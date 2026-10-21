@@ -365,11 +365,11 @@ func TestEmailGroupHandledNeedsEveryIPBlocked(t *testing.T) {
 	ips := map[netip.Addr]bool{netip.MustParseAddr("203.0.113.5"): true}
 	nets := []netip.Prefix{netip.MustParsePrefix("198.51.100.0/24")}
 	groups := []emailGroup{
-		{Title: "all", IPs: []string{"203.0.113.5", "198.51.100.7"}},
-		{Title: "some", IPs: []string{"203.0.113.5", "192.0.2.1"}},
-		{Title: "mapped", IPs: []string{"::ffff:203.0.113.5"}},
+		{Title: "all", Kind: "auth_failure", IPs: []string{"203.0.113.5", "198.51.100.7"}},
+		{Title: "some", Kind: "auth_failure", IPs: []string{"203.0.113.5", "192.0.2.1"}},
+		{Title: "mapped", Kind: "auth_failure", IPs: []string{"::ffff:203.0.113.5"}},
 		{Title: "noip", Kind: "compromised_account"},
-		{Title: "junk", IPs: []string{"not-an-ip"}},
+		{Title: "junk", Kind: "auth_failure", IPs: []string{"not-an-ip"}},
 	}
 	annotateEmailGroups(groups, ips, nets)
 	want := map[string][2]any{"all": {"all", true}, "some": {"some", false}, "mapped": {"all", true},
@@ -377,6 +377,63 @@ func TestEmailGroupHandledNeedsEveryIPBlocked(t *testing.T) {
 	for _, g := range groups {
 		if w := want[g.Title]; g.BlockState != w[0] || g.Handled != w[1] {
 			t.Errorf("%s: %s %v", g.Title, g.BlockState, g.Handled)
+		}
+	}
+}
+
+// A blocked source IP ends an auth attack, not a compromised password or a
+// spam run: only auth failures whose every finding names its attacker can
+// be handled.
+func TestEmailGroupHandledOnlyForAddressedAuthFailures(t *testing.T) {
+	now := time.Now()
+	in := []alert.Finding{
+		emailFinding("mail_account_compromised", alert.Critical, "owned@example.com", "", "203.0.113.5", now),
+		emailFinding("email_cloud_relay_abuse", alert.High, "relay@example.com", "", "203.0.113.5", now),
+		emailFinding("email_auth_failure_realtime", alert.High, "jane@example.com", "", "203.0.113.5", now),
+		emailFinding("email_auth_failure_realtime", alert.High, "jane@example.com", "", "", now),
+		emailFinding("email_auth_failure_realtime", alert.High, "bob@example.com", "", "203.0.113.5", now),
+	}
+	groups := buildEmailGroups(in, now.Add(-time.Hour), now, "")
+	annotateEmailGroups(groups, map[netip.Addr]bool{netip.MustParseAddr("203.0.113.5"): true}, nil)
+	want := map[string][2]any{
+		"owned@example.com": {"all", false},
+		"relay@example.com": {"all", false},
+		"jane@example.com":  {"all", false},
+		"bob@example.com":   {"all", true},
+	}
+	if len(groups) != len(want) {
+		t.Fatalf("got %d groups, want %d: %+v", len(groups), len(want), groups)
+	}
+	for _, g := range groups {
+		if w := want[g.Title]; g.BlockState != w[0] || g.Handled != w[1] {
+			t.Errorf("%s (%s): %s %v, want %v", g.Title, g.Kind, g.BlockState, g.Handled, w)
+		}
+	}
+}
+
+// A subnet spray names its subnet. A block covers it only when the block's
+// prefix holds the whole subnet.
+func TestEmailGroupSubnetSprayCoveredBySubnetBlock(t *testing.T) {
+	now := time.Now()
+	spray := alert.Finding{Severity: alert.High, Check: "mail_subnet_spray", Message: "spray",
+		CIDRs: []string{"198.51.100.0/24"}, Timestamp: now}
+	for _, tc := range []struct {
+		block   string
+		state   string
+		handled bool
+	}{
+		{"198.51.100.0/24", "all", true},
+		{"198.51.0.0/16", "all", true},
+		{"198.51.100.0/28", "none", false},
+		{"203.0.113.0/24", "none", false},
+	} {
+		groups := buildEmailGroups([]alert.Finding{spray}, now.Add(-time.Hour), now, "")
+		if len(groups) != 1 || len(groups[0].IPs) != 1 || groups[0].IPs[0] != "198.51.100.0/24" {
+			t.Fatalf("spray groups = %+v, want one group naming its subnet", groups)
+		}
+		annotateEmailGroups(groups, nil, []netip.Prefix{netip.MustParsePrefix(tc.block)})
+		if g := groups[0]; g.BlockState != tc.state || g.Handled != tc.handled {
+			t.Errorf("block %s: %s %v, want %s %v", tc.block, g.BlockState, g.Handled, tc.state, tc.handled)
 		}
 	}
 }

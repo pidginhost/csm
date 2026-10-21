@@ -45,9 +45,13 @@ type emailGroup struct {
 	// BlockState is all, some, none or no_ip: how many of IPs are under an
 	// enforced block now. It is empty when the firewall state is unreadable.
 	BlockState string `json:"block_state"`
-	// Handled marks a group whose every IP is blocked. A group with no IP,
-	// such as a compromised account, is never handled.
+	// Handled marks an auth failure group whose every IP is blocked and
+	// whose every finding names its attacker. A blocked source IP does not
+	// end a compromised account or a spam run, so no other kind is handled.
 	Handled bool `json:"handled"`
+	// addressless is set when a finding in the group names no attacker
+	// address, so blocking the group's IPs need not end what it reports.
+	addressless bool
 }
 
 type emailGroupsResponse struct {
@@ -219,6 +223,8 @@ func buildEmailGroups(findings []alert.Finding, from, to time.Time, kindFilter s
 		}
 		if ip := alert.AttackerAddress(f); ip != "" {
 			agg.ipCounts[ip]++
+		} else {
+			agg.group.addressless = true
 		}
 		if f.Domain != "" {
 			agg.domainSet[strings.ToLower(f.Domain)] = struct{}{}
@@ -456,17 +462,15 @@ func activeBlocks(statePath string, now time.Time) (ips map[netip.Addr]bool, net
 	return ips, nets, nil
 }
 
-// annotateEmailGroups sets each group's block state. A group is handled
-// only when it has an IP and every IP is blocked directly or by a covering
-// subnet; an address that does not parse is never blocked.
+// annotateEmailGroups sets each group's block state, and marks an auth
+// failure group handled when every finding names its attacker and every one
+// of its IPs is blocked.
 func annotateEmailGroups(groups []emailGroup, ips map[netip.Addr]bool, nets []netip.Prefix) {
 	for i := range groups {
 		g := &groups[i]
 		blocked := 0
 		for _, s := range g.IPs {
-			ip, err := netip.ParseAddr(s)
-			ip = ip.Unmap()
-			if err == nil && (ips[ip] || slices.ContainsFunc(nets, func(p netip.Prefix) bool { return p.Contains(ip) })) {
+			if entryBlocked(s, ips, nets) {
 				blocked++
 			}
 		}
@@ -480,8 +484,25 @@ func annotateEmailGroups(groups []emailGroup, ips map[netip.Addr]bool, nets []ne
 		default:
 			g.BlockState = "none"
 		}
-		g.Handled = g.BlockState == "all"
+		g.Handled = g.Kind == "auth_failure" && !g.addressless && g.BlockState == "all"
 	}
+}
+
+// entryBlocked reports whether a group's IP entry is under an active block.
+// An address is covered by a direct block or a subnet block holding it. A
+// subnet, which a subnet spray names, is covered only by a subnet block
+// holding all of it. Anything else is never blocked.
+func entryBlocked(s string, ips map[netip.Addr]bool, nets []netip.Prefix) bool {
+	if ip, err := netip.ParseAddr(s); err == nil {
+		ip = ip.Unmap()
+		return ips[ip] || slices.ContainsFunc(nets, func(p netip.Prefix) bool { return p.Contains(ip) })
+	}
+	if sub, err := netip.ParsePrefix(s); err == nil {
+		return slices.ContainsFunc(nets, func(p netip.Prefix) bool {
+			return p.Bits() <= sub.Bits() && p.Contains(sub.Masked().Addr())
+		})
+	}
+	return false
 }
 
 func (s *Server) buildEmailGroupsResponse(from, to time.Time, kindFilter string) emailGroupsResponse {
