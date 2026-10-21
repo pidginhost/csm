@@ -2,7 +2,13 @@ package checks
 
 import "strings"
 
-const phpUploadProgressKey = "session.upload_progress.enabled"
+const (
+	phpUploadProgressKey       = "session.upload_progress.enabled"
+	phpFatalErrorBacktracesKey = "fatal_error_backtraces"
+)
+
+// FPM pool overrides are tracked only for the settings the audit evaluates.
+var phpAuditPoolSettings = []string{phpUploadProgressKey, phpFatalErrorBacktracesKey}
 
 // Keep conditional settings separate: disabling one site does not disable
 // other sites that inherit PHP's global value.
@@ -49,17 +55,17 @@ func (ini phpAuditINI) merge(content string, pools bool) {
 			value += "\n" + strings.Join(lines[start+1:i+1], "\n")
 		}
 		if pools {
-			switch key {
-			case "php_value[" + phpUploadProgressKey + "]", "php_flag[" + phpUploadProgressKey + "]":
-				key = "value"
-			case "php_admin_value[" + phpUploadProgressKey + "]", "php_admin_flag[" + phpUploadProgressKey + "]":
-				key = "admin"
-			default:
+			if key = phpAuditPoolKey(key); key == "" {
 				continue
 			}
 		}
 		if ini[scope] == nil {
 			ini[scope] = make(map[string]string)
+		}
+		if _, set := ini[scope][key]; pools && set {
+			// FPM prepends pool values to a list and applies it in reverse
+			// configuration order, so the first duplicate wins.
+			continue
 		}
 		ini[scope][key] = strings.TrimSpace(value)
 	}
@@ -89,20 +95,57 @@ func phpAuditQuoteState(value string, quote byte) byte {
 	return quote
 }
 
-func (ini phpAuditINI) uploadProgressDisabled(pools phpAuditINI) bool {
-	value, set := ini[""][phpUploadProgressKey]
+// phpAuditPoolKey maps a tracked pool directive to "admin:<setting>" or
+// "value:<setting>", and anything else to "".
+func phpAuditPoolKey(directive string) string {
+	prefix, offset, ok := strings.Cut(directive, "[")
+	if !ok || !strings.HasSuffix(offset, "]") {
+		return ""
+	}
+	var kind string
+	switch strings.TrimSpace(prefix) {
+	case "php_value", "php_flag":
+		kind = "value:"
+	case "php_admin_value", "php_admin_flag":
+		kind = "admin:"
+	default:
+		return ""
+	}
+	offset = strings.TrimLeft(strings.TrimSuffix(offset, "]"), " \t")
+	if !phpAuditQuotesClosed(offset) {
+		return ""
+	}
+	// PHP ignores whitespace after a closing quote, but keeps it as part
+	// of an unquoted offset. Trimming both would alias distinct settings.
+	trimmed := strings.TrimRight(offset, " \t")
+	if strings.HasSuffix(trimmed, "\"") || strings.HasSuffix(trimmed, "'") {
+		offset = trimmed
+	}
+	offset, _ = joinPHPIniQuotedFragments(offset)
+	for _, setting := range phpAuditPoolSettings {
+		if offset == setting {
+			return kind + setting
+		}
+	}
+	return ""
+}
+
+// settingDisabled reports whether a boolean setting that defaults to on is
+// explicitly off globally and not turned back on by any section or pool.
+func (ini phpAuditINI) settingDisabled(key string, pools phpAuditINI) bool {
+	value, set := ini[""][key]
 	if !set || !phpAuditBoolDisabled(value) {
 		return false
 	}
 	for _, settings := range ini {
-		if value, set := settings[phpUploadProgressKey]; set && !phpAuditBoolDisabled(value) {
+		if value, set := settings[key]; set && !phpAuditBoolDisabled(value) {
 			return false
 		}
 	}
 	for _, settings := range pools {
-		value, set := settings["admin"]
+		value, set := settings["admin:"+key]
 		if !set {
-			value, set = settings["value"]
+			value, set = settings["value:"+key]
 		}
 		if set && !phpAuditBoolDisabled(value) {
 			return false
