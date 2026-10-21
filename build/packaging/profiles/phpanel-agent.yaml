@@ -30,7 +30,7 @@
 #   - <agent control plane ip>
 #
 # The agent rewrites 10-phpanel-runtime.yaml on every bootstrap. After a
-# rewrite it re-signs only its own fragments:
+# rewrite it re-hashes only its own fragments:
 #
 #   csm rehash --fragment 10-phpanel-runtime.yaml
 #

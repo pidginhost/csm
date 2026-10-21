@@ -55,7 +55,7 @@ sudo csm doctor
 
 Open `https://<server>:9443/login`. The package generates an initial admin token in `/etc/csm/csm.yaml` and a self-signed certificate under the state directory unless explicit TLS paths are configured.
 
-The baseline signs the binary, `csm.yaml`, and every non-exempt conf.d drop-in. After a later hand edit, run `sudo csm rehash` before restarting: the daemon refuses a config it did not sign, and `csm doctor` reports the mismatch while the old daemon is still running. Automation-owned overrides go in `/etc/csm/conf.d/*.yaml`; see [Configuration](docs/src/configuration.md#confd-drop-ins) for merge order, trust, and integrity rules.
+The baseline records the hashes of the binary, `csm.yaml`, and every non-exempt conf.d drop-in. After a later hand edit, run `sudo csm rehash` before restarting: the daemon refuses a config whose hash it did not record, and `csm doctor` reports the mismatch while the old daemon is still running. The check catches edits that were never recorded, but it does not stop anyone who can write `/etc/csm`, because they can record new hashes too. Automation-owned overrides go in `/etc/csm/conf.d/*.yaml`; see [Configuration](docs/src/configuration.md#confd-drop-ins) for merge order, trust, and integrity rules.
 
 ## How it runs
 
@@ -90,7 +90,7 @@ csm privileges [--json]      what CSM does that needs privilege, and the key tha
 csm actions [--since 24h]    what CSM did to this host, with before/after digests on file changes
 csm selftest                 scan known samples and report what the installed rules catch
 csm baseline                 establish known state after first start or an approved reset
-csm rehash                   re-sign binary, csm.yaml, and conf.d after an intentional change
+csm rehash                   re-hash binary, csm.yaml, and conf.d after an intentional change
 csm scan <user> [--full]     scan one account, uncapped with --full
 csm scan --all --full        scan every account without the per-account file cap
 csm incidents ...            list, show, and update correlated incidents

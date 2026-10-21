@@ -39,7 +39,7 @@ A tier with no open item has no heading below.
 
 ## Release readiness gates
 
-Required dependencies are defined in [.gitlab-ci.yml](.gitlab-ci.yml): signed
+These gates run in the internal CI pipeline, which requires signed
 multi-architecture builds, fixture privacy, the pinned clean corpus, the
 production-tag and real-kernel jobs, release preflight and cloud integration
 on fresh servers. Two gates are open:

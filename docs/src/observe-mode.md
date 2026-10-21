@@ -65,7 +65,7 @@ enabled, `email_av.fail_mode: tempfail`, both of which act on a host
 independently of `auto_response.enabled`.
 
 CSM refuses rather than silently turning those switches off in memory, because
-the config re-signing path marshals the in-memory config back over `csm.yaml`:
+the config re-hash path marshals the in-memory config back over `csm.yaml`:
 an in-memory override would eventually be written into the operator's file.
 
 ## What still runs

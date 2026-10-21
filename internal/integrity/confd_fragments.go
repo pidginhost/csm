@@ -21,7 +21,7 @@ const fragmentRecordSuffix = ".confd-fragments.json"
 // ErrNoFragmentBaseline means no per-fragment record matches the signed
 // conf.d state, so a scoped rehash cannot tell which fragments changed. A
 // full `csm rehash` signs the current state and records one.
-var ErrNoFragmentBaseline = errors.New("no per-fragment conf.d record matches the signed state")
+var ErrNoFragmentBaseline = errors.New("no per-fragment conf.d record matches the recorded state")
 
 // UnnamedChangesError refuses a scoped rehash because something other than
 // the named fragments changed since the last signed state.
@@ -174,14 +174,14 @@ func RehashFragments(binaryPath, configPath, confDir string, names []string) err
 	}
 	cfg.ConfigFile, cfg.ConfigDir = configPath, confDir
 	if cfg.Integrity.BinaryHash == "" || cfg.Integrity.ConfigHash == "" {
-		return fmt.Errorf("%w: the config has never been signed", ErrNoFragmentBaseline)
+		return fmt.Errorf("%w: the config has no recorded hashes", ErrNoFragmentBaseline)
 	}
 	rec, err := readFragmentRecord(configPath)
 	if err != nil {
 		return err
 	}
 	if rec.ConfdHash != cfg.Integrity.ConfdHash {
-		return fmt.Errorf("%w: the record belongs to another signed state", ErrNoFragmentBaseline)
+		return fmt.Errorf("%w: the record belongs to another recorded state", ErrNoFragmentBaseline)
 	}
 	exempt := cfg.ConfD.IntegrityExempt
 	for name := range named {
@@ -190,7 +190,7 @@ func RehashFragments(binaryPath, configPath, confDir string, names []string) err
 		}
 		_, statErr := os.Lstat(filepath.Join(confDir, name))
 		if errors.Is(statErr, os.ErrNotExist) {
-			return fmt.Errorf("fragment %s does not exist in %s and is not part of the signed state", name, confDir)
+			return fmt.Errorf("fragment %s does not exist in %s and is not part of the recorded state", name, confDir)
 		}
 		if statErr != nil {
 			return fmt.Errorf("fragment %s: %w", name, statErr)

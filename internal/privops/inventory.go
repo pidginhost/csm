@@ -278,7 +278,7 @@ var operations = []Op{
 		Privileges:       []Privilege{Root},
 		Trigger:          Operator,
 		Writes:           []string{"/etc/csm"},
-		WithoutPrivilege: "the integrity gate cannot be re-signed, so the next restart refuses to start after any config edit",
+		WithoutPrivilege: "the integrity hashes cannot be re-recorded, so the next restart refuses to start after any config edit",
 	},
 	{
 		ID:               "state.update_signatures",
@@ -730,10 +730,10 @@ var operations = []Op{
 		ID: "operate.rehash", Subsystem: "operator commands",
 		Risk:        RiskDestructive,
 		RecoveryGap: "This inventory does not specify an action-wide snapshot and verified rollback of configuration, service and external-tool side effects.",
-		Summary:     "re-sign configuration, converge legacy config copies, set binary immutability and refresh the launcher, service and log rotation",
+		Summary:     "re-hash configuration, converge legacy config copies, set binary immutability and refresh the launcher, service and log rotation",
 		Privileges:  []Privilege{CapLinuxImmutable, Root}, Trigger: Operator, Unsandboxed: true,
 		Writes:           []string{"/opt/csm", "/etc/csm", "/etc/systemd/system", "/etc/logrotate.d", "/usr/sbin/csm", "service:daemon reload"},
-		WithoutPrivilege: "hash signing and upgrade integration refresh cannot complete",
+		WithoutPrivilege: "hash recording and upgrade integration refresh cannot complete",
 	},
 	{
 		ID:               "operate.manual_remediation",
