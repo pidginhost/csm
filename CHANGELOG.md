@@ -11,7 +11,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Security
 
-- PHP hardening audits no longer report a safe configured default when inspected worker settings keep the audited feature enabled.
+- PHP hardening audits no longer pass when a PHP-FPM pool still turns the checked setting on through quoted or repeated entries.
 
 ### Changed
 
