@@ -144,6 +144,58 @@ func TestWPInstalls_UnreadableMapMarksCallersGap(t *testing.T) {
 	}
 }
 
+// A customer who deletes a site's directory usually leaves the domain behind in
+// the panel. That root holds no WordPress, so it is not a coverage gap: a gap
+// here kept every WordPress check on the host from retiring its findings and
+// left deleted sites reported indefinitely.
+func TestWPInstalls_MissingMappedRootIsNotAGap(t *testing.T) {
+	old := osFS
+	osFS = wpUserdataFS(
+		"live.example.com: alice==alice==main==live.example.com==/home/alice/public_html\n"+
+			"gone.example.com: alice==alice==sub==live.example.com==/home/alice/gone.example.com\n",
+		"/home/alice/public_html/wp-config.php",
+	)
+	t.Cleanup(func() { osFS = old })
+
+	ctx, collector := withIncompleteCheckCollector(context.Background())
+	got := wpInstalls(ctx, "outdated_plugins")
+	if collectorMarked(collector, "outdated_plugins") {
+		t.Error("missing mapped document root recorded a coverage gap")
+	}
+	if len(got) != 1 || got[0].ConfigPath != "/home/alice/public_html/wp-config.php" {
+		t.Fatalf("installs = %v, want the live install only", wpInstallPaths(got))
+	}
+	if got[0].Served != servedByPanel {
+		t.Errorf("served state = %v, want servedByPanel", got[0].Served)
+	}
+}
+
+// A mapped root that exists but cannot be inspected may hold an install, so it
+// stays a gap.
+func TestWPInstalls_UninspectableMappedRootMarksGap(t *testing.T) {
+	const locked = "/home/alice/locked.example.com"
+	old := osFS
+	fs := wpUserdataFS(
+		"live.example.com: alice==alice==main==live.example.com==/home/alice/public_html\n"+
+			"locked.example.com: alice==alice==sub==live.example.com=="+locked+"\n",
+		"/home/alice/public_html/wp-config.php",
+	)
+	fs.lstat = func(name string) (os.FileInfo, error) {
+		if name == locked {
+			return nil, os.ErrPermission
+		}
+		return mockPathInfo(name, fs.files)
+	}
+	osFS = fs
+	t.Cleanup(func() { osFS = old })
+
+	ctx, collector := withIncompleteCheckCollector(context.Background())
+	wpInstalls(ctx, "outdated_plugins")
+	if !collectorMarked(collector, "outdated_plugins") {
+		t.Error("uninspectable mapped document root did not record a coverage gap")
+	}
+}
+
 // Map and walk find the same file; the panel's declaration wins.
 func TestWPInstalls_DedupsKeepingPanelState(t *testing.T) {
 	old := osFS

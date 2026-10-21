@@ -231,6 +231,8 @@ refresh policy. `disabled_checks` controls these scheduled checks, and plugin
 coverage performs no refresh when both inventory consumers are disabled.
 Cancellation and incomplete discovery retain earlier evidence. Complete discovery
 removes installations that are no longer present, scoped to the account scanned.
+A domain the panel still lists after its directory was deleted holds no
+installation and does not make discovery incomplete.
 A wp-cli refusal explicitly identifying a non-WordPress directory is recorded as
 not applicable rather than an outage. A completed core check that finds modified
 or missing files retains its existing integrity findings and is counted separately.

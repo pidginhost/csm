@@ -238,7 +238,11 @@ func discoverWPInstalls(ctx context.Context, account string) wpDiscovery {
 			}
 			wpConfig, err := canonicalWPInstallPath(filepath.Join(root, "wp-config.php"))
 			if err != nil {
-				d.incomplete = true
+				// A domain left in the panel after its directory was deleted
+				// holds no install, the same as a root without wp-config.php.
+				if !errors.Is(err, fs.ErrNotExist) {
+					d.incomplete = true
+				}
 				continue
 			}
 			mappedRoots[wpConfig] = true
