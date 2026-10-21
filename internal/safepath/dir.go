@@ -174,6 +174,21 @@ func (d *Dir) ExchangeTo(name string, dest *Dir, destName string) error {
 	return d.rename(name, dest, destName, true)
 }
 
+// ReplaceTo renames name over destName, replacing whatever entry is there.
+// A symlink at destName is replaced, not followed.
+func (d *Dir) ReplaceTo(name string, dest *Dir, destName string) error {
+	if !validName(name) || !validName(destName) {
+		return fmt.Errorf("invalid rename basenames %q, %q", name, destName)
+	}
+	err := unix.Renameat(fileFD(d.file), name, fileFD(dest.file), destName)
+	runtime.KeepAlive(d)
+	runtime.KeepAlive(dest)
+	if err != nil {
+		return &os.LinkError{Op: "renameat", Old: name, New: destName, Err: err}
+	}
+	return nil
+}
+
 func (d *Dir) rename(name string, dest *Dir, destName string, exchange bool) error {
 	if !validName(name) || !validName(destName) {
 		return fmt.Errorf("invalid rename basenames %q, %q", name, destName)
