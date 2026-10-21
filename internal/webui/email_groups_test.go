@@ -416,19 +416,19 @@ func TestEmailGroupHandledOnlyForAddressedAuthFailures(t *testing.T) {
 func TestEmailGroupSubnetSprayCoveredBySubnetBlock(t *testing.T) {
 	now := time.Now()
 	spray := alert.Finding{Severity: alert.High, Check: "mail_subnet_spray", Message: "spray",
-		CIDRs: []string{"198.51.100.0/24"}, Timestamp: now}
+		CIDRs: []string{"198.51.100.0/26"}, Timestamp: now}
 	for _, tc := range []struct {
 		block   string
 		state   string
 		handled bool
 	}{
+		{"198.51.100.0/26", "all", true},
 		{"198.51.100.0/24", "all", true},
-		{"198.51.0.0/16", "all", true},
 		{"198.51.100.0/28", "none", false},
 		{"203.0.113.0/24", "none", false},
 	} {
 		groups := buildEmailGroups([]alert.Finding{spray}, now.Add(-time.Hour), now, "")
-		if len(groups) != 1 || len(groups[0].IPs) != 1 || groups[0].IPs[0] != "198.51.100.0/24" {
+		if len(groups) != 1 || len(groups[0].IPs) != 1 || groups[0].IPs[0] != "198.51.100.0/26" {
 			t.Fatalf("spray groups = %+v, want one group naming its subnet", groups)
 		}
 		annotateEmailGroups(groups, nil, []netip.Prefix{netip.MustParsePrefix(tc.block)})
