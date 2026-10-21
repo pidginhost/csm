@@ -172,10 +172,6 @@ func (s *Store) clock() time.Time {
 func (s *Store) FlushDue(now time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.saveDueLocked(now)
-}
-
-func (s *Store) saveDueLocked(now time.Time) error {
 	if !s.dirty || now.Sub(s.lastSave) < saveInterval {
 		return nil
 	}
@@ -316,10 +312,6 @@ func (s *Store) Update(findings []alert.Finding) {
 			}
 		}
 	}
-
-	if err := s.saveDueLocked(now); err != nil {
-		fmt.Fprintf(os.Stderr, "state: error saving after update: %v\n", err)
-	}
 }
 
 // MarkAlerted refreshes AlertSent on each finding's entry so the 24-hour
@@ -346,9 +338,6 @@ func (s *Store) MarkAlerted(findings []alert.Finding) {
 		return
 	}
 	s.dirty = true
-	if err := s.saveDueLocked(now); err != nil {
-		fmt.Fprintf(os.Stderr, "state: error saving after MarkAlerted: %v\n", err)
-	}
 }
 
 func (s *Store) SetBaseline(findings []alert.Finding) {

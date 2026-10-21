@@ -37,6 +37,9 @@ func TestSaveWritesHashedBytes(t *testing.T) {
 	writes := captureStateWrites(t)
 
 	st.Update([]alert.Finding{{Check: "save_bytes", Message: "one", Severity: alert.High}})
+	if err := st.Flush(); err != nil {
+		t.Fatal(err)
+	}
 
 	if len(*writes) != 1 {
 		t.Fatalf("state.json writes = %d, want 1 carrying the hashed bytes", len(*writes))
@@ -87,7 +90,7 @@ var (
 	debounceB = alert.Finding{Check: "debounce_probe", Message: "second", Severity: alert.High}
 )
 
-func TestUpdateAndMarkAlertedSaveOncePerInterval(t *testing.T) {
+func TestUpdateAndMarkAlertedOnlyMarkDirty(t *testing.T) {
 	t0 := time.Now()
 	clk := t0
 	st := debounceStore(t, &clk)
@@ -96,23 +99,25 @@ func TestUpdateAndMarkAlertedSaveOncePerInterval(t *testing.T) {
 	st.Update([]alert.Finding{debounceA})
 	clk = t0.Add(10 * time.Second)
 	st.Update([]alert.Finding{debounceA, debounceB})
-	clk = t0.Add(20 * time.Second)
 	st.MarkAlerted([]alert.Finding{debounceB})
-
-	if len(*writes) != 1 {
-		t.Fatalf("state.json written %d times within the save interval, want 1", len(*writes))
-	}
-	if onDiskKeys(t, st.path)[debounceB.Key()] {
-		t.Fatal("a change inside the save interval reached disk")
-	}
-
-	clk = t0.Add(saveInterval)
+	clk = t0.Add(2 * saveInterval)
 	st.Update([]alert.Finding{debounceA, debounceB})
-	if len(*writes) != 2 {
-		t.Fatalf("state.json written %d times once the interval passed, want 2", len(*writes))
+	st.MarkAlerted([]alert.Finding{debounceB})
+	if len(*writes) != 0 {
+		t.Fatalf("mutations wrote state.json %d times before a flush", len(*writes))
 	}
-	if !onDiskKeys(t, st.path)[debounceB.Key()] {
-		t.Fatal("the save after the interval did not carry the pending change")
+	if !st.dirty || len(st.FilterNew([]alert.Finding{debounceA, debounceB})) != 0 {
+		t.Fatal("mutations must update live dedup state and leave it dirty")
+	}
+	if err := st.FlushDue(clk); err != nil {
+		t.Fatal(err)
+	}
+	if len(*writes) != 1 {
+		t.Fatalf("FlushDue wrote state.json %d times, want 1", len(*writes))
+	}
+	keys := onDiskKeys(t, st.path)
+	if len(keys) != 2 || !keys[debounceA.Key()] || !keys[debounceB.Key()] {
+		t.Fatalf("flush did not carry all pending changes: %v", keys)
 	}
 }
 
@@ -123,6 +128,9 @@ func TestFlushDueWritesAfterInterval(t *testing.T) {
 	writes := captureStateWrites(t)
 
 	st.Update([]alert.Finding{debounceA})
+	if err := st.FlushDue(clk); err != nil {
+		t.Fatal(err)
+	}
 	clk = t0.Add(5 * time.Second)
 	st.Update([]alert.Finding{debounceA, debounceB})
 
@@ -132,7 +140,8 @@ func TestFlushDueWritesAfterInterval(t *testing.T) {
 	if len(*writes) != 1 {
 		t.Fatalf("FlushDue inside the interval wrote: %d writes, want 1", len(*writes))
 	}
-	if err := st.FlushDue(t0.Add(61 * time.Second)); err != nil {
+	clk = t0.Add(61 * time.Second)
+	if err := st.FlushDue(clk); err != nil {
 		t.Fatal(err)
 	}
 	if len(*writes) != 2 {
@@ -155,6 +164,9 @@ func TestCloseWritesPending(t *testing.T) {
 	st := debounceStore(t, &clk)
 
 	st.Update([]alert.Finding{debounceA})
+	if err := st.FlushDue(clk); err != nil {
+		t.Fatal(err)
+	}
 	clk = t0.Add(5 * time.Second)
 	st.Update([]alert.Finding{debounceA, debounceB})
 	if onDiskKeys(t, st.path)[debounceB.Key()] {
@@ -179,6 +191,9 @@ func TestFlushWritesPendingInsideInterval(t *testing.T) {
 	st := debounceStore(t, &clk)
 
 	st.Update([]alert.Finding{debounceA})
+	if err := st.FlushDue(clk); err != nil {
+		t.Fatal(err)
+	}
 	clk = t0.Add(5 * time.Second)
 	st.Update([]alert.Finding{debounceA, debounceB})
 	if onDiskKeys(t, st.path)[debounceB.Key()] {
@@ -208,6 +223,9 @@ func TestFailedSaveRetriesAtNextInterval(t *testing.T) {
 	t.Cleanup(func() { stateFileWriter = old })
 
 	st.Update([]alert.Finding{debounceA})
+	if err := st.FlushDue(clk); err == nil {
+		t.Fatal("FlushDue hid the write error")
+	}
 	clk = t0.Add(10 * time.Second)
 	st.Update([]alert.Finding{debounceA, debounceB})
 	st.MarkAlerted([]alert.Finding{debounceB})
@@ -215,10 +233,23 @@ func TestFailedSaveRetriesAtNextInterval(t *testing.T) {
 	if attempts != 1 {
 		t.Fatalf("failing write attempted %d times inside the interval, want 1", attempts)
 	}
-	if err := st.FlushDue(t0.Add(saveInterval)); err == nil {
+	clk = t0.Add(saveInterval)
+	if err := st.FlushDue(clk); err == nil {
 		t.Fatal("FlushDue hid the write error")
 	}
 	if attempts != 2 {
 		t.Fatalf("failing write attempted %d times after the interval, want 2", attempts)
+	}
+	if !st.dirty {
+		t.Fatal("failed save cleared pending changes")
+	}
+	stateFileWriter = old
+	clk = clk.Add(saveInterval)
+	if err := st.FlushDue(clk); err != nil {
+		t.Fatal(err)
+	}
+	keys := onDiskKeys(t, st.path)
+	if len(keys) != 2 || !keys[debounceA.Key()] || !keys[debounceB.Key()] {
+		t.Fatalf("retry lost pending changes: %v", keys)
 	}
 }

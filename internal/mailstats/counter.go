@@ -107,7 +107,7 @@ type bucket struct {
 
 // scanRef is what the join keeps of a message: the score of its successful
 // scan and the bucket and Scans key that scan counted under. Key is empty
-// while no scan has been seen. Malware is set once a malware reject or
+// while no scan is retained. Malware is set once a malware reject or
 // quarantine of the message took its scan out of clean, or will.
 type scanRef struct {
 	score   int
@@ -298,7 +298,7 @@ func (c *Counter) RecordSend(at time.Time, account string) {
 // holds, or whose bucket is gone, stays as it is. The caller holds c.mu.
 func (c *Counter) moveToMalware(msgID string) {
 	ref, ok := c.scans[msgID]
-	if !ok || ref.malware {
+	if !ok || ref.malware || ref.key == "" {
 		return
 	}
 	b := c.buckets[ref.bucket]
@@ -344,13 +344,26 @@ func (c *Counter) bucket(k int64) *bucket {
 			if oldest == k {
 				return nil
 			}
-			delete(c.buckets, oldest)
-			delete(c.dirty, oldest)
+			c.dropBucket(oldest)
 		}
 		b = &bucket{Scans: map[string]int{}, Rejects: map[Class]int{}, Temporary: map[Class]int{}}
 		c.buckets[k] = b
 	}
 	return b
+}
+
+// A late record can recreate a dropped bucket. Invalidate its scan counts
+// so a later quarantine cannot subtract a different message. Keep scores
+// and FIFO positions until the join evicts them. The caller holds c.mu.
+func (c *Counter) dropBucket(k int64) {
+	delete(c.buckets, k)
+	delete(c.dirty, k)
+	for id, ref := range c.scans {
+		if ref.bucket == k {
+			ref.key = ""
+			c.scans[id] = ref
+		}
+	}
 }
 
 // rememberScan keeps the last scanJoinSize messages seen in a successful

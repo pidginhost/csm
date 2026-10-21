@@ -604,6 +604,28 @@ func TestMalwareMoveSkipsDroppedScanBucket(t *testing.T) {
 		[]Point{{T: bucketKey(now), Malware: 1}})
 }
 
+// A late scan can recreate a pruned bucket. A quarantine for the discarded
+// scan must not subtract the unrelated scan now occupying that bucket.
+func TestMalwareMovePreservesRecreatedBucket(t *testing.T) {
+	start := time.Date(2026, 10, 20, 12, 1, 0, 0, time.UTC)
+	now := start
+	c := New(func() time.Time { return now })
+	const oldID = "1tAbCd-000001-Ab"
+	c.RecordScan(start, antispam.Scan{OK: true, Mode: "enforce", Decision: "none", MsgID: oldID})
+	now = start.Add(Retention + time.Minute)
+	c.Prune(now)
+	c.RecordScan(start.Add(2*time.Minute), antispam.Scan{OK: true, Mode: "enforce", Decision: "none", MsgID: "1tAbCd-000002-Ab"})
+	c.RecordQuarantine(now, oldID)
+	ov := c.Overview(start.Add(-time.Minute), now.Add(time.Minute))
+	want := Totals{Scanned: 1, Clean: 1, Quarantined: 1, Rejects: map[Class]int{}, Temporary: map[Class]int{}}
+	if !reflect.DeepEqual(ov.Totals, want) {
+		t.Fatalf("totals %+v, want %+v", ov.Totals, want)
+	}
+	if want := []Point{{T: bucketStart(start), Clean: 1}, {T: bucketStart(now), Malware: 1}}; !slices.Equal(ov.Series, want) {
+		t.Fatalf("series %+v, want %+v", ov.Series, want)
+	}
+}
+
 // Sends sum by account across buckets, most messages first and then by
 // name. A submitter that resolved to no account counts in the total but is
 // not a row, and the row limit leaves the totals whole.

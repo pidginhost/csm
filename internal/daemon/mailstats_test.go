@@ -310,8 +310,11 @@ func TestEximArrivalCountsSubmitterAccount(t *testing.T) {
 	d := newMailStatsTestDaemon(t, &now)
 	for _, line := range []string{
 		`2026-10-20 12:10:00 1tAbCd-000011-Ab <= user@example.com H=(client.example.net) [203.0.113.20]:50000 P=esmtpsa A=dovecot_login:user@example.com S=1200 for b@example.net`,
-		`2026-10-20 12:10:30 1tAbCd-000012-Ab <= exampleacct@host.example.com U=exampleacct P=local S=800 for b@example.net`,
-		`2026-10-20 12:10:45 1tAbCd-000015-Ab <= <> R=1tAbCd-000012-Ab U=mailnull P=local S=1500 for exampleacct@host.example.com`,
+		`2026-10-20 12:10:30 1tAbCd-000012-Ab <= exampleacct@example.net U=exampleacct P=local S=800 for b@example.net`,
+		`2026-10-20 12:10:45 1tAbCd-000015-Ab <= <> R=1tAbCd-000012-Ab U=mailnull P=local S=1500 for exampleacct@example.net`,
+		`2026-10-20 12:10:46 1tAbCd-000016-Ab <= <> H=(client.example.net) [203.0.113.20]:50002 P=esmtpsa A=dovecot_login:user@example.com S=1500 for b@example.net`,
+		`2026-10-20 12:10:47 1tAbCd-000017-Ab <= root@example.com U=root P=local S=800 for b@example.net`,
+		`2026-10-20 12:10:48 1tAbCd-000018-Ab <= mailnull@example.com U=mailnull P=local S=800 for b@example.net`,
 		`2026-10-20 12:11:00 1tAbCd-000013-Ab <= other@example.net H=(client.example.net) [203.0.113.21]:50001 P=esmtpsa A=dovecot_login:other@example.net S=900 for b@example.net`,
 		`2026-10-20 12:11:30 1tAbCd-000014-Ab <= a@example.net H=mx.example.net [198.51.100.9]:41000 P=esmtps S=2000 for user@example.com`,
 		`2026-10-20 12:12:00 1tAbCd-000011-Ab => b@example.net R=dkim_lookuphost T=dkim_remote_smtp H=mx.example.net [198.51.100.10]`,
@@ -319,7 +322,7 @@ func TestEximArrivalCountsSubmitterAccount(t *testing.T) {
 		d.handleEximLine(line, alert.Observation{ObservedAt: now}, &config.Config{})
 	}
 	got := d.mailStats.TopSenders(now.Add(-time.Hour), now, 0)
-	want := mailstats.SendersReport{Accounts: []mailstats.AccountSends{{Account: "exampleacct", Messages: 2}}, Total: 3, Unresolved: 1}
+	want := mailstats.SendersReport{Accounts: []mailstats.AccountSends{{Account: "exampleacct", Messages: 2}}, Total: 5, Unresolved: 3}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("senders = %+v, want %+v", got, want)
 	}

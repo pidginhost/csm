@@ -162,8 +162,7 @@ func (c *Counter) Prune(now time.Time) {
 	defer c.mu.Unlock()
 	for k := range c.buckets {
 		if k < cut.Unix() {
-			delete(c.buckets, k)
-			delete(c.dirty, k)
+			c.dropBucket(k)
 		}
 	}
 	for class, ring := range c.rings {
