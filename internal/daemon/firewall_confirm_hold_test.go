@@ -162,6 +162,9 @@ func TestRecoveredWindowWithoutMarkerReleasesHold(t *testing.T) {
 // A kernel restore cannot settle a window whose engine configuration could
 // not be recovered. Keep the marker and hold until repair or confirmation.
 func TestRecoveredWindowWithUnreadableConfigKeepsHold(t *testing.T) {
+	oldApply := applyFirewallEngine
+	applyFirewallEngine = func(*Daemon) error { return nil }
+	t.Cleanup(func() { applyFirewallEngine = oldApply })
 	for _, hadState := range []bool{false, true} {
 		t.Run(map[bool]string{false: "absent_state", true: "saved_state"}[hadState], func(t *testing.T) {
 			d, confirmFile, rollbackFile, _, seenFile := setupFirewallDeadmanState(t)
@@ -204,14 +207,18 @@ func TestRecoveredWindowWithUnreadableConfigKeepsHold(t *testing.T) {
 			assertRestored()
 			requirePathExists(t, firewallStateSnapshotPath(rollbackFile))
 			// Legacy changes remain possible while the window is pending.
-			// A second rollback must restore the same before-state again.
-			writeTestFile(t, stateFile, `{"blocked":[{"ip":"192.0.2.20"}]}`)
+			// Operator ruling 6: the restore ran once, so a repaired
+			// configuration settles the window and keeps them.
+			later := `{"blocked":[{"ip":"192.0.2.20"}]}`
+			writeTestFile(t, stateFile, later)
 			writeTestFile(t, firewallConfigSnapshotPath(rollbackFile), "{}")
 			d.recoverFirewallApplyConfirmed()
 			if held {
 				t.Fatal("repaired configuration kept admission held")
 			}
-			assertRestored()
+			if got, err := os.ReadFile(stateFile); err != nil || string(got) != later {
+				t.Fatalf("state after a repaired configuration = %q, %v; want the later blocks kept", got, err)
+			}
 			requirePathMissing(t, confirmFile)
 			requirePathMissing(t, firewallStateSnapshotPath(rollbackFile))
 		})

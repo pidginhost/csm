@@ -265,6 +265,15 @@ installations share it. These findings are separate from queue health:
 a command that completed with a refusal did not lose queue work. Existing queue
 loss accounting remains responsible for interrupted or missing command work.
 
+### Firewall confirmation
+
+`automation.firewall_confirmation` describes a pending CLI `apply-confirmed`
+window, also when the firewall is disabled or its engine failed to start; it
+is absent when none is pending. `deadline` is the saved deadline in UTC when
+it can be read, and `error` says why the window cannot settle without
+`csm firewall confirm` or repair of the reported recovery problem. It is
+separate from the Web UI configuration rollback timer.
+
 ### Automatic response admission
 
 `status.admission.v1` advertises the `admission` object on status responses.
@@ -287,12 +296,14 @@ It never applies them; the view is not an enforcement record.
   names why the ledger owner is not running (`error`), why its last turn
   failed while it runs (`turn_error`), the last fault met while retiring
   uncertain blocks (`retirement_error`, kept until none is left faulted), why
-  the last clock reading was refused (`tick_error`), whether the clock is degraded,
-  where the ceiling came from (`ceiling_source`: `default`, `configured` or
-  `clamped`), the legacy hourly count imported at the first start (`import`,
+  the last clock reading or its live start failed (`tick_error`), whether
+  the clock is degraded, where the ceiling came from (`ceiling_source`:
+  `default`, `configured` or `clamped`), the legacy hourly count imported at
+  the first start (`import`,
   which counts at least until an hour after `at`, or names why the count
-  could not be read), the last inventory read and why responses naming a
-  damaged record were discarded (`damage_error`).
+  could not be read at the first start or when execution began; a committed
+  read error survives startup retries), the last inventory read and why
+  responses naming a damaged record were discarded (`damage_error`).
 - An owner that runs on the firewall engine, with the firewall on and
   outside observe mode, adds `execution_held` with `execution_held_by`
   (`policy` for a refused execution policy, `firewall` for the firewall

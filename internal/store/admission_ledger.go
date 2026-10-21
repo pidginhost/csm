@@ -43,6 +43,9 @@ const (
 	// admissionSchemaDisabled is the schema of a ledger holding a candidate
 	// refused because the configuration turned its response off.
 	admissionSchemaDisabled = 10
+	// admissionSchemaLive is the schema of a ledger whose live start ran
+	// (design C7): its marker, and the state it carried over.
+	admissionSchemaLive = 11
 )
 
 var (
@@ -94,6 +97,9 @@ type AdmissionLedger struct {
 	// reserved is set once this handle granted a reservation: Settle then
 	// refuses, since it would end work this process still runs.
 	reserved bool
+
+	// live is set once the live start ran (design C7); guarded by mu.
+	live bool
 
 	// revalidated is set once this handle has checked every queued
 	// candidate at a current reading. A reopened ledger cannot know what
@@ -280,7 +286,7 @@ func OpenAdmissionLedger(db *DB, reg *admission.Registry) (*AdmissionLedger, err
 				if err := upgradeLedgerToSchemaSeven(tx); err != nil {
 					return err
 				}
-			case len(schema) == 1 && schema[0] >= admissionSchemaVersion && schema[0] <= admissionSchemaDisabled:
+			case len(schema) == 1 && schema[0] >= admissionSchemaVersion && schema[0] <= admissionSchemaLive:
 				if existing != len(admissionBuckets) {
 					return admission.ErrCorruptRecord
 				}
@@ -291,6 +297,11 @@ func OpenAdmissionLedger(db *DB, reg *admission.Registry) (*AdmissionLedger, err
 		if err := validateStateKeys(tx); err != nil {
 			return err
 		}
+		_, live, liveErr := loadLiveStart(tx)
+		if liveErr != nil {
+			return liveErr
+		}
+		l.live = live
 		if _, err := loadQueueState(tx); err != nil {
 			return err
 		}
@@ -583,7 +594,7 @@ func validateStateKeys(tx *bolt.Tx) error {
 		keys [][]byte
 	}{
 		{admissionMetaBucket, [][]byte{admissionSchemaKey, admissionClockKey, admissionClockPendingKey, admissionTrackerKey, admissionInventoryKey, admissionAmbiguousKey}},
-		{admissionQueueStateBucket, [][]byte{queueStateKey, queueCountersKey, scheduleStateKey, ingressStateKey, ceilingStateKey, storageStateKey, episodeStateKey}},
+		{admissionQueueStateBucket, [][]byte{queueStateKey, queueCountersKey, scheduleStateKey, ingressStateKey, ceilingStateKey, storageStateKey, episodeStateKey, liveStartKey}},
 	} {
 		b := tx.Bucket([]byte(state.name))
 		if b == nil {

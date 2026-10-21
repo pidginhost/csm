@@ -89,6 +89,10 @@ type HistoryEntry struct {
 	// Pinned: the outcome is unresolved. Its bytes are held in the recovery
 	// reserve, and it is not retired until recovery settles it.
 	Pinned bool
+	// Released: the live start made an observe preview's history eligible
+	// before its review window ended (design C7). A preview carries no
+	// review or undo.
+	Released bool
 }
 
 // Charged is the history bytes the entry holds.
@@ -111,13 +115,14 @@ type historyEntryRecord struct {
 	Eligible int64  `json:"eligible,omitempty"`
 	Pinned   bool   `json:"pinned,omitempty"`
 	RootMask uint32 `json:"root_mask,omitempty"`
+	Released bool   `json:"released,omitempty"`
 }
 
 func (h HistoryEntry) record() (historyEntryRecord, error) {
 	bad := func(detail string) (historyEntryRecord, error) {
 		return historyEntryRecord{}, refuse(ReasonInvalid, detail)
 	}
-	rec := historyEntryRecord{V: historyEntryVersion, General: h.General, Reserved: h.Reserved, Pinned: h.Pinned, RootMask: h.RootMask}
+	rec := historyEntryRecord{V: historyEntryVersion, General: h.General, Reserved: h.Reserved, Pinned: h.Pinned, RootMask: h.RootMask, Released: h.Released}
 	if h.LegacyCost {
 		rec.V = 1
 	}
@@ -128,7 +133,7 @@ func (h HistoryEntry) record() (historyEntryRecord, error) {
 		return bad("history root mask exceeds the candidate bound")
 	}
 	if h.Ended.IsZero() {
-		if !h.Eligible.IsZero() || h.Pinned {
+		if !h.Eligible.IsZero() || h.Pinned || h.Released {
 			return bad("a live history entry is pinned or has a retirement time")
 		}
 		return rec, nil
@@ -138,12 +143,18 @@ func (h HistoryEntry) record() (historyEntryRecord, error) {
 		return bad("history entry has no end time after the epoch")
 	}
 	if h.Pinned {
-		if !h.Eligible.IsZero() {
+		if !h.Eligible.IsZero() || h.Released {
 			return bad("a pinned history entry has a retirement time")
 		}
 		return rec, nil
 	}
-	if rec.Eligible, ok = unixNano(h.Eligible); !ok || h.Eligible.Before(h.Ended.Add(HistoryRetention)) {
+	if rec.Eligible, ok = unixNano(h.Eligible); !ok {
+		return bad("history entry has no retirement time")
+	}
+	switch review := h.Ended.Add(HistoryRetention); {
+	case h.Released && (h.Eligible.Before(h.Ended) || !h.Eligible.Before(review)):
+		return bad("released history may be retired before its end or keeps its review window")
+	case !h.Released && h.Eligible.Before(review):
 		return bad("history entry may be retired inside its review window")
 	}
 	if _, ok = unixNano(h.Target()); !ok {
@@ -230,7 +241,7 @@ func UnmarshalHistoryEntry(data []byte) (HistoryEntry, error) {
 	if err := openRecord(data, &rec); err != nil {
 		return HistoryEntry{}, err
 	}
-	h := HistoryEntry{LegacyCost: rec.V == 1, General: rec.General, Reserved: rec.Reserved, Ended: fromNano(rec.Ended), Eligible: fromNano(rec.Eligible), Pinned: rec.Pinned, RootMask: rec.RootMask}
+	h := HistoryEntry{LegacyCost: rec.V == 1, General: rec.General, Reserved: rec.Reserved, Ended: fromNano(rec.Ended), Eligible: fromNano(rec.Eligible), Pinned: rec.Pinned, RootMask: rec.RootMask, Released: rec.Released}
 	if again, err := h.record(); (rec.V != 1 && rec.V != historyEntryVersion) || err != nil || again != rec {
 		return HistoryEntry{}, ErrCorruptRecord
 	}

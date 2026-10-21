@@ -143,25 +143,34 @@ func (l *AdmissionLedger) ImportLegacySpend(limit uint32, spend admission.Legacy
 		if err != nil {
 			return err
 		}
-		bucket := tx.Bucket([]byte(admissionChargesBucket))
-		for _, c := range charges {
-			key, err := c.Key()
-			if err != nil {
-				return err
-			}
-			data, err := c.MarshalBinary()
-			if err != nil {
-				return err
-			}
-			if bucket.Get(key) != nil {
-				return admission.ErrCorruptRecord
-			}
-			if err = bucket.Put(key, data); err != nil {
-				return err
-			}
+		if err = putCharges(tx, charges); err != nil {
+			return err
 		}
 		return putCeilingState(tx, next)
 	})
+}
+
+// putCharges stores new charges. An existing key is damage: overwriting
+// it would leave usage the retained charges no longer prove.
+func putCharges(tx *bolt.Tx, charges []admission.Charge) error {
+	bucket := tx.Bucket([]byte(admissionChargesBucket))
+	for _, c := range charges {
+		key, err := c.Key()
+		if err != nil {
+			return err
+		}
+		data, err := c.MarshalBinary()
+		if err != nil {
+			return err
+		}
+		if bucket.Get(key) != nil {
+			return admission.ErrCorruptRecord
+		}
+		if err = bucket.Put(key, data); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Ceiling is the committed ceiling state.

@@ -13,6 +13,10 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 - CSM is now built with Go 1.27.3, which rejects certificates chained through intermediate authorities that are no longer trusted.
 
+### Changed
+
+- Firewall confirmation windows show in status and doctor; one whose saved configuration is unreadable rolls back once and stays pending until confirmed, keeping later blocks.
+
 ### Fixed
 
 - WordPress findings, such as outdated plugins, no longer stay listed after the site is updated or deleted.

@@ -61,6 +61,7 @@ func TestAPIStatusCarriesHealthSnapshotContract(t *testing.T) {
 			FirewallLedgerError:           "fixture ledger damage",
 			FirewallRollbackPending:       true,
 			FirewallRollbackSecondsRemain: 120,
+			FirewallConfirmation:          &health.FirewallConfirmation{Deadline: now.Add(time.Minute), Error: "fixture confirmation"},
 			LastAction: &health.AutomationAction{
 				Check:     "auto_block",
 				Message:   "AUTO-BLOCK: 203.0.113.5 blocked",

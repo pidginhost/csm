@@ -48,6 +48,22 @@ func TestSnapshot_OKWhenAllGreen(t *testing.T) {
 	}
 }
 
+// A pending CLI confirmation window goes out under its own key, apart
+// from the Web UI rollback timer.
+func TestAutomationStatusFirewallConfirmationKey(t *testing.T) {
+	deadline := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	raw, err := json.Marshal(AutomationStatus{FirewallConfirmation: &FirewallConfirmation{Deadline: deadline, Error: "fixture"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"firewall_confirmation":{"deadline":"2026-10-20T12:00:00Z","error":"fixture"}`) {
+		t.Fatalf("got %s", raw)
+	}
+	if raw, err = json.Marshal(AutomationStatus{}); err != nil || strings.Contains(string(raw), "firewall_confirmation") {
+		t.Fatalf("no window: %s, %v", raw, err)
+	}
+}
+
 // A duration goes out in seconds under a key that ends in _seconds, like
 // every other duration the API sends.
 func TestAutomationStatusRollbackSecondsKey(t *testing.T) {

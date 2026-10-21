@@ -232,6 +232,15 @@ func (l *AdmissionLedger) AckAudit(acks []admission.AuditAck) error {
 			if !found {
 				return admission.ErrCorruptRecord
 			}
+			if h.Released {
+				c, loadErr := loadCandidate(tx, id)
+				if loadErr != nil {
+					return loadErr
+				}
+				if err = proveReleasedHistory(tx, c, h); err != nil {
+					return err
+				}
+			}
 			if err = putHistoryEntry(tx, id, h); err != nil {
 				return err
 			}

@@ -2,6 +2,8 @@ package daemon
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -25,6 +27,22 @@ func TestAdmissionOwnerPreviewsWithoutAFirewall(t *testing.T) {
 		if d.admissionOptions(nil).Blocks != nil {
 			t.Errorf("%s: the owner got an engine provider", name)
 		}
+	}
+}
+
+// Design C7: the owner's live start reads legacy blocking's state from the
+// daemon's state directory.
+func TestAdmissionOptionsReadTheLegacyHandover(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Date(2026, 10, 4, 14, 20, 0, 0, time.UTC)
+	body := `{"ips":[],"pending":[{"ip":"192.0.2.1","reason":"r"}],"blocks_this_hour":2,"hour_key":"2026-10-04T14"}`
+	if err := os.WriteFile(filepath.Join(dir, "blocked_ips.json"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	opts := (&Daemon{cfg: &config.Config{StatePath: dir}}).admissionOptions(nil)
+	h, err := opts.LegacyHandover(opts.StatePath, now)
+	if err != nil || h.Pending != 1 || h.Spend.Units != 2 {
+		t.Fatalf("handover = %+v, %v", h, err)
 	}
 }
 

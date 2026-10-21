@@ -40,8 +40,8 @@ type AdmissionOwner struct {
 	// blocks. Each affected block stays held and is retried; it clears once
 	// none is left faulted.
 	RetirementError string `json:"retirement_error,omitempty"`
-	// TickError is why the last clock reading was refused. Nothing is
-	// admitted until a reading succeeds.
+	// TickError is why the last clock reading or its live start failed.
+	// Nothing is admitted until both succeed.
 	TickError string `json:"tick_error,omitempty"`
 	// ClockDegraded is set while the wall clock is behind the ledger's
 	// high-water mark or disagrees with the time since boot (spec 5.4).
@@ -51,8 +51,9 @@ type AdmissionOwner struct {
 	// default or the largest ceiling the ledger accepts.
 	CeilingSource string `json:"ceiling_source,omitempty"`
 	// Import describes this process's import or retained charges found at
-	// startup. An initial read error is process-local; restart restores a
-	// known horizon without re-reading the legacy file.
+	// startup, or why the legacy state could not be read when execution
+	// began. A read error is process-local; restart restores a known
+	// horizon without re-reading the legacy file.
 	Import         *AdmissionImport `json:"import,omitempty"`
 	InventoryAt    time.Time        `json:"inventory_at,omitempty"`
 	InventoryError string           `json:"inventory_error,omitempty"`
