@@ -162,6 +162,27 @@ func TestQueueSnapshotFailedListing(t *testing.T) {
 	}
 }
 
+// A request's now can predate a listing another request made while it
+// waited for the lock. The oldest age is then the listed age: never less,
+// never negative.
+func TestQueueSnapshotNowBeforeListing(t *testing.T) {
+	t0 := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	for listing, want := range map[string]int{
+		queueListing: 4 * 86400,
+		"0m  1.0K 1tQxZb-000GhI-56 <>\n          new@example.net\n": 0,
+	} {
+		stubQueue(t, "1\n", listing)
+		queueSnapshot(t0)
+		got := -1
+		if q := queueSnapshot(t0.Add(-30 * time.Second)); q.OldestAgeSeconds != nil {
+			got = *q.OldestAgeSeconds
+		}
+		if got != want {
+			t.Errorf("listed oldest %q served 30 s before its listing as %d s, want %d s", listing[:3], got, want)
+		}
+	}
+}
+
 // Emptying the queue invalidates the old detail, but must not reset the
 // listing throttle when new mail arrives within the same minute.
 func TestQueueSnapshotEmptyQueue(t *testing.T) {

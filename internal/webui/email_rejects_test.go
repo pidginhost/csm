@@ -131,7 +131,7 @@ func TestEmailRejectsClassFilterAndLimit(t *testing.T) {
 	for _, tc := range []struct {
 		limit string
 		want  int
-	}{{"200", 200}, {"201", 50}, {"0", 50}, {"-3", 50}, {"x", 50}} {
+	}{{"200", 200}, {"201", 200}, {"100000", 200}, {"0", 50}, {"-3", 50}, {"x", 50}} {
 		if body, _ := getRejects(t, s, "?limit="+tc.limit); body.Limit != tc.want {
 			t.Errorf("limit=%s: limit %d, want %d", tc.limit, body.Limit, tc.want)
 		}

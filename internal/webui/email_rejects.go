@@ -47,9 +47,10 @@ func (s *Server) apiEmailRejects(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	limit := queryInt(r, "limit", emailRejectsDefaultLimit)
-	if limit <= 0 || limit > emailRejectsMaxLimit {
+	if limit <= 0 {
 		limit = emailRejectsDefaultLimit
 	}
+	limit = min(limit, emailRejectsMaxLimit)
 	now := time.Now()
 	from, to, ok := historyRangeQuery(w, q, now.Add(-24*time.Hour), now)
 	if !ok {

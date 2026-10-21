@@ -400,7 +400,13 @@ func queueSnapshot(now time.Time) emailQueueState {
 	}
 	q.Frozen = d.frozen
 	if !d.oldestQueued.IsZero() {
-		secs := int(now.Sub(d.oldestQueued) / time.Second)
+		// A request that waited on the lock can hold a now from before the
+		// listing; age from the listing then, never below what it showed.
+		at := now
+		if at.Before(d.listed) {
+			at = d.listed
+		}
+		secs := int(at.Sub(d.oldestQueued) / time.Second)
 		q.OldestAgeSeconds = &secs
 	}
 	return q
