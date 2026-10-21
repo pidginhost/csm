@@ -35,6 +35,14 @@ against actual host state before any retry; an uncertain outcome stays
 visible until it can be proved. A stable ID supports deduplication, not a
 promise of exactly-once host effects.
 
+A firewall action can carry a batch: a header and a manifest of
+single-target members, each with its own charge and the rows it removes to
+make room. Each member ID belongs to exactly one batch. Admitting a known ID
+with any change to the members, their order or their effects is refused, and
+a refused batch charges nothing. Actions written before batches read as
+one-member batches and keep their stored format. A record written by a newer
+build is refused as unsupported, never read or overwritten.
+
 If intent or budget persistence fails, new automated mutations are refused
 and the finding is retained. If outcome persistence fails after mutation, the
 pending intent is preserved, action health reports degraded, and
@@ -53,11 +61,6 @@ changed or irreversible targets. Retention keeps unresolved intent and
 required recovery evidence. Backup restore must not resurrect pending actions,
 jobs or sessions as executable or authenticated live state; what is disarmed
 and what requires review is defined per record type.
-
-The firewall store checks record versions before interpreting their schemas.
-Newer journal records and snapshots return an unsupported-version error,
-including through recovery and audit delivery. An audit envelope keeps its
-embedded action opaque until that action's version is supported.
 
 The open work is tracked in the
 [roadmap](https://github.com/pidginhost/csm/blob/main/ROADMAP.md#action-log-covers-seven-of-43-host-changing-operations).
