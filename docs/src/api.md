@@ -1287,22 +1287,25 @@ the next listing. Failed listings can reuse detail for at most ten minutes.
 
 The queue list and the overview share one queue listing, refreshed at most
 once per minute and after any queue action. `total` counts the messages that
-match `filter` and `q`; `frozen`, `backscatter` (null-sender messages) and
-`oldest_seconds` describe the whole queue. When no listing has succeeded in
+match `filter` and `q`; `queued`, `frozen`, `backscatter` (null-sender
+messages) and `oldest_seconds` describe the whole queue. When no listing has succeeded in
 the last ten minutes the list answers `unavailable: true` with no items and no
 counts. Each message's `reason` (`class`, `text`, `raw`) comes from its msglog
 and is reused for a minute. A message thawed since it froze shows
 `retry_wait` until its next delivery attempt.
 
-Queue actions run exim as a systemd transient unit and never inside the
-daemon's sandbox: without systemd-run they answer 503 and nothing runs. Each
-action first checks that the message is still queued; when it is not, the
-answer is 409 with `outcome: "gone"` and nothing runs. `retry` answers
+Queue reads and actions run exim as a systemd transient unit and never inside
+the daemon's sandbox: without systemd-run the message route and the actions
+answer 503 and exim does not run. Each action first checks that the message is
+still queued; when it is not, the answer is 409 with `outcome: "gone"`. Nothing
+ran, unless the message left during the action. `retry` answers
 `attempt_started` as soon as the delivery attempt has started. `bounce`,
-`delete` and `thaw` answer `bounced`, `removed` and `thawed` only when the
-queue shows the change, and `unchanged` with an error otherwise. Every
-attempt is written to the UI audit log as `email_queue_<action>` with the
-message ID and the outcome.
+`delete` and `thaw` answer `bounced`, `removed` and `thawed` when the queue
+shows the change, even if exim reported an error, and `unchanged` with an
+error otherwise. A thaw on a message that is not frozen answers `unchanged`
+without running exim. Every attempt is written to the UI audit log as
+`email_queue_<action>` with the message ID, the outcome and any error exim
+reported.
 
 Deferrals are grouped under the provider whose MX host deferred them
 (Google, Microsoft and Yahoo hosts), so a business domain those providers

@@ -25,7 +25,8 @@ import (
 // eximWorld plays systemd-run and exim for the queue routes: the full -bp
 // listing, -bp <id> with exim's missing-header reply for a message it does not
 // hold, and the per-message actions applied to its queue. It records every
-// exim argv with the systemd-run flags that wrapped it.
+// exim argv with the systemd-run flags that wrapped it. Exim run directly
+// fails, as it does inside csm's sandbox.
 type eximWorld struct {
 	mu           sync.Mutex
 	queue        map[string]*worldMessage
@@ -34,6 +35,7 @@ type eximWorld struct {
 	noSystemdRun bool
 	listFails    bool
 	listOutput   string // replaces the full listing when set
+	actionErr    error  // returned by -Mrm and -Mg after they applied
 	// release unblocks a delivery attempt a caller waits on.
 	release chan struct{}
 	calls   []eximCall
@@ -100,6 +102,10 @@ func (w *eximWorld) run(ctx context.Context, name string, args ...string) ([]byt
 	}
 	w.mu.Lock()
 	w.calls = append(w.calls, eximCall{flags: flags, argv: argv})
+	if flags == nil {
+		w.mu.Unlock()
+		return nil, errors.New("exim: cannot open main log: Read-only file system")
+	}
 	if argv[1] == "-M" && (slices.Contains(flags, "--wait") || slices.Contains(flags, "--pipe")) {
 		// A delivery attempt to an unresponsive server: whoever waits for
 		// the unit waits until the attempt gives up.
@@ -138,6 +144,7 @@ func (w *eximWorld) run(ctx context.Context, name string, args ...string) ([]byt
 		return []byte(formatEntry(argv[2], *w.queue[argv[2]])), nil
 	case argv[1] == "-Mrm", argv[1] == "-Mg":
 		delete(w.queue, argv[2])
+		return nil, w.actionErr
 	case argv[1] == "-Mt":
 		if m, ok := w.queue[argv[2]]; ok {
 			m.frozen = false
@@ -217,6 +224,7 @@ type queueListBody struct {
 		Reason intel.StuckReason `json:"reason"`
 	} `json:"items"`
 	Total         *int `json:"total"`
+	Queued        *int `json:"queued"`
 	Page          int  `json:"page"`
 	Limit         int  `json:"limit"`
 	Frozen        *int `json:"frozen"`
@@ -289,8 +297,8 @@ func TestQueueListPagingAndFilters(t *testing.T) {
 	if got, want := all.ids(), []string{qOldest, qOld, qMid, qNew, qNewest}; !slices.Equal(got, want) {
 		t.Fatalf("ids = %v, want oldest first %v", got, want)
 	}
-	if all.Total == nil || *all.Total != 5 || all.Page != 1 || all.Limit != 25 || all.Unavailable {
-		t.Errorf("paging = total %v page %d limit %d unavailable %v, want 5, 1, 25, false", all.Total, all.Page, all.Limit, all.Unavailable)
+	if all.Total == nil || *all.Total != 5 || all.Queued == nil || *all.Queued != 5 || all.Page != 1 || all.Limit != 25 || all.Unavailable {
+		t.Errorf("paging = total %v queued %v page %d limit %d unavailable %v, want 5, 5, 1, 25, false", all.Total, all.Queued, all.Page, all.Limit, all.Unavailable)
 	}
 	if all.Frozen == nil || *all.Frozen != 2 || all.Backscatter == nil || *all.Backscatter != 2 || all.OldestSeconds == nil || *all.OldestSeconds != 25*60 {
 		t.Errorf("summary = frozen %v backscatter %v oldest %v, want 2, 2, 1500", all.Frozen, all.Backscatter, all.OldestSeconds)
@@ -334,8 +342,8 @@ func TestQueueListPagingAndFilters(t *testing.T) {
 			t.Errorf("%s = %v (total %d), want %v", query, got.ids(), *got.Total, want)
 		}
 		// The summary describes the whole queue whatever the filter.
-		if *got.Frozen != 2 || *got.Backscatter != 2 {
-			t.Errorf("%s: frozen %d backscatter %d, want the whole queue's 2 and 2", query, *got.Frozen, *got.Backscatter)
+		if got.Queued == nil || *got.Queued != 5 || *got.Frozen != 2 || *got.Backscatter != 2 {
+			t.Errorf("%s: queued %v frozen %d backscatter %d, want the whole queue's 5, 2 and 2", query, got.Queued, *got.Frozen, *got.Backscatter)
 		}
 	}
 
@@ -410,28 +418,46 @@ func TestQueueListUnavailable(t *testing.T) {
 			world := newEximWorld(t)
 			setup(world)
 			s, admin, _ := queueServer(t, world)
-
-			w := queueRequest(t, s, http.MethodGet, "/api/v1/email/queue")
-			if w.Code != http.StatusOK {
-				t.Fatalf("status %d, want 200", w.Code)
-			}
-			var raw map[string]json.RawMessage
-			if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
-				t.Fatal(err)
-			}
-			if string(raw["unavailable"]) != "true" || string(raw["items"]) != "[]" {
-				t.Errorf("body = %s, want unavailable with no items", w.Body.String())
-			}
-			// No count may read as an empty queue.
-			for _, key := range []string{"total", "frozen", "backscatter", "oldest_seconds"} {
-				if _, ok := raw[key]; ok {
-					t.Errorf("unavailable queue carries %q: %s", key, w.Body.String())
-				}
-			}
-			if len(admin.reasons) != 0 {
-				t.Errorf("msglogs read for an unknown queue: %v", admin.reasons)
-			}
+			assertQueueUnknown(t, s, admin)
 		})
+	}
+
+	// An overview poll saw the queue empty. Mail arrived since and the
+	// listing fails: the old empty count must not stand in for it.
+	t.Run("refilled after an empty count", func(t *testing.T) {
+		world := newEximWorld(t)
+		s, admin, _ := queueServer(t, world)
+		if q := queueSnapshot(time.Now()); q.Size != 0 || q.Unavailable {
+			t.Fatalf("snapshot = %+v, want an empty queue", q)
+		}
+		world.add(qMid, worldMessage{recipients: []string{"rcpt@example.net"}})
+		world.listFails = true
+		assertQueueUnknown(t, s, admin)
+	})
+}
+
+// assertQueueUnknown checks that the list says the queue is unknown and
+// carries nothing that could read as its size.
+func assertQueueUnknown(t *testing.T, s *Server, admin *countingAdmin) {
+	t.Helper()
+	w := queueRequest(t, s, http.MethodGet, "/api/v1/email/queue")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d, want 200", w.Code)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
+		t.Fatal(err)
+	}
+	if string(raw["unavailable"]) != "true" || string(raw["items"]) != "[]" {
+		t.Errorf("body = %s, want unavailable with no items", w.Body.String())
+	}
+	for _, key := range []string{"total", "queued", "frozen", "backscatter", "oldest_seconds"} {
+		if _, ok := raw[key]; ok {
+			t.Errorf("unavailable queue carries %q: %s", key, w.Body.String())
+		}
+	}
+	if len(admin.reasons) != 0 {
+		t.Errorf("msglogs read for an unknown queue: %v", admin.reasons)
 	}
 }
 
@@ -482,6 +508,17 @@ func TestQueueDetail(t *testing.T) {
 	}
 	if w := queueRequest(t, s, http.MethodPost, "/api/v1/email/queue/"+qMid); w.Code != http.StatusMethodNotAllowed {
 		t.Errorf("POST detail: status %d, want 405", w.Code)
+	}
+
+	// The read runs exim, which aborts inside csm's sandbox; without
+	// systemd-run it is not attempted.
+	world.noSystemdRun = true
+	before := world.callCount()
+	if w := queueRequest(t, s, http.MethodGet, "/api/v1/email/queue/"+qMid); w.Code != http.StatusServiceUnavailable {
+		t.Errorf("GET without systemd-run: status %d %s, want 503", w.Code, w.Body.String())
+	}
+	if n := world.callCount(); n != before {
+		t.Errorf("without systemd-run exim ran directly: %v", world.calls[before:])
 	}
 }
 
@@ -607,6 +644,42 @@ func TestQueueRetryDoesNotWait(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("retry did not return within 2 s while the delivery attempt runs")
+	}
+}
+
+// A thaw on a message that is no longer frozen (a stale list, auto_thaw or
+// another admin) is not a failure, and exim has nothing to do.
+func TestQueueThawNotFrozen(t *testing.T) {
+	world := newEximWorld(t)
+	world.add(qMid, worldMessage{recipients: []string{"rcpt@example.net"}})
+	s, _, _ := queueServer(t, world)
+
+	w := queueRequest(t, s, http.MethodPost, "/api/v1/email/queue/"+qMid+"/thaw")
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"outcome":"unchanged"`) {
+		t.Fatalf("status %d body %s, want 200 unchanged", w.Code, w.Body.String())
+	}
+	if runs := world.runs("-Mt"); len(runs) != 0 {
+		t.Errorf("thaw ran on a message that is not frozen: %v", runs)
+	}
+	if a := lastAudit(t, s); a.Action != "email_queue_thaw" || a.Target != qMid || a.Details != "outcome: unchanged" {
+		t.Errorf("audit = %+v, want email_queue_thaw with outcome unchanged", a)
+	}
+}
+
+// exim can exit non-zero for a removal it made. The queue decides the
+// outcome; the audit entry still records what exim said.
+func TestQueueActionAuditsRunError(t *testing.T) {
+	world := newEximWorld(t)
+	world.add(qMid, worldMessage{recipients: []string{"rcpt@example.net"}})
+	world.actionErr = errors.New("exit status 1")
+	s, _, _ := queueServer(t, world)
+
+	w := queueRequest(t, s, http.MethodPost, "/api/v1/email/queue/"+qMid+"/delete")
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"outcome":"removed"`) {
+		t.Fatalf("status %d body %s, want 200 removed", w.Code, w.Body.String())
+	}
+	if a := lastAudit(t, s); a.Action != "email_queue_delete" || !strings.HasPrefix(a.Details, "outcome: removed; ") || !strings.Contains(a.Details, "exit status 1") {
+		t.Errorf("audit = %+v, want outcome removed with exim's exit status", a)
 	}
 }
 

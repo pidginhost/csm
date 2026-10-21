@@ -48,7 +48,9 @@ type QueueAdmin interface {
 	// lines of that log.
 	Reason(id string) (StuckReason, []string, error)
 	// Act runs one action on the message and returns the outcome the queue
-	// shows afterwards. An error comes with OutcomeUnchanged.
+	// shows afterwards. With OutcomeUnchanged an error means the action
+	// failed; with any other outcome it is what exim reported while the
+	// queue shows the change.
 	Act(action, id string) (string, error)
 }
 
@@ -79,7 +81,9 @@ func (a *EximQueueAdmin) Message(id string) (QueueMessage, error) {
 	if !ValidMessageID(id) {
 		return QueueMessage{}, errors.New("invalid exim message id")
 	}
-	out, err := a.exim(systemdrun.Options{Pipe: true, RuntimeMax: queueReadTimeout}, queueReadTimeout, "-bp", id)
+	// exim aborts inside csm's sandbox even for a read, so the read never
+	// runs there either.
+	out, err := a.exim(systemdrun.Options{Pipe: true, Required: true, RuntimeMax: queueReadTimeout}, queueReadTimeout, "-bp", id)
 	// The reply, not the exit status, says the message is missing: exim
 	// reports it on stdout whatever status it exits with.
 	if bytes.HasSuffix(bytes.TrimSpace(out), []byte(eximNoSuchMessage)) {
@@ -88,9 +92,7 @@ func (a *EximQueueAdmin) Message(id string) (QueueMessage, error) {
 	if err != nil {
 		return QueueMessage{}, err
 	}
-	if len(bytes.TrimSpace(out)) == 0 {
-		return QueueMessage{}, ErrNotQueued
-	}
+	// An empty reply is an error: it does not say the message is gone.
 	m, err := ParseQueueDetail(out)
 	if err != nil {
 		return QueueMessage{}, err
@@ -120,6 +122,10 @@ func (a *EximQueueAdmin) Act(action, id string) (string, error) {
 	if err != nil {
 		return OutcomeUnchanged, fmt.Errorf("read the message before acting: %w", err)
 	}
+	if action == "thaw" && !before.Frozen {
+		// A stale list, auto_thaw or another admin: nothing to thaw.
+		return OutcomeUnchanged, nil
+	}
 
 	if action == "retry" {
 		// A delivery attempt lasts as long as the receiving servers make it,
@@ -136,21 +142,23 @@ func (a *EximQueueAdmin) Act(action, id string) (string, error) {
 		return OutcomeUnchanged, runErr
 	}
 	if runErr != nil {
-		runErr = fmt.Errorf("exim %s: %w", flag, runErr)
+		// The text reaches the audit log, so both parts are bounded.
+		msg := "exim " + flag + ": " + boundText(runErr.Error())
 		if text := boundText(string(out)); text != "" {
-			runErr = fmt.Errorf("%w: %s", runErr, text)
+			msg += ": " + text
 		}
+		runErr = errors.New(msg)
 	}
 
 	after, err := a.Message(id)
 	switch {
 	case errors.Is(err, ErrNotQueued) && action == "delete":
-		return OutcomeRemoved, nil
+		return OutcomeRemoved, runErr
 	case errors.Is(err, ErrNotQueued) && action == "bounce":
-		return OutcomeBounced, nil
+		return OutcomeBounced, runErr
 	case errors.Is(err, ErrNotQueued):
 		// Delivered or removed by someone else while it was being thawed.
-		return OutcomeGone, nil
+		return OutcomeGone, runErr
 	case err != nil:
 		return OutcomeUnchanged, errors.Join(runErr, fmt.Errorf("the outcome could not be read back: %w", err))
 	case action == "thaw" && before.Frozen && !after.Frozen:

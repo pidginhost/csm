@@ -376,6 +376,11 @@ func refreshQueueListing(now time.Time) {
 	d.tried = now
 	msgs, ok := eximQueueDetails()
 	if !ok {
+		if d.emptied {
+			// The empty count is the only "listing" held, and mail may
+			// have arrived since: serve nothing rather than an empty queue.
+			*d = queueDetailState{tried: now}
+		}
 		return
 	}
 	*d = queueDetailState{tried: now, listed: now, msgs: msgs}

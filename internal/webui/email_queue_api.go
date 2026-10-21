@@ -49,9 +49,9 @@ type cachedQueueReason struct {
 
 // apiEmailQueueList handles GET /api/v1/email/queue: one page of the queue,
 // oldest first, filtered by filter=all|frozen|backscatter and q (a sender or
-// recipient substring). frozen, backscatter and oldest_seconds describe the
-// whole queue; total counts the matches. The listing is the cached one the
-// overview uses, and msglogs are read only for the page.
+// recipient substring). queued, frozen, backscatter and oldest_seconds
+// describe the whole queue; total counts the matches. The listing is the
+// cached one the overview uses, and msglogs are read only for the page.
 func (s *Server) apiEmailQueueList(w http.ResponseWriter, r *http.Request) {
 	if s.queueAdmin == nil {
 		writeJSONError(w, queueUnavailableText, http.StatusServiceUnavailable)
@@ -105,6 +105,7 @@ func (s *Server) apiEmailQueueList(w http.ResponseWriter, r *http.Request) {
 
 	extra := map[string]interface{}{
 		"total":       len(matched),
+		"queued":      len(msgs),
 		"page":        page,
 		"limit":       limit,
 		"frozen":      frozen,
@@ -196,6 +197,10 @@ func (s *Server) apiEmailQueueMessage(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, "Message is not in the queue", http.StatusNotFound)
 		return
 	}
+	if errors.Is(err, systemdrun.ErrUnavailable) {
+		writeJSONError(w, "Reading the queue needs systemd-run: "+err.Error(), http.StatusServiceUnavailable)
+		return
+	}
 	if err != nil {
 		writeJSONError(w, "Failed to read the message from the queue: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -209,7 +214,8 @@ func (s *Server) apiEmailQueueMessage(w http.ResponseWriter, r *http.Request) {
 
 // apiEmailQueueAction handles POST /api/v1/email/queue/{id}/{action} for
 // retry, bounce, delete and thaw. The answer carries the outcome the queue
-// shows afterwards, and every attempt is audit-logged with it.
+// shows afterwards, and every attempt is audit-logged with it and with any
+// error exim reported, including for work the queue shows done.
 func (s *Server) apiEmailQueueAction(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -243,11 +249,11 @@ func (s *Server) apiEmailQueueAction(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case outcome == intel.OutcomeGone:
 		writeJSONStatus(w, http.StatusConflict, map[string]string{"error": "Message is no longer in the queue", "outcome": outcome})
+	case outcome != intel.OutcomeUnchanged || err == nil:
+		writeOK(w, map[string]interface{}{"outcome": outcome})
 	case errors.Is(err, systemdrun.ErrUnavailable):
 		writeJSONStatus(w, http.StatusServiceUnavailable, map[string]string{"error": "Queue actions need systemd-run: " + err.Error(), "outcome": outcome})
-	case err != nil:
-		writeJSONStatus(w, http.StatusInternalServerError, map[string]string{"error": "Queue action failed: " + err.Error(), "outcome": outcome})
 	default:
-		writeOK(w, map[string]interface{}{"outcome": outcome})
+		writeJSONStatus(w, http.StatusInternalServerError, map[string]string{"error": "Queue action failed: " + err.Error(), "outcome": outcome})
 	}
 }

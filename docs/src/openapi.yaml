@@ -430,7 +430,7 @@ paths:
         "200":
           description: >-
             Queued messages with reason {class, text, raw}, plus page, limit,
-            total (the messages matching filter and q), and frozen,
+            total (the messages matching filter and q), and queued, frozen,
             backscatter and oldest_seconds for the whole queue. The listing
             is refreshed at most once a minute. When the queue cannot be
             listed, unavailable is true, items is empty and no count is sent.
@@ -465,7 +465,7 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { description: The message is not in the queue. }
         "500": { description: The queue could not be read. }
-        "503": { description: The mail queue is not available on this host. }
+        "503": { description: The mail queue is not available on this host, or systemd-run cannot start a unit and exim did not run. }
   "/api/v1/email/queue/{id}/{action}":
     post:
       operationId: post_email_queue_action
@@ -489,14 +489,18 @@ paths:
           schema: { type: string, enum: [retry, bounce, delete, thaw] }
       responses:
         "200":
-          description: ActionResult with outcome attempt_started, bounced, removed or thawed.
+          description: >-
+            ActionResult with outcome attempt_started, bounced, removed or
+            thawed, also when exim reported an error the queue does not bear
+            out (the audit entry records it), or unchanged for a thaw on a
+            message that is not frozen, where nothing runs.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ActionResult" }
         "400": { description: Not an exim message ID, or an unknown action. }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
-        "409": { description: The message is no longer in the queue; outcome is gone and nothing ran. }
+        "409": { description: "The message is no longer in the queue; outcome is gone. Nothing ran, unless the message left during the action." }
         "500": { description: The action failed or its outcome could not be read back; outcome is unchanged. }
         "503": { description: The mail queue is not available on this host, or systemd-run cannot start a unit and the action did not run (outcome unchanged). }
   "/api/v1/email/forwarders":
