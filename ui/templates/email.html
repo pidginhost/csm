@@ -115,53 +115,81 @@
         </div>
     </div>
 
-    <div class="csm-status-strip mb-3" id="email-status-strip"></div>
-
-    <!-- First viewport: action groups (left) + mail protection state (right) -->
-    <div class="row row-cards mb-3">
-        <div class="col-lg-7">
-            <div class="card">
-                <div class="card-header">
-                    <h2 class="card-title"><i class="ti ti-target"></i>&nbsp;Email action groups</h2>
-                    <div class="card-actions">
-                        <span class="text-muted small" id="email-groups-count"></span>
-                    </div>
-                </div>
-                <div class="csm-summary-list csm-summary-list--scroll" id="email-action-groups">
-                    <div class="csm-empty">
-                        <div class="csm-empty__icon"><i class="ti ti-loader-2"></i></div>
-                        <div class="csm-empty__reason">Loading action groups...</div>
-                    </div>
-                </div>
+    <!-- Recent rejects -->
+    <div class="card mb-3">
+        <div class="card-header flex-wrap gap-2">
+            <h2 class="card-title"><i class="ti ti-mail-off"></i>&nbsp;Recent rejects</h2>
+            <div class="card-actions">
+                <select id="email-rejects-filter" class="form-select form-select-sm csm-auto-width" aria-label="Reject reason" title="Reject reason">
+                    <option value="content">Spam and malware</option>
+                    <option value="all">All reasons</option>
+                </select>
             </div>
         </div>
-        <div class="col-lg-5">
+        <div class="table-responsive">
+            <table class="table table-vcenter card-table table-sm" id="email-rejects-table">
+                <thead>
+                    <tr>
+                        <th>Time</th>
+                        <th>Reason</th>
+                        <th>Sender</th>
+                        <th>Recipient</th>
+                        <th>Source IP</th>
+                        <th>Detail</th>
+                    </tr>
+                </thead>
+                <tbody id="email-rejects-tbody">
+                    <tr><td colspan="6" class="text-center text-muted py-4"><span class="spinner-border spinner-border-sm"></span> Loading rejects...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Needs attention (left) + protection (right) -->
+    <div class="row row-cards align-items-start mb-3">
+        <div class="col-lg-8">
+            <div class="card">
+                <div class="card-header flex-wrap gap-2">
+                    <h2 class="card-title"><i class="ti ti-target"></i>&nbsp;Needs attention</h2>
+                    <div class="card-actions d-flex align-items-center gap-2">
+                        <span class="text-muted small text-nowrap" id="email-groups-count"></span>
+                        <button type="button" class="btn btn-ghost-secondary btn-sm" id="email-groups-handled" aria-pressed="false" hidden>Show handled</button>
+                    </div>
+                </div>
+                <div class="csm-summary-list" id="email-action-groups">
+                    <div class="csm-empty">
+                        <div class="csm-empty__icon"><i class="ti ti-loader-2"></i></div>
+                        <div class="csm-empty__reason">Loading...</div>
+                    </div>
+                </div>
+                <button type="button" class="btn btn-ghost-secondary btn-sm w-100 rounded-0 border-0 border-top" id="email-groups-more" hidden>Show all</button>
+            </div>
+        </div>
+        <div class="col-lg-4">
             <div class="card">
                 <div class="card-header">
-                    <h2 class="card-title"><i class="ti ti-shield-lock"></i>&nbsp;Mail protection state</h2>
+                    <h2 class="card-title"><i class="ti ti-shield-lock"></i>&nbsp;Protection</h2>
                 </div>
-                <div class="card-body" id="email-protection-state">
-                    <div class="mb-3" id="protection-queue">
-                        <div class="text-muted text-center py-3"><span class="spinner-border spinner-border-sm"></span> Loading queue...</div>
+                <div class="card-body" id="email-protection">
+                    <div class="d-flex align-items-center gap-2 mb-2" id="prot-antispam">
+                        <span class="status-dot"></span>
+                        <span class="text-muted">Antispam</span>
+                        <span class="ms-auto text-end" data-prot-value>--</span>
                     </div>
-                    <hr class="my-2">
-                    <div class="subheader mb-2">SMTP firewall</div>
-                    <div class="mb-3" id="smtp-firewall">
-                        <div class="text-muted small">Loading...</div>
+                    <div class="d-flex align-items-center gap-2 mb-2" id="prot-av">
+                        <span class="status-dot"></span>
+                        <span class="text-muted">Antivirus</span>
+                        <span class="ms-auto text-end" data-prot-value>--</span>
                     </div>
-                    <hr class="my-2">
-                    <div class="subheader mb-2">AV engines</div>
-                    <div class="mb-1">
-                        <span class="status-dot" id="clamd-dot"></span>
-                        ClamAV: <span id="clamd-status">--</span>
+                    <div class="d-flex align-items-center gap-2 mb-2" id="prot-smtp">
+                        <span class="status-dot"></span>
+                        <span class="text-muted">Outbound SMTP</span>
+                        <span class="ms-auto text-end" data-prot-value>--</span>
                     </div>
-                    <div class="mb-1">
-                        <span class="status-dot" id="yarax-dot"></span>
-                        YARA-X: <span id="yarax-status">--</span>
-                        (<span id="yarax-rules">0</span> rules)
-                    </div>
-                    <div class="mb-1">
-                        Watcher: <span id="watcher-mode">--</span>
+                    <div class="d-flex align-items-center gap-2" id="prot-watcher">
+                        <span class="status-dot"></span>
+                        <span class="text-muted">Watcher mode</span>
+                        <span class="ms-auto text-end" data-prot-value>--</span>
                     </div>
                 </div>
             </div>
@@ -342,6 +370,12 @@
             <div class="tab-pane fade" id="email-pane-senders" role="tabpanel" aria-labelledby="email-tab-senders" tabindex="0">
                 <div class="card-body p-0 csm-list-scroll-sm" id="top-senders">
                     <div class="text-muted text-center py-3"><span class="spinner-border spinner-border-sm"></span> Loading...</div>
+                </div>
+                <div class="card-body border-top">
+                    <div class="subheader mb-2">SMTP firewall</div>
+                    <div id="smtp-firewall">
+                        <div class="text-muted small">Loading...</div>
+                    </div>
                 </div>
             </div>
 

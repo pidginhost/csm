@@ -1,9 +1,10 @@
 // Run with: node --test ui/email_test.js
 // The Email page: one range for the whole page, the headline numbers, the
-// mail decisions chart and the rspamd card.
+// mail decisions chart, the rspamd card, recent rejects, the groups that
+// need attention and the protection card.
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
-const { loadPage, templateBody, SHARED, settle } = require('./pagekit.js');
+const { loadPage, templateBody, items, SHARED, settle } = require('./pagekit.js');
 
 const DAY = 86400;
 const HOUR_MS = 3600 * 1000;
@@ -210,7 +211,9 @@ test('the chart sums days in the operator zone', async () => {
     page.respond('/api/v1/email/overview', 200, overview({}, { series: [
         { t: (start - 900000) / 1000, clean: 5, tagged: 0, rejected: 0, malware: 0, other: 0 },
         { t: start / 1000, clean: 7, tagged: 0, rejected: 0, malware: 0, other: 0 },
-        { t: (start + 23 * HOUR_MS + 2700000) / 1000, clean: 1, tagged: 0, rejected: 0, malware: 0, other: 0 }
+        // The last bucket of yesterday, which is 23 h long on a day the
+        // clocks go forward.
+        { t: (prefs.dayBoundary(yesterday, true) - 900000) / 1000, clean: 1, tagged: 0, rejected: 0, malware: 0, other: 0 }
     ] }));
     await settle();
     const chart = page.Chart.charts.at(-1);
@@ -339,6 +342,9 @@ test('the range select drives every request', async () => {
     const groups = after.find(r => r.url.includes('/api/v1/email/groups?'));
     assert.ok(groups, 'no groups request after the change');
     assert.equal(query(groups.url).get('from'), want);
+    const rejects = after.find(r => r.url.includes('/api/v1/email/rejects?'));
+    assert.ok(rejects, 'no rejects request after the change');
+    assert.equal(query(rejects.url).get('from'), want);
     assert.equal(page.window.localStorage.getItem('csm-email-range'), '7d');
 
     const again = emailPage({ storage: Object.assign({ 'csm-email-range': '30d' }, CHATHAM) });
@@ -347,4 +353,283 @@ test('the range select drives every request', async () => {
     const first = again.pending('/api/v1/email/overview')[0];
     assert.equal(query(first.url).get('from'),
         new Date(prefs.dayBoundary(daysBefore(prefs.today(), 29), false)).toISOString());
+});
+
+const AT = '2026-10-21T09:58:00Z';
+
+// answerAll answers what the page asks for until it stops asking: bodies
+// by URL fragment, every other route an empty list.
+async function answerAll(page, bodies) {
+    for (let round = 0; round < 8; round++) {
+        const pending = page.pending();
+        if (pending.length === 0) break;
+        for (const req of pending) {
+            const hit = Object.keys(bodies).find(k => req.url.includes(k));
+            page.respond(req.url, 200, hit ? bodies[hit] : items([]));
+        }
+        await settle();
+    }
+}
+
+function group(title, extra) {
+    return Object.assign({ kind: 'auth_failure', severity: 'CRITICAL', title, subject: title, summary: 'failed logins', count: 3,
+        first_seen: AT, last_seen: AT, ips: ['203.0.113.9'], block_state: 'none', handled: false }, extra);
+}
+
+function groupTitles(page) {
+    return Array.from(page.document.querySelectorAll('#email-action-groups .csm-summary-list__title')).map(e => e.textContent);
+}
+
+test('rejects default to spam and malware', async () => {
+    const page = emailPage();
+    await settle();
+    const ovFrom = query(page.pending('/api/v1/email/overview')[0].url).get('from');
+    const req = page.pending('/api/v1/email/rejects')[0];
+    assert.ok(req, 'no rejects request');
+    const q = query(req.url);
+    assert.equal(q.get('class'), 'content');
+    assert.equal(q.get('from'), ovFrom);
+    assert.ok(Math.abs(Date.parse(q.get('to')) - Date.now()) < 60000, 'the range does not end now');
+    page.respond('/api/v1/email/rejects', 200, items([
+        { at: AT, class: 'spam', ip: '203.0.113.5', sender: 'a@example.com', recipient: 'b@example.net', detail: 'score 15.2', msg_id: '1abcDE-000001-AB' },
+        { at: AT, class: 'malware', ip: '2001:db8::5', sender: 'c@example.com', recipient: 'd@example.net', detail: 'Eicar-Test-Signature' }
+    ], { class: 'content', limit: 50, kept_days: 7 }));
+    await settle();
+    const tbody = page.document.getElementById('email-rejects-tbody');
+    const rows = tbody.querySelectorAll('tr');
+    assert.equal(rows.length, 2);
+    const link = rows[0].querySelector('a');
+    assert.equal(link.getAttribute('href'), '/firewall?ip=203.0.113.5');
+    assert.equal(link.textContent, '203.0.113.5');
+    assert.equal(rows[1].querySelector('a').getAttribute('href'), '/firewall?ip=' + encodeURIComponent('2001:db8::5'));
+    assert.match(rows[0].textContent, /score 15\.2/);
+    assert.match(rows[0].textContent, /a@example\.com/);
+    assert.match(rows[0].textContent, /b@example\.net/);
+    assert.match(rows[0].querySelector('.badge').textContent, /^Spam$/);
+    assert.match(rows[1].querySelector('.badge').textContent, /^Malware$/);
+    assert.equal(rows[0].cells.length, 6);
+    assert.ok(Array.from(rows[0].cells).every(td => td.getAttribute('data-label')), 'a cell has no label for the phone layout');
+});
+
+test('reject rows show server text as text', async () => {
+    const page = emailPage();
+    await settle();
+    page.respond('/api/v1/email/rejects', 200, items([
+        { at: AT, class: 'sender_verify', temporary: true, ip: '', sender: '<img src=x onerror=alert(1)>@example.com', recipient: '', detail: '<b>verify</b>' },
+        { at: AT, class: 'rate_limited', temporary: true, ip: '198.51.100.7', sender: 's@example.com', detail: 'ratelimited' }
+    ], { class: 'all', limit: 50, kept_days: 7 }));
+    await settle();
+    const tbody = page.document.getElementById('email-rejects-tbody');
+    assert.equal(tbody.querySelectorAll('img').length, 0);
+    assert.equal(tbody.querySelectorAll('b').length, 0);
+    assert.match(tbody.textContent, /<img src=x/);
+    const rows = tbody.querySelectorAll('tr');
+    assert.equal(rows[0].querySelector('a'), null, 'a row without an IP links nowhere');
+    assert.equal(rows[0].querySelector('.badge').textContent, 'Sender verification (temporary)');
+    assert.equal(rows[1].querySelector('.badge').textContent, 'Rate limited (temporary)');
+});
+
+test('rejects empty state names range and filter', async () => {
+    const page = emailPage();
+    await settle();
+    page.respond('/api/v1/email/rejects', 200, items([], { class: 'content', limit: 50, kept_days: 7 }));
+    await settle();
+    const tbody = page.document.getElementById('email-rejects-tbody');
+    assert.ok(tbody.querySelector('.csm-empty'), 'not the shared empty state');
+    assert.match(tbody.textContent, /No spam or malware rejects in the last 24 hours/);
+
+    const filter = page.document.getElementById('email-rejects-filter');
+    assert.deepEqual(Array.from(filter.options).map(o => o.value), ['content', 'all', 'spam', 'malware', 'unknown_recipient',
+        'sender_verify', 'bad_helo', 'relay_denied', 'auth_required', 'suspended', 'mailbox_full', 'blocklisted', 'rate_limited', 'other']);
+    assert.equal(filter.value, 'content');
+    assert.equal(Array.from(filter.options).find(o => o.value === 'rate_limited').textContent, 'Rate limited (temporary)');
+
+    filter.value = 'all';
+    filter.dispatchEvent(new page.window.Event('change'));
+    await settle();
+    assert.equal(query(page.pending('/api/v1/email/rejects')[0].url).get('class'), 'all');
+    page.respond('/api/v1/email/rejects', 200, items([], { class: 'all', limit: 50, kept_days: 7 }));
+    await settle();
+    assert.match(tbody.textContent, /No rejects in the last 24 hours/);
+
+    filter.value = 'sender_verify';
+    filter.dispatchEvent(new page.window.Event('change'));
+    await settle();
+    assert.equal(query(page.pending('/api/v1/email/rejects')[0].url).get('class'), 'sender_verify');
+    page.respond('/api/v1/email/rejects', 200, items([], { class: 'sender_verify', limit: 50, kept_days: 7 }));
+    await settle();
+    assert.match(tbody.textContent, /No rejects for Sender verification in the last 24 hours/);
+});
+
+test('a failed rejects load shows a load error with retry', async () => {
+    const page = emailPage();
+    await settle();
+    page.respond('/api/v1/email/rejects', 401, { error: 'Unauthorized' });
+    await settle();
+    const tbody = page.document.getElementById('email-rejects-tbody');
+    assert.match(tbody.textContent, /Failed to load rejects/);
+    tbody.querySelector('.csm-retry-btn').click();
+    page.respond('/api/v1/email/rejects', 200, items([{ at: AT, class: 'spam', ip: '203.0.113.5', detail: 'score 15.2' }], { kept_days: 7 }));
+    await settle();
+    assert.doesNotMatch(tbody.textContent, /Failed to load/);
+    assert.match(tbody.textContent, /score 15\.2/);
+});
+
+test('handled groups hide behind a toggle', async () => {
+    const page = emailPage();
+    await settle();
+    page.respond('/api/v1/email/groups?', 200, items([
+        group('A', { block_state: 'some', ips: ['203.0.113.9', '203.0.113.10'] }),
+        group('B', { block_state: 'all', handled: true })
+    ], { handled_count: 1, limit: 50, truncated: false, blocks_unavailable: false }));
+    await settle();
+    assert.deepEqual(groupTitles(page), ['A']);
+    const list = page.document.getElementById('email-action-groups');
+    assert.match(list.textContent, /partly blocked/);
+    assert.match(page.document.getElementById('email-groups-count').textContent, /^1 group$/);
+    const toggle = page.document.getElementById('email-groups-handled');
+    assert.equal(toggle.hidden, false);
+    assert.equal(toggle.textContent.trim(), 'Show handled (1)');
+    assert.equal(toggle.getAttribute('aria-pressed'), 'false');
+    toggle.click();
+    assert.deepEqual(groupTitles(page), ['A', 'B']);
+    assert.equal(toggle.getAttribute('aria-pressed'), 'true');
+    const items_ = list.querySelectorAll('.csm-summary-list__item');
+    assert.match(items_[1].textContent, /\bblocked\b/);
+    assert.equal(items_[1].querySelector('.csm-summary-list__sev'), null, 'a handled group still carries alarm styling');
+    assert.ok(items_[0].querySelector('.csm-summary-list__sev'), 'an open group lost its severity');
+    toggle.click();
+    assert.deepEqual(groupTitles(page), ['A']);
+});
+
+test('groups show their block state, and say once when it is unknown', async () => {
+    const page = emailPage();
+    await settle();
+    page.respond('/api/v1/email/groups?', 200, items([
+        group('none', { block_state: 'none' }),
+        group('noip', { kind: 'spam_outbreak', block_state: 'no_ip', ips: [] })
+    ], { handled_count: 0 }));
+    await settle();
+    const rows = page.document.querySelectorAll('#email-action-groups .csm-summary-list__item');
+    assert.match(rows[0].textContent, /not blocked/);
+    assert.doesNotMatch(rows[1].textContent, /blocked/);
+    assert.equal(page.document.getElementById('email-groups-handled').hidden, true, 'a toggle with nothing to show');
+
+    const down = emailPage();
+    await settle();
+    down.respond('/api/v1/email/groups?', 200, items([group('x', { block_state: '' }), group('y', { block_state: '' })],
+        { handled_count: 0, blocks_unavailable: true }));
+    await settle();
+    const list = down.document.getElementById('email-action-groups');
+    assert.doesNotMatch(Array.from(list.querySelectorAll('.csm-summary-list__item')).map(r => r.textContent).join(' '), /blocked/);
+    assert.equal(list.textContent.match(/Block state unavailable/g).length, 1);
+});
+
+test('at most eight groups show before Show all', async () => {
+    const page = emailPage();
+    await settle();
+    page.respond('/api/v1/email/groups?', 200, items(Array.from({ length: 10 }, (_, i) => group('g' + i)), { handled_count: 0 }));
+    await settle();
+    assert.equal(groupTitles(page).length, 8);
+    const more = page.document.getElementById('email-groups-more');
+    assert.equal(more.hidden, false);
+    assert.equal(more.textContent.trim(), 'Show all');
+    more.click();
+    assert.equal(groupTitles(page).length, 10);
+    assert.equal(more.hidden, true);
+});
+
+test('nothing needs you when every group is handled', async () => {
+    const page = emailPage();
+    await settle();
+    page.respond('/api/v1/email/groups?', 200, items([
+        group('B', { block_state: 'all', handled: true }),
+        group('C', { block_state: 'all', handled: true })
+    ], { handled_count: 2 }));
+    await settle();
+    const list = page.document.getElementById('email-action-groups');
+    assert.deepEqual(groupTitles(page), []);
+    assert.ok(list.querySelector('.csm-empty'), 'not the shared empty state');
+    assert.match(list.textContent, /Nothing needs you\.\s*2 groups already handled\./);
+    assert.equal(page.document.getElementById('email-groups-count').textContent, '');
+    assert.equal(page.document.getElementById('email-groups-handled').textContent.trim(), 'Show handled (2)');
+});
+
+test('a failed groups load shows a load error with retry', async () => {
+    const page = emailPage();
+    await settle();
+    page.fail('/api/v1/email/groups?');
+    await settle();
+    const list = page.document.getElementById('email-action-groups');
+    assert.match(list.textContent, /Failed to load what needs attention/);
+    list.querySelector('.csm-retry-btn').click();
+    page.respond('/api/v1/email/groups?', 200, items([group('A')], { handled_count: 0 }));
+    await settle();
+    assert.doesNotMatch(list.textContent, /Failed to load/);
+    assert.deepEqual(groupTitles(page), ['A']);
+});
+
+test('protection card lists four plain lines', async () => {
+    const page = emailPage();
+    await answerAll(page, {
+        '/api/v1/email/overview': overview({}, { mode: 'enforce', smtp_restricted: true }),
+        '/api/v1/email/rspamd': { status: 'up', mode: 'enforce', available: false },
+        '/api/v1/email/av/status': { enabled: true, clamd_available: true, clamd_socket: '/run/clamd.sock', yarax_available: false,
+            yarax_rule_count: 4321, watcher_mode: 'permission', quarantined: 0 },
+        '/api/v1/email/stats': { queue_size: 2, queue_warn: 100, queue_crit: 500, frozen_count: 0, smtp_block: true,
+            smtp_allow_users: ['alice'], smtp_ports: [25], port_flood: [{ port: 25, proto: 'tcp', hits: 10, window_seconds: 60 }], top_senders: [] }
+    });
+    const card = page.document.getElementById('email-protection');
+    assert.ok(card, 'no #email-protection');
+    const lines = ['prot-antispam', 'prot-av', 'prot-smtp', 'prot-watcher'].map(id => {
+        const el = card.querySelector('#' + id);
+        assert.ok(el, 'no #' + id);
+        assert.ok(el.querySelector('.status-dot'), id + ' has no status dot');
+        return el.textContent.replace(/\s+/g, ' ').trim();
+    });
+    assert.match(lines[0], /Antispam.*enforce, rspamd up/);
+    assert.match(lines[1], /Antivirus.*ClamAV up, YARA-X down/);
+    assert.match(lines[2], /Outbound SMTP.*restricted/);
+    assert.match(lines[3], /Watcher.*permission/);
+    assert.match(card.querySelector('#prot-av .status-dot').className, /status-yellow/);
+    assert.doesNotMatch(card.textContent, /threshold|allowed users|rules\)|4321|alice/i);
+    assert.equal(page.document.getElementById('email-protection-state'), null, 'the old settings card is still there');
+    assert.equal(page.document.getElementById('email-status-strip'), null, 'the old status strip is still there');
+});
+
+test('protection says when antispam is off or rspamd is down', async () => {
+    const page = emailPage();
+    await answerAll(page, {
+        '/api/v1/email/overview': overview({}, { mode: 'dry-run', smtp_restricted: false }),
+        '/api/v1/email/rspamd': { status: 'down', mode: 'dry-run', available: false },
+        '/api/v1/email/av/status': { enabled: false, clamd_available: false, yarax_available: false, watcher_mode: 'disabled' }
+    });
+    const text = id => page.document.getElementById(id).textContent.replace(/\s+/g, ' ');
+    assert.match(text('prot-antispam'), /dry-run, rspamd down/);
+    assert.match(page.document.querySelector('#prot-antispam .status-dot').className, /status-red/);
+    assert.match(text('prot-smtp'), /open/);
+    assert.match(text('prot-av'), /\boff\b/);
+
+    const off = emailPage();
+    await answerAll(off, {
+        '/api/v1/email/overview': overview({}, { mode: 'off' }),
+        '/api/v1/email/rspamd': { status: 'off', mode: 'off', available: false, reason: 'antispam is off' }
+    });
+    assert.match(off.document.getElementById('prot-antispam').textContent, /\boff\b/);
+    assert.doesNotMatch(off.document.getElementById('prot-antispam').textContent, /rspamd/);
+});
+
+test('the page never downloads the blocked list', async () => {
+    const page = emailPage();
+    const bodies = {
+        '/api/v1/email/stats': { queue_size: 0, queue_warn: 100, queue_crit: 500, frozen_count: 0, smtp_block: true,
+            smtp_allow_users: [], smtp_ports: [25], port_flood: [], top_senders: [] },
+        '/api/v1/email/overview': overview({})
+    };
+    await answerAll(page, bodies);
+    page.document.getElementById('email-refresh').click();
+    await answerAll(page, bodies);
+    const urls = page.requests.map(r => r.url);
+    assert.ok(urls.filter(u => u.includes('/api/v1/email/stats')).length >= 2, 'no refresh round ran');
+    assert.deepEqual(urls.filter(u => u.includes('/api/v1/blocked-ips')), []);
 });

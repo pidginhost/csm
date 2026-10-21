@@ -1360,10 +1360,10 @@ func TestEmailPageUsesPhase8Primitives(t *testing.T) {
 
 	for _, want := range []string{
 		`class="csm-page-header`,
-		`id="email-status-strip"`,
+		`id="email-rejects-tbody"`,
 		`id="email-action-groups"`,
 		`csm-summary-list`,
-		`id="email-protection-state"`,
+		`id="email-protection"`,
 		`id="email-tab-findings"`,
 		`id="email-tab-auth"`,
 		`id="email-tab-queue"`,
@@ -1391,6 +1391,8 @@ func TestEmailPageUsesPhase8Primitives(t *testing.T) {
 		`id="stat-queue-alerts"`,
 		`id="email-filters"`,
 		`id="recent-threats"`,
+		`id="email-status-strip"`,
+		`id="email-protection-state"`,
 	} {
 		if strings.Contains(text, banned) {
 			t.Errorf("email.html still contains legacy element %q", banned)
@@ -1405,7 +1407,8 @@ func TestEmailPageUsesPhase8Primitives(t *testing.T) {
 	for _, want := range []string{
 		`/api/v1/email/groups`,
 		`renderActionGroups`,
-		`refreshStatusStrip`,
+		`/api/v1/email/rejects`,
+		`renderProtection`,
 		`CSM.summaryItem`,
 		`CSM.detailPanel.open`,
 		`/api/v1/email/forwarders`,
@@ -1427,6 +1430,8 @@ func TestEmailPageUsesPhase8Primitives(t *testing.T) {
 	for _, banned := range []string{
 		`updateStatCards`,
 		`renderRecentThreats`,
+		`refreshStatusStrip`,
+		`/api/v1/blocked-ips`,
 	} {
 		if strings.Contains(jsText, banned) {
 			t.Errorf("email.js still references removed helper %q", banned)
@@ -1442,9 +1447,9 @@ func TestEmailQueueUnavailableDoesNotRenderAsZero(t *testing.T) {
 	src := string(js)
 	for _, want := range []string{
 		`'mail_queue_unavailable'`,
-		`if (s.queue_unavailable)`,
+		`if (q.unavailable)`,
+		`'queue size unknown'`,
 		`if (data.queue_unavailable)`,
-		`qvalue = 'unavailable'`,
 		`hv.textContent = 'unavailable'`,
 	} {
 		if !strings.Contains(src, want) {
