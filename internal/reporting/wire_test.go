@@ -124,3 +124,47 @@ func TestSignRejectsBadKey(t *testing.T) {
 		t.Fatalf("hmac empty secret: got %v, want ErrInvalidEnvelope", err)
 	}
 }
+
+// The signed GET vector shared with the central service's envelope tests. The
+// key is public test material: never enroll it anywhere.
+func TestSignedGETGoldenVector(t *testing.T) {
+	seed := sha256.Sum256([]byte("CSM signed GET interoperability fixture v1"))
+	priv := ed25519.NewKeyFromSeed(seed[:])
+	if got := hex.EncodeToString(priv.Public().(ed25519.PublicKey)); got != "7b7bdcd613ab7c5184507e8ef75e184f50a3585ec15b145c663c029857fa46a7" {
+		t.Fatalf("public key = %s", got)
+	}
+	e := Envelope{
+		NodeID:    "n_000000000000000000000001",
+		KeyID:     "k_000000000000000000000002",
+		Method:    "GET",
+		Path:      "/decisions",
+		BodyHash:  HashBody(nil),
+		Timestamp: 1700000000,
+		Nonce:     "0123456789abcdef0123456789abcdef",
+	}
+	got, err := e.canonical()
+	if err != nil {
+		t.Fatalf("canonical: %v", err)
+	}
+	if hex.EncodeToString(got) != goldenGETCanonical {
+		t.Fatalf("canonical drift:\n got=%x\nwant=%s", got, goldenGETCanonical)
+	}
+	sig, err := SignEd25519(e, priv)
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	const wantSig = "" +
+		"5923a221c7a8319a90f4493d5f45dd5eb1d8b492d8cc918f869be9ceb929cbee6" +
+		"4b6147b338cabb07ca0ab1bcd65fe5ee3d89180ca4b43831a80ff698e372208"
+	if hex.EncodeToString(sig) != wantSig {
+		t.Fatalf("signature drift: %x", sig)
+	}
+}
+
+const goldenGETCanonical = "" +
+	"0000001a6e5f303030303030303030303030303030303030303030303031" +
+	"0000001a6b5f303030303030303030303030303030303030303030303032" +
+	"000000034745540000000a2f6465636973696f6e73" +
+	"00000020e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" +
+	"000000203031323334353637383961626364656630313233343536373839616263646566" +
+	"000000006553f100"

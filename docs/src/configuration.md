@@ -535,6 +535,7 @@ reputation:
     enabled: false                      # opt-in central scored-set consume; restart required
     set_url: ""                         # HTTPS scored-set endpoint; HTTP only for loopback
     pubkey_env: ""                      # env var with Ed25519 public key hex
+    auth_target: ""                     # report target whose node key signs downloads
     refresh_interval: 6h                # pull interval; default 6h
     action: "challenge"                 # off | challenge | block_if_local_corroborated
     block_threshold: 60                 # score needed before local corroboration can block

@@ -999,6 +999,7 @@ type Config struct {
 			Enabled         bool   `yaml:"enabled"`
 			SetURL          string `yaml:"set_url"`
 			PubkeyEnv       string `yaml:"pubkey_env"`       // env holding the central Ed25519 public key (hex)
+			AuthTarget      string `yaml:"auth_target"`      // report target whose node key signs pulls
 			RefreshInterval string `yaml:"refresh_interval"` // e.g. "6h"; default 6h
 			Action          string `yaml:"action"`           // off | challenge | block_if_local_corroborated
 			BlockThreshold  int    `yaml:"block_threshold"`  // node-local score threshold for block (default 60)

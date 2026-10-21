@@ -2,11 +2,13 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"log"
 	"sync"
 	"time"
 
 	"github.com/pidginhost/csm/internal/queuehealth"
+	"github.com/pidginhost/csm/internal/reporting"
 )
 
 type centralActionConsumer struct {
@@ -72,7 +74,7 @@ func (c *centralActionConsumer) run() {
 	}()
 
 	if err := c.refresh(ctx); err != nil {
-		log.Printf("central-intel: initial pull failed: %v", err)
+		logCentralRefreshError("initial pull failed", err)
 	}
 	ticker := time.NewTicker(c.interval)
 	defer ticker.Stop()
@@ -96,7 +98,7 @@ func (c *centralActionConsumer) run() {
 		case <-ticker.C:
 			c.logDropped(&loggedLoss)
 			if err := c.refresh(ctx); err != nil {
-				log.Printf("central-intel: refresh failed: %v", err)
+				logCentralRefreshError("refresh failed", err)
 			}
 		}
 	}
@@ -120,6 +122,20 @@ func (c *centralActionConsumer) process(work queuehealth.Work[centralQueuedActio
 	if err != nil {
 		logCentralBlockFailure(work.Value.ip, err)
 	}
+}
+
+// centralUnauthorizedLog names what an operator can fix when the central
+// service refuses the node.
+const centralUnauthorizedLog = "central-intel: pull unauthorized; check node enrollment, node clock and reputation.central.auth_target"
+
+// logCentralRefreshError logs a failed pull. A refusal of the node gets one
+// fixed line; the node keeps its verified set and tries again next interval.
+func logCentralRefreshError(what string, err error) {
+	if errors.Is(err, reporting.ErrPullUnauthorized) {
+		log.Print(centralUnauthorizedLog)
+		return
+	}
+	log.Printf("central-intel: %s: %v", what, err)
 }
 
 func (c *centralActionConsumer) logDropped(previous *uint64) {

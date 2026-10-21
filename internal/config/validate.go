@@ -335,6 +335,7 @@ func Validate(cfg *Config) []ValidationResult {
 		results = append(results, firewallValueResults(cfg.Firewall)...)
 	}
 	results = append(results, centralActionResults(cfg)...)
+	results = append(results, centralAuthTargetResults(cfg)...)
 	results = append(results, blockAtSeverityResults(cfg)...)
 
 	// --- Challenge ---
@@ -999,6 +1000,67 @@ func centralActionResults(cfg *Config) []ValidationResult {
 	}
 	return []ValidationResult{{"error", "reputation.central.action",
 		fmt.Sprintf("invalid action %q: must be one of %s", action, strings.Join(centralActions[:], ", "))}}
+}
+
+// centralAuthTargetResults checks the report target named to sign central
+// pulls. The puller sends that target's node identity, so it must be an
+// Ed25519 node target on the same origin as set_url: a signed request never
+// goes to a host the node does not report to.
+func centralAuthTargetResults(cfg *Config) []ValidationResult {
+	const field = "reputation.central.auth_target"
+	name := cfg.Reputation.Central.AuthTarget
+	if name == "" {
+		return nil
+	}
+	matches := 0
+	var target reportTargetFields
+	for _, t := range cfg.Reputation.Report.Targets {
+		if t.Name == name {
+			matches++
+			target = reportTargetFields{t.URL, t.Transport, t.NodeID, t.KeyID, t.KeyEnv}
+		}
+	}
+	var msg string
+	switch {
+	case matches != 1:
+		msg = fmt.Sprintf("%q must name exactly one reputation.report.targets entry, found %d", name, matches)
+	case target.transport != "ed25519":
+		msg = fmt.Sprintf("target %q must use transport ed25519", name)
+	case target.nodeID == "" || target.keyID == "" || target.keyEnv == "":
+		msg = fmt.Sprintf("target %q needs node_id, key_id and key_env", name)
+	case !sameOrigin(target.url, cfg.Reputation.Central.SetURL):
+		msg = fmt.Sprintf("target %q url and reputation.central.set_url must use the same scheme, host and port", name)
+	default:
+		return nil
+	}
+	return []ValidationResult{{"error", field, msg}}
+}
+
+type reportTargetFields struct {
+	url, transport, nodeID, keyID, keyEnv string
+}
+
+// sameOrigin reports whether two URLs share scheme, host and port, with the
+// scheme's default port filled in.
+func sameOrigin(a, b string) bool {
+	ua, errA := url.Parse(a)
+	ub, errB := url.Parse(b)
+	if errA != nil || errB != nil || !strings.EqualFold(ua.Scheme, ub.Scheme) {
+		return false
+	}
+	hostA, portA, okA := urlDialTarget(a)
+	hostB, portB, okB := urlDialTarget(b)
+	if !okA || !okB || portA != portB {
+		return false
+	}
+	// IPv6 spelling can vary, but zone identifiers name case-sensitive
+	// interfaces and must not inherit DNS hostname case folding.
+	addrA, ipErrA := netip.ParseAddr(hostA)
+	addrB, ipErrB := netip.ParseAddr(hostB)
+	if ipErrA == nil || ipErrB == nil {
+		return ipErrA == nil && ipErrB == nil && addrA == addrB
+	}
+	return strings.EqualFold(hostA, hostB)
 }
 
 // blockAtSeverityResults rejects an unrecognised incident block threshold.
