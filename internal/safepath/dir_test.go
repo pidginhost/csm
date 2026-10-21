@@ -169,3 +169,40 @@ func TestPrivateTempPinsTransactionNames(t *testing.T) {
 		t.Fatal("followed a replacement symlink during cleanup")
 	}
 }
+
+func TestReplaceToOverwritesWithoutFollowingDestinationSymlink(t *testing.T) {
+	base := t.TempDir()
+	outside := filepath.Join(base, "outside")
+	if err := os.WriteFile(outside, []byte("outside"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(base, "src"), []byte("new"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(base, "dst")); err != nil {
+		t.Fatal(err)
+	}
+	dir, err := OpenDir(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = dir.Close() }()
+
+	if opErr := dir.ReplaceTo("src", dir, "dst"); opErr != nil {
+		t.Fatal(opErr)
+	}
+
+	info, err := os.Lstat(filepath.Join(base, "dst"))
+	if err != nil || !info.Mode().IsRegular() {
+		t.Fatalf("destination after replace: %v, %v", info, err)
+	}
+	if got, err := os.ReadFile(filepath.Join(base, "dst")); err != nil || string(got) != "new" {
+		t.Fatalf("destination content = %q, %v", got, err)
+	}
+	if got, err := os.ReadFile(outside); err != nil || string(got) != "outside" {
+		t.Fatalf("symlink target changed: %q, %v", got, err)
+	}
+	if _, err := os.Lstat(filepath.Join(base, "src")); !os.IsNotExist(err) {
+		t.Fatalf("source name still present: %v", err)
+	}
+}

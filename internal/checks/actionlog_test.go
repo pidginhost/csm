@@ -12,6 +12,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/actionlog"
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/safepath"
 )
 
 type recordingSink struct{ records []actionlog.Record }
@@ -343,7 +344,7 @@ func TestAccessCleanActionsAndWriteFailures(t *testing.T) {
 				}
 				if phase == "sync" {
 					old := syncCleanParent
-					syncCleanParent = func(int) error { return syscall.EIO }
+					syncCleanParent = func(*safepath.Dir) error { return syscall.EIO }
 					t.Cleanup(func() { syncCleanParent = old })
 				}
 				switch kind {

@@ -272,10 +272,11 @@ func TestPerfRemediationRejectsChangedFileBeforeRename(t *testing.T) {
 	if err := os.WriteFile(path, []byte("display_errors = On\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	original, err := os.Lstat(path)
+	target, err := openCleanTarget(path)
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer target.Close()
 	tmp := filepath.Join(root, "replacement.ini")
 	if werr := os.WriteFile(tmp, []byte("memory_limit = 128M\n"), 0o644); werr != nil {
 		t.Fatal(werr)
@@ -284,7 +285,7 @@ func TestPerfRemediationRejectsChangedFileBeforeRename(t *testing.T) {
 		t.Fatal(rerr)
 	}
 
-	err = writeFilePreservingOwner(path, []byte("display_errors = Off\n"), original)
+	err = writeCleanedFileAtomic(target, []byte("display_errors = Off\n"))
 	if err == nil {
 		t.Fatal("expected changed-file rejection")
 	}

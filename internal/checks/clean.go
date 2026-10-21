@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"math"
 	"os"
 	"path/filepath"
@@ -15,9 +16,8 @@ import (
 	"syscall"
 	"unicode"
 
-	"golang.org/x/sys/unix"
-
 	"github.com/pidginhost/csm/internal/actionlog"
+	"github.com/pidginhost/csm/internal/safepath"
 )
 
 // CleanResult describes the outcome of a cleaning attempt.
@@ -178,7 +178,7 @@ func cleanInfectedFileIdentified(path string, expected os.FileInfo) (result Clea
 
 type cleanTarget struct {
 	Path            string
-	DirFD           int
+	Dir             *safepath.Dir
 	Name            string
 	File            *os.File
 	Info            os.FileInfo
@@ -193,50 +193,43 @@ func (t *cleanTarget) Close() {
 	if t.File != nil {
 		_ = t.File.Close()
 	}
-	if t.DirFD >= 0 {
-		_ = unix.Close(t.DirFD)
+	if t.Dir != nil {
+		_ = t.Dir.Close()
 	}
 }
 
+// openCleanTarget opens path without following a symlink in any component.
+// The account owner controls every directory below its home, so a symlink
+// planted anywhere on the path after the caller's checks must not steer the
+// read or the replacement into another tree.
 func openCleanTarget(path string) (*cleanTarget, error) {
-	dir, name := filepath.Split(path)
+	return openCleanTargetFlags(path, os.O_RDONLY)
+}
+
+func openCleanTargetFlags(path string, flags int) (*cleanTarget, error) {
+	parent, name := filepath.Split(path)
 	if name == "" || name == "." || name == ".." {
 		return nil, fmt.Errorf("invalid target path %q", path)
 	}
-	if dir == "" {
-		dir = "."
-	}
-	dir = filepath.Clean(dir)
-	parentInfo, err := os.Lstat(dir)
+	parent, err := filepath.Abs(parent)
 	if err != nil {
-		return nil, fmt.Errorf("stat parent directory: %w", err)
+		return nil, fmt.Errorf("resolve parent directory: %w", err)
 	}
-	if parentInfo.Mode()&os.ModeSymlink != 0 {
-		return nil, refuseFileResponse(errors.New("refusing symlinked parent directory"))
-	}
-
-	// Pin the immediate parent. A swap of that directory to a symlink
-	// after detection must not redirect either the read or the writeback.
-	dirFD, err := unix.Open(dir, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	dir, err := safepath.OpenDirNoFollow(parent)
 	if err != nil {
-		return nil, fmt.Errorf("open parent directory: %w", err)
+		return nil, fmt.Errorf("open parent directory: %w", fileResponseSourceError(err))
 	}
 	closeDir := true
 	defer func() {
 		if closeDir {
-			_ = unix.Close(dirFD)
+			_ = dir.Close()
 		}
 	}()
-	if pinErr := verifyCleanParentStillPinned(dirFD, parentInfo); pinErr != nil {
-		return nil, pinErr
-	}
 
-	fd, err := unix.Openat(dirFD, name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC|unix.O_NONBLOCK, 0)
+	file, err := dir.OpenFile(name, flags, 0)
 	if err != nil {
 		return nil, err
 	}
-	// #nosec G115 -- unix.Openat returned a non-negative fd because err is nil.
-	file := os.NewFile(uintptr(fd), path)
 	closeFile := true
 	defer func() {
 		if closeFile {
@@ -253,11 +246,11 @@ func openCleanTarget(path string) (*cleanTarget, error) {
 	}
 
 	target := &cleanTarget{
-		Path:  path,
-		DirFD: dirFD,
-		Name:  name,
-		File:  file,
-		Info:  info,
+		Path: path,
+		Dir:  dir,
+		Name: name,
+		File: file,
+		Info: info,
 	}
 	if stat, ok := info.Sys().(*syscall.Stat_t); ok {
 		target.UID = int(stat.Uid)
@@ -270,45 +263,27 @@ func openCleanTarget(path string) (*cleanTarget, error) {
 	return target, nil
 }
 
-func verifyCleanParentStillPinned(dirFD int, want os.FileInfo) error {
-	var got unix.Stat_t
-	if err := unix.Fstat(dirFD, &got); err != nil {
-		return fmt.Errorf("stat opened parent directory: %w", err)
-	}
-	if !sameUnixStatIdentity(want, got) {
-		return refuseFileResponse(errors.New("parent directory changed during cleaning"))
-	}
-	return nil
-}
-
-func sameUnixStatIdentity(info os.FileInfo, stat unix.Stat_t) bool {
-	if info == nil {
-		return false
-	}
-	want, ok := info.Sys().(*syscall.Stat_t)
-	if !ok {
-		return false
-	}
-	// #nosec G115 -- Dev is signed on darwin and unsigned on linux; widening
-	// both sides to uint64 is what makes the comparison portable.
-	return uint64(want.Dev) == uint64(stat.Dev) && uint64(want.Ino) == uint64(stat.Ino)
-}
-
 var closeCleanTemp = (*os.File).Close
-var syncCleanParent = unix.Fsync
 
-// writeCleanedFileAtomic stages cleaned content through a hidden sibling
-// name under the pinned parent directory and renames it over the original
-// only after the path still resolves to the inode we read.
+// cleanAfterTempCreated lets a test act as the account owner once the staged
+// replacement exists in the directory the owner controls.
+var cleanAfterTempCreated = func(string) {}
+var syncCleanParent = (*safepath.Dir).Sync
+
+// writeCleanedFileAtomic stages content through a hidden sibling name under
+// the pinned parent directory and renames it over the original only after the
+// name still holds the inode we read. Owner and mode are set on the staged
+// descriptor, never by path.
 func writeCleanedFileAtomic(target *cleanTarget, content []byte) error {
-	tmp, tmpName, err := createCleanTempFile(target.DirFD)
+	tmp, tmpName, err := createCleanTempFile(target.Dir)
 	if err != nil {
 		return err
 	}
+	cleanAfterTempCreated(filepath.Join(filepath.Dir(target.Path), tmpName))
 	removeTmp := true
 	defer func() {
 		if removeTmp {
-			_ = unix.Unlinkat(target.DirFD, tmpName, 0)
+			_ = target.Dir.Remove(tmpName)
 		}
 		_ = tmp.Close()
 	}()
@@ -338,46 +313,49 @@ func writeCleanedFileAtomic(target *cleanTarget, content []byte) error {
 	if err := verifyCleanTargetUnchanged(target); err != nil {
 		return err
 	}
+	// The owner can replace the staged name too. Install only the file
+	// written above, so a refusal is reported instead of a planted entry.
+	staged, stagedErr := target.Dir.Stat(tmpName)
+	if stagedErr != nil || !sameFileIdentity(staged, replacementInfo) {
+		return refuseFileResponse(errors.New("staged replacement changed before install"))
+	}
 
-	if err := unix.Renameat(target.DirFD, tmpName, target.DirFD, target.Name); err != nil {
+	if err := target.Dir.ReplaceTo(tmpName, target.Dir, target.Name); err != nil {
 		return err
 	}
 	removeTmp = false
 	target.installed = true
 	target.replacementInfo = replacementInfo
-	if err := syncCleanParent(target.DirFD); err != nil {
-		return fmt.Errorf("cleaned file installed but directory sync failed; recovery backup retained: %w", err)
+	if err := syncCleanParent(target.Dir); err != nil {
+		return fmt.Errorf("replacement installed but directory sync failed: %w", err)
 	}
 	return nil
 }
 
-func createCleanTempFile(dirFD int) (*os.File, string, error) {
+func createCleanTempFile(dir *safepath.Dir) (*os.File, string, error) {
 	for i := 0; i < 100; i++ {
 		var raw [8]byte
 		if _, err := rand.Read(raw[:]); err != nil {
 			return nil, "", fmt.Errorf("random temp name: %w", err)
 		}
 		name := ".csm-clean-" + hex.EncodeToString(raw[:])
-		fd, err := unix.Openat(dirFD, name, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
-		if err == unix.EEXIST {
+		file, err := dir.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if errors.Is(err, fs.ErrExist) {
 			continue
 		}
 		if err != nil {
 			return nil, "", err
 		}
-		// #nosec G115 -- unix.Openat returned a non-negative fd because err is nil.
-		return os.NewFile(uintptr(fd), name), name, nil
+		return file, name, nil
 	}
 	return nil, "", fmt.Errorf("could not allocate temp file name")
 }
 
 func verifyCleanTargetUnchanged(target *cleanTarget) error {
-	fd, err := unix.Openat(target.DirFD, target.Name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC|unix.O_NONBLOCK, 0)
+	file, err := target.Dir.OpenFile(target.Name, os.O_RDONLY, 0)
 	if err != nil {
 		return fmt.Errorf("open target before rename: %w", fileResponseSourceError(err))
 	}
-	// #nosec G115 -- unix.Openat returned a non-negative fd because err is nil.
-	file := os.NewFile(uintptr(fd), target.Path)
 	defer func() { _ = file.Close() }()
 
 	info, err := file.Stat()
@@ -387,10 +365,21 @@ func verifyCleanTargetUnchanged(target *cleanTarget) error {
 	if !info.Mode().IsRegular() {
 		return refuseFileResponse(fmt.Errorf("refusing non-regular target before rename (mode=%v)", info.Mode()))
 	}
-	if !sameFileIdentity(info, target.Info) || !sameCleanContentShape(info, target.Info) {
+	if !sameCleanFileState(info, target.Info) {
 		return refuseFileResponse(errors.New("file changed during cleaning"))
 	}
 	return nil
+}
+
+// sameCleanFileState also compares mode and owner, so a permission change
+// made while the replacement was staged is not overwritten.
+func sameCleanFileState(a, b os.FileInfo) bool {
+	if !sameFileIdentity(a, b) || !sameCleanContentShape(a, b) || a.Mode() != b.Mode() {
+		return false
+	}
+	as, aok := a.Sys().(*syscall.Stat_t)
+	bs, bok := b.Sys().(*syscall.Stat_t)
+	return aok && bok && as.Uid == bs.Uid && as.Gid == bs.Gid
 }
 
 func sameCleanContentShape(a, b os.FileInfo) bool {

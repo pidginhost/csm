@@ -134,6 +134,10 @@ Manual full scans leave cleaner refusals for review instead of reporting a
 failed remediation. `csm clean` also distinguishes a refusal from an action
 failure; both return a nonzero exit status when the file was not cleaned.
 
+Automatic permission fixes dismiss the original finding after a successful fix
+or after confirming its unsafe permission is already gone. A confirmation alone
+does not report a permission change.
+
 These limits use the existing `enabled`, `quarantine_files` and `clean_htaccess`
 opt-ins. Observe mode still forbids automatic changes. `dry_run` continues to
 control IP blocking and web-exposed-file virtual patches; it does not preview

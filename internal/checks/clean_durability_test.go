@@ -7,6 +7,8 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+
+	"github.com/pidginhost/csm/internal/safepath"
 )
 
 func withHtaccessBackupRoot(t *testing.T) {
@@ -95,7 +97,7 @@ func TestCleanReplacementDurabilityFailureRetainsBackup(t *testing.T) {
 					return syscall.EIO
 				}
 			} else {
-				syncCleanParent = func(int) error { called = true; return syscall.EIO }
+				syncCleanParent = func(*safepath.Dir) error { called = true; return syscall.EIO }
 			}
 			result := CleanInfectedFile(path)
 			if !called || result.Cleaned || !strings.Contains(result.Error, syscall.EIO.Error()) {

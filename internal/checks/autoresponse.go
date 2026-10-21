@@ -244,25 +244,19 @@ func AutoFixPermissions(cfg *config.Config, findings []alert.Finding) (actions [
 			continue
 		}
 
-		path, info, err := resolveExistingFixPath(path, effectiveFixRoots(fixPermissionsAllowedRoots))
-		if err != nil || info.IsDir() {
+		result, oldMode := applyPermissionFix(path, f.Check)
+		if !result.Success {
 			continue
 		}
-
-		oldMode := info.Mode().Perm()
-		// #nosec G302 -- same as fixPermissions: restoring canonical web-content
-		// mode on a user file flagged for dangerous (e.g. world-writable) perms.
-		if err := os.Chmod(path, 0644); err != nil {
-			continue
+		if oldMode != 0 {
+			actions = append(actions, alert.Finding{
+				Severity:  alert.Warning,
+				Check:     "auto_response",
+				Message:   fmt.Sprintf("AUTO-FIX: %s permissions set to 644 (was %o)", path, oldMode),
+				Timestamp: time.Now(),
+			})
 		}
-
-		actions = append(actions, alert.Finding{
-			Severity:  alert.Warning,
-			Check:     "auto_response",
-			Message:   fmt.Sprintf("AUTO-FIX: %s permissions set to 644 (was %o)", path, oldMode),
-			Timestamp: time.Now(),
-		})
-		fixedKeys = append(fixedKeys, f.Check+":"+f.Message)
+		fixedKeys = append(fixedKeys, f.Key())
 	}
 
 	return actions, fixedKeys

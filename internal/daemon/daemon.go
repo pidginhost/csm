@@ -949,18 +949,7 @@ func (d *Daemon) Run() error {
 
 	// Remove auto-fixed findings before storing to UI
 	if len(permFixedKeys) > 0 {
-		fixedSet := make(map[string]bool, len(permFixedKeys))
-		for _, k := range permFixedKeys {
-			fixedSet[k] = true
-		}
-		var filtered []alert.Finding
-		for _, f := range initialFindings {
-			key := f.Check + ":" + f.Message
-			if !fixedSet[key] {
-				filtered = append(filtered, f)
-			}
-		}
-		initialFindings = filtered
+		initialFindings = withoutFixedFindings(initialFindings, permFixedKeys)
 	}
 
 	d.store.Update(initialFindings)
@@ -1719,6 +1708,21 @@ func (d *Daemon) respondToInitialScan(cfg *config.Config, initialFindings []aler
 	initialAuditSources := append(append([]alert.Finding(nil), initialFindings...), responseFindings...)
 	_ = alert.DispatchWithNotificationFilter(cfg, newFindings, initialAuditSources, responseFindings, operatorAlertableFindings)
 	return newFindings, permFixedKeys
+}
+
+// withoutFixedFindings drops findings whose Key is in fixedKeys.
+func withoutFixedFindings(findings []alert.Finding, fixedKeys []string) []alert.Finding {
+	fixed := make(map[string]bool, len(fixedKeys))
+	for _, k := range fixedKeys {
+		fixed[k] = true
+	}
+	var kept []alert.Finding
+	for _, f := range findings {
+		if !fixed[f.Key()] {
+			kept = append(kept, f)
+		}
+	}
+	return kept
 }
 
 // autoFixWPCron lets daemon wiring tests avoid real wp-config.php and crontab

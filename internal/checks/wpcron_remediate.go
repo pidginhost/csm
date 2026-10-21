@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"hash/fnv"
+	"io"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -94,7 +95,12 @@ func FixDisableWPCronInRoots(path string, allowedRoots []string, opts WPCronFixO
 		return RemediationResult{Error: fmt.Sprintf("automated WP-Cron fix only applies to wp-config.php (got %s)", filepath.Base(resolved))}
 	}
 
-	data, err := readFilePreservingIdentity(resolved, info)
+	target, err := openFixTarget(resolved, info)
+	if err != nil {
+		return RemediationResult{Error: fmt.Sprintf("read failed: %v", err)}
+	}
+	defer target.Close()
+	data, err := io.ReadAll(target.File)
 	if err != nil {
 		return RemediationResult{Error: fmt.Sprintf("read failed: %v", err)}
 	}
@@ -129,7 +135,7 @@ func FixDisableWPCronInRoots(path string, allowedRoots []string, opts WPCronFixO
 	}
 
 	if needsDefine {
-		if werr := writeFilePreservingOwner(resolved, rewritten, info); werr != nil {
+		if werr := writeCleanedFileAtomic(target, rewritten); werr != nil {
 			if cronInstalled {
 				return RemediationResult{Error: fmt.Sprintf("system cron installed but wp-config.php update failed: %v", werr)}
 			}
