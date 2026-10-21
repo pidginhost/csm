@@ -319,8 +319,12 @@ func TestPHPAuditScopesPreservePrecedence(t *testing.T) {
 		t.Fatal("later conditional off and admin off must take precedence")
 	}
 	pools.merge("[www]\nphp_admin_value[session.upload_progress.enabled] = On\n", true)
+	if !settings.settingDisabled(phpUploadProgressKey, pools) {
+		t.Fatal("first pool admin value must take precedence over duplicates")
+	}
+	pools.merge("[other]\nphp_admin_value[session.upload_progress.enabled] = On\n", true)
 	if settings.settingDisabled(phpUploadProgressKey, pools) {
-		t.Fatal("later pool admin on must take precedence")
+		t.Fatal("one pool's admin off must not hide another pool's admin on")
 	}
 }
 
@@ -395,6 +399,98 @@ func TestAuditPHPFatalErrorBacktracesOnlyFromPHP85(t *testing.T) {
 	}
 	if r, ok := auditResultByName(results, "php_fatal_error_backtraces_86"); !ok || r.Status != "warn" {
 		t.Errorf("PHP 8.6 default must warn: %+v, present %v", r, ok)
+	}
+}
+
+func TestAuditPHPFPMSettingSyntax(t *testing.T) {
+	for _, setting := range []struct{ key, result string }{
+		{phpFatalErrorBacktracesKey, "php_fatal_error_backtraces_85"},
+		{phpUploadProgressKey, "php_upload_progress_85"},
+	} {
+		for _, directive := range []string{"php_value", "php_flag", "php_admin_value", "php_admin_flag"} {
+			for _, spelling := range []string{
+				directive + "[\"" + setting.key + "\"]",
+				directive + "['" + setting.key + "']",
+				directive + " [ " + setting.key + "]",
+				directive + "[\"" + setting.key + "\" \t]",
+				directive + "[\"" + setting.key[:4] + "\"" + setting.key[4:] + "]",
+			} {
+				t.Run(spelling, func(t *testing.T) {
+					withFakePHPFiles(t, map[string]string{
+						"/opt/cpanel/ea-php85/root/etc/php.ini":            setting.key + " = Off\n",
+						"/opt/cpanel/ea-php85/root/etc/php-fpm.d/www.conf": "[www]\n" + spelling + " = On\n",
+					})
+					withMockCmd(t, &mockCmd{})
+					r, ok := auditResultByName(auditPHP("cpanel"), setting.result)
+					if !ok || r.Status != "warn" {
+						t.Fatalf("enabled pool override must warn: %+v, present %v", r, ok)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestAuditPHPFPMDuplicateSettings(t *testing.T) {
+	const ini = "/opt/cpanel/ea-php85/root/etc/php.ini"
+	const pools = "/opt/cpanel/ea-php85/root/etc/php-fpm.d/"
+	for _, tc := range []struct {
+		name, first, second, want string
+	}{
+		{"value on first", "php_value[fatal_error_backtraces] = On", "php_flag[fatal_error_backtraces] = Off", "warn"},
+		{"value off first", "php_flag[fatal_error_backtraces] = Off", "php_value[fatal_error_backtraces] = On", "pass"},
+		{"admin on first", "php_admin_flag[fatal_error_backtraces] = On", "php_admin_value[fatal_error_backtraces] = Off", "warn"},
+		{"admin off first", "php_admin_value[fatal_error_backtraces] = Off", "php_admin_flag[fatal_error_backtraces] = On", "pass"},
+		{"admin off before value on", "php_admin_value[fatal_error_backtraces] = Off", "php_value[fatal_error_backtraces] = On", "pass"},
+		{"admin off after value on", "php_flag[fatal_error_backtraces] = On", "php_admin_flag[fatal_error_backtraces] = Off", "pass"},
+		{"admin on before value off", "php_admin_flag[fatal_error_backtraces] = On", "php_flag[fatal_error_backtraces] = Off", "warn"},
+		{"admin on after value off", "php_value[fatal_error_backtraces] = Off", "php_admin_value[fatal_error_backtraces] = On", "warn"},
+	} {
+		for _, split := range []bool{false, true} {
+			name := tc.name + "/same file"
+			if split {
+				name = tc.name + "/separate files"
+			}
+			t.Run(name, func(t *testing.T) {
+				files := map[string]string{
+					ini:               "fatal_error_backtraces = Off\n",
+					pools + "10.conf": "[www]\n" + tc.first + "\n",
+				}
+				if split {
+					files[pools+"20.conf"] = "[www]\n" + tc.second + "\n"
+				} else {
+					files[pools+"10.conf"] += tc.second + "\n"
+				}
+				withFakePHPFiles(t, files)
+				withMockCmd(t, &mockCmd{})
+				r, ok := auditResultByName(auditPHP("cpanel"), "php_fatal_error_backtraces_85")
+				if !ok || r.Status != tc.want {
+					t.Fatalf("got %+v, present %v; want %s", r, ok, tc.want)
+				}
+			})
+		}
+	}
+}
+
+func TestAuditPHPFPMUnrelatedSettings(t *testing.T) {
+	for _, key := range []string{
+		"fatal_error_backtraces ",
+		`"fatal_error_backtraces "`,
+		"fatal_error_backtraces_extra",
+		"session.upload_progress.enabled",
+	} {
+		t.Run(key, func(t *testing.T) {
+			withFakePHPFiles(t, map[string]string{
+				"/opt/cpanel/ea-php85/root/etc/php.ini": "fatal_error_backtraces = Off\n",
+				"/opt/cpanel/ea-php85/root/etc/php-fpm.d/www.conf": "[www]\n" +
+					"php_flag[fatal_error_backtraces] = On\nphp_admin_flag[" + key + "] = Off\n",
+			})
+			withMockCmd(t, &mockCmd{})
+			r, ok := auditResultByName(auditPHP("cpanel"), "php_fatal_error_backtraces_85")
+			if !ok || r.Status != "warn" {
+				t.Fatalf("unrelated admin value must not hide enabled setting: %+v, present %v", r, ok)
+			}
+		})
 	}
 }
 

@@ -9,6 +9,10 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ## [Unreleased]
 
+### Security
+
+- PHP hardening audits no longer report a safe configured default when inspected worker settings keep the audited feature enabled.
+
 ### Changed
 
 - The hardening audit warns on PHP 8.5 and later while fatal error backtraces are on, a setting the PHP2Shell advisory says to turn off.
