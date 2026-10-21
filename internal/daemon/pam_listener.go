@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"net"
+	"net/netip"
 	"os"
 	"sort"
 	"strconv"
@@ -63,6 +64,9 @@ type PAMListener struct {
 	// inbound connection (regardless of payload validity). Used by the
 	// upstream probe to detect a missing PAM module hook.
 	lastPeerNanos atomic.Int64
+	// hostNameWarned limits the "remote host is not an address" log to one
+	// line per daemon run; sshd with UseDNS sends one on every login.
+	hostNameWarned atomic.Bool
 }
 
 type pamFailureTracker struct {
@@ -229,7 +233,7 @@ func (p *PAMListener) processEvent(line string) {
 	eventType := parts[0]
 	kvPart := parts[1]
 
-	var ip, user, service, pid, ts string
+	var ip, user, service, pid, stamp string
 	for _, kv := range strings.Fields(kvPart) {
 		switch {
 		case strings.HasPrefix(kv, "ip="):
@@ -241,13 +245,25 @@ func (p *PAMListener) processEvent(line string) {
 		case strings.HasPrefix(kv, "pid="):
 			pid = kv[4:]
 		case strings.HasPrefix(kv, "ts="):
-			ts = kv[3:]
+			stamp = kv[3:]
 		}
 	}
 
-	if ip == "" || ip == "-" || ip == "127.0.0.1" {
+	if ip == "" || ip == "-" {
 		return
 	}
+	addr, err := netip.ParseAddr(ip)
+	if err != nil {
+		if p.hostNameWarned.CompareAndSwap(false, true) {
+			fmt.Fprintf(os.Stderr, "[%s] PAM listener: remote host %q is not an IP address; its logins are not tracked (set UseDNS no in sshd_config)\n", ts(), ip)
+		}
+		return
+	}
+	addr = addr.Unmap().WithZone("")
+	if addr.IsLoopback() {
+		return
+	}
+	ip = addr.String()
 
 	// Skip infra IPs. Read from the live config like the thresholds are: an
 	// infrastructure address added by reload must stop counting at once.
@@ -258,7 +274,7 @@ func (p *PAMListener) processEvent(line string) {
 	switch eventType {
 	case "FAIL":
 		findings := p.recordFailure(ip, user, service)
-		obs := pamObservation(pid, ts)
+		obs := pamObservation(pid, stamp)
 		for i := range findings {
 			findings[i].Observation = obs
 		}
