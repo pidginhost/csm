@@ -29,8 +29,8 @@ type QueueFlusher interface {
 func FrozenBackscatterIDs(out string) []string {
 	var ids []string
 	for _, line := range strings.Split(out, "\n") {
-		if id, _, _, bounce, frozen, ok := parseQueueHeader(line); ok && bounce && frozen {
-			ids = append(ids, id)
+		if m, ok := parseQueueHeader(line); ok && m.Bounce && m.Frozen {
+			ids = append(ids, m.ID)
 		}
 	}
 	return ids
@@ -96,9 +96,9 @@ func (f *EximQueueFlusher) FlushBackscatter() (FlushResult, error) {
 	}
 	stillQueued := make(map[string]struct{}, len(ids))
 	for _, line := range strings.Split(string(after), "\n") {
-		id, _, _, _, _, ok := parseQueueHeader(line)
-		if _, isTargeted := targeted[id]; ok && isTargeted {
-			stillQueued[id] = struct{}{}
+		m, ok := parseQueueHeader(line)
+		if _, isTargeted := targeted[m.ID]; ok && isTargeted {
+			stillQueued[m.ID] = struct{}{}
 		}
 	}
 	var survived []string

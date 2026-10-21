@@ -168,6 +168,13 @@ func classifyReason(errText string) string {
 			return m[1]
 		}
 	}
+	return keywordReason(errText)
+}
+
+// keywordReason labels error text by keyword, or returns "". The labels after
+// "blocked" say why a queued message waits rather than what a provider
+// objects to; they come last so text an earlier label matches keeps it.
+func keywordReason(errText string) string {
 	low := strings.ToLower(errText)
 	switch {
 	case strings.Contains(low, "spamhaus"):
@@ -183,6 +190,19 @@ func classifyReason(errText string) string {
 	case strings.Contains(low, "blocked"), strings.Contains(low, "blacklist"),
 		strings.Contains(low, "listed"):
 		return "blocked"
+	case strings.Contains(low, "mailbox full"), strings.Contains(low, "mailbox is full"),
+		strings.Contains(low, "over quota"), strings.Contains(low, "quota exceeded"):
+		return "mailbox_full"
+	case strings.Contains(low, "retry time not reached"):
+		return "retry_wait"
+	case strings.Contains(low, "no route to host"), strings.Contains(low, "network is unreachable"),
+		strings.Contains(low, "connection timed out"), strings.Contains(low, "host lookup did not complete"),
+		strings.Contains(low, "host not found"), strings.Contains(low, "non-existent host"),
+		strings.Contains(low, "unrouteable"):
+		return "host_not_found"
+	case strings.Contains(low, "refused"), strings.Contains(low, "rejected"),
+		strings.Contains(low, "denied"):
+		return "refused"
 	}
 	return ""
 }

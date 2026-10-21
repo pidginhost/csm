@@ -1,6 +1,8 @@
 package intel
 
 import (
+	"bytes"
+	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -54,8 +56,7 @@ func (s *EximSource) Report() (Report, error) {
 }
 
 // tailLines returns up to maxLines trailing lines of the file, reading at most
-// the last maxBytes so a huge log never loads whole into memory. A partial
-// first line (from the byte-window cut) is dropped.
+// the last maxBytes so a huge log never loads whole into memory.
 func tailLines(path string, maxBytes int64, maxLines int) []string {
 	if maxBytes <= 0 || maxLines <= 0 {
 		return nil
@@ -66,32 +67,48 @@ func tailLines(path string, maxBytes int64, maxLines int) []string {
 	}
 	defer func() { _ = f.Close() }()
 
-	info, err := f.Stat()
+	lines, err := readFileTail(f, maxBytes)
 	if err != nil {
 		return nil
 	}
-
-	var data []byte
-	if info.Size() > maxBytes {
-		if _, err := f.Seek(-maxBytes, io.SeekEnd); err != nil {
-			return nil
-		}
-		data, _ = io.ReadAll(f)
-		// Drop the first (likely partial) line after a mid-file seek.
-		if nl := strings.IndexByte(string(data), '\n'); nl >= 0 {
-			data = data[nl+1:]
-		}
-	} else {
-		data, _ = io.ReadAll(f)
-	}
-
-	text := strings.TrimSuffix(string(data), "\n")
-	if text == "" {
-		return nil
-	}
-	lines := strings.Split(text, "\n")
 	if len(lines) > maxLines {
 		lines = lines[len(lines)-maxLines:]
 	}
 	return lines
+}
+
+// readFileTail reads at most the last maxBytes of a regular file, seeking past
+// the rest, and splits them into lines. A partial first line (from the
+// byte-window cut) is dropped.
+func readFileTail(f *os.File, maxBytes int64) ([]string, error) {
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s is not a regular file", f.Name())
+	}
+
+	offset := info.Size() - maxBytes
+	if offset > 0 {
+		if _, seekErr := f.Seek(offset, io.SeekStart); seekErr != nil {
+			return nil, seekErr
+		}
+	}
+	// The limit holds the bound even if the file grew after Stat.
+	data, err := io.ReadAll(io.LimitReader(f, maxBytes))
+	if err != nil {
+		return nil, err
+	}
+	if offset > 0 {
+		if nl := bytes.IndexByte(data, '\n'); nl >= 0 {
+			data = data[nl+1:]
+		}
+	}
+
+	text := strings.TrimSuffix(string(data), "\n")
+	if text == "" {
+		return nil, nil
+	}
+	return strings.Split(text, "\n"), nil
 }
