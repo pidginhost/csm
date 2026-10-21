@@ -11,8 +11,6 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Security
 
-- ModSecurity warnings remain informational and no longer trigger false firewall bans.
-- Disabling firewall escalation for a ModSecurity rule now prevents further bans from its earlier matches.
 - Sources probing for the PHP2Shell flaw are now blocked at the firewall after their first blocked request.
 - Failed central list downloads no longer write the download URL, or any token in it, to the log.
 - PHP hardening audits no longer pass when a PHP-FPM pool still turns the checked setting on through quoted or repeated entries.
@@ -28,6 +26,8 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Fixed
 
+- ModSecurity warnings no longer lead to firewall bans.
+- Disabling firewall escalation for a ModSecurity rule now prevents further bans from its earlier matches.
 - The PHP end-of-life audit no longer says old branches get no security fixes; it points to vendor backports instead.
 
 ## [4.4.1] - 2026-10-21
