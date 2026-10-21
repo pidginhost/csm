@@ -203,7 +203,7 @@ GET  /api/v1/findings/enriched   Enriched findings with GeoIP, accounts, fix inf
 GET  /api/v1/finding-detail      Finding detail with action history (?check=&message=)
 GET  /api/v1/history             Paginated history (?limit=&offset=&from=&to=&severity=&search=&checks=&scope=).
                                  checks is a comma-separated list of check names to include.
-                                 scope=email includes the /api/v1/email/checks list when checks is absent.
+                                 scope=email limits results to the /api/v1/email/checks list when checks is absent.
                                  total counts every match; truncated is true when matches exist past the page
 GET  /api/v1/history/csv         CSV export of the newest 5,000 entries matching the /history filters
 GET  /api/v1/stats               24h severity counts, accounts at risk, auto-response summary
