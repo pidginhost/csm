@@ -37,8 +37,9 @@ type sender struct {
 	// unacked holds a delivery whose acknowledgement failed: it is
 	// acknowledged before another ledger notice batch, never delivered
 	// again. The independent stopped-ingress notice still runs.
-	unacked   []admission.NoticeAck
-	delivered uint64
+	unacked        []admission.NoticeAck
+	unackedStarted bool
+	delivered      uint64
 	// announced is set once the current stop of the ingress was sent.
 	announced      bool
 	announcedSince time.Time
@@ -98,7 +99,7 @@ func (s *sender) cycle() {
 		return
 	}
 	if len(s.unacked) > 0 {
-		if err := s.o.do(func() error { return ackNotices(s.o.ledger, s.unacked) }); err != nil {
+		if err := s.o.do(func() error { return ackNoticeSnapshot(s.o.ledger, s.unackedStarted, s.unacked) }); err != nil {
 			return
 		}
 		s.unacked = nil
@@ -106,11 +107,31 @@ func (s *sender) cycle() {
 		s.observe()
 	}
 	var l *store.AdmissionLedger
-	var live bool
-	if s.o.do(func() error { l, live = s.o.ledger, s.o.executing(); return nil }) != nil || l == nil {
+	var live, started bool
+	var due []admission.NoticeRecord
+	err := s.o.do(func() error {
+		l, live = s.o.ledger, s.o.executing()
+		if l == nil {
+			return nil
+		}
+		if !liveExecution {
+			return nil
+		}
+		started = l.LiveStarted()
+		// The payload and its mode belong to the same owner boundary.
+		if live && !started {
+			return nil
+		}
+		var readErr error
+		due, readErr = l.PendingNotices()
+		return readErr
+	})
+	if err != nil || l == nil {
 		return
 	}
-	due, err := l.PendingNotices()
+	if !liveExecution {
+		due, err = l.PendingNotices()
+	}
 	if err != nil {
 		return
 	}
@@ -130,9 +151,9 @@ func (s *sender) cycle() {
 		return
 	}
 	s.delivered += uint64(len(due))
-	s.unacked = acks
+	s.unacked, s.unackedStarted = acks, started
 	s.observe()
-	if err = s.o.do(func() error { return ackNotices(l, acks) }); err != nil {
+	if err = s.o.do(func() error { return ackNoticeSnapshot(l, started, acks) }); err != nil {
 		return
 	}
 	s.unacked = nil
@@ -277,4 +298,13 @@ func alertSeverity(k admission.NoticeKind) alert.Severity {
 		return alert.Critical
 	}
 	return alert.Warning
+}
+
+// ackNoticeSnapshot runs on the owner. Clearing preview notices at cutover
+// invalidates their receipts, even if a new notice has the same first time.
+func ackNoticeSnapshot(l *store.AdmissionLedger, started bool, acks []admission.NoticeAck) error {
+	if liveExecution && started != l.LiveStarted() {
+		return nil
+	}
+	return ackNotices(l, acks)
 }

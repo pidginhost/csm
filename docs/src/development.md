@@ -927,6 +927,30 @@ nothing: work that falls due sooner, from a drain or a panel answer, stays
 due for the next second, while retirement of earlier attempts keeps its own
 waits.
 
+The first time an owner executes (only in tests while `liveExecution` is
+false), its live start runs once per ledger, in one transaction, before
+anything is drained or served under that policy: every drain and turn reads
+the clock first, and the reading runs the live start. It charges the legacy
+hour as the greater of its count and the charges the ledger already retains
+in that hour, since previews and legacy blocking count the same responses;
+earlier preview charges stay as handover charges with their lane, cost and
+release times, so a later forecast cannot refund them. It counts each
+pending entry legacy blocking would still retry as refused for attribution,
+since none carries an observation. It ends the episode answers of earlier
+observe previews, so the next observation of a previewed address queues a
+new generation, or a new episode when no other candidate kept the old one;
+challenge previews and verified blocks keep their answers. It clears the
+notice records raised while admission previewed, so none goes out as a live
+alert or delays a key's first live notice, and makes the previews' history
+eligible at once. Until it runs, an executing owner delivers no ledger
+notice; with execution enabled the sender reads the mode and the due notices
+together, and an acknowledgement taken before the live start never covers a
+record raised after it. It writes schema 11, which earlier builds refuse,
+and leaves `blocked_ips.json` in place. A legacy state file it cannot read
+keeps no saved credit, and `admission.owner.import.error` names the error.
+A failed live start fails the turn, reload or drain that ran it, and a
+failed drain closes admission.
+
 An owner with an engine binds to one execution policy: the dry-run mode,
 the verdict callback and its timeout, the hourly ceiling and the response
 lifetimes, read together from one config publication. Every publication

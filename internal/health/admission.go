@@ -51,8 +51,9 @@ type AdmissionOwner struct {
 	// default or the largest ceiling the ledger accepts.
 	CeilingSource string `json:"ceiling_source,omitempty"`
 	// Import describes this process's import or retained charges found at
-	// startup. An initial read error is process-local; restart restores a
-	// known horizon without re-reading the legacy file.
+	// startup, or why the legacy state could not be read when execution
+	// began. A read error is process-local; restart restores a known
+	// horizon without re-reading the legacy file.
 	Import         *AdmissionImport `json:"import,omitempty"`
 	InventoryAt    time.Time        `json:"inventory_at,omitempty"`
 	InventoryError string           `json:"inventory_error,omitempty"`

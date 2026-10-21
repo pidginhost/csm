@@ -95,7 +95,7 @@ func newOwnerFixture(t testing.TB) *ownerFixture {
 func (f *ownerFixture) options() Options {
 	return Options{
 		DB: f.db, StatePath: f.statePath, Ceiling: f.host.ceiling, Clock: f.host.clock,
-		Inventory: f.host.inventory, LegacySpend: checks.LegacyBlockSpend,
+		Inventory: f.host.inventory, LegacySpend: checks.LegacyBlockSpend, LegacyHandover: checks.LegacyHandover,
 		WriteAudit: func([]actionlog.Record) error { return nil },
 		TickEvery:  time.Hour, InventoryEvery: time.Hour, StatusEvery: time.Hour, DeliverEvery: time.Hour, NoticeEvery: time.Hour,
 		DrainEvery: time.Hour, ScheduleEvery: time.Hour,

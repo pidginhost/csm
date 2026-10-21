@@ -33,29 +33,68 @@ const maxLegacyHourLead = 24 * time.Hour
 // now's zone, the later instance of an hour the clocks repeat, and an hour
 // whose window ended by now counts nothing.
 func LegacyBlockSpend(statePath string, now time.Time) (admission.LegacySpend, error) {
+	state, path, err := readLegacyBlockState(statePath, now.Location())
+	if err != nil {
+		return admission.LegacySpend{}, err
+	}
+	return legacySpendOf(state, path, now)
+}
+
+// LegacyHandover reads legacy blocking's state for the admission owner's
+// live start (design C7): the hourly count as LegacyBlockSpend reads it,
+// and how many pending entries legacy blocking would still retry. A stale
+// entry, which its drain drops unblocked, is not counted. The whole file
+// must validate, as for LegacyBlockSpend.
+func LegacyHandover(statePath string, now time.Time) (admission.LegacyHandover, error) {
+	state, path, err := readLegacyBlockState(statePath, now.Location())
+	if err != nil {
+		return admission.LegacyHandover{}, err
+	}
+	spend, err := legacySpendOf(state, path, now)
+	if err != nil {
+		return admission.LegacyHandover{}, err
+	}
+	h := admission.LegacyHandover{Spend: spend}
+	for _, p := range state.Pending {
+		if p.QueuedAt.IsZero() || now.Sub(p.QueuedAt) <= maxPendingAge {
+			h.Pending++
+		}
+	}
+	return h, nil
+}
+
+// readLegacyBlockState reads and validates the whole legacy state file; no
+// file is the empty state.
+func readLegacyBlockState(statePath string, loc *time.Location) (blockState, string, error) {
 	path := filepath.Join(statePath, blockStateFile)
 	data, err := osFS.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return admission.LegacySpend{}, nil
+		return blockState{}, path, nil
 	}
 	if err != nil {
-		return admission.LegacySpend{}, fmt.Errorf("reading %s: %w", path, err)
+		return blockState{}, path, fmt.Errorf("reading %s: %w", path, err)
 	}
 	if err = validateLegacyJSON(data); err != nil {
-		return admission.LegacySpend{}, fmt.Errorf("reading %s: %w", path, err)
+		return blockState{}, path, fmt.Errorf("reading %s: %w", path, err)
 	}
 	var state blockState
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	if err = dec.Decode(&state); err != nil {
-		return admission.LegacySpend{}, fmt.Errorf("reading %s: %w", path, err)
+		return blockState{}, path, fmt.Errorf("reading %s: %w", path, err)
 	}
 	if _, err = dec.Token(); err != io.EOF {
-		return admission.LegacySpend{}, fmt.Errorf("reading %s: data after the state", path)
+		return blockState{}, path, fmt.Errorf("reading %s: data after the state", path)
 	}
-	if err = validateLegacyState(state, now.Location()); err != nil {
-		return admission.LegacySpend{}, fmt.Errorf("reading %s: %w", path, err)
+	if err = validateLegacyState(state, loc); err != nil {
+		return blockState{}, path, fmt.Errorf("reading %s: %w", path, err)
 	}
+	return state, path, nil
+}
+
+// legacySpendOf is the hourly count of a validated state, dated at the end
+// of its hour.
+func legacySpendOf(state blockState, path string, now time.Time) (admission.LegacySpend, error) {
 	end, _ := legacyHourEnd(state.HourKey, now.Location())
 	switch {
 	case end.After(now.Add(maxLegacyHourLead)):

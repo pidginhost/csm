@@ -68,14 +68,15 @@ func (d *Daemon) admissionOptions(db *store.DB) admissionowner.Options {
 	}
 	return admissionowner.Options{
 		DB: db, StatePath: d.cfg.StatePath,
-		Ceiling:     func() (uint32, string) { return d.currentCfg().AdmissionCeiling() },
-		Clock:       admissionowner.ReadClock,
-		Inventory:   admissionowner.Inventory,
-		LegacySpend: checks.LegacyBlockSpend,
-		WriteAudit:  actionlog.WriteDurableBatch,
-		Applied:     d.consumeAppliedBlocks,
-		Deliver:     d.deliverAdmissionNotices,
-		Blocks:      blocks,
+		Ceiling:        func() (uint32, string) { return d.currentCfg().AdmissionCeiling() },
+		Clock:          admissionowner.ReadClock,
+		Inventory:      admissionowner.Inventory,
+		LegacySpend:    checks.LegacyBlockSpend,
+		LegacyHandover: checks.LegacyHandover,
+		WriteAudit:     actionlog.WriteDurableBatch,
+		Applied:        d.consumeAppliedBlocks,
+		Deliver:        d.deliverAdmissionNotices,
+		Blocks:         blocks,
 		// A dry-run summary is a preview: history only.
 		DeliverSummary: func(ctx context.Context, f alert.Finding) error {
 			if err := ctx.Err(); err != nil {

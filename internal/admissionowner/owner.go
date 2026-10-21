@@ -92,6 +92,9 @@ type Options struct {
 	Inventory func() (admission.InventoryObservation, error)
 	// LegacySpend reads the legacy hourly counter (checks.LegacyBlockSpend).
 	LegacySpend func(statePath string, now time.Time) (admission.LegacySpend, error)
+	// LegacyHandover reads legacy blocking's state for the live start
+	// (checks.LegacyHandover).
+	LegacyHandover func(statePath string, now time.Time) (admission.LegacyHandover, error)
 	// WriteAudit writes audit rows to the action log in one durable write
 	// (actionlog.WriteDurableBatch).
 	WriteAudit func([]actionlog.Record) error
@@ -445,6 +448,9 @@ func (o *Owner) start() error {
 	if _, _, err = settleLedger(o.ledger); err != nil {
 		return fmt.Errorf("settling outstanding attempts: %w", err)
 	}
+	if err = o.startLive(); err != nil {
+		return err
+	}
 	// Opted-out work must end silently before startup revalidation can
 	// report its expired evidence or changed ownership as a response gap.
 	if err = o.refuseDisabled(); err != nil {
@@ -504,6 +510,31 @@ func (o *Owner) applyCeiling(now time.Time) error {
 	return nil
 }
 
+// startLiveLedger runs the ledger's live start; tests make it fail.
+var startLiveLedger = (*store.AdmissionLedger).StartLive
+
+// startLive runs the live start (design C7) once per ledger, as soon as the
+// installed policy executes. Every drain and turn reads the clock through
+// tick first, so nothing is placed or served under that policy before it:
+// legacy blocking's hour and pending queue are carried over, and earlier
+// previews stop answering episodes and sending notices. A legacy state it
+// cannot read is not an empty one: the ledger keeps no saved credit, and
+// status names the error.
+func (o *Owner) startLive() error {
+	if !o.executing() || o.ledger.LiveStarted() {
+		return nil
+	}
+	h, err := o.opts.LegacyHandover(o.opts.StatePath, o.lastTick)
+	if err != nil {
+		h = admission.LegacyHandover{Spend: admission.LegacySpend{Unknown: true}}
+		o.imported = &health.AdmissionImport{Error: err.Error()}
+	}
+	if err = startLiveLedger(o.ledger, h); err != nil {
+		return fmt.Errorf("starting live execution: %w", err)
+	}
+	return nil
+}
+
 // readTick records one clock reading.
 func (o *Owner) readTick() (admission.ClockReading, error) {
 	reading, err := o.opts.Clock()
@@ -538,6 +569,12 @@ func (o *Owner) tick() error {
 	}()
 	if _, err := o.readTick(); err != nil {
 		o.ingress.Publish(nil)
+		return err
+	}
+	// A live policy installed since the last reading starts live before
+	// any later drain or turn; a drain that cannot start it fails, which
+	// closes admission.
+	if err := o.startLive(); err != nil {
 		return err
 	}
 	// A ceiling changed by any config path, not only a reload, applies
