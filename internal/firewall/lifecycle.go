@@ -201,7 +201,7 @@ func (l *Lifecycle) Undo(req ActionRequest, kernel ActionKernel) (FirewallAction
 		return FirewallAction{}, errors.New("invalid firewall undo request")
 	}
 	if existing, err := l.Store.ReadFirewallAction(req.ID); err == nil {
-		if existing.Request != req {
+		if !existing.IsRequest(req) {
 			return FirewallAction{}, ErrStateConflict
 		}
 		return l.execute(existing, kernel)

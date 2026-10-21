@@ -1,7 +1,9 @@
 package firewall
 
 import (
+	"encoding/json"
 	"errors"
+	"slices"
 	"sync"
 	"time"
 )
@@ -39,6 +41,20 @@ type ScanAdmission struct {
 	Limit  int    `json:"limit"`
 }
 
+// MaxActionMembers bounds one batch manifest. It matches the block batch
+// applier, so one durable batch can carry one applier batch.
+const MaxActionMembers = MaxBlockBatchMembers
+
+// ActionMember is one immutable single-target request inside a batch, with
+// its admission data and the effects its plan records.
+type ActionMember struct {
+	Request ActionRequest  `json:"request"`
+	Budget  *ScanAdmission `json:"budget,omitempty"`
+	// Victims are the rows this member removes to make room, exactly as they
+	// were, so undo can prove they are still current.
+	Victims []BlockedEntry `json:"victims,omitempty"`
+}
+
 // FirewallAction retains both complete states until the kernel outcome can be
 // proved. Admission does not publish After as committed firewall state.
 type FirewallAction struct {
@@ -46,6 +62,10 @@ type FirewallAction struct {
 	KernelBefore []ActionSet    `json:"kernel_before,omitempty"`
 	KernelAfter  []ActionSet    `json:"kernel_after,omitempty"`
 	Request      ActionRequest  `json:"request"`
+	// Members is the batch manifest. Without it the action is one member, its
+	// Request and Budget, as every record written before manifests is. With
+	// it, a batch of several members uses Request as its header.
+	Members      []ActionMember `json:"members,omitempty"`
 	Before       FirewallState  `json:"before"`
 	After        FirewallState  `json:"after"`
 	Revision     uint64         `json:"revision"`
@@ -56,6 +76,43 @@ type FirewallAction struct {
 	Budget       *ScanAdmission `json:"budget,omitempty"`
 	AuditVersion uint64         `json:"audit_version"`
 	AuditAck     uint64         `json:"audit_ack"`
+}
+
+// ActionMembers returns the batch manifest, deriving the single member of an
+// action that carries none. Callers must not modify the result.
+func (a FirewallAction) ActionMembers() []ActionMember {
+	if a.Members == nil {
+		return []ActionMember{{Request: a.Request, Budget: a.Budget}}
+	}
+	return a.Members
+}
+
+// SameManifest reports whether b is the same batch as a: the same header, the
+// same members in the same order and the same effects. Admission data is not
+// compared: a replay in a later window keeps the charge taken first.
+func (a FirewallAction) SameManifest(b FirewallAction) bool {
+	return a.Request == b.Request && slices.EqualFunc(a.ActionMembers(), b.ActionMembers(), func(x, y ActionMember) bool {
+		return x.Request == y.Request && sameVictims(x.Victims, y.Victims)
+	})
+}
+
+// IsRequest reports whether a is the one-member action for exactly req, so a
+// batch whose header happens to match is never replayed as one request.
+func (a FirewallAction) IsRequest(req ActionRequest) bool {
+	members := a.ActionMembers()
+	return a.Request == req && len(members) == 1 && members[0].Request == req
+}
+
+func sameVictims(a, b []BlockedEntry) bool {
+	if len(a) == 0 || len(b) == 0 {
+		return len(a) == len(b)
+	}
+	left, err := json.Marshal(a)
+	if err != nil {
+		return false
+	}
+	right, err := json.Marshal(b)
+	return err == nil && string(left) == string(right)
 }
 
 // ActionStore owns atomic admission, accounting, outcome and audit delivery
