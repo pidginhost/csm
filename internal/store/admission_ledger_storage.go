@@ -791,6 +791,9 @@ func (q *queueTx) retire(id admission.CandidateID, key []byte) error {
 	if !slices.ContainsFunc(keys, func(k []byte) bool { return bytes.Equal(k, key) }) {
 		return admission.ErrCorruptRecord
 	}
+	if err = proveReleasedHistory(q.tx, c, h); err != nil {
+		return err
+	}
 	// Deletion must not conceal missing or inconsistent attempt history.
 	if _, err = currentAttempt(q.tx, c); err != nil {
 		return err
@@ -1131,10 +1134,17 @@ func proveStorageLinks(tx *bolt.Tx) error {
 			}
 			if !h.Pinned {
 				// Endings before the row rule kept only verified history
-				// until expiry; such an entry keeps its time.
+				// until expiry; such an entry keeps its time. The live
+				// start released a preview's history at its own time; a
+				// ledger without one has none.
 				eligible, _ := admission.HistoryTimes(h.Ended, c.ExpiresAt, admission.HistoryUntilExpiry(c))
 				earlier, _ := admission.HistoryTimes(h.Ended, c.ExpiresAt, c.State == admission.StateVerified)
-				if !h.Eligible.Equal(eligible) && !h.Eligible.Equal(earlier) {
+				switch {
+				case h.Released:
+					if proofErr := proveReleasedHistory(tx, c, h); proofErr != nil {
+						return proofErr
+					}
+				case !h.Eligible.Equal(eligible) && !h.Eligible.Equal(earlier):
 					return admission.ErrCorruptRecord
 				}
 			}
@@ -1235,4 +1245,20 @@ func proveStorageLinks(tx *bolt.Tx) error {
 		}
 		return nil
 	})
+}
+
+// proveReleasedHistory protects mutation paths that consume a retirement
+// time after open. A valid checksum alone cannot waive genuine retention.
+func proveReleasedHistory(tx *bolt.Tx, c admission.Candidate, h admission.HistoryEntry) error {
+	if !h.Released {
+		return nil
+	}
+	start, found, err := loadLiveStart(tx)
+	if err != nil {
+		return err
+	}
+	if !found || admission.HistoryUntilExpiry(c) || !h.Eligible.Equal(start.At) {
+		return admission.ErrCorruptRecord
+	}
+	return nil
 }

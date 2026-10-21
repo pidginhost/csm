@@ -33,8 +33,8 @@ func (l *AdmissionLedger) LiveStarted() bool {
 // the greater of that count and the charges retained in its hour, counts
 // each legacy pending entry as refused for attribution, ends the answers
 // of earlier observe previews, clears the notices raised while admission
-// previewed, and records the start under the schema that older builds
-// refuse. A ledger that has
+// previewed, makes the previews' history eligible, and records the start
+// under the schema that older builds refuse. A ledger that has
 // started refuses with ErrTransitionConflict. It needs a reading this
 // handle recorded.
 func (l *AdmissionLedger) StartLive(h admission.LegacyHandover) error {
@@ -62,6 +62,9 @@ func (l *AdmissionLedger) StartLive(h admission.LegacyHandover) error {
 			return err
 		}
 		if err = q.clearNotices(); err != nil {
+			return err
+		}
+		if err = q.releasePreviewHistory(); err != nil {
 			return err
 		}
 		if err = carryLegacySpend(tx, h.Spend); err != nil {
@@ -223,6 +226,55 @@ func (q *queueTx) clearNotices() error {
 			return err
 		}
 		q.storageDirty = true
+	}
+	return nil
+}
+
+// releasePreviewHistory makes the history of every ended observe preview
+// eligible now (design C7): a preview carries no review or undo, so
+// pressure retires it before genuine history. Its index keys move with it;
+// one whose audit rows wait gets them on acknowledgement.
+func (q *queueTx) releasePreviewHistory() error {
+	var ids []admission.CandidateID
+	err := q.tx.Bucket([]byte(admissionHistoryBucket)).ForEach(func(k, v []byte) error {
+		h, err := admission.UnmarshalHistoryEntry(v)
+		if err != nil {
+			return err
+		}
+		if h.Ended.IsZero() || h.Pinned || !h.Eligible.After(q.now) {
+			return nil
+		}
+		c, err := loadCandidate(q.tx, admission.CandidateID(k))
+		if err != nil {
+			return corruptRecord(err)
+		}
+		if !admission.HistoryUntilExpiry(c) {
+			ids = append(ids, admission.CandidateID(k))
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	retire := q.tx.Bucket([]byte(admissionRetireBucket))
+	for _, id := range ids {
+		h, _, err := loadHistoryEntry(q.tx, id)
+		if err != nil {
+			return err
+		}
+		keys, err := retireKeysOf(q.tx, id, h)
+		if err != nil {
+			return err
+		}
+		for _, k := range keys {
+			if err = retire.Delete(k); err != nil {
+				return err
+			}
+		}
+		h.Released, h.Eligible = true, q.now
+		if err = putHistoryEntry(q.tx, id, h); err != nil {
+			return err
+		}
 	}
 	return nil
 }
