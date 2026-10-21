@@ -926,6 +926,26 @@ Compromise evidence, successful logins, suspicious mail content and findings
 that summarize multiple sources remain visible. Blocking one address does not
 resolve those findings. This setting does not remove findings from the audit log.
 
+## Web UI Exposure
+
+An admin token can change firewall rules, files under account homes and most
+settings, so treat the Web UI as privileged access. The shipped
+`listen: "0.0.0.0:9443"` answers on every interface, which the WHM addon needs.
+`csm validate` and `csm doctor` warn when the UI listens on a non-loopback
+address, an admin token has no `allowed_ips` or allows an entire address family,
+and the CSM firewall policy does not restrict that family. These warnings do
+not make either command fail.
+
+Enabling the firewall alone does not clear the warning. Keep the UI port out
+of public `tcp_in` and `tcp6_in` entries, or add it to `restricted_tcp` (which
+includes 9443 by default). Keep it outside the passive FTP range. Wildcard
+listeners can accept both address families, so also enable `firewall.ipv6`.
+Except for `localhost`, hostnames are checked against both families without
+resolving DNS.
+Alternatively, limit admin tokens with `allowed_ips`, or listen on
+`127.0.0.1:9443` and reach the UI through an SSH tunnel. An external firewall
+may already restrict access, but configuration validation cannot verify it.
+
 ## TLS Certificates
 
 The Web UI serves over HTTPS. Configure TLS certificates under `webui`:

@@ -78,6 +78,11 @@ Hosts installed before the failure hook existed report successful logins
 only. Run `csm pam install` again after upgrading; it adds the failure
 hook and leaves the existing lines alone.
 
+Logins from loopback addresses are ignored. The module passes on the
+remote host sshd reports; with `UseDNS yes` that is a host name, which
+CSM cannot track or block. The daemon logs that once and ignores those
+logins, so keep `UseDNS no`, the OpenSSH default.
+
 ## Safety rails
 
 - The `optional` control flag is mandatory: a CSM outage **must not**

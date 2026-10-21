@@ -23,6 +23,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Changed
 
+- Validation and doctor now warn when the web UI accepts admin logins from any network and neither the CSM firewall nor token address limits restrict it.
 - The Email Security page shows spam, malware and other reject counts, a chart, recent rejects and rspamd status; counting starts at upgrade. rspamd counters may need a private controller socket.
 - The hardening audit warns on PHP 8.5 and later while fatal error backtraces are on, a setting the PHP2Shell advisory says to turn off.
 
@@ -33,6 +34,8 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - The PHP end-of-life audit no longer says old branches get no security fixes; it points to vendor backports instead.
 - Automatic permission fixes no longer change a file that stopped being world- or group-writable after the scan.
 - Findings resolved by the automatic permission fix now leave the Findings page instead of staying listed until the next scan.
+- Local IPv6 logins no longer raise login alerts, and the daemon log now says once when sshd sends host names CSM cannot track.
+- Mail login tracking now skips private IPv6 clients as it already skipped private IPv4 ranges, so internal clients are not blocked.
 
 ## [4.4.1] - 2026-10-21
 

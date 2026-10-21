@@ -231,6 +231,33 @@ func TestPAMListenerOKClearsFailures(t *testing.T) {
 }
 
 func TestPAMListenerIgnoresLoopback(t *testing.T) {
+	for _, ip := range []string{"127.0.0.1", "127.0.0.2", "::1", "::ffff:127.0.0.1"} {
+		t.Run(ip, func(t *testing.T) {
+			alertCh := make(chan alert.Finding, 2)
+			p := &PAMListener{
+				cfg:      &config.Config{},
+				alertCh:  alertCh,
+				failures: make(map[string]*pamFailureTracker),
+			}
+
+			p.processEvent("FAIL ip=" + ip + " user=root service=sshd")
+			p.processEvent("OK ip=" + ip + " user=root service=sshd")
+
+			select {
+			case finding := <-alertCh:
+				t.Fatalf("unexpected finding for loopback event: %+v", finding)
+			default:
+			}
+			if len(p.failures) != 0 {
+				t.Fatalf("loopback events should not create failure trackers: %+v", p.failures)
+			}
+		})
+	}
+}
+
+// sshd with UseDNS hands PAM a host name. It cannot be blocked or matched
+// against infra_ips, so it must not reach the trackers or alerts.
+func TestPAMListenerDropsNonAddressHost(t *testing.T) {
 	alertCh := make(chan alert.Finding, 2)
 	p := &PAMListener{
 		cfg:      &config.Config{},
@@ -238,15 +265,37 @@ func TestPAMListenerIgnoresLoopback(t *testing.T) {
 		failures: make(map[string]*pamFailureTracker),
 	}
 
-	p.processEvent("FAIL ip=127.0.0.1 user=root service=sshd")
-	p.processEvent("OK ip=127.0.0.1 user=root service=sshd")
+	p.processEvent("FAIL ip=client.example.com user=root service=sshd")
+	p.processEvent("OK ip=client.example.com user=root service=sshd")
 
 	select {
 	case finding := <-alertCh:
-		t.Fatalf("unexpected finding for loopback event: %+v", finding)
+		t.Fatalf("unexpected finding for a host name: %+v", finding)
 	default:
 	}
 	if len(p.failures) != 0 {
-		t.Fatalf("loopback events should not create failure trackers: %+v", p.failures)
+		t.Fatalf("host name created a failure tracker: %+v", p.failures)
+	}
+}
+
+func TestPAMListenerCountsMappedIPv4AsIPv4(t *testing.T) {
+	alertCh := make(chan alert.Finding, 4)
+	cfg := &config.Config{}
+	cfg.Thresholds.PAMBruteforceThreshold = 2
+	p := &PAMListener{
+		cfg:      cfg,
+		alertCh:  alertCh,
+		failures: make(map[string]*pamFailureTracker),
+	}
+
+	p.processEvent("FAIL ip=::ffff:203.0.113.10 user=root service=sshd")
+	p.processEvent("FAIL ip=203.0.113.10 user=root service=sshd")
+
+	finding := drainForCheck(alertCh, "pam_bruteforce")
+	if finding == nil {
+		t.Fatal("mapped and plain forms of one address were counted apart")
+	}
+	if finding.SourceIP != "203.0.113.10" {
+		t.Fatalf("SourceIP = %q, want 203.0.113.10", finding.SourceIP)
 	}
 }

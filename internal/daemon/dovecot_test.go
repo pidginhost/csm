@@ -84,6 +84,12 @@ func TestDaemonIsPrivateOrLoopback(t *testing.T) {
 	if isPrivateOrLoopback("203.0.113.5") {
 		t.Error("public IP should not be private")
 	}
+	if !isPrivateOrLoopback("fd00::1") {
+		t.Error("IPv6 unique local address should be private")
+	}
+	if isPrivateOrLoopback("2001:db8::1") {
+		t.Error("public IPv6 should not be private")
+	}
 	if !isPrivateOrLoopback("invalid") {
 		t.Error("invalid IP treated as private (skip)")
 	}

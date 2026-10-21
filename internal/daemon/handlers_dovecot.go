@@ -187,23 +187,14 @@ func parseDovecotLoginFields(line string) (user, ip string) {
 	return user, ip
 }
 
-// isPrivateOrLoopback returns true if the IP is loopback or RFC1918 private.
+// isPrivateOrLoopback returns true if the IP is loopback, RFC1918 private or
+// an IPv6 unique local address.
 func isPrivateOrLoopback(ipStr string) bool {
 	ip := net.ParseIP(ipStr)
 	if ip == nil {
 		return true // invalid = skip
 	}
-
-	if ip.IsLoopback() {
-		return true
-	}
-
-	// RFC1918 checks
-	private10 := net.IPNet{IP: net.ParseIP("10.0.0.0"), Mask: net.CIDRMask(8, 32)}
-	private172 := net.IPNet{IP: net.ParseIP("172.16.0.0"), Mask: net.CIDRMask(12, 32)}
-	private192 := net.IPNet{IP: net.ParseIP("192.168.0.0"), Mask: net.CIDRMask(16, 32)}
-
-	return private10.Contains(ip) || private172.Contains(ip) || private192.Contains(ip)
+	return ip.IsLoopback() || ip.IsPrivate()
 }
 
 // pruneOldCountries removes country entries older than maxAge seconds.
