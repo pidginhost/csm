@@ -1050,7 +1050,17 @@ func sameOrigin(a, b string) bool {
 	}
 	hostA, portA, okA := urlDialTarget(a)
 	hostB, portB, okB := urlDialTarget(b)
-	return okA && okB && strings.EqualFold(hostA, hostB) && portA == portB
+	if !okA || !okB || portA != portB {
+		return false
+	}
+	// IPv6 spelling can vary, but zone identifiers name case-sensitive
+	// interfaces and must not inherit DNS hostname case folding.
+	addrA, ipErrA := netip.ParseAddr(hostA)
+	addrB, ipErrB := netip.ParseAddr(hostB)
+	if ipErrA == nil || ipErrB == nil {
+		return ipErrA == nil && ipErrB == nil && addrA == addrB
+	}
+	return strings.EqualFold(hostA, hostB)
 }
 
 // blockAtSeverityResults rejects an unrecognised incident block threshold.
