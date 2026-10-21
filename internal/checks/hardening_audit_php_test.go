@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"testing"
 	"time"
@@ -168,6 +169,173 @@ func TestAuditPHPBareServerReadsScanDir(t *testing.T) {
 		}
 		if r.Status != want {
 			t.Errorf("%s = %s, want %s", name, r.Status, want)
+		}
+	}
+}
+
+func TestAuditPHPUploadProgressBooleanSyntax(t *testing.T) {
+	for _, value := range []string{"1.0", "1foo", "1e-2", "0|1", "!0", `"1&0"`, `"0"|"1"`, "PHP_INT_MAX", "${CSM_UPLOAD:-1}", `"Off`, "\"1\nsession.upload_progress.enabled = Off\n\""} {
+		t.Run(value, func(t *testing.T) {
+			withFakePHPFiles(t, map[string]string{
+				"/opt/cpanel/ea-php84/root/etc/php.ini": "session.upload_progress.enabled = " + value + "\n",
+			})
+			withMockCmd(t, &mockCmd{})
+			r, ok := auditResultByName(auditPHP("cpanel"), "php_upload_progress_84")
+			if !ok || r.Status != "warn" {
+				t.Fatalf("enabled or unresolved value %q: got %+v, present %v", value, r, ok)
+			}
+		})
+	}
+}
+
+func TestAuditPHPUploadProgressScopes(t *testing.T) {
+	const ini = "/opt/cpanel/ea-php84/root/etc/php.ini"
+	const scan = "/opt/cpanel/ea-php84/root/etc/php.d/"
+	const pools = "/opt/cpanel/ea-php84/root/etc/php-fpm.d/"
+	for _, tc := range []struct {
+		name  string
+		files map[string]string
+		want  string
+	}{
+		{"pool cannot disable global", map[string]string{
+			ini:                "session.upload_progress.enabled = On\n",
+			pools + "www.conf": "[www]\nphp_admin_value[session.upload_progress.enabled] = Off\n",
+		}, "warn"},
+		{"separate pools", map[string]string{
+			ini:              "session.upload_progress.enabled = Off\n",
+			pools + "a.conf": "[a]\nphp_admin_value[session.upload_progress.enabled] = On\n",
+			pools + "z.conf": "[z]\nphp_admin_value[session.upload_progress.enabled] = Off\n",
+		}, "warn"},
+		{"pool flag", map[string]string{
+			ini:                "session.upload_progress.enabled = Off\n",
+			pools + "www.conf": "[www]\nphp_admin_flag[session.upload_progress.enabled] = On\n",
+		}, "warn"},
+		{"all off", map[string]string{
+			ini:                "session.upload_progress.enabled = Off\n",
+			pools + "www.conf": "[www]\nphp_flag[session.upload_progress.enabled] = Off\n",
+		}, "pass"},
+		{"path does not disable global", map[string]string{
+			ini:                   "session.upload_progress.enabled = On\n",
+			scan + "99-local.ini": "[PATH=/srv/www/one]\nsession.upload_progress.enabled = Off\n",
+		}, "warn"},
+		{"host remains enabled", map[string]string{
+			ini:                   "session.upload_progress.enabled = Off\n[HOST=one.example]\nsession.upload_progress.enabled = On\n",
+			scan + "99-local.ini": "session.upload_progress.enabled = Off\n",
+		}, "warn"},
+		{"same host overridden", map[string]string{
+			ini:                   "session.upload_progress.enabled = Off\n[HOST=one.example]\nsession.upload_progress.enabled = On\n",
+			scan + "99-local.ini": "[HOST=ONE.example]\nsession.upload_progress.enabled = Off\n",
+		}, "pass"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			withFakePHPFiles(t, tc.files)
+			withMockCmd(t, &mockCmd{})
+			r, ok := auditResultByName(auditPHP("cpanel"), "php_upload_progress_84")
+			if !ok || r.Status != tc.want {
+				t.Fatalf("got %+v, present %v; want %s", r, ok, tc.want)
+			}
+		})
+	}
+}
+
+func TestAuditPHPUploadProgressUnreadableDropIn(t *testing.T) {
+	withMockOS(t, &mockOS{
+		glob: func(pattern string) ([]string, error) {
+			switch pattern {
+			case "/opt/cpanel/ea-php*/root/etc/php.ini":
+				return []string{"/opt/cpanel/ea-php84/root/etc/php.ini"}, nil
+			case "/opt/cpanel/ea-php84/root/etc/php.d/*.ini":
+				return []string{"/opt/cpanel/ea-php84/root/etc/php.d/99-local.ini"}, nil
+			}
+			return nil, nil
+		},
+		readFile: func(name string) ([]byte, error) {
+			if filepath.Base(name) == "php.ini" {
+				return []byte("session.upload_progress.enabled = Off\n"), nil
+			}
+			return nil, os.ErrPermission
+		},
+	})
+	withMockCmd(t, &mockCmd{})
+	r, ok := auditResultByName(auditPHP("cpanel"), "php_upload_progress_84")
+	if !ok || r.Status != "warn" {
+		t.Fatalf("unreadable override must not pass: %+v, present %v", r, ok)
+	}
+}
+
+func TestAuditPHPBareServerScanFileOrder(t *testing.T) {
+	withFakePHPFiles(t, map[string]string{
+		"/etc/php/php.ini":             "session.upload_progress.enabled = Off\n",
+		"/etc/php/first/99-local.ini":  "session.upload_progress.enabled = Off\n",
+		"/etc/php/second/01-local.ini": "session.upload_progress.enabled = On\n",
+	})
+	withMockCmd(t, &mockCmd{
+		runContext: func(_ context.Context, name string, args ...string) ([]byte, error) {
+			if name == "php" && len(args) == 1 {
+				switch args[0] {
+				case "-i":
+					return []byte("Loaded Configuration File => /etc/php/php.ini\n" +
+						"Scan this dir for additional .ini files => /etc/php/first:/etc/php/second\n" +
+						"Additional .ini files parsed => /etc/php/first/99-local.ini,\n/etc/php/second/01-local.ini\n\n"), nil
+				case "-v":
+					return []byte("PHP 8.3.6 (cli)\n"), nil
+				}
+			}
+			return nil, os.ErrNotExist
+		},
+	})
+	r, ok := auditResultByName(auditPHP("bare"), "php_upload_progress_83")
+	if !ok || r.Status != "warn" {
+		t.Fatalf("last scan directory must win: %+v, present %v", r, ok)
+	}
+}
+
+func TestAuditPHPUploadProgressDisabledSyntax(t *testing.T) {
+	for _, value := range []string{"Off", "No", "False", "None", "", `"0" ; disabled`, "Off ; ${CSM_UPLOAD}", "1&0", `"0|1"`, "0.5", "-0", `"Of""f"`} {
+		t.Run(value, func(t *testing.T) {
+			withFakePHPFiles(t, map[string]string{
+				"/opt/cpanel/ea-php84/root/etc/php.ini": "session.upload_progress.enabled = " + value + "\n",
+			})
+			withMockCmd(t, &mockCmd{})
+			r, ok := auditResultByName(auditPHP("cpanel"), "php_upload_progress_84")
+			if !ok || r.Status != "pass" {
+				t.Fatalf("disabled value %q: got %+v, present %v", value, r, ok)
+			}
+		})
+	}
+}
+
+func TestPHPAuditScopesPreservePrecedence(t *testing.T) {
+	settings := phpAuditINI{"": {}}
+	settings.merge("session.upload_progress.enabled = Off\n[PATH=/srv/www/]\nsession.upload_progress.enabled = On\n[Session]\nsession.upload_progress.enabled = Off\n", false)
+	if settings.uploadProgressDisabled(nil) {
+		t.Fatal("global off must not hide conditional on")
+	}
+	settings.merge("[PATH = /srv/www]\nsession.upload_progress.enabled = Off\n", false)
+	pools := phpAuditINI{}
+	pools.merge("[www]\nphp_admin_flag[session.upload_progress.enabled] = Off\nphp_flag[session.upload_progress.enabled] = On\n", true)
+	if !settings.uploadProgressDisabled(pools) {
+		t.Fatal("later conditional off and admin off must take precedence")
+	}
+	pools.merge("[www]\nphp_admin_value[session.upload_progress.enabled] = On\n", true)
+	if settings.uploadProgressDisabled(pools) {
+		t.Fatal("later pool admin on must take precedence")
+	}
+}
+
+func TestPHPAuditScannedFiles(t *testing.T) {
+	for _, tc := range []struct {
+		info  string
+		files []string
+		known bool
+	}{
+		{"Scan this dir for additional .ini files => /etc/php.d\n", nil, false},
+		{"Additional .ini files parsed => (none)\n\n", nil, true},
+		{"Additional .ini files parsed => /etc/php.d/99.ini,\n/etc/php-local/01.ini\n\nOther => ignored\n", []string{"/etc/php.d/99.ini", "/etc/php-local/01.ini"}, true},
+	} {
+		files, known := phpAuditScannedFiles(tc.info)
+		if known != tc.known || !slices.Equal(files, tc.files) {
+			t.Fatalf("%q: got %v, %v; want %v, %v", tc.info, files, known, tc.files, tc.known)
 		}
 	}
 }

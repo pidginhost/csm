@@ -13,6 +13,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 - CSM is now built with Go 1.27.3, which rejects certificates chained through intermediate authorities that are no longer trusted.
 - Web firewall rules now block requests that reach PHP's session upload-progress handler, the reported entry point of the PHP2Shell attacks.
+- PHP upload-progress warnings remain visible when protection is incomplete or cannot be verified across inspected settings.
 
 ### Changed
 

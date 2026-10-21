@@ -1297,11 +1297,13 @@ func auditPHP(serverType string) []store.AuditResult {
 	var results []store.AuditResult
 
 	type phpInstall struct {
-		version string // e.g. "8.1"
-		shortID string // e.g. "81"
-		iniPath string
-		scanDir string // additional .ini files PHP parses after iniPath
-		fpmDir  string // for FPM pool override merging
+		version        string // e.g. "8.1"
+		shortID        string // e.g. "81"
+		iniPath        string
+		scanDir        string // additional .ini files PHP parses after iniPath
+		scanFiles      []string
+		scanFilesKnown bool
+		fpmDir         string // for FPM pool override merging
 	}
 
 	var installs []phpInstall
@@ -1378,6 +1380,7 @@ func auditPHP(serverType string) []store.AuditResult {
 			}
 			if len(installs) > 0 {
 				installs[0].scanDir = scanDir
+				installs[0].scanFiles, installs[0].scanFilesKnown = phpAuditScannedFiles(string(out))
 			}
 		}
 		// Try to get version for bare
@@ -1403,32 +1406,57 @@ func auditPHP(serverType string) []store.AuditResult {
 		if err != nil {
 			continue
 		}
-		ini := parsePHPIni(string(data))
+		settings := phpAuditINI{"": {}}
+		settings.merge(string(data), false)
+		complete := true
 
 		// PHP reads the scan dir in name order after php.ini, so a later
 		// file overrides an earlier one.
-		if inst.scanDir != "" {
-			extra, _ := osFS.Glob(filepath.Join(inst.scanDir, "*.ini"))
-			slices.Sort(extra)
-			for _, f := range extra {
-				edata, eerr := osFS.ReadFile(f)
-				if eerr != nil {
+		extra := inst.scanFiles
+		if !inst.scanFilesKnown && inst.scanDir != "" {
+			for _, dir := range filepath.SplitList(inst.scanDir) {
+				if dir == "" {
+					complete = false
 					continue
 				}
-				for k, v := range parsePHPIni(string(edata)) {
-					ini[k] = v
+				files, err := osFS.Glob(filepath.Join(dir, "*.ini"))
+				if err != nil {
+					complete = false
 				}
+				slices.Sort(files)
+				extra = append(extra, files...)
 			}
 		}
+		for _, f := range extra {
+			edata, eerr := osFS.ReadFile(f)
+			if eerr != nil {
+				complete = false
+				continue
+			}
+			settings.merge(string(edata), false)
+		}
+		// Existing checks merge pool values below. Preserve the global and
+		// conditional settings for the upload-progress audit.
+		ini := make(map[string]string, len(settings[""]))
+		for k, v := range settings[""] {
+			ini[k] = v
+		}
+		pools := phpAuditINI{}
 
 		// Merge FPM pool overrides if available
 		if inst.fpmDir != "" {
-			poolConfs, _ := osFS.Glob(filepath.Join(inst.fpmDir, "*.conf"))
+			poolConfs, err := osFS.Glob(filepath.Join(inst.fpmDir, "*.conf"))
+			if err != nil {
+				complete = false
+			}
+			slices.Sort(poolConfs)
 			for _, pc := range poolConfs {
 				pdata, perr := osFS.ReadFile(pc)
 				if perr != nil {
+					complete = false
 					continue
 				}
+				pools.merge(string(pdata), true)
 				for _, line := range strings.Split(string(pdata), "\n") {
 					line = strings.TrimSpace(line)
 					if strings.HasPrefix(line, ";") {
@@ -1534,21 +1562,20 @@ func auditPHP(serverType string) []store.AuditResult {
 		// php_upload_progress: on by default, and its handler runs on any
 		// multipart POST during request startup, before any script or
 		// auto_prepend file, so only this switch removes that code path.
-		upload, set := ini["session.upload_progress.enabled"]
-		if !set || phpIniBool(upload) {
+		if !complete || !settings.uploadProgressDisabled(pools) {
 			fix := fmt.Sprintf("Set session.upload_progress.enabled = Off in %s", inst.iniPath)
-			if inst.scanDir != "" {
+			if inst.scanDir != "" && !strings.Contains(inst.scanDir, string(filepath.ListSeparator)) {
 				fix = fmt.Sprintf("Add session.upload_progress.enabled = Off to an .ini file in %s", inst.scanDir)
 			}
 			results = append(results, store.AuditResult{
 				Category: "php", Name: "php_upload_progress_" + suffix, Title: fmt.Sprintf("PHP %s session upload progress", inst.version),
-				Status: "warn", Message: "session.upload_progress.enabled is on",
-				Fix: fix + " unless a site shows upload progress bars, then restart PHP.",
+				Status: "warn", Message: "session.upload_progress.enabled is on or could not be confirmed off in all inspected settings",
+				Fix: fix + ", check site and FPM pool overrides, then restart PHP and verify the web configuration.",
 			})
 		} else {
 			results = append(results, store.AuditResult{
 				Category: "php", Name: "php_upload_progress_" + suffix, Title: fmt.Sprintf("PHP %s session upload progress", inst.version),
-				Status: "pass", Message: "session.upload_progress.enabled is off",
+				Status: "pass", Message: "session.upload_progress.enabled is off in all inspected settings",
 			})
 		}
 	}
@@ -1557,32 +1584,9 @@ func auditPHP(serverType string) []store.AuditResult {
 }
 
 func parsePHPIni(content string) map[string]string {
-	ini := make(map[string]string)
-	for _, line := range strings.Split(content, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, ";") || strings.HasPrefix(line, "[") {
-			continue
-		}
-		if idx := strings.Index(line, "="); idx > 0 {
-			key := strings.TrimSpace(line[:idx])
-			val := strings.TrimSpace(line[idx+1:])
-			ini[key] = val
-		}
-	}
-	return ini
-}
-
-// phpIniBool follows PHP's boolean ini parsing: on, yes, true or a non-zero
-// number is true; off, no, false, none and empty are false.
-func phpIniBool(raw string) bool {
-	v, _, _ := strings.Cut(raw, ";")
-	v = strings.ToLower(strings.Trim(strings.TrimSpace(v), `"'`))
-	switch v {
-	case "on", "yes", "true":
-		return true
-	}
-	n, _ := strconv.Atoi(v)
-	return n != 0
+	ini := phpAuditINI{"": {}}
+	ini.merge(content, false)
+	return ini[""]
 }
 
 func parsePHPVersion(ver string) (int, int) {

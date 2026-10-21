@@ -83,8 +83,10 @@ in WordPress. Disabling rule `900112` disables this filter for both route forms;
 its helper rules only set transaction-local flags and do not block requests.
 
 The PHP session upload-progress filter denies requests whose form field names
-contain PHP's upload-progress field name, matched case-insensitively so quoted
-spellings are covered. PHP handles that field before any script runs, which
+contain PHP's default `PHP_SESSION_UPLOAD_PROGRESS` field name, matched
+case-insensitively so quoted spellings are covered. A custom
+`session.upload_progress.name` is outside this filter's coverage.
+PHP handles that field before any script runs, which
 leaves the web server as the only layer that can drop the request. See
 [CVE Mitigations](cve-mitigations.md) for the PHP-side setting that removes the
 handler.
