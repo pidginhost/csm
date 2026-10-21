@@ -263,10 +263,14 @@ func TestFirewallBatchAdmissionSurvivesCommitFaults(t *testing.T) {
 		})
 	}
 	in := firewallBatchOf(t, db, "batch-a", 64, "member-1", "member-2")
+	before := batchIndexImage(t, db)
 	if _, _, err := db.AdmitFirewallAction(in); !errors.Is(err, refused) {
 		t.Fatalf("refused commit = %v", err)
 	}
 	boltUpdate = previous
+	if !bytes.Equal(before, batchIndexImage(t, db)) {
+		t.Fatal("refused commit left partial reservations, inventory or charges")
+	}
 	if _, err := db.ReadFirewallAction("batch-a"); !errors.Is(err, ErrFirewallActionMissing) {
 		t.Fatalf("a refused commit left the batch: %v", err)
 	}
@@ -410,5 +414,208 @@ func TestFirewallBatchIndexDamageNewerEntryIsUnsupported(t *testing.T) {
 	}
 	if !bytes.Equal(before, batchIndexImage(t, db)) {
 		t.Error("unsupported member release changed journal or reservations")
+	}
+}
+
+// Retention frees an ID only through an intact entry that names the batch
+// being removed. Lost reservations are not reconstructed at admission: that
+// needs a scan of every retained batch, and an earlier build's sweep leaves
+// reservations without their record on purpose.
+func TestFirewallBatchDamagedReleaseFailsClosed(t *testing.T) {
+	cases := map[string][]string{"admit": {"nested member"}}
+	for _, operation := range []string{"sweep", "cap"} {
+		cases[operation] = []string{"missing member", "missing member bucket", "duplicate member", "header as member", "unsupported list", "unsupported member", "nested member"}
+	}
+	for operation, damages := range cases {
+		for _, damage := range damages {
+			t.Run(damage+"/"+operation, func(t *testing.T) {
+				db := openSnapshotDB(t)
+				if _, err := db.ReplaceFirewallState(0, completeFirewallState()); err != nil {
+					t.Fatal(err)
+				}
+				original := firewallBatchOf(t, db, "batch-a", 64, "member-1", "member-2", "member-3")
+				admitFirewallBatch(t, db, original)
+				settleFirewallAction(t, db, "batch-a")
+				next := firewallBatchOf(t, db, "batch-b", 64, "member-4", "member-3")
+				if operation == "cap" {
+					next.Members[1].Request.ID = "member-5"
+					admitFirewallBatch(t, db, next)
+					previous := firewallActionRetention
+					t.Cleanup(func() { firewallActionRetention = previous })
+					firewallActionRetention.Actions = 1
+				}
+				want := firewall.ErrStateCorrupt
+				if err := db.bolt.Update(func(tx *bolt.Tx) error {
+					batches := tx.Bucket([]byte(firewallBatchMembersBucket))
+					members := tx.Bucket([]byte(firewallMemberIndexBucket))
+					switch damage {
+					case "missing member":
+						return members.Delete([]byte("member-3"))
+					case "nested member":
+						if err := members.Delete([]byte("member-3")); err != nil {
+							return err
+						}
+						_, err := members.CreateBucket([]byte("member-3"))
+						return err
+					case "missing member bucket":
+						return tx.DeleteBucket([]byte(firewallMemberIndexBucket))
+					case "duplicate member", "header as member":
+						ids := []string{"member-1", "member-2"}
+						if damage == "duplicate member" {
+							ids = append(ids, "member-2")
+						}
+						if damage == "header as member" {
+							ids = append(ids, "batch-a")
+						}
+						raw, err := encodeFirewallJournal(firewallBatchMembers{Members: ids})
+						if err != nil {
+							return err
+						}
+						return batches.Put([]byte("batch-a"), raw)
+					case "unsupported list":
+						want = firewall.ErrStateUnsupported
+						return batches.Put([]byte("batch-a"), []byte(`{"version":2}`))
+					case "unsupported member":
+						want = firewall.ErrStateUnsupported
+						return members.Put([]byte("member-3"), []byte(`{"version":2}`))
+					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+				before := batchIndexImage(t, db)
+				var err error
+				switch operation {
+				case "admit":
+					var fresh bool
+					_, fresh, err = db.AdmitFirewallAction(next)
+					if fresh {
+						t.Error("damaged index admitted new work")
+					}
+				case "sweep":
+					var deleted int
+					deleted, err = db.SweepFirewallActionsOlderThan(time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC))
+					if deleted != 0 {
+						t.Errorf("damaged index deleted %d actions", deleted)
+					}
+				case "cap":
+					_, err = db.TransitionFirewallAction("batch-b", "failed", "not applied", original.CreatedAt.Add(time.Hour))
+				}
+				if !errors.Is(err, want) {
+					t.Errorf("operation = %v, want %v", err, want)
+				}
+				if !bytes.Equal(before, batchIndexImage(t, db)) {
+					t.Error("refused operation changed journal, reservations or charges")
+				}
+			})
+		}
+	}
+}
+
+func TestFirewallBatchMultipleWindowsAreAtomic(t *testing.T) {
+	db := openSnapshotDB(t)
+	if _, err := db.ReplaceFirewallState(0, completeFirewallState()); err != nil {
+		t.Fatal(err)
+	}
+	in := firewallBatchOf(t, db, "batch-a", 1, "member-1", "member-2", "member-3")
+	in.Members[0].Budget.Window = "2026-01-02T02"
+	before := batchIndexImage(t, db)
+	if _, fresh, err := db.AdmitFirewallAction(in); fresh || !errors.Is(err, firewall.ErrScanBudget) {
+		t.Fatalf("over-budget batch = %v, %v", fresh, err)
+	}
+	if !bytes.Equal(before, batchIndexImage(t, db)) {
+		t.Fatal("later window refusal kept an earlier window's charge or reservations")
+	}
+	in.Members[2].Budget = nil
+	admitFirewallBatch(t, db, in)
+	for _, window := range []string{"2026-01-02T02", "2026-01-02T03"} {
+		if count, err := db.ReadFirewallScanBudget(window); err != nil || count != 1 {
+			t.Fatalf("window %s = %d, %v", window, count, err)
+		}
+	}
+	for i := range in.Members {
+		in.Members[i].Budget = &firewall.ScanAdmission{Window: "2026-01-02T04", Limit: 1}
+	}
+	if _, fresh, err := db.AdmitFirewallAction(in); err != nil || fresh {
+		t.Fatalf("replay compares charges: %v, %v", fresh, err)
+	}
+	if count, err := db.ReadFirewallScanBudget("2026-01-02T04"); err != nil || count != 0 {
+		t.Fatalf("replay charged a new window: %d, %v", count, err)
+	}
+}
+
+func TestFirewallBatchReusePrecedesPendingAndCharges(t *testing.T) {
+	db := openSnapshotDB(t)
+	if _, err := db.ReplaceFirewallState(0, completeFirewallState()); err != nil {
+		t.Fatal(err)
+	}
+	admitFirewallBatch(t, db, firewallBatchOf(t, db, "batch-a", 2, "member-1", "member-2"))
+	next := firewallBatchOf(t, db, "batch-b", 2, "member-3", "member-2")
+	before := batchIndexImage(t, db)
+	if _, fresh, err := db.AdmitFirewallAction(next); fresh || !errors.Is(err, firewall.ErrStateConflict) || err.Error() != "firewall state revision conflict: member ID reused" {
+		t.Fatalf("reuse hidden by pending action or exhausted budget: fresh %v, %v", fresh, err)
+	}
+	if !bytes.Equal(before, batchIndexImage(t, db)) {
+		t.Fatal("reused ID changed journal or charges")
+	}
+}
+
+func TestFirewallBatchRetentionRollbackKeepsReservations(t *testing.T) {
+	for _, operation := range []string{"sweep", "cap"} {
+		t.Run(operation, func(t *testing.T) {
+			db := openSnapshotDB(t)
+			if _, err := db.ReplaceFirewallState(0, completeFirewallState()); err != nil {
+				t.Fatal(err)
+			}
+			admitFirewallBatch(t, db, firewallBatchOf(t, db, "batch-a", 64, "member-1", "member-2"))
+			settleFirewallAction(t, db, "batch-a")
+			if operation == "cap" {
+				admitFirewallBatch(t, db, firewallBatchOf(t, db, "batch-b", 64, "member-3", "member-4"))
+				previous := firewallActionRetention
+				t.Cleanup(func() { firewallActionRetention = previous })
+				firewallActionRetention.Actions = 1
+			}
+			previous := boltUpdate
+			t.Cleanup(func() { boltUpdate = previous })
+			refused := errors.New("forced retention rollback")
+			boltUpdate = func(b *bolt.DB, fn func(*bolt.Tx) error) error {
+				return b.Update(func(tx *bolt.Tx) error {
+					if err := fn(tx); err != nil {
+						return err
+					}
+					return refused
+				})
+			}
+			before := batchIndexImage(t, db)
+			prune := func() error {
+				if operation == "cap" {
+					_, err := db.TransitionFirewallAction("batch-b", "failed", "not applied", time.Date(2026, 1, 2, 4, 0, 0, 0, time.UTC))
+					return err
+				}
+				deleted, err := db.SweepFirewallActionsOlderThan(time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC))
+				if err != nil && deleted != 0 {
+					t.Errorf("failed sweep reports %d deleted actions", deleted)
+				}
+				return err
+			}
+			if err := prune(); !errors.Is(err, refused) {
+				t.Fatalf("prune = %v, want commit fault", err)
+			}
+			if !bytes.Equal(before, batchIndexImage(t, db)) {
+				t.Fatal("failed retention released reservations or changed journal")
+			}
+			boltUpdate = previous
+			if err := prune(); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.ReadFirewallAction("batch-a"); !errors.Is(err, ErrFirewallActionMissing) {
+				t.Fatalf("successful retry did not prune the batch: %v", err)
+			}
+			again := firewallBatchOf(t, db, "batch-c", 64, "member-1", "member-2")
+			for i := range again.Members {
+				again.Members[i].Budget = nil
+			}
+			admitFirewallBatch(t, db, again)
+		})
 	}
 }
