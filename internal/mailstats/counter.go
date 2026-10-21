@@ -31,7 +31,8 @@ type Span struct {
 
 // Totals sums a range. A dry-run tag or reject delivered the message
 // unchanged, so it counts as clean and as would-tag or would-reject, never
-// as tagged or rejected.
+// as tagged or rejected. Rejects counts every reject per class; Temporary
+// is the temporary subset.
 type Totals struct {
 	Scanned       int           `json:"scanned"`
 	Clean         int           `json:"clean"`
@@ -42,12 +43,15 @@ type Totals struct {
 	Unfiltered    int           `json:"unfiltered"`
 	ScanErrors    int           `json:"scan_errors"`
 	Rejects       map[Class]int `json:"rejects"`
+	Temporary     map[Class]int `json:"temporary"`
 	Quarantined   int           `json:"quarantined"`
 	LoginsSMTP    int           `json:"logins_smtp"`
 	LoginsMailbox int           `json:"logins_mailbox"`
 }
 
 // Point is one bucket of the chart. T is the bucket start in unix seconds.
+// A temporary reject defers the message rather than deciding it, so no
+// series counts one.
 type Point struct {
 	T        int64 `json:"t"`
 	Clean    int   `json:"clean"`
@@ -70,9 +74,11 @@ type Overview struct {
 
 // bucket holds the counts of one BucketSeconds window. Scans is keyed by
 // mode + ":" + outcome, where outcome is the scan decision or "error".
+// Temporary is the subset of Rejects that were temporary.
 type bucket struct {
 	Scans         map[string]int
 	Rejects       map[Class]int
+	Temporary     map[Class]int
 	LoginsSMTP    int
 	LoginsMailbox int
 	Quarantined   int
@@ -138,6 +144,9 @@ func (c *Counter) RecordReject(r Reject) {
 		return
 	}
 	b.Rejects[r.Class]++
+	if r.Temporary {
+		b.Temporary[r.Class]++
+	}
 	if r.At.Before(c.now().Add(-RingAge)) {
 		return
 	}
@@ -183,7 +192,7 @@ func (c *Counter) bucketAt(at time.Time) *bucket {
 	k := at.Unix() / BucketSeconds * BucketSeconds
 	b := c.buckets[k]
 	if b == nil {
-		b = &bucket{Scans: map[string]int{}, Rejects: map[Class]int{}}
+		b = &bucket{Scans: map[string]int{}, Rejects: map[Class]int{}, Temporary: map[Class]int{}}
 		c.buckets[k] = b
 	}
 	return b
@@ -214,7 +223,7 @@ func (c *Counter) Overview(from, to time.Time) Overview {
 	for k, b := range c.buckets {
 		if start := time.Unix(k, 0); !start.Before(from) && start.Before(to) {
 			cp := *b
-			cp.Scans, cp.Rejects = maps.Clone(b.Scans), maps.Clone(b.Rejects)
+			cp.Scans, cp.Rejects, cp.Temporary = maps.Clone(b.Scans), maps.Clone(b.Rejects), maps.Clone(b.Temporary)
 			in = append(in, keyed{k, cp})
 		}
 	}
@@ -222,7 +231,7 @@ func (c *Counter) Overview(from, to time.Time) Overview {
 
 	slices.SortFunc(in, func(x, y keyed) int { return cmp.Compare(x.t, y.t) })
 	ov := Overview{From: from, To: to, CountingSince: since, Gaps: []Span{},
-		Totals: Totals{Rejects: map[Class]int{}}, Series: make([]Point, 0, len(in))}
+		Totals: Totals{Rejects: map[Class]int{}, Temporary: map[Class]int{}}, Series: make([]Point, 0, len(in))}
 	tot := &ov.Totals
 	for _, e := range in {
 		p := Point{T: e.t}
@@ -249,14 +258,18 @@ func (c *Counter) Overview(from, to time.Time) Overview {
 				}
 			}
 		}
+		for class, n := range e.b.Temporary {
+			tot.Temporary[class] += n
+		}
 		for class, n := range e.b.Rejects {
 			tot.Rejects[class] += n
+			permanent := n - e.b.Temporary[class]
 			switch class {
 			case ClassSpam, ClassRateLimited:
 			case ClassMalware:
-				p.Malware += n
+				p.Malware += permanent
 			default:
-				p.Other += n
+				p.Other += permanent
 			}
 		}
 		p.Malware += e.b.Quarantined

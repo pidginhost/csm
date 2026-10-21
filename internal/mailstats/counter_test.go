@@ -60,9 +60,33 @@ func TestOverviewTotalsAndPoints(t *testing.T) {
 		tot.Rejects[ClassSpam] != 1 || len(tot.Rejects) != 4 {
 		t.Fatalf("rejects %v", tot.Rejects)
 	}
+	if tot.Temporary[ClassRateLimited] != 1 || len(tot.Temporary) != 1 {
+		t.Fatalf("temporary %v", tot.Temporary)
+	}
 	if tot.Scanned != 3 || tot.Clean != 1 || tot.Unfiltered != 1 || tot.ScanErrors != 1 || tot.Rejected != 1 ||
 		tot.Quarantined != 1 || tot.LoginsSMTP != 1 || tot.LoginsMailbox != 3 {
 		t.Fatalf("totals %+v", tot)
+	}
+}
+
+func TestTemporaryRejectsStayOutOfChart(t *testing.T) {
+	now := time.Date(2026, 10, 20, 12, 10, 0, 0, time.UTC)
+	c := New(func() time.Time { return now })
+	c.RecordReject(Reject{At: now, Class: ClassSenderVerify, Temporary: true})
+	c.RecordReject(Reject{At: now, Class: ClassSenderVerify})
+	c.RecordReject(Reject{At: now, Class: ClassMalware, Temporary: true})
+
+	ov := c.Overview(now.Add(-time.Hour), now.Add(time.Hour))
+	want := Point{T: time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC).Unix(), Other: 1}
+	if len(ov.Series) != 1 || ov.Series[0] != want {
+		t.Fatalf("series %+v, want [%+v]", ov.Series, want)
+	}
+	tot := ov.Totals
+	if tot.Rejects[ClassSenderVerify] != 2 || tot.Rejects[ClassMalware] != 1 {
+		t.Fatalf("rejects %v", tot.Rejects)
+	}
+	if tot.Temporary[ClassSenderVerify] != 1 || tot.Temporary[ClassMalware] != 1 || len(tot.Temporary) != 2 {
+		t.Fatalf("temporary %v", tot.Temporary)
 	}
 }
 
@@ -254,6 +278,7 @@ func TestCounterConcurrentUse(t *testing.T) {
 			for j := 0; j < 100; j++ {
 				c.RecordScan(now, antispam.Scan{OK: true, Mode: "enforce", Decision: "reject", MsgID: fmt.Sprintf("1tAbCd-%06d-Ab", j)})
 				c.RecordReject(Reject{At: now, Class: ClassSpam, MsgID: fmt.Sprintf("1tAbCd-%06d-Ab", j)})
+				c.RecordReject(Reject{At: now, Class: ClassRateLimited, Temporary: true})
 				c.RecordLoginFailure(now, true, 1)
 				c.RecordQuarantine(now)
 				c.Overview(now.Add(-time.Hour), now.Add(time.Hour))
@@ -263,7 +288,8 @@ func TestCounterConcurrentUse(t *testing.T) {
 	}
 	wg.Wait()
 	tot := c.Overview(now.Add(-time.Hour), now.Add(time.Hour)).Totals
-	if tot.Rejected != 400 || tot.Rejects[ClassSpam] != 400 || tot.LoginsMailbox != 400 || tot.Quarantined != 400 {
+	if tot.Rejected != 400 || tot.Rejects[ClassSpam] != 400 || tot.Temporary[ClassRateLimited] != 400 ||
+		tot.LoginsMailbox != 400 || tot.Quarantined != 400 {
 		t.Fatalf("%+v", tot)
 	}
 }
@@ -277,14 +303,14 @@ func TestOverviewRangeAndJSON(t *testing.T) {
 		t.Fatalf("bucket start before from counted: %+v", ov)
 	}
 	ov := c.Overview(now, now)
-	if ov.Totals.Scanned != 0 || len(ov.Series) != 0 || ov.Totals.Rejects == nil || !ov.CountingSince.Equal(now) {
+	if ov.Totals.Scanned != 0 || len(ov.Series) != 0 || ov.Totals.Rejects == nil || ov.Totals.Temporary == nil || !ov.CountingSince.Equal(now) {
 		t.Fatalf("empty range %+v", ov)
 	}
 	b, err := json.Marshal(ov)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`"counting_since":"2026-10-20T12:00:00Z"`, `"rejects":{}`, `"would_reject":0`, `"logins_smtp":0`, `"uncounted_minutes":0`, `"gaps":[]`, `"series":[]`} {
+	for _, want := range []string{`"counting_since":"2026-10-20T12:00:00Z"`, `"rejects":{}`, `"temporary":{}`, `"would_reject":0`, `"logins_smtp":0`, `"uncounted_minutes":0`, `"gaps":[]`, `"series":[]`} {
 		if !strings.Contains(string(b), want) {
 			t.Errorf("JSON lacks %s: %s", want, b)
 		}
