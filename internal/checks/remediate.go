@@ -341,16 +341,16 @@ func fixHtaccess(path, message string) (result RemediationResult) {
 	if filepath.Base(path) != ".htaccess" {
 		return RemediationResult{Error: "automated .htaccess remediation only applies to .htaccess files"}
 	}
-	path, _, err := resolveExistingFixPath(path, effectiveFixRoots(fixHtaccessAllowedRoots))
+	path, info, err := resolveExistingFixPath(path, effectiveFixRoots(fixHtaccessAllowedRoots))
 	if err != nil {
 		return RemediationResult{Error: err.Error()}
 	}
 	// Same pinned-inode read and atomic replace as CleanHtaccessFile: the
 	// directory belongs to the account, so nothing here may follow a path
 	// the owner can redirect between the check and the write.
-	target, err := openCleanTarget(path)
+	target, err := openFixTarget(path, info)
 	if err != nil {
-		return RemediationResult{Error: fmt.Sprintf("cannot open: %v", err)}
+		return RemediationResult{Refused: errors.Is(fileResponseSourceError(err), errFileResponseRefused), Error: fmt.Sprintf("cannot open: %v", err)}
 	}
 	defer target.Close()
 	audit.rec.Result = actionlog.Failed
@@ -469,7 +469,11 @@ var fixAfterPathResolved = func(string) {}
 // openFixTarget pins the file resolveExistingFixPath admitted. Another inode
 // at that name means the owner swapped it after the check.
 func openFixTarget(path string, expected os.FileInfo) (*cleanTarget, error) {
-	target, err := openCleanTarget(path)
+	return openFixTargetFlags(path, expected, os.O_RDONLY)
+}
+
+func openFixTargetFlags(path string, expected os.FileInfo, flags int) (*cleanTarget, error) {
+	target, err := openCleanTargetFlags(path, flags)
 	if err != nil {
 		return nil, err
 	}

@@ -240,3 +240,32 @@ func TestChecksNeverChangeFileMetadataByPath(t *testing.T) {
 		t.Fatalf("path-based metadata calls in internal/checks:\n%s", strings.Join(offenders, "\n"))
 	}
 }
+
+// A finding names a file the scanner saw in one account. If the owner then
+// turns a directory on that path into a symlink to another account's tree,
+// cleaning must refuse instead of editing the other account's file.
+func TestCleanInfectedFileRefusesPlantedAncestorSymlink(t *testing.T) {
+	withQuarantineDirCF(t, t.TempDir())
+	root := realTempDir(t)
+	other := realTempDir(t)
+	const infected = "<?php\n@include('/tmp/evil.php');\necho 'safe';\n"
+	victim := filepath.Join(other, "a", "site", "index.php")
+	if err := os.MkdirAll(filepath.Dir(victim), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(victim, []byte(infected), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(other, "a"), filepath.Join(root, "a")); err != nil {
+		t.Fatal(err)
+	}
+
+	res := CleanInfectedFile(filepath.Join(root, "a", "site", "index.php"))
+
+	if got, err := os.ReadFile(victim); err != nil || string(got) != infected {
+		t.Fatalf("another tree's file was cleaned through a planted ancestor: %q, %v", got, err)
+	}
+	if res.Cleaned {
+		t.Fatalf("clean reported success through a planted ancestor: %+v", res)
+	}
+}

@@ -203,6 +203,10 @@ func (t *cleanTarget) Close() {
 // planted anywhere on the path after the caller's checks must not steer the
 // read or the replacement into another tree.
 func openCleanTarget(path string) (*cleanTarget, error) {
+	return openCleanTargetFlags(path, os.O_RDONLY)
+}
+
+func openCleanTargetFlags(path string, flags int) (*cleanTarget, error) {
 	parent, name := filepath.Split(path)
 	if name == "" || name == "." || name == ".." {
 		return nil, fmt.Errorf("invalid target path %q", path)
@@ -222,7 +226,7 @@ func openCleanTarget(path string) (*cleanTarget, error) {
 		}
 	}()
 
-	file, err := dir.OpenFile(name, os.O_RDONLY, 0)
+	file, err := dir.OpenFile(name, flags, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -361,10 +365,21 @@ func verifyCleanTargetUnchanged(target *cleanTarget) error {
 	if !info.Mode().IsRegular() {
 		return refuseFileResponse(fmt.Errorf("refusing non-regular target before rename (mode=%v)", info.Mode()))
 	}
-	if !sameFileIdentity(info, target.Info) || !sameCleanContentShape(info, target.Info) {
+	if !sameCleanFileState(info, target.Info) {
 		return refuseFileResponse(errors.New("file changed during cleaning"))
 	}
 	return nil
+}
+
+// sameCleanFileState also compares mode and owner, so a permission change
+// made while the replacement was staged is not overwritten.
+func sameCleanFileState(a, b os.FileInfo) bool {
+	if !sameFileIdentity(a, b) || !sameCleanContentShape(a, b) || a.Mode() != b.Mode() {
+		return false
+	}
+	as, aok := a.Sys().(*syscall.Stat_t)
+	bs, bok := b.Sys().(*syscall.Stat_t)
+	return aok && bok && as.Uid == bs.Uid && as.Gid == bs.Gid
 }
 
 func sameCleanContentShape(a, b os.FileInfo) bool {

@@ -827,7 +827,7 @@ func cleanHtaccessFileIdentified(path string, expected os.FileInfo) (result Reme
 	if filepath.Base(path) != ".htaccess" {
 		return RemediationResult{Refused: true, Error: "automated .htaccess remediation only applies to .htaccess files"}
 	}
-	resolved, _, err := resolveExistingFixPath(path, effectiveFixRoots(fixHtaccessAllowedRoots))
+	resolved, info, err := resolveExistingFixPath(path, effectiveFixRoots(fixHtaccessAllowedRoots))
 	if err != nil {
 		return RemediationResult{Refused: errors.Is(fileResponseSourceError(err), errFileResponseRefused), Error: err.Error()}
 	}
@@ -836,7 +836,7 @@ func cleanHtaccessFileIdentified(path string, expected os.FileInfo) (result Reme
 	// file is pinned by inode and replaced through a random O_EXCL name under
 	// the pinned parent fd. A guessable staging name would let the owner
 	// plant a symlink there and have the cleaned bytes written anywhere.
-	target, err := openCleanTarget(resolved)
+	target, err := openFixTarget(resolved, info)
 	if err != nil {
 		return RemediationResult{Refused: errors.Is(fileResponseSourceError(err), errFileResponseRefused), Error: fmt.Sprintf("cannot open: %v", err)}
 	}
