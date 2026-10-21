@@ -62,9 +62,9 @@ func TestAdmissionLedgerRefusesUnsealedRegistryAndUnknownSchema(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, mutate := range map[string]func(meta *bolt.Bucket) error{
-		// Schema 10 holds disabled refusals; 11 is the first this build cannot read.
+		// Schema 11 holds the live start; 12 is the first this build cannot read.
 		"future schema": func(meta *bolt.Bucket) error {
-			return meta.Put(admissionSchemaKey, []byte{admissionSchemaDisabled + 1})
+			return meta.Put(admissionSchemaKey, []byte{admissionSchemaLive + 1})
 		},
 		"zero schema": func(meta *bolt.Bucket) error { return meta.Put(admissionSchemaKey, []byte{0}) },
 		"missing schema with data": func(meta *bolt.Bucket) error {

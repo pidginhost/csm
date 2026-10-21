@@ -147,6 +147,18 @@ func LegacyActionID(at time.Time, seq uint32) ActionID {
 	return ActionID("act_" + hex.EncodeToString(h.Sum(nil)[:16]))
 }
 
+// LiveStartActionID names the seq-th charge the live start carried from the
+// legacy hour ending at at. It is named apart from the first import's
+// charges, which may still be retained for the same hour.
+func LiveStartActionID(at time.Time, seq uint32) ActionID {
+	h := sha256.New()
+	writeField(h, []byte{identityVersion})
+	writeField(h, []byte("live_start_hour"))
+	writeField(h, binary.BigEndian.AppendUint64(nil, uint64(at.UnixNano())))
+	writeField(h, binary.BigEndian.AppendUint32(nil, seq))
+	return ActionID("act_" + hex.EncodeToString(h.Sum(nil)[:16]))
+}
+
 // NewAttempt derives attempt seq of c. Sequences start at 1.
 func NewAttempt(c CandidateID, seq uint32) (Attempt, error) {
 	if _, err := ParseCandidateID(string(c)); err != nil {
@@ -194,4 +206,14 @@ func lowerHex(s string, n int) bool {
 		}
 	}
 	return true
+}
+
+// LiveStartPreviewActionID preserves a pre-start preview's charge as part
+// of the conservative handover balance, separate from its preview attempt.
+func LiveStartPreviewActionID(action ActionID) ActionID {
+	h := sha256.New()
+	writeField(h, []byte{identityVersion})
+	writeField(h, []byte("live_start_preview"))
+	writeField(h, []byte(action))
+	return ActionID("act_" + hex.EncodeToString(h.Sum(nil)[:16]))
 }
