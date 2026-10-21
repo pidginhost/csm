@@ -98,6 +98,55 @@ func TestPassControllerSettledWhenBusy(t *testing.T) {
 	}
 }
 
+// Every pass that collected the controller carries the stats endpoint, so
+// the web UI follows the host without reading it itself.
+func TestPassCarriesStatsEndpoint(t *testing.T) {
+	trusted := antispam.StatsEndpoint{Address: "127.0.0.1:11334", Version: "4.2.2"}
+	untrusted := stockControllerFacts()
+	untrusted.Controller.TrustEntries = nil
+	_, noListener := antispam.StatsEndpointFor(untrusted)
+	if noListener == "" {
+		t.Fatal("no reason for a controller without a readable listener")
+	}
+	busy := func(f antispam.HostFacts) Outcome {
+		h := &fakeHost{
+			assessment: antispam.Assessment{Action: antispam.Install},
+			result:     antispam.Result{Operation: antispam.OpApply, Busy: true, FailedStep: "lock", Rollback: antispam.RollbackNone},
+		}
+		r := h.reconciler()
+		r.Collect = func(context.Context, string) antispam.HostFacts { return f }
+		return r.Pass(context.Background(), desired(true))
+	}
+	observe := func(f antispam.HostFacts) Outcome {
+		h := &fakeHost{assessment: antispam.Assessment{Action: antispam.Keep}}
+		r := h.reconciler()
+		r.Collect = func(context.Context, string) antispam.HostFacts { return f }
+		d := desired(true)
+		d.Observe = true
+		return r.Pass(context.Background(), d)
+	}
+	for name, tc := range map[string]struct {
+		out        Outcome
+		want       antispam.StatsEndpoint
+		wantReason string
+	}{
+		"keep":        {passWithFacts(stockControllerFacts(), antispam.Keep), trusted, ""},
+		"install":     {passWithFacts(stockControllerFacts(), antispam.Install), trusted, ""},
+		"busy":        {busy(stockControllerFacts()), trusted, ""},
+		"observe":     {observe(stockControllerFacts()), trusted, ""},
+		"no listener": {passWithFacts(untrusted, antispam.Keep), antispam.StatsEndpoint{Version: "4.2.2"}, noListener},
+	} {
+		if len(tc.out.Checks) == 0 || tc.out.Stats != tc.want || tc.out.StatsReason != tc.wantReason {
+			t.Errorf("%s: checks %v stats %+v reason %q, want %+v %q", name, tc.out.Checks, tc.out.Stats, tc.out.StatsReason, tc.want, tc.wantReason)
+		}
+	}
+	// A disabled pass reads only CSM's own files, not the controller.
+	h := &fakeHost{assessment: antispam.Assessment{Action: antispam.Keep}}
+	if out := h.reconciler().Pass(context.Background(), desired(false)); out.Stats != (antispam.StatsEndpoint{}) || out.StatsReason != "" {
+		t.Fatalf("disabled pass: stats %+v reason %q", out.Stats, out.StatsReason)
+	}
+}
+
 func TestPassControllerClearedWhenDisabled(t *testing.T) {
 	h := &fakeHost{assessment: antispam.Assessment{Action: antispam.Keep}}
 	out := h.reconciler().Pass(context.Background(), desired(false))

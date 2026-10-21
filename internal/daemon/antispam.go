@@ -436,12 +436,35 @@ func (d *Daemon) reportAntispamHealth(findings []alert.Finding) {
 	}
 }
 
+// rspamdStatsSource is where the web UI reads rspamd's counters, or why
+// it cannot, as the last completed pass found.
+type rspamdStatsSource struct {
+	ep     antispam.StatsEndpoint
+	reason string
+}
+
 // reportAntispam keeps the findings of the checks a pass settled in the
 // latest set, alerts on new ones, and logs a pass that did not complete.
+// A completed pass also publishes where rspamd's counters can be read.
 func (d *Daemon) reportAntispam(out reconcile.Outcome) {
 	if out.Err != nil && !errors.Is(out.Err, context.Canceled) {
 		// A worker error can carry the worker's diagnostics across lines.
 		csmlog.Warn("antispam reconcile did not complete", "err", strconv.Quote(out.Err.Error()))
 	}
+	if len(out.Checks) > 0 {
+		d.rspamdStats.Store(&rspamdStatsSource{ep: out.Stats, reason: out.StatsReason})
+	}
 	d.processScanFindings(d.currentCfg(), out.Findings, out.Checks, "antispam")
+}
+
+// rspamdStatsStatus pairs the last completed pass's endpoint with live
+// probe health. Dismissing an outage finding must not report recovery.
+func (d *Daemon) rspamdStatsStatus() (antispam.StatsEndpoint, string, bool) {
+	down := slices.ContainsFunc(d.antispamHealth.Active(), func(f alert.Finding) bool {
+		return f.Check == reconcile.CheckRspamdDown
+	})
+	if src := d.rspamdStats.Load(); src != nil {
+		return src.ep, src.reason, down
+	}
+	return antispam.StatsEndpoint{}, "", down
 }

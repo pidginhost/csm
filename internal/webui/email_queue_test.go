@@ -12,11 +12,23 @@ import (
 	"github.com/pidginhost/csm/internal/firewall"
 )
 
+// withEximProbe swaps the exim probes for the test. It also clears the cached
+// queue listing, before and after, so no test reads another's listing.
 func withEximProbe(t *testing.T, lookPath func(string) (string, error), run func(context.Context, string, ...string) ([]byte, error)) {
 	t.Helper()
 	oldLook, oldRun := eximLookPath, eximRun
 	eximLookPath, eximRun = lookPath, run
-	t.Cleanup(func() { eximLookPath, eximRun = oldLook, oldRun })
+	clearQueueDetail()
+	t.Cleanup(func() {
+		eximLookPath, eximRun = oldLook, oldRun
+		clearQueueDetail()
+	})
+}
+
+func clearQueueDetail() {
+	queueDetail.Lock()
+	defer queueDetail.Unlock()
+	queueDetail.state = queueDetailState{}
 }
 
 // The daemon serves this API from inside ProtectSystem=strict, where exim

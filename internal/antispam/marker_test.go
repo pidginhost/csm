@@ -73,6 +73,9 @@ func TestScanMarkerPrefixVariants(t *testing.T) {
 					if marker, ok := ScanMarker(line); !marker || ok {
 						t.Errorf("rejected prefix in %q: %t, %t", line, marker, ok)
 					}
+					if s, _ := ParseScan(line); s.MsgID != id {
+						t.Errorf("MsgID = %q in %q, want %q", s.MsgID, line, id)
+					}
 				}
 			}
 		}
@@ -169,11 +172,11 @@ func TestParseScanReadsTheSender(t *testing.T) {
 		want Scan
 	}{
 		{markerPrefix + `CSM-ANTISPAM event=scan mode=dry-run policy=on result=ok score=150 action="reject" decision=reject ip=198.51.100.7`,
-			Scan{OK: true, Policy: "on", Score: 150, Decision: "reject", IP: netip.MustParseAddr("198.51.100.7")}},
+			Scan{OK: true, Mode: "dry-run", Policy: "on", Score: 150, Decision: "reject", IP: netip.MustParseAddr("198.51.100.7"), MsgID: "1xF5ol-00000000SdK-2TMA"}},
 		{markerPrefix + `CSM-ANTISPAM event=scan mode=enforce policy=off result=ok score=-5 action="no action" decision=unfiltered ip=2001:db8::25`,
-			Scan{OK: true, Policy: "off", Score: -5, Decision: "unfiltered", IP: netip.MustParseAddr("2001:db8::25")}},
+			Scan{OK: true, Mode: "enforce", Policy: "off", Score: -5, Decision: "unfiltered", IP: netip.MustParseAddr("2001:db8::25"), MsgID: "1xF5ol-00000000SdK-2TMA"}},
 		{markerPrefix + `CSM-ANTISPAM event=scan mode=enforce policy=on result=error score=none action="unavailable" decision=none ip=203.0.113.9`,
-			Scan{Policy: "on", Decision: "none", IP: netip.MustParseAddr("203.0.113.9")}},
+			Scan{Mode: "enforce", Policy: "on", Decision: "none", IP: netip.MustParseAddr("203.0.113.9"), MsgID: "1xF5ol-00000000SdK-2TMA"}},
 	} {
 		got, ok := ParseScan(tc.line)
 		if !ok || got != tc.want {
@@ -191,6 +194,29 @@ func TestParseScanAcceptsOldGrammar(t *testing.T) {
 	}
 	if marker, scanOK := ScanMarker(markerPrefix + `CSM-ANTISPAM event=scan mode=enforce policy=on result=error score=none action="unavailable" decision=none`); !marker || scanOK {
 		t.Fatal("old error marker no longer counts")
+	}
+}
+
+func TestParseScanMode(t *testing.T) {
+	enforce := "2026-10-20 12:00:00 1tAbCd-000001-Ab CSM-ANTISPAM event=scan mode=enforce policy=on result=ok score=152 action=\"reject\" decision=reject ip=203.0.113.7"
+	dry := strings.Replace(enforce, "mode=enforce", "mode=dry-run", 1)
+	s, ok := ParseScan(enforce)
+	if !ok || s.Mode != "enforce" || s.MsgID != "1tAbCd-000001-Ab" {
+		t.Fatalf("enforce: %+v %v", s, ok)
+	}
+	if s, ok = ParseScan(dry); !ok || s.Mode != "dry-run" {
+		t.Fatalf("dry-run: %+v %v", s, ok)
+	}
+	if _, ok = ParseScan(strings.Replace(enforce, "mode=enforce", "mode=other", 1)); ok {
+		t.Fatal("unknown mode accepted")
+	}
+}
+
+func TestParseScanErrorKeepsMode(t *testing.T) {
+	line := "2026-10-20 12:00:00 1tAbCd-000002-Ab CSM-ANTISPAM event=scan mode=dry-run policy=on result=error score=none action=\"unavailable\" decision=none ip="
+	s, ok := ParseScan(line)
+	if !ok || s.OK || s.Mode != "dry-run" || s.MsgID != "1tAbCd-000002-Ab" {
+		t.Fatalf("%+v %v", s, ok)
 	}
 }
 

@@ -460,7 +460,8 @@ func (q historyQuery) filtered() bool {
 	return q.from != "" || q.to != "" || q.severity >= 0 || q.search != "" || q.checks != nil
 }
 
-// parseHistoryQuery reads the history filters. An unreadable date is a 400,
+// parseHistoryQuery reads the history filters. scope=email selects the email
+// check list unless checks names the checks. An unreadable date is a 400,
 // written here, and ok is false.
 func parseHistoryQuery(w http.ResponseWriter, r *http.Request) (historyQuery, bool) {
 	v := r.URL.Query()
@@ -478,6 +479,9 @@ func parseHistoryQuery(w http.ResponseWriter, r *http.Request) (historyQuery, bo
 				q.checks[c] = true
 			}
 		}
+	}
+	if q.checks == nil && v.Get("scope") == "email" {
+		q.checks = emailCheckSet()
 	}
 	return q, true
 }

@@ -37,6 +37,7 @@ var collectionRoutes = []string{
 	"/api/v1/incidents/groups",
 	"/api/v1/email/quarantine",
 	"/api/v1/email/groups",
+	"/api/v1/email/rejects",
 	"/api/v1/email/relay-abuse",
 	"/api/v1/email/forwarders",
 	"/api/v1/email/held",

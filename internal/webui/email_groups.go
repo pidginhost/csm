@@ -2,12 +2,16 @@ package webui
 
 import (
 	"net/http"
+	"net/netip"
 	"net/url"
+	"slices"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/checks"
+	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/store"
 )
 
@@ -39,6 +43,15 @@ type emailGroup struct {
 	TopIPs         []string     `json:"top_ips,omitempty"`
 	Domains        []string     `json:"domains,omitempty"`
 	MessageIDs     []string     `json:"message_ids,omitempty"`
+	// BlockState is all, some, none or no_ip: how many of IPs are under an
+	// enforced block now. It is empty when the firewall state is unreadable.
+	BlockState string `json:"block_state"`
+	// Handled marks an auth failure group whose every finding is answered
+	// by its blocked attackers. Compromise evidence remains actionable.
+	Handled bool `json:"handled"`
+	// blockInsufficient covers missing addresses, successful logins, and
+	// distributed attacks that name only their latest source.
+	blockInsufficient bool
 }
 
 type emailGroupsResponse struct {
@@ -50,55 +63,19 @@ type emailGroupsResponse struct {
 	To        time.Time    `json:"to"`
 	Scanned   int          `json:"scanned"`
 	Truncated bool         `json:"truncated"`
+	// HandledCount counts handled groups across all of Total.
+	HandledCount int `json:"handled_count"`
+	// BlocksUnavailable is set when the firewall state cannot be read. No
+	// group is handled then: an unknown block must not hide a group.
+	BlocksUnavailable bool `json:"blocks_unavailable"`
+	historyMark       string
 }
 
 // emailKindForCheck maps an alert check name to its email-workbench group
-// kind. Returns "" when the check is not part of the email surface and
-// the finding should be skipped by /api/v1/email/groups.
+// kind. Returns "" when the check is not grouped and the finding should be
+// skipped by /api/v1/email/groups.
 func emailKindForCheck(check string) string {
-	switch check {
-	case "email_compromised_account",
-		"email_credential_leak",
-		"email_weak_password",
-		"mail_account_compromised",
-		"email_pipe_forwarder",
-		"email_suspicious_forwarder":
-		return "compromised_account"
-	case "email_spam_outbreak",
-		"email_rate_critical",
-		"email_rate_warning",
-		"email_php_relay_abuse",
-		"email_php_relay_action_failed",
-		"email_php_relay_rate_limit_hit",
-		"email_cloud_relay_abuse":
-		return "spam_outbreak"
-	case "email_auth_failure_realtime",
-		"email_suspicious_geo",
-		"mail_bruteforce",
-		"mail_bruteforce_suspected",
-		"mail_subnet_spray",
-		"mail_account_spray",
-		"smtp_bruteforce",
-		"smtp_subnet_spray",
-		"smtp_account_spray",
-		"smtp_probe_abuse":
-		return "auth_failure"
-	case "email_malware",
-		"email_phishing_content",
-		"email_av_degraded",
-		"email_av_encrypted_archive",
-		"email_av_timeout",
-		"email_av_parse_error",
-		"email_av_quarantine_error":
-		return "malware"
-	case "mail_per_account",
-		"mail_queue",
-		"mail_queue_unavailable",
-		"email_defer_fail_governor",
-		"exim_frozen_realtime":
-		return "queue_alert"
-	}
-	return ""
+	return emailCheckKinds[check]
 }
 
 // emailGroupKey is the dedup key used to merge findings into a single
@@ -247,6 +224,13 @@ func buildEmailGroups(findings []alert.Finding, from, to time.Time, kindFilter s
 		}
 		if ip := alert.AttackerAddress(f); ip != "" {
 			agg.ipCounts[ip]++
+		} else {
+			agg.group.blockInsufficient = true
+		}
+		// Subnet sprays are checked against coverage of their entire CIDR.
+		// Other findings follow the existing block-response policy.
+		if f.Check != "mail_subnet_spray" && f.Check != "smtp_subnet_spray" && !checks.IPResponseAnswersFinding(nil, f, true) {
+			agg.group.blockInsufficient = true
 		}
 		if f.Domain != "" {
 			agg.domainSet[strings.ToLower(f.Domain)] = struct{}{}
@@ -429,14 +413,123 @@ func (s *Server) apiEmailGroups(w http.ResponseWriter, r *http.Request) {
 	}
 
 	kindFilter := q.Get("kind")
-	writeJSON(w, s.emailMemo("groups?"+q.Encode(), func() any {
-		return s.buildEmailGroupsResponse(from, to, kindFilter, limit)
-	}))
+	// The memo holds every group. Block state changes while history does
+	// not, so marking, ordering and the limit happen on each request, on a
+	// copy of the shared groups.
+	key := "groups?" + q.Encode()
+	compute := func() any { return s.buildEmailGroupsResponse(from, to, kindFilter) }
+	resp := s.emailMemo(key, compute).(emailGroupsResponse)
+	// A throttled result can miss a new attacker, so it cannot mark groups
+	// handled. Any check's finding moves the mark; recompute rather than
+	// show every handled group as needing attention.
+	if s.store != nil && resp.historyMark != s.store.HistoryMark() {
+		resp = s.emailMemos.memo(key).fresh(s.store.HistoryMark(), compute).(emailGroupsResponse)
+	}
+	resp.Groups = slices.Clone(resp.Groups)
+	if ips, nets, err := activeBlocks(s.cfg.StatePath, now); err != nil {
+		resp.BlocksUnavailable = true
+	} else {
+		annotateEmailGroups(resp.Groups, ips, nets)
+	}
+	incomplete := resp.Truncated || s.store != nil && resp.historyMark != s.store.HistoryMark()
+	for i := range resp.Groups {
+		g := &resp.Groups[i]
+		// Before the response limit is applied, Truncated means history
+		// was cut short. History that changed after the result was built
+		// can also hold new attackers.
+		if incomplete {
+			g.Handled = false
+		}
+		if g.Handled {
+			resp.HandledCount++
+		}
+	}
+	sort.SliceStable(resp.Groups, func(i, j int) bool {
+		return !resp.Groups[i].Handled && resp.Groups[j].Handled
+	})
+	if len(resp.Groups) > limit {
+		resp.Truncated = true
+		resp.Groups = resp.Groups[:limit]
+	}
+	resp.Limit = limit
+	writeJSON(w, resp)
 }
 
-func (s *Server) buildEmailGroupsResponse(from, to time.Time, kindFilter string, limit int) emailGroupsResponse {
+// activeBlocks returns the addresses and subnets under an enforced block at
+// now. Dry-run blocks are never written to the firewall state.
+func activeBlocks(statePath string, now time.Time) (ips map[netip.Addr]bool, nets []netip.Prefix, err error) {
+	st, err := firewall.LoadState(statePath)
+	if err != nil {
+		return nil, nil, err
+	}
+	ips = make(map[netip.Addr]bool, len(st.Blocked))
+	for _, b := range st.Blocked {
+		if !blockActive(b.Unverified, b.ExpiresAt, now) {
+			continue
+		}
+		if ip, err := netip.ParseAddr(b.IP); err == nil {
+			ips[ip.Unmap()] = true
+		}
+	}
+	for _, n := range st.BlockedNet {
+		if !blockActive(false, n.ExpiresAt, now) {
+			continue
+		}
+		if p, err := netip.ParsePrefix(n.CIDR); err == nil {
+			nets = append(nets, p)
+		}
+	}
+	return ips, nets, nil
+}
+
+// annotateEmailGroups sets each group's block state, and marks an auth
+// failure group handled when every finding names its attacker and every one
+// of its IPs is blocked.
+func annotateEmailGroups(groups []emailGroup, ips map[netip.Addr]bool, nets []netip.Prefix) {
+	for i := range groups {
+		g := &groups[i]
+		blocked := 0
+		for _, s := range g.IPs {
+			if entryBlocked(s, ips, nets) {
+				blocked++
+			}
+		}
+		switch {
+		case len(g.IPs) == 0:
+			g.BlockState = "no_ip"
+		case blocked == len(g.IPs):
+			g.BlockState = "all"
+		case blocked > 0:
+			g.BlockState = "some"
+		default:
+			g.BlockState = "none"
+		}
+		g.Handled = g.Kind == "auth_failure" && !g.blockInsufficient && g.BlockState == "all"
+	}
+}
+
+// entryBlocked reports whether a group's IP entry is under an active block.
+// An address is covered by a direct block or a subnet block holding it. A
+// subnet, which a subnet spray names, is covered only by a subnet block
+// holding all of it. Anything else is never blocked.
+func entryBlocked(s string, ips map[netip.Addr]bool, nets []netip.Prefix) bool {
+	if ip, err := netip.ParseAddr(s); err == nil {
+		ip = ip.Unmap()
+		return ips[ip] || slices.ContainsFunc(nets, func(p netip.Prefix) bool { return p.Contains(ip) })
+	}
+	if sub, err := netip.ParsePrefix(s); err == nil {
+		return slices.ContainsFunc(nets, func(p netip.Prefix) bool {
+			return p.Bits() <= sub.Bits() && p.Contains(sub.Masked().Addr())
+		})
+	}
+	return false
+}
+
+func (s *Server) buildEmailGroupsResponse(from, to time.Time, kindFilter string) emailGroupsResponse {
 	var findings []alert.Finding
+	var mark string
 	if s.store != nil {
+		mark = s.store.HistoryMark()
 		// Filter while walking history so unrelated findings, or findings
 		// newer than the requested range, never use up the scan budget.
 		findings = s.store.SearchHistorySince(from, emailGroupsScanCap+1, func(f alert.Finding) bool {
@@ -455,20 +548,14 @@ func (s *Server) buildEmailGroupsResponse(from, to time.Time, kindFilter string,
 	scanned := len(findings)
 
 	groups := buildEmailGroups(findings, from, to, kindFilter)
-	total := len(groups)
-	if len(groups) > limit {
-		truncated = true
-		groups = groups[:limit]
-	}
-
 	return emailGroupsResponse{
-		Groups:    groups,
-		Total:     total,
-		Limit:     limit,
-		From:      from.UTC(),
-		To:        to.UTC(),
-		Scanned:   scanned,
-		Truncated: truncated,
+		Groups:      groups,
+		Total:       len(groups),
+		From:        from.UTC(),
+		To:          to.UTC(),
+		Scanned:     scanned,
+		Truncated:   truncated,
+		historyMark: mark,
 	}
 }
 

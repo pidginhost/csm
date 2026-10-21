@@ -40,6 +40,7 @@ import (
 	csmlog "github.com/pidginhost/csm/internal/log"
 	"github.com/pidginhost/csm/internal/maillog"
 	"github.com/pidginhost/csm/internal/mailranges"
+	"github.com/pidginhost/csm/internal/mailstats"
 	"github.com/pidginhost/csm/internal/metrics"
 	"github.com/pidginhost/csm/internal/modsec"
 	"github.com/pidginhost/csm/internal/obs"
@@ -129,6 +130,14 @@ type Daemon struct {
 	authBackend      *authBackendHealth
 	startTime        time.Time
 
+	// mailStats counts mail decisions for the Email Security page on the
+	// clock mailStatsNow, which also times its restore, saves and pruning.
+	mailStats    *mailstats.Counter
+	mailStatsNow func() time.Time
+	// mailStatsLoadFailing is set from a logged load failure until a retry
+	// merges, so each outcome is logged once.
+	mailStatsLoadFailing atomic.Bool
+
 	// antispamLoop runs antispam reconcile passes on a cPanel host. It
 	// stays nil elsewhere and until startup reaches it.
 	antispamLoop atomic.Pointer[reconcile.Loop]
@@ -158,6 +167,8 @@ type Daemon struct {
 	ipmapCanarySocket string
 	// antispamFeeds is also read by the mail log path before startup finishes.
 	antispamFeeds atomic.Pointer[reconcile.FeedState]
+	// rspamdStats is written by reconcile passes and read by web UI requests.
+	rspamdStats atomic.Pointer[rspamdStatsSource]
 	// forwardGuardMu prevents overlapping attempts from applying stale config.
 	forwardGuardMu sync.Mutex
 	// forwardGuardRetry retains failed or deferred reconcile requests.
@@ -257,6 +268,9 @@ func New(cfg *config.Config, store *state.Store, lock *state.LockFile, binaryPat
 		stopCh:     make(chan struct{}),
 
 		forwardGuardWake: make(chan struct{}, 1),
+
+		mailStats:    mailstats.New(time.Now),
+		mailStatsNow: time.Now,
 	}
 	// Remediation records what it wrote here, so the sensitive-file detectors
 	// can tell CSM's own change from a third party's after a restart.
@@ -1273,6 +1287,7 @@ func (d *Daemon) Run() error {
 	// The log watchers have stopped, so this save holds every frozen message
 	// they reported and the next start does not report them again.
 	d.persistEximFrozenDedup()
+	d.persistMailStats()
 	// Some producers can finish a tick after alertDispatcher observes stopCh.
 	// Drain again once tracked workers are gone and before state is closed.
 	d.flushPendingAlertsOnShutdown()
@@ -2040,6 +2055,8 @@ func (d *Daemon) startPHPRelay() {
 func (d *Daemon) startLogWatchers() {
 	d.loadMailGoodSource()
 	d.restoreEximFrozenDedup()
+	d.restoreMailStats()
+	d.startMailStatsPersistence()
 
 	hostInfo := platform.Detect()
 
@@ -2383,6 +2400,7 @@ func (d *Daemon) handleEximLine(line string, obs alert.Observation, cfg *config.
 		at = time.Now()
 	}
 	d.recordSpamEvidence(line, at, cfg)
+	d.recordMailStatsExim(line, at)
 	return append(findings, d.recordAntispamLine(line, at)...)
 }
 
@@ -2390,6 +2408,7 @@ func (d *Daemon) handleEximLine(line string, obs alert.Observation, cfg *config.
 // with mailAuthTracker augmentation for IMAP/POP3/ManageSieve brute-force,
 // subnet spray, account spray, and compromise detection. obs names the line.
 func (d *Daemon) handleMailLine(line string, obs alert.Observation, cfg *config.Config) []alert.Finding {
+	d.recordMailStatsMail(line, obs.ObservedAt)
 	findings := parseDovecotLogLine(line, cfg)
 	authLine := isMailAuthLine(line)
 	// Auth-backend failures (dovecot cannot reach the credential backend)
@@ -2512,6 +2531,8 @@ func (d *Daemon) startWebUI() {
 
 	d.webServer = srv
 	srv.SetHealthProvider(d)
+	srv.SetMailStats(d.mailStats)
+	srv.SetRspamdSource(d.rspamdStatsStatus)
 	srv.SetFindingBus(d.findingBus)
 	if d.scanJobs != nil {
 		srv.SetScanJobs(d.scanJobs)
@@ -2624,8 +2645,8 @@ func (d *Daemon) startSpoolWatcher() {
 	d.emailQuarantine = quar
 
 	// Create and start spool watcher
-	sw, err := NewSpoolWatcher(d.cfg, d.alertCh, orch, quar) //nolint:staticcheck // The Linux constructor is fallible; the non-Linux stub always returns an error.
-	if err != nil {                                          //nolint:staticcheck // The Linux constructor can also succeed.
+	sw, err := NewSpoolWatcher(d.cfg, d.alertCh, orch, quar, d.mailStats.RecordQuarantine) //nolint:staticcheck // The Linux constructor is fallible; the non-Linux stub always returns an error.
+	if err != nil {                                                                        //nolint:staticcheck // The Linux constructor can also succeed.
 		fmt.Fprintf(os.Stderr, "[%s] Email AV spool watcher not available: %v\n", ts(), err)
 		d.MarkWatcher("email_av_spool", false)
 		return
@@ -2675,8 +2696,8 @@ type spoolWatcherRuntime interface {
 
 func (d *Daemon) runSpoolWatcherLoop(sw *SpoolWatcher, orch *emailav.Orchestrator, quar *emailav.Quarantine) {
 	d.runSpoolWatcherLoopWithFactory(sw, 2*time.Second, func() (spoolWatcherRuntime, error) {
-		next, err := NewSpoolWatcher(d.cfg, d.alertCh, orch, quar) //nolint:staticcheck // The Linux constructor is fallible; the non-Linux stub always returns an error.
-		if err != nil {                                            //nolint:staticcheck // The Linux constructor can also succeed.
+		next, err := NewSpoolWatcher(d.cfg, d.alertCh, orch, quar, d.mailStats.RecordQuarantine) //nolint:staticcheck // The Linux constructor is fallible; the non-Linux stub always returns an error.
+		if err != nil {                                                                          //nolint:staticcheck // The Linux constructor can also succeed.
 			return nil, err
 		}
 		d.setSpoolWatcher(next)
