@@ -36,6 +36,14 @@ func (c modsecConfidence) String() string {
 	}
 }
 
+// modsecSingleHitRules are CSM rules that match one exploit's request shape,
+// which legitimate clients do not send. One deny is enough evidence, so they
+// escalate on the first hit whatever the operator's hit threshold. The per-rule
+// escalation exclusion still applies. Only exact CSM rule IDs.
+var modsecSingleHitRules = map[int]bool{
+	900133: true, // PHP2Shell session upload progress field
+}
+
 // modsecKnownLowConfRules are vendor policy/anomaly/scoring rule IDs verified to
 // fire on legitimate-but-unusual traffic as often as on attacks. They are
 // low-confidence by exact ID, but a high-confidence attack signal in the same

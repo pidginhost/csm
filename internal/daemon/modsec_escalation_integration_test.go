@@ -225,3 +225,49 @@ func TestParseModSec_ConcurrentClassifierGapDoesNotSuppressEscalation(t *testing
 		t.Errorf("escalations = %d, want %d", n, sources)
 	}
 }
+
+// An exploit-specific CSM rule escalates on its first deny even when the
+// operator raised the hit threshold, and the message does not claim a count.
+func TestParseModSec_SingleHitRuleEscalatesOnFirstDeny(t *testing.T) {
+	resetModSecState()
+	cfg := &config.Config{}
+	cfg.Thresholds.ModSecEscalationHits = 10
+	cfg.Thresholds.ModSecEscalationWindowMin = 120
+	line := modsecApacheLine("203.0.113.63", "900133",
+		"CSM VP: PHP session upload progress field (PHP2Shell)", "")
+	var msg string
+	for _, f := range parseModSecLogLineDeduped(line, cfg) {
+		if f.Check == "modsec_csm_block_escalation" {
+			msg = f.Message
+		}
+	}
+	if msg == "" {
+		t.Fatal("first deny of an exploit-specific rule must escalate")
+	}
+	if strings.Contains(msg, "10+") {
+		t.Fatalf("single-hit escalation must not claim the hit threshold: %q", msg)
+	}
+}
+
+// The per-rule escalation exclusion still wins over the single-hit table.
+func TestParseModSec_StoreNoEscalateSuppressesSingleHit(t *testing.T) {
+	resetModSecState()
+	sdb, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	prev := store.Global()
+	store.SetGlobal(sdb)
+	t.Cleanup(func() {
+		store.SetGlobal(prev)
+		_ = sdb.Close()
+	})
+	if err := sdb.AddModSecNoEscalateRule(900133); err != nil {
+		t.Fatal(err)
+	}
+	line := modsecApacheLine("203.0.113.64", "900133",
+		"CSM VP: PHP session upload progress field (PHP2Shell)", "")
+	if modsecFindingChecks(&config.Config{}, []string{line})["modsec_csm_block_escalation"] {
+		t.Fatal("store-backed no-escalate rule must suppress single-hit escalation")
+	}
+}

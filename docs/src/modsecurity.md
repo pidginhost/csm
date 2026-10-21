@@ -38,11 +38,16 @@ Rule-staleness alerts scan both the flat CRS layout (`/usr/share/modsecurity-crs
 - **Custom CSM rules** - IDs 900000-900999 in `configs/csm_modsec_custom.conf` (cPanel only today)
 - **Rule override management** - `SecRuleRemoveById` directives for false positive suppression
 - **Escalation control** - change rule severity or action per-rule
-- **Live deny escalation** - repeated ModSecurity deny events from one IP emit an escalation finding that feeds auto-response blocking. CSM-owned rules keep their existing per-rule escalation controls.
+- **Live deny escalation** - repeated ModSecurity deny events from one IP emit an escalation finding that feeds auto-response blocking. CSM-owned rules keep their existing per-rule escalation controls. CSM rules that match one specific exploit escalate on the first deny.
 - **Disabled-scope detection** - reports domains and accounts with the engine switched off, covering both the userdata flag and the per-account and per-domain config includes used by Apache and LiteSpeed in the std and ssl trees
 - **WAF event log parsing** - correlates events by IP, URI, and rule ID
 - **Hot-reload** - apply changes without Apache restart (cPanel only)
 - **Rule activation** - ModSecurity reads rules only when the web server starts or reloads. When CSM's installed rule sections change, for example after an upgrade or `csm install`, the daemon runs `modsec.reload_command` at startup or during its WAF check. Each rule change reloads once. Standalone `csm check` runs never reload. A failed reload raises a `waf_status` warning and is retried. Without a command, CSM only warns at startup and the rules wait for the next web server restart.
+
+First-deny escalation requires a blocking action for an exact CSM rule ID.
+Request text cannot turn a warning into a deny. Disabling a rule's firewall
+escalation excludes both new events and retained evidence from later blocking
+decisions. Existing firewall bans keep their configured expiry.
 
 CSM checks the rule-action registry every five minutes and rebuilds it when rule
 file contents change. Read failures leave the build uncached so the next check
