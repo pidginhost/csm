@@ -213,8 +213,8 @@ Commands:
   check-deep      Test deep checks only
   status        Show current state, last run, active findings
   baseline      Reset state - mark current state as "known good" (use --confirm if history exists)
-  rehash        Re-sign binary, csm.yaml and conf.d hashes after an intentional change (no scan;
-                --fragment <file> re-signs only when that conf.d file is all that changed)
+  rehash        Re-hash binary, csm.yaml and conf.d after an intentional change (no scan;
+                --fragment <file> re-hashes only when that conf.d file is all that changed)
   validate      Validate config (--deep for connectivity probes)
   config        Config display (config show [--no-redact] [--json])
   verify        Verify binary + config integrity
@@ -1014,16 +1014,16 @@ func rehashFragments(binPath, cfgPath, confDir string, names []string, stdout, s
 	var unnamed *integrity.UnnamedChangesError
 	switch {
 	case err == nil:
-		fmt.Fprintf(stdout, "Re-signed conf.d fragments: %s\n", strings.Join(names, ", "))
+		fmt.Fprintf(stdout, "Re-hashed conf.d fragments: %s\n", strings.Join(names, ", "))
 		return 0
 	case errors.As(err, &unnamed):
-		fmt.Fprintf(stderr, "Refusing to re-sign: %v\nReview these changes, then run `csm rehash` to sign everything.\n", err)
+		fmt.Fprintf(stderr, "Refusing to re-hash: %v\nReview these changes, then run `csm rehash` to re-hash everything.\n", err)
 		return exitRehashUnnamedChanges
 	case errors.Is(err, integrity.ErrNoFragmentBaseline):
-		fmt.Fprintf(stderr, "Cannot re-sign by fragment: %v\nRun `csm rehash` to sign the current state.\n", err)
+		fmt.Fprintf(stderr, "Cannot re-hash by fragment: %v\nRun `csm rehash` to record the current state.\n", err)
 		return exitRehashNoBaseline
 	default:
-		fmt.Fprintf(stderr, "Error re-signing conf.d fragments: %v\n", err)
+		fmt.Fprintf(stderr, "Error re-hashing conf.d fragments: %v\n", err)
 		return 1
 	}
 }

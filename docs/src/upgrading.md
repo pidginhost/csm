@@ -20,7 +20,7 @@ sudo apt update && sudo apt install --only-upgrade csm   # Debian/Ubuntu
 sudo dnf upgrade csm                                     # RHEL family
 ```
 
-The package preserves the operator config and state, updates runtime assets, re-signs integrity metadata, and restarts the daemon when it was already active.
+The package preserves the operator config and state, updates runtime assets, re-records integrity hashes, and restarts the daemon when it was already active.
 
 ## Standalone installations
 
@@ -41,7 +41,7 @@ The helper:
 
 The health gate waits 20 seconds by default. Set `CSM_UPGRADE_HEALTH_SETTLE` to an integer from 1 to 3600 seconds for a longer or shorter observation window. Invalid values fail the gate. Doctor warnings do not trigger rollback; failed checks do.
 
-If activation, rehash, startup, or the health gate fails, the helper stops the new daemon, restores the previous binary and assets, re-signs the restored binary hash, and starts the previous version. It exits nonzero and reports where it retained recovery material. If recovery itself fails, it reports an incomplete rollback that needs operator attention.
+If activation, rehash, startup, or the health gate fails, the helper stops the new daemon, restores the previous binary and assets, re-records the restored binary hash, and starts the previous version. It exits nonzero and reports where it retained recovery material. If recovery itself fails, it reports an incomplete rollback that needs operator attention.
 
 ## Optional nightly upgrades
 
@@ -75,7 +75,7 @@ If `systemctl` says CSM is stopped but bbolt still times out, find the process h
 
 **Never delete `csm.db`** -- it contains all historical findings, firewall state, email forwarder baselines, and per-account data. If you delete it, the web UI will show empty data until the next full scan cycle (up to 60 minutes for deep scan findings). Restore from backup when possible; for an intentional reset, run `csm baseline --confirm` rather than removing the database by hand.
 
-**Config changes require rehash** -- After editing a restart-required field in `csm.yaml` or any conf.d drop-in, run `csm rehash` once, validate, then restart. Hot-reload-safe changes can use `systemctl reload csm`; the daemon validates and re-signs the accepted config itself. A restart that fails with `conf.d hash mismatch` means a drop-in changed since the last signing: rehash if the change was intentional, and list fragments an integration rewrites on its own under `confd.integrity_exempt` so they stop needing one. `csm doctor` reports the mismatch while the daemon is still up.
+**Config changes require rehash** -- After editing a restart-required field in `csm.yaml` or any conf.d drop-in, run `csm rehash` once, validate, then restart. Hot-reload-safe changes can use `systemctl reload csm`; the daemon validates the accepted config and re-records its hash itself. A restart that fails with `conf.d hash mismatch` means a drop-in changed since the hashes were last recorded: rehash if the change was intentional, and list fragments an integration rewrites on its own under `confd.integrity_exempt` so they stop needing one. `csm doctor` reports the mismatch while the daemon is still up.
 
 ## FHS migration (state, config, drop-ins, and profiles)
 

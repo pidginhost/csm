@@ -277,7 +277,7 @@ csm status --json | jq '.severities, .blocklist_size'
 csm firewall status   # "Recently Blocked" entries with timestamps after the restart confirm live mode
 ```
 
-To go live: set `dry_run: false`, then run `systemctl reload csm`. The field is hot-reload-safe, and a successful reload validates and re-signs the config. For a planned restart instead, run `csm rehash` once before restarting.
+To go live: set `dry_run: false`, then run `systemctl reload csm`. The field is hot-reload-safe, and a successful reload validates the config and re-records its hash. For a planned restart instead, run `csm rehash` once before restarting.
 
 ### Verdict callback (advisory)
 

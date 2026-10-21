@@ -955,8 +955,10 @@ csm config show        # display config with secrets redacted
 CSM stores a sha256 of the main config in `integrity.config_hash` and
 a separate digest of loaded drop-ins in `integrity.confd_hash`. It
 refuses to start if the on-disk files disagree with those values. This
-is a tamper-detection feature. There are two supported edit workflows
-depending on which fields you touch.
+is a tamper-detection feature. It catches edits that were never
+recorded, but it does not stop anyone who can write `/etc/csm`,
+because they can record new hashes too. There are two supported edit
+workflows depending on which fields you touch.
 
 ### Fast path: SIGHUP reload (safe fields only)
 
@@ -987,7 +989,7 @@ in YAML merges and conf.d fragments. Removing them does not require a restart.
 file). The daemon re-reads the file, validates it, diffs it against
 the running config, and if every change is on a field tagged
 `hotreload:"safe"` it swaps the new values into
-the live config and re-signs the integrity hashes on disk. The
+the live config and re-records the integrity hashes on disk. The
 next check tick sees the new thresholds; fanotify marks are not
 dropped.
 
@@ -1068,14 +1070,14 @@ Look for one of three log shapes in the journal:
 Fields not tagged `hotreload:"safe"` (the majority, including
 `hostname`, `state_path`, `webui.listen`, `firewall.*`, `email_av.*`
 and anything that survives only one re-init per daemon lifetime)
-require a full restart. The integrity check must be re-signed first:
+require a full restart. The integrity hashes must be re-recorded first:
 
 ```bash
 sudo cp /etc/csm/csm.yaml /etc/csm/csm.yaml.bak-$(date +%s)
 
 # edit /etc/csm/csm.yaml with your favourite editor
 
-sudo /opt/csm/csm rehash     # re-signs integrity hashes
+sudo /opt/csm/csm rehash     # re-records integrity hashes
 sudo /opt/csm/csm validate   # syntax + value sanity
 sudo systemctl restart csm
 sudo systemctl status csm    # confirm active, no crash-loop
@@ -1092,7 +1094,7 @@ needed.
 Config-management workflows (Ansible, Puppet, Chef) should:
 
 - For safe changes, notify `systemctl reload csm` instead of
-  `restart`. The daemon re-signs the hash itself; no separate
+  `restart`. The daemon re-records the hash itself; no separate
   `csm rehash` step is required.
 - For any change that may touch a restart-required field, run
   `csm rehash` before the restart notify fires. Or always send
@@ -1109,14 +1111,14 @@ The YARA-X worker inherits the daemon's selected directory on every start. If it
 - **Merge semantics:** maps merge recursively; scalars replace the value from the main file; lists append in fragment order. All-scalar lists drop duplicate entries while keeping the first occurrence; structured lists such as `webui.tokens` keep every entry.
 - **Trust:** override directories must be absolute, must exist, and must be owned by root or the running process. The directory and every loaded fragment must not be group- or world-writable. Safe symlinked fragments are allowed, so packaged profiles can still be linked into `/etc/csm/conf.d/`.
 - **Integrity ownership:** drop-ins cannot set the `integrity` block. Integrity metadata is stored only in the main config.
-- **Hash:** `integrity.config_hash` covers the main file and `integrity.confd_hash` covers loaded drop-ins. After editing a drop-in by hand, run `csm rehash` before restarting, or use `systemctl reload csm` so the daemon can re-sign after validating the merged config. Rehash re-signs the resolved main file only; when a real legacy copy still exists at `/opt/csm/csm.yaml` with the same operator content, rehash replaces it with the compatibility symlink so the two never drift. Web settings saves refuse to bless a drop-in change that has not already been re-signed. A mismatch is refused at the next daemon start with an error that names `csm rehash`. Until then the running daemon keeps its old hashes, but its periodic integrity check raises a tamper finding and skips the scheduled checks on every cycle; `csm doctor` reports the same mismatch, so it can be fixed before a restart turns it into an outage.
+- **Hash:** `integrity.config_hash` covers the main file and `integrity.confd_hash` covers loaded drop-ins. After editing a drop-in by hand, run `csm rehash` before restarting, or use `systemctl reload csm` so the daemon can re-hash after validating the merged config. Rehash re-hashes the resolved main file only; when a real legacy copy still exists at `/opt/csm/csm.yaml` with the same operator content, rehash replaces it with the compatibility symlink so the two never drift. Web settings saves refuse to bless a drop-in change that has not already been re-hashed. A mismatch is refused at the next daemon start with an error that names `csm rehash`. Until then the running daemon keeps its old hashes, but its periodic integrity check raises a tamper finding and skips the scheduled checks on every cycle; `csm doctor` reports the same mismatch, so it can be fixed before a restart turns it into an outage.
 - **Integration-owned fragments:** a fragment its owning package rewrites on its own schedule (phpanel-server-agent rewrites `10-phpanel-runtime.yaml` on every bootstrap) cannot be pinned by a static hash without making every one of those rewrites a failed restart. List such fragments by bare filename under `confd.integrity_exempt` in the main config, then run `csm rehash` once. Their content is left out of `confd_hash`; every other fragment stays covered. The list lives in the main config, outside the `integrity` block, so it is itself covered by `config_hash`, and a fragment cannot set `confd` to exempt itself.
-- **Scoped re-sign:** an integration that rewrites a covered fragment of its own runs `csm rehash --fragment <file>` (repeat the flag for several files) instead of a full `csm rehash`. It re-signs only when the named files are the only change since the last signed state. If the binary, the main config or any other fragment changed, it signs nothing and names what changed. A named file may be new, edited or deleted; a deleted one must have been part of the signed state. Fragments under `confd.integrity_exempt` stay outside the signed state either way. CSM keeps a per-fragment record in `csm.yaml.confd-fragments.json` beside the main config. Every signing writes it, and each daemon start that verifies conf.d writes one when it is missing or out of date, so upgraded hosts need no extra step. Exit codes:
-  - `0`: re-signed, or nothing had changed.
+- **Scoped re-hash:** an integration that rewrites a covered fragment of its own runs `csm rehash --fragment <file>` (repeat the flag for several files) instead of a full `csm rehash`. It re-records hashes only when the named files are the only change since the last recorded state. If the binary, the main config or any other fragment changed, it records nothing and names what changed. A named file may be new, edited or deleted; a deleted one must have been part of the recorded state. Fragments under `confd.integrity_exempt` stay outside the recorded state either way. CSM keeps a per-fragment record in `csm.yaml.confd-fragments.json` beside the main config. Every hash update writes it, and each daemon start that verifies conf.d writes one when it is missing or out of date, so upgraded hosts need no extra step. Exit codes:
+  - `0`: re-hashed, or nothing had changed.
   - `4`: refused because something besides the named files changed; stderr lists it.
-  - `5`: no per-fragment record for the current signed state yet. A full `csm rehash` signs everything and writes one.
-  - Any other non-zero code: an error, including a corrupt record, an incomplete option, an invalid fragment name or a file that never existed. Do not fall back to full signing on these errors.
-- **Record privacy:** the per-fragment record retains covered fragment contents to validate them against the signed digest. It is written with owner-only access beside the resolved main config and must be protected like the config itself. A corrupt record never authorizes fallback signing; a successful startup verification can rebuild it from verified fragments.
+  - `5`: no per-fragment record for the current recorded state yet. A full `csm rehash` re-hashes everything and writes one.
+  - Any other non-zero code: an error, including a corrupt record, an incomplete option, an invalid fragment name or a file that never existed. Do not fall back to a full `csm rehash` on these errors.
+- **Record privacy:** the per-fragment record retains covered fragment contents to validate them against the recorded digest. It is written with owner-only access beside the resolved main config and must be protected like the config itself. A corrupt record never authorizes a fallback to a full rehash; a successful startup verification can rebuild it from verified fragments.
 - **Use cases:** packaged integration profiles (e.g. `/usr/lib/csm/profiles/phpanel-agent.yaml` symlinked into `conf.d/`), per-host automation that should not touch the operator's `csm.yaml`, secret material rendered from a vault.
 
 ```bash

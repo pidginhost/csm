@@ -35,7 +35,7 @@ func recordReloadResult(result string) {
 	reloadMetricOnce.Do(func() {
 		reloadMetric = metrics.NewCounterVec(
 			"csm_config_reloads_total",
-			"SIGHUP config reload attempts, by outcome. result=success when safe fields were swapped in place; restart_required when the edit touched a field that needs a full restart (live config unchanged); error on YAML parse, validation, or re-sign failure (live config unchanged); noop when the edit was semantically identical to the running config.",
+			"SIGHUP config reload attempts, by outcome. result=success when safe fields were swapped in place; restart_required when the edit touched a field that needs a full restart (live config unchanged); error on YAML parse, validation, or re-hash failure (live config unchanged); noop when the edit was semantically identical to the running config.",
 			[]string{"result"},
 		)
 		metrics.MustRegister("csm_config_reloads_total", reloadMetric)
@@ -122,13 +122,13 @@ func (d *Daemon) reloadConfig() {
 			resynced.ConfigDir = oldCfg.ConfigDir
 			publishActiveConfig(&resynced, "SIGHUP")
 		} else {
-			fmt.Fprintf(os.Stderr, "[%s] config_reload_restart_required: re-sign failed (%v); file and live hash remain mismatched until operator runs `csm rehash`\n",
+			fmt.Fprintf(os.Stderr, "[%s] config_reload_restart_required: re-hash failed (%v); file and live hash remain mismatched until operator runs `csm rehash`\n",
 				ts(), err)
 		}
 
 		recordReloadResult(reloadResultRestartRequired)
 		d.emitReloadFinding(alert.Warning, "config_reload_restart_required",
-			fmt.Sprintf("SIGHUP reload: restart-required fields changed: %v; live config unchanged, main config re-signed if needed for next restart",
+			fmt.Sprintf("SIGHUP reload: restart-required fields changed: %v; live config unchanged, main config re-hashed if needed for next restart",
 				offenders))
 		return
 	}
@@ -136,7 +136,7 @@ func (d *Daemon) reloadConfig() {
 	if err := d.signAndSaveReloadedConfig(oldCfg, newCfg); err != nil {
 		recordReloadResult(reloadResultError)
 		d.emitReloadFinding(alert.Critical, "config_reload_error",
-			fmt.Sprintf("SIGHUP reload: re-signing config failed: %v; live config unchanged", err))
+			fmt.Sprintf("SIGHUP reload: re-hashing config failed: %v; live config unchanged", err))
 		return
 	}
 

@@ -292,10 +292,10 @@ Registered when `reputation.upstream.enabled: true`.
 - `csm_config_reloads_total{result}` (counter): SIGHUP reload
   attempts, by outcome. Labels: `result` is one of:
   - `success` -- safe fields swapped in place, integrity hash
-    re-signed, live config updated.
+    re-recorded, live config updated.
   - `restart_required` -- one or more fields that need a full
     restart changed; live config unchanged.
-  - `error` -- YAML parse failure, validation failure, or re-sign
+  - `error` -- YAML parse failure, validation failure, or re-hash
     failure; live config unchanged.
   - `noop` -- file edit produced no semantic change (identical
     values, whitespace edit, etc.).

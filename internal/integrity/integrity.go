@@ -312,7 +312,7 @@ func Verify(binaryPath string, cfg *config.Config) error {
 			return fmt.Errorf("hashing conf.d: %w", err)
 		}
 		if confdHash != cfg.Integrity.ConfdHash {
-			return fmt.Errorf("%w: a drop-in under %s changed since the config was last signed (expected %s, got %s); run `csm rehash` after an intentional conf.d change, or list fragments an integration rewrites under confd.integrity_exempt",
+			return fmt.Errorf("%w: a drop-in under %s changed since the hashes were last recorded (expected %s, got %s); run `csm rehash` after an intentional conf.d change, or list fragments an integration rewrites under confd.integrity_exempt",
 				ErrConfdHashMismatch, cfg.ConfigDir, hashOrNone(cfg.Integrity.ConfdHash), hashOrNone(confdHash))
 		}
 	}
