@@ -9,10 +9,10 @@ type emailCheck struct {
 	Kind string `json:"kind"`
 }
 
-// emailChecks is the one list of email checks: every Email & Phishing check
-// except emailCheckExclusions, plus the mail_ and smtp_ brute-force checks.
-// TestEmailCheckListCoversRegistry fails when a registered check is in
-// neither list.
+// emailChecks is the one list of email checks. TestEmailCheckListCoversRegistry
+// fails when a registered check in the Email & Phishing category, or one in
+// any category named mail_, smtp_, email_, exim_ or antispam_, is in neither
+// emailChecks nor emailCheckExclusions.
 var emailChecks = []emailCheck{
 	{"email_compromised_account", "compromised_account"},
 	{"email_credential_leak", "compromised_account"},
@@ -62,6 +62,8 @@ var emailChecks = []emailCheck{
 	{"email_filter_pipe", ""},
 	{"email_mail_filters", ""},
 	{"email_password_audit_incomplete", ""},
+	{"mail_auth_backend_degraded", ""},
+	{"mail_log_source_unavailable", ""},
 	{"antispam_apply_failed", ""},
 	{"antispam_controller_open", ""},
 	{"antispam_feed", ""},

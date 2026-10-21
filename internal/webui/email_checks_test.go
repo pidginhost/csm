@@ -18,10 +18,14 @@ func TestEmailCheckListCoversRegistry(t *testing.T) {
 	for _, n := range emailCheckExclusions {
 		excluded[n] = true
 	}
+	// A mail check can sit in any category (brute force, health), so the
+	// name prefix counts as much as the category.
 	for _, name := range checks.AllCheckNames() {
 		info, _ := checks.LookupCheck(name)
-		relevant := info.Category == checks.CategoryEmail ||
-			(info.Category == checks.CategoryBruteForce && (strings.HasPrefix(name, "mail_") || strings.HasPrefix(name, "smtp_")))
+		relevant := info.Category == checks.CategoryEmail
+		for _, prefix := range []string{"mail_", "smtp_", "email_", "exim_", "antispam_"} {
+			relevant = relevant || strings.HasPrefix(name, prefix)
+		}
 		if relevant && !listed[name] && !excluded[name] {
 			t.Errorf("%s is email-relevant: add it to emailChecks or emailCheckExclusions", name)
 		}
