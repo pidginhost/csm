@@ -9,6 +9,10 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ## [Unreleased]
 
+### Security
+
+- WordPress findings and plugin inventories remain available when discovery cannot confirm that a site was removed.
+
 ### Fixed
 
 - WordPress findings, such as outdated plugins, no longer stay listed after the site is updated or deleted.

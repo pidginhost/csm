@@ -232,7 +232,10 @@ coverage performs no refresh when both inventory consumers are disabled.
 Cancellation and incomplete discovery retain earlier evidence. Complete discovery
 removes installations that are no longer present, scoped to the account scanned.
 A domain the panel still lists after its directory was deleted holds no
-installation and does not make discovery incomplete.
+installation and does not make discovery incomplete when the original mapped
+config path is also confirmed absent. Ambiguous symlink resolution, account
+boundary violations, and inspection errors keep discovery incomplete and retain
+earlier evidence.
 A wp-cli refusal explicitly identifying a non-WordPress directory is recorded as
 not applicable rather than an outage. A completed core check that finds modified
 or missing files retains its existing integrity findings and is counted separately.

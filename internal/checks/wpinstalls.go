@@ -236,13 +236,18 @@ func discoverWPInstalls(ctx context.Context, account string) wpDiscovery {
 			if scope != "" && vh.user != scope {
 				continue
 			}
-			wpConfig, err := canonicalWPInstallPath(filepath.Join(root, "wp-config.php"))
+			mappedConfig := filepath.Join(root, "wp-config.php")
+			wpConfig, err := canonicalWPInstallPath(mappedConfig)
 			if err != nil {
-				// A domain left in the panel after its directory was deleted
-				// holds no install, the same as a root without wp-config.php.
-				if !errors.Is(err, fs.ErrNotExist) {
-					d.incomplete = true
+				if errors.Is(err, errWPDocrootMissing) {
+					// Check the original path too: a symlink target containing
+					// ".." can resolve differently from its cleaned form. Only
+					// the same absence accepted by add may permit retirement.
+					if _, statErr := osFS.Lstat(mappedConfig); errors.Is(statErr, fs.ErrNotExist) {
+						continue
+					}
 				}
+				d.incomplete = true
 				continue
 			}
 			mappedRoots[wpConfig] = true
