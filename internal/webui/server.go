@@ -31,6 +31,7 @@ import (
 	"github.com/pidginhost/csm/internal/incident"
 	"github.com/pidginhost/csm/internal/mailfwd/intel"
 	"github.com/pidginhost/csm/internal/mailfwd/inventory"
+	"github.com/pidginhost/csm/internal/mailstats"
 	"github.com/pidginhost/csm/internal/obs"
 	"github.com/pidginhost/csm/internal/session"
 	"github.com/pidginhost/csm/internal/state"
@@ -108,11 +109,13 @@ type Server struct {
 	logWatcherCount func() int  // live daemon reader; nil outside the daemon
 	blocker         IPBlocker
 	geoIPDB         atomic.Pointer[geoip.DB]
-	// emailQuarantine and emailAVWatcherMode are installed by the daemon
-	// after the listener already serves; request goroutines read them, so
-	// they are held atomically and read through the accessors below.
+	// emailQuarantine, emailAVWatcherMode and the mail decision counter
+	// mailStats are installed by the daemon after the listener already
+	// serves; request goroutines read them, so they are held atomically and
+	// read through the accessors below.
 	emailQuarantine    atomic.Pointer[emailav.Quarantine]
 	emailAVWatcherMode atomic.Value // string
+	mailStats          atomic.Pointer[mailstats.Counter]
 	forwarderSource    inventory.Source
 	deferralReporter   intel.Reporter
 	queueReporter      intel.QueueReporter
@@ -758,6 +761,18 @@ func (s *Server) SetEmailAVWatcherMode(mode string) {
 // before the daemon installs one.
 func (s *Server) emailQuarantineHandle() *emailav.Quarantine {
 	return s.emailQuarantine.Load()
+}
+
+// SetMailStats installs the mail decision counter the Email Security page
+// reads.
+func (s *Server) SetMailStats(c *mailstats.Counter) {
+	s.mailStats.Store(c)
+}
+
+// mailStatsCounter returns the installed mail decision counter, or nil
+// before the daemon installs one.
+func (s *Server) mailStatsCounter() *mailstats.Counter {
+	return s.mailStats.Load()
 }
 
 // emailAVMode returns the installed AV watcher mode, "" before it is set.

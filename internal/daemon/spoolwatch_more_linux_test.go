@@ -501,13 +501,15 @@ func TestSpoolWatcherHandleSpoolEventInfectedQuarantineSucceeds(t *testing.T) {
 	cfg.EmailAV.QuarantineInfected = true
 
 	ch := make(chan alert.Finding, 8)
+	var quarantined []time.Time
 	sw := &SpoolWatcher{
-		cfg:          cfg,
-		alertCh:      ch,
-		orchestrator: orch,
-		quarantine:   quar,
-		fd:           respPipe[1],
-		stopCh:       make(chan struct{}),
+		cfg:           cfg,
+		alertCh:       ch,
+		orchestrator:  orch,
+		quarantine:    quar,
+		fd:            respPipe[1],
+		stopCh:        make(chan struct{}),
+		onQuarantined: func(at time.Time) { quarantined = append(quarantined, at) },
 	}
 	defer sw.closeFd()
 
@@ -556,6 +558,9 @@ drain:
 	// Verify quarantine dir was created with the message.
 	if _, err := os.Stat(filepath.Join(qDir, msgID)); err != nil {
 		t.Errorf("quarantine dir not created: %v", err)
+	}
+	if len(quarantined) != 1 || quarantined[0].IsZero() {
+		t.Errorf("onQuarantined calls = %v, want one with the quarantine time", quarantined)
 	}
 }
 
@@ -655,6 +660,9 @@ func TestSpoolWatcherHandleSpoolEventInfectedQuarantineErrorTempfail(t *testing.
 		quarantine:   quar,
 		fd:           respPipe[1],
 		stopCh:       make(chan struct{}),
+		onQuarantined: func(time.Time) {
+			t.Error("onQuarantined called after a failed quarantine")
+		},
 	}
 	defer sw.closeFd()
 

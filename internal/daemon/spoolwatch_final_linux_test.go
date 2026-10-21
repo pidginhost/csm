@@ -260,7 +260,7 @@ func TestNewSpoolWatcherNoSpoolDirs(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.EmailAV.FailMode = "open"
 
-	sw, err := NewSpoolWatcher(cfg, make(chan alert.Finding, 1), nil, nil)
+	sw, err := NewSpoolWatcher(cfg, make(chan alert.Finding, 1), nil, nil, nil)
 	if err == nil {
 		// Some kernels/users may have root + exim installed — accept both.
 		if sw != nil {
