@@ -201,8 +201,9 @@ GET  /api/v1/findings/enriched   Enriched findings with GeoIP, accounts, fix inf
                                  block_ip is set only for checks that report an attacker address,
                                  the same evidence auto-block acts on
 GET  /api/v1/finding-detail      Finding detail with action history (?check=&message=)
-GET  /api/v1/history             Paginated history (?limit=&offset=&from=&to=&severity=&search=&checks=).
+GET  /api/v1/history             Paginated history (?limit=&offset=&from=&to=&severity=&search=&checks=&scope=).
                                  checks is a comma-separated list of check names to include.
+                                 scope=email includes the /api/v1/email/checks list when checks is absent.
                                  total counts every match; truncated is true when matches exist past the page
 GET  /api/v1/history/csv         CSV export of the newest 5,000 entries matching the /history filters
 GET  /api/v1/stats               24h severity counts, accounts at risk, auto-response summary
@@ -1235,6 +1236,7 @@ POST /api/v1/email/queue/flush-backscatter  Request removal of frozen null-sende
 GET  /api/v1/email/held          Forward copies held by the forward guard (admin scope)
 POST /api/v1/email/held/{id}/release   Re-inject a held forward copy to its external recipient (admin scope, CSRF)
 DELETE /api/v1/email/held/{id}   Discard a held forward copy (admin scope, CSRF)
+GET  /api/v1/email/checks        Email checks the Email page shows, each with its group kind ("" = never grouped) (read scope)
 GET  /api/v1/email/groups        Server-grouped action rows (kind=compromised_account|spam_outbreak|auth_failure|queue_alert|malware) with from/to/limit (read scope)
 GET  /api/v1/email/relay-abuse   Outbound PHP-mail abuse detections (spam outbreaks, high-volume scripts/accounts) with per-site script breakdown; from/to/limit (read scope)
 GET  /api/v1/email/quarantine    Quarantined email list
