@@ -90,6 +90,25 @@ func TestMailStatsPersistAcrossRestart(t *testing.T) {
 	}
 }
 
+// The counter is built with the daemon, but counting starts when the log
+// watchers do, right after the restore. The stop recorded at restore ends
+// there.
+func TestRestoreMailStatsGapEndsAtRestore(t *testing.T) {
+	db := openStoreForTest(t)
+	built := mailStatsTestNow
+	now := built
+	d := newMailStatsTestDaemon(t, &now)
+	if err := db.SetMetaString("mailstats:flushed_at", built.Add(-10*time.Minute).UTC().Format(time.RFC3339)); err != nil {
+		t.Fatal(err)
+	}
+	now = built.Add(5 * time.Minute)
+	d.restoreMailStats()
+	ov := d.mailStats.Overview(built.Add(-time.Hour), now)
+	if ov.UncountedMinutes != 15 || len(ov.Gaps) != 1 || !ov.Gaps[0].Start.Equal(built.Add(-10*time.Minute)) || !ov.Gaps[0].End.Equal(now) {
+		t.Fatalf("uncounted %d, gaps %+v, want 15 minutes ending at the restore", ov.UncountedMinutes, ov.Gaps)
+	}
+}
+
 // One store error at startup must not leave the run memory-only: each save
 // retries the load, which merges the stored counts once, and the save then
 // writes. Only the first failure and the recovery are logged.

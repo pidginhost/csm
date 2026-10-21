@@ -146,9 +146,13 @@ func TestFlushLoadRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	from, to := now.Add(-time.Hour), now.Add(time.Hour)
-	wantOv, wantRj := jsonOf(t, c.Overview(from, to)), jsonOf(t, c.Rejects(from, to, nil, 100))
+	ov, wantRj := c.Overview(from, to), jsonOf(t, c.Rejects(from, to, nil, 100))
 
+	// The minute between the flush and the restart is not counted.
+	flushed := now
 	now = now.Add(time.Minute)
+	ov.UncountedMinutes, ov.Gaps = 1, []Span{{flushed, now}}
+	wantOv := jsonOf(t, ov)
 	c2 := New(func() time.Time { return now })
 	if err := c2.Load(db, now); err != nil {
 		t.Fatal(err)
@@ -241,26 +245,68 @@ func TestLoadGapEndsAtCounterStart(t *testing.T) {
 	}
 }
 
-func TestLoadNoGapAfterShortStop(t *testing.T) {
+// Any stop leaves time uncounted: a clean shutdown flushes as it stops, and
+// after a crash the lines since the last flush are lost. A flush time that
+// is not before the counter's start, or that cannot be read, records nothing.
+func TestLoadRecordsShortStop(t *testing.T) {
 	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
-	for name, flushed := range map[string]string{
-		"90s":    now.Add(-90 * time.Second).Format(time.RFC3339),
-		"2m":     now.Add(-2 * time.Minute).Format(time.RFC3339),
-		"future": now.Add(5 * time.Minute).Format(time.RFC3339),
-		"unset":  "",
-		"bad":    "not a time",
+	for name, tc := range map[string]struct {
+		flushed string
+		stop    time.Duration
+		minutes int
+	}{
+		"90s":    {now.Add(-90 * time.Second).Format(time.RFC3339), 90 * time.Second, 2},
+		"2m":     {now.Add(-2 * time.Minute).Format(time.RFC3339), 2 * time.Minute, 2},
+		"now":    {now.Format(time.RFC3339), 0, 0},
+		"future": {now.Add(5 * time.Minute).Format(time.RFC3339), 0, 0},
+		"unset":  {"", 0, 0},
+		"bad":    {"not a time", 0, 0},
 	} {
 		db := newFakeStore()
-		if flushed != "" {
-			db.meta["mailstats:flushed_at"] = flushed
+		if tc.flushed != "" {
+			db.meta["mailstats:flushed_at"] = tc.flushed
 		}
 		c := New(func() time.Time { return now })
 		if err := c.Load(db, now); err != nil {
 			t.Fatal(err)
 		}
-		if ov := c.Overview(now.Add(-time.Hour), now.Add(time.Hour)); ov.UncountedMinutes != 0 || len(ov.Gaps) != 0 || len(db.gaps) != 0 {
-			t.Errorf("%s: uncounted %d, gaps %+v, stored %v", name, ov.UncountedMinutes, ov.Gaps, db.gaps)
+		ov := c.Overview(now.Add(-time.Hour), now.Add(time.Hour))
+		if tc.stop == 0 {
+			if ov.UncountedMinutes != 0 || len(ov.Gaps) != 0 || len(db.gaps) != 0 {
+				t.Errorf("%s: uncounted %d, gaps %+v, stored %v, want none", name, ov.UncountedMinutes, ov.Gaps, db.gaps)
+			}
+			continue
 		}
+		start := now.Add(-tc.stop)
+		if ov.UncountedMinutes != tc.minutes || len(ov.Gaps) != 1 || !ov.Gaps[0].Start.Equal(start) || !ov.Gaps[0].End.Equal(now) {
+			t.Errorf("%s: uncounted %d, gaps %+v, want %d minutes from %v to %v", name, ov.UncountedMinutes, ov.Gaps, tc.minutes, start, now)
+		}
+		if db.gaps[now.Unix()] != start.Unix() || len(db.gaps) != 1 {
+			t.Errorf("%s: stored gaps %v", name, db.gaps)
+		}
+	}
+}
+
+// The daemon builds the counter before its log readers start. SetStart moves
+// the end of the recorded stop to when counting began, and a Load retried
+// after a failure keeps it.
+func TestLoadGapEndsAtSetStart(t *testing.T) {
+	built := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	c := New(func() time.Time { return built })
+	db := newFakeStore()
+	db.meta["mailstats:flushed_at"] = built.Add(-10 * time.Minute).Format(time.RFC3339)
+	started := built.Add(5 * time.Minute)
+	c.SetStart(started)
+	db.readErr = errors.New("read failed")
+	if err := c.Load(db, started); err == nil {
+		t.Fatal("Load succeeded on a failing store")
+	}
+	db.readErr = nil
+	now := started.Add(10 * time.Minute)
+	mustLoad(t, c, db, now)
+	ov := c.Overview(built.Add(-time.Hour), now)
+	if ov.UncountedMinutes != 15 || len(ov.Gaps) != 1 || !ov.Gaps[0].End.Equal(started) {
+		t.Fatalf("uncounted %d, gaps %+v, want 15 minutes ending when counting began", ov.UncountedMinutes, ov.Gaps)
 	}
 }
 

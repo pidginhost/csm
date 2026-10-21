@@ -95,8 +95,9 @@ type ringEntry struct {
 // Counter counts mail decisions in memory by the time the log line gives.
 type Counter struct {
 	now func() time.Time
-	// start is when New ran and so the end of any stop Load records.
-	// Unlike since, Load never replaces it.
+	// start is when New ran, or what SetStart set, and so the end of any
+	// stop Load records. Unlike since, Load never replaces it. Guarded by
+	// persistMu.
 	start time.Time
 
 	// persistMu serializes Load and Flush. A Flush that writes between
@@ -132,6 +133,17 @@ func New(now func() time.Time) *Counter {
 		rings:     map[Class][]ringEntry{},
 		ringDirty: map[Class]bool{},
 		scores:    map[string]int{},
+	}
+}
+
+// SetStart sets when counting began, for a counter built before its log
+// readers start, so the stop the first Load records ends there. It does
+// nothing once a Load has succeeded.
+func (c *Counter) SetStart(t time.Time) {
+	c.persistMu.Lock()
+	defer c.persistMu.Unlock()
+	if !c.loaded {
+		c.start = t
 	}
 }
 

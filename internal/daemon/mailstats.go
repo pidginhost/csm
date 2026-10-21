@@ -50,9 +50,11 @@ func (d *Daemon) recordMailStatsMail(line string, at time.Time) {
 }
 
 // restoreMailStats merges the stored counts into the counter before the log
-// watchers start.
+// watchers start. Counting starts now, not when the counter was built, so
+// the stop the load records ends here; a retried load keeps that end.
 func (d *Daemon) restoreMailStats() {
 	if sdb := store.Global(); sdb != nil {
+		d.mailStats.SetStart(d.mailStatsNow())
 		d.loadMailStats(sdb)
 	}
 }

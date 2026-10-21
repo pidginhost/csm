@@ -22,15 +22,13 @@ type Store interface {
 const (
 	metaSince     = "mailstats:since"
 	metaFlushedAt = "mailstats:flushed_at"
-
-	// gapMin is the longest stop that is a restart rather than a gap.
-	gapMin = 2 * time.Minute
 )
 
 // Load adds the stored counts to what the counter holds, since lines may
 // already have been counted, restores the reject rings and gaps, and
-// records the stretch from the last flush to the counter's start as a gap
-// when CSM was stopped longer than gapMin. Ending it at the start rather
+// records the stretch from the last flush to the counter's start as a gap.
+// Every stop is one: a clean shutdown flushes as it stops, and after a crash
+// the lines since the last flush were lost. Ending it at the start rather
 // than at now keeps a retried Load from counting time already counted. A
 // corrupt entry, an unknown class or an entry out of range is skipped. A
 // failed load leaves live counts unchanged and can be retried. Once a Load
@@ -56,7 +54,7 @@ func (c *Counter) Load(db Store, now time.Time) error {
 	}
 	end := time.Unix(c.start.Unix(), 0).UTC()
 	flushed, ferr := time.Parse(time.RFC3339, db.GetMetaString(metaFlushedAt))
-	newGap := ferr == nil && end.Sub(flushed) > gapMin
+	newGap := ferr == nil && end.After(flushed)
 	if newGap {
 		gaps = append(gaps, Span{flushed, end})
 	}
