@@ -395,6 +395,102 @@ paths:
           description: The flush or its queue verification was incomplete; the error includes bounded target and outcome details.
         "503":
           description: Mail queue flush is unavailable on this host.
+  "/api/v1/email/queue":
+    get:
+      operationId: get_email_queue
+      summary: "One page of the exim queue, oldest first, with why each message is stuck (scope: admin)"
+      x-csm-scope: admin
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: page
+          in: query
+          schema: { type: integer, minimum: 1, default: 1 }
+        - name: limit
+          in: query
+          description: Values above 100 are cut to 100.
+          schema: { type: integer, minimum: 1, maximum: 100, default: 25 }
+        - name: filter
+          in: query
+          description: backscatter selects null-sender messages.
+          schema: { type: string, enum: [all, frozen, backscatter], default: all }
+        - name: q
+          in: query
+          description: Case-insensitive substring of the sender or of one of the first 50 undelivered recipients.
+          schema: { type: string }
+      responses:
+        "200":
+          description: >-
+            Queued messages with reason {class, text, raw}, plus page, limit,
+            total (the messages matching filter and q), and frozen,
+            backscatter and oldest_seconds for the whole queue. The listing
+            is refreshed at most once a minute. When the queue cannot be
+            listed, unavailable is true, items is empty and no count is sent.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "400": { description: Unknown filter. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "503": { description: The mail queue is not available on this host. }
+  "/api/v1/email/queue/{id}":
+    get:
+      operationId: get_email_queue_message
+      summary: "One queued message with all undelivered recipients (up to 1,000), why it is stuck and the last 20 msglog lines (scope: admin)"
+      x-csm-scope: admin
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Exim message ID.
+          schema: { type: string }
+      responses:
+        "200":
+          description: The message fields as in the queue list, reason, and msglog (a list of lines).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "400": { description: Not an exim message ID. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: The message is not in the queue. }
+        "500": { description: The queue could not be read. }
+        "503": { description: The mail queue is not available on this host. }
+  "/api/v1/email/queue/{id}/{action}":
+    post:
+      operationId: post_email_queue_action
+      summary: "Retry, return to sender, delete or thaw one queued message (CSRF on cookie sessions)."
+      x-csm-scope: admin
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Exim message ID.
+          schema: { type: string }
+        - name: action
+          in: path
+          required: true
+          description: >-
+            retry runs exim -M and answers attempt_started without waiting
+            for the delivery; bounce (-Mg) answers bounced, delete (-Mrm)
+            removed and thaw (-Mt) thawed once the queue shows the change.
+          schema: { type: string, enum: [retry, bounce, delete, thaw] }
+      responses:
+        "200":
+          description: ActionResult with outcome attempt_started, bounced, removed or thawed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ActionResult" }
+        "400": { description: Not an exim message ID, or an unknown action. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { description: The message is no longer in the queue; outcome is gone and nothing ran. }
+        "500": { description: The action failed or its outcome could not be read back; outcome is unchanged. }
+        "503": { description: The mail queue is not available on this host, or systemd-run cannot start a unit and the action did not run (outcome unchanged). }
   "/api/v1/email/forwarders":
     get:
       operationId: get_email_forwarders

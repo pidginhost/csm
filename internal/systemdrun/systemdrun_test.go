@@ -63,6 +63,23 @@ func TestArgvWaitsWhenNotPiping(t *testing.T) {
 	}
 }
 
+// A unit started with NoWait must hand control back once it has started:
+// --pipe and --wait both hold the caller until the command exits, which for a
+// delivery attempt can take minutes.
+func TestSystemdrunNoWaitArgv(t *testing.T) {
+	for _, opt := range []Options{{NoWait: true}, {NoWait: true, Pipe: true}} {
+		_, args := Argv("/usr/bin/systemd-run", opt, "/usr/sbin/exim", "-M", "1tAbCd-000001-Ab")
+
+		if contains(args, "--wait") || contains(args, "--pipe") {
+			t.Errorf("%+v: argv must neither wait nor pipe: %v", opt, args)
+		}
+		want := "--quiet --collect -- /usr/sbin/exim -M 1tAbCd-000001-Ab"
+		if got := strings.Join(args, " "); got != want {
+			t.Errorf("%+v: argv = %q, want %q", opt, got, want)
+		}
+	}
+}
+
 func TestArgvSetsRuntimeMax(t *testing.T) {
 	_, args := Argv("/usr/bin/systemd-run", Options{RuntimeMax: 90 * time.Second}, "/bin/true")
 

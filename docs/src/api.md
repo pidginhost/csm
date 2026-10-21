@@ -1245,6 +1245,9 @@ GET  /api/v1/email/forwarders    Mail forwarder inventory with destination provi
 GET  /api/v1/email/deferrals     Outbound deferral rollup by provider and sending IP with reason codes, parsed from exim_mainlog (read scope)
 GET  /api/v1/email/queue-composition  Mail queue makeup: real vs null-sender bounce backscatter, frozen count, oldest age, top stuck recipients (read scope)
 POST /api/v1/email/queue/flush-backscatter  Request removal of frozen null-sender messages from the exim queue on cPanel hosts; returns the count of targeted messages no longer queued, reports incomplete verification as 500, or returns 503 when unavailable (admin scope, CSRF)
+GET  /api/v1/email/queue         One page of the exim queue on cPanel hosts, oldest first, each message with why it is stuck; page (default 1), limit (default 25, max 100), filter=all|frozen|backscatter, q (sender or recipient substring) (admin scope)
+GET  /api/v1/email/queue/{id}    One queued message with all undelivered recipients (up to 1,000), why it is stuck and the last 20 lines of its msglog; 404 when it is not queued (admin scope)
+POST /api/v1/email/queue/{id}/{action}  retry, bounce (return to sender), delete or thaw one queued message; answers the outcome the queue shows afterwards (admin scope, CSRF)
 GET  /api/v1/email/held          Forward copies held by the forward guard (admin scope)
 POST /api/v1/email/held/{id}/release   Re-inject a held forward copy to its external recipient (admin scope, CSRF)
 DELETE /api/v1/email/held/{id}   Discard a held forward copy (admin scope, CSRF)
@@ -1277,6 +1280,25 @@ The overview reads queue depth on every request. Queue detail is refreshed
 at most once per minute, even if the queue empties and refills. An empty queue
 discards its previous detail; new mail has `detail_unavailable: true` until
 the next listing. Failed listings can reuse detail for at most ten minutes.
+
+The queue list and the overview share one queue listing, refreshed at most
+once per minute and after any queue action. `total` counts the messages that
+match `filter` and `q`; `frozen`, `backscatter` (null-sender messages) and
+`oldest_seconds` describe the whole queue. When no listing has succeeded in
+the last ten minutes the list answers `unavailable: true` with no items and no
+counts. Each message's `reason` (`class`, `text`, `raw`) comes from its msglog
+and is reused for a minute. A message thawed since it froze shows
+`retry_wait` until its next delivery attempt.
+
+Queue actions run exim as a systemd transient unit and never inside the
+daemon's sandbox: without systemd-run they answer 503 and nothing runs. Each
+action first checks that the message is still queued; when it is not, the
+answer is 409 with `outcome: "gone"` and nothing runs. `retry` answers
+`attempt_started` as soon as the delivery attempt has started. `bounce`,
+`delete` and `thaw` answer `bounced`, `removed` and `thawed` only when the
+queue shows the change, and `unchanged` with an error otherwise. Every
+attempt is written to the UI audit log as `email_queue_<action>` with the
+message ID and the outcome.
 
 The rspamd status follows live health probes. Dismissing an outage finding
 does not change it to `up`. Version display strings are bounded whether

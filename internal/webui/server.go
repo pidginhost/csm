@@ -121,8 +121,12 @@ type Server struct {
 	deferralReporter   intel.Reporter
 	queueReporter      intel.QueueReporter
 	queueFlusher       intel.QueueFlusher
+	queueAdmin         intel.QueueAdmin
 	forwardHeld        heldForwardStore
 	version            string
+	// queueReasons caches msglog reasons for the queue list by message ID.
+	queueReasonMu sync.Mutex
+	queueReasons  map[string]cachedQueueReason
 	// Host metrics are sampled when the Performance page asks, at most once
 	// per perfSampleTTL; perfMu makes concurrent requests share a sample.
 	perfSample         atomic.Pointer[perfSample]
@@ -216,6 +220,7 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 		deferralReporter: selectDeferralReporter(),
 		queueReporter:    selectQueueReporter(),
 		queueFlusher:     selectQueueFlusher(),
+		queueAdmin:       selectQueueAdmin(),
 		forwardHeld:      selectForwardHeld(),
 		verifyFinding:    checks.VerifyFindingInput,
 		applyFix:         checks.ApplyFix,
@@ -369,6 +374,9 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	mux.Handle("/api/v1/email/deferrals", s.requireRead(http.HandlerFunc(s.apiEmailDeferrals)))
 	mux.Handle("/api/v1/email/queue-composition", s.requireRead(http.HandlerFunc(s.apiEmailQueueComposition)))
 	mux.Handle("/api/v1/email/queue/flush-backscatter", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiEmailFlushBackscatter))))
+	mux.Handle("/api/v1/email/queue", s.requireAuth(getOnly(http.HandlerFunc(s.apiEmailQueueList))))
+	mux.Handle("/api/v1/email/queue/{id}", s.requireAuth(getOnly(http.HandlerFunc(s.apiEmailQueueMessage))))
+	mux.Handle("/api/v1/email/queue/{id}/{action}", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiEmailQueueAction))))
 	mux.Handle("/api/v1/email/held", s.requireAuth(http.HandlerFunc(s.apiEmailHeldList)))
 	mux.Handle("/api/v1/email/held/", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiEmailHeldAction))))
 	mux.Handle("/api/v1/performance", s.requireAuth(getOnly(http.HandlerFunc(s.apiPerformance))))

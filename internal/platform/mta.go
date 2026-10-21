@@ -10,6 +10,10 @@ import (
 // EximMainLog is the Exim main log the daemon follows on cPanel hosts.
 const EximMainLog = "/var/log/exim_mainlog"
 
+// EximSpoolRoot is the Exim spool directory on cPanel hosts, holding input/
+// and msglog/.
+const EximSpoolRoot = "/var/spool/exim"
+
 // EximLocalSkeleton is the full set of cPanel exim.conf.local section
 // markers, written when a host has no exim.conf.local yet. cPanel's
 // buildeximconf injects whatever follows each marker into exim.conf.
