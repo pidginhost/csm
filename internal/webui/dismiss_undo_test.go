@@ -4,9 +4,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/state"
 )
 
 func TestBulkDismissRecordsOneUndoForEveryKey(t *testing.T) {
@@ -124,4 +127,69 @@ func TestDismissOffersUndoThatRestoresTheFinding(t *testing.T) {
 	if !found {
 		t.Fatal("undo of a dismissal must be audited")
 	}
+}
+
+// An undo that waited for the next due flush could be lost to a hard kill
+// after the dismissal had already reached disk. The restarted daemon would
+// then suppress a finding the UI lists as active.
+func TestUndoDismissSavesStateAtOnce(t *testing.T) {
+	s := newTestServerWithBbolt(t, "tok")
+	dir := t.TempDir()
+	st, err := state.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	s.store = st
+
+	f := alert.Finding{Check: "webshell", Severity: alert.Critical, Message: "Webshell found", FilePath: "/home/a/public_html/x.php"}
+	s.store.Update([]alert.Finding{f})
+	s.store.SetLatestFindings([]alert.Finding{f})
+
+	body, _ := json.Marshal(map[string]string{"key": f.Key()})
+	rec := httptest.NewRecorder()
+	s.apiDismissFinding(rec, bearerRequest("POST", "/api/v1/dismiss", body))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("dismiss status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		UndoToken string `json:"undo_token"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	// A due flush puts the dismissal on disk.
+	if err := s.store.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	if !savedEntry(t, dir, f.Key()).IsBaseline {
+		t.Fatal("precondition: the dismissal should be on disk")
+	}
+
+	runBody, _ := json.Marshal(undoRunRequest{ID: resp.UndoToken})
+	rec = httptest.NewRecorder()
+	s.apiUndoRun(rec, bearerRequest("POST", "/api/v1/undo/run", runBody))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("undo status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if savedEntry(t, dir, f.Key()).IsBaseline {
+		t.Fatal("undo did not reach state.json: a restart would suppress the finding")
+	}
+}
+
+func savedEntry(t *testing.T, dir, key string) state.Entry {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(dir, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var entries map[string]state.Entry
+	if err := json.Unmarshal(data, &entries); err != nil {
+		t.Fatal(err)
+	}
+	e, ok := entries[key]
+	if !ok {
+		t.Fatalf("state.json has no entry for %s", key)
+	}
+	return e
 }

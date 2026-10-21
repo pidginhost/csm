@@ -137,3 +137,29 @@ func TestAlertDispatcherTickFlushesDueState(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+// Close runs only after the workers drain, so a stop that overruns the
+// systemd timeout would lose the pending window. The dispatcher writes it as
+// soon as it stops.
+func TestAlertDispatcherStopFlushesPendingState(t *testing.T) {
+	dir := t.TempDir()
+	st, err := state.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	prevInterval := alertBatchInterval
+	alertBatchInterval = time.Hour // no tick may write the state
+	t.Cleanup(func() { alertBatchInterval = prevInterval })
+
+	st.SetRaw("_dispatcher_stop_probe", "pending")
+	d := New(&config.Config{StatePath: dir}, st, nil, "")
+	d.wg.Add(1)
+	go d.alertDispatcher()
+	close(d.stopCh)
+	d.wg.Wait()
+
+	if !stateFileHas(t, dir, "_dispatcher_stop_probe") {
+		t.Fatal("dispatcher stopped without writing the pending state")
+	}
+}

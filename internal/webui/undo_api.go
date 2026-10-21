@@ -350,6 +350,14 @@ func (s *Server) runUndoEntry(r *http.Request, entry store.UndoEntry) (undoRunRe
 				resp.Count++
 			}
 		}
+		// Save now, once for all keys: a dismissal already on disk would
+		// otherwise survive a crash and suppress the restored finding. A
+		// failed write stays pending for the next due flush.
+		if resp.Count > 0 {
+			if err := s.store.Flush(); err != nil {
+				log.Printf("webui: save undo of dismissal: %v", err)
+			}
+		}
 	default:
 		return undoRunResponse{}, fmt.Errorf("unknown inverse action %q", entry.Inverse)
 	}
