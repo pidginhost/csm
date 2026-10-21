@@ -218,6 +218,16 @@ func TestFirewallManifestRejectsInvalidBatches(t *testing.T) {
 			*a = admissionFixture()
 			a.Members = []firewall.ActionMember{{Request: a.Request}}
 		},
+		"one member victim aliases its target": func(a *firewall.FirewallAction) {
+			m := a.Members[0]
+			m.Request.Target = "::ffff:" + m.Victims[0].IP
+			a.Request, a.Budget, a.Members = m.Request, m.Budget, []firewall.ActionMember{m}
+		},
+		"one member victim aliases its IPv6 target": func(a *firewall.FirewallAction) {
+			m := a.Members[0]
+			m.Request.Target, m.Victims[0].IP = "2001:DB8::5a", "2001:db8::5a"
+			a.Request, a.Budget, a.Members = m.Request, m.Budget, []firewall.ActionMember{m}
+		},
 	}
 	for name, change := range cases {
 		t.Run(name, func(t *testing.T) {

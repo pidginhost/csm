@@ -112,7 +112,12 @@ func validateFirewallManifest(a firewall.FirewallAction) error {
 				}
 			}
 		}
-		ids[r.ID], targets[r.Target] = true, true
+		// A one-member target may be any spelling; victims compare by address.
+		target := r.Target
+		if addr, err := netip.ParseAddr(target); err == nil {
+			target = addr.Unmap().String()
+		}
+		ids[r.ID], targets[target] = true, true
 		if err := validateFirewallBudget(r.Source, m.Budget); err != nil {
 			return err
 		}
