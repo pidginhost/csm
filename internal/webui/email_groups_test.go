@@ -588,3 +588,68 @@ func TestEmailGroupsUnhandledFirstThenLimit(t *testing.T) {
 		}
 	}
 }
+
+// The omitted tail can contain an unblocked attacker or an addressless
+// finding for any returned group. A partial scan cannot prove handling.
+func TestEmailGroupsTruncatedHistoryIsNotHandled(t *testing.T) {
+	for _, attacker := range []string{"198.51.100.8", ""} {
+		t.Run("older attacker="+attacker, func(t *testing.T) {
+			s := newTestServerWithBbolt(t, "tok")
+			now := time.Now().Add(-time.Minute)
+			findings := []alert.Finding{emailFinding("mail_bruteforce", alert.High, "user@example.com", "", attacker, now.Add(-time.Hour))}
+			for i := 0; i < emailGroupsScanCap; i++ {
+				findings = append(findings, emailFinding("mail_bruteforce", alert.High, "user@example.com", "", "203.0.113.7", now))
+			}
+			s.store.AppendHistory(findings)
+			writeFirewallState(t, s.cfg.StatePath, firewall.FirewallState{Blocked: []firewall.BlockedEntry{{IP: "203.0.113.7"}}})
+
+			resp := getEmailGroups(t, s, "")
+			if !resp.Truncated || resp.Scanned != emailGroupsScanCap || len(resp.Groups) != 1 {
+				t.Fatalf("expected one partially scanned group: %+v", resp)
+			}
+			if resp.Groups[0].Handled || resp.HandledCount != 0 {
+				t.Fatalf("incomplete attacker history marked handled: %+v", resp)
+			}
+		})
+	}
+}
+
+func TestEmailGroupsStaleHistoryIsNotHandled(t *testing.T) {
+	withMemoAges(t, time.Hour, time.Hour)
+	s := newTestServerWithBbolt(t, "tok")
+	now := time.Now().Add(-time.Minute)
+	s.store.AppendHistory([]alert.Finding{emailFinding("mail_bruteforce", alert.High, "user@example.com", "", "203.0.113.7", now)})
+	writeFirewallState(t, s.cfg.StatePath, firewall.FirewallState{Blocked: []firewall.BlockedEntry{{IP: "203.0.113.7"}}})
+	if resp := getEmailGroups(t, s, ""); len(resp.Groups) != 1 || !resp.Groups[0].Handled || resp.HandledCount != 1 {
+		t.Fatalf("complete history should be handled: %+v", resp)
+	}
+	s.store.AppendHistory([]alert.Finding{emailFinding("mail_bruteforce", alert.High, "user@example.com", "", "198.51.100.8", now.Add(time.Second))})
+	resp := getEmailGroups(t, s, "")
+	if len(resp.Groups) != 1 || resp.Groups[0].Count != 1 {
+		t.Fatalf("expected the throttled history snapshot: %+v", resp)
+	}
+	if resp.Groups[0].Handled || resp.HandledCount != 0 {
+		t.Fatalf("known stale attacker history marked handled: %+v", resp)
+	}
+}
+
+// Successful logins can mean stolen credentials; account sprays name only
+// their latest source. Neither is resolved by blocking the listed address.
+func TestEmailGroupsKeepLoginAndDistributedEvidence(t *testing.T) {
+	now := time.Now()
+	for _, check := range []string{"email_suspicious_geo", "mail_account_spray", "smtp_account_spray"} {
+		t.Run(check, func(t *testing.T) {
+			var findings []alert.Finding
+			for i := 0; i < 3; i++ {
+				findings = append(findings, emailFinding("mail_bruteforce", alert.High, "user@example.com", "", "203.0.113.7", now))
+			}
+			// Beyond the three displayed samples, but still part of the group.
+			findings = append(findings, emailFinding(check, alert.High, "user@example.com", "", "203.0.113.7", now.Add(-time.Minute)))
+			groups := buildEmailGroups(findings, now.Add(-time.Hour), now, "")
+			annotateEmailGroups(groups, map[netip.Addr]bool{netip.MustParseAddr("203.0.113.7"): true}, nil)
+			if len(groups) != 1 || groups[0].Count != 4 || groups[0].BlockState != "all" || groups[0].Handled {
+				t.Fatalf("blocking one source hid evidence needing attention: %+v", groups)
+			}
+		})
+	}
+}

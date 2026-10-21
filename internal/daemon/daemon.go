@@ -2532,7 +2532,7 @@ func (d *Daemon) startWebUI() {
 	d.webServer = srv
 	srv.SetHealthProvider(d)
 	srv.SetMailStats(d.mailStats)
-	srv.SetRspamdEndpoint(d.rspamdStatsEndpoint)
+	srv.SetRspamdSource(d.rspamdStatsStatus)
 	srv.SetFindingBus(d.findingBus)
 	if d.scanJobs != nil {
 		srv.SetScanJobs(d.scanJobs)

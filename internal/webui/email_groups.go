@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/store"
 )
@@ -45,13 +46,12 @@ type emailGroup struct {
 	// BlockState is all, some, none or no_ip: how many of IPs are under an
 	// enforced block now. It is empty when the firewall state is unreadable.
 	BlockState string `json:"block_state"`
-	// Handled marks an auth failure group whose every IP is blocked and
-	// whose every finding names its attacker. A blocked source IP does not
-	// end a compromised account or a spam run, so no other kind is handled.
+	// Handled marks an auth failure group whose every finding is answered
+	// by its blocked attackers. Compromise evidence remains actionable.
 	Handled bool `json:"handled"`
-	// addressless is set when a finding in the group names no attacker
-	// address, so blocking the group's IPs need not end what it reports.
-	addressless bool
+	// blockInsufficient covers missing addresses, successful logins, and
+	// distributed attacks that name only their latest source.
+	blockInsufficient bool
 }
 
 type emailGroupsResponse struct {
@@ -68,6 +68,7 @@ type emailGroupsResponse struct {
 	// BlocksUnavailable is set when the firewall state cannot be read. No
 	// group is handled then: an unknown block must not hide a group.
 	BlocksUnavailable bool `json:"blocks_unavailable"`
+	historyMark       string
 }
 
 // emailKindForCheck maps an alert check name to its email-workbench group
@@ -224,7 +225,12 @@ func buildEmailGroups(findings []alert.Finding, from, to time.Time, kindFilter s
 		if ip := alert.AttackerAddress(f); ip != "" {
 			agg.ipCounts[ip]++
 		} else {
-			agg.group.addressless = true
+			agg.group.blockInsufficient = true
+		}
+		// Subnet sprays are checked against coverage of their entire CIDR.
+		// Other findings follow the existing block-response policy.
+		if f.Check != "mail_subnet_spray" && f.Check != "smtp_subnet_spray" && !checks.IPResponseAnswersFinding(nil, f, true) {
+			agg.group.blockInsufficient = true
 		}
 		if f.Domain != "" {
 			agg.domainSet[strings.ToLower(f.Domain)] = struct{}{}
@@ -419,7 +425,14 @@ func (s *Server) apiEmailGroups(w http.ResponseWriter, r *http.Request) {
 	} else {
 		annotateEmailGroups(resp.Groups, ips, nets)
 	}
-	for _, g := range resp.Groups {
+	incomplete := resp.Truncated || s.store != nil && resp.historyMark != s.store.HistoryMark()
+	for i := range resp.Groups {
+		g := &resp.Groups[i]
+		// Before the response limit is applied, Truncated means history
+		// was cut short. A throttled memo can also omit new attackers.
+		if incomplete {
+			g.Handled = false
+		}
 		if g.Handled {
 			resp.HandledCount++
 		}
@@ -484,7 +497,7 @@ func annotateEmailGroups(groups []emailGroup, ips map[netip.Addr]bool, nets []ne
 		default:
 			g.BlockState = "none"
 		}
-		g.Handled = g.Kind == "auth_failure" && !g.addressless && g.BlockState == "all"
+		g.Handled = g.Kind == "auth_failure" && !g.blockInsufficient && g.BlockState == "all"
 	}
 }
 
@@ -507,7 +520,9 @@ func entryBlocked(s string, ips map[netip.Addr]bool, nets []netip.Prefix) bool {
 
 func (s *Server) buildEmailGroupsResponse(from, to time.Time, kindFilter string) emailGroupsResponse {
 	var findings []alert.Finding
+	var mark string
 	if s.store != nil {
+		mark = s.store.HistoryMark()
 		// Filter while walking history so unrelated findings, or findings
 		// newer than the requested range, never use up the scan budget.
 		findings = s.store.SearchHistorySince(from, emailGroupsScanCap+1, func(f alert.Finding) bool {
@@ -527,12 +542,13 @@ func (s *Server) buildEmailGroupsResponse(from, to time.Time, kindFilter string)
 
 	groups := buildEmailGroups(findings, from, to, kindFilter)
 	return emailGroupsResponse{
-		Groups:    groups,
-		Total:     len(groups),
-		From:      from.UTC(),
-		To:        to.UTC(),
-		Scanned:   scanned,
-		Truncated: truncated,
+		Groups:      groups,
+		Total:       len(groups),
+		From:        from.UTC(),
+		To:          to.UTC(),
+		Scanned:     scanned,
+		Truncated:   truncated,
+		historyMark: mark,
 	}
 }
 

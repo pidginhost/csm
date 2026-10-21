@@ -46,7 +46,7 @@ func newRspamdTestServer(t *testing.T, ep antispam.StatsEndpoint, reason string)
 	t.Helper()
 	s, tok := newTestServerWithReadToken(t)
 	s.cfg.EmailProtection.Antispam.Enabled = true
-	s.SetRspamdEndpoint(func() (antispam.StatsEndpoint, string) { return ep, reason })
+	s.SetRspamdSource(func() (antispam.StatsEndpoint, string, bool) { return ep, reason, false })
 	return s, tok
 }
 
@@ -120,7 +120,7 @@ func TestEmailRspamdRefetchesAfterTTLOrNewEndpoint(t *testing.T) {
 
 	moved := testRspamdEndpoint
 	moved.Address = "/run/rspamd/other.sock"
-	s.SetRspamdEndpoint(func() (antispam.StatsEndpoint, string) { return moved, "" })
+	s.SetRspamdSource(func() (antispam.StatsEndpoint, string, bool) { return moved, "", false })
 	getRspamd(t, s, tok)
 	if got := calls.Load(); got != 3 || seen[2] != moved {
 		t.Fatalf("after an endpoint change: %d reads, last %+v; want a third read of %+v", got, seen[len(seen)-1], moved)
@@ -183,6 +183,7 @@ func TestEmailRspamdBurstFetchesOnce(t *testing.T) {
 
 func TestEmailRspamdDownStillShowsMode(t *testing.T) {
 	s, tok := newRspamdTestServer(t, testRspamdEndpoint, "")
+	s.SetRspamdSource(func() (antispam.StatsEndpoint, string, bool) { return testRspamdEndpoint, "", true })
 	s.store.PurgeAndMergeFindings(nil, []alert.Finding{{Severity: alert.Critical, Check: "antispam_rspamd_down", Message: "rspamd is down", Timestamp: time.Now()}})
 	calls := stubRspamdStats(t, func(context.Context, antispam.StatsEndpoint) (antispam.RspamdStats, error) {
 		return antispam.RspamdStats{}, errors.New("cannot reach /run/rspamd/controller.sock")
@@ -205,6 +206,27 @@ func TestEmailRspamdDownStillShowsMode(t *testing.T) {
 	getRspamd(t, s, tok)
 	if got := calls.Load(); got != 1 {
 		t.Errorf("failed read retried %d times within the cache period, want 1 read", got)
+	}
+}
+
+func TestEmailRspamdDismissalDoesNotRecover(t *testing.T) {
+	s, tok := newRspamdTestServer(t, antispam.StatsEndpoint{}, "")
+	probeDown := true
+	s.SetRspamdSource(func() (antispam.StatsEndpoint, string, bool) { return antispam.StatsEndpoint{}, "", probeDown })
+	down := alert.Finding{Severity: alert.Critical, Check: "antispam_rspamd_down", Message: "rspamd is down", Timestamp: time.Now()}
+	s.store.PurgeAndMergeFindings(nil, []alert.Finding{down})
+	if resp, _ := getRspamd(t, s, tok); resp.Status != "down" {
+		t.Fatalf("before dismissal: status %q, want down", resp.Status)
+	}
+	if undo := s.store.DismissFindingWithUndo(down.Key()); len(undo.Removed) != 1 {
+		t.Fatalf("dismissal removed %d findings, want 1", len(undo.Removed))
+	}
+	if resp, _ := getRspamd(t, s, tok); resp.Status != "down" {
+		t.Fatalf("dismissal changed health to %q without a successful probe", resp.Status)
+	}
+	probeDown = false
+	if resp, _ := getRspamd(t, s, tok); resp.Status != "up" {
+		t.Fatalf("probe recovery left status %q, want up", resp.Status)
 	}
 }
 

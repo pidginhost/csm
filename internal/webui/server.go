@@ -159,11 +159,11 @@ type Server struct {
 	statsMemo    historyMemo
 	timelineMemo historyMemo
 	emailMemos   historyMemos
-	// rspamdEndpoint is set before Start. rspamdMu guards rspamdCache and
+	// rspamdSource is set before Start. rspamdMu guards rspamdCache and
 	// is held across a controller read.
-	rspamdEndpoint func() (antispam.StatsEndpoint, string)
-	rspamdMu       sync.Mutex
-	rspamdCache    rspamdFetch
+	rspamdSource func() (ep antispam.StatsEndpoint, reason string, down bool)
+	rspamdMu     sync.Mutex
+	rspamdCache  rspamdFetch
 	// accountRoots and scanAccounts are the platform's account inventory;
 	// per server so handler tests can supply their own tree.
 	accountRoots func() []string
@@ -785,11 +785,12 @@ func (s *Server) mailStatsCounter() *mailstats.Counter {
 	return s.mailStats.Load()
 }
 
-// SetRspamdEndpoint installs the daemon's answer to where rspamd's
+// SetRspamdSource installs the daemon's answer to where rspamd's
 // controller can be read without a password, from the last completed
-// antispam pass, and why not when it cannot. Call it before Start.
-func (s *Server) SetRspamdEndpoint(fn func() (antispam.StatsEndpoint, string)) {
-	s.rspamdEndpoint = fn
+// antispam pass, and why not when it cannot. The down flag comes from live
+// probe health, independent of dismissed findings. Call it before Start.
+func (s *Server) SetRspamdSource(fn func() (antispam.StatsEndpoint, string, bool)) {
+	s.rspamdSource = fn
 }
 
 // emailAVMode returns the installed AV watcher mode, "" before it is set.

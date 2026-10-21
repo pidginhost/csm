@@ -108,6 +108,9 @@ func statsVersion(r CommandResult) string {
 	if v, _, err := ParseRspamdVersion(line); err == nil {
 		return v
 	}
+	if utf8.RuneCountInString(line) > maxStatsVersion {
+		return ""
+	}
 	return line
 }
 

@@ -156,6 +156,10 @@ func TestStatsEndpointVersion(t *testing.T) {
 		{CommandResult{Stdout: "Rspamd daemon version 3.9.1\n\nCPU architecture x86_64\n"}, "3.9.1"},
 		{CommandResult{Stdout: "  3.9.1 \r\nRspamd daemon version 9.9.9\n"}, "3.9.1"},
 		{CommandResult{Stdout: "rspamd 3.9.1-custom\n"}, "rspamd 3.9.1-custom"},
+		{CommandResult{Stdout: strings.Repeat("v", 32)}, strings.Repeat("v", 32)},
+		{CommandResult{Stdout: strings.Repeat("v", 33)}, ""},
+		{CommandResult{Stdout: strings.Repeat("\u00e9", 32)}, strings.Repeat("\u00e9", 32)},
+		{CommandResult{Stdout: strings.Repeat("\u00e9", 33)}, ""},
 		{CommandResult{Stdout: "Rspamd daemon version 3.9.1\n", Err: errors.New("exit status 1")}, ""},
 		{CommandResult{}, ""},
 	} {

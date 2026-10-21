@@ -162,9 +162,8 @@ func TestQueueSnapshotFailedListing(t *testing.T) {
 	}
 }
 
-// An empty queue holds nothing frozen, and a listing taken before it emptied
-// describes mail that is gone, so a queue that goes 2, 0, 1 within a minute
-// is listed afresh.
+// Emptying the queue invalidates the old detail, but must not reset the
+// listing throttle when new mail arrives within the same minute.
 func TestQueueSnapshotEmptyQueue(t *testing.T) {
 	st := stubQueue(t, "2\n", queueListing)
 	t0 := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
@@ -181,8 +180,15 @@ func TestQueueSnapshotEmptyQueue(t *testing.T) {
 
 	st.count, st.listing = "1\n", "10m  1.0K 1tQxZb-000GhI-56 <>\n          new@example.net\n"
 	q = queueSnapshot(t0.Add(20 * time.Second))
+	if st.calls["-bp"] != 1 || !q.DetailUnavailable || q.Frozen != 0 || q.OldestAgeSeconds != nil {
+		t.Errorf("after 2, 0, 1: %+v after %d listings, want unknown detail until the next listing", q, st.calls["-bp"])
+	}
+	q = queueSnapshot(t0.Add(time.Minute))
 	if st.calls["-bp"] != 2 || q.Frozen != 0 || q.OldestAgeSeconds == nil || *q.OldestAgeSeconds != 600 {
-		t.Errorf("after 2, 0, 1: %+v after %d listings, want a fresh listing of the new message", q, st.calls["-bp"])
+		t.Errorf("after a minute: %+v after %d listings, want a fresh listing of the new message", q, st.calls["-bp"])
+	}
+	if st.calls["-bpc"] != 4 {
+		t.Errorf("count ran %d times, want every snapshot", st.calls["-bpc"])
 	}
 }
 

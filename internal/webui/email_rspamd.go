@@ -4,13 +4,10 @@ import (
 	"cmp"
 	"context"
 	"net/http"
-	"slices"
 	"time"
 
-	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/antispam"
 	"github.com/pidginhost/csm/internal/antispam/hostfacts"
-	"github.com/pidginhost/csm/internal/config"
 )
 
 // rspamd's numbers are cached this long, and one read of its controller
@@ -57,16 +54,21 @@ type rspamdFetch struct {
 // antispam mode, and rspamd's own counters since it started.
 func (s *Server) apiEmailRspamd(w http.ResponseWriter, r *http.Request) {
 	cfg := s.liveCfg()
-	resp := emailRspamdResponse{Status: s.rspamdStatus(cfg), Mode: antispamMode(cfg), FetchedAt: time.Now()}
-	if resp.Status == "off" {
+	resp := emailRspamdResponse{Status: "off", Mode: antispamMode(cfg), FetchedAt: time.Now()}
+	if !cfg.EmailProtection.Antispam.Enabled {
 		resp.Reason = rspamdOff
 		writeJSON(w, resp)
 		return
 	}
 	var ep antispam.StatsEndpoint
 	var reason string
-	if s.rspamdEndpoint != nil {
-		ep, reason = s.rspamdEndpoint()
+	var down bool
+	if s.rspamdSource != nil {
+		ep, reason, down = s.rspamdSource()
+	}
+	resp.Status = "up"
+	if down {
+		resp.Status = "down"
 	}
 	resp.Version = ep.Version
 	if ep.Address == "" {
@@ -80,20 +82,6 @@ func (s *Server) apiEmailRspamd(w http.ResponseWriter, r *http.Request) {
 		resp.Version = cmp.Or(f.stats.Version, ep.Version)
 	}
 	writeJSON(w, resp)
-}
-
-// rspamdStatus is off while antispam is disabled and down while the health
-// probe reports rspamd down.
-func (s *Server) rspamdStatus(cfg *config.Config) string {
-	if !cfg.EmailProtection.Antispam.Enabled {
-		return "off"
-	}
-	if s.store != nil && slices.ContainsFunc(s.store.LatestFindings(), func(f alert.Finding) bool {
-		return f.Check == "antispam_rspamd_down"
-	}) {
-		return "down"
-	}
-	return "up"
 }
 
 // rspamdStats returns the cached read of ep, reading the controller again

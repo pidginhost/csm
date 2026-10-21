@@ -1250,6 +1250,21 @@ POST /api/v1/email/quarantine/{id}/release  Release a quarantined message (admin
 DELETE /api/v1/email/quarantine/{id}        Delete a quarantined message (admin scope, CSRF)
 ```
 
+Email groups report `handled: true` only for auth failures whose complete,
+current history is answered by active blocks on every attacker address or
+covering subnet. Missing addresses, truncated or stale history, successful
+logins, and account sprays stay unhandled. Unreadable firewall state sets
+`blocks_unavailable: true` and leaves every group unhandled.
+
+The overview reads queue depth on every request. Queue detail is refreshed
+at most once per minute, even if the queue empties and refills. An empty queue
+discards its previous detail; new mail has `detail_unavailable: true` until
+the next listing. Failed listings can reuse detail for at most ten minutes.
+
+The rspamd status follows live health probes. Dismissing an outage finding
+does not change it to `up`. Version display strings are bounded whether
+they come from the controller or the installed program.
+
 ## Hardening
 
 ```

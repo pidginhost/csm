@@ -457,12 +457,14 @@ func (d *Daemon) reportAntispam(out reconcile.Outcome) {
 	d.processScanFindings(d.currentCfg(), out.Findings, out.Checks, "antispam")
 }
 
-// rspamdStatsEndpoint returns what the last completed pass published. It
-// is zero before a pass completes, so always on a host without cPanel, and
-// after a pass with antispam disabled.
-func (d *Daemon) rspamdStatsEndpoint() (antispam.StatsEndpoint, string) {
+// rspamdStatsStatus pairs the last completed pass's endpoint with live
+// probe health. Dismissing an outage finding must not report recovery.
+func (d *Daemon) rspamdStatsStatus() (antispam.StatsEndpoint, string, bool) {
+	down := slices.ContainsFunc(d.antispamHealth.Active(), func(f alert.Finding) bool {
+		return f.Check == reconcile.CheckRspamdDown
+	})
 	if src := d.rspamdStats.Load(); src != nil {
-		return src.ep, src.reason
+		return src.ep, src.reason, down
 	}
-	return antispam.StatsEndpoint{}, ""
+	return antispam.StatsEndpoint{}, "", down
 }

@@ -382,7 +382,7 @@ func queueSnapshot(now time.Time) emailQueueState {
 	defer queueDetail.Unlock()
 	d := &queueDetail.state
 	if ok && size == 0 {
-		*d = queueDetailState{}
+		*d = queueDetailState{tried: d.tried}
 		return q
 	}
 	if d.tried.IsZero() || now.Sub(d.tried) >= queueDetailTTL {
