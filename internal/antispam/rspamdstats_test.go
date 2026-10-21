@@ -2,6 +2,7 @@ package antispam
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"reflect"
 	"strings"
@@ -180,6 +181,28 @@ func TestParseRspamdStat(t *testing.T) {
 	}
 }
 
+// The controller can be spoofed on TCP, so display strings are bounded: a
+// version over 32 characters is dropped for the host's, and an action name
+// over 64 characters is skipped.
+func TestParseRspamdStatBoundsStrings(t *testing.T) {
+	version, name := strings.Repeat("9", 32), strings.Repeat("a", 64)
+	body := fmt.Sprintf(`{"version":%q,"actions":{%q:1,%q:2,"reject":3}}`, version, name, name+"b")
+	got, err := ParseRspamdStat([]byte(body))
+	want := RspamdStats{Version: version, Actions: map[string]int64{name: 1, "reject": 3}}
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %+v err %v, want %+v", got, err, want)
+	}
+	got, err = ParseRspamdStat([]byte(fmt.Sprintf(`{"version":%q,"scanned":4}`, version+"1")))
+	if err != nil || !reflect.DeepEqual(got, RspamdStats{Scanned: 4}) {
+		t.Fatalf("long version: got %+v err %v", got, err)
+	}
+	// Characters, not bytes: a 32-character version of two-byte runes stays.
+	wide := strings.Repeat("\u00e9", 32)
+	if got, err := ParseRspamdStat([]byte(fmt.Sprintf(`{"version":%q}`, wide))); err != nil || got.Version != wide {
+		t.Fatalf("wide version: got %+v err %v", got, err)
+	}
+}
+
 func TestParseRspamdStatToleratesAbsentFields(t *testing.T) {
 	for _, tc := range []struct {
 		body string
@@ -219,6 +242,7 @@ func TestParseRspamdStatRejectsGarbage(t *testing.T) {
 }
 
 func TestParseRspamdCountersTop(t *testing.T) {
+	long := strings.Repeat("S", 128)
 	body := []byte(`[
 		{"symbol":"R_A","weight":1,"frequency":0.1,"hits":5,"time":0.001},
 		{"symbol":"R_B","hits":90},
@@ -233,13 +257,21 @@ func TestParseRspamdCountersTop(t *testing.T) {
 		{"weight":1,"hits":1000},
 		{"symbol":"","hits":999},
 		{"symbol":"R_ZERO","hits":0},
-		null
+		null,
+		{"symbol":"R_GHOST","weight":0.0,"hits":0.0},
+		{"symbol":"R_K","hits":12.0},
+		{"symbol":"R_FRAC","hits":500.5},
+		{"symbol":"` + long + `","hits":80},
+		{"symbol":"` + long + `X","hits":1000}
 	]`)
 	got, err := ParseRspamdCounters(body, 8)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []RuleHits{{"R_B", 90}, {"R_F", 70}, {"R_I", 60}, {"R_C", 40}, {"R_D", 40}, {"R_A", 5}, {"R_J", 4}, {"R_E", 3}}
+	// rspamd prints some counts as doubles (0.0 for virtual symbols): an
+	// integral double counts, a fraction drops only its own entry, and a
+	// symbol over 128 characters is not shown.
+	want := []RuleHits{{"R_B", 90}, {long, 80}, {"R_F", 70}, {"R_I", 60}, {"R_C", 40}, {"R_D", 40}, {"R_K", 12}, {"R_A", 5}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %+v, want %+v", got, want)
 	}
@@ -254,7 +286,7 @@ func TestParseRspamdCountersTop(t *testing.T) {
 
 func TestParseRspamdCountersRejectsGarbage(t *testing.T) {
 	for _, b := range []string{"", "not json", `{}`, `null`, `[1]`, `["R_A"]`, `[{"symbol":"R_A","hits":"many"}]`,
-		`[{"symbol":5,"hits":1}]`, `[{"symbol":"R_A","hits":1.5}]`, `[] trailing`} {
+		`[{"symbol":5,"hits":1}]`, `[{"symbol":"R_A","hits":"12"}]`, `[] trailing`} {
 		got, err := ParseRspamdCounters([]byte(b), 8)
 		if err == nil {
 			t.Errorf("%q accepted as %+v", b, got)

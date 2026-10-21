@@ -20,7 +20,8 @@ const (
 var testStats = antispam.RspamdStats{Scanned: 1200, Learned: 30, HamCount: 20, SpamCount: 10, Version: "3.9.1",
 	Actions: map[string]int64{"reject": 41, "add header": 9}, TopRules: []antispam.RuleHits{{Symbol: "BAYES_SPAM", Hits: 12}, {Symbol: "R_SPF_FAIL", Hits: 7}}}
 
-// statsServer answers /stat and /counters and records each request.
+// statsServer answers /stat and /counters, 404 for an empty one, and
+// records each request.
 type statsServer struct {
 	mu       sync.Mutex
 	requests []*http.Request
@@ -32,10 +33,10 @@ func (s *statsServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	s.requests = append(s.requests, r.Clone(context.Background()))
 	s.mu.Unlock()
-	switch r.URL.Path {
-	case "/stat":
+	switch {
+	case r.URL.Path == "/stat" && s.stat != "":
 		_, _ = w.Write([]byte(s.stat))
-	case "/counters":
+	case r.URL.Path == "/counters" && s.counters != "":
 		_, _ = w.Write([]byte(s.counters))
 	default:
 		http.NotFound(w, r)
@@ -111,29 +112,76 @@ func TestReadRspamdStatsUnix(t *testing.T) {
 	}
 }
 
+func padded(open, pad, end string, size int) string {
+	return open + strings.Repeat(pad, size-len(open)-len(end)) + end
+}
+
 func TestReadRspamdStatsBodyLimit(t *testing.T) {
-	padded := func(open, pad, end string, size int) string {
-		return open + strings.Repeat(pad, size-len(open)-len(end)) + end
+	stat := padded(`{"scanned":1,"x":"`, "x", `"}`, 1<<20)
+	if _, err := ReadRspamdStats(context.Background(), tcpStatsServer(t, &statsServer{stat: stat, counters: `[]`})); err != nil {
+		t.Fatalf("/stat at the limit: %v", err)
 	}
+	_, err := ReadRspamdStats(context.Background(), tcpStatsServer(t, &statsServer{stat: stat + " ", counters: `[]`}))
+	if err == nil || strings.Contains(err.Error(), "xxxx") {
+		t.Fatalf("/stat over the limit: %v", err)
+	}
+	// An oversized /counters loses only the rule list.
+	counters := padded(`[{"symbol":"R_A","hits":1}`, " ", `]`, 4<<20)
 	for _, tc := range []struct {
-		name, stat, counters string
-		ok                   bool
+		counters string
+		want     []antispam.RuleHits
 	}{
-		{"stat at limit", padded(`{"version":"`, "x", `"}`, 1<<20), `[]`, true},
-		{"stat over limit", padded(`{"version":"`, "x", `"}`, 1<<20+1), `[]`, false},
-		{"counters at limit", `{}`, padded(`[`, " ", `]`, 4<<20), true},
-		{"counters over limit", `{}`, padded(`[{"symbol":"`, "x", `","hits":1}]`, 4<<20+1), false},
+		{counters, []antispam.RuleHits{{Symbol: "R_A", Hits: 1}}},
+		{counters + " ", nil},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			s := &statsServer{stat: tc.stat, counters: tc.counters}
-			_, err := ReadRspamdStats(context.Background(), tcpStatsServer(t, s))
-			if (err == nil) != tc.ok {
-				t.Fatalf("err %v, want ok %t", err, tc.ok)
-			}
-			if err != nil && strings.Contains(err.Error(), "xxxx") {
-				t.Fatalf("error repeats the reply: %v", err)
+		got, err := ReadRspamdStats(context.Background(), tcpStatsServer(t, &statsServer{stat: `{"scanned":1}`, counters: tc.counters}))
+		if err != nil || got.Scanned != 1 || !reflect.DeepEqual(got.TopRules, tc.want) {
+			t.Fatalf("/counters of %d bytes: got %+v err %v, want rules %+v", len(tc.counters), got, err, tc.want)
+		}
+	}
+}
+
+// The rule list is optional: when only /counters fails, the card still
+// gets the /stat numbers.
+func TestReadRspamdStatsWithoutCounters(t *testing.T) {
+	dropped := func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/stat" {
+			_, _ = w.Write([]byte(testStatBody))
+			return
+		}
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err == nil {
+			_ = conn.Close()
+		}
+	}
+	want := testStats
+	want.TopRules = nil
+	for name, h := range map[string]http.Handler{
+		"connection dropped": http.HandlerFunc(dropped),
+		"HTTP 404":           &statsServer{stat: testStatBody},
+		"not an array":       &statsServer{stat: testStatBody, counters: `{"symbol":"R_A"}`},
+		"invalid entry":      &statsServer{stat: testStatBody, counters: `[{"symbol":"R_A","hits":"many"}]`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := ReadRspamdStats(context.Background(), tcpStatsServer(t, h))
+			if err != nil || !reflect.DeepEqual(got, want) {
+				t.Fatalf("got %+v err %v, want %+v", got, err, want)
 			}
 		})
+	}
+	sock := serve(t, t.TempDir(), (&statsServer{stat: testStatBody}).ServeHTTP)
+	got, err := ReadRspamdStats(context.Background(), antispam.StatsEndpoint{Unix: true, Address: sock, RspamdUID: wantPeer(), Version: "3.9.1"})
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("unix: got %+v err %v, want %+v", got, err, want)
+	}
+}
+
+// A version string longer than any real one gives way to the host's.
+func TestReadRspamdStatsLongVersion(t *testing.T) {
+	s := &statsServer{stat: `{"version":"` + strings.Repeat("9", 33) + `"}`, counters: `[]`}
+	got, err := ReadRspamdStats(context.Background(), tcpStatsServer(t, s))
+	if err != nil || got.Version != "3.9.1" {
+		t.Fatalf("got %+v err %v", got, err)
 	}
 }
 
@@ -152,11 +200,10 @@ func TestReadRspamdStatsRejectsReplies(t *testing.T) {
 		http.Redirect(w, r, "/elsewhere", http.StatusFound)
 	})
 	for name, h := range map[string]http.Handler{
-		"unauthorized":     unauthorized,
-		"redirect":         redirect,
-		"bad stat":         &statsServer{stat: `{"scanned":"many"}`, counters: testCountersBody},
-		"bad counters":     &statsServer{stat: testStatBody, counters: `{"symbol":"many"}`},
-		"missing counters": &statsServer{stat: testStatBody},
+		"unauthorized": unauthorized,
+		"redirect":     redirect,
+		"bad stat":     &statsServer{stat: `{"scanned":"many"}`, counters: testCountersBody},
+		"missing stat": &statsServer{counters: testCountersBody},
 	} {
 		t.Run(name, func(t *testing.T) {
 			ep := tcpStatsServer(t, h)

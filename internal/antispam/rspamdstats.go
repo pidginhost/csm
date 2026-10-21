@@ -5,12 +5,22 @@ import (
 	"cmp"
 	"encoding/json"
 	"errors"
+	"maps"
 	"math"
 	"net"
 	"net/netip"
 	"slices"
 	"strconv"
 	"strings"
+	"unicode/utf8"
+)
+
+// The controller on a TCP port can be spoofed, so the strings it hands the
+// web UI are bounded, in characters.
+const (
+	maxStatsVersion = 32
+	maxStatsAction  = 64
+	maxStatsSymbol  = 128
 )
 
 // Stats endpoint reasons. They are fixed strings so the web UI never shows
@@ -121,7 +131,8 @@ type RspamdStats struct {
 
 // ParseRspamdStat reads the controller's /stat reply. Absent fields stay
 // zero and unknown fields are ignored; a known field of the wrong type is
-// an error. Errors are fixed text; they never repeat the reply.
+// an error. An overlong version is dropped and an overlong action name
+// skipped. Errors are fixed text; they never repeat the reply.
 func ParseRspamdStat(body []byte) (RspamdStats, error) {
 	if t := bytes.TrimSpace(body); len(t) == 0 || t[0] != '{' {
 		return RspamdStats{}, errors.New("rspamd's /stat reply is not a JSON object")
@@ -139,8 +150,11 @@ func ParseRspamdStat(body []byte) (RspamdStats, error) {
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return RspamdStats{}, errors.New("rspamd's /stat reply has an invalid field")
 	}
-	s := RspamdStats{Scanned: raw.Scanned, Learned: raw.Learned, HamCount: raw.HamCount, SpamCount: raw.SpamCount,
-		Version: raw.Version, Actions: raw.Actions}
+	s := RspamdStats{Scanned: raw.Scanned, Learned: raw.Learned, HamCount: raw.HamCount, SpamCount: raw.SpamCount, Actions: raw.Actions}
+	if utf8.RuneCountInString(raw.Version) <= maxStatsVersion {
+		s.Version = raw.Version
+	}
+	maps.DeleteFunc(s.Actions, func(name string, _ int64) bool { return utf8.RuneCountInString(name) > maxStatsAction })
 	if raw.Uptime > 0 && raw.Uptime < math.MaxInt64 {
 		s.UptimeSeconds = int64(raw.Uptime)
 	}
@@ -148,19 +162,31 @@ func ParseRspamdStat(body []byte) (RspamdStats, error) {
 }
 
 // ParseRspamdCounters reads the controller's /counters reply and returns the
-// top symbols by hits, ties by name. Entries without a symbol or a hit are
-// skipped. Errors are fixed text; they never repeat the reply.
+// top symbols by hits, ties by name. An entry without a symbol, with an
+// overlong one, or without a whole positive hit count is skipped. Errors
+// are fixed text; they never repeat the reply.
 func ParseRspamdCounters(body []byte, top int) ([]RuleHits, error) {
 	if t := bytes.TrimSpace(body); len(t) == 0 || t[0] != '[' {
 		return nil, errors.New("rspamd's /counters reply is not a JSON array")
 	}
-	var entries []RuleHits
+	// rspamd prints some hit counts as doubles: 0.0 for virtual symbols.
+	var entries []struct {
+		Symbol string  `json:"symbol"`
+		Hits   float64 `json:"hits"`
+	}
 	if err := json.Unmarshal(body, &entries); err != nil {
 		return nil, errors.New("rspamd's /counters reply has an invalid entry")
 	}
-	entries = slices.DeleteFunc(entries, func(r RuleHits) bool { return r.Symbol == "" || r.Hits <= 0 })
-	slices.SortFunc(entries, func(a, b RuleHits) int {
+	var rules []RuleHits
+	for _, e := range entries {
+		if e.Symbol == "" || utf8.RuneCountInString(e.Symbol) > maxStatsSymbol ||
+			e.Hits < 1 || e.Hits >= math.MaxInt64 || e.Hits != math.Trunc(e.Hits) {
+			continue
+		}
+		rules = append(rules, RuleHits{Symbol: e.Symbol, Hits: int64(e.Hits)})
+	}
+	slices.SortFunc(rules, func(a, b RuleHits) int {
 		return cmp.Or(cmp.Compare(b.Hits, a.Hits), strings.Compare(a.Symbol, b.Symbol))
 	})
-	return slices.Clone(entries[:min(len(entries), max(top, 0))]), nil
+	return slices.Clone(rules[:min(len(rules), max(top, 0))]), nil
 }

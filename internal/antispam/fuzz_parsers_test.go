@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func FuzzCheckIPMapLoaded(f *testing.F) {
@@ -908,8 +909,13 @@ func FuzzParseRspamdStat(f *testing.F) {
 			}
 			return
 		}
-		if s.UptimeSeconds < 0 || s.TopRules != nil {
+		if s.UptimeSeconds < 0 || s.TopRules != nil || utf8.RuneCountInString(s.Version) > maxStatsVersion {
 			t.Fatalf("parsed %+v", s)
+		}
+		for name := range s.Actions {
+			if utf8.RuneCountInString(name) > maxStatsAction {
+				t.Fatalf("kept action name of %d characters", utf8.RuneCountInString(name))
+			}
 		}
 		var object map[string]json.RawMessage
 		if json.Unmarshal(body, &object) != nil || object == nil {
@@ -921,6 +927,7 @@ func FuzzParseRspamdStat(f *testing.F) {
 func FuzzParseRspamdCounters(f *testing.F) {
 	for _, seed := range []string{
 		`[{"symbol":"R_A","weight":1,"frequency":0.1,"hits":5,"time":0.001},{"symbol":"R_B","hits":5},{"hits":9},null]`,
+		`[{"symbol":"R_GHOST","hits":0.0},{"symbol":"R_K","hits":12.0},{"symbol":"R_F","hits":2.5}]`,
 		`[{"symbol":"R_A","hits":"many"}]`, `[1]`, `{}`, `null`, ``,
 	} {
 		f.Add([]byte(seed))
@@ -937,7 +944,7 @@ func FuzzParseRspamdCounters(f *testing.F) {
 			t.Fatalf("%d rules, want at most 8", len(rules))
 		}
 		for i, r := range rules {
-			if r.Symbol == "" || r.Hits <= 0 {
+			if r.Symbol == "" || utf8.RuneCountInString(r.Symbol) > maxStatsSymbol || r.Hits <= 0 {
 				t.Fatalf("kept %+v", r)
 			}
 			if i > 0 && (rules[i-1].Hits < r.Hits || rules[i-1].Hits == r.Hits && rules[i-1].Symbol > r.Symbol) {

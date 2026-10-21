@@ -31,8 +31,9 @@ var loopbackClient = &http.Client{
 }
 
 // ReadRspamdStats reads /stat and /counters from the endpoint
-// antispam.StatsEndpointFor chose. It never sends a password. Errors are
-// fixed text; they never repeat a reply or the endpoint.
+// antispam.StatsEndpointFor chose. It never sends a password. A failed
+// /stat fails the read; a failed /counters only leaves TopRules nil.
+// Errors are fixed text; they never repeat a reply or the endpoint.
 func ReadRspamdStats(ctx context.Context, ep antispam.StatsEndpoint) (antispam.RspamdStats, error) {
 	if ep.Address == "" {
 		return antispam.RspamdStats{}, errors.New("no rspamd controller endpoint to read")
@@ -51,11 +52,9 @@ func ReadRspamdStats(ctx context.Context, ep antispam.StatsEndpoint) (antispam.R
 	if err != nil {
 		return antispam.RspamdStats{}, err
 	}
-	if body, err = get("/counters", maxCountersReply); err != nil {
-		return antispam.RspamdStats{}, err
-	}
-	if stats.TopRules, err = antispam.ParseRspamdCounters(body, statsTopRules); err != nil {
-		return antispam.RspamdStats{}, err
+	if body, err = get("/counters", maxCountersReply); err == nil {
+		// ParseRspamdCounters returns nil with its error.
+		stats.TopRules, _ = antispam.ParseRspamdCounters(body, statsTopRules)
 	}
 	if stats.Version == "" {
 		stats.Version = ep.Version
