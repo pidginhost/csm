@@ -56,8 +56,12 @@ confirms each candidate with a live request to the site rather than by reading
 the file. A cycle that skips it on that interval leaves its existing findings
 in place. The interval starts only after a complete exposure scan; an incomplete
 attempt can retry on the next cycle, including after switching between full and
-reduced scans. A domain the panel still lists after its document root was
-deleted serves nothing and does not make the exposure scan incomplete.
+reduced scans. A deleted document root does not make the exposure scan
+incomplete, even if the panel still lists its domain. CSM must confirm the
+absence without following symbolic links; otherwise it retains earlier
+findings and retries. Unreadable roots and subdirectories that disappear
+during the walk also leave the scan incomplete. Readable symbolic links to
+document roots continue to be scanned.
 
 Account discovery failures, unreadable directories or files, and truncated
 backdoor candidate lists leave the affected scan incomplete. Its earlier

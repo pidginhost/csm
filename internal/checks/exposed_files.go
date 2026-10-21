@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -19,6 +20,7 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/state"
+	"golang.org/x/sys/unix"
 )
 
 // userdataDomainsPath is cPanel's authoritative domain->docroot map. It covers
@@ -228,11 +230,10 @@ func walkExposureCandidatesLimit(ctx context.Context, docroot string, maxDepth, 
 		queue = queue[1:]
 		entries, err := osFS.ReadDir(dir.path)
 		if err != nil {
-			// A document root that no longer exists serves nothing, though the
-			// panel may still map a domain to it. A subdirectory that vanished
-			// after its listing may have moved, so it stays a gap.
+			// Only a proven absent root is a complete negative. A subdirectory
+			// that vanished after its listing may have moved, so it stays a gap.
 			if dir.depth == 0 && errors.Is(err, fs.ErrNotExist) {
-				return nil, true
+				return nil, exposureDocrootAbsent(ctx, docroot)
 			}
 			complete = false
 			continue
@@ -276,6 +277,34 @@ func walkExposureCandidatesLimit(ctx context.Context, docroot string, maxDepth, 
 		complete = false
 	}
 	return out, complete
+}
+
+// ENOENT through a symlink is not proof of absence: process-relative links can
+// resolve differently for the web server. Walk from / with pinned directories
+// and no-follow opens so a swapped ancestor cannot redirect the absence check.
+// Readable symlinked roots still take the normal exposure walk above.
+func exposureDocrootAbsent(ctx context.Context, docroot string) bool {
+	if !filepath.IsAbs(docroot) || filepath.Clean(docroot) != docroot || docroot == string(filepath.Separator) {
+		return false
+	}
+	dir, err := osFS.Open(string(filepath.Separator))
+	if err != nil {
+		return false
+	}
+	defer func() { _ = dir.Close() }()
+	for _, part := range strings.Split(strings.TrimPrefix(docroot, string(filepath.Separator)), string(filepath.Separator)) {
+		if ctx.Err() != nil {
+			return false
+		}
+		fd, err := unix.Openat(int(dir.Fd()), part, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC|unix.O_NONBLOCK, 0)
+		if err != nil {
+			return errors.Is(err, fs.ErrNotExist) && ctx.Err() == nil
+		}
+		_ = dir.Close()
+		// #nosec G115 -- Openat returned a non-negative descriptor because err is nil.
+		dir = os.NewFile(uintptr(fd), part)
+	}
+	return false
 }
 
 func relURLPath(docroot, path string) string {
