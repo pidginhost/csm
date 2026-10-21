@@ -206,6 +206,7 @@ reporting off.
        enabled: true
        set_url: https://abuse.example.net/decisions
        pubkey_env: CSM_CENTRAL_PUBKEY
+       auth_target: central
        action: challenge
    ```
 
@@ -225,6 +226,28 @@ requires an active firewall, `auto_response.enabled: true`,
 remains subject to the normal block protections. Dry-run records what
 would have been blocked. Central data alone never blocks. `action: off`
 pulls the list without taking central-driven actions.
+
+`auth_target` names the report target whose node key signs each download.
+The central abuse database refuses unsigned downloads. The target must use
+`transport: ed25519`, and its URL must share scheme, host and port with
+`set_url`, so a signed request never goes to another host. Leave
+`auth_target` unset only for a central service that serves the list
+without signatures.
+
+Signed downloads work with `reputation.report.enabled: false`; keep the
+target configured even when the node does not send reports. `csm validate`
+refuses an `auth_target` that names no target or several, a target that is
+not Ed25519 or lacks `node_id`, `key_id` or `key_env`, or a `set_url` on
+another origin, and CSM will not start with that config. The settings page
+refuses the same changes. If the target's key is unset or invalid, CSM
+starts with the central consumer off and logs one line naming
+`reputation.central.auth_target`. It never falls back to unsigned
+downloads while `auth_target` is set.
+
+If the service refuses a download, CSM keeps its last verified list, tries
+again at the next refresh, and logs
+`central-intel: pull unauthorized; check node enrollment, node clock and reputation.central.auth_target`.
+Each successful refresh logs `central-intel: refresh complete (version=N)`.
 
 To rotate the node key, run `csm report enroll` again and have the central
 operator register the new public key. Then update `key_id` and the

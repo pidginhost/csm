@@ -178,6 +178,7 @@ func TestReputationReportingSchemaFieldsResolveToConfig(t *testing.T) {
 		{"central.enabled", "bool", json.RawMessage(`true`)},
 		{"central.set_url", "string", json.RawMessage(`"https://abuse.example/set"`)},
 		{"central.pubkey_env", "string", json.RawMessage(`"CSM_CENTRAL_PUBKEY"`)},
+		{"central.auth_target", "string", json.RawMessage(`"central"`)},
 		{"central.action", "string", json.RawMessage(`"challenge"`)},
 		{"central.block_threshold", "int", json.RawMessage(`80`)},
 		{"central.refresh_interval", "string", json.RawMessage(`"6h"`)},
