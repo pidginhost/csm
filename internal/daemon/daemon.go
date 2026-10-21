@@ -1468,6 +1468,9 @@ func (d *Daemon) alertDispatcher() {
 				d.dispatchBatch(batch)
 				batch = nil
 			}
+			if err := d.store.FlushDue(time.Now()); err != nil {
+				fmt.Fprintf(os.Stderr, "[%s] state: error saving: %v\n", ts(), err)
+			}
 		}
 	}
 }
