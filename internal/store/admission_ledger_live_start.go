@@ -31,8 +31,10 @@ func (l *AdmissionLedger) LiveStarted() bool {
 // StartLive runs the live start (design C7) once, when the owner first
 // executes, in one transaction: it carries the legacy hour's count over as
 // the greater of that count and the charges retained in its hour, counts
-// each legacy pending entry as refused for attribution, and records the
-// start under the schema that older builds refuse. A ledger that has
+// each legacy pending entry as refused for attribution, ends the answers
+// of earlier observe previews, clears the notices raised while admission
+// previewed, and records the start under the schema that older builds
+// refuse. A ledger that has
 // started refuses with ErrTransitionConflict. It needs a reading this
 // handle recorded.
 func (l *AdmissionLedger) StartLive(h admission.LegacyHandover) error {
@@ -54,6 +56,12 @@ func (l *AdmissionLedger) StartLive(h admission.LegacyHandover) error {
 		}
 		q, err := l.openQueue(tx, now)
 		if err != nil {
+			return err
+		}
+		if err = q.endPreviewAnswers(); err != nil {
+			return err
+		}
+		if err = q.clearNotices(); err != nil {
 			return err
 		}
 		if err = carryLegacySpend(tx, h.Spend); err != nil {
@@ -114,6 +122,109 @@ func carryLegacySpend(tx *bolt.Tx, spend admission.LegacySpend) error {
 		return err
 	}
 	return putCeilingState(tx, next)
+}
+
+// endPreviewAnswers makes placement's forecast rule for preview answers
+// durable (section 8, row 4): a block line a preview answered ends, so the
+// next observation queues a new generation, and a row no candidate anchors
+// any longer is deleted, so its target's next observation opens a new
+// episode. Challenge lines keep their previews' answers, and a remembered
+// answer of a verified block keeps its episode's verified end.
+func (q *queueTx) endPreviewAnswers() error {
+	episodes := q.tx.Bucket([]byte(admissionEpisodesBucket))
+	type change struct {
+		key string
+		row admission.Episode
+	}
+	var changes []change
+	err := episodes.ForEach(func(k, v []byte) error {
+		e, err := admission.UnmarshalEpisode(v)
+		if err != nil {
+			return err
+		}
+		ended := false
+		for i, line := range e.Lines {
+			if line.Kind == admission.KindChallenge {
+				continue
+			}
+			if line.Candidate == "" {
+				if line.Answered && e.Verified.IsZero() {
+					e.Lines[i].Answered, ended = false, true
+				}
+				continue
+			}
+			c, err := loadCandidate(q.tx, line.Candidate)
+			if err != nil {
+				return corruptRecord(err)
+			}
+			if c.State == admission.StateObserved {
+				e.Lines[i].Candidate, ended = "", true
+			}
+		}
+		if ended {
+			changes = append(changes, change{string(k), e})
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	for _, c := range changes {
+		if !c.row.HasCandidates() {
+			err = episodes.Delete([]byte(c.key))
+		} else {
+			err = putEpisode(q.tx, c.key, c.row)
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// clearNotices removes every notice record raised while admission only
+// previewed, delivered or not: their gaps were legacy blocking's to close,
+// and a preview delivery must not delay a key's first live notice. The
+// fixed records stay, empty.
+func (q *queueTx) clearNotices() error {
+	outbox := q.tx.Bucket([]byte(admissionOutboxBucket))
+	var quiet, records [][]byte
+	cur := outbox.Cursor()
+	for k, _ := cur.Seek([]byte{'n'}); k != nil && k[0] == 'n'; k, _ = cur.Next() {
+		records = append(records, k)
+	}
+	for k, _ := cur.Seek([]byte{'q'}); k != nil && k[0] == 'q'; k, _ = cur.Next() {
+		quiet = append(quiet, k)
+	}
+	for _, k := range quiet {
+		if err := outbox.Delete(k); err != nil {
+			return err
+		}
+	}
+	for _, kb := range records {
+		key, err := admission.ParseNoticeKey(kb)
+		if err != nil {
+			return err
+		}
+		if key.Fixed() {
+			if err = putNoticeRecord(q.tx, admission.NewNoticeRecord(key)); err != nil {
+				return err
+			}
+			continue
+		}
+		if err = outbox.Delete(kb); err != nil {
+			return err
+		}
+		s, err := q.storageState()
+		if err != nil {
+			return err
+		}
+		if *s, err = s.RemoveNotice(); err != nil {
+			return err
+		}
+		q.storageDirty = true
+	}
+	return nil
 }
 
 // keepPreLiveCharges makes the greater-of balance survive later forecasts
