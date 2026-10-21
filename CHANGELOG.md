@@ -37,6 +37,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Changed
 
+- The Email Security page now shows spam, malware and other reject counts with a chart, rspamd status, recent rejects, and hides groups already blocked.
 - Antispam repairs a changed or missing file by reloading only the service that reads it, instead of also reloading rspamd and rebuilding Exim.
 - After the system clock is set back, new temporary blocks show expiry times later by that step, and the journal notes it once per start.
 - Deep phishing scans use less memory and CPU per page.

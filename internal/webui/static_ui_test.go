@@ -888,12 +888,15 @@ func TestEmailFindingsLoaderClearsAndGuardsState(t *testing.T) {
 		"if (label) label.textContent = '';",
 		"resetEmailFindingsTable();\n            clearEmailFindingsState();\n            return;",
 		"if (findings.length === 0) {",
-		"tbody.innerHTML = CSM.emptyState('No email findings in this period', 6);",
+		"emptyRow(tbody, 6, 'mail-search', emptyTitle);",
 		"emailTable = new CSM.Table({",
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("email.js missing findings state guard fragment %q", want)
 		}
+	}
+	if strings.Contains(text, "CSM.emptyState('No email findings in this period', 6)") {
+		t.Error("email.js still renders empty findings outside the shared empty state")
 	}
 	if strings.Count(text, "if (seq !== _emailFindingsLoadSeq) return;") < 2 {
 		t.Error("email.js must ignore stale successful and failed findings responses")
@@ -1347,9 +1350,9 @@ func TestModSecPageUsesPhase8Primitives(t *testing.T) {
 	}
 }
 
-// TestEmailPageUsesPhase8Primitives asserts the email workbench dropped the
-// old six-card stat row in favour of a status strip + grouped action rows
-// + tabs (Findings / Auth failures / Queue / Quarantine / Senders), and
+// TestEmailPageUsesPhase8Primitives asserts the email page dropped the old
+// six-card stat row in favour of recent rejects, grouped action rows and
+// five tabs (Findings / Quarantine / Queue / Outbound / Deliverability), and
 // that email.js no longer touches the removed stat-card IDs.
 func TestEmailPageUsesPhase8Primitives(t *testing.T) {
 	tmpl, err := os.ReadFile("../../ui/templates/email.html")
@@ -1365,15 +1368,15 @@ func TestEmailPageUsesPhase8Primitives(t *testing.T) {
 		`csm-summary-list`,
 		`id="email-protection"`,
 		`id="email-tab-findings"`,
-		`id="email-tab-auth"`,
+		`id="email-filter-auth"`,
 		`id="email-tab-queue"`,
 		`id="email-tab-quarantine"`,
 		`id="email-tab-senders"`,
 		`id="email-tab-forwarders"`,
 		`id="email-tab-deliverability"`,
+		`id="email-tab-outbound"`,
 		`id="email-held-tbody"`,
 		`class="csm-toolbar"`,
-		`value="mail_queue_unavailable"`,
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("email.html missing phase-8 hook %q", want)
@@ -1393,6 +1396,10 @@ func TestEmailPageUsesPhase8Primitives(t *testing.T) {
 		`id="recent-threats"`,
 		`id="email-status-strip"`,
 		`id="email-protection-state"`,
+		`id="email-tab-auth"`,
+		`id="filter-from"`,
+		`id="filter-to"`,
+		`value="mail_queue_unavailable"`,
 	} {
 		if strings.Contains(text, banned) {
 			t.Errorf("email.html still contains legacy element %q", banned)
@@ -1422,6 +1429,7 @@ func TestEmailPageUsesPhase8Primitives(t *testing.T) {
 		`backscatter message(s) no longer queued`,
 		`/api/v1/email/held`,
 		`renderHeld`,
+		`/api/v1/email/checks`,
 	} {
 		if !strings.Contains(jsText, want) {
 			t.Errorf("email.js missing phase-8 hook %q", want)
@@ -1432,6 +1440,8 @@ func TestEmailPageUsesPhase8Primitives(t *testing.T) {
 		`renderRecentThreats`,
 		`refreshStatusStrip`,
 		`/api/v1/blocked-ips`,
+		`EMAIL_CHECKS`,
+		`loadAuthGroups`,
 	} {
 		if strings.Contains(jsText, banned) {
 			t.Errorf("email.js still references removed helper %q", banned)
@@ -1446,15 +1456,18 @@ func TestEmailQueueUnavailableDoesNotRenderAsZero(t *testing.T) {
 	}
 	src := string(js)
 	for _, want := range []string{
-		`'mail_queue_unavailable'`,
 		`if (q.unavailable)`,
 		`'queue size unknown'`,
-		`if (data.queue_unavailable)`,
-		`hv.textContent = 'unavailable'`,
+		`'Queue size unknown', 'CSM could not read the mail queue.'`,
 	} {
 		if !strings.Contains(src, want) {
 			t.Errorf("email.js does not render an unreadable queue distinctly; missing %q", want)
 		}
+	}
+	// The page's check list comes from emailChecks, so the operator can
+	// still filter on the check that reports the unreadable queue.
+	if _, ok := emailCheckKinds["mail_queue_unavailable"]; !ok {
+		t.Error("the email check list the page loads lacks mail_queue_unavailable")
 	}
 }
 

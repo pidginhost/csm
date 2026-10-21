@@ -201,6 +201,7 @@ test('the first finding after an empty history notifies', async () => {
 test('a port flood rule shows its window from seconds', async () => {
     const page = loadPage(templateBody('email'), SHARED.concat(['email.js']));
     page.document.dispatchEvent(new page.window.Event('DOMContentLoaded'));
+    page.document.getElementById('email-tab-outbound').dispatchEvent(new page.window.Event('shown.bs.tab'));
     await answerAll(page, { '/api/v1/email/stats': { queue_size: 0, frozen_count: 0, smtp_allow_users: [], smtp_ports: [25],
         port_flood: [{ port: 25, proto: 'tcp', hits: 10, window_seconds: 60 }], top_senders: [] } });
     assert.match(page.document.body.textContent, /Port 25: 10 \/ 60s/);

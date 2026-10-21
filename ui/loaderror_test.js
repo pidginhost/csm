@@ -190,6 +190,7 @@ const CASES = [
     { name: 'email', scripts: ['email.js'], tab: 'email-tab-deliverability', fails: '/api/v1/email/deferrals', host: 'email-deliv-providers-body', title: /deferral/i },
     { name: 'email', scripts: ['email.js'], tab: 'email-tab-outbound-abuse', fails: '/api/v1/email/relay-abuse', host: 'outbound-abuse-body', title: /outbound/i },
     { name: 'email', scripts: ['email.js'], tab: 'email-tab-queue', fails: '/api/v1/email/queue-composition', host: 'queue-composition', title: /queue composition/i },
+    { name: 'email', scripts: ['email.js'], tab: 'email-tab-outbound', fails: '/api/v1/email/stats', host: 'smtp-firewall', title: /SMTP firewall/i },
     { name: 'firewall', scripts: ['firewall.js'], fails: '/api/v1/challenge/stats', host: 'fw-chal-body', title: /challenge/i },
     { name: 'incident', scripts: ['incident.js'], tab: 'grouped-tab', click: true, fails: '/api/v1/incidents/groups?', host: 'grouped-content', title: /groups/i },
     { name: 'hardening', scripts: ['hardening.js'], fails: '/api/v1/hardening', host: 'categories-container', title: /hardening report/i },

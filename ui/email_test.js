@@ -1,8 +1,10 @@
 // Run with: node --test ui/email_test.js
 // The Email page: one range for the whole page, the headline numbers, the
 // mail decisions chart, the rspamd card, recent rejects, the groups that
-// need attention and the protection card.
+// need attention, the protection card and the five tabs.
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const { test } = require('node:test');
 const { loadPage, templateBody, items, SHARED, settle } = require('./pagekit.js');
 
@@ -494,6 +496,7 @@ test('handled groups hide behind a toggle', async () => {
     toggle.click();
     assert.deepEqual(groupTitles(page), ['A', 'B']);
     assert.equal(toggle.getAttribute('aria-pressed'), 'true');
+    assert.equal(toggle.textContent.trim(), 'Show handled (1)', 'a pressed toggle keeps its name; aria-pressed carries the state');
     const items_ = list.querySelectorAll('.csm-summary-list__item');
     assert.match(items_[1].textContent, /\bblocked\b/);
     assert.equal(items_[1].querySelector('.csm-summary-list__sev'), null, 'a handled group still carries alarm styling');
@@ -630,6 +633,318 @@ test('the page never downloads the blocked list', async () => {
     page.document.getElementById('email-refresh').click();
     await answerAll(page, bodies);
     const urls = page.requests.map(r => r.url);
-    assert.ok(urls.filter(u => u.includes('/api/v1/email/stats')).length >= 2, 'no refresh round ran');
+    assert.ok(urls.filter(u => u.includes('/api/v1/email/overview')).length >= 2, 'no refresh round ran');
     assert.deepEqual(urls.filter(u => u.includes('/api/v1/blocked-ips')), []);
+});
+
+// ---------- Fold-ins: rejects paging, groups count, Show all ----------
+
+function reject(i) {
+    return { at: AT, class: 'spam', ip: '203.0.113.5', sender: 's' + i + '@example.com', recipient: 'r@example.net', detail: 'row ' + i };
+}
+
+function rejectsShowing(page) {
+    return page.document.getElementById('email-rejects-table-controls').textContent;
+}
+
+test('rejects keep their page across a refresh with the same filter and range', async () => {
+    const page = emailPage();
+    await settle();
+    page.respond('/api/v1/email/rejects', 200, items(Array.from({ length: 25 }, (_, i) => reject(i)), { kept_days: 7 }));
+    await settle();
+    page.document.querySelector('#email-rejects-table-controls [data-page="3"]').click();
+    assert.match(rejectsShowing(page), /Showing 21.25 of 25/);
+
+    page.document.getElementById('email-refresh').click();
+    await settle();
+    page.respond('/api/v1/email/rejects', 200, items(Array.from({ length: 25 }, (_, i) => reject(i)), { kept_days: 7 }));
+    await settle();
+    assert.match(rejectsShowing(page), /Showing 21.25 of 25/, 'a refresh sent the operator back to page 1');
+
+    page.document.getElementById('email-refresh').click();
+    await settle();
+    page.respond('/api/v1/email/rejects', 200, items(Array.from({ length: 12 }, (_, i) => reject(i)), { kept_days: 7 }));
+    await settle();
+    assert.match(rejectsShowing(page), /Showing 11.12 of 12/, 'the kept page is not clamped to the new page count');
+
+    const filter = page.document.getElementById('email-rejects-filter');
+    filter.value = 'all';
+    filter.dispatchEvent(new page.window.Event('change'));
+    await settle();
+    page.respond('/api/v1/email/rejects', 200, items(Array.from({ length: 25 }, (_, i) => reject(i)), { kept_days: 7 }));
+    await settle();
+    assert.match(rejectsShowing(page), /Showing 1.10 of 25/, 'a new filter kept the old page');
+});
+
+test('a failed groups reload clears the group count', async () => {
+    const page = emailPage();
+    await settle();
+    page.respond('/api/v1/email/groups?', 200, items([group('A'), group('B')], { handled_count: 0 }));
+    await settle();
+    const count = page.document.getElementById('email-groups-count');
+    assert.equal(count.textContent, '2 groups');
+    page.document.getElementById('email-refresh').click();
+    await settle();
+    page.fail('/api/v1/email/groups?');
+    await settle();
+    assert.match(page.document.getElementById('email-action-groups').textContent, /Failed to load what needs attention/);
+    assert.equal(count.textContent, '', 'the count still reports groups the error hides');
+});
+
+test('Show all keeps keyboard focus and resets with the range', async () => {
+    const page = emailPage();
+    await settle();
+    page.respond('/api/v1/email/groups?', 200, items(Array.from({ length: 10 }, (_, i) => group('g' + i)), { handled_count: 0 }));
+    await settle();
+    const more = page.document.getElementById('email-groups-more');
+    more.focus();
+    more.click();
+    assert.equal(more.hidden, true);
+    const rows = page.document.querySelectorAll('#email-action-groups .csm-summary-list__item');
+    assert.equal(page.document.activeElement, rows[8], 'focus stayed on the hidden button');
+
+    const range = page.document.getElementById('email-range');
+    range.value = '7d';
+    range.dispatchEvent(new page.window.Event('change'));
+    await settle();
+    page.respond('/api/v1/email/groups?', 200, items(Array.from({ length: 10 }, (_, i) => group('g' + i)), { handled_count: 0 }));
+    await settle();
+    assert.equal(groupTitles(page).length, 8, 'Show all outlived the range change');
+    assert.equal(more.hidden, false);
+});
+
+// ---------- Tabs ----------
+
+const CHECKS = { checks: [
+    { name: 'mail_bruteforce', kind: 'auth_failure' },
+    { name: 'smtp_bruteforce', kind: 'auth_failure' },
+    { name: 'mail_queue', kind: 'queue_alert' },
+    { name: 'email_dkim_failure', kind: '' }
+] };
+
+function historyQuery(page) {
+    const reqs = page.pending('/api/v1/history?');
+    assert.equal(reqs.length, 1, 'expected one findings request, have ' + reqs.length);
+    return query(reqs[0].url);
+}
+
+function changeValue(page, el, value) {
+    el.value = value;
+    el.dispatchEvent(new page.window.Event('change'));
+}
+
+test('five tabs in the spec order', async () => {
+    const page = emailPage();
+    await settle();
+    const doc = page.document;
+    assert.deepEqual(Array.from(doc.querySelectorAll('#email-tabs > .nav-item > .nav-link')).map(b => b.id),
+        ['email-tab-findings', 'email-tab-quarantine', 'email-tab-queue', 'email-tab-outbound', 'email-tab-deliverability']);
+    assert.equal(doc.getElementById('email-tab-auth'), null);
+    assert.equal(doc.getElementById('email-pane-auth'), null);
+    const outbound = doc.getElementById('email-pane-outbound');
+    assert.ok(outbound, 'no Outbound pane');
+    assert.deepEqual(Array.from(outbound.querySelectorAll('.nav-link')).map(b => b.id),
+        ['email-tab-senders', 'email-tab-outbound-abuse', 'email-tab-forwarders']);
+    assert.deepEqual(Array.from(outbound.querySelectorAll('.nav-link')).map(b => b.textContent.replace(/\s+/g, ' ').trim()),
+        ['Senders', 'Abuse', 'Forwarders and held']);
+    assert.match(doc.getElementById('email-pane-senders').textContent, /last 500 log lines/);
+    const fw = doc.getElementById('smtp-firewall');
+    assert.ok(outbound.contains(fw), 'the SMTP firewall block is not in the Outbound tab');
+    const html = outbound.innerHTML;
+    assert.ok(html.indexOf('id="smtp-firewall"') < html.indexOf('id="email-tab-senders"'), 'the SMTP firewall block is not above the outbound sections');
+    // On a phone the tab bar scrolls sideways instead of wrapping.
+    assert.ok(doc.getElementById('email-tabs').classList.contains('csm-tabs-scroll'));
+    const css = fs.readFileSync(path.join(__dirname, 'static/css/csm.css'), 'utf8');
+    const rule = css.match(/@media \(max-width: [\d.]+px\) \{\s*\.csm-tabs-scroll \{([^}]*)\}/);
+    assert.ok(rule, 'no narrow-screen .csm-tabs-scroll rule');
+    assert.match(rule[1], /flex-wrap: nowrap/);
+    assert.match(rule[1], /overflow-x: auto/);
+});
+
+test('findings use the email scope and the header range', async () => {
+    const page = emailPage({ storage: CHATHAM });
+    await settle();
+    const doc = page.document;
+    assert.equal(doc.getElementById('filter-from'), null);
+    assert.equal(doc.getElementById('filter-to'), null);
+    const ov = query(page.pending('/api/v1/email/overview')[0].url);
+    const q = historyQuery(page);
+    assert.equal(q.get('scope'), 'email');
+    assert.equal(q.get('checks'), null, 'the default request names checks');
+    assert.equal(q.get('from'), ov.get('from'));
+    assert.ok(Math.abs(Date.parse(q.get('to')) - Date.parse(ov.get('to'))) < 1000, 'the findings range does not end with the overview');
+    page.respond('/api/v1/history?', 200, items([]));
+    await settle();
+    assert.match(doc.getElementById('email-tbody').textContent, /No email findings in the last 24 hours/);
+    assert.ok(doc.querySelector('#email-tbody .csm-empty'), 'not the shared empty state');
+
+    changeValue(page, doc.getElementById('email-range'), '7d');
+    await settle();
+    const prefs = page.window.CSM.prefs;
+    assert.equal(historyQuery(page).get('from'), new Date(prefs.dayBoundary(daysBefore(prefs.today(), 6), false)).toISOString());
+});
+
+test('a truncated findings page says so once', async () => {
+    const page = emailPage();
+    await settle();
+    const row = { severity: 'HIGH', check: 'mail_bruteforce', message: 'm', timestamp: AT };
+    page.respond('/api/v1/history?', 200, items([row], { total: 400, limit: 250, truncated: true }));
+    await settle();
+    const pane = page.document.getElementById('email-pane-findings');
+    assert.equal(pane.querySelectorAll('.csm-truncation-note').length, 1);
+    changeValue(page, page.document.getElementById('filter-severity'), '1');
+    await settle();
+    page.respond('/api/v1/history?', 200, items([row], { total: 400, limit: 250, truncated: true }));
+    await settle();
+    assert.equal(pane.querySelectorAll('.csm-truncation-note').length, 1, 'a reload stacked a second note');
+    changeValue(page, page.document.getElementById('filter-severity'), '2');
+    await settle();
+    page.respond('/api/v1/history?', 200, items([row], { total: 1, limit: 250, truncated: false }));
+    await settle();
+    assert.equal(pane.querySelectorAll('.csm-truncation-note').length, 0);
+});
+
+test('the severity filter keeps old dates out of the address', async () => {
+    const page = emailPage({ url: 'https://csm.example.test/email?from=2026-09-23&to=2026-09-23' });
+    await settle();
+    const doc = page.document;
+    changeValue(page, doc.getElementById('email-range'), '24h');
+    await settle();
+    changeValue(page, doc.getElementById('filter-severity'), '2');
+    await settle();
+    const url = new URL(page.window.location.href);
+    assert.equal(url.searchParams.get('severity'), '2');
+    assert.equal(url.searchParams.get('from'), null, 'the severity filter wrote the old from day back');
+    assert.equal(url.searchParams.get('to'), null, 'the severity filter wrote the old to day back');
+});
+
+test('the auth chip filters to auth failure checks', async () => {
+    const page = emailPage();
+    await settle();
+    const doc = page.document;
+    const check = doc.getElementById('filter-check');
+    const chip = doc.getElementById('email-filter-auth');
+    assert.deepEqual(Array.from(check.options).map(o => o.textContent.trim()), ['All email checks']);
+    assert.equal(chip.disabled, true, 'the chip works before the check list is known');
+    page.respond('/api/v1/history?', 200, items([]));
+    page.respond('/api/v1/email/checks', 200, CHECKS);
+    await settle();
+    assert.deepEqual(Array.from(check.options).map(o => o.value), ['', 'mail_bruteforce', 'smtp_bruteforce', 'mail_queue', 'email_dkim_failure']);
+    assert.equal(chip.disabled, false);
+    assert.equal(chip.textContent.trim(), 'Auth failures');
+    assert.equal(chip.getAttribute('aria-pressed'), 'false');
+
+    chip.click();
+    await settle();
+    assert.equal(historyQuery(page).get('checks'), 'mail_bruteforce,smtp_bruteforce');
+    assert.equal(chip.getAttribute('aria-pressed'), 'true');
+    assert.equal(chip.textContent.trim(), 'Auth failures');
+    page.respond('/api/v1/history?', 200, items([]));
+    await settle();
+
+    // A check picked from the list replaces the chip.
+    changeValue(page, check, 'mail_queue');
+    await settle();
+    assert.equal(historyQuery(page).get('checks'), 'mail_queue');
+    assert.equal(chip.getAttribute('aria-pressed'), 'false');
+    page.respond('/api/v1/history?', 200, items([]));
+    await settle();
+
+    // And the chip replaces the picked check.
+    chip.click();
+    await settle();
+    assert.equal(historyQuery(page).get('checks'), 'mail_bruteforce,smtp_bruteforce');
+    assert.equal(check.value, '');
+    page.respond('/api/v1/history?', 200, items([]));
+    await settle();
+
+    chip.click();
+    await settle();
+    assert.equal(historyQuery(page).get('checks'), null, 'the chip turned off still filters');
+});
+
+test('a check from the address filters before the check list answers', async () => {
+    const page = emailPage({ url: 'https://csm.example.test/email?check=mail_queue' });
+    await settle();
+    assert.equal(historyQuery(page).get('checks'), 'mail_queue');
+    page.respond('/api/v1/email/checks', 200, CHECKS);
+    await settle();
+    assert.equal(page.document.getElementById('filter-check').value, 'mail_queue');
+});
+
+test('outbound loads the SMTP firewall when first shown', async () => {
+    const page = emailPage();
+    await answerAll(page, { '/api/v1/email/overview': overview({}) });
+    const stats = () => page.requests.filter(r => r.url.includes('/api/v1/email/stats'));
+    assert.equal(stats().length, 0, 'the page read the SMTP firewall before the Outbound tab opened');
+    const tab = page.document.getElementById('email-tab-outbound');
+    tab.dispatchEvent(new page.window.Event('shown.bs.tab'));
+    await settle();
+    assert.equal(stats().length, 1);
+    page.respond('/api/v1/email/stats', 200, { queue_size: 0, queue_warn: 100, queue_crit: 500, frozen_count: 0, smtp_block: true,
+        smtp_allow_users: ['alice', 'bob'], smtp_ports: [25, 587], port_flood: [{ port: 25, proto: 'tcp', hits: 10, window_seconds: 60 }],
+        top_senders: [{ domain: 'shop.example.com', count: 12 }] });
+    await settle();
+    const fw = page.document.getElementById('smtp-firewall').textContent.replace(/\s+/g, ' ');
+    assert.match(fw, /restricted/i);
+    assert.match(fw, /alice, bob/);
+    assert.match(fw, /Port 25: 10 \/ 60s/);
+    assert.match(page.document.getElementById('top-senders').textContent, /shop\.example\.com/);
+    tab.dispatchEvent(new page.window.Event('shown.bs.tab'));
+    await settle();
+    assert.equal(stats().length, 1, 'opening the tab again read the SMTP firewall again');
+});
+
+test('the queue tab draws its warn and crit marks on the size bar', async () => {
+    const page = emailPage();
+    page.respond('/api/v1/email/overview', 200, overview({}, {
+        queue: { size: 120, unavailable: false, warn: 100, crit: 500, frozen: 2, oldest_age_seconds: 4 * DAY, detail_unavailable: false }
+    }));
+    await settle();
+    const doc = page.document;
+    doc.getElementById('email-tab-queue').dispatchEvent(new page.window.Event('shown.bs.tab'));
+    await settle();
+    const health = doc.getElementById('queue-health');
+    const warn = health.querySelector('[data-queue-mark="warn"]');
+    const crit = health.querySelector('[data-queue-mark="crit"]');
+    assert.ok(warn && crit, 'no warn and crit marks on the bar');
+    // The bar runs a quarter past crit, so crit sits at 80%.
+    assert.equal(warn.style.left, '16%');
+    assert.equal(crit.style.left, '80%');
+    assert.match(warn.textContent, /warn 100/);
+    assert.match(crit.textContent, /crit 500/);
+    const bar = health.querySelector('.progress-bar');
+    assert.equal(bar.getAttribute('aria-valuenow'), '19');
+    assert.match(bar.className, /bg-warning/);
+    const text = health.textContent.replace(/\s+/g, ' ');
+    assert.match(text, /120/);
+    assert.match(text, /oldest 4d/);
+    assert.doesNotMatch(text, /threshold/i, 'the thresholds are rows again');
+
+    page.respond('/api/v1/email/queue-composition', 200, { total: 120, real: 100, bounce: 20, frozen: 2, flushable_backscatter: 0,
+        oldest_age_seconds: 4 * DAY, top_recipients: [{ address: 'stuck@example.net', count: 7 }] });
+    await settle();
+    const comp = doc.getElementById('queue-composition').textContent.replace(/\s+/g, ' ');
+    assert.match(comp, /Real mail\s*100/);
+    assert.match(comp, /Backscatter\s*20 \(17%\)/);
+    assert.match(comp, /stuck@example\.net/);
+    const pane = doc.getElementById('email-pane-queue');
+    assert.equal(pane.querySelectorAll('.justify-content-between, .ms-auto').length, 0, 'a label and its value sit at opposite edges');
+
+    const down = emailPage();
+    down.respond('/api/v1/email/overview', 200, overview({}, {
+        queue: { size: 0, unavailable: true, warn: 100, crit: 500, frozen: 0, detail_unavailable: true }
+    }));
+    await settle();
+    const h = down.document.getElementById('queue-health');
+    assert.match(h.textContent, /Queue size unknown/);
+    assert.equal(h.querySelector('.progress-bar'), null, 'an unreadable queue draws an empty bar');
+});
+
+test('the email page has no hard-coded check list', () => {
+    const src = fs.readFileSync(path.join(__dirname, 'static/js/email.js'), 'utf8');
+    assert.equal(/'mail_bruteforce'/.test(src), false, 'email.js still names checks');
+    assert.equal(/EMAIL_CHECKS/.test(src), false, 'email.js still holds a check list');
+    const tmpl = fs.readFileSync(path.join(__dirname, 'templates/email.html'), 'utf8');
+    assert.equal(/value="mail_bruteforce"/.test(tmpl), false, 'email.html still lists checks');
 });

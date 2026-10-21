@@ -5,47 +5,10 @@
     'use strict';
 
     var EMAIL_FINDINGS_LIMIT = 250; // first viewport row cap from the plan
-    var EMAIL_CHECKS = [
-        'mail_queue',
-        'mail_queue_unavailable',
-        'mail_per_account',
-        'exim_frozen_realtime',
-        'email_phishing_content',
-        'email_malware',
-        'email_av_degraded',
-        'email_av_timeout',
-        'email_av_parse_error',
-        'email_av_quarantine_error',
-        'email_compromised_account',
-        'email_credential_leak',
-        'email_weak_password',
-        'email_spam_outbreak',
-        'email_rate_critical',
-        'email_rate_warning',
-        'email_cloud_relay_abuse',
-        'email_php_relay_abuse',
-        'email_php_relay_action_failed',
-        'email_php_relay_rate_limit_hit',
-        'email_auth_failure_realtime',
-        'email_suspicious_geo',
-        'mail_bruteforce',
-        'mail_subnet_spray',
-        'mail_account_spray',
-        'mail_account_compromised',
-        'smtp_bruteforce',
-        'smtp_subnet_spray',
-        'smtp_account_spray',
-        'smtp_probe_abuse',
-        'email_dkim_failure',
-        'email_spf_rejection',
-        'email_pipe_forwarder',
-        'email_suspicious_forwarder'
-    ].join(',');
     var _emailExportData = [];
     var emailTable = null;
     var _emailFindingsLoadSeq = 0;
     var quarantineLoaded = false;
-    var authGroupsLoaded = false;
     var forwardersLoaded = false;
     var _forwarders = [];
     var deliverabilityLoaded = false;
@@ -54,15 +17,16 @@
 
     // ---------- Filter state from URL ----------
     var today = CSM.prefs.today();
-    var fromEl = document.getElementById('filter-from');
-    var toEl = document.getElementById('filter-to');
     var sevEl = document.getElementById('filter-severity');
     var checkEl = document.getElementById('filter-check');
     var searchEl = document.getElementById('email-search');
-    if (fromEl) fromEl.value = CSM.urlState.get('from') || today;
-    if (toEl) toEl.value = CSM.urlState.get('to') || today;
+    var authChip = document.getElementById('email-filter-auth');
     if (sevEl && CSM.urlState.get('severity')) sevEl.value = CSM.urlState.get('severity');
-    if (checkEl && CSM.urlState.get('check')) checkEl.value = CSM.urlState.get('check');
+    // A linked check filters at once; the check list fills in around it.
+    if (checkEl && CSM.urlState.get('check')) {
+        checkEl.appendChild(checkOption(CSM.urlState.get('check')));
+        checkEl.value = CSM.urlState.get('check');
+    }
     if (searchEl && CSM.urlState.get('search')) searchEl.value = CSM.urlState.get('search');
     var initialTab = CSM.urlState.get('tab');
 
@@ -185,6 +149,7 @@
                 _overviewRange = range;
                 CSM.clearLoadError(document.getElementById('email-kpis'));
                 renderKPIs(ov);
+                renderQueueHealth(ov.queue || {});
                 renderChart(ov, range);
                 renderSubtitle();
                 renderProtection();
@@ -192,6 +157,7 @@
             .catch(function(err) {
                 if (seq !== _overviewSeq) return;
                 CSM.loadError(document.getElementById('email-kpis'), loadOverview, { title: 'Failed to load mail numbers', error: err });
+                CSM.loadError(document.getElementById('queue-health'), loadOverview, { title: 'Failed to load the mail queue', error: err });
             });
     }
 
@@ -518,11 +484,11 @@
             }
             loadOverview();
             loadRejects();
+            _showAllGroups = false;
             loadActionGroups();
-            authGroupsLoaded = false;
+            loadFindings();
             outboundAbuseLoaded = false;
-            var tab = activeEmailTab();
-            if (tab === 'auth' || tab === 'outbound-abuse') loadActiveEmailTab(true);
+            if (activeTab('email-tabs') === 'outbound' && activeTab('email-outbound-nav') === 'outbound-abuse') loadOutboundAbuse();
         });
     }
 
@@ -545,6 +511,9 @@
     var rejectsFilter = document.getElementById('email-rejects-filter');
     var rejectsTable = null;
     var _rejectsSeq = 0;
+    // The filter and range the table shows; a refresh of the same pair
+    // keeps the operator's page.
+    var _rejectsKey = '';
 
     if (rejectsFilter) {
         Object.keys(REJECT_CLASS_LABELS).forEach(function(cls) {
@@ -565,12 +534,15 @@
         if (!tbody) return;
         var cls = rejectsFilter ? rejectsFilter.value : 'content';
         var range = currentRange();
+        var key = cls + '|' + range.key;
         var seq = ++_rejectsSeq;
         CSM.get('/api/v1/email/rejects?' + rangeQuery(range, 'class=' + encodeURIComponent(cls) + '&limit=50'))
             .then(function(data) {
                 if (seq !== _rejectsSeq) return;
+                var page = rejectsTable && key === _rejectsKey ? rejectsTable.currentPage : 1;
+                _rejectsKey = key;
                 var what = cls === 'content' ? 'spam or malware rejects' : cls === 'all' ? 'rejects' : 'rejects for ' + rejectClassLabel(cls);
-                renderRejects(data.items, 'No ' + what + ' ' + rangeWords(range), data.kept_days);
+                renderRejects(data.items, 'No ' + what + ' ' + rangeWords(range), data.kept_days, page);
             })
             .catch(function(err) {
                 if (seq !== _rejectsSeq) return;
@@ -589,19 +561,24 @@
         return td;
     }
 
-    function renderRejects(items, emptyTitle, keptDays) {
+    // emptyRow fills a table body with the shared empty state.
+    function emptyRow(tbody, cols, icon, title, reason) {
+        var td = node('td');
+        td.setAttribute('colspan', String(cols));
+        td.appendChild(buildEmpty(icon, title, reason));
+        var tr = node('tr');
+        tr.appendChild(td);
+        tbody.replaceChildren(tr);
+    }
+
+    function renderRejects(items, emptyTitle, keptDays, page) {
         var tbody = document.getElementById('email-rejects-tbody');
         if (!tbody) return;
         resetRejectsTable();
         tbody.replaceChildren();
         items = Array.isArray(items) ? items : [];
         if (items.length === 0) {
-            var td = node('td');
-            td.setAttribute('colspan', '6');
-            td.appendChild(buildEmpty('mail-check', emptyTitle, keptDays > 0 ? 'Rejects are kept for ' + keptDays + ' days.' : ''));
-            var tr = node('tr');
-            tr.appendChild(td);
-            tbody.appendChild(tr);
+            emptyRow(tbody, 6, 'mail-check', emptyTitle, keptDays > 0 ? 'Rejects are kept for ' + keptDays + ' days.' : '');
             return;
         }
         items.forEach(function(r) {
@@ -631,6 +608,11 @@
             sortable: false,
             mobileRowCard: true
         });
+        // render clamps the page to the new page count.
+        if (page > 1) {
+            rejectsTable.currentPage = page;
+            rejectsTable.render();
+        }
     }
 
     // ---------- Protection ----------
@@ -669,124 +651,101 @@
         }
     }
 
-    // ---------- Mail stats: queue, SMTP firewall, senders ----------
+    // ---------- Outbound tab: SMTP firewall and senders ----------
 
-    var _stats = null;
+    // The stats call reads the SMTP firewall settings and the last 500 log
+    // lines, so it runs only once the Outbound tab opens.
+    var statsLoaded = false;
 
     function loadEmailStats() {
+        statsLoaded = true;
         CSM.get('/api/v1/email/stats')
             .then(function(data) {
-                _stats = data;
-                renderQueueHealth(data);
                 renderSMTPFirewall(data);
-                var sendersPane = document.getElementById('email-pane-senders');
-                if (sendersPane && sendersPane.classList.contains('active')) {
-                    renderTopSenders(data.top_senders || []);
-                } else {
-                    // Hold the data for first activation
-                    _pendingSenders = data.top_senders || [];
-                }
+                renderTopSenders(data.top_senders || []);
             })
             .catch(function(err) {
-                CSM.loadError(document.getElementById('queue-health'), loadEmailStats, { title: 'Failed to load the mail queue', error: err });
+                statsLoaded = false;
                 CSM.loadError(document.getElementById('smtp-firewall'), loadEmailStats, { title: 'Failed to load the SMTP firewall', error: err });
+                CSM.loadError(document.getElementById('top-senders'), loadEmailStats, { title: 'Failed to load top senders', error: err });
             });
     }
-
-    var _pendingSenders = null;
 
     function emailDateQuery(base) {
         return rangeQuery(currentRange(), base);
     }
 
-    function renderQueueHealth(data) {
+    // renderQueueHealth draws the queue size on a bar that runs a quarter
+    // past the crit threshold, with the warn and crit marks on the bar.
+    function renderQueueHealth(q) {
         var el = document.getElementById('queue-health');
         if (!el) return;
-        var pct = data.queue_unavailable ? 0 : Math.min(100, Math.round(data.queue_size / Math.max(1, data.queue_crit) * 100));
+        if (q.unavailable) {
+            el.replaceChildren(buildEmpty('mailbox-off', 'Queue size unknown', 'CSM could not read the mail queue.'));
+            return;
+        }
+        var size = q.size || 0;
+        var scale = Math.max(size, (q.crit || q.warn || 1) * 1.25);
         var color = 'bg-green';
-        if (data.queue_unavailable) color = 'bg-warning';
-        else if (data.queue_size >= data.queue_crit) color = 'bg-danger';
-        else if (data.queue_size >= data.queue_warn) color = 'bg-warning';
-        el.replaceChildren();
+        if (q.crit > 0 && size >= q.crit) color = 'bg-danger';
+        else if (q.warn > 0 && size >= q.warn) color = 'bg-warning';
 
-        function row(label, value, cls) {
-            var r = document.createElement('div');
-            r.className = 'd-flex justify-content-between mb-1';
-            var l = document.createElement('span');
-            l.className = 'text-muted small';
-            l.textContent = label;
-            var v = document.createElement('span');
-            v.className = 'small ' + (cls || '');
-            v.textContent = value;
-            r.appendChild(l);
-            r.appendChild(v);
-            return r;
-        }
+        var head = node('div', 'd-flex align-items-baseline flex-wrap gap-2 mb-2');
+        head.appendChild(node('span', 'h2 mb-0', num(size)));
+        head.appendChild(node('span', 'text-muted', size === 1 ? 'message queued' : 'messages queued'));
+        var age = '';
+        if (size > 0) age = q.detail_unavailable ? 'oldest unknown' : q.oldest_age_seconds != null ? 'oldest ' + CSM.formatDuration(q.oldest_age_seconds) : '';
+        if (age) head.appendChild(node('span', 'text-muted small', age));
 
-        var head = document.createElement('div');
-        head.className = 'd-flex justify-content-between mb-1';
-        var hl = document.createElement('span');
-        hl.className = 'text-muted small';
-        hl.textContent = 'Queue size';
-        var hv = document.createElement('span');
-        hv.className = 'fw-bold';
-        if (data.queue_unavailable) {
-            hv.className += ' text-warning';
-            hv.textContent = 'unavailable';
-        } else {
-            hv.textContent = data.queue_size + ' / ' + data.queue_crit;
-        }
-        head.appendChild(hl); head.appendChild(hv);
-        el.appendChild(head);
-
-        var pwrap = document.createElement('div');
-        pwrap.className = 'progress progress-sm mb-2';
-        var pbar = document.createElement('div');
-        pbar.className = 'progress-bar ' + color;
-        CSM.setProgressBar(pbar, pct);
-        pwrap.appendChild(pbar);
-        el.appendChild(pwrap);
-
-        el.appendChild(row('Frozen', data.frozen_count || 0, (data.frozen_count || 0) > 0 ? 'text-warning fw-bold' : ''));
-        var oldest = CSM.formatDuration(data.oldest_age_seconds);
-        el.appendChild(row('Oldest', oldest || 'none', data.oldest_age_seconds >= 86400 ? 'text-danger fw-bold' : ''));
-        el.appendChild(row('Warn threshold', data.queue_warn, ''));
-        el.appendChild(row('Crit threshold', data.queue_crit, ''));
+        var wrap = node('div', 'csm-queue-bar');
+        var track = node('div', 'progress');
+        var bar = node('div', 'progress-bar ' + color);
+        bar.setAttribute('aria-label', 'Queue size against the crit threshold');
+        CSM.setProgressBar(bar, size / scale * 100);
+        track.appendChild(bar);
+        wrap.appendChild(track);
+        [['warn', q.warn], ['crit', q.crit]].forEach(function(m) {
+            if (!(m[1] > 0)) return;
+            var mark = node('div', 'csm-queue-mark csm-queue-mark--' + m[0]);
+            mark.setAttribute('data-queue-mark', m[0]);
+            mark.style.left = Math.round(m[1] / scale * 100) + '%';
+            mark.appendChild(node('span', 'csm-queue-mark__label', m[0] + ' ' + num(m[1])));
+            wrap.appendChild(mark);
+        });
+        el.replaceChildren(head, wrap);
     }
 
+    // fact is one label and value of a compact line.
+    function fact(label, value) {
+        var el = node('span');
+        el.appendChild(node('span', 'text-muted me-1', label));
+        el.appendChild(node('span', null, value));
+        return el;
+    }
+
+    // renderSMTPFirewall says on one line whether outbound SMTP is
+    // restricted, who may still send, and the SMTP port flood limits.
     function renderSMTPFirewall(data) {
         var el = document.getElementById('smtp-firewall');
         if (!el) return;
-        el.replaceChildren();
-        var head = document.createElement('div');
-        head.className = 'd-flex align-items-center mb-1';
-        var lbl = document.createElement('span');
-        lbl.className = 'text-muted small';
-        lbl.textContent = 'Outbound SMTP';
-        var st = document.createElement('span');
-        st.className = 'ms-auto fw-bold ' + (data.smtp_block ? 'text-danger' : 'text-green');
-        st.textContent = data.smtp_block ? 'Restricted' : 'Open';
-        head.appendChild(lbl); head.appendChild(st);
-        el.appendChild(head);
-
-        if (data.smtp_block && data.smtp_allow_users && data.smtp_allow_users.length > 0) {
-            var allowed = document.createElement('div');
-            allowed.className = 'text-muted small mb-1';
-            allowed.textContent = 'Allowed: ' + data.smtp_allow_users.join(', ');
-            el.appendChild(allowed);
+        var line = node('div', 'd-flex flex-wrap align-items-center column-gap-3 row-gap-1');
+        var state = node('span', 'd-inline-flex align-items-center gap-2');
+        state.appendChild(node('span', 'status-dot ' + (data.smtp_block ? 'status-green' : 'status-secondary')));
+        state.appendChild(node('span', 'text-muted', 'Outbound SMTP'));
+        state.appendChild(node('strong', null, data.smtp_block ? 'restricted' : 'open'));
+        line.appendChild(state);
+        if (data.smtp_block) {
+            line.appendChild(fact('Ports', (data.smtp_ports || []).join(', ') || 'none'));
+            line.appendChild(fact('Allowed users', (data.smtp_allow_users || []).join(', ') || 'none'));
         }
-        if (data.port_flood && data.port_flood.length > 0) {
-            for (var i = 0; i < data.port_flood.length; i++) {
-                var pf = data.port_flood[i];
-                var pfRow = document.createElement('div');
-                pfRow.className = 'small text-muted';
-                pfRow.textContent = 'Port ' + pf.port + ': ' + pf.hits + ' / ' + pf.window_seconds + 's';
-                el.appendChild(pfRow);
-            }
-        }
+        var limits = (data.port_flood || []).map(function(pf) {
+            return 'Port ' + pf.port + ': ' + pf.hits + ' / ' + pf.window_seconds + 's';
+        });
+        line.appendChild(fact('Port limits', limits.join(', ') || 'none'));
+        el.replaceChildren(line);
     }
 
-    // ---------- Top senders (Senders tab) ----------
+    // ---------- Top senders (Outbound tab) ----------
 
     function renderTopSenders(senders) {
         var el = document.getElementById('top-senders');
@@ -795,11 +754,7 @@
         var meaningful = senders.filter(function(s) { return s.count > 1; });
         if (meaningful.length > 0) senders = meaningful;
         if (!senders || senders.length === 0) {
-            el.replaceChildren();
-            var empty = document.createElement('div');
-            empty.className = 'text-muted text-center py-3';
-            empty.textContent = 'No notable outbound activity';
-            el.appendChild(empty);
+            el.replaceChildren(buildEmpty('send', 'No notable outbound activity', ''));
             return;
         }
         var maxCount = senders[0].count || 1;
@@ -887,6 +842,8 @@
                     var btn = document.getElementById(id);
                     if (btn) btn.hidden = true;
                 });
+                var countEl = document.getElementById('email-groups-count');
+                if (countEl) countEl.textContent = '';
                 CSM.loadError(document.getElementById('email-action-groups'), loadActionGroups, { title: 'Failed to load what needs attention', error: err });
             });
     }
@@ -913,8 +870,9 @@
         var toggle = document.getElementById('email-groups-handled');
         if (toggle) {
             toggle.hidden = handled === 0;
-            toggle.textContent = (_showHandled ? 'Hide handled (' : 'Show handled (') + handled + ')';
+            toggle.textContent = 'Show handled (' + handled + ')';
             toggle.setAttribute('aria-pressed', String(_showHandled));
+            toggle.classList.toggle('active', _showHandled);
         }
 
         el.replaceChildren();
@@ -963,6 +921,10 @@
         moreGroups.addEventListener('click', function() {
             _showAllGroups = true;
             renderActionGroups();
+            // The button hides itself; focus moves to the first group it
+            // revealed, so the keyboard does not fall back to the page top.
+            var next = document.querySelectorAll('#email-action-groups .csm-summary-list__item')[GROUPS_SHOWN];
+            if (next) next.focus();
         });
     }
 
@@ -1006,63 +968,82 @@
         });
     }
 
-    // ---------- Auth failures tab (kind=auth_failure) ----------
-
-    function loadAuthGroups() {
-        if (authGroupsLoaded) return;
-        authGroupsLoaded = true;
-        CSM.get('/api/v1/email/groups?' + emailDateQuery('kind=auth_failure&limit=200'))
-            .then(function(data) {
-                var el = document.getElementById('email-auth-groups');
-                if (!el) return;
-                el.replaceChildren();
-                var groups = data.items;
-                if (groups.length === 0) {
-                    el.appendChild(buildEmpty('lock-check', 'No auth-failure clusters', 'No mailbox or IP exceeded the auth-failure threshold in this window.'));
-                    return;
-                }
-                for (var i = 0; i < groups.length; i++) {
-                    var g = groups[i];
-                    var item = CSM.summaryItem({
-                        severity: g.severity,
-                        title: g.title,
-                        meta: g.summary,
-                        count: g.count,
-                        age: ageLabel(g.last_seen),
-                        onClick: (function(group) { return function() { openGroupDetail(group); }; })(g),
-                    });
-                    el.appendChild(item);
-                }
-                CSM.truncationNote(el, data.truncated, 'auth-failure findings');
-            })
-            .catch(function(err) {
-                authGroupsLoaded = false;
-                CSM.loadError(document.getElementById('email-auth-groups'), loadAuthGroups, { title: 'Failed to load auth failure clusters', error: err });
-            });
-    }
-
     // ---------- Findings tab (table) ----------
 
+    // checkLabel words a check name the way the table's Type column does.
+    function checkLabel(name) {
+        return name.replace(/_/g, ' ').replace(/realtime$/, '').replace(/^email /, '').trim();
+    }
+
+    function checkOption(name) {
+        var opt = node('option', null, checkLabel(name));
+        opt.value = name;
+        return opt;
+    }
+
+    // The auth failure checks, from the server's email check list.
+    var _authChecks = [];
+
+    // loadEmailChecks fills the check list from the server's email check
+    // list, grouped by kind. Until it answers the list offers only All
+    // email checks, and the Auth failures chip stays off.
+    function loadEmailChecks() {
+        CSM.get('/api/v1/email/checks')
+            .then(function(data) {
+                var checks = Array.isArray(data.checks) ? data.checks : [];
+                _authChecks = checks.filter(function(c) { return c.kind === 'auth_failure'; }).map(function(c) { return c.name; });
+                if (authChip) authChip.disabled = _authChecks.length === 0;
+                if (!checkEl) return;
+                var picked = checkEl.value;
+                Array.from(checkEl.children).slice(1).forEach(function(c) { c.remove(); });
+                var groups = {};
+                checks.forEach(function(c) {
+                    if (!groups[c.kind]) {
+                        groups[c.kind] = node('optgroup');
+                        groups[c.kind].label = c.kind ? kindLabel(c.kind) : 'Other checks';
+                        checkEl.appendChild(groups[c.kind]);
+                    }
+                    groups[c.kind].appendChild(checkOption(c.name));
+                });
+                checkEl.value = picked;
+            })
+            .catch(function() { /* the request toasts; the list keeps All email checks */ });
+    }
+
+    function setAuthChip(on) {
+        if (!authChip) return;
+        authChip.setAttribute('aria-pressed', String(on));
+        authChip.classList.toggle('active', on);
+    }
+
+    // findingsChecks returns the checks the table asks for: the auth
+    // failure checks while the chip is on, else the picked check, else
+    // none, which the server reads as every email check.
+    function findingsChecks() {
+        if (authChip && authChip.getAttribute('aria-pressed') === 'true') return _authChecks.join(',');
+        return checkEl ? checkEl.value : '';
+    }
+
     function loadFindings() {
-        var range = CSM.prefs.dayRange(
-            (document.getElementById('filter-from') || {}).value || '',
-            (document.getElementById('filter-to') || {}).value || '');
-        var sev = (document.getElementById('filter-severity') || {}).value || '';
-        var check = (document.getElementById('filter-check') || {}).value || '';
-        var params = 'checks=' + encodeURIComponent(check || EMAIL_CHECKS) + '&limit=' + EMAIL_FINDINGS_LIMIT;
-        if (range.from) params += '&from=' + encodeURIComponent(range.from);
-        if (range.to)   params += '&to=' + encodeURIComponent(range.to);
-        if (sev)  params += '&severity=' + encodeURIComponent(sev);
+        var range = currentRange();
+        var sev = sevEl ? sevEl.value : '';
+        var checks = findingsChecks();
+        var params = 'scope=email&limit=' + EMAIL_FINDINGS_LIMIT;
+        if (checks) params += '&checks=' + encodeURIComponent(checks);
+        if (sev) params += '&severity=' + encodeURIComponent(sev);
         var seq = ++_emailFindingsLoadSeq;
-        CSM.get('/api/v1/history?' + params)
+        CSM.get('/api/v1/history?' + rangeQuery(range, params))
             .then(function(data) {
                 if (seq !== _emailFindingsLoadSeq) return;
                 var findings = data.items;
-                renderFindingsTable(findings);
+                renderFindingsTable(findings, 'No email findings ' + rangeWords(range));
                 var label = document.getElementById('email-total-label');
                 if (label) {
                     label.textContent = findings.length + ' / ' + data.total;
                 }
+                var note = document.getElementById('email-findings-note');
+                if (note) note.replaceChildren();
+                CSM.truncationNote(note, data.truncated, 'email findings');
             })
             .catch(function(err) {
                 if (seq !== _emailFindingsLoadSeq) return;
@@ -1082,9 +1063,11 @@
         _emailExportData = [];
         var label = document.getElementById('email-total-label');
         if (label) label.textContent = '';
+        var note = document.getElementById('email-findings-note');
+        if (note) note.replaceChildren();
     }
 
-    function renderFindingsTable(findings) {
+    function renderFindingsTable(findings, emptyTitle) {
         var tbody = document.getElementById('email-tbody');
         if (!tbody) {
             resetEmailFindingsTable();
@@ -1110,7 +1093,7 @@
         });
 
         if (findings.length === 0) {
-            tbody.innerHTML = CSM.emptyState('No email findings in this period', 6);
+            emptyRow(tbody, 6, 'mail-search', emptyTitle);
             return;
         }
 
@@ -1120,10 +1103,9 @@
             var cls = CSM.severityClass(f.severity);
             var account = f.account || '';
             var ip = f.ip || '';
-            var checkLabel = f.check.replace(/_/g, ' ').replace(/realtime$/, '').replace(/^email /, '');
             html += '<tr data-sev="' + cls + '">';
             html += '<td>' + CSM.severityBadge(f.severity) + '</td>';
-            html += '<td><span class="small">' + CSM.esc(checkLabel) + '</span></td>';
+            html += '<td><span class="small">' + CSM.esc(checkLabel(f.check)) + '</span></td>';
             html += '<td>' + CSM.esc(account || '') + '</td>';
             html += '<td><code>' + CSM.esc(ip || '') + '</code></td>';
             html += '<td class="text-wrap csm-tw-400">' + CSM.esc(f.message || '') +
@@ -1235,7 +1217,7 @@
                 _resetEmailQuarTable();
                 if (!data || data.length === 0) {
                     _bindEmailQuarURLState(fromEl, toEl);
-                    container.innerHTML = '<p class="text-muted">No quarantined messages.</p>';
+                    container.replaceChildren(buildEmpty('lock-open', 'No quarantined messages', ''));
                     _emailQuarUpdateBulk();
                     return;
                 }
@@ -1428,7 +1410,7 @@
         var c = document.getElementById('email-held-count');
         if (c) c.textContent = msgs.length ? '(' + msgs.length + ')' : '';
         if (msgs.length === 0) {
-            tb.innerHTML = '<tr><td colspan="5" class="text-center text-muted py-4">Nothing held.</td></tr>';
+            emptyRow(tb, 5, 'mail-pause', 'Nothing held', '');
             return;
         }
         var html = '';
@@ -1510,10 +1492,8 @@
         if (countEl) countEl.textContent = rows.length + ' of ' + _forwarders.length;
 
         if (rows.length === 0) {
-            var msg = _forwarders.length === 0
-                ? 'No forwarders found on this host.'
-                : 'No forwarders match the current filter.';
-            tb.innerHTML = '<tr><td colspan="5" class="text-center text-muted py-4">' + msg + '</td></tr>';
+            if (_forwarders.length === 0) emptyRow(tb, 5, 'mail-forward', 'No forwarders found on this host', '');
+            else emptyRow(tb, 5, 'filter-off', 'No forwarders match the current filter', '');
             return;
         }
 
@@ -1589,7 +1569,7 @@
 
     function setRowMessage(tbodyID, cols, msg) {
         var tb = document.getElementById(tbodyID);
-        if (tb) tb.innerHTML = '<tr><td colspan="' + cols + '" class="text-center text-muted py-4">' + msg + '</td></tr>';
+        if (tb) emptyRow(tb, cols, 'circle-check', msg, '');
     }
 
     function renderDeliverability(data) {
@@ -1664,7 +1644,7 @@
         var body = document.getElementById('outbound-abuse-body');
         var entries = (resp && resp.items) || [];
         if (entries.length === 0) {
-            body.innerHTML = '<div class="csm-empty"><div class="csm-empty__reason">No outbound mail abuse detected.</div></div>';
+            body.replaceChildren(buildEmpty('circle-check', 'No outbound mail abuse ' + rangeWords(currentRange()), ''));
             return;
         }
         var html = '<div class="table-responsive"><table class="table table-vcenter card-table table-sm">';
@@ -1750,7 +1730,7 @@
         if (!el) return;
         var total = queueCount(data.total);
         if (total === 0) {
-            el.innerHTML = '<div class="text-muted small">The mail queue is empty.</div>';
+            el.replaceChildren(buildEmpty('mailbox', 'The mail queue is empty', ''));
             return;
         }
         var bounce = queueCount(data.bounce);
@@ -1759,12 +1739,11 @@
         var flushable = queueCount(data.flushable_backscatter);
         var bouncePct = Math.round(bounce / total * 100);
 
-        var html = '<div class="row g-2 mb-3">';
-        html += metricCol('Total', CSM.formatNumber(total), '');
+        // The queue size and oldest age sit on the size bar beside this.
+        var html = '<div class="row g-3 mb-3">';
         html += metricCol('Real mail', CSM.formatNumber(real), 'text-success');
         html += metricCol('Backscatter', CSM.formatNumber(bounce) + ' (' + bouncePct + '%)', bounce > 0 ? 'text-danger' : 'text-muted');
         html += metricCol('Frozen', CSM.formatNumber(frozen), frozen > 0 ? 'text-warning' : 'text-muted');
-        html += metricCol('Oldest', CSM.formatDuration(data.oldest_age_seconds) || '--', '');
         html += '</div>';
 
         // Flush is offered only for frozen null-sender messages: undeliverable
@@ -1774,18 +1753,17 @@
                 '<i class="ti ti-trash"></i>&nbsp;Flush ' + CSM.formatNumber(flushable) + ' frozen backscatter message(s)</button>';
         }
 
+        // Count first, then the address, in a table as wide as its text.
         var recips = deliverabilityArray(data.top_recipients);
         if (recips.length > 0) {
-            html += '<div class="subheader mb-1 small">Top stuck recipients</div>';
-            html += '<div class="list-group list-group-flush">';
+            html += '<div class="subheader mb-1">Top stuck recipients</div>';
+            html += '<table class="table table-sm w-auto mb-0"><tbody>';
             for (var i = 0; i < recips.length; i++) {
                 var rc = recips[i] || {};
-                html += '<div class="list-group-item py-1 px-0 d-flex">';
-                html += '<span class="font-monospace small">' + CSM.esc(rc.address) + '</span>';
-                html += '<span class="ms-auto small text-muted">' + CSM.formatNumber(queueCount(rc.count)) + '</span>';
-                html += '</div>';
+                html += '<tr><td class="text-end text-muted small">' + CSM.formatNumber(queueCount(rc.count)) + '</td>';
+                html += '<td class="font-monospace small">' + CSM.esc(rc.address) + '</td></tr>';
             }
-            html += '</div>';
+            html += '</tbody></table>';
         }
         el.innerHTML = html;
     }
@@ -1803,7 +1781,7 @@
                         ' backscatter message(s) no longer queued', 'success');
                     queueCompositionLoaded = false;
                     loadQueueComposition();
-                    loadEmailStats(); // refresh the queue size on the Queue tab
+                    loadOverview(); // the queue size on the Queue tab
                 })
                 .catch(function(err) { CSM.toast('Flush failed: ' + (err.message || ''), 'error'); });
         }).catch(function() { /* cancelled */ });
@@ -1818,38 +1796,36 @@
 
     // ---------- Tab activation ----------
 
+    // activeTab returns the open tab of a tab bar, without its email-tab-
+    // prefix.
+    function activeTab(navId) {
+        var btn = document.querySelector('#' + navId + ' .nav-link.active');
+        return btn ? btn.id.replace('email-tab-', '') : '';
+    }
+
     function activateTab(name) {
         var btn = document.getElementById('email-tab-' + name);
-        if (btn && window.bootstrap && window.bootstrap.Tab) {
-            window.bootstrap.Tab.getOrCreateInstance(btn).show();
+        if (!btn || !window.bootstrap || !window.bootstrap.Tab) return;
+        // An outbound section opens inside the Outbound tab.
+        if (btn.closest('#email-pane-outbound')) {
+            window.bootstrap.Tab.getOrCreateInstance(document.getElementById('email-tab-outbound')).show();
         }
+        window.bootstrap.Tab.getOrCreateInstance(btn).show();
     }
 
-    function activeEmailTab() {
-        var btn = document.querySelector('[id^="email-tab-"].active');
-        if (!btn || !btn.id) return 'findings';
-        return btn.id.replace('email-tab-', '');
-    }
-
-    function loadActiveEmailTab(force) {
-        var id = activeEmailTab();
-        if (id === 'auth') {
-            if (force) authGroupsLoaded = false;
-            loadAuthGroups();
+    // loadTab loads what a tab shows the first time it opens; force loads
+    // it again.
+    function loadTab(id, force) {
+        if (id === 'outbound') {
+            if (force || !statsLoaded) loadEmailStats();
+            loadTab(activeTab('email-outbound-nav'), force);
+        } else if (id === 'senders') {
+            if (!statsLoaded) loadEmailStats();
         } else if (id === 'queue') {
-            if (_stats) renderQueueHealth(_stats);
             if (force) queueCompositionLoaded = false;
             loadQueueComposition();
         } else if (id === 'quarantine') {
-            if (force) quarantineLoaded = false;
-            if (!quarantineLoaded) loadQuarantine();
-        } else if (id === 'senders') {
-            if (_pendingSenders) {
-                renderTopSenders(_pendingSenders);
-                _pendingSenders = null;
-            } else if (force) {
-                loadEmailStats();
-            }
+            if (force || !quarantineLoaded) loadQuarantine();
         } else if (id === 'forwarders') {
             if (force) { forwardersLoaded = false; heldLoaded = false; }
             loadForwarders();
@@ -1858,8 +1834,7 @@
             if (force) deliverabilityLoaded = false;
             loadDeliverability();
         } else if (id === 'outbound-abuse') {
-            if (force) outboundAbuseLoaded = false;
-            loadOutboundAbuse();
+            if (force || !outboundAbuseLoaded) loadOutboundAbuse();
         }
     }
 
@@ -1867,21 +1842,11 @@
     for (var t = 0; t < tabButtons.length; t++) {
         tabButtons[t].addEventListener('shown.bs.tab', function(ev) {
             var id = ev.target.id.replace('email-tab-', '');
-            CSM.urlState.set({ tab: id === 'findings' ? '' : id });
-            if (id === 'auth')        loadAuthGroups();
-            else if (id === 'queue')  { if (_stats) renderQueueHealth(_stats); loadQueueComposition(); }
-            else if (id === 'quarantine' && !quarantineLoaded) loadQuarantine();
-            else if (id === 'senders') {
-                if (_pendingSenders) {
-                    renderTopSenders(_pendingSenders);
-                    _pendingSenders = null;
-                } else {
-                    loadEmailStats();
-                }
-            }
-            else if (id === 'forwarders') { loadForwarders(); loadHeld(); }
-            else if (id === 'deliverability') loadDeliverability();
-            else if (id === 'outbound-abuse') { if (!outboundAbuseLoaded) loadOutboundAbuse(); }
+            // The address names the open outbound section, so a reload
+            // reopens it.
+            var shown = id === 'outbound' ? activeTab('email-outbound-nav') || id : id;
+            CSM.urlState.set({ tab: shown === 'findings' ? '' : shown });
+            loadTab(id, false);
         });
     }
 
@@ -1896,33 +1861,35 @@
 
     // ---------- Filter handlers (auto-apply on change) ----------
 
+    // syncEmailURL writes the findings filters to the address. The range
+    // select owns from and to.
     function syncEmailURL() {
-        var fromVal = (document.getElementById('filter-from') || {}).value || '';
-        var toVal = (document.getElementById('filter-to') || {}).value || '';
-        var sevVal = (document.getElementById('filter-severity') || {}).value || '';
-        var checkVal = (document.getElementById('filter-check') || {}).value || '';
-        var searchVal = (document.getElementById('email-search') || {}).value || '';
-        var todayStr = CSM.prefs.today();
         CSM.urlState.set({
-            from: fromVal !== todayStr ? fromVal : '',
-            to: toVal !== todayStr ? toVal : '',
-            severity: sevVal,
-            check: checkVal,
-            search: searchVal
+            severity: sevEl ? sevEl.value : '',
+            check: checkEl ? checkEl.value : '',
+            search: searchEl ? searchEl.value : ''
         });
     }
 
-    ['filter-from', 'filter-to', 'filter-severity', 'filter-check'].forEach(function(id) {
-        var el = document.getElementById(id);
+    [sevEl, checkEl].forEach(function(el) {
         if (!el) return;
         el.addEventListener('change', function() {
+            // A picked check replaces the Auth failures chip.
+            if (el === checkEl && checkEl.value) setAuthChip(false);
             syncEmailURL();
             loadFindings();
-            loadActionGroups();
-            authGroupsLoaded = false; // re-fetch on next tab activation
-            if (activeEmailTab() === 'auth') loadAuthGroups();
         });
     });
+
+    if (authChip) {
+        authChip.addEventListener('click', function() {
+            var on = authChip.getAttribute('aria-pressed') !== 'true';
+            setAuthChip(on);
+            if (on && checkEl) checkEl.value = '';
+            syncEmailURL();
+            loadFindings();
+        });
+    }
 
     // ---------- Quarantine action delegation ----------
 
@@ -1943,18 +1910,17 @@
         refreshBtn.addEventListener('click', function() {
             loadOverview();
             loadRspamd();
-            loadEmailStats();
             loadAVStatus();
             loadRejects();
             loadActionGroups();
             loadFindings();
-            authGroupsLoaded = false;
+            statsLoaded = false;
             forwardersLoaded = false;
             heldLoaded = false;
             deliverabilityLoaded = false;
             outboundAbuseLoaded = false;
             queueCompositionLoaded = false;
-            loadActiveEmailTab(true);
+            loadTab(activeTab('email-tabs'), true);
         });
     }
 
@@ -1979,14 +1945,15 @@
     if (initialTab) activateTab(initialTab);
     loadOverview();
     loadRspamd();
-    loadEmailStats();
     loadAVStatus();
     loadRejects();
     loadActionGroups();
+    loadEmailChecks();
     loadFindings();
-    loadActiveEmailTab(false);
+    loadTab(activeTab('email-tabs'), false);
 
-    // Polling while the tab is visible: the numbers and the queue every 30 s,
+    // Polling while the tab is visible: the numbers and the queue every 30 s
+    // (with the SMTP firewall and senders while the Outbound tab is open),
     // rspamd and AV every 60 s (rspamd's own figures are cached that long),
     // and the rejects and groups every 60 s.
     var _emailIntervals = [];
@@ -1997,7 +1964,10 @@
 
     function _startEmailPolling() {
         _emailIntervals.push(CSM.refresh.interval(function() {
-            try { loadOverview(); loadEmailStats(); } catch(e) {}
+            try {
+                loadOverview();
+                if (activeTab('email-tabs') === 'outbound') loadEmailStats();
+            } catch(e) {}
         }, 30000));
         _emailIntervals.push(CSM.refresh.interval(function() {
             try { loadRspamd(); loadAVStatus(); } catch(e) {}
