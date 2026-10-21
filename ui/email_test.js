@@ -32,10 +32,17 @@ function chartStub() {
 
 function emailPage(opts = {}) {
     const Chart = chartStub();
+    const globals = { Chart };
+    if (opts.now) {
+        globals.Date = class extends Date {
+            constructor(...args) { super(...(args.length ? args : [opts.now])); }
+            static now() { return Date.parse(opts.now); }
+        };
+    }
     const page = loadPage(templateBody('email'), SHARED.concat(['email.js']), {
         url: opts.url || 'https://csm.example.test/email',
         storage: opts.storage || {},
-        globals: { Chart }
+        globals
     });
     page.Chart = Chart;
     return page;
@@ -947,4 +954,192 @@ test('the email page has no hard-coded check list', () => {
     assert.equal(/EMAIL_CHECKS/.test(src), false, 'email.js still holds a check list');
     const tmpl = fs.readFileSync(path.join(__dirname, 'templates/email.html'), 'utf8');
     assert.equal(/value="mail_bruteforce"/.test(tmpl), false, 'email.html still lists checks');
+});
+
+// Set the classes Bootstrap changes before it emits shown.bs.tab. The
+// shared component stub only emits the event.
+function showEmailTab(page, name, nav = 'email-tabs') {
+    for (const tab of page.document.querySelectorAll('#' + nav + ' .nav-link')) {
+        tab.classList.toggle('active', tab.id === 'email-tab-' + name);
+    }
+    page.document.getElementById('email-tab-' + name).dispatchEvent(new page.window.Event('shown.bs.tab'));
+}
+
+test('an older outbound response cannot replace the selected range', async () => {
+    const page = emailPage();
+    showEmailTab(page, 'outbound');
+    showEmailTab(page, 'outbound-abuse', 'email-outbound-nav');
+    await settle();
+    const old = page.pending('/api/v1/email/relay-abuse?')[0];
+    changeValue(page, page.document.getElementById('email-range'), '7d');
+    await settle();
+    const recent = page.pending('/api/v1/email/relay-abuse?').at(-1);
+    assert.notEqual(recent.url, old.url);
+    page.respond(recent.url, 200, items([{ severity: 'HIGH', path_label: 'Current range', trigger_count: 2, detected_at: AT }]));
+    await settle();
+    page.respond(old.url, 200, items([]));
+    await settle();
+    assert.match(page.document.getElementById('outbound-abuse-body').textContent, /Current range/);
+});
+
+test('changing range while outbound is hidden invalidates its pending request', async () => {
+    const page = emailPage();
+    showEmailTab(page, 'outbound');
+    showEmailTab(page, 'outbound-abuse', 'email-outbound-nav');
+    await settle();
+    const old = page.pending('/api/v1/email/relay-abuse?')[0];
+    showEmailTab(page, 'findings');
+    changeValue(page, page.document.getElementById('email-range'), '7d');
+    page.respond(old.url, 200, items([]));
+    await settle();
+    showEmailTab(page, 'outbound');
+    await settle();
+    const requests = page.pending('/api/v1/email/relay-abuse?');
+    assert.equal(requests.length, 1, 'the hidden response marked the new range loaded');
+    assert.equal(query(requests[0].url).get('from'), query(page.pending('/api/v1/email/overview').at(-1).url).get('from'));
+});
+
+test('failed status refreshes do not leave healthy protection or an old chart visible', async () => {
+    const page = emailPage();
+    const bodies = {
+        '/api/v1/email/overview': overview({ scanned: 10, clean: 10 }, { smtp_restricted: true }),
+        '/api/v1/email/rspamd': { status: 'up', mode: 'enforce', available: false },
+        '/api/v1/email/av/status': { enabled: true, clamd_available: true, yarax_available: true, watcher_mode: 'permission' }
+    };
+    await answerAll(page, bodies);
+    page.document.getElementById('email-refresh').click();
+    await settle();
+    for (const route of ['overview', 'rspamd', 'av/status']) page.fail('/api/v1/email/' + route);
+    await settle();
+    const doc = page.document;
+    assert.doesNotMatch(doc.getElementById('email-subtitle').textContent, /Mail flowing|Queue empty/);
+    assert.equal(doc.getElementById('email-decisions-chart').hidden, true, 'old chart is still visible');
+    for (const id of ['prot-antispam', 'prot-smtp', 'prot-av', 'prot-watcher']) {
+        assert.ok(doc.getElementById(id).querySelector('.csm-load-error'), id + ' still reports the previous state');
+    }
+    doc.getElementById('email-refresh').click();
+    await answerAll(page, bodies);
+    assert.equal(doc.getElementById('email-decisions-chart').hidden, false);
+    assert.equal(doc.getElementById('email-protection').querySelectorAll('.csm-load-error').length, 0);
+    assert.match(doc.getElementById('email-subtitle').textContent, /Mail flowing/);
+});
+
+test('old rspamd and AV responses cannot overwrite newer health', async () => {
+    for (const oldFails of [false, true]) {
+        const page = emailPage();
+        await settle();
+        const oldRspamd = page.pending('/api/v1/email/rspamd')[0];
+        const oldAV = page.pending('/api/v1/email/av/status')[0];
+        oldRspamd.settled = oldAV.settled = true;
+        page.document.getElementById('email-refresh').click();
+        await settle();
+        await answerAll(page, {
+            '/api/v1/email/overview': overview({}),
+            '/api/v1/email/rspamd': { status: 'down', mode: 'enforce', available: false },
+            '/api/v1/email/av/status': { enabled: true, clamd_available: false, yarax_available: false, watcher_mode: 'disabled' }
+        });
+        if (oldFails) {
+            oldRspamd.reject(new Error('Old request failed'));
+            oldAV.reject(new Error('Old request failed'));
+        } else {
+            const { jsonResponse } = require('./pagekit.js');
+            oldRspamd.resolve(jsonResponse(200, { status: 'up', mode: 'enforce', available: false }));
+            oldAV.resolve(jsonResponse(200, { enabled: true, clamd_available: true, yarax_available: true, watcher_mode: 'permission' }));
+        }
+        await settle();
+        assert.match(page.document.getElementById('email-rspamd').textContent, /rspamd down/);
+        assert.match(page.document.getElementById('prot-antispam').textContent, /rspamd down/);
+        assert.match(page.document.getElementById('prot-av').textContent, /ClamAV down, YARA-X down/);
+    }
+});
+
+test('a failed rspamd refresh marks its protection status unknown', async () => {
+    const page = emailPage();
+    await answerAll(page, {
+        '/api/v1/email/overview': overview({}),
+        '/api/v1/email/rspamd': { status: 'up', mode: 'enforce', available: false }
+    });
+    page.document.getElementById('email-refresh').click();
+    await settle();
+    page.fail('/api/v1/email/rspamd');
+    await settle();
+    const line = page.document.getElementById('prot-antispam');
+    assert.match(line.textContent, /unknown|unavailable/i);
+    assert.doesNotMatch(line.querySelector('.status-dot').className, /status-green/);
+});
+
+test('custom date links normalize reversed days before requesting and charting', async () => {
+    const page = emailPage({ url: 'https://csm.example.test/email?from=2026-10-21&to=2026-10-19',
+        storage: { 'csm-prefs': JSON.stringify({ timezone: 'Etc/UTC' }) } });
+    await settle();
+    const params = query(page.pending('/api/v1/email/overview')[0].url);
+    assert.equal(params.get('from'), '2026-10-19T00:00:00.000Z');
+    assert.equal(params.get('to'), '2026-10-22T00:00:00.000Z');
+    page.respond('/api/v1/email/overview', 200, overview({}, { series: [{ t: Date.parse('2026-10-20T12:00:00Z') / 1000, clean: 3 }] }));
+    await settle();
+    assert.deepEqual(Array.from(page.Chart.charts[0].data.labels), ['10-19', '10-20', '10-21']);
+    assert.deepEqual(dataset(page.Chart.charts[0], 'Clean'), [0, 3, 0]);
+});
+
+test('daily bars include every quarter-hour of short and long DST days', async () => {
+    for (const [day, hours] of [['2026-03-29', 23], ['2026-10-25', 25]]) {
+        const page = emailPage({ url: 'https://csm.example.test/email?from=' + day + '&to=' + day,
+            storage: { 'csm-prefs': JSON.stringify({ timezone: 'Europe/Bucharest' }) } });
+        await settle();
+        const q = query(page.pending('/api/v1/email/overview')[0].url);
+        const from = Date.parse(q.get('from')), to = Date.parse(q.get('to'));
+        assert.equal(to - from, hours * HOUR_MS);
+        const series = Array.from({ length: hours * 4 }, (_, i) => ({ t: (from + i * 900000) / 1000, clean: 1 }));
+        page.respond('/api/v1/email/overview', 200, overview({}, { series }));
+        await settle();
+        assert.deepEqual(dataset(page.Chart.charts[0], 'Clean'), [hours * 4]);
+    }
+});
+
+test('long custom ranges bound chart work without dropping counts', async () => {
+    const page = emailPage({ url: 'https://csm.example.test/email?from=2026-01-01&to=2026-12-31',
+        storage: { 'csm-prefs': JSON.stringify({ timezone: 'Etc/UTC' }) } });
+    page.respond('/api/v1/email/overview', 200, overview({}, { series: [
+        { t: Date.parse('2026-01-01T00:00:00Z') / 1000, clean: 2 },
+        { t: Date.parse('2026-12-31T23:45:00Z') / 1000, clean: 3 }
+    ] }));
+    await settle();
+    const counts = dataset(page.Chart.charts[0], 'Clean');
+    assert.ok(counts.length <= 30, 'a long date link built ' + counts.length + ' daily bars');
+    assert.equal(counts[0], 2);
+    assert.equal(counts.at(-1), 3);
+    assert.equal(counts.reduce((a, b) => a + b, 0), 5);
+});
+
+test('recipient and check names remain text in every email view', async () => {
+    const page = emailPage();
+    const payload = '<img src=x onerror=alert(1)>';
+    await settle();
+    page.respond('/api/v1/email/rejects', 200, items([{ at: AT, class: 'spam', recipient: payload + '@example.net' }]));
+    page.respond('/api/v1/email/checks', 200, { checks: [{ name: payload, kind: 'auth_failure' }] });
+    page.respond('/api/v1/history?', 200, items([{ timestamp: AT, check: payload, message: 'Synthetic finding', severity: 'HIGH' }]));
+    await settle();
+    for (const id of ['email-rejects-tbody', 'filter-check', 'email-tbody']) {
+        const el = page.document.getElementById(id);
+        assert.equal(el.querySelectorAll('img').length, 0, id + ' interpreted server text as markup');
+        assert.ok(el.textContent.includes(payload), id + ' lost the literal server text');
+    }
+});
+
+test('hour bars realign on both sides of a half-hour DST transition', async () => {
+    for (const [now, transition, labels] of [
+        ['2026-10-04T02:00:00Z', '2026-10-03T15:30:00Z', ['01:00', '02:30', '03:00']],
+        ['2026-04-05T02:00:00Z', '2026-04-04T15:00:00Z', ['01:00', '01:30', '02:00']]
+    ]) {
+        const page = emailPage({ now, storage: { 'csm-prefs': JSON.stringify({ timezone: 'Australia/Lord_Howe' }) } });
+        await settle();
+        const start = Date.parse(transition);
+        // One full hour before the jump, one half-hour after, then a full hour.
+        const series = Array.from({ length: 10 }, (_, i) => ({ t: (start - HOUR_MS + i * 900000) / 1000, clean: 1 }));
+        page.respond('/api/v1/email/overview', 200, overview({}, { series }));
+        await settle();
+        const chart = page.Chart.charts[0];
+        const filled = dataset(chart, 'Clean').map((v, i) => [chart.data.labels[i], v]).filter(row => row[1]);
+        assert.deepEqual(filled, labels.map((label, i) => [label, i === 1 ? 2 : 4]));
+    }
 });

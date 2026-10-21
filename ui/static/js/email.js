@@ -13,6 +13,7 @@
     var _forwarders = [];
     var deliverabilityLoaded = false;
     var outboundAbuseLoaded = false;
+    var _outboundAbuseSeq = 0;
     var queueCompositionLoaded = false;
 
     // ---------- Filter state from URL ----------
@@ -47,10 +48,17 @@
     var linkTo = CSM.urlState.get('to') || '';
     var customRange = null;
     if (linkFrom || linkTo) {
-        var linked = CSM.prefs.dayRange(linkFrom || today, linkTo || today);
+        linkFrom = linkFrom || today;
+        linkTo = linkTo || today;
+        if (linkFrom > linkTo) {
+            var swap = linkFrom;
+            linkFrom = linkTo;
+            linkTo = swap;
+        }
+        var linked = CSM.prefs.dayRange(linkFrom, linkTo);
         if (linked.from && linked.to) {
             customRange = { from: Date.parse(linked.from), to: Date.parse(linked.to),
-                label: (linkFrom || today) === (linkTo || today) ? (linkFrom || today) : (linkFrom || today) + ' to ' + (linkTo || today) };
+                label: linkFrom === linkTo ? linkFrom : linkFrom + ' to ' + linkTo };
         }
     }
     if (rangeEl) {
@@ -75,8 +83,22 @@
 
     // hourStart returns the start of the operator-zone hour holding ms.
     function hourStart(ms) {
+        ms = Math.floor(ms / 1000) * 1000;
         var wall = CSM.prefs.formatDateTime(new Date(ms));
-        return Math.floor(ms / 1000) * 1000 - (+wall.slice(14, 16) * 60 + +wall.slice(17, 19)) * 1000;
+        var start = ms - (+wall.slice(14, 16) * 60 + +wall.slice(17, 19)) * 1000;
+        // A half-hour clock change can begin or repeat only part of an
+        // hour. Do not cross that transition while finding its start.
+        var offset = Date.parse(wall.replace(' ', 'T') + 'Z') - ms;
+        var lo = start, hi = ms;
+        while (lo < hi) {
+            var at = CSM.prefs.formatDateTime(new Date(lo));
+            if (Date.parse(at.replace(' ', 'T') + 'Z') - lo === offset) return lo;
+            var mid = lo + Math.floor((hi - lo) / 2000) * 1000;
+            at = CSM.prefs.formatDateTime(new Date(mid));
+            if (Date.parse(at.replace(' ', 'T') + 'Z') - mid === offset) hi = mid;
+            else lo = mid + 1000;
+        }
+        return hi;
     }
 
     // currentRange returns the selected range: the last 24 operator-zone
@@ -92,7 +114,7 @@
             var first = daysBefore(CSM.prefs.today(), key === '7d' ? 6 : 29);
             return { key: key, from: new Date(CSM.prefs.dayBoundary(first, false)), to: new Date(now) };
         }
-        return { key: '24h', from: new Date(hourStart(now) - 23 * 3600000), to: new Date(now) };
+        return { key: '24h', from: new Date(hourStart(hourStart(now) - 23 * 3600000)), to: new Date(now) };
     }
 
     function rangeQuery(range, base) {
@@ -138,6 +160,7 @@
     var _overviewRange = null;
     var _overviewSeq = 0;
     var _rspamd = null;
+    var _rspamdSeq = 0;
 
     function loadOverview() {
         var range = currentRange();
@@ -148,6 +171,7 @@
                 _overview = ov;
                 _overviewRange = range;
                 CSM.clearLoadError(document.getElementById('email-kpis'));
+                CSM.clearLoadError(document.getElementById('email-decisions-chart').parentElement);
                 renderKPIs(ov);
                 renderQueueHealth(ov.queue || {});
                 renderChart(ov, range);
@@ -156,8 +180,16 @@
             })
             .catch(function(err) {
                 if (seq !== _overviewSeq) return;
+                _overview = null;
+                _overviewRange = null;
+                document.getElementById('email-subtitle').textContent = 'Mail numbers unavailable.';
                 CSM.loadError(document.getElementById('email-kpis'), loadOverview, { title: 'Failed to load mail numbers', error: err });
                 CSM.loadError(document.getElementById('queue-health'), loadOverview, { title: 'Failed to load the mail queue', error: err });
+                CSM.loadError(document.getElementById('email-decisions-chart').parentElement, loadOverview, { title: 'Mail decisions unavailable', error: err });
+                document.getElementById('email-chart-note').textContent = '';
+                ['prot-antispam', 'prot-smtp'].forEach(function(id) {
+                    CSM.loadError(document.getElementById(id), loadOverview, { title: 'Protection status unavailable', error: err });
+                });
             });
     }
 
@@ -283,24 +315,33 @@
     var _chartGapMinutes = [];
 
     // chartPeriods returns the bars of a range: operator-zone hours for 24
-    // hours, operator-zone days otherwise. Hour bars are fixed 3600 s steps
-    // from the first hour start, each labeled with the operator-zone time
-    // at its start.
+    // hours, operator-zone days otherwise. Each hour starts on the local
+    // clock, including partial hours at daylight saving transitions. Long
+    // custom links group days to keep chart work within the 30-day view's
+    // bar budget without cutting any of the requested range.
     function chartPeriods(range) {
         var from = range.from.getTime(), to = range.to.getTime();
         var periods = [];
         if (range.key === '24h') {
-            for (var t = from; t < to; t += 3600000) {
-                periods.push({ start: t, end: t + 3600000, label: CSM.prefs.formatDateTime(new Date(t)).slice(11, 16) });
+            for (var t = from; t < to;) {
+                var end = hourStart(t + 3600000);
+                periods.push({ start: t, end: end, label: CSM.prefs.formatDateTime(new Date(t)).slice(11, 16) });
+                t = end;
             }
             return periods;
         }
         var day = CSM.prefs.formatDateTime(range.from).slice(0, 10);
-        for (var start = from; start < to;) {
-            var next = CSM.prefs.dayBoundary(day, true);
-            if (next === null || next <= start) break;
-            periods.push({ start: start, end: next, label: day.slice(5) });
-            day = daysBefore(day, -1);
+        var last = CSM.prefs.formatDateTime(new Date(to - 1)).slice(0, 10);
+        var days = Math.round((Date.parse(last) - Date.parse(day)) / 86400000) + 1;
+        var step = Math.max(1, Math.ceil(days / 30));
+        var labelStart = day.slice(0, 4) === last.slice(0, 4) ? 5 : 0;
+        for (var start = from; days > 0; days -= step) {
+            var lastDay = daysBefore(day, -Math.min(step - 1, days - 1));
+            var next = Math.min(CSM.prefs.dayBoundary(lastDay, true), to);
+            var label = day.slice(labelStart);
+            if (lastDay !== day) label += ' to ' + lastDay.slice(labelStart);
+            if (next > start) periods.push({ start: start, end: next, label: label });
+            day = daysBefore(lastDay, -1);
             start = next;
         }
         return periods;
@@ -421,14 +462,20 @@
     }
 
     function loadRspamd() {
+        var seq = ++_rspamdSeq;
         CSM.get('/api/v1/email/rspamd')
             .then(function(r) {
+                if (seq !== _rspamdSeq) return;
                 _rspamd = r;
                 renderRspamd(r);
                 renderSubtitle();
                 renderProtection();
             })
             .catch(function(err) {
+                if (seq !== _rspamdSeq) return;
+                _rspamd = { status: 'unknown' };
+                renderSubtitle();
+                renderProtection();
                 CSM.loadError(document.getElementById('email-rspamd'), loadRspamd, { title: 'Failed to load rspamd status', error: err });
             });
     }
@@ -488,6 +535,7 @@
             loadActionGroups();
             loadFindings();
             outboundAbuseLoaded = false;
+            ++_outboundAbuseSeq;
             if (activeTab('email-tabs') === 'outbound' && activeTab('email-outbound-nav') === 'outbound-abuse') loadOutboundAbuse();
         });
     }
@@ -618,12 +666,14 @@
     // ---------- Protection ----------
 
     var _av = null;
+    var _avSeq = 0;
     var MODE_STATES = { 'enforce': 'ok', 'dry-run': 'warn', 'off': 'off' };
     var PROTECTION_DOTS = { ok: 'status-green', warn: 'status-yellow', bad: 'status-red', off: 'status-secondary' };
 
     function setProtection(id, state, text) {
         var line = document.getElementById(id);
         if (!line) return;
+        CSM.clearLoadError(line);
         line.querySelector('.status-dot').className = 'status-dot ' + PROTECTION_DOTS[state];
         line.querySelector('[data-prot-value]').textContent = text;
     }
@@ -638,6 +688,7 @@
             if (mode !== 'off' && _rspamd && _rspamd.status) {
                 spamText += ', rspamd ' + _rspamd.status;
                 if (_rspamd.status === 'down') spam = 'bad';
+                else if (_rspamd.status !== 'up') spam = 'warn';
             }
             setProtection('prot-antispam', spam, spamText);
             setProtection('prot-smtp', _overview.smtp_restricted ? 'ok' : 'off', _overview.smtp_restricted ? 'restricted' : 'open');
@@ -791,12 +842,20 @@
     // ---------- AV status (Protection card) ----------
 
     function loadAVStatus() {
+        var seq = ++_avSeq;
         CSM.get('/api/v1/email/av/status', { silent: true })
             .then(function(data) {
+                if (seq !== _avSeq) return;
                 _av = data;
                 renderProtection();
             })
-            .catch(function() { /* non-fatal */ });
+            .catch(function(err) {
+                if (seq !== _avSeq) return;
+                _av = null;
+                ['prot-av', 'prot-watcher'].forEach(function(id) {
+                    CSM.loadError(document.getElementById(id), loadAVStatus, { title: 'Antivirus status unavailable', error: err });
+                });
+            });
     }
 
     // ---------- Needs attention ----------
@@ -1629,13 +1688,17 @@
     function loadOutboundAbuse() {
         var body = document.getElementById('outbound-abuse-body');
         if (!body) return;
+        var seq = ++_outboundAbuseSeq;
         CSM.get('/api/v1/email/relay-abuse?' + emailDateQuery('limit=20'))
             .then(function(resp) {
+                if (seq !== _outboundAbuseSeq) return;
                 outboundAbuseLoaded = true;
                 renderOutboundAbuse(resp);
                 CSM.truncationNote(body, resp && resp.truncated, 'relay abuse findings');
             })
             .catch(function(err) {
+                if (seq !== _outboundAbuseSeq) return;
+                outboundAbuseLoaded = false;
                 CSM.loadError(body, loadOutboundAbuse, { title: 'Failed to load outbound mail abuse', error: err });
             });
     }
@@ -1919,6 +1982,7 @@
             heldLoaded = false;
             deliverabilityLoaded = false;
             outboundAbuseLoaded = false;
+            ++_outboundAbuseSeq;
             queueCompositionLoaded = false;
             loadTab(activeTab('email-tabs'), true);
         });
