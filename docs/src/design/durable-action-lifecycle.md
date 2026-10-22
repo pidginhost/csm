@@ -60,10 +60,12 @@ ordinary single action, and a stored batch ID is observed, never planned
 again. A batch has one outcome. A crash or lost write at any step, from
 admission to audit acknowledgement, leaves recovery to prove an outcome or
 keep it unknown; the kernel is written at most once and each member is
-charged once. A kernel holding only some members proves neither outcome, so
-the batch stays unknown until the kernel proves one or an operator resolves
-it. Audit delivery writes one record per member, with the member's action ID
-and the batch's outcome and version, in one durable write.
+charged once. Storage and audit failures reach the caller even when recovery
+can later prove the outcome. A kernel holding only some members proves
+neither outcome, so the batch stays unknown until the kernel proves one or
+an operator resolves it. Audit delivery writes one record per member, with
+the member's action ID and the batch's outcome and version, in one durable
+write.
 
 Batch evidence selects each member's current row by ID, target and planning
 time; retained rows from an earlier use of that ID are not current evidence.
@@ -87,6 +89,9 @@ original action before checking current policy or expiry, and cannot add
 other members. Two stored singletons in one call are a conflict. A caller
 needing a durable header alias for singletons must wait for a stored-format
 extension.
+
+Replaying a settled batch leaves its charges, committed revision and kernel
+unchanged. An acknowledged audit is not delivered again.
 
 Batch planning dates member rows and kernel evidence by one lease-clock
 instant, even when the wall clock moves backward during a lease.

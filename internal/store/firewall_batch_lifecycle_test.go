@@ -78,20 +78,22 @@ func TestFirewallBatchLifecycleSurvivesEveryBoundary(t *testing.T) {
 		failAudit  bool
 		start      func(firewall.FirewallAction) firewall.FirewallState
 		wantWrites int
+		firstPhase string
+		wantErr    error
 		want       string
 	}{
-		{name: "clean batch", wantWrites: 1, want: "verified"},
-		{name: "lost after admission", store: boundaryStore{failTo: "executing"}, want: "failed"},
-		{name: "lost after executing", store: boundaryStore{failTo: "unknown"}, kernel: boundaryKernel{failObs: 1}, want: "failed"},
-		{name: "kernel rejects", kernel: boundaryKernel{observedKernel: observedKernel{fail: errBoundary}, apply: func(a firewall.FirewallAction) firewall.FirewallState { return a.Before }}, wantWrites: 1, want: "failed"},
-		{name: "lost kernel reply", kernel: boundaryKernel{observedKernel: observedKernel{fail: errBoundary}}, wantWrites: 1, want: "verified"},
-		{name: "lost after apply", store: boundaryStore{failTo: "applied"}, wantWrites: 1, want: "verified"},
-		{name: "lost after applied", store: boundaryStore{failTo: "unknown"}, kernel: boundaryKernel{failObs: 2}, wantWrites: 1, want: "verified"},
-		{name: "lost outcome", store: boundaryStore{failTo: "verified"}, wantWrites: 1, want: "verified"},
-		{name: "lost audit", failAudit: true, wantWrites: 1, want: "verified"},
-		{name: "lost acknowledgement", store: boundaryStore{failAck: true}, wantWrites: 1, want: "verified"},
-		{name: "partial kernel effect", kernel: boundaryKernel{apply: partial}, wantWrites: 1, want: "unknown"},
-		{name: "kernel changed before execution", start: partial, want: "unknown"},
+		{name: "clean batch", wantWrites: 1, firstPhase: "verified", want: "verified"},
+		{name: "lost after admission", store: boundaryStore{failTo: "executing"}, firstPhase: "planned", wantErr: firewall.ErrActionUnknown, want: "failed"},
+		{name: "lost after executing", store: boundaryStore{failTo: "unknown"}, kernel: boundaryKernel{failObs: 1}, firstPhase: "executing", wantErr: firewall.ErrActionUnknown, want: "failed"},
+		{name: "kernel rejects", kernel: boundaryKernel{observedKernel: observedKernel{fail: errBoundary}, apply: func(a firewall.FirewallAction) firewall.FirewallState { return a.Before }}, wantWrites: 1, firstPhase: "failed", wantErr: firewall.ErrActionFailed, want: "failed"},
+		{name: "lost kernel reply", kernel: boundaryKernel{observedKernel: observedKernel{fail: errBoundary}}, wantWrites: 1, firstPhase: "verified", want: "verified"},
+		{name: "lost after apply", store: boundaryStore{failTo: "applied"}, wantWrites: 1, firstPhase: "executing", wantErr: firewall.ErrActionUnknown, want: "verified"},
+		{name: "lost after applied", store: boundaryStore{failTo: "unknown"}, kernel: boundaryKernel{failObs: 2}, wantWrites: 1, firstPhase: "applied", wantErr: firewall.ErrActionUnknown, want: "verified"},
+		{name: "lost outcome", store: boundaryStore{failTo: "verified"}, wantWrites: 1, firstPhase: "applied", wantErr: firewall.ErrActionUnknown, want: "verified"},
+		{name: "lost audit", failAudit: true, wantWrites: 1, firstPhase: "verified", wantErr: errBoundary, want: "verified"},
+		{name: "lost acknowledgement", store: boundaryStore{failAck: true}, wantWrites: 1, firstPhase: "verified", wantErr: errBoundary, want: "verified"},
+		{name: "partial kernel effect", kernel: boundaryKernel{apply: partial}, wantWrites: 1, firstPhase: "unknown", wantErr: firewall.ErrActionUnknown, want: "unknown"},
+		{name: "kernel changed before execution", start: partial, firstPhase: "unknown", wantErr: firewall.ErrActionUnknown, want: "unknown"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			db := openSnapshotDB(t)
@@ -117,17 +119,28 @@ func TestFirewallBatchLifecycleSurvivesEveryBoundary(t *testing.T) {
 				return nil
 			}}
 			first, executeErr := l.Execute(in, &k)
-			if tc.want == "verified" && tc.store.failTo == "" && !tc.failAudit && !tc.store.failAck && tc.kernel.fail == nil && executeErr != nil {
-				t.Fatalf("clean batch = %#v, %v", first, executeErr)
+			if !errors.Is(executeErr, tc.wantErr) {
+				t.Fatalf("execution = %q, %v; want error %v", first.Phase, executeErr, tc.wantErr)
 			}
-			if recoverErr := l.Recover(&k); recoverErr != nil && !errors.Is(recoverErr, firewall.ErrActionUnknown) {
-				t.Fatalf("recover = %v", recoverErr)
+			if s.failTo != "" || s.failAck || failAudit || k.observes < tc.kernel.failObs {
+				t.Fatal("execution did not reach the injected fault")
+			}
+			stored, err := db.ReadFirewallAction(in.Request.ID)
+			if err != nil || stored.Phase != tc.firstPhase || !stored.SameManifest(in) {
+				t.Fatalf("before recovery = %q, %v; want %s with the original manifest", stored.Phase, err, tc.firstPhase)
+			}
+			var wantRecoverErr error
+			if tc.want == "unknown" {
+				wantRecoverErr = firewall.ErrActionUnknown
+			}
+			if recoverErr := l.Recover(&k); !errors.Is(recoverErr, wantRecoverErr) {
+				t.Fatalf("recover = %v; want %v", recoverErr, wantRecoverErr)
 			}
 			if auditErr := l.DeliverAudit(); auditErr != nil {
 				t.Fatalf("audit retry = %v", auditErr)
 			}
 			got, err := db.ReadFirewallAction(in.Request.ID)
-			if err != nil || got.Phase != tc.want || len(got.Members) != 2 {
+			if err != nil || got.Phase != tc.want || !got.SameManifest(in) {
 				t.Fatalf("outcome = %q (%d members), %v; want %s", got.Phase, len(got.Members), err, tc.want)
 			}
 			if k.writes != tc.wantWrites {
@@ -152,15 +165,30 @@ func TestFirewallBatchLifecycleSurvivesEveryBoundary(t *testing.T) {
 			if (tc.failAudit || tc.store.failAck) && len(audited) != 2 {
 				t.Fatalf("a lost delivery was not retried: %d deliveries", len(audited))
 			}
-			if tc.want != "unknown" {
-				if len(audited) == 0 || audited[len(audited)-1].AuditVersion != got.AuditVersion || got.AuditAck != got.AuditVersion || len(audited[len(audited)-1].Members) != 2 {
-					t.Fatalf("audit = %d deliveries, last %#v; record ack %d of %d", len(audited), audited, got.AuditAck, got.AuditVersion)
+			if len(audited) == 0 || audited[len(audited)-1].AuditVersion != got.AuditVersion || got.AuditAck != got.AuditVersion {
+				t.Fatalf("audit = %d deliveries, last %#v; record ack %d of %d", len(audited), audited, got.AuditAck, got.AuditVersion)
+			}
+			for _, a := range audited {
+				if !a.SameManifest(in) || a.Phase != tc.want {
+					t.Fatalf("audit lost the batch identity or outcome: %#v", a)
 				}
 			}
-			again, _ := l.Execute(in, &k)
-			if k.writes != tc.wantWrites || again.Phase != tc.want {
-				t.Fatalf("repeated batch = %q after %d writes", again.Phase, k.writes)
+			var wantReplayErr error
+			switch tc.want {
+			case "failed":
+				wantReplayErr = firewall.ErrActionFailed
+			case "unknown":
+				wantReplayErr = firewall.ErrActionUnknown
 			}
+			deliveries := len(audited)
+			again, replayErr := l.Execute(in, &k)
+			if !errors.Is(replayErr, wantReplayErr) || k.writes != tc.wantWrites || again.Phase != tc.want || !again.SameManifest(in) || len(audited) != deliveries {
+				t.Fatalf("repeated batch = %q, %v after %d writes and %d audits", again.Phase, replayErr, k.writes, len(audited))
+			}
+			if count, err := db.ReadFirewallScanBudget("2026-01-02T03"); err != nil || count != 2 {
+				t.Fatalf("replay charges = %d, %v; want 2", count, err)
+			}
+			assertFirewallSnapshot(t, db, committed, revision)
 		})
 	}
 }
@@ -347,10 +375,18 @@ func TestFirewallBatchCrashAfterEachStep(t *testing.T) {
 			if deliveries != wantDeliveries {
 				t.Fatalf("restart delivered %d audits, want %d", deliveries, wantDeliveries)
 			}
-			_, _ = recovery.Execute(in, k)
-			if k.writes != wantWrites || deliveries != wantDeliveries {
-				t.Fatal("replay after restart wrote again")
+			var wantReplayErr error
+			if wantPhase == "failed" {
+				wantReplayErr = firewall.ErrActionFailed
 			}
+			again, replayErr := recovery.Execute(in, k)
+			if !errors.Is(replayErr, wantReplayErr) || again.Phase != wantPhase || !again.SameManifest(in) || k.writes != wantWrites || deliveries != wantDeliveries {
+				t.Fatalf("replay after restart = %q, %v, writes %d, audits %d", again.Phase, replayErr, k.writes, deliveries)
+			}
+			if count, err := reopened.ReadFirewallScanBudget("2026-01-02T03"); err != nil || count != 2 {
+				t.Fatalf("replay after restart charges = %d, %v; want 2", count, err)
+			}
+			assertFirewallSnapshot(t, reopened, wantState, 2)
 		})
 	}
 }
