@@ -166,17 +166,18 @@ func ParseSpoolMessage(headerPath, bodyPath string, limits Limits) (*ExtractionR
 						markPartial(result, "could not stage single-part attachment for scanning")
 					} else {
 						totalSize += int64(n)
-						filename := params["name"]
-						if filename == "" {
-							filename = "attachment"
+						rawFilename := params["name"]
+						if rawFilename == "" {
+							rawFilename = "attachment"
 						}
-						filename = sanitizeAttachmentName(filename)
+						filename := sanitizeAttachmentName(rawFilename)
 						result.Parts = append(result.Parts, ExtractedPart{
 							Filename:    filename,
 							ContentType: mediaType,
 							Size:        int64(len(decoded)),
 							TempPath:    tmpFile.Name(),
 						})
+						expandArchive(tmpFile.Name(), rawFilename, filename, limits, result, &totalSize, 0)
 					}
 				} else {
 					markPartial(result, "could not stage single-part attachment for scanning")
@@ -614,16 +615,28 @@ func extractMultipartNested(r io.Reader, boundary string, limits Limits, result 
 				TempPath:    tmpFile.Name(),
 			})
 
-			// Attempt archive extraction
-			if depth < limits.MaxArchiveDepth {
-				switch archiveKindForAttachmentName(rawFilename, filename) {
-				case "zip":
-					extractZIP(tmpFile.Name(), filename, limits, result, totalSize, depth+1)
-				case "tar.gz":
-					extractTarGz(tmpFile.Name(), filename, limits, result, totalSize, depth+1)
-				}
-			}
+			expandArchive(tmpFile.Name(), rawFilename, filename, limits, result, totalSize, depth)
 		}
+	}
+}
+
+// expandArchive unpacks an archive found at depth (0 for an attachment, 1 for
+// a member of an attached archive) while max_archive_depth allows it. Past the
+// limit its members were never read, so the message is not fully scanned.
+func expandArchive(path, rawName, safeName string, limits Limits, result *ExtractionResult, totalSize *int64, depth int) {
+	kind := archiveKindForAttachmentName(rawName, safeName)
+	if kind == "" {
+		return
+	}
+	if depth >= limits.MaxArchiveDepth {
+		markPartial(result, fmt.Sprintf("nested archive %q not expanded", safeName))
+		return
+	}
+	switch kind {
+	case "zip":
+		extractZIP(path, safeName, limits, result, totalSize, depth+1)
+	case "tar.gz":
+		extractTarGz(path, safeName, limits, result, totalSize, depth+1)
 	}
 }
 
@@ -651,20 +664,21 @@ func markExtractionBudget(result *ExtractionResult, limits Limits) {
 // extraction budget is spent.
 var errExtractionBudget = errors.New("extraction budget spent")
 
-// budgetReader counts what it yields and fails once the count passes limit.
+// budgetReader adds what it yields to the message's shared spent count and
+// fails once that count passes limit. Nested archives add to the same count.
 type budgetReader struct {
 	r     io.Reader
-	n     int64
+	spent *int64
 	limit int64
 }
 
 func (b *budgetReader) Read(p []byte) (int, error) {
-	if b.n > b.limit {
+	if *b.spent > b.limit {
 		return 0, errExtractionBudget
 	}
 	n, err := b.r.Read(p)
-	b.n += int64(n)
-	if b.n > b.limit {
+	*b.spent += int64(n)
+	if *b.spent > b.limit {
 		return n, errExtractionBudget
 	}
 	return n, err
@@ -798,6 +812,7 @@ func extractZIP(zipPath, archiveName string, limits Limits, result *ExtractionRe
 			ArchiveName: archiveName,
 		})
 		extracted++
+		expandArchive(tmpFile.Name(), zf.Name, safeName, limits, result, totalSize, depth)
 	}
 }
 
@@ -819,10 +834,7 @@ func extractTarGz(tgzPath, archiveName string, limits Limits, result *Extraction
 
 	// Everything the gzip stream yields spends the budget, including the
 	// remainder tar.Next reads through to skip an oversize member.
-	base := *totalSize
-	budget := &budgetReader{r: gr, limit: limits.MaxExtractionSize - base}
-	defer func() { *totalSize = base + budget.n }()
-	tr := tar.NewReader(budget)
+	tr := tar.NewReader(&budgetReader{r: gr, spent: totalSize, limit: limits.MaxExtractionSize})
 	walkCap := archiveWalkCap(limits)
 	extracted, walked := 0, 0
 	for {
@@ -892,6 +904,7 @@ func extractTarGz(tgzPath, archiveName string, limits Limits, result *Extraction
 			ArchiveName: archiveName,
 		})
 		extracted++
+		expandArchive(tmpFile.Name(), hdr.Name, safeName, limits, result, totalSize, depth)
 	}
 }
 

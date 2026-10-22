@@ -592,7 +592,7 @@ email_av:
   clamd_socket: "/var/run/clamd.scan/clamd.sock"  # path to ClamAV daemon socket
   scan_timeout: "30s"                   # per-attachment scan timeout
   max_attachment_size: 26214400         # max single attachment size in bytes (25MB)
-  max_archive_depth: 1                  # max nested archive extraction depth
+  max_archive_depth: 1                  # archive levels unpacked (1: attached archives only); a deeper archive counts as not fully scanned
   max_archive_files: 50                 # max files extracted per archive; also caps encrypted member names reported per message
   max_extraction_size: 104857600        # max total extraction size in bytes (100MB)
   quarantine_infected: true             # quarantine emails with infected attachments
