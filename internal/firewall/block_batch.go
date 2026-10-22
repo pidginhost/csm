@@ -32,7 +32,8 @@ const (
 	// BlockRefusedInvalid: a malformed action ID, address, reason or
 	// expiry, or an address not in canonical form.
 	BlockRefusedInvalid BlockRefusal = "invalid"
-	// BlockRefusedExpired: less than a millisecond of the block is left.
+	// BlockRefusedExpired: less than a millisecond of the block is left, or
+	// a durable batch member too short to outlive its verification.
 	BlockRefusedExpired BlockRefusal = "expired"
 	// BlockRefusedUnsupported: the address family is not enabled.
 	BlockRefusedUnsupported BlockRefusal = "unsupported"

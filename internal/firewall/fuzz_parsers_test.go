@@ -3,6 +3,8 @@
 package firewall
 
 import (
+	"errors"
+	"net"
 	"strings"
 	"testing"
 	"time"
@@ -43,6 +45,40 @@ func FuzzCheckBlockBatchIsolatesMembers(f *testing.F) {
 			}
 			if want == "" {
 				seenIP[member.IP], seenAction[member.Action] = true, true
+			}
+		}
+	})
+}
+
+// FuzzBlockBatchMembers feeds arbitrary member content around valid
+// members: a member can only refuse itself, never poison the rest.
+func FuzzBlockBatchMembers(f *testing.F) {
+	f.Add("203.0.113.70", "member-x", "brute force", int64(time.Hour))
+	f.Add("::ffff:203.0.113.71", "member x", "line\nbreak", int64(0))
+	f.Add("2001:db8::70", "member-x", "", int64(time.Millisecond))
+	f.Add("203.0.113.0/24", "batch-one", "brute force", int64(-time.Hour))
+	f.Fuzz(func(t *testing.T, target, id, reason string, ttl int64) {
+		e, s := batchPlanEngine(t, FirewallConfig{IPv6: true}, FirewallState{})
+		odd := batchMember(id, target)
+		odd.Reason, odd.TTL = reason, time.Duration(ttl)
+		members := []ActionRequest{batchMember("member-first", "203.0.113.80"), odd, batchMember("member-last", "203.0.113.81")}
+		result, err := e.BlockBatchRequest(batchHeader(), members, nil)
+		if !errors.Is(err, errBatchPlanStop) || len(result.Refusals) != len(members) || result.Refusals[0] != "" || len(s.admitted) != 1 {
+			t.Fatalf("batch = %q, %v, admitted %d", result.Refusals, err, len(s.admitted))
+		}
+		var ran []string
+		for i, refusal := range result.Refusals {
+			if refusal == "" {
+				ran = append(ran, members[i].ID)
+			}
+		}
+		plan := s.admitted[0]
+		if len(plan.Members) != len(ran) || len(plan.After.Blocked) != len(ran) {
+			t.Fatalf("planned %d members and %d rows for %v", len(plan.Members), len(plan.After.Blocked), ran)
+		}
+		for i, m := range plan.Members {
+			if m.Request.ID != ran[i] || net.ParseIP(m.Request.Target) == nil || net.ParseIP(m.Request.Target).String() != m.Request.Target || m.Request.TTL <= 0 {
+				t.Fatalf("planned member %d = %#v", i, m.Request)
 			}
 		}
 	})

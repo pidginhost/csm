@@ -39,13 +39,66 @@ A firewall action can carry a batch: a header and a manifest of
 single-target members, each with its own charge and the rows it removes to
 make room. Each member ID belongs to exactly one batch. Admitting a known ID
 with any change to the members, their order or their effects is refused, and
-a refused batch charges nothing. Actions written before batches read as
+a refused batch charges nothing. A batch only adds its members' rows: nothing
+evicts for a batch, so admission refuses one whose result drops a row that
+has not expired or changes any other entry. Kept rows retain their order.
+Unverified rows remain until their owner settles the outcome, even after
+expiry, and a batch cannot add a block for an address they hold; an
+unverified address stays pending even when another spelling of the same
+address has a verified block. Actions written before batches read as
 one-member batches and keep their stored format. A record written by a newer
 build is refused as unsupported, never read or overwritten. A firewall-only
 import moves the durable journal and its snapshot as one unit, and refuses
 while either database has an unresolved action or undelivered audit. A
 refusal, including one for nested firewall buckets on either side, leaves the
 target database unchanged.
+
+The block batch planner checks each automatic temporary block on its own
+against one committed snapshot, leaves out refused members and runs the rest
+as one batch with one kernel transaction; a lone valid member runs as an
+ordinary single action, and a stored batch ID is observed, never planned
+again. A member too short to outlive its own verification is refused, since
+its expiry would leave the batch unknown. A batch has one outcome. A crash or lost write at any step, from
+admission to audit acknowledgement, leaves recovery to prove an outcome or
+keep it unknown; the kernel is written at most once and each member is
+charged once. Storage and audit failures reach the caller even when recovery
+can later prove the outcome. A kernel holding only some members proves
+neither outcome, so the batch stays unknown until the kernel proves one or
+an operator resolves it. Audit delivery writes one record per member, with
+the member's action ID and the batch's outcome and version, in one durable
+write.
+
+Batch evidence selects each member's current row by ID, target and planning
+time; retained rows from an earlier use of that ID are not current evidence.
+An unresolved batch with an expired member remains unknown: absence does
+not prove that member was never applied. This also holds during immediate
+verification after apply. A durable terminal outcome is preserved on replay
+after expiry. A rejected kernel batch is not retried inside the lifecycle.
+Its owner must first prove rejection and use a new charged action for any
+retry. The existing single-request path is unchanged. Audit is delivered at
+least once; consumers deduplicate each member event by its action ID and
+transition version, not by the batch ID.
+
+Batch replay returns the stored manifest, not a fresh decision on candidates
+left out of the original action. Nil refusals on replay do not mean every
+supplied candidate ran. The stored requests must appear as an ordered
+subsequence; extra candidates, including previously refused duplicate IDs,
+never execute. The original refused list cannot be reconstructed. A
+singleton uses its member ID as the durable action ID; its unused header ID
+is not reserved. Retrying that exact automatic temporary block returns the
+original action before checking current policy or expiry, and cannot add
+other members. Two stored singletons in one call are a conflict. A caller
+needing a durable header alias for singletons must wait for a stored-format
+extension.
+
+Replaying a settled batch leaves its charges, committed revision and kernel
+unchanged. An acknowledged audit is not delivered again.
+
+Batch planning dates member rows and kernel evidence by one lease-clock
+instant, even when the wall clock moves backward during a lease.
+Operator IP and port allows come from the same committed planning snapshot;
+allow expiry uses one wall-clock reading. A changed committed revision
+refuses admission for both batches and lone members.
 
 If intent or budget persistence fails, new automated mutations are refused
 and the finding is retained. If outcome persistence fails after mutation, the

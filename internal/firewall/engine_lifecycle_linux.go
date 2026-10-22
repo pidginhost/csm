@@ -39,9 +39,22 @@ func (e *Engine) AttachLifecycle(l *Lifecycle) error {
 	e.installCommittedCache(state)
 	return nil
 }
+
+// writeFirewallActionAudit records one event per member. A batch writes its
+// members in one durable write, each with the batch's outcome and version.
 func writeFirewallActionAudit(a FirewallAction) error {
-	result := actionlog.Result(a.Phase)
-	return actionlog.WriteDurable(actionlog.Record{ActionID: a.Request.ID, ActionVersion: a.AuditVersion, IncidentID: a.Request.IncidentID, UndoOf: a.Request.UndoOf, Timestamp: a.UpdatedAt, Op: firewallAuditOperation(a.Request), Action: a.Request.Operation, Actor: actionlog.Actor(a.Request.Actor), ActorDetail: a.Request.ActorDetail, FindingID: a.Request.FindingID, Target: a.Request.Target, Reason: a.Request.Reason, Result: result, Error: a.Detail})
+	if len(a.Members) < 2 {
+		return actionlog.WriteDurable(firewallAuditRecord(a, a.Request))
+	}
+	records := make([]actionlog.Record, 0, len(a.Members))
+	for _, m := range a.Members {
+		records = append(records, firewallAuditRecord(a, m.Request))
+	}
+	return actionlog.WriteDurableBatch(records)
+}
+
+func firewallAuditRecord(a FirewallAction, req ActionRequest) actionlog.Record {
+	return actionlog.Record{ActionID: req.ID, ActionVersion: a.AuditVersion, IncidentID: req.IncidentID, UndoOf: req.UndoOf, Timestamp: a.UpdatedAt, Op: firewallAuditOperation(req), Action: req.Operation, Actor: actionlog.Actor(req.Actor), ActorDetail: req.ActorDetail, FindingID: req.FindingID, Target: req.Target, Reason: req.Reason, Result: actionlog.Result(a.Phase), Error: a.Detail}
 }
 func (e *Engine) lifecycleEnabled() bool { e.mu.Lock(); defer e.mu.Unlock(); return e.lifecycle != nil }
 func (e *Engine) installCommittedCache(state FirewallState) {
@@ -134,33 +147,47 @@ func (e *Engine) UndoAction(req ActionRequest) (FirewallAction, error) {
 	return a, err
 }
 func (e *Engine) runDurableLocked(req ActionRequest, budget *ScanAdmission, next FirewallState) error {
+	_, err := e.runDurablePlanLocked(FirewallAction{Request: req, After: next, Budget: budget})
+	return err
+}
+
+// runDurablePlanLocked admits and executes a plan the caller made from the
+// committed snapshot it last read. Its request, members, budget and After
+// state are the caller's; Before, revision and kernel evidence are read here.
+// Only an admitted attempt's error speaks for its durable outcome; a refusal
+// before admission keeps the caller's refusal record.
+func (e *Engine) runDurablePlanLocked(plan FirewallAction) (FirewallAction, error) {
 	if e.stateReadErr != nil {
-		return e.stateReadErr
+		return FirewallAction{}, e.stateReadErr
 	}
 	expectedRevision := e.stateRevision
 	if err := e.lifecycleReadyLocked(); err != nil {
-		return err
+		return FirewallAction{}, err
 	}
 	prior, revision, err := e.readCommittedStateLocked()
 	if err != nil {
-		return err
+		return FirewallAction{}, err
 	}
 	if revision != expectedRevision {
-		return fmt.Errorf("%w: planning snapshot changed", ErrStateConflict)
+		return FirewallAction{}, fmt.Errorf("%w: planning snapshot changed", ErrStateConflict)
 	}
-	if req.ID == "" {
-		req.ID = rand.Text()
+	if plan.Request.ID == "" {
+		plan.Request.ID = rand.Text()
 	}
-	req = normalizeActionRequest(req)
-	plan := FirewallAction{Request: req, Before: prior, After: next, Revision: revision, CreatedAt: time.Now(), Budget: budget}
-	if prepareErr := e.prepareActionKernel(&plan); prepareErr != nil {
-		return prepareErr
+	plan.Request = normalizeActionRequest(plan.Request)
+	plan.Before, plan.Revision = prior, revision
+	at := plan.CreatedAt
+	if at.IsZero() {
+		at = e.expiryNow()
+	}
+	if prepareErr := e.prepareActionKernelAt(&plan, at); prepareErr != nil {
+		return FirewallAction{}, prepareErr
 	}
 	a, err := e.lifecycle.Execute(plan, engineActionKernel{e})
 	if a.Phase == "verified" {
 		e.installCommittedCache(a.After)
 	}
-	return durableActionOutcome(a, err)
+	return a, durableActionOutcome(a, err)
 }
 
 func stateFingerprint(value any) string {
@@ -192,18 +219,9 @@ func desiredActionSets(state FirewallState, ipv6 bool, now time.Time) map[string
 		if b.Unverified || (!b.ExpiresAt.IsZero() && !b.ExpiresAt.After(now)) {
 			continue
 		}
-		ip := net.ParseIP(b.IP)
-		if ip == nil {
+		name, key, ok := blockedSetKey(b.IP, ipv6)
+		if !ok {
 			continue
-		}
-		name := "blocked_ips"
-		key := ip.To4()
-		if key == nil {
-			if !ipv6 {
-				continue
-			}
-			name += "6"
-			key = ip.To16()
 		}
 		out[name] = append(out[name], ActionElement{Key: key, Comment: stateFingerprint(b), ExpiresAt: b.ExpiresAt})
 	}
@@ -253,8 +271,28 @@ func desiredActionSets(state FirewallState, ipv6 bool, now time.Time) map[string
 	}
 	return out
 }
+
+// blockedSetKey names the blocked set and element key for an address.
+func blockedSetKey(address string, ipv6 bool) (string, []byte, bool) {
+	ip := net.ParseIP(address)
+	if ip == nil {
+		return "", nil, false
+	}
+	if key := ip.To4(); key != nil {
+		return "blocked_ips", key, true
+	}
+	if !ipv6 {
+		return "", nil, false
+	}
+	return "blocked_ips6", ip.To16(), true
+}
+
 func (e *Engine) prepareActionKernel(a *FirewallAction) error {
-	now := e.expiryNow()
+	return e.prepareActionKernelAt(a, e.expiryNow())
+}
+
+// prepareActionKernelAt keeps a planner's chosen instant for all its evidence.
+func (e *Engine) prepareActionKernelAt(a *FirewallAction, now time.Time) error {
 	a.CreatedAt = now
 	desired := desiredActionSets(a.After, e.setBlocked6 != nil, now)
 	expected := desiredActionSets(a.Before, e.setBlocked6 != nil, now)
@@ -314,7 +352,7 @@ func (k engineActionKernel) ApplyFirewallAction(a FirewallAction) error {
 		return k.e.applyRulesetLocked(a.Ruleset.Marker)
 	}
 	if err := k.applyActionSets(a, true); err != nil {
-		if !isNftNotFound(err) {
+		if len(a.Members) > 1 || !isNftNotFound(err) {
 			return err
 		}
 		// The kernel expires timed elements on its own, so a delete can name an
@@ -398,17 +436,23 @@ func actionElementDelta(before, after ActionSet, now time.Time) (add, remove []n
 	intended := make(map[string]ActionElement, len(after.Elements))
 	var additions []ActionElement
 	for _, entry := range after.Elements {
-		if !entry.ExpiresAt.IsZero() {
-			if _, ok := blockTimeout(entry.ExpiresAt, now); !ok {
-				continue
-			}
-		}
 		key := actionElementKey(entry)
-		intended[key] = entry
 		prior, held := live[key]
 		// Millisecond encoding must not make an unchanged absolute expiry
 		// look like a replacement on every later mutation.
-		if held && prior.Comment == entry.Comment && prior.ExpiresAt.Equal(entry.ExpiresAt) {
+		unchanged := held && prior.Comment == entry.Comment && prior.ExpiresAt.Equal(entry.ExpiresAt)
+		if !entry.ExpiresAt.IsZero() {
+			if _, ok := blockTimeout(entry.ExpiresAt, now); !ok {
+				// The kernel expires an unchanged element on its own. A delete
+				// naming one it already dropped fails the whole transaction.
+				if unchanged {
+					intended[key] = entry
+				}
+				continue
+			}
+		}
+		intended[key] = entry
+		if unchanged {
 			continue
 		}
 		if held {
@@ -509,6 +553,21 @@ func (k engineActionKernel) ObserveFirewallAction(a FirewallAction) (ActionObser
 		}
 		result.Before = result.Before && matchActionElements(before.Elements, elems, at)
 		result.After = result.After && matchActionElements(after.Elements, elems, at)
+	}
+	if len(a.Members) > 1 {
+		at := k.e.leaseNowLocked()
+		for _, m := range a.Members {
+			for _, row := range a.After.Blocked {
+				// A row can outlive the journal entry that reserved its ID.
+				if row.ActionID != m.Request.ID || row.IP != m.Request.Target || !row.ExpiresAt.After(a.CreatedAt) {
+					continue
+				}
+				if _, live := blockTimeout(row.ExpiresAt, at); !live {
+					// Absence cannot distinguish a missed effect from an expired one.
+					return ActionObservation{}, nil
+				}
+			}
+		}
 	}
 	if a.Request.Operation == "apply" {
 		rules, err := k.e.rulesetEvidenceMatches(a, generation)
@@ -683,6 +742,54 @@ func (k engineActionKernel) ValidateEvidence(a FirewallAction) error {
 		}
 		if after.Exists && !sameActionElements(after.Elements, expected[name]) {
 			return errors.New("kernel evidence differs from intended effect")
+		}
+	}
+	return validateBatchMemberEvidence(a)
+}
+
+// validateBatchMemberEvidence requires every member of a batch to add its own
+// element: before the batch the kernel held nothing for its address, and
+// after it the element carries the fingerprint of that member's row. Retained
+// rows from an older use of an ID are not evidence for the current member.
+func validateBatchMemberEvidence(a FirewallAction) error {
+	if len(a.Members) < 2 {
+		return nil
+	}
+	targets := make(map[string]string, len(a.Members))
+	for _, m := range a.Members {
+		targets[m.Request.ID] = m.Request.Target
+	}
+	rows := make(map[string]BlockedEntry, len(a.Members))
+	for _, row := range a.After.Blocked {
+		if target, member := targets[row.ActionID]; member && row.IP == target && row.ExpiresAt.After(a.CreatedAt) {
+			rows[row.ActionID] = row
+		}
+	}
+	sets := make(map[string][2]ActionSet, len(a.KernelBefore))
+	for i, before := range a.KernelBefore {
+		sets[before.Name] = [2]ActionSet{before, a.KernelAfter[i]}
+	}
+	for _, m := range a.Members {
+		row, ok := rows[m.Request.ID]
+		if !ok {
+			return errors.New("batch member has no row")
+		}
+		name, key, ok := blockedSetKey(row.IP, true)
+		evidence, held := sets[name]
+		if !ok || !held {
+			return errors.New("batch member has no kernel evidence")
+		}
+		for _, elem := range evidence[0].Elements {
+			if bytes.Equal(elem.Key, key) {
+				return errors.New("batch member already held before the batch")
+			}
+		}
+		added := false
+		for _, elem := range evidence[1].Elements {
+			added = added || bytes.Equal(elem.Key, key) && elem.Comment == stateFingerprint(row)
+		}
+		if !added {
+			return errors.New("batch member element missing after the batch")
 		}
 	}
 	return nil

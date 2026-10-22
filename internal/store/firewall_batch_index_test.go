@@ -22,11 +22,14 @@ func firewallBatchOf(t *testing.T, db *DB, id string, limit int, members ...stri
 	a := batchFixture()
 	a.Request.ID, a.Before, a.After, a.Revision = id, state, state, revision
 	a.Members = nil
+	a.After = copyFirewallStateForTest(state)
 	for i, member := range members {
-		a.Members = append(a.Members, firewall.ActionMember{
+		m := firewall.ActionMember{
 			Request: firewall.ActionRequest{ID: member, Operation: "block", Target: fmt.Sprintf("203.0.113.%d", 20+i), Reason: "brute force", Actor: "auto", Source: "scan", Automatic: true, TTL: time.Hour},
 			Budget:  &firewall.ScanAdmission{Window: "2026-01-02T03", Limit: limit},
-		})
+		}
+		a.Members = append(a.Members, m)
+		a.After.Blocked = append(a.After.Blocked, batchMemberRow(a, m))
 	}
 	return a
 }
@@ -346,7 +349,7 @@ func TestFirewallBatchMemberIDsRejectNestedReservations(t *testing.T) {
 			case "header":
 				in.Request.ID = c.key
 			case "member":
-				in.Members[1].Request.ID = c.key
+				in = firewallBatchOf(t, db, "batch-b", 64, "member-3", c.key)
 			}
 			before := batchIndexImage(t, db)
 			if _, fresh, err := db.AdmitFirewallAction(in); fresh || !errors.Is(err, firewall.ErrStateCorrupt) {
@@ -438,7 +441,7 @@ func TestFirewallBatchDamagedReleaseFailsClosed(t *testing.T) {
 				settleFirewallAction(t, db, "batch-a")
 				next := firewallBatchOf(t, db, "batch-b", 64, "member-4", "member-3")
 				if operation == "cap" {
-					next.Members[1].Request.ID = "member-5"
+					next = firewallBatchOf(t, db, "batch-b", 64, "member-4", "member-5")
 					admitFirewallBatch(t, db, next)
 					previous := firewallActionRetention
 					t.Cleanup(func() { firewallActionRetention = previous })
