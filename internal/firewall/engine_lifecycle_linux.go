@@ -141,7 +141,7 @@ func (e *Engine) UndoAction(req ActionRequest) (FirewallAction, error) {
 	if e.lifecycle == nil {
 		return FirewallAction{}, errors.New("firewall lifecycle unavailable")
 	}
-	a, err := e.lifecycle.Undo(req, engineActionKernel{e})
+	a, err := e.lifecycle.undoWithClock(req, engineActionKernel{e}, e.leaseNowLocked)
 	err = durableActionOutcome(a, err)
 	if a.Phase == "verified" {
 		current, _, readErr := e.readCommittedStateLocked()

@@ -105,6 +105,8 @@ unchanged. An acknowledged audit is not delivered again. Whole-action undo
 requires the complete saved after-state and kernel proof. Member undo removes
 only that member's unchanged row and preserves other members and later live
 changes. Another live or unverified block on its address refuses member undo.
+Member undo checks alias expiry on the engine's lease clock, so a backward
+wall-clock step cannot make an expired alias prevent undo.
 Every undo omits expired blocks, allows and subnets, including expired
 unverified blocks. Restored rows keep their original absolute expiry.
 

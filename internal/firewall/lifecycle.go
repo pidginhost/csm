@@ -193,9 +193,15 @@ func (l *Lifecycle) deliverAudit() error {
 	return nil
 }
 
-// Undo admits an inverse state transition, never a command string. The complete
-// recorded result must still be current; this also protects eviction victims.
+// Undo admits an inverse state transition, never a command string. A whole
+// action needs its complete result current; a member needs its own row current.
 func (l *Lifecycle) Undo(req ActionRequest, kernel ActionKernel) (FirewallAction, error) {
+	return l.undoWithClock(req, kernel, time.Now)
+}
+
+// The engine supplies its lease clock so an expired alias cannot prevent a
+// member undo after a backward wall-clock step.
+func (l *Lifecycle) undoWithClock(req ActionRequest, kernel ActionKernel, now func() time.Time) (FirewallAction, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if req.Operation != "undo" || req.UndoOf == "" {
@@ -211,7 +217,7 @@ func (l *Lifecycle) Undo(req ActionRequest, kernel ActionKernel) (FirewallAction
 	}
 	original, err := l.Store.ReadFirewallAction(req.UndoOf)
 	if errors.Is(err, ErrActionMissing) {
-		return l.undoMember(req, kernel)
+		return l.undoMember(req, kernel, now)
 	}
 	if err != nil {
 		return FirewallAction{}, err
@@ -236,8 +242,8 @@ func (l *Lifecycle) Undo(req ActionRequest, kernel ActionKernel) (FirewallAction
 	if !observed.After {
 		return FirewallAction{}, fmt.Errorf("%w: undo target changed", ErrStateConflict)
 	}
-	now := time.Now()
-	plan := FirewallAction{Request: req, Before: state, After: withoutExpiredRows(original.Before, now), Revision: revision, CreatedAt: now, KernelBefore: original.KernelAfter, KernelAfter: original.KernelBefore}
+	at := now()
+	plan := FirewallAction{Request: req, Before: state, After: withoutExpiredRows(original.Before, at), Revision: revision, CreatedAt: at, KernelBefore: original.KernelAfter, KernelAfter: original.KernelBefore}
 	return l.executeUndo(plan, kernel)
 }
 
@@ -245,7 +251,7 @@ func (l *Lifecycle) Undo(req ActionRequest, kernel ActionKernel) (FirewallAction
 // state: the batch's other members and later live changes stay. Only that
 // member's own row must still be current, with no other live or unverified
 // row on its address. Batches evict no live victim to restore.
-func (l *Lifecycle) undoMember(req ActionRequest, kernel ActionKernel) (FirewallAction, error) {
+func (l *Lifecycle) undoMember(req ActionRequest, kernel ActionKernel, now func() time.Time) (FirewallAction, error) {
 	batch, err := l.Store.ReadFirewallBatchMember(req.UndoOf)
 	if err != nil {
 		return FirewallAction{}, err
@@ -269,7 +275,7 @@ func (l *Lifecycle) undoMember(req ActionRequest, kernel ActionKernel) (Firewall
 	if err != nil {
 		return FirewallAction{}, err
 	}
-	now := time.Now()
+	at := now()
 	next := FirewallState{BlockedNet: state.BlockedNet, Allowed: state.Allowed, PortAllowed: state.PortAllowed}
 	current, others := false, 0
 	for _, r := range state.Blocked {
@@ -278,7 +284,7 @@ func (l *Lifecycle) undoMember(req ActionRequest, kernel ActionKernel) (Firewall
 			next.Blocked = append(next.Blocked, r)
 		case !current && SameBlockedEntry(r, row):
 			current = true
-		case !r.Unverified && !r.ExpiresAt.IsZero() && !r.ExpiresAt.After(now):
+		case !r.Unverified && !r.ExpiresAt.IsZero() && !r.ExpiresAt.After(at):
 			// An expired row on the address blocks nothing; it goes too.
 		default:
 			others++
@@ -287,7 +293,7 @@ func (l *Lifecycle) undoMember(req ActionRequest, kernel ActionKernel) (Firewall
 	if !current || others > 0 {
 		return FirewallAction{}, fmt.Errorf("%w: undo state changed", ErrStateConflict)
 	}
-	return l.executeUndo(FirewallAction{Request: req, Before: state, After: withoutExpiredRows(next, now), Revision: revision, CreatedAt: now}, kernel)
+	return l.executeUndo(FirewallAction{Request: req, Before: state, After: withoutExpiredRows(next, at), Revision: revision, CreatedAt: at}, kernel)
 }
 
 func (l *Lifecycle) executeUndo(plan FirewallAction, kernel ActionKernel) (FirewallAction, error) {
