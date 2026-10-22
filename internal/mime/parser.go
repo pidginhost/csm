@@ -575,6 +575,10 @@ func extractMultipartNested(r io.Reader, boundary string, limits Limits, result 
 			}
 		}
 		if filename == "" {
+			// Mail clients fall back to the Content-Type name parameter.
+			filename = params["name"]
+		}
+		if filename == "" {
 			// No filename and text/* content - this is a body part, skip
 			if strings.HasPrefix(mediaType, "text/") {
 				continue

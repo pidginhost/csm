@@ -282,3 +282,24 @@ func TestNestedTarGzValidatesStreamAfterTarEnd(t *testing.T) {
 		})
 	}
 }
+
+// Mail clients show a part named only by its Content-Type name parameter
+// under that name, so the parser must unpack it the same way.
+func TestMultipartZipNamedByContentTypeIsExpanded(t *testing.T) {
+	zipBytes := buildZipArchive(t, map[string][]byte{"x.txt": []byte("inside")})
+	body := "--BOUND\r\n" +
+		"Content-Type: application/zip; name=\"evil.zip\"\r\n" +
+		"Content-Transfer-Encoding: base64\r\n" +
+		"Content-Disposition: attachment\r\n\r\n" +
+		base64.StdEncoding.EncodeToString(zipBytes) + "\r\n" +
+		"--BOUND--\r\n"
+	r := parseWithLimits(t, `multipart/mixed; boundary="BOUND"`, body, DefaultLimits())
+	var outer, inner bool
+	for _, p := range r.Parts {
+		outer = outer || (p.Filename == "evil.zip" && !p.Nested)
+		inner = inner || (p.Filename == "x.txt" && p.Nested && p.ArchiveName == "evil.zip")
+	}
+	if !outer || !inner {
+		t.Fatalf("part named by Content-Type not expanded: %+v", r.Parts)
+	}
+}
