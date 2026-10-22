@@ -73,3 +73,32 @@ func TestSinglePartZipMessageIsExpanded(t *testing.T) {
 		t.Fatalf("single-part zip not expanded: %+v", r.Parts)
 	}
 }
+
+// A single-part body named only by Content-Disposition is unpacked like a
+// multipart attachment named the same way.
+func TestSinglePartZipNamedByDispositionIsExpanded(t *testing.T) {
+	zipBytes := buildZipArchive(t, map[string][]byte{"x.txt": []byte("inside")})
+	h, d := buildEximSpool(t, "application/octet-stream", base64.StdEncoding.EncodeToString(zipBytes))
+	header, err := os.ReadFile(h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	header = append(header, eximHdr(' ', "Content-Transfer-Encoding: base64")...)
+	header = append(header, eximHdr(' ', `Content-Disposition: attachment; filename="x.zip"`)...)
+	if err = os.WriteFile(h, header, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	limits := DefaultLimits()
+	limits.TempDir = t.TempDir()
+	r, err := ParseSpoolMessage(h, d, limits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, p := range r.Parts {
+		found = found || (p.Filename == "x.txt" && p.Nested)
+	}
+	if !found {
+		t.Fatalf("single-part zip named by Content-Disposition not expanded: %+v", r.Parts)
+	}
+}

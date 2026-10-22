@@ -169,7 +169,15 @@ func ParseSpoolMessage(headerPath, bodyPath string, limits Limits) (*ExtractionR
 						markPartial(result, "could not stage single-part attachment for scanning")
 					} else {
 						totalSize += int64(n)
+						// Name the body the way a multipart attachment is
+						// named: Content-Type name, then the disposition's
+						// filename, so a disposition-named archive is unpacked.
 						rawFilename := params["name"]
+						if rawFilename == "" {
+							if _, dparams, err := mime.ParseMediaType(hdrs.Get("Content-Disposition")); err == nil {
+								rawFilename = dparams["filename"]
+							}
+						}
 						if rawFilename == "" {
 							rawFilename = "attachment"
 						}
