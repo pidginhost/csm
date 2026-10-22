@@ -147,13 +147,15 @@ func (e *Engine) UndoAction(req ActionRequest) (FirewallAction, error) {
 	return a, err
 }
 func (e *Engine) runDurableLocked(req ActionRequest, budget *ScanAdmission, next FirewallState) error {
-	a, err := e.runDurablePlanLocked(FirewallAction{Request: req, After: next, Budget: budget})
-	return durableActionOutcome(a, err)
+	_, err := e.runDurablePlanLocked(FirewallAction{Request: req, After: next, Budget: budget})
+	return err
 }
 
 // runDurablePlanLocked admits and executes a plan the caller made from the
 // committed snapshot it last read. Its request, members, budget and After
 // state are the caller's; Before, revision and kernel evidence are read here.
+// Only an admitted attempt's error speaks for its durable outcome; a refusal
+// before admission keeps the caller's refusal record.
 func (e *Engine) runDurablePlanLocked(plan FirewallAction) (FirewallAction, error) {
 	if e.stateReadErr != nil {
 		return FirewallAction{}, e.stateReadErr
@@ -185,7 +187,7 @@ func (e *Engine) runDurablePlanLocked(plan FirewallAction) (FirewallAction, erro
 	if a.Phase == "verified" {
 		e.installCommittedCache(a.After)
 	}
-	return a, err
+	return a, durableActionOutcome(a, err)
 }
 
 func stateFingerprint(value any) string {

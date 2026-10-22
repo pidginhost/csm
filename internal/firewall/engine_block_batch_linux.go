@@ -88,7 +88,7 @@ func (e *Engine) BlockBatchRequest(header ActionRequest, members []ActionRequest
 		plan = FirewallAction{Request: ran[0].Request, Budget: budget, After: next, CreatedAt: at}
 	}
 	result.Action, err = e.runDurablePlanLocked(plan)
-	return result, durableActionOutcome(result.Action, err)
+	return result, err
 }
 
 // validBlockBatchHeader holds a batch header to plan 1.5d-1's shape: an

@@ -589,6 +589,36 @@ func TestBlockBatchRefactorKeepsSingleRequestClock(t *testing.T) {
 	}
 }
 
+type batchPendingStore struct{ *batchPlanStore }
+
+func (s batchPendingStore) PendingFirewallActions() ([]FirewallAction, error) {
+	return []FirewallAction{{Request: ActionRequest{ID: "held"}}}, nil
+}
+
+// A refusal before admission keeps the single-request path's refusal record:
+// nothing was admitted, so no durable outcome speaks for the attempt.
+func TestBlockBatchRefactorKeepsSingleRequestRefusals(t *testing.T) {
+	committed := FirewallState{Blocked: []BlockedEntry{{IP: "203.0.113.21", Reason: "brute force", Source: "scan", BlockedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour)}}}
+	for _, tc := range []struct {
+		name    string
+		prepare func(*Engine, *batchPlanStore)
+	}{
+		{"live set differs", func(_ *Engine, s *batchPlanStore) { s.state = committed }},
+		{"pending action", func(e *Engine, s *batchPlanStore) { e.lifecycle.Store = batchPendingStore{s} }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e, s := batchPlanEngine(t, FirewallConfig{}, FirewallState{})
+			tc.prepare(e, s)
+			e.mu.Lock()
+			err := e.runDurableLocked(ActionRequest{Operation: "unblock", Target: "203.0.113.21", Actor: "cli", Source: "cli"}, nil, FirewallState{})
+			e.mu.Unlock()
+			if !errors.Is(err, ErrActionUnknown) || !e.shouldLegacyOutcome(err) || len(s.admitted) != 0 {
+				t.Fatalf("refusal before admission: %v, legacy record %t, admissions %d", err, e.shouldLegacyOutcome(err), len(s.admitted))
+			}
+		})
+	}
+}
+
 // Expiry cannot settle an unverified row: its address stays pending until
 // its owner proves the outcome, as the store's batch-state rule requires.
 func TestBlockBatchHoldsExpiredUnverifiedRows(t *testing.T) {
