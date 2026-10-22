@@ -342,6 +342,39 @@ func TestSchedulerPrunesOnlyVerifiedFolders(t *testing.T) {
 	}
 }
 
+// A link in ~/etc is never a mail domain. It must not leave every pass
+// unfinished or keep deleted mailboxes from being pruned.
+func TestSchedulerEtcSymlinkKeepsInventoryComplete(t *testing.T) {
+	f := newWatch(t, 1)
+	home := f.accounts[0].Home
+	f.addMailbox(0, "example.com", "gone")
+	writeMsg(t, filepath.Join(home, "etc/tenant1.rcube.db.1700000000"), nil)
+	if err := os.Symlink("tenant1.rcube.db.1700000000", filepath.Join(home, "etc/tenant1.rcube.db.latest")); err != nil {
+		t.Fatal(err)
+	}
+	if r := f.pass(); r.Unfinished {
+		t.Fatalf("an ~/etc link left the pass unfinished: %+v", r)
+	}
+	for _, dir := range []string{"etc/example.com", "mail/example.com"} {
+		if err := os.RemoveAll(filepath.Join(home, dir)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.mu.Lock()
+	f.now = t0.Add(SeenRetention + 48*time.Hour)
+	f.mu.Unlock()
+	f.pass()
+	if err := f.cfg.State.View(func(tx StateTx) error {
+		_, found, err := tx.Folder(FolderKey{UID: f.accounts[0].UID, Domain: "example.com", Box: "gone", Folder: ".spam"})
+		if found {
+			t.Error("deleted mailbox kept its state behind an ~/etc link")
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestSchedulerRotatesFoldersAcrossPasses(t *testing.T) {
 	f := newWatch(t, 1)
 	home := f.accounts[0].Home

@@ -323,8 +323,29 @@ func TestMailboxesNeverFollowsVirtual(t *testing.T) {
 	if !slices.Equal(got, []Mailbox{{}}) {
 		t.Fatalf("mailboxes %+v", got)
 	}
-	if r := reasons(skips); r[SkipUnsupportedName] != 1 || r[SkipUnsafePath] != 2 {
+	// The linked passwd is unsafe; the ~/etc/example.org link is no domain.
+	if r := reasons(skips); r[SkipUnsupportedName] != 1 || r[SkipUnsafePath] != 1 || len(skips) != 2 {
 		t.Fatalf("skips %+v", skips)
+	}
+}
+
+// cPanel keeps non-domain links in ~/etc, such as the Roundcube database
+// link; some homes also hold copied system links. None is a mail domain.
+func TestMailboxesIgnoresEtcSymlinks(t *testing.T) {
+	a, h := openTenant(t)
+	writeFile(t, filepath.Join(a.Home, "etc/tenant.rcube.db.1700000000"), nil)
+	if err := os.Symlink("tenant.rcube.db.1700000000", filepath.Join(a.Home, "etc/tenant.rcube.db.latest")); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(a.Home, "etc/rc.d/rc0.d/passwd"), []byte("victim:x\n"))
+	if err := os.Symlink("rc.d/rc0.d", filepath.Join(a.Home, "etc/rc0.d")); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(a.Home, "etc/example.com/passwd"), []byte("user:x\n"))
+	got, skips, err := h.Mailboxes()
+	want := []Mailbox{{}, {Domain: "example.com", Box: "user"}}
+	if err != nil || !slices.Equal(got, want) || len(skips) != 0 {
+		t.Fatalf("mailboxes %+v, skips %+v, error %v", got, skips, err)
 	}
 }
 

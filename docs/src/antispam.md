@@ -674,6 +674,9 @@ baselines. Observe mode keeps everything and resumes where it stopped.
 Folders absent for 90 days are forgotten with their pending reports.
 Unresolved accounts, unreadable homes, incomplete mailbox lists and unsafe
 or unreadable folders keep their state until they can be checked again.
+Links in an account's `etc` directory, such as cPanel's Roundcube database
+link, are not mail domains: CSM does not follow them and they do not hold
+back this cleanup.
 
 A backend error stops further submissions for that pass; the next pass
 starts with the accounts after the one that failed. Reports stay pending
