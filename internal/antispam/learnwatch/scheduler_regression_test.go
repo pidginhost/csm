@@ -342,6 +342,91 @@ func TestSchedulerPrunesOnlyVerifiedFolders(t *testing.T) {
 	}
 }
 
+// A link in ~/etc is never a mail domain. It must not leave every pass
+// unfinished or keep deleted mailboxes from being pruned.
+func TestSchedulerEtcSymlinkKeepsInventoryComplete(t *testing.T) {
+	f := newWatch(t, 1)
+	home := f.accounts[0].Home
+	f.addMailbox(0, "example.com", "gone")
+	writeMsg(t, filepath.Join(home, "etc/tenant1.rcube.db.1700000000"), nil)
+	if err := os.Symlink("tenant1.rcube.db.1700000000", filepath.Join(home, "etc/tenant1.rcube.db.latest")); err != nil {
+		t.Fatal(err)
+	}
+	if r := f.pass(); r.Unfinished {
+		t.Fatalf("an ~/etc link left the pass unfinished: %+v", r)
+	}
+	for _, dir := range []string{"etc/example.com", "mail/example.com"} {
+		if err := os.RemoveAll(filepath.Join(home, dir)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.mu.Lock()
+	f.now = t0.Add(SeenRetention + 48*time.Hour)
+	f.mu.Unlock()
+	f.pass()
+	if err := f.cfg.State.View(func(tx StateTx) error {
+		_, found, err := tx.Folder(FolderKey{UID: f.accounts[0].UID, Domain: "example.com", Box: "gone", Folder: ".spam"})
+		if found {
+			t.Error("deleted mailbox kept its state behind an ~/etc link")
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Dovecot stores one delivery to several mailboxes as one hard-linked file,
+// so every copy filed in Spam stays linked. A tagged copy is skipped at once.
+func TestSchedulerSkipsTaggedLinkedMessages(t *testing.T) {
+	f := newWatch(t, 1)
+	home := f.accounts[0].Home
+	f.addMailbox(0, "example.com", "user")
+	f.pass()
+	msg := filepath.Join(home, "mail/.spam/new/1700000001.M1.host")
+	writeMsg(t, msg, []byte("X-Spam-Status: Yes, score=9\r\n\r\ntagged"))
+	if err := os.Link(msg, filepath.Join(home, "mail/example.com/user/.spam/new/1700000001.M1.host")); err != nil {
+		t.Fatal(err)
+	}
+	r := f.pass()
+	if len(f.engine.submitted()) != 0 || r.Skipped["tagged"] != 2 || f.pending(0) != 0 {
+		t.Fatalf("linked tagged copies: submitted %d, report %+v, pending %d", len(f.engine.submitted()), r, f.pending(0))
+	}
+}
+
+// A report still linked from the inbox, such as a colleague's copy of the
+// same delivery, waits one pass interval for a move to finish, then counts.
+func TestSchedulerReportsLinkedMessageAfterOnePass(t *testing.T) {
+	f := newWatch(t, 1)
+	home := f.accounts[0].Home
+	if err := os.MkdirAll(filepath.Join(home, "mail/cur"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	f.pass()
+	inbox := filepath.Join(home, "mail/cur/1700000002.M2.host:2,S")
+	writeMsg(t, inbox, []byte(spamBody))
+	if err := os.Link(inbox, filepath.Join(home, "mail/.spam/cur/1700000002.M2.host:2,S")); err != nil {
+		t.Fatal(err)
+	}
+	f.pass()
+	if got := len(f.engine.submitted()); got != 0 || f.pending(0) != 1 {
+		t.Fatalf("linked report submitted %d times before it settled, pending %d", got, f.pending(0))
+	}
+	f.mu.Lock()
+	f.now = f.now.Add(PassEvery - time.Second)
+	f.mu.Unlock()
+	f.pass()
+	if got := len(f.engine.submitted()); got != 0 {
+		t.Fatalf("linked report submitted %d times within one pass interval", got)
+	}
+	f.mu.Lock()
+	f.now = f.now.Add(time.Second)
+	f.mu.Unlock()
+	f.pass()
+	if got := len(f.engine.submitted()); got != 1 || f.pending(0) != 0 {
+		t.Fatalf("lasting linked report submitted %d times, pending %d", got, f.pending(0))
+	}
+}
+
 func TestSchedulerRotatesFoldersAcrossPasses(t *testing.T) {
 	f := newWatch(t, 1)
 	home := f.accounts[0].Home

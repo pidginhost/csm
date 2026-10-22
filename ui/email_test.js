@@ -2366,7 +2366,7 @@ test('Back keeps the address on the range and filters the page shows', async () 
 // ---------- Held mail ----------
 
 const MID = ['1hEld1-000001-Ab', '1hEld1-000002-Ab', '1hEld1-000003-Ab'];
-const FID = ['1792300000.M1P2.csm', '1792300001.M2P2.csm'];
+const FID = ['1792300000.M1P2.csm', '1792300001.M2P2.csm', '1792300002.M3P2.csm'];
 
 function hoursAgo(h) {
     return new Date(Date.now() - h * HOUR_MS).toISOString();
@@ -2461,7 +2461,8 @@ test('each held row says when, what, who to and why', async () => {
                 { filename: 'c.zip', engine: 'clamav', signature: 'Win.Trojan.Agent', severity: 'critical' }] })
     ], [
         forwardItem(FID[0], { subject: '' }),
-        forwardItem(FID[1], { sender: 'news@example.net', reasons: ['bad_sender_ip'], subject: '\u00cenc\u0103 o ofert\u0103', held_at: hoursAgo(3) })
+        forwardItem(FID[1], { sender: 'news@example.net', reasons: ['bad_sender_ip'], subject: '\u00cenc\u0103 o ofert\u0103', held_at: hoursAgo(3) }),
+        forwardItem(FID[2], { sender: 'promo@example.org', reasons: ['spam_flagged'], subject: 'Offer', held_at: hoursAgo(4) })
     ]);
     const malware = heldRow(page, MID[0]);
     // The time sorts by its instant; the cell reads how long ago.
@@ -2488,6 +2489,8 @@ test('each held row says when, what, who to and why', async () => {
     // The server decodes encoded subjects; the page shows them as they come.
     assert.equal(heldCell(listed, 'Subject'), '\u00cenc\u0103 o ofert\u0103');
     assert.equal(heldCell(listed, 'Why held'), 'Held forward to external address sent from a listed bad IP');
+    const spam = heldRow(page, FID[2]);
+    assert.equal(heldCell(spam, 'Why held'), 'Held forward to external address tagged as spam');
     // Only malware takes part in bulk actions.
     assert.ok(malware.querySelector('.email-quar-cb'));
     assert.equal(bounce.querySelector('input[type="checkbox"]'), null);

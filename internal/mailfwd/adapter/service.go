@@ -181,7 +181,7 @@ func handleEximMutation(input io.Reader, mutate func(eximMutation) error) error 
 	}
 	switch request.Operation {
 	case "apply":
-		if !request.Config.Enabled || request.Config.DryRun || (!request.Config.HoldSignals.BounceBackscatter && !request.Config.HoldSignals.BadSenderIP) {
+		if !request.Config.Enabled || request.Config.DryRun || (!request.Config.HoldSignals.BounceBackscatter && !request.Config.HoldSignals.BadSenderIP && !request.Config.HoldSignals.SpamFlagged) {
 			return fmt.Errorf("forward-guard request must enable an enforceable policy")
 		}
 		for _, ip := range request.BadIPs {

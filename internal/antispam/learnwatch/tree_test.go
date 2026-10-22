@@ -245,8 +245,23 @@ func TestReadMessageLinkCountTwoPending(t *testing.T) {
 		t.Fatal(err)
 	}
 	f := openSpam(t, a, "cur")
-	snap, _, status, err := f.ReadMessage("1.M1.host:2,", a.UID)
-	if status != ReadPendingLinked || snap != nil || err != nil {
+	// The content does not depend on the link count, so the caller gets it
+	// to judge the headers while the link decides only when to report.
+	snap, meta, status, err := f.ReadMessage("1.M1.host:2,", a.UID)
+	if status != ReadPendingLinked || string(snap) != "body" || meta.Nlink != 2 || err != nil {
+		t.Fatalf("status %v, snapshot %q, links %d, error %v", status, snap, meta.Nlink, err)
+	}
+}
+
+func TestReadMessageLinkedOversizeIsSkipped(t *testing.T) {
+	a := tenantHome(t)
+	msg := filepath.Join(a.Home, "mail/.spam/cur/big")
+	writeMsg(t, msg, bytes.Repeat([]byte("a"), 10<<20+1))
+	if err := os.Link(msg, filepath.Join(a.Home, "mail/.spam/new/big")); err != nil {
+		t.Fatal(err)
+	}
+	f := openSpam(t, a, "cur")
+	if snap, _, status, err := f.ReadMessage("big", a.UID); status != ReadSkipOversize || snap != nil || err != nil {
 		t.Fatalf("status %v, %d bytes, error %v", status, len(snap), err)
 	}
 }

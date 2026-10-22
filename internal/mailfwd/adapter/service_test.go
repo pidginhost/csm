@@ -73,12 +73,34 @@ func TestEximMutationPreservesTransaction(t *testing.T) {
 	}
 }
 
+func TestEximMutationAppliesSpamFlaggedOnlyPolicy(t *testing.T) {
+	a, side := testAdapter(t)
+	body := mutationBody(t, eximMutation{Operation: "apply", Config: policy.Config{Enabled: true, HoldSignals: policy.HoldSignals{SpamFlagged: true}}})
+	if err := handleEximMutation(strings.NewReader(body), mutationTarget(a)); err != nil {
+		t.Fatal(err)
+	}
+	status, err := a.Status()
+	if err != nil || !status.Installed || side.rebuilds != 1 {
+		t.Fatalf("status=%+v error=%v rebuilds=%d", status, err, side.rebuilds)
+	}
+	conf, err := os.ReadFile(a.localConf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`{or{ {match{$h_x-spam-status:}{\N(?im)^Yes[[:blank:]]*(,|$)\N}} }`, `${if match{$h_x-spam-status:}{\\N(?im)^Yes[[:blank:]]*(,|$)\\N}{spam_flagged,}}`} {
+		if !strings.Contains(string(conf), want) {
+			t.Errorf("installed config missing %q\n%s", want, conf)
+		}
+	}
+}
+
 func TestEximMutationRejectsInvalidRequestsBeforeSideEffects(t *testing.T) {
 	cases := []string{
 		``, `null`, `{}`, `{"operation":"shell"}`, `{"operation":"remove","path":"/etc/passwd"}`,
 		`{"operation":"remove"} {}`, `{"operation":"remove"} junk`,
 		`{"operation":"apply","config":{"Enabled":true,"DryRun":true}}`,
 		`{"operation":"apply","config":{"Enabled":true}}`,
+		`{"operation":"apply","config":{"Enabled":true,"HoldSignals":{"Malware":true,"AuthFail":true}}}`,
 		`{"operation":"apply","config":{"Enabled":true,"HoldSignals":{"BounceBackscatter":true}},"bad_ips":["192.0.2.1\ncommand"]}`,
 		`{"operation":"remove","bad_ips":["192.0.2.1"]}`,
 		strings.Repeat(" ", eximMutationLimit+1),
@@ -161,7 +183,7 @@ func writeInstalledConf(t *testing.T, a *EximAdapter) string {
 	}
 	conf, err := injectBlock(platform.EximLocalSkeleton, "@ROUTERSTART@", router)
 	if err == nil {
-		conf, err = injectBlock(conf, "@TRANSPORTSTART@", a.renderTransport())
+		conf, err = injectBlock(conf, "@TRANSPORTSTART@", a.renderTransport(policy.HoldSignals{BounceBackscatter: true}))
 	}
 	if err != nil {
 		t.Fatal(err)

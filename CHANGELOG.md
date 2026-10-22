@@ -9,12 +9,18 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ## [Unreleased]
 
+### Changed
+
+- With the forward guard enforcing, mail tagged as spam is now held instead of forwarded to outside addresses.
+
 ### Fixed
 
 - The Email Security queue lists messages exim cannot read, offering Delete, and says when exim fails instead of showing an empty queue.
 - Queued mail whose receiving server quotes its reason, such as 'greylisted', now shows that reason instead of other.
 - A held forwarded message whose release was cut short by a CSM restart returns to Held mail instead of disappearing from the list.
 - On phones, the outbound abuse events and forwarders lists on the Email Security page show as cards instead of scrolling sideways.
+- Spam folder learning status no longer reports every pass as unfinished on cPanel servers, so waiting reports are counted and deleted mailboxes are cleaned up.
+- Spam folder learning now counts a message moved to Spam when the same delivery also reached other mailboxes of the account.
 
 ## [4.6.0] - 2026-10-22
 
