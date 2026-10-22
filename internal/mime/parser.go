@@ -673,6 +673,10 @@ const maxZipDirectoryBytes = 16 << 20
 // of any kind. max_archive_files bounds what is extracted; this bounds the
 // work spent getting there.
 func archiveWalkCap(limits Limits) int {
+	maxInt := int(^uint(0) >> 1)
+	if limits.MaxArchiveFiles > maxInt/10 {
+		return maxInt
+	}
 	return 10 * max(limits.MaxArchiveFiles, 1)
 }
 
@@ -690,21 +694,35 @@ func markExtractionBudget(result *ExtractionResult, limits Limits) {
 var errExtractionBudget = errors.New("extraction budget spent")
 
 // budgetReader adds what it yields to the message's shared spent count and
-// fails once that count passes limit. Nested archives add to the same count.
+// fails once that count passes limit, reading at most one byte past it.
+// Nested archives add to the same count. The first error sticks.
 type budgetReader struct {
 	r     io.Reader
 	spent *int64
 	limit int64
+	err   error
 }
 
 func (b *budgetReader) Read(p []byte) (int, error) {
+	if b.err != nil {
+		return 0, b.err
+	}
 	if *b.spent > b.limit {
-		return 0, errExtractionBudget
+		b.err = errExtractionBudget
+		return 0, b.err
+	}
+	if remaining := b.limit - *b.spent; remaining < int64(len(p)) {
+		p = p[:remaining+1]
 	}
 	n, err := b.r.Read(p)
 	*b.spent += int64(n)
 	if *b.spent > b.limit {
-		return n, errExtractionBudget
+		err = errExtractionBudget
+	}
+	// io.ReadFull may suppress an error returned with its final bytes. Keep
+	// it visible to the archive driver even when tar.Next reports EOF.
+	if err != nil && err != io.EOF {
+		b.err = err
 	}
 	return n, err
 }
@@ -735,16 +753,20 @@ func extractZIP(zipPath, archiveName string, limits Limits, result *ExtractionRe
 		markArchiveUnopened(result, archiveName, err)
 		return
 	}
-	// The end record says how many entries the directory lists. Refuse a huge
-	// listing before zip.NewReader allocates an object for every entry.
+	// Validate the listing itself before zip.NewReader allocates per entry;
+	// the sender controls both the directory and the end record's counts.
 	walkCap := archiveWalkCap(limits)
 	dir, err := zipdir.Read(f, info.Size(), maxZipDirectoryBytes)
 	if err != nil {
 		markArchiveUnopened(result, archiveName, err)
 		return
 	}
-	if dir.Records > uint64(walkCap) { // #nosec G115 -- archiveWalkCap is at least 10.
-		markArchiveWalkCap(result, archiveName, walkCap)
+	if err = validateZIPDirectory(f, info.Size(), dir, walkCap); err != nil {
+		if errors.Is(err, errArchiveWalk) {
+			markArchiveWalkCap(result, archiveName, walkCap)
+		} else {
+			markArchiveUnopened(result, archiveName, err)
+		}
 		return
 	}
 	zr, err := zip.NewReader(f, info.Size())
@@ -759,9 +781,6 @@ func extractZIP(zipPath, archiveName string, limits Limits, result *ExtractionRe
 		if walked > walkCap {
 			markArchiveWalkCap(result, archiveName, walkCap)
 			return
-		}
-		if zf.FileInfo().IsDir() {
-			continue
 		}
 		safeName := sanitizeAttachmentName(zf.Name)
 
@@ -779,6 +798,12 @@ func extractZIP(zipPath, archiveName string, limits Limits, result *ExtractionRe
 				})
 			} else {
 				result.EncryptedEntriesOmitted++
+			}
+			continue
+		}
+		if zf.FileInfo().IsDir() {
+			if dirErr := validateZIPDirectoryEntry(zf); dirErr != nil {
+				markPartial(result, fmt.Sprintf("directory %q in archive %q contains unread data", safeName, archiveName))
 			}
 			continue
 		}
@@ -800,15 +825,15 @@ func extractZIP(zipPath, archiveName string, limits Limits, result *ExtractionRe
 			continue
 		}
 
-		limited := io.LimitReader(rc, limits.MaxAttachmentSize+1)
+		// Every decompressed byte spends the budget, kept or thrown away, so
+		// a bomb of oversize members cannot decompress without limit.
+		budget := &budgetReader{r: rc, spent: totalSize, limit: limits.MaxExtractionSize}
+		limited := io.LimitReader(budget, limits.MaxAttachmentSize+1)
 		n, err := io.Copy(tmpFile, limited)
 		closeErr := tmpFile.Close()
 		rc.Close()
 
-		// Every decompressed byte spends the budget, kept or thrown away, so
-		// a bomb of oversize members cannot decompress without limit.
-		*totalSize += n
-		if *totalSize > limits.MaxExtractionSize {
+		if errors.Is(err, errExtractionBudget) || *totalSize > limits.MaxExtractionSize {
 			_ = os.Remove(tmpFile.Name())
 			markExtractionBudget(result, limits)
 			return
@@ -850,25 +875,41 @@ func extractTarGz(tgzPath, archiveName string, limits Limits, result *Extraction
 	}
 	defer f.Close()
 
-	gr, err := gzip.NewReader(f)
+	compressed := bufio.NewReader(f)
+	gr, err := gzip.NewReader(compressed)
 	if err != nil {
 		markArchiveUnopened(result, archiveName, err)
 		return
 	}
 	defer func() { _ = gr.Close() }()
+	// Count streams explicitly so empty streams cannot bypass either budget.
+	gr.Multistream(false)
 
 	// Everything the gzip stream yields spends the budget, including the
 	// remainder tar.Next reads through to skip an oversize member.
-	tr := tar.NewReader(&budgetReader{r: gr, spent: totalSize, limit: limits.MaxExtractionSize})
 	walkCap := archiveWalkCap(limits)
-	extracted, walked := 0, 0
+	streams := &gzipStreamReader{compressed: compressed, gr: gr, walkCap: walkCap, streams: 1}
+	budget := &budgetReader{r: streams, spent: totalSize, limit: limits.MaxExtractionSize}
+	walk := &tarWalkReader{r: budget, walkCap: walkCap}
+	tr := tar.NewReader(walk)
+	extracted := 0
 	for {
 		hdr, err := tr.Next()
+		if budget.err != nil {
+			err = budget.err
+		}
 		if err == io.EOF {
-			return
+			err = finishTar(budget)
+			if err == nil {
+				return
+			}
 		}
 		if errors.Is(err, errExtractionBudget) {
 			markExtractionBudget(result, limits)
+			return
+		}
+		if errors.Is(err, errArchiveWalk) {
+			markArchiveWalkCap(result, archiveName, walkCap)
 			return
 		}
 		if err != nil {
@@ -876,12 +917,14 @@ func extractTarGz(tgzPath, archiveName string, limits Limits, result *Extraction
 			markPartial(result, fmt.Sprintf("archive %q could not be read: %v", archiveName, err))
 			return
 		}
-		walked++
-		if walked > walkCap {
-			markArchiveWalkCap(result, archiveName, walkCap)
+		if err = walk.setMember(hdr); err != nil {
+			markPartial(result, fmt.Sprintf("archive %q could not be read: %v", archiveName, err))
 			return
 		}
 		if hdr.Typeflag != tar.TypeReg {
+			if walk.remaining > 0 && hdr.Typeflag != tar.TypeXGlobalHeader {
+				markPartial(result, fmt.Sprintf("unsupported file %q in archive %q contains unread data", sanitizeAttachmentName(hdr.Name), archiveName))
+			}
 			continue
 		}
 		if extracted >= limits.MaxArchiveFiles {
@@ -897,9 +940,22 @@ func extractTarGz(tgzPath, archiveName string, limits Limits, result *Extraction
 			continue
 		}
 
-		limited := io.LimitReader(tr, limits.MaxAttachmentSize+1)
+		// Sparse tar readers synthesize hole bytes outside the gzip stream.
+		// Bound logical output too, then charge only the bytes the physical
+		// stream did not already spend.
+		before := *totalSize
+		var logicalN int64
+		logical := &budgetReader{r: tr, spent: &logicalN, limit: limits.MaxExtractionSize - before}
+		limited := io.LimitReader(logical, limits.MaxAttachmentSize+1)
 		n, err := io.Copy(tmpFile, limited)
 		closeErr := tmpFile.Close()
+		*totalSize += max(logicalN-(*totalSize-before), 0)
+		if *totalSize > limits.MaxExtractionSize {
+			budget.err = errExtractionBudget
+		}
+		if budget.err != nil {
+			err = budget.err
+		}
 
 		if errors.Is(err, errExtractionBudget) {
 			_ = os.Remove(tmpFile.Name())

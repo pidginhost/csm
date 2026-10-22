@@ -606,8 +606,10 @@ email_av:
   # are allowed unscanned ("open") or deferred ("tempfail"). Scanning resumes
   # automatically afterwards; bypassed messages are not scanned later.
   # An archive that lists more than ten times max_archive_files entries, or
-  # whose decompressed members pass max_extraction_size, counts as not fully
-  # scanned and follows fail_mode.
+  # whose decompressed data passes max_extraction_size, counts as not fully
+  # scanned and follows fail_mode. So do corrupt gzip trailers, data after a
+  # tar end marker, legacy sparse tar members and zip directory entries that
+  # carry data. Empty members and directories remain valid.
   # Late malware results can quarantine only the original, unlocked message.
   # Messages in active delivery, replaced spool files, and messages with a
   # pending delivery journal are left untouched with email_av_quarantine_error.

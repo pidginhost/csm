@@ -38,6 +38,10 @@ type Directory struct {
 	Offset  int64
 	Size    int64
 	Records uint64
+	// DeclaredOffset and EndOffset let callers check that another ZIP parser
+	// will select the same directory, including for self-extracting archives.
+	DeclaredOffset int64
+	EndOffset      int64
 }
 
 // Read finds the end-of-central-directory record (zip64 included) and
@@ -97,9 +101,11 @@ func Read(r io.ReaderAt, size int64, maxDirBytes uint64) (Directory, error) {
 	}
 
 	return Directory{
-		Offset:  directoryEndOffset - directorySize64,
-		Size:    directorySize64,
-		Records: records,
+		Offset:         directoryEndOffset - directorySize64,
+		Size:           directorySize64,
+		Records:        records,
+		DeclaredOffset: directoryOffset64,
+		EndOffset:      endOffset,
 	}, nil
 }
 
