@@ -1301,7 +1301,13 @@ the queue at once rather than waiting out the minute, once for each such
 refill. A message exim cannot read is listed with `unreadable` holding
 exim's error and reason class `unreadable`; without its envelope it has no
 sender, recipients, size or frozen state, and only `delete` runs on it. An
-exim spool error printed under no message makes the listing unavailable.
+exim spool error without an immediately preceding message line makes the
+listing unavailable, including a missing-file error. Truncated entries and
+unrecognized output also fail instead of reporting an empty queue. The
+composition counts messages without envelopes only in `total` and
+`unreadable`, not in `real` or `bounce`. Backscatter flushing excludes every
+unreadable message and validates the whole listing before and after
+removal; a targeted message that becomes unreadable still counts as queued.
 Quoted recipient local parts remain intact, including spaces. Each
 message's `reason` (`class`, `text`, `raw`) comes from its msglog tail; a
 partial first line is discarded. Up to 100 reasons are cached for a minute.
@@ -1312,7 +1318,8 @@ attempt.
 Message reads and actions run exim as a systemd transient unit and never
 inside the daemon's sandbox: without systemd-run the message route and the
 actions answer 503 and exim does not run. Each action first checks that the message is
-still queued; when it is not, the answer is 409 with `outcome: "gone"`. Nothing
+still queued; a missing-file reply must name the requested message. When
+it is not queued, the answer is 409 with `outcome: "gone"`. Nothing
 ran, unless the message left during the action. `retry` answers
 `attempt_started` as soon as the delivery attempt has started. `bounce` and
 `delete` answer `bounced` and `removed` when the message left the queue and
@@ -1339,7 +1346,9 @@ message leaves at once. A release or delete first claims the held copy, so
 of concurrent requests one acts and the others answer that the copy is not
 held; a failed release puts the copy back. A copy whose release or delete
 the daemon never finished, as when it stopped mid-release, is held again
-within 15 minutes; such a release may already have been delivered.
+on the next 15-minute refresh once the claim is at least five minutes old;
+such a release may already have been delivered. Recovery never replaces another
+held copy in either Maildir folder and makes each claim visible only once.
 
 Deferrals are grouped under the provider whose MX host deferred them
 (Google, Microsoft and Yahoo hosts), so a business domain those providers

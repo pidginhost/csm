@@ -99,6 +99,60 @@ func TestEximQueueFlusherStillQueuedAfterUnfreezeIsNotRemoved(t *testing.T) {
 	}
 }
 
+func TestEximQueueFlusherUnreadableSurvivorIsNotRemoved(t *testing.T) {
+	const id = "1rABcd-000ABC-2A"
+	for _, diagnostic := range []string{"spool format error", "spool read error: Permission denied"} {
+		calls := 0
+		f := &EximQueueFlusher{
+			list: func() ([]byte, error) {
+				calls++
+				if calls == 1 {
+					return []byte(eximBpSample), nil
+				}
+				return []byte("      " + id + "\n    *** " + diagnostic + " ***\n\n"), nil
+			},
+			remove: func([]string) error { return nil },
+		}
+		res, err := f.FlushBackscatter()
+		if err == nil || res.Removed != 0 || res.Targeted != 1 || !strings.Contains(err.Error(), id) {
+			t.Errorf("unreadable survivor: %+v, %v; want one target still queued", res, err)
+		}
+	}
+}
+
+func TestEximQueueFlusherRejectsUnparseableListing(t *testing.T) {
+	for _, broken := range []string{
+		"exim: unexpected listing error\n",
+		eximBpSample + "    *** spool read error: No such file or directory ***\n",
+		eximBpSample + "    *** spool format error ***\n",
+	} {
+		for _, afterRemoval := range []bool{false, true} {
+			calls, removals := 0, 0
+			f := &EximQueueFlusher{
+				list: func() ([]byte, error) {
+					calls++
+					if afterRemoval && calls == 1 {
+						return []byte(eximBpSample), nil
+					}
+					return []byte(broken), nil
+				},
+				remove: func([]string) error { removals++; return nil },
+			}
+			res, err := f.FlushBackscatter()
+			wantTargets := 0
+			if afterRemoval {
+				wantTargets = 1
+			}
+			if err == nil || res.Removed != 0 || res.Targeted != wantTargets || removals != wantTargets {
+				t.Errorf("broken listing (after removal %v): %+v, %v, removals %d", afterRemoval, res, err, removals)
+			}
+		}
+		if ids := FrozenBackscatterIDs(broken); len(ids) != 0 {
+			t.Errorf("unsafe listing produced flush targets %v", ids)
+		}
+	}
+}
+
 func TestEximQueueFlusherPostRemovalListFailureReportsAttempt(t *testing.T) {
 	calls := 0
 	f := &EximQueueFlusher{

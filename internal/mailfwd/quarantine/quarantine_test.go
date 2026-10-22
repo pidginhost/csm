@@ -197,6 +197,9 @@ func TestConcurrentReleaseSendsOnce(t *testing.T) {
 	first := make(chan error, 1)
 	go func() { first <- q.Release(id) }()
 	<-entered
+	if n, restoreErr := New(q.base).RestoreStaleClaims(time.Now()); restoreErr != nil || n != 0 {
+		t.Errorf("restored %d, %v during a live release; want none", n, restoreErr)
+	}
 	second := q.Release(id)
 	deleted := q.Delete(id)
 	close(proceed)
@@ -553,27 +556,66 @@ func TestRestoreStaleClaims(t *testing.T) {
 // A claim whose id is held again, which no release makes, stays put rather
 // than overwrite that copy.
 func TestRestoreStaleClaimsNeverOverwrites(t *testing.T) {
-	q := New(t.TempDir())
-	id, err := q.Hold(held(), sampleBody())
-	if err != nil {
-		t.Fatal(err)
+	for _, dir := range []string{"new", "cur"} {
+		t.Run(dir, func(t *testing.T) {
+			q := New(t.TempDir())
+			id, err := q.Hold(held(), sampleBody())
+			if err != nil {
+				t.Fatal(err)
+			}
+			claimed, _, err := q.claim(id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			other := []byte("Subject: other\r\n\r\nbody\r\n")
+			if err := os.WriteFile(filepath.Join(q.sub(dir), id), other, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if n, err := q.RestoreStaleClaims(time.Now().Add(staleClaimAge + time.Second)); err != nil || n != 0 {
+				t.Errorf("restored %d, %v; want 0", n, err)
+			}
+			if got, _ := os.ReadFile(filepath.Join(q.sub(dir), id)); !bytes.Equal(got, other) {
+				t.Error("held copy overwritten by a restored claim")
+			}
+			if _, err := os.Lstat(claimed); err != nil {
+				t.Errorf("claim removed: %v", err)
+			}
+		})
 	}
-	claimed, _, err := q.claim(id)
-	if err != nil {
-		t.Fatal(err)
-	}
-	other := []byte("Subject: other\r\n\r\nbody\r\n")
-	if err := os.WriteFile(filepath.Join(q.sub("new"), id), other, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if n, err := q.RestoreStaleClaims(time.Now().Add(staleClaimAge + time.Second)); err != nil || n != 0 {
-		t.Errorf("restored %d, %v; want 0", n, err)
-	}
-	if got, _ := os.ReadFile(filepath.Join(q.sub("new"), id)); !bytes.Equal(got, other) {
-		t.Error("held copy overwritten by a restored claim")
-	}
-	if _, err := os.Lstat(claimed); err != nil {
-		t.Errorf("claim removed: %v", err)
+}
+
+func TestRestoreStaleClaimsUsesClaimAge(t *testing.T) {
+	for _, age := range []time.Duration{staleClaimAge - time.Nanosecond, staleClaimAge} {
+		t.Run(age.String(), func(t *testing.T) {
+			q := New(t.TempDir())
+			id, err := q.Hold(held(), sampleBody())
+			if err != nil {
+				t.Fatal(err)
+			}
+			old := time.Now().Add(-24 * time.Hour)
+			if err = os.Chtimes(q.pathOf(id), old, old); err != nil {
+				t.Fatal(err)
+			}
+			claimed, _, err := q.claim(id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, at, ok := parseClaimName(filepath.Base(claimed))
+			if !ok {
+				t.Fatal("claim name did not parse")
+			}
+			want := 0
+			if age == staleClaimAge {
+				want = 1
+			}
+			if n, restoreErr := q.RestoreStaleClaims(at.Add(age)); restoreErr != nil || n != want {
+				t.Fatalf("restored %d, %v; want %d", n, restoreErr, want)
+			}
+			msgs, err := q.List()
+			if err != nil || len(msgs) != want {
+				t.Fatalf("held after restore: %+v, %v; want %d", msgs, err, want)
+			}
+		})
 	}
 }
 

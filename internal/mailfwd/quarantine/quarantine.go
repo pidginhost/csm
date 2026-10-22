@@ -27,6 +27,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/pidginhost/csm/internal/safepath"
 	"github.com/pidginhost/csm/internal/systemdrun"
 )
 
@@ -331,23 +332,42 @@ func (q *Quarantine) RestoreStaleClaims(now time.Time) (int, error) {
 		if !ok || !e.Type().IsRegular() || now.Sub(at) < staleClaimAge {
 			continue
 		}
-		if err := os.MkdirAll(q.sub("new"), 0700); err != nil {
-			return restored, err
-		}
-		claimed := filepath.Join(q.sub("tmp"), e.Name())
-		// Link, unlike rename, fails rather than replace a held copy.
-		if err := os.Link(claimed, filepath.Join(q.sub("new"), id)); err != nil {
-			if !errors.Is(err, fs.ErrExist) {
+		if err := q.restoreClaim(e.Name(), id); err != nil {
+			if !errors.Is(err, fs.ErrExist) && !errors.Is(err, fs.ErrNotExist) {
 				errs = append(errs, err)
 			}
 			continue
 		}
-		if err := os.Remove(claimed); err != nil {
-			errs = append(errs, err)
-		}
 		restored++
 	}
 	return restored, errors.Join(errs...)
+}
+
+func (q *Quarantine) restoreClaim(name, id string) error {
+	// List and locate also read cur/: restoring into new/ must not shadow
+	// another held copy with the same ID there.
+	if _, err := os.Lstat(filepath.Join(q.sub("cur"), id)); err == nil {
+		return fs.ErrExist
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	if err := os.MkdirAll(q.sub("new"), 0700); err != nil {
+		return err
+	}
+	src, err := safepath.OpenDir(q.sub("tmp"))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = src.Close() }()
+	dst, err := safepath.OpenDir(q.sub("new"))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = dst.Close() }()
+	// Publish and consume the claim atomically without replacing a held
+	// copy. Link followed by unlink leaves a second recoverable copy if the
+	// daemon stops, or another restorer races a release between the two.
+	return src.RenameTo(name, dst, id)
 }
 
 // parseClaimName reads the held id and the claim time from a name claim gave

@@ -204,6 +204,10 @@ func TestMsglogReasonClasses(t *testing.T) {
 			Class: "retry_wait", Text: "retry time not reached",
 			Raw: "defer (-53): retry time not reached for any host for 'unlisted.example.net'",
 		}},
+		{"keyword in a single label routing domain", strings.ReplaceAll(msglogKeywordDomain, "unlisted.example.net", "unlisted"), StuckReason{
+			Class: "retry_wait", Text: "retry time not reached",
+			Raw: "defer (-53): retry time not reached for any host for 'unlisted'",
+		}},
 		{"older recognized attempt does not explain a newer one", msglogRateLimited + msglogOther, StuckReason{
 			Class: "other", Text: "other",
 			Raw: "SMTP error from remote mail server after end of data: 451 4.3.0 Temporary local problem",

@@ -189,9 +189,6 @@ func parseQueueMessages(out []byte, keep int) ([]QueueMessage, error) {
 		return nil, err
 	}
 	if len(msgs) == 0 {
-		if strings.TrimSpace(text) != "" {
-			return nil, errors.New("exim -bp output holds no queue entry")
-		}
 		return []QueueMessage{}, nil
 	}
 	for i := range msgs {
@@ -220,6 +217,7 @@ const spoolDataMissing = "spool data file missing"
 func parseQueueEntries(out string, keep int) ([]QueueMessage, error) {
 	var msgs []QueueMessage
 	current := -1
+	sawEntry := false
 	// afterHeader is set while the previous line was current's header, and
 	// bareID while it was a message ID exim printed without an envelope.
 	afterHeader, bareID := false, ""
@@ -230,7 +228,7 @@ func parseQueueEntries(out string, keep int) ([]QueueMessage, error) {
 		afterHeader, bareID = false, ""
 		if text, frozen, ok := spoolErrorLine(trimmed); ok {
 			switch {
-			case trimmed == eximNoSuchMessage:
+			case prevID != "" && trimmed == eximNoSuchMessage:
 				// Delivered or removed while exim listed the queue.
 				current = -1
 			case prevID != "":
@@ -250,14 +248,19 @@ func parseQueueEntries(out string, keep int) ([]QueueMessage, error) {
 			}
 			continue
 		}
+		if prevID != "" {
+			return nil, errors.New("exim -bp omitted the spool error after a message ID")
+		}
 		if m, ok := parseQueueHeader(line); ok {
 			msgs = append(msgs, m)
 			current = len(msgs) - 1
 			afterHeader = true
+			sawEntry = true
 			continue
 		}
 		if id, ok := queueBareID(line); ok {
 			bareID, current = id, -1
+			sawEntry = true
 			continue
 		}
 
@@ -286,6 +289,12 @@ func parseQueueEntries(out string, keep int) ([]QueueMessage, error) {
 			}
 		}
 	}
+	if bareID != "" {
+		return nil, errors.New("exim -bp omitted the spool error after a message ID")
+	}
+	if !sawEntry && strings.TrimSpace(out) != "" {
+		return nil, errors.New("exim -bp output holds no queue entry")
+	}
 	return msgs, nil
 }
 
@@ -312,12 +321,11 @@ func spoolErrorLine(trimmed string) (text string, frozen, ok bool) {
 // queueBareID reads the line exim prints for a message whose envelope it
 // could not read: the ID alone, after a blank size.
 func queueBareID(line string) (string, bool) {
-	fields := strings.Fields(line)
-	switch {
-	case len(fields) == 1 && queueMsgIDRe.MatchString(fields[0]):
-		return fields[0], true
-	case len(fields) == 2 && queueSizeRe.MatchString(fields[0]) && queueMsgIDRe.MatchString(fields[1]):
-		return fields[1], true
+	// The five-character blank size and its separator occupy six spaces.
+	// Recipient indentation must not be mistaken for a missing envelope.
+	id, ok := strings.CutPrefix(line, "      ")
+	if ok && queueMsgIDRe.MatchString(id) {
+		return id, true
 	}
 	return "", false
 }

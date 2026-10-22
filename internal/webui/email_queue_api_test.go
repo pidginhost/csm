@@ -146,7 +146,7 @@ func (w *eximWorld) run(ctx context.Context, name string, args ...string) ([]byt
 			return []byte(out), nil
 		}
 		if _, ok := w.queue[argv[2]]; !ok {
-			return []byte(fmt.Sprintf("   0 %s\n    *** spool read error: No such file or directory ***\n\n", argv[2])), nil
+			return []byte(fmt.Sprintf("      %s\n    *** spool read error: No such file or directory ***\n\n", argv[2])), nil
 		}
 		return []byte(formatEntry(argv[2], *w.queue[argv[2]])), nil
 	case argv[1] == "-Mrm", argv[1] == "-Mg":

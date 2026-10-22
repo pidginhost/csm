@@ -58,8 +58,8 @@ var noAttemptReason = StuckReason{Class: "none", Text: "no delivery attempt logg
 // paths, "host [ip]" pairs with or without H=, bare addresses and quoted
 // domains. Senders and recipient domains choose that text, so it is blanked
 // before keyword classification. A quoted word without a dot is the remote's
-// own reply wording, not a domain, and stays.
-var msglogNameRe = regexp.MustCompile(`<[^<>]*>|(?:H=)?[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+ \[(?:\d{1,3}(?:\.\d{1,3}){3}|[0-9A-Fa-f]*:[0-9A-Fa-f:.]+)\]|\S+@\S+|'[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+'`)
+// own reply wording and stays, unless Exim names it as the routing domain.
+var msglogNameRe = regexp.MustCompile(`for any host for '[A-Za-z0-9.-]+'|<[^<>]*>|(?:H=)?[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+ \[(?:\d{1,3}(?:\.\d{1,3}){3}|[0-9A-Fa-f]*:[0-9A-Fa-f:.]+)\]|\S+@\S+|'[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+'`)
 
 // ReadMsglogReason reads the tail of a queued message's exim msglog and says
 // why the message is stuck, returning the last lines of that tail with it. A

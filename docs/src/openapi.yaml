@@ -387,7 +387,7 @@ paths:
               schema: { $ref: "#/components/schemas/JSONObject" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
-        "500": { description: "exim could not list the queue, so no composition is given rather than an empty one. Messages exim cannot read are counted in unreadable." }
+        "500": { description: "exim failed to list the queue or returned an unrecognized or incomplete listing. Messages without envelopes count in total and unreadable, but neither real nor bounce." }
   "/api/v1/email/queue/flush-backscatter":
     post:
       operationId: post_email_queue_flush_backscatter
@@ -445,7 +445,9 @@ paths:
             a positive count the next request lists the queue at once, once
             for each such refill. A message exim cannot read carries
             unreadable (exim's error) and reason class unreadable, and only
-            delete runs on it. Quoted recipient local parts remain intact.
+            delete runs on it. Spool errors without an immediately preceding
+            message line and truncated entries make the listing unavailable.
+            Quoted recipient local parts remain intact.
             At most 100 msglog reasons are cached for a minute, retaining
             the current page first.
           content:

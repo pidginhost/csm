@@ -190,7 +190,10 @@ func TestParseQueueRejectsUnknownLongMessageIDToken(t *testing.T) {
           victim@example.net
 `
 
-	c := mustParseQueue(t, in)
+	c, err := ParseQueue(in)
+	if err == nil {
+		t.Fatal("an unrecognized listing must not report an empty queue")
+	}
 
 	if c.Total != 0 {
 		t.Fatalf("total = %d, want 0 for non-exim message-id token", c.Total)
@@ -215,7 +218,10 @@ func TestParseQueueEmpty(t *testing.T) {
 		"blank":   "",
 		"garbage": "no queue here\njust text",
 	} {
-		c := mustParseQueue(t, in)
+		c, err := ParseQueue(in)
+		if (err != nil) != (name == "garbage") {
+			t.Errorf("%s: error = %v, want an error only for unrecognized output", name, err)
+		}
 		if c.Total != 0 || c.Bounce != 0 || c.Real != 0 || c.Frozen != 0 {
 			t.Errorf("%s: expected zero composition, got %+v", name, c)
 		}

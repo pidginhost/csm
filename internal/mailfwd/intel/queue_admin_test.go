@@ -73,7 +73,7 @@ func (f *fakeExim) run(_ context.Context, name string, args ...string) ([]byte, 
 			return []byte(f.bpOutput), nil
 		}
 		if !f.queued {
-			return []byte(fmt.Sprintf("   0 %s\n    *** spool read error: No such file or directory ***\n\n", argv[2])), nil
+			return []byte(fmt.Sprintf("      %s\n    *** spool read error: No such file or directory ***\n\n", argv[2])), nil
 		}
 		state := ""
 		if f.frozen {
@@ -122,7 +122,7 @@ func TestEximQueueAdminMessage(t *testing.T) {
 	}
 
 	for name, out := range map[string]string{
-		"missing header": "   0 " + adminTestID + "\n    *** spool read error: No such file or directory ***\n\n",
+		"missing header": "      " + adminTestID + "\n    *** spool read error: No such file or directory ***\n\n",
 		// exim listed a message, but not the one asked for.
 		"other message": "25m  1.0K 1tAbCd-000002-Ab <sender@example.com>\n          rcpt@example.net\n",
 	} {
@@ -148,6 +148,25 @@ func TestEximQueueAdminMessage(t *testing.T) {
 	}
 	if len(f.calls) != 0 {
 		t.Errorf("without systemd-run exim ran directly: %v", f.calls)
+	}
+}
+
+func TestEximQueueAdminMissingReplyRequiresMatchingBareID(t *testing.T) {
+	for _, out := range []string{
+		"    " + eximNoSuchMessage + "\n",
+		"      1tAbCd-000002-Ab\n    " + eximNoSuchMessage + "\n",
+		"      " + adminTestID + "\n\n    " + eximNoSuchMessage + "\n",
+		"25m  1.0K " + adminTestID + " <sender@example.com>\n          rcpt@example.net\n    " + eximNoSuchMessage + "\n",
+	} {
+		f := &fakeExim{queued: true, bpOutput: out}
+		if _, err := NewEximQueueAdmin("", f.lookPath, f.run).Message(adminTestID); err == nil || errors.Is(err, ErrNotQueued) {
+			t.Errorf("reply %q: err = %v, want an unconfirmed message read", out, err)
+		}
+	}
+	f := &fakeExim{queued: true, bpOutput: "25m  1.0K " + adminTestID + " <>\n    " + eximNoSuchMessage + "\n"}
+	m, err := NewEximQueueAdmin("", f.lookPath, f.run).Message(adminTestID)
+	if err != nil || m.Unreadable == "" || !m.Bounce {
+		t.Errorf("header error with a known envelope = %+v, %v; want an unreadable queued message", m, err)
 	}
 }
 

@@ -1,10 +1,10 @@
 package intel
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/pidginhost/csm/internal/systemdrun"
@@ -88,8 +88,11 @@ func (a *EximQueueAdmin) Message(id string) (QueueMessage, error) {
 	out, err := a.exim(systemdrun.Options{Pipe: true, Required: true, RuntimeMax: queueReadTimeout}, queueReadTimeout, "-bp", id)
 	// The reply, not the exit status, says the message is missing: exim
 	// reports it on stdout whatever status it exits with.
-	if bytes.HasSuffix(bytes.TrimSpace(out), []byte(eximNoSuchMessage)) {
-		return QueueMessage{}, ErrNotQueued
+	lines := strings.Split(strings.TrimRight(string(out), "\r\n"), "\n")
+	if len(lines) == 2 && strings.TrimSpace(lines[1]) == eximNoSuchMessage {
+		if missingID, ok := queueBareID(lines[0]); ok && missingID == id {
+			return QueueMessage{}, ErrNotQueued
+		}
 	}
 	if err != nil {
 		return QueueMessage{}, err

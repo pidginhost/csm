@@ -365,3 +365,66 @@ func TestQueueListRefusesUnplacedSpoolError(t *testing.T) {
 		t.Errorf("listing after a concurrent delivery = %+v, %v", msgs, err)
 	}
 }
+
+func TestQueueSpoolErrorsRequireAdjacentEntry(t *testing.T) {
+	const header = "  1h  900 1tAbCd-000001-Ab <> *** frozen ***\n"
+	for _, diagnostic := range []string{
+		"*** spool read error: No such file or directory ***",
+		"*** spool read error: Permission denied ***",
+		"*** spool format error ***",
+		"*** spool format error: size=37 ***",
+	} {
+		for _, prefix := range []string{
+			header + "\n",
+			header + "          rcpt@example.net\n",
+			header + "          1tAbCd-000002-Ab\n",
+			header + "          \"1tAbCd-000002-Ab\"@example.net\n",
+		} {
+			out := prefix + "    " + diagnostic + "\n\n"
+			if msgs, err := ParseQueueList([]byte(out)); err == nil || len(msgs) != 0 {
+				t.Errorf("list %q = %+v, %v; want no partial list", out, msgs, err)
+			}
+			if comp, err := ParseQueue(out); err == nil || comp.Total != 0 {
+				t.Errorf("composition %q = %+v, %v; want no partial counts", out, comp, err)
+			}
+		}
+	}
+}
+
+func TestQueueMissingSpoolEnvelopeAndHeader(t *testing.T) {
+	const missing = "      1tAbCd-000001-Ab\n    *** spool read error: No such file or directory ***\n\n"
+	msgs, err := ParseQueueList([]byte(missing))
+	if err != nil || msgs == nil || len(msgs) != 0 {
+		t.Errorf("only a vanished message = %+v, %v; want an empty list", msgs, err)
+	}
+	const headerError = "  1h  900 1tAbCd-000001-Ab <>\n    *** spool read error: No such file or directory ***\n          rcpt@example.net\n\n"
+	m, err := ParseQueueDetail([]byte(headerError))
+	if err != nil || m.Unreadable != "spool read error: No such file or directory" || !m.Bounce || m.RecipientCount != 1 {
+		t.Errorf("known envelope with a header error = %+v, %v", m, err)
+	}
+}
+
+func TestQueueIncompleteEnvelopeFailsListing(t *testing.T) {
+	const good = "  1h  900 1tAbCd-000001-Ab <sender@example.com>\n\n"
+	for _, out := range []string{
+		good + "      1tAbCd-000002-Ab",
+		"      1tAbCd-000002-Ab\n\n" + good,
+		"exim: spool directory unreadable\n",
+	} {
+		if msgs, err := ParseQueueList([]byte(out)); err == nil || len(msgs) != 0 {
+			t.Errorf("list %q = %+v, %v; want an error", out, msgs, err)
+		}
+		if comp, err := ParseQueue(out); err == nil || comp.Total != 0 {
+			t.Errorf("composition %q = %+v, %v; want an error", out, comp, err)
+		}
+	}
+}
+
+func TestQueueQuotedDiagnosticsRemainRecipients(t *testing.T) {
+	want := []string{`"*** spool read error: No such file or directory ***"@example.net`, `"1tAbCd-000002-Ab"@example.net`}
+	out := "  1h  900 1tAbCd-000001-Ab <sender@example.com>\n          " + strings.Join(want, "\n          ") + "\n\n"
+	m, err := ParseQueueDetail([]byte(out))
+	if err != nil || m.Unreadable != "" || m.RecipientCount != len(want) || !reflect.DeepEqual(m.Recipients, want) {
+		t.Errorf("quoted diagnostics = %+v, %v; want recipients %q", m, err, want)
+	}
+}
