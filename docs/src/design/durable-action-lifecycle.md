@@ -48,7 +48,11 @@ Actions written before batches read as one-member batches and keep their
 stored format. A record written by a newer
 build is refused as unsupported, never read or overwritten. Audit delivery
 writes one record per member, with the member's action ID and the batch's
-outcome and version, in one durable write. A firewall-only
+outcome and version, in one durable write. The block batch planner checks
+each automatic temporary block on its own against one committed snapshot,
+leaves out refused members and runs the rest as one batch with one kernel
+transaction; a lone valid member runs as an ordinary single action, and a
+stored batch ID is observed, never planned again. A firewall-only
 import moves the durable journal and its snapshot as one unit, and refuses
 while either database has an unresolved action or undelivered audit. A
 refusal, including one for nested firewall buckets on either side, leaves the
@@ -64,6 +68,21 @@ Its owner must first prove rejection and use a new charged action for any
 retry. The existing single-request path is unchanged. Audit is delivered at
 least once; consumers deduplicate each member event by its action ID and
 transition version, not by the batch ID.
+
+Batch replay returns the stored manifest, not a fresh decision on candidates
+left out of the original action. Nil refusals on replay do not mean every
+supplied candidate ran. The stored requests must appear as an ordered
+subsequence; extra candidates, including previously refused duplicate IDs,
+never execute. The original refused list cannot be reconstructed. A
+singleton uses its member ID as the durable action ID; its unused header ID
+is not reserved. Retrying that exact automatic temporary block returns the
+original action before checking current policy or expiry, and cannot add
+other members. Two stored singletons in one call are a conflict. A caller
+needing a durable header alias for singletons must wait for a stored-format
+extension.
+
+Batch planning dates member rows and kernel evidence by one lease-clock
+instant, even when the wall clock moves backward during a lease.
 
 If intent or budget persistence fails, new automated mutations are refused
 and the finding is retained. If outcome persistence fails after mutation, the

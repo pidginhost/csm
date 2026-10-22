@@ -147,33 +147,45 @@ func (e *Engine) UndoAction(req ActionRequest) (FirewallAction, error) {
 	return a, err
 }
 func (e *Engine) runDurableLocked(req ActionRequest, budget *ScanAdmission, next FirewallState) error {
+	a, err := e.runDurablePlanLocked(FirewallAction{Request: req, After: next, Budget: budget})
+	return durableActionOutcome(a, err)
+}
+
+// runDurablePlanLocked admits and executes a plan the caller made from the
+// committed snapshot it last read. Its request, members, budget and After
+// state are the caller's; Before, revision and kernel evidence are read here.
+func (e *Engine) runDurablePlanLocked(plan FirewallAction) (FirewallAction, error) {
 	if e.stateReadErr != nil {
-		return e.stateReadErr
+		return FirewallAction{}, e.stateReadErr
 	}
 	expectedRevision := e.stateRevision
 	if err := e.lifecycleReadyLocked(); err != nil {
-		return err
+		return FirewallAction{}, err
 	}
 	prior, revision, err := e.readCommittedStateLocked()
 	if err != nil {
-		return err
+		return FirewallAction{}, err
 	}
 	if revision != expectedRevision {
-		return fmt.Errorf("%w: planning snapshot changed", ErrStateConflict)
+		return FirewallAction{}, fmt.Errorf("%w: planning snapshot changed", ErrStateConflict)
 	}
-	if req.ID == "" {
-		req.ID = rand.Text()
+	if plan.Request.ID == "" {
+		plan.Request.ID = rand.Text()
 	}
-	req = normalizeActionRequest(req)
-	plan := FirewallAction{Request: req, Before: prior, After: next, Revision: revision, CreatedAt: time.Now(), Budget: budget}
-	if prepareErr := e.prepareActionKernel(&plan); prepareErr != nil {
-		return prepareErr
+	plan.Request = normalizeActionRequest(plan.Request)
+	plan.Before, plan.Revision = prior, revision
+	at := plan.CreatedAt
+	if at.IsZero() {
+		at = e.expiryNow()
+	}
+	if prepareErr := e.prepareActionKernelAt(&plan, at); prepareErr != nil {
+		return FirewallAction{}, prepareErr
 	}
 	a, err := e.lifecycle.Execute(plan, engineActionKernel{e})
 	if a.Phase == "verified" {
 		e.installCommittedCache(a.After)
 	}
-	return durableActionOutcome(a, err)
+	return a, err
 }
 
 func stateFingerprint(value any) string {
@@ -274,7 +286,11 @@ func blockedSetKey(address string, ipv6 bool) (string, []byte, bool) {
 }
 
 func (e *Engine) prepareActionKernel(a *FirewallAction) error {
-	now := e.expiryNow()
+	return e.prepareActionKernelAt(a, e.expiryNow())
+}
+
+// prepareActionKernelAt keeps a planner's chosen instant for all its evidence.
+func (e *Engine) prepareActionKernelAt(a *FirewallAction, now time.Time) error {
 	a.CreatedAt = now
 	desired := desiredActionSets(a.After, e.setBlocked6 != nil, now)
 	expected := desiredActionSets(a.Before, e.setBlocked6 != nil, now)
