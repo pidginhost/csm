@@ -11,42 +11,45 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Highlights
 
-- Account owners can no longer use the automated file fixes and cleaning to change files outside their account. Upgrade every host.
-- Sources probing for the PHP2Shell flaw are now blocked at the firewall after their first blocked request.
-- Central abuse database downloads can now be signed with a report target's node key.
-- The Email Security page shows spam, malware and other reject counts, a chart, recent rejects and rspamd status.
-- Validation and doctor now warn when the web UI accepts admin logins from any network without a CSM restriction.
-- ModSecurity warnings no longer lead to firewall bans.
+- Automated file fixes and cleaning now prevent account owners from changing files outside their account. Upgrade every host.
+- Detected PHP2Shell probes now escalate faster to firewall blocking when automatic blocking is enabled.
+- PHP hardening audits now flag unsafe fatal error backtrace settings on PHP 8.5 and later.
+- Central intelligence downloads now support node authentication with an existing reporting identity.
+- The Email Security page now shows mail decision counts, monitoring gaps, recent rejects, rspamd status and groups needing attention.
+- Validation and doctor now warn about unrestricted web UI administrator access in CSM settings.
+- ModSecurity warnings alone no longer trigger firewall bans.
+- Firewall-only restores now refuse databases with unfinished actions or undelivered audits.
 
 ### Security
 
-- Sources probing for the PHP2Shell flaw are now blocked at the firewall after their first blocked request.
-- Failed central list downloads no longer write the download URL, or any token in it, to the log.
-- PHP hardening audits no longer pass when a PHP-FPM pool still turns the checked setting on through quoted or repeated entries.
-- Account owners can no longer trick the display_errors, WP-Cron or file permission fixes into changing files outside their account.
-- Account owners can no longer steer .htaccess or PHP file cleaning into another account's files.
+- Automated file fixes and cleaning now prevent account owners from changing files outside their account.
+- Detected PHP2Shell probes now escalate faster to firewall blocking when automatic blocking is enabled.
+- Failed central intelligence downloads no longer expose download addresses or access tokens in logs.
+- PHP hardening audits no longer report unsafe PHP-FPM settings as safe.
+- PHP hardening audits now flag unsafe fatal error backtrace settings on PHP 8.5 and later.
+- Validation and doctor now warn about unrestricted web UI administrator access in CSM settings.
+- ModSecurity warnings alone no longer trigger firewall bans.
 
 ### Added
 
-- Central abuse database downloads can now be signed with a report target's node key; name that target in the central settings and restart.
+- Central intelligence downloads now support node authentication with an existing reporting identity. Select that identity in central settings and restart to enable it.
+- Integrations can now read mail decision statistics, recent rejects, available email checks and rspamd health through the API.
 
 ### Changed
 
-- Validation and doctor now warn when the web UI accepts admin logins from any network and neither the CSM firewall nor token address limits restrict it.
-- The Email Security page shows spam, malware and other reject counts, a chart, recent rejects and rspamd status; counting starts at upgrade. rspamd counters may need a private controller socket.
-- The hardening audit warns on PHP 8.5 and later while fatal error backtraces are on, a setting the PHP2Shell advisory says to turn off.
+- The Email Security page now shows persistent mail counts, a chart, monitoring gaps, recent rejects, rspamd status and groups needing attention. Follow the antispam guide if rspamd counters are unavailable.
 - Docs and command output now describe the integrity check as recorded hashes, not signatures, and note what it cannot stop.
 
 ### Fixed
 
 #### Firewall and blocking
 
-- ModSecurity warnings no longer lead to firewall bans.
 - Disabling firewall escalation for a ModSecurity rule now prevents further bans from its earlier matches.
+- Firewall-only restores now import consistent firewall state and action history, refusing unfinished actions or undelivered audits without changing existing data.
 
 #### Login and mail monitoring
 
-- Local IPv6 logins no longer raise login alerts, and the daemon log now says once when sshd sends host names CSM cannot track.
+- IPv6 loopback logins no longer raise alerts, and untrackable SSH hostnames produce a single diagnostic warning.
 - Mail login tracking now skips private IPv6 clients as it already skipped private IPv4 ranges, so internal clients are not blocked.
 
 #### Automatic response
