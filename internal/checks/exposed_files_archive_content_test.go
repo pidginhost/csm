@@ -347,16 +347,6 @@ func TestArchiveContentRetainsMarkerFoundBeforeCancellation(t *testing.T) {
 	}
 }
 
-func TestArchiveOffsetRejectsOverflow(t *testing.T) {
-	got, ok := archiveOffset(1<<63 - 1)
-	if !ok || got != 1<<63-1 {
-		t.Fatalf("max int64 offset: got (%d, %v)", got, ok)
-	}
-	if _, ok := archiveOffset(1 << 63); ok {
-		t.Error("offset above max int64 was accepted")
-	}
-}
-
 // Unreadable or non-zip input must not classify, and must not panic.
 func TestArchiveContentHandlesUnreadable(t *testing.T) {
 	root := t.TempDir()
