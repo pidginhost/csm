@@ -12,23 +12,19 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 ### Highlights
 
 - Automated file fixes and cleaning now prevent account owners from changing files outside their account. Upgrade every host.
-- Detected PHP2Shell probes now escalate faster to firewall blocking when automatic blocking is enabled.
+- With automatic blocking on, sources probing for the PHP2Shell flaw are now blocked at the firewall on their first blocked request.
 - PHP hardening audits now flag unsafe fatal error backtrace settings on PHP 8.5 and later.
 - Central intelligence downloads now support node authentication with an existing reporting identity.
 - The Email Security page now shows mail decision counts, monitoring gaps, recent rejects, rspamd status and groups needing attention.
-- Validation and doctor now warn about unrestricted web UI administrator access in CSM settings.
+- Validation and doctor now warn when the web UI accepts admin logins from any network without a CSM restriction.
 - ModSecurity warnings alone no longer trigger firewall bans.
-- Firewall-only restores now refuse databases with unfinished actions or undelivered audits.
 
 ### Security
 
 - Automated file fixes and cleaning now prevent account owners from changing files outside their account.
-- Detected PHP2Shell probes now escalate faster to firewall blocking when automatic blocking is enabled.
+- With automatic blocking on, sources probing for the PHP2Shell flaw are now blocked at the firewall on their first blocked request.
 - Failed central intelligence downloads no longer expose download addresses or access tokens in logs.
 - PHP hardening audits no longer report unsafe PHP-FPM settings as safe.
-- PHP hardening audits now flag unsafe fatal error backtrace settings on PHP 8.5 and later.
-- Validation and doctor now warn about unrestricted web UI administrator access in CSM settings.
-- ModSecurity warnings alone no longer trigger firewall bans.
 
 ### Added
 
@@ -37,6 +33,8 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Changed
 
+- PHP hardening audits now flag unsafe fatal error backtrace settings on PHP 8.5 and later.
+- Validation and doctor now warn when the web UI accepts admin logins from any network and neither the CSM firewall nor token address limits restrict it.
 - The Email Security page now shows persistent mail counts, a chart, monitoring gaps, recent rejects, rspamd status and groups needing attention. Follow the antispam guide if rspamd counters are unavailable.
 - Docs and command output now describe the integrity check as recorded hashes, not signatures, and note what it cannot stop.
 
@@ -44,6 +42,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 #### Firewall and blocking
 
+- ModSecurity warnings alone no longer trigger firewall bans.
 - Disabling firewall escalation for a ModSecurity rule now prevents further bans from its earlier matches.
 - Firewall-only restores now import consistent firewall state and action history, refusing unfinished actions or undelivered audits without changing existing data.
 
