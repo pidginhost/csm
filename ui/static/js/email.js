@@ -2091,7 +2091,7 @@
         if (btn) btn.addEventListener('click', function() { heldBulkAction(action); });
     });
 
-    // ---------- Forwarders (inventory, collapsed under Sending accounts) ----------
+    // ---------- Forwarders tab: inventory, and delete per destination ----------
 
     // Provider class -> badge colour. Free providers are the reputation-risk
     // case (forwarding spam to them tanks the outbound IP), so they read red.
@@ -2120,17 +2120,9 @@
             })
             .catch(function(err) {
                 forwardersLoaded = false;
-                setForwardersCount('?');
+                setTabCount('forwarders', '?');
                 CSM.loadError(document.getElementById('email-fwd-tbody'), loadForwarders, { title: 'Failed to load forwarders', error: err });
             });
-    }
-
-    // setForwardersCount shows a count on the collapsed forwarders section.
-    function setForwardersCount(text) {
-        var badge = document.getElementById('email-fwd-section-count');
-        if (!badge) return;
-        badge.hidden = false;
-        badge.textContent = text;
     }
 
     function forwarderMatchesFilter(f, mode) {
@@ -2162,7 +2154,7 @@
 
         var countEl = document.getElementById('email-fwd-count');
         if (countEl) countEl.textContent = rows.length + ' of ' + _forwarders.length;
-        setForwardersCount(num(_forwarders.filter(function(f) { return f.has_external; }).length));
+        setTabCount('forwarders', _forwarders.filter(function(f) { return f.has_external; }).length);
 
         if (rows.length === 0) {
             if (_forwarders.length === 0) emptyRow(tb, 5, 'mail-forward', 'No forwarders found on this host', '');
@@ -2173,9 +2165,19 @@
         var html = '';
         for (var i = 0; i < rows.length; i++) {
             var f = rows[i];
+            // The default address is set in cPanel, not deleted.
+            var deletable = f.source.indexOf('*@') !== 0;
             var dests = '';
             for (var d = 0; d < f.destinations.length; d++) {
-                dests += '<div class="font-monospace small">' + CSM.esc(f.destinations[d].address) + '</div>';
+                var addr = f.destinations[d].address;
+                dests += '<div class="font-monospace small">' + CSM.esc(f.destinations[d].address);
+                if (deletable) {
+                    dests += ' <button type="button" class="btn btn-sm btn-ghost-danger py-0" data-fwd-delete' +
+                        ' data-source="' + CSM.attr(f.source) + '" data-dest="' + CSM.attr(addr) + '"' +
+                        ' aria-label="' + CSM.attr('Delete forwarder from ' + f.source + ' to ' + addr) + '"' +
+                        (_fwdBusy[fwdKey(f.source, addr)] ? ' disabled' : '') + '>Delete</button>';
+                }
+                dests += '</div>';
             }
             var badges = '';
             for (var p = 0; p < f.providers.length; p++) {
@@ -2193,6 +2195,47 @@
             html += '</tr>';
         }
         tb.innerHTML = html;
+    }
+
+    // Destinations with a delete in flight, by fwdKey. Their buttons stay
+    // disabled across a redraw.
+    var _fwdBusy = {};
+
+    function fwdKey(source, dest) {
+        return source + '\n' + dest;
+    }
+
+    // deleteForwarder asks first, then removes one destination of a
+    // forwarder and reads the list again, whatever the answer: a failed
+    // delete may still have changed something.
+    function deleteForwarder(source, dest) {
+        var key = fwdKey(source, dest);
+        if (_fwdBusy[key]) return;
+        _fwdBusy[key] = true;
+        renderForwarders();
+        CSM.confirm('Delete the forwarder from ' + source + ' to ' + dest + '? Mail to ' + source + ' stops going to ' + dest + '.', { danger: true, okLabel: 'Delete' }).then(function() {
+            // cPanel's API loads its whole stack on every call.
+            CSM.post('/api/v1/email/forwarders/delete', { source: source, destination: dest }, { timeoutMs: 60000 })
+                .then(function() { CSM.toast('Forwarder deleted', 'success'); })
+                .catch(function(err) { CSM.toast('Delete failed: ' + CSM.errorText(err), 'error'); })
+                .then(function() {
+                    delete _fwdBusy[key];
+                    forwardersLoaded = false;
+                    loadForwarders();
+                    renderForwarders();
+                });
+        }).catch(function() {
+            delete _fwdBusy[key];
+            renderForwarders();
+        });
+    }
+
+    var fwdBody = document.getElementById('email-fwd-tbody');
+    if (fwdBody) {
+        fwdBody.addEventListener('click', function(e) {
+            var btn = e.target.closest('button[data-fwd-delete]');
+            if (btn && !btn.disabled) deleteForwarder(btn.getAttribute('data-source'), btn.getAttribute('data-dest'));
+        });
     }
 
     // ---------- Queue tab: summary and messages ----------
@@ -3231,7 +3274,7 @@
     // tab that took each over. auth also turns the Auth failures chip on.
     var TAB_ALIASES = {
         quarantine: 'held', outbound: 'sending', senders: 'sending', 'outbound-abuse': 'sending',
-        forwarders: 'sending', deliverability: 'delays', auth: 'findings'
+        deliverability: 'delays', auth: 'findings'
     };
 
     // tabButton returns the button of a job tab, or null for any other name.
@@ -3253,7 +3296,7 @@
     function tabFromURL(value) {
         var raw = value === undefined ? CSM.urlState.get('tab') : value;
         var name = Object.prototype.hasOwnProperty.call(TAB_ALIASES, raw) ? TAB_ALIASES[raw] : raw;
-        return { name: tabButton(name) ? name : 'overview', auth: raw === 'auth', forwarders: raw === 'forwarders' };
+        return { name: tabButton(name) ? name : 'overview', auth: raw === 'auth' };
     }
 
     // selectTab opens a job tab through Bootstrap's tab plugin, which also
@@ -3276,14 +3319,9 @@
         else if (tab.right > strip.right) tabsEl.scrollLeft += tab.right - strip.right;
     }
 
-    // openTab opens what an address or a headline card names. An old
-    // forwarders link also opens the forwarders section.
+    // openTab opens what an address or a headline card names.
     function openTab(t) {
         if (t.auth) applyAuthChip(true);
-        if (t.forwarders) {
-            var fwd = document.getElementById('email-forwarders-section');
-            if (fwd) fwd.open = true;
-        }
         selectTab(t.name);
     }
 
@@ -3308,7 +3346,8 @@
     // What each job tab counts, one and many, for screen readers.
     var TAB_COUNT_WORDS = {
         queue: ['queued', 'queued'], held: ['held', 'held'], rejects: ['rejected', 'rejected'],
-        sending: ['abuse event', 'abuse events'], delays: ['provider deferring', 'providers deferring'],
+        sending: ['abuse event', 'abuse events'], forwarders: ['outside forwarder', 'outside forwarders'],
+        delays: ['provider deferring', 'providers deferring'],
         findings: ['finding', 'findings']
     };
     // A count at a threshold: its badge color and what it adds in words.
@@ -3371,6 +3410,7 @@
             if (force || !statsLoaded) loadEmailStats();
             loadSenders();
             if (force || !outboundAbuseLoaded) loadOutboundAbuse();
+        } else if (id === 'forwarders') {
             if (force) forwardersLoaded = false;
             loadForwarders();
         } else if (id === 'queue') {

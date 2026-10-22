@@ -9,6 +9,10 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ## [Unreleased]
 
+### Added
+
+- The Email Security page has a Forwarders tab, where any forwarder destination can be deleted after a confirmation.
+
 ### Changed
 
 - With the forward guard enforcing, mail tagged as spam is now held instead of forwarded to outside addresses.

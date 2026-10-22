@@ -764,6 +764,18 @@ var operations = []Op{
 		WithoutPrivilege: "firewall changes are made with nft or the panel's own tooling",
 	},
 	{
+		ID:               "operate.delete_forwarder",
+		Risk:             RiskDestructive,
+		RecoveryGap:      "The web UI audit log names the deleted destination and its account; nothing re-creates the forwarder.",
+		Subsystem:        "operator commands",
+		Summary:          "delete one destination of a mail forwarder through uapi, as the account that owns it, on an admin's web UI request",
+		Privileges:       []Privilege{Root},
+		Trigger:          Operator,
+		Unsandboxed:      true,
+		Writes:           []string{"cpanel:mail forwarders"},
+		WithoutPrivilege: "forwarders are deleted in cPanel",
+	},
+	{
 		ID:               "operate.truncate_error_log",
 		Risk:             RiskDestructive,
 		RecoveryGap:      "Current remediation may retain local recovery evidence, but per-operation identity-checked undo and partial-failure recovery are not specified by this inventory.",

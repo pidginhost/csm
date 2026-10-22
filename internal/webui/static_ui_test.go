@@ -1375,7 +1375,7 @@ func TestEmailPageUsesPhase8Primitives(t *testing.T) {
 		`id="email-tab-held"`,
 		`id="email-tab-rejects"`,
 		`id="email-sending-table"`,
-		`id="email-forwarders-section"`,
+		`id="email-tab-forwarders"`,
 		`id="email-tab-delays"`,
 		`id="email-tab-sending"`,
 		`id="email-held-tbody"`,

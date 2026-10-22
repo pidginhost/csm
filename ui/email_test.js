@@ -80,7 +80,7 @@ function emailPage(opts = {}) {
     return page;
 }
 
-const TABS = ['overview', 'queue', 'held', 'rejects', 'sending', 'delays', 'findings'];
+const TABS = ['overview', 'queue', 'held', 'rejects', 'sending', 'forwarders', 'delays', 'findings'];
 
 // selectedTab returns the one job tab that is selected, after checking
 // that its pane, and only its pane, shows.
@@ -880,7 +880,7 @@ function changeValue(page, el, value) {
     el.dispatchEvent(new page.window.Event('change'));
 }
 
-test('seven job tabs sit right under the headline cards', async () => {
+test('eight job tabs sit right under the headline cards', async () => {
     const page = emailPage();
     await settle();
     const doc = page.document;
@@ -890,7 +890,7 @@ test('seven job tabs sit right under the headline cards', async () => {
     const tabs = Array.from(strip.querySelectorAll('[role="tab"]'));
     assert.deepEqual(tabs.map(b => b.id), TABS.map(name => 'email-tab-' + name));
     assert.deepEqual(tabs.map(b => b.textContent.replace(/\s+/g, ' ').trim()),
-        ['Overview', 'Queue', 'Held mail', 'Rejects', 'Sending accounts', 'Provider delays', 'Findings']);
+        ['Overview', 'Queue', 'Held mail', 'Rejects', 'Sending accounts', 'Forwarders', 'Provider delays', 'Findings']);
     for (const name of TABS) {
         const tab = doc.getElementById('email-tab-' + name);
         const pane = doc.getElementById('email-pane-' + name);
@@ -911,14 +911,15 @@ test('seven job tabs sit right under the headline cards', async () => {
         assert.equal(doc.getElementById('email-tab-' + old), null, 'the old ' + old + ' tab is still there');
         assert.equal(doc.getElementById('email-pane-' + old), null, 'the old ' + old + ' pane is still there');
     }
-    // Sending accounts: the SMTP firewall line, the accounts, the abuse
-    // events, then the forwarders, collapsed. No inner tabs.
+    // Sending accounts: the SMTP firewall line, the accounts, then the
+    // abuse events. No inner tabs. The forwarders have their own tab.
     const sending = doc.getElementById('email-pane-sending');
     assert.equal(sending.querySelectorAll('.nav-link').length, 0, 'Sending accounts still has inner tabs');
     // Held forward copies moved to Held mail.
     assert.equal(sending.contains(doc.getElementById('email-held-table')), false, 'held copies are still under Sending accounts');
     const html = sending.innerHTML;
-    const order = ['email-sending-firewall', 'email-sending-table', 'email-abuse-events', 'email-forwarders-section'].map(id => html.indexOf('id="' + id + '"'));
+    assert.equal(sending.contains(doc.getElementById('email-fwd-table')), false, 'the forwarders are still under Sending accounts');
+    const order = ['email-sending-firewall', 'email-sending-table', 'email-abuse-events'].map(id => html.indexOf('id="' + id + '"'));
     assert.ok(order.every(i => i >= 0), 'a Sending accounts section is missing: ' + order);
     assert.deepEqual(order.slice().sort((a, b) => a - b), order, 'the Sending accounts sections are out of order');
     // On a phone the tab bar scrolls sideways instead of wrapping.
@@ -942,7 +943,7 @@ test('Overview opens first and holds the chart, rspamd, needs attention and prot
     }
     // Every other job keeps what it showed before, in its own tab.
     for (const [tab, id] of [['queue', 'queue-health'], ['queue', 'queue-composition'], ['held', 'email-held-summary'], ['held', 'email-held-table'],
-        ['rejects', 'email-rejects-table'], ['sending', 'email-sending-firewall'], ['sending', 'email-fwd-table'],
+        ['rejects', 'email-rejects-table'], ['sending', 'email-sending-firewall'], ['forwarders', 'email-fwd-table'],
         ['delays', 'email-deliv-providers'], ['delays', 'email-deliv-ips'], ['findings', 'email-table']]) {
         assert.ok(doc.getElementById('email-pane-' + tab).contains(doc.getElementById(id)), '#' + id + ' is not in ' + tab);
     }
@@ -1015,7 +1016,7 @@ test('Failed logins opens Findings with the Auth failures chip on', async () => 
 
 test('old tab names in the address open the job tab that took them over', async () => {
     for (const [old, tab] of [['quarantine', 'held'], ['outbound', 'sending'], ['senders', 'sending'], ['outbound-abuse', 'sending'],
-        ['forwarders', 'sending'], ['deliverability', 'delays'], ['findings', 'findings'], ['queue', 'queue'], ['held', 'held'],
+        ['forwarders', 'forwarders'], ['deliverability', 'delays'], ['findings', 'findings'], ['queue', 'queue'], ['held', 'held'],
         ['rejects', 'rejects'], ['sending', 'sending'], ['delays', 'delays'], ['overview', 'overview'], ['no-such-tab', 'overview']]) {
         const page = emailPage({ url: 'https://csm.example.test/email?tab=' + old });
         await settle();
@@ -1085,7 +1086,7 @@ test('the Queue tab counts the queue once its size is known', async () => {
     assert.equal(badge(page, 'queue').hidden, false);
     assert.equal(badge(page, 'queue').textContent, '18');
     assert.doesNotMatch(badge(page, 'queue').className, /badge-warning/, 'a queue under its warn threshold is colored');
-    for (const name of ['held', 'sending', 'delays', 'findings']) {
+    for (const name of ['held', 'sending', 'forwarders', 'delays', 'findings']) {
         assert.equal(badge(page, name).hidden, true, name + ' shows a count nothing set');
     }
     // Rejects count from the same overview.
@@ -3099,25 +3100,115 @@ test('the abuse events keep their script breakdown and Block 24h', async () => {
     assert.deepEqual([post.method, post.body.ip, post.body.duration], ['POST', '203.0.113.30', '24h']);
 });
 
-test('the forwarders to outside addresses stay collapsed with their count', async () => {
-    const fwd = (source, external) => ({ source, domain: 'example.com', owner: 'alice', destinations: [{ address: 'x@example.net', domain: 'example.net', provider: external ? 'external' : 'local' }],
-        providers: [external ? 'external' : 'local'], keep_local: true, forward_only: false, has_external: external, has_free_provider: false });
-    const page = await sendingPage({ '/api/v1/email/forwarders': items([fwd('a@example.com', true), fwd('b@example.com', false), fwd('c@example.com', true)]) });
+// forwardersPage opens the Forwarders tab and answers what it asks for.
+async function forwardersPage(bodies) {
+    const page = emailPage({ url: 'https://csm.example.test/email?tab=forwarders' });
+    await settle();
+    await answerAll(page, bodies);
+    return page;
+}
+
+function forwarder(source, dests, extra) {
+    dests = dests.map(d => typeof d === 'string' ? { address: d, domain: d.split('@')[1], provider: 'external' } : d);
+    return Object.assign({ source, domain: source.split('@')[1], owner: 'alice', destinations: dests,
+        providers: Array.from(new Set(dests.map(d => d.provider))).sort(), keep_local: false, forward_only: true,
+        has_external: dests.some(d => d.provider !== 'local'), has_free_provider: false }, extra);
+}
+
+test('the Forwarders tab lists them, counting the outside ones on the tab', async () => {
+    const local = { address: 'x@example.com', domain: 'example.com', provider: 'local' };
+    const page = await forwardersPage({ '/api/v1/email/forwarders': items([forwarder('a@example.com', ['x@example.net']),
+        forwarder('b@example.com', [local], { has_external: false, keep_local: true, forward_only: false }), forwarder('c@example.com', ['y@example.net'])]) });
     const doc = page.document;
-    const section = doc.getElementById('email-forwarders-section');
-    assert.equal(section.tagName, 'DETAILS');
-    assert.equal(section.hasAttribute('open'), false, 'the forwarders are not collapsed');
-    assert.match(flat(section.querySelector('summary')), /^Forwarders to outside addresses\s*2$/);
+    assert.equal(selectedTab(page), 'forwarders');
+    assert.equal(doc.getElementById('email-pane-forwarders').contains(doc.getElementById('email-fwd-table')), true);
+    assert.equal(doc.querySelector('#email-pane-forwarders details'), null, 'the forwarders are still collapsed');
+    const badge = doc.querySelector('#email-tab-forwarders [data-tab-count]');
+    assert.equal(badge.hidden, false);
+    assert.equal(badge.textContent, '2');
+    assert.equal(flat(doc.querySelector('#email-tab-forwarders [data-tab-count-text]')), '2 outside forwarders');
     // The list starts on the outside ones, which the count names.
     assert.equal(doc.getElementById('email-fwd-filter').value, 'external');
     assert.equal(flat(doc.getElementById('email-fwd-count')), '2 of 3');
 
-    const failed = emailPage({ url: 'https://csm.example.test/email?tab=sending' });
+    const failed = emailPage({ url: 'https://csm.example.test/email?tab=forwarders' });
     await settle();
     failed.fail('/api/v1/email/forwarders', new Error('HTTP 502'));
     await settle();
-    assert.equal(flat(failed.document.getElementById('email-fwd-section-count')), '?');
+    assert.equal(failed.document.querySelector('#email-tab-forwarders [data-tab-count]').textContent, '?');
     assert.match(flat(failed.document.getElementById('email-fwd-tbody')), /Failed to load forwarders/);
+});
+
+test('Sending accounts no longer reads the forwarders', async () => {
+    const page = await sendingPage({});
+    assert.equal(page.requests.filter(r => r.url.includes('/api/v1/email/forwarders')).length, 0);
+});
+
+// fwdDeleteButtons returns the delete buttons of the forwarders on screen.
+function fwdDeleteButtons(page) {
+    return Array.from(page.document.querySelectorAll('#email-fwd-tbody button[data-fwd-delete]'));
+}
+
+test('each destination of a forwarder has its own delete button', async () => {
+    const page = await forwardersPage({ '/api/v1/email/forwarders': items([forwarder('a@example.com', ['x@example.net', 'y@example.org'])]) });
+    const buttons = fwdDeleteButtons(page);
+    assert.equal(buttons.length, 2);
+    assert.deepEqual(buttons.map(b => b.getAttribute('aria-label')),
+        ['Delete forwarder from a@example.com to x@example.net', 'Delete forwarder from a@example.com to y@example.org']);
+});
+
+test('the default address has no delete button', async () => {
+    const page = await forwardersPage({ '/api/v1/email/forwarders': items([forwarder('*@example.com', ['x@example.net'])]) });
+    assert.equal(fwdDeleteButtons(page).length, 0);
+    assert.match(flat(page.document.getElementById('email-fwd-tbody')), /x@example\.net/);
+});
+
+test('deleting a forwarder asks first, posts the pair, and reads the list again', async () => {
+    const page = await forwardersPage({ '/api/v1/email/forwarders': items([forwarder('a@example.com', ['x@example.net', 'y@example.org'])]) });
+    page.toasts = [];
+    page.window.CSM.toast = (message, type) => page.toasts.push([message, type]);
+    const asked = stubConfirm(page);
+    const reads = () => page.requests.filter(r => r.url.includes('/api/v1/email/forwarders') && r.method !== 'POST').length;
+    const before = reads();
+    fwdDeleteButtons(page)[1].click();
+    await settle();
+    assert.equal(asked.length, 1);
+    assert.match(asked[0].message, /^Delete the forwarder from a@example\.com to y@example\.org\?/);
+    assert.equal(asked[0].opts.danger, true);
+    assert.equal(asked[0].opts.okLabel, 'Delete');
+    const post = page.pending('/api/v1/email/forwarders/delete')[0];
+    assert.ok(post, 'no delete request');
+    assert.equal(post.method, 'POST');
+    assert.deepEqual(post.body, { source: 'a@example.com', destination: 'y@example.org' });
+    assert.equal(fwdDeleteButtons(page)[1].disabled, true, 'the button is live while the delete runs');
+    page.respond('/api/v1/email/forwarders/delete', 200, { ok: true });
+    await settle();
+    assert.deepEqual(page.toasts, [['Forwarder deleted', 'success']]);
+    assert.equal(reads(), before + 1, 'the list was not read again');
+});
+
+test('a declined delete sends nothing', async () => {
+    const page = await forwardersPage({ '/api/v1/email/forwarders': items([forwarder('a@example.com', ['x@example.net'])]) });
+    stubConfirm(page, false);
+    fwdDeleteButtons(page)[0].click();
+    await settle();
+    assert.equal(page.pending('/api/v1/email/forwarders/delete').length, 0);
+    assert.equal(fwdDeleteButtons(page)[0].disabled, false);
+});
+
+test('a refused delete toasts the server error and keeps the row', async () => {
+    const page = await forwardersPage({ '/api/v1/email/forwarders': items([forwarder('a@example.com', ['x@example.net'])]) });
+    page.toasts = [];
+    page.window.CSM.toast = (message, type) => page.toasts.push([message, type]);
+    stubConfirm(page);
+    fwdDeleteButtons(page)[0].click();
+    await settle();
+    page.respond('/api/v1/email/forwarders/delete', 500, { error: 'cPanel said no' });
+    await settle();
+    assert.equal(page.toasts.length, 1);
+    assert.match(page.toasts[0][0], /^Delete failed: .*cPanel said no/);
+    assert.equal(page.toasts[0][1], 'error');
+    assert.equal(fwdDeleteButtons(page)[0].disabled, false);
 });
 
 test('abuse events and forwarders turn into labelled cards on phones', async () => {
@@ -3126,8 +3217,7 @@ test('abuse events and forwarders turn into labelled cards on phones', async () 
     const page = await sendingPage({
         '/api/v1/email/relay-abuse': items([abuseEvent({ cp_user: 'shopuser', sites: [
             { site: 'shop.example.com', script: '/mail.php', hits: 40, last_seen: AT, sample_subject: 'You won' }] })],
-        { total: 1, limit: 20, truncated: false }),
-        '/api/v1/email/forwarders': items([fwd])
+        { total: 1, limit: 20, truncated: false })
     });
     const doc = page.document;
     const labels = row => Array.from(row.children).map(td => td.getAttribute('data-label'));
@@ -3136,9 +3226,10 @@ test('abuse events and forwarders turn into labelled cards on phones', async () 
     assert.deepEqual(labels(abuse.querySelector('tr[data-abuse-key]')), ['Severity', 'Type', 'Source IP', 'Account', 'Count', 'Detected', 'Actions']);
     const sites = doc.getElementById(abuse.querySelector('.oab-toggle').getAttribute('data-target'));
     assert.deepEqual(labels(sites.querySelector('tbody tr')), ['Site', 'Script', 'Hits', 'Last seen', 'Sample subject']);
-    const fwdTable = doc.getElementById('email-fwd-table');
+    const fwdPage = await forwardersPage({ '/api/v1/email/forwarders': items([fwd]) });
+    const fwdTable = fwdPage.document.getElementById('email-fwd-table');
     assert.ok(fwdTable.classList.contains('csm-table-rowcard'), 'forwarders scroll sideways on phones');
-    assert.deepEqual(labels(doc.querySelector('#email-fwd-tbody tr')), ['Source', 'Owner', 'Destinations', 'Providers', 'Local copy']);
+    assert.deepEqual(labels(fwdPage.document.querySelector('#email-fwd-tbody tr')), ['Source', 'Owner', 'Destinations', 'Providers', 'Local copy']);
 });
 
 test('an old outbound abuse link reads each Sending accounts source once', async () => {
@@ -3146,7 +3237,7 @@ test('an old outbound abuse link reads each Sending accounts source once', async
     const page = emailPage({ url: 'https://csm.example.test/email?tab=outbound-abuse' });
     await settle();
     assert.equal(selectedTab(page), 'sending');
-    for (const route of ['/api/v1/email/relay-abuse', '/api/v1/email/senders', '/api/v1/email/stats', '/api/v1/email/forwarders']) {
+    for (const route of ['/api/v1/email/relay-abuse', '/api/v1/email/senders', '/api/v1/email/stats']) {
         assert.equal(count(page, route), 1, route);
     }
     await answerAll(page, { '/api/v1/email/stats': FIREWALL });
@@ -3154,7 +3245,7 @@ test('an old outbound abuse link reads each Sending accounts source once', async
     showEmailTab(page, 'overview');
     showEmailTab(page, 'sending');
     await settle();
-    assert.deepEqual(['/api/v1/email/relay-abuse', '/api/v1/email/senders', '/api/v1/email/stats', '/api/v1/email/forwarders'].map(r => count(page, r)), [1, 2, 1, 1]);
+    assert.deepEqual(['/api/v1/email/relay-abuse', '/api/v1/email/senders', '/api/v1/email/stats'].map(r => count(page, r)), [1, 2, 1]);
 });
 
 test('the Sending accounts count is read with the page and follows the range', async () => {
@@ -3216,6 +3307,12 @@ test('sending accounts, abuse events and forwarders keep server text as text', a
             keep_local: true, forward_only: false, has_external: true, has_free_provider: false }])
     });
     const doc = page.document;
+    showEmailTab(page, 'forwarders');
+    await settle();
+    await answerAll(page, { '/api/v1/email/forwarders': items([{ source: payload + '@example.com', domain: 'example.com', owner: payload,
+        destinations: [{ address: payload + '@example.net', domain: 'example.net', provider: 'external' }], providers: [payload],
+        keep_local: true, forward_only: false, has_external: true, has_free_provider: false }]) });
+    assert.equal(fwdDeleteButtons(page)[0].getAttribute('aria-label'), 'Delete forwarder from ' + payload + '@example.com to ' + payload + '@example.net');
     for (const id of ['email-sending-tbody', 'email-abuse-events', 'email-fwd-tbody']) {
         const el = doc.getElementById(id);
         assert.equal(el.querySelectorAll('img').length, 0, id + ' interpreted server text as markup');
@@ -3388,14 +3485,11 @@ test('Other reasons asks for the reasons the overview counts, as the Other rejec
     assert.match(flat(tbody), /No rejects for other reasons in the last 24 hours/);
 });
 
-test('an old forwarders link opens Sending accounts with the forwarders shown', async () => {
+test('a forwarders link opens the Forwarders tab and reads the list', async () => {
     const page = emailPage({ url: 'https://csm.example.test/email?tab=forwarders' });
     await settle();
-    assert.equal(selectedTab(page), 'sending');
-    assert.equal(page.document.getElementById('email-forwarders-section').open, true);
-    const plain = emailPage({ url: 'https://csm.example.test/email?tab=sending' });
-    await settle();
-    assert.equal(plain.document.getElementById('email-forwarders-section').open, false);
+    assert.equal(selectedTab(page), 'forwarders');
+    assert.equal(page.pending('/api/v1/email/forwarders').length, 1);
 });
 
 // ---------- Provider delays ----------

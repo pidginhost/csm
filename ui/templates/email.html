@@ -119,6 +119,11 @@
             </button>
         </li>
         <li class="nav-item" role="presentation">
+            <button class="nav-link" id="email-tab-forwarders" data-bs-toggle="tab" data-bs-target="#email-pane-forwarders" type="button" role="tab" aria-controls="email-pane-forwarders" aria-selected="false">
+                <i class="ti ti-mail-forward"></i>&nbsp;Forwarders<span class="badge bg-secondary-lt ms-1" data-tab-count aria-hidden="true" hidden></span> <span class="visually-hidden" data-tab-count-text></span>
+            </button>
+        </li>
+        <li class="nav-item" role="presentation">
             <button class="nav-link" id="email-tab-delays" data-bs-toggle="tab" data-bs-target="#email-pane-delays" type="button" role="tab" aria-controls="email-pane-delays" aria-selected="false">
                 <i class="ti ti-clock-pause"></i>&nbsp;Provider delays<span class="badge bg-secondary-lt ms-1" data-tab-count aria-hidden="true" hidden></span> <span class="visually-hidden" data-tab-count-text></span>
             </button>
@@ -356,8 +361,7 @@
         </div>
 
         <!-- Sending accounts: how much each hosting account sent, under the
-             SMTP firewall line; then the outbound abuse events, and the
-             forwarders to outside addresses, collapsed -->
+             SMTP firewall line; then the outbound abuse events -->
         <div class="tab-pane fade" id="email-pane-sending" role="tabpanel" aria-labelledby="email-tab-sending" tabindex="0">
             <div class="card mb-3">
                 <div class="card-body border-bottom" id="email-sending-firewall">
@@ -390,39 +394,39 @@
                     <div class="csm-empty"><div class="csm-empty__reason">Outbound abuse events load when this tab is opened.</div></div>
                 </div>
             </div>
+        </div>
+
+        <!-- Forwarders: every mail forwarder on the host, the ones to
+             outside addresses first; each destination can be deleted -->
+        <div class="tab-pane fade" id="email-pane-forwarders" role="tabpanel" aria-labelledby="email-tab-forwarders" tabindex="0">
             <div class="card">
-                <details id="email-forwarders-section">
-                    <summary class="card-body fw-medium">
-                        <i class="ti ti-mail-forward"></i>&nbsp;Forwarders to outside addresses<span class="badge bg-secondary-lt ms-2" id="email-fwd-section-count" hidden></span>
-                    </summary>
-                    <div class="csm-toolbar">
-                        <input type="text" id="email-fwd-search" class="form-control form-control-sm csm-toolbar__search" placeholder="Search source / destination / owner..." aria-label="Search forwarders">
-                        <select id="email-fwd-filter" class="form-select form-select-sm csm-toolbar__filter" aria-label="Filter forwarders">
-                            <option value="">All forwarders</option>
-                            <option value="external" selected>External only</option>
-                            <option value="free">Free providers</option>
-                            <option value="forward_only">Forward-only (no local copy)</option>
-                        </select>
-                        <span class="csm-toolbar__spacer"></span>
-                        <span class="csm-toolbar__count" id="email-fwd-count"></span>
-                    </div>
-                    <div class="table-responsive">
-                        <table class="table table-vcenter card-table table-sm csm-table-rowcard" id="email-fwd-table">
-                            <thead>
-                                <tr>
-                                    <th>Source</th>
-                                    <th>Owner</th>
-                                    <th>Destinations</th>
-                                    <th>Providers</th>
-                                    <th>Local copy</th>
-                                </tr>
-                            </thead>
-                            <tbody id="email-fwd-tbody">
-                                <tr><td colspan="5" class="text-center text-muted py-4">Forwarder inventory loads when this tab is opened.</td></tr>
-                            </tbody>
-                        </table>
-                    </div>
-                </details>
+                <div class="csm-toolbar">
+                    <input type="text" id="email-fwd-search" class="form-control form-control-sm csm-toolbar__search" placeholder="Search source / destination / owner..." aria-label="Search forwarders">
+                    <select id="email-fwd-filter" class="form-select form-select-sm csm-toolbar__filter" aria-label="Filter forwarders">
+                        <option value="">All forwarders</option>
+                        <option value="external" selected>External only</option>
+                        <option value="free">Free providers</option>
+                        <option value="forward_only">Forward-only (no local copy)</option>
+                    </select>
+                    <span class="csm-toolbar__spacer"></span>
+                    <span class="csm-toolbar__count" id="email-fwd-count"></span>
+                </div>
+                <div class="table-responsive">
+                    <table class="table table-vcenter card-table table-sm csm-table-rowcard" id="email-fwd-table">
+                        <thead>
+                            <tr>
+                                <th>Source</th>
+                                <th>Owner</th>
+                                <th>Destinations</th>
+                                <th>Providers</th>
+                                <th>Local copy</th>
+                            </tr>
+                        </thead>
+                        <tbody id="email-fwd-tbody">
+                            <tr><td colspan="5" class="text-center text-muted py-4">Forwarder inventory loads when this tab is opened.</td></tr>
+                        </tbody>
+                    </table>
+                </div>
             </div>
         </div>
 

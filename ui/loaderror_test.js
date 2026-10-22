@@ -185,7 +185,7 @@ const CASES = [
     { name: 'email', scripts: ['email.js'], tab: 'email-tab-rejects', fails: '/api/v1/email/rejects', host: 'email-rejects-tbody', title: /rejects/i },
     { name: 'email', scripts: ['email.js'], fails: '/api/v1/history?', host: 'email-tbody', title: /findings/i },
     { name: 'email', scripts: ['email.js'], tab: 'email-tab-held', fails: '/api/v1/email/quarantine', host: 'email-held-tbody', title: /quarantine/i },
-    { name: 'email', scripts: ['email.js'], tab: 'email-tab-sending', fails: '/api/v1/email/forwarders', host: 'email-fwd-tbody', title: /forwarders/i },
+    { name: 'email', scripts: ['email.js'], tab: 'email-tab-forwarders', fails: '/api/v1/email/forwarders', host: 'email-fwd-tbody', title: /forwarders/i },
     { name: 'email', scripts: ['email.js'], tab: 'email-tab-held', fails: '/api/v1/email/held', host: 'email-held-tbody', title: /held/i },
     { name: 'email', scripts: ['email.js'], tab: 'email-tab-delays', fails: '/api/v1/email/deferrals', host: 'email-deliv-providers-body', title: /deferral/i },
     { name: 'email', scripts: ['email.js'], tab: 'email-tab-sending', fails: '/api/v1/email/relay-abuse', host: 'email-abuse-events', title: /outbound/i },

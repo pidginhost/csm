@@ -1244,6 +1244,7 @@ DELETE /api/v1/suppressions      Delete a suppression rule by id
 ```
 GET  /api/v1/email/stats         Email scanning statistics
 GET  /api/v1/email/forwarders    Mail forwarder inventory with destination providers and local-copy flags (read scope)
+POST /api/v1/email/forwarders/delete  Delete one destination of a forwarder on cPanel hosts through uapi, as the account that owns it; takes {"source", "destination"} as the inventory lists them; 404 when the inventory has no such pair, 503 when unavailable (admin scope, CSRF)
 GET  /api/v1/email/deferrals     Outbound deferral rollup by provider and sending IP with reason codes and last_seen, parsed from exim_mainlog; each provider has a sample error text; lines is the number of log lines read and window_start/window_end the times of the first and last of them; one read is reused for 60 s (read scope)
 GET  /api/v1/email/queue-composition  Mail queue makeup: real vs null-sender bounce backscatter, frozen count, unreadable count, oldest age, top stuck recipients; 500 when exim could not list the queue, rather than an empty queue (read scope)
 POST /api/v1/email/queue/flush-backscatter  Request removal of frozen null-sender messages from the exim queue on cPanel hosts; returns the count of targeted messages no longer queued, reports incomplete verification as 500, or returns 503 when unavailable (admin scope, CSRF)
