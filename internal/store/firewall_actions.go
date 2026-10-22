@@ -44,8 +44,14 @@ func firewallActionPending(phase string) bool {
 	return phase == "planned" || phase == "executing" || phase == "applied" || phase == "unknown"
 }
 
+// firewallActionOutstanding reports whether a still holds the pending
+// interlock: a pending phase that recovery has not retired.
+func firewallActionOutstanding(a firewall.FirewallAction) bool {
+	return firewallActionPending(a.Phase) && !a.Retired
+}
+
 func validateFirewallAdmission(a firewall.FirewallAction) error {
-	if a.Request.ID == "" || len(a.Request.ID) > 128 || a.Request.Operation == "" || a.Request.Actor == "" || a.CreatedAt.IsZero() || a.Revision == 0 {
+	if a.Request.ID == "" || len(a.Request.ID) > 128 || a.Request.Operation == "" || a.Request.Actor == "" || a.CreatedAt.IsZero() || a.Revision == 0 || a.Retired && a.Phase != "unknown" {
 		return errors.New("invalid firewall action admission")
 	}
 	for _, value := range []string{a.Request.ID, a.Request.Operation, a.Request.Target, a.Request.Reason, a.Request.Actor, a.Request.ActorDetail, a.Request.Source, a.Request.FindingID, a.Request.IncidentID, a.Request.UndoOf, a.Detail} {
@@ -141,7 +147,7 @@ func validateFirewallManifest(a firewall.FirewallAction) error {
 	if len(a.Members) > 1 {
 		return validateFirewallBatchStates(a)
 	}
-	return nil
+	return validateFirewallVictims(a)
 }
 
 // canonicalFirewallAddress accepts one address in its only spelling, so no
@@ -364,7 +370,7 @@ func indexedPendingFirewallAction(tx *bolt.Tx, index firewallJournalIndex) (fire
 	if errors.Is(err, firewall.ErrStateUnsupported) {
 		return firewall.FirewallAction{}, err
 	}
-	if err != nil || !firewallActionPending(a.Phase) {
+	if err != nil || !firewallActionOutstanding(a) {
 		return firewall.FirewallAction{}, firewall.ErrStateCorrupt
 	}
 	return a, nil
@@ -786,6 +792,39 @@ func (db *DB) ReadFirewallAction(id string) (firewall.FirewallAction, error) {
 	return a, nil
 }
 
+// ReadFirewallBatchMember returns the batch that indexes member id. An ID no
+// batch indexes is missing; an entry naming a batch that does not list the
+// member is damage.
+func (db *DB) ReadFirewallBatchMember(id string) (firewall.FirewallAction, error) {
+	var a firewall.FirewallAction
+	err := db.bolt.View(func(tx *bolt.Tx) error {
+		index := tx.Bucket([]byte(firewallMemberIndexBucket))
+		if index != nil && index.Bucket([]byte(id)) != nil {
+			return firewall.ErrStateCorrupt
+		}
+		if index == nil || index.Get([]byte(id)) == nil {
+			return ErrFirewallActionMissing
+		}
+		payload, err := decodeFirewallJournal(index.Get([]byte(id)))
+		if err != nil {
+			return err
+		}
+		var entry firewallMemberIndexEntry
+		if json.Unmarshal(payload, &entry) != nil {
+			return firewall.ErrStateCorrupt
+		}
+		a, err = readFirewallAction(tx, entry.Batch)
+		if errors.Is(err, ErrFirewallActionMissing) || err == nil && !slices.Contains(firewallBatchMemberIDs(a), id) {
+			return firewall.ErrStateCorrupt
+		}
+		return err
+	})
+	if err != nil {
+		return firewall.FirewallAction{}, err
+	}
+	return a, nil
+}
+
 func (db *DB) PendingFirewallActions() ([]firewall.FirewallAction, error) {
 	var pending []firewall.FirewallAction
 	err := db.bolt.View(func(tx *bolt.Tx) error {
@@ -958,13 +997,16 @@ func (db *DB) TransitionFirewallAction(id, phase, detail string, at time.Time) (
 		if err != nil {
 			return err
 		}
-		if firewallActionPending(a.Phase) {
+		if firewallActionOutstanding(a) {
 			if index.PendingID != id {
 				return firewall.ErrStateCorrupt
 			}
-			if err := validateFirewallActionBase(tx, a); err != nil {
-				return err
+			if baseErr := validateFirewallActionBase(tx, a); baseErr != nil {
+				return baseErr
 			}
+		}
+		if a.Retired {
+			return fmt.Errorf("%w: retired action cannot transition", firewall.ErrStateConflict)
 		}
 		if a.Phase == phase && a.Detail == detail {
 			result = a
@@ -978,53 +1020,122 @@ func (db *DB) TransitionFirewallAction(id, phase, detail string, at time.Time) (
 			if phase == "verified" {
 				state = a.After
 			}
-			meta, rows, err := encodeFirewallSnapshot(state)
-			if err != nil {
-				return err
-			}
-			if a.Revision == math.MaxUint64 {
-				return firewall.ErrStateConflict
-			}
-			meta.Revision = a.Revision + 1
-			raw, err := json.Marshal(meta)
-			if err != nil {
-				return err
-			}
-			if err := replaceFirewallSnapshot(tx, a.Revision, meta, rows, raw); err != nil {
-				return err
+			if publishErr := publishFirewallState(tx, a, state); publishErr != nil {
+				return publishErr
 			}
 		}
 		a.Phase, a.Detail, a.UpdatedAt = phase, detail, at
-		if err := validateFirewallAdmission(a); err != nil {
+		result, err = commitFirewallTransition(tx, index, a)
+		return err
+	})
+	if resultErr != nil {
+		return firewall.FirewallAction{}, resultErr
+	}
+	return result, nil
+}
+
+// publishFirewallState commits state as the revision after a's own.
+func publishFirewallState(tx *bolt.Tx, a firewall.FirewallAction, state firewall.FirewallState) error {
+	meta, rows, err := encodeFirewallSnapshot(state)
+	if err != nil {
+		return err
+	}
+	if a.Revision == math.MaxUint64 {
+		return firewall.ErrStateConflict
+	}
+	meta.Revision = a.Revision + 1
+	raw, err := json.Marshal(meta)
+	if err != nil {
+		return err
+	}
+	return replaceFirewallSnapshot(tx, a.Revision, meta, rows, raw)
+}
+
+// commitFirewallTransition writes a's next version and its audit event, and
+// once a no longer holds the pending interlock frees it and indexes a as
+// retained history.
+func commitFirewallTransition(tx *bolt.Tx, index firewallJournalIndex, a firewall.FirewallAction) (firewall.FirewallAction, error) {
+	if err := validateFirewallAdmission(a); err != nil {
+		return firewall.FirewallAction{}, err
+	}
+	a.AuditVersion++
+	size, err := writeFirewallAction(tx, a)
+	if err != nil {
+		return firewall.FirewallAction{}, err
+	}
+	if err := writeFirewallAuditEvent(tx, a); err != nil {
+		return firewall.FirewallAction{}, err
+	}
+	settled := !firewallActionOutstanding(a)
+	if settled {
+		index.PendingID = ""
+	}
+	if firewallAuditPhase(a.Phase) {
+		index.Audit = append(index.Audit, firewallAuditReference{ID: a.Request.ID, Version: a.AuditVersion})
+	}
+	if err := writeFirewallJournalIndex(tx, index); err != nil {
+		return firewall.FirewallAction{}, err
+	}
+	if settled {
+		if err := recordFirewallActionHistory(tx, a, size); err != nil {
+			return firewall.FirewallAction{}, err
+		}
+		if err := pruneFirewallActionHistory(tx, index); err != nil {
+			return firewall.FirewallAction{}, err
+		}
+	}
+	return a, nil
+}
+
+// RetireFirewallAction retires the uncertainty of an unknown block action
+// once nothing it may have applied can remain (spec 5.4, design D7). The
+// caller has proved that the kernel holds the retired state at at; the store
+// checks that every effect has expired by then and that the unknown
+// outcome's audit was delivered, so the event follows the outcome. In one
+// transaction it commits the rows Before and After agree on as the next
+// revision, frees the pending interlock and records the event. The outcome
+// stays unknown and its charges stay spent. On an action already retired
+// it changes nothing.
+func (db *DB) RetireFirewallAction(id string, at time.Time) (result firewall.FirewallAction, resultErr error) {
+	defer func() { recordFirewallWriteError(resultErr) }()
+	resultErr = db.updateFirewallSnapshot(1, func(tx *bolt.Tx) error {
+		index, err := readFirewallJournalIndex(tx)
+		if err != nil {
 			return err
 		}
-		a.AuditVersion++
-		size, writeErr := writeFirewallAction(tx, a)
-		if writeErr != nil {
-			return writeErr
-		}
-		if err := writeFirewallAuditEvent(tx, a); err != nil {
+		a, err := readFirewallAction(tx, id)
+		if err != nil {
 			return err
 		}
-		if !firewallActionPending(a.Phase) {
-			index.PendingID = ""
+		if a.Retired {
+			result = a
+			return nil
 		}
-		if firewallAuditPhase(a.Phase) {
-			index.Audit = append(index.Audit, firewallAuditReference{ID: id, Version: a.AuditVersion})
+		if a.Phase != "unknown" {
+			return fmt.Errorf("%w: action %s is not an unknown outcome", firewall.ErrStateConflict, id)
 		}
-		if err := writeFirewallJournalIndex(tx, index); err != nil {
-			return err
+		if index.PendingID != id {
+			return firewall.ErrStateCorrupt
 		}
-		if !firewallActionPending(a.Phase) {
-			if err := recordFirewallActionHistory(tx, a, size); err != nil {
-				return err
-			}
-			if err := pruneFirewallActionHistory(tx, index); err != nil {
-				return err
-			}
+		if baseErr := validateFirewallActionBase(tx, a); baseErr != nil {
+			return baseErr
 		}
-		result = a
-		return nil
+		if slices.ContainsFunc(index.Audit, func(ref firewallAuditReference) bool { return ref.ID == id }) {
+			return fmt.Errorf("%w: action %s outcome audit pending", firewall.ErrStateConflict, id)
+		}
+		if a.AuditAck != a.AuditVersion {
+			return fmt.Errorf("%w: action %s outcome audit acknowledgement missing", firewall.ErrStateCorrupt, id)
+		}
+		state, ok := firewall.RetiredActionState(a, at)
+		if !ok || a.AuditVersion == math.MaxUint64 {
+			return fmt.Errorf("%w: action %s has an effect that can still be live", firewall.ErrStateConflict, id)
+		}
+		if publishErr := publishFirewallState(tx, a, state); publishErr != nil {
+			return publishErr
+		}
+		a.Retired, a.UpdatedAt = true, at
+		result, err = commitFirewallTransition(tx, index, a)
+		return err
 	})
 	if resultErr != nil {
 		return firewall.FirewallAction{}, resultErr

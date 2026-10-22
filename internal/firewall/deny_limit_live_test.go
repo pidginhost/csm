@@ -146,7 +146,7 @@ func TestReplacementCountsUseKernelForUnverifiedRows(t *testing.T) {
 			f.e.liveBlockCounts = func() (int, int, error) { return 1, 1, nil }
 			f.e.liveBlockLookup = func(*nftables.Set, []byte) (bool, error) { return true, nil }
 			f.e.mu.Lock()
-			_, _, existing, victim, err := f.e.blockIPTargetFromState("203.0.113.10", tc.requestTimeout, false, state)
+			_, _, existing, victim, err := f.e.blockIPTargetFromStates("203.0.113.10", tc.requestTimeout, false, state, state)
 			f.e.mu.Unlock()
 			if (err != nil) != tc.wantError || existing || victim != tc.wantVictim {
 				t.Fatalf("replacement = existing %t, victim %q, error %v; want victim %q, error %t", existing, victim, err, tc.wantVictim, tc.wantError)

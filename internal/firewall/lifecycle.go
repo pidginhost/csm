@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 )
 
@@ -39,7 +40,7 @@ func (l *Lifecycle) execute(plan FirewallAction, kernel ActionKernel) (FirewallA
 		return FirewallAction{}, err
 	}
 	if !fresh {
-		if a.Phase != "verified" && a.Phase != "failed" {
+		if a.Phase != "verified" && a.Phase != "failed" && !a.Retired {
 			a, err = l.reconcile(a, kernel, nil)
 		} else {
 			err = actionResult(a)
@@ -73,6 +74,9 @@ func (l *Lifecycle) markUnknown(a FirewallAction, cause error) (FirewallAction, 
 	result, err := l.Store.TransitionFirewallAction(a.Request.ID, "unknown", cause.Error(), time.Now())
 	return result, errors.Join(fmt.Errorf("%w: %s: %w", ErrActionUnknown, a.Request.ID, cause), err)
 }
+
+var errFirewallUnproven = errors.New("kernel does not prove a complete before or after state")
+
 func (l *Lifecycle) reconcile(a FirewallAction, kernel ActionKernel, kernelErr error) (FirewallAction, error) {
 	observed, err := kernel.ObserveFirewallAction(a)
 	if err != nil {
@@ -89,7 +93,7 @@ func (l *Lifecycle) reconcile(a FirewallAction, kernel ActionKernel, kernelErr e
 	case observed.After && observed.Before && a.Phase == "planned":
 		phase = "failed"
 	default:
-		return l.markUnknown(a, errors.New("kernel does not prove a complete before or after state"))
+		return l.markUnknown(a, errFirewallUnproven)
 	}
 	detail := ""
 	if kernelErr != nil {
@@ -111,21 +115,64 @@ func (l *Lifecycle) Recover(kernel ActionKernel) error {
 	if err != nil {
 		return err
 	}
-	var failures []error
+	var failures, uncertain []error
+	var unknown []FirewallAction
 	for _, a := range actions {
-		if _, err := l.reconcile(a, kernel, nil); err != nil && !errors.Is(err, ErrActionFailed) {
+		result, err := l.reconcile(a, kernel, nil)
+		switch {
+		case err == nil || errors.Is(err, ErrActionFailed):
+		case result.Phase == "unknown":
+			unknown, uncertain = append(unknown, result), append(uncertain, err)
+		default:
 			failures = append(failures, err)
 		}
 	}
-	failures = append(failures, l.deliverAudit())
-	return errors.Join(failures...)
+	auditErr := l.deliverAudit()
+	if auditErr == nil {
+		// A retirement follows the delivered outcome it settles.
+		retired := false
+		for i, a := range unknown {
+			ok, err := l.retire(a, kernel)
+			if ok {
+				retired = true
+				if errors.Is(uncertain[i], errFirewallUnproven) {
+					uncertain[i] = nil
+				}
+			} else if err != nil {
+				failures = append(failures, err)
+			}
+		}
+		if retired {
+			auditErr = l.deliverAudit()
+		}
+	}
+	return errors.Join(append(append(failures, uncertain...), auditErr)...)
+}
+
+// retire settles an unknown action as expired_unproven when the kernel
+// proves the state it retires to (spec 5.4, design D7). It never writes the
+// kernel; a kernel that cannot prove it leaves the action pending.
+func (l *Lifecycle) retire(a FirewallAction, kernel ActionKernel) (bool, error) {
+	prover, ok := kernel.(interface {
+		ProveFirewallRetirement(FirewallAction) (time.Time, bool, error)
+	})
+	if !ok {
+		return false, nil
+	}
+	at, proven, err := prover.ProveFirewallRetirement(a)
+	if err != nil || !proven {
+		return false, err
+	}
+	if _, err := l.Store.RetireFirewallAction(a.Request.ID, at); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // Resolve records the outcome an operator established by hand for an action
-// the kernel could not prove. It is the only way out of an uncertain outcome,
-// which otherwise refuses every later mutation. Kernel evidence still wins: a
-// proven outcome is recorded instead of the asserted one, and a settled action
-// is never rewritten. Detail names who decided, and reaches the audit trail.
+// the kernel could not prove or retire. Kernel evidence still wins: a proven
+// outcome is recorded instead of the asserted one, and a settled action is
+// never rewritten. Detail names who decided, and reaches the audit trail.
 func (l *Lifecycle) Resolve(id, outcome, detail string, kernel ActionKernel) (FirewallAction, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -139,8 +186,12 @@ func (l *Lifecycle) Resolve(id, outcome, detail string, kernel ActionKernel) (Fi
 	if err != nil {
 		return FirewallAction{}, err
 	}
-	if a.Phase != "unknown" {
-		return FirewallAction{}, fmt.Errorf("%w: action %s is %s, not uncertain", ErrStateConflict, id, a.Phase)
+	if a.Phase != "unknown" || a.Retired {
+		phase := a.Phase
+		if a.Retired {
+			phase = "retired as expired_unproven"
+		}
+		return FirewallAction{}, fmt.Errorf("%w: action %s is %s, not uncertain", ErrStateConflict, id, phase)
 	}
 	proven, reconcileErr := l.reconcile(a, kernel, nil)
 	if proven.Phase == "verified" || proven.Phase == "failed" {
@@ -192,9 +243,15 @@ func (l *Lifecycle) deliverAudit() error {
 	return nil
 }
 
-// Undo admits an inverse state transition, never a command string. The complete
-// recorded result must still be current; this also protects eviction victims.
+// Undo admits an inverse state transition, never a command string. A whole
+// action needs its complete result current; a member needs its own row current.
 func (l *Lifecycle) Undo(req ActionRequest, kernel ActionKernel) (FirewallAction, error) {
+	return l.undoWithClock(req, kernel, time.Now)
+}
+
+// The engine supplies its lease clock so an expired alias cannot prevent a
+// member undo after a backward wall-clock step.
+func (l *Lifecycle) undoWithClock(req ActionRequest, kernel ActionKernel, now func() time.Time) (FirewallAction, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if req.Operation != "undo" || req.UndoOf == "" {
@@ -209,6 +266,9 @@ func (l *Lifecycle) Undo(req ActionRequest, kernel ActionKernel) (FirewallAction
 		return FirewallAction{}, err
 	}
 	original, err := l.Store.ReadFirewallAction(req.UndoOf)
+	if errors.Is(err, ErrActionMissing) {
+		return l.undoMember(req, kernel, now)
+	}
 	if err != nil {
 		return FirewallAction{}, err
 	}
@@ -232,11 +292,89 @@ func (l *Lifecycle) Undo(req ActionRequest, kernel ActionKernel) (FirewallAction
 	if !observed.After {
 		return FirewallAction{}, fmt.Errorf("%w: undo target changed", ErrStateConflict)
 	}
-	plan := FirewallAction{Request: req, Before: state, After: original.Before, Revision: revision, CreatedAt: time.Now(), KernelBefore: original.KernelAfter, KernelAfter: original.KernelBefore}
+	at := now()
+	plan := FirewallAction{Request: req, Before: state, After: withoutExpiredRows(original.Before, at), Revision: revision, CreatedAt: at, KernelBefore: original.KernelAfter, KernelAfter: original.KernelBefore}
+	return l.executeUndo(plan, kernel)
+}
+
+// undoMember removes one member of a verified batch, planned against current
+// state: the batch's other members and later live changes stay. Only that
+// member's own row must still be current, with no other live or unverified
+// row on its address. Batches evict no live victim to restore.
+func (l *Lifecycle) undoMember(req ActionRequest, kernel ActionKernel, now func() time.Time) (FirewallAction, error) {
+	batch, err := l.Store.ReadFirewallBatchMember(req.UndoOf)
+	if err != nil {
+		return FirewallAction{}, err
+	}
+	if batch.Phase != "verified" {
+		return FirewallAction{}, errors.New("only a verified firewall action can be undone")
+	}
+	i := slices.IndexFunc(batch.Members, func(m ActionMember) bool { return m.Request.ID == req.UndoOf })
+	if i < 0 {
+		return FirewallAction{}, ErrStateCorrupt
+	}
+	member := batch.Members[i].Request
+	j := slices.IndexFunc(batch.After.Blocked, func(row BlockedEntry) bool {
+		return row.ActionID == member.ID && row.IP == member.Target && row.ExpiresAt.After(batch.CreatedAt)
+	})
+	if j < 0 {
+		return FirewallAction{}, ErrStateCorrupt
+	}
+	row := batch.After.Blocked[j]
+	state, revision, err := l.Store.ReadFirewallState()
+	if err != nil {
+		return FirewallAction{}, err
+	}
+	at := now()
+	next := FirewallState{BlockedNet: state.BlockedNet, Allowed: state.Allowed, PortAllowed: state.PortAllowed}
+	current, others := false, 0
+	for _, r := range state.Blocked {
+		switch {
+		case !sameAddress(r.IP, row.IP):
+			next.Blocked = append(next.Blocked, r)
+		case !current && SameBlockedEntry(r, row):
+			current = true
+		case !r.Unverified && !r.ExpiresAt.IsZero() && !r.ExpiresAt.After(at):
+			// An expired row on the address blocks nothing; it goes too.
+		default:
+			others++
+		}
+	}
+	if !current || others > 0 {
+		return FirewallAction{}, fmt.Errorf("%w: undo state changed", ErrStateConflict)
+	}
+	return l.executeUndo(FirewallAction{Request: req, Before: state, After: withoutExpiredRows(next, at), Revision: revision, CreatedAt: at}, kernel)
+}
+
+func (l *Lifecycle) executeUndo(plan FirewallAction, kernel ActionKernel) (FirewallAction, error) {
 	if planner, ok := kernel.(interface{ PrepareFirewallUndo(*FirewallAction) error }); ok {
 		if err := planner.PrepareFirewallUndo(&plan); err != nil {
 			return FirewallAction{}, err
 		}
 	}
 	return l.execute(plan, kernel)
+}
+
+// withoutExpiredRows copies state without the timed rows that have expired
+// at at, so undo never puts one back; a restored row keeps its absolute
+// expiry. Expired rows are omitted even when their outcome is unverified.
+func withoutExpiredRows(state FirewallState, at time.Time) FirewallState {
+	live := func(expires time.Time) bool { return expires.IsZero() || expires.After(at) }
+	out := FirewallState{PortAllowed: slices.Clone(state.PortAllowed)}
+	for _, row := range state.Blocked {
+		if live(row.ExpiresAt) {
+			out.Blocked = append(out.Blocked, row)
+		}
+	}
+	for _, row := range state.Allowed {
+		if live(row.ExpiresAt) {
+			out.Allowed = append(out.Allowed, row)
+		}
+	}
+	for _, row := range state.BlockedNet {
+		if live(row.ExpiresAt) {
+			out.BlockedNet = append(out.BlockedNet, row)
+		}
+	}
+	return out
 }

@@ -219,8 +219,7 @@ func TestFirewallLifecycleUndoChecksIdentityAndLinksAction(t *testing.T) {
 	if err != nil || result.Request.UndoOf != a.Request.ID || result.Phase != "verified" {
 		t.Fatalf("undo = %#v, %v", result, err)
 	}
-	assertFirewallSnapshot(t, db, a.Before, 3)
-	if !result.After.Blocked[0].ExpiresAt.Equal(a.Before.Blocked[0].ExpiresAt) {
-		t.Fatal("undo renewed original expiry")
-	}
+	// The fixture's timed rows expired long ago: undo leaves them out.
+	want := firewall.FirewallState{Blocked: a.Before.Blocked[1:], Allowed: a.Before.Allowed[1:], PortAllowed: a.Before.PortAllowed}
+	assertFirewallSnapshot(t, db, want, 3)
 }

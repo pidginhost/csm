@@ -2637,9 +2637,9 @@ func (e *Engine) blockIPRequestLocked(ip string, reason string, timeout time.Dur
 		return BlockOutcomeNoop, readyErr
 	}
 
-	priorState := e.loadStateFile()
-	if e.lifecycle != nil && e.stateReadErr != nil {
-		return BlockOutcomeNoop, e.stateReadErr
+	priorState, policyState, readErr := e.blockPlanningStatesLocked()
+	if readErr != nil {
+		return BlockOutcomeNoop, readErr
 	}
 	if preserveLifetime && timeout > 0 {
 		if e.stateReadErr != nil {
@@ -2650,7 +2650,7 @@ func (e *Engine) blockIPRequestLocked(ip string, reason string, timeout time.Dur
 		if isUnblockableAddress(ip) {
 			return BlockOutcomeNoop, ipProtectedErrorf("refusing to block non-routable address: %s", ip)
 		}
-		if entry, found := blockedStateEntry(priorState, ip); found {
+		if entry, found := blockedStateEntry(policyState, ip); found {
 			if entry.ExpiresAt.IsZero() {
 				return BlockOutcomeNoop, ErrPermanentBlock
 			}
@@ -2677,7 +2677,7 @@ func (e *Engine) blockIPRequestLocked(ip string, reason string, timeout time.Dur
 		return BlockOutcomeAllowlisted, nil
 	}
 
-	targetSet, key, alreadyBlocked, evictTempIP, err := e.blockIPTargetFromState(ip, timeout, skipExisting, priorState)
+	targetSet, key, alreadyBlocked, evictTempIP, err := e.blockIPTargetFromStates(ip, timeout, skipExisting, policyState, priorState)
 	if err != nil {
 		return BlockOutcomeNoop, err
 	}
@@ -2722,7 +2722,7 @@ func (e *Engine) blockIPRequestLocked(ip string, reason string, timeout time.Dur
 	// an acknowledged no-op that keeps the old timeout, so the element must be
 	// deleted and re-added in the same batch, as PromoteToPermanentBlock does;
 	// otherwise state.json and every CSM surface disagree with the kernel.
-	replaceExisting := !skipExisting && firewallStateHasBlocked(priorState, ip)
+	replaceExisting := !skipExisting && firewallStateHasBlocked(policyState, ip)
 	if !skipExisting && !replaceExisting {
 		// State is normally written before the kernel batch, but older builds
 		// and partial recovery can leave a live kernel element without a state
@@ -2747,7 +2747,16 @@ func (e *Engine) blockIPRequestLocked(ip string, reason string, timeout time.Dur
 		}
 	}
 	if e.lifecycle != nil {
-		if err := e.runDurableLocked(req, budget, nextState); err != nil {
+		plan := FirewallAction{Request: req, Budget: budget, After: nextState}
+		if evictTempIP != "" {
+			for _, row := range priorState.Blocked {
+				if row.IP == evictTempIP {
+					plan.Members = []ActionMember{{Request: req, Budget: budget, Victims: []BlockedEntry{row}}}
+					break
+				}
+			}
+		}
+		if _, err := e.runDurablePlanLocked(plan); err != nil {
 			if errors.Is(err, ErrActionAuditPending) {
 				return BlockOutcomeLive, err
 			}
@@ -2805,7 +2814,7 @@ func (e *Engine) blockIPRequestLocked(ip string, reason string, timeout time.Dur
 		}
 	}
 	if evictTempIP != "" {
-		e.legacyActionAuditLocked("evict_temp", evictTempIP, "temp deny limit reached; evicted soonest-expiring entry", SourceSystem, 0)
+		e.legacyActionAuditLocked("evict_temp", evictTempIP, evictTempReason, SourceSystem, 0)
 	}
 	e.legacyFileAuditLocked("block", ip, reason, entry.Source, timeout)
 
@@ -2905,15 +2914,31 @@ func (e *Engine) validateBlockIP(ip string, timeout time.Duration, skipExisting 
 	return alreadyBlocked, err
 }
 
-func (e *Engine) blockIPTarget(ip string, timeout time.Duration, skipExisting bool) (*nftables.Set, []byte, bool, string, error) {
-	state := e.loadStateFile()
-	if e.lifecycle != nil && e.stateReadErr != nil {
-		return nil, nil, false, "", e.stateReadErr
+// blockPlanningStatesLocked keeps saved rows separate from active policy
+// rows, both from one read. Expiry must not erase victim identity or make
+// an expired row occupy a policy slot.
+func (e *Engine) blockPlanningStatesLocked() (FirewallState, FirewallState, error) {
+	if e.lifecycle == nil {
+		state := e.loadStateFile()
+		return state, state, nil
 	}
-	return e.blockIPTargetFromState(ip, timeout, skipExisting, state)
+	state, _, err := e.readCommittedStateLocked()
+	if err != nil {
+		return FirewallState{}, FirewallState{}, err
+	}
+	e.installCommittedCache(state)
+	return state, copyFirewallState(*e.stateCache), nil
 }
 
-func (e *Engine) blockIPTargetFromState(ip string, timeout time.Duration, skipExisting bool, st FirewallState) (*nftables.Set, []byte, bool, string, error) {
+func (e *Engine) blockIPTarget(ip string, timeout time.Duration, skipExisting bool) (*nftables.Set, []byte, bool, string, error) {
+	state, policyState, err := e.blockPlanningStatesLocked()
+	if err != nil {
+		return nil, nil, false, "", err
+	}
+	return e.blockIPTargetFromStates(ip, timeout, skipExisting, policyState, state)
+}
+
+func (e *Engine) blockIPTargetFromStates(ip string, timeout time.Duration, skipExisting bool, st, victimState FirewallState) (*nftables.Set, []byte, bool, string, error) {
 	parsed := net.ParseIP(ip)
 	if parsed == nil {
 		return nil, nil, false, "", fmt.Errorf("invalid IP: %s", ip)
@@ -2990,7 +3015,7 @@ func (e *Engine) blockIPTargetFromState(ip string, timeout time.Duration, skipEx
 		if timeout > 0 && e.cfg.DenyTempIPLimit > 0 && temp >= e.cfg.DenyTempIPLimit {
 			// Validation must stay read-only because verdict and dry-run gates run
 			// after it. The live block path applies this eviction target.
-			victim, ok := e.evictionVictimLocked(st, ip, skipExisting)
+			victim, ok := e.evictionVictimLocked(victimState, ip, skipExisting)
 			if !ok {
 				return nil, nil, false, "", fmt.Errorf("temporary deny limit reached (%d) and no temp entry to evict", e.cfg.DenyTempIPLimit)
 			}
@@ -3046,6 +3071,9 @@ func (e *Engine) blockProtectionLocked(parsed net.IP, ip string) error {
 	}
 	return nil
 }
+
+// evictTempReason is the reason every eviction record gives.
+const evictTempReason = "temp deny limit reached; evicted soonest-expiring entry"
 
 // soonestExpiringTempIP returns the IP of the temporary block closest to
 // expiry, skipping permanent blocks, unverified rows and excludeIP. Pure

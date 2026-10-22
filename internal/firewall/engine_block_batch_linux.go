@@ -30,9 +30,8 @@ func (e *Engine) BlockBatchRequest(header ActionRequest, members []ActionRequest
 	if !validBlockBatchHeader(header) || len(members) == 0 || len(members) > MaxActionMembers {
 		return BlockBatchResult{}, errors.New("invalid firewall block batch")
 	}
-	if e.autoResponseDryRunEnabled() {
-		return BlockBatchResult{}, ErrActionDryRun
-	}
+	// Dry run refuses new work only; read it before taking the lock.
+	dryRun := e.autoResponseDryRunEnabled()
 	members = slices.Clone(members)
 	// The verified-range callback runs outside the engine lock, as it does
 	// for a single automatic block.
@@ -53,6 +52,9 @@ func (e *Engine) BlockBatchRequest(header ActionRequest, members []ActionRequest
 	}
 	if replayed, result, err := e.replayBlockSingleLocked(header, members); replayed || err != nil {
 		return result, err
+	}
+	if dryRun {
+		return BlockBatchResult{}, ErrActionDryRun
 	}
 	if err := e.lifecycleReadyLocked(); err != nil {
 		return BlockBatchResult{}, err

@@ -452,9 +452,10 @@ func TestKernelDurableMaintenanceMetadataAndExpiredUndo(t *testing.T) {
 	if err != nil || len(elems) != 0 {
 		t.Fatalf("expired allow rearmed: %#v,%v", elems, err)
 	}
+	// The expired allow stays out of committed state as well as the kernel.
 	state, _, err := db.ReadFirewallState()
-	if err != nil || len(state.Allowed) != 1 || state.Allowed[0].ExpiresAt.After(time.Now()) {
-		t.Fatalf("lost historical expiry: %#v,%v", state, err)
+	if err != nil || len(state.Allowed) != 0 {
+		t.Fatalf("undo restored an expired allow: %#v,%v", state, err)
 	}
 	if err := e.AllowIPPort("192.0.2.132", 443, "tcp", "operator"); err != nil {
 		t.Fatal(err)

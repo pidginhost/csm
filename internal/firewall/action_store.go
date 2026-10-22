@@ -2,6 +2,7 @@ package firewall
 
 import (
 	"errors"
+	"net"
 	"slices"
 	"sync"
 	"time"
@@ -64,11 +65,15 @@ type FirewallAction struct {
 	// Members is the batch manifest. Without it the action is one member, its
 	// Request and Budget, as every record written before manifests is. With
 	// it, a batch of several members uses Request as its header.
-	Members      []ActionMember `json:"members,omitempty"`
-	Before       FirewallState  `json:"before"`
-	After        FirewallState  `json:"after"`
-	Revision     uint64         `json:"revision"`
-	Phase        string         `json:"phase"`
+	Members  []ActionMember `json:"members,omitempty"`
+	Before   FirewallState  `json:"before"`
+	After    FirewallState  `json:"after"`
+	Revision uint64         `json:"revision"`
+	Phase    string         `json:"phase"`
+	// Retired marks an unknown outcome recovery settled as expired_unproven:
+	// every effect had expired and the kernel held the retired state. The
+	// outcome stays unknown, but it no longer holds later mutations.
+	Retired      bool           `json:"retired,omitempty"`
 	CreatedAt    time.Time      `json:"created_at"`
 	UpdatedAt    time.Time      `json:"updated_at"`
 	Detail       string         `json:"detail,omitempty"`
@@ -95,6 +100,31 @@ func (a FirewallAction) SameManifest(b FirewallAction) bool {
 	})
 }
 
+// removedVictims returns the victims of m that a took out: rows its Before
+// state held exactly, at an address no row of its After state names. A batch
+// keeps every unexpired row, so a victim stored on a batch member was never
+// evicted; it is neither audited as an eviction nor restored by undo.
+func removedVictims(a FirewallAction, m ActionMember) []BlockedEntry {
+	if len(a.Members) > 1 {
+		return nil
+	}
+	var out []BlockedEntry
+	for _, v := range m.Victims {
+		held := slices.ContainsFunc(a.Before.Blocked, func(row BlockedEntry) bool { return SameBlockedEntry(row, v) })
+		kept := slices.ContainsFunc(a.After.Blocked, func(row BlockedEntry) bool { return sameAddress(row.IP, v.IP) })
+		if held && !kept {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// sameAddress reports whether two spellings name one IP address.
+func sameAddress(a, b string) bool {
+	x := net.ParseIP(a)
+	return x != nil && x.Equal(net.ParseIP(b))
+}
+
 // IsRequest reports whether a is the one-member action for exactly req, so a
 // batch whose header happens to match is never replayed as one request.
 func (a FirewallAction) IsRequest(req ActionRequest) bool {
@@ -108,8 +138,14 @@ type ActionStore interface {
 	StateStore
 	AdmitFirewallAction(FirewallAction) (FirewallAction, bool, error)
 	ReadFirewallAction(string) (FirewallAction, error)
+	// ReadFirewallBatchMember returns the batch of two or more members that
+	// indexes a member ID, or ErrActionMissing.
+	ReadFirewallBatchMember(string) (FirewallAction, error)
 	PendingFirewallActions() ([]FirewallAction, error)
 	TransitionFirewallAction(string, string, string, time.Time) (FirewallAction, error)
+	// RetireFirewallAction commits the state an unknown action retires to
+	// at the given instant (RetiredActionState) and marks it retired.
+	RetireFirewallAction(string, time.Time) (FirewallAction, error)
 	FirewallAuditPending() ([]FirewallAction, error)
 	AcknowledgeFirewallAudit(string, uint64) error
 	ReadFirewallScanBudget(string) (int, error)
@@ -130,6 +166,11 @@ type Lifecycle struct {
 	mu    sync.Mutex
 	Store ActionStore
 	Audit func(FirewallAction) error
+
+	// RetirementClockTrusted runs with the engine lock held and must not
+	// call back into the engine. Nil or false refuses retirement; an error
+	// also reaches recovery's caller, even if the returned bool is true.
+	RetirementClockTrusted func() (bool, error)
 }
 
 // ActionSet is detached recovery evidence for one complete nftables set.

@@ -40,21 +40,31 @@ func (e *Engine) AttachLifecycle(l *Lifecycle) error {
 	return nil
 }
 
-// writeFirewallActionAudit records one event per member. A batch writes its
-// members in one durable write, each with the batch's outcome and version.
+// writeFirewallActionAudit records one event per member and one evict_temp
+// event per row a member removed to make room. Several events go in one
+// durable write, each with the action's outcome and version.
 func writeFirewallActionAudit(a FirewallAction) error {
-	if len(a.Members) < 2 {
-		return actionlog.WriteDurable(firewallAuditRecord(a, a.Request))
-	}
-	records := make([]actionlog.Record, 0, len(a.Members))
-	for _, m := range a.Members {
+	var records []actionlog.Record
+	for _, m := range a.ActionMembers() {
 		records = append(records, firewallAuditRecord(a, m.Request))
+		for _, v := range removedVictims(a, m) {
+			r := firewallAuditRecord(a, m.Request)
+			r.Action, r.Target, r.Reason = "evict_temp", v.IP, evictTempReason
+			records = append(records, r)
+		}
+	}
+	if len(records) == 1 {
+		return actionlog.WriteDurable(records[0])
 	}
 	return actionlog.WriteDurableBatch(records)
 }
 
 func firewallAuditRecord(a FirewallAction, req ActionRequest) actionlog.Record {
-	return actionlog.Record{ActionID: req.ID, ActionVersion: a.AuditVersion, IncidentID: req.IncidentID, UndoOf: req.UndoOf, Timestamp: a.UpdatedAt, Op: firewallAuditOperation(req), Action: req.Operation, Actor: actionlog.Actor(req.Actor), ActorDetail: req.ActorDetail, FindingID: req.FindingID, Target: req.Target, Reason: req.Reason, Result: actionlog.Result(a.Phase), Error: a.Detail}
+	result := actionlog.Result(a.Phase)
+	if a.Retired {
+		result = "expired_unproven"
+	}
+	return actionlog.Record{ActionID: req.ID, ActionVersion: a.AuditVersion, IncidentID: req.IncidentID, UndoOf: req.UndoOf, Timestamp: a.UpdatedAt, Op: firewallAuditOperation(req), Action: req.Operation, Actor: actionlog.Actor(req.Actor), ActorDetail: req.ActorDetail, FindingID: req.FindingID, Target: req.Target, Reason: req.Reason, Result: result, Error: a.Detail}
 }
 func (e *Engine) lifecycleEnabled() bool { e.mu.Lock(); defer e.mu.Unlock(); return e.lifecycle != nil }
 func (e *Engine) installCommittedCache(state FirewallState) {
@@ -135,7 +145,7 @@ func (e *Engine) UndoAction(req ActionRequest) (FirewallAction, error) {
 	if e.lifecycle == nil {
 		return FirewallAction{}, errors.New("firewall lifecycle unavailable")
 	}
-	a, err := e.lifecycle.Undo(req, engineActionKernel{e})
+	a, err := e.lifecycle.undoWithClock(req, engineActionKernel{e}, e.leaseNowLocked)
 	err = durableActionOutcome(a, err)
 	if a.Phase == "verified" {
 		current, _, readErr := e.readCommittedStateLocked()
@@ -175,6 +185,10 @@ func (e *Engine) runDurablePlanLocked(plan FirewallAction) (FirewallAction, erro
 		plan.Request.ID = rand.Text()
 	}
 	plan.Request = normalizeActionRequest(plan.Request)
+	if len(plan.Members) == 1 {
+		// A one-member manifest repeats its header exactly.
+		plan.Members[0].Request = plan.Request
+	}
 	plan.Before, plan.Revision = prior, revision
 	at := plan.CreatedAt
 	if at.IsZero() {
@@ -810,8 +824,58 @@ func sameActionElements(a, b []ActionElement) bool {
 	}
 	return true
 }
+
+// ProveFirewallRetirement reports whether the kernel holds exactly the state
+// a retires to at the lease clock's current instant, and that instant. A
+// lease clock running ahead of the kernel finds an element the kernel still
+// holds, so it proves nothing.
+func (k engineActionKernel) ProveFirewallRetirement(a FirewallAction) (time.Time, bool, error) {
+	if k.e.lifecycle == nil || k.e.lifecycle.RetirementClockTrusted == nil {
+		return time.Time{}, false, nil
+	}
+	trusted, trustErr := k.e.lifecycle.RetirementClockTrusted()
+	if trustErr != nil || !trusted {
+		return time.Time{}, false, trustErr
+	}
+	if err := k.ValidateEvidence(a); err != nil {
+		return time.Time{}, false, err
+	}
+	at := k.e.leaseNowLocked()
+	state, ok := RetiredActionState(a, at)
+	if !ok {
+		return at, false, nil
+	}
+	desired := desiredActionSets(state, true, at)
+	conn, err := newLifecycleConn(k.e)
+	if err != nil {
+		return at, false, err
+	}
+	blockedProof := false
+	for i, set := range a.KernelAfter {
+		blockedProof = blockedProof || set.Name == "blocked_ips"
+		if a.KernelBefore[i].Exists != set.Exists {
+			return at, false, nil
+		}
+		started := time.Now()
+		readAt := k.e.leaseNowLocked()
+		actual, err := readActionSet(conn, set.Name)
+		if err != nil {
+			return at, false, err
+		}
+		if time.Since(started) > 2*time.Second {
+			return at, false, errors.New("firewall retirement verification took too long")
+		}
+		if actual.exists != set.Exists || !matchActionElements(desired[set.Name], actual.elements, readAt) {
+			return at, false, nil
+		}
+	}
+	return at, blockedProof, nil
+}
+
 func (k engineActionKernel) PrepareFirewallUndo(plan *FirewallAction) error {
-	return k.e.prepareActionKernel(plan)
+	at := k.e.leaseNowLocked()
+	plan.After = withoutExpiredRows(plan.After, at)
+	return k.e.prepareActionKernelAt(plan, at)
 }
 
 // The caller holds e.mu. Durable paths deliver their versioned journal event.

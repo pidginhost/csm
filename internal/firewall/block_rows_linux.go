@@ -89,6 +89,12 @@ func (e *Engine) BlockActionsUnproven() error {
 // are unproven, and always for an automatic block, which never removes a
 // block admission owns (design C8).
 func (e *Engine) evictionVictimLocked(st FirewallState, excludeIP string, automatic bool) (string, bool) {
+	addresses := make(map[string]int)
+	if e.lifecycle != nil {
+		for _, row := range st.Blocked {
+			addresses[stateIPKey(row.IP)]++
+		}
+	}
 	if e.blockActionsUnproven != nil || automatic {
 		var kept []BlockedEntry
 		for _, row := range st.Blocked {
@@ -97,6 +103,20 @@ func (e *Engine) evictionVictimLocked(st FirewallState, excludeIP string, automa
 			}
 		}
 		st.Blocked = kept
+	}
+	if e.lifecycle != nil {
+		// The saved Before must identify exactly one row at this address.
+		at := e.leaseNowLocked()
+		var recordable []BlockedEntry
+		for _, row := range st.Blocked {
+			if e.unverifiedBlockActions[row.ActionID] || e.failedBlockActions[row.ActionID] {
+				continue
+			}
+			if row.IP == stateIPKey(row.IP) && addresses[stateIPKey(row.IP)] == 1 && row.ExpiresAt.After(at) {
+				recordable = append(recordable, row)
+			}
+		}
+		st.Blocked = recordable
 	}
 	return soonestExpiringTempIP(st, excludeIP)
 }

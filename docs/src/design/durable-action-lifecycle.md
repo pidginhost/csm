@@ -39,11 +39,19 @@ A firewall action can carry a batch: a header and a manifest of
 single-target members, each with its own charge and the rows it removes to
 make room. Each member ID belongs to exactly one batch. Admitting a known ID
 with any change to the members, their order or their effects is refused, and
-a refused batch charges nothing. A batch only adds its members' rows: nothing
-evicts for a batch, so admission refuses one whose result drops a row that
+a refused batch charges nothing. A single-target block that removes a row to
+make room records that row as its victim: the only row naming the address
+before the action, with none naming it after. Selection requires a verified,
+unexpired row in its canonical spelling and uses complete committed state.
+Safety and capacity use the active view of the same snapshot; the saved
+result preserves unrelated rows. In-memory unverified or failed marks also
+exclude victims, including for operator blocks, without changing the saved
+rows. Its audit writes an `evict_temp` record beside
+the block's record in the same durable write. A batch only adds its members'
+rows, each starting when the batch is planned: nothing evicts for a batch, so admission refuses one whose result drops a row that
 has not expired or changes any other entry. Kept rows retain their order.
-Unverified rows remain until their owner settles the outcome, even after
-expiry, and a batch cannot add a block for an address they hold; an
+In batch planning, unverified rows remain until their owner settles the
+outcome, even after expiry, and a batch cannot add a block for an address they hold; an
 unverified address stays pending even when another spelling of the same
 address has a verified block. Actions written before batches read as
 one-member batches and keep their stored format. A record written by a newer
@@ -63,10 +71,29 @@ admission to audit acknowledgement, leaves recovery to prove an outcome or
 keep it unknown; the kernel is written at most once and each member is
 charged once. Storage and audit failures reach the caller even when recovery
 can later prove the outcome. A kernel holding only some members proves
-neither outcome, so the batch stays unknown until the kernel proves one or
-an operator resolves it. Audit delivery writes one record per member, with
-the member's action ID and the batch's outcome and version, in one durable
-write.
+neither outcome, so the batch stays unknown until the kernel proves one,
+an operator resolves it, or it retires. Audit delivery writes one record per
+member, with the member's action ID and the batch's outcome and version, in
+one durable write. An unknown block action retires as `expired_unproven`
+once all member targets are timed and expired, every row its before and
+after states disagree on is a verified timed block that has
+expired by the lease clock, its owner attests a trusted clock, its unknown
+outcome has reached the audit trail,
+and the kernel holds exactly the rows both states agree on. Recovery then
+commits those rows as the next revision in one transaction and frees the
+pending interlock. The outcome stays unknown, its charges stay spent, its
+audit records say `expired_unproven`, and nothing is applied again. A lease
+clock running ahead of the kernel finds an element the kernel still holds
+and retires nothing. A permanent, unverified or non-block effect, or any
+change outside the blocked rows, waits for an operator. A retired action
+cannot be resolved or undone. A missing or degraded clock attestation
+leaves the action pending; a failed attestation also reports its error.
+Saved blocked-set evidence must be present, and
+a changed set topology prevents retirement. IPv6 proof uses saved evidence
+even if IPv6 is now disabled. Kernel timeouts are checked against the clock
+sample taken before each read, and a slow read refuses retirement. The
+unknown outcome must carry its recorded audit acknowledgement; an empty
+outbox alone does not prove delivery.
 
 Batch evidence selects each member's current row by ID, target and planning
 time; retained rows from an earlier use of that ID are not current evidence.
@@ -75,9 +102,9 @@ not prove that member was never applied. This also holds during immediate
 verification after apply. A durable terminal outcome is preserved on replay
 after expiry. A rejected kernel batch is not retried inside the lifecycle.
 Its owner must first prove rejection and use a new charged action for any
-retry. The existing single-request path is unchanged. Audit is delivered at
-least once; consumers deduplicate each member event by its action ID and
-transition version, not by the batch ID.
+retry. Audit is delivered at least once; consumers deduplicate each member
+or victim event by action ID, transition version, action and target, so a
+block and its eviction remain distinct.
 
 Batch replay returns the stored manifest, not a fresh decision on candidates
 left out of the original action. Nil refusals on replay do not mean every
@@ -87,12 +114,20 @@ never execute. The original refused list cannot be reconstructed. A
 singleton uses its member ID as the durable action ID; its unused header ID
 is not reserved. Retrying that exact automatic temporary block returns the
 original action before checking current policy or expiry, and cannot add
-other members. Two stored singletons in one call are a conflict. A caller
+other members. Two stored singletons in one call are a conflict. Dry run
+refuses only new work: a retry still returns the stored action. A caller
 needing a durable header alias for singletons must wait for a stored-format
 extension.
 
 Replaying a settled batch leaves its charges, committed revision and kernel
-unchanged. An acknowledged audit is not delivered again.
+unchanged. An acknowledged audit is not delivered again. Whole-action undo
+requires the complete saved after-state and kernel proof. Member undo removes
+only that member's unchanged row and preserves other members and later live
+changes. Another live or unverified block on its address refuses member undo.
+Member undo checks alias expiry on the engine's lease clock, so a backward
+wall-clock step cannot make an expired alias prevent undo.
+Every undo omits expired blocks, allows and subnets, including expired
+unverified blocks. Restored rows keep their original absolute expiry.
 
 Batch planning dates member rows and kernel evidence by one lease-clock
 instant, even when the wall clock moves backward during a lease.
