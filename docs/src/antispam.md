@@ -620,10 +620,12 @@ next one is due; the rest wait for the next pass.
 ### What counts as a report
 
 A report is a regular file owned by the account, at most 10 MiB, that did
-not change while CSM read it. A message still linked from another folder
-waits for the next pass. Messages are skipped when any `X-Spam-Status`
-header says `Yes`, when that header cannot be parsed, and when the header
-block is malformed or too large.
+not change while CSM read it. A message still linked from another folder,
+such as one delivery shared by several mailboxes, counts once it and its
+links have stayed unchanged for a full pass, so a move into or out of Spam
+can finish first. Messages are skipped when any `X-Spam-Status` header says
+`Yes`, when that header cannot be parsed, and when the header block is
+malformed or too large, linked or not.
 
 Reports are not authenticated. Tenants control their own mail: they can
 move any message they received, or deliver one locally, and a forged
@@ -638,6 +640,8 @@ and four accounts give `CSM_FUZZY_SPAM` scores of about 2.9, 5.4, 7.2 and
 8.4, so with the default tag score of 6 a message needs reports from about
 three accounts to be tagged on that evidence alone. An operator mark from
 `csm antispam learn --spam` weighs as much as nine accounts.
+Copies in multiple Spam folders or mailboxes of the same account still
+contribute only once to that cluster.
 
 Messages that share most of their text join the same cluster, so later
 variants of a campaign score too. Newsletters built from one template can

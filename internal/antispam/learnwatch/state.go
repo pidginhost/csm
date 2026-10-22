@@ -88,9 +88,15 @@ type SeenEntry struct {
 	Status      string    `json:"status"`
 	FirstSeen   time.Time `json:"first_seen"`
 	LastSeen    time.Time `json:"last_seen"`
+	// StableSince tracks the current version, independently of queue age.
+	// Ctime changes when a move adds or removes a hard link elsewhere.
+	StableSince time.Time `json:"stable_since,omitzero"`
 }
 
-func (e *SeenEntry) setMeta(m Meta) {
+func (e *SeenEntry) setMeta(m Meta, now time.Time) {
+	if e.StableSince.IsZero() || !e.sameContent(m) {
+		e.StableSince = now
+	}
 	e.Dev, e.Ino, e.Size, e.MtimeNs, e.CtimeNs = m.Dev, m.Ino, m.Size, m.MtimeNs, m.CtimeNs
 }
 
@@ -276,7 +282,7 @@ func (t StateTx) Observe(k FolderKey, sub, name string, m Meta) (candidate, crea
 		// even when a basename or inode is reused in its initial corpus.
 		e = SeenEntry{Status: StatusBaseline, FirstSeen: t.now}
 	case found && e.Status == StatusPending && e.Dev == m.Dev && e.Ino == m.Ino:
-		if fresh && e.sameContent(m) {
+		if fresh && e.sameContent(m) && !e.StableSince.IsZero() {
 			return true, false, nil
 		}
 	case found && e.Dev == m.Dev && e.Ino == m.Ino:
@@ -289,9 +295,24 @@ func (t StateTx) Observe(k FolderKey, sub, name string, m Meta) (candidate, crea
 			e.Status = StatusBaseline
 		}
 	}
-	e.setMeta(m)
+	e.setMeta(m, t.now)
 	e.Sub, e.Name, e.LastSeen = sub, name, t.now
 	return e.Status == StatusPending, !found, t.putSeen(k, base, e)
+}
+
+// LinkedSettled checks the read snapshot against the last observed version.
+// Reads must also refresh it: links outside Spam do not change the watched
+// directory, so discovery may have skipped its listing this pass.
+func (t StateTx) LinkedSettled(k FolderKey, base string, m Meta) (bool, error) {
+	e, found, err := t.Seen(k, base)
+	if err != nil || !found {
+		return false, errors.Join(err, errors.New("learnwatch: no seen entry to settle"))
+	}
+	if e.StableSince.IsZero() || !e.sameContent(m) {
+		_, _, err = t.Observe(k, e.Sub, e.Name, m)
+		return false, err
+	}
+	return t.now.Sub(e.StableSince) >= PassEvery, nil
 }
 
 // Pending index keys sit in the folders bucket after every folder key,

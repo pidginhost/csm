@@ -203,17 +203,19 @@ func classify(fi os.FileInfo, m Meta, uid int) ReadStatus {
 		return ReadSkipWrongOwner
 	case m.Nlink == 0:
 		return ReadGone
-	case m.Nlink > 1:
-		return ReadPendingLinked
 	case m.Size > learn.MaxBody:
 		return ReadSkipOversize
+	case m.Nlink > 1:
+		return ReadPendingLinked
 	}
 	return ReadOK
 }
 
 // ReadMessage takes a bounded snapshot of one message owned by uid. The
-// snapshot is returned only with ReadOK, when the descriptor metadata did
-// not change across the read. A non-nil error is transient; retry later.
+// snapshot is returned only with ReadOK or ReadPendingLinked, when the
+// descriptor metadata did not change across the read; a link elsewhere does
+// not change the content, only when it may be reported. A non-nil error is
+// transient; retry later.
 func (f *Folder) ReadMessage(name string, uid int) ([]byte, Meta, ReadStatus, error) {
 	named, status, err := f.Stat(name)
 	if err != nil || status != ReadOK {
@@ -232,7 +234,7 @@ func (f *Folder) ReadMessage(name string, uid int) ([]byte, Meta, ReadStatus, er
 	}
 	defer file.Close()
 	before, status, err := fstatMeta(file, uid)
-	if err != nil || status != ReadOK {
+	if err != nil || status != ReadOK && status != ReadPendingLinked {
 		return nil, before, status, err
 	}
 	if before.Dev != named.Dev || before.Ino != named.Ino {
@@ -254,7 +256,8 @@ func (f *Folder) ReadMessage(name string, uid int) ([]byte, Meta, ReadStatus, er
 	case len(data) > learn.MaxBody:
 		return nil, after, ReadSkipOversize, nil
 	}
-	return data, before, ReadOK, nil
+	// after equals before, so status is still OK or linked.
+	return data, before, status, nil
 }
 
 func fstatMeta(file *os.File, uid int) (Meta, ReadStatus, error) {
