@@ -90,7 +90,8 @@
     </div>
 
     <!-- Job tabs, on the first screen under the cards. A tab loads what it
-         shows when it first opens; ?tab= names the open tab. -->
+         shows when it first opens; ?tab= names the open tab. A count badge
+         shows the number; screen readers get it in words instead. -->
     <ul class="nav nav-tabs csm-tabs-scroll mb-3" id="email-tabs" role="tablist" aria-label="Email Security tabs">
         <li class="nav-item" role="presentation">
             <button class="nav-link active" id="email-tab-overview" data-bs-toggle="tab" data-bs-target="#email-pane-overview" type="button" role="tab" aria-controls="email-pane-overview" aria-selected="true">
@@ -99,32 +100,32 @@
         </li>
         <li class="nav-item" role="presentation">
             <button class="nav-link" id="email-tab-queue" data-bs-toggle="tab" data-bs-target="#email-pane-queue" type="button" role="tab" aria-controls="email-pane-queue" aria-selected="false">
-                <i class="ti ti-mailbox"></i>&nbsp;Queue<span class="badge bg-secondary-lt ms-1" data-tab-count hidden></span>
+                <i class="ti ti-mailbox"></i>&nbsp;Queue<span class="badge bg-secondary-lt ms-1" data-tab-count aria-hidden="true" hidden></span> <span class="visually-hidden" data-tab-count-text></span>
             </button>
         </li>
         <li class="nav-item" role="presentation">
             <button class="nav-link" id="email-tab-held" data-bs-toggle="tab" data-bs-target="#email-pane-held" type="button" role="tab" aria-controls="email-pane-held" aria-selected="false">
-                <i class="ti ti-lock"></i>&nbsp;Held mail<span class="badge bg-secondary-lt ms-1" data-tab-count hidden></span>
+                <i class="ti ti-lock"></i>&nbsp;Held mail<span class="badge bg-secondary-lt ms-1" data-tab-count aria-hidden="true" hidden></span> <span class="visually-hidden" data-tab-count-text></span>
             </button>
         </li>
         <li class="nav-item" role="presentation">
             <button class="nav-link" id="email-tab-rejects" data-bs-toggle="tab" data-bs-target="#email-pane-rejects" type="button" role="tab" aria-controls="email-pane-rejects" aria-selected="false">
-                <i class="ti ti-mail-off"></i>&nbsp;Rejects<span class="badge bg-secondary-lt ms-1" data-tab-count hidden></span>
+                <i class="ti ti-mail-off"></i>&nbsp;Rejects<span class="badge bg-secondary-lt ms-1" data-tab-count aria-hidden="true" hidden></span> <span class="visually-hidden" data-tab-count-text></span>
             </button>
         </li>
         <li class="nav-item" role="presentation">
             <button class="nav-link" id="email-tab-sending" data-bs-toggle="tab" data-bs-target="#email-pane-sending" type="button" role="tab" aria-controls="email-pane-sending" aria-selected="false">
-                <i class="ti ti-send"></i>&nbsp;Sending accounts<span class="badge bg-secondary-lt ms-1" data-tab-count hidden></span>
+                <i class="ti ti-send"></i>&nbsp;Sending accounts<span class="badge bg-secondary-lt ms-1" data-tab-count aria-hidden="true" hidden></span> <span class="visually-hidden" data-tab-count-text></span>
             </button>
         </li>
         <li class="nav-item" role="presentation">
             <button class="nav-link" id="email-tab-delays" data-bs-toggle="tab" data-bs-target="#email-pane-delays" type="button" role="tab" aria-controls="email-pane-delays" aria-selected="false">
-                <i class="ti ti-clock-pause"></i>&nbsp;Provider delays<span class="badge bg-secondary-lt ms-1" data-tab-count hidden></span>
+                <i class="ti ti-clock-pause"></i>&nbsp;Provider delays<span class="badge bg-secondary-lt ms-1" data-tab-count aria-hidden="true" hidden></span> <span class="visually-hidden" data-tab-count-text></span>
             </button>
         </li>
         <li class="nav-item" role="presentation">
             <button class="nav-link" id="email-tab-findings" data-bs-toggle="tab" data-bs-target="#email-pane-findings" type="button" role="tab" aria-controls="email-pane-findings" aria-selected="false">
-                <i class="ti ti-list"></i>&nbsp;Findings<span class="badge bg-secondary-lt ms-1" data-tab-count hidden></span>
+                <i class="ti ti-list"></i>&nbsp;Findings<span class="badge bg-secondary-lt ms-1" data-tab-count aria-hidden="true" hidden></span> <span class="visually-hidden" data-tab-count-text></span>
             </button>
         </li>
     </ul>

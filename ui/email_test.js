@@ -895,13 +895,14 @@ test('Overview opens first and holds the chart, rspamd, needs attention and prot
 });
 
 test('each headline card opens the tab that explains its number', async () => {
-    for (const [card, href, tab, loads] of [
+    for (const [card, href, tab, loads, address] of [
         ['kpi-scanned', '?tab=overview', 'overview'],
         ['kpi-tagged', '?tab=overview', 'overview'],
         ['kpi-spam', '?tab=rejects', 'rejects'],
         ['kpi-other', '?tab=rejects', 'rejects'],
         ['kpi-malware', '?tab=held', 'held', '/api/v1/email/quarantine'],
-        ['kpi-logins', '?tab=auth', 'findings'],
+        // The address keeps the Auth failures filter, so a reload keeps it.
+        ['kpi-logins', '?tab=auth', 'findings', null, 'auth'],
         ['kpi-queue', '?tab=queue', 'queue', '/api/v1/email/queue-composition']
     ]) {
         const page = emailPage({ url: 'https://csm.example.test/email?tab=delays' });
@@ -920,7 +921,7 @@ test('each headline card opens the tab that explains its number', async () => {
         assert.equal(click.defaultPrevented, true, card + ' left the page');
         await settle();
         assert.equal(selectedTab(page), tab, card);
-        assert.equal(urlTab(page), tab === 'overview' ? null : tab, card + ' address');
+        assert.equal(urlTab(page), address || (tab === 'overview' ? null : tab), card + ' address');
         if (loads) assert.equal(page.pending(loads).length, 1, card + ' did not load its tab');
     }
 });
@@ -971,7 +972,7 @@ test('an old Auth tab link opens Findings filtered to auth failures', async () =
     const page = emailPage({ url: 'https://csm.example.test/email?tab=auth' });
     await settle();
     assert.equal(selectedTab(page), 'findings');
-    assert.equal(urlTab(page), 'findings');
+    assert.equal(urlTab(page), 'auth');
     assert.equal(page.pending('/api/v1/history?').length, 0, 'findings loaded before the auth checks were known');
     page.respond('/api/v1/email/checks', 200, CHECKS);
     await settle();
@@ -987,6 +988,7 @@ test('an old Auth tab link opens Findings filtered to auth failures', async () =
     await settle();
     assert.equal(failed.document.getElementById('email-filter-auth').getAttribute('aria-pressed'), 'false');
     assert.equal(historyQuery(failed).get('checks'), null);
+    assert.equal(urlTab(failed), 'findings', 'the address keeps a filter the page dropped');
 });
 
 test('a picked tab goes in the address, and Back and Forward reopen tabs', async () => {
@@ -1890,4 +1892,131 @@ test('the refresh button and the queue timer read the open Queue tab again', asy
     const timer = src.match(/CSM\.refresh\.interval\(function\(\) \{([\s\S]*?)\}, 30000\)/);
     assert.ok(timer, 'no 30 s timer');
     assert.match(timer[1], /activeTab\('email-tabs'\) === 'queue'\) loadQueue\(\)/, 'the 30 s timer does not read the open Queue tab');
+});
+
+// ---------- Tab chip, counts and address ----------
+
+test('Failed logins cannot press a chip that has no auth checks to filter on', async () => {
+    for (const checks of [null, { checks: [{ name: 'mail_queue', kind: 'queue_alert' }] }]) {
+        const page = emailPage();
+        await settle();
+        if (checks) page.respond('/api/v1/email/checks', 200, checks);
+        else page.fail('/api/v1/email/checks');
+        page.respond('/api/v1/history?', 200, items([]));
+        await settle();
+        page.document.querySelector('#kpi-logins a').click();
+        await settle();
+        const chip = page.document.getElementById('email-filter-auth');
+        const label = checks ? 'no auth checks' : 'check list failed';
+        assert.equal(selectedTab(page), 'findings', label);
+        assert.equal(chip.disabled, true, label);
+        assert.equal(chip.getAttribute('aria-pressed'), 'false', label + ': a pressed chip the operator cannot clear');
+        assert.equal(chip.classList.contains('active'), false, label);
+        assert.equal(historyQuery(page).get('checks'), null, label);
+        assert.equal(urlTab(page), 'findings', label);
+    }
+});
+
+// spoken is the text a screen reader gets from el: hidden and aria-hidden
+// parts left out.
+function spoken(el) {
+    const walk = n => n.nodeType === 3 ? n.nodeValue || n.textContent :
+        n.nodeType === 1 && !n.hidden && n.getAttribute('aria-hidden') !== 'true' ? n.childNodes.map(walk).join('') : '';
+    return walk(el).replace(/\s+/g, ' ').trim();
+}
+
+test('tab counts read as words, with their level, to a screen reader', async () => {
+    const tab = page => page.document.getElementById('email-tab-queue');
+    const page = emailPage();
+    await settle();
+    assert.equal(spoken(tab(page)), 'Queue', 'a count before the overview answered');
+    for (const [queue, words] of [
+        [{ size: 99 }, 'Queue 99 queued'],
+        [{ size: 118 }, 'Queue 118 queued, above warning level'],
+        [{ size: 1234 }, 'Queue 1,234 queued, above critical level'],
+        [{ size: 0, unavailable: true }, 'Queue count unknown']
+    ]) {
+        const p = emailPage();
+        p.respond('/api/v1/email/overview', 200, overview({}, { queue: Object.assign({ unavailable: false, warn: 100, crit: 500, frozen: 0, detail_unavailable: false }, queue) }));
+        await settle();
+        assert.equal(spoken(tab(p)), words);
+        // The badge still shows the number; its words are for screen readers.
+        assert.equal(p.document.querySelector('#email-tab-queue [data-tab-count]').getAttribute('aria-hidden'), 'true');
+    }
+    const failed = emailPage();
+    failed.fail('/api/v1/email/overview');
+    await settle();
+    assert.equal(spoken(tab(failed)), 'Queue count unknown');
+});
+
+test('the Auth failures filter stays in the address across a reload', async () => {
+    const page = emailPage();
+    await settle();
+    page.respond('/api/v1/email/checks', 200, CHECKS);
+    page.respond('/api/v1/history?', 200, items([]));
+    await settle();
+    page.document.querySelector('#kpi-logins a').click();
+    await settle();
+    assert.equal(urlTab(page), 'auth');
+
+    const reloaded = emailPage({ url: page.window.location.href });
+    await settle();
+    assert.equal(selectedTab(reloaded), 'findings');
+    reloaded.respond('/api/v1/email/checks', 200, CHECKS);
+    await settle();
+    const chip = reloaded.document.getElementById('email-filter-auth');
+    assert.equal(chip.getAttribute('aria-pressed'), 'true', 'the reload dropped the Auth failures filter');
+    assert.equal(historyQuery(reloaded).get('checks'), 'mail_bruteforce,smtp_bruteforce');
+    assert.equal(urlTab(reloaded), 'auth');
+    reloaded.respond('/api/v1/history?', 200, items([]));
+    await settle();
+
+    // Turning the chip off on Findings names the plain tab, in place; on
+    // again names auth.
+    const before = reloaded.window.history.entries.length;
+    chip.click();
+    await settle();
+    assert.equal(urlTab(reloaded), 'findings');
+    reloaded.respond('/api/v1/history?', 200, items([]));
+    await settle();
+    chip.click();
+    await settle();
+    assert.equal(urlTab(reloaded), 'auth');
+    assert.deepEqual(reloaded.window.history.entries.slice(before).filter(e => e[0] === 'push'), [], 'the chip added history entries');
+});
+
+test('Back keeps the address on the range and filters the page shows', async () => {
+    const page = emailPage({ url: 'https://csm.example.test/email?from=2026-10-19&to=2026-10-21' });
+    await settle();
+    const doc = page.document;
+    assert.equal(doc.getElementById('email-range').value, 'custom');
+    const customEntry = page.window.location.href;
+    showEmailTab(page, 'queue');
+    await settle();
+    changeValue(page, doc.getElementById('email-range'), '24h');
+    await settle();
+    assert.equal(new URL(page.window.location.href).searchParams.get('from'), null);
+
+    // Back to the Overview entry, which still names the custom days.
+    page.window.location._set(customEntry);
+    page.window.dispatchEvent(new page.window.Event('popstate'));
+    await settle();
+    assert.equal(selectedTab(page), 'overview');
+    assert.equal(doc.getElementById('email-range').value, '24h');
+    let url = new URL(page.window.location.href);
+    assert.equal(url.searchParams.get('from'), null, 'the address names a range the page does not show');
+    assert.equal(url.searchParams.get('to'), null);
+
+    // A findings filter set after an entry was left comes back with Back.
+    const overviewEntry = page.window.location.href;
+    showEmailTab(page, 'queue');
+    await settle();
+    changeValue(page, doc.getElementById('filter-severity'), '2');
+    await settle();
+    page.window.location._set(overviewEntry);
+    page.window.dispatchEvent(new page.window.Event('popstate'));
+    await settle();
+    url = new URL(page.window.location.href);
+    assert.equal(selectedTab(page), 'overview');
+    assert.equal(url.searchParams.get('severity'), '2', 'the address lost the severity the findings show');
 });

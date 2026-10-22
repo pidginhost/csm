@@ -281,7 +281,7 @@
             if (q.frozen > 0) sub += ', ' + num(q.frozen) + ' frozen';
         }
         setKPI('kpi-queue', size, sub, { crit: 'text-danger', warn: 'text-warning' }[level]);
-        setTabCount('queue', size, { crit: 'badge-critical', warn: 'badge-warning' }[level]);
+        setTabCount('queue', size, level);
     }
 
     // queueLevel returns 'crit' or 'warn' when the queue size is at or over
@@ -530,14 +530,18 @@
         card.appendChild(list);
     }
 
+    // rangeURL is what the address carries for the selected range: the
+    // days of a Custom link, nothing for the others.
+    function rangeURL() {
+        return rangeEl && rangeEl.value === 'custom' ? { from: linkFrom, to: linkTo } : { from: '', to: '' };
+    }
+
     if (rangeEl) {
         rangeEl.addEventListener('change', function() {
-            if (rangeEl.value === 'custom') {
-                CSM.urlState.set({ from: linkFrom, to: linkTo });
-            } else {
+            if (rangeEl.value !== 'custom') {
                 try { window.localStorage.setItem(RANGE_KEY, rangeEl.value); } catch (e) { /* storage unavailable */ }
-                CSM.urlState.set({ from: '', to: '' });
             }
+            CSM.urlState.set(rangeURL());
             loadOverview();
             loadRejects();
             _showAllGroups = false;
@@ -1093,7 +1097,10 @@
         var held = _checksPending && authOn();
         _checksPending = false;
         if (authChip) authChip.disabled = _authChecks.length === 0;
-        if (_authChecks.length === 0) setAuthChip(false);
+        if (_authChecks.length === 0 && authOn()) {
+            setAuthChip(false);
+            syncEmailURL();
+        }
         if (held) loadFindings();
     }
 
@@ -1110,6 +1117,8 @@
     // applyAuthChip turns the Auth failures chip on or off and reloads the
     // findings. On, it replaces a picked check.
     function applyAuthChip(on) {
+        // With no auth checks known, the chip cannot filter or be cleared.
+        if (on && !_checksPending && _authChecks.length === 0) on = false;
         setAuthChip(on);
         if (on && checkEl) checkEl.value = '';
         syncEmailURL();
@@ -2347,25 +2356,54 @@
         selectTab(t.name);
     }
 
+    // tabValue is the ?tab= value naming a job tab: none for Overview, and
+    // auth for Findings while the Auth failures chip is on, so a reload
+    // keeps the filter.
+    function tabValue(name) {
+        if (name === 'overview') return '';
+        return name === 'findings' && authOn() ? 'auth' : name;
+    }
+
     // syncTabURL names the open tab in the address. Opening a tab adds a
     // history entry, so Back returns to the tab before. An address that
     // already names the tab, maybe by an old name, is rewritten in place.
     function syncTabURL(name) {
-        var value = name === 'overview' ? '' : name;
+        var value = tabValue(name);
         if (CSM.urlState.get('tab') === value) return;
         if (tabFromURL().name === name) CSM.urlState.set({ tab: value });
         else CSM.urlState.push({ tab: value });
     }
 
-    // setTabCount shows a job tab's count. null hides it, so a count that
-    // has not loaded shows nothing, never 0. cls colors the badge.
-    function setTabCount(name, n, cls) {
+    // What each job tab counts, one and many, for screen readers.
+    var TAB_COUNT_WORDS = {
+        queue: ['queued', 'queued'], held: ['held', 'held'], rejects: ['rejected', 'rejected'],
+        sending: ['abuse event', 'abuse events'], delays: ['provider deferring', 'providers deferring'],
+        findings: ['finding', 'findings']
+    };
+    // A count at a threshold: its badge color and what it adds in words.
+    var TAB_COUNT_LEVELS = {
+        warn: ['badge-warning', ', above warning level'],
+        crit: ['badge-critical', ', above critical level']
+    };
+
+    // setTabCount shows a job tab's count: a number, or '?' for unknown.
+    // null hides it, so a count that has not loaded shows nothing, never 0.
+    // level ('warn' or 'crit') colors the badge. Screen readers get the
+    // count in words, since the badge is a bare number and a color.
+    function setTabCount(name, n, level) {
         var btn = tabButton(name);
         var badge = btn && btn.querySelector('[data-tab-count]');
         if (!badge) return;
+        var lv = Object.prototype.hasOwnProperty.call(TAB_COUNT_LEVELS, level) ? TAB_COUNT_LEVELS[level] : ['bg-secondary-lt', ''];
         badge.hidden = n == null;
         badge.textContent = n == null ? '' : typeof n === 'number' ? num(n) : n;
-        badge.className = 'badge ms-1 ' + (cls || 'bg-secondary-lt');
+        badge.className = 'badge ms-1 ' + lv[0];
+        var words = btn.querySelector('[data-tab-count-text]');
+        if (words) {
+            if (n == null) words.textContent = '';
+            else if (typeof n !== 'number') words.textContent = 'count unknown';
+            else words.textContent = num(n) + ' ' + TAB_COUNT_WORDS[name][n === 1 ? 0 : 1] + lv[1];
+        }
         revealTab(tabsEl.querySelector('.nav-link.active'));
     }
 
@@ -2404,8 +2442,13 @@
         });
     }
 
-    // Back and Forward reopen the tab the address names.
-    CSM.urlState.subscribe(function() { openTab(tabFromURL()); });
+    // Back and Forward reopen the tab the address names. The range and the
+    // findings filters stay as the page shows them, and the address is
+    // rewritten to say so.
+    CSM.urlState.subscribe(function() {
+        openTab(tabFromURL());
+        CSM.urlState.set(Object.assign(rangeURL(), emailURLState()));
+    });
 
     // A headline card opens the tab that explains its number. A click
     // meant for a new browser tab follows the card's address instead.
@@ -2433,14 +2476,21 @@
 
     // ---------- Filter handlers (auto-apply on change) ----------
 
-    // syncEmailURL writes the findings filters to the address. The range
-    // select owns from and to.
-    function syncEmailURL() {
-        CSM.urlState.set({
+    // emailURLState is what the address carries for the findings filters,
+    // with the tab while Findings is open, since the Auth failures chip
+    // names it. The range select owns from and to.
+    function emailURLState() {
+        var state = {
             severity: sevEl ? sevEl.value : '',
             check: checkEl ? checkEl.value : '',
             search: searchEl ? searchEl.value : ''
-        });
+        };
+        if (activeTab('email-tabs') === 'findings') state.tab = tabValue('findings');
+        return state;
+    }
+
+    function syncEmailURL() {
+        CSM.urlState.set(emailURLState());
     }
 
     [sevEl, checkEl].forEach(function(el) {
@@ -2509,9 +2559,11 @@
 
     // ---------- Initialize ----------
 
+    // Opening first lets an auth link turn the chip on before the address
+    // names the tab.
     var startTab = tabFromURL();
-    syncTabURL(startTab.name);
     openTab(startTab);
+    syncTabURL(startTab.name);
     loadOverview();
     loadRspamd();
     loadAVStatus();
