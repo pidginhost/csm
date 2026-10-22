@@ -20,7 +20,8 @@ type emailSendersResponse struct {
 // apiEmailSenders handles GET /api/v1/email/senders: the messages each
 // hosting account sent in from/to (see emailRange), busiest first, and the
 // count of the outbound abuse events /api/v1/email/relay-abuse lists for the
-// same range. The rows name accounts, so the route is admin only.
+// same range, under the same scan cap and memo. The rows name accounts, so
+// the route is admin only.
 func (s *Server) apiEmailSenders(w http.ResponseWriter, r *http.Request) {
 	from, to, ok := emailRange(w, r.URL.Query(), time.Now())
 	if !ok {
@@ -30,6 +31,8 @@ func (s *Server) apiEmailSenders(w http.ResponseWriter, r *http.Request) {
 	if c := s.mailStatsCounter(); c != nil {
 		resp.SendersReport = c.TopSenders(from, to, emailSendersLimit)
 	}
-	resp.AbuseEvents = s.buildRelayAbuseResponse(from, to, 1).Total
+	resp.AbuseEvents = s.emailMemo("senders-abuse?"+r.URL.Query().Encode(), func() any {
+		return s.buildRelayAbuseResponse(from, to, 1).Total
+	}).(int)
 	writeJSON(w, resp)
 }

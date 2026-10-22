@@ -587,7 +587,8 @@ paths:
             accounts (up to 100 rows of account and messages), total (every
             message with a submitter), unresolved (messages whose submitter
             matched no account) and abuse_events (the outbound abuse events
-            relay-abuse lists for the range).
+            relay-abuse lists for the range, counted up to 5,000 like
+            relay-abuse).
           content:
             application/json:
               schema: { $ref: "#/components/schemas/JSONObject" }

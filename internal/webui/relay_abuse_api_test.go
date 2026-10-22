@@ -104,3 +104,24 @@ func TestSplitScriptKey(t *testing.T) {
 		}
 	}
 }
+
+// With only to, the range is the 24 h before it, as on the other email
+// range endpoints.
+func TestRelayAbuseOneSidedTo(t *testing.T) {
+	s := newTestServerWithBbolt(t, "tok")
+	at := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	s.store.AppendHistory([]alert.Finding{
+		{Check: "email_php_relay_abuse", Severity: alert.High, Path: "volume", Timestamp: at.Add(-time.Hour)},
+		{Check: "email_php_relay_abuse", Severity: alert.High, Path: "volume", Timestamp: at.Add(-25 * time.Hour)},
+	})
+
+	w := httptest.NewRecorder()
+	s.apiEmailRelayAbuse(w, httptest.NewRequest(http.MethodGet, "/api/v1/email/relay-abuse?to=2026-10-20T12:00:00Z", nil))
+	var resp relayAbuseResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil || w.Code != http.StatusOK {
+		t.Fatalf("status %d, %v: %s", w.Code, err, w.Body.String())
+	}
+	if !resp.From.Equal(at.Add(-24*time.Hour)) || !resp.To.Equal(at) || resp.Total != 1 {
+		t.Errorf("range %v .. %v with %d events, want the 24 h before %v with 1 event", resp.From, resp.To, resp.Total, at)
+	}
+}

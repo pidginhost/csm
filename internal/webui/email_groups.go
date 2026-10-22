@@ -404,12 +404,9 @@ func (s *Server) apiEmailGroups(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := time.Now()
-	from, to, ok := historyRangeQuery(w, q, now.Add(-24*time.Hour), now)
+	from, to, ok := emailRange(w, q, now)
 	if !ok {
 		return
-	}
-	if to.Before(from) {
-		from, to = to, from
 	}
 
 	kindFilter := q.Get("kind")

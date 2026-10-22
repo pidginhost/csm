@@ -74,13 +74,9 @@ func (s *Server) apiEmailRelayAbuse(w http.ResponseWriter, r *http.Request) {
 		limit = relayAbuseDefaultLimit
 	}
 
-	now := time.Now()
-	from, to, ok := historyRangeQuery(w, q, now.Add(-24*time.Hour), now)
+	from, to, ok := emailRange(w, q, time.Now())
 	if !ok {
 		return
-	}
-	if to.Before(from) {
-		from, to = to, from
 	}
 
 	writeJSON(w, s.emailMemo("relay?"+q.Encode(), func() any {

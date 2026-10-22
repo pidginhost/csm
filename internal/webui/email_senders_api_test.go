@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"reflect"
 	"strings"
 	"testing"
@@ -114,5 +115,26 @@ func TestSendersEndpointNoCounter(t *testing.T) {
 	}
 	if got := strings.TrimSpace(w.Body.String()); got != `{"accounts":[],"total":0,"unresolved":0,"abuse_events":0}` {
 		t.Errorf("body = %s, want empty counts", got)
+	}
+}
+
+// The abuse count walks history, so it is memoized per query like the
+// relay-abuse view it counts.
+func TestSendersAbuseCountMemoized(t *testing.T) {
+	s := newTestServerWithBbolt(t, "tok")
+	const query = "from=2026-10-20T12:00:00Z&to=2026-10-20T13:00:00Z"
+	q, err := url.ParseQuery(query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.emailMemos.memo("senders-abuse?"+q.Encode()).get(s.store.HistoryMark(), func() any { return 7 })
+
+	w := serveSenders(s, http.MethodGet, "tok", "?"+query)
+	var body emailSendersBody
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil || w.Code != http.StatusOK {
+		t.Fatalf("status %d, %v: %s", w.Code, err, w.Body.String())
+	}
+	if body.AbuseEvents != 7 {
+		t.Errorf("abuse_events = %d, want the memoized 7", body.AbuseEvents)
 	}
 }

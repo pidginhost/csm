@@ -695,3 +695,14 @@ func TestEmailGroupsKeepLoginAndDistributedEvidence(t *testing.T) {
 		})
 	}
 }
+
+// With only to, the range is the 24 h before it, as on the other email
+// range endpoints.
+func TestEmailGroupsOneSidedTo(t *testing.T) {
+	s := newTestServerWithBbolt(t, "tok")
+	resp := getEmailGroups(t, s, "?to=2026-10-20T12:00:00Z")
+	to := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	if !resp.From.Equal(to.Add(-24*time.Hour)) || !resp.To.Equal(to) {
+		t.Errorf("range = %v .. %v, want the 24 h before %v", resp.From, resp.To, to)
+	}
+}
