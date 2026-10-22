@@ -7,7 +7,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { test } = require('node:test');
-const { loadPage, templateBody, items, SHARED, settle } = require('./pagekit.js');
+const { loadPage, templateBody, items, SHARED, settle, jsonResponse } = require('./pagekit.js');
 
 const DAY = 86400;
 const HOUR_MS = 3600 * 1000;
@@ -1600,6 +1600,28 @@ test('the Queue tab sums up the queue in one sentence beside the backscatter flu
     assert.equal(requestCount(page, '/api/v1/email/overview'), overviews + 1, 'the queue size did not reload');
 });
 
+test('the backscatter flush keeps the focus while the queue numbers stay the same', async () => {
+    const page = await queuePage([queueMsg(QID[0], { bounce: true, frozen: true })], { queued: 1, frozen: 1, backscatter: 1 });
+    page.respond('/api/v1/email/queue-composition', 200, { total: 1, real: 0, bounce: 1, frozen: 1, flushable_backscatter: 1, top_recipients: [] });
+    await settle();
+    const flush = page.document.getElementById('flush-backscatter-btn');
+    flush.focus();
+    // The 30 s timer answers the overview and the list with the same numbers.
+    page.window.CSM.refresh.manual();
+    await settle();
+    page.respond('/api/v1/email/overview', 200, queueOverview(1, { frozen: 1 }));
+    page.respond('/api/v1/email/queue?', 200, queueList([queueMsg(QID[0], { bounce: true, frozen: true })], { queued: 1, frozen: 1, backscatter: 1 }));
+    await settle();
+    assert.equal(page.document.getElementById('flush-backscatter-btn'), flush, 'the summary was rebuilt');
+    assert.equal(page.document.activeElement, flush, 'the flush button lost the focus');
+    // New numbers still show.
+    page.window.CSM.refresh.manual();
+    await settle();
+    page.respond('/api/v1/email/overview', 200, queueOverview(2, { frozen: 1 }));
+    await settle();
+    assert.match(flat(page.document.getElementById('email-queue-summary')), /^2 queued, 1 frozen/);
+});
+
 test('the queue summary words one bounce, no bounces and a queue with no dated message', async () => {
     for (const [extra, want] of [
         [{ queued: 2, frozen: 0, backscatter: 1, oldest_seconds: 90 }, '2 queued, 0 frozen, oldest 1m 30s. 1 is a bounce to a sender that does not exist (backscatter).'],
@@ -2568,6 +2590,129 @@ test('malware keeps bulk select; forward copies act one at a time', async () => 
     assert.equal(askedOne[0].message, 'Deliver this message to its original recipients? It contained malware.');
     assert.equal(askedOne[0].opts.danger, true);
     assert.equal(one.requests.filter(r => r.method !== 'GET').length, 0, 'a cancelled bulk release still acted');
+});
+
+// heldTick runs the timers on an open Held mail tab and answers both
+// stores' reads, leaving any action in flight pending.
+async function heldTick(page, malware, forward) {
+    page.window.CSM.refresh.manual();
+    await settle();
+    for (const [route, list] of [['/api/v1/email/quarantine', malware], ['/api/v1/email/held', forward]]) {
+        const read = page.pending(route).find(r => r.method === 'GET');
+        read.settled = true;
+        read.resolve(jsonResponse(200, items(list)));
+    }
+    await settle();
+}
+
+test('an unchanged held mail answer keeps the rows, the focus and the selection', async () => {
+    const malware = [malwareItem(MID[0], { quarantined_at: hoursAgo(1) }), malwareItem(MID[1], { quarantined_at: hoursAgo(3) })];
+    const forward = [forwardItem(FID[0])];
+    const page = await heldPage(malware, forward);
+    const doc = page.document;
+    const rows = heldRows(page);
+    heldRow(page, MID[1]).querySelector('.email-quar-cb').click();
+    const del = heldRow(page, FID[0]).querySelector('[data-held-action="delete"]');
+    del.focus();
+    await heldTick(page, malware, forward);
+    assert.deepEqual(heldRows(page), rows, 'the rows were rebuilt');
+    assert.equal(doc.activeElement, del, 'the focus left Delete');
+    assert.equal(heldRow(page, MID[1]).querySelector('.email-quar-cb').checked, true, 'the selection was dropped');
+    assert.match(flat(doc.getElementById('email-quar-bulk-release')), /Release 1 message\(s\)/);
+    assert.equal(doc.getElementById('email-quar-bulk-release').classList.contains('d-none'), false, 'the bulk buttons hid');
+});
+
+test('a held mail answer that changes the list keeps the selection and the focus', async () => {
+    const malware = [malwareItem(MID[0], { quarantined_at: hoursAgo(1) }), malwareItem(MID[1], { quarantined_at: hoursAgo(3) })];
+    const page = await heldPage(malware, []);
+    const doc = page.document;
+    heldRow(page, MID[1]).querySelector('.email-quar-cb').click();
+    heldRow(page, MID[0]).querySelector('[data-held-action="release"]').focus();
+    const before = heldRows(page);
+    await heldTick(page, malware.concat([malwareItem(MID[2], { quarantined_at: hoursAgo(0.2) })]), []);
+    assert.deepEqual(heldRows(page).map(r => r.getAttribute('data-held-id')), [MID[2], MID[0], MID[1]]);
+    assert.notEqual(heldRow(page, MID[0]), before[0], 'a new item did not rebuild the rows');
+    assert.equal(heldRow(page, MID[1]).querySelector('.email-quar-cb').checked, true, 'the selection was dropped');
+    assert.equal(heldRow(page, MID[0]).querySelector('.email-quar-cb').checked, false);
+    assert.match(flat(doc.getElementById('email-quar-bulk-release')), /Release 1 message\(s\)/);
+    assert.equal(doc.activeElement, heldRow(page, MID[0]).querySelector('[data-held-action="release"]'), 'the focus did not come back to Release');
+});
+
+test('typing a held mail search survives a store answer', async () => {
+    const wait = ms => new Promise(r => setTimeout(r, ms));
+    const malware = [malwareItem(MID[0], { from: 'billing@example.com' }), malwareItem(MID[1], { from: 'news@example.org' })];
+    for (const changed of [false, true]) {
+        const page = await heldPage(malware, []);
+        // A search the table saved earlier must not come back over the typing.
+        page.window.localStorage.setItem('csm-email-held', JSON.stringify({ search: 'billing' }));
+        const search = page.document.getElementById('email-held-search');
+        search.value = 'news';
+        search.dispatchEvent(new page.window.Event('input'));
+        // A store answers before the address takes the search.
+        await heldTick(page, changed ? malware.concat([malwareItem(MID[2], { from: 'news@example.org' })]) : malware, []);
+        await wait(400);
+        const label = changed ? 'changed answer' : 'same answer';
+        assert.equal(search.value, 'news', label + ': the search box was cleared');
+        assert.equal(new URL(page.window.location.href).searchParams.get('email_held_q'), 'news', label + ': the address lost the search');
+        const shown = heldRows(page).filter(r => r.style.display !== 'none').map(r => r.getAttribute('data-held-id'));
+        assert.deepEqual(shown, changed ? [MID[2], MID[1]] : [MID[1]], label + ': the rows do not follow the search');
+    }
+});
+
+test('a held item keeps its actions closed while one runs, across a rebuild', async () => {
+    const page = await heldPage([malwareItem(MID[0])], [forwardItem(FID[0])]);
+    stubConfirm(page);
+    heldRow(page, FID[0]).querySelector('[data-held-action="release"]').click();
+    await settle();
+    const buttons = () => Array.from(heldRow(page, FID[0]).querySelectorAll('[data-held-action]'));
+    assert.deepEqual(buttons().map(b => b.disabled), [true, true]);
+    // A new item rebuilds the rows while the release runs.
+    await heldTick(page, [malwareItem(MID[0]), malwareItem(MID[1], { quarantined_at: hoursAgo(0.5) })], [forwardItem(FID[0])]);
+    assert.deepEqual(buttons().map(b => b.disabled), [true, true], 'a rebuild opened the actions of a running release');
+    buttons()[0].click();
+    await settle();
+    assert.equal(page.requests.filter(r => r.method === 'POST').length, 1, 'a second release went out');
+    // Refused: the copy stays, and its actions open again.
+    page.respond('/api/v1/email/held/' + FID[0] + '/release', 500, { error: 'refused' });
+    await settle();
+    page.respond('/api/v1/email/held', 200, items([forwardItem(FID[0])]));
+    await settle();
+    assert.deepEqual(buttons().map(b => b.disabled), [false, false], 'the actions stayed closed after the release failed');
+});
+
+test('a held mail store that fails again after Retry shows its error again', async () => {
+    const page = await heldPage(null, [forwardItem(FID[0])]);
+    const tbody = page.document.getElementById('email-held-tbody');
+    page.fail('/api/v1/email/quarantine', new Error('HTTP 502'));
+    await settle();
+    const rows = heldRows(page);
+    tbody.querySelector('.csm-retry-btn').click();
+    await settle();
+    page.fail('/api/v1/email/quarantine', new Error('HTTP 502'));
+    await settle();
+    assert.match(flat(tbody.children[0]), /Failed to load the mail quarantine/, 'the second failure shows no error');
+    assert.equal(tbody.querySelectorAll('.csm-load-error').length, 1);
+    assert.equal(tbody.children.length, rows.length + 1, 'an old error row stayed behind');
+    assert.deepEqual(heldRows(page), rows, 'the held copies were rebuilt');
+});
+
+test('the held mail summary says when it has nothing to count', async () => {
+    const page = emailPage({ url: 'https://csm.example.test/email?tab=held' });
+    await settle();
+    const summary = page.document.getElementById('email-held-summary');
+    assert.match(flat(summary), /Loading held mail/);
+    page.fail('/api/v1/email/overview');
+    await settle();
+    assert.match(flat(summary), /Loading held mail/, 'the counts were called unavailable while the stores load');
+    page.fail('/api/v1/email/quarantine');
+    page.respond('/api/v1/email/held', 200, items([forwardItem(FID[0])]));
+    await settle();
+    assert.equal(flat(summary), 'Held mail counts unavailable.');
+});
+
+test('the held mail search fits a phone', () => {
+    const search = emailPage().document.getElementById('email-held-search');
+    assert.equal(search.getAttribute('placeholder'), 'Search sender, recipient, subject');
 });
 
 test('the page range scopes held mail and names what it hides', async () => {

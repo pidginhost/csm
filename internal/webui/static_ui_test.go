@@ -3275,7 +3275,7 @@ func TestEmailQuarantineToolbar(t *testing.T) {
 		`tr.setAttribute('data-kind', e.kind);`,
 		`held.setAttribute('data-timestamp', e.at || '');`,
 		`tr.setAttribute('data-search', [from, to.join(' '), m.forwarder, m.subject].join(' ').toLowerCase());`,
-		`var _heldURLUnbind = null;`,
+		`CSM.urlState.bind({`,
 		`email_held_q: document.getElementById('email-held-search'),`,
 		`email_held_kind: document.getElementById('email-held-filter')`,
 	} {

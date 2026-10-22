@@ -1280,7 +1280,12 @@
     var _heldTable = null;
     var _heldShown = []; // the items in the range, as the rows show them
     var _heldOlder = 0;  // held items older than the range
-    var _heldURLUnbind = null;
+    // What the rows on screen show, apart from the times; an answer that
+    // shows the same leaves them, the focus and the selection alone.
+    var _heldSig = '';
+    // Items with an action in flight, by kind:id. Their actions stay
+    // disabled, across a rebuild too.
+    var _heldBusy = {};
     // Why the guard held a forward copy, from its reason codes.
     var HELD_REASONS = { bounce_backscatter: 'a bounce (backscatter)', bad_sender_ip: 'sent from a listed bad IP' };
 
@@ -1294,6 +1299,16 @@
             { el: document.getElementById('email-quar-bulk-release'), labelTemplate: 'Release {n} message(s)' },
             { el: document.getElementById('email-quar-bulk-delete'),  labelTemplate: 'Delete {n} message(s)' }
         ]
+    });
+
+    // The search and the kind filter are static, so the address binds to
+    // them once.
+    CSM.urlState.bind({
+        inputs: {
+            email_held_q: document.getElementById('email-held-search'),
+            email_held_kind: document.getElementById('email-held-filter')
+        },
+        defaults: { email_held_kind: 'all' }
     });
 
     function loadHeldMail() {
@@ -1341,21 +1356,68 @@
 
     // renderHeld draws the merged list in the page range; items held
     // before it hide behind a note in the summary. A store that failed
-    // shows its own error row above the other store's items.
+    // shows its own error row above the other store's items. The 60 s
+    // poll mostly brings the same list, and then only the times change.
     function renderHeld() {
         var tbody = document.getElementById('email-held-tbody');
         if (!tbody) return;
-        if (_heldTable) _heldTable.destroy();
-        _heldTable = null;
         var from = currentRange().from.getTime();
         var all = heldEntries();
         _heldShown = all.filter(function(e) { return !(e.time < from); });
         _heldOlder = all.length - _heldShown.length;
-        tbody.replaceChildren();
-        _heldShown.forEach(function(e) { tbody.appendChild(heldRow(e)); });
         var pending = ['malware', 'forward'].some(function(k) { return _held[k].items === null && !_held[k].err; });
-        var failed = _held.malware.err || _held.forward.err;
+        var failed = !!(_held.malware.err || _held.forward.err);
+        var sig = JSON.stringify([_heldShown.map(function(e) { return [e.kind, e.id, e.at]; }), _heldOlder, pending,
+            !!_held.malware.err, !!_held.forward.err]);
+        if (sig === _heldSig) {
+            _heldShown.forEach(function(e) {
+                var row = heldRowEl(e.kind, e.id);
+                if (row) row.querySelector('[data-label="Held"]').textContent = CSM.timeAgo(e.at);
+            });
+        } else {
+            _heldSig = sig;
+            rebuildHeld(tbody, all.length, pending, failed);
+        }
+        // Retry takes its error away, so the error rows draw every time.
+        tbody.querySelectorAll('[data-held-error]').forEach(function(tr) { tr.remove(); });
+        // Inserted after the table took its rows, so filters and paging
+        // leave the error rows in place, on top.
+        ['forward', 'malware'].forEach(function(kind) {
+            if (!_held[kind].err) return;
+            var td = node('td');
+            td.setAttribute('colspan', '9');
+            var tr = node('tr');
+            tr.setAttribute('data-held-error', kind);
+            tr.appendChild(td);
+            tbody.insertBefore(tr, tbody.firstChild);
+            CSM.loadError(td, function() { loadHeldSource(kind); }, { title: HELD_SOURCES[kind].title, error: _held[kind].err });
+        });
+        _emailQuarBulk.refresh();
+        renderHeldSummary();
+    }
+
+    // rebuildHeld draws the rows again. The selected malware stays
+    // selected, the focused control gets the focus back, and the search
+    // and filter keep what their boxes hold.
+    function rebuildHeld(tbody, total, pending, failed) {
+        var focus = heldFocus(tbody);
+        var picked = {};
+        tbody.querySelectorAll('.email-quar-cb').forEach(function(cb) {
+            if (cb.checked) picked[cb.getAttribute('data-id')] = true;
+        });
+        if (_heldTable) _heldTable.destroy();
+        _heldTable = null;
+        tbody.replaceChildren();
+        _heldShown.forEach(function(e) {
+            var row = heldRow(e);
+            var cb = row.querySelector('.email-quar-cb');
+            if (cb) cb.checked = !!picked[e.id];
+            tbody.appendChild(row);
+        });
         if (_heldShown.length > 0) {
+            var search = document.getElementById('email-held-search');
+            var kind = document.getElementById('email-held-filter');
+            var typed = search ? search.value : '', shown = kind ? kind.value : 'all';
             _heldTable = new CSM.Table({
                 tableId: 'email-held-table',
                 perPage: 25,
@@ -1368,32 +1430,53 @@
                 emptyState: { icon: 'filter-off', title: 'No held mail matches', reason: 'Try another filter or search.' },
                 onRender: function() { _emailQuarBulk.refresh(); }
             });
+            // The table restores the search and filter it saved last. The
+            // boxes can hold newer ones: from the address, or typed before
+            // the table saved them.
+            if (search) search.value = typed;
+            if (kind) kind.value = shown;
+            _heldTable.searchText = typed.toLowerCase();
+            _heldTable.filterValues['email-held-filter'] = shown;
+            _heldTable.applyFilters();
         } else if (pending) {
             emptyRow(tbody, 9, 'loader-2', 'Loading held mail...', '');
         } else if (!failed) {
-            emptyRow(tbody, 9, 'mail-check', all.length ? 'Nothing held in this range' : 'Nothing held', '');
+            emptyRow(tbody, 9, 'mail-check', total ? 'Nothing held in this range' : 'Nothing held', '');
         }
-        // Inserted after the table took its rows, so filters and paging
-        // leave the error rows in place, on top.
-        ['forward', 'malware'].forEach(function(kind) {
-            if (!_held[kind].err) return;
-            var td = node('td');
-            td.setAttribute('colspan', '9');
-            var tr = node('tr');
-            tr.appendChild(td);
-            tbody.insertBefore(tr, tbody.firstChild);
-            CSM.loadError(td, function() { loadHeldSource(kind); }, { title: HELD_SOURCES[kind].title, error: _held[kind].err });
-        });
-        if (_heldURLUnbind) _heldURLUnbind();
-        _heldURLUnbind = CSM.urlState.bind({
-            inputs: {
-                email_held_q: document.getElementById('email-held-search'),
-                email_held_kind: document.getElementById('email-held-filter')
-            },
-            defaults: { email_held_kind: 'all' }
-        });
-        _emailQuarBulk.refresh();
-        renderHeldSummary();
+        if (focus) {
+            var row = heldRowEl(focus.kind, focus.id);
+            var target = row && row.querySelector(focus.sel);
+            if (target) target.focus();
+        }
+    }
+
+    // heldRowEl returns the row on screen for a held item, or null.
+    function heldRowEl(kind, id) {
+        var rows = document.querySelectorAll('#email-held-tbody tr[data-held-id]');
+        for (var i = 0; i < rows.length; i++) {
+            if (rows[i].getAttribute('data-kind') === kind && rows[i].getAttribute('data-held-id') === id) return rows[i];
+        }
+        return null;
+    }
+
+    // heldFocus names the row control that has the focus, to give it back
+    // after a rebuild.
+    function heldFocus(tbody) {
+        var el = document.activeElement;
+        var row = el && tbody.contains(el) ? el.closest('tr[data-held-id]') : null;
+        if (!row) return null;
+        var action = el.getAttribute('data-held-action');
+        var sel = action ? '[data-held-action="' + action + '"]' : el.classList.contains('email-quar-cb') ? '.email-quar-cb' : '';
+        return sel ? { kind: row.getAttribute('data-kind'), id: row.getAttribute('data-held-id'), sel: sel } : null;
+    }
+
+    // setHeldBusy marks an item's action as running, or done, and sets its
+    // buttons on screen to match.
+    function setHeldBusy(e, busy) {
+        if (busy) _heldBusy[e.kind + ':' + e.id] = true;
+        else delete _heldBusy[e.kind + ':' + e.id];
+        var row = heldRowEl(e.kind, e.id);
+        if (row) row.querySelectorAll('[data-held-action]').forEach(function(btn) { btn.disabled = busy; });
     }
 
     // virusNames names what the antivirus found in a message.
@@ -1496,6 +1579,7 @@
             btn.type = 'button';
             btn.setAttribute('data-held-action', a[0]);
             btn.setAttribute('aria-label', a[1] + ' ' + what);
+            btn.disabled = !!_heldBusy[e.kind + ':' + e.id];
             buttons.appendChild(btn);
         });
         actions.appendChild(buttons);
@@ -1528,7 +1612,14 @@
             line.appendChild(document.createTextNode(n === 0 ? 'Nothing is held now.' : 'Held now: ' + num(n) + ' (' + num(malware.length) + ' malware, ' +
                 num(forward.length) + (forward.length === 1 ? ' forward copy' : ' forward copies') + ').'));
         }
-        if (!line.childNodes.length) return;
+        if (!line.childNodes.length) {
+            // A spinner while the counts load; once they cannot, say so
+            // rather than keep the spinner or numbers from before.
+            var waiting = (!_overview && !_overviewErr) ||
+                ['malware', 'forward'].some(function(k) { return _held[k].items === null && !_held[k].err; });
+            if (waiting) return;
+            line.textContent = 'Held mail counts unavailable.';
+        }
         var parts = [line];
         if (_heldOlder > 0) {
             parts.push(node('div', 'mt-1', num(_heldOlder) + (_heldOlder === 1 ? ' older held item' : ' older held items') + '; widen the range.'));
@@ -1540,19 +1631,21 @@
 
     // heldAction asks first, in words that differ by kind, then releases or
     // deletes the item through its own store's route.
-    function heldAction(e, action, btn) {
+    function heldAction(e, action) {
+        if (_heldBusy[e.kind + ':' + e.id]) return;
         var asked;
         if (action === 'delete') asked = CSM.confirm('Delete permanently. This cannot be undone.', { danger: true, okLabel: 'Delete' });
         else if (e.kind === 'malware') asked = CSM.confirm('Deliver this message to its original recipients? It contained ' + virusNames(e.item) + '.', { danger: true, okLabel: 'Deliver' });
         else asked = CSM.confirm('Send this held copy to ' + e.item.recipient + '?', { okLabel: 'Send' });
         asked.then(function() {
-            btn.disabled = true;
+            setHeldBusy(e, true);
             var url = HELD_ROUTES[e.kind] + encodeURIComponent(e.id);
             var req = action === 'delete' ? CSM.delete(url) : CSM.post(url + '/release', {});
             req.then(function() { CSM.toast(action === 'delete' ? 'Deleted' : 'Released', 'success'); })
                 // A refused release leaves the item held; the error says why.
                 .catch(function(err) { CSM.toast((action === 'delete' ? 'Delete' : 'Release') + ' failed: ' + CSM.errorText(err), 'error'); })
                 .then(function() {
+                    setHeldBusy(e, false);
                     loadHeldSource(e.kind);
                     if (e.kind === 'malware') loadAVStatus();
                 });
@@ -1565,7 +1658,7 @@
             var btn = ev.target.closest('[data-held-action]');
             var row = btn && btn.closest('tr');
             var e = row && heldEntry(row.getAttribute('data-kind'), row.getAttribute('data-held-id'));
-            if (e) heldAction(e, btn.getAttribute('data-held-action'), btn);
+            if (e) heldAction(e, btn.getAttribute('data-held-action'));
         });
     }
 
@@ -1733,6 +1826,9 @@
     // Messages with an action in flight. Their actions stay disabled,
     // across a rebuild too.
     var _queueBusy = {};
+    // What the summary line on screen says, with the flush count; '' once
+    // something else took its place.
+    var _queueSummaryKey = '';
 
     // The per-message actions, in the order the row offers them. Each
     // confirm names the message and its recipients.
@@ -1806,6 +1902,7 @@
         var summary = document.getElementById('email-queue-summary');
         // Retry shows what the error covers; an old count must not return.
         if (summary) summary.replaceChildren();
+        _queueSummaryKey = '';
         CSM.loadError(summary, loadQueue, { title: 'Queue size unknown', error: err });
     }
 
@@ -1853,19 +1950,28 @@
             // Wait for the overview; once it has failed, say so.
             if (_overview || _overviewErr) {
                 el.replaceChildren();
+                _queueSummaryKey = '';
                 CSM.loadError(el, loadOverview, { title: 'Queue size unknown', error: _overviewErr || 'CSM could not read the mail queue.' });
             }
             return;
         }
+        var text = 'The queue is empty.';
+        if (size > 0) {
+            text = num(size) + ' queued, ' + num(q.frozen) + ' frozen';
+            if (q.oldest_seconds != null) text += ', oldest ' + CSM.formatDuration(q.oldest_seconds);
+            text += '.';
+            if (q.backscatter === 1) text += ' 1 is a bounce to a sender that does not exist (backscatter).';
+            else if (q.backscatter > 1) text += ' ' + num(q.backscatter) + ' are bounces to senders that do not exist (backscatter).';
+        }
+        // The overview and the list answer every 30 s, mostly with the same
+        // numbers; a new line would take the focus off the flush button.
+        var key = text + '|' + (size > 0 ? _queueFlushable : 0);
+        if (key === _queueSummaryKey) return;
+        _queueSummaryKey = key;
         if (size === 0) {
-            el.replaceChildren(node('div', 'fw-medium', 'The queue is empty.'));
+            el.replaceChildren(node('div', 'fw-medium', text));
             return;
         }
-        var text = num(size) + ' queued, ' + num(q.frozen) + ' frozen';
-        if (q.oldest_seconds != null) text += ', oldest ' + CSM.formatDuration(q.oldest_seconds);
-        text += '.';
-        if (q.backscatter === 1) text += ' 1 is a bounce to a sender that does not exist (backscatter).';
-        else if (q.backscatter > 1) text += ' ' + num(q.backscatter) + ' are bounces to senders that do not exist (backscatter).';
         var line = node('div', 'd-flex flex-wrap align-items-center gap-2');
         line.appendChild(node('span', 'fw-medium', text));
         // Flush is offered only for frozen null-sender messages: undeliverable
