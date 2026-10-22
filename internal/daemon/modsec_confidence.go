@@ -44,7 +44,7 @@ func (c modsecConfidence) String() string {
 // must stay on the normal hit-count path.
 var modsecSingleHitRules = map[int]bool{
 	900122: true, // wp2shell exploit tool User-Agent
-	900133: true, // PHP2Shell session upload progress field
+	900133: true, // PHP2Shell upload progress field, non-browser requests
 }
 
 // modsecKnownLowConfRules are vendor policy/anomaly/scoring rule IDs verified to

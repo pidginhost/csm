@@ -49,6 +49,12 @@ Request text cannot turn a warning into a deny. Disabling a rule's firewall
 escalation excludes both new events and retained evidence from later blocking
 decisions. Existing firewall bans keep their configured expiry.
 
+CSM adds the default escalation exclusion for browser-marked upload progress
+requests once, including on upgrade, and keeps later operator changes. If the
+saved exclusions cannot be read, CSM keeps running and blocking requests but
+pauses ModSecurity firewall escalation, and the rules page reports the error
+instead of overwriting them. The next start retries the default update.
+
 CSM checks the rule-action registry every five minutes and rebuilds it when rule
 file contents change. Read failures leave the build uncached so the next check
 retries. Files that were read in full but exceeded the parser's line limit are
@@ -91,6 +97,11 @@ The PHP session upload-progress filter denies requests whose form field names
 contain PHP's default `PHP_SESSION_UPLOAD_PROGRESS` field name, matched
 case-insensitively so quoted spellings are covered. A custom
 `session.upload_progress.name` is outside this filter's coverage.
+GET and HEAD pass. Other methods use the first-deny escalation rule when both
+`Origin` and `Sec-Fetch-Site` are absent; browser-marked requests use the separate
+rule whose escalation is off by default. Keep that exclusion to avoid
+browser-steered bans. A browser whose extension or proxy strips `Origin` on a
+plain-HTTP request can still reach the first-deny rule.
 PHP handles that field before any script runs, which
 leaves the web server as the only layer that can drop the request. See
 [CVE Mitigations](cve-mitigations.md) for the PHP-side setting that removes the

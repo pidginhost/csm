@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -205,27 +206,43 @@ func Open(statePath string) (*DB, error) {
 
 const (
 	modsecNoEscalateSeededKey              = "modsec:no_escalate_seeded"
+	modsecNoEscalateBrowserSeededKey       = "modsec:no_escalate_seeded_900134"
 	defaultModSecNoEscalateWPEnumerationID = 900112
+	defaultModSecNoEscalateBrowserUploadID = 900134
 )
 
 func (db *DB) seedDefaultModSecNoEscalateRules() error {
 	return db.bolt.Update(func(tx *bolt.Tx) error {
 		meta := tx.Bucket([]byte("meta"))
-		if meta.Get([]byte(modsecNoEscalateSeededKey)) != nil {
+		if meta.Get([]byte(modsecNoEscalateSeededKey)) != nil && meta.Get([]byte(modsecNoEscalateBrowserSeededKey)) != nil {
 			return nil
 		}
-		if meta.Get([]byte(modsecNoEscalateKey)) != nil {
-			return meta.Put([]byte(modsecNoEscalateSeededKey), []byte("1"))
+		var ids []int
+		if v := meta.Get([]byte(modsecNoEscalateKey)); v != nil {
+			if err := json.Unmarshal(v, &ids); err != nil {
+				return err
+			}
+		} else if meta.Get([]byte(modsecNoEscalateSeededKey)) == nil {
+			// WordPress user enumeration is blocked at the HTTP layer only.
+			ids = append(ids, defaultModSecNoEscalateWPEnumerationID)
 		}
-		// WordPress user enumeration is blocked at the HTTP layer only.
-		val, err := json.Marshal([]int{defaultModSecNoEscalateWPEnumerationID})
+		if meta.Get([]byte(modsecNoEscalateBrowserSeededKey)) == nil && !slices.Contains(ids, defaultModSecNoEscalateBrowserUploadID) {
+			// A third-party page can steer browser-sent upload progress
+			// denies, so they must not ban the visitor. Added once, also on
+			// upgrade; an operator can turn the escalation back on.
+			ids = append(ids, defaultModSecNoEscalateBrowserUploadID)
+		}
+		val, err := json.Marshal(ids)
 		if err != nil {
 			return err
 		}
 		if err := meta.Put([]byte(modsecNoEscalateKey), val); err != nil {
 			return err
 		}
-		return meta.Put([]byte(modsecNoEscalateSeededKey), []byte("1"))
+		if err := meta.Put([]byte(modsecNoEscalateSeededKey), []byte("1")); err != nil {
+			return err
+		}
+		return meta.Put([]byte(modsecNoEscalateBrowserSeededKey), []byte("1"))
 	})
 }
 

@@ -548,8 +548,10 @@ func recordModSecEvent(ip string, now time.Time, rule int, conf modsecConfidence
 }
 
 func recordModSecEventWithRearm(ip string, now time.Time, rule int, conf modsecConfidence, isBlock bool, hits, lowConfHits int, window, rearmAfter time.Duration) modsecEscalationOutcome {
-	excluded := modsecNoEscalateRules()
-	if excluded[rule] {
+	excluded, err := modsecNoEscalateRules()
+	// The optional seed must not stop the daemon, but unreadable operator
+	// exclusions cannot authorize a firewall ban. HTTP deny reporting continues.
+	if err != nil || excluded[rule] {
 		return modsecEscalationOutcome{}
 	}
 	val, _ := modsecBlockCount.LoadOrStore(ip, &modsecIPCounter{})
@@ -606,11 +608,11 @@ func recordModSecEventWithRearm(ip string, now time.Time, rule int, conf modsecC
 	return out
 }
 
-func modsecNoEscalateRules() map[int]bool {
+func modsecNoEscalateRules() (map[int]bool, error) {
 	if db := store.Global(); db != nil {
 		return db.GetModSecNoEscalateRules()
 	}
-	return nil
+	return nil, nil
 }
 
 // Exclusions apply to retained evidence too, or another rule's event could
@@ -733,7 +735,9 @@ func evictModSecStateWithLowConf(now time.Time, hits, lowConfHits int, window ti
 
 	// Prune counter entries.
 	cutoff := now.Add(-window)
-	excluded := modsecNoEscalateRules()
+	// Even if exclusions are unreadable, expired evidence still needs eviction.
+	// Recording and escalation wait for a successful read in recordModSecEvent.
+	excluded, _ := modsecNoEscalateRules()
 	modsecBlockCount.Range(func(key, value any) bool {
 		ctr := value.(*modsecIPCounter)
 		ctr.mu.Lock()
