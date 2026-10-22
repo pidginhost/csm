@@ -2185,11 +2185,11 @@
                 ? '<span class="badge bg-red-lt">Forward-only</span>'
                 : '<span class="badge bg-green-lt">Keep local</span>';
             html += '<tr>';
-            html += '<td class="font-monospace small">' + CSM.esc(f.source) + '</td>';
-            html += '<td>' + (f.owner ? CSM.esc(f.owner) : '<span class="text-muted">--</span>') + '</td>';
-            html += '<td>' + dests + '</td>';
-            html += '<td>' + badges + '</td>';
-            html += '<td>' + copy + '</td>';
+            html += '<td data-label="Source"><span class="font-monospace small">' + CSM.esc(f.source) + '</span></td>';
+            html += '<td data-label="Owner">' + (f.owner ? CSM.esc(f.owner) : '<span class="text-muted">--</span>') + '</td>';
+            html += '<td data-label="Destinations">' + dests + '</td>';
+            html += '<td data-label="Providers">' + badges + '</td>';
+            html += '<td data-label="Local copy">' + copy + '</td>';
             html += '</tr>';
         }
         tb.innerHTML = html;
@@ -3048,7 +3048,8 @@
             body.replaceChildren(buildEmpty('circle-check', 'No outbound mail abuse ' + rangeWords(currentRange()), ''));
             return;
         }
-        var html = '<div class="table-responsive"><table class="table table-vcenter card-table table-sm">';
+        // Phones get one labelled card per event instead of a sideways scroll.
+        var html = '<div class="table-responsive"><table class="table table-vcenter card-table table-sm csm-table-rowcard">';
         html += '<thead><tr><th>Severity</th><th>Type</th><th>Source IP</th><th>Account</th><th>Count</th><th>Detected</th><th></th></tr></thead><tbody>';
         for (var i = 0; i < entries.length; i++) {
             var e = entries[i];
@@ -3057,13 +3058,13 @@
             // on message volume. Label the unit per path so the count is honest.
             var unit = e.path === 'fanout' ? 'scripts' : 'messages';
             html += '<tr data-abuse-key="' + CSM.attr(JSON.stringify([e.path, e.source_ip, e.cp_user, e.detected_at])) + '">';
-            html += '<td>' + CSM.severityBadge(e.severity) + '</td>';
-            html += '<td>' + CSM.esc(e.path_label) + '</td>';
-            html += '<td>' + (e.source_ip ? '<code>' + CSM.esc(e.source_ip) + '</code>' : '<span class="text-muted">-</span>') + '</td>';
-            html += '<td>' + CSM.esc(e.cp_user || '') + '</td>';
-            html += '<td>' + CSM.esc(String(e.trigger_count) + ' ' + unit) + '</td>';
-            html += '<td>' + (CSM.timeAgo ? CSM.timeAgo(e.detected_at) : CSM.esc(e.detected_at)) + '</td>';
-            html += '<td class="text-end">';
+            html += '<td data-label="Severity">' + CSM.severityBadge(e.severity) + '</td>';
+            html += '<td data-label="Type">' + CSM.esc(e.path_label) + '</td>';
+            html += '<td data-label="Source IP">' + (e.source_ip ? '<code>' + CSM.esc(e.source_ip) + '</code>' : '<span class="text-muted">-</span>') + '</td>';
+            html += '<td data-label="Account">' + CSM.esc(e.cp_user || '') + '</td>';
+            html += '<td data-label="Count">' + CSM.esc(String(e.trigger_count) + ' ' + unit) + '</td>';
+            html += '<td data-label="Detected">' + (CSM.timeAgo ? CSM.timeAgo(e.detected_at) : CSM.esc(e.detected_at)) + '</td>';
+            html += '<td class="text-end" data-label="Actions">';
             if (e.source_ip) {
                 html += '<button class="btn btn-sm btn-outline-danger oab-block" data-ip="' + CSM.esc(e.source_ip) + '" data-reason="' + CSM.esc('PHP mail relay abuse: ' + e.path_label + ' (' + e.trigger_count + ' ' + unit + ')') + '">Block 24h</button>';
             }
@@ -3075,7 +3076,7 @@
                 html += '<tr id="' + rid + '" class="d-none"><td colspan="7"><div class="table-responsive"><table class="table table-sm mb-0"><thead><tr><th>Site</th><th>Script</th><th>Hits</th><th>Last seen</th><th>Sample subject</th></tr></thead><tbody>';
                 for (var j = 0; j < e.sites.length; j++) {
                     var st = e.sites[j];
-                    html += '<tr><td>' + CSM.esc(st.site) + '</td><td><code>' + CSM.esc(st.script) + '</code></td><td>' + CSM.esc(String(st.hits)) + '</td><td>' + (CSM.timeAgo ? CSM.timeAgo(st.last_seen) : CSM.esc(st.last_seen)) + '</td><td class="text-wrap csm-tw-400">' + CSM.esc(st.sample_subject || '') + '</td></tr>';
+                    html += '<tr><td data-label="Site">' + CSM.esc(st.site) + '</td><td data-label="Script"><code>' + CSM.esc(st.script) + '</code></td><td data-label="Hits">' + CSM.esc(String(st.hits)) + '</td><td data-label="Last seen">' + (CSM.timeAgo ? CSM.timeAgo(st.last_seen) : CSM.esc(st.last_seen)) + '</td><td class="text-wrap csm-tw-400" data-label="Sample subject">' + CSM.esc(st.sample_subject || '') + '</td></tr>';
                 }
                 html += '</tbody></table></div></td></tr>';
             }

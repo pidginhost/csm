@@ -3117,6 +3117,27 @@ test('the forwarders to outside addresses stay collapsed with their count', asyn
     assert.match(flat(failed.document.getElementById('email-fwd-tbody')), /Failed to load forwarders/);
 });
 
+test('abuse events and forwarders turn into labelled cards on phones', async () => {
+    const fwd = { source: 'a@example.com', domain: 'example.com', owner: 'alice', destinations: [{ address: 'x@example.net', domain: 'example.net', provider: 'external' }],
+        providers: ['external'], keep_local: true, forward_only: false, has_external: true, has_free_provider: false };
+    const page = await sendingPage({
+        '/api/v1/email/relay-abuse': items([abuseEvent({ cp_user: 'shopuser', sites: [
+            { site: 'shop.example.com', script: '/mail.php', hits: 40, last_seen: AT, sample_subject: 'You won' }] })],
+        { total: 1, limit: 20, truncated: false }),
+        '/api/v1/email/forwarders': items([fwd])
+    });
+    const doc = page.document;
+    const labels = row => Array.from(row.children).map(td => td.getAttribute('data-label'));
+    const abuse = doc.querySelector('#email-abuse-events table');
+    assert.ok(abuse.classList.contains('csm-table-rowcard'), 'abuse events scroll sideways on phones');
+    assert.deepEqual(labels(abuse.querySelector('tr[data-abuse-key]')), ['Severity', 'Type', 'Source IP', 'Account', 'Count', 'Detected', 'Actions']);
+    const sites = doc.getElementById(abuse.querySelector('.oab-toggle').getAttribute('data-target'));
+    assert.deepEqual(labels(sites.querySelector('tbody tr')), ['Site', 'Script', 'Hits', 'Last seen', 'Sample subject']);
+    const fwdTable = doc.getElementById('email-fwd-table');
+    assert.ok(fwdTable.classList.contains('csm-table-rowcard'), 'forwarders scroll sideways on phones');
+    assert.deepEqual(labels(doc.querySelector('#email-fwd-tbody tr')), ['Source', 'Owner', 'Destinations', 'Providers', 'Local copy']);
+});
+
 test('an old outbound abuse link reads each Sending accounts source once', async () => {
     const count = (page, route) => page.requests.filter(r => r.url.includes(route)).length;
     const page = emailPage({ url: 'https://csm.example.test/email?tab=outbound-abuse' });
