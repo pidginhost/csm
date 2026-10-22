@@ -9,6 +9,15 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ## [Unreleased]
 
+### Highlights
+
+- A crafted web page or email can no longer get ordinary browser visitors banned at the firewall by the PHP2Shell protection. Upgrade every host running 4.5.0.
+- With automatic blocking on, sources using the wp2shell exploit tool are now blocked at the firewall on their first blocked request.
+- The Email Security page now has job tabs under the headline numbers and shows why queued mail is stuck, with retry, return and delete actions.
+- Releasing a held forwarded message now uses only the addresses CSM recorded.
+- Email Security no longer counts malware messages as clean.
+- Bulk WordPress plugin updates no longer raise false findings for unmodified plugin files.
+
 ### Security
 
 - With automatic blocking on, sources using the wp2shell exploit tool are now blocked at the firewall on their first blocked request.
@@ -23,9 +32,14 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Fixed
 
+#### Email
+
 - Email Security no longer counts malware messages as clean.
 - Quarantined malware subjects now show decoded, without characters that reverse or hide text, on the Email Security page and in the quarantine API.
 - Spam folder learning no longer refuses to start on standard cPanel servers when Redis runs under its own service user.
+
+#### Findings and file detection
+
 - Bulk WordPress plugin updates no longer raise unverified package warnings or false content findings for unmodified plugin files.
 - PHP in a folder named mail inside a plugin or website no longer raises a Critical alert; only account mail directories do.
 - PHP files that print an embedded image, such as a tracking pixel or an SVG logo, no longer match the encoded spam link signature.
