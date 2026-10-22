@@ -24,6 +24,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 - Email Security no longer counts malware messages as clean.
 - Quarantined malware subjects now show decoded, without characters that reverse or hide text, on the Email Security page and in the quarantine API.
+- Spam folder learning no longer refuses to start on standard cPanel servers when Redis runs under its own service user.
 
 ## [4.5.0] - 2026-10-22
 

@@ -141,6 +141,32 @@ func FuzzParseGroupMembers(f *testing.F) {
 	})
 }
 
+func FuzzLocalAccountNames(f *testing.F) {
+	f.Add("redis:x:12345:12345::/:/bin/false\n")
+	f.Add("tenant:x:12345\n")
+	f.Add("# comment\n\n")
+	f.Add("")
+	f.Fuzz(func(t *testing.T, passwd string) {
+		c := collector{
+			readPasswd: func() ([]byte, error) { return []byte(passwd), nil },
+		}
+		names, err := c.localAccountNames()
+		if err != nil && names != nil {
+			t.Fatal("unverified account database returned a trusted record set")
+		}
+		c.readPasswd = func() ([]byte, error) { return []byte(passwd + "\nmalformed\n"), nil }
+		if _, err := c.localAccountNames(); err == nil {
+			t.Fatal("malformed account record left a trusted record set")
+		}
+		c.readPasswd = func() ([]byte, error) {
+			return []byte(passwd + "\nprobe:x:12345:12345::/:/bin/false\n"), nil
+		}
+		if names, err := c.localAccountNames(); err == nil && !names["probe"] {
+			t.Fatal("complete account data lost a local uid alias")
+		}
+	})
+}
+
 func FuzzParseProbeReply(f *testing.F) {
 	question := dnsmessage.Question{Name: dnsmessage.MustNewName("probe.example."), Type: dnsmessage.TypeA, Class: dnsmessage.ClassINET}
 	for _, rcode := range []dnsmessage.RCode{dnsmessage.RCodeSuccess, dnsmessage.RCodeNameError, dnsmessage.RCodeServerFailure} {
