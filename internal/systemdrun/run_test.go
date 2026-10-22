@@ -284,3 +284,44 @@ func TestRunRequiredPreservesWrappedCommandFailure(t *testing.T) {
 		t.Fatalf("calls=%+v, want one probe and one wrapped command without a direct retry", calls)
 	}
 }
+
+// systemd-run hands the unit its own stdin only with --pipe; without it the
+// command would read an empty input. The probe gets no input.
+func TestRunInputPipesInputToTheCommandOnly(t *testing.T) {
+	type inputCall struct {
+		name  string
+		args  []string
+		input []byte
+	}
+	var calls []inputCall
+	lookPath := func(string) (string, error) { return "/usr/bin/systemd-run", nil }
+	run := func(_ context.Context, input []byte, name string, args ...string) ([]byte, error) {
+		calls = append(calls, inputCall{name, args, input})
+		return []byte("queued\n"), nil
+	}
+
+	out, err := RunInput(context.Background(), lookPath, run, Options{NoWait: true, Required: true}, []byte("message"), "/usr/sbin/sendmail", "-i")
+
+	if err != nil || string(out) != "queued\n" {
+		t.Fatalf("out=%q err=%v, want the command's output", out, err)
+	}
+	if len(calls) != 2 || calls[0].input != nil {
+		t.Fatalf("calls=%+v, want a probe without input, then the command", calls)
+	}
+	want := []string{"--quiet", "--collect", "--pipe", "--", "/usr/sbin/sendmail", "-i"}
+	if calls[1].name != "/usr/bin/systemd-run" || !reflect.DeepEqual(calls[1].args, want) || string(calls[1].input) != "message" {
+		t.Fatalf("command call=%+v, want systemd-run %v with the input", calls[1], want)
+	}
+}
+
+func TestRunInputRequiredNeverRunsCommandDirectly(t *testing.T) {
+	var calls int
+	_, err := RunInput(context.Background(), func(string) (string, error) { return "", exec.ErrNotFound },
+		func(context.Context, []byte, string, ...string) ([]byte, error) {
+			calls++
+			return nil, nil
+		}, Options{Required: true}, []byte("message"), "/usr/sbin/sendmail", "-i")
+	if !errors.Is(err, ErrUnavailable) || calls != 0 {
+		t.Fatalf("err=%v calls=%d, want ErrUnavailable before any run", err, calls)
+	}
+}

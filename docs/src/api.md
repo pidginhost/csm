@@ -230,7 +230,8 @@ GET  /api/v1/hardening           Last stored hardening audit report (admin scope
 ### Date ranges
 
 `/api/v1/history`, `/api/v1/email/groups`, `/api/v1/email/overview`,
-`/api/v1/email/rejects` and `/api/v1/email/relay-abuse` take `from` and `to` as
+`/api/v1/email/rejects`, `/api/v1/email/senders` and
+`/api/v1/email/relay-abuse` take `from` and `to` as
 a calendar date (`YYYY-MM-DD`) or an RFC 3339 time. A date is
 a day in the server's time zone, and `to` includes the whole day. An RFC 3339
 `to` is exclusive. The web UI sends RFC 3339 times so a day follows the
@@ -238,7 +239,8 @@ operator's time zone preference. A value in neither form is rejected with 400.
 An empty or whitespace-only bound is treated as absent. Calendar days start at
 their first valid local time, including when midnight is skipped or repeated;
 a skipped calendar date covers an empty range. Fractional seconds are preserved
-when filtering RFC 3339 bounds.
+when filtering RFC 3339 bounds. On the `/api/v1/email/` endpoints a `to`
+without `from` covers the 24 hours before `to`.
 
 ### WordPress verification coverage
 
@@ -1242,24 +1244,33 @@ DELETE /api/v1/suppressions      Delete a suppression rule by id
 ```
 GET  /api/v1/email/stats         Email scanning statistics
 GET  /api/v1/email/forwarders    Mail forwarder inventory with destination providers and local-copy flags (read scope)
-GET  /api/v1/email/deferrals     Outbound deferral rollup by provider and sending IP with reason codes, parsed from exim_mainlog (read scope)
-GET  /api/v1/email/queue-composition  Mail queue makeup: real vs null-sender bounce backscatter, frozen count, oldest age, top stuck recipients (read scope)
+GET  /api/v1/email/deferrals     Outbound deferral rollup by provider and sending IP with reason codes and last_seen, parsed from exim_mainlog; each provider has a sample error text; lines is the number of log lines read and window_start/window_end the times of the first and last of them; one read is reused for 60 s (read scope)
+GET  /api/v1/email/queue-composition  Mail queue makeup: real vs null-sender bounce backscatter, frozen count, oldest age, top stuck recipients; 500 when exim could not read every spool header, rather than counting the readable messages (read scope)
 POST /api/v1/email/queue/flush-backscatter  Request removal of frozen null-sender messages from the exim queue on cPanel hosts; returns the count of targeted messages no longer queued, reports incomplete verification as 500, or returns 503 when unavailable (admin scope, CSRF)
-GET  /api/v1/email/held          Forward copies held by the forward guard (admin scope)
+GET  /api/v1/email/queue         One page of the exim queue on cPanel hosts, oldest first, each message with why it is stuck; page (default 1), limit (default 25, max 100), filter=all|frozen|backscatter, q (a substring of the sender or of one of its first 50 undelivered recipients) (admin scope)
+GET  /api/v1/email/queue/{id}    One queued message with all undelivered recipients (up to 1,000), why it is stuck and the last 20 lines of its msglog; 404 when it is not queued (admin scope)
+POST /api/v1/email/queue/{id}/{action}  retry, bounce (return to sender), delete or thaw one queued message; answers the outcome the queue shows afterwards (admin scope, CSRF)
+GET  /api/v1/email/held          Forward copies held by the forward guard, each with its decoded subject and size (admin scope)
 POST /api/v1/email/held/{id}/release   Re-inject a held forward copy to its external recipient (admin scope, CSRF)
 DELETE /api/v1/email/held/{id}   Discard a held forward copy (admin scope, CSRF)
 GET  /api/v1/email/checks        Email checks the Email page shows, each with its group kind ("" = never grouped) (read scope)
 GET  /api/v1/email/groups        Server-grouped action rows (kind=compromised_account|spam_outbreak|auth_failure|queue_alert|malware) with from/to/limit (read scope)
 GET  /api/v1/email/overview      Mail decision totals and 15-minute chart series for from/to (default the last 24 h), antispam mode, live queue and mail-related block counts (read scope)
-GET  /api/v1/email/rejects       Recent rejected mail (time, class, sender, recipient, source IP, detail), newest first, kept 7 days; class=content (spam and malware, default)|all|<class>, from/to (default the last 24 h), limit (default 50, max 200) (admin scope)
-GET  /api/v1/email/relay-abuse   Outbound PHP-mail abuse detections (spam outbreaks, high-volume scripts/accounts) with per-site script breakdown; from/to/limit (read scope)
+GET  /api/v1/email/rejects       Recent rejected mail (time, class, sender, recipient, source IP, detail), newest first, kept 7 days; class=content (spam and malware, default)|all|<class>[,<class>...], from/to (default the last 24 h), limit (default 50, max 200); totals has the permanent rejects of every class in the range (admin scope)
+GET  /api/v1/email/senders       Messages each hosting account sent in from/to (default the last 24 h), busiest first, up to 100 rows, with total, unresolved and abuse_events, the outbound abuse events relay-abuse lists for the range, counted up to 5,000 like relay-abuse, with abuse_events_truncated true when that cap cut the count, and abuse_by_account, those events counted per account they name and per kind, before any list limit (admin scope)
+GET  /api/v1/email/relay-abuse   Outbound PHP-mail abuse detections (spam outbreaks, high-volume scripts/accounts) with per-site script breakdown; from/to/limit; total counts up to 5,000 and total_truncated is true when that cap cut it, while truncated is also set when only limit cut the list (read scope)
 GET  /api/v1/email/rspamd       rspamd status (up|down|off), antispam mode, version and rspamd's counters since it started (scanned, learned, actions, top 8 rules), read from its controller without a password and cached 60 s; available false with a reason when they cannot be read (read scope)
-GET  /api/v1/email/quarantine    Quarantined email list
+GET  /api/v1/email/quarantine    Quarantined email list, each with the size of its spooled body and its subject, decoded and cleaned as on held forward copies
 GET  /api/v1/email/av/status     Email AV watcher status
 GET  /api/v1/email/quarantine/{id}          One quarantined message
 POST /api/v1/email/quarantine/{id}/release  Release a quarantined message (admin scope, CSRF)
 DELETE /api/v1/email/quarantine/{id}        Delete a quarantined message (admin scope, CSRF)
 ```
+
+The senders abuse count and relay abuse list apply the exact `from` and `to`
+bounds, including fractional seconds, even when requests share cached
+history. `from` is inclusive and `to` is exclusive. A cached history limit
+cannot let findings outside those bounds hide matching findings.
 
 Email groups report `handled: true` only for auth failures whose complete,
 current history is answered by active blocks on every attacker address or
@@ -1278,9 +1289,63 @@ at most once per minute, even if the queue empties and refills. An empty queue
 discards its previous detail; new mail has `detail_unavailable: true` until
 the next listing. Failed listings can reuse detail for at most ten minutes.
 
+The queue list and the overview share one queue listing, refreshed at most
+once per minute and after any queue action. `total` counts the messages that
+match `filter` and `q`; `queued`, `frozen`, `backscatter` (null-sender
+messages) and `oldest_seconds` describe the whole queue. `listed_at` is when
+that listing ran, so these counts can trail the overview's live queue size. When no listing has succeeded in
+the last ten minutes the list answers `unavailable: true` with no items and no
+counts. A failed refresh cannot reuse an empty listing, and a positive queue
+count invalidates any earlier empty result. The next list request then lists
+the queue at once rather than waiting out the minute, once for each such
+refill. A spool read failure also makes
+the listing unavailable instead of reporting only its readable messages.
+Quoted recipient local parts remain intact, including spaces. Each
+message's `reason` (`class`, `text`, `raw`) comes from its msglog tail; a
+partial first line is discarded. Up to 100 reasons are cached for a minute.
+The current page takes priority when older entries must be evicted. A
+message thawed since it froze shows `retry_wait` until its next delivery
+attempt.
+
+Message reads and actions run exim as a systemd transient unit and never
+inside the daemon's sandbox: without systemd-run the message route and the
+actions answer 503 and exim does not run. Each action first checks that the message is
+still queued; when it is not, the answer is 409 with `outcome: "gone"`. Nothing
+ran, unless the message left during the action. `retry` answers
+`attempt_started` as soon as the delivery attempt has started. `bounce` and
+`delete` answer `bounced` and `removed` when the message left the queue and
+exim reported no error. When exim reported an error and the message left
+anyway, as when exim -Mrm finds it locked by a delivery that then completes,
+the answer is 409 with `outcome: "gone"`. `thaw` answers `thawed` when the
+queue shows the change, even if exim reported an error. Otherwise the answer
+is `unchanged` with an error. A thaw on a message that is not frozen answers `unchanged`
+without running exim -Mt. Every attempt is written to the UI audit log as
+`email_queue_<action>` with the message ID, the outcome and any error exim
+reported.
+
+Held forward release requires a recorded sender and recipient, each a single
+mailbox without commas, whitespace or a leading dash. An explicitly empty
+sender is allowed for bounces. Ambiguous or missing envelope metadata causes
+a release error and leaves the message held without invoking sendmail.
+Release runs sendmail as a systemd transient unit with the message on its
+stdin, never inside the daemon's sandbox: without systemd-run the release
+fails and the message stays held. The unit uses KillMode=process, so the
+delivery exim forks before it exits is not stopped with the unit and the
+message leaves at once. A release or delete first claims the held copy, so
+of concurrent requests one acts and the others answer that the copy is not
+held; a failed release puts the copy back.
+
+Deferrals are grouped under the provider whose MX host deferred them
+(Google, Microsoft and Yahoo hosts), so a business domain those providers
+host counts under them. The recipient's domain decides when the log line
+names no MX or an unknown one.
+
 The rspamd status follows live health probes. Dismissing an outage finding
 does not change it to `up`. Version display strings are bounded whether
-they come from the controller or the installed program.
+they come from the controller or the installed program. A read of rspamd's
+controller finishes even when the request that started it goes away, so its
+result is cached for the other requests; a failed read is logged once per
+cache period.
 
 ## Hardening
 

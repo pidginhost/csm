@@ -17,6 +17,12 @@ type relayAbuseResponse struct {
 	From      time.Time         `json:"from"`
 	To        time.Time         `json:"to"`
 	Truncated bool              `json:"truncated"`
+	// TotalTruncated says the scan cap cut Total, so the range can hold
+	// more events. Truncated is also set when only limit cut the list.
+	TotalTruncated bool `json:"total_truncated"`
+	// byAccount counts the events of the range that name an account, by
+	// account and kind, before limit cuts the list.
+	byAccount map[string]map[string]int
 }
 
 type relayAbuseEntry struct {
@@ -41,6 +47,11 @@ type relaySiteEntry struct {
 
 const relayAbuseDefaultLimit = 20
 const relayAbuseMaxLimit = 100
+
+// relayAbuseMemo names the history walk the relay-abuse list and the senders
+// abuse count share. The limit only cuts the answer, so it is not part of the
+// key.
+const relayAbuseMemo = "relay-abuse"
 
 func relayPathLabel(path string) string {
 	switch path {
@@ -74,46 +85,68 @@ func (s *Server) apiEmailRelayAbuse(w http.ResponseWriter, r *http.Request) {
 		limit = relayAbuseDefaultLimit
 	}
 
-	now := time.Now()
-	from, to, ok := historyRangeQuery(w, q, now.Add(-24*time.Hour), now)
+	from, to, ok := emailRange(w, q, time.Now())
 	if !ok {
 		return
 	}
-	if to.Before(from) {
-		from, to = to, from
-	}
 
-	writeJSON(w, s.emailMemo("relay?"+q.Encode(), func() any {
-		return s.buildRelayAbuseResponse(from, to, limit)
-	}))
+	writeJSON(w, s.buildRelayAbuseResponse(from, to, limit))
 }
 
 func (s *Server) buildRelayAbuseResponse(from, to time.Time, limit int) relayAbuseResponse {
 	resp := relayAbuseResponse{
-		Entries: []relayAbuseEntry{},
-		Limit:   limit,
-		From:    from.UTC(),
-		To:      to.UTC(),
+		Entries:   []relayAbuseEntry{},
+		Limit:     limit,
+		From:      from.UTC(),
+		To:        to.UTC(),
+		byAccount: map[string]map[string]int{},
 	}
 	if s.store == nil {
 		return resp
 	}
 
-	// Filter while walking newest-first history and cap the matches, so
-	// unrelated findings and findings newer than the range never hide a
-	// match. Truncation covers both this budget and the result limit below.
-	rows := s.store.SearchHistorySince(from, emailGroupsScanCap+1, func(f alert.Finding) bool {
-		return f.Check == "email_php_relay_abuse" && f.Timestamp.Before(to)
-	})
+	key := rangeMemoKey(relayAbuseMemo, from, to)
+	snapshot := s.emailMemo(key, func() any {
+		return s.relayAbuseHistory(from.Truncate(time.Minute), to.Truncate(time.Minute).Add(time.Minute))
+	}).([]relayAbuseEntry)
+	if len(snapshot) > emailGroupsScanCap {
+		// A partial minute-wide snapshot may omit matches behind newer
+		// findings outside the exact range. Apply its bounds during the
+		// history walk instead, before spending the match budget.
+		exactKey := key + "&exact-from=" + from.UTC().Format(time.RFC3339Nano) + "&exact-to=" + to.UTC().Format(time.RFC3339Nano)
+		snapshot = s.emailMemo(exactKey, func() any {
+			return s.relayAbuseHistory(from, to)
+		}).([]relayAbuseEntry)
+	}
+
+	// Memoized rows are shared by concurrent requests. Filter into a new
+	// slice before sorting, retaining each request's precise range.
+	rows := make([]relayAbuseEntry, 0, len(snapshot))
+	for _, row := range snapshot {
+		if !row.DetectedAt.Before(from) && row.DetectedAt.Before(to) {
+			rows = append(rows, row)
+		}
+	}
 	if len(rows) > emailGroupsScanCap {
 		rows = rows[:emailGroupsScanCap]
-		resp.Truncated = true
+		resp.Truncated, resp.TotalTruncated = true, true
 	}
 	resp.Total = len(rows)
+	for _, row := range rows {
+		if row.CPUser == "" {
+			continue
+		}
+		kinds := resp.byAccount[row.CPUser]
+		if kinds == nil {
+			kinds = map[string]int{}
+			resp.byAccount[row.CPUser] = kinds
+		}
+		kinds[row.PathLabel]++
+	}
 
 	sort.SliceStable(rows, func(i, j int) bool {
-		if !rows[i].Timestamp.Equal(rows[j].Timestamp) {
-			return rows[i].Timestamp.After(rows[j].Timestamp)
+		if !rows[i].DetectedAt.Equal(rows[j].DetectedAt) {
+			return rows[i].DetectedAt.After(rows[j].DetectedAt)
 		}
 		if rows[i].Path != rows[j].Path {
 			return rows[i].Path < rows[j].Path
@@ -128,10 +161,19 @@ func (s *Server) buildRelayAbuseResponse(from, to time.Time, limit int) relayAbu
 		resp.Truncated = true
 		rows = rows[:limit]
 	}
-	for _, f := range rows {
-		resp.Entries = append(resp.Entries, toRelayAbuseEntry(f))
-	}
+	resp.Entries = rows
 	return resp
+}
+
+func (s *Server) relayAbuseHistory(from, to time.Time) []relayAbuseEntry {
+	findings := s.store.SearchHistorySince(from, emailGroupsScanCap+1, func(f alert.Finding) bool {
+		return f.Check == "email_php_relay_abuse" && f.Timestamp.Before(to)
+	})
+	rows := make([]relayAbuseEntry, 0, len(findings))
+	for _, finding := range findings {
+		rows = append(rows, toRelayAbuseEntry(finding))
+	}
+	return rows
 }
 
 func toRelayAbuseEntry(f alert.Finding) relayAbuseEntry {

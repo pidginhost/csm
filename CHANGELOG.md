@@ -12,6 +12,18 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 ### Security
 
 - With automatic blocking on, sources using the wp2shell exploit tool are now blocked at the firewall on their first blocked request.
+- Releasing a held forwarded message now uses only the addresses CSM recorded, never copies in the message's own headers, and refuses ambiguous addresses.
+
+### Changed
+
+- The Email Security page puts its job tabs right under the headline numbers, with counts, and shows why queued mail is stuck with retry, return and delete actions.
+- Provider delays now count business domains hosted by Google, Microsoft or Yahoo under those providers instead of as other domains.
+- CSM writes its findings state file at most once a minute instead of on every alert batch, cutting disk writes on busy servers.
+
+### Fixed
+
+- Email Security no longer counts malware messages as clean.
+- Quarantined malware subjects now show decoded, without characters that reverse or hide text, on the Email Security page and in the quarantine API.
 
 ## [4.5.0] - 2026-10-22
 

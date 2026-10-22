@@ -59,7 +59,7 @@ func TestFrozenBackscatterIDsRejectsRealSenderAndMalformedHeaders(t *testing.T) 
 }
 
 func TestParseQueueCountsFlushableBackscatter(t *testing.T) {
-	c := ParseQueue(eximBpSample)
+	c := mustParseQueue(t, eximBpSample)
 	if c.FlushableBackscatter != 1 {
 		t.Fatalf("flushable backscatter = %d, want 1 (only the frozen <> message)", c.FlushableBackscatter)
 	}

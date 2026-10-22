@@ -2,6 +2,7 @@ package intel
 
 import (
 	"net"
+	"strings"
 	"testing"
 	"unicode/utf8"
 )
@@ -61,7 +62,10 @@ func FuzzParseQueue(f *testing.F) {
 	f.Add(" 1d 1K aaaaaa-bbbbbb-cc <>\n   a@b.example")
 	f.Add("garbage\nlines\nonly")
 	f.Fuzz(func(t *testing.T, out string) {
-		c := ParseQueue(out)
+		c, err := ParseQueue(out)
+		if err != nil && c.Total != 0 {
+			t.Fatalf("error %v with %d counted messages", err, c.Total)
+		}
 		if c.Bounce+c.Real != c.Total {
 			t.Fatalf("bounce(%d)+real(%d) != total(%d)", c.Bounce, c.Real, c.Total)
 		}
@@ -70,6 +74,106 @@ func FuzzParseQueue(f *testing.F) {
 		}
 		if len(c.TopRecipients) > topRecipientLimit {
 			t.Fatalf("top recipients exceeds limit: %d", len(c.TopRecipients))
+		}
+	})
+}
+
+// FuzzParseQueueList checks that every listed field stays within its bound.
+// The list, the detail view and the composition share one walker today; the
+// agreement checks guard a later refactor that would let them diverge.
+func FuzzParseQueueList(f *testing.F) {
+	f.Add(eximBpListSample)
+	f.Add(eximBpSample)
+	f.Add(eximBpSampleNewID)
+	f.Add(eximBpSampleNewID + "   0 1tAbCd-000002-Ab\n    *** spool read error: Permission denied ***\n")
+	f.Add(" 1d 1K aaaaaa-bbbbbb-cc <s@example.com>\n          \"two words\"@example.net\n          D \"done already\"@example.net\n")
+	f.Add("")
+	f.Add("garbage\nlines\nonly")
+	f.Add(" 1d 1K aaaaaa-bbbbbb-cc <>\n   a@example.net\n   D c@example.net")
+	f.Add(" 1d 99999999999999999999T aaaaaa-bbbbbb-cc (u) <s@example.com> *** frozen ***\n   a@example.net")
+	f.Add(" 1d 1K aaaaaa-bbbbbb-cc <s@example.com> (u) *** frozen ***\n   a@example.net")
+	f.Add(` 1d 1K aaaaaa-bbbbbb-cc <"a b>c"@example.com> (u)` + "\n   a@example.net")
+	f.Add("          early@example.net\n 1d 1K aaaaaa-bbbbbb-cc <s@example.com>\n   a@example.net")
+	f.Add(" 1d 1K")
+	f.Fuzz(func(t *testing.T, out string) {
+		msgs, err := ParseQueueList([]byte(out))
+		comp, compErr := ParseQueue(out)
+		if compErr != nil && err == nil {
+			t.Fatalf("composition error %v for a listing the list parsed", compErr)
+		}
+		detail, detailErr := ParseQueueDetail([]byte(out))
+		if (detailErr == nil) != (err == nil && len(msgs) == 1) {
+			t.Fatalf("detail error %v with %d listed messages (list error %v)", detailErr, len(msgs), err)
+		}
+		if detailErr == nil && (detail.ID != msgs[0].ID || detail.RecipientCount != msgs[0].RecipientCount ||
+			len(detail.Recipients) != min(detail.RecipientCount, maxDetailRecipients)) {
+			t.Fatalf("detail %+v disagrees with list %+v", detail, msgs[0])
+		}
+		if err != nil {
+			if len(msgs) != 0 || comp.Total != 0 {
+				t.Fatalf("error %v with %d listed and %d counted messages", err, len(msgs), comp.Total)
+			}
+			return
+		}
+		if len(msgs) != comp.Total {
+			t.Fatalf("listed %d messages, composition counted %d", len(msgs), comp.Total)
+		}
+		frozen, bounce := 0, 0
+		for _, m := range msgs {
+			if !ValidMessageID(m.ID) {
+				t.Fatalf("listed invalid message id %q", m.ID)
+			}
+			if m.Recipients == nil || len(m.Recipients) != min(m.RecipientCount, maxQueueRecipients) {
+				t.Fatalf("recipients = %d (nil %v) of %d, want a non-nil list of the first %d", len(m.Recipients), m.Recipients == nil, m.RecipientCount, maxQueueRecipients)
+			}
+			for _, r := range m.Recipients {
+				if len(r) > maxAddressLen || !strings.Contains(r, "@") {
+					t.Fatalf("recipient %q is not a bounded address", r)
+				}
+			}
+			if m.Size < 0 || m.Delivered < 0 {
+				t.Fatalf("size %d delivered %d, want non-negative", m.Size, m.Delivered)
+			}
+			if m.Frozen {
+				frozen++
+			}
+			if m.Bounce {
+				bounce++
+			}
+		}
+		if frozen != comp.Frozen || bounce != comp.Bounce {
+			t.Fatalf("frozen/bounce %d/%d, composition %d/%d", frozen, bounce, comp.Frozen, comp.Bounce)
+		}
+	})
+}
+
+// FuzzMsglogReason feeds attacker-influenced msglog text (remote SMTP replies
+// and sender-chosen subjects) through the reason picker.
+func FuzzMsglogReason(f *testing.F) {
+	for _, seed := range []string{
+		msglogRateLimited, msglogNoRoute, msglogFrozen, msglogReceivedOnly,
+		msglogOther, msglogRetryWait, msglogKeywordAddress, msglogKeywordHost, msglogTwoRecipients,
+		msglogRateLimited + msglogOther, "", "*** Frozen", "*** Frozen (",
+		"2026-10-21 12:00:00 ", "H=", " defer", "2026-10-21 12:00:00 x defer " + strings.Repeat("\xff", 300),
+	} {
+		f.Add(seed)
+	}
+	classes := map[string]bool{
+		"rate_limited": true, "mailbox_full": true, "refused": true, "host_not_found": true,
+		"greylisted": true, "blocked": true, "retry_wait": true, "frozen": true, "none": true, "other": true,
+	}
+	f.Fuzz(func(t *testing.T, tail string) {
+		r := msglogReason(strings.Split(tail, "\n"))
+		if !classes[r.Class] {
+			t.Fatalf("class %q is not a documented class", r.Class)
+		}
+		for name, s := range map[string]string{"text": r.Text, "raw": r.Raw} {
+			if len(s) > maxTextLen || !utf8.ValidString(s) {
+				t.Fatalf("%s %q is not bounded valid UTF-8", name, s)
+			}
+		}
+		if r.Text == "" {
+			t.Fatal("empty reason text")
 		}
 	})
 }

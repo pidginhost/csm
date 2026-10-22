@@ -8,6 +8,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/antispam"
 	"github.com/pidginhost/csm/internal/antispam/hostfacts"
+	csmlog "github.com/pidginhost/csm/internal/log"
 )
 
 // rspamd's numbers are cached this long, and one read of its controller
@@ -86,23 +87,23 @@ func (s *Server) apiEmailRspamd(w http.ResponseWriter, r *http.Request) {
 
 // rspamdStats returns the cached read of ep, reading the controller again
 // once the cache is older than rspamdStatsTTL or holds another endpoint.
-// The lock is held across the read so a burst of requests reads once.
+// The lock is held across the read so a burst of requests reads once. The
+// read outlives a client that goes away, so its result is about rspamd and
+// can be cached for the requests waiting on it.
 func (s *Server) rspamdStats(ctx context.Context, ep antispam.StatsEndpoint) rspamdFetch {
 	s.rspamdMu.Lock()
 	defer s.rspamdMu.Unlock()
 	if c := s.rspamdCache; c.ep == ep && time.Since(c.at) < rspamdStatsTTL {
 		return c
 	}
-	readCtx, cancel := context.WithTimeout(ctx, rspamdFetchTimeout)
+	readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rspamdFetchTimeout)
 	defer cancel()
 	stats, err := readRspamdStats(readCtx, ep)
 	f := rspamdFetch{ep: ep, at: time.Now()}
 	if err != nil {
+		// The read's errors are fixed text: no address, URL or password.
+		csmlog.Warn("email page could not read rspamd's controller", "err", err)
 		f.reason = rspamdNoAnswer
-		if ctx.Err() != nil {
-			// The client went away; its failure says nothing about rspamd.
-			return f
-		}
 	} else {
 		f.stats = &stats
 	}

@@ -162,8 +162,7 @@ func (c *Counter) Prune(now time.Time) {
 	defer c.mu.Unlock()
 	for k := range c.buckets {
 		if k < cut.Unix() {
-			delete(c.buckets, k)
-			delete(c.dirty, k)
+			c.dropBucket(k)
 		}
 	}
 	for class, ring := range c.rings {
@@ -224,6 +223,12 @@ func (b *bucket) add(o *bucket) {
 	b.LoginsSMTP += o.LoginsSMTP
 	b.LoginsMailbox += o.LoginsMailbox
 	b.Quarantined += o.Quarantined
+	for k, n := range o.Sends {
+		if b.Sends == nil {
+			b.Sends = map[string]int{}
+		}
+		b.Sends[k] += n
+	}
 }
 
 // mergeRings merges restored entries into the live rings. Restored entries

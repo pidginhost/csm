@@ -255,9 +255,14 @@ tr[tabindex]:focus-visible, th[tabindex]:focus-visible { outline: 2px solid var(
     .csm-tabs-scroll .nav-link { white-space: nowrap; }
 }
 
-/* Mail queue size bar: the warn and crit marks sit on the bar, each
-   labeled under it. The crit label ends at its mark so the two labels
-   part. */
+/* Email Security: on a phone the seven headline cards sit tighter, so the
+   job tabs under them stay on the first screen. */
+@media (max-width: 575.98px) {
+    #email-kpis .card-body { padding: 0.75rem; }
+}
+
+/* Mail queue size bar: the warn and crit marks sit on the bar, and their
+   labels share one line under it. */
 .csm-queue-bar { position: relative; padding-bottom: 1.25rem; }
 .csm-queue-bar .progress { height: 0.75rem; }
 .csm-queue-mark {
@@ -269,15 +274,28 @@ tr[tabindex]:focus-visible, th[tabindex]:focus-visible { outline: 2px solid var(
     background: var(--csm-warning);
 }
 .csm-queue-mark--crit { background: var(--csm-critical); }
-.csm-queue-mark__label {
+.csm-queue-bar__labels {
     position: absolute;
-    top: 100%;
-    left: 0;
+    bottom: 0;
     font-size: 0.75rem;
     color: var(--csm-secondary);
     white-space: nowrap;
 }
-.csm-queue-mark--crit .csm-queue-mark__label { left: auto; right: 0; }
+
+/* Held mail subjects break anywhere, raw encoded words too, so the table
+   would shrink them first; keep them a readable width. */
+.csm-held-subject { min-width: 12rem; }
+
+/* Queue tab message details: long recipient lists and exim's msglog lines
+   scroll inside the row instead of stretching it. */
+.csm-queue-recipients { max-height: 12rem; overflow-y: auto; }
+.csm-queue-log {
+    max-height: 16rem;
+    overflow: auto;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    font-size: 0.75rem;
+}
 
 /* --- findings.html: sticky filter header -------------------------------- */
 #findings-card > .card-header {
@@ -1074,6 +1092,11 @@ tr[tabindex]:focus-visible, th[tabindex]:focus-visible { outline: 2px solid var(
         color: var(--csm-text-muted);
         margin-right: 0.4rem;
     }
+    /* The block rows above would show every details row; closed ones stay
+       hidden until their row is expanded. */
+    .csm-table-rowcard tbody tr.details-row:not(.show) {
+        display: none;
+    }
 }
 
 /* Utility classes (replace inline style= attrs) --------------------------- */
@@ -1089,6 +1112,9 @@ tr[tabindex]:focus-visible, th[tabindex]:focus-visible { outline: 2px solid var(
 .csm-mw-80  { min-width: 80px; }
 .csm-break-all  { word-break: break-all; }
 .csm-break-word { word-break: break-word; }
+/* Long words stay whole where a table sizes its columns to them, and break
+   only when a block, such as a phone row card, has no room. */
+.csm-wrap-long { overflow-wrap: break-word; }
 .csm-fs-sm  { font-size: 0.8rem; }
 .csm-fs-xl  { font-size: 2rem; }
 .csm-fs-2xl { font-size: 3rem; }

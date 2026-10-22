@@ -18,19 +18,20 @@
         </div>
     </div>
 
-    <!-- Headline numbers for the selected range -->
+    <!-- Headline numbers for the selected range. Each card opens the tab
+         that explains it; ?tab=auth is Findings on auth failures. -->
     <div class="row row-deck row-cards mb-3" id="email-kpis">
         <div class="col-6 col-lg" id="kpi-scanned">
-            <div class="card stat-card">
+            <a href="?tab=overview" class="card card-link stat-card" title="Mail scanned: open the Overview tab">
                 <div class="card-body">
                     <div class="subheader">Mail scanned</div>
                     <div class="h1 mb-0" data-kpi-value>-</div>
                     <div class="text-muted small" data-kpi-sub></div>
                 </div>
-            </div>
+            </a>
         </div>
         <div class="col-6 col-lg" id="kpi-spam">
-            <div class="card stat-card">
+            <a href="?tab=rejects" class="card card-link stat-card" data-rejects-class="spam" title="Spam rejected: open the Rejects tab on spam">
                 <div class="card-body">
                     <div class="subheader">Spam rejected</div>
                     <div class="d-flex align-items-center flex-wrap gap-2">
@@ -39,46 +40,46 @@
                     </div>
                     <div class="text-muted small" data-kpi-sub></div>
                 </div>
-            </div>
+            </a>
         </div>
         <div class="col-6 col-lg" id="kpi-tagged">
-            <div class="card stat-card">
+            <a href="?tab=overview" class="card card-link stat-card" title="Spam tagged: open the Overview tab">
                 <div class="card-body">
                     <div class="subheader">Spam tagged</div>
                     <div class="h1 mb-0" data-kpi-value>-</div>
                     <div class="text-muted small" data-kpi-sub></div>
                 </div>
-            </div>
+            </a>
         </div>
         <div class="col-6 col-lg" id="kpi-malware">
-            <div class="card stat-card">
+            <a href="?tab=held" class="card card-link stat-card" title="Malware: open the Held mail tab">
                 <div class="card-body">
                     <div class="subheader">Malware</div>
                     <div class="h1 mb-0" data-kpi-value>-</div>
                     <div class="text-muted small" data-kpi-sub></div>
                 </div>
-            </div>
+            </a>
         </div>
         <div class="col-6 col-lg" id="kpi-other">
-            <div class="card stat-card">
+            <a href="?tab=rejects" class="card card-link stat-card" data-rejects-class="other" title="Other rejects: open the Rejects tab on other reasons">
                 <div class="card-body">
                     <div class="subheader">Other rejects</div>
                     <div class="h1 mb-0" data-kpi-value>-</div>
                     <div class="text-muted small" data-kpi-sub></div>
                 </div>
-            </div>
+            </a>
         </div>
         <div class="col-6 col-lg" id="kpi-logins">
-            <div class="card stat-card">
+            <a href="?tab=auth" class="card card-link stat-card" title="Failed logins: open the Findings tab on auth failures">
                 <div class="card-body">
                     <div class="subheader">Failed logins</div>
                     <div class="h1 mb-0" data-kpi-value>-</div>
                     <div class="text-muted small" data-kpi-sub></div>
                 </div>
-            </div>
+            </a>
         </div>
         <div class="col-6 col-lg" id="kpi-queue">
-            <a href="#email-tab-queue" class="card card-link stat-card" title="Mail queue: open the Queue tab">
+            <a href="?tab=queue" class="card card-link stat-card" title="Mail queue: open the Queue tab">
                 <div class="card-body">
                     <div class="subheader">Queue</div>
                     <div class="h1 mb-0" data-kpi-value>-</div>
@@ -88,147 +89,395 @@
         </div>
     </div>
 
-    <!-- Mail decisions chart (left) + rspamd (right) -->
-    <div class="row row-deck row-cards mb-3">
-        <div class="col-lg-8">
-            <div class="card">
-                <div class="card-header">
-                    <h2 class="card-title"><i class="ti ti-chart-bar"></i>&nbsp;Mail decisions</h2>
-                </div>
-                <div class="card-body d-flex flex-column">
-                    <div class="csm-chart-md flex-grow-1">
-                        <canvas id="email-decisions-chart" role="img" aria-label="Chart of mail decisions over the selected range: clean, tagged, spam rejected, malware and other rejects"></canvas>
+    <!-- Job tabs, on the first screen under the cards. A tab loads what it
+         shows when it first opens; ?tab= names the open tab. A count badge
+         shows the number; screen readers get it in words instead. -->
+    <ul class="nav nav-tabs csm-tabs-scroll mb-3" id="email-tabs" role="tablist" aria-label="Email Security tabs">
+        <li class="nav-item" role="presentation">
+            <button class="nav-link active" id="email-tab-overview" data-bs-toggle="tab" data-bs-target="#email-pane-overview" type="button" role="tab" aria-controls="email-pane-overview" aria-selected="true">
+                <i class="ti ti-layout-dashboard"></i>&nbsp;Overview
+            </button>
+        </li>
+        <li class="nav-item" role="presentation">
+            <button class="nav-link" id="email-tab-queue" data-bs-toggle="tab" data-bs-target="#email-pane-queue" type="button" role="tab" aria-controls="email-pane-queue" aria-selected="false">
+                <i class="ti ti-mailbox"></i>&nbsp;Queue<span class="badge bg-secondary-lt ms-1" data-tab-count aria-hidden="true" hidden></span> <span class="visually-hidden" data-tab-count-text></span>
+            </button>
+        </li>
+        <li class="nav-item" role="presentation">
+            <button class="nav-link" id="email-tab-held" data-bs-toggle="tab" data-bs-target="#email-pane-held" type="button" role="tab" aria-controls="email-pane-held" aria-selected="false">
+                <i class="ti ti-lock"></i>&nbsp;Held mail<span class="badge bg-secondary-lt ms-1" data-tab-count aria-hidden="true" hidden></span> <span class="visually-hidden" data-tab-count-text></span>
+            </button>
+        </li>
+        <li class="nav-item" role="presentation">
+            <button class="nav-link" id="email-tab-rejects" data-bs-toggle="tab" data-bs-target="#email-pane-rejects" type="button" role="tab" aria-controls="email-pane-rejects" aria-selected="false">
+                <i class="ti ti-mail-off"></i>&nbsp;Rejects<span class="badge bg-secondary-lt ms-1" data-tab-count aria-hidden="true" hidden></span> <span class="visually-hidden" data-tab-count-text></span>
+            </button>
+        </li>
+        <li class="nav-item" role="presentation">
+            <button class="nav-link" id="email-tab-sending" data-bs-toggle="tab" data-bs-target="#email-pane-sending" type="button" role="tab" aria-controls="email-pane-sending" aria-selected="false">
+                <i class="ti ti-send"></i>&nbsp;Sending accounts<span class="badge bg-secondary-lt ms-1" data-tab-count aria-hidden="true" hidden></span> <span class="visually-hidden" data-tab-count-text></span>
+            </button>
+        </li>
+        <li class="nav-item" role="presentation">
+            <button class="nav-link" id="email-tab-delays" data-bs-toggle="tab" data-bs-target="#email-pane-delays" type="button" role="tab" aria-controls="email-pane-delays" aria-selected="false">
+                <i class="ti ti-clock-pause"></i>&nbsp;Provider delays<span class="badge bg-secondary-lt ms-1" data-tab-count aria-hidden="true" hidden></span> <span class="visually-hidden" data-tab-count-text></span>
+            </button>
+        </li>
+        <li class="nav-item" role="presentation">
+            <button class="nav-link" id="email-tab-findings" data-bs-toggle="tab" data-bs-target="#email-pane-findings" type="button" role="tab" aria-controls="email-pane-findings" aria-selected="false">
+                <i class="ti ti-list"></i>&nbsp;Findings<span class="badge bg-secondary-lt ms-1" data-tab-count aria-hidden="true" hidden></span> <span class="visually-hidden" data-tab-count-text></span>
+            </button>
+        </li>
+    </ul>
+
+    <div class="tab-content">
+        <!-- Overview -->
+        <div class="tab-pane fade show active" id="email-pane-overview" role="tabpanel" aria-labelledby="email-tab-overview" tabindex="0">
+            <!-- Mail decisions chart (left) + rspamd (right) -->
+            <div class="row row-deck row-cards mb-3">
+                <div class="col-lg-8">
+                    <div class="card">
+                        <div class="card-header">
+                            <h2 class="card-title"><i class="ti ti-chart-bar"></i>&nbsp;Mail decisions</h2>
+                        </div>
+                        <div class="card-body d-flex flex-column">
+                            <div class="csm-chart-md flex-grow-1">
+                                <canvas id="email-decisions-chart" role="img" aria-label="Chart of mail decisions over the selected range: clean, tagged, spam rejected, malware and other rejects"></canvas>
+                            </div>
+                            <div class="text-muted small mt-2" id="email-chart-note"></div>
+                        </div>
                     </div>
-                    <div class="text-muted small mt-2" id="email-chart-note"></div>
+                </div>
+                <div class="col-lg-4">
+                    <div class="card">
+                        <div class="card-header">
+                            <h2 class="card-title"><i class="ti ti-filter"></i>&nbsp;rspamd</h2>
+                        </div>
+                        <div class="card-body" id="email-rspamd">
+                            <div class="text-muted small">Loading rspamd...</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Needs attention (left) + protection (right) -->
+            <div class="row row-cards align-items-start">
+                <div class="col-lg-8">
+                    <div class="card">
+                        <div class="card-header flex-wrap gap-2">
+                            <h2 class="card-title"><i class="ti ti-target"></i>&nbsp;Needs attention</h2>
+                            <div class="card-actions d-flex align-items-center gap-2">
+                                <span class="text-muted small text-nowrap" id="email-groups-count"></span>
+                                <button type="button" class="btn btn-ghost-secondary btn-sm" id="email-groups-handled" aria-pressed="false" hidden>Show handled</button>
+                            </div>
+                        </div>
+                        <div class="csm-summary-list" id="email-action-groups">
+                            <div class="csm-empty">
+                                <div class="csm-empty__icon"><i class="ti ti-loader-2"></i></div>
+                                <div class="csm-empty__reason">Loading...</div>
+                            </div>
+                        </div>
+                        <button type="button" class="btn btn-ghost-secondary btn-sm w-100 rounded-0 border-0 border-top" id="email-groups-more" hidden>Show all</button>
+                    </div>
+                </div>
+                <div class="col-lg-4">
+                    <div class="card">
+                        <div class="card-header">
+                            <h2 class="card-title"><i class="ti ti-shield-lock"></i>&nbsp;Protection</h2>
+                        </div>
+                        <div class="card-body" id="email-protection">
+                            <div class="d-flex align-items-center gap-2 mb-2" id="prot-antispam">
+                                <span class="status-dot"></span>
+                                <span class="text-muted">Antispam</span>
+                                <span class="ms-auto text-end" data-prot-value>--</span>
+                            </div>
+                            <div class="d-flex align-items-center gap-2 mb-2" id="prot-av">
+                                <span class="status-dot"></span>
+                                <span class="text-muted">Antivirus</span>
+                                <span class="ms-auto text-end" data-prot-value>--</span>
+                            </div>
+                            <div class="d-flex align-items-center gap-2 mb-2" id="prot-smtp">
+                                <span class="status-dot"></span>
+                                <span class="text-muted">Outbound SMTP</span>
+                                <span class="ms-auto text-end" data-prot-value>--</span>
+                            </div>
+                            <div class="d-flex align-items-center gap-2" id="prot-watcher">
+                                <span class="status-dot"></span>
+                                <span class="text-muted">Watcher mode</span>
+                                <span class="ms-auto text-end" data-prot-value>--</span>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
-        <div class="col-lg-4">
+
+        <!-- Queue: what is stuck and why, oldest first, with the actions on
+             each message; then the composition and stuck recipients -->
+        <div class="tab-pane fade" id="email-pane-queue" role="tabpanel" aria-labelledby="email-tab-queue" tabindex="0">
             <div class="card">
-                <div class="card-header">
-                    <h2 class="card-title"><i class="ti ti-filter"></i>&nbsp;rspamd</h2>
+                <div class="card-body border-bottom">
+                    <div class="row g-3 align-items-center">
+                        <div class="col-lg-8">
+                            <div id="email-queue-summary">
+                                <div class="text-muted small"><span class="spinner-border spinner-border-sm"></span> Loading the queue...</div>
+                            </div>
+                        </div>
+                        <div class="col-lg-4">
+                            <div class="subheader mb-2"><i class="ti ti-mailbox"></i>&nbsp;Queue size</div>
+                            <div id="queue-health">
+                                <div class="text-muted small"><span class="spinner-border spinner-border-sm"></span> Loading...</div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
-                <div class="card-body" id="email-rspamd">
-                    <div class="text-muted small">Loading rspamd...</div>
+                <div id="email-queue-list">
+                    <div class="csm-toolbar">
+                        <select id="email-queue-filter" class="form-select form-select-sm csm-toolbar__filter" aria-label="Show messages">
+                            <option value="all">All messages</option>
+                            <option value="frozen">Frozen</option>
+                            <option value="backscatter">Backscatter</option>
+                        </select>
+                        <input type="search" id="email-queue-search" class="form-control form-control-sm csm-toolbar__search" placeholder="Search sender or recipient..." aria-label="Search sender or recipient">
+                        <span class="csm-toolbar__spacer"></span>
+                        <span class="csm-toolbar__count" id="email-queue-count"></span>
+                    </div>
+                    <div class="table-responsive">
+                        <table class="table table-vcenter card-table table-sm" id="email-queue-table">
+                            <thead>
+                                <tr>
+                                    <th>Age</th>
+                                    <th>From</th>
+                                    <th>To</th>
+                                    <th>Size</th>
+                                    <th>Why stuck</th>
+                                    <th>State</th>
+                                    <th class="text-end">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="email-queue-tbody">
+                                <tr><td colspan="7" class="text-center text-muted py-4"><span class="spinner-border spinner-border-sm"></span> Loading...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="card-footer" id="email-queue-pager" hidden>
+                        <div class="d-flex align-items-center gap-2">
+                            <button type="button" class="btn btn-sm btn-ghost-secondary" id="email-queue-prev"><i class="ti ti-chevron-left"></i>&nbsp;Previous</button>
+                            <span class="small text-muted" id="email-queue-page"></span>
+                            <button type="button" class="btn btn-sm btn-ghost-secondary" id="email-queue-next">Next&nbsp;<i class="ti ti-chevron-right"></i></button>
+                        </div>
+                    </div>
+                </div>
+                <div class="card-body border-top">
+                    <div class="subheader mb-2"><i class="ti ti-chart-pie"></i>&nbsp;Queue composition</div>
+                    <div id="queue-composition">
+                        <div class="text-muted small">Composition loads when this tab is opened.</div>
+                    </div>
                 </div>
             </div>
         </div>
-    </div>
 
-    <!-- Recent rejects -->
-    <div class="card mb-3">
-        <div class="card-header flex-wrap gap-2">
-            <h2 class="card-title"><i class="ti ti-mail-off"></i>&nbsp;Recent rejects</h2>
-            <div class="card-actions">
-                <select id="email-rejects-filter" class="form-select form-select-sm csm-auto-width" aria-label="Reject reason" title="Reject reason">
-                    <option value="content">Spam and malware</option>
-                    <option value="all">All reasons</option>
-                </select>
+        <!-- Held mail: malware the email AV quarantined and forward copies
+             the forward guard held, newest first, in the page range -->
+        <div class="tab-pane fade" id="email-pane-held" role="tabpanel" aria-labelledby="email-tab-held" tabindex="0">
+            <div class="card">
+                <div class="card-body border-bottom">
+                    <div id="email-held-summary">
+                        <div class="text-muted small"><span class="spinner-border spinner-border-sm"></span> Loading held mail...</div>
+                    </div>
+                </div>
+                <div class="csm-toolbar">
+                    <select id="email-held-filter" class="form-select form-select-sm csm-toolbar__filter" aria-label="Show held mail">
+                        <option value="all">All held mail</option>
+                        <option value="malware">Malware</option>
+                        <option value="forward">Forward copies</option>
+                    </select>
+                    <input type="search" id="email-held-search" class="form-control form-control-sm csm-toolbar__search" placeholder="Search sender, recipient, subject" aria-label="Search held mail">
+                    <span class="csm-toolbar__spacer"></span>
+                    <div class="csm-toolbar__actions">
+                        <button class="btn btn-warning btn-sm d-none" id="email-quar-bulk-release"><i class="ti ti-mail-forward"></i>&nbsp;Release Selected</button>
+                        <button class="btn btn-danger btn-sm d-none" id="email-quar-bulk-delete"><i class="ti ti-trash"></i>&nbsp;Delete Selected</button>
+                    </div>
+                </div>
+                <div class="table-responsive">
+                    <table class="table table-vcenter card-table table-sm" id="email-held-table">
+                        <thead>
+                            <tr>
+                                <th><input type="checkbox" class="form-check-input" id="email-quar-select-all" aria-label="Select all visible malware messages"></th>
+                                <th>Held</th>
+                                <th>Kind</th>
+                                <th>From</th>
+                                <th>To</th>
+                                <th>Subject</th>
+                                <th>Why held</th>
+                                <th>Size</th>
+                                <th class="text-end">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="email-held-tbody">
+                            <tr><td colspan="9" class="text-center text-muted py-4"><span class="spinner-border spinner-border-sm"></span> Loading...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
             </div>
         </div>
-        <div class="table-responsive">
-            <table class="table table-vcenter card-table table-sm" id="email-rejects-table">
-                <thead>
-                    <tr>
-                        <th>Time</th>
-                        <th>Reason</th>
-                        <th>Sender</th>
-                        <th>Recipient</th>
-                        <th>Source IP</th>
-                        <th>Detail</th>
-                    </tr>
-                </thead>
-                <tbody id="email-rejects-tbody">
-                    <tr><td colspan="6" class="text-center text-muted py-4"><span class="spinner-border spinner-border-sm"></span> Loading rejects...</td></tr>
-                </tbody>
-            </table>
-        </div>
-    </div>
 
-    <!-- Needs attention (left) + protection (right) -->
-    <div class="row row-cards align-items-start mb-3">
-        <div class="col-lg-8">
+        <!-- Rejects: recent rejects in the range -->
+        <div class="tab-pane fade" id="email-pane-rejects" role="tabpanel" aria-labelledby="email-tab-rejects" tabindex="0">
             <div class="card">
                 <div class="card-header flex-wrap gap-2">
-                    <h2 class="card-title"><i class="ti ti-target"></i>&nbsp;Needs attention</h2>
-                    <div class="card-actions d-flex align-items-center gap-2">
-                        <span class="text-muted small text-nowrap" id="email-groups-count"></span>
-                        <button type="button" class="btn btn-ghost-secondary btn-sm" id="email-groups-handled" aria-pressed="false" hidden>Show handled</button>
+                    <h2 class="card-title"><i class="ti ti-mail-off"></i>&nbsp;Recent rejects</h2>
+                    <div class="card-actions">
+                        <select id="email-rejects-filter" class="form-select form-select-sm csm-auto-width" aria-label="Reject reason" title="Reject reason">
+                            <option value="content">Spam and malware</option>
+                            <option value="all">All reasons</option>
+                        </select>
                     </div>
                 </div>
-                <div class="csm-summary-list" id="email-action-groups">
-                    <div class="csm-empty">
-                        <div class="csm-empty__icon"><i class="ti ti-loader-2"></i></div>
-                        <div class="csm-empty__reason">Loading...</div>
-                    </div>
+                <div class="card-body border-bottom py-2 small text-muted" id="email-rejects-note">Counts are permanent rejects; temporary ones are listed and tagged.</div>
+                <div class="table-responsive">
+                    <table class="table table-vcenter card-table table-sm" id="email-rejects-table">
+                        <thead>
+                            <tr>
+                                <th>Time</th>
+                                <th>Reason</th>
+                                <th>Sender</th>
+                                <th>Recipient</th>
+                                <th>Source IP</th>
+                                <th>Detail</th>
+                            </tr>
+                        </thead>
+                        <tbody id="email-rejects-tbody">
+                            <tr><td colspan="6" class="text-center text-muted py-4"><span class="spinner-border spinner-border-sm"></span> Loading rejects...</td></tr>
+                        </tbody>
+                    </table>
                 </div>
-                <button type="button" class="btn btn-ghost-secondary btn-sm w-100 rounded-0 border-0 border-top" id="email-groups-more" hidden>Show all</button>
             </div>
         </div>
-        <div class="col-lg-4">
+
+        <!-- Sending accounts: how much each hosting account sent, under the
+             SMTP firewall line; then the outbound abuse events, and the
+             forwarders to outside addresses, collapsed -->
+        <div class="tab-pane fade" id="email-pane-sending" role="tabpanel" aria-labelledby="email-tab-sending" tabindex="0">
+            <div class="card mb-3">
+                <div class="card-body border-bottom" id="email-sending-firewall">
+                    <div class="text-muted small">The SMTP firewall loads when this tab is opened.</div>
+                </div>
+                <div class="card-body border-bottom py-2 small" id="email-sending-summary"></div>
+                <div class="table-responsive">
+                    <table class="table table-vcenter card-table table-sm" id="email-sending-table">
+                        <thead>
+                            <tr>
+                                <th>Account</th>
+                                <th class="text-end">Messages</th>
+                                <th class="text-end">Share</th>
+                                <th class="ps-md-3">Flags</th>
+                                <th class="text-end">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="email-sending-tbody">
+                            <tr><td colspan="5" class="text-center text-muted py-4"><span class="spinner-border spinner-border-sm"></span> Loading...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="card mb-3">
+                <div class="card-header flex-wrap gap-2">
+                    <h2 class="card-title"><i class="ti ti-alert-triangle"></i>&nbsp;Outbound abuse events</h2>
+                    <span class="card-actions text-muted small" id="email-abuse-count"></span>
+                </div>
+                <div id="email-abuse-events">
+                    <div class="csm-empty"><div class="csm-empty__reason">Outbound abuse events load when this tab is opened.</div></div>
+                </div>
+            </div>
+            <div class="card">
+                <details id="email-forwarders-section">
+                    <summary class="card-body fw-medium">
+                        <i class="ti ti-mail-forward"></i>&nbsp;Forwarders to outside addresses<span class="badge bg-secondary-lt ms-2" id="email-fwd-section-count" hidden></span>
+                    </summary>
+                    <div class="csm-toolbar">
+                        <input type="text" id="email-fwd-search" class="form-control form-control-sm csm-toolbar__search" placeholder="Search source / destination / owner..." aria-label="Search forwarders">
+                        <select id="email-fwd-filter" class="form-select form-select-sm csm-toolbar__filter" aria-label="Filter forwarders">
+                            <option value="">All forwarders</option>
+                            <option value="external" selected>External only</option>
+                            <option value="free">Free providers</option>
+                            <option value="forward_only">Forward-only (no local copy)</option>
+                        </select>
+                        <span class="csm-toolbar__spacer"></span>
+                        <span class="csm-toolbar__count" id="email-fwd-count"></span>
+                    </div>
+                    <div class="table-responsive">
+                        <table class="table table-vcenter card-table table-sm" id="email-fwd-table">
+                            <thead>
+                                <tr>
+                                    <th>Source</th>
+                                    <th>Owner</th>
+                                    <th>Destinations</th>
+                                    <th>Providers</th>
+                                    <th>Local copy</th>
+                                </tr>
+                            </thead>
+                            <tbody id="email-fwd-tbody">
+                                <tr><td colspan="5" class="text-center text-muted py-4">Forwarder inventory loads when this tab is opened.</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </details>
+            </div>
+        </div>
+
+        <!-- Provider delays: which providers defer this server's mail and why,
+             then this server's sending IPs, from the newest exim_mainlog
+             lines -->
+        <div class="tab-pane fade" id="email-pane-delays" role="tabpanel" aria-labelledby="email-tab-delays" tabindex="0">
+            <div class="card mb-3">
+                <div class="card-body border-bottom">
+                    <div class="fw-medium" id="email-deliv-summary">Deferral activity loads when this tab is opened.</div>
+                    <div class="text-muted small" id="email-deliv-scope"></div>
+                </div>
+                <div class="table-responsive">
+                    <table class="table table-vcenter card-table table-sm" id="email-deliv-providers">
+                        <thead>
+                            <tr>
+                                <th>Provider</th>
+                                <th class="text-end">Deferred</th>
+                                <th class="ps-md-3">Last seen</th>
+                                <th>Reason</th>
+                            </tr>
+                        </thead>
+                        <tbody id="email-deliv-providers-body">
+                            <tr><td colspan="4" class="text-center text-muted py-4"><span class="spinner-border spinner-border-sm"></span> Loading...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
             <div class="card">
                 <div class="card-header">
-                    <h2 class="card-title"><i class="ti ti-shield-lock"></i>&nbsp;Protection</h2>
+                    <h2 class="card-title"><i class="ti ti-router"></i>&nbsp;Our sending IPs</h2>
                 </div>
-                <div class="card-body" id="email-protection">
-                    <div class="d-flex align-items-center gap-2 mb-2" id="prot-antispam">
-                        <span class="status-dot"></span>
-                        <span class="text-muted">Antispam</span>
-                        <span class="ms-auto text-end" data-prot-value>--</span>
-                    </div>
-                    <div class="d-flex align-items-center gap-2 mb-2" id="prot-av">
-                        <span class="status-dot"></span>
-                        <span class="text-muted">Antivirus</span>
-                        <span class="ms-auto text-end" data-prot-value>--</span>
-                    </div>
-                    <div class="d-flex align-items-center gap-2 mb-2" id="prot-smtp">
-                        <span class="status-dot"></span>
-                        <span class="text-muted">Outbound SMTP</span>
-                        <span class="ms-auto text-end" data-prot-value>--</span>
-                    </div>
-                    <div class="d-flex align-items-center gap-2" id="prot-watcher">
-                        <span class="status-dot"></span>
-                        <span class="text-muted">Watcher mode</span>
-                        <span class="ms-auto text-end" data-prot-value>--</span>
-                    </div>
+                <div class="table-responsive">
+                    <table class="table table-vcenter card-table table-sm" id="email-deliv-ips">
+                        <thead>
+                            <tr>
+                                <th>Sending IP</th>
+                                <th class="text-end">Deferred</th>
+                                <th class="ps-md-3">Last seen</th>
+                                <th>Deferred by</th>
+                                <th>Reason</th>
+                            </tr>
+                        </thead>
+                        <tbody id="email-deliv-ips-body">
+                            <tr><td colspan="5" class="text-center text-muted py-4"><span class="spinner-border spinner-border-sm"></span> Loading...</td></tr>
+                        </tbody>
+                    </table>
                 </div>
             </div>
         </div>
-    </div>
 
-    <!-- Tabs: Findings, Quarantine, Queue, Outbound, Deliverability -->
-    <div class="card">
-        <ul class="nav nav-tabs csm-tabs-scroll" id="email-tabs" role="tablist">
-            <li class="nav-item" role="presentation">
-                <button class="nav-link active" id="email-tab-findings" data-bs-toggle="tab" data-bs-target="#email-pane-findings" type="button" role="tab" aria-controls="email-pane-findings" aria-selected="true">
-                    <i class="ti ti-list"></i>&nbsp;Findings
-                </button>
-            </li>
-            <li class="nav-item" role="presentation">
-                <button class="nav-link" id="email-tab-quarantine" data-bs-toggle="tab" data-bs-target="#email-pane-quarantine" type="button" role="tab" aria-controls="email-pane-quarantine" aria-selected="false">
-                    <i class="ti ti-lock"></i>&nbsp;Quarantine
-                </button>
-            </li>
-            <li class="nav-item" role="presentation">
-                <button class="nav-link" id="email-tab-queue" data-bs-toggle="tab" data-bs-target="#email-pane-queue" type="button" role="tab" aria-controls="email-pane-queue" aria-selected="false">
-                    <i class="ti ti-mailbox"></i>&nbsp;Queue
-                </button>
-            </li>
-            <li class="nav-item" role="presentation">
-                <button class="nav-link" id="email-tab-outbound" data-bs-toggle="tab" data-bs-target="#email-pane-outbound" type="button" role="tab" aria-controls="email-pane-outbound" aria-selected="false">
-                    <i class="ti ti-send"></i>&nbsp;Outbound
-                </button>
-            </li>
-            <li class="nav-item" role="presentation">
-                <button class="nav-link" id="email-tab-deliverability" data-bs-toggle="tab" data-bs-target="#email-pane-deliverability" type="button" role="tab" aria-controls="email-pane-deliverability" aria-selected="false">
-                    <i class="ti ti-gauge"></i>&nbsp;Deliverability
-                </button>
-            </li>
-        </ul>
-
-        <div class="tab-content">
-            <!-- Findings tab: scoped by the header range -->
-            <div class="tab-pane fade show active" id="email-pane-findings" role="tabpanel" aria-labelledby="email-tab-findings" tabindex="0">
+        <!-- Findings: scoped by the header range -->
+        <div class="tab-pane fade" id="email-pane-findings" role="tabpanel" aria-labelledby="email-tab-findings" tabindex="0">
+            <div class="card">
+                <div class="card-body border-bottom fw-medium" id="email-findings-summary" hidden></div>
                 <div class="csm-toolbar">
                     <input type="text" id="email-search" class="form-control form-control-sm csm-toolbar__search" placeholder="Search findings..." aria-label="Search findings">
                     <select id="filter-severity" class="form-select form-select-sm csm-auto-width" aria-label="Severity">
@@ -273,169 +522,6 @@
                     </table>
                 </div>
                 <div id="email-findings-note"></div>
-            </div>
-
-            <!-- Quarantine tab (full width) -->
-            <div class="tab-pane fade" id="email-pane-quarantine" role="tabpanel" aria-labelledby="email-tab-quarantine" tabindex="0">
-                <div class="csm-toolbar">
-                    <input type="text" id="email-quar-search" class="form-control form-control-sm csm-toolbar__search" placeholder="Search sender / recipient / subject..." aria-label="Search email quarantine">
-                    <select id="email-quar-dir" class="form-select form-select-sm csm-toolbar__filter" aria-label="Filter by direction">
-                        <option value="">All directions</option>
-                        <option value="inbound">Inbound</option>
-                        <option value="outbound">Outbound</option>
-                    </select>
-                    <input type="date" id="email-quar-from" class="form-control form-control-sm csm-toolbar__filter" aria-label="From date">
-                    <input type="date" id="email-quar-to" class="form-control form-control-sm csm-toolbar__filter" aria-label="To date">
-                    <span class="csm-toolbar__spacer"></span>
-                    <div class="csm-toolbar__actions">
-                        <button class="btn btn-warning btn-sm d-none" id="email-quar-bulk-release"><i class="ti ti-mail-forward"></i>&nbsp;Release Selected</button>
-                        <button class="btn btn-danger btn-sm d-none" id="email-quar-bulk-delete"><i class="ti ti-trash"></i>&nbsp;Delete Selected</button>
-                    </div>
-                </div>
-                <div class="card-body">
-                    <div id="quarantine-table"></div>
-                </div>
-            </div>
-
-            <!-- Queue tab: size against the thresholds, composition, stuck recipients -->
-            <div class="tab-pane fade" id="email-pane-queue" role="tabpanel" aria-labelledby="email-tab-queue" tabindex="0">
-                <div class="card-body">
-                    <div class="row g-4 align-items-start">
-                        <div class="col-lg-6">
-                            <div class="subheader mb-2"><i class="ti ti-mailbox"></i>&nbsp;Queue size</div>
-                            <div id="queue-health">
-                                <div class="text-muted small"><span class="spinner-border spinner-border-sm"></span> Loading...</div>
-                            </div>
-                        </div>
-                        <div class="col-lg-6">
-                            <div class="subheader mb-2"><i class="ti ti-chart-pie"></i>&nbsp;Queue composition</div>
-                            <div id="queue-composition">
-                                <div class="text-muted small">Composition loads when this tab is opened.</div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Outbound tab: SMTP firewall, then senders, abuse, forwarders -->
-            <div class="tab-pane fade" id="email-pane-outbound" role="tabpanel" aria-labelledby="email-tab-outbound" tabindex="0">
-                <div class="card-body border-bottom">
-                    <div class="subheader mb-2">SMTP firewall</div>
-                    <div id="smtp-firewall">
-                        <div class="text-muted small">Loads when this tab is opened.</div>
-                    </div>
-                </div>
-                <div class="card-body pb-0">
-                    <ul class="nav nav-pills csm-tabs-scroll" id="email-outbound-nav" role="tablist">
-                        <li class="nav-item" role="presentation">
-                            <button class="nav-link active" id="email-tab-senders" data-bs-toggle="tab" data-bs-target="#email-pane-senders" type="button" role="tab" aria-controls="email-pane-senders" aria-selected="true">Senders</button>
-                        </li>
-                        <li class="nav-item" role="presentation">
-                            <button class="nav-link" id="email-tab-outbound-abuse" data-bs-toggle="tab" data-bs-target="#email-pane-outbound-abuse" type="button" role="tab" aria-controls="email-pane-outbound-abuse" aria-selected="false">Abuse</button>
-                        </li>
-                        <li class="nav-item" role="presentation">
-                            <button class="nav-link" id="email-tab-forwarders" data-bs-toggle="tab" data-bs-target="#email-pane-forwarders" type="button" role="tab" aria-controls="email-pane-forwarders" aria-selected="false">Forwarders and held</button>
-                        </li>
-                    </ul>
-                </div>
-                <div class="tab-content">
-                    <div class="tab-pane fade show active" id="email-pane-senders" role="tabpanel" aria-labelledby="email-tab-senders" tabindex="0">
-                        <div class="card-body pb-2 text-muted small">Top sending domains in the last 500 log lines.</div>
-                        <div class="p-0 csm-list-scroll-sm" id="top-senders">
-                            <div class="text-muted text-center py-3"><span class="spinner-border spinner-border-sm"></span> Loading...</div>
-                        </div>
-                    </div>
-                    <div class="tab-pane fade" id="email-pane-outbound-abuse" role="tabpanel" aria-labelledby="email-tab-outbound-abuse" tabindex="0">
-                        <div id="outbound-abuse-body">
-                            <div class="csm-empty"><div class="csm-empty__reason">Outbound mail abuse loads when this section is opened.</div></div>
-                        </div>
-                    </div>
-                    <div class="tab-pane fade" id="email-pane-forwarders" role="tabpanel" aria-labelledby="email-tab-forwarders" tabindex="0">
-                        <div class="csm-toolbar">
-                            <input type="text" id="email-fwd-search" class="form-control form-control-sm csm-toolbar__search" placeholder="Search source / destination / owner..." aria-label="Search forwarders">
-                            <select id="email-fwd-filter" class="form-select form-select-sm csm-toolbar__filter" aria-label="Filter forwarders">
-                                <option value="">All forwarders</option>
-                                <option value="external">External only</option>
-                                <option value="free">Free providers</option>
-                                <option value="forward_only">Forward-only (no local copy)</option>
-                            </select>
-                            <span class="csm-toolbar__spacer"></span>
-                            <span class="csm-toolbar__count" id="email-fwd-count"></span>
-                        </div>
-                        <div class="table-responsive">
-                            <table class="table table-vcenter card-table table-sm" id="email-fwd-table">
-                                <thead>
-                                    <tr>
-                                        <th>Source</th>
-                                        <th>Owner</th>
-                                        <th>Destinations</th>
-                                        <th>Providers</th>
-                                        <th>Local copy</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="email-fwd-tbody">
-                                    <tr><td colspan="5" class="text-center text-muted py-4">Forwarder inventory loads when this tab is opened.</td></tr>
-                                </tbody>
-                            </table>
-                        </div>
-
-                        <div class="card-body border-top">
-                            <div class="subheader mb-2"><i class="ti ti-mail-pause"></i>&nbsp;Held forward copies <span class="text-muted small" id="email-held-count"></span></div>
-                            <div class="text-muted small mb-2">Spam-bounce or bad-sender forward copies the guard held before they relayed externally. The local copy still delivered. Release re-sends a copy to its external recipient; delete discards it.</div>
-                            <div class="table-responsive">
-                                <table class="table table-vcenter card-table table-sm" id="email-held-table">
-                                    <thead>
-                                        <tr>
-                                            <th>Held</th>
-                                            <th>Forwarder</th>
-                                            <th>Recipient</th>
-                                            <th>Reason</th>
-                                            <th class="text-end">Actions</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody id="email-held-tbody">
-                                        <tr><td colspan="5" class="text-center text-muted py-4">Held forwards load when this tab is opened.</td></tr>
-                                    </tbody>
-                                </table>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Deliverability tab: outbound deferral picture from exim_mainlog -->
-            <div class="tab-pane fade" id="email-pane-deliverability" role="tabpanel" aria-labelledby="email-tab-deliverability" tabindex="0">
-                <div class="card-body">
-                    <div class="text-muted small mb-3" id="email-deliv-summary">Deferral activity loads when this tab is opened.</div>
-                    <div class="row row-cards">
-                        <div class="col-lg-6">
-                            <div class="subheader mb-2"><i class="ti ti-building-broadcast-tower"></i>&nbsp;Providers throttling this server</div>
-                            <div class="table-responsive">
-                                <table class="table table-vcenter card-table table-sm" id="email-deliv-providers">
-                                    <thead>
-                                        <tr><th>Provider</th><th class="text-end">Deferrals</th><th>Reasons</th></tr>
-                                    </thead>
-                                    <tbody id="email-deliv-providers-body">
-                                        <tr><td colspan="3" class="text-center text-muted py-4"><span class="spinner-border spinner-border-sm"></span> Loading...</td></tr>
-                                    </tbody>
-                                </table>
-                            </div>
-                        </div>
-                        <div class="col-lg-6">
-                            <div class="subheader mb-2"><i class="ti ti-router"></i>&nbsp;Outbound IP reputation</div>
-                            <div class="table-responsive">
-                                <table class="table table-vcenter card-table table-sm" id="email-deliv-ips">
-                                    <thead>
-                                        <tr><th>Sending IP</th><th class="text-end">Deferrals</th><th>Deferred by</th></tr>
-                                    </thead>
-                                    <tbody id="email-deliv-ips-body">
-                                        <tr><td colspan="3" class="text-center text-muted py-4"><span class="spinner-border spinner-border-sm"></span> Loading...</td></tr>
-                                    </tbody>
-                                </table>
-                            </div>
-                        </div>
-                    </div>
-                </div>
             </div>
         </div>
     </div>

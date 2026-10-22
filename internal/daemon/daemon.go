@@ -1431,6 +1431,13 @@ func (d *Daemon) alertDispatcher() {
 		case <-d.stopCh:
 			batch = d.drainAlertChannel(batch)
 			d.persistPendingFindingsOnShutdown(batch)
+			// Save now: Close waits for the worker drains, and a stop
+			// killed before it would lose the pending state window.
+			if d.store != nil {
+				if err := d.store.Flush(); err != nil {
+					fmt.Fprintf(os.Stderr, "[%s] state: error saving: %v\n", ts(), err)
+				}
+			}
 			return
 
 		case f := <-d.alertCh:
@@ -1456,6 +1463,9 @@ func (d *Daemon) alertDispatcher() {
 			if len(batch) > 0 {
 				d.dispatchBatch(batch)
 				batch = nil
+			}
+			if err := d.store.FlushDue(time.Now()); err != nil {
+				fmt.Fprintf(os.Stderr, "[%s] state: error saving: %v\n", ts(), err)
 			}
 		}
 	}

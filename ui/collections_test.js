@@ -6,6 +6,8 @@ const { test } = require('node:test');
 const { loadPage, templateBody, items, SHARED, settle } = require('./pagekit.js');
 
 const AT = '2026-09-22T10:00:00Z';
+// Held mail shows items held within the page range, the last 24 hours.
+const RECENT = new Date(Date.now() - 3600 * 1000).toISOString();
 
 // answerAll answers what the page asks for until it stops asking: the
 // route under test gets its body, every other list route an empty list.
@@ -33,20 +35,20 @@ const CASES = [
     { name: 'email findings', page: 'email', scripts: ['email.js'], route: '/api/v1/history?',
       item: { severity: 2, check: 'email_spam_outbreak', message: 'history row message', timestamp: AT },
       host: 'email-tbody', text: 'history row message' },
-    { name: 'email quarantine', page: 'email', scripts: ['email.js'], tab: 'email-tab-quarantine', route: '/api/v1/email/quarantine',
+    { name: 'email quarantine', page: 'email', scripts: ['email.js'], tab: 'email-tab-held', route: '/api/v1/email/quarantine',
       item: { message_id: '1abcDE-000001-AB', direction: 'inbound', from: 'sender@example.org', to: ['user@example.com'], subject: 'invoice',
-              quarantined_at: AT, findings: [{ filename: 'a.exe', engine: 'clamav', signature: 'Eicar-Test', severity: 'high' }] },
-      host: 'quarantine-table', text: 'sender@example.org' },
-    { name: 'email forwarders', page: 'email', scripts: ['email.js'], tab: 'email-tab-forwarders', route: '/api/v1/email/forwarders',
+              quarantined_at: RECENT, findings: [{ filename: 'a.exe', engine: 'clamav', signature: 'Eicar-Test', severity: 'high' }] },
+      host: 'email-held-tbody', text: 'sender@example.org' },
+    { name: 'email forwarders', page: 'email', scripts: ['email.js'], tab: 'email-tab-sending', route: '/api/v1/email/forwarders',
       item: { source: 'info@example.com', domain: 'example.com', owner: 'alice', destinations: [{ address: 'fwd@example.net', domain: 'example.net', provider: 'other' }],
               providers: ['other'], keep_local: false, forward_only: true, has_external: true, has_free_provider: false },
       extra: { summary: { total: 1, external: 1, free_provider: 0 } }, host: 'email-fwd-tbody', text: 'info@example.com' },
-    { name: 'held forwards', page: 'email', scripts: ['email.js'], tab: 'email-tab-forwarders', route: '/api/v1/email/held',
-      item: { id: 'h1', forwarder: 'held@example.com', recipient: 'x@example.net', sender: 's@example.org', reasons: ['spam'], held_at: AT, size: 100 },
+    { name: 'held forwards', page: 'email', scripts: ['email.js'], tab: 'email-tab-held', route: '/api/v1/email/held',
+      item: { id: 'h1', forwarder: 'held@example.com', recipient: 'x@example.net', sender: 's@example.org', reasons: ['spam'], held_at: RECENT, size: 100 },
       host: 'email-held-tbody', text: 'held@example.com' },
-    { name: 'outbound relay abuse', page: 'email', scripts: ['email.js'], tab: 'email-tab-outbound-abuse', route: '/api/v1/email/relay-abuse',
+    { name: 'outbound relay abuse', page: 'email', scripts: ['email.js'], tab: 'email-tab-sending', route: '/api/v1/email/relay-abuse',
       item: { path: '/home/alice/public_html/relay.php', path_label: 'relay.php', severity: 'HIGH', trigger_count: 3, detected_at: AT },
-      extra: { limit: 20, truncated: false }, host: 'outbound-abuse-body', text: 'relay.php' },
+      extra: { limit: 20, truncated: false }, host: 'email-abuse-events', text: 'relay.php' },
     { name: 'blocked subnets', page: 'firewall', scripts: ['firewall.js'], route: '/api/v1/firewall/subnets',
       item: { cidr: '198.51.100.0/24', reason: 'scanner', source: 'web_ui', blocked_at: AT }, host: 'subnet-content', text: '198.51.100.0/24' },
     { name: 'whitelist', page: 'firewall', scripts: ['firewall.js'], route: '/api/v1/threat/whitelist',

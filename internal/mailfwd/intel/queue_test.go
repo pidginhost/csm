@@ -24,7 +24,7 @@ const eximBpSample = ` 25m  2.5K 1rABcd-000ABC-2A <> *** frozen ***
 `
 
 func TestParseQueueComposition(t *testing.T) {
-	c := ParseQueue(eximBpSample)
+	c := mustParseQueue(t, eximBpSample)
 
 	if c.Total != 4 {
 		t.Fatalf("total = %d, want 4", c.Total)
@@ -68,7 +68,7 @@ const eximBpSampleNewID = `  3d  4.3K 1wVR8E-0000000C9po-1DDg <sender@shop.examp
 `
 
 func TestParseQueueNewEximMessageIDFormat(t *testing.T) {
-	c := ParseQueue(eximBpSampleNewID)
+	c := mustParseQueue(t, eximBpSampleNewID)
 
 	if c.Total != 3 {
 		t.Fatalf("total = %d, want 3 (exim 4.97+ message ids must parse)", c.Total)
@@ -98,7 +98,7 @@ func TestParseQueueAcceptsLocalUserSenderMarker(t *testing.T) {
           bounce@example.net
 `
 
-	c := ParseQueue(in)
+	c := mustParseQueue(t, in)
 
 	if c.Total != 2 {
 		t.Fatalf("total = %d, want 2", c.Total)
@@ -126,13 +126,35 @@ func TestParseQueueAcceptsLocalUserSenderMarker(t *testing.T) {
 	}
 }
 
+func TestParseQueueCountsLoginAfterSender(t *testing.T) {
+	// Exim prints "(login)" after the sender, then the frozen marker.
+	in := `  1h  1.2K 1tAbCd-000002-Ab <sender@example.com> (cpuser)
+          rcpt@example.net
+
+  2h   900 1tAbCd-000003-Ab <> (cpuser) *** frozen ***
+          bounce@example.net
+`
+
+	c := mustParseQueue(t, in)
+
+	if c.Total != 2 || c.Real != 1 || c.Bounce != 1 || c.Frozen != 1 || c.FlushableBackscatter != 1 {
+		t.Fatalf("composition = %+v, want 2 messages: 1 real, 1 frozen bounce", c)
+	}
+	if len(c.TopRecipients) != 2 {
+		t.Fatalf("top recipients = %+v, want both recipients counted", c.TopRecipients)
+	}
+	if ids := FrozenBackscatterIDs(in); len(ids) != 1 || ids[0] != "1tAbCd-000003-Ab" {
+		t.Fatalf("frozen backscatter = %v, want the frozen bounce", ids)
+	}
+}
+
 func TestParseQueueDoesNotCountHeaderShapedContinuation(t *testing.T) {
 	in := `  3d  4.3K 1wVR8E-0000000C9po-1DDg <sender@shop.example>
           1d 1K 1wVRAI-0000000CAT0-41m1 recipient@example.net
           real@example.net
 `
 
-	c := ParseQueue(in)
+	c := mustParseQueue(t, in)
 
 	if c.Total != 1 {
 		t.Fatalf("total = %d, want 1", c.Total)
@@ -150,7 +172,7 @@ func TestParseQueueDoesNotCountTabIndentedHeaderShapedContinuation(t *testing.T)
 		"\t1d 1K 1wVRAI-0000000CAT0-41m1 recipient@example.net\n" +
 		"          real@example.net\n"
 
-	c := ParseQueue(in)
+	c := mustParseQueue(t, in)
 
 	if c.Total != 1 {
 		t.Fatalf("total = %d, want 1", c.Total)
@@ -168,7 +190,7 @@ func TestParseQueueRejectsUnknownLongMessageIDToken(t *testing.T) {
           victim@example.net
 `
 
-	c := ParseQueue(in)
+	c := mustParseQueue(t, in)
 
 	if c.Total != 0 {
 		t.Fatalf("total = %d, want 0 for non-exim message-id token", c.Total)
@@ -178,12 +200,22 @@ func TestParseQueueRejectsUnknownLongMessageIDToken(t *testing.T) {
 	}
 }
 
+// mustParseQueue is ParseQueue for a listing that must parse.
+func mustParseQueue(t *testing.T, out string) QueueComposition {
+	t.Helper()
+	c, err := ParseQueue(out)
+	if err != nil {
+		t.Fatalf("ParseQueue: %v", err)
+	}
+	return c
+}
+
 func TestParseQueueEmpty(t *testing.T) {
 	for name, in := range map[string]string{
 		"blank":   "",
 		"garbage": "no queue here\njust text",
 	} {
-		c := ParseQueue(in)
+		c := mustParseQueue(t, in)
 		if c.Total != 0 || c.Bounce != 0 || c.Real != 0 || c.Frozen != 0 {
 			t.Errorf("%s: expected zero composition, got %+v", name, c)
 		}
@@ -200,7 +232,7 @@ not-a-recipient@example.net
 -- summary from a wrapper: operator@example.net
 `
 
-	c := ParseQueue(in)
+	c := mustParseQueue(t, in)
 
 	if c.Total != 1 || c.Bounce != 1 || c.Real != 0 {
 		t.Fatalf("composition = %+v, want one bounce message", c)
@@ -226,7 +258,7 @@ func TestParseQueueMalformedHeaderDoesNotLeakRecipients(t *testing.T) {
           leaked@example.org
 `
 
-	c := ParseQueue(in)
+	c := mustParseQueue(t, in)
 
 	if c.Total != 1 {
 		t.Fatalf("total = %d, want only the valid header counted", c.Total)
@@ -253,6 +285,28 @@ func TestEximQueueSourceCompositionReturnsEmptyOnCommandError(t *testing.T) {
 	}
 	if c.TopRecipients == nil {
 		t.Fatal("TopRecipients must be a non-nil empty slice")
+	}
+}
+
+// A listing with a spool header exim could not read is neither the whole
+// queue nor an empty one. The composition reports an error, as the queue
+// list reports the listing unavailable, instead of counting what it read.
+func TestEximQueueSourceCompositionFailsOnSpoolReadError(t *testing.T) {
+	unreadable := "   0 1tAbCd-000002-Ab\n    *** spool read error: Permission denied ***\n"
+	for name, out := range map[string]string{
+		"among readable messages": eximBpSampleNewID + unreadable,
+		"alone":                   unreadable,
+	} {
+		src := &EximQueueSource{run: func() ([]byte, error) { return []byte(out), nil }}
+		if c, err := src.Composition(); err == nil {
+			t.Errorf("%s: Composition = %+v with no error, want an error", name, c)
+		}
+	}
+	// A message delivered while exim listed it is not a read failure.
+	gone := eximBpSampleNewID + "   0 1tAbCd-000002-Ab\n    *** spool read error: No such file or directory ***\n"
+	src := &EximQueueSource{run: func() ([]byte, error) { return []byte(gone), nil }}
+	if c, err := src.Composition(); err != nil || c.Total == 0 {
+		t.Errorf("listing with a delivered message: Composition = %+v, %v; want the readable messages counted", c, err)
 	}
 }
 

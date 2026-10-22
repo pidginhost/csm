@@ -43,7 +43,7 @@ scope. The header links to session management.
 | **Firewall** | `/firewall` | Subview-tabbed page (`?view=overview/blocks/allow/config/audit/danger`; `?ip=<address>` opens the lookup for that address): blocked IPs/subnets with GeoIP, bulk unblock of selected rows (with undo), the whitelist and allow rules (Allow Rules tab), search, audit log; the lookup links to Threat Intel for the same address; destructive actions live under the Danger tab |
 | **ModSecurity** | `/modsec` | WAF workbench: status strip, Active WAF pressure summary list (top attackers by hits), top rules / domains side panel, Blocked IPs / Events tabs, and a Manage Rules link to ModSecurity Rules. Block detail panels show first-seen, top URIs, sample events, and direct links to Threat Intel, Firewall lookup, and rule management |
 | **ModSecurity Rules** | `/modsec/rules` | Enable or disable CSM rules (applied with one reload) and firewall escalation exclusions; the exclusion list works even when rule management is not configured |
-| **Email Security** | `/email` | Mail decisions, recent rejects, rspamd and AV status, and groups needing attention. Findings, Quarantine, Queue, Outbound, and Deliverability tabs hold the detailed views. Outbound includes senders, abuse, forwarders, and held copies. Queue actions distinguish real mail from frozen null-sender backscatter; held copies can be released or deleted without affecting local delivery. |
+| **Email Security** | `/email` | Headline numbers for the selected range, each opening the tab that explains it, then job tabs with counts: Overview (mail decisions chart, rspamd, groups needing attention, protection), Queue (why each message is stuck, with retry, return to sender, delete and thaw), Held mail (quarantined malware and held forward copies, to release or delete), Rejects, Sending accounts (mail per hosting account, abuse events, forwarders), Provider delays (providers and sending IPs deferring mail, and why) and Findings. `?tab=` names the open tab. |
 | **Verified Bots** | `/verified-bots` | Editor for the verified-crawler allowlist (`reputation.verified_bots`): UA, reverse-DNS suffix, and IP-range identities, plus auto-update posture, with apply-and-reload. Admin scope |
 | **Threat Intelligence** | `/threat` | IP lookup with scoring/GeoIP/ASN (`?ip=<address>` runs it on load), 24 hour and permanent block and whitelist actions (single and bulk), top attackers, attack type charts, trends; the lookup links to Firewall for the same address, and the whitelist itself is kept under Firewall > Allow Rules |
 | **Server Hardening** | `/hardening` | On-demand hardening audit, stored report, score, and remediation guidance |
@@ -128,6 +128,19 @@ load succeeds.
 On Email Security, failed refreshes mark protection status as unavailable
 and hide stale chart data. An older response cannot overwrite newer health
 status or the selected outbound abuse range.
+Headline counts refresh every 30 seconds. Queue messages and composition,
+held mail, rejects, sending accounts, provider delays and Findings refresh
+every minute while their tab is open. Hidden tabs do not poll their lists;
+the Held mail, Sending accounts and Provider delays counts and the rspamd
+state in the header refresh every minute on any tab.
+Unchanged results keep their rows; changed results retain paging, sorting,
+selection, open details and focus for items still present. Pending message,
+bulk and firewall actions stay disabled across refreshes. Queue actions wait
+up to a minute; an unreadable outcome is reported as unknown.
+Held mail custom ranges include only items held during the selected days;
+the summary also identifies held items outside that range. The other ranges
+have no end, so a server clock ahead of the browser cannot hide mail just
+held.
 
 The visible History tab refreshes with its current filters and page size.
 Editors wait for an ongoing save or load before accepting another refresh;

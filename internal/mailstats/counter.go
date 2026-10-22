@@ -20,8 +20,8 @@ const (
 	RingSize      = 200
 	RingAge       = 7 * 24 * time.Hour
 
-	scoreJoinSize = 1024
-	bucketLimit   = int(Retention / (BucketSeconds * time.Second))
+	scanJoinSize = 1024
+	bucketLimit  = int(Retention / (BucketSeconds * time.Second))
 )
 
 // Span is a stretch of time.
@@ -32,8 +32,9 @@ type Span struct {
 
 // Totals sums a range. A dry-run tag or reject delivered the message
 // unchanged, so it counts as clean and as would-tag or would-reject, never
-// as tagged or rejected. Rejects counts every reject per class; Temporary
-// is the temporary subset.
+// as tagged or rejected. A scan whose message was then rejected or
+// quarantined as malware counts only as scanned. Rejects counts every
+// reject per class; Temporary is the temporary subset.
 type Totals struct {
 	Scanned       int           `json:"scanned"`
 	Clean         int           `json:"clean"`
@@ -73,9 +74,27 @@ type Overview struct {
 	Series           []Point   `json:"series"`
 }
 
+// SendersReport is the outgoing mail of [from, to) by hosting account.
+// Total counts every message with a submitter, including the Unresolved
+// ones whose submitter matched no account and that no row holds.
+type SendersReport struct {
+	Accounts   []AccountSends `json:"accounts"`
+	Total      int            `json:"total"`
+	Unresolved int            `json:"unresolved"`
+}
+
+// AccountSends is the number of messages one hosting account sent.
+type AccountSends struct {
+	Account  string `json:"account"`
+	Messages int    `json:"messages"`
+}
+
 // bucket holds the counts of one BucketSeconds window. Scans is keyed by
-// mode + ":" + outcome, where outcome is the scan decision or "error".
-// Temporary is the subset of Rejects that were temporary.
+// mode + ":" + outcome, where outcome is the scan decision, "error", or
+// "malware" once a malware reject or quarantine of the message followed.
+// Temporary is the subset of Rejects that were temporary. Sends is keyed by
+// hosting account, "" for a submitter that matched none, and stays nil
+// until the window has a send.
 type bucket struct {
 	Scans         map[string]int
 	Rejects       map[Class]int
@@ -83,6 +102,18 @@ type bucket struct {
 	LoginsSMTP    int
 	LoginsMailbox int
 	Quarantined   int
+	Sends         map[string]int `json:",omitempty"`
+}
+
+// scanRef is what the join keeps of a message: the score of its successful
+// scan and the bucket and Scans key that scan counted under. Key is empty
+// while no scan is retained. Malware is set once a malware reject or
+// quarantine of the message took its scan out of clean, or will.
+type scanRef struct {
+	score   int
+	bucket  int64
+	key     string
+	malware bool
 }
 
 // ringEntry is a reject in its class ring. Seq orders entries with the
@@ -117,8 +148,8 @@ type Counter struct {
 	ringDirty map[Class]bool
 	seq       uint64
 	gaps      []Span // stretches CSM was stopped, by start
-	scores    map[string]int
-	scoreIDs  []string // FIFO of the keys of scores, oldest first
+	scans     map[string]scanRef
+	scanIDs   []string // FIFO of the keys of scans, oldest first
 }
 
 // New returns an empty counter that has counted since now().
@@ -132,7 +163,7 @@ func New(now func() time.Time) *Counter {
 		dirty:     map[int64]bool{},
 		rings:     map[Class][]ringEntry{},
 		ringDirty: map[Class]bool{},
-		scores:    map[string]int{},
+		scans:     map[string]scanRef{},
 	}
 }
 
@@ -162,10 +193,17 @@ func (c *Counter) RecordScan(at time.Time, s antispam.Scan) {
 	if b == nil {
 		return
 	}
-	b.Scans[s.Mode+":"+outcome]++
+	key := s.Mode + ":" + outcome
 	if s.OK && s.MsgID != "" {
-		c.rememberScore(s.MsgID, s.Score)
+		ref := scanRef{score: s.Score, bucket: bucketStart(at), key: key}
+		if prev := c.scans[s.MsgID]; prev.malware && prev.key == "" {
+			// Quarantined before the log watcher read this marker.
+			ref.key, ref.malware = s.Mode+":malware", true
+		}
+		c.rememberScan(s.MsgID, ref)
+		key = ref.key
 	}
+	b.Scans[key]++
 }
 
 // RecordReject counts one reject and keeps it in its class ring when it is
@@ -181,12 +219,14 @@ func (c *Counter) RecordReject(r Reject) {
 	b.Rejects[r.Class]++
 	if r.Temporary {
 		b.Temporary[r.Class]++
+	} else if r.Class == ClassMalware {
+		c.moveToMalware(r.MsgID)
 	}
 	if r.At.Before(c.now().Add(-RingAge)) {
 		return
 	}
-	if score, ok := c.scores[r.MsgID]; ok && r.Class == ClassSpam {
-		r.Detail = fmt.Sprintf("score %.1f", float64(score)/10)
+	if ref, ok := c.scans[r.MsgID]; ok && r.Class == ClassSpam {
+		r.Detail = fmt.Sprintf("score %.1f", float64(ref.score)/10)
 	}
 	c.seq++
 	ring := c.rings[r.Class]
@@ -217,13 +257,63 @@ func (c *Counter) RecordLoginFailure(at time.Time, mailbox bool, n int) {
 	}
 }
 
-// RecordQuarantine counts one message CSM quarantined.
-func (c *Counter) RecordQuarantine(at time.Time) {
+// RecordQuarantine counts one message CSM quarantined. The spool watcher
+// quarantines as soon as Exim accepts the message, often before the log
+// watcher reads its scan marker; RecordScan then counts that scan as
+// malware.
+func (c *Counter) RecordQuarantine(at time.Time, msgID string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if b := c.bucketAt(at); b != nil {
-		b.Quarantined++
+	b := c.bucketAt(at)
+	if b == nil {
+		return
 	}
+	b.Quarantined++
+	if _, ok := c.scans[msgID]; !ok && msgID != "" {
+		c.rememberScan(msgID, scanRef{malware: true})
+		return
+	}
+	c.moveToMalware(msgID)
+}
+
+// RecordSend counts one message a hosting account sent. An empty account
+// is a submitter that matched no account.
+func (c *Counter) RecordSend(at time.Time, account string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	b := c.bucketAt(at)
+	if b == nil {
+		return
+	}
+	if b.Sends == nil {
+		b.Sends = map[string]int{}
+	}
+	// The owner lookups return slices of a log line or a whole host file,
+	// and assigning to an existing key stores the new string. Copy on every
+	// send so a bucket never pins those buffers.
+	b.Sends[strings.Clone(account)]++
+}
+
+// moveToMalware recounts the scan of msgID as a malware outcome. Exim logs
+// the scan marker before the antivirus rejects the message, and the spool
+// watcher quarantines only accepted mail, so the scan counted the message
+// as clean, tagged or rejected. A scan moves once; one the join no longer
+// holds, or whose bucket is gone, stays as it is. The caller holds c.mu.
+func (c *Counter) moveToMalware(msgID string) {
+	ref, ok := c.scans[msgID]
+	if !ok || ref.malware || ref.key == "" {
+		return
+	}
+	b := c.buckets[ref.bucket]
+	if b == nil || b.Scans[ref.key] == 0 {
+		return
+	}
+	mode, _, _ := strings.Cut(ref.key, ":")
+	b.Scans[ref.key]--
+	b.Scans[mode+":malware"]++
+	c.dirty[ref.bucket] = true
+	ref.malware = true
+	c.scans[msgID] = ref
 }
 
 // bucketAt returns the bucket at falls in, creating it, or nil when at is
@@ -233,13 +323,16 @@ func (c *Counter) bucketAt(at time.Time) *bucket {
 	if now := c.now(); at.Before(now.Add(-Retention)) || at.Sub(now) > time.Hour {
 		return nil
 	}
-	k := at.Unix() / BucketSeconds * BucketSeconds
+	k := bucketStart(at)
 	b := c.bucket(k)
 	if b != nil {
 		c.dirty[k] = true
 	}
 	return b
 }
+
+// bucketStart returns the start of the bucket at falls in, in unix seconds.
+func bucketStart(at time.Time) int64 { return at.Unix() / BucketSeconds * BucketSeconds }
 
 // bucket keeps the newest bucketLimit buckets even if persistence is stalled.
 // A late record must not evict a newer bucket. The caller holds c.mu.
@@ -254,8 +347,7 @@ func (c *Counter) bucket(k int64) *bucket {
 			if oldest == k {
 				return nil
 			}
-			delete(c.buckets, oldest)
-			delete(c.dirty, oldest)
+			c.dropBucket(oldest)
 		}
 		b = &bucket{Scans: map[string]int{}, Rejects: map[Class]int{}, Temporary: map[Class]int{}}
 		c.buckets[k] = b
@@ -263,17 +355,31 @@ func (c *Counter) bucket(k int64) *bucket {
 	return b
 }
 
-// rememberScore keeps the score of the last scoreJoinSize scanned
-// messages. The caller holds c.mu.
-func (c *Counter) rememberScore(msgID string, score int) {
-	if _, ok := c.scores[msgID]; !ok {
-		if len(c.scoreIDs) == scoreJoinSize {
-			delete(c.scores, c.scoreIDs[0])
-			c.scoreIDs = c.scoreIDs[1:]
+// A late record can recreate a dropped bucket. Invalidate its scan counts
+// so a later quarantine cannot subtract a different message. Keep scores
+// and FIFO positions until the join evicts them. The caller holds c.mu.
+func (c *Counter) dropBucket(k int64) {
+	delete(c.buckets, k)
+	delete(c.dirty, k)
+	for id, ref := range c.scans {
+		if ref.bucket == k {
+			ref.key = ""
+			c.scans[id] = ref
 		}
-		c.scoreIDs = append(c.scoreIDs, msgID)
 	}
-	c.scores[msgID] = score
+}
+
+// rememberScan keeps the last scanJoinSize messages seen in a successful
+// scan or a quarantine, by message ID. The caller holds c.mu.
+func (c *Counter) rememberScan(msgID string, ref scanRef) {
+	if _, ok := c.scans[msgID]; !ok {
+		if len(c.scanIDs) == scanJoinSize {
+			delete(c.scans, c.scanIDs[0])
+			c.scanIDs = c.scanIDs[1:]
+		}
+		c.scanIDs = append(c.scanIDs, msgID)
+	}
+	c.scans[msgID] = ref
 }
 
 // Overview sums the buckets that start in [from, to).
@@ -308,6 +414,8 @@ func (c *Counter) Overview(from, to time.Time) Overview {
 			switch {
 			case outcome == "error":
 				tot.ScanErrors += n
+			case outcome == "malware":
+				// Scanned only: the reject or quarantine counts it as malware.
 			case outcome == "tag" && enforce:
 				p.Tagged += n
 			case outcome == "reject" && enforce:
@@ -348,6 +456,37 @@ func (c *Counter) Overview(from, to time.Time) Overview {
 		ov.Series = append(ov.Series, p)
 	}
 	return ov
+}
+
+// TopSenders sums the sends of the buckets that start in [from, to). Rows
+// come most messages first, then by account; n > 0 keeps the first n rows
+// and leaves the totals whole.
+func (c *Counter) TopSenders(from, to time.Time, n int) SendersReport {
+	sums := map[string]int{}
+	c.mu.Lock()
+	for k, b := range c.buckets {
+		if start := time.Unix(k, 0); !start.Before(from) && start.Before(to) {
+			for account, m := range b.Sends {
+				sums[account] += m
+			}
+		}
+	}
+	c.mu.Unlock()
+
+	rep := SendersReport{Accounts: []AccountSends{}, Unresolved: sums[""]}
+	for account, m := range sums {
+		rep.Total += m
+		if account != "" {
+			rep.Accounts = append(rep.Accounts, AccountSends{account, m})
+		}
+	}
+	slices.SortFunc(rep.Accounts, func(x, y AccountSends) int {
+		return cmp.Or(cmp.Compare(y.Messages, x.Messages), strings.Compare(x.Account, y.Account))
+	})
+	if n > 0 && len(rep.Accounts) > n {
+		rep.Accounts = rep.Accounts[:n]
+	}
+	return rep
 }
 
 // Rejects returns up to limit ring entries of the given classes, every

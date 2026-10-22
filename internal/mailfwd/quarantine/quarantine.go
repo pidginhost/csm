@@ -7,10 +7,15 @@
 package quarantine
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"mime"
+	"net/mail"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,6 +24,9 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+	"unicode"
+
+	"github.com/pidginhost/csm/internal/systemdrun"
 )
 
 // Control headers the exim transport adds and CSM parses. They are stripped
@@ -38,6 +46,7 @@ type HeldMessage struct {
 	Recipient string    `json:"recipient"` // external destination that was held
 	Sender    string    `json:"sender"`    // envelope sender ("" = null-sender bounce)
 	Reasons   []string  `json:"reasons"`
+	Subject   string    `json:"subject"`
 	HeldAt    time.Time `json:"held_at"`
 	Size      int64     `json:"size"`
 }
@@ -47,19 +56,26 @@ type Quarantine struct {
 	base     string
 	counter  atomic.Uint64
 	sendmail func(sender, recipient string, body []byte) error
+	lookPath systemdrun.LookPathFunc
+	run      systemdrun.InputRunnerFunc
 }
 
 // New returns a quarantine rooted at dir (a Maildir; new/cur/tmp are created on
-// demand). The default re-injector shells out to the platform sendmail.
+// demand). Release re-injects through the platform sendmail, run as a
+// transient unit (see reinject).
 func New(dir string) *Quarantine {
-	return &Quarantine{base: dir, sendmail: runSendmail}
+	q := &Quarantine{base: dir, lookPath: exec.LookPath, run: runWithInput}
+	q.sendmail = q.reinject
+	return q
 }
 
 func (q *Quarantine) sub(name string) string { return filepath.Join(q.base, name) }
 
 // Hold writes a held copy into the Maildir with the X-CSM-* control headers and
 // returns its id (the Maildir filename). In production exim's appendfile writes
-// these files; Hold produces the identical format for CSM-side paths and tests.
+// these files; Hold produces the same layout for CSM-side paths and tests: the
+// control headers follow the message's own header fields, as exim's
+// headers_add appends them.
 func (q *Quarantine) Hold(m HeldMessage, body []byte) (string, error) {
 	for _, d := range []string{"tmp", "new", "cur"} {
 		if err := os.MkdirAll(q.sub(d), 0700); err != nil {
@@ -67,12 +83,22 @@ func (q *Quarantine) Hold(m HeldMessage, body []byte) (string, error) {
 		}
 	}
 
+	// cut is where the header fields end: the start of the blank separator
+	// line, or the end of a message that has none.
+	cut := headerBlockEnd(body)
+	if start := bytes.LastIndexByte(body[:max(cut-1, 0)], '\n') + 1; cut > 0 && isBlankLine(body[start:cut]) {
+		cut = start
+	}
 	var buf bytes.Buffer
+	buf.Write(body[:cut])
+	if cut > 0 && body[cut-1] != '\n' {
+		buf.WriteString("\r\n")
+	}
 	fmt.Fprintf(&buf, "%s: %s\r\n", hdrForwarder, headerValue(m.Forwarder))
 	fmt.Fprintf(&buf, "%s: %s\r\n", hdrRecipient, headerValue(m.Recipient))
 	fmt.Fprintf(&buf, "%s: %s\r\n", hdrSender, headerValue(m.Sender))
 	fmt.Fprintf(&buf, "%s: %s\r\n", hdrReasons, headerValue(strings.Join(m.Reasons, ",")))
-	buf.Write(body)
+	buf.Write(body[cut:])
 
 	id := fmt.Sprintf("%d.%d.csm", time.Now().UnixNano(), q.counter.Add(1))
 	tmp := filepath.Join(q.sub("tmp"), id)
@@ -114,51 +140,199 @@ func (q *Quarantine) List() ([]HeldMessage, error) {
 	return out, nil
 }
 
+// maxHeaderBlock bounds the header block CSM reads from a held copy: exim's
+// default header_maxsize (1 MiB) for the message's own fields, plus room for
+// the control headers the transport appends after them. maxSubjectLen bounds
+// the subject the list shows.
+const (
+	maxHeaderBlock = 1<<20 + 8<<10
+	maxSubjectLen  = 160
+)
+
+var errHeaderBlockTooLarge = errors.New("held message header block is larger than CSM reads")
+
+// readHeaderBlock reads lines up to and including the first blank line, or
+// to the end of a message with no body. A longer block than maxHeaderBlock is
+// refused rather than cut: the control headers come last, so a cut block
+// could hold only copies the message itself carried.
+func readHeaderBlock(r io.Reader) ([]byte, error) {
+	br := bufio.NewReader(io.LimitReader(r, maxHeaderBlock+1))
+	var block []byte
+	for {
+		line, err := br.ReadBytes('\n')
+		block = append(block, line...)
+		if len(block) > maxHeaderBlock {
+			return nil, errHeaderBlockTooLarge
+		}
+		if err == io.EOF || err == nil && isBlankLine(line) {
+			return block, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+}
+
 func (q *Quarantine) read(dir, id string) (HeldMessage, error) {
-	path := filepath.Join(q.sub(dir), id)
-	data, info, err := readMessageFile(path)
+	f, info, err := openMessageFile(filepath.Join(q.sub(dir), id))
 	if err != nil {
 		return HeldMessage{}, err
 	}
-	hdr := parseControlHeaders(data)
+	defer f.Close()
+	header, err := readHeaderBlock(f)
+	if err != nil {
+		return HeldMessage{}, err
+	}
+	hdr := parseControlHeaders(header)
 	return HeldMessage{
 		ID:        id,
 		Forwarder: hdr[hdrForwarder],
 		Recipient: hdr[hdrRecipient],
 		Sender:    hdr[hdrSender],
 		Reasons:   splitReasons(hdr[hdrReasons]),
+		Subject:   heldSubject(header),
 		HeldAt:    info.ModTime(),
 		Size:      info.Size(),
 	}, nil
 }
 
-// Release re-injects the held copy to its original external recipient (operator
-// decided it was a false positive), then removes it. The message is removed
-// only after a successful re-injection, so a sendmail failure never loses mail.
-func (q *Quarantine) Release(id string) error {
-	_, path := q.locate(id)
-	if path == "" {
-		return fmt.Errorf("held message %q not found", id)
+// heldSubject returns the first Subject field of a header block, unfolded,
+// as CleanSubject leaves it.
+func heldSubject(header []byte) string {
+	var raw strings.Builder
+	found := false
+	for _, line := range strings.Split(string(header), "\n") {
+		line = strings.TrimRight(line, "\r")
+		folded := line != "" && (line[0] == ' ' || line[0] == '\t')
+		if found {
+			if !folded {
+				break
+			}
+			raw.WriteString(line)
+			continue
+		}
+		name, value, ok := strings.Cut(line, ":")
+		if ok && !folded && strings.EqualFold(strings.TrimRight(name, " \t"), "Subject") {
+			raw.WriteString(value)
+			found = true
+		}
 	}
+	return CleanSubject(raw.String())
+}
+
+// CleanSubject readies a mail subject for the web UI: RFC 2047 encoded words
+// decoded, control characters turned into spaces, bidi and other format
+// characters (which can reverse or hide text) dropped, runs of space
+// collapsed, and cut to maxSubjectLen runes. The subject is the sender's
+// text. A charset the decoder does not know leaves the words as sent.
+func CleanSubject(subject string) string {
+	if decoded, err := new(mime.WordDecoder).DecodeHeader(subject); err == nil {
+		subject = decoded
+	}
+	subject = strings.Join(strings.Fields(strings.Map(func(r rune) rune {
+		switch {
+		case unicode.IsControl(r):
+			return ' '
+		case unicode.Is(unicode.Bidi_Control, r), unicode.Is(unicode.Cf, r):
+			return -1
+		}
+		return r
+	}, subject)), " ")
+	if r := []rune(subject); len(r) > maxSubjectLen {
+		subject = string(r[:maxSubjectLen])
+	}
+	return subject
+}
+
+// Release re-injects the held copy to its original external recipient (operator
+// decided it was a false positive), then removes it. The copy is claimed
+// first, so of two releases or a release and a delete only one acts; the
+// other finds it not held. It is removed only after a successful
+// re-injection and put back otherwise, so a sendmail failure never loses mail.
+func (q *Quarantine) Release(id string) error {
+	claimed, held, err := q.claim(id)
+	if err != nil {
+		return err
+	}
+	if err := q.reinjectClaimed(claimed); err != nil {
+		if back := os.Rename(claimed, held); back != nil {
+			return errors.Join(err, fmt.Errorf("returning held message %q: %w", id, back))
+		}
+		return err
+	}
+	return os.Remove(claimed)
+}
+
+func (q *Quarantine) reinjectClaimed(path string) error {
 	data, _, err := readMessageFile(path)
 	if err != nil {
 		return err
 	}
-	hdr := parseControlHeaders(data)
+	header, err := readHeaderBlock(bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	hdr := parseControlHeaders(header)
+	sender, hasSender := hdr[hdrSender]
+	recipient := hdr[hdrRecipient]
+	if !hasSender || sender != "" && !singleEnvelopeAddress(sender) || !singleEnvelopeAddress(recipient) {
+		return errors.New("held message does not record a safe single sender and recipient")
+	}
 	clean := stripControlHeaders(data)
-	if err := q.sendmail(hdr[hdrSender], hdr[hdrRecipient], clean); err != nil {
+	if err := q.sendmail(sender, recipient, clean); err != nil {
 		return fmt.Errorf("re-injecting held message: %w", err)
 	}
-	return os.Remove(path)
+	return nil
 }
 
-// Delete discards a held copy without delivering it.
-func (q *Quarantine) Delete(id string) error {
-	_, path := q.locate(id)
-	if path == "" {
-		return fmt.Errorf("held message %q not found", id)
+// claim moves a held copy into tmp/ under a name of its own and returns
+// where it is now and where it was held. The rename is atomic, so one
+// caller wins and the others find the copy not held.
+func (q *Quarantine) claim(id string) (claimed, held string, err error) {
+	_, held = q.locate(id)
+	if held == "" {
+		return "", "", errNotHeld(id)
 	}
-	return os.Remove(path)
+	if err := os.MkdirAll(q.sub("tmp"), 0700); err != nil {
+		return "", "", err
+	}
+	claimed = filepath.Join(q.sub("tmp"), fmt.Sprintf("%s.claim.%d.%d", filepath.Base(held), time.Now().UnixNano(), q.counter.Add(1)))
+	if err := os.Rename(held, claimed); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return "", "", errNotHeld(id)
+		}
+		return "", "", err
+	}
+	return claimed, held, nil
+}
+
+func errNotHeld(id string) error {
+	return fmt.Errorf("held message %q not found", id)
+}
+
+// Exim splits command-line recipients on commas, including dequoted local
+// parts from its control headers. Check both the recorded and parsed forms
+// so quoting cannot hide a list separator, whitespace or an option prefix.
+func singleEnvelopeAddress(value string) bool {
+	unsafe := func(s string) bool {
+		return strings.HasPrefix(s, "-") || strings.ContainsAny(s, ",<>") ||
+			strings.ContainsFunc(s, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) })
+	}
+	if value == "" || unsafe(value) {
+		return false
+	}
+	addr, err := mail.ParseAddress(value)
+	return err == nil && addr.Name == "" && !unsafe(addr.Address)
+}
+
+// Delete discards a held copy without delivering it. It claims the copy as
+// Release does, so a copy being released is not held for Delete.
+func (q *Quarantine) Delete(id string) error {
+	claimed, _, err := q.claim(id)
+	if err != nil {
+		return err
+	}
+	return os.Remove(claimed)
 }
 
 // PruneOlderThan removes held copies older than maxAge and returns how many were
@@ -230,25 +404,36 @@ func (q *Quarantine) locate(id string) (dir, path string) {
 }
 
 func readMessageFile(path string) ([]byte, os.FileInfo, error) {
+	f, info, err := openMessageFile(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer f.Close()
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return nil, nil, err
+	}
+	return data, info, nil
+}
+
+// openMessageFile opens a held copy for reading. The caller closes it.
+func openMessageFile(path string) (*os.File, os.FileInfo, error) {
 	// #nosec G304 -- path is a located Maildir entry under the CSM-owned base;
 	// O_NOFOLLOW rejects symlink entries and symlink swaps before reading.
 	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		return nil, nil, err
 	}
-	defer f.Close()
 	info, err := f.Stat()
 	if err != nil {
+		_ = f.Close()
 		return nil, nil, err
 	}
 	if !info.Mode().IsRegular() {
+		_ = f.Close()
 		return nil, nil, fmt.Errorf("held message %q is not a regular file", filepath.Base(path))
 	}
-	data, err := io.ReadAll(f)
-	if err != nil {
-		return nil, nil, err
-	}
-	return data, info, nil
+	return f, info, nil
 }
 
 // headerValue collapses a control-header value to a single safe line (no CR/LF
@@ -285,8 +470,7 @@ func headerBlockEnd(data []byte) int {
 		if nl < 0 {
 			return len(data) // no terminating newline: all headers, no body
 		}
-		line := data[off : off+nl+1]
-		if strings.TrimRight(string(line), "\r\n") == "" {
+		if isBlankLine(data[off : off+nl+1]) {
 			return off + nl + 1
 		}
 		off += nl + 1
@@ -294,20 +478,27 @@ func headerBlockEnd(data []byte) int {
 	return len(data)
 }
 
+// isBlankLine reports whether line, with its line ending, is the blank line
+// that ends a header block.
+func isBlankLine(line []byte) bool {
+	return len(bytes.TrimRight(line, "\r\n")) == 0
+}
+
+// parseControlHeaders returns the X-CSM-* fields of the header block that
+// starts data. A message can carry its own X-CSM-* fields; exim appends the
+// real ones after every field the message brought, so the last occurrence
+// of each wins. A folded continuation line is never a field.
 func parseControlHeaders(data []byte) map[string]string {
 	out := map[string]string{}
 	header := data[:headerBlockEnd(data)]
 	for _, line := range strings.Split(string(header), "\n") {
 		line = strings.TrimRight(line, "\r")
 		colon := strings.IndexByte(line, ':')
-		if colon < 0 {
+		if colon < 0 || line[0] == ' ' || line[0] == '\t' {
 			continue
 		}
 		key, ok := canonicalControlHeader(line[:colon])
 		if !ok {
-			continue
-		}
-		if _, exists := out[key]; exists {
 			continue
 		}
 		out[key] = headerValue(line[colon+1:])
@@ -376,16 +567,36 @@ func stripControlHeaders(data []byte) []byte {
 	return kept.Bytes()
 }
 
-func runSendmail(sender, recipient string, body []byte) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+const (
+	sendmailPath = "/usr/sbin/sendmail"
+	// sendmailTimeout bounds a re-injection, the wait and the unit alike.
+	sendmailTimeout = 30 * time.Second
+)
+
+// reinject hands body to the platform sendmail for one recipient. exim
+// cannot open its logs inside csm.service's ProtectSystem=strict sandbox and
+// aborts there, possibly after queueing the copy, so sendmail runs as a
+// transient unit or not at all: without systemd-run the release fails and
+// the copy stays held. exim queues the message, forks its delivery and
+// exits; KillMode=process keeps the unit's stop from killing that delivery,
+// so released mail goes out at once rather than at the next queue run.
+func (q *Quarantine) reinject(sender, recipient string, body []byte) error {
+	ctx, cancel := context.WithTimeout(context.Background(), sendmailTimeout)
 	defer cancel()
 	sender = headerValue(sender)
 	recipient = headerValue(recipient)
 	// -i: do not treat lone "." as end; -f: envelope sender ("" yields null
 	// sender); -- terminates options so a hostile recipient cannot be a flag.
-	cmd := exec.CommandContext(ctx, sendmailPath, "-i", "-f", sender, "--", recipient) // #nosec G204 -- recipient guarded by --, args are envelope addresses
-	cmd.Stdin = bytes.NewReader(body)
-	return cmd.Run()
+	_, err := systemdrun.RunInput(ctx, q.lookPath, q.run,
+		systemdrun.Options{Required: true, RuntimeMax: sendmailTimeout, KillMode: "process"},
+		body, sendmailPath, "-i", "-f", sender, "--", recipient)
+	return err
 }
 
-const sendmailPath = "/usr/sbin/sendmail"
+func runWithInput(ctx context.Context, input []byte, name string, args ...string) ([]byte, error) {
+	// #nosec G204 -- name is the resolved systemd-run path; the envelope
+	// addresses follow fixed flags, the recipient after --.
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Stdin = bytes.NewReader(input)
+	return cmd.Output()
+}

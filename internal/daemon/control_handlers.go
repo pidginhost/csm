@@ -434,6 +434,11 @@ func (c *ControlListener) handleStoreExport(argsRaw json.RawMessage) (any, error
 	if sdb == nil {
 		return nil, fmt.Errorf("bbolt store not available")
 	}
+	// The alert path saves state.json at most once a minute; write what it
+	// holds so the archive carries the current dedup state.
+	if err := c.d.store.Flush(); err != nil {
+		return nil, fmt.Errorf("saving state: %w", err)
+	}
 	cfg := c.d.currentCfg()
 	hostname, _ := os.Hostname()
 	pi := platform.Detect()

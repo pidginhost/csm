@@ -30,6 +30,16 @@ type Options struct {
 	// Required makes Run return ErrUnavailable instead of running the command
 	// directly, for commands that must never run inside the caller's sandbox.
 	Required bool
+	// NoWait returns as soon as the unit has started, with neither --pipe nor
+	// --wait, for commands whose run time the caller must not wait out. It
+	// overrides Pipe: the unit's output goes to the journal, and an error
+	// means only that the unit could not be started.
+	NoWait bool
+	// KillMode sets the unit's KillMode property; empty keeps systemd's
+	// default, control-group, which stops every process the command forked
+	// when its main process ends. "process" stops only the main process,
+	// for a command that forks work meant to outlive it.
+	KillMode string
 }
 
 // Argv returns the argv that runs name/args as a transient unit. When
@@ -40,13 +50,18 @@ func Argv(systemdRunPath string, opt Options, name string, args ...string) (stri
 		return name, args
 	}
 	flags := []string{"--quiet", "--collect"}
-	if opt.Pipe {
+	switch {
+	case opt.NoWait:
+	case opt.Pipe:
 		flags = append(flags, "--pipe")
-	} else {
+	default:
 		flags = append(flags, "--wait")
 	}
 	if opt.RuntimeMax > 0 {
 		flags = append(flags, "--property=RuntimeMaxSec="+formatRuntimeMax(opt.RuntimeMax))
+	}
+	if opt.KillMode != "" {
+		flags = append(flags, "--property=KillMode="+opt.KillMode)
 	}
 	flags = append(flags, "--")
 	flags = append(flags, name)

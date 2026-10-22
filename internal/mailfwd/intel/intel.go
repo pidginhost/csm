@@ -58,7 +58,11 @@ var (
 // parseDeferralLine parses one exim_mainlog line. ok is false for anything that
 // is not a deferral (delivery "=>", arrival "<=", failure "**", blanks, junk).
 func parseDeferralLine(line string) (Deferral, bool) {
-	fields := strings.Fields(line)
+	return parseDeferral(line, strings.Fields(line))
+}
+
+// parseDeferral is parseDeferralLine for a line already split into fields.
+func parseDeferral(line string, fields []string) (Deferral, bool) {
 	// <date> <time> <msgid> == <recipient> ...
 	if len(fields) < 5 || fields[3] != "==" {
 		return Deferral{}, false
@@ -69,19 +73,14 @@ func parseDeferralLine(line string) (Deferral, bool) {
 		return Deferral{}, false
 	}
 
-	d := Deferral{
-		Recipient: recipient,
-		Provider:  inventory.ClassifyAddress(recipient),
-	}
+	d := Deferral{Recipient: recipient}
 	if at := strings.LastIndexByte(recipient, '@'); at >= 0 && at < len(recipient)-1 {
 		d.Domain = strings.ToLower(recipient[at+1:])
 	}
 	if d.Domain == "" || len(d.Domain) > maxDomainLen {
 		return Deferral{}, false
 	}
-	if t, err := time.ParseInLocation(eximTimeLayout, fields[0]+" "+fields[1], time.Local); err == nil {
-		d.Time = t
-	}
+	d.Time, _ = lineTime(fields)
 
 	errText := fallbackDeferralText(line)
 	canExtractOutboundIP := false
@@ -92,6 +91,11 @@ func parseDeferralLine(line string) (Deferral, bool) {
 		canExtractOutboundIP = true
 	}
 
+	d.Provider = classifyMX(d.RemoteHost)
+	if d.Provider == "" {
+		d.Provider = inventory.ClassifyAddress(recipient)
+	}
+
 	d.SMTPCode = firstSMTPCode(errText)
 	if canExtractOutboundIP {
 		d.OutboundIP = firstIPv4(errText)
@@ -100,6 +104,42 @@ func parseDeferralLine(line string) (Deferral, bool) {
 	d.Text = boundText(errText)
 
 	return d, true
+}
+
+// lineTime parses the timestamp that opens a log line split into fields.
+func lineTime(fields []string) (time.Time, bool) {
+	if len(fields) < 2 {
+		return time.Time{}, false
+	}
+	t, err := time.ParseInLocation(eximTimeLayout, fields[0]+" "+fields[1], time.Local)
+	return t, err == nil
+}
+
+// mxProviders maps provider MX host suffixes to the provider class. Google's
+// aspmx hosts sit under google.com and googlemail.com, and Microsoft's under
+// outlook.com, hosted business domains included
+// (*.mail.protection.outlook.com).
+var mxProviders = []struct {
+	suffix   string
+	provider inventory.ProviderClass
+}{
+	{"google.com", inventory.ProviderGmail},
+	{"googlemail.com", inventory.ProviderGmail},
+	{"outlook.com", inventory.ProviderOutlook},
+	{"yahoodns.net", inventory.ProviderYahoo},
+}
+
+// classifyMX returns the provider whose MX host deferred, or "" when the
+// host is absent or no known provider's. The suffix must start a label, so
+// a look-alike such as google.com.example.net does not match.
+func classifyMX(host string) inventory.ProviderClass {
+	host = strings.TrimSuffix(strings.ToLower(host), ".")
+	for _, mx := range mxProviders {
+		if host == mx.suffix || strings.HasSuffix(host, "."+mx.suffix) {
+			return mx.provider
+		}
+	}
+	return ""
 }
 
 func fallbackDeferralText(line string) string {
@@ -168,6 +208,13 @@ func classifyReason(errText string) string {
 			return m[1]
 		}
 	}
+	return keywordReason(errText)
+}
+
+// keywordReason labels error text by keyword, or returns "". The labels after
+// "blocked" say why a queued message waits rather than what a provider
+// objects to; they come last so text an earlier label matches keeps it.
+func keywordReason(errText string) string {
 	low := strings.ToLower(errText)
 	switch {
 	case strings.Contains(low, "spamhaus"):
@@ -183,6 +230,19 @@ func classifyReason(errText string) string {
 	case strings.Contains(low, "blocked"), strings.Contains(low, "blacklist"),
 		strings.Contains(low, "listed"):
 		return "blocked"
+	case strings.Contains(low, "mailbox full"), strings.Contains(low, "mailbox is full"),
+		strings.Contains(low, "over quota"), strings.Contains(low, "quota exceeded"):
+		return "mailbox_full"
+	case strings.Contains(low, "retry time not reached"):
+		return "retry_wait"
+	case strings.Contains(low, "no route to host"), strings.Contains(low, "network is unreachable"),
+		strings.Contains(low, "connection timed out"), strings.Contains(low, "host lookup did not complete"),
+		strings.Contains(low, "host not found"), strings.Contains(low, "non-existent host"),
+		strings.Contains(low, "unrouteable"):
+		return "host_not_found"
+	case strings.Contains(low, "refused"), strings.Contains(low, "rejected"),
+		strings.Contains(low, "denied"):
+		return "refused"
 	}
 	return ""
 }
@@ -250,10 +310,16 @@ type OutboundIPRollup struct {
 }
 
 // Report is the aggregated deferral picture over a window of log lines.
+// Lines is how many lines were read. WindowStart and WindowEnd are the times
+// of the first and last lines read that carry one, deferral or not; both are
+// zero when none does.
 type Report struct {
 	Deferrals   int                `json:"deferrals"`
 	Providers   []ProviderRollup   `json:"providers"`
 	OutboundIPs []OutboundIPRollup `json:"outbound_ips"`
+	Lines       int                `json:"lines"`
+	WindowStart time.Time          `json:"window_start,omitzero"`
+	WindowEnd   time.Time          `json:"window_end,omitzero"`
 }
 
 // emptyReport returns a zero report with non-nil slices so it serializes as []
@@ -269,8 +335,16 @@ func BuildReport(lines []string) Report {
 	ipAgg := map[string]*ipAccum{}
 	deferrals := 0
 
+	var windowStart, windowEnd time.Time
 	for _, line := range lines {
-		d, ok := parseDeferralLine(line)
+		fields := strings.Fields(line)
+		if t, ok := lineTime(fields); ok {
+			if windowStart.IsZero() {
+				windowStart = t
+			}
+			windowEnd = t
+		}
+		d, ok := parseDeferral(line, fields)
 		if !ok {
 			continue
 		}
@@ -296,6 +370,8 @@ func BuildReport(lines []string) Report {
 
 	rep := emptyReport()
 	rep.Deferrals = deferrals
+	rep.Lines = len(lines)
+	rep.WindowStart, rep.WindowEnd = windowStart, windowEnd
 	for prov, pa := range provAgg {
 		rep.Providers = append(rep.Providers, ProviderRollup{
 			Provider:  prov,

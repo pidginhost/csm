@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/antispam"
+	"github.com/pidginhost/csm/internal/eximlog"
 	csmlog "github.com/pidginhost/csm/internal/log"
 	"github.com/pidginhost/csm/internal/mailstats"
 	"github.com/pidginhost/csm/internal/obs"
@@ -19,8 +20,20 @@ var mailStatsPersistInterval = time.Minute
 // recordMailStatsExim counts an Exim main log line for the Email Security
 // page. Every Exim line comes through here, so a parser runs only for a line
 // that holds its marker. The login count does not depend on the IP or infra
-// filters, so it matches a grep of the log.
+// filters, so it matches a grep of the log. An arrival counts as a send of
+// its submitter's hosting account; inbound mail has no submitter. A
+// null-sender arrival counts only when its submitter resolves to an
+// account: Exim's own bounces come from mailnull, which resolves to none,
+// and an account must not hide its mail behind <>.
 func (d *Daemon) recordMailStatsExim(line string, at time.Time) {
+	if i := strings.Index(line, " <= "); i >= 0 {
+		if id := eximlog.Submitter(line); id != "" {
+			owner := mailAccountOwner(id)
+			if owner != "" || !strings.HasPrefix(line[i+len(" <= "):], "<> ") {
+				d.mailStats.RecordSend(mailstats.LineTime(line, time.Local, at), owner)
+			}
+		}
+	}
 	if strings.Contains(line, " CSM-ANTISPAM ") {
 		if s, ok := antispam.ParseScan(line); ok {
 			d.mailStats.RecordScan(mailstats.LineTime(line, time.Local, at), s)

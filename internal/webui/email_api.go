@@ -296,32 +296,24 @@ func eximQueueSize() (int, bool) {
 	return n, true
 }
 
-// eximQueueDetails returns the frozen message count and the age of the oldest
-// message in the queue. Uses `exim -bp` which lists all queued messages. ok is
-// false when the listing could not be read.
-func eximQueueDetails() (frozen int, oldestAge string, ok bool) {
+// eximQueueDetails lists the queue with `exim -bp`, oldest first. ok is false
+// when the listing could not be read or parsed.
+func eximQueueDetails() ([]intel.QueueMessage, bool) {
 	out, err := runExim(10*time.Second, "-bp")
 	if err != nil {
-		return 0, "", false
+		return nil, false
 	}
-	lines := strings.Split(string(out), "\n")
-	for _, line := range lines {
-		if strings.Contains(line, "*** frozen ***") {
-			frozen++
-		}
-		// First field of queue listing lines is the age (e.g., "4d", "15h", "30m")
-		fields := strings.Fields(line)
-		if len(fields) >= 3 {
-			age := fields[0]
-			// Only consider lines where first field looks like an age
-			if len(age) >= 2 && (age[len(age)-1] == 'd' || age[len(age)-1] == 'h' || age[len(age)-1] == 'm' || age[len(age)-1] == 's') {
-				if oldestAge == "" {
-					oldestAge = age // first entry is the oldest (queue sorted oldest first)
-				}
-			}
-		}
+	msgs, err := intel.ParseQueueList(out)
+	if err != nil {
+		return nil, false
 	}
-	return frozen, oldestAge, true
+	sort.SliceStable(msgs, func(i, j int) bool {
+		if !msgs[i].Arrived.Equal(msgs[j].Arrived) {
+			return msgs[i].Arrived.Before(msgs[j].Arrived)
+		}
+		return msgs[i].ID < msgs[j].ID
+	})
+	return msgs, true
 }
 
 // emailQueueState is the live queue the Email page shows.
@@ -352,9 +344,9 @@ const (
 	queueDetailMaxAge = 10 * time.Minute
 )
 
-// queueDetail caches the queue listing. Its lock is held while a listing
-// runs, so concurrent polls wait for one listing instead of each starting
-// their own.
+// queueDetail caches the queue listing the overview and the queue list share.
+// Its lock is held while a listing runs, so concurrent polls wait for one
+// listing instead of each starting their own.
 var queueDetail struct {
 	sync.Mutex
 	state queueDetailState
@@ -362,11 +354,82 @@ var queueDetail struct {
 
 type queueDetailState struct {
 	tried  time.Time // last listing attempt
-	listed time.Time // last successful listing
+	listed time.Time // last successful listing, or the empty count
+	// emptied marks listed as an exim -bpc that found the queue empty
+	// rather than a listing. The overview has no detail for mail queued
+	// since; the queue list serves the empty queue.
+	emptied bool
+	// refill marks a positive count that disproved a known empty result.
+	// The queue list then lists without waiting out queueDetailTTL; any
+	// listing clears the mark, so each refill costs one extra listing.
+	refill bool
+	msgs   []intel.QueueMessage // oldest first; never modified once stored
 	frozen int
 	// oldestQueued is when the oldest listed message was queued, the age
 	// the listing gave counted back from listed; zero when it gave none.
 	oldestQueued time.Time
+}
+
+// refreshQueueListing lists the queue when the last attempt, failed or not,
+// is queueDetailTTL old. The caller holds queueDetail.
+func refreshQueueListing(now time.Time) {
+	d := &queueDetail.state
+	if !d.tried.IsZero() && now.Sub(d.tried) < queueDetailTTL {
+		return
+	}
+	d.tried = now
+	msgs, ok := eximQueueDetails()
+	if !ok {
+		if len(d.msgs) == 0 {
+			// Mail may have arrived since the empty result. A failed read
+			// cannot confirm that the queue is still empty.
+			*d = queueDetailState{tried: now}
+		}
+		return
+	}
+	*d = queueDetailState{tried: now, listed: now, msgs: msgs}
+	oldest := -1
+	for _, m := range msgs {
+		if m.Frozen {
+			d.frozen++
+		}
+		oldest = max(oldest, m.AgeSeconds)
+	}
+	if oldest >= 0 {
+		d.oldestQueued = now.Add(-time.Duration(oldest) * time.Second)
+	}
+}
+
+// staleQueueListing reports whether the cached listing is too old to serve.
+// The caller holds queueDetail.
+func staleQueueListing(now time.Time) bool {
+	d := &queueDetail.state
+	return d.listed.IsZero() || now.Sub(d.listed) > queueDetailMaxAge
+}
+
+// oldestQueuedSeconds ages the oldest listed message to now. The caller holds
+// queueDetail.
+func oldestQueuedSeconds(now time.Time) *int {
+	d := &queueDetail.state
+	if d.oldestQueued.IsZero() {
+		return nil
+	}
+	// A request that waited on the lock can hold a now from before the
+	// listing; age from the listing then, never below what it showed.
+	at := now
+	if at.Before(d.listed) {
+		at = d.listed
+	}
+	secs := int(at.Sub(d.oldestQueued) / time.Second)
+	return &secs
+}
+
+// expireQueueListing makes the next caller list the queue again, after an
+// action changed it.
+func expireQueueListing() {
+	queueDetail.Lock()
+	defer queueDetail.Unlock()
+	queueDetail.state.tried = time.Time{}
 }
 
 // queueSnapshot reads the queue depth on every call and lists the queue at
@@ -382,33 +445,22 @@ func queueSnapshot(now time.Time) emailQueueState {
 	defer queueDetail.Unlock()
 	d := &queueDetail.state
 	if ok && size == 0 {
-		*d = queueDetailState{tried: d.tried}
+		*d = queueDetailState{tried: d.tried, listed: now, emptied: true}
 		return q
 	}
-	if d.tried.IsZero() || now.Sub(d.tried) >= queueDetailTTL {
-		d.tried = now
-		if frozen, oldest, ok := eximQueueDetails(); ok {
-			d.listed, d.frozen, d.oldestQueued = now, frozen, time.Time{}
-			if oldest != "" {
-				d.oldestQueued = now.Add(-time.Duration(intel.AgeToSeconds(oldest)) * time.Second)
-			}
-		}
+	if ok && size > 0 && !d.listed.IsZero() && len(d.msgs) == 0 {
+		// The count disproves the cached empty result, even when another
+		// listing is not due yet. The overview keeps the retry interval;
+		// the queue list lists at once.
+		*d = queueDetailState{tried: d.tried, refill: true}
 	}
-	if d.listed.IsZero() || now.Sub(d.listed) > queueDetailMaxAge {
+	refreshQueueListing(now)
+	if d.emptied || staleQueueListing(now) {
 		q.DetailUnavailable = true
 		return q
 	}
 	q.Frozen = d.frozen
-	if !d.oldestQueued.IsZero() {
-		// A request that waited on the lock can hold a now from before the
-		// listing; age from the listing then, never below what it showed.
-		at := now
-		if at.Before(d.listed) {
-			at = d.listed
-		}
-		secs := int(at.Sub(d.oldestQueued) / time.Second)
-		q.OldestAgeSeconds = &secs
-	}
+	q.OldestAgeSeconds = oldestQueuedSeconds(now)
 	return q
 }
 

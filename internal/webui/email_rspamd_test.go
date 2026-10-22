@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"reflect"
 	"strings"
 	"sync"
@@ -15,6 +17,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/antispam"
+	csmlog "github.com/pidginhost/csm/internal/log"
 )
 
 var (
@@ -289,13 +292,17 @@ func TestEmailRspamdOff(t *testing.T) {
 	assertTimeContract(t, "/api/v1/email/rspamd", []byte(body))
 }
 
-// A request that goes away mid-read must not leave its failure cached for
+// A client that goes away does not cancel the shared read: it runs to its
+// own deadline and its result, not the client's failure, is cached for
 // everyone else.
-func TestEmailRspamdCanceledRequestIsNotCached(t *testing.T) {
+func TestRspamdFetchSurvivesClientCancel(t *testing.T) {
 	s, tok := newRspamdTestServer(t, testRspamdEndpoint, "")
 	calls := stubRspamdStats(t, func(ctx context.Context, _ antispam.StatsEndpoint) (antispam.RspamdStats, error) {
 		if err := ctx.Err(); err != nil {
 			return antispam.RspamdStats{}, err
+		}
+		if dl, ok := ctx.Deadline(); !ok || time.Until(dl) > rspamdFetchTimeout {
+			t.Errorf("fetch context deadline %v (set %v), want at most %v ahead", dl, ok, rspamdFetchTimeout)
 		}
 		return testRspamdStats, nil
 	})
@@ -307,8 +314,63 @@ func TestEmailRspamdCanceledRequestIsNotCached(t *testing.T) {
 	s.httpSrv.Handler.ServeHTTP(httptest.NewRecorder(), req)
 
 	resp, _ := getRspamd(t, s, tok)
-	if got := calls.Load(); got != 2 || !resp.Available {
-		t.Errorf("%d reads, response %+v; want a fresh read after the canceled one", got, resp)
+	if got := calls.Load(); got != 1 || !resp.Available || resp.Stats == nil {
+		t.Errorf("%d reads, response %+v; want the canceled request's read to serve the next one", got, resp)
+	}
+}
+
+// captureCSMLog sends the csm logger to a pipe until the returned func runs,
+// which restores it and returns what was logged.
+func captureCSMLog(t *testing.T) func() string {
+	t.Helper()
+	t.Setenv("CSM_LOG_FORMAT", "text")
+	t.Setenv("CSM_LOG_LEVEL", "info")
+	oldStderr := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	os.Stderr = w
+	csmlog.Init()
+	var once sync.Once
+	var out string
+	done := func() string {
+		once.Do(func() {
+			_ = w.Close()
+			data, _ := io.ReadAll(r)
+			_ = r.Close()
+			os.Stderr = oldStderr
+			csmlog.Init()
+			out = string(data)
+		})
+		return out
+	}
+	t.Cleanup(func() { done() })
+	return done
+}
+
+// A failed read is logged once per cache miss, with fixed text and the
+// read's error, which never carries a password or URL.
+func TestRspamdReadErrorLoggedOncePerCacheMiss(t *testing.T) {
+	s, tok := newRspamdTestServer(t, testRspamdEndpoint, "")
+	stubRspamdStats(t, func(context.Context, antispam.StatsEndpoint) (antispam.RspamdStats, error) {
+		return antispam.RspamdStats{}, errors.New("cannot connect to rspamd's controller socket")
+	})
+	logged := captureCSMLog(t)
+
+	getRspamd(t, s, tok)
+	getRspamd(t, s, tok)
+	s.rspamdMu.Lock()
+	s.rspamdCache.at = s.rspamdCache.at.Add(-rspamdStatsTTL)
+	s.rspamdMu.Unlock()
+	getRspamd(t, s, tok)
+
+	out := logged()
+	if n := strings.Count(out, "email page could not read rspamd's controller"); n != 2 {
+		t.Errorf("logged the failed read %d times for two cache misses, want 2:\n%s", n, out)
+	}
+	if !strings.Contains(out, "cannot connect to rspamd's controller socket") {
+		t.Errorf("log lacks the read error:\n%s", out)
 	}
 }
 

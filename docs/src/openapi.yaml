@@ -310,7 +310,14 @@ paths:
         - bearerAuth: []
       responses:
         "200":
-          description: Success.
+          description: >-
+            Deferrals by provider and by sending IP. The provider comes
+            from the deferring MX host when it is a known provider's, else
+            from the recipient domain. Each provider has last_seen and a
+            sample error text; each sending IP has last_seen. lines is how
+            many log lines were read. window_start and window_end are the
+            times of the first and last log lines read; both are left out
+            when no line carries a time. One read is reused for 60 s.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/JSONObject" }
@@ -325,7 +332,10 @@ paths:
         - bearerAuth: []
       responses:
         "200":
-          description: Success.
+          description: >-
+            Held forward copies, each with the decoded subject of the
+            original message (control characters removed, at most 160
+            characters) and the file size.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/JSONObject" }
@@ -361,6 +371,7 @@ paths:
               schema: { $ref: "#/components/schemas/JSONObject" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { description: "Release failed or the recorded envelope is missing or ambiguous, and the copy stays held; or another release or delete already took the copy, which is then not found." }
   "/api/v1/email/queue-composition":
     get:
       operationId: get_email_queue_composition
@@ -376,6 +387,7 @@ paths:
               schema: { $ref: "#/components/schemas/JSONObject" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { description: "The queue could not be read: exim could not read every spool header, so the readable messages are not counted as the whole queue." }
   "/api/v1/email/queue/flush-backscatter":
     post:
       operationId: post_email_queue_flush_backscatter
@@ -395,6 +407,116 @@ paths:
           description: The flush or its queue verification was incomplete; the error includes bounded target and outcome details.
         "503":
           description: Mail queue flush is unavailable on this host.
+  "/api/v1/email/queue":
+    get:
+      operationId: get_email_queue
+      summary: "One page of the exim queue, oldest first, with why each message is stuck (scope: admin)"
+      x-csm-scope: admin
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: page
+          in: query
+          schema: { type: integer, minimum: 1, default: 1 }
+        - name: limit
+          in: query
+          description: Values above 100 are cut to 100.
+          schema: { type: integer, minimum: 1, maximum: 100, default: 25 }
+        - name: filter
+          in: query
+          description: backscatter selects null-sender messages.
+          schema: { type: string, enum: [all, frozen, backscatter], default: all }
+        - name: q
+          in: query
+          description: Case-insensitive substring of the sender or of one of the first 50 undelivered recipients.
+          schema: { type: string }
+      responses:
+        "200":
+          description: >-
+            Queued messages with reason {class, text, raw}, plus page, limit,
+            total (the messages matching filter and q), queued, frozen,
+            backscatter and oldest_seconds for the whole queue, and
+            listed_at, when the listing ran, so the counts can trail the
+            overview's live queue size. The listing is refreshed at most
+            once a minute. When the queue cannot be listed and no reusable
+            nonempty listing remains, unavailable is true, items is empty
+            and no count or listed_at is sent. An empty result is
+            invalidated by a failed refresh or a positive queue count; after
+            a positive count the next request lists the queue at once, once
+            for each such refill. Quoted recipient local parts remain
+            intact. At most 100 msglog reasons are cached for a minute,
+            retaining the current page first.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "400": { description: Unknown filter. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "503": { description: The mail queue is not available on this host. }
+  "/api/v1/email/queue/{id}":
+    get:
+      operationId: get_email_queue_message
+      summary: "One queued message with all undelivered recipients (up to 1,000), why it is stuck and the last 20 msglog lines (scope: admin)"
+      x-csm-scope: admin
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Exim message ID.
+          schema: { type: string }
+      responses:
+        "200":
+          description: The message fields as in the queue list, reason, and msglog (a list of lines).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "400": { description: Not an exim message ID. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: The message is not in the queue. }
+        "500": { description: The queue could not be read. }
+        "503": { description: The mail queue is not available on this host, or systemd-run cannot start a unit and exim did not run. }
+  "/api/v1/email/queue/{id}/{action}":
+    post:
+      operationId: post_email_queue_action
+      summary: "Retry, return to sender, delete or thaw one queued message (CSRF on cookie sessions)."
+      x-csm-scope: admin
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Exim message ID.
+          schema: { type: string }
+        - name: action
+          in: path
+          required: true
+          description: >-
+            retry runs exim -M and answers attempt_started without waiting
+            for the delivery; bounce (-Mg) answers bounced and delete (-Mrm)
+            removed once the message left the queue and exim reported no
+            error; thaw (-Mt) answers thawed once the queue shows the change.
+          schema: { type: string, enum: [retry, bounce, delete, thaw] }
+      responses:
+        "200":
+          description: >-
+            ActionResult with outcome attempt_started, bounced or removed
+            (exim reported no error), thawed (also when exim reported an
+            error the queue does not bear out; the audit entry records it),
+            or unchanged for a thaw on a message that is not frozen, where
+            nothing runs.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ActionResult" }
+        "400": { description: Not an exim message ID, or an unknown action. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { description: "The message is no longer in the queue; outcome is gone. Nothing ran, unless the message left during the action, as when exim reported an error and the message has left anyway (the audit entry records the error)." }
+        "500": { description: The action failed or its outcome could not be read back; outcome is unchanged. }
+        "503": { description: The mail queue is not available on this host, or systemd-run cannot start a unit and the action did not run (outcome unchanged). }
   "/api/v1/email/forwarders":
     get:
       operationId: get_email_forwarders
@@ -449,10 +571,45 @@ paths:
         - bearerAuth: []
       responses:
         "200":
-          description: Success.
+          description: >-
+            Rejects newest first, plus totals: the permanent rejects of
+            every class in the range, whatever class is listed.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/email/senders":
+    get:
+      operationId: get_email_senders
+      summary: "Messages each hosting account sent in from/to, busiest first, and the outbound abuse event count (scope: admin)"
+      x-csm-scope: admin
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: from
+          in: query
+          description: Calendar date or RFC 3339 time. Without it the range is the 24 h before to.
+          schema: { type: string }
+        - name: to
+          in: query
+          description: Calendar date or RFC 3339 time. Without it the range ends now.
+          schema: { type: string }
+      responses:
+        "200":
+          description: >-
+            accounts (up to 100 rows of account and messages), total (every
+            message with a submitter), unresolved (messages whose submitter
+            matched no account), abuse_events (the outbound abuse events
+            relay-abuse lists for the range, counted up to 5,000 like
+            relay-abuse), abuse_events_truncated (true when that cap cut
+            abuse_events) and abuse_by_account (those events counted per
+            account they name and per kind, as {account: {kind: count}},
+            before any list limit).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "400": { description: Invalid from or to. }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
   "/api/v1/email/relay-abuse":
@@ -494,7 +651,10 @@ paths:
         - bearerAuth: []
       responses:
         "200":
-          description: Success.
+          description: >-
+            Quarantined messages, each with size, the size of its spooled
+            body, and subject, decoded, with control, bidi and format
+            characters removed, at most 160 characters.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/JSONObject" }

@@ -1352,8 +1352,9 @@ func TestModSecPageUsesPhase8Primitives(t *testing.T) {
 
 // TestEmailPageUsesPhase8Primitives asserts the email page dropped the old
 // six-card stat row in favour of recent rejects, grouped action rows and
-// five tabs (Findings / Quarantine / Queue / Outbound / Deliverability), and
-// that email.js no longer touches the removed stat-card IDs.
+// the job tabs (Overview / Queue / Held mail / Rejects / Sending accounts /
+// Provider delays / Findings), and that email.js no longer touches the
+// removed stat-card IDs.
 func TestEmailPageUsesPhase8Primitives(t *testing.T) {
 	tmpl, err := os.ReadFile("../../ui/templates/email.html")
 	if err != nil {
@@ -1369,12 +1370,14 @@ func TestEmailPageUsesPhase8Primitives(t *testing.T) {
 		`id="email-protection"`,
 		`id="email-tab-findings"`,
 		`id="email-filter-auth"`,
+		`id="email-tab-overview"`,
 		`id="email-tab-queue"`,
-		`id="email-tab-quarantine"`,
-		`id="email-tab-senders"`,
-		`id="email-tab-forwarders"`,
-		`id="email-tab-deliverability"`,
-		`id="email-tab-outbound"`,
+		`id="email-tab-held"`,
+		`id="email-tab-rejects"`,
+		`id="email-sending-table"`,
+		`id="email-forwarders-section"`,
+		`id="email-tab-delays"`,
+		`id="email-tab-sending"`,
 		`id="email-held-tbody"`,
 		`class="csm-toolbar"`,
 	} {
@@ -1458,7 +1461,7 @@ func TestEmailQueueUnavailableDoesNotRenderAsZero(t *testing.T) {
 	for _, want := range []string{
 		`if (q.unavailable)`,
 		`'queue size unknown'`,
-		`'Queue size unknown', 'CSM could not read the mail queue.'`,
+		`CSM.loadError(el, loadOverview, { title: 'Queue size unknown', error: _overviewErr || 'CSM could not read the mail queue.' });`,
 	} {
 		if !strings.Contains(src, want) {
 			t.Errorf("email.js does not render an unreadable queue distinctly; missing %q", want)
@@ -1492,24 +1495,35 @@ func TestEmailForwardersRenderEscapesInventoryValues(t *testing.T) {
 }
 
 // TestEmailDeliverabilityRenderEscapesProviderValues ensures the deferral
-// panels escape provider/IP/reason text parsed from a remote MTA's error.
+// panels never parse provider/IP/reason text from a remote MTA's error as
+// HTML: the Provider delays block builds no markup from strings and sets
+// that text as text.
 func TestEmailDeliverabilityRenderEscapesProviderValues(t *testing.T) {
 	js, err := os.ReadFile("../../ui/static/js/email.js")
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := string(js)
+	start := strings.Index(text, "// ---------- Provider delays tab")
+	end := strings.Index(text, "// ---------- Outbound abuse events")
+	if start < 0 || end < start {
+		t.Fatal("email.js missing provider delays block")
+	}
+	block := text[start:end]
+	for _, banned := range []string{`innerHTML`, `outerHTML`, `insertAdjacentHTML`} {
+		if strings.Contains(block, banned) {
+			t.Fatalf("provider delays renderer builds markup from strings: %q", banned)
+		}
+	}
 	for _, fragment := range []string{
-		`providerBadge(p.provider)`, // provider escaped inside providerBadge (see forwarder escape test)
-		`CSM.esc(ip.ip)`,
-		`CSM.esc(r.code)`,
-		`CSM.esc(formatDeferralCount(r.count))`,
-		`CSM.esc(formatDeferralCount(p.deferrals))`,
-		`CSM.esc(formatDeferralCount(ip.deferrals))`,
-		`CSM.esc(formatDeferralCount(item.count))`,
+		`rejectCell('Provider', providerName(p.provider))`,
+		`addr.appendChild(node('span', 'font-monospace', String(ip.ip || '')));`,
+		`node('span', 'badge me-1 ' + color, words`,
+		`node('div', 'font-monospace small csm-break-word', String(p.sample))`,
+		`td.textContent = formatDeferralCount(value);`,
 	} {
-		if !strings.Contains(text, fragment) {
-			t.Fatalf("email.js deliverability renderer missing escape fragment %q", fragment)
+		if !strings.Contains(block, fragment) {
+			t.Fatalf("email.js provider delays renderer missing text fragment %q", fragment)
 		}
 	}
 }
@@ -1520,7 +1534,7 @@ func TestEmailDeliverabilityCountsPreserveLargeValues(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(js)
-	start := strings.Index(text, "// ---------- Deliverability tab")
+	start := strings.Index(text, "// ---------- Provider delays tab")
 	end := strings.Index(text, "// ---------- Tab activation")
 	if start < 0 || end < start {
 		t.Fatal("email.js missing deliverability block")
@@ -3227,11 +3241,11 @@ func TestQuarantinePageHasFilterPack(t *testing.T) {
 	}
 }
 
-// TestEmailQuarantineToolbar pins WEB_ROADMAP P3.4: email quarantine
-// pane gains search / direction / date-range filters and bulk
-// release+delete via CSM.bulk. Search scope is limited to
-// from/to/subject through searchAttr so badges and table chrome don't
-// pollute matches.
+// TestEmailQuarantineToolbar pins WEB_ROADMAP P3.4, carried into the Held
+// mail tab: search and a kind filter over the merged list, and bulk
+// release+delete of malware via CSM.bulk. The page range replaced the
+// pane's own date inputs. Search scope is limited to from/to/subject
+// through searchAttr so badges and table chrome don't pollute matches.
 func TestEmailQuarantineToolbar(t *testing.T) {
 	tmpl, err := os.ReadFile("../../ui/templates/email.html")
 	if err != nil {
@@ -3239,15 +3253,18 @@ func TestEmailQuarantineToolbar(t *testing.T) {
 	}
 	tmplText := string(tmpl)
 	for _, fragment := range []string{
-		`id="email-quar-search"`,
-		`id="email-quar-dir"`,
-		`id="email-quar-from"`,
-		`id="email-quar-to"`,
+		`id="email-held-search"`,
+		`id="email-held-filter"`,
 		`id="email-quar-bulk-release"`,
 		`id="email-quar-bulk-delete"`,
 	} {
 		if !strings.Contains(tmplText, fragment) {
 			t.Fatalf("email.html missing P3.4 fragment %q", fragment)
+		}
+	}
+	for _, banned := range []string{`id="email-quar-from"`, `id="email-quar-to"`} {
+		if strings.Contains(tmplText, banned) {
+			t.Fatalf("email.html still has %q; the page range scopes held mail", banned)
 		}
 	}
 
@@ -3257,32 +3274,28 @@ func TestEmailQuarantineToolbar(t *testing.T) {
 	}
 	jsText := string(js)
 	for _, fragment := range []string{
-		`tableId: 'email-quar-table',`,
-		`searchId: 'email-quar-search',`,
+		`tableId: 'email-held-table',`,
+		`searchId: 'email-held-search',`,
 		`searchAttr: 'data-search',`,
-		`filters: [{ id: 'email-quar-dir', attr: 'data-direction' }],`,
-		`if (_emailQuarBulk) _emailQuarBulk.refresh();`,
+		`filters: [{ id: 'email-held-filter', attr: 'data-kind' }],`,
+		`onRender: function() { _emailQuarBulk.refresh(); }`,
 		`rowCheckboxSelector: '.email-quar-cb',`,
 		`selectAllSelector: '#email-quar-select-all',`,
 		`labelTemplate: 'Release {n} message(s)' }`,
 		`labelTemplate: 'Delete {n} message(s)' }`,
-		`data-direction="' + CSM.attr(msg.direction || '') + '"`,
-		`data-quar-timestamp="' + CSM.attr(msg.quarantined_at || '') + '"`,
-		`<td data-label="Time" data-timestamp="' + CSM.attr(msg.quarantined_at || '') + '">' + CSM.esc(time) + '</td>`,
-		`data-search="' + CSM.attr(searchBlob.toLowerCase()) + '"`,
-		`var _emailQuarURLUnbind = null;`,
-		`email_quar_q: document.getElementById('email-quar-search'),`,
-		`email_quar_dir: document.getElementById('email-quar-dir'),`,
-		`email_quar_from: fromEl,`,
-		`email_quar_to: toEl`,
-		`_bindEmailQuarURLState(fromEl, toEl);`,
+		`tr.setAttribute('data-kind', e.kind);`,
+		`held.setAttribute('data-timestamp', e.at || '');`,
+		`tr.setAttribute('data-search', [from, to.join(' '), m.forwarder, m.subject].join(' ').toLowerCase());`,
+		`CSM.urlState.bind({`,
+		`email_held_q: document.getElementById('email-held-search'),`,
+		`email_held_kind: document.getElementById('email-held-filter')`,
 	} {
 		if !strings.Contains(jsText, fragment) {
 			t.Fatalf("email.js missing P3.4 fragment %q", fragment)
 		}
 	}
-	if strings.Contains(jsText, `<tr data-direction="' + CSM.attr(msg.direction || '') + '" data-timestamp=`) {
-		t.Fatal("email quarantine rows must not use data-timestamp; CSM.initTimeAgo rewrites matching elements")
+	if strings.Contains(jsText, `tr.setAttribute('data-timestamp'`) {
+		t.Fatal("held mail rows must not use data-timestamp; CSM.initTimeAgo rewrites matching elements")
 	}
 }
 

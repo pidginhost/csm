@@ -37,9 +37,11 @@ func TestDestructiveConfirmsAreMarkedDanger(t *testing.T) {
 		}
 	}
 	// The floor is the number of call sites today (Cleanup History's copy of
-	// the file backup delete went with its duplicate list). Lower it only
-	// when a destructive confirm is removed, never to let the pattern miss.
-	if checked < 14 {
+	// the file backup delete went with its duplicate list, and the Email
+	// page's quarantine and held-copy deletes became one Held mail delete).
+	// Lower it only when a destructive confirm is removed, never to let the
+	// pattern miss.
+	if checked < 13 {
 		t.Fatalf("matched only %d destructive confirms; the pattern no longer finds the call sites", checked)
 	}
 

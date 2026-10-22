@@ -54,8 +54,10 @@ type Store struct {
 	mu                   sync.RWMutex
 	path                 string
 	entries              map[string]*Entry
-	dirty                bool   // true if state changed since last save
-	savedHash            string // hash of last saved state
+	dirty                bool             // true if state changed since last save
+	savedHash            string           // hash of last saved state
+	lastSave             time.Time        // start of the last save attempt
+	now                  func() time.Time // save clock; nil means time.Now
 	throttleReservations map[string]struct{}
 
 	pendingHealthOnce sync.Once
@@ -148,7 +150,36 @@ func loadJSONWithBackup(file string, v any) bool {
 	return true
 }
 
-func (s *Store) Close() error {
+// stateFileWriter writes state.json; a seam for tests.
+var stateFileWriter = atomicio.AtomicWrite
+
+// saveInterval bounds how often Update and MarkAlerted rewrite state.json.
+// They run on every alert batch and the file holds the whole dedup map, so
+// saving on each batch would rewrite it several times a minute on a busy
+// host. FlushDue, Flush and Close write what they leave pending.
+const saveInterval = 60 * time.Second
+
+func (s *Store) clock() time.Time {
+	if s.now == nil {
+		return time.Now()
+	}
+	return s.now()
+}
+
+// FlushDue writes pending changes once saveInterval has passed since the
+// last save. Call it periodically so the last batch before a quiet spell
+// still reaches disk.
+func (s *Store) FlushDue(now time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.dirty || now.Sub(s.lastSave) < saveInterval {
+		return nil
+	}
+	return s.save()
+}
+
+// Flush writes pending changes now.
+func (s *Store) Flush() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.dirty {
@@ -157,7 +188,14 @@ func (s *Store) Close() error {
 	return s.save()
 }
 
+func (s *Store) Close() error {
+	return s.Flush()
+}
+
 func (s *Store) save() error {
+	// A failed write counts too: a full disk is retried once per
+	// saveInterval, not on every alert batch.
+	s.lastSave = s.clock()
 	data, err := json.MarshalIndent(s.entries, "", "  ")
 	if err != nil {
 		return err
@@ -175,7 +213,12 @@ func (s *Store) save() error {
 	// above then "skips" the next attempt because the in-memory hash is
 	// unchanged, so corruption persists across restarts.
 	stateFile := filepath.Join(s.path, "state.json")
-	if err := atomicio.AtomicWriteJSON(stateFile, 0o600, s.entries); err != nil {
+	// Older releases wrote through a fixed <path>.tmp; clear one left by a
+	// crash so it cannot be mistaken for live state.
+	if err := os.Remove(stateFile + ".tmp"); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove stale tmp: %w", err)
+	}
+	if err := stateFileWriter(stateFile, 0o600, data); err != nil {
 		return err
 	}
 
@@ -229,7 +272,7 @@ func (s *Store) Update(findings []alert.Finding) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.dirty = true
-	now := time.Now()
+	now := s.clock()
 
 	seen := make(map[string]bool)
 	for _, f := range findings {
@@ -269,10 +312,6 @@ func (s *Store) Update(findings []alert.Finding) {
 			}
 		}
 	}
-
-	if err := s.save(); err != nil {
-		fmt.Fprintf(os.Stderr, "state: error saving after update: %v\n", err)
-	}
 }
 
 // MarkAlerted refreshes AlertSent on each finding's entry so the 24-hour
@@ -286,7 +325,7 @@ func (s *Store) MarkAlerted(findings []alert.Finding) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	now := time.Now()
+	now := s.clock()
 	changed := false
 	for _, f := range findings {
 		key := findingKey(f)
@@ -299,9 +338,6 @@ func (s *Store) MarkAlerted(findings []alert.Finding) {
 		return
 	}
 	s.dirty = true
-	if err := s.save(); err != nil {
-		fmt.Fprintf(os.Stderr, "state: error saving after MarkAlerted: %v\n", err)
-	}
 }
 
 func (s *Store) SetBaseline(findings []alert.Finding) {

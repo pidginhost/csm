@@ -1,8 +1,10 @@
 package intel
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/pidginhost/csm/internal/mailfwd/inventory"
@@ -251,5 +253,86 @@ func TestBoundTextReplacesInvalidUTF8BeforeTruncating(t *testing.T) {
 	}
 	if got != want {
 		t.Fatalf("boundText = %q, want %q", got, want)
+	}
+}
+
+// A provider's MX names it even when the recipient's domain does not, so a
+// business domain hosted at Google or Microsoft rolls up under that provider.
+// The recipient domain decides only when the MX is absent or unknown. The
+// window spans the first and last log lines that carry a time, deferral or
+// not.
+func TestDeferralsWindowAndMXClassification(t *testing.T) {
+	lines := []string{
+		`2026-10-20 08:00:00 1tQa00-000AAA-01 <= sender@example.com U=exampleuser P=local S=900`,
+		`2026-10-20 08:05:00 1tQa00-000AAA-01 == user@example.net R=dkim_lookuphost T=remote_smtp defer (-44) H=alt1.aspmx.l.google.com [203.0.113.41]: SMTP error from remote mail server after RCPT TO:<user@example.net>: 421-4.7.28 [198.51.100.7] Our system has detected an unusual rate of unsolicited mail`,
+		`2026-10-20 08:30:00 1tQb00-000BBB-02 == info@example.net R=dkim_lookuphost T=remote_smtp defer (-44) H=example-net.mail.protection.outlook.com [203.0.113.42]: SMTP error from remote mail server after RCPT TO:<info@example.net>: 451 4.7.500 Server busy. Please try again later from [198.51.100.7]`,
+		`2026-10-20 08:40:00 1tQc00-000CCC-03 == sales@example.net R=dkim_lookuphost T=remote_smtp defer (-46) H=mta6.am0.yahoodns.net [203.0.113.40]: SMTP error from remote mail server after end of data: 421 4.7.0 [TSS04] Messages from 198.51.100.7 temporarily deferred`,
+		`2026-10-20 08:50:00 1tQd00-000DDD-04 == user@yahoo.com R=dkim_lookuphost T=remote_smtp defer (-53): retry time not reached`,
+		`2026-10-20 09:00:00 1tQe00-000EEE-05 == user@gmail.com R=dkim_lookuphost T=remote_smtp defer (-44) H=mx.example.com [203.0.113.9]: SMTP error from remote mail server after RCPT TO:<user@gmail.com>: 451 greylisted`,
+		`2026-10-20 09:10:00 1tQf00-000FFF-06 == user@example.net R=dkim_lookuphost T=remote_smtp defer (-44) H=google.com.example.net [203.0.113.10]: SMTP error from remote mail server after RCPT TO:<user@example.net>: 451 greylisted`,
+		`2026-10-20 09:50:00 1tQg00-000GGG-07 => user@example.com R=dnslookup T=remote_smtp H=mx.example.com [203.0.113.1]`,
+		`not a log line`,
+	}
+
+	rep := BuildReport(lines)
+
+	got := map[string]int{}
+	for _, p := range rep.Providers {
+		got[p.Provider] = p.Deferrals
+	}
+	want := map[string]int{
+		string(inventory.ProviderGmail):    2, // aspmx MX; gmail.com recipient behind an unknown MX
+		string(inventory.ProviderOutlook):  1,
+		string(inventory.ProviderYahoo):    2, // yahoodns MX; yahoo.com recipient with no MX
+		string(inventory.ProviderExternal): 1, // a look-alike host is not Google
+	}
+	if len(got) != len(want) {
+		t.Errorf("providers = %v, want %v", got, want)
+	}
+	for p, n := range want {
+		if got[p] != n {
+			t.Errorf("provider %s: %d deferrals, want %d (all: %v)", p, got[p], n, got)
+		}
+	}
+	if rep.Deferrals != 6 {
+		t.Errorf("deferrals = %d, want 6", rep.Deferrals)
+	}
+
+	start := time.Date(2026, 10, 20, 8, 0, 0, 0, time.Local)
+	end := time.Date(2026, 10, 20, 9, 50, 0, 0, time.Local)
+	if !rep.WindowStart.Equal(start) || !rep.WindowEnd.Equal(end) {
+		t.Errorf("window = %v .. %v, want %v .. %v", rep.WindowStart, rep.WindowEnd, start, end)
+	}
+	raw, err := json.Marshal(rep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{`"window_start":`, `"window_end":`} {
+		if !strings.Contains(string(raw), key) {
+			t.Errorf("report JSON lacks %s: %s", key, raw)
+		}
+	}
+	if empty, _ := json.Marshal(BuildReport(nil)); strings.Contains(string(empty), "window_") {
+		t.Errorf("an empty report sends a window: %s", empty)
+	}
+}
+
+// lines is how many log lines the report read, deferrals or not, so the page
+// can say what window its numbers cover.
+func TestBuildReportCountsLinesRead(t *testing.T) {
+	lines := []string{arrivalLine, yahooTSS04, deliveryLine, "not a log line", gmailRate}
+	rep := BuildReport(lines)
+	if rep.Lines != len(lines) {
+		t.Errorf("lines = %d, want %d", rep.Lines, len(lines))
+	}
+	raw, err := json.Marshal(rep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"lines":5`) {
+		t.Errorf("report JSON lacks lines: %s", raw)
+	}
+	if empty, _ := json.Marshal(BuildReport(nil)); !strings.Contains(string(empty), `"lines":0`) {
+		t.Errorf("an empty report leaves out lines: %s", empty)
 	}
 }

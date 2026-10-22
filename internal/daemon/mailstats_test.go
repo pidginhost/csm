@@ -1,11 +1,13 @@
 package daemon
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/mailstats"
 	"github.com/pidginhost/csm/internal/store"
@@ -46,6 +48,26 @@ func TestHandleEximLineCountsMarkersAndRejects(t *testing.T) {
 	}
 	if len(ov.Series) != 1 || ov.Series[0].T != time.Date(2026, 10, 20, 12, 0, 0, 0, time.Local).Unix() {
 		t.Fatalf("series = %+v, want one bucket at the lines' own time, not the read time", ov.Series)
+	}
+}
+
+// The scan marker and the antivirus reject of one message carry the same
+// message ID, so the counter takes that scan out of clean.
+func TestHandleEximLineMovesMalwareScanOutOfClean(t *testing.T) {
+	now := mailStatsTestNow
+	d := newMailStatsTestDaemon(t, &now)
+	for _, line := range []string{
+		`2026-10-20 12:10:00 1tAbCd-000002-Ab CSM-ANTISPAM event=scan mode=enforce policy=on result=ok score=12 action="no action" decision=none ip=203.0.113.8`,
+		`2026-10-20 12:10:01 1tAbCd-000002-Ab H=(mx.example.net) [203.0.113.8]:25 F=<a@example.com> rejected after DATA: This message contains a virus or other harmful content (Example.Test-1)`,
+	} {
+		d.handleEximLine(line, alert.Observation{ObservedAt: now}, &config.Config{})
+	}
+	ov := d.mailStats.Overview(now.Add(-time.Hour), now)
+	if ov.Totals.Scanned != 1 || ov.Totals.Clean != 0 || ov.Totals.Rejects[mailstats.ClassMalware] != 1 {
+		t.Fatalf("totals = %+v, want the scan counted but not as clean", ov.Totals)
+	}
+	if len(ov.Series) != 1 || ov.Series[0].Clean != 0 || ov.Series[0].Malware != 1 {
+		t.Fatalf("series = %+v, want one malware message and nothing clean", ov.Series)
 	}
 }
 
@@ -152,7 +174,7 @@ func TestMailStatsRetriesFailedLoad(t *testing.T) {
 	if err = saved.Load(db, now); err != nil {
 		t.Fatal(err)
 	}
-	saved.RecordQuarantine(now)
+	saved.RecordQuarantine(now, "")
 	if err = saved.Flush(db, now); err != nil {
 		t.Fatal(err)
 	}
@@ -248,7 +270,7 @@ func TestStartLogWatchersRestoresMailStats(t *testing.T) {
 	if err := saved.Load(db, now); err != nil {
 		t.Fatal(err)
 	}
-	saved.RecordQuarantine(now)
+	saved.RecordQuarantine(now, "")
 	if err := saved.Flush(db, now); err != nil {
 		t.Fatal(err)
 	}
@@ -263,5 +285,47 @@ func TestStartLogWatchersRestoresMailStats(t *testing.T) {
 
 	if got := d.mailStats.Overview(now.Add(-time.Hour), now.Add(time.Hour)).Totals.Quarantined; got != 1 {
 		t.Fatalf("restored quarantines = %d, want 1", got)
+	}
+}
+
+// An arrival counts for the hosting account of its submitter: the domain
+// owner of an authenticated mailbox, or the local caller when it is a
+// hosting account. A submitter that resolves to no account counts only as
+// unresolved. Inbound mail has no submitter. A null-sender arrival counts
+// when its submitter resolves to an account, so an account cannot hide its
+// mail behind <>, and is dropped otherwise, like Exim's own bounces.
+func TestEximArrivalCountsSubmitterAccount(t *testing.T) {
+	t.Cleanup(checks.SetAccountOwnerLookupForTest(func(domain string) (string, bool) {
+		if domain == "example.com" {
+			return "exampleacct", true
+		}
+		return "", false
+	}))
+	t.Cleanup(checks.SetHostingAccountLookupForTest(func(name string) string {
+		if name == "exampleacct" {
+			return name
+		}
+		return ""
+	}))
+	now := mailStatsTestNow
+	d := newMailStatsTestDaemon(t, &now)
+	for _, line := range []string{
+		`2026-10-20 12:10:00 1tAbCd-000011-Ab <= user@example.com H=(client.example.net) [203.0.113.20]:50000 P=esmtpsa A=dovecot_login:user@example.com S=1200 for b@example.net`,
+		`2026-10-20 12:10:30 1tAbCd-000012-Ab <= exampleacct@example.net U=exampleacct P=local S=800 for b@example.net`,
+		`2026-10-20 12:10:45 1tAbCd-000015-Ab <= <> R=1tAbCd-000012-Ab U=mailnull P=local S=1500 for exampleacct@example.net`,
+		`2026-10-20 12:10:45 1tAbCd-000019-Ab <= <> U=exampleacct P=local S=700 for b@example.net`,
+		`2026-10-20 12:10:46 1tAbCd-000016-Ab <= <> H=(client.example.net) [203.0.113.20]:50002 P=esmtpsa A=dovecot_login:user@example.com S=1500 for b@example.net`,
+		`2026-10-20 12:10:47 1tAbCd-000017-Ab <= root@example.com U=root P=local S=800 for b@example.net`,
+		`2026-10-20 12:10:48 1tAbCd-000018-Ab <= mailnull@example.com U=mailnull P=local S=800 for b@example.net`,
+		`2026-10-20 12:11:00 1tAbCd-000013-Ab <= other@example.net H=(client.example.net) [203.0.113.21]:50001 P=esmtpsa A=dovecot_login:other@example.net S=900 for b@example.net`,
+		`2026-10-20 12:11:30 1tAbCd-000014-Ab <= a@example.net H=mx.example.net [198.51.100.9]:41000 P=esmtps S=2000 for user@example.com`,
+		`2026-10-20 12:12:00 1tAbCd-000011-Ab => b@example.net R=dkim_lookuphost T=dkim_remote_smtp H=mx.example.net [198.51.100.10]`,
+	} {
+		d.handleEximLine(line, alert.Observation{ObservedAt: now}, &config.Config{})
+	}
+	got := d.mailStats.TopSenders(now.Add(-time.Hour), now, 0)
+	want := mailstats.SendersReport{Accounts: []mailstats.AccountSends{{Account: "exampleacct", Messages: 4}}, Total: 7, Unresolved: 3}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("senders = %+v, want %+v", got, want)
 	}
 }

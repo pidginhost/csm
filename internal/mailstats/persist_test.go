@@ -144,7 +144,7 @@ func TestFlushLoadRoundTrip(t *testing.T) {
 	c.RecordReject(Reject{At: now, Class: ClassMalware, Detail: "third"})
 	c.RecordLoginFailure(now, false, 2)
 	c.RecordLoginFailure(now, true, 5)
-	c.RecordQuarantine(now)
+	c.RecordQuarantine(now, "")
 	if err := c.Flush(db, now); err != nil {
 		t.Fatal(err)
 	}
@@ -860,7 +860,7 @@ func TestLoadBoundsBuckets(t *testing.T) {
 		db.buckets[bucketKey(at)] = []byte(`{"Quarantined":1}`)
 	}
 	c := New(func() time.Time { return now })
-	c.RecordQuarantine(now)
+	c.RecordQuarantine(now, "")
 	mustLoad(t, c, db, now)
 	ov := c.Overview(now.Add(-Retention), now.Add(2*time.Hour))
 	const limit = 2880
@@ -904,5 +904,81 @@ func TestLoadFlushRemovesExpiredStoredRejects(t *testing.T) {
 	}
 	if got := string(db.rings[string(ClassSpam)]); got != "[]" {
 		t.Fatalf("expired reject details remain stored: %s", got)
+	}
+}
+
+// A move after the scan's bucket was saved marks that bucket for the next
+// save, so a restart keeps the scan out of clean.
+func TestMalwareMovePersists(t *testing.T) {
+	now := time.Date(2026, 10, 20, 12, 20, 0, 0, time.UTC)
+	const id = "1tAbCd-000001-Ab"
+	db := newFakeStore()
+	c := New(func() time.Time { return now })
+	mustLoad(t, c, db, now)
+	c.RecordScan(now.Add(-10*time.Minute), antispam.Scan{OK: true, Mode: "enforce", Policy: "on", Decision: "none", MsgID: id})
+	if err := c.Flush(db, now); err != nil {
+		t.Fatal(err)
+	}
+	c.RecordQuarantine(now, id)
+	if err := c.Flush(db, now); err != nil {
+		t.Fatal(err)
+	}
+
+	restarted := New(func() time.Time { return now })
+	mustLoad(t, restarted, db, now)
+	tot := restarted.Overview(now.Add(-time.Hour), now.Add(time.Hour)).Totals
+	if tot.Scanned != 1 || tot.Clean != 0 || tot.Quarantined != 1 {
+		t.Fatalf("restored totals %+v, want the scan out of clean", tot)
+	}
+}
+
+// Sends survive a restart and add to what the new counter already counted.
+func TestSendsPersistRoundTrip(t *testing.T) {
+	now := time.Date(2026, 10, 20, 12, 20, 0, 0, time.UTC)
+	db := newFakeStore()
+	c := New(func() time.Time { return now })
+	mustLoad(t, c, db, now)
+	c.RecordSend(now.Add(-20*time.Minute), "alpha")
+	c.RecordSend(now, "alpha")
+	c.RecordSend(now, "")
+	if err := c.Flush(db, now); err != nil {
+		t.Fatal(err)
+	}
+	from, to := now.Add(-time.Hour), now.Add(time.Hour)
+
+	restarted := New(func() time.Time { return now })
+	if got := jsonOf(t, restarted.TopSenders(from, to, 0)); got != `{"accounts":[],"total":0,"unresolved":0}` {
+		t.Fatalf("before load: %s", got)
+	}
+	restarted.RecordSend(now, "alpha")
+	restarted.RecordSend(now, "bravo")
+	mustLoad(t, restarted, db, now)
+	want := `{"accounts":[{"account":"alpha","messages":3},{"account":"bravo","messages":1}],"total":5,"unresolved":1}`
+	if got := jsonOf(t, restarted.TopSenders(from, to, 0)); got != want {
+		t.Fatalf("restored\n got %s\nwant %s", got, want)
+	}
+}
+
+// A bucket stored before sends were counted loads and takes new sends.
+func TestOldBucketWithoutSendsLoads(t *testing.T) {
+	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	db := newFakeStore()
+	db.buckets[bucketKey(now)] = []byte(`{"Scans":{"enforce:none":2},"Rejects":{},"Temporary":{},"LoginsSMTP":1,"LoginsMailbox":0,"Quarantined":0}`)
+	c := New(func() time.Time { return now })
+	mustLoad(t, c, db, now)
+	c.RecordSend(now, "alpha")
+	from, to := now.Add(-time.Hour), now.Add(time.Hour)
+	if tot := c.Overview(from, to).Totals; tot.Scanned != 2 || tot.LoginsSMTP != 1 {
+		t.Fatalf("totals %+v", tot)
+	}
+	if got := jsonOf(t, c.TopSenders(from, to, 0)); got != `{"accounts":[{"account":"alpha","messages":1}],"total":1,"unresolved":0}` {
+		t.Fatalf("senders %s", got)
+	}
+	if err := c.Flush(db, now); err != nil {
+		t.Fatal(err)
+	}
+	var b bucket
+	if err := json.Unmarshal(db.buckets[bucketKey(now)], &b); err != nil || b.Sends["alpha"] != 1 || b.Scans["enforce:none"] != 2 {
+		t.Fatalf("stored %+v (%v)", b, err)
 	}
 }

@@ -3,6 +3,7 @@ package webui
 import (
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/pidginhost/csm/internal/mailstats"
@@ -17,8 +18,8 @@ const (
 // are what class=content, the default, lists.
 var contentRejectClasses = []mailstats.Class{mailstats.ClassSpam, mailstats.ClassMalware}
 
-// rejectClasses resolves the class parameter: content, all (nil) or one
-// class name. ok is false for anything else.
+// rejectClasses resolves the class parameter: content, all (nil), or
+// class names joined by commas. ok is false for anything else.
 func rejectClasses(class string) (classes []mailstats.Class, ok bool) {
 	switch class {
 	case "content":
@@ -26,15 +27,30 @@ func rejectClasses(class string) (classes []mailstats.Class, ok bool) {
 	case "all":
 		return nil, true
 	}
-	if c := mailstats.Class(class); slices.Contains(mailstats.Classes, c) {
-		return []mailstats.Class{c}, true
+	for name := range strings.SplitSeq(class, ",") {
+		c := mailstats.Class(name)
+		if !slices.Contains(mailstats.Classes, c) {
+			return nil, false
+		}
+		classes = append(classes, c)
 	}
-	return nil, false
+	return classes, true
+}
+
+// permanentRejects counts the permanent rejects of every class in an
+// overview: its rejects less its temporary ones.
+func permanentRejects(t mailstats.Totals) map[mailstats.Class]int {
+	out := make(map[mailstats.Class]int, len(mailstats.Classes))
+	for _, c := range mailstats.Classes {
+		out[c] = t.Rejects[c] - t.Temporary[c]
+	}
+	return out
 }
 
 // apiEmailRejects handles GET /api/v1/email/rejects: the newest rejects the
-// mail decision counter keeps for from/to (default the last 24 h). Each
-// entry names a sender and a recipient, so the route is admin only.
+// mail decision counter keeps for from/to (see emailRange), and the
+// permanent rejects of every class in the range. Each entry names a sender
+// and a recipient, so the route is admin only.
 func (s *Server) apiEmailRejects(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	class := q.Get("class")
@@ -43,7 +59,7 @@ func (s *Server) apiEmailRejects(w http.ResponseWriter, r *http.Request) {
 	}
 	classes, ok := rejectClasses(class)
 	if !ok {
-		writeJSONError(w, "Invalid class: use content, all or a reject class name", http.StatusBadRequest)
+		writeJSONError(w, "Invalid class: use content, all or reject class names joined by commas", http.StatusBadRequest)
 		return
 	}
 	limit := queryInt(r, "limit", emailRejectsDefaultLimit)
@@ -51,22 +67,21 @@ func (s *Server) apiEmailRejects(w http.ResponseWriter, r *http.Request) {
 		limit = emailRejectsDefaultLimit
 	}
 	limit = min(limit, emailRejectsMaxLimit)
-	now := time.Now()
-	from, to, ok := historyRangeQuery(w, q, now.Add(-24*time.Hour), now)
+	from, to, ok := emailRange(w, q, time.Now())
 	if !ok {
 		return
 	}
-	if to.Before(from) {
-		from, to = to, from
-	}
 
 	var items []mailstats.Reject
+	var totals mailstats.Totals
 	if c := s.mailStatsCounter(); c != nil {
 		items = c.Rejects(from, to, classes, limit)
+		totals = c.Overview(from, to).Totals
 	}
 	writeItems(w, items, map[string]interface{}{
 		"class":     class,
 		"limit":     limit,
 		"kept_days": int(mailstats.RingAge / (24 * time.Hour)),
+		"totals":    permanentRejects(totals),
 	})
 }

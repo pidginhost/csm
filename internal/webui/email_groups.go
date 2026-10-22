@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -404,12 +405,9 @@ func (s *Server) apiEmailGroups(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := time.Now()
-	from, to, ok := historyRangeQuery(w, q, now.Add(-24*time.Hour), now)
+	from, to, ok := emailRange(w, q, now)
 	if !ok {
 		return
-	}
-	if to.Before(from) {
-		from, to = to, from
 	}
 
 	kindFilter := q.Get("kind")
@@ -566,4 +564,12 @@ func (s *Server) emailMemo(key string, compute func() any) any {
 		return compute()
 	}
 	return s.emailMemos.memo(key).get(s.store.HistoryMark(), compute)
+}
+
+// rangeMemoKey keys an email memo on a range cut to the minute. The page asks
+// up to now, so a key holding the exact times never matched a later request;
+// requests in the same minute now share one history walk.
+func rangeMemoKey(name string, from, to time.Time) string {
+	return name + "?from=" + strconv.FormatInt(from.Truncate(time.Minute).Unix(), 10) +
+		"&to=" + strconv.FormatInt(to.Truncate(time.Minute).Unix(), 10)
 }
