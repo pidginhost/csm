@@ -65,7 +65,7 @@ var realtimeOnlyRules = map[string]string{
 	"php_hex_string_obfuscation":      "Tier 2: silent on both samples; no realistic benign control establishes whether generated binary parsers can satisfy its concatenation shape. Validate against real code before porting",
 	"php_open_basedir_bypass":         "Tier 2: silent on both samples, yet fires on a hosting support plugin's server diagnostics screen. Redesign before porting",
 	"php_open_basedir_override":       "Rename, not a gap: the same open_basedir reset already ships as exploit_open_basedir_escape",
-	"spam_base64_links":               "Tier 2: already fires in realtime on live data, and fires on a theme echoing an inline base64 SVG logo. Redesign before porting",
+	"spam_base64_links":               "Tier 2: redesigned to require a literal that decodes to an off-site link, so inline SVG logos and tracking pixels stay silent. Not yet measured on the clean corpus or the live sample; measure before porting",
 	"spam_comment_injector":           "Tier 2: 15 port-induced live hits on WordPress core .js; also already a live realtime false positive on core comment handling",
 	"spam_hidden_div_links":           "Rename, not a gap: the anchor repetition could not cross the closing tag of a link, so the rule matched nothing. Repaired, it is the same hidden-container link farm at the same count of eight that spam_hidden_links already scans for",
 	"spam_link_injector":              "Covered and HARDENED under another name: spam_wp_footer_injection requires the hide directive inside an inline style attribute, which is what keeps a plugin echoing a style block beside a visible link from matching. This .yml form has no such requirement",

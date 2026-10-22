@@ -34,7 +34,6 @@ var knownRealtimeFalsePositives = map[string]string{
 	"phishing_google_drive":      "a Drive backup plugin settings screen taking a service-account key",
 	"phishing_workers_dev_exfil": "a site whose own API is hosted on Cloudflare Workers",
 	"php_open_basedir_bypass":    "a hosting support plugin server diagnostics screen",
-	"spam_base64_links":          "a theme echoing an inline base64 SVG logo",
 	"spam_redirect_chain":        "a mobile and desktop redirect keyed on the user agent",
 	"spam_sitemap_hijack":        "a sitemap listing a legitimate .xyz URL",
 	"spam_wp_options_inject":     "an authenticated migration step updating a staged default-prefix options table",
@@ -209,12 +208,20 @@ $callback();
 `,
 	},
 	{
-		name:     "spam_base64_links",
-		ext:      ".php",
-		knownHit: "spam_base64_links",
+		name: "spam_base64_links",
+		ext:  ".php",
 		sample: `<?php
 // Inline SVG logo emitted by a theme.
 echo base64_decode('PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMCAxMCI+PC9zdmc+');
+`,
+	},
+	{
+		name: "spam_base64_links tracking pixel",
+		ext:  ".php",
+		sample: `<?php
+// Newsletter open tracking answers with a 1x1 GIF.
+header('Content-Type: image/gif');
+echo base64_decode('R0lGODlhAQABAJAAAP8AAAAAACH5BAUQAAAALAAAAAABAAEAAAICBAEAOw==');
 `,
 	},
 	{

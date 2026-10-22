@@ -26,6 +26,9 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - Email Security no longer counts malware messages as clean.
 - Quarantined malware subjects now show decoded, without characters that reverse or hide text, on the Email Security page and in the quarantine API.
 - Spam folder learning no longer refuses to start on standard cPanel servers when Redis runs under its own service user.
+- Bulk WordPress plugin updates no longer raise unverified package warnings or false content findings for unmodified plugin files.
+- PHP in a folder named mail inside a plugin or website no longer raises a Critical alert; only account mail directories do.
+- PHP files that print an embedded image, such as a tracking pixel or an SVG logo, no longer match the encoded spam link signature.
 
 ## [4.5.0] - 2026-10-22
 
