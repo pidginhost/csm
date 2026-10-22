@@ -1,12 +1,8 @@
 package checks
 
 import (
-	"archive/zip"
-	"bufio"
 	"context"
-	"encoding/binary"
 	"errors"
-	"io"
 	"io/fs"
 	"os"
 	"path"
@@ -119,9 +115,6 @@ func archiveSiteBackupStatus(ctx context.Context, p string) (holds, complete boo
 }
 
 func scanZipDirectory(ctx context.Context, f *os.File, dir zipdir.Directory) (bool, error) {
-	reader := bufio.NewReader(io.NewSectionReader(f, dir.Offset, dir.Size))
-	var header [zipDirectoryHeaderLen]byte
-	var records uint64
 	holdsSite := false
 	// A wp-config.php nested past the shallow bound only counts alongside a
 	// WordPress runtime file, so both are accumulated across the whole
@@ -132,76 +125,37 @@ func scanZipDirectory(ctx context.Context, f *os.File, dir zipdir.Directory) (bo
 	// also holds a Joomla entry point, so both are keyed by directory.
 	joomlaConfigDirs := map[string]bool{}
 	joomlaRuntimeDirs := map[string]bool{}
-	for {
-		if records%256 == 0 {
-			if err := ctx.Err(); err != nil {
-				return holdsSite, err
-			}
-		}
-		signature, err := reader.Peek(4)
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			return holdsSite, err
-		}
-		if binary.LittleEndian.Uint32(signature) != zipDirectoryHeaderSignature {
-			break
-		}
-		if _, err := io.ReadFull(reader, header[:]); err != nil {
-			return holdsSite, archiveDirectoryReadError(err)
-		}
-		nameLen := int(binary.LittleEndian.Uint16(header[28:30]))
-		extraLen := int64(binary.LittleEndian.Uint16(header[30:32]))
-		commentLen := int64(binary.LittleEndian.Uint16(header[32:34]))
-		name := make([]byte, nameLen)
-		if _, err := io.ReadFull(reader, name); err != nil {
-			return holdsSite, archiveDirectoryReadError(err)
-		}
-		if _, err := io.CopyN(io.Discard, reader, extraLen+commentLen); err != nil {
-			return holdsSite, archiveDirectoryReadError(err)
-		}
-		if entry := string(name); archiveEntrySignalsSiteBackup(entry) {
+	err := zipdir.Walk(ctx, f, dir, func(e zipdir.Entry) error {
+		entry := e.Name
+		if archiveEntrySignalsSiteBackup(entry) {
 			holdsSite = true
-		} else {
-			if archiveEntryIsDeepWPConfig(entry) {
-				deepConfig = true
+			return nil
+		}
+		if archiveEntryIsDeepWPConfig(entry) {
+			deepConfig = true
+		}
+		if archiveEntryIsWPRuntime(entry) {
+			wpRuntime = true
+		}
+		// Names alone cannot distinguish PHP files from directories or
+		// symlinks. Interpret central-directory attributes without opening
+		// or decompressing any entry payload.
+		if e.Mode().IsRegular() {
+			if d, ok := archiveNestedJoomlaConfigDir(entry); ok {
+				joomlaConfigDirs[d] = true
+				holdsSite = holdsSite || joomlaRuntimeDirs[d]
 			}
-			if archiveEntryIsWPRuntime(entry) {
-				wpRuntime = true
-			}
-			// Names alone cannot distinguish PHP files from directories or
-			// symlinks. Interpret central-directory attributes without opening
-			// or decompressing any entry payload.
-			entryHeader := zip.FileHeader{
-				Name:           strings.ReplaceAll(entry, `\`, "/"),
-				CreatorVersion: binary.LittleEndian.Uint16(header[4:6]),
-				ExternalAttrs:  binary.LittleEndian.Uint32(header[38:42]),
-			}
-			if entryHeader.Mode().IsRegular() {
-				if d, ok := archiveNestedJoomlaConfigDir(entry); ok {
-					joomlaConfigDirs[d] = true
-					holdsSite = holdsSite || joomlaRuntimeDirs[d]
-				}
-				if d, ok := archiveJoomlaRuntimeDir(entry); ok {
-					joomlaRuntimeDirs[d] = true
-					holdsSite = holdsSite || joomlaConfigDirs[d]
-				}
+			if d, ok := archiveJoomlaRuntimeDir(entry); ok {
+				joomlaRuntimeDirs[d] = true
+				holdsSite = holdsSite || joomlaConfigDirs[d]
 			}
 		}
-		records++
-	}
-	if records != dir.Records {
-		return false, errArchiveFormat
+		return nil
+	})
+	if err != nil {
+		return holdsSite, err
 	}
 	return holdsSite || (deepConfig && wpRuntime), nil
-}
-
-func archiveDirectoryReadError(err error) error {
-	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-		return errArchiveFormat
-	}
-	return err
 }
 
 // archiveEntryPath normalises a raw zip entry name and rejects the shapes that

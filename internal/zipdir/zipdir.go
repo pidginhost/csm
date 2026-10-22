@@ -5,9 +5,14 @@
 package zipdir
 
 import (
+	"archive/zip"
+	"bufio"
+	"context"
 	"encoding/binary"
 	"errors"
 	"io"
+	"io/fs"
+	"strings"
 )
 
 // Record layout constants from APPNOTE.TXT.
@@ -172,4 +177,81 @@ func readAtFull(r io.ReaderAt, dst []byte, offset int64) error {
 		return err
 	}
 	return nil
+}
+
+// Entry is one central-directory record: its name and the attributes that
+// say what kind of file it is. Nothing of the entry's data is read.
+type Entry struct {
+	Name           string
+	CreatorVersion uint16
+	ExternalAttrs  uint32
+}
+
+// Mode interprets the record's attributes the way archive/zip does.
+func (e Entry) Mode() fs.FileMode {
+	h := zip.FileHeader{
+		Name:           strings.ReplaceAll(e.Name, `\`, "/"),
+		CreatorVersion: e.CreatorVersion,
+		ExternalAttrs:  e.ExternalAttrs,
+	}
+	return h.Mode()
+}
+
+// Walk streams the central directory record by record, holding one record at
+// a time, and calls visit for each. It checks ctx before every 256th record.
+// A visit error stops the walk and is returned as is. A directory that holds
+// a different number of records than dir claims is ErrFormat.
+func Walk(ctx context.Context, r io.ReaderAt, dir Directory, visit func(Entry) error) error {
+	reader := bufio.NewReader(io.NewSectionReader(r, dir.Offset, dir.Size))
+	var header [HeaderLen]byte
+	var records uint64
+	for {
+		if records%256 == 0 {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+		}
+		signature, err := reader.Peek(4)
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		if binary.LittleEndian.Uint32(signature) != HeaderSignature {
+			break
+		}
+		if _, err := io.ReadFull(reader, header[:]); err != nil {
+			return readError(err)
+		}
+		nameLen := int(binary.LittleEndian.Uint16(header[28:30]))
+		extraLen := int64(binary.LittleEndian.Uint16(header[30:32]))
+		commentLen := int64(binary.LittleEndian.Uint16(header[32:34]))
+		name := make([]byte, nameLen)
+		if _, err := io.ReadFull(reader, name); err != nil {
+			return readError(err)
+		}
+		if _, err := io.CopyN(io.Discard, reader, extraLen+commentLen); err != nil {
+			return readError(err)
+		}
+		if err := visit(Entry{
+			Name:           string(name),
+			CreatorVersion: binary.LittleEndian.Uint16(header[4:6]),
+			ExternalAttrs:  binary.LittleEndian.Uint32(header[38:42]),
+		}); err != nil {
+			return err
+		}
+		records++
+	}
+	if records != dir.Records {
+		return ErrFormat
+	}
+	return nil
+}
+
+func readError(err error) error {
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return ErrFormat
+	}
+	return err
 }
