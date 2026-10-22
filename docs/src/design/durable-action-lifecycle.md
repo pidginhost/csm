@@ -50,8 +50,8 @@ rows. Its audit writes an `evict_temp` record beside
 the block's record in the same durable write. A batch only adds its members'
 rows, each starting when the batch is planned: nothing evicts for a batch, so admission refuses one whose result drops a row that
 has not expired or changes any other entry. Kept rows retain their order.
-Unverified rows remain until their owner settles the outcome, even after
-expiry, and a batch cannot add a block for an address they hold; an
+In batch planning, unverified rows remain until their owner settles the
+outcome, even after expiry, and a batch cannot add a block for an address they hold; an
 unverified address stays pending even when another spelling of the same
 address has a verified block. Actions written before batches read as
 one-member batches and keep their stored format. A record written by a newer
@@ -101,7 +101,12 @@ needing a durable header alias for singletons must wait for a stored-format
 extension.
 
 Replaying a settled batch leaves its charges, committed revision and kernel
-unchanged. An acknowledged audit is not delivered again.
+unchanged. An acknowledged audit is not delivered again. Whole-action undo
+requires the complete saved after-state and kernel proof. Member undo removes
+only that member's unchanged row and preserves other members and later live
+changes. Another live or unverified block on its address refuses member undo.
+Every undo omits expired blocks, allows and subnets, including expired
+unverified blocks. Restored rows keep their original absolute expiry.
 
 Batch planning dates member rows and kernel evidence by one lease-clock
 instant, even when the wall clock moves backward during a lease.

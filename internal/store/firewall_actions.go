@@ -786,6 +786,39 @@ func (db *DB) ReadFirewallAction(id string) (firewall.FirewallAction, error) {
 	return a, nil
 }
 
+// ReadFirewallBatchMember returns the batch that indexes member id. An ID no
+// batch indexes is missing; an entry naming a batch that does not list the
+// member is damage.
+func (db *DB) ReadFirewallBatchMember(id string) (firewall.FirewallAction, error) {
+	var a firewall.FirewallAction
+	err := db.bolt.View(func(tx *bolt.Tx) error {
+		index := tx.Bucket([]byte(firewallMemberIndexBucket))
+		if index != nil && index.Bucket([]byte(id)) != nil {
+			return firewall.ErrStateCorrupt
+		}
+		if index == nil || index.Get([]byte(id)) == nil {
+			return ErrFirewallActionMissing
+		}
+		payload, err := decodeFirewallJournal(index.Get([]byte(id)))
+		if err != nil {
+			return err
+		}
+		var entry firewallMemberIndexEntry
+		if json.Unmarshal(payload, &entry) != nil {
+			return firewall.ErrStateCorrupt
+		}
+		a, err = readFirewallAction(tx, entry.Batch)
+		if errors.Is(err, ErrFirewallActionMissing) || err == nil && !slices.Contains(firewallBatchMemberIDs(a), id) {
+			return firewall.ErrStateCorrupt
+		}
+		return err
+	})
+	if err != nil {
+		return firewall.FirewallAction{}, err
+	}
+	return a, nil
+}
+
 func (db *DB) PendingFirewallActions() ([]firewall.FirewallAction, error) {
 	var pending []firewall.FirewallAction
 	err := db.bolt.View(func(tx *bolt.Tx) error {

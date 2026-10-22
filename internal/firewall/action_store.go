@@ -134,6 +134,9 @@ type ActionStore interface {
 	StateStore
 	AdmitFirewallAction(FirewallAction) (FirewallAction, bool, error)
 	ReadFirewallAction(string) (FirewallAction, error)
+	// ReadFirewallBatchMember returns the batch of two or more members that
+	// indexes a member ID, or ErrActionMissing.
+	ReadFirewallBatchMember(string) (FirewallAction, error)
 	PendingFirewallActions() ([]FirewallAction, error)
 	TransitionFirewallAction(string, string, string, time.Time) (FirewallAction, error)
 	FirewallAuditPending() ([]FirewallAction, error)

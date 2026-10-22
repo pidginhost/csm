@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 )
 
@@ -209,6 +210,9 @@ func (l *Lifecycle) Undo(req ActionRequest, kernel ActionKernel) (FirewallAction
 		return FirewallAction{}, err
 	}
 	original, err := l.Store.ReadFirewallAction(req.UndoOf)
+	if errors.Is(err, ErrActionMissing) {
+		return l.undoMember(req, kernel)
+	}
 	if err != nil {
 		return FirewallAction{}, err
 	}
@@ -232,11 +236,89 @@ func (l *Lifecycle) Undo(req ActionRequest, kernel ActionKernel) (FirewallAction
 	if !observed.After {
 		return FirewallAction{}, fmt.Errorf("%w: undo target changed", ErrStateConflict)
 	}
-	plan := FirewallAction{Request: req, Before: state, After: original.Before, Revision: revision, CreatedAt: time.Now(), KernelBefore: original.KernelAfter, KernelAfter: original.KernelBefore}
+	now := time.Now()
+	plan := FirewallAction{Request: req, Before: state, After: withoutExpiredRows(original.Before, now), Revision: revision, CreatedAt: now, KernelBefore: original.KernelAfter, KernelAfter: original.KernelBefore}
+	return l.executeUndo(plan, kernel)
+}
+
+// undoMember removes one member of a verified batch, planned against current
+// state: the batch's other members and later live changes stay. Only that
+// member's own row must still be current, with no other live or unverified
+// row on its address. Batches evict no live victim to restore.
+func (l *Lifecycle) undoMember(req ActionRequest, kernel ActionKernel) (FirewallAction, error) {
+	batch, err := l.Store.ReadFirewallBatchMember(req.UndoOf)
+	if err != nil {
+		return FirewallAction{}, err
+	}
+	if batch.Phase != "verified" {
+		return FirewallAction{}, errors.New("only a verified firewall action can be undone")
+	}
+	i := slices.IndexFunc(batch.Members, func(m ActionMember) bool { return m.Request.ID == req.UndoOf })
+	if i < 0 {
+		return FirewallAction{}, ErrStateCorrupt
+	}
+	member := batch.Members[i].Request
+	j := slices.IndexFunc(batch.After.Blocked, func(row BlockedEntry) bool {
+		return row.ActionID == member.ID && row.IP == member.Target && row.ExpiresAt.After(batch.CreatedAt)
+	})
+	if j < 0 {
+		return FirewallAction{}, ErrStateCorrupt
+	}
+	row := batch.After.Blocked[j]
+	state, revision, err := l.Store.ReadFirewallState()
+	if err != nil {
+		return FirewallAction{}, err
+	}
+	now := time.Now()
+	next := FirewallState{BlockedNet: state.BlockedNet, Allowed: state.Allowed, PortAllowed: state.PortAllowed}
+	current, others := false, 0
+	for _, r := range state.Blocked {
+		switch {
+		case !sameAddress(r.IP, row.IP):
+			next.Blocked = append(next.Blocked, r)
+		case !current && SameBlockedEntry(r, row):
+			current = true
+		case !r.Unverified && !r.ExpiresAt.IsZero() && !r.ExpiresAt.After(now):
+			// An expired row on the address blocks nothing; it goes too.
+		default:
+			others++
+		}
+	}
+	if !current || others > 0 {
+		return FirewallAction{}, fmt.Errorf("%w: undo state changed", ErrStateConflict)
+	}
+	return l.executeUndo(FirewallAction{Request: req, Before: state, After: withoutExpiredRows(next, now), Revision: revision, CreatedAt: now}, kernel)
+}
+
+func (l *Lifecycle) executeUndo(plan FirewallAction, kernel ActionKernel) (FirewallAction, error) {
 	if planner, ok := kernel.(interface{ PrepareFirewallUndo(*FirewallAction) error }); ok {
 		if err := planner.PrepareFirewallUndo(&plan); err != nil {
 			return FirewallAction{}, err
 		}
 	}
 	return l.execute(plan, kernel)
+}
+
+// withoutExpiredRows copies state without the timed rows that have expired
+// at at, so undo never puts one back; a restored row keeps its absolute
+// expiry. Expired rows are omitted even when their outcome is unverified.
+func withoutExpiredRows(state FirewallState, at time.Time) FirewallState {
+	live := func(expires time.Time) bool { return expires.IsZero() || expires.After(at) }
+	out := FirewallState{PortAllowed: slices.Clone(state.PortAllowed)}
+	for _, row := range state.Blocked {
+		if live(row.ExpiresAt) {
+			out.Blocked = append(out.Blocked, row)
+		}
+	}
+	for _, row := range state.Allowed {
+		if live(row.ExpiresAt) {
+			out.Allowed = append(out.Allowed, row)
+		}
+	}
+	for _, row := range state.BlockedNet {
+		if live(row.ExpiresAt) {
+			out.BlockedNet = append(out.BlockedNet, row)
+		}
+	}
+	return out
 }

@@ -821,7 +821,9 @@ func sameActionElements(a, b []ActionElement) bool {
 	return true
 }
 func (k engineActionKernel) PrepareFirewallUndo(plan *FirewallAction) error {
-	return k.e.prepareActionKernel(plan)
+	at := k.e.leaseNowLocked()
+	plan.After = withoutExpiredRows(plan.After, at)
+	return k.e.prepareActionKernelAt(plan, at)
 }
 
 // The caller holds e.mu. Durable paths deliver their versioned journal event.
