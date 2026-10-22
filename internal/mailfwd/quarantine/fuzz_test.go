@@ -40,21 +40,24 @@ func FuzzStripControlHeaders(f *testing.F) {
 }
 
 // FuzzHeldSubject feeds arbitrary header bytes through the subject parse. The
-// result is rendered in the web UI, so it must be valid UTF-8 with no control
-// characters and at most maxSubjectLen runes.
+// result is rendered in the web UI, so it must be valid UTF-8 with no control,
+// bidi or format characters and at most maxSubjectLen runes.
 func FuzzHeldSubject(f *testing.F) {
 	f.Add("Subject: hi\r\n\r\nbody")
 	f.Add("subject: =?UTF-8?B?w45uY8SDIG8=?=\r\n =?UTF-8?Q?_ofert=C4=83?=\r\n\r\n")
 	f.Add("Subject: =?UTF-8?B?YRtbMzFtYgBjDQpkCWU=?=\r\n")
 	f.Add("X-A: b\r\n Subject: c\r\nSubject:\xff\xfe\r\n")
+	f.Add("Subject: invoice\u202efdp.exe\u200b\r\n")
 	f.Add("")
 	f.Fuzz(func(t *testing.T, msg string) {
 		got := heldSubject([]byte(msg))
 		if !utf8.ValidString(got) {
 			t.Fatalf("invalid UTF-8: %q", got)
 		}
-		if strings.ContainsFunc(got, unicode.IsControl) {
-			t.Fatalf("control character survived: %q", got)
+		if strings.ContainsFunc(got, func(r rune) bool {
+			return unicode.IsControl(r) || unicode.Is(unicode.Bidi_Control, r) || unicode.Is(unicode.Cf, r)
+		}) {
+			t.Fatalf("control, bidi or format character survived: %q", got)
 		}
 		if n := utf8.RuneCountInString(got); n > maxSubjectLen {
 			t.Fatalf("%d runes, want at most %d", n, maxSubjectLen)

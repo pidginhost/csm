@@ -14,6 +14,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - Sources probing for the PHP2Shell flaw are now blocked at the firewall after their first blocked request.
 - Failed central list downloads no longer write the download URL, or any token in it, to the log.
 - PHP hardening audits no longer pass when a PHP-FPM pool still turns the checked setting on through quoted or repeated entries.
+- Releasing a held forwarded message now sends it only to the addresses CSM recorded, never to copies written into the message's own headers.
 
 ### Added
 

@@ -7,8 +7,10 @@
 package quarantine
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -62,7 +64,9 @@ func (q *Quarantine) sub(name string) string { return filepath.Join(q.base, name
 
 // Hold writes a held copy into the Maildir with the X-CSM-* control headers and
 // returns its id (the Maildir filename). In production exim's appendfile writes
-// these files; Hold produces the identical format for CSM-side paths and tests.
+// these files; Hold produces the same layout for CSM-side paths and tests: the
+// control headers follow the message's own header fields, as exim's
+// headers_add appends them.
 func (q *Quarantine) Hold(m HeldMessage, body []byte) (string, error) {
 	for _, d := range []string{"tmp", "new", "cur"} {
 		if err := os.MkdirAll(q.sub(d), 0700); err != nil {
@@ -70,12 +74,22 @@ func (q *Quarantine) Hold(m HeldMessage, body []byte) (string, error) {
 		}
 	}
 
+	// cut is where the header fields end: the start of the blank separator
+	// line, or the end of a message that has none.
+	cut := headerBlockEnd(body)
+	if start := bytes.LastIndexByte(body[:max(cut-1, 0)], '\n') + 1; cut > 0 && isBlankLine(body[start:cut]) {
+		cut = start
+	}
 	var buf bytes.Buffer
+	buf.Write(body[:cut])
+	if cut > 0 && body[cut-1] != '\n' {
+		buf.WriteString("\r\n")
+	}
 	fmt.Fprintf(&buf, "%s: %s\r\n", hdrForwarder, headerValue(m.Forwarder))
 	fmt.Fprintf(&buf, "%s: %s\r\n", hdrRecipient, headerValue(m.Recipient))
 	fmt.Fprintf(&buf, "%s: %s\r\n", hdrSender, headerValue(m.Sender))
 	fmt.Fprintf(&buf, "%s: %s\r\n", hdrReasons, headerValue(strings.Join(m.Reasons, ",")))
-	buf.Write(body)
+	buf.Write(body[cut:])
 
 	id := fmt.Sprintf("%d.%d.csm", time.Now().UnixNano(), q.counter.Add(1))
 	tmp := filepath.Join(q.sub("tmp"), id)
@@ -117,13 +131,38 @@ func (q *Quarantine) List() ([]HeldMessage, error) {
 	return out, nil
 }
 
-// Listing reads at most maxHeaderRead bytes of each held copy: the control
-// headers and the message's own headers come first, and the body is not
-// needed. maxSubjectLen bounds the subject the list shows.
+// maxHeaderBlock bounds the header block CSM reads from a held copy: exim's
+// default header_maxsize (1 MiB) for the message's own fields, plus room for
+// the control headers the transport appends after them. maxSubjectLen bounds
+// the subject the list shows.
 const (
-	maxHeaderRead = 64 << 10
-	maxSubjectLen = 160
+	maxHeaderBlock = 1<<20 + 8<<10
+	maxSubjectLen  = 160
 )
+
+var errHeaderBlockTooLarge = errors.New("held message header block is larger than CSM reads")
+
+// readHeaderBlock reads lines up to and including the first blank line, or
+// to the end of a message with no body. A longer block than maxHeaderBlock is
+// refused rather than cut: the control headers come last, so a cut block
+// could hold only copies the message itself carried.
+func readHeaderBlock(r io.Reader) ([]byte, error) {
+	br := bufio.NewReader(io.LimitReader(r, maxHeaderBlock+1))
+	var block []byte
+	for {
+		line, err := br.ReadBytes('\n')
+		block = append(block, line...)
+		if len(block) > maxHeaderBlock {
+			return nil, errHeaderBlockTooLarge
+		}
+		if err == io.EOF || err == nil && isBlankLine(line) {
+			return block, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+}
 
 func (q *Quarantine) read(dir, id string) (HeldMessage, error) {
 	f, info, err := openMessageFile(filepath.Join(q.sub(dir), id))
@@ -131,11 +170,10 @@ func (q *Quarantine) read(dir, id string) (HeldMessage, error) {
 		return HeldMessage{}, err
 	}
 	defer f.Close()
-	data, err := io.ReadAll(io.LimitReader(f, maxHeaderRead))
+	header, err := readHeaderBlock(f)
 	if err != nil {
 		return HeldMessage{}, err
 	}
-	header := data[:headerBlockEnd(data)]
 	hdr := parseControlHeaders(header)
 	return HeldMessage{
 		ID:        id,
@@ -151,9 +189,10 @@ func (q *Quarantine) read(dir, id string) (HeldMessage, error) {
 
 // heldSubject returns the first Subject field of a header block, unfolded,
 // with RFC 2047 encoded words decoded. The subject is the sender's text and
-// the web UI shows it, so control characters become spaces, runs of space
-// collapse, and it is cut to maxSubjectLen runes. A charset the decoder does
-// not know leaves the field as sent.
+// the web UI shows it, so control characters become spaces, bidi and other
+// format characters (which can reverse or hide text) are dropped, runs of
+// space collapse, and it is cut to maxSubjectLen runes. A charset the
+// decoder does not know leaves the field as sent.
 func heldSubject(header []byte) string {
 	var raw strings.Builder
 	found := false
@@ -178,8 +217,11 @@ func heldSubject(header []byte) string {
 		subject = decoded
 	}
 	subject = strings.Join(strings.Fields(strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) {
+		switch {
+		case unicode.IsControl(r):
 			return ' '
+		case unicode.Is(unicode.Bidi_Control, r), unicode.Is(unicode.Cf, r):
+			return -1
 		}
 		return r
 	}, subject)), " ")
@@ -201,7 +243,11 @@ func (q *Quarantine) Release(id string) error {
 	if err != nil {
 		return err
 	}
-	hdr := parseControlHeaders(data)
+	header, err := readHeaderBlock(bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	hdr := parseControlHeaders(header)
 	clean := stripControlHeaders(data)
 	if err := q.sendmail(hdr[hdrSender], hdr[hdrRecipient], clean); err != nil {
 		return fmt.Errorf("re-injecting held message: %w", err)
@@ -353,8 +399,7 @@ func headerBlockEnd(data []byte) int {
 		if nl < 0 {
 			return len(data) // no terminating newline: all headers, no body
 		}
-		line := data[off : off+nl+1]
-		if strings.TrimRight(string(line), "\r\n") == "" {
+		if isBlankLine(data[off : off+nl+1]) {
 			return off + nl + 1
 		}
 		off += nl + 1
@@ -362,20 +407,27 @@ func headerBlockEnd(data []byte) int {
 	return len(data)
 }
 
+// isBlankLine reports whether line, with its line ending, is the blank line
+// that ends a header block.
+func isBlankLine(line []byte) bool {
+	return len(bytes.TrimRight(line, "\r\n")) == 0
+}
+
+// parseControlHeaders returns the X-CSM-* fields of the header block that
+// starts data. A message can carry its own X-CSM-* fields; exim appends the
+// real ones after every field the message brought, so the last occurrence
+// of each wins. A folded continuation line is never a field.
 func parseControlHeaders(data []byte) map[string]string {
 	out := map[string]string{}
 	header := data[:headerBlockEnd(data)]
 	for _, line := range strings.Split(string(header), "\n") {
 		line = strings.TrimRight(line, "\r")
 		colon := strings.IndexByte(line, ':')
-		if colon < 0 {
+		if colon < 0 || line[0] == ' ' || line[0] == '\t' {
 			continue
 		}
 		key, ok := canonicalControlHeader(line[:colon])
 		if !ok {
-			continue
-		}
-		if _, exists := out[key]; exists {
 			continue
 		}
 		out[key] = headerValue(line[colon+1:])

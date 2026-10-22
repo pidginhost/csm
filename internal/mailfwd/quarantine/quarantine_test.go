@@ -333,8 +333,8 @@ var errInjectTest = injectTestError{}
 // The held list shows each copy's subject: the first Subject field of the
 // message's own header block, unfolded, with RFC 2047 encoded words decoded.
 // The subject is the sender's text and the page renders it, so it comes back
-// without control characters and cut to maxSubjectLen runes. Only a bounded
-// prefix of the file is read; the size is still the whole file.
+// without control, bidi or format characters and cut to maxSubjectLen runes.
+// Only the header block is read; the size is still the whole file.
 func TestHeldMessageSubject(t *testing.T) {
 	filler := "X-Filler: " + strings.Repeat("f", 200) + "\r\n"
 	cases := []struct {
@@ -350,12 +350,13 @@ func TestHeldMessageSubject(t *testing.T) {
 		{"continuation is not a field", "X-Note: hi\r\n Subject: spoofed\r\nSubject: real\r\n", "real"},
 		{"first field wins", "Subject: first\r\nSubject: second\r\n", "first"},
 		{"none", "From: a@example.com\r\n", ""},
-		{"beyond the read bound", strings.Repeat(filler, maxHeaderRead/len(filler)+1) + "Subject: late\r\n", ""},
+		{"bidi and format controls", "Subject: invoice\u202efdp.exe \u2066x\u2069\u200b\u00ad\r\n", "invoicefdp.exe x"},
+		{"after 64 KiB of headers", strings.Repeat(filler, (64<<10)/len(filler)+1) + "Subject: late\r\n", "late"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			q := New(t.TempDir())
-			body := []byte(tc.header + "\r\nSubject: in the body\r\n" + strings.Repeat("b", 2*maxHeaderRead))
+			body := []byte(tc.header + "\r\nSubject: in the body\r\n" + strings.Repeat("b", 128<<10))
 			if _, err := q.Hold(held(), body); err != nil {
 				t.Fatal(err)
 			}
@@ -377,5 +378,148 @@ func TestHeldMessageSubject(t *testing.T) {
 	raw, err := json.Marshal(HeldMessage{Subject: "s"})
 	if err != nil || !strings.Contains(string(raw), `"subject":"s"`) {
 		t.Errorf("held message JSON = %s, %v; want a subject field", raw, err)
+	}
+}
+
+// eximHeld is a held copy in the layout exim's csm_forward_hold transport
+// writes: the message's own header fields, then the four control headers it
+// appends, then the body.
+func eximHeld(ownHeaders string) string {
+	return ownHeaders +
+		"X-CSM-Forwarder: sales@example.com\n" +
+		"X-CSM-Recipient: owner@example.net\n" +
+		"X-CSM-Sender: real@example.com\n" +
+		"X-CSM-Reasons: bad_sender_ip\n" +
+		"\n" +
+		"body\n"
+}
+
+func writeRawHeld(t *testing.T, q *Quarantine, id, content string) {
+	t.Helper()
+	if err := os.MkdirAll(q.sub("new"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(q.sub("new"), id), []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func wantRealControlHeaders(t *testing.T, m HeldMessage) {
+	t.Helper()
+	if m.Forwarder != "sales@example.com" || m.Recipient != "owner@example.net" || m.Sender != "real@example.com" ||
+		len(m.Reasons) != 1 || m.Reasons[0] != "bad_sender_ip" {
+		t.Errorf("listed control headers = %+v, want the ones exim appended", m)
+	}
+}
+
+// Exim appends the control headers after the message's own headers, which
+// may be up to header_maxsize (1 MiB) long. List must reach them.
+func TestListReadsControlHeadersAfterLargeMessageHeaders(t *testing.T) {
+	q := New(t.TempDir())
+	own := "Subject: big\n" + strings.Repeat("X-Filler: "+strings.Repeat("f", 500)+"\n", 200)
+	if len(own) <= 64<<10 {
+		t.Fatalf("fixture headers are only %d bytes", len(own))
+	}
+	writeRawHeld(t, q, "big", eximHeld(own))
+
+	msgs, err := q.List()
+	if err != nil || len(msgs) != 1 {
+		t.Fatalf("list = %v, %v; want one message", msgs, err)
+	}
+	wantRealControlHeaders(t, msgs[0])
+	if msgs[0].Subject != "big" {
+		t.Errorf("subject = %q, want big", msgs[0].Subject)
+	}
+}
+
+// A header block longer than the read bound cannot come from exim and may
+// end before the appended control headers, leaving only copies the message
+// carried. It is neither listed nor released.
+func TestOversizedHeaderBlockIsNotListedOrReleased(t *testing.T) {
+	q := New(t.TempDir())
+	q.sendmail = func(string, string, []byte) error {
+		t.Error("sendmail called for an oversized header block")
+		return nil
+	}
+	own := "X-CSM-Recipient: attacker@example.net\n" + strings.Repeat("X-Filler: "+strings.Repeat("f", 1000)+"\n", maxHeaderBlock/1000+1)
+	writeRawHeld(t, q, "huge", eximHeld(own))
+
+	if msgs, err := q.List(); err != nil || len(msgs) != 0 {
+		t.Errorf("list = %+v, %v; want the oversized copy left out", msgs, err)
+	}
+	if err := q.Release("huge"); err == nil {
+		t.Error("release of an oversized header block succeeded")
+	}
+	if q.pathOf("huge") == "" {
+		t.Error("refused release removed the held copy")
+	}
+}
+
+// A message may carry its own X-CSM-* fields. Exim appends the real ones
+// last, so the last occurrence is the one CSM recorded: List shows it and
+// Release delivers only to it.
+func TestForgedControlHeadersLose(t *testing.T) {
+	q := New(t.TempDir())
+	own := "Subject: hi\n" +
+		"X-CSM-Recipient: attacker@example.net\n" +
+		"x-csm-sender: attacker@example.net\n" +
+		"X-CSM-Forwarder: attacker@example.net\n" +
+		"X-CSM-Reasons: forged\n" +
+		"From: a@example.com\n"
+	writeRawHeld(t, q, "forged", eximHeld(own))
+
+	msgs, err := q.List()
+	if err != nil || len(msgs) != 1 {
+		t.Fatalf("list = %v, %v; want one message", msgs, err)
+	}
+	wantRealControlHeaders(t, msgs[0])
+
+	var gotSender, gotRcpt string
+	var gotBody []byte
+	q.sendmail = func(sender, recipient string, body []byte) error {
+		gotSender, gotRcpt, gotBody = sender, recipient, body
+		return nil
+	}
+	if err := q.Release("forged"); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	if gotSender != "real@example.com" || gotRcpt != "owner@example.net" {
+		t.Errorf("reinject envelope = -f %q %q, want the recorded sender and recipient", gotSender, gotRcpt)
+	}
+	if strings.Contains(strings.ToLower(string(gotBody)), "x-csm-") || !strings.Contains(string(gotBody), "From: a@example.com") {
+		t.Errorf("re-injected message = %q, want the own headers without any X-CSM field", gotBody)
+	}
+}
+
+// Hold writes the layout exim writes: control headers after the message's
+// own headers, so the forged copies a message carries come first and lose.
+func TestHoldAppendsControlHeadersAfterOwnHeaders(t *testing.T) {
+	for _, tc := range []struct{ name, body, wantPrefix, wantRest string }{
+		{"crlf message", "Subject: hi\r\nX-CSM-Recipient: attacker@example.net\r\n\r\nbody\r\n", "Subject: hi\r\nX-CSM-Recipient: attacker@example.net\r\n", "\r\nbody\r\n"},
+		{"lf message", "Subject: hi\nX-CSM-Recipient: attacker@example.net\n\nbody\n", "Subject: hi\nX-CSM-Recipient: attacker@example.net\n", "\nbody\n"},
+		{"no body", "Subject: hi\nX-CSM-Recipient: attacker@example.net", "Subject: hi\nX-CSM-Recipient: attacker@example.net\r\n", ""},
+		{"no headers", "\r\nbody\r\n", "", "\r\nbody\r\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			q := New(t.TempDir())
+			m := held()
+			m.Sender = "real@shop.example"
+			id, err := q.Hold(m, []byte(tc.body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, err := os.ReadFile(q.pathOf(id))
+			if err != nil {
+				t.Fatal(err)
+			}
+			control := "X-CSM-Forwarder: sales@shop.example\r\nX-CSM-Recipient: owner@yahoo.com\r\nX-CSM-Sender: real@shop.example\r\nX-CSM-Reasons: bounce_backscatter\r\n"
+			if want := tc.wantPrefix + control + tc.wantRest; string(raw) != want {
+				t.Fatalf("held file = %q, want %q", raw, want)
+			}
+			msgs, err := q.List()
+			if err != nil || len(msgs) != 1 || msgs[0].Recipient != "owner@yahoo.com" || msgs[0].Sender != "real@shop.example" {
+				t.Errorf("list = %+v, %v; want the recorded recipient and sender", msgs, err)
+			}
+		})
 	}
 }
