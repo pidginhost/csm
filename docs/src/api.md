@@ -1329,7 +1329,11 @@ sender is allowed for bounces. Ambiguous or missing envelope metadata causes
 a release error and leaves the message held without invoking sendmail.
 Release runs sendmail as a systemd transient unit with the message on its
 stdin, never inside the daemon's sandbox: without systemd-run the release
-fails and the message stays held.
+fails and the message stays held. The unit uses KillMode=process, so the
+delivery exim forks before it exits is not stopped with the unit and the
+message leaves at once. A release or delete first claims the held copy, so
+of concurrent requests one acts and the others answer that the copy is not
+held; a failed release puts the copy back.
 
 Deferrals are grouped under the provider whose MX host deferred them
 (Google, Microsoft and Yahoo hosts), so a business domain those providers

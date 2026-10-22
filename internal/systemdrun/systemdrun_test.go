@@ -1,6 +1,7 @@
 package systemdrun
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -85,6 +86,22 @@ func TestArgvSetsRuntimeMax(t *testing.T) {
 
 	if !contains(args, "--property=RuntimeMaxSec=90s") {
 		t.Errorf("RuntimeMax must become a RuntimeMaxSec property: %v", args)
+	}
+}
+
+// exim's sendmail forks its delivery and exits; KillMode=process keeps that
+// child alive when the unit's main process ends.
+func TestArgvSetsKillMode(t *testing.T) {
+	_, args := Argv("/usr/bin/systemd-run", Options{Pipe: true, RuntimeMax: 30 * time.Second, KillMode: "process"}, "/usr/sbin/sendmail", "-i")
+	want := []string{"--quiet", "--collect", "--pipe", "--property=RuntimeMaxSec=30s", "--property=KillMode=process", "--", "/usr/sbin/sendmail", "-i"}
+	if !reflect.DeepEqual(args, want) {
+		t.Errorf("args = %q, want %q", args, want)
+	}
+	_, args = Argv("/usr/bin/systemd-run", Options{Pipe: true}, "/bin/true")
+	for _, a := range args {
+		if strings.HasPrefix(a, "--property=KillMode") {
+			t.Errorf("no KillMode must keep systemd's default: %v", args)
+		}
 	}
 }
 

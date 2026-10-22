@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"mime"
 	"net/mail"
 	"os"
@@ -244,13 +245,25 @@ func CleanSubject(subject string) string {
 }
 
 // Release re-injects the held copy to its original external recipient (operator
-// decided it was a false positive), then removes it. The message is removed
-// only after a successful re-injection, so a sendmail failure never loses mail.
+// decided it was a false positive), then removes it. The copy is claimed
+// first, so of two releases or a release and a delete only one acts; the
+// other finds it not held. It is removed only after a successful
+// re-injection and put back otherwise, so a sendmail failure never loses mail.
 func (q *Quarantine) Release(id string) error {
-	_, path := q.locate(id)
-	if path == "" {
-		return fmt.Errorf("held message %q not found", id)
+	claimed, held, err := q.claim(id)
+	if err != nil {
+		return err
 	}
+	if err := q.reinjectClaimed(claimed); err != nil {
+		if back := os.Rename(claimed, held); back != nil {
+			return errors.Join(err, fmt.Errorf("returning held message %q: %w", id, back))
+		}
+		return err
+	}
+	return os.Remove(claimed)
+}
+
+func (q *Quarantine) reinjectClaimed(path string) error {
 	data, _, err := readMessageFile(path)
 	if err != nil {
 		return err
@@ -269,7 +282,32 @@ func (q *Quarantine) Release(id string) error {
 	if err := q.sendmail(sender, recipient, clean); err != nil {
 		return fmt.Errorf("re-injecting held message: %w", err)
 	}
-	return os.Remove(path)
+	return nil
+}
+
+// claim moves a held copy into tmp/ under a name of its own and returns
+// where it is now and where it was held. The rename is atomic, so one
+// caller wins and the others find the copy not held.
+func (q *Quarantine) claim(id string) (claimed, held string, err error) {
+	_, held = q.locate(id)
+	if held == "" {
+		return "", "", errNotHeld(id)
+	}
+	if err := os.MkdirAll(q.sub("tmp"), 0700); err != nil {
+		return "", "", err
+	}
+	claimed = filepath.Join(q.sub("tmp"), fmt.Sprintf("%s.claim.%d.%d", filepath.Base(held), time.Now().UnixNano(), q.counter.Add(1)))
+	if err := os.Rename(held, claimed); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return "", "", errNotHeld(id)
+		}
+		return "", "", err
+	}
+	return claimed, held, nil
+}
+
+func errNotHeld(id string) error {
+	return fmt.Errorf("held message %q not found", id)
 }
 
 // Exim splits command-line recipients on commas, including dequoted local
@@ -287,13 +325,14 @@ func singleEnvelopeAddress(value string) bool {
 	return err == nil && addr.Name == "" && !unsafe(addr.Address)
 }
 
-// Delete discards a held copy without delivering it.
+// Delete discards a held copy without delivering it. It claims the copy as
+// Release does, so a copy being released is not held for Delete.
 func (q *Quarantine) Delete(id string) error {
-	_, path := q.locate(id)
-	if path == "" {
-		return fmt.Errorf("held message %q not found", id)
+	claimed, _, err := q.claim(id)
+	if err != nil {
+		return err
 	}
-	return os.Remove(path)
+	return os.Remove(claimed)
 }
 
 // PruneOlderThan removes held copies older than maxAge and returns how many were
@@ -538,7 +577,9 @@ const (
 // cannot open its logs inside csm.service's ProtectSystem=strict sandbox and
 // aborts there, possibly after queueing the copy, so sendmail runs as a
 // transient unit or not at all: without systemd-run the release fails and
-// the copy stays held.
+// the copy stays held. exim queues the message, forks its delivery and
+// exits; KillMode=process keeps the unit's stop from killing that delivery,
+// so released mail goes out at once rather than at the next queue run.
 func (q *Quarantine) reinject(sender, recipient string, body []byte) error {
 	ctx, cancel := context.WithTimeout(context.Background(), sendmailTimeout)
 	defer cancel()
@@ -546,7 +587,8 @@ func (q *Quarantine) reinject(sender, recipient string, body []byte) error {
 	recipient = headerValue(recipient)
 	// -i: do not treat lone "." as end; -f: envelope sender ("" yields null
 	// sender); -- terminates options so a hostile recipient cannot be a flag.
-	_, err := systemdrun.RunInput(ctx, q.lookPath, q.run, systemdrun.Options{Required: true, RuntimeMax: sendmailTimeout},
+	_, err := systemdrun.RunInput(ctx, q.lookPath, q.run,
+		systemdrun.Options{Required: true, RuntimeMax: sendmailTimeout, KillMode: "process"},
 		body, sendmailPath, "-i", "-f", sender, "--", recipient)
 	return err
 }

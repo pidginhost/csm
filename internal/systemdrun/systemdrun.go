@@ -35,6 +35,11 @@ type Options struct {
 	// overrides Pipe: the unit's output goes to the journal, and an error
 	// means only that the unit could not be started.
 	NoWait bool
+	// KillMode sets the unit's KillMode property; empty keeps systemd's
+	// default, control-group, which stops every process the command forked
+	// when its main process ends. "process" stops only the main process,
+	// for a command that forks work meant to outlive it.
+	KillMode string
 }
 
 // Argv returns the argv that runs name/args as a transient unit. When
@@ -54,6 +59,9 @@ func Argv(systemdRunPath string, opt Options, name string, args ...string) (stri
 	}
 	if opt.RuntimeMax > 0 {
 		flags = append(flags, "--property=RuntimeMaxSec="+formatRuntimeMax(opt.RuntimeMax))
+	}
+	if opt.KillMode != "" {
+		flags = append(flags, "--property=KillMode="+opt.KillMode)
 	}
 	flags = append(flags, "--")
 	flags = append(flags, name)

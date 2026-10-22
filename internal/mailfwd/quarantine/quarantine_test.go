@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -135,7 +136,9 @@ func TestReleaseRunsSendmailAsTransientUnit(t *testing.T) {
 	if len(calls) != 2 || calls[0].input != nil {
 		t.Fatalf("runs = %+v, want the availability probe, then sendmail", calls)
 	}
-	want := []string{"--quiet", "--collect", "--pipe", "--property=RuntimeMaxSec=30s", "--",
+	// exim's sendmail forks the delivery and exits once the message is
+	// queued; KillMode=process keeps the unit's stop from killing it.
+	want := []string{"--quiet", "--collect", "--pipe", "--property=RuntimeMaxSec=30s", "--property=KillMode=process", "--",
 		"/usr/sbin/sendmail", "-i", "-f", "real@shop.example", "--", "owner@yahoo.com"}
 	if calls[1].name != "/usr/bin/systemd-run" || !reflect.DeepEqual(calls[1].args, want) {
 		t.Errorf("sendmail run = %s %q, want /usr/bin/systemd-run %q", calls[1].name, calls[1].args, want)
@@ -167,6 +170,100 @@ func TestReleaseWithoutSystemdRunKeepsTheCopyHeld(t *testing.T) {
 	}
 	if msgs, _ := q.List(); len(msgs) != 1 || msgs[0].ID != id {
 		t.Errorf("held = %+v, want the copy still held", msgs)
+	}
+}
+
+// Two releases of one copy, from a double click or two admins, must send it
+// once: the first claims the file, the second finds nothing to release. A
+// delete meanwhile finds nothing either.
+func TestConcurrentReleaseSendsOnce(t *testing.T) {
+	q := New(t.TempDir())
+	entered, proceed := make(chan struct{}), make(chan struct{})
+	var sends atomic.Int32
+	q.sendmail = func(string, string, []byte) error {
+		if sends.Add(1) == 1 {
+			close(entered)
+			<-proceed
+		}
+		return nil
+	}
+	m := held()
+	m.Sender = "real@shop.example"
+	id, err := q.Hold(m, sampleBody())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	first := make(chan error, 1)
+	go func() { first <- q.Release(id) }()
+	<-entered
+	second := q.Release(id)
+	deleted := q.Delete(id)
+	close(proceed)
+	if err := <-first; err != nil {
+		t.Fatalf("first release: %v", err)
+	}
+	if second == nil || !strings.Contains(second.Error(), "not found") {
+		t.Errorf("second release = %v, want not found", second)
+	}
+	if deleted == nil || !strings.Contains(deleted.Error(), "not found") {
+		t.Errorf("delete during the release = %v, want not found", deleted)
+	}
+	if n := sends.Load(); n != 1 {
+		t.Errorf("sendmail ran %d times, want once", n)
+	}
+	if msgs, _ := q.List(); len(msgs) != 0 {
+		t.Errorf("held after release = %+v, want none", msgs)
+	}
+	if left, _ := os.ReadDir(q.sub("tmp")); len(left) != 0 {
+		t.Errorf("tmp holds %d entries after the release, want none", len(left))
+	}
+
+	// Many at once: still one send, one success, the rest not found.
+	id, err = q.Hold(m, sampleBody())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sends.Store(1) // past the first-send hold above
+	start := make(chan struct{})
+	errs := make(chan error, 8)
+	for i := 0; i < 8; i++ {
+		go func() {
+			<-start
+			errs <- q.Release(id)
+		}()
+	}
+	close(start)
+	ok := 0
+	for i := 0; i < 8; i++ {
+		if err := <-errs; err == nil {
+			ok++
+		} else if !strings.Contains(err.Error(), "not found") {
+			t.Errorf("concurrent release: %v, want success or not found", err)
+		}
+	}
+	if n := sends.Load() - 1; ok != 1 || n != 1 {
+		t.Errorf("concurrent releases: %d succeeded, %d sent; want one each", ok, n)
+	}
+}
+
+// A failed release puts the claimed copy back where it was held.
+func TestFailedReleaseReturnsTheCopy(t *testing.T) {
+	q := New(t.TempDir())
+	q.sendmail = func(string, string, []byte) error { return errInjectTest }
+	id, err := q.Hold(held(), sampleBody())
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := q.pathOf(id)
+	if err := q.Release(id); err == nil {
+		t.Fatal("release succeeded although sendmail failed")
+	}
+	if got := q.pathOf(id); got != path {
+		t.Errorf("copy at %q after the failed release, want it back at %q", got, path)
+	}
+	if left, _ := os.ReadDir(q.sub("tmp")); len(left) != 0 {
+		t.Errorf("tmp holds %d entries after the failed release, want none", len(left))
 	}
 }
 
