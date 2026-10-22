@@ -44,6 +44,15 @@ func TestFirewallBatchStatesOnlyAddMemberRows(t *testing.T) {
 			last := len(a.After.Blocked) - 1
 			a.After.Blocked[1], a.After.Blocked[last] = a.After.Blocked[last], a.After.Blocked[1]
 		},
+		"moves an expired row after a kept row": func(a *firewall.FirewallAction) {
+			a.After.Blocked = append(slices.Clone(a.After.Blocked[1:]), a.Before.Blocked[0])
+		},
+		"drops a row before a kept row": func(a *firewall.FirewallAction) {
+			later := a.Before.Blocked[1]
+			later.IP, later.Reason = "192.0.2.2", "kept"
+			a.Before.Blocked = append(a.Before.Blocked, later)
+			a.After.Blocked = append(without(a.After.Blocked, "192.0.2.1"), later)
+		},
 		"drops an expired unverified row": func(a *firewall.FirewallAction) {
 			a.Before.Blocked[0].ActionID, a.Before.Blocked[0].Unverified = "earlier-action", true
 			a.After.Blocked = without(a.After.Blocked, a.Before.Blocked[0].IP)
