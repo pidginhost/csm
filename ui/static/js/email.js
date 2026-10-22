@@ -994,30 +994,39 @@
 
     // loadSenders reads what each hosting account sent in the range, and
     // how many outbound abuse events the range holds, which the tab counts.
-    // The table has its own error state, so no toast repeats it.
-    function loadSenders() {
+    // The table has its own error state, so no toast repeats it. countOnly
+    // updates the tab count and leaves the table of a hidden tab as drawn;
+    // it reads again on opening.
+    function loadSenders(countOnly) {
         var seq = ++_sendersSeq;
+        var render = countOnly ? renderSendersCount : renderSenders;
         CSM.get('/api/v1/email/senders?' + emailDateQuery(), { silent: true })
             .then(function(data) {
                 if (seq !== _sendersSeq) return;
                 _senders = data;
                 _sendersErr = null;
-                renderSenders();
+                render();
             })
             .catch(function(err) {
                 if (seq !== _sendersSeq) return;
                 _senders = null;
                 _sendersErr = err;
-                renderSenders();
+                render();
             });
     }
 
-    // renderSenders counts the abuse events on the tab, shown only when
-    // there are any, and lists the accounts busiest first: messages, share
-    // of all outbound mail, and flags from the abuse events naming them.
-    function renderSenders() {
+    // renderSendersCount counts the abuse events on the tab, shown only
+    // when there are any.
+    function renderSendersCount() {
         var events = _senders ? _senders.abuse_events || 0 : 0;
         setTabCount('sending', _senders ? (events > 0 ? events : null) : _sendersErr ? '?' : null, '', !!(_senders && _senders.abuse_events_truncated));
+    }
+
+    // renderSenders counts the abuse events on the tab and lists the
+    // accounts busiest first: messages, share of all outbound mail, and
+    // flags from the abuse events naming them.
+    function renderSenders() {
+        renderSendersCount();
         renderSendersSummary();
         var tbody = document.getElementById('email-sending-tbody');
         if (!tbody) return;
@@ -1674,28 +1683,31 @@
         defaults: { email_held_kind: 'all' }
     });
 
-    function loadHeldMail() {
-        loadHeldSource('malware');
-        loadHeldSource('forward');
+    // loadHeldMail reads both stores. countOnly updates the tab count and
+    // leaves the list of a hidden tab as drawn; it reads again on opening.
+    function loadHeldMail(countOnly) {
+        loadHeldSource('malware', countOnly);
+        loadHeldSource('forward', countOnly);
     }
 
     // loadHeldSource reads one store. The list has its own error row, so
     // no toast repeats it.
-    function loadHeldSource(kind) {
+    function loadHeldSource(kind, countOnly) {
         var src = _held[kind];
         var seq = ++src.seq;
+        var render = countOnly ? renderHeldSummary : renderHeld;
         CSM.get(HELD_SOURCES[kind].url, { silent: true })
             .then(function(resp) {
                 if (seq !== src.seq) return;
                 src.items = Array.isArray(resp.items) ? resp.items : [];
                 src.err = null;
-                renderHeld();
+                render();
             })
             .catch(function(err) {
                 if (seq !== src.seq) return;
                 src.items = null;
                 src.err = err;
-                renderHeld();
+                render();
             });
     }
 
@@ -1726,7 +1738,10 @@
         if (!tbody) return;
         var range = currentRange(), from = range.from.getTime(), to = range.to.getTime();
         var all = heldEntries();
-        _heldShown = all.filter(function(e) { return e.time >= from && e.time < to; });
+        // The other ranges end now by the browser's clock, which can lag
+        // the server's; only a Custom range has an end to hold items to.
+        var custom = range.key === 'custom';
+        _heldShown = all.filter(function(e) { return e.time >= from && (!custom || e.time < to); });
         _heldOlder = all.filter(function(e) { return e.time < from; }).length;
         _heldOutside = all.length - _heldShown.length - _heldOlder;
         var pending = ['malware', 'forward'].some(function(k) { return _held[k].items === null && !_held[k].err; });
@@ -2883,18 +2898,22 @@
     }
 
     // loadDeliverability reads the deferrals. The tables have their own
-    // error state, so no toast repeats it.
-    function loadDeliverability() {
+    // error state, so no toast repeats it. countOnly updates the tab count
+    // and leaves the tables of a hidden tab as drawn; they read again on
+    // opening.
+    function loadDeliverability(countOnly) {
         var seq = ++_delaysSeq;
         CSM.get('/api/v1/email/deferrals', { silent: true })
             .then(function(data) {
                 if (seq !== _delaysSeq) return;
-                renderDeliverability(data || {});
+                if (countOnly) setTabCount('delays', deliverabilityArray((data || {}).providers).length);
+                else renderDeliverability(data || {});
             })
             .catch(function(err) {
                 if (seq !== _delaysSeq) return;
-                _delaysSig = '';
                 setTabCount('delays', '?');
+                if (countOnly) return;
+                _delaysSig = '';
                 var summary = document.getElementById('email-deliv-summary');
                 if (summary) summary.textContent = 'Deferral activity unavailable.';
                 var scope = document.getElementById('email-deliv-scope');
@@ -3496,7 +3515,9 @@
     if (startTab.name !== 'delays') loadDeliverability();
 
     // Headline numbers poll every 30 s. Lists poll every 60 s while their
-    // tab is open; Overview content also waits while that tab is hidden.
+    // tab is open; Overview content also waits while that tab is hidden,
+    // apart from rspamd, which the header names. The Held mail, Sending
+    // accounts and Provider delays counts poll every 60 s on any tab.
     var _emailIntervals = [];
     function _stopEmailIntervals() {
         for (var i = 0; i < _emailIntervals.length; i++) _emailIntervals[i].stop();
@@ -3512,17 +3533,21 @@
         }, 30000));
         _emailIntervals.push(CSM.refresh.interval(function() {
             try {
-                if (activeTab('email-tabs') === 'overview') {
-                    loadRspamd();
-                    loadAVStatus();
-                }
-                if (activeTab('email-tabs') === 'queue') {
+                var tab = activeTab('email-tabs');
+                // The header sentence says whether rspamd is up, on any tab.
+                loadRspamd();
+                if (tab === 'overview') loadAVStatus();
+                if (tab === 'queue') {
                     loadQueue();
                     queueCompositionLoaded = false;
                     loadQueueComposition();
                 }
-                if (activeTab('email-tabs') === 'held') loadHeldMail();
-                if (activeTab('email-tabs') === 'delays') loadDeliverability();
+                // The Held mail, Sending accounts and Provider delays counts
+                // show on every tab; a hidden tab reads its count only. An
+                // open Sending accounts tab reads with its lists below.
+                loadHeldMail(tab !== 'held');
+                if (tab !== 'sending') loadSenders(true);
+                loadDeliverability(tab !== 'delays');
             } catch(e) {}
         }, 60000));
         _emailIntervals.push(CSM.refresh.interval(function() {

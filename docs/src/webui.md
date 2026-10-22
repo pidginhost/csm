@@ -130,13 +130,17 @@ and hide stale chart data. An older response cannot overwrite newer health
 status or the selected outbound abuse range.
 Headline counts refresh every 30 seconds. Queue messages and composition,
 held mail, rejects, sending accounts, provider delays and Findings refresh
-every minute while their tab is open. Hidden tabs do not poll their lists.
+every minute while their tab is open. Hidden tabs do not poll their lists;
+the Held mail, Sending accounts and Provider delays counts and the rspamd
+state in the header refresh every minute on any tab.
 Unchanged results keep their rows; changed results retain paging, sorting,
 selection, open details and focus for items still present. Pending message,
 bulk and firewall actions stay disabled across refreshes. Queue actions wait
 up to a minute; an unreadable outcome is reported as unknown.
 Held mail custom ranges include only items held during the selected days;
-the summary also identifies held items outside that range.
+the summary also identifies held items outside that range. The other ranges
+have no end, so a server clock ahead of the browser cannot hide mail just
+held.
 
 The visible History tab refreshes with its current filters and page size.
 Editors wait for an ongoing save or load before accepting another refresh;

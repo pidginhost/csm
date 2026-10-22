@@ -2820,11 +2820,26 @@ test('the Held mail count is what is held now, read with the page', async () => 
     await settle();
     assert.equal(fresh.pending('/api/v1/email/quarantine').length, 1, 'refresh did not read the quarantine');
     assert.equal(fresh.pending('/api/v1/email/held').length, 1, 'refresh did not read the held copies');
-    // While Held mail is open, the 60 s timer reads it again.
-    const src = fs.readFileSync(path.join(__dirname, 'static/js/email.js'), 'utf8');
-    const timer = src.match(/CSM\.refresh\.interval\(function\(\) \{([\s\S]*?)\}, 60000\)/);
-    assert.ok(timer, 'no 60 s timer');
-    assert.match(timer[1], /activeTab\('email-tabs'\) === 'held'\) loadHeldMail\(\)/, 'the 60 s timer does not read the open Held mail tab');
+    // The timers read both stores on every tab: the count on a closed tab,
+    // the list too while Held mail is open.
+    fresh.respond('/api/v1/email/quarantine', 200, items([]));
+    fresh.respond('/api/v1/email/held', 200, items([]));
+    await settle();
+    fresh.window.CSM.refresh.manual();
+    await settle();
+    assert.equal(fresh.pending('/api/v1/email/quarantine').length, 1, 'the timers did not read the closed tab count');
+    assert.equal(fresh.pending('/api/v1/email/held').length, 1, 'the timers did not read the closed tab count');
+    await answerAll(fresh, {});
+    showEmailTab(fresh, 'held');
+    await settle();
+    await answerAll(fresh, {});
+    fresh.window.CSM.refresh.manual();
+    await settle();
+    assert.equal(fresh.pending('/api/v1/email/quarantine').length, 1, 'the timers did not read the open Held mail tab');
+    fresh.respond('/api/v1/email/quarantine', 200, items([malwareItem(MID[0])]));
+    fresh.respond('/api/v1/email/held', 200, items([]));
+    await settle();
+    assert.deepEqual(heldRows(fresh).map(r => r.getAttribute('data-held-id')), [MID[0]], 'the open tab did not draw its list');
 });
 
 // ---------- Rejects counts ----------
@@ -3105,10 +3120,15 @@ test('the Sending accounts count is read with the page and follows the range', a
     page.respond('/api/v1/email/senders', 200, senders([], { abuse_events: 2 }));
     await settle();
     assert.equal(page.document.querySelector('#email-tab-sending [data-tab-count]').textContent, '2');
-    // The timers leave a closed tab alone; a new range reads the count again.
+    // The timers read the count of a closed tab, and only the count; a new
+    // range reads it again.
     page.window.CSM.refresh.manual();
     await settle();
-    assert.equal(count(page, '/api/v1/email/senders'), 1, 'the timers read a closed Sending accounts tab');
+    assert.equal(count(page, '/api/v1/email/senders'), 2, 'the timers did not read the closed tab count');
+    for (const route of ['/api/v1/email/relay-abuse', '/api/v1/email/stats', '/api/v1/email/forwarders']) assert.equal(count(page, route), 0, route);
+    page.respond('/api/v1/email/senders', 200, senders([], { abuse_events: 3 }));
+    await settle();
+    assert.equal(page.document.querySelector('#email-tab-sending [data-tab-count]').textContent, '3');
     changeValue(page, page.document.getElementById('email-range'), '7d');
     await settle();
     const req = page.pending('/api/v1/email/senders')[0];
@@ -3453,11 +3473,16 @@ test('the Provider delays count is the providers deferring now, read with the pa
     await settle();
     assert.equal(tab.querySelector('[data-tab-count]').textContent, '3');
     assert.equal(spoken(tab), 'Provider delays 3 providers deferring');
-    // A closed tab does not poll; an open one reads on opening and every
-    // minute.
+    // A closed tab reads its count every minute; an open one reads on
+    // opening and every minute.
+    const rows = page.document.getElementById('email-deliv-providers-body').innerHTML;
     page.window.CSM.refresh.manual();
     await settle();
-    assert.equal(page.pending('/api/v1/email/deferrals').length, 0, 'the closed tab polled');
+    assert.equal(page.pending('/api/v1/email/deferrals').length, 1, 'the closed tab count was not read');
+    page.respond('/api/v1/email/deferrals', 200, deferrals({ deferrals: 4, providers: DELAYS.providers.slice(0, 2) }));
+    await settle();
+    assert.equal(tab.querySelector('[data-tab-count]').textContent, '2');
+    assert.equal(page.document.getElementById('email-deliv-providers-body').innerHTML, rows, 'the hidden tables were drawn again');
     await answerAll(page, {});
     showEmailTab(page, 'delays');
     await settle();
@@ -3474,6 +3499,47 @@ test('the Provider delays count is the providers deferring now, read with the pa
     failed.fail('/api/v1/email/deferrals');
     await settle();
     assert.equal(failed.document.querySelector('#email-tab-delays [data-tab-count]').textContent, '?');
+});
+
+test('the minute timer keeps the header and the hidden tab counts fresh without drawing hidden tables', async () => {
+    const page = emailPage({ url: 'https://csm.example.test/email?tab=findings' });
+    await settle();
+    await answerAll(page, {
+        '/api/v1/email/overview': overview({ scanned: 10, clean: 10 }),
+        '/api/v1/email/rspamd': { status: 'up', available: false },
+        '/api/v1/email/quarantine': items([malwareItem(MID[0])]),
+        '/api/v1/email/held': items([]),
+        '/api/v1/email/senders': senders([{ account: 'shopuser', messages: 3 }], { abuse_events: 1 }),
+        '/api/v1/email/deferrals': DELAYS
+    });
+    const doc = page.document;
+    const badges = () => ['held', 'sending', 'delays'].map(name => doc.querySelector('#email-tab-' + name + ' [data-tab-count]').textContent);
+    const TABLES = ['email-held-tbody', 'email-sending-tbody', 'email-deliv-providers-body', 'email-deliv-ips-body'];
+    const tables = () => TABLES.map(id => doc.getElementById(id).innerHTML);
+    assert.deepEqual(badges(), ['1', '1', '3']);
+    const drawn = tables();
+    assert.doesNotMatch(flat(doc.getElementById('email-subtitle')), /rspamd is down/);
+
+    page.window.CSM.refresh.manual();
+    await settle();
+    await answerAll(page, {
+        '/api/v1/email/overview': overview({ scanned: 10, clean: 10 }),
+        '/api/v1/email/rspamd': { status: 'down', available: false },
+        '/api/v1/email/quarantine': items([malwareItem(MID[0]), malwareItem(MID[1])]),
+        '/api/v1/email/held': items([forwardItem(FID[0])]),
+        '/api/v1/email/senders': senders([{ account: 'shopuser', messages: 9 }, { account: 'blogger', messages: 2 }], { abuse_events: 4 }),
+        '/api/v1/email/deferrals': deferrals({ deferrals: 1, providers: [DELAYS.providers[2]] })
+    });
+    assert.match(flat(doc.getElementById('email-subtitle')), /rspamd is down/);
+    assert.deepEqual(badges(), ['3', '4', '1']);
+    assert.deepEqual(tables(), drawn, 'a hidden table was drawn again');
+    // A count that cannot be read says so, on a hidden tab too.
+    page.window.CSM.refresh.manual();
+    await settle();
+    for (const route of ['/api/v1/email/held', '/api/v1/email/senders', '/api/v1/email/deferrals']) page.fail(route, new Error('HTTP 502'));
+    await answerAll(page, {});
+    assert.deepEqual(badges(), ['?', '?', '?']);
+    assert.deepEqual(tables(), drawn, 'a failed count drew a hidden table');
 });
 
 test('an unchanged delays answer keeps the rows; a changed one keeps the open sample and the focus', async () => {
@@ -3793,11 +3859,14 @@ test('Findings refresh on opening and poll only while visible', async () => {
     page.window.CSM.refresh.manual();
     assert.equal(count(), initial + 2, 'visible Findings did not poll');
     showEmailTab(page, 'queue');
-    const overviewCalls = ['/api/v1/email/groups?', '/api/v1/email/rspamd', '/api/v1/email/av/status'].map(p => requestCount(page, p));
+    const overviewCalls = ['/api/v1/email/groups?', '/api/v1/email/av/status'].map(p => requestCount(page, p));
+    const rspamdCalls = requestCount(page, '/api/v1/email/rspamd');
     page.window.CSM.refresh.manual();
     assert.equal(count(), initial + 2);
-    assert.deepEqual(['/api/v1/email/groups?', '/api/v1/email/rspamd', '/api/v1/email/av/status'].map(p => requestCount(page, p)), overviewCalls,
+    assert.deepEqual(['/api/v1/email/groups?', '/api/v1/email/av/status'].map(p => requestCount(page, p)), overviewCalls,
         'hidden Overview content polled');
+    // The header names rspamd's state on every tab.
+    assert.equal(requestCount(page, '/api/v1/email/rspamd'), rspamdCalls + 1, 'the header rspamd state did not refresh');
 });
 
 test('Findings refresh keeps rows, open details and focused controls', async () => {
@@ -3833,6 +3902,19 @@ test('a held custom range excludes items at and after its end', async () => {
     await settle();
     assert.deepEqual(heldRows(page).map(r => r.getAttribute('data-held-id')), [MID[0]]);
     assert.match(flat(page.document.getElementById('email-held-summary')), /2.*outside.*range/i);
+});
+
+test('held mail a server clock ahead of the browser just held shows in the rolling ranges', async () => {
+    const now = '2026-10-21T10:00:00Z', ahead = '2026-10-21T10:02:00Z';
+    for (const range of ['24h', '7d', '30d']) {
+        const page = emailPage({ now, url: 'https://csm.example.test/email?tab=held', storage: { 'csm-email-range': range } });
+        await settle();
+        page.respond('/api/v1/email/quarantine', 200, items([malwareItem(MID[0], { quarantined_at: ahead })]));
+        page.respond('/api/v1/email/held', 200, items([forwardItem(FID[0], { held_at: ahead })]));
+        await settle();
+        assert.deepEqual(heldRows(page).map(r => r.getAttribute('data-held-id')).sort(), [FID[0], MID[0]].sort(), range + ' hid what was just held');
+        assert.doesNotMatch(flat(page.document.getElementById('email-held-summary')), /outside/, range);
+    }
 });
 
 test('a queued message updates changed recipients even when their count stays equal', async () => {
