@@ -38,23 +38,17 @@ func kitZipWithFiller(t *testing.T, path string, filler int) {
 	}
 }
 
-func TestPhishingZipOverEntryCapIsSkippedNotIncomplete(t *testing.T) {
+// Padding a kit with filler entries must not hide it: the whole listing is
+// streamed one record at a time, so its size costs reading time, not memory.
+func TestPhishingZipWithHugeListingStillDetected(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "office365.zip")
-	kitZipWithFiller(t, path, maxPhishingZipEntries) // 20,003 entries
+	kitZipWithFiller(t, path, 30000)
 	ctx, c := withIncompleteCheckCollector(context.Background())
-	if zipLooksLikeKit(ctx, path) {
-		t.Fatal("over-cap zip was parsed")
+	if !zipLooksLikeKit(ctx, path) {
+		t.Fatal("a kit padded with filler entries was not detected")
 	}
 	if c.contains("phishing") {
-		t.Fatal("an out-of-scope zip must not leave the check incomplete")
-	}
-}
-
-func TestPhishingZipJustUnderCapStillDetected(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "office365.zip")
-	kitZipWithFiller(t, path, maxPhishingZipEntries-3) // exactly 20,000 entries
-	if !zipLooksLikeKit(context.Background(), path) {
-		t.Fatal("a kit at the cap must still be detected")
+		t.Fatal("a readable listing must not leave the check incomplete")
 	}
 }
 

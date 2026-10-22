@@ -1,7 +1,6 @@
 package checks
 
 import (
-	"archive/zip"
 	"bytes"
 	"context"
 	"encoding/binary"
@@ -10,6 +9,7 @@ import (
 	"io"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"unicode"
@@ -1841,12 +1841,10 @@ func isKitCredentialSinkName(base string) bool {
 	}
 }
 
-// A kit is a few hundred files at most. A zip listing more entries, or a
-// central directory larger than this, is out of scope for the check.
-const (
-	maxPhishingZipEntries        = 20000
-	maxPhishingZipDirectoryBytes = 16 << 20
-)
+// maxPhishingZipBytes is the largest zip the check inspects. Its central
+// directory is streamed one record at a time, so padding a kit with filler
+// entries costs reading time, never memory, and cannot hide it.
+const maxPhishingZipBytes = 50 * 1024 * 1024
 
 // zipLooksLikeKit inspects a ZIP's central directory (entry names only, no
 // decompression) and reports whether the contents match a phishing kit rather
@@ -1874,7 +1872,7 @@ func zipLooksLikeKit(ctx context.Context, path string) bool {
 	// failure: the caller already gates on the same range, and marking the
 	// check incomplete here would stop it ever retiring a stale finding on a
 	// host that simply keeps a large archive under a docroot.
-	if !info.Mode().IsRegular() || info.Size() <= 1000 || info.Size() >= 50*1024*1024 {
+	if !info.Mode().IsRegular() || info.Size() <= 1000 || info.Size() >= maxPhishingZipBytes {
 		return false
 	}
 	return phishingKitZipHasEvidence(ctx, f, info.Size())
@@ -1883,22 +1881,10 @@ func zipLooksLikeKit(ctx context.Context, path string) bool {
 // phishingKitZipHasEvidence confirms a bounded ZIP using independent entry-name
 // signals without decompressing attacker-controlled archive contents.
 func phishingKitZipHasEvidence(ctx context.Context, reader io.ReaderAt, size int64) bool {
-	if size <= 1000 || size >= 50*1024*1024 {
+	if size <= 1000 || size >= maxPhishingZipBytes {
 		return false
 	}
-	// Read the entry count before zip.NewReader allocates an object for
-	// every entry. A huge listing is a scope decision like an oversize zip:
-	// marking the check incomplete would stop it ever retiring stale findings
-	// on a host that keeps such an archive.
-	dir, err := zipdir.Read(reader, size, maxPhishingZipDirectoryBytes)
-	if errors.Is(err, zipdir.ErrScanLimit) || (err == nil && dir.Records > maxPhishingZipEntries) {
-		return false
-	}
-	if err != nil {
-		markCheckIncomplete(ctx, "phishing")
-		return false
-	}
-	zr, err := zip.NewReader(reader, size)
+	dir, err := zipdir.Read(reader, size, maxPhishingZipBytes)
 	if err != nil {
 		markCheckIncomplete(ctx, "phishing")
 		return false
@@ -1906,14 +1892,22 @@ func phishingKitZipHasEvidence(ctx context.Context, reader io.ReaderAt, size int
 
 	capture, credSink, antibot := false, false, false
 	brandPages := 0
-	evidenceEntries := make(map[string]bool)
-	for i, e := range zr.File {
-		if i%256 == 0 && ctx.Err() != nil {
-			markCheckIncomplete(ctx, "phishing")
-			return false
+	// Two distinct evidence entries are all the verdict needs, so at most two
+	// names are kept however many entries carry evidence.
+	var evidenceEntries []string
+	errKit := errors.New("kit evidence complete")
+	signals := func() int {
+		n := 0
+		for _, on := range []bool{capture, credSink, antibot, brandPages >= 1} {
+			if on {
+				n++
+			}
 		}
-		if e.FileInfo().IsDir() {
-			continue
+		return n
+	}
+	err = zipdir.Walk(ctx, reader, dir, func(e zipdir.Entry) error {
+		if e.Mode().IsDir() {
+			return nil
 		}
 		base := e.Name
 		if i := strings.LastIndexAny(base, "/\\"); i >= 0 {
@@ -1943,24 +1937,22 @@ func phishingKitZipHasEvidence(ctx context.Context, reader io.ReaderAt, size int
 				}
 			}
 		}
-		if hasEvidence {
-			evidenceEntries[e.Name] = true
+		if hasEvidence && len(evidenceEntries) < 2 && !slices.Contains(evidenceEntries, e.Name) {
+			evidenceEntries = append(evidenceEntries, e.Name)
 		}
+		if signals() >= 2 && len(evidenceEntries) >= 2 {
+			return errKit
+		}
+		return nil
+	})
+	if errors.Is(err, errKit) {
+		return true
 	}
-	signals := 0
-	if capture {
-		signals++
+	if err != nil {
+		markCheckIncomplete(ctx, "phishing")
+		return false
 	}
-	if credSink {
-		signals++
-	}
-	if antibot {
-		signals++
-	}
-	if brandPages >= 1 {
-		signals++
-	}
-	return signals >= 2 && len(evidenceEntries) >= 2
+	return false
 }
 
 func visiblePageContent(s string, includeImageAttrs bool) string {
