@@ -36,6 +36,7 @@ type eximWorld struct {
 	listFails    bool
 	listOutput   string // replaces the full listing when set
 	actionErr    error  // returned by -Mrm and -Mg after they applied
+	actionOutput string // stdout from -Mrm and -Mg
 	// probeFailsAfterAction makes systemd-run unable to start a unit once
 	// an action ran, so only the read-back is refused.
 	probeFailsAfterAction bool
@@ -152,7 +153,7 @@ func (w *eximWorld) run(ctx context.Context, name string, args ...string) ([]byt
 	case argv[1] == "-Mrm", argv[1] == "-Mg":
 		delete(w.queue, argv[2])
 		delete(w.bpAnswer, argv[2])
-		return nil, w.actionErr
+		return []byte(w.actionOutput), w.actionErr
 	case argv[1] == "-Mt":
 		if m, ok := w.queue[argv[2]]; ok {
 			m.frozen = false
@@ -532,18 +533,37 @@ func TestQueueActionsOnUnreadableMessage(t *testing.T) {
 		})
 	}
 
-	// exim removes such a message and still exits 1, as exim 4.100 does.
-	world := newEximWorld(t)
-	world.add(qMid, worldMessage{})
-	world.bpAnswer[qMid] = "      " + qMid + "\n    *** spool format error: size=37 ***\n\n"
-	world.actionErr = errors.New("exit status 1: Spool format error for " + qMid + "-H Continuing to ensure all files removed")
-	s, _, _ := queueServer(t, world)
-	w := queueRequest(t, s, http.MethodPost, "/api/v1/email/queue/"+qMid+"/delete")
-	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"outcome":"removed"`) {
-		t.Errorf("delete: status %d body %s, want 200 removed", w.Code, w.Body.String())
-	}
-	if a := lastAudit(t, s); !strings.HasPrefix(a.Details, "outcome: removed; ") || !strings.Contains(a.Details, "Spool format error") {
-		t.Errorf("audit = %+v, want the removal with what exim said", a)
+	for _, tc := range []struct {
+		name, output, outcome, diagnostic string
+		status                            int
+	}{
+		{
+			name: "confirmed removal despite error exit",
+			output: "Spool format error for " + qMid + "-H\nContinuing to ensure all files removed\n" +
+				"Message " + qMid + " has been removed\n",
+			outcome: "removed", diagnostic: "Spool format error", status: http.StatusOK,
+		},
+		{
+			name:    "locked while another caller removes",
+			output:  "Message " + qMid + " is locked\n",
+			outcome: "gone", diagnostic: "is locked", status: http.StatusConflict,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			world := newEximWorld(t)
+			world.add(qMid, worldMessage{})
+			world.bpAnswer[qMid] = "      " + qMid + "\n    *** spool format error: size=37 ***\n\n"
+			world.actionErr = errors.New("exit status 1")
+			world.actionOutput = tc.output
+			s, _, _ := queueServer(t, world)
+			w := queueRequest(t, s, http.MethodPost, "/api/v1/email/queue/"+qMid+"/delete")
+			if w.Code != tc.status || !strings.Contains(w.Body.String(), `"outcome":"`+tc.outcome+`"`) {
+				t.Errorf("delete: status %d body %s, want %d %s", w.Code, w.Body.String(), tc.status, tc.outcome)
+			}
+			if a := lastAudit(t, s); !strings.HasPrefix(a.Details, "outcome: "+tc.outcome+"; ") || !strings.Contains(a.Details, tc.diagnostic) {
+				t.Errorf("audit = %+v, want %s with what exim said", a, tc.outcome)
+			}
+		})
 	}
 }
 

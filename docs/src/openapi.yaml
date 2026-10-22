@@ -502,14 +502,18 @@ paths:
             retry runs exim -M and answers attempt_started without waiting
             for the delivery; bounce (-Mg) answers bounced and delete (-Mrm)
             removed once the message left the queue and exim reported no
-            error; thaw (-Mt) answers thawed once the queue shows the change.
+            error. Delete also answers removed when exim confirms removal
+            of an unreadable message despite an error exit and the message
+            is no longer queued. Thaw (-Mt) answers thawed once the queue
+            shows the change.
           schema: { type: string, enum: [retry, bounce, delete, thaw] }
       responses:
         "200":
           description: >-
-            ActionResult with outcome attempt_started, bounced or removed
-            (exim reported no error, or the message was one exim cannot
-            read, whose removal exim always reports as an error), thawed (also when exim reported an
+            ActionResult with outcome attempt_started, bounced (exim
+            reported no error), removed (exim reported no error or confirmed
+            removal of an unreadable message, and it is no longer queued),
+            thawed (also when exim reported an
             error the queue does not bear out; the audit entry records it),
             or unchanged for a thaw on a message that is not frozen, where
             nothing runs.

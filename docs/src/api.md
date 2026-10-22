@@ -1325,10 +1325,12 @@ ran, unless the message left during the action. `retry` answers
 `delete` answer `bounced` and `removed` when the message left the queue and
 exim reported no error. When exim reported an error and the message left
 anyway, as when exim -Mrm finds it locked by a delivery that then completes,
-the answer is 409 with `outcome: "gone"`. A message exim cannot read
-answers `removed` once `delete` took it, although exim always reports an
-error removing one. `thaw` answers `thawed` when the
-queue shows the change, even if exim reported an error. Otherwise the answer
+the answer is 409 with `outcome: "gone"`. An unreadable message answers
+`removed` despite an error exit only when exim confirms its removal and
+the message is no longer queued. A failed or interrupted delete without
+that confirmation answers `gone` when another caller takes the message.
+`thaw` answers `thawed` when the queue shows the change, even if exim reported
+an error. Otherwise the answer
 is `unchanged` with an error. A thaw on a message that is not frozen answers `unchanged`
 without running exim -Mt. Every attempt is written to the UI audit log as
 `email_queue_<action>` with the message ID, the outcome and any error exim
