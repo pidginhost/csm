@@ -62,7 +62,7 @@ func validateFirewallBatchStates(a firewall.FirewallAction) error {
 		if seen[row.ActionID] {
 			return errInvalidFirewallManifest
 		}
-		if !ok || row.IP != m.Target || row.Reason != m.Reason || row.Unverified || !row.ExpiresAt.Equal(row.BlockedAt.Add(m.TTL)) || !row.ExpiresAt.After(a.CreatedAt) {
+		if !ok || row.IP != m.Target || row.Reason != m.Reason || row.Unverified || !row.BlockedAt.Equal(a.CreatedAt) || !row.ExpiresAt.Equal(row.BlockedAt.Add(m.TTL)) || !row.ExpiresAt.After(a.CreatedAt) {
 			return errInvalidFirewallManifest
 		}
 		seen[row.ActionID] = true
@@ -73,6 +73,40 @@ func validateFirewallBatchStates(a firewall.FirewallAction) error {
 	for _, row := range a.Before.Blocked[nextBefore:] {
 		if !firewallRowExpired(row, a) {
 			return errInvalidFirewallManifest
+		}
+	}
+	return nil
+}
+
+// validateFirewallVictims holds a one-member action to the victims it
+// records. Undo restores a victim from this record, so each must be exactly
+// the one row that named its address before the action, and no row may name
+// that address after it.
+func validateFirewallVictims(a firewall.FirewallAction) error {
+	for _, v := range a.Members[0].Victims {
+		if v.Unverified {
+			return errInvalidFirewallManifest
+		}
+		want, err := json.Marshal(v)
+		if err != nil {
+			return errInvalidFirewallManifest
+		}
+		held, same := 0, false
+		for _, row := range a.Before.Blocked {
+			if canonicalFirewallTarget(row.IP) != v.IP {
+				continue
+			}
+			held++
+			raw, err := json.Marshal(row)
+			same = same || err == nil && string(raw) == string(want)
+		}
+		if held != 1 || !same {
+			return errInvalidFirewallManifest
+		}
+		for _, row := range a.After.Blocked {
+			if canonicalFirewallTarget(row.IP) == v.IP {
+				return errInvalidFirewallManifest
+			}
 		}
 	}
 	return nil

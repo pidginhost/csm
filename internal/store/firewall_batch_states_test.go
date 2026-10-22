@@ -64,6 +64,11 @@ func TestFirewallBatchStatesOnlyAddMemberRows(t *testing.T) {
 			row(a, "member-one").ExpiresAt = row(a, "member-one").ExpiresAt.Add(time.Second)
 		},
 		"permanent member row": func(a *firewall.FirewallAction) { row(a, "member-one").ExpiresAt = time.Time{} },
+		"member row starts after planning": func(a *firewall.FirewallAction) {
+			r := row(a, "member-one")
+			r.BlockedAt = a.CreatedAt.Add(time.Hour)
+			r.ExpiresAt = r.BlockedAt.Add(time.Hour)
+		},
 		"member row expired": func(a *firewall.FirewallAction) {
 			r := row(a, "member-one")
 			r.BlockedAt = a.CreatedAt.Add(-2 * time.Hour)

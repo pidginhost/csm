@@ -141,7 +141,7 @@ func validateFirewallManifest(a firewall.FirewallAction) error {
 	if len(a.Members) > 1 {
 		return validateFirewallBatchStates(a)
 	}
-	return nil
+	return validateFirewallVictims(a)
 }
 
 // canonicalFirewallAddress accepts one address in its only spelling, so no
