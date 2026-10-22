@@ -128,6 +128,15 @@ load succeeds.
 On Email Security, failed refreshes mark protection status as unavailable
 and hide stale chart data. An older response cannot overwrite newer health
 status or the selected outbound abuse range.
+Headline counts refresh every 30 seconds. Queue messages and composition,
+held mail, rejects, sending accounts, provider delays and Findings refresh
+every minute while their tab is open. Hidden tabs do not poll their lists.
+Unchanged results keep their rows; changed results retain paging, sorting,
+selection, open details and focus for items still present. Pending message,
+bulk and firewall actions stay disabled across refreshes. Queue actions wait
+up to a minute; an unreadable outcome is reported as unknown.
+Held mail custom ranges include only items held during the selected days;
+the summary also identifies held items outside that range.
 
 The visible History tab refreshes with its current filters and page size.
 Editors wait for an ongoing save or load before accepting another refresh;

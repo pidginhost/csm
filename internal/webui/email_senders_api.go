@@ -31,8 +31,6 @@ func (s *Server) apiEmailSenders(w http.ResponseWriter, r *http.Request) {
 	if c := s.mailStatsCounter(); c != nil {
 		resp.SendersReport = c.TopSenders(from, to, emailSendersLimit)
 	}
-	resp.AbuseEvents = s.emailMemo(rangeMemoKey("senders-abuse", from, to), func() any {
-		return s.buildRelayAbuseResponse(from, to, 1).Total
-	}).(int)
+	resp.AbuseEvents = s.buildRelayAbuseResponse("senders-abuse", from, to, 1).Total
 	writeJSON(w, resp)
 }

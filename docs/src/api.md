@@ -1267,6 +1267,11 @@ POST /api/v1/email/quarantine/{id}/release  Release a quarantined message (admin
 DELETE /api/v1/email/quarantine/{id}        Delete a quarantined message (admin scope, CSRF)
 ```
 
+The senders abuse count and relay abuse list apply the exact `from` and `to`
+bounds, including fractional seconds, even when requests share cached
+history. `from` is inclusive and `to` is exclusive. A cached history limit
+cannot let findings outside those bounds hide matching findings.
+
 Email groups report `handled: true` only for auth failures whose complete,
 current history is answered by active blocks on every attacker address or
 covering subnet. Missing addresses, truncated or stale history, successful

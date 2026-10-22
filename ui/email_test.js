@@ -71,6 +71,10 @@ function emailPage(opts = {}) {
         globals
     });
     page.window.bootstrap.Tab = tabPlugin(page.window);
+    if (opts.intervals) {
+        const interval = page.window.CSM.refresh.interval;
+        page.window.CSM.refresh.interval = (fn, ms) => { opts.intervals.push({ fn, ms }); return interval(fn, ms); };
+    }
     page.load('email.js');
     page.Chart = Chart;
     return page;
@@ -2158,15 +2162,11 @@ test('count updates leave a strip the operator scrolled alone', async () => {
     assert.equal(strip.scrollLeft, 400, 'an unchanged count moved the strip');
 });
 
-test('the refresh button and the queue timer read the open Queue tab again', async () => {
+test('the refresh button reads the open Queue tab again', async () => {
     const page = await queuePage([queueMsg(QID[0])]);
     page.document.getElementById('email-refresh').click();
     await settle();
     assert.equal(page.pending('/api/v1/email/queue?').length, 1, 'refresh did not read the queue list');
-    const src = fs.readFileSync(path.join(__dirname, 'static/js/email.js'), 'utf8');
-    const timer = src.match(/CSM\.refresh\.interval\(function\(\) \{([\s\S]*?)\}, 30000\)/);
-    assert.ok(timer, 'no 30 s timer');
-    assert.match(timer[1], /activeTab\('email-tabs'\) === 'queue'\) loadQueue\(\)/, 'the 30 s timer does not read the open Queue tab');
 });
 
 // ---------- Tab chip, counts and address ----------
@@ -3687,4 +3687,258 @@ test('the queue summary takes frozen and oldest from the overview, as the Queue 
     await settle();
     assert.equal(kpi(page, 'kpi-queue').sub, 'oldest unknown');
     assert.match(flat(summary), /^30 queued, oldest unknown\./);
+});
+
+// Refreshes must preserve work in progress, including when the data changes.
+test('reject refreshes keep unchanged rows and restore link focus after changes', async () => {
+    const page = emailPage({ url: 'https://csm.example.com/email?tab=rejects' });
+    const list = Array.from({ length: 15 }, (_, i) => ({ at: AT, class: 'spam', ip: '192.0.2.1', detail: 'reject ' + i }));
+    page.respond('/api/v1/email/rejects', 200, items(list, { kept_days: 7 }));
+    await settle();
+    const table = () => page.window.CSM._tableInstances.find(t => t.opts.tableId === 'email-rejects-table');
+    page.document.querySelector('#email-rejects-table-controls [data-page="2"]').click();
+    const row = table().allRows[11].row;
+    row.querySelector('a').focus();
+    page.window.CSM.refresh.manual();
+    page.respond('/api/v1/email/rejects', 200, items(list, { kept_days: 7 }));
+    await settle();
+    assert.equal(table().allRows[11].row, row, 'unchanged rows were rebuilt');
+    assert.equal(page.document.activeElement, row.querySelector('a'));
+    page.window.CSM.refresh.manual();
+    page.respond('/api/v1/email/rejects', 200, items(list.concat({ at: AT, class: 'spam', detail: 'new' }), { kept_days: 7 }));
+    await settle();
+    assert.equal(table().currentPage, 2);
+    assert.equal(page.document.activeElement, table().allRows[11].row.querySelector('a'), 'changed rows lost focus');
+});
+
+test('Findings refresh on opening and poll only while visible', async () => {
+    const page = emailPage();
+    const count = () => requestCount(page, '/api/v1/history?');
+    page.respond('/api/v1/history?', 200, items([]));
+    await settle();
+    const initial = count();
+    page.window.CSM.refresh.manual();
+    assert.equal(count(), initial, 'hidden Findings polled');
+    showEmailTab(page, 'findings');
+    assert.equal(count(), initial + 1, 'opening Findings left the initial results stale');
+    page.window.CSM.refresh.manual();
+    assert.equal(count(), initial + 2, 'visible Findings did not poll');
+    showEmailTab(page, 'queue');
+    const overviewCalls = ['/api/v1/email/groups?', '/api/v1/email/rspamd', '/api/v1/email/av/status'].map(p => requestCount(page, p));
+    page.window.CSM.refresh.manual();
+    assert.equal(count(), initial + 2);
+    assert.deepEqual(['/api/v1/email/groups?', '/api/v1/email/rspamd', '/api/v1/email/av/status'].map(p => requestCount(page, p)), overviewCalls,
+        'hidden Overview content polled');
+});
+
+test('Findings refresh keeps rows, open details and focused controls', async () => {
+    const page = emailPage({ url: 'https://csm.example.com/email?tab=findings' });
+    const list = [{ check: 'email_av', severity: 'HIGH', message: 'message', details: 'details', timestamp: AT }];
+    for (const req of page.pending('/api/v1/history?')) { req.settled = true; req.resolve(jsonResponse(200, items(list))); }
+    await settle();
+    const body = page.document.getElementById('email-tbody');
+    const row = body.firstElementChild;
+    const btn = row.querySelector('.expand-btn');
+    btn.click(); btn.focus();
+    page.document.getElementById('email-refresh').click();
+    page.respond('/api/v1/history?', 200, items(list));
+    await settle();
+    assert.equal(body.firstElementChild, row, 'unchanged findings were rebuilt');
+    assert.equal(page.document.activeElement, btn);
+    page.document.getElementById('email-refresh').click();
+    page.respond('/api/v1/history?', 200, items(list.concat({ check: 'email_av', severity: 'HIGH', message: 'new', timestamp: AT })));
+    await settle();
+    const restored = body.querySelector('.expand-btn');
+    assert.equal(restored.getAttribute('aria-expanded'), 'true');
+    assert.equal(page.document.activeElement, restored);
+});
+
+test('a held custom range excludes items at and after its end', async () => {
+    const page = emailPage({ url: 'https://csm.example.com/email?tab=held&from=2026-10-20&to=2026-10-20',
+        storage: { 'csm-prefs': JSON.stringify({ timezone: 'UTC' }) } });
+    page.respond('/api/v1/email/quarantine', 200, items([
+        malwareItem(MID[0], { quarantined_at: '2026-10-20T12:00:00Z' }),
+        malwareItem(MID[1], { quarantined_at: '2026-10-21T00:00:00Z' })
+    ]));
+    page.respond('/api/v1/email/held', 200, items([forwardItem(FID[0], { held_at: '2026-10-22T12:00:00Z' })]));
+    await settle();
+    assert.deepEqual(heldRows(page).map(r => r.getAttribute('data-held-id')), [MID[0]]);
+    assert.match(flat(page.document.getElementById('email-held-summary')), /2.*outside.*range/i);
+});
+
+test('a queued message updates changed recipients even when their count stays equal', async () => {
+    const m = queueMsg(QID[0], { recipients: ['first@example.net'], recipient_count: 1 });
+    const page = await queuePage([m]);
+    page.window.CSM.refresh.manual();
+    page.respond('/api/v1/email/queue?', 200, queueList([Object.assign({}, m, { recipients: ['next@example.net'] })]));
+    await settle();
+    assert.match(flat(queueRow(page, QID[0])), /next@example.net/);
+    assert.doesNotMatch(flat(queueRow(page, QID[0])), /first@example.net/);
+});
+
+test('older queue detail reads cannot replace the refreshed delivery log', async () => {
+    const m = queueMsg(QID[0]);
+    const page = await queuePage([m]);
+    queueRow(page, QID[0]).querySelector('.expand-btn').click();
+    await settle();
+    const old = page.pending('/api/v1/email/queue/' + QID[0])[0];
+    page.window.CSM.refresh.manual();
+    page.respond('/api/v1/email/queue?', 200, queueList([Object.assign({}, m, { frozen: !m.frozen })]));
+    await settle();
+    const fresh = page.pending('/api/v1/email/queue/' + QID[0]).at(-1);
+    assert.notEqual(fresh, old);
+    fresh.settled = true; fresh.resolve(jsonResponse(200, { id: QID[0], msglog: ['new delivery log'] }));
+    await settle();
+    old.settled = true; old.resolve(jsonResponse(200, { id: QID[0], msglog: ['old delivery log'] }));
+    await settle();
+    const text = flat(queueRow(page, QID[0]).nextElementSibling);
+    assert.match(text, /new delivery log/);
+    assert.doesNotMatch(text, /old delivery log/);
+});
+
+test('bulk held actions lock every selected item across refreshes', async () => {
+    const malware = [malwareItem(MID[0]), malwareItem(MID[1])];
+    const page = await heldPage(malware, []);
+    stubConfirm(page);
+    heldRow(page, MID[0]).querySelector('.email-quar-cb').click();
+    heldRow(page, MID[1]).querySelector('.email-quar-cb').click();
+    page.document.getElementById('email-quar-bulk-release').click();
+    await settle();
+    await heldTick(page, malware.concat(malwareItem(MID[2])), []);
+    for (const id of MID.slice(0, 2)) {
+        const row = heldRow(page, id);
+        assert.equal(row.querySelector('[data-held-action="delete"]').disabled, true, 'bulk item can be deleted mid-release');
+        assert.equal(row.querySelector('.email-quar-cb').disabled, true, 'bulk item can be selected again');
+    }
+    assert.equal(page.document.getElementById('email-quar-bulk-delete').disabled, true);
+    page.document.getElementById('email-quar-bulk-release').click();
+    await settle();
+    assert.equal(page.requests.filter(r => r.method === 'POST').length, 1, 'duplicate bulk release started');
+});
+
+test('changed abuse events keep open sites, focus and pending block state', async () => {
+    const event = abuseEvent({ source_ip: '192.0.2.5', sites: [{ site: 'example.com', script: '/send.php', hits: 1, last_seen: AT }] });
+    const page = await sendingPage({ '/api/v1/email/relay-abuse': items([event]) });
+    stubConfirm(page);
+    const body = page.document.getElementById('email-abuse-events');
+    body.querySelector('.oab-toggle').click();
+    body.querySelector('.oab-block').click();
+    await settle();
+    body.querySelector('.oab-toggle').focus();
+    page.window.CSM.refresh.manual();
+    page.respond('/api/v1/email/relay-abuse', 200, items([abuseEvent({ detected_at: '2026-10-21T12:00:00Z' }), event]));
+    await settle();
+    const block = body.querySelector('.oab-block[data-ip="192.0.2.5"]');
+    assert.equal(block.disabled, true, 'a refresh reopened a pending block');
+    const toggle = block.parentElement.querySelector('.oab-toggle');
+    assert.equal(page.document.activeElement, toggle);
+    assert.equal(page.document.getElementById(toggle.getAttribute('data-target')).classList.contains('d-none'), false);
+    page.respond('/api/v1/block-ip', 200, {});
+    await settle();
+    assert.equal(block.textContent, 'Blocked', 'the completion updated a detached button');
+});
+
+test('a backscatter flush stays busy across queue summary changes and reports uncertainty', async () => {
+    const page = await queuePage([queueMsg(QID[0], { bounce: true, frozen: true })]);
+    page.respond('/api/v1/email/queue-composition', 200, { total: 1, flushable_backscatter: 1 });
+    await settle();
+    stubConfirm(page);
+    const options = [];
+    const post = page.window.CSM.post;
+    page.window.CSM.post = (url, body, opts) => { options.push(opts); return post(url, body, opts); };
+    page.document.getElementById('flush-backscatter-btn').click();
+    await settle();
+    assert.equal(options[0].timeoutMs, 60000);
+    page.window.CSM.refresh.manual();
+    page.respond('/api/v1/email/overview', 200, queueOverview(2));
+    await settle();
+    const btn = page.document.getElementById('flush-backscatter-btn');
+    assert.equal(btn.disabled, true);
+    btn.click();
+    await settle();
+    assert.equal(requestCount(page, '/api/v1/email/queue/flush-backscatter'), 1);
+    page.respond('/api/v1/email/queue/flush-backscatter', 500, { error: 'the outcome could not be read back' });
+    await settle();
+    assert.match(page.toasts.at(-1)[0], /^Outcome unknown:/);
+    assert.equal(btn.disabled, false);
+});
+
+test('a successful queue reply without an outcome cannot claim nothing changed', async () => {
+    const page = await queuePage([queueMsg(QID[0])]);
+    stubConfirm(page);
+    queueRow(page, QID[0]).querySelector('[data-queue-action="retry"]').click();
+    await settle();
+    page.respond('/api/v1/email/queue/' + QID[0] + '/retry', 200, {});
+    await settle();
+    assert.match(page.toasts.at(-1)[0], /^Outcome unknown:/);
+});
+
+test('queue lists and composition poll once a minute while headline counts poll every 30 seconds', async () => {
+    const intervals = [];
+    const page = emailPage({ url: 'https://csm.example.com/email?tab=queue', intervals });
+    page.respond('/api/v1/email/queue-composition', 200, { total: 1, flushable_backscatter: 1 });
+    await settle();
+    const before = page.requests.length;
+    intervals.filter(t => t.ms === 30000).forEach(t => t.fn());
+    const fast = page.requests.slice(before).map(r => r.url);
+    assert.ok(fast.some(u => u.includes('/api/v1/email/overview')));
+    assert.equal(fast.some(u => u.includes('/api/v1/email/queue?')), false, 'queue list polls twice a minute');
+    const listReads = requestCount(page, '/api/v1/email/queue?');
+    intervals.filter(t => t.ms === 60000).forEach(t => t.fn());
+    assert.equal(requestCount(page, '/api/v1/email/queue?'), listReads + 1);
+    assert.equal(requestCount(page, '/api/v1/email/queue-composition'), 2, 'composition remained the initial snapshot');
+    assert.equal(intervals.length, 3);
+});
+
+test('Findings retains a saved search but does not resurrect a search just cleared', async () => {
+    const page = emailPage({ url: 'https://csm.example.com/email?tab=findings',
+        storage: { 'csm-email-table': JSON.stringify({ search: 'first' }) } });
+    const rows = ['first', 'second'].map(message => ({ check: 'email_av', severity: 'HIGH', message, timestamp: AT }));
+    page.respond('/api/v1/history?', 200, items(rows));
+    await settle();
+    const input = page.document.getElementById('email-search');
+    assert.equal(input.value, 'first');
+    input.value = '';
+    input.dispatchEvent(new page.window.Event('input'));
+    page.document.getElementById('email-refresh').click();
+    page.respond('/api/v1/history?', 200, items(rows.concat({ check: 'email_av', severity: 'HIGH', message: 'third', timestamp: AT })));
+    await settle();
+    assert.equal(input.value, '');
+    assert.equal(Array.from(page.document.querySelectorAll('#email-tbody tr')).filter(r => r.style.display !== 'none').length, 3);
+});
+
+test('sending table keeps its page, sort and pager focus without browser storage', async () => {
+    const accounts = n => Array.from({ length: 30 }, (_, i) => ({ account: 'user' + String(i).padStart(2, '0'), messages: i + n }));
+    const page = await sendingPage({ '/api/v1/email/senders': senders(accounts(1)) });
+    page.window.localStorage.setItem = () => { throw new Error('storage unavailable'); };
+    const doc = page.document;
+    doc.querySelectorAll('#email-sending-table thead th')[0].click();
+    doc.querySelector('#email-sending-table-controls [data-page="2"]').click();
+    doc.querySelector('#email-sending-table-controls [data-page="1"]').focus();
+    page.window.CSM.refresh.manual();
+    page.respond('/api/v1/email/senders', 200, senders(accounts(2)));
+    await settle();
+    const table = page.window.CSM._tableInstances.find(t => t.opts.tableId === 'email-sending-table');
+    assert.equal(table.currentPage, 2);
+    assert.equal(table.sortColumn, 0);
+    assert.equal(doc.activeElement, doc.querySelector('#email-sending-table-controls [data-page="1"]'));
+});
+
+test('queue composition ignores old replies and keeps unchanged recipient rows', async () => {
+    const page = await queuePage([queueMsg(QID[0])]);
+    const old = page.pending('/api/v1/email/queue-composition')[0];
+    const data = { total: 1, bounce: 1, frozen: 1, flushable_backscatter: 1, oldest_age_seconds: 60,
+        top_recipients: [{ address: 'user@example.net', count: 1 }] };
+    page.document.getElementById('email-refresh').click();
+    const fresh = page.pending('/api/v1/email/queue-composition').at(-1);
+    fresh.settled = true; fresh.resolve(jsonResponse(200, data));
+    await settle();
+    old.settled = true; old.resolve(jsonResponse(200, Object.assign({}, data, { flushable_backscatter: 9 })));
+    await settle();
+    assert.match(flat(page.document.getElementById('flush-backscatter-btn')), /Flush 1 /);
+    const row = page.document.querySelector('#queue-composition tbody tr');
+    page.document.getElementById('email-refresh').click();
+    page.respond('/api/v1/email/queue-composition', 200, Object.assign({}, data, { oldest_age_seconds: 120 }));
+    await settle();
+    assert.equal(page.document.querySelector('#queue-composition tbody tr'), row, 'unshown age rebuilt an unchanged table');
 });

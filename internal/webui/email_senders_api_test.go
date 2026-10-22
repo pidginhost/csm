@@ -124,15 +124,22 @@ func TestSendersAbuseCountMemoized(t *testing.T) {
 	const query = "from=2026-10-20T12:00:00Z&to=2026-10-20T13:00:00Z"
 	from := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
 	key := rangeMemoKey("senders-abuse", from, from.Add(time.Hour))
-	s.emailMemos.memo(key).get(s.store.HistoryMark(), func() any { return 7 })
+	s.store.AppendHistory([]alert.Finding{{Check: "email_php_relay_abuse", Severity: alert.High, Path: "volume", Timestamp: from.Add(time.Minute)}})
 
 	w := serveSenders(s, http.MethodGet, "tok", "?"+query)
 	var body emailSendersBody
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil || w.Code != http.StatusOK {
 		t.Fatalf("status %d, %v: %s", w.Code, err, w.Body.String())
 	}
-	if body.AbuseEvents != 7 {
-		t.Errorf("abuse_events = %d, want the memoized 7", body.AbuseEvents)
+	if body.AbuseEvents != 1 {
+		t.Errorf("abuse_events = %d, want 1", body.AbuseEvents)
+	}
+	w = serveSenders(s, http.MethodGet, "tok", "?"+query)
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil || w.Code != http.StatusOK || body.AbuseEvents != 1 {
+		t.Fatalf("second request: status %d, %v, count %d; want 200 and 1", w.Code, err, body.AbuseEvents)
+	}
+	if n := s.emailMemos.memo(key).computes; n != 1 {
+		t.Errorf("history computations = %d, want 1", n)
 	}
 }
 
