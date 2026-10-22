@@ -277,26 +277,47 @@
             </div>
         </div>
 
-        <!-- Held mail: the email AV quarantine -->
+        <!-- Held mail: malware the email AV quarantined and forward copies
+             the forward guard held, newest first, in the page range -->
         <div class="tab-pane fade" id="email-pane-held" role="tabpanel" aria-labelledby="email-tab-held" tabindex="0">
             <div class="card">
+                <div class="card-body border-bottom">
+                    <div id="email-held-summary">
+                        <div class="text-muted small"><span class="spinner-border spinner-border-sm"></span> Loading held mail...</div>
+                    </div>
+                </div>
                 <div class="csm-toolbar">
-                    <input type="text" id="email-quar-search" class="form-control form-control-sm csm-toolbar__search" placeholder="Search sender / recipient / subject..." aria-label="Search email quarantine">
-                    <select id="email-quar-dir" class="form-select form-select-sm csm-toolbar__filter" aria-label="Filter by direction">
-                        <option value="">All directions</option>
-                        <option value="inbound">Inbound</option>
-                        <option value="outbound">Outbound</option>
+                    <select id="email-held-filter" class="form-select form-select-sm csm-toolbar__filter" aria-label="Show held mail">
+                        <option value="all">All held mail</option>
+                        <option value="malware">Malware</option>
+                        <option value="forward">Forward copies</option>
                     </select>
-                    <input type="date" id="email-quar-from" class="form-control form-control-sm csm-toolbar__filter" aria-label="From date">
-                    <input type="date" id="email-quar-to" class="form-control form-control-sm csm-toolbar__filter" aria-label="To date">
+                    <input type="search" id="email-held-search" class="form-control form-control-sm csm-toolbar__search" placeholder="Search sender, recipient or subject..." aria-label="Search held mail">
                     <span class="csm-toolbar__spacer"></span>
                     <div class="csm-toolbar__actions">
                         <button class="btn btn-warning btn-sm d-none" id="email-quar-bulk-release"><i class="ti ti-mail-forward"></i>&nbsp;Release Selected</button>
                         <button class="btn btn-danger btn-sm d-none" id="email-quar-bulk-delete"><i class="ti ti-trash"></i>&nbsp;Delete Selected</button>
                     </div>
                 </div>
-                <div class="card-body">
-                    <div id="quarantine-table"></div>
+                <div class="table-responsive">
+                    <table class="table table-vcenter card-table table-sm" id="email-held-table">
+                        <thead>
+                            <tr>
+                                <th><input type="checkbox" class="form-check-input" id="email-quar-select-all" aria-label="Select all visible malware messages"></th>
+                                <th>Held</th>
+                                <th>Kind</th>
+                                <th>From</th>
+                                <th>To</th>
+                                <th>Subject</th>
+                                <th>Why held</th>
+                                <th>Size</th>
+                                <th class="text-end">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="email-held-tbody">
+                            <tr><td colspan="9" class="text-center text-muted py-4"><span class="spinner-border spinner-border-sm"></span> Loading...</td></tr>
+                        </tbody>
+                    </table>
                 </div>
             </div>
         </div>
@@ -351,7 +372,7 @@
                             <button class="nav-link" id="email-tab-outbound-abuse" data-bs-toggle="tab" data-bs-target="#email-pane-outbound-abuse" type="button" role="tab" aria-controls="email-pane-outbound-abuse" aria-selected="false">Abuse</button>
                         </li>
                         <li class="nav-item" role="presentation">
-                            <button class="nav-link" id="email-tab-forwarders" data-bs-toggle="tab" data-bs-target="#email-pane-forwarders" type="button" role="tab" aria-controls="email-pane-forwarders" aria-selected="false">Forwarders and held</button>
+                            <button class="nav-link" id="email-tab-forwarders" data-bs-toggle="tab" data-bs-target="#email-pane-forwarders" type="button" role="tab" aria-controls="email-pane-forwarders" aria-selected="false">Forwarders</button>
                         </li>
                     </ul>
                 </div>
@@ -394,27 +415,6 @@
                                     <tr><td colspan="5" class="text-center text-muted py-4">Forwarder inventory loads when this tab is opened.</td></tr>
                                 </tbody>
                             </table>
-                        </div>
-
-                        <div class="card-body border-top">
-                            <div class="subheader mb-2"><i class="ti ti-mail-pause"></i>&nbsp;Held forward copies <span class="text-muted small" id="email-held-count"></span></div>
-                            <div class="text-muted small mb-2">Spam-bounce or bad-sender forward copies the guard held before they relayed externally. The local copy still delivered. Release re-sends a copy to its external recipient; delete discards it.</div>
-                            <div class="table-responsive">
-                                <table class="table table-vcenter card-table table-sm" id="email-held-table">
-                                    <thead>
-                                        <tr>
-                                            <th>Held</th>
-                                            <th>Forwarder</th>
-                                            <th>Recipient</th>
-                                            <th>Reason</th>
-                                            <th class="text-end">Actions</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody id="email-held-tbody">
-                                        <tr><td colspan="5" class="text-center text-muted py-4">Held forwards load when this tab is opened.</td></tr>
-                                    </tbody>
-                                </table>
-                            </div>
                         </div>
                     </div>
                 </div>

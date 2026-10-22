@@ -10,7 +10,6 @@
     var _emailExportData = [];
     var emailTable = null;
     var _emailFindingsLoadSeq = 0;
-    var quarantineLoaded = false;
     var forwardersLoaded = false;
     var _forwarders = [];
     var deliverabilityLoaded = false;
@@ -181,6 +180,7 @@
                 renderSubtitle();
                 renderProtection();
                 renderQueueSummary();
+                renderHeldSummary();
             })
             .catch(function(err) {
                 if (seq !== _overviewSeq) return;
@@ -197,6 +197,7 @@
                     CSM.loadError(document.getElementById(id), loadOverview, { title: 'Protection status unavailable', error: err });
                 });
                 renderQueueSummary();
+                renderHeldSummary();
             });
     }
 
@@ -237,6 +238,13 @@
         return out;
     }
 
+    // malwareStopped splits the malware stopped in a range: permanently
+    // rejected at SMTP time, and quarantined after it was accepted.
+    function malwareStopped(t) {
+        var rejects = t.rejects || {}, temporary = t.temporary || {};
+        return { smtp: (rejects.malware || 0) - (temporary.malware || 0), quarantined: t.quarantined || 0 };
+    }
+
     function renderKPIs(ov) {
         var t = ov.totals || {};
         var scanned = t.scanned || 0;
@@ -252,10 +260,9 @@
         }
         setKPI('kpi-tagged', t.tagged || 0, t.would_tag > 0 ? 'would tag ' + num(t.would_tag) : 'delivered, marked as spam');
 
-        var rejects = t.rejects || {}, temporary = t.temporary || {};
-        var smtpMalware = (rejects.malware || 0) - (temporary.malware || 0);
-        setKPI('kpi-malware', smtpMalware + (t.quarantined || 0),
-            num(smtpMalware) + ' rejected at SMTP, ' + num(t.quarantined) + ' quarantined');
+        var malware = malwareStopped(t);
+        setKPI('kpi-malware', malware.smtp + malware.quarantined,
+            num(malware.smtp) + ' rejected at SMTP, ' + num(malware.quarantined) + ' quarantined');
 
         var other = otherRejects(t);
         setKPI('kpi-other', other.total, other.top ? rejectClassLabel(other.top) + ' ' + num(other.topCount) : 'none');
@@ -555,6 +562,7 @@
             outboundAbuseLoaded = false;
             ++_outboundAbuseSeq;
             if (activeTab('email-tabs') === 'sending' && activeTab('email-outbound-nav') === 'outbound-abuse') loadOutboundAbuse();
+            renderHeld();
         });
     }
 
@@ -1255,166 +1263,316 @@
         if (CSM.initTimeAgo) CSM.initTimeAgo();
     }
 
-    // ---------- Quarantine tab ----------
+    // ---------- Held mail tab ----------
 
-    var _emailQuarBulk = null;
-    var _emailQuarTable = null;
-    var _emailQuarURLUnbind = null;
-    var _emailQuarDateListenersBound = false;
+    // Held mail is one list from two stores: messages the email AV
+    // quarantined as malware, and forward copies the forward guard held
+    // before they left for an outside address. Each store loads and fails
+    // on its own, and the list shows what has arrived.
+    var HELD_SOURCES = {
+        malware: { url: '/api/v1/email/quarantine', title: 'Failed to load the mail quarantine' },
+        forward: { url: '/api/v1/email/held', title: 'Failed to load held forward copies' }
+    };
+    var _held = {
+        malware: { items: null, err: null, seq: 0 },
+        forward: { items: null, err: null, seq: 0 }
+    };
+    var _heldTable = null;
+    var _heldShown = []; // the items in the range, as the rows show them
+    var _heldOlder = 0;  // held items older than the range
+    var _heldURLUnbind = null;
+    // Why the guard held a forward copy, from its reason codes.
+    var HELD_REASONS = { bounce_backscatter: 'a bounce (backscatter)', bad_sender_ip: 'sent from a listed bad IP' };
 
-    function _emailQuarURLInputs(fromEl, toEl) {
-        return {
-            email_quar_q: document.getElementById('email-quar-search'),
-            email_quar_dir: document.getElementById('email-quar-dir'),
-            email_quar_from: fromEl,
-            email_quar_to: toEl
-        };
+    // Malware rows can be released or deleted together.
+    var _emailQuarBulk = CSM.bulk({
+        rowCheckboxSelector: '.email-quar-cb',
+        selectAllEl: document.getElementById('email-quar-select-all'),
+        selectAllSelector: '#email-quar-select-all',
+        valueAttr: 'data-id',
+        buttons: [
+            { el: document.getElementById('email-quar-bulk-release'), labelTemplate: 'Release {n} message(s)' },
+            { el: document.getElementById('email-quar-bulk-delete'),  labelTemplate: 'Delete {n} message(s)' }
+        ]
+    });
+
+    function loadHeldMail() {
+        loadHeldSource('malware');
+        loadHeldSource('forward');
     }
 
-    function _bindEmailQuarURLState(fromEl, toEl) {
-        if (_emailQuarURLUnbind) _emailQuarURLUnbind();
-        _emailQuarURLUnbind = CSM.urlState.bind({ inputs: _emailQuarURLInputs(fromEl, toEl) });
-    }
-
-    function _resetEmailQuarTable() {
-        if (_emailQuarTable) {
-            if (typeof _emailQuarTable.destroy === 'function') _emailQuarTable.destroy();
-            _emailQuarTable = null;
-        }
-        var controls = document.getElementById('email-quar-table-controls');
-        if (controls) controls.remove();
-    }
-
-    function _emailQuarUpdateBulk() {
-        var releaseBtn = document.getElementById('email-quar-bulk-release');
-        var deleteBtn = document.getElementById('email-quar-bulk-delete');
-        var selectAll = document.getElementById('email-quar-select-all');
-        if (!_emailQuarBulk && !selectAll && !document.querySelector('.email-quar-cb')) {
-            [releaseBtn, deleteBtn].forEach(function(btn) {
-                if (!btn) return;
-                btn.disabled = true;
-                btn.classList.add('d-none');
-            });
-            return;
-        }
-        if (_emailQuarBulk) { _emailQuarBulk.refresh(); return; }
-        if (!releaseBtn && !deleteBtn) return;
-        _emailQuarBulk = CSM.bulk({
-            rowCheckboxSelector: '.email-quar-cb',
-            selectAllEl: selectAll,
-            selectAllSelector: '#email-quar-select-all',
-            valueAttr: 'data-id',
-            buttons: [
-                { el: releaseBtn, labelTemplate: 'Release {n} message(s)' },
-                { el: deleteBtn,  labelTemplate: 'Delete {n} message(s)' }
-            ]
-        });
-    }
-
-    function _bindEmailQuarDateFilters(fromEl, toEl) {
-        if (_emailQuarDateListenersBound) return;
-        function onDate() {
-            if (_emailQuarTable) {
-                _emailQuarTable.currentPage = 1;
-                _emailQuarTable.applyFilters();
-            }
-        }
-        if (fromEl) fromEl.addEventListener('change', onDate);
-        if (toEl) toEl.addEventListener('change', onDate);
-        _emailQuarDateListenersBound = true;
-    }
-
-    function loadQuarantine() {
-        quarantineLoaded = true;
-        CSM.get('/api/v1/email/quarantine')
+    // loadHeldSource reads one store. The list has its own error row, so
+    // no toast repeats it.
+    function loadHeldSource(kind) {
+        var src = _held[kind];
+        var seq = ++src.seq;
+        CSM.get(HELD_SOURCES[kind].url, { silent: true })
             .then(function(resp) {
-                var data = resp.items;
-                var container = document.getElementById('quarantine-table');
-                if (!container) return;
-                var fromEl = document.getElementById('email-quar-from');
-                var toEl = document.getElementById('email-quar-to');
-                _resetEmailQuarTable();
-                if (!data || data.length === 0) {
-                    _bindEmailQuarURLState(fromEl, toEl);
-                    container.replaceChildren(buildEmpty('lock-open', 'No quarantined messages', ''));
-                    _emailQuarUpdateBulk();
-                    return;
-                }
-                var html = '<div class="table-responsive"><table class="table table-vcenter card-table table-sm csm-table-rowcard" id="email-quar-table">';
-                html += '<thead><tr><th><input type="checkbox" class="form-check-input" id="email-quar-select-all" aria-label="Select all visible quarantined messages"></th><th>Time</th><th>Dir</th><th>From</th><th>To</th><th>Subject</th><th>Threat</th><th>Actions</th></tr></thead><tbody>';
-                for (var i = 0; i < data.length; i++) {
-                    var msg = data[i];
-                    var time = CSM.timeAgo ? CSM.timeAgo(msg.quarantined_at) : CSM.esc(msg.quarantined_at);
-                    var dir = msg.direction === 'inbound'
-                        ? '<span class="badge bg-blue">IN</span>'
-                        : '<span class="badge bg-orange">OUT</span>';
-                    var findings = msg.findings || [];
-                    var threats = [];
-                    for (var j = 0; j < findings.length; j++) {
-                        threats.push(findings[j].signature + ' (' + findings[j].engine + ')');
-                    }
-                    var to = (msg.to || []).join(', ');
-                    var msgID = CSM.attr(msg.message_id);
-                    // Stash search-relevant fields on the row so the
-                    // shared search input matches against just these
-                    // (instead of the whole DOM text including badges).
-                    var searchBlob = String(msg.from || '') + ' ' + String(to || '') + ' ' + String(msg.subject || '');
-                    html += '<tr data-direction="' + CSM.attr(msg.direction || '') + '" data-quar-timestamp="' + CSM.attr(msg.quarantined_at || '') + '" data-search="' + CSM.attr(searchBlob.toLowerCase()) + '">';
-                    html += '<td><input type="checkbox" class="form-check-input email-quar-cb" data-id="' + msgID + '" aria-label="Select message from ' + CSM.attr(msg.from || 'unknown sender') + ': ' + CSM.attr(msg.subject || 'no subject') + '"></td>';
-                    html += '<td data-label="Time" data-timestamp="' + CSM.attr(msg.quarantined_at || '') + '">' + CSM.esc(time) + '</td>';
-                    html += '<td data-label="Dir">' + dir + '</td>';
-                    html += '<td data-label="From">' + CSM.esc(msg.from) + '</td>';
-                    html += '<td data-label="To">' + CSM.esc(to) + '</td>';
-                    html += '<td data-label="Subject">' + CSM.esc(msg.subject) + '</td>';
-                    html += '<td data-label="Threat"><code>' + CSM.esc(threats.join(', ')) + '</code></td>';
-                    html += '<td data-label="Actions">';
-                    html += '<button class="btn btn-sm btn-warning" data-email-release="' + msgID + '">Release</button> ';
-                    html += '<button class="btn btn-sm btn-danger" data-email-delete="' + msgID + '">Delete</button>';
-                    html += '</td>';
-                    html += '</tr>';
-                }
-                html += '</tbody></table></div>';
-                container.innerHTML = html;
-                function _inRange(row) {
-                    var raw = row.getAttribute('data-quar-timestamp') || '';
-                    if (!raw) return true;
-                    var ts = CSM.parseTimestamp(raw);
-                    if (isNaN(ts)) return true;
-                    var from = fromEl ? CSM.prefs.dayBoundary(fromEl.value, false) : null;
-                    var to = toEl ? CSM.prefs.dayBoundary(toEl.value, true) : null;
-                    if (from !== null && ts < from) return false;
-                    if (to !== null && ts >= to) return false;
-                    return true;
-                }
-                _emailQuarTable = new CSM.Table({
-                    tableId: 'email-quar-table',
-                    perPage: 25,
-                    searchId: 'email-quar-search',
-                    searchAttr: 'data-search',
-                    sortable: true,
-                    stateKey: 'csm-email-quarantine',
-                    mobileRowCard: true,
-                    filters: [{ id: 'email-quar-dir', attr: 'data-direction' }],
-                    rowFilter: _inRange,
-                    onRender: function() {
-                        if (_emailQuarBulk) _emailQuarBulk.refresh();
-                    }
-                });
-                _bindEmailQuarDateFilters(fromEl, toEl);
-                _bindEmailQuarURLState(fromEl, toEl);
-                _emailQuarUpdateBulk();
+                if (seq !== src.seq) return;
+                src.items = Array.isArray(resp.items) ? resp.items : [];
+                src.err = null;
+                renderHeld();
             })
             .catch(function(err) {
-                quarantineLoaded = false;
-                CSM.loadError(document.getElementById('quarantine-table'), loadQuarantine, { title: 'Failed to load the mail quarantine', error: err });
+                if (seq !== src.seq) return;
+                src.items = null;
+                src.err = err;
+                renderHeld();
             });
+    }
+
+    // heldEntries merges both stores, newest first.
+    function heldEntries() {
+        var out = [];
+        function add(kind, id, raw, item) {
+            out.push({ kind: kind, id: id, at: raw, time: CSM.parseTimestamp(raw), item: item });
+        }
+        (_held.malware.items || []).forEach(function(m) { add('malware', m.message_id, m.quarantined_at, m); });
+        (_held.forward.items || []).forEach(function(m) { add('forward', m.id, m.held_at, m); });
+        return out.sort(function(a, b) { return (b.time || 0) - (a.time || 0); });
+    }
+
+    function heldEntry(kind, id) {
+        for (var i = 0; i < _heldShown.length; i++) {
+            if (_heldShown[i].kind === kind && _heldShown[i].id === id) return _heldShown[i];
+        }
+        return null;
+    }
+
+    // renderHeld draws the merged list in the page range; items held
+    // before it hide behind a note in the summary. A store that failed
+    // shows its own error row above the other store's items.
+    function renderHeld() {
+        var tbody = document.getElementById('email-held-tbody');
+        if (!tbody) return;
+        if (_heldTable) _heldTable.destroy();
+        _heldTable = null;
+        var from = currentRange().from.getTime();
+        var all = heldEntries();
+        _heldShown = all.filter(function(e) { return !(e.time < from); });
+        _heldOlder = all.length - _heldShown.length;
+        tbody.replaceChildren();
+        _heldShown.forEach(function(e) { tbody.appendChild(heldRow(e)); });
+        var pending = ['malware', 'forward'].some(function(k) { return _held[k].items === null && !_held[k].err; });
+        var failed = _held.malware.err || _held.forward.err;
+        if (_heldShown.length > 0) {
+            _heldTable = new CSM.Table({
+                tableId: 'email-held-table',
+                perPage: 25,
+                searchId: 'email-held-search',
+                searchAttr: 'data-search',
+                sortable: true,
+                stateKey: 'csm-email-held',
+                mobileRowCard: true,
+                filters: [{ id: 'email-held-filter', attr: 'data-kind' }],
+                emptyState: { icon: 'filter-off', title: 'No held mail matches', reason: 'Try another filter or search.' },
+                onRender: function() { _emailQuarBulk.refresh(); }
+            });
+        } else if (pending) {
+            emptyRow(tbody, 9, 'loader-2', 'Loading held mail...', '');
+        } else if (!failed) {
+            emptyRow(tbody, 9, 'mail-check', all.length ? 'Nothing held in this range' : 'Nothing held', '');
+        }
+        // Inserted after the table took its rows, so filters and paging
+        // leave the error rows in place, on top.
+        ['forward', 'malware'].forEach(function(kind) {
+            if (!_held[kind].err) return;
+            var td = node('td');
+            td.setAttribute('colspan', '9');
+            var tr = node('tr');
+            tr.appendChild(td);
+            tbody.insertBefore(tr, tbody.firstChild);
+            CSM.loadError(td, function() { loadHeldSource(kind); }, { title: HELD_SOURCES[kind].title, error: _held[kind].err });
+        });
+        if (_heldURLUnbind) _heldURLUnbind();
+        _heldURLUnbind = CSM.urlState.bind({
+            inputs: {
+                email_held_q: document.getElementById('email-held-search'),
+                email_held_kind: document.getElementById('email-held-filter')
+            },
+            defaults: { email_held_kind: 'all' }
+        });
+        _emailQuarBulk.refresh();
+        renderHeldSummary();
+    }
+
+    // virusNames names what the antivirus found in a message.
+    function virusNames(m) {
+        return uniqueValues((m.findings || []).map(function(f) { return f.signature; })).join(', ') || 'malware';
+    }
+
+    function uniqueValues(list) {
+        return list.filter(function(v, i) { return v && list.indexOf(v) === i; });
+    }
+
+    // addressNode shows an address that may fold after its @, so a narrow
+    // column breaks it there rather than mid-word.
+    function addressNode(text) {
+        var span = node('span');
+        var at = text.indexOf('@') + 1;
+        span.appendChild(document.createTextNode(at > 0 ? text.slice(0, at) : text));
+        if (at > 0) {
+            span.appendChild(document.createElement('wbr'));
+            span.appendChild(document.createTextNode(text.slice(at)));
+        }
+        return span;
+    }
+
+    // addLine adds a second, muted line to a cell.
+    function addLine(td, text) {
+        td.appendChild(document.createTextNode(' '));
+        td.appendChild(node('div', 'text-muted small', text));
+    }
+
+    // heldRow builds one held item's row. Senders, recipients, subjects and
+    // virus names come from mail anyone can send, so all of it is text.
+    function heldRow(e) {
+        var m = e.item, malware = e.kind === 'malware';
+        var from = malware ? m.from : m.sender;
+        var to = malware ? (Array.isArray(m.to) ? m.to : []) : [m.recipient];
+        var tr = node('tr');
+        tr.setAttribute('data-kind', e.kind);
+        tr.setAttribute('data-held-id', e.id);
+        tr.setAttribute('data-search', [from, to.join(' '), m.forwarder, m.subject].join(' ').toLowerCase());
+
+        var pick = node('td');
+        if (malware) {
+            var cb = node('input', 'form-check-input email-quar-cb');
+            cb.type = 'checkbox';
+            cb.setAttribute('data-id', e.id);
+            cb.setAttribute('aria-label', 'Select message from ' + (from || 'unknown sender') + ': ' + (m.subject || 'no subject'));
+            pick.appendChild(cb);
+        }
+        tr.appendChild(pick);
+
+        var held = queueCell('Held', 'text-nowrap');
+        held.setAttribute('data-timestamp', e.at || '');
+        held.textContent = CSM.timeAgo(e.at);
+        if (e.at) held.title = CSM.fmtDate(e.at);
+        tr.appendChild(held);
+
+        var kind = queueCell('Kind', 'text-nowrap');
+        kind.appendChild(node('span', 'badge ' + (malware ? 'bg-red-lt' : 'bg-secondary-lt'), malware ? 'Malware' : 'Forward copy'));
+        if (malware && m.direction === 'outbound') addLine(kind, 'outgoing');
+        tr.appendChild(kind);
+
+        var sender = queueCell('From', 'csm-wrap-long');
+        if (!malware && !from) sender.appendChild(node('span', 'badge bg-secondary-lt', 'bounce'));
+        else sender.appendChild(from ? addressNode(from) : node('span', 'text-muted', '--'));
+        tr.appendChild(sender);
+
+        var rcpt = queueCell('To', 'csm-wrap-long');
+        rcpt.appendChild(to[0] ? addressNode(to[0]) : node('span', 'text-muted', '--'));
+        if (to.length > 1) rcpt.appendChild(node('span', 'text-muted small', ' +' + num(to.length - 1) + ' more'));
+        if (!malware && m.forwarder) addLine(rcpt, 'via ' + m.forwarder);
+        tr.appendChild(rcpt);
+
+        tr.appendChild(rejectCell('Subject', m.subject, 'text-wrap csm-break-word csm-held-subject'));
+
+        var why = queueCell('Why held', 'text-wrap csm-wrap-long');
+        if (malware) {
+            why.appendChild(node('span', null, virusNames(m)));
+            var engines = uniqueValues((m.findings || []).map(function(f) { return f.engine; }));
+            if (engines.length) addLine(why, 'found by ' + engines.join(', '));
+        } else {
+            why.appendChild(node('span', null, 'Held forward to external address'));
+            var reasons = (Array.isArray(m.reasons) ? m.reasons : []).map(function(r) {
+                return Object.prototype.hasOwnProperty.call(HELD_REASONS, r) ? HELD_REASONS[r] : r;
+            });
+            if (reasons.length) addLine(why, reasons.join(', '));
+        }
+        tr.appendChild(why);
+
+        var size = queueCell('Size', 'text-nowrap');
+        size.setAttribute('data-sort', String(m.size || 0));
+        size.textContent = CSM.formatSize(m.size);
+        tr.appendChild(size);
+
+        var actions = queueCell('Actions', 'text-end');
+        var buttons = node('div', 'btn-list justify-content-end flex-nowrap');
+        var what = malware ? 'message from ' + (from || 'unknown sender') : 'held copy to ' + m.recipient;
+        [['release', 'Release', 'btn-ghost-secondary'], ['delete', 'Delete', 'btn-ghost-danger']].forEach(function(a) {
+            var btn = node('button', 'btn btn-sm ' + a[2], a[1]);
+            btn.type = 'button';
+            btn.setAttribute('data-held-action', a[0]);
+            btn.setAttribute('aria-label', a[1] + ' ' + what);
+            buttons.appendChild(btn);
+        });
+        actions.appendChild(buttons);
+        tr.appendChild(actions);
+        return tr;
+    }
+
+    // renderHeldSummary repeats the Malware card's numbers for the range,
+    // then says what is held now: what this tab lists and counts.
+    function renderHeldSummary() {
+        var malware = _held.malware.items, forward = _held.forward.items;
+        var known = malware && forward;
+        setTabCount('held', known ? malware.length + forward.length : _held.malware.err || _held.forward.err ? '?' : null);
+        var el = document.getElementById('email-held-summary');
+        if (!el) return;
+        var line = node('div', 'fw-medium');
+        if (_overview) {
+            var stopped = malwareStopped(_overview.totals || {});
+            line.appendChild(document.createTextNode('Malware stopped in this range: ' + num(stopped.smtp + stopped.quarantined) + ' ('));
+            var link = node('a', null, num(stopped.smtp) + ' rejected at SMTP');
+            link.href = '?tab=rejects';
+            link.setAttribute('data-rejects-class', 'malware');
+            bindTabLink(link);
+            line.appendChild(link);
+            line.appendChild(document.createTextNode(', ' + num(stopped.quarantined) + ' quarantined).'));
+        }
+        if (known) {
+            var n = malware.length + forward.length;
+            if (line.childNodes.length) line.appendChild(document.createTextNode(' '));
+            line.appendChild(document.createTextNode(n === 0 ? 'Nothing is held now.' : 'Held now: ' + num(n) + ' (' + num(malware.length) + ' malware, ' +
+                num(forward.length) + (forward.length === 1 ? ' forward copy' : ' forward copies') + ').'));
+        }
+        if (!line.childNodes.length) return;
+        var parts = [line];
+        if (_heldOlder > 0) {
+            parts.push(node('div', 'mt-1', num(_heldOlder) + (_heldOlder === 1 ? ' older held item' : ' older held items') + '; widen the range.'));
+        }
+        el.replaceChildren.apply(el, parts);
+    }
+
+    var HELD_ROUTES = { malware: '/api/v1/email/quarantine/', forward: '/api/v1/email/held/' };
+
+    // heldAction asks first, in words that differ by kind, then releases or
+    // deletes the item through its own store's route.
+    function heldAction(e, action, btn) {
+        var asked;
+        if (action === 'delete') asked = CSM.confirm('Delete permanently. This cannot be undone.', { danger: true, okLabel: 'Delete' });
+        else if (e.kind === 'malware') asked = CSM.confirm('Deliver this message to its original recipients? It contained ' + virusNames(e.item) + '.', { danger: true, okLabel: 'Deliver' });
+        else asked = CSM.confirm('Send this held copy to ' + e.item.recipient + '?', { okLabel: 'Send' });
+        asked.then(function() {
+            btn.disabled = true;
+            var url = HELD_ROUTES[e.kind] + encodeURIComponent(e.id);
+            var req = action === 'delete' ? CSM.delete(url) : CSM.post(url + '/release', {});
+            req.then(function() { CSM.toast(action === 'delete' ? 'Deleted' : 'Released', 'success'); })
+                // A refused release leaves the item held; the error says why.
+                .catch(function(err) { CSM.toast((action === 'delete' ? 'Delete' : 'Release') + ' failed: ' + CSM.errorText(err), 'error'); })
+                .then(function() {
+                    loadHeldSource(e.kind);
+                    if (e.kind === 'malware') loadAVStatus();
+                });
+        }).catch(function() { /* cancelled */ });
+    }
+
+    var heldBody = document.getElementById('email-held-tbody');
+    if (heldBody) {
+        heldBody.addEventListener('click', function(ev) {
+            var btn = ev.target.closest('[data-held-action]');
+            var row = btn && btn.closest('tr');
+            var e = row && heldEntry(row.getAttribute('data-kind'), row.getAttribute('data-held-id'));
+            if (e) heldAction(e, btn.getAttribute('data-held-action'), btn);
+        });
     }
 
     // Bulk release / delete wired through CSM.bulk's selectedValues.
     var _bulkReleaseBtn = document.getElementById('email-quar-bulk-release');
     if (_bulkReleaseBtn) {
         _bulkReleaseBtn.addEventListener('click', function() {
-            if (!_emailQuarBulk) return;
             var ids = _emailQuarBulk.selectedValues();
             if (ids.length === 0) return;
             CSM.confirm('Release ' + ids.length + ' message(s) back to the mail queue?').then(function() {
@@ -1429,7 +1587,7 @@
                 });
                 chain.then(function() {
                     CSM.toast('Released ' + succeeded + ' of ' + (succeeded + failed), failed > 0 ? 'warning' : 'success');
-                    loadQuarantine();
+                    loadHeldSource('malware');
                     loadAVStatus();
                 });
             }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
@@ -1438,7 +1596,6 @@
     var _bulkDeleteBtn = document.getElementById('email-quar-bulk-delete');
     if (_bulkDeleteBtn) {
         _bulkDeleteBtn.addEventListener('click', function() {
-            if (!_emailQuarBulk) return;
             var ids = _emailQuarBulk.selectedValues();
             if (ids.length === 0) return;
             CSM.confirm('Permanently delete ' + ids.length + ' quarantined message(s)?', { danger: true, okLabel: 'Delete' }).then(function() {
@@ -1453,27 +1610,11 @@
                 });
                 chain.then(function() {
                     CSM.toast('Deleted ' + succeeded + ' of ' + (succeeded + failed), failed > 0 ? 'warning' : 'success');
-                    loadQuarantine();
+                    loadHeldSource('malware');
                     loadAVStatus();
                 });
             }).catch(function() { /* cancelled */ });
         });
-    }
-
-    function releaseMessage(msgID) {
-        CSM.confirm('Release this message back to the mail queue? Only do this for confirmed false positives.').then(function() {
-            CSM.post('/api/v1/email/quarantine/' + encodeURIComponent(msgID) + '/release', {})
-                .then(function() { loadQuarantine(); loadAVStatus(); })
-                .catch(function(err) { CSM.toast('Release failed: ' + (err.message || ''), 'error'); });
-        }).catch(function() { /* cancelled */ });
-    }
-
-    function deleteMessage(msgID) {
-        CSM.confirm('Permanently delete this quarantined message?', { danger: true, okLabel: 'Delete' }).then(function() {
-            CSM.delete('/api/v1/email/quarantine/' + encodeURIComponent(msgID))
-                .then(function() { loadQuarantine(); loadAVStatus(); })
-                .catch(function(err) { CSM.toast('Delete failed: ' + (err.message || ''), 'error'); });
-        }).catch(function() { /* cancelled */ });
     }
 
     // ---------- Forwarders tab (inventory table) ----------
@@ -1507,77 +1648,6 @@
                 forwardersLoaded = false;
                 CSM.loadError(document.getElementById('email-fwd-tbody'), loadForwarders, { title: 'Failed to load forwarders', error: err });
             });
-    }
-
-    var heldLoaded = false;
-
-    function loadHeld() {
-        if (heldLoaded) return;
-        heldLoaded = true;
-        CSM.get('/api/v1/email/held')
-            .then(function(data) { renderHeld(data.items); })
-            .catch(function(err) {
-                heldLoaded = false;
-                CSM.loadError(document.getElementById('email-held-tbody'), loadHeld, { title: 'Failed to load held forwards', error: err });
-            });
-    }
-
-    function renderHeld(msgs) {
-        var tb = document.getElementById('email-held-tbody');
-        if (!tb) return;
-        msgs = Array.isArray(msgs) ? msgs : [];
-        var c = document.getElementById('email-held-count');
-        if (c) c.textContent = msgs.length ? '(' + msgs.length + ')' : '';
-        if (msgs.length === 0) {
-            emptyRow(tb, 5, 'mail-pause', 'Nothing held', '');
-            return;
-        }
-        var html = '';
-        for (var i = 0; i < msgs.length; i++) {
-            var m = msgs[i] || {};
-            var reasons = '';
-            var rs = Array.isArray(m.reasons) ? m.reasons : [];
-            for (var j = 0; j < rs.length; j++) {
-                reasons += '<span class="badge bg-red-lt me-1">' + CSM.esc(rs[j]) + '</span>';
-            }
-            html += '<tr>';
-            html += '<td class="small text-muted">' + CSM.esc(ageLabel(m.held_at)) + '</td>';
-            html += '<td class="font-monospace small">' + CSM.esc(m.forwarder) + '</td>';
-            html += '<td class="font-monospace small">' + CSM.esc(m.recipient) + '</td>';
-            html += '<td>' + (reasons || '<span class="text-muted">--</span>') + '</td>';
-            html += '<td class="text-end">' +
-                '<button type="button" class="btn btn-sm btn-ghost-secondary" data-held-release="' + CSM.attr(m.id) + '"><i class="ti ti-mail-forward"></i>&nbsp;Release</button> ' +
-                '<button type="button" class="btn btn-sm btn-ghost-danger" data-held-delete="' + CSM.attr(m.id) + '" aria-label="Delete held forward"><i class="ti ti-trash"></i></button>' +
-                '</td>';
-            html += '</tr>';
-        }
-        tb.innerHTML = html;
-    }
-
-    function releaseHeld(id) {
-        CSM.confirm('Release this held forward copy to its external recipient? Only do this for confirmed false positives.').then(function() {
-            CSM.post('/api/v1/email/held/' + encodeURIComponent(id) + '/release', {})
-                .then(function() { CSM.toast('Released held forward', 'success'); heldLoaded = false; loadHeld(); })
-                .catch(function(err) { CSM.toast('Release failed: ' + (err.message || ''), 'error'); });
-        }).catch(function() { /* cancelled */ });
-    }
-
-    function deleteHeld(id) {
-        CSM.confirm('Permanently delete this held forward copy?', { danger: true, okLabel: 'Delete' }).then(function() {
-            CSM.delete('/api/v1/email/held/' + encodeURIComponent(id))
-                .then(function() { CSM.toast('Deleted held forward', 'success'); heldLoaded = false; loadHeld(); })
-                .catch(function(err) { CSM.toast('Delete failed: ' + (err.message || ''), 'error'); });
-        }).catch(function() { /* cancelled */ });
-    }
-
-    var _heldBody = document.getElementById('email-held-tbody');
-    if (_heldBody) {
-        _heldBody.addEventListener('click', function(e) {
-            var rel = e.target.closest('[data-held-release]');
-            if (rel) { releaseHeld(rel.getAttribute('data-held-release')); return; }
-            var del = e.target.closest('[data-held-delete]');
-            if (del) { deleteHeld(del.getAttribute('data-held-delete')); }
-        });
     }
 
     function forwarderMatchesFilter(f, mode) {
@@ -2525,7 +2595,9 @@
     }
 
     // loadTab loads what a tab shows the first time it opens; force loads
-    // it again. Overview, Rejects and Findings load with the page.
+    // it again. Queue and Held mail read again whenever they open.
+    // Overview, Rejects, Findings and the Held mail count load with the
+    // page.
     function loadTab(id, force) {
         if (id === 'sending') {
             if (force || !statsLoaded) loadEmailStats();
@@ -2537,11 +2609,10 @@
             loadQueueComposition();
             loadQueue();
         } else if (id === 'held') {
-            if (force || !quarantineLoaded) loadQuarantine();
+            loadHeldMail();
         } else if (id === 'forwarders') {
-            if (force) { forwardersLoaded = false; heldLoaded = false; }
+            if (force) forwardersLoaded = false;
             loadForwarders();
-            loadHeld();
         } else if (id === 'delays') {
             if (force) deliverabilityLoaded = false;
             loadDeliverability();
@@ -2567,20 +2638,24 @@
         CSM.urlState.set(Object.assign(rangeURL(), emailURLState()));
     });
 
-    // A headline card opens the tab that explains its number. A click
-    // meant for a new browser tab follows the card's address instead.
-    document.querySelectorAll('#email-kpis a.card').forEach(function(card) {
-        card.addEventListener('click', function(e) {
+    // bindTabLink makes a link to a tab open it in place, on the rejects
+    // reason it names. A click meant for a new browser tab follows the
+    // link's address instead.
+    function bindTabLink(link) {
+        link.addEventListener('click', function(e) {
             if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
             e.preventDefault();
-            var cls = card.getAttribute('data-rejects-class');
+            var cls = link.getAttribute('data-rejects-class');
             if (cls && rejectsFilter && rejectsFilter.value !== cls) {
                 rejectsFilter.value = cls;
                 loadRejects();
             }
-            openTab(tabFromURL(new URLSearchParams(card.getAttribute('href')).get('tab')));
+            openTab(tabFromURL(new URLSearchParams(link.getAttribute('href')).get('tab')));
         });
-    });
+    }
+
+    // A headline card opens the tab that explains its number.
+    document.querySelectorAll('#email-kpis a.card').forEach(bindTabLink);
 
     // ---------- Forwarders filter/search (client-side, no refetch) ----------
 
@@ -2624,18 +2699,6 @@
         authChip.addEventListener('click', function() { applyAuthChip(!authOn()); });
     }
 
-    // ---------- Quarantine action delegation ----------
-
-    var quarantineTable = document.getElementById('quarantine-table');
-    if (quarantineTable) {
-        quarantineTable.addEventListener('click', function(e) {
-            var releaseBtn = e.target.closest('[data-email-release]');
-            if (releaseBtn) { releaseMessage(releaseBtn.getAttribute('data-email-release')); return; }
-            var deleteBtn = e.target.closest('[data-email-delete]');
-            if (deleteBtn) { deleteMessage(deleteBtn.getAttribute('data-email-delete')); }
-        });
-    }
-
     // ---------- Refresh button ----------
 
     var refreshBtn = document.getElementById('email-refresh');
@@ -2649,11 +2712,12 @@
             loadFindings();
             statsLoaded = false;
             forwardersLoaded = false;
-            heldLoaded = false;
             deliverabilityLoaded = false;
             outboundAbuseLoaded = false;
             ++_outboundAbuseSeq;
             queueCompositionLoaded = false;
+            // Held mail reads again on any tab, for its count.
+            if (activeTab('email-tabs') !== 'held') loadHeldMail();
             loadTab(activeTab('email-tabs'), true);
         });
     }
@@ -2688,11 +2752,15 @@
     loadActionGroups();
     loadEmailChecks();
     loadFindings();
+    // The Held mail count shows on every tab; an open Held mail has read
+    // it already.
+    if (startTab.name !== 'held') loadHeldMail();
 
     // Polling while the tab is visible: the numbers and the queue every 30 s
     // (with the SMTP firewall and senders while Sending accounts is open,
     // and the queued messages while Queue is open),
-    // rspamd and AV every 60 s (rspamd's own figures are cached that long),
+    // rspamd and AV every 60 s (rspamd's own figures are cached that long,
+    // with held mail while Held mail is open),
     // and the rejects and groups every 60 s.
     var _emailIntervals = [];
     function _stopEmailIntervals() {
@@ -2709,7 +2777,11 @@
             } catch(e) {}
         }, 30000));
         _emailIntervals.push(CSM.refresh.interval(function() {
-            try { loadRspamd(); loadAVStatus(); } catch(e) {}
+            try {
+                loadRspamd();
+                loadAVStatus();
+                if (activeTab('email-tabs') === 'held') loadHeldMail();
+            } catch(e) {}
         }, 60000));
         _emailIntervals.push(CSM.refresh.interval(function() {
             try { loadRejects(); loadActionGroups(); } catch(e) {}

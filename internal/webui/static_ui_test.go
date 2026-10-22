@@ -3230,11 +3230,11 @@ func TestQuarantinePageHasFilterPack(t *testing.T) {
 	}
 }
 
-// TestEmailQuarantineToolbar pins WEB_ROADMAP P3.4: email quarantine
-// pane gains search / direction / date-range filters and bulk
-// release+delete via CSM.bulk. Search scope is limited to
-// from/to/subject through searchAttr so badges and table chrome don't
-// pollute matches.
+// TestEmailQuarantineToolbar pins WEB_ROADMAP P3.4, carried into the Held
+// mail tab: search and a kind filter over the merged list, and bulk
+// release+delete of malware via CSM.bulk. The page range replaced the
+// pane's own date inputs. Search scope is limited to from/to/subject
+// through searchAttr so badges and table chrome don't pollute matches.
 func TestEmailQuarantineToolbar(t *testing.T) {
 	tmpl, err := os.ReadFile("../../ui/templates/email.html")
 	if err != nil {
@@ -3242,15 +3242,18 @@ func TestEmailQuarantineToolbar(t *testing.T) {
 	}
 	tmplText := string(tmpl)
 	for _, fragment := range []string{
-		`id="email-quar-search"`,
-		`id="email-quar-dir"`,
-		`id="email-quar-from"`,
-		`id="email-quar-to"`,
+		`id="email-held-search"`,
+		`id="email-held-filter"`,
 		`id="email-quar-bulk-release"`,
 		`id="email-quar-bulk-delete"`,
 	} {
 		if !strings.Contains(tmplText, fragment) {
 			t.Fatalf("email.html missing P3.4 fragment %q", fragment)
+		}
+	}
+	for _, banned := range []string{`id="email-quar-from"`, `id="email-quar-to"`} {
+		if strings.Contains(tmplText, banned) {
+			t.Fatalf("email.html still has %q; the page range scopes held mail", banned)
 		}
 	}
 
@@ -3260,32 +3263,28 @@ func TestEmailQuarantineToolbar(t *testing.T) {
 	}
 	jsText := string(js)
 	for _, fragment := range []string{
-		`tableId: 'email-quar-table',`,
-		`searchId: 'email-quar-search',`,
+		`tableId: 'email-held-table',`,
+		`searchId: 'email-held-search',`,
 		`searchAttr: 'data-search',`,
-		`filters: [{ id: 'email-quar-dir', attr: 'data-direction' }],`,
-		`if (_emailQuarBulk) _emailQuarBulk.refresh();`,
+		`filters: [{ id: 'email-held-filter', attr: 'data-kind' }],`,
+		`onRender: function() { _emailQuarBulk.refresh(); }`,
 		`rowCheckboxSelector: '.email-quar-cb',`,
 		`selectAllSelector: '#email-quar-select-all',`,
 		`labelTemplate: 'Release {n} message(s)' }`,
 		`labelTemplate: 'Delete {n} message(s)' }`,
-		`data-direction="' + CSM.attr(msg.direction || '') + '"`,
-		`data-quar-timestamp="' + CSM.attr(msg.quarantined_at || '') + '"`,
-		`<td data-label="Time" data-timestamp="' + CSM.attr(msg.quarantined_at || '') + '">' + CSM.esc(time) + '</td>`,
-		`data-search="' + CSM.attr(searchBlob.toLowerCase()) + '"`,
-		`var _emailQuarURLUnbind = null;`,
-		`email_quar_q: document.getElementById('email-quar-search'),`,
-		`email_quar_dir: document.getElementById('email-quar-dir'),`,
-		`email_quar_from: fromEl,`,
-		`email_quar_to: toEl`,
-		`_bindEmailQuarURLState(fromEl, toEl);`,
+		`tr.setAttribute('data-kind', e.kind);`,
+		`held.setAttribute('data-timestamp', e.at || '');`,
+		`tr.setAttribute('data-search', [from, to.join(' '), m.forwarder, m.subject].join(' ').toLowerCase());`,
+		`var _heldURLUnbind = null;`,
+		`email_held_q: document.getElementById('email-held-search'),`,
+		`email_held_kind: document.getElementById('email-held-filter')`,
 	} {
 		if !strings.Contains(jsText, fragment) {
 			t.Fatalf("email.js missing P3.4 fragment %q", fragment)
 		}
 	}
-	if strings.Contains(jsText, `<tr data-direction="' + CSM.attr(msg.direction || '') + '" data-timestamp=`) {
-		t.Fatal("email quarantine rows must not use data-timestamp; CSM.initTimeAgo rewrites matching elements")
+	if strings.Contains(jsText, `tr.setAttribute('data-timestamp'`) {
+		t.Fatal("held mail rows must not use data-timestamp; CSM.initTimeAgo rewrites matching elements")
 	}
 }
 

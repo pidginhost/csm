@@ -861,7 +861,9 @@ test('seven job tabs sit right under the headline cards', async () => {
     assert.deepEqual(Array.from(sending.querySelectorAll('.nav-link')).map(b => b.id),
         ['email-tab-senders', 'email-tab-outbound-abuse', 'email-tab-forwarders']);
     assert.deepEqual(Array.from(sending.querySelectorAll('.nav-link')).map(b => b.textContent.replace(/\s+/g, ' ').trim()),
-        ['Senders', 'Abuse', 'Forwarders and held']);
+        ['Senders', 'Abuse', 'Forwarders']);
+    // Held forward copies moved to Held mail.
+    assert.equal(sending.contains(doc.getElementById('email-held-table')), false, 'held copies are still under Sending accounts');
     assert.match(doc.getElementById('email-pane-senders').textContent, /last 500 log lines/);
     assert.ok(sending.contains(doc.getElementById('smtp-firewall')), 'the SMTP firewall block is not in the Sending accounts tab');
     const html = sending.innerHTML;
@@ -886,8 +888,8 @@ test('Overview opens first and holds the chart, rspamd, needs attention and prot
         assert.ok(overview.contains(doc.getElementById(id)), '#' + id + ' is not on Overview');
     }
     // Every other job keeps what it showed before, in its own tab.
-    for (const [tab, id] of [['queue', 'queue-health'], ['queue', 'queue-composition'], ['held', 'quarantine-table'],
-        ['rejects', 'email-rejects-table'], ['sending', 'smtp-firewall'], ['sending', 'email-fwd-table'], ['sending', 'email-held-table'],
+    for (const [tab, id] of [['queue', 'queue-health'], ['queue', 'queue-composition'], ['held', 'email-held-summary'], ['held', 'email-held-table'],
+        ['rejects', 'email-rejects-table'], ['sending', 'smtp-firewall'], ['sending', 'email-fwd-table'],
         ['delays', 'email-deliv-providers'], ['delays', 'email-deliv-ips'], ['findings', 'email-table']]) {
         assert.ok(doc.getElementById('email-pane-' + tab).contains(doc.getElementById(id)), '#' + id + ' is not in ' + tab);
     }
@@ -916,13 +918,16 @@ test('each headline card opens the tab that explains its number', async () => {
         link.dispatchEvent(newTab);
         assert.equal(newTab.defaultPrevented, false, card + ' blocked opening its tab in a new browser tab');
         assert.equal(selectedTab(page), 'delays', card + ' switched tabs on a click meant for a new browser tab');
+        // Held mail is read with the page for its count; opening it reads
+        // it once more.
+        const before = loads ? page.pending(loads).length : 0;
         const click = new page.window.Event('click', { bubbles: true, cancelable: true });
         link.dispatchEvent(click);
         assert.equal(click.defaultPrevented, true, card + ' left the page');
         await settle();
         assert.equal(selectedTab(page), tab, card);
         assert.equal(urlTab(page), address || (tab === 'overview' ? null : tab), card + ' address');
-        if (loads) assert.equal(page.pending(loads).length, 1, card + ' did not load its tab');
+        if (loads) assert.equal(page.pending(loads).length, before + 1, card + ' did not load its tab');
     }
 });
 
@@ -2213,4 +2218,357 @@ test('Back keeps the address on the range and filters the page shows', async () 
     url = new URL(page.window.location.href);
     assert.equal(selectedTab(page), 'overview');
     assert.equal(url.searchParams.get('severity'), '2', 'the address lost the severity the findings show');
+});
+
+// ---------- Held mail ----------
+
+const MID = ['1hEld1-000001-Ab', '1hEld1-000002-Ab', '1hEld1-000003-Ab'];
+const FID = ['1792300000.M1P2.csm', '1792300001.M2P2.csm'];
+
+function hoursAgo(h) {
+    return new Date(Date.now() - h * HOUR_MS).toISOString();
+}
+
+// malwareItem is one message the email AV quarantined, as the quarantine
+// list sends it.
+function malwareItem(id, extra) {
+    return Object.assign({ message_id: id, direction: 'inbound', from: 'billing@example.com', to: ['user@example.net'],
+        subject: 'Invoice overdue', quarantined_at: hoursAgo(1), original_spool_dir: '/var/spool/exim/input',
+        findings: [{ filename: 'invoice.zip', engine: 'clamav', signature: 'Win.Trojan.Agent', severity: 'critical' }],
+        partial_scan: false, engines_used: ['clamav'], size: 20480 }, extra);
+}
+
+// forwardItem is one forward copy the guard held, as the held list sends
+// it: a bounce to a local address that forwards outside.
+function forwardItem(id, extra) {
+    return Object.assign({ id, forwarder: 'info@example.com', recipient: 'owner@example.net', sender: '',
+        reasons: ['bounce_backscatter'], subject: 'Undelivered Mail Returned to Sender', held_at: hoursAgo(2), size: 3072 }, extra);
+}
+
+// heldPage opens Held mail from its address and answers the overview,
+// the quarantine and the held copies when given; null leaves one pending.
+async function heldPage(malware, forward, ov) {
+    const page = emailPage({ url: 'https://csm.example.test/email?tab=held' });
+    await settle();
+    if (ov) page.respond('/api/v1/email/overview', 200, ov);
+    if (malware) page.respond('/api/v1/email/quarantine', 200, items(malware));
+    if (forward) page.respond('/api/v1/email/held', 200, items(forward));
+    await settle();
+    page.toasts = [];
+    page.window.CSM.toast = (message, type) => page.toasts.push([message, type]);
+    return page;
+}
+
+function heldRows(page) {
+    return Array.from(page.document.getElementById('email-held-tbody').children).filter(tr => tr.hasAttribute('data-kind'));
+}
+
+function heldRow(page, id) {
+    const row = heldRows(page).find(tr => tr.getAttribute('data-held-id') === id);
+    assert.ok(row, 'no row for ' + id);
+    return row;
+}
+
+function heldCell(row, label) {
+    const td = row.querySelector('[data-label="' + label + '"]');
+    assert.ok(td, 'no ' + label + ' cell');
+    return flat(td);
+}
+
+function heldBadge(page) {
+    return page.document.querySelector('#email-tab-held [data-tab-count]');
+}
+
+test('Held mail lists malware and forward copies together, newest first, as each store answers', async () => {
+    const page = await heldPage(null, null);
+    const doc = page.document;
+    assert.deepEqual(Array.from(doc.querySelectorAll('#email-held-table thead th')).map(flat),
+        ['', 'Held', 'Kind', 'From', 'To', 'Subject', 'Why held', 'Size', 'Actions']);
+    assert.match(flat(doc.getElementById('email-held-tbody')), /Loading/);
+    assert.equal(page.pending('/api/v1/email/quarantine').length, 1, 'Held mail did not read the quarantine');
+    assert.equal(page.pending('/api/v1/email/held').length, 1, 'Held mail did not read the held copies');
+    // The held copies answer first and show before the quarantine does.
+    page.respond('/api/v1/email/held', 200, items([forwardItem(FID[0], { held_at: hoursAgo(2) })]));
+    await settle();
+    assert.deepEqual(heldRows(page).map(r => r.getAttribute('data-held-id')), [FID[0]]);
+    page.respond('/api/v1/email/quarantine', 200, items([malwareItem(MID[0], { quarantined_at: hoursAgo(3) }),
+        malwareItem(MID[1], { quarantined_at: hoursAgo(1) })]));
+    await settle();
+    assert.deepEqual(heldRows(page).map(r => [r.getAttribute('data-kind'), r.getAttribute('data-held-id')]),
+        [['malware', MID[1]], ['forward', FID[0]], ['malware', MID[0]]]);
+    assert.deepEqual(heldRows(page).map(r => flat(r.querySelector('[data-label="Kind"] .badge'))), ['Malware', 'Forward copy', 'Malware']);
+    assert.doesNotMatch(flat(doc.getElementById('email-held-tbody')), /Loading/);
+    // Phones get one card per item.
+    assert.ok(doc.getElementById('email-held-table').classList.contains('csm-table-rowcard'));
+    // The kind filter shows one kind at a time.
+    changeValue(page, doc.getElementById('email-held-filter'), 'forward');
+    const shown = () => heldRows(page).filter(r => r.style.display !== 'none').map(r => r.getAttribute('data-held-id'));
+    assert.deepEqual(shown(), [FID[0]]);
+    changeValue(page, doc.getElementById('email-held-filter'), 'malware');
+    assert.deepEqual(shown(), [MID[1], MID[0]]);
+});
+
+test('each held row says when, what, who to and why', async () => {
+    const at = hoursAgo(0.5);
+    const page = await heldPage([
+        malwareItem(MID[0], { quarantined_at: at, direction: 'outbound', from: 'shop@example.com', to: ['a@example.net', 'b@example.net', 'c@example.net'],
+            subject: 'Your order', findings: [
+                { filename: 'a.zip', engine: 'clamav', signature: 'Win.Trojan.Agent', severity: 'critical' },
+                { filename: 'b.zip', engine: 'yara', signature: 'Eicar_Test_File', severity: 'high' },
+                { filename: 'c.zip', engine: 'clamav', signature: 'Win.Trojan.Agent', severity: 'critical' }] })
+    ], [
+        forwardItem(FID[0], { subject: '' }),
+        forwardItem(FID[1], { sender: 'news@example.org', reasons: ['bad_sender_ip'], subject: '\u00cenc\u0103 o ofert\u0103', held_at: hoursAgo(3) })
+    ]);
+    const malware = heldRow(page, MID[0]);
+    // The time sorts by its instant; the cell reads how long ago.
+    assert.equal(malware.querySelector('[data-label="Held"]').getAttribute('data-timestamp'), at);
+    assert.equal(heldCell(malware, 'Held'), '30m ago');
+    assert.equal(heldCell(malware, 'Kind'), 'Malware outgoing');
+    assert.equal(heldCell(malware, 'From'), 'shop@example.com');
+    assert.equal(heldCell(malware, 'To'), 'a@example.net +2 more');
+    assert.equal(heldCell(malware, 'Subject'), 'Your order');
+    assert.equal(heldCell(malware, 'Why held'), 'Win.Trojan.Agent, Eicar_Test_File found by clamav, yara');
+    assert.equal(heldCell(malware, 'Size'), '20.0 KB');
+    assert.deepEqual(Array.from(malware.querySelectorAll('[data-label="Actions"] button')).map(flat), ['Release', 'Delete']);
+
+    const bounce = heldRow(page, FID[0]);
+    assert.equal(heldCell(bounce, 'Kind'), 'Forward copy');
+    assert.equal(heldCell(bounce, 'From'), 'bounce');
+    assert.equal(heldCell(bounce, 'To'), 'owner@example.net via info@example.com');
+    assert.equal(heldCell(bounce, 'Subject'), '--');
+    assert.equal(heldCell(bounce, 'Why held'), 'Held forward to external address a bounce (backscatter)');
+    assert.equal(heldCell(bounce, 'Size'), '3.0 KB');
+
+    const listed = heldRow(page, FID[1]);
+    assert.equal(heldCell(listed, 'From'), 'news@example.org');
+    // The server decodes encoded subjects; the page shows them as they come.
+    assert.equal(heldCell(listed, 'Subject'), '\u00cenc\u0103 o ofert\u0103');
+    assert.equal(heldCell(listed, 'Why held'), 'Held forward to external address sent from a listed bad IP');
+    // Only malware takes part in bulk actions.
+    assert.ok(malware.querySelector('.email-quar-cb'));
+    assert.equal(bounce.querySelector('input[type="checkbox"]'), null);
+});
+
+test('a held mail store that fails shows its own error row, and the other store still shows', async () => {
+    const page = await heldPage(null, [forwardItem(FID[0])]);
+    const tbody = page.document.getElementById('email-held-tbody');
+    page.fail('/api/v1/email/quarantine', new Error('HTTP 502'));
+    await settle();
+    const error = tbody.children[0].querySelector('.csm-load-error');
+    assert.ok(error, 'no error row on top of the list');
+    assert.match(flat(error), /Failed to load the mail quarantine/);
+    assert.match(flat(error), /HTTP 502/);
+    assert.deepEqual(heldRows(page).map(r => r.getAttribute('data-held-id')), [FID[0]], 'the held copies hid with the failed quarantine');
+    assert.equal(heldBadge(page).textContent, '?');
+    assert.equal(spoken(page.document.getElementById('email-tab-held')), 'Held mail count unknown');
+    assert.deepEqual(page.toasts, [], 'a toast repeats the error row');
+    error.querySelector('.csm-retry-btn').click();
+    await settle();
+    assert.equal(page.pending('/api/v1/email/quarantine').length, 1, 'Retry did not read the quarantine again');
+    assert.equal(page.pending('/api/v1/email/held').length, 0, 'Retry read the held copies too');
+    page.respond('/api/v1/email/quarantine', 200, items([malwareItem(MID[0])]));
+    await settle();
+    assert.equal(tbody.querySelector('.csm-load-error'), null);
+    assert.equal(heldRows(page).length, 2);
+    assert.equal(heldBadge(page).textContent, '2');
+
+    const other = await heldPage([malwareItem(MID[0])], null);
+    other.fail('/api/v1/email/held', new Error('HTTP 502'));
+    await settle();
+    const otherTbody = other.document.getElementById('email-held-tbody');
+    assert.match(flat(otherTbody.children[0]), /Failed to load held forward copies/);
+    assert.deepEqual(heldRows(other).map(r => r.getAttribute('data-held-id')), [MID[0]]);
+});
+
+test('the held mail summary repeats the Malware card and links its SMTP rejects to Rejects', async () => {
+    const ov = overview({ rejects: { malware: 80, spam: 5 }, temporary: { malware: 2 }, quarantined: 3 });
+    const page = await heldPage([malwareItem(MID[0]), malwareItem(MID[1])], [forwardItem(FID[0])], ov);
+    const doc = page.document;
+    const summary = doc.getElementById('email-held-summary');
+    assert.equal(flat(summary), 'Malware stopped in this range: 81 (78 rejected at SMTP, 3 quarantined). Held now: 3 (2 malware, 1 forward copy).');
+    assert.equal(kpi(page, 'kpi-malware').value, '81');
+    assert.equal(kpi(page, 'kpi-malware').sub, '78 rejected at SMTP, 3 quarantined');
+    page.respond('/api/v1/email/rejects', 200, items([], { kept_days: 7 }));
+    await settle();
+    const link = summary.querySelector('a');
+    assert.equal(flat(link), '78 rejected at SMTP');
+    assert.equal(link.getAttribute('href'), '?tab=rejects');
+    link.click();
+    await settle();
+    assert.equal(selectedTab(page), 'rejects');
+    assert.equal(doc.getElementById('email-rejects-filter').value, 'malware');
+    const reqs = page.pending('/api/v1/email/rejects');
+    assert.equal(reqs.length, 1, 'the link did not load the malware rejects');
+    assert.equal(query(reqs[0].url).get('class'), 'malware');
+
+    for (const [malware, forward, want] of [
+        [[malwareItem(MID[0])], [forwardItem(FID[0]), forwardItem(FID[1])], 'Held now: 3 (1 malware, 2 forward copies).'],
+        [[], [], 'Nothing is held now.']
+    ]) {
+        // Before the overview answers, the line says what is held.
+        const p = await heldPage(malware, forward);
+        assert.equal(flat(p.document.getElementById('email-held-summary')), want);
+    }
+});
+
+test('each kind of held mail asks in its own words before release or delete', async () => {
+    for (const [id, action, message, okLabel, danger] of [
+        [MID[0], 'release', 'Deliver this message to its original recipients? It contained Win.Trojan.Agent, Eicar_Test_File.', 'Deliver', true],
+        [FID[0], 'release', 'Send this held copy to owner@example.net?', 'Send', false],
+        [MID[0], 'delete', 'Delete permanently. This cannot be undone.', 'Delete', true],
+        [FID[0], 'delete', 'Delete permanently. This cannot be undone.', 'Delete', true]
+    ]) {
+        const page = await heldPage([malwareItem(MID[0], { findings: [
+            { filename: 'a.zip', engine: 'clamav', signature: 'Win.Trojan.Agent', severity: 'critical' },
+            { filename: 'b.zip', engine: 'yara', signature: 'Eicar_Test_File', severity: 'high' }] })], [forwardItem(FID[0])]);
+        const asked = stubConfirm(page, false);
+        heldRow(page, id).querySelector('[data-held-action="' + action + '"]').click();
+        await settle();
+        assert.equal(asked.length, 1, id + ' ' + action + ' did not ask');
+        assert.equal(asked[0].message, message);
+        assert.equal(asked[0].opts.okLabel, okLabel);
+        assert.equal(!!asked[0].opts.danger, danger, id + ' ' + action + ' danger');
+        assert.equal(page.requests.filter(r => r.method !== 'GET').length, 0, 'a cancelled confirm still acted');
+    }
+});
+
+test('release and delete go to the store that holds the item, then read it again', async () => {
+    for (const [id, action, method, url, store, other, toast] of [
+        [MID[0], 'release', 'POST', '/api/v1/email/quarantine/' + MID[0] + '/release', '/api/v1/email/quarantine', '/api/v1/email/held', 'Released'],
+        [MID[0], 'delete', 'DELETE', '/api/v1/email/quarantine/' + MID[0], '/api/v1/email/quarantine', '/api/v1/email/held', 'Deleted'],
+        [FID[0], 'release', 'POST', '/api/v1/email/held/' + FID[0] + '/release', '/api/v1/email/held', '/api/v1/email/quarantine', 'Released'],
+        [FID[0], 'delete', 'DELETE', '/api/v1/email/held/' + FID[0], '/api/v1/email/held', '/api/v1/email/quarantine', 'Deleted']
+    ]) {
+        const page = await heldPage([malwareItem(MID[0])], [forwardItem(FID[0])]);
+        stubConfirm(page);
+        const btn = heldRow(page, id).querySelector('[data-held-action="' + action + '"]');
+        btn.click();
+        await settle();
+        const sent = page.requests.filter(r => r.method !== 'GET');
+        assert.equal(sent.length, 1, id + ' ' + action + ' sent ' + sent.length + ' requests');
+        assert.equal(sent[0].method, method);
+        assert.equal(sent[0].url, url);
+        assert.ok(Object.prototype.hasOwnProperty.call(sent[0].headers, 'X-CSRF-Token'), 'sent without the CSRF header');
+        assert.equal(btn.disabled, true, 'the button stays open while the request runs');
+        page.respond(url, 200, {});
+        await settle();
+        assert.deepEqual(page.toasts, [[toast, 'success']]);
+        assert.equal(page.pending(store).filter(r => r.method === 'GET').length, 1, 'the store was not read again after ' + action);
+        assert.equal(page.pending(other).length, 0, 'the other store was read again');
+    }
+});
+
+test('a refused release toasts the server error, and the copy stays held', async () => {
+    const page = await heldPage([], [forwardItem(FID[0])]);
+    stubConfirm(page);
+    heldRow(page, FID[0]).querySelector('[data-held-action="release"]').click();
+    await settle();
+    const error = 'Failed to release held forward: held message does not record a safe single sender and recipient';
+    page.respond('/api/v1/email/held/' + FID[0] + '/release', 500, { error });
+    await settle();
+    assert.deepEqual(page.toasts, [['Release failed: ' + error, 'error']]);
+    page.respond('/api/v1/email/held', 200, items([forwardItem(FID[0])]));
+    await settle();
+    assert.deepEqual(heldRows(page).map(r => r.getAttribute('data-held-id')), [FID[0]]);
+});
+
+test('held mail keeps server text as text, in the rows and the confirms', async () => {
+    const payload = '<img src=x onerror=alert(1)>';
+    const page = await heldPage([malwareItem(MID[0], { from: payload + '@example.com', to: [payload + '@example.net'], subject: payload,
+        findings: [{ filename: 'x', engine: payload, signature: payload, severity: 'high' }] })],
+    [forwardItem(FID[0], { sender: payload + '@example.org', forwarder: payload + '@example.com', recipient: payload + '@example.net', subject: payload, reasons: [payload] })]);
+    const tbody = page.document.getElementById('email-held-tbody');
+    assert.equal(tbody.querySelectorAll('img').length, 0, 'server text became markup');
+    assert.ok(heldCell(heldRow(page, MID[0]), 'Why held').includes(payload), 'lost the virus name');
+    assert.ok(heldCell(heldRow(page, FID[0]), 'To').includes('via ' + payload + '@example.com'), 'lost the forwarder');
+    const asked = stubConfirm(page, false);
+    heldRow(page, MID[0]).querySelector('[data-held-action="release"]').click();
+    heldRow(page, FID[0]).querySelector('[data-held-action="release"]').click();
+    await settle();
+    assert.equal(asked[0].message, 'Deliver this message to its original recipients? It contained ' + payload + '.');
+    assert.equal(asked[1].message, 'Send this held copy to ' + payload + '@example.net?');
+});
+
+test('malware keeps bulk select; forward copies act one at a time', async () => {
+    const page = await heldPage([malwareItem(MID[0], { quarantined_at: hoursAgo(1) }), malwareItem(MID[1], { quarantined_at: hoursAgo(3) })],
+        [forwardItem(FID[0])]);
+    const doc = page.document;
+    const boxes = Array.from(doc.querySelectorAll('#email-held-tbody .email-quar-cb'));
+    assert.deepEqual(boxes.map(b => b.closest('tr').getAttribute('data-kind')), ['malware', 'malware']);
+    const release = doc.getElementById('email-quar-bulk-release');
+    assert.equal(release.classList.contains('d-none'), true, 'bulk release shows with nothing selected');
+    doc.getElementById('email-quar-select-all').click();
+    assert.equal(release.classList.contains('d-none'), false);
+    assert.match(flat(release), /Release 2 message\(s\)/);
+    const asked = stubConfirm(page);
+    release.click();
+    await settle();
+    assert.equal(asked.length, 1);
+    page.respond('/api/v1/email/quarantine/' + MID[0] + '/release', 200, {});
+    await settle();
+    page.respond('/api/v1/email/quarantine/' + MID[1] + '/release', 200, {});
+    await settle();
+    assert.deepEqual(page.toasts, [['Released 2 of 2', 'success']]);
+    assert.equal(page.requests.filter(r => r.method === 'POST' && r.url.includes('/api/v1/email/held/')).length, 0, 'bulk touched a forward copy');
+    assert.equal(page.pending('/api/v1/email/quarantine').length, 1, 'the quarantine was not read again');
+});
+
+test('the page range scopes held mail and names what it hides', async () => {
+    const page = await heldPage([malwareItem(MID[0], { quarantined_at: hoursAgo(1) }), malwareItem(MID[1], { quarantined_at: hoursAgo(30) })],
+        [forwardItem(FID[0], { held_at: hoursAgo(2) }), forwardItem(FID[1], { held_at: hoursAgo(50) })]);
+    const doc = page.document;
+    const summary = doc.getElementById('email-held-summary');
+    assert.deepEqual(heldRows(page).map(r => r.getAttribute('data-held-id')), [MID[0], FID[0]]);
+    assert.match(flat(summary), /2 older held items; widen the range\.$/);
+    // The count is what is held now, in the range or not.
+    assert.equal(heldBadge(page).textContent, '4');
+    assert.match(flat(summary), /Held now: 4 \(2 malware, 2 forward copies\)\./);
+    const before = requestCount(page, '/api/v1/email/quarantine');
+    changeValue(page, doc.getElementById('email-range'), '7d');
+    await settle();
+    assert.deepEqual(heldRows(page).map(r => r.getAttribute('data-held-id')), [MID[0], FID[0], MID[1], FID[1]]);
+    assert.doesNotMatch(flat(summary), /older held/);
+    assert.equal(requestCount(page, '/api/v1/email/quarantine'), before, 'the range read the quarantine again');
+
+    const one = await heldPage([malwareItem(MID[0], { quarantined_at: hoursAgo(30) })], []);
+    assert.match(flat(one.document.getElementById('email-held-summary')), /1 older held item; widen the range\.$/);
+    assert.match(flat(one.document.getElementById('email-held-tbody')), /Nothing held in this range/);
+});
+
+test('the Held mail count is what is held now, read with the page', async () => {
+    const page = emailPage();
+    await settle();
+    // The count shows on every tab, so the page reads both stores at once.
+    assert.equal(page.pending('/api/v1/email/quarantine').length, 1);
+    assert.equal(page.pending('/api/v1/email/held').length, 1);
+    page.respond('/api/v1/email/quarantine', 200, items([malwareItem(MID[0]), malwareItem(MID[1])]));
+    await settle();
+    assert.equal(heldBadge(page).hidden, true, 'a count before both stores answered');
+    page.respond('/api/v1/email/held', 200, items([forwardItem(FID[0])]));
+    await settle();
+    assert.equal(heldBadge(page).hidden, false);
+    assert.equal(heldBadge(page).textContent, '3');
+    assert.equal(spoken(page.document.getElementById('email-tab-held')), 'Held mail 3 held');
+    // Opening the tab reads both again, once.
+    showEmailTab(page, 'held');
+    await settle();
+    assert.equal(page.pending('/api/v1/email/quarantine').length, 1);
+    assert.equal(page.pending('/api/v1/email/held').length, 1);
+    // The refresh button on another tab keeps the count fresh.
+    const fresh = emailPage();
+    await settle();
+    fresh.respond('/api/v1/email/quarantine', 200, items([]));
+    fresh.respond('/api/v1/email/held', 200, items([]));
+    await settle();
+    assert.equal(heldBadge(fresh).textContent, '0');
+    fresh.document.getElementById('email-refresh').click();
+    await settle();
+    assert.equal(fresh.pending('/api/v1/email/quarantine').length, 1, 'refresh did not read the quarantine');
+    assert.equal(fresh.pending('/api/v1/email/held').length, 1, 'refresh did not read the held copies');
+    // While Held mail is open, the 60 s timer reads it again.
+    const src = fs.readFileSync(path.join(__dirname, 'static/js/email.js'), 'utf8');
+    const timer = src.match(/CSM\.refresh\.interval\(function\(\) \{([\s\S]*?)\}, 60000\)/);
+    assert.ok(timer, 'no 60 s timer');
+    assert.match(timer[1], /activeTab\('email-tabs'\) === 'held'\) loadHeldMail\(\)/, 'the 60 s timer does not read the open Held mail tab');
 });

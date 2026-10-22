@@ -282,6 +282,10 @@ tr[tabindex]:focus-visible, th[tabindex]:focus-visible { outline: 2px solid var(
     white-space: nowrap;
 }
 
+/* Held mail subjects break anywhere, raw encoded words too, so the table
+   would shrink them first; keep them a readable width. */
+.csm-held-subject { min-width: 12rem; }
+
 /* Queue tab message details: long recipient lists and exim's msglog lines
    scroll inside the row instead of stretching it. */
 .csm-queue-recipients { max-height: 12rem; overflow-y: auto; }
@@ -1108,6 +1112,9 @@ tr[tabindex]:focus-visible, th[tabindex]:focus-visible { outline: 2px solid var(
 .csm-mw-80  { min-width: 80px; }
 .csm-break-all  { word-break: break-all; }
 .csm-break-word { word-break: break-word; }
+/* Long words stay whole where a table sizes its columns to them, and break
+   only when a block, such as a phone row card, has no room. */
+.csm-wrap-long { overflow-wrap: break-word; }
 .csm-fs-sm  { font-size: 0.8rem; }
 .csm-fs-xl  { font-size: 2rem; }
 .csm-fs-2xl { font-size: 3rem; }
