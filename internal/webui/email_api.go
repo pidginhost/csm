@@ -359,8 +359,12 @@ type queueDetailState struct {
 	// rather than a listing. The overview has no detail for mail queued
 	// since; the queue list serves the empty queue.
 	emptied bool
-	msgs    []intel.QueueMessage // oldest first; never modified once stored
-	frozen  int
+	// refill marks a positive count that disproved a known empty result.
+	// The queue list then lists without waiting out queueDetailTTL; any
+	// listing clears the mark, so each refill costs one extra listing.
+	refill bool
+	msgs   []intel.QueueMessage // oldest first; never modified once stored
+	frozen int
 	// oldestQueued is when the oldest listed message was queued, the age
 	// the listing gave counted back from listed; zero when it gave none.
 	oldestQueued time.Time
@@ -444,10 +448,11 @@ func queueSnapshot(now time.Time) emailQueueState {
 		*d = queueDetailState{tried: d.tried, listed: now, emptied: true}
 		return q
 	}
-	if ok && size > 0 && len(d.msgs) == 0 {
+	if ok && size > 0 && !d.listed.IsZero() && len(d.msgs) == 0 {
 		// The count disproves the cached empty result, even when another
-		// listing is not due yet. Preserve the retry interval.
-		*d = queueDetailState{tried: d.tried}
+		// listing is not due yet. The overview keeps the retry interval;
+		// the queue list lists at once.
+		*d = queueDetailState{tried: d.tried, refill: true}
 	}
 	refreshQueueListing(now)
 	if d.emptied || staleQueueListing(now) {

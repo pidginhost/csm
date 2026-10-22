@@ -838,7 +838,71 @@ func TestQueueListDoesNotOverrideKnownRefill(t *testing.T) {
 	if got := queueSnapshot(time.Now()); got.Size != 1 || !got.DetailUnavailable {
 		t.Fatalf("refilled snapshot = %+v", got)
 	}
-	assertQueueUnknown(t, s, admin)
+	if got := getQueueList(t, s, ""); got.Unavailable || !slices.Equal(got.ids(), []string{qNew}) || *got.Queued != 1 {
+		t.Errorf("list after the refill = %v (queued %v, unavailable %v), want %s and not the empty listing", got.ids(), got.Queued, got.Unavailable, qNew)
+	}
+	if len(admin.reasons) != 1 {
+		t.Errorf("msglog reads = %v, want the refilled page's one", admin.reasons)
+	}
+}
+
+// The overview's count can show mail queued since an empty listing that is
+// not due again for up to a minute. The list must show that mail at once,
+// not answer that the queue is unknown while the card shows its size.
+func TestQueueListListsAtOnceAfterEmptyQueueRefills(t *testing.T) {
+	world := newEximWorld(t)
+	s, _, _ := queueServer(t, world)
+	if got := getQueueList(t, s, ""); got.Unavailable || *got.Queued != 0 {
+		t.Fatalf("initial list = %+v, want a known empty queue", got)
+	}
+	world.add(qOld, worldMessage{sender: "sender@example.com", recipients: []string{"rcpt@example.net"}})
+	world.add(qMid, worldMessage{sender: "sender@example.com", recipients: []string{"rcpt@example.net"}})
+	if q := queueSnapshot(time.Now()); q.Size != 2 || q.Unavailable {
+		t.Fatalf("snapshot = %+v, want a count of 2", q)
+	}
+
+	got := getQueueList(t, s, "")
+	if got.Unavailable || !slices.Equal(got.ids(), []string{qOld, qMid}) || *got.Queued != 2 {
+		t.Fatalf("list after the count rose = %v (queued %v, unavailable %v), want both messages", got.ids(), got.Queued, got.Unavailable)
+	}
+	if n := len(world.runs("-bp")); n != 2 {
+		t.Errorf("full listings = %d, want the first and one more for the refill", n)
+	}
+}
+
+// The extra listing runs once per refill of an empty queue, however many
+// requests follow and whether or not it succeeds, so requests cannot turn
+// it into a listing each.
+func TestQueueListRefillListsOnce(t *testing.T) {
+	world := newEximWorld(t)
+	s, admin, _ := queueServer(t, world)
+	getQueueList(t, s, "")
+	world.add(qMid, worldMessage{sender: "sender@example.com", recipients: []string{"rcpt@example.net"}})
+	world.listFails = true
+	queueSnapshot(time.Now())
+	for i := 0; i < 3; i++ {
+		assertQueueUnknown(t, s, admin)
+		queueSnapshot(time.Now())
+	}
+	if n := len(world.runs("-bp")); n != 2 {
+		t.Errorf("full listings = %d, want the first and one failed refill listing", n)
+	}
+
+	// A refill seen after a good listing also lists once.
+	world = newEximWorld(t)
+	s, _, _ = queueServer(t, world)
+	getQueueList(t, s, "")
+	world.add(qMid, worldMessage{sender: "sender@example.com", recipients: []string{"rcpt@example.net"}})
+	queueSnapshot(time.Now())
+	for i := 0; i < 3; i++ {
+		if got := getQueueList(t, s, ""); !slices.Equal(got.ids(), []string{qMid}) {
+			t.Fatalf("request %d: list = %v, want %s", i, got.ids(), qMid)
+		}
+		queueSnapshot(time.Now())
+	}
+	if n := len(world.runs("-bp")); n != 2 {
+		t.Errorf("full listings = %d, want the first and one for the refill", n)
+	}
 }
 
 func TestQueueReasonCacheHasSizeBound(t *testing.T) {

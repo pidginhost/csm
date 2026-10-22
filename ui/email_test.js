@@ -1851,6 +1851,35 @@ test('an unreadable queue says the size is unknown, with Retry', async () => {
     assert.match(flat(summary), /^1 queued/);
 });
 
+test('a queue list behind the known queue size says the list is refreshing, not that the size is unknown', async () => {
+    const page = emailPage();
+    showEmailTab(page, 'queue');
+    await settle();
+    page.respond('/api/v1/email/queue?', 200, { unavailable: true, items: [], page: 1, limit: 25 });
+    await settle();
+    const summary = page.document.getElementById('email-queue-summary');
+    // The card counts the queue: the size is known, the list is behind it.
+    page.respond('/api/v1/email/overview', 200, queueOverview(2, { detail_unavailable: true }));
+    await settle();
+    assert.equal(kpi(page, 'kpi-queue').value, '2');
+    assert.match(flat(summary), /Queue list refreshing/);
+    assert.doesNotMatch(flat(summary), /size unknown/i);
+    assert.equal(summary.querySelectorAll('.csm-load-error').length, 1, 'not one error state');
+    summary.querySelector('.csm-retry-btn').click();
+    await settle();
+    page.respond('/api/v1/email/queue?', 200, queueList([queueMsg(QID[0]), queueMsg(QID[1])]));
+    await settle();
+    assert.match(flat(summary), /^2 queued/);
+    // A failed list read says the list failed; the size is still known.
+    page.document.getElementById('email-refresh').click();
+    await settle();
+    page.fail('/api/v1/email/queue?', new Error('HTTP 502'));
+    await settle();
+    assert.match(flat(summary), /Failed to load the queue list/);
+    assert.match(flat(summary), /HTTP 502/);
+    assert.doesNotMatch(flat(summary), /size unknown/i);
+});
+
 test('an empty queue says so', async () => {
     const page = await queuePage([]);
     assert.equal(flat(page.document.getElementById('email-queue-summary')), 'The queue is empty.');
@@ -1924,7 +1953,9 @@ test('a failed queue reload drops the old count, and says so once', async () => 
     await settle();
     page.fail('/api/v1/email/queue?', new Error('HTTP 502'));
     await settle();
-    assert.match(flat(summary), /Queue size unknown/);
+    // The card still counts 21; the list is what failed.
+    assert.match(flat(summary), /Failed to load the queue list/);
+    assert.doesNotMatch(flat(summary), /size unknown/i);
     // Hidden text comes back while Retry reads the queue again.
     assert.doesNotMatch(summary.textContent, /21 queued/, 'the old count hides under the error');
     summary.querySelector('.csm-retry-btn').click();

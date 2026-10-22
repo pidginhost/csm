@@ -1295,7 +1295,9 @@ match `filter` and `q`; `queued`, `frozen`, `backscatter` (null-sender
 messages) and `oldest_seconds` describe the whole queue. When no listing has succeeded in
 the last ten minutes the list answers `unavailable: true` with no items and no
 counts. A failed refresh cannot reuse an empty listing, and a positive queue
-count invalidates any earlier empty result. A spool read failure also makes
+count invalidates any earlier empty result. The next list request then lists
+the queue at once rather than waiting out the minute, once for each such
+refill. A spool read failure also makes
 the listing unavailable instead of reporting only its readable messages.
 Quoted recipient local parts remain intact, including spaces. Each
 message's `reason` (`class`, `text`, `raw`) comes from its msglog tail; a

@@ -77,6 +77,12 @@ func (s *Server) apiEmailQueueList(w http.ResponseWriter, r *http.Request) {
 
 	now := time.Now()
 	queueDetail.Lock()
+	if queueDetail.state.refill {
+		// The card already counts mail queued since an empty listing; list
+		// it now rather than answer that the queue is unknown until the
+		// next listing is due.
+		queueDetail.state.tried = time.Time{}
+	}
 	refreshQueueListing(now)
 	stale := staleQueueListing(now)
 	msgs, frozen, oldest := queueDetail.state.msgs, queueDetail.state.frozen, oldestQueuedSeconds(now)

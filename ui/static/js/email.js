@@ -2187,6 +2187,9 @@
     var queueSearchEl = document.getElementById('email-queue-search');
     var queueTable = null;
     var _queue = null; // the list page on screen; null while unread
+    // Why the list could not be read, while it cannot: { error } with the
+    // failure, or a null error when the server had no listing to page.
+    var _queueErr = null;
     var _queuePage = 1;
     var _queueSeq = 0;
     // What the backscatter flush would remove, from the queue composition.
@@ -2200,8 +2203,8 @@
     // Messages with an action in flight. Their actions stay disabled,
     // across a rebuild too.
     var _queueBusy = {};
-    // What the summary line on screen says, with the flush count; '' once
-    // something else took its place.
+    // What the summary line on screen says, with the flush count, or the
+    // list failure it words; '' once something else took its place.
     var _queueSummaryKey = '';
 
     // The per-message actions, in the order the row offers them. Each
@@ -2239,7 +2242,7 @@
             .then(function(data) {
                 if (seq !== _queueSeq) return;
                 if (data.unavailable) {
-                    queueUnknown('CSM could not read the mail queue.');
+                    queueUnknown(null);
                     return;
                 }
                 // An action can empty the last page; show the one before.
@@ -2266,19 +2269,35 @@
         loadOverview();
     }
 
-    // queueUnknown says the queue could not be read, with Retry. The list
-    // hides: an unread queue has no count, and is not an empty one.
+    // queueUnknown says the list could not be read, with Retry. The list
+    // hides: an unread list has no count, and is not an empty one. A null
+    // err is a server with no listing to page.
     function queueUnknown(err) {
         _queue = null;
+        _queueErr = { error: err };
         _queueSig = '';
         resetQueueTable();
         var list = document.getElementById('email-queue-list');
         if (list) list.hidden = true;
-        var summary = document.getElementById('email-queue-summary');
-        // Retry shows what the error covers; an old count must not return.
-        if (summary) summary.replaceChildren();
         _queueSummaryKey = '';
-        CSM.loadError(summary, loadQueue, { title: 'Queue size unknown', error: err });
+        renderQueueError();
+    }
+
+    // renderQueueError words the list's failure. While the card counts the
+    // queue, its size is known and only the list is behind: the listing
+    // runs at most once a minute, and can fail on its own.
+    function renderQueueError() {
+        var summary = document.getElementById('email-queue-summary');
+        if (!summary) return;
+        var known = queueSize() !== null, err = _queueErr.error;
+        var title = !known ? 'Queue size unknown' : err ? 'Failed to load the queue list' : 'Queue list refreshing';
+        if (!err) err = known ? 'CSM lists the queue again within a minute.' : 'CSM could not read the mail queue.';
+        var key = 'error|' + title + '|' + CSM.errorText(err);
+        if (key === _queueSummaryKey) return;
+        _queueSummaryKey = key;
+        // Retry shows what the error covers; an old count must not return.
+        summary.replaceChildren();
+        CSM.loadError(summary, loadQueue, { title: title, error: err });
     }
 
     // renderQueue shows a list page. The 60 s poll mostly brings the page
@@ -2290,6 +2309,7 @@
             return [m.id, m.frozen, m.recipient_count, m.reason, m.sender, m.recipients, m.local_user, m.size, m.bounce, m.arrived];
         })]);
         _queue = data;
+        _queueErr = null;
         renderQueueSummary();
         renderQueuePager(data.total || 0);
         if (sig === _queueSig) {
@@ -2317,7 +2337,13 @@
     // the two must not disagree.
     function renderQueueSummary() {
         var el = document.getElementById('email-queue-summary');
-        if (!el || !_queue) return;
+        if (!el) return;
+        if (!_queue) {
+            // The list failure is worded from the queue size, which a new
+            // overview can bring.
+            if (_queueErr) renderQueueError();
+            return;
+        }
         var q = _queue;
         var size = queueSize();
         var list = document.getElementById('email-queue-list');
