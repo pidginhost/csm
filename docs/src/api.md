@@ -1323,6 +1323,9 @@ Held forward release requires a recorded sender and recipient, each a single
 mailbox without commas, whitespace or a leading dash. An explicitly empty
 sender is allowed for bounces. Ambiguous or missing envelope metadata causes
 a release error and leaves the message held without invoking sendmail.
+Release runs sendmail as a systemd transient unit with the message on its
+stdin, never inside the daemon's sandbox: without systemd-run the release
+fails and the message stays held.
 
 Deferrals are grouped under the provider whose MX host deferred them
 (Google, Microsoft and Yahoo hosts), so a business domain those providers

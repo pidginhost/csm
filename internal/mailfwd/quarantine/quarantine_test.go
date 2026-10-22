@@ -1,12 +1,19 @@
 package quarantine
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/pidginhost/csm/internal/systemdrun"
 )
 
 func sampleBody() []byte {
@@ -83,6 +90,83 @@ func TestReleaseReinjectsCleanedMessageAndRemoves(t *testing.T) {
 	}
 	if msgs, _ := q.List(); len(msgs) != 0 {
 		t.Errorf("message still present after release: %d", len(msgs))
+	}
+}
+
+type sendmailCall struct {
+	name  string
+	args  []string
+	input []byte
+}
+
+// fakeSystemdRun stands in for systemd-run and the units it starts; without
+// systemd-run, lookPath finds nothing.
+func fakeSystemdRun(q *Quarantine, available bool, calls *[]sendmailCall) {
+	q.lookPath = func(file string) (string, error) {
+		if file == "systemd-run" && available {
+			return "/usr/bin/systemd-run", nil
+		}
+		return "", exec.ErrNotFound
+	}
+	q.run = func(_ context.Context, input []byte, name string, args ...string) ([]byte, error) {
+		*calls = append(*calls, sendmailCall{name, args, input})
+		return nil, nil
+	}
+}
+
+// exim aborts inside csm.service's ProtectSystem=strict sandbox, where it
+// cannot open its logs, so a sendmail run there can fail, or queue the copy
+// and still report failure. Release runs it as a transient unit, with the
+// message on stdin.
+func TestReleaseRunsSendmailAsTransientUnit(t *testing.T) {
+	q := New(t.TempDir())
+	var calls []sendmailCall
+	fakeSystemdRun(q, true, &calls)
+	m := held()
+	m.Sender = "real@shop.example"
+	id, err := q.Hold(m, sampleBody())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := q.Release(id); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	if len(calls) != 2 || calls[0].input != nil {
+		t.Fatalf("runs = %+v, want the availability probe, then sendmail", calls)
+	}
+	want := []string{"--quiet", "--collect", "--pipe", "--property=RuntimeMaxSec=30s", "--",
+		"/usr/sbin/sendmail", "-i", "-f", "real@shop.example", "--", "owner@yahoo.com"}
+	if calls[1].name != "/usr/bin/systemd-run" || !reflect.DeepEqual(calls[1].args, want) {
+		t.Errorf("sendmail run = %s %q, want /usr/bin/systemd-run %q", calls[1].name, calls[1].args, want)
+	}
+	if !bytes.Equal(calls[1].input, sampleBody()) {
+		t.Errorf("stdin = %q, want the original message %q", calls[1].input, sampleBody())
+	}
+	if msgs, _ := q.List(); len(msgs) != 0 {
+		t.Errorf("message still held after release: %d", len(msgs))
+	}
+}
+
+// Without systemd-run the release fails and the copy stays held: sendmail
+// never runs inside the sandbox.
+func TestReleaseWithoutSystemdRunKeepsTheCopyHeld(t *testing.T) {
+	q := New(t.TempDir())
+	var calls []sendmailCall
+	fakeSystemdRun(q, false, &calls)
+	id, err := q.Hold(held(), sampleBody())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := q.Release(id); !errors.Is(err, systemdrun.ErrUnavailable) {
+		t.Errorf("release error = %v, want ErrUnavailable", err)
+	}
+	if len(calls) != 0 {
+		t.Errorf("sendmail ran without systemd-run: %+v", calls)
+	}
+	if msgs, _ := q.List(); len(msgs) != 1 || msgs[0].ID != id {
+		t.Errorf("held = %+v, want the copy still held", msgs)
 	}
 }
 

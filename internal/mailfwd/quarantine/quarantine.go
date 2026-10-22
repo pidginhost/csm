@@ -24,6 +24,8 @@ import (
 	"syscall"
 	"time"
 	"unicode"
+
+	"github.com/pidginhost/csm/internal/systemdrun"
 )
 
 // Control headers the exim transport adds and CSM parses. They are stripped
@@ -53,12 +55,17 @@ type Quarantine struct {
 	base     string
 	counter  atomic.Uint64
 	sendmail func(sender, recipient string, body []byte) error
+	lookPath systemdrun.LookPathFunc
+	run      systemdrun.InputRunnerFunc
 }
 
 // New returns a quarantine rooted at dir (a Maildir; new/cur/tmp are created on
-// demand). The default re-injector shells out to the platform sendmail.
+// demand). Release re-injects through the platform sendmail, run as a
+// transient unit (see reinject).
 func New(dir string) *Quarantine {
-	return &Quarantine{base: dir, sendmail: runSendmail}
+	q := &Quarantine{base: dir, lookPath: exec.LookPath, run: runWithInput}
+	q.sendmail = q.reinject
+	return q
 }
 
 func (q *Quarantine) sub(name string) string { return filepath.Join(q.base, name) }
@@ -521,16 +528,33 @@ func stripControlHeaders(data []byte) []byte {
 	return kept.Bytes()
 }
 
-func runSendmail(sender, recipient string, body []byte) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+const (
+	sendmailPath = "/usr/sbin/sendmail"
+	// sendmailTimeout bounds a re-injection, the wait and the unit alike.
+	sendmailTimeout = 30 * time.Second
+)
+
+// reinject hands body to the platform sendmail for one recipient. exim
+// cannot open its logs inside csm.service's ProtectSystem=strict sandbox and
+// aborts there, possibly after queueing the copy, so sendmail runs as a
+// transient unit or not at all: without systemd-run the release fails and
+// the copy stays held.
+func (q *Quarantine) reinject(sender, recipient string, body []byte) error {
+	ctx, cancel := context.WithTimeout(context.Background(), sendmailTimeout)
 	defer cancel()
 	sender = headerValue(sender)
 	recipient = headerValue(recipient)
 	// -i: do not treat lone "." as end; -f: envelope sender ("" yields null
 	// sender); -- terminates options so a hostile recipient cannot be a flag.
-	cmd := exec.CommandContext(ctx, sendmailPath, "-i", "-f", sender, "--", recipient) // #nosec G204 -- recipient guarded by --, args are envelope addresses
-	cmd.Stdin = bytes.NewReader(body)
-	return cmd.Run()
+	_, err := systemdrun.RunInput(ctx, q.lookPath, q.run, systemdrun.Options{Required: true, RuntimeMax: sendmailTimeout},
+		body, sendmailPath, "-i", "-f", sender, "--", recipient)
+	return err
 }
 
-const sendmailPath = "/usr/sbin/sendmail"
+func runWithInput(ctx context.Context, input []byte, name string, args ...string) ([]byte, error) {
+	// #nosec G204 -- name is the resolved systemd-run path; the envelope
+	// addresses follow fixed flags, the recipient after --.
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Stdin = bytes.NewReader(input)
+	return cmd.Output()
+}
