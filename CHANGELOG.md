@@ -15,7 +15,6 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Fixed
 
-- CI validates each revision with fresh test results and waits for required build images before starting dependent jobs.
 - Email attachments in damaged zip or tar.gz archives are no longer counted as scanned and clean.
 - Email archives built to overwhelm the scanner, such as zip bombs or huge file lists, are now counted as not fully scanned instead of clean.
 - Archives inside email attachments are unpacked up to the configured depth, and deeper ones are no longer counted as scanned and clean.
