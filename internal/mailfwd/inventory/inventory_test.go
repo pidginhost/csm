@@ -139,6 +139,18 @@ func TestParseForwarderLine(t *testing.T) {
 			t.Errorf("forwarder domain not normalized: %+v", fwd)
 		}
 	})
+
+	// cPanel writes the whole address as the key; the domain must not be
+	// appended a second time.
+	t.Run("full address key", func(t *testing.T) {
+		fwd, ok := parseForwarderLine("psihologa.test", "contact@PSIHOLOGA.test: ext@gmail.com", local)
+		if !ok {
+			t.Fatal("expected a forwarder")
+		}
+		if fwd.Source != "contact@psihologa.test" || fwd.Domain != "psihologa.test" {
+			t.Errorf("source = %q domain = %q, want contact@psihologa.test", fwd.Source, fwd.Domain)
+		}
+	})
 }
 
 func TestIsAddressDestination_BounceAndTaggedAddresses(t *testing.T) {

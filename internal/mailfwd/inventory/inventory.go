@@ -172,8 +172,14 @@ func parseForwarderLine(domain, line string, localDomains map[string]bool) (Forw
 		return Forwarder{}, false
 	}
 
+	// cPanel keys a forwarder by its whole address; a bare local part
+	// belongs to the file's domain.
+	source := localPart + "@" + domain
+	if at := strings.LastIndexByte(localPart, '@'); at >= 0 {
+		source = localPart[:at] + "@" + normalizeDomain(localPart[at+1:])
+	}
 	fwd := Forwarder{
-		Source: localPart + "@" + domain,
+		Source: source,
 		Domain: domain,
 	}
 	for _, raw := range strings.Split(rest, ",") {
