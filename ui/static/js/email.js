@@ -185,6 +185,9 @@
                 renderRejectsCounts();
                 renderSendersSummary();
                 renderFindingsSummary();
+                // A new range can count other reasons the list did not ask for.
+                if (activeTab('email-tabs') === 'rejects' && rejectsFilter && rejectsFilter.value === 'other' &&
+                    rejectsQuery('other') !== _rejectsClasses) loadRejects();
             })
             .catch(function(err) {
                 if (seq !== _overviewSeq) return;
@@ -193,7 +196,7 @@
                 _overviewRange = null;
                 document.getElementById('email-subtitle').textContent = 'Mail numbers unavailable.';
                 CSM.loadError(document.getElementById('email-kpis'), loadOverview, { title: 'Failed to load mail numbers', error: err });
-                CSM.loadError(document.getElementById('queue-health'), loadOverview, { title: 'Failed to load the mail queue', error: err });
+                renderQueueHealth({ unavailable: true });
                 setTabCount('queue', '?');
                 CSM.loadError(document.getElementById('email-decisions-chart').parentElement, loadOverview, { title: 'Mail decisions unavailable', error: err });
                 document.getElementById('email-chart-note').textContent = '';
@@ -605,6 +608,8 @@
     // The filter and range the table shows; a refresh of the same pair
     // keeps the operator's page.
     var _rejectsKey = '';
+    // The class list the table last asked for.
+    var _rejectsClasses = null;
 
     if (rejectsFilter) {
         ['other'].concat(Object.keys(REJECT_CLASS_LABELS).map(rejectsValue)).forEach(function(value) {
@@ -622,11 +627,15 @@
 
     // rejectsQuery is the class parameter a filter value asks for. Other
     // reasons asks for the classes the overview counted, the ones the Other
-    // rejects card sums, and every class the page knows until it answers.
+    // rejects card sums, and every class the page knows until it answers. A
+    // counted class this build does not know, kept from an older one, stays
+    // out: the server refuses a list naming it.
     function rejectsQuery(value) {
         if (value === 'other') {
             var counted = _overview && _overview.totals && _overview.totals.rejects;
-            return Object.keys(counted || REJECT_CLASS_LABELS).filter(otherReason).join(',');
+            return Object.keys(counted || REJECT_CLASS_LABELS).filter(function(cls) {
+                return otherReason(cls) && Object.prototype.hasOwnProperty.call(REJECT_CLASS_LABELS, cls);
+            }).join(',');
         }
         return value === 'unclassified' ? 'other' : value;
     }
@@ -671,6 +680,7 @@
         var key = cls + '|' + range.key;
         var seq = ++_rejectsSeq;
         var classes = rejectsQuery(cls);
+        _rejectsClasses = classes;
         var what = cls === 'content' ? 'spam or malware rejects' : cls === 'all' ? 'rejects' :
             cls === 'other' ? 'rejects for other reasons' : 'rejects for ' + rejectClassLabel(classes);
         // The range counted no other reason, so there is nothing to list.
@@ -844,12 +854,14 @@
 
     // renderQueueHealth draws the queue size on a bar that runs a quarter
     // past the crit threshold, with the warn and crit marks on the bar. The
-    // summary line beside it gives the count and the oldest age.
+    // summary line beside it gives the count and the oldest age. An unknown
+    // size has no bar; the summary says so, with Retry.
     function renderQueueHealth(q) {
         var el = document.getElementById('queue-health');
         if (!el) return;
+        el.parentElement.hidden = !!q.unavailable;
         if (q.unavailable) {
-            el.replaceChildren(buildEmpty('mailbox-off', 'Queue size unknown', 'CSM could not read the mail queue.'));
+            el.replaceChildren();
             return;
         }
         var size = q.size || 0;
@@ -2230,8 +2242,9 @@
 
     // renderQueueSummary says in one sentence how much is queued, frozen
     // and how old, and how much of it is backscatter, with the flush. The
-    // count is the card's live size; the list's own count comes from a
-    // listing up to a minute old, and the two must not disagree.
+    // count, the frozen and the oldest age are the card's, from the live
+    // overview; the list's own come from a listing up to a minute old, and
+    // the two must not disagree.
     function renderQueueSummary() {
         var el = document.getElementById('email-queue-summary');
         if (!el || !_queue) return;
@@ -2250,8 +2263,13 @@
         }
         var text = 'The queue is empty.';
         if (size > 0) {
-            text = num(size) + ' queued, ' + num(q.frozen) + ' frozen';
-            if (q.oldest_seconds != null) text += ', oldest ' + CSM.formatDuration(q.oldest_seconds);
+            var live = _overview.queue;
+            text = num(size) + ' queued';
+            if (live.detail_unavailable) text += ', oldest unknown';
+            else {
+                text += ', ' + num(live.frozen) + ' frozen';
+                if (live.oldest_age_seconds != null) text += ', oldest ' + CSM.formatDuration(live.oldest_age_seconds);
+            }
             text += '.';
             if (q.backscatter === 1) text += ' 1 is a bounce to a sender that does not exist (backscatter).';
             else if (q.backscatter > 1) text += ' ' + num(q.backscatter) + ' are bounces to senders that do not exist (backscatter).';
@@ -2745,10 +2763,15 @@
         tr.appendChild(addr);
         tr.appendChild(deferredCell(ip.deferrals));
         tr.appendChild(lastSeenCell(ip.last_seen));
-        tr.appendChild(rejectCell('Deferred by', deliverabilityArray(ip.providers).map(function(item) {
+        // Each provider and its count wrap as one.
+        var by = queueCell('Deferred by');
+        deliverabilityArray(ip.providers).forEach(function(item, i) {
             item = item || {};
-            return providerName(item.provider) + ' ' + formatDeferralCount(item.count);
-        }).join(', ')));
+            if (i > 0) by.appendChild(document.createTextNode(', '));
+            by.appendChild(node('span', 'text-nowrap', providerName(item.provider) + ' ' + formatDeferralCount(item.count)));
+        });
+        if (!by.firstChild) by.appendChild(node('span', 'text-muted', '--'));
+        tr.appendChild(by);
         tr.appendChild(reasonsCell(ip.reasons, ip.deferrals));
         return [tr];
     }

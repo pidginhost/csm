@@ -1303,7 +1303,10 @@ test('the queue tab draws its warn and crit marks on the size bar', async () => 
     }));
     await settle();
     const h = down.document.getElementById('queue-health');
-    assert.match(h.textContent, /Queue size unknown/);
+    // The summary line says the size is unknown, with Retry; the size box
+    // does not say it again.
+    assert.equal(h.parentElement.hidden, true, 'the size box shows for an unreadable queue');
+    assert.doesNotMatch(h.textContent, /Queue size unknown/, 'the size box repeats the summary error');
     assert.equal(h.querySelector('.progress-bar'), null, 'an unreadable queue draws an empty bar');
 });
 
@@ -1538,7 +1541,7 @@ async function queuePage(list, extra) {
     showEmailTab(page, 'queue');
     await settle();
     const q = queueList(list, extra);
-    page.respond('/api/v1/email/overview', 200, queueOverview(q.queued));
+    page.respond('/api/v1/email/overview', 200, queueOverview(q.queued, { frozen: q.frozen, oldest_age_seconds: q.oldest_seconds }));
     page.respond('/api/v1/email/queue?', 200, q);
     await settle();
     page.toasts = [];
@@ -1579,7 +1582,7 @@ test('the Queue tab sums up the queue in one sentence beside the backscatter flu
     assert.equal(reqs.length, 1, 'the Queue tab did not ask for the queue list');
     const q = query(reqs[0].url);
     assert.deepEqual([q.get('page'), q.get('limit'), q.get('filter'), q.get('q')], ['1', '25', 'all', '']);
-    page.respond('/api/v1/email/overview', 200, queueOverview(21, { frozen: 4 }));
+    page.respond('/api/v1/email/overview', 200, queueOverview(21, { frozen: 4, oldest_age_seconds: 3 * DAY + 7 * 3600 }));
     page.respond('/api/v1/email/queue?', 200, queueList([queueMsg(QID[0])],
         { total: 21, queued: 21, frozen: 4, backscatter: 6, oldest_seconds: 3 * DAY + 7 * 3600 }));
     page.respond('/api/v1/email/queue-composition', 200, { total: 21, real: 15, bounce: 6, frozen: 4, flushable_backscatter: 3, top_recipients: [] });
@@ -1616,7 +1619,7 @@ test('the backscatter flush keeps the focus while the queue numbers stay the sam
     // The 30 s timer answers the overview and the list with the same numbers.
     page.window.CSM.refresh.manual();
     await settle();
-    page.respond('/api/v1/email/overview', 200, queueOverview(1, { frozen: 1 }));
+    page.respond('/api/v1/email/overview', 200, queueOverview(1, { frozen: 1, oldest_age_seconds: 1800 }));
     page.respond('/api/v1/email/queue?', 200, queueList([queueMsg(QID[0], { bounce: true, frozen: true })], { queued: 1, frozen: 1, backscatter: 1 }));
     await settle();
     assert.equal(page.document.getElementById('flush-backscatter-btn'), flush, 'the summary was rebuilt');
@@ -3217,16 +3220,24 @@ test('an unchanged held mail summary keeps its link and the focus', async () => 
 test('Other reasons asks for the reasons the overview counts, as the Other rejects card does', async () => {
     const page = emailPage();
     await settle();
-    // A reason the page has no label for still counts, on the card and in
-    // the list it opens.
     page.respond('/api/v1/email/overview', 200, overview({
-        rejects: { spam: 4, malware: 1, rate_limited: 3, sender_verify: 2, policy_block: 1 }, temporary: { rate_limited: 3 }
+        rejects: { spam: 4, malware: 1, rate_limited: 3, sender_verify: 2, bad_helo: 1 }, temporary: { rate_limited: 3 }
     }));
     await settle();
     assert.equal(kpi(page, 'kpi-other').value, '3');
     page.document.querySelector('#kpi-other a').click();
     await settle();
-    assert.equal(query(page.pending('/api/v1/email/rejects')[0].url).get('class'), 'sender_verify,policy_block');
+    assert.equal(query(page.pending('/api/v1/email/rejects')[0].url).get('class'), 'sender_verify,bad_helo');
+
+    // A class this build does not know, kept from an older one, is left
+    // out: the server would refuse the whole list.
+    const old = emailPage();
+    await settle();
+    old.respond('/api/v1/email/overview', 200, overview({ rejects: { sender_verify: 2, retired_class: 4 } }));
+    await settle();
+    old.document.querySelector('#kpi-other a').click();
+    await settle();
+    assert.equal(query(old.pending('/api/v1/email/rejects')[0].url).get('class'), 'sender_verify');
 
     // No other reason in the range: nothing to ask for.
     const none = emailPage();
@@ -3602,4 +3613,78 @@ test('the Failed logins card opens Findings with its number repeated', async () 
     page.respond('/api/v1/history?', 200, items([], { total: 0 }));
     await settle();
     assert.equal(flat(summary), 'Failed login attempts in this range: 7. Alerts raised: 0.');
+});
+
+// ---------- Fix round 2 ----------
+
+test('Other reasons asks again when a new range counts other reasons', async () => {
+    const page = emailPage({ url: 'https://csm.example.test/email?tab=rejects' });
+    await settle();
+    page.respond('/api/v1/email/overview', 200, overview({ rejects: { spam: 3 } }));
+    page.respond('/api/v1/email/rejects', 200, items([], { kept_days: 7 }));
+    await settle();
+    changeValue(page, page.document.getElementById('email-rejects-filter'), 'other');
+    await settle();
+    assert.equal(page.pending('/api/v1/email/rejects').length, 0, 'asked with no other reason counted');
+    changeValue(page, page.document.getElementById('email-range'), '30d');
+    await settle();
+    page.respond('/api/v1/email/overview', 200, overview({ rejects: { spam: 40, sender_verify: 12 } }));
+    await settle();
+    const reqs = page.pending('/api/v1/email/rejects');
+    assert.equal(reqs.length, 1, 'the new range did not ask for its reasons');
+    assert.equal(query(reqs[0].url).get('class'), 'sender_verify');
+    page.respond('/api/v1/email/rejects', 200, items([{ at: AT, class: 'sender_verify', sender: 'a@example.com', detail: 'verify failed' }], { kept_days: 7 }));
+    await settle();
+    assert.match(flat(page.document.getElementById('email-rejects-tbody')), /verify failed/);
+    // The same classes on the next overview ask nothing more.
+    page.document.getElementById('email-refresh').click();
+    await settle();
+    page.respond('/api/v1/email/rejects', 200, items([{ at: AT, class: 'sender_verify', sender: 'a@example.com', detail: 'verify failed' }], { kept_days: 7 }));
+    page.respond('/api/v1/email/overview', 200, overview({ rejects: { spam: 40, sender_verify: 12 } }));
+    await settle();
+    assert.equal(page.pending('/api/v1/email/rejects').length, 0, 'an unchanged class list asked again');
+});
+
+test('each Deferred by entry keeps its provider and count together', async () => {
+    const page = await delaysPage(DELAYS);
+    const cell = delayRows(page, 'email-deliv-ips')[0].querySelector('[data-label="Deferred by"]');
+    assert.deepEqual(Array.from(cell.querySelectorAll('.text-nowrap')).map(flat), ['Google 5', 'Yahoo 3']);
+    assert.equal(flat(cell), 'Google 5, Yahoo 3');
+});
+
+test('an unknown queue size says so once on the Queue tab, with Retry', async () => {
+    for (const fails of [false, true]) {
+        const page = emailPage();
+        showEmailTab(page, 'queue');
+        await settle();
+        if (fails) page.fail('/api/v1/email/overview', new Error('HTTP 502'));
+        else page.respond('/api/v1/email/overview', 200, overview({}, { queue: { size: 0, unavailable: true, warn: 100, crit: 500, frozen: 0, detail_unavailable: true } }));
+        page.respond('/api/v1/email/queue?', 200, queueList([queueMsg(QID[0])]));
+        await settle();
+        const pane = page.document.getElementById('email-pane-queue');
+        const label = fails ? 'failed overview' : 'unreadable queue';
+        assert.equal(pane.querySelectorAll('.csm-load-error').length, 1, label + ': not one error state');
+        assert.equal(shownEmpty(pane).length, 0, label + ': an empty state beside the error');
+        assert.equal((pane.textContent.match(/Queue size unknown/g) || []).length, 1, label + ': said more than once');
+        assert.ok(page.document.querySelector('#email-queue-summary .csm-retry-btn'), label + ': no Retry');
+    }
+});
+
+test('the queue summary takes frozen and oldest from the overview, as the Queue card does', async () => {
+    const page = emailPage();
+    showEmailTab(page, 'queue');
+    await settle();
+    page.respond('/api/v1/email/overview', 200, queueOverview(30, { frozen: 3, oldest_age_seconds: 4 * DAY }));
+    page.respond('/api/v1/email/queue?', 200, queueList([queueMsg(QID[0])], { queued: 28, frozen: 1, oldest_seconds: 2 * DAY }));
+    await settle();
+    const summary = page.document.getElementById('email-queue-summary');
+    assert.equal(kpi(page, 'kpi-queue').sub, 'oldest 4d, 3 frozen');
+    assert.match(flat(summary), /^30 queued, 3 frozen, oldest 4d\./);
+    // Without the queue detail both say the oldest is unknown.
+    page.document.getElementById('email-refresh').click();
+    await settle();
+    page.respond('/api/v1/email/overview', 200, queueOverview(30, { frozen: 0, detail_unavailable: true }));
+    await settle();
+    assert.equal(kpi(page, 'kpi-queue').sub, 'oldest unknown');
+    assert.match(flat(summary), /^30 queued, oldest unknown\./);
 });

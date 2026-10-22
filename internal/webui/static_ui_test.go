@@ -1461,7 +1461,7 @@ func TestEmailQueueUnavailableDoesNotRenderAsZero(t *testing.T) {
 	for _, want := range []string{
 		`if (q.unavailable)`,
 		`'queue size unknown'`,
-		`'Queue size unknown', 'CSM could not read the mail queue.'`,
+		`CSM.loadError(el, loadOverview, { title: 'Queue size unknown', error: _overviewErr || 'CSM could not read the mail queue.' });`,
 	} {
 		if !strings.Contains(src, want) {
 			t.Errorf("email.js does not render an unreadable queue distinctly; missing %q", want)
