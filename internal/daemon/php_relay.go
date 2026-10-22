@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/gob"
 	"fmt"
+	"net/mail"
 	"os"
 	"sort"
 	"strconv"
@@ -77,22 +78,24 @@ type recipientTracker struct {
 	lastUnknownAt time.Time
 }
 
-// record folds one message's recipients in. An empty list marks a parse gap.
-// A recipient for which skip returns true still counts as parsed, so the
-// window stays known, but is left out of the distinct count. skip may be nil.
-func (t *recipientTracker) record(recipients []string, at time.Time, max int, skip func(string) bool) {
+// record folds one message's recipients in. An empty list or any invalid
+// address marks a parse gap. A domain skipped by skipDomain still counts as
+// parsed, but its recipients are left out of the distinct count.
+func (t *recipientTracker) record(recipients []string, at time.Time, max int, skipDomain func(string) bool) {
 	recorded := false
+	complete := len(recipients) > 0
 	if len(recipients) > 0 {
 		if t.recipients == nil {
 			t.recipients = make(map[string]time.Time, 8)
 		}
 		for _, raw := range recipients {
-			r := normalizeRecipient(raw)
+			r, domain := parseRelayRecipient(raw)
 			if r == "" {
+				complete = false
 				continue
 			}
 			recorded = true
-			if skip != nil && skip(r) {
+			if skipDomain != nil && skipDomain(domain) {
 				continue
 			}
 			if _, exists := t.recipients[r]; !exists && len(t.recipients) >= max {
@@ -106,7 +109,7 @@ func (t *recipientTracker) record(recipients []string, at time.Time, max int, sk
 	if recorded && at.After(t.lastAt) {
 		t.lastAt = at
 	}
-	if !recorded && at.After(t.lastUnknownAt) {
+	if !complete && at.After(t.lastUnknownAt) {
 		t.lastUnknownAt = at
 	}
 }
@@ -442,8 +445,8 @@ func (s *ipState) appendLocked(k scriptKey, at time.Time, capPerIP int, subject 
 // appendMessage records a script hit and its recipient parse result while
 // holding the same IP-state lock, keeping the Path 4 gate fail-open when
 // evaluation runs concurrently with spool processing. Recipients in the
-// sending account's own domains are parsed but not counted: that mail reaches
-// the site's owner, and an attacker cannot use it to reach anyone else. An
+// sending account's listed domains are parsed but not counted. Subdomains
+// need their own entry: they can belong to a different hosting account. An
 // empty ownDomains set counts every recipient.
 func (w *perIPWindow) appendMessage(ip string, k scriptKey, at time.Time, subject string, recipients []string, ownDomains map[string]struct{}) {
 	if ip == "" {
@@ -454,8 +457,9 @@ func (w *perIPWindow) appendMessage(ip string, k scriptKey, at time.Time, subjec
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.appendLocked(k, at, w.capPerIP, subject)
-	s.rcpts.record(recipients, at, maxTrackedRecipients, func(r string) bool {
-		return IsAuthorisedFromDomain(emailspool.ExtractDomain(r), ownDomains)
+	s.rcpts.record(recipients, at, maxTrackedRecipients, func(domain string) bool {
+		_, own := ownDomains[domain]
+		return own
 	})
 }
 
@@ -513,11 +517,24 @@ func evictOldestRecipient(m map[string]time.Time) {
 	}
 }
 
-func normalizeRecipient(r string) string {
+// Envelope recipients are mailboxes, not display-name headers. Wrapping the
+// input forces addr-spec parsing, so angle brackets inside a quoted local
+// part cannot substitute a different domain for the actual destination.
+func parseRelayRecipient(r string) (recipient, domain string) {
 	r = strings.TrimSpace(r)
-	r = strings.TrimPrefix(r, "<")
-	r = strings.TrimSuffix(r, ">")
-	return strings.ToLower(strings.TrimSpace(r))
+	if strings.HasPrefix(r, "<") && strings.HasSuffix(r, ">") {
+		r = strings.TrimSpace(r[1 : len(r)-1])
+	}
+	addr, err := mail.ParseAddress("<" + r + ">")
+	if err != nil {
+		return "", ""
+	}
+	at := strings.LastIndexByte(addr.Address, '@')
+	if at < 0 {
+		return "", ""
+	}
+	domain = strings.TrimSuffix(emailspool.ExtractDomain("recipient"+addr.Address[at:]), ".")
+	return strings.ToLower(addr.Address[:at]) + "@" + domain, domain
 }
 
 func (w *perIPWindow) relaySamplesSince(ip string, since time.Time) []alert.RelayScriptHit {

@@ -9,6 +9,10 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ## [Unreleased]
 
+### Security
+
+- Spam outbreak detection no longer misses external recipients disguised as site notifications or suppresses alerts when recipient or account data is incomplete.
+
 ### Changed
 
 - With the forward guard enforcing, mail tagged as spam is now held instead of forwarded to outside addresses.

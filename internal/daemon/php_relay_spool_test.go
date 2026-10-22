@@ -456,7 +456,7 @@ func fanoutPipeline(t *testing.T, sites ...string) (*spoolPipeline, *[]alert.Fin
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(dir, "main"), []byte("main_domain: site-"+s+".example\n"), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, "main"), []byte("main_domain: site-"+s+".example\nsub_domains:\n  - news.site-"+s+".example\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -518,5 +518,61 @@ func TestOnFileAt_Path4_CountsRecipientsOutsideSendersDomains(t *testing.T) {
 
 	if !fanoutFired(*findings) {
 		t.Fatalf("Path 4 must fire when scripts reach recipients outside their own domains, got %+v", *findings)
+	}
+}
+
+func TestOnFileAt_Path4_FiresWhenDomainLookupFails(t *testing.T) {
+	for _, data := range []string{"missing", "main_domain: [invalid", ""} {
+		t.Run(data, func(t *testing.T) {
+			p, findings := fanoutPipeline(t, "b", "c")
+			if data != "missing" {
+				dir := filepath.Join(p.domains.root, "usera")
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, "main"), []byte(data), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			now := time.Unix(1_700_000_000, 0).UTC()
+			for i, site := range []string{"a", "b", "c"} {
+				feedSiteMail(t, p, "m"+site, site, "192.0.2.56", now.Add(time.Duration(i)*time.Second), "admin@site-"+site+".example")
+			}
+			if !fanoutFired(*findings) {
+				t.Fatalf("domain lookup failure must leave Path 4 firing, got %+v", *findings)
+			}
+		})
+	}
+}
+
+func TestOnFileAt_Path4_FiresForCraftedExternalRecipients(t *testing.T) {
+	for _, recipient := range []string{
+		"victim%d@tenant.site-%s.example",
+		`"victim%d<admin@site-%s.example>"@outside.example`,
+	} {
+		t.Run(recipient, func(t *testing.T) {
+			p, findings := fanoutPipeline(t, "a", "b", "c")
+			now := time.Unix(1_700_000_000, 0).UTC()
+			for i, site := range []string{"a", "b", "c"} {
+				feedSiteMail(t, p, "m"+site, site, "192.0.2.57", now.Add(time.Duration(i)*time.Second),
+					fmt.Sprintf(recipient, 0, site), fmt.Sprintf(recipient, 1, site))
+			}
+			if !fanoutFired(*findings) {
+				t.Fatalf("external recipients must leave Path 4 firing, got %+v", *findings)
+			}
+		})
+	}
+}
+
+func TestOnFileAt_Path4_OwnNoticesCannotHideParseGap(t *testing.T) {
+	for _, recipients := range [][]string{nil, {`"unfinished@site-a.example`, "admin@site-a.example"}} {
+		p, findings := fanoutPipeline(t, "a", "b", "c")
+		now := time.Unix(1_700_000_000, 0).UTC()
+		feedSiteMail(t, p, "ma", "a", "192.0.2.58", now, recipients...)
+		feedSiteMail(t, p, "mb", "b", "192.0.2.58", now.Add(time.Second), "admin@site-b.example")
+		feedSiteMail(t, p, "mc", "c", "192.0.2.58", now.Add(2*time.Second), "admin@site-c.example")
+		if !fanoutFired(*findings) {
+			t.Fatalf("recipient parse gap must leave Path 4 firing, got %+v", *findings)
+		}
 	}
 }
