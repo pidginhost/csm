@@ -3196,6 +3196,57 @@ test('a declined delete sends nothing', async () => {
     assert.equal(fwdDeleteButtons(page)[0].disabled, false);
 });
 
+test('declining a forwarder delete preserves keyboard focus', async () => {
+    const page = await forwardersPage({ '/api/v1/email/forwarders': items([forwarder('a@example.com', ['x@example.net'])]) });
+    const layout = fs.readFileSync(path.join(__dirname, 'templates', 'layout.html'), 'utf8');
+    const start = layout.indexOf('<div class="modal fade" id="csm-confirm-modal"');
+    const end = layout.indexOf('<div class="modal fade" id="csm-prefs-modal"');
+    assert.ok(start > 0 && end > start);
+    const dialogs = page.document.createElement('div');
+    dialogs.innerHTML = layout.slice(start, end);
+    page.document.body.appendChild(dialogs);
+    const button = fwdDeleteButtons(page)[0];
+    button.focus();
+    button.click();
+    const cancel = page.document.getElementById('csm-confirm-cancel');
+    assert.equal(page.document.activeElement, cancel);
+    cancel.click();
+    await settle();
+    assert.equal(page.document.contains(button), true, 'the focused opener was replaced');
+    assert.equal(page.document.activeElement, button);
+    assert.equal(button.disabled, false);
+    assert.equal(page.pending('/api/v1/email/forwarders/delete').length, 0);
+});
+
+for (const oldReply of ['success', 'failure']) {
+    test('a late inventory ' + oldReply + ' cannot replace the list after a forwarder delete', async () => {
+        const route = '/api/v1/email/forwarders';
+        const before = items([forwarder('a@example.com', ['x@example.net', 'y@example.org'])]);
+        const page = await forwardersPage({ [route]: before });
+        page.document.getElementById('email-refresh').click();
+        await settle();
+        const old = page.pending(route).find(r => r.method === 'GET');
+        assert.ok(old, 'no inventory read before deletion');
+        stubConfirm(page);
+        fwdDeleteButtons(page)[1].click();
+        await settle();
+        page.respond(route + '/delete', 200, { ok: true });
+        await settle();
+        const current = page.pending(route).find(r => r.method === 'GET' && r !== old);
+        assert.ok(current, 'no inventory read after deletion');
+        current.settled = true;
+        current.resolve(jsonResponse(200, items([forwarder('a@example.com', ['x@example.net'])])));
+        await settle();
+        old.settled = true;
+        if (oldReply === 'success') old.resolve(jsonResponse(200, before));
+        else old.reject(new Error('old inventory failed'));
+        await settle();
+        assert.deepEqual(fwdDeleteButtons(page).map(b => b.getAttribute('data-dest')), ['x@example.net']);
+        assert.doesNotMatch(flat(page.document.getElementById('email-fwd-tbody')), /Failed to load/);
+        assert.equal(flat(page.document.querySelector('#email-tab-forwarders [data-tab-count]')), '1');
+    });
+}
+
 test('a refused delete toasts the server error and keeps the row', async () => {
     const page = await forwardersPage({ '/api/v1/email/forwarders': items([forwarder('a@example.com', ['x@example.net'])]) });
     page.toasts = [];

@@ -62,6 +62,10 @@ Account views use the recorded finding owner when available, with account paths
 as a fallback. They also recognize resolved paths under linked account roots,
 including files already moved into quarantine.
 
+The Forwarders tab refreshes after each deletion attempt and ignores older
+inventory replies. Cancelling deletion keeps keyboard focus on the Delete
+button. Default addresses have no Delete button; change them in cPanel.
+
 ## Threat intelligence spam evidence
 
 The Spam column shows spam and ham verdict counts and the current spam score.

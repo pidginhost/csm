@@ -77,6 +77,12 @@ func TestMailVisibilityCapabilitiesAlwaysPresent(t *testing.T) {
 	}
 }
 
+func TestForwarderDeleteCapabilityAlwaysPresent(t *testing.T) {
+	if !contains(Capabilities(), "mail.forwarders.delete.v1") {
+		t.Error("mail.forwarders.delete.v1 capability missing")
+	}
+}
+
 func TestHTTPScannerProfileCapabilityAlwaysPresent(t *testing.T) {
 	if !contains(Capabilities(), "detect.http_scanner_profile.v1") {
 		t.Error("detect.http_scanner_profile.v1 capability missing")

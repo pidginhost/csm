@@ -570,7 +570,7 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { description: The forwarder list has no such source and destination. Nothing ran. }
         "409": { description: No cPanel account owns the forwarder's domain. Nothing ran. }
-        "500": { description: "cPanel refused or failed the delete; the error carries its message and the audit entry records it." }
+        "500": { description: "cPanel or command execution failed; the error and audit entry record the failure. Reload the inventory before retrying because the delete may have partially completed." }
         "503": { description: Forwarders cannot be changed on this host, or systemd-run cannot start a unit and nothing ran. }
   "/api/v1/email/groups":
     get:

@@ -57,9 +57,9 @@ func uapiValue(v string) string {
 	return strings.ReplaceAll(url.QueryEscape(v), "+", "%20")
 }
 
-// uapiReplyError reads the outcome of a `uapi --output=json` call. uapi exits
-// non-zero on an API failure, so the JSON status is the source of truth and
-// the exit error only adds context when no reply can be read.
+// uapiReplyError preserves cPanel's own failure message. A success reply
+// cannot override a failed command: systemd-run may fail after forwarding
+// the output, leaving completion uncertain.
 func uapiReplyError(out []byte, runErr error) error {
 	var reply struct {
 		Result struct {
@@ -78,6 +78,9 @@ func uapiReplyError(out []byte, runErr error) error {
 		return fmt.Errorf("unreadable uapi reply: %s", text)
 	}
 	if reply.Result.Status == 1 {
+		if runErr != nil {
+			return fmt.Errorf("uapi execution failed: %w", runErr)
+		}
 		return nil
 	}
 	if len(reply.Result.Errors) == 0 {

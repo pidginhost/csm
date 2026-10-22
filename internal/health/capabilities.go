@@ -57,6 +57,7 @@ func Capabilities() []string {
 		"token.allowed_ips.v1",     // per-token source addresses
 		"confd.rehash.fragment.v1", // csm rehash --fragment re-signs one integration's conf.d files
 		"admission.action_show.v1",
+		"mail.forwarders.delete.v1",
 	}
 	if firewall.Supported() {
 		caps = append(caps,

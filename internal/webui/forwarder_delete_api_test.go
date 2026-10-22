@@ -159,6 +159,18 @@ func TestForwarderDeleteNeedsSystemdRun(t *testing.T) {
 	}
 }
 
+func TestForwarderDeleteAuditsExecutionFailureAfterSuccessReply(t *testing.T) {
+	s, u := fwdDeleteServer(t, "sales@shop.example", "shopuser")
+	u.err = context.DeadlineExceeded
+	w := fwdDelete(s, bossDelete)
+	if w.Code != http.StatusInternalServerError || !strings.Contains(w.Body.String(), u.err.Error()) {
+		t.Fatalf("status %d %s, want 500 with execution error", w.Code, w.Body.String())
+	}
+	if a := lastAudit(t, s); a.Action != "email_forwarder_delete" || !strings.Contains(a.Details, u.err.Error()) {
+		t.Errorf("audit = %+v, want failed delete with execution error", a)
+	}
+}
+
 func TestForwarderDeleteUnavailableOffCPanel(t *testing.T) {
 	s, _ := fwdDeleteServer(t, "sales@shop.example", "shopuser")
 	s.forwarderRemover = nil

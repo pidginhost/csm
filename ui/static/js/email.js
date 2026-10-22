@@ -13,6 +13,7 @@
     var _findingsSig = '';
     var _findingsPending = false;
     var forwardersLoaded = false;
+    var _forwardersSeq = 0;
     var _forwarders = [];
     var outboundAbuseLoaded = false;
     var _outboundAbuseSeq = 0;
@@ -2113,12 +2114,15 @@
     function loadForwarders() {
         if (forwardersLoaded) return;
         forwardersLoaded = true;
+        var seq = ++_forwardersSeq;
         CSM.get('/api/v1/email/forwarders')
             .then(function(data) {
+                if (seq !== _forwardersSeq) return;
                 _forwarders = data.items;
                 renderForwarders();
             })
             .catch(function(err) {
+                if (seq !== _forwardersSeq) return;
                 forwardersLoaded = false;
                 setTabCount('forwarders', '?');
                 CSM.loadError(document.getElementById('email-fwd-tbody'), loadForwarders, { title: 'Failed to load forwarders', error: err });
@@ -2197,12 +2201,19 @@
         tb.innerHTML = html;
     }
 
-    // Destinations with a delete in flight, by fwdKey. Their buttons stay
-    // disabled across a redraw.
+    // Destinations awaiting confirmation or a delete reply, by fwdKey.
+    // A redraw must not allow a second request for the same destination.
     var _fwdBusy = {};
 
     function fwdKey(source, dest) {
         return source + '\n' + dest;
+    }
+
+    // Keep the opener in the DOM so the confirmation can return focus.
+    function updateForwarderButtons() {
+        document.querySelectorAll('#email-fwd-tbody button[data-fwd-delete]').forEach(function(btn) {
+            btn.disabled = !!_fwdBusy[fwdKey(btn.getAttribute('data-source'), btn.getAttribute('data-dest'))];
+        });
     }
 
     // deleteForwarder asks first, then removes one destination of a
@@ -2212,21 +2223,21 @@
         var key = fwdKey(source, dest);
         if (_fwdBusy[key]) return;
         _fwdBusy[key] = true;
-        renderForwarders();
         CSM.confirm('Delete the forwarder from ' + source + ' to ' + dest + '? Mail to ' + source + ' stops going to ' + dest + '.', { danger: true, okLabel: 'Delete' }).then(function() {
+            updateForwarderButtons();
             // cPanel's API loads its whole stack on every call.
             CSM.post('/api/v1/email/forwarders/delete', { source: source, destination: dest }, { timeoutMs: 60000 })
                 .then(function() { CSM.toast('Forwarder deleted', 'success'); })
                 .catch(function(err) { CSM.toast('Delete failed: ' + CSM.errorText(err), 'error'); })
                 .then(function() {
                     delete _fwdBusy[key];
+                    updateForwarderButtons();
                     forwardersLoaded = false;
                     loadForwarders();
-                    renderForwarders();
                 });
         }).catch(function() {
             delete _fwdBusy[key];
-            renderForwarders();
+            updateForwarderButtons();
         });
     }
 

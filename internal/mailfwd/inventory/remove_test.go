@@ -74,6 +74,19 @@ func TestCPanelRemoverReportsUAPIErrors(t *testing.T) {
 	}
 }
 
+func TestCPanelRemoverReportsExecutionFailureAfterSuccessReply(t *testing.T) {
+	for _, runErr := range []error{context.DeadlineExceeded, errors.New("exit status 1")} {
+		f := &fakeUAPI{reply: `{"result":{"status":1,"errors":null}}`, err: runErr}
+		err := NewCPanelRemover(f.lookPath, f.run).Remove(shopForwarder, "boss@example.net")
+		if !errors.Is(err, runErr) {
+			t.Errorf("Remove error = %v, want execution error %v", err, runErr)
+		}
+		if len(f.calls) != 1 {
+			t.Errorf("calls = %v, want one attempt without retry", f.calls)
+		}
+	}
+}
+
 func TestCPanelRemoverReportsUnreadableReplies(t *testing.T) {
 	f := &fakeUAPI{reply: "Can't locate Cpanel/API.pm", err: errors.New("exit status 2")}
 	err := NewCPanelRemover(f.lookPath, f.run).Remove(shopForwarder, "boss@example.net")
