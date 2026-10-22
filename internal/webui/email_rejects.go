@@ -3,6 +3,7 @@ package webui
 import (
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/pidginhost/csm/internal/mailstats"
@@ -17,8 +18,8 @@ const (
 // are what class=content, the default, lists.
 var contentRejectClasses = []mailstats.Class{mailstats.ClassSpam, mailstats.ClassMalware}
 
-// rejectClasses resolves the class parameter: content, all (nil) or one
-// class name. ok is false for anything else.
+// rejectClasses resolves the class parameter: content, all (nil), or
+// class names joined by commas. ok is false for anything else.
 func rejectClasses(class string) (classes []mailstats.Class, ok bool) {
 	switch class {
 	case "content":
@@ -26,10 +27,14 @@ func rejectClasses(class string) (classes []mailstats.Class, ok bool) {
 	case "all":
 		return nil, true
 	}
-	if c := mailstats.Class(class); slices.Contains(mailstats.Classes, c) {
-		return []mailstats.Class{c}, true
+	for name := range strings.SplitSeq(class, ",") {
+		c := mailstats.Class(name)
+		if !slices.Contains(mailstats.Classes, c) {
+			return nil, false
+		}
+		classes = append(classes, c)
 	}
-	return nil, false
+	return classes, true
 }
 
 // permanentRejects counts the permanent rejects of every class in an
@@ -54,7 +59,7 @@ func (s *Server) apiEmailRejects(w http.ResponseWriter, r *http.Request) {
 	}
 	classes, ok := rejectClasses(class)
 	if !ok {
-		writeJSONError(w, "Invalid class: use content, all or a reject class name", http.StatusBadRequest)
+		writeJSONError(w, "Invalid class: use content, all or reject class names joined by commas", http.StatusBadRequest)
 		return
 	}
 	limit := queryInt(r, "limit", emailRejectsDefaultLimit)

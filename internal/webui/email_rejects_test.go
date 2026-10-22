@@ -149,6 +149,32 @@ func TestEmailRejectsClassFilterAndLimit(t *testing.T) {
 	}
 }
 
+// TestEmailRejectsClassList covers several classes joined by commas, the
+// way the page asks for every reason but spam, malware and rate limiting.
+func TestEmailRejectsClassList(t *testing.T) {
+	s := newTestServer(t, "tok")
+	s.SetMailStats(rejectsCounter())
+
+	body, _ := getRejects(t, s, "?class=sender_verify,malware&"+rejectsRange)
+	if got := rejectClassesOf(body.Items); !slices.Equal(got, []mailstats.Class{mailstats.ClassMalware, mailstats.ClassSenderVerify}) {
+		t.Errorf("class=sender_verify,malware: classes = %v, want malware then sender_verify", got)
+	}
+	if body.Class != "sender_verify,malware" {
+		t.Errorf("echoed class %q", body.Class)
+	}
+
+	body, _ = getRejects(t, s, "?class=unknown_recipient,sender_verify,sender_verify&"+rejectsRange)
+	if got := rejectClassesOf(body.Items); !slices.Equal(got, []mailstats.Class{mailstats.ClassSenderVerify}) {
+		t.Errorf("repeated class: classes = %v, want the one sender_verify reject", got)
+	}
+
+	for _, q := range []string{"?class=spam,", "?class=,spam", "?class=spam,,malware", "?class=spam,bogus", "?class=spam,all", "?class=spam,content"} {
+		if w := serveRejects(s, http.MethodGet, "tok", q); w.Code != http.StatusBadRequest {
+			t.Errorf("%s: status %d, want 400", q, w.Code)
+		}
+	}
+}
+
 func TestEmailRejectsNoCounter(t *testing.T) {
 	s := newTestServer(t, "tok")
 
