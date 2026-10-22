@@ -2880,7 +2880,8 @@ test('Sending accounts lists each account with its share and the abuse it is fla
     const page = await sendingPage({
         '/api/v1/email/overview': overview({}),
         '/api/v1/email/senders': senders([{ account: 'shopuser', messages: 300 }, { account: 'blogger', messages: 100 }, { account: 'quiet', messages: 1 }],
-            { total: 501, unresolved: 100, abuse_events: 4 }),
+            { total: 501, unresolved: 100, abuse_events: 4,
+                abuse_by_account: { shopuser: { 'High volume script': 2, 'Suspicious headers': 1 }, 'gone-account': { 'High volume script': 1 } } }),
         '/api/v1/email/relay-abuse': items([
             abuseEvent({ cp_user: 'shopuser' }), abuseEvent({ cp_user: 'shopuser' }),
             abuseEvent({ cp_user: 'shopuser', path: 'header', path_label: 'Suspicious headers' }),
@@ -2902,6 +2903,17 @@ test('Sending accounts lists each account with its share and the abuse it is fla
     const tab = doc.getElementById('email-tab-sending');
     assert.equal(tab.querySelector('[data-tab-count]').textContent, '4');
     assert.equal(spoken(tab), 'Sending accounts 4 abuse events');
+});
+
+test('the flags count every abuse event of the range, not only the listed ones', async () => {
+    // One busy account fills the newest events the list shows; the other
+    // account's older event still flags its row.
+    const page = await sendingPage({
+        '/api/v1/email/senders': senders([{ account: 'busyacct', messages: 900 }, { account: 'quietacct', messages: 4 }],
+            { abuse_events: 26, abuse_by_account: { busyacct: { 'High volume script': 25 }, quietacct: { 'Suspicious headers': 1 } } }),
+        '/api/v1/email/relay-abuse': items(Array.from({ length: 20 }, () => abuseEvent({ cp_user: 'busyacct' })), { total: 26, limit: 20, truncated: true })
+    });
+    assert.deepEqual(sendingRows(page).map(r => flat(r.querySelector('[data-label="Flags"]'))), ['High volume script (25)', 'Suspicious headers']);
 });
 
 test('View findings opens Findings searched for the account', async () => {
@@ -3072,7 +3084,7 @@ test('an open Sending accounts tab refreshes and keeps the focus when nothing ch
 test('sending accounts, abuse events and forwarders keep server text as text', async () => {
     const payload = '<img src=x onerror=alert(1)>';
     const page = await sendingPage({
-        '/api/v1/email/senders': senders([{ account: payload, messages: 3 }]),
+        '/api/v1/email/senders': senders([{ account: payload, messages: 3 }], { abuse_events: 1, abuse_by_account: { [payload]: { [payload]: 1 } } }),
         '/api/v1/email/relay-abuse': items([abuseEvent({ cp_user: payload, path_label: payload, sites: [
             { site: payload, script: '/' + payload, hits: 1, last_seen: AT, sample_subject: payload }] })], { total: 1, limit: 20, truncated: false }),
         '/api/v1/email/forwarders': items([{ source: payload + '@example.com', domain: 'example.com', owner: payload,
@@ -3181,7 +3193,7 @@ test('the accounts summary says when only the busiest accounts are listed', asyn
 
 test('a range change drops the abuse flags of the old range', async () => {
     const page = await sendingPage({
-        '/api/v1/email/senders': senders([{ account: 'shopuser', messages: 3 }]),
+        '/api/v1/email/senders': senders([{ account: 'shopuser', messages: 3 }], { abuse_events: 1, abuse_by_account: { shopuser: { 'High volume script': 1 } } }),
         '/api/v1/email/relay-abuse': items([abuseEvent({ cp_user: 'shopuser' })], { total: 1, limit: 20, truncated: false })
     });
     const flags = () => flat(sendingRows(page)[0].querySelector('[data-label="Flags"]'));

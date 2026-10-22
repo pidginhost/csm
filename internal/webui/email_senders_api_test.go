@@ -14,10 +14,11 @@ import (
 )
 
 type emailSendersBody struct {
-	Accounts    []mailstats.AccountSends `json:"accounts"`
-	Total       int                      `json:"total"`
-	Unresolved  int                      `json:"unresolved"`
-	AbuseEvents int                      `json:"abuse_events"`
+	Accounts       []mailstats.AccountSends  `json:"accounts"`
+	Total          int                       `json:"total"`
+	Unresolved     int                       `json:"unresolved"`
+	AbuseEvents    int                       `json:"abuse_events"`
+	AbuseByAccount map[string]map[string]int `json:"abuse_by_account"`
 }
 
 func serveSenders(s *Server, method, token, query string) *httptest.ResponseRecorder {
@@ -83,10 +84,11 @@ func TestSendersEndpointAdminOnly(t *testing.T) {
 		t.Fatalf("decode: %v", err)
 	}
 	want := emailSendersBody{
-		Accounts:    []mailstats.AccountSends{{Account: "exampleacct", Messages: 3}, {Account: "otheracct", Messages: 1}},
-		Total:       5,
-		Unresolved:  1,
-		AbuseEvents: 2,
+		Accounts:       []mailstats.AccountSends{{Account: "exampleacct", Messages: 3}, {Account: "otheracct", Messages: 1}},
+		Total:          5,
+		Unresolved:     1,
+		AbuseEvents:    2,
+		AbuseByAccount: map[string]map[string]int{"exampleacct": {"High volume script": 1}},
 	}
 	if !reflect.DeepEqual(body, want) {
 		t.Errorf("body = %+v, want %+v", body, want)
@@ -112,18 +114,18 @@ func TestSendersEndpointNoCounter(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status %d: %s", w.Code, w.Body.String())
 	}
-	if got := strings.TrimSpace(w.Body.String()); got != `{"accounts":[],"total":0,"unresolved":0,"abuse_events":0}` {
+	if got := strings.TrimSpace(w.Body.String()); got != `{"accounts":[],"total":0,"unresolved":0,"abuse_events":0,"abuse_by_account":{}}` {
 		t.Errorf("body = %s, want empty counts", got)
 	}
 }
 
-// The abuse count walks history, so it is memoized per query like the
-// relay-abuse view it counts.
+// The abuse count walks history, so it is memoized per range. The
+// relay-abuse view of the same range reads the same walk, whatever its limit.
 func TestSendersAbuseCountMemoized(t *testing.T) {
 	s := newTestServerWithBbolt(t, "tok")
 	const query = "from=2026-10-20T12:00:00Z&to=2026-10-20T13:00:00Z"
 	from := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
-	key := rangeMemoKey("senders-abuse", from, from.Add(time.Hour))
+	key := rangeMemoKey(relayAbuseMemo, from, from.Add(time.Hour))
 	s.store.AppendHistory([]alert.Finding{{Check: "email_php_relay_abuse", Severity: alert.High, Path: "volume", Timestamp: from.Add(time.Minute)}})
 
 	w := serveSenders(s, http.MethodGet, "tok", "?"+query)
@@ -138,8 +140,15 @@ func TestSendersAbuseCountMemoized(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil || w.Code != http.StatusOK || body.AbuseEvents != 1 {
 		t.Fatalf("second request: status %d, %v, count %d; want 200 and 1", w.Code, err, body.AbuseEvents)
 	}
-	if n := s.emailMemos.memo(key).computes; n != 1 {
-		t.Errorf("history computations = %d, want 1", n)
+	for _, limit := range []string{"20", "5"} {
+		relay := httptest.NewRecorder()
+		s.apiEmailRelayAbuse(relay, httptest.NewRequest(http.MethodGet, "/api/v1/email/relay-abuse?limit="+limit+"&"+query, nil))
+		if relay.Code != http.StatusOK {
+			t.Fatalf("relay-abuse limit %s: status %d: %s", limit, relay.Code, relay.Body.String())
+		}
+	}
+	if n, memos := s.emailMemos.memo(key).computes, len(s.emailMemos.items); n != 1 || memos != 1 {
+		t.Errorf("history computations = %d in %d memos, want 1 in 1 for the senders count and both relay-abuse pages", n, memos)
 	}
 }
 
@@ -171,5 +180,34 @@ func TestSendersAbuseMemoSharedWithinMinute(t *testing.T) {
 	}
 	if n := count("2026-10-20T12:01:05Z"); n != 2 {
 		t.Errorf("next minute: abuse_events = %d, want 2", n)
+	}
+}
+
+// One account with more events than the abuse list shows must not push
+// another account's flags off the Sending accounts table: the flags count
+// every event of the range, not the newest page of them.
+func TestSendersAbuseByAccountCoversEveryEvent(t *testing.T) {
+	s := newTestServerWithBbolt(t, "tok")
+	from := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	relay := func(path, account string, at time.Time) alert.Finding {
+		return alert.Finding{Check: "email_php_relay_abuse", Severity: alert.High, Path: path, CPUser: account, Timestamp: at}
+	}
+	findings := []alert.Finding{relay("header", "quietacct", from.Add(time.Minute))}
+	for i := 0; i < 25; i++ {
+		findings = append(findings, relay("volume", "busyacct", from.Add(10*time.Minute+time.Duration(i)*time.Second)))
+	}
+	// An event that names no account flags no row.
+	noAccount := relay("fanout", "", from.Add(20*time.Minute))
+	noAccount.SourceIP = "192.0.2.10"
+	s.store.AppendHistory(append(findings, noAccount))
+
+	w := serveSenders(s, http.MethodGet, "tok", "?from=2026-10-20T12:00:00Z&to=2026-10-20T13:00:00Z")
+	var body emailSendersBody
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil || w.Code != http.StatusOK {
+		t.Fatalf("status %d, %v: %s", w.Code, err, w.Body.String())
+	}
+	want := map[string]map[string]int{"busyacct": {"High volume script": 25}, "quietacct": {"Suspicious headers": 1}}
+	if !reflect.DeepEqual(body.AbuseByAccount, want) || body.AbuseEvents != 27 {
+		t.Errorf("abuse_by_account = %v with %d events, want %v with 27", body.AbuseByAccount, body.AbuseEvents, want)
 	}
 }

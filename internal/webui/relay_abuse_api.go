@@ -3,7 +3,6 @@ package webui
 import (
 	"net/http"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -18,6 +17,9 @@ type relayAbuseResponse struct {
 	From      time.Time         `json:"from"`
 	To        time.Time         `json:"to"`
 	Truncated bool              `json:"truncated"`
+	// byAccount counts the events of the range that name an account, by
+	// account and kind, before limit cuts the list.
+	byAccount map[string]map[string]int
 }
 
 type relayAbuseEntry struct {
@@ -42,6 +44,11 @@ type relaySiteEntry struct {
 
 const relayAbuseDefaultLimit = 20
 const relayAbuseMaxLimit = 100
+
+// relayAbuseMemo names the history walk the relay-abuse list and the senders
+// abuse count share. The limit only cuts the answer, so it is not part of the
+// key.
+const relayAbuseMemo = "relay-abuse"
 
 func relayPathLabel(path string) string {
 	switch path {
@@ -80,21 +87,22 @@ func (s *Server) apiEmailRelayAbuse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, s.buildRelayAbuseResponse("relay&limit="+strconv.Itoa(limit), from, to, limit))
+	writeJSON(w, s.buildRelayAbuseResponse(from, to, limit))
 }
 
-func (s *Server) buildRelayAbuseResponse(memoName string, from, to time.Time, limit int) relayAbuseResponse {
+func (s *Server) buildRelayAbuseResponse(from, to time.Time, limit int) relayAbuseResponse {
 	resp := relayAbuseResponse{
-		Entries: []relayAbuseEntry{},
-		Limit:   limit,
-		From:    from.UTC(),
-		To:      to.UTC(),
+		Entries:   []relayAbuseEntry{},
+		Limit:     limit,
+		From:      from.UTC(),
+		To:        to.UTC(),
+		byAccount: map[string]map[string]int{},
 	}
 	if s.store == nil {
 		return resp
 	}
 
-	key := rangeMemoKey(memoName, from, to)
+	key := rangeMemoKey(relayAbuseMemo, from, to)
 	snapshot := s.emailMemo(key, func() any {
 		return s.relayAbuseHistory(from.Truncate(time.Minute), to.Truncate(time.Minute).Add(time.Minute))
 	}).([]relayAbuseEntry)
@@ -121,6 +129,17 @@ func (s *Server) buildRelayAbuseResponse(memoName string, from, to time.Time, li
 		resp.Truncated = true
 	}
 	resp.Total = len(rows)
+	for _, row := range rows {
+		if row.CPUser == "" {
+			continue
+		}
+		kinds := resp.byAccount[row.CPUser]
+		if kinds == nil {
+			kinds = map[string]int{}
+			resp.byAccount[row.CPUser] = kinds
+		}
+		kinds[row.PathLabel]++
+	}
 
 	sort.SliceStable(rows, func(i, j int) bool {
 		if !rows[i].DetectedAt.Equal(rows[j].DetectedAt) {

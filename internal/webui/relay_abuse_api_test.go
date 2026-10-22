@@ -127,7 +127,7 @@ func TestRelayAbuseOneSidedTo(t *testing.T) {
 }
 
 // As for the senders count: requests in the same minute share one history
-// walk; the limit still keys its own result.
+// walk, whatever their limit.
 func TestRelayAbuseMemoSharedWithinMinute(t *testing.T) {
 	s := newTestServerWithBbolt(t, "tok")
 	at := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
@@ -152,8 +152,8 @@ func TestRelayAbuseMemoSharedWithinMinute(t *testing.T) {
 	if n := total("limit=20&to=2026-10-20T12:00:40Z"); n != 1 {
 		t.Errorf("same minute: total = %d, want the shared 1", n)
 	}
-	if n := total("limit=5&to=2026-10-20T12:00:40Z"); n != 2 {
-		t.Errorf("same minute, other limit: total = %d, want 2", n)
+	if n := total("limit=5&to=2026-10-20T12:00:40Z"); n != 1 {
+		t.Errorf("same minute, other limit: total = %d, want the shared 1", n)
 	}
 	if n := total("limit=20&to=2026-10-20T12:01:05Z"); n != 2 {
 		t.Errorf("next minute: total = %d, want 2", n)

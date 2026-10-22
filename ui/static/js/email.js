@@ -16,7 +16,6 @@
     var _forwarders = [];
     var outboundAbuseLoaded = false;
     var _outboundAbuseSeq = 0;
-    var _abuse = null;   // the outbound abuse events listed for the range
     var _abuseBlocks = Object.create(null);
     var _abuseSig = '';  // what the abuse events on screen show
     var queueCompositionLoaded = false;
@@ -584,7 +583,6 @@
             loadActionGroups();
             loadFindings();
             outboundAbuseLoaded = false;
-            _abuse = null;
             ++_outboundAbuseSeq;
             loadSenders();
             if (activeTab('email-tabs') === 'sending') loadOutboundAbuse();
@@ -1103,18 +1101,15 @@
         return tr;
     }
 
-    // abuseFlags groups the listed abuse events by the account they name:
-    // each kind once, with how many events. An event naming no account
-    // flags no row.
+    // abuseFlags lists, for each account, the kinds of abuse event naming
+    // it with how many events, from the server's count over every event of
+    // the range, not only the ones the list below shows.
     function abuseFlags() {
         var out = Object.create(null);
-        (_abuse && Array.isArray(_abuse.items) ? _abuse.items : []).forEach(function(e) {
-            if (!e.cp_user) return;
-            var list = out[e.cp_user] || (out[e.cp_user] = []);
-            var label = e.path_label || 'Outbound abuse';
-            var seen = list.filter(function(f) { return f.label === label; })[0];
-            if (seen) seen.count++;
-            else list.push({ label: label, count: 1 });
+        var byAccount = _senders && _senders.abuse_by_account || {};
+        Object.keys(byAccount).forEach(function(account) {
+            var kinds = byAccount[account] || {};
+            out[account] = Object.keys(kinds).map(function(label) { return { label: label, count: kinds[label] }; });
         });
         return out;
     }
@@ -2956,8 +2951,7 @@
 
     // ---------- Outbound abuse events (Sending accounts tab) ----------
 
-    // loadOutboundAbuse lists the newest abuse events of the range. They
-    // also flag the accounts they name in the table above.
+    // loadOutboundAbuse lists the newest abuse events of the range.
     function loadOutboundAbuse() {
         var body = document.getElementById('email-abuse-events');
         if (!body) return;
@@ -2966,8 +2960,6 @@
             .then(function(resp) {
                 if (seq !== _outboundAbuseSeq) return;
                 outboundAbuseLoaded = true;
-                _abuse = resp;
-                renderSenders();
                 // A poll mostly brings the same events; drawing them again
                 // would close their breakdowns.
                 var sig = JSON.stringify([resp.items, resp.total, resp.truncated]);
@@ -2979,9 +2971,7 @@
             .catch(function(err) {
                 if (seq !== _outboundAbuseSeq) return;
                 outboundAbuseLoaded = false;
-                _abuse = null;
                 _abuseSig = '';
-                renderSenders();
                 document.getElementById('email-abuse-count').textContent = '';
                 CSM.loadError(body, loadOutboundAbuse, { title: 'Failed to load outbound mail abuse', error: err });
             });
@@ -3432,7 +3422,6 @@
             statsLoaded = false;
             forwardersLoaded = false;
             outboundAbuseLoaded = false;
-            _abuse = null;
             ++_outboundAbuseSeq;
             queueCompositionLoaded = false;
             // Held mail, the sending accounts and the provider delays read
