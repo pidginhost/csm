@@ -50,8 +50,9 @@ type cachedQueueReason struct {
 // apiEmailQueueList handles GET /api/v1/email/queue: one page of the queue,
 // oldest first, filtered by filter=all|frozen|backscatter and q (a sender or
 // recipient substring). queued, frozen, backscatter and oldest_seconds
-// describe the whole queue; total counts the matches. The listing is the
-// cached one the overview uses, and msglogs are read only for the page.
+// describe the whole queue; total counts the matches; listed_at is when the
+// listing ran. The listing is the cached one the overview uses, and msglogs
+// are read only for the page.
 func (s *Server) apiEmailQueueList(w http.ResponseWriter, r *http.Request) {
 	if s.queueAdmin == nil {
 		writeJSONError(w, queueUnavailableText, http.StatusServiceUnavailable)
@@ -85,7 +86,7 @@ func (s *Server) apiEmailQueueList(w http.ResponseWriter, r *http.Request) {
 	}
 	refreshQueueListing(now)
 	stale := staleQueueListing(now)
-	msgs, frozen, oldest := queueDetail.state.msgs, queueDetail.state.frozen, oldestQueuedSeconds(now)
+	msgs, frozen, oldest, listed := queueDetail.state.msgs, queueDetail.state.frozen, oldestQueuedSeconds(now), queueDetail.state.listed
 	queueDetail.Unlock()
 	if stale {
 		// No count goes out: any number here would read as a queue size.
@@ -117,6 +118,7 @@ func (s *Server) apiEmailQueueList(w http.ResponseWriter, r *http.Request) {
 		"frozen":      frozen,
 		"backscatter": backscatter,
 		"unavailable": false,
+		"listed_at":   listed.UTC(),
 	}
 	if oldest != nil {
 		extra["oldest_seconds"] = *oldest

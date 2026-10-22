@@ -1292,7 +1292,8 @@ the next listing. Failed listings can reuse detail for at most ten minutes.
 The queue list and the overview share one queue listing, refreshed at most
 once per minute and after any queue action. `total` counts the messages that
 match `filter` and `q`; `queued`, `frozen`, `backscatter` (null-sender
-messages) and `oldest_seconds` describe the whole queue. When no listing has succeeded in
+messages) and `oldest_seconds` describe the whole queue. `listed_at` is when
+that listing ran, so these counts can trail the overview's live queue size. When no listing has succeeded in
 the last ten minutes the list answers `unavailable: true` with no items and no
 counts. A failed refresh cannot reuse an empty listing, and a positive queue
 count invalidates any earlier empty result. The next list request then lists

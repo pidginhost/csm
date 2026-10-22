@@ -230,14 +230,15 @@ type queueListBody struct {
 		intel.QueueMessage
 		Reason intel.StuckReason `json:"reason"`
 	} `json:"items"`
-	Total         *int `json:"total"`
-	Queued        *int `json:"queued"`
-	Page          int  `json:"page"`
-	Limit         int  `json:"limit"`
-	Frozen        *int `json:"frozen"`
-	Backscatter   *int `json:"backscatter"`
-	OldestSeconds *int `json:"oldest_seconds"`
-	Unavailable   bool `json:"unavailable"`
+	Total         *int       `json:"total"`
+	Queued        *int       `json:"queued"`
+	Page          int        `json:"page"`
+	Limit         int        `json:"limit"`
+	Frozen        *int       `json:"frozen"`
+	Backscatter   *int       `json:"backscatter"`
+	OldestSeconds *int       `json:"oldest_seconds"`
+	Unavailable   bool       `json:"unavailable"`
+	ListedAt      *time.Time `json:"listed_at"`
 }
 
 func getQueueList(t *testing.T, s *Server, query string) queueListBody {
@@ -362,6 +363,23 @@ func TestQueueListPagingAndFilters(t *testing.T) {
 	}
 }
 
+// The list comes from a listing up to a minute old, so it says when that
+// listing ran: its counts can trail the live size the card shows.
+func TestQueueListSaysWhenItListed(t *testing.T) {
+	world := newEximWorld(t)
+	world.add(qMid, worldMessage{sender: "sender@example.com", recipients: []string{"rcpt@example.net"}})
+	s, _, _ := queueServer(t, world)
+	before := time.Now()
+	first := getQueueList(t, s, "")
+	after := time.Now()
+	if first.ListedAt == nil || first.ListedAt.Before(before.Truncate(time.Second)) || first.ListedAt.After(after) {
+		t.Fatalf("listed_at = %v, want the listing time between %v and %v", first.ListedAt, before, after)
+	}
+	if again := getQueueList(t, s, ""); again.ListedAt == nil || !again.ListedAt.Equal(*first.ListedAt) {
+		t.Errorf("cached list listed_at = %v, want the listing's %v", again.ListedAt, first.ListedAt)
+	}
+}
+
 func TestQueueListReadsOnlyPageMsglogs(t *testing.T) {
 	world := newEximWorld(t)
 	for i := 0; i < 2000; i++ {
@@ -462,7 +480,7 @@ func assertQueueUnknown(t *testing.T, s *Server, admin *countingAdmin) {
 	if string(raw["unavailable"]) != "true" || string(raw["items"]) != "[]" {
 		t.Errorf("body = %s, want unavailable with no items", w.Body.String())
 	}
-	for _, key := range []string{"total", "queued", "frozen", "backscatter", "oldest_seconds"} {
+	for _, key := range []string{"total", "queued", "frozen", "backscatter", "oldest_seconds", "listed_at"} {
 		if _, ok := raw[key]; ok {
 			t.Errorf("unavailable queue carries %q: %s", key, w.Body.String())
 		}

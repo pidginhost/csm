@@ -2302,7 +2302,8 @@
 
     // renderQueue shows a list page. The 60 s poll mostly brings the page
     // on screen again; rebuilding it would drop the focus and read every
-    // open message again, so then only the summary and the ages change.
+    // open message again, so then only the summary, the count and the ages
+    // change.
     function renderQueue(data) {
         var items = Array.isArray(data.items) ? data.items : [];
         var sig = JSON.stringify([data.total, items.map(function(m) {
@@ -2312,6 +2313,12 @@
         _queueErr = null;
         renderQueueSummary();
         renderQueuePager(data.total || 0);
+        // The count is the listing's, up to a minute old, so it can trail
+        // the live size the summary shows; it says when it was taken.
+        var count = document.getElementById('email-queue-count');
+        var total = data.total || 0;
+        if (count) count.textContent = num(total) + (total === 1 ? ' message' : ' messages') +
+            ' as of ' + CSM.prefs.formatDateTime(new Date(data.listed_at)).slice(11);
         if (sig === _queueSig) {
             items.forEach(function(m) {
                 var row = queueRowEl(m.id);
@@ -2537,9 +2544,6 @@
             if (row && row.nextElementSibling) shown[id] = row.nextElementSibling.querySelector('[data-queue-detail]');
         });
         resetQueueTable();
-        var count = document.getElementById('email-queue-count');
-        var total = _queue.total || 0;
-        if (count) count.textContent = num(total) + (total === 1 ? ' message' : ' messages');
         var open = _queueOpen;
         _queueOpen = {};
         if (items.length === 0) {

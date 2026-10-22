@@ -1523,7 +1523,7 @@ function queueMsg(id, extra) {
 // that fit it unless extra says otherwise.
 function queueList(list, extra) {
     return Object.assign({
-        items: list, total: list.length, page: 1, limit: 25, unavailable: false, queued: list.length,
+        items: list, total: list.length, page: 1, limit: 25, unavailable: false, queued: list.length, listed_at: AT,
         frozen: list.filter(m => m.frozen).length, backscatter: list.filter(m => m.bounce).length,
         oldest_seconds: list.length ? list[0].age_seconds : undefined
     }, extra);
@@ -1671,7 +1671,19 @@ test('queue rows read oldest first with age, sender, recipients, size, reason an
     assert.equal(details.classList.contains('show'), false);
     // Phones get one card per message.
     assert.ok(doc.getElementById('email-queue-table').classList.contains('csm-table-rowcard'));
-    assert.equal(flat(doc.getElementById('email-queue-count')), '3 messages');
+    // The count is the listing's, which can trail the live size: it says when.
+    const asOf = page.window.CSM.prefs.formatDateTime(new Date(AT)).slice(11);
+    assert.equal(flat(doc.getElementById('email-queue-count')), '3 messages as of ' + asOf);
+});
+
+test('the queue list count follows each listing, even when the rows stay the same', async () => {
+    const page = await queuePage([queueMsg(QID[0])]);
+    const row = queueRow(page, QID[0]);
+    const later = '2026-10-21T09:59:30Z';
+    await queueTick(page, [queueMsg(QID[0])], { listed_at: later });
+    assert.equal(queueRow(page, QID[0]), row, 'the unchanged rows were drawn again');
+    assert.equal(flat(page.document.getElementById('email-queue-count')),
+        '1 message as of ' + page.window.CSM.prefs.formatDateTime(new Date(later)).slice(11));
 });
 
 test('queue rows keep sender, recipient and reason as text', async () => {
