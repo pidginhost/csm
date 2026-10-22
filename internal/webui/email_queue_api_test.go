@@ -677,8 +677,9 @@ func TestQueueThawNotFrozen(t *testing.T) {
 	}
 }
 
-// exim can exit non-zero for a removal it made. The queue decides the
-// outcome; the audit entry still records what exim said.
+// exim can fail an action, "locked" say, while a delivery takes the
+// message. It left the queue, but the action cannot claim it: the outcome is
+// gone, and the audit entry still records what exim said.
 func TestQueueActionAuditsRunError(t *testing.T) {
 	world := newEximWorld(t)
 	world.add(qMid, worldMessage{recipients: []string{"rcpt@example.net"}})
@@ -686,11 +687,11 @@ func TestQueueActionAuditsRunError(t *testing.T) {
 	s, _, _ := queueServer(t, world)
 
 	w := queueRequest(t, s, http.MethodPost, "/api/v1/email/queue/"+qMid+"/delete")
-	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"outcome":"removed"`) {
-		t.Fatalf("status %d body %s, want 200 removed", w.Code, w.Body.String())
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), `"outcome":"gone"`) {
+		t.Fatalf("status %d body %s, want 409 gone", w.Code, w.Body.String())
 	}
-	if a := lastAudit(t, s); a.Action != "email_queue_delete" || !strings.HasPrefix(a.Details, "outcome: removed; ") || !strings.Contains(a.Details, "exit status 1") {
-		t.Errorf("audit = %+v, want outcome removed with exim's exit status", a)
+	if a := lastAudit(t, s); a.Action != "email_queue_delete" || !strings.HasPrefix(a.Details, "outcome: gone; ") || !strings.Contains(a.Details, "exit status 1") {
+		t.Errorf("audit = %+v, want outcome gone with exim's exit status", a)
 	}
 }
 

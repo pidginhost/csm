@@ -1311,10 +1311,13 @@ inside the daemon's sandbox: without systemd-run the message route and the
 actions answer 503 and exim does not run. Each action first checks that the message is
 still queued; when it is not, the answer is 409 with `outcome: "gone"`. Nothing
 ran, unless the message left during the action. `retry` answers
-`attempt_started` as soon as the delivery attempt has started. `bounce`,
-`delete` and `thaw` answer `bounced`, `removed` and `thawed` when the queue
-shows the change, even if exim reported an error, and `unchanged` with an
-error otherwise. A thaw on a message that is not frozen answers `unchanged`
+`attempt_started` as soon as the delivery attempt has started. `bounce` and
+`delete` answer `bounced` and `removed` when the message left the queue and
+exim reported no error. When exim reported an error and the message left
+anyway, as when exim -Mrm finds it locked by a delivery that then completes,
+the answer is 409 with `outcome: "gone"`. `thaw` answers `thawed` when the
+queue shows the change, even if exim reported an error. Otherwise the answer
+is `unchanged` with an error. A thaw on a message that is not frozen answers `unchanged`
 without running exim -Mt. Every attempt is written to the UI audit log as
 `email_queue_<action>` with the message ID, the outcome and any error exim
 reported.

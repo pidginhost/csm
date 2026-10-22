@@ -50,7 +50,8 @@ type QueueAdmin interface {
 	// Act runs one action on the message and returns the outcome the queue
 	// shows afterwards. With OutcomeUnchanged an error means the action
 	// failed; with any other outcome it is what exim reported while the
-	// queue shows the change.
+	// queue shows the change. A message that left the queue while exim
+	// reported an error is OutcomeGone, never removed or bounced.
 	Act(action, id string) (string, error)
 }
 
@@ -108,8 +109,8 @@ func (a *EximQueueAdmin) Reason(id string) (StuckReason, []string, error) {
 }
 
 // Act checks that the message is queued, runs the action and reads the
-// queue again. As with FlushBackscatter, the queue decides the outcome:
-// exim has exited non-zero for work it completed.
+// queue again. As with FlushBackscatter, the queue decides the outcome; a
+// removal or bounce is claimed only when exim reported no error.
 func (a *EximQueueAdmin) Act(action, id string) (string, error) {
 	flag, ok := queueActionFlags[action]
 	if !ok {
@@ -152,12 +153,14 @@ func (a *EximQueueAdmin) Act(action, id string) (string, error) {
 
 	after, err := a.Message(id)
 	switch {
-	case errors.Is(err, ErrNotQueued) && action == "delete":
-		return OutcomeRemoved, runErr
-	case errors.Is(err, ErrNotQueued) && action == "bounce":
-		return OutcomeBounced, runErr
+	case errors.Is(err, ErrNotQueued) && runErr == nil && action == "delete":
+		return OutcomeRemoved, nil
+	case errors.Is(err, ErrNotQueued) && runErr == nil && action == "bounce":
+		return OutcomeBounced, nil
 	case errors.Is(err, ErrNotQueued):
-		// Delivered or removed by someone else while it was being thawed.
+		// Delivered or removed by someone else while it was being thawed,
+		// or while exim failed the action: -Mrm reports "locked" when a
+		// delivery holds the message, and the delivery can then take it.
 		return OutcomeGone, runErr
 	case err != nil:
 		// %v, not %w: the action ran, so an ErrUnavailable from the read

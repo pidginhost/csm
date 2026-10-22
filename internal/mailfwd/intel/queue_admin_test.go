@@ -161,14 +161,15 @@ func TestEximQueueAdminActOutcomes(t *testing.T) {
 		noRun   bool
 	}{
 		{name: "delete removes", action: "delete", exim: fakeExim{queued: true}, want: OutcomeRemoved},
-		// exim -Mrm has removed messages and still exited non-zero; the
-		// queue decides, and the error is still reported.
-		{name: "delete with a failing exit", action: "delete", exim: fakeExim{queued: true, actionErr: errors.New("exit status 1")}, want: OutcomeRemoved, wantErr: "exim -Mrm: exit status 1"},
+		// exim -Mrm can fail, "locked" say, while a delivery takes the
+		// message: it left the queue, but not by this action. The error
+		// is still reported.
+		{name: "delete with a failing exit", action: "delete", exim: fakeExim{queued: true, actionErr: errors.New("exit status 1")}, want: OutcomeGone, wantErr: "exim -Mrm: exit status 1"},
 		{name: "delete left queued", action: "delete", exim: fakeExim{queued: true, keep: true}, want: OutcomeUnchanged, wantErr: "Spool file is locked"},
 		// An empty re-read proves nothing; it must not count as removed.
 		{name: "delete with an empty re-read", action: "delete", exim: fakeExim{queued: true, bpAfterAction: "\n"}, want: OutcomeUnchanged, wantErr: "could not be read back"},
 		{name: "bounce", action: "bounce", exim: fakeExim{queued: true}, want: OutcomeBounced},
-		{name: "bounce with a failing exit", action: "bounce", exim: fakeExim{queued: true, actionErr: errors.New("exit status 2")}, want: OutcomeBounced, wantErr: "exim -Mg: exit status 2"},
+		{name: "bounce with a failing exit", action: "bounce", exim: fakeExim{queued: true, actionErr: errors.New("exit status 2")}, want: OutcomeGone, wantErr: "exim -Mg: exit status 2"},
 		{name: "bounce left queued", action: "bounce", exim: fakeExim{queued: true, keep: true}, want: OutcomeUnchanged, wantErr: "Spool file is locked"},
 		{name: "thaw frozen", action: "thaw", exim: fakeExim{queued: true, frozen: true}, want: OutcomeThawed},
 		{name: "thaw with a failing exit", action: "thaw", exim: fakeExim{queued: true, frozen: true, actionErr: errors.New("exit status 1")}, want: OutcomeThawed, wantErr: "exim -Mt: exit status 1"},
@@ -214,8 +215,8 @@ func TestEximQueueAdminActReadBackRefused(t *testing.T) {
 func TestEximQueueAdminActBoundsRunError(t *testing.T) {
 	f := &fakeExim{queued: true, actionErr: errors.New(strings.Repeat("x", 5000))}
 	got, err := NewEximQueueAdmin("", f.lookPath, f.run).Act("delete", adminTestID)
-	if got != OutcomeRemoved || err == nil || len(err.Error()) > 300 {
-		t.Fatalf("Act = (%q, %d-byte error), want removed with a bounded error", got, len(fmt.Sprint(err)))
+	if got != OutcomeGone || err == nil || len(err.Error()) > 300 {
+		t.Fatalf("Act = (%q, %d-byte error), want gone with a bounded error", got, len(fmt.Sprint(err)))
 	}
 }
 
