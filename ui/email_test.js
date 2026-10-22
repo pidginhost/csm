@@ -1219,8 +1219,7 @@ test('the queue tab draws its warn and crit marks on the size bar', async () => 
     // The bar runs a quarter past crit, so crit sits at 80%.
     assert.equal(warn.style.left, '16%');
     assert.equal(crit.style.left, '80%');
-    assert.match(warn.textContent, /warn 100/);
-    assert.match(crit.textContent, /crit 500/);
+    assert.equal(flat(health.querySelector('.csm-queue-bar__labels')), 'warn 100, crit 500');
     const bar = health.querySelector('.progress-bar');
     assert.equal(bar.getAttribute('aria-valuenow'), '19');
     assert.equal(bar.getAttribute('aria-valuetext'), '120 messages, warn 100, crit 500');
@@ -1470,12 +1469,20 @@ function flat(el) {
     return el.textContent.replace(/\s+/g, ' ').trim();
 }
 
-// queuePage opens the Queue tab, answers its list, and records toasts.
+// queueOverview is an overview whose live queue holds size messages.
+function queueOverview(size, extra) {
+    return overview({}, { queue: Object.assign({ size, unavailable: false, warn: 100, crit: 500, frozen: 0, detail_unavailable: false }, extra) });
+}
+
+// queuePage opens the Queue tab, answers the overview with a live queue
+// size that fits the list, answers the list, and records toasts.
 async function queuePage(list, extra) {
     const page = emailPage();
     showEmailTab(page, 'queue');
     await settle();
-    page.respond('/api/v1/email/queue?', 200, queueList(list, extra));
+    const q = queueList(list, extra);
+    page.respond('/api/v1/email/overview', 200, queueOverview(q.queued));
+    page.respond('/api/v1/email/queue?', 200, q);
     await settle();
     page.toasts = [];
     page.window.CSM.toast = (message, type) => page.toasts.push([message, type]);
@@ -1515,6 +1522,7 @@ test('the Queue tab sums up the queue in one sentence beside the backscatter flu
     assert.equal(reqs.length, 1, 'the Queue tab did not ask for the queue list');
     const q = query(reqs[0].url);
     assert.deepEqual([q.get('page'), q.get('limit'), q.get('filter'), q.get('q')], ['1', '25', 'all', '']);
+    page.respond('/api/v1/email/overview', 200, queueOverview(21, { frozen: 4 }));
     page.respond('/api/v1/email/queue?', 200, queueList([queueMsg(QID[0])],
         { total: 21, queued: 21, frozen: 4, backscatter: 6, oldest_seconds: 3 * DAY + 7 * 3600 }));
     page.respond('/api/v1/email/queue-composition', 200, { total: 21, real: 15, bounce: 6, frozen: 4, flushable_backscatter: 3, top_recipients: [] });
@@ -1707,6 +1715,9 @@ test('queue action outcomes read as plain toasts', async () => {
         ['thaw', 200, { outcome: 'unchanged' }, ['Nothing changed', 'warning']],
         ['delete', 500, { error: 'Queue action failed: exim -Mrm: exit status 1', outcome: 'unchanged' },
             ['Nothing changed: Queue action failed: exim -Mrm: exit status 1', 'warning']],
+        // The action ran, but the queue could not be read afterwards.
+        ['bounce', 500, { error: 'Queue action failed: exim -Mg: exit status 1\nthe outcome could not be read back: exim -bp timed out', outcome: 'unchanged' },
+            ['Outcome unknown: Queue action failed: exim -Mg: exit status 1\nthe outcome could not be read back: exim -bp timed out. Refresh to check.', 'warning']],
         ['retry', 503, { error: 'Queue actions need systemd-run: not found', outcome: 'unchanged' }, ['Queue actions need systemd-run on this server.', 'error']]
     ]) {
         const page = await queuePage([queueMsg(QID[0], { frozen: true })]);
@@ -1747,6 +1758,7 @@ test('an unreadable queue says the size is unknown, with Retry', async () => {
     assert.match(flat(summary), /Mail queue is not available on this host/);
     summary.querySelector('.csm-retry-btn').click();
     await settle();
+    page.respond('/api/v1/email/overview', 200, queueOverview(1));
     page.respond('/api/v1/email/queue?', 200, queueList([queueMsg(QID[0])]));
     await settle();
     assert.equal(doc.getElementById('email-queue-list').hidden, false);
@@ -1757,6 +1769,83 @@ test('an empty queue says so', async () => {
     const page = await queuePage([]);
     assert.equal(flat(page.document.getElementById('email-queue-summary')), 'The queue is empty.');
     assert.equal(page.document.getElementById('email-queue-list').hidden, true);
+});
+
+test('the queue summary counts the live queue size the card and the tab show', async () => {
+    const page = emailPage();
+    showEmailTab(page, 'queue');
+    await settle();
+    page.respond('/api/v1/email/overview', 200, queueOverview(21, { frozen: 4 }));
+    // The list counts from a listing up to a minute old.
+    page.respond('/api/v1/email/queue?', 200, queueList([queueMsg(QID[0])], { queued: 8, frozen: 4 }));
+    await settle();
+    const doc = page.document;
+    const summary = doc.getElementById('email-queue-summary');
+    assert.match(flat(summary), /^21 queued, 4 frozen/);
+    assert.equal(kpi(page, 'kpi-queue').value, '21');
+    assert.equal(doc.querySelector('#email-tab-queue [data-tab-count]').textContent, '21');
+
+    // The next overview moves the summary with the card, before the list.
+    doc.getElementById('email-refresh').click();
+    await settle();
+    page.respond('/api/v1/email/overview', 200, queueOverview(22, { frozen: 4 }));
+    await settle();
+    assert.match(flat(summary), /^22 queued/);
+    assert.equal(kpi(page, 'kpi-queue').value, '22');
+
+    // When the overview cannot say, the size is unknown; the list's own
+    // count does not stand in for it, and the messages stay.
+    doc.getElementById('email-refresh').click();
+    await settle();
+    page.fail('/api/v1/email/overview', new Error('HTTP 502'));
+    await settle();
+    assert.match(flat(summary), /Queue size unknown/);
+    assert.match(flat(summary), /HTTP 502/);
+    assert.doesNotMatch(flat(summary), /\d+ queued/);
+    assert.equal(doc.getElementById('email-queue-list').hidden, false, 'the messages hid with the size');
+    page.respond('/api/v1/email/queue?', 200, queueList([queueMsg(QID[0])], { queued: 8 }));
+    await settle();
+    assert.doesNotMatch(flat(summary), /\d+ queued/, 'the list count stood in for the unknown size');
+});
+
+test('a queue action with no answer has an unknown outcome', async () => {
+    for (const [error, words] of [
+        [Object.assign(new Error('signal is aborted without reason'), { name: 'AbortError' }), 'no answer within a minute'],
+        [new TypeError('Failed to fetch'), 'Failed to fetch']
+    ]) {
+        const page = await queuePage([queueMsg(QID[0])]);
+        stubConfirm(page);
+        const delays = [];
+        const realTimeout = page.window.setTimeout;
+        page.window.setTimeout = (fn, ms, ...args) => { delays.push(ms); return realTimeout(fn, ms, ...args); };
+        queueRow(page, QID[0]).querySelector('[data-queue-action="delete"]').click();
+        await settle();
+        page.window.setTimeout = realTimeout;
+        // exim can take most of a minute; the request waits that long.
+        assert.ok(delays.includes(60000), 'the action keeps the default timeout: ' + delays.join(', '));
+        page.fail('/api/v1/email/queue/' + QID[0] + '/delete', error);
+        await settle();
+        assert.deepEqual(page.toasts, [['Outcome unknown: ' + words + '. Refresh to check.', 'warning']]);
+        assert.equal(page.pending('/api/v1/email/queue?').length, 1, 'the list did not reload');
+    }
+});
+
+test('a failed queue reload drops the old count, and says so once', async () => {
+    const page = await queuePage([queueMsg(QID[0])], { queued: 21 });
+    const summary = page.document.getElementById('email-queue-summary');
+    assert.match(flat(summary), /^21 queued/);
+    page.document.getElementById('email-refresh').click();
+    await settle();
+    page.fail('/api/v1/email/queue?', new Error('HTTP 502'));
+    await settle();
+    assert.match(flat(summary), /Queue size unknown/);
+    // Hidden text comes back while Retry reads the queue again.
+    assert.doesNotMatch(summary.textContent, /21 queued/, 'the old count hides under the error');
+    summary.querySelector('.csm-retry-btn').click();
+    await settle();
+    assert.doesNotMatch(flat(summary), /21 queued/, 'Retry shows the old count');
+    // The summary says it; no toast says it again.
+    assert.deepEqual(page.toasts, []);
 });
 
 test('the queue filter, search and pages ask the server', async () => {
@@ -1818,14 +1907,16 @@ test('an older queue page cannot replace a newer one', async () => {
     assert.deepEqual(queueRows(page).map(r => r.getAttribute('data-queue-id')), [QID[2]]);
 });
 
-test('the queue size bar speaks its size and thresholds, and close labels share one line', async () => {
-    for (const [queue, valuetext, apart, at] of [
-        [{ size: 21, warn: 100, crit: 500 }, '21 messages, warn 100, crit 500', true],
-        // 64% and 80%: the line ends at the crit mark.
-        [{ size: 1, warn: 400, crit: 500 }, '1 message, warn 400, crit 500', false, { right: '20%' }],
+test('the queue size bar speaks its size and thresholds, and its labels share one line', async () => {
+    for (const [queue, valuetext, at] of [
+        // 16% and 80%: the line ends at the crit mark.
+        [{ size: 21, warn: 100, crit: 500 }, '21 messages, warn 100, crit 500', { right: '20%' }],
+        [{ size: 1, warn: 400, crit: 500 }, '1 message, warn 400, crit 500', { right: '20%' }],
         // 2% and 10%: the line starts at the warn mark.
-        [{ size: 5000, warn: 100, crit: 500 }, '5,000 messages, warn 100, crit 500', false, { left: '2%' }],
-        [{ size: 21, warn: 100, crit: 0 }, '21 messages, warn 100', true]
+        [{ size: 5000, warn: 100, crit: 500 }, '5,000 messages, warn 100, crit 500', { left: '2%' }],
+        // Above crit the scale grows: 8% and 33%, labels would still meet.
+        [{ size: 6000, warn: 500, crit: 2000 }, '6,000 messages, warn 500, crit 2,000', { left: '8%' }],
+        [{ size: 21, warn: 100, crit: 0 }, '21 messages, warn 100', { right: '20%' }]
     ]) {
         const page = emailPage();
         page.respond('/api/v1/email/overview', 200, overview({}, { queue: Object.assign({ unavailable: false, frozen: 0, detail_unavailable: false }, queue) }));
@@ -1833,18 +1924,14 @@ test('the queue size bar speaks its size and thresholds, and close labels share 
         const health = page.document.getElementById('queue-health');
         assert.equal(health.querySelector('.progress-bar').getAttribute('aria-valuetext'), valuetext);
         const marks = [['warn', queue.warn], ['crit', queue.crit]].filter(m => m[1] > 0);
-        const line = health.querySelector('.csm-queue-bar__labels');
-        if (apart) {
-            assert.equal(line, null, valuetext + ': labels share a line though their marks are apart');
-            assert.deepEqual(Array.from(health.querySelectorAll('.csm-queue-mark__label')).map(flat), marks.map(m => m[0] + ' ' + CSMnum(m[1])));
-        } else {
-            // Marks within a fifth of the bar of each other would print one
-            // label over the other.
-            assert.equal(health.querySelectorAll('.csm-queue-mark__label').length, 0, valuetext + ': labels still sit under close marks');
-            assert.ok(line, valuetext + ': no shared label line');
-            assert.equal(flat(line), marks.map(m => m[0] + ' ' + CSMnum(m[1])).join(', '));
-            assert.deepEqual({ left: line.style.left || undefined, right: line.style.right || undefined }, Object.assign({ left: undefined, right: undefined }, at));
-        }
+        assert.deepEqual(Array.from(health.querySelectorAll('[data-queue-mark]')).map(m => m.getAttribute('data-queue-mark')), marks.map(m => m[0]));
+        // A label under each mark prints over the other once the marks
+        // close up, so every label goes on one line.
+        assert.equal(health.querySelectorAll('.csm-queue-mark__label').length, 0, valuetext + ': a label still sits under its mark');
+        const lines = health.querySelectorAll('.csm-queue-bar__labels');
+        assert.equal(lines.length, 1, valuetext + ': not one labels line');
+        assert.equal(flat(lines[0]), marks.map(m => m[0] + ' ' + CSMnum(m[1])).join(', '));
+        assert.deepEqual({ left: lines[0].style.left || undefined, right: lines[0].style.right || undefined }, Object.assign({ left: undefined, right: undefined }, at));
     }
 });
 
@@ -1932,8 +2019,9 @@ test('tab counts read as words, with their level, to a screen reader', async () 
     assert.equal(spoken(tab(page)), 'Queue', 'a count before the overview answered');
     for (const [queue, words] of [
         [{ size: 99 }, 'Queue 99 queued'],
-        [{ size: 118 }, 'Queue 118 queued, above warning level'],
-        [{ size: 1234 }, 'Queue 1,234 queued, above critical level'],
+        [{ size: 118 }, 'Queue 118 queued, at or above warning level'],
+        [{ size: 1234 }, 'Queue 1,234 queued, at or above critical level'],
+        [{ size: 500 }, 'Queue 500 queued, at or above critical level'],
         [{ size: 0, unavailable: true }, 'Queue count unknown']
     ]) {
         const p = emailPage();

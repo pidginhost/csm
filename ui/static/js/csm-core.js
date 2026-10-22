@@ -20,8 +20,9 @@ var CSM = CSM || {};
 // The CSRF token for state-changing requests, from <meta name="csrf-token">.
 CSM.csrfToken = (document.querySelector('meta[name="csrf-token"]') || {}).content || '';
 
-// Wrapper for POST requests with CSRF token
-CSM.post = function(url, body) {
+// Wrapper for POST requests with CSRF token. opts.timeoutMs replaces the
+// default request timeout.
+CSM.post = function(url, body, opts) {
     return CSM.request(url, {
         method: 'POST',
         headers: {
@@ -29,7 +30,8 @@ CSM.post = function(url, body) {
             'X-CSRF-Token': CSM.csrfToken
         },
         body: JSON.stringify(body),
-        silent: true
+        silent: true,
+        timeoutMs: opts && opts.timeoutMs
     }).then(function(r) { return r.json(); });
 };
 

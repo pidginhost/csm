@@ -158,6 +158,7 @@
     var num = function(n) { return CSM.formatNumber(n || 0); };
 
     var _overview = null;
+    var _overviewErr = null; // why the last overview failed, if it did
     var _overviewRange = null;
     var _overviewSeq = 0;
     var _rspamd = null;
@@ -170,6 +171,7 @@
             .then(function(ov) {
                 if (seq !== _overviewSeq) return;
                 _overview = ov;
+                _overviewErr = null;
                 _overviewRange = range;
                 CSM.clearLoadError(document.getElementById('email-kpis'));
                 CSM.clearLoadError(document.getElementById('email-decisions-chart').parentElement);
@@ -178,10 +180,12 @@
                 renderChart(ov, range);
                 renderSubtitle();
                 renderProtection();
+                renderQueueSummary();
             })
             .catch(function(err) {
                 if (seq !== _overviewSeq) return;
                 _overview = null;
+                _overviewErr = err;
                 _overviewRange = null;
                 document.getElementById('email-subtitle').textContent = 'Mail numbers unavailable.';
                 CSM.loadError(document.getElementById('email-kpis'), loadOverview, { title: 'Failed to load mail numbers', error: err });
@@ -192,6 +196,7 @@
                 ['prot-antispam', 'prot-smtp'].forEach(function(id) {
                     CSM.loadError(document.getElementById(id), loadOverview, { title: 'Protection status unavailable', error: err });
                 });
+                renderQueueSummary();
             });
     }
 
@@ -762,23 +767,22 @@
         CSM.setProgressBar(bar, size / scale * 100);
         track.appendChild(bar);
         wrap.appendChild(track);
-        // Labels under marks within a fifth of the bar of each other would
-        // print over one another, so they share one line instead.
-        var shared = marks.length === 2 && Math.abs(marks[1].at - marks[0].at) < 20;
         marks.forEach(function(m) {
             var mark = node('div', 'csm-queue-mark csm-queue-mark--' + m.name);
             mark.setAttribute('data-queue-mark', m.name);
             mark.style.left = m.at + '%';
-            if (!shared) mark.appendChild(node('span', 'csm-queue-mark__label', m.label));
             wrap.appendChild(mark);
         });
-        if (shared) {
-            var line = node('div', 'csm-queue-bar__labels', marks[0].label + ', ' + marks[1].label);
-            // The line ends at the right mark, or starts at the left one
-            // when both sit in the left half.
-            var right = Math.max(marks[0].at, marks[1].at);
+        // A label under each mark prints over the other once the marks
+        // close up, as they do above crit where the scale grows, so the
+        // labels share one line. It ends at the right mark, or starts at
+        // the left one when the marks sit in the left half.
+        if (marks.length > 0) {
+            var ats = marks.map(function(m) { return m.at; });
+            var line = node('div', 'csm-queue-bar__labels', marks.map(function(m) { return m.label; }).join(', '));
+            var right = Math.max.apply(null, ats);
             if (right > 50) line.style.right = (100 - right) + '%';
-            else line.style.left = Math.min(marks[0].at, marks[1].at) + '%';
+            else line.style.left = Math.min.apply(null, ats) + '%';
             wrap.appendChild(line);
         }
         el.replaceChildren(wrap);
@@ -1681,7 +1685,8 @@
         var params = 'page=' + _queuePage + '&limit=' + QUEUE_PAGE_SIZE +
             '&filter=' + encodeURIComponent(queueFilterEl ? queueFilterEl.value : 'all') +
             '&q=' + encodeURIComponent(queueSearchEl ? queueSearchEl.value.trim() : '');
-        CSM.get('/api/v1/email/queue?' + params)
+        // The list has its own error state, so no toast repeats it.
+        CSM.get('/api/v1/email/queue?' + params, { silent: true })
             .then(function(data) {
                 if (seq !== _queueSeq) return;
                 if (data.unavailable) {
@@ -1719,29 +1724,50 @@
         resetQueueTable();
         var list = document.getElementById('email-queue-list');
         if (list) list.hidden = true;
-        CSM.loadError(document.getElementById('email-queue-summary'), loadQueue, { title: 'Queue size unknown', error: err });
+        var summary = document.getElementById('email-queue-summary');
+        // Retry shows what the error covers; an old count must not return.
+        if (summary) summary.replaceChildren();
+        CSM.loadError(summary, loadQueue, { title: 'Queue size unknown', error: err });
     }
 
     function renderQueue(data) {
         _queue = data;
         renderQueueSummary();
-        var list = document.getElementById('email-queue-list');
-        if (list) list.hidden = !(data.queued > 0);
         renderQueueRows(Array.isArray(data.items) ? data.items : []);
         renderQueuePager(data.total || 0);
     }
 
+    // queueSize is the live queue size the card and the tab count show,
+    // or null while it is not known.
+    function queueSize() {
+        var q = _overview && _overview.queue;
+        return q && !q.unavailable ? q.size || 0 : null;
+    }
+
     // renderQueueSummary says in one sentence how much is queued, frozen
-    // and how old, and how much of it is backscatter, with the flush.
+    // and how old, and how much of it is backscatter, with the flush. The
+    // count is the card's live size; the list's own count comes from a
+    // listing up to a minute old, and the two must not disagree.
     function renderQueueSummary() {
         var el = document.getElementById('email-queue-summary');
         if (!el || !_queue) return;
         var q = _queue;
-        if (!(q.queued > 0)) {
+        var size = queueSize();
+        var list = document.getElementById('email-queue-list');
+        if (list) list.hidden = !((size === null ? q.queued : size) > 0);
+        if (size === null) {
+            // Wait for the overview; once it has failed, say so.
+            if (_overview || _overviewErr) {
+                el.replaceChildren();
+                CSM.loadError(el, loadOverview, { title: 'Queue size unknown', error: _overviewErr || 'CSM could not read the mail queue.' });
+            }
+            return;
+        }
+        if (size === 0) {
             el.replaceChildren(node('div', 'fw-medium', 'The queue is empty.'));
             return;
         }
-        var text = num(q.queued) + ' queued, ' + num(q.frozen) + ' frozen';
+        var text = num(size) + ' queued, ' + num(q.frozen) + ' frozen';
         if (q.oldest_seconds != null) text += ', oldest ' + CSM.formatDuration(q.oldest_seconds);
         text += '.';
         if (q.backscatter === 1) text += ' 1 is a bounce to a sender that does not exist (backscatter).';
@@ -1969,7 +1995,8 @@
         var a = QUEUE_ACTIONS[name];
         CSM.confirm(a.ask(queueTarget(m), m), { danger: !!a.danger, okLabel: a.title }).then(function() {
             btn.disabled = true;
-            CSM.post('/api/v1/email/queue/' + encodeURIComponent(m.id) + '/' + name, {})
+            // exim can take most of a minute to act and to list the queue.
+            CSM.post('/api/v1/email/queue/' + encodeURIComponent(m.id) + '/' + name, {}, { timeoutMs: 60000 })
                 .then(function(res) {
                     var outcome = res && res.outcome;
                     if (Object.prototype.hasOwnProperty.call(QUEUE_OUTCOMES, outcome)) CSM.toast(QUEUE_OUTCOMES[outcome][0], QUEUE_OUTCOMES[outcome][1]);
@@ -1978,12 +2005,13 @@
                 .catch(function(err) {
                     // 409: the message left the queue before the action
                     // ran. Another answer means the queue shows no change,
-                    // and its error says why. With no answer at all, the
-                    // reload shows what happened.
+                    // and its error says why, unless the action ran and
+                    // the queue could not be read afterwards. With no
+                    // answer at all, the action may have run too.
                     if (err && err.status === 409) CSM.toast('No longer in the queue', 'info');
                     else if (err && err.status === 503) CSM.toast('Queue actions need systemd-run on this server.', 'error');
-                    else if (err && err.status) CSM.toast('Nothing changed: ' + CSM.errorText(err), 'warning');
-                    else CSM.toast('Queue action failed: ' + CSM.errorText(err), 'error');
+                    else if (err && err.status && !/could not be read back/.test(CSM.errorText(err))) CSM.toast('Nothing changed: ' + CSM.errorText(err), 'warning');
+                    else CSM.toast('Outcome unknown: ' + (err && err.name === 'AbortError' ? 'no answer within a minute' : CSM.errorText(err)) + '. Refresh to check.', 'warning');
                 })
                 .then(reloadQueue);
         }).catch(function() { /* cancelled */ });
@@ -2382,8 +2410,8 @@
     };
     // A count at a threshold: its badge color and what it adds in words.
     var TAB_COUNT_LEVELS = {
-        warn: ['badge-warning', ', above warning level'],
-        crit: ['badge-critical', ', above critical level']
+        warn: ['badge-warning', ', at or above warning level'],
+        crit: ['badge-critical', ', at or above critical level']
     };
 
     // setTabCount shows a job tab's count: a number, or '?' for unknown.

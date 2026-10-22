@@ -261,9 +261,8 @@ tr[tabindex]:focus-visible, th[tabindex]:focus-visible { outline: 2px solid var(
     #email-kpis .card-body { padding: 0.75rem; }
 }
 
-/* Mail queue size bar: the warn and crit marks sit on the bar, each
-   labeled under it. The crit label ends at its mark so the two labels
-   part. */
+/* Mail queue size bar: the warn and crit marks sit on the bar, and their
+   labels share one line under it. */
 .csm-queue-bar { position: relative; padding-bottom: 1.25rem; }
 .csm-queue-bar .progress { height: 0.75rem; }
 .csm-queue-mark {
@@ -275,16 +274,6 @@ tr[tabindex]:focus-visible, th[tabindex]:focus-visible { outline: 2px solid var(
     background: var(--csm-warning);
 }
 .csm-queue-mark--crit { background: var(--csm-critical); }
-.csm-queue-mark__label {
-    position: absolute;
-    top: 100%;
-    left: 0;
-    font-size: 0.75rem;
-    color: var(--csm-secondary);
-    white-space: nowrap;
-}
-.csm-queue-mark--crit .csm-queue-mark__label { left: auto; right: 0; }
-/* Marks too close for a label each share one line under the bar. */
 .csm-queue-bar__labels {
     position: absolute;
     bottom: 0;
