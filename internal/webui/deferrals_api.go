@@ -37,7 +37,8 @@ func (s *Server) apiEmailDeferrals(w http.ResponseWriter, r *http.Request) {
 	// The report reads up to 8 MiB of exim_mainlog, and the page asks for
 	// it on every load and every minute while its tab is open, so one read
 	// serves memoMaxAge. History does not change it: the mark stays fixed.
-	res := s.emailMemos.memo("deferrals").get("", func() any {
+	// The memo is its own, so other memoized queries cannot evict it.
+	res := s.deferralsMemo.get("", func() any {
 		rep, err := s.deferralReporter.Report()
 		return deferralsResult{rep, err}
 	}).(deferralsResult)

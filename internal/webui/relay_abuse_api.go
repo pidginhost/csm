@@ -80,9 +80,12 @@ func (s *Server) apiEmailRelayAbuse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, s.emailMemo(rangeMemoKey("relay", from, to)+"&limit="+strconv.Itoa(limit), func() any {
+	resp := s.emailMemo(rangeMemoKey("relay", from, to)+"&limit="+strconv.Itoa(limit), func() any {
 		return s.buildRelayAbuseResponse(from, to, limit)
-	}))
+	}).(relayAbuseResponse)
+	// A result shared within the minute answers with this request's range.
+	resp.From, resp.To = from.UTC(), to.UTC()
+	writeJSON(w, resp)
 }
 
 func (s *Server) buildRelayAbuseResponse(from, to time.Time, limit int) relayAbuseResponse {

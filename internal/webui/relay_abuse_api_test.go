@@ -159,3 +159,24 @@ func TestRelayAbuseMemoSharedWithinMinute(t *testing.T) {
 		t.Errorf("next minute: total = %d, want 2", n)
 	}
 }
+
+// A request served from the memo still names its own range.
+func TestRelayAbuseMemoAnswersWithTheCallersRange(t *testing.T) {
+	s := newTestServerWithBbolt(t, "tok")
+	get := func(to string) relayAbuseResponse {
+		t.Helper()
+		w := httptest.NewRecorder()
+		s.apiEmailRelayAbuse(w, httptest.NewRequest(http.MethodGet, "/api/v1/email/relay-abuse?limit=20&from=2026-10-20T10:00:00Z&to="+to, nil))
+		var resp relayAbuseResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil || w.Code != http.StatusOK {
+			t.Fatalf("status %d, %v: %s", w.Code, err, w.Body.String())
+		}
+		return resp
+	}
+	get("2026-10-20T12:00:10Z")
+	resp := get("2026-10-20T12:00:40Z")
+	want := time.Date(2026, 10, 20, 12, 0, 40, 0, time.UTC)
+	if !resp.To.Equal(want) || !resp.From.Equal(time.Date(2026, 10, 20, 10, 0, 0, 0, time.UTC)) {
+		t.Errorf("range %v .. %v, want the caller's 10:00:00 .. %v", resp.From, resp.To, want)
+	}
+}

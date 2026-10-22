@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 
@@ -188,5 +189,33 @@ func TestApiEmailDeferralsReadsTheLogOncePerMinute(t *testing.T) {
 	get()
 	if src.reads != 2 {
 		t.Errorf("an expired answer was reused: %d reads, want 2", src.reads)
+	}
+}
+
+// Any read token can send groups queries that each take a memo; they must
+// not push the deferrals answer out and force a fresh log read.
+func TestApiEmailDeferralsMemoSurvivesGroupsTraffic(t *testing.T) {
+	s := newTestServerWithBbolt(t, "tok")
+	src := &countingReporter{rep: intel.Report{Providers: []intel.ProviderRollup{}, OutboundIPs: []intel.OutboundIPRollup{}}}
+	s.deferralReporter = src
+	deferrals := func() {
+		t.Helper()
+		w := httptest.NewRecorder()
+		s.apiEmailDeferrals(w, httptest.NewRequest(http.MethodGet, "/api/v1/email/deferrals", nil))
+		if w.Code != http.StatusOK {
+			t.Fatalf("deferrals status = %d, want 200", w.Code)
+		}
+	}
+	deferrals()
+	for i := 1; i <= historyMemosMax+8; i++ {
+		w := httptest.NewRecorder()
+		s.apiEmailGroups(w, httptest.NewRequest(http.MethodGet, "/api/v1/email/groups?limit="+strconv.Itoa(i), nil))
+		if w.Code != http.StatusOK {
+			t.Fatalf("groups status = %d, want 200", w.Code)
+		}
+	}
+	deferrals()
+	if src.reads != 1 {
+		t.Errorf("groups traffic evicted the deferrals answer: %d log reads, want 1", src.reads)
 	}
 }

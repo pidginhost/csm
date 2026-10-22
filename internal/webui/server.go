@@ -160,9 +160,10 @@ type Server struct {
 	// handler tests can hold one without running checks.
 	scanInProgress func() bool
 	// Results computed from recent history, reused while it is unchanged.
-	statsMemo    historyMemo
-	timelineMemo historyMemo
-	emailMemos   historyMemos
+	statsMemo     historyMemo
+	timelineMemo  historyMemo
+	deferralsMemo historyMemo
+	emailMemos    historyMemos
 	// rspamdSource is set before Start. rspamdMu guards rspamdCache and
 	// is held across a controller read.
 	rspamdSource func() (ep antispam.StatsEndpoint, reason string, down bool)
