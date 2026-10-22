@@ -2599,10 +2599,10 @@ func validateForwardGuard(cfg *Config) error {
 		return fmt.Errorf("email_protection.forward_guard.quarantine_retention_days must be > 0 when enabled")
 	}
 	// Enforce mode requires a signal exim can actually evaluate at routing time.
-	// spam_flagged/malware/auth_fail are accounted in dry-run but not yet
-	// enforceable, so enforcing with only those on would silently hold nothing.
-	if !fg.DryRun && !fg.HoldSignals.BounceBackscatter && !fg.HoldSignals.BadSenderIP {
-		return fmt.Errorf("email_protection.forward_guard: enforce mode (dry_run:false) requires bounce_backscatter or bad_sender_ip enabled; spam_flagged/malware/auth_fail are dry-run only until exim content scanning is enabled")
+	// malware/auth_fail are accounted in dry-run but not yet enforceable, so
+	// enforcing with only those on would silently hold nothing.
+	if !fg.DryRun && !fg.HoldSignals.BounceBackscatter && !fg.HoldSignals.BadSenderIP && !fg.HoldSignals.SpamFlagged {
+		return fmt.Errorf("email_protection.forward_guard: enforce mode (dry_run:false) requires bounce_backscatter, bad_sender_ip or spam_flagged enabled; malware/auth_fail are dry-run only")
 	}
 	return nil
 }

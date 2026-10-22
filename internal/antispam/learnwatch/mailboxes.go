@@ -129,8 +129,9 @@ func unsafeErr(err error) bool {
 
 // Mailboxes lists the main mailbox and every valid mailbox of every valid
 // domain directory under ~/etc, within the discovery bounds. It never lists
-// ~/mail, so the virtual namespace is never followed. Unsafe or unsupported
-// entries are skipped; a transient failure is an error.
+// ~/mail, so the virtual namespace is never followed. Entries of ~/etc that
+// are not directories, links included, are not domains. Unsafe or
+// unsupported entries are skipped; a transient failure is an error.
 func (h *Home) Mailboxes() ([]Mailbox, []Skip, error) {
 	out := []Mailbox{{}}
 	etc, err := h.dir.Walk("etc")
@@ -179,14 +180,14 @@ func domainDirs(etc *safepath.Dir) ([]string, []Skip, error) {
 				return domains, append(skips, Skip{Reason: SkipMailboxLimit}), nil
 			}
 			name, typ := e.Name(), e.Type()
+			// Only directories are domains. Links are never followed and,
+			// like files, are ignored: cPanel keeps non-domain links here.
 			switch {
 			case strings.HasPrefix(name, "."):
 			case !ValidDomain(name):
 				if typ.IsDir() {
 					skips = append(skips, Skip{Reason: SkipUnsupportedName})
 				}
-			case typ&fs.ModeSymlink != 0:
-				skips = append(skips, Skip{Reason: SkipUnsafePath})
 			case typ.IsDir():
 				domains = append(domains, name)
 			}

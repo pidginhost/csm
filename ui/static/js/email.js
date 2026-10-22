@@ -1652,7 +1652,7 @@
     // drawn again, so its link keeps the focus.
     var _heldSummaryKey = '';
     // Why the guard held a forward copy, from its reason codes.
-    var HELD_REASONS = { bounce_backscatter: 'a bounce (backscatter)', bad_sender_ip: 'sent from a listed bad IP' };
+    var HELD_REASONS = { bounce_backscatter: 'a bounce (backscatter)', bad_sender_ip: 'sent from a listed bad IP', spam_flagged: 'tagged as spam' };
 
     // Malware rows can be released or deleted together.
     var _emailQuarBulk = CSM.bulk({

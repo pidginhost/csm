@@ -1020,19 +1020,19 @@ func (r *accountRun) attempt(ctx context.Context, rep *PassReport) {
 		_ = f.Close()
 		return
 	}
-	snap, _, st, err := f.ReadMessage(it.Name, ownerUID(r.a))
+	snap, meta, st, err := f.ReadMessage(it.Name, ownerUID(r.a))
 	_ = f.Close()
 	if !allowed() {
 		return
 	}
 	switch {
-	case err != nil, st == ReadPendingLinked, st == ReadPendingChanged:
+	case err != nil, st == ReadPendingChanged:
 		retry()
 		return
 	case st == ReadGone:
 		forget()
 		return
-	case st != ReadOK:
+	case st != ReadOK && st != ReadPendingLinked:
 		rep.Skipped[st.String()]++
 		mark(SkippedStatus(st.String()))
 		return
@@ -1041,6 +1041,25 @@ func (r *accountRun) attempt(ctx context.Context, rep *PassReport) {
 		rep.Skipped[v.String()]++
 		mark(SkippedStatus(v.String()))
 		return
+	}
+	// A move links the message into its new folder before unlinking the old
+	// one, in either direction. Count a linked message only once its links
+	// and content have stayed unchanged for a pass interval; a lasting copy,
+	// such as one delivery shared by several mailboxes, then counts.
+	if st == ReadPendingLinked {
+		var settled bool
+		err = r.state().Update(func(tx StateTx) (e error) {
+			settled, e = tx.LinkedSettled(k, it.Base, meta)
+			return e
+		})
+		if r.stateFailed(err, rep) {
+			hold()
+			return
+		}
+		if !settled {
+			retry()
+			return
+		}
 	}
 	if !r.eligible(ctx, rep) {
 		if len(r.queues) > 0 {

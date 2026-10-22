@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -174,14 +176,101 @@ func TestRenderRouterOnlyBounceOmitsBadIPClause(t *testing.T) {
 
 func TestRenderRouterNoEnforceableSignalErrors(t *testing.T) {
 	a, _ := testAdapter(t)
-	if _, err := a.renderRouter(policy.HoldSignals{SpamFlagged: true, Malware: true, AuthFail: true}); err == nil {
+	if _, err := a.renderRouter(policy.HoldSignals{Malware: true, AuthFail: true}); err == nil {
 		t.Fatal("expected error: no routing-time-enforceable signal")
+	}
+}
+
+func TestRenderRouterSpamFlaggedHoldsTaggedForwards(t *testing.T) {
+	a, _ := testAdapter(t)
+	router, err := a.renderRouter(policy.HoldSignals{SpamFlagged: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "  condition = ${if and{ {def:parent_local_part} {or{ {match{$h_x-spam-status:}{\\N(?im)^Yes[[:blank:]]*(,|$)\\N}} } } }{yes}{no}}\n"
+	if !strings.Contains(router, want) {
+		t.Errorf("router missing spam-only condition %q\n%s", want, router)
+	}
+}
+
+// Exim joins repeated $h_ fields with newlines, trimming each field's outer
+// whitespace. Test the pattern from both rendered contexts, including the
+// transport's config-string quoting, rather than a second copy of it.
+func TestSpamFlaggedMatchesVerdictInAnyHeader(t *testing.T) {
+	a, _ := testAdapter(t)
+	sig := policy.HoldSignals{SpamFlagged: true}
+	router, err := a.renderRouter(sig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport := a.renderTransport(sig)
+	_, quoted, ok := strings.Cut(transport, "  headers_add = ")
+	if !ok {
+		t.Fatal("transport has no headers_add")
+	}
+	quoted, _, _ = strings.Cut(quoted, "\n")
+	headers, err := strconv.Unquote(quoted)
+	if err != nil {
+		t.Fatalf("transport header quoting: %v", err)
+	}
+	for name, rendered := range map[string]string{"router": router, "transport": headers} {
+		t.Run(name, func(t *testing.T) {
+			_, rest, ok := strings.Cut(rendered, "match{$h_x-spam-status:}{")
+			if !ok {
+				t.Fatal("missing spam header match")
+			}
+			pattern, _, ok := strings.Cut(rest, "}")
+			if !ok {
+				t.Fatal("unterminated spam header pattern")
+			}
+			pattern = strings.TrimSuffix(strings.TrimPrefix(pattern, `\N`), `\N`)
+			re, err := regexp.Compile(pattern)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, tc := range []struct {
+				name, value string
+				want        bool
+			}{
+				{"absent", "", false},
+				{"not spam", "No, score=0", false},
+				{"tagged", "Yes, score=8", true},
+				{"bare verdict", "Yes", true},
+				{"mixed case", "yEs, score=8", true},
+				{"later tagged header", "No, score=0\nYes, score=8", true},
+				{"earlier tagged header", "Yes, score=8\nNo, score=0", true},
+				{"folded score", "Yes,\n score=8", true},
+				{"space before comma", "Yes \t, score=8", true},
+				{"prefix only", "Yesterday", false},
+				{"not a verdict", "Yes indeed", false},
+				{"embedded word", "No, test=Yes", false},
+				{"continuation text", "No,\n Yes, score=8", false},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					if got := re.MatchString(tc.value); got != tc.want {
+						t.Errorf("spam verdict in %q = %t, want %t", tc.value, got, tc.want)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestRenderTransportReasonsNameOnlyEnabledSignals(t *testing.T) {
+	a, _ := testAdapter(t)
+	tr := a.renderTransport(policy.HoldSignals{BounceBackscatter: true, SpamFlagged: true})
+	want := `X-CSM-Reasons: ${if eq{$sender_address}{}{bounce_backscatter,}}${if match{$h_x-spam-status:}{\\N(?im)^Yes[[:blank:]]*(,|$)\\N}{spam_flagged,}}"`
+	if !strings.Contains(tr, want) {
+		t.Errorf("transport reasons = want %q\n%s", want, tr)
+	}
+	if strings.Contains(tr, "bad_sender_ip") {
+		t.Errorf("disabled bad_sender_ip named in reasons:\n%s", tr)
 	}
 }
 
 func TestRenderTransportMatchesQuarantineContract(t *testing.T) {
 	a, _ := testAdapter(t)
-	tr := a.renderTransport()
+	tr := a.renderTransport(bothSignals().HoldSignals)
 	for _, want := range []string{
 		"csm_forward_hold:",
 		"driver = appendfile",
@@ -191,7 +280,7 @@ func TestRenderTransportMatchesQuarantineContract(t *testing.T) {
 		"X-CSM-Forwarder: $parent_local_part@$parent_domain",
 		"X-CSM-Recipient: $local_part@$domain",
 		"X-CSM-Sender: $sender_address",
-		"X-CSM-Reasons: ${if eq{$sender_address}{}{bounce_backscatter}{bad_sender_ip}}",
+		"X-CSM-Reasons: ${if eq{$sender_address}{}{bounce_backscatter,}}${if eq{${lookup{$sender_host_address}lsearch{" + a.badIPsPath + "}{1}{0}}}{1}{bad_sender_ip,}}\"",
 	} {
 		if !strings.Contains(tr, want) {
 			t.Errorf("transport missing %q\n%s", want, tr)
@@ -554,7 +643,7 @@ func TestApplyRemovesDuplicateManagedBlocksOnReapply(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	transport := a.renderTransport()
+	transport := a.renderTransport(bothSignals().HoldSignals)
 	existing := strings.Replace(platform.EximLocalSkeleton, "@ROUTERSTART@\n", "@ROUTERSTART@\n"+router+"\n"+router+"\n", 1)
 	existing = strings.Replace(existing, "@TRANSPORTSTART@\n", "@TRANSPORTSTART@\n"+transport+"\n"+transport+"\n", 1)
 	if err = os.WriteFile(a.localConf, []byte(existing), 0644); err != nil {
@@ -674,7 +763,7 @@ func TestRemoveStripsDuplicateManagedBlocks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	transport := a.renderTransport()
+	transport := a.renderTransport(bothSignals().HoldSignals)
 	existing := strings.Replace(platform.EximLocalSkeleton, "@ROUTERSTART@\n", "@ROUTERSTART@\n"+router+"\n"+router+"\n", 1)
 	existing = strings.Replace(existing, "@TRANSPORTSTART@\n", "@TRANSPORTSTART@\n"+transport+"\n"+transport+"\n", 1)
 	if err = os.WriteFile(a.localConf, []byte(existing), 0644); err != nil {
