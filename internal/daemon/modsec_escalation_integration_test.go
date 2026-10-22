@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -249,25 +250,114 @@ func TestParseModSec_SingleHitRuleEscalatesOnFirstDeny(t *testing.T) {
 	}
 }
 
-// The per-rule escalation exclusion still wins over the single-hit table.
-func TestParseModSec_StoreNoEscalateSuppressesSingleHit(t *testing.T) {
-	resetModSecState()
-	sdb, err := store.Open(t.TempDir())
+// A tool-identifying User-Agent is distinct from an endpoint-only match.
+func TestParseModSec_WP2ShellEscalatesOnFirstDeny(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Thresholds.ModSecEscalationHits = 10
+	cfg.Thresholds.ModSecEscalationWindowMin = 120
+	for _, server := range []string{"apache", "litespeed"} {
+		t.Run(server, func(t *testing.T) {
+			resetModSecState()
+			t.Cleanup(resetModSecState)
+			installModSecRegistryForTest(t, map[int]string{900122: "deny"})
+			line := modsecApacheLine("203.0.113.65", "900122", "CSM: Blocked wp2shell exploit tool User-Agent", "")
+			if server == "litespeed" {
+				line = strings.Replace(liteSpeedTriggerLine210710, `"210710"`, `"900122"`, 1)
+			}
+			findings := parseModSecLogLineDeduped(line, cfg)
+			if len(findings) != 2 || findings[0].Check != "modsec_csm_block_escalation" || findings[1].Check != "modsec_block_realtime" {
+				t.Fatalf("first tool deny findings = %+v", findings)
+			}
+			if got := parseModSecLogLineDeduped(line, cfg); len(got) != 0 {
+				t.Fatalf("repeated tool deny emitted duplicate findings: %+v", got)
+			}
+		})
+	}
+}
+
+// The shipped URI-only rule also denies benign references and diagnostic
+// requests. Those denies must retain the normal escalation policy.
+func TestParseModSec_FileManagerRequiresRepeatedDenies(t *testing.T) {
+	match := regexp.MustCompile(`SecRule REQUEST_URI "([^"]+)" \\\n\s+"id:900107,`).FindStringSubmatch(string(embeddedModSec))
+	if len(match) != 2 {
+		t.Fatal("missing WP File Manager URI rule")
+	}
+	uriRE, err := regexp.Compile(match[1])
 	if err != nil {
 		t.Fatal(err)
 	}
-	prev := store.Global()
-	store.SetGlobal(sdb)
-	t.Cleanup(func() {
-		store.SetGlobal(prev)
-		_ = sdb.Close()
-	})
-	if err := sdb.AddModSecNoEscalateRule(900133); err != nil {
-		t.Fatal(err)
+	const connector = "/wp-content/plugins/wp-file-manager/lib/php/connector.minimal.php"
+	for _, tc := range []struct{ name, method, uri string }{
+		{"owner_get", "GET", connector},
+		{"health_check", "HEAD", connector},
+		{"query_reference", "GET", "/help?file=" + connector},
+		{"redirect_target", "GET", "/wp-login.php?redirect_to=" + connector},
+		{"path_suffix", "GET", connector + ".txt"},
+	} {
+		for _, server := range []string{"apache", "litespeed"} {
+			t.Run(tc.name+"/"+server, func(t *testing.T) {
+				resetModSecState()
+				t.Cleanup(resetModSecState)
+				if !uriRE.MatchString(tc.uri) {
+					t.Fatalf("shipped URI rule does not match fixture %q", tc.uri)
+				}
+				installModSecRegistryForTest(t, map[int]string{900107: "deny"})
+				cfg := &config.Config{}
+				cfg.Thresholds.ModSecEscalationHits = 10
+				cfg.Thresholds.ModSecEscalationWindowMin = 120
+				line := modsecApacheLine("203.0.113.66", "900107", "CSM VP: WP File Manager arbitrary upload", "")
+				uri, _, _ := strings.Cut(tc.uri, "?")
+				line = strings.Replace(line, `[uri "/checkout"]`, `[uri "`+uri+`"]`, 1)
+				if server == "litespeed" {
+					line = strings.Replace(liteSpeedTriggerLine210710, `"210710"`, `"900107"`, 1)
+				}
+				line += ` [data "` + tc.method + ` ` + tc.uri + `"]`
+				for hit := 1; hit <= cfg.Thresholds.ModSecEscalationHits; hit++ {
+					findings := parseModSecLogLineDeduped(line, cfg)
+					switch hit {
+					case 1:
+						if len(findings) != 1 || findings[0].Check != "modsec_block_realtime" {
+							t.Fatalf("first endpoint deny findings = %+v", findings)
+						}
+					case cfg.Thresholds.ModSecEscalationHits:
+						if len(findings) != 1 || findings[0].Check != "modsec_csm_block_escalation" {
+							t.Fatalf("endpoint denies at configured count did not escalate: %+v", findings)
+						}
+					default:
+						if len(findings) != 0 {
+							t.Fatalf("endpoint deny %d below configured count emitted findings: %+v", hit, findings)
+						}
+					}
+				}
+			})
+		}
 	}
-	line := modsecApacheLine("203.0.113.64", "900133",
-		"CSM VP: PHP session upload progress field (PHP2Shell)", "")
-	if modsecFindingChecks(&config.Config{}, []string{line})["modsec_csm_block_escalation"] {
-		t.Fatal("store-backed no-escalate rule must suppress single-hit escalation")
+}
+
+// The per-rule escalation exclusion still wins over the single-hit table.
+func TestParseModSec_StoreNoEscalateSuppressesSingleHit(t *testing.T) {
+	for _, rule := range []int{900122, 900133} {
+		t.Run(fmt.Sprint(rule), func(t *testing.T) {
+			resetModSecState()
+			t.Cleanup(resetModSecState)
+			sdb, err := store.Open(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			prev := store.Global()
+			store.SetGlobal(sdb)
+			t.Cleanup(func() {
+				store.SetGlobal(prev)
+				_ = sdb.Close()
+			})
+			if err := sdb.AddModSecNoEscalateRule(rule); err != nil {
+				t.Fatal(err)
+			}
+			line := modsecApacheLine("203.0.113.64", fmt.Sprint(rule), "CSM exploit-specific deny", "")
+			findings := parseModSecLogLineDeduped(line, &config.Config{})
+			if len(findings) != 1 || findings[0].Check != "modsec_block_realtime" {
+				t.Fatalf("excluded rule must retain only the WAF deny finding: %+v", findings)
+			}
+		})
 	}
 }
