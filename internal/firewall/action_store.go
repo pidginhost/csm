@@ -2,6 +2,7 @@ package firewall
 
 import (
 	"errors"
+	"net"
 	"slices"
 	"sync"
 	"time"
@@ -93,6 +94,31 @@ func (a FirewallAction) SameManifest(b FirewallAction) bool {
 	return a.Request == b.Request && slices.EqualFunc(a.ActionMembers(), b.ActionMembers(), func(x, y ActionMember) bool {
 		return x.Request == y.Request && slices.EqualFunc(x.Victims, y.Victims, SameBlockedEntry)
 	})
+}
+
+// removedVictims returns the victims of m that a took out: rows its Before
+// state held exactly, at an address no row of its After state names. A batch
+// keeps every unexpired row, so a victim stored on a batch member was never
+// evicted; it is neither audited as an eviction nor restored by undo.
+func removedVictims(a FirewallAction, m ActionMember) []BlockedEntry {
+	if len(a.Members) > 1 {
+		return nil
+	}
+	var out []BlockedEntry
+	for _, v := range m.Victims {
+		held := slices.ContainsFunc(a.Before.Blocked, func(row BlockedEntry) bool { return SameBlockedEntry(row, v) })
+		kept := slices.ContainsFunc(a.After.Blocked, func(row BlockedEntry) bool { return sameAddress(row.IP, v.IP) })
+		if held && !kept {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// sameAddress reports whether two spellings name one IP address.
+func sameAddress(a, b string) bool {
+	x := net.ParseIP(a)
+	return x != nil && x.Equal(net.ParseIP(b))
 }
 
 // IsRequest reports whether a is the one-member action for exactly req, so a

@@ -40,15 +40,21 @@ func (e *Engine) AttachLifecycle(l *Lifecycle) error {
 	return nil
 }
 
-// writeFirewallActionAudit records one event per member. A batch writes its
-// members in one durable write, each with the batch's outcome and version.
+// writeFirewallActionAudit records one event per member and one evict_temp
+// event per row a member removed to make room. Several events go in one
+// durable write, each with the action's outcome and version.
 func writeFirewallActionAudit(a FirewallAction) error {
-	if len(a.Members) < 2 {
-		return actionlog.WriteDurable(firewallAuditRecord(a, a.Request))
-	}
-	records := make([]actionlog.Record, 0, len(a.Members))
-	for _, m := range a.Members {
+	var records []actionlog.Record
+	for _, m := range a.ActionMembers() {
 		records = append(records, firewallAuditRecord(a, m.Request))
+		for _, v := range removedVictims(a, m) {
+			r := firewallAuditRecord(a, m.Request)
+			r.Action, r.Target, r.Reason = "evict_temp", v.IP, evictTempReason
+			records = append(records, r)
+		}
+	}
+	if len(records) == 1 {
+		return actionlog.WriteDurable(records[0])
 	}
 	return actionlog.WriteDurableBatch(records)
 }
@@ -175,6 +181,10 @@ func (e *Engine) runDurablePlanLocked(plan FirewallAction) (FirewallAction, erro
 		plan.Request.ID = rand.Text()
 	}
 	plan.Request = normalizeActionRequest(plan.Request)
+	if len(plan.Members) == 1 {
+		// A one-member manifest repeats its header exactly.
+		plan.Members[0].Request = plan.Request
+	}
 	plan.Before, plan.Revision = prior, revision
 	at := plan.CreatedAt
 	if at.IsZero() {

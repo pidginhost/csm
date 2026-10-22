@@ -41,7 +41,13 @@ make room. Each member ID belongs to exactly one batch. Admitting a known ID
 with any change to the members, their order or their effects is refused, and
 a refused batch charges nothing. A single-target block that removes a row to
 make room records that row as its victim: the only row naming the address
-before the action, with none naming it after. A batch only adds its members'
+before the action, with none naming it after. Selection requires a verified,
+unexpired row in its canonical spelling and uses complete committed state.
+Safety and capacity use the active view of the same snapshot; the saved
+result preserves unrelated rows. In-memory unverified or failed marks also
+exclude victims, including for operator blocks, without changing the saved
+rows. Its audit writes an `evict_temp` record beside
+the block's record in the same durable write. A batch only adds its members'
 rows, each starting when the batch is planned: nothing evicts for a batch, so admission refuses one whose result drops a row that
 has not expired or changes any other entry. Kept rows retain their order.
 Unverified rows remain until their owner settles the outcome, even after
@@ -77,9 +83,9 @@ not prove that member was never applied. This also holds during immediate
 verification after apply. A durable terminal outcome is preserved on replay
 after expiry. A rejected kernel batch is not retried inside the lifecycle.
 Its owner must first prove rejection and use a new charged action for any
-retry. The existing single-request path is unchanged. Audit is delivered at
-least once; consumers deduplicate each member event by its action ID and
-transition version, not by the batch ID.
+retry. Audit is delivered at least once; consumers deduplicate each member
+or victim event by action ID, transition version, action and target, so a
+block and its eviction remain distinct.
 
 Batch replay returns the stored manifest, not a fresh decision on candidates
 left out of the original action. Nil refusals on replay do not mean every
@@ -89,7 +95,8 @@ never execute. The original refused list cannot be reconstructed. A
 singleton uses its member ID as the durable action ID; its unused header ID
 is not reserved. Retrying that exact automatic temporary block returns the
 original action before checking current policy or expiry, and cannot add
-other members. Two stored singletons in one call are a conflict. A caller
+other members. Two stored singletons in one call are a conflict. Dry run
+refuses only new work: a retry still returns the stored action. A caller
 needing a durable header alias for singletons must wait for a stored-format
 extension.
 
