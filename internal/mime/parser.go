@@ -743,7 +743,7 @@ func extractZIP(zipPath, archiveName string, limits Limits, result *ExtractionRe
 		markArchiveUnopened(result, archiveName, err)
 		return
 	}
-	if dir.Records > uint64(walkCap) {
+	if dir.Records > uint64(walkCap) { // #nosec G115 -- archiveWalkCap is at least 10.
 		markArchiveWalkCap(result, archiveName, walkCap)
 		return
 	}
