@@ -1,30 +1,27 @@
-# CSM CI tools image -- pre-installs every Go-based helper that the
-# pipeline used to `go install` on every run. The k8s runner has no
-# distributed cache and no PVC for /cache or /go, so each `go install`
-# in a job pod re-downloads modules and re-compiles binaries into a
-# fresh emptyDir that dies with the pod. Pre-baking those binaries
-# into a tagged image moves the writes onto a container image layer
-# that the node's containerd caches once and reuses across pipelines.
+# CSM CI tools image -- pre-installs every tool and package the Go jobs
+# would otherwise download or compile on every run: the Go toolchain go.mod
+# requires (the golang image sets GOTOOLCHAIN=local, so a stale image fails
+# instead of fetching a newer one), the Go analysers, node for the Web UI
+# JavaScript tests, and the apt packages the test and integration jobs use.
 #
-# Also bundles the apt packages that integration:'s before_script
-# installs on every run (openssh-client, jq) for the same reason, and
-# node for the Web UI JavaScript tests the test: job runs.
-#
-# Tag: registry.pidginhost.cloud/csm/ci-tools:go-1.27.2-r2
+# Tag: registry.pidginhost.cloud/csm/ci-tools:go-1.27.3-r1
 # Build: docker build -f build/Dockerfile.ci-tools \
-#          -t registry.pidginhost.cloud/csm/ci-tools:go-1.27.2-r2 .
+#          -t registry.pidginhost.cloud/csm/ci-tools:go-1.27.3-r1 .
 # Push: triggered manually by build-ci-tools-image job in .gitlab-ci.yml
 #
 # Bump the tag suffix whenever a pinned tool version changes or a new
 # tool needs to be added. The .gitlab-ci.yml CSM_CI_TOOLS_TAG variable
 # points at the tag that pipelines should pull.
 
-FROM golang:1.27.2-bookworm
+FROM golang:1.27.3-bookworm
 
 # Versions kept in sync with the install commands that previously
 # lived inline in .gitlab-ci.yml. When bumping any of these, bump
 # the image tag in .gitlab-ci.yml CSM_CI_TOOLS_TAG so the next
 # pipeline pulls the rebuilt image instead of the stale one.
+# golangci-lint and gosec are also built into Dockerfile.builder for the
+# tagged jobs; keep the versions equal.
+ARG GOLANGCI_LINT_VERSION=v2.14.0
 ARG GOVULNCHECK_VERSION=v1.8.0
 ARG GOCOVER_COBERTURA_VERSION=v1.2.0
 ARG GOCOVMERGE_VERSION=v0.0.0-20160331181800-b5bfa59ec0ad
@@ -32,15 +29,16 @@ ARG GOCOVMERGE_VERSION=v0.0.0-20160331181800-b5bfa59ec0ad
 ARG GOSEC_VERSION=v2.29.1-0.20261005092323-d2b649ec0182
 ARG PHCTL_VERSION=v0.6.2
 
-# openssh-client + jq + ca-certificates are the only system packages
-# integration: needs at runtime. Doing this in the image saves a
-# per-job `apt-get update && apt-get install` cycle (~20 MB of
-# index + package writes onto the job pod's emptyDir each run).
+# openssh-client + jq + ca-certificates for integration:, php-cli for
+# the PHP Shield runtime tests and python3-cryptography for the EL8
+# release verifier in test:. Installed here so no job runs apt.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
         openssh-client \
         jq \
         ca-certificates \
+        php-cli \
+        python3-cryptography \
  && rm -rf /var/lib/apt/lists/*
 
 # Pre-install every Go helper that pipeline jobs used to compile
@@ -49,7 +47,8 @@ RUN apt-get update \
 #
 # phctl needs GONOSUMCHECK + GOFLAGS=-mod=mod because the previous
 # integration: invocation set them; preserve that contract here.
-RUN go install golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION} \
+RUN go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${GOLANGCI_LINT_VERSION} \
+ && go install golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION} \
  && go install github.com/boumenot/gocover-cobertura@${GOCOVER_COBERTURA_VERSION} \
  && go install github.com/wadey/gocovmerge@${GOCOVMERGE_VERSION} \
  && go install github.com/securego/gosec/v2/cmd/gosec@${GOSEC_VERSION} \

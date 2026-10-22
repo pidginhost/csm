@@ -38,7 +38,6 @@ ARG VERSION=dev
 ARG BUILD_HASH=unknown
 ARG BUILD_TIME=unknown
 ENV CGO_ENABLED=1
-RUN dnf -y install pam-devel && dnf clean all
 # The source tree is copied in rather than mounted so the build is
 # reproducible from whatever buildx staged. go.mod / go.sum are
 # already in the repo.
