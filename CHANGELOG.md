@@ -23,26 +23,26 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - With automatic blocking on, sources using the wp2shell exploit tool are now blocked at the firewall on their first blocked request.
 - Releasing a held forwarded message now uses only the addresses CSM recorded, never copies in the message's own headers, and refuses ambiguous addresses.
 - A crafted web page or email can no longer get ordinary browser visitors banned at the firewall by the PHP2Shell protection.
+- Quarantined malware subjects now show decoded, without characters that reverse or hide text, on the Email Security page and in the quarantine API.
 
 ### Changed
 
 - The Email Security page puts its job tabs right under the headline numbers, with counts, and shows why queued mail is stuck with retry, return and delete actions.
 - Provider delays now count business domains hosted by Google, Microsoft or Yahoo under those providers instead of as other domains.
-- CSM writes its findings state file at most once a minute instead of on every alert batch, cutting disk writes on busy servers.
+- CSM now produces fewer disk writes on busy servers.
 
 ### Fixed
 
 #### Email
 
 - Email Security no longer counts malware messages as clean.
-- Quarantined malware subjects now show decoded, without characters that reverse or hide text, on the Email Security page and in the quarantine API.
-- Spam folder learning no longer refuses to start on standard cPanel servers when Redis runs under its own service user.
+- Spam folder learning now starts correctly on standard cPanel servers.
 
 #### Findings and file detection
 
 - Bulk WordPress plugin updates no longer raise unverified package warnings or false content findings for unmodified plugin files.
-- PHP in a folder named mail inside a plugin or website no longer raises a Critical alert; only account mail directories do.
-- PHP files that print an embedded image, such as a tracking pixel or an SVG logo, no longer match the encoded spam link signature.
+- PHP files in plugin and website folders no longer raise false mail directory alerts.
+- PHP files that serve embedded images no longer raise false spam alerts.
 
 ## [4.5.0] - 2026-10-22
 
