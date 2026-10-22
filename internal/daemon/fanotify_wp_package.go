@@ -177,7 +177,9 @@ func (q *stagedPackageQueue) note(pkg wpStagedPackage, v wpcheck.Verification, n
 	key := stagedPackageKey{root: pkg.dir + "/" + pkg.unpacked}
 	// Use the identity captured with the header, before content scanning:
 	// by now WordPress may already have renamed or replaced this pathname.
-	if v.RootInfo != nil && v.Root == key.root {
+	installedRoot := pkg.wpRoot + "/wp-content/plugins/" + pkg.unpacked
+	movedPlugin := v.Staged && v.Kind == wpcheck.KindPlugin && v.Slug == pkg.unpacked && v.Root == installedRoot
+	if v.RootInfo != nil && v.RootInfo.IsDir() && (v.Root == key.root || movedPlugin) {
 		if st, ok := v.RootInfo.Sys().(*syscall.Stat_t); ok {
 			key.dev, key.ino = st.Dev, st.Ino
 		}
@@ -424,8 +426,11 @@ func pathPresent(path string) bool {
 func (fm *FileMonitor) alertStagedFileMismatch(stagedPath string, pkg wpStagedPackage, v wpcheck.Verification, procInfo string) {
 	reportPath := stagedPath
 	moved := false
-	if !pathPresent(stagedPath) {
-		if installed := stagedFileInstalledPath(pkg, v); installed != "" && pathPresent(installed) {
+	// A descriptor-linked result already located this event in plugins/.
+	// The staging pathname may now belong to a different unpacked tree.
+	if installed := stagedFileInstalledPath(pkg, v); installed != "" && pathPresent(installed) {
+		identifiedInstalled := v.Staged && v.Kind == wpcheck.KindPlugin && v.Root == pkg.wpRoot+"/wp-content/plugins/"+v.Slug
+		if identifiedInstalled || !pathPresent(stagedPath) {
 			reportPath, moved = installed, true
 		}
 	}
