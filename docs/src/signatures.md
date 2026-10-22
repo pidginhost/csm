@@ -18,6 +18,14 @@ Both engines skip ZIP, gzip, bzip2, xz, 7z, and RAR containers, but only when th
 
 ## YAML Rules
 
+Encoded spam-link detection applies to real-time scanning and finding re-checks
+only. It looks for external-link attributes in PHP that directly prints a
+base64 literal. Embedded tracking pixels, local image references and inline
+logos without external links do not supply that evidence. An encoded external
+link is a heuristic, not proof of spam or proof that the destination is outside
+the site's own domain. Scheduled YARA scans do not use this rule; adding it
+there still requires clean-corpus measurement.
+
 The WordPress REST API exploit signature is a YAML-only heuristic. It requires
 a users-endpoint URL literal and a password query parameter or a nearby PHP,
 JSON or form-encoded password field, including payloads prepared before the

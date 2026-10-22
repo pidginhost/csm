@@ -43,3 +43,26 @@ func FuzzReferencedPayloadPaths(f *testing.F) {
 		}
 	})
 }
+
+func FuzzSpamBase64Links(f *testing.F) {
+	for _, seed := range []string{
+		`<a href="http://example.com/">pills</a>`,
+		"x<a\nHREF='https://example.com/'>pills</a>",
+		`xx<a href=//example.com/>pills</a>`,
+		`<a href="http-help.html">help</a>`,
+		`<svg><use href="#logo"/></svg>`,
+		"<a href=\"http\u017f://example.com/\">local name</a>",
+	} {
+		f.Add([]byte(seed))
+	}
+	// Compare the encoded rule with an independent decoded-text oracle;
+	// mutating binary neighbours also exercises the partial sextet edges.
+	decodedLink := regexp.MustCompile(`[\t\n\f\r ][hH][rR][eE][fF]=["']?(?:[hH][tT][tT][pP][sS]?:)?//`)
+	f.Fuzz(func(t *testing.T, decoded []byte) {
+		scanner := spamBase64Scanner(t)
+		got := hasRule(scanner.ScanContent(echoBase64(string(decoded)), ".php"), "spam_base64_links")
+		if want := decodedLink.Match(decoded); got != want {
+			t.Fatalf("encoded rule = %t, decoded oracle = %t for %q", got, want, decoded)
+		}
+	})
+}
