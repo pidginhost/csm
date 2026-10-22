@@ -1,17 +1,15 @@
 package checks
 
 import (
-	"archive/zip"
-	"bufio"
 	"context"
-	"encoding/binary"
 	"errors"
-	"io"
 	"io/fs"
 	"os"
 	"path"
 	"strings"
 	"syscall"
+
+	"github.com/pidginhost/csm/internal/zipdir"
 )
 
 const (
@@ -20,26 +18,22 @@ const (
 	// allowing substantially more than the old 4096-entry cutoff.
 	archiveDirectoryScanByteLimit = 16 << 20
 
-	zipDirectoryHeaderLen = 46
-	zipDirectoryEndLen    = 22
-	zipDirectory64EndLen  = 56
-	zipDirectory64LocLen  = 20
-	zipMaxCommentLen      = 1<<16 - 1
+	zipDirectoryHeaderLen = zipdir.HeaderLen
+	zipDirectoryEndLen    = zipdir.EndLen
+	zipDirectory64EndLen  = zipdir.End64Len
+	zipDirectory64LocLen  = zipdir.End64LocatorLen
 
 	// A site backup names its document root at or just below the archive
 	// root. Past that a configuration file needs corroboration.
 	shallowSiteConfigDepth = 2
 
-	zipDirectoryHeaderSignature = 0x02014b50
-	zipDirectoryEndSignature    = 0x06054b50
-	zipDirectory64EndSignature  = 0x06064b50
-	zipDirectory64LocSignature  = 0x07064b50
+	zipDirectoryHeaderSignature = zipdir.HeaderSignature
+	zipDirectoryEndSignature    = zipdir.EndSignature
+	zipDirectory64EndSignature  = zipdir.End64Signature
+	zipDirectory64LocSignature  = zipdir.End64LocatorSign
 )
 
-var (
-	errArchiveFormat    = errors.New("invalid zip central directory")
-	errArchiveScanLimit = errors.New("zip central directory exceeds scan limit")
-)
+var errArchiveFormat = zipdir.ErrFormat
 
 // docrootDirNames are hosting conventions for the web root. An archive whose
 // entries sit under one is a copy of a served directory tree.
@@ -48,12 +42,6 @@ var docrootDirNames = map[string]bool{
 	"public_html": true,
 	"htdocs":      true,
 	"httpdocs":    true,
-}
-
-type zipDirectory struct {
-	offset  int64
-	size    int64
-	records uint64
 }
 
 // archiveHoldsSiteBackup reports whether a web-reachable archive contains a
@@ -65,8 +53,8 @@ func archiveHoldsSiteBackup(p string) bool {
 
 // archiveSiteBackupStatus also reports whether the result is complete. A
 // resource-limited or interrupted inspection must retain an earlier finding.
-// Malformed zip data is a complete negative result: a file merely ending in
-// .zip must not hold the whole exposed-files check incomplete forever.
+// Malformed zip data without readable evidence is a complete negative result:
+// a file merely ending in .zip must not hold the whole check incomplete forever.
 func archiveSiteBackupStatus(ctx context.Context, p string) (holds, complete bool) {
 	if !strings.HasSuffix(strings.ToLower(p), ".zip") {
 		return false, true
@@ -109,7 +97,7 @@ func archiveSiteBackupStatus(ctx context.Context, p string) (holds, complete boo
 		return false, true
 	}
 
-	dir, err := readZipDirectory(f, openedInfo.Size())
+	dir, err := zipdir.Read(f, openedInfo.Size(), archiveDirectoryScanByteLimit)
 	if err != nil {
 		if errors.Is(err, errArchiveFormat) {
 			return false, true
@@ -119,152 +107,15 @@ func archiveSiteBackupStatus(ctx context.Context, p string) (holds, complete boo
 	holds, err = scanZipDirectory(ctx, f, dir)
 	if err != nil {
 		if errors.Is(err, errArchiveFormat) {
-			return false, true
+			// A damaged tail cannot erase site markers already read.
+			return holds, true
 		}
 		return holds, false
 	}
 	return holds, true
 }
 
-func readZipDirectory(f *os.File, size int64) (zipDirectory, error) {
-	if size < zipDirectoryEndLen {
-		return zipDirectory{}, errArchiveFormat
-	}
-	tailLen := int64(zipDirectoryEndLen + zipMaxCommentLen)
-	if tailLen > size {
-		tailLen = size
-	}
-	tail := make([]byte, int(tailLen))
-	if err := readAtFull(f, tail, size-tailLen); err != nil {
-		return zipDirectory{}, err
-	}
-
-	endIndex := findZipDirectoryEnd(tail)
-	if endIndex < 0 {
-		return zipDirectory{}, errArchiveFormat
-	}
-	endOffset := size - tailLen + int64(endIndex)
-	end := tail[endIndex : endIndex+zipDirectoryEndLen]
-	if binary.LittleEndian.Uint16(end[4:6]) != 0 ||
-		binary.LittleEndian.Uint16(end[6:8]) != 0 {
-		return zipDirectory{}, errArchiveFormat
-	}
-	recordsThisDisk := uint64(binary.LittleEndian.Uint16(end[8:10]))
-	records := uint64(binary.LittleEndian.Uint16(end[10:12]))
-	directorySize := uint64(binary.LittleEndian.Uint32(end[12:16]))
-	directoryOffset := uint64(binary.LittleEndian.Uint32(end[16:20]))
-	if recordsThisDisk != records {
-		return zipDirectory{}, errArchiveFormat
-	}
-
-	directoryEndOffset := endOffset
-	if records == 0xffff || directorySize == 0xffffffff || directoryOffset == 0xffffffff {
-		var err error
-		directoryEndOffset, records, directorySize, directoryOffset, err = readZip64Directory(f, endOffset)
-		if err != nil {
-			return zipDirectory{}, err
-		}
-	}
-	if directorySize > archiveDirectoryScanByteLimit {
-		return zipDirectory{}, errArchiveScanLimit
-	}
-	directorySize64, sizeOK := archiveOffset(directorySize)
-	directoryOffset64, offsetOK := archiveOffset(directoryOffset)
-	if !sizeOK || !offsetOK || directoryEndOffset < 0 ||
-		directorySize64 > directoryEndOffset || directoryOffset64 > directoryEndOffset {
-		return zipDirectory{}, errArchiveFormat
-	}
-	if records > directorySize/zipDirectoryHeaderLen {
-		return zipDirectory{}, errArchiveFormat
-	}
-
-	return zipDirectory{
-		offset:  directoryEndOffset - directorySize64,
-		size:    directorySize64,
-		records: records,
-	}, nil
-}
-
-func findZipDirectoryEnd(tail []byte) int {
-	for i := len(tail) - zipDirectoryEndLen; i >= 0; i-- {
-		if binary.LittleEndian.Uint32(tail[i:i+4]) != zipDirectoryEndSignature {
-			continue
-		}
-		commentLen := int(binary.LittleEndian.Uint16(tail[i+20 : i+22]))
-		if i+zipDirectoryEndLen+commentLen == len(tail) {
-			return i
-		}
-	}
-	return -1
-}
-
-func readZip64Directory(f *os.File, endOffset int64) (end int64, records, size, offset uint64, err error) {
-	locatorOffset := endOffset - zipDirectory64LocLen
-	if locatorOffset < 0 {
-		return 0, 0, 0, 0, errArchiveFormat
-	}
-	var locator [zipDirectory64LocLen]byte
-	if err := readAtFull(f, locator[:], locatorOffset); err != nil {
-		return 0, 0, 0, 0, err
-	}
-	if binary.LittleEndian.Uint32(locator[0:4]) != zipDirectory64LocSignature ||
-		binary.LittleEndian.Uint32(locator[4:8]) != 0 ||
-		binary.LittleEndian.Uint32(locator[16:20]) != 1 {
-		return 0, 0, 0, 0, errArchiveFormat
-	}
-	zip64Offset := binary.LittleEndian.Uint64(locator[8:16])
-	zip64Offset64, ok := archiveOffset(zip64Offset)
-	if !ok || zip64Offset64 > locatorOffset {
-		return 0, 0, 0, 0, errArchiveFormat
-	}
-	var record [zipDirectory64EndLen]byte
-	if err := readAtFull(f, record[:], zip64Offset64); err != nil {
-		return 0, 0, 0, 0, err
-	}
-	if binary.LittleEndian.Uint32(record[0:4]) != zipDirectory64EndSignature ||
-		binary.LittleEndian.Uint64(record[4:12]) < zipDirectory64EndLen-12 ||
-		binary.LittleEndian.Uint32(record[16:20]) != 0 ||
-		binary.LittleEndian.Uint32(record[20:24]) != 0 {
-		return 0, 0, 0, 0, errArchiveFormat
-	}
-	recordsThisDisk := binary.LittleEndian.Uint64(record[24:32])
-	records = binary.LittleEndian.Uint64(record[32:40])
-	if recordsThisDisk != records {
-		return 0, 0, 0, 0, errArchiveFormat
-	}
-	return zip64Offset64, records,
-		binary.LittleEndian.Uint64(record[40:48]),
-		binary.LittleEndian.Uint64(record[48:56]), nil
-}
-
-func archiveOffset(value uint64) (int64, bool) {
-	if value > 1<<63-1 {
-		return 0, false
-	}
-	return int64(value), true // #nosec G115 -- the MaxInt64 bound is checked above.
-}
-
-func readAtFull(f *os.File, dst []byte, offset int64) error {
-	n, err := f.ReadAt(dst, offset)
-	if n != len(dst) {
-		if errors.Is(err, io.EOF) {
-			return errArchiveFormat
-		}
-		if err != nil {
-			return err
-		}
-		return errArchiveFormat
-	}
-	if err != nil && !errors.Is(err, io.EOF) {
-		return err
-	}
-	return nil
-}
-
-func scanZipDirectory(ctx context.Context, f *os.File, dir zipDirectory) (bool, error) {
-	reader := bufio.NewReader(io.NewSectionReader(f, dir.offset, dir.size))
-	var header [zipDirectoryHeaderLen]byte
-	var records uint64
+func scanZipDirectory(ctx context.Context, f *os.File, dir zipdir.Directory) (bool, error) {
 	holdsSite := false
 	// A wp-config.php nested past the shallow bound only counts alongside a
 	// WordPress runtime file, so both are accumulated across the whole
@@ -275,76 +126,34 @@ func scanZipDirectory(ctx context.Context, f *os.File, dir zipDirectory) (bool, 
 	// also holds a Joomla entry point, so both are keyed by directory.
 	joomlaConfigDirs := map[string]bool{}
 	joomlaRuntimeDirs := map[string]bool{}
-	for {
-		if records%256 == 0 {
-			if err := ctx.Err(); err != nil {
-				return holdsSite, err
-			}
-		}
-		signature, err := reader.Peek(4)
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			return holdsSite, err
-		}
-		if binary.LittleEndian.Uint32(signature) != zipDirectoryHeaderSignature {
-			break
-		}
-		if _, err := io.ReadFull(reader, header[:]); err != nil {
-			return holdsSite, archiveDirectoryReadError(err)
-		}
-		nameLen := int(binary.LittleEndian.Uint16(header[28:30]))
-		extraLen := int64(binary.LittleEndian.Uint16(header[30:32]))
-		commentLen := int64(binary.LittleEndian.Uint16(header[32:34]))
-		name := make([]byte, nameLen)
-		if _, err := io.ReadFull(reader, name); err != nil {
-			return holdsSite, archiveDirectoryReadError(err)
-		}
-		if _, err := io.CopyN(io.Discard, reader, extraLen+commentLen); err != nil {
-			return holdsSite, archiveDirectoryReadError(err)
-		}
-		if entry := string(name); archiveEntrySignalsSiteBackup(entry) {
+	err := zipdir.Walk(ctx, f, dir, func(e zipdir.Entry) error {
+		entry := e.Name
+		if archiveEntrySignalsSiteBackup(entry) {
 			holdsSite = true
-		} else {
-			if archiveEntryIsDeepWPConfig(entry) {
-				deepConfig = true
+			return nil
+		}
+		if archiveEntryIsDeepWPConfig(entry) {
+			deepConfig = true
+		}
+		if archiveEntryIsWPRuntime(entry) {
+			wpRuntime = true
+		}
+		// Names alone cannot distinguish PHP files from directories or
+		// symlinks. Interpret central-directory attributes without opening
+		// or decompressing any entry payload.
+		if e.Mode().IsRegular() {
+			if d, ok := archiveNestedJoomlaConfigDir(entry); ok {
+				joomlaConfigDirs[d] = true
+				holdsSite = holdsSite || joomlaRuntimeDirs[d]
 			}
-			if archiveEntryIsWPRuntime(entry) {
-				wpRuntime = true
-			}
-			// Names alone cannot distinguish PHP files from directories or
-			// symlinks. Interpret central-directory attributes without opening
-			// or decompressing any entry payload.
-			entryHeader := zip.FileHeader{
-				Name:           strings.ReplaceAll(entry, `\`, "/"),
-				CreatorVersion: binary.LittleEndian.Uint16(header[4:6]),
-				ExternalAttrs:  binary.LittleEndian.Uint32(header[38:42]),
-			}
-			if entryHeader.Mode().IsRegular() {
-				if d, ok := archiveNestedJoomlaConfigDir(entry); ok {
-					joomlaConfigDirs[d] = true
-					holdsSite = holdsSite || joomlaRuntimeDirs[d]
-				}
-				if d, ok := archiveJoomlaRuntimeDir(entry); ok {
-					joomlaRuntimeDirs[d] = true
-					holdsSite = holdsSite || joomlaConfigDirs[d]
-				}
+			if d, ok := archiveJoomlaRuntimeDir(entry); ok {
+				joomlaRuntimeDirs[d] = true
+				holdsSite = holdsSite || joomlaConfigDirs[d]
 			}
 		}
-		records++
-	}
-	if records != dir.records {
-		return false, errArchiveFormat
-	}
-	return holdsSite || (deepConfig && wpRuntime), nil
-}
-
-func archiveDirectoryReadError(err error) error {
-	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-		return errArchiveFormat
-	}
-	return err
+		return nil
+	})
+	return holdsSite || (deepConfig && wpRuntime), err
 }
 
 // archiveEntryPath normalises a raw zip entry name and rejects the shapes that

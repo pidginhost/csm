@@ -21,6 +21,10 @@ import (
 
 const emailBodySampleSize = 65536 // Analyze the first 64KB of email body
 
+// maxSpoolHeaderBytes bounds the -H file read into memory. Exim's own header
+// size limit keeps real mail far below it.
+const maxSpoolHeaderBytes = 16 << 20
+
 // Suspicious mailer headers that indicate mass mailing scripts. PHPMailer is
 // deliberately absent: it is the default WordPress transport and appears on
 // essentially all legitimate WordPress mail, so it carries no signal. The
@@ -136,19 +140,22 @@ func scanEximMessage(msgID, sender string, cfg *config.Config) *alert.Finding {
 
 	var indicators []string
 
-	// Read and parse headers via the emailspool Exim -H parser. We go through
-	// osFS.ReadFile + bytes.NewReader rather than emailspool.ParseHeaders(path)
-	// so check tests can inject mock spool contents through the existing
-	// osFS seam.
-	headerData, err := osFS.ReadFile(headerPath)
+	// Keep checks within the bounded prefix, even when padding exceeds the
+	// field parser's per-line limit. The MIME parser already handles long
+	// lines within this buffer and retains headers preceding a malformed tail.
+	headerData, _, err := readRegularFileHead(headerPath, maxSpoolHeaderBytes)
 	if err != nil {
 		return nil
 	}
+	mimeHeaders := emime.ParseSpoolMIMEHeaders(headerData)
 	parsed, err := emailspool.ParseHeadersReader(bytes.NewReader(headerData))
 	if err != nil {
-		// Malformed or truncated -H file: nothing to check, skip silently as
-		// the previous loose parse would have done.
-		return nil
+		parsed = emailspool.Headers{
+			From:      mimeHeaders.Get("From"),
+			ReplyTo:   mimeHeaders.Get("Reply-To"),
+			XMailer:   mimeHeaders.Get("X-Mailer"),
+			UserAgent: mimeHeaders.Get("User-Agent"),
+		}
 	}
 
 	// Check 1: Reply-To mismatch
@@ -197,11 +204,9 @@ func scanEximMessage(msgID, sender string, cfg *config.Config) *alert.Finding {
 		}
 	}
 
-	// Read and analyze a bounded body sample.
-	bodyData, _ := osFS.ReadFile(bodyPath)
-	if len(bodyData) > emailBodySampleSize {
-		bodyData = bodyData[:emailBodySampleSize]
-	}
+	// Read and analyze a bounded body sample; the rest of the body is never
+	// read into memory.
+	bodyData, _, _ := readRegularFileHead(bodyPath, emailBodySampleSize)
 	if len(bodyData) > 0 {
 		bodyLower := strings.ToLower(string(bodyData))
 		indicators = append(indicators, bodyContentIndicators(bodyLower)...)
@@ -215,7 +220,6 @@ func scanEximMessage(msgID, sender string, cfg *config.Config) *alert.Finding {
 		if marker, body, ok := bytes.Cut(bodyData, []byte("\n")); ok && string(bytes.TrimSuffix(marker, []byte("\r"))) == msgID+"-D" {
 			bodyData = body
 		}
-		mimeHeaders := emime.ParseSpoolMIMEHeaders(headerData)
 		if decoded := decodeBase64Body(bodyData, mimeHeaders.Get("Content-Type"), mimeHeaders.Get("Content-Transfer-Encoding")); decoded != "" {
 			indicators = append(indicators, bodyContentIndicators(strings.ToLower(decoded))...)
 		}

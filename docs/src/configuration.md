@@ -592,7 +592,7 @@ email_av:
   clamd_socket: "/var/run/clamd.scan/clamd.sock"  # path to ClamAV daemon socket
   scan_timeout: "30s"                   # per-attachment scan timeout
   max_attachment_size: 26214400         # max single attachment size in bytes (25MB)
-  max_archive_depth: 1                  # max nested archive extraction depth
+  max_archive_depth: 1                  # archive levels unpacked (1: attached archives only); a deeper archive counts as not fully scanned
   max_archive_files: 50                 # max files extracted per archive; also caps encrypted member names reported per message
   max_extraction_size: 104857600        # max total extraction size in bytes (100MB)
   quarantine_infected: true             # quarantine emails with infected attachments
@@ -605,6 +605,12 @@ email_av:
   # stops queueing new scans for five minutes. During this cooldown new opens
   # are allowed unscanned ("open") or deferred ("tempfail"). Scanning resumes
   # automatically afterwards; bypassed messages are not scanned later.
+  # An archive that lists more than ten times max_archive_files entries, or
+  # whose decompressed data passes max_extraction_size, counts as not fully
+  # scanned and follows fail_mode. Nested archives share that budget. So do
+  # corrupt gzip trailers, data after a tar end marker, legacy sparse tar
+  # members and zip directory entries that carry data, at any nesting level.
+  # Empty members and directories remain valid.
   # Late malware results can quarantine only the original, unlocked message.
   # Messages in active delivery, replaced spool files, and messages with a
   # pending delivery journal are left untouched with email_av_quarantine_error.

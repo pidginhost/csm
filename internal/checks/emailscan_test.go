@@ -2,6 +2,7 @@ package checks
 
 import (
 	"encoding/base64"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -129,6 +130,24 @@ func TestScanEximMessage_TwoIndicators_High(t *testing.T) {
 	}
 }
 
+// A header file past the read cap is checked from its bounded prefix, not
+// skipped: padding the headers must not hide a message from the check.
+func TestScanEximMessageOversizedHeaderStillChecked(t *testing.T) {
+	msgID := "1aBcDe-000009-99"
+	// Ordinary-length lines, so the parse sees real headers up to the cap.
+	lines := []string{"From: shop@example.com", "Reply-To: collect@other.example.net"}
+	pad := "X-Pad: " + strings.Repeat("a", 1000)
+	for size := 0; size <= maxSpoolHeaderBytes; size += len(pad) + 6 {
+		lines = append(lines, pad)
+	}
+	header := eximHeader(msgID, lines...)
+	mockEximSpool(t, msgID, header, "click https://bit.ly/x to continue\n")
+	got := scanEximMessage(msgID, "shop@example.com", &config.Config{})
+	if got == nil || got.Severity != alert.High {
+		t.Fatalf("oversized header hid the message from the check: %+v", got)
+	}
+}
+
 func TestScanEximMessage_ThreeIndicators_Critical(t *testing.T) {
 	msgID := "1aBcDe-000004-44"
 	header := eximHeader(msgID,
@@ -230,5 +249,34 @@ func TestScanEximMessage_Base64MultipartLaterHTMLPayloadDetected(t *testing.T) {
 	}
 	if !strings.Contains(strings.ToLower(got.Details), "credential harvesting") {
 		t.Errorf("decoded harvesting-language indicator missing; details=%q", got.Details)
+	}
+}
+
+// A long padding line must not discard earlier evidence or suppress body checks.
+func TestScanEximMessageLongHeaderPaddingKeepsEvidence(t *testing.T) {
+	for _, padSize := range []int{64 << 10, maxSpoolHeaderBytes + 1} {
+		for _, position := range []string{"before", "after"} {
+			t.Run(fmt.Sprintf("%d/%s", padSize, position), func(t *testing.T) {
+				msgID := "1aBcDe-000009-99"
+				lines := []string{"From: shop@example.com", "Reply-To: collect@other.example.net"}
+				padding := "X-Pad: " + strings.Repeat("a", padSize)
+				if position == "before" {
+					lines = append([]string{padding}, lines...)
+				} else {
+					lines = append(lines, padding)
+				}
+				body := "click https://bit.ly/x to continue"
+				// Evidence after the read bound is unavailable; two body signals
+				// must still be sufficient to detect this message.
+				if position == "before" && padSize > maxSpoolHeaderBytes {
+					body += " verify your account and confirm your identity"
+				}
+				mockEximSpool(t, msgID, eximHeader(msgID, lines...), body)
+				got := scanEximMessage(msgID, "shop@example.com", &config.Config{})
+				if got == nil || got.Severity != alert.High {
+					t.Fatalf("padding hid message evidence: %+v", got)
+				}
+			})
+		}
 	}
 }

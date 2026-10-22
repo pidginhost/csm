@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"bytes"
 	"compress/gzip"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -15,6 +16,8 @@ import (
 	"path/filepath"
 	"strings"
 	"unicode"
+
+	"github.com/pidginhost/csm/internal/zipdir"
 )
 
 // ExtractedPart represents a single extracted attachment.
@@ -83,6 +86,9 @@ func DefaultLimits() Limits {
 // files in result.Parts[*].TempPath when done.
 func ParseSpoolMessage(headerPath, bodyPath string, limits Limits) (*ExtractionResult, error) {
 	envelope, hdrs, err := parseEximHeader(headerPath)
+	if errors.Is(err, errHeaderOverBudget) {
+		return &ExtractionResult{Partial: true, PartialReason: "message header exceeds parser memory budget"}, nil
+	}
 	if err != nil {
 		return nil, fmt.Errorf("parsing header file: %w", err)
 	}
@@ -163,17 +169,26 @@ func ParseSpoolMessage(headerPath, bodyPath string, limits Limits) (*ExtractionR
 						markPartial(result, "could not stage single-part attachment for scanning")
 					} else {
 						totalSize += int64(n)
-						filename := params["name"]
-						if filename == "" {
-							filename = "attachment"
+						// Name the body the way a multipart attachment is
+						// named: Content-Type name, then the disposition's
+						// filename, so a disposition-named archive is unpacked.
+						rawFilename := params["name"]
+						if rawFilename == "" {
+							if _, dparams, err := mime.ParseMediaType(hdrs.Get("Content-Disposition")); err == nil {
+								rawFilename = dparams["filename"]
+							}
 						}
-						filename = sanitizeAttachmentName(filename)
+						if rawFilename == "" {
+							rawFilename = "attachment"
+						}
+						filename := sanitizeAttachmentName(rawFilename)
 						result.Parts = append(result.Parts, ExtractedPart{
 							Filename:    filename,
 							ContentType: mediaType,
 							Size:        int64(len(decoded)),
 							TempPath:    tmpFile.Name(),
 						})
+						expandArchive(tmpFile.Name(), rawFilename, filename, limits, result, &totalSize, 0)
 					}
 				} else {
 					markPartial(result, "could not stage single-part attachment for scanning")
@@ -260,6 +275,12 @@ func decodeSinglePart(r io.Reader, limit int64) ([]byte, bool, error) {
 	return decoded, false, err
 }
 
+// maxHeaderFileBytes bounds the Exim -H file read into memory. Exim's own
+// header size limit keeps real mail far below it.
+const maxHeaderFileBytes = 16 << 20
+
+var errHeaderOverBudget = errors.New("message header exceeds parser memory budget")
+
 type envelope struct {
 	from    string
 	to      []string
@@ -269,9 +290,17 @@ type envelope struct {
 // parseEximHeader reads an Exim -H file and extracts envelope info and headers.
 func parseEximHeader(path string) (*envelope, textproto.MIMEHeader, error) {
 	// #nosec G304 -- path is Exim -H file path from mail queue scanner walk.
-	data, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
 		return nil, nil, err
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, maxHeaderFileBytes+1))
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(data) > maxHeaderFileBytes {
+		return nil, nil, errHeaderOverBudget
 	}
 	env, hdrs := parseEximHeaderData(data)
 	return env, hdrs, nil
@@ -546,6 +575,10 @@ func extractMultipartNested(r io.Reader, boundary string, limits Limits, result 
 			}
 		}
 		if filename == "" {
+			// Mail clients fall back to the Content-Type name parameter.
+			filename = params["name"]
+		}
+		if filename == "" {
 			// No filename and text/* content - this is a body part, skip
 			if strings.HasPrefix(mediaType, "text/") {
 				continue
@@ -611,17 +644,97 @@ func extractMultipartNested(r io.Reader, boundary string, limits Limits, result 
 				TempPath:    tmpFile.Name(),
 			})
 
-			// Attempt archive extraction
-			if depth < limits.MaxArchiveDepth {
-				switch archiveKindForAttachmentName(rawFilename, filename) {
-				case "zip":
-					extractZIP(tmpFile.Name(), filename, limits, result, totalSize, depth+1)
-				case "tar.gz":
-					extractTarGz(tmpFile.Name(), filename, limits, result, totalSize, depth+1)
-				}
-			}
+			expandArchive(tmpFile.Name(), rawFilename, filename, limits, result, totalSize, depth)
 		}
 	}
+}
+
+// expandArchive unpacks an archive found at depth (0 for an attachment, 1 for
+// a member of an attached archive) while max_archive_depth allows it. Past the
+// limit its members were never read, so the message is not fully scanned.
+func expandArchive(path, rawName, safeName string, limits Limits, result *ExtractionResult, totalSize *int64, depth int) {
+	kind := archiveKindForAttachmentName(rawName, safeName)
+	if kind == "" {
+		return
+	}
+	if depth >= limits.MaxArchiveDepth {
+		markPartial(result, fmt.Sprintf("nested archive %q not expanded", safeName))
+		return
+	}
+	switch kind {
+	case "zip":
+		extractZIP(path, safeName, limits, result, totalSize, depth+1)
+	case "tar.gz":
+		extractTarGz(path, safeName, limits, result, totalSize, depth+1)
+	}
+}
+
+// maxZipDirectoryBytes bounds the central directory an attached zip may
+// declare before any of it is read.
+const maxZipDirectoryBytes = 16 << 20
+
+// archiveWalkCap bounds how many entries or headers one archive walk visits,
+// of any kind. max_archive_files bounds what is extracted; this bounds the
+// work spent getting there.
+func archiveWalkCap(limits Limits) int {
+	maxInt := int(^uint(0) >> 1)
+	if limits.MaxArchiveFiles > maxInt/10 {
+		return maxInt
+	}
+	return 10 * max(limits.MaxArchiveFiles, 1)
+}
+
+func markArchiveWalkCap(result *ExtractionResult, archiveName string, walkCap int) {
+	markPartial(result, fmt.Sprintf("archive %q lists more than %d entries", archiveName, walkCap))
+}
+
+func markExtractionBudget(result *ExtractionResult, limits Limits) {
+	result.Partial = true
+	result.PartialReason = fmt.Sprintf("total extraction size exceeds %d bytes", limits.MaxExtractionSize)
+}
+
+// errExtractionBudget stops a decompressing reader once the message's
+// extraction budget is spent.
+var errExtractionBudget = errors.New("extraction budget spent")
+
+// budgetReader adds what it yields to the message's shared spent count and
+// fails once that count passes limit, reading at most one byte past it.
+// Nested archives add to the same count. The first error sticks.
+type budgetReader struct {
+	r     io.Reader
+	spent *int64
+	limit int64
+	err   error
+}
+
+func (b *budgetReader) Read(p []byte) (int, error) {
+	if b.err != nil {
+		return 0, b.err
+	}
+	if *b.spent > b.limit {
+		b.err = errExtractionBudget
+		return 0, b.err
+	}
+	if remaining := b.limit - *b.spent; remaining < int64(len(p)) {
+		p = p[:remaining+1]
+	}
+	n, err := b.r.Read(p)
+	*b.spent += int64(n)
+	if *b.spent > b.limit {
+		err = errExtractionBudget
+	}
+	// io.ReadFull may suppress an error returned with its final bytes. Keep
+	// it visible to the archive driver even when tar.Next reports EOF.
+	if err != nil && err != io.EOF {
+		b.err = err
+	}
+	return n, err
+}
+
+// markArchiveUnopened records an attached archive whose members could not be
+// reached at all.
+func markArchiveUnopened(result *ExtractionResult, archiveName string, err error) {
+	markPartial(result, fmt.Sprintf("archive %q could not be opened: %v", archiveName, err))
 }
 
 // zipEncryptedFlag is bit 0 of the ZIP general purpose bit flag: the entry is
@@ -629,26 +742,49 @@ func extractMultipartNested(r io.Reader, boundary string, limits Limits, result 
 const zipEncryptedFlag = 0x1
 
 func extractZIP(zipPath, archiveName string, limits Limits, result *ExtractionResult, totalSize *int64, depth int) {
+	// An archive that cannot be opened was not scanned inside: a mail client
+	// may still repair and open it, so it must never count as clean.
 	// #nosec G304 -- zipPath is CreateTemp-produced path from the caller.
 	f, err := os.Open(zipPath)
 	if err != nil {
-		return // fail-open: skip corrupt archives
+		markArchiveUnopened(result, archiveName, err)
+		return
 	}
 	defer f.Close()
 
 	info, err := f.Stat()
 	if err != nil {
+		markArchiveUnopened(result, archiveName, err)
+		return
+	}
+	// Validate the listing itself before zip.NewReader allocates per entry;
+	// the sender controls both the directory and the end record's counts.
+	walkCap := archiveWalkCap(limits)
+	dir, err := zipdir.Read(f, info.Size(), maxZipDirectoryBytes)
+	if err != nil {
+		markArchiveUnopened(result, archiveName, err)
+		return
+	}
+	if err = validateZIPDirectory(f, info.Size(), dir, walkCap); err != nil {
+		if errors.Is(err, errArchiveWalk) {
+			markArchiveWalkCap(result, archiveName, walkCap)
+		} else {
+			markArchiveUnopened(result, archiveName, err)
+		}
 		return
 	}
 	zr, err := zip.NewReader(f, info.Size())
 	if err != nil {
+		markArchiveUnopened(result, archiveName, err)
 		return
 	}
 
-	extracted := 0
+	extracted, walked := 0, 0
 	for _, zf := range zr.File {
-		if zf.FileInfo().IsDir() {
-			continue
+		walked++
+		if walked > walkCap {
+			markArchiveWalkCap(result, archiveName, walkCap)
+			return
 		}
 		safeName := sanitizeAttachmentName(zf.Name)
 
@@ -669,8 +805,25 @@ func extractZIP(zipPath, archiveName string, limits Limits, result *ExtractionRe
 			}
 			continue
 		}
+		if zf.FileInfo().IsDir() {
+			if dirErr := validateZIPDirectoryEntry(zf); dirErr != nil {
+				markPartial(result, fmt.Sprintf("directory %q in archive %q contains unread data", safeName, archiveName))
+			}
+			continue
+		}
 		if extracted >= limits.MaxArchiveFiles {
 			markPartial(result, fmt.Sprintf("archive %q exceeds max files %d", archiveName, limits.MaxArchiveFiles))
+			return
+		}
+
+		// A member costs whichever is larger, its compressed or its inflated
+		// size. Records can share one compressed stream that inflates to
+		// nothing, so the compressed size is charged before inflating.
+		before := *totalSize
+		compressed := int64(min(zf.CompressedSize64, uint64(limits.MaxExtractionSize)+1)) // #nosec G115 -- bounded by an int64 above.
+		if before+compressed > limits.MaxExtractionSize {
+			// Never opened, so nothing is spent; the budget is exhausted.
+			markExtractionBudget(result, limits)
 			return
 		}
 
@@ -687,10 +840,21 @@ func extractZIP(zipPath, archiveName string, limits Limits, result *ExtractionRe
 			continue
 		}
 
-		limited := io.LimitReader(rc, limits.MaxAttachmentSize+1)
+		// Every decompressed byte spends the budget, kept or thrown away, so
+		// a bomb of oversize members cannot decompress without limit.
+		var inflated int64
+		budget := &budgetReader{r: rc, spent: &inflated, limit: limits.MaxExtractionSize - before}
+		limited := io.LimitReader(budget, limits.MaxAttachmentSize+1)
 		n, err := io.Copy(tmpFile, limited)
 		closeErr := tmpFile.Close()
 		rc.Close()
+		*totalSize = before + max(compressed, inflated)
+
+		if errors.Is(err, errExtractionBudget) || *totalSize > limits.MaxExtractionSize {
+			_ = os.Remove(tmpFile.Name())
+			markExtractionBudget(result, limits)
+			return
+		}
 
 		if err != nil || closeErr != nil || n > limits.MaxAttachmentSize {
 			_ = os.Remove(tmpFile.Name())
@@ -706,14 +870,6 @@ func extractZIP(zipPath, archiveName string, limits Limits, result *ExtractionRe
 			continue
 		}
 
-		*totalSize += n
-		if *totalSize > limits.MaxExtractionSize {
-			_ = os.Remove(tmpFile.Name())
-			result.Partial = true
-			result.PartialReason = fmt.Sprintf("total extraction size exceeds %d bytes", limits.MaxExtractionSize)
-			return
-		}
-
 		result.Parts = append(result.Parts, ExtractedPart{
 			Filename:    safeName,
 			ContentType: "application/octet-stream",
@@ -723,6 +879,7 @@ func extractZIP(zipPath, archiveName string, limits Limits, result *ExtractionRe
 			ArchiveName: archiveName,
 		})
 		extracted++
+		expandArchive(tmpFile.Name(), zf.Name, safeName, limits, result, totalSize, depth)
 	}
 }
 
@@ -730,24 +887,61 @@ func extractTarGz(tgzPath, archiveName string, limits Limits, result *Extraction
 	// #nosec G304 -- tgzPath is CreateTemp-produced path from the caller.
 	f, err := os.Open(tgzPath)
 	if err != nil {
+		markArchiveUnopened(result, archiveName, err)
 		return
 	}
 	defer f.Close()
 
-	gr, err := gzip.NewReader(f)
+	compressed := bufio.NewReader(f)
+	gr, err := gzip.NewReader(compressed)
 	if err != nil {
+		markArchiveUnopened(result, archiveName, err)
 		return
 	}
 	defer func() { _ = gr.Close() }()
+	// Count streams explicitly so empty streams cannot bypass either budget.
+	gr.Multistream(false)
 
-	tr := tar.NewReader(gr)
+	// Everything the gzip stream yields spends the budget, including the
+	// remainder tar.Next reads through to skip an oversize member.
+	walkCap := archiveWalkCap(limits)
+	streams := &gzipStreamReader{compressed: compressed, gr: gr, walkCap: walkCap, streams: 1}
+	budget := &budgetReader{r: streams, spent: totalSize, limit: limits.MaxExtractionSize}
+	walk := &tarWalkReader{r: budget, walkCap: walkCap}
+	tr := tar.NewReader(walk)
 	extracted := 0
 	for {
 		hdr, err := tr.Next()
+		if budget.err != nil {
+			err = budget.err
+		}
+		if err == io.EOF {
+			err = finishTar(budget)
+			if err == nil {
+				return
+			}
+		}
+		if errors.Is(err, errExtractionBudget) {
+			markExtractionBudget(result, limits)
+			return
+		}
+		if errors.Is(err, errArchiveWalk) {
+			markArchiveWalkCap(result, archiveName, walkCap)
+			return
+		}
 		if err != nil {
-			return // EOF or error - done
+			// The members after a broken header were never read.
+			markPartial(result, fmt.Sprintf("archive %q could not be read: %v", archiveName, err))
+			return
+		}
+		if err = walk.setMember(hdr); err != nil {
+			markPartial(result, fmt.Sprintf("archive %q could not be read: %v", archiveName, err))
+			return
 		}
 		if hdr.Typeflag != tar.TypeReg {
+			if walk.remaining > 0 && hdr.Typeflag != tar.TypeXGlobalHeader {
+				markPartial(result, fmt.Sprintf("unsupported file %q in archive %q contains unread data", sanitizeAttachmentName(hdr.Name), archiveName))
+			}
 			continue
 		}
 		if extracted >= limits.MaxArchiveFiles {
@@ -763,10 +957,28 @@ func extractTarGz(tgzPath, archiveName string, limits Limits, result *Extraction
 			continue
 		}
 
-		limited := io.LimitReader(tr, limits.MaxAttachmentSize+1)
+		// Sparse tar readers synthesize hole bytes outside the gzip stream.
+		// Bound logical output too, then charge only the bytes the physical
+		// stream did not already spend.
+		before := *totalSize
+		var logicalN int64
+		logical := &budgetReader{r: tr, spent: &logicalN, limit: limits.MaxExtractionSize - before}
+		limited := io.LimitReader(logical, limits.MaxAttachmentSize+1)
 		n, err := io.Copy(tmpFile, limited)
 		closeErr := tmpFile.Close()
+		*totalSize += max(logicalN-(*totalSize-before), 0)
+		if *totalSize > limits.MaxExtractionSize {
+			budget.err = errExtractionBudget
+		}
+		if budget.err != nil {
+			err = budget.err
+		}
 
+		if errors.Is(err, errExtractionBudget) {
+			_ = os.Remove(tmpFile.Name())
+			markExtractionBudget(result, limits)
+			return
+		}
 		if err != nil || closeErr != nil || n > limits.MaxAttachmentSize {
 			_ = os.Remove(tmpFile.Name())
 			switch {
@@ -781,14 +993,6 @@ func extractTarGz(tgzPath, archiveName string, limits Limits, result *Extraction
 			continue
 		}
 
-		*totalSize += n
-		if *totalSize > limits.MaxExtractionSize {
-			_ = os.Remove(tmpFile.Name())
-			result.Partial = true
-			result.PartialReason = fmt.Sprintf("total extraction size exceeds %d bytes", limits.MaxExtractionSize)
-			return
-		}
-
 		result.Parts = append(result.Parts, ExtractedPart{
 			Filename:    safeName,
 			ContentType: "application/octet-stream",
@@ -798,6 +1002,7 @@ func extractTarGz(tgzPath, archiveName string, limits Limits, result *Extraction
 			ArchiveName: archiveName,
 		})
 		extracted++
+		expandArchive(tmpFile.Name(), hdr.Name, safeName, limits, result, totalSize, depth)
 	}
 }
 
