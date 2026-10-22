@@ -354,70 +354,74 @@
             </div>
         </div>
 
-        <!-- Sending accounts: SMTP firewall, then senders, abuse, forwarders -->
+        <!-- Sending accounts: how much each hosting account sent, under the
+             SMTP firewall line; then the outbound abuse events, and the
+             forwarders to outside addresses, collapsed -->
         <div class="tab-pane fade" id="email-pane-sending" role="tabpanel" aria-labelledby="email-tab-sending" tabindex="0">
+            <div class="card mb-3">
+                <div class="card-body border-bottom" id="email-sending-firewall">
+                    <div class="text-muted small">The SMTP firewall loads when this tab is opened.</div>
+                </div>
+                <div class="card-body border-bottom py-2 small" id="email-sending-summary"></div>
+                <div class="table-responsive">
+                    <table class="table table-vcenter card-table table-sm" id="email-sending-table">
+                        <thead>
+                            <tr>
+                                <th>Account</th>
+                                <th class="text-end">Messages</th>
+                                <th class="text-end">Share</th>
+                                <th>Flags</th>
+                                <th class="text-end">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="email-sending-tbody">
+                            <tr><td colspan="5" class="text-center text-muted py-4"><span class="spinner-border spinner-border-sm"></span> Loading...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="card mb-3">
+                <div class="card-header flex-wrap gap-2">
+                    <h2 class="card-title"><i class="ti ti-alert-triangle"></i>&nbsp;Outbound abuse events</h2>
+                    <span class="card-actions text-muted small" id="email-abuse-count"></span>
+                </div>
+                <div id="email-abuse-events">
+                    <div class="csm-empty"><div class="csm-empty__reason">Outbound abuse events load when this tab is opened.</div></div>
+                </div>
+            </div>
             <div class="card">
-                <div class="card-body border-bottom">
-                    <div class="subheader mb-2">SMTP firewall</div>
-                    <div id="smtp-firewall">
-                        <div class="text-muted small">Loads when this tab is opened.</div>
+                <details id="email-forwarders-section">
+                    <summary class="card-body fw-medium">
+                        <i class="ti ti-mail-forward"></i>&nbsp;Forwarders to outside addresses<span class="badge bg-secondary-lt ms-2" id="email-fwd-section-count" hidden></span>
+                    </summary>
+                    <div class="csm-toolbar">
+                        <input type="text" id="email-fwd-search" class="form-control form-control-sm csm-toolbar__search" placeholder="Search source / destination / owner..." aria-label="Search forwarders">
+                        <select id="email-fwd-filter" class="form-select form-select-sm csm-toolbar__filter" aria-label="Filter forwarders">
+                            <option value="">All forwarders</option>
+                            <option value="external" selected>External only</option>
+                            <option value="free">Free providers</option>
+                            <option value="forward_only">Forward-only (no local copy)</option>
+                        </select>
+                        <span class="csm-toolbar__spacer"></span>
+                        <span class="csm-toolbar__count" id="email-fwd-count"></span>
                     </div>
-                </div>
-                <div class="card-body pb-0">
-                    <ul class="nav nav-pills csm-tabs-scroll" id="email-outbound-nav" role="tablist">
-                        <li class="nav-item" role="presentation">
-                            <button class="nav-link active" id="email-tab-senders" data-bs-toggle="tab" data-bs-target="#email-pane-senders" type="button" role="tab" aria-controls="email-pane-senders" aria-selected="true">Senders</button>
-                        </li>
-                        <li class="nav-item" role="presentation">
-                            <button class="nav-link" id="email-tab-outbound-abuse" data-bs-toggle="tab" data-bs-target="#email-pane-outbound-abuse" type="button" role="tab" aria-controls="email-pane-outbound-abuse" aria-selected="false">Abuse</button>
-                        </li>
-                        <li class="nav-item" role="presentation">
-                            <button class="nav-link" id="email-tab-forwarders" data-bs-toggle="tab" data-bs-target="#email-pane-forwarders" type="button" role="tab" aria-controls="email-pane-forwarders" aria-selected="false">Forwarders</button>
-                        </li>
-                    </ul>
-                </div>
-                <div class="tab-content">
-                    <div class="tab-pane fade show active" id="email-pane-senders" role="tabpanel" aria-labelledby="email-tab-senders" tabindex="0">
-                        <div class="card-body pb-2 text-muted small">Top sending domains in the last 500 log lines.</div>
-                        <div class="p-0 csm-list-scroll-sm" id="top-senders">
-                            <div class="text-muted text-center py-3"><span class="spinner-border spinner-border-sm"></span> Loading...</div>
-                        </div>
+                    <div class="table-responsive">
+                        <table class="table table-vcenter card-table table-sm" id="email-fwd-table">
+                            <thead>
+                                <tr>
+                                    <th>Source</th>
+                                    <th>Owner</th>
+                                    <th>Destinations</th>
+                                    <th>Providers</th>
+                                    <th>Local copy</th>
+                                </tr>
+                            </thead>
+                            <tbody id="email-fwd-tbody">
+                                <tr><td colspan="5" class="text-center text-muted py-4">Forwarder inventory loads when this tab is opened.</td></tr>
+                            </tbody>
+                        </table>
                     </div>
-                    <div class="tab-pane fade" id="email-pane-outbound-abuse" role="tabpanel" aria-labelledby="email-tab-outbound-abuse" tabindex="0">
-                        <div id="outbound-abuse-body">
-                            <div class="csm-empty"><div class="csm-empty__reason">Outbound mail abuse loads when this section is opened.</div></div>
-                        </div>
-                    </div>
-                    <div class="tab-pane fade" id="email-pane-forwarders" role="tabpanel" aria-labelledby="email-tab-forwarders" tabindex="0">
-                        <div class="csm-toolbar">
-                            <input type="text" id="email-fwd-search" class="form-control form-control-sm csm-toolbar__search" placeholder="Search source / destination / owner..." aria-label="Search forwarders">
-                            <select id="email-fwd-filter" class="form-select form-select-sm csm-toolbar__filter" aria-label="Filter forwarders">
-                                <option value="">All forwarders</option>
-                                <option value="external">External only</option>
-                                <option value="free">Free providers</option>
-                                <option value="forward_only">Forward-only (no local copy)</option>
-                            </select>
-                            <span class="csm-toolbar__spacer"></span>
-                            <span class="csm-toolbar__count" id="email-fwd-count"></span>
-                        </div>
-                        <div class="table-responsive">
-                            <table class="table table-vcenter card-table table-sm" id="email-fwd-table">
-                                <thead>
-                                    <tr>
-                                        <th>Source</th>
-                                        <th>Owner</th>
-                                        <th>Destinations</th>
-                                        <th>Providers</th>
-                                        <th>Local copy</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="email-fwd-tbody">
-                                    <tr><td colspan="5" class="text-center text-muted py-4">Forwarder inventory loads when this tab is opened.</td></tr>
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
-                </div>
+                </details>
             </div>
         </div>
 

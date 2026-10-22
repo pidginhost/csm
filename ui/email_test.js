@@ -475,6 +475,12 @@ function groupTitles(page) {
     return Array.from(page.document.querySelectorAll('#email-action-groups .csm-summary-list__title')).map(e => e.textContent);
 }
 
+// The Rejects filter values: the groups, then each class. other is every
+// reason but spam, malware and rate limiting; the class the server calls
+// other is unclassified here.
+const REJECT_FILTER_VALUES = ['content', 'all', 'other', 'spam', 'malware', 'unknown_recipient', 'sender_verify', 'bad_helo',
+    'relay_denied', 'auth_required', 'suspended', 'mailbox_full', 'blocklisted', 'rate_limited', 'unclassified'];
+
 test('rejects default to spam and malware', async () => {
     const page = emailPage();
     showEmailTab(page, 'rejects');
@@ -537,8 +543,7 @@ test('rejects empty state names range and filter', async () => {
     assert.match(tbody.textContent, /No spam or malware rejects in the last 24 hours/);
 
     const filter = page.document.getElementById('email-rejects-filter');
-    assert.deepEqual(Array.from(filter.options).map(o => o.value), ['content', 'all', 'spam', 'malware', 'unknown_recipient',
-        'sender_verify', 'bad_helo', 'relay_denied', 'auth_required', 'suspended', 'mailbox_full', 'blocklisted', 'rate_limited', 'other']);
+    assert.deepEqual(Array.from(filter.options).map(o => o.value), REJECT_FILTER_VALUES);
     assert.equal(filter.value, 'content');
     assert.equal(Array.from(filter.options).find(o => o.value === 'rate_limited').textContent, 'Rate limited (temporary)');
 
@@ -902,18 +907,16 @@ test('seven job tabs sit right under the headline cards', async () => {
         assert.equal(doc.getElementById('email-tab-' + old), null, 'the old ' + old + ' tab is still there');
         assert.equal(doc.getElementById('email-pane-' + old), null, 'the old ' + old + ' pane is still there');
     }
-    // Sending accounts keeps the Outbound sections as they were.
+    // Sending accounts: the SMTP firewall line, the accounts, the abuse
+    // events, then the forwarders, collapsed. No inner tabs.
     const sending = doc.getElementById('email-pane-sending');
-    assert.deepEqual(Array.from(sending.querySelectorAll('.nav-link')).map(b => b.id),
-        ['email-tab-senders', 'email-tab-outbound-abuse', 'email-tab-forwarders']);
-    assert.deepEqual(Array.from(sending.querySelectorAll('.nav-link')).map(b => b.textContent.replace(/\s+/g, ' ').trim()),
-        ['Senders', 'Abuse', 'Forwarders']);
+    assert.equal(sending.querySelectorAll('.nav-link').length, 0, 'Sending accounts still has inner tabs');
     // Held forward copies moved to Held mail.
     assert.equal(sending.contains(doc.getElementById('email-held-table')), false, 'held copies are still under Sending accounts');
-    assert.match(doc.getElementById('email-pane-senders').textContent, /last 500 log lines/);
-    assert.ok(sending.contains(doc.getElementById('smtp-firewall')), 'the SMTP firewall block is not in the Sending accounts tab');
     const html = sending.innerHTML;
-    assert.ok(html.indexOf('id="smtp-firewall"') < html.indexOf('id="email-tab-senders"'), 'the SMTP firewall block is not above the outbound sections');
+    const order = ['email-sending-firewall', 'email-sending-table', 'email-abuse-events', 'email-forwarders-section'].map(id => html.indexOf('id="' + id + '"'));
+    assert.ok(order.every(i => i >= 0), 'a Sending accounts section is missing: ' + order);
+    assert.deepEqual(order.slice().sort((a, b) => a - b), order, 'the Sending accounts sections are out of order');
     // On a phone the tab bar scrolls sideways instead of wrapping.
     assert.ok(strip.classList.contains('csm-tabs-scroll'));
     const css = fs.readFileSync(path.join(__dirname, 'static/css/csm.css'), 'utf8');
@@ -935,7 +938,7 @@ test('Overview opens first and holds the chart, rspamd, needs attention and prot
     }
     // Every other job keeps what it showed before, in its own tab.
     for (const [tab, id] of [['queue', 'queue-health'], ['queue', 'queue-composition'], ['held', 'email-held-summary'], ['held', 'email-held-table'],
-        ['rejects', 'email-rejects-table'], ['sending', 'smtp-firewall'], ['sending', 'email-fwd-table'],
+        ['rejects', 'email-rejects-table'], ['sending', 'email-sending-firewall'], ['sending', 'email-fwd-table'],
         ['delays', 'email-deliv-providers'], ['delays', 'email-deliv-ips'], ['findings', 'email-table']]) {
         assert.ok(doc.getElementById('email-pane-' + tab).contains(doc.getElementById(id)), '#' + id + ' is not in ' + tab);
     }
@@ -978,7 +981,9 @@ test('each headline card opens the tab that explains its number', async () => {
 });
 
 test('the reject cards open Rejects on their reason', async () => {
-    for (const [card, cls] of [['kpi-spam', 'spam'], ['kpi-other', 'other']]) {
+    // Other reasons asks for every class but spam, malware and rate limiting.
+    const others = 'unknown_recipient,sender_verify,bad_helo,relay_denied,auth_required,suspended,mailbox_full,blocklisted,other';
+    for (const [card, cls, asked] of [['kpi-spam', 'spam', 'spam'], ['kpi-other', 'other', others]]) {
         const page = emailPage();
         await settle();
         page.document.querySelector('#' + card + ' a').click();
@@ -987,7 +992,7 @@ test('the reject cards open Rejects on their reason', async () => {
         assert.equal(page.document.getElementById('email-rejects-filter').value, cls);
         const reqs = page.pending('/api/v1/email/rejects');
         assert.equal(reqs.length, 1, card + ' did not reload the rejects');
-        assert.equal(query(reqs[0].url).get('class'), cls);
+        assert.equal(query(reqs[0].url).get('class'), asked);
     }
 });
 
@@ -1076,9 +1081,11 @@ test('the Queue tab counts the queue once its size is known', async () => {
     assert.equal(badge(page, 'queue').hidden, false);
     assert.equal(badge(page, 'queue').textContent, '18');
     assert.doesNotMatch(badge(page, 'queue').className, /badge-warning/, 'a queue under its warn threshold is colored');
-    for (const name of ['held', 'rejects', 'sending', 'delays', 'findings']) {
+    for (const name of ['held', 'sending', 'delays', 'findings']) {
         assert.equal(badge(page, name).hidden, true, name + ' shows a count nothing set');
     }
+    // Rejects count from the same overview.
+    assert.equal(badge(page, 'rejects').textContent, '0');
 
     // The badge takes the card's color: amber from warn, red from crit.
     for (const [queue, text, color] of [
@@ -1232,6 +1239,8 @@ test('a check from the address filters before the check list answers', async () 
 test('Sending accounts loads the SMTP firewall when first shown', async () => {
     const page = emailPage();
     await answerAll(page, { '/api/v1/email/overview': overview({}) });
+    page.window.CSM.refresh.manual();
+    await answerAll(page, { '/api/v1/email/overview': overview({}) });
     const stats = () => page.requests.filter(r => r.url.includes('/api/v1/email/stats'));
     assert.equal(stats().length, 0, 'the page read the SMTP firewall before the Sending accounts tab opened');
     const tab = page.document.getElementById('email-tab-sending');
@@ -1242,11 +1251,11 @@ test('Sending accounts loads the SMTP firewall when first shown', async () => {
         smtp_allow_users: ['alice', 'bob'], smtp_ports: [25, 587], port_flood: [{ port: 25, proto: 'tcp', hits: 10, window_seconds: 60 }],
         top_senders: [{ domain: 'shop.example.com', count: 12 }] });
     await settle();
-    const fw = page.document.getElementById('smtp-firewall').textContent.replace(/\s+/g, ' ');
-    assert.match(fw, /restricted/i);
-    assert.match(fw, /alice, bob/);
-    assert.match(fw, /Port 25: 10 \/ 60s/);
-    assert.match(page.document.getElementById('top-senders').textContent, /shop\.example\.com/);
+    const fw = page.document.getElementById('email-sending-firewall');
+    assert.equal(fw.children.length, 1, 'the SMTP firewall is more than one line');
+    assert.match(flat(fw), /restricted/i);
+    assert.match(flat(fw), /alice, bob/);
+    assert.match(flat(fw), /Port 25: 10 \/ 60s/);
     tab.dispatchEvent(new page.window.Event('shown.bs.tab'));
     await settle();
     assert.equal(stats().length, 1, 'opening the tab again read the SMTP firewall again');
@@ -1315,7 +1324,6 @@ function showEmailTab(page, name) {
 test('an older outbound response cannot replace the selected range', async () => {
     const page = emailPage();
     showEmailTab(page, 'sending');
-    showEmailTab(page, 'outbound-abuse');
     await settle();
     const old = page.pending('/api/v1/email/relay-abuse?')[0];
     changeValue(page, page.document.getElementById('email-range'), '7d');
@@ -1326,13 +1334,12 @@ test('an older outbound response cannot replace the selected range', async () =>
     await settle();
     page.respond(old.url, 200, items([]));
     await settle();
-    assert.match(page.document.getElementById('outbound-abuse-body').textContent, /Current range/);
+    assert.match(page.document.getElementById('email-abuse-events').textContent, /Current range/);
 });
 
 test('changing range while outbound is hidden invalidates its pending request', async () => {
     const page = emailPage();
     showEmailTab(page, 'sending');
-    showEmailTab(page, 'outbound-abuse');
     await settle();
     const old = page.pending('/api/v1/email/relay-abuse?')[0];
     showEmailTab(page, 'findings');
@@ -2772,4 +2779,317 @@ test('the Held mail count is what is held now, read with the page', async () => 
     const timer = src.match(/CSM\.refresh\.interval\(function\(\) \{([\s\S]*?)\}, 60000\)/);
     assert.ok(timer, 'no 60 s timer');
     assert.match(timer[1], /activeTab\('email-tabs'\) === 'held'\) loadHeldMail\(\)/, 'the 60 s timer does not read the open Held mail tab');
+});
+
+// ---------- Rejects counts ----------
+
+// filterLabels maps each Rejects filter value to the label it shows.
+function filterLabels(page) {
+    const out = {};
+    for (const o of page.document.getElementById('email-rejects-filter').options) out[o.value] = flat(o);
+    return out;
+}
+
+test('the rejects filter counts each reason from the overview, as the cards do', async () => {
+    const page = emailPage();
+    await settle();
+    const tab = page.document.getElementById('email-tab-rejects');
+    assert.equal(tab.querySelector('[data-tab-count]').hidden, true, 'a count before the overview answered');
+    assert.equal(filterLabels(page).spam, 'Spam rejected at SMTP', 'a count before the overview answered');
+    page.respond('/api/v1/email/overview', 200, overview({
+        rejects: { spam: 3, malware: 2, sender_verify: 5, other: 1, rate_limited: 4, unknown_recipient: 0 },
+        temporary: { spam: 2, sender_verify: 1, rate_limited: 4 }
+    }));
+    await settle();
+    const labels = filterLabels(page);
+    assert.deepEqual(Object.keys(labels), REJECT_FILTER_VALUES);
+    assert.equal(labels.content, 'Spam and malware (3)');
+    assert.equal(labels.all, 'All reasons (8)');
+    assert.equal(labels.other, 'Other reasons (5)');
+    assert.equal(labels.spam, 'Spam rejected at SMTP (1)');
+    assert.equal(labels.malware, 'Malware (2)');
+    assert.equal(labels.sender_verify, 'Sender verification (4)');
+    assert.equal(labels.unknown_recipient, 'Unknown recipient (0)');
+    assert.equal(labels.unclassified, 'Unclassified (1)');
+    // Rate limiting only defers, so it has no permanent count.
+    assert.equal(labels.rate_limited, 'Rate limited (temporary)');
+    // The cards and the tab say the same numbers.
+    assert.equal(kpi(page, 'kpi-other').value, '5');
+    assert.equal(kpi(page, 'kpi-malware').value, '2');
+    assert.equal(tab.querySelector('[data-tab-count]').textContent, '8');
+    assert.equal(spoken(tab), 'Rejects 8 rejected');
+
+    const failed = emailPage();
+    failed.fail('/api/v1/email/overview');
+    await settle();
+    assert.equal(failed.document.querySelector('#email-tab-rejects [data-tab-count]').textContent, '?');
+    assert.equal(filterLabels(failed).all, 'All reasons');
+});
+
+test('Other reasons lists every reason but spam, malware and rate limiting', async () => {
+    const page = emailPage();
+    await settle();
+    page.document.querySelector('#kpi-other a').click();
+    await settle();
+    const req = page.pending('/api/v1/email/rejects')[0];
+    assert.equal(query(req.url).get('class'), 'unknown_recipient,sender_verify,bad_helo,relay_denied,auth_required,suspended,mailbox_full,blocklisted,other');
+    page.respond('/api/v1/email/rejects', 200, items([], { kept_days: 7 }));
+    await settle();
+    const tbody = page.document.getElementById('email-rejects-tbody');
+    assert.match(flat(tbody), /No rejects for other reasons in the last 24 hours/);
+    assert.match(flat(tbody), /Rejects are kept for 7 days\./);
+    // The class the server calls other is Unclassified, on its own.
+    changeValue(page, page.document.getElementById('email-rejects-filter'), 'unclassified');
+    await settle();
+    assert.equal(query(page.pending('/api/v1/email/rejects')[0].url).get('class'), 'other');
+    page.respond('/api/v1/email/rejects', 200, items([{ at: AT, class: 'other', detail: 'policy text' }], { kept_days: 7 }));
+    await settle();
+    assert.equal(flat(tbody.querySelector('.badge')), 'Unclassified');
+});
+
+// ---------- Sending accounts ----------
+
+function senders(accounts, extra) {
+    return Object.assign({ accounts, total: accounts.reduce((n, a) => n + a.messages, 0), unresolved: 0, abuse_events: 0 }, extra);
+}
+
+function abuseEvent(extra) {
+    return Object.assign({ path: 'volume', path_label: 'High volume script', severity: 'HIGH', source_ip: '203.0.113.30', cp_user: '',
+        trigger_count: 40, detected_at: AT, sites: [] }, extra);
+}
+
+const FIREWALL = { smtp_block: true, smtp_allow_users: ['root'], smtp_ports: [25], port_flood: [], top_senders: [] };
+
+// sendingPage opens Sending accounts from its address and answers what it
+// reads; every route not given gets an empty list.
+async function sendingPage(bodies, url) {
+    const page = emailPage({ url: url || 'https://csm.example.test/email?tab=sending' });
+    await settle();
+    await answerAll(page, Object.assign({ '/api/v1/email/stats': FIREWALL }, bodies));
+    return page;
+}
+
+function sendingRows(page) {
+    return Array.from(page.document.querySelectorAll('#email-sending-tbody tr')).filter(r => r.querySelector('[data-label="Account"]'));
+}
+
+test('Sending accounts lists each account with its share and the abuse it is flagged for', async () => {
+    const page = await sendingPage({
+        '/api/v1/email/overview': overview({}),
+        '/api/v1/email/senders': senders([{ account: 'shopuser', messages: 300 }, { account: 'blogger', messages: 100 }, { account: 'quiet', messages: 1 }],
+            { total: 501, unresolved: 100, abuse_events: 4 }),
+        '/api/v1/email/relay-abuse': items([
+            abuseEvent({ cp_user: 'shopuser' }), abuseEvent({ cp_user: 'shopuser' }),
+            abuseEvent({ cp_user: 'shopuser', path: 'header', path_label: 'Suspicious headers' }),
+            abuseEvent({ cp_user: '' }), abuseEvent({ cp_user: 'gone-account' })
+        ], { total: 5, limit: 20, truncated: false })
+    });
+    const doc = page.document;
+    assert.deepEqual(Array.from(doc.querySelectorAll('#email-sending-table thead th')).map(flat), ['Account', 'Messages', 'Share', 'Flags', 'Actions']);
+    const rows = sendingRows(page);
+    assert.deepEqual(rows.map(r => flat(r.querySelector('[data-label="Account"]'))), ['shopuser', 'blogger', 'quiet']);
+    assert.deepEqual(rows.map(r => flat(r.querySelector('[data-label="Messages"]'))), ['300', '100', '1']);
+    assert.deepEqual(rows.map(r => flat(r.querySelector('[data-label="Share"]'))), ['60%', '20%', '<1%']);
+    assert.deepEqual(Array.from(rows[0].querySelectorAll('[data-label="Flags"] .badge')).map(flat), ['High volume script (2)', 'Suspicious headers']);
+    assert.match(Array.from(rows[0].querySelectorAll('[data-label="Flags"] .badge'))[0].className, /bg-red-lt/);
+    assert.equal(flat(rows[1].querySelector('[data-label="Flags"]')), '--');
+    assert.equal(flat(doc.getElementById('email-sending-summary')), '501 messages sent in the last 24 hours, 100 of them from senders not matched to an account.');
+    assert.ok(doc.getElementById('email-sending-table').classList.contains('csm-table-rowcard'), 'no row cards on phones');
+    // The tab counts the abuse events of the range.
+    const tab = doc.getElementById('email-tab-sending');
+    assert.equal(tab.querySelector('[data-tab-count]').textContent, '4');
+    assert.equal(spoken(tab), 'Sending accounts 4 abuse events');
+});
+
+test('View findings opens Findings searched for the account', async () => {
+    const page = await sendingPage({ '/api/v1/email/senders': senders([{ account: 'shopuser', messages: 3 }]) });
+    const link = sendingRows(page)[0].querySelector('[data-label="Actions"] a');
+    assert.equal(flat(link), 'View findings');
+    assert.equal(link.getAttribute('href'), '?tab=findings&search=shopuser');
+    const newTab = new page.window.Event('click', { bubbles: true, cancelable: true, ctrlKey: true });
+    link.dispatchEvent(newTab);
+    assert.equal(newTab.defaultPrevented, false, 'a click meant for a new browser tab was taken');
+    assert.equal(selectedTab(page), 'sending');
+    link.click();
+    await settle();
+    assert.equal(selectedTab(page), 'findings');
+    assert.equal(page.document.getElementById('email-search').value, 'shopuser');
+    const url = new URL(page.window.location.href);
+    assert.equal(url.searchParams.get('tab'), 'findings');
+    assert.equal(url.searchParams.get('search'), 'shopuser');
+});
+
+test('the accounts table says since when sends are counted', async () => {
+    const since = new Date(Date.now() - 2 * HOUR_MS).toISOString();
+    const page = await sendingPage({
+        '/api/v1/email/overview': overview({}, { counting_since: since }),
+        '/api/v1/email/senders': senders([])
+    });
+    const doc = page.document;
+    assert.match(flat(doc.getElementById('email-sending-tbody')), /No mail sent by an account in the last 24 hours/);
+    assert.ok(doc.querySelector('#email-sending-tbody .csm-empty'), 'not the shared empty state');
+    assert.equal(flat(doc.getElementById('email-sending-summary')),
+        '0 messages sent in the last 24 hours. Counting since ' + page.window.CSM.fmtDate(since) + '.');
+    // No abuse events, no count.
+    assert.equal(doc.querySelector('#email-tab-sending [data-tab-count]').hidden, true);
+
+    // Once rows come, the note stays only while counting began inside the range.
+    const old = await sendingPage({
+        '/api/v1/email/overview': overview({}, { counting_since: '2020-01-01T00:00:00Z' }),
+        '/api/v1/email/senders': senders([{ account: 'shopuser', messages: 2 }])
+    });
+    assert.doesNotMatch(flat(old.document.getElementById('email-sending-summary')), /Counting/);
+    const recent = await sendingPage({
+        '/api/v1/email/overview': overview({}, { counting_since: since }),
+        '/api/v1/email/senders': senders([{ account: 'shopuser', messages: 2 }])
+    });
+    assert.match(flat(recent.document.getElementById('email-sending-summary')), /Counting since/);
+});
+
+test('abuse event counts at the server cap read as more', async () => {
+    const page = await sendingPage({
+        '/api/v1/email/senders': senders([], { abuse_events: 5000 }),
+        '/api/v1/email/relay-abuse': items([abuseEvent()], { total: 5000, limit: 20, truncated: true })
+    });
+    const tab = page.document.getElementById('email-tab-sending');
+    assert.equal(tab.querySelector('[data-tab-count]').textContent, '5,000+');
+    assert.equal(spoken(tab), 'Sending accounts 5,000 or more abuse events');
+    assert.equal(flat(page.document.getElementById('email-abuse-count')), '5,000+ events');
+    const below = await sendingPage({ '/api/v1/email/relay-abuse': items([abuseEvent()], { total: 21, limit: 20, truncated: true }) });
+    assert.equal(flat(below.document.getElementById('email-abuse-count')), '21 events');
+});
+
+test('the abuse events keep their script breakdown and Block 24h', async () => {
+    const page = await sendingPage({
+        '/api/v1/email/relay-abuse': items([abuseEvent({ cp_user: 'shopuser', sites: [
+            { site: 'shop.example.com', script: '/wp-content/plugins/x/mail.php', hits: 40, last_seen: AT, sample_subject: 'You won' }] })],
+        { total: 1, limit: 20, truncated: false })
+    });
+    const doc = page.document;
+    const body = doc.getElementById('email-abuse-events');
+    assert.match(flat(body), /High volume script/);
+    assert.match(flat(body), /shopuser/);
+    const toggle = body.querySelector('.oab-toggle');
+    assert.equal(flat(toggle), 'Sites (1)');
+    const sites = doc.getElementById(toggle.getAttribute('data-target'));
+    assert.ok(sites.classList.contains('d-none'), 'the breakdown shows before it is opened');
+    toggle.click();
+    assert.equal(sites.classList.contains('d-none'), false);
+    const cells = Array.from(sites.querySelectorAll('tbody td')).map(flat);
+    assert.deepEqual([cells[0], cells[1], cells[2], cells[4]], ['shop.example.com', '/wp-content/plugins/x/mail.php', '40', 'You won']);
+    const asked = stubConfirm(page);
+    body.querySelector('.oab-block').click();
+    await settle();
+    assert.match(asked[0].message, /^Block 203\.0\.113\.30 in the firewall for 24 hours\?/);
+    assert.equal(asked[0].opts.danger, true);
+    const post = page.pending('/api/v1/block-ip')[0];
+    assert.deepEqual([post.method, post.body.ip, post.body.duration], ['POST', '203.0.113.30', '24h']);
+});
+
+test('the forwarders to outside addresses stay collapsed with their count', async () => {
+    const fwd = (source, external) => ({ source, domain: 'example.com', owner: 'alice', destinations: [{ address: 'x@example.net', domain: 'example.net', provider: external ? 'external' : 'local' }],
+        providers: [external ? 'external' : 'local'], keep_local: true, forward_only: false, has_external: external, has_free_provider: false });
+    const page = await sendingPage({ '/api/v1/email/forwarders': items([fwd('a@example.com', true), fwd('b@example.com', false), fwd('c@example.com', true)]) });
+    const doc = page.document;
+    const section = doc.getElementById('email-forwarders-section');
+    assert.equal(section.tagName, 'DETAILS');
+    assert.equal(section.hasAttribute('open'), false, 'the forwarders are not collapsed');
+    assert.match(flat(section.querySelector('summary')), /^Forwarders to outside addresses\s*2$/);
+    // The list starts on the outside ones, which the count names.
+    assert.equal(doc.getElementById('email-fwd-filter').value, 'external');
+    assert.equal(flat(doc.getElementById('email-fwd-count')), '2 of 3');
+
+    const failed = emailPage({ url: 'https://csm.example.test/email?tab=sending' });
+    await settle();
+    failed.fail('/api/v1/email/forwarders', new Error('HTTP 502'));
+    await settle();
+    assert.equal(flat(failed.document.getElementById('email-fwd-section-count')), '?');
+    assert.match(flat(failed.document.getElementById('email-fwd-tbody')), /Failed to load forwarders/);
+});
+
+test('an old outbound abuse link reads each Sending accounts source once', async () => {
+    const count = (page, route) => page.requests.filter(r => r.url.includes(route)).length;
+    const page = emailPage({ url: 'https://csm.example.test/email?tab=outbound-abuse' });
+    await settle();
+    assert.equal(selectedTab(page), 'sending');
+    for (const route of ['/api/v1/email/relay-abuse', '/api/v1/email/senders', '/api/v1/email/stats', '/api/v1/email/forwarders']) {
+        assert.equal(count(page, route), 1, route);
+    }
+    await answerAll(page, { '/api/v1/email/stats': FIREWALL });
+    // Opening the tab again reads only the accounts, for a fresh count.
+    showEmailTab(page, 'overview');
+    showEmailTab(page, 'sending');
+    await settle();
+    assert.deepEqual(['/api/v1/email/relay-abuse', '/api/v1/email/senders', '/api/v1/email/stats', '/api/v1/email/forwarders'].map(r => count(page, r)), [1, 2, 1, 1]);
+});
+
+test('the Sending accounts count is read with the page and follows the range', async () => {
+    const count = (page, route) => page.requests.filter(r => r.url.includes(route)).length;
+    const page = emailPage();
+    await settle();
+    // The count shows on every tab; the rest waits for the tab.
+    assert.equal(count(page, '/api/v1/email/senders'), 1);
+    for (const route of ['/api/v1/email/relay-abuse', '/api/v1/email/stats', '/api/v1/email/forwarders']) assert.equal(count(page, route), 0, route);
+    page.respond('/api/v1/email/senders', 200, senders([], { abuse_events: 2 }));
+    await settle();
+    assert.equal(page.document.querySelector('#email-tab-sending [data-tab-count]').textContent, '2');
+    // The timers leave a closed tab alone; a new range reads the count again.
+    page.window.CSM.refresh.manual();
+    await settle();
+    assert.equal(count(page, '/api/v1/email/senders'), 1, 'the timers read a closed Sending accounts tab');
+    changeValue(page, page.document.getElementById('email-range'), '7d');
+    await settle();
+    const req = page.pending('/api/v1/email/senders')[0];
+    assert.ok(req, 'a new range did not read the count again');
+    assert.equal(query(req.url).get('from'), query(page.pending('/api/v1/email/overview').at(-1).url).get('from'));
+    page.respond('/api/v1/email/senders', 404, { error: 'Not found' });
+    await settle();
+    assert.equal(page.document.querySelector('#email-tab-sending [data-tab-count]').textContent, '?');
+});
+
+test('an open Sending accounts tab refreshes and keeps the focus when nothing changed', async () => {
+    const bodies = { '/api/v1/email/senders': senders([{ account: 'shopuser', messages: 3 }]),
+        '/api/v1/email/relay-abuse': items([abuseEvent({ cp_user: 'shopuser' })], { total: 1, limit: 20, truncated: false }) };
+    const page = await sendingPage(bodies);
+    const link = sendingRows(page)[0].querySelector('a');
+    link.focus();
+    const toggleRow = page.document.querySelector('#email-abuse-events tbody tr');
+    const before = page.requests.length;
+    page.window.CSM.refresh.manual();
+    await settle();
+    const asked = page.requests.slice(before).map(r => r.url);
+    for (const route of ['/api/v1/email/senders', '/api/v1/email/relay-abuse', '/api/v1/email/stats']) {
+        assert.ok(asked.some(u => u.includes(route)), 'the timers did not read ' + route);
+    }
+    await answerAll(page, Object.assign({ '/api/v1/email/stats': FIREWALL }, bodies));
+    assert.equal(page.document.activeElement, link, 'the focus left View findings');
+    assert.equal(page.document.querySelector('#email-abuse-events tbody tr'), toggleRow, 'the abuse events were drawn again');
+});
+
+test('sending accounts, abuse events and forwarders keep server text as text', async () => {
+    const payload = '<img src=x onerror=alert(1)>';
+    const page = await sendingPage({
+        '/api/v1/email/senders': senders([{ account: payload, messages: 3 }]),
+        '/api/v1/email/relay-abuse': items([abuseEvent({ cp_user: payload, path_label: payload, sites: [
+            { site: payload, script: '/' + payload, hits: 1, last_seen: AT, sample_subject: payload }] })], { total: 1, limit: 20, truncated: false }),
+        '/api/v1/email/forwarders': items([{ source: payload + '@example.com', domain: 'example.com', owner: payload,
+            destinations: [{ address: payload + '@example.net', domain: 'example.net', provider: 'external' }], providers: [payload],
+            keep_local: true, forward_only: false, has_external: true, has_free_provider: false }])
+    });
+    const doc = page.document;
+    for (const id of ['email-sending-tbody', 'email-abuse-events', 'email-fwd-tbody']) {
+        const el = doc.getElementById(id);
+        assert.equal(el.querySelectorAll('img').length, 0, id + ' interpreted server text as markup');
+        assert.ok(el.textContent.includes(payload), id + ' lost the literal server text');
+    }
+    assert.equal(sendingRows(page)[0].querySelector('a').getAttribute('href'), '?tab=findings&search=' + encodeURIComponent(payload));
+
+    const failed = emailPage({ url: 'https://csm.example.test/email?tab=sending' });
+    await settle();
+    failed.respond('/api/v1/email/senders', 500, { error: payload });
+    await settle();
+    const tbody = failed.document.getElementById('email-sending-tbody');
+    assert.match(flat(tbody), /Failed to load sending accounts/);
+    assert.ok(tbody.textContent.includes(payload));
+    assert.equal(tbody.querySelectorAll('img').length, 0);
 });

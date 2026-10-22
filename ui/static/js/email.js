@@ -15,6 +15,8 @@
     var deliverabilityLoaded = false;
     var outboundAbuseLoaded = false;
     var _outboundAbuseSeq = 0;
+    var _abuse = null;   // the outbound abuse events listed for the range
+    var _abuseSig = '';  // what the abuse events on screen show
     var queueCompositionLoaded = false;
 
     // ---------- Filter state from URL ----------
@@ -141,7 +143,7 @@
         mailbox_full: 'Mailbox full',
         blocklisted: 'Blocklisted',
         rate_limited: 'Rate limited (temporary)',
-        other: 'Other'
+        other: 'Unclassified'
     };
 
     function rejectClassLabel(cls) {
@@ -181,6 +183,8 @@
                 renderProtection();
                 renderQueueSummary();
                 renderHeldSummary();
+                renderRejectsCounts();
+                renderSendersSummary();
             })
             .catch(function(err) {
                 if (seq !== _overviewSeq) return;
@@ -198,6 +202,8 @@
                 });
                 renderQueueSummary();
                 renderHeldSummary();
+                renderRejectsCounts();
+                renderSendersSummary();
             });
     }
 
@@ -222,14 +228,21 @@
         card.querySelector('[data-kpi-sub]').textContent = sub;
     }
 
-    // otherRejects sums the permanent rejects outside spam and malware, the
+    // otherReason reports whether a reject class is one of the other
+    // reasons: every class but spam, malware and rate limiting, which only
+    // ever defers.
+    function otherReason(cls) {
+        return cls !== 'spam' && cls !== 'malware' && cls !== 'rate_limited';
+    }
+
+    // otherRejects sums the permanent rejects for the other reasons, the
     // same count the chart's Other rejects series shows: a temporary reject
     // defers the message, which comes back and is decided later.
     function otherRejects(t) {
         var rejects = t.rejects || {}, temporary = t.temporary || {};
         var out = { total: 0, top: '', topCount: 0 };
         Object.keys(rejects).forEach(function(cls) {
-            if (cls === 'spam' || cls === 'malware') return;
+            if (!otherReason(cls)) return;
             var n = (rejects[cls] || 0) - (temporary[cls] || 0);
             if (n <= 0) return;
             out.total += n;
@@ -561,7 +574,8 @@
             loadFindings();
             outboundAbuseLoaded = false;
             ++_outboundAbuseSeq;
-            if (activeTab('email-tabs') === 'sending' && activeTab('email-outbound-nav') === 'outbound-abuse') loadOutboundAbuse();
+            loadSenders();
+            if (activeTab('email-tabs') === 'sending') loadOutboundAbuse();
             renderHeld();
         });
     }
@@ -579,6 +593,10 @@
     // ---------- Recent rejects ----------
 
     var REJECT_BADGES = { spam: 'bg-orange-lt', malware: 'bg-red-lt' };
+    // The filter offers content, all, other (every other reason, what the
+    // Other rejects card counts), then each class. The unclassified class
+    // takes its own value there, since other names the group.
+    var REJECT_FILTER_LABELS = { content: 'Spam and malware', all: 'All reasons', other: 'Other reasons', spam: 'Spam rejected at SMTP' };
     var rejectsFilter = document.getElementById('email-rejects-filter');
     var rejectsTable = null;
     var _rejectsSeq = 0;
@@ -587,12 +605,50 @@
     var _rejectsKey = '';
 
     if (rejectsFilter) {
-        Object.keys(REJECT_CLASS_LABELS).forEach(function(cls) {
-            var opt = node('option', null, REJECT_CLASS_LABELS[cls]);
-            opt.value = cls;
+        ['other'].concat(Object.keys(REJECT_CLASS_LABELS).map(rejectsValue)).forEach(function(value) {
+            var opt = node('option', null, rejectsLabel(value));
+            opt.value = value;
             rejectsFilter.appendChild(opt);
         });
         rejectsFilter.addEventListener('change', loadRejects);
+    }
+
+    // rejectsValue is the filter value of a reject class.
+    function rejectsValue(cls) {
+        return cls === 'other' ? 'unclassified' : cls;
+    }
+
+    // rejectsQuery is the class parameter a filter value asks for.
+    function rejectsQuery(value) {
+        if (value === 'other') return Object.keys(REJECT_CLASS_LABELS).filter(otherReason).join(',');
+        return value === 'unclassified' ? 'other' : value;
+    }
+
+    function rejectsLabel(value) {
+        return Object.prototype.hasOwnProperty.call(REJECT_FILTER_LABELS, value) ? REJECT_FILTER_LABELS[value] : rejectClassLabel(rejectsQuery(value));
+    }
+
+    // renderRejectsCounts puts the permanent rejects of the range in the
+    // filter and on the Rejects tab. They come from the overview the cards
+    // show, so the three agree. Rate limiting only defers, so it has none.
+    function renderRejectsCounts() {
+        var counts = null;
+        if (_overview) {
+            var t = _overview.totals || {}, rejects = t.rejects || {}, temporary = t.temporary || {};
+            var permanent = function(cls) { return Math.max(0, (rejects[cls] || 0) - (temporary[cls] || 0)); };
+            counts = { content: permanent('spam') + permanent('malware'), all: 0, other: otherRejects(t).total };
+            Object.keys(rejects).forEach(function(cls) { counts.all += permanent(cls); });
+            Object.keys(REJECT_CLASS_LABELS).forEach(function(cls) {
+                if (cls !== 'rate_limited') counts[rejectsValue(cls)] = permanent(cls);
+            });
+        }
+        if (rejectsFilter) {
+            Array.from(rejectsFilter.options).forEach(function(opt) {
+                var n = counts && Object.prototype.hasOwnProperty.call(counts, opt.value) ? counts[opt.value] : null;
+                opt.textContent = rejectsLabel(opt.value) + (n == null ? '' : ' (' + num(n) + ')');
+            });
+        }
+        setTabCount('rejects', counts ? counts.all : _overviewErr ? '?' : null);
     }
 
     function resetRejectsTable() {
@@ -607,12 +663,13 @@
         var range = currentRange();
         var key = cls + '|' + range.key;
         var seq = ++_rejectsSeq;
-        CSM.get('/api/v1/email/rejects?' + rangeQuery(range, 'class=' + encodeURIComponent(cls) + '&limit=50'))
+        CSM.get('/api/v1/email/rejects?' + rangeQuery(range, 'class=' + encodeURIComponent(rejectsQuery(cls)) + '&limit=50'))
             .then(function(data) {
                 if (seq !== _rejectsSeq) return;
                 var page = rejectsTable && key === _rejectsKey ? rejectsTable.currentPage : 1;
                 _rejectsKey = key;
-                var what = cls === 'content' ? 'spam or malware rejects' : cls === 'all' ? 'rejects' : 'rejects for ' + rejectClassLabel(cls);
+                var what = cls === 'content' ? 'spam or malware rejects' : cls === 'all' ? 'rejects' :
+                    cls === 'other' ? 'rejects for other reasons' : 'rejects for ' + rejectClassLabel(rejectsQuery(cls));
                 renderRejects(data.items, 'No ' + what + ' ' + rangeWords(range), data.kept_days, page);
             })
             .catch(function(err) {
@@ -725,7 +782,7 @@
         }
     }
 
-    // ---------- Sending accounts tab: SMTP firewall and senders ----------
+    // ---------- Sending accounts tab: SMTP firewall ----------
 
     // The stats call reads the SMTP firewall settings and the last 500 log
     // lines, so it runs only once the Sending accounts tab opens.
@@ -734,14 +791,10 @@
     function loadEmailStats() {
         statsLoaded = true;
         CSM.get('/api/v1/email/stats')
-            .then(function(data) {
-                renderSMTPFirewall(data);
-                renderTopSenders(data.top_senders || []);
-            })
+            .then(renderSMTPFirewall)
             .catch(function(err) {
                 statsLoaded = false;
-                CSM.loadError(document.getElementById('smtp-firewall'), loadEmailStats, { title: 'Failed to load the SMTP firewall', error: err });
-                CSM.loadError(document.getElementById('top-senders'), loadEmailStats, { title: 'Failed to load top senders', error: err });
+                CSM.loadError(document.getElementById('email-sending-firewall'), loadEmailStats, { title: 'Failed to load the SMTP firewall', error: err });
             });
     }
 
@@ -807,7 +860,7 @@
     // renderSMTPFirewall says on one line whether outbound SMTP is
     // restricted, who may still send, and the SMTP port flood limits.
     function renderSMTPFirewall(data) {
-        var el = document.getElementById('smtp-firewall');
+        var el = document.getElementById('email-sending-firewall');
         if (!el) return;
         var line = node('div', 'd-flex flex-wrap align-items-center column-gap-3 row-gap-1');
         var state = node('span', 'd-inline-flex align-items-center gap-2');
@@ -826,47 +879,172 @@
         el.replaceChildren(line);
     }
 
-    // ---------- Top senders (Sending accounts tab) ----------
+    // ---------- Sending accounts tab: accounts ----------
 
-    function renderTopSenders(senders) {
-        var el = document.getElementById('top-senders');
-        if (!el) return;
-        // Suppress count=1 noise unless every sender has only 1 hit (plan rule).
-        var meaningful = senders.filter(function(s) { return s.count > 1; });
-        if (meaningful.length > 0) senders = meaningful;
-        if (!senders || senders.length === 0) {
-            el.replaceChildren(buildEmpty('send', 'No notable outbound activity', ''));
+    // The server counts outbound abuse events up to this many.
+    var ABUSE_EVENTS_CAP = 5000;
+    var _senders = null;
+    var _sendersErr = null;
+    var _sendersSeq = 0;
+    // What the account rows on screen show; a poll that shows the same
+    // leaves them, and the focus, alone.
+    var _sendersSig = '';
+    var sendersTable = null;
+
+    // abuseCount words a number of abuse events; at the cap there may be
+    // more.
+    function abuseCount(n) {
+        return n >= ABUSE_EVENTS_CAP ? num(ABUSE_EVENTS_CAP) + '+' : num(n);
+    }
+
+    // loadSenders reads what each hosting account sent in the range, and
+    // how many outbound abuse events the range holds, which the tab counts.
+    // The table has its own error state, so no toast repeats it.
+    function loadSenders() {
+        var seq = ++_sendersSeq;
+        CSM.get('/api/v1/email/senders?' + emailDateQuery(), { silent: true })
+            .then(function(data) {
+                if (seq !== _sendersSeq) return;
+                _senders = data;
+                _sendersErr = null;
+                renderSenders();
+            })
+            .catch(function(err) {
+                if (seq !== _sendersSeq) return;
+                _senders = null;
+                _sendersErr = err;
+                renderSenders();
+            });
+    }
+
+    // renderSenders counts the abuse events on the tab, shown only when
+    // there are any, and lists the accounts busiest first: messages, share
+    // of all outbound mail, and flags from the abuse events naming them.
+    function renderSenders() {
+        var events = _senders ? _senders.abuse_events || 0 : 0;
+        setTabCount('sending', _senders ? (events > 0 ? events : null) : _sendersErr ? '?' : null);
+        renderSendersSummary();
+        var tbody = document.getElementById('email-sending-tbody');
+        if (!tbody) return;
+        if (_sendersErr) {
+            _sendersSig = '';
+            resetSendersTable();
+            CSM.loadError(tbody, loadSenders, { title: 'Failed to load sending accounts', error: _sendersErr });
             return;
         }
-        var maxCount = senders[0].count || 1;
-        var html = '<div class="list-group list-group-flush">';
-        for (var i = 0; i < senders.length; i++) {
-            var s = senders[i];
-            var pct = Math.round(s.count / maxCount * 100);
-            var countClass = s.count >= 100 ? 'text-danger fw-bold' : 'text-muted';
-            html += '<div class="list-group-item feed-item" data-sender-domain="' + CSM.attr(s.domain) + '">';
-            html += '<div class="d-flex align-items-center mb-1">';
-            html += '<span class="font-monospace small">' + CSM.esc(s.domain) + '</span>';
-            html += '<span class="ms-auto small ' + countClass + '">' + s.count + '</span></div>';
-            html += '<div class="progress progress-sm"><div class="progress-bar bg-primary csm-progress-zero" role="progressbar" aria-valuemin="0" aria-valuemax="100" data-csm-progress="' + CSM.attr(pct) + '"></div></div>';
-            html += '</div>';
+        if (!_senders) return;
+        var accounts = Array.isArray(_senders.accounts) ? _senders.accounts : [];
+        var flags = abuseFlags();
+        var range = currentRange();
+        var sig = JSON.stringify([accounts, _senders.total, flags, rangeWords(range)]);
+        if (sig === _sendersSig) return;
+        _sendersSig = sig;
+        resetSendersTable();
+        if (accounts.length === 0) {
+            emptyRow(tbody, 5, 'send', 'No mail sent by an account ' + rangeWords(range), '');
+            return;
         }
-        html += '</div>';
-        el.innerHTML = html;
-        CSM.applyProgressBars(el);
-        var items = el.querySelectorAll('[data-sender-domain]');
-        for (var j = 0; j < items.length; j++) {
-            CSM.makeClickable(items[j]);
-            items[j].addEventListener('click', function() {
-                var domain = this.getAttribute('data-sender-domain');
-                var sb = document.getElementById('email-search');
-                if (sb) {
-                    sb.value = domain;
-                    sb.dispatchEvent(new Event('input'));
-                    selectTab('findings');
-                }
-            });
+        tbody.replaceChildren();
+        accounts.forEach(function(a) { tbody.appendChild(senderRow(a, _senders.total, flags[a.account] || [])); });
+        sendersTable = new CSM.Table({
+            tableId: 'email-sending-table',
+            perPage: 25,
+            persistPerPage: false,
+            search: false,
+            sortable: true,
+            mobileRowCard: true
+        });
+    }
+
+    function resetSendersTable() {
+        if (sendersTable) sendersTable.destroy();
+        sendersTable = null;
+    }
+
+    // senderRow builds one account's row. Account names and abuse kinds
+    // come from the server, so all of it is text.
+    function senderRow(a, total, flags) {
+        var tr = node('tr');
+        tr.appendChild(rejectCell('Account', a.account, 'csm-break-word'));
+        var messages = queueCell('Messages', 'text-end text-nowrap');
+        messages.setAttribute('data-sort', String(a.messages));
+        messages.textContent = num(a.messages);
+        tr.appendChild(messages);
+        var share = queueCell('Share', 'text-end text-nowrap');
+        share.setAttribute('data-sort', String(a.messages));
+        var pct = total > 0 ? a.messages / total * 100 : 0;
+        share.textContent = total > 0 ? (pct < 1 ? '<1%' : Math.round(pct) + '%') : '--';
+        tr.appendChild(share);
+        var flagged = queueCell('Flags');
+        if (flags.length === 0) flagged.appendChild(node('span', 'text-muted', '--'));
+        flags.forEach(function(f) {
+            flagged.appendChild(node('span', 'badge bg-red-lt me-1', f.label + (f.count > 1 ? ' (' + num(f.count) + ')' : '')));
+        });
+        tr.appendChild(flagged);
+        var actions = queueCell('Actions', 'text-end');
+        var link = node('a', 'btn btn-sm btn-ghost-secondary text-nowrap', 'View findings');
+        link.href = '?tab=findings&search=' + encodeURIComponent(a.account);
+        link.setAttribute('data-findings-account', a.account);
+        link.setAttribute('aria-label', 'View findings for ' + a.account);
+        actions.appendChild(link);
+        tr.appendChild(actions);
+        return tr;
+    }
+
+    // abuseFlags groups the listed abuse events by the account they name:
+    // each kind once, with how many events. An event naming no account
+    // flags no row.
+    function abuseFlags() {
+        var out = Object.create(null);
+        (_abuse && Array.isArray(_abuse.items) ? _abuse.items : []).forEach(function(e) {
+            if (!e.cp_user) return;
+            var list = out[e.cp_user] || (out[e.cp_user] = []);
+            var label = e.path_label || 'Outbound abuse';
+            var seen = list.filter(function(f) { return f.label === label; })[0];
+            if (seen) seen.count++;
+            else list.push({ label: label, count: 1 });
+        });
+        return out;
+    }
+
+    // renderSendersSummary says how much mail went out in the range, and
+    // since when sends are counted while the table has no rows or the
+    // counting began inside the range.
+    function renderSendersSummary() {
+        var el = document.getElementById('email-sending-summary');
+        if (!el) return;
+        if (!_senders) {
+            el.textContent = '';
+            return;
         }
+        var range = currentRange();
+        var total = _senders.total || 0;
+        var text = num(total) + (total === 1 ? ' message' : ' messages') + ' sent ' + rangeWords(range);
+        if (_senders.unresolved > 0) text += ', ' + num(_senders.unresolved) + ' of them from senders not matched to an account';
+        text += '.';
+        var empty = !(Array.isArray(_senders.accounts) && _senders.accounts.length);
+        if (_overview && !_overview.counting_since) text += ' Counting has not started.';
+        else if (_overview && (empty || Date.parse(_overview.counting_since) > range.from.getTime())) {
+            text += ' Counting since ' + CSM.fmtDate(_overview.counting_since) + '.';
+        }
+        el.textContent = text;
+    }
+
+    // A View findings link opens Findings searched for its account. A click
+    // meant for a new browser tab follows the link's address instead.
+    var sendingBody = document.getElementById('email-sending-tbody');
+    if (sendingBody) {
+        sendingBody.addEventListener('click', function(e) {
+            var link = e.target.closest('[data-findings-account]');
+            if (!link || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
+            e.preventDefault();
+            if (searchEl) {
+                searchEl.value = link.getAttribute('data-findings-account');
+                searchEl.dispatchEvent(new Event('input'));
+            }
+            selectTab('findings');
+            syncEmailURL();
+        });
     }
 
     // ---------- AV status (Protection card) ----------
@@ -1713,7 +1891,7 @@
         });
     }
 
-    // ---------- Forwarders tab (inventory table) ----------
+    // ---------- Forwarders (inventory, collapsed under Sending accounts) ----------
 
     // Provider class -> badge colour. Free providers are the reputation-risk
     // case (forwarding spam to them tanks the outbound IP), so they read red.
@@ -1742,8 +1920,17 @@
             })
             .catch(function(err) {
                 forwardersLoaded = false;
+                setForwardersCount('?');
                 CSM.loadError(document.getElementById('email-fwd-tbody'), loadForwarders, { title: 'Failed to load forwarders', error: err });
             });
+    }
+
+    // setForwardersCount shows a count on the collapsed forwarders section.
+    function setForwardersCount(text) {
+        var badge = document.getElementById('email-fwd-section-count');
+        if (!badge) return;
+        badge.hidden = false;
+        badge.textContent = text;
     }
 
     function forwarderMatchesFilter(f, mode) {
@@ -1775,6 +1962,7 @@
 
         var countEl = document.getElementById('email-fwd-count');
         if (countEl) countEl.textContent = rows.length + ' of ' + _forwarders.length;
+        setForwardersCount(num(_forwarders.filter(function(f) { return f.has_external; }).length));
 
         if (rows.length === 0) {
             if (_forwarders.length === 0) emptyRow(tb, 5, 'mail-forward', 'No forwarders found on this host', '');
@@ -2419,29 +2607,44 @@
         }
     }
 
-    // ---------- Outbound mail abuse (Outbound abuse tab) ----------
+    // ---------- Outbound abuse events (Sending accounts tab) ----------
 
+    // loadOutboundAbuse lists the newest abuse events of the range. They
+    // also flag the accounts they name in the table above.
     function loadOutboundAbuse() {
-        var body = document.getElementById('outbound-abuse-body');
+        var body = document.getElementById('email-abuse-events');
         if (!body) return;
         var seq = ++_outboundAbuseSeq;
         CSM.get('/api/v1/email/relay-abuse?' + emailDateQuery('limit=20'))
             .then(function(resp) {
                 if (seq !== _outboundAbuseSeq) return;
                 outboundAbuseLoaded = true;
+                _abuse = resp;
+                renderSenders();
+                // A poll mostly brings the same events; drawing them again
+                // would close their breakdowns.
+                var sig = JSON.stringify([resp.items, resp.total, resp.truncated]);
+                if (sig === _abuseSig) return;
+                _abuseSig = sig;
                 renderOutboundAbuse(resp);
                 CSM.truncationNote(body, resp && resp.truncated, 'relay abuse findings');
             })
             .catch(function(err) {
                 if (seq !== _outboundAbuseSeq) return;
                 outboundAbuseLoaded = false;
+                _abuse = null;
+                _abuseSig = '';
+                renderSenders();
+                document.getElementById('email-abuse-count').textContent = '';
                 CSM.loadError(body, loadOutboundAbuse, { title: 'Failed to load outbound mail abuse', error: err });
             });
     }
 
     function renderOutboundAbuse(resp) {
-        var body = document.getElementById('outbound-abuse-body');
+        var body = document.getElementById('email-abuse-events');
         var entries = (resp && resp.items) || [];
+        var total = resp && resp.total > 0 ? resp.total : 0;
+        document.getElementById('email-abuse-count').textContent = total > 0 ? abuseCount(total) + (total === 1 ? ' event' : ' events') : '';
         if (entries.length === 0) {
             body.replaceChildren(buildEmpty('circle-check', 'No outbound mail abuse ' + rangeWords(currentRange()), ''));
             return;
@@ -2663,6 +2866,8 @@
         sending: ['abuse event', 'abuse events'], delays: ['provider deferring', 'providers deferring'],
         findings: ['finding', 'findings']
     };
+    // Counts the server caps: at the cap there may be more.
+    var TAB_COUNT_CAPS = { sending: ABUSE_EVENTS_CAP };
     // A count at a threshold: its badge color and what it adds in words.
     var TAB_COUNT_LEVELS = {
         warn: ['badge-warning', ', at or above warning level'],
@@ -2678,7 +2883,8 @@
         var badge = btn && btn.querySelector('[data-tab-count]');
         if (!badge) return;
         var lv = Object.prototype.hasOwnProperty.call(TAB_COUNT_LEVELS, level) ? TAB_COUNT_LEVELS[level] : ['bg-secondary-lt', ''];
-        var text = n == null ? '' : typeof n === 'number' ? num(n) : n;
+        var capped = typeof n === 'number' && Object.prototype.hasOwnProperty.call(TAB_COUNT_CAPS, name) && n >= TAB_COUNT_CAPS[name];
+        var text = n == null ? '' : typeof n === 'number' ? num(n) + (capped ? '+' : '') : n;
         // A new count can widen its tab and push the open tab out of the
         // strip. Bring it back only if it was in view: the polls must not
         // undo the operator scrolling the strip.
@@ -2691,7 +2897,7 @@
         if (words) {
             if (n == null) words.textContent = '';
             else if (typeof n !== 'number') words.textContent = 'count unknown';
-            else words.textContent = num(n) + ' ' + TAB_COUNT_WORDS[name][n === 1 ? 0 : 1] + lv[1];
+            else words.textContent = num(n) + (capped ? ' or more ' : ' ') + TAB_COUNT_WORDS[name][n === 1 ? 0 : 1] + lv[1];
         }
         if (reveal) revealTab(active);
     }
@@ -2704,14 +2910,16 @@
     }
 
     // loadTab loads what a tab shows the first time it opens; force loads
-    // it again. Queue, Held mail and Rejects read again whenever they open.
-    // Overview, Findings and the Held mail count load with the page.
+    // it again. Queue, Held mail, Rejects and the sending accounts read
+    // again whenever they open. Overview, Findings and the Held mail and
+    // Sending accounts counts load with the page.
     function loadTab(id, force) {
         if (id === 'sending') {
             if (force || !statsLoaded) loadEmailStats();
-            loadTab(activeTab('email-outbound-nav'), force);
-        } else if (id === 'senders') {
-            if (!statsLoaded) loadEmailStats();
+            loadSenders();
+            if (force || !outboundAbuseLoaded) loadOutboundAbuse();
+            if (force) forwardersLoaded = false;
+            loadForwarders();
         } else if (id === 'queue') {
             if (force) queueCompositionLoaded = false;
             loadQueueComposition();
@@ -2720,14 +2928,9 @@
             loadHeldMail();
         } else if (id === 'rejects') {
             loadRejects();
-        } else if (id === 'forwarders') {
-            if (force) forwardersLoaded = false;
-            loadForwarders();
         } else if (id === 'delays') {
             if (force) deliverabilityLoaded = false;
             loadDeliverability();
-        } else if (id === 'outbound-abuse') {
-            if (force || !outboundAbuseLoaded) loadOutboundAbuse();
         }
     }
 
@@ -2826,8 +3029,10 @@
             outboundAbuseLoaded = false;
             ++_outboundAbuseSeq;
             queueCompositionLoaded = false;
-            // Held mail reads again on any tab, for its count.
+            // Held mail and the sending accounts read again on any tab, for
+            // their counts.
             if (activeTab('email-tabs') !== 'held') loadHeldMail();
+            if (activeTab('email-tabs') !== 'sending') loadSenders();
             loadTab(activeTab('email-tabs'), true);
         });
     }
@@ -2861,16 +3066,19 @@
     loadActionGroups();
     loadEmailChecks();
     loadFindings();
-    // The Held mail count shows on every tab; an open Held mail has read
-    // it already.
+    // The Held mail and Sending accounts counts show on every tab; an open
+    // tab has read its own already.
     if (startTab.name !== 'held') loadHeldMail();
+    if (startTab.name !== 'sending') loadSenders();
 
     // Polling while the tab is visible: the numbers and the queue every 30 s
-    // (with the SMTP firewall and senders while Sending accounts is open,
+    // (with the SMTP firewall while Sending accounts is open,
     // and the queued messages while Queue is open),
     // rspamd and AV every 60 s (rspamd's own figures are cached that long,
     // with held mail while Held mail is open),
-    // and the groups every 60 s (with the rejects while Rejects is open).
+    // and the groups every 60 s (with the rejects while Rejects is open,
+    // and the accounts and abuse events while Sending accounts is open:
+    // each walks the history of the range, as the groups do).
     var _emailIntervals = [];
     function _stopEmailIntervals() {
         for (var i = 0; i < _emailIntervals.length; i++) _emailIntervals[i].stop();
@@ -2896,6 +3104,10 @@
             try {
                 loadActionGroups();
                 if (activeTab('email-tabs') === 'rejects') loadRejects();
+                if (activeTab('email-tabs') === 'sending') {
+                    loadSenders();
+                    loadOutboundAbuse();
+                }
             } catch(e) {}
         }, 60000));
     }
