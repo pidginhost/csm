@@ -167,3 +167,19 @@ func TestHeaderFileOverBudgetIsPartial(t *testing.T) {
 		t.Fatalf("result = %+v", r)
 	}
 }
+
+func TestZipWithBytesAfterEndRecordStaysComplete(t *testing.T) {
+	archive := append(orderedZip(t, archiveEntry{"doc.txt", []byte("hello")}), "\r\n"...)
+	body := buildMultipartBody("BOUND", "ok.zip", "application/zip", archive)
+	r := parseWithLimits(t, `multipart/mixed; boundary="BOUND"`, body, DefaultLimits())
+	if r.Partial {
+		t.Fatalf("zip with a trailing line break marked partial: %q", r.PartialReason)
+	}
+	var found bool
+	for _, p := range r.Parts {
+		found = found || (p.Filename == "doc.txt" && p.Nested)
+	}
+	if !found {
+		t.Fatalf("member not extracted: %+v", r.Parts)
+	}
+}

@@ -109,17 +109,26 @@ func Read(r io.ReaderAt, size int64, maxDirBytes uint64) (Directory, error) {
 	}, nil
 }
 
+// findEnd returns the end record whose comment reaches the end of tail. A
+// record found that way cannot be a decoy inside another record's comment.
+// Without one, it falls back to the record nearest the end whose comment
+// still fits, which is the record archive/zip opens: a file with bytes after
+// its end record, such as a trailing line break, reads the same in both.
 func findEnd(tail []byte) int {
+	fallback := -1
 	for i := len(tail) - EndLen; i >= 0; i-- {
 		if binary.LittleEndian.Uint32(tail[i:i+4]) != EndSignature {
 			continue
 		}
 		commentLen := int(binary.LittleEndian.Uint16(tail[i+20 : i+22]))
-		if i+EndLen+commentLen == len(tail) {
+		switch end := i + EndLen + commentLen; {
+		case end == len(tail):
 			return i
+		case end < len(tail) && fallback < 0:
+			fallback = i
 		}
 	}
-	return -1
+	return fallback
 }
 
 func readZip64(r io.ReaderAt, endOffset int64) (end int64, records, size, offset uint64, err error) {

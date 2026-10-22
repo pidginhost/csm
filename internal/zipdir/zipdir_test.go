@@ -150,3 +150,26 @@ func TestWalkChecksCancellationDuringListing(t *testing.T) {
 		t.Fatalf("err=%v visited=%d, want cancellation after 256 entries", err, visited)
 	}
 }
+
+// archive/zip opens a zip with bytes after its end record (download scripts
+// often append a line break), so Read must find the same end record.
+func TestReadAcceptsBytesAfterEndRecord(t *testing.T) {
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	if _, err := zw.Create("a.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, tail := range []string{"\r\n", string(make([]byte, 512))} {
+		data := append(append([]byte(nil), buf.Bytes()...), tail...)
+		dir, err := Read(bytes.NewReader(data), int64(len(data)), 16<<20)
+		if err != nil || dir.Records != 1 {
+			t.Fatalf("tail %q: Read = %+v, %v", tail[:min(len(tail), 4)], dir, err)
+		}
+		if _, err := zip.NewReader(bytes.NewReader(data), int64(len(data))); err != nil {
+			t.Fatalf("archive/zip refused the same file: %v", err)
+		}
+	}
+}

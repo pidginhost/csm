@@ -95,3 +95,22 @@ func TestPhishingZipUnreadDirectoryTailMarksIncomplete(t *testing.T) {
 		t.Fatal("unread directory bytes reported as a complete negative scan")
 	}
 }
+
+// One byte appended after the end record must not hide a kit: unzip and PHP
+// still open the file.
+func TestPhishingKitWithTrailingByteStillDetected(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "office365.zip")
+	kitZipWithFiller(t, path, 0)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = f.Write([]byte("\n")); err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Close()
+	ctx, c := withIncompleteCheckCollector(context.Background())
+	if !zipLooksLikeKit(ctx, path) || c.contains("phishing") {
+		t.Fatalf("kit with a trailing byte: detected=false or incomplete=%v", c.contains("phishing"))
+	}
+}
