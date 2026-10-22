@@ -503,6 +503,80 @@ func TestPruneOlderThan(t *testing.T) {
 	}
 }
 
+// A daemon that dies between claiming a copy and finishing with it leaves the
+// claim in tmp/, where List and Prune never look. Once no release can still
+// hold it, the copy is held again under its own id.
+func TestRestoreStaleClaims(t *testing.T) {
+	q := New(t.TempDir())
+	id, err := q.Hold(held(), sampleBody())
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, _, err := q.claim(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// exim's own delivery in progress shares tmp/ and is not a claim.
+	eximTmp := filepath.Join(q.sub("tmp"), "1761140000.P123.host.example")
+	if err = os.WriteFile(eximTmp, []byte("partial"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := q.RestoreStaleClaims(time.Now())
+	if err != nil || n != 0 {
+		t.Fatalf("fresh claim: restored %d, %v; want it left to the release holding it", n, err)
+	}
+	if msgs, _ := q.List(); len(msgs) != 0 {
+		t.Fatalf("fresh claim listed: %+v", msgs)
+	}
+
+	n, err = q.RestoreStaleClaims(time.Now().Add(staleClaimAge + time.Second))
+	if err != nil || n != 1 {
+		t.Fatalf("stale claim: restored %d, %v; want 1", n, err)
+	}
+	msgs, _ := q.List()
+	if len(msgs) != 1 || msgs[0].ID != id || msgs[0].Recipient != held().Recipient {
+		t.Errorf("after restore = %+v, want %s held again", msgs, id)
+	}
+	if _, err := os.Lstat(claimed); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("claim still in tmp/: %v", err)
+	}
+	if _, err := os.Lstat(eximTmp); err != nil {
+		t.Errorf("exim's tmp file touched: %v", err)
+	}
+	// Restored, the copy can be released or deleted as before.
+	if err := q.Delete(id); err != nil {
+		t.Errorf("delete after restore: %v", err)
+	}
+}
+
+// A claim whose id is held again, which no release makes, stays put rather
+// than overwrite that copy.
+func TestRestoreStaleClaimsNeverOverwrites(t *testing.T) {
+	q := New(t.TempDir())
+	id, err := q.Hold(held(), sampleBody())
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, _, err := q.claim(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := []byte("Subject: other\r\n\r\nbody\r\n")
+	if err := os.WriteFile(filepath.Join(q.sub("new"), id), other, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := q.RestoreStaleClaims(time.Now().Add(staleClaimAge + time.Second)); err != nil || n != 0 {
+		t.Errorf("restored %d, %v; want 0", n, err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(q.sub("new"), id)); !bytes.Equal(got, other) {
+		t.Error("held copy overwritten by a restored claim")
+	}
+	if _, err := os.Lstat(claimed); err != nil {
+		t.Errorf("claim removed: %v", err)
+	}
+}
+
 func TestStripControlHeadersDropsFoldedControlHeader(t *testing.T) {
 	data := []byte("Subject: hi\r\n" +
 		"\tkept subject continuation\r\n" +

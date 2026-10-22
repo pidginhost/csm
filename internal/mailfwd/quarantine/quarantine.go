@@ -20,6 +20,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -304,6 +305,67 @@ func (q *Quarantine) claim(id string) (claimed, held string, err error) {
 		return "", "", err
 	}
 	return claimed, held, nil
+}
+
+// staleClaimAge is past any claim a live Release or Delete still holds: a
+// release waits at most sendmailTimeout for sendmail.
+const staleClaimAge = 5 * time.Minute
+
+// RestoreStaleClaims holds again every copy that a Release or Delete claimed
+// at least staleClaimAge before now and never finished with, as when the
+// daemon died mid-release; such a release may already have been delivered.
+// A claim whose id is held again stays in tmp/. It returns how many copies
+// were restored.
+func (q *Quarantine) RestoreStaleClaims(now time.Time) (int, error) {
+	entries, err := os.ReadDir(q.sub("tmp"))
+	if os.IsNotExist(err) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	restored := 0
+	var errs []error
+	for _, e := range entries {
+		id, at, ok := parseClaimName(e.Name())
+		if !ok || !e.Type().IsRegular() || now.Sub(at) < staleClaimAge {
+			continue
+		}
+		if err := os.MkdirAll(q.sub("new"), 0700); err != nil {
+			return restored, err
+		}
+		claimed := filepath.Join(q.sub("tmp"), e.Name())
+		// Link, unlike rename, fails rather than replace a held copy.
+		if err := os.Link(claimed, filepath.Join(q.sub("new"), id)); err != nil {
+			if !errors.Is(err, fs.ErrExist) {
+				errs = append(errs, err)
+			}
+			continue
+		}
+		if err := os.Remove(claimed); err != nil {
+			errs = append(errs, err)
+		}
+		restored++
+	}
+	return restored, errors.Join(errs...)
+}
+
+// parseClaimName reads the held id and the claim time from a name claim gave
+// a copy; exim's own files in tmp/ do not parse.
+func parseClaimName(name string) (id string, at time.Time, ok bool) {
+	i := strings.LastIndex(name, ".claim.")
+	if i <= 0 {
+		return "", time.Time{}, false
+	}
+	stamp, seq, found := strings.Cut(name[i+len(".claim."):], ".")
+	nanos, err := strconv.ParseInt(stamp, 10, 64)
+	if !found || err != nil || nanos <= 0 {
+		return "", time.Time{}, false
+	}
+	if _, err := strconv.ParseUint(seq, 10, 64); err != nil {
+		return "", time.Time{}, false
+	}
+	return name[:i], time.Unix(0, nanos), true
 }
 
 func errNotHeld(id string) error {

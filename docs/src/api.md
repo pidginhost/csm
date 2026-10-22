@@ -1335,7 +1335,9 @@ fails and the message stays held. The unit uses KillMode=process, so the
 delivery exim forks before it exits is not stopped with the unit and the
 message leaves at once. A release or delete first claims the held copy, so
 of concurrent requests one acts and the others answer that the copy is not
-held; a failed release puts the copy back.
+held; a failed release puts the copy back. A copy whose release or delete
+the daemon never finished, as when it stopped mid-release, is held again
+within 15 minutes; such a release may already have been delivered.
 
 Deferrals are grouped under the provider whose MX host deferred them
 (Google, Microsoft and Yahoo hosts), so a business domain those providers
