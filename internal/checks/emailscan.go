@@ -140,24 +140,22 @@ func scanEximMessage(msgID, sender string, cfg *config.Config) *alert.Finding {
 
 	var indicators []string
 
-	// Read and parse headers via the emailspool Exim -H parser. The bounded
-	// read goes through the osFS seam rather than emailspool.ParseHeaders(path)
-	// so check tests can inject mock spool contents. A header file past the
-	// cap is checked from its bounded prefix: padding the headers must not
-	// hide a message from the check.
-	headerData, truncated, err := readRegularFileHead(headerPath, maxSpoolHeaderBytes)
+	// Keep checks within the bounded prefix, even when padding exceeds the
+	// field parser's per-line limit. The MIME parser already handles long
+	// lines within this buffer and retains headers preceding a malformed tail.
+	headerData, _, err := readRegularFileHead(headerPath, maxSpoolHeaderBytes)
 	if err != nil {
 		return nil
 	}
+	mimeHeaders := emime.ParseSpoolMIMEHeaders(headerData)
 	parsed, err := emailspool.ParseHeadersReader(bytes.NewReader(headerData))
-	if err != nil && !truncated {
-		// Malformed -H file: nothing to check, skip silently as the previous
-		// loose parse would have done.
-		return nil
-	}
 	if err != nil {
-		// A cut prefix may end mid-line; the body checks still run.
-		parsed = emailspool.Headers{}
+		parsed = emailspool.Headers{
+			From:      mimeHeaders.Get("From"),
+			ReplyTo:   mimeHeaders.Get("Reply-To"),
+			XMailer:   mimeHeaders.Get("X-Mailer"),
+			UserAgent: mimeHeaders.Get("User-Agent"),
+		}
 	}
 
 	// Check 1: Reply-To mismatch
@@ -222,7 +220,6 @@ func scanEximMessage(msgID, sender string, cfg *config.Config) *alert.Finding {
 		if marker, body, ok := bytes.Cut(bodyData, []byte("\n")); ok && string(bytes.TrimSuffix(marker, []byte("\r"))) == msgID+"-D" {
 			bodyData = body
 		}
-		mimeHeaders := emime.ParseSpoolMIMEHeaders(headerData)
 		if decoded := decodeBase64Body(bodyData, mimeHeaders.Get("Content-Type"), mimeHeaders.Get("Content-Transfer-Encoding")); decoded != "" {
 			indicators = append(indicators, bodyContentIndicators(strings.ToLower(decoded))...)
 		}

@@ -4,29 +4,32 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"encoding/binary"
 	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/pidginhost/csm/internal/zipdir"
 )
 
-// kitZipWithFiller writes the three entries a real kit carries, then filler
-// empty entries, padded past the scanner's 1000-byte gate.
+// kitZipWithFiller puts evidence after the filler so detection must walk
+// past every padding entry to reach it.
 func kitZipWithFiller(t *testing.T, path string, filler int) {
 	t.Helper()
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)
+	for i := 0; i < filler; i++ {
+		if _, err := zw.CreateHeader(&zip.FileHeader{Name: fmt.Sprintf("assets/%d.dat", i), Method: zip.Store}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	for _, n := range []string{"office365/login.html", "office365/next.php", "office365/results.txt"} {
 		w, err := zw.CreateHeader(&zip.FileHeader{Name: n, Method: zip.Store})
 		if err != nil {
 			t.Fatal(err)
 		}
 		if _, err := w.Write(make([]byte, 500)); err != nil {
-			t.Fatal(err)
-		}
-	}
-	for i := 0; i < filler; i++ {
-		if _, err := zw.CreateHeader(&zip.FileHeader{Name: fmt.Sprintf("assets/%d.dat", i), Method: zip.Store}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -63,5 +66,32 @@ func TestPhishingZipCancelledMidListMarksIncomplete(t *testing.T) {
 	}
 	if !c.contains("phishing") {
 		t.Fatal("cancelled scan must mark the check incomplete")
+	}
+}
+
+func TestPhishingZipUnreadDirectoryTailMarksIncomplete(t *testing.T) {
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	w, err := zw.CreateHeader(&zip.FileHeader{Name: "style.css", Method: zip.Store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write(make([]byte, 1500)); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	end := append([]byte(nil), buf.Bytes()[buf.Len()-zipdir.EndLen:]...)
+	binary.LittleEndian.PutUint32(end[12:16], binary.LittleEndian.Uint32(end[12:16])+4)
+	raw := append([]byte(nil), buf.Bytes()[:buf.Len()-zipdir.EndLen]...)
+	raw = append(raw, []byte("junk")...)
+	raw = append(raw, end...)
+	ctx, collector := withIncompleteCheckCollector(context.Background())
+	if phishingKitZipHasEvidence(ctx, bytes.NewReader(raw), int64(len(raw))) {
+		t.Fatal("benign names reported as a kit")
+	}
+	if !collector.contains("phishing") {
+		t.Fatal("unread directory bytes reported as a complete negative scan")
 	}
 }

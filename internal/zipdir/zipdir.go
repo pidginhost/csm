@@ -206,33 +206,33 @@ func (e Entry) Mode() fs.FileMode {
 // Walk streams the central directory record by record, holding one record at
 // a time, and calls visit for each. It checks ctx before every 256th record.
 // A visit error stops the walk and is returned as is. A directory that holds
-// a different number of records than dir claims is ErrFormat.
+// a different number of records or bytes than dir claims is ErrFormat.
 func Walk(ctx context.Context, r io.ReaderAt, dir Directory, visit func(Entry) error) error {
 	reader := bufio.NewReader(io.NewSectionReader(r, dir.Offset, dir.Size))
 	var header [HeaderLen]byte
-	var records uint64
-	for {
+	remaining := dir.Size
+	for records := uint64(0); records < dir.Records; records++ {
 		if records%256 == 0 {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
 		}
-		signature, err := reader.Peek(4)
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			return err
-		}
-		if binary.LittleEndian.Uint32(signature) != HeaderSignature {
-			break
+		if remaining < HeaderLen {
+			return ErrFormat
 		}
 		if _, err := io.ReadFull(reader, header[:]); err != nil {
 			return readError(err)
 		}
+		if binary.LittleEndian.Uint32(header[:4]) != HeaderSignature {
+			return ErrFormat
+		}
 		nameLen := int(binary.LittleEndian.Uint16(header[28:30]))
 		extraLen := int64(binary.LittleEndian.Uint16(header[30:32]))
 		commentLen := int64(binary.LittleEndian.Uint16(header[32:34]))
+		remaining -= HeaderLen + int64(nameLen) + extraLen + commentLen
+		if remaining < 0 {
+			return ErrFormat
+		}
 		name := make([]byte, nameLen)
 		if _, err := io.ReadFull(reader, name); err != nil {
 			return readError(err)
@@ -247,12 +247,27 @@ func Walk(ctx context.Context, r io.ReaderAt, dir Directory, visit func(Entry) e
 		}); err != nil {
 			return err
 		}
-		records++
 	}
-	if records != dir.Records {
+	if remaining == 0 {
+		return ctx.Err()
+	}
+	// APPNOTE permits one digital signature after the file records. Anything
+	// else is unread directory content, even when the record count matches.
+	var signature [6]byte
+	if remaining < int64(len(signature)) {
 		return ErrFormat
 	}
-	return nil
+	if _, err := io.ReadFull(reader, signature[:]); err != nil {
+		return readError(err)
+	}
+	length := int64(binary.LittleEndian.Uint16(signature[4:6]))
+	if binary.LittleEndian.Uint32(signature[:4]) != 0x05054b50 || remaining != 6+length {
+		return ErrFormat
+	}
+	if _, err := io.CopyN(io.Discard, reader, length); err != nil {
+		return readError(err)
+	}
+	return ctx.Err()
 }
 
 func readError(err error) error {

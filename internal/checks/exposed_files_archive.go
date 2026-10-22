@@ -53,8 +53,8 @@ func archiveHoldsSiteBackup(p string) bool {
 
 // archiveSiteBackupStatus also reports whether the result is complete. A
 // resource-limited or interrupted inspection must retain an earlier finding.
-// Malformed zip data is a complete negative result: a file merely ending in
-// .zip must not hold the whole exposed-files check incomplete forever.
+// Malformed zip data without readable evidence is a complete negative result:
+// a file merely ending in .zip must not hold the whole check incomplete forever.
 func archiveSiteBackupStatus(ctx context.Context, p string) (holds, complete bool) {
 	if !strings.HasSuffix(strings.ToLower(p), ".zip") {
 		return false, true
@@ -107,7 +107,8 @@ func archiveSiteBackupStatus(ctx context.Context, p string) (holds, complete boo
 	holds, err = scanZipDirectory(ctx, f, dir)
 	if err != nil {
 		if errors.Is(err, errArchiveFormat) {
-			return false, true
+			// A damaged tail cannot erase site markers already read.
+			return holds, true
 		}
 		return holds, false
 	}
@@ -152,10 +153,7 @@ func scanZipDirectory(ctx context.Context, f *os.File, dir zipdir.Directory) (bo
 		}
 		return nil
 	})
-	if err != nil {
-		return holdsSite, err
-	}
-	return holdsSite || (deepConfig && wpRuntime), nil
+	return holdsSite || (deepConfig && wpRuntime), err
 }
 
 // archiveEntryPath normalises a raw zip entry name and rejects the shapes that

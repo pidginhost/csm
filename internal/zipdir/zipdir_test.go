@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"testing"
@@ -79,5 +80,73 @@ func TestWalkVisitsEveryEntryInOrderAndStopsOnRequest(t *testing.T) {
 	cancel()
 	if err := Walk(ctx, r, dir, func(Entry) error { return nil }); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled walk: err=%v", err)
+	}
+}
+
+func TestWalkRejectsUnreadDirectoryBytes(t *testing.T) {
+	var header [HeaderLen]byte
+	binary.LittleEndian.PutUint32(header[:4], HeaderSignature)
+	for _, tail := range [][]byte{{'x'}, {'x', 'y', 'z'}, []byte("junk"), {0x50, 0x4b, 0x01}} {
+		raw := append(append([]byte(nil), header[:]...), tail...)
+		visited := 0
+		err := Walk(context.Background(), bytes.NewReader(raw), Directory{Size: int64(len(raw)), Records: 1}, func(Entry) error {
+			visited++
+			return nil
+		})
+		if !errors.Is(err, ErrFormat) || visited != 1 {
+			t.Errorf("tail %x: err=%v visited=%d, want ErrFormat after one entry", tail, err, visited)
+		}
+	}
+	// Reader EOF before the declared end is truncation even if the count matches.
+	err := Walk(context.Background(), bytes.NewReader(header[:]), Directory{Size: HeaderLen + 4, Records: 1}, func(Entry) error { return nil })
+	if !errors.Is(err, ErrFormat) {
+		t.Errorf("short directory: err=%v, want ErrFormat", err)
+	}
+}
+
+func TestWalkValidatesDigitalSignatureTrailer(t *testing.T) {
+	var header [HeaderLen]byte
+	binary.LittleEndian.PutUint32(header[:4], HeaderSignature)
+	trailer := []byte{0x50, 0x4b, 0x05, 0x05, 3, 0, 'a', 'b', 'c'}
+	for _, tc := range []struct {
+		name  string
+		tail  []byte
+		valid bool
+	}{
+		{"valid", trailer, true},
+		{"cut header", trailer[:5], false},
+		{"cut data", trailer[:8], false},
+		{"extra data", append(append([]byte(nil), trailer...), 'x'), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := append(append([]byte(nil), header[:]...), tc.tail...)
+			visited := 0
+			err := Walk(context.Background(), bytes.NewReader(raw), Directory{Size: int64(len(raw)), Records: 1}, func(Entry) error {
+				visited++
+				return nil
+			})
+			if visited != 1 || (tc.valid && err != nil) || (!tc.valid && !errors.Is(err, ErrFormat)) {
+				t.Fatalf("err=%v visited=%d valid=%v", err, visited, tc.valid)
+			}
+		})
+	}
+}
+
+func TestWalkChecksCancellationDuringListing(t *testing.T) {
+	var header [HeaderLen]byte
+	binary.LittleEndian.PutUint32(header[:4], HeaderSignature)
+	raw := bytes.Repeat(header[:], 600)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	visited := 0
+	err := Walk(ctx, bytes.NewReader(raw), Directory{Size: int64(len(raw)), Records: 600}, func(Entry) error {
+		visited++
+		if visited == 1 {
+			cancel()
+		}
+		return nil
+	})
+	if !errors.Is(err, context.Canceled) || visited != 256 {
+		t.Fatalf("err=%v visited=%d, want cancellation after 256 entries", err, visited)
 	}
 }
