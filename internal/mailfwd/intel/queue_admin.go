@@ -51,7 +51,8 @@ type QueueAdmin interface {
 	// shows afterwards. With OutcomeUnchanged an error means the action
 	// failed; with any other outcome it is what exim reported while the
 	// queue shows the change. A message that left the queue while exim
-	// reported an error is OutcomeGone, never removed or bounced.
+	// reported an error is OutcomeGone, never removed or bounced, except a
+	// message exim could not read, which only the removal can take.
 	Act(action, id string) (string, error)
 }
 
@@ -159,6 +160,10 @@ func (a *EximQueueAdmin) Act(action, id string) (string, error) {
 	switch {
 	case errors.Is(err, ErrNotQueued) && runErr == nil && action == "delete":
 		return OutcomeRemoved, nil
+	case errors.Is(err, ErrNotQueued) && before.Unreadable != "" && action == "delete":
+		// exim removes a message it cannot read and still exits 1; no
+		// delivery can take such a message, so the removal was this one.
+		return OutcomeRemoved, runErr
 	case errors.Is(err, ErrNotQueued) && runErr == nil && action == "bounce":
 		return OutcomeBounced, nil
 	case errors.Is(err, ErrNotQueued):

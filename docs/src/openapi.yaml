@@ -506,7 +506,8 @@ paths:
         "200":
           description: >-
             ActionResult with outcome attempt_started, bounced or removed
-            (exim reported no error), thawed (also when exim reported an
+            (exim reported no error, or the message was one exim cannot
+            read, whose removal exim always reports as an error), thawed (also when exim reported an
             error the queue does not bear out; the audit entry records it),
             or unchanged for a thaw on a message that is not frozen, where
             nothing runs.

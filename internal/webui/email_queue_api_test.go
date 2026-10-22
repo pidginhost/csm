@@ -532,13 +532,18 @@ func TestQueueActionsOnUnreadableMessage(t *testing.T) {
 		})
 	}
 
+	// exim removes such a message and still exits 1, as exim 4.100 does.
 	world := newEximWorld(t)
 	world.add(qMid, worldMessage{})
 	world.bpAnswer[qMid] = "      " + qMid + "\n    *** spool format error: size=37 ***\n\n"
+	world.actionErr = errors.New("exit status 1: Spool format error for " + qMid + "-H Continuing to ensure all files removed")
 	s, _, _ := queueServer(t, world)
 	w := queueRequest(t, s, http.MethodPost, "/api/v1/email/queue/"+qMid+"/delete")
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"outcome":"removed"`) {
 		t.Errorf("delete: status %d body %s, want 200 removed", w.Code, w.Body.String())
+	}
+	if a := lastAudit(t, s); !strings.HasPrefix(a.Details, "outcome: removed; ") || !strings.Contains(a.Details, "Spool format error") {
+		t.Errorf("audit = %+v, want the removal with what exim said", a)
 	}
 }
 
