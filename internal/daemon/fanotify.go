@@ -1126,7 +1126,7 @@ func (fm *FileMonitor) isInteresting(path string) bool {
 	}
 
 	// PHP in sensitive directories that should never contain PHP
-	if inSensitivePHPDir(path) && isPHPExtension(strings.ToLower(filepath.Base(path))) {
+	if isPHPExtension(strings.ToLower(filepath.Base(path))) && fm.sensitivePHPDir(path) != "" {
 		return true
 	}
 
@@ -1173,12 +1173,53 @@ func underTempRoot(path string) bool {
 
 // sensitivePHPDirs are directories that should never contain PHP, so a PHP
 // file in one is reported wherever the directory itself lives.
-var sensitivePHPDirs = []string{"/.ssh/", "/.cpanel/", "/mail/", "/.gnupg/", "/.cagefs/"}
+var sensitivePHPDirs = []string{"/.ssh/", "/.cpanel/", "/.gnupg/", "/.cagefs/"}
 
-func inSensitivePHPDir(path string) bool {
+// accountMailDir is an account's mail store. Applications ship ordinary
+// directories named mail, so only the one directly in an account home counts.
+const accountMailDir = "/mail/"
+
+// sensitivePHPDir returns the directory that makes PHP at path Critical on
+// location alone, or "" when there is none.
+func (fm *FileMonitor) sensitivePHPDir(path string) string {
 	for _, dir := range sensitivePHPDirs {
 		if strings.Contains(path, dir) {
+			return dir
+		}
+	}
+	for i := 0; ; {
+		idx := strings.Index(path[i:], accountMailDir)
+		if idx < 0 {
+			return ""
+		}
+		if fm.isAccountHome(path[:i+idx]) {
+			return accountMailDir
+		}
+		i += idx + 1
+	}
+}
+
+// isAccountHome reports whether dir is an account home itself. cPanel also
+// places accounts on further partitions named /home2, /home3 that platform
+// detection does not list, so those count wherever /home does.
+func (fm *FileMonitor) isAccountHome(dir string) bool {
+	patterns := fm.accountRootPatterns
+	if len(patterns) == 0 {
+		patterns = []string{"/home/*"}
+	}
+	for _, pattern := range patterns {
+		if matched, err := filepath.Match(pattern, dir); err == nil && matched {
 			return true
+		}
+		if pattern != "/home/*" {
+			continue
+		}
+		if rest, ok := strings.CutPrefix(dir, "/home"); ok {
+			partition, account, ok := strings.Cut(rest, "/")
+			if ok && partition != "" && strings.Trim(partition, "0123456789") == "" &&
+				account != "" && !strings.Contains(account, "/") {
+				return true
+			}
 		}
 	}
 	return false
@@ -1207,7 +1248,7 @@ func (fm *FileMonitor) tempRootEventNeedsAnalysis(path string, fd int) bool {
 		knownWebshells[name],
 		strings.HasSuffix(lower, ".haxor"), strings.HasSuffix(lower, ".cgix"),
 		strings.Contains(content, "/.config/"),
-		isPHPExtension(name) && inSensitivePHPDir(content),
+		isPHPExtension(name) && fm.sensitivePHPDir(content) != "",
 		contenttype.IsImageExt(filepath.Ext(lower)) && fm.underAccountOrConfiguredDocRoot(content):
 		return true
 	}
@@ -1540,13 +1581,11 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 
 	// Location-based severity escalation: PHP in dirs that should NEVER have PHP
 	if isPHPExtension(nameLower) {
-		for _, sensitive := range sensitivePHPDirs {
-			if strings.Contains(path, sensitive) {
-				fm.sendAlertWithPath(alert.Critical, "php_in_sensitive_dir_realtime",
-					fmt.Sprintf("PHP file in critical directory: %s", path),
-					fmt.Sprintf("PHP should never exist in %s - likely webshell or backdoor", sensitive), path, procInfo)
-				return
-			}
+		if sensitive := fm.sensitivePHPDir(path); sensitive != "" {
+			fm.sendAlertWithPath(alert.Critical, "php_in_sensitive_dir_realtime",
+				fmt.Sprintf("PHP file in critical directory: %s", path),
+				fmt.Sprintf("PHP should never exist in %s - likely webshell or backdoor", sensitive), path, procInfo)
+			return
 		}
 	}
 

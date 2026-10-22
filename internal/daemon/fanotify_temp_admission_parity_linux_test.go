@@ -26,6 +26,9 @@ func TestTempRootAdmissionPreservesAnalyzerFindings(t *testing.T) {
 				mode              os.FileMode
 				severity          alert.Severity
 				cron, fifo, image bool
+				// accountRoot makes the test directory an account root, so
+				// alice/ below it is an account home with a mail store.
+				accountRoot bool
 			}{
 				{name: "cron/alice", body: "0 * * * * /tmp/x defunct-kernel\n", check: "suspicious_crontab", cron: true},
 				{name: "worker", mode: 0o755, check: "executable_in_tmp_realtime"},
@@ -34,7 +37,7 @@ func TestTempRootAdmissionPreservesAnalyzerFindings(t *testing.T) {
 				{name: "payload.phps", body: "<?php echo 'EVIL_MARKER_A'; ?>", check: "signature_match_realtime", severity: alert.High},
 				{name: ".ssh/payload.phtml", check: "php_in_sensitive_dir_realtime"},
 				{name: ".cpanel/payload.php", check: "php_in_sensitive_dir_realtime"},
-				{name: "mail/payload.php", check: "php_in_sensitive_dir_realtime"},
+				{name: "alice/mail/payload.php", check: "php_in_sensitive_dir_realtime", accountRoot: true},
 				{name: ".gnupg/payload.php", check: "php_in_sensitive_dir_realtime"},
 				{name: ".cagefs/payload.php", check: "php_in_sensitive_dir_realtime"},
 				{name: "wso.php", body: "<?php system($_GET['x']);", check: "webshell_realtime"},
@@ -94,6 +97,9 @@ func TestTempRootAdmissionPreservesAnalyzerFindings(t *testing.T) {
 								fm := &FileMonitor{cfg: &config.Config{}, alertCh: findings, analyzerCh: make(chan fileEvent, 1)}
 								if tc.image {
 									fm.docRootPatterns = []string{dir}
+								}
+								if tc.accountRoot {
+									fm.accountRootPatterns = []string{filepath.Join(dir, "*")}
 								}
 								switch route {
 								case "direct":
