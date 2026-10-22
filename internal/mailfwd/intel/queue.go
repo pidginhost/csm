@@ -112,13 +112,19 @@ func ArrivalFromID(id string) (time.Time, bool) {
 	return time.Unix(secs, 0).UTC(), true
 }
 
-// ParseQueue parses `exim -bp` output into a composition summary.
-func ParseQueue(out string) QueueComposition {
+// ParseQueue parses `exim -bp` output into a composition summary. A spool
+// header exim could not read is an error: the readable messages are not the
+// whole queue.
+func ParseQueue(out string) (QueueComposition, error) {
 	comp := QueueComposition{TopRecipients: []RecipientCount{}}
 	recipients := map[string]int{}
 	oldestSeconds := -1
 
-	for _, m := range parseQueueEntries(out, math.MaxInt) {
+	msgs, err := parseQueueEntries(out, math.MaxInt)
+	if err != nil {
+		return comp, err
+	}
+	for _, m := range msgs {
 		comp.Total++
 		if m.Bounce {
 			comp.Bounce++
@@ -142,7 +148,7 @@ func ParseQueue(out string) QueueComposition {
 	}
 
 	comp.TopRecipients = topRecipients(recipients)
-	return comp
+	return comp, nil
 }
 
 // ParseQueueList parses `exim -bp` output into one entry per queued message,
@@ -168,7 +174,10 @@ func ParseQueueDetail(out []byte) (QueueMessage, error) {
 
 func parseQueueMessages(out []byte, keep int) ([]QueueMessage, error) {
 	text := string(out)
-	msgs := parseQueueEntries(text, keep)
+	msgs, err := parseQueueEntries(text, keep)
+	if err != nil {
+		return nil, err
+	}
 	if len(msgs) == 0 {
 		if strings.TrimSpace(text) != "" {
 			return nil, errors.New("exim -bp output holds no queue entry")
@@ -185,11 +194,15 @@ func parseQueueMessages(out []byte, keep int) ([]QueueMessage, error) {
 	return msgs, nil
 }
 
+// errSpoolUnreadable means exim listed a message whose spool header it could
+// not read.
+var errSpoolUnreadable = errors.New("exim -bp could not read a spool header")
+
 // parseQueueEntries walks `exim -bp` output into messages, keeping the first
 // keep undelivered recipients of each and counting all of them. Recipient
 // lines are indented deeper than headers; any other line ends the current
 // message so stray text cannot attach to it.
-func parseQueueEntries(out string, keep int) []QueueMessage {
+func parseQueueEntries(out string, keep int) ([]QueueMessage, error) {
 	var msgs []QueueMessage
 	current := -1
 
@@ -199,7 +212,7 @@ func parseQueueEntries(out string, keep int) []QueueMessage {
 		// read. Do not present the readable subset as the whole queue.
 		// A missing file can instead mean delivery raced the listing.
 		if strings.HasPrefix(trimmed, "*** spool read error:") && trimmed != eximNoSuchMessage {
-			return nil
+			return nil, errSpoolUnreadable
 		}
 		if m, ok := parseQueueHeader(line); ok {
 			msgs = append(msgs, m)
@@ -232,7 +245,7 @@ func parseQueueEntries(out string, keep int) []QueueMessage {
 			}
 		}
 	}
-	return msgs
+	return msgs, nil
 }
 
 func parseQueueHeader(line string) (QueueMessage, bool) {
@@ -428,7 +441,8 @@ func NewEximQueueSource() *EximQueueSource {
 }
 
 // Composition lists the queue and summarizes it. An exim error yields an empty
-// composition, not a hard error: this is a read-only visibility surface.
+// composition, not a hard error: this is a read-only visibility surface. A
+// listing that could not read every spool header is an error.
 func (s *EximQueueSource) Composition() (QueueComposition, error) {
 	out, err := s.run()
 	if err != nil {
@@ -436,7 +450,7 @@ func (s *EximQueueSource) Composition() (QueueComposition, error) {
 		// surface an empty composition rather than a 500.
 		return QueueComposition{TopRecipients: []RecipientCount{}}, nil //nolint:nilerr
 	}
-	return ParseQueue(string(out)), nil
+	return ParseQueue(string(out))
 }
 
 func runEximBp() ([]byte, error) {

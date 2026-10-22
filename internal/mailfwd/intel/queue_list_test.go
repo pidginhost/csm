@@ -171,7 +171,7 @@ func TestParseQueueListSenderWithSpacesAndBrackets(t *testing.T) {
 			t.Errorf("message %d recipients = %q, want one", i, m.Recipients)
 		}
 	}
-	if c := ParseQueue(in); c.Total != 3 || c.Frozen != 0 {
+	if c := mustParseQueue(t, in); c.Total != 3 || c.Frozen != 0 {
 		t.Errorf("composition total %d frozen %d, want 3 and 0", c.Total, c.Frozen)
 	}
 }

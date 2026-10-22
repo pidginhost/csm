@@ -62,7 +62,10 @@ func FuzzParseQueue(f *testing.F) {
 	f.Add(" 1d 1K aaaaaa-bbbbbb-cc <>\n   a@b.example")
 	f.Add("garbage\nlines\nonly")
 	f.Fuzz(func(t *testing.T, out string) {
-		c := ParseQueue(out)
+		c, err := ParseQueue(out)
+		if err != nil && c.Total != 0 {
+			t.Fatalf("error %v with %d counted messages", err, c.Total)
+		}
 		if c.Bounce+c.Real != c.Total {
 			t.Fatalf("bounce(%d)+real(%d) != total(%d)", c.Bounce, c.Real, c.Total)
 		}
@@ -94,7 +97,10 @@ func FuzzParseQueueList(f *testing.F) {
 	f.Add(" 1d 1K")
 	f.Fuzz(func(t *testing.T, out string) {
 		msgs, err := ParseQueueList([]byte(out))
-		comp := ParseQueue(out)
+		comp, compErr := ParseQueue(out)
+		if compErr != nil && err == nil {
+			t.Fatalf("composition error %v for a listing the list parsed", compErr)
+		}
 		detail, detailErr := ParseQueueDetail([]byte(out))
 		if (detailErr == nil) != (err == nil && len(msgs) == 1) {
 			t.Fatalf("detail error %v with %d listed messages (list error %v)", detailErr, len(msgs), err)
