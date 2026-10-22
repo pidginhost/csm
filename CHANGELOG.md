@@ -11,6 +11,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Fixed
 
+- Email attachments in damaged zip or tar.gz archives are no longer counted as scanned and clean.
 - The Email Security queue lists messages exim cannot read, offering Delete, and says when exim fails instead of showing an empty queue.
 - Queued mail whose receiving server quotes its reason, such as 'greylisted', now shows that reason instead of other.
 - A held forwarded message whose release was cut short by a CSM restart returns to Held mail instead of disappearing from the list.

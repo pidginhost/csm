@@ -624,24 +624,35 @@ func extractMultipartNested(r io.Reader, boundary string, limits Limits, result 
 	}
 }
 
+// markArchiveUnopened records an attached archive whose members could not be
+// reached at all.
+func markArchiveUnopened(result *ExtractionResult, archiveName string, err error) {
+	markPartial(result, fmt.Sprintf("archive %q could not be opened: %v", archiveName, err))
+}
+
 // zipEncryptedFlag is bit 0 of the ZIP general purpose bit flag: the entry is
 // encrypted. APPNOTE.TXT section 4.4.4.
 const zipEncryptedFlag = 0x1
 
 func extractZIP(zipPath, archiveName string, limits Limits, result *ExtractionResult, totalSize *int64, depth int) {
+	// An archive that cannot be opened was not scanned inside: a mail client
+	// may still repair and open it, so it must never count as clean.
 	// #nosec G304 -- zipPath is CreateTemp-produced path from the caller.
 	f, err := os.Open(zipPath)
 	if err != nil {
-		return // fail-open: skip corrupt archives
+		markArchiveUnopened(result, archiveName, err)
+		return
 	}
 	defer f.Close()
 
 	info, err := f.Stat()
 	if err != nil {
+		markArchiveUnopened(result, archiveName, err)
 		return
 	}
 	zr, err := zip.NewReader(f, info.Size())
 	if err != nil {
+		markArchiveUnopened(result, archiveName, err)
 		return
 	}
 
@@ -730,12 +741,14 @@ func extractTarGz(tgzPath, archiveName string, limits Limits, result *Extraction
 	// #nosec G304 -- tgzPath is CreateTemp-produced path from the caller.
 	f, err := os.Open(tgzPath)
 	if err != nil {
+		markArchiveUnopened(result, archiveName, err)
 		return
 	}
 	defer f.Close()
 
 	gr, err := gzip.NewReader(f)
 	if err != nil {
+		markArchiveUnopened(result, archiveName, err)
 		return
 	}
 	defer func() { _ = gr.Close() }()
@@ -744,8 +757,13 @@ func extractTarGz(tgzPath, archiveName string, limits Limits, result *Extraction
 	extracted := 0
 	for {
 		hdr, err := tr.Next()
+		if err == io.EOF {
+			return
+		}
 		if err != nil {
-			return // EOF or error - done
+			// The members after a broken header were never read.
+			markPartial(result, fmt.Sprintf("archive %q could not be read: %v", archiveName, err))
+			return
 		}
 		if hdr.Typeflag != tar.TypeReg {
 			continue
