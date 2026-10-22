@@ -380,6 +380,23 @@ func TestQueueListSaysWhenItListed(t *testing.T) {
 	}
 }
 
+// The listing keeps the first 50 undelivered recipients of each message, so
+// q matches the sender and those recipients only, as api.md says.
+func TestQueueSearchMatchesTheFirstFiftyRecipients(t *testing.T) {
+	world := newEximWorld(t)
+	var rcpts []string
+	for i := 0; i < 60; i++ {
+		rcpts = append(rcpts, fmt.Sprintf("r%02d@example.net", i))
+	}
+	world.add(qMid, worldMessage{sender: "sender@example.com", recipients: rcpts})
+	s, _, _ := queueServer(t, world)
+	for q, want := range map[string]int{"sender%40example.com": 1, "r49%40": 1, "r50%40": 0} {
+		if got := getQueueList(t, s, "?q="+q); *got.Total != want {
+			t.Errorf("q=%s: total %d, want %d", q, *got.Total, want)
+		}
+	}
+}
+
 func TestQueueListReadsOnlyPageMsglogs(t *testing.T) {
 	world := newEximWorld(t)
 	for i := 0; i < 2000; i++ {
