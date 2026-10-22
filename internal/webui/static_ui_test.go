@@ -1352,8 +1352,9 @@ func TestModSecPageUsesPhase8Primitives(t *testing.T) {
 
 // TestEmailPageUsesPhase8Primitives asserts the email page dropped the old
 // six-card stat row in favour of recent rejects, grouped action rows and
-// five tabs (Findings / Quarantine / Queue / Outbound / Deliverability), and
-// that email.js no longer touches the removed stat-card IDs.
+// the job tabs (Overview / Queue / Held mail / Rejects / Sending accounts /
+// Provider delays / Findings), and that email.js no longer touches the
+// removed stat-card IDs.
 func TestEmailPageUsesPhase8Primitives(t *testing.T) {
 	tmpl, err := os.ReadFile("../../ui/templates/email.html")
 	if err != nil {
@@ -1369,12 +1370,14 @@ func TestEmailPageUsesPhase8Primitives(t *testing.T) {
 		`id="email-protection"`,
 		`id="email-tab-findings"`,
 		`id="email-filter-auth"`,
+		`id="email-tab-overview"`,
 		`id="email-tab-queue"`,
-		`id="email-tab-quarantine"`,
+		`id="email-tab-held"`,
+		`id="email-tab-rejects"`,
 		`id="email-tab-senders"`,
 		`id="email-tab-forwarders"`,
-		`id="email-tab-deliverability"`,
-		`id="email-tab-outbound"`,
+		`id="email-tab-delays"`,
+		`id="email-tab-sending"`,
 		`id="email-held-tbody"`,
 		`class="csm-toolbar"`,
 	} {

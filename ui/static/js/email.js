@@ -1,6 +1,8 @@
 // CSM Email Security page.
-// Layout: range header, headline numbers, mail decisions chart and rspamd,
-// recent rejects, needs attention and protection, tabs.
+// Layout: range header, headline numbers, then the job tabs right under
+// them: Overview (mail decisions chart and rspamd, needs attention and
+// protection), Queue, Held mail, Rejects, Sending accounts, Provider
+// delays, Findings. Each headline card opens the tab that explains it.
 (function() {
     'use strict';
 
@@ -29,7 +31,6 @@
         checkEl.value = CSM.urlState.get('check');
     }
     if (searchEl && CSM.urlState.get('search')) searchEl.value = CSM.urlState.get('search');
-    var initialTab = CSM.urlState.get('tab');
 
     // ---------- Range ----------
 
@@ -185,6 +186,7 @@
                 document.getElementById('email-subtitle').textContent = 'Mail numbers unavailable.';
                 CSM.loadError(document.getElementById('email-kpis'), loadOverview, { title: 'Failed to load mail numbers', error: err });
                 CSM.loadError(document.getElementById('queue-health'), loadOverview, { title: 'Failed to load the mail queue', error: err });
+                setTabCount('queue', '?');
                 CSM.loadError(document.getElementById('email-decisions-chart').parentElement, loadOverview, { title: 'Mail decisions unavailable', error: err });
                 document.getElementById('email-chart-note').textContent = '';
                 ['prot-antispam', 'prot-smtp'].forEach(function(id) {
@@ -262,10 +264,11 @@
     }
 
     // The queue is colored from the thresholds the mail_queue check alerts
-    // on, so the card and the alert agree.
+    // on, so the card, the Queue tab count and the alert agree.
     function renderQueueKPI(q) {
         if (q.unavailable) {
             setKPI('kpi-queue', '--', 'queue size unknown', 'text-warning');
+            setTabCount('queue', '?');
             return;
         }
         var size = q.size || 0;
@@ -280,6 +283,7 @@
             if (q.frozen > 0) sub += ', ' + num(q.frozen) + ' frozen';
         }
         setKPI('kpi-queue', size, sub, cls);
+        setTabCount('queue', size, q.warn > 0 && size >= q.warn ? 'badge-warning' : '');
     }
 
     // stateLine says in one sentence how mail is doing over the range.
@@ -450,15 +454,16 @@
         return el;
     }
 
-    // sinceStart words rspamd's uptime so its numbers are not read as the
-    // page range.
-    function sinceStart(seconds) {
-        if (!(seconds > 0)) return 'since rspamd started';
+    // uptimeWords words rspamd's uptime. rspamd can keep its counters
+    // across a restart, so the uptime shows apart from them, not as their
+    // period.
+    function uptimeWords(seconds) {
+        if (!(seconds > 0)) return 'Uptime unknown';
         var n, unit;
         if (seconds >= 86400) { n = Math.floor(seconds / 86400); unit = 'day'; }
         else if (seconds >= 3600) { n = Math.floor(seconds / 3600); unit = 'hour'; }
         else { n = Math.max(1, Math.floor(seconds / 60)); unit = 'minute'; }
-        return 'since rspamd started ' + n + ' ' + unit + (n === 1 ? '' : 's') + ' ago';
+        return 'Uptime ' + n + ' ' + unit + (n === 1 ? '' : 's');
     }
 
     function loadRspamd() {
@@ -498,15 +503,12 @@
             card.appendChild(node('div', 'text-muted small', 'Stats unavailable' + (r.reason ? ': ' + r.reason : '') + '.'));
             return;
         }
-        card.appendChild(node('div', 'text-muted small mb-2', 'Counts ' + sinceStart(s.uptime_seconds) + '.'));
-        var nums = node('div', 'row g-2 mb-2');
-        [['Scanned', s.scanned], ['Learned ham', s.ham_count], ['Learned spam', s.spam_count]].forEach(function(m) {
-            var col = node('div', 'col-auto me-3');
-            col.appendChild(node('div', 'small text-muted', m[0]));
-            col.appendChild(node('div', 'h3 mb-0', num(m[1])));
-            nums.appendChild(col);
-        });
-        card.appendChild(nums);
+        card.appendChild(node('div', 'text-muted small mb-2', uptimeWords(s.uptime_seconds) + '.'));
+        card.appendChild(node('div', 'subheader mb-1', 'rspamd counters'));
+        // spam_count and ham_count are scan verdicts; learned is what the
+        // classifier was taught.
+        card.appendChild(node('div', null, 'Scanned ' + num(s.scanned) + ' (spam ' + num(s.spam_count) + ', ham ' + num(s.ham_count) + ')'));
+        card.appendChild(node('div', 'mb-2', 'Learned ' + num(s.learned)));
 
         var rules = (Array.isArray(s.top_rules) ? s.top_rules : []).slice(0, 8);
         if (rules.length === 0) return;
@@ -536,7 +538,7 @@
             loadFindings();
             outboundAbuseLoaded = false;
             ++_outboundAbuseSeq;
-            if (activeTab('email-tabs') === 'outbound' && activeTab('email-outbound-nav') === 'outbound-abuse') loadOutboundAbuse();
+            if (activeTab('email-tabs') === 'sending' && activeTab('email-outbound-nav') === 'outbound-abuse') loadOutboundAbuse();
         });
     }
 
@@ -549,9 +551,6 @@
             if (decisionsChart && _overview) renderChart(_overview, _overviewRange);
         });
     }).observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
-
-    var queueCard = document.querySelector('#kpi-queue a');
-    if (queueCard) queueCard.addEventListener('click', function() { activateTab('queue'); });
 
     // ---------- Recent rejects ----------
 
@@ -702,10 +701,10 @@
         }
     }
 
-    // ---------- Outbound tab: SMTP firewall and senders ----------
+    // ---------- Sending accounts tab: SMTP firewall and senders ----------
 
     // The stats call reads the SMTP firewall settings and the last 500 log
-    // lines, so it runs only once the Outbound tab opens.
+    // lines, so it runs only once the Sending accounts tab opens.
     var statsLoaded = false;
 
     function loadEmailStats() {
@@ -796,7 +795,7 @@
         el.replaceChildren(line);
     }
 
-    // ---------- Top senders (Outbound tab) ----------
+    // ---------- Top senders (Sending accounts tab) ----------
 
     function renderTopSenders(senders) {
         var el = document.getElementById('top-senders');
@@ -833,7 +832,7 @@
                 if (sb) {
                     sb.value = domain;
                     sb.dispatchEvent(new Event('input'));
-                    activateTab('findings');
+                    selectTab('findings');
                 }
             });
         }
@@ -1040,18 +1039,20 @@
         return opt;
     }
 
-    // The auth failure checks, from the server's email check list.
+    // The auth failure checks, from the server's email check list, and
+    // whether that list is still to answer.
     var _authChecks = [];
+    var _checksPending = true;
 
     // loadEmailChecks fills the check list from the server's email check
     // list, grouped by kind. Until it answers the list offers only All
-    // email checks, and the Auth failures chip stays off.
+    // email checks, and the Auth failures chip cannot be pressed.
     function loadEmailChecks() {
         CSM.get('/api/v1/email/checks')
             .then(function(data) {
                 var checks = Array.isArray(data.checks) ? data.checks : [];
                 _authChecks = checks.filter(function(c) { return c.kind === 'auth_failure'; }).map(function(c) { return c.name; });
-                if (authChip) authChip.disabled = _authChecks.length === 0;
+                checksReady();
                 if (!checkEl) return;
                 var picked = checkEl.value;
                 Array.from(checkEl.children).slice(1).forEach(function(c) { c.remove(); });
@@ -1066,7 +1067,23 @@
                 });
                 checkEl.value = picked;
             })
-            .catch(function() { /* the request toasts; the list keeps All email checks */ });
+            // The request toasts; the list keeps All email checks.
+            .catch(checksReady);
+    }
+
+    // checksReady runs once the check list answered or failed. A chip
+    // turned on before then, by a Failed logins link, held the findings
+    // back; with no auth checks to name it cannot filter, so it turns off.
+    function checksReady() {
+        var held = _checksPending && authOn();
+        _checksPending = false;
+        if (authChip) authChip.disabled = _authChecks.length === 0;
+        if (_authChecks.length === 0) setAuthChip(false);
+        if (held) loadFindings();
+    }
+
+    function authOn() {
+        return !!authChip && authChip.getAttribute('aria-pressed') === 'true';
     }
 
     function setAuthChip(on) {
@@ -1075,15 +1092,30 @@
         authChip.classList.toggle('active', on);
     }
 
+    // applyAuthChip turns the Auth failures chip on or off and reloads the
+    // findings. On, it replaces a picked check.
+    function applyAuthChip(on) {
+        setAuthChip(on);
+        if (on && checkEl) checkEl.value = '';
+        syncEmailURL();
+        loadFindings();
+    }
+
     // findingsChecks returns the checks the table asks for: the auth
     // failure checks while the chip is on, else the picked check, else
     // none, which the server reads as every email check.
     function findingsChecks() {
-        if (authChip && authChip.getAttribute('aria-pressed') === 'true') return _authChecks.join(',');
+        if (authOn()) return _authChecks.join(',');
         return checkEl ? checkEl.value : '';
     }
 
     function loadFindings() {
+        // Unfiltered findings must not show under a pressed chip, so wait
+        // for the check list; checksReady loads them.
+        if (_checksPending && authOn()) {
+            ++_emailFindingsLoadSeq;
+            return;
+        }
         var range = currentRange();
         var sev = sevEl ? sevEl.value : '';
         var checks = findingsChecks();
@@ -1859,6 +1891,21 @@
 
     // ---------- Tab activation ----------
 
+    var tabsEl = document.getElementById('email-tabs');
+
+    // Old tab names that links and bookmarks may still carry, and the job
+    // tab that took each over. auth also turns the Auth failures chip on.
+    var TAB_ALIASES = {
+        quarantine: 'held', outbound: 'sending', senders: 'sending', 'outbound-abuse': 'sending',
+        forwarders: 'sending', deliverability: 'delays', auth: 'findings'
+    };
+
+    // tabButton returns the button of a job tab, or null for any other name.
+    function tabButton(name) {
+        var btn = document.getElementById('email-tab-' + name);
+        return btn && tabsEl && tabsEl.contains(btn) ? btn : null;
+    }
+
     // activeTab returns the open tab of a tab bar, without its email-tab-
     // prefix.
     function activeTab(navId) {
@@ -1866,20 +1913,54 @@
         return btn ? btn.id.replace('email-tab-', '') : '';
     }
 
-    function activateTab(name) {
-        var btn = document.getElementById('email-tab-' + name);
-        if (!btn || !window.bootstrap || !window.bootstrap.Tab) return;
-        // An outbound section opens inside the Outbound tab.
-        if (btn.closest('#email-pane-outbound')) {
-            window.bootstrap.Tab.getOrCreateInstance(document.getElementById('email-tab-outbound')).show();
-        }
-        window.bootstrap.Tab.getOrCreateInstance(btn).show();
+    // tabFromURL returns the job tab a ?tab= value names (the address's
+    // own by default), Overview for none or an unknown name, and whether
+    // it asks for the Auth failures chip.
+    function tabFromURL(value) {
+        var raw = value === undefined ? CSM.urlState.get('tab') : value;
+        var name = Object.prototype.hasOwnProperty.call(TAB_ALIASES, raw) ? TAB_ALIASES[raw] : raw;
+        return { name: tabButton(name) ? name : 'overview', auth: raw === 'auth' };
+    }
+
+    // selectTab opens a job tab through Bootstrap's tab plugin, which also
+    // moves between tabs on the arrow keys. Its shown event loads the tab
+    // and names it in the address.
+    function selectTab(name) {
+        var btn = tabButton(name);
+        if (btn && window.bootstrap && window.bootstrap.Tab) window.bootstrap.Tab.getOrCreateInstance(btn).show();
+    }
+
+    // openTab opens what an address or a headline card names.
+    function openTab(t) {
+        if (t.auth) applyAuthChip(true);
+        selectTab(t.name);
+    }
+
+    // syncTabURL names the open tab in the address. Opening a tab adds a
+    // history entry, so Back returns to the tab before. An address that
+    // already names the tab, maybe by an old name, is rewritten in place.
+    function syncTabURL(name) {
+        var value = name === 'overview' ? '' : name;
+        if (CSM.urlState.get('tab') === value) return;
+        if (tabFromURL().name === name) CSM.urlState.set({ tab: value });
+        else CSM.urlState.push({ tab: value });
+    }
+
+    // setTabCount shows a job tab's count. null hides it, so a count that
+    // has not loaded shows nothing, never 0. cls colors the badge.
+    function setTabCount(name, n, cls) {
+        var btn = tabButton(name);
+        var badge = btn && btn.querySelector('[data-tab-count]');
+        if (!badge) return;
+        badge.hidden = n == null;
+        badge.textContent = n == null ? '' : typeof n === 'number' ? num(n) : n;
+        badge.className = 'badge ms-1 ' + (cls || 'bg-secondary-lt');
     }
 
     // loadTab loads what a tab shows the first time it opens; force loads
-    // it again.
+    // it again. Overview, Rejects and Findings load with the page.
     function loadTab(id, force) {
-        if (id === 'outbound') {
+        if (id === 'sending') {
             if (force || !statsLoaded) loadEmailStats();
             loadTab(activeTab('email-outbound-nav'), force);
         } else if (id === 'senders') {
@@ -1887,13 +1968,13 @@
         } else if (id === 'queue') {
             if (force) queueCompositionLoaded = false;
             loadQueueComposition();
-        } else if (id === 'quarantine') {
+        } else if (id === 'held') {
             if (force || !quarantineLoaded) loadQuarantine();
         } else if (id === 'forwarders') {
             if (force) { forwardersLoaded = false; heldLoaded = false; }
             loadForwarders();
             loadHeld();
-        } else if (id === 'deliverability') {
+        } else if (id === 'delays') {
             if (force) deliverabilityLoaded = false;
             loadDeliverability();
         } else if (id === 'outbound-abuse') {
@@ -1905,13 +1986,28 @@
     for (var t = 0; t < tabButtons.length; t++) {
         tabButtons[t].addEventListener('shown.bs.tab', function(ev) {
             var id = ev.target.id.replace('email-tab-', '');
-            // The address names the open outbound section, so a reload
-            // reopens it.
-            var shown = id === 'outbound' ? activeTab('email-outbound-nav') || id : id;
-            CSM.urlState.set({ tab: shown === 'findings' ? '' : shown });
+            if (tabButton(id)) syncTabURL(id);
             loadTab(id, false);
         });
     }
+
+    // Back and Forward reopen the tab the address names.
+    CSM.urlState.subscribe(function() { openTab(tabFromURL()); });
+
+    // A headline card opens the tab that explains its number. A click
+    // meant for a new browser tab follows the card's address instead.
+    document.querySelectorAll('#email-kpis a.card').forEach(function(card) {
+        card.addEventListener('click', function(e) {
+            if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
+            e.preventDefault();
+            var cls = card.getAttribute('data-rejects-class');
+            if (cls && rejectsFilter && rejectsFilter.value !== cls) {
+                rejectsFilter.value = cls;
+                loadRejects();
+            }
+            openTab(tabFromURL(new URLSearchParams(card.getAttribute('href')).get('tab')));
+        });
+    });
 
     // ---------- Forwarders filter/search (client-side, no refetch) ----------
 
@@ -1945,13 +2041,7 @@
     });
 
     if (authChip) {
-        authChip.addEventListener('click', function() {
-            var on = authChip.getAttribute('aria-pressed') !== 'true';
-            setAuthChip(on);
-            if (on && checkEl) checkEl.value = '';
-            syncEmailURL();
-            loadFindings();
-        });
+        authChip.addEventListener('click', function() { applyAuthChip(!authOn()); });
     }
 
     // ---------- Quarantine action delegation ----------
@@ -2006,7 +2096,9 @@
 
     // ---------- Initialize ----------
 
-    if (initialTab) activateTab(initialTab);
+    var startTab = tabFromURL();
+    syncTabURL(startTab.name);
+    openTab(startTab);
     loadOverview();
     loadRspamd();
     loadAVStatus();
@@ -2014,10 +2106,9 @@
     loadActionGroups();
     loadEmailChecks();
     loadFindings();
-    loadTab(activeTab('email-tabs'), false);
 
     // Polling while the tab is visible: the numbers and the queue every 30 s
-    // (with the SMTP firewall and senders while the Outbound tab is open),
+    // (with the SMTP firewall and senders while Sending accounts is open),
     // rspamd and AV every 60 s (rspamd's own figures are cached that long),
     // and the rejects and groups every 60 s.
     var _emailIntervals = [];
@@ -2030,7 +2121,7 @@
         _emailIntervals.push(CSM.refresh.interval(function() {
             try {
                 loadOverview();
-                if (activeTab('email-tabs') === 'outbound') loadEmailStats();
+                if (activeTab('email-tabs') === 'sending') loadEmailStats();
             } catch(e) {}
         }, 30000));
         _emailIntervals.push(CSM.refresh.interval(function() {

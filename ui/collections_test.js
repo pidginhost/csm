@@ -33,7 +33,7 @@ const CASES = [
     { name: 'email findings', page: 'email', scripts: ['email.js'], route: '/api/v1/history?',
       item: { severity: 2, check: 'email_spam_outbreak', message: 'history row message', timestamp: AT },
       host: 'email-tbody', text: 'history row message' },
-    { name: 'email quarantine', page: 'email', scripts: ['email.js'], tab: 'email-tab-quarantine', route: '/api/v1/email/quarantine',
+    { name: 'email quarantine', page: 'email', scripts: ['email.js'], tab: 'email-tab-held', route: '/api/v1/email/quarantine',
       item: { message_id: '1abcDE-000001-AB', direction: 'inbound', from: 'sender@example.org', to: ['user@example.com'], subject: 'invoice',
               quarantined_at: AT, findings: [{ filename: 'a.exe', engine: 'clamav', signature: 'Eicar-Test', severity: 'high' }] },
       host: 'quarantine-table', text: 'sender@example.org' },

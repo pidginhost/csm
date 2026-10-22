@@ -255,6 +255,12 @@ tr[tabindex]:focus-visible, th[tabindex]:focus-visible { outline: 2px solid var(
     .csm-tabs-scroll .nav-link { white-space: nowrap; }
 }
 
+/* Email Security: on a phone the seven headline cards sit tighter, so the
+   job tabs under them stay on the first screen. */
+@media (max-width: 575.98px) {
+    #email-kpis .card-body { padding: 0.75rem; }
+}
+
 /* Mail queue size bar: the warn and crit marks sit on the bar, each
    labeled under it. The crit label ends at its mark so the two labels
    part. */
@@ -1073,6 +1079,11 @@ tr[tabindex]:focus-visible, th[tabindex]:focus-visible { outline: 2px solid var(
         font-weight: 600;
         color: var(--csm-text-muted);
         margin-right: 0.4rem;
+    }
+    /* The block rows above would show every details row; closed ones stay
+       hidden until their row is expanded. */
+    .csm-table-rowcard tbody tr.details-row:not(.show) {
+        display: none;
     }
 }
 
