@@ -57,7 +57,8 @@ The block batch planner checks each automatic temporary block on its own
 against one committed snapshot, leaves out refused members and runs the rest
 as one batch with one kernel transaction; a lone valid member runs as an
 ordinary single action, and a stored batch ID is observed, never planned
-again. A batch has one outcome. A crash or lost write at any step, from
+again. A member too short to outlive its own verification is refused, since
+its expiry would leave the batch unknown. A batch has one outcome. A crash or lost write at any step, from
 admission to audit acknowledgement, leaves recovery to prove an outcome or
 keep it unknown; the kernel is written at most once and each member is
 charged once. Storage and audit failures reach the caller even when recovery

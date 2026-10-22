@@ -91,6 +91,12 @@ func (e *Engine) BlockBatchRequest(header ActionRequest, members []ActionRequest
 	return result, err
 }
 
+// blockBatchMinLifetime is the shortest member lifetime a batch plans. It
+// covers the kernel's timeout granularity and the admission, apply and
+// readback that run before verification: a member that expires first leaves
+// the batch unknown, holding every durable mutation until it is resolved.
+const blockBatchMinLifetime = blockReadbackSlack + 2*time.Second
+
 // validBlockBatchHeader holds a batch header to plan 1.5d-1's shape: an
 // automatic block with no target, link, lifetime or charge of its own.
 func validBlockBatchHeader(h ActionRequest) bool {
@@ -241,7 +247,7 @@ func (e *Engine) blockBatchRefusalLocked(header, m ActionRequest, softAllowed bo
 	if !validBlockBatchMember(header, m) {
 		return BlockRefusedInvalid
 	}
-	if _, ok := blockTimeout(at.Add(m.TTL), at); !ok {
+	if _, ok := blockTimeout(at.Add(m.TTL), at); !ok || m.TTL < blockBatchMinLifetime {
 		return BlockRefusedExpired
 	}
 	if parsed.To4() == nil && (!e.cfg.IPv6 || e.setBlocked6 == nil) {

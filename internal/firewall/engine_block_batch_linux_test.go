@@ -144,6 +144,24 @@ func TestBlockBatchPlansValidMembersTogether(t *testing.T) {
 	}
 }
 
+// A member that expires before verification reads it back leaves the batch
+// unknown, and an unknown batch holds every durable mutation until an
+// operator resolves it. Such a member is refused at planning.
+func TestBlockBatchRefusesMembersTooShortToVerify(t *testing.T) {
+	e, s := batchPlanEngine(t, FirewallConfig{}, FirewallState{})
+	short := batchMember("member-short", "203.0.113.47")
+	short.TTL = blockBatchMinLifetime - time.Millisecond
+	enough := batchMember("member-enough", "203.0.113.48")
+	enough.TTL = blockBatchMinLifetime
+	result, err := e.BlockBatchRequest(batchHeader(), []ActionRequest{short, enough, batchMember("member-hour", "203.0.113.49")}, nil)
+	if !errors.Is(err, errBatchPlanStop) || fmt.Sprint(result.Refusals) != fmt.Sprint([]BlockRefusal{BlockRefusedExpired, "", ""}) {
+		t.Fatalf("short member = %q, %v", result.Refusals, err)
+	}
+	if plan := s.admitted[0]; len(plan.Members) != 2 || plan.Members[0].Request.ID != "member-enough" {
+		t.Fatalf("plan members = %#v", plan.Members)
+	}
+}
+
 func TestBlockBatchRefusesExistingAndFullMembers(t *testing.T) {
 	at := time.Now().Round(0)
 	committed := FirewallState{Blocked: []BlockedEntry{
