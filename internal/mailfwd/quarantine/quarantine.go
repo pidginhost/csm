@@ -189,11 +189,7 @@ func (q *Quarantine) read(dir, id string) (HeldMessage, error) {
 }
 
 // heldSubject returns the first Subject field of a header block, unfolded,
-// with RFC 2047 encoded words decoded. The subject is the sender's text and
-// the web UI shows it, so control characters become spaces, bidi and other
-// format characters (which can reverse or hide text) are dropped, runs of
-// space collapse, and it is cut to maxSubjectLen runes. A charset the
-// decoder does not know leaves the field as sent.
+// as CleanSubject leaves it.
 func heldSubject(header []byte) string {
 	var raw strings.Builder
 	found := false
@@ -213,7 +209,15 @@ func heldSubject(header []byte) string {
 			found = true
 		}
 	}
-	subject := raw.String()
+	return CleanSubject(raw.String())
+}
+
+// CleanSubject readies a mail subject for the web UI: RFC 2047 encoded words
+// decoded, control characters turned into spaces, bidi and other format
+// characters (which can reverse or hide text) dropped, runs of space
+// collapsed, and cut to maxSubjectLen runes. The subject is the sender's
+// text. A charset the decoder does not know leaves the words as sent.
+func CleanSubject(subject string) string {
 	if decoded, err := new(mime.WordDecoder).DecodeHeader(subject); err == nil {
 		subject = decoded
 	}

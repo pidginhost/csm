@@ -58,6 +58,7 @@ func TestApiEmailDeferralsSerialization(t *testing.T) {
 	now := time.Now()
 	s.deferralReporter = fakeReporter{rep: intel.Report{
 		Deferrals: 3,
+		Lines:     20000,
 		Providers: []intel.ProviderRollup{
 			{Provider: "yahoo", Deferrals: 2, Reasons: []intel.ReasonCount{{Code: "TSS04", Count: 2}}, LastSeen: now, Sample: "421 4.7.0 [TSS04] ..."},
 			{Provider: "gmail", Deferrals: 1, Reasons: []intel.ReasonCount{{Code: "rate_limit", Count: 1}}, LastSeen: now},
@@ -76,6 +77,9 @@ func TestApiEmailDeferralsSerialization(t *testing.T) {
 	rep := decodeReport(t, w.Body.Bytes())
 	if rep.Deferrals != 3 {
 		t.Errorf("deferrals = %d, want 3", rep.Deferrals)
+	}
+	if rep.Lines != 20000 {
+		t.Errorf("lines = %d, want 20000", rep.Lines)
 	}
 	if len(rep.Providers) != 2 || rep.Providers[0].Provider != "yahoo" || rep.Providers[0].Deferrals != 2 {
 		t.Errorf("providers = %+v", rep.Providers)

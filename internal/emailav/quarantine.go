@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/pidginhost/csm/internal/mailfwd/quarantine"
 	"github.com/pidginhost/csm/internal/quarantinefs"
 	"github.com/pidginhost/csm/internal/safepath"
 )
@@ -38,6 +39,8 @@ type QuarantineEnvelope struct {
 }
 
 // QuarantineMetadata is the JSON sidecar written with quarantined messages.
+// Subject is stored as the message carried it and read as
+// quarantine.CleanSubject leaves it.
 type QuarantineMetadata struct {
 	MessageID        string    `json:"message_id"`
 	Direction        string    `json:"direction"`
@@ -272,6 +275,7 @@ func (q *Quarantine) readMetadata(msgID string) (*QuarantineMetadata, error) {
 	if err := json.Unmarshal(data, &meta); err != nil {
 		return nil, err
 	}
+	meta.Subject = quarantine.CleanSubject(meta.Subject)
 	meta.Size = 0
 	if info, err := os.Lstat(filepath.Join(q.baseDir, msgID, msgID+"-D")); err == nil && info.Mode().IsRegular() {
 		meta.Size = info.Size()

@@ -310,12 +310,14 @@ type OutboundIPRollup struct {
 }
 
 // Report is the aggregated deferral picture over a window of log lines.
-// WindowStart and WindowEnd are the times of the first and last lines read
-// that carry one, deferral or not; both are zero when none does.
+// Lines is how many lines were read. WindowStart and WindowEnd are the times
+// of the first and last lines read that carry one, deferral or not; both are
+// zero when none does.
 type Report struct {
 	Deferrals   int                `json:"deferrals"`
 	Providers   []ProviderRollup   `json:"providers"`
 	OutboundIPs []OutboundIPRollup `json:"outbound_ips"`
+	Lines       int                `json:"lines"`
 	WindowStart time.Time          `json:"window_start,omitzero"`
 	WindowEnd   time.Time          `json:"window_end,omitzero"`
 }
@@ -368,6 +370,7 @@ func BuildReport(lines []string) Report {
 
 	rep := emptyReport()
 	rep.Deferrals = deferrals
+	rep.Lines = len(lines)
 	rep.WindowStart, rep.WindowEnd = windowStart, windowEnd
 	for prov, pa := range provAgg {
 		rep.Providers = append(rep.Providers, ProviderRollup{

@@ -316,3 +316,23 @@ func TestDeferralsWindowAndMXClassification(t *testing.T) {
 		t.Errorf("an empty report sends a window: %s", empty)
 	}
 }
+
+// lines is how many log lines the report read, deferrals or not, so the page
+// can say what window its numbers cover.
+func TestBuildReportCountsLinesRead(t *testing.T) {
+	lines := []string{arrivalLine, yahooTSS04, deliveryLine, "not a log line", gmailRate}
+	rep := BuildReport(lines)
+	if rep.Lines != len(lines) {
+		t.Errorf("lines = %d, want %d", rep.Lines, len(lines))
+	}
+	raw, err := json.Marshal(rep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"lines":5`) {
+		t.Errorf("report JSON lacks lines: %s", raw)
+	}
+	if empty, _ := json.Marshal(BuildReport(nil)); !strings.Contains(string(empty), `"lines":0`) {
+		t.Errorf("an empty report leaves out lines: %s", empty)
+	}
+}

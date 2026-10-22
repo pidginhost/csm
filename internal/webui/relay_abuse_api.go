@@ -3,6 +3,7 @@ package webui
 import (
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -79,7 +80,7 @@ func (s *Server) apiEmailRelayAbuse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, s.emailMemo("relay?"+q.Encode(), func() any {
+	writeJSON(w, s.emailMemo(rangeMemoKey("relay", from, to)+"&limit="+strconv.Itoa(limit), func() any {
 		return s.buildRelayAbuseResponse(from, to, limit)
 	}))
 }

@@ -125,3 +125,37 @@ func TestRelayAbuseOneSidedTo(t *testing.T) {
 		t.Errorf("range %v .. %v with %d events, want the 24 h before %v with 1 event", resp.From, resp.To, resp.Total, at)
 	}
 }
+
+// As for the senders count: requests in the same minute share one history
+// walk; the limit still keys its own result.
+func TestRelayAbuseMemoSharedWithinMinute(t *testing.T) {
+	s := newTestServerWithBbolt(t, "tok")
+	at := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	relay := func(ts time.Time) alert.Finding {
+		return alert.Finding{Check: "email_php_relay_abuse", Severity: alert.High, Path: "volume", Timestamp: ts}
+	}
+	s.store.AppendHistory([]alert.Finding{relay(at.Add(-time.Hour))})
+	total := func(query string) int {
+		t.Helper()
+		w := httptest.NewRecorder()
+		s.apiEmailRelayAbuse(w, httptest.NewRequest(http.MethodGet, "/api/v1/email/relay-abuse?from=2026-10-20T10:00:00Z&"+query, nil))
+		var resp relayAbuseResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil || w.Code != http.StatusOK {
+			t.Fatalf("status %d, %v: %s", w.Code, err, w.Body.String())
+		}
+		return resp.Total
+	}
+	if n := total("limit=20&to=2026-10-20T12:00:10Z"); n != 1 {
+		t.Fatalf("total = %d, want 1", n)
+	}
+	s.store.AppendHistory([]alert.Finding{relay(at.Add(-30 * time.Minute))})
+	if n := total("limit=20&to=2026-10-20T12:00:40Z"); n != 1 {
+		t.Errorf("same minute: total = %d, want the shared 1", n)
+	}
+	if n := total("limit=5&to=2026-10-20T12:00:40Z"); n != 2 {
+		t.Errorf("same minute, other limit: total = %d, want 2", n)
+	}
+	if n := total("limit=20&to=2026-10-20T12:01:05Z"); n != 2 {
+		t.Errorf("next minute: total = %d, want 2", n)
+	}
+}

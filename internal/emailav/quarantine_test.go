@@ -582,3 +582,35 @@ func TestQuarantineItemSize(t *testing.T) {
 		t.Errorf("without a -D file: %+v, %v; want size 0", meta, err)
 	}
 }
+
+// The subject is the sender's text and the web UI shows it, so it reads as
+// the held forward copies' subjects do: encoded words decoded, control
+// characters spaced, bidi and format characters dropped, and bounded. A
+// sidecar written before this keeps its raw subject on disk and still reads
+// clean.
+func TestQuarantineSubjectReadsClean(t *testing.T) {
+	qDir := filepath.Join(t.TempDir(), "quarantine", "email")
+	msgID := "2jKPFm-000abc-1X"
+	spoolDir := setupTestSpool(t, msgID)
+	q := NewQuarantine(qDir)
+	q.allowedSpoolDirs = []string{spoolDir}
+	result := &ScanResult{MessageID: msgID, Infected: true, Findings: []Finding{{Filename: "f.exe", Engine: "clamav", Signature: "Sig", Severity: "critical"}}}
+	raw := "=?UTF-8?B?w45uY8SDIG8=?= =?UTF-8?Q?_ofert=C4=83?=\tinvoice\u202efdp.exe\u200b " + strings.Repeat("x", 300)
+	env := QuarantineEnvelope{From: "a@example.com", To: []string{"b@example.net"}, Subject: raw, Direction: "inbound"}
+	if err := q.QuarantineMessage(msgID, spoolDir, result, env); err != nil {
+		t.Fatalf("QuarantineMessage: %v", err)
+	}
+
+	want := "\u00cenc\u0103 o ofert\u0103 invoicefdp.exe " + strings.Repeat("x", 160-len([]rune("\u00cenc\u0103 o ofert\u0103 invoicefdp.exe ")))
+	msgs, err := q.ListMessages()
+	if err != nil || len(msgs) != 1 {
+		t.Fatalf("ListMessages = %v, %v; want one message", msgs, err)
+	}
+	if msgs[0].Subject != want {
+		t.Errorf("listed subject = %q, want %q", msgs[0].Subject, want)
+	}
+	meta, err := q.GetMessage(msgID)
+	if err != nil || meta.Subject != want {
+		t.Errorf("GetMessage subject = %q, %v; want %q", meta.Subject, err, want)
+	}
+}

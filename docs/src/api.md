@@ -1244,7 +1244,7 @@ DELETE /api/v1/suppressions      Delete a suppression rule by id
 ```
 GET  /api/v1/email/stats         Email scanning statistics
 GET  /api/v1/email/forwarders    Mail forwarder inventory with destination providers and local-copy flags (read scope)
-GET  /api/v1/email/deferrals     Outbound deferral rollup by provider and sending IP with reason codes, parsed from exim_mainlog, with window_start/window_end, the times of the first and last lines read (read scope)
+GET  /api/v1/email/deferrals     Outbound deferral rollup by provider and sending IP with reason codes and last_seen, parsed from exim_mainlog; each provider has a sample error text; lines is the number of log lines read and window_start/window_end the times of the first and last of them (read scope)
 GET  /api/v1/email/queue-composition  Mail queue makeup: real vs null-sender bounce backscatter, frozen count, oldest age, top stuck recipients (read scope)
 POST /api/v1/email/queue/flush-backscatter  Request removal of frozen null-sender messages from the exim queue on cPanel hosts; returns the count of targeted messages no longer queued, reports incomplete verification as 500, or returns 503 when unavailable (admin scope, CSRF)
 GET  /api/v1/email/queue         One page of the exim queue on cPanel hosts, oldest first, each message with why it is stuck; page (default 1), limit (default 25, max 100), filter=all|frozen|backscatter, q (sender or recipient substring) (admin scope)
@@ -1260,7 +1260,7 @@ GET  /api/v1/email/rejects       Recent rejected mail (time, class, sender, reci
 GET  /api/v1/email/senders       Messages each hosting account sent in from/to (default the last 24 h), busiest first, up to 100 rows, with total, unresolved and abuse_events, the outbound abuse events relay-abuse lists for the range, counted up to 5,000 like relay-abuse (admin scope)
 GET  /api/v1/email/relay-abuse   Outbound PHP-mail abuse detections (spam outbreaks, high-volume scripts/accounts) with per-site script breakdown; from/to/limit (read scope)
 GET  /api/v1/email/rspamd       rspamd status (up|down|off), antispam mode, version and rspamd's counters since it started (scanned, learned, actions, top 8 rules), read from its controller without a password and cached 60 s; available false with a reason when they cannot be read (read scope)
-GET  /api/v1/email/quarantine    Quarantined email list, each with the size of its spooled body
+GET  /api/v1/email/quarantine    Quarantined email list, each with the size of its spooled body and its subject, decoded and cleaned as on held forward copies
 GET  /api/v1/email/av/status     Email AV watcher status
 GET  /api/v1/email/quarantine/{id}          One quarantined message
 POST /api/v1/email/quarantine/{id}/release  Release a quarantined message (admin scope, CSRF)

@@ -313,7 +313,9 @@ paths:
           description: >-
             Deferrals by provider and by sending IP. The provider comes
             from the deferring MX host when it is a known provider's, else
-            from the recipient domain. window_start and window_end are the
+            from the recipient domain. Each provider has last_seen and a
+            sample error text; each sending IP has last_seen. lines is how
+            many log lines were read. window_start and window_end are the
             times of the first and last log lines read; both are left out
             when no line carries a time.
           content:
@@ -640,7 +642,9 @@ paths:
       responses:
         "200":
           description: >-
-            Quarantined messages, each with size, the size of its spooled body.
+            Quarantined messages, each with size, the size of its spooled
+            body, and subject, decoded, with control, bidi and format
+            characters removed, at most 160 characters.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/JSONObject" }

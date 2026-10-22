@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"reflect"
 	"strings"
 	"testing"
@@ -123,11 +122,9 @@ func TestSendersEndpointNoCounter(t *testing.T) {
 func TestSendersAbuseCountMemoized(t *testing.T) {
 	s := newTestServerWithBbolt(t, "tok")
 	const query = "from=2026-10-20T12:00:00Z&to=2026-10-20T13:00:00Z"
-	q, err := url.ParseQuery(query)
-	if err != nil {
-		t.Fatal(err)
-	}
-	s.emailMemos.memo("senders-abuse?"+q.Encode()).get(s.store.HistoryMark(), func() any { return 7 })
+	from := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	key := rangeMemoKey("senders-abuse", from, from.Add(time.Hour))
+	s.emailMemos.memo(key).get(s.store.HistoryMark(), func() any { return 7 })
 
 	w := serveSenders(s, http.MethodGet, "tok", "?"+query)
 	var body emailSendersBody
@@ -136,5 +133,36 @@ func TestSendersAbuseCountMemoized(t *testing.T) {
 	}
 	if body.AbuseEvents != 7 {
 		t.Errorf("abuse_events = %d, want the memoized 7", body.AbuseEvents)
+	}
+}
+
+// The page asks up to now, so two polls never send the same to. Requests in
+// the same minute share one history walk: a finding written between them
+// shows from the next minute, not before.
+func TestSendersAbuseMemoSharedWithinMinute(t *testing.T) {
+	s := newTestServerWithBbolt(t, "tok")
+	at := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	relay := func(ts time.Time) alert.Finding {
+		return alert.Finding{Check: "email_php_relay_abuse", Severity: alert.High, Path: "volume", Timestamp: ts}
+	}
+	s.store.AppendHistory([]alert.Finding{relay(at.Add(-time.Hour))})
+	count := func(to string) int {
+		t.Helper()
+		w := serveSenders(s, http.MethodGet, "tok", "?from=2026-10-20T10:00:00Z&to="+to)
+		var body emailSendersBody
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil || w.Code != http.StatusOK {
+			t.Fatalf("status %d, %v: %s", w.Code, err, w.Body.String())
+		}
+		return body.AbuseEvents
+	}
+	if n := count("2026-10-20T12:00:10Z"); n != 1 {
+		t.Fatalf("abuse_events = %d, want 1", n)
+	}
+	s.store.AppendHistory([]alert.Finding{relay(at.Add(-30 * time.Minute))})
+	if n := count("2026-10-20T12:00:40Z"); n != 1 {
+		t.Errorf("same minute: abuse_events = %d, want the shared 1", n)
+	}
+	if n := count("2026-10-20T12:01:05Z"); n != 2 {
+		t.Errorf("next minute: abuse_events = %d, want 2", n)
 	}
 }
