@@ -148,3 +148,22 @@ func TestValidArchivesStayComplete(t *testing.T) {
 		}
 	}
 }
+
+func TestHeaderFileOverBudgetIsPartial(t *testing.T) {
+	hPath, dPath := buildEximSpool(t, `multipart/mixed; boundary="BOUND"`, "")
+	f, err := os.OpenFile(hPath, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = f.Write(bytes.Repeat([]byte("x"), maxHeaderFileBytes+1)); err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Close()
+	r, err := ParseSpoolMessage(hPath, dPath, DefaultLimits())
+	if err != nil {
+		t.Fatalf("err = %v, want a partial result", err)
+	}
+	if !r.Partial || r.PartialReason != "message header exceeds parser memory budget" || len(r.Parts) != 0 {
+		t.Fatalf("result = %+v", r)
+	}
+}

@@ -86,6 +86,9 @@ func DefaultLimits() Limits {
 // files in result.Parts[*].TempPath when done.
 func ParseSpoolMessage(headerPath, bodyPath string, limits Limits) (*ExtractionResult, error) {
 	envelope, hdrs, err := parseEximHeader(headerPath)
+	if errors.Is(err, errHeaderOverBudget) {
+		return &ExtractionResult{Partial: true, PartialReason: "message header exceeds parser memory budget"}, nil
+	}
 	if err != nil {
 		return nil, fmt.Errorf("parsing header file: %w", err)
 	}
@@ -264,6 +267,12 @@ func decodeSinglePart(r io.Reader, limit int64) ([]byte, bool, error) {
 	return decoded, false, err
 }
 
+// maxHeaderFileBytes bounds the Exim -H file read into memory. Exim's own
+// header size limit keeps real mail far below it.
+const maxHeaderFileBytes = 16 << 20
+
+var errHeaderOverBudget = errors.New("message header exceeds parser memory budget")
+
 type envelope struct {
 	from    string
 	to      []string
@@ -273,9 +282,17 @@ type envelope struct {
 // parseEximHeader reads an Exim -H file and extracts envelope info and headers.
 func parseEximHeader(path string) (*envelope, textproto.MIMEHeader, error) {
 	// #nosec G304 -- path is Exim -H file path from mail queue scanner walk.
-	data, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
 		return nil, nil, err
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, maxHeaderFileBytes+1))
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(data) > maxHeaderFileBytes {
+		return nil, nil, errHeaderOverBudget
 	}
 	env, hdrs := parseEximHeaderData(data)
 	return env, hdrs, nil
