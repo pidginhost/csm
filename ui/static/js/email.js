@@ -555,7 +555,7 @@
             }
             CSM.urlState.set(rangeURL());
             loadOverview();
-            loadRejects();
+            if (activeTab('email-tabs') === 'rejects') loadRejects();
             _showAllGroups = false;
             loadActionGroups();
             loadFindings();
@@ -1575,7 +1575,10 @@
         _bulkReleaseBtn.addEventListener('click', function() {
             var ids = _emailQuarBulk.selectedValues();
             if (ids.length === 0) return;
-            CSM.confirm('Release ' + ids.length + ' message(s) back to the mail queue?').then(function() {
+            // Releasing delivers malware, so it asks as one row's Release does.
+            var ask = ids.length === 1 ? 'Deliver this message to its original recipients? It contained malware.'
+                : 'Deliver these ' + ids.length + ' messages to their original recipients? They contained malware.';
+            CSM.confirm(ask, { danger: true, okLabel: 'Deliver' }).then(function() {
                 var succeeded = 0, failed = 0;
                 var chain = Promise.resolve();
                 ids.forEach(function(id) {
@@ -2595,9 +2598,8 @@
     }
 
     // loadTab loads what a tab shows the first time it opens; force loads
-    // it again. Queue and Held mail read again whenever they open.
-    // Overview, Rejects, Findings and the Held mail count load with the
-    // page.
+    // it again. Queue, Held mail and Rejects read again whenever they open.
+    // Overview, Findings and the Held mail count load with the page.
     function loadTab(id, force) {
         if (id === 'sending') {
             if (force || !statsLoaded) loadEmailStats();
@@ -2610,6 +2612,8 @@
             loadQueue();
         } else if (id === 'held') {
             loadHeldMail();
+        } else if (id === 'rejects') {
+            loadRejects();
         } else if (id === 'forwarders') {
             if (force) forwardersLoaded = false;
             loadForwarders();
@@ -2646,9 +2650,10 @@
             if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
             e.preventDefault();
             var cls = link.getAttribute('data-rejects-class');
+            // A closed Rejects tab reads the new reason as it opens.
             if (cls && rejectsFilter && rejectsFilter.value !== cls) {
                 rejectsFilter.value = cls;
-                loadRejects();
+                if (activeTab('email-tabs') === 'rejects') loadRejects();
             }
             openTab(tabFromURL(new URLSearchParams(link.getAttribute('href')).get('tab')));
         });
@@ -2707,7 +2712,6 @@
             loadOverview();
             loadRspamd();
             loadAVStatus();
-            loadRejects();
             loadActionGroups();
             loadFindings();
             statsLoaded = false;
@@ -2748,7 +2752,6 @@
     loadOverview();
     loadRspamd();
     loadAVStatus();
-    loadRejects();
     loadActionGroups();
     loadEmailChecks();
     loadFindings();
@@ -2761,7 +2764,7 @@
     // and the queued messages while Queue is open),
     // rspamd and AV every 60 s (rspamd's own figures are cached that long,
     // with held mail while Held mail is open),
-    // and the rejects and groups every 60 s.
+    // and the groups every 60 s (with the rejects while Rejects is open).
     var _emailIntervals = [];
     function _stopEmailIntervals() {
         for (var i = 0; i < _emailIntervals.length; i++) _emailIntervals[i].stop();
@@ -2784,7 +2787,10 @@
             } catch(e) {}
         }, 60000));
         _emailIntervals.push(CSM.refresh.interval(function() {
-            try { loadRejects(); loadActionGroups(); } catch(e) {}
+            try {
+                loadActionGroups();
+                if (activeTab('email-tabs') === 'rejects') loadRejects();
+            } catch(e) {}
         }, 60000));
     }
     _startEmailPolling();

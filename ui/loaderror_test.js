@@ -182,7 +182,7 @@ const CASES = [
     { name: 'dashboard', scripts: ['dashboard.js'], fails: '/api/v1/stats/trend', host: 'trend-chart', parent: true, title: /trend/i },
     { name: 'email', scripts: ['email.js'], fails: '/api/v1/email/overview', host: 'email-kpis', title: /mail numbers/i },
     { name: 'email', scripts: ['email.js'], fails: u => u.includes('/api/v1/email/groups?') && !u.includes('auth_failure'), host: 'email-action-groups', title: /needs attention/i },
-    { name: 'email', scripts: ['email.js'], fails: '/api/v1/email/rejects', host: 'email-rejects-tbody', title: /rejects/i },
+    { name: 'email', scripts: ['email.js'], tab: 'email-tab-rejects', fails: '/api/v1/email/rejects', host: 'email-rejects-tbody', title: /rejects/i },
     { name: 'email', scripts: ['email.js'], fails: '/api/v1/history?', host: 'email-tbody', title: /findings/i },
     { name: 'email', scripts: ['email.js'], tab: 'email-tab-held', fails: '/api/v1/email/quarantine', host: 'email-held-tbody', title: /quarantine/i },
     { name: 'email', scripts: ['email.js'], tab: 'email-tab-forwarders', fails: '/api/v1/email/forwarders', host: 'email-fwd-tbody', title: /forwarders/i },

@@ -419,6 +419,7 @@ test('a failed rspamd read shows a load error', async () => {
 
 test('the range select drives every request', async () => {
     const page = emailPage({ storage: CHATHAM });
+    showEmailTab(page, 'rejects');
     await settle();
     const range = page.document.getElementById('email-range');
     assert.equal(range.value, '24h');
@@ -476,6 +477,7 @@ function groupTitles(page) {
 
 test('rejects default to spam and malware', async () => {
     const page = emailPage();
+    showEmailTab(page, 'rejects');
     await settle();
     const ovFrom = query(page.pending('/api/v1/email/overview')[0].url).get('from');
     const req = page.pending('/api/v1/email/rejects')[0];
@@ -507,6 +509,7 @@ test('rejects default to spam and malware', async () => {
 
 test('reject rows show server text as text', async () => {
     const page = emailPage();
+    showEmailTab(page, 'rejects');
     await settle();
     page.respond('/api/v1/email/rejects', 200, items([
         { at: AT, class: 'sender_verify', temporary: true, ip: '', sender: '<img src=x onerror=alert(1)>@example.com', recipient: '', detail: '<b>verify</b>' },
@@ -525,6 +528,7 @@ test('reject rows show server text as text', async () => {
 
 test('rejects empty state names range and filter', async () => {
     const page = emailPage();
+    showEmailTab(page, 'rejects');
     await settle();
     page.respond('/api/v1/email/rejects', 200, items([], { class: 'content', limit: 50, kept_days: 7 }));
     await settle();
@@ -557,6 +561,7 @@ test('rejects empty state names range and filter', async () => {
 
 test('a failed rejects load shows a load error with retry', async () => {
     const page = emailPage();
+    showEmailTab(page, 'rejects');
     await settle();
     page.respond('/api/v1/email/rejects', 401, { error: 'Unauthorized' });
     await settle();
@@ -567,6 +572,46 @@ test('a failed rejects load shows a load error with retry', async () => {
     await settle();
     assert.doesNotMatch(tbody.textContent, /Failed to load/);
     assert.match(tbody.textContent, /score 15\.2/);
+});
+
+test('the rejects list loads when its tab opens and refreshes only while it is open', async () => {
+    const rejects = page => page.requests.filter(r => r.url.includes('/api/v1/email/rejects'));
+    const page = emailPage();
+    await settle();
+    assert.equal(rejects(page).length, 0, 'the page read the rejects before their tab opened');
+    // The timers, the refresh button and a new range leave a closed tab alone.
+    page.window.CSM.refresh.manual();
+    await settle();
+    page.document.getElementById('email-refresh').click();
+    await settle();
+    changeValue(page, page.document.getElementById('email-range'), '7d');
+    await settle();
+    assert.equal(rejects(page).length, 0, 'a closed Rejects tab was read');
+
+    showEmailTab(page, 'rejects');
+    await settle();
+    assert.equal(rejects(page).length, 1, 'opening Rejects did not read them');
+    assert.equal(query(rejects(page)[0].url).get('from'), query(page.pending('/api/v1/email/overview').at(-1).url).get('from'));
+    page.respond('/api/v1/email/rejects', 200, items([], { kept_days: 7 }));
+    await settle();
+    page.window.CSM.refresh.manual();
+    await settle();
+    assert.equal(rejects(page).length, 2, 'the timers do not refresh the open Rejects tab');
+    page.respond('/api/v1/email/rejects', 200, items([], { kept_days: 7 }));
+    await settle();
+
+    showEmailTab(page, 'overview');
+    page.window.CSM.refresh.manual();
+    await settle();
+    assert.equal(rejects(page).length, 2, 'the timers read a closed Rejects tab');
+    showEmailTab(page, 'rejects');
+    await settle();
+    assert.equal(rejects(page).length, 3, 'reopening Rejects did not read them again');
+
+    // An address that opens Rejects reads them once.
+    const linked = emailPage({ url: 'https://csm.example.test/email?tab=rejects' });
+    await settle();
+    assert.equal(rejects(linked).length, 1);
 });
 
 test('handled groups hide behind a toggle', async () => {
@@ -741,6 +786,7 @@ function rejectsShowing(page) {
 
 test('rejects keep their page across a refresh with the same filter and range', async () => {
     const page = emailPage();
+    showEmailTab(page, 'rejects');
     await settle();
     page.respond('/api/v1/email/rejects', 200, items(Array.from({ length: 25 }, (_, i) => reject(i)), { kept_days: 7 }));
     await settle();
@@ -934,8 +980,6 @@ test('each headline card opens the tab that explains its number', async () => {
 test('the reject cards open Rejects on their reason', async () => {
     for (const [card, cls] of [['kpi-spam', 'spam'], ['kpi-other', 'other']]) {
         const page = emailPage();
-        await settle();
-        page.respond('/api/v1/email/rejects', 200, items([], { kept_days: 7 }));
         await settle();
         page.document.querySelector('#' + card + ' a').click();
         await settle();
@@ -1417,6 +1461,7 @@ test('long custom ranges bound chart work without dropping counts', async () => 
 test('recipient and check names remain text in every email view', async () => {
     const page = emailPage();
     const payload = '<img src=x onerror=alert(1)>';
+    showEmailTab(page, 'rejects');
     await settle();
     page.respond('/api/v1/email/rejects', 200, items([{ at: AT, class: 'spam', recipient: payload + '@example.net' }]));
     page.respond('/api/v1/email/checks', 200, { checks: [{ name: payload, kind: 'auth_failure' }] });
@@ -2389,8 +2434,6 @@ test('the held mail summary repeats the Malware card and links its SMTP rejects 
     assert.equal(flat(summary), 'Malware stopped in this range: 81 (78 rejected at SMTP, 3 quarantined). Held now: 3 (2 malware, 1 forward copy).');
     assert.equal(kpi(page, 'kpi-malware').value, '81');
     assert.equal(kpi(page, 'kpi-malware').sub, '78 rejected at SMTP, 3 quarantined');
-    page.respond('/api/v1/email/rejects', 200, items([], { kept_days: 7 }));
-    await settle();
     const link = summary.querySelector('a');
     assert.equal(flat(link), '78 rejected at SMTP');
     assert.equal(link.getAttribute('href'), '?tab=rejects');
@@ -2505,6 +2548,10 @@ test('malware keeps bulk select; forward copies act one at a time', async () => 
     release.click();
     await settle();
     assert.equal(asked.length, 1);
+    // Releasing delivers malware, so it asks the way one row's Release does.
+    assert.equal(asked[0].message, 'Deliver these 2 messages to their original recipients? They contained malware.');
+    assert.equal(asked[0].opts.okLabel, 'Deliver');
+    assert.equal(asked[0].opts.danger, true);
     page.respond('/api/v1/email/quarantine/' + MID[0] + '/release', 200, {});
     await settle();
     page.respond('/api/v1/email/quarantine/' + MID[1] + '/release', 200, {});
@@ -2512,6 +2559,15 @@ test('malware keeps bulk select; forward copies act one at a time', async () => 
     assert.deepEqual(page.toasts, [['Released 2 of 2', 'success']]);
     assert.equal(page.requests.filter(r => r.method === 'POST' && r.url.includes('/api/v1/email/held/')).length, 0, 'bulk touched a forward copy');
     assert.equal(page.pending('/api/v1/email/quarantine').length, 1, 'the quarantine was not read again');
+
+    const one = await heldPage([malwareItem(MID[0])], []);
+    one.document.querySelector('#email-held-tbody .email-quar-cb').click();
+    const askedOne = stubConfirm(one, false);
+    one.document.getElementById('email-quar-bulk-release').click();
+    await settle();
+    assert.equal(askedOne[0].message, 'Deliver this message to its original recipients? It contained malware.');
+    assert.equal(askedOne[0].opts.danger, true);
+    assert.equal(one.requests.filter(r => r.method !== 'GET').length, 0, 'a cancelled bulk release still acted');
 });
 
 test('the page range scopes held mail and names what it hides', async () => {

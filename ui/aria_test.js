@@ -76,7 +76,7 @@ for (const spec of [
     { page: 'account', url: '/account?name=alice', script: 'account.js', endpoint: '/api/v1/account' },
     { page: 'performance', script: 'performance.js', endpoint: '/api/v1/performance' },
     { page: 'email', script: 'email.js', endpoint: '/api/v1/email/groups?' },
-    { page: 'email', script: 'email.js', endpoint: '/api/v1/email/rejects' },
+    { page: 'email', script: 'email.js', endpoint: '/api/v1/email/rejects', tab: '#email-tab-rejects', event: 'shown.bs.tab' },
     { page: 'incident', script: 'incident.js', endpoint: '/api/v1/incidents/groups?', tab: '#grouped-tab', event: 'click' },
     { page: 'modsec', script: 'modsec.js', endpoint: '/api/v1/modsec/blocks' }
 ]) {
