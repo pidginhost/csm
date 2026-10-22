@@ -285,20 +285,146 @@ func TestQueueRecipientsWithQuotedLocalParts(t *testing.T) {
 	}
 }
 
-func TestQueueListRefusesPartialSpoolRead(t *testing.T) {
+// Exim lists a message it cannot read in one of three shapes, typed after
+// queue_list in exim's queue.c: an ID-only line (blank size, no envelope)
+// with the error below it, a full line followed by a header error, or a full
+// line whose size is blank because the data file is missing. Each one is a
+// queued message the operator must see, not a reason to drop the listing.
+func TestQueueListShowsUnreadableEntries(t *testing.T) {
 	good := "  1h  900 1tAbCd-000001-Ab <sender@example.com>\n          rcpt@example.net\n\n"
-	bad := "   0 1tAbCd-000002-Ab\n    *** spool read error: Permission denied ***\n"
-	for _, input := range []string{good + bad, bad + good} {
-		if msgs, err := ParseQueueList([]byte(input)); err == nil || len(msgs) != 0 {
-			t.Errorf("partial listing = %+v, %v; want an unavailable queue", msgs, err)
+	noEnvelope := "      1tAbCd-000002-Ab\n    *** spool format error: size=37 ***\n\n"
+	denied := "      1tAbCd-000003-Ab\n    *** spool read error: Permission denied ***\n\n"
+	badHeader := "  2h  1.2K 1tAbCd-000004-Ab <sender@example.com> (cpuser)\n    *** spool format error: size=1500 *** *** frozen ***\n          other@example.net\n\n"
+	noData := " 5m       1tAbCd-000005-Ab <> *** frozen ***\n          bounce@example.com\n\n"
+
+	msgs, err := ParseQueueList([]byte(good + noEnvelope + denied + badHeader + noData))
+	if err != nil {
+		t.Fatalf("ParseQueueList: %v", err)
+	}
+	if len(msgs) != 5 {
+		t.Fatalf("messages = %+v, want 5", msgs)
+	}
+	if msgs[0].Unreadable != "" {
+		t.Errorf("readable message marked unreadable: %+v", msgs[0])
+	}
+
+	envelopeless := map[string]string{
+		"1tAbCd-000002-Ab": "spool format error: size=37",
+		"1tAbCd-000003-Ab": "spool read error: Permission denied",
+	}
+	for _, m := range msgs[1:3] {
+		if m.Unreadable != envelopeless[m.ID] {
+			t.Errorf("%s: unreadable = %q, want %q", m.ID, m.Unreadable, envelopeless[m.ID])
 		}
-		if _, err := ParseQueueDetail([]byte(input)); err == nil {
-			t.Error("partial output accepted as one complete message")
+		if m.Sender != "" || m.Bounce || m.Frozen || m.Size != 0 || m.RecipientCount != 0 || len(m.Recipients) != 0 {
+			t.Errorf("%s: envelope invented: %+v", m.ID, m)
+		}
+		// exim prints no age without the envelope; the ID still dates it.
+		arrived, _ := ArrivalFromID(m.ID)
+		if want := int(time.Since(arrived) / time.Second); m.AgeSeconds < want-5 || m.AgeSeconds > want+5 {
+			t.Errorf("%s: age = %d, want about %d from the ID", m.ID, m.AgeSeconds, want)
 		}
 	}
+
+	h := msgs[3]
+	if h.Unreadable != "spool format error: size=1500" || !h.Frozen || h.Sender != "sender@example.com" ||
+		h.LocalUser != "cpuser" || h.AgeSeconds != 2*3600 || !reflect.DeepEqual(h.Recipients, []string{"other@example.net"}) {
+		t.Errorf("header error entry = %+v", h)
+	}
+
+	d := msgs[4]
+	if d.Unreadable != "spool data file missing" || d.Size != 0 || !d.Bounce || !d.Frozen || d.AgeSeconds != 5*60 ||
+		!reflect.DeepEqual(d.Recipients, []string{"bounce@example.com"}) {
+		t.Errorf("missing data file entry = %+v", d)
+	}
+
+	one, err := ParseQueueDetail([]byte(noEnvelope))
+	if err != nil || one.ID != "1tAbCd-000002-Ab" || one.Unreadable == "" {
+		t.Errorf("detail of an unreadable message = %+v, %v", one, err)
+	}
+}
+
+// An error line exim did not print under a message ID cannot be placed, so
+// the listing is not the whole queue.
+func TestQueueListRefusesUnplacedSpoolError(t *testing.T) {
+	good := "  1h  900 1tAbCd-000001-Ab <sender@example.com>\n          rcpt@example.net\n\n"
+	orphan := "    *** spool read error: Permission denied ***\n"
+	for _, input := range []string{orphan + good, good + orphan} {
+		if msgs, err := ParseQueueList([]byte(input)); err == nil {
+			t.Errorf("listing with an unplaced error = %+v, want an error", msgs)
+		}
+	}
+	// A recipient cannot pose as exim's error line.
+	quoted := "  1h  900 1tAbCd-000001-Ab <sender@example.com>\n          \"*** spool read error: x ***\"@example.net\n\n"
+	if msgs, err := ParseQueueList([]byte(quoted)); err != nil || len(msgs) != 1 || msgs[0].Unreadable != "" {
+		t.Errorf("quoted recipient = %+v, %v", msgs, err)
+	}
 	// A message delivered during enumeration is absent, not unreadable.
-	missing := "   0 1tAbCd-000002-Ab\n    *** spool read error: No such file or directory ***\n"
+	missing := "      1tAbCd-000002-Ab\n    *** spool read error: No such file or directory ***\n\n"
 	if msgs, err := ParseQueueList([]byte(good + missing)); err != nil || len(msgs) != 1 {
 		t.Errorf("listing after a concurrent delivery = %+v, %v", msgs, err)
+	}
+}
+
+func TestQueueSpoolErrorsRequireAdjacentEntry(t *testing.T) {
+	const header = "  1h  900 1tAbCd-000001-Ab <> *** frozen ***\n"
+	for _, diagnostic := range []string{
+		"*** spool read error: No such file or directory ***",
+		"*** spool read error: Permission denied ***",
+		"*** spool format error ***",
+		"*** spool format error: size=37 ***",
+	} {
+		for _, prefix := range []string{
+			header + "\n",
+			header + "          rcpt@example.net\n",
+			header + "          1tAbCd-000002-Ab\n",
+			header + "          \"1tAbCd-000002-Ab\"@example.net\n",
+		} {
+			out := prefix + "    " + diagnostic + "\n\n"
+			if msgs, err := ParseQueueList([]byte(out)); err == nil || len(msgs) != 0 {
+				t.Errorf("list %q = %+v, %v; want no partial list", out, msgs, err)
+			}
+			if comp, err := ParseQueue(out); err == nil || comp.Total != 0 {
+				t.Errorf("composition %q = %+v, %v; want no partial counts", out, comp, err)
+			}
+		}
+	}
+}
+
+func TestQueueMissingSpoolEnvelopeAndHeader(t *testing.T) {
+	const missing = "      1tAbCd-000001-Ab\n    *** spool read error: No such file or directory ***\n\n"
+	msgs, err := ParseQueueList([]byte(missing))
+	if err != nil || msgs == nil || len(msgs) != 0 {
+		t.Errorf("only a vanished message = %+v, %v; want an empty list", msgs, err)
+	}
+	const headerError = "  1h  900 1tAbCd-000001-Ab <>\n    *** spool read error: No such file or directory ***\n          rcpt@example.net\n\n"
+	m, err := ParseQueueDetail([]byte(headerError))
+	if err != nil || m.Unreadable != "spool read error: No such file or directory" || !m.Bounce || m.RecipientCount != 1 {
+		t.Errorf("known envelope with a header error = %+v, %v", m, err)
+	}
+}
+
+func TestQueueIncompleteEnvelopeFailsListing(t *testing.T) {
+	const good = "  1h  900 1tAbCd-000001-Ab <sender@example.com>\n\n"
+	for _, out := range []string{
+		good + "      1tAbCd-000002-Ab",
+		"      1tAbCd-000002-Ab\n\n" + good,
+		"exim: spool directory unreadable\n",
+	} {
+		if msgs, err := ParseQueueList([]byte(out)); err == nil || len(msgs) != 0 {
+			t.Errorf("list %q = %+v, %v; want an error", out, msgs, err)
+		}
+		if comp, err := ParseQueue(out); err == nil || comp.Total != 0 {
+			t.Errorf("composition %q = %+v, %v; want an error", out, comp, err)
+		}
+	}
+}
+
+func TestQueueQuotedDiagnosticsRemainRecipients(t *testing.T) {
+	want := []string{`"*** spool read error: No such file or directory ***"@example.net`, `"1tAbCd-000002-Ab"@example.net`}
+	out := "  1h  900 1tAbCd-000001-Ab <sender@example.com>\n          " + strings.Join(want, "\n          ") + "\n\n"
+	m, err := ParseQueueDetail([]byte(out))
+	if err != nil || m.Unreadable != "" || m.RecipientCount != len(want) || !reflect.DeepEqual(m.Recipients, want) {
+		t.Errorf("quoted diagnostics = %+v, %v; want recipients %q", m, err, want)
 	}
 }

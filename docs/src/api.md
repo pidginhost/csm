@@ -1245,7 +1245,7 @@ DELETE /api/v1/suppressions      Delete a suppression rule by id
 GET  /api/v1/email/stats         Email scanning statistics
 GET  /api/v1/email/forwarders    Mail forwarder inventory with destination providers and local-copy flags (read scope)
 GET  /api/v1/email/deferrals     Outbound deferral rollup by provider and sending IP with reason codes and last_seen, parsed from exim_mainlog; each provider has a sample error text; lines is the number of log lines read and window_start/window_end the times of the first and last of them; one read is reused for 60 s (read scope)
-GET  /api/v1/email/queue-composition  Mail queue makeup: real vs null-sender bounce backscatter, frozen count, oldest age, top stuck recipients; 500 when exim could not read every spool header, rather than counting the readable messages (read scope)
+GET  /api/v1/email/queue-composition  Mail queue makeup: real vs null-sender bounce backscatter, frozen count, unreadable count, oldest age, top stuck recipients; 500 when exim could not list the queue, rather than an empty queue (read scope)
 POST /api/v1/email/queue/flush-backscatter  Request removal of frozen null-sender messages from the exim queue on cPanel hosts; returns the count of targeted messages no longer queued, reports incomplete verification as 500, or returns 503 when unavailable (admin scope, CSRF)
 GET  /api/v1/email/queue         One page of the exim queue on cPanel hosts, oldest first, each message with why it is stuck; page (default 1), limit (default 25, max 100), filter=all|frozen|backscatter, q (a substring of the sender or of one of its first 50 undelivered recipients) (admin scope)
 GET  /api/v1/email/queue/{id}    One queued message with all undelivered recipients (up to 1,000), why it is stuck and the last 20 lines of its msglog; 404 when it is not queued (admin scope)
@@ -1298,8 +1298,16 @@ the last ten minutes the list answers `unavailable: true` with no items and no
 counts. A failed refresh cannot reuse an empty listing, and a positive queue
 count invalidates any earlier empty result. The next list request then lists
 the queue at once rather than waiting out the minute, once for each such
-refill. A spool read failure also makes
-the listing unavailable instead of reporting only its readable messages.
+refill. A message exim cannot read is listed with `unreadable` holding
+exim's error and reason class `unreadable`; without its envelope it has no
+sender, recipients, size or frozen state, and only `delete` runs on it. An
+exim spool error without an immediately preceding message line makes the
+listing unavailable, including a missing-file error. Truncated entries and
+unrecognized output also fail instead of reporting an empty queue. The
+composition counts messages without envelopes only in `total` and
+`unreadable`, not in `real` or `bounce`. Backscatter flushing excludes every
+unreadable message and validates the whole listing before and after
+removal; a targeted message that becomes unreadable still counts as queued.
 Quoted recipient local parts remain intact, including spaces. Each
 message's `reason` (`class`, `text`, `raw`) comes from its msglog tail; a
 partial first line is discarded. Up to 100 reasons are cached for a minute.
@@ -1310,14 +1318,19 @@ attempt.
 Message reads and actions run exim as a systemd transient unit and never
 inside the daemon's sandbox: without systemd-run the message route and the
 actions answer 503 and exim does not run. Each action first checks that the message is
-still queued; when it is not, the answer is 409 with `outcome: "gone"`. Nothing
+still queued; a missing-file reply must name the requested message. When
+it is not queued, the answer is 409 with `outcome: "gone"`. Nothing
 ran, unless the message left during the action. `retry` answers
 `attempt_started` as soon as the delivery attempt has started. `bounce` and
 `delete` answer `bounced` and `removed` when the message left the queue and
 exim reported no error. When exim reported an error and the message left
 anyway, as when exim -Mrm finds it locked by a delivery that then completes,
-the answer is 409 with `outcome: "gone"`. `thaw` answers `thawed` when the
-queue shows the change, even if exim reported an error. Otherwise the answer
+the answer is 409 with `outcome: "gone"`. An unreadable message answers
+`removed` despite an error exit only when exim confirms its removal and
+the message is no longer queued. A failed or interrupted delete without
+that confirmation answers `gone` when another caller takes the message.
+`thaw` answers `thawed` when the queue shows the change, even if exim reported
+an error. Otherwise the answer
 is `unchanged` with an error. A thaw on a message that is not frozen answers `unchanged`
 without running exim -Mt. Every attempt is written to the UI audit log as
 `email_queue_<action>` with the message ID, the outcome and any error exim
@@ -1333,7 +1346,11 @@ fails and the message stays held. The unit uses KillMode=process, so the
 delivery exim forks before it exits is not stopped with the unit and the
 message leaves at once. A release or delete first claims the held copy, so
 of concurrent requests one acts and the others answer that the copy is not
-held; a failed release puts the copy back.
+held; a failed release puts the copy back. A copy whose release or delete
+the daemon never finished, as when it stopped mid-release, is held again
+on the next 15-minute refresh once the claim is at least five minutes old;
+such a release may already have been delivered. Recovery never replaces another
+held copy in either Maildir folder and makes each claim visible only once.
 
 Deferrals are grouped under the provider whose MX host deferred them
 (Google, Microsoft and Yahoo hosts), so a business domain those providers

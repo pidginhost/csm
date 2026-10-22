@@ -26,10 +26,19 @@ type QueueFlusher interface {
 // AND null-sender (<>) in `exim -bp` output. This is the only set the flush
 // touches: a frozen null-sender message is undeliverable bounce backscatter,
 // so removing it cannot lose a real sender's mail or interrupt a live retry.
+// A message exim could not fully read is left for the operator.
 func FrozenBackscatterIDs(out string) []string {
+	msgs, err := parseQueueEntries(out, 0)
+	if err != nil {
+		return nil
+	}
+	return frozenBackscatterIDs(msgs)
+}
+
+func frozenBackscatterIDs(msgs []QueueMessage) []string {
 	var ids []string
-	for _, line := range strings.Split(out, "\n") {
-		if m, ok := parseQueueHeader(line); ok && m.Bounce && m.Frozen {
+	for _, m := range msgs {
+		if m.Bounce && m.Frozen && m.Unreadable == "" {
 			ids = append(ids, m.ID)
 		}
 	}
@@ -74,7 +83,11 @@ func (f *EximQueueFlusher) FlushBackscatter() (FlushResult, error) {
 	if err != nil {
 		return FlushResult{}, err
 	}
-	ids := FrozenBackscatterIDs(string(out))
+	msgs, err := parseQueueEntries(string(out), 0)
+	if err != nil {
+		return FlushResult{}, err
+	}
+	ids := frozenBackscatterIDs(msgs)
 	if len(ids) == 0 {
 		return FlushResult{}, nil
 	}
@@ -82,6 +95,10 @@ func (f *EximQueueFlusher) FlushBackscatter() (FlushResult, error) {
 	removeErr := f.remove(ids)
 
 	after, listErr := f.list()
+	var remaining []QueueMessage
+	if listErr == nil {
+		remaining, listErr = parseQueueEntries(string(after), 0)
+	}
 	if listErr != nil {
 		confirmErr := fmt.Errorf("removal could not be confirmed: %w", listErr)
 		if removeErr != nil {
@@ -95,9 +112,8 @@ func (f *EximQueueFlusher) FlushBackscatter() (FlushResult, error) {
 		targeted[id] = struct{}{}
 	}
 	stillQueued := make(map[string]struct{}, len(ids))
-	for _, line := range strings.Split(string(after), "\n") {
-		m, ok := parseQueueHeader(line)
-		if _, isTargeted := targeted[m.ID]; ok && isTargeted {
+	for _, m := range remaining {
+		if _, isTargeted := targeted[m.ID]; isTargeted {
 			stillQueued[m.ID] = struct{}{}
 		}
 	}

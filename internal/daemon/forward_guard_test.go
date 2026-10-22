@@ -209,6 +209,29 @@ func TestPruneForwardQuarantineKeepsEverythingWithoutRetention(t *testing.T) {
 	}
 }
 
+// A copy claimed by a release the daemon never finished returns to the held
+// list on the refresh tick, whether or not retention prunes.
+func TestPruneForwardQuarantineRestoresInterruptedClaims(t *testing.T) {
+	seedForwardQuarantine(t, 0)
+	tmp := filepath.Join(forwardQuarantineDir, "tmp")
+	if err := os.MkdirAll(tmp, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	claimed := filepath.Join(tmp, fmt.Sprintf("held.eml.claim.%d.1", time.Now().Add(-time.Hour).UnixNano()))
+	if err := os.WriteFile(claimed, []byte("X-CSM-Forwarder: a@example.com\n\nbody\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	(&Daemon{}).pruneForwardQuarantine()
+
+	if _, err := os.Stat(filepath.Join(forwardQuarantineDir, "new", "held.eml")); err != nil {
+		t.Fatalf("interrupted claim not held again: %v", err)
+	}
+	if _, err := os.Stat(claimed); !os.IsNotExist(err) {
+		t.Fatalf("claim still in tmp/ (err=%v)", err)
+	}
+}
+
 // flakyForwardGuard fails its first fail reconcile attempts.
 type flakyForwardGuard struct {
 	applies, removes, refreshes int

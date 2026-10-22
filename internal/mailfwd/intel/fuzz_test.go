@@ -2,6 +2,7 @@ package intel
 
 import (
 	"net"
+	"slices"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -58,6 +59,7 @@ func FuzzParseDeferralLine(f *testing.F) {
 // must keep its counts internally consistent.
 func FuzzParseQueue(f *testing.F) {
 	f.Add(eximBpSample)
+	f.Add("      1tAbCd-000002-Ab\n    *** spool format error ***\n\n")
 	f.Add("")
 	f.Add(" 1d 1K aaaaaa-bbbbbb-cc <>\n   a@b.example")
 	f.Add("garbage\nlines\nonly")
@@ -66,8 +68,9 @@ func FuzzParseQueue(f *testing.F) {
 		if err != nil && c.Total != 0 {
 			t.Fatalf("error %v with %d counted messages", err, c.Total)
 		}
-		if c.Bounce+c.Real != c.Total {
-			t.Fatalf("bounce(%d)+real(%d) != total(%d)", c.Bounce, c.Real, c.Total)
+		unknown := c.Total - c.Bounce - c.Real
+		if unknown < 0 || unknown > c.Unreadable || c.Unreadable > c.Total {
+			t.Fatalf("invalid envelope counts: %+v", c)
 		}
 		if c.Frozen > c.Total {
 			t.Fatalf("frozen(%d) > total(%d)", c.Frozen, c.Total)
@@ -85,7 +88,9 @@ func FuzzParseQueueList(f *testing.F) {
 	f.Add(eximBpListSample)
 	f.Add(eximBpSample)
 	f.Add(eximBpSampleNewID)
-	f.Add(eximBpSampleNewID + "   0 1tAbCd-000002-Ab\n    *** spool read error: Permission denied ***\n")
+	f.Add(eximBpSampleNewID + "      1tAbCd-000002-Ab\n    *** spool read error: Permission denied ***\n\n")
+	f.Add("      1tAbCd-000002-Ab\n    *** spool read error: No such file or directory ***\n\n")
+	f.Add("  1h  900 1tAbCd-000002-Ab <>\n    *** spool format error *** *** frozen ***\n          rcpt@example.net\n\n")
 	f.Add(" 1d 1K aaaaaa-bbbbbb-cc <s@example.com>\n          \"two words\"@example.net\n          D \"done already\"@example.net\n")
 	f.Add("")
 	f.Add("garbage\nlines\nonly")
@@ -98,7 +103,7 @@ func FuzzParseQueueList(f *testing.F) {
 	f.Fuzz(func(t *testing.T, out string) {
 		msgs, err := ParseQueueList([]byte(out))
 		comp, compErr := ParseQueue(out)
-		if compErr != nil && err == nil {
+		if (compErr == nil) != (err == nil) {
 			t.Fatalf("composition error %v for a listing the list parsed", compErr)
 		}
 		detail, detailErr := ParseQueueDetail([]byte(out))
@@ -118,7 +123,8 @@ func FuzzParseQueueList(f *testing.F) {
 		if len(msgs) != comp.Total {
 			t.Fatalf("listed %d messages, composition counted %d", len(msgs), comp.Total)
 		}
-		frozen, bounce := 0, 0
+		frozen, bounce, real, unreadable, unknown := 0, 0, 0, 0, 0
+		var flushable []string
 		for _, m := range msgs {
 			if !ValidMessageID(m.ID) {
 				t.Fatalf("listed invalid message id %q", m.ID)
@@ -137,12 +143,28 @@ func FuzzParseQueueList(f *testing.F) {
 			if m.Frozen {
 				frozen++
 			}
-			if m.Bounce {
+			switch {
+			case m.Bounce:
 				bounce++
+			case m.Sender != "":
+				real++
+			default:
+				unknown++
+				if m.Unreadable == "" {
+					t.Fatalf("message without an envelope is not unreadable: %+v", m)
+				}
+			}
+			if m.Unreadable != "" {
+				unreadable++
+			} else if m.Bounce && m.Frozen {
+				flushable = append(flushable, m.ID)
 			}
 		}
-		if frozen != comp.Frozen || bounce != comp.Bounce {
-			t.Fatalf("frozen/bounce %d/%d, composition %d/%d", frozen, bounce, comp.Frozen, comp.Bounce)
+		if frozen != comp.Frozen || bounce != comp.Bounce || real != comp.Real || unreadable != comp.Unreadable || bounce+real+unknown != comp.Total {
+			t.Fatalf("list counts %d/%d/%d/%d/%d disagree with composition %+v", frozen, bounce, real, unreadable, unknown, comp)
+		}
+		if len(flushable) != comp.FlushableBackscatter || !slices.Equal(flushable, FrozenBackscatterIDs(out)) {
+			t.Fatalf("flush candidates %v disagree with composition %+v or flush IDs %v", flushable, comp, FrozenBackscatterIDs(out))
 		}
 	})
 }

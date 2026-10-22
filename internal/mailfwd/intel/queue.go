@@ -30,6 +30,9 @@ type QueueComposition struct {
 	// when the queue is empty.
 	OldestAgeSeconds *int             `json:"oldest_age_seconds,omitempty"`
 	TopRecipients    []RecipientCount `json:"top_recipients"`
+	// Unreadable counts messages exim could not read. Those without an
+	// envelope count as neither real mail nor backscatter.
+	Unreadable int `json:"unreadable"`
 }
 
 // RecipientCount is a recipient address and how many queued messages target it.
@@ -54,6 +57,10 @@ type QueueMessage struct {
 	Recipients     []string `json:"recipients"`
 	RecipientCount int      `json:"recipient_count"` // every undelivered recipient
 	Delivered      int      `json:"delivered"`       // recipients exim marks D
+	// Unreadable is why exim could not read the message, such as "spool
+	// format error"; "" for a readable message. Without an envelope the
+	// sender is "" and Bounce is false, and only removal works.
+	Unreadable string `json:"unreadable,omitempty"`
 }
 
 const (
@@ -112,9 +119,9 @@ func ArrivalFromID(id string) (time.Time, bool) {
 	return time.Unix(secs, 0).UTC(), true
 }
 
-// ParseQueue parses `exim -bp` output into a composition summary. A spool
-// header exim could not read is an error: the readable messages are not the
-// whole queue.
+// ParseQueue parses `exim -bp` output into a composition summary. A message
+// exim could not read counts as unreadable; one without an envelope counts as
+// neither real mail nor backscatter, and none is flushable.
 func ParseQueue(out string) (QueueComposition, error) {
 	comp := QueueComposition{TopRecipients: []RecipientCount{}}
 	recipients := map[string]int{}
@@ -128,13 +135,16 @@ func ParseQueue(out string) (QueueComposition, error) {
 		comp.Total++
 		if m.Bounce {
 			comp.Bounce++
-		} else {
+		} else if m.Sender != "" {
 			comp.Real++
+		}
+		if m.Unreadable != "" {
+			comp.Unreadable++
 		}
 		if m.Frozen {
 			comp.Frozen++
 		}
-		if m.Bounce && m.Frozen {
+		if m.Bounce && m.Frozen && m.Unreadable == "" {
 			comp.FlushableBackscatter++
 		}
 		if m.AgeSeconds > oldestSeconds {
@@ -179,9 +189,6 @@ func parseQueueMessages(out []byte, keep int) ([]QueueMessage, error) {
 		return nil, err
 	}
 	if len(msgs) == 0 {
-		if strings.TrimSpace(text) != "" {
-			return nil, errors.New("exim -bp output holds no queue entry")
-		}
 		return []QueueMessage{}, nil
 	}
 	for i := range msgs {
@@ -194,29 +201,66 @@ func parseQueueMessages(out []byte, keep int) ([]QueueMessage, error) {
 	return msgs, nil
 }
 
-// errSpoolUnreadable means exim listed a message whose spool header it could
-// not read.
-var errSpoolUnreadable = errors.New("exim -bp could not read a spool header")
+// errSpoolUnreadable means exim reported a spool error under no message it
+// listed, so the listing cannot be read as the whole queue.
+var errSpoolUnreadable = errors.New("exim -bp reported a spool error for no listed message")
+
+// spoolDataMissing marks a message exim listed with a blank size: it could
+// not stat the data file.
+const spoolDataMissing = "spool data file missing"
 
 // parseQueueEntries walks `exim -bp` output into messages, keeping the first
 // keep undelivered recipients of each and counting all of them. Recipient
 // lines are indented deeper than headers; any other line ends the current
-// message so stray text cannot attach to it.
+// message so stray text cannot attach to it. A message exim could not read
+// is listed with why: exim prints the error right below its line.
 func parseQueueEntries(out string, keep int) ([]QueueMessage, error) {
 	var msgs []QueueMessage
 	current := -1
+	sawEntry := false
+	// afterHeader is set while the previous line was current's header, and
+	// bareID while it was a message ID exim printed without an envelope.
+	afterHeader, bareID := false, ""
 
 	for _, line := range strings.Split(out, "\n") {
 		trimmed := strings.TrimSpace(line)
-		// Exim may exit successfully while some spool headers cannot be
-		// read. Do not present the readable subset as the whole queue.
-		// A missing file can instead mean delivery raced the listing.
-		if strings.HasPrefix(trimmed, "*** spool read error:") && trimmed != eximNoSuchMessage {
-			return nil, errSpoolUnreadable
+		prevHeader, prevID := afterHeader, bareID
+		afterHeader, bareID = false, ""
+		if text, frozen, ok := spoolErrorLine(trimmed); ok {
+			switch {
+			case prevID != "" && trimmed == eximNoSuchMessage:
+				// Delivered or removed while exim listed the queue.
+				current = -1
+			case prevID != "":
+				m := QueueMessage{ID: prevID, Unreadable: text}
+				// exim prints no age without the envelope; the ID dates it.
+				if at, ok := ArrivalFromID(prevID); ok {
+					m.AgeSeconds = max(0, int(time.Since(at)/time.Second))
+				}
+				msgs = append(msgs, m)
+				current = -1
+			case prevHeader:
+				// exim read the envelope and still lists the recipients.
+				msgs[current].Unreadable = text
+				msgs[current].Frozen = msgs[current].Frozen || frozen
+			default:
+				return nil, errSpoolUnreadable
+			}
+			continue
+		}
+		if prevID != "" {
+			return nil, errors.New("exim -bp omitted the spool error after a message ID")
 		}
 		if m, ok := parseQueueHeader(line); ok {
 			msgs = append(msgs, m)
 			current = len(msgs) - 1
+			afterHeader = true
+			sawEntry = true
+			continue
+		}
+		if id, ok := queueBareID(line); ok {
+			bareID, current = id, -1
+			sawEntry = true
 			continue
 		}
 
@@ -245,7 +289,45 @@ func parseQueueEntries(out string, keep int) ([]QueueMessage, error) {
 			}
 		}
 	}
+	if bareID != "" {
+		return nil, errors.New("exim -bp omitted the spool error after a message ID")
+	}
+	if !sawEntry && strings.TrimSpace(out) != "" {
+		return nil, errors.New("exim -bp output holds no queue entry")
+	}
 	return msgs, nil
+}
+
+// spoolErrorLine reads the error exim prints below a message it could not
+// read, such as "*** spool format error: size=37 ***", with the frozen mark
+// exim may add after it. A recipient cannot pose as one: an address holding
+// spaces is quoted, so its line starts with a quote.
+func spoolErrorLine(trimmed string) (text string, frozen, ok bool) {
+	rest, found := strings.CutPrefix(trimmed, "*** spool ")
+	end := strings.Index(rest, " ***")
+	if !found || end < 0 {
+		return "", false, false
+	}
+	switch strings.TrimSpace(rest[end+len(" ***"):]) {
+	case "":
+	case "*** frozen ***":
+		frozen = true
+	default:
+		return "", false, false
+	}
+	return boundText("spool " + rest[:end]), frozen, true
+}
+
+// queueBareID reads the line exim prints for a message whose envelope it
+// could not read: the ID alone, after a blank size.
+func queueBareID(line string) (string, bool) {
+	// The five-character blank size and its separator occupy six spaces.
+	// Recipient indentation must not be mistaken for a missing envelope.
+	id, ok := strings.CutPrefix(line, "      ")
+	if ok && queueMsgIDRe.MatchString(id) {
+		return id, true
+	}
+	return "", false
 }
 
 func parseQueueHeader(line string) (QueueMessage, bool) {
@@ -254,11 +336,22 @@ func parseQueueHeader(line string) (QueueMessage, bool) {
 	}
 	age, rest := cutQueueField(line)
 	size, rest := cutQueueField(rest)
-	id, rest := cutQueueField(rest)
-	if !queueAgeRe.MatchString(age) || !queueSizeRe.MatchString(size) || !queueMsgIDRe.MatchString(id) {
+	var id string
+	if queueMsgIDRe.MatchString(size) {
+		// exim leaves the size blank when it cannot stat the data file.
+		id, size = size, ""
+	} else {
+		id, rest = cutQueueField(rest)
+	}
+	if !queueAgeRe.MatchString(age) || (size != "" && !queueSizeRe.MatchString(size)) || !queueMsgIDRe.MatchString(id) {
 		return QueueMessage{}, false
 	}
-	m := QueueMessage{ID: id, AgeSeconds: AgeToSeconds(age), Size: queueSizeBytes(size)}
+	m := QueueMessage{ID: id, AgeSeconds: AgeToSeconds(age)}
+	if size == "" {
+		m.Unreadable = spoolDataMissing
+	} else {
+		m.Size = queueSizeBytes(size)
+	}
 
 	rest = strings.TrimSpace(rest)
 	if field, after := cutQueueField(rest); queueLocalUserField(field) {
@@ -440,15 +533,12 @@ func NewEximQueueSource() *EximQueueSource {
 	return &EximQueueSource{run: runEximBp}
 }
 
-// Composition lists the queue and summarizes it. An exim error yields an empty
-// composition, not a hard error: this is a read-only visibility surface. A
-// listing that could not read every spool header is an error.
+// Composition lists the queue and summarizes it. exim failing to list it is
+// an error: an empty composition would read as an empty queue.
 func (s *EximQueueSource) Composition() (QueueComposition, error) {
 	out, err := s.run()
 	if err != nil {
-		// exim absent or failing means no observable queue, not an API error;
-		// surface an empty composition rather than a 500.
-		return QueueComposition{TopRecipients: []RecipientCount{}}, nil //nolint:nilerr
+		return QueueComposition{TopRecipients: []RecipientCount{}}, err
 	}
 	return ParseQueue(string(out))
 }

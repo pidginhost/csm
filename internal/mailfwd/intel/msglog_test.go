@@ -111,6 +111,9 @@ const (
 2026-10-21 18:00:00 H=mx9.example.com [203.0.113.28] SMTP error from remote mail server after end of data: 451 4.3.0 Temporary local problem
 2026-10-21 18:00:00 two@example.com R=lookuphost T=remote_smtp defer H=mx9.example.com [203.0.113.28]: SMTP error from remote mail server after end of data: 451 4.3.0 Temporary local problem
 `
+	// The remote quotes its own reason word; only quoted domains are names.
+	msglogQuotedReason = `2026-10-21 19:00:00 rcpt@example.net R=lookuphost T=remote_smtp defer H=mx6.example.net [203.0.113.25]: SMTP error from remote mail server after RCPT TO:<rcpt@example.net>: 451 4.7.1 Message 'greylisted', retry later
+`
 	// A connect timeout logs the host line well before the address line.
 	msglogSlowAttempt = `2026-10-21 16:00:00 H=mx1.example.net [203.0.113.20]: Connection timed out
 2026-10-21 16:05:00 rcpt@example.net R=lookuphost T=remote_smtp defer H=mx1.example.net [203.0.113.20]: mx1.example.net [203.0.113.20]
@@ -201,6 +204,10 @@ func TestMsglogReasonClasses(t *testing.T) {
 			Class: "retry_wait", Text: "retry time not reached",
 			Raw: "defer (-53): retry time not reached for any host for 'unlisted.example.net'",
 		}},
+		{"keyword in a single label routing domain", strings.ReplaceAll(msglogKeywordDomain, "unlisted.example.net", "unlisted"), StuckReason{
+			Class: "retry_wait", Text: "retry time not reached",
+			Raw: "defer (-53): retry time not reached for any host for 'unlisted'",
+		}},
 		{"older recognized attempt does not explain a newer one", msglogRateLimited + msglogOther, StuckReason{
 			Class: "other", Text: "other",
 			Raw: "SMTP error from remote mail server after end of data: 451 4.3.0 Temporary local problem",
@@ -220,6 +227,10 @@ func TestMsglogReasonClasses(t *testing.T) {
 		{"delivery to an address named error", msglogDeliveredToError, StuckReason{
 			Class: "greylisted", Text: "greylisted",
 			Raw: "SMTP error from remote mail server after RCPT TO:<rcpt@example.net>: 451 4.7.1 Greylisted, please try again later",
+		}},
+		{"quoted reason word in a reply", msglogQuotedReason, StuckReason{
+			Class: "greylisted", Text: "greylisted",
+			Raw: "SMTP error from remote mail server after RCPT TO:<rcpt@example.net>: 451 4.7.1 Message 'greylisted', retry later",
 		}},
 		{"host line logged before a slow attempt ends", msglogSlowAttempt, StuckReason{
 			Class: "host_not_found", Text: "receiving server not found or unreachable",

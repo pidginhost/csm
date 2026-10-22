@@ -197,6 +197,9 @@ func TestConcurrentReleaseSendsOnce(t *testing.T) {
 	first := make(chan error, 1)
 	go func() { first <- q.Release(id) }()
 	<-entered
+	if n, restoreErr := New(q.base).RestoreStaleClaims(time.Now()); restoreErr != nil || n != 0 {
+		t.Errorf("restored %d, %v during a live release; want none", n, restoreErr)
+	}
 	second := q.Release(id)
 	deleted := q.Delete(id)
 	close(proceed)
@@ -500,6 +503,119 @@ func TestPruneOlderThan(t *testing.T) {
 	msgs, _ := q.List()
 	if len(msgs) != 1 || msgs[0].ID != freshID {
 		t.Errorf("after prune = %+v, want only fresh %s", msgs, freshID)
+	}
+}
+
+// A daemon that dies between claiming a copy and finishing with it leaves the
+// claim in tmp/, where List and Prune never look. Once no release can still
+// hold it, the copy is held again under its own id.
+func TestRestoreStaleClaims(t *testing.T) {
+	q := New(t.TempDir())
+	id, err := q.Hold(held(), sampleBody())
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, _, err := q.claim(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// exim's own delivery in progress shares tmp/ and is not a claim.
+	eximTmp := filepath.Join(q.sub("tmp"), "1761140000.P123.host.example")
+	if err = os.WriteFile(eximTmp, []byte("partial"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := q.RestoreStaleClaims(time.Now())
+	if err != nil || n != 0 {
+		t.Fatalf("fresh claim: restored %d, %v; want it left to the release holding it", n, err)
+	}
+	if msgs, _ := q.List(); len(msgs) != 0 {
+		t.Fatalf("fresh claim listed: %+v", msgs)
+	}
+
+	n, err = q.RestoreStaleClaims(time.Now().Add(staleClaimAge + time.Second))
+	if err != nil || n != 1 {
+		t.Fatalf("stale claim: restored %d, %v; want 1", n, err)
+	}
+	msgs, _ := q.List()
+	if len(msgs) != 1 || msgs[0].ID != id || msgs[0].Recipient != held().Recipient {
+		t.Errorf("after restore = %+v, want %s held again", msgs, id)
+	}
+	if _, err := os.Lstat(claimed); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("claim still in tmp/: %v", err)
+	}
+	if _, err := os.Lstat(eximTmp); err != nil {
+		t.Errorf("exim's tmp file touched: %v", err)
+	}
+	// Restored, the copy can be released or deleted as before.
+	if err := q.Delete(id); err != nil {
+		t.Errorf("delete after restore: %v", err)
+	}
+}
+
+// A claim whose id is held again, which no release makes, stays put rather
+// than overwrite that copy.
+func TestRestoreStaleClaimsNeverOverwrites(t *testing.T) {
+	for _, dir := range []string{"new", "cur"} {
+		t.Run(dir, func(t *testing.T) {
+			q := New(t.TempDir())
+			id, err := q.Hold(held(), sampleBody())
+			if err != nil {
+				t.Fatal(err)
+			}
+			claimed, _, err := q.claim(id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			other := []byte("Subject: other\r\n\r\nbody\r\n")
+			if err := os.WriteFile(filepath.Join(q.sub(dir), id), other, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if n, err := q.RestoreStaleClaims(time.Now().Add(staleClaimAge + time.Second)); err != nil || n != 0 {
+				t.Errorf("restored %d, %v; want 0", n, err)
+			}
+			if got, _ := os.ReadFile(filepath.Join(q.sub(dir), id)); !bytes.Equal(got, other) {
+				t.Error("held copy overwritten by a restored claim")
+			}
+			if _, err := os.Lstat(claimed); err != nil {
+				t.Errorf("claim removed: %v", err)
+			}
+		})
+	}
+}
+
+func TestRestoreStaleClaimsUsesClaimAge(t *testing.T) {
+	for _, age := range []time.Duration{staleClaimAge - time.Nanosecond, staleClaimAge} {
+		t.Run(age.String(), func(t *testing.T) {
+			q := New(t.TempDir())
+			id, err := q.Hold(held(), sampleBody())
+			if err != nil {
+				t.Fatal(err)
+			}
+			old := time.Now().Add(-24 * time.Hour)
+			if err = os.Chtimes(q.pathOf(id), old, old); err != nil {
+				t.Fatal(err)
+			}
+			claimed, _, err := q.claim(id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, at, ok := parseClaimName(filepath.Base(claimed))
+			if !ok {
+				t.Fatal("claim name did not parse")
+			}
+			want := 0
+			if age == staleClaimAge {
+				want = 1
+			}
+			if n, restoreErr := q.RestoreStaleClaims(at.Add(age)); restoreErr != nil || n != want {
+				t.Fatalf("restored %d, %v; want %d", n, restoreErr, want)
+			}
+			msgs, err := q.List()
+			if err != nil || len(msgs) != want {
+				t.Fatalf("held after restore: %+v, %v; want %d", msgs, err, want)
+			}
+		})
 	}
 }
 

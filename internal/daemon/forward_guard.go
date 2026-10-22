@@ -141,16 +141,25 @@ func (d *Daemon) refreshForwardGuard() {
 	d.pruneForwardQuarantine()
 }
 
-// pruneForwardQuarantine deletes held forward copies older than
-// quarantine_retention_days. Copies held while the guard was on must still
-// age out after it is switched off, so only the retention value gates this;
-// 0 keeps everything.
+// pruneForwardQuarantine holds again the copies a release or delete claimed
+// and never finished, as when the daemon died mid-release, then deletes held
+// forward copies older than quarantine_retention_days. Copies held while the
+// guard was on must still age out after it is switched off, so only the
+// retention value gates the prune; 0 keeps everything.
 func (d *Daemon) pruneForwardQuarantine() {
+	q := quarantine.New(forwardQuarantineDir)
+	restored, err := q.RestoreStaleClaims(time.Now())
+	if err != nil {
+		csmlog.Error("forward-guard quarantine restore failed", "err", err)
+	}
+	if restored > 0 {
+		csmlog.Warn("forward-guard held copies restored after an interrupted release or delete; a restored release may already have been delivered", "restored", restored)
+	}
 	days := d.currentCfg().EmailProtection.ForwardGuard.QuarantineRetentionDays
 	if days <= 0 {
 		return
 	}
-	removed, err := quarantine.New(forwardQuarantineDir).PruneOlderThan(time.Duration(days) * 24 * time.Hour)
+	removed, err := q.PruneOlderThan(time.Duration(days) * 24 * time.Hour)
 	if err != nil {
 		csmlog.Error("forward-guard quarantine prune failed", "err", err)
 		return

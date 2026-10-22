@@ -387,7 +387,7 @@ paths:
               schema: { $ref: "#/components/schemas/JSONObject" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
-        "500": { description: "The queue could not be read: exim could not read every spool header, so the readable messages are not counted as the whole queue." }
+        "500": { description: "exim failed to list the queue or returned an unrecognized or incomplete listing. Messages without envelopes count in total and unreadable, but neither real nor bounce." }
   "/api/v1/email/queue/flush-backscatter":
     post:
       operationId: post_email_queue_flush_backscatter
@@ -443,9 +443,13 @@ paths:
             and no count or listed_at is sent. An empty result is
             invalidated by a failed refresh or a positive queue count; after
             a positive count the next request lists the queue at once, once
-            for each such refill. Quoted recipient local parts remain
-            intact. At most 100 msglog reasons are cached for a minute,
-            retaining the current page first.
+            for each such refill. A message exim cannot read carries
+            unreadable (exim's error) and reason class unreadable, and only
+            delete runs on it. Spool errors without an immediately preceding
+            message line and truncated entries make the listing unavailable.
+            Quoted recipient local parts remain intact.
+            At most 100 msglog reasons are cached for a minute, retaining
+            the current page first.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/JSONObject" }
@@ -498,13 +502,18 @@ paths:
             retry runs exim -M and answers attempt_started without waiting
             for the delivery; bounce (-Mg) answers bounced and delete (-Mrm)
             removed once the message left the queue and exim reported no
-            error; thaw (-Mt) answers thawed once the queue shows the change.
+            error. Delete also answers removed when exim confirms removal
+            of an unreadable message despite an error exit and the message
+            is no longer queued. Thaw (-Mt) answers thawed once the queue
+            shows the change.
           schema: { type: string, enum: [retry, bounce, delete, thaw] }
       responses:
         "200":
           description: >-
-            ActionResult with outcome attempt_started, bounced or removed
-            (exim reported no error), thawed (also when exim reported an
+            ActionResult with outcome attempt_started, bounced (exim
+            reported no error), removed (exim reported no error or confirmed
+            removal of an unreadable message, and it is no longer queued),
+            thawed (also when exim reported an
             error the queue does not bear out; the audit entry records it),
             or unchanged for a thaw on a message that is not frozen, where
             nothing runs.
@@ -515,7 +524,7 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "409": { description: "The message is no longer in the queue; outcome is gone. Nothing ran, unless the message left during the action, as when exim reported an error and the message has left anyway (the audit entry records the error)." }
-        "500": { description: The action failed or its outcome could not be read back; outcome is unchanged. }
+        "500": { description: The action failed or its outcome could not be read back, or exim cannot read the message and the action is not delete; outcome is unchanged. }
         "503": { description: The mail queue is not available on this host, or systemd-run cannot start a unit and the action did not run (outcome unchanged). }
   "/api/v1/email/forwarders":
     get:

@@ -1,10 +1,10 @@
 package intel
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/pidginhost/csm/internal/systemdrun"
@@ -51,7 +51,8 @@ type QueueAdmin interface {
 	// shows afterwards. With OutcomeUnchanged an error means the action
 	// failed; with any other outcome it is what exim reported while the
 	// queue shows the change. A message that left the queue while exim
-	// reported an error is OutcomeGone, never removed or bounced.
+	// reported an error is OutcomeGone, unless exim confirmed removal of
+	// an unreadable message.
 	Act(action, id string) (string, error)
 }
 
@@ -87,8 +88,11 @@ func (a *EximQueueAdmin) Message(id string) (QueueMessage, error) {
 	out, err := a.exim(systemdrun.Options{Pipe: true, Required: true, RuntimeMax: queueReadTimeout}, queueReadTimeout, "-bp", id)
 	// The reply, not the exit status, says the message is missing: exim
 	// reports it on stdout whatever status it exits with.
-	if bytes.HasSuffix(bytes.TrimSpace(out), []byte(eximNoSuchMessage)) {
-		return QueueMessage{}, ErrNotQueued
+	lines := strings.Split(strings.TrimRight(string(out), "\r\n"), "\n")
+	if len(lines) == 2 && strings.TrimSpace(lines[1]) == eximNoSuchMessage {
+		if missingID, ok := queueBareID(lines[0]); ok && missingID == id {
+			return QueueMessage{}, ErrNotQueued
+		}
 	}
 	if err != nil {
 		return QueueMessage{}, err
@@ -110,7 +114,8 @@ func (a *EximQueueAdmin) Reason(id string) (StuckReason, []string, error) {
 
 // Act checks that the message is queued, runs the action and reads the
 // queue again. As with FlushBackscatter, the queue decides the outcome; a
-// removal or bounce is claimed only when exim reported no error.
+// removal or bounce requires a successful command, except when exim confirms
+// removal of an unreadable message despite its error exit.
 func (a *EximQueueAdmin) Act(action, id string) (string, error) {
 	flag, ok := queueActionFlags[action]
 	if !ok {
@@ -122,6 +127,10 @@ func (a *EximQueueAdmin) Act(action, id string) (string, error) {
 	}
 	if err != nil {
 		return OutcomeUnchanged, fmt.Errorf("read the message before acting: %w", err)
+	}
+	if before.Unreadable != "" && action != "delete" {
+		// exim refuses every other action on a message it cannot read.
+		return OutcomeUnchanged, fmt.Errorf("exim cannot read this message (%s); only delete works on it", before.Unreadable)
 	}
 	if action == "thaw" && !before.Frozen {
 		// A stale list, auto_thaw or another admin: nothing to thaw.
@@ -155,6 +164,11 @@ func (a *EximQueueAdmin) Act(action, id string) (string, error) {
 	switch {
 	case errors.Is(err, ErrNotQueued) && runErr == nil && action == "delete":
 		return OutcomeRemoved, nil
+	case errors.Is(err, ErrNotQueued) && before.Unreadable != "" && action == "delete" && eximRemovalConfirmed(out, id):
+		// Exim exits 1 after removing an unreadable message. Its completion
+		// line distinguishes that from a failed command while another
+		// caller removed the message or repaired it for delivery.
+		return OutcomeRemoved, runErr
 	case errors.Is(err, ErrNotQueued) && runErr == nil && action == "bounce":
 		return OutcomeBounced, nil
 	case errors.Is(err, ErrNotQueued):
@@ -173,6 +187,16 @@ func (a *EximQueueAdmin) Act(action, id string) (string, error) {
 		runErr = errors.New("exim left the message as it was")
 	}
 	return OutcomeUnchanged, runErr
+}
+
+func eximRemovalConfirmed(out []byte, id string) bool {
+	confirmation := "Message " + id + " has been removed"
+	for line := range strings.SplitSeq(string(out), "\n") {
+		if line == confirmation || line == confirmation+" or did not exist" {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *EximQueueAdmin) exim(opt systemdrun.Options, timeout time.Duration, args ...string) ([]byte, error) {

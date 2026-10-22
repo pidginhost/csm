@@ -1836,6 +1836,29 @@ test('Thaw shows only on frozen messages', async () => {
     assert.deepEqual(actions(QID[1]), ['retry', 'bounce', 'delete']);
 });
 
+test('a message exim cannot read shows why, an unknown size and only Delete', async () => {
+    const page = await queuePage([
+        queueMsg(QID[0], { sender: '', size: 0, recipients: [], recipient_count: 0, unreadable: 'spool format error: size=37',
+            reason: { class: 'unreadable', text: 'exim cannot read this message', raw: 'spool format error: size=37' } }),
+        queueMsg(QID[1], { size: 0, frozen: true, unreadable: 'spool data file missing',
+            reason: { class: 'unreadable', text: 'exim cannot read this message', raw: 'spool data file missing' } })
+    ]);
+    const [envelopeless, noData] = queueRows(page).map(r => Array.from(r.children).slice(0, 6).map(flat));
+    assert.deepEqual(envelopeless, ['30m', '--', '--', '--', 'exim cannot read this message', 'Unreadable']);
+    assert.deepEqual(noData, ['30m', 'shop@example.com', 'first@example.net', '--', 'exim cannot read this message', 'Unreadable']);
+    for (const id of QID.slice(0, 2)) {
+        assert.deepEqual(Array.from(queueRow(page, id).querySelectorAll('[data-queue-action]')).map(b => b.getAttribute('data-queue-action')), ['delete']);
+    }
+});
+
+test('the queue composition counts messages exim cannot read', async () => {
+    const page = await queuePage([queueMsg(QID[0])]);
+    page.respond('/api/v1/email/queue-composition', 200, { total: 3, real: 1, bounce: 1, frozen: 0, flushable_backscatter: 0, unreadable: 1, top_recipients: [] });
+    await settle();
+    const comp = flat(page.document.getElementById('queue-composition'));
+    assert.match(comp, /Unreadable\s*1/);
+});
+
 test('an unreadable queue says the size is unknown, with Retry', async () => {
     const page = emailPage();
     showEmailTab(page, 'queue');
@@ -3092,6 +3115,27 @@ test('the forwarders to outside addresses stay collapsed with their count', asyn
     await settle();
     assert.equal(flat(failed.document.getElementById('email-fwd-section-count')), '?');
     assert.match(flat(failed.document.getElementById('email-fwd-tbody')), /Failed to load forwarders/);
+});
+
+test('abuse events and forwarders turn into labelled cards on phones', async () => {
+    const fwd = { source: 'a@example.com', domain: 'example.com', owner: 'alice', destinations: [{ address: 'x@example.net', domain: 'example.net', provider: 'external' }],
+        providers: ['external'], keep_local: true, forward_only: false, has_external: true, has_free_provider: false };
+    const page = await sendingPage({
+        '/api/v1/email/relay-abuse': items([abuseEvent({ cp_user: 'shopuser', sites: [
+            { site: 'shop.example.com', script: '/mail.php', hits: 40, last_seen: AT, sample_subject: 'You won' }] })],
+        { total: 1, limit: 20, truncated: false }),
+        '/api/v1/email/forwarders': items([fwd])
+    });
+    const doc = page.document;
+    const labels = row => Array.from(row.children).map(td => td.getAttribute('data-label'));
+    const abuse = doc.querySelector('#email-abuse-events table');
+    assert.ok(abuse.classList.contains('csm-table-rowcard'), 'abuse events scroll sideways on phones');
+    assert.deepEqual(labels(abuse.querySelector('tr[data-abuse-key]')), ['Severity', 'Type', 'Source IP', 'Account', 'Count', 'Detected', 'Actions']);
+    const sites = doc.getElementById(abuse.querySelector('.oab-toggle').getAttribute('data-target'));
+    assert.deepEqual(labels(sites.querySelector('tbody tr')), ['Site', 'Script', 'Hits', 'Last seen', 'Sample subject']);
+    const fwdTable = doc.getElementById('email-fwd-table');
+    assert.ok(fwdTable.classList.contains('csm-table-rowcard'), 'forwarders scroll sideways on phones');
+    assert.deepEqual(labels(doc.querySelector('#email-fwd-tbody tr')), ['Source', 'Owner', 'Destinations', 'Providers', 'Local copy']);
 });
 
 test('an old outbound abuse link reads each Sending accounts source once', async () => {

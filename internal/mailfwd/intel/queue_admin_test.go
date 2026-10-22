@@ -23,6 +23,7 @@ type fakeExim struct {
 	queued, frozen bool
 	keep           bool   // the action exits non-zero and leaves the message
 	actionErr      error  // returned by the action even when it applied
+	actionOutput   string // stdout from the action
 	bpOutput       string // replaces the -bp <id> reply when set
 	bpAfterAction  string // replaces the -bp <id> reply once an action ran
 	noSystemdRun   bool
@@ -73,7 +74,7 @@ func (f *fakeExim) run(_ context.Context, name string, args ...string) ([]byte, 
 			return []byte(f.bpOutput), nil
 		}
 		if !f.queued {
-			return []byte(fmt.Sprintf("   0 %s\n    *** spool read error: No such file or directory ***\n\n", argv[2])), nil
+			return []byte(fmt.Sprintf("      %s\n    *** spool read error: No such file or directory ***\n\n", argv[2])), nil
 		}
 		state := ""
 		if f.frozen {
@@ -90,7 +91,7 @@ func (f *fakeExim) run(_ context.Context, name string, args ...string) ([]byte, 
 			f.frozen = false
 		}
 	}
-	return nil, f.actionErr
+	return []byte(f.actionOutput), f.actionErr
 }
 
 func (f *fakeExim) actionRuns() []fakeEximCall {
@@ -122,7 +123,7 @@ func TestEximQueueAdminMessage(t *testing.T) {
 	}
 
 	for name, out := range map[string]string{
-		"missing header": "   0 " + adminTestID + "\n    *** spool read error: No such file or directory ***\n\n",
+		"missing header": "      " + adminTestID + "\n    *** spool read error: No such file or directory ***\n\n",
 		// exim listed a message, but not the one asked for.
 		"other message": "25m  1.0K 1tAbCd-000002-Ab <sender@example.com>\n          rcpt@example.net\n",
 	} {
@@ -148,6 +149,25 @@ func TestEximQueueAdminMessage(t *testing.T) {
 	}
 	if len(f.calls) != 0 {
 		t.Errorf("without systemd-run exim ran directly: %v", f.calls)
+	}
+}
+
+func TestEximQueueAdminMissingReplyRequiresMatchingBareID(t *testing.T) {
+	for _, out := range []string{
+		"    " + eximNoSuchMessage + "\n",
+		"      1tAbCd-000002-Ab\n    " + eximNoSuchMessage + "\n",
+		"      " + adminTestID + "\n\n    " + eximNoSuchMessage + "\n",
+		"25m  1.0K " + adminTestID + " <sender@example.com>\n          rcpt@example.net\n    " + eximNoSuchMessage + "\n",
+	} {
+		f := &fakeExim{queued: true, bpOutput: out}
+		if _, err := NewEximQueueAdmin("", f.lookPath, f.run).Message(adminTestID); err == nil || errors.Is(err, ErrNotQueued) {
+			t.Errorf("reply %q: err = %v, want an unconfirmed message read", out, err)
+		}
+	}
+	f := &fakeExim{queued: true, bpOutput: "25m  1.0K " + adminTestID + " <>\n    " + eximNoSuchMessage + "\n"}
+	m, err := NewEximQueueAdmin("", f.lookPath, f.run).Message(adminTestID)
+	if err != nil || m.Unreadable == "" || !m.Bounce {
+		t.Errorf("header error with a known envelope = %+v, %v; want an unreadable queued message", m, err)
 	}
 }
 
@@ -192,6 +212,46 @@ func TestEximQueueAdminActOutcomes(t *testing.T) {
 				t.Fatalf("action runs = %v, want %d", f.actionRuns(), want)
 			}
 		})
+	}
+}
+
+// An unreadable listing does not identify which process removed the message.
+// A failed action needs Exim's completion line as well as a missing read-back.
+func TestEximQueueAdminUnreadableDeleteConfirmation(t *testing.T) {
+	const missing = "      " + adminTestID + "\n    " + eximNoSuchMessage + "\n\n"
+	const spoolError = "Spool format error for " + adminTestID + "-H\nContinuing to ensure all files removed\n"
+	const confirmation = "Message " + adminTestID + " has been removed\n"
+	for _, before := range []string{
+		"      " + adminTestID + "\n    *** spool format error: size=37 ***\n\n",
+		"      " + adminTestID + "\n    *** spool read error: Permission denied ***\n\n",
+		"25m       " + adminTestID + " <sender@example.com>\n          rcpt@example.net\n\n",
+	} {
+		for _, tc := range []struct {
+			name, output, want string
+			keep               bool
+		}{
+			{"confirmed", spoolError + confirmation, OutcomeRemoved, false},
+			{"missing data confirmed", "Message " + adminTestID + " has been removed or did not exist\n", OutcomeRemoved, false},
+			{"locked and removed by another caller", "", OutcomeGone, true},
+			{"unit failed and removed by another caller", "", OutcomeGone, false},
+			{"interrupted before removal", spoolError, OutcomeGone, false},
+			{"different message confirmed", "Message 1tAbCd-000002-Ab has been removed\n", OutcomeGone, false},
+			{"partial removal", "Message " + adminTestID + " Error while removing spool data: Permission denied\nhas been removed\n", OutcomeGone, false},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				f := &fakeExim{
+					queued: true, keep: tc.keep, bpOutput: before, bpAfterAction: missing,
+					actionErr: errors.New("exit status 1"), actionOutput: tc.output,
+				}
+				got, err := NewEximQueueAdmin("", f.lookPath, f.run).Act("delete", adminTestID)
+				if got != tc.want || err == nil || !strings.Contains(err.Error(), "exit status 1") {
+					t.Fatalf("Act = (%q, %v), want %q with Exim's error", got, err, tc.want)
+				}
+				if runs := f.actionRuns(); len(runs) != 1 || !slices.Equal(runs[0].argv, []string{"/usr/sbin/exim", "-Mrm", adminTestID}) {
+					t.Errorf("action runs = %v, want one delete", runs)
+				}
+			})
+		}
 	}
 }
 
