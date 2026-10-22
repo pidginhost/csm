@@ -605,6 +605,9 @@ email_av:
   # stops queueing new scans for five minutes. During this cooldown new opens
   # are allowed unscanned ("open") or deferred ("tempfail"). Scanning resumes
   # automatically afterwards; bypassed messages are not scanned later.
+  # An archive that lists more than ten times max_archive_files entries, or
+  # whose decompressed members pass max_extraction_size, counts as not fully
+  # scanned and follows fail_mode.
   # Late malware results can quarantine only the original, unlocked message.
   # Messages in active delivery, replaced spool files, and messages with a
   # pending delivery journal are left untouched with email_av_quarantine_error.
