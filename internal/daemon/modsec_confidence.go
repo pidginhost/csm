@@ -40,7 +40,10 @@ func (c modsecConfidence) String() string {
 // which legitimate clients do not send. One deny is enough evidence, so they
 // escalate on the first hit whatever the operator's hit threshold. The per-rule
 // escalation exclusion still applies. Only exact CSM rule IDs.
+// Endpoint-only rules such as 900107 can also match legitimate requests and
+// must stay on the normal hit-count path.
 var modsecSingleHitRules = map[int]bool{
+	900122: true, // wp2shell exploit tool User-Agent
 	900133: true, // PHP2Shell session upload progress field
 }
 
