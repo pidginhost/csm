@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"golang.org/x/sys/unix"
 )
 
 // PackageKind names the WordPress package family a path belongs to.
@@ -347,6 +349,11 @@ func (c *Cache) verifyCore(v Verification) Verdict {
 // source, and resolves the comparison when the checksums are already cached.
 func (c *Cache) VerifyFile(fd int, path string) Verification {
 	v := c.Describe(path)
+	if v.Staged && v.Kind == KindPlugin && v.Verdict == VerdictNoVersion {
+		if moved, ok := c.describeMovedStagedPlugin(fd, v); ok {
+			v = moved
+		}
+	}
 	switch v.Verdict {
 	case VerdictNoVersion, VerdictPending, VerdictReady:
 		v.Digest = c.Digest(v.Kind, fd)
@@ -355,6 +362,38 @@ func (c *Cache) VerifyFile(fd int, path string) Verification {
 		v.Verdict = c.Verify(v)
 	}
 	return v
+}
+
+// describeMovedStagedPlugin identifies a staged plugin file that WordPress
+// renamed into wp-content/plugins/ before the event was analyzed. The staging
+// path is gone by then, but the event descriptor still holds the file. The
+// installed header names its release only while the installed path is that
+// same file: a copy, or an older release left by a failed update, says nothing
+// about the bytes the event wrote.
+func (c *Cache) describeMovedStagedPlugin(fd int, staged Verification) (Verification, bool) {
+	idx := strings.Index(staged.Root, upgradeSegment)
+	if idx < 0 {
+		return Verification{}, false
+	}
+	root := staged.Root[:idx] + pluginsSegment + staged.Slug
+	installed := filepath.Join(root, staged.Rel)
+	var event unix.Stat_t
+	if err := unix.Fstat(fd, &event); err != nil || !pathIsFile(installed, event) {
+		return Verification{}, false
+	}
+	v := c.describePluginRoot(root, staged.Slug, installed)
+	// The header was read by path: the file must still be there afterwards,
+	// or the header may belong to a tree swapped in during the read.
+	if v.Kind != KindPlugin || v.Version == "" || !pathIsFile(installed, event) {
+		return Verification{}, false
+	}
+	v.Staged = true
+	return v, true
+}
+
+func pathIsFile(path string, file unix.Stat_t) bool {
+	var st unix.Stat_t
+	return unix.Lstat(path, &st) == nil && st.Dev == file.Dev && st.Ino == file.Ino
 }
 
 func hexDigestEqual(digest, expected string) bool {

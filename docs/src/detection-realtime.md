@@ -72,7 +72,9 @@ is stock and skips detection like an installed stock file. A file whose
 checksums are still being fetched is content-scanned now and compared once they
 land, even if the package header was written late or WordPress has already
 moved the tree into place. An installed plugin header can identify the release
-only when its directory is the original staging directory moved into place.
+only when its directory is the original staging directory moved into place, or
+when the installed path is still the very file the staged event wrote, so a
+stock file first examined after the move skips detection like any other.
 A core update copies files, so the installed version.php identifies the
 release only if it was replaced or rewritten after the staged file was seen;
 a borrowed release still requires the file's bytes to be the official ones for

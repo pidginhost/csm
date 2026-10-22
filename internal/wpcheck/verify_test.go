@@ -441,3 +441,96 @@ func TestVerify_StagedCoreCannotChangeItsRecordedRelease(t *testing.T) {
 		t.Fatalf("recorded 7.1 mismatch was verified against a later header: %v", got)
 	}
 }
+
+// WordPress renames a staged plugin tree into wp-content/plugins/ a moment
+// after unpacking it. An event the analyzer reaches after that rename names a
+// staging path that no longer exists, while its descriptor still holds the
+// file at its installed path. That file belongs to the installed release.
+func movedStagedPlugin(t *testing.T, body string) (staged, installed string, fd int) {
+	t.Helper()
+	wpRoot := filepath.Join(t.TempDir(), "public_html")
+	stagingRoot := filepath.Join(wpRoot, "wp-content", "upgrade", "gtm-kit.2.18.1", "gtm-kit")
+	staged = filepath.Join(stagingRoot, "inc", "a.php")
+	writeStaged(t, filepath.Join(stagingRoot, "gtm-kit.php"), stagedPluginHeader)
+	writeStaged(t, staged, body)
+	fd = openFd(t, staged)
+	installedRoot := filepath.Join(wpRoot, "wp-content", "plugins", "gtm-kit")
+	if err := os.MkdirAll(filepath.Dir(installedRoot), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(stagingRoot, installedRoot); err != nil {
+		t.Fatal(err)
+	}
+	return staged, filepath.Join(installedRoot, "inc", "a.php"), fd
+}
+
+func pluginChecksum(body string) string {
+	sum := sha256.Sum256([]byte(body))
+	return hex.EncodeToString(sum[:])
+}
+
+func TestVerifyFile_StagedPluginMovedBeforeAnalysisUsesInstalledRelease(t *testing.T) {
+	const body = "<?php return 'stock';\n"
+	staged, _, fd := movedStagedPlugin(t, body)
+	c := NewCache(t.TempDir())
+	c.setPluginChecksums("gtm-kit", "2.18.1", map[string]string{filepath.Join("inc", "a.php"): pluginChecksum(body)})
+
+	if v := c.VerifyFile(fd, staged); v.Verdict != VerdictVerified || v.Kind != KindPlugin || v.Version != "2.18.1" {
+		t.Fatalf("VerifyFile = %+v, want the moved stock file verified against 2.18.1", v)
+	}
+}
+
+func TestVerifyFile_StagedPluginMovedBeforeAnalysisStillComparesBytes(t *testing.T) {
+	staged, _, fd := movedStagedPlugin(t, "<?php system($_GET['c']);\n")
+	c := NewCache(t.TempDir())
+	c.setPluginChecksums("gtm-kit", "2.18.1", map[string]string{filepath.Join("inc", "a.php"): pluginChecksum("<?php return 'stock';\n")})
+
+	v := c.VerifyFile(fd, staged)
+	if v.Verdict != VerdictMismatch || v.Version != "2.18.1" || v.Rel != filepath.Join("inc", "a.php") {
+		t.Fatalf("VerifyFile = %+v, want a 2.18.1 mismatch for inc/a.php", v)
+	}
+}
+
+func TestVerifyFile_StagedPluginMovedBeforeFetchCarriesInstalledRelease(t *testing.T) {
+	const body = "<?php return 'stock';\n"
+	servePackages(t, map[string][]byte{
+		"gtm-kit.2.18.1.zip": buildPluginZip(t, map[string][]byte{
+			"gtm-kit/gtm-kit.php": []byte(stagedPluginHeader),
+			"gtm-kit/inc/a.php":   []byte(body),
+		}),
+	}, nil)
+	staged, _, fd := movedStagedPlugin(t, body)
+	c := NewCache(t.TempDir())
+
+	v := c.VerifyFile(fd, staged)
+	if v.Verdict != VerdictPending || v.Version != "2.18.1" || v.Digest != pluginChecksum(body) {
+		t.Fatalf("VerifyFile = %+v, want Pending for 2.18.1 with the event digest", v)
+	}
+	waitVerdict(t, VerdictVerified, func() Verdict { return c.Verify(v) })
+}
+
+// A failed update removes its staging tree and leaves the old release in
+// place. A file at the installed path is then a different file, and its
+// header says nothing about the bytes the event wrote: borrowing it would call
+// every changed file of the new release modified.
+func TestVerifyFile_StagedPluginGoneLeavesOtherInstalledReleaseAlone(t *testing.T) {
+	const newBody = "<?php return 'new release';\n"
+	wpRoot := filepath.Join(t.TempDir(), "public_html")
+	stagingRoot := filepath.Join(wpRoot, "wp-content", "upgrade", "gtm-kit.2.18.1", "gtm-kit")
+	staged := filepath.Join(stagingRoot, "inc", "a.php")
+	writeStaged(t, filepath.Join(stagingRoot, "gtm-kit.php"), stagedPluginHeader)
+	writeStaged(t, staged, newBody)
+	fd := openFd(t, staged)
+	installedRoot := filepath.Join(wpRoot, "wp-content", "plugins", "gtm-kit")
+	writeStaged(t, filepath.Join(installedRoot, "gtm-kit.php"), strings.Replace(stagedPluginHeader, "2.18.1", "2.18.0", 1))
+	writeStaged(t, filepath.Join(installedRoot, "inc", "a.php"), "<?php return 'old release';\n")
+	if err := os.RemoveAll(stagingRoot); err != nil {
+		t.Fatal(err)
+	}
+	c := NewCache(t.TempDir())
+	c.setPluginChecksums("gtm-kit", "2.18.0", map[string]string{filepath.Join("inc", "a.php"): pluginChecksum("<?php return 'old release';\n")})
+
+	if v := c.VerifyFile(fd, staged); v.Verdict != VerdictNoVersion || v.Version != "" {
+		t.Fatalf("VerifyFile = %+v, want NoVersion: the installed 2.18.0 file is not the staged file", v)
+	}
+}
