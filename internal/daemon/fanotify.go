@@ -1187,6 +1187,7 @@ func (fm *FileMonitor) sensitivePHPDir(path string) string {
 			return dir
 		}
 	}
+	path = filepath.Clean(path)
 	for i := 0; ; {
 		idx := strings.Index(path[i:], accountMailDir)
 		if idx < 0 {
