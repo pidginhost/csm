@@ -637,6 +637,20 @@ func TestBlockBatchRefactorKeepsSingleRequestRefusals(t *testing.T) {
 	}
 }
 
+// An admitted action speaks for its own outcome, so the public boundary
+// must not add a refusal record for it.
+func TestBlockBatchRefactorKeepsAdmittedOutcomes(t *testing.T) {
+	e, s := batchPlanEngine(t, FirewallConfig{}, FirewallState{})
+	req := ActionRequest{ID: "single-failed", Operation: "unblock", Target: "203.0.113.22", Actor: "cli", Source: "cli"}
+	s.stored[req.ID] = FirewallAction{Request: req, Phase: "failed"}
+	e.mu.Lock()
+	err := e.runDurableLocked(req, nil, FirewallState{})
+	e.mu.Unlock()
+	if !errors.Is(err, ErrActionFailed) || e.shouldLegacyOutcome(err) {
+		t.Fatalf("admitted failure: %v, legacy record %t", err, e.shouldLegacyOutcome(err))
+	}
+}
+
 // Expiry cannot settle an unverified row: its address stays pending until
 // its owner proves the outcome, as the store's batch-state rule requires.
 func TestBlockBatchHoldsExpiredUnverifiedRows(t *testing.T) {
