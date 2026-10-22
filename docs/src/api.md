@@ -1269,10 +1269,9 @@ DELETE /api/v1/email/quarantine/{id}        Delete a quarantined message (admin 
 ```
 
 The `mail.forwarders.delete.v1` capability advertises the forwarder delete
-endpoint. Deletion requires cPanel and systemd-run access to the system
-service manager. A command execution failure returns 500 even if cPanel printed a success
-reply; the outcome may be partial, so reload the inventory before retrying.
-Default addresses (`*@domain`) must be changed in cPanel.
+endpoint. A 500 can follow a delete that partly ran, so read the inventory
+again before retrying. A domain's default address (`*@domain`) is changed in
+cPanel.
 
 The senders abuse count and relay abuse list apply the exact `from` and `to`
 bounds, including fractional seconds, even when requests share cached
