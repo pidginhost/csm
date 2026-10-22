@@ -11,6 +11,33 @@ import (
 	bolt "go.etcd.io/bbolt"
 )
 
+func TestFirewallRetireRequiresRecordedAuditAcknowledgement(t *testing.T) {
+	db := openSnapshotDB(t)
+	a := unknownBatch(t, db, false)
+	// Losing an outbox reference cannot stand in for delivery of its event.
+	if err := db.bolt.Update(func(tx *bolt.Tx) error {
+		index, err := readFirewallJournalIndex(tx)
+		if err != nil {
+			return err
+		}
+		index.Audit = nil
+		return writeFirewallJournalIndex(tx, index)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	image := batchIndexImage(t, db)
+	if _, err := db.RetireFirewallAction(a.Request.ID, time.Now().UTC()); !errors.Is(err, firewall.ErrStateCorrupt) {
+		t.Fatalf("retirement without an outcome acknowledgement: %v", err)
+	}
+	if !bytes.Equal(image, batchIndexImage(t, db)) {
+		t.Fatal("refused retirement changed the journal")
+	}
+	assertFirewallSnapshot(t, db, a.Before, a.Revision)
+	if pending, err := db.PendingFirewallActions(); err != nil || len(pending) != 1 || pending[0].Retired {
+		t.Fatalf("unacknowledged outcome lost its interlock: %#v %v", pending, err)
+	}
+}
+
 func TestFirewallRetireRefusesChangedBase(t *testing.T) {
 	for _, revision := range []bool{false, true} {
 		t.Run(map[bool]string{false: "state", true: "revision"}[revision], func(t *testing.T) {

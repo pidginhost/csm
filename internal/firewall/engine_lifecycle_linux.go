@@ -856,11 +856,16 @@ func (k engineActionKernel) ProveFirewallRetirement(a FirewallAction) (time.Time
 		if a.KernelBefore[i].Exists != set.Exists {
 			return at, false, nil
 		}
+		started := time.Now()
+		readAt := k.e.leaseNowLocked()
 		actual, err := readActionSet(conn, set.Name)
 		if err != nil {
 			return at, false, err
 		}
-		if actual.exists != set.Exists || !matchActionElements(desired[set.Name], actual.elements, k.e.leaseNowLocked()) {
+		if time.Since(started) > 2*time.Second {
+			return at, false, errors.New("firewall retirement verification took too long")
+		}
+		if actual.exists != set.Exists || !matchActionElements(desired[set.Name], actual.elements, readAt) {
 			return at, false, nil
 		}
 	}

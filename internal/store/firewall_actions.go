@@ -1123,6 +1123,9 @@ func (db *DB) RetireFirewallAction(id string, at time.Time) (result firewall.Fir
 		if slices.ContainsFunc(index.Audit, func(ref firewallAuditReference) bool { return ref.ID == id }) {
 			return fmt.Errorf("%w: action %s outcome audit pending", firewall.ErrStateConflict, id)
 		}
+		if a.AuditAck != a.AuditVersion {
+			return fmt.Errorf("%w: action %s outcome audit acknowledgement missing", firewall.ErrStateCorrupt, id)
+		}
 		state, ok := firewall.RetiredActionState(a, at)
 		if !ok || a.AuditVersion == math.MaxUint64 {
 			return fmt.Errorf("%w: action %s has an effect that can still be live", firewall.ErrStateConflict, id)

@@ -8,7 +8,68 @@ import (
 	"time"
 
 	"github.com/mdlayher/netlink"
+	"golang.org/x/sys/unix"
 )
+
+// A reply's remaining lifetime belongs to the read, not the later instant
+// at which recovery resumes processing it.
+func TestProveFirewallRetirementPinsReadTime(t *testing.T) {
+	at := time.Date(2026, 1, 2, 6, 0, 0, 0, time.UTC)
+	a := retireFixture(at)
+	kept := BlockedEntry{IP: "192.0.2.2", BlockedAt: a.CreatedAt, ExpiresAt: at.Add(time.Hour)}
+	a.Before.Blocked = append(a.Before.Blocked, kept)
+	a.After.Blocked = append(a.After.Blocked, kept)
+	a = withBatchKernelEvidence(a)
+	a.KernelBefore[0].Elements = desiredActionSets(a.Before, true, a.CreatedAt)["blocked_ips"]
+	live := liveElements(a.Before, at)
+	if _, ok, err := retireEngine(t, live, at).ProveFirewallRetirement(a); err != nil || !ok {
+		t.Fatalf("matching kept lease did not prove retirement: proven %v, error %v", ok, err)
+	}
+	// The kept row expires early in the kernel, outside verification slack.
+	live[1].Expires = 30 * time.Minute
+	k := retireEngine(t, live, at)
+	clock := at
+	k.e.leaseClock = func() (time.Time, time.Time) { return clock, clock }
+	dial := k.e.conn.TestDial
+	reads := 0
+	k.e.conn.TestDial = func(req []netlink.Message) ([]netlink.Message, error) {
+		reply, err := dial(req)
+		if len(req) > 0 && uint16(req[0].Header.Type)&0xff == unix.NFT_MSG_GETSETELEM {
+			reads++
+			clock = at.Add(30 * time.Minute)
+		}
+		return reply, err
+	}
+	if _, ok, err := k.ProveFirewallRetirement(a); err != nil || ok {
+		t.Fatalf("shortened kept lease proved retirement: proven %v, error %v", ok, err)
+	}
+	if reads != 1 {
+		t.Fatalf("element reads = %d, want 1", reads)
+	}
+}
+
+func TestProveFirewallRetirementRejectsSlowRead(t *testing.T) {
+	at := time.Now().UTC().Round(0)
+	a := withBatchKernelEvidence(retireFixture(at))
+	k := retireEngine(t, liveElements(a.Before, at), at)
+	dial := k.e.conn.TestDial
+	reads := 0
+	k.e.conn.TestDial = func(req []netlink.Message) ([]netlink.Message, error) {
+		reply, err := dial(req)
+		if len(req) > 0 && uint16(req[0].Header.Type)&0xff == unix.NFT_MSG_GETSETELEM {
+			reads++
+			// The socket deadline cannot catch a pause after the reply arrives.
+			time.Sleep(2100 * time.Millisecond)
+		}
+		return reply, err
+	}
+	if _, ok, err := k.ProveFirewallRetirement(a); ok || err == nil {
+		t.Fatalf("stale read proved retirement: proven %v, error %v", ok, err)
+	}
+	if reads != 1 {
+		t.Fatalf("element reads = %d, want 1", reads)
+	}
+}
 
 func TestProveFirewallRetirementRequiresTrustedClock(t *testing.T) {
 	at := time.Now().UTC().Round(0)

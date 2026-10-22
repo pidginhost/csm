@@ -90,7 +90,10 @@ cannot be resolved or undone. A missing or degraded clock attestation
 leaves the action pending; a failed attestation also reports its error.
 Saved blocked-set evidence must be present, and
 a changed set topology prevents retirement. IPv6 proof uses saved evidence
-even if IPv6 is now disabled.
+even if IPv6 is now disabled. Kernel timeouts are checked against the clock
+sample taken before each read, and a slow read refuses retirement. The
+unknown outcome must carry its recorded audit acknowledgement; an empty
+outbox alone does not prove delivery.
 
 Batch evidence selects each member's current row by ID, target and planning
 time; retained rows from an earlier use of that ID are not current evidence.
