@@ -134,8 +134,8 @@ func queueMessageMatches(m intel.QueueMessage, filter, search string) bool {
 }
 
 // pageReasons pairs each message of a list page with why it is stuck. A
-// msglog is read at most once per queueReasonTTL. Every call drops entries
-// past it, so the cache holds only messages listed within the last TTL.
+// msglog is reused for queueReasonTTL while cached. The cache holds at most
+// queueListMaxLimit reasons, retaining the current page before older pages.
 func (s *Server) pageReasons(now time.Time, msgs []intel.QueueMessage) []queueItem {
 	s.queueReasonMu.Lock()
 	defer s.queueReasonMu.Unlock()
@@ -147,10 +147,24 @@ func (s *Server) pageReasons(now time.Time, msgs []intel.QueueMessage) []queueIt
 	if s.queueReasons == nil {
 		s.queueReasons = map[string]cachedQueueReason{}
 	}
+	pageIDs := make(map[string]bool, len(msgs))
+	for _, m := range msgs {
+		pageIDs[m.ID] = true
+	}
 	items := make([]queueItem, len(msgs))
 	for i, m := range msgs {
 		c, ok := s.queueReasons[m.ID]
 		if !ok {
+			if len(s.queueReasons) == queueListMaxLimit {
+				var oldestID string
+				var oldest time.Time
+				for id, entry := range s.queueReasons {
+					if !pageIDs[id] && (oldestID == "" || entry.read.Before(oldest)) {
+						oldestID, oldest = id, entry.read
+					}
+				}
+				delete(s.queueReasons, oldestID)
+			}
 			c.read = now
 			c.reason, _ = s.msglogReason(m.ID)
 			s.queueReasons[m.ID] = c

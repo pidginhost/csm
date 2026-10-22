@@ -1289,9 +1289,15 @@ once per minute and after any queue action. `total` counts the messages that
 match `filter` and `q`; `queued`, `frozen`, `backscatter` (null-sender
 messages) and `oldest_seconds` describe the whole queue. When no listing has succeeded in
 the last ten minutes the list answers `unavailable: true` with no items and no
-counts. Each message's `reason` (`class`, `text`, `raw`) comes from its msglog
-and is reused for a minute. A message thawed since it froze shows
-`retry_wait` until its next delivery attempt.
+counts. A failed refresh cannot reuse an empty listing, and a positive queue
+count invalidates any earlier empty result. A spool read failure also makes
+the listing unavailable instead of reporting only its readable messages.
+Quoted recipient local parts remain intact, including spaces. Each
+message's `reason` (`class`, `text`, `raw`) comes from its msglog tail; a
+partial first line is discarded. Up to 100 reasons are cached for a minute.
+The current page takes priority when older entries must be evicted. A
+message thawed since it froze shows `retry_wait` until its next delivery
+attempt.
 
 Message reads and actions run exim as a systemd transient unit and never
 inside the daemon's sandbox: without systemd-run the message route and the
@@ -1305,6 +1311,11 @@ error otherwise. A thaw on a message that is not frozen answers `unchanged`
 without running exim -Mt. Every attempt is written to the UI audit log as
 `email_queue_<action>` with the message ID, the outcome and any error exim
 reported.
+
+Held forward release requires a recorded sender and recipient, each a single
+mailbox without commas, whitespace or a leading dash. An explicitly empty
+sender is allowed for bounces. Ambiguous or missing envelope metadata causes
+a release error and leaves the message held without invoking sendmail.
 
 Deferrals are grouped under the provider whose MX host deferred them
 (Google, Microsoft and Yahoo hosts), so a business domain those providers

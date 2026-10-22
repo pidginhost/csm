@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/mail"
 	"os/exec"
 	"regexp"
 	"sort"
@@ -193,6 +194,13 @@ func parseQueueEntries(out string, keep int) []QueueMessage {
 	current := -1
 
 	for _, line := range strings.Split(out, "\n") {
+		trimmed := strings.TrimSpace(line)
+		// Exim may exit successfully while some spool headers cannot be
+		// read. Do not present the readable subset as the whole queue.
+		// A missing file can instead mean delivery raced the listing.
+		if strings.HasPrefix(trimmed, "*** spool read error:") && trimmed != eximNoSuchMessage {
+			return nil
+		}
 		if m, ok := parseQueueHeader(line); ok {
 			msgs = append(msgs, m)
 			current = len(msgs) - 1
@@ -202,7 +210,6 @@ func parseQueueEntries(out string, keep int) []QueueMessage {
 		if current < 0 {
 			continue
 		}
-		trimmed := strings.TrimSpace(line)
 		if trimmed == "" {
 			continue
 		}
@@ -212,8 +219,10 @@ func parseQueueEntries(out string, keep int) []QueueMessage {
 		}
 		m := &msgs[current]
 		// Exim prefixes an already-delivered recipient with "D"; it is not stuck.
-		if fields := strings.Fields(trimmed); len(fields) == 2 && fields[0] == "D" {
-			m.Delivered++
+		if addr, delivered := strings.CutPrefix(trimmed, "D "); delivered {
+			if _, ok := queueRecipientAddress(strings.TrimSpace(addr)); ok {
+				m.Delivered++
+			}
 			continue
 		}
 		if addr, ok := queueRecipientAddress(trimmed); ok {
@@ -319,12 +328,14 @@ func queueRecipientLine(line string) bool {
 }
 
 func queueRecipientAddress(trimmed string) (string, bool) {
-	fields := strings.Fields(trimmed)
-	if len(fields) != 1 {
+	addr := trimmed
+	if strings.HasPrefix(addr, "<") && strings.HasSuffix(addr, ">") {
+		addr = addr[1 : len(addr)-1]
+	}
+	if len(addr) > maxAddressLen || !strings.Contains(addr, "@") {
 		return "", false
 	}
-	addr := strings.Trim(fields[0], "<>")
-	if len(addr) > maxAddressLen || !strings.Contains(addr, "@") {
+	if parsed, err := mail.ParseAddress(addr); err != nil || parsed.Name != "" {
 		return "", false
 	}
 	return addr, true

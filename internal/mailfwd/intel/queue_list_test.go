@@ -269,3 +269,36 @@ func TestValidMessageID(t *testing.T) {
 		}
 	}
 }
+
+func TestQueueRecipientsWithQuotedLocalParts(t *testing.T) {
+	in := "  1h  900 1tAbCd-000001-Ab <sender@example.com>\n" +
+		"          \"two words\"@example.net\n" +
+		"          D \"done already\"@example.net\n" +
+		"          <\"a>b\"@example.net>\n"
+	m, err := ParseQueueDetail([]byte(in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{`"two words"@example.net`, `"a>b"@example.net`}
+	if !reflect.DeepEqual(m.Recipients, want) || m.RecipientCount != 2 || m.Delivered != 1 {
+		t.Errorf("recipients = %q, count = %d, delivered = %d", m.Recipients, m.RecipientCount, m.Delivered)
+	}
+}
+
+func TestQueueListRefusesPartialSpoolRead(t *testing.T) {
+	good := "  1h  900 1tAbCd-000001-Ab <sender@example.com>\n          rcpt@example.net\n\n"
+	bad := "   0 1tAbCd-000002-Ab\n    *** spool read error: Permission denied ***\n"
+	for _, input := range []string{good + bad, bad + good} {
+		if msgs, err := ParseQueueList([]byte(input)); err == nil || len(msgs) != 0 {
+			t.Errorf("partial listing = %+v, %v; want an unavailable queue", msgs, err)
+		}
+		if _, err := ParseQueueDetail([]byte(input)); err == nil {
+			t.Error("partial output accepted as one complete message")
+		}
+	}
+	// A message delivered during enumeration is absent, not unreadable.
+	missing := "   0 1tAbCd-000002-Ab\n    *** spool read error: No such file or directory ***\n"
+	if msgs, err := ParseQueueList([]byte(good + missing)); err != nil || len(msgs) != 1 {
+		t.Errorf("listing after a concurrent delivery = %+v, %v", msgs, err)
+	}
+}

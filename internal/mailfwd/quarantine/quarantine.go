@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"mime"
+	"net/mail"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -248,11 +249,31 @@ func (q *Quarantine) Release(id string) error {
 		return err
 	}
 	hdr := parseControlHeaders(header)
+	sender, hasSender := hdr[hdrSender]
+	recipient := hdr[hdrRecipient]
+	if !hasSender || sender != "" && !singleEnvelopeAddress(sender) || !singleEnvelopeAddress(recipient) {
+		return errors.New("held message does not record a safe single sender and recipient")
+	}
 	clean := stripControlHeaders(data)
-	if err := q.sendmail(hdr[hdrSender], hdr[hdrRecipient], clean); err != nil {
+	if err := q.sendmail(sender, recipient, clean); err != nil {
 		return fmt.Errorf("re-injecting held message: %w", err)
 	}
 	return os.Remove(path)
+}
+
+// Exim splits command-line recipients on commas, including dequoted local
+// parts from its control headers. Check both the recorded and parsed forms
+// so quoting cannot hide a list separator, whitespace or an option prefix.
+func singleEnvelopeAddress(value string) bool {
+	unsafe := func(s string) bool {
+		return strings.HasPrefix(s, "-") || strings.ContainsAny(s, ",<>") ||
+			strings.ContainsFunc(s, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) })
+	}
+	if value == "" || unsafe(value) {
+		return false
+	}
+	addr, err := mail.ParseAddress(value)
+	return err == nil && addr.Name == "" && !unsafe(addr.Address)
 }
 
 // Delete discards a held copy without delivering it.

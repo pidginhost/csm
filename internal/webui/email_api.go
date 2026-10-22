@@ -376,9 +376,9 @@ func refreshQueueListing(now time.Time) {
 	d.tried = now
 	msgs, ok := eximQueueDetails()
 	if !ok {
-		if d.emptied {
-			// The empty count is the only "listing" held, and mail may
-			// have arrived since: serve nothing rather than an empty queue.
+		if len(d.msgs) == 0 {
+			// Mail may have arrived since the empty result. A failed read
+			// cannot confirm that the queue is still empty.
 			*d = queueDetailState{tried: now}
 		}
 		return
@@ -443,6 +443,11 @@ func queueSnapshot(now time.Time) emailQueueState {
 	if ok && size == 0 {
 		*d = queueDetailState{tried: d.tried, listed: now, emptied: true}
 		return q
+	}
+	if ok && size > 0 && len(d.msgs) == 0 {
+		// The count disproves the cached empty result, even when another
+		// listing is not due yet. Preserve the retry interval.
+		*d = queueDetailState{tried: d.tried}
 	}
 	refreshQueueListing(now)
 	if d.emptied || staleQueueListing(now) {

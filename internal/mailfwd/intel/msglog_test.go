@@ -413,3 +413,19 @@ func processReadBytes(t *testing.T) int64 {
 	t.Fatal("no rchar line in /proc/self/io")
 	return 0
 }
+
+func TestMsglogDiscardsAnEntirelyPartialTail(t *testing.T) {
+	root := t.TempDir()
+	path := msglogTestPath(t, root, msglogTestID, false)
+	// A writer has not finished a long arrival line. Its subject is not a
+	// delivery error even when the byte window cuts away "Received from".
+	line := "Received from sender@example.com T=\"" + strings.Repeat("x", msglogTailBytes) +
+		" SMTP error: mailbox full"
+	if err := os.WriteFile(path, []byte(line), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reason, lines, err := ReadMsglogReason(root, msglogTestID)
+	if err != nil || len(lines) != 0 || reason.Class != "none" {
+		t.Errorf("partial line became a delivery attempt: %+v, %d lines, %v", reason, len(lines), err)
+	}
+}

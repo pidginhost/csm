@@ -82,6 +82,8 @@ func FuzzParseQueueList(f *testing.F) {
 	f.Add(eximBpListSample)
 	f.Add(eximBpSample)
 	f.Add(eximBpSampleNewID)
+	f.Add(eximBpSampleNewID + "   0 1tAbCd-000002-Ab\n    *** spool read error: Permission denied ***\n")
+	f.Add(" 1d 1K aaaaaa-bbbbbb-cc <s@example.com>\n          \"two words\"@example.net\n          D \"done already\"@example.net\n")
 	f.Add("")
 	f.Add("garbage\nlines\nonly")
 	f.Add(" 1d 1K aaaaaa-bbbbbb-cc <>\n   a@example.net\n   D c@example.net")

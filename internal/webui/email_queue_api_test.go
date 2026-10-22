@@ -420,6 +420,10 @@ func TestQueueListUnavailable(t *testing.T) {
 	for name, setup := range map[string]func(*eximWorld){
 		"exim fails":      func(w *eximWorld) { w.listFails = true },
 		"listing garbled": func(w *eximWorld) { w.listOutput = "exim: unexpected reply\n" },
+		"partial listing": func(w *eximWorld) {
+			w.listOutput = formatEntry(qMid, worldMessage{sender: "sender@example.com"}) +
+				"   0 " + qNew + "\n    *** spool read error: Permission denied ***\n"
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			world := newEximWorld(t)
@@ -805,5 +809,73 @@ func TestSelectQueueAdminUsesEximOnCPanel(t *testing.T) {
 	}
 	if _, ok := selectQueueAdmin().(*intel.EximQueueAdmin); !ok {
 		t.Fatalf("selectQueueAdmin returned %T, want *intel.EximQueueAdmin", selectQueueAdmin())
+	}
+}
+
+func TestQueueListFailedRefreshAfterEmptyListing(t *testing.T) {
+	world := newEximWorld(t)
+	s, admin, _ := queueServer(t, world)
+	if got := getQueueList(t, s, ""); got.Unavailable || got.Queued == nil || *got.Queued != 0 {
+		t.Fatalf("initial list = %+v, want a known empty queue", got)
+	}
+	queueDetail.Lock()
+	queueDetail.state.tried = time.Now().Add(-2 * queueDetailTTL)
+	queueDetail.Unlock()
+	world.listFails = true
+	assertQueueUnknown(t, s, admin)
+}
+
+func TestQueueListDoesNotOverrideKnownRefill(t *testing.T) {
+	world := newEximWorld(t)
+	world.add(qMid, worldMessage{sender: "sender@example.com"})
+	s, admin, _ := queueServer(t, world)
+	queueSnapshot(time.Now())
+	world.mu.Lock()
+	delete(world.queue, qMid)
+	world.mu.Unlock()
+	queueSnapshot(time.Now())
+	world.add(qNew, worldMessage{sender: "sender@example.com"})
+	if got := queueSnapshot(time.Now()); got.Size != 1 || !got.DetailUnavailable {
+		t.Fatalf("refilled snapshot = %+v", got)
+	}
+	assertQueueUnknown(t, s, admin)
+}
+
+func TestQueueReasonCacheHasSizeBound(t *testing.T) {
+	world := newEximWorld(t)
+	s, admin, _ := queueServer(t, world)
+	now := time.Now()
+	for i := 0; i < queueListMaxLimit*3; i++ {
+		id := fmt.Sprintf("1tAbCd-%06d-Ab", i)
+		items := s.pageReasons(now.Add(time.Duration(i)*time.Millisecond), []intel.QueueMessage{{ID: id}})
+		if len(items) != 1 || items[0].ID != id {
+			t.Fatalf("wrong page: %+v", items)
+		}
+		if len(s.queueReasons) > queueListMaxLimit {
+			t.Fatalf("cached %d reasons, want at most one maximum-sized page (%d)", len(s.queueReasons), queueListMaxLimit)
+		}
+	}
+	if len(admin.reasons) != queueListMaxLimit*3 {
+		t.Fatal("not every requested reason was read")
+	}
+}
+
+func TestQueueReasonCacheRetainsTheCurrentPage(t *testing.T) {
+	world := newEximWorld(t)
+	s, admin, _ := queueServer(t, world)
+	now := time.Now()
+	msgs := make([]intel.QueueMessage, queueListMaxLimit)
+	for i := range msgs {
+		msgs[i].ID = fmt.Sprintf("1tAbCd-%06d-Ab", i)
+	}
+	s.pageReasons(now, msgs)
+	// Half the next page is already cached, all with the same read time.
+	for i := 0; i < len(msgs)/2; i++ {
+		msgs[i].ID = fmt.Sprintf("1tAbCd-%06d-Ab", i+queueListMaxLimit)
+	}
+	s.pageReasons(now, msgs)
+	s.pageReasons(now, msgs)
+	if len(admin.reasons) != queueListMaxLimit*3/2 || len(s.queueReasons) != queueListMaxLimit {
+		t.Errorf("reads = %d, cached = %d; want only new page members read and the full page retained", len(admin.reasons), len(s.queueReasons))
 	}
 }

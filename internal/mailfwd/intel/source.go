@@ -101,9 +101,11 @@ func readFileTail(f *os.File, maxBytes int64) ([]string, error) {
 		return nil, err
 	}
 	if offset > 0 {
-		if nl := bytes.IndexByte(data, '\n'); nl >= 0 {
-			data = data[nl+1:]
+		nl := bytes.IndexByte(data, '\n')
+		if nl < 0 {
+			return nil, nil
 		}
+		data = data[nl+1:]
 	}
 
 	text := strings.TrimSuffix(string(data), "\n")

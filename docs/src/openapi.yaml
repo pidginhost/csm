@@ -369,6 +369,7 @@ paths:
               schema: { $ref: "#/components/schemas/JSONObject" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { description: Release failed or the recorded envelope is missing or ambiguous; the copy stays held. }
   "/api/v1/email/queue-composition":
     get:
       operationId: get_email_queue_composition
@@ -433,7 +434,11 @@ paths:
             total (the messages matching filter and q), and queued, frozen,
             backscatter and oldest_seconds for the whole queue. The listing
             is refreshed at most once a minute. When the queue cannot be
-            listed, unavailable is true, items is empty and no count is sent.
+            listed and no reusable nonempty listing remains, unavailable is
+            true, items is empty and no count is sent. An empty result is
+            invalidated by a failed refresh or a positive queue count.
+            Quoted recipient local parts remain intact. At most 100 msglog
+            reasons are cached for a minute, retaining the current page first.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/JSONObject" }

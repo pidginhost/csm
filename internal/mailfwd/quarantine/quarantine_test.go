@@ -143,28 +143,80 @@ func TestReleaseDoesNotRemoveOnSendmailFailure(t *testing.T) {
 	}
 }
 
-func TestReleaseSanitizesEnvelopeValuesReadFromDisk(t *testing.T) {
-	q := New(t.TempDir())
-	if err := os.MkdirAll(q.sub("new"), 0700); err != nil {
-		t.Fatal(err)
+// Release must never reinterpret a recorded mailbox as several recipients or
+// as an Exim option. A refusal retains the copy and never invokes sendmail.
+func TestReleaseRefusesAmbiguousEnvelope(t *testing.T) {
+	for _, field := range []string{hdrSender, hdrRecipient} {
+		for _, value := range []string{
+			"root,owner@example.net", `"root,x"@example.net`,
+			`"two words"@example.net`, "owner@example.net other@example.net",
+			"owner@example.net\tother@example.net", "-owner@example.net",
+			"Display <owner@example.net>", "<owner@example.net>",
+			"owner@example.net(comment)", "localonly", "@example.net",
+			"owner@example.net\rBcc: bad", "owner@example.net\x00", `"-flag"@example.net`,
+		} {
+			t.Run(field+"/"+value, func(t *testing.T) {
+				q := New(t.TempDir())
+				q.sendmail = func(string, string, []byte) error {
+					t.Error("sendmail called for an unsafe envelope")
+					return nil
+				}
+				raw := eximHeld("Subject: test\n")
+				old := field + ": real@example.com"
+				if field == hdrRecipient {
+					old = field + ": owner@example.net"
+				}
+				writeRawHeld(t, q, "unsafe", strings.Replace(raw, old, field+": "+value, 1))
+				if err := q.Release("unsafe"); err == nil {
+					t.Error("release accepted an unsafe envelope")
+				}
+				if q.pathOf("unsafe") == "" {
+					t.Error("refused release removed the held copy")
+				}
+			})
+		}
 	}
-	if err := os.WriteFile(filepath.Join(q.sub("new"), "raw"), []byte(
-		"X-CSM-Sender: sender@example.com\rX-Injected: bad\r\n"+
-			"X-CSM-Recipient: owner@example.com\rBcc: bad\r\n"+
-			"\r\nbody\r\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	var gotSender, gotRcpt string
-	q.sendmail = func(sender, recipient string, body []byte) error {
-		gotSender, gotRcpt = sender, recipient
-		return nil
-	}
+}
 
-	if err := q.Release("raw"); err != nil {
-		t.Fatalf("release: %v", err)
+func TestReleaseRequiresEnvelopeFields(t *testing.T) {
+	for _, field := range []string{hdrSender, hdrRecipient} {
+		t.Run(field, func(t *testing.T) {
+			q := New(t.TempDir())
+			q.sendmail = func(string, string, []byte) error {
+				t.Error("sendmail called without a recorded envelope")
+				return nil
+			}
+			raw := eximHeld("Subject: test\n")
+			start := strings.Index(raw, field+":")
+			end := start + strings.IndexByte(raw[start:], '\n') + 1
+			writeRawHeld(t, q, "missing", raw[:start]+raw[end:])
+			if err := q.Release("missing"); err == nil || q.pathOf("missing") == "" {
+				t.Errorf("release = %v; want refusal and a retained copy", err)
+			}
+		})
 	}
-	if strings.ContainsAny(gotSender+gotRcpt, "\r\n") {
-		t.Fatalf("envelope contains CR/LF after sanitization: sender=%q recipient=%q", gotSender, gotRcpt)
+}
+
+func TestReleasePreservesSingleEnvelopeAddress(t *testing.T) {
+	for _, sender := range []string{"", "sender@example.com", `"quoted"@example.com`} {
+		t.Run(sender, func(t *testing.T) {
+			q := New(t.TempDir())
+			calls := 0
+			q.sendmail = func(gotSender, recipient string, body []byte) error {
+				calls++
+				if gotSender != sender || recipient != "owner+tag@example.net" || string(body) != "Subject: test\n\nbody\n" {
+					t.Errorf("reinjection changed the envelope or content: %q %q %q", gotSender, recipient, body)
+				}
+				return nil
+			}
+			id, err := q.Hold(HeldMessage{Sender: sender, Recipient: "owner+tag@example.net"}, []byte("Subject: test\n\nbody\n"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := q.Release(id); err != nil || calls != 1 || q.pathOf(id) != "" {
+				t.Errorf("release = %v, calls = %d; want one delivery and removal", err, calls)
+			}
+		})
 	}
 }
 
