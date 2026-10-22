@@ -23,8 +23,7 @@ only. It looks for external-link attributes in PHP that directly prints a
 base64 literal. Embedded tracking pixels, local image references and inline
 logos without external links do not supply that evidence. An encoded external
 link is a heuristic, not proof of spam or proof that the destination is outside
-the site's own domain. Scheduled YARA scans do not use this rule; adding it
-there still requires clean-corpus measurement.
+the site's own domain. Scheduled YARA scans do not use this rule.
 
 The WordPress REST API exploit signature is a YAML-only heuristic. It requires
 a users-endpoint URL literal and a password query parameter or a nearby PHP,
