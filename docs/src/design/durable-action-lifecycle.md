@@ -46,11 +46,24 @@ order. Unverified rows remain until their owner settles the outcome, even
 after expiry, and a batch cannot add a block for an address they hold.
 Actions written before batches read as one-member batches and keep their
 stored format. A record written by a newer
-build is refused as unsupported, never read or overwritten. A firewall-only
+build is refused as unsupported, never read or overwritten. Audit delivery
+writes one record per member, with the member's action ID and the batch's
+outcome and version, in one durable write. A firewall-only
 import moves the durable journal and its snapshot as one unit, and refuses
 while either database has an unresolved action or undelivered audit. A
 refusal, including one for nested firewall buckets on either side, leaves the
 target database unchanged.
+
+Batch evidence selects each member's current row by ID, target and planning
+time; retained rows from an earlier use of that ID are not current evidence.
+An unresolved batch with an expired member remains unknown: absence does
+not prove that member was never applied. This also holds during immediate
+verification after apply. A durable terminal outcome is preserved on replay
+after expiry. A rejected kernel batch is not retried inside the lifecycle.
+Its owner must first prove rejection and use a new charged action for any
+retry. The existing single-request path is unchanged. Audit is delivered at
+least once; consumers deduplicate each member event by its action ID and
+transition version, not by the batch ID.
 
 If intent or budget persistence fails, new automated mutations are refused
 and the finding is retained. If outcome persistence fails after mutation, the
