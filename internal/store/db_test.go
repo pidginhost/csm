@@ -50,7 +50,9 @@ func TestOpenSeedsDefaultModSecNoEscalateRulesOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := db.GetModSecNoEscalateRules(); !got[defaultModSecNoEscalateWPEnumerationID] {
+	if got, readErr := db.GetModSecNoEscalateRules(); readErr != nil {
+		t.Fatal(readErr)
+	} else if !got[defaultModSecNoEscalateWPEnumerationID] {
 		t.Fatalf("default ModSecurity no-escalate rule was not seeded: %v", got)
 	}
 	if setErr := db.SetModSecNoEscalateRules(map[int]bool{}); setErr != nil {
@@ -65,8 +67,128 @@ func TestOpenSeedsDefaultModSecNoEscalateRulesOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = db.Close() }()
-	if got := db.GetModSecNoEscalateRules(); len(got) != 0 {
+	if got, readErr := db.GetModSecNoEscalateRules(); readErr != nil {
+		t.Fatal(readErr)
+	} else if len(got) != 0 {
 		t.Fatalf("operator-cleared ModSecurity no-escalate rules were re-seeded: %v", got)
+	}
+}
+
+// Browser-sent upload progress denies come from visitors a third-party page
+// can steer, so existing installs get that rule excluded once, and an operator
+// who turns its escalation back on keeps that choice.
+func TestOpenSeedsBrowserUploadProgressNoEscalateOnce(t *testing.T) {
+	dir := t.TempDir()
+	db, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, readErr := db.GetModSecNoEscalateRules(); readErr != nil {
+		t.Fatal(readErr)
+	} else if !got[defaultModSecNoEscalateBrowserUploadID] || !got[defaultModSecNoEscalateWPEnumerationID] {
+		t.Fatalf("fresh install defaults = %v", got)
+	}
+	// An install seeded before the browser rule existed.
+	if setErr := db.SetModSecNoEscalateRules(map[int]bool{900500: true}); setErr != nil {
+		t.Fatal(setErr)
+	}
+	if updateErr := db.bolt.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket([]byte("meta")).Delete([]byte(modsecNoEscalateBrowserSeededKey))
+	}); updateErr != nil {
+		t.Fatal(updateErr)
+	}
+	if closeErr := db.Close(); closeErr != nil {
+		t.Fatal(closeErr)
+	}
+
+	db, err = Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := db.GetModSecNoEscalateRules()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || !got[900500] || !got[defaultModSecNoEscalateBrowserUploadID] {
+		t.Fatalf("upgrade must add only the browser rule: %v", got)
+	}
+	if rmErr := db.RemoveModSecNoEscalateRule(defaultModSecNoEscalateBrowserUploadID); rmErr != nil {
+		t.Fatal(rmErr)
+	}
+	if closeErr := db.Close(); closeErr != nil {
+		t.Fatal(closeErr)
+	}
+
+	db, err = Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	if got, readErr := db.GetModSecNoEscalateRules(); readErr != nil {
+		t.Fatal(readErr)
+	} else if got[defaultModSecNoEscalateBrowserUploadID] {
+		t.Fatalf("operator-enabled browser rule escalation was re-seeded: %v", got)
+	}
+}
+
+// An unreadable exclusion list must not stop the store from opening, which
+// would stop the daemon, and must not be replaced. The browser exclusion stays
+// unseeded until the list is repaired, then the next Open adds it.
+func TestOpenKeepsUnreadableModSecSeedForRetry(t *testing.T) {
+	dir := t.TempDir()
+	db, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const corrupt = `[900500,`
+	if updateErr := db.bolt.Update(func(tx *bolt.Tx) error {
+		meta := tx.Bucket([]byte("meta"))
+		if deleteErr := meta.Delete([]byte(modsecNoEscalateBrowserSeededKey)); deleteErr != nil {
+			return deleteErr
+		}
+		return meta.Put([]byte(modsecNoEscalateKey), []byte(corrupt))
+	}); updateErr != nil {
+		t.Fatal(updateErr)
+	}
+	if closeErr := db.Close(); closeErr != nil {
+		t.Fatal(closeErr)
+	}
+	db, err = Open(dir)
+	if err != nil {
+		t.Fatalf("Open must survive an unreadable exclusion list: %v", err)
+	}
+	if rules, readErr := db.GetModSecNoEscalateRules(); readErr == nil || rules != nil {
+		t.Fatalf("unreadable exclusions returned %v, %v; want nil rules and an error", rules, readErr)
+	}
+	if viewErr := db.bolt.View(func(tx *bolt.Tx) error {
+		meta := tx.Bucket([]byte("meta"))
+		if got := string(meta.Get([]byte(modsecNoEscalateKey))); got != corrupt {
+			t.Errorf("unreadable list changed to %q", got)
+		}
+		if meta.Get([]byte(modsecNoEscalateBrowserSeededKey)) != nil {
+			t.Error("failed seed was marked complete")
+		}
+		return nil
+	}); viewErr != nil {
+		t.Fatal(viewErr)
+	}
+	if setErr := db.SetModSecNoEscalateRules(map[int]bool{900500: true}); setErr != nil {
+		t.Fatal(setErr)
+	}
+	if closeErr := db.Close(); closeErr != nil {
+		t.Fatal(closeErr)
+	}
+	db, err = Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	got, err := db.GetModSecNoEscalateRules()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || !got[900500] || !got[defaultModSecNoEscalateBrowserUploadID] {
+		t.Fatalf("repaired upgrade defaults = %v", got)
 	}
 }
 
@@ -94,7 +216,10 @@ func TestOpenDoesNotClobberExistingModSecNoEscalateRules(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = db.Close() }()
-	got := db.GetModSecNoEscalateRules()
+	got, err := db.GetModSecNoEscalateRules()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(got) != len(want) || !got[900500] {
 		t.Fatalf("existing ModSecurity no-escalate rules were clobbered: %v", got)
 	}

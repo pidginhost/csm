@@ -14,6 +14,7 @@ import socket
 import subprocess
 import tempfile
 import time
+from urllib.parse import quote
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -109,7 +110,7 @@ GROUPS = (
 )
 
 
-def request(port, method, uri, cookie, headers):
+def request(port, method, uri, cookie, headers, body=None):
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
     try:
         conn.putrequest(method, uri)
@@ -118,14 +119,47 @@ def request(port, method, uri, cookie, headers):
                 conn.putheader("Cookie", value)
         for key, value in headers.items():
             conn.putheader(key, value)
-        conn.endheaders()
+        if body is not None:
+            conn.putheader("Content-Length", str(len(body)))
+        conn.endheaders(body)
         response = conn.getresponse()
         return response.status, response.read()
     finally:
         conn.close()
 
 
-def run_group(conf, enabled, cases):
+def upload_progress_probes(port, error_log):
+    # Assert the deny ID as well as HTTP status: a 403 from the first-hit rule
+    # would still let a third-party page ban the visitor sending the request.
+    failures = []
+    count = 0
+    boundary = "csm-upload-probe"
+    for field in ("PHP_SESSION_UPLOAD_PROGRESS", "'PHP_SESSION_UPLOAD_PROGRESS'", "php_session_upload_progress", "ordinary_field"):
+        body = (f"--{boundary}\r\nContent-Disposition: form-data; name=\"{field}\"\r\n\r\nprobe\r\n"
+                f"--{boundary}\r\nContent-Disposition: form-data; name=\"upload\"; filename=\"probe.txt\"\r\n"
+                f"Content-Type: text/plain\r\n\r\nprobe\r\n--{boundary}--\r\n").encode()
+        for method in ("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"):
+            for browser_headers in ({}, {"Origin": "null"}, {"Origin": "http://192.0.2.1"}, {"Sec-Fetch-Site": "cross-site"}):
+                for location in ("body", "query"):
+                    count += 1
+                    uri = f"/?{quote(field)}=probe" if location == "query" else "/"
+                    payload = body if location == "body" else None
+                    headers = {"Content-Type": f"multipart/form-data; boundary={boundary}", **browser_headers}
+                    matched = field != "ordinary_field"
+                    expected = None
+                    if matched and method not in ("GET", "HEAD"):
+                        expected = "900134" if browser_headers else "900133"
+                    offset = error_log.stat().st_size
+                    status, _ = request(port, method, uri, "", headers, payload)
+                    with error_log.open() as log:
+                        log.seek(offset)
+                        ids = re.findall(r'\[id "(\d+)"\]', log.read())
+                    if status != (403 if expected else 200) or ids != ([expected] if expected else []):
+                        failures.append(f"{method} {location} {field} {browser_headers}: HTTP {status}, IDs {ids}, expected {expected}")
+    return count, failures
+
+
+def run_group(conf, enabled, cases, probe_fn=None):
     # Parse the complete file before excluding unrelated denies, so a bad
     # directive anywhere still fails the configuration-load gate.
     other_ids = [i for i in re.findall(r"\bid:(\d+)", conf.read_text()) if i not in enabled]
@@ -199,6 +233,8 @@ SecRuleRemoveById {' '.join(other_ids)}
                     time.sleep(0.05)
             else:
                 raise RuntimeError("Apache did not start")
+            if probe_fn is not None:
+                return probe_fn(port, base / "error.log")
             # Verify PHP's real query/header parsing independently of cookies.
             for _, _, uri, _, headers, _ in cases():
                 if "_method=" in uri or "%5fmethod=" in uri or ".method=" in uri or "X-HTTP-Method-Override" in headers:
@@ -251,6 +287,11 @@ def main():
             print(f"FAIL [{label}]:", failure)
         print(f"{label}: {count} ModSecurity request cases; {len(failures)} failures")
         failed = failed or bool(failures)
+    count, failures = run_group(conf, ("900133", "900134"), lambda: (), upload_progress_probes)
+    for failure in failures:
+        print("FAIL [upload progress]:", failure)
+    print(f"upload progress: {count} ModSecurity request cases; {len(failures)} failures")
+    failed = failed or bool(failures)
     return failed
 
 

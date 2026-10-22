@@ -2,6 +2,7 @@ package webui
 
 import (
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -9,7 +10,33 @@ import (
 	"testing"
 
 	"github.com/pidginhost/csm/internal/modsec"
+	"github.com/pidginhost/csm/internal/store"
 )
+
+func TestModSecRulesReportExclusionReadFailure(t *testing.T) {
+	s := newTestServerWithBbolt(t, "tok")
+	rules := filepath.Join(t.TempDir(), "rules.conf")
+	if err := os.WriteFile(rules, []byte(`SecRule REQUEST_URI "x" "id:900134,phase:1,deny"`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	s.cfg.ModSec.RulesFile = rules
+	s.cfg.ModSec.OverridesFile = filepath.Join(t.TempDir(), "overrides.conf")
+	s.cfg.ModSec.ReloadCommand = "true"
+	if err := store.Global().Close(); err != nil {
+		t.Fatal(err)
+	}
+	for name, handler := range map[string]http.HandlerFunc{
+		"rules": s.apiModSecRules, "exclusions": s.apiModSecRulesEscalation,
+	} {
+		t.Run(name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			handler(w, httptest.NewRequest(http.MethodGet, "/", nil))
+			if w.Code != http.StatusInternalServerError {
+				t.Fatalf("unreadable exclusions returned HTTP %d, want 500", w.Code)
+			}
+		})
+	}
+}
 
 func TestModSecFailedRollbackIsNotAuditedAsRestored(t *testing.T) {
 	s := newTestServer(t, "tok")

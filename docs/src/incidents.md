@@ -317,7 +317,12 @@ that match one specific exploit's request shape (for example the PHP2Shell
 upload progress field or the wp2shell tool User-Agent) escalate on their
 first deny, whatever the hit threshold; turning firewall escalation off for
 that rule on the ModSecurity rules page opts out, including its retained
-evidence in later decisions. Existing bans keep their configured expiry.
+evidence in later decisions. Upload progress requests carrying browser headers
+are denied by a separate rule whose escalation is off by default. Requests
+lacking those headers retain first-deny escalation. See
+[ModSecurity Integration](modsecurity.md) for the browser-header limitation and
+behavior when saved exclusions cannot be read. Existing bans keep their
+configured expiry.
 Warnings remain non-blocking even when request fields contain text resembling
 a deny message.
 While qualifying evidence remains in the window, duplicate escalations stay

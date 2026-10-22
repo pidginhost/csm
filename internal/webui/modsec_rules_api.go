@@ -81,7 +81,11 @@ func (s *Server) apiModSecRules(w http.ResponseWriter, _ *http.Request) {
 	var noEscalate map[int]bool
 	var hits map[int]store.RuleHitStats
 	if db := store.Global(); db != nil {
-		noEscalate = db.GetModSecNoEscalateRules()
+		noEscalate, err = db.GetModSecNoEscalateRules()
+		if err != nil {
+			writeJSONError(w, "Failed to read escalation exclusions", http.StatusInternalServerError)
+			return
+		}
 		hits = db.GetModSecRuleHits()
 	}
 
@@ -226,8 +230,13 @@ func (s *Server) apiModSecRulesEscalation(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if r.Method == http.MethodGet {
+		rules, err := db.GetModSecNoEscalateRules()
+		if err != nil {
+			writeJSONError(w, "Failed to read escalation exclusions", http.StatusInternalServerError)
+			return
+		}
 		ids := []int{}
-		for id := range db.GetModSecNoEscalateRules() {
+		for id := range rules {
 			ids = append(ids, id)
 		}
 		sort.Ints(ids)

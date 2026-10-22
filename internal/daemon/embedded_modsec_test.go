@@ -27,15 +27,34 @@ func TestEmbeddedModSecBlocksWP2ShellUserAgent(t *testing.T) {
 // auto_prepend file runs, so the session upload-progress trigger can only be
 // dropped at the web server. The match must survive quoting variants: PHP
 // accepts a single-quoted field name that ModSecurity keeps verbatim.
+//
+// A third-party page or email can make a visitor's browser send the field, and
+// 900133 bans on the first deny. Only requests without browser request headers
+// reach 900133; browser-sent ones are still denied, by 900134.
 func TestEmbeddedModSecBlocksPHPUploadProgressField(t *testing.T) {
 	conf := string(embeddedModSec)
-	const rule = `SecRule ARGS_NAMES "@contains php_session_upload_progress" \` + "\n" +
-		`    "id:900133,phase:2,deny,status:403,log,t:none,t:lowercase,`
-	if !strings.Contains(conf, rule) {
-		t.Error("modsec ruleset does not block the PHP session upload progress field")
+	const field = `SecRule ARGS_NAMES "@contains php_session_upload_progress" "t:none,t:lowercase"`
+	const tool = `SecRule REQUEST_METHOD "!@rx ^(?:GET|HEAD)$" \` + "\n" +
+		`    "id:900133,phase:2,deny,status:403,log,t:none,\` + "\n" +
+		`    msg:'CSM VP: PHP session upload progress field (PHP2Shell)',chain"` + "\n" +
+		`SecRule &REQUEST_HEADERS:Origin "@eq 0" "t:none,chain"` + "\n" +
+		`SecRule &REQUEST_HEADERS:Sec-Fetch-Site "@eq 0" "t:none,chain"` + "\n" + field + "\n"
+	const browser = `SecRule REQUEST_METHOD "!@rx ^(?:GET|HEAD)$" \` + "\n" +
+		`    "id:900134,phase:2,deny,status:403,log,t:none,\` + "\n" +
+		`    msg:'CSM VP: PHP session upload progress field from a browser (PHP2Shell)',chain"` + "\n" + field + "\n"
+	if !strings.Contains(conf, tool+browser) {
+		t.Error("modsec ruleset must deny the upload progress field, tool requests via 900133 before browser requests via 900134")
 	}
-	if got := strings.Count(conf, "id:900133,"); got != 1 {
-		t.Errorf("found %d upload progress rule IDs, want 1", got)
+	for _, id := range []string{"id:900133,", "id:900134,"} {
+		if got := strings.Count(conf, id); got != 1 {
+			t.Errorf("found %d %s rules, want 1", got, id)
+		}
+	}
+	readOnly := regexp.MustCompile(`^(?:GET|HEAD)$`)
+	for method, skip := range map[string]bool{"GET": true, "HEAD": true, "POST": false, "PUT": false, "PATCH": false} {
+		if got := readOnly.MatchString(method); got != skip {
+			t.Errorf("method %s skipped = %v, want %v", method, got, skip)
+		}
 	}
 }
 

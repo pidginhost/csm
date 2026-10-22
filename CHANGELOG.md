@@ -13,6 +13,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 - With automatic blocking on, sources using the wp2shell exploit tool are now blocked at the firewall on their first blocked request.
 - Releasing a held forwarded message now uses only the addresses CSM recorded, never copies in the message's own headers, and refuses ambiguous addresses.
+- A crafted web page or email can no longer get ordinary browser visitors banned at the firewall by the PHP2Shell protection.
 
 ### Changed
 
