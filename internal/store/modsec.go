@@ -14,23 +14,28 @@ const modsecNoEscalateKey = "modsec:no_escalate_rules"
 
 // GetModSecNoEscalateRules returns the set of ModSecurity rule IDs that should
 // NOT escalate to nftables firewall blocks. Stored in the meta bucket.
-func (db *DB) GetModSecNoEscalateRules() map[int]bool {
+// An unreadable list is not an empty list: callers must not authorize firewall
+// escalation or report all rules enabled when the operator's choices are unknown.
+func (db *DB) GetModSecNoEscalateRules() (map[int]bool, error) {
 	rules := make(map[int]bool)
-	_ = db.bolt.View(func(tx *bolt.Tx) error {
+	err := db.bolt.View(func(tx *bolt.Tx) error {
 		v := tx.Bucket([]byte("meta")).Get([]byte(modsecNoEscalateKey))
 		if v == nil {
 			return nil
 		}
 		var ids []int
-		if json.Unmarshal(v, &ids) != nil {
-			return nil //nolint:nilerr // skip corrupt data
+		if err := json.Unmarshal(v, &ids); err != nil {
+			return err
 		}
 		for _, id := range ids {
 			rules[id] = true
 		}
 		return nil
 	})
-	return rules
+	if err != nil {
+		return nil, fmt.Errorf("read ModSecurity escalation exclusions: %w", err)
+	}
+	return rules, nil
 }
 
 // SetModSecNoEscalateRules stores the set of rule IDs that should not escalate.
@@ -55,7 +60,9 @@ func (db *DB) AddModSecNoEscalateRule(ruleID int) error {
 		b := tx.Bucket([]byte("meta"))
 		var ids []int
 		if v := b.Get([]byte(modsecNoEscalateKey)); v != nil {
-			_ = json.Unmarshal(v, &ids)
+			if err := json.Unmarshal(v, &ids); err != nil {
+				return fmt.Errorf("read ModSecurity escalation exclusions: %w", err)
+			}
 		}
 		for _, id := range ids {
 			if id == ruleID {
@@ -77,7 +84,9 @@ func (db *DB) RemoveModSecNoEscalateRule(ruleID int) error {
 		b := tx.Bucket([]byte("meta"))
 		var ids []int
 		if v := b.Get([]byte(modsecNoEscalateKey)); v != nil {
-			_ = json.Unmarshal(v, &ids)
+			if err := json.Unmarshal(v, &ids); err != nil {
+				return fmt.Errorf("read ModSecurity escalation exclusions: %w", err)
+			}
 		}
 		var filtered []int
 		for _, id := range ids {

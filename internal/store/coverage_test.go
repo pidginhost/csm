@@ -555,7 +555,10 @@ func TestGetModSecNoEscalateRulesEmpty(t *testing.T) {
 	if err := db.SetModSecNoEscalateRules(map[int]bool{}); err != nil {
 		t.Fatal(err)
 	}
-	got := db.GetModSecNoEscalateRules()
+	got, err := db.GetModSecNoEscalateRules()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(got) != 0 {
 		t.Errorf("expected empty, got %v", got)
 	}
@@ -567,7 +570,10 @@ func TestGetModSecNoEscalateRulesAfterSet(t *testing.T) {
 	if err := db.SetModSecNoEscalateRules(want); err != nil {
 		t.Fatal(err)
 	}
-	got := db.GetModSecNoEscalateRules()
+	got, err := db.GetModSecNoEscalateRules()
+	if err != nil {
+		t.Fatal(err)
+	}
 	for id := range want {
 		if !got[id] {
 			t.Errorf("rule %d missing from GetModSecNoEscalateRules", id)
@@ -587,7 +593,10 @@ func TestAddModSecNoEscalateRuleIdempotent(t *testing.T) {
 	if err := db.AddModSecNoEscalateRule(900500); err != nil {
 		t.Fatal(err)
 	}
-	got := db.GetModSecNoEscalateRules()
+	got, err := db.GetModSecNoEscalateRules()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(got) != 1 || !got[900500] {
 		t.Errorf("got %v, want {900500:true}", got)
 	}
@@ -601,7 +610,10 @@ func TestRemoveModSecNoEscalateRule(t *testing.T) {
 	if err := db.RemoveModSecNoEscalateRule(900100); err != nil {
 		t.Fatal(err)
 	}
-	got := db.GetModSecNoEscalateRules()
+	got, err := db.GetModSecNoEscalateRules()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if got[900100] {
 		t.Error("900100 should be removed")
 	}
@@ -618,7 +630,10 @@ func TestRemoveModSecNoEscalateRuleMissingIsNoOp(t *testing.T) {
 	if err := db.RemoveModSecNoEscalateRule(999999); err != nil {
 		t.Errorf("RemoveModSecNoEscalateRule on missing id = %v, want nil", err)
 	}
-	got := db.GetModSecNoEscalateRules()
+	got, err := db.GetModSecNoEscalateRules()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !got[900100] {
 		t.Error("900100 should still be present")
 	}

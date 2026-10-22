@@ -334,6 +334,59 @@ func TestParseModSec_FileManagerRequiresRepeatedDenies(t *testing.T) {
 	}
 }
 
+// Browser-sent upload progress denies can be steered by a third-party page, so
+// they never ban on a default store, however many arrive.
+func TestParseModSec_BrowserUploadProgressDoesNotBanByDefault(t *testing.T) {
+	for _, server := range []string{"apache", "litespeed"} {
+		t.Run(server, func(t *testing.T) {
+			resetModSecState()
+			t.Cleanup(resetModSecState)
+			sdb, err := store.Open(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			prev := store.Global()
+			store.SetGlobal(sdb)
+			t.Cleanup(func() {
+				store.SetGlobal(prev)
+				_ = sdb.Close()
+			})
+			installModSecRegistryForTest(t, map[int]string{900134: "deny"})
+			cfg := &config.Config{}
+			cfg.Thresholds.ModSecEscalationHits = 3
+			cfg.Thresholds.ModSecEscalationWindowMin = 10
+			line := modsecApacheLine("203.0.113.67", "900134",
+				"CSM VP: PHP session upload progress field from a browser (PHP2Shell)", "")
+			if server == "litespeed" {
+				line = strings.Replace(liteSpeedTriggerLine210710, `"210710"`, `"900134"`, 1)
+			}
+			for hit := 1; hit <= 10; hit++ {
+				findings := parseModSecLogLineDeduped(line, cfg)
+				if hit == 1 {
+					if len(findings) != 1 || findings[0].Check != "modsec_block_realtime" {
+						t.Fatalf("first deny findings = %+v, want one HTTP block", findings)
+					}
+				} else if len(findings) != 0 {
+					t.Fatalf("excluded deny %d emitted findings: %+v", hit, findings)
+				}
+			}
+			if err := sdb.RemoveModSecNoEscalateRule(900134); err != nil {
+				t.Fatal(err)
+			}
+			for hit := 1; hit <= cfg.Thresholds.ModSecEscalationHits; hit++ {
+				findings := parseModSecLogLineDeduped(line, cfg)
+				if hit < cfg.Thresholds.ModSecEscalationHits {
+					if len(findings) != 0 {
+						t.Fatalf("excluded history or first deny caused a ban: %+v", findings)
+					}
+				} else if len(findings) != 1 || findings[0].Check != "modsec_csm_block_escalation" {
+					t.Fatalf("operator-enabled escalation findings = %+v", findings)
+				}
+			}
+		})
+	}
+}
+
 // The per-rule escalation exclusion still wins over the single-hit table.
 func TestParseModSec_StoreNoEscalateSuppressesSingleHit(t *testing.T) {
 	for _, rule := range []int{900122, 900133} {
