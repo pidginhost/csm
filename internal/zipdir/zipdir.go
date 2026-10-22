@@ -112,8 +112,9 @@ func Read(r io.ReaderAt, size int64, maxDirBytes uint64) (Directory, error) {
 // findEnd returns the end record whose comment reaches the end of tail. A
 // record found that way cannot be a decoy inside another record's comment.
 // Without one, it falls back to the record nearest the end whose comment
-// still fits, which is the record archive/zip opens: a file with bytes after
-// its end record, such as a trailing line break, reads the same in both.
+// still fits, which is the record archive/zip opens, but only when nothing
+// but padding follows it: a trailing line break or NUL fill reads the same in
+// every unzip, while other bytes could carry a decoy a lenient one would pick.
 func findEnd(tail []byte) int {
 	fallback := -1
 	for i := len(tail) - EndLen; i >= 0; i-- {
@@ -124,11 +125,22 @@ func findEnd(tail []byte) int {
 		switch end := i + EndLen + commentLen; {
 		case end == len(tail):
 			return i
-		case end < len(tail) && fallback < 0:
+		case end < len(tail) && fallback < 0 && onlyPadding(tail[end:]):
 			fallback = i
 		}
 	}
 	return fallback
+}
+
+func onlyPadding(b []byte) bool {
+	for _, c := range b {
+		switch c {
+		case 0, ' ', '\t', '\r', '\n':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func readZip64(r io.ReaderAt, endOffset int64) (end int64, records, size, offset uint64, err error) {

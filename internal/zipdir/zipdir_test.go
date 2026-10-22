@@ -173,3 +173,28 @@ func TestReadAcceptsBytesAfterEndRecord(t *testing.T) {
 		}
 	}
 }
+
+// Only padding may follow the end record when no record reaches EOF exactly:
+// other bytes could hold a decoy end record that a lenient unzip picks.
+func TestReadRefusesNonPaddingAfterEndRecord(t *testing.T) {
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	if _, err := zw.Create("a.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	decoy := make([]byte, EndLen)
+	binary.LittleEndian.PutUint32(decoy, EndSignature)
+	binary.LittleEndian.PutUint16(decoy[20:22], 0xffff) // comment overruns EOF
+	for name, tail := range map[string][]byte{
+		"junk":  []byte("junk"),
+		"decoy": decoy,
+	} {
+		data := append(append([]byte(nil), buf.Bytes()...), tail...)
+		if _, err := Read(bytes.NewReader(data), int64(len(data)), 16<<20); !errors.Is(err, ErrFormat) {
+			t.Errorf("%s after end record: err = %v, want ErrFormat", name, err)
+		}
+	}
+}
