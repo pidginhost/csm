@@ -98,7 +98,7 @@ func initializeFirewallActionHistory(tx *bolt.Tx) error {
 		if err != nil {
 			return err
 		}
-		if firewallActionPending(a.Phase) {
+		if firewallActionOutstanding(a) {
 			return nil
 		}
 		return recordFirewallActionHistory(tx, a, len(raw))
@@ -219,7 +219,7 @@ func pruneFirewallActionHistory(tx *bolt.Tx, index firewallJournalIndex) error {
 	return nil
 }
 
-// SweepFirewallActionsOlderThan deletes proven outcomes whose audit has been
+// SweepFirewallActionsOlderThan deletes settled outcomes whose audit has been
 // delivered and whose result is older than cutoff. Pending actions and
 // undelivered outcomes are retained regardless of age: recovery still needs
 // them. Deleting an outcome ends the undo window for that action.

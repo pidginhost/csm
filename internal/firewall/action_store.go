@@ -65,11 +65,15 @@ type FirewallAction struct {
 	// Members is the batch manifest. Without it the action is one member, its
 	// Request and Budget, as every record written before manifests is. With
 	// it, a batch of several members uses Request as its header.
-	Members      []ActionMember `json:"members,omitempty"`
-	Before       FirewallState  `json:"before"`
-	After        FirewallState  `json:"after"`
-	Revision     uint64         `json:"revision"`
-	Phase        string         `json:"phase"`
+	Members  []ActionMember `json:"members,omitempty"`
+	Before   FirewallState  `json:"before"`
+	After    FirewallState  `json:"after"`
+	Revision uint64         `json:"revision"`
+	Phase    string         `json:"phase"`
+	// Retired marks an unknown outcome recovery settled as expired_unproven:
+	// every effect had expired and the kernel held the retired state. The
+	// outcome stays unknown, but it no longer holds later mutations.
+	Retired      bool           `json:"retired,omitempty"`
 	CreatedAt    time.Time      `json:"created_at"`
 	UpdatedAt    time.Time      `json:"updated_at"`
 	Detail       string         `json:"detail,omitempty"`
@@ -139,6 +143,9 @@ type ActionStore interface {
 	ReadFirewallBatchMember(string) (FirewallAction, error)
 	PendingFirewallActions() ([]FirewallAction, error)
 	TransitionFirewallAction(string, string, string, time.Time) (FirewallAction, error)
+	// RetireFirewallAction commits the state an unknown action retires to
+	// at the given instant (RetiredActionState) and marks it retired.
+	RetireFirewallAction(string, time.Time) (FirewallAction, error)
 	FirewallAuditPending() ([]FirewallAction, error)
 	AcknowledgeFirewallAudit(string, uint64) error
 	ReadFirewallScanBudget(string) (int, error)
@@ -159,6 +166,11 @@ type Lifecycle struct {
 	mu    sync.Mutex
 	Store ActionStore
 	Audit func(FirewallAction) error
+
+	// RetirementClockTrusted runs with the engine lock held and must not
+	// call back into the engine. Nil or false refuses retirement; an error
+	// also reaches recovery's caller, even if the returned bool is true.
+	RetirementClockTrusted func() (bool, error)
 }
 
 // ActionSet is detached recovery evidence for one complete nftables set.

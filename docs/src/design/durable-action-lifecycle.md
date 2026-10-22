@@ -71,10 +71,26 @@ admission to audit acknowledgement, leaves recovery to prove an outcome or
 keep it unknown; the kernel is written at most once and each member is
 charged once. Storage and audit failures reach the caller even when recovery
 can later prove the outcome. A kernel holding only some members proves
-neither outcome, so the batch stays unknown until the kernel proves one or
-an operator resolves it. Audit delivery writes one record per member, with
-the member's action ID and the batch's outcome and version, in one durable
-write.
+neither outcome, so the batch stays unknown until the kernel proves one,
+an operator resolves it, or it retires. Audit delivery writes one record per
+member, with the member's action ID and the batch's outcome and version, in
+one durable write. An unknown block action retires as `expired_unproven`
+once all member targets are timed and expired, every row its before and
+after states disagree on is a verified timed block that has
+expired by the lease clock, its owner attests a trusted clock, its unknown
+outcome has reached the audit trail,
+and the kernel holds exactly the rows both states agree on. Recovery then
+commits those rows as the next revision in one transaction and frees the
+pending interlock. The outcome stays unknown, its charges stay spent, its
+audit records say `expired_unproven`, and nothing is applied again. A lease
+clock running ahead of the kernel finds an element the kernel still holds
+and retires nothing. A permanent, unverified or non-block effect, or any
+change outside the blocked rows, waits for an operator. A retired action
+cannot be resolved or undone. A missing or degraded clock attestation
+leaves the action pending; a failed attestation also reports its error.
+Saved blocked-set evidence must be present, and
+a changed set topology prevents retirement. IPv6 proof uses saved evidence
+even if IPv6 is now disabled.
 
 Batch evidence selects each member's current row by ID, target and planning
 time; retained rows from an earlier use of that ID are not current evidence.

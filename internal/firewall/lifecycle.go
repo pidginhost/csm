@@ -40,7 +40,7 @@ func (l *Lifecycle) execute(plan FirewallAction, kernel ActionKernel) (FirewallA
 		return FirewallAction{}, err
 	}
 	if !fresh {
-		if a.Phase != "verified" && a.Phase != "failed" {
+		if a.Phase != "verified" && a.Phase != "failed" && !a.Retired {
 			a, err = l.reconcile(a, kernel, nil)
 		} else {
 			err = actionResult(a)
@@ -74,6 +74,9 @@ func (l *Lifecycle) markUnknown(a FirewallAction, cause error) (FirewallAction, 
 	result, err := l.Store.TransitionFirewallAction(a.Request.ID, "unknown", cause.Error(), time.Now())
 	return result, errors.Join(fmt.Errorf("%w: %s: %w", ErrActionUnknown, a.Request.ID, cause), err)
 }
+
+var errFirewallUnproven = errors.New("kernel does not prove a complete before or after state")
+
 func (l *Lifecycle) reconcile(a FirewallAction, kernel ActionKernel, kernelErr error) (FirewallAction, error) {
 	observed, err := kernel.ObserveFirewallAction(a)
 	if err != nil {
@@ -90,7 +93,7 @@ func (l *Lifecycle) reconcile(a FirewallAction, kernel ActionKernel, kernelErr e
 	case observed.After && observed.Before && a.Phase == "planned":
 		phase = "failed"
 	default:
-		return l.markUnknown(a, errors.New("kernel does not prove a complete before or after state"))
+		return l.markUnknown(a, errFirewallUnproven)
 	}
 	detail := ""
 	if kernelErr != nil {
@@ -112,21 +115,64 @@ func (l *Lifecycle) Recover(kernel ActionKernel) error {
 	if err != nil {
 		return err
 	}
-	var failures []error
+	var failures, uncertain []error
+	var unknown []FirewallAction
 	for _, a := range actions {
-		if _, err := l.reconcile(a, kernel, nil); err != nil && !errors.Is(err, ErrActionFailed) {
+		result, err := l.reconcile(a, kernel, nil)
+		switch {
+		case err == nil || errors.Is(err, ErrActionFailed):
+		case result.Phase == "unknown":
+			unknown, uncertain = append(unknown, result), append(uncertain, err)
+		default:
 			failures = append(failures, err)
 		}
 	}
-	failures = append(failures, l.deliverAudit())
-	return errors.Join(failures...)
+	auditErr := l.deliverAudit()
+	if auditErr == nil {
+		// A retirement follows the delivered outcome it settles.
+		retired := false
+		for i, a := range unknown {
+			ok, err := l.retire(a, kernel)
+			if ok {
+				retired = true
+				if errors.Is(uncertain[i], errFirewallUnproven) {
+					uncertain[i] = nil
+				}
+			} else if err != nil {
+				failures = append(failures, err)
+			}
+		}
+		if retired {
+			auditErr = l.deliverAudit()
+		}
+	}
+	return errors.Join(append(append(failures, uncertain...), auditErr)...)
+}
+
+// retire settles an unknown action as expired_unproven when the kernel
+// proves the state it retires to (spec 5.4, design D7). It never writes the
+// kernel; a kernel that cannot prove it leaves the action pending.
+func (l *Lifecycle) retire(a FirewallAction, kernel ActionKernel) (bool, error) {
+	prover, ok := kernel.(interface {
+		ProveFirewallRetirement(FirewallAction) (time.Time, bool, error)
+	})
+	if !ok {
+		return false, nil
+	}
+	at, proven, err := prover.ProveFirewallRetirement(a)
+	if err != nil || !proven {
+		return false, err
+	}
+	if _, err := l.Store.RetireFirewallAction(a.Request.ID, at); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // Resolve records the outcome an operator established by hand for an action
-// the kernel could not prove. It is the only way out of an uncertain outcome,
-// which otherwise refuses every later mutation. Kernel evidence still wins: a
-// proven outcome is recorded instead of the asserted one, and a settled action
-// is never rewritten. Detail names who decided, and reaches the audit trail.
+// the kernel could not prove or retire. Kernel evidence still wins: a proven
+// outcome is recorded instead of the asserted one, and a settled action is
+// never rewritten. Detail names who decided, and reaches the audit trail.
 func (l *Lifecycle) Resolve(id, outcome, detail string, kernel ActionKernel) (FirewallAction, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -140,8 +186,12 @@ func (l *Lifecycle) Resolve(id, outcome, detail string, kernel ActionKernel) (Fi
 	if err != nil {
 		return FirewallAction{}, err
 	}
-	if a.Phase != "unknown" {
-		return FirewallAction{}, fmt.Errorf("%w: action %s is %s, not uncertain", ErrStateConflict, id, a.Phase)
+	if a.Phase != "unknown" || a.Retired {
+		phase := a.Phase
+		if a.Retired {
+			phase = "retired as expired_unproven"
+		}
+		return FirewallAction{}, fmt.Errorf("%w: action %s is %s, not uncertain", ErrStateConflict, id, phase)
 	}
 	proven, reconcileErr := l.reconcile(a, kernel, nil)
 	if proven.Phase == "verified" || proven.Phase == "failed" {
