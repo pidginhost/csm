@@ -3190,10 +3190,12 @@ test('a range change drops the abuse flags of the old range', async () => {
     assert.equal(flags(), '--', 'the account kept the flag of the old range');
 });
 
-test('the Flags column keeps its distance from Share', async () => {
+test('the Flags column keeps its distance from Share, but not on phone row cards', async () => {
     const page = await sendingPage({ '/api/v1/email/senders': senders([{ account: 'shopuser', messages: 3 }]) });
-    assert.ok(page.document.querySelectorAll('#email-sending-table thead th')[3].classList.contains('ps-3'));
-    assert.ok(sendingRows(page)[0].querySelector('[data-label="Flags"]').classList.contains('ps-3'));
+    for (const el of [page.document.querySelectorAll('#email-sending-table thead th')[3], sendingRows(page)[0].querySelector('[data-label="Flags"]')]) {
+        assert.ok(el.classList.contains('ps-md-3'), el.tagName + ' lacks ps-md-3');
+        assert.equal(el.classList.contains('ps-3'), false, el.tagName + ' pads the phone row card');
+    }
 });
 
 test('an unchanged held mail summary keeps its link and the focus', async () => {
@@ -3558,4 +3560,46 @@ test('an empty queue says so once, in the shared empty state', async () => {
         '/api/v1/email/queue-composition': { total: 3, real: 3, bounce: 0, frozen: 0, flushable_backscatter: 0, top_recipients: [] } });
     assert.equal(page.document.getElementById('queue-composition').parentElement.hidden, false);
     assert.match(flat(page.document.getElementById('queue-composition')), /Real mail/);
+});
+
+// ---------- Findings summary under the Auth failures chip ----------
+
+test('Findings under the Auth failures chip repeats the Failed logins number and the alerts raised', async () => {
+    const page = emailPage({ url: 'https://csm.example.test/email?tab=auth' });
+    await settle();
+    const summary = page.document.getElementById('email-findings-summary');
+    assert.ok(page.document.getElementById('email-pane-findings').contains(summary), 'the summary is not on Findings');
+    page.respond('/api/v1/email/overview', 200, overview({ logins_smtp: 300, logins_mailbox: 138 }));
+    page.respond('/api/v1/email/checks', 200, CHECKS);
+    await settle();
+    assert.equal(kpi(page, 'kpi-logins').value, '438');
+    page.respond('/api/v1/history?', 200, items([{ severity: 2, check: 'mail_bruteforce', message: 'm', timestamp: AT }], { total: 12, limit: 250 }));
+    await settle();
+    assert.equal(summary.hidden, false);
+    assert.equal(flat(summary), 'Failed login attempts in this range: 438. Alerts raised: 12.');
+    assert.equal(summary.children.length, 0, 'the summary holds markup');
+
+    // Without the chip there is no such line.
+    page.document.getElementById('email-filter-auth').click();
+    await settle();
+    page.respond('/api/v1/history?', 200, items([], { total: 40 }));
+    await settle();
+    assert.equal(summary.hidden, true);
+    assert.equal(flat(summary), '');
+});
+
+test('the Failed logins card opens Findings with its number repeated', async () => {
+    const page = emailPage();
+    await settle();
+    page.respond('/api/v1/email/overview', 200, overview({ logins_smtp: 5, logins_mailbox: 2 }));
+    page.respond('/api/v1/email/checks', 200, CHECKS);
+    page.respond('/api/v1/history?', 200, items([], { total: 99 }));
+    await settle();
+    const summary = page.document.getElementById('email-findings-summary');
+    assert.equal(summary.hidden, true, 'a summary without the chip');
+    page.document.querySelector('#kpi-logins a').click();
+    await settle();
+    page.respond('/api/v1/history?', 200, items([], { total: 0 }));
+    await settle();
+    assert.equal(flat(summary), 'Failed login attempts in this range: 7. Alerts raised: 0.');
 });

@@ -184,6 +184,7 @@
                 renderHeldSummary();
                 renderRejectsCounts();
                 renderSendersSummary();
+                renderFindingsSummary();
             })
             .catch(function(err) {
                 if (seq !== _overviewSeq) return;
@@ -203,6 +204,7 @@
                 renderHeldSummary();
                 renderRejectsCounts();
                 renderSendersSummary();
+                renderFindingsSummary();
             });
     }
 
@@ -1024,7 +1026,7 @@
         var pct = total > 0 ? a.messages / total * 100 : 0;
         share.textContent = total > 0 ? (pct < 1 ? '<1%' : Math.round(pct) + '%') : '--';
         tr.appendChild(share);
-        var flagged = queueCell('Flags', 'ps-3');
+        var flagged = queueCell('Flags', 'ps-md-3');
         if (flags.length === 0) flagged.appendChild(node('span', 'text-muted', '--'));
         flags.forEach(function(f) {
             flagged.appendChild(node('span', 'badge bg-red-lt me-1', f.label + (f.count > 1 ? ' (' + num(f.count) + ')' : '')));
@@ -1392,6 +1394,9 @@
         var range = currentRange();
         var sev = sevEl ? sevEl.value : '';
         var checks = findingsChecks();
+        var auth = authOn();
+        _authAlerts = null;
+        renderFindingsSummary();
         var params = 'scope=email&limit=' + EMAIL_FINDINGS_LIMIT;
         if (checks) params += '&checks=' + encodeURIComponent(checks);
         if (sev) params += '&severity=' + encodeURIComponent(sev);
@@ -1401,6 +1406,8 @@
                 if (seq !== _emailFindingsLoadSeq) return;
                 var findings = data.items;
                 setTabCount('findings', data.total);
+                _authAlerts = auth ? data.total || 0 : null;
+                renderFindingsSummary();
                 renderFindingsTable(findings, 'No email findings ' + rangeWords(range));
                 var label = document.getElementById('email-total-label');
                 if (label) {
@@ -1417,6 +1424,29 @@
                 clearEmailFindingsState();
                 CSM.loadError(document.getElementById('email-tbody'), loadFindings, { title: 'Failed to load email findings', error: err });
             });
+    }
+
+    // The findings the Auth failures chip matched in the range, once they
+    // answered; null otherwise.
+    var _authAlerts = null;
+
+    // renderFindingsSummary shows, under the Auth failures chip, the Failed
+    // logins card's number beside the alerts the chip lists: attempts are
+    // log lines, alerts are the findings raised from them. Without the chip
+    // there is no summary.
+    function renderFindingsSummary() {
+        var el = document.getElementById('email-findings-summary');
+        if (!el) return;
+        var parts = [];
+        if (authOn()) {
+            if (_overview) {
+                var t = _overview.totals || {};
+                parts.push('Failed login attempts in this range: ' + num((t.logins_smtp || 0) + (t.logins_mailbox || 0)) + '.');
+            }
+            if (_authAlerts !== null) parts.push('Alerts raised: ' + num(_authAlerts) + '.');
+        }
+        el.textContent = parts.join(' ');
+        el.hidden = parts.length === 0;
     }
 
     function resetEmailFindingsTable() {

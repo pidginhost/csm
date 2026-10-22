@@ -317,7 +317,7 @@ paths:
             sample error text; each sending IP has last_seen. lines is how
             many log lines were read. window_start and window_end are the
             times of the first and last log lines read; both are left out
-            when no line carries a time.
+            when no line carries a time. One read is reused for 60 s.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/JSONObject" }

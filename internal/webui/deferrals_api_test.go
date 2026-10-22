@@ -147,3 +147,46 @@ func TestApiEmailDeferralsMethodNotAllowed(t *testing.T) {
 		t.Fatalf("status = %d, want 405", w.Code)
 	}
 }
+
+type countingReporter struct {
+	reads int
+	rep   intel.Report
+}
+
+func (c *countingReporter) Report() (intel.Report, error) {
+	c.reads++
+	return c.rep, nil
+}
+
+// The report reads up to 8 MiB of exim_mainlog. The page asks for it on
+// every load and every minute while its tab is open, so one read serves a
+// minute of requests.
+func TestApiEmailDeferralsReadsTheLogOncePerMinute(t *testing.T) {
+	s := newTestServer(t, "tok")
+	src := &countingReporter{rep: intel.Report{Deferrals: 2, Lines: 900, Providers: []intel.ProviderRollup{}, OutboundIPs: []intel.OutboundIPRollup{}}}
+	s.deferralReporter = src
+	get := func() intel.Report {
+		t.Helper()
+		w := httptest.NewRecorder()
+		s.apiEmailDeferrals(w, httptest.NewRequest(http.MethodGet, "/api/v1/email/deferrals", nil))
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", w.Code)
+		}
+		return decodeReport(t, w.Body.Bytes())
+	}
+	if rep := get(); rep.Deferrals != 2 || rep.Lines != 900 {
+		t.Fatalf("first answer = %+v", rep)
+	}
+	if rep := get(); rep.Deferrals != 2 || rep.Lines != 900 {
+		t.Fatalf("second answer = %+v", rep)
+	}
+	if src.reads != 1 {
+		t.Errorf("two requests within a minute read the log %d times, want 1", src.reads)
+	}
+	// Past the minute the log is read again.
+	withMemoAges(t, 0, 0)
+	get()
+	if src.reads != 2 {
+		t.Errorf("an expired answer was reused: %d reads, want 2", src.reads)
+	}
+}

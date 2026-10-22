@@ -30,7 +30,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Fixed
 
-- Quarantined malware subjects, on the Email Security page and in the quarantine API, now show decoded and without characters that can reverse or hide text, including messages already held.
+- Quarantined malware subjects now show decoded, without characters that reverse or hide text, on the Email Security page and in the quarantine API.
 - ModSecurity warnings no longer lead to firewall bans.
 - Disabling firewall escalation for a ModSecurity rule now prevents further bans from its earlier matches.
 - The PHP end-of-life audit no longer says old branches get no security fixes; it points to vendor backports instead.

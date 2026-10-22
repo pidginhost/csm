@@ -371,7 +371,7 @@
                                 <th>Account</th>
                                 <th class="text-end">Messages</th>
                                 <th class="text-end">Share</th>
-                                <th class="ps-3">Flags</th>
+                                <th class="ps-md-3">Flags</th>
                                 <th class="text-end">Actions</th>
                             </tr>
                         </thead>
@@ -477,6 +477,7 @@
         <!-- Findings: scoped by the header range -->
         <div class="tab-pane fade" id="email-pane-findings" role="tabpanel" aria-labelledby="email-tab-findings" tabindex="0">
             <div class="card">
+                <div class="card-body border-bottom fw-medium" id="email-findings-summary" hidden></div>
                 <div class="csm-toolbar">
                     <input type="text" id="email-search" class="form-control form-control-sm csm-toolbar__search" placeholder="Search findings..." aria-label="Search findings">
                     <select id="filter-severity" class="form-select form-select-sm csm-auto-width" aria-label="Severity">
