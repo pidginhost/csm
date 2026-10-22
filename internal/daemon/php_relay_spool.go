@@ -278,7 +278,7 @@ func (p *spoolPipeline) onFileAt(path string, at time.Time) {
 	state.recordActive(msgID, now)
 
 	if p.policies == nil || !p.policies.IsProxyIP(sig.SourceIP) {
-		p.eng.ips.appendMessage(sig.SourceIP, sig.ScriptKey, now, h.Subject, h.Recipients)
+		p.eng.ips.appendMessage(sig.SourceIP, sig.ScriptKey, now, h.Subject, h.Recipients, auth)
 	}
 
 	if p.rebuilding.Load() {

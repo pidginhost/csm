@@ -14,8 +14,8 @@ func TestPerIPWindow_DistinctRecipients(t *testing.T) {
 	ip := "192.0.2.50"
 
 	// Case/bracket normalization and dedup: three logical recipients.
-	w.appendMessage(ip, "k:/", now, "", []string{"Admin@Example.com", "<admin@example.com>", "ops@example.org"})
-	w.appendMessage(ip, "k:/", now, "", []string{"sales@example.net"})
+	w.appendMessage(ip, "k:/", now, "", []string{"Admin@Example.com", "<admin@example.com>", "ops@example.org"}, nil)
+	w.appendMessage(ip, "k:/", now, "", []string{"sales@example.net"}, nil)
 
 	count, known := w.distinctRecipientsSince(ip, now.Add(-time.Minute))
 	if !known {
@@ -26,7 +26,7 @@ func TestPerIPWindow_DistinctRecipients(t *testing.T) {
 	}
 
 	// Recipients older than the window are excluded.
-	w.appendMessage(ip, "k:/", now.Add(-2*time.Hour), "", []string{"old@example.com"})
+	w.appendMessage(ip, "k:/", now.Add(-2*time.Hour), "", []string{"old@example.com"}, nil)
 	count, _ = w.distinctRecipientsSince(ip, now.Add(-time.Minute))
 	if count != 3 {
 		t.Fatalf("distinct recipients with window = %d, want 3", count)
@@ -38,12 +38,33 @@ func TestPerIPWindow_DistinctRecipients(t *testing.T) {
 	}
 }
 
+// Recipients in the sending account's own domains keep the window known but
+// are not counted. Look-alike domains outside the account still count.
+func TestPerIPWindow_OwnDomainRecipientsAreKnownButNotCounted(t *testing.T) {
+	w := newPerIPWindow(64)
+	now := time.Unix(1_700_000_000, 0).UTC()
+	ip := "192.0.2.55"
+	own := map[string]struct{}{"site.example": {}}
+
+	w.appendMessage(ip, "k:/", now, "", []string{"Admin@Site.example", "ops@mail.site.example"}, own)
+	count, known := w.distinctRecipientsSince(ip, now.Add(-time.Minute))
+	if count != 0 || !known {
+		t.Fatalf("own-domain recipients = (%d,%v), want (0,true)", count, known)
+	}
+
+	w.appendMessage(ip, "k:/", now, "", []string{"victim@evilsite.example", "victim@site.example.test"}, own)
+	count, known = w.distinctRecipientsSince(ip, now.Add(-time.Minute))
+	if count != 2 || !known {
+		t.Fatalf("look-alike recipients = (%d,%v), want (2,true)", count, known)
+	}
+}
+
 func TestPerIPWindow_StaleRecipientsAreUnknown(t *testing.T) {
 	w := newPerIPWindow(64)
 	now := time.Unix(1_700_000_000, 0).UTC()
 	ip := "192.0.2.51"
 
-	w.appendMessage(ip, "k:/", now.Add(-2*time.Hour), "", []string{"old@example.com"})
+	w.appendMessage(ip, "k:/", now.Add(-2*time.Hour), "", []string{"old@example.com"}, nil)
 
 	count, known := w.distinctRecipientsSince(ip, now.Add(-5*time.Minute))
 	if count != 0 || known {
@@ -56,8 +77,8 @@ func TestPerIPWindow_RecipientParseGapMakesWindowUnknown(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0).UTC()
 	ip := "192.0.2.52"
 
-	w.appendMessage(ip, "k:/", now, "", []string{"admin@example.com"})
-	w.appendMessage(ip, "k:/", now.Add(time.Second), "", nil)
+	w.appendMessage(ip, "k:/", now, "", []string{"admin@example.com"}, nil)
+	w.appendMessage(ip, "k:/", now.Add(time.Second), "", nil, nil)
 
 	count, known := w.distinctRecipientsSince(ip, now.Add(-time.Minute))
 	if count != 1 || known {
@@ -70,8 +91,8 @@ func TestPerIPWindow_StaleRecipientParseGapDoesNotHideFreshKnownData(t *testing.
 	now := time.Unix(1_700_000_000, 0).UTC()
 	ip := "192.0.2.53"
 
-	w.appendMessage(ip, "k:/", now.Add(-2*time.Hour), "", nil)
-	w.appendMessage(ip, "k:/", now, "", []string{"admin@example.com"})
+	w.appendMessage(ip, "k:/", now.Add(-2*time.Hour), "", nil, nil)
+	w.appendMessage(ip, "k:/", now, "", []string{"admin@example.com"}, nil)
 
 	count, known := w.distinctRecipientsSince(ip, now.Add(-5*time.Minute))
 	if count != 1 || !known {
@@ -85,7 +106,7 @@ func TestPerIPWindow_RecipientEvictionKeepsHighDiversityAboveGate(t *testing.T) 
 	ip := "192.0.2.54"
 
 	for i := 0; i < maxTrackedRecipients+50; i++ {
-		w.appendMessage(ip, "k:/", now, "", []string{fmt.Sprintf("victim%03d@example.com", i)})
+		w.appendMessage(ip, "k:/", now, "", []string{fmt.Sprintf("victim%03d@example.com", i)}, nil)
 	}
 
 	count, known := w.distinctRecipientsSince(ip, now.Add(-time.Minute))
@@ -110,7 +131,7 @@ func seedFanout(psw *perScriptWindow, pip *perIPWindow, ip string, now time.Time
 			rcpts = recipients[i]
 		}
 		psw.getOrCreate(k).appendMessage(scriptEvent{At: at, SourceIP: ip}, rcpts)
-		pip.appendMessage(ip, k, at, "subj", rcpts)
+		pip.appendMessage(ip, k, at, "subj", rcpts, nil)
 	}
 }
 

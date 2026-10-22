@@ -78,7 +78,9 @@ type recipientTracker struct {
 }
 
 // record folds one message's recipients in. An empty list marks a parse gap.
-func (t *recipientTracker) record(recipients []string, at time.Time, max int) {
+// A recipient for which skip returns true still counts as parsed, so the
+// window stays known, but is left out of the distinct count. skip may be nil.
+func (t *recipientTracker) record(recipients []string, at time.Time, max int, skip func(string) bool) {
 	recorded := false
 	if len(recipients) > 0 {
 		if t.recipients == nil {
@@ -89,13 +91,16 @@ func (t *recipientTracker) record(recipients []string, at time.Time, max int) {
 			if r == "" {
 				continue
 			}
+			recorded = true
+			if skip != nil && skip(r) {
+				continue
+			}
 			if _, exists := t.recipients[r]; !exists && len(t.recipients) >= max {
 				evictOldestRecipient(t.recipients)
 			}
 			if at.After(t.recipients[r]) {
 				t.recipients[r] = at
 			}
-			recorded = true
 		}
 	}
 	if recorded && at.After(t.lastAt) {
@@ -171,7 +176,7 @@ func (s *scriptState) appendMessage(e scriptEvent, recipients []string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.appendLocked(e)
-	s.rcpts.record(recipients, e.At, maxTrackedRecipients)
+	s.rcpts.record(recipients, e.At, maxTrackedRecipients, nil)
 }
 
 // distinctRecipientsSince reports the distinct recipients this script reached
@@ -436,8 +441,11 @@ func (s *ipState) appendLocked(k scriptKey, at time.Time, capPerIP int, subject 
 
 // appendMessage records a script hit and its recipient parse result while
 // holding the same IP-state lock, keeping the Path 4 gate fail-open when
-// evaluation runs concurrently with spool processing.
-func (w *perIPWindow) appendMessage(ip string, k scriptKey, at time.Time, subject string, recipients []string) {
+// evaluation runs concurrently with spool processing. Recipients in the
+// sending account's own domains are parsed but not counted: that mail reaches
+// the site's owner, and an attacker cannot use it to reach anyone else. An
+// empty ownDomains set counts every recipient.
+func (w *perIPWindow) appendMessage(ip string, k scriptKey, at time.Time, subject string, recipients []string, ownDomains map[string]struct{}) {
 	if ip == "" {
 		return
 	}
@@ -446,7 +454,9 @@ func (w *perIPWindow) appendMessage(ip string, k scriptKey, at time.Time, subjec
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.appendLocked(k, at, w.capPerIP, subject)
-	s.rcpts.record(recipients, at, maxTrackedRecipients)
+	s.rcpts.record(recipients, at, maxTrackedRecipients, func(r string) bool {
+		return IsAuthorisedFromDomain(emailspool.ExtractDomain(r), ownDomains)
+	})
 }
 
 func (w *perIPWindow) distinctScriptsSince(ip string, since time.Time) int {
@@ -835,11 +845,13 @@ func (e *evaluator) scriptIsLowDiversityNotification(s *scriptState, since time.
 
 // fanoutIsLowDiversityNotification reports whether a script fanout from this
 // source IP looks like WordPress notification mail (comment moderation, contact
-// forms): many distinct scripts but a small fixed recipient set. It returns
-// true only when recipient data is known AND the distinct recipient count is
-// below the configured minimum, so Path 4 still fires whenever recipients are
-// diverse (real relay) or unknown (recipient parsing gap -- fail open). A
-// non-positive threshold disables the gate and preserves the original behavior.
+// forms): many distinct scripts but a small fixed recipient set. Mail to each
+// sending site's own domains is not counted, so one client commenting on many
+// hosted sites does not add up its owners into a relay. It returns true only
+// when recipient data is known AND the distinct recipient count is below the
+// configured minimum, so Path 4 still fires whenever recipients are diverse
+// (real relay) or unknown (recipient parsing gap -- fail open). A non-positive
+// threshold disables the gate and preserves the original behavior.
 func (e *evaluator) fanoutIsLowDiversityNotification(sourceIP string, since time.Time, minRcpt int) bool {
 	if minRcpt <= 0 || e.ips == nil {
 		return false
