@@ -1654,6 +1654,12 @@
     var _queueFlushable = 0;
     // Messages whose details are open. A reload opens them again.
     var _queueOpen = {};
+    // What the rows on screen show, apart from the ages; a list page that
+    // shows the same leaves them, with the focus and open details, alone.
+    var _queueSig = '';
+    // Messages with an action in flight. Their actions stay disabled,
+    // across a rebuild too.
+    var _queueBusy = {};
 
     // The per-message actions, in the order the row offers them. Each
     // confirm names the message and its recipients.
@@ -1730,11 +1736,26 @@
         CSM.loadError(summary, loadQueue, { title: 'Queue size unknown', error: err });
     }
 
+    // renderQueue shows a list page. The 30 s poll mostly brings the page
+    // on screen again; rebuilding it would drop the focus and read every
+    // open message again, so then only the summary and the ages change.
     function renderQueue(data) {
+        var items = Array.isArray(data.items) ? data.items : [];
+        var sig = JSON.stringify([data.total, items.map(function(m) {
+            return [m.id, m.frozen, m.recipient_count, m.reason];
+        })]);
         _queue = data;
         renderQueueSummary();
-        renderQueueRows(Array.isArray(data.items) ? data.items : []);
         renderQueuePager(data.total || 0);
+        if (queueTable && sig === _queueSig) {
+            items.forEach(function(m) {
+                var row = queueRowEl(m.id);
+                if (row) row.cells[0].textContent = CSM.formatDuration(m.age_seconds);
+            });
+            return;
+        }
+        _queueSig = sig;
+        renderQueueRows(items);
     }
 
     // queueSize is the live queue size the card and the tab count show,
@@ -1790,6 +1811,25 @@
     function resetQueueTable() {
         if (queueTable) queueTable.destroy();
         queueTable = null;
+    }
+
+    // queueRowEl returns the row on screen for a message, or null.
+    function queueRowEl(id) {
+        var rows = document.querySelectorAll('#email-queue-tbody tr[data-queue-id]');
+        for (var i = 0; i < rows.length; i++) {
+            if (rows[i].getAttribute('data-queue-id') === id) return rows[i];
+        }
+        return null;
+    }
+
+    // setQueueBusy marks a message's action as running, or done, and sets
+    // its buttons on screen to match.
+    function setQueueBusy(id, busy) {
+        if (busy) _queueBusy[id] = true;
+        else delete _queueBusy[id];
+        var row = queueRowEl(id);
+        if (!row) return;
+        row.querySelectorAll('[data-queue-action]').forEach(function(btn) { btn.disabled = busy; });
     }
 
     function queueItem(id) {
@@ -1875,6 +1915,7 @@
             btn.title = a.title;
             btn.setAttribute('data-queue-action', name);
             btn.setAttribute('aria-label', a.title + ', message ' + m.id);
+            btn.disabled = !!_queueBusy[m.id];
             buttons.appendChild(btn);
         });
         actions.appendChild(buttons);
@@ -1894,9 +1935,18 @@
         return tr;
     }
 
+    // renderQueueRows rebuilds the rows. The control that had the focus
+    // gets it back, and open messages reopen with their details on screen
+    // while they are read again.
     function renderQueueRows(items) {
         var tbody = document.getElementById('email-queue-tbody');
         if (!tbody) return;
+        var focus = queueFocus(tbody);
+        var shown = {};
+        Object.keys(_queueOpen).forEach(function(id) {
+            var row = queueRowEl(id);
+            if (row && row.nextElementSibling) shown[id] = row.nextElementSibling.querySelector('[data-queue-detail]');
+        });
         resetQueueTable();
         var count = document.getElementById('email-queue-count');
         var total = _queue.total || 0;
@@ -1925,10 +1975,31 @@
             mobileRowCard: true
         });
         reopen.forEach(function(r) {
-            _queueOpen[r[0].id] = true;
+            var m = r[0], old = shown[m.id];
+            _queueOpen[m.id] = true;
             CSM.toggleDetailRow(r[1].querySelector('.expand-btn'));
-            loadQueueDetail(r[0], r[2]);
+            if (old) {
+                var host = r[2].querySelector('[data-queue-detail]');
+                host.parentNode.replaceChild(old, host);
+            }
+            loadQueueDetail(m, r[2], !!old);
         });
+        if (focus) {
+            var row = queueRowEl(focus.id);
+            var target = row && row.querySelector(focus.sel);
+            if (target) target.focus();
+        }
+    }
+
+    // queueFocus names the row control that has the focus, to give it back
+    // after a rebuild.
+    function queueFocus(tbody) {
+        var el = document.activeElement;
+        var row = el && tbody.contains(el) ? el.closest('tr[data-queue-id]') : null;
+        if (!row) return null;
+        var action = el.getAttribute('data-queue-action');
+        var sel = action ? '[data-queue-action="' + action + '"]' : el.classList.contains('expand-btn') ? '.expand-btn' : '';
+        return sel ? { id: row.getAttribute('data-queue-id'), sel: sel } : null;
     }
 
     function renderQueuePager(total) {
@@ -1941,9 +2012,11 @@
         document.getElementById('email-queue-next').disabled = _queuePage >= pages;
     }
 
-    function loadQueueDetail(m, details) {
+    // loadQueueDetail reads an open message. quiet keeps what the details
+    // show until the answer comes, for a message read again.
+    function loadQueueDetail(m, details, quiet) {
         var host = details.querySelector('[data-queue-detail]');
-        host.replaceChildren(node('div', 'text-muted', 'Loading the message...'));
+        if (!quiet) host.replaceChildren(node('div', 'text-muted', 'Loading the message...'));
         CSM.get('/api/v1/email/queue/' + encodeURIComponent(m.id), { silent: true, refresh: false })
             .then(function(d) { renderQueueDetail(host, d); })
             .catch(function(err) {
@@ -1991,10 +2064,10 @@
         host.replaceChildren.apply(host, parts);
     }
 
-    function queueAction(m, name, btn) {
+    function queueAction(m, name) {
         var a = QUEUE_ACTIONS[name];
         CSM.confirm(a.ask(queueTarget(m), m), { danger: !!a.danger, okLabel: a.title }).then(function() {
-            btn.disabled = true;
+            setQueueBusy(m.id, true);
             // exim can take most of a minute to act and to list the queue.
             CSM.post('/api/v1/email/queue/' + encodeURIComponent(m.id) + '/' + name, {}, { timeoutMs: 60000 })
                 .then(function(res) {
@@ -2013,7 +2086,10 @@
                     else if (err && err.status && !/could not be read back/.test(CSM.errorText(err))) CSM.toast('Nothing changed: ' + CSM.errorText(err), 'warning');
                     else CSM.toast('Outcome unknown: ' + (err && err.name === 'AbortError' ? 'no answer within a minute' : CSM.errorText(err)) + '. Refresh to check.', 'warning');
                 })
-                .then(reloadQueue);
+                .then(function() {
+                    setQueueBusy(m.id, false);
+                    reloadQueue();
+                });
         }).catch(function() { /* cancelled */ });
     }
 
@@ -2035,7 +2111,7 @@
                 return;
             }
             var btn = e.target.closest('[data-queue-action]');
-            if (btn) queueAction(m, btn.getAttribute('data-queue-action'), btn);
+            if (btn) queueAction(m, btn.getAttribute('data-queue-action'));
         });
     }
 
@@ -2423,8 +2499,14 @@
         var badge = btn && btn.querySelector('[data-tab-count]');
         if (!badge) return;
         var lv = Object.prototype.hasOwnProperty.call(TAB_COUNT_LEVELS, level) ? TAB_COUNT_LEVELS[level] : ['bg-secondary-lt', ''];
+        var text = n == null ? '' : typeof n === 'number' ? num(n) : n;
+        // A new count can widen its tab and push the open tab out of the
+        // strip. Bring it back only if it was in view: the polls must not
+        // undo the operator scrolling the strip.
+        var active = tabsEl.querySelector('.nav-link.active');
+        var reveal = badge.textContent !== text && tabInView(active);
         badge.hidden = n == null;
-        badge.textContent = n == null ? '' : typeof n === 'number' ? num(n) : n;
+        badge.textContent = text;
         badge.className = 'badge ms-1 ' + lv[0];
         var words = btn.querySelector('[data-tab-count-text]');
         if (words) {
@@ -2432,7 +2514,14 @@
             else if (typeof n !== 'number') words.textContent = 'count unknown';
             else words.textContent = num(n) + ' ' + TAB_COUNT_WORDS[name][n === 1 ? 0 : 1] + lv[1];
         }
-        revealTab(tabsEl.querySelector('.nav-link.active'));
+        if (reveal) revealTab(active);
+    }
+
+    // tabInView reports whether a tab shows whole in the strip.
+    function tabInView(btn) {
+        if (!btn) return false;
+        var strip = tabsEl.getBoundingClientRect(), tab = btn.getBoundingClientRect();
+        return tab.left >= strip.left && tab.right <= strip.right;
     }
 
     // loadTab loads what a tab shows the first time it opens; force loads

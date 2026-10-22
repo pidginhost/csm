@@ -1848,6 +1848,85 @@ test('a failed queue reload drops the old count, and says so once', async () => 
     assert.deepEqual(page.toasts, []);
 });
 
+// detailOf is the expanded message's answer, with its delivery log.
+function detailOf(id, extra) {
+    return Object.assign(queueMsg(id), { recipients: ['first@example.net'], recipient_count: 1, delivered: 3,
+        msglog: ['2026-10-21 09:00:01 first@example.net R=dkim_lookuphost T=remote_smtp defer (-44): Connection refused'] }, extra);
+}
+
+// queueTick reads the queue again, as the 30 s timer does, and answers
+// the list with list.
+async function queueTick(page, list, extra) {
+    page.document.getElementById('email-refresh').click();
+    await settle();
+    page.respond('/api/v1/email/queue?', 200, queueList(list, extra));
+    await settle();
+}
+
+test('an unchanged queue page keeps its rows, the focus and the open message', async () => {
+    const page = await queuePage([queueMsg(QID[0]), queueMsg(QID[1])]);
+    const doc = page.document;
+    const row = queueRow(page, QID[1]);
+    row.querySelector('.expand-btn').click();
+    await settle();
+    page.respond('/api/v1/email/queue/' + QID[1], 200, detailOf(QID[1]));
+    await settle();
+    const retry = row.querySelector('[data-queue-action="retry"]');
+    retry.focus();
+    // Thirty seconds on, the same messages, each half a minute older.
+    await queueTick(page, [queueMsg(QID[0], { age_seconds: 1830 }), queueMsg(QID[1], { age_seconds: 1830 })]);
+    assert.equal(queueRow(page, QID[1]), row, 'the rows were rebuilt');
+    assert.equal(doc.activeElement, retry, 'the focus left the row');
+    assert.ok(row.nextElementSibling.classList.contains('show'), 'the open message closed');
+    assert.match(flat(row.nextElementSibling), /Already delivered: 3/);
+    assert.equal(page.pending('/api/v1/email/queue/' + QID[1]).length, 0, 'the open message was read again');
+    // The ages still move on.
+    assert.equal(flat(row.children[0]), '30m 30s');
+});
+
+test('a rebuilt queue page gives the focus back and keeps open messages on screen', async () => {
+    const page = await queuePage([queueMsg(QID[0]), queueMsg(QID[1])]);
+    const doc = page.document;
+    queueRow(page, QID[1]).querySelector('.expand-btn').click();
+    await settle();
+    page.respond('/api/v1/email/queue/' + QID[1], 200, detailOf(QID[1]));
+    await settle();
+    const old = queueRow(page, QID[1]).querySelector('[data-queue-action="delete"]');
+    old.focus();
+    // The first message left and a new one arrived.
+    await queueTick(page, [queueMsg(QID[1]), queueMsg(QID[2])]);
+    const row = queueRow(page, QID[1]);
+    const del = row.querySelector('[data-queue-action="delete"]');
+    assert.notEqual(del, old, 'the page was not rebuilt');
+    assert.equal(doc.activeElement, del, 'the focus did not come back to Delete');
+    const details = row.nextElementSibling;
+    assert.ok(details.classList.contains('show'), 'the open message closed');
+    // The details stay as they were while they are read again.
+    assert.match(flat(details), /Already delivered: 3/);
+    assert.doesNotMatch(flat(details), /Loading/);
+    assert.equal(page.pending('/api/v1/email/queue/' + QID[1]).length, 1, 'the open message was not read again');
+    page.respond('/api/v1/email/queue/' + QID[1], 200, detailOf(QID[1], { delivered: 4 }));
+    await settle();
+    assert.match(flat(details), /Already delivered: 4/);
+});
+
+test('a message keeps every action disabled while one runs, across a rebuild', async () => {
+    const page = await queuePage([queueMsg(QID[0]), queueMsg(QID[1], { frozen: true })]);
+    stubConfirm(page);
+    const disabled = id => Array.from(queueRow(page, id).querySelectorAll('[data-queue-action]')).map(b => b.disabled);
+    queueRow(page, QID[1]).querySelector('[data-queue-action="delete"]').click();
+    await settle();
+    assert.deepEqual(disabled(QID[1]), [true, true, true, true], 'actions stay open while one runs');
+    assert.deepEqual(disabled(QID[0]), [false, false, false]);
+    // A tick rebuilds the page while the delete still runs.
+    await queueTick(page, [queueMsg(QID[0]), queueMsg(QID[1], { frozen: true }), queueMsg(QID[2])]);
+    assert.deepEqual(disabled(QID[1]), [true, true, true, true], 'a rebuild opened the actions of a running delete');
+    assert.deepEqual(disabled(QID[2]), [false, false, false]);
+    page.respond('/api/v1/email/queue/' + QID[1] + '/delete', 200, { outcome: 'unchanged' });
+    await settle();
+    assert.deepEqual(disabled(QID[1]), [false, false, false, false], 'the actions stayed shut after the delete answered');
+});
+
 test('the queue filter, search and pages ask the server', async () => {
     const page = await queuePage([queueMsg(QID[0])], { total: 60, queued: 60 });
     const doc = page.document;
@@ -1945,18 +2024,18 @@ test('the open tab scrolls into the strip, and stays there as counts widen the t
     const doc = page.document;
     const strip = doc.getElementById('email-tabs');
     const findings = doc.getElementById('email-tab-findings');
-    // A phone strip from 8 to 382 px with Findings beyond its right edge;
-    // shift is how far counts loaded since pushed the tabs right.
-    let shift = 0;
+    // A phone strip from 8 to 382 px with Findings beyond its right edge.
+    // The Queue count, once it shows, pushes the tabs after it 34 px right.
+    const queueBadge = doc.querySelector('#email-tab-queue [data-tab-count]');
+    const shift = () => queueBadge.textContent ? 34 : 0;
     strip.scrollLeft = 0;
     strip.getBoundingClientRect = () => ({ left: 8, right: 382 });
-    findings.getBoundingClientRect = () => ({ left: 700 + shift - strip.scrollLeft, right: 802 + shift - strip.scrollLeft });
+    findings.getBoundingClientRect = () => ({ left: 700 + shift() - strip.scrollLeft, right: 802 + shift() - strip.scrollLeft });
     let pageScrolls = 0;
     findings.scrollIntoView = () => { pageScrolls++; };
     doc.querySelector('#kpi-logins a').click();
     await settle();
     assert.equal(strip.scrollLeft, 420, 'Findings is not scrolled into the strip');
-    shift = 34;
     page.respond('/api/v1/email/overview', 200, overview({}, { queue: { size: 21, unavailable: false, warn: 100, crit: 500, frozen: 0, detail_unavailable: false } }));
     await settle();
     assert.equal(doc.querySelector('#email-tab-queue [data-tab-count]').textContent, '21');
@@ -1968,6 +2047,33 @@ test('the open tab scrolls into the strip, and stays there as counts widen the t
     doc.querySelector('#kpi-logins a').click();
     await settle();
     assert.equal(strip.scrollLeft, 726);
+});
+
+test('count updates leave a strip the operator scrolled alone', async () => {
+    const page = emailPage({ url: 'https://csm.example.test/email?tab=findings' });
+    await settle();
+    const doc = page.document;
+    const strip = doc.getElementById('email-tabs');
+    const findings = doc.getElementById('email-tab-findings');
+    const queueBadge = doc.querySelector('#email-tab-queue [data-tab-count]');
+    const shift = () => queueBadge.textContent ? 34 : 0;
+    strip.getBoundingClientRect = () => ({ left: 8, right: 382 });
+    findings.getBoundingClientRect = () => ({ left: 700 + shift() - strip.scrollLeft, right: 802 + shift() - strip.scrollLeft });
+    const answer = size => page.respond('/api/v1/email/overview', 200, overview({}, { queue: { size, unavailable: false, warn: 100, crit: 500, frozen: 0, detail_unavailable: false } }));
+    // The operator scrolled back to the start, away from the open tab.
+    strip.scrollLeft = 0;
+    answer(21);
+    await settle();
+    assert.equal(queueBadge.textContent, '21');
+    assert.equal(strip.scrollLeft, 0, 'a new count pulled the strip back to the open tab');
+    // A poll that brings the same count moves nothing, even with the open
+    // tab half out of view.
+    strip.scrollLeft = 400;
+    doc.getElementById('email-refresh').click();
+    await settle();
+    answer(21);
+    await settle();
+    assert.equal(strip.scrollLeft, 400, 'an unchanged count moved the strip');
 });
 
 test('the refresh button and the queue timer read the open Queue tab again', async () => {
