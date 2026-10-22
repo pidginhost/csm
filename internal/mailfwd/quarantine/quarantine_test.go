@@ -200,8 +200,8 @@ func TestConcurrentReleaseSendsOnce(t *testing.T) {
 	second := q.Release(id)
 	deleted := q.Delete(id)
 	close(proceed)
-	if err := <-first; err != nil {
-		t.Fatalf("first release: %v", err)
+	if firstErr := <-first; firstErr != nil {
+		t.Fatalf("first release: %v", firstErr)
 	}
 	if second == nil || !strings.Contains(second.Error(), "not found") {
 		t.Errorf("second release = %v, want not found", second)
