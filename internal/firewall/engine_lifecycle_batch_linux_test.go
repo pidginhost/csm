@@ -358,6 +358,31 @@ func TestBatchEvidenceUsesOneKernelTransaction(t *testing.T) {
 	}
 }
 
+// A kept row can expire between planning and apply. The kernel drops its
+// element on its own, so the batch must not name it in a delete the kernel
+// would refuse with ENOENT, failing the whole transaction.
+func TestBatchApplyLeavesExpiredKeptElementsToTheKernel(t *testing.T) {
+	a := batchEvidence()
+	kept := BlockedEntry{IP: "203.0.113.98", Reason: "earlier", Source: "scan", BlockedAt: a.CreatedAt.Add(-time.Hour), ExpiresAt: a.CreatedAt.Add(50 * time.Millisecond)}
+	a.Before.Blocked = append(a.Before.Blocked, kept)
+	a.After.Blocked = append([]BlockedEntry{kept}, a.After.Blocked...)
+	a = withBatchKernelEvidence(a)
+	a.KernelBefore[0].Elements = desiredActionSets(a.Before, true, a.CreatedAt)["blocked_ips"]
+	transactions := 0
+	conn, captured := capturingLifecycleConn(t, func(attempt int) bool { transactions = attempt; return false })
+	e := newBlockedSetWireTestEngine(t, conn)
+	e.expiryClock = func() time.Time { return kept.ExpiresAt.Add(time.Millisecond) }
+	if err := (engineActionKernel{e}).ApplyFirewallAction(a); err != nil || transactions != 1 {
+		t.Fatalf("batch apply: %v after %d transactions", err, transactions)
+	}
+	if deletes := capturedTypes(*captured, nftDeleteSetElem); deletes != 0 {
+		t.Fatalf("batch sent %d deletes for an element the kernel already expired", deletes)
+	}
+	if timeouts := newSetElemTimeouts(t, *captured, "blocked_ips"); len(timeouts) != 2 {
+		t.Fatalf("batch wrote %d elements, want its two members", len(timeouts))
+	}
+}
+
 func TestBatchEvidenceRetainedRowOrder(t *testing.T) {
 	for _, sameTarget := range []bool{false, true} {
 		for _, oldLast := range []bool{false, true} {

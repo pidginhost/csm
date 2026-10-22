@@ -436,17 +436,23 @@ func actionElementDelta(before, after ActionSet, now time.Time) (add, remove []n
 	intended := make(map[string]ActionElement, len(after.Elements))
 	var additions []ActionElement
 	for _, entry := range after.Elements {
-		if !entry.ExpiresAt.IsZero() {
-			if _, ok := blockTimeout(entry.ExpiresAt, now); !ok {
-				continue
-			}
-		}
 		key := actionElementKey(entry)
-		intended[key] = entry
 		prior, held := live[key]
 		// Millisecond encoding must not make an unchanged absolute expiry
 		// look like a replacement on every later mutation.
-		if held && prior.Comment == entry.Comment && prior.ExpiresAt.Equal(entry.ExpiresAt) {
+		unchanged := held && prior.Comment == entry.Comment && prior.ExpiresAt.Equal(entry.ExpiresAt)
+		if !entry.ExpiresAt.IsZero() {
+			if _, ok := blockTimeout(entry.ExpiresAt, now); !ok {
+				// The kernel expires an unchanged element on its own. A delete
+				// naming one it already dropped fails the whole transaction.
+				if unchanged {
+					intended[key] = entry
+				}
+				continue
+			}
+		}
+		intended[key] = entry
+		if unchanged {
 			continue
 		}
 		if held {
