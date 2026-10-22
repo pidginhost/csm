@@ -412,10 +412,15 @@ func TestFirewallAuditRejectsAChangedManifest(t *testing.T) {
 	changed := unknown
 	changed.Members = append([]firewall.ActionMember(nil), unknown.Members...)
 	changed.Members[1].Request.Reason = "other"
+	changed.After = copyFirewallStateForTest(unknown.After)
+	changed.After.Blocked[len(changed.After.Blocked)-1].Reason = "other"
 	if err := db.bolt.Update(func(tx *bolt.Tx) error {
 		action, err := encodeFirewallActionRecord(changed)
 		if err != nil {
 			return err
+		}
+		if _, decodeErr := decodeFirewallAction(action); decodeErr != nil {
+			t.Fatalf("changed audit must be a valid action to test manifest comparison: %v", decodeErr)
 		}
 		raw, err := encodeFirewallJournal(firewallAuditEvent{Action: action})
 		if err != nil {

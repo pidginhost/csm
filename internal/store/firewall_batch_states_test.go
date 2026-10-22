@@ -3,6 +3,7 @@ package store
 import (
 	"bytes"
 	"errors"
+	"reflect"
 	"slices"
 	"testing"
 	"time"
@@ -32,8 +33,21 @@ func TestFirewallBatchStatesOnlyAddMemberRows(t *testing.T) {
 		return out
 	}
 	cases := map[string]func(*firewall.FirewallAction){
-		"drops a permanent row":   func(a *firewall.FirewallAction) { a.After.Blocked = without(a.After.Blocked, "192.0.2.1") },
-		"changes a kept row":      func(a *firewall.FirewallAction) { a.After.Blocked[1].Reason = "changed" },
+		"drops a permanent row": func(a *firewall.FirewallAction) { a.After.Blocked = without(a.After.Blocked, "192.0.2.1") },
+		"changes a kept row":    func(a *firewall.FirewallAction) { a.After.Blocked[1].Reason = "changed" },
+		"reorders kept aliases": func(a *firewall.FirewallAction) {
+			other := a.Before.Blocked[1]
+			other.IP, other.Reason = "::ffff:192.0.2.1", "later decision"
+			other.ExpiresAt = a.CreatedAt.Add(time.Hour)
+			a.Before.Blocked = append(a.Before.Blocked, other)
+			a.After.Blocked = append(a.After.Blocked, other)
+			last := len(a.After.Blocked) - 1
+			a.After.Blocked[1], a.After.Blocked[last] = a.After.Blocked[last], a.After.Blocked[1]
+		},
+		"drops an expired unverified row": func(a *firewall.FirewallAction) {
+			a.Before.Blocked[0].ActionID, a.Before.Blocked[0].Unverified = "earlier-action", true
+			a.After.Blocked = without(a.After.Blocked, a.Before.Blocked[0].IP)
+		},
 		"member without its row":  func(a *firewall.FirewallAction) { a.After.Blocked = without(a.After.Blocked, "203.0.113.11") },
 		"row of another action":   func(a *firewall.FirewallAction) { row(a, "member-two").ActionID = "member-three" },
 		"row with another reason": func(a *firewall.FirewallAction) { row(a, "member-one").Reason = "other" },
@@ -66,6 +80,14 @@ func TestFirewallBatchStatesOnlyAddMemberRows(t *testing.T) {
 			a.Before.Blocked = append(a.Before.Blocked, held)
 			a.After.Blocked = append(a.After.Blocked, held)
 		},
+		"target has an expired unverified alias": func(a *firewall.FirewallAction) {
+			held := *row(a, "member-two")
+			held.IP, held.ActionID = "::ffff:203.0.113.11", "earlier"
+			held.BlockedAt, held.ExpiresAt = a.CreatedAt.Add(-time.Hour), a.CreatedAt
+			held.Unverified = true
+			a.Before.Blocked = append(a.Before.Blocked, held)
+			a.After.Blocked = append(a.After.Blocked, held)
+		},
 		"changes a subnet": func(a *firewall.FirewallAction) { a.After.BlockedNet = nil },
 		"changes an allow": func(a *firewall.FirewallAction) { a.After.Allowed = a.After.Allowed[1:] },
 		"changes a port allow": func(a *firewall.FirewallAction) {
@@ -81,8 +103,8 @@ func TestFirewallBatchStatesOnlyAddMemberRows(t *testing.T) {
 				t.Fatal(err)
 			}
 			image := batchIndexImage(t, db)
-			if _, _, err := db.AdmitFirewallAction(in); err == nil || errors.Is(err, firewall.ErrStateConflict) || errors.Is(err, firewall.ErrStateCorrupt) || errors.Is(err, firewall.ErrScanBudget) {
-				t.Fatalf("batch state change admitted or refused for another reason: %v", err)
+			if _, fresh, err := db.AdmitFirewallAction(in); fresh || !errors.Is(err, errInvalidFirewallManifest) {
+				t.Fatalf("batch state change admitted or refused for another reason: fresh %v, %v", fresh, err)
 			}
 			if after := batchIndexImage(t, db); !bytes.Equal(after, image) {
 				t.Fatal("refused batch changed journal or indexes")
@@ -90,16 +112,53 @@ func TestFirewallBatchStatesOnlyAddMemberRows(t *testing.T) {
 			if count, err := db.ReadFirewallScanBudget("2026-01-02T03"); err != nil || count != 0 {
 				t.Fatalf("refused batch charged %d, %v", count, err)
 			}
+			in.Phase, in.UpdatedAt, in.AuditVersion = "planned", in.CreatedAt, 1
+			raw, err := encodeFirewallActionRecord(in)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := decodeFirewallAction(raw); !errors.Is(err, firewall.ErrStateCorrupt) {
+				t.Fatalf("invalid stored batch read as %v", err)
+			}
 		})
 	}
 	t.Run("drops an expired row", func(t *testing.T) {
 		db := openSnapshotDB(t)
 		in := batchFixture()
 		in.After.Blocked = without(in.After.Blocked, "203.0.113.90")
-		if a := admitFixture(t, db, in); len(a.After.Blocked) != len(in.After.Blocked) {
+		if a := admitFixture(t, db, in); !reflect.DeepEqual(a.After, in.After) {
 			t.Fatalf("admitted After = %#v", a.After.Blocked)
 		}
 	})
+}
+
+func TestFirewallBatchStatesPreserveValidKeptRows(t *testing.T) {
+	cases := map[string]func(*firewall.FirewallAction){
+		"expired unverified row remains": func(a *firewall.FirewallAction) {
+			a.Before.Blocked[0].ActionID, a.Before.Blocked[0].Unverified = "earlier-action", true
+			a.After.Blocked[0] = a.Before.Blocked[0]
+		},
+		"later copy of expired row remains": func(a *firewall.FirewallAction) {
+			expired := a.Before.Blocked[0]
+			a.Before.Blocked = append(a.Before.Blocked, expired)
+			a.After.Blocked = append(a.After.Blocked[1:], expired)
+		},
+		"member rows precede kept rows": func(a *firewall.FirewallAction) {
+			a.After.Blocked = append(slices.Clone(a.After.Blocked[2:]), a.Before.Blocked...)
+		},
+	}
+	for name, change := range cases {
+		t.Run(name, func(t *testing.T) {
+			in := batchFixture()
+			change(&in)
+			db := openSnapshotDB(t)
+			admitFixture(t, db, in)
+			got, err := db.ReadFirewallAction(in.Request.ID)
+			if err != nil || !reflect.DeepEqual(got.Before, in.Before) || !reflect.DeepEqual(got.After, in.After) {
+				t.Fatalf("stored states changed: before %#v, after %#v, error %v", got.Before, got.After, err)
+			}
+		})
+	}
 }
 
 // A one-request action keeps its free-form state change: the batch rule

@@ -9,19 +9,22 @@ import (
 
 // validateFirewallBatchStates holds a batch of two or more members to the
 // only change it may make: each member adds its own row, and every other row
-// stays as it was. Nothing evicts for a batch, so only a row that had
-// expired when the batch was planned may be missing from its After state.
+// stays as it was. Nothing evicts for a batch, so only a verified row that
+// had expired when the batch was planned may be missing from its After state.
 func validateFirewallBatchStates(a firewall.FirewallAction) error {
 	if !sameFirewallRows(a.Before.BlockedNet, a.After.BlockedNet) || !sameFirewallRows(a.Before.Allowed, a.After.Allowed) || !sameFirewallRows(a.Before.PortAllowed, a.After.PortAllowed) {
 		return errInvalidFirewallManifest
 	}
 	kept := map[string]int{}
+	beforeRows := make([]string, 0, len(a.Before.Blocked))
 	for _, row := range a.Before.Blocked {
 		raw, err := json.Marshal(row)
 		if err != nil {
 			return errInvalidFirewallManifest
 		}
-		kept[string(raw)]++
+		key := string(raw)
+		kept[key]++
+		beforeRows = append(beforeRows, key)
 	}
 	members := map[string]firewall.ActionRequest{}
 	targets := map[string]bool{}
@@ -30,12 +33,25 @@ func validateFirewallBatchStates(a firewall.FirewallAction) error {
 		members[m.Request.ID] = m.Request
 		targets[m.Request.Target] = true
 	}
+	nextBefore := 0
 	for _, row := range a.After.Blocked {
 		raw, err := json.Marshal(row)
 		if err != nil {
 			return errInvalidFirewallManifest
 		}
 		if kept[string(raw)] > 0 {
+			// Address aliases can carry different decisions. Their order
+			// determines which decision the engine's lookups select.
+			for nextBefore < len(beforeRows) && beforeRows[nextBefore] != string(raw) {
+				if !firewallRowExpired(a.Before.Blocked[nextBefore], a) {
+					return errInvalidFirewallManifest
+				}
+				nextBefore++
+			}
+			if nextBefore == len(beforeRows) {
+				return errInvalidFirewallManifest
+			}
+			nextBefore++
 			kept[string(raw)]--
 			if !firewallRowExpired(row, a) && targets[canonicalFirewallTarget(row.IP)] {
 				return errInvalidFirewallManifest
@@ -54,20 +70,17 @@ func validateFirewallBatchStates(a firewall.FirewallAction) error {
 	if len(seen) != len(members) {
 		return errInvalidFirewallManifest
 	}
-	for _, row := range a.Before.Blocked {
-		raw, _ := json.Marshal(row)
-		if kept[string(raw)] > 0 {
-			kept[string(raw)]--
-			if !firewallRowExpired(row, a) {
-				return errInvalidFirewallManifest
-			}
+	for _, row := range a.Before.Blocked[nextBefore:] {
+		if !firewallRowExpired(row, a) {
+			return errInvalidFirewallManifest
 		}
 	}
 	return nil
 }
 
 func firewallRowExpired(row firewall.BlockedEntry, a firewall.FirewallAction) bool {
-	return !row.ExpiresAt.IsZero() && !row.ExpiresAt.After(a.CreatedAt)
+	// Expiry cannot settle an unknown kernel effect; its owner must do so.
+	return !row.Unverified && !row.ExpiresAt.IsZero() && !row.ExpiresAt.After(a.CreatedAt)
 }
 
 // canonicalFirewallTarget compares a stored row's address with a member's

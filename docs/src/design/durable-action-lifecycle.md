@@ -41,9 +41,11 @@ make room. Each member ID belongs to exactly one batch. Admitting a known ID
 with any change to the members, their order or their effects is refused, and
 a refused batch charges nothing. A batch only adds its members' rows:
 nothing evicts for a batch, so admission refuses one whose result drops a row
-that has not expired or changes any other entry. Actions written before
-batches read as
-one-member batches and keep their stored format. A record written by a newer
+that has not expired or changes any other entry. Kept rows retain their
+order. Unverified rows remain until their owner settles the outcome, even
+after expiry, and a batch cannot add a block for an address they hold.
+Actions written before batches read as one-member batches and keep their
+stored format. A record written by a newer
 build is refused as unsupported, never read or overwritten. A firewall-only
 import moves the durable journal and its snapshot as one unit, and refuses
 while either database has an unresolved action or undelivered audit. A
