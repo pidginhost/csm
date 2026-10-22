@@ -2438,7 +2438,7 @@ test('each held row says when, what, who to and why', async () => {
                 { filename: 'c.zip', engine: 'clamav', signature: 'Win.Trojan.Agent', severity: 'critical' }] })
     ], [
         forwardItem(FID[0], { subject: '' }),
-        forwardItem(FID[1], { sender: 'news@example.org', reasons: ['bad_sender_ip'], subject: '\u00cenc\u0103 o ofert\u0103', held_at: hoursAgo(3) })
+        forwardItem(FID[1], { sender: 'news@example.net', reasons: ['bad_sender_ip'], subject: '\u00cenc\u0103 o ofert\u0103', held_at: hoursAgo(3) })
     ]);
     const malware = heldRow(page, MID[0]);
     // The time sorts by its instant; the cell reads how long ago.
@@ -2461,7 +2461,7 @@ test('each held row says when, what, who to and why', async () => {
     assert.equal(heldCell(bounce, 'Size'), '3.0 KB');
 
     const listed = heldRow(page, FID[1]);
-    assert.equal(heldCell(listed, 'From'), 'news@example.org');
+    assert.equal(heldCell(listed, 'From'), 'news@example.net');
     // The server decodes encoded subjects; the page shows them as they come.
     assert.equal(heldCell(listed, 'Subject'), '\u00cenc\u0103 o ofert\u0103');
     assert.equal(heldCell(listed, 'Why held'), 'Held forward to external address sent from a listed bad IP');
@@ -2595,7 +2595,7 @@ test('held mail keeps server text as text, in the rows and the confirms', async 
     const payload = '<img src=x onerror=alert(1)>';
     const page = await heldPage([malwareItem(MID[0], { from: payload + '@example.com', to: [payload + '@example.net'], subject: payload,
         findings: [{ filename: 'x', engine: payload, signature: payload, severity: 'high' }] })],
-    [forwardItem(FID[0], { sender: payload + '@example.org', forwarder: payload + '@example.com', recipient: payload + '@example.net', subject: payload, reasons: [payload] })]);
+    [forwardItem(FID[0], { sender: payload + '@example.net', forwarder: payload + '@example.com', recipient: payload + '@example.net', subject: payload, reasons: [payload] })]);
     const tbody = page.document.getElementById('email-held-tbody');
     assert.equal(tbody.querySelectorAll('img').length, 0, 'server text became markup');
     assert.ok(heldCell(heldRow(page, MID[0]), 'Why held').includes(payload), 'lost the virus name');
@@ -2693,7 +2693,7 @@ test('a held mail answer that changes the list keeps the selection and the focus
 
 test('typing a held mail search survives a store answer', async () => {
     const wait = ms => new Promise(r => setTimeout(r, ms));
-    const malware = [malwareItem(MID[0], { from: 'billing@example.com' }), malwareItem(MID[1], { from: 'news@example.org' })];
+    const malware = [malwareItem(MID[0], { from: 'billing@example.com' }), malwareItem(MID[1], { from: 'news@example.net' })];
     for (const changed of [false, true]) {
         const page = await heldPage(malware, []);
         // A search the table saved earlier must not come back over the typing.
@@ -2702,7 +2702,7 @@ test('typing a held mail search survives a store answer', async () => {
         search.value = 'news';
         search.dispatchEvent(new page.window.Event('input'));
         // A store answers before the address takes the search.
-        await heldTick(page, changed ? malware.concat([malwareItem(MID[2], { from: 'news@example.org' })]) : malware, []);
+        await heldTick(page, changed ? malware.concat([malwareItem(MID[2], { from: 'news@example.net' })]) : malware, []);
         await wait(400);
         const label = changed ? 'changed answer' : 'same answer';
         assert.equal(search.value, 'news', label + ': the search box was cleared');

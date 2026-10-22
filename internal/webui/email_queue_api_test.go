@@ -293,8 +293,8 @@ func TestQueueListPagingAndFilters(t *testing.T) {
 	// Listed newest first so the route has to order them.
 	world.add(qNewest, worldMessage{sender: "news@example.com", recipients: []string{"Reader@Example.NET"}})
 	world.add(qNew, worldMessage{frozen: true, recipients: []string{"gone@example.net"}})
-	world.add(qMid, worldMessage{sender: "billing@example.com", recipients: []string{"a@example.net", "b@example.org"}})
-	world.add(qOld, worldMessage{recipients: []string{"unknown@example.org"}})
+	world.add(qMid, worldMessage{sender: "billing@example.com", recipients: []string{"a@example.net", "b@example.net"}})
+	world.add(qOld, worldMessage{recipients: []string{"unknown@example.net"}})
 	world.add(qOldest, worldMessage{frozen: true, sender: "sender@example.com", recipients: []string{"rcpt@example.net"}})
 	s, _, spool := queueServer(t, world)
 	frozenLog := "2026-10-21 06:10:01 rcpt@example.net R=lookuphost T=remote_smtp defer (-53): retry time not reached\n*** Frozen (delivery error message)\n"
@@ -339,7 +339,8 @@ func TestQueueListPagingAndFilters(t *testing.T) {
 		"?filter=all":                     {qOldest, qOld, qMid, qNew, qNewest},
 		"?filter=frozen":                  {qOldest, qNew},
 		"?filter=backscatter":             {qOld, qNew},
-		"?q=example.net":                  {qOldest, qMid, qNew, qNewest},
+		"?q=example.net":                  {qOldest, qOld, qMid, qNew, qNewest},
+		"?q=unknown":                      {qOld},
 		"?q=READER%40example.net":         {qNewest},
 		"?q=billing":                      {qMid},
 		"?filter=frozen&q=gone":           {qNew},
