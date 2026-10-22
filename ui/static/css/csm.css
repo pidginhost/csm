@@ -284,6 +284,25 @@ tr[tabindex]:focus-visible, th[tabindex]:focus-visible { outline: 2px solid var(
     white-space: nowrap;
 }
 .csm-queue-mark--crit .csm-queue-mark__label { left: auto; right: 0; }
+/* Marks too close for a label each share one line under the bar. */
+.csm-queue-bar__labels {
+    position: absolute;
+    bottom: 0;
+    font-size: 0.75rem;
+    color: var(--csm-secondary);
+    white-space: nowrap;
+}
+
+/* Queue tab message details: long recipient lists and exim's msglog lines
+   scroll inside the row instead of stretching it. */
+.csm-queue-recipients { max-height: 12rem; overflow-y: auto; }
+.csm-queue-log {
+    max-height: 16rem;
+    overflow: auto;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    font-size: 0.75rem;
+}
 
 /* --- findings.html: sticky filter header -------------------------------- */
 #findings-card > .card-header {

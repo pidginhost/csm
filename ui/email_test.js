@@ -1029,12 +1029,16 @@ test('the Queue tab counts the queue once its size is known', async () => {
         assert.equal(badge(page, name).hidden, true, name + ' shows a count nothing set');
     }
 
-    for (const [queue, text, warning] of [
-        [{ size: 1234, unavailable: false, warn: 100, crit: 500 }, '1,234', true],
-        [{ size: 100, unavailable: false, warn: 100, crit: 500 }, '100', true],
-        [{ size: 99, unavailable: false, warn: 100, crit: 500 }, '99', false],
-        [{ size: 0, unavailable: false, warn: 100, crit: 500 }, '0', false],
-        [{ size: 0, unavailable: true, warn: 100, crit: 500 }, '?', false]
+    // The badge takes the card's color: amber from warn, red from crit.
+    for (const [queue, text, color] of [
+        [{ size: 1234, unavailable: false, warn: 100, crit: 500 }, '1,234', 'badge-critical'],
+        [{ size: 500, unavailable: false, warn: 100, crit: 500 }, '500', 'badge-critical'],
+        [{ size: 499, unavailable: false, warn: 100, crit: 500 }, '499', 'badge-warning'],
+        [{ size: 100, unavailable: false, warn: 100, crit: 500 }, '100', 'badge-warning'],
+        [{ size: 600, unavailable: false, warn: 100, crit: 0 }, '600', 'badge-warning'],
+        [{ size: 99, unavailable: false, warn: 100, crit: 500 }, '99', ''],
+        [{ size: 0, unavailable: false, warn: 100, crit: 500 }, '0', ''],
+        [{ size: 0, unavailable: true, warn: 100, crit: 500 }, '?', '']
     ]) {
         const p = emailPage();
         p.respond('/api/v1/email/overview', 200, overview({}, { queue: Object.assign({ frozen: 0, detail_unavailable: false }, queue) }));
@@ -1042,7 +1046,9 @@ test('the Queue tab counts the queue once its size is known', async () => {
         const b = badge(p, 'queue');
         assert.equal(b.hidden, false);
         assert.equal(b.textContent, text);
-        assert.equal(/badge-warning/.test(b.className), warning, text + ': ' + b.className);
+        const shown = (b.className.match(/badge-(warning|critical)/g) || []).join(' ');
+        assert.equal(shown, color, text + ': ' + b.className);
+        if (color) assert.match(p.document.querySelector('#kpi-queue [data-kpi-value]').className, color === 'badge-critical' ? /text-danger/ : /text-warning/, text + ': the card disagrees');
     }
 
     const failed = emailPage();
@@ -1215,10 +1221,11 @@ test('the queue tab draws its warn and crit marks on the size bar', async () => 
     assert.match(crit.textContent, /crit 500/);
     const bar = health.querySelector('.progress-bar');
     assert.equal(bar.getAttribute('aria-valuenow'), '19');
+    assert.equal(bar.getAttribute('aria-valuetext'), '120 messages, warn 100, crit 500');
     assert.match(bar.className, /bg-warning/);
     const text = health.textContent.replace(/\s+/g, ' ');
-    assert.match(text, /120/);
-    assert.match(text, /oldest 4d/);
+    // The summary line beside the bar gives the count and the oldest age.
+    assert.doesNotMatch(text, /oldest/, 'the bar repeats the summary line');
     assert.doesNotMatch(text, /threshold/i, 'the thresholds are rows again');
 
     page.respond('/api/v1/email/queue-composition', 200, { total: 120, real: 100, bounce: 20, frozen: 2, flushable_backscatter: 0,
@@ -1432,4 +1439,455 @@ test('hour bars realign on both sides of a half-hour DST transition', async () =
         const filled = dataset(chart, 'Clean').map((v, i) => [chart.data.labels[i], v]).filter(row => row[1]);
         assert.deepEqual(filled, labels.map((label, i) => [label, i === 1 ? 2 : 4]));
     }
+});
+
+// ---------- Queue tab ----------
+
+const QID = ['1aB2cD-000001-Ab', '1aB2cD-000002-Ab', '1aB2cD-000003-Ab'];
+
+// queueMsg is one queued message as the queue list sends it.
+function queueMsg(id, extra) {
+    return Object.assign({
+        id, arrived: AT, age_seconds: 1800, size: 1536, sender: 'shop@example.com', local_user: '',
+        frozen: false, bounce: false, recipients: ['first@example.net'], recipient_count: 1, delivered: 0,
+        reason: { class: 'refused', text: 'connection refused', raw: 'H=mx.example.net [192.0.2.25]: Connection refused' }
+    }, extra);
+}
+
+// queueList is a queue list page holding list, with whole-queue counts
+// that fit it unless extra says otherwise.
+function queueList(list, extra) {
+    return Object.assign({
+        items: list, total: list.length, page: 1, limit: 25, unavailable: false, queued: list.length,
+        frozen: list.filter(m => m.frozen).length, backscatter: list.filter(m => m.bounce).length,
+        oldest_seconds: list.length ? list[0].age_seconds : undefined
+    }, extra);
+}
+
+function flat(el) {
+    return el.textContent.replace(/\s+/g, ' ').trim();
+}
+
+// queuePage opens the Queue tab, answers its list, and records toasts.
+async function queuePage(list, extra) {
+    const page = emailPage();
+    showEmailTab(page, 'queue');
+    await settle();
+    page.respond('/api/v1/email/queue?', 200, queueList(list, extra));
+    await settle();
+    page.toasts = [];
+    page.window.CSM.toast = (message, type) => page.toasts.push([message, type]);
+    return page;
+}
+
+// stubConfirm answers every confirm with ok (or cancel) and records what
+// it asked.
+function stubConfirm(page, ok = true) {
+    const asked = [];
+    page.window.CSM.confirm = (message, opts) => {
+        asked.push({ message, opts: opts || {} });
+        return ok ? Promise.resolve() : Promise.reject();
+    };
+    return asked;
+}
+
+function queueRows(page) {
+    return Array.from(page.document.getElementById('email-queue-tbody').children).filter(tr => !tr.classList.contains('details-row'));
+}
+
+function queueRow(page, id) {
+    const row = queueRows(page).find(tr => tr.getAttribute('data-queue-id') === id);
+    assert.ok(row, 'no row for ' + id);
+    return row;
+}
+
+function requestCount(page, match) {
+    return page.requests.filter(r => r.url.includes(match)).length;
+}
+
+test('the Queue tab sums up the queue in one sentence beside the backscatter flush', async () => {
+    const page = emailPage();
+    showEmailTab(page, 'queue');
+    await settle();
+    const reqs = page.pending('/api/v1/email/queue?');
+    assert.equal(reqs.length, 1, 'the Queue tab did not ask for the queue list');
+    const q = query(reqs[0].url);
+    assert.deepEqual([q.get('page'), q.get('limit'), q.get('filter'), q.get('q')], ['1', '25', 'all', '']);
+    page.respond('/api/v1/email/queue?', 200, queueList([queueMsg(QID[0])],
+        { total: 21, queued: 21, frozen: 4, backscatter: 6, oldest_seconds: 3 * DAY + 7 * 3600 }));
+    page.respond('/api/v1/email/queue-composition', 200, { total: 21, real: 15, bounce: 6, frozen: 4, flushable_backscatter: 3, top_recipients: [] });
+    await settle();
+    const summary = page.document.getElementById('email-queue-summary');
+    assert.match(flat(summary), /^21 queued, 4 frozen, oldest 3d 7h\. 6 are bounces to senders that do not exist \(backscatter\)\./);
+    const flush = summary.querySelector('#flush-backscatter-btn');
+    assert.ok(flush, 'no backscatter flush in the summary line');
+    assert.match(flat(flush), /Flush 3 frozen backscatter message\(s\)/);
+    assert.equal(page.document.querySelectorAll('#flush-backscatter-btn').length, 1, 'a second flush button');
+
+    const asked = stubConfirm(page);
+    const overviews = requestCount(page, '/api/v1/email/overview');
+    flush.click();
+    await settle();
+    assert.equal(asked.length, 1);
+    assert.equal(asked[0].opts.danger, true);
+    const post = page.pending('/api/v1/email/queue/flush-backscatter');
+    assert.equal(post.length, 1);
+    assert.equal(post[0].method, 'POST');
+    page.respond('/api/v1/email/queue/flush-backscatter', 200, { removed: 3 });
+    await settle();
+    assert.equal(page.pending('/api/v1/email/queue?').length, 1, 'the list did not reload after the flush');
+    assert.equal(page.pending('/api/v1/email/queue-composition').length, 1, 'the flush count did not reload');
+    assert.equal(requestCount(page, '/api/v1/email/overview'), overviews + 1, 'the queue size did not reload');
+});
+
+test('the queue summary words one bounce, no bounces and a queue with no dated message', async () => {
+    for (const [extra, want] of [
+        [{ queued: 2, frozen: 0, backscatter: 1, oldest_seconds: 90 }, '2 queued, 0 frozen, oldest 1m 30s. 1 is a bounce to a sender that does not exist (backscatter).'],
+        [{ queued: 1, frozen: 1, backscatter: 0, oldest_seconds: 3600 }, '1 queued, 1 frozen, oldest 1h.'],
+        [{ queued: 1234, frozen: 0, backscatter: 0, oldest_seconds: undefined }, '1,234 queued, 0 frozen.']
+    ]) {
+        const page = await queuePage([queueMsg(QID[0])], extra);
+        assert.equal(flat(page.document.getElementById('email-queue-summary')), want);
+    }
+});
+
+test('queue rows read oldest first with age, sender, recipients, size, reason and state', async () => {
+    const many = Array.from({ length: 50 }, (_, i) => 'r' + i + '@example.net');
+    const page = await queuePage([
+        queueMsg(QID[0], { age_seconds: 3 * DAY + 7 * 3600, size: 2048, sender: '', bounce: true, frozen: true,
+            recipients: ['ghost@example.net'], reason: { class: 'frozen', text: 'frozen: undeliverable bounce', raw: 'Frozen (delivery error message)' } }),
+        queueMsg(QID[1], { age_seconds: 5 * 3600, size: 512, sender: 'news@example.com', local_user: 'shopuser',
+            recipients: many, recipient_count: 120, reason: { class: 'rate_limited', text: 'rate limited', raw: '451 4.7.0 Too many messages from 203.0.113.7' } }),
+        queueMsg(QID[2], { age_seconds: 1800 })
+    ]);
+    const doc = page.document;
+    assert.deepEqual(Array.from(doc.querySelectorAll('#email-queue-table thead th')).map(flat),
+        ['Age', 'From', 'To', 'Size', 'Why stuck', 'State', 'Actions']);
+    assert.deepEqual(queueRows(page).map(r => r.getAttribute('data-queue-id')), QID, 'rows are not in the server order, oldest first');
+    const [bounce, login, plain] = queueRows(page).map(r => Array.from(r.children).slice(0, 6).map(flat));
+    assert.deepEqual(bounce, ['3d 7h', 'bounce', 'ghost@example.net', '2.0 KB', 'frozen: undeliverable bounce', 'Frozen']);
+    assert.deepEqual(login, ['5h', 'news@example.com (shopuser)', 'r0@example.net +119 more', '512 B', 'rate limited', 'Queued']);
+    assert.deepEqual(plain, ['30m', 'shop@example.com', 'first@example.net', '1.5 KB', 'connection refused', 'Queued']);
+    // The raw SMTP text waits in the row's closed details.
+    assert.doesNotMatch(flat(queueRow(page, QID[1])), /451 4\.7\.0/);
+    const details = queueRow(page, QID[1]).nextElementSibling;
+    assert.ok(details && details.classList.contains('details-row'), 'no details row under the message');
+    assert.equal(details.classList.contains('show'), false);
+    // Phones get one card per message.
+    assert.ok(doc.getElementById('email-queue-table').classList.contains('csm-table-rowcard'));
+    assert.equal(flat(doc.getElementById('email-queue-count')), '3 messages');
+});
+
+test('queue rows keep sender, recipient and reason as text', async () => {
+    const payload = '<img src=x onerror=alert(1)>';
+    const page = await queuePage([queueMsg(QID[0], { sender: payload + '@example.com', local_user: payload,
+        recipients: [payload + '@example.net'], reason: { class: 'other', text: payload, raw: payload } })]);
+    const tbody = page.document.getElementById('email-queue-tbody');
+    assert.equal(tbody.querySelectorAll('img').length, 0, 'server text became markup');
+    for (const want of [payload + '@example.com', '(' + payload + ')', payload + '@example.net']) {
+        assert.ok(tbody.textContent.includes(want), 'lost ' + want);
+    }
+    const asked = stubConfirm(page, false);
+    queueRow(page, QID[0]).querySelector('[data-queue-action="delete"]').click();
+    await settle();
+    assert.ok(asked[0].message.includes(payload + '@example.net'), 'the confirm lost the recipient');
+});
+
+test('expanding a queued message shows every recipient, the error and its delivery log as text', async () => {
+    const payload = '<img src=x onerror=alert(1)>';
+    const page = await queuePage([queueMsg(QID[0]), queueMsg(QID[1], { recipients: ['r0@example.net', 'r1@example.net'], recipient_count: 120 })]);
+    const row = queueRow(page, QID[1]);
+    const btn = row.querySelector('.expand-btn');
+    assert.ok(btn, 'no expand button');
+    btn.click();
+    await settle();
+    const detailURL = '/api/v1/email/queue/' + QID[1];
+    let reqs = page.pending(detailURL);
+    assert.equal(reqs.length, 1, 'expanding did not read the message');
+    assert.equal(reqs[0].method, 'GET');
+    const all = Array.from({ length: 120 }, (_, i) => 'r' + i + '@example.net');
+    all[7] = payload + '@example.net';
+    const log = ['2026-10-21 09:00:01 r0@example.net R=dkim_lookuphost T=remote_smtp defer (-44) H=mx.example.net [192.0.2.25]: ' +
+        'SMTP error from remote mail server after RCPT TO:<r0@example.net>: 451 4.7.0 Try again later', payload];
+    const detail = Object.assign(queueMsg(QID[1]), { recipients: all, recipient_count: 120, delivered: 3,
+        reason: { class: 'rate_limited', text: 'rate limited', raw: '451 4.7.0 ' + payload }, msglog: log });
+    page.respond(detailURL, 200, detail);
+    await settle();
+    let details = row.nextElementSibling;
+    assert.ok(details.classList.contains('show'), 'the details did not open');
+    for (const r of all) assert.ok(details.textContent.includes(r), 'missing recipient ' + r);
+    assert.match(flat(details), /Undelivered recipients \(120\)/);
+    assert.match(flat(details), /Already delivered: 3/);
+    assert.ok(details.textContent.includes('451 4.7.0 ' + payload), 'the full error text is missing');
+    const pre = details.querySelector('pre');
+    assert.ok(pre, 'no delivery log');
+    assert.equal(pre.textContent, log.join('\n'));
+    assert.equal(details.querySelectorAll('img, script').length, 0, 'server text became markup');
+
+    // A refresh keeps the message open and reads it again.
+    page.document.getElementById('email-refresh').click();
+    await settle();
+    page.respond('/api/v1/email/queue?', 200, queueList([queueMsg(QID[0]), queueMsg(QID[1])]));
+    await settle();
+    details = queueRow(page, QID[1]).nextElementSibling;
+    assert.ok(details.classList.contains('show'), 'a refresh closed the open message');
+    assert.equal(page.pending(detailURL).length, 1, 'the open message was not read again');
+    page.respond(detailURL, 200, detail);
+    await settle();
+    assert.equal(details.querySelector('pre').textContent, log.join('\n'));
+
+    // Closing asks for nothing; opening again reads the message afresh.
+    const again = queueRow(page, QID[1]).querySelector('.expand-btn');
+    again.click();
+    await settle();
+    assert.equal(details.classList.contains('show'), false);
+    assert.equal(page.pending(detailURL).length, 0);
+    again.click();
+    await settle();
+    page.respond(detailURL, 500, { error: 'Failed to read the message from the queue: exim timed out' });
+    await settle();
+    assert.match(flat(details), /exim timed out/);
+    details.querySelector('.csm-retry-btn').click();
+    await settle();
+    reqs = page.pending(detailURL);
+    assert.equal(reqs.length, 1, 'Retry did not read the message again');
+    page.respond(detailURL, 404, { error: 'Message is not in the queue' });
+    await settle();
+    assert.match(flat(details), /No longer in the queue/);
+});
+
+test('each queue action names the message and its first recipient, then posts to its route', async () => {
+    for (const [action, label, okLabel, danger, words] of [
+        ['thaw', 'Thaw', 'Thaw', false, /^Thaw message 1aB2cD-000002-Ab to r0@example\.net and 119 more\?/],
+        ['retry', 'Retry', 'Retry now', false, /^Try delivering message 1aB2cD-000002-Ab to r0@example\.net and 119 more now\?/],
+        ['bounce', 'Return', 'Return to sender', true, /^Give up on message 1aB2cD-000002-Ab to r0@example\.net and 119 more and return it to its sender\?/],
+        ['delete', 'Delete', 'Delete', true, /^Delete message 1aB2cD-000002-Ab to r0@example\.net and 119 more\? No bounce is sent/]
+    ]) {
+        const page = await queuePage([queueMsg(QID[0]), queueMsg(QID[1], { frozen: true, recipients: ['r0@example.net'], recipient_count: 120 })]);
+        const asked = stubConfirm(page);
+        const btn = queueRow(page, QID[1]).querySelector('[data-queue-action="' + action + '"]');
+        assert.equal(flat(btn), label);
+        const overviews = requestCount(page, '/api/v1/email/overview');
+        btn.click();
+        await settle();
+        assert.equal(asked.length, 1, action + ' did not ask first');
+        assert.match(asked[0].message, words);
+        assert.equal(asked[0].opts.okLabel, okLabel);
+        assert.equal(!!asked[0].opts.danger, danger, action + ' danger');
+        const posts = page.pending('/api/v1/email/queue/' + QID[1] + '/' + action);
+        assert.equal(posts.length, 1, action + ' did not post to its route');
+        assert.equal(posts[0].method, 'POST');
+        assert.ok(Object.prototype.hasOwnProperty.call(posts[0].headers, 'X-CSRF-Token'), action + ' posted without the CSRF header');
+        assert.equal(page.requests.filter(r => r.method === 'POST').length, 1, action + ' posted elsewhere too');
+        page.respond('/api/v1/email/queue/' + QID[1] + '/' + action, 200, { outcome: 'unchanged' });
+        await settle();
+        assert.equal(page.pending('/api/v1/email/queue?').length, 1, 'the list did not reload after ' + action);
+        assert.equal(requestCount(page, '/api/v1/email/overview'), overviews + 1, 'the queue size did not reload after ' + action);
+    }
+
+    // Cancel posts nothing. A bounce returned to its null sender makes no
+    // new bounce, and the confirm says so.
+    const page = await queuePage([queueMsg(QID[0], { sender: '', bounce: true })]);
+    const asked = stubConfirm(page, false);
+    queueRow(page, QID[0]).querySelector('[data-queue-action="bounce"]').click();
+    await settle();
+    assert.match(asked[0].message, /^Give up on message 1aB2cD-000001-Ab to first@example\.net and return it to its sender\? It is a bounce itself, so exim sends no new bounce\./);
+    assert.equal(page.requests.filter(r => r.method === 'POST').length, 0);
+});
+
+test('queue action outcomes read as plain toasts', async () => {
+    for (const [action, status, body, toast] of [
+        ['delete', 200, { outcome: 'removed' }, ['Deleted', 'success']],
+        ['bounce', 200, { outcome: 'bounced' }, ['Returned to sender', 'success']],
+        ['retry', 200, { outcome: 'attempt_started' }, ['Delivery attempt started', 'success']],
+        ['thaw', 200, { outcome: 'thawed' }, ['Thawed', 'success']],
+        ['delete', 409, { error: 'Message is no longer in the queue', outcome: 'gone' }, ['No longer in the queue', 'info']],
+        ['thaw', 200, { outcome: 'unchanged' }, ['Nothing changed', 'warning']],
+        ['delete', 500, { error: 'Queue action failed: exim -Mrm: exit status 1', outcome: 'unchanged' },
+            ['Nothing changed: Queue action failed: exim -Mrm: exit status 1', 'warning']],
+        ['retry', 503, { error: 'Queue actions need systemd-run: not found', outcome: 'unchanged' }, ['Queue actions need systemd-run on this server.', 'error']]
+    ]) {
+        const page = await queuePage([queueMsg(QID[0], { frozen: true })]);
+        stubConfirm(page);
+        queueRow(page, QID[0]).querySelector('[data-queue-action="' + action + '"]').click();
+        await settle();
+        page.respond('/api/v1/email/queue/' + QID[0] + '/' + action, status, body);
+        await settle();
+        assert.deepEqual(page.toasts, [toast], action + ' ' + status);
+        assert.equal(page.pending('/api/v1/email/queue?').length, 1, 'the list did not reload after ' + action + ' ' + status);
+    }
+});
+
+test('Thaw shows only on frozen messages', async () => {
+    const page = await queuePage([queueMsg(QID[0], { frozen: true }), queueMsg(QID[1])]);
+    const actions = id => Array.from(queueRow(page, id).querySelectorAll('[data-queue-action]')).map(b => b.getAttribute('data-queue-action'));
+    assert.deepEqual(actions(QID[0]), ['thaw', 'retry', 'bounce', 'delete']);
+    assert.deepEqual(actions(QID[1]), ['retry', 'bounce', 'delete']);
+});
+
+test('an unreadable queue says the size is unknown, with Retry', async () => {
+    const page = emailPage();
+    showEmailTab(page, 'queue');
+    await settle();
+    page.respond('/api/v1/email/queue?', 200, { unavailable: true, items: [], page: 1, limit: 25 });
+    await settle();
+    const doc = page.document;
+    const summary = doc.getElementById('email-queue-summary');
+    assert.match(flat(summary), /Queue size unknown/);
+    assert.doesNotMatch(flat(summary), /\d+ queued|queue is empty/i, 'an unreadable queue reads as a count');
+    assert.equal(doc.getElementById('email-queue-list').hidden, true, 'the list shows under an unreadable queue');
+    summary.querySelector('.csm-retry-btn').click();
+    await settle();
+    assert.equal(page.pending('/api/v1/email/queue?').length, 1, 'Retry did not read the queue again');
+    page.fail('/api/v1/email/queue?', new Error('Mail queue is not available on this host'));
+    await settle();
+    assert.match(flat(summary), /Queue size unknown/);
+    assert.match(flat(summary), /Mail queue is not available on this host/);
+    summary.querySelector('.csm-retry-btn').click();
+    await settle();
+    page.respond('/api/v1/email/queue?', 200, queueList([queueMsg(QID[0])]));
+    await settle();
+    assert.equal(doc.getElementById('email-queue-list').hidden, false);
+    assert.match(flat(summary), /^1 queued/);
+});
+
+test('an empty queue says so', async () => {
+    const page = await queuePage([]);
+    assert.equal(flat(page.document.getElementById('email-queue-summary')), 'The queue is empty.');
+    assert.equal(page.document.getElementById('email-queue-list').hidden, true);
+});
+
+test('the queue filter, search and pages ask the server', async () => {
+    const page = await queuePage([queueMsg(QID[0])], { total: 60, queued: 60 });
+    const doc = page.document;
+    const pager = doc.getElementById('email-queue-pager');
+    assert.equal(pager.hidden, false);
+    assert.equal(flat(doc.getElementById('email-queue-page')), 'Page 1 of 3');
+    assert.equal(doc.getElementById('email-queue-prev').disabled, true);
+    doc.getElementById('email-queue-next').click();
+    await settle();
+    assert.equal(query(page.pending('/api/v1/email/queue?')[0].url).get('page'), '2');
+    page.respond('/api/v1/email/queue?', 200, queueList([queueMsg(QID[1])], { total: 60, queued: 60, page: 2 }));
+    await settle();
+    assert.equal(flat(doc.getElementById('email-queue-page')), 'Page 2 of 3');
+
+    // A page emptied by an action falls back to the last page that has rows.
+    doc.getElementById('email-queue-next').click();
+    await settle();
+    page.respond('/api/v1/email/queue?', 200, queueList([], { total: 50, queued: 50, page: 3 }));
+    await settle();
+    assert.equal(query(page.pending('/api/v1/email/queue?')[0].url).get('page'), '2');
+    page.respond('/api/v1/email/queue?', 200, queueList([queueMsg(QID[1])], { total: 50, queued: 50, page: 2 }));
+    await settle();
+    assert.equal(flat(doc.getElementById('email-queue-page')), 'Page 2 of 2');
+
+    changeValue(page, doc.getElementById('email-queue-filter'), 'frozen');
+    await settle();
+    let q = query(page.pending('/api/v1/email/queue?')[0].url);
+    assert.deepEqual([q.get('filter'), q.get('page')], ['frozen', '1']);
+    page.respond('/api/v1/email/queue?', 200, queueList([], { total: 0, queued: 60 }));
+    await settle();
+    assert.match(flat(doc.getElementById('email-queue-tbody')), /No queued messages match/);
+    assert.equal(doc.getElementById('email-queue-list').hidden, false, 'a filter with no match hid the list');
+    assert.equal(pager.hidden, true);
+    assert.match(flat(doc.getElementById('email-queue-summary')), /^60 queued/);
+
+    const search = doc.getElementById('email-queue-search');
+    search.value = 'Example.NET';
+    search.dispatchEvent(new page.window.Event('input'));
+    await new Promise(r => setTimeout(r, 400));
+    await settle();
+    q = query(page.pending('/api/v1/email/queue?')[0].url);
+    assert.deepEqual([q.get('q'), q.get('filter'), q.get('page')], ['Example.NET', 'frozen', '1']);
+});
+
+test('an older queue page cannot replace a newer one', async () => {
+    const page = await queuePage([queueMsg(QID[0])], { total: 60, queued: 60 });
+    const doc = page.document;
+    doc.getElementById('email-queue-next').click();
+    await settle();
+    changeValue(page, doc.getElementById('email-queue-filter'), 'frozen');
+    await settle();
+    const [old, recent] = page.pending('/api/v1/email/queue?');
+    page.respond(recent.url, 200, queueList([queueMsg(QID[2], { frozen: true })], { queued: 60 }));
+    await settle();
+    page.respond(old.url, 200, queueList([queueMsg(QID[1])], { total: 60, queued: 60, page: 2 }));
+    await settle();
+    assert.deepEqual(queueRows(page).map(r => r.getAttribute('data-queue-id')), [QID[2]]);
+});
+
+test('the queue size bar speaks its size and thresholds, and close labels share one line', async () => {
+    for (const [queue, valuetext, apart, at] of [
+        [{ size: 21, warn: 100, crit: 500 }, '21 messages, warn 100, crit 500', true],
+        // 64% and 80%: the line ends at the crit mark.
+        [{ size: 1, warn: 400, crit: 500 }, '1 message, warn 400, crit 500', false, { right: '20%' }],
+        // 2% and 10%: the line starts at the warn mark.
+        [{ size: 5000, warn: 100, crit: 500 }, '5,000 messages, warn 100, crit 500', false, { left: '2%' }],
+        [{ size: 21, warn: 100, crit: 0 }, '21 messages, warn 100', true]
+    ]) {
+        const page = emailPage();
+        page.respond('/api/v1/email/overview', 200, overview({}, { queue: Object.assign({ unavailable: false, frozen: 0, detail_unavailable: false }, queue) }));
+        await settle();
+        const health = page.document.getElementById('queue-health');
+        assert.equal(health.querySelector('.progress-bar').getAttribute('aria-valuetext'), valuetext);
+        const marks = [['warn', queue.warn], ['crit', queue.crit]].filter(m => m[1] > 0);
+        const line = health.querySelector('.csm-queue-bar__labels');
+        if (apart) {
+            assert.equal(line, null, valuetext + ': labels share a line though their marks are apart');
+            assert.deepEqual(Array.from(health.querySelectorAll('.csm-queue-mark__label')).map(flat), marks.map(m => m[0] + ' ' + CSMnum(m[1])));
+        } else {
+            // Marks within a fifth of the bar of each other would print one
+            // label over the other.
+            assert.equal(health.querySelectorAll('.csm-queue-mark__label').length, 0, valuetext + ': labels still sit under close marks');
+            assert.ok(line, valuetext + ': no shared label line');
+            assert.equal(flat(line), marks.map(m => m[0] + ' ' + CSMnum(m[1])).join(', '));
+            assert.deepEqual({ left: line.style.left || undefined, right: line.style.right || undefined }, Object.assign({ left: undefined, right: undefined }, at));
+        }
+    }
+});
+
+function CSMnum(n) {
+    return n.toLocaleString('en-US');
+}
+
+test('the open tab scrolls into the strip, and stays there as counts widen the tabs', async () => {
+    const page = emailPage();
+    await settle();
+    const doc = page.document;
+    const strip = doc.getElementById('email-tabs');
+    const findings = doc.getElementById('email-tab-findings');
+    // A phone strip from 8 to 382 px with Findings beyond its right edge;
+    // shift is how far counts loaded since pushed the tabs right.
+    let shift = 0;
+    strip.scrollLeft = 0;
+    strip.getBoundingClientRect = () => ({ left: 8, right: 382 });
+    findings.getBoundingClientRect = () => ({ left: 700 + shift - strip.scrollLeft, right: 802 + shift - strip.scrollLeft });
+    let pageScrolls = 0;
+    findings.scrollIntoView = () => { pageScrolls++; };
+    doc.querySelector('#kpi-logins a').click();
+    await settle();
+    assert.equal(strip.scrollLeft, 420, 'Findings is not scrolled into the strip');
+    shift = 34;
+    page.respond('/api/v1/email/overview', 200, overview({}, { queue: { size: 21, unavailable: false, warn: 100, crit: 500, frozen: 0, detail_unavailable: false } }));
+    await settle();
+    assert.equal(doc.querySelector('#email-tab-queue [data-tab-count]').textContent, '21');
+    assert.equal(strip.scrollLeft, 454, 'a count pushed the open tab out of the strip');
+    // The strip scrolls; the page, which polls these counts, does not.
+    assert.equal(pageScrolls, 0);
+    // A tab left of the strip's view comes back to its left edge.
+    strip.scrollLeft = 900;
+    doc.querySelector('#kpi-logins a').click();
+    await settle();
+    assert.equal(strip.scrollLeft, 726);
+});
+
+test('the refresh button and the queue timer read the open Queue tab again', async () => {
+    const page = await queuePage([queueMsg(QID[0])]);
+    page.document.getElementById('email-refresh').click();
+    await settle();
+    assert.equal(page.pending('/api/v1/email/queue?').length, 1, 'refresh did not read the queue list');
+    const src = fs.readFileSync(path.join(__dirname, 'static/js/email.js'), 'utf8');
+    const timer = src.match(/CSM\.refresh\.interval\(function\(\) \{([\s\S]*?)\}, 30000\)/);
+    assert.ok(timer, 'no 30 s timer');
+    assert.match(timer[1], /activeTab\('email-tabs'\) === 'queue'\) loadQueue\(\)/, 'the 30 s timer does not read the open Queue tab');
 });

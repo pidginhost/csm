@@ -211,23 +211,66 @@
             </div>
         </div>
 
-        <!-- Queue: size against the thresholds, composition, stuck recipients -->
+        <!-- Queue: what is stuck and why, oldest first, with the actions on
+             each message; then the composition and stuck recipients -->
         <div class="tab-pane fade" id="email-pane-queue" role="tabpanel" aria-labelledby="email-tab-queue" tabindex="0">
             <div class="card">
-                <div class="card-body">
-                    <div class="row g-4 align-items-start">
-                        <div class="col-lg-6">
+                <div class="card-body border-bottom">
+                    <div class="row g-3 align-items-center">
+                        <div class="col-lg-8">
+                            <div id="email-queue-summary">
+                                <div class="text-muted small"><span class="spinner-border spinner-border-sm"></span> Loading the queue...</div>
+                            </div>
+                        </div>
+                        <div class="col-lg-4">
                             <div class="subheader mb-2"><i class="ti ti-mailbox"></i>&nbsp;Queue size</div>
                             <div id="queue-health">
                                 <div class="text-muted small"><span class="spinner-border spinner-border-sm"></span> Loading...</div>
                             </div>
                         </div>
-                        <div class="col-lg-6">
-                            <div class="subheader mb-2"><i class="ti ti-chart-pie"></i>&nbsp;Queue composition</div>
-                            <div id="queue-composition">
-                                <div class="text-muted small">Composition loads when this tab is opened.</div>
-                            </div>
+                    </div>
+                </div>
+                <div id="email-queue-list">
+                    <div class="csm-toolbar">
+                        <select id="email-queue-filter" class="form-select form-select-sm csm-toolbar__filter" aria-label="Show messages">
+                            <option value="all">All messages</option>
+                            <option value="frozen">Frozen</option>
+                            <option value="backscatter">Backscatter</option>
+                        </select>
+                        <input type="search" id="email-queue-search" class="form-control form-control-sm csm-toolbar__search" placeholder="Search sender or recipient..." aria-label="Search sender or recipient">
+                        <span class="csm-toolbar__spacer"></span>
+                        <span class="csm-toolbar__count" id="email-queue-count"></span>
+                    </div>
+                    <div class="table-responsive">
+                        <table class="table table-vcenter card-table table-sm" id="email-queue-table">
+                            <thead>
+                                <tr>
+                                    <th>Age</th>
+                                    <th>From</th>
+                                    <th>To</th>
+                                    <th>Size</th>
+                                    <th>Why stuck</th>
+                                    <th>State</th>
+                                    <th class="text-end">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="email-queue-tbody">
+                                <tr><td colspan="7" class="text-center text-muted py-4"><span class="spinner-border spinner-border-sm"></span> Loading...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="card-footer" id="email-queue-pager" hidden>
+                        <div class="d-flex align-items-center gap-2">
+                            <button type="button" class="btn btn-sm btn-ghost-secondary" id="email-queue-prev"><i class="ti ti-chevron-left"></i>&nbsp;Previous</button>
+                            <span class="small text-muted" id="email-queue-page"></span>
+                            <button type="button" class="btn btn-sm btn-ghost-secondary" id="email-queue-next">Next&nbsp;<i class="ti ti-chevron-right"></i></button>
                         </div>
+                    </div>
+                </div>
+                <div class="card-body border-top">
+                    <div class="subheader mb-2"><i class="ti ti-chart-pie"></i>&nbsp;Queue composition</div>
+                    <div id="queue-composition">
+                        <div class="text-muted small">Composition loads when this tab is opened.</div>
                     </div>
                 </div>
             </div>

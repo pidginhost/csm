@@ -272,9 +272,7 @@
             return;
         }
         var size = q.size || 0;
-        var cls = '';
-        if (q.crit > 0 && size >= q.crit) cls = 'text-danger';
-        else if (q.warn > 0 && size >= q.warn) cls = 'text-warning';
+        var level = queueLevel(q);
         var sub;
         if (size === 0) sub = 'empty';
         else if (q.detail_unavailable) sub = 'oldest unknown';
@@ -282,8 +280,17 @@
             sub = q.oldest_age_seconds != null ? 'oldest ' + CSM.formatDuration(q.oldest_age_seconds) : 'no dated message';
             if (q.frozen > 0) sub += ', ' + num(q.frozen) + ' frozen';
         }
-        setKPI('kpi-queue', size, sub, cls);
-        setTabCount('queue', size, q.warn > 0 && size >= q.warn ? 'badge-warning' : '');
+        setKPI('kpi-queue', size, sub, { crit: 'text-danger', warn: 'text-warning' }[level]);
+        setTabCount('queue', size, { crit: 'badge-critical', warn: 'badge-warning' }[level]);
+    }
+
+    // queueLevel returns 'crit' or 'warn' when the queue size is at or over
+    // that threshold, else ''.
+    function queueLevel(q) {
+        var size = q.size || 0;
+        if (q.crit > 0 && size >= q.crit) return 'crit';
+        if (q.warn > 0 && size >= q.warn) return 'warn';
+        return '';
     }
 
     // stateLine says in one sentence how mail is doing over the range.
@@ -726,7 +733,8 @@
     }
 
     // renderQueueHealth draws the queue size on a bar that runs a quarter
-    // past the crit threshold, with the warn and crit marks on the bar.
+    // past the crit threshold, with the warn and crit marks on the bar. The
+    // summary line beside it gives the count and the oldest age.
     function renderQueueHealth(q) {
         var el = document.getElementById('queue-health');
         if (!el) return;
@@ -736,33 +744,40 @@
         }
         var size = q.size || 0;
         var scale = Math.max(size, (q.crit || q.warn || 1) * 1.25);
-        var color = 'bg-green';
-        if (q.crit > 0 && size >= q.crit) color = 'bg-danger';
-        else if (q.warn > 0 && size >= q.warn) color = 'bg-warning';
-
-        var head = node('div', 'd-flex align-items-baseline flex-wrap gap-2 mb-2');
-        head.appendChild(node('span', 'h2 mb-0', num(size)));
-        head.appendChild(node('span', 'text-muted', size === 1 ? 'message queued' : 'messages queued'));
-        var age = '';
-        if (size > 0) age = q.detail_unavailable ? 'oldest unknown' : q.oldest_age_seconds != null ? 'oldest ' + CSM.formatDuration(q.oldest_age_seconds) : '';
-        if (age) head.appendChild(node('span', 'text-muted small', age));
+        var color = { crit: 'bg-danger', warn: 'bg-warning' }[queueLevel(q)] || 'bg-green';
+        var marks = [['warn', q.warn], ['crit', q.crit]].filter(function(m) { return m[1] > 0; }).map(function(m) {
+            return { name: m[0], label: m[0] + ' ' + num(m[1]), at: Math.round(m[1] / scale * 100) };
+        });
 
         var wrap = node('div', 'csm-queue-bar');
         var track = node('div', 'progress');
         var bar = node('div', 'progress-bar ' + color);
         bar.setAttribute('aria-label', 'Queue size against the crit threshold');
+        bar.setAttribute('aria-valuetext', [num(size) + (size === 1 ? ' message' : ' messages')]
+            .concat(marks.map(function(m) { return m.label; })).join(', '));
         CSM.setProgressBar(bar, size / scale * 100);
         track.appendChild(bar);
         wrap.appendChild(track);
-        [['warn', q.warn], ['crit', q.crit]].forEach(function(m) {
-            if (!(m[1] > 0)) return;
-            var mark = node('div', 'csm-queue-mark csm-queue-mark--' + m[0]);
-            mark.setAttribute('data-queue-mark', m[0]);
-            mark.style.left = Math.round(m[1] / scale * 100) + '%';
-            mark.appendChild(node('span', 'csm-queue-mark__label', m[0] + ' ' + num(m[1])));
+        // Labels under marks within a fifth of the bar of each other would
+        // print over one another, so they share one line instead.
+        var shared = marks.length === 2 && Math.abs(marks[1].at - marks[0].at) < 20;
+        marks.forEach(function(m) {
+            var mark = node('div', 'csm-queue-mark csm-queue-mark--' + m.name);
+            mark.setAttribute('data-queue-mark', m.name);
+            mark.style.left = m.at + '%';
+            if (!shared) mark.appendChild(node('span', 'csm-queue-mark__label', m.label));
             wrap.appendChild(mark);
         });
-        el.replaceChildren(head, wrap);
+        if (shared) {
+            var line = node('div', 'csm-queue-bar__labels', marks[0].label + ', ' + marks[1].label);
+            // The line ends at the right mark, or starts at the left one
+            // when both sit in the left half.
+            var right = Math.max(marks[0].at, marks[1].at);
+            if (right > 50) line.style.right = (100 - right) + '%';
+            else line.style.left = Math.min(marks[0].at, marks[1].at) + '%';
+            wrap.appendChild(line);
+        }
+        el.replaceChildren(wrap);
     }
 
     // fact is one label and value of a compact line.
@@ -1613,6 +1628,403 @@
         tb.innerHTML = html;
     }
 
+    // ---------- Queue tab: summary and messages ----------
+
+    var QUEUE_PAGE_SIZE = 25;
+    var queueFilterEl = document.getElementById('email-queue-filter');
+    var queueSearchEl = document.getElementById('email-queue-search');
+    var queueTable = null;
+    var _queue = null; // the list page on screen; null while unread
+    var _queuePage = 1;
+    var _queueSeq = 0;
+    // What the backscatter flush would remove, from the queue composition.
+    var _queueFlushable = 0;
+    // Messages whose details are open. A reload opens them again.
+    var _queueOpen = {};
+
+    // The per-message actions, in the order the row offers them. Each
+    // confirm names the message and its recipients.
+    var QUEUE_ACTIONS = {
+        thaw: { label: 'Thaw', title: 'Thaw',
+            ask: function(t) { return 'Thaw ' + t + '? Exim tries it again on its next queue run.'; } },
+        retry: { label: 'Retry', title: 'Retry now',
+            ask: function(t) { return 'Try delivering ' + t + ' now?'; } },
+        bounce: { label: 'Return', title: 'Return to sender', danger: true,
+            ask: function(t, m) {
+                return 'Give up on ' + t + ' and return it to its sender? ' +
+                    (m.bounce ? 'It is a bounce itself, so exim sends no new bounce.' : 'Exim stops trying and sends the sender a bounce.');
+            } },
+        'delete': { label: 'Delete', title: 'Delete', danger: true,
+            ask: function(t) { return 'Delete ' + t + '? No bounce is sent and this cannot be undone.'; } }
+    };
+
+    // What the queue showed after an action, as the toast says it.
+    var QUEUE_OUTCOMES = {
+        removed: ['Deleted', 'success'],
+        bounced: ['Returned to sender', 'success'],
+        attempt_started: ['Delivery attempt started', 'success'],
+        thawed: ['Thawed', 'success'],
+        gone: ['No longer in the queue', 'info']
+    };
+
+    function loadQueue() {
+        var seq = ++_queueSeq;
+        var params = 'page=' + _queuePage + '&limit=' + QUEUE_PAGE_SIZE +
+            '&filter=' + encodeURIComponent(queueFilterEl ? queueFilterEl.value : 'all') +
+            '&q=' + encodeURIComponent(queueSearchEl ? queueSearchEl.value.trim() : '');
+        CSM.get('/api/v1/email/queue?' + params)
+            .then(function(data) {
+                if (seq !== _queueSeq) return;
+                if (data.unavailable) {
+                    queueUnknown('CSM could not read the mail queue.');
+                    return;
+                }
+                // An action can empty the last page; show the one before.
+                var pages = Math.max(1, Math.ceil((data.total || 0) / QUEUE_PAGE_SIZE));
+                if (_queuePage > pages) {
+                    _queuePage = pages;
+                    loadQueue();
+                    return;
+                }
+                renderQueue(data);
+            })
+            .catch(function(err) {
+                if (seq !== _queueSeq) return;
+                queueUnknown(err);
+            });
+    }
+
+    // reloadQueue reads the queue again after it changed: the list, the
+    // flush count and the queue size on the card, the tab and the bar.
+    function reloadQueue() {
+        loadQueue();
+        queueCompositionLoaded = false;
+        loadQueueComposition();
+        loadOverview();
+    }
+
+    // queueUnknown says the queue could not be read, with Retry. The list
+    // hides: an unread queue has no count, and is not an empty one.
+    function queueUnknown(err) {
+        _queue = null;
+        resetQueueTable();
+        var list = document.getElementById('email-queue-list');
+        if (list) list.hidden = true;
+        CSM.loadError(document.getElementById('email-queue-summary'), loadQueue, { title: 'Queue size unknown', error: err });
+    }
+
+    function renderQueue(data) {
+        _queue = data;
+        renderQueueSummary();
+        var list = document.getElementById('email-queue-list');
+        if (list) list.hidden = !(data.queued > 0);
+        renderQueueRows(Array.isArray(data.items) ? data.items : []);
+        renderQueuePager(data.total || 0);
+    }
+
+    // renderQueueSummary says in one sentence how much is queued, frozen
+    // and how old, and how much of it is backscatter, with the flush.
+    function renderQueueSummary() {
+        var el = document.getElementById('email-queue-summary');
+        if (!el || !_queue) return;
+        var q = _queue;
+        if (!(q.queued > 0)) {
+            el.replaceChildren(node('div', 'fw-medium', 'The queue is empty.'));
+            return;
+        }
+        var text = num(q.queued) + ' queued, ' + num(q.frozen) + ' frozen';
+        if (q.oldest_seconds != null) text += ', oldest ' + CSM.formatDuration(q.oldest_seconds);
+        text += '.';
+        if (q.backscatter === 1) text += ' 1 is a bounce to a sender that does not exist (backscatter).';
+        else if (q.backscatter > 1) text += ' ' + num(q.backscatter) + ' are bounces to senders that do not exist (backscatter).';
+        var line = node('div', 'd-flex flex-wrap align-items-center gap-2');
+        line.appendChild(node('span', 'fw-medium', text));
+        // Flush is offered only for frozen null-sender messages: undeliverable
+        // backscatter that cannot belong to a real sender or a live retry.
+        if (_queueFlushable > 0) {
+            var flush = node('button', 'btn btn-sm btn-outline-danger');
+            flush.type = 'button';
+            flush.id = 'flush-backscatter-btn';
+            flush.appendChild(node('i', 'ti ti-trash'));
+            flush.appendChild(document.createTextNode('\u00a0Flush ' + num(_queueFlushable) + ' frozen backscatter message(s)'));
+            line.appendChild(flush);
+        }
+        el.replaceChildren(line);
+    }
+
+    function resetQueueTable() {
+        if (queueTable) queueTable.destroy();
+        queueTable = null;
+    }
+
+    function queueItem(id) {
+        var list = _queue && Array.isArray(_queue.items) ? _queue.items : [];
+        for (var i = 0; i < list.length; i++) {
+            if (list[i].id === id) return list[i];
+        }
+        return null;
+    }
+
+    // queueTarget names a message and its undelivered recipients.
+    function queueTarget(m) {
+        var first = (m.recipients || [])[0];
+        if (!first) return 'message ' + m.id;
+        var more = (m.recipient_count || 1) - 1;
+        return 'message ' + m.id + ' to ' + first + (more > 0 ? ' and ' + num(more) + ' more' : '');
+    }
+
+    function queueCell(label, cls) {
+        var td = node('td', cls);
+        td.setAttribute('data-label', label);
+        return td;
+    }
+
+    // queueRow builds one message's row. Senders, recipients and the
+    // reasons come from mail anyone can send, so all of it is text.
+    function queueRow(m) {
+        var tr = node('tr');
+        tr.setAttribute('data-queue-id', m.id);
+
+        var age = queueCell('Age', 'text-nowrap');
+        age.textContent = CSM.formatDuration(m.age_seconds);
+        if (m.arrived) age.title = 'Arrived ' + CSM.fmtDate(m.arrived);
+        tr.appendChild(age);
+
+        var from = queueCell('From', 'csm-break-word');
+        if (m.bounce || !m.sender) from.appendChild(node('span', 'badge bg-secondary-lt', 'bounce'));
+        else from.appendChild(node('span', null, m.sender));
+        if (m.local_user) {
+            var user = node('span', 'text-muted small', ' (' + m.local_user + ')');
+            user.title = 'Sent by local user ' + m.local_user;
+            from.appendChild(user);
+        }
+        tr.appendChild(from);
+
+        var to = queueCell('To', 'csm-break-word');
+        var first = (m.recipients || [])[0];
+        var more = (m.recipient_count || 1) - 1;
+        if (first) {
+            to.appendChild(node('span', null, first));
+            if (more > 0) to.appendChild(node('span', 'text-muted small', ' +' + num(more) + ' more'));
+        } else {
+            to.appendChild(node('span', 'text-muted', '--'));
+        }
+        tr.appendChild(to);
+
+        var size = queueCell('Size', 'text-nowrap');
+        size.textContent = CSM.formatSize(m.size);
+        tr.appendChild(size);
+
+        var why = queueCell('Why stuck', 'text-wrap');
+        var reason = m.reason || {};
+        why.appendChild(reason.text ? node('span', null, reason.text) : node('span', 'text-muted', '--'));
+        var expand = node('button', 'btn btn-ghost-secondary btn-sm expand-btn');
+        expand.type = 'button';
+        expand.setAttribute('aria-expanded', 'false');
+        expand.setAttribute('aria-label', 'Expand details');
+        expand.title = 'Recipients, error and delivery log';
+        expand.appendChild(node('i', 'ti ti-chevron-down'));
+        why.appendChild(expand);
+        tr.appendChild(why);
+
+        var state = queueCell('State');
+        state.appendChild(m.frozen ? node('span', 'badge bg-azure-lt', 'Frozen') : node('span', 'text-muted', 'Queued'));
+        tr.appendChild(state);
+
+        var actions = queueCell('Actions', 'text-end');
+        var buttons = node('div', 'btn-list justify-content-end flex-nowrap');
+        (m.frozen ? ['thaw'] : []).concat(['retry', 'bounce', 'delete']).forEach(function(name) {
+            var a = QUEUE_ACTIONS[name];
+            var btn = node('button', 'btn btn-sm ' + (a.danger ? 'btn-ghost-danger' : 'btn-ghost-secondary'), a.label);
+            btn.type = 'button';
+            btn.title = a.title;
+            btn.setAttribute('data-queue-action', name);
+            btn.setAttribute('aria-label', a.title + ', message ' + m.id);
+            buttons.appendChild(btn);
+        });
+        actions.appendChild(buttons);
+        tr.appendChild(actions);
+        return tr;
+    }
+
+    // queueDetailsRow holds a message's details, read when it is expanded.
+    function queueDetailsRow() {
+        var tr = node('tr', 'details-row');
+        var td = node('td');
+        td.setAttribute('colspan', '7');
+        var host = node('div', 'small');
+        host.setAttribute('data-queue-detail', '');
+        td.appendChild(host);
+        tr.appendChild(td);
+        return tr;
+    }
+
+    function renderQueueRows(items) {
+        var tbody = document.getElementById('email-queue-tbody');
+        if (!tbody) return;
+        resetQueueTable();
+        var count = document.getElementById('email-queue-count');
+        var total = _queue.total || 0;
+        if (count) count.textContent = num(total) + (total === 1 ? ' message' : ' messages');
+        var open = _queueOpen;
+        _queueOpen = {};
+        if (items.length === 0) {
+            emptyRow(tbody, 7, 'filter-off', 'No queued messages match', 'Try another filter or search.');
+            return;
+        }
+        tbody.replaceChildren();
+        var reopen = [];
+        items.forEach(function(m) {
+            var row = queueRow(m), details = queueDetailsRow();
+            tbody.appendChild(row);
+            tbody.appendChild(details);
+            if (open[m.id]) reopen.push([m, row, details]);
+        });
+        queueTable = new CSM.Table({
+            tableId: 'email-queue-table',
+            perPage: 0,
+            controls: false,
+            search: false,
+            sortable: false,
+            detailRows: true,
+            mobileRowCard: true
+        });
+        reopen.forEach(function(r) {
+            _queueOpen[r[0].id] = true;
+            CSM.toggleDetailRow(r[1].querySelector('.expand-btn'));
+            loadQueueDetail(r[0], r[2]);
+        });
+    }
+
+    function renderQueuePager(total) {
+        var pager = document.getElementById('email-queue-pager');
+        if (!pager) return;
+        var pages = Math.max(1, Math.ceil(total / QUEUE_PAGE_SIZE));
+        pager.hidden = pages <= 1;
+        document.getElementById('email-queue-page').textContent = 'Page ' + _queuePage + ' of ' + pages;
+        document.getElementById('email-queue-prev').disabled = _queuePage <= 1;
+        document.getElementById('email-queue-next').disabled = _queuePage >= pages;
+    }
+
+    function loadQueueDetail(m, details) {
+        var host = details.querySelector('[data-queue-detail]');
+        host.replaceChildren(node('div', 'text-muted', 'Loading the message...'));
+        CSM.get('/api/v1/email/queue/' + encodeURIComponent(m.id), { silent: true, refresh: false })
+            .then(function(d) { renderQueueDetail(host, d); })
+            .catch(function(err) {
+                host.replaceChildren();
+                if (err && err.status === 404) {
+                    host.appendChild(node('div', 'text-muted', 'No longer in the queue.'));
+                    return;
+                }
+                CSM.loadError(host, function() { loadQueueDetail(m, details); }, { title: 'Failed to load the message', error: err });
+            });
+    }
+
+    // renderQueueDetail shows every undelivered recipient, the full error
+    // and the last lines exim logged for the message, all as text.
+    function renderQueueDetail(host, d) {
+        var parts = [];
+        var head = node('div', 'mb-2');
+        head.appendChild(node('span', 'font-monospace', d.id));
+        if (d.arrived) head.appendChild(node('span', 'text-muted', ', arrived ' + CSM.fmtDate(d.arrived)));
+        parts.push(head);
+
+        var recipients = Array.isArray(d.recipients) ? d.recipients : [];
+        parts.push(node('div', 'subheader mb-1', 'Undelivered recipients (' + num(d.recipient_count) + ')'));
+        var list = node('div', 'csm-queue-recipients font-monospace mb-2');
+        recipients.forEach(function(r) { list.appendChild(node('div', null, r)); });
+        parts.push(list);
+        if (recipients.length < d.recipient_count) {
+            parts.push(node('div', 'text-muted mb-2', 'Showing the first ' + num(recipients.length) + '.'));
+        }
+        if (d.delivered > 0) parts.push(node('div', 'mb-2', 'Already delivered: ' + num(d.delivered)));
+
+        var reason = d.reason || {};
+        if (reason.raw) {
+            parts.push(node('div', 'subheader mb-1', 'Last error'));
+            parts.push(node('div', 'font-monospace csm-break-word mb-2', reason.raw));
+        }
+
+        var log = Array.isArray(d.msglog) ? d.msglog : [];
+        if (log.length > 0) {
+            parts.push(node('div', 'subheader mb-1', 'Delivery log, last ' + log.length + (log.length === 1 ? ' line' : ' lines')));
+            parts.push(node('pre', 'csm-queue-log mb-0', log.join('\n')));
+        } else {
+            parts.push(node('div', 'text-muted', 'Exim has logged no delivery attempt for this message.'));
+        }
+        host.replaceChildren.apply(host, parts);
+    }
+
+    function queueAction(m, name, btn) {
+        var a = QUEUE_ACTIONS[name];
+        CSM.confirm(a.ask(queueTarget(m), m), { danger: !!a.danger, okLabel: a.title }).then(function() {
+            btn.disabled = true;
+            CSM.post('/api/v1/email/queue/' + encodeURIComponent(m.id) + '/' + name, {})
+                .then(function(res) {
+                    var outcome = res && res.outcome;
+                    if (Object.prototype.hasOwnProperty.call(QUEUE_OUTCOMES, outcome)) CSM.toast(QUEUE_OUTCOMES[outcome][0], QUEUE_OUTCOMES[outcome][1]);
+                    else CSM.toast('Nothing changed', 'warning');
+                })
+                .catch(function(err) {
+                    // 409: the message left the queue before the action
+                    // ran. Another answer means the queue shows no change,
+                    // and its error says why. With no answer at all, the
+                    // reload shows what happened.
+                    if (err && err.status === 409) CSM.toast('No longer in the queue', 'info');
+                    else if (err && err.status === 503) CSM.toast('Queue actions need systemd-run on this server.', 'error');
+                    else if (err && err.status) CSM.toast('Nothing changed: ' + CSM.errorText(err), 'warning');
+                    else CSM.toast('Queue action failed: ' + CSM.errorText(err), 'error');
+                })
+                .then(reloadQueue);
+        }).catch(function() { /* cancelled */ });
+    }
+
+    var queueBody = document.getElementById('email-queue-tbody');
+    if (queueBody) {
+        queueBody.addEventListener('click', function(e) {
+            var row = e.target.closest('tr');
+            var m = row && row.hasAttribute('data-queue-id') ? queueItem(row.getAttribute('data-queue-id')) : null;
+            if (!m) return;
+            var expand = e.target.closest('.expand-btn');
+            if (expand) {
+                // The shared handler opens or closes the details after this.
+                if (expand.getAttribute('aria-expanded') === 'true') {
+                    delete _queueOpen[m.id];
+                } else {
+                    _queueOpen[m.id] = true;
+                    loadQueueDetail(m, row.nextElementSibling);
+                }
+                return;
+            }
+            var btn = e.target.closest('[data-queue-action]');
+            if (btn) queueAction(m, btn.getAttribute('data-queue-action'), btn);
+        });
+    }
+
+    var queueSummaryEl = document.getElementById('email-queue-summary');
+    if (queueSummaryEl) {
+        queueSummaryEl.addEventListener('click', function(e) {
+            if (e.target.closest('#flush-backscatter-btn')) flushBackscatter();
+        });
+    }
+
+    function firstQueuePage() {
+        _queuePage = 1;
+        loadQueue();
+    }
+
+    if (queueFilterEl) queueFilterEl.addEventListener('change', firstQueuePage);
+    if (queueSearchEl) queueSearchEl.addEventListener('input', CSM.debounce(firstQueuePage, 300));
+    [['email-queue-prev', -1], ['email-queue-next', 1]].forEach(function(p) {
+        var btn = document.getElementById(p[0]);
+        if (!btn) return;
+        btn.addEventListener('click', function() {
+            _queuePage = Math.max(1, _queuePage + p[1]);
+            loadQueue();
+        });
+    });
+
     // ---------- Deliverability tab (outbound deferral intel) ----------
 
     function deliverabilityArray(value) {
@@ -1810,6 +2222,8 @@
             .then(function(data) { renderQueueComposition(data || {}); })
             .catch(function(err) {
                 queueCompositionLoaded = false;
+                _queueFlushable = 0;
+                renderQueueSummary();
                 CSM.loadError(document.getElementById('queue-composition'), loadQueueComposition, { title: 'Failed to load queue composition', error: err });
             });
     }
@@ -1821,6 +2235,9 @@
     }
 
     function renderQueueComposition(data) {
+        // The summary line offers the flush.
+        _queueFlushable = queueCount(data.flushable_backscatter);
+        renderQueueSummary();
         var el = document.getElementById('queue-composition');
         if (!el) return;
         var total = queueCount(data.total);
@@ -1831,22 +2248,13 @@
         var bounce = queueCount(data.bounce);
         var real = queueCount(data.real);
         var frozen = queueCount(data.frozen);
-        var flushable = queueCount(data.flushable_backscatter);
         var bouncePct = Math.round(bounce / total * 100);
 
-        // The queue size and oldest age sit on the size bar beside this.
         var html = '<div class="row g-3 mb-3">';
         html += metricCol('Real mail', CSM.formatNumber(real), 'text-success');
         html += metricCol('Backscatter', CSM.formatNumber(bounce) + ' (' + bouncePct + '%)', bounce > 0 ? 'text-danger' : 'text-muted');
         html += metricCol('Frozen', CSM.formatNumber(frozen), frozen > 0 ? 'text-warning' : 'text-muted');
         html += '</div>';
-
-        // Flush is offered only for frozen null-sender messages: undeliverable
-        // backscatter that cannot belong to a real sender or a live retry.
-        if (flushable > 0) {
-            html += '<button type="button" class="btn btn-sm btn-outline-danger mb-3" id="flush-backscatter-btn">' +
-                '<i class="ti ti-trash"></i>&nbsp;Flush ' + CSM.formatNumber(flushable) + ' frozen backscatter message(s)</button>';
-        }
 
         // Count first, then the address, in a table as wide as its text.
         var recips = deliverabilityArray(data.top_recipients);
@@ -1874,19 +2282,10 @@
                 .then(function(res) {
                     CSM.toast(queueCount(res && res.removed) +
                         ' backscatter message(s) no longer queued', 'success');
-                    queueCompositionLoaded = false;
-                    loadQueueComposition();
-                    loadOverview(); // the queue size on the Queue tab
                 })
-                .catch(function(err) { CSM.toast('Flush failed: ' + (err.message || ''), 'error'); });
+                .catch(function(err) { CSM.toast('Flush failed: ' + (err.message || ''), 'error'); })
+                .then(reloadQueue);
         }).catch(function() { /* cancelled */ });
-    }
-
-    var queueCompEl = document.getElementById('queue-composition');
-    if (queueCompEl) {
-        queueCompEl.addEventListener('click', function(e) {
-            if (e.target.closest('#flush-backscatter-btn')) flushBackscatter();
-        });
     }
 
     // ---------- Tab activation ----------
@@ -1927,7 +2326,19 @@
     // and names it in the address.
     function selectTab(name) {
         var btn = tabButton(name);
-        if (btn && window.bootstrap && window.bootstrap.Tab) window.bootstrap.Tab.getOrCreateInstance(btn).show();
+        if (!btn) return;
+        if (window.bootstrap && window.bootstrap.Tab) window.bootstrap.Tab.getOrCreateInstance(btn).show();
+        revealTab(btn);
+    }
+
+    // revealTab scrolls the strip, never the page, until the tab shows
+    // whole. On a phone the strip scrolls sideways, and counts that load
+    // after a tab opened widen the tabs before it.
+    function revealTab(btn) {
+        if (!btn || !tabsEl) return;
+        var strip = tabsEl.getBoundingClientRect(), tab = btn.getBoundingClientRect();
+        if (tab.left < strip.left) tabsEl.scrollLeft -= strip.left - tab.left;
+        else if (tab.right > strip.right) tabsEl.scrollLeft += tab.right - strip.right;
     }
 
     // openTab opens what an address or a headline card names.
@@ -1955,6 +2366,7 @@
         badge.hidden = n == null;
         badge.textContent = n == null ? '' : typeof n === 'number' ? num(n) : n;
         badge.className = 'badge ms-1 ' + (cls || 'bg-secondary-lt');
+        revealTab(tabsEl.querySelector('.nav-link.active'));
     }
 
     // loadTab loads what a tab shows the first time it opens; force loads
@@ -1968,6 +2380,7 @@
         } else if (id === 'queue') {
             if (force) queueCompositionLoaded = false;
             loadQueueComposition();
+            loadQueue();
         } else if (id === 'held') {
             if (force || !quarantineLoaded) loadQuarantine();
         } else if (id === 'forwarders') {
@@ -2108,7 +2521,8 @@
     loadFindings();
 
     // Polling while the tab is visible: the numbers and the queue every 30 s
-    // (with the SMTP firewall and senders while Sending accounts is open),
+    // (with the SMTP firewall and senders while Sending accounts is open,
+    // and the queued messages while Queue is open),
     // rspamd and AV every 60 s (rspamd's own figures are cached that long),
     // and the rejects and groups every 60 s.
     var _emailIntervals = [];
@@ -2122,6 +2536,7 @@
             try {
                 loadOverview();
                 if (activeTab('email-tabs') === 'sending') loadEmailStats();
+                if (activeTab('email-tabs') === 'queue') loadQueue();
             } catch(e) {}
         }, 30000));
         _emailIntervals.push(CSM.refresh.interval(function() {
