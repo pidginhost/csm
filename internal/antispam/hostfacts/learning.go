@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
+	"os/user"
 	"strconv"
 	"strings"
 
@@ -466,8 +467,26 @@ func (c collector) trustedRedisOwner(uid int, f antispam.HostFacts) bool {
 	if f.AccountNamesErr != nil || f.AccountNames["redis"] {
 		return false
 	}
+	var localNames map[string]bool
 	for account := range f.AccountNames {
-		if accountUID, err := c.uid(account); err != nil || accountUID == uid {
+		accountUID, err := c.uid(account)
+		// cPanel keeps registry records with no system user, such as its own
+		// "system" record. cPanel accounts are local users, so a name absent
+		// from /etc/passwd has no uid to share. NSS can report an unavailable
+		// backend as an unknown user, so the unknown reply alone is not proof.
+		if errors.As(err, new(user.UnknownUserError)) {
+			if localNames == nil {
+				localNames, err = c.localAccountNames()
+				if err != nil {
+					return false
+				}
+			}
+			if localNames[account] {
+				return false
+			}
+			continue
+		}
+		if err != nil || accountUID == uid {
 			return false
 		}
 	}

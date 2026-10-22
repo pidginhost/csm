@@ -3,6 +3,7 @@ package hostfacts
 import (
 	"errors"
 	"os"
+	"os/user"
 	"path/filepath"
 	"testing"
 
@@ -81,15 +82,74 @@ func TestRedisPathRejectsUnsafeDirectories(t *testing.T) {
 
 func TestTrustedRedisOwnerRejectsAccountUIDAlias(t *testing.T) {
 	c, _ := learningCollector(t, &fakeRun{})
-	c.userName = func(string) (string, error) { return "redis", nil }
-	c.uid = lookup(map[string]int{"tenant": 12345})
+	c.uid = lookup(map[string]int{"tenant": 12345, "redis": 12345})
 	f := antispam.HostFacts{AccountNames: map[string]bool{"tenant": true}}
 	if c.trustedRedisOwner(12345, f) {
 		t.Fatal("an account UID was trusted through its service-name alias")
 	}
-	c.uid = func(string) (int, error) { return -1, errors.New("lookup unavailable") }
+	c.uid = func(name string) (int, error) {
+		if name == "redis" {
+			return 12345, nil
+		}
+		return -1, errors.New("lookup unavailable")
+	}
 	if c.trustedRedisOwner(12345, f) {
 		t.Fatal("an unresolved account UID was treated as unrelated")
+	}
+}
+
+// cPanel keeps registry records with no system user, such as its own
+// "system" record. A name with no user has no uid to share with Redis.
+func TestTrustedRedisOwnerIgnoresRecordWithoutUser(t *testing.T) {
+	c, _ := learningCollector(t, &fakeRun{})
+	ids := map[string]int{"tenant": 23456, "redis": 12345}
+	c.uid = func(name string) (int, error) {
+		if id, ok := ids[name]; ok {
+			return id, nil
+		}
+		return -1, user.UnknownUserError(name)
+	}
+	c.readPasswd = func() ([]byte, error) {
+		return []byte("redis:x:12345:12345::/:/bin/false\ntenant:x:23456:23456::/:/bin/false\n"), nil
+	}
+	f := antispam.HostFacts{AccountNames: map[string]bool{"tenant": true, "system": true}}
+	if !c.trustedRedisOwner(12345, f) {
+		t.Fatal("a registry record without a system user blocked the redis service user")
+	}
+	if c.trustedRedisOwner(23456, f) {
+		t.Fatal("an account UID was trusted")
+	}
+}
+
+func TestTrustedRedisOwnerRejectsUnknownUserWithoutLocalProof(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		passwd string
+		err    error
+	}{
+		{name: "unavailable database", err: os.ErrNotExist},
+		{name: "unreadable database", err: os.ErrPermission},
+		{name: "unresolved local alias", passwd: "tenant:x:12345:12345::/:/bin/false\n"},
+		{name: "malformed database", passwd: "tenant:x:12345\n"},
+		{name: "invalid uid", passwd: "tenant:x:invalid:12345::/:/bin/false\n"},
+		{name: "invalid gid", passwd: "tenant:x:12345:invalid::/:/bin/false\n"},
+		{name: "invalid name", passwd: "bad name:x:23456:23456::/:/bin/false\n"},
+		{name: "malformed unrelated record", passwd: "redis:x:12345:12345::/:/bin/false\nbroken\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, _ := learningCollector(t, &fakeRun{})
+			c.uid = func(name string) (int, error) {
+				if name == "redis" {
+					return 12345, nil
+				}
+				return -1, user.UnknownUserError(name)
+			}
+			c.readPasswd = func() ([]byte, error) { return []byte(tc.passwd), tc.err }
+			f := antispam.HostFacts{AccountNames: map[string]bool{"tenant": true}}
+			if c.trustedRedisOwner(12345, f) {
+				t.Fatal("an unresolved account was treated as absent without a readable local record set")
+			}
+		})
 	}
 }
 
