@@ -26,7 +26,10 @@ type fakeExim struct {
 	bpOutput       string // replaces the -bp <id> reply when set
 	bpAfterAction  string // replaces the -bp <id> reply once an action ran
 	noSystemdRun   bool
-	calls          []fakeEximCall
+	// probeFailsAfterAction makes systemd-run unable to start a unit once
+	// an action ran, so only the read-back is refused.
+	probeFailsAfterAction bool
+	calls                 []fakeEximCall
 }
 
 type fakeEximCall struct {
@@ -52,6 +55,9 @@ func (f *fakeExim) run(_ context.Context, name string, args ...string) ([]byte, 
 		argv = append([]string{name}, args...)
 	}
 	if argv[0] == "/bin/true" {
+		if f.probeFailsAfterAction && len(f.actionRuns()) > 0 {
+			return nil, errors.New("Failed to connect to bus: No such file or directory")
+		}
 		return nil, nil
 	}
 	f.calls = append(f.calls, fakeEximCall{flags: flags, argv: argv})
@@ -165,6 +171,7 @@ func TestEximQueueAdminActOutcomes(t *testing.T) {
 		{name: "bounce with a failing exit", action: "bounce", exim: fakeExim{queued: true, actionErr: errors.New("exit status 2")}, want: OutcomeBounced, wantErr: "exim -Mg: exit status 2"},
 		{name: "bounce left queued", action: "bounce", exim: fakeExim{queued: true, keep: true}, want: OutcomeUnchanged, wantErr: "Spool file is locked"},
 		{name: "thaw frozen", action: "thaw", exim: fakeExim{queued: true, frozen: true}, want: OutcomeThawed},
+		{name: "thaw with a failing exit", action: "thaw", exim: fakeExim{queued: true, frozen: true, actionErr: errors.New("exit status 1")}, want: OutcomeThawed, wantErr: "exim -Mt: exit status 1"},
 		{name: "thaw still frozen", action: "thaw", exim: fakeExim{queued: true, frozen: true, keep: true}, want: OutcomeUnchanged, wantErr: "left the message as it was"},
 		// Nothing to thaw: a stale list, auto_thaw or another admin.
 		{name: "thaw not frozen", action: "thaw", exim: fakeExim{queued: true}, want: OutcomeUnchanged, noRun: true},
@@ -184,6 +191,21 @@ func TestEximQueueAdminActOutcomes(t *testing.T) {
 				t.Fatalf("action runs = %v, want %d", f.actionRuns(), want)
 			}
 		})
+	}
+}
+
+// The action ran, so a refused read-back is an unknown outcome, never the
+// "did not run" ErrUnavailable means.
+func TestEximQueueAdminActReadBackRefused(t *testing.T) {
+	for _, action := range []string{"bounce", "delete", "thaw"} {
+		f := &fakeExim{queued: true, frozen: true, probeFailsAfterAction: true}
+		got, err := NewEximQueueAdmin("", f.lookPath, f.run).Act(action, adminTestID)
+		if got != OutcomeUnchanged || err == nil || errors.Is(err, systemdrun.ErrUnavailable) || !strings.Contains(err.Error(), "could not be read back") {
+			t.Errorf("%s: Act = (%q, %v), want unchanged with a read-back error that is not ErrUnavailable", action, got, err)
+		}
+		if runs := f.actionRuns(); len(runs) != 1 {
+			t.Errorf("%s: action runs = %v, want one", action, runs)
+		}
 	}
 }
 

@@ -36,6 +36,9 @@ type eximWorld struct {
 	listFails    bool
 	listOutput   string // replaces the full listing when set
 	actionErr    error  // returned by -Mrm and -Mg after they applied
+	// probeFailsAfterAction makes systemd-run unable to start a unit once
+	// an action ran, so only the read-back is refused.
+	probeFailsAfterAction bool
 	// release unblocks a delivery attempt a caller waits on.
 	release chan struct{}
 	calls   []eximCall
@@ -97,10 +100,14 @@ func (w *eximWorld) run(ctx context.Context, name string, args ...string) ([]byt
 	} else {
 		argv = append([]string{name}, args...)
 	}
+	w.mu.Lock()
 	if argv[0] == "/bin/true" {
+		defer w.mu.Unlock()
+		if w.probeFailsAfterAction && slices.ContainsFunc(w.calls, func(c eximCall) bool { return strings.HasPrefix(c.argv[1], "-M") }) {
+			return nil, errors.New("Failed to connect to bus: No such file or directory")
+		}
 		return nil, nil
 	}
-	w.mu.Lock()
 	w.calls = append(w.calls, eximCall{flags: flags, argv: argv})
 	if flags == nil {
 		w.mu.Unlock()
@@ -680,6 +687,26 @@ func TestQueueActionAuditsRunError(t *testing.T) {
 	}
 	if a := lastAudit(t, s); a.Action != "email_queue_delete" || !strings.HasPrefix(a.Details, "outcome: removed; ") || !strings.Contains(a.Details, "exit status 1") {
 		t.Errorf("audit = %+v, want outcome removed with exim's exit status", a)
+	}
+}
+
+// The action ran, so a refused read-back is an unknown outcome (500), not the
+// 503 that says nothing ran.
+func TestQueueActionReadBackRefused(t *testing.T) {
+	world := newEximWorld(t)
+	world.add(qMid, worldMessage{recipients: []string{"rcpt@example.net"}})
+	world.probeFailsAfterAction = true
+	s, _, _ := queueServer(t, world)
+
+	w := queueRequest(t, s, http.MethodPost, "/api/v1/email/queue/"+qMid+"/delete")
+	if w.Code != http.StatusInternalServerError || !strings.Contains(w.Body.String(), `"outcome":"unchanged"`) || strings.Contains(w.Body.String(), "need systemd-run") {
+		t.Fatalf("status %d body %s, want 500 unchanged, not the systemd-run refusal", w.Code, w.Body.String())
+	}
+	if runs := world.runs("-Mrm"); len(runs) != 1 {
+		t.Fatalf("-Mrm runs = %v, want the one that ran", runs)
+	}
+	if a := lastAudit(t, s); a.Action != "email_queue_delete" || !strings.Contains(a.Details, "could not be read back") {
+		t.Errorf("audit = %+v, want the delete with its unreadable outcome", a)
 	}
 }
 

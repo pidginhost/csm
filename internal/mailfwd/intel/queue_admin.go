@@ -160,9 +160,11 @@ func (a *EximQueueAdmin) Act(action, id string) (string, error) {
 		// Delivered or removed by someone else while it was being thawed.
 		return OutcomeGone, runErr
 	case err != nil:
-		return OutcomeUnchanged, errors.Join(runErr, fmt.Errorf("the outcome could not be read back: %w", err))
+		// %v, not %w: the action ran, so an ErrUnavailable from the read
+		// must not read as "nothing ran".
+		return OutcomeUnchanged, errors.Join(runErr, fmt.Errorf("the outcome could not be read back: %v", err))
 	case action == "thaw" && before.Frozen && !after.Frozen:
-		return OutcomeThawed, nil
+		return OutcomeThawed, runErr
 	}
 	if runErr == nil {
 		runErr = errors.New("exim left the message as it was")

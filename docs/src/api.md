@@ -1293,16 +1293,16 @@ counts. Each message's `reason` (`class`, `text`, `raw`) comes from its msglog
 and is reused for a minute. A message thawed since it froze shows
 `retry_wait` until its next delivery attempt.
 
-Queue reads and actions run exim as a systemd transient unit and never inside
-the daemon's sandbox: without systemd-run the message route and the actions
-answer 503 and exim does not run. Each action first checks that the message is
+Message reads and actions run exim as a systemd transient unit and never
+inside the daemon's sandbox: without systemd-run the message route and the
+actions answer 503 and exim does not run. Each action first checks that the message is
 still queued; when it is not, the answer is 409 with `outcome: "gone"`. Nothing
 ran, unless the message left during the action. `retry` answers
 `attempt_started` as soon as the delivery attempt has started. `bounce`,
 `delete` and `thaw` answer `bounced`, `removed` and `thawed` when the queue
 shows the change, even if exim reported an error, and `unchanged` with an
 error otherwise. A thaw on a message that is not frozen answers `unchanged`
-without running exim. Every attempt is written to the UI audit log as
+without running exim -Mt. Every attempt is written to the UI audit log as
 `email_queue_<action>` with the message ID, the outcome and any error exim
 reported.
 
