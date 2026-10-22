@@ -720,6 +720,12 @@ disable core filtering; `antispam_learning` names the reason.
 CSM sends the Redis password only to a socket it has verified, and only on a
 connection served by that socket's owner.
 
+A cPanel account record with no system user, such as cPanel's own `system`
+record, does not count as an account sharing the Redis owner when
+`/etc/passwd` does not list it either. If `/etc/passwd` cannot be read in
+full, or an account lookup fails for another reason, CSM does not trust a
+non-root Redis owner.
+
 Redis persistence is recommended. CSM warns only when both append-only
 persistence (`appendonly yes`) and snapshots (`save`) are disabled. While
 learning is active, CSM rebuilds missing learned values from stored messages.
