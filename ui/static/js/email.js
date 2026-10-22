@@ -573,6 +573,7 @@
             loadActionGroups();
             loadFindings();
             outboundAbuseLoaded = false;
+            _abuse = null;
             ++_outboundAbuseSeq;
             loadSenders();
             if (activeTab('email-tabs') === 'sending') loadOutboundAbuse();
@@ -618,9 +619,14 @@
         return cls === 'other' ? 'unclassified' : cls;
     }
 
-    // rejectsQuery is the class parameter a filter value asks for.
+    // rejectsQuery is the class parameter a filter value asks for. Other
+    // reasons asks for the classes the overview counted, the ones the Other
+    // rejects card sums, and every class the page knows until it answers.
     function rejectsQuery(value) {
-        if (value === 'other') return Object.keys(REJECT_CLASS_LABELS).filter(otherReason).join(',');
+        if (value === 'other') {
+            var counted = _overview && _overview.totals && _overview.totals.rejects;
+            return Object.keys(counted || REJECT_CLASS_LABELS).filter(otherReason).join(',');
+        }
         return value === 'unclassified' ? 'other' : value;
     }
 
@@ -663,13 +669,22 @@
         var range = currentRange();
         var key = cls + '|' + range.key;
         var seq = ++_rejectsSeq;
-        CSM.get('/api/v1/email/rejects?' + rangeQuery(range, 'class=' + encodeURIComponent(rejectsQuery(cls)) + '&limit=50'))
+        var classes = rejectsQuery(cls);
+        var what = cls === 'content' ? 'spam or malware rejects' : cls === 'all' ? 'rejects' :
+            cls === 'other' ? 'rejects for other reasons' : 'rejects for ' + rejectClassLabel(classes);
+        // The range counted no other reason, so there is nothing to list.
+        if (!classes) {
+            _rejectsKey = key;
+            renderRejectsNote(range, 0);
+            renderRejects([], 'No ' + what + ' ' + rangeWords(range), 0, 1);
+            return;
+        }
+        CSM.get('/api/v1/email/rejects?' + rangeQuery(range, 'class=' + encodeURIComponent(classes) + '&limit=50'))
             .then(function(data) {
                 if (seq !== _rejectsSeq) return;
                 var page = rejectsTable && key === _rejectsKey ? rejectsTable.currentPage : 1;
                 _rejectsKey = key;
-                var what = cls === 'content' ? 'spam or malware rejects' : cls === 'all' ? 'rejects' :
-                    cls === 'other' ? 'rejects for other reasons' : 'rejects for ' + rejectClassLabel(rejectsQuery(cls));
+                renderRejectsNote(range, data.kept_days);
                 renderRejects(data.items, 'No ' + what + ' ' + rangeWords(range), data.kept_days, page);
             })
             .catch(function(err) {
@@ -677,6 +692,18 @@
                 resetRejectsTable();
                 CSM.loadError(tbody, loadRejects, { title: 'Failed to load rejects', error: err });
             });
+    }
+
+    // renderRejectsNote says what the filter counts cover, and when the list
+    // holds fewer days than the range.
+    function renderRejectsNote(range, keptDays) {
+        var note = document.getElementById('email-rejects-note');
+        if (!note) return;
+        var text = 'Counts are permanent rejects; temporary ones are listed and tagged.';
+        if (keptDays > 0 && range.to.getTime() - range.from.getTime() > keptDays * 86400000) {
+            text += ' The list holds the last ' + keptDays + ' days only.';
+        }
+        note.textContent = text;
     }
 
     // rejectCell returns a labeled cell holding text, or a muted dash when
@@ -714,7 +741,13 @@
             row.appendChild(rejectCell('Time', CSM.fmtDate(r.at), 'text-nowrap'));
             var reason = rejectCell('Reason');
             reason.replaceChildren(node('span', 'badge ' + (Object.prototype.hasOwnProperty.call(REJECT_BADGES, r.class) ? REJECT_BADGES[r.class] : 'bg-secondary-lt'),
-                rejectClassLabel(r.class) + (r.temporary && r.class !== 'rate_limited' ? ' (temporary)' : '')));
+                rejectClassLabel(r.class)));
+            // The counts leave temporary rejects out; rate limiting says
+            // so in its label.
+            if (r.temporary && r.class !== 'rate_limited') {
+                reason.appendChild(document.createTextNode(' '));
+                reason.appendChild(node('span', 'badge badge-outline text-secondary', 'temporary'));
+            }
             row.appendChild(reason);
             row.appendChild(rejectCell('Sender', r.sender, 'csm-break-word'));
             row.appendChild(rejectCell('Recipient', r.recipient));
@@ -939,6 +972,8 @@
         var sig = JSON.stringify([accounts, _senders.total, flags, rangeWords(range)]);
         if (sig === _sendersSig) return;
         _sendersSig = sig;
+        var active = document.activeElement;
+        var focused = active && tbody.contains(active) ? active.getAttribute('data-findings-account') : null;
         resetSendersTable();
         if (accounts.length === 0) {
             emptyRow(tbody, 5, 'send', 'No mail sent by an account ' + rangeWords(range), '');
@@ -946,14 +981,23 @@
         }
         tbody.replaceChildren();
         accounts.forEach(function(a) { tbody.appendChild(senderRow(a, _senders.total, flags[a.account] || [])); });
+        // The saved state brings back the page and the sort the operator
+        // picked, which a poll with new counts would otherwise reset.
         sendersTable = new CSM.Table({
             tableId: 'email-sending-table',
             perPage: 25,
             persistPerPage: false,
             search: false,
             sortable: true,
+            stateKey: 'csm-email-senders',
             mobileRowCard: true
         });
+        if (focused !== null) {
+            var links = tbody.querySelectorAll('[data-findings-account]');
+            for (var i = 0; i < links.length; i++) {
+                if (links[i].getAttribute('data-findings-account') === focused) links[i].focus();
+            }
+        }
     }
 
     function resetSendersTable() {
@@ -975,7 +1019,7 @@
         var pct = total > 0 ? a.messages / total * 100 : 0;
         share.textContent = total > 0 ? (pct < 1 ? '<1%' : Math.round(pct) + '%') : '--';
         tr.appendChild(share);
-        var flagged = queueCell('Flags');
+        var flagged = queueCell('Flags', 'ps-3');
         if (flags.length === 0) flagged.appendChild(node('span', 'text-muted', '--'));
         flags.forEach(function(f) {
             flagged.appendChild(node('span', 'badge bg-red-lt me-1', f.label + (f.count > 1 ? ' (' + num(f.count) + ')' : '')));
@@ -1022,7 +1066,11 @@
         var text = num(total) + (total === 1 ? ' message' : ' messages') + ' sent ' + rangeWords(range);
         if (_senders.unresolved > 0) text += ', ' + num(_senders.unresolved) + ' of them from senders not matched to an account';
         text += '.';
-        var empty = !(Array.isArray(_senders.accounts) && _senders.accounts.length);
+        // The server lists the busiest accounts only; the total counts all.
+        var accounts = Array.isArray(_senders.accounts) ? _senders.accounts : [];
+        var listed = accounts.reduce(function(n, a) { return n + a.messages; }, _senders.unresolved || 0);
+        if (listed < total) text += ' Busiest ' + num(accounts.length) + ' accounts shown.';
+        var empty = accounts.length === 0;
         if (_overview && !_overview.counting_since) text += ' Counting has not started.';
         else if (_overview && (empty || Date.parse(_overview.counting_since) > range.from.getTime())) {
             text += ' Counting since ' + CSM.fmtDate(_overview.counting_since) + '.';
@@ -1423,6 +1471,9 @@
         }
         tbody.innerHTML = html;
 
+        // The table restores the search it saved last. A search in the box
+        // is newer: from the address, or typed before the table saved it.
+        var typed = searchEl ? searchEl.value : '';
         emailTable = new CSM.Table({
             tableId: 'email-table',
             perPage: 25,
@@ -1438,6 +1489,11 @@
                 reason: 'Try clearing the search or filter selections.'
             }
         });
+        if (typed) {
+            searchEl.value = typed;
+            emailTable.searchText = typed.toLowerCase();
+            emailTable.applyFilters();
+        }
         if (CSM.initTimeAgo) CSM.initTimeAgo();
     }
 
@@ -1464,6 +1520,9 @@
     // Items with an action in flight, by kind:id. Their actions stay
     // disabled, across a rebuild too.
     var _heldBusy = {};
+    // What the held mail summary on screen says; an unchanged one is not
+    // drawn again, so its link keeps the focus.
+    var _heldSummaryKey = '';
     // Why the guard held a forward copy, from its reason codes.
     var HELD_REASONS = { bounce_backscatter: 'a bounce (backscatter)', bad_sender_ip: 'sent from a listed bad IP' };
 
@@ -1802,6 +1861,9 @@
         if (_heldOlder > 0) {
             parts.push(node('div', 'mt-1', num(_heldOlder) + (_heldOlder === 1 ? ' older held item' : ' older held items') + '; widen the range.'));
         }
+        var key = parts.map(function(p) { return p.textContent; }).join('|');
+        if (key === _heldSummaryKey) return;
+        _heldSummaryKey = key;
         el.replaceChildren.apply(el, parts);
     }
 
@@ -2813,7 +2875,7 @@
     function tabFromURL(value) {
         var raw = value === undefined ? CSM.urlState.get('tab') : value;
         var name = Object.prototype.hasOwnProperty.call(TAB_ALIASES, raw) ? TAB_ALIASES[raw] : raw;
-        return { name: tabButton(name) ? name : 'overview', auth: raw === 'auth' };
+        return { name: tabButton(name) ? name : 'overview', auth: raw === 'auth', forwarders: raw === 'forwarders' };
     }
 
     // selectTab opens a job tab through Bootstrap's tab plugin, which also
@@ -2836,9 +2898,14 @@
         else if (tab.right > strip.right) tabsEl.scrollLeft += tab.right - strip.right;
     }
 
-    // openTab opens what an address or a headline card names.
+    // openTab opens what an address or a headline card names. An old
+    // forwarders link also opens the forwarders section.
     function openTab(t) {
         if (t.auth) applyAuthChip(true);
+        if (t.forwarders) {
+            var fwd = document.getElementById('email-forwarders-section');
+            if (fwd) fwd.open = true;
+        }
         selectTab(t.name);
     }
 
@@ -3027,6 +3094,7 @@
             forwardersLoaded = false;
             deliverabilityLoaded = false;
             outboundAbuseLoaded = false;
+            _abuse = null;
             ++_outboundAbuseSeq;
             queueCompositionLoaded = false;
             // Held mail and the sending accounts read again on any tab, for
