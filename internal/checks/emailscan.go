@@ -143,16 +143,21 @@ func scanEximMessage(msgID, sender string, cfg *config.Config) *alert.Finding {
 	// Read and parse headers via the emailspool Exim -H parser. The bounded
 	// read goes through the osFS seam rather than emailspool.ParseHeaders(path)
 	// so check tests can inject mock spool contents. A header file past the
-	// cap is skipped, not read into memory.
+	// cap is checked from its bounded prefix: padding the headers must not
+	// hide a message from the check.
 	headerData, truncated, err := readRegularFileHead(headerPath, maxSpoolHeaderBytes)
-	if err != nil || truncated {
+	if err != nil {
 		return nil
 	}
 	parsed, err := emailspool.ParseHeadersReader(bytes.NewReader(headerData))
-	if err != nil {
-		// Malformed or truncated -H file: nothing to check, skip silently as
-		// the previous loose parse would have done.
+	if err != nil && !truncated {
+		// Malformed -H file: nothing to check, skip silently as the previous
+		// loose parse would have done.
 		return nil
+	}
+	if err != nil {
+		// A cut prefix may end mid-line; the body checks still run.
+		parsed = emailspool.Headers{}
 	}
 
 	// Check 1: Reply-To mismatch

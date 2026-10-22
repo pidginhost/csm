@@ -129,11 +129,11 @@ func TestScanEximMessage_TwoIndicators_High(t *testing.T) {
 	}
 }
 
-// A header file past the read cap is skipped rather than read into memory,
-// even when its first lines would raise indicators.
-func TestScanEximMessageSkipsOversizedHeader(t *testing.T) {
+// A header file past the read cap is checked from its bounded prefix, not
+// skipped: padding the headers must not hide a message from the check.
+func TestScanEximMessageOversizedHeaderStillChecked(t *testing.T) {
 	msgID := "1aBcDe-000009-99"
-	// Ordinary-length lines, so only the size cap can stop the parse.
+	// Ordinary-length lines, so the parse sees real headers up to the cap.
 	lines := []string{"From: shop@example.com", "Reply-To: collect@other.example.net"}
 	pad := "X-Pad: " + strings.Repeat("a", 1000)
 	for size := 0; size <= maxSpoolHeaderBytes; size += len(pad) + 6 {
@@ -141,8 +141,9 @@ func TestScanEximMessageSkipsOversizedHeader(t *testing.T) {
 	}
 	header := eximHeader(msgID, lines...)
 	mockEximSpool(t, msgID, header, "click https://bit.ly/x to continue\n")
-	if got := scanEximMessage(msgID, "shop@example.com", &config.Config{}); got != nil {
-		t.Fatalf("oversized header was parsed: %+v", got)
+	got := scanEximMessage(msgID, "shop@example.com", &config.Config{})
+	if got == nil || got.Severity != alert.High {
+		t.Fatalf("oversized header hid the message from the check: %+v", got)
 	}
 }
 
