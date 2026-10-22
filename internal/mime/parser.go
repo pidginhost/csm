@@ -812,6 +812,17 @@ func extractZIP(zipPath, archiveName string, limits Limits, result *ExtractionRe
 			return
 		}
 
+		// A member costs whichever is larger, its compressed or its inflated
+		// size. Records can share one compressed stream that inflates to
+		// nothing, so the compressed size is charged before inflating.
+		before := *totalSize
+		compressed := int64(min(zf.CompressedSize64, uint64(limits.MaxExtractionSize)+1)) // #nosec G115 -- bounded by an int64 above.
+		if before+compressed > limits.MaxExtractionSize {
+			// Never opened, so nothing is spent; the budget is exhausted.
+			markExtractionBudget(result, limits)
+			return
+		}
+
 		rc, err := zf.Open()
 		if err != nil {
 			markPartial(result, fmt.Sprintf("could not decompress file %q in archive %q: %v", safeName, archiveName, err))
@@ -827,11 +838,13 @@ func extractZIP(zipPath, archiveName string, limits Limits, result *ExtractionRe
 
 		// Every decompressed byte spends the budget, kept or thrown away, so
 		// a bomb of oversize members cannot decompress without limit.
-		budget := &budgetReader{r: rc, spent: totalSize, limit: limits.MaxExtractionSize}
+		var inflated int64
+		budget := &budgetReader{r: rc, spent: &inflated, limit: limits.MaxExtractionSize - before}
 		limited := io.LimitReader(budget, limits.MaxAttachmentSize+1)
 		n, err := io.Copy(tmpFile, limited)
 		closeErr := tmpFile.Close()
 		rc.Close()
+		*totalSize = before + max(compressed, inflated)
 
 		if errors.Is(err, errExtractionBudget) || *totalSize > limits.MaxExtractionSize {
 			_ = os.Remove(tmpFile.Name())

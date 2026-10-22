@@ -17,8 +17,13 @@ import (
 
 var errArchiveWalk = errors.New("archive walk limit exceeded")
 
+// maxDirectoryStream is the most compressed data an empty directory entry
+// may carry. Writers that deflate empty directories emit about 2 bytes; a
+// larger stream would be inflated without spending the extraction budget.
+const maxDirectoryStream = 64
+
 func validateZIPDirectoryEntry(file *zip.File) error {
-	if file.UncompressedSize64 != 0 {
+	if file.UncompressedSize64 != 0 || file.CompressedSize64 > maxDirectoryStream {
 		return zip.ErrFormat
 	}
 	if file.CompressedSize64 == 0 {

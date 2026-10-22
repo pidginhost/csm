@@ -236,7 +236,9 @@ func TestArchiveByteBudgetStopsWithinOneProbeByte(t *testing.T) {
 				data = orderedTarGz(t, entries...)
 			}
 			limits := DefaultLimits()
-			limits.MaxExtractionSize = 1024
+			// Above the member's compressed size (about 1 KiB), so inflating
+			// is what crosses the budget and the probe byte is what stops it.
+			limits.MaxExtractionSize = 4096
 			r, total := extractArchiveFixture(t, name, data, limits)
 			if !r.Partial || total != limits.MaxExtractionSize+1 || len(r.Parts) != 0 {
 				t.Fatalf("partial=%v bytes=%d parts=%d", r.Partial, total, len(r.Parts))

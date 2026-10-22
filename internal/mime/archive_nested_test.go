@@ -1,6 +1,7 @@
 package mime
 
 import (
+	"archive/zip"
 	"bytes"
 	"compress/gzip"
 	"encoding/base64"
@@ -148,8 +149,14 @@ func TestNestedZipStopsAtSharedBudget(t *testing.T) {
 func TestNestedTarEndMarkersSpendSharedBudget(t *testing.T) {
 	inner := orderedTarGz(t, archiveEntry{"leaf.txt", []byte("x")})
 	outer := orderedZip(t, archiveEntry{"inner.tar.gz", inner})
-	// The TAR holds a header, one padded data block, and two end blocks.
-	wantSpent := int64(len(inner)) + 4*512
+	// A zip member costs the larger of its compressed and inflated sizes;
+	// gzip data does not deflate, so its stored size may be the larger. The
+	// TAR then holds a header, one padded data block, and two end blocks.
+	zr, err := zip.NewReader(bytes.NewReader(outer), int64(len(outer)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantSpent := max(int64(zr.File[0].CompressedSize64), int64(len(inner))) + 4*512
 	for _, tc := range []struct {
 		name    string
 		limit   int64
