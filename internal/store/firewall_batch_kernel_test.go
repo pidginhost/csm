@@ -106,8 +106,8 @@ func TestKernelDurableBlockBatchRunsOnlyValidMembers(t *testing.T) {
 	if afterGeneration-beforeGeneration != 1 {
 		t.Fatalf("batch committed %d kernel transactions, want 1", afterGeneration-beforeGeneration)
 	}
-	if count, err := db.ReadFirewallScanBudget(budget.Window); err != nil || count != 2 {
-		t.Fatalf("charged %d, %v; want the two valid members", count, err)
+	if count, budgetErr := db.ReadFirewallScanBudget(budget.Window); budgetErr != nil || count != 2 {
+		t.Fatalf("charged %d, %v; want the two valid members", count, budgetErr)
 	}
 	stored, err := db.ReadFirewallAction(header.ID)
 	if err != nil || stored.Phase != "verified" || len(stored.Members) != 2 {
@@ -183,8 +183,8 @@ func TestKernelDurableBlockBatchLeaseClock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.ReplaceFirewallState(revision, prior); err != nil {
-		t.Fatal(err)
+	if _, replaceErr := db.ReplaceFirewallState(revision, prior); replaceErr != nil {
+		t.Fatal(replaceErr)
 	}
 	// The row has expired on the lease clock, although wall time says otherwise.
 	floor := at.Add(2 * time.Hour)
