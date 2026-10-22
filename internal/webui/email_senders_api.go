@@ -17,6 +17,8 @@ type emailSendersResponse struct {
 	mailstats.SendersReport
 	AbuseEvents    int                       `json:"abuse_events"`
 	AbuseByAccount map[string]map[string]int `json:"abuse_by_account"`
+	// AbuseTruncated says the scan cap cut AbuseEvents.
+	AbuseTruncated bool `json:"abuse_events_truncated"`
 }
 
 // apiEmailSenders handles GET /api/v1/email/senders: the messages each
@@ -35,6 +37,6 @@ func (s *Server) apiEmailSenders(w http.ResponseWriter, r *http.Request) {
 		resp.SendersReport = c.TopSenders(from, to, emailSendersLimit)
 	}
 	abuse := s.buildRelayAbuseResponse(from, to, 1)
-	resp.AbuseEvents, resp.AbuseByAccount = abuse.Total, abuse.byAccount
+	resp.AbuseEvents, resp.AbuseByAccount, resp.AbuseTruncated = abuse.Total, abuse.byAccount, abuse.TotalTruncated
 	writeJSON(w, resp)
 }

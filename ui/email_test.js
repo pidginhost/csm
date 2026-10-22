@@ -2961,15 +2961,29 @@ test('the accounts table says since when sends are counted', async () => {
     assert.match(flat(recent.document.getElementById('email-sending-summary')), /Counting since/);
 });
 
-test('abuse event counts at the server cap read as more', async () => {
+test('abuse event counts read as more only when the server capped them', async () => {
     const page = await sendingPage({
-        '/api/v1/email/senders': senders([], { abuse_events: 5000 }),
-        '/api/v1/email/relay-abuse': items([abuseEvent()], { total: 5000, limit: 20, truncated: true })
+        '/api/v1/email/senders': senders([], { abuse_events: 5000, abuse_events_truncated: true }),
+        '/api/v1/email/relay-abuse': items([abuseEvent()], { total: 5000, limit: 20, truncated: true, total_truncated: true })
     });
     const tab = page.document.getElementById('email-tab-sending');
     assert.equal(tab.querySelector('[data-tab-count]').textContent, '5,000+');
     assert.equal(spoken(tab), 'Sending accounts 5,000 or more abuse events');
     assert.equal(flat(page.document.getElementById('email-abuse-count')), '5,000+ events');
+    // The server says when it capped a count; the page knows no cap of its own.
+    const exact = await sendingPage({
+        '/api/v1/email/senders': senders([], { abuse_events: 5000 }),
+        '/api/v1/email/relay-abuse': items([abuseEvent()], { total: 5000, limit: 20, truncated: true })
+    });
+    assert.equal(exact.document.querySelector('#email-tab-sending [data-tab-count]').textContent, '5,000');
+    assert.equal(spoken(exact.document.getElementById('email-tab-sending')), 'Sending accounts 5,000 abuse events');
+    assert.equal(flat(exact.document.getElementById('email-abuse-count')), '5,000 events');
+    const capped = await sendingPage({
+        '/api/v1/email/senders': senders([], { abuse_events: 8000, abuse_events_truncated: true }),
+        '/api/v1/email/relay-abuse': items([abuseEvent()], { total: 8000, limit: 20, truncated: true, total_truncated: true })
+    });
+    assert.equal(capped.document.querySelector('#email-tab-sending [data-tab-count]').textContent, '8,000+');
+    assert.equal(flat(capped.document.getElementById('email-abuse-count')), '8,000+ events');
     const below = await sendingPage({ '/api/v1/email/relay-abuse': items([abuseEvent()], { total: 21, limit: 20, truncated: true }) });
     assert.equal(flat(below.document.getElementById('email-abuse-count')), '21 events');
 });

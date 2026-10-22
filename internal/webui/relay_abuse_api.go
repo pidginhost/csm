@@ -17,6 +17,9 @@ type relayAbuseResponse struct {
 	From      time.Time         `json:"from"`
 	To        time.Time         `json:"to"`
 	Truncated bool              `json:"truncated"`
+	// TotalTruncated says the scan cap cut Total, so the range can hold
+	// more events. Truncated is also set when only limit cut the list.
+	TotalTruncated bool `json:"total_truncated"`
 	// byAccount counts the events of the range that name an account, by
 	// account and kind, before limit cuts the list.
 	byAccount map[string]map[string]int
@@ -126,7 +129,7 @@ func (s *Server) buildRelayAbuseResponse(from, to time.Time, limit int) relayAbu
 	}
 	if len(rows) > emailGroupsScanCap {
 		rows = rows[:emailGroupsScanCap]
-		resp.Truncated = true
+		resp.Truncated, resp.TotalTruncated = true, true
 	}
 	resp.Total = len(rows)
 	for _, row := range rows {

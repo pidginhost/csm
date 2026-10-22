@@ -978,8 +978,6 @@
 
     // ---------- Sending accounts tab: accounts ----------
 
-    // The server counts outbound abuse events up to this many.
-    var ABUSE_EVENTS_CAP = 5000;
     var _senders = null;
     var _sendersErr = null;
     var _sendersSeq = 0;
@@ -988,10 +986,10 @@
     var _sendersSig = '';
     var sendersTable = null;
 
-    // abuseCount words a number of abuse events; at the cap there may be
-    // more.
-    function abuseCount(n) {
-        return n >= ABUSE_EVENTS_CAP ? num(ABUSE_EVENTS_CAP) + '+' : num(n);
+    // abuseCount words a number of abuse events; one the server capped
+    // may have more.
+    function abuseCount(n, capped) {
+        return num(n) + (capped ? '+' : '');
     }
 
     // loadSenders reads what each hosting account sent in the range, and
@@ -1019,7 +1017,7 @@
     // of all outbound mail, and flags from the abuse events naming them.
     function renderSenders() {
         var events = _senders ? _senders.abuse_events || 0 : 0;
-        setTabCount('sending', _senders ? (events > 0 ? events : null) : _sendersErr ? '?' : null);
+        setTabCount('sending', _senders ? (events > 0 ? events : null) : _sendersErr ? '?' : null, '', !!(_senders && _senders.abuse_events_truncated));
         renderSendersSummary();
         var tbody = document.getElementById('email-sending-tbody');
         if (!tbody) return;
@@ -2962,7 +2960,7 @@
                 outboundAbuseLoaded = true;
                 // A poll mostly brings the same events; drawing them again
                 // would close their breakdowns.
-                var sig = JSON.stringify([resp.items, resp.total, resp.truncated]);
+                var sig = JSON.stringify([resp.items, resp.total, resp.truncated, resp.total_truncated]);
                 if (sig === _abuseSig) return;
                 _abuseSig = sig;
                 renderOutboundAbuse(resp);
@@ -2989,7 +2987,7 @@
         });
         var entries = (resp && resp.items) || [];
         var total = resp && resp.total > 0 ? resp.total : 0;
-        document.getElementById('email-abuse-count').textContent = total > 0 ? abuseCount(total) + (total === 1 ? ' event' : ' events') : '';
+        document.getElementById('email-abuse-count').textContent = total > 0 ? abuseCount(total, resp.total_truncated) + (total === 1 ? ' event' : ' events') : '';
         if (entries.length === 0) {
             body.replaceChildren(buildEmpty('circle-check', 'No outbound mail abuse ' + rangeWords(currentRange()), ''));
             return;
@@ -3254,8 +3252,6 @@
         sending: ['abuse event', 'abuse events'], delays: ['provider deferring', 'providers deferring'],
         findings: ['finding', 'findings']
     };
-    // Counts the server caps: at the cap there may be more.
-    var TAB_COUNT_CAPS = { sending: ABUSE_EVENTS_CAP };
     // A count at a threshold: its badge color and what it adds in words.
     var TAB_COUNT_LEVELS = {
         warn: ['badge-warning', ', at or above warning level'],
@@ -3264,14 +3260,15 @@
 
     // setTabCount shows a job tab's count: a number, or '?' for unknown.
     // null hides it, so a count that has not loaded shows nothing, never 0.
-    // level ('warn' or 'crit') colors the badge. Screen readers get the
-    // count in words, since the badge is a bare number and a color.
-    function setTabCount(name, n, level) {
+    // level ('warn' or 'crit') colors the badge. capped says the server
+    // cut the count, so there may be more. Screen readers get the count in
+    // words, since the badge is a bare number and a color.
+    function setTabCount(name, n, level, capped) {
         var btn = tabButton(name);
         var badge = btn && btn.querySelector('[data-tab-count]');
         if (!badge) return;
         var lv = Object.prototype.hasOwnProperty.call(TAB_COUNT_LEVELS, level) ? TAB_COUNT_LEVELS[level] : ['bg-secondary-lt', ''];
-        var capped = typeof n === 'number' && Object.prototype.hasOwnProperty.call(TAB_COUNT_CAPS, name) && n >= TAB_COUNT_CAPS[name];
+        capped = typeof n === 'number' && !!capped;
         var text = n == null ? '' : typeof n === 'number' ? num(n) + (capped ? '+' : '') : n;
         // A new count can widen its tab and push the open tab out of the
         // strip. Bring it back only if it was in view: the polls must not

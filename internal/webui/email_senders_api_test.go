@@ -19,6 +19,7 @@ type emailSendersBody struct {
 	Unresolved     int                       `json:"unresolved"`
 	AbuseEvents    int                       `json:"abuse_events"`
 	AbuseByAccount map[string]map[string]int `json:"abuse_by_account"`
+	AbuseTruncated bool                      `json:"abuse_events_truncated"`
 }
 
 func serveSenders(s *Server, method, token, query string) *httptest.ResponseRecorder {
@@ -114,7 +115,7 @@ func TestSendersEndpointNoCounter(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status %d: %s", w.Code, w.Body.String())
 	}
-	if got := strings.TrimSpace(w.Body.String()); got != `{"accounts":[],"total":0,"unresolved":0,"abuse_events":0,"abuse_by_account":{}}` {
+	if got := strings.TrimSpace(w.Body.String()); got != `{"accounts":[],"total":0,"unresolved":0,"abuse_events":0,"abuse_by_account":{},"abuse_events_truncated":false}` {
 		t.Errorf("body = %s, want empty counts", got)
 	}
 }
@@ -209,5 +210,43 @@ func TestSendersAbuseByAccountCoversEveryEvent(t *testing.T) {
 	want := map[string]map[string]int{"busyacct": {"High volume script": 25}, "quietacct": {"Suspicious headers": 1}}
 	if !reflect.DeepEqual(body.AbuseByAccount, want) || body.AbuseEvents != 27 {
 		t.Errorf("abuse_by_account = %v with %d events, want %v with 27", body.AbuseByAccount, body.AbuseEvents, want)
+	}
+}
+
+// The abuse counts say when the scan cap cut them, apart from a list cut to
+// its limit: only then can the range hold more events than they count.
+func TestAbuseCountsSayWhenTheScanCapCutThem(t *testing.T) {
+	from := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	const query = "?from=2026-10-20T12:00:00Z&to=2026-10-20T13:00:00Z"
+	for _, tc := range []struct {
+		events int
+		capped bool
+	}{{relayAbuseDefaultLimit + 1, false}, {emailGroupsScanCap + 1, true}} {
+		s := newTestServerWithBbolt(t, "tok")
+		findings := make([]alert.Finding, tc.events)
+		for i := range findings {
+			findings[i] = alert.Finding{Check: "email_php_relay_abuse", Severity: alert.High, Path: "volume", Timestamp: from.Add(time.Duration(i) * time.Millisecond)}
+		}
+		s.store.AppendHistory(findings)
+
+		w := httptest.NewRecorder()
+		s.apiEmailRelayAbuse(w, httptest.NewRequest(http.MethodGet, "/api/v1/email/relay-abuse"+query, nil))
+		var view relayAbuseResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &view); err != nil || w.Code != http.StatusOK {
+			t.Fatalf("%d events: relay-abuse status %d, %v: %s", tc.events, w.Code, err, w.Body.String())
+		}
+		if !view.Truncated || view.TotalTruncated != tc.capped || view.Total != min(tc.events, emailGroupsScanCap) {
+			t.Errorf("%d events: relay-abuse truncated %v total_truncated %v total %d, want true, %v, %d",
+				tc.events, view.Truncated, view.TotalTruncated, view.Total, tc.capped, min(tc.events, emailGroupsScanCap))
+		}
+
+		w = serveSenders(s, http.MethodGet, "tok", query)
+		var body emailSendersBody
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil || w.Code != http.StatusOK {
+			t.Fatalf("%d events: senders status %d, %v: %s", tc.events, w.Code, err, w.Body.String())
+		}
+		if body.AbuseTruncated != tc.capped || body.AbuseEvents != view.Total {
+			t.Errorf("%d events: abuse_events_truncated %v with %d events, want %v with %d", tc.events, body.AbuseTruncated, body.AbuseEvents, tc.capped, view.Total)
+		}
 	}
 }

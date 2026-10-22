@@ -595,7 +595,8 @@ paths:
             message with a submitter), unresolved (messages whose submitter
             matched no account), abuse_events (the outbound abuse events
             relay-abuse lists for the range, counted up to 5,000 like
-            relay-abuse) and abuse_by_account (those events counted per
+            relay-abuse), abuse_events_truncated (true when that cap cut
+            abuse_events) and abuse_by_account (those events counted per
             account they name and per kind, as {account: {kind: count}},
             before any list limit).
           content:
