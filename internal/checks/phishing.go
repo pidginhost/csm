@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -17,6 +18,7 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/state"
+	"github.com/pidginhost/csm/internal/zipdir"
 	"golang.org/x/net/html"
 )
 
@@ -1839,6 +1841,13 @@ func isKitCredentialSinkName(base string) bool {
 	}
 }
 
+// A kit is a few hundred files at most. A zip listing more entries, or a
+// central directory larger than this, is out of scope for the check.
+const (
+	maxPhishingZipEntries        = 20000
+	maxPhishingZipDirectoryBytes = 16 << 20
+)
+
 // zipLooksLikeKit inspects a ZIP's central directory (entry names only, no
 // decompression) and reports whether the contents match a phishing kit rather
 // than a legitimate plugin/theme distribution archive. Filename brand keywords
@@ -1877,6 +1886,18 @@ func phishingKitZipHasEvidence(ctx context.Context, reader io.ReaderAt, size int
 	if size <= 1000 || size >= 50*1024*1024 {
 		return false
 	}
+	// Read the entry count before zip.NewReader allocates an object for
+	// every entry. A huge listing is a scope decision like an oversize zip:
+	// marking the check incomplete would stop it ever retiring stale findings
+	// on a host that keeps such an archive.
+	dir, err := zipdir.Read(reader, size, maxPhishingZipDirectoryBytes)
+	if errors.Is(err, zipdir.ErrScanLimit) || (err == nil && dir.Records > maxPhishingZipEntries) {
+		return false
+	}
+	if err != nil {
+		markCheckIncomplete(ctx, "phishing")
+		return false
+	}
 	zr, err := zip.NewReader(reader, size)
 	if err != nil {
 		markCheckIncomplete(ctx, "phishing")
@@ -1886,7 +1907,11 @@ func phishingKitZipHasEvidence(ctx context.Context, reader io.ReaderAt, size int
 	capture, credSink, antibot := false, false, false
 	brandPages := 0
 	evidenceEntries := make(map[string]bool)
-	for _, e := range zr.File {
+	for i, e := range zr.File {
+		if i%256 == 0 && ctx.Err() != nil {
+			markCheckIncomplete(ctx, "phishing")
+			return false
+		}
 		if e.FileInfo().IsDir() {
 			continue
 		}

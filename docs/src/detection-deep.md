@@ -321,7 +321,7 @@ discovers WordPress installs only.
 
 | Check | Description |
 |-------|-------------|
-| `phishing` | 8-layer phishing detection (kit directories, credential harvesting) |
+| `phishing` | 8-layer phishing detection (kit directories, credential harvesting). Kit archives are judged from their file list; a zip listing more than 20,000 entries is skipped. |
 | `email_content` | Outbound email body scanning for credentials and suspicious URLs |
 
 The phishing and group-writable PHP scans include dependency and source-control
