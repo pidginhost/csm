@@ -21,6 +21,10 @@ import (
 
 const emailBodySampleSize = 65536 // Analyze the first 64KB of email body
 
+// maxSpoolHeaderBytes bounds the -H file read into memory. Exim's own header
+// size limit keeps real mail far below it.
+const maxSpoolHeaderBytes = 16 << 20
+
 // Suspicious mailer headers that indicate mass mailing scripts. PHPMailer is
 // deliberately absent: it is the default WordPress transport and appears on
 // essentially all legitimate WordPress mail, so it carries no signal. The
@@ -136,12 +140,12 @@ func scanEximMessage(msgID, sender string, cfg *config.Config) *alert.Finding {
 
 	var indicators []string
 
-	// Read and parse headers via the emailspool Exim -H parser. We go through
-	// osFS.ReadFile + bytes.NewReader rather than emailspool.ParseHeaders(path)
-	// so check tests can inject mock spool contents through the existing
-	// osFS seam.
-	headerData, err := osFS.ReadFile(headerPath)
-	if err != nil {
+	// Read and parse headers via the emailspool Exim -H parser. The bounded
+	// read goes through the osFS seam rather than emailspool.ParseHeaders(path)
+	// so check tests can inject mock spool contents. A header file past the
+	// cap is skipped, not read into memory.
+	headerData, truncated, err := readRegularFileHead(headerPath, maxSpoolHeaderBytes)
+	if err != nil || truncated {
 		return nil
 	}
 	parsed, err := emailspool.ParseHeadersReader(bytes.NewReader(headerData))
@@ -197,11 +201,9 @@ func scanEximMessage(msgID, sender string, cfg *config.Config) *alert.Finding {
 		}
 	}
 
-	// Read and analyze a bounded body sample.
-	bodyData, _ := osFS.ReadFile(bodyPath)
-	if len(bodyData) > emailBodySampleSize {
-		bodyData = bodyData[:emailBodySampleSize]
-	}
+	// Read and analyze a bounded body sample; the rest of the body is never
+	// read into memory.
+	bodyData, _, _ := readRegularFileHead(bodyPath, emailBodySampleSize)
 	if len(bodyData) > 0 {
 		bodyLower := strings.ToLower(string(bodyData))
 		indicators = append(indicators, bodyContentIndicators(bodyLower)...)

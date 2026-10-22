@@ -132,6 +132,29 @@ func openTenantRegularFile(path string) (*os.File, error) {
 	return file, nil
 }
 
+// readRegularFileHead returns at most limit bytes of a regular file and whether the
+// file held more. Production refuses a final symlink and never reads past
+// limit+1 bytes; test filesystems fall back to ReadFile and truncate.
+func readRegularFileHead(path string, limit int64) (data []byte, truncated bool, err error) {
+	if fs, production := osFS.(realOS); production {
+		var file *os.File
+		if file, err = fs.openRegularFile(path, unix.O_NOFOLLOW); err != nil {
+			return nil, false, err
+		}
+		defer file.Close()
+		data, err = io.ReadAll(io.LimitReader(file, limit+1))
+		if err != nil {
+			return nil, false, err
+		}
+	} else if data, err = osFS.ReadFile(path); err != nil {
+		return nil, false, err
+	}
+	if int64(len(data)) > limit {
+		return data[:limit], true, nil
+	}
+	return data, false, nil
+}
+
 // #nosec G304 -- filesystem abstraction; check functions pass trusted paths.
 func (realOS) Open(name string) (*os.File, error) { return os.Open(name) }
 
