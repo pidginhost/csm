@@ -44,6 +44,8 @@ nothing evicts for a batch, so admission refuses one whose result drops a row
 that has not expired or changes any other entry. Kept rows retain their
 order. Unverified rows remain until their owner settles the outcome, even
 after expiry, and a batch cannot add a block for an address they hold.
+An unverified address stays pending even when another spelling of the same
+address has a verified block.
 Actions written before batches read as one-member batches and keep their
 stored format. A record written by a newer
 build is refused as unsupported, never read or overwritten. Audit delivery
@@ -83,6 +85,9 @@ extension.
 
 Batch planning dates member rows and kernel evidence by one lease-clock
 instant, even when the wall clock moves backward during a lease.
+Operator IP and port allows come from the same committed planning snapshot;
+allow expiry uses one wall-clock reading. A changed committed revision
+refuses admission for both batches and lone members.
 
 If intent or budget persistence fails, new automated mutations are refused
 and the finding is retained. If outcome persistence fails after mutation, the

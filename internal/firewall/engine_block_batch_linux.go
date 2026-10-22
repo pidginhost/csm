@@ -61,8 +61,9 @@ func (e *Engine) BlockBatchRequest(header ActionRequest, members []ActionRequest
 	if err != nil {
 		return BlockBatchResult{}, err
 	}
-	at := e.leaseNowLocked()
-	result := BlockBatchResult{Refusals: e.checkBlockBatchLocked(header, members, verified, prior, at)}
+	now := e.expiryNow()
+	at := e.leaseAtLocked(now)
+	result := BlockBatchResult{Refusals: e.checkBlockBatchLocked(header, members, verified, prior, at, now)}
 	next := copyFirewallState(prior)
 	var ran []ActionMember
 	for i, m := range members {
@@ -183,13 +184,27 @@ func (e *Engine) replayBlockSingleLocked(header ActionRequest, members []ActionR
 // checkBlockBatchLocked answers every member against the committed snapshot.
 // A refused member takes no slot and names nothing a later member collides
 // with.
-func (e *Engine) checkBlockBatchLocked(header ActionRequest, members []ActionRequest, verified []bool, prior FirewallState, at time.Time) []BlockRefusal {
+func (e *Engine) checkBlockBatchLocked(header ActionRequest, members []ActionRequest, verified []bool, prior FirewallState, at, now time.Time) []BlockRefusal {
+	// Reading the cache per member would replace the planning revision and
+	// could admit an old After against newer state. Allows share the snapshot;
+	// their expiry still follows wall time, independently of block leases.
+	allowed := make(map[string]bool, len(prior.Allowed)+len(prior.PortAllowed))
+	for _, row := range prior.Allowed {
+		if row.ExpiresAt.IsZero() || row.ExpiresAt.After(now) {
+			allowed[stateIPKey(row.IP)] = true
+		}
+	}
+	for _, row := range prior.PortAllowed {
+		allowed[stateIPKey(row.IP)] = true
+	}
 	rows := make(map[string]BlockedEntry, len(prior.Blocked))
 	temp := 0
 	for _, row := range prior.Blocked {
 		// Expiry cannot settle an unverified row; its owner must.
 		if row.Unverified || row.ExpiresAt.IsZero() || row.ExpiresAt.After(at) {
-			rows[stateIPKey(row.IP)] = row
+			if key := stateIPKey(row.IP); !rows[key].Unverified {
+				rows[key] = row
+			}
 		}
 		if !row.Unverified && row.ExpiresAt.After(at) {
 			temp++
@@ -198,7 +213,7 @@ func (e *Engine) checkBlockBatchLocked(header ActionRequest, members []ActionReq
 	out := make([]BlockRefusal, len(members))
 	seenIP, seenID := map[string]bool{}, map[string]bool{header.ID: true}
 	for i, m := range members {
-		out[i] = e.blockBatchRefusalLocked(header, m, verified[i], rows, at, seenIP, seenID)
+		out[i] = e.blockBatchRefusalLocked(header, m, verified[i] || allowed[m.Target], rows, at, seenIP, seenID)
 		if out[i] != "" {
 			continue
 		}
@@ -221,7 +236,7 @@ func validBlockBatchMember(header, m ActionRequest) bool {
 	return true
 }
 
-func (e *Engine) blockBatchRefusalLocked(header, m ActionRequest, verified bool, rows map[string]BlockedEntry, at time.Time, seenIP, seenID map[string]bool) BlockRefusal {
+func (e *Engine) blockBatchRefusalLocked(header, m ActionRequest, softAllowed bool, rows map[string]BlockedEntry, at time.Time, seenIP, seenID map[string]bool) BlockRefusal {
 	parsed := net.ParseIP(m.Target)
 	if !validBlockBatchMember(header, m) {
 		return BlockRefusedInvalid
@@ -235,7 +250,7 @@ func (e *Engine) blockBatchRefusalLocked(header, m ActionRequest, verified bool,
 	if e.blockProtectionLocked(parsed, m.Target) != nil {
 		return BlockRefusedProtected
 	}
-	if verified || e.operatorSoftAllowedLocked(m.Target) {
+	if softAllowed {
 		return BlockRefusedAllowed
 	}
 	if seenIP[m.Target] || seenID[m.ID] {

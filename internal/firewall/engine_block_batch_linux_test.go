@@ -613,3 +613,120 @@ func TestBlockBatchHoldsExpiredUnverifiedRows(t *testing.T) {
 		t.Fatalf("plan = members %#v, after %#v", plan.Members, plan.After.Blocked)
 	}
 }
+
+type batchChangingStateStore struct {
+	*batchPlanStore
+	revision uint64
+	reads    int
+	onRead   func(int)
+}
+
+func (s *batchChangingStateStore) ReadFirewallState() (FirewallState, uint64, error) {
+	state, revision := s.state, s.revision
+	s.reads++
+	if s.onRead != nil {
+		s.onRead(s.reads)
+	}
+	return state, revision, nil
+}
+
+func TestBlockBatchRejectsRevisionChangedDuringMemberChecks(t *testing.T) {
+	for _, count := range []int{1, 2} {
+		t.Run(fmt.Sprintf("members_%d", count), func(t *testing.T) {
+			e, base := batchPlanEngine(t, FirewallConfig{}, FirewallState{})
+			s := &batchChangingStateStore{batchPlanStore: base, revision: 7}
+			e.lifecycle.Store = s
+			s.onRead = func(reads int) {
+				if reads == 2 {
+					// Commit after the readiness and planning reads, before the
+					// first member check. The old After must not gain this revision.
+					s.state = FirewallState{PortAllowed: []PortAllowEntry{{IP: "192.0.2.90", Port: 443, Proto: "tcp"}}}
+					s.revision++
+				}
+			}
+			members := []ActionRequest{batchMember("member-a", "203.0.113.20"), batchMember("member-b", "203.0.113.21")}
+			got, err := e.BlockBatchRequest(batchHeader(), members[:count], nil)
+			if !errors.Is(err, ErrStateConflict) || len(s.admitted) != 0 || got.Action.Request.ID != "" {
+				t.Fatalf("stale batch = %#v, %v; admissions %d", got, err, len(s.admitted))
+			}
+		})
+	}
+}
+
+func TestBlockBatchChecksAllowsFromPlanningSnapshot(t *testing.T) {
+	state := FirewallState{
+		Allowed:     []AllowedEntry{{IP: "::ffff:203.0.113.20", Reason: "operator"}},
+		PortAllowed: []PortAllowEntry{{IP: "::ffff:203.0.113.21", Port: 443, Proto: "tcp"}},
+	}
+	e, base := batchPlanEngine(t, FirewallConfig{}, state)
+	s := &batchChangingStateStore{batchPlanStore: base, revision: 7}
+	e.lifecycle.Store = s
+	s.onRead = func(reads int) {
+		if reads == 2 {
+			s.state = FirewallState{}
+			s.revision++
+		}
+	}
+	members := []ActionRequest{batchMember("member-a", "203.0.113.20"), batchMember("member-b", "203.0.113.21")}
+	got, err := e.BlockBatchRequest(batchHeader(), members, nil)
+	want := []BlockRefusal{BlockRefusedAllowed, BlockRefusedAllowed}
+	if err != nil || fmt.Sprint(got.Refusals) != fmt.Sprint(want) || len(s.admitted) != 0 || got.Action.Request.ID != "" {
+		t.Fatalf("snapshot allows = %#v, %v; admissions %d", got, err, len(s.admitted))
+	}
+}
+
+func TestBlockBatchUnverifiedAliasHoldsAddress(t *testing.T) {
+	at := time.Now().Round(0)
+	unverified := BlockedEntry{IP: "::ffff:203.0.113.20", ExpiresAt: at.Add(-time.Hour), Unverified: true, ActionID: "unsettled"}
+	verified := BlockedEntry{IP: "203.0.113.20", ExpiresAt: at.Add(2 * time.Hour)}
+	for _, unverifiedFirst := range []bool{true, false} {
+		t.Run(fmt.Sprintf("unverified_first_%t", unverifiedFirst), func(t *testing.T) {
+			rows := []BlockedEntry{verified, unverified}
+			if unverifiedFirst {
+				rows = []BlockedEntry{unverified, verified}
+			}
+			e, s := batchPlanEngine(t, FirewallConfig{}, FirewallState{Blocked: rows})
+			members := []ActionRequest{batchMember("member-a", verified.IP), batchMember("member-b", "203.0.113.21")}
+			got, err := e.BlockBatchRequest(batchHeader(), members, nil)
+			want := []BlockRefusal{BlockRefusedPending, ""}
+			if !errors.Is(err, errBatchPlanStop) || fmt.Sprint(got.Refusals) != fmt.Sprint(want) || len(s.admitted) != 1 {
+				t.Fatalf("unverified alias = %q, %v; admissions %d", got.Refusals, err, len(s.admitted))
+			}
+			plan := s.admitted[0]
+			if plan.Request != members[1] || plan.Members != nil || len(plan.After.Blocked) != 3 || !SameBlockedEntry(plan.After.Blocked[0], rows[0]) || !SameBlockedEntry(plan.After.Blocked[1], rows[1]) {
+				t.Fatalf("unverified address was changed: request %#v, rows %#v", plan.Request, plan.After.Blocked)
+			}
+		})
+	}
+}
+
+func TestBlockBatchAllowExpiryUsesWallSnapshot(t *testing.T) {
+	at := time.Now().Round(0)
+	state := FirewallState{Allowed: []AllowedEntry{
+		{IP: "203.0.113.20", ExpiresAt: at.Add(time.Minute)},
+		{IP: "::ffff:203.0.113.21", ExpiresAt: at},
+	}}
+	e, s := batchPlanEngine(t, FirewallConfig{}, state)
+	wall := at
+	e.expiryClock = func() time.Time { return wall }
+	e.leaseClock = func() (time.Time, time.Time) {
+		// Member checks must keep the sampled wall instant, even when time
+		// passes and the block lease is ahead after an earlier clock step.
+		wall = at.Add(2 * time.Minute)
+		return at.Add(time.Hour), at
+	}
+	members := []ActionRequest{
+		batchMember("member-allowed", "203.0.113.20"),
+		batchMember("member-expired-allow", "203.0.113.21"),
+		batchMember("member-free", "203.0.113.22"),
+	}
+	got, err := e.BlockBatchRequest(batchHeader(), members, nil)
+	want := []BlockRefusal{BlockRefusedAllowed, "", ""}
+	if !errors.Is(err, errBatchPlanStop) || fmt.Sprint(got.Refusals) != fmt.Sprint(want) || len(s.admitted) != 1 {
+		t.Fatalf("allow expiry = %q, %v; admissions %d", got.Refusals, err, len(s.admitted))
+	}
+	plan := s.admitted[0]
+	if len(plan.Members) != 2 || plan.Members[0].Request != members[1] || plan.Members[1].Request != members[2] || !plan.CreatedAt.Equal(at.Add(time.Hour)) {
+		t.Fatalf("allow expiry changed the planned members: %#v", plan)
+	}
+}
