@@ -39,7 +39,10 @@ A firewall action can carry a batch: a header and a manifest of
 single-target members, each with its own charge and the rows it removes to
 make room. Each member ID belongs to exactly one batch. Admitting a known ID
 with any change to the members, their order or their effects is refused, and
-a refused batch charges nothing. Actions written before batches read as
+a refused batch charges nothing. A batch only adds its members' rows:
+nothing evicts for a batch, so admission refuses one whose result drops a row
+that has not expired or changes any other entry. Actions written before
+batches read as
 one-member batches and keep their stored format. A record written by a newer
 build is refused as unsupported, never read or overwritten. A firewall-only
 import moves the durable journal and its snapshot as one unit, and refuses

@@ -252,6 +252,7 @@ func TestFirewallManifestRejectsInvalidBatches(t *testing.T) {
 			m := in.Members[1]
 			m.Request.ID, m.Request.Target = fmt.Sprintf("member-%03d", i), fmt.Sprintf("198.51.100.%d", i)
 			in.Members = append(in.Members, m)
+			in.After.Blocked = append(in.After.Blocked, batchMemberRow(in, m))
 		}
 		for i := range in.Members {
 			in.Members[i].Budget = &firewall.ScanAdmission{Window: "2026-01-02T03", Limit: firewall.MaxActionMembers}
@@ -386,7 +387,10 @@ func TestFirewallReplayComparesTheWholeManifest(t *testing.T) {
 	changes := map[string]func(*firewall.FirewallAction){
 		"order":  func(a *firewall.FirewallAction) { a.Members[0], a.Members[1] = a.Members[1], a.Members[0] },
 		"victim": func(a *firewall.FirewallAction) { a.Members[0].Victims[0].Reason = "other" },
-		"member": func(a *firewall.FirewallAction) { a.Members[1].Request.Reason = "other" },
+		"member": func(a *firewall.FirewallAction) {
+			a.Members[1].Request.Reason = "other"
+			a.After.Blocked[len(a.After.Blocked)-1].Reason = "other"
+		},
 	}
 	for name, change := range changes {
 		changed := batchFixture()
