@@ -1566,6 +1566,11 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 	if fm.wpCache != nil {
 		wpVerdict = fm.wpCache.VerifyFile(event.fd, contentPath)
 		if wpVerdict.Verdict == wpcheck.VerdictVerified {
+			// Earlier files may still be waiting for this tree's header.
+			// Keep the identity even when this file needs no content scan.
+			if wpVerdict.Staged && wpVerdict.Kind == wpcheck.KindPlugin {
+				fm.handleStagedPackageFile(path, wpVerdict, procInfo)
+			}
 			return
 		}
 	}

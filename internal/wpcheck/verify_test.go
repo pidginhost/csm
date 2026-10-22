@@ -534,3 +534,77 @@ func TestVerifyFile_StagedPluginGoneLeavesOtherInstalledReleaseAlone(t *testing.
 		t.Fatalf("VerifyFile = %+v, want NoVersion: the installed 2.18.0 file is not the staged file", v)
 	}
 }
+
+func TestVerifyFile_MovedPluginRetainsDirectoryIdentity(t *testing.T) {
+	const body = "<?php return 'stock';\n"
+	staged, installed, fd := movedStagedPlugin(t, body)
+	c := NewCache(t.TempDir())
+	c.setPluginChecksums("gtm-kit", "2.18.1", map[string]string{"inc/a.php": pluginChecksum(body)})
+	v := c.VerifyFile(fd, staged)
+	root := filepath.Dir(filepath.Dir(installed))
+	info, err := os.Lstat(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.Root != root || !v.Staged || v.RootInfo == nil || !os.SameFile(v.RootInfo, info) {
+		t.Fatalf("moved verification lost its directory identity: %+v", v)
+	}
+}
+
+func TestVerifyFile_MovedPluginRejectsUnlinkedAndSymlinkedPaths(t *testing.T) {
+	for _, change := range []string{"copy", "recreated", "file-symlink", "root-symlink"} {
+		t.Run(change, func(t *testing.T) {
+			const body = "<?php return 'stock';\n"
+			staged, installed, fd := movedStagedPlugin(t, body)
+			c := NewCache(t.TempDir())
+			c.setPluginChecksums("gtm-kit", "2.18.1", map[string]string{"inc/a.php": pluginChecksum(body)})
+			switch change {
+			case "copy", "recreated":
+				// The live event descriptor pins the deleted inode even on
+				// filesystems that aggressively reuse unreferenced inodes.
+				if err := os.Remove(installed); err != nil {
+					t.Fatal(err)
+				}
+				writeStaged(t, installed, body)
+				if change == "recreated" {
+					writeStaged(t, staged, body)
+				}
+			case "file-symlink", "root-symlink":
+				path := installed
+				if change == "root-symlink" {
+					path = filepath.Dir(filepath.Dir(installed))
+				}
+				if err := os.Rename(path, path+".original"); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(path+".original", path); err != nil {
+					t.Fatal(err)
+				}
+			}
+			v := c.VerifyFile(fd, staged)
+			if v.Verdict != VerdictNoVersion || v.Version != "" || v.Digest != pluginChecksum(body) {
+				t.Fatalf("unlinked event borrowed an installed release: %+v", v)
+			}
+		})
+	}
+}
+
+func TestVerifyFile_MovedPluginHardLinkStillRequiresOfficialBytes(t *testing.T) {
+	for _, body := range []string{"<?php return 'stock';\n", "<?php return 'modified';\n"} {
+		staged, installed, fd := movedStagedPlugin(t, body)
+		writeStaged(t, filepath.Join(filepath.Dir(staged), "other.php"), "<?php\n")
+		if err := os.Link(installed, staged); err != nil {
+			t.Fatal(err)
+		}
+		c := NewCache(t.TempDir())
+		stock := pluginChecksum("<?php return 'stock';\n")
+		c.setPluginChecksums("gtm-kit", "2.18.1", map[string]string{"inc/a.php": stock})
+		want := VerdictMismatch
+		if pluginChecksum(body) == stock {
+			want = VerdictVerified
+		}
+		if v := c.VerifyFile(fd, staged); v.Verdict != want || v.Digest != pluginChecksum(body) {
+			t.Fatalf("hard-linked event = %+v, want %v for its own bytes", v, want)
+		}
+	}
+}

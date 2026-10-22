@@ -75,6 +75,11 @@ moved the tree into place. An installed plugin header can identify the release
 only when its directory is the original staging directory moved into place, or
 when the installed path is still the very file the staged event wrote, so a
 stock file first examined after the move skips detection like any other.
+The installed plugin directory must remain the same directory during that
+check and cannot itself be a symlink. Its identity also connects earlier
+queued files from the same tree, including when the later file is already
+verified. Copies and unrelated trees do not establish that connection; every
+retained digest still needs to match the official release.
 A core update copies files, so the installed version.php identifies the
 release only if it was replaced or rewritten after the staged file was seen;
 a borrowed release still requires the file's bytes to be the official ones for
@@ -85,7 +90,9 @@ and plugin copies whose staging identity was never captured; the warning does
 not establish whether installation succeeded. Reused staging paths follow the
 normal alert cooldown rather than suppressing later unidentified uploads. A
 file the official package does not ship gets its
-own warning, naming the installed path when it still exists. Themes, packages
+own warning. An event identified at its installed location keeps that location
+while it exists, even if another update reuses the staging name. Other staged
+events name the installed path when it exists. Themes, packages
 not published on wordpress.org, a full verification queue, and a package whose
 checksums do not arrive within 60 seconds raise one warning per staging
 directory. WordPress picks a new staging directory for every upload. Once the

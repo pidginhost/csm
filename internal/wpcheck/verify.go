@@ -89,8 +89,9 @@ type Verification struct {
 	Rel     string
 	Digest  string
 	// Staged pins a retained digest to this release instead of retrying it
-	// against a later installed-core header. RootInfo identifies the staged
-	// directory observed while reading the header, before content analysis.
+	// against a later installed-core header. RootInfo identifies the package
+	// directory observed while reading the header, before content analysis;
+	// Root can name its installed location after a staged plugin was moved.
 	Staged   bool
 	RootInfo os.FileInfo
 }
@@ -378,16 +379,29 @@ func (c *Cache) describeMovedStagedPlugin(fd int, staged Verification) (Verifica
 	root := staged.Root[:idx] + pluginsSegment + staged.Slug
 	installed := filepath.Join(root, staged.Rel)
 	var event unix.Stat_t
-	if err := unix.Fstat(fd, &event); err != nil || !pathIsFile(installed, event) {
+	if err := unix.Fstat(fd, &event); err != nil {
+		return Verification{}, false
+	}
+	// Pin the directory during the header read as well as the event file.
+	// Hard links can preserve a file across a tree swap, and an unpinned
+	// directory inode can be reused before the final identity check.
+	// #nosec G304 -- root is derived from the recognized staged plugin path.
+	dir, err := os.OpenFile(root, os.O_RDONLY|unix.O_NONBLOCK|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return Verification{}, false
+	}
+	defer func() { _ = dir.Close() }()
+	before, err := dir.Stat()
+	if err != nil || !pathIsFile(installed, event) {
 		return Verification{}, false
 	}
 	v := c.describePluginRoot(root, staged.Slug, installed)
-	// The header was read by path: the file must still be there afterwards,
-	// or the header may belong to a tree swapped in during the read.
-	if v.Kind != KindPlugin || v.Version == "" || !pathIsFile(installed, event) {
+	after, err := os.Lstat(root)
+	if v.Kind != KindPlugin || v.Version == "" || err != nil || !after.IsDir() ||
+		!os.SameFile(before, after) || !pathIsFile(installed, event) {
 		return Verification{}, false
 	}
-	v.Staged = true
+	v.Staged, v.RootInfo = true, before
 	return v, true
 }
 
