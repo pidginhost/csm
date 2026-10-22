@@ -39,26 +39,31 @@ A firewall action can carry a batch: a header and a manifest of
 single-target members, each with its own charge and the rows it removes to
 make room. Each member ID belongs to exactly one batch. Admitting a known ID
 with any change to the members, their order or their effects is refused, and
-a refused batch charges nothing. A batch only adds its members' rows:
-nothing evicts for a batch, so admission refuses one whose result drops a row
-that has not expired or changes any other entry. Kept rows retain their
-order. Unverified rows remain until their owner settles the outcome, even
-after expiry, and a batch cannot add a block for an address they hold.
-An unverified address stays pending even when another spelling of the same
-address has a verified block.
-Actions written before batches read as one-member batches and keep their
-stored format. A record written by a newer
-build is refused as unsupported, never read or overwritten. Audit delivery
-writes one record per member, with the member's action ID and the batch's
-outcome and version, in one durable write. The block batch planner checks
-each automatic temporary block on its own against one committed snapshot,
-leaves out refused members and runs the rest as one batch with one kernel
-transaction; a lone valid member runs as an ordinary single action, and a
-stored batch ID is observed, never planned again. A firewall-only
+a refused batch charges nothing. A batch only adds its members' rows: nothing
+evicts for a batch, so admission refuses one whose result drops a row that
+has not expired or changes any other entry. Kept rows retain their order.
+Unverified rows remain until their owner settles the outcome, even after
+expiry, and a batch cannot add a block for an address they hold; an
+unverified address stays pending even when another spelling of the same
+address has a verified block. Actions written before batches read as
+one-member batches and keep their stored format. A record written by a newer
+build is refused as unsupported, never read or overwritten. A firewall-only
 import moves the durable journal and its snapshot as one unit, and refuses
 while either database has an unresolved action or undelivered audit. A
 refusal, including one for nested firewall buckets on either side, leaves the
 target database unchanged.
+
+The block batch planner checks each automatic temporary block on its own
+against one committed snapshot, leaves out refused members and runs the rest
+as one batch with one kernel transaction; a lone valid member runs as an
+ordinary single action, and a stored batch ID is observed, never planned
+again. A batch has one outcome. A crash or lost write at any step, from
+admission to audit acknowledgement, leaves recovery to prove an outcome or
+keep it unknown; the kernel is written at most once and each member is
+charged once. A kernel holding only some members proves neither outcome, so
+the batch stays unknown until the kernel proves one or an operator resolves
+it. Audit delivery writes one record per member, with the member's action ID
+and the batch's outcome and version, in one durable write.
 
 Batch evidence selects each member's current row by ID, target and planning
 time; retained rows from an earlier use of that ID are not current evidence.
