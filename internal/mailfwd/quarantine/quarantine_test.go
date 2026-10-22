@@ -753,6 +753,41 @@ func writeRawHeld(t *testing.T, q *Quarantine, id, content string) {
 	}
 }
 
+func TestTaggedForwardReasonsListAndRelease(t *testing.T) {
+	for _, reasons := range [][]string{{"spam_flagged"}, {"bounce_backscatter", "bad_sender_ip", "spam_flagged"}} {
+		t.Run(strings.Join(reasons, ","), func(t *testing.T) {
+			q := New(t.TempDir())
+			raw := strings.Replace(eximHeld("X-Spam-Status: Yes\n"), "X-CSM-Reasons: bad_sender_ip\n",
+				"X-CSM-Reasons: "+strings.Join(reasons, ",")+",\n", 1)
+			writeRawHeld(t, q, "tagged", raw)
+			msgs, err := q.List()
+			if err != nil || len(msgs) != 1 {
+				t.Fatalf("list = %+v, %v; want one held message", msgs, err)
+			}
+			if !reflect.DeepEqual(msgs[0].Reasons, reasons) {
+				t.Fatalf("reasons = %q, want %q", msgs[0].Reasons, reasons)
+			}
+			calls := 0
+			q.sendmail = func(sender, recipient string, body []byte) error {
+				calls++
+				if sender != "real@example.com" || recipient != "owner@example.net" {
+					t.Errorf("release envelope = %q, %q", sender, recipient)
+				}
+				if string(body) != "X-Spam-Status: Yes\n\nbody\n" {
+					t.Errorf("released message = %q; want original spam header and body only", body)
+				}
+				return nil
+			}
+			if err := q.Release("tagged"); err != nil {
+				t.Fatal(err)
+			}
+			if msgs, err := q.List(); err != nil || len(msgs) != 0 || calls != 1 {
+				t.Fatalf("after release: list = %+v, %v; sendmail calls = %d", msgs, err, calls)
+			}
+		})
+	}
+}
+
 func wantRealControlHeaders(t *testing.T, m HeldMessage) {
 	t.Helper()
 	if m.Forwarder != "sales@example.com" || m.Recipient != "owner@example.net" || m.Sender != "real@example.com" ||

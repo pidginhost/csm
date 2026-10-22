@@ -8,6 +8,7 @@ import (
 func FuzzEximMutation(f *testing.F) {
 	f.Add(`{"operation":"remove"}`)
 	f.Add(`{"operation":"apply","config":{"Enabled":true,"HoldSignals":{"BounceBackscatter":true}},"bad_ips":["192.0.2.1"]}`)
+	f.Add(`{"operation":"apply","config":{"Enabled":true,"HoldSignals":{"SpamFlagged":true}}}`)
 	f.Add(`{"operation":"remove","command":"anything"}`)
 	f.Fuzz(func(t *testing.T, input string) {
 		calls := 0
@@ -19,7 +20,7 @@ func FuzzEximMutation(f *testing.F) {
 			if r.Operation != "apply" && r.Operation != "remove" {
 				t.Fatalf("arbitrary operation escaped validation: %q", r.Operation)
 			}
-			if r.Operation == "apply" && (!r.Config.Enabled || r.Config.DryRun || (!r.Config.HoldSignals.BounceBackscatter && !r.Config.HoldSignals.BadSenderIP)) {
+			if r.Operation == "apply" && (!r.Config.Enabled || r.Config.DryRun || (!r.Config.HoldSignals.BounceBackscatter && !r.Config.HoldSignals.BadSenderIP && !r.Config.HoldSignals.SpamFlagged)) {
 				t.Fatalf("invalid policy escaped validation: %+v", r.Config)
 			}
 			return nil

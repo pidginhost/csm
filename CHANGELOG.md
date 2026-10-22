@@ -9,6 +9,10 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ## [Unreleased]
 
+### Changed
+
+- With the forward guard enforcing, mail tagged as spam is now held instead of forwarded to outside addresses.
+
 ### Fixed
 
 - The Email Security queue lists messages exim cannot read, offering Delete, and says when exim fails instead of showing an empty queue.

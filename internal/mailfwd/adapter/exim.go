@@ -20,6 +20,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -122,7 +123,7 @@ func (a *EximAdapter) Apply(cfg policy.Config, badIPs []string) error {
 	if err != nil {
 		return err
 	}
-	next, err = injectBlock(next, "@TRANSPORTSTART@", a.renderTransport())
+	next, err = injectBlock(next, "@TRANSPORTSTART@", a.renderTransport(cfg.HoldSignals))
 	if err != nil {
 		return err
 	}
@@ -204,18 +205,38 @@ func (a *EximAdapter) Status() (Status, error) {
 	return Status{Installed: routerInstalled}, nil
 }
 
-func (a *EximAdapter) renderRouter(sig policy.HoldSignals) (string, error) {
-	var clauses []string
+// holdClause is one enabled hold signal and its Exim condition.
+type holdClause struct{ reason, cond string }
+
+// holdClauses lists the enabled routing-time signals in a fixed order. The
+// router holds when any matches; the transport records the ones that did.
+func (a *EximAdapter) holdClauses(sig policy.HoldSignals) []holdClause {
+	var out []holdClause
 	if sig.BounceBackscatter {
-		clauses = append(clauses, "{eq{$sender_address}{}}")
+		out = append(out, holdClause{"bounce_backscatter", "eq{$sender_address}{}"})
 	}
 	if sig.BadSenderIP {
-		clauses = append(clauses, fmt.Sprintf("{eq{${lookup{$sender_host_address}lsearch{%s}{1}{0}}}{1}}", a.badIPsPath))
+		out = append(out, holdClause{"bad_sender_ip", fmt.Sprintf("eq{${lookup{$sender_host_address}lsearch{%s}{1}{0}}}{1}", a.badIPsPath)})
+	}
+	if sig.SpamFlagged {
+		// Antispam strips inbound X-Spam headers from the mail it scans before
+		// tagging; on other mail a forged header holds only the forger's copy.
+		// Exim joins repeated headers with newlines. A preceding verdict must
+		// not hide a later Yes, and a word starting with Yes is not a verdict.
+		out = append(out, holdClause{"spam_flagged", `match{$h_x-spam-status:}{\N(?im)^Yes[[:blank:]]*(,|$)\N}`})
+	}
+	return out
+}
+
+func (a *EximAdapter) renderRouter(sig policy.HoldSignals) (string, error) {
+	var clauses []string
+	for _, c := range a.holdClauses(sig) {
+		clauses = append(clauses, "{"+c.cond+"}")
 	}
 	if len(clauses) == 0 {
-		// Config validation forbids enforce mode with neither signal; guard here
+		// Config validation forbids enforce mode with no such signal; guard here
 		// so the adapter never installs a router that holds everything or nothing.
-		return "", fmt.Errorf("forward-guard adapter: no routing-time-enforceable signal enabled (need bounce_backscatter or bad_sender_ip)")
+		return "", fmt.Errorf("forward-guard adapter: no routing-time-enforceable signal enabled (need bounce_backscatter, bad_sender_ip or spam_flagged)")
 	}
 	cond := fmt.Sprintf("${if and{ {def:parent_local_part} {or{ %s } } }{yes}{no}}", strings.Join(clauses, " "))
 	return strings.Join([]string{
@@ -229,13 +250,19 @@ func (a *EximAdapter) renderRouter(sig policy.HoldSignals) (string, error) {
 	}, "\n"), nil
 }
 
-func (a *EximAdapter) renderTransport() string {
+func (a *EximAdapter) renderTransport(sig policy.HoldSignals) string {
+	var reasons strings.Builder
+	for _, c := range a.holdClauses(sig) {
+		reasons.WriteString("${if " + c.cond + "{" + c.reason + ",}}")
+	}
 	headers := strings.Join([]string{
 		"X-CSM-Forwarder: $parent_local_part@$parent_domain",
 		"X-CSM-Recipient: $local_part@$domain",
 		"X-CSM-Sender: $sender_address",
-		"X-CSM-Reasons: ${if eq{$sender_address}{}{bounce_backscatter}{bad_sender_ip}}",
+		"X-CSM-Reasons: " + reasons.String(),
 	}, "\\n")
+	// Exim unquotes the option before expanding it; regex escapes must
+	// survive both stages.
 	return strings.Join([]string{
 		transportBegin,
 		"csm_forward_hold:",
@@ -246,7 +273,7 @@ func (a *EximAdapter) renderTransport() string {
 		"  directory_mode = 0700",
 		"  mode = 0600",
 		"  user = " + transportUser,
-		`  headers_add = "` + headers + `"`,
+		"  headers_add = " + strconv.Quote(headers),
 		transportEnd,
 	}, "\n")
 }

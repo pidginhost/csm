@@ -159,8 +159,9 @@ email_protection:
 }
 
 func TestForwardGuardValidationRejectsEnforceWithNoEnforceableSignal(t *testing.T) {
-	// enabled + not dry-run, but both routing-time-enforceable signals (bounce,
-	// bad_sender_ip) are off and only the not-yet-enforceable signals are on.
+	// enabled + not dry-run, but every routing-time-enforceable signal
+	// (bounce, bad_sender_ip, spam_flagged) is off and only the
+	// not-yet-enforceable signals are on.
 	yaml := `
 email_protection:
   forward_guard:
@@ -169,7 +170,7 @@ email_protection:
     hold_signals:
       bounce_backscatter: false
       bad_sender_ip: false
-      spam_flagged: true
+      spam_flagged: false
       malware: true
       auth_fail: true
 `
@@ -212,8 +213,26 @@ email_protection:
 	}
 }
 
+func TestForwardGuardValidationAllowsEnforceWithSpamFlaggedOnly(t *testing.T) {
+	yaml := `
+email_protection:
+  forward_guard:
+    enabled: true
+    dry_run: false
+    hold_signals:
+      bounce_backscatter: false
+      bad_sender_ip: false
+      spam_flagged: true
+      malware: false
+      auth_fail: false
+`
+	if _, err := LoadBytes([]byte(yaml)); err != nil {
+		t.Fatalf("spam_flagged-only enforce config rejected: %v", err)
+	}
+}
+
 func TestForwardGuardValidationAllowsDryRunWithUnenforceableOnly(t *testing.T) {
-	// In dry-run, accounting may preview spam/malware/auth even though the exim
+	// In dry-run, accounting may preview malware/auth even though the exim
 	// adapter cannot enforce them yet -- must not be rejected.
 	yaml := `
 email_protection:
@@ -223,7 +242,8 @@ email_protection:
     hold_signals:
       bounce_backscatter: false
       bad_sender_ip: false
-      spam_flagged: true
+      spam_flagged: false
+      malware: true
 `
 	if _, err := LoadBytes([]byte(yaml)); err != nil {
 		t.Fatalf("valid dry-run config rejected: %v", err)

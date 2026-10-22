@@ -21,7 +21,9 @@ account's choice. For an opted-in account, Exim:
 - rejects it with 550 when the score is at or above `reject_score`;
 - adds `X-Spam-Status: Yes` when the score is at or above `tag_score` and below
   `reject_score`. If the user turned on cPanel's spam box, the mail is filed in
-  the Spam folder; otherwise it is delivered normally with the header.
+  the Spam folder; otherwise it is delivered normally with the header. When the
+  [forward guard](configuration.md) enforces `spam_flagged`, a copy forwarded
+  to an outside address is held instead of relayed.
 
 Mail for an opted-out account is delivered with no CSM rejection and no spam
 verdict header. Opting out never affects antivirus, outbound checks, SMTP-time

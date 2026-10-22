@@ -650,19 +650,23 @@ email_protection:
     allow_domains: []                   # domain-wide opt-outs for cloud-relay detection
 
   # Email forward guard (cPanel only). Opt-in MTA-native enforcement for
-  # external forward copies. Enforce mode can hold null-sender backscatter and
-  # bad-sender-IP copies before they relay to an external provider, while the
-  # local mailbox copy still delivers. Spam, malware, and auth-fail signals are
-  # accounted in dry-run until Exim content scanning is wired. CSM is not in the
-  # live mail path; an installed Exim rule can keep holding matching copies even
-  # if the daemon is down. Held copies can be released or deleted from the Email page.
+  # external forward copies. Enforce mode can hold null-sender backscatter,
+  # bad-sender-IP and spam-flagged copies before they relay to an external
+  # provider, while the local mailbox copy still delivers. Spam-flagged means
+  # the message carries X-Spam-Status: Yes, as antispam adds when it tags.
+  # Any X-Spam-Status field with a Yes verdict counts, ignoring letter case.
+  # Other text does not count as a spam verdict.
+  # Malware and auth-fail signals are accounted in dry-run until Exim content
+  # scanning is wired. CSM is not in the live mail path; an installed Exim rule
+  # can keep holding matching copies even if the daemon is down. Held copies can
+  # be released or deleted from the Email page.
   forward_guard:
     enabled: false                      # master switch (default off)
     dry_run: true                       # account/log only, do not actually hold (default true)
     quarantine_retention_days: 14       # held copies older than this are deleted; 0 keeps them
     hold_signals:                       # signal toggles, each default true
       bounce_backscatter: true          # null-sender bounce backscatter (enforceable)
-      spam_flagged: true                # message flagged as spam (dry-run/accounting only)
+      spam_flagged: true                # message carries X-Spam-Status: Yes (enforceable)
       malware: true                     # message carries malware (dry-run/accounting only)
       bad_sender_ip: true               # originating IP has bad reputation (enforceable)
       auth_fail: true                   # sender failed SPF/DKIM/DMARC auth (dry-run/accounting only)

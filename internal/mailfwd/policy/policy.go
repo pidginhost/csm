@@ -14,7 +14,7 @@ package policy
 // meta can only ever reduce the chance of a hold, never invent one.
 type MessageMeta struct {
 	NullSender  bool // envelope sender is <> (bounce/backscatter)
-	SpamFlagged bool // SpamAssassin marked it spam
+	SpamFlagged bool // carries an X-Spam-Status: Yes spam verdict
 	MalwareHit  bool // ClamAV / YARA-X matched
 	SenderIPBad bool // sender IP is in the CSM attack DB / reputation
 	SPFFail     bool
