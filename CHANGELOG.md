@@ -23,6 +23,8 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 ### Changed
 
 - The Email Security page shows spam, malware and other reject counts, a chart, recent rejects and rspamd status; counting starts at upgrade. rspamd counters may need a private controller socket.
+- The Email Security page puts its job tabs right under the headline numbers, with counts, and shows why queued mail is stuck with retry, return and delete actions.
+- Provider delays now count business domains hosted by Google, Microsoft or Yahoo under those providers instead of as other domains.
 - The hardening audit warns on PHP 8.5 and later while fatal error backtraces are on, a setting the PHP2Shell advisory says to turn off.
 - CSM writes its findings state file at most once a minute instead of on every alert batch, cutting disk writes on busy servers.
 

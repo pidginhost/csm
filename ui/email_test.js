@@ -3248,3 +3248,314 @@ test('an old forwarders link opens Sending accounts with the forwarders shown', 
     await settle();
     assert.equal(plain.document.getElementById('email-forwarders-section').open, false);
 });
+
+// ---------- Provider delays ----------
+
+// deferrals is a deferrals response with nothing deferred, read from 20,000
+// log lines, and any other fields.
+function deferrals(extra) {
+    return Object.assign({ deferrals: 0, providers: [], outbound_ips: [], lines: 20000,
+        window_start: '2026-10-21T08:00:00Z', window_end: '2026-10-21T10:00:00Z' }, extra);
+}
+
+const DELAYS = deferrals({
+    deferrals: 9,
+    providers: [
+        { provider: 'gmail', deferrals: 5, reasons: [{ code: 'rate_limit', count: 4 }], last_seen: '2026-10-21T09:58:00Z',
+            sample: '421-4.7.28 [198.51.100.7] Our system has detected an unusual rate of unsolicited mail' },
+        { provider: 'yahoo', deferrals: 3, reasons: [{ code: 'TSS04', count: 2 }, { code: 'spamhaus', count: 1 }], last_seen: '2026-10-21T09:00:00Z',
+            sample: '421 4.7.0 [TSS04] Messages from 198.51.100.7 temporarily deferred' },
+        { provider: 'external', deferrals: 1, reasons: [{ code: 'greylist', count: 1 }], last_seen: '2026-10-21T08:30:00Z', sample: '' }
+    ],
+    outbound_ips: [
+        { ip: '198.51.100.7', deferrals: 8, providers: [{ provider: 'gmail', count: 5 }, { provider: 'yahoo', count: 3 }],
+            reasons: [{ code: 'rate_limit', count: 4 }, { code: 'TSS04', count: 2 }, { code: 'spamhaus', count: 1 }], last_seen: '2026-10-21T09:58:00Z' }
+    ]
+});
+
+// delaysPage opens Provider delays from its address and answers its read.
+async function delaysPage(body) {
+    const page = emailPage({ url: 'https://csm.example.test/email?tab=delays' });
+    await settle();
+    page.respond('/api/v1/email/deferrals', 200, body);
+    await settle();
+    return page;
+}
+
+function delayRows(page, id) {
+    return Array.from(page.document.querySelectorAll('#' + id + '-body tr')).filter(r => !r.classList.contains('details-row'));
+}
+
+function badgeTexts(row) {
+    return Array.from(row.querySelectorAll('[data-label="Reason"] .badge')).map(flat);
+}
+
+test('Provider delays lists each provider: deferred, last seen and why in plain words, the sample on expand', async () => {
+    const page = await delaysPage(DELAYS);
+    const doc = page.document;
+    assert.deepEqual(Array.from(doc.querySelectorAll('#email-deliv-providers thead th')).map(flat), ['Provider', 'Deferred', 'Last seen', 'Reason']);
+    const rows = delayRows(page, 'email-deliv-providers');
+    assert.deepEqual(rows.map(r => flat(r.querySelector('[data-label="Provider"]'))), ['Google', 'Yahoo', 'Other domains']);
+    assert.deepEqual(rows.map(r => flat(r.querySelector('[data-label="Deferred"]'))), ['5', '3', '1']);
+    assert.equal(flat(rows[0].querySelector('[data-label="Last seen"]')), page.window.CSM.fmtDate('2026-10-21T09:58:00Z'));
+    // A deferral no reason was read from counts as other.
+    assert.deepEqual(rows.map(badgeTexts), [['rate limited (4)', 'other'], ['code TSS04 (2)', 'blocklisted (Spamhaus)'], ['greylisted']]);
+    // No Risk column, and a provider carries no color of its own.
+    assert.equal(rows[0].querySelector('[data-label="Provider"] .badge'), null);
+    // The sample error shows on expand, as text.
+    const expand = rows[0].querySelector('.expand-btn');
+    assert.ok(expand, 'no expand button for the sample');
+    const details = rows[0].nextElementSibling;
+    assert.ok(details.classList.contains('details-row'));
+    assert.equal(details.classList.contains('show'), false);
+    expand.click();
+    assert.equal(details.classList.contains('show'), true);
+    assert.equal(flat(details.querySelector('.subheader')), 'Sample error');
+    assert.equal(flat(details.querySelector('.font-monospace')), '421-4.7.28 [198.51.100.7] Our system has detected an unusual rate of unsolicited mail');
+    assert.equal(rows[2].querySelector('.expand-btn'), null, 'a provider with no sample has something to expand');
+    assert.ok(doc.getElementById('email-deliv-providers').classList.contains('csm-table-rowcard'), 'no row cards on phones');
+});
+
+test('Our sending IPs lists each IP with the providers deferring it and why', async () => {
+    const page = await delaysPage(DELAYS);
+    const doc = page.document;
+    const html = doc.getElementById('email-pane-delays').innerHTML;
+    assert.ok(html.indexOf('id="email-deliv-providers"') < html.indexOf('Our sending IPs'), 'the providers do not come first');
+    assert.ok(html.indexOf('Our sending IPs') < html.indexOf('id="email-deliv-ips"'));
+    assert.deepEqual(Array.from(doc.querySelectorAll('#email-deliv-ips thead th')).map(flat), ['Sending IP', 'Deferred', 'Last seen', 'Deferred by', 'Reason']);
+    const rows = delayRows(page, 'email-deliv-ips');
+    assert.equal(rows.length, 1);
+    assert.equal(flat(rows[0].querySelector('[data-label="Sending IP"]')), '198.51.100.7');
+    assert.equal(flat(rows[0].querySelector('[data-label="Deferred"]')), '8');
+    assert.equal(flat(rows[0].querySelector('[data-label="Last seen"]')), page.window.CSM.fmtDate('2026-10-21T09:58:00Z'));
+    assert.equal(flat(rows[0].querySelector('[data-label="Deferred by"]')), 'Google 5, Yahoo 3');
+    assert.deepEqual(badgeTexts(rows[0]), ['rate limited (4)', 'code TSS04 (2)', 'blocklisted (Spamhaus)', 'other']);
+    assert.ok(doc.getElementById('email-deliv-ips').classList.contains('csm-table-rowcard'), 'no row cards on phones');
+});
+
+test('Provider delays says how many log lines it read, and since when', async () => {
+    const page = await delaysPage(DELAYS);
+    const doc = page.document;
+    assert.equal(flat(doc.getElementById('email-deliv-summary')), '9 outbound deferrals across 3 providers and 1 sending IP.');
+    assert.equal(flat(doc.getElementById('email-deliv-scope')),
+        'From the last 20,000 log lines (since ' + page.window.CSM.fmtDate('2026-10-21T08:00:00Z') + ')');
+    const empty = await delaysPage(deferrals({ lines: 0, window_start: undefined, window_end: undefined }));
+    assert.equal(flat(empty.document.getElementById('email-deliv-summary')), 'No outbound deferrals seen in the recent log window.');
+    assert.equal(flat(empty.document.getElementById('email-deliv-scope')), 'No mail log lines read.');
+    for (const id of ['email-deliv-providers-body', 'email-deliv-ips-body']) {
+        assert.ok(empty.document.querySelector('#' + id + ' .csm-empty'), id + ' does not show the shared empty state');
+    }
+});
+
+test('delay reasons are colored by what they mean: blocked red, rate limited amber, greylisted grey, the rest neutral', async () => {
+    const codes = ['spamhaus', 'blocked', 'complaint', 'rate_limit', 'greylist', 'mailbox_full', 'retry_wait', 'host_not_found', 'refused', 'TSS04'];
+    const page = await delaysPage(deferrals({ deferrals: codes.length, providers: [{ provider: 'gmail', deferrals: codes.length,
+        reasons: codes.map(code => ({ code, count: 1 })), last_seen: AT, sample: 'x' }] }));
+    const badges = Array.from(delayRows(page, 'email-deliv-providers')[0].querySelectorAll('[data-label="Reason"] .badge'));
+    const color = b => b.classList.contains('bg-red-lt') ? 'red' : b.classList.contains('bg-yellow-lt') ? 'amber' :
+        b.classList.contains('bg-secondary-lt') ? 'grey' : 'neutral';
+    assert.deepEqual(badges.map(b => [flat(b), color(b)]), [
+        ['blocklisted (Spamhaus)', 'red'], ['blocked', 'red'], ['user complaints', 'red'], ['rate limited', 'amber'], ['greylisted', 'grey'],
+        ['mailbox full', 'neutral'], ['retry time not reached', 'neutral'], ['server not found or unreachable', 'neutral'],
+        ['refused', 'neutral'], ['code TSS04', 'neutral']]);
+    for (const b of badges.slice(5)) assert.doesNotMatch(b.className, /\bbg-/, flat(b) + ' carries a color');
+});
+
+test('the Provider delays count is the providers deferring now, read with the page', async () => {
+    const page = emailPage();
+    await settle();
+    const tab = page.document.getElementById('email-tab-delays');
+    assert.equal(tab.querySelector('[data-tab-count]').hidden, true, 'a count before the deferrals answered');
+    assert.equal(page.pending('/api/v1/email/deferrals').length, 1, 'the count was not read with the page');
+    page.respond('/api/v1/email/deferrals', 200, DELAYS);
+    await settle();
+    assert.equal(tab.querySelector('[data-tab-count]').textContent, '3');
+    assert.equal(spoken(tab), 'Provider delays 3 providers deferring');
+    // A closed tab does not poll; an open one reads on opening and every
+    // minute.
+    page.window.CSM.refresh.manual();
+    await settle();
+    assert.equal(page.pending('/api/v1/email/deferrals').length, 0, 'the closed tab polled');
+    await answerAll(page, {});
+    showEmailTab(page, 'delays');
+    await settle();
+    assert.equal(page.pending('/api/v1/email/deferrals').length, 1, 'opening the tab did not read it');
+    page.respond('/api/v1/email/deferrals', 200, deferrals({ deferrals: 1, providers: [DELAYS.providers[2]] }));
+    await settle();
+    assert.equal(tab.querySelector('[data-tab-count]').textContent, '1');
+    page.window.CSM.refresh.manual();
+    await settle();
+    assert.equal(page.pending('/api/v1/email/deferrals').length, 1, 'the open tab did not poll');
+
+    const failed = emailPage();
+    await settle();
+    failed.fail('/api/v1/email/deferrals');
+    await settle();
+    assert.equal(failed.document.querySelector('#email-tab-delays [data-tab-count]').textContent, '?');
+});
+
+test('an unchanged delays answer keeps the rows; a changed one keeps the open sample and the focus', async () => {
+    const page = await delaysPage(DELAYS);
+    const first = delayRows(page, 'email-deliv-providers')[0];
+    const expand = first.querySelector('.expand-btn');
+    expand.click();
+    expand.focus();
+    page.window.CSM.refresh.manual();
+    await answerAll(page, { '/api/v1/email/deferrals': DELAYS });
+    assert.equal(delayRows(page, 'email-deliv-providers')[0], first, 'an unchanged answer rebuilt the rows');
+    const changed = JSON.parse(JSON.stringify(DELAYS));
+    changed.deferrals = 10;
+    changed.providers[0].deferrals = 6;
+    page.window.CSM.refresh.manual();
+    await answerAll(page, { '/api/v1/email/deferrals': changed });
+    const row = delayRows(page, 'email-deliv-providers')[0];
+    assert.notEqual(row, first, 'a changed answer kept the old rows');
+    assert.equal(flat(row.querySelector('[data-label="Deferred"]')), '6');
+    assert.equal(row.nextElementSibling.classList.contains('show'), true, 'the open sample closed');
+    assert.equal(page.document.activeElement, row.querySelector('.expand-btn'), 'the focus was lost');
+});
+
+test('provider delays keep server text as text', async () => {
+    const evil = '<img src=x onerror=alert(1)>';
+    const page = await delaysPage(deferrals({ deferrals: 2,
+        providers: [{ provider: evil, deferrals: 2, reasons: [{ code: evil, count: 2 }], last_seen: AT, sample: '<b>sample</b>' }],
+        outbound_ips: [{ ip: evil, deferrals: 2, providers: [{ provider: evil, count: 2 }], reasons: [{ code: evil, count: 2 }], last_seen: AT }] }));
+    const pane = page.document.getElementById('email-pane-delays');
+    assert.equal(pane.querySelectorAll('img').length, 0);
+    assert.equal(pane.querySelectorAll('b').length, 0);
+    assert.match(pane.textContent, /<img src=x onerror=alert\(1\)>/);
+    assert.match(pane.textContent, /<b>sample<\/b>/);
+});
+
+// ---------- Findings polish ----------
+
+test('an unknown check from the address stays on offer, so the select names what the table filters', async () => {
+    const page = emailPage({ url: 'https://csm.example.test/email?tab=findings&check=email_retired_check' });
+    await settle();
+    assert.equal(historyQuery(page).get('checks'), 'email_retired_check');
+    page.respond('/api/v1/email/checks', 200, CHECKS);
+    await settle();
+    const check = page.document.getElementById('filter-check');
+    assert.equal(check.value, 'email_retired_check');
+    assert.equal(Array.from(check.options).filter(o => o.value === 'email_retired_check').length, 1);
+    assert.deepEqual(Array.from(check.options).map(o => o.value).slice(0, 5), ['', 'mail_bruteforce', 'smtp_bruteforce', 'mail_queue', 'email_dkim_failure']);
+});
+
+test('the Findings count is the findings in the range', async () => {
+    const page = emailPage();
+    await settle();
+    const tab = page.document.getElementById('email-tab-findings');
+    assert.equal(tab.querySelector('[data-tab-count]').hidden, true, 'a count before the findings answered');
+    page.respond('/api/v1/history?', 200, items([{ severity: 1, check: 'mail_bruteforce', message: 'm', timestamp: AT }], { total: 312, limit: 250, truncated: true }));
+    await settle();
+    assert.equal(tab.querySelector('[data-tab-count]').textContent, '312');
+    assert.equal(spoken(tab), 'Findings 312 findings');
+    changeValue(page, page.document.getElementById('filter-severity'), '2');
+    await settle();
+    page.respond('/api/v1/history?', 200, items([], { total: 0 }));
+    await settle();
+    assert.equal(tab.querySelector('[data-tab-count]').textContent, '0');
+    changeValue(page, page.document.getElementById('filter-severity'), '1');
+    await settle();
+    page.fail('/api/v1/history?');
+    await settle();
+    assert.equal(tab.querySelector('[data-tab-count]').textContent, '?');
+});
+
+test('an older SMTP firewall answer cannot replace a newer one', async () => {
+    const page = emailPage({ url: 'https://csm.example.test/email?tab=sending' });
+    await settle();
+    page.window.CSM.refresh.manual();
+    await settle();
+    const [older, newer] = page.pending('/api/v1/email/stats');
+    assert.ok(newer, 'the timer did not read the SMTP firewall again');
+    newer.settled = true;
+    newer.resolve(jsonResponse(200, Object.assign({}, FIREWALL, { smtp_block: false })));
+    await settle();
+    older.settled = true;
+    older.resolve(jsonResponse(200, FIREWALL));
+    await settle();
+    const fw = flat(page.document.getElementById('email-sending-firewall'));
+    assert.match(fw, /Outbound SMTP\s*open/);
+    assert.doesNotMatch(fw, /restricted/);
+});
+
+// ---------- One empty state and one error state ----------
+
+// Each tab's list: where it shows, what fails it, and what answers it
+// empty when the default empty list would not.
+const LIST_STATES = [
+    { tab: 'overview', fails: '/api/v1/email/groups?', host: 'email-action-groups' },
+    { tab: 'queue', fails: '/api/v1/email/queue?', host: 'email-queue-summary',
+        bodies: { '/api/v1/email/overview': queueOverview(0), '/api/v1/email/queue?': queueList([]) } },
+    { tab: 'held', fails: '/api/v1/email/quarantine', host: 'email-held-tbody' },
+    { tab: 'rejects', fails: '/api/v1/email/rejects', host: 'email-rejects-tbody' },
+    { tab: 'sending', fails: '/api/v1/email/senders', host: 'email-sending-tbody', bodies: { '/api/v1/email/senders': senders([]) } },
+    { tab: 'delays', fails: '/api/v1/email/deferrals', host: 'email-deliv-providers-body', bodies: { '/api/v1/email/deferrals': deferrals() } },
+    { tab: 'findings', fails: '/api/v1/history?', host: 'email-tbody' }
+];
+
+// drive answers what the page asks for until it stops asking, failing what
+// fails matches.
+async function drive(page, bodies, fails) {
+    for (let round = 0; round < 8; round++) {
+        const pending = page.pending();
+        if (pending.length === 0) break;
+        for (const req of pending) {
+            if (fails && req.url.includes(fails)) {
+                page.fail(req.url, new Error('HTTP 502'));
+                continue;
+            }
+            const hit = Object.keys(bodies).find(k => req.url.includes(k));
+            page.respond(req.url, 200, hit ? bodies[hit] : items([]));
+        }
+        await settle();
+    }
+}
+
+// shownEmpty returns the shared empty states in host that show: a load
+// error hides what the host held before.
+function shownEmpty(host) {
+    return Array.from(host.querySelectorAll('.csm-empty')).filter(el => {
+        for (let n = el; n && n !== host; n = n.parentNode) if (n.hidden) return false;
+        return true;
+    });
+}
+
+test('every tab shows the one empty state and the one error state with Retry', async () => {
+    const src = fs.readFileSync(path.join(__dirname, 'static/js/email.js'), 'utf8');
+    assert.match(src, /var buildEmpty = CSM\.emptyStateNode;/);
+    assert.doesNotMatch(src, /csm-empty|csm-load-error/, 'email.js draws an empty or error state of its own');
+    for (const c of LIST_STATES) {
+        const empty = emailPage({ url: 'https://csm.example.test/email?tab=' + c.tab });
+        await settle();
+        await drive(empty, c.bodies || {});
+        const host = empty.document.getElementById(c.host);
+        assert.ok(empty.document.getElementById('email-pane-' + c.tab).contains(host), c.host + ' is not on ' + c.tab);
+        assert.equal(shownEmpty(host).length, 1, c.tab + ': no shared empty state in #' + c.host + ': ' + flat(host));
+        assert.equal(host.querySelector('.csm-load-error'), null, c.tab + ': an error state with nothing failed');
+
+        const failed = emailPage({ url: 'https://csm.example.test/email?tab=' + c.tab });
+        await settle();
+        await drive(failed, c.bodies || {}, c.fails);
+        const error = failed.document.getElementById(c.host).querySelector('.csm-load-error');
+        assert.ok(error, c.tab + ': no shared error state in #' + c.host);
+        assert.match(error.textContent, /HTTP 502/, c.tab + ': the reason is missing');
+        assert.ok(error.querySelector('.csm-retry-btn'), c.tab + ': no Retry');
+        assert.equal(shownEmpty(failed.document.getElementById(c.host)).length, 0, c.tab + ': a failed list reads as empty');
+    }
+});
+
+test('an empty queue says so once, in the shared empty state', async () => {
+    const page = await queuePage([]);
+    page.respond('/api/v1/email/queue-composition', 200, { total: 0, real: 0, bounce: 0, frozen: 0, flushable_backscatter: 0, top_recipients: [] });
+    await settle();
+    const pane = page.document.getElementById('email-pane-queue');
+    assert.deepEqual(shownEmpty(pane).map(flat), ['The queue is empty.']);
+    // Once the queue fills, the composition shows again.
+    page.document.getElementById('email-refresh').click();
+    await answerAll(page, { '/api/v1/email/overview': queueOverview(3), '/api/v1/email/queue?': queueList([queueMsg(QID[0])], { queued: 3 }),
+        '/api/v1/email/queue-composition': { total: 3, real: 3, bounce: 0, frozen: 0, flushable_backscatter: 0, top_recipients: [] } });
+    assert.equal(page.document.getElementById('queue-composition').parentElement.hidden, false);
+    assert.match(flat(page.document.getElementById('queue-composition')), /Real mail/);
+});

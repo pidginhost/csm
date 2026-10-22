@@ -1495,24 +1495,35 @@ func TestEmailForwardersRenderEscapesInventoryValues(t *testing.T) {
 }
 
 // TestEmailDeliverabilityRenderEscapesProviderValues ensures the deferral
-// panels escape provider/IP/reason text parsed from a remote MTA's error.
+// panels never parse provider/IP/reason text from a remote MTA's error as
+// HTML: the Provider delays block builds no markup from strings and sets
+// that text as text.
 func TestEmailDeliverabilityRenderEscapesProviderValues(t *testing.T) {
 	js, err := os.ReadFile("../../ui/static/js/email.js")
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := string(js)
+	start := strings.Index(text, "// ---------- Provider delays tab")
+	end := strings.Index(text, "// ---------- Outbound abuse events")
+	if start < 0 || end < start {
+		t.Fatal("email.js missing provider delays block")
+	}
+	block := text[start:end]
+	for _, banned := range []string{`innerHTML`, `outerHTML`, `insertAdjacentHTML`} {
+		if strings.Contains(block, banned) {
+			t.Fatalf("provider delays renderer builds markup from strings: %q", banned)
+		}
+	}
 	for _, fragment := range []string{
-		`providerBadge(p.provider)`, // provider escaped inside providerBadge (see forwarder escape test)
-		`CSM.esc(ip.ip)`,
-		`CSM.esc(r.code)`,
-		`CSM.esc(formatDeferralCount(r.count))`,
-		`CSM.esc(formatDeferralCount(p.deferrals))`,
-		`CSM.esc(formatDeferralCount(ip.deferrals))`,
-		`CSM.esc(formatDeferralCount(item.count))`,
+		`rejectCell('Provider', providerName(p.provider))`,
+		`addr.appendChild(node('span', 'font-monospace', String(ip.ip || '')));`,
+		`node('span', 'badge me-1 ' + color, words`,
+		`node('div', 'font-monospace small csm-break-word', String(p.sample))`,
+		`td.textContent = formatDeferralCount(value);`,
 	} {
-		if !strings.Contains(text, fragment) {
-			t.Fatalf("email.js deliverability renderer missing escape fragment %q", fragment)
+		if !strings.Contains(block, fragment) {
+			t.Fatalf("email.js provider delays renderer missing text fragment %q", fragment)
 		}
 	}
 }
@@ -1523,7 +1534,7 @@ func TestEmailDeliverabilityCountsPreserveLargeValues(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(js)
-	start := strings.Index(text, "// ---------- Deliverability tab")
+	start := strings.Index(text, "// ---------- Provider delays tab")
 	end := strings.Index(text, "// ---------- Tab activation")
 	if start < 0 || end < start {
 		t.Fatal("email.js missing deliverability block")

@@ -12,7 +12,6 @@
     var _emailFindingsLoadSeq = 0;
     var forwardersLoaded = false;
     var _forwarders = [];
-    var deliverabilityLoaded = false;
     var outboundAbuseLoaded = false;
     var _outboundAbuseSeq = 0;
     var _abuse = null;   // the outbound abuse events listed for the range
@@ -820,12 +819,18 @@
     // The stats call reads the SMTP firewall settings and the last 500 log
     // lines, so it runs only once the Sending accounts tab opens.
     var statsLoaded = false;
+    var _statsSeq = 0;
 
     function loadEmailStats() {
         statsLoaded = true;
+        var seq = ++_statsSeq;
         CSM.get('/api/v1/email/stats')
-            .then(renderSMTPFirewall)
+            .then(function(data) {
+                if (seq !== _statsSeq) return;
+                renderSMTPFirewall(data);
+            })
             .catch(function(err) {
+                if (seq !== _statsSeq) return;
                 statsLoaded = false;
                 CSM.loadError(document.getElementById('email-sending-firewall'), loadEmailStats, { title: 'Failed to load the SMTP firewall', error: err });
             });
@@ -1323,6 +1328,12 @@
                     groups[c.kind].appendChild(checkOption(c.name));
                 });
                 checkEl.value = picked;
+                // A linked check the list does not name stays on offer, so
+                // the select names what the table filters on.
+                if (picked && checkEl.value !== picked) {
+                    checkEl.appendChild(checkOption(picked));
+                    checkEl.value = picked;
+                }
             })
             // The request toasts; the list keeps All email checks.
             .catch(checksReady);
@@ -1389,6 +1400,7 @@
             .then(function(data) {
                 if (seq !== _emailFindingsLoadSeq) return;
                 var findings = data.items;
+                setTabCount('findings', data.total);
                 renderFindingsTable(findings, 'No email findings ' + rangeWords(range));
                 var label = document.getElementById('email-total-label');
                 if (label) {
@@ -1400,6 +1412,7 @@
             })
             .catch(function(err) {
                 if (seq !== _emailFindingsLoadSeq) return;
+                setTabCount('findings', '?');
                 resetEmailFindingsTable();
                 clearEmailFindingsState();
                 CSM.loadError(document.getElementById('email-tbody'), loadFindings, { title: 'Failed to load email findings', error: err });
@@ -2219,7 +2232,7 @@
         if (key === _queueSummaryKey) return;
         _queueSummaryKey = key;
         if (size === 0) {
-            el.replaceChildren(node('div', 'fw-medium', text));
+            el.replaceChildren(buildEmpty('mailbox', text, ''));
             return;
         }
         var line = node('div', 'd-flex flex-wrap align-items-center gap-2');
@@ -2567,7 +2580,37 @@
         });
     });
 
-    // ---------- Deliverability tab (outbound deferral intel) ----------
+    // ---------- Provider delays tab (outbound deferral intel) ----------
+
+    // The deferrals come from the newest exim_mainlog lines. They are read
+    // with the page for the tab count, again whenever the tab opens, and
+    // every minute while it is open.
+    var _delaysSeq = 0;
+    // What the tables on screen show; an answer that shows the same leaves
+    // them, the open samples and the focus alone.
+    var _delaysSig = '';
+    var _delaysTables = {};
+
+    // Provider classes in plain words. The deferring MX host names the
+    // provider first, so Google and Microsoft include the business domains
+    // they host.
+    var DELAY_PROVIDERS = { gmail: 'Google', outlook: 'Microsoft', yahoo: 'Yahoo', external: 'Other domains', local: 'This server' };
+
+    // Reason codes in plain words, with the class that colors them: blocked
+    // red, rate limited amber, greylisted grey, the rest neutral. Any other
+    // code is a provider's own, such as Yahoo's TSS04, shown as it came.
+    var DELAY_REASONS = {
+        spamhaus: ['blocklisted (Spamhaus)', 'blocked'],
+        blocked: ['blocked', 'blocked'],
+        complaint: ['user complaints', 'blocked'],
+        rate_limit: ['rate limited', 'rate_limited'],
+        greylist: ['greylisted', 'greylisted'],
+        mailbox_full: ['mailbox full', 'mailbox_full'],
+        retry_wait: ['retry time not reached', 'retry_wait'],
+        host_not_found: ['server not found or unreachable', 'host_not_found'],
+        refused: ['refused', 'refused']
+    };
+    var DELAY_COLORS = { blocked: 'bg-red-lt', rate_limited: 'bg-yellow-lt', greylisted: 'bg-secondary-lt' };
 
     function deliverabilityArray(value) {
         return Array.isArray(value) ? value : [];
@@ -2588,85 +2631,191 @@
         return CSM.formatNumber(Math.floor(value));
     }
 
-    function reasonBadges(reasons) {
-        reasons = deliverabilityArray(reasons);
-        if (!reasons || reasons.length === 0) return '<span class="text-muted">--</span>';
-        var out = '';
-        for (var i = 0; i < reasons.length; i++) {
-            var r = reasons[i] || {};
-            out += '<span class="badge bg-secondary-lt me-1">' + CSM.esc(r.code) + ' &times;' + CSM.esc(formatDeferralCount(r.count)) + '</span>';
-        }
-        return out;
+    function providerName(provider) {
+        provider = String(provider || '');
+        return Object.prototype.hasOwnProperty.call(DELAY_PROVIDERS, provider) ? DELAY_PROVIDERS[provider] : provider;
     }
 
+    // reasonBadge words one reason and how often it came, colored by its
+    // class. No code stands for the deferrals no reason was read from.
+    function reasonBadge(code, count) {
+        var known = Object.prototype.hasOwnProperty.call(DELAY_REASONS, code) ? DELAY_REASONS[code] : null;
+        var words = known ? known[0] : code ? 'code ' + code : 'other';
+        var color = known && Object.prototype.hasOwnProperty.call(DELAY_COLORS, known[1]) ? DELAY_COLORS[known[1]] : 'badge-outline text-secondary';
+        return node('span', 'badge me-1 ' + color, words + (queueCount(count) > 1 ? ' (' + formatDeferralCount(count) + ')' : ''));
+    }
+
+    // reasonsCell lists why some deferrals happened, most often first.
+    function reasonsCell(reasons, deferrals) {
+        var td = queueCell('Reason', 'text-wrap');
+        var read = 0;
+        deliverabilityArray(reasons).forEach(function(r) {
+            r = r || {};
+            read += queueCount(r.count);
+            td.appendChild(reasonBadge(String(r.code || ''), r.count));
+        });
+        var rest = queueCount(deferrals) - read;
+        if (rest > 0) td.appendChild(reasonBadge('', rest));
+        return td;
+    }
+
+    function deferredCell(value) {
+        var td = queueCell('Deferred', 'text-end text-nowrap');
+        td.textContent = formatDeferralCount(value);
+        return td;
+    }
+
+    // lastSeenCell keeps its distance from the right-aligned count before
+    // it, apart from on phones, where the rows are cards.
+    function lastSeenCell(at) {
+        var td = queueCell('Last seen', 'text-nowrap ps-md-3');
+        if (at) td.textContent = CSM.fmtDate(at);
+        else td.appendChild(node('span', 'text-muted', '--'));
+        return td;
+    }
+
+    // providerDelayRows builds a provider's row and, when the log gave a
+    // sample error, the details row that shows it. Provider names, reason
+    // codes and the sample come from log lines a remote server's reply
+    // fills, so all of it is text.
+    function providerDelayRows(p) {
+        p = p || {};
+        var tr = node('tr');
+        tr.setAttribute('data-delay-key', 'provider:' + String(p.provider || ''));
+        tr.appendChild(rejectCell('Provider', providerName(p.provider)));
+        tr.appendChild(deferredCell(p.deferrals));
+        tr.appendChild(lastSeenCell(p.last_seen));
+        var why = reasonsCell(p.reasons, p.deferrals);
+        tr.appendChild(why);
+        if (!p.sample) return [tr];
+        var expand = node('button', 'btn btn-ghost-secondary btn-sm expand-btn');
+        expand.type = 'button';
+        expand.setAttribute('aria-expanded', 'false');
+        expand.setAttribute('aria-label', 'Expand details');
+        expand.title = 'Sample error';
+        expand.appendChild(node('i', 'ti ti-chevron-down'));
+        why.appendChild(expand);
+        var details = node('tr', 'details-row');
+        var td = node('td');
+        td.setAttribute('colspan', '4');
+        td.appendChild(node('div', 'subheader mb-1', 'Sample error'));
+        td.appendChild(node('div', 'font-monospace small csm-break-word', String(p.sample)));
+        details.appendChild(td);
+        return [tr, details];
+    }
+
+    // ipDelayRows builds one of this server's sending IPs: how often and
+    // when it was last deferred, by which providers and why.
+    function ipDelayRows(ip) {
+        ip = ip || {};
+        var tr = node('tr');
+        tr.setAttribute('data-delay-key', 'ip:' + String(ip.ip || ''));
+        var addr = queueCell('Sending IP', 'text-nowrap');
+        addr.appendChild(node('span', 'font-monospace', String(ip.ip || '')));
+        tr.appendChild(addr);
+        tr.appendChild(deferredCell(ip.deferrals));
+        tr.appendChild(lastSeenCell(ip.last_seen));
+        tr.appendChild(rejectCell('Deferred by', deliverabilityArray(ip.providers).map(function(item) {
+            item = item || {};
+            return providerName(item.provider) + ' ' + formatDeferralCount(item.count);
+        }).join(', ')));
+        tr.appendChild(reasonsCell(ip.reasons, ip.deferrals));
+        return [tr];
+    }
+
+    // loadDeliverability reads the deferrals. The tables have their own
+    // error state, so no toast repeats it.
     function loadDeliverability() {
-        if (deliverabilityLoaded) return;
-        deliverabilityLoaded = true;
-        CSM.get('/api/v1/email/deferrals')
-            .then(function(data) { renderDeliverability(data || {}); })
+        var seq = ++_delaysSeq;
+        CSM.get('/api/v1/email/deferrals', { silent: true })
+            .then(function(data) {
+                if (seq !== _delaysSeq) return;
+                renderDeliverability(data || {});
+            })
             .catch(function(err) {
-                deliverabilityLoaded = false;
-                ['email-deliv-providers-body', 'email-deliv-ips-body'].forEach(function(id) {
-                    CSM.loadError(document.getElementById(id), loadDeliverability, { title: 'Failed to load deferral activity', error: err });
+                if (seq !== _delaysSeq) return;
+                _delaysSig = '';
+                setTabCount('delays', '?');
+                var summary = document.getElementById('email-deliv-summary');
+                if (summary) summary.textContent = 'Deferral activity unavailable.';
+                var scope = document.getElementById('email-deliv-scope');
+                if (scope) scope.textContent = '';
+                ['email-deliv-providers', 'email-deliv-ips'].forEach(function(id) {
+                    resetDelaysTable(id);
+                    CSM.loadError(document.getElementById(id + '-body'), loadDeliverability, { title: 'Failed to load deferral activity', error: err });
                 });
             });
     }
 
-    function setRowMessage(tbodyID, cols, msg) {
-        var tb = document.getElementById(tbodyID);
-        if (tb) emptyRow(tb, cols, 'circle-check', msg, '');
+    function resetDelaysTable(id) {
+        if (_delaysTables[id]) _delaysTables[id].destroy();
+        _delaysTables[id] = null;
     }
 
+    // renderDeliverability counts the providers deferring now on the tab,
+    // says how much was deferred over which log lines, and lists the
+    // providers and this server's sending IPs.
     function renderDeliverability(data) {
-        data = data || {};
         var providers = deliverabilityArray(data.providers);
         var ips = deliverabilityArray(data.outbound_ips);
-        var total = formatDeferralCount(data.deferrals);
-
+        setTabCount('delays', providers.length);
         var summary = document.getElementById('email-deliv-summary');
         if (summary) {
-            summary.textContent = total === '0'
-                ? 'No outbound deferrals seen in the recent log window.'
-                : total + ' outbound deferral(s) across ' + providers.length + ' provider(s) and ' + ips.length + ' sending IP(s).';
+            var n = queueCount(data.deferrals);
+            summary.textContent = n === 0 ? 'No outbound deferrals seen in the recent log window.'
+                : formatDeferralCount(data.deferrals) + (n === 1 ? ' outbound deferral' : ' outbound deferrals') + ' across ' +
+                    plural(providers.length, 'provider') + ' and ' + plural(ips.length, 'sending IP') + '.';
         }
+        var scope = document.getElementById('email-deliv-scope');
+        if (scope) {
+            var lines = queueCount(data.lines);
+            scope.textContent = lines === 0 ? 'No mail log lines read.'
+                : 'From the last ' + formatDeferralCount(data.lines) + (lines === 1 ? ' log line' : ' log lines') +
+                    (data.window_start ? ' (since ' + CSM.fmtDate(data.window_start) + ')' : '');
+        }
+        var sig = JSON.stringify([providers, ips]);
+        if (sig === _delaysSig) return;
+        _delaysSig = sig;
+        fillDelays('email-deliv-providers', providers, 4, 'No providers are deferring mail from this server.', providerDelayRows);
+        fillDelays('email-deliv-ips', ips, 5, 'No sending IP has been deferred.', ipDelayRows);
+    }
 
-        if (providers.length === 0) {
-            setRowMessage('email-deliv-providers-body', 3, 'No providers are deferring mail from this server.');
-        } else {
-            var ph = '';
-            for (var i = 0; i < providers.length; i++) {
-                var p = providers[i] || {};
-                ph += '<tr>';
-                ph += '<td>' + providerBadge(p.provider) + '</td>';
-                ph += '<td class="text-end">' + CSM.esc(formatDeferralCount(p.deferrals)) + '</td>';
-                ph += '<td>' + reasonBadges(p.reasons) + '</td>';
-                ph += '</tr>';
-            }
-            var pb = document.getElementById('email-deliv-providers-body');
-            if (pb) pb.innerHTML = ph;
+    // fillDelays draws one table again. A sample open before stays open,
+    // and its focused expand button gets the focus back.
+    function fillDelays(id, list, cols, empty, rowsOf) {
+        var tbody = document.getElementById(id + '-body');
+        if (!tbody) return;
+        var open = {};
+        tbody.querySelectorAll('.expand-btn[aria-expanded="true"]').forEach(function(btn) {
+            open[btn.closest('tr').getAttribute('data-delay-key')] = true;
+        });
+        var active = document.activeElement;
+        var focused = active && tbody.contains(active) && active.classList.contains('expand-btn') ? active.closest('tr').getAttribute('data-delay-key') : null;
+        resetDelaysTable(id);
+        if (list.length === 0) {
+            emptyRow(tbody, cols, 'circle-check', empty, '');
+            return;
         }
-
-        if (ips.length === 0) {
-            setRowMessage('email-deliv-ips-body', 3, 'No sending IP has been deferred.');
-        } else {
-            var ih = '';
-            for (var j = 0; j < ips.length; j++) {
-                var ip = ips[j] || {};
-                var by = '';
-                var byList = deliverabilityArray(ip.providers);
-                for (var k = 0; k < byList.length; k++) {
-                    var item = byList[k] || {};
-                    by += providerBadge(item.provider) + '<span class="text-muted small me-2">&times;' + CSM.esc(formatDeferralCount(item.count)) + '</span>';
-                }
-                ih += '<tr>';
-                ih += '<td class="font-monospace small">' + CSM.esc(ip.ip) + '</td>';
-                ih += '<td class="text-end">' + CSM.esc(formatDeferralCount(ip.deferrals)) + '</td>';
-                ih += '<td>' + (by || '<span class="text-muted">--</span>') + '</td>';
-                ih += '</tr>';
-            }
-            var ib = document.getElementById('email-deliv-ips-body');
-            if (ib) ib.innerHTML = ih;
-        }
+        tbody.replaceChildren();
+        list.forEach(function(item) {
+            rowsOf(item).forEach(function(tr) { tbody.appendChild(tr); });
+        });
+        _delaysTables[id] = new CSM.Table({
+            tableId: id,
+            perPage: 0,
+            controls: false,
+            search: false,
+            sortable: false,
+            detailRows: true,
+            mobileRowCard: true
+        });
+        tbody.querySelectorAll('tr[data-delay-key]').forEach(function(tr) {
+            var btn = tr.querySelector('.expand-btn');
+            if (!btn) return;
+            var key = tr.getAttribute('data-delay-key');
+            if (open[key]) CSM.toggleDetailRow(btn);
+            if (key === focused) btn.focus();
+        });
     }
 
     // ---------- Outbound abuse events (Sending accounts tab) ----------
@@ -2781,7 +2930,9 @@
                 queueCompositionLoaded = false;
                 _queueFlushable = 0;
                 renderQueueSummary();
-                CSM.loadError(document.getElementById('queue-composition'), loadQueueComposition, { title: 'Failed to load queue composition', error: err });
+                var el = document.getElementById('queue-composition');
+                if (el) el.parentElement.hidden = false;
+                CSM.loadError(el, loadQueueComposition, { title: 'Failed to load queue composition', error: err });
             });
     }
 
@@ -2798,8 +2949,10 @@
         var el = document.getElementById('queue-composition');
         if (!el) return;
         var total = queueCount(data.total);
+        // The summary line says once that the queue is empty.
+        el.parentElement.hidden = total === 0;
         if (total === 0) {
-            el.replaceChildren(buildEmpty('mailbox', 'The mail queue is empty', ''));
+            el.replaceChildren();
             return;
         }
         var bounce = queueCount(data.bounce);
@@ -2977,9 +3130,10 @@
     }
 
     // loadTab loads what a tab shows the first time it opens; force loads
-    // it again. Queue, Held mail, Rejects and the sending accounts read
-    // again whenever they open. Overview, Findings and the Held mail and
-    // Sending accounts counts load with the page.
+    // it again. Queue, Held mail, Rejects, Provider delays and the sending
+    // accounts read again whenever they open. Overview, Findings and the
+    // Held mail, Sending accounts and Provider delays counts load with the
+    // page.
     function loadTab(id, force) {
         if (id === 'sending') {
             if (force || !statsLoaded) loadEmailStats();
@@ -2996,7 +3150,6 @@
         } else if (id === 'rejects') {
             loadRejects();
         } else if (id === 'delays') {
-            if (force) deliverabilityLoaded = false;
             loadDeliverability();
         }
     }
@@ -3092,15 +3245,15 @@
             loadFindings();
             statsLoaded = false;
             forwardersLoaded = false;
-            deliverabilityLoaded = false;
             outboundAbuseLoaded = false;
             _abuse = null;
             ++_outboundAbuseSeq;
             queueCompositionLoaded = false;
-            // Held mail and the sending accounts read again on any tab, for
-            // their counts.
+            // Held mail, the sending accounts and the provider delays read
+            // again on any tab, for their counts.
             if (activeTab('email-tabs') !== 'held') loadHeldMail();
             if (activeTab('email-tabs') !== 'sending') loadSenders();
+            if (activeTab('email-tabs') !== 'delays') loadDeliverability();
             loadTab(activeTab('email-tabs'), true);
         });
     }
@@ -3134,16 +3287,18 @@
     loadActionGroups();
     loadEmailChecks();
     loadFindings();
-    // The Held mail and Sending accounts counts show on every tab; an open
-    // tab has read its own already.
+    // The Held mail, Sending accounts and Provider delays counts show on
+    // every tab; an open tab has read its own already.
     if (startTab.name !== 'held') loadHeldMail();
     if (startTab.name !== 'sending') loadSenders();
+    if (startTab.name !== 'delays') loadDeliverability();
 
     // Polling while the tab is visible: the numbers and the queue every 30 s
     // (with the SMTP firewall while Sending accounts is open,
     // and the queued messages while Queue is open),
     // rspamd and AV every 60 s (rspamd's own figures are cached that long,
-    // with held mail while Held mail is open),
+    // with held mail while Held mail is open, and the deferrals while
+    // Provider delays is open),
     // and the groups every 60 s (with the rejects while Rejects is open,
     // and the accounts and abuse events while Sending accounts is open:
     // each walks the history of the range, as the groups do).
@@ -3166,6 +3321,7 @@
                 loadRspamd();
                 loadAVStatus();
                 if (activeTab('email-tabs') === 'held') loadHeldMail();
+                if (activeTab('email-tabs') === 'delays') loadDeliverability();
             } catch(e) {}
         }, 60000));
         _emailIntervals.push(CSM.refresh.interval(function() {
