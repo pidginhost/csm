@@ -192,9 +192,13 @@ func (s *Server) msglogReason(id string) (intel.StuckReason, []string) {
 	return reason, lines
 }
 
-// queueReason corrects what the msglog cannot know: a message thawed since it
-// froze is waiting for its next delivery attempt.
+// queueReason corrects what the msglog cannot know: a message exim cannot
+// read is stuck for that reason, and a message thawed since it froze is
+// waiting for its next delivery attempt.
 func queueReason(m intel.QueueMessage, r intel.StuckReason) intel.StuckReason {
+	if m.Unreadable != "" {
+		return intel.StuckReason{Class: "unreadable", Text: "exim cannot read this message", Raw: m.Unreadable}
+	}
 	if r.Class == "frozen" && !m.Frozen {
 		r.Class, r.Text = "retry_wait", "thawed, waiting for the next delivery attempt"
 	}

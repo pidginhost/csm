@@ -271,42 +271,45 @@ func TestParseQueueMalformedHeaderDoesNotLeakRecipients(t *testing.T) {
 	}
 }
 
-func TestEximQueueSourceCompositionReturnsEmptyOnCommandError(t *testing.T) {
-	src := &EximQueueSource{run: func() ([]byte, error) {
-		return nil, errors.New("exim unavailable")
-	}}
-
+// A message exim cannot read is counted as unreadable, apart from real mail
+// and backscatter, since its envelope is unknown; a listing that holds one is
+// still the whole queue.
+func TestEximQueueSourceCountsUnreadable(t *testing.T) {
+	unreadable := "      1tAbCd-000002-Ab\n    *** spool read error: Permission denied ***\n\n"
+	noData := " 5m       1tAbCd-000005-Ab <> *** frozen ***\n          bounce@example.com\n\n"
+	src := &EximQueueSource{run: func() ([]byte, error) { return []byte(eximBpSampleNewID + unreadable + noData), nil }}
+	before, err := ParseQueue(eximBpSampleNewID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	c, err := src.Composition()
 	if err != nil {
-		t.Fatalf("Composition returned error: %v", err)
+		t.Fatalf("Composition: %v", err)
 	}
-	if c.Total != 0 || c.Bounce != 0 || c.Real != 0 || c.Frozen != 0 {
-		t.Fatalf("composition = %+v, want empty on command error", c)
+	if c.Total != before.Total+2 || c.Unreadable != 2 || c.Real != before.Real || c.Bounce != before.Bounce+1 {
+		t.Errorf("composition = %+v, want two more messages, both unreadable, one a bounce (before %+v)", c, before)
 	}
-	if c.TopRecipients == nil {
-		t.Fatal("TopRecipients must be a non-nil empty slice")
+	// A frozen bounce without its data file is not flushed as backscatter.
+	if c.FlushableBackscatter != before.FlushableBackscatter {
+		t.Errorf("flushable = %d, want %d", c.FlushableBackscatter, before.FlushableBackscatter)
+	}
+	if ids := FrozenBackscatterIDs(noData); len(ids) != 0 {
+		t.Errorf("flush targets = %v, want none", ids)
+	}
+	// A message delivered while exim listed it is not a read failure.
+	gone := eximBpSampleNewID + "      1tAbCd-000002-Ab\n    *** spool read error: No such file or directory ***\n"
+	src = &EximQueueSource{run: func() ([]byte, error) { return []byte(gone), nil }}
+	if c, err := src.Composition(); err != nil || c.Total != before.Total || c.Unreadable != 0 {
+		t.Errorf("listing with a delivered message: Composition = %+v, %v; want the readable messages counted", c, err)
 	}
 }
 
-// A listing with a spool header exim could not read is neither the whole
-// queue nor an empty one. The composition reports an error, as the queue
-// list reports the listing unavailable, instead of counting what it read.
-func TestEximQueueSourceCompositionFailsOnSpoolReadError(t *testing.T) {
-	unreadable := "   0 1tAbCd-000002-Ab\n    *** spool read error: Permission denied ***\n"
-	for name, out := range map[string]string{
-		"among readable messages": eximBpSampleNewID + unreadable,
-		"alone":                   unreadable,
-	} {
-		src := &EximQueueSource{run: func() ([]byte, error) { return []byte(out), nil }}
-		if c, err := src.Composition(); err == nil {
-			t.Errorf("%s: Composition = %+v with no error, want an error", name, c)
-		}
-	}
-	// A message delivered while exim listed it is not a read failure.
-	gone := eximBpSampleNewID + "   0 1tAbCd-000002-Ab\n    *** spool read error: No such file or directory ***\n"
-	src := &EximQueueSource{run: func() ([]byte, error) { return []byte(gone), nil }}
-	if c, err := src.Composition(); err != nil || c.Total == 0 {
-		t.Errorf("listing with a delivered message: Composition = %+v, %v; want the readable messages counted", c, err)
+// exim failing to list the queue says nothing about the queue: an empty
+// composition would read as an empty queue.
+func TestEximQueueSourceFailsWhenEximFails(t *testing.T) {
+	src := &EximQueueSource{run: func() ([]byte, error) { return nil, errors.New("exim: exit status 1") }}
+	if c, err := src.Composition(); err == nil {
+		t.Errorf("Composition = %+v with no error, want an error", c)
 	}
 }
 

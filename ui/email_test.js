@@ -1836,6 +1836,29 @@ test('Thaw shows only on frozen messages', async () => {
     assert.deepEqual(actions(QID[1]), ['retry', 'bounce', 'delete']);
 });
 
+test('a message exim cannot read shows why, an unknown size and only Delete', async () => {
+    const page = await queuePage([
+        queueMsg(QID[0], { sender: '', size: 0, recipients: [], recipient_count: 0, unreadable: 'spool format error: size=37',
+            reason: { class: 'unreadable', text: 'exim cannot read this message', raw: 'spool format error: size=37' } }),
+        queueMsg(QID[1], { size: 0, frozen: true, unreadable: 'spool data file missing',
+            reason: { class: 'unreadable', text: 'exim cannot read this message', raw: 'spool data file missing' } })
+    ]);
+    const [envelopeless, noData] = queueRows(page).map(r => Array.from(r.children).slice(0, 6).map(flat));
+    assert.deepEqual(envelopeless, ['30m', '--', '--', '--', 'exim cannot read this message', 'Unreadable']);
+    assert.deepEqual(noData, ['30m', 'shop@example.com', 'first@example.net', '--', 'exim cannot read this message', 'Unreadable']);
+    for (const id of QID.slice(0, 2)) {
+        assert.deepEqual(Array.from(queueRow(page, id).querySelectorAll('[data-queue-action]')).map(b => b.getAttribute('data-queue-action')), ['delete']);
+    }
+});
+
+test('the queue composition counts messages exim cannot read', async () => {
+    const page = await queuePage([queueMsg(QID[0])]);
+    page.respond('/api/v1/email/queue-composition', 200, { total: 3, real: 1, bounce: 1, frozen: 0, flushable_backscatter: 0, unreadable: 1, top_recipients: [] });
+    await settle();
+    const comp = flat(page.document.getElementById('queue-composition'));
+    assert.match(comp, /Unreadable\s*1/);
+});
+
 test('an unreadable queue says the size is unknown, with Retry', async () => {
     const page = emailPage();
     showEmailTab(page, 'queue');

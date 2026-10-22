@@ -2476,9 +2476,11 @@
         if (m.arrived) age.title = 'Arrived ' + CSM.fmtDate(m.arrived);
         tr.appendChild(age);
 
+        // A message exim cannot read may have no envelope: no sender at all.
         var from = queueCell('From', 'csm-break-word');
-        if (m.bounce || !m.sender) from.appendChild(node('span', 'badge bg-secondary-lt', 'bounce'));
-        else from.appendChild(node('span', null, m.sender));
+        if (m.bounce) from.appendChild(node('span', 'badge bg-secondary-lt', 'bounce'));
+        else if (m.sender) from.appendChild(node('span', null, m.sender));
+        else from.appendChild(node('span', 'text-muted', '--'));
         if (m.local_user) {
             var user = node('span', 'text-muted small', ' (' + m.local_user + ')');
             user.title = 'Sent by local user ' + m.local_user;
@@ -2497,8 +2499,10 @@
         }
         tr.appendChild(to);
 
+        // exim leaves the size blank when it cannot read the data file.
         var size = queueCell('Size', 'text-nowrap');
-        size.textContent = CSM.formatSize(m.size);
+        if (m.size > 0) size.textContent = CSM.formatSize(m.size);
+        else size.appendChild(node('span', 'text-muted', '--'));
         tr.appendChild(size);
 
         var why = queueCell('Why stuck', 'text-wrap');
@@ -2514,12 +2518,15 @@
         tr.appendChild(why);
 
         var state = queueCell('State');
-        state.appendChild(m.frozen ? node('span', 'badge bg-azure-lt', 'Frozen') : node('span', 'text-muted', 'Queued'));
+        if (m.unreadable) state.appendChild(node('span', 'badge bg-red-lt', 'Unreadable'));
+        else state.appendChild(m.frozen ? node('span', 'badge bg-azure-lt', 'Frozen') : node('span', 'text-muted', 'Queued'));
         tr.appendChild(state);
 
+        // exim can only remove a message it cannot read.
+        var names = m.unreadable ? ['delete'] : (m.frozen ? ['thaw'] : []).concat(['retry', 'bounce', 'delete']);
         var actions = queueCell('Actions', 'text-end');
         var buttons = node('div', 'btn-list justify-content-end flex-nowrap');
-        (m.frozen ? ['thaw'] : []).concat(['retry', 'bounce', 'delete']).forEach(function(name) {
+        names.forEach(function(name) {
             var a = QUEUE_ACTIONS[name];
             var btn = node('button', 'btn btn-sm ' + (a.danger ? 'btn-ghost-danger' : 'btn-ghost-secondary'), a.label);
             btn.type = 'button';
@@ -3152,7 +3159,7 @@
         renderQueueSummary();
         var el = document.getElementById('queue-composition');
         if (!el) return;
-        var sig = JSON.stringify([data.total, data.bounce, data.real, data.frozen, data.top_recipients]);
+        var sig = JSON.stringify([data.total, data.bounce, data.real, data.frozen, data.unreadable, data.top_recipients]);
         if (sig === _queueCompositionSig) return;
         _queueCompositionSig = sig;
         var total = queueCount(data.total);
@@ -3171,6 +3178,8 @@
         html += metricCol('Real mail', CSM.formatNumber(real), 'text-success');
         html += metricCol('Backscatter', CSM.formatNumber(bounce) + ' (' + bouncePct + '%)', bounce > 0 ? 'text-danger' : 'text-muted');
         html += metricCol('Frozen', CSM.formatNumber(frozen), frozen > 0 ? 'text-warning' : 'text-muted');
+        var unreadable = queueCount(data.unreadable);
+        if (unreadable > 0) html += metricCol('Unreadable', CSM.formatNumber(unreadable), 'text-danger');
         html += '</div>';
 
         // Count first, then the address, in a table as wide as its text.

@@ -123,6 +123,10 @@ func (a *EximQueueAdmin) Act(action, id string) (string, error) {
 	if err != nil {
 		return OutcomeUnchanged, fmt.Errorf("read the message before acting: %w", err)
 	}
+	if before.Unreadable != "" && action != "delete" {
+		// exim refuses every other action on a message it cannot read.
+		return OutcomeUnchanged, fmt.Errorf("exim cannot read this message (%s); only delete works on it", before.Unreadable)
+	}
 	if action == "thaw" && !before.Frozen {
 		// A stale list, auto_thaw or another admin: nothing to thaw.
 		return OutcomeUnchanged, nil

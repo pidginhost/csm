@@ -151,6 +151,7 @@ func (w *eximWorld) run(ctx context.Context, name string, args ...string) ([]byt
 		return []byte(formatEntry(argv[2], *w.queue[argv[2]])), nil
 	case argv[1] == "-Mrm", argv[1] == "-Mg":
 		delete(w.queue, argv[2])
+		delete(w.bpAnswer, argv[2])
 		return nil, w.actionErr
 	case argv[1] == "-Mt":
 		if m, ok := w.queue[argv[2]]; ok {
@@ -456,9 +457,9 @@ func TestQueueListUnavailable(t *testing.T) {
 	for name, setup := range map[string]func(*eximWorld){
 		"exim fails":      func(w *eximWorld) { w.listFails = true },
 		"listing garbled": func(w *eximWorld) { w.listOutput = "exim: unexpected reply\n" },
-		"partial listing": func(w *eximWorld) {
+		"spool error under no message": func(w *eximWorld) {
 			w.listOutput = formatEntry(qMid, worldMessage{sender: "sender@example.com"}) +
-				"   0 " + qNew + "\n    *** spool read error: Permission denied ***\n"
+				"    *** spool read error: Permission denied ***\n"
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -481,6 +482,64 @@ func TestQueueListUnavailable(t *testing.T) {
 		world.listFails = true
 		assertQueueUnknown(t, s, admin)
 	})
+}
+
+// A message exim cannot read is listed with why, so the operator can delete
+// it, and the rest of the queue still lists.
+func TestQueueListShowsUnreadableMessage(t *testing.T) {
+	world := newEximWorld(t)
+	world.listOutput = formatEntry(qMid, worldMessage{sender: "sender@example.com", recipients: []string{"rcpt@example.net"}}) +
+		"      " + qNew + "\n    *** spool read error: Permission denied ***\n\n"
+	s, _, _ := queueServer(t, world)
+
+	body := getQueueList(t, s, "")
+	if body.Unavailable || body.Queued == nil || *body.Queued != 2 || len(body.Items) != 2 {
+		t.Fatalf("list = %+v, want both messages", body)
+	}
+	want := intel.StuckReason{Class: "unreadable", Text: "exim cannot read this message", Raw: "spool read error: Permission denied"}
+	for _, it := range body.Items {
+		switch it.ID {
+		case qNew:
+			if it.Unreadable != want.Raw || it.Reason != want {
+				t.Errorf("unreadable item = %+v, reason %+v", it.QueueMessage, it.Reason)
+			}
+		case qMid:
+			if it.Unreadable != "" || it.Reason.Class == "unreadable" {
+				t.Errorf("readable item = %+v, reason %+v", it.QueueMessage, it.Reason)
+			}
+		}
+	}
+}
+
+// exim refuses every action but removal on a message it cannot read, so CSM
+// does not run them and says why.
+func TestQueueActionsOnUnreadableMessage(t *testing.T) {
+	for _, action := range []string{"retry", "bounce", "thaw"} {
+		t.Run(action, func(t *testing.T) {
+			world := newEximWorld(t)
+			world.add(qMid, worldMessage{})
+			world.bpAnswer[qMid] = "      " + qMid + "\n    *** spool format error: size=37 ***\n\n"
+			s, _, _ := queueServer(t, world)
+			w := queueRequest(t, s, http.MethodPost, "/api/v1/email/queue/"+qMid+"/"+action)
+			if w.Code != http.StatusInternalServerError || !strings.Contains(w.Body.String(), "only delete") {
+				t.Errorf("status %d body %s, want 500 saying only delete works", w.Code, w.Body.String())
+			}
+			for _, flag := range []string{"-M", "-Mg", "-Mt"} {
+				if runs := world.runs(flag); len(runs) != 0 {
+					t.Errorf("%s ran on an unreadable message: %v", flag, runs)
+				}
+			}
+		})
+	}
+
+	world := newEximWorld(t)
+	world.add(qMid, worldMessage{})
+	world.bpAnswer[qMid] = "      " + qMid + "\n    *** spool format error: size=37 ***\n\n"
+	s, _, _ := queueServer(t, world)
+	w := queueRequest(t, s, http.MethodPost, "/api/v1/email/queue/"+qMid+"/delete")
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"outcome":"removed"`) {
+		t.Errorf("delete: status %d body %s, want 200 removed", w.Code, w.Body.String())
+	}
 }
 
 // assertQueueUnknown checks that the list says the queue is unknown and

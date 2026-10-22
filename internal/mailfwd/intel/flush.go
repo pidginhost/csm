@@ -26,10 +26,11 @@ type QueueFlusher interface {
 // AND null-sender (<>) in `exim -bp` output. This is the only set the flush
 // touches: a frozen null-sender message is undeliverable bounce backscatter,
 // so removing it cannot lose a real sender's mail or interrupt a live retry.
+// A message exim could not fully read is left for the operator.
 func FrozenBackscatterIDs(out string) []string {
 	var ids []string
 	for _, line := range strings.Split(out, "\n") {
-		if m, ok := parseQueueHeader(line); ok && m.Bounce && m.Frozen {
+		if m, ok := parseQueueHeader(line); ok && m.Bounce && m.Frozen && m.Unreadable == "" {
 			ids = append(ids, m.ID)
 		}
 	}
