@@ -147,6 +147,7 @@
       "htaccess_injection",
       "htaccess_injection_realtime",
       "htaccess_php_in_uploads",
+      "htaccess_rewrite_off_shield",
       "htaccess_security_disabled",
       "htaccess_spam_redirect",
       "htaccess_user_agent_cloak",

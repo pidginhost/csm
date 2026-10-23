@@ -1,0 +1,218 @@
+[
+  {
+    "name": "protected members joined into HTML-mode eval",
+    "rule": "backdoor_archive_loader",
+    "want": true,
+    "sample": "<?php $bundle = new ZipArchive;\nif ($bundle->open(\"assets.dat\") === TRUE) {\n    $bundle->setPassword(\"example-pass\");\n    $parts = array();\n    for ($n = 0; $n < $bundle->numFiles; $n++) {\n        $parts[$bundle->getNameIndex($n)] = $bundle->getFromIndex($n);\n    }\n    ksort($parts, SORT_NATURAL);\n    $body = implode(\"\", $parts);\n    EvAl(\"?>\" . $body) ;\n    $bundle->close();\n}"
+  },
+  {
+    "name": "member read inside eval",
+    "rule": "backdoor_archive_loader",
+    "want": true,
+    "sample": "<?php\n$a = new ZipArchive();\n$a->open(__DIR__ . '/cache.bin');\neval('?>' . $a->getFromName('main.php'));"
+  },
+  {
+    "name": "member read inside assert",
+    "rule": "backdoor_archive_loader",
+    "want": true,
+    "sample": "<?php\n$a = new ZipArchive();\n$a->open('cache.bin');\nassert($a->getFromName('init'));"
+  },
+  {
+    "name": "member stream read into HTML-mode eval",
+    "rule": "backdoor_archive_loader",
+    "want": true,
+    "sample": "<?php\n$a = new ZipArchive();\n$a->open('cache.bin');\n$h = $a->getStream('main.php');\n$src = stream_get_contents($h);\neval('?>' . $src);"
+  },
+  {
+    "name": "zip wrapper read inside eval",
+    "rule": "backdoor_archive_loader",
+    "want": true,
+    "sample": "<?php eval('?>' . file_get_contents('zip://' . __DIR__ . '/cache.bin#main.php'));"
+  },
+  {
+    "name": "phar wrapper read inside eval",
+    "rule": "backdoor_archive_loader",
+    "want": true,
+    "sample": "<?php eval(file_get_contents(\"phar://\" . __DIR__ . \"/cache.phar/run\"));"
+  },
+  {
+    "name": "protected member read run without HTML mode",
+    "rule": "backdoor_archive_loader",
+    "want": true,
+    "sample": "<?php\n$a = new ZipArchive();\nif ($a->open('cache.bin') === true) {\n    $a->setPassword($key);\n    $src = $a->getFromName('core.txt');\n    eval($src);\n}"
+  },
+  {
+    "name": "extraction to disk",
+    "rule": "backdoor_archive_loader",
+    "want": false,
+    "sample": "<?php\nfunction example_unzip($file, $to) {\n    $z = new ZipArchive();\n    if (true !== $z->open($file, ZipArchive::CHECKCONS)) {\n        return false;\n    }\n    for ($i = 0; $i < $z->numFiles; $i++) {\n        $info = $z->statIndex($i);\n        $contents = $z->getFromIndex($i);\n        if (false === $contents) {\n            return false;\n        }\n        file_put_contents($to . $info['name'], $contents);\n    }\n    $z->close();\n    return true;\n}"
+  },
+  {
+    "name": "data member parsed as XML",
+    "rule": "backdoor_archive_loader",
+    "want": false,
+    "sample": "<?php\n$z = new ZipArchive();\n$z->open($path);\n$xml = simplexml_load_string($z->getFromName('xl/workbook.xml'));"
+  },
+  {
+    "name": "encrypted backup writer",
+    "rule": "backdoor_archive_loader",
+    "want": false,
+    "sample": "<?php\n$z = new ZipArchive();\n$z->open($target, ZipArchive::CREATE);\n$z->setPassword($secret);\n$z->addFile($dump, 'db.sql');\n$z->setEncryptionName('db.sql', ZipArchive::EM_AES_256);\n$manifest = json_decode($z->getFromName('manifest.json'), true);\nassert(is_array($manifest));\n$z->close();"
+  },
+  {
+    "name": "template engine with a token stream",
+    "rule": "backdoor_archive_loader",
+    "want": false,
+    "sample": "<?php\nfinal class Environment {\n    public function load($name) {\n        $stream = $this->parser->getStream();\n        $content = $this->compileSource($stream);\n        eval('?>' . $content);\n    }\n}"
+  },
+  {
+    "name": "local template file evaluated",
+    "rule": "backdoor_archive_loader",
+    "want": false,
+    "sample": "<?php\n$template = file_get_contents(__DIR__ . '/views/page.tpl');\neval('?>' . $template);"
+  },
+  {
+    "name": "include without parentheses",
+    "rule": "dropper_php_stream_wrapper",
+    "want": true,
+    "sample": "<?php include 'zip://' . __DIR__ . '/cache.bin#main.php';"
+  },
+  {
+    "name": "require_once with parentheses",
+    "rule": "dropper_php_stream_wrapper",
+    "want": true,
+    "sample": "<?php require_once(\"zip://cache.bin#main.php\");"
+  },
+  {
+    "name": "include_once without parentheses",
+    "rule": "dropper_php_stream_wrapper",
+    "want": true,
+    "sample": "<?php include_once \"zip://cache.bin#main.php\";"
+  },
+  {
+    "name": "archive read after a completed eval",
+    "rule": "backdoor_archive_loader",
+    "want": false,
+    "sample": "<?php $out = eval($local) . $z->getFromName('data.txt');"
+  },
+  {
+    "name": "archive read after eval in a previous function",
+    "rule": "backdoor_archive_loader",
+    "want": false,
+    "sample": "<?php function render() { return eval($local); } function unpack() { return $z->getFromName('data.txt'); }"
+  },
+  {
+    "name": "assertion checks a parsed data member",
+    "rule": "backdoor_archive_loader",
+    "want": false,
+    "sample": "<?php assert(is_array(json_decode($z->getFromName('manifest.json'), true)));"
+  },
+  {
+    "name": "assertion compares a data member",
+    "rule": "backdoor_archive_loader",
+    "want": false,
+    "sample": "<?php assert($z->getFromName('manifest.json') !== false);"
+  },
+  {
+    "name": "assertion executes archive bytes",
+    "rule": "backdoor_archive_loader",
+    "want": true,
+    "sample": "<?php assert($z->getFromName('init'));"
+  },
+  {
+    "name": "nested member read executed",
+    "rule": "backdoor_archive_loader",
+    "want": true,
+    "sample": "<?php EvAl(gzinflate($z->getFromName('code')));"
+  },
+  {
+    "name": "nested stream read executed",
+    "rule": "backdoor_archive_loader",
+    "want": true,
+    "sample": "<?php eval(stream_get_contents($z->getStream('code')));"
+  },
+  {
+    "name": "function body read from archive",
+    "rule": "backdoor_archive_loader",
+    "want": true,
+    "sample": "<?php create_function('', $z->getFromName('code'));"
+  },
+  {
+    "name": "function parameters read from archive",
+    "rule": "backdoor_archive_loader",
+    "want": true,
+    "sample": "<?php create_function($z->getFromName('parameters.txt'), 'return 1;');"
+  },
+  {
+    "name": "composer phar loader",
+    "rule": "backdoor_archive_loader",
+    "want": false,
+    "sample": "<?php require 'phar://' . __DIR__ . '/composer.phar/vendor/autoload.php';"
+  },
+  {
+    "name": "phpunit generated class",
+    "rule": "backdoor_archive_loader",
+    "want": false,
+    "sample": "<?php eval($generatedClass);"
+  },
+  {
+    "name": "laravel view compiler",
+    "rule": "backdoor_archive_loader",
+    "want": false,
+    "sample": "<?php $compiled = $compiler->compileString($view); eval('?>' . $compiled);"
+  },
+  {
+    "name": "assertion executes decoded archive bytes",
+    "rule": "backdoor_archive_loader",
+    "want": true,
+    "sample": "<?php assert(gzinflate($z->getFromName('code')));"
+  },
+  {
+    "name": "assertion checks decoded archive bytes",
+    "rule": "backdoor_archive_loader",
+    "want": false,
+    "sample": "<?php assert(gzinflate($z->getFromName('code')) !== false);"
+  },
+  {
+    "name": "assertion executes a member stream",
+    "rule": "backdoor_archive_loader",
+    "want": true,
+    "sample": "<?php assert(stream_get_contents($z->getStream('code')));"
+  },
+  {
+    "name": "function parameter string contains comma",
+    "rule": "backdoor_archive_loader",
+    "want": true,
+    "sample": "<?php create_function('$first, ' . $z->getFromName('parameters.txt'), 'return 1;');"
+  },
+  {
+    "name": "function body with parameter list",
+    "rule": "backdoor_archive_loader",
+    "want": true,
+    "sample": "<?php create_function('$first, $second', $z->getFromName('code'));"
+  },
+  {
+    "name": "untyped numeric stream accessor",
+    "rule": "backdoor_archive_loader",
+    "want": false,
+    "sample": "<?php assert(stream_get_contents($object->getStream(1)));"
+  },
+  {
+    "name": "archive eval after a balanced prefix call",
+    "rule": "backdoor_archive_loader",
+    "want": true,
+    "sample": "<?php eval(trim($prefix) . $z->getFromName('code'));"
+  },
+  {
+    "name": "archive function body after computed parameters",
+    "rule": "backdoor_archive_loader",
+    "want": true,
+    "sample": "<?php create_function(get_parameters(), $z->getFromName('code'));"
+  },
+  {
+    "name": "archive read after completed function creation",
+    "rule": "backdoor_archive_loader",
+    "want": false,
+    "sample": "<?php $result = create_function('', 'return 1;') . $z->getFromName('data');"
+  }
+]

@@ -271,6 +271,11 @@ var htaccessDetectors = []htaccessDetector{
 		DetectContext: detectFilesMatchShieldContext,
 	},
 	{
+		Name:     "htaccess_rewrite_off_shield",
+		Severity: alert.High,
+		Detect:   detectRewriteOffShield,
+	},
+	{
 		Name:     "htaccess_header_injection",
 		Severity: alert.High,
 		Detect:   detectHeaderInjection,
@@ -1674,9 +1679,7 @@ func detectFilesMatchShieldContext(ctx context.Context, content []byte, path str
 		if paired == nil {
 			continue
 		}
-		body := content[open[1]:paired[0]]
-		bodyLower := strings.ToLower(string(body))
-		if !strings.Contains(bodyLower, "allow from all") && !strings.Contains(bodyLower, "require all granted") {
+		if !htaccessBodyGrantsAccess(content[open[1]:paired[0]]) {
 			continue
 		}
 

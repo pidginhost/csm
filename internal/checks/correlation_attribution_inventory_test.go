@@ -92,6 +92,7 @@ var attributionEvidence = map[string]string{
 	"htaccess_header_injection":     "TestHtaccessFindingsAttributeByPath",
 	"htaccess_injection":            "TestHtaccessFindingsAttributeByPath",
 	"htaccess_php_in_uploads":       "TestHtaccessFindingsAttributeByPath",
+	"htaccess_rewrite_off_shield":   "TestHtaccessFindingsAttributeByPath",
 	"htaccess_security_disabled":    "TestHtaccessFindingsAttributeByPath",
 	"htaccess_spam_redirect":        "TestHtaccessFindingsAttributeByPath",
 	"htaccess_user_agent_cloak":     "TestHtaccessFindingsAttributeByPath",
