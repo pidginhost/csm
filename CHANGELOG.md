@@ -18,6 +18,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - Web configuration checks now recognize more malicious access-control variants.
 - Scans and real-time checks now detect PHP that runs code hidden inside an archive, including password-protected archives and includes of archive members.
 - Web configuration checks now report a dropper kit's .htaccess template that switches off rewrite protections, and the automatic cleaner can remove it.
+- On LiteSpeed, requests ModSecurity only logged, such as OWASP CRS detections in anomaly scoring mode, are no longer reported as blocked or get the visitor banned.
 
 ### Added
 

@@ -228,8 +228,8 @@ func TestIsBlockingAction(t *testing.T) {
 	cases := map[string]bool{
 		"deny":     true,
 		"drop":     true,
-		"block":    true,
-		"redirect": true, // request is diverted - never reaches the upstream app
+		"block":    false, // inherits from SecDefaultAction; the registry resolves it
+		"redirect": true,  // request is diverted - never reaches the upstream app
 		"proxy":    true,
 		"pause":    true,
 		"pass":     false,
@@ -365,6 +365,34 @@ SecRule REQUEST_URI "x" "id:800013,phase:1,drop,log"
 		}
 		if !IsBlockingAction(r.Action) {
 			t.Errorf("rule %d: %q should be classified as blocking", c.id, r.Action)
+		}
+	}
+}
+
+func TestParseAction_PhaseComesFromTheActionList(t *testing.T) {
+	dir := t.TempDir()
+	conf := `SecRule ARGS "x" "id:800030,phase:request,pass"
+SecRule ARGS "x" "id:800031,phase:'1',pass"
+SecRule ARGS "x" "id:800032,pass,msg:'phase:1 lookalike'"
+SecRule ARGS "x" "id:800033,PHASE:Response,pass"
+SecRule ARGS "x" "id:800034,phase:logging,pass"
+`
+	path := filepath.Join(dir, "phases.conf")
+	if err := os.WriteFile(path, []byte(conf), 0644); err != nil {
+		t.Fatal(err)
+	}
+	rules, err := ParseRulesFileAll(path)
+	if err != nil {
+		t.Fatalf("ParseRulesFileAll: %v", err)
+	}
+	for id, want := range map[int]int{800030: 2, 800031: 1, 800032: 0, 800033: 4, 800034: 5} {
+		r := findRule(rules, id)
+		if r == nil {
+			t.Errorf("rule %d not parsed", id)
+			continue
+		}
+		if r.Phase != want {
+			t.Errorf("rule %d: Phase = %d, want %d", id, r.Phase, want)
 		}
 	}
 }

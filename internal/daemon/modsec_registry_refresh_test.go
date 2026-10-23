@@ -108,6 +108,31 @@ func TestModSecRefreshRebuildsWhenTheRuleTreeChanges(t *testing.T) {
 	}
 }
 
+// A setup file can hold nothing but SecDefaultAction lines and still decide
+// what every block rule in its pack does, so editing it must rebuild.
+func TestModSecRefreshRebuildsWhenTheSetupFileChanges(t *testing.T) {
+	installModSecRegistryForTest(t, map[int]string{1: "deny"})
+	root := t.TempDir()
+	writeModSecPackForTest(t, root, modsecPackPassDefaults)
+	probe := &modsecRefreshProbe{dirs: []string{root}}
+	probe.install(t)
+	d := &Daemon{}
+
+	d.refreshModSecRegistry()
+	if got := classifyLiteSpeedTrigger("941100"); got != "modsec_warning_realtime" {
+		t.Fatalf("pass defaults: classified %q, want modsec_warning_realtime", got)
+	}
+
+	writeModSecPackForTest(t, root, modsecPackDenyDefaults)
+	d.refreshModSecRegistry()
+	if probe.builds != 2 {
+		t.Fatalf("rule tree parsed %d times across a setup file change, want 2", probe.builds)
+	}
+	if got := classifyLiteSpeedTrigger("941100"); got != "modsec_block_realtime" {
+		t.Fatalf("deny defaults: classified %q, want modsec_block_realtime", got)
+	}
+}
+
 func TestModSecRefreshProbesAgainWhenTheRuleDirsDisappear(t *testing.T) {
 	installModSecRegistryForTest(t, map[int]string{1: "deny"})
 	dir := modsecRuleDir(t, modsecTestRule)

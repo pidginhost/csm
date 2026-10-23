@@ -13,9 +13,10 @@ import (
 )
 
 // Registry maps parsed ModSecurity rule IDs with a decisive disposition to
-// that action (deny, drop, block, redirect, proxy, pause, pass, allow).
-// Rules with only metadata actions are intentionally absent so callers use
-// the unknown-rule default. It is consulted by the LiteSpeed
+// that action (deny, drop, redirect, proxy, pause, pass, allow). A block rule
+// maps to the disruptive action it inherits from SecDefaultAction. Rules
+// with only metadata actions are intentionally absent so callers use the
+// unknown-rule default. It is consulted by the LiteSpeed
 // log-line classifier - error_log records every match as "triggered!"
 // regardless of whether the rule's action denied the request, so the action
 // lookup is the only signal that distinguishes a real deny from a noisy
@@ -67,6 +68,16 @@ func (r *Registry) Fingerprint() string {
 // directory to define a rule keeps it - that way an operator override in
 // /etc/apache2/conf.d/modsec_vendor_configs/ is not silently replaced by
 // a stale system fallback in /usr/share/modsecurity-crs/rules/.
+//
+// A block rule resolves to the disruptive action of the SecDefaultAction
+// for its phase, or pass, ModSecurity's own default, when none applies.
+// ModSecurity applies a default to the rules loaded after it in the same
+// configuration context. CSM does not read the Include directives that set
+// load order, so a default applies to the directory tree that holds it: a
+// pack's setup file governs the rules beside and below it, and the nearest
+// declaring directory wins per phase. A default never reaches a sibling
+// directory or another entry in dirs. A rule loaded before a default in the
+// same tree still resolves to it.
 func BuildRegistry(dirs []string) (*Registry, error) {
 	actions := make(map[int]string)
 	claimed := make(map[int]struct{})
@@ -81,14 +92,16 @@ func BuildRegistry(dirs []string) (*Registry, error) {
 		if dir == "" {
 			continue
 		}
-		perDirActions := make(map[int]string)
-		perDirClaimed := make(map[int]struct{})
+		// Rules resolve after the walk, once every default in the tree is known.
+		var found []foundRule
+		defaults := make(map[string]map[int]string) // directory -> phase -> action
 		fmt.Fprintf(digest, "dir:%q\n", dir)
 		walkErr := walkRuleFiles(dir, func(path string) error {
 			var rules []Rule
+			var fileDefaults map[int]string
 			var fileParseErr error
 			fileDigest, err := readRuleFile(path, func(reader io.Reader) error {
-				rules, fileParseErr = parseRules(reader)
+				rules, fileDefaults, fileParseErr = parseRules(reader)
 				// Read the rest even when the parser stopped early, so the
 				// digest always describes the whole file and matches what
 				// RuleTreeFingerprint computes for the same tree.
@@ -102,16 +115,33 @@ func BuildRegistry(dirs []string) (*Registry, error) {
 			if fileParseErr != nil {
 				parseErr = errors.Join(parseErr, fmt.Errorf("%s: %w", path, fileParseErr))
 			}
-			for _, r := range rules {
-				perDirClaimed[r.ID] = struct{}{}
-				if r.Action != "" {
-					perDirActions[r.ID] = r.Action
-				} else {
-					delete(perDirActions, r.ID)
+			fileDir := filepath.Dir(path)
+			for phase, action := range fileDefaults {
+				if defaults[fileDir] == nil {
+					defaults[fileDir] = make(map[int]string)
 				}
+				defaults[fileDir][phase] = action
+			}
+			for _, r := range rules {
+				found = append(found, foundRule{id: r.ID, action: r.Action, phase: r.Phase, dir: fileDir})
 			}
 			return nil
 		})
+		perDirActions := make(map[int]string)
+		perDirClaimed := make(map[int]struct{})
+		root := filepath.Clean(dir)
+		for _, r := range found {
+			perDirClaimed[r.id] = struct{}{}
+			action := r.action
+			if action == "block" {
+				action = inheritedAction(defaults, root, r.dir, r.phase)
+			}
+			if action != "" {
+				perDirActions[r.id] = action
+			} else {
+				delete(perDirActions, r.id)
+			}
+		}
 		// Promote the per-directory map into the global map only for IDs
 		// that no earlier (more-specific) directory has already claimed.
 		for id := range perDirClaimed {
@@ -131,6 +161,31 @@ func BuildRegistry(dirs []string) (*Registry, error) {
 		reg.fingerprint = hex.EncodeToString(digest.Sum(nil))
 	}
 	return reg, errors.Join(readErr, parseErr)
+}
+
+type foundRule struct {
+	id     int
+	action string
+	phase  int
+	dir    string
+}
+
+// inheritedAction returns the disruptive action of the nearest default for
+// phase declared in dir or one of its parents up to root, or pass.
+func inheritedAction(defaults map[string]map[int]string, root, dir string, phase int) string {
+	if phase == 0 {
+		phase = defaultPhase
+	}
+	for {
+		if action, ok := defaults[dir][phase]; ok {
+			return action
+		}
+		parent := filepath.Dir(dir)
+		if dir == root || parent == dir {
+			return "pass"
+		}
+		dir = parent
+	}
 }
 
 // Both the parser and fingerprint must see the same paths and precedence.

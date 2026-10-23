@@ -230,3 +230,87 @@ func TestLiteSpeedUnknownPassActionSuppliesEvidenceToLowDenyBurst(t *testing.T) 
 		t.Fatal("unknown evidence must keep the burst out of the low-confidence-only path")
 	}
 }
+
+const (
+	modsecPackPassDefaults = `SecDefaultAction "phase:1,log,auditlog,pass"
+SecDefaultAction "phase:2,log,auditlog,pass"
+`
+	modsecPackDenyDefaults = `SecDefaultAction "phase:1,log,auditlog,deny,status:403"
+SecDefaultAction "phase:2,log,auditlog,deny,status:403"
+`
+)
+
+// liteSpeedTriggerLine941100 is a "triggered!" line for a CRS-style XSS
+// detection rule whose action is block.
+const liteSpeedTriggerLine941100 = `2026-05-09 09:07:53.866619 [NOTICE] [1800848] [T4] [203.0.113.63:62060-H3:1FDA31C803B1F23A-44#APVH_test.example.com:443] [MODSEC] mod_security rule [id "941100"] at [/etc/apache2/conf.d/modsec_vendor_configs/OWASP3/rules/REQUEST-941-APPLICATION-ATTACK-XSS.conf:55] triggered!`
+
+// writeModSecPackForTest lays out a synthetic vendor pack the way CRS ships:
+// the setup file at the pack root, detection rules under rules/.
+func writeModSecPackForTest(t *testing.T, root, setup string) {
+	t.Helper()
+	rules := filepath.Join(root, "OWASP3", "rules")
+	if err := os.MkdirAll(rules, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "OWASP3", "crs-setup.conf"), []byte(setup), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	body := `SecRule ARGS "@rx <script" "id:941100,phase:2,block,capture,t:none,log,msg:'XSS Attack Detected'"` + "\n"
+	if err := os.WriteFile(filepath.Join(rules, "REQUEST-941-APPLICATION-ATTACK-XSS.conf"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func installModSecPackForTest(t *testing.T, setup string) {
+	t.Helper()
+	prev := modsec.Global()
+	t.Cleanup(func() { modsec.SetGlobal(prev) })
+	root := t.TempDir()
+	writeModSecPackForTest(t, root, setup)
+	reg, err := modsec.BuildRegistry([]string{root})
+	if err != nil {
+		t.Fatalf("BuildRegistry: %v", err)
+	}
+	modsec.SetGlobal(reg)
+}
+
+// In anomaly-scoring mode the pack's pass defaults make block rules log only.
+// A burst of detections from one visitor, such as a site owner saving pages
+// in a page builder, must not be counted as denies.
+func TestLiteSpeedBlockRuleUnderPassDefaultsNeverEscalates(t *testing.T) {
+	resetModSecState()
+	installModSecPackForTest(t, modsecPackPassDefaults)
+
+	cfg := &config.Config{}
+	if got := parseModSecLogLine(liteSpeedTriggerLine941100, cfg); len(got) != 1 || got[0].Check != "modsec_warning_realtime" {
+		t.Fatalf("findings = %+v, want one modsec_warning_realtime", got)
+	}
+	for i := 0; i < modsecDefaultLowConfEscalationHits+1; i++ {
+		for _, f := range parseModSecLogLineDeduped(liteSpeedTriggerLine941100, cfg) {
+			if f.Check == "modsec_block_escalation" || f.Check == "modsec_block_realtime" {
+				t.Fatalf("detection-only rule produced %s on hit %d", f.Check, i+1)
+			}
+		}
+	}
+}
+
+func TestLiteSpeedBlockRuleUnderDenyDefaultsEscalates(t *testing.T) {
+	resetModSecState()
+	installModSecPackForTest(t, modsecPackDenyDefaults)
+
+	cfg := &config.Config{}
+	if got := parseModSecLogLine(liteSpeedTriggerLine941100, cfg); len(got) != 1 || got[0].Check != "modsec_block_realtime" {
+		t.Fatalf("findings = %+v, want one modsec_block_realtime", got)
+	}
+	escalated := false
+	for i := 0; i < modsecDefaultEscalationHits+1; i++ {
+		for _, f := range parseModSecLogLineDeduped(liteSpeedTriggerLine941100, cfg) {
+			if f.Check == "modsec_block_escalation" {
+				escalated = true
+			}
+		}
+	}
+	if !escalated {
+		t.Fatal("block rule under deny defaults did not escalate after threshold hits")
+	}
+}
