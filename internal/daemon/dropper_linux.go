@@ -88,11 +88,11 @@ func (fm *FileMonitor) initDropperDetector(cfg *config.Config) {
 }
 
 func (fm *FileMonitor) setDropperDocroots(docroots []string) {
-	fm.dropperDocroots.Store(newDropperDocrootIndex(docroots))
+	fm.dropperDocroots.Store(checks.NewDocrootIndex(docroots))
 }
 
 func (fm *FileMonitor) dropperDocrootFor(path string) string {
-	return fm.dropperDocroots.Load().lookup(path)
+	return fm.dropperDocroots.Load().Lookup(path)
 }
 
 // isDropperInteresting admits paths that the normal content filter deliberately

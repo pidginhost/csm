@@ -394,7 +394,7 @@ type FileMonitor struct {
 	// dropperDocroots indexes the web document roots the admission gate
 	// matches paths against, refreshed on the probe loop's cadence so
 	// account add/remove is picked up without a restart.
-	dropperDocroots atomic.Pointer[dropperDocrootIndex]
+	dropperDocroots atomic.Pointer[checks.DocrootIndex]
 	// dropperQuarantines records exact snapshots of files CSM moved out of
 	// their original paths, so the later absence probe does not misclassify
 	// CSM's own remediation as attacker self-deletion.
