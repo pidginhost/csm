@@ -3,16 +3,21 @@ package checks
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/safepath"
 	"github.com/pidginhost/csm/internal/signatures"
 	"github.com/pidginhost/csm/internal/state"
 	"github.com/pidginhost/csm/internal/yara"
+	"github.com/pidginhost/csm/internal/yaraipc"
 )
 
 // checkAccountYARA is the YARA content pass of a full account scan. It walks
@@ -39,8 +44,8 @@ func checkAccountYARA(ctx context.Context, cfg *config.Config, _ *state.Store) [
 	}
 	respectIgnores := scanRespectsIgnores(ctx, cfg)
 
-	// Stop with the margin left so the partial result is returned: the
-	// account scan drops every finding of a check that overruns its budget.
+	// Leave time for the last worker call. Completed detections are also
+	// checkpointed in case that call or filesystem I/O exceeds the margin.
 	var softDeadline time.Time
 	if deadline, ok := ctx.Deadline(); ok {
 		softDeadline = deadline.Add(-yaraDeepDeadlineMargin)
@@ -51,25 +56,24 @@ func checkAccountYARA(ctx context.Context, cfg *config.Config, _ *state.Store) [
 	var findings []alert.Finding
 	stopped := false
 	stop := func(path string) bool {
-		if stopped || ctx.Err() != nil {
+		if stopped {
 			return true
 		}
-		if !softDeadline.IsZero() && !yaraDeepNow().Before(softDeadline) {
+		if ctx.Err() != nil || (!softDeadline.IsZero() && !yaraDeepNow().Before(softDeadline)) {
 			stopped = true
 			gaps.recordUnknownRange(fmt.Sprintf("stopped at %s before the time budget ran out", path))
 		}
 		return stopped
 	}
 
-	var walk func(dir string)
-	walk = func(dir string) {
-		entries, err := osFS.ReadDir(dir)
+	var walk func(dir string, pinned *safepath.Dir)
+	walk = func(dir string, pinned *safepath.Dir) {
+		defer func() { _ = pinned.Close() }()
+		entries, err := pinned.ReadDir()
 		if err != nil {
-			if !os.IsNotExist(err) {
-				gaps.recordUnknownRange(fmt.Sprintf("reading %s: %v", dir, err))
-			}
-			return
+			gaps.recordUnknownRange(fmt.Sprintf("reading %s: %v", dir, err))
 		}
+		sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
 		for _, entry := range entries {
 			path := filepath.Join(dir, entry.Name())
 			if stop(path) {
@@ -82,37 +86,69 @@ func checkAccountYARA(ctx context.Context, cfg *config.Config, _ *state.Store) [
 			// necessarily the account's and may be anywhere on the host.
 			switch {
 			case entry.IsDir():
-				walk(path)
+				child, err := pinned.Walk(entry.Name())
+				if err != nil {
+					gaps.recordUnknownRange(fmt.Sprintf("opening %s: %v", path, err))
+					continue
+				}
+				walk(path, child)
 			case entry.Type().IsRegular():
-				findings = append(findings, scanAccountYARAFile(backend, gaps, path, entry, maxBytes)...)
+				matches := scanAccountYARAFile(backend, gaps, pinned, path, maxBytes, cfg.StatePath)
+				findings = append(findings, matches...)
+				publishAccountScanFindings(ctx, matches)
 			}
 		}
 	}
 
+	scanHome := func(homePath string) {
+		if stop(homePath) {
+			return
+		}
+		pinned, err := openAccountYARAHome(homePath)
+		if err != nil {
+			gaps.recordUnknownRange(fmt.Sprintf("opening %s: %v", homePath, err))
+			return
+		}
+		defer func() { _ = pinned.Close() }()
+		entries, err := pinned.ReadDir()
+		if err != nil {
+			gaps.recordUnknownRange(fmt.Sprintf("reading %s: %v", homePath, err))
+		}
+		sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+		for _, entry := range entries {
+			if !accountContentDir(entry.Name()) {
+				continue
+			}
+			root := filepath.Join(homePath, entry.Name())
+			if stop(root) {
+				break
+			}
+			if respectIgnores && ignoredPath(cfg, root) {
+				continue
+			}
+			switch {
+			case entry.Type()&os.ModeSymlink != 0:
+				if entry.Name() == "public_html" {
+					gaps.recordUnknownRange(fmt.Sprintf("%s is a symbolic link and was not followed", root))
+				}
+				continue
+			case !entry.IsDir():
+				continue
+			}
+			child, err := pinned.Walk(entry.Name())
+			if err != nil {
+				gaps.recordUnknownRange(fmt.Sprintf("opening %s: %v", root, err))
+				continue
+			}
+			walk(root, child)
+		}
+	}
 	homes, err := GetScanHomeDirs(ctx)
 	if err != nil {
 		gaps.recordUnknownRange(fmt.Sprintf("resolving the account home: %v", err))
 	}
 	for _, home := range homes {
-		for _, root := range accountDocRoots(scanHomeDirPath(home)) {
-			if stop(root) {
-				break
-			}
-			info, err := osFS.Lstat(root)
-			switch {
-			case err != nil:
-				if !os.IsNotExist(err) {
-					gaps.recordUnknownRange(fmt.Sprintf("inspecting %s: %v", root, err))
-				}
-				continue
-			case info.Mode()&os.ModeSymlink != 0:
-				gaps.recordUnknownRange(fmt.Sprintf("%s is a symbolic link and was not followed", root))
-				continue
-			case !info.IsDir():
-				continue
-			}
-			walk(root)
-		}
+		scanHome(scanHomeDirPath(home))
 	}
 	if !gaps.empty() {
 		findings = append(findings, gaps.finding())
@@ -120,36 +156,50 @@ func checkAccountYARA(ctx context.Context, cfg *config.Config, _ *state.Store) [
 	return findings
 }
 
+func openAccountYARAHome(home string) (*safepath.Dir, error) {
+	// The platform's account-root parent is operator controlled. Pin the
+	// volume and account components below it so neither can redirect reads.
+	volume := filepath.Dir(home)
+	anchor, err := safepath.OpenDir(filepath.Dir(volume))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = anchor.Close() }()
+	return anchor.Walk(filepath.Join(filepath.Base(volume), filepath.Base(home)))
+}
+
 // scanAccountYARAFile sends one regular file through the backend. The size
 // check comes first so a large media file or dump is never read at all.
-func scanAccountYARAFile(backend yara.Backend, gaps *yaraGapCollector, path string, entry os.DirEntry, maxBytes int64) []alert.Finding {
-	info, err := entry.Info()
+func scanAccountYARAFile(backend yara.Backend, gaps *yaraGapCollector, dir *safepath.Dir, path string, maxBytes int64, statePath string) []alert.Finding {
+	file, err := dir.OpenFile(filepath.Base(path), os.O_RDONLY, 0)
 	if err != nil {
-		if !os.IsNotExist(err) {
-			gaps.record(path, "stat_error")
-		}
+		gaps.record(path, "read_error")
 		return nil
 	}
-	if info.Size() == 0 {
+	defer func() { _ = file.Close() }()
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		gaps.record(path, "stat_error")
 		return nil
 	}
 	if info.Size() > maxBytes {
 		gaps.record(path, "oversize")
 		return nil
 	}
-	data, truncated, err := readRegularFileHead(path, maxBytes)
+	data, err := io.ReadAll(io.LimitReader(file, maxBytes))
 	if err != nil {
-		if !os.IsNotExist(err) {
-			gaps.record(path, "read_error")
-		}
+		gaps.record(path, "read_error")
 		return nil
 	}
-	if truncated {
-		gaps.record(path, "oversize")
+	after, err := file.Stat()
+	if err != nil || !sameFileSnapshot(info, after) || int64(len(data)) != info.Size() {
+		gaps.record(path, "changed")
 		return nil
 	}
-	// #nosec G115 -- maxBytes is FullScanMaxFileBytes or the job's copy of it, capped far below MaxInt.
-	matches, contentSHA256, err := yara.ScanContentOrPathChecked(backend, path, data, int(maxBytes))
+	if len(data) == 0 {
+		return nil
+	}
+	matches, err := scanAccountYARASnapshot(backend, path, data, statePath)
 	if err != nil {
 		gaps.record(path, "scan_error")
 		return nil
@@ -157,9 +207,7 @@ func scanAccountYARAFile(backend yara.Backend, gaps *yaraGapCollector, path stri
 	if len(matches) == 0 {
 		return nil
 	}
-	if contentSHA256 == "" {
-		contentSHA256 = fmt.Sprintf("%x", sha256.Sum256(data))
-	}
+	contentSHA256 := fmt.Sprintf("%x", sha256.Sum256(data))
 	findings := make([]alert.Finding, 0, len(matches))
 	for _, match := range matches {
 		findings = append(findings, alert.Finding{
@@ -173,6 +221,33 @@ func scanAccountYARAFile(backend yara.Backend, gaps *yaraGapCollector, path stri
 		})
 	}
 	return findings
+}
+
+func scanAccountYARASnapshot(backend yara.Backend, path string, data []byte, statePath string) ([]yara.Match, error) {
+	matches, err := yara.ScanBytesChecked(backend, path, data)
+	if !errors.Is(err, yaraipc.ErrPayloadTooLarge) {
+		return matches, err
+	}
+	// The worker cannot receive large snapshots inline. A private copy keeps
+	// its retry bound to these bytes even if the tenant replaces the source.
+	// Keep it with daemon state, outside the monitored account and temp trees.
+	snapshot, err := os.CreateTemp(statePath, "account-yara-*")
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = os.Remove(snapshot.Name()) }()
+	defer func() { _ = snapshot.Close() }()
+	if _, writeErr := snapshot.Write(data); writeErr != nil {
+		return nil, writeErr
+	}
+	result, err := yara.ScanFileChecked(backend, snapshot.Name(), len(data))
+	if err != nil {
+		return nil, err
+	}
+	if result.ContentSHA256 != fmt.Sprintf("%x", sha256.Sum256(data)) {
+		return nil, errFileChanged
+	}
+	return result.Matches, nil
 }
 
 // ignoredPath reports whether path matches the operator's ignore_paths.

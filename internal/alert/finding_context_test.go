@@ -1,6 +1,7 @@
 package alert
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -109,5 +110,23 @@ func TestFindingWithoutContextRendersUnchanged(t *testing.T) {
 	want := "[CRITICAL] webshell - Known webshell found: /home/alice/public_html/x.php\n  Size: 10\n  Time: 2026-01-02 03:04:05"
 	if got := f.String(); got != want {
 		t.Errorf("String() = %q, want %q", got, want)
+	}
+}
+
+func TestFindingContextIsSanitizedAtOutputBoundaries(t *testing.T) {
+	value := rand.Text()
+	f := contextFinding()
+	f.Context = "password=" + value
+	if got := SanitizeFinding(f).Context; got != "password=[REDACTED]" {
+		t.Fatal("context was not sanitized")
+	}
+	if strings.Contains(FormatAlert("host.example.com", []Finding{f}), value) {
+		t.Fatal("alert disclosed a credential in context")
+	}
+	if strings.Contains(NewAuditEvent("host.example.com", f).Context, value) {
+		t.Fatal("audit event disclosed a credential in context")
+	}
+	if f.Context != "password="+value {
+		t.Fatal("sanitizing changed the source finding")
 	}
 }

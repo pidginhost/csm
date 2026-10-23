@@ -244,6 +244,8 @@ func runAccountScanCheck(ctx context.Context, c namedCheck, cfg *config.Config, 
 	}
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	partial := &accountScanPartialResults{}
+	cctx = context.WithValue(cctx, accountScanPartialKey{}, partial)
 	panicIdentity := alert.Finding{Check: "check_panic", DedupKey: fmt.Sprintf("account-scan:%q:%s", AccountFromContext(ctx), c.name)}
 
 	execution := executeCheckAsync(cctx, "account-scan-exec", func() []alert.Finding {
@@ -276,13 +278,36 @@ func runAccountScanCheck(ctx context.Context, c namedCheck, cfg *config.Config, 
 		if ctx.Err() != nil {
 			return nil
 		}
-		return []alert.Finding{{
+		return append(partial.snapshot(), alert.Finding{
 			Severity:  alert.Warning,
 			Check:     "check_timeout",
 			Message:   fmt.Sprintf("Account scan check '%s' timed out", c.name),
 			Timestamp: time.Now(),
-		}}
+		})
 	}
+}
+
+type accountScanPartialKey struct{}
+
+// A blocked filesystem or backend call can outlast the runner. Checkpoints
+// retain completed detections while that execution still owns its scan slot.
+type accountScanPartialResults struct {
+	mu       sync.Mutex
+	findings []alert.Finding
+}
+
+func publishAccountScanFindings(ctx context.Context, findings []alert.Finding) {
+	if partial, ok := ctx.Value(accountScanPartialKey{}).(*accountScanPartialResults); ok {
+		partial.mu.Lock()
+		partial.findings = append(partial.findings, findings...)
+		partial.mu.Unlock()
+	}
+}
+
+func (p *accountScanPartialResults) snapshot() []alert.Finding {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]alert.Finding(nil), p.findings...)
 }
 
 func accountScanFindingInScope(f alert.Finding, account string) bool {

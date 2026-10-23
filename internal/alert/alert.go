@@ -373,12 +373,13 @@ func FormatAlert(hostname string, findings []Finding) string {
 }
 
 // SanitizeFinding returns a copy with recognized credentials redacted from
-// Message and Details. Call it at output and persistence boundaries so detection
-// and identity calculations can still use the original finding. Other fields
-// are unchanged; nested data is not modified.
+// Message, Details and Context. Call it at output and persistence boundaries
+// so detection and identity calculations can still use the original finding.
+// Other fields are unchanged; nested data is not modified.
 func SanitizeFinding(f Finding) Finding {
 	f.Message = redactSensitive(f.Message)
 	f.Details = redactSensitive(f.Details)
+	f.Context = redactSensitive(f.Context)
 	return f
 }
 

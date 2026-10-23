@@ -62,6 +62,11 @@ func AccountHomeRoots() []string {
 	return accountHomeRoots()
 }
 
+func accountContentDir(name string) bool {
+	return !strings.HasPrefix(name, ".") && name != "mail" && name != "etc" &&
+		name != "logs" && name != "ssl" && name != "tmp"
+}
+
 // accountHomeDir resolves an account's home directory: the first root that
 // holds it, then a registered cPanel account's home on another partition,
 // or the first root when it exists nowhere (callers that need existence
@@ -71,7 +76,7 @@ func accountHomeDir(account string) string {
 	if home, ok := accountHomeUnder(roots, account); ok {
 		return home
 	}
-	if home, ok := registeredAccountHome(account); ok {
+	if home, ok := registeredAccountHome(roots, account); ok {
 		return home
 	}
 	return defaultAccountHome(roots, account)
@@ -108,7 +113,7 @@ func defaultAccountHome(roots []string, account string) string {
 // (/home2, /home3, ...). The registry decides the name is an account and
 // passwd names its home; the home must be a real directory named after the
 // account, so a redirected or symlinked home is never scanned in its name.
-func registeredAccountHome(account string) (string, bool) {
+func registeredAccountHome(roots []string, account string) (string, bool) {
 	if !validAccountName.MatchString(account) {
 		return "", false
 	}
@@ -116,11 +121,29 @@ func registeredAccountHome(account string) (string, bool) {
 		return "", false
 	}
 	home := defaultUIDCache.HomeDir(account)
-	if !filepath.IsAbs(home) || filepath.Base(home) != account {
+	if !filepath.IsAbs(home) || filepath.Clean(home) != home || filepath.Base(home) != account {
+		return "", false
+	}
+	// Only extend the configured home-volume boundary to a sibling volume.
+	// A passwd entry alone must not authorize another account or system tree.
+	volume := filepath.Dir(home)
+	allowed := false
+	for _, root := range roots {
+		if isHomeVolumeName(filepath.Base(root)) && isHomeVolumeName(filepath.Base(volume)) &&
+			filepath.Dir(root) == filepath.Dir(volume) {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		return "", false
+	}
+	volumeInfo, err := osFS.Lstat(volume)
+	if err != nil || !volumeInfo.IsDir() || volumeInfo.Mode()&os.ModeSymlink != 0 {
 		return "", false
 	}
 	info, err := osFS.Lstat(home)
-	if err != nil || !info.IsDir() {
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return "", false
 	}
 	return filepath.Clean(home), true

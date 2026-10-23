@@ -2,6 +2,9 @@ package checks
 
 import (
 	"context"
+	"crypto/sha256"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -12,7 +15,9 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/state"
 	"github.com/pidginhost/csm/internal/yara"
+	"github.com/pidginhost/csm/internal/yaraipc"
 )
 
 // countingYARABackend matches "dormant malware" like deepYARATestBackend and
@@ -164,6 +169,9 @@ func TestAccountYARAPassDoesNotFollowSymlinks(t *testing.T) {
 	if err := os.Symlink(filepath.Dir(outside), filepath.Join(docroot, "linkdir")); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Symlink(docroot, filepath.Join(filepath.Dir(docroot), "www")); err != nil {
+		t.Fatal(err)
+	}
 	backend := useCountingYARABackend(t)
 
 	findings := checkAccountYARA(fullAccountYARAContext("alice", FullScanOptions(&config.Config{}, false)), &config.Config{}, nil)
@@ -237,5 +245,204 @@ func TestAccountYARAPassStopsBeforeDeadlineWithPartialResults(t *testing.T) {
 	gap := findingByCheck(findings, "yara_scan_incomplete")
 	if !strings.Contains(gap.Details, "time budget") {
 		t.Fatalf("gap = %+v, want the early stop reported", gap)
+	}
+}
+
+func TestAccountYARAPassRejectsDirectoryReplacement(t *testing.T) {
+	for _, replacement := range []string{"symlink", "missing"} {
+		t.Run(replacement, func(t *testing.T) {
+			base := t.TempDir()
+			root := filepath.Join(base, "home")
+			withAccountHomeRoots(t, root)
+			first := writeYARADeepFile(t, root, "alice/public_html/a.dat", "dormant malware")
+			dir := filepath.Dir(writeYARADeepFile(t, root, "alice/public_html/z/b.dat", "clean"))
+			outside := filepath.Dir(writeYARADeepFile(t, base, "outside/b.dat", "outside account"))
+			backend := useCountingYARABackend(t)
+			backend.onScan = func() {
+				backend.onScan = nil
+				if err := os.Rename(dir, dir+"-moved"); err != nil {
+					t.Fatal(err)
+				}
+				if replacement == "symlink" {
+					if err := os.Symlink(outside, dir); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			findings := checkAccountYARA(fullAccountYARAContext("alice", FullScanOptions(nil, false)), &config.Config{}, nil)
+			if scans := backend.scans(); len(scans) != 1 || scans[0] != "dormant malware" {
+				t.Fatalf("read a replaced directory: %q", scans)
+			}
+			if got := yaraMatchPaths(findings); len(got) != 1 || got[0] != first {
+				t.Fatalf("lost confirmed match: %v", got)
+			}
+			if gap := findingByCheck(findings, "yara_scan_incomplete"); !strings.Contains(gap.Details, dir) {
+				t.Fatalf("missing coverage gap for replaced directory: %+v", findings)
+			}
+		})
+	}
+}
+
+type accountYARAFallbackBackend struct {
+	countingYARABackend
+	onInline  func()
+	path      string
+	data      []byte
+	mode      os.FileMode
+	fileErr   error
+	wrongHash bool
+}
+
+func (b *accountYARAFallbackBackend) ScanBytesChecked([]byte) ([]yara.Match, error) {
+	if b.onInline != nil {
+		b.onInline()
+	}
+	return nil, yaraipc.ErrPayloadTooLarge
+}
+
+func (b *accountYARAFallbackBackend) ScanFileChecked(path string, limit int) (yara.FileScanResult, error) {
+	b.path = path
+	info, err := os.Stat(path)
+	if err != nil {
+		return yara.FileScanResult{}, err
+	}
+	b.mode = info.Mode()
+	if info.Size() > int64(limit) {
+		return yara.FileScanResult{}, errors.New("snapshot exceeds worker limit")
+	}
+	if b.fileErr != nil {
+		return yara.FileScanResult{}, b.fileErr
+	}
+	data, err := os.ReadFile(path)
+	b.data = data
+	if err != nil {
+		return yara.FileScanResult{}, err
+	}
+	matches, err := b.deepYARATestBackend.ScanBytesChecked(data)
+	digest := fmt.Sprintf("%x", sha256.Sum256(data))
+	if b.wrongHash {
+		digest = strings.Repeat("0", 64)
+	}
+	return yara.FileScanResult{Matches: matches, ContentSHA256: digest}, err
+}
+
+func TestAccountYARAFallbackScansTheOriginalSnapshot(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "home")
+	withAccountHomeRoots(t, root)
+	path := writeYARADeepFile(t, root, "alice/public_html/a.dat", "dormant malware")
+	outside := writeYARADeepFile(t, base, "outside/b.dat", "outside account")
+	backend := &accountYARAFallbackBackend{onInline: func() {
+		if err := os.Rename(path, path+"-moved"); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(outside, path); err != nil {
+			t.Fatal(err)
+		}
+	}}
+	yara.SetActive(backend)
+	t.Cleanup(func() { yara.SetActive(nil) })
+	cfg := &config.Config{StatePath: t.TempDir()}
+	findings := checkAccountYARA(fullAccountYARAContext("alice", FullScanOptions(nil, false)), cfg, nil)
+	if string(backend.data) != "dormant malware" {
+		t.Fatalf("fallback reopened tenant path: scanned %q", backend.data)
+	}
+	if got := yaraMatchPaths(findings); len(got) != 1 || got[0] != path {
+		t.Fatalf("snapshot match lost: %+v", findings)
+	}
+	if filepath.Dir(backend.path) != cfg.StatePath || backend.mode.Perm() != 0o600 {
+		t.Fatalf("snapshot is not private daemon state: %q (%v)", backend.path, backend.mode)
+	}
+	if _, err := os.Stat(backend.path); !os.IsNotExist(err) {
+		t.Fatalf("temporary snapshot remains: %v", err)
+	}
+}
+
+func TestAccountYARAFallbackFailuresReportGapsAndRemoveSnapshots(t *testing.T) {
+	for _, failure := range []string{"worker", "digest", "storage"} {
+		t.Run(failure, func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), "home")
+			withAccountHomeRoots(t, root)
+			path := writeYARADeepFile(t, root, "alice/public_html/a.dat", "dormant malware")
+			backend := &accountYARAFallbackBackend{}
+			cfg := &config.Config{StatePath: t.TempDir()}
+			switch failure {
+			case "worker":
+				backend.fileErr = errors.New("worker unavailable")
+			case "digest":
+				backend.wrongHash = true
+			case "storage":
+				cfg.StatePath = filepath.Join(cfg.StatePath, "missing")
+			}
+			yara.SetActive(backend)
+			t.Cleanup(func() { yara.SetActive(nil) })
+			findings := checkAccountYARA(fullAccountYARAContext("alice", FullScanOptions(nil, false)), cfg, nil)
+			if got := yaraMatchPaths(findings); len(got) != 0 {
+				t.Fatalf("failed scan produced matches: %v", got)
+			}
+			if gap := findingByCheck(findings, "yara_scan_incomplete"); !strings.Contains(gap.Details, "scan_error=1") || !strings.Contains(gap.Details, path) {
+				t.Fatalf("failed scan not reported: %+v", findings)
+			}
+			if backend.path != "" {
+				if _, err := os.Stat(backend.path); !os.IsNotExist(err) {
+					t.Fatalf("failed scan left snapshot: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestAccountYARAPassKeepsFindingsWhenBackendExceedsDeadline(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "home")
+	withAccountHomeRoots(t, root)
+	first := writeYARADeepFile(t, root, "alice/public_html/a.dat", "dormant malware")
+	writeYARADeepFile(t, root, "alice/public_html/b.dat", "clean")
+	backend := useCountingYARABackend(t)
+	blocked, release, finished := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	backend.onScan = func() {
+		if len(backend.scans()) == 2 {
+			close(blocked)
+			<-release
+		}
+	}
+	// Keep the soft clock before the margin while the real runner expires.
+	clock := time.Now().Add(-time.Hour)
+	useYARADeepClock(t, &clock)
+	ctx := fullAccountYARAContext("alice", FullScanOptions(nil, false))
+	check := namedCheck{"yara_deep", func(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
+		defer close(finished)
+		return checkAccountYARA(ctx, cfg, nil)
+	}}
+	result := make(chan []alert.Finding, 1)
+	go func() { result <- runAccountScanCheck(ctx, check, &config.Config{}, nil, time.Second) }()
+	defer func() { close(release); <-finished }()
+	select {
+	case <-blocked:
+	case <-time.After(5 * time.Second):
+		t.Fatal("second scan did not start")
+	}
+	select {
+	case findings := <-result:
+		if got := yaraMatchPaths(findings); len(got) != 1 || got[0] != first {
+			t.Fatalf("deadline discarded confirmed match: %+v", findings)
+		}
+		if f := findingByCheck(findings, "check_timeout"); f.Check == "" {
+			t.Fatalf("deadline was not reported: %+v", findings)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("runner did not honor deadline")
+	}
+}
+
+func TestAccountYARAPassRespectsIgnoredDocroot(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "home")
+	withAccountHomeRoots(t, root)
+	path := writeYARADeepFile(t, root, "alice/public_html/a.dat", "dormant malware")
+	backend := useCountingYARABackend(t)
+	cfg := &config.Config{}
+	cfg.Suppressions.IgnorePaths = []string{filepath.Dir(path)}
+	findings := checkAccountYARA(fullAccountYARAContext("alice", FullScanOptions(cfg, true)), cfg, nil)
+	if len(backend.scans()) != 0 || len(findings) != 0 {
+		t.Fatalf("scanned ignored document root: %+v", findings)
 	}
 }

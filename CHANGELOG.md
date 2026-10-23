@@ -12,6 +12,8 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 ### Security
 
 - Full account scans now run the YARA rules over the account's website files instead of reporting the account clean without them.
+- Full account YARA scans reject unsafe account locations and retain confirmed detections after timeouts.
+- Alerts and audit records now redact credentials from finding context.
 
 ### Changed
 

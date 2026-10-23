@@ -35,6 +35,8 @@ An optional `context` key carries background beside the details, such as
 ModSecurity being switched off for the account a malware finding concerns.
 It is not part of `finding_id` or receipt matching, so a change in it alone
 never produces a new record.
+Recognized credentials in context are redacted before alert and audit output,
+using the same policy as messages and details.
 
 `finding_id` is a stable 16-hex-char hash of the canonical fields
 (timestamp, check, severity, message, file path). Two emits of the

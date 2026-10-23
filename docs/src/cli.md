@@ -42,6 +42,18 @@ empty tree keeps the last loaded actions until a replacement is available.
 | `csm scan --report <id> [--json]` | Print the stored report for a completed full-scan job. |
 | `csm scan --cancel <id> [--json]` | Cancel a running full-scan job. |
 
+Passwd home fallback accepts an account-named directory directly under a sibling
+home volume, such as `/home2`, and rejects symlinked volumes and homes. Arbitrary
+passwd locations outside this boundary are not used for account scans.
+
+The full-account YARA pass does not follow tenant symlinks. It reports unreadable
+or changed files and directories as coverage gaps, and keeps confirmed matches
+if a later read or worker call times out. Large worker requests use a private
+temporary snapshot in the daemon state directory, bounded by
+`full_scan_max_file_mb`, which is removed after the request. Failure to create
+or scan that snapshot is reported as incomplete coverage. The default account
+scan still has no YARA pass.
+
 ## Management
 
 | Command | Description |

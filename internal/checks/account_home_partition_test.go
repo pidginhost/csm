@@ -77,8 +77,9 @@ func TestAccountHomeDirIgnoresUnqualifiedPasswdHomes(t *testing.T) {
 		"linked:x:1003:1003::BASE/home2/linked:/bin/bash",
 		"missing:x:1004:1004::BASE/home2/missing:/bin/bash",
 		"relative:x:1005:1005::home2/relative:/bin/bash",
+		"regular:x:1006:1006::BASE/home2/regular:/bin/bash",
 	}, "\n") + "\n"
-	base := withPartitionedAccounts(t, passwd, "renamed", "linked", "missing", "relative")
+	base := withPartitionedAccounts(t, passwd, "renamed", "linked", "missing", "relative", "regular")
 	for _, dir := range []string{"unregistered", "other", "target"} {
 		if err := os.MkdirAll(filepath.Join(base, "home2", dir), 0o755); err != nil {
 			t.Fatal(err)
@@ -87,11 +88,51 @@ func TestAccountHomeDirIgnoresUnqualifiedPasswdHomes(t *testing.T) {
 	if err := os.Symlink(filepath.Join(base, "home2", "target"), filepath.Join(base, "home2", "linked")); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(base, "home2", "regular"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
 
-	for _, account := range []string{"unregistered", "renamed", "linked", "missing", "relative"} {
+	for _, account := range []string{"unregistered", "renamed", "linked", "missing", "relative", "regular"} {
 		want := filepath.Join(base, "home", account)
 		if got := accountHomeDir(account); got != want {
 			t.Errorf("accountHomeDir(%s) = %q, want the root join %q", account, got, want)
 		}
+	}
+}
+
+func TestAccountHomeDirRejectsEscapingPasswdHomes(t *testing.T) {
+	for _, location := range []string{"home/bob/alice", "etc/alice", "home2/../etc/alice", "home2/alice/", "home2/alice"} {
+		t.Run(location, func(t *testing.T) {
+			base := withPartitionedAccounts(t, "alice:x:1001:1001::BASE/"+location+":/bin/bash\n", "alice")
+			home := filepath.Join(base, location)
+			if location == "home2/../etc/alice" {
+				if err := os.MkdirAll(filepath.Join(base, "home2"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if location == "home2/alice" {
+				if err := os.MkdirAll(filepath.Join(base, "outside", "alice"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(filepath.Join(base, "outside"), filepath.Join(base, "home2")); err != nil {
+					t.Fatal(err)
+				}
+			} else if location == "home2/alice/" {
+				if err := os.MkdirAll(filepath.Join(base, "outside"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.MkdirAll(filepath.Dir(home), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(filepath.Join(base, "outside"), home); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.MkdirAll(home, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if got, want := accountHomeDir("alice"), filepath.Join(base, "home", "alice"); got != want {
+				t.Fatalf("unsafe home accepted: %q, want %q", got, want)
+			}
+		})
 	}
 }
