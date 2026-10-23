@@ -18,45 +18,31 @@ package phptaintworker
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"io"
+	"net"
 	"os"
 	"os/signal"
 
 	"github.com/pidginhost/csm/internal/phptaint"
 	"github.com/pidginhost/csm/internal/phptaintipc"
+	"github.com/pidginhost/csm/internal/workerproc"
 )
 
-// Serve reads request frames from r and writes response frames to w. It checks
-// ctx between frames, not from inside the parser; the parent process remains
-// the sole liveness boundary. It is the whole worker: one request at a time, no
-// concurrency, no state carried between requests.
+// Serve answers analysis requests on conn, one at a time, with no state
+// carried between them; workerproc.Serve owns the loop and its framing.
 //
 // A valid frame with a bad operation or payload is answered with an error and
 // the loop continues. Dropping the process for that peer mistake would make the
-// parent replace its worker repeatedly. Broken framing ends the loop because a
-// trustworthy boundary for the next request no longer exists.
-func Serve(ctx context.Context, r io.Reader, w io.Writer) error {
-	for {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		req, err := phptaintipc.ReadFrame(r)
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				return nil
-			}
-			return err
-		}
-		resp := handle(ctx, req)
-		if err := phptaintipc.WriteFrame(w, resp); err != nil {
-			return err
-		}
-	}
+// parent replace its worker repeatedly.
+func Serve(ctx context.Context, conn *net.UnixConn) error {
+	// The daemon passes no descriptors to this worker, so none are accepted.
+	lim := workerproc.Limits{MaxFrameBytes: phptaintipc.MaxFrameBytes}
+	return workerproc.Serve(ctx, conn, lim, func(ctx context.Context, req workerproc.Frame, _ []*os.File) (workerproc.Frame, []*os.File) {
+		return handle(ctx, req), nil
+	})
 }
 
-func handle(ctx context.Context, req phptaintipc.Frame) phptaintipc.Frame {
+func handle(ctx context.Context, req workerproc.Frame) workerproc.Frame {
 	switch req.Op {
 	case phptaintipc.OpPing:
 		return reply(phptaintipc.OpPing, phptaintipc.PingResult{OK: true})
@@ -64,7 +50,7 @@ func handle(ctx context.Context, req phptaintipc.Frame) phptaintipc.Frame {
 	case phptaintipc.OpAnalyze:
 		var args phptaintipc.AnalyzeArgs
 		if err := phptaintipc.DecodePayload(req, &args); err != nil {
-			return phptaintipc.Frame{Error: err.Error()}
+			return workerproc.Frame{Error: err.Error()}
 		}
 		// Analyze already contains its own panic boundary and reports one as a
 		// coverage gap, so there is nothing to recover here.
@@ -72,19 +58,15 @@ func handle(ctx context.Context, req phptaintipc.Frame) phptaintipc.Frame {
 		return reply(phptaintipc.OpAnalyze, phptaintipc.AnalyzeResult{Report: report})
 
 	default:
-		return phptaintipc.Frame{Error: fmt.Sprintf("phptaintworker: unknown op %q", req.Op)}
+		return workerproc.Frame{Error: fmt.Sprintf("phptaintworker: unknown op %q", req.Op)}
 	}
 }
 
-func reply(op string, v any) phptaintipc.Frame {
+func reply(op string, v any) workerproc.Frame {
 	frame, err := phptaintipc.EncodePayload(op, v)
 	if err != nil {
-		return phptaintipc.Frame{Error: err.Error()}
+		return workerproc.Frame{Error: err.Error()}
 	}
-	// A response carries no op: the parent matches replies by order on a
-	// single-flight connection, and echoing the op would invite a reader to
-	// match on it instead.
-	frame.Op = ""
 	return frame
 }
 

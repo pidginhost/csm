@@ -1195,6 +1195,31 @@ Migration is incremental and optional. The legacy format stays valid. Start with
 
 Keep the `[TIMESTAMP]` prefix of journalctl lines readable by humans: slog's text handler uses `time=... level=... msg=...` which is also human-parseable, so journalctl viewers still work.
 
+## Worker processes
+
+Code that parses attacker-controlled input and can loop, crash or exhaust
+memory runs in a child process under `internal/workerproc`. The daemon can
+kill a child; it cannot stop a stuck goroutine.
+
+The launcher gives the child one Unix socket as both fd 0 and fd 1. A frame
+is a 4-byte big-endian length followed by a JSON envelope, and it may carry
+descriptors. The length is checked against a cap before anything is
+allocated.
+
+A request that misses its deadline kills and reaps the worker, and that
+worker is never used again. Any other failure does the same. Three failures
+in a row pause spawning for 60 seconds, then one trial request is let
+through. Each supervisor publishes a `requests` queue-health row.
+
+Caller cancellation, including during launch, does not count as a worker
+failure or lost request. A canceled trial restarts the breaker cooldown.
+PHP parser panics reported in a valid reply count as lost requests, but do
+not open the breaker or replace the worker. Worker diagnostics must go to
+stderr; stdout carries the protocol socket.
+
+The PHP taint worker (`csm phptaint-worker`) runs on this package. The YARA
+worker moves to it later; until then the section below describes it.
+
 ## YARA-X Worker Process
 
 CSM runs YARA-X in a supervised child process by default (since the

@@ -1,4 +1,4 @@
-package phptaintworker
+package workerproc
 
 import (
 	"sync"
@@ -80,7 +80,7 @@ func (w *requestWork) finishCaller(completed bool) {
 }
 
 func (w *requestWork) releaseLocked() {
-	// Closing the pipes normally releases the RPC goroutine. A caller that
+	// Closing the socket normally releases the RPC goroutine. A caller that
 	// already returned must not hide an operation still blocked in I/O.
 	if w.callerDone && !w.rpcOutstanding {
 		delete(w.queue.pending, w)

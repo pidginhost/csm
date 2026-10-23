@@ -2,6 +2,7 @@ package phptaintworker
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -40,20 +41,29 @@ func TestSupervisorCancellationDuringPrefilter(t *testing.T) {
 }
 
 func TestSupervisorPrefilterBypassesBusyWorker(t *testing.T) {
-	cfg := helperChild(t, "ok")
+	dir := t.TempDir()
+	cfg := helperChild(t, "hold:"+dir)
 	cfg.Timeout = time.Minute
 	s, err := NewSupervisor(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	entered, release := installHeldReply(t, s)
+	release := sync.OnceFunc(func() {
+		if err := os.WriteFile(filepath.Join(dir, "release"), nil, 0o600); err != nil {
+			t.Error(err)
+		}
+	})
 	t.Cleanup(func() { release(); _ = s.Stop() })
 	workerDone := make(chan phptaint.Report, 1)
 	go func() { workerDone <- s.Analyze(context.Background(), []byte(workerInput)) }()
-	select {
-	case <-entered:
-	case <-time.After(time.Second):
-		t.Fatal("candidate did not reach the worker")
+	for until := time.Now().Add(5 * time.Second); ; {
+		if _, err := os.Stat(filepath.Join(dir, "entered")); err == nil {
+			break
+		}
+		if time.Now().After(until) {
+			t.Fatal("candidate did not reach the worker")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 
 	for _, canceled := range []bool{false, true} {
@@ -102,13 +112,13 @@ func TestSupervisorPrefilterPreservesOpenBreaker(t *testing.T) {
 			t.Fatalf("missing worker returned %+v", rep)
 		}
 	}
-	openedAt := s.openedAt
+	openedAt := s.proc.Stats().BreakerOpenedAt
 	for _, src := range [][]byte{nil, []byte("<?php echo 'safe';"), []byte("\x89PNG\r\n\x1a\n\x00"), make([]byte, phptaint.MaxSourceBytes)} {
 		if rep := s.Analyze(context.Background(), src); rep.Status != phptaint.StatusNotCandidate {
 			t.Fatalf("open breaker rejected a non-candidate: %+v", rep)
 		}
 	}
-	if s.consecutive != ConsecutiveFailureLimit || s.openedAt != openedAt || !s.breakerOpenLocked() {
+	if st := s.proc.Stats(); st.ConsecutiveFailures != ConsecutiveFailureLimit || st.BreakerOpenedAt != openedAt || !st.BreakerOpen {
 		t.Fatal("local answers changed the open breaker")
 	}
 	if q := workerQueue(t, s, time.Now()); q.Depth != 0 || q.InFlight != 0 || q.DroppedTotal != ConsecutiveFailureLimit || s.SpawnCount() != 0 {
