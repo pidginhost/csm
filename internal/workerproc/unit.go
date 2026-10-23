@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -345,6 +346,34 @@ func systemctlKill(ctx context.Context, p *unitProcess) error {
 		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+// CheckUnitCommand reports why a unit's dynamic user could not run path: the
+// file must be executable by others, which needs no read permission for a
+// compiled binary, and every directory above it searchable by others.
+func CheckUnitCommand(path string) error {
+	if !filepath.IsAbs(path) {
+		return fmt.Errorf("workerproc: unit command %q is not an absolute path", path)
+	}
+	st, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if !st.Mode().IsRegular() || st.Mode().Perm()&0o001 == 0 {
+		return fmt.Errorf("workerproc: %s is mode %04o; worker units need it executable by others, such as 0711", path, st.Mode().Perm())
+	}
+	for dir := filepath.Dir(path); ; dir = filepath.Dir(dir) {
+		st, err := os.Stat(dir)
+		if err != nil {
+			return err
+		}
+		if st.Mode().Perm()&0o001 == 0 {
+			return fmt.Errorf("workerproc: %s is mode %04o; worker units need it searchable by others", dir, st.Mode().Perm())
+		}
+		if dir == filepath.Dir(dir) {
+			return nil
+		}
+	}
 }
 
 // StopUnits SIGKILLs every unit whose name starts with prefix, for leftovers

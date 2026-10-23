@@ -199,10 +199,11 @@ func (inst *Installer) Install() error {
 		if err != nil {
 			return fmt.Errorf("reading self: %w", err)
 		}
-		// #nosec G306 G703 -- Installed binary; must be executable by root.
-		// 0700 restricts it to the owner (root). inst.BinaryPath is the
-		// installer's configured destination (/opt/csm/csm by default).
-		if err := os.WriteFile(inst.BinaryPath, data, 0700); err != nil {
+		// #nosec G306 G703 -- Installed binary. 0711: only root can read or
+		// replace it; others can execute it, because parse worker units run
+		// it as a dynamic user. inst.BinaryPath is the installer's configured
+		// destination (/opt/csm/csm by default).
+		if err := os.WriteFile(inst.BinaryPath, data, 0711); err != nil {
 			return fmt.Errorf("writing binary: %w", err)
 		}
 		fmt.Printf("  Binary installed to %s\n", inst.BinaryPath)

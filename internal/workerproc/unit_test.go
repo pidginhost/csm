@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
 	"reflect"
 	"regexp"
 	"strings"
@@ -217,5 +218,54 @@ func TestUnitLauncherUnitNamePattern(t *testing.T) {
 	p := launchUnit(t, cfg)
 	if !regexp.MustCompile(`^csm-parse-worker-zip0-[0-9]+$`).MatchString(p.unit) {
 		t.Fatalf("unit name %q", p.unit)
+	}
+}
+
+// unitCommand writes an executable with mode in a directory with dirMode, and
+// opens the test's own temporary directories to other users.
+func unitCommand(t *testing.T, mode, dirMode os.FileMode) string {
+	t.Helper()
+	root := t.TempDir()
+	for dir := root; dir != "/" && dir != filepath.Dir(os.TempDir()); dir = filepath.Dir(dir) {
+		st, err := os.Stat(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if st.Mode().Perm()&0o001 == 0 {
+			if err := os.Chmod(dir, st.Mode().Perm()|0o011); err != nil {
+				t.Skipf("cannot open %s to others: %v", dir, err)
+			}
+		}
+	}
+	dir := filepath.Join(root, "bin")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "csm")
+	if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, mode); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, dirMode); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+	return path
+}
+
+func TestCheckUnitCommand(t *testing.T) {
+	if err := CheckUnitCommand(unitCommand(t, 0o711, 0o711)); err != nil {
+		t.Fatalf("execute-only binary in a searchable directory: %v", err)
+	}
+	if err := CheckUnitCommand(unitCommand(t, 0o700, 0o755)); err == nil || !strings.Contains(err.Error(), "0700") {
+		t.Fatalf("owner-only binary: %v", err)
+	}
+	if err := CheckUnitCommand(unitCommand(t, 0o711, 0o700)); err == nil || !strings.Contains(err.Error(), "bin") {
+		t.Fatalf("owner-only directory: %v", err)
+	}
+	if err := CheckUnitCommand("csm"); err == nil {
+		t.Fatal("relative command accepted")
 	}
 }

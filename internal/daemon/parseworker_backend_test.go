@@ -3,6 +3,9 @@ package daemon
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -19,6 +22,7 @@ func TestParseWorkersLifecycleInstallsLazyLister(t *testing.T) {
 	}
 	t.Cleanup(func() { stopParseWorkerUnits = real })
 
+	allowParseWorkerCommand(t)
 	d := &Daemon{binaryPath: "/opt/csm/csm"}
 	if err := d.initParseWorkers(); err != nil {
 		t.Fatal(err)
@@ -49,6 +53,7 @@ func TestParseWorkersLifecycleInstallsLazyLister(t *testing.T) {
 }
 
 func TestParseWorkersCleanupFailureWithPhishingDisabled(t *testing.T) {
+	allowParseWorkerCommand(t)
 	real := stopParseWorkerUnits
 	calls := 0
 	stopParseWorkerUnits = func(ctx context.Context, prefix string) error {
@@ -90,5 +95,35 @@ func TestParseWorkersRejectMissingBinary(t *testing.T) {
 	d := &Daemon{}
 	if err := d.initParseWorkers(); err == nil || d.zipLister != nil {
 		t.Fatalf("empty daemon binary accepted: err=%v", err)
+	}
+}
+
+// allowParseWorkerCommand accepts any command path, for tests whose binary
+// path does not exist on the test host.
+func allowParseWorkerCommand(t *testing.T) {
+	t.Helper()
+	real := checkParseWorkerCommand
+	checkParseWorkerCommand = func(string) error { return nil }
+	t.Cleanup(func() { checkParseWorkerCommand = real })
+}
+
+// A unit's dynamic user cannot run an owner-only binary. Without this check
+// every launch would fail at exec, once per scan.
+func TestParseWorkersRejectUnexecutableBinary(t *testing.T) {
+	var stopped int
+	real := stopParseWorkerUnits
+	stopParseWorkerUnits = func(context.Context, string) error { stopped++; return nil }
+	t.Cleanup(func() { stopParseWorkerUnits = real })
+	path := filepath.Join(t.TempDir(), "csm")
+	if err := os.WriteFile(path, []byte("x"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	d := &Daemon{binaryPath: path}
+	err := d.initParseWorkers()
+	if err == nil || !strings.Contains(err.Error(), "executable by others") || d.zipLister != nil {
+		t.Fatalf("owner-only binary: err=%v lister=%v", err, d.zipLister != nil)
+	}
+	if stopped != 1 {
+		t.Fatalf("leftover units not stopped first: %d", stopped)
 	}
 }

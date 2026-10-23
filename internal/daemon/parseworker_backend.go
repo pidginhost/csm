@@ -23,6 +23,9 @@ const parseWorkerMemoryLimit = 512 << 20
 // stopParseWorkerUnits is a seam for tests.
 var stopParseWorkerUnits = workerproc.StopUnits
 
+// checkParseWorkerCommand is a seam for tests whose binary path does not exist.
+var checkParseWorkerCommand = workerproc.CheckUnitCommand
+
 func (d *Daemon) initParseWorkers() error {
 	if d.binaryPath == "" {
 		return errors.New("parse worker: daemon binary unknown")
@@ -35,6 +38,11 @@ func (d *Daemon) initParseWorkers() error {
 		logf("stop leftover units: %v", err)
 	}
 	cancel()
+	// Refused here, once, rather than at every launch: a unit's dynamic user
+	// cannot run an owner-only binary, so each worker would fail at exec.
+	if err := checkParseWorkerCommand(d.binaryPath); err != nil {
+		return fmt.Errorf("parse worker: %w", err)
+	}
 	lister, err := parseworker.NewLister(parseworker.ListerConfig{
 		Launch: workerproc.UnitLauncher(workerproc.UnitConfig{
 			Prefix:        parseWorkerUnitPrefix + "zip0",

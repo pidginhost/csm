@@ -560,7 +560,7 @@ do_install() {
         rm -f "$BINARY_PATH" 2>/dev/null || true
         die "Binary installation failed"
     fi
-    if ! chmod 0700 "$BINARY_PATH"; then
+    if ! chmod 0711 "$BINARY_PATH"; then
         rm -f "$BINARY_PATH" 2>/dev/null || true
         die "Could not secure installed binary"
     fi
@@ -664,7 +664,7 @@ do_upgrade() {
     if ! cp "${tmpdir}/${ARTIFACT_NAME}" "$BINARY_PATH"; then
         rollback_upgrade "Binary installation failed"
     fi
-    if ! chmod 0700 "$BINARY_PATH"; then
+    if ! chmod 0711 "$BINARY_PATH"; then
         rollback_upgrade "Could not secure installed binary"
     fi
     if ! activate_assets "$assets_stage" "$asset_backup"; then
