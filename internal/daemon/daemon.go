@@ -44,6 +44,7 @@ import (
 	"github.com/pidginhost/csm/internal/metrics"
 	"github.com/pidginhost/csm/internal/modsec"
 	"github.com/pidginhost/csm/internal/obs"
+	"github.com/pidginhost/csm/internal/parseworker"
 	"github.com/pidginhost/csm/internal/phptaintworker"
 	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/queuehealth"
@@ -189,6 +190,10 @@ type Daemon struct {
 	// phpTaintSup is the mandatory process boundary around the PHP taint
 	// parser. It starts its child lazily on the first admitted source.
 	phpTaintSup *phptaintworker.Supervisor
+
+	// zipLister lists tenant zips for the phishing-kit check in a locked-down
+	// parse worker unit, started on first use.
+	zipLister *parseworker.Lister
 
 	// policies holds the email PHP-relay pattern policies
 	// (suspicious/safe x-mailer classes, HTTP proxy ranges) loaded
@@ -783,6 +788,11 @@ func (d *Daemon) Run() error {
 	} else {
 		defer d.stopPHPTaintAnalyzer()
 	}
+	if err := d.initParseWorkers(); err != nil {
+		fmt.Fprintf(os.Stderr, "[%s] parse worker init: %v\n", ts(), err)
+	} else {
+		defer d.stopParseWorkers()
+	}
 
 	// Install operator verified-bot ranges before the firewall engine is
 	// exposed and before the initial auto-response pass. The firewall's
@@ -1264,6 +1274,7 @@ func (d *Daemon) Run() error {
 	}
 	d.stopYaraBackend()
 	d.stopPHPTaintAnalyzer()
+	d.stopParseWorkers()
 	csmlog.Info("watchers signalled", "elapsed_ms", time.Since(shutdownStart).Milliseconds())
 
 	d.wg.Wait()

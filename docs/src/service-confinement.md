@@ -55,6 +55,42 @@ wrapper attempts direct execution once; inside the service, restricted writes
 then fail and are reported. A scope unit is unsuitable because it inherits the
 calling process's sandbox.
 
+## Parse worker units
+
+The daemon reads tenant zip listings for the phishing-kit check in a separate
+worker, started on demand as a transient unit with `systemd-run`. Each unit
+gets these properties:
+
+- `DynamicUser=yes`, `CapabilityBoundingSet=` (empty), `NoNewPrivileges=yes`;
+- `PrivateNetwork=yes`, `RestrictAddressFamilies=AF_UNIX`;
+- `ProtectSystem=strict`, `ProtectHome=yes`, `PrivateTmp=yes`,
+  `PrivateDevices=yes`, `ProtectKernelTunables=yes`,
+  `ProtectKernelModules=yes`, `ProtectControlGroups=yes`,
+  `RestrictNamespaces=yes`, `RestrictRealtime=yes`, `LockPersonality=yes`,
+  `MemoryDenyWriteExecute=yes`, `UMask=0077`;
+- `SystemCallFilter=@system-service` with `SystemCallErrorNumber=EPERM`;
+- `MemoryAccounting=yes`, `MemoryLimit=` and `MemoryMax=` set to the
+  worker's memory cap, `MemorySwapMax=0`;
+- `TasksMax=64`, `LimitNOFILE=256`, `LimitCORE=0`, `LimitFSIZE=` set above
+  the largest listing, `CPUWeight=50`, and a one-hour `RuntimeMaxSec`.
+
+The unit starts with a clean environment. The worker has no network and can
+open no host files: it receives the zip as an open descriptor and returns
+entry names in a sealed memfd.
+
+`MemoryLimit` caps RAM only on cgroup v1, so the daemon also writes
+`memory.memsw.limit_in_bytes` in the unit's own memory cgroup, or
+`memory.swappiness=0` where there is no swap accounting. On cgroup v2 it sets
+`memory.swap.max` to 0, and refuses to use a worker on a host with swap on but
+no swap accounting. The daemon can write those files because `csm.service`
+has `ProtectControlGroups=no`. A worker whose memory cannot be capped or
+measured gets no request, and the phishing check reports itself incomplete.
+
+Workers are killed by unit name with `systemctl kill`, never by a PID. If the
+daemon dies, the worker reads end of file on its socket and exits; the
+lifetime cap stops it in any case, and the next daemon start kills any
+`csm-parse-worker-*` unit left over.
+
 ## Limits and validation
 
 These restrictions reduce accidental and misdirected writes. CSM remains a

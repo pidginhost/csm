@@ -1204,21 +1204,91 @@ kill a child; it cannot stop a stuck goroutine.
 The launcher gives the child one Unix socket as both fd 0 and fd 1. A frame
 is a 4-byte big-endian length followed by a JSON envelope, and it may carry
 descriptors. The length is checked against a cap before anything is
-allocated.
+allocated. Passing a descriptor never calls `Fd()`, so the caller's pipe keeps
+its nonblocking mode and deadlines. Request descriptors are duplicated before
+launch, and the caller may close its files once a call returns.
 
 A request that misses its deadline kills and reaps the worker, and that
-worker is never used again. Any other failure does the same. Three failures
-in a row pause spawning for 60 seconds, then one trial request is let
-through. Each supervisor publishes a `requests` queue-health row.
+worker is never used again. Any other round-trip failure does the same, and
+its error matches `workerproc.ErrWorkerFailed` with its text unchanged. Three
+failures in a row pause spawning for 60 seconds, then one trial request is
+let through. Each supervisor publishes a `requests` queue-health row.
 
-Caller cancellation, including during launch, does not count as a worker
-failure or lost request. A canceled trial restarts the breaker cooldown.
-PHP parser panics reported in a valid reply count as lost requests, but do
-not open the breaker or replace the worker. Worker diagnostics must go to
-stderr; stdout carries the protocol socket.
+Some errors are not worker failures and never count toward the breaker:
 
-The PHP taint worker (`csm phptaint-worker`) runs on this package. The YARA
-worker moves to it later; until then the section below describes it.
+- caller cancellation, including during launch; a canceled trial restarts
+  the breaker cooldown;
+- the daemon running out of descriptors (EMFILE or ENFILE) while duplicating
+  request descriptors or starting a child. The request counts as lost work,
+  but the healthy worker stays. Outside load can push the daemon to its
+  descriptor limit, and that must not switch a worker off;
+- PHP parser panics reported in a valid reply, which count as lost requests
+  but do not replace the worker.
+
+A known limit: when the daemon is at its descriptor limit, the kernel drops
+descriptors a reply carries. That looks the same as a worker sending too
+many, so it counts as a worker failure.
+
+`Config.MaxJobs` retires a worker after that many requests, and
+`Process.Retire` lets a launcher retire one after a request, for example over
+a memory threshold. `Config.IdleTimeout` stops a worker left unused; the idle
+countdown restarts only after a served request and never stops a worker in
+the middle of one. Retirement keeps the reply and is not a failure. Both
+settings default to zero, as the PHP taint worker uses them.
+
+`workerproc.Handshake` sends `hello` and checks the child's protocol version
+before any real request. It honors cancellation and the context deadline,
+refuses reply descriptors and clears the socket deadline before returning.
+
+`workerproc.Strikes` remembers inputs that made a worker fail. Two failures
+within 24 hours block an input, for at most 1,024 inputs. The phishing check
+keys it by the zip's SHA-256 and reports a blocked zip with the
+`phishing_kit_archive_unscannable` warning instead of retrying it on every
+scan.
+
+Worker diagnostics must go to stderr; stdout carries the protocol socket. The
+PHP taint worker (`csm phptaint-worker`) runs as a plain child
+(`ExecLauncher`). The YARA worker moves to this package later; until then the
+section below describes it.
+
+### Parse worker units
+
+The archive parse worker (`csm parse-worker`) runs through `UnitLauncher`:
+each worker is a transient systemd unit started with `systemd-run --pipe`,
+named `csm-parse-worker-<slot>-<generation>`, with the properties listed in
+[service confinement](service-confinement.md). There is no fallback to
+running it directly.
+
+Before a unit gets a request, the launcher checks that the worker's main PID
+is in that unit's own memory cgroup, reads back the RAM cap, caps swap, and
+reads current usage. On cgroup v1 it caps memory and swap together, or sets
+swappiness to zero where there is no swap accounting. On cgroup v2 it
+disables swap; without swap accounting it requires a host with no active
+swap. A missing cgroup, a cap that does not read back, unreadable counters,
+or usage already over the cap fail the start. Process RSS polling cannot
+replace this: it misses memfd pages and other processes in the unit.
+
+A watchdog reads the cgroup counters every 500 ms and kills a worker over its
+cap, or whose usage cannot be read. A worker over three quarters of its cap
+after a request is retired. Kill closes the socket at once and asks systemd
+to kill the unit by name; it never signals a PID and never blocks. The daemon
+kills leftover `csm-parse-worker-*` units at startup.
+
+The worker gets an open zip descriptor, never a path, and reads it with
+positional reads, so the daemon's file offset stays put. It returns entry
+names in a memfd it seals against writes, growth and shrinkage. The daemon
+treats every reply byte as hostile: it checks the seals, then the size, every
+record and the entry count, before the visitor sees one name. Records are
+charged against the request's directory budget, never a size the worker
+reports. A malformed reply kills the worker and matches
+`workerproc.ErrWorkerFailed`. An archive the worker could not read reports
+itself incomplete, without counting as lost work. A worker can still leave
+names out; validating the reply does not verify the archive. Name
+classification stays in `internal/checks`.
+
+Unit tests use temporary proc and cgroup trees, never the host's. The kernel
+tests in `internal/workerproc/unit_kernel_test.go` run real units as root on
+the CI kernel runner.
 
 ## YARA-X Worker Process
 

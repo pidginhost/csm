@@ -3926,6 +3926,59 @@
       ]
     },
     {
+      "id": "archive_list",
+      "rows": [
+        "archive_list.requests"
+      ],
+      "bounds": "One listing RPC at a time; lock waiters have no fixed global cap. A listing is bounded by the zip size and lives in the worker's memory cgroup.",
+      "publication": [
+        {
+          "package": "github.com/pidginhost/csm/internal/parseworker",
+          "name": "TestListZipQueuePublication",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestParseWorkersLifecycleInstallsLazyLister",
+          "mode": "portable"
+        }
+      ],
+      "lifecycle": [
+        {
+          "package": "github.com/pidginhost/csm/internal/parseworker",
+          "name": "TestListZipCorruptIsIncompleteNotFailure",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/parseworker",
+          "name": "TestListZipRejectsMalformedListing",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/parseworker",
+          "name": "TestListZipWorkerCrash",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/workerproc",
+          "name": "TestIdleWorkerIsStopped",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/workerproc",
+          "name": "TestCallRecyclesAfterMaxJobs",
+          "mode": "portable"
+        }
+      ],
+      "anchors": [
+        {
+          "path": "internal/parseworker/lister.go",
+          "symbol": "Lister.proc",
+          "shape": "*workerproc.Supervisor"
+        }
+      ]
+    },
+    {
       "id": "php_taint",
       "rows": [
         "php_taint.requests"
