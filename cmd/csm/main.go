@@ -4,13 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"os/user"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -23,6 +28,7 @@ import (
 	"github.com/pidginhost/csm/internal/health"
 	"github.com/pidginhost/csm/internal/integrity"
 	"github.com/pidginhost/csm/internal/obs"
+	"github.com/pidginhost/csm/internal/parseworker"
 	"github.com/pidginhost/csm/internal/phptaintworker"
 	"github.com/pidginhost/csm/internal/sdnotify"
 	"github.com/pidginhost/csm/internal/signatures"
@@ -100,6 +106,8 @@ func main() {
 		runYaraWorker()
 	case "phptaint-worker":
 		runPHPTaintWorker()
+	case "parse-worker":
+		runParseWorker(os.Args[2:])
 	case "install":
 		runInstall()
 	case "uninstall":
@@ -480,6 +488,32 @@ func runPHPTaintWorker() {
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "phptaint-worker:", err)
+		os.Exit(1)
+	}
+}
+
+// runParseWorker is the isolated child entry point for archive parsing. Fd 0
+// and fd 1 are the daemon's socket; diagnostics go to stderr.
+func runParseWorker(args []string) {
+	// The unit's LimitFSIZE caps listing memfds. Past it, a write must fail
+	// with EFBIG rather than the signal killing the worker.
+	signal.Ignore(syscall.SIGXFSZ)
+	fs := flag.NewFlagSet("parse-worker", flag.ContinueOnError)
+	memoryLimit := fs.Int64("memory-limit", 0, "the unit's memory cap in bytes")
+	err := fs.Parse(args)
+	if err == nil && *memoryLimit > 0 {
+		// Make the collector work harder before the kernel kills the unit.
+		debug.SetMemoryLimit(*memoryLimit * 8 / 10)
+	}
+	var conn *net.UnixConn
+	if err == nil {
+		conn, err = workerproc.ChildConn()
+	}
+	if err == nil {
+		err = parseworker.Serve(context.Background(), conn)
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "parse-worker:", err)
 		os.Exit(1)
 	}
 }
