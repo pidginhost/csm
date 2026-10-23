@@ -48,6 +48,10 @@ RUN dnf -y install dnf-plugins-core epel-release \
         perl autoconf automake libtool \
         clang llvm libbpf libbpf-devel \
         elfutils-libelf-devel \
+        pam-devel \
+    && dnf module reset -y php \
+    && dnf module enable -y php:8.2 \
+    && dnf -y install php-cli \
     && dnf clean all
 
 # Go 1.26.2 from the official tarball. Alma 8's repos track older
@@ -75,6 +79,18 @@ RUN set -eux; \
     tar -xzf /tmp/go.tar.gz -C /usr/local; \
     rm /tmp/go.tar.gz
 ENV PATH=/usr/local/go/bin:$PATH
+# The tarball defaults to GOTOOLCHAIN=auto, which would fetch a newer
+# toolchain in every job whose go.mod outgrew this image. Fail instead.
+ENV GOTOOLCHAIN=local
+
+# Analysers the tagged lint and gosec jobs run, built with this image's Go
+# so they read its export data. Keep the versions equal to
+# Dockerfile.ci-tools.
+ARG GOLANGCI_LINT_VERSION=v2.14.0
+ARG GOSEC_VERSION=v2.29.1-0.20261005092323-d2b649ec0182
+RUN GOBIN=/usr/local/bin go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${GOLANGCI_LINT_VERSION} \
+    && GOBIN=/usr/local/bin go install github.com/securego/gosec/v2/cmd/gosec@${GOSEC_VERSION} \
+    && rm -rf /root/.cache/go-build /root/go/pkg/mod
 
 # Rust toolchain via rustup. We install our own (not Alma's rust
 # package) so we can pin a known-good version with rustup and
