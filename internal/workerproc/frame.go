@@ -67,6 +67,10 @@ func ReadFrame(r io.Reader, maxBytes int) (Frame, error) {
 	}
 	body := make([]byte, size)
 	if _, err := io.ReadFull(r, body); err != nil {
+		if errors.Is(err, io.EOF) {
+			// Only an end before the header is a clean end of stream.
+			err = io.ErrUnexpectedEOF
+		}
 		return Frame{}, fmt.Errorf("workerproc: read body: %w", err)
 	}
 	var f Frame
@@ -118,16 +122,10 @@ func sendBody(conn *net.UnixConn, body []byte, fds []*os.File) error {
 // it. On error every received descriptor is closed; on success the caller
 // owns the returned files.
 func ReceiveFrame(conn *net.UnixConn, lim Limits) (Frame, []*os.File, error) {
-	r := &rightsReader{conn: conn, oob: make([]byte, syscall.CmsgSpace(4*max(lim.MaxFDs, 1)))}
+	r := &rightsReader{conn: conn, limit: lim.MaxFDs, oob: make([]byte, syscall.CmsgSpace(4*max(lim.MaxFDs, 1)))}
 	f, err := ReadFrame(r, lim.MaxFrameBytes)
-	switch {
-	case err != nil:
-	case r.err != nil:
+	if err == nil {
 		err = r.err
-	case r.truncated:
-		err = errors.New("workerproc: descriptors truncated in transit")
-	case len(r.files) > lim.MaxFDs:
-		err = fmt.Errorf("workerproc: frame carries %d descriptors, limit %d", len(r.files), lim.MaxFDs)
 	}
 	if err != nil {
 		closeFiles(r.files)
@@ -137,22 +135,35 @@ func ReceiveFrame(conn *net.UnixConn, lim Limits) (Frame, []*os.File, error) {
 }
 
 // rightsReader reads a stream socket and collects the SCM_RIGHTS descriptors
-// that arrive along the way, so none is dropped whichever read picks it up.
+// that arrive along the way. A sender attaches descriptors to a frame's first
+// byte, so they arrive on the first read; any later ones, or any past the
+// limit, come from a peer trying to pile descriptors up and are closed at
+// once.
 type rightsReader struct {
-	conn      *net.UnixConn
-	oob       []byte
-	files     []*os.File
-	truncated bool
-	err       error
+	conn  *net.UnixConn
+	oob   []byte
+	limit int
+	reads int
+	files []*os.File
+	err   error
 }
 
 func (r *rightsReader) Read(p []byte) (int, error) {
 	n, oobn, flags, _, err := r.conn.ReadMsgUnix(p, r.oob)
+	r.reads++
 	if flags&syscall.MSG_CTRUNC != 0 {
-		r.truncated = true
+		r.fail(errors.New("workerproc: descriptors truncated in transit"))
 	}
 	if oobn > 0 {
 		r.collect(r.oob[:oobn])
+	}
+	if errors.Is(err, io.EOF) {
+		// net wraps EOF in an OpError; io.ReadFull only recognises it bare,
+		// and needs it to tell a clean end from a truncated frame.
+		err = io.EOF
+	}
+	if err == nil {
+		err = r.err
 	}
 	return n, err
 }
@@ -160,7 +171,7 @@ func (r *rightsReader) Read(p []byte) (int, error) {
 func (r *rightsReader) collect(oob []byte) {
 	msgs, err := syscall.ParseSocketControlMessage(oob)
 	if err != nil {
-		r.err = fmt.Errorf("workerproc: parse control message: %w", err)
+		r.fail(fmt.Errorf("workerproc: parse control message: %w", err))
 		return
 	}
 	for i := range msgs {
@@ -169,12 +180,27 @@ func (r *rightsReader) collect(oob []byte) {
 		}
 		fds, err := syscall.ParseUnixRights(&msgs[i])
 		if err != nil {
-			r.err = fmt.Errorf("workerproc: parse descriptors: %w", err)
+			r.fail(fmt.Errorf("workerproc: parse descriptors: %w", err))
 			continue
 		}
 		for _, fd := range fds {
-			r.files = append(r.files, os.NewFile(uintptr(fd), "received"))
+			switch {
+			case r.reads > 1:
+				r.fail(errors.New("workerproc: descriptors arrived after the start of a frame"))
+			case len(r.files) >= r.limit:
+				r.fail(fmt.Errorf("workerproc: frame carries more than %d descriptors", r.limit))
+			default:
+				r.files = append(r.files, os.NewFile(uintptr(fd), "received"))
+				continue
+			}
+			_ = syscall.Close(fd)
 		}
+	}
+}
+
+func (r *rightsReader) fail(err error) {
+	if r.err == nil {
+		r.err = err
 	}
 }
 

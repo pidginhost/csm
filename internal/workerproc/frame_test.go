@@ -233,3 +233,33 @@ func TestSendFrameRefusesMoreThanKernelLimit(t *testing.T) {
 		t.Fatal("254 descriptors accepted")
 	}
 }
+
+// A sender attaches descriptors to a frame's first byte. Descriptors that
+// arrive later in the frame come from a peer splitting one frame across many
+// sendmsg calls to pile up descriptors past the cap.
+func TestReceiveFrameRejectsDescriptorsAfterFirstRead(t *testing.T) {
+	a, b := socketPair(t)
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	defer w.Close()
+	before := openFDs(t)
+	body := []byte(`{"op":"x"}`)
+	var hdr [4]byte
+	binary.BigEndian.PutUint32(hdr[:], uint32(len(body)))
+	if _, err := a.Write(hdr[:]); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := a.WriteMsgUnix(body[:1], syscall.UnixRights(int(w.Fd())), nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Write(body[1:]); err != nil {
+		t.Fatal(err)
+	}
+	if _, fds, err := ReceiveFrame(b, Limits{MaxFrameBytes: 1 << 20, MaxFDs: 1}); err == nil || fds != nil {
+		t.Fatalf("mid-frame descriptor accepted: fds=%d err=%v", len(fds), err)
+	}
+	assertNoFDLeak(t, before)
+}
