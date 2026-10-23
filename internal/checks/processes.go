@@ -177,12 +177,13 @@ func CheckFakeKernelThreads(ctx context.Context, _ *config.Config, _ *state.Stor
 	return findings
 }
 
-func CheckSuspiciousProcesses(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
+func CheckSuspiciousProcesses(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
 	suspiciousNames := suspiciousExeNames
 	suspiciousCmdline := suspiciousCmdlinePatterns
 	suspiciousPaths := suspiciousExePaths
+	docroots := NewDocrootIndex(ResolveWebRoots(cfg))
 
 	procs, _ := osFS.Glob("/proc/[0-9]*/exe")
 	for _, exePath := range procs {
@@ -253,9 +254,30 @@ func CheckSuspiciousProcesses(ctx context.Context, _ *config.Config, _ *state.St
 				break
 			}
 		}
+
+		if uidInt, err := strconv.Atoi(uid); err == nil && docroots.Lookup(strings.TrimSuffix(exe, " (deleted)")) != "" {
+			if f := InspectDocrootExec(cfg, pidInt, uidInt, exe, procParentComm(statusData), docroots); f != nil {
+				findings = append(findings, *f)
+			}
+		}
 	}
 
 	return findings
+}
+
+// procParentComm returns the name of the parent of the process whose
+// /proc/<pid>/status is given, or "" when it cannot be read.
+func procParentComm(status []byte) string {
+	for _, line := range strings.Split(string(status), "\n") {
+		if ppid, ok := strings.CutPrefix(line, "PPid:"); ok {
+			comm, err := osFS.ReadFile(filepath.Join("/proc", strings.TrimSpace(ppid), "comm"))
+			if err != nil {
+				return ""
+			}
+			return strings.TrimSpace(string(comm))
+		}
+	}
+	return ""
 }
 
 // CheckPHPProcesses inspects running lsphp processes to detect active

@@ -5,6 +5,7 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"maps"
 	"sync/atomic"
 	"time"
 
@@ -26,6 +27,7 @@ type execBPF struct {
 	alertCh chan<- alert.Finding
 	cfg     *config.Config
 	count   atomic.Uint64
+	docroot *docrootExecMonitor
 }
 
 func startExecBPF(_ context.Context, alertCh chan<- alert.Finding, cfg *config.Config) (*execBPF, error) {
@@ -58,6 +60,7 @@ func startExecBPF(_ context.Context, alertCh chan<- alert.Finding, cfg *config.C
 		reader:  reader,
 		alertCh: alertCh,
 		cfg:     cfg,
+		docroot: newDocrootExecMonitor(cfg, alertCh),
 	}, nil
 }
 
@@ -65,7 +68,9 @@ func (e *execBPF) Mode() string       { return "bpf" }
 func (e *execBPF) EventCount() uint64 { return e.count.Load() }
 
 func (e *execBPF) QueueStatuses(now time.Time) map[string]queuehealth.Status {
-	return e.reader.QueueStatuses(now)
+	states := e.reader.QueueStatuses(now)
+	maps.Copy(states, e.docroot.queueStatuses(now))
+	return states
 }
 
 func (e *execBPF) Run(ctx context.Context) {
@@ -79,6 +84,12 @@ func (e *execBPF) Run(ctx context.Context) {
 	errorsCh := e.reader.Errors()
 	eventsCh := e.reader.Events()
 	pcCache, pcEnr := ProcessCtx()
+	stopDocroot := e.docroot.start(ctx, func(f *alert.Finding, ev ExecEvent) {
+		attachProcessCtxToExecFinding(pcCache, f, ev)
+	})
+	// Runs before the reader teardown above. The loop below is the only
+	// producer, and it has returned by then.
+	defer stopDocroot()
 	for {
 		select {
 		case <-ctx.Done():
@@ -106,6 +117,7 @@ func (e *execBPF) Run(ctx context.Context) {
 						csmlog.Warn("exec bpf: alert channel full, dropping finding")
 					}
 				}
+				e.docroot.observe(ev)
 			})
 		}
 	}

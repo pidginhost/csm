@@ -147,6 +147,7 @@ var checkRegistry = []CheckInfo{
 	{Name: "cgi_backdoor_realtime", Category: CategoryMalware, Correlation: CorrelationSecurityEvent},
 	{Name: "cgi_suspicious_location_realtime", Category: CategoryMalware, Correlation: CorrelationSecurityEvent},
 	{Name: "cross_account_malware", Category: CategoryMalware, Correlation: CorrelationDerived, Response: ResponsePolicy{NeverChallenge: true}},
+	{Name: "docroot_binary_exec", Category: CategoryMalware, Correlation: CorrelationSecurityEvent},
 	{Name: "executable_in_config_realtime", Category: CategoryMalware, Correlation: CorrelationSecurityEvent},
 	{Name: "executable_in_tmp_realtime", Category: CategoryMalware, Correlation: CorrelationSecurityEvent},
 	{Name: "fake_kernel_thread", Category: CategoryMalware, Correlation: CorrelationSecurityEvent, Response: ResponsePolicy{NeverChallenge: true}},

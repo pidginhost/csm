@@ -12,6 +12,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 ### Security
 
 - Scans now report native Linux programs that download PHP or .htaccess payloads, including ones hidden in theme or plugin folders.
+- Programs that run from a website's document root are now checked as they start: malware is reported as Critical, and PHP starting one raises a warning.
 
 ### Changed
 

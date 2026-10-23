@@ -285,7 +285,7 @@ var runnerFindingNames = map[string][]string{
 	"ssh_logins":           {"ssh_login_unknown_ip"},
 	"sshd_config":          {"sshd_config_change"},
 	"ssl_certs":            {"ssl_cert_issued"},
-	"suspicious_processes": {"suspicious_process"},
+	"suspicious_processes": {"docroot_binary_exec", "suspicious_process"},
 	"symlink_attacks":      {"symlink_attack"},
 	"uid0_accounts":        {"uid0_account"},
 	"user_outbound":        {"user_outbound_connection", "direct_smtp_egress", "bad_asn_outbound"},

@@ -518,6 +518,11 @@ and buffered output left after the reader stops. A received event remains
 running until evaluation and delivery to the finding queue finish, including
 events intentionally filtered during evaluation. Kernel ring occupancy and
 reservation failures are separate from these userspace measurements.
+`bpf.execution.docroot` reports up to 1,024 non-root process starts waiting
+for a check of a program in a document root, with one worker reading and
+scanning them. A start refused by a full queue, or left waiting when the exec
+monitor stops, counts as lost; that program is still read by the scheduled
+deep scan and judged by the periodic process check while it runs.
 `bpf.connection.verdict` reports the advisory annotation pool's 256 waiting
 slots and up to four running callbacks. Repeated findings for a pending
 destination, reason and severity share one request and retain its original age.

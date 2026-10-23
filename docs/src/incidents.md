@@ -703,6 +703,7 @@ Attribution gaps:
 | `direct_smtp_egress` | security event |  |  |
 | `dns_connection` | ignored | host-scope |  |
 | `dns_zone_change` | ignored | informational |  |
+| `docroot_binary_exec` | security event |  |  |
 | `dpkg_integrity` | ignored | host-scope |  |
 | `drupal_admin_injection` | security event |  |  |
 | `drupal_content_injection` | security event |  |  |

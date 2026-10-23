@@ -102,6 +102,7 @@ var attributionEvidence = map[string]string{
 	"php_remote_taint":              "TestContentFindingsAttributeByPath",
 	"js_keylogger_dataflow":         "TestContentFindingsAttributeByPath",
 	"yara_match_scheduled":          "TestYARAScheduledFindingAttributesByPath",
+	"docroot_binary_exec":           "TestDocrootExecFindingAttributesByPath",
 	"wp_core_integrity":             "TestWPCoreIntegrityAttributesByPath",
 	"symlink_attack":                "TestSymlinkAttackStampsOwner",
 	// Realtime producers (Linux).
