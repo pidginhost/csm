@@ -458,6 +458,12 @@ those zones or of other configured resolvers.
   Keep your own regexp rules in `/etc/rspamd/override.d/regexp.conf`;
 - the map redirect files and, with a DNS feed, the blocklist files listed
   under [Feeds](#feeds);
+- `groups.conf` in `/etc/rspamd/local.d`, which lowers rspamd's
+  `HIDDEN_TEXT` weight from 5 to 2. Newsletters hide their preview line, and
+  at the default `tag_score` that rule plus one minor symbol tagged them. An
+  operator-owned `groups.conf` is left alone: rspamd keeps its own weights and
+  CSM reports an `rspamd_scores` warning. Move your weights out of that file
+  if CSM should manage it;
 - with learning on, the learning files listed under
   [Learning from Spam folders](#learning-from-spam-folders);
 - a completion record in `/var/lib/csm/antispam`.

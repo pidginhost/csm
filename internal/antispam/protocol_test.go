@@ -327,3 +327,27 @@ func TestSettingsValidateRoundcubeNeedsLearning(t *testing.T) {
 		t.Fatal("Roundcube without Learning accepted")
 	}
 }
+
+func TestRequestRoundTripSkipScores(t *testing.T) {
+	want := defaults(false)
+	want.SkipScores = true
+	data, err := json.Marshal(ApplyRequest(want))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"skip_scores":true`) {
+		t.Fatalf("request %s lacks skip_scores", data)
+	}
+	_, got, err := DecodeRequest(data)
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("decoded %+v, %v", got, err)
+	}
+	for _, extra := range []string{`,"skip_scores":"true"}`, `,"skip_scores":null}`, `,"skip_scores":1}`} {
+		if _, _, err := DecodeRequest([]byte(strings.TrimSuffix(validApply, "}") + extra)); err == nil {
+			t.Errorf("accepted %s", extra)
+		}
+	}
+	if _, _, err := DecodeRequest([]byte(`{"operation":"remove","skip_scores":true}`)); err == nil {
+		t.Error("remove accepted skip_scores")
+	}
+}
