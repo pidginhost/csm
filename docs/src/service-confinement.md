@@ -76,9 +76,13 @@ gets these properties:
 - `TasksMax=64`, `LimitNOFILE=256`, `LimitCORE=0`, `LimitFSIZE=` set above
   the largest listing, `CPUWeight=50`, and a one-hour `RuntimeMaxSec`.
 
-The unit starts with a clean environment. The worker has no network and can
-open no host files: it receives the zip as an open descriptor and returns
-entry names in a sealed memfd.
+The worker receives the zip as an open descriptor and returns entry names in
+a sealed memfd. It cannot create IPv4 or IPv6 sockets. Unix sockets remain
+available. `/home`, `/root` and `/run/user` are hidden; other account-home
+locations are not. Most host files are read-only. The worker can still read
+world-readable host files outside those directories and write in its private
+temporary directories. The daemon does not forward its environment to the
+unit; systemd supplies the service environment.
 
 `MemoryLimit` caps RAM only on cgroup v1, so the daemon also writes
 `memory.memsw.limit_in_bytes` in the unit's own memory cgroup, or
@@ -87,11 +91,17 @@ entry names in a sealed memfd.
 no swap accounting. The daemon can write those files because `csm.service`
 has `ProtectControlGroups=no`. A worker whose memory cannot be capped or
 measured gets no request, and the phishing check reports itself incomplete.
+Without cgroup v2 swap accounting, the watchdog also checks that swap stays
+off throughout the worker's lifetime.
 
 Workers are killed by unit name with `systemctl kill`, never by a PID. If the
-daemon dies, the worker reads end of file on its socket and exits; the
-lifetime cap stops it in any case, and the next daemon start kills any
-`csm-parse-worker-*` unit left over.
+daemon dies, a worker waiting for a request reads end of file and exits. A
+worker stuck parsing may remain until the lifetime cap stops it. At startup,
+the daemon attempts to kill leftover `csm-parse-worker-*` units; cleanup
+failures are logged and do not prevent startup.
+
+`disabled_checks: [phishing]` disables scheduled phishing checks. Requested
+account scans can still use the worker, and startup cleanup still runs.
 
 ## Limits and validation
 

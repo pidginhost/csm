@@ -1234,7 +1234,7 @@ many, so it counts as a worker failure.
 a memory threshold. `Config.IdleTimeout` stops a worker left unused; the idle
 countdown restarts only after a served request and never stops a worker in
 the middle of one. Retirement keeps the reply and is not a failure. Both
-settings default to zero, as the PHP taint worker uses them.
+settings default to zero; the PHP taint worker leaves them at those defaults.
 
 `workerproc.Handshake` sends `hello` and checks the child's protocol version
 before any real request. It honors cancellation and the context deadline,
@@ -1257,12 +1257,17 @@ The archive parse worker (`csm parse-worker`) runs through `UnitLauncher`:
 each worker is a transient systemd unit started with `systemd-run --pipe`,
 named `csm-parse-worker-<slot>-<generation>`, with the properties listed in
 [service confinement](service-confinement.md). There is no fallback to
-running it directly.
+running it directly. The daemon installs one lazy zip lister, using slot
+`zip0`, before scans start. It publishes `archive_list.requests` and is
+stopped during daemon shutdown. The worker retires after 1,000 requests or
+ten idle minutes. Each archive RPC has a 30-second timeout; unit startup has
+a separate ten-second timeout, and reaping can take another ten seconds.
 
-Before a unit gets a request, the launcher checks that the worker's main PID
-is in that unit's own memory cgroup, reads back the RAM cap, caps swap, and
-reads current usage. On cgroup v1 it caps memory and swap together, or sets
-swappiness to zero where there is no swap accounting. On cgroup v2 it
+After the hello exchange, before an archive request, the launcher checks
+that the worker's main PID is in that unit's own memory cgroup, reads back
+the RAM cap, caps swap, and reads current usage. On cgroup v1 it caps memory
+and swap together, or sets swappiness to zero where there is no swap
+accounting. On cgroup v2 it
 disables swap; without swap accounting it requires a host with no active
 swap. A missing cgroup, a cap that does not read back, unreadable counters,
 or usage already over the cap fail the start. Process RSS polling cannot
@@ -1272,7 +1277,10 @@ A watchdog reads the cgroup counters every 500 ms and kills a worker over its
 cap, or whose usage cannot be read. A worker over three quarters of its cap
 after a request is retired. Kill closes the socket at once and asks systemd
 to kill the unit by name; it never signals a PID and never blocks. The daemon
-kills leftover `csm-parse-worker-*` units at startup.
+attempts to kill leftover `csm-parse-worker-*` units at startup, with a
+30-second timeout. Cleanup failures are logged; lister initialization still
+proceeds. Disabling scheduled phishing checks does not disable cleanup or
+archive listings for requested account scans.
 
 The worker gets an open zip descriptor, never a path, and reads it with
 positional reads, so the daemon's file offset stays put. It returns entry

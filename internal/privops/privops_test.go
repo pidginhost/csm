@@ -199,6 +199,51 @@ func TestEveryAutomaticHostChangeExplainsItsControl(t *testing.T) {
 	}
 }
 
+func TestParseWorkerControlDisclosesUnconditionalCleanup(t *testing.T) {
+	for _, op := range Operations() {
+		if op.ID != "detect.parse_worker_units" {
+			continue
+		}
+		if op.DisableKey != "" || op.DisableValue != "" {
+			t.Fatalf("parse worker claims a full opt-out: %s", op.DisableInstruction())
+		}
+		for _, scope := range []string{"disabled_checks", "scheduled", "requested", "startup cleanup"} {
+			if !strings.Contains(op.DisableReason, scope) {
+				t.Errorf("parse worker control omits %q: %s", scope, op.DisableReason)
+			}
+		}
+		return
+	}
+	t.Fatal("parse worker operation is missing")
+}
+
+func TestParseWorkerMemoryWritesStayInsideDaemon(t *testing.T) {
+	var memory, units *Op
+	for _, op := range Operations() {
+		switch op.ID {
+		case "detect.parse_worker_memory":
+			memory = &op
+		case "detect.parse_worker_units":
+			units = &op
+		}
+	}
+	if memory == nil || units == nil {
+		t.Fatal("parse worker memory controls and transient units need separate operations")
+	}
+	if memory.Unsandboxed || !units.Unsandboxed {
+		t.Fatal("memory limits are written by the daemon; only the worker runs outside its sandbox")
+	}
+	if !slices.Equal(units.Writes, []string{"systemd:transient units"}) {
+		t.Fatalf("unit operation claims in-daemon writes: %v", units.Writes)
+	}
+	if !slices.Equal(memory.Writes, []string{"cgroup:/sys/fs/cgroup/memory/system.slice/csm-parse-worker-*.service", "cgroup:/sys/fs/cgroup/system.slice/csm-parse-worker-*.service"}) {
+		t.Fatalf("memory operation does not name both kernel cgroup layouts: %v", memory.Writes)
+	}
+	if memory.DisableKey != "" || !strings.Contains(memory.DisableReason, "requested account scans") {
+		t.Fatalf("memory control hides requested scans: %s", memory.DisableInstruction())
+	}
+}
+
 func TestDisableValuesAreValidConfigYAML(t *testing.T) {
 	for _, op := range Operations() {
 		if op.DisableKey == "" {
@@ -235,7 +280,7 @@ func TestUnconfigurableHostChangesAreExplicit(t *testing.T) {
 			}
 		}
 	}
-	if want := []string{"detect.bpf_probe", "detect.kernel_livepatch_probe"}; !reflect.DeepEqual(ids, want) {
+	if want := []string{"detect.bpf_probe", "detect.kernel_livepatch_probe", "detect.parse_worker_memory", "detect.parse_worker_units"}; !reflect.DeepEqual(ids, want) {
 		t.Errorf("unconfigurable host changes = %v, want %v; verify each new exception against its callers", ids, want)
 	}
 }
@@ -458,6 +503,7 @@ var reviewedRiskTiers = map[string]RiskTier{
 	"detect.kernel_livepatch_probe": RiskReversible,
 	"detect.kernel_oom":             RiskObserve,
 	"detect.mail_queue_probe":       RiskReversible,
+	"detect.parse_worker_memory":    RiskReversible,
 	"detect.parse_worker_units":     RiskReversible,
 	"detect.outbound_connections":   RiskReversible,
 	"detect.pam_events":             RiskObserve,
@@ -552,7 +598,8 @@ var reviewedRecoveryGaps = map[string]string{
 	"detect.bpf_probe":              "This inventory does not yet specify verified detach, map restoration and crash recovery for these kernel hooks.",
 	"detect.kernel_livepatch_probe": "This inventory does not specify recovery of incidental external cache or log writes by probe commands.",
 	"detect.mail_queue_probe":       "This inventory does not specify recovery of incidental external cache or log writes by probe commands.",
-	"detect.parse_worker_units":     "Worker units and their cgroups end with the unit; leftovers are killed at daemon start, but this inventory specifies no contract for that cleanup.",
+	"detect.parse_worker_memory":    "Memory and swap limits end with the worker cgroup; this inventory specifies no separate cleanup contract.",
+	"detect.parse_worker_units":     "Worker units and their cgroups end with the unit; startup attempts to kill leftovers and logs failures, but this inventory specifies no contract for that cleanup.",
 	"detect.outbound_connections":   "This inventory does not yet specify verified detach, map restoration and crash recovery for these kernel hooks.",
 	"detect.process_exec":           "This inventory does not yet specify verified detach, map restoration and crash recovery for these kernel hooks.",
 	"detect.sensitive_file_writes":  "This inventory does not yet specify verified detach, map restoration and crash recovery for these kernel hooks.",
