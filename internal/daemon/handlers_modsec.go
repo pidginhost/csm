@@ -185,8 +185,9 @@ func parseModSecLogLine(line string, cfg *config.Config) []alert.Finding {
 	// or merely incremented a counter. Without further context every match
 	// would be counted as a deny, escalating to a 24-hour auto-block after
 	// three pass-action triggers from the same IP. Consult the rule-action
-	// registry built at daemon start: pass/log/allow rules produce a
-	// warning, deny/drop/block produce a block, and an unknown rule ID in a
+	// registry built at daemon start: pass/allow rules produce a warning,
+	// deny/drop and the other disruptive actions produce a block, block
+	// follows the rule's SecDefaultAction, and an unknown rule ID in a
 	// populated registry stays conservative. When the registry is empty, the
 	// line remains a warning until a refresh loads rule actions.
 	check := "modsec_warning_realtime"

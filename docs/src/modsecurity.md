@@ -55,11 +55,32 @@ saved exclusions cannot be read, CSM keeps running and blocking requests but
 pauses ModSecurity firewall escalation, and the rules page reports the error
 instead of overwriting them. The next start retries the default update.
 
+LiteSpeed logs every rule match as `triggered!`, whether or not the rule denied
+the request, so CSM looks up each rule's action in the installed rule files.
+Apache logs say whether a request was denied and do not need the lookup. A rule
+whose action is `block` does what the `SecDefaultAction` for its phase says, and
+`pass` when there is none, as in ModSecurity. OWASP CRS in anomaly scoring mode
+sets `pass`, so its detection rules count as warnings, not denies. CSM does not
+follow `Include` order: a `SecDefaultAction` applies to the rules in its own
+directory and below, so a vendor pack's setup file governs that pack and no
+other.
+
+CSM reads rule IDs, phases and actions from the rule's action argument. Text
+inside an operator, message or log data cannot override them. Explicit
+disruptive actions take precedence over inherited `block` actions. When setup
+files in the applicable directory cannot be read or parsed, inherited `block`
+actions remain blocking until CSM can resolve them. Explicit actions are still
+usable, and rules without a disruptive action remain unknown.
+
+The directory walk follows symlinked packs and rule directories. Defaults
+follow the configured directory layout, including nested overrides. Directory
+cycles are reported as incomplete reads and prevent caching the result.
+
 CSM checks the rule-action registry every five minutes and rebuilds it when rule
-file contents change. Read failures leave the build uncached so the next check
-retries. Files that were read in full but exceeded the parser's line limit are
-reported without forcing unchanged files to be parsed again. Rules appended
-after parsing reaches the end of a file are picked up on the next check.
+or setup file contents change. Read failures leave the build uncached so the
+next check retries. Files that were read in full but exceeded the parser's line
+limit are reported without forcing unchanged files to be parsed again. Rules
+appended after parsing reaches the end of a file are picked up on the next check.
 
 The reload command runs inside CSM's systemd sandbox. Use a service-manager
 command such as `systemctl reload lsws` for LiteSpeed, so the web server's service

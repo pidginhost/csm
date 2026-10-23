@@ -2,6 +2,7 @@ package modsec
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -21,29 +22,31 @@ type Rule struct {
 	Description string // from msg:'...' field
 	Action      string // disposition keyword: deny|drop|block|redirect|proxy|pause|allow|pass; "" if rule has only metadata (log, msg, ...) and inherits SecDefaultAction
 	StatusCode  int    // 403, 429, 0 (for pass)
-	Phase       int    // 1 or 2
+	Phase       int    // phase named in the action list, 1-5; 0 if none
 	Raw         string // full rule text including chains
 	IsCounter   bool   // true if pass,nolog (bookkeeping rule, hidden in UI)
 }
 
 var (
-	reID     = regexp.MustCompile(`[,"]id:(\d+)`)
 	reMsg    = regexp.MustCompile(`msg:'([^']*)'`)
-	rePhase  = regexp.MustCompile(`phase:(\d)`)
 	reStatus = regexp.MustCompile(`status:(\d+)`)
 )
 
+// defaultPhase is the phase ModSecurity uses for a rule or SecDefaultAction
+// that does not name one.
+const defaultPhase = 2
+
 // dispositionPriority lists the ModSecurity action keywords that decide
 // what happens to the request, ordered most-disruptive first. The first
-// keyword present as a standalone token in the action string wins; this
-// matches how ModSecurity itself resolves multiple disruptive directives
-// in a single rule. Metadata keywords (log, msg, severity, tag, ...) are
-// intentionally excluded - a rule that carries only metadata inherits
-// SecDefaultAction, which CSM does not parse, so the registry leaves
-// Action empty. A populated registry treats that rule as unknown and the
-// LiteSpeed classifier defaults it to block.
+// keyword present as a standalone token in the action string wins so an
+// explicit disruptive action cannot be weakened by block inheritance.
+// Metadata keywords (log, msg, severity, tag, ...) are
+// intentionally excluded. A rule that carries only metadata has an empty
+// Action; the registry leaves it out, so the LiteSpeed classifier treats it
+// as unknown and defaults it to block. block itself names no disruptive
+// action: the registry resolves it through SecDefaultAction.
 var dispositionPriority = []string{
-	"deny", "drop", "block", "redirect", "proxy", "pause", "allow", "pass",
+	"deny", "drop", "redirect", "proxy", "pause", "block", "allow", "pass",
 }
 
 // dispositionSet is dispositionPriority as a lookup table. Pre-built for
@@ -86,10 +89,14 @@ func ParseRulesFileAll(path string) ([]Rule, error) {
 	}
 	defer f.Close()
 
-	return parseRules(f)
+	rules, _, err := parseRules(f)
+	return rules, err
 }
 
-func parseRules(reader io.Reader) ([]Rule, error) {
+// parseRules returns the rules in a config file and the disruptive action
+// each phase's SecDefaultAction in it declares. A later directive for the
+// same phase replaces an earlier one.
+func parseRules(reader io.Reader) ([]Rule, map[int]string, error) {
 	// Phase 1: Read lines, joining backslash continuations into logical lines.
 	var logicalLines []string
 	var current strings.Builder
@@ -115,15 +122,15 @@ func parseRules(reader io.Reader) ([]Rule, error) {
 		if strings.HasSuffix(trimmed, "\\") {
 			// Continuation: strip trailing \ and keep accumulating.
 			if err := appendCurrent(strings.TrimSuffix(trimmed, "\\")); err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			if err := appendCurrent(" "); err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			continue
 		}
 		if err := appendCurrent(trimmed); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		logicalLines = append(logicalLines, current.String())
 		current.Reset()
@@ -132,7 +139,7 @@ func parseRules(reader io.Reader) ([]Rule, error) {
 		logicalLines = append(logicalLines, current.String())
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// Phase 2: Group logical lines into blocks.
@@ -142,6 +149,8 @@ func parseRules(reader io.Reader) ([]Rule, error) {
 	var blocks []string
 	var block strings.Builder
 	chainPending := false
+	defaults := make(map[int]string)
+	var parseErr error
 
 	flushBlock := func() {
 		if block.Len() > 0 {
@@ -152,7 +161,25 @@ func parseRules(reader io.Reader) ([]Rule, error) {
 	}
 
 	for _, line := range logicalLines {
-		if strings.HasPrefix(line, "SecRule ") {
+		if rest, ok := directiveArgs(line, "SecDefaultAction"); ok {
+			arg, _, valid := configArgument(rest)
+			if !valid {
+				parseErr = errors.Join(parseErr, fmt.Errorf("malformed SecDefaultAction argument"))
+				continue
+			}
+			// SecDefaultAction must name a disruptive action other than
+			// block; ModSecurity refuses to load one that does not.
+			if action := pickDisposition(arg); action != "" && action != "block" {
+				phase := actionPhase(arg)
+				if phase == 0 {
+					phase = defaultPhase
+				}
+				defaults[phase] = action
+			}
+			continue
+		}
+		_, isRule := directiveArgs(line, "SecRule")
+		if isRule {
 			if block.Len() > 0 && !chainPending {
 				flushBlock()
 			}
@@ -160,12 +187,12 @@ func parseRules(reader io.Reader) ([]Rule, error) {
 			continue // skip comments and blank lines outside blocks
 		}
 
-		if block.Len() > 0 || strings.HasPrefix(line, "SecRule ") {
+		if block.Len() > 0 || isRule {
 			block.WriteString(line)
 			block.WriteString("\n")
 			// Only update chainPending for SecRule lines - non-SecRule
 			// directives between chained rules must not reset the flag.
-			if strings.HasPrefix(line, "SecRule ") {
+			if isRule {
 				chainPending = hasChainAction(line)
 			}
 		}
@@ -179,117 +206,117 @@ func parseRules(reader io.Reader) ([]Rule, error) {
 			rules = append(rules, r)
 		}
 	}
-	return rules, nil
+	return rules, defaults, parseErr
 }
 
-// hasChainAction checks whether a logical line (continuations already joined)
-// contains "chain" as a ModSecurity action keyword. Strips whitespace to handle
-// action strings split across continuation lines like: "id:900004,..., chain"
+// hasChainAction reads only the SecRule action argument: a regex or message
+// containing chain must not swallow the next independent rule.
 func hasChainAction(line string) bool {
-	// Remove all whitespace so ",  chain\"" becomes ",chain\""
-	stripped := strings.Map(func(r rune) rune {
-		if r == ' ' || r == '\t' {
-			return -1
-		}
-		return r
-	}, line)
-	return strings.Contains(stripped, ",chain\"") ||
-		strings.Contains(stripped, ",chain'") ||
-		strings.Contains(stripped, ",chain,") ||
-		strings.Contains(stripped, "\"chain\"") ||
-		strings.Contains(stripped, "\"chain,")
-}
-
-func parseBlock(block string) (Rule, bool) {
-	// Extract ID
-	m := reID.FindStringSubmatch(block)
-	if m == nil {
-		return Rule{}, false
-	}
-	id, _ := strconv.Atoi(m[1])
-
-	r := Rule{
-		ID:  id,
-		Raw: strings.TrimSpace(block),
-	}
-
-	// Extract description from msg
-	if mm := reMsg.FindStringSubmatch(block); mm != nil {
-		r.Description = mm[1]
-	}
-
-	// Extract phase
-	if pm := rePhase.FindStringSubmatch(block); pm != nil {
-		r.Phase, _ = strconv.Atoi(pm[1])
-	}
-
-	// Extract the action string (the quoted segment that carries id:N) and
-	// pull the disposition keyword from its tokens. Substring matching
-	// against the whole block would false-match on action-like text inside
-	// regex operators, msg:'...' literals, and the like (e.g. "passive"
-	// looks like "pass"). Token parsing inside the bounded action string
-	// avoids those collisions.
-	if actionStr := extractActionString(block, id); actionStr != "" {
-		r.Action = pickDisposition(actionStr)
-		// nolog/log are honoured only as flags, never as the action.
-		actionLower := strings.ToLower(actionStr)
-		if r.Action == "pass" && strings.Contains(actionLower, "nolog") {
-			r.IsCounter = true
-		}
-	}
-
-	// Extract status code
-	if sm := reStatus.FindStringSubmatch(block); sm != nil {
-		r.StatusCode, _ = strconv.Atoi(sm[1])
-	}
-
-	return r, true
-}
-
-// extractActionString returns the body of the quoted segment that contains
-// "id:<ruleID>". ModSecurity rule blocks have one such segment per rule
-// (chained sub-rules carry "chain,capture"-style action lists with no id),
-// so finding the id-bearing quotes uniquely identifies the primary action
-// list. Returns "" if the segment cannot be located, in which case the
-// caller leaves Action empty and the registry treats the rule as unknown.
-func extractActionString(block string, ruleID int) string {
-	needle := "id:" + strconv.Itoa(ruleID)
-	for i := 0; i < len(block); i++ {
-		if block[i] != '"' {
-			continue
-		}
-		start := i + 1
-		escaped := false
-		for j := start; j < len(block); j++ {
-			switch {
-			case escaped:
-				escaped = false
-			case block[j] == '\\':
-				escaped = true
-			case block[j] == '"':
-				segment := block[start:j]
-				if actionStringHasRuleID(segment, needle) {
-					return segment
-				}
-				i = j
-				j = len(block)
-			}
-		}
-	}
-	return ""
-}
-
-func actionStringHasRuleID(actionStr, needle string) bool {
-	for _, tok := range tokenizeActionString(actionStr) {
-		name, value, ok := strings.Cut(tok, ":")
-		if !ok || strings.ToLower(strings.TrimSpace(name)) != "id" {
-			continue
-		}
-		if strings.Trim(strings.TrimSpace(value), `'"`) == strings.TrimPrefix(needle, "id:") {
+	for _, token := range tokenizeActionString(secRuleActions(line)) {
+		if strings.EqualFold(token, "chain") {
 			return true
 		}
 	}
 	return false
+}
+
+func parseBlock(block string) (Rule, bool) {
+	line, _, _ := strings.Cut(block, "\n")
+	actions := secRuleActions(line)
+	id := 0
+	for _, token := range tokenizeActionString(actions) {
+		name, value, ok := strings.Cut(token, ":")
+		if ok && strings.EqualFold(strings.TrimSpace(name), "id") {
+			id, _ = strconv.Atoi(strings.Trim(strings.TrimSpace(value), `'"`))
+			break
+		}
+	}
+	if id <= 0 {
+		return Rule{}, false
+	}
+
+	r := Rule{
+		ID:     id,
+		Raw:    strings.TrimSpace(block),
+		Action: pickDisposition(actions),
+		Phase:  actionPhase(actions),
+	}
+	if mm := reMsg.FindStringSubmatch(block); mm != nil {
+		r.Description = mm[1]
+	}
+	if r.Action == "pass" && strings.Contains(strings.ToLower(actions), "nolog") {
+		r.IsCounter = true
+	}
+	if sm := reStatus.FindStringSubmatch(block); sm != nil {
+		r.StatusCode, _ = strconv.Atoi(sm[1])
+	}
+	return r, true
+}
+
+// Rule identity and disposition come from the third argument, never from
+// an id-like substring in the operator or a chained rule's actions.
+func secRuleActions(line string) string {
+	rest, ok := directiveArgs(line, "SecRule")
+	if !ok {
+		return ""
+	}
+	var arg string
+	for range 3 {
+		arg, rest, ok = configArgument(rest)
+		if !ok {
+			return ""
+		}
+	}
+	return arg
+}
+
+func directiveArgs(line, directive string) (string, bool) {
+	if len(line) <= len(directive) || !strings.EqualFold(line[:len(directive)], directive) {
+		return "", false
+	}
+	rest := line[len(directive):]
+	if rest[0] != ' ' && rest[0] != '\t' {
+		return "", false
+	}
+	return strings.TrimLeft(rest, " \t"), true
+}
+
+// Decode the outer Apache quoting before tokenizing the action list. A
+// doubled backslash can escape an inner apostrophe only after this layer
+// is removed; otherwise a following deny could look like message text.
+func configArgument(s string) (string, string, bool) {
+	s = strings.TrimLeft(s, " \t")
+	if s == "" {
+		return "", "", false
+	}
+	if quote := s[0]; quote == '\'' || quote == '"' {
+		for i := 1; i < len(s); i++ {
+			switch s[i] {
+			case '\\':
+				if i+1 < len(s) && (s[i+1] == quote || s[i+1] == '\\') {
+					i++
+				}
+			case quote:
+				return decodeConfigArgument(s[1:i], quote), s[i+1:], true
+			}
+		}
+		return "", "", false
+	}
+	if i := strings.IndexAny(s, " \t"); i >= 0 {
+		return decodeConfigArgument(s[:i], 0), s[i:], true
+	}
+	return decodeConfigArgument(s, 0), "", true
+}
+
+func decodeConfigArgument(s string, quote byte) string {
+	var decoded strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+1 < len(s) && (s[i+1] == '\\' || (quote != 0 && s[i+1] == quote)) {
+			i++
+		}
+		decoded.WriteByte(s[i])
+	}
+	return decoded.String()
 }
 
 // pickDisposition returns the ModSecurity disposition keyword present in
@@ -316,6 +343,31 @@ func pickDisposition(actionStr string) string {
 		}
 	}
 	return ""
+}
+
+// actionPhase returns the phase an action list names, or 0 if it names none.
+// ModSecurity also accepts request, response and logging for 2, 4 and 5.
+func actionPhase(actionStr string) int {
+	phase := 0
+	for _, tok := range tokenizeActionString(actionStr) {
+		name, value, ok := strings.Cut(tok, ":")
+		if !ok || !strings.EqualFold(strings.TrimSpace(name), "phase") {
+			continue
+		}
+		switch v := strings.ToLower(strings.Trim(strings.TrimSpace(value), "'")); v {
+		case "request":
+			phase = 2
+		case "response":
+			phase = 4
+		case "logging":
+			phase = 5
+		default:
+			if n, err := strconv.Atoi(v); err == nil && n >= 1 && n <= 5 {
+				phase = n
+			}
+		}
+	}
+	return phase
 }
 
 // tokenizeActionString splits a ModSecurity action list on top-level commas
@@ -360,7 +412,9 @@ func tokenizeActionString(s string) []string {
 // regardless of action, so the action lookup is the only way to tell a real
 // deny apart from a pass-action informational rule. redirect, proxy and
 // pause are disruptive: the original request never reaches the upstream
-// application as intended, so they are classified the same as deny.
+// application as intended, so they are classified the same as deny. The
+// registry keeps block only when incomplete setup files prevent resolution;
+// it must remain blocking until the default can be determined.
 func IsBlockingAction(action string) bool {
 	switch action {
 	case "deny", "drop", "block", "redirect", "proxy", "pause":
