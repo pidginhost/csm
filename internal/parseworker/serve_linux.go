@@ -16,9 +16,6 @@ import (
 	"github.com/pidginhost/csm/internal/workerproc"
 )
 
-// maxIncomplete caps the reason a worker reports for a partial listing.
-const maxIncomplete = 512
-
 // Serve answers parse requests on conn until the daemon closes it.
 func Serve(ctx context.Context, conn *net.UnixConn) error {
 	return workerproc.Serve(ctx, conn, Limits, handle)

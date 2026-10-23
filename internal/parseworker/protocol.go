@@ -24,5 +24,8 @@ type ListZipResult struct {
 	Incomplete string `json:"incomplete,omitempty"`
 }
 
+// maxIncomplete caps the reason a worker reports for a partial listing.
+const maxIncomplete = 512
+
 // Limits bounds frames both ways: one descriptor, small JSON.
 var Limits = workerproc.Limits{MaxFrameBytes: 64 << 10, MaxFDs: 1}
