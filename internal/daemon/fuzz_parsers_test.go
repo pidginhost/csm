@@ -3,11 +3,31 @@ package daemon
 import (
 	"io/fs"
 	"path/filepath"
+	"strconv"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 )
+
+func FuzzRelayRecipientDomain(f *testing.F) {
+	for _, local := range []string{"victim", "victim<admin@site.example>", "admin@site.example ", `escaped\"@site.example`, ""} {
+		f.Add(local)
+	}
+	f.Fuzz(func(t *testing.T, local string) {
+		// Local-part contents must never turn an external destination into
+		// an own-domain exemption. Invalid mailboxes must leave it unknown.
+		raw := strconv.Quote(local) + "@outside.example"
+		w := newPerIPWindow(64)
+		now := time.Unix(1_700_000_000, 0).UTC()
+		w.appendMessage("192.0.2.55", "k:/", now, "", []string{raw}, map[string]struct{}{"site.example": {}})
+		count, known := w.distinctRecipientsSince("192.0.2.55", now)
+		if known && count != 1 {
+			t.Fatalf("external mailbox was exempted: %q, count=%d", raw, count)
+		}
+	})
+}
 
 func FuzzModSecWarningPayload(f *testing.F) {
 	for _, payload := range []string{"", "Access denied", "ModSecurity: Access denied", "[MODSEC] Access denied", `[id \"900133\"]`} {

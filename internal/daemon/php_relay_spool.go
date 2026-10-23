@@ -245,7 +245,7 @@ func (p *spoolPipeline) onFileAt(path string, at time.Time) {
 		return // queue-runner re-write dedup
 	}
 
-	auth, _ := p.domains.Domains(h.EnvelopeUser)
+	auth, domainErr := p.domains.Domains(h.EnvelopeUser)
 	sig := computeSignals(h, auth, p.policies)
 	if sig.ScriptKey == "" {
 		return
@@ -278,7 +278,13 @@ func (p *spoolPipeline) onFileAt(path string, at time.Time) {
 	state.recordActive(msgID, now)
 
 	if p.policies == nil || !p.policies.IsProxyIP(sig.SourceIP) {
-		p.eng.ips.appendMessage(sig.SourceIP, sig.ScriptKey, now, h.Subject, h.Recipients)
+		fanoutRecipients := h.Recipients
+		if domainErr != nil || len(auth) == 0 {
+			// Missing ownership data must not let earlier own-domain
+			// notifications suppress this message's fanout window.
+			fanoutRecipients = nil
+		}
+		p.eng.ips.appendMessage(sig.SourceIP, sig.ScriptKey, now, h.Subject, fanoutRecipients, auth)
 	}
 
 	if p.rebuilding.Load() {

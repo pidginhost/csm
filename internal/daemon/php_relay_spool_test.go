@@ -443,3 +443,136 @@ func TestSupervisor_StopsAfterMaxRestarts(t *testing.T) {
 		t.Error("OnFailed callback should have fired")
 	}
 }
+
+// fanoutPipeline wires an evaluator to a spool pipeline whose domain resolver
+// knows one cPanel account per site: user<x> owns site-<x>.example.
+func fanoutPipeline(t *testing.T, sites ...string) (*spoolPipeline, *[]alert.Finding) {
+	t.Helper()
+	cfg := defaultPHPRelayCfg()
+	eng := newEvaluator(newPerScriptWindow(), newPerIPWindow(64), newPerAccountWindow(5000), cfg, nil)
+	udir := t.TempDir()
+	for _, s := range sites {
+		dir := filepath.Join(udir, "user"+s)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "main"), []byte("main_domain: site-"+s+".example\nsub_domains:\n  - news.site-"+s+".example\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var findings []alert.Finding
+	p := newSpoolPipeline(eng, newUserDomainsResolverWithRoot(udir, time.Minute), newTestPolicies(t), nil, nil,
+		func(f alert.Finding) { findings = append(findings, f) })
+	return p, &findings
+}
+
+// feedSiteMail writes one -H file for a script on site-<site>.example reached
+// from ip and runs it through the pipeline at the given time.
+func feedSiteMail(t *testing.T, p *spoolPipeline, msgID, site, ip string, at time.Time, rcpts ...string) {
+	t.Helper()
+	body := fmt.Sprintf("id-H\nuser%s 1 1\n<user%s@host.example.test>\n0 0\n-local\n%d\n", site, site, len(rcpts))
+	for _, r := range rcpts {
+		body += r + "\n"
+	}
+	body += fmt.Sprintf("\n040  Subject: [Site] Please moderate a comment\n"+
+		"070  X-PHP-Script: site-%s.example/wp-comments-post.php for %s\n"+
+		"045F From: WordPress <wordpress@site-%s.example>\n", site, ip, site)
+	f := filepath.Join(t.TempDir(), msgID+"-H")
+	if err := os.WriteFile(f, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p.onFileAt(f, at)
+}
+
+// FP: one client posts comments on several hosted sites; each site mails a
+// moderation notice to its own owner. That is many scripts from one IP, but
+// the mail stays with the sites' owners, so Path 4 must not report a relay.
+func TestOnFileAt_Path4_IgnoresNoticesToSendersOwnDomains(t *testing.T) {
+	p, findings := fanoutPipeline(t, "a", "b", "c", "d")
+	ip := "203.0.113.7"
+	now := time.Unix(1_700_000_000, 0).UTC()
+
+	feedSiteMail(t, p, "m1", "a", ip, now.Add(-4*time.Minute), "admin@site-a.example")
+	feedSiteMail(t, p, "m2", "b", ip, now.Add(-3*time.Minute), "admin@site-b.example")
+	feedSiteMail(t, p, "m3", "b", ip, now.Add(-3*time.Minute), "author@elsewhere.example")
+	feedSiteMail(t, p, "m4", "c", ip, now.Add(-2*time.Minute), "owner@site-c.example")
+	feedSiteMail(t, p, "m5", "d", ip, now, "admin@news.site-d.example")
+
+	if fanoutFired(*findings) {
+		t.Fatalf("Path 4 must not fire for notices to the sending sites' own domains, got %+v", *findings)
+	}
+}
+
+// True positive: the same fanout, but the scripts reach recipients outside
+// their own account, including another hosted account's domain. Mixing in
+// mail to the senders' own domains must not hide them.
+func TestOnFileAt_Path4_CountsRecipientsOutsideSendersDomains(t *testing.T) {
+	p, findings := fanoutPipeline(t, "a", "b", "c", "d")
+	ip := "203.0.113.8"
+	now := time.Unix(1_700_000_000, 0).UTC()
+
+	feedSiteMail(t, p, "m1", "a", ip, now.Add(-4*time.Minute), "admin@site-a.example", "admin@site-b.example")
+	feedSiteMail(t, p, "m2", "b", ip, now.Add(-3*time.Minute), "admin@site-b.example", "victim1@elsewhere.example")
+	feedSiteMail(t, p, "m3", "c", ip, now.Add(-2*time.Minute), "admin@site-c.example", "victim2@elsewhere.example")
+	feedSiteMail(t, p, "m4", "d", ip, now, "admin@site-d.example", "victim3@elsewhere.example", "victim4@elsewhere.example")
+
+	if !fanoutFired(*findings) {
+		t.Fatalf("Path 4 must fire when scripts reach recipients outside their own domains, got %+v", *findings)
+	}
+}
+
+func TestOnFileAt_Path4_FiresWhenDomainLookupFails(t *testing.T) {
+	for _, data := range []string{"missing", "main_domain: [invalid", ""} {
+		t.Run(data, func(t *testing.T) {
+			p, findings := fanoutPipeline(t, "b", "c")
+			if data != "missing" {
+				dir := filepath.Join(p.domains.root, "usera")
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, "main"), []byte(data), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			now := time.Unix(1_700_000_000, 0).UTC()
+			for i, site := range []string{"a", "b", "c"} {
+				feedSiteMail(t, p, "m"+site, site, "192.0.2.56", now.Add(time.Duration(i)*time.Second), "admin@site-"+site+".example")
+			}
+			if !fanoutFired(*findings) {
+				t.Fatalf("domain lookup failure must leave Path 4 firing, got %+v", *findings)
+			}
+		})
+	}
+}
+
+func TestOnFileAt_Path4_FiresForCraftedExternalRecipients(t *testing.T) {
+	for _, recipient := range []string{
+		"victim%d@tenant.site-%s.example",
+		`"victim%d<admin@site-%s.example>"@outside.example`,
+	} {
+		t.Run(recipient, func(t *testing.T) {
+			p, findings := fanoutPipeline(t, "a", "b", "c")
+			now := time.Unix(1_700_000_000, 0).UTC()
+			for i, site := range []string{"a", "b", "c"} {
+				feedSiteMail(t, p, "m"+site, site, "192.0.2.57", now.Add(time.Duration(i)*time.Second),
+					fmt.Sprintf(recipient, 0, site), fmt.Sprintf(recipient, 1, site))
+			}
+			if !fanoutFired(*findings) {
+				t.Fatalf("external recipients must leave Path 4 firing, got %+v", *findings)
+			}
+		})
+	}
+}
+
+func TestOnFileAt_Path4_OwnNoticesCannotHideParseGap(t *testing.T) {
+	for _, recipients := range [][]string{nil, {`"unfinished@site-a.example`, "admin@site-a.example"}} {
+		p, findings := fanoutPipeline(t, "a", "b", "c")
+		now := time.Unix(1_700_000_000, 0).UTC()
+		feedSiteMail(t, p, "ma", "a", "192.0.2.58", now, recipients...)
+		feedSiteMail(t, p, "mb", "b", "192.0.2.58", now.Add(time.Second), "admin@site-b.example")
+		feedSiteMail(t, p, "mc", "c", "192.0.2.58", now.Add(2*time.Second), "admin@site-c.example")
+		if !fanoutFired(*findings) {
+			t.Fatalf("recipient parse gap must leave Path 4 firing, got %+v", *findings)
+		}
+	}
+}
