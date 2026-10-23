@@ -224,3 +224,37 @@ func TestKernelStopUnitsKillsLeftovers(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	}
 }
+
+func TestKernelUnitLauncherMemoryCap(t *testing.T) {
+	cfg := kernelUnitConfig(t, 64<<20, 1<<20)
+	var units []string
+	launch := UnitLauncher(cfg)
+	s, err := New(Config{Name: "unit worker", Timeout: 60 * time.Second, Limits: cfg.Limits, Launch: func(ctx context.Context) (Process, error) {
+		p, err := launch(ctx)
+		if err == nil {
+			units = append(units, p.(*unitProcess).unit)
+		}
+		return p, err
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Stop() })
+	if err := callInto(t, s, "alloc", `256`, nil); !errors.Is(err, ErrWorkerFailed) {
+		t.Fatalf("256 MiB under a 64 MiB cap: %v", err)
+	}
+	if len(units) != 1 {
+		t.Fatalf("units = %v", units)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		out, _ := exec.Command("systemctl", "is-active", units[0]+".service").Output()
+		if strings.TrimSpace(string(out)) != "active" {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("unit %s still active over its memory cap", units[0])
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}

@@ -17,6 +17,10 @@ import (
 type unitFake struct {
 	mu     sync.Mutex
 	killed []*unitProcess
+	// layout is the fake cgroup tree the "unit" lands in: v2, v1-memsw,
+	// v1-noswap, v1-uncappable, or none.
+	layout               string
+	procRoot, cgroupRoot string
 }
 
 func (f *unitFake) kills() []*unitProcess {
@@ -45,7 +49,7 @@ func (f *unitFake) waitKills(t *testing.T, n int) []*unitProcess {
 // a worker serving fd 0. The "unit" is that process.
 func fakeUnitConfig(t *testing.T, helperArgs ...string) (UnitConfig, *unitFake) {
 	t.Helper()
-	f := &unitFake{}
+	f := &unitFake{layout: "v2", procRoot: t.TempDir(), cgroupRoot: t.TempDir()}
 	return UnitConfig{
 		Prefix:        "csm-parse-worker-zip0",
 		Command:       os.Args[0],
@@ -59,7 +63,8 @@ func fakeUnitConfig(t *testing.T, helperArgs ...string) (UnitConfig, *unitFake) 
 		hooks: &unitHooks{
 			systemdRun: os.Args[0],
 			mainPID: func(_ context.Context, p *unitProcess) (int, error) {
-				return p.cmd.Process.Pid, nil
+				pid := p.cmd.Process.Pid
+				return pid, f.writeCgroup(pid, p.unit)
 			},
 			killUnit: func(_ context.Context, p *unitProcess) error {
 				f.mu.Lock()
@@ -67,8 +72,8 @@ func fakeUnitConfig(t *testing.T, helperArgs ...string) (UnitConfig, *unitFake) 
 				f.mu.Unlock()
 				return p.cmd.Process.Kill()
 			},
-			procRoot:     t.TempDir(),
-			cgroupRoot:   t.TempDir(),
+			procRoot:     f.procRoot,
+			cgroupRoot:   f.cgroupRoot,
 			pollInterval: 10 * time.Millisecond,
 		},
 	}, f

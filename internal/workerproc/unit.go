@@ -200,7 +200,57 @@ func (p *unitProcess) start(ctx context.Context, cfg UnitConfig, h *unitHooks) e
 		return errors.New("unit has no main process")
 	}
 	p.pid = pid
+
+	cg, found, err := findMemoryCgroup(h.procRoot, h.cgroupRoot, pid)
+	if err != nil {
+		return fmt.Errorf("cannot cap worker memory: %w", err)
+	}
+	if found {
+		if err := cg.capSwap(cfg.MemoryLimit); err != nil {
+			return fmt.Errorf("cannot cap worker memory: %w", err)
+		}
+		p.usage = cg.usage
+	} else {
+		p.logf("unit %s: no memory cgroup found; only process polling caps this worker", p.unit)
+		p.usage = func() (uint64, error) { return processMemory(h.procRoot, pid) }
+	}
+	if _, err := p.usage(); err != nil {
+		return fmt.Errorf("cannot measure worker memory: %w", err)
+	}
+	p.limit = cfg.MemoryLimit
+	go p.watch(h.pollInterval)
 	return nil
+}
+
+// watch kills the worker once its memory passes the cap. It covers hosts
+// where no cgroup knob caps swap, and fails closed: usage that cannot be
+// read while the worker is alive kills it too.
+func (p *unitProcess) watch(interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-p.done:
+			return
+		case <-ticker.C:
+		}
+		used, err := p.usage()
+		if err == nil && used <= p.limit {
+			continue
+		}
+		select {
+		case <-p.done:
+			return // Gone already: its counters vanished with it.
+		default:
+		}
+		if err != nil {
+			p.logf("unit %s: cannot read memory, killing: %v", p.unit, err)
+		} else {
+			p.logf("unit %s: memory %d over cap %d, killing", p.unit, used, p.limit)
+		}
+		_ = p.Kill()
+		return
+	}
 }
 
 // unitProcess is one worker unit. Done follows the systemd-run client, which
@@ -214,12 +264,24 @@ type unitProcess struct {
 	killUnit func(ctx context.Context, p *unitProcess) error
 	kill     sync.Once
 	log      func(string, ...any)
+	// usage reads memory and swap in use; limit is the cap it is held to.
+	usage func() (uint64, error)
+	limit uint64
 }
 
 func (p *unitProcess) Conn() *net.UnixConn   { return p.conn }
 func (p *unitProcess) Done() <-chan struct{} { return p.done }
 func (p *unitProcess) PID() int              { return p.pid }
-func (p *unitProcess) Retire() bool          { return false }
+
+// Retire asks for a fresh worker once this one holds more than three
+// quarters of its cap after a job, or its usage cannot be read.
+func (p *unitProcess) Retire() bool {
+	if p.usage == nil {
+		return false
+	}
+	used, err := p.usage()
+	return err != nil || used > p.limit/4*3
+}
 
 // Kill asks systemd to SIGKILL the unit and returns at once: the supervisor
 // calls it holding its lock, and a hung systemctl must not freeze it. The

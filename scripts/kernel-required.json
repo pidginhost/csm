@@ -54,5 +54,9 @@
   {
     "Package": "github.com/pidginhost/csm/internal/workerproc",
     "Name": "TestKernelStopUnitsKillsLeftovers"
+  },
+  {
+    "Package": "github.com/pidginhost/csm/internal/workerproc",
+    "Name": "TestKernelUnitLauncherMemoryCap"
   }
 ]
