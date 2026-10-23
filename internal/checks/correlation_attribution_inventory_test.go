@@ -77,13 +77,16 @@ var attributionEvidence = map[string]string{
 	"email_cloud_relay_abuse":    "TestCloudRelayFindingCarriesTenant",
 	"email_suspicious_geo":       "TestDovecotGeoFindingCarriesTenant",
 	// Path-bearing scheduled file families.
-	"phishing_credential_log":       "TestPhishingFindingsAttributeByPath",
-	"phishing_directory":            "TestPhishingFindingsAttributeByPath",
-	"phishing_iframe":               "TestPhishingFindingsAttributeByPath",
-	"phishing_kit_archive":          "TestPhishingFindingsAttributeByPath",
-	"phishing_page":                 "TestPhishingFindingsAttributeByPath",
-	"phishing_php":                  "TestPhishingFindingsAttributeByPath",
-	"phishing_redirector":           "TestPhishingFindingsAttributeByPath",
+	"phishing_credential_log": "TestPhishingFindingsAttributeByPath",
+	"phishing_directory":      "TestPhishingFindingsAttributeByPath",
+	"phishing_iframe":         "TestPhishingFindingsAttributeByPath",
+	"phishing_kit_archive":    "TestPhishingFindingsAttributeByPath",
+	"phishing_page":           "TestPhishingFindingsAttributeByPath",
+	"phishing_php":            "TestPhishingFindingsAttributeByPath",
+	"phishing_redirector":     "TestPhishingFindingsAttributeByPath",
+
+	"phishing_kit_archive_unscannable": "TestScanForPhishingWarnsOnSkippedZip",
+
 	"htaccess_auto_prepend":         "TestHtaccessFindingsAttributeByPath",
 	"htaccess_cgi_handler_abuse":    "TestHtaccessFindingsAttributeByPath",
 	"htaccess_errordocument_hijack": "TestHtaccessFindingsAttributeByPath",

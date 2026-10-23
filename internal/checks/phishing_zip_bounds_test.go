@@ -87,8 +87,17 @@ func TestPhishingZipUnreadDirectoryTailMarksIncomplete(t *testing.T) {
 	raw := append([]byte(nil), buf.Bytes()[:buf.Len()-zipdir.EndLen]...)
 	raw = append(raw, []byte("junk")...)
 	raw = append(raw, end...)
+	path := filepath.Join(t.TempDir(), "style.zip")
+	if writeErr := os.WriteFile(path, raw, 0o600); writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	f, openErr := os.Open(path)
+	if openErr != nil {
+		t.Fatal(openErr)
+	}
+	defer f.Close()
 	ctx, collector := withIncompleteCheckCollector(context.Background())
-	if phishingKitZipHasEvidence(ctx, bytes.NewReader(raw), int64(len(raw))) {
+	if phishingKitZipHasEvidence(ctx, f, int64(len(raw))) {
 		t.Fatal("benign names reported as a kit")
 	}
 	if !collector.contains("phishing") {

@@ -103,6 +103,7 @@ var emailCheckExclusions = []string{
 	"phishing_directory",
 	"phishing_iframe",
 	"phishing_kit_archive",
+	"phishing_kit_archive_unscannable",
 	"phishing_kit_realtime",
 	"phishing_page",
 	"phishing_php",

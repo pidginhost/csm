@@ -350,6 +350,7 @@ var checkRegistry = []CheckInfo{
 	{Name: "phishing_directory", Category: CategoryEmail, Correlation: CorrelationSecurityEvent, Response: ResponsePolicy{NeverChallenge: true}},
 	{Name: "phishing_iframe", Category: CategoryEmail, Correlation: CorrelationSecurityEvent, Response: ResponsePolicy{NeverChallenge: true}},
 	{Name: "phishing_kit_archive", Category: CategoryEmail, Correlation: CorrelationSecurityEvent, Response: ResponsePolicy{NeverChallenge: true}},
+	{Name: "phishing_kit_archive_unscannable", Category: CategoryEmail, Correlation: CorrelationSecurityEvent},
 	{Name: "phishing_kit_realtime", Category: CategoryEmail, Correlation: CorrelationSecurityEvent},
 	{Name: "phishing_page", Category: CategoryEmail, Correlation: CorrelationSecurityEvent, Response: ResponsePolicy{NeverChallenge: true}},
 	{Name: "phishing_php", Category: CategoryEmail, Correlation: CorrelationSecurityEvent, Response: ResponsePolicy{NeverChallenge: true}},

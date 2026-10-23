@@ -3,10 +3,13 @@ package checks
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -18,7 +21,7 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/state"
-	"github.com/pidginhost/csm/internal/zipdir"
+	"github.com/pidginhost/csm/internal/workerproc"
 	"golang.org/x/net/html"
 )
 
@@ -411,14 +414,24 @@ func scanForPhishing(ctx context.Context, dir string, maxDepth int, user string,
 		}
 
 		// --- Phishing kit ZIP archives ---
-		if strings.HasSuffix(nameLower, ".zip") && size > 1000 && size < 50*1024*1024 {
-			if isPhishingKitZipName(nameLower) && zipLooksLikeKit(ctx, fullPath) {
+		if strings.HasSuffix(nameLower, ".zip") && size > 1000 && size < 50*1024*1024 && isPhishingKitZipName(nameLower) {
+			switch verdict, sum := classifyKitZip(ctx, fullPath); verdict {
+			case zipKit:
 				*findings = append(*findings, alert.Finding{
 					Severity: alert.High,
 					Check:    "phishing_kit_archive",
 					Message:  fmt.Sprintf("Suspected phishing kit archive: %s", fullPath),
 					Details: fmt.Sprintf("Account: %s\nFilename: %s\nSize: %d bytes",
 						user, name, size),
+					FilePath: fullPath,
+				})
+			case zipSkipped:
+				*findings = append(*findings, alert.Finding{
+					Severity: alert.Warning,
+					Check:    "phishing_kit_archive_unscannable",
+					Message:  "Phishing kit check skipped an archive that made the parse worker fail twice",
+					Details: fmt.Sprintf("Account: %s\nPath: %s\nSize: %d bytes\nSHA-256: %s",
+						user, fullPath, size, sum),
 					FilePath: fullPath,
 				})
 			}
@@ -1855,37 +1868,78 @@ const maxPhishingZipBytes = 50 * 1024 * 1024
 // blocker. Two signal categories from at least two distinct entries are
 // required so one generic result filename cannot decide the archive alone.
 func zipLooksLikeKit(ctx context.Context, path string) bool {
+	verdict, _ := classifyKitZip(ctx, path)
+	return verdict == zipKit
+}
+
+// zipVerdict is what the kit check concluded about one zip.
+type zipVerdict int
+
+const (
+	zipNotKit zipVerdict = iota
+	zipKit
+	// zipSkipped: the zip made the parse worker fail StrikeLimit times, so
+	// it is not sent again. Retrying would cost a worker on every scan and
+	// keep the check incomplete forever.
+	zipSkipped
+)
+
+// classifyKitZip opens path and judges it. A skipped zip comes with its
+// SHA-256.
+func classifyKitZip(ctx context.Context, path string) (zipVerdict, string) {
 	f, err := openTenantRegularFile(path)
 	if err != nil {
 		if err != errNonRegularFile {
 			markScanReadError(ctx, "phishing", err)
 		}
-		return false
+		return zipNotKit, ""
 	}
 	defer func() { _ = f.Close() }()
 	info, err := f.Stat()
 	if err != nil {
 		markScanReadError(ctx, "phishing", err)
-		return false
+		return zipNotKit, ""
 	}
 	// Out of bounds or not a regular file is a scope decision, not a coverage
 	// failure: the caller already gates on the same range, and marking the
 	// check incomplete here would stop it ever retiring a stale finding on a
 	// host that simply keeps a large archive under a docroot.
 	if !info.Mode().IsRegular() || info.Size() <= 1000 || info.Size() >= maxPhishingZipBytes {
-		return false
+		return zipNotKit, ""
 	}
-	return phishingKitZipHasEvidence(ctx, f, info.Size())
+	if zipStrikes.Len() > 0 {
+		sum, err := zipSHA256(f, info.Size())
+		if err != nil {
+			markScanReadError(ctx, "phishing", err)
+			return zipNotKit, ""
+		}
+		if zipStrikes.Blocked(sum) {
+			return zipSkipped, sum
+		}
+	}
+	if phishingKitZipHasEvidence(ctx, f, info.Size()) {
+		return zipKit, ""
+	}
+	return zipNotKit, ""
+}
+
+func zipSHA256(f *os.File, size int64) (string, error) {
+	h := sha256.New()
+	if _, err := io.Copy(h, io.NewSectionReader(f, 0, size)); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // phishingKitZipHasEvidence confirms a bounded ZIP using independent entry-name
-// signals without decompressing attacker-controlled archive contents.
-func phishingKitZipHasEvidence(ctx context.Context, reader io.ReaderAt, size int64) bool {
+// signals. The names come from the parse worker; nothing of the archive is
+// parsed or decompressed in this process.
+func phishingKitZipHasEvidence(ctx context.Context, f *os.File, size int64) bool {
 	if size <= 1000 || size >= maxPhishingZipBytes {
 		return false
 	}
-	dir, err := zipdir.Read(reader, size, maxPhishingZipBytes)
-	if err != nil {
+	lister := currentZipLister()
+	if lister == nil {
 		markCheckIncomplete(ctx, "phishing")
 		return false
 	}
@@ -1905,11 +1959,11 @@ func phishingKitZipHasEvidence(ctx context.Context, reader io.ReaderAt, size int
 		}
 		return n
 	}
-	err = zipdir.Walk(ctx, reader, dir, func(e zipdir.Entry) error {
-		if e.Mode().IsDir() {
+	err := lister.ListZip(ctx, f, size, maxPhishingZipBytes, func(name string, dir bool) error {
+		if dir {
 			return nil
 		}
-		base := e.Name
+		base := name
 		if i := strings.LastIndexAny(base, "/\\"); i >= 0 {
 			base = base[i+1:]
 		}
@@ -1937,8 +1991,8 @@ func phishingKitZipHasEvidence(ctx context.Context, reader io.ReaderAt, size int
 				}
 			}
 		}
-		if hasEvidence && len(evidenceEntries) < 2 && !slices.Contains(evidenceEntries, e.Name) {
-			evidenceEntries = append(evidenceEntries, e.Name)
+		if hasEvidence && len(evidenceEntries) < 2 && !slices.Contains(evidenceEntries, name) {
+			evidenceEntries = append(evidenceEntries, name)
 		}
 		if signals() >= 2 && len(evidenceEntries) >= 2 {
 			return errKit
@@ -1950,7 +2004,11 @@ func phishingKitZipHasEvidence(ctx context.Context, reader io.ReaderAt, size int
 	}
 	if err != nil {
 		markCheckIncomplete(ctx, "phishing")
-		return false
+		if errors.Is(err, workerproc.ErrWorkerFailed) {
+			if sum, hashErr := zipSHA256(f, size); hashErr == nil {
+				zipStrikes.Record(sum)
+			}
+		}
 	}
 	return false
 }

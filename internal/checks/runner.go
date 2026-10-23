@@ -274,7 +274,7 @@ var runnerFindingNames = map[string][]string{
 	"perf_wp_loopback":     {"perf_wp_loopback"},
 	"perf_wp_myisam":       {"perf_wp_myisam"},
 	"perf_wp_transients":   {"perf_wp_transients"},
-	"phishing":             {"phishing_credential_log", "phishing_directory", "phishing_iframe", "phishing_kit_archive", "phishing_page", "phishing_php", "phishing_redirector"},
+	"phishing":             {"phishing_credential_log", "phishing_directory", "phishing_iframe", "phishing_kit_archive", "phishing_kit_archive_unscannable", "phishing_page", "phishing_php", "phishing_redirector"},
 	"yara_deep":            {"yara_match_scheduled", "yara_scan_incomplete"},
 	"php_config_changes":   {"php_config_change", "php_config_scan_incomplete"},
 	"php_content":          {"obfuscated_php", "suspicious_php_content"},
