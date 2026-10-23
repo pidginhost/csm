@@ -249,19 +249,23 @@ func TestSchedulerPrunePreservesUncheckedFolders(t *testing.T) {
 			writeMsg(t, filepath.Join(mail, "new/report"), []byte(spamBody))
 			f.pass()
 			f.now = t0.Add(SeenRetention + 48*time.Hour)
-			var path string
+			var path, saved string
 			switch block {
 			case "home":
 				path = f.accounts[0].Home
 			case "mailboxes":
 				path = filepath.Join(f.accounts[0].Home, "etc/example.com/passwd")
 			case "folder":
-				path = mail
+				// Outside the mailbox: a link to a sibling folder is readable.
+				path, saved = mail, filepath.Join(f.accounts[0].Home, "mail/example.com/spam-saved")
 			}
-			if err := os.Rename(path, path+"-saved"); err != nil {
+			if saved == "" {
+				saved = path + "-saved"
+			}
+			if err := os.Rename(path, saved); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.Symlink(path+"-saved", path); err != nil {
+			if err := os.Symlink(saved, path); err != nil {
 				t.Fatal(err)
 			}
 			// A different, deleted account can still be pruned while this

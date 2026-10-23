@@ -29,7 +29,10 @@ func TestBrowserSourcesPassTheirNodeTests(t *testing.T) {
 		t.Fatal("no browser tests found; this runner has nothing to protect")
 	}
 	args := append([]string{"--test"}, matches...)
-	out, err := exec.Command(node, args...).CombinedOutput() // #nosec G204 -- fixed flags over a repo-local glob
+	cmd := exec.Command(node, args...) // #nosec G204 -- fixed flags over a repo-local glob
+	// Intl follows the host locale; pin the one the expectations are written in.
+	cmd.Env = append(os.Environ(), "LC_ALL=en_US.UTF-8", "LANG=en_US.UTF-8")
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("node --test failed: %v\n%s", err, out)
 	}

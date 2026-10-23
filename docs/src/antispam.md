@@ -609,6 +609,10 @@ every account whose Spam Filters switch is on, or of every account when
 directories of `.spam`, the folder spam-box delivery and the webmail Junk
 button use, and `.Junk`, which many mail clients use. Folders are read
 without following links; CSM never creates folders or changes permissions.
+The exception is a `.spam` or `.Junk` that links to another folder of the
+same mailbox, such as `.spambox` on some older cPanel accounts, by its bare
+name or its exact path under the account's home. CSM reads that folder, and
+pointing the link elsewhere starts a fresh baseline.
 
 The first pass over a folder records what is already there without reading
 it. Only messages that arrive after that are reports, so existing mail is

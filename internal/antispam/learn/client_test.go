@@ -19,7 +19,8 @@ import (
 // serveController answers HTTP on a fresh Unix socket and counts requests.
 func serveController(t *testing.T, h http.HandlerFunc) (string, *atomic.Int32) {
 	t.Helper()
-	sock := filepath.Join(t.TempDir(), "controller.sock")
+	// Long test names leave little room within the Unix socket path limit.
+	sock := filepath.Join(t.TempDir(), "c.sock")
 	l, err := net.Listen("unix", sock)
 	if err != nil {
 		t.Fatal(err)

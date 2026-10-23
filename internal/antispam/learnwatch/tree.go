@@ -6,6 +6,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"syscall"
@@ -74,8 +75,9 @@ var afterRead = func() {}
 // Home is an account's home directory, pinned without following links and
 // owned by the account.
 type Home struct {
-	dir *safepath.Dir
-	uid int
+	dir  *safepath.Dir
+	path string
+	uid  int
 }
 
 // OpenHome pins a's home from the filesystem root and checks its owner.
@@ -94,7 +96,7 @@ func OpenHome(a Account) (*Home, error) {
 		_ = d.Close()
 		return nil, err
 	}
-	return &Home{dir: d, uid: a.UID}, nil
+	return &Home{dir: d, path: filepath.Clean(a.Home), uid: a.UID}, nil
 }
 
 // Close releases the home descriptor.
@@ -105,28 +107,46 @@ func plainName(s string) bool {
 	return s != "" && s != "." && s != ".." && !strings.ContainsAny(s, "/\x00")
 }
 
-func folderPath(m Mailbox, folder, sub string) (string, error) {
+func mailboxPath(m Mailbox, folder, sub string) (string, error) {
 	if !slices.Contains(Folders, folder) || !slices.Contains(Subdirs, sub) {
 		return "", fmt.Errorf("%w: folder %q/%q is not observed", ErrUnsafePath, folder, sub)
 	}
 	switch {
 	case m == Mailbox{}:
-		return "mail/" + folder + "/" + sub, nil
+		return "mail", nil
 	case ValidDomain(m.Domain) && ValidMailbox(m.Box):
-		return "mail/" + m.Domain + "/" + m.Box + "/" + folder + "/" + sub, nil
+		return "mail/" + m.Domain + "/" + m.Box, nil
 	}
 	return "", fmt.Errorf("%w: unsupported mailbox name", ErrUnsafePath)
 }
 
+// siblingFolder accepts a folder link that names another unobserved Maildir++
+// folder of the same mailbox, as ".name" or as that exact absolute path. Some
+// older cPanel accounts keep .spam as such a link; nothing else is followed.
+func siblingFolder(target, mailboxAbs string) (string, bool) {
+	name := target
+	if strings.HasPrefix(target, "/") {
+		name = strings.TrimPrefix(target, mailboxAbs+"/")
+		if name == target {
+			return "", false
+		}
+	}
+	return name, plainName(name) && strings.HasPrefix(name, ".") && name != ".." && !slices.Contains(Folders, name)
+}
+
 // OpenFolder opens one observed Maildir subdirectory beneath the home, one
 // no-follow component at a time. A missing folder wraps fs.ErrNotExist;
-// symlinks and non-directories wrap ErrUnsafePath. Other errors are retryable.
+// symlinks and non-directories wrap ErrUnsafePath, except a folder linked to
+// a sibling folder (siblingFolder). Other errors are retryable.
 func (h *Home) OpenFolder(m Mailbox, folder, sub string) (*Folder, error) {
-	rel, err := folderPath(m, folder, sub)
+	rel, err := mailboxPath(m, folder, sub)
 	if err != nil {
 		return nil, err
 	}
-	d, err := h.dir.Walk(rel)
+	d, err := h.dir.Walk(rel + "/" + folder + "/" + sub)
+	if errors.Is(err, syscall.ENOTDIR) || errors.Is(err, syscall.ELOOP) {
+		d, err = h.openSibling(rel, folder, sub, err)
+	}
 	if err != nil {
 		if errors.Is(err, syscall.ENOTDIR) || errors.Is(err, syscall.ELOOP) {
 			return nil, fmt.Errorf("%w: %w", ErrUnsafePath, err)
@@ -146,6 +166,28 @@ func (h *Home) OpenFolder(m Mailbox, folder, sub string) (*Folder, error) {
 		return nil, err
 	}
 	return &Folder{dir: d, ident: ident}, nil
+}
+
+// openSibling preserves the original unsafe-path error only when the folder
+// is not a permitted link. Lookup failures must keep their retry semantics.
+func (h *Home) openSibling(rel, folder, sub string, cause error) (*safepath.Dir, error) {
+	mbox, err := h.dir.Walk(rel)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = mbox.Close() }()
+	target, err := mbox.Readlink(folder)
+	if errors.Is(err, syscall.EINVAL) {
+		return nil, cause
+	}
+	if err != nil {
+		return nil, err
+	}
+	name, ok := siblingFolder(target, h.path+"/"+rel)
+	if !ok {
+		return nil, cause
+	}
+	return mbox.Walk(name + "/" + sub)
 }
 
 // Folder is an open Maildir subdirectory.
