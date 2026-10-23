@@ -155,21 +155,21 @@ func companionLine(details, name string) string {
 	return ""
 }
 
-type countingYARABackend struct {
+type noMatchCountingYARABackend struct {
 	scans atomic.Int64
 }
 
-func (b *countingYARABackend) ScanFile(string, int) []yara.Match { return nil }
-func (b *countingYARABackend) ScanBytes(data []byte) []yara.Match {
+func (b *noMatchCountingYARABackend) ScanFile(string, int) []yara.Match { return nil }
+func (b *noMatchCountingYARABackend) ScanBytes(data []byte) []yara.Match {
 	matches, _ := b.ScanBytesChecked(data)
 	return matches
 }
-func (b *countingYARABackend) ScanBytesChecked([]byte) ([]yara.Match, error) {
+func (b *noMatchCountingYARABackend) ScanBytesChecked([]byte) ([]yara.Match, error) {
 	b.scans.Add(1)
 	return nil, nil
 }
-func (b *countingYARABackend) RuleCount() int { return 1 }
-func (b *countingYARABackend) Reload() error  { return nil }
+func (b *noMatchCountingYARABackend) RuleCount() int { return 1 }
+func (b *noMatchCountingYARABackend) Reload() error  { return nil }
 
 // A kit is planted in one session: the members a scanner recognised are
 // reported by that scanner, and the rest -- loaders no rule matches, an
@@ -383,7 +383,7 @@ func TestCompanionSweepOfLargeDirectoryWithoutPlantsReadsNothing(t *testing.T) {
 		writeKitFile(t, dir, fmt.Sprintf("f%04d.php", i), []byte("<?php\n"))
 	}
 	useStampedOS(t, fs)
-	backend := &countingYARABackend{}
+	backend := &noMatchCountingYARABackend{}
 	useCompanionYARA(t, backend)
 
 	findings := sweepCompanions(context.Background(), &config.Config{}, anchorAt(t, anchor, time.Now()))
