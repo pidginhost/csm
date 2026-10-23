@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"strings"
@@ -56,6 +57,14 @@ func runUAPI(ctx context.Context, lookPath systemdrun.LookPathFunc, run systemdr
 		opt.RuntimeMax = time.Until(deadline)
 	}
 	return systemdrun.Run(ctx, lookPath, run, opt, uapiPath, args...)
+}
+
+// uapiValue encodes v for uapi's command line, which URI-decodes every value:
+// a + or % in a mailbox would otherwise reach cPanel as something else. A
+// space goes in as %20, which reads the same whether or not the decoder takes
+// + for a space.
+func uapiValue(v string) string {
+	return strings.ReplaceAll(url.QueryEscape(v), "+", "%20")
 }
 
 // uapiResultError reads the outcome of a `uapi --output=json` call. uapi exits
@@ -133,7 +142,7 @@ func suspendMailbox(mailbox, reason string) bool {
 
 // runMailboxSuspension applies one uapi Email suspension and records it.
 func runMailboxSuspension(user, mailbox, fn, reason string) error {
-	args := []string{"--output=json", "--user=" + user, "Email", fn, "email=" + mailbox}
+	args := []string{"--output=json", "--user=" + user, "Email", fn, "email=" + uapiValue(mailbox)}
 	ctx, cancel := context.WithTimeout(context.Background(), uapiTimeout)
 	defer cancel()
 	out, execErr := uapiExec(ctx, args...)
@@ -148,7 +157,7 @@ func runMailboxSuspension(user, mailbox, fn, reason string) error {
 		Account: user,
 		Reason:  reason,
 		Command: append([]string{uapiPath}, args...),
-		Undo:    fmt.Sprintf("%s %s Email un%s %s", uapiPath, mailboxShellArg("--user="+user), fn, mailboxShellArg("email="+mailbox)),
+		Undo:    fmt.Sprintf("%s %s Email un%s %s", uapiPath, mailboxShellArg("--user="+user), fn, mailboxShellArg("email="+uapiValue(mailbox))),
 		Result:  actionlog.Applied,
 	}
 	if err != nil {

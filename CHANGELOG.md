@@ -31,6 +31,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - Spam folder learning now counts a message moved to Spam when the same delivery also reached other mailboxes of the account.
 - The forwarders list on the Email Security page shows each cPanel source address once, instead of with its domain repeated.
 - One visitor posting comments on several hosted sites no longer raises a spam outbreak alert when each site only notifies its own owner.
+- Automatic mailbox suspension and its release commands now reach the right mailbox when the address holds a plus or percent sign.
 
 ## [4.6.0] - 2026-10-22
 

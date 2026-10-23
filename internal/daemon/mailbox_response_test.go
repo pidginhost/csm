@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"errors"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -68,7 +69,7 @@ func uapiFailure(msg string) ([]byte, error) {
 }
 
 func uapiArgs(fn string) []string {
-	return []string{"--output=json", "--user=cpuser", "Email", fn, "email=real@victim.example"}
+	return []string{"--output=json", "--user=cpuser", "Email", fn, "email=real%40victim.example"}
 }
 
 func TestMaybeSuspendMailbox_GatedByConfig(t *testing.T) {
@@ -146,7 +147,7 @@ func TestMaybeSuspendMailbox_SuspendsLoginAndOutgoing(t *testing.T) {
 	if sink.records[0].Action != "suspend_login" || sink.records[1].Action != "suspend_outgoing" {
 		t.Errorf("record actions = %q, %q", sink.records[0].Action, sink.records[1].Action)
 	}
-	if u := sink.records[0].Undo; !strings.Contains(u, "unsuspend_login") || !strings.Contains(u, "--user=cpuser") || !strings.Contains(u, "email=real@victim.example") {
+	if u := sink.records[0].Undo; !strings.Contains(u, "unsuspend_login") || !strings.Contains(u, "--user=cpuser") || !strings.Contains(u, "email=real%40victim.example") {
 		t.Errorf("login undo = %q", u)
 	}
 	if u := sink.records[1].Undo; !strings.Contains(u, "unsuspend_outgoing") {
@@ -382,6 +383,9 @@ func TestMailboxSuspensionUndoPreservesIdentity(t *testing.T) {
 		"name$(printf${IFS}changed)@example.com",
 		"name`printf${IFS}changed`@example.com",
 		"name;printf${IFS}changed@example.com",
+		// uapi URI-decodes its values: these must reach cPanel unchanged.
+		"a+b@example.com",
+		"pct%41x@example.com",
 	} {
 		t.Run(mailbox, func(t *testing.T) {
 			line := "2026-01-01 10:00:00 1abc23-000456-AB <= sender@example.com H=mail.example.com [203.0.113.5]:2525 P=esmtpsa A=dovecot_login:" + mailbox + " S=100"
@@ -393,8 +397,8 @@ func TestMailboxSuspensionUndoPreservesIdentity(t *testing.T) {
 				t.Fatal("suspension failed")
 			}
 			for _, args := range (*calls)[len(*calls)-2:] {
-				if args[4] != "email="+mailbox {
-					t.Fatalf("uapi mailbox argument = %q", args[4])
+				if got := uapiDecoded(t, args[4]); got != "email="+mailbox {
+					t.Fatalf("uapi mailbox argument %q reaches cPanel as %q", args[4], got)
 				}
 			}
 			for _, rec := range sink.records[len(sink.records)-2:] {
@@ -404,9 +408,14 @@ func TestMailboxSuspensionUndoPreservesIdentity(t *testing.T) {
 					t.Fatalf("missing undo command: %+v", rec)
 				}
 				out, err := exec.Command("/bin/sh", "-c", "set -- "+tail+"\nprintf '%s\\n' \"$@\"").CombinedOutput()
-				want := "--user=cpuser\nEmail\nun" + rec.Action + "\nemail=" + mailbox + "\n"
-				if err != nil || string(out) != want {
-					t.Errorf("undo did not preserve mailbox: output=%q error=%v, want %q", out, err, want)
+				words := strings.Split(strings.TrimSuffix(string(out), "\n"), "\n")
+				if err != nil || len(words) != 4 {
+					t.Fatalf("undo words = %q error=%v", out, err)
+				}
+				words[3] = uapiDecoded(t, words[3])
+				want := []string{"--user=cpuser", "Email", "un" + rec.Action, "email=" + mailbox}
+				if !reflect.DeepEqual(words, want) {
+					t.Errorf("undo reaches cPanel as %q, want %q", words, want)
 				}
 			}
 		})
@@ -477,4 +486,19 @@ func TestCloudRelayCredentialAbuseAction_SuspendsMailboxBeforeAccountHold(t *tes
 	if !gotVictim {
 		t.Fatal("cloud-relay domain must be tracked as compromised after the suspension")
 	}
+}
+
+// uapiDecoded returns a key=value argument as uapi reads it: the value
+// URI-decoded, with %20 for a space.
+func uapiDecoded(t *testing.T, arg string) string {
+	t.Helper()
+	key, value, ok := strings.Cut(arg, "=")
+	if !ok || strings.Contains(value, "+") {
+		t.Fatalf("uapi argument %q is not key=value with + encoded", arg)
+	}
+	decoded, err := url.PathUnescape(value)
+	if err != nil {
+		t.Fatalf("uapi argument %q: %v", arg, err)
+	}
+	return key + "=" + decoded
 }
