@@ -354,6 +354,7 @@ func (s *Supervisor) Reload() error {
 	if res.CompileError != "" {
 		return fmt.Errorf("yaraworker reload compile error: %s", res.CompileError)
 	}
+	yara.InvalidateCaches()
 	return nil
 }
 
@@ -601,6 +602,8 @@ func (s *Supervisor) spawnAndWaitReady() error {
 	s.cmd = cmd
 	s.started = time.Now()
 	client := yaraipc.NewClient(s.cfg.SocketPath, s.cfg.ClientTimeout)
+	// Scans can reach the new client before the readiness probe returns.
+	yara.InvalidateCaches()
 	s.client = client
 	s.mu.Unlock()
 

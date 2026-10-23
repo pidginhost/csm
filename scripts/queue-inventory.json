@@ -662,6 +662,18 @@
       "rationale": "Stops or joins daemon and supervised watcher lifetimes; protection data stays with each watcher owner."
     },
     {
+      "id": "internal/daemon/docroot_exec.go::newDocrootExecMonitor::queue::accounted_channel::1",
+      "path": "internal/daemon/docroot_exec.go",
+      "owner": "newDocrootExecMonitor",
+      "target": "queue",
+      "kind": "accounted_channel",
+      "source": "queuehealth.NewChannel[ExecEvent](docrootExecQueueSize, time.Minute)",
+      "capacity": "1024",
+      "class": "work",
+      "rationale": "Owns process starts from the exec event loop until their program is judged, so a slow scan never holds up exec events.",
+      "queue": "bpf.execution.docroot"
+    },
+    {
       "id": "internal/daemon/fanotify.go::NewFileMonitor::analyzerCh::channel::1",
       "path": "internal/daemon/fanotify.go",
       "owner": "NewFileMonitor",
@@ -2163,6 +2175,39 @@
           "path": "internal/bpf/ringbuf.go",
           "symbol": "Reader.out",
           "shape": "*queuehealth.Channel[T]"
+        }
+      ]
+    },
+    {
+      "id": "bpf.execution.docroot",
+      "rows": [
+        "bpf.execution.docroot"
+      ],
+      "bounds": "1024 non-root process starts, resolved by one worker because absolute launch names may alias a document root. Only document-root images are read and scanned. A received start stays in flight until its program is judged and any finding is admitted. Starts refused by a full queue, starts left waiting at shutdown, and findings suppressed during shutdown count as lost; the deep scan and the periodic process check still cover those programs.",
+      "publication": [
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestDocrootExecQueuePublished",
+          "mode": "portable"
+        }
+      ],
+      "lifecycle": [
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestDocrootExecWorkerInspectsQueuedStarts",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestDocrootExecStopAccountsForPendingStarts",
+          "mode": "portable"
+        }
+      ],
+      "anchors": [
+        {
+          "path": "internal/daemon/docroot_exec.go",
+          "symbol": "docrootExecMonitor.queue",
+          "shape": "*queuehealth.Channel[ExecEvent]"
         }
       ]
     },

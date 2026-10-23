@@ -222,6 +222,16 @@ include or require. These are candidate payload references: proximity does
 not prove variable identity, and concatenated paths may be partial. Extraction
 advances through the content once and stops when the output cap is reached.
 
+Native Linux programs are judged by content too. A program that carries a
+`wget` or `curl` download command with an open output path, together with
+either a URL to a PHP script or `.htaccess` file (including at the URL root),
+or PHP source that writes files, is reported as a Critical dropper wherever
+it sits. The ELF header decides what counts as a program: non-PIE, PIE and
+static PIE executables do, shared libraries (native Node.js modules, Python
+extensions) do not. The executable bit is not consulted. A program in a web root without those traits
+is not reported: vendor download binaries, bundled build tools such as
+esbuild, image optimizer binaries and old CGI programs are normal there.
+
 Scheduled YARA sweeps scan regular, non-empty files under configured
 `account_roots`, or cPanel `/home/*/public_html` roots when no override is
 configured. Files larger than `thresholds.full_scan_max_file_mb`, symlinks,

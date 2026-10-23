@@ -103,6 +103,7 @@ var attributionEvidence = map[string]string{
 	"js_keylogger_dataflow":         "TestContentFindingsAttributeByPath",
 	"yara_match_scheduled":          "TestYARAScheduledFindingAttributesByPath",
 	"malware_companion_files":       "TestCompanionFindingAttributesByPath",
+	"docroot_binary_exec":           "TestDocrootExecFindingAttributesByPath",
 	"wp_core_integrity":             "TestWPCoreIntegrityAttributesByPath",
 	"symlink_attack":                "TestSymlinkAttackStampsOwner",
 	// Realtime producers (Linux).

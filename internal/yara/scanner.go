@@ -131,6 +131,7 @@ func (s *Scanner) Reload() error {
 	s.rules = rules
 	s.ruleCount = rules.Count()
 	s.disabledCount = disabledCount
+	InvalidateCaches()
 	s.mu.Unlock()
 
 	fmt.Fprintf(os.Stderr, "yara: compiled %d rules from %d file(s) in %s\n", s.ruleCount, fileCount, s.rulesDir)

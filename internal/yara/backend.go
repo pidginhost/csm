@@ -99,6 +99,16 @@ func ScanFileChecked(b Backend, path string, maxBytes int) (FileScanResult, erro
 
 var activeBackend atomic.Pointer[backendHolder]
 
+var cacheGeneration atomic.Uint64
+
+// CacheGeneration changes when rules or the active backend change. Rule
+// counts alone cannot invalidate verdicts after an edit to an existing rule.
+func CacheGeneration() uint64 { return cacheGeneration.Load() }
+
+// InvalidateCaches retires verdicts after loading rules, including a worker
+// restart that may load different on-disk content without an explicit reload.
+func InvalidateCaches() { cacheGeneration.Add(1) }
+
 type backendHolder struct{ b Backend }
 
 // Active returns the configured scanning backend. When SetActive has
@@ -120,6 +130,7 @@ func Active() Backend {
 // time; reads in-flight see the prior backend finish and the next read
 // sees the new one.
 func SetActive(b Backend) {
+	defer InvalidateCaches()
 	if b == nil {
 		activeBackend.Store(nil)
 		return
