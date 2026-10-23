@@ -1142,6 +1142,18 @@
       "rationale": "Joins session-pruning maintenance; session records are retained authentication state rather than queued findings."
     },
     {
+      "id": "internal/workerproc/launch.go::ExecLauncher::done::channel::1",
+      "path": "internal/workerproc/launch.go",
+      "owner": "ExecLauncher",
+      "target": "done",
+      "kind": "channel",
+      "source": "make(chan struct{})",
+      "capacity": "0",
+      "class": "lifecycle",
+      "rationale": "Joins child reaping; the supervisor waits on it, bounded, after every kill.",
+      "queue": "php_taint"
+    },
+    {
       "id": "internal/yaraworker/supervisor.go::*Supervisor.Start::s.done::channel::1",
       "path": "internal/yaraworker/supervisor.go",
       "owner": "*Supervisor.Start",
