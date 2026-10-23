@@ -4,7 +4,9 @@ package yara_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/signatures"
@@ -56,5 +58,35 @@ func TestArchiveLoaderFixtureParity(t *testing.T) {
 				t.Fatalf("YAML = %v, YARA = %v, want %v", yamlHit, yaraHit, tc.Want)
 			}
 		})
+	}
+}
+
+func TestArchiveLoaderProximityParity(t *testing.T) {
+	yamlScanner := signatures.NewScanner("../../configs")
+	if err := yamlScanner.LoadError(); err != nil {
+		t.Fatal(err)
+	}
+	yaraScanner, err := csmyara.NewScanner("../../configs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, reverse := range []bool{false, true} {
+		for _, offset := range []int{0, 6, 1000, 2000} {
+			for _, distance := range []int{999, 1000, 1001, 1100} {
+				t.Run(fmt.Sprintf("reverse=%v/offset=%d/distance=%d", reverse, offset, distance), func(t *testing.T) {
+					first, second := "->getFromName('a');", "eval('?>' . $s);"
+					if reverse {
+						first, second = second, first
+					}
+					content := []byte(strings.Repeat(" ", offset) + first + strings.Repeat(" ", distance-len(first)) + second)
+					want := distance <= 1000
+					yamlHit := hasSignatureRule(yamlScanner.ScanContent(content, ".php"), "backdoor_archive_loader")
+					yaraHit := hasRepositoryYaraRule(yaraScanner.ScanBytes(content), "backdoor_archive_loader")
+					if yamlHit != want || yaraHit != want {
+						t.Fatalf("YAML = %v, YARA = %v, want %v", yamlHit, yaraHit, want)
+					}
+				})
+			}
+		}
 	}
 }

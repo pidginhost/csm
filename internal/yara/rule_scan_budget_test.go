@@ -297,3 +297,25 @@ func TestRuleScanBudgetArchiveLoader(t *testing.T) {
 		"read_then_evals.php": []byte("<?php\n$z->setPassword($k); $s = $z->getFromName('a');\n" + strings.Repeat("eval(", 200_000)),
 	})
 }
+
+// Exercise the range lookup with both match lists at YARA-X's default cap.
+// No pair qualifies, so the condition must examine the entire eval list.
+func TestRuleScanBudgetArchiveLoaderMatchCap(t *testing.T) {
+	content := []byte("<?php\n" + strings.Repeat("eval('?>' . $t); ", 1_000_001) +
+		strings.Repeat(" ", 2000) + strings.Repeat("'zip://' ", 1_000_001))
+	rules := shippedRule(t, "backdoor_archive_loader")
+	defer rules.Destroy()
+	scanner := yara_x.NewScanner(rules)
+	defer scanner.Destroy()
+	scanner.SetTimeout(scanBudgetTimeout)
+	result, err := scanner.Scan(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.MatchingRules()) != 0 {
+		t.Fatal("disjoint matches must traverse the loop without reporting a pair")
+	}
+	requireRuleScanBudget(t, "backdoor_archive_loader", map[string][]byte{
+		"saturated_disjoint_matches.php": content,
+	})
+}

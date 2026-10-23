@@ -17,6 +17,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - Programs that run from a website's document root are now checked as they start: malware is reported as Critical, and PHP starting one raises a warning.
 - Web configuration checks now recognize more malicious access-control variants.
 - Scans and real-time checks now detect PHP that runs code hidden inside an archive, including password-protected archives and includes of archive members.
+- Archive malware checks no longer stall finding re-checks on large PHP bundles or disagree near unrelated template code.
 - Web configuration checks now report a dropper kit's .htaccess template that switches off rewrite protections, and the automatic cleaner can remove it.
 - On LiteSpeed, matches that ModSecurity only logs are no longer reported as blocks or counted toward visitor bans.
 

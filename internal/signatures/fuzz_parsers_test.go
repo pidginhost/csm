@@ -6,6 +6,37 @@ import (
 	"testing"
 )
 
+func FuzzRegexPairOffsets(f *testing.F) {
+	f.Add([]byte("read eval"), uint16(5))
+	f.Add([]byte("eval     read"), uint16(0))
+	f.Add([]byte("reader bread eval read"), uint16(12))
+	f.Add([]byte("read /*\u754c\u754c*/eval"), uint16(12))
+	compiled, err := compileRuleRegexes(make(map[string]*compiledRegex), []string{`\bread\b`, `\beval\b`}, "pair")
+	if err != nil {
+		f.Fatal(err)
+	}
+	f.Fuzz(func(t *testing.T, content []byte, distance uint16) {
+		// Keep the independent all-pairs oracle small; production uses a merge.
+		if len(content) > 4096 {
+			return
+		}
+		want := false
+		for _, first := range compiled[0].FindAllIndex(content, -1) {
+			for _, second := range compiled[1].FindAllIndex(content, -1) {
+				gap := first[0] - second[0]
+				if gap < 0 {
+					gap = -gap
+				}
+				want = want || gap <= int(distance)
+			}
+		}
+		pair := compiledRegexPair{first: compiled[0], second: compiled[1], maxDistance: int(distance)}
+		if got := newRegexEval(content).matchPair(pair); got != want {
+			t.Fatalf("distance %d on %q: got %v, want %v", distance, content, got, want)
+		}
+	})
+}
+
 // Custom YAML rules may use syntax absent from the shipped rules, so mutate
 // both the regex and its input instead of holding the rule set fixed.
 func FuzzRegexGatesAreSound(f *testing.F) {

@@ -56,6 +56,7 @@ rules:
 - `file_types` - file extensions to match (or `["*"]` for all)
 - `patterns` - case-insensitive literal strings
 - `regexes` - regex patterns, compiled case-insensitively
+- `regex_pairs` - entries with `first`, `second` and `max_distance`; each pair counts as one regex match when its match starts are within that many bytes, in either order
 - `exclude_patterns` - literal patterns that suppress a match (false positive reduction)
 - `exclude_regexes` - regex patterns that suppress a match
 - `min_match` - minimum total number of matching literal and regex entries; each entry counts once
@@ -70,6 +71,12 @@ such as function names: a regex with no fixed text of two or more characters
 runs over every file of its types, and realtime pays that cost on each write.
 Required text can include escaped bytes such as `\x00`; these remain part of
 the literal when checking whether a file could match.
+
+Regex pairs compare the ordered, non-overlapping matches of two expressions.
+Both expressions must be non-empty and compile; `max_distance` must be
+non-negative. A distance of zero requires both matches to start at the same
+byte. Use pairs for nearby evidence instead of joining expressions with a
+wide wildcard gap, which can slow finding re-checks on large files.
 
 When a regex includes a literal listed in `patterns`, the same content can
 satisfy both entries. Use independent entries when a rule needs multiple pieces
@@ -149,7 +156,8 @@ superglobal names. A regression check guards against expression drift.
 The archive loader signature reports PHP that runs code read out of an
 archive, in both engines. A ZipArchive member read, or a `zip://` or `phar://`
 path, must sit inside an `eval`, `assert` or `create_function` call, lie
-within 1000 bytes of an `eval` that leaves PHP mode first, before or after it,
+within 1000 bytes of an `eval` that leaves PHP mode first, before or after it
+(measured between match starts in both engines),
 or follow a password set on the archive and precede `eval` of a variable.
 Extracting archives to disk, parsing data members and template engines
 evaluating local text are not evidence, nor is a bundled tool such as a
