@@ -1275,7 +1275,10 @@ replace this: it misses memfd pages and other processes in the unit.
 
 A watchdog reads the cgroup counters every 500 ms and kills a worker over its
 cap, or whose usage cannot be read. A worker over three quarters of its cap
-after a request is retired. Kill closes the socket at once and asks systemd
+after a request is retired. Units also retire at three quarters of their
+lifetime cap. The supervisor checks retirement before reusing an idle
+worker, as well as after a request, so expired workers get no new input.
+Kill closes the socket at once and asks systemd
 to kill the unit by name; it never signals a PID and never blocks. The daemon
 attempts to kill leftover `csm-parse-worker-*` units at startup, with a
 30-second timeout. Cleanup failures are logged; lister initialization still

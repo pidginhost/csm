@@ -20,8 +20,8 @@ type Process interface {
 	Done() <-chan struct{}
 	// PID is for logs and Stats only.
 	PID() int
-	// Retire is asked after each served request; true means the worker
-	// should take no more.
+	// Retire is asked before reusing a worker and after each served
+	// request; true means the worker should take no more.
 	Retire() bool
 }
 

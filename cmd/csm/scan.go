@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -610,7 +612,7 @@ func runScanLegacy(f scanFlags) {
 	defer func() { _ = st.Close() }()
 
 	fmt.Fprintf(os.Stderr, "Scanning account: %s\n", f.account)
-	stopLister, listerErr := installScanZipLister()
+	stopLister, coverage := installScanZipLister()
 	defer stopLister()
 	start := time.Now()
 
@@ -619,18 +621,9 @@ func runScanLegacy(f scanFlags) {
 	elapsed := time.Since(start).Round(time.Millisecond)
 	fmt.Fprintf(os.Stderr, "Scan completed in %s: %d finding(s)\n\n", elapsed, len(findings))
 
+	printLegacyScanFindings(os.Stdout, findings, coverage.Err())
 	if len(findings) == 0 {
-		if listerErr != nil {
-			fmt.Println("No findings, but phishing-kit zip archives were not checked.")
-			return
-		}
-		fmt.Println("No findings. Account is clean.")
 		return
-	}
-
-	for _, finding := range findings {
-		fmt.Println(finding.String())
-		fmt.Println()
 	}
 
 	if f.sendAlert {
@@ -644,6 +637,24 @@ func runScanLegacy(f scanFlags) {
 		if err := alert.Dispatch(cfg, alertFindings); err != nil {
 			fmt.Fprintf(os.Stderr, "Alert dispatch error: %v\n", err)
 		}
+	}
+}
+
+func printLegacyScanFindings(w io.Writer, findings []alert.Finding, coverageErr error) {
+	if coverageErr != nil {
+		fmt.Fprintf(w, "Warning: some phishing-kit zip archives were not checked: %v\n\n", coverageErr)
+	}
+	if len(findings) == 0 {
+		if coverageErr != nil {
+			fmt.Fprintln(w, "No findings. Scan is incomplete.")
+			return
+		}
+		fmt.Fprintln(w, "No findings. Account is clean.")
+		return
+	}
+	for _, finding := range findings {
+		fmt.Fprintln(w, finding.String())
+		fmt.Fprintln(w)
 	}
 }
 
@@ -687,8 +698,8 @@ const scanCLIUnitPrefix = "csm-parse-worker-cli"
 
 // installScanZipLister gives an in-process scan its own parse worker, since
 // zips are never parsed in this process. On failure the scan runs without
-// it, and the error says why kit zips went unchecked.
-func installScanZipLister() (stop func(), err error) {
+// it. Coverage records setup and listing failures for the final report.
+func installScanZipLister() (stop func(), coverage *scanZipCoverage) {
 	binary, err := os.Executable()
 	if err == nil {
 		binary, err = filepath.EvalSymlinks(binary)
@@ -698,14 +709,44 @@ func installScanZipLister() (stop func(), err error) {
 		lister, err = scanZipLister(binary)
 	}
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: phishing-kit zip archives will not be checked: %v\n", err)
-		return func() {}, err
+		return func() {}, &scanZipCoverage{err: err}
 	}
-	checks.SetZipLister(lister)
+	coverage = &scanZipCoverage{ZipLister: lister}
+	checks.SetZipLister(coverage)
 	return func() {
 		checks.SetZipLister(nil)
 		_ = lister.Stop()
-	}, nil
+	}, coverage
+}
+
+type scanZipCoverage struct {
+	checks.ZipLister
+	mu  sync.Mutex
+	err error
+}
+
+func (c *scanZipCoverage) ListZip(ctx context.Context, zip *os.File, size int64, maxDirBytes uint64, visit func(string, bool) error) error {
+	var visitErr error
+	err := c.ZipLister.ListZip(ctx, zip, size, maxDirBytes, func(name string, dir bool) error {
+		visitErr = visit(name, dir)
+		return visitErr
+	})
+	// The classifier ends a successful listing with its own sentinel once
+	// it has enough kit evidence. Only listing failures lose coverage.
+	if err != nil && visitErr == nil {
+		c.mu.Lock()
+		if c.err == nil {
+			c.err = err
+		}
+		c.mu.Unlock()
+	}
+	return err
+}
+
+func (c *scanZipCoverage) Err() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.err
 }
 
 func scanZipLister(binary string) (*parseworker.Lister, error) {

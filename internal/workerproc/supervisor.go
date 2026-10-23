@@ -283,6 +283,11 @@ func (s *Supervisor) callLocked(ctx context.Context, req Frame, fds []*os.File, 
 			// Not this request's fault, and nothing to count against it.
 			s.killLocked()
 		default:
+			// An idle worker may have reached its retirement deadline
+			// since the last reply. Replace it before sending new input.
+			if s.child.proc.Retire() {
+				s.killLocked()
+			}
 		}
 	}
 	if s.child == nil {

@@ -146,7 +146,8 @@ func TestScanLegacyInstallsZipLister(t *testing.T) {
 	if install < 0 || scan < 0 || install > scan {
 		t.Error("runScanLegacy must install a zip lister before RunAccountScan")
 	}
-	if !strings.Contains(legacy, "were not checked") {
-		t.Error("runScanLegacy must not call an account clean when kit zips were not checked")
+	report := strings.Index(legacy, "printLegacyScanFindings(os.Stdout, findings, coverage.Err())")
+	if report < scan {
+		t.Error("runScanLegacy must report coverage after RunAccountScan completes")
 	}
 }
