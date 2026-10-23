@@ -277,7 +277,8 @@ func TestMailboxesAccountLimitBoundary(t *testing.T) {
 
 func TestMailboxesSkipsNonRegularLists(t *testing.T) {
 	a, h := openTenant(t)
-	for _, domain := range []string{"directory.example.com", "fifo.example.com", "socket.example.com"} {
+	// The short socket domain leaves room for the test's temporary path.
+	for _, domain := range []string{"directory.example.com", "fifo.example.com", "sock.test"} {
 		if err := os.MkdirAll(filepath.Join(a.Home, "etc", domain), 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -288,7 +289,7 @@ func TestMailboxesSkipsNonRegularLists(t *testing.T) {
 	if err := syscall.Mkfifo(filepath.Join(a.Home, "etc/fifo.example.com/passwd"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	socket, err := net.Listen("unix", filepath.Join(a.Home, "etc/socket.example.com/passwd"))
+	socket, err := net.Listen("unix", filepath.Join(a.Home, "etc/sock.test/passwd"))
 	if err != nil {
 		t.Fatal(err)
 	}
