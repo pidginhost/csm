@@ -23,14 +23,14 @@ func TestArchiveLoaderFixtureParity(t *testing.T) {
 		Want   bool
 		Sample string
 	}
-	if err := json.Unmarshal(data, &fixtures); err != nil {
+	if err = json.Unmarshal(data, &fixtures); err != nil {
 		t.Fatal(err)
 	}
 	if len(fixtures) == 0 {
 		t.Fatal("no archive loader fixtures")
 	}
 	yamlScanner := signatures.NewScanner("../../configs")
-	if err := yamlScanner.LoadError(); err != nil {
+	if err = yamlScanner.LoadError(); err != nil {
 		t.Fatal(err)
 	}
 	yaraScanner, err := csmyara.NewScanner("../../configs")
