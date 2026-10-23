@@ -1154,6 +1154,30 @@
       "queue": "php_taint"
     },
     {
+      "id": "internal/workerproc/supervisor.go::*Supervisor.roundTripLocked::abandon::channel::1",
+      "path": "internal/workerproc/supervisor.go",
+      "owner": "*Supervisor.roundTripLocked",
+      "target": "abandon",
+      "kind": "channel",
+      "source": "make(chan struct{})",
+      "capacity": "0",
+      "class": "lifecycle",
+      "rationale": "Tells the round-trip goroutine its caller returned, so a late reply is dropped and its descriptors closed.",
+      "queue": "php_taint"
+    },
+    {
+      "id": "internal/workerproc/supervisor.go::*Supervisor.roundTripLocked::results::channel::1",
+      "path": "internal/workerproc/supervisor.go",
+      "owner": "*Supervisor.roundTripLocked",
+      "target": "results",
+      "kind": "channel",
+      "source": "make(chan result)",
+      "capacity": "0",
+      "class": "work",
+      "rationale": "Transfers a worker reply while request ownership survives cancellation and child cleanup; a reply the caller abandoned has its descriptors closed by the sender.",
+      "queue": "php_taint"
+    },
+    {
       "id": "internal/yaraworker/supervisor.go::*Supervisor.Start::s.done::channel::1",
       "path": "internal/yaraworker/supervisor.go",
       "owner": "*Supervisor.Start",
