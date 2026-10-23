@@ -96,7 +96,7 @@ func TestReadFrameOnTruncatedBody(t *testing.T) {
 
 func socketPair(t *testing.T) (*net.UnixConn, *net.UnixConn) {
 	t.Helper()
-	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM|syscall.SOCK_CLOEXEC, 0)
+	fds, err := socketpair()
 	if err != nil {
 		t.Fatal(err)
 	}

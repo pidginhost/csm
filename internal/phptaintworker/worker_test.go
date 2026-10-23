@@ -19,10 +19,12 @@ import (
 
 func socketPair(t *testing.T) (*net.UnixConn, *net.UnixConn) {
 	t.Helper()
-	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM|syscall.SOCK_CLOEXEC, 0)
+	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
+	syscall.CloseOnExec(fds[0])
+	syscall.CloseOnExec(fds[1])
 	conn := func(fd int) *net.UnixConn {
 		f := os.NewFile(uintptr(fd), "socketpair")
 		defer f.Close()

@@ -34,7 +34,7 @@ func ExecLauncher(command string, args, env []string) Launcher {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		pair, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM|syscall.SOCK_CLOEXEC, 0)
+		pair, err := socketpair()
 		if err != nil {
 			return nil, fmt.Errorf("workerproc: socketpair: %w", err)
 		}
@@ -80,4 +80,20 @@ func (p *execProcess) Kill() error {
 		return err
 	}
 	return nil
+}
+
+// socketpair returns a close-on-exec Unix stream pair. Holding ForkLock keeps
+// a concurrent exec from inheriting the descriptors before they are marked;
+// SOCK_CLOEXEC would do this atomically, but it does not exist on every
+// platform the packages are built on.
+func socketpair() ([2]int, error) {
+	syscall.ForkLock.RLock()
+	defer syscall.ForkLock.RUnlock()
+	pair, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
+	if err != nil {
+		return [2]int{}, err
+	}
+	syscall.CloseOnExec(pair[0])
+	syscall.CloseOnExec(pair[1])
+	return pair, nil
 }
