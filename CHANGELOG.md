@@ -11,6 +11,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Security
 
+- Web configuration checks now recognize more malicious access-control variants without removing unrelated settings during automatic cleaning.
 - Scans and real-time checks now detect PHP that runs code hidden inside an archive, including password-protected archives and includes of archive members.
 - Web configuration checks now report a dropper kit's .htaccess template that switches off rewrite protections, and the automatic cleaner can remove it.
 
@@ -20,6 +21,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Fixed
 
+- Archive checks no longer flag ordinary data assertions or archive reads outside code-execution arguments.
 - Email attachments in damaged zip or tar.gz archives are no longer counted as scanned and clean.
 - Email archives built to overwhelm the scanner, such as zip bombs or huge file lists, are now counted as not fully scanned instead of clean.
 - Archives inside email attachments are unpacked up to the configured depth, and deeper ones are no longer counted as scanned and clean.

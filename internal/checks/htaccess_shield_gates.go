@@ -2,6 +2,7 @@ package checks
 
 import (
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -63,7 +64,17 @@ func filesMatchNamesNoFile(pattern string) bool {
 	if len(pattern) < 2 || pattern[0] != '^' || pattern[len(pattern)-1] != '$' {
 		return false
 	}
-	return strings.Trim(pattern[1:len(pattern)-1], "()|?:*+") == ""
+	// Only grouping, alternation and repetition may appear between the
+	// anchors. A colon outside a non-capturing group names a real file.
+	body := strings.ReplaceAll(pattern[1:len(pattern)-1], "(?:", "(")
+	if strings.Trim(body, "()|?*+") != "" {
+		return false
+	}
+	// Alternation can detach an anchor: ^()|()$ also matches nonempty
+	// names. With consuming atoms excluded above, these two probes prove
+	// that the valid expression accepts only the empty string.
+	re, err := regexp.Compile(pattern)
+	return err == nil && re.MatchString("") && !re.MatchString("x")
 }
 
 // uploadTreeDirNames are directory names under which web-writable content

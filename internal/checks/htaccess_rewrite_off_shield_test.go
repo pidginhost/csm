@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -89,7 +90,9 @@ func TestCleanHtaccessFileRemovesRewriteOffShield(t *testing.T) {
 	fixHtaccessAllowedRoots = []string{dir}
 	htaccessBackupDirRoot = filepath.Join(t.TempDir(), "pre_clean")
 
-	path := writeHtaccess(t, dir, "site/assets", "# kept\n"+rewriteOffShieldTemplate)
+	prefix := "# kept\n\nOptions -Indexes\n\n"
+	suffix := "\n# untouched\nDirectoryIndex index.html\n"
+	path := writeHtaccess(t, dir, "site/assets", prefix+rewriteOffShieldTemplate+suffix)
 	res := CleanHtaccessFile(path)
 	if !res.Success {
 		t.Fatalf("clean failed: %+v", res)
@@ -98,16 +101,67 @@ func TestCleanHtaccessFileRemovesRewriteOffShield(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cleaned := string(data)
-	for _, gone := range []string{"RewriteEngine", "FilesMatch", "Allow from all"} {
-		if strings.Contains(cleaned, gone) {
-			t.Errorf("cleaned file still contains %q:\n%s", gone, cleaned)
-		}
-	}
-	if !strings.Contains(cleaned, "# kept") {
-		t.Errorf("cleaner removed unrelated content:\n%s", cleaned)
+	if string(data) != prefix+suffix {
+		t.Fatalf("cleaned bytes = %q, want %q", data, prefix+suffix)
 	}
 	if findings, _ := AuditHtaccessFile(path); countByCheck(findings, "htaccess_rewrite_off_shield") != 0 {
 		t.Error("finding still raised after cleaning")
+	}
+}
+
+func TestRewriteOffShieldDirectiveSyntax(t *testing.T) {
+	for name, tc := range map[string]struct {
+		body string
+		want int
+	}{
+		"grant with additional hosts":   {"RewriteEngine Off\n<FilesMatch \"^()$\">\nAllow from 192.0.2.1 all\n</FilesMatch>\n", 2},
+		"tabbed grant":                  {"RewriteEngine Off\n<FilesMatch \"^()$\">\nAllow\tfrom\tall\n</FilesMatch>\n", 2},
+		"continued grant":               {"RewriteEngine Off\n<FilesMatch \\\n\"^()$\">\nRequire all \\\ngranted\n</FilesMatch>\n", 2},
+		"quoted grant":                  {"RewriteEngine Off\n<FilesMatch \"^()$\">\nRequire \"all\" \"granted\"\n</FilesMatch>\n", 2},
+		"commented grant":               {"RewriteEngine Off\n<FilesMatch \"^()$\">\n# Allow from all\nRequire all denied\n</FilesMatch>\n", 0},
+		"grant inside another argument": {"RewriteEngine Off\n<FilesMatch \"^()$\">\nErrorDocument 403 \"Require all granted\"\n</FilesMatch>\n", 0},
+		"continued comment":             {"RewriteEngine Off\n# example \\\n<FilesMatch \"^()$\">\nAllow from all\n</FilesMatch>\n", 0},
+		"unanchored alternative":        {"RewriteEngine Off\n<FilesMatch \"^()|()$\">\nAllow from all\n</FilesMatch>\n", 0},
+		"literal colon filename":        {"RewriteEngine Off\n<FilesMatch \"^(:)$\">\nAllow from all\n</FilesMatch>\n", 0},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := len(detectRewriteOffShield([]byte(tc.body), ".htaccess")); got != tc.want {
+				t.Fatalf("got %d matches, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRewriteOffShieldPreservesUnrelatedBytes(t *testing.T) {
+	for _, ending := range []string{"\n", "\r\n"} {
+		t.Run(fmt.Sprintf("ending_%q", ending), func(t *testing.T) {
+			prefix := "# before\n\nOptions -Indexes\n\n"
+			suffix := "\n# after\n<FilesMatch \"\\.(css|js)$\">\nRequire all granted\n</FilesMatch>"
+			content := []byte(strings.ReplaceAll(prefix+rewriteOffShieldTemplate+suffix, "\n", ending))
+			matches := detectRewriteOffShield(content, ".htaccess")
+			if len(matches) != 2 {
+				t.Fatalf("got %d matches, want two offending blocks", len(matches))
+			}
+			got := applyRangeRemoval(content, mergeRanges(matchRanges(matches)))
+			want := strings.ReplaceAll(prefix+suffix, "\n", ending)
+			if string(got) != want {
+				t.Fatalf("cleaned bytes = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+func TestRewriteOffShieldPreservesSharedWrapper(t *testing.T) {
+	prefix := "<IfModule mod_rewrite.c>\n# keep this comment\nOptions -Indexes\n"
+	suffix := "\n</IfModule>\n\n"
+	grant := "<FilesMatch \"^()$\">\nRequire all granted\n</FilesMatch>\n"
+	content := []byte(prefix + "RewriteEngine Off\n" + suffix + grant)
+	matches := detectRewriteOffShield(content, ".htaccess")
+	if len(matches) != 2 {
+		t.Fatalf("got %d matches, want 2", len(matches))
+	}
+	got := applyRangeRemoval(content, mergeRanges(matchRanges(matches)))
+	if string(got) != prefix+suffix {
+		t.Fatalf("cleaned bytes = %q, want %q", got, prefix+suffix)
 	}
 }

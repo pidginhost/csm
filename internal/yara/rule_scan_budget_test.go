@@ -282,10 +282,14 @@ func TestRuleScanBudgetDownloadAndMinerLines(t *testing.T) {
 // execution call. Dense runs of each piece must not multiply into those spans.
 func TestRuleScanBudgetArchiveLoader(t *testing.T) {
 	requireRuleScanBudget(t, "backdoor_archive_loader", map[string][]byte{
-		"protected_reads.php": []byte("<?php\n" + strings.Repeat("$z->setPassword($k); $s = $z->getFromName('a'); ", 20_000)),
-		"member_reads.php":    []byte("<?php\n" + strings.Repeat("$p[] = $z->getFromIndex($i); ", 35_000)),
-		"open_eval_calls.php": []byte("<?php\n" + strings.Repeat("eval(", 200_000)),
-		"html_mode_evals.php": []byte("<?php\n" + strings.Repeat("eval('?>' . $t); ", 60_000)),
-		"read_then_evals.php": []byte("<?php\n$z->setPassword($k); $s = $z->getFromName('a');\n" + strings.Repeat("eval(", 200_000)),
+		"open_assert_calls.php":   []byte("<?php\n" + strings.Repeat("assert(", 150_000)),
+		"nested_assert_reads.php": []byte("<?php\n" + strings.Repeat("assert(gzinflate($z->getFromName('data')) !== false); ", 21_000)),
+		"function_parameters.php": []byte("<?php\n" + strings.Repeat("create_function('$x, ' . $z->getFromName('params'), 'return 1;'); ", 17_000)),
+		"protected_reads.php":     []byte("<?php\n" + strings.Repeat("$z->setPassword($k); $s = $z->getFromName('a'); ", 20_000)),
+		"member_reads.php":        []byte("<?php\n" + strings.Repeat("$p[] = $z->getFromIndex($i); ", 35_000)),
+		"zip_wrapper_paths.php":   []byte("<?php\n" + strings.Repeat("'zip://' ", 125_000)),
+		"open_eval_calls.php":     []byte("<?php\n" + strings.Repeat("eval(", 200_000)),
+		"html_mode_evals.php":     []byte("<?php\n" + strings.Repeat("eval('?>' . $t); ", 60_000)),
+		"read_then_evals.php":     []byte("<?php\n$z->setPassword($k); $s = $z->getFromName('a');\n" + strings.Repeat("eval(", 200_000)),
 	})
 }

@@ -153,7 +153,13 @@ file with an `eval` that leaves PHP mode first, or follow a password set on the
 archive and precede `eval` of a variable. Extracting archives to disk, parsing
 data members and template engines evaluating local text are not evidence.
 Including a `zip://` path is reported with or without parentheses. These are
-source-text heuristics, not PHP dataflow analysis.
+source-text heuristics, not PHP dataflow analysis. Execution arguments stop
+at the end of their call while allowing balanced prefix calls. Assertions
+that parse or compare archive data are not execution evidence. Both strings
+passed to `create_function` remain source text, as described in the
+[PHP manual](https://www.php.net/manual/en/function.create-function.php).
+Regression fixtures run through both engines, including mixed-case calls and
+ordinary archive and template code.
 
 ### Legacy callback parser follow-up
 
