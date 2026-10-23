@@ -96,9 +96,12 @@ off throughout the worker's lifetime.
 
 The unit runs the daemon's own binary as its dynamic user, so the binary is
 installed as mode 0711: others can execute it but not read it, and only root
-can replace it. Its directories must be searchable by others. When they are
-not, the daemon logs one line at startup, starts no worker, and the phishing
-check reports itself incomplete.
+can replace it. Package, CLI and script installs set this mode under any umask
+and make the installation directory searchable by others; its subdirectories
+keep their private modes. A rolled-back upgrade restores the previous mode.
+When the binary or a directory above it is not executable by others, the
+daemon logs one line at startup, starts no worker, and the phishing check
+reports itself incomplete.
 
 Workers are killed by unit name with `systemctl kill`, never by a PID. If the
 daemon dies, a worker waiting for a request reads end of file and exits. A

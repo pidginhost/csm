@@ -181,6 +181,16 @@ func TestUpgradeHealthGateRollsBackRunningDaemon(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
+				oldMode := os.FileMode(0700)
+				if failure == "settle" {
+					oldMode = 0711
+				}
+				if err := os.Chmod(binary, oldMode); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chmod(installDir, 0700); err != nil {
+					t.Fatal(err)
+				}
 				for _, entry := range []string{"ui", "configs", "pam"} {
 					writeDeployTestFile(t, filepath.Join(installDir, entry, "release"), "old")
 				}
@@ -231,6 +241,24 @@ func TestUpgradeHealthGateRollsBackRunningDaemon(t *testing.T) {
 				version, versionErr := exec.Command(binary, "version").CombinedOutput()
 				if versionErr != nil || strings.TrimSpace(string(version)) != "csm "+wantVersion {
 					t.Errorf("installed version: %v %s", versionErr, version)
+				}
+				wantMode := oldMode
+				if failure == "none" {
+					wantMode = 0711
+					info, statErr := os.Stat(installDir)
+					if statErr != nil {
+						t.Fatal(statErr)
+					}
+					if info.Mode().Perm() != 0711 {
+						t.Errorf("upgraded directory mode = %#o, want 0711", info.Mode().Perm())
+					}
+				}
+				info, statErr := os.Stat(binary)
+				if statErr != nil {
+					t.Fatal(statErr)
+				}
+				if info.Mode().Perm() != wantMode {
+					t.Errorf("binary mode = %#o, want %#o", info.Mode().Perm(), wantMode)
 				}
 				for _, entry := range []string{"ui/release", "configs/release", "pam/release", "deploy.sh", "rules/malware.yml", "rules/malware.yar"} {
 					data, readErr := os.ReadFile(filepath.Join(installDir, entry))

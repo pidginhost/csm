@@ -208,6 +208,31 @@ func (inst *Installer) Install() error {
 		}
 		fmt.Printf("  Binary installed to %s\n", inst.BinaryPath)
 	}
+	// WriteFile preserves an existing mode and applies umask to a new file.
+	// This also covers installing from the destination binary itself. Avoid
+	// a no-op chmod on an already-correct immutable binary.
+	binInfo, binErr := os.Stat(inst.BinaryPath)
+	if binErr != nil {
+		return fmt.Errorf("checking installed binary: %w", binErr)
+	}
+	if binInfo.Mode().Perm() != 0711 {
+		// #nosec G302 -- DynamicUser workers need execute access; only the owner may read or write.
+		if err := os.Chmod(inst.BinaryPath, 0711); err != nil {
+			return fmt.Errorf("setting binary permissions: %w", err)
+		}
+	}
+	// Grant workers search access only after securing the binary. State,
+	// rules and quarantine subdirectories keep their private modes.
+	installDir := filepath.Dir(inst.BinaryPath)
+	dirInfo, dirErr := os.Stat(installDir)
+	if dirErr != nil {
+		return fmt.Errorf("checking binary directory: %w", dirErr)
+	}
+	if dirInfo.Mode().Perm()&0011 != 0011 {
+		if err := os.Chmod(installDir, dirInfo.Mode()|0011); err != nil {
+			return fmt.Errorf("setting binary directory permissions: %w", err)
+		}
+	}
 	if err := ensureCommandSymlink(inst.commandSymlinkPath(), inst.BinaryPath); err != nil {
 		return fmt.Errorf("installing command at %s: %w", inst.CommandPath, err)
 	} else if inst.commandSymlinkPath() != "" {

@@ -413,6 +413,7 @@ info "Assets OK"
 ## Place binary
 cp "${TMPDIR}/csm" "$BINARY_PATH"
 chmod 0711 "$BINARY_PATH"
+chmod go+x "$INSTALL_DIR"
 
 chmod 755 "${INSTALL_DIR}/deploy.sh"
 
