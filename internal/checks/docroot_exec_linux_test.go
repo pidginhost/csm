@@ -89,26 +89,51 @@ func TestInspectDocrootExecPathRetryPinsOriginalProgram(t *testing.T) {
 	}
 }
 
-func TestInspectDocrootExecReadsPinnedLiveImage(t *testing.T) {
-	f := newDocrootExecFixture(t)
-	data, err := os.ReadFile("/bin/sleep")
+// buildDocrootSleeper compiles a small static program that sleeps. A copy of a
+// distribution sleep binary does not work everywhere: on AlmaLinux 8 it is a
+// shebang wrapper, so the running image is the interpreter outside the docroot.
+func buildDocrootSleeper(t *testing.T) []byte {
+	t.Helper()
+	goBinary, err := exec.LookPath("go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := f.write(t, "bin/sleeper", string(data))
-	alias := filepath.Join(t.TempDir(), "alias")
-	if err = os.Symlink(path, alias); err != nil {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "main.go")
+	if err = os.WriteFile(src, []byte("package main\n\nimport \"time\"\n\nfunc main() { time.Sleep(30 * time.Second) }\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command(alias, "30")
-	if err = cmd.Start(); err != nil {
+	out := filepath.Join(dir, "sleeper")
+	build := exec.Command(goBinary, "build", "-o", out, src)
+	build.Dir = dir
+	build.Env = append(os.Environ(), "CGO_ENABLED=0", "GOFLAGS=")
+	if output, buildErr := build.CombinedOutput(); buildErr != nil {
+		t.Fatalf("build sleeper: %v\n%s", buildErr, output)
+	}
+	data, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+func TestInspectDocrootExecReadsPinnedLiveImage(t *testing.T) {
+	f := newDocrootExecFixture(t)
+	data := buildDocrootSleeper(t)
+	path := f.write(t, "bin/sleeper", string(data))
+	alias := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(path, alias); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(alias)
+	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }()
 	osFS = realOS{}
 	for _, deleted := range []bool{false, true} {
 		if deleted {
-			if err = os.Remove(path); err != nil {
+			if err := os.Remove(path); err != nil {
 				t.Fatal(err)
 			}
 		}
