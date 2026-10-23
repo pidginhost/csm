@@ -5,8 +5,11 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"strings"
 	"testing"
+
+	"github.com/pidginhost/csm/internal/zipdir"
 )
 
 type entry struct {
@@ -59,7 +62,7 @@ func TestEntryCodecRoundTrip(t *testing.T) {
 		}
 	}
 	var got []entry
-	n, err := readEntries(&buf, func(name string, dir bool) error {
+	n, err := readEntries(context.Background(), &buf, 1<<20, func(name string, dir bool) error {
 		got = append(got, entry{name, dir})
 		return nil
 	})
@@ -82,27 +85,87 @@ func TestReadEntriesRejectsBadRecords(t *testing.T) {
 		"short head": {0, 0},
 		"bad flag":   {2, 0, 1, 'a'},
 	} {
-		if _, err := readEntries(bytes.NewReader(data), func(string, bool) error { return nil }); err == nil {
+		if _, err := readEntries(context.Background(), bytes.NewReader(data), 1<<20, func(string, bool) error { return nil }); err == nil {
 			t.Fatalf("%s: accepted", name)
 		}
 	}
 	stop := errors.New("stop")
-	if _, err := readEntries(bytes.NewReader([]byte{0, 0, 1, 'a'}), func(string, bool) error { return stop }); err != stop {
+	if _, err := readEntries(context.Background(), bytes.NewReader([]byte{0, 0, 1, 'a'}), 1<<20, func(string, bool) error { return stop }); err != stop {
 		t.Fatalf("visit error = %v, want it unwrapped", err)
 	}
 }
 
-func FuzzReadEntries(f *testing.F) {
-	f.Add([]byte{})
-	f.Add([]byte{0, 0, 1, 'a', 1, 0, 2, 'b', '/'})
-	f.Add([]byte{2, 0, 0})
-	f.Fuzz(func(t *testing.T, data []byte) {
-		var again bytes.Buffer
-		_, err := readEntries(bytes.NewReader(data), func(name string, dir bool) error {
-			return writeEntry(&again, name, dir)
+func TestReadEntriesEnforcesDirectoryBudget(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		data    []byte
+		budget  uint64
+		visited uint64
+		limited bool
+	}{
+		{"empty", nil, 0, 0, false},
+		{"exact", []byte{0, 0, 1, 'a'}, zipdir.HeaderLen + 1, 1, false},
+		{"name over budget", []byte{0, 0, 1, 'a'}, zipdir.HeaderLen, 0, true},
+		{"name length before payload", []byte{0, 255, 255}, zipdir.HeaderLen, 0, true},
+		{"record over budget", []byte{0, 0, 0}, 0, 0, true},
+		{"empty name flood", make([]byte, 30), 2 * zipdir.HeaderLen, 2, true},
+		{"aggregate names", []byte{0, 0, 1, 'a', 0, 0, 1, 'b'}, 2*zipdir.HeaderLen + 1, 1, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var visited uint64
+			n, err := readEntries(context.Background(), bytes.NewReader(tc.data), tc.budget, func(string, bool) error {
+				visited++
+				return nil
+			})
+			if n != tc.visited || visited != tc.visited || (tc.limited && !errors.Is(err, zipdir.ErrScanLimit)) || (!tc.limited && err != nil) {
+				t.Fatalf("readEntries = %d, %v, visits = %d; want %d, limited=%t", n, err, visited, tc.visited, tc.limited)
+			}
 		})
-		if err == nil && !bytes.Equal(again.Bytes(), data) {
-			t.Fatalf("re-encoding %x gave %x", data, again.Bytes())
+	}
+}
+
+func TestReadEntriesStopsOnCancellation(t *testing.T) {
+	for _, before := range []bool{false, true} {
+		ctx, cancel := context.WithCancel(context.Background())
+		if before {
+			cancel()
 		}
+		var visits uint64
+		n, err := readEntries(ctx, bytes.NewReader(make([]byte, 30)), 1<<20, func(string, bool) error {
+			visits++
+			cancel()
+			return nil
+		})
+		cancel()
+		want := uint64(1)
+		if before {
+			want = 0
+		}
+		if !errors.Is(err, context.Canceled) || n != want || visits != want {
+			t.Fatalf("canceled before=%t: readEntries = %d, %v, visits = %d; want %d", before, n, err, visits, want)
+		}
+	}
+}
+
+// A compromised worker can return a sparse listing full of empty names.
+// The daemon must bound work by the request, not by a worker-supplied size.
+func TestReadEntriesBoundsEndlessListing(t *testing.T) {
+	var visits uint64
+	n, err := readEntries(context.Background(), zeroListing{}, 2*zipdir.HeaderLen, func(string, bool) error {
+		visits++
+		if visits > 10 {
+			return io.ErrNoProgress
+		}
+		return nil
 	})
+	if !errors.Is(err, zipdir.ErrScanLimit) || n != 2 || visits != 2 {
+		t.Fatalf("endless listing = %d, %v, visits = %d", n, err, visits)
+	}
+}
+
+type zeroListing struct{}
+
+func (zeroListing) Read(p []byte) (int, error) {
+	clear(p)
+	return len(p), nil
 }

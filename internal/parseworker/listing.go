@@ -46,12 +46,17 @@ func writeEntry(w io.Writer, name string, dir bool) error {
 
 // readEntries decodes records until a clean end of input and returns how
 // many it read. A short record or an unknown flag bit is an error; a visit
-// error stops the read and is returned unwrapped.
-func readEntries(r io.Reader, visit func(name string, dir bool) error) (uint64, error) {
+// error stops the read and is returned unwrapped. maxDirBytes is the original
+// request's directory budget, never a size supplied by the worker. The caller
+// must provide a reader over the listing file, not a potentially blocking pipe.
+func readEntries(ctx context.Context, r io.Reader, maxDirBytes uint64, visit func(name string, dir bool) error) (uint64, error) {
 	br := bufio.NewReader(r)
 	var n uint64
 	var head [3]byte
 	for {
+		if err := ctx.Err(); err != nil {
+			return n, err
+		}
 		if _, err := io.ReadFull(br, head[:1]); err != nil {
 			if errors.Is(err, io.EOF) {
 				return n, nil
@@ -64,7 +69,16 @@ func readEntries(r io.Reader, visit func(name string, dir bool) error) (uint64, 
 		if _, err := io.ReadFull(br, head[1:]); err != nil {
 			return n, fmt.Errorf("parseworker: listing record %d truncated: %w", n, noEOF(err))
 		}
-		name := make([]byte, binary.BigEndian.Uint16(head[1:]))
+		nameLen := binary.BigEndian.Uint16(head[1:])
+		// Each record costs at least a central-directory header and its name.
+		// Charging that overhead also bounds floods of empty names from a
+		// compromised worker without rejecting any valid directory in budget.
+		cost := uint64(zipdir.HeaderLen) + uint64(nameLen)
+		if cost > maxDirBytes {
+			return n, fmt.Errorf("parseworker: listing record %d: %w", n, zipdir.ErrScanLimit)
+		}
+		maxDirBytes -= cost
+		name := make([]byte, nameLen)
 		if _, err := io.ReadFull(br, name); err != nil {
 			return n, fmt.Errorf("parseworker: listing record %d truncated: %w", n, noEOF(err))
 		}

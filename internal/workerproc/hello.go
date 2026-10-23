@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"sync"
 	"time"
 )
 
@@ -26,9 +27,10 @@ func HelloReply(protocol int) Frame {
 }
 
 // Handshake sends hello and checks the worker answers with protocol. The
-// reply is read under ctx's deadline, which is cleared afterwards. A reply
-// with an op, an Error or any descriptor is refused.
-func Handshake(ctx context.Context, conn *net.UnixConn, lim Limits, protocol int) error {
+// exchange honors ctx's cancellation and deadline, clearing the connection
+// deadline afterwards. A reply with an op, an Error or any descriptor is
+// refused. The caller must close the connection after a failed handshake.
+func Handshake(ctx context.Context, conn *net.UnixConn, lim Limits, protocol int) (retErr error) {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -36,8 +38,24 @@ func Handshake(ctx context.Context, conn *net.UnixConn, lim Limits, protocol int
 		if err := conn.SetDeadline(deadline); err != nil {
 			return fmt.Errorf("workerproc: hello: %w", err)
 		}
-		defer func() { _ = conn.SetDeadline(time.Time{}) }()
 	}
+	var canceled sync.WaitGroup
+	canceled.Add(1)
+	stop := context.AfterFunc(ctx, func() {
+		defer canceled.Done()
+		_ = conn.SetDeadline(time.Now())
+	})
+	defer func() {
+		// A cancellation callback already running must finish before the
+		// deadline is cleared, or it could poison the next exchange.
+		if !stop() {
+			canceled.Wait()
+		}
+		_ = conn.SetDeadline(time.Time{})
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			retErr = ctxErr
+		}
+	}()
 	payload, err := json.Marshal(Hello{Protocol: protocol})
 	if err != nil {
 		return fmt.Errorf("workerproc: hello: %w", err)

@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -37,6 +38,7 @@ func TestSupervisedParseWorkerKeepsSocketFraming(t *testing.T) {
 		hctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
 		if err := workerproc.Handshake(hctx, p.Conn(), parseworker.Limits, parseworker.ProtocolVersion); err != nil {
+			_ = p.Conn().Close()
 			_ = p.Kill()
 			<-p.Done()
 			return nil, err
@@ -68,10 +70,14 @@ func TestSupervisedParseWorkerKeepsSocketFraming(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer zf.Close()
+	const offset = 7
+	if _, err := zf.Seek(offset, io.SeekStart); err != nil {
+		t.Fatal(err)
+	}
 	payload, _ := json.Marshal(parseworker.ListZipArgs{MaxDirBytes: 1 << 20})
 
 	// Each record is a 3-byte header and the name: "a.php" and "b/".
-	const wantListing = 3 + 5 + 3 + 2
+	wantListing := []byte{0, 0, 5, 'a', '.', 'p', 'h', 'p', 1, 0, 2, 'b', '/'}
 	for range 2 {
 		var res parseworker.ListZipResult
 		_, fds, err := s.Call(context.Background(), workerproc.Frame{Op: parseworker.OpListZip, Payload: payload}, []*os.File{zf},
@@ -88,9 +94,17 @@ func TestSupervisedParseWorkerKeepsSocketFraming(t *testing.T) {
 			t.Fatal(err)
 		}
 		st, statErr := fds[0].Stat()
+		gotListing := make([]byte, len(wantListing))
+		_, readErr := fds[0].ReadAt(gotListing, 0)
 		_ = fds[0].Close()
-		if statErr != nil || res.Entries != 2 || res.Incomplete != "" || st.Size() != wantListing {
+		if statErr != nil || res.Entries != 2 || res.Incomplete != "" || st.Size() != int64(len(wantListing)) {
 			t.Fatalf("listing: %+v size %v err %v", res, st, statErr)
+		}
+		if readErr != nil || !bytes.Equal(gotListing, wantListing) {
+			t.Fatalf("listing bytes = %q, %v; want %q", gotListing, readErr, wantListing)
+		}
+		if got, err := zf.Seek(0, io.SeekCurrent); err != nil || got != offset {
+			t.Fatalf("shared zip offset = %d, %v; want %d", got, err, offset)
 		}
 	}
 	if got := s.Stats().Spawns; got != 1 {

@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"syscall"
 	"testing"
 	"time"
@@ -89,7 +90,14 @@ func roundTrip(t *testing.T, conn *net.UnixConn, req workerproc.Frame, fds []*os
 func TestServeListZipReturnsListingMemfd(t *testing.T) {
 	conn := servePair(t)
 	zf := tempFile(t, zipBytes(t, "a/", "a/b.php", "c.txt"))
+	const offset = 7
+	if _, err := zf.Seek(offset, io.SeekStart); err != nil {
+		t.Fatal(err)
+	}
 	reply, fds := roundTrip(t, conn, listZipRequest(t), []*os.File{zf})
+	if got, err := zf.Seek(0, io.SeekCurrent); err != nil || got != offset {
+		t.Fatalf("shared zip offset = %d, %v; want %d", got, err, offset)
+	}
 	var res ListZipResult
 	if reply.Error != "" || json.Unmarshal(reply.Payload, &res) != nil || res.Incomplete != "" {
 		t.Fatalf("reply = %+v", reply)
@@ -101,13 +109,39 @@ func TestServeListZipReturnsListingMemfd(t *testing.T) {
 	if err != nil || !st.Mode().IsRegular() {
 		t.Fatalf("listing descriptor: %v %v", st, err)
 	}
-	var names []string
-	n, err := readEntries(io.NewSectionReader(fds[0], 0, st.Size()), func(name string, _ bool) error {
-		names = append(names, name)
+	var got []entry
+	n, err := readEntries(context.Background(), io.NewSectionReader(fds[0], 0, st.Size()), 1<<20, func(name string, dir bool) error {
+		got = append(got, entry{name, dir})
 		return nil
 	})
-	if err != nil || n != res.Entries || res.Entries != 3 || names[1] != "a/b.php" {
-		t.Fatalf("listing = %v (%d records, %v), result %+v", names, n, err, res)
+	want := []entry{{"a/", true}, {"a/b.php", false}, {"c.txt", false}}
+	if err != nil || n != res.Entries || res.Entries != 3 || !slices.Equal(got, want) {
+		t.Fatalf("listing = %v (%d records, %v), result %+v", got, n, err, res)
+	}
+}
+
+func TestServeListZipRejectsNonRegularDescriptor(t *testing.T) {
+	conn := servePair(t)
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	defer w.Close()
+	reply, fds := roundTrip(t, conn, listZipRequest(t), []*os.File{r})
+	if reply.Error == "" || len(fds) != 0 {
+		t.Fatalf("pipe accepted: reply %+v fds %d", reply, len(fds))
+	}
+}
+
+func TestServeListZipOverBudgetIsIncomplete(t *testing.T) {
+	conn := servePair(t)
+	req := listZipRequest(t)
+	req.Payload = json.RawMessage(`{"max_dir_bytes":1}`)
+	reply, fds := roundTrip(t, conn, req, []*os.File{tempFile(t, zipBytes(t, "a.txt"))})
+	var res ListZipResult
+	if reply.Error != "" || json.Unmarshal(reply.Payload, &res) != nil || res.Incomplete == "" || res.Entries != 0 || len(fds) != 0 {
+		t.Fatalf("over-budget zip: reply %+v result %+v fds %d", reply, res, len(fds))
 	}
 }
 
