@@ -25,6 +25,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - On phones, the outbound abuse events and forwarders lists on the Email Security page show as cards instead of scrolling sideways.
 - Spam folder learning status no longer reports every pass as unfinished on cPanel servers, so waiting reports are counted and deleted mailboxes are cleaned up.
 - Spam folder learning now counts a message moved to Spam when the same delivery also reached other mailboxes of the account.
+- Automatic mailbox suspension and its release commands now reach the right mailbox when the address holds a plus or percent sign.
 
 ## [4.6.0] - 2026-10-22
 

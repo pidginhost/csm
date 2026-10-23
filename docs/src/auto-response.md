@@ -20,7 +20,7 @@ When enabled, CSM automatically responds to detected threats. All actions are lo
 
 Mailbox suspension runs `/usr/local/cpanel/bin/uapi` as a transient systemd service outside the daemon's filesystem sandbox; hosts without a usable systemd-run run it directly. Each call is bounded in time, the JSON result decides success, and mailbox names stay literal arguments on both paths.
 
-After resolving the credential abuse, copy the release commands from the action log. They are quoted for the shell, for example `/usr/local/cpanel/bin/uapi '--user=account' Email unsuspend_login 'email=alice@example.com'` and the matching `unsuspend_outgoing` command. Dry-run writes one planned-action record without running a command; disabled auto-response writes none.
+After resolving the credential abuse, copy the release commands from the action log. They are quoted for the shell, for example `/usr/local/cpanel/bin/uapi '--user=account' Email unsuspend_login 'email=alice%40example.com'` and the matching `unsuspend_outgoing` command. The address is URI-encoded because uapi decodes its values. Dry-run writes one planned-action record without running a command; disabled auto-response writes none.
 
 Subnet history is pruned hourly and saved only when it changes. If the file cannot be read it is left untouched and escalation counts only the addresses blocked right now until it is repaired or removed; status and doctor report the failure. Clear, whitelist and flush actions report history cleanup failures so operators can retry them.
 
