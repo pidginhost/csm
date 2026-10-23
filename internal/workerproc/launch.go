@@ -37,19 +37,11 @@ func ExecLauncher(command string, args, env []string) Launcher {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		pair, err := socketpair()
+		conn, childFile, err := workerSocket()
 		if err != nil {
-			return nil, fmt.Errorf("workerproc: socketpair: %w", err)
+			return nil, err
 		}
-		parentFile := os.NewFile(uintptr(pair[0]), "worker-parent")
-		childFile := os.NewFile(uintptr(pair[1]), "worker-child")
 		defer childFile.Close()
-		c, err := net.FileConn(parentFile)
-		_ = parentFile.Close()
-		if err != nil {
-			return nil, fmt.Errorf("workerproc: worker socket: %w", err)
-		}
-		conn := c.(*net.UnixConn)
 
 		cmd := exec.Command(command, args...) // #nosec G204 -- command comes from the daemon's own config, not from scanned content.
 		cmd.Env = env
@@ -84,6 +76,24 @@ func (p *execProcess) Kill() error {
 		return err
 	}
 	return nil
+}
+
+// workerSocket returns the parent's connection and the child's end of a new
+// socket pair. The caller closes childFile once the child has it.
+func workerSocket() (*net.UnixConn, *os.File, error) {
+	pair, err := socketpair()
+	if err != nil {
+		return nil, nil, fmt.Errorf("workerproc: socketpair: %w", err)
+	}
+	parentFile := os.NewFile(uintptr(pair[0]), "worker-parent")
+	childFile := os.NewFile(uintptr(pair[1]), "worker-child")
+	c, err := net.FileConn(parentFile)
+	_ = parentFile.Close()
+	if err != nil {
+		_ = childFile.Close()
+		return nil, nil, fmt.Errorf("workerproc: worker socket: %w", err)
+	}
+	return c.(*net.UnixConn), childFile, nil
 }
 
 // socketpair returns a close-on-exec Unix stream pair. Holding ForkLock keeps

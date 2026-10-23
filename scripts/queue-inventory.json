@@ -1153,6 +1153,18 @@
       "queue": "php_taint"
     },
     {
+      "id": "internal/workerproc/unit.go::startUnit::done::channel::1",
+      "path": "internal/workerproc/unit.go",
+      "owner": "startUnit",
+      "target": "done",
+      "kind": "channel",
+      "source": "make(chan struct{})",
+      "capacity": "0",
+      "class": "lifecycle",
+      "rationale": "Joins reaping of the systemd-run client; the supervisor waits on it, bounded, after every kill.",
+      "queue": "php_taint"
+    },
+    {
       "id": "internal/workerproc/supervisor.go::*Supervisor.roundTripLocked::abandon::channel::1",
       "path": "internal/workerproc/supervisor.go",
       "owner": "*Supervisor.roundTripLocked",

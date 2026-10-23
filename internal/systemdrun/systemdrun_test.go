@@ -164,3 +164,11 @@ func contains(args []string, want string) bool {
 	}
 	return false
 }
+
+func TestArgvUnitAndProperties(t *testing.T) {
+	_, args := Argv("/usr/bin/systemd-run", Options{Pipe: true, Unit: "u", Properties: []string{"PrivateNetwork=yes", "TasksMax=64"}}, "/opt/csm/csm", "parse-worker")
+	want := []string{"--quiet", "--collect", "--pipe", "--unit=u", "--property=PrivateNetwork=yes", "--property=TasksMax=64", "--", "/opt/csm/csm", "parse-worker"}
+	if !reflect.DeepEqual(args, want) {
+		t.Fatalf("argv = %v, want %v", args, want)
+	}
+}
