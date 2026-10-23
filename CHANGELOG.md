@@ -9,6 +9,10 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ## [Unreleased]
 
+### Security
+
+- Scans and real-time checks now detect PHP that runs code hidden inside an archive, including password-protected archives and includes of archive members.
+
 ### Changed
 
 - With the forward guard enforcing, mail tagged as spam is now held instead of forwarded to outside addresses.

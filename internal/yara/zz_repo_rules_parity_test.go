@@ -346,6 +346,80 @@ $out = shell_exec($cmd);`,
 			rule:   "backdoor_htmlmode_eval",
 			sample: `<?php $url = 'https://api.example.test/data'; $content = curl_exec($ch);`,
 		},
+		// backdoor_archive_loader: code read out of an archive reaches an
+		// execution call. Reading, extracting or writing archives is not.
+		{
+			name: "protected archive members joined into HTML-mode eval",
+			rule: "backdoor_archive_loader",
+			want: true,
+			sample: `<?php $bundle = new ZipArchive;
+if ($bundle->open("assets.dat") === TRUE) {
+    $bundle->setPassword("example-pass");
+    $parts = array();
+    for ($n = 0; $n < $bundle->numFiles; $n++) {
+        $parts[$bundle->getNameIndex($n)] = $bundle->getFromIndex($n);
+    }
+    $body = implode("", $parts);
+    EvAl("?>" . $body) ;
+}`,
+		},
+		{
+			name:   "archive member read inside eval",
+			rule:   "backdoor_archive_loader",
+			want:   true,
+			sample: `<?php $a = new ZipArchive(); $a->open('cache.bin'); eval('?>' . $a->GetFromName('main.php'));`,
+		},
+		{
+			name:   "zip wrapper read inside eval",
+			rule:   "backdoor_archive_loader",
+			want:   true,
+			sample: `<?php eval('?>' . file_get_contents('ZIP://' . __DIR__ . '/cache.bin#main.php'));`,
+		},
+		{
+			name: "protected archive member run without HTML mode",
+			rule: "backdoor_archive_loader",
+			want: true,
+			sample: `<?php
+$a = new ZipArchive();
+if ($a->open('cache.bin') === true) {
+    $a->setPassword($key);
+    $src = $a->getFromName('core.txt');
+    eval($src);
+}`,
+		},
+		{
+			name: "archive extracted to disk",
+			rule: "backdoor_archive_loader",
+			sample: `<?php
+$z = new ZipArchive();
+$z->open($file, ZipArchive::CHECKCONS);
+for ($i = 0; $i < $z->numFiles; $i++) {
+    $info = $z->statIndex($i);
+    file_put_contents($to . $info['name'], $z->getFromIndex($i));
+}`,
+		},
+		{
+			name: "encrypted backup writer checking its manifest",
+			rule: "backdoor_archive_loader",
+			sample: `<?php
+$z = new ZipArchive();
+$z->open($target, ZipArchive::CREATE);
+$z->setPassword($secret);
+$z->addFile($dump, 'db.sql');
+$manifest = json_decode($z->getFromName('manifest.json'), true);
+assert(is_array($manifest));`,
+		},
+		{
+			name: "template engine with a token stream",
+			rule: "backdoor_archive_loader",
+			sample: `<?php
+final class Environment {
+    public function load($name) {
+        $stream = $this->parser->getStream();
+        eval('?>' . $this->compileSource($stream));
+    }
+}`,
+		},
 		{
 			name:     "mixed-case cron downloader",
 			rule:     "backdoor_cron_reverse_shell",
@@ -1983,6 +2057,24 @@ func TestRenamedYARARuleClaims(t *testing.T) {
 			yaraRule:    "dropper_stream_wrapper_abuse",
 			ext:         ".php",
 			sample:      `<?php require('expect://id');`,
+			wantYAMLHit: true,
+			wantYARAHit: true,
+		},
+		{
+			name:        "stream wrapper zip include without parentheses",
+			yamlRule:    "dropper_php_stream_wrapper",
+			yaraRule:    "dropper_stream_wrapper_abuse",
+			ext:         ".php",
+			sample:      `<?php include 'zip://' . __DIR__ . '/cache.bin#main.php';`,
+			wantYAMLHit: true,
+			wantYARAHit: true,
+		},
+		{
+			name:        "stream wrapper zip require_once",
+			yamlRule:    "dropper_php_stream_wrapper",
+			yaraRule:    "dropper_stream_wrapper_abuse",
+			ext:         ".php",
+			sample:      `<?php Require_Once("zip://cache.bin#main.php");`,
 			wantYAMLHit: true,
 			wantYARAHit: true,
 		},
