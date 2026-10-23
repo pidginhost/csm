@@ -44,6 +44,10 @@ func (o *stampedOS) Lstat(name string) (os.FileInfo, error) {
 	if err != nil {
 		return nil, err
 	}
+	return o.stamp(name, info), nil
+}
+
+func (o *stampedOS) stamp(name string, info os.FileInfo) os.FileInfo {
 	base := filepath.Base(name)
 	at, stamped := o.stamps[base]
 	if !stamped && !o.fallback.IsZero() {
@@ -51,7 +55,7 @@ func (o *stampedOS) Lstat(name string) (os.FileInfo, error) {
 	}
 	uid, owned := o.uids[base]
 	if !stamped && !owned {
-		return info, nil
+		return info
 	}
 	st := *info.Sys().(*syscall.Stat_t)
 	if stamped {
@@ -60,7 +64,7 @@ func (o *stampedOS) Lstat(name string) (os.FileInfo, error) {
 	if owned {
 		st.Uid = uid
 	}
-	return stampedInfo{FileInfo: info, stat: &st}, nil
+	return stampedInfo{FileInfo: info, stat: &st}
 }
 
 // Open counts every content read; the swept directory itself is not one.
@@ -74,8 +78,16 @@ func (o *stampedOS) Open(name string) (*os.File, error) {
 func useStampedOS(t *testing.T, fs *stampedOS) {
 	t.Helper()
 	prev := osFS
+	prevStat := companionFileStat
 	osFS = fs
-	t.Cleanup(func() { osFS = prev })
+	companionFileStat = func(file *os.File) (os.FileInfo, error) {
+		info, err := file.Stat()
+		if err != nil {
+			return nil, err
+		}
+		return fs.stamp(file.Name(), info), nil
+	}
+	t.Cleanup(func() { osFS = prev; companionFileStat = prevStat })
 }
 
 func useCompanionYARA(t *testing.T, b yara.Backend) {
@@ -485,12 +497,19 @@ func TestCompanionSweepQueueClaimsOneSweepPerPlantWindow(t *testing.T) {
 		{"c.php", now, true},
 		{"d.php", now, true},
 		{"a.php", now, false},
-		{"a.php", now.Add(companionClaimTTL + time.Minute), true},
 	}
 	for i, s := range steps {
 		if got := q.add(paths[s.name], info(s.name), s.at); got != s.want {
 			t.Fatalf("step %d: add(%s) = %v, want %v", i, s.name, got, s.want)
 		}
+	}
+	// Claims expire after their sweep starts. An undrained window must not
+	// mint a second pending sweep just because the worker is behind.
+	for len(q.pending) > 0 {
+		q.next(now.Add(companionPlantWindow))
+	}
+	if !q.add(paths["a.php"], info("a.php"), now.Add(companionClaimTTL+2*companionPlantWindow)) {
+		t.Fatal("completed claim did not expire")
 	}
 }
 

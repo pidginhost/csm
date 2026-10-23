@@ -11,6 +11,8 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Security
 
+- Companion scans remain responsive under hostile activity, avoid duplicate alerts, and report incomplete analysis.
+- Startup detections and successful access-file cleanup now receive companion scans, while refused cleanup and quarantine attempts leave neighboring files alone.
 - Files planted next to detected or quarantined malware at the same time are now scanned, and those no scanner matches are reported for review.
 
 ### Changed

@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -22,6 +23,7 @@ import (
 	"github.com/pidginhost/csm/internal/contenttype"
 	"github.com/pidginhost/csm/internal/phptaint"
 	"github.com/pidginhost/csm/internal/yara"
+	"github.com/pidginhost/csm/internal/yaraipc"
 )
 
 // companionPlantWindow is how far another file's change time may lie from the
@@ -96,9 +98,18 @@ func RunCompanionSweeps(ctx context.Context, cfg func() *config.Config, emit fun
 // findings, for a scan that returns a report instead of alerting.
 func companionSweepFindings(ctx context.Context, cfg *config.Config, findings []alert.Finding) []alert.Finding {
 	q := newCompanionSweepQueue()
-	q.observe(findings, time.Now())
+	now := time.Now()
+	for i := range findings {
+		if ctx.Err() != nil {
+			return nil
+		}
+		q.observe(findings[i:i+1], now)
+	}
 	var out []alert.Finding
 	for _, a := range q.pending {
+		if ctx.Err() != nil {
+			break
+		}
 		out = append(out, sweepCompanions(ctx, cfg, *a)...)
 	}
 	return out
@@ -112,8 +123,14 @@ type companionAnchor struct {
 	due     time.Time
 	// detected holds other detections in the same window; they have their own
 	// findings and are not reported again.
-	detected []os.FileInfo
-	claim    *companionClaim
+	detected   map[[2]uint64]companionDetection
+	detectedMu *sync.Mutex
+	claim      *companionClaim
+}
+
+type companionDetection struct {
+	info os.FileInfo
+	at   time.Time
 }
 
 func newCompanionAnchor(path string, info os.FileInfo, now time.Time) (companionAnchor, bool) {
@@ -128,25 +145,41 @@ func newCompanionAnchor(path string, info os.FileInfo, now time.Time) (companion
 	if limit := now.Add(companionPlantWindow); due.After(limit) {
 		due = limit
 	}
-	return companionAnchor{path: filepath.Clean(path), info: info, changed: changed, due: due}, true
+	a := companionAnchor{path: filepath.Clean(path), info: info, changed: changed, due: due,
+		detected: make(map[[2]uint64]companionDetection), detectedMu: new(sync.Mutex)}
+	a.rememberAt(info, now)
+	return a, true
 }
 
 func (a companionAnchor) isDetected(info os.FileInfo) bool {
-	if sameDetectedFile(a.info, info) {
-		return true
+	id, ok := selfWriteIdentityFromFileInfo(info)
+	if !ok {
+		return false
 	}
-	for _, d := range a.detected {
-		if sameDetectedFile(d, info) {
-			return true
-		}
+	a.detectedMu.Lock()
+	defer a.detectedMu.Unlock()
+	return sameDetectedFile(a.info, info) || sameDetectedFile(a.detected[[2]uint64{id.Device, id.Inode}].info, info)
+}
+
+func (a companionAnchor) rememberAt(info os.FileInfo, now time.Time) {
+	id, ok := selfWriteIdentityFromFileInfo(info)
+	if !ok {
+		return
 	}
-	return false
+	a.detectedMu.Lock()
+	defer a.detectedMu.Unlock()
+	a.detected[[2]uint64{id.Device, id.Inode}] = companionDetection{info: info, at: now}
 }
 
 // sameDetectedFile also compares size and modification time: the detected file
 // may be gone, and a new file can reuse its inode number.
 func sameDetectedFile(a, b os.FileInfo) bool {
-	return sameFileIdentity(a, b) && sameContentShape(a, b)
+	if !sameFileIdentity(a, b) || !sameContentShape(a, b) || a.Mode() != b.Mode() || !sameFileOwner(a, b) {
+		return false
+	}
+	ac, aok := changeTimeOf(a)
+	bc, bok := changeTimeOf(b)
+	return aok && bok && ac.Equal(bc)
 }
 
 type companionClaim struct {
@@ -154,6 +187,12 @@ type companionClaim struct {
 	at      time.Time
 	// pending is the queued sweep for this window, nil once it has started.
 	pending *companionAnchor
+	anchor  companionAnchor
+}
+
+type companionDirectoryKey struct {
+	dir string
+	uid uint32
 }
 
 // companionSweepQueue holds sweeps until their window closes and claims each
@@ -162,13 +201,14 @@ type companionClaim struct {
 type companionSweepQueue struct {
 	mu      sync.Mutex
 	pending companionHeap
-	claims  map[string][]*companionClaim
+	claims  map[companionDirectoryKey][]*companionClaim
 	pruned  time.Time
 	wake    chan struct{}
+	closed  bool
 }
 
 func newCompanionSweepQueue() *companionSweepQueue {
-	return &companionSweepQueue{claims: map[string][]*companionClaim{}, wake: make(chan struct{}, 1)}
+	return &companionSweepQueue{claims: map[companionDirectoryKey][]*companionClaim{}, wake: make(chan struct{}, 1)}
 }
 
 func (q *companionSweepQueue) observe(findings []alert.Finding, now time.Time) {
@@ -191,30 +231,42 @@ func (q *companionSweepQueue) add(path string, info os.FileInfo, now time.Time) 
 	if !ok {
 		return false
 	}
-	dir := filepath.Dir(a.path)
+	dir := companionDirectoryKey{dir: filepath.Dir(a.path), uid: info.Sys().(*syscall.Stat_t).Uid}
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	if q.closed {
+		return false
+	}
+	q.pruneLocked(now)
 	claims := q.claims[dir]
 	live := claims[:0]
 	claimed := false
 	for _, c := range claims {
-		if now.Sub(c.at) > companionClaimTTL {
+		if c.pending == nil && now.Sub(c.at) > companionClaimTTL {
 			continue
 		}
 		live = append(live, c)
+		if c.anchor.isDetected(info) {
+			claimed = true
+		}
 		if gap := a.changed.Sub(c.changed); !claimed && gap <= companionPlantWindow && gap >= -companionPlantWindow {
 			claimed = true
-			if c.pending != nil {
-				c.pending.detected = append(c.pending.detected, info)
-			}
+			c.anchor.rememberAt(info, now)
 		}
 	}
+	clear(claims[len(live):])
 	if claimed {
 		q.claims[dir] = live
 		return false
 	}
+	if len(live) > 0 {
+		// Overlapping windows share exact file versions. A result emitted by
+		// one sweep must neither be emitted again nor enqueue another sweep.
+		a.detected, a.detectedMu = live[0].anchor.detected, live[0].anchor.detectedMu
+		a.rememberAt(info, now)
+	}
 	queued := &a
-	queued.claim = &companionClaim{changed: a.changed, at: now, pending: queued}
+	queued.claim = &companionClaim{changed: a.changed, at: now, pending: queued, anchor: a}
 	q.claims[dir] = append(live, queued.claim)
 	heap.Push(&q.pending, queued)
 	select {
@@ -239,6 +291,7 @@ func (q *companionSweepQueue) next(now time.Time) (companionAnchor, time.Duratio
 	}
 	heap.Pop(&q.pending)
 	top.claim.pending = nil
+	top.claim.at = now
 	return *top, 0, true
 }
 
@@ -249,13 +302,25 @@ func (q *companionSweepQueue) pruneLocked(now time.Time) {
 		return
 	}
 	q.pruned = now
+	prunedDetections := make(map[*sync.Mutex]bool)
 	for dir, claims := range q.claims {
 		live := claims[:0]
 		for _, c := range claims {
-			if now.Sub(c.at) <= companionClaimTTL {
+			if !prunedDetections[c.anchor.detectedMu] {
+				prunedDetections[c.anchor.detectedMu] = true
+				c.anchor.detectedMu.Lock()
+				for key, detection := range c.anchor.detected {
+					if now.Sub(detection.at) > companionClaimTTL {
+						delete(c.anchor.detected, key)
+					}
+				}
+				c.anchor.detectedMu.Unlock()
+			}
+			if c.pending != nil || now.Sub(c.at) <= companionClaimTTL {
 				live = append(live, c)
 			}
 		}
+		clear(claims[len(live):])
 		if len(live) == 0 {
 			delete(q.claims, dir)
 		} else {
@@ -265,26 +330,30 @@ func (q *companionSweepQueue) pruneLocked(now time.Time) {
 }
 
 func (q *companionSweepQueue) run(ctx context.Context, cfg func() *config.Config, emit func([]alert.Finding)) {
+	defer func() {
+		q.mu.Lock()
+		defer q.mu.Unlock()
+		q.closed = true
+		q.pending = nil
+		clear(q.claims)
+	}()
 	timer := time.NewTimer(time.Hour)
 	timer.Stop()
 	defer timer.Stop()
 	for ctx.Err() == nil {
 		a, wait, ok := q.next(time.Now())
 		if ok {
-			if findings := sweepCompanions(ctx, cfg(), a); len(findings) > 0 && ctx.Err() == nil {
-				emit(findings)
-			}
+			sweepCompanionsTo(ctx, cfg(), a, emit)
 			continue
 		}
-		var due <-chan time.Time
-		if wait > 0 {
-			timer.Reset(wait)
-			due = timer.C
+		if wait <= 0 || wait > companionPlantWindow {
+			wait = companionPlantWindow
 		}
+		timer.Reset(wait)
 		select {
 		case <-ctx.Done():
 		case <-q.wake:
-		case <-due:
+		case <-timer.C:
 		}
 	}
 }
@@ -320,37 +389,92 @@ type plantedFile struct {
 // ordinary findings; files that match nothing but are of a kind a kit carries
 // are named together in one report. Nothing is quarantined here.
 func sweepCompanions(ctx context.Context, cfg *config.Config, a companionAnchor) []alert.Finding {
+	var findings []alert.Finding
+	sweepCompanionsTo(ctx, cfg, a, func(batch []alert.Finding) { findings = append(findings, batch...) })
+	return findings
+}
+
+func sweepCompanionsTo(parent context.Context, cfg *config.Config, a companionAnchor, emit func([]alert.Finding)) {
+	if parent.Err() != nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(parent, timeoutFor("malware_companion_files"))
+	defer cancel()
+	dir := filepath.Dir(a.path)
+	defer func() {
+		if ctx.Err() == context.DeadlineExceeded && parent.Err() == nil {
+			emit([]alert.Finding{{Severity: alert.Warning, Check: "check_timeout", FilePath: dir,
+				Message: "Companion scan did not finish: " + dir, Timestamp: time.Now()}})
+		}
+	}()
 	slot := scanBudgetFrom(ctx).acquire(ctx)
 	if slot == nil {
-		return nil
+		return
 	}
-	defer slot.release()
+	defer func() { slot.release() }()
 
-	dir := filepath.Dir(a.path)
 	dirInfo, err := osFS.Lstat(dir)
 	if err != nil || !dirInfo.IsDir() {
-		return nil
+		return
 	}
 	d, err := openTenantDirectory(dir)
 	if err != nil {
-		return nil
+		return
 	}
 	defer func() { _ = d.Close() }()
 	if opened, statErr := d.Stat(); statErr != nil || !opened.IsDir() || !sameFileIdentity(dirInfo, opened) {
-		return nil
+		return
 	}
 
 	from, to := a.changed.Add(-companionPlantWindow), a.changed.Add(companionPlantWindow)
 	maxBytes := FullScanMaxFileBytes(cfg)
+	if limit := scanMaxFileBytes(ctx); limit > 0 {
+		maxBytes = limit
+	}
 	respectIgnores := scanRespectsIgnores(ctx, cfg)
 	var findings []alert.Finding
 	var planted []plantedFile
 	total := 0
+	failed := 0
+	failureExample := ""
+	flush := func() {
+		// Alert delivery can wait on a busy dispatcher. It must not retain a
+		// scan slot or all matches from a tenant's directory while waiting.
+		slot.release()
+		slot = nil
+		if len(findings) > 0 && parent.Err() == nil {
+			now := time.Now()
+			for i := range findings {
+				if findings[i].Timestamp.IsZero() {
+					findings[i].Timestamp = now
+				}
+			}
+			emit(findings)
+		}
+		findings = nil
+	}
+	defer flush()
+	defer func() {
+		if failed > 0 {
+			findings = append(findings, alert.Finding{Severity: alert.Warning, Check: "malware_companion_scan_incomplete", FilePath: dir,
+				Message: "Companion content scan incomplete: " + dir,
+				Details: fmt.Sprintf("Could not fully scan %d file(s). Example: %s", failed, failureExample)})
+		}
+	}()
 	for {
+		if ctx.Err() != nil {
+			return
+		}
+		if slot == nil {
+			slot = scanBudgetFrom(ctx).acquire(ctx)
+			if slot == nil {
+				return
+			}
+		}
 		entries, readErr := d.ReadDir(companionReadDirBatch)
 		for _, entry := range entries {
 			if ctx.Err() != nil {
-				return findings
+				return
 			}
 			if !entry.Type().IsRegular() {
 				continue
@@ -370,9 +494,24 @@ func sweepCompanions(ctx context.Context, cfg *config.Config, a companionAnchor)
 			if !inWindow && entry.Name() != ".htaccess" {
 				continue
 			}
-			matches, file := scanCompanionFile(ctx, cfg, path, info, maxBytes)
+			matches, file := scanCompanionFile(ctx, cfg, d, path, info, maxBytes)
 			findings = append(findings, matches...)
-			if inWindow && len(matches) == 0 && file.kind != "" {
+			if file.note != "" {
+				failed++
+				if failureExample == "" {
+					failureExample = strconv.QuoteToASCII(path) + ": " + file.note
+				}
+			}
+			if len(matches) > 0 {
+				a.rememberAt(info, time.Now())
+			}
+			matched := false
+			for _, f := range matches {
+				if f.Check != "php_taint_scan_incomplete" {
+					matched = true
+				}
+			}
+			if inWindow && !matched && file.kind != "" {
 				total++
 				if len(planted) < companionSampleLimit {
 					planted = append(planted, file)
@@ -380,22 +519,26 @@ func sweepCompanions(ctx context.Context, cfg *config.Config, a companionAnchor)
 			}
 		}
 		if readErr != nil {
+			if !errors.Is(readErr, io.EOF) {
+				findings = append(findings, alert.Finding{Severity: alert.Warning, Check: "malware_companion_scan_incomplete", FilePath: dir,
+					Message: "Companion scan could not finish reading directory: " + dir, Details: readErr.Error()})
+			}
 			break
 		}
+		flush()
 	}
 	if total > 0 && ctx.Err() == nil {
 		findings = append(findings, plantedFilesFinding(a, planted, total))
 	}
-	return findings
 }
 
 // scanCompanionFile runs the content engines over one file regardless of any
 // scan cache or modification-time skip.
-func scanCompanionFile(ctx context.Context, cfg *config.Config, path string, info os.FileInfo, maxBytes int64) ([]alert.Finding, plantedFile) {
+func scanCompanionFile(ctx context.Context, cfg *config.Config, dir *tenantDirectory, path string, info os.FileInfo, maxBytes int64) ([]alert.Finding, plantedFile) {
 	name := filepath.Base(path)
 	changed, _ := changeTimeOf(info)
 	file := plantedFile{name: name, size: info.Size(), changed: changed, modified: info.ModTime()}
-	data, note := readCompanionFile(path, info, maxBytes)
+	data, note := readCompanionFileFrom(ctx, dir, path, info, maxBytes)
 	file.kind = companionKind(name, info, data)
 	if note != "" {
 		file.note = note
@@ -407,15 +550,12 @@ func scanCompanionFile(ctx context.Context, cfg *config.Config, path string, inf
 	var findings []alert.Finding
 	if backend := activeYARABackend(); backend != nil && backend.RuleCount() > 0 && !yaraDeepConsumerDisabled(cfg) {
 		// #nosec G115 -- FullScanMaxFileBytes is at most a few GiB; it fits int on the 64-bit hosts CSM supports.
-		matches, scannedSHA256, err := yara.ScanContentOrPathChecked(backend, path, data, int(maxBytes))
+		matches, err := scanCompanionYARA(backend, path, data, int(maxBytes))
 		if err != nil {
 			file.note = "YARA could not scan it"
 		}
-		if scannedSHA256 == "" {
-			scannedSHA256 = contentSHA256
-		}
 		for _, m := range matches {
-			findings = append(findings, scheduledYARAFinding(m, path, data, scannedSHA256))
+			findings = append(findings, scheduledYARAFinding(m, path, data, contentSHA256))
 		}
 	}
 	if contenttype.IsPHPSourceName(strings.ToLower(name)) && !runnerDisabled(cfg, "php_content") {
@@ -424,13 +564,15 @@ func scanCompanionFile(ctx context.Context, cfg *config.Config, path string, inf
 		}
 	}
 	if len(data) <= phptaint.MaxSourceBytes && !phpTaintDeepConsumerDisabled(cfg) && phpTaintAnalyzerReady() {
-		findings = append(findings, analyzePHPTaintSnapshot(ctx, path, contentSHA256, data, newPHPTaintGapCollector())...)
+		gaps := newPHPTaintGapCollector()
+		findings = append(findings, analyzePHPTaintSnapshot(ctx, path, contentSHA256, data, gaps)...)
+		findings = append(findings, gaps.findings()...)
 	}
 	if name == ".htaccess" && !runnerDisabled(cfg, "htaccess") {
 		if len(data) > htaccessMaxFileBytes {
 			file.note = "too large to audit"
 		} else {
-			audit, _ := AuditHtaccessContent(path, data)
+			audit, _ := auditHtaccessContent(ctx, path, data)
 			findings = append(findings, audit...)
 		}
 	}
@@ -440,23 +582,82 @@ func scanCompanionFile(ctx context.Context, cfg *config.Config, path string, inf
 // readCompanionFile reads the file the stat pass selected, refusing a symlink,
 // a special file or a different object swapped into its place.
 func readCompanionFile(path string, info os.FileInfo, maxBytes int64) ([]byte, string) {
-	f, err := openTenantRegularFile(path)
+	dir, err := openTenantDirectory(filepath.Dir(path))
+	if err != nil {
+		return nil, "could not be opened"
+	}
+	defer func() { _ = dir.Close() }()
+	return readCompanionFileFrom(context.Background(), dir, path, info, maxBytes)
+}
+
+// companionFileStat lets filesystem providers supply matching metadata for
+// both the selection pass and the opened descriptor in tests.
+var companionFileStat = (*os.File).Stat
+
+func readCompanionFileFrom(ctx context.Context, dir *tenantDirectory, path string, info os.FileInfo, maxBytes int64) ([]byte, string) {
+	f, err := dir.open(filepath.Base(path))
 	if err != nil {
 		return nil, "could not be opened"
 	}
 	defer func() { _ = f.Close() }()
-	opened, err := f.Stat()
-	if err != nil || !sameDetectedFile(info, opened) {
+	opened, err := companionFileStat(f)
+	if err != nil || !opened.Mode().IsRegular() || !sameDetectedFile(info, opened) {
 		return nil, "changed while it was read"
 	}
 	if opened.Size() > maxBytes {
 		return nil, "larger than the scan limit, not scanned"
 	}
-	data, err := io.ReadAll(io.LimitReader(f, maxBytes+1))
+	data, err := io.ReadAll(io.LimitReader(companionContextReader{ctx: ctx, reader: f}, opened.Size()+1))
 	if err != nil || int64(len(data)) != opened.Size() {
 		return nil, "could not be read whole"
 	}
+	after, err := companionFileStat(f)
+	if err != nil || !sameDetectedFile(opened, after) {
+		return nil, "changed while it was read"
+	}
 	return data, ""
+}
+
+type companionContextReader struct {
+	ctx    context.Context
+	reader io.Reader
+}
+
+func (r companionContextReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.reader.Read(p)
+}
+
+// The worker's large-payload fallback must not reopen a tenant-controlled
+// pathname after selection. Give it a private snapshot of the validated bytes.
+func scanCompanionYARA(backend yara.Backend, path string, data []byte, maxBytes int) ([]yara.Match, error) {
+	matches, err := yara.ScanBytesChecked(backend, path, data)
+	if !errors.Is(err, yaraipc.ErrPayloadTooLarge) {
+		return matches, err
+	}
+	f, err := os.CreateTemp("", "csm-companion-*")
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = os.Remove(f.Name()) }()
+	if _, err = f.Write(data); err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	if err = f.Close(); err != nil {
+		return nil, err
+	}
+	result, err := yara.ScanFileChecked(backend, f.Name(), maxBytes)
+	if err != nil {
+		return nil, err
+	}
+	digest := sha256.Sum256(data)
+	if result.ContentSHA256 != hex.EncodeToString(digest[:]) {
+		return nil, errFileChanged
+	}
+	return result.Matches, nil
 }
 
 // companionKind names the kinds of file a kit carries. Anything else in the

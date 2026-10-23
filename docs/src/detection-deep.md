@@ -353,13 +353,15 @@ account cannot forge it.
 
 - **Trigger.** A Critical finding from a content scanner, a YARA or signature
   rule, or a known webshell or backdoor name, from the realtime monitor or a
-  scheduled scan. Every quarantine or cleaning of a file, automatic or manual,
-  also triggers one, with the file's metadata taken before it is moved or
-  rewritten. An account scan sweeps for the detections in its own results and
-  includes the outcome in its report.
+  scheduled scan, including the startup scan. Successful quarantine or cleaning
+  through the daemon, including manual dashboard actions and access-file
+  cleanup, also triggers one. Its metadata comes from before the move or
+  rewrite. Refused actions do not trigger sweeps. An account scan sweeps for
+  the detections in its own results and includes the outcome in its report.
 - **Scope.** The detected file's own directory, not its subdirectories.
-  Symlinks and special files are never followed or read. Only files owned by the
-  detected file's owner count: an account can only create files it owns.
+  Symlinks and special files are never followed or read. Content reads remain
+  bound to the opened directory and selected file version. Only files owned by
+  the detected file's owner count: an account can only create files it owns.
 - **Window.** Files changed within ten minutes either side of the detected file.
   A file caught as it is written may be the first of its kit to land, so its
   sweep waits until the window has closed.
@@ -367,7 +369,8 @@ account cannot forge it.
   directory's `.htaccess` whatever its age, then get a full content scan with
   YARA, the PHP content heuristics, PHP taint analysis and the `.htaccess`
   audit, regardless of scan caches. A match is an ordinary finding and follows
-  the normal response policy.
+  the normal response policy. Account scans retain their requested file-size
+  limit. Failed PHP analysis is reported as incomplete, not as a clean result.
 - **Report.** Files in the window that nothing matched are listed in one High
   `malware_companion_files` finding when they are PHP, executables, archives,
   files without an extension or `.htaccess`, with size, change time and
@@ -376,16 +379,26 @@ account cannot forge it.
   modification times, so treat it as a hint. CSM never quarantines these files
   on its own: review each one first.
 
-Each plant window of a directory is swept once a day at most, so another member
-of the same kit, a repeated alert or the quarantine of the detected file does
-not sweep it again. Sweeps run one at a time and share the scan concurrency
-limit with the periodic checks. A huge directory costs one metadata read per
-entry; only files written in the window are opened.
+Each plant window of a directory and owner is swept once a day at most, so
+another member of the same kit, a repeated alert or the quarantine of the
+detected file does not sweep it again. Sweeps run one at a time and share the
+scan concurrency limit and per-check execution deadline with periodic checks. Matches are
+delivered in batches, releasing the scan slot while waiting for delivery.
+Overlapping windows do not repeat content findings for the same file version.
+Repeated detections retain one file version, and expired records are removed
+even when no new work arrives. Pending windows stay claimed until they run.
+A huge directory costs one metadata read per entry; only files written in the
+window and `.htaccess` are opened. A timeout produces a `check_timeout` warning;
+directory or content scan failures produce `malware_companion_scan_incomplete`.
+The access-file audit checks sibling context once, in batches, and stops on
+cancellation or when it has enough evidence for its existing sibling gate.
 
 A bulk ownership or permission change, or an account restore, resets the change
 time of every file it touches. A detection in such a directory lists every file
 of a reported kind from the same operation. Sweeps still waiting for their
-window are held in memory, and a restart drops them.
+window are held in memory, and a restart drops them. Standalone CLI cleanup
+commands do not run this daemon worker; use an account scan to inspect companions
+when the action runs outside the daemon.
 
 ## System Integrity
 

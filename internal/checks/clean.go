@@ -97,11 +97,6 @@ func cleanInfectedFileIdentified(path string, expected os.FileInfo) (result Clea
 		result.Error = "file changed before automatic cleaning"
 		return result
 	}
-	// Cleaning rewrites the file and its change time before the finding
-	// reaches the dispatcher, so the sweep of its neighbours is queued here
-	// with the stat from before the rewrite.
-	companionSweeps.add(path, target.Info, time.Now())
-
 	if sz := target.Info.Size(); sz > cleanMaxFileSize {
 		result.Refused = true
 		result.Error = fmt.Sprintf("file too large to clean (%d bytes > %d)", sz, cleanMaxFileSize)
@@ -178,6 +173,9 @@ func cleanInfectedFileIdentified(path string, expected os.FileInfo) (result Clea
 
 	result.Cleaned = true
 	result.Removals = removals
+	// Keep the pre-rewrite change time, but only a successful cleanup proves
+	// the file contained an injection.
+	companionSweeps.add(path, target.Info, time.Now())
 	return result
 }
 

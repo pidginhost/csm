@@ -815,6 +815,7 @@ Attribution gaps:
 | `mail_queue_unavailable` | ignored | self-health |  |
 | `mail_subnet_spray` | ignored | attacker-side |  |
 | `malware_companion_files` | security event |  |  |
+| `malware_companion_scan_incomplete` | ignored | self-health |  |
 | `modsec_block_escalation` | ignored | attacker-side |  |
 | `modsec_block_realtime` | ignored | attacker-side |  |
 | `modsec_classifier_gap` | ignored | self-health |  |

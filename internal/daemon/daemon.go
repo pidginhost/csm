@@ -1701,6 +1701,7 @@ func (d *Daemon) respondToInitialScan(cfg *config.Config, initialFindings []aler
 	var responseFindings []alert.Finding
 	if len(unfilteredNew) > 0 {
 		killActions := checks.AutoKillProcesses(d.scanContext(), cfg, newFindings)
+		queueCompanionSweeps(newFindings)
 		quarantineActions := checks.AutoQuarantineFiles(cfg, newFindings)
 		blockActions := checks.AutoBlockIPs(cfg, initialFindings)
 		d.observeBlocks(blockActions)

@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/pidginhost/csm/internal/safepath"
 )
 
 // ---------------------------------------------------------------------------
@@ -132,18 +134,55 @@ func openTenantRegularFile(path string) (*os.File, error) {
 	return file, nil
 }
 
-// openTenantDirectory opens a directory a tenant controls. It does not follow
-// the final symlink or block on a FIFO swapped into its place.
-func openTenantDirectory(path string) (*os.File, error) {
+// tenantDirectory keeps content opens bound to the directory being enumerated.
+// Test providers retain their injected Open implementation.
+type tenantDirectory struct {
+	file   *os.File
+	pinned *safepath.Dir
+	path   string
+}
+
+func openTenantDirectory(path string) (*tenantDirectory, error) {
 	if _, production := osFS.(realOS); production {
-		fd, err := unix.Open(path, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC|unix.O_NONBLOCK, 0)
+		dir, err := safepath.OpenDirNoFollow(path)
 		if err != nil {
 			return nil, err
 		}
-		// #nosec G115 -- unix.Open returns a non-negative descriptor whenever err is nil.
-		return os.NewFile(uintptr(fd), path), nil
+		return &tenantDirectory{pinned: dir, path: path}, nil
 	}
-	return osFS.Open(path)
+	file, err := osFS.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	return &tenantDirectory{file: file, path: path}, nil
+}
+
+func (d *tenantDirectory) Close() error {
+	if d.pinned != nil {
+		return d.pinned.Close()
+	}
+	return d.file.Close()
+}
+
+func (d *tenantDirectory) Stat() (os.FileInfo, error) {
+	if d.pinned != nil {
+		return d.pinned.Info()
+	}
+	return d.file.Stat()
+}
+
+func (d *tenantDirectory) ReadDir(n int) ([]os.DirEntry, error) {
+	if d.pinned != nil {
+		return d.pinned.ReadDirN(n)
+	}
+	return d.file.ReadDir(n)
+}
+
+func (d *tenantDirectory) open(name string) (*os.File, error) {
+	if d.pinned != nil {
+		return d.pinned.OpenFile(name, os.O_RDONLY, 0)
+	}
+	return openTenantRegularFile(filepath.Join(d.path, name))
 }
 
 // readRegularFileHead returns at most limit bytes of a regular file and whether the

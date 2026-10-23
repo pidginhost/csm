@@ -65,3 +65,13 @@ func TestDispatchBatchQueuesCompanionSweeps(t *testing.T) {
 		t.Fatalf("queued = %v, a suppressed finding must not start a sweep", got)
 	}
 }
+
+func TestInitialScanQueuesCompanionSweeps(t *testing.T) {
+	d := newTestDaemon(t)
+	calls := stubQueueCompanionSweeps(t)
+	f := companionTrigger("/home/alice/public_html/loader.php")
+	d.respondToInitialScan(d.currentCfg(), []alert.Finding{f})
+	if got := queuedPaths(*calls)[f.FilePath]; got != 1 {
+		t.Fatalf("initial scan queued %d sweeps, want 1", got)
+	}
+}
