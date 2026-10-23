@@ -227,6 +227,19 @@ POST /api/v1/perf/fix-wp-cron    Disable WP-Cron and install a system cron for a
 GET  /api/v1/hardening           Last stored hardening audit report (admin scope)
 ```
 
+### Accounts at risk
+
+`GET /api/v1/stats` returns `accounts_at_risk` from current findings, regardless
+of age. Suppressed findings and internal status or response records are excluded.
+An account appears only while it has a high or critical finding. Its `findings`
+count includes all its remaining findings, including warnings, and `severity`
+is their highest severity.
+
+The list contains at most 50 accounts, ordered by severity, then finding count
+(both descending), then account name (ascending). An empty list is `[]`.
+Dismissals, suppressions and severity changes take effect on the next request,
+independently of the cached 24-hour history summary.
+
 ### Date ranges
 
 `/api/v1/history`, `/api/v1/email/groups`, `/api/v1/email/overview`,

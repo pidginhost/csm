@@ -25,6 +25,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Changed
 
+- The API documentation now explains which findings count toward Accounts at Risk and how the list is ordered.
 - With the forward guard enforcing, mail tagged as spam is now held instead of forwarded to outside addresses.
 - Malware findings now say when ModSecurity is switched off for the affected account or site, naming the setting that disables it.
 
