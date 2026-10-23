@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -13,9 +14,11 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/control"
+	"github.com/pidginhost/csm/internal/parseworker"
 	"github.com/pidginhost/csm/internal/signatures"
 	"github.com/pidginhost/csm/internal/state"
 	"github.com/pidginhost/csm/internal/store"
+	"github.com/pidginhost/csm/internal/workerproc"
 )
 
 // scanFlags holds the parsed result of the flags for `csm scan`.
@@ -607,6 +610,8 @@ func runScanLegacy(f scanFlags) {
 	defer func() { _ = st.Close() }()
 
 	fmt.Fprintf(os.Stderr, "Scanning account: %s\n", f.account)
+	stopLister, listerErr := installScanZipLister()
+	defer stopLister()
 	start := time.Now()
 
 	findings := checks.RunAccountScan(cfg, st, f.account)
@@ -615,6 +620,10 @@ func runScanLegacy(f scanFlags) {
 	fmt.Fprintf(os.Stderr, "Scan completed in %s: %d finding(s)\n\n", elapsed, len(findings))
 
 	if len(findings) == 0 {
+		if listerErr != nil {
+			fmt.Println("No findings, but phishing-kit zip archives were not checked.")
+			return
+		}
 		fmt.Println("No findings. Account is clean.")
 		return
 	}
@@ -669,4 +678,45 @@ func printJobRecordTo(w io.Writer, j store.ScanJobRecord) {
 	if j.Error != "" {
 		fmt.Fprintf(w, "  error: %s\n", j.Error)
 	}
+}
+
+// scanCLIUnitPrefix names the parse worker units of an in-process scan. The
+// daemon's startup cleanup matches it too, which only costs a running CLI
+// scan its kit-zip coverage.
+const scanCLIUnitPrefix = "csm-parse-worker-cli"
+
+// installScanZipLister gives an in-process scan its own parse worker, since
+// zips are never parsed in this process. On failure the scan runs without
+// it, and the error says why kit zips went unchecked.
+func installScanZipLister() (stop func(), err error) {
+	binary, err := os.Executable()
+	if err == nil {
+		binary, err = filepath.EvalSymlinks(binary)
+	}
+	var lister *parseworker.Lister
+	if err == nil {
+		lister, err = scanZipLister(binary)
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: phishing-kit zip archives will not be checked: %v\n", err)
+		return func() {}, err
+	}
+	checks.SetZipLister(lister)
+	return func() {
+		checks.SetZipLister(nil)
+		_ = lister.Stop()
+	}, nil
+}
+
+func scanZipLister(binary string) (*parseworker.Lister, error) {
+	if err := workerproc.CheckUnitCommand(binary); err != nil {
+		return nil, err
+	}
+	logf := func(format string, args ...any) {
+		fmt.Fprintf(os.Stderr, "parse-worker: "+format+"\n", args...)
+	}
+	return parseworker.NewLister(parseworker.ListerConfig{
+		Launch: workerproc.UnitLauncher(parseworker.UnitConfig(binary, scanCLIUnitPrefix, logf)),
+		Log:    logf,
+	})
 }

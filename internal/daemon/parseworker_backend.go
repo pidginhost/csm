@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strconv"
 	"time"
 
 	"github.com/pidginhost/csm/internal/checks"
@@ -16,9 +15,6 @@ import (
 // parseWorkerUnitPrefix starts every parse worker unit name, so leftovers of
 // a daemon that died can be found and killed.
 const parseWorkerUnitPrefix = "csm-parse-worker-"
-
-// parseWorkerMemoryLimit caps a parse worker's memory and swap together.
-const parseWorkerMemoryLimit = 512 << 20
 
 // stopParseWorkerUnits is a seam for tests.
 var stopParseWorkerUnits = workerproc.StopUnits
@@ -44,19 +40,8 @@ func (d *Daemon) initParseWorkers() error {
 		return fmt.Errorf("parse worker: %w", err)
 	}
 	lister, err := parseworker.NewLister(parseworker.ListerConfig{
-		Launch: workerproc.UnitLauncher(workerproc.UnitConfig{
-			Prefix:        parseWorkerUnitPrefix + "zip0",
-			Command:       d.binaryPath,
-			Args:          []string{"parse-worker", "--memory-limit=" + strconv.Itoa(parseWorkerMemoryLimit)},
-			MemoryLimit:   parseWorkerMemoryLimit,
-			FileSizeLimit: 64 << 20,
-			RuntimeMax:    time.Hour,
-			StartTimeout:  10 * time.Second,
-			Protocol:      parseworker.ProtocolVersion,
-			Limits:        parseworker.Limits,
-			Log:           logf,
-		}),
-		Log: logf,
+		Launch: workerproc.UnitLauncher(parseworker.UnitConfig(d.binaryPath, parseWorkerUnitPrefix+"zip0", logf)),
+		Log:    logf,
 	})
 	if err != nil {
 		return err
