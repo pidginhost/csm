@@ -155,6 +155,9 @@ var checkRegistry = []CheckInfo{
 	{Name: "js_taint_scan_incomplete", Category: CategoryMalware, Internal: true, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
 	{Name: "php_remote_taint", Category: CategoryMalware, Correlation: CorrelationSecurityEvent},
 	{Name: "php_taint_scan_incomplete", Category: CategoryMalware, Internal: true, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
+	// Reports files planted with a detection. The detection itself counts
+	// toward correlation; this report is never Critical, so it adds nothing.
+	{Name: "malware_companion_files", Category: CategoryMalware, Correlation: CorrelationSecurityEvent},
 	{Name: "new_executable_in_config", Category: CategoryMalware, Correlation: CorrelationMalwareArtifact},
 	{Name: "new_php_in_sensitive_dir", Category: CategoryMalware, Correlation: CorrelationSecurityEvent},
 	{Name: "new_php_in_sensitive_dir_clean", Category: CategoryMalware, Correlation: CorrelationIgnored, CorrelationReason: reasonInformational},

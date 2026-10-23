@@ -1198,6 +1198,7 @@ func TestRunnerPurgeMapCoversEmittedCheckNames(t *testing.T) {
 	nonScheduledEmitters := map[string]string{
 		"account_scan":             "RunAccountScan summary finding, per-account CLI path (not a tier)",
 		"full_scan_file_too_large": "full-scan account audit only, never dispatched to scheduled latest state",
+		"malware_companion_files":  "companion sweep after a detection or quarantine, and account scan reports; never in scheduled latest state",
 		"sensitive_file_modified":  "daemon legacy poller CheckSensitiveFiles, not wired into any tier",
 	}
 

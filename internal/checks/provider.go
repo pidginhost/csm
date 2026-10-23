@@ -132,6 +132,20 @@ func openTenantRegularFile(path string) (*os.File, error) {
 	return file, nil
 }
 
+// openTenantDirectory opens a directory a tenant controls. It does not follow
+// the final symlink or block on a FIFO swapped into its place.
+func openTenantDirectory(path string) (*os.File, error) {
+	if _, production := osFS.(realOS); production {
+		fd, err := unix.Open(path, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC|unix.O_NONBLOCK, 0)
+		if err != nil {
+			return nil, err
+		}
+		// #nosec G115 -- unix.Open returns a non-negative descriptor whenever err is nil.
+		return os.NewFile(uintptr(fd), path), nil
+	}
+	return osFS.Open(path)
+}
+
 // readRegularFileHead returns at most limit bytes of a regular file and whether the
 // file held more. Production refuses a final symlink and never reads past
 // limit+1 bytes; test filesystems fall back to ReadFile and truncate.

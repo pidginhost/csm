@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"syscall"
+	"time"
 	"unicode"
 
 	"github.com/pidginhost/csm/internal/actionlog"
@@ -96,6 +97,10 @@ func cleanInfectedFileIdentified(path string, expected os.FileInfo) (result Clea
 		result.Error = "file changed before automatic cleaning"
 		return result
 	}
+	// Cleaning rewrites the file and its change time before the finding
+	// reaches the dispatcher, so the sweep of its neighbours is queued here
+	// with the stat from before the rewrite.
+	companionSweeps.add(path, target.Info, time.Now())
 
 	if sz := target.Info.Size(); sz > cleanMaxFileSize {
 		result.Refused = true

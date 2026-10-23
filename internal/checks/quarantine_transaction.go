@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"golang.org/x/sys/unix"
 
@@ -38,6 +39,12 @@ func quarantineTargetWith(path, qPath string, info os.FileInfo, metadata Quarant
 	}
 	if err := quarantinefs.EnsureDir(filepath.Dir(qPath), 0700); err != nil {
 		return err
+	}
+	// The move takes the file before its finding reaches the dispatcher, so
+	// the sweep of its neighbours is queued here with the stat from before
+	// the move. Mail spool entries are not tenant files.
+	if info.Mode().IsRegular() && metadata.SpoolDir == "" {
+		companionSweeps.add(path, info, time.Now())
 	}
 
 	return move(path, qPath, info, data)
