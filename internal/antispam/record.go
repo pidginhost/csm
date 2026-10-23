@@ -93,7 +93,7 @@ func Generation(content map[string]string) string {
 // ManagedContent maps each file CSM writes to the text it owns there: a
 // whole rspamd file, or the CSM block of a shared Exim file. Optional files
 // appear only while a feed, map redirect, learning or the Roundcube include
-// needs them.
+// needs them; the symbol weights appear unless the operator owns that file.
 func ManagedContent(s Settings) (map[string]string, error) {
 	hooks, err := RenderExim(s)
 	if err != nil {
@@ -117,6 +117,9 @@ func ManagedContent(s Settings) (map[string]string, error) {
 		return nil, err
 	}
 	maps.Copy(out, feeds)
+	if !s.SkipScores {
+		out[ScoresPath] = scoreWeights
+	}
 	learning, err := RenderLearning(s)
 	if err != nil {
 		return nil, err

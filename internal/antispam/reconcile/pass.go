@@ -211,11 +211,12 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) (out Outcome) {
 		assess = antispam.Assess
 	}
 	settings, feedProblems := d.Settings, []antispam.Problem(nil)
-	var learningProblems []antispam.Problem
+	var scoreProblems, learningProblems []antispam.Problem
 	var gate antispam.LearningGate
 	if d.Enabled {
 		settings, feedProblems = antispam.ResolveFeeds(d.Settings, f)
 		settings, feedProblems = r.Feeds.apply(d.Settings, settings, feedProblems)
+		settings, scoreProblems = antispam.ResolveScores(settings, f)
 		settings, gate, learningProblems = r.resolveLearningState(settings, f, keys)
 	}
 	a := assess(d.Enabled, settings, f)
@@ -286,7 +287,7 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) (out Outcome) {
 	} else {
 		r.Feeds.setProbeScope([32]byte{})
 	}
-	for _, p := range a.Problems {
+	for _, p := range slices.Concat(a.Problems, scoreProblems) {
 		if p.Code == antispam.CodeFeed {
 			continue
 		}

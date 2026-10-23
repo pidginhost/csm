@@ -46,6 +46,7 @@ type Request struct {
 	// Feeds and SkipMaps are comma-separated names.
 	Feeds      *string `json:"feeds,omitempty"`
 	SkipMaps   *string `json:"skip_maps,omitempty"`
+	SkipScores *bool   `json:"skip_scores,omitempty"`
 	DQSKeyFile *string `json:"dqs_key_file,omitempty"`
 	// Learning fields are omitted when learning is off, so older records
 	// keep their form.
@@ -73,6 +74,10 @@ func ApplyRequest(s Settings) Request {
 		v := strings.Join(s.SkipMaps, ",")
 		r.SkipMaps = &v
 	}
+	if s.SkipScores {
+		skip := true
+		r.SkipScores = &skip
+	}
 	if s.DQSKeyFile != "" {
 		v := s.DQSKeyFile
 		r.DQSKeyFile = &v
@@ -96,7 +101,7 @@ func RemoveRequest() Request {
 var requestKeys = map[string]bool{
 	"operation": true, "enabled": true, "dry_run": true,
 	"rspamd_socket": true, "reject_score": true, "tag_score": true,
-	"feeds": true, "skip_maps": true, "dqs_key_file": true,
+	"feeds": true, "skip_maps": true, "skip_scores": true, "dqs_key_file": true,
 	"learning": true, "learning_dir": true, "roundcube": true,
 }
 
@@ -119,10 +124,10 @@ func DecodeRequest(data []byte) (Request, Settings, error) {
 	if err != nil {
 		return Request{}, Settings{}, err
 	}
-	for _, key := range []string{"feeds", "skip_maps", "dqs_key_file", "learning_dir", "learning", "roundcube"} {
+	for _, key := range []string{"feeds", "skip_maps", "skip_scores", "dqs_key_file", "learning_dir", "learning", "roundcube"} {
 		if value, present := fields[key]; present {
 			var valid bool
-			if key == "learning" || key == "roundcube" {
+			if key == "skip_scores" || key == "learning" || key == "roundcube" {
 				_, valid = value.(bool)
 			} else {
 				_, valid = value.(string)
@@ -149,6 +154,7 @@ func DecodeRequest(data []byte) (Request, Settings, error) {
 		if r.DQSKeyFile != nil {
 			s.DQSKeyFile = *r.DQSKeyFile
 		}
+		s.SkipScores = r.SkipScores != nil && *r.SkipScores
 		s.Learning = r.Learning != nil && *r.Learning
 		s.Roundcube = r.Roundcube != nil && *r.Roundcube
 		if s.Learning && r.LearningDir != nil {

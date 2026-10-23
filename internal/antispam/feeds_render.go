@@ -31,6 +31,9 @@ const (
 	RspamdOverrideDir = "/etc/rspamd/override.d"
 	FeedRBLPath       = RspamdOverrideDir + "/rbl.conf"
 	FeedRBLGroupPath  = RspamdOverrideDir + "/rbl_group.conf"
+	// ScoresPath sets the weight of rspamd's own symbols. CSM leaves it out
+	// when the operator owns it.
+	ScoresPath = RspamdLocalDir + "/groups.conf"
 )
 
 // mapRedirects point rspamd.com maps at rspamd's package copies, or at
@@ -68,13 +71,13 @@ const phishingExceptions = "exceptions {\n" +
 func RedirectPath(name string) string { return path.Join(RspamdLocalDir, name+".conf") }
 
 // OptionalRspamdPaths lists every optional file in write order: the DNS
-// feed files, then the map redirects.
+// feed files, the map redirects, then the symbol weights.
 func OptionalRspamdPaths() []string {
 	out := []string{FeedRBLPath, FeedRBLGroupPath}
 	for _, name := range MapRedirectNames() {
 		out = append(out, RedirectPath(name))
 	}
-	return out
+	return append(out, ScoresPath)
 }
 
 // RenderFeeds returns the optional files s needs, keyed by path. A path

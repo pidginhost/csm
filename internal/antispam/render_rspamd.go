@@ -48,6 +48,13 @@ const subjectRules = ManagedHeader + "\nCSM_INVISIBLE_CJK_SUBJECT {\n" +
 	"  score = 8.0;\n" +
 	"  description = \"Invisible character inside CJK text in Subject\";\n}\n"
 
+// scoreWeights lowers rspamd's HIDDEN_TEXT, which gives up to 5 points for
+// hidden text. Newsletters hide their preview line that way, so at the
+// default tag score the rule and one minor symbol were enough to tag them.
+// A configured symbol loses rspamd's one_shot unless the entry repeats it.
+const scoreWeights = ManagedHeader + "\ngroup \"html\" {\n  symbols {\n    \"HIDDEN_TEXT\" {\n" +
+	"      weight = 2.0;\n      one_shot = true;\n    }\n  }\n}\n"
+
 // RenderRspamd returns the content of each file in RspamdFiles, keyed by its
 // name under /etc/rspamd/local.d.
 func RenderRspamd(s Settings) (map[string]string, error) {

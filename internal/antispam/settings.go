@@ -37,6 +37,9 @@ type Settings struct {
 	// SkipMaps names map redirects left out because CSM cannot own their
 	// file (feeds spec section 5.3).
 	SkipMaps []string
+	// SkipScores leaves out the symbol weights file because CSM cannot own
+	// it.
+	SkipScores bool
 	// DQSKeyFile holds the Spamhaus DQS key. DQSKey is its validated
 	// content: the caller loads it, and it never travels in a request.
 	DQSKeyFile string
