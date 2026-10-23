@@ -68,6 +68,7 @@ func TestMutationTargetsCoverSpecFiles(t *testing.T) {
 		"/etc/rspamd/local.d/mime_types.conf":                                                          TargetRspamdOptional,
 		"/etc/rspamd/local.d/whitelist.conf":                                                           TargetRspamdOptional,
 		"/etc/rspamd/local.d/multimap.conf":                                                            TargetRspamdOptional,
+		"/etc/rspamd/local.d/groups.conf":                                                              TargetRspamdOptional,
 		"/etc/rspamd/override.d/fuzzy_check.conf":                                                      TargetRspamdOptional,
 		"/etc/rspamd/override.d/worker-fuzzy.inc":                                                      TargetRspamdOptional,
 		"/etc/rspamd/local.d/fuzzy_group.conf":                                                         TargetRspamdOptional,

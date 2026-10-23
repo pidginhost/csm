@@ -840,3 +840,35 @@ func TestIPMapFindingKeyIgnoresDetails(t *testing.T) {
 		t.Fatalf("keys differ: %q vs %q", a.Key(), b.Key())
 	}
 }
+
+func TestPassSkipsForeignScoresFile(t *testing.T) {
+	h := &fakeHost{}
+	r := h.reconciler()
+	r.Collect = func(context.Context, string) antispam.HostFacts {
+		f := goodFeedFacts()
+		for i := range f.Targets {
+			if f.Targets[i].Path == antispam.ScoresPath {
+				f.Targets[i].Missing = false
+				f.Targets[i].File = antispam.PathFacts{Path: antispam.ScoresPath, Mode: 0o644}
+				f.Targets[i].Content = "operator\n"
+			}
+		}
+		return f
+	}
+	r.assess = func(bool, antispam.Settings, antispam.HostFacts) antispam.Assessment {
+		return antispam.Assessment{Action: antispam.Install}
+	}
+	out := r.Pass(context.Background(), feedDesired())
+	if len(h.requests) != 1 || h.requests[0].SkipScores == nil || !*h.requests[0].SkipScores {
+		t.Fatalf("requests %+v", h.requests)
+	}
+	found := false
+	for _, f := range out.Findings {
+		if f.Check == CheckPrecondition && strings.Contains(f.Message, antispam.CodeScores) && strings.Contains(f.Details, antispam.ScoresPath) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("no scores finding in %+v", out.Findings)
+	}
+}

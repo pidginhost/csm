@@ -51,6 +51,7 @@ const (
 	CodeEximLog        = "exim_log"
 	CodeSystemd        = "systemd"
 	CodeFeed           = "feed"
+	CodeScores         = "rspamd_scores"
 	CodeControllerOpen = "controller_open"
 )
 

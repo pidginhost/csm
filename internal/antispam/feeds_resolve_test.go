@@ -615,3 +615,24 @@ func TestResolveFeedsChecksIPMapDirectories(t *testing.T) {
 		}
 	}
 }
+
+func TestResolveScoresSkipsForeignGroups(t *testing.T) {
+	f := feedFacts()
+	s := defaults(false)
+	s.SkipScores = true
+	if got, problems := ResolveScores(s, f); got.SkipScores || len(problems) != 0 {
+		t.Fatalf("usable file: got %+v, problems %+v", got, problems)
+	}
+	for i := range f.Targets {
+		if f.Targets[i].Path == ScoresPath {
+			f.Targets[i].Missing, f.Targets[i].File, f.Targets[i].Content = false, PathFacts{Path: ScoresPath, Mode: 0o644}, "operator\n"
+		}
+	}
+	got, problems := ResolveScores(defaults(false), f)
+	if !got.SkipScores || len(problems) != 1 {
+		t.Fatalf("foreign file: got %+v, problems %+v", got, problems)
+	}
+	if p := problems[0]; p.Code != CodeScores || p.Severity != Warning || !strings.Contains(p.Detail, ScoresPath) {
+		t.Fatalf("problem %+v", p)
+	}
+}

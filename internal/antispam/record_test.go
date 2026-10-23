@@ -217,3 +217,26 @@ func TestManagedContentIncludesFeedFiles(t *testing.T) {
 		}
 	}
 }
+
+func TestManagedContentLowersHiddenTextWeight(t *testing.T) {
+	if ScoresPath != "/etc/rspamd/local.d/groups.conf" {
+		t.Fatalf("ScoresPath = %s, want rspamd's local groups include", ScoresPath)
+	}
+	managed, err := ManagedContent(defaults(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "# csm-managed-version: 1\ngroup \"html\" {\n  symbols {\n    \"HIDDEN_TEXT\" {\n" +
+		"      weight = 2.0;\n      one_shot = true;\n    }\n  }\n}\n"
+	if managed[ScoresPath] != want {
+		t.Fatalf("%s =\n%q\nwant\n%q", ScoresPath, managed[ScoresPath], want)
+	}
+	s := defaults(false)
+	s.SkipScores = true
+	if managed, err = ManagedContent(s); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := managed[ScoresPath]; ok {
+		t.Fatalf("skipped %s rendered", ScoresPath)
+	}
+}

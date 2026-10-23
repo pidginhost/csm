@@ -413,6 +413,25 @@ func (l LogFacts) exposed(uid int, trustedGroup func(int) bool) (bool, string) {
 // redirects were verified on.
 const minFeedsRspamdMajor = 4
 
+// ResolveScores leaves out the symbol weights file when CSM cannot own it,
+// with a Warning: rspamd then keeps its own weights.
+func ResolveScores(s Settings, f HostFacts) (Settings, []Problem) {
+	s.SkipScores = false
+	err := fmt.Errorf("%s was not checked", ScoresPath)
+	for _, t := range f.Targets {
+		if t.Path == ScoresPath {
+			err = OptionalUsable(t)
+			break
+		}
+	}
+	if err == nil {
+		return s, nil
+	}
+	s.SkipScores = true
+	return s, []Problem{{Code: CodeScores, Severity: Warning,
+		Detail: fmt.Sprintf("%v, so rspamd keeps its full weight for hidden text, which can tag newsletters; move your weights out of it so CSM can own it", err)}}
+}
+
 // FeedsSupported reports whether rspamd is recent enough for feed files
 // and map redirects, and why not.
 func FeedsSupported(version CommandResult) (bool, string) {
