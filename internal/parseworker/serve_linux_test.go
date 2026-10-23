@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"os"
@@ -12,6 +13,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/pidginhost/csm/internal/workerproc"
 )
@@ -131,6 +134,29 @@ func TestServeListZipRejectsNonRegularDescriptor(t *testing.T) {
 	reply, fds := roundTrip(t, conn, listZipRequest(t), []*os.File{r})
 	if reply.Error == "" || len(fds) != 0 {
 		t.Fatalf("pipe accepted: reply %+v fds %d", reply, len(fds))
+	}
+}
+
+func TestServeListZipListingCannotChange(t *testing.T) {
+	conn := servePair(t)
+	_, fds := roundTrip(t, conn, listZipRequest(t), []*os.File{tempFile(t, zipBytes(t, "a.txt"))})
+	if len(fds) != 1 {
+		t.Fatalf("got %d descriptors", len(fds))
+	}
+	st, err := fds[0].Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, mutate := range map[string]func() error{
+		"rewrite": func() error { _, err := fds[0].WriteAt([]byte{2}, 0); return err },
+		"shrink":  func() error { return fds[0].Truncate(0) },
+		"grow":    func() error { return fds[0].Truncate(st.Size() + 1) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := mutate(); !errors.Is(err, unix.EPERM) {
+				t.Fatalf("listing mutation = %v, want EPERM", err)
+			}
+		})
 	}
 }
 

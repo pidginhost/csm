@@ -202,6 +202,29 @@ func TestUnitWatchdogKillsOverCap(t *testing.T) {
 	}
 }
 
+func TestUnitWatchdogRechecksSwapWithoutAccounting(t *testing.T) {
+	for _, mode := range []string{"swap enabled", "swap status unreadable"} {
+		t.Run(mode, func(t *testing.T) {
+			cfg, f := fakeUnitConfig(t, "1")
+			f.layout = "v2-noswapacct"
+			swaps := filepath.Join(f.procRoot, "swaps")
+			writeValue(t, swaps, "Filename\tType\tSize\tUsed\tPriority\n")
+			p := launchUnit(t, cfg)
+			if mode == "swap enabled" {
+				writeValue(t, swaps, "Filename\tType\tSize\tUsed\tPriority\n/swapfile file 16777212 0 -2\n")
+			} else if err := os.Rename(swaps, swaps+".unavailable"); err != nil {
+				t.Fatal(err)
+			}
+			f.waitKills(t, 1)
+			select {
+			case <-p.Done():
+			case <-time.After(reapTimeout):
+				t.Fatal("worker survived without verifiable swap isolation")
+			}
+		})
+	}
+}
+
 func TestUnitRetireAboveThreeQuarters(t *testing.T) {
 	cfg, f := fakeUnitConfig(t, "1")
 	f.layout = "v1-memsw"
@@ -226,7 +249,7 @@ func TestCgroupMemoryReadsRAMAndSwap(t *testing.T) {
 	cg := memoryCgroup{dir: t.TempDir(), v2: true}
 	writeValue(t, filepath.Join(cg.dir, "memory.current"), "1024000")
 	writeValue(t, filepath.Join(cg.dir, "memory.swap.current"), "24576")
-	got, err := cg.usage()
+	got, err := cg.usage(t.TempDir())
 	if err != nil || got != 1048576 {
 		t.Fatalf("cgroup memory = %d, %v", got, err)
 	}

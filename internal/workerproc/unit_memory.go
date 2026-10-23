@@ -121,7 +121,7 @@ func (c memoryCgroup) capSwap(limit uint64, procRoot string) error {
 
 // usage is the cgroup's memory and swap in use. It counts memfd pages
 // charged to the unit, which VmRSS misses.
-func (c memoryCgroup) usage() (uint64, error) {
+func (c memoryCgroup) usage(procRoot string) (uint64, error) {
 	if c.v2 {
 		used, err := readCgroupUint(filepath.Join(c.dir, "memory.current"))
 		if err != nil {
@@ -129,7 +129,9 @@ func (c memoryCgroup) usage() (uint64, error) {
 		}
 		swap, err := readCgroupUint(filepath.Join(c.dir, "memory.swap.current"))
 		if errors.Is(err, os.ErrNotExist) {
-			return used, nil
+			// Swap can be enabled after launch. Without accounting, the
+			// no-swap condition must hold for the worker's whole lifetime.
+			return used, noSwap(procRoot)
 		}
 		return used + swap, err
 	}

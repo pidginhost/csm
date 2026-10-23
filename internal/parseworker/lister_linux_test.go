@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -38,12 +40,19 @@ func TestParseWorkerHelper(t *testing.T) {
 }
 
 func memfdWith(data []byte) *os.File {
-	fd, err := unix.MemfdCreate("lie", unix.MFD_CLOEXEC)
+	return memfdWithSeals(data, unix.F_SEAL_WRITE|unix.F_SEAL_GROW|unix.F_SEAL_SHRINK)
+}
+
+func memfdWithSeals(data []byte, seals int) *os.File {
+	fd, err := unix.MemfdCreate("lie", unix.MFD_CLOEXEC|unix.MFD_ALLOW_SEALING)
 	if err != nil {
 		panic(err)
 	}
 	f := os.NewFile(uintptr(fd), "lie")
 	if _, err := f.Write(data); err != nil {
+		panic(err)
+	}
+	if _, err := unix.FcntlInt(f.Fd(), unix.F_ADD_SEALS, seals); err != nil {
 		panic(err)
 	}
 	return f
@@ -67,6 +76,21 @@ func lyingHandler(mode string) workerproc.Handler {
 			return result(ListZipResult{Entries: entries, Incomplete: incomplete})
 		}
 		switch mode {
+		case "null-reply", "missing-count", "null-count":
+			payload := map[string]string{"null-reply": "null", "missing-count": "{}", "null-count": `{"entries":null}`}[mode]
+			return workerproc.Frame{Payload: json.RawMessage(payload)}, []*os.File{memfdWith(nil)}
+		case "incomplete-with-count":
+			return ok(1, "partial"), nil
+		case "long-incomplete":
+			return ok(0, strings.Repeat("x", maxIncomplete+1)), nil
+		case "unsealed":
+			return ok(1, ""), []*os.File{memfdWithSeals(listingOf("a"), 0)}
+		case "writable":
+			return ok(1, ""), []*os.File{memfdWithSeals(listingOf("a"), unix.F_SEAL_GROW|unix.F_SEAL_SHRINK)}
+		case "growable":
+			return ok(1, ""), []*os.File{memfdWithSeals(listingOf("a"), unix.F_SEAL_WRITE|unix.F_SEAL_SHRINK)}
+		case "shrinkable":
+			return ok(1, ""), []*os.File{memfdWithSeals(listingOf("a"), unix.F_SEAL_WRITE|unix.F_SEAL_GROW)}
 		case "crash":
 			os.Exit(3)
 		case "two-fds":
@@ -83,7 +107,9 @@ func lyingHandler(mode string) workerproc.Handler {
 			}
 			return ok(uint64(len(names)), ""), []*os.File{memfdWith(listingOf(names...))}
 		case "truncated-record":
-			return ok(1, ""), []*os.File{memfdWith([]byte{0, 0, 10, 'a'})}
+			return ok(2, ""), []*os.File{memfdWith(append(listingOf("a"), 0, 0, 10, 'a'))}
+		case "bad-flag":
+			return ok(2, ""), []*os.File{memfdWith(append(listingOf("a"), 2, 0, 0))}
 		case "count-mismatch":
 			return ok(1, ""), []*os.File{memfdWith(listingOf("a", "b"))}
 		case "incomplete-with-fd":
@@ -155,8 +181,11 @@ func TestListZipDeliversEntriesPastFiller(t *testing.T) {
 	if err := listVia(t, l, data, collect(&got)); err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != len(names) || got[len(got)-1].name != "office365/next.php" {
-		t.Fatalf("got %d entries, last %v", len(got), got[len(got)-1])
+	if len(got) != len(names) {
+		t.Fatalf("got %d entries, want %d", len(got), len(names))
+	}
+	if last := got[len(got)-1]; last.name != "office365/next.php" {
+		t.Fatalf("last entry = %v", last)
 	}
 	stop := errors.New("kit found")
 	err := listVia(t, l, data, func(name string, _ bool) error {
@@ -188,10 +217,17 @@ func TestListZipCorruptIsIncompleteNotFailure(t *testing.T) {
 	if got := l.Stats().Spawns; got != 1 {
 		t.Fatalf("spawns = %d", got)
 	}
+	if q := l.QueueStatuses(time.Now())["requests"]; q.DroppedTotal != 0 || q.InFlight != 0 || q.Depth != 0 {
+		t.Fatalf("corrupt zips degraded request health: %+v", q)
+	}
 }
 
 func TestListZipRejectsMalformedListing(t *testing.T) {
-	for _, mode := range []string{"two-fds", "pipe-fd", "listing-larger-than-zip", "truncated-record", "count-mismatch", "incomplete-with-fd"} {
+	for _, mode := range []string{
+		"null-reply", "missing-count", "null-count", "incomplete-with-count", "long-incomplete",
+		"unsealed", "writable", "growable", "shrinkable", "two-fds", "pipe-fd",
+		"listing-larger-than-zip", "truncated-record", "bad-flag", "count-mismatch", "incomplete-with-fd",
+	} {
 		t.Run(mode, func(t *testing.T) {
 			l := testLister(t, mode)
 			data := zipBytes(t, "a.txt")
@@ -203,6 +239,9 @@ func TestListZipRejectsMalformedListing(t *testing.T) {
 				}
 				if got := l.Stats().Spawns; got != i {
 					t.Fatalf("call %d: spawns = %d, want a new worker per call", i, got)
+				}
+				if st := l.Stats(); st.Running || st.ConsecutiveFailures != i {
+					t.Fatalf("call %d: rejected worker still usable: %+v", i, st)
 				}
 			}
 		})

@@ -49,7 +49,7 @@ func listZip(ctx context.Context, req workerproc.Frame, fds []*os.File) (workerp
 	if !st.Mode().IsRegular() {
 		return workerproc.Frame{Error: "list_zip descriptor is not a regular file"}, nil
 	}
-	fd, err := unix.MemfdCreate("csm-zip-listing", unix.MFD_CLOEXEC)
+	fd, err := unix.MemfdCreate("csm-zip-listing", unix.MFD_CLOEXEC|unix.MFD_ALLOW_SEALING)
 	if err != nil {
 		return workerproc.Frame{Error: fmt.Sprintf("memfd: %v", err)}, nil
 	}
@@ -70,6 +70,10 @@ func listZip(ctx context.Context, req workerproc.Frame, fds []*os.File) (workerp
 			reason = reason[:maxIncomplete]
 		}
 		return result(ListZipResult{Incomplete: reason}), nil
+	}
+	if _, err := unix.FcntlInt(listing.Fd(), unix.F_ADD_SEALS, listingSeals); err != nil {
+		_ = listing.Close()
+		return workerproc.Frame{Error: fmt.Sprintf("seal listing: %v", err)}, nil
 	}
 	return result(ListZipResult{Entries: n}), []*os.File{listing}
 }

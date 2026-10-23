@@ -61,14 +61,21 @@ func (l *Lister) ListZip(ctx context.Context, zip *os.File, size int64, maxDirBy
 	var listingSize int64
 	_, fds, err := l.proc.Call(ctx, workerproc.Frame{Op: OpListZip, Payload: payload}, []*os.File{zip},
 		func(reply workerproc.Frame, fds []*os.File) (bool, error) {
-			res = ListZipResult{}
+			var wire struct {
+				Entries    *uint64 `json:"entries"`
+				Incomplete string  `json:"incomplete,omitempty"`
+			}
 			dec := json.NewDecoder(bytes.NewReader(reply.Payload))
 			dec.DisallowUnknownFields()
-			if decodeErr := dec.Decode(&res); decodeErr != nil {
+			if decodeErr := dec.Decode(&wire); decodeErr != nil {
 				return false, fmt.Errorf("list_zip reply: %w", decodeErr)
 			}
+			if wire.Entries == nil {
+				return false, errors.New("list_zip reply has no entry count")
+			}
+			res = ListZipResult{Entries: *wire.Entries, Incomplete: wire.Incomplete}
 			if res.Incomplete != "" {
-				if len(fds) != 0 || len(res.Incomplete) > maxIncomplete {
+				if len(fds) != 0 || res.Entries != 0 || len(res.Incomplete) > maxIncomplete {
 					return false, errors.New("malformed incomplete listing")
 				}
 				return false, nil
@@ -84,19 +91,22 @@ func (l *Lister) ListZip(ctx context.Context, zip *os.File, size int64, maxDirBy
 		return fmt.Errorf("%w: %s", errIncomplete, res.Incomplete)
 	}
 	defer func() { _ = fds[0].Close() }()
-	// The listing passed the check above; a worker that rewrites it since
-	// gains nothing a lying listing would not.
 	_, err = readEntries(ctx, io.NewSectionReader(fds[0], 0, listingSize), maxDirBytes, visit)
 	return err
 }
 
 // checkListing validates the worker's listing before anything trusts it: one
-// regular file, no larger than the zip (a record is 3 bytes plus the name,
-// a central-directory record at least 46 plus the name), whole records only,
-// exactly as many as the reply claims.
+// immutable regular file, no larger than the zip (a record is 3 bytes plus
+// the name, a central-directory record at least 46 plus the name), whole
+// records only, exactly as many as the reply claims.
 func checkListing(ctx context.Context, fds []*os.File, zipSize int64, maxDirBytes, entries uint64) (int64, error) {
 	if len(fds) != 1 {
 		return 0, fmt.Errorf("listing carries %d descriptors, want 1", len(fds))
+	}
+	// Seal checks precede even Stat: the size and every record must stay
+	// unchanged from validation through delivery to visit.
+	if err := checkListingSeals(fds[0]); err != nil {
+		return 0, err
 	}
 	st, err := fds[0].Stat()
 	if err != nil {

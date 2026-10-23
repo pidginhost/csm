@@ -222,7 +222,7 @@ func (p *unitProcess) start(ctx context.Context, cfg UnitConfig, h *unitHooks) e
 	if capErr := cg.capSwap(cfg.MemoryLimit, h.procRoot); capErr != nil {
 		return fmt.Errorf("cannot cap worker memory: %w", capErr)
 	}
-	p.usage = cg.usage
+	p.usage = func() (uint64, error) { return cg.usage(h.procRoot) }
 	used, err := p.usage()
 	if err != nil {
 		return fmt.Errorf("cannot measure worker memory: %w", err)
