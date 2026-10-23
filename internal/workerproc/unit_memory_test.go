@@ -21,9 +21,6 @@ func (f *unitFake) cgroupDir(unit string) string {
 // writeCgroup builds the fake /proc/<pid>/cgroup and cgroup files the way a
 // unit started by systemd would see them.
 func (f *unitFake) writeCgroup(pid int, unit string) error {
-	if f.layout == "none" {
-		return nil
-	}
 	path := "/system.slice/" + unit + ".service"
 	procFile := "0::" + path + "\n"
 	if strings.HasPrefix(f.layout, "v1") {
@@ -36,6 +33,9 @@ func (f *unitFake) writeCgroup(pid int, unit string) error {
 	if err := os.WriteFile(filepath.Join(procDir, "cgroup"), []byte(procFile), 0o644); err != nil {
 		return err
 	}
+	if f.layout == "none" {
+		return nil // The process names a cgroup that is not there.
+	}
 	dir := f.cgroupDir(unit)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
@@ -44,6 +44,8 @@ func (f *unitFake) writeCgroup(pid int, unit string) error {
 	switch f.layout {
 	case "v2":
 		files = map[string]string{"memory.current": "1048576", "memory.swap.current": "0", "memory.swap.max": "max"}
+	case "v2-noswapacct":
+		files = map[string]string{"memory.current": "1048576"}
 	case "v1-memsw":
 		files = map[string]string{"memory.usage_in_bytes": "1048576", "memory.memsw.usage_in_bytes": "1048576", "memory.memsw.limit_in_bytes": "9223372036854771712", "memory.swappiness": "60"}
 	case "v1-noswap":
@@ -136,6 +138,45 @@ func TestUnitLauncherRefusesUncappableWorker(t *testing.T) {
 	}
 }
 
+func TestUnitLauncherRefusesWorkerWithoutMemoryCgroup(t *testing.T) {
+	cfg, f := fakeUnitConfig(t, "1")
+	f.layout = "none"
+	if _, err := UnitLauncher(cfg)(context.Background()); err == nil || !strings.Contains(err.Error(), "cannot cap worker memory") {
+		t.Fatalf("launch = %v", err)
+	}
+	f.waitKills(t, 1)
+}
+
+// Without swap accounting, cgroup v2 cannot charge swap to the unit, so a
+// worker over memory.max swaps instead of dying. That is only safe on a host
+// with no swap.
+func TestUnitLauncherV2WithoutSwapAccounting(t *testing.T) {
+	for _, tc := range []struct {
+		swaps string
+		ok    bool
+	}{
+		{swaps: "Filename\t\t\t\tType\t\tSize\tUsed\tPriority\n", ok: true},
+		{swaps: "Filename\t\t\t\tType\t\tSize\tUsed\tPriority\n/swapfile file 16777212 0 -2\n", ok: false},
+	} {
+		cfg, f := fakeUnitConfig(t, "1")
+		f.layout = "v2-noswapacct"
+		writeValue(t, filepath.Join(f.procRoot, "swaps"), tc.swaps)
+		p, err := UnitLauncher(cfg)(context.Background())
+		if tc.ok {
+			if err != nil {
+				t.Fatalf("no swap on host: launch = %v", err)
+			}
+			_ = p.Kill()
+			<-p.Done()
+			_ = p.Conn().Close()
+			continue
+		}
+		if err == nil || !strings.Contains(err.Error(), "cannot cap worker memory") {
+			t.Fatalf("swap on host without accounting: launch = %v", err)
+		}
+	}
+}
+
 func TestUnitWatchdogKillsOverCap(t *testing.T) {
 	cfg, f := fakeUnitConfig(t, "1")
 	f.layout = "v1-memsw"
@@ -167,17 +208,5 @@ func TestUnitRetireAboveThreeQuarters(t *testing.T) {
 	writeValue(t, usage, "unreadable")
 	if !p.Retire() {
 		t.Fatal("worker with unreadable usage not retired")
-	}
-}
-
-func TestProcessMemoryReadsRSSAndSwap(t *testing.T) {
-	proc := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(proc, "7"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	writeValue(t, filepath.Join(proc, "7", "status"), "Name:\tcsm\nVmRSS:\t    1000 kB\nVmSwap:\t      24 kB\n")
-	got, err := processMemory(proc, 7)
-	if err != nil || got != 1048576 {
-		t.Fatalf("processMemory = %d, %v", got, err)
 	}
 }

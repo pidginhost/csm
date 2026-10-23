@@ -205,15 +205,14 @@ func (p *unitProcess) start(ctx context.Context, cfg UnitConfig, h *unitHooks) e
 	if err != nil {
 		return fmt.Errorf("cannot cap worker memory: %w", err)
 	}
-	if found {
-		if err := cg.capSwap(cfg.MemoryLimit); err != nil {
-			return fmt.Errorf("cannot cap worker memory: %w", err)
-		}
-		p.usage = cg.usage
-	} else {
-		p.logf("unit %s: no memory cgroup found; only process polling caps this worker", p.unit)
-		p.usage = func() (uint64, error) { return processMemory(h.procRoot, pid) }
+	if !found {
+		// Polling the main process alone would miss any child it forks.
+		return errors.New("cannot cap worker memory: no memory cgroup for the unit")
 	}
+	if err := cg.capSwap(cfg.MemoryLimit, h.procRoot); err != nil {
+		return fmt.Errorf("cannot cap worker memory: %w", err)
+	}
+	p.usage = cg.usage
 	if _, err := p.usage(); err != nil {
 		return fmt.Errorf("cannot measure worker memory: %w", err)
 	}
@@ -222,9 +221,9 @@ func (p *unitProcess) start(ctx context.Context, cfg UnitConfig, h *unitHooks) e
 	return nil
 }
 
-// watch kills the worker once its memory passes the cap. It covers hosts
-// where no cgroup knob caps swap, and fails closed: usage that cannot be
-// read while the worker is alive kills it too.
+// watch kills the worker once its memory and swap pass the cap, in case the
+// kernel's own limit did not take effect. It fails closed: usage that cannot
+// be read while the worker is alive kills it too.
 func (p *unitProcess) watch(interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()

@@ -1,7 +1,6 @@
 package workerproc
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
 	"os"
@@ -60,12 +59,14 @@ func isDir(path string) bool {
 // MemoryLimit caps RAM only: a worker over it swaps instead of dying, and a
 // host with plenty of swap never stops it. Each write is read back, because a
 // cap that silently did not take effect is no cap.
-func (c memoryCgroup) capSwap(limit uint64) error {
+func (c memoryCgroup) capSwap(limit uint64, procRoot string) error {
 	if c.v2 {
 		swapMax := filepath.Join(c.dir, "memory.swap.max")
 		current, err := readCgroupValue(swapMax)
 		if errors.Is(err, os.ErrNotExist) {
-			return nil // No swap controller: nothing to swap to.
+			// No swap accounting: swap cannot be charged to the unit, which
+			// is safe only while the host has no swap at all.
+			return noSwap(procRoot)
 		}
 		if err != nil || current == "0" {
 			return err
@@ -108,39 +109,18 @@ func (c memoryCgroup) usage() (uint64, error) {
 	return used, err
 }
 
-// processMemory is VmRSS plus VmSwap of pid, for a worker whose cgroup
-// cannot be found.
-func processMemory(procRoot string, pid int) (uint64, error) {
-	f, err := os.Open(filepath.Join(procRoot, strconv.Itoa(pid), "status")) // #nosec G304 -- procfs path built from a PID systemd reported.
+// noSwap fails when any swap area is active.
+func noSwap(procRoot string) error {
+	data, err := os.ReadFile(filepath.Join(procRoot, "swaps")) // #nosec G304 -- procfs.
 	if err != nil {
-		return 0, err
+		return err
 	}
-	defer f.Close()
-	var rss, swap uint64
-	haveRSS := false
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		key, value, ok := strings.Cut(sc.Text(), ":")
-		if !ok || (key != "VmRSS" && key != "VmSwap") {
-			continue
-		}
-		kb, err := strconv.ParseUint(strings.TrimSuffix(strings.TrimSpace(value), " kB"), 10, 64)
-		if err != nil {
-			return 0, fmt.Errorf("workerproc: %s of %d: %w", key, pid, err)
-		}
-		if key == "VmRSS" {
-			rss, haveRSS = kb<<10, true
-		} else {
-			swap = kb << 10
-		}
+	// The first line is a header; each further line is one swap area.
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) > 1 {
+		return errors.New("swap is on and the kernel does not account it per cgroup")
 	}
-	if err := sc.Err(); err != nil {
-		return 0, err
-	}
-	if !haveRSS {
-		return 0, fmt.Errorf("workerproc: no VmRSS for %d", pid)
-	}
-	return rss + swap, nil
+	return nil
 }
 
 func readCgroupValue(path string) (string, error) {
