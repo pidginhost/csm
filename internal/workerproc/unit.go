@@ -77,10 +77,13 @@ func lockdownProperties(cfg UnitConfig) []string {
 		"ProtectControlGroups=yes",
 		"RestrictNamespaces=yes",
 		"RestrictRealtime=yes",
-		"LockPersonality=yes",
 		"MemoryDenyWriteExecute=yes",
 		"UMask=0077",
 		"SystemCallFilter=@system-service",
+		// In place of LockPersonality=yes, which systemd-run on systemd 239
+		// rejects as an unknown assignment. Denying personality(2) outright
+		// is stricter, and no worker needs it.
+		"SystemCallFilter=~personality",
 		"SystemCallErrorNumber=EPERM",
 		"MemoryAccounting=yes",
 		"MemoryLimit=" + memory,
@@ -337,7 +340,8 @@ func systemctlMainPID(ctx context.Context, p *unitProcess) (int, error) {
 
 func systemctlKill(ctx context.Context, p *unitProcess) error {
 	out, err := exec.CommandContext(ctx, "systemctl", "kill", "--signal=SIGKILL", p.unit+".service").CombinedOutput() // #nosec G204 -- the unit name is ours.
-	if err != nil {
+	if err != nil && !strings.Contains(string(out), "not loaded") {
+		// "not loaded": the unit already ended, which is what Kill wants.
 		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil

@@ -66,9 +66,11 @@ gets these properties:
 - `ProtectSystem=strict`, `ProtectHome=yes`, `PrivateTmp=yes`,
   `PrivateDevices=yes`, `ProtectKernelTunables=yes`,
   `ProtectKernelModules=yes`, `ProtectControlGroups=yes`,
-  `RestrictNamespaces=yes`, `RestrictRealtime=yes`, `LockPersonality=yes`,
+  `RestrictNamespaces=yes`, `RestrictRealtime=yes`,
   `MemoryDenyWriteExecute=yes`, `UMask=0077`;
-- `SystemCallFilter=@system-service` with `SystemCallErrorNumber=EPERM`;
+- `SystemCallFilter=@system-service` and `SystemCallFilter=~personality`,
+  with `SystemCallErrorNumber=EPERM`. The personality deny stands in for
+  `LockPersonality=yes`, which `systemd-run` on systemd 239 rejects;
 - `MemoryAccounting=yes`, `MemoryLimit=` and `MemoryMax=` set to the
   worker's memory cap, `MemorySwapMax=0`;
 - `TasksMax=64`, `LimitNOFILE=256`, `LimitCORE=0`, `LimitFSIZE=` set above

@@ -26,8 +26,8 @@ func init() {
 }
 
 type probeResult struct {
-	UID                              int
-	INET, INET6, Home, Shadow, Spool string
+	UID                                           int
+	INET, INET6, Home, Shadow, Spool, Personality string
 }
 
 func errText(err error) string {
@@ -58,6 +58,11 @@ func probeOp(json.RawMessage) Frame {
 	r.Shadow = errText(err)
 	_, err = os.ReadDir("/var/spool/exim/input")
 	r.Spool = errText(err)
+	// ADDR_NO_RANDOMIZE: a persona change the unit must refuse.
+	_, _, errno := unix.Syscall(unix.SYS_PERSONALITY, 0x0040000, 0, 0)
+	if errno != 0 {
+		r.Personality = errno.Error()
+	}
 	out, _ := json.Marshal(r)
 	return Frame{Payload: out}
 }
@@ -180,7 +185,7 @@ func TestKernelUnitLauncherLockdown(t *testing.T) {
 	if !strings.Contains(r.INET, "address family not supported") || r.INET6 == "" {
 		t.Fatalf("network sockets: inet %q inet6 %q", r.INET, r.INET6)
 	}
-	if r.Home == "" || r.Shadow == "" || r.Spool == "" {
+	if r.Home == "" || r.Shadow == "" || r.Spool == "" || r.Personality == "" {
 		t.Fatalf("file access: %+v", r)
 	}
 	var w struct{ Error string }
