@@ -9,6 +9,10 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ## [Unreleased]
 
+### Added
+
+- The Email Security page has a Forwarders tab, where any forwarder destination can be deleted after a confirmation.
+
 ### Changed
 
 - With the forward guard enforcing, mail tagged as spam is now held instead of forwarded to outside addresses.
@@ -25,6 +29,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - On phones, the outbound abuse events and forwarders lists on the Email Security page show as cards instead of scrolling sideways.
 - Spam folder learning status no longer reports every pass as unfinished on cPanel servers, so waiting reports are counted and deleted mailboxes are cleaned up.
 - Spam folder learning now counts a message moved to Spam when the same delivery also reached other mailboxes of the account.
+- The forwarders list on the Email Security page shows each cPanel source address once, instead of with its domain repeated.
 
 ## [4.6.0] - 2026-10-22
 

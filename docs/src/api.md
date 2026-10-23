@@ -181,7 +181,7 @@ GET  /api/v1/challenge/stats     Challenge-routing activity for the UI: `pending
                                  check, since restart), and `recent` routes. Read scope.
 GET  /api/v1/capabilities        Static feature list (e.g. `confd.dropins.v1`, `events.sse.v1`,
                                  `webhook.phpanel.v1`, `webui.prefs.v1`, `webui.undo.v1`,
-                                 `mail.queue.composition.v1`,
+                                 `mail.queue.composition.v1`, `mail.forwarders.delete.v1`,
                                  `detect.http_scanner_profile.v1`, `challenge.stats.v1`,
                                  `firewall.rollback.v1`, `firewall.dos_exempt.v1` on Linux builds).
                                  Use for orchestrator feature-detect. `csm capabilities` prints
@@ -1244,6 +1244,7 @@ DELETE /api/v1/suppressions      Delete a suppression rule by id
 ```
 GET  /api/v1/email/stats         Email scanning statistics
 GET  /api/v1/email/forwarders    Mail forwarder inventory with destination providers and local-copy flags (read scope)
+POST /api/v1/email/forwarders/delete  Delete one destination of a forwarder on cPanel hosts through uapi, as the account that owns it; takes {"source", "destination"} as the inventory lists them; 404 when the inventory has no such pair, 500 when cPanel or command execution fails, 503 when unavailable (admin scope, CSRF)
 GET  /api/v1/email/deferrals     Outbound deferral rollup by provider and sending IP with reason codes and last_seen, parsed from exim_mainlog; each provider has a sample error text; lines is the number of log lines read and window_start/window_end the times of the first and last of them; one read is reused for 60 s (read scope)
 GET  /api/v1/email/queue-composition  Mail queue makeup: real vs null-sender bounce backscatter, frozen count, unreadable count, oldest age, top stuck recipients; 500 when exim could not list the queue, rather than an empty queue (read scope)
 POST /api/v1/email/queue/flush-backscatter  Request removal of frozen null-sender messages from the exim queue on cPanel hosts; returns the count of targeted messages no longer queued, reports incomplete verification as 500, or returns 503 when unavailable (admin scope, CSRF)
@@ -1266,6 +1267,11 @@ GET  /api/v1/email/quarantine/{id}          One quarantined message
 POST /api/v1/email/quarantine/{id}/release  Release a quarantined message (admin scope, CSRF)
 DELETE /api/v1/email/quarantine/{id}        Delete a quarantined message (admin scope, CSRF)
 ```
+
+The `mail.forwarders.delete.v1` capability advertises the forwarder delete
+endpoint. A 500 can follow a delete that partly ran, so read the inventory
+again before retrying. A domain's default address (`*@domain`) is changed in
+cPanel.
 
 The senders abuse count and relay abuse list apply the exact `from` and `to`
 bounds, including fractional seconds, even when requests share cached

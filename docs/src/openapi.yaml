@@ -541,6 +541,37 @@ paths:
               schema: { $ref: "#/components/schemas/JSONObject" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/email/forwarders/delete":
+    post:
+      operationId: post_email_forwarders_delete
+      summary: "Delete one destination of a mail forwarder through cPanel, as the account that owns it (scope: admin)"
+      x-csm-scope: admin
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [source, destination]
+              properties:
+                source: { type: string, description: "The forwarder's address, as /email/forwarders lists it." }
+                destination: { type: string, description: "One of its destinations, as /email/forwarders lists it." }
+      responses:
+        "200":
+          description: The destination was deleted.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "400": { description: "The body does not name a source and a destination, or the source is the domain's default address, which is set in cPanel." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: The forwarder list has no such source and destination. Nothing ran. }
+        "409": { description: No cPanel account owns the forwarder's domain. Nothing ran. }
+        "500": { description: "cPanel or command execution failed; the error and audit entry record the failure. Reload the inventory before retrying because the delete may have partially completed." }
+        "503": { description: Forwarders cannot be changed on this host, or systemd-run cannot start a unit and nothing ran. }
   "/api/v1/email/groups":
     get:
       operationId: get_email_groups

@@ -118,6 +118,7 @@ type Server struct {
 	emailAVWatcherMode atomic.Value // string
 	mailStats          atomic.Pointer[mailstats.Counter]
 	forwarderSource    inventory.Source
+	forwarderRemover   *inventory.CPanelRemover // nil off cPanel
 	deferralReporter   intel.Reporter
 	queueReporter      intel.QueueReporter
 	queueFlusher       intel.QueueFlusher
@@ -218,6 +219,7 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 		apiRequests:      make(map[string][]time.Time),
 		pruneDone:        make(chan struct{}),
 		forwarderSource:  selectForwarderSource(),
+		forwarderRemover: selectForwarderRemover(),
 		deferralReporter: selectDeferralReporter(),
 		queueReporter:    selectQueueReporter(),
 		queueFlusher:     selectQueueFlusher(),
@@ -373,6 +375,7 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	mux.Handle("/api/v1/email/rspamd", s.requireRead(http.HandlerFunc(s.apiEmailRspamd)))
 	mux.Handle("/api/v1/email/relay-abuse", s.requireRead(http.HandlerFunc(s.apiEmailRelayAbuse)))
 	mux.Handle("/api/v1/email/forwarders", s.requireRead(http.HandlerFunc(s.apiEmailForwarders)))
+	mux.Handle("/api/v1/email/forwarders/delete", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiEmailForwarderDelete))))
 	mux.Handle("/api/v1/email/deferrals", s.requireRead(http.HandlerFunc(s.apiEmailDeferrals)))
 	mux.Handle("/api/v1/email/queue-composition", s.requireRead(http.HandlerFunc(s.apiEmailQueueComposition)))
 	mux.Handle("/api/v1/email/queue/flush-backscatter", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiEmailFlushBackscatter))))

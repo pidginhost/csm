@@ -118,6 +118,7 @@ func TestInventoryMatchesRuntimeContracts(t *testing.T) {
 		{"operate.restore_backup", "cmd/csm/restore.go: stage and replace config, drop-ins and state", "", "", []Privilege{Root}, []string{"/etc/csm", "/var/lib/csm", "/opt/csm", "/tmp"}},
 		{"integrate.challenge_snippet", "integration/webserver/installer.go: Install and Remove reload the web server", "mode", "observe", []Privilege{Root}, []string{"service:web server reload"}},
 		{"operate.manual_remediation", "checks/remediate.go: ApplyFix can kill and quarantine, or truncate a user crontab", "", "", []Privilege{CapKill, Root}, []string{"/home", "/tmp", "/var/tmp", "/dev/shm", "/var/spool/cron", "/var/spool/exim/input", "/var/spool/exim4/input"}},
+		{"operate.delete_forwarder", "mailfwd/inventory/remove.go: CPanelRemover.Remove calls uapi Email delete_forwarder as the domain owner", "", "", []Privilege{Root}, []string{"cpanel:mail forwarders"}},
 	} {
 		t.Run(tc.id, func(t *testing.T) {
 			op, ok := byID[tc.id]
@@ -475,6 +476,7 @@ var reviewedRiskTiers = map[string]RiskTier{
 	"integrate.panel_plugin":        RiskDestructive,
 	"integrate.php_shield":          RiskDestructive,
 	"integrate.waf_vendor_rules":    RiskDestructive,
+	"operate.delete_forwarder":      RiskDestructive,
 	"operate.export_archives":       RiskDestructive,
 	"operate.harden_host":           RiskDestructive,
 	"operate.install_service":       RiskDestructive,
@@ -559,6 +561,7 @@ var reviewedRecoveryGaps = map[string]string{
 	"integrate.panel_plugin":        "This inventory does not specify an action-wide snapshot and verified rollback of configuration, service and external-tool side effects.",
 	"integrate.php_shield":          "This inventory does not specify an action-wide snapshot and verified rollback of configuration, service and external-tool side effects.",
 	"integrate.waf_vendor_rules":    "This inventory does not specify an action-wide snapshot and verified rollback of configuration, service and external-tool side effects.",
+	"operate.delete_forwarder":      "The web UI audit log names the deleted destination and its account; nothing re-creates the forwarder.",
 	"operate.export_archives":       "Export can replace an existing operator-selected archive; removing the new archive does not restore overwritten bytes.",
 	"operate.harden_host":           "This inventory does not specify an action-wide snapshot and verified rollback of configuration, service and external-tool side effects.",
 	"operate.install_service":       "This inventory does not specify an action-wide snapshot and verified rollback of configuration, service and external-tool side effects.",

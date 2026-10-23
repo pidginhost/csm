@@ -39,7 +39,7 @@ const CASES = [
       item: { message_id: '1abcDE-000001-AB', direction: 'inbound', from: 'sender@example.org', to: ['user@example.com'], subject: 'invoice',
               quarantined_at: RECENT, findings: [{ filename: 'a.exe', engine: 'clamav', signature: 'Eicar-Test', severity: 'high' }] },
       host: 'email-held-tbody', text: 'sender@example.org' },
-    { name: 'email forwarders', page: 'email', scripts: ['email.js'], tab: 'email-tab-sending', route: '/api/v1/email/forwarders',
+    { name: 'email forwarders', page: 'email', scripts: ['email.js'], tab: 'email-tab-forwarders', route: '/api/v1/email/forwarders',
       item: { source: 'info@example.com', domain: 'example.com', owner: 'alice', destinations: [{ address: 'fwd@example.net', domain: 'example.net', provider: 'other' }],
               providers: ['other'], keep_local: false, forward_only: true, has_external: true, has_free_provider: false },
       extra: { summary: { total: 1, external: 1, free_provider: 0 } }, host: 'email-fwd-tbody', text: 'info@example.com' },

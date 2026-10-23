@@ -1,11 +1,14 @@
 package webui
 
 import (
+	"errors"
 	"net/http"
 	"sort"
+	"strings"
 
 	"github.com/pidginhost/csm/internal/mailfwd/inventory"
 	"github.com/pidginhost/csm/internal/platform"
+	"github.com/pidginhost/csm/internal/systemdrun"
 )
 
 // forwarderDestination is one resolved target of a forwarder, as served to the
@@ -52,6 +55,16 @@ func selectForwarderSource() inventory.Source {
 		return inventory.NewCPanelSource()
 	}
 	return inventory.EmptySource{}
+}
+
+// selectForwarderRemover picks how forwarders are deleted. Only cPanel is
+// wired; elsewhere the delete route answers as unavailable. eximLookPath and
+// eximRun run any command, not only exim.
+func selectForwarderRemover() *inventory.CPanelRemover {
+	if platform.Detect().IsCPanel() {
+		return inventory.NewCPanelRemover(eximLookPath, eximRun)
+	}
+	return nil
 }
 
 // apiEmailForwarders handles GET /api/v1/email/forwarders and returns the host's
@@ -118,4 +131,77 @@ func toForwarderEntry(f inventory.Forwarder) forwarderEntry {
 		HasExternal:     f.HasExternal(),
 		HasFreeProvider: f.HasFreeProvider(),
 	}
+}
+
+// apiEmailForwarderDelete handles POST /api/v1/email/forwarders/delete: it
+// removes one destination of one forwarder. The pair must be in the current
+// inventory, which also names the account uapi runs as, so a request can
+// never pick the account or reach an address the list does not show. Every
+// attempt that reaches cPanel is audit-logged with its outcome.
+func (s *Server) apiEmailForwarderDelete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		Source      string `json:"source"`
+		Destination string `json:"destination"`
+	}
+	if err := decodeJSONBodyLimited(w, r, 4096, &req); err != nil || req.Source == "" || req.Destination == "" {
+		writeJSONError(w, "Body must name a source and a destination", http.StatusBadRequest)
+		return
+	}
+	if s.forwarderRemover == nil || s.forwarderSource == nil {
+		writeJSONError(w, "Forwarders cannot be changed on this host", http.StatusServiceUnavailable)
+		return
+	}
+	fwds, err := s.forwarderSource.Forwarders()
+	if err != nil {
+		writeJSONError(w, "Failed to enumerate forwarders", http.StatusInternalServerError)
+		return
+	}
+	f, ok := findForwarderDestination(fwds, req.Source, req.Destination)
+	switch {
+	case !ok:
+		writeJSONError(w, "No such forwarder; reload the list", http.StatusNotFound)
+		return
+	case strings.HasPrefix(f.Source, "*@"):
+		writeJSONError(w, "The default address is changed in cPanel", http.StatusBadRequest)
+		return
+	case f.Owner == "":
+		writeJSONError(w, "No cPanel account owns "+f.Domain, http.StatusConflict)
+		return
+	}
+
+	err = s.forwarderRemover.Remove(f, req.Destination)
+	details := "destination: " + req.Destination + "; owner: " + f.Owner
+	if err != nil {
+		details += "; error: " + err.Error()
+	}
+	s.auditLog(r, "email_forwarder_delete", f.Source, details)
+
+	switch {
+	case err == nil:
+		writeOK(w, nil)
+	case errors.Is(err, systemdrun.ErrUnavailable):
+		writeJSONError(w, "Deleting forwarders needs systemd-run: "+err.Error(), http.StatusServiceUnavailable)
+	default:
+		writeJSONError(w, "Forwarder delete failed: "+err.Error(), http.StatusInternalServerError)
+	}
+}
+
+// findForwarderDestination returns the forwarder whose source and one of whose
+// destinations match exactly.
+func findForwarderDestination(fwds []inventory.Forwarder, source, dest string) (inventory.Forwarder, bool) {
+	for _, f := range fwds {
+		if f.Source != source {
+			continue
+		}
+		for _, d := range f.Destinations {
+			if d.Address == dest {
+				return f, true
+			}
+		}
+	}
+	return inventory.Forwarder{}, false
 }
