@@ -452,7 +452,8 @@ panel never stops local protection.
 
 **Problem:** neither rule set fires on `assert` with a fragmented name on
 request input, on `base64_decode` assembled from fragments into `eval`, or
-on a `chr()`-built callable invoked on request input; the self-test bundle
+on a `chr()`-built callable invoked on request input, including a callable
+decoded from a digit string three digits per character; the self-test bundle
 records them as gaps, and identifier reconstruction rules produce
 false-positive floods, so this is detector work with a corpus result.
 
@@ -497,6 +498,21 @@ other adapters in `cmsDiscover` do not use the panel map. See
 **Acceptance:** depth and cost budget are decided per CMS; nested mapped and
 unmapped installs, custom roots, symlinks, cancellation and incomplete
 traversal are tested; each adapter's limits are documented.
+
+**Size:** M.
+
+## Accounts on additional home partitions
+
+**Problem:** a single-account scan resolves an account whose home sits on an
+additional home partition such as `/home2`, but `csm scan --all --full` skips
+those accounts, the scheduled deep scan does not walk their document roots,
+and quarantine cannot write there because the service sandbox grants `/home`
+only.
+
+**Acceptance:** account enumeration, the deep scan and quarantine resolve
+homes through the account registry with no hardcoded `/home`; an account on a
+second partition is scanned by all three paths, and a file there is
+quarantined and restored under the sandbox.
 
 **Size:** M.
 
