@@ -63,24 +63,67 @@ func AccountHomeRoots() []string {
 }
 
 // accountHomeDir resolves an account's home directory: the first root that
-// holds it, or the first root when it exists nowhere (callers that need
-// existence check it themselves).
+// holds it, then a registered cPanel account's home on another partition,
+// or the first root when it exists nowhere (callers that need existence
+// check it themselves).
 func accountHomeDir(account string) string {
-	return AccountHomeDirIn(accountHomeRoots(), account)
+	roots := accountHomeRoots()
+	if home, ok := accountHomeUnder(roots, account); ok {
+		return home
+	}
+	if home, ok := registeredAccountHome(account); ok {
+		return home
+	}
+	return defaultAccountHome(roots, account)
 }
 
-// AccountHomeDirIn is accountHomeDir over the given roots.
+// AccountHomeDirIn is accountHomeDir over the given roots, without the
+// registry lookup.
 func AccountHomeDirIn(roots []string, account string) string {
+	if home, ok := accountHomeUnder(roots, account); ok {
+		return home
+	}
+	return defaultAccountHome(roots, account)
+}
+
+func accountHomeUnder(roots []string, account string) (string, bool) {
 	for _, root := range roots {
 		candidate := filepath.Join(root, account)
 		if _, err := osFS.Stat(candidate); err == nil {
-			return candidate
+			return candidate, true
 		}
 	}
+	return "", false
+}
+
+func defaultAccountHome(roots []string, account string) string {
 	if len(roots) == 0 {
 		return filepath.Join("/home", account)
 	}
 	return filepath.Join(roots[0], account)
+}
+
+// registeredAccountHome resolves a cPanel account that lives outside every
+// account root: HOMEMATCH places new accounts on any matching partition
+// (/home2, /home3, ...). The registry decides the name is an account and
+// passwd names its home; the home must be a real directory named after the
+// account, so a redirected or symlinked home is never scanned in its name.
+func registeredAccountHome(account string) (string, bool) {
+	if !validAccountName.MatchString(account) {
+		return "", false
+	}
+	if _, err := osFS.Stat(filepath.Join("/var/cpanel/users", account)); err != nil {
+		return "", false
+	}
+	home := defaultUIDCache.HomeDir(account)
+	if !filepath.IsAbs(home) || filepath.Base(home) != account {
+		return "", false
+	}
+	info, err := osFS.Lstat(home)
+	if err != nil || !info.IsDir() {
+		return "", false
+	}
+	return filepath.Clean(home), true
 }
 
 // accountHomeGlob globs "<root>/<pattern>" under every root and returns the
