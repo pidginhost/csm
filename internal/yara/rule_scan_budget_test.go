@@ -278,18 +278,22 @@ func TestRuleScanBudgetDownloadAndMinerLines(t *testing.T) {
 }
 
 // The archive loader rule chains a password call, a member read and an
-// execution call across bounded gaps, and checks a bounded span after every
-// execution call. Dense runs of each piece must not multiply into those spans.
+// execution call across bounded gaps, checks a bounded span after every
+// execution call, and looks for a member read near every HTML-mode eval.
+// Dense runs of each piece must not multiply into those spans.
 func TestRuleScanBudgetArchiveLoader(t *testing.T) {
 	requireRuleScanBudget(t, "backdoor_archive_loader", map[string][]byte{
-		"open_assert_calls.php":   []byte("<?php\n" + strings.Repeat("assert(", 150_000)),
-		"nested_assert_reads.php": []byte("<?php\n" + strings.Repeat("assert(gzinflate($z->getFromName('data')) !== false); ", 21_000)),
-		"function_parameters.php": []byte("<?php\n" + strings.Repeat("create_function('$x, ' . $z->getFromName('params'), 'return 1;'); ", 17_000)),
-		"protected_reads.php":     []byte("<?php\n" + strings.Repeat("$z->setPassword($k); $s = $z->getFromName('a'); ", 20_000)),
-		"member_reads.php":        []byte("<?php\n" + strings.Repeat("$p[] = $z->getFromIndex($i); ", 35_000)),
-		"zip_wrapper_paths.php":   []byte("<?php\n" + strings.Repeat("'zip://' ", 125_000)),
-		"open_eval_calls.php":     []byte("<?php\n" + strings.Repeat("eval(", 200_000)),
-		"html_mode_evals.php":     []byte("<?php\n" + strings.Repeat("eval('?>' . $t); ", 60_000)),
-		"read_then_evals.php":     []byte("<?php\n$z->setPassword($k); $s = $z->getFromName('a');\n" + strings.Repeat("eval(", 200_000)),
+		"open_assert_calls.php":    []byte("<?php\n" + strings.Repeat("assert(", 150_000)),
+		"nested_assert_reads.php":  []byte("<?php\n" + strings.Repeat("assert(gzinflate($z->getFromName('data')) !== false); ", 21_000)),
+		"function_parameters.php":  []byte("<?php\n" + strings.Repeat("create_function('$x, ' . $z->getFromName('params'), 'return 1;'); ", 17_000)),
+		"protected_reads.php":      []byte("<?php\n" + strings.Repeat("$z->setPassword($k); $s = $z->getFromName('a'); ", 20_000)),
+		"member_reads.php":         []byte("<?php\n" + strings.Repeat("$p[] = $z->getFromIndex($i); ", 35_000)),
+		"zip_wrapper_paths.php":    []byte("<?php\n" + strings.Repeat("'zip://' ", 125_000)),
+		"open_eval_calls.php":      []byte("<?php\n" + strings.Repeat("eval(", 200_000)),
+		"html_mode_evals.php":      []byte("<?php\n" + strings.Repeat("eval('?>' . $t); ", 60_000)),
+		"read_html_mode_pairs.php": []byte("<?php\n" + strings.Repeat("$s = $z->getFromName('a'); eval('?>' . $s); ", 23_000)),
+		"html_mode_far_from_reads.php": []byte("<?php\n" + strings.Repeat("eval('?>' . $t); ", 30_000) +
+			strings.Repeat(" ", 2_000) + strings.Repeat("$p[] = $z->getFromIndex($i); ", 17_000)),
+		"read_then_evals.php": []byte("<?php\n$z->setPassword($k); $s = $z->getFromName('a');\n" + strings.Repeat("eval(", 200_000)),
 	})
 }

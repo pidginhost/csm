@@ -421,6 +421,26 @@ final class Environment {
 }`,
 		},
 		{
+			// A bundled tool keeps many libraries in one file: the archive
+			// path in its stub and a template cache's HTML-mode eval are
+			// unrelated code far apart.
+			name: "bundled tool with an archive stub far from a template eval",
+			rule: "backdoor_archive_loader",
+			sample: "<?php\nPhar::mapPhar('tool.phar');\nrequire 'phar://tool.phar/boot.php';\n__HALT_COMPILER(); ?>\n" +
+				strings.Repeat("<?php\nclass Util { public function size($v) { return strlen($v); } }\n", 40) +
+				"<?php\nclass TemplateCache { public function load($key, $code) { eval('?>' . $code); } }\n",
+		},
+		{
+			name: "HTML-mode eval helper before the archive member read",
+			rule: "backdoor_archive_loader",
+			want: true,
+			sample: `<?php
+function run_cached($src) { eval('?>' . $src); }
+$a = new ZipArchive();
+$a->open('cache.bin');
+run_cached($a->getFromName('main.php'));`,
+		},
+		{
 			name:     "mixed-case cron downloader",
 			rule:     "backdoor_cron_reverse_shell",
 			yaraRule: "backdoor_cron_downloader",

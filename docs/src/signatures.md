@@ -148,10 +148,12 @@ superglobal names. A regression check guards against expression drift.
 
 The archive loader signature reports PHP that runs code read out of an
 archive, in both engines. A ZipArchive member read, or a `zip://` or `phar://`
-path, must sit inside an `eval`, `assert` or `create_function` call, share the
-file with an `eval` that leaves PHP mode first, or follow a password set on the
-archive and precede `eval` of a variable. Extracting archives to disk, parsing
-data members and template engines evaluating local text are not evidence.
+path, must sit inside an `eval`, `assert` or `create_function` call, lie
+within 1000 bytes of an `eval` that leaves PHP mode first, before or after it,
+or follow a password set on the archive and precede `eval` of a variable.
+Extracting archives to disk, parsing data members and template engines
+evaluating local text are not evidence, nor is a bundled tool such as a
+`.phar` whose stub names an archive path far from a template engine's `eval`.
 Including a `zip://` path is reported with or without parentheses. These are
 source-text heuristics, not PHP dataflow analysis. Execution arguments stop
 at the end of their call while allowing balanced prefix calls. Assertions
