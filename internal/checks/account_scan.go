@@ -181,6 +181,9 @@ func RunAccountScanWithOptions(ctx context.Context, cfg *config.Config, store *s
 			filtered = append(filtered, f)
 		}
 	}
+	// The report never reaches the dispatcher, so the companion sweep runs
+	// here, after the checks have released their scan slots.
+	filtered = append(filtered, companionSweepFindings(scanCtx, cfg, filtered)...)
 
 	filtered = stampTenantIDIfEmpty(filtered, account)
 	annotateModsecDisabledMalware(platform.Detect(), filtered)

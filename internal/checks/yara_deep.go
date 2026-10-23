@@ -108,6 +108,20 @@ func scheduledYARADetails(ruleName string, content []byte) string {
 		signatures.ReferencedPayloadDetail(content)
 }
 
+// scheduledYARAFinding is the finding for one deep-scan match. contentSHA256
+// names the bytes the backend actually scanned.
+func scheduledYARAFinding(match yara.Match, path string, content []byte, contentSHA256 string) alert.Finding {
+	return alert.Finding{
+		Severity:      yaraMatchSeverity(match.Meta["severity"]),
+		Check:         "yara_match_scheduled",
+		Message:       fmt.Sprintf("YARA rule match [%s]: %s", match.RuleName, path),
+		Details:       scheduledYARADetails(match.RuleName, content),
+		FilePath:      path,
+		ContentSHA256: contentSHA256,
+		DetectLogic:   ContentDetectionVersion(),
+	}
+}
+
 type yaraDeepScanEntry struct {
 	path      string
 	sortKey   string
@@ -683,16 +697,7 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 				continue
 			}
 			for _, match := range matches {
-				finding := alert.Finding{
-					Severity:      yaraMatchSeverity(match.Meta["severity"]),
-					Check:         "yara_match_scheduled",
-					Message:       fmt.Sprintf("YARA rule match [%s]: %s", match.RuleName, path),
-					Details:       scheduledYARADetails(match.RuleName, data),
-					FilePath:      path,
-					ContentSHA256: yaraSHA256,
-					DetectLogic:   ContentDetectionVersion(),
-				}
-				findings = append(findings, finding)
+				findings = append(findings, scheduledYARAFinding(match, path, data, yaraSHA256))
 			}
 		}
 	}

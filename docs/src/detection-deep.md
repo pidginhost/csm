@@ -339,6 +339,67 @@ title or hidden markup does not establish impersonation. Suspected kit directori
 are reported for review; `auto_response.quarantine_files` applies only to eligible
 page findings.
 
+## Files Planted Alongside Malware
+
+A webshell kit is usually dropped in one session: a loader no rule matches, an
+encrypted payload, a binary dropper, an access file. Removing only the member a
+scanner recognised leaves the rest in place. When CSM proves one file malicious,
+it looks at the other files in that file's directory and reports the ones
+planted with it.
+
+Files are matched by change time, not modification time. Kits backdate
+modification times, but the kernel sets the change time on every write and an
+account cannot forge it.
+
+- **Trigger.** A Critical finding from a content scanner, a YARA or signature
+  rule, or a known webshell or backdoor name, from the realtime monitor or a
+  scheduled scan, including the startup scan. Successful quarantine or cleaning
+  through the daemon, including manual dashboard actions and access-file
+  cleanup, also triggers one. Its metadata comes from before the move or
+  rewrite. Refused actions do not trigger sweeps. An account scan sweeps for
+  the detections in its own results and includes the outcome in its report.
+- **Scope.** The detected file's own directory, not its subdirectories.
+  Symlinks and special files are never followed or read. Content reads remain
+  bound to the opened directory and selected file version. Only files owned by
+  the detected file's owner count: an account can only create files it owns.
+- **Window.** Files changed within ten minutes either side of the detected file.
+  A file caught as it is written may be the first of its kit to land, so its
+  sweep waits until the window has closed.
+- **Scan.** A first pass reads metadata only. Files in the window, and the
+  directory's `.htaccess` whatever its age, then get a full content scan with
+  YARA, the PHP content heuristics, PHP taint analysis and the `.htaccess`
+  audit, regardless of scan caches. A match is an ordinary finding and follows
+  the normal response policy. Account scans retain their requested file-size
+  limit. Failed PHP analysis is reported as incomplete, not as a clean result.
+- **Report.** Files in the window that nothing matched are listed in one High
+  `malware_companion_files` finding when they are PHP, executables, archives,
+  files without an extension or `.htaccess`, with size, change time and
+  modification time. A modification time more than a day older than the change
+  time is marked as possible backdating; unpacking an archive also keeps old
+  modification times, so treat it as a hint. CSM never quarantines these files
+  on its own: review each one first.
+
+Each plant window of a directory and owner is swept once a day at most, so
+another member of the same kit, a repeated alert or the quarantine of the
+detected file does not sweep it again. Sweeps run one at a time and share the
+scan concurrency limit and per-check execution deadline with periodic checks. Matches are
+delivered in batches, releasing the scan slot while waiting for delivery.
+Overlapping windows do not repeat content findings for the same file version.
+Repeated detections retain one file version, and expired records are removed
+even when no new work arrives. Pending windows stay claimed until they run.
+A huge directory costs one metadata read per entry; only files written in the
+window and `.htaccess` are opened. A timeout produces a `check_timeout` warning;
+directory or content scan failures produce `malware_companion_scan_incomplete`.
+The access-file audit checks sibling context once, in batches, and stops on
+cancellation or when it has enough evidence for its existing sibling gate.
+
+A bulk ownership or permission change, or an account restore, resets the change
+time of every file it touches. A detection in such a directory lists every file
+of a reported kind from the same operation. Sweeps still waiting for their
+window are held in memory, and a restart drops them. Standalone CLI cleanup
+commands do not run this daemon worker; use an account scan to inspect companions
+when the action runs outside the daemon.
+
 ## System Integrity
 
 | Check | Description |

@@ -338,6 +338,17 @@
       "queue": "checks.executions"
     },
     {
+      "id": "internal/checks/companion_sweep.go::newCompanionSweepQueue::wake::channel::1",
+      "path": "internal/checks/companion_sweep.go",
+      "owner": "newCompanionSweepQueue",
+      "target": "wake",
+      "kind": "channel",
+      "source": "make(chan struct{}, 1)",
+      "capacity": "1",
+      "class": "maintenance",
+      "rationale": "Coalesces companion sweep wakes; the queue holds every pending sweep under its own lock, so a dropped duplicate loses nothing."
+    },
+    {
       "id": "internal/checks/email_hash_queue.go::*emailHashPool.matches::done::channel::1",
       "path": "internal/checks/email_hash_queue.go",
       "owner": "*emailHashPool.matches",

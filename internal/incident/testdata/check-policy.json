@@ -162,6 +162,8 @@
       "mail_log_source_unavailable",
       "mail_queue",
       "mail_queue_unavailable",
+      "malware_companion_files",
+      "malware_companion_scan_incomplete",
       "mysql_superuser",
       "new_executable_in_config",
       "new_php_in_languages",

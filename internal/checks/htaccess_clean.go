@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/url"
@@ -56,9 +57,10 @@ type htaccessMatch struct {
 // scans the content and reports every range the detector wants
 // removed. Adding a pattern is one entry in this slice.
 type htaccessDetector struct {
-	Name     string
-	Severity alert.Severity
-	Detect   func(content []byte, path string) []htaccessMatch
+	Name          string
+	Severity      alert.Severity
+	Detect        func(content []byte, path string) []htaccessMatch
+	DetectContext func(context.Context, []byte, string) []htaccessMatch
 }
 
 // htaccessSpamTLDs lists TLDs commonly abused for spam-redirect
@@ -263,9 +265,10 @@ var htaccessDetectors = []htaccessDetector{
 		Detect:   detectSpamRedirect,
 	},
 	{
-		Name:     "htaccess_filesmatch_shield",
-		Severity: alert.Critical,
-		Detect:   detectFilesMatchShield,
+		Name:          "htaccess_filesmatch_shield",
+		Severity:      alert.Critical,
+		Detect:        detectFilesMatchShield,
+		DetectContext: detectFilesMatchShieldContext,
 	},
 	{
 		Name:     "htaccess_header_injection",
@@ -764,6 +767,13 @@ func auditHtaccessFile(path string) ([]alert.Finding, []htaccessByteRange, bool)
 // per-pattern detector: what realtime reports and what a generic finding's
 // manual fix removes.
 func AuditHtaccessContent(path string, content []byte) ([]alert.Finding, []htaccessByteRange) {
+	return auditHtaccessContent(context.Background(), path, content)
+}
+
+func auditHtaccessContent(ctx context.Context, path string, content []byte) ([]alert.Finding, []htaccessByteRange) {
+	if ctx.Err() != nil {
+		return nil, nil
+	}
 	legacy, matches := auditHtaccessLegacyContent(path, content, htaccessSuspiciousPatterns, htaccessSafePatterns)
 	var findings []alert.Finding
 	var ranges []htaccessByteRange
@@ -776,7 +786,10 @@ func AuditHtaccessContent(path string, content []byte) ([]alert.Finding, []htacc
 			ranges = append(ranges, matches[i].Range)
 		}
 	}
-	patternFindings, patternRanges := auditHtaccessPatterns(path, content)
+	patternFindings, patternRanges := auditHtaccessPatternsContext(ctx, path, content)
+	if ctx.Err() != nil {
+		return nil, nil
+	}
 	return append(findings, patternFindings...), mergeRanges(append(ranges, patternRanges...))
 }
 
@@ -785,13 +798,25 @@ func AuditHtaccessContent(path string, content []byte) ([]alert.Finding, []htacc
 // generic scanner also flags directives a site may rely on, such as a PHP
 // handler for .html pages.
 func auditHtaccessPatterns(path string, content []byte) ([]alert.Finding, []htaccessByteRange) {
+	return auditHtaccessPatternsContext(context.Background(), path, content)
+}
+
+func auditHtaccessPatternsContext(ctx context.Context, path string, content []byte) ([]alert.Finding, []htaccessByteRange) {
 	findings, abuse := htaccessHandlerAbuse(path, content)
 	var ranges []htaccessByteRange
 	for _, m := range abuse {
 		ranges = append(ranges, m.Range)
 	}
 	for _, d := range htaccessDetectors {
-		matches := d.Detect(content, path)
+		if ctx.Err() != nil {
+			return nil, nil
+		}
+		var matches []htaccessMatch
+		if d.DetectContext != nil {
+			matches = d.DetectContext(ctx, content, path)
+		} else {
+			matches = d.Detect(content, path)
+		}
 		for _, m := range matches {
 			findings = append(findings, alert.Finding{
 				Severity:  d.Severity,
@@ -884,6 +909,7 @@ func cleanHtaccessFileIdentified(path string, expected os.FileInfo) (result Reme
 	}
 
 	bytesRemoved := len(original) - len(cleaned)
+	companionSweeps.add(resolved, target.Info, time.Now())
 	return RemediationResult{
 		Success:     true,
 		Action:      fmt.Sprintf("removed %d malicious byte(s) from %s", bytesRemoved, resolved),
@@ -1547,29 +1573,41 @@ func filesMatchPatternIsTargeted(pattern string) bool {
 	return true
 }
 
-// htaccessParentPHPFileCount counts ".php" files (and other handler
-// extensions FilesMatch covers) sitting alongside the .htaccess at
-// path. Used to differentiate a plugin directory full of legitimate
+// htaccessParentPHPFileCount counts sibling handler files up to the gate's
+// threshold. Used to differentiate a plugin directory full of legitimate
 // PHP dispatchers from a freshly-attacker-written upload directory
 // containing one or zero PHP files.
 //
 // Errors (parent missing, permission denied, race) return 0 - the
 // caller treats that as "not enough sibling PHP" and keeps firing.
-func htaccessParentPHPFileCount(htaccessPath string) int {
+func htaccessParentPHPFileCount(ctx context.Context, htaccessPath string) int {
 	parent := filepath.Dir(htaccessPath)
-	entries, err := os.ReadDir(parent)
+	dir, err := openTenantDirectory(parent)
 	if err != nil {
 		return 0
 	}
+	defer func() { _ = dir.Close() }()
 	n := 0
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
+	for ctx.Err() == nil {
+		entries, readErr := dir.ReadDir(companionReadDirBatch)
+		for _, e := range entries {
+			if ctx.Err() != nil {
+				return 0
+			}
+			if e.IsDir() {
+				continue
+			}
+			ext := strings.ToLower(filepath.Ext(e.Name()))
+			switch ext {
+			case ".php", ".phtml", ".ph2", ".ph3", ".ph4", ".ph5", ".ph6", ".ph7":
+				n++
+				if n >= filesMatchShieldSiblingThreshold {
+					return n
+				}
+			}
 		}
-		ext := strings.ToLower(filepath.Ext(e.Name()))
-		switch ext {
-		case ".php", ".phtml", ".ph2", ".ph3", ".ph4", ".ph5", ".ph6", ".ph7":
-			n++
+		if readErr != nil {
+			return n
 		}
 	}
 	return n
@@ -1608,6 +1646,10 @@ const filesMatchShieldSiblingThreshold = 3
 // caller (passed as the second argument to all htaccessDetector.Detect
 // implementations).
 func detectFilesMatchShield(content []byte, path string) []htaccessMatch {
+	return detectFilesMatchShieldContext(context.Background(), content, path)
+}
+
+func detectFilesMatchShieldContext(ctx context.Context, content []byte, path string) []htaccessMatch {
 	openIdxs := reFilesMatchOpen.FindAllIndex(content, -1)
 	closeIdxs := reFilesMatchClose.FindAllIndex(content, -1)
 	if len(openIdxs) == 0 || len(closeIdxs) == 0 {
@@ -1616,7 +1658,11 @@ func detectFilesMatchShield(content []byte, path string) []htaccessMatch {
 	patternIdxs := reFilesMatchPattern.FindAllSubmatchIndex(content, -1)
 
 	var out []htaccessMatch
+	siblingCount := -1
 	for _, open := range openIdxs {
+		if ctx.Err() != nil {
+			return nil
+		}
 		// pair this opening tag with the next closing tag after it
 		var paired []int
 		for _, c := range closeIdxs {
@@ -1654,8 +1700,16 @@ func detectFilesMatchShield(content []byte, path string) []htaccessMatch {
 		// Not inside an upload-style tree, though: there the siblings
 		// are whatever the uploader chose to drop, and three dummy .php
 		// files are the cheapest way to silence this finding.
-		if path != "" && !htaccessInUploadTree(path) && htaccessParentPHPFileCount(path) >= filesMatchShieldSiblingThreshold {
-			continue
+		if path != "" && !htaccessInUploadTree(path) {
+			if siblingCount < 0 {
+				siblingCount = htaccessParentPHPFileCount(ctx, path)
+			}
+			if ctx.Err() != nil {
+				return nil
+			}
+			if siblingCount >= filesMatchShieldSiblingThreshold {
+				continue
+			}
 		}
 
 		out = append(out, htaccessMatch{

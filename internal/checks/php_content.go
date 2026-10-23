@@ -2196,19 +2196,7 @@ func (s *phpContentScan) scanFile(ctx context.Context, fullPath string, overlay 
 	// them, and any skip is a place an attacker can hide a backdoor.
 	result := analyzePHPContentReaderAt(fullPath, f, size)
 	if result.severity >= 0 {
-		details := result.details
-		if info != nil {
-			details += fmt.Sprintf("\nSize: %d, Mtime: %s", info.Size(), info.ModTime().Format("2006-01-02 15:04:05"))
-		}
-		*findings = append(*findings, alert.Finding{
-			Severity:      result.severity,
-			Check:         result.check,
-			Message:       fmt.Sprintf("%s: %s", result.message, fullPath),
-			Details:       details,
-			FilePath:      fullPath,
-			ContentSHA256: FileContentSHA256(fullPath),
-			DetectLogic:   ContentDetectionVersion(),
-		})
+		*findings = append(*findings, phpContentFinding(fullPath, result, info, FileContentSHA256(fullPath)))
 		return
 	}
 
@@ -2222,6 +2210,24 @@ func (s *phpContentScan) scanFile(ctx context.Context, fullPath string, overlay 
 			phpFileStampOf(afterPath) == stamp && phpFileStampOf(afterFile) == stamp {
 			s.next[fullPath] = stamp
 		}
+	}
+}
+
+// phpContentFinding is the finding for one flagged PHP file. info may be nil
+// when the file could not be statted.
+func phpContentFinding(path string, result phpAnalysisResult, info os.FileInfo, contentSHA256 string) alert.Finding {
+	details := result.details
+	if info != nil {
+		details += fmt.Sprintf("\nSize: %d, Mtime: %s", info.Size(), info.ModTime().Format("2006-01-02 15:04:05"))
+	}
+	return alert.Finding{
+		Severity:      result.severity,
+		Check:         result.check,
+		Message:       fmt.Sprintf("%s: %s", result.message, path),
+		Details:       details,
+		FilePath:      path,
+		ContentSHA256: contentSHA256,
+		DetectLogic:   ContentDetectionVersion(),
 	}
 }
 

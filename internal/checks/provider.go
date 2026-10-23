@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/pidginhost/csm/internal/safepath"
 )
 
 // ---------------------------------------------------------------------------
@@ -130,6 +132,57 @@ func openTenantRegularFile(path string) (*os.File, error) {
 		return nil, errNonRegularFile
 	}
 	return file, nil
+}
+
+// tenantDirectory keeps content opens bound to the directory being enumerated.
+// Test providers retain their injected Open implementation.
+type tenantDirectory struct {
+	file   *os.File
+	pinned *safepath.Dir
+	path   string
+}
+
+func openTenantDirectory(path string) (*tenantDirectory, error) {
+	if _, production := osFS.(realOS); production {
+		dir, err := safepath.OpenDirNoFollow(path)
+		if err != nil {
+			return nil, err
+		}
+		return &tenantDirectory{pinned: dir, path: path}, nil
+	}
+	file, err := osFS.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	return &tenantDirectory{file: file, path: path}, nil
+}
+
+func (d *tenantDirectory) Close() error {
+	if d.pinned != nil {
+		return d.pinned.Close()
+	}
+	return d.file.Close()
+}
+
+func (d *tenantDirectory) Stat() (os.FileInfo, error) {
+	if d.pinned != nil {
+		return d.pinned.Info()
+	}
+	return d.file.Stat()
+}
+
+func (d *tenantDirectory) ReadDir(n int) ([]os.DirEntry, error) {
+	if d.pinned != nil {
+		return d.pinned.ReadDirN(n)
+	}
+	return d.file.ReadDir(n)
+}
+
+func (d *tenantDirectory) open(name string) (*os.File, error) {
+	if d.pinned != nil {
+		return d.pinned.OpenFile(name, os.O_RDONLY, 0)
+	}
+	return openTenantRegularFile(filepath.Join(d.path, name))
 }
 
 // readRegularFileHead returns at most limit bytes of a regular file and whether the

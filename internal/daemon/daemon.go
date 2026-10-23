@@ -1007,6 +1007,9 @@ func (d *Daemon) Run() error {
 	d.wg.Add(1)
 	obs.Go("deep-scanner", d.deepScanner)
 
+	d.wg.Add(1)
+	obs.Go("companion-sweeper", d.companionSweeper)
+
 	// Async bot-rDNS verifier: runs PTR+forward-A verification for
 	// claimed search-engine bot IPs that are not in a static range.
 	// Gated on reputation.bot_verify_enabled (default true) and on a
@@ -1628,8 +1631,11 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 	d.store.AppendHistory(newFindings)
 	d.observeBlocks(blockActions)
 
-	// Kill and quarantine only run on new, unsuppressed findings.
+	// Kill and quarantine only run on new, unsuppressed findings. The
+	// companion sweep is queued first so a file quarantined below is
+	// anchored from its live stat.
 	killActions := checks.AutoKillProcesses(d.scanContext(), cfg, newFindings)
+	queueCompanionSweeps(newFindings)
 	quarantineActions := checks.AutoQuarantineFiles(cfg, newFindings)
 	// Database response also reports WordPress session addresses without
 	// blocking them. Suppressions stop SQL writes and session revocation,
@@ -1695,6 +1701,7 @@ func (d *Daemon) respondToInitialScan(cfg *config.Config, initialFindings []aler
 	var responseFindings []alert.Finding
 	if len(unfilteredNew) > 0 {
 		killActions := checks.AutoKillProcesses(d.scanContext(), cfg, newFindings)
+		queueCompanionSweeps(newFindings)
 		quarantineActions := checks.AutoQuarantineFiles(cfg, newFindings)
 		blockActions := checks.AutoBlockIPs(cfg, initialFindings)
 		d.observeBlocks(blockActions)
@@ -1741,6 +1748,19 @@ var autoFixWPCron = checks.AutoFixWPCron
 
 // Database wiring tests exercise suppression policy without a live MySQL host.
 var autoRespondDBMalware = checks.AutoRespondDBMalwareWithPolicy
+
+// queueCompanionSweeps lets wiring tests see what the dispatcher hands to the
+// companion sweep without touching the filesystem.
+var queueCompanionSweeps = checks.QueueCompanionSweeps
+
+// companionSweeper reports files planted alongside confirmed malware. Its
+// findings take the same path to the dispatcher as a scan's.
+func (d *Daemon) companionSweeper() {
+	defer d.wg.Done()
+	checks.RunCompanionSweeps(d.scanContext(), d.currentCfg, func(findings []alert.Finding) {
+		d.enqueueScanAlerts(findings, "companion sweep")
+	})
+}
 
 // processScanFindings handles the output of a deep or periodic scan: it persists
 // the findings to the latest-findings surface, runs the auto-responses that act

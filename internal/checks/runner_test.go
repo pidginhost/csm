@@ -1196,9 +1196,11 @@ func TestRunnerPurgeMapCoversEmittedCheckNames(t *testing.T) {
 	// (or intentionally not stored in the latest set) through its own path, so
 	// runnerFindingNames does not and should not own it.
 	nonScheduledEmitters := map[string]string{
-		"account_scan":             "RunAccountScan summary finding, per-account CLI path (not a tier)",
-		"full_scan_file_too_large": "full-scan account audit only, never dispatched to scheduled latest state",
-		"sensitive_file_modified":  "daemon legacy poller CheckSensitiveFiles, not wired into any tier",
+		"account_scan":                      "RunAccountScan summary finding, per-account CLI path (not a tier)",
+		"full_scan_file_too_large":          "full-scan account audit only, never dispatched to scheduled latest state",
+		"malware_companion_files":           "companion sweep after a detection or quarantine, and account scan reports; never in scheduled latest state",
+		"malware_companion_scan_incomplete": "companion sweep coverage diagnostic; never in scheduled latest state",
+		"sensitive_file_modified":           "daemon legacy poller CheckSensitiveFiles, not wired into any tier",
 	}
 
 	covered := map[string]struct{}{}

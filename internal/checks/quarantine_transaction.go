@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"golang.org/x/sys/unix"
 
@@ -36,11 +37,17 @@ func quarantineTargetWith(path, qPath string, info os.FileInfo, metadata Quarant
 	if err != nil {
 		return fmt.Errorf("encoding quarantine metadata: %w", err)
 	}
-	if err := quarantinefs.EnsureDir(filepath.Dir(qPath), 0700); err != nil {
+	if err = quarantinefs.EnsureDir(filepath.Dir(qPath), 0700); err != nil {
 		return err
 	}
-
-	return move(path, qPath, info, data)
+	err = move(path, qPath, info, data)
+	_, completed := completedQuarantineWarning(err)
+	// A refused manual action is not evidence of malware. Successful moves
+	// retain the stat from before capture; mail spool entries are excluded.
+	if (err == nil || completed) && info.Mode().IsRegular() && metadata.SpoolDir == "" {
+		companionSweeps.add(path, info, time.Now())
+	}
+	return err
 }
 
 // quarantineTargetFn performs the move. It is indirected so the action record
