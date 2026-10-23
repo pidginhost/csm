@@ -14,6 +14,7 @@ func TestExecLauncherHandsChildOneSocket(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = p.Kill(); <-p.Done() }()
+	defer func() { _ = p.Conn().Close() }()
 	if sendErr := SendFrame(p.Conn(), Frame{Op: "check"}, nil, 1<<20); sendErr != nil {
 		t.Fatal(sendErr)
 	}
@@ -31,6 +32,7 @@ func TestExecLauncherKillReapsChild(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer func() { _ = p.Conn().Close() }()
 	if err := p.Kill(); err != nil {
 		t.Fatal(err)
 	}

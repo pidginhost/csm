@@ -164,8 +164,9 @@ func (s *Supervisor) Stats() Stats {
 }
 
 // Call sends req with fds to the worker and returns its reply. The caller
-// keeps ownership of fds and owns the returned descriptors. A reply with an
-// Error or an Op set, or one check rejects, is a worker failure.
+// keeps ownership of fds and owns the returned descriptors. It may close or
+// reuse fds after Call returns, even if a canceled send has not yet finished.
+// A reply with an Error or an Op set, or one check rejects, is a worker failure.
 func (s *Supervisor) Call(ctx context.Context, req Frame, fds []*os.File, check Check) (Frame, []*os.File, error) {
 	work := s.health.begin()
 	completed := false
@@ -276,6 +277,12 @@ func (s *Supervisor) breakerOpenLocked() bool {
 // goroutine ends when killLocked closes the socket; a reply it reads after
 // the caller gave up has its descriptors closed there.
 func (s *Supervisor) roundTripLocked(ctx context.Context, body []byte, fds []*os.File, check Check, work *requestWork) (Frame, []*os.File, bool, error) {
+	// Cancellation can return before the goroutine reaches sendmsg. Give it
+	// its own files and slice before the caller can close or reuse either.
+	ownedFDs, err := dupFiles(fds)
+	if err != nil {
+		return Frame{}, nil, false, err
+	}
 	c := s.child
 	type result struct {
 		frame Frame
@@ -302,8 +309,12 @@ func (s *Supervisor) roundTripLocked(ctx context.Context, body []byte, fds []*os
 			// health stops charging it to the RPC deadline before the
 			// handoff, not after.
 			defer func() { work.finishRPC(completed) }()
-			if err := c.conn.send(body, fds); err != nil {
-				res.err = fmt.Errorf("write request: %w", err)
+			sendErr := func() error {
+				defer closeFiles(ownedFDs)
+				return c.conn.send(body, ownedFDs)
+			}()
+			if sendErr != nil {
+				res.err = fmt.Errorf("write request: %w", sendErr)
 			} else if res.frame, res.fds, res.err = c.conn.receive(); res.err != nil {
 				res.err = fmt.Errorf("read reply: %w", res.err)
 			}
@@ -323,6 +334,7 @@ func (s *Supervisor) roundTripLocked(ctx context.Context, body []byte, fds []*os
 		return Frame{}, nil, false, ctx.Err()
 	case res := <-results:
 		work.progress()
+		defer func() { closeFiles(res.fds) }()
 		if res.err != nil {
 			return Frame{}, nil, false, fmt.Errorf("%s: %w", s.cfg.Name, res.err)
 		}
@@ -339,10 +351,11 @@ func (s *Supervisor) roundTripLocked(ctx context.Context, body []byte, fds []*os
 			}
 		}
 		if err != nil {
-			closeFiles(res.fds)
 			return Frame{}, nil, false, err
 		}
-		return res.frame, res.fds, lost, nil
+		replyFDs := res.fds
+		res.fds = nil // Ownership passes to the caller only on success.
+		return res.frame, replyFDs, lost, nil
 	}
 }
 

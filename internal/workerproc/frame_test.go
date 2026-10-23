@@ -432,3 +432,33 @@ func TestReceiveFrameRejectsDescriptorsAfterFirstRead(t *testing.T) {
 	}
 	assertNoFDLeak(t, before)
 }
+
+func TestReceiveFrameRejectsDescriptorCapBeforeReadingBody(t *testing.T) {
+	for _, count := range []int{2, 3} {
+		a, b := socketPair(t)
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer r.Close()
+		defer w.Close()
+		before := openFDs(t)
+		fds := make([]int, count)
+		for i := range fds {
+			fds[i] = int(w.Fd())
+		}
+		// Send only the header. A rejected descriptor must not leave the
+		// receiver waiting for more bytes from the same untrusted peer.
+		if _, _, sendErr := a.WriteMsgUnix([]byte{0, 0, 0, 2}, syscall.UnixRights(fds...), nil); sendErr != nil {
+			t.Fatal(sendErr)
+		}
+		if err := b.SetReadDeadline(time.Now().Add(100 * time.Millisecond)); err != nil {
+			t.Fatal(err)
+		}
+		_, received, recvErr := ReceiveFrame(b, Limits{MaxFrameBytes: 1 << 20, MaxFDs: 1})
+		if recvErr == nil || !strings.Contains(recvErr.Error(), "descriptors") || received != nil {
+			t.Errorf("%d descriptors: fds=%d err=%v, want immediate descriptor error", count, len(received), recvErr)
+		}
+		assertNoFDLeak(t, before)
+	}
+}

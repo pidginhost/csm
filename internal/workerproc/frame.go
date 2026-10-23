@@ -258,3 +258,20 @@ func closeFiles(files []*os.File) {
 		_ = f.Close()
 	}
 }
+
+func dupFiles(files []*os.File) ([]*os.File, error) {
+	if len(files) > maxSendFDs {
+		return nil, fmt.Errorf("workerproc: %d descriptors exceed the kernel limit of %d", len(files), maxSendFDs)
+	}
+	owned := make([]*os.File, 0, len(files))
+	for _, f := range files {
+		fd, err := unix.FcntlInt(f.Fd(), unix.F_DUPFD_CLOEXEC, 0)
+		runtime.KeepAlive(f)
+		if err != nil {
+			closeFiles(owned)
+			return nil, fmt.Errorf("workerproc: duplicate request descriptor: %w", err)
+		}
+		owned = append(owned, os.NewFile(uintptr(fd), "worker-request"))
+	}
+	return owned, nil
+}
