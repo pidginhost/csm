@@ -206,7 +206,7 @@ GET  /api/v1/history             Paginated history (?limit=&offset=&from=&to=&se
                                  scope=email limits results to the /api/v1/email/checks list when checks is absent.
                                  total counts every match; truncated is true when matches exist past the page
 GET  /api/v1/history/csv         CSV export of the newest 5,000 entries matching the /history filters
-GET  /api/v1/stats               24h severity counts, accounts at risk, auto-response summary
+GET  /api/v1/stats               24h severity counts and auto-response summary, accounts with active high or critical findings
 GET  /api/v1/stats/trend         30-day daily severity counts; each `date` is a calendar day in the server's time zone
 GET  /api/v1/stats/timeline      Hourly severity counts for the last 24 hours; each bucket names its `start` instant
 GET  /api/v1/quarantine          Quarantined files with metadata (incl. htaccess pre_clean backups)
@@ -226,6 +226,14 @@ POST /api/v1/perf/fix-display-errors
 POST /api/v1/perf/fix-wp-cron    Disable WP-Cron and install a system cron for a perf_wp_cron finding (admin scope, CSRF)
 GET  /api/v1/hardening           Last stored hardening audit report (admin scope)
 ```
+
+### Accounts at risk
+
+`accounts_at_risk` in `GET /api/v1/stats` lists accounts with a current high or
+critical finding, whatever its age. Suppressed findings and internal records are
+left out. `findings` counts all of the account's current findings, warnings
+included, and `severity` is the highest. At most 50 accounts, ordered by
+severity, then finding count, then name. An empty list is `[]`.
 
 ### Date ranges
 
