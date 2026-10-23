@@ -14,8 +14,8 @@ func TestExecLauncherHandsChildOneSocket(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = p.Kill(); <-p.Done() }()
-	if err := SendFrame(p.Conn(), Frame{Op: "check"}, nil, 1<<20); err != nil {
-		t.Fatal(err)
+	if sendErr := SendFrame(p.Conn(), Frame{Op: "check"}, nil, 1<<20); sendErr != nil {
+		t.Fatal(sendErr)
 	}
 	f, _, err := ReceiveFrame(p.Conn(), Limits{MaxFrameBytes: 1 << 20})
 	if err != nil || string(f.Payload) != `{"socket":true,"same":true}` {

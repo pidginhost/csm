@@ -93,8 +93,8 @@ func TestServeClearsReplyOpAndClosesDescriptors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := SendFrame(parent, Frame{Op: "x", Payload: json.RawMessage(`1`)}, []*os.File{w}, 1<<20); err != nil {
-		t.Fatal(err)
+	if sendErr := SendFrame(parent, Frame{Op: "x", Payload: json.RawMessage(`1`)}, []*os.File{w}, 1<<20); sendErr != nil {
+		t.Fatal(sendErr)
 	}
 	_ = r.Close()
 	_ = w.Close()

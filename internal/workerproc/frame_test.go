@@ -123,8 +123,8 @@ func TestSocketFrameCarriesDescriptorsBothWays(t *testing.T) {
 	}
 	defer r.Close()
 	defer w.Close()
-	if err := SendFrame(a, Frame{Op: "x", Payload: json.RawMessage(`{"n":1}`)}, []*os.File{w}, 1<<20); err != nil {
-		t.Fatal(err)
+	if sendErr := SendFrame(a, Frame{Op: "x", Payload: json.RawMessage(`{"n":1}`)}, []*os.File{w}, 1<<20); sendErr != nil {
+		t.Fatal(sendErr)
 	}
 	f, fds, err := ReceiveFrame(b, Limits{MaxFrameBytes: 1 << 20, MaxFDs: 1})
 	if err != nil {
@@ -202,8 +202,8 @@ func TestSocketFrameLargeBodyWithDescriptors(t *testing.T) {
 	big := Frame{Op: "big", Payload: json.RawMessage(`"` + strings.Repeat("a", 4<<20) + `"`)}
 	errc := make(chan error, 1)
 	go func() {
-		if err := SendFrame(a, big, []*os.File{w}, 8<<20); err != nil {
-			errc <- err
+		if sendErr := SendFrame(a, big, []*os.File{w}, 8<<20); sendErr != nil {
+			errc <- sendErr
 			return
 		}
 		errc <- SendFrame(a, Frame{Op: "next"}, nil, 8<<20)
