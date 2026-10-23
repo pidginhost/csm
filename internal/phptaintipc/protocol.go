@@ -12,9 +12,10 @@
 // the other side of this protocol does, and why analysis runs out of process at
 // all.
 //
-// The protocol is length-prefixed JSON frames over private pipes. Pipes rather
-// than a Unix socket: the daemon runs under ProtectSystem=strict, and a pipe
-// inherited across fork needs no socket path and so no new writable directory.
+// Framing, transport and supervision are internal/workerproc's: frames travel
+// over a socket pair inherited across fork, which needs no socket path and so
+// no new writable directory under the daemon's ProtectSystem=strict. This
+// package defines the payloads and how they are validated.
 //
 // Frames carry phptaint's own Report type rather than a restatement of it.
 // Worker and daemon are the same binary, so the two definitions can never
@@ -26,14 +27,13 @@ package phptaintipc
 
 import (
 	"bytes"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"strings"
 
 	"github.com/pidginhost/csm/internal/phptaint"
+	"github.com/pidginhost/csm/internal/workerproc"
 )
 
 // MaxFrameBytes caps a single request or response body. The largest legitimate
@@ -55,14 +55,6 @@ const (
 // avoids marshalling a multi-megabyte frame only to have the worker decline it.
 var ErrSourceTooLarge = errors.New("phptaintipc: source exceeds maximum analyzed size")
 
-// Frame is the envelope. A request carries an Op and a typed Payload; a
-// response leaves Op empty and carries either a Payload or an Error.
-type Frame struct {
-	Op      string          `json:"op,omitempty"`
-	Payload json.RawMessage `json:"payload,omitempty"`
-	Error   string          `json:"error,omitempty"`
-}
-
 // AnalyzeArgs carries the bytes to analyze. The daemon has already read the
 // file and run the pre-filter, so only admitted content crosses the boundary,
 // and the worker is never given a path to open on its own.
@@ -82,22 +74,22 @@ type PingResult struct {
 
 // EncodePayload validates and marshals v into a frame under op. AnalyzeArgs is
 // size-checked here so an oversize source fails before it is ever encoded.
-func EncodePayload(op string, v any) (Frame, error) {
+func EncodePayload(op string, v any) (workerproc.Frame, error) {
 	if v == nil {
-		return Frame{Op: op}, nil
+		return workerproc.Frame{Op: op}, nil
 	}
 	if err := validatePayload(v); err != nil {
-		return Frame{}, err
+		return workerproc.Frame{}, err
 	}
 	raw, err := json.Marshal(v)
 	if err != nil {
-		return Frame{}, fmt.Errorf("phptaintipc: marshal %s payload: %w", op, err)
+		return workerproc.Frame{}, fmt.Errorf("phptaintipc: marshal %s payload: %w", op, err)
 	}
-	return Frame{Op: op, Payload: raw}, nil
+	return workerproc.Frame{Op: op, Payload: raw}, nil
 }
 
 // DecodePayload unmarshals and validates a frame's payload into v.
-func DecodePayload(f Frame, v any) error {
+func DecodePayload(f workerproc.Frame, v any) error {
 	if len(f.Payload) == 0 {
 		return errors.New("phptaintipc: frame has no payload")
 	}
@@ -344,64 +336,4 @@ func lookupJSONField(raw []byte, name string) (json.RawMessage, bool, error) {
 		found, ok = value, true
 	}
 	return found, ok, nil
-}
-
-// WriteFrame writes one length-prefixed frame.
-func WriteFrame(w io.Writer, f Frame) error {
-	body, err := json.Marshal(f)
-	if err != nil {
-		return fmt.Errorf("phptaintipc: marshal frame: %w", err)
-	}
-	if len(body) > MaxFrameBytes {
-		return fmt.Errorf("phptaintipc: frame body %d bytes exceeds cap %d", len(body), MaxFrameBytes)
-	}
-	var hdr [4]byte
-	// #nosec G115 -- len(body) is bounded above by MaxFrameBytes, which fits in uint32.
-	binary.BigEndian.PutUint32(hdr[:], uint32(len(body)))
-	if err := writeFull(w, hdr[:]); err != nil {
-		return fmt.Errorf("phptaintipc: write header: %w", err)
-	}
-	if err := writeFull(w, body); err != nil {
-		return fmt.Errorf("phptaintipc: write body: %w", err)
-	}
-	return nil
-}
-
-func writeFull(w io.Writer, p []byte) error {
-	for len(p) != 0 {
-		n, err := w.Write(p)
-		if err != nil {
-			return err
-		}
-		if n <= 0 || n > len(p) {
-			return io.ErrShortWrite
-		}
-		p = p[n:]
-	}
-	return nil
-}
-
-// ReadFrame reads one length-prefixed frame.
-//
-// The length prefix comes from the peer, so it is checked against the cap
-// BEFORE any buffer is allocated. Reading the declared size first and
-// validating afterwards would let a four-byte write ask for gigabytes.
-func ReadFrame(r io.Reader) (Frame, error) {
-	var hdr [4]byte
-	if _, err := io.ReadFull(r, hdr[:]); err != nil {
-		return Frame{}, fmt.Errorf("phptaintipc: read header: %w", err)
-	}
-	size := binary.BigEndian.Uint32(hdr[:])
-	if size > MaxFrameBytes {
-		return Frame{}, fmt.Errorf("phptaintipc: declared frame size %d exceeds cap %d", size, MaxFrameBytes)
-	}
-	body := make([]byte, size)
-	if _, err := io.ReadFull(r, body); err != nil {
-		return Frame{}, fmt.Errorf("phptaintipc: read body: %w", err)
-	}
-	var f Frame
-	if err := json.Unmarshal(body, &f); err != nil {
-		return Frame{}, fmt.Errorf("phptaintipc: unmarshal frame: %w", err)
-	}
-	return f, nil
 }

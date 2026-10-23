@@ -1,40 +1,69 @@
 package phptaintworker
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
+	"os"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/pidginhost/csm/internal/phptaint"
 	"github.com/pidginhost/csm/internal/phptaintipc"
+	"github.com/pidginhost/csm/internal/workerproc"
 )
 
-// serve runs the worker loop over in-memory pipes and returns the responses it
-// wrote, so a test can drive it exactly as the supervisor does.
-func serve(t *testing.T, requests ...phptaintipc.Frame) []phptaintipc.Frame {
+func socketPair(t *testing.T) (*net.UnixConn, *net.UnixConn) {
 	t.Helper()
-	var in bytes.Buffer
+	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM|syscall.SOCK_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn := func(fd int) *net.UnixConn {
+		f := os.NewFile(uintptr(fd), "socketpair")
+		defer f.Close()
+		c, err := net.FileConn(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c.(*net.UnixConn)
+	}
+	a, b := conn(fds[0]), conn(fds[1])
+	t.Cleanup(func() { _ = a.Close(); _ = b.Close() })
+	return a, b
+}
+
+// serve runs the worker loop over a socket pair and returns the responses it
+// wrote, so a test can drive it exactly as the supervisor does.
+func serve(t *testing.T, requests ...workerproc.Frame) []workerproc.Frame {
+	t.Helper()
+	parent, child := socketPair(t)
+	done := make(chan error, 1)
+	go func() {
+		err := Serve(context.Background(), child)
+		_ = child.Close()
+		done <- err
+	}()
 	for _, f := range requests {
-		if err := phptaintipc.WriteFrame(&in, f); err != nil {
+		if err := workerproc.SendFrame(parent, f, nil, phptaintipc.MaxFrameBytes); err != nil {
 			t.Fatalf("write request: %v", err)
 		}
 	}
-	var out bytes.Buffer
-	if err := Serve(context.Background(), &in, &out); err != nil && err != io.EOF {
-		t.Fatalf("serve: %v", err)
-	}
-	var got []phptaintipc.Frame
+	_ = parent.CloseWrite()
+	var got []workerproc.Frame
 	for {
-		f, err := phptaintipc.ReadFrame(&out)
+		f, _, err := workerproc.ReceiveFrame(parent, workerproc.Limits{MaxFrameBytes: phptaintipc.MaxFrameBytes})
 		if err != nil {
 			break
 		}
 		got = append(got, f)
+	}
+	if err := <-done; err != nil && err != io.EOF {
+		t.Fatalf("serve: %v", err)
 	}
 	return got
 }
@@ -71,7 +100,7 @@ func TestWorkerServesMoreThanOneRequest(t *testing.T) {
 }
 
 func TestWorkerAnswersPing(t *testing.T) {
-	got := serve(t, phptaintipc.Frame{Op: phptaintipc.OpPing})
+	got := serve(t, workerproc.Frame{Op: phptaintipc.OpPing})
 	if len(got) != 1 {
 		t.Fatalf("responses = %d, want 1", len(got))
 	}
@@ -90,7 +119,7 @@ func TestWorkerAnswersPing(t *testing.T) {
 func TestWorkerReportsUnknownOpWithoutExiting(t *testing.T) {
 	follow, _ := phptaintipc.EncodePayload(phptaintipc.OpAnalyze,
 		phptaintipc.AnalyzeArgs{Source: []byte("<?php echo 1;")})
-	got := serve(t, phptaintipc.Frame{Op: "nonsense"}, follow)
+	got := serve(t, workerproc.Frame{Op: "nonsense"}, follow)
 	if len(got) != 2 {
 		t.Fatalf("responses = %d, want 2 (error then a served request)", len(got))
 	}
@@ -105,7 +134,7 @@ func TestWorkerReportsUnknownOpWithoutExiting(t *testing.T) {
 // TestWorkerReportsBadPayloadWithoutExiting is the same contract for a payload
 // that decodes but violates the protocol's own validation.
 func TestWorkerReportsBadPayloadWithoutExiting(t *testing.T) {
-	bad := phptaintipc.Frame{Op: phptaintipc.OpAnalyze, Payload: json.RawMessage(`{"nope":1}`)}
+	bad := workerproc.Frame{Op: phptaintipc.OpAnalyze, Payload: json.RawMessage(`{"nope":1}`)}
 	follow, _ := phptaintipc.EncodePayload(phptaintipc.OpAnalyze,
 		phptaintipc.AnalyzeArgs{Source: []byte("<?php echo 1;")})
 	got := serve(t, bad, follow)
@@ -119,12 +148,12 @@ func TestWorkerReportsBadPayloadWithoutExiting(t *testing.T) {
 func TestWorkerStopsOnContextCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	var in bytes.Buffer
+	parent, child := socketPair(t)
 	req, _ := phptaintipc.EncodePayload(phptaintipc.OpAnalyze,
 		phptaintipc.AnalyzeArgs{Source: []byte("<?php echo 1;")})
-	_ = phptaintipc.WriteFrame(&in, req)
+	_ = workerproc.SendFrame(parent, req, nil, phptaintipc.MaxFrameBytes)
 	done := make(chan error, 1)
-	go func() { done <- Serve(ctx, &in, io.Discard) }()
+	go func() { done <- Serve(ctx, child) }()
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
@@ -133,7 +162,12 @@ func TestWorkerStopsOnContextCancel(t *testing.T) {
 }
 
 func TestWorkerRejectsTruncatedFrame(t *testing.T) {
-	err := Serve(context.Background(), bytes.NewReader([]byte{0, 0}), io.Discard)
+	parent, child := socketPair(t)
+	if _, err := parent.Write([]byte{0, 0}); err != nil {
+		t.Fatal(err)
+	}
+	_ = parent.CloseWrite()
+	err := Serve(context.Background(), child)
 	if !errors.Is(err, io.ErrUnexpectedEOF) {
 		t.Fatalf("error = %v, want io.ErrUnexpectedEOF", err)
 	}

@@ -2,96 +2,14 @@ package phptaintipc
 
 import (
 	"bytes"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"io"
-	"strings"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/phptaint"
+	"github.com/pidginhost/csm/internal/workerproc"
 )
-
-func TestFrameRoundTrip(t *testing.T) {
-	var buf bytes.Buffer
-	want := Frame{Op: OpAnalyze, Payload: []byte(`{"source":"PD9waHA="}`)}
-	if err := WriteFrame(&buf, want); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-	got, err := ReadFrame(&buf)
-	if err != nil {
-		t.Fatalf("read: %v", err)
-	}
-	if got.Op != want.Op || string(got.Payload) != string(want.Payload) {
-		t.Fatalf("round trip = %+v, want %+v", got, want)
-	}
-}
-
-type chunkWriter struct {
-	bytes.Buffer
-	max int
-}
-
-func (w *chunkWriter) Write(p []byte) (int, error) {
-	if len(p) > w.max {
-		p = p[:w.max]
-	}
-	return w.Buffer.Write(p)
-}
-
-func TestWriteFrameCompletesShortWrites(t *testing.T) {
-	var wire chunkWriter
-	wire.max = 2
-	want := Frame{Op: OpPing}
-	if err := WriteFrame(&wire, want); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-	got, err := ReadFrame(&wire.Buffer)
-	if err != nil {
-		t.Fatalf("read frame written in short chunks: %v", err)
-	}
-	if got.Op != want.Op {
-		t.Fatalf("op = %q, want %q", got.Op, want.Op)
-	}
-}
-
-// TestReadFrameRejectsOversizeHeaderWithoutAllocating is the one that matters
-// for a hostile peer: the length prefix is attacker-influenced, so a frame
-// claiming 4 GiB must be refused from the header alone. Allocating first and
-// discovering the truth afterwards is how a peer turns a 4-byte write into an
-// out-of-memory kill.
-func TestReadFrameRejectsOversizeHeaderWithoutAllocating(t *testing.T) {
-	var hdr [4]byte
-	binary.BigEndian.PutUint32(hdr[:], ^uint32(0))
-	_, err := ReadFrame(bytes.NewReader(hdr[:]))
-	if err == nil {
-		t.Fatal("oversize length prefix accepted, want error")
-	}
-	if !strings.Contains(err.Error(), "exceeds") {
-		t.Fatalf("error = %v, want it to name the cap", err)
-	}
-}
-
-func TestWriteFrameRejectsOversizeBody(t *testing.T) {
-	big := Frame{Op: OpAnalyze, Payload: make([]byte, MaxFrameBytes+1)}
-	for i := range big.Payload {
-		big.Payload[i] = 'a'
-	}
-	if err := WriteFrame(io.Discard, big); err == nil {
-		t.Fatal("oversize body accepted, want error")
-	}
-}
-
-func TestReadFrameOnTruncatedBody(t *testing.T) {
-	var buf bytes.Buffer
-	if err := WriteFrame(&buf, Frame{Op: OpPing}); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-	truncated := buf.Bytes()[:buf.Len()-1]
-	if _, err := ReadFrame(bytes.NewReader(truncated)); err == nil {
-		t.Fatal("truncated frame accepted, want error")
-	}
-}
 
 func TestEncodeDecodeAnalyzeArgs(t *testing.T) {
 	src := []byte("<?php eval(curl_exec($c));")
@@ -134,7 +52,7 @@ func TestAnalyzeArgsAtSourceLimitFitsFrame(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
-	if err := WriteFrame(io.Discard, frame); err != nil {
+	if err := workerproc.WriteFrame(io.Discard, frame, MaxFrameBytes); err != nil {
 		t.Fatalf("write exact-limit source: %v", err)
 	}
 }
@@ -152,14 +70,14 @@ func TestDecodeAnalyzeArgsRejectsOversizeSource(t *testing.T) {
 		t.Fatalf("marshal fixture: %v", err)
 	}
 	var got AnalyzeArgs
-	if err := DecodePayload(Frame{Payload: raw}, &got); !errors.Is(err, ErrSourceTooLarge) {
+	if err := DecodePayload(workerproc.Frame{Payload: raw}, &got); !errors.Is(err, ErrSourceTooLarge) {
 		t.Fatalf("error = %v, want ErrSourceTooLarge", err)
 	}
 }
 
 func TestDecodeAnalyzeArgsRejectsMissingSource(t *testing.T) {
 	got := AnalyzeArgs{Source: []byte("previous request")}
-	if err := DecodePayload(Frame{Payload: []byte(`{}`)}, &got); err == nil {
+	if err := DecodePayload(workerproc.Frame{Payload: []byte(`{}`)}, &got); err == nil {
 		t.Fatal("payload without source accepted, want error")
 	}
 	if string(got.Source) != "previous request" {
@@ -232,7 +150,7 @@ func TestAnalyzeResultCarriesExplicitNotCandidateStatus(t *testing.T) {
 
 func TestAnalyzeResultRejectsMissingStatus(t *testing.T) {
 	got := AnalyzeResult{Report: phptaint.Report{Status: phptaint.StatusAnalyzed}}
-	if err := DecodePayload(Frame{Payload: []byte(`{"report":{}}`)}, &got); err == nil {
+	if err := DecodePayload(workerproc.Frame{Payload: []byte(`{"report":{}}`)}, &got); err == nil {
 		t.Fatal("report without status accepted, want error")
 	}
 	if got.Report.Status != phptaint.StatusAnalyzed {
@@ -242,7 +160,7 @@ func TestAnalyzeResultRejectsMissingStatus(t *testing.T) {
 
 func TestAnalyzeResultRejectsUnknownStatus(t *testing.T) {
 	var got AnalyzeResult
-	err := DecodePayload(Frame{Payload: []byte(`{"report":{"Status":255}}`)}, &got)
+	err := DecodePayload(workerproc.Frame{Payload: []byte(`{"report":{"Status":255}}`)}, &got)
 	if err == nil {
 		t.Fatal("unknown report status accepted, want error")
 	}
@@ -362,11 +280,11 @@ func TestDecodeRejectsPreBasisReply(t *testing.T) {
 	const preBasis = `{"report":{"Status":1,"Results":[{"Source":"curl_exec","Identifiers":null,"Sink":"eval","Confidence":1}],"TotalResults":1,"Reason":"","PrecisionLoss":null,"EvidenceTruncated":false}}`
 	const restored = `{"report":{"Status":1,"Results":[{"Source":"curl_exec","Identifiers":null,"Sink":"eval","Confidence":1,"Basis":"always-remote","ResolutionOffset":-1}],"TotalResults":1,"Reason":"","PrecisionLoss":null,"EvidenceTruncated":false}}`
 	var control AnalyzeResult
-	if err := DecodePayload(Frame{Payload: []byte(restored)}, &control); err != nil {
+	if err := DecodePayload(workerproc.Frame{Payload: []byte(restored)}, &control); err != nil {
 		t.Fatalf("control with basis restored rejected: %v", err)
 	}
 	var got AnalyzeResult
-	if err := DecodePayload(Frame{Payload: []byte(preBasis)}, &got); err == nil {
+	if err := DecodePayload(workerproc.Frame{Payload: []byte(preBasis)}, &got); err == nil {
 		t.Fatalf("pre-basis reply decoded: %+v", got.Report)
 	}
 }
@@ -407,7 +325,7 @@ func resultReply(keys string) []byte {
 
 func TestDecodeResultReplyControl(t *testing.T) {
 	var got AnalyzeResult
-	if err := DecodePayload(Frame{Payload: resultReply(`,"Basis":"call-argument","ResolutionOffset":5`)}, &got); err != nil {
+	if err := DecodePayload(workerproc.Frame{Payload: resultReply(`,"Basis":"call-argument","ResolutionOffset":5`)}, &got); err != nil {
 		t.Fatalf("complete reply rejected: %v", err)
 	}
 	if got.Report.Results[0].ResolutionOffset != 5 || got.Report.Results[0].Basis != phptaint.BasisCallArgument {
@@ -419,7 +337,7 @@ func TestDecodeResultReplyControl(t *testing.T) {
 // never evidence resolved at the first byte.
 func TestDecodeRejectsResultWithoutOffset(t *testing.T) {
 	var got AnalyzeResult
-	if err := DecodePayload(Frame{Payload: resultReply(`,"Basis":"call-argument"`)}, &got); err == nil {
+	if err := DecodePayload(workerproc.Frame{Payload: resultReply(`,"Basis":"call-argument"`)}, &got); err == nil {
 		t.Fatalf("reply without offset decoded: %+v", got.Report)
 	}
 }
@@ -437,28 +355,28 @@ func twoResultReply(second string) []byte {
 // result predates the offset field is a worker failure too.
 func TestDecodeRejectsMixedResultsWithoutOffset(t *testing.T) {
 	var control AnalyzeResult
-	if err := DecodePayload(Frame{Payload: twoResultReply(`,"Basis":"always-remote","ResolutionOffset":-1`)}, &control); err != nil {
+	if err := DecodePayload(workerproc.Frame{Payload: twoResultReply(`,"Basis":"always-remote","ResolutionOffset":-1`)}, &control); err != nil {
 		t.Fatalf("complete two-result reply rejected: %v", err)
 	}
 	if len(control.Report.Results) != 2 {
 		t.Fatalf("control decoded as %+v", control.Report)
 	}
 	var got AnalyzeResult
-	if err := DecodePayload(Frame{Payload: twoResultReply(`,"Basis":"always-remote"`)}, &got); err == nil {
+	if err := DecodePayload(workerproc.Frame{Payload: twoResultReply(`,"Basis":"always-remote"`)}, &got); err == nil {
 		t.Fatalf("reply whose second result has no offset decoded: %+v", got.Report)
 	}
 }
 
 func TestDecodeRejectsResultWithNullOffset(t *testing.T) {
 	var got AnalyzeResult
-	if err := DecodePayload(Frame{Payload: resultReply(`,"Basis":"call-argument","ResolutionOffset":null`)}, &got); err == nil {
+	if err := DecodePayload(workerproc.Frame{Payload: resultReply(`,"Basis":"call-argument","ResolutionOffset":null`)}, &got); err == nil {
 		t.Fatalf("reply with null offset decoded: %+v", got.Report)
 	}
 }
 
 func TestDecodeRejectsResultWithoutBasis(t *testing.T) {
 	var got AnalyzeResult
-	if err := DecodePayload(Frame{Payload: resultReply(`,"ResolutionOffset":-1`)}, &got); err == nil {
+	if err := DecodePayload(workerproc.Frame{Payload: resultReply(`,"ResolutionOffset":-1`)}, &got); err == nil {
 		t.Fatalf("reply without basis decoded: %+v", got.Report)
 	}
 }
@@ -471,7 +389,7 @@ func TestDecodeRejectsAmbiguousResultKeys(t *testing.T) {
 		`,"Basis":"call-argument","ResolutionOffset":-1,"resolutionoffset":5`,
 	} {
 		var got AnalyzeResult
-		if err := DecodePayload(Frame{Payload: resultReply(keys)}, &got); err == nil {
+		if err := DecodePayload(workerproc.Frame{Payload: resultReply(keys)}, &got); err == nil {
 			t.Errorf("ambiguous reply %s decoded: %+v", keys, got.Report)
 		}
 	}
@@ -507,7 +425,7 @@ func TestDecodeRejectsDuplicateEvidenceFields(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			var got AnalyzeResult
-			if err := DecodePayload(Frame{Payload: payload}, &got); err == nil {
+			if err := DecodePayload(workerproc.Frame{Payload: payload}, &got); err == nil {
 				t.Fatalf("duplicate fields accepted: %+v", got.Report)
 			}
 		})

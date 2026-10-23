@@ -1021,30 +1021,6 @@
       "queue": "mail.delivery"
     },
     {
-      "id": "internal/phptaintworker/supervisor.go::*Supervisor.ensureChildLocked::done::channel::1",
-      "path": "internal/phptaintworker/supervisor.go",
-      "owner": "*Supervisor.ensureChildLocked",
-      "target": "done",
-      "kind": "channel",
-      "source": "make(chan struct{})",
-      "capacity": "0",
-      "class": "lifecycle",
-      "rationale": "Joins child reaping; the request owner retains outstanding worker communication through cleanup.",
-      "queue": "php_taint"
-    },
-    {
-      "id": "internal/phptaintworker/supervisor.go::*Supervisor.roundTripLocked::done::channel::1",
-      "path": "internal/phptaintworker/supervisor.go",
-      "owner": "*Supervisor.roundTripLocked",
-      "target": "done",
-      "kind": "channel",
-      "source": "make(chan result, 1)",
-      "capacity": "1",
-      "class": "work",
-      "rationale": "Transfers a worker response while request ownership survives cancellation and child cleanup.",
-      "queue": "php_taint"
-    },
-    {
       "id": "internal/processctx/enricher.go::NewEnricher::queue::channel::1",
       "path": "internal/processctx/enricher.go",
       "owner": "NewEnricher",
@@ -3886,7 +3862,7 @@
       "rows": [
         "php_taint.requests"
       ],
-      "bounds": "One worker RPC at a time; lock waiters have no fixed global cap. Requests retain pipe operations after caller timeout and remain owned through decoding and child cleanup.",
+      "bounds": "One worker RPC at a time; lock waiters have no fixed global cap. Requests retain socket operations after caller timeout and remain owned through decoding and child cleanup.",
       "publication": [
         {
           "package": "github.com/pidginhost/csm/internal/phptaintworker",
@@ -3906,22 +3882,22 @@
           "mode": "portable"
         },
         {
-          "package": "github.com/pidginhost/csm/internal/phptaintworker",
+          "package": "github.com/pidginhost/csm/internal/workerproc",
           "name": "TestWorkerQueueWaitingCallersCancelWithoutLoss",
           "mode": "portable"
         },
         {
-          "package": "github.com/pidginhost/csm/internal/phptaintworker",
+          "package": "github.com/pidginhost/csm/internal/workerproc",
           "name": "TestWorkerQueueRetainsRPCBeyondCallerCancellation",
           "mode": "portable"
         },
         {
-          "package": "github.com/pidginhost/csm/internal/phptaintworker",
+          "package": "github.com/pidginhost/csm/internal/workerproc",
           "name": "TestWorkerQueueTimeoutLossSurvivesLateReply",
           "mode": "portable"
         },
         {
-          "package": "github.com/pidginhost/csm/internal/phptaintworker",
+          "package": "github.com/pidginhost/csm/internal/workerproc",
           "name": "TestWorkerQueueKnownFailureDuringCleanup",
           "mode": "portable"
         },
@@ -3936,23 +3912,28 @@
           "mode": "portable"
         },
         {
-          "package": "github.com/pidginhost/csm/internal/phptaintworker",
+          "package": "github.com/pidginhost/csm/internal/workerproc",
           "name": "TestWorkerQueueHonorsLongConfiguredRPC",
           "mode": "portable"
         },
         {
-          "package": "github.com/pidginhost/csm/internal/phptaintworker",
+          "package": "github.com/pidginhost/csm/internal/workerproc",
           "name": "TestWorkerQueueBufferedReplyHasIndependentBudget",
           "mode": "portable"
         },
         {
-          "package": "github.com/pidginhost/csm/internal/phptaintworker",
+          "package": "github.com/pidginhost/csm/internal/workerproc",
           "name": "TestWorkerQueueRPCExitCountsOnce",
           "mode": "portable"
         },
         {
           "package": "github.com/pidginhost/csm/internal/phptaintworker",
           "name": "TestWorkerQueueRecoveredAnalyzerPanicCountsLoss",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/workerproc",
+          "name": "TestCallClosesDescriptorsOfAbandonedReply",
           "mode": "portable"
         }
       ]

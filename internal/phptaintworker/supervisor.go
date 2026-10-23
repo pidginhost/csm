@@ -4,46 +4,19 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
-	"os/exec"
+	"os"
 	"sync"
 	"time"
 
 	"github.com/pidginhost/csm/internal/phptaint"
 	"github.com/pidginhost/csm/internal/phptaintipc"
+	"github.com/pidginhost/csm/internal/queuehealth"
+	"github.com/pidginhost/csm/internal/workerproc"
 )
 
 // ConsecutiveFailureLimit is how many failed workers in a row are tolerated
-// before the supervisor pauses spawning replacements for one cooldown.
-//
-// It is a constant rather than a setting because nothing an operator can
-// observe would tell them a better value: the right number depends on how the
-// parser fails, not on the host. It is also harmful in both directions -- too
-// low and one transient failure blinds the rest of a scan, too high and a
-// crafted account gets the exec storm the limit exists to prevent. When it
-// trips, the coverage gap says so, so the condition stays visible even though
-// the threshold is not tunable.
-const ConsecutiveFailureLimit = 3
-
-// reapTimeout bounds how long killLocked waits for a SIGKILLed child while
-// holding the supervisor lock.
-const reapTimeout = 10 * time.Second
-
-// breakerCooldown is how long the supervisor refuses to spawn replacements
-// after ConsecutiveFailureLimit failures in a row, before it tries once more.
-//
-// The breaker bounds an exec storm; it must not switch the detector off. With
-// no way back it would be a kill switch any tenant could throw with a handful
-// of crafted files, disabling PHP analysis across a shared host for the life of
-// the daemon -- worse than not deploying the detector, because an operator
-// would believe it was running. One trial per cooldown keeps the storm bounded
-// (a hostile account costs one timeout per cooldown, not one per file) while
-// letting a host recover without an operator having to notice and restart.
-//
-// The cost of each retry lands on the shared deep-scan budget, which the YARA
-// and JavaScript consumers walk too, so a longer cooldown buys their coverage
-// back on a host that stays broken.
-const breakerCooldown = 60 * time.Second
+// before spawning pauses for one cooldown; see workerproc.
+const ConsecutiveFailureLimit = workerproc.ConsecutiveFailureLimit
 
 // SupervisorConfig describes how to start the worker process.
 type SupervisorConfig struct {
@@ -60,42 +33,15 @@ type SupervisorConfig struct {
 	Log func(string, ...any)
 }
 
-// Supervisor runs one worker process at a time and guarantees that a request
-// which does not return kills the process it was running in.
-//
-// The guarantee is the point. A deadline on its own is not containment: the
-// call returns to the caller while the child keeps spinning on a core, and the
-// next request starts another one. That is the failure mode of a timeout
-// without a kill, and it is why this type does not reuse the YARA supervisor,
-// which restarts a child on exit and never kills one that simply stops
-// answering.
-//
-// A worker that misses its deadline is poisoned: killed, reaped, and never
-// used again. Replacement is lazy, so a scan with no further candidates pays
-// nothing for the last file's failure.
+// Supervisor runs PHP taint analysis in a worker process. Containment, the
+// breaker and request health are workerproc's; this type adds the pre-filter,
+// the payload schema and the mapping from failures to coverage gaps.
 type Supervisor struct {
-	cfg    SupervisorConfig
-	health *requestQueue
+	cfg  SupervisorConfig
+	proc *workerproc.Supervisor
 
-	mu          sync.Mutex
-	child       *child
-	lastPID     int
-	spawns      int
-	consecutive int
-	// openedAt is when the breaker last opened; the zero value means closed.
-	openedAt time.Time
-	mode     string
-	stopped  bool
-
-	// now is a seam so the cooldown can be exercised without sleeping.
-	now func() time.Time
-}
-
-type child struct {
-	cmd    *exec.Cmd
-	stdin  io.WriteCloser
-	stdout io.ReadCloser
-	done   chan struct{}
+	mu   sync.Mutex
+	mode string
 }
 
 // NewSupervisor validates config. It does not start a worker: the first
@@ -107,7 +53,30 @@ func NewSupervisor(cfg SupervisorConfig) (*Supervisor, error) {
 	if cfg.Timeout <= 0 {
 		return nil, errors.New("phptaintworker: timeout must be positive")
 	}
-	return &Supervisor{cfg: cfg, now: time.Now, health: newRequestQueue()}, nil
+	s := &Supervisor{cfg: cfg}
+	proc, err := workerproc.New(workerproc.Config{
+		Name:    "phptaint worker",
+		Launch:  s.launch,
+		Timeout: cfg.Timeout,
+		Limits:  workerproc.Limits{MaxFrameBytes: phptaintipc.MaxFrameBytes},
+		Log:     cfg.Log,
+	})
+	if err != nil {
+		return nil, err
+	}
+	s.proc = proc
+	return s, nil
+}
+
+func (s *Supervisor) launch(ctx context.Context) (workerproc.Process, error) {
+	s.mu.Lock()
+	mode := s.mode
+	s.mu.Unlock()
+	env := s.cfg.Env
+	if mode != "" {
+		env = append(append([]string(nil), env...), "CSM_HELPER_WORKER="+mode)
+	}
+	return workerproc.ExecLauncher(s.cfg.Command, s.cfg.Args, env)(ctx)
 }
 
 // SetMode is a test seam for the helper child, which selects its behaviour
@@ -119,26 +88,17 @@ func (s *Supervisor) SetMode(mode string) {
 }
 
 // LastChildPID reports the pid of the most recently started worker.
-func (s *Supervisor) LastChildPID() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.lastPID
-}
+func (s *Supervisor) LastChildPID() int { return s.proc.Stats().LastPID }
 
 // SpawnCount reports how many workers have been started.
-func (s *Supervisor) SpawnCount() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.spawns
-}
+func (s *Supervisor) SpawnCount() int { return s.proc.Stats().Spawns }
 
 // Stop shuts down the current worker.
-func (s *Supervisor) Stop() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.stopped = true
-	s.killLocked()
-	return nil
+func (s *Supervisor) Stop() error { return s.proc.Stop() }
+
+// QueueStatuses does not take the supervisor lock or inspect child processes.
+func (s *Supervisor) QueueStatuses(now time.Time) map[string]queuehealth.Status {
+	return s.proc.QueueStatuses(now)
 }
 
 // Analyze runs one analysis in the worker. It never returns a status a caller
@@ -159,233 +119,36 @@ func (s *Supervisor) Analyze(ctx context.Context, src []byte) phptaint.Report {
 		}
 		return phptaint.Report{Status: phptaint.StatusNotCandidate}
 	}
-	work := s.health.begin()
-	completed := false
-	defer func() { work.finishCaller(completed) }()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	work.start()
-	report := s.analyzeLocked(ctx, src, work)
-	completed = true
-	return report
-}
-
-func (s *Supervisor) analyzeLocked(ctx context.Context, src []byte, work *requestWork) phptaint.Report {
-	if s.stopped {
-		return gap(phptaint.StatusWorkerFailure, "supervisor stopped")
-	}
-	if s.breakerOpenLocked() {
-		work.fail()
-		return gap(phptaint.StatusWorkerFailure, fmt.Sprintf(
-			"worker failed %d times in a row; not analyzed, next attempt after %s",
-			s.consecutive, breakerCooldown))
-	}
 	req, err := phptaintipc.EncodePayload(phptaintipc.OpAnalyze, phptaintipc.AnalyzeArgs{Source: src})
 	if err != nil {
 		// An oversize source is the caller's own ceiling, not a worker fault,
-		// so it must not count toward the breaker.
+		// so it must not count toward the breaker. It never reaches a worker,
+		// so it is the answer whatever state the worker side is in.
 		return gap(phptaint.StatusOversize, err.Error())
 	}
-	if ctxErr := ctx.Err(); ctxErr != nil {
-		return gap(phptaint.StatusCanceled, ctxErr.Error())
-	}
-	if startErr := s.ensureChildLocked(); startErr != nil {
-		work.fail()
-		s.recordFailureLocked()
-		return gap(phptaint.StatusWorkerFailure, startErr.Error())
-	}
-
-	report, err := s.roundTripLocked(ctx, req, len(src), work)
-	if err != nil {
-		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-			work.fail()
-		}
-		// The child is not trusted after any failure: it may be mid-parse and
-		// spinning, or it may have left a partial frame in the pipe that would
-		// desynchronise every later request.
-		s.killLocked()
-		if errors.Is(err, errDeadline) {
-			s.recordFailureLocked()
-			return gap(phptaint.StatusTimeout, fmt.Sprintf(
-				"analysis exceeded %s; worker killed", s.cfg.Timeout))
-		}
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			// The caller withdrew, so this is not a worker fault and must not
-			// count toward the breaker. It did consume the trial, though: the
-			// cooldown has to be re-armed or a caller that cancels can spend
-			// one spawn per file while the breaker is nominally open.
-			s.rearmBreakerLocked()
-			return gap(phptaint.StatusCanceled, err.Error())
-		}
-		s.recordFailureLocked()
-		return gap(phptaint.StatusWorkerFailure, err.Error())
-	}
-	s.consecutive = 0
-	if report.Status == phptaint.StatusPanic {
-		work.fail()
-	}
-	return report
-}
-
-var errDeadline = errors.New("phptaintworker: analysis deadline exceeded")
-
-// recordFailureLocked counts a worker failure and, once the run of failures
-// reaches the limit, restarts the cooldown. Stamping on every failure at or
-// past the limit -- a failed trial request included -- is what makes a
-// persistently broken host retry once per cooldown instead of once per file.
-func (s *Supervisor) recordFailureLocked() {
-	s.consecutive++
-	s.rearmBreakerLocked()
-}
-
-// rearmBreakerLocked restarts the cooldown when the breaker is at or past its
-// limit. openedAt is never cleared on success: breakerOpenLocked reads it only
-// once consecutive has reached the limit, and every path that reaches the limit
-// stamps it first, so a stale value cannot be observed.
-func (s *Supervisor) rearmBreakerLocked() {
-	if s.consecutive >= ConsecutiveFailureLimit {
-		s.openedAt = s.now()
-	}
-}
-
-// breakerOpenLocked reports whether this request must be refused without
-// spawning. Once the cooldown elapses the breaker goes half-open: the request
-// is let through as a trial, which either resets the counter on success or
-// restarts the cooldown on failure.
-func (s *Supervisor) breakerOpenLocked() bool {
-	if s.consecutive < ConsecutiveFailureLimit {
-		return false
-	}
-	return s.now().Sub(s.openedAt) < breakerCooldown
-}
-
-// roundTripLocked writes one request and waits for its reply, bounded by the
-// configured timeout. sourceLen is the size of the submitted source, which
-// bounds every offset the reply may carry. The pipe round trip runs on its own
-// goroutine because the child may stop before reading the complete request or
-// never answer. The goroutine ends when killLocked closes the pipes.
-func (s *Supervisor) roundTripLocked(ctx context.Context, req phptaintipc.Frame, sourceLen int, work *requestWork) (phptaint.Report, error) {
-	c := s.child
-	type result struct {
-		frame phptaintipc.Frame
-		err   error
-	}
-	deadline := time.Now().Add(s.cfg.Timeout)
-	timer := time.NewTimer(s.cfg.Timeout)
-	defer timer.Stop()
-	if parent, ok := ctx.Deadline(); ok && parent.Before(deadline) {
-		deadline = parent
-	}
-	work.beginRPC(deadline)
-	defer work.progress()
-
-	done := make(chan result, 1)
-	go func() {
-		completed := false
-		defer func() { work.finishRPC(completed) }()
-		if err := phptaintipc.WriteFrame(c.stdin, req); err != nil {
-			done <- result{err: fmt.Errorf("phptaintworker: write request: %w", err)}
-			completed = true
-			return
-		}
-		f, err := phptaintipc.ReadFrame(c.stdout)
-		done <- result{frame: f, err: err}
-		completed = true
-	}()
-
-	select {
-	case <-timer.C:
-		return phptaint.Report{}, errDeadline
-	case <-ctx.Done():
-		return phptaint.Report{}, ctx.Err()
-	case res := <-done:
-		work.progress()
-		if res.err != nil {
-			return phptaint.Report{}, fmt.Errorf("phptaintworker: read reply: %w", res.err)
-		}
-		if res.frame.Error != "" {
-			return phptaint.Report{}, fmt.Errorf("phptaintworker: worker: %s", res.frame.Error)
-		}
-		if res.frame.Op != "" {
-			return phptaint.Report{}, fmt.Errorf("phptaintworker: response carries op %q", res.frame.Op)
-		}
+	var report phptaint.Report
+	_, _, err = s.proc.Call(ctx, req, nil, func(reply workerproc.Frame, _ []*os.File) (bool, error) {
 		var out phptaintipc.AnalyzeResult
-		if err := phptaintipc.DecodePayload(res.frame, &out); err != nil {
-			return phptaint.Report{}, err
+		if decodeErr := phptaintipc.DecodePayload(reply, &out); decodeErr != nil {
+			return false, decodeErr
 		}
-		if err := phptaintipc.ValidateReportForSource(out.Report, sourceLen); err != nil {
-			return phptaint.Report{}, err
+		if validErr := phptaintipc.ValidateReportForSource(out.Report, len(src)); validErr != nil {
+			return false, validErr
 		}
-		return out.Report, nil
-	}
-}
-
-func (s *Supervisor) ensureChildLocked() error {
-	if s.child != nil {
-		return nil
-	}
-	env := s.cfg.Env
-	if s.mode != "" {
-		env = append(append([]string(nil), env...), "CSM_HELPER_WORKER="+s.mode)
-	}
-	cmd := exec.Command(s.cfg.Command, s.cfg.Args...) // #nosec G204 -- command comes from the daemon's own config, not from scanned content.
-	cmd.Env = env
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return fmt.Errorf("phptaintworker: stdin pipe: %w", err)
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return fmt.Errorf("phptaintworker: stdout pipe: %w", err)
-	}
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("phptaintworker: start worker: %w", err)
-	}
-	c := &child{cmd: cmd, stdin: stdin, stdout: stdout, done: make(chan struct{})}
-	go func() {
-		_ = cmd.Wait()
-		close(c.done)
-	}()
-	s.child = c
-	s.spawns++
-	s.lastPID = cmd.Process.Pid
-	return nil
-}
-
-// killLocked terminates the current worker and waits for it to be reaped.
-//
-// SIGKILL, not SIGTERM: the process this exists to stop is spinning inside a
-// parser loop and never returns to a point where a catchable signal would be
-// handled. Closing the pipes around the kill unblocks the round-trip goroutine
-// so it cannot outlive the child.
-func (s *Supervisor) killLocked() {
-	c := s.child
-	if c == nil {
-		return
-	}
-	s.child = nil
-	_ = c.stdin.Close()
-	if c.cmd.Process != nil {
-		_ = c.cmd.Process.Kill()
-	}
-	_ = c.stdout.Close()
-
-	// Bounded, because this runs while the supervisor lock is held: an
-	// unbounded wait would turn one unreapable child into a frozen analyzer
-	// for every later file. SIGKILL cannot be caught or ignored, so the only
-	// way to reach the timeout is a process wedged in uninterruptible sleep.
-	// Giving up on the reap leaks one process; blocking here would stop the
-	// scan, and the scan is what protects the host.
-	select {
-	case <-c.done:
-	case <-time.After(reapTimeout):
-		if s.cfg.Log != nil {
-			s.cfg.Log("phptaint worker %d did not exit after SIGKILL", c.cmd.Process.Pid)
-		}
-		return
-	}
-	if s.cfg.Log != nil {
-		s.cfg.Log("phptaint worker %d killed", c.cmd.Process.Pid)
+		report = out.Report
+		return report.Status == phptaint.StatusPanic, nil
+	})
+	switch {
+	case err == nil:
+		return report
+	case errors.Is(err, workerproc.ErrStopped):
+		return gap(phptaint.StatusWorkerFailure, "supervisor stopped")
+	case errors.Is(err, workerproc.ErrTimeout):
+		return gap(phptaint.StatusTimeout, fmt.Sprintf("analysis exceeded %s; worker killed", s.cfg.Timeout))
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		return gap(phptaint.StatusCanceled, err.Error())
+	default:
+		return gap(phptaint.StatusWorkerFailure, err.Error())
 	}
 }
 
