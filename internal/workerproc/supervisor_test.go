@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"net"
 	"os"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -254,5 +257,175 @@ func TestSupervisorCancelledTrialDoesNotFreeASpawn(t *testing.T) {
 	}
 	if delta := s.Stats().Spawns - spawns; delta > 1 {
 		t.Fatalf("cancelled requests spawned %d workers, want at most the one trial", delta)
+	}
+}
+
+// pairLauncher runs h in this process on the far end of a socket pair, so a
+// test can watch both ends of a descriptor it passes.
+func pairLauncher(t *testing.T, h Handler) Launcher {
+	t.Helper()
+	return func(ctx context.Context) (Process, error) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		parent, far := socketPair(t)
+		for _, c := range []*net.UnixConn{parent, far} {
+			if err := c.SetDeadline(time.Time{}); err != nil {
+				return nil, err
+			}
+		}
+		p := &pairProcess{conn: parent, far: far, done: make(chan struct{})}
+		go func() {
+			defer close(p.done)
+			_ = Serve(context.Background(), far, Limits{MaxFrameBytes: 1 << 20, MaxFDs: 8}, h)
+		}()
+		return p, nil
+	}
+}
+
+type pairProcess struct {
+	conn, far *net.UnixConn
+	done      chan struct{}
+	kill      sync.Once
+}
+
+func (p *pairProcess) Conn() *net.UnixConn   { return p.conn }
+func (p *pairProcess) Done() <-chan struct{} { return p.done }
+func (p *pairProcess) PID() int              { return os.Getpid() }
+
+func (p *pairProcess) Kill() error {
+	p.kill.Do(func() { _ = p.far.Close() })
+	return nil
+}
+
+func echoPayload(_ context.Context, req Frame, _ []*os.File) (Frame, []*os.File) {
+	return Frame{Payload: req.Payload}, nil
+}
+
+func TestCallKeepsCallerPipeNonBlocking(t *testing.T) {
+	s := newTestSupervisor(t, pairLauncher(t, echoPayload), 5*time.Second)
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	defer w.Close()
+	if _, _, err := s.Call(context.Background(), Frame{Op: "work", Payload: json.RawMessage(`1`)}, []*os.File{r}, okCheck); err != nil {
+		t.Fatal(err)
+	}
+	assertPipeStillPollable(t, r)
+}
+
+func TestCallDescriptorExhaustionKeepsWorker(t *testing.T) {
+	s := newTestSupervisor(t, pairLauncher(t, echoPayload), 5*time.Second)
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	defer w.Close()
+	if _, _, err := s.Call(context.Background(), Frame{Op: "work", Payload: json.RawMessage(`1`)}, nil, okCheck); err != nil {
+		t.Fatal(err)
+	}
+	real := dupFD
+	dupFD = func(int) (int, error) { return -1, syscall.EMFILE }
+	defer func() { dupFD = real }()
+	for range ConsecutiveFailureLimit + 1 {
+		_, _, err := s.Call(context.Background(), Frame{Op: "work", Payload: json.RawMessage(`1`)}, []*os.File{w}, okCheck)
+		if !errors.Is(err, syscall.EMFILE) || errors.Is(err, ErrWorkerFailed) {
+			t.Fatalf("Call = %v, want local EMFILE", err)
+		}
+	}
+	if st := s.Stats(); st.ConsecutiveFailures != 0 || st.BreakerOpen {
+		t.Fatalf("descriptor exhaustion counted as worker failure: %+v", st)
+	}
+	waitWorkerQueueIdle(t, s, ConsecutiveFailureLimit+1)
+	dupFD = real
+	if _, _, err := s.Call(context.Background(), Frame{Op: "work", Payload: json.RawMessage(`1`)}, []*os.File{w}, okCheck); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Stats().Spawns; got != 1 {
+		t.Fatalf("spawns = %d, want the healthy worker kept", got)
+	}
+}
+
+func TestCallLaunchDescriptorExhaustionIsNotAFailure(t *testing.T) {
+	for _, errno := range []syscall.Errno{syscall.EMFILE, syscall.ENFILE} {
+		t.Run(errno.Error(), func(t *testing.T) {
+			s := newTestSupervisor(t, func(context.Context) (Process, error) {
+				return nil, fmt.Errorf("workerproc: socketpair: %w", errno)
+			}, 5*time.Second)
+			for range ConsecutiveFailureLimit + 1 {
+				_, _, err := s.Call(context.Background(), Frame{Op: "work"}, nil, okCheck)
+				if !errors.Is(err, errno) || errors.Is(err, ErrWorkerFailed) {
+					t.Fatalf("Call = %v, want local %v", err, errno)
+				}
+			}
+			if st := s.Stats(); st.ConsecutiveFailures != 0 || st.BreakerOpen {
+				t.Fatalf("launch exhaustion counted as worker failure: %+v", st)
+			}
+		})
+	}
+}
+
+func TestCallMarksWorkerFailures(t *testing.T) {
+	reject := func(Frame, []*os.File) (bool, error) { return false, errors.New("bad reply") }
+	for _, tc := range []struct {
+		name, mode string
+		timeout    time.Duration
+		check      Check
+	}{
+		{name: "error frame", mode: "reply-error", timeout: 5 * time.Second, check: okCheck},
+		{name: "reply op", mode: "reply-op", timeout: 5 * time.Second, check: okCheck},
+		{name: "check", mode: "echo", timeout: 5 * time.Second, check: reject},
+		{name: "child exits", mode: "exit", timeout: 5 * time.Second, check: okCheck},
+		{name: "timeout", mode: "hang", timeout: 200 * time.Millisecond, check: okCheck},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newTestSupervisor(t, helperLauncher(t, tc.mode), tc.timeout)
+			_, _, err := s.Call(context.Background(), Frame{Op: "work", Payload: json.RawMessage(`1`)}, nil, tc.check)
+			if !errors.Is(err, ErrWorkerFailed) {
+				t.Fatalf("Call = %v, want ErrWorkerFailed", err)
+			}
+			if tc.mode == "hang" && (!errors.Is(err, ErrTimeout) || !strings.Contains(err.Error(), "after")) {
+				t.Fatalf("timeout lost its class or text: %v", err)
+			}
+		})
+	}
+
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	for _, tc := range []struct {
+		name  string
+		setup func(*Supervisor) (context.Context, Frame)
+	}{
+		{name: "stopped", setup: func(s *Supervisor) (context.Context, Frame) {
+			_ = s.Stop()
+			return context.Background(), Frame{Op: "work"}
+		}},
+		{name: "breaker open", setup: func(s *Supervisor) (context.Context, Frame) {
+			s.consecutive, s.openedAt = ConsecutiveFailureLimit, time.Now()
+			return context.Background(), Frame{Op: "work"}
+		}},
+		{name: "oversize", setup: func(*Supervisor) (context.Context, Frame) {
+			return context.Background(), Frame{Op: "work", Payload: json.RawMessage(`"` + strings.Repeat("x", 2<<20) + `"`)}
+		}},
+		{name: "canceled", setup: func(*Supervisor) (context.Context, Frame) { return canceled, Frame{Op: "work"} }},
+		{name: "launch", setup: nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			launch := helperLauncher(t, "echo")
+			if tc.setup == nil {
+				launch = func(context.Context) (Process, error) { return nil, errors.New("no binary") }
+			}
+			s := newTestSupervisor(t, launch, 5*time.Second)
+			ctx, req := context.Background(), Frame{Op: "work"}
+			if tc.setup != nil {
+				ctx, req = tc.setup(s)
+			}
+			if _, _, err := s.Call(ctx, req, nil, okCheck); err == nil || errors.Is(err, ErrWorkerFailed) {
+				t.Fatalf("Call = %v, want an error that is not a worker failure", err)
+			}
+		})
 	}
 }

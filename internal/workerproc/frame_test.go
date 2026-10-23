@@ -462,3 +462,52 @@ func TestReceiveFrameRejectsDescriptorCapBeforeReadingBody(t *testing.T) {
 		assertNoFDLeak(t, before)
 	}
 }
+
+// nonblocking reads O_NONBLOCK without calling Fd, which would itself switch
+// the descriptor to blocking mode.
+func nonblocking(t *testing.T, f *os.File) bool {
+	t.Helper()
+	rc, err := f.SyscallConn()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var flags int
+	var flagErr error
+	if err := rc.Control(func(fd uintptr) { flags, flagErr = unix.FcntlInt(fd, unix.F_GETFL, 0) }); err != nil {
+		t.Fatal(err)
+	}
+	if flagErr != nil {
+		t.Fatal(flagErr)
+	}
+	return flags&unix.O_NONBLOCK != 0
+}
+
+// assertPipeStillPollable fails when f lost O_NONBLOCK or its deadlines.
+func assertPipeStillPollable(t *testing.T, f *os.File) {
+	t.Helper()
+	if !nonblocking(t, f) {
+		t.Fatal("caller pipe was switched to blocking mode")
+	}
+	if err := f.SetReadDeadline(time.Now().Add(10 * time.Millisecond)); err != nil {
+		t.Fatalf("caller pipe lost deadlines: %v", err)
+	}
+}
+
+func TestSendFrameKeepsCallerPipeNonBlocking(t *testing.T) {
+	a, b := socketPair(t)
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	defer w.Close()
+	if sendErr := SendFrame(a, Frame{Op: "x"}, []*os.File{r}, 1<<10); sendErr != nil {
+		t.Fatal(sendErr)
+	}
+	_, got, err := ReceiveFrame(b, Limits{MaxFrameBytes: 1 << 10, MaxFDs: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeFiles(got)
+	assertPipeStillPollable(t, r)
+}

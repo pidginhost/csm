@@ -16,7 +16,6 @@ import (
 	"io"
 	"net"
 	"os"
-	"runtime"
 	"syscall"
 
 	"golang.org/x/sys/unix"
@@ -98,19 +97,19 @@ func sendBody(conn *net.UnixConn, body []byte, fds []*os.File) error {
 		return fmt.Errorf("workerproc: %d descriptors exceed the kernel limit of %d", len(fds), maxSendFDs)
 	}
 	buf := withHeader(body)
-	var oob []byte
-	if len(fds) > 0 {
-		raw := make([]int, len(fds))
-		for i, f := range fds {
-			raw[i] = int(f.Fd())
+	n := 0
+	err := withRawFDs(fds, func(raw []int) error {
+		var oob []byte
+		if len(raw) > 0 {
+			oob = syscall.UnixRights(raw...)
 		}
-		oob = syscall.UnixRights(raw...)
-	}
-	// WriteMsgUnix is a single sendmsg, which a stream socket may cut short
-	// once its buffer fills. The descriptors went with the first byte; the
-	// rest of the frame follows as plain writes.
-	n, _, err := conn.WriteMsgUnix(buf, oob, nil)
-	runtime.KeepAlive(fds)
+		// WriteMsgUnix is a single sendmsg, which a stream socket may cut
+		// short once its buffer fills. The descriptors went with the first
+		// byte; the rest of the frame follows as plain writes.
+		var writeErr error
+		n, _, writeErr = conn.WriteMsgUnix(buf, oob, nil)
+		return writeErr
+	})
 	if err == nil && n < len(buf) {
 		err = writeFull(conn, buf[n:])
 	}
@@ -265,8 +264,12 @@ func dupFiles(files []*os.File) ([]*os.File, error) {
 	}
 	owned := make([]*os.File, 0, len(files))
 	for _, f := range files {
-		fd, err := unix.FcntlInt(f.Fd(), unix.F_DUPFD_CLOEXEC, 0)
-		runtime.KeepAlive(f)
+		var fd int
+		err := withRawFDs([]*os.File{f}, func(raw []int) error {
+			var dupErr error
+			fd, dupErr = dupFD(raw[0])
+			return dupErr
+		})
 		if err != nil {
 			closeFiles(owned)
 			return nil, fmt.Errorf("workerproc: duplicate request descriptor: %w", err)
@@ -274,4 +277,34 @@ func dupFiles(files []*os.File) ([]*os.File, error) {
 		owned = append(owned, os.NewFile(uintptr(fd), "worker-request"))
 	}
 	return owned, nil
+}
+
+// dupFD is a seam so tests can exhaust descriptors on demand.
+var dupFD = func(fd int) (int, error) { return unix.FcntlInt(uintptr(fd), unix.F_DUPFD_CLOEXEC, 0) }
+
+// withRawFDs runs fn with the raw descriptors of files, each held open for
+// the duration. It never calls Fd: that switches the descriptor to blocking
+// mode, and O_NONBLOCK lives on the open file description the caller shares,
+// so even a duplicate would leave the caller's pipe without deadlines.
+func withRawFDs(files []*os.File, fn func([]int) error) error {
+	raw := make([]int, 0, len(files))
+	var hold func(i int) error
+	hold = func(i int) error {
+		if i == len(files) {
+			return fn(raw)
+		}
+		rc, err := files[i].SyscallConn()
+		if err != nil {
+			return err
+		}
+		var inner error
+		if err := rc.Control(func(fd uintptr) {
+			raw = append(raw, int(fd)) // #nosec G115 -- a descriptor always fits in int.
+			inner = hold(i + 1)
+		}); err != nil {
+			return err
+		}
+		return inner
+	}
+	return hold(0)
 }

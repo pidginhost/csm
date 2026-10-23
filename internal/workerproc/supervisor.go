@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -49,7 +50,27 @@ var (
 	ErrTimeout       = errors.New("deadline exceeded; worker killed")
 	ErrSpawn         = errors.New("worker did not start")
 	ErrFrameTooLarge = errors.New("request exceeds frame cap")
+	// ErrWorkerFailed marks a failure the worker caused: a timeout, a broken
+	// socket, an Error frame, or a reply the caller rejected. Errors that
+	// carry it have their own text; this sentinel only classifies them.
+	ErrWorkerFailed = errors.New("worker failed")
 )
+
+// workerFailure tags a round-trip error as ErrWorkerFailed without changing
+// its text, which callers already report as coverage-gap reasons.
+type workerFailure struct{ err error }
+
+func (e workerFailure) Error() string        { return e.err.Error() }
+func (e workerFailure) Unwrap() error        { return e.err }
+func (e workerFailure) Is(target error) bool { return target == ErrWorkerFailed }
+
+// localExhaustion reports the daemon running out of descriptors. That is not
+// the worker's fault, and outside load can push the daemon there, so it must
+// neither kill a healthy worker nor count toward the breaker: otherwise
+// exhausting the daemon's descriptors would switch the worker off.
+func localExhaustion(err error) bool {
+	return errors.Is(err, syscall.EMFILE) || errors.Is(err, syscall.ENFILE)
+}
 
 // Config describes one kind of worker.
 type Config struct {
@@ -198,6 +219,20 @@ func (s *Supervisor) callLocked(ctx context.Context, req Frame, fds []*os.File, 
 		// toward the breaker.
 		return Frame{}, nil, fmt.Errorf("%w: %d > %d bytes", ErrFrameTooLarge, len(body), s.cfg.Limits.MaxFrameBytes)
 	}
+	// Duplicated before any launch or send, so that running out of
+	// descriptors is seen as the daemon's condition, not the worker's. The
+	// copies also outlive a canceled call: the send goroutine owns them.
+	ownedFDs, err := dupFiles(fds)
+	if err != nil {
+		work.fail()
+		return Frame{}, nil, fmt.Errorf("%s: %w", s.cfg.Name, err)
+	}
+	handedOff := false
+	defer func() {
+		if !handedOff {
+			closeFiles(ownedFDs)
+		}
+	}()
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return Frame{}, nil, ctxErr
 	}
@@ -213,6 +248,9 @@ func (s *Supervisor) callLocked(ctx context.Context, req Frame, fds []*os.File, 
 				return Frame{}, nil, ctxErr
 			}
 			work.fail()
+			if localExhaustion(launchErr) {
+				return Frame{}, nil, fmt.Errorf("%w: %w", ErrSpawn, launchErr)
+			}
 			s.recordFailureLocked()
 			return Frame{}, nil, fmt.Errorf("%w: %v", ErrSpawn, launchErr)
 		}
@@ -221,7 +259,8 @@ func (s *Supervisor) callLocked(ctx context.Context, req Frame, fds []*os.File, 
 		s.lastPID = proc.PID()
 	}
 
-	reply, replyFDs, lost, err := s.roundTripLocked(ctx, body, fds, check, work)
+	handedOff = true
+	reply, replyFDs, lost, err := s.roundTripLocked(ctx, body, ownedFDs, check, work)
 	if err != nil {
 		canceled := errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 		if !canceled {
@@ -237,10 +276,10 @@ func (s *Supervisor) callLocked(ctx context.Context, req Frame, fds []*os.File, 
 			// cooldown has to be re-armed or a caller that cancels can spend
 			// one spawn per request while the breaker is nominally open.
 			s.rearmBreakerLocked()
-		} else {
-			s.recordFailureLocked()
+			return Frame{}, nil, err
 		}
-		return Frame{}, nil, err
+		s.recordFailureLocked()
+		return Frame{}, nil, workerFailure{err}
 	}
 	s.consecutive = 0
 	if lost {
@@ -283,14 +322,10 @@ func (s *Supervisor) breakerOpenLocked() bool {
 // configured timeout. The socket round trip runs on its own goroutine because
 // the child may stop before reading the complete request or never answer. The
 // goroutine ends when killLocked closes the socket; a reply it reads after
-// the caller gave up has its descriptors closed there.
-func (s *Supervisor) roundTripLocked(ctx context.Context, body []byte, fds []*os.File, check Check, work *requestWork) (Frame, []*os.File, bool, error) {
-	// Cancellation can return before the goroutine reaches sendmsg. Give it
-	// its own files and slice before the caller can close or reuse either.
-	ownedFDs, err := dupFiles(fds)
-	if err != nil {
-		return Frame{}, nil, false, err
-	}
+// the caller gave up has its descriptors closed there. The goroutine owns
+// ownedFDs and closes them once sent: cancellation can return before it
+// reaches sendmsg, so they must not be the caller's files.
+func (s *Supervisor) roundTripLocked(ctx context.Context, body []byte, ownedFDs []*os.File, check Check, work *requestWork) (Frame, []*os.File, bool, error) {
 	c := s.child
 	type result struct {
 		frame Frame
