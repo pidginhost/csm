@@ -144,6 +144,7 @@ function renderFindings(data) {
             ' data-check="' + CSM.esc(f.check) + '"' +
             ' data-message="' + CSM.esc(f.message) + '"' +
             ' data-details="' + CSM.esc(f.details || '') + '"' +
+            ' data-context="' + CSM.esc(f.context || '') + '"' +
             ' data-filepath="' + CSM.esc(f.file_path || '') + '"' +
             ' data-account="' + CSM.esc(f.account || '') + '"' +
             ' data-block-ip="' + CSM.esc(f.block_ip || '') + '"' +
@@ -938,6 +939,7 @@ function toggleFindingDetail(row) {
         CSM.urlState.set({ key: '' });
     }
     var filepath = row.getAttribute('data-filepath') || '';
+    var context = row.getAttribute('data-context') || '';
     var account = row.getAttribute('data-account') || '';
     var blockIP = row.getAttribute('data-block-ip') || '';
 
@@ -960,6 +962,7 @@ function toggleFindingDetail(row) {
             html += '<div class="mb-2"><strong>Check:</strong> <code>' + CSM.esc(check) + '</code></div>';
             html += '<div class="mb-2"><strong>Message:</strong><br>' + CSM.esc(message) + '</div>';
             if (filepath) html += '<div class="mb-2"><strong>File:</strong> <code class="csm-break-all">' + CSM.esc(filepath) + '</code></div>';
+            if (context) html += '<div class="mb-2"><strong>Context:</strong><div class="csm-detail csm-break-all">' + CSM.esc(context) + '</div></div>';
             if (data.first_seen) html += '<div class="mb-2"><strong>First seen:</strong> ' + CSM.esc(CSM.fmtDate(data.first_seen)) + '</div>';
             if (data.last_seen) html += '<div class="mb-2"><strong>Last seen:</strong> ' + CSM.esc(CSM.fmtDate(data.last_seen)) + '</div>';
             var actions = data.actions || [];

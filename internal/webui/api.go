@@ -195,6 +195,7 @@ func (s *Server) apiFindings(w http.ResponseWriter, _ *http.Request) {
 		Check     string    `json:"check"`
 		Message   string    `json:"message"`
 		Details   string    `json:"details,omitempty"`
+		Context   string    `json:"context,omitempty"`
 		Time      time.Time `json:"time"`
 		FirstSeen time.Time `json:"first_seen"`
 		LastSeen  time.Time `json:"last_seen"`
@@ -222,6 +223,7 @@ func (s *Server) apiFindings(w http.ResponseWriter, _ *http.Request) {
 			Check:     f.Check,
 			Message:   f.Message,
 			Details:   f.Details,
+			Context:   f.Context,
 			Time:      f.Timestamp.UTC(),
 			FirstSeen: firstSeen.UTC(),
 			LastSeen:  lastSeen.UTC(),
@@ -238,6 +240,7 @@ type enrichedFinding struct {
 	Check         string    `json:"check"`
 	Message       string    `json:"message"`
 	Details       string    `json:"details,omitempty"`
+	Context       string    `json:"context,omitempty"`
 	FilePath      string    `json:"file_path,omitempty"`
 	Account       string    `json:"account,omitempty"`
 	FirstSeen     time.Time `json:"first_seen"`
@@ -326,6 +329,7 @@ func (s *Server) apiFindingsEnriched(w http.ResponseWriter, r *http.Request) {
 			Check:         f.Check,
 			Message:       f.Message,
 			Details:       f.Details,
+			Context:       f.Context,
 			FilePath:      f.FilePath,
 			Account:       extractAccountFromFinding(f),
 			FirstSeen:     firstSeen.UTC(),

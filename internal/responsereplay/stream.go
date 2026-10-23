@@ -115,6 +115,7 @@ type wireEvent struct {
 	Check     string       `json:"check"`
 	Message   string       `json:"message"`
 	Details   string       `json:"details,omitempty"`
+	Context   string       `json:"context,omitempty"`
 	FilePath  string       `json:"file_path,omitempty"`
 	Hostname  string       `json:"hostname"`
 	TenantID  string       `json:"tenant_id,omitempty"`
@@ -273,7 +274,7 @@ func decodeStrict(data []byte, v any) error {
 
 var timeType = reflect.TypeFor[time.Time]()
 
-var longTextFields = map[string]bool{"message": true, "details": true, "file_path": true, "exe": true, "cmdline": true}
+var longTextFields = map[string]bool{"message": true, "details": true, "context": true, "file_path": true, "exe": true, "cmdline": true}
 
 func checkObject(dec *json.Decoder, t reflect.Type, depth map[reflect.Type]int) error {
 	if t.Kind() == reflect.Map && t.Key().Kind() == reflect.String {

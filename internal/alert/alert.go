@@ -72,6 +72,12 @@ type Finding struct {
 	Check       string   `json:"check"`
 	Message     string   `json:"message"`
 	Details     string   `json:"details,omitempty"`
+	// Context is background an operator needs beside the finding, such as the
+	// ModSecurity state of the account it concerns. It is outside Key,
+	// Fingerprint and every other identity on purpose: the background can
+	// change while the condition stays the same, and that change must not
+	// re-alert or undo a dismissal. Renderers show it after Details.
+	Context string `json:"context,omitempty"`
 	// CoverageScope identifies a scanner-owned unit that can be retired after
 	// complete coverage. Empty legacy scopes require whole-check completion.
 	// It is opaque, contains no credentials, and does not change dedup identity.
@@ -194,6 +200,9 @@ func (f Finding) String() string {
 	s := fmt.Sprintf("[%s] %s - %s", f.Severity, f.Check, f.Message)
 	if f.Details != "" {
 		s += "\n  " + strings.ReplaceAll(f.Details, "\n", "\n  ")
+	}
+	if f.Context != "" {
+		s += "\n  " + strings.ReplaceAll(f.Context, "\n", "\n  ")
 	}
 	if f.ProcessInfo != "" {
 		s += fmt.Sprintf("\n  Process: %s", f.ProcessInfo)

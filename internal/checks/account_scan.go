@@ -182,7 +182,9 @@ func RunAccountScanWithOptions(ctx context.Context, cfg *config.Config, store *s
 		}
 	}
 
-	return stampTenantIDIfEmpty(filtered, account)
+	filtered = stampTenantIDIfEmpty(filtered, account)
+	annotateModsecDisabledMalware(platform.Detect(), filtered)
+	return filtered
 }
 
 // runAccountChecksBounded runs checks under the host-wide scan budget.
