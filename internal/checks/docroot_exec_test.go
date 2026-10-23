@@ -2,7 +2,10 @@ package checks
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +16,7 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/yara"
+	"github.com/pidginhost/csm/internal/yaraipc"
 )
 
 // docrootExecBackend reports a critical match for content carrying the
@@ -161,7 +165,7 @@ func TestInspectDocrootExecWarnsWhenPHPStartsCleanProgram(t *testing.T) {
 // Web servers run CGI programs from document roots, and build tools such as
 // esbuild run from node_modules. Neither is reported without a malware match.
 func TestInspectDocrootExecQuietForCleanProgramFromOtherLaunchers(t *testing.T) {
-	for _, parent := range []string{"lscgid", "httpd", "node", "bash", "crond", "phpstorm"} {
+	for _, parent := range []string{"lscgid", "httpd", "suexec", "node", "bash", "crond", "phpstorm"} {
 		t.Run(parent, func(t *testing.T) {
 			f := newDocrootExecFixture(t)
 			path := f.write(t, "cgi-bin/cgiecho", testELFHeader+"cgi program")
@@ -416,5 +420,169 @@ func TestIsPHPInterpreterComm(t *testing.T) {
 		if got := isPHPInterpreterComm(comm); got != want {
 			t.Errorf("isPHPInterpreterComm(%q) = %v, want %v", comm, got, want)
 		}
+	}
+}
+
+func TestInspectDocrootExecRechecksRaisedScanLimit(t *testing.T) {
+	f := newDocrootExecFixture(t)
+	path := f.write(t, "big", testELFHeader+strings.Repeat("A", 1<<20)+"payload-fetcher")
+	f.procs[700] = path
+	cfg := &config.Config{}
+	cfg.Thresholds.FullScanMaxFileMB = 1
+	if got := InspectDocrootExec(cfg, 700, 1001, path, "bash", f.roots); got != nil {
+		t.Fatalf("oversize program: %+v", got)
+	}
+	cfg.Thresholds.FullScanMaxFileMB = 2
+	if got := InspectDocrootExec(cfg, 700, 1001, path, "bash", f.roots); got == nil || got.Severity != alert.Critical {
+		t.Fatalf("raised limit retained an unscanned verdict: %+v", got)
+	}
+}
+
+func TestInspectDocrootExecSameSizeRewriteInvalidatesCache(t *testing.T) {
+	f := newDocrootExecFixture(t)
+	path := f.write(t, "tool", testELFHeader+strings.Repeat("x", len("payload-fetcher")))
+	f.procs[701] = path
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := InspectDocrootExec(nil, 701, 1001, path, "bash", f.roots); got != nil {
+		t.Fatalf("clean program: %+v", got)
+	}
+	time.Sleep(10 * time.Millisecond)
+	f.write(t, "tool", testELFHeader+"payload-fetcher")
+	if err = os.Chtimes(path, before.ModTime(), before.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Stat(path)
+	if err != nil || !os.SameFile(before, after) || before.Size() != after.Size() || !before.ModTime().Equal(after.ModTime()) {
+		t.Fatalf("fixture did not retain inode, size and mtime: %v", err)
+	}
+	if got := InspectDocrootExec(nil, 701, 1001, path, "bash", f.roots); got == nil || got.Severity != alert.Critical {
+		t.Fatalf("same-size rewrite retained a clean verdict: %+v", got)
+	}
+	if got := f.backend.scans.Load(); got != 2 {
+		t.Fatalf("scans = %d, want 2", got)
+	}
+}
+
+func TestInspectDocrootExecRejectsPermissionFallback(t *testing.T) {
+	f := newDocrootExecFixture(t)
+	path := f.write(t, "tool", testELFHeader+"payload-fetcher")
+	osFS.(*mockOS).readlink = func(string) (string, error) { return "", os.ErrPermission }
+	if got := InspectDocrootExec(nil, 702, 1001, path, "lsphp", f.roots); got != nil {
+		t.Fatalf("permission failure treated as an exited process: %+v", got)
+	}
+	if len(f.opens) != 0 {
+		t.Fatalf("opened fallback on permission failure: %v", f.opens)
+	}
+}
+
+// The worker fallback must read the pinned inode even when the start name
+// has been replaced after the inline scan was rejected.
+type docrootPathRetryBackend struct {
+	docrootExecBackend
+	beforeRetry func()
+	retryPath   string
+}
+
+func (b *docrootPathRetryBackend) ScanBytesChecked([]byte) ([]yara.Match, error) {
+	b.beforeRetry()
+	return nil, yaraipc.ErrPayloadTooLarge
+}
+
+func (b *docrootPathRetryBackend) ScanFileChecked(path string, _ int) (yara.FileScanResult, error) {
+	b.retryPath = path
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return yara.FileScanResult{}, err
+	}
+	matches, err := b.docrootExecBackend.ScanBytesChecked(data)
+	sum := sha256.Sum256(data)
+	return yara.FileScanResult{Matches: matches, ContentSHA256: fmt.Sprintf("%x", sum)}, err
+}
+
+func TestInspectDocrootExecCacheBound(t *testing.T) {
+	f := newDocrootExecFixture(t)
+	for i := 0; i < docrootBinaryCacheMax+2; i++ {
+		path := f.write(t, fmt.Sprintf("tool-%d", i), testELFHeader+"payload-fetcher")
+		f.procs[703] = path
+		if got := InspectDocrootExec(nil, 703, 1001, path, "bash", f.roots); got == nil || got.Severity != alert.Critical {
+			t.Fatalf("program %d: %+v", i, got)
+		}
+		docrootBinaryCache.Lock()
+		n := len(docrootBinaryCache.verdicts)
+		docrootBinaryCache.Unlock()
+		if n > docrootBinaryCacheMax {
+			t.Fatalf("cache retained %d entries", n)
+		}
+	}
+	if n := f.backend.scans.Load(); n != docrootBinaryCacheMax+2 {
+		t.Fatalf("scans = %d, want one per distinct inode", n)
+	}
+}
+
+func TestInspectDocrootBinaryReadsOnlyHeaderForRejectedContent(t *testing.T) {
+	for _, program := range []bool{false, true} {
+		t.Run(fmt.Sprintf("program=%t", program), func(t *testing.T) {
+			f := newDocrootExecFixture(t)
+			prefix := "#!/bin/sh\n"
+			if program {
+				prefix = testELFHeader
+			}
+			path := f.write(t, "large", prefix)
+			file, err := os.OpenFile(path, os.O_RDWR, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer file.Close()
+			if err = file.Truncate(2 << 20); err != nil {
+				t.Fatal(err)
+			}
+			cfg := &config.Config{}
+			cfg.Thresholds.FullScanMaxFileMB = 1
+			v, ok := inspectDocrootBinary(cfg, file)
+			if !ok || v.program != program || (program && v.gap == "") {
+				t.Fatalf("verdict = %+v, ok = %v", v, ok)
+			}
+			// Header inspection uses ReadAt. A body read would advance the
+			// shared descriptor offset and reveal work past admission.
+			if pos, err := file.Seek(0, io.SeekCurrent); err != nil || pos != 0 {
+				t.Fatalf("body consumed: offset=%d, err=%v", pos, err)
+			}
+			if f.backend.scans.Load() != 0 {
+				t.Fatal("scanned rejected content")
+			}
+		})
+	}
+}
+
+func TestCheckSuspiciousProcessesHonorsCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var reads int
+	withMockOS(t, &mockOS{glob: func(string) ([]string, error) {
+		reads++
+		return nil, nil
+	}})
+	if got := CheckSuspiciousProcesses(ctx, &config.Config{}, nil); len(got) != 0 {
+		t.Fatalf("cancelled process check returned findings: %+v", got)
+	}
+	if reads != 0 {
+		t.Fatalf("cancelled process check performed %d filesystem searches", reads)
+	}
+}
+
+func TestInspectDocrootExecDoesNotRewriteExitedStartPath(t *testing.T) {
+	f := newDocrootExecFixture(t)
+	f.write(t, "tool", testELFHeader+"payload-fetcher")
+	// Lexical cleaning would silently replace a nonexistent start path
+	// with a different file. A symlink before '..' is ambiguous as well.
+	filename := f.docroot + "/missing/../tool"
+	if got := InspectDocrootExec(nil, 706, 1001, filename, "lsphp", f.roots); got != nil {
+		t.Fatalf("rewrote the exited program's start path: %+v", got)
+	}
+	if len(f.opens) != 0 {
+		t.Fatalf("opened an ambiguous fallback: %v", f.opens)
 	}
 }

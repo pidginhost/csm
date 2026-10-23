@@ -28,14 +28,13 @@ func stubDocrootInspect(t *testing.T, fn func(pid int, filename, parentComm stri
 	t.Cleanup(func() { inspectDocrootExec = old })
 }
 
-// The exec event loop only filters: a start that cannot run a program from a
-// document root never reaches the inspection queue.
+// The exec event loop filters root starts without resolving tenant paths.
 func TestDocrootExecObserveFiltersWithoutIO(t *testing.T) {
 	m := newTestDocrootExecMonitor(t, make(chan alert.Finding, 1))
 	for _, ev := range []ExecEvent{
-		{UID: 1001, PID: 10, Filename: "/usr/bin/php"},
-		{UID: 1001, PID: 11, Filename: "/home/alice/bin/tool"},
-		{UID: 1001, PID: 12, Filename: "/home/alice/public_html_old/x"},
+		{UID: 0, PID: 10, Filename: "/usr/bin/php"},
+		{UID: 0, PID: 11, Filename: "/home/alice/bin/tool"},
+		{UID: 0, PID: 12, Filename: "/home/alice/public_html_old/x"},
 		{UID: 0, PID: 13, Filename: "/home/alice/public_html/x"},
 	} {
 		m.observe(ev)
@@ -149,5 +148,71 @@ func TestDocrootExecStopAccountsForPendingStarts(t *testing.T) {
 	}
 	if got := uint64(inspected.Load()) + status.DroppedTotal; got != starts {
 		t.Fatalf("inspected %d + dropped %d = %d, want %d", inspected.Load(), status.DroppedTotal, got, starts)
+	}
+}
+
+func TestDocrootExecQueuesAbsoluteAliases(t *testing.T) {
+	m := newTestDocrootExecMonitor(t, make(chan alert.Finding, 1))
+	// The started name may be a symlink outside the web root. Only the
+	// worker's /proc lookup can establish the executable's real location.
+	m.observe(ExecEvent{UID: 1001, PID: 42, Filename: "/home/alice/bin/link-to-webroot"})
+	if depth := m.queue.Snapshot(time.Now()).Depth; depth != 1 {
+		t.Fatalf("queued %d starts, want the unresolved absolute alias", depth)
+	}
+}
+
+func TestDocrootExecCancellationDoesNotInspectPendingStarts(t *testing.T) {
+	m := newTestDocrootExecMonitor(t, make(chan alert.Finding, 1))
+	var inspected atomic.Int64
+	stubDocrootInspect(t, func(int, string, string, *checks.DocrootIndex) *alert.Finding {
+		inspected.Add(1)
+		return nil
+	})
+	for i := 0; i < 64; i++ {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		m.observe(ExecEvent{UID: 1001, PID: 42, Filename: "/home/alice/public_html/x"})
+		m.run(ctx, func(*alert.Finding, ExecEvent) {})
+	}
+	m.queue.Close()
+	m.queue.DiscardPending()
+	if got := inspected.Load(); got != 0 {
+		t.Fatalf("inspected %d starts after cancellation", got)
+	}
+	if got := m.queue.Snapshot(time.Now()); got.DroppedTotal != 64 || got.Depth != 0 || got.InFlight != 0 {
+		t.Fatalf("cancelled queue = %+v, want all pending starts counted as lost", got)
+	}
+}
+
+func TestDocrootExecObserveDoesNotAllocate(t *testing.T) {
+	m := newTestDocrootExecMonitor(t, make(chan alert.Finding, 1))
+	// Non-canonical absolute names must stay on the I/O-free admission path.
+	ev := ExecEvent{UID: 1001, PID: 42, Filename: "/home/alice/bin/../bin/link"}
+	allocs := testing.AllocsPerRun(1000, func() {
+		m.observe(ev)
+		work := <-m.queue.Items()
+		work.Ticket.Finish(time.Now())
+	})
+	if allocs != 0 {
+		t.Fatalf("observe allocated %g times per start", allocs)
+	}
+}
+
+func TestDocrootExecCountsFindingLostAtShutdown(t *testing.T) {
+	alertCh := make(chan alert.Finding, 1)
+	m := newTestDocrootExecMonitor(t, alertCh)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stubDocrootInspect(t, func(int, string, string, *checks.DocrootIndex) *alert.Finding {
+		cancel()
+		return &alert.Finding{Check: "docroot_binary_exec", Severity: alert.Critical}
+	})
+	m.observe(ExecEvent{UID: 1001, PID: 42, Filename: "/home/alice/public_html/x"})
+	m.run(ctx, func(*alert.Finding, ExecEvent) {})
+	if len(alertCh) != 0 {
+		t.Fatal("published a finding after shutdown")
+	}
+	if got := m.queue.Snapshot(time.Now()); got.DroppedTotal != 1 || got.Depth != 0 || got.InFlight != 0 {
+		t.Fatalf("lost finding was not accounted: %+v", got)
 	}
 }

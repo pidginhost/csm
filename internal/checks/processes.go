@@ -179,6 +179,9 @@ func CheckFakeKernelThreads(ctx context.Context, _ *config.Config, _ *state.Stor
 
 func CheckSuspiciousProcesses(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
+	if ctx.Err() != nil {
+		return nil
+	}
 
 	suspiciousNames := suspiciousExeNames
 	suspiciousCmdline := suspiciousCmdlinePatterns
@@ -187,6 +190,9 @@ func CheckSuspiciousProcesses(ctx context.Context, cfg *config.Config, _ *state.
 
 	procs, _ := osFS.Glob("/proc/[0-9]*/exe")
 	for _, exePath := range procs {
+		if ctx.Err() != nil {
+			break
+		}
 		pid := filepath.Base(filepath.Dir(exePath))
 		pidInt, _ := strconv.Atoi(pid)
 

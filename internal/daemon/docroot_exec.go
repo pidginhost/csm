@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -59,14 +58,10 @@ func (m *docrootExecMonitor) refreshRoots() {
 	m.roots.Store(checks.NewDocrootIndex(checks.ResolveWebRoots(m.currentCfg())))
 }
 
-// observe runs on the exec event loop and does no I/O. An absolute start name
-// outside every document root cannot be a program from one. A relative name
-// is queued because only /proc can resolve it.
+// observe runs on the exec event loop and does no I/O. Even an absolute
+// start name can be an alias into a document root; only /proc can resolve it.
 func (m *docrootExecMonitor) observe(ev ExecEvent) {
 	if ev.UID == 0 {
-		return
-	}
-	if filepath.IsAbs(ev.Filename) && m.roots.Load().Lookup(ev.Filename) == "" {
 		return
 	}
 	m.queue.TrySend(ev)
@@ -83,15 +78,26 @@ func (m *docrootExecMonitor) run(ctx context.Context, attach func(*alert.Finding
 	refresh := time.NewTicker(docrootExecRefreshInterval)
 	defer refresh.Stop()
 	for {
+		if ctx.Err() != nil {
+			return
+		}
 		select {
 		case <-ctx.Done():
 			return
 		case <-refresh.C:
 			m.refreshRoots()
 		case work := <-m.queue.Items():
+			if ctx.Err() != nil {
+				work.Ticket.Reject(time.Now())
+				return
+			}
 			work.Process(func(ev ExecEvent) {
 				f := inspectDocrootExec(m.currentCfg(), int(ev.PID), int(ev.UID), ev.Filename, ev.ParentComm, m.roots.Load())
 				if f == nil {
+					return
+				}
+				if ctx.Err() != nil {
+					m.queue.Lose(1)
 					return
 				}
 				attach(f, ev)

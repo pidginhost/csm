@@ -3,17 +3,22 @@ package checks
 import (
 	"bytes"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/processctx"
+	"github.com/pidginhost/csm/internal/safepath"
 	"github.com/pidginhost/csm/internal/yara"
 )
 
@@ -28,9 +33,11 @@ type docrootBinaryVerdict struct {
 }
 
 type docrootBinaryKey struct {
-	id      selfWriteFileIdentity
-	size    int64
-	version string
+	id             selfWriteFileIdentity
+	size           int64
+	version        string
+	maxBytes       int64
+	yaraGeneration uint64
 }
 
 // docrootBinaryCacheMax bounds the verdict cache. Reaching it drops the whole
@@ -75,17 +82,40 @@ func InspectDocrootExec(cfg *config.Config, pid, uid int, filename, parentComm s
 	if target, err := osFS.Readlink(source); err == nil {
 		// The kernel keeps a deleted program running and marks its path.
 		exe = strings.TrimSuffix(target, " (deleted)")
-	} else if filepath.IsAbs(filename) {
-		exe = filepath.Clean(filename)
-		source = exe
 	} else {
-		return nil
+		if !errors.Is(err, os.ErrNotExist) && !errors.Is(err, unix.ESRCH) {
+			return nil
+		}
+		// Cleaning '..' before refusing symlinks can name a different file
+		// than execve did. An exited process cannot disambiguate that path.
+		if !filepath.IsAbs(filename) || filepath.Clean(filename) != filename {
+			return nil
+		}
+		exe, source = filename, filename
 	}
 	docroot := roots.Lookup(exe)
 	if docroot == "" {
 		return nil
 	}
-	v, ok := inspectDocrootBinary(cfg, source)
+	file, err := openDocrootBinary(source, source == procExePath(pid))
+	if err != nil {
+		return nil
+	}
+	defer file.Close()
+	if _, production := osFS.(realOS); production && source == procExePath(pid) {
+		// A PID can exec again between Readlink and Open. Attribute the
+		// pinned image, never the path observed before the open.
+		target, err := osFS.Readlink(fmt.Sprintf("/proc/self/fd/%d", file.Fd()))
+		if err != nil {
+			return nil
+		}
+		exe = strings.TrimSuffix(target, " (deleted)")
+		docroot = roots.Lookup(exe)
+		if docroot == "" {
+			return nil
+		}
+	}
+	v, ok := inspectDocrootBinary(cfg, file)
 	if !ok || !v.program {
 		return nil
 	}
@@ -127,21 +157,34 @@ func InspectDocrootExec(cfg *config.Config, pid, uid int, filename, parentComm s
 	return &finding
 }
 
-// inspectDocrootBinary returns the verdict for the file at path, reading it
-// only when this version of the file has no verdict yet. ok is false when the
-// file cannot be opened or is not a regular file.
-func inspectDocrootBinary(cfg *config.Config, path string) (docrootBinaryVerdict, bool) {
-	file, err := osFS.Open(path)
-	if err != nil {
-		return docrootBinaryVerdict{}, false
+// openDocrootBinary follows only kernel-owned /proc executable links. An
+// exited process's start name is tenant-controlled, including every parent.
+func openDocrootBinary(path string, proc bool) (*os.File, error) {
+	if fs, production := osFS.(realOS); production {
+		if proc {
+			return fs.openRegularFile(path, 0)
+		}
+		dir, err := safepath.OpenDirNoFollow(filepath.Dir(path))
+		if err != nil {
+			return nil, err
+		}
+		defer func() { _ = dir.Close() }()
+		return dir.OpenFile(filepath.Base(path), os.O_RDONLY, 0)
 	}
-	defer func() { _ = file.Close() }()
+	return osFS.Open(path)
+}
+
+// inspectDocrootBinary returns the verdict for the opened image, reading it
+// only when this version of the file has no verdict yet. Non-regular files,
+// failed reads and files changed during the read have no usable verdict.
+func inspectDocrootBinary(cfg *config.Config, file *os.File) (docrootBinaryVerdict, bool) {
 	info, err := file.Stat()
 	if err != nil || !info.Mode().IsRegular() {
 		return docrootBinaryVerdict{}, false
 	}
 	id, keyed := selfWriteIdentityFromFileInfo(info)
-	key := docrootBinaryKey{id: id, size: info.Size(), version: ContentDetectionVersion()}
+	maxBytes := FullScanMaxFileBytes(cfg)
+	key := docrootBinaryKey{id: id, size: info.Size(), version: ContentDetectionVersion(), maxBytes: maxBytes, yaraGeneration: yara.CacheGeneration()}
 	if keyed {
 		docrootBinaryCache.Lock()
 		v, hit := docrootBinaryCache.verdicts[key]
@@ -151,34 +194,57 @@ func inspectDocrootBinary(cfg *config.Config, path string) (docrootBinaryVerdict
 		}
 	}
 
-	maxBytes := FullScanMaxFileBytes(cfg)
-	data, err := io.ReadAll(io.LimitReader(file, maxBytes+1))
-	if err != nil {
+	var header [4]byte
+	_, err = file.ReadAt(header[:], 0)
+	if err != nil && err != io.EOF {
 		return docrootBinaryVerdict{}, false
 	}
-	v := docrootBinaryVerdict{program: bytes.HasPrefix(data, elfMagic)}
+	v := docrootBinaryVerdict{program: bytes.Equal(header[:], elfMagic)}
 	final := true
 	switch {
 	case !v.program:
-	case int64(len(data)) > maxBytes:
+	case info.Size() > maxBytes:
 		v.gap = fmt.Sprintf("it is larger than the %d-byte scan limit", maxBytes)
 	default:
+		data, readErr := io.ReadAll(io.LimitReader(file, maxBytes+1))
+		if readErr != nil || int64(len(data)) != info.Size() {
+			return docrootBinaryVerdict{}, false
+		}
+		afterRead, statErr := file.Stat()
+		if statErr != nil || !sameFileSnapshot(info, afterRead) {
+			return docrootBinaryVerdict{}, false
+		}
+		if readID, ok := selfWriteIdentityFromFileInfo(afterRead); keyed && (!ok || id != readID) {
+			return docrootBinaryVerdict{}, false
+		}
 		v.sha256 = fmt.Sprintf("%x", sha256.Sum256(data))
 		backend := activeYARABackend()
 		if backend == nil || backend.RuleCount() == 0 {
 			v.gap, final = "no YARA rules are loaded", false
 			break
 		}
+		// The worker has its own descriptor table. Keep our descriptor open
+		// through the synchronous retry so exit or rename cannot redirect it.
+		snapshotPath := fmt.Sprintf("/proc/%d/fd/%d", os.Getpid(), file.Fd())
 		// #nosec G115 -- maxBytes is FullScanMaxFileBytes, at most a few hundred MiB.
-		matches, scannedSHA, scanErr := yara.ScanContentOrPathChecked(backend, path, data, int(maxBytes))
+		matches, scannedSHA, scanErr := yara.ScanContentOrPathChecked(backend, snapshotPath, data, int(maxBytes))
 		if scanErr != nil {
 			v.gap, final = "YARA scan failed: "+scanErr.Error(), false
 			break
 		}
-		if scannedSHA != "" {
-			v.sha256 = scannedSHA
+		if scannedSHA != "" && scannedSHA != v.sha256 {
+			return docrootBinaryVerdict{}, false
 		}
 		v.matches = matches
+	}
+	after, err := file.Stat()
+	if err != nil || !sameFileSnapshot(info, after) {
+		final = false
+	}
+	if err == nil {
+		if afterID, ok := selfWriteIdentityFromFileInfo(after); keyed && (!ok || id != afterID) {
+			final = false
+		}
 	}
 	if keyed && final {
 		docrootBinaryCache.Lock()

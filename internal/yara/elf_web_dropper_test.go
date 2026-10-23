@@ -129,6 +129,7 @@ func TestELFWebPayloadDropperRule(t *testing.T) {
 	}{
 		{"static program fetching a PHP payload with wget", buildTestELF(elfStaticExec, wgetTemplate+phpPayloadURL), true},
 		{"static program fetching an .htaccess with wget", buildTestELF(elfStaticExec, wgetTemplate+htaccessURL), true},
+		{"static program fetching root .htaccess", buildTestELF(elfStaticExec, wgetTemplate+"https://dl.example.net/.htaccess\x00"), true},
 		{"static program writing embedded PHP fetched with curl", buildTestELF(elfStaticExec, curlTemplate+phpWriter+archiveURL), true},
 		{"dynamic PIE program fetching a PHP payload", buildTestELF(elfPIE, curlTemplate+phpPayloadURL), true},
 		{"static PIE program fetching a PHP payload", buildTestELF(elfStaticPIE, wgetTemplate+phpPayloadURL), true},

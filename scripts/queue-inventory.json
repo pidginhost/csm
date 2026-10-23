@@ -2160,7 +2160,7 @@
       "rows": [
         "bpf.execution.docroot"
       ],
-      "bounds": "1024 non-root process starts whose program may sit in a document root, read and scanned by one worker. A received start stays in flight until its program is judged and any finding is admitted. Starts refused by a full queue or left waiting at shutdown count as lost; the deep scan and the periodic process check still cover those programs.",
+      "bounds": "1024 non-root process starts, resolved by one worker because absolute launch names may alias a document root. Only document-root images are read and scanned. A received start stays in flight until its program is judged and any finding is admitted. Starts refused by a full queue, starts left waiting at shutdown, and findings suppressed during shutdown count as lost; the deep scan and the periodic process check still cover those programs.",
       "publication": [
         {
           "package": "github.com/pidginhost/csm/internal/daemon",

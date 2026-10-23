@@ -7,6 +7,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/pidginhost/csm/internal/yara"
 )
 
 // ScanBytesChecked is the fail-closed entrypoint: before Start (no worker) it
@@ -56,6 +58,7 @@ func TestSupervisorScanAvailabilityAcrossRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = sup.Stop() }()
+	generation := yara.CacheGeneration()
 	child, err := os.FindProcess(sup.ChildPID())
 	if err != nil {
 		t.Fatal(err)
@@ -74,6 +77,9 @@ func TestSupervisorScanAvailabilityAcrossRestart(t *testing.T) {
 	})
 	if _, err := sup.ScanFileChecked("/unused", 1024); err != nil {
 		t.Fatalf("file scan after restart: %v", err)
+	}
+	if yara.CacheGeneration() == generation {
+		t.Fatal("worker restart retained cached verdicts")
 	}
 	if stable.Load() {
 		t.Fatal("worker reported stable before scan availability was checked")
@@ -109,5 +115,27 @@ func TestSupervisorScanBytesCheckedHealthyWorker(t *testing.T) {
 	}
 	if m != nil {
 		t.Errorf("scripted worker returns no matches, got %v", m)
+	}
+}
+
+func TestSupervisorReloadInvalidatesVerdicts(t *testing.T) {
+	sup, err := NewSupervisor(SupervisorConfig{
+		BinaryPath: os.Args[0], SocketPath: shortSockPath(t),
+		StartTimeout: 3 * time.Second, ClientTimeout: 2 * time.Second,
+		Env: helperEnv("normal"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = sup.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sup.Stop() }()
+	generation := yara.CacheGeneration()
+	if err = sup.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	if yara.CacheGeneration() == generation {
+		t.Fatal("worker reload retained cached verdicts")
 	}
 }

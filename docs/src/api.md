@@ -519,10 +519,12 @@ running until evaluation and delivery to the finding queue finish, including
 events intentionally filtered during evaluation. Kernel ring occupancy and
 reservation failures are separate from these userspace measurements.
 `bpf.execution.docroot` reports up to 1,024 non-root process starts waiting
-for a check of a program in a document root, with one worker reading and
-scanning them. A start refused by a full queue, or left waiting when the exec
-monitor stops, counts as lost; that program is still read by the scheduled
-deep scan and judged by the periodic process check while it runs.
+for a check of a program in a document root. One worker resolves the running
+image before reading and scanning it. All non-root starts enter this queue
+because a launch path outside a document root can be an alias into one.
+Starts refused by a full queue, starts left waiting at shutdown, and findings
+suppressed during shutdown count as lost. The scheduled deep scan still reads
+programs in its scope, and the periodic process check judges running programs.
 `bpf.connection.verdict` reports the advisory annotation pool's 256 waiting
 slots and up to four running callbacks. Repeated findings for a pending
 destination, reason and severity share one request and retain its original age.
