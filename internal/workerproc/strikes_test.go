@@ -40,6 +40,30 @@ func TestStrikesExpireAfterTTL(t *testing.T) {
 	}
 }
 
+func TestStrikesLenDropsExpiredInputs(t *testing.T) {
+	now := time.Unix(1_000_000, 0)
+	s := fixedStrikes(&now)
+	s.Record("expired")
+	s.Record("expired")
+	now = now.Add(StrikeTTL)
+	s.Record("recent")
+	if got := s.Len(); got != 2 {
+		t.Fatalf("Len at expiry boundary = %d, want 2", got)
+	}
+	now = now.Add(time.Second)
+	if got := s.Len(); got != 1 || s.Blocked("expired") {
+		t.Fatalf("Len = %d, want only the recent input", got)
+	}
+	s.Record("recent")
+	if !s.Blocked("recent") {
+		t.Fatal("expiry discarded a recent failure")
+	}
+	now = now.Add(StrikeTTL + time.Second)
+	if got := s.Len(); got != 0 {
+		t.Fatalf("Len = %d after all failures expired, want 0", got)
+	}
+}
+
 func TestStrikesEvictOldestWhenFull(t *testing.T) {
 	now := time.Unix(1_000_000, 0)
 	s := fixedStrikes(&now)

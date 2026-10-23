@@ -321,8 +321,22 @@ discovers WordPress installs only.
 
 | Check | Description |
 |-------|-------------|
-| `phishing` | 8-layer phishing detection (kit directories, credential harvesting). Kit archives are judged from their file list, read one entry at a time without decompression. Unread or malformed directory records leave the check incomplete. |
+| `phishing` | 8-layer phishing detection (kit directories, credential harvesting). Kit archives are judged from their file list, read through an isolated worker without decompression. Unread or malformed directory records leave the check incomplete. |
 | `email_content` | Outbound email body scanning for credentials and suspicious URLs. Oversized headers are checked from a bounded prefix; long padding lines do not discard readable evidence or stop body checks. |
+
+If the ZIP worker is unavailable, the check stays incomplete. ZIP parsing never
+falls back into the daemon. The existing `phishing` entry in `disabled_checks`
+controls the check.
+
+An archive that causes two worker failures within 24 hours is skipped on later
+scans with a `phishing_kit_archive_unscannable` warning naming its path and
+SHA-256. That skip alone does not leave the check incomplete. The failure record
+expires 24 hours after its last failure; it is held in memory and is cleared by
+a daemon restart. Changed content is eligible for scanning, and a file rewritten
+while the worker runs cannot acquire a failure for its replacement contents.
+Malformed listings, canceled scans, and an open worker breaker leave the check
+incomplete without adding failures against the archive. Once all failure records
+expire, scans no longer hash each candidate archive before requesting its list.
 
 The phishing and group-writable PHP scans include dependency and source-control
 folders within their depth budgets. They do not recurse through directory

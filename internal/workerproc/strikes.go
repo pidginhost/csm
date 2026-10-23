@@ -44,7 +44,7 @@ func (s *Strikes) Record(key string) {
 		e = strike{}
 	}
 	if !ok && len(s.entries) >= maxStrikeKeys {
-		// ponytail: linear scan over at most 1,024 keys, on a worker failure only.
+		// A worker failure is rare enough to scan this bounded table.
 		oldest := ""
 		for k, v := range s.entries {
 			if oldest == "" || v.last.Before(s.entries[oldest].last) {
@@ -67,9 +67,16 @@ func (s *Strikes) Blocked(key string) bool {
 	return ok && e.count >= StrikeLimit && s.now().Sub(e.last) <= StrikeTTL
 }
 
-// Len is how many inputs are remembered.
+// Len is how many inputs have unexpired failures. Dropping expired entries
+// lets callers avoid hashing every input once the failure window has passed.
 func (s *Strikes) Len() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	now := s.now()
+	for key, entry := range s.entries {
+		if now.Sub(entry.last) > StrikeTTL {
+			delete(s.entries, key)
+		}
+	}
 	return len(s.entries)
 }

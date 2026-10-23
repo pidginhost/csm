@@ -91,13 +91,8 @@ func TestPhishingZipUnreadDirectoryTailMarksIncomplete(t *testing.T) {
 	if writeErr := os.WriteFile(path, raw, 0o600); writeErr != nil {
 		t.Fatal(writeErr)
 	}
-	f, openErr := os.Open(path)
-	if openErr != nil {
-		t.Fatal(openErr)
-	}
-	defer f.Close()
 	ctx, collector := withIncompleteCheckCollector(context.Background())
-	if phishingKitZipHasEvidence(ctx, f, int64(len(raw))) {
+	if zipLooksLikeKit(ctx, path) {
 		t.Fatal("benign names reported as a kit")
 	}
 	if !collector.contains("phishing") {

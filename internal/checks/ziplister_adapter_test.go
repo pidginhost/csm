@@ -6,10 +6,12 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
@@ -19,6 +21,12 @@ import (
 type fakeZipLister struct {
 	err   error
 	calls int
+}
+
+type zipListerFunc func(context.Context, *os.File, int64, uint64, func(string, bool) error) error
+
+func (fn zipListerFunc) ListZip(ctx context.Context, f *os.File, size int64, max uint64, visit func(string, bool) error) error {
+	return fn(ctx, f, size, max, visit)
 }
 
 func (f *fakeZipLister) ListZip(context.Context, *os.File, int64, uint64, func(string, bool) error) error {
@@ -65,6 +73,84 @@ func TestKitZipWithoutListerIsIncomplete(t *testing.T) {
 	}
 }
 
+func TestKitZipBlockedWithoutListerIsIncomplete(t *testing.T) {
+	useZipLister(t, nil)
+	path := kitZip(t)
+	sum := fileSHA256(t, path)
+	zipStrikes.Record(sum)
+	zipStrikes.Record(sum)
+	ctx, c := withIncompleteCheckCollector(context.Background())
+	if v, _ := classifyKitZip(ctx, path); v != zipNotKit || !c.contains("phishing") {
+		t.Fatalf("missing lister: verdict %v incomplete %v", v, c.contains("phishing"))
+	}
+}
+
+func TestKitZipBlockedCancellationIsIncomplete(t *testing.T) {
+	fake := &fakeZipLister{}
+	useZipLister(t, fake)
+	path := kitZip(t)
+	sum := fileSHA256(t, path)
+	zipStrikes.Record(sum)
+	zipStrikes.Record(sum)
+	ctx, c := withIncompleteCheckCollector(context.Background())
+	ctx, cancel := context.WithCancel(ctx)
+	cancel()
+	if v, _ := classifyKitZip(ctx, path); v != zipNotKit || !c.contains("phishing") || fake.calls != 0 {
+		t.Fatalf("cancellation: verdict %v incomplete %v calls %d", v, c.contains("phishing"), fake.calls)
+	}
+}
+
+func TestKitZipChangedDuringWorkerFailureDoesNotStrike(t *testing.T) {
+	path := kitZip(t)
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	useZipLister(t, zipListerFunc(func(context.Context, *os.File, int64, uint64, func(string, bool) error) error {
+		// Change the same inode to a different, same-size archive while the
+		// worker is running. Its failure cannot identify these new bytes.
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		data[100] ^= 1
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		mtime := before.ModTime().Add(time.Second)
+		if err := os.Chtimes(path, mtime, mtime); err != nil {
+			t.Fatal(err)
+		}
+		return workerproc.ErrWorkerFailed
+	}))
+	ctx, c := withIncompleteCheckCollector(context.Background())
+	if v, _ := classifyKitZip(ctx, path); v != zipNotKit || !c.contains("phishing") {
+		t.Fatalf("changed archive: verdict %v incomplete %v", v, c.contains("phishing"))
+	}
+	if got := zipStrikes.Len(); got != 0 {
+		t.Fatalf("charged worker failure to replacement contents: %d strikes", got)
+	}
+}
+
+func TestZipSHA256RejectsShortRead(t *testing.T) {
+	path := kitZip(t)
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(path, info.Size()-1); err != nil {
+		t.Fatal(err)
+	}
+	if sum, err := zipSHA256(f, info); !errors.Is(err, io.EOF) || sum != "" {
+		t.Fatalf("short read: sum %q error %v", sum, err)
+	}
+}
+
 func TestKitZipWorkerFailureStrikesThenSkips(t *testing.T) {
 	fake := &fakeZipLister{err: fmt.Errorf("parse worker: %w", workerproc.ErrWorkerFailed)}
 	useZipLister(t, fake)
@@ -86,13 +172,24 @@ func TestKitZipWorkerFailureStrikesThenSkips(t *testing.T) {
 }
 
 func TestKitZipIncompleteListingDoesNotStrike(t *testing.T) {
-	useZipLister(t, &fakeZipLister{err: errors.New("zip listing incomplete")})
-	ctx, c := withIncompleteCheckCollector(context.Background())
-	if zipLooksLikeKit(ctx, kitZip(t)) || !c.contains("phishing") {
-		t.Fatal("incomplete listing: want not a kit and incomplete")
-	}
-	if got := zipStrikes.Len(); got != 0 {
-		t.Fatalf("incomplete listing struck the zip: %d", got)
+	for _, err := range []error{
+		errors.New("zip listing incomplete"), context.Canceled, context.DeadlineExceeded,
+		workerproc.ErrBreakerOpen, workerproc.ErrSpawn, workerproc.ErrStopped,
+	} {
+		t.Run(err.Error(), func(t *testing.T) {
+			fake := &fakeZipLister{err: err}
+			useZipLister(t, fake)
+			path := kitZip(t)
+			for range 3 {
+				ctx, c := withIncompleteCheckCollector(context.Background())
+				if v, _ := classifyKitZip(ctx, path); v != zipNotKit || !c.contains("phishing") {
+					t.Fatalf("verdict %v incomplete %v", v, c.contains("phishing"))
+				}
+			}
+			if got := zipStrikes.Len(); got != 0 || fake.calls != 3 {
+				t.Fatalf("non-worker failure: strikes %d calls %d", got, fake.calls)
+			}
+		})
 	}
 }
 

@@ -1907,26 +1907,49 @@ func classifyKitZip(ctx context.Context, path string) (zipVerdict, string) {
 	if !info.Mode().IsRegular() || info.Size() <= 1000 || info.Size() >= maxPhishingZipBytes {
 		return zipNotKit, ""
 	}
+	lister := currentZipLister()
+	if lister == nil || ctx.Err() != nil {
+		markCheckIncomplete(ctx, "phishing")
+		return zipNotKit, ""
+	}
 	if zipStrikes.Len() > 0 {
-		sum, err := zipSHA256(f, info.Size())
-		if err != nil {
-			markScanReadError(ctx, "phishing", err)
+		sum, hashErr := zipSHA256(f, info)
+		if hashErr != nil || ctx.Err() != nil {
+			markCheckIncomplete(ctx, "phishing")
 			return zipNotKit, ""
 		}
 		if zipStrikes.Blocked(sum) {
 			return zipSkipped, sum
 		}
 	}
-	if phishingKitZipHasEvidence(ctx, f, info.Size()) {
+	kit, err := phishingKitZipHasEvidence(ctx, lister, f, info.Size())
+	if err != nil {
+		markCheckIncomplete(ctx, "phishing")
+		if errors.Is(err, workerproc.ErrWorkerFailed) {
+			if sum, hashErr := zipSHA256(f, info); hashErr == nil {
+				zipStrikes.Record(sum)
+			}
+		}
+	}
+	if kit {
 		return zipKit, ""
 	}
 	return zipNotKit, ""
 }
 
-func zipSHA256(f *os.File, size int64) (string, error) {
+func zipSHA256(f *os.File, before os.FileInfo) (string, error) {
 	h := sha256.New()
-	if _, err := io.Copy(h, io.NewSectionReader(f, 0, size)); err != nil {
+	if _, err := io.CopyN(h, io.NewSectionReader(f, 0, before.Size()), before.Size()); err != nil {
 		return "", err
+	}
+	after, err := f.Stat()
+	if err != nil {
+		return "", err
+	}
+	// The tenant can rewrite the open inode while the worker runs or while
+	// we hash it. Such a failure cannot be charged to the replacement bytes.
+	if !SameFileVersion(before, after) {
+		return "", errors.New("zip changed while being checked")
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
@@ -1934,14 +1957,9 @@ func zipSHA256(f *os.File, size int64) (string, error) {
 // phishingKitZipHasEvidence confirms a bounded ZIP using independent entry-name
 // signals. The names come from the parse worker; nothing of the archive is
 // parsed or decompressed in this process.
-func phishingKitZipHasEvidence(ctx context.Context, f *os.File, size int64) bool {
+func phishingKitZipHasEvidence(ctx context.Context, lister ZipLister, f *os.File, size int64) (bool, error) {
 	if size <= 1000 || size >= maxPhishingZipBytes {
-		return false
-	}
-	lister := currentZipLister()
-	if lister == nil {
-		markCheckIncomplete(ctx, "phishing")
-		return false
+		return false, nil
 	}
 
 	capture, credSink, antibot := false, false, false
@@ -2000,17 +2018,9 @@ func phishingKitZipHasEvidence(ctx context.Context, f *os.File, size int64) bool
 		return nil
 	})
 	if errors.Is(err, errKit) {
-		return true
+		return true, nil
 	}
-	if err != nil {
-		markCheckIncomplete(ctx, "phishing")
-		if errors.Is(err, workerproc.ErrWorkerFailed) {
-			if sum, hashErr := zipSHA256(f, size); hashErr == nil {
-				zipStrikes.Record(sum)
-			}
-		}
-	}
-	return false
+	return false, err
 }
 
 func visiblePageContent(s string, includeImageAttrs bool) string {
