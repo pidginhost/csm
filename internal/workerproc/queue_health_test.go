@@ -45,6 +45,7 @@ func (stubProcess) Conn() *net.UnixConn     { return nil }
 func (stubProcess) Kill() error             { return nil }
 func (p stubProcess) Done() <-chan struct{} { return p.done }
 func (stubProcess) PID() int                { return 0 }
+func (stubProcess) Retire() bool            { return false }
 
 // exitedProcess is a Process that has already exited and been reaped.
 func exitedProcess() Process {

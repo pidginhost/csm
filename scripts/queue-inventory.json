@@ -1153,6 +1153,18 @@
       "queue": "php_taint"
     },
     {
+      "id": "internal/workerproc/unit.go::startUnit::done::channel::1",
+      "path": "internal/workerproc/unit.go",
+      "owner": "startUnit",
+      "target": "done",
+      "kind": "channel",
+      "source": "make(chan struct{})",
+      "capacity": "0",
+      "class": "lifecycle",
+      "rationale": "Joins reaping of the systemd-run client; the supervisor waits on it, bounded, after every kill.",
+      "queue": "php_taint"
+    },
+    {
       "id": "internal/workerproc/supervisor.go::*Supervisor.roundTripLocked::abandon::channel::1",
       "path": "internal/workerproc/supervisor.go",
       "owner": "*Supervisor.roundTripLocked",
@@ -3910,6 +3922,59 @@
           "path": "internal/daemon/notification_queue_linux.go",
           "symbol": "notificationQueue.source",
           "shape": "notificationSource"
+        }
+      ]
+    },
+    {
+      "id": "archive_list",
+      "rows": [
+        "archive_list.requests"
+      ],
+      "bounds": "One listing RPC at a time; lock waiters have no fixed global cap. A listing is bounded by the zip size and lives in the worker's memory cgroup.",
+      "publication": [
+        {
+          "package": "github.com/pidginhost/csm/internal/parseworker",
+          "name": "TestListZipQueuePublication",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestParseWorkersLifecycleInstallsLazyLister",
+          "mode": "portable"
+        }
+      ],
+      "lifecycle": [
+        {
+          "package": "github.com/pidginhost/csm/internal/parseworker",
+          "name": "TestListZipCorruptIsIncompleteNotFailure",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/parseworker",
+          "name": "TestListZipRejectsMalformedListing",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/parseworker",
+          "name": "TestListZipWorkerCrash",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/workerproc",
+          "name": "TestIdleWorkerIsStopped",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/workerproc",
+          "name": "TestCallRecyclesAfterMaxJobs",
+          "mode": "portable"
+        }
+      ],
+      "anchors": [
+        {
+          "path": "internal/parseworker/lister.go",
+          "symbol": "Lister.proc",
+          "shape": "*workerproc.Supervisor"
         }
       ]
     },

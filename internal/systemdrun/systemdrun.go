@@ -40,6 +40,11 @@ type Options struct {
 	// when its main process ends. "process" stops only the main process,
 	// for a command that forks work meant to outlive it.
 	KillMode string
+	// Unit names the transient unit, so the caller can stop it by name.
+	// Empty lets systemd pick one.
+	Unit string
+	// Properties are extra unit properties, one --property each.
+	Properties []string
 }
 
 // Argv returns the argv that runs name/args as a transient unit. When
@@ -62,6 +67,12 @@ func Argv(systemdRunPath string, opt Options, name string, args ...string) (stri
 	}
 	if opt.KillMode != "" {
 		flags = append(flags, "--property=KillMode="+opt.KillMode)
+	}
+	if opt.Unit != "" {
+		flags = append(flags, "--unit="+opt.Unit)
+	}
+	for _, p := range opt.Properties {
+		flags = append(flags, "--property="+p)
 	}
 	flags = append(flags, "--")
 	flags = append(flags, name)

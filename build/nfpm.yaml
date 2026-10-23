@@ -17,7 +17,8 @@ contents:
   - src: dist/csm-linux-${ARCH}
     dst: /opt/csm/csm
     file_info:
-      mode: 0700
+      # Execute-only for others: parse worker units run it as a dynamic user.
+      mode: 0711
       owner: root
       group: root
 

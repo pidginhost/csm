@@ -46,5 +46,17 @@
   {
     "Package": "github.com/pidginhost/csm/internal/firewall",
     "Name": "TestKernelKilledBatchLeavesNothingAfterRestart"
+  },
+  {
+    "Package": "github.com/pidginhost/csm/internal/workerproc",
+    "Name": "TestKernelUnitLauncherLockdown"
+  },
+  {
+    "Package": "github.com/pidginhost/csm/internal/workerproc",
+    "Name": "TestKernelStopUnitsKillsLeftovers"
+  },
+  {
+    "Package": "github.com/pidginhost/csm/internal/workerproc",
+    "Name": "TestKernelUnitLauncherMemoryCap"
   }
 ]

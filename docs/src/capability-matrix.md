@@ -71,16 +71,21 @@ or prove the privilege and disable claims; those require tracing the runtime cod
 
 Operations marked "outside the systemd sandbox" run as standalone operator
 commands or transient services forked by PID 1. The latter use direct execution
-on hosts without a reachable systemd service manager. Mixed operations have
+only where their helper permits it; the archive parse worker has no direct
+fallback when systemd is unavailable. Mixed operations have
 separate rows for their in-daemon writes, such as the AF_ALG marker repair and
 forward-guard lookup refresh. The service sandbox does not bound external tools.
+Archive worker memory limits are also written inside the daemon sandbox.
+Their `cgroup:` resources are kernel controls, writable because the packaged
+unit keeps `ProtectControlGroups=no`, rather than ordinary directory grants.
 
 ## Turning most of it off at once
 
 `mode: observe` stops automatic remediation and integration deployment, and
 refuses configurations that enable those subsystems. It still maintains CSM state,
 loads temporary BPF capability probes in BPF builds, and invokes the KernelCare
-probe, which can update its own cache. It is not a guarantee of zero host writes. See
+probe, which can update its own cache. Archive worker startup cleanup and
+on-demand unit launches also remain active. It is not a guarantee of zero host writes. See
 [observe mode](observe-mode.md).
 
 ## The matrix
@@ -116,6 +121,8 @@ below and the current contracts in the JSON inventory. The TIER column of
 | `detect.mail_queue_probe`<br>query the Exim queue through a transient unit, because Exim opens its logs even to answer a read | root | automatic | 2 | /var/log/exim_mainlog, /var/log/exim_paniclog, /var/log/exim4 (outside the systemd sandbox) | `disabled_checks: [mail_queue]` | no | queue depth is unknown, so a queue-size spam outbreak may go undetected |
 | `detect.outbound_connections`<br>watch outbound connections through BPF cgroup hooks, or by polling /proc/net/tcp | CAP_BPF, CAP_NET_ADMIN, root | automatic | 2 | kernel:BPF programs and maps | `detection.connection_tracker_backend: none` | no | auto mode uses polling; an explicitly selected BPF backend stays unavailable |
 | `detect.pam_events`<br>receive authentication attempts from the pam_csm.so hook over a private socket | root | automatic | 0 | /var/run/csm | not configurable | no | no immediate brute-force or credential-stuffing block; log parsing lags by up to a minute |
+| `detect.parse_worker_memory`<br>cap the archive parse worker's memory and swap through kernel cgroup controls inside the daemon sandbox | root | automatic | 2 | cgroup:/sys/fs/cgroup/memory/system.slice/csm-parse-worker-*.service, cgroup:/sys/fs/cgroup/system.slice/csm-parse-worker-*.service | not configurable: disabled_checks only suppresses scheduled phishing checks; requested account scans remain | no | the worker gets no archive request if its memory and swap cannot be capped, and the phishing check reports itself incomplete |
+| `detect.parse_worker_units`<br>start the archive parse worker as a locked-down transient unit and attempt to kill leftover parse worker units at startup | root | automatic | 2 | systemd:transient units (outside the systemd sandbox) | not configurable: disabled_checks only suppresses scheduled phishing checks; requested account scans and startup cleanup remain | no | tenant zip archives are not checked for phishing kits and the phishing check reports itself incomplete |
 | `detect.process_exec`<br>watch process execution through a BPF tracepoint, or by walking /proc | CAP_BPF, CAP_PERFMON, root | automatic | 2 | kernel:BPF programs and maps | `detection.exec_monitor_backend: none` | no | auto mode uses periodic /proc sampling; an explicitly selected BPF backend stays unavailable |
 | `detect.read_service_logs`<br>read mail, authentication, web server and ModSecurity logs | root | automatic | 0 | nothing (read-only) | not configurable | no | no mail abuse, brute-force or WAF detection: these logs are root-readable only |
 | `detect.scan_account_files`<br>read every account's files for scheduled, real-time and on-demand scans | CAP_DAC_READ_SEARCH, root | automatic | 0 | nothing (read-only) | not configurable: disabled_checks only suppresses scheduled checks; realtime and requested scans remain | no | only files readable by CSM's own uid are scanned, which on a shared host is close to nothing |
@@ -189,6 +196,8 @@ the host states the recovery this inventory does not yet cover:
 | --- | --- |
 | `detect.bpf_probe`, `detect.outbound_connections`, `detect.process_exec`, `detect.sensitive_file_writes`, `detect.af_alg_sockets`, `respond.bpf_deny_egress` | This inventory does not yet specify verified detach, map restoration and crash recovery for these kernel hooks. |
 | `detect.kernel_livepatch_probe`, `detect.mail_queue_probe` | This inventory does not specify recovery of incidental external cache or log writes by probe commands. |
+| `detect.parse_worker_memory` | Memory and swap limits end with the worker cgroup; this inventory specifies no separate cleanup contract. |
+| `detect.parse_worker_units` | Worker units and their cgroups end with the unit; startup attempts to kill leftovers and logs failures, but this inventory specifies no contract for that cleanup. |
 | `respond.mail_delivery_gate`, `respond.hold_outgoing_mail`, `respond.suspend_mailbox`, `respond.freeze_mail`, `respond.quarantine_mail` | This inventory does not yet specify identity checks for releasing or restoring mail, or recovery after a restart. |
 | `respond.af_alg_enforce`, `respond.af_alg_marker`, `respond.forward_guard`, `respond.fix_wp_cron`, `integrate.auditd_rules`, `integrate.modsec_section`, `integrate.panel_plugin`, `integrate.php_shield`, `integrate.waf_vendor_rules`, `operate.harden_host`, `operate.install_service`, `operate.rehash`, `operate.restore_backup` | This inventory does not specify an action-wide snapshot and verified rollback of configuration, service and external-tool side effects. |
 | `respond.af_alg_kill`, `respond.kill_process`, `respond.restart_mail_auth` | Process termination and restart cannot restore lost process state; this inventory does not yet specify a full recovery contract. |

@@ -11,6 +11,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Security
 
+- Phishing-kit checks now read tenant zip archives in a separate locked-down process with no network access, so a crafted archive cannot stall the scan.
 - Full account scans now run the YARA rules over the account's website files instead of reporting the account clean without them.
 - Files planted next to detected or quarantined malware at the same time are now scanned, and those no scanner matches are reported for review.
 - Scans now report native Linux programs that download PHP or .htaccess payloads, including ones hidden in theme or plugin folders.
