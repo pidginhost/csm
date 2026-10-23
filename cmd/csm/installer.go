@@ -209,29 +209,9 @@ func (inst *Installer) Install() error {
 		fmt.Printf("  Binary installed to %s\n", inst.BinaryPath)
 	}
 	// WriteFile preserves an existing mode and applies umask to a new file.
-	// This also covers installing from the destination binary itself. Avoid
-	// a no-op chmod on an already-correct immutable binary.
-	binInfo, binErr := os.Stat(inst.BinaryPath)
-	if binErr != nil {
-		return fmt.Errorf("checking installed binary: %w", binErr)
-	}
-	if binInfo.Mode().Perm() != 0711 {
-		// #nosec G302 -- DynamicUser workers need execute access; only the owner may read or write.
-		if err := os.Chmod(inst.BinaryPath, 0711); err != nil {
-			return fmt.Errorf("setting binary permissions: %w", err)
-		}
-	}
-	// Grant workers search access only after securing the binary. State,
-	// rules and quarantine subdirectories keep their private modes.
-	installDir := filepath.Dir(inst.BinaryPath)
-	dirInfo, dirErr := os.Stat(installDir)
-	if dirErr != nil {
-		return fmt.Errorf("checking binary directory: %w", dirErr)
-	}
-	if dirInfo.Mode().Perm()&0011 != 0011 {
-		if err := os.Chmod(installDir, dirInfo.Mode()|0011); err != nil {
-			return fmt.Errorf("setting binary directory permissions: %w", err)
-		}
+	// This also covers installing from the destination binary itself.
+	if err := prepareWorkerExecutable(inst.BinaryPath); err != nil {
+		return err
 	}
 	if err := ensureCommandSymlink(inst.commandSymlinkPath(), inst.BinaryPath); err != nil {
 		return fmt.Errorf("installing command at %s: %w", inst.CommandPath, err)
@@ -692,6 +672,34 @@ func configuredImmutable(path string) bool {
 // than a real fault. Callers downgrade this to a warning so an install is not
 // blocked on filesystems that cannot enforce integrity.immutable.
 var errImmutableUnsupported = errors.New("filesystem or tooling does not support the immutable flag")
+
+// prepareWorkerExecutable sets the binary to 0711 and makes its directory
+// searchable by others: parse worker units run it as a dynamic user. It
+// skips a no-op chmod, which would fail on an immutable binary. State, rules
+// and quarantine subdirectories keep their private modes.
+func prepareWorkerExecutable(binaryPath string) error {
+	binInfo, err := os.Stat(binaryPath)
+	if err != nil {
+		return fmt.Errorf("checking installed binary: %w", err)
+	}
+	if binInfo.Mode().Perm() != 0711 {
+		// #nosec G302 -- DynamicUser workers need execute access; only the owner may read or write.
+		if chmodErr := os.Chmod(binaryPath, 0711); chmodErr != nil {
+			return fmt.Errorf("setting binary permissions: %w", chmodErr)
+		}
+	}
+	installDir := filepath.Dir(binaryPath)
+	dirInfo, err := os.Stat(installDir)
+	if err != nil {
+		return fmt.Errorf("checking binary directory: %w", err)
+	}
+	if dirInfo.Mode().Perm()&0011 != 0011 {
+		if chmodErr := os.Chmod(installDir, dirInfo.Mode()|0011); chmodErr != nil {
+			return fmt.Errorf("setting binary directory permissions: %w", chmodErr)
+		}
+	}
+	return nil
+}
 
 func setBinaryImmutable(path string, enabled bool) error {
 	flag := "-i"
