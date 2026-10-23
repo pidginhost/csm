@@ -112,7 +112,7 @@ func TestCallClosesDescriptorsOfAbandonedReply(t *testing.T) {
 	// w is the pipe's only write end and is never closed by the test: once
 	// the supervisor side closes it, r reads EOF.
 	release := make(chan struct{})
-	s.child = &child{proc: exitedProcess(), conn: &fakeTransport{onReceive: func() (Frame, []*os.File, error) {
+	s.child = &child{proc: liveProcess(), conn: &fakeTransport{onReceive: func() (Frame, []*os.File, error) {
 		<-release
 		return Frame{}, []*os.File{w}, nil
 	}}}

@@ -79,7 +79,7 @@ func TestCallRoundTripErrorsCannotBypassBreaker(t *testing.T) {
 				}
 				wantText += failure.Error()
 				for i := 1; i <= ConsecutiveFailureLimit; i++ {
-					s.child = &child{proc: exitedProcess(), conn: conn}
+					s.child = &child{proc: liveProcess(), conn: conn}
 					_, _, err := s.Call(context.Background(), Frame{Op: "work"}, nil, check)
 					if !errors.Is(err, ErrWorkerFailed) {
 						t.Errorf("Call = %v, want worker failure", err)

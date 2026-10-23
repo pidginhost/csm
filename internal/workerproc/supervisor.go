@@ -276,6 +276,15 @@ func (s *Supervisor) callLocked(ctx context.Context, req Frame, fds []*os.File, 
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return Frame{}, nil, ctxErr
 	}
+	if s.child != nil {
+		select {
+		case <-s.child.proc.Done():
+			// It ended on its own: a lifetime cap, a watchdog, the kernel.
+			// Not this request's fault, and nothing to count against it.
+			s.killLocked()
+		default:
+		}
+	}
 	if s.child == nil {
 		proc, launchErr := s.cfg.Launch(ctx)
 		if launchErr != nil {

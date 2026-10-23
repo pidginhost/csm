@@ -241,6 +241,9 @@ func (p *unitProcess) start(ctx context.Context, cfg UnitConfig, h *unitHooks) e
 		return err
 	}
 	p.limit = cfg.MemoryLimit
+	if cfg.RuntimeMax > 0 {
+		p.retireAt = time.Now().Add(cfg.RuntimeMax - cfg.RuntimeMax/4)
+	}
 	go p.watch(h.pollInterval)
 	return nil
 }
@@ -290,6 +293,8 @@ type unitProcess struct {
 	// usage reads memory and swap in use; limit is the cap it is held to.
 	usage func() (uint64, error)
 	limit uint64
+	// retireAt is three quarters into RuntimeMaxSec; zero means no cap.
+	retireAt time.Time
 }
 
 func (p *unitProcess) Conn() *net.UnixConn   { return p.conn }
@@ -297,8 +302,13 @@ func (p *unitProcess) Done() <-chan struct{} { return p.done }
 func (p *unitProcess) PID() int              { return p.pid }
 
 // Retire asks for a fresh worker once this one holds more than three
-// quarters of its cap after a job, or its usage cannot be read.
+// quarters of its cap after a job, or its usage cannot be read, or it is
+// three quarters into its lifetime cap: systemd ending it mid-request would
+// charge that request's input with a worker failure.
 func (p *unitProcess) Retire() bool {
+	if !p.retireAt.IsZero() && time.Now().After(p.retireAt) {
+		return true
+	}
 	if p.usage == nil {
 		return false
 	}

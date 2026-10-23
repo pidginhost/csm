@@ -239,7 +239,7 @@ func TestRejectedCallsDoNotExtendWorkerIdleTime(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				s := newRecycleSupervisor(t, Config{Launch: helperLauncher(t, "echo"), IdleTimeout: time.Minute})
-				s.child = &child{proc: exitedProcess(), conn: &fakeTransport{
+				s.child = &child{proc: liveProcess(), conn: &fakeTransport{
 					onReceive: func() (Frame, []*os.File, error) { return Frame{}, nil, nil },
 				}}
 				sleepCall(t, s, 0)
@@ -286,7 +286,7 @@ func TestWorkerRemovalDisarmsIdleTimer(t *testing.T) {
 				ctx := context.Background()
 				check := okCheck
 				if mode != "spawn failure" {
-					s.child = &child{proc: exitedProcess(), conn: &fakeTransport{
+					s.child = &child{proc: liveProcess(), conn: &fakeTransport{
 						onReceive: func() (Frame, []*os.File, error) { return Frame{}, nil, nil },
 					}}
 					sleepCall(t, s, 0)
@@ -333,7 +333,7 @@ func TestWorkerRemovalDisarmsIdleTimer(t *testing.T) {
 func TestZeroLifespanSettingsKeepWorker(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		s := newRecycleSupervisor(t, Config{Launch: helperLauncher(t, "echo")})
-		s.child = &child{proc: exitedProcess(), conn: &fakeTransport{
+		s.child = &child{proc: liveProcess(), conn: &fakeTransport{
 			onReceive: func() (Frame, []*os.File, error) { return Frame{}, nil, nil },
 		}}
 		for range 10 {
@@ -346,4 +346,27 @@ func TestZeroLifespanSettingsKeepWorker(t *testing.T) {
 		}
 		waitWorkerQueueIdle(t, s, 0)
 	})
+}
+
+// A worker that ended on its own, at its lifetime cap or by the watchdog, is
+// replaced before the next request rather than failing it.
+func TestCallReplacesWorkerThatExited(t *testing.T) {
+	s := newRecycleSupervisor(t, Config{Launch: helperLauncher(t, "echo")})
+	if _, _, err := s.Call(context.Background(), Frame{Op: "work", Payload: json.RawMessage(`1`)}, nil, okCheck); err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	proc := s.child.proc
+	s.mu.Unlock()
+	if err := proc.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	<-proc.Done()
+	if _, _, err := s.Call(context.Background(), Frame{Op: "work", Payload: json.RawMessage(`1`)}, nil, okCheck); err != nil {
+		t.Fatalf("call after the worker exited: %v", err)
+	}
+	if st := s.Stats(); st.Spawns != 2 || st.ConsecutiveFailures != 0 {
+		t.Fatalf("stats = %+v, want a fresh worker and no failure", st)
+	}
+	waitWorkerQueueIdle(t, s, 0)
 }
