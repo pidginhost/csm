@@ -204,6 +204,12 @@ func (s *Supervisor) callLocked(ctx context.Context, req Frame, fds []*os.File, 
 	if s.child == nil {
 		proc, launchErr := s.cfg.Launch(ctx)
 		if launchErr != nil {
+			if errors.Is(launchErr, context.Canceled) || errors.Is(launchErr, context.DeadlineExceeded) {
+				// A canceled launch is still the caller withdrawing, not a
+				// worker fault. A half-open trial has been consumed, though.
+				s.rearmBreakerLocked()
+				return Frame{}, nil, launchErr
+			}
 			work.fail()
 			s.recordFailureLocked()
 			return Frame{}, nil, fmt.Errorf("%w: %v", ErrSpawn, launchErr)

@@ -163,8 +163,8 @@ func TestSupervisorKillsAndReapsAHungWorker(t *testing.T) {
 	if rep.Status != phptaint.StatusTimeout {
 		t.Fatalf("status = %v (%s), want StatusTimeout", rep.Status, rep.Reason)
 	}
-	if rep.Reason == "" {
-		t.Fatal("timeout reported with no reason; a gap must say why")
+	if rep.Reason != "timeout: analysis exceeded 2s; worker killed" {
+		t.Fatalf("timeout reason = %q", rep.Reason)
 	}
 	if len(rep.Results) != 0 {
 		t.Fatalf("results = %+v, want none from a killed worker", rep.Results)

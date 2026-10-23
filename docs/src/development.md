@@ -1209,6 +1209,12 @@ worker is never used again. Any other failure does the same. Three failures
 in a row pause spawning for 60 seconds, then one trial request is let
 through. Each supervisor publishes a `requests` queue-health row.
 
+Caller cancellation, including during launch, does not count as a worker
+failure or lost request. A canceled trial restarts the breaker cooldown.
+PHP parser panics reported in a valid reply count as lost requests, but do
+not open the breaker or replace the worker. Worker diagnostics must go to
+stderr; stdout carries the protocol socket.
+
 The PHP taint worker (`csm phptaint-worker`) runs on this package. The YARA
 worker moves to it later; until then the section below describes it.
 
