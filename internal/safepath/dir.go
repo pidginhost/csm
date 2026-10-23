@@ -103,6 +103,23 @@ func (d *Dir) OpenFile(name string, flags int, mode os.FileMode) (*os.File, erro
 	return adoptFD(fd, name), nil
 }
 
+// Readlink returns the target of the symlink name inside d without following it.
+func (d *Dir) Readlink(name string) (string, error) {
+	if !validName(name) {
+		return "", fmt.Errorf("invalid basename %q", name)
+	}
+	buf := make([]byte, 4096)
+	n, err := unix.Readlinkat(fileFD(d.file), name, buf)
+	runtime.KeepAlive(d)
+	if err == nil && n == len(buf) {
+		err = unix.ENAMETOOLONG
+	}
+	if err != nil {
+		return "", &os.PathError{Op: "readlinkat", Path: name, Err: err}
+	}
+	return string(buf[:n]), nil
+}
+
 func (d *Dir) Stat(name string) (os.FileInfo, error) {
 	f, err := d.OpenFile(name, os.O_RDONLY, 0)
 	if err != nil {

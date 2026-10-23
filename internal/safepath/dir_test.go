@@ -206,3 +206,26 @@ func TestReplaceToOverwritesWithoutFollowingDestinationSymlink(t *testing.T) {
 		t.Fatalf("source name still present: %v", err)
 	}
 }
+
+func TestDirReadlinkReturnsTargetWithoutFollowing(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Symlink(".elsewhere", filepath.Join(root, "link")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "file"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	d, err := OpenDirNoFollow(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = d.Close() }()
+	if got, err := d.Readlink("link"); err != nil || got != ".elsewhere" {
+		t.Fatalf("Readlink(link) = %q, %v; want the dangling target unchanged", got, err)
+	}
+	for _, name := range []string{"file", "missing", "../link", ""} {
+		if got, err := d.Readlink(name); err == nil {
+			t.Fatalf("Readlink(%q) = %q, want an error", name, got)
+		}
+	}
+}
