@@ -177,9 +177,6 @@ func (s *Supervisor) Stop() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.stopped = true
-	if s.idle != nil {
-		s.idle.Stop()
-	}
 	s.killLocked()
 	return nil
 }
@@ -211,14 +208,13 @@ func (s *Supervisor) Call(ctx context.Context, req Frame, fds []*os.File, check 
 	work.start()
 	reply, replyFDs, err := s.callLocked(ctx, req, fds, check, work)
 	completed = true
-	s.armIdleLocked()
 	return reply, replyFDs, err
 }
 
-// armIdleLocked restarts the idle countdown after a request. The timer
+// armIdleLocked restarts the idle countdown after a served request. The timer
 // cannot stop a worker mid-request: stopIdle needs the lock Call holds.
 func (s *Supervisor) armIdleLocked() {
-	if s.cfg.IdleTimeout <= 0 || s.stopped {
+	if s.cfg.IdleTimeout <= 0 || s.stopped || s.child == nil {
 		return
 	}
 	s.lastUse = s.now()
@@ -339,6 +335,7 @@ func (s *Supervisor) callLocked(ctx context.Context, req Frame, fds []*os.File, 
 		s.logf("%s %d retired", s.cfg.Name, s.child.proc.PID())
 		s.killLocked()
 	}
+	s.armIdleLocked()
 	return reply, replyFDs, nil
 }
 
@@ -463,6 +460,10 @@ func (s *Supervisor) roundTripLocked(ctx context.Context, body []byte, ownedFDs 
 // handled. Closing the socket unblocks the round-trip goroutine so it cannot
 // outlive the child.
 func (s *Supervisor) killLocked() {
+	if s.idle != nil {
+		s.idle.Stop()
+		s.idle = nil
+	}
 	c := s.child
 	if c == nil {
 		return
