@@ -228,8 +228,8 @@ func TestIsBlockingAction(t *testing.T) {
 	cases := map[string]bool{
 		"deny":     true,
 		"drop":     true,
-		"block":    false, // inherits from SecDefaultAction; the registry resolves it
-		"redirect": true,  // request is diverted - never reaches the upstream app
+		"block":    true, // unresolved inheritance must remain conservative
+		"redirect": true, // request is diverted - never reaches the upstream app
 		"proxy":    true,
 		"pause":    true,
 		"pass":     false,
@@ -393,6 +393,49 @@ SecRule ARGS "x" "id:800034,phase:logging,pass"
 		}
 		if r.Phase != want {
 			t.Errorf("rule %d: Phase = %d, want %d", id, r.Phase, want)
+		}
+	}
+}
+
+func TestParseAction_OnlySecRuleArgumentsSupplyMetadata(t *testing.T) {
+	conf := `SecRule ARGS "@rx ,id:5401,phase:2,block" "id:5401,phase:1,deny"
+SecRule ARGS "@rx ,id:5401,chain,block" "msg:'id:5401,phase:4',id:5402,phase:2,drop"
+SecRule ARGS "x" "id:5403,block,msg:'phase:1',logdata:'phase:4'"
+SecRule ARGS "x" "id:5404,phase:1,pass,chain"
+SecRule ARGS "x" "msg:'phase:2'"
+SecRule ARGS "x" "id:5405,phase:1,deny"
+`
+	rules, _, err := parseRules(strings.NewReader(conf))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rules) != 5 {
+		t.Fatalf("parsed %d rules, want 5", len(rules))
+	}
+	for _, want := range []struct {
+		id, phase int
+		action    string
+	}{{5401, 1, "deny"}, {5402, 2, "drop"}, {5403, 0, "block"}, {5404, 1, "pass"}, {5405, 1, "deny"}} {
+		rule := findRule(rules, want.id)
+		if rule == nil || rule.Action != want.action || rule.Phase != want.phase {
+			t.Errorf("rule %d = %+v, want phase %d and action %q", want.id, rule, want.phase, want.action)
+		}
+	}
+}
+
+func TestParseAction_ConfigArgumentForms(t *testing.T) {
+	for _, line := range []string{
+		`SecRule "ARGS" "@rx x" "id:'5601',phase:1,deny"`,
+		`SecRule ARGS '@rx x' 'id:5601,phase:1,deny'`,
+		`SecRule ARGS x id:5601,phase:1,deny`,
+		"secrule\tARGS\t\"x\"\t\"id:5601,phase:1,deny\"",
+	} {
+		rules, _, err := parseRules(strings.NewReader(line))
+		if err != nil || len(rules) != 1 {
+			t.Fatalf("parse %q: rules=%+v err=%v", line, rules, err)
+		}
+		if rule := rules[0]; rule.ID != 5601 || rule.Phase != 1 || rule.Action != "deny" {
+			t.Errorf("parse %q: got %+v", line, rule)
 		}
 	}
 }

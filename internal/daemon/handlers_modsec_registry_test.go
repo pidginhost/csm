@@ -314,3 +314,27 @@ func TestLiteSpeedBlockRuleUnderDenyDefaultsEscalates(t *testing.T) {
 		t.Fatal("block rule under deny defaults did not escalate after threshold hits")
 	}
 }
+
+func TestLiteSpeedExplicitDeniesIgnoreOperatorActions(t *testing.T) {
+	for _, action := range []string{"deny", "drop"} {
+		t.Run(action, func(t *testing.T) {
+			resetModSecState()
+			prev := modsec.Global()
+			t.Cleanup(func() { modsec.SetGlobal(prev) })
+			root := t.TempDir()
+			body := modsecPackPassDefaults + fmt.Sprintf(`SecRule ARGS "@rx ,id:941100,phase:2,block" "id:941100,phase:2,%s"`, action)
+			if err := os.WriteFile(filepath.Join(root, "rules.conf"), []byte(body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			reg, err := modsec.BuildRegistry([]string{root})
+			if err != nil {
+				t.Fatal(err)
+			}
+			modsec.SetGlobal(reg)
+			got := parseModSecLogLine(liteSpeedTriggerLine941100, &config.Config{})
+			if len(got) != 1 || got[0].Check != "modsec_block_realtime" {
+				t.Fatalf("explicit %s produced %+v, want one block", action, got)
+			}
+		})
+	}
+}

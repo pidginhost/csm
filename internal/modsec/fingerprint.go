@@ -31,7 +31,10 @@ func RuleTreeFingerprint(dirs []string) (string, bool) {
 			present = true
 		}
 		fmt.Fprintf(digest, "dir:%q\n", dir)
-		err := walkRuleFiles(dir, func(path string) error {
+		err := walkRuleFiles(dir, func(path string, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
 			fileDigest, err := readRuleFile(path, func(reader io.Reader) error {
 				_, err := io.Copy(io.Discard, reader)
 				return err

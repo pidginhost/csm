@@ -133,6 +133,35 @@ func TestModSecRefreshRebuildsWhenTheSetupFileChanges(t *testing.T) {
 	}
 }
 
+func TestModSecRefreshIncompleteSetupKeepsInheritedBlocks(t *testing.T) {
+	installModSecRegistryForTest(t, map[int]string{1: "deny"})
+	root := t.TempDir()
+	writeModSecPackForTest(t, root, modsecPackDenyDefaults)
+	probe := &modsecRefreshProbe{dirs: []string{root}}
+	probe.install(t)
+	d := &Daemon{}
+	d.refreshModSecRegistry()
+
+	writeModSecPackForTest(t, root, strings.Repeat("#", 9<<20)+"\n"+modsecPackDenyDefaults)
+	d.refreshModSecRegistry()
+	d.refreshModSecRegistry()
+	if probe.builds != 2 {
+		t.Fatalf("stable parse failure should be cached: builds=%d, want 2", probe.builds)
+	}
+	if got := classifyLiteSpeedTrigger("941100"); got != "modsec_block_realtime" {
+		t.Fatalf("unreadable defaults weakened a block: %q", got)
+	}
+
+	writeModSecPackForTest(t, root, modsecPackPassDefaults)
+	d.refreshModSecRegistry()
+	if probe.builds != 3 {
+		t.Fatalf("repaired setup must be reloaded: builds=%d, want 3", probe.builds)
+	}
+	if got := classifyLiteSpeedTrigger("941100"); got != "modsec_warning_realtime" {
+		t.Fatalf("repaired defaults were not applied: %q", got)
+	}
+}
+
 func TestModSecRefreshProbesAgainWhenTheRuleDirsDisappear(t *testing.T) {
 	installModSecRegistryForTest(t, map[int]string{1: "deny"})
 	dir := modsecRuleDir(t, modsecTestRule)

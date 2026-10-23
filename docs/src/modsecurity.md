@@ -65,6 +65,17 @@ follow `Include` order: a `SecDefaultAction` applies to the rules in its own
 directory and below, so a vendor pack's setup file governs that pack and no
 other.
 
+CSM reads rule IDs, phases and actions from the rule's action argument. Text
+inside an operator, message or log data cannot override them. Explicit
+disruptive actions take precedence over inherited `block` actions. When setup
+files in the applicable directory cannot be read or parsed, inherited `block`
+actions remain blocking until CSM can resolve them. Explicit actions are still
+usable, and rules without a disruptive action remain unknown.
+
+The directory walk follows symlinked packs and rule directories. Defaults
+follow the configured directory layout, including nested overrides. Directory
+cycles are reported as incomplete reads and prevent caching the result.
+
 CSM checks the rule-action registry every five minutes and rebuilds it when rule
 or setup file contents change. Read failures leave the build uncached so the
 next check retries. Files that were read in full but exceeded the parser's line

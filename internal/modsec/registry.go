@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -14,7 +15,8 @@ import (
 
 // Registry maps parsed ModSecurity rule IDs with a decisive disposition to
 // that action (deny, drop, redirect, proxy, pause, pass, allow). A block rule
-// maps to the disruptive action it inherits from SecDefaultAction. Rules
+// maps to the disruptive action it inherits from SecDefaultAction, or stays
+// block when the applicable setup files could not be read or parsed. Rules
 // with only metadata actions are intentionally absent so callers use the
 // unknown-rule default. It is consulted by the LiteSpeed
 // log-line classifier - error_log records every match as "triggered!"
@@ -95,8 +97,14 @@ func BuildRegistry(dirs []string) (*Registry, error) {
 		// Rules resolve after the walk, once every default in the tree is known.
 		var found []foundRule
 		defaults := make(map[string]map[int]string) // directory -> phase -> action
+		incomplete := make(map[string]bool)
 		fmt.Fprintf(digest, "dir:%q\n", dir)
-		walkErr := walkRuleFiles(dir, func(path string) error {
+		walkErr := walkRuleFiles(dir, func(path string, walkErr error) error {
+			fileDir := filepath.Dir(path)
+			if walkErr != nil {
+				incomplete[fileDir] = true
+				return walkErr
+			}
 			var rules []Rule
 			var fileDefaults map[int]string
 			var fileParseErr error
@@ -109,13 +117,14 @@ func BuildRegistry(dirs []string) (*Registry, error) {
 				return drainErr
 			})
 			if err != nil {
+				incomplete[fileDir] = true
 				return err
 			}
 			fmt.Fprintf(digest, "file:%q:%x\n", path, fileDigest)
 			if fileParseErr != nil {
+				incomplete[fileDir] = true
 				parseErr = errors.Join(parseErr, fmt.Errorf("%s: %w", path, fileParseErr))
 			}
-			fileDir := filepath.Dir(path)
 			for phase, action := range fileDefaults {
 				if defaults[fileDir] == nil {
 					defaults[fileDir] = make(map[int]string)
@@ -134,7 +143,7 @@ func BuildRegistry(dirs []string) (*Registry, error) {
 			perDirClaimed[r.id] = struct{}{}
 			action := r.action
 			if action == "block" {
-				action = inheritedAction(defaults, root, r.dir, r.phase)
+				action = inheritedAction(defaults, incomplete, root, r.dir, r.phase)
 			}
 			if action != "" {
 				perDirActions[r.id] = action
@@ -171,12 +180,17 @@ type foundRule struct {
 }
 
 // inheritedAction returns the disruptive action of the nearest default for
-// phase declared in dir or one of its parents up to root, or pass.
-func inheritedAction(defaults map[string]map[int]string, root, dir string, phase int) string {
+// phase declared in dir or one of its parents up to root, or pass. Missing
+// setup content could override a known default, so unresolved blocks stay
+// conservative instead of being treated as known pass actions.
+func inheritedAction(defaults map[string]map[int]string, incomplete map[string]bool, root, dir string, phase int) string {
 	if phase == 0 {
 		phase = defaultPhase
 	}
 	for {
+		if incomplete[dir] {
+			return "block"
+		}
 		if action, ok := defaults[dir][phase]; ok {
 			return action
 		}
@@ -189,28 +203,52 @@ func inheritedAction(defaults map[string]map[int]string, root, dir string, phase
 }
 
 // Both the parser and fingerprint must see the same paths and precedence.
-// WalkDir visits files lexically and does not descend into symlinked dirs;
-// symlinked .conf files are opened by the visitor, following their targets.
-func walkRuleFiles(dir string, visit func(string) error) error {
+// Follow linked packs using their logical paths so defaults stay scoped to
+// the configured tree. Track ancestors, not all visited directories: two
+// aliases of the same pack may inherit different defaults.
+func walkRuleFiles(dir string, visit func(string, error) error) error {
 	var readErr error
-	walkErr := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+	visitFile := func(path string, err error) {
+		if visitErr := visit(path, err); visitErr != nil {
+			readErr = errors.Join(readErr, fmt.Errorf("%s: %w", path, visitErr))
+		}
+	}
+	var walk func(string, []fs.FileInfo)
+	walk = func(path string, ancestors []fs.FileInfo) {
+		info, err := os.Stat(path)
 		if err != nil {
 			// Candidate directories commonly do not exist on this platform.
 			// A failure inside an existing tree means the walk is incomplete.
 			if path != dir || !errors.Is(err, fs.ErrNotExist) {
-				readErr = errors.Join(readErr, err)
+				visitFile(path, err)
 			}
-			return nil
+			return
 		}
-		if d.IsDir() || !strings.HasSuffix(strings.ToLower(d.Name()), ".conf") {
-			return nil
+		if !info.IsDir() {
+			if strings.HasSuffix(strings.ToLower(filepath.Base(path)), ".conf") {
+				visitFile(path, nil)
+			}
+			return
 		}
-		if err := visit(path); err != nil {
-			readErr = errors.Join(readErr, fmt.Errorf("%s: %w", path, err))
+		for _, ancestor := range ancestors {
+			if os.SameFile(info, ancestor) {
+				visitFile(path, fmt.Errorf("directory symlink cycle"))
+				return
+			}
 		}
-		return nil
-	})
-	return errors.Join(readErr, walkErr)
+		entries, err := os.ReadDir(path)
+		if err != nil {
+			visitFile(path, err)
+			return
+		}
+		ancestors = append(ancestors, info)
+		for _, entry := range entries {
+			walk(filepath.Join(path, entry.Name()), ancestors)
+		}
+	}
+	dir = filepath.Clean(dir)
+	walk(dir, nil)
+	return readErr
 }
 
 var globalRegistry atomic.Pointer[Registry]
