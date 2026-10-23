@@ -260,6 +260,9 @@ func (s *Supervisor) callLocked(ctx context.Context, req Frame, fds []*os.File, 
 		// toward the breaker.
 		return Frame{}, nil, fmt.Errorf("%w: %d > %d bytes", ErrFrameTooLarge, len(body), s.cfg.Limits.MaxFrameBytes)
 	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return Frame{}, nil, ctxErr
+	}
 	// Duplicated before any launch or send, so that running out of
 	// descriptors is seen as the daemon's condition, not the worker's. The
 	// copies also outlive a canceled call: the send goroutine owns them.
@@ -304,7 +307,9 @@ func (s *Supervisor) callLocked(ctx context.Context, req Frame, fds []*os.File, 
 	handedOff = true
 	reply, replyFDs, lost, err := s.roundTripLocked(ctx, body, ownedFDs, check, work)
 	if err != nil {
-		canceled := errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+		// A transport or validator can return its own context error. Only
+		// the caller withdrawing exempts a failure from the breaker.
+		canceled := ctx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded))
 		if !canceled {
 			work.fail()
 		}
