@@ -25,6 +25,28 @@ func FuzzBaseName(f *testing.F) {
 	})
 }
 
+func FuzzSiblingFolder(f *testing.F) {
+	const mailbox = "/home/tenant/mail/example.com/user"
+	for _, target := range []string{
+		".spambox", mailbox + "/.spambox", ".", "..", ".Junk", ".spam",
+		"../other/.spambox", mailbox + "//.spambox", mailbox + "/x/../.spambox",
+		"/home2/tenant/mail/example.com/user/.spambox", ".spambox\x00suffix",
+	} {
+		f.Add(target)
+	}
+	f.Fuzz(func(t *testing.T, target string) {
+		name, ok := siblingFolder(target, mailbox)
+		if !ok {
+			return
+		}
+		if name == "." || name == ".." || !strings.HasPrefix(name, ".") ||
+			strings.ContainsAny(name, "/\x00") || name == ".spam" || name == ".Junk" ||
+			(target != name && target != mailbox+"/"+name) {
+			t.Fatalf("accepted non-sibling target %q as %q", target, name)
+		}
+	})
+}
+
 func FuzzParsePasswd(f *testing.F) {
 	f.Add([]byte(passwd), "tenant1")
 	f.Add([]byte("a:b:c"), "a")

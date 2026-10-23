@@ -69,6 +69,85 @@ func TestOpenHomeChecksOwner(t *testing.T) {
 	}
 }
 
+// siblingSpam replaces the virtual mailbox's .spam with a link to target and
+// gives the mailbox a real .spambox holding one message in cur.
+func siblingSpam(t *testing.T, target func(box string) string) (Account, Mailbox) {
+	t.Helper()
+	a := tenantHome(t)
+	box := filepath.Join(a.Home, "mail/example.com/user")
+	if err := os.MkdirAll(filepath.Join(box, ".spambox/cur"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeMsg(t, filepath.Join(box, ".spambox/cur/1.host:2,S"), []byte("Subject: x\n\nbody"))
+	if err := os.Symlink(target(box), filepath.Join(box, ".spam")); err != nil {
+		t.Fatal(err)
+	}
+	return a, Mailbox{Domain: "example.com", Box: "user"}
+}
+
+func TestTreeOpensSpamLinkedToSiblingFolder(t *testing.T) {
+	for name, target := range map[string]func(string) string{
+		"relative": func(string) string { return ".spambox" },
+		"absolute": func(box string) string { return filepath.Join(box, ".spambox") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			a, m := siblingSpam(t, target)
+			h, err := OpenHome(a)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = h.Close() }()
+			f, err := h.OpenFolder(m, ".spam", "cur")
+			if err != nil {
+				t.Fatalf("sibling-linked Spam folder not opened: %v", err)
+			}
+			defer func() { _ = f.Close() }()
+			names, err := f.Next(10)
+			if err != nil && !errors.Is(err, io.EOF) {
+				t.Fatal(err)
+			}
+			if len(names) != 1 || names[0] != "1.host:2,S" {
+				t.Fatalf("names = %q, want the .spambox message", names)
+			}
+		})
+	}
+}
+
+func TestTreeRefusesSpamLinkedOutsideItsMailbox(t *testing.T) {
+	for name, target := range map[string]func(string) string{
+		"parent":          func(string) string { return "../other/.spambox" },
+		"other mailbox":   func(box string) string { return filepath.Join(filepath.Dir(box), "other/.spambox") },
+		"dotted path":     func(box string) string { return filepath.Join(box, "x") + "/../.spambox" },
+		"watched folder":  func(string) string { return ".Junk" },
+		"no leading dot":  func(string) string { return "spambox" },
+		"dot dot":         func(string) string { return ".." },
+		"outside home":    func(string) string { return "/tmp/.spambox" },
+		"chained link":    func(string) string { return ".chain" },
+		"empty component": func(box string) string { return box + "//.spambox" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			a, m := siblingSpam(t, target)
+			box := filepath.Join(a.Home, "mail/example.com/user")
+			if err := os.Symlink(".spambox", filepath.Join(box, ".chain")); err != nil {
+				t.Fatal(err)
+			}
+			h, err := OpenHome(a)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = h.Close() }()
+			f, err := h.OpenFolder(m, ".spam", "cur")
+			if err == nil {
+				_ = f.Close()
+				t.Fatal("Spam folder linked outside its mailbox opened")
+			}
+			if !errors.Is(err, ErrUnsafePath) {
+				t.Fatalf("not reported as unsafe: %v", err)
+			}
+		})
+	}
+}
+
 func TestTreeRefusesSymlinkedFolder(t *testing.T) {
 	a := tenantHome(t)
 	other := t.TempDir()
