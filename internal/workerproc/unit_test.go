@@ -191,9 +191,15 @@ func TestUnitLauncherMainPIDFailure(t *testing.T) {
 }
 
 func TestUnitProcessKillDoesNotBlock(t *testing.T) {
+	conn, childFile, err := workerSocket()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+	defer childFile.Close()
 	release := make(chan struct{})
 	defer close(release)
-	p := &unitProcess{unit: "u", done: make(chan struct{}), killUnit: func(context.Context, *unitProcess) error {
+	p := &unitProcess{unit: "u", conn: conn, done: make(chan struct{}), killUnit: func(context.Context, *unitProcess) error {
 		<-release
 		return nil
 	}}

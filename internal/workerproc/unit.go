@@ -97,8 +97,8 @@ func lockdownProperties(cfg UnitConfig) []string {
 
 // UnitLauncher starts each worker as its own transient unit through
 // `systemd-run --pipe`, whose stdin and stdout are the worker's socket. A
-// worker is handed out only after it answered hello and its main PID is
-// known; there is no fallback to running the command directly.
+// worker is handed out only after hello and verification of its own memory
+// cgroup's cap and usage; there is no fallback to direct execution.
 func UnitLauncher(cfg UnitConfig) Launcher {
 	h := unitHooks{}
 	if cfg.hooks != nil {
@@ -168,6 +168,8 @@ func startUnit(ctx context.Context, cfg UnitConfig, h *unitHooks) (*unitProcess,
 	p := &unitProcess{unit: unit, cmd: cmd, conn: conn, done: make(chan struct{}), killUnit: h.killUnit, log: cfg.Log}
 	go func() {
 		_ = cmd.Wait()
+		// The unit belongs to PID 1 and can outlive the systemd-run client.
+		_ = p.Kill()
 		close(p.done)
 	}()
 
@@ -189,7 +191,12 @@ func startUnit(ctx context.Context, cfg UnitConfig, h *unitHooks) (*unitProcess,
 // start finishes a launch: hello, then the main PID, which only systemd
 // reports, never the worker.
 func (p *unitProcess) start(ctx context.Context, cfg UnitConfig, h *unitHooks) error {
+	stop := context.AfterFunc(ctx, func() { _ = p.conn.Close() })
+	defer stop()
 	if err := Handshake(ctx, p.conn, cfg.Limits, cfg.Protocol); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		return err
 	}
 	pid, err := h.mainPID(ctx, p)
@@ -201,7 +208,7 @@ func (p *unitProcess) start(ctx context.Context, cfg UnitConfig, h *unitHooks) e
 	}
 	p.pid = pid
 
-	cg, found, err := findMemoryCgroup(h.procRoot, h.cgroupRoot, pid)
+	cg, found, err := findMemoryCgroup(h.procRoot, h.cgroupRoot, pid, p.unit)
 	if err != nil {
 		return fmt.Errorf("cannot cap worker memory: %w", err)
 	}
@@ -209,12 +216,25 @@ func (p *unitProcess) start(ctx context.Context, cfg UnitConfig, h *unitHooks) e
 		// Polling the main process alone would miss any child it forks.
 		return errors.New("cannot cap worker memory: no memory cgroup for the unit")
 	}
-	if err := cg.capSwap(cfg.MemoryLimit, h.procRoot); err != nil {
-		return fmt.Errorf("cannot cap worker memory: %w", err)
+	if capErr := cg.checkRAMLimit(cfg.MemoryLimit); capErr != nil {
+		return fmt.Errorf("cannot cap worker memory: %w", capErr)
+	}
+	if capErr := cg.capSwap(cfg.MemoryLimit, h.procRoot); capErr != nil {
+		return fmt.Errorf("cannot cap worker memory: %w", capErr)
 	}
 	p.usage = cg.usage
-	if _, err := p.usage(); err != nil {
+	used, err := p.usage()
+	if err != nil {
 		return fmt.Errorf("cannot measure worker memory: %w", err)
+	}
+	if used > cfg.MemoryLimit {
+		return fmt.Errorf("worker memory %d over cap %d", used, cfg.MemoryLimit)
+	}
+	// Stop the startup cancellation hook before handing out the socket.
+	// If cancellation won, the callback may still be closing it.
+	stop()
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	p.limit = cfg.MemoryLimit
 	go p.watch(h.pollInterval)
@@ -287,6 +307,9 @@ func (p *unitProcess) Retire() bool {
 // worker is killed by unit name, never by a PID it could have influenced.
 func (p *unitProcess) Kill() error {
 	p.kill.Do(func() {
+		// A failed watchdog check must prevent further requests even while
+		// systemctl is stalled or fails to reach the manager.
+		_ = p.conn.Close()
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), unitKillTimeout)
 			defer cancel()

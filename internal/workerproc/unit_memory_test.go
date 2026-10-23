@@ -61,6 +61,13 @@ func (f *unitFake) writeCgroup(pid int, unit string) error {
 			return err
 		}
 	}
+	ram := "memory.max"
+	if strings.HasPrefix(f.layout, "v1") {
+		ram = "memory.limit_in_bytes"
+	}
+	if err := os.WriteFile(filepath.Join(dir, ram), []byte("536870912\n"), 0o644); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -75,7 +82,11 @@ func readTrim(t *testing.T, path string) string {
 
 func writeValue(t *testing.T, path, value string) {
 	t.Helper()
-	if err := os.WriteFile(path, []byte(value), 0o644); err != nil {
+	// Unlike regular files, cgroup counters cannot be read mid-truncate.
+	if err := os.WriteFile(path+".tmp", []byte(value), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(path+".tmp", path); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -91,7 +102,7 @@ func TestFindMemoryCgroupPrefersV1MemoryLine(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	cg, found, err := findMemoryCgroup(proc, root, 42)
+	cg, found, err := findMemoryCgroup(proc, root, 42, "u")
 	if err != nil || !found || cg.v2 || cg.dir != filepath.Join(root, "memory/system.slice/u.service") {
 		t.Fatalf("cgroup = %+v found=%v err=%v", cg, found, err)
 	}
@@ -208,5 +219,15 @@ func TestUnitRetireAboveThreeQuarters(t *testing.T) {
 	writeValue(t, usage, "unreadable")
 	if !p.Retire() {
 		t.Fatal("worker with unreadable usage not retired")
+	}
+}
+
+func TestCgroupMemoryReadsRAMAndSwap(t *testing.T) {
+	cg := memoryCgroup{dir: t.TempDir(), v2: true}
+	writeValue(t, filepath.Join(cg.dir, "memory.current"), "1024000")
+	writeValue(t, filepath.Join(cg.dir, "memory.swap.current"), "24576")
+	got, err := cg.usage()
+	if err != nil || got != 1048576 {
+		t.Fatalf("cgroup memory = %d, %v", got, err)
 	}
 }

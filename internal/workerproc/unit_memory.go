@@ -18,7 +18,7 @@ type memoryCgroup struct {
 // findMemoryCgroup reads the cgroup of pid from procRoot. A cgroup v1 memory
 // controller line wins; otherwise the unified (v2) line is used. found is
 // false when neither names a directory under cgroupRoot.
-func findMemoryCgroup(procRoot, cgroupRoot string, pid int) (memoryCgroup, bool, error) {
+func findMemoryCgroup(procRoot, cgroupRoot string, pid int, unit string) (memoryCgroup, bool, error) {
 	data, err := os.ReadFile(filepath.Join(procRoot, strconv.Itoa(pid), "cgroup")) // #nosec G304 -- procfs path built from a PID systemd reported.
 	if err != nil {
 		return memoryCgroup{}, false, err
@@ -37,17 +37,48 @@ func findMemoryCgroup(procRoot, cgroupRoot string, pid int) (memoryCgroup, bool,
 			if controller != "memory" {
 				continue
 			}
+			if err := checkUnitCgroup(parts[2], unit); err != nil {
+				return memoryCgroup{}, false, err
+			}
 			if dir := filepath.Join(cgroupRoot, "memory", parts[2]); isDir(dir) {
 				return memoryCgroup{dir: dir}, true, nil
 			}
+			return memoryCgroup{}, false, errors.New("memory cgroup directory unavailable")
 		}
 	}
 	if unified != "" {
+		if err := checkUnitCgroup(unified, unit); err != nil {
+			return memoryCgroup{}, false, err
+		}
 		if dir := filepath.Join(cgroupRoot, unified); isDir(dir) {
 			return memoryCgroup{dir: dir, v2: true}, true, nil
 		}
 	}
 	return memoryCgroup{}, false, nil
+}
+
+func checkUnitCgroup(path, unit string) error {
+	// A PID can exit and be reused between systemctl and the procfs read.
+	// Never change the limits of a different unit or a shared parent group.
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path || filepath.Base(path) != unit+".service" {
+		return fmt.Errorf("memory cgroup %q does not belong to unit %s", path, unit)
+	}
+	return nil
+}
+
+func (c memoryCgroup) checkRAMLimit(limit uint64) error {
+	name := "memory.limit_in_bytes"
+	if c.v2 {
+		name = "memory.max"
+	}
+	got, err := readCgroupUint(filepath.Join(c.dir, name))
+	if err != nil {
+		return err
+	}
+	if got == 0 || got > limit {
+		return fmt.Errorf("RAM limit %d exceeds worker cap %d or is zero", got, limit)
+	}
+	return nil
 }
 
 func isDir(path string) bool {
