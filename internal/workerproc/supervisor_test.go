@@ -292,6 +292,7 @@ type pairProcess struct {
 func (p *pairProcess) Conn() *net.UnixConn   { return p.conn }
 func (p *pairProcess) Done() <-chan struct{} { return p.done }
 func (p *pairProcess) PID() int              { return os.Getpid() }
+func (p *pairProcess) Retire() bool          { return false }
 
 func (p *pairProcess) Kill() error {
 	p.kill.Do(func() { _ = p.far.Close() })

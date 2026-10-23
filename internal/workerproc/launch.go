@@ -20,6 +20,9 @@ type Process interface {
 	Done() <-chan struct{}
 	// PID is for logs and Stats only.
 	PID() int
+	// Retire is asked after each served request; true means the worker
+	// should take no more.
+	Retire() bool
 }
 
 // Launcher starts one worker.
@@ -74,6 +77,7 @@ type execProcess struct {
 func (p *execProcess) Conn() *net.UnixConn   { return p.conn }
 func (p *execProcess) Done() <-chan struct{} { return p.done }
 func (p *execProcess) PID() int              { return p.cmd.Process.Pid }
+func (p *execProcess) Retire() bool          { return false }
 
 func (p *execProcess) Kill() error {
 	if err := p.cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {

@@ -84,6 +84,10 @@ type Config struct {
 	Limits Limits
 	// Log is optional.
 	Log func(string, ...any)
+	// MaxJobs retires a worker after that many requests; 0 means no limit.
+	MaxJobs int
+	// IdleTimeout stops a worker left unused that long; 0 means never.
+	IdleTimeout time.Duration
 }
 
 // Check validates a reply. err rejects it: the worker is killed and the
@@ -96,6 +100,8 @@ type Stats struct {
 	Spawns, LastPID, ConsecutiveFailures int
 	BreakerOpenedAt                      time.Time
 	BreakerOpen                          bool
+	// Running reports a worker process attached.
+	Running bool
 }
 
 // Supervisor runs one worker process at a time and guarantees that a request
@@ -121,6 +127,10 @@ type Supervisor struct {
 	// openedAt is when the breaker last opened; the zero value means closed.
 	openedAt time.Time
 	stopped  bool
+	// jobs counts requests served by the current child.
+	jobs    int
+	lastUse time.Time
+	idle    *time.Timer
 
 	// now is a seam so the cooldown can be exercised without sleeping.
 	now func() time.Time
@@ -167,6 +177,9 @@ func (s *Supervisor) Stop() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.stopped = true
+	if s.idle != nil {
+		s.idle.Stop()
+	}
 	s.killLocked()
 	return nil
 }
@@ -181,6 +194,7 @@ func (s *Supervisor) Stats() Stats {
 		ConsecutiveFailures: s.consecutive,
 		BreakerOpenedAt:     s.openedAt,
 		BreakerOpen:         s.breakerOpenLocked(),
+		Running:             s.child != nil,
 	}
 }
 
@@ -197,7 +211,34 @@ func (s *Supervisor) Call(ctx context.Context, req Frame, fds []*os.File, check 
 	work.start()
 	reply, replyFDs, err := s.callLocked(ctx, req, fds, check, work)
 	completed = true
+	s.armIdleLocked()
 	return reply, replyFDs, err
+}
+
+// armIdleLocked restarts the idle countdown after a request. The timer
+// cannot stop a worker mid-request: stopIdle needs the lock Call holds.
+func (s *Supervisor) armIdleLocked() {
+	if s.cfg.IdleTimeout <= 0 || s.stopped {
+		return
+	}
+	s.lastUse = s.now()
+	if s.idle == nil {
+		s.idle = time.AfterFunc(s.cfg.IdleTimeout, s.stopIdle)
+		return
+	}
+	s.idle.Reset(s.cfg.IdleTimeout)
+}
+
+func (s *Supervisor) stopIdle() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// A request that ran while the timer fired has moved lastUse on and
+	// re-armed the timer.
+	if s.stopped || s.child == nil || s.now().Sub(s.lastUse) < s.cfg.IdleTimeout {
+		return
+	}
+	s.logf("%s %d idle", s.cfg.Name, s.child.proc.PID())
+	s.killLocked()
 }
 
 func (s *Supervisor) callLocked(ctx context.Context, req Frame, fds []*os.File, check Check, work *requestWork) (Frame, []*os.File, error) {
@@ -255,6 +296,7 @@ func (s *Supervisor) callLocked(ctx context.Context, req Frame, fds []*os.File, 
 			return Frame{}, nil, fmt.Errorf("%w: %v", ErrSpawn, launchErr)
 		}
 		s.child = &child{proc: proc, conn: unixTransport{conn: proc.Conn(), lim: s.cfg.Limits}}
+		s.jobs = 0
 		s.spawns++
 		s.lastPID = proc.PID()
 	}
@@ -284,6 +326,13 @@ func (s *Supervisor) callLocked(ctx context.Context, req Frame, fds []*os.File, 
 	s.consecutive = 0
 	if lost {
 		work.fail()
+	}
+	// Retiring a healthy worker is not a failure: the reply stands and
+	// nothing counts toward the breaker.
+	s.jobs++
+	if (s.cfg.MaxJobs > 0 && s.jobs >= s.cfg.MaxJobs) || s.child.proc.Retire() {
+		s.logf("%s %d retired", s.cfg.Name, s.child.proc.PID())
+		s.killLocked()
 	}
 	return reply, replyFDs, nil
 }
