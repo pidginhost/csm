@@ -9,6 +9,10 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ## [Unreleased]
 
+### Security
+
+- Full account scans now run the YARA rules over the account's website files instead of reporting the account clean without them.
+
 ### Added
 
 - The Email Security page has a Forwarders tab, where any forwarder destination can be deleted after a confirmation.
@@ -16,6 +20,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 ### Changed
 
 - With the forward guard enforcing, mail tagged as spam is now held instead of forwarded to outside addresses.
+- Malware findings now say when ModSecurity is switched off for the affected account or site, naming the setting that disables it.
 
 ### Fixed
 
@@ -32,6 +37,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - The forwarders list on the Email Security page shows each cPanel source address once, instead of with its domain repeated.
 - One visitor posting comments on several hosted sites no longer raises a spam outbreak alert when each site only notifies its own owner.
 - Automatic mailbox suspension and its release commands now reach the right mailbox when the address holds a plus or percent sign.
+- Scanning a single account now finds a cPanel account whose home sits on an additional home partition instead of reporting it missing.
 
 ## [4.6.0] - 2026-10-22
 

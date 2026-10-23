@@ -25,6 +25,7 @@ type AuditEvent struct {
 	Check     string                     `json:"check"`
 	Message   string                     `json:"message"`
 	Details   string                     `json:"details,omitempty"`
+	Context   string                     `json:"context,omitempty"`
 	FilePath  string                     `json:"file_path,omitempty"`
 	Hostname  string                     `json:"hostname"`
 	TenantID  string                     `json:"tenant_id,omitempty"`
@@ -71,6 +72,7 @@ func NewAuditEvent(hostname string, f Finding) AuditEvent {
 		Check:     f.Check,
 		Message:   f.Message,
 		Details:   f.Details,
+		Context:   f.Context,
 		FilePath:  f.FilePath,
 		Hostname:  hostname,
 		TenantID:  f.TenantID,

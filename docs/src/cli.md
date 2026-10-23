@@ -35,12 +35,24 @@ empty tree keeps the last loaded actions until a replacement is available.
 | `csm check` | Run all checks via the daemon, print findings to stdout, no alerts / auto-response |
 | `csm check-critical` | Test critical checks only (dry-run via daemon) |
 | `csm check-deep` | Test deep checks only (dry-run via daemon) |
-| `csm scan <user> [--alert]` | Scan a single cPanel account (capped quick scan). `--alert` sends alerts for the findings. |
-| `csm scan <user> --full [--wait] [--json] [--respect-ignores] [--quarantine]` | Uncapped deep scan of one account, routed through the daemon (bypasses the per-account file cap). It is report-only by default; `--quarantine` acts on critical file findings the way the scheduled auto-response does (WordPress core, plugin and theme files are cleaned in place; directories, symlinks and lower-severity findings are left for review); `--wait` polls to completion and prints the report; `--respect-ignores` honors `ignore_paths`. |
+| `csm scan <user> [--alert]` | Scan a single cPanel account (capped quick scan). `--alert` sends alerts for the findings. An account whose home is on an additional home partition is found through the cPanel account list and its passwd home. |
+| `csm scan <user> --full [--wait] [--json] [--respect-ignores] [--quarantine]` | Uncapped deep scan of one account, routed through the daemon (bypasses the per-account file cap). It also runs the YARA rules over the account's document roots, one file at a time through the YARA worker; files over `full_scan_max_file_mb` are reported as not scanned. It is report-only by default; `--quarantine` acts on critical file findings the way the scheduled auto-response does (WordPress core, plugin and theme files are cleaned in place; directories, symlinks and lower-severity findings are left for review); `--wait` polls to completion and prints the report; `--respect-ignores` honors `ignore_paths`. |
 | `csm scan --all --full [--wait] [--json] [--respect-ignores]` | Server-wide uncapped full scan across every account. Quarantine per account after review (`--quarantine` is rejected with `--all`). |
 | `csm scan --status [id] [--json]` | List full-scan jobs, or show one job by id. |
 | `csm scan --report <id> [--json]` | Print the stored report for a completed full-scan job. |
 | `csm scan --cancel <id> [--json]` | Cancel a running full-scan job. |
+
+Passwd home fallback accepts an account-named directory directly under a sibling
+home volume, such as `/home2`, and rejects symlinked volumes and homes. Arbitrary
+passwd locations outside this boundary are not used for account scans.
+
+The full-account YARA pass does not follow tenant symlinks. It reports unreadable
+or changed files and directories as coverage gaps, and keeps confirmed matches
+if a later read or worker call times out. Large worker requests use a private
+temporary snapshot in the daemon state directory, bounded by
+`full_scan_max_file_mb`, which is removed after the request. Failure to create
+or scan that snapshot is reported as incomplete coverage. The default account
+scan still has no YARA pass.
 
 ## Management
 

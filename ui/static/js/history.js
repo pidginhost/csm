@@ -155,9 +155,11 @@
             tdTime.appendChild(timeSpan);
             tr.appendChild(tdTime);
 
-            // Expand button cell
+            // Expand button cell. Context follows the details; a finding may
+            // carry either one.
+            var detailText = [f.details, f.context].filter(function(s) { return !!s; }).join('\n\n');
             var tdExpand = document.createElement('td');
-            if (f.details) {
+            if (detailText) {
                 var btn = document.createElement('button');
                 btn.className = 'btn btn-ghost-secondary btn-sm expand-btn';
                 btn.title = 'Expand details';
@@ -172,13 +174,13 @@
             tbody.appendChild(tr);
 
             // Details row (hidden by default)
-            if (f.details) {
+            if (detailText) {
                 var detailTr = document.createElement('tr');
                 detailTr.className = 'details-row';
                 var detailTd = document.createElement('td');
                 detailTd.colSpan = 5;
                 detailTd.className = 'text-muted bg-dark-lt csm-detail small';
-                detailTd.textContent = f.details;
+                detailTd.textContent = detailText;
                 detailTr.appendChild(detailTd);
                 tbody.appendChild(detailTr);
             }

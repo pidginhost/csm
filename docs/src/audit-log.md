@@ -31,6 +31,13 @@ The `v` field is the schema version. CSM bumps it on incompatible
 changes and will not bump it for additive fields, so SIEM parsers
 can pin on `v: 1` and ignore unknown keys.
 
+An optional `context` key carries background beside the details, such as
+ModSecurity being switched off for the account a malware finding concerns.
+It is not part of `finding_id` or receipt matching, so a change in it alone
+never produces a new record.
+Recognized credentials in context are redacted before alert and audit output,
+using the same policy as messages and details.
+
 `finding_id` is a stable 16-hex-char hash of the canonical fields
 (timestamp, check, severity, message, file path). Two emits of the
 same finding produce the same ID, so downstream dedup works across

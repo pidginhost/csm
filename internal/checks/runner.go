@@ -1298,9 +1298,10 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 		}
 	}
 
-	// Cross-account correlation
+	// Cross-account correlation reads cached platform roots, so detection
+	// runs first; malware findings name a disabled ModSecurity scope.
 	if len(findings) > 0 {
-		platform.Detect()
+		annotateModsecDisabledMalware(platform.Detect(), findings)
 	}
 	correlated := CorrelateBatchFindings(findings)
 	for i := range correlated.Derived {

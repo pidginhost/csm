@@ -1983,9 +1983,7 @@ func accountDocRoots(homeDir string) []string {
 	docRoots := []string{filepath.Join(homeDir, "public_html")}
 	subDirs, _ := osFS.ReadDir(homeDir)
 	for _, sd := range subDirs {
-		if sd.IsDir() && sd.Name() != "public_html" && sd.Name() != "mail" &&
-			!strings.HasPrefix(sd.Name(), ".") && sd.Name() != "etc" &&
-			sd.Name() != "logs" && sd.Name() != "ssl" && sd.Name() != "tmp" {
+		if sd.IsDir() && sd.Name() != "public_html" && accountContentDir(sd.Name()) {
 			docRoots = append(docRoots, filepath.Join(homeDir, sd.Name()))
 		}
 	}
