@@ -16,7 +16,6 @@ type statsSummary struct {
 	critical, high, warning                  int
 	byCheck                                  map[string]int
 	lastCritical                             time.Time
-	atRisk                                   []map[string]interface{}
 	autoBlocked, autoQuarantined, autoKilled int
 	topAccounts                              []accountCount
 	bruteForce                               map[string]interface{}
@@ -26,6 +25,12 @@ type statsSummary struct {
 type accountCount struct {
 	Account string `json:"account"`
 	Count   int    `json:"count"`
+}
+
+type atRiskAccount struct {
+	Account  string `json:"account"`
+	Severity string `json:"severity"`
+	Findings int    `json:"findings"`
 }
 
 func (s *Server) statsSummary24h() *statsSummary {
@@ -73,8 +78,6 @@ func summarizeHistory(findings []alert.Finding) *statsSummary {
 		recent = append(recent, f)
 	}
 
-	// Compute accounts at risk: accounts with critical/high findings in 24h
-	accountRisk := make(map[string]int) // account -> highest severity
 	// Auto-response summary: count actions by type in 24h
 	autoBlocked, autoQuarantined, autoKilled := 0, 0, 0
 	// Top targeted accounts
@@ -88,10 +91,6 @@ func summarizeHistory(findings []alert.Finding) *statsSummary {
 		acct := extractAccountFromFinding(f)
 		if acct != "" {
 			accountHits[acct]++
-			sev := int(f.Severity)
-			if prev, ok := accountRisk[acct]; !ok || sev > prev {
-				accountRisk[acct] = sev
-			}
 		}
 		// Count auto-response actions
 		switch f.Check {
@@ -120,31 +119,6 @@ func summarizeHistory(findings []alert.Finding) *statsSummary {
 		}
 	}
 
-	// Accounts at risk: those with critical or high severity
-	var atRisk []map[string]interface{}
-	for acct, sev := range accountRisk {
-		if sev >= int(alert.High) {
-			atRisk = append(atRisk, map[string]interface{}{
-				"account":  acct,
-				"severity": sev,
-				"findings": accountHits[acct],
-			})
-		}
-	}
-	// Sort by severity desc, then findings desc
-	sort.Slice(atRisk, func(i, j int) bool {
-		if atRisk[i]["severity"].(int) != atRisk[j]["severity"].(int) {
-			return atRisk[i]["severity"].(int) > atRisk[j]["severity"].(int)
-		}
-		return atRisk[i]["findings"].(int) > atRisk[j]["findings"].(int)
-	})
-	if len(atRisk) > 50 {
-		atRisk = atRisk[:50]
-	}
-	for _, a := range atRisk {
-		a["severity"] = alert.Severity(a["severity"].(int)).String()
-	}
-
 	// Top targeted accounts (by finding count)
 	var topAccounts []accountCount
 	for acct, count := range accountHits {
@@ -163,7 +137,6 @@ func summarizeHistory(findings []alert.Finding) *statsSummary {
 		warning:         warning,
 		byCheck:         byCheck,
 		lastCritical:    lastCritical,
-		atRisk:          atRisk,
 		autoBlocked:     autoBlocked,
 		autoQuarantined: autoQuarantined,
 		autoKilled:      autoKilled,
@@ -171,4 +144,59 @@ func summarizeHistory(findings []alert.Finding) *statsSummary {
 		bruteForce:      buildBruteForceSummary(bruteForceIPs, bruteForceTypes),
 		recent:          recent,
 	}
+}
+
+// accountsAtRisk lists the accounts with an active critical or high finding,
+// worst first. It reads the latest findings the way the Findings page does,
+// not history, so a fixed or dismissed finding drops off at once.
+func (s *Server) accountsAtRisk() []atRiskAccount {
+	type risk struct {
+		account  string
+		worst    alert.Severity
+		findings int
+	}
+	byAccount := make(map[string]*risk)
+	suppressions := s.store.LoadSuppressions()
+	for _, f := range s.store.LatestFindings() {
+		if !operatorFacingCheck(f.Check) || s.store.IsSuppressed(f, suppressions) {
+			continue
+		}
+		acct := extractAccountFromFinding(f)
+		if acct == "" {
+			continue
+		}
+		r := byAccount[acct]
+		if r == nil {
+			r = &risk{account: acct, worst: f.Severity}
+			byAccount[acct] = r
+		}
+		r.findings++
+		if f.Severity > r.worst {
+			r.worst = f.Severity
+		}
+	}
+
+	var list []*risk
+	for _, r := range byAccount {
+		if r.worst >= alert.High {
+			list = append(list, r)
+		}
+	}
+	sort.Slice(list, func(i, j int) bool {
+		if list[i].worst != list[j].worst {
+			return list[i].worst > list[j].worst
+		}
+		if list[i].findings != list[j].findings {
+			return list[i].findings > list[j].findings
+		}
+		return list[i].account < list[j].account
+	})
+	if len(list) > 50 {
+		list = list[:50]
+	}
+	out := make([]atRiskAccount, 0, len(list))
+	for _, r := range list {
+		out = append(out, atRiskAccount{Account: r.account, Severity: r.worst.String(), Findings: r.findings})
+	}
+	return out
 }

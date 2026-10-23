@@ -206,7 +206,7 @@ GET  /api/v1/history             Paginated history (?limit=&offset=&from=&to=&se
                                  scope=email limits results to the /api/v1/email/checks list when checks is absent.
                                  total counts every match; truncated is true when matches exist past the page
 GET  /api/v1/history/csv         CSV export of the newest 5,000 entries matching the /history filters
-GET  /api/v1/stats               24h severity counts, accounts at risk, auto-response summary
+GET  /api/v1/stats               24h severity counts and auto-response summary, accounts with active high or critical findings
 GET  /api/v1/stats/trend         30-day daily severity counts; each `date` is a calendar day in the server's time zone
 GET  /api/v1/stats/timeline      Hourly severity counts for the last 24 hours; each bucket names its `start` instant
 GET  /api/v1/quarantine          Quarantined files with metadata (incl. htaccess pre_clean backups)

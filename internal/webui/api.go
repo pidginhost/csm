@@ -789,7 +789,7 @@ func (s *Server) apiStats(w http.ResponseWriter, _ *http.Request) {
 			"total":    sum.critical + sum.high + sum.warning,
 		},
 		"by_check":         sum.byCheck,
-		"accounts_at_risk": sum.atRisk,
+		"accounts_at_risk": s.accountsAtRisk(),
 		"auto_response": map[string]int{
 			"blocked":     sum.autoBlocked,
 			"quarantined": sum.autoQuarantined,
