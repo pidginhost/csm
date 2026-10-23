@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"os"
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -75,12 +77,9 @@ func TestReadFrameRejectsOversizeHeaderWithoutAllocating(t *testing.T) {
 }
 
 func TestWriteFrameRejectsOversizeBody(t *testing.T) {
-	big := Frame{Op: "analyze", Payload: make([]byte, 8<<20+1)}
-	for i := range big.Payload {
-		big.Payload[i] = 'a'
-	}
-	if err := WriteFrame(io.Discard, big, 8<<20); err == nil {
-		t.Fatal("oversize body accepted, want error")
+	big := Frame{Op: "analyze", Payload: json.RawMessage(`"` + strings.Repeat("a", 8<<20) + `"`)}
+	if err := WriteFrame(io.Discard, big, 8<<20); err == nil || !strings.Contains(err.Error(), "exceeds cap") {
+		t.Fatalf("oversize body: got %v, want cap error", err)
 	}
 }
 
@@ -112,6 +111,11 @@ func socketPair(t *testing.T) (*net.UnixConn, *net.UnixConn) {
 	}
 	a, b := conn(fds[0]), conn(fds[1])
 	t.Cleanup(func() { _ = a.Close(); _ = b.Close() })
+	for _, c := range []*net.UnixConn{a, b} {
+		if err := c.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
+			t.Fatal(err)
+		}
+	}
 	return a, b
 }
 
@@ -191,8 +195,86 @@ func TestReceiveFrameClosesDescriptorsOnBadFrame(t *testing.T) {
 	assertNoFDLeak(t, before)
 }
 
+func TestReceiveFrameClosesDescriptorsOnIncompleteOrInvalidFrame(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		wire []byte
+	}{
+		{name: "partial header", wire: []byte{0, 0}},
+		{name: "partial body", wire: withHeader([]byte(`{"op":"x"}`))[:6]},
+		{name: "invalid JSON", wire: withHeader([]byte(`{`))},
+		{name: "empty body", wire: withHeader(nil)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, b := socketPair(t)
+			r, w, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer r.Close()
+			defer w.Close()
+			before := openFDs(t)
+			if _, _, sendErr := a.WriteMsgUnix(tc.wire, syscall.UnixRights(int(w.Fd())), nil); sendErr != nil {
+				t.Fatal(sendErr)
+			}
+			if closeErr := a.CloseWrite(); closeErr != nil {
+				t.Fatal(closeErr)
+			}
+			_, files, err := ReceiveFrame(b, Limits{MaxFrameBytes: 100, MaxFDs: 1})
+			defer closeFiles(files)
+			if err == nil || files != nil {
+				t.Errorf("bad frame accepted: files=%d err=%v", len(files), err)
+			}
+			assertNoFDLeak(t, before)
+		})
+	}
+}
+
+// A frame sent in pieces must not take the next frame's descriptors. A
+// descriptor sent mid-frame is rejected instead; see
+// TestReceiveFrameRejectsDescriptorsAfterFirstRead.
+func TestReceiveFrameKeepsDescriptorsWithTheirFrame(t *testing.T) {
+	a, b := socketPair(t)
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	defer w.Close()
+	wire := withHeader([]byte(`{"op":"first"}`))
+	for _, part := range [][]byte{wire[:1], wire[1:4], wire[4:5], wire[5:]} {
+		if writeErr := writeFull(a, part); writeErr != nil {
+			t.Fatal(writeErr)
+		}
+	}
+	if sendErr := SendFrame(a, Frame{Op: "next"}, []*os.File{r}, 100); sendErr != nil {
+		t.Fatal(sendErr)
+	}
+	lim := Limits{MaxFrameBytes: 100, MaxFDs: 1}
+	f, files, err := ReceiveFrame(b, lim)
+	defer closeFiles(files)
+	if err != nil || f.Op != "first" || len(files) != 0 {
+		t.Fatalf("first frame: op=%q descriptors=%d err=%v", f.Op, len(files), err)
+	}
+	if _, writeErr := w.Write([]byte("x")); writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	f, files, err = ReceiveFrame(b, lim)
+	defer closeFiles(files)
+	if err != nil || f.Op != "next" || len(files) != 1 {
+		t.Fatalf("next frame: op=%q descriptors=%d err=%v", f.Op, len(files), err)
+	}
+	var got [1]byte
+	if _, err := io.ReadFull(files[0], got[:]); err != nil || got[0] != 'x' {
+		t.Fatalf("next frame did not receive the reader: data=%q err=%v", got, err)
+	}
+}
+
 func TestSocketFrameLargeBodyWithDescriptors(t *testing.T) {
 	a, b := socketPair(t)
+	if err := a.SetWriteBuffer(4096); err != nil {
+		t.Fatal(err)
+	}
 	r, w, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
@@ -206,20 +288,107 @@ func TestSocketFrameLargeBodyWithDescriptors(t *testing.T) {
 			errc <- sendErr
 			return
 		}
-		errc <- SendFrame(a, Frame{Op: "next"}, nil, 8<<20)
+		errc <- SendFrame(a, Frame{Op: "next"}, []*os.File{w}, 8<<20)
 	}()
 	lim := Limits{MaxFrameBytes: 8 << 20, MaxFDs: 1}
 	f, fds, err := ReceiveFrame(b, lim)
-	if err != nil || f.Op != "big" || len(f.Payload) != len(big.Payload) || len(fds) != 1 {
+	defer closeFiles(fds)
+	if err != nil || f.Op != "big" || !bytes.Equal(f.Payload, big.Payload) || len(fds) != 1 {
 		t.Fatalf("large frame: op=%q len=%d fds=%d err=%v", f.Op, len(f.Payload), len(fds), err)
 	}
-	fds[0].Close()
 	f, fds, err = ReceiveFrame(b, lim)
-	if err != nil || f.Op != "next" || len(fds) != 0 {
+	defer closeFiles(fds)
+	if err != nil || f.Op != "next" || len(fds) != 1 {
 		t.Fatalf("stream lost framing after a large frame: op=%q fds=%d err=%v", f.Op, len(fds), err)
 	}
 	if err := <-errc; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestReceiveFrameStopsOnDescriptorLimit(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		limit    int
+		counts   []int
+		complete bool
+	}{
+		{name: "none allowed", limit: 0, counts: []int{1}},
+		{name: "over limit without truncation", limit: 1, counts: []int{2}},
+		{name: "truncated control", limit: 1, counts: []int{3}},
+		{name: "across reads", limit: 2, counts: []int{2, 1}},
+		{name: "at end of body", limit: 1, counts: []int{0, 2}, complete: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, b := socketPair(t)
+			r, w, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer r.Close()
+			defer w.Close()
+			before := openFDs(t)
+			var hdr [4]byte
+			binary.BigEndian.PutUint32(hdr[:], 100)
+			if tc.complete {
+				binary.BigEndian.PutUint32(hdr[:], 2)
+			}
+			for i, count := range tc.counts {
+				data := hdr[:]
+				if i > 0 {
+					data = []byte("{}")
+				}
+				fds := make([]int, count)
+				for j := range fds {
+					fds[j] = int(w.Fd())
+				}
+				var oob []byte
+				if count > 0 {
+					oob = syscall.UnixRights(fds...)
+				}
+				if _, _, sendErr := a.WriteMsgUnix(data, oob, nil); sendErr != nil {
+					t.Fatal(sendErr)
+				}
+			}
+			// Incomplete bodies must not delay descriptor rejection.
+			if deadlineErr := b.SetReadDeadline(time.Now().Add(time.Second)); deadlineErr != nil {
+				t.Fatal(deadlineErr)
+			}
+			_, files, err := ReceiveFrame(b, Limits{MaxFrameBytes: 100, MaxFDs: tc.limit})
+			defer closeFiles(files)
+			if err == nil || errors.Is(err, os.ErrDeadlineExceeded) || !strings.Contains(err.Error(), "descriptor") || files != nil {
+				t.Errorf("got files=%d error=%v, want immediate descriptor rejection", len(files), err)
+			}
+			assertNoFDLeak(t, before)
+		})
+	}
+}
+
+func TestRightsReaderKeepsDescriptorsBeforeControlParseError(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	defer w.Close()
+	fd, err := unix.Dup(int(w.Fd()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// recvmsg owns the installed descriptor even if a later control is bad.
+	oob := append(syscall.UnixRights(fd), make([]byte, syscall.CmsgLen(0))...)
+	rr := &rightsReader{limit: 1, reads: 1}
+	rr.collect(oob)
+	if len(rr.files) != 1 {
+		_ = unix.Close(fd)
+		t.Fatalf("retained %d descriptors for cleanup, want 1", len(rr.files))
+	}
+	closeFiles(rr.files)
+	if rr.err == nil {
+		t.Error("malformed control accepted")
+	}
+	if _, err := unix.FcntlInt(uintptr(fd), unix.F_GETFD, 0); !errors.Is(err, unix.EBADF) {
+		t.Fatalf("descriptor still open after cleanup: %v", err)
 	}
 }
 

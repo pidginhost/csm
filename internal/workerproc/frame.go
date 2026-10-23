@@ -18,6 +18,8 @@ import (
 	"os"
 	"runtime"
 	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
 // maxSendFDs is the kernel's SCM_MAX_FD: the most descriptors one sendmsg
@@ -120,11 +122,17 @@ func sendBody(conn *net.UnixConn, body []byte, fds []*os.File) error {
 
 // ReceiveFrame reads one frame from conn with any descriptors that came with
 // it. On error every received descriptor is closed; on success the caller
-// owns the returned files.
+// owns the returned files. After an error the connection must be closed:
+// unread bytes and descriptors may remain from the rejected frame.
 func ReceiveFrame(conn *net.UnixConn, lim Limits) (Frame, []*os.File, error) {
-	r := &rightsReader{conn: conn, limit: lim.MaxFDs, oob: make([]byte, syscall.CmsgSpace(4*max(lim.MaxFDs, 1)))}
+	r := &rightsReader{
+		conn:  conn,
+		limit: lim.MaxFDs,
+		oob:   make([]byte, syscall.CmsgSpace(4*min(max(lim.MaxFDs, 1), maxSendFDs))),
+	}
 	f, err := ReadFrame(r, lim.MaxFrameBytes)
 	if err == nil {
+		// ReadFull drops an error returned with the last bytes it needed.
 		err = r.err
 	}
 	if err != nil {
@@ -149,36 +157,44 @@ type rightsReader struct {
 }
 
 func (r *rightsReader) Read(p []byte) (int, error) {
+	if r.err != nil {
+		// Reject at once rather than wait for body bytes a hostile peer may
+		// never send.
+		return 0, r.err
+	}
 	n, oobn, flags, _, err := r.conn.ReadMsgUnix(p, r.oob)
 	r.reads++
+	if oobn > 0 {
+		r.collect(r.oob[:oobn])
+	}
 	if flags&syscall.MSG_CTRUNC != 0 {
 		r.fail(errors.New("workerproc: descriptors truncated in transit"))
 	}
-	if oobn > 0 {
-		r.collect(r.oob[:oobn])
+	if r.err != nil {
+		return n, r.err
 	}
 	if errors.Is(err, io.EOF) {
 		// net wraps EOF in an OpError; io.ReadFull only recognises it bare,
 		// and needs it to tell a clean end from a truncated frame.
 		err = io.EOF
 	}
-	if err == nil {
-		err = r.err
-	}
 	return n, err
 }
 
 func (r *rightsReader) collect(oob []byte) {
-	msgs, err := syscall.ParseSocketControlMessage(oob)
-	if err != nil {
-		r.fail(fmt.Errorf("workerproc: parse control message: %w", err))
-		return
-	}
-	for i := range msgs {
-		if msgs[i].Header.Level != syscall.SOL_SOCKET || msgs[i].Header.Type != syscall.SCM_RIGHTS {
+	// Parse one message at a time so a malformed later message cannot hide
+	// descriptors recvmsg already installed and that still need closing.
+	for len(oob) >= unix.CmsgLen(0) {
+		hdr, data, rest, err := unix.ParseOneSocketControlMessage(oob)
+		if err != nil {
+			r.fail(fmt.Errorf("workerproc: parse control message: %w", err))
+			return
+		}
+		oob = rest
+		if hdr.Level != unix.SOL_SOCKET || hdr.Type != unix.SCM_RIGHTS {
 			continue
 		}
-		fds, err := syscall.ParseUnixRights(&msgs[i])
+		fds, err := unix.ParseUnixRights(&unix.SocketControlMessage{Header: hdr, Data: data})
 		if err != nil {
 			r.fail(fmt.Errorf("workerproc: parse descriptors: %w", err))
 			continue
@@ -193,7 +209,7 @@ func (r *rightsReader) collect(oob []byte) {
 				r.files = append(r.files, os.NewFile(uintptr(fd), "received"))
 				continue
 			}
-			_ = syscall.Close(fd)
+			_ = unix.Close(fd)
 		}
 	}
 }
