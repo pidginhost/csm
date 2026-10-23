@@ -229,16 +229,11 @@ GET  /api/v1/hardening           Last stored hardening audit report (admin scope
 
 ### Accounts at risk
 
-`GET /api/v1/stats` returns `accounts_at_risk` from current findings, regardless
-of age. Suppressed findings and internal status or response records are excluded.
-An account appears only while it has a high or critical finding. Its `findings`
-count includes all its remaining findings, including warnings, and `severity`
-is their highest severity.
-
-The list contains at most 50 accounts, ordered by severity, then finding count
-(both descending), then account name (ascending). An empty list is `[]`.
-Dismissals, suppressions and severity changes take effect on the next request,
-independently of the cached 24-hour history summary.
+`accounts_at_risk` in `GET /api/v1/stats` lists accounts with a current high or
+critical finding, whatever its age. Suppressed findings and internal records are
+left out. `findings` counts all of the account's current findings, warnings
+included, and `severity` is the highest. At most 50 accounts, ordered by
+severity, then finding count, then name. An empty list is `[]`.
 
 ### Date ranges
 
