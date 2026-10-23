@@ -55,6 +55,17 @@ func regexAlternativeNamesSomething(alt string) bool {
 	return false
 }
 
+// filesMatchNamesNoFile reports whether a FilesMatch pattern can match only
+// the empty name: anchored at both ends with nothing but grouping,
+// alternation and repetition between the anchors. No request names such a
+// file, so a grant under it grants nothing.
+func filesMatchNamesNoFile(pattern string) bool {
+	if len(pattern) < 2 || pattern[0] != '^' || pattern[len(pattern)-1] != '$' {
+		return false
+	}
+	return strings.Trim(pattern[1:len(pattern)-1], "()|?:*+") == ""
+}
+
 // uploadTreeDirNames are directory names under which web-writable content
 // lands. Findings there are judged without the sibling-PHP gate.
 var uploadTreeDirNames = map[string]bool{

@@ -205,6 +205,7 @@ var checkRegistry = []CheckInfo{
 	{Name: "htaccess_injection", Category: CategoryWeb, Correlation: CorrelationSecurityEvent, Response: ResponsePolicy{NeverChallenge: true}},
 	{Name: "htaccess_injection_realtime", Category: CategoryWeb, Correlation: CorrelationSecurityEvent},
 	{Name: "htaccess_php_in_uploads", Category: CategoryWeb, Correlation: CorrelationSecurityEvent},
+	{Name: "htaccess_rewrite_off_shield", Category: CategoryWeb, Correlation: CorrelationSecurityEvent},
 	{Name: "htaccess_security_disabled", Category: CategoryWeb, Correlation: CorrelationSecurityEvent},
 	{Name: "web_exposed_backup_archive", Category: CategoryWeb, Correlation: CorrelationIgnored, CorrelationReason: reasonPosture},
 	{Name: "web_exposed_config_leak", Category: CategoryWeb, Correlation: CorrelationIgnored, CorrelationReason: reasonPosture},

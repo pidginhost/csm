@@ -782,6 +782,7 @@ Attribution gaps:
 | `htaccess_injection` | security event |  |  |
 | `htaccess_injection_realtime` | security event |  |  |
 | `htaccess_php_in_uploads` | security event |  |  |
+| `htaccess_rewrite_off_shield` | security event |  |  |
 | `htaccess_security_disabled` | security event |  |  |
 | `htaccess_spam_redirect` | security event |  |  |
 | `htaccess_user_agent_cloak` | security event |  |  |

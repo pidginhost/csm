@@ -63,7 +63,8 @@ func TestHtaccessFindingsAttributeByPath(t *testing.T) {
 	seen := expectAttributed(t, findings, "alice")
 	requireChecks(t, seen, "htaccess_php_in_uploads", "htaccess_auto_prepend", "htaccess_user_agent_cloak",
 		"htaccess_spam_redirect", "htaccess_filesmatch_shield", "htaccess_header_injection",
-		"htaccess_errordocument_hijack", "htaccess_cgi_handler_abuse", "htaccess_security_disabled")
+		"htaccess_errordocument_hijack", "htaccess_cgi_handler_abuse", "htaccess_security_disabled",
+		"htaccess_rewrite_off_shield")
 
 	// The legacy web.go audit emits htaccess_injection with the path too; an
 	// oversized real file under a temporary account root drives its first

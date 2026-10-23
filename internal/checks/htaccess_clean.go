@@ -268,6 +268,11 @@ var htaccessDetectors = []htaccessDetector{
 		Detect:   detectFilesMatchShield,
 	},
 	{
+		Name:     "htaccess_rewrite_off_shield",
+		Severity: alert.High,
+		Detect:   detectRewriteOffShield,
+	},
+	{
 		Name:     "htaccess_header_injection",
 		Severity: alert.High,
 		Detect:   detectHeaderInjection,
@@ -1628,9 +1633,7 @@ func detectFilesMatchShield(content []byte, path string) []htaccessMatch {
 		if paired == nil {
 			continue
 		}
-		body := content[open[1]:paired[0]]
-		bodyLower := strings.ToLower(string(body))
-		if !strings.Contains(bodyLower, "allow from all") && !strings.Contains(bodyLower, "require all granted") {
+		if !htaccessBodyGrantsAccess(content[open[1]:paired[0]]) {
 			continue
 		}
 
@@ -1664,6 +1667,56 @@ func detectFilesMatchShield(content []byte, path string) []htaccessMatch {
 		})
 	}
 	return out
+}
+
+// htaccessBodyGrantsAccess reports whether a container body opens access with
+// either the Apache 2.2 or the 2.4 directive.
+func htaccessBodyGrantsAccess(body []byte) bool {
+	lower := strings.ToLower(string(body))
+	return strings.Contains(lower, "allow from all") || strings.Contains(lower, "require all granted")
+}
+
+// reRewriteEngineOff matches an active rewrite switch. Apache reads the flag
+// case-insensitively and strips argument quotes.
+var reRewriteEngineOff = regexp.MustCompile(`(?i)^\s*RewriteEngine\s+["']?off["']?\s*$`)
+
+// detectRewriteOffShield finds a dropper kit's .htaccess template: rewriting
+// switched off, beside a FilesMatch grant whose pattern can match no file
+// name. Rewriting off drops the rewrite protections a parent .htaccess applies
+// to the directory. The empty grant is the template's unfilled allow-list,
+// which no author writes on purpose. Each half alone is ordinary (asset
+// folders switch rewriting off) or inert, so both must be present. Every
+// active rewrite switch and every empty grant is returned for removal.
+func detectRewriteOffShield(content []byte, _ string) []htaccessMatch {
+	closeIdxs := reFilesMatchClose.FindAllIndex(content, -1)
+	var grants []htaccessMatch
+	for _, open := range reFilesMatchPattern.FindAllSubmatchIndex(content, -1) {
+		if !filesMatchNamesNoFile(string(content[open[2]:open[3]])) {
+			continue
+		}
+		var closing []int
+		for _, c := range closeIdxs {
+			if c[0] >= open[1] {
+				closing = c
+				break
+			}
+		}
+		if closing == nil || !htaccessBodyGrantsAccess(content[open[1]:closing[0]]) {
+			continue
+		}
+		grants = append(grants, htaccessMatch{
+			Range:   blockRange(content, open[0], closing[1]),
+			Excerpt: trimExcerpt(content, open[0], closing[1]),
+		})
+	}
+	if len(grants) == 0 {
+		return nil
+	}
+	switches := matchesFromLogicalLineRegex(content, reRewriteEngineOff)
+	if len(switches) == 0 {
+		return nil
+	}
+	return append(switches, grants...)
 }
 
 // detectHeaderInjection flags Header set / Header add directives
