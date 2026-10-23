@@ -12,10 +12,20 @@ func TestCallLaunchCancellationDoesNotCountAsFailure(t *testing.T) {
 	for _, cause := range []error{context.Canceled, context.DeadlineExceeded} {
 		for _, trial := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/trial=%t", cause, trial), func(t *testing.T) {
+				ctx, cancel := context.WithCancel(context.Background())
+				if cause == context.DeadlineExceeded {
+					ctx, cancel = context.WithTimeout(context.Background(), 50*time.Millisecond)
+				}
+				defer cancel()
 				attempts := 0
-				s := newTestSupervisor(t, func(context.Context) (Process, error) {
+				// The caller's context ends while the launcher is starting.
+				s := newTestSupervisor(t, func(ctx context.Context) (Process, error) {
 					attempts++
-					return nil, fmt.Errorf("launch: %w", cause)
+					if cause == context.Canceled {
+						cancel()
+					}
+					<-ctx.Done()
+					return nil, fmt.Errorf("launch: %w", ctx.Err())
 				}, time.Second)
 				clock := time.Now()
 				s.now = func() time.Time { return clock }
@@ -26,7 +36,7 @@ func TestCallLaunchCancellationDoesNotCountAsFailure(t *testing.T) {
 					s.openedAt = clock.Add(-BreakerCooldown)
 				}
 
-				_, _, err := s.Call(context.Background(), Frame{Op: "work"}, nil, okCheck)
+				_, _, err := s.Call(ctx, Frame{Op: "work"}, nil, okCheck)
 				if !errors.Is(err, cause) || errors.Is(err, ErrSpawn) {
 					t.Errorf("launch cancellation = %v, want %v without ErrSpawn", err, cause)
 				}
@@ -48,4 +58,22 @@ func TestCallLaunchCancellationDoesNotCountAsFailure(t *testing.T) {
 			})
 		}
 	}
+}
+
+// A launcher's own timeout, such as a worker that never finishes starting,
+// is a worker failure even though it surfaces as a context error. Treating it
+// as the caller withdrawing would let a start that always hangs dodge the
+// breaker.
+func TestCallLaunchOwnTimeoutCountsAsFailure(t *testing.T) {
+	s := newTestSupervisor(t, func(context.Context) (Process, error) {
+		return nil, fmt.Errorf("handshake: %w", context.DeadlineExceeded)
+	}, time.Second)
+	_, _, err := s.Call(context.Background(), Frame{Op: "work"}, nil, okCheck)
+	if !errors.Is(err, ErrSpawn) {
+		t.Fatalf("launcher timeout = %v, want ErrSpawn", err)
+	}
+	if st := s.Stats(); st.ConsecutiveFailures != 1 {
+		t.Fatalf("launcher timeout did not count: %+v", st)
+	}
+	waitWorkerQueueIdle(t, s, 1)
 }
