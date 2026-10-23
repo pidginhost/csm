@@ -150,6 +150,12 @@ func RunAccountScanWithOptions(ctx context.Context, cfg *config.Config, store *s
 	if opts.ForceFileIndex {
 		accountChecks = append(accountChecks, namedCheck{"file_index", CheckFileIndex})
 	}
+	// The YARA content pass belongs to the explicit full-scan audit only: it
+	// reads every file in the account's document roots, and the default scan
+	// keeps its existing cost.
+	if opts.ForceContent {
+		accountChecks = append(accountChecks, namedCheck{"yara_deep", checkAccountYARA})
+	}
 
 	// Run under the host-wide scan budget - filesystem checks all walk the
 	// same directory tree, so too many concurrent checks starve each other on
