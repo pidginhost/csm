@@ -199,13 +199,39 @@ func (inst *Installer) Install() error {
 		if err != nil {
 			return fmt.Errorf("reading self: %w", err)
 		}
-		// #nosec G306 G703 -- Installed binary; must be executable by root.
-		// 0700 restricts it to the owner (root). inst.BinaryPath is the
-		// installer's configured destination (/opt/csm/csm by default).
-		if err := os.WriteFile(inst.BinaryPath, data, 0700); err != nil {
+		// #nosec G306 G703 -- Installed binary. 0711: only root can read or
+		// replace it; others can execute it, because parse worker units run
+		// it as a dynamic user. inst.BinaryPath is the installer's configured
+		// destination (/opt/csm/csm by default).
+		if err := os.WriteFile(inst.BinaryPath, data, 0711); err != nil {
 			return fmt.Errorf("writing binary: %w", err)
 		}
 		fmt.Printf("  Binary installed to %s\n", inst.BinaryPath)
+	}
+	// WriteFile preserves an existing mode and applies umask to a new file.
+	// This also covers installing from the destination binary itself. Avoid
+	// a no-op chmod on an already-correct immutable binary.
+	binInfo, binErr := os.Stat(inst.BinaryPath)
+	if binErr != nil {
+		return fmt.Errorf("checking installed binary: %w", binErr)
+	}
+	if binInfo.Mode().Perm() != 0711 {
+		// #nosec G302 -- DynamicUser workers need execute access; only the owner may read or write.
+		if err := os.Chmod(inst.BinaryPath, 0711); err != nil {
+			return fmt.Errorf("setting binary permissions: %w", err)
+		}
+	}
+	// Grant workers search access only after securing the binary. State,
+	// rules and quarantine subdirectories keep their private modes.
+	installDir := filepath.Dir(inst.BinaryPath)
+	dirInfo, dirErr := os.Stat(installDir)
+	if dirErr != nil {
+		return fmt.Errorf("checking binary directory: %w", dirErr)
+	}
+	if dirInfo.Mode().Perm()&0011 != 0011 {
+		if err := os.Chmod(installDir, dirInfo.Mode()|0011); err != nil {
+			return fmt.Errorf("setting binary directory permissions: %w", err)
+		}
 	}
 	if err := ensureCommandSymlink(inst.commandSymlinkPath(), inst.BinaryPath); err != nil {
 		return fmt.Errorf("installing command at %s: %w", inst.CommandPath, err)

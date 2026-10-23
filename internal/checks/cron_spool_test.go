@@ -11,5 +11,6 @@ import (
 // layout pin it explicitly with withCronSpoolDir.
 func TestMain(m *testing.M) {
 	cronSpoolDir = func() string { return "/var/spool/cron" }
+	SetZipLister(inProcessZipLister{})
 	os.Exit(m.Run())
 }

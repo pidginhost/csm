@@ -863,6 +863,7 @@ Attribution gaps:
 | `phishing_directory` | security event |  |  |
 | `phishing_iframe` | security event |  |  |
 | `phishing_kit_archive` | security event |  |  |
+| `phishing_kit_archive_unscannable` | security event |  |  |
 | `phishing_kit_realtime` | security event |  |  |
 | `phishing_page` | security event |  |  |
 | `phishing_php` | security event |  |  |
