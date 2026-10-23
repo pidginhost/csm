@@ -291,6 +291,9 @@ func (s *Supervisor) callLocked(ctx context.Context, req Frame, fds []*os.File, 
 			if localExhaustion(launchErr) {
 				return Frame{}, nil, fmt.Errorf("%w: %w", ErrSpawn, launchErr)
 			}
+			// The breaker bounds how often this logs: three in a row, then
+			// one trial per cooldown.
+			s.logf("%s did not start: %v", s.cfg.Name, launchErr)
 			s.recordFailureLocked()
 			return Frame{}, nil, fmt.Errorf("%w: %v", ErrSpawn, launchErr)
 		}

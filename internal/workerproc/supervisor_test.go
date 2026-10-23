@@ -430,3 +430,23 @@ func TestCallMarksWorkerFailures(t *testing.T) {
 		})
 	}
 }
+
+func TestCallLogsLaunchFailure(t *testing.T) {
+	var logged []string
+	s, err := New(Config{
+		Name:    "test worker",
+		Launch:  func(context.Context) (Process, error) { return nil, errors.New("systemd-run: no bus") },
+		Timeout: time.Second,
+		Limits:  Limits{MaxFrameBytes: 1 << 10},
+		Log:     func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.Call(context.Background(), Frame{Op: "work"}, nil, okCheck); !errors.Is(err, ErrSpawn) {
+		t.Fatalf("Call = %v", err)
+	}
+	if len(logged) != 1 || !strings.Contains(logged[0], "systemd-run: no bus") {
+		t.Fatalf("launch failure logs = %q", logged)
+	}
+}
