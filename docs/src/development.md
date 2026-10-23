@@ -183,11 +183,10 @@ GitLab CI (`.gitlab-ci.yml`) is the internal build pipeline. It runs lint/test/p
 
 | Stage | What it does |
 |-------|-------------|
-| **.pre** | Manual CI tools and amd64 builder image builds block dependent jobs when their definitions change on a branch. |
+| **.pre** | Manual CI tools and builder image builds (amd64 and arm64) block dependent jobs when their definitions change on a branch. |
 | **preflight** | Release preflight rejects version tags without a usable cPanel image, after required images are built. |
 | **lint** | Pinned golangci-lint and formatter, vet, blocking gosec/govulncheck, fixture privacy, and Prometheus config validation. |
 | **test** | Full default-tag race/coverage suite (30-minute package timeout), shipped-tag lint/security/race gate, required kernel/service gate, and four pinned clean-application gates. |
-| **build-image** | Build the arm64 CSM builder image with YARA-X (manual trigger). |
 | **build** | amd64 and arm64 release binaries with YARA-X CGO and the `yara journal bpf` build tags. arm64 builds run under QEMU in rootless BuildKit. |
 | **package** | RPM + DEB via nFPM |
 | **integration** | Spin up cloudv-1 AlmaLinux and Ubuntu hosts plus the configured clean cPanel image via phctl, install the pipeline-built amd64 packages, run the integration test binary, collect coverage, and confirm every test server was really deleted. `main` integration is manual and can omit cPanel; version tags require the cPanel image, baseline-to-candidate package upgrade, installer, WHM, mail watcher and forward guard checks. |
@@ -206,11 +205,10 @@ The default suite executes on every pipeline even when compiled packages
 are cached. Release build and package jobs stay on separate runners and do
 not consume these caches.
 
-When either amd64 image definition changes on a branch, run its blocking
-manual image job. Preflight waits for those builds, and the amd64 release
-build waits for preflight while still running alongside lint and tests.
-The arm64 image remains a separate manual build; its release build waits
-for the matching image tag in the registry.
+When an image definition changes on a branch, run its blocking manual
+image jobs: ci-tools, or both builder architectures. Preflight waits for
+those builds, and both release builds wait for preflight while still
+running alongside lint and tests.
 
 ## Public Releases
 
