@@ -6,7 +6,7 @@ import (
 )
 
 func TestUnitConfigForTheZipPool(t *testing.T) {
-	cfg := UnitConfig("/opt/csm/csm", "csm-parse-worker-zip0", nil)
+	cfg := UnitConfig("/opt/csm/csm", "csm-parse-worker-zip0", 64<<20, nil)
 	if cfg.Command != "/opt/csm/csm" || cfg.Prefix != "csm-parse-worker-zip0" {
 		t.Fatalf("command/prefix = %q %q", cfg.Command, cfg.Prefix)
 	}

@@ -40,7 +40,7 @@ func (d *Daemon) initParseWorkers() error {
 		return fmt.Errorf("parse worker: %w", err)
 	}
 	lister, err := parseworker.NewLister(parseworker.ListerConfig{
-		Launch: workerproc.UnitLauncher(parseworker.UnitConfig(d.binaryPath, parseWorkerUnitPrefix+"zip0", logf)),
+		Launch: workerproc.UnitLauncher(parseworker.UnitConfig(d.binaryPath, parseWorkerUnitPrefix+"zip0", 64<<20, logf)),
 		Log:    logf,
 	})
 	if err != nil {

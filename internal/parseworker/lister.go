@@ -20,8 +20,9 @@ var errIncomplete = errors.New("zip listing incomplete")
 
 // ListerConfig configures a Lister.
 type ListerConfig struct {
-	Launch workerproc.Launcher
-	Log    func(string, ...any)
+	Launch    workerproc.Launcher
+	Log       func(string, ...any)
+	OnFailure func(reason string, err error)
 }
 
 // Lister lists tenant zips through one parse worker at a time.
@@ -39,6 +40,7 @@ func NewLister(cfg ListerConfig) (*Lister, error) {
 		Log:         cfg.Log,
 		MaxJobs:     1000,
 		IdleTimeout: 10 * time.Minute,
+		OnFailure:   cfg.OnFailure,
 	})
 	if err != nil {
 		return nil, err

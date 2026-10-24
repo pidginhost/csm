@@ -757,7 +757,7 @@ func scanZipLister(binary string) (*parseworker.Lister, error) {
 		fmt.Fprintf(os.Stderr, "parse-worker: "+format+"\n", args...)
 	}
 	return parseworker.NewLister(parseworker.ListerConfig{
-		Launch: workerproc.UnitLauncher(parseworker.UnitConfig(binary, scanCLIUnitPrefix, logf)),
+		Launch: workerproc.UnitLauncher(parseworker.UnitConfig(binary, scanCLIUnitPrefix, 64<<20, logf)),
 		Log:    logf,
 	})
 }
