@@ -440,6 +440,108 @@ $a = new ZipArchive();
 $a->open('cache.bin');
 run_cached($a->getFromName('main.php'));`,
 		},
+		// backdoor_first_line_stub: an injection kit prepends a line that does
+		// nothing to every file it patches. Only the file's first bytes count.
+		{
+			name: "kit stub on the first line of a patched file",
+			rule: "backdoor_first_line_stub",
+			want: true,
+			sample: `<?php $array_walk_qmzt  =  [''];  if(isset($array_walk_qmzt['str_pad_kx']))  {} 
+/**
+ * Feed cache class.
+ */
+class Example_Feed_Cache {}`,
+		},
+		{
+			name:   "kit stub with double quotes and upper-case keywords",
+			rule:   "backdoor_first_line_stub",
+			want:   true,
+			sample: "<?php $Ucfirst_Abcd = [\"\"]; IF (ISSET($Ucfirst_Abcd[\"key_1\"])) { }\necho 1;",
+		},
+		{
+			name: "same shape later in the file",
+			rule: "backdoor_first_line_stub",
+			sample: `<?php
+// configuration
+$defaults = ['']; if(isset($defaults['mode'])) {}`,
+		},
+		{
+			name:   "default array with a real isset branch",
+			rule:   "backdoor_first_line_stub",
+			sample: `<?php $defaults = ['']; if (isset($defaults['mode'])) { $mode = $defaults['mode']; }`,
+		},
+		// backdoor_visitor_ip_logger: a cookie named after a hash of the site
+		// and visitor addresses appended to a file in the upload temp directory.
+		{
+			name: "admin visitor address logger",
+			rule: "backdoor_visitor_ip_logger",
+			want: true,
+			sample: `<?php
+$seen = md5(md5($_SERVER['DOCUMENT_ROOT']));
+if (!isset($_COOKIE[$seen])) {
+    setcookie($seen, '1', 0, '/');
+    $dir = ini_get('upload_tmp_dir');
+    if (empty($dir)) { $dir = '/tmp/'; }
+    $ip = $_SERVER['REMOTE_ADDR'];
+    if (is_writable($dir)) { $fp = fopen($dir . '/' . $seen, "a"); fputs($fp, "\n" . $ip); fclose($fp); }
+}
+require_once __DIR__ . '/admin.php';`,
+		},
+		{
+			name: "host hashed cache key and temp directory lookup",
+			rule: "backdoor_visitor_ip_logger",
+			sample: `<?php
+function example_cache_dir() {
+    $key = md5($_SERVER['HTTP_HOST']);
+    $dir = ini_get('upload_tmp_dir');
+    return rtrim($dir ? $dir : sys_get_temp_dir(), '/') . '/cache-' . $key;
+}`,
+		},
+		{
+			name: "debug log in the temp directory",
+			rule: "backdoor_visitor_ip_logger",
+			sample: `<?php
+function example_debug_log($line) {
+    $dir = ini_get('upload_tmp_dir');
+    $fp = fopen($dir . '/example-debug.log', 'a');
+    fwrite($fp, $line . "\n");
+    fclose($fp);
+}`,
+		},
+		{
+			name: "site hash and temp log far apart in a bundle",
+			rule: "backdoor_visitor_ip_logger",
+			sample: "<?php\n$key = md5($_SERVER['HTTP_HOST']);\n" + strings.Repeat("// filler line for an unrelated library\n", 80) +
+				"$dir = ini_get('upload_tmp_dir');\n" + strings.Repeat("// filler line for an unrelated library\n", 80) +
+				"$fp = fopen($dir . '/trace.log', 'a');\n",
+		},
+		// backdoor_obfuscated_hook_injector: the hook name itself goes through
+		// a base64 and XOR decoder defined beside the registration.
+		{
+			name: "footer hook name decoded beside an XOR decoder",
+			rule: "backdoor_obfuscated_hook_injector",
+			want: true,
+			sample: `<?php
+function qz_unpack($s, $k) {
+    $s = base64_decode($s);
+    for ($i = 0; $i < strlen($s); $i++) { $s[$i] = chr(ord($s[$i]) ^ $k); }
+    return $s;
+}
+function qz_footer() { echo get_option('qz_banner'); }
+add_action( qz_unpack('Y2pqcWB3V1A=', 5) , "qz_footer" );`,
+		},
+		{
+			name: "plain hook beside a licence XOR helper",
+			rule: "backdoor_obfuscated_hook_injector",
+			sample: `<?php
+function example_mask($s, $k) { for ($i = 0; $i < strlen($s); $i++) { $s[$i] = chr(ord($s[$i]) ^ ord($k[$i % strlen($k)])); } return $s; }
+add_action('init', 'example_register');`,
+		},
+		{
+			name:   "hook name from a constant without a decoder",
+			rule:   "backdoor_obfuscated_hook_injector",
+			sample: `<?php add_action( constant( 'EXAMPLEHOOK' ), 'example_boot' );`,
+		},
 		{
 			name:     "mixed-case cron downloader",
 			rule:     "backdoor_cron_reverse_shell",

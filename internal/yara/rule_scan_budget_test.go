@@ -310,6 +310,27 @@ func TestRuleScanBudgetPHPInImage(t *testing.T) {
 	})
 }
 
+// The kit marker rules anchor on short, frequent tokens. Dense runs of each
+// token, and pairs just outside their windows, must not multiply.
+func TestRuleScanBudgetKitMarkers(t *testing.T) {
+	far := strings.Repeat(" ", 5_000)
+	requireRuleScanBudget(t, "backdoor_first_line_stub", map[string][]byte{
+		"repeated_stubs.php": []byte(strings.Repeat("<?php $abc_defg = ['']; if(isset($abc_defg['key'])) {} ", 18_000)),
+		"open_tags.php":      []byte(strings.Repeat("<?php $a = [''", 70_000)),
+	})
+	requireRuleScanBudget(t, "backdoor_visitor_ip_logger", map[string][]byte{
+		"temp_dir_lookups.php": []byte("<?php\n" + strings.Repeat("ini_get('upload_tmp_dir'); ", 40_000)),
+		"lookups_far_from_hashes.php": []byte("<?php\n" + strings.Repeat("ini_get('upload_tmp_dir'); ", 20_000) + far +
+			strings.Repeat("md5($_SERVER['HTTP_HOST']); fopen($d . $k, 'a'); ", 10_000)),
+		"open_fopen_calls.php": []byte("<?php\n" + strings.Repeat("fopen($dir . $name . $x . $y . $z", 30_000)),
+	})
+	requireRuleScanBudget(t, "backdoor_obfuscated_hook_injector", map[string][]byte{
+		"decoded_hooks.php": []byte("<?php\n" + strings.Repeat("add_action(d('Y2pqcWB3V1A='), 'f'); ", 28_000)),
+		"hooks_far_from_xor.php": []byte("<?php\n" + strings.Repeat("add_action(d('Y2pqcWB3V1A='), 'f'); ", 14_000) + far +
+			strings.Repeat("$s[$i] = chr(ord($s[$i]) ^ $k); ", 15_000)),
+	})
+}
+
 // Both lists at YARA-X's default match cap, every construct just outside the
 // window, so the loop must visit every opening tag without a match.
 func TestRuleScanBudgetPHPInImageMatchCap(t *testing.T) {

@@ -18,6 +18,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - Web configuration checks now recognize more malicious access-control variants.
 - Scans and real-time checks now detect PHP that runs code hidden inside an archive, including password-protected archives and includes of archive members.
 - Custom signature rules can now require two patterns to appear near each other in a file.
+- Scans and real-time checks now detect more code injected into WordPress files, including admin visitor address loggers and footer injectors that hide their hooks.
 - Web configuration checks now report a dropper kit's .htaccess template that switches off rewrite protections, and the automatic cleaner can remove it.
 - On LiteSpeed, matches that ModSecurity only logs are no longer reported as blocks or counted toward visitor bans.
 

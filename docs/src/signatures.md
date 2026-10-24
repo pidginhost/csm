@@ -171,6 +171,18 @@ passed to `create_function` remain source text, as described in the
 Regression fixtures run through both engines, including mixed-case calls and
 ordinary archive and template code.
 
+Three signatures report code an injection kit leaves in WordPress files, in
+both engines. The first-line stub signature matches only a file that opens
+with an array holding an empty string followed by an `isset` test with an
+empty body. The line does nothing, outlives cleaners that strip only the
+payload, and no generator writes it. The visitor logger signature needs a hash
+of the site root or host and an append-mode `fopen`, each starting within 1200
+bytes of a lookup of the upload temp directory. The hook injector signature
+needs `add_action` or `add_filter` called with a hook name returned by a call
+on an encoded literal, starting within 4096 bytes of a byte-wise XOR loop.
+Plugins that name hooks in plain text, keep caches in the temp directory or
+mask licence keys with XOR are not evidence.
+
 ### Legacy callback parser follow-up
 
 The callback signature does not inspect quoted function bodies. Doing so needs
