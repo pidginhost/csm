@@ -309,7 +309,8 @@ func TestStopParseWorkersWaitsForSpoolDrain(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		d := &Daemon{mailExtractor: ex}
+		d := &Daemon{mailExtractor: ex, stopCh: make(chan struct{})}
+		close(d.stopCh) // shutdown signalled
 		d.wg.Add(1)
 		stopped := make(chan struct{})
 		go func() { d.stopParseWorkers(); close(stopped) }()
@@ -339,4 +340,20 @@ func TestStopParseWorkersWaitsForSpoolDrain(t *testing.T) {
 			t.Errorf("extractor accepted work after shutdown: %v", err)
 		}
 	})
+}
+
+// A panic unwinding Run runs the deferred stop before shutdown is signalled.
+// Nothing has told the daemon's goroutines to stop, so waiting for them would
+// hang the process instead of letting it crash and be restarted.
+func TestStopParseWorkersDoesNotWaitBeforeShutdown(t *testing.T) {
+	d := &Daemon{stopCh: make(chan struct{})}
+	d.wg.Add(1)
+	t.Cleanup(d.wg.Done)
+	stopped := make(chan struct{})
+	go func() { d.stopParseWorkers(); close(stopped) }()
+	select {
+	case <-stopped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("parse worker stop waited for goroutines that were never told to stop")
+	}
 }

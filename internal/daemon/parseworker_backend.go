@@ -108,9 +108,16 @@ func (d *Daemon) spoolExtractor() mailExtractor {
 }
 
 func (d *Daemon) stopParseWorkers() {
-	// Stop is signalled before this call. A watcher may still be draining
-	// or finishing a restart, and must retain its pool until it returns.
-	d.wg.Wait()
+	// During shutdown a watcher may still be draining or finishing a
+	// restart, and must keep its pool until it returns. Before shutdown is
+	// signalled (a panic unwinding Run) nothing tells those goroutines to
+	// stop: waiting would hang the daemon instead of letting it crash and be
+	// restarted.
+	select {
+	case <-d.stopCh:
+		d.wg.Wait()
+	default:
+	}
 	checks.SetZipLister(nil)
 	if d.mailExtractor != nil {
 		_ = d.mailExtractor.Stop()
