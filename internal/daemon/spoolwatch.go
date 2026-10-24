@@ -587,6 +587,7 @@ func (sw *SpoolWatcher) handleSpoolEvent(evt spoolEvent) {
 		MaxArchiveDepth:   sw.cfg.EmailAV.MaxArchiveDepth,
 		MaxArchiveFiles:   sw.cfg.EmailAV.MaxArchiveFiles,
 		MaxExtractionSize: sw.cfg.EmailAV.MaxExtractionSize,
+		MaxParts:          emime.MaxParts,
 		TempDir:           sw.emailAVTempDir,
 	}
 

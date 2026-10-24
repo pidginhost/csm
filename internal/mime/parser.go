@@ -83,6 +83,11 @@ type Limits struct {
 	MaxParts int
 }
 
+// MaxParts caps the parts one message stages. Each holds an open file
+// until the scan ends, so the cap keeps a message of thousands of tiny
+// attachments from exhausting the process's descriptors.
+const MaxParts = 200
+
 // DefaultLimits returns the default extraction limits.
 func DefaultLimits() Limits {
 	return Limits{
@@ -90,6 +95,7 @@ func DefaultLimits() Limits {
 		MaxArchiveDepth:   1,
 		MaxArchiveFiles:   50,
 		MaxExtractionSize: 100 * 1024 * 1024,
+		MaxParts:          MaxParts,
 	}
 }
 

@@ -257,3 +257,10 @@ func readBodyFileLimited(t *testing.T, path string, limit int64) ([]byte, bool, 
 	f, _ := openArchive(t, path)
 	return readBodyLimited(f, limit)
 }
+
+// Every staged part holds an open file, so the default limits must cap them.
+func TestDefaultLimitsCapParts(t *testing.T) {
+	if got := DefaultLimits().MaxParts; got != MaxParts || MaxParts != 200 {
+		t.Fatalf("DefaultLimits().MaxParts = %d, MaxParts = %d; want 200", got, MaxParts)
+	}
+}
