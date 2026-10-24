@@ -499,7 +499,12 @@ func (s *Supervisor) roundTripLocked(ctx context.Context, body []byte, ownedFDs 
 		work.progress()
 		defer func() { closeFiles(res.fds) }()
 		if res.err != nil {
-			return Frame{}, nil, false, ReasonCrash, fmt.Errorf("%s: %w", s.cfg.Name, res.err)
+			reason := ReasonCrash
+			var invalid protocolError
+			if errors.As(res.err, &invalid) {
+				reason = ReasonProtocol
+			}
+			return Frame{}, nil, false, reason, fmt.Errorf("%s: %w", s.cfg.Name, res.err)
 		}
 		var err error
 		lost := false

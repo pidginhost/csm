@@ -1214,6 +1214,20 @@ its error matches `workerproc.ErrWorkerFailed` with its text unchanged. Three
 failures in a row pause spawning for 60 seconds, then one trial request is
 let through. Each supervisor publishes a `requests` queue-health row.
 
+`workerproc.FailureReason` classifies counted failures as `timeout`,
+`protocol`, `crash`, `oom`, or `spawn`, including through wrapped errors.
+Malformed frames and rejected descriptors are protocol failures; a broken
+socket is a crash unless the process reports an OOM kill. Diagnostic text
+and underlying errors remain unchanged. A failed start matches `ErrSpawn`,
+not `ErrWorkerFailed`.
+
+`Config.OnFailure` receives each counted failure while the supervisor lock
+is held. The callback must return promptly and must not call back into the
+supervisor. `Stats.Kills` counts these failures by reason, including failed
+starts, and returns an independent snapshot. Cancellation, stopped or
+breaker refusals, and local descriptor exhaustion before the round trip
+do not reach the hook or these counters.
+
 Some errors are not worker failures and never count toward the breaker:
 
 - caller cancellation, including during launch; a canceled trial restarts
@@ -1274,9 +1288,14 @@ or usage already over the cap fail the start. Process RSS polling cannot
 replace this: it misses memfd pages and other processes in the unit.
 
 A watchdog reads the cgroup counters every 500 ms and kills a worker over its
-cap, or whose usage cannot be read. A worker over three quarters of its cap
-after a request is retired. Units also retire at three quarters of their
-lifetime cap. The supervisor checks retirement before reusing an idle
+cap, or whose usage cannot be read. It skips a tick when the daemon itself
+runs out of descriptors (EMFILE or ENFILE). Memory kills are identified by
+the watchdog or the unit's cgroup OOM counter; a missing or unreadable
+counter alone is not evidence of an OOM kill.
+
+A worker over three quarters of its cap after a request is retired. Units
+also retire at three quarters of their lifetime cap. The supervisor checks
+retirement before reusing an idle
 worker, as well as after a request, so expired workers get no new input.
 Kill closes the socket at once and asks systemd
 to kill the unit by name; it never signals a PID and never blocks. The daemon

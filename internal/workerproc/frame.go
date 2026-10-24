@@ -40,6 +40,13 @@ type Limits struct {
 	MaxFDs        int
 }
 
+// protocolError distinguishes a rejected peer frame from socket failure
+// without changing the diagnostic text or hiding its underlying error.
+type protocolError struct{ err error }
+
+func (e protocolError) Error() string { return e.err.Error() }
+func (e protocolError) Unwrap() error { return e.err }
+
 // WriteFrame writes one length-prefixed frame.
 func WriteFrame(w io.Writer, f Frame, maxBytes int) error {
 	body, err := marshalBody(f, maxBytes)
@@ -64,7 +71,7 @@ func ReadFrame(r io.Reader, maxBytes int) (Frame, error) {
 	}
 	size := binary.BigEndian.Uint32(hdr[:])
 	if int64(size) > int64(maxBytes) {
-		return Frame{}, fmt.Errorf("workerproc: declared frame size %d exceeds cap %d", size, maxBytes)
+		return Frame{}, protocolError{fmt.Errorf("workerproc: declared frame size %d exceeds cap %d", size, maxBytes)}
 	}
 	body := make([]byte, size)
 	if _, err := io.ReadFull(r, body); err != nil {
@@ -76,7 +83,7 @@ func ReadFrame(r io.Reader, maxBytes int) (Frame, error) {
 	}
 	var f Frame
 	if err := json.Unmarshal(body, &f); err != nil {
-		return Frame{}, fmt.Errorf("workerproc: unmarshal frame: %w", err)
+		return Frame{}, protocolError{fmt.Errorf("workerproc: unmarshal frame: %w", err)}
 	}
 	return f, nil
 }
@@ -215,7 +222,7 @@ func (r *rightsReader) collect(oob []byte) {
 
 func (r *rightsReader) fail(err error) {
 	if r.err == nil {
-		r.err = err
+		r.err = protocolError{err}
 	}
 }
 
