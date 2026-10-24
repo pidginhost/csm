@@ -323,7 +323,12 @@ func CheckWPCore(ctx context.Context, cfg *config.Config, _ *state.Store) (findi
 					}
 
 					outStr := string(out)
-					lineEndingOnly, onlyLineEndings := releases.lineEndingOnly(wpPath, out)
+					completed := wpCoreVerificationCompleted(err, out)
+					lineEndingOnly := make(map[string]bool)
+					onlyLineEndings := false
+					if completed {
+						lineEndingOnly, onlyLineEndings = releases.lineEndingOnly(wpPath, out)
+					}
 					var extraneous []string
 					reported := false
 					for _, line := range strings.Split(outStr, "\n") {
@@ -358,7 +363,7 @@ func CheckWPCore(ctx context.Context, cfg *config.Config, _ *state.Store) (findi
 						findings = append(findings, collapsed)
 						mu.Unlock()
 					}
-					if wpCoreVerificationCompleted(err, out) {
+					if completed {
 						state := "modified"
 						if onlyLineEndings {
 							state = "verified"

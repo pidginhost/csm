@@ -195,7 +195,7 @@ The parser supports PHP syntax up to version 8.1. A file written against a newer
 
 | Check | Description |
 |-------|-------------|
-| `wp_core` | Core file integrity via official WordPress.org checksums. A command timeout does not mark files as verified, and a timed-out re-check stays unresolved. Repeated verification failures produce `wp_core_unverified`. A core file that differs from the release only in line endings is not reported, and an install with no other difference counts as verified. |
+| `wp_core` | Core file integrity via official WordPress.org checksums. A command timeout does not mark files as verified, and a timed-out re-check stays unresolved. Repeated verification failures produce `wp_core_unverified`. A core file proven to differ from the release only in line endings is not reported, and an install with no other difference counts as verified. Incomplete checks stay unresolved. |
 | `wp_plugin_inventory` | Reports persistent plugin inventory failures as `wp_plugin_inventory_unverified`. Shares the existing refresh and interval with the outdated and vulnerable plugin checks. |
 | `nulled_plugins` | Cracked/nulled plugin detection |
 | `outdated_plugins` | Plugins behind the latest release, graded by version gap |

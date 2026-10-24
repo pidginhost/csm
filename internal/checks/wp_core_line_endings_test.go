@@ -99,6 +99,26 @@ func TestCheckWPCoreIgnoresLineEndingOnlyCoreFile(t *testing.T) {
 	if state := wpCoreCoverageState(t, db, dirs[0]); state != "verified" {
 		t.Errorf("coverage state = %q, want verified", state)
 	}
+	if size := GlobalCMSCache().Size(); size != 0 {
+		t.Errorf("line-ending-only install added %d files to the realtime hash cache", size)
+	}
+}
+
+// A matching prefix is not enough when wp-cli did not complete the integrity
+// check. The modified-file finding stays until the whole result is trustworthy.
+func TestCheckWPCoreLineEndingsRequireCompletedVerification(t *testing.T) {
+	output := "Warning: File doesn't verify against checksum: wp-includes/plugin.php\n" +
+		"Error: Failed to get core checksums: service unavailable\n"
+	db, dirs := wpCoreLineEndingsFixture(t, 1, withCRLF(wpCoreLineEndingsOfficial), output)
+	stubWPCoreChecksums(t, map[string]string{"wp-includes/plugin.php": wpCoreMD5(wpCoreLineEndingsOfficial)}, nil)
+
+	got := coreIntegrityFindings(CheckWPCore(withWPInstallCache(context.Background()), nil, nil))
+	if len(got) != 1 || got[0].FilePath != filepath.Join(dirs[0], "wp-includes", "plugin.php") {
+		t.Fatalf("incomplete verification suppressed the modified-file finding: %+v", got)
+	}
+	if state := wpCoreCoverageState(t, db, dirs[0]); state != "unverified" {
+		t.Errorf("coverage state = %q, want unverified", state)
+	}
 }
 
 // Every way of failing to prove the file is the release's code keeps the
@@ -114,6 +134,8 @@ func TestCheckWPCoreReportsCoreFileBeyondLineEndings(t *testing.T) {
 		fetchErr      error
 	}{
 		{"crlf_with_added_line", withCRLF(wpCoreLineEndingsOfficial + "function synthetic_added() {}\n"), official, nil},
+		{"cr_away_from_lf", withCRLF(strings.Replace(wpCoreLineEndingsOfficial, "return 1", "return\r 1", 1)), official, nil},
+		{"double_cr_before_lf", strings.ReplaceAll(withCRLF(wpCoreLineEndingsOfficial), "\r\n", "\r\r\n"), official, nil},
 		{"lf_changed", wpCoreLineEndingsOfficial + "function synthetic_added() {}\n", official, nil},
 		{"lf_matching_release", wpCoreLineEndingsOfficial, official, nil},
 		{"fetch_failed", withCRLF(wpCoreLineEndingsOfficial), official, errors.New("HTTP 503")},
@@ -174,6 +196,67 @@ func TestCheckWPCoreFetchesEachReleaseOnce(t *testing.T) {
 			}
 			if n := calls.Load(); n != 1 {
 				t.Errorf("checksum fetches = %d, want 1 for two installs on one release", n)
+			}
+		})
+	}
+}
+
+// The report and version file live in an account-controlled tree. Neither a
+// symlinked report path nor a symlinked version directory can redirect the
+// privileged comparison outside the opened installation.
+func TestWPCoreLineEndingsRefuseSymlinkedPaths(t *testing.T) {
+	withMockOS(t, realOS{})
+	for _, tc := range []struct {
+		name  string
+		setup func(t *testing.T, install, outside string) string
+	}{
+		{
+			name: "final_core_file",
+			setup: func(t *testing.T, install, outside string) string {
+				writeWPCoreFile(t, install, "wp-includes/version.php", "<?php\n$wp_version = '6.5.2';\n")
+				writeWPCoreFile(t, outside, "plugin.php", withCRLF(wpCoreLineEndingsOfficial))
+				if err := os.Symlink(filepath.Join(outside, "plugin.php"), filepath.Join(install, "wp-includes", "plugin.php")); err != nil {
+					t.Fatal(err)
+				}
+				return "wp-includes/plugin.php"
+			},
+		},
+		{
+			name: "core_file_parent",
+			setup: func(t *testing.T, install, outside string) string {
+				writeWPCoreFile(t, install, "wp-includes/version.php", "<?php\n$wp_version = '6.5.2';\n")
+				writeWPCoreFile(t, outside, "plugin.php", withCRLF(wpCoreLineEndingsOfficial))
+				if err := os.Symlink(outside, filepath.Join(install, "wp-admin")); err != nil {
+					t.Fatal(err)
+				}
+				return "wp-admin/plugin.php"
+			},
+		},
+		{
+			name: "version_file_parent",
+			setup: func(t *testing.T, install, outside string) string {
+				writeWPCoreFile(t, install, "wp-login.php", withCRLF(wpCoreLineEndingsOfficial))
+				writeWPCoreFile(t, outside, "version.php", "<?php\n$wp_version = '6.5.2';\n")
+				if err := os.Symlink(outside, filepath.Join(install, "wp-includes")); err != nil {
+					t.Fatal(err)
+				}
+				return "wp-login.php"
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			base := t.TempDir()
+			install := filepath.Join(base, "install")
+			outside := filepath.Join(base, "outside")
+			mkdirTest(t, install)
+			mkdirTest(t, outside)
+			rel := tc.setup(t, install, outside)
+			stubWPCoreChecksums(t, map[string]string{rel: wpCoreMD5(wpCoreLineEndingsOfficial)}, nil)
+
+			var releases wpCoreReleaseChecksums
+			files, only := releases.lineEndingOnly(install, []byte(wpCoreLineEndingsReport(rel)))
+			if only || files[rel] {
+				t.Fatalf("symlinked %s was accepted as an in-install core file", rel)
 			}
 		})
 	}
