@@ -211,9 +211,10 @@ func verifyOutdatedPlugins(details string) VerifyResult {
 // resolves the finding when no extraneous core file ("should not exist")
 // remains -- mirroring CheckWPCore, which only flags those lines. It is
 // read-only and bounded by wpVerifyTimeout. To avoid ever clearing a real
-// compromise it resolves only when verification is clean or the install is
-// gone; any wp-cli error (including modified files with no remaining
-// extra-file line) returns Checked:false.
+// compromise it resolves only when verification is clean, every remaining
+// difference is line endings, or the install is gone; any wp-cli error
+// (including modified files with no remaining extra-file line) returns
+// Checked:false.
 func verifyWPCoreIntegrity(details string) VerifyResult {
 	wpPath := findingDetailPath(details)
 	if wpPath == "" {
@@ -248,11 +249,16 @@ func verifyWPCoreIntegrity(details string) VerifyResult {
 	if len(out) == 0 {
 		return VerifyResult{Checked: false, Detail: "could not run wp core verify-checksums (try again, or run an account scan)"}
 	}
+	var releases wpCoreReleaseChecksums
+	lineEndingOnly, onlyLineEndings := releases.lineEndingOnly(clean, out)
+	if onlyLineEndings && wpCoreVerificationCompleted(err, out) {
+		return VerifyResult{Checked: true, Resolved: true, Detail: "remaining WordPress core differences are line endings only"}
+	}
 	for _, line := range strings.Split(string(out), "\n") {
 		if wpChecksumLineHasExtraneousCoreFile(line) {
 			return VerifyResult{Checked: true, Resolved: false, Detail: "WordPress core still has extraneous files"}
 		}
-		if wpChecksumModifiedCoreFile(line) != "" {
+		if rel := wpChecksumModifiedCoreFile(line); rel != "" && !lineEndingOnly[rel] {
 			return VerifyResult{Checked: true, Resolved: false, Detail: "WordPress core still has modified files"}
 		}
 	}

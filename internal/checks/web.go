@@ -273,6 +273,7 @@ func CheckWPCore(ctx context.Context, cfg *config.Config, _ *state.Store) (findi
 
 	var mu sync.Mutex
 	var wg sync.WaitGroup
+	var releases wpCoreReleaseChecksums
 
 	batch := wpCoreBatches.begin(len(wpConfigs), wpChecksumWorkers)
 	defer batch.abandon(ctx)
@@ -322,6 +323,12 @@ func CheckWPCore(ctx context.Context, cfg *config.Config, _ *state.Store) (findi
 					}
 
 					outStr := string(out)
+					completed := wpCoreVerificationCompleted(err, out)
+					lineEndingOnly := make(map[string]bool)
+					onlyLineEndings := false
+					if completed {
+						lineEndingOnly, onlyLineEndings = releases.lineEndingOnly(wpPath, out)
+					}
 					var extraneous []string
 					reported := false
 					for _, line := range strings.Split(outStr, "\n") {
@@ -333,7 +340,7 @@ func CheckWPCore(ctx context.Context, cfg *config.Config, _ *state.Store) (findi
 						// A shipped core file whose bytes changed is where backdoors
 						// are appended; that is worse than an extra file, and the
 						// path lets Re-check and the operator go straight to it.
-						if rel := wpChecksumModifiedCoreFile(line); rel != "" {
+						if rel := wpChecksumModifiedCoreFile(line); rel != "" && !lineEndingOnly[rel] {
 							mu.Lock()
 							findings = append(findings, alert.Finding{
 								Severity: wpCoreModifiedSeverity(wpCoreFilePathWithin(wpPath, rel), rel),
@@ -356,8 +363,12 @@ func CheckWPCore(ctx context.Context, cfg *config.Config, _ *state.Store) (findi
 						findings = append(findings, collapsed)
 						mu.Unlock()
 					}
-					if wpCoreVerificationCompleted(err, out) {
-						coverage.record(wpPath, store.WPVerificationResult{State: "modified"})
+					if completed {
+						state := "modified"
+						if onlyLineEndings {
+							state = "verified"
+						}
+						coverage.record(wpPath, store.WPVerificationResult{State: state})
 					}
 					// wp-cli that ran and refused this tree answered the check.
 					if !reported && !commandRefused(err) {

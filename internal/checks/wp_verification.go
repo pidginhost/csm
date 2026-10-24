@@ -165,6 +165,10 @@ func wpVerificationCollapsedFinding(check, label, reason string, group []string,
 	return finding
 }
 
+// wpChecksumFailureSummary is wp-cli's closing line, lowercased, for an
+// install it finished checking and found different from the release.
+const wpChecksumFailureSummary = "error: wordpress installation doesn't verify against checksums."
+
 // Integrity warnings can precede a later operational error. Only wp-cli's
 // expected checksum-mismatch summary establishes a completed negative check.
 func wpCoreVerificationCompleted(err error, out []byte) bool {
@@ -177,7 +181,7 @@ func wpCoreVerificationCompleted(err error, out []byte) bool {
 		if strings.Contains(line, "fatal error") || strings.Contains(line, "parse error") {
 			return false
 		}
-		if line == "error: wordpress installation doesn't verify against checksums." {
+		if line == wpChecksumFailureSummary {
 			completed = true
 		} else if strings.HasPrefix(line, "error:") {
 			return false
