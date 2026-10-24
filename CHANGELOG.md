@@ -11,33 +11,33 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Highlights
 
-- Full account scans now run the YARA rules over the account's website files instead of reporting the account clean without them.
-- Scans and real-time checks now detect PHP that runs code hidden inside an archive, including password-protected archives.
-- Programs started from a website's document root are now checked as they start, and malware among them is reported as Critical.
-- Files planted next to detected or quarantined malware are now scanned, and those no scanner matches are reported for review.
+- Full account scans now detect known malware in website files and no longer report incomplete scans as clean.
+- Scans and real-time checks now detect PHP malware that runs code stored inside archives.
+- Programs running from website document roots are now checked; malware is reported as Critical, and PHP-launched programs raise a warning.
+- Companion files planted with detected or quarantined malware are now scanned, with suspicious leftovers reported for review.
 - With the forward guard enforcing, mail tagged as spam is now held instead of forwarded to outside addresses.
 - On LiteSpeed, matches that ModSecurity only logs are no longer reported as blocks or counted toward visitor bans.
-- Email scanning no longer counts damaged, deeply nested or oversized archives, such as zip bombs, as clean.
-- The Email Security page has a Forwarders tab, where any forwarder destination can be deleted after a confirmation.
+- Email scanning now marks damaged, deeply nested, or oversized archives as incomplete instead of clean.
+- The Email Security page adds a Forwarders tab with per-destination deletion and confirmation; cPanel still manages domain default addresses.
 
 ### Security
 
-- Full account scans now run the YARA rules over the account's website files instead of reporting the account clean without them.
-- Scans and real-time checks now detect PHP that runs code hidden inside an archive, including password-protected archives and includes of archive members.
-- Scans and real-time checks now detect more code injected into WordPress files, including admin visitor address loggers and footer injectors that hide their hooks.
-- Programs that run from a website's document root are now checked as they start: malware is reported as Critical, and PHP starting one raises a warning.
-- Scans now report native Linux programs that download PHP or .htaccess payloads, including ones hidden in theme or plugin folders.
-- Files planted next to detected or quarantined malware at the same time are now scanned, and those no scanner matches are reported for review.
-- Web configuration checks now recognize more malicious access-control variants.
-- Web configuration checks now report a dropper kit's .htaccess template that switches off rewrite protections, and the automatic cleaner can remove it.
-- Email scanning now unpacks nested archives to the configured depth and counts damaged, deeper or oversized archives, such as zip bombs, as not fully scanned instead of clean.
-- Phishing-kit checks now read tenant zip archives in a separate locked-down process with no network access, so a crafted archive cannot stall the scan or exhaust memory.
+- Full account scans now detect known malware in website files and no longer report incomplete scans as clean.
+- Scans and real-time checks now detect PHP malware that runs code stored inside archives.
+- Scans and real-time checks now detect more malicious code injected into WordPress sites.
+- Programs running from website document roots are now checked; malware is reported as Critical, and PHP-launched programs raise a warning.
+- Scans now detect native programs used to plant malicious files in hosted websites.
+- Companion files planted with detected or quarantined malware are now scanned, with suspicious leftovers reported for review.
+- Web configuration checks now detect more malicious access-control changes.
+- Web configuration checks now report a newly detected dropper configuration, and the automatic cleaner can remove it.
+- Email scanning now marks damaged, deeply nested, or oversized archives as incomplete instead of clean.
+- Hostile tenant archives can no longer consume unbounded time or memory during phishing-kit scans.
 - On LiteSpeed, matches that ModSecurity only logs are no longer reported as blocks or counted toward visitor bans.
 
 ### Added
 
-- The Email Security page has a Forwarders tab, where any forwarder destination can be deleted after a confirmation.
-- Custom signature rules can now require two patterns to appear near each other in a file.
+- The Email Security page adds a Forwarders tab with per-destination deletion and confirmation; cPanel still manages domain default addresses.
+- Custom signature rules can now combine nearby indicators into a single match.
 
 ### Changed
 
@@ -61,8 +61,8 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 #### Scans and findings
 
-- Scans no longer report large photos as hiding PHP when unrelated metadata and pixel data happen to resemble code.
-- WordPress core files proven to differ from the official release only in line endings are no longer reported as modified.
+- Ordinary large photos no longer raise false PHP findings during scans.
+- Verified WordPress core files with harmless formatting differences no longer raise modification findings.
 - Scanning a single account now finds a cPanel account whose home sits on an additional home partition instead of reporting it missing.
 
 #### Web UI
