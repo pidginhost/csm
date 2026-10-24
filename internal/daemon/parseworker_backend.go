@@ -101,6 +101,9 @@ type mailExtractor interface {
 // spoolExtractor is the mail extractor for a new spool watcher, or nil.
 // A nil pointer must not become a non-nil interface.
 func (d *Daemon) spoolExtractor() mailExtractor {
+	// Panic cleanup can clear the extractor while a watcher is restarting.
+	d.spoolWatcherMu.Lock()
+	defer d.spoolWatcherMu.Unlock()
 	if d.mailExtractor == nil {
 		return nil
 	}
@@ -119,9 +122,12 @@ func (d *Daemon) stopParseWorkers() {
 	default:
 	}
 	checks.SetZipLister(nil)
-	if d.mailExtractor != nil {
-		_ = d.mailExtractor.Stop()
-		d.mailExtractor = nil
+	d.spoolWatcherMu.Lock()
+	extractor := d.mailExtractor
+	d.mailExtractor = nil
+	d.spoolWatcherMu.Unlock()
+	if extractor != nil {
+		_ = extractor.Stop()
 	}
 	if d.zipLister == nil {
 		return

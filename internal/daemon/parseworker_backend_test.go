@@ -357,3 +357,33 @@ func TestStopParseWorkersDoesNotWaitBeforeShutdown(t *testing.T) {
 		t.Fatal("parse worker stop waited for goroutines that were never told to stop")
 	}
 }
+
+// Panic cleanup skips the producer drain, so a watcher replacement can still
+// be reading the shared extractor while cleanup clears it.
+func TestStopParseWorkersDuringWatcherRestart(t *testing.T) {
+	ex, err := parseworker.NewExtractor(parseworker.ExtractorConfig{Size: 1,
+		Launch: func(int) workerproc.Launcher {
+			return func(context.Context) (workerproc.Process, error) {
+				return nil, errors.New("unexpected worker launch")
+			}
+		}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := &Daemon{mailExtractor: ex, stopCh: make(chan struct{})}
+	d.wg.Add(1)
+	go func() {
+		defer d.wg.Done()
+		if got := d.spoolExtractor(); got != nil && got != ex {
+			t.Errorf("replacement received an invalid extractor: %v", got)
+		}
+	}()
+	d.stopParseWorkers()
+	d.wg.Wait()
+	if d.spoolExtractor() != nil {
+		t.Fatal("extractor retained after cleanup")
+	}
+	if _, err := ex.Extract(context.Background(), 0, nil, nil, emime.DefaultLimits()); !errors.Is(err, workerproc.ErrStopped) {
+		t.Fatalf("extractor accepted work after cleanup: %v", err)
+	}
+}

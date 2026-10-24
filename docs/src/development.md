@@ -1353,6 +1353,9 @@ Watcher replacement waits for the previous scan goroutines to finish before
 reusing their slots. On shutdown, queued spool events release their
 descriptors without starting extractions. The daemon waits for active scans
 and watcher restarts to finish before stopping or clearing the parse pools.
+If a panic unwinds the daemon before shutdown is signalled, cleanup skips
+that wait so the process can exit. Extractor lookup and removal share the
+watcher lifecycle lock because a replacement may still be starting.
 
 Unit tests use temporary proc and cgroup trees, never the host's. The kernel
 tests in `internal/workerproc/unit_kernel_test.go` run real units as root on
