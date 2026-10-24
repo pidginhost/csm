@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"os"
 	"sync"
@@ -56,13 +57,41 @@ var (
 	ErrWorkerFailed = errors.New("worker failed")
 )
 
-// workerFailure tags a round-trip error as ErrWorkerFailed without changing
-// its text, which callers already report as coverage-gap reasons.
-type workerFailure struct{ err error }
+// Failure reasons: why a worker was given up on.
+const (
+	ReasonTimeout  = "timeout"
+	ReasonProtocol = "protocol"
+	ReasonCrash    = "crash"
+	ReasonOOM      = "oom"
+	ReasonSpawn    = "spawn"
+)
 
-func (e workerFailure) Error() string        { return e.err.Error() }
-func (e workerFailure) Unwrap() error        { return e.err }
-func (e workerFailure) Is(target error) bool { return target == ErrWorkerFailed }
+// failure tags a counted failure with its reason without changing its text,
+// which callers already report as coverage-gap reasons. Only round-trip
+// failures match ErrWorkerFailed; a failed launch is ErrSpawn.
+type failure struct {
+	err    error
+	reason string
+}
+
+func (e failure) Error() string        { return e.err.Error() }
+func (e failure) Unwrap() error        { return e.err }
+func (e failure) Is(target error) bool { return target == ErrWorkerFailed && e.reason != ReasonSpawn }
+
+// FailureReason is the reason a failed Call gave up on its worker, or "" for
+// an error that is not a counted failure: cancellation, a stopped
+// supervisor, the breaker, the daemon's own descriptor exhaustion.
+func FailureReason(err error) string {
+	var f failure
+	if errors.As(err, &f) {
+		return f.reason
+	}
+	return ""
+}
+
+// oomReporter is implemented by processes that can tell a memory kill from
+// a crash.
+type oomReporter interface{ OOMKilled() bool }
 
 // localExhaustion reports the daemon running out of descriptors. That is not
 // the worker's fault, and outside load can push the daemon there, so it must
@@ -88,6 +117,9 @@ type Config struct {
 	MaxJobs int
 	// IdleTimeout stops a worker left unused that long; 0 means never.
 	IdleTimeout time.Duration
+	// OnFailure is told of every counted failure, with the supervisor lock
+	// held: it must not block. Optional.
+	OnFailure func(reason string, err error)
 }
 
 // Check validates a reply. err rejects it: the worker is killed and the
@@ -102,6 +134,8 @@ type Stats struct {
 	BreakerOpen                          bool
 	// Running reports a worker process attached.
 	Running bool
+	// Kills counts counted failures by reason.
+	Kills map[string]uint64
 }
 
 // Supervisor runs one worker process at a time and guarantees that a request
@@ -131,6 +165,7 @@ type Supervisor struct {
 	jobs    int
 	lastUse time.Time
 	idle    *time.Timer
+	kills   map[string]uint64
 
 	// now is a seam so the cooldown can be exercised without sleeping.
 	now func() time.Time
@@ -192,6 +227,7 @@ func (s *Supervisor) Stats() Stats {
 		BreakerOpenedAt:     s.openedAt,
 		BreakerOpen:         s.breakerOpenLocked(),
 		Running:             s.child != nil,
+		Kills:               maps.Clone(s.kills),
 	}
 }
 
@@ -308,8 +344,9 @@ func (s *Supervisor) callLocked(ctx context.Context, req Frame, fds []*os.File, 
 			// The breaker bounds how often this logs: three in a row, then
 			// one trial per cooldown.
 			s.logf("%s did not start: %v", s.cfg.Name, launchErr)
-			s.recordFailureLocked()
-			return Frame{}, nil, fmt.Errorf("%w: %v", ErrSpawn, launchErr)
+			err := failure{err: fmt.Errorf("%w: %v", ErrSpawn, launchErr), reason: ReasonSpawn}
+			s.recordFailureLocked(err)
+			return Frame{}, nil, err
 		}
 		s.child = &child{proc: proc, conn: unixTransport{conn: proc.Conn(), lim: s.cfg.Limits}}
 		s.jobs = 0
@@ -318,8 +355,15 @@ func (s *Supervisor) callLocked(ctx context.Context, req Frame, fds []*os.File, 
 	}
 
 	handedOff = true
-	reply, replyFDs, lost, err := s.roundTripLocked(ctx, body, ownedFDs, check, work)
+	reply, replyFDs, lost, reason, err := s.roundTripLocked(ctx, body, ownedFDs, check, work)
 	if err != nil {
+		if reason == ReasonCrash {
+			// Asked before the kill below: the unit's cgroup, which holds
+			// the evidence, goes away with it.
+			if r, ok := s.child.proc.(oomReporter); ok && r.OOMKilled() {
+				reason = ReasonOOM
+			}
+		}
 		// A transport or validator can return its own context error. Only
 		// the caller withdrawing exempts a failure from the breaker.
 		canceled := ctx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded))
@@ -338,8 +382,9 @@ func (s *Supervisor) callLocked(ctx context.Context, req Frame, fds []*os.File, 
 			s.rearmBreakerLocked()
 			return Frame{}, nil, err
 		}
-		s.recordFailureLocked()
-		return Frame{}, nil, workerFailure{err}
+		f := failure{err: err, reason: reason}
+		s.recordFailureLocked(f)
+		return Frame{}, nil, f
 	}
 	s.consecutive = 0
 	if lost {
@@ -360,9 +405,16 @@ func (s *Supervisor) callLocked(ctx context.Context, req Frame, fds []*os.File, 
 // reaches the limit, restarts the cooldown. Stamping on every failure at or
 // past the limit -- a failed trial request included -- is what makes a
 // persistently broken host retry once per cooldown instead of once per file.
-func (s *Supervisor) recordFailureLocked() {
+func (s *Supervisor) recordFailureLocked(f failure) {
 	s.consecutive++
 	s.rearmBreakerLocked()
+	if s.kills == nil {
+		s.kills = make(map[string]uint64)
+	}
+	s.kills[f.reason]++
+	if s.cfg.OnFailure != nil {
+		s.cfg.OnFailure(f.reason, f)
+	}
 }
 
 // rearmBreakerLocked restarts the cooldown when the breaker is at or past its
@@ -393,7 +445,7 @@ func (s *Supervisor) breakerOpenLocked() bool {
 // the caller gave up has its descriptors closed there. The goroutine owns
 // ownedFDs and closes them once sent: cancellation can return before it
 // reaches sendmsg, so they must not be the caller's files.
-func (s *Supervisor) roundTripLocked(ctx context.Context, body []byte, ownedFDs []*os.File, check Check, work *requestWork) (Frame, []*os.File, bool, error) {
+func (s *Supervisor) roundTripLocked(ctx context.Context, body []byte, ownedFDs []*os.File, check Check, work *requestWork) (Frame, []*os.File, bool, string, error) {
 	c := s.child
 	type result struct {
 		frame Frame
@@ -440,14 +492,14 @@ func (s *Supervisor) roundTripLocked(ctx context.Context, body []byte, ownedFDs 
 
 	select {
 	case <-timer.C:
-		return Frame{}, nil, false, fmt.Errorf("%s: %w after %s", s.cfg.Name, ErrTimeout, s.cfg.Timeout)
+		return Frame{}, nil, false, ReasonTimeout, fmt.Errorf("%s: %w after %s", s.cfg.Name, ErrTimeout, s.cfg.Timeout)
 	case <-ctx.Done():
-		return Frame{}, nil, false, ctx.Err()
+		return Frame{}, nil, false, "", ctx.Err()
 	case res := <-results:
 		work.progress()
 		defer func() { closeFiles(res.fds) }()
 		if res.err != nil {
-			return Frame{}, nil, false, fmt.Errorf("%s: %w", s.cfg.Name, res.err)
+			return Frame{}, nil, false, ReasonCrash, fmt.Errorf("%s: %w", s.cfg.Name, res.err)
 		}
 		var err error
 		lost := false
@@ -462,11 +514,11 @@ func (s *Supervisor) roundTripLocked(ctx context.Context, body []byte, ownedFDs 
 			}
 		}
 		if err != nil {
-			return Frame{}, nil, false, err
+			return Frame{}, nil, false, ReasonProtocol, err
 		}
 		replyFDs := res.fds
 		res.fds = nil // Ownership passes to the caller only on success.
-		return res.frame, replyFDs, lost, nil
+		return res.frame, replyFDs, lost, "", nil
 	}
 }
 

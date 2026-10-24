@@ -245,8 +245,12 @@ func TestKernelUnitLauncherMemoryCap(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = s.Stop() })
-	if err := callInto(t, s, "alloc", `256`, nil); !errors.Is(err, ErrWorkerFailed) {
+	err = callInto(t, s, "alloc", `256`, nil)
+	if !errors.Is(err, ErrWorkerFailed) {
 		t.Fatalf("256 MiB under a 64 MiB cap: %v", err)
+	}
+	if got := FailureReason(err); got != ReasonOOM {
+		t.Fatalf("memory kill reported as %q, want %q", got, ReasonOOM)
 	}
 	if len(units) != 1 {
 		t.Fatalf("units = %v", units)

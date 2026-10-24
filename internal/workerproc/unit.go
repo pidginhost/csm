@@ -226,6 +226,7 @@ func (p *unitProcess) start(ctx context.Context, cfg UnitConfig, h *unitHooks) e
 	if capErr := cg.capSwap(cfg.MemoryLimit, h.procRoot); capErr != nil {
 		return fmt.Errorf("cannot cap worker memory: %w", capErr)
 	}
+	p.cg = cg
 	p.usage = func() (uint64, error) { return cg.usage(h.procRoot) }
 	used, err := p.usage()
 	if err != nil {
@@ -264,6 +265,11 @@ func (p *unitProcess) watch(interval time.Duration) {
 		if err == nil && used <= p.limit {
 			continue
 		}
+		if err != nil && localExhaustion(err) {
+			// The daemon is out of descriptors, not the worker out of
+			// line; the kernel cap was verified at start.
+			continue
+		}
 		select {
 		case <-p.done:
 			return // Gone already: its counters vanished with it.
@@ -273,6 +279,7 @@ func (p *unitProcess) watch(interval time.Duration) {
 			p.logf("unit %s: cannot read memory, killing: %v", p.unit, err)
 		} else {
 			p.logf("unit %s: memory %d over cap %d, killing", p.unit, used, p.limit)
+			p.memoryKill.Store(true)
 		}
 		_ = p.Kill()
 		return
@@ -295,6 +302,10 @@ type unitProcess struct {
 	limit uint64
 	// retireAt is three quarters into RuntimeMaxSec; zero means no cap.
 	retireAt time.Time
+	// cg is the unit's memory cgroup; memoryKill records the watchdog
+	// killing the worker for memory.
+	cg         memoryCgroup
+	memoryKill atomic.Bool
 }
 
 func (p *unitProcess) Conn() *net.UnixConn   { return p.conn }
@@ -333,6 +344,16 @@ func (p *unitProcess) Kill() error {
 		}()
 	})
 	return nil
+}
+
+// OOMKilled reports a memory kill: by the watchdog, or by the kernel as the
+// unit's cgroup records it. A cgroup that is already gone reads as no.
+func (p *unitProcess) OOMKilled() bool {
+	if p.memoryKill.Load() {
+		return true
+	}
+	n, err := p.cg.oomKills()
+	return err == nil && n > 0
 }
 
 func (p *unitProcess) logf(format string, args ...any) {

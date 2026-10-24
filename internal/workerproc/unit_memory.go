@@ -142,6 +142,24 @@ func (c memoryCgroup) usage(procRoot string) (uint64, error) {
 	return used, err
 }
 
+// oomKills is how many processes the kernel OOM-killed in the cgroup.
+func (c memoryCgroup) oomKills() (uint64, error) {
+	name := "memory.oom_control"
+	if c.v2 {
+		name = "memory.events"
+	}
+	data, err := os.ReadFile(filepath.Join(c.dir, name)) // #nosec G304 -- a file in the worker unit's own cgroup.
+	if err != nil {
+		return 0, err
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if value, ok := strings.CutPrefix(line, "oom_kill "); ok {
+			return strconv.ParseUint(strings.TrimSpace(value), 10, 64)
+		}
+	}
+	return 0, nil
+}
+
 // noSwap fails when any swap area is active.
 func noSwap(procRoot string) error {
 	data, err := os.ReadFile(filepath.Join(procRoot, "swaps")) // #nosec G304 -- procfs.
