@@ -1321,8 +1321,10 @@ Its reply must be one UTF-8 JSON object with a `parts` field, which may be
 null for an empty result. Each part must have a readable, sealed descriptor
 of the claimed size. Individual sizes and their total must fit the request's
 limits without integer overflow. Invalid replies discard all parts and kill
-the worker with reason `protocol`. The spool handler does not use this API
-yet.
+the worker with reason `protocol`. The spool watcher extracts every message
+through it: each scan goroutine owns one worker slot, because parts are
+charged to the memory cgroup of the worker that wrote them. A failed
+extraction becomes a partial result naming the failure, never an error.
 
 Unit tests use temporary proc and cgroup trees, never the host's. The kernel
 tests in `internal/workerproc/unit_kernel_test.go` run real units as root on

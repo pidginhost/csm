@@ -313,7 +313,7 @@ func TestSpoolDeadlineShutdownDrainsGuardedEventsOnce(t *testing.T) {
 	}
 	sw.Stop()
 	sw.wg.Add(1)
-	go sw.scanWorker()
+	go sw.scanWorker(0)
 	sw.drainAndClose()
 	got := responses()
 	if len(got) != len(fds) {

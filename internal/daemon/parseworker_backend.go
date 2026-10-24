@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/checks"
+	emime "github.com/pidginhost/csm/internal/mime"
 	"github.com/pidginhost/csm/internal/parseworker"
 	"github.com/pidginhost/csm/internal/workerproc"
 )
@@ -49,11 +50,48 @@ func (d *Daemon) initParseWorkers() error {
 	d.zipLister = lister
 	d.registerQueueSource("archive_list", lister)
 	checks.SetZipLister(lister)
+	if d.cfg == nil || !d.cfg.EmailAV.Enabled {
+		return nil
+	}
+	// The spool watcher runs one scan goroutine per slot, sized the same way.
+	extractor, err := parseworker.NewExtractor(parseworker.ExtractorConfig{
+		Size: d.cfg.EmailAV.ScanConcurrency,
+		Launch: func(slot int) workerproc.Launcher {
+			name := fmt.Sprintf("%smail%d", parseWorkerUnitPrefix, slot)
+			return workerproc.UnitLauncher(parseworker.UnitConfig(d.binaryPath, name, parseworker.FileSizeLimit(d.cfg.EmailAV.MaxAttachmentSize), logf))
+		},
+		Log: logf,
+	})
+	if err != nil {
+		return err
+	}
+	d.mailExtractor = extractor
+	d.registerQueueSource("email_extract", extractor)
 	return nil
+}
+
+// mailExtractor is what the spool watcher needs from the mail parse workers;
+// tests fake it.
+type mailExtractor interface {
+	Size() int
+	Extract(ctx context.Context, slot int, header, body *os.File, limits emime.Limits) (*emime.ExtractionResult, error)
+}
+
+// spoolExtractor is the mail extractor for a new spool watcher, or nil.
+// A nil pointer must not become a non-nil interface.
+func (d *Daemon) spoolExtractor() mailExtractor {
+	if d.mailExtractor == nil {
+		return nil
+	}
+	return d.mailExtractor
 }
 
 func (d *Daemon) stopParseWorkers() {
 	checks.SetZipLister(nil)
+	if d.mailExtractor != nil {
+		_ = d.mailExtractor.Stop()
+		d.mailExtractor = nil
+	}
 	if d.zipLister == nil {
 		return
 	}

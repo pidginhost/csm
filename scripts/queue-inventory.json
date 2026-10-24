@@ -3979,6 +3979,54 @@
       ]
     },
     {
+      "id": "email_extract",
+      "rows": [
+        "email_extract.requests"
+      ],
+      "bounds": "One extraction RPC per slot; each spool scan goroutine owns one slot, so no caller waits on another. Parts live in the worker's memory cgroup until the daemon receives them, then in memfds the daemon closes after scanning.",
+      "publication": [
+        {
+          "package": "github.com/pidginhost/csm/internal/parseworker",
+          "name": "TestExtractQueuePublication",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestParseWorkersBuildMailExtractor",
+          "mode": "portable"
+        }
+      ],
+      "lifecycle": [
+        {
+          "package": "github.com/pidginhost/csm/internal/workerproc",
+          "name": "TestPoolSlotFailureIsolated",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/parseworker",
+          "name": "TestExtractRejectsMalformedReply",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/parseworker",
+          "name": "TestExtractWorkerHangTimesOut",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/parseworker",
+          "name": "TestExtractWorkerCrash",
+          "mode": "portable"
+        }
+      ],
+      "anchors": [
+        {
+          "path": "internal/parseworker/extractor.go",
+          "symbol": "Extractor.pool",
+          "shape": "*workerproc.Pool"
+        }
+      ]
+    },
+    {
       "id": "php_taint",
       "rows": [
         "php_taint.requests"

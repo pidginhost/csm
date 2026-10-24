@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -43,62 +42,6 @@ func eximPreamble(msgID string) string {
 		"1\n" +
 		"recipient@example.com\n" +
 		"\n"
-}
-
-func TestResolveEmailAVTempDirCreatesPrivateDirectory(t *testing.T) {
-	stateDir := t.TempDir()
-
-	dir, err := resolveEmailAVTempDir(&config.Config{StatePath: stateDir})
-	if err != nil {
-		t.Fatalf("resolveEmailAVTempDir: %v", err)
-	}
-	if want := filepath.Join(stateDir, "emailav-tmp"); dir != want {
-		t.Fatalf("dir = %q, want %q", dir, want)
-	}
-
-	info, err := os.Lstat(dir)
-	if err != nil {
-		t.Fatalf("lstat temp dir: %v", err)
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		t.Fatal("temp dir must not be a symlink")
-	}
-	if !info.IsDir() {
-		t.Fatal("temp path must be a directory")
-	}
-	if got := info.Mode().Perm(); got != 0o700 {
-		t.Fatalf("mode = %o, want 700", got)
-	}
-	if uid, _, ok := fileOwner(info); ok && uid != os.Geteuid() {
-		t.Fatalf("uid = %d, want %d", uid, os.Geteuid())
-	}
-}
-
-func TestResolveEmailAVTempDirRejectsSymlink(t *testing.T) {
-	stateDir := t.TempDir()
-	target := t.TempDir()
-	link := filepath.Join(stateDir, "emailav-tmp")
-	if err := os.Symlink(target, link); err != nil {
-		t.Fatalf("symlink: %v", err)
-	}
-
-	_, err := resolveEmailAVTempDir(&config.Config{StatePath: stateDir})
-	if err == nil {
-		t.Fatal("expected symlink temp dir to be rejected")
-	}
-	if !strings.Contains(err.Error(), "symlink") {
-		t.Fatalf("err = %v, want symlink rejection", err)
-	}
-}
-
-func TestResolveEmailAVTempDirRejectsEmptyStatePath(t *testing.T) {
-	_, err := resolveEmailAVTempDir(&config.Config{})
-	if err == nil {
-		t.Fatal("expected empty state_path to be rejected")
-	}
-	if !strings.Contains(err.Error(), "state_path") {
-		t.Fatalf("err = %v, want state_path rejection", err)
-	}
 }
 
 // These tests cover spoolwatch.go branches that aren't already exercised in
@@ -262,10 +205,11 @@ func TestSpoolWatcherHandleSpoolEventTempfailParseErrorDenies(t *testing.T) {
 
 	ch := make(chan alert.Finding, 4)
 	sw := &SpoolWatcher{
-		cfg:     cfg,
-		alertCh: ch,
-		fd:      respPipe[1],
-		stopCh:  make(chan struct{}),
+		extractor: inProcessExtractor{},
+		cfg:       cfg,
+		alertCh:   ch,
+		fd:        respPipe[1],
+		stopCh:    make(chan struct{}),
 	}
 	defer sw.closeFd()
 
@@ -329,9 +273,9 @@ func TestSpoolWatcherHandleSpoolEventNoAttachmentsAllows(t *testing.T) {
 	buildMinimalEximSpool(t, dir, msgID)
 
 	// Event fd: real fd that defer-close is allowed to close.
-	tmpFd, err := unix.Open(dir, unix.O_RDONLY|unix.O_DIRECTORY, 0)
+	tmpFd, err := unix.Open(filepath.Join(dir, msgID+"-D"), unix.O_RDONLY|unix.O_CLOEXEC, 0)
 	if err != nil {
-		t.Skipf("open dir: %v", err)
+		t.Fatalf("open body: %v", err)
 	}
 
 	cfg := &config.Config{}
@@ -340,10 +284,11 @@ func TestSpoolWatcherHandleSpoolEventNoAttachmentsAllows(t *testing.T) {
 
 	ch := make(chan alert.Finding, 4)
 	sw := &SpoolWatcher{
-		cfg:      cfg,
-		alertCh:  ch,
-		fdClosed: 1, // no real fanotify fd
-		stopCh:   make(chan struct{}),
+		extractor: inProcessExtractor{},
+		cfg:       cfg,
+		alertCh:   ch,
+		fdClosed:  1, // no real fanotify fd
+		stopCh:    make(chan struct{}),
 	}
 
 	evt := spoolEvent{
@@ -371,9 +316,9 @@ func TestSpoolWatcherHandleSpoolEventPartialExtractionTempfailDenies(t *testing.
 		t.Fatal(err)
 	}
 
-	tmpFd, err := unix.Open(dir, unix.O_RDONLY|unix.O_DIRECTORY, 0)
+	tmpFd, err := unix.Open(bodyPath, unix.O_RDONLY|unix.O_CLOEXEC, 0)
 	if err != nil {
-		t.Skipf("open dir: %v", err)
+		t.Fatalf("open body: %v", err)
 	}
 
 	var respPipe [2]int
@@ -389,10 +334,11 @@ func TestSpoolWatcherHandleSpoolEventPartialExtractionTempfailDenies(t *testing.
 
 	ch := make(chan alert.Finding, 4)
 	sw := &SpoolWatcher{
-		cfg:     cfg,
-		alertCh: ch,
-		fd:      respPipe[1],
-		stopCh:  make(chan struct{}),
+		extractor: inProcessExtractor{},
+		cfg:       cfg,
+		alertCh:   ch,
+		fd:        respPipe[1],
+		stopCh:    make(chan struct{}),
 	}
 	defer sw.closeFd()
 
@@ -504,6 +450,7 @@ func TestSpoolWatcherHandleSpoolEventInfectedQuarantineSucceeds(t *testing.T) {
 	var quarantined []time.Time
 	var quarantinedIDs []string
 	sw := &SpoolWatcher{
+		extractor:    inProcessExtractor{},
 		cfg:          cfg,
 		alertCh:      ch,
 		orchestrator: orch,
@@ -577,9 +524,9 @@ func TestSpoolWatcherHandleSpoolEventInfectedQuarantineDisabledAllows(t *testing
 
 	orch := emailav.NewOrchestrator([]emailav.Scanner{alwaysInfectedScanner{}}, 5*time.Second)
 
-	tmpFd, err := unix.Open(dir, unix.O_RDONLY|unix.O_DIRECTORY, 0)
+	tmpFd, err := unix.Open(filepath.Join(dir, msgID+"-D"), unix.O_RDONLY|unix.O_CLOEXEC, 0)
 	if err != nil {
-		t.Skipf("open dir: %v", err)
+		t.Fatalf("open body: %v", err)
 	}
 
 	cfg := &config.Config{}
@@ -592,6 +539,7 @@ func TestSpoolWatcherHandleSpoolEventInfectedQuarantineDisabledAllows(t *testing
 
 	ch := make(chan alert.Finding, 8)
 	sw := &SpoolWatcher{
+		extractor:    inProcessExtractor{},
 		cfg:          cfg,
 		alertCh:      ch,
 		orchestrator: orch,
@@ -658,6 +606,7 @@ func TestSpoolWatcherHandleSpoolEventInfectedQuarantineErrorTempfail(t *testing.
 
 	ch := make(chan alert.Finding, 8)
 	sw := &SpoolWatcher{
+		extractor:    inProcessExtractor{},
 		cfg:          cfg,
 		alertCh:      ch,
 		orchestrator: orch,
@@ -728,9 +677,9 @@ func TestSpoolWatcherHandleSpoolEventAllEnginesDownTempfail(t *testing.T) {
 
 	orch := emailav.NewOrchestrator([]emailav.Scanner{noEnginesAvailableScanner{}}, 5*time.Second)
 
-	tmpFd, err := unix.Open(dir, unix.O_RDONLY|unix.O_DIRECTORY, 0)
+	tmpFd, err := unix.Open(filepath.Join(dir, msgID+"-D"), unix.O_RDONLY|unix.O_CLOEXEC, 0)
 	if err != nil {
-		t.Skipf("open dir: %v", err)
+		t.Fatalf("open body: %v", err)
 	}
 
 	var respPipe [2]int
@@ -748,6 +697,7 @@ func TestSpoolWatcherHandleSpoolEventAllEnginesDownTempfail(t *testing.T) {
 
 	ch := make(chan alert.Finding, 8)
 	sw := &SpoolWatcher{
+		extractor:    inProcessExtractor{},
 		cfg:          cfg,
 		alertCh:      ch,
 		orchestrator: orch,
@@ -803,9 +753,9 @@ func TestSpoolWatcherHandleSpoolEventAllEnginesDownFailOpenAllows(t *testing.T) 
 
 	orch := emailav.NewOrchestrator([]emailav.Scanner{noEnginesAvailableScanner{}}, 5*time.Second)
 
-	tmpFd, err := unix.Open(dir, unix.O_RDONLY|unix.O_DIRECTORY, 0)
+	tmpFd, err := unix.Open(filepath.Join(dir, msgID+"-D"), unix.O_RDONLY|unix.O_CLOEXEC, 0)
 	if err != nil {
-		t.Skipf("open dir: %v", err)
+		t.Fatalf("open body: %v", err)
 	}
 
 	cfg := &config.Config{}
@@ -817,6 +767,7 @@ func TestSpoolWatcherHandleSpoolEventAllEnginesDownFailOpenAllows(t *testing.T) 
 
 	ch := make(chan alert.Finding, 8)
 	sw := &SpoolWatcher{
+		extractor:    inProcessExtractor{},
 		cfg:          cfg,
 		alertCh:      ch,
 		orchestrator: orch,

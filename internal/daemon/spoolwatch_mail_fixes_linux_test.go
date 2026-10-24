@@ -108,6 +108,7 @@ func TestSpoolWatcherDispatchEventForeignPIDEnqueues(t *testing.T) {
 	}
 
 	sw := &SpoolWatcher{
+		extractor:      inProcessExtractor{},
 		cfg:            &config.Config{},
 		permissionMode: true,
 		selfPID:        111111,
@@ -156,9 +157,9 @@ func TestSpoolWatcherHandleSpoolEventReceptionRaceAllowsSilently(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			tmpFd, err := unix.Open(dir, unix.O_RDONLY|unix.O_DIRECTORY, 0)
+			tmpFd, err := unix.Open(bodyPath, unix.O_RDONLY|unix.O_CLOEXEC, 0)
 			if err != nil {
-				t.Skipf("open dir: %v", err)
+				t.Fatalf("open body: %v", err)
 			}
 
 			var respPipe [2]int
@@ -174,10 +175,11 @@ func TestSpoolWatcherHandleSpoolEventReceptionRaceAllowsSilently(t *testing.T) {
 
 			ch := make(chan alert.Finding, 4)
 			sw := &SpoolWatcher{
-				cfg:     cfg,
-				alertCh: ch,
-				fd:      respPipe[1],
-				stopCh:  make(chan struct{}),
+				extractor: inProcessExtractor{},
+				cfg:       cfg,
+				alertCh:   ch,
+				fd:        respPipe[1],
+				stopCh:    make(chan struct{}),
 			}
 			defer sw.closeFd()
 
@@ -249,10 +251,11 @@ func TestSpoolWatcherHandleSpoolEventDeletedBodyAllowsAndClosesFD(t *testing.T) 
 
 			ch := make(chan alert.Finding, 4)
 			sw := &SpoolWatcher{
-				cfg:     cfg,
-				alertCh: ch,
-				fd:      respPipe[1],
-				stopCh:  make(chan struct{}),
+				extractor: inProcessExtractor{},
+				cfg:       cfg,
+				alertCh:   ch,
+				fd:        respPipe[1],
+				stopCh:    make(chan struct{}),
 			}
 			defer sw.closeFd()
 
@@ -300,18 +303,25 @@ func TestSpoolWatcherScanWorkerDrainsQueuedEventsAfterStop(t *testing.T) {
 
 	const events = 32
 	sw := &SpoolWatcher{
-		cfg:     cfg,
-		alertCh: make(chan alert.Finding, events),
-		fd:      respPipe[1],
-		scanCh:  make(chan spoolEvent, events),
-		stopCh:  make(chan struct{}),
+		extractor: inProcessExtractor{},
+		cfg:       cfg,
+		alertCh:   make(chan alert.Finding, events),
+		fd:        respPipe[1],
+		scanCh:    make(chan spoolEvent, events),
+		stopCh:    make(chan struct{}),
 	}
 	defer sw.closeFd()
 
+	// The queued messages' spool files are gone; the event descriptors still
+	// refer to a regular file, as fanotify's do.
+	eventFile := filepath.Join(dir, "event-D")
+	if err := os.WriteFile(eventFile, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	for i := 0; i < events; i++ {
-		evtFd, err := unix.Open(dir, unix.O_RDONLY|unix.O_DIRECTORY, 0)
+		evtFd, err := unix.Open(eventFile, unix.O_RDONLY|unix.O_CLOEXEC, 0)
 		if err != nil {
-			t.Skipf("open dir: %v", err)
+			t.Fatalf("open body: %v", err)
 		}
 		sw.scanCh <- spoolEvent{
 			path:     filepath.Join(dir, fmt.Sprintf("queued-%02d-D", i)),
@@ -323,7 +333,7 @@ func TestSpoolWatcherScanWorkerDrainsQueuedEventsAfterStop(t *testing.T) {
 	close(sw.stopCh)
 	close(sw.scanCh)
 	sw.wg.Add(1)
-	sw.scanWorker()
+	sw.scanWorker(0)
 
 	gotAllows := 0
 	buf := make([]byte, responseSize)

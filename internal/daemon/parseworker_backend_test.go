@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/config"
+	emime "github.com/pidginhost/csm/internal/mime"
 	"github.com/pidginhost/csm/internal/workerproc"
 )
 
@@ -125,5 +126,54 @@ func TestParseWorkersRejectUnexecutableBinary(t *testing.T) {
 	}
 	if stopped != 1 {
 		t.Fatalf("leftover units not stopped first: %d", stopped)
+	}
+}
+
+// One mail slot per spool scan goroutine, each started on first use.
+func TestParseWorkersBuildMailExtractor(t *testing.T) {
+	real := stopParseWorkerUnits
+	stopParseWorkerUnits = func(context.Context, string) error { return nil }
+	t.Cleanup(func() { stopParseWorkerUnits = real })
+	allowParseWorkerCommand(t)
+	cfg := &config.Config{}
+	cfg.EmailAV.Enabled = true
+	cfg.EmailAV.ScanConcurrency = 3
+	d := &Daemon{binaryPath: "/opt/csm/csm", cfg: cfg}
+	if err := d.initParseWorkers(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(d.stopParseWorkers)
+	if d.mailExtractor == nil || d.mailExtractor.Size() != 3 {
+		t.Fatalf("mail extractor = %v", d.mailExtractor)
+	}
+	q, ok := d.QueueStatuses()["email_extract.requests"]
+	if !ok || q.Status != "ok" || q.Capacity != 3 || q.InFlight != 0 {
+		t.Fatalf("mail extraction queue was not published: found=%v status=%+v", ok, q)
+	}
+	ex := d.mailExtractor
+	d.stopParseWorkers()
+	if d.mailExtractor != nil {
+		t.Fatal("mail extractor survived shutdown")
+	}
+	if _, err := ex.Extract(context.Background(), 0, nil, nil, emime.DefaultLimits()); !errors.Is(err, workerproc.ErrStopped) {
+		t.Fatalf("extractor accepted work after shutdown: %v", err)
+	}
+}
+
+func TestParseWorkersNoMailExtractorWhenEmailAVOff(t *testing.T) {
+	real := stopParseWorkerUnits
+	stopParseWorkerUnits = func(context.Context, string) error { return nil }
+	t.Cleanup(func() { stopParseWorkerUnits = real })
+	allowParseWorkerCommand(t)
+	d := &Daemon{binaryPath: "/opt/csm/csm", cfg: &config.Config{}}
+	if err := d.initParseWorkers(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(d.stopParseWorkers)
+	if d.mailExtractor != nil {
+		t.Fatal("mail extractor built with email AV off")
+	}
+	if _, ok := d.QueueStatuses()["email_extract.requests"]; ok {
+		t.Fatal("mail extraction queue published with email AV off")
 	}
 }
