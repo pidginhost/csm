@@ -289,6 +289,26 @@ func (s *Supervisor) ScanBytesChecked(data []byte) ([]yara.Match, error) {
 	return toYaraMatches(res.Matches), nil
 }
 
+// ScanFDChecked asks the worker to scan the first size bytes of f, passed as
+// a descriptor. It fails closed like ScanBytesChecked.
+func (s *Supervisor) ScanFDChecked(f *os.File, size int64) ([]yara.Match, error) {
+	if !s.running.Load() {
+		return nil, errors.New("yaraworker: supervisor not running")
+	}
+	s.mu.Lock()
+	client := s.client
+	s.mu.Unlock()
+	if client == nil {
+		return nil, errors.New("yaraworker: no client")
+	}
+	res, err := client.ScanFD(f, size)
+	if err != nil {
+		s.logScanErr(err)
+		return nil, fmt.Errorf("yaraworker scan_fd: %w", err)
+	}
+	return toYaraMatches(res.Matches), nil
+}
+
 // logScanErr writes a scan failure at most once per scanErrLogWindow per
 // distinct message, reporting how many identical failures were folded into
 // the gap so the volume stays visible. Tracking is per message rather than

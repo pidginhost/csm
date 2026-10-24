@@ -4,7 +4,6 @@ package emailav
 
 import (
 	"fmt"
-	"os"
 
 	"github.com/pidginhost/csm/internal/yara"
 )
@@ -60,24 +59,17 @@ func (s *YaraXScanner) Available() bool {
 	return backend != nil && backend.RuleCount() > 0
 }
 
-// Scan reads path and matches against the backend's compiled rules.
-// Returns the first matching rule's verdict, with severity taken from
-// the rule's "severity" metadata (defaulting to "high" when absent).
-func (s *YaraXScanner) Scan(path string) (Verdict, error) {
+// Scan matches the part against the backend's compiled rules. Returns the
+// first matching rule's verdict, with severity taken from the rule's
+// "severity" metadata (defaulting to "high" when absent).
+func (s *YaraXScanner) Scan(part Part) (Verdict, error) {
 	backend := s.currentBackend()
 	if backend == nil {
 		return Verdict{}, fmt.Errorf("no YARA backend configured")
 	}
-	// #nosec G304 -- path is a quarantined attachment staged by the spool watcher under our own root.
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return Verdict{}, fmt.Errorf("reading file: %w", err)
-	}
-	// An attachment too large for one IPC frame is retried by path rather than
-	// errored: the worker can read the file itself, and refusing to scan every
-	// large attachment would route them all conservatively without ever looking
-	// inside one.
-	matches, _, err := yara.ScanContentOrPathChecked(backend, path, data, len(data))
+	// The worker reads the part through its descriptor: no copy of it in
+	// the daemon, no frame-size ceiling, no path to reopen.
+	matches, err := yara.ScanFileDescriptorChecked(backend, part.File, part.Size)
 	if err != nil {
 		// Fail closed: a scan that could not complete (worker down, a
 		// transport error) must not be reported as a clean file. The

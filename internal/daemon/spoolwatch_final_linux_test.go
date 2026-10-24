@@ -27,7 +27,7 @@ type timedOutScanner struct{}
 func (timedOutScanner) Name() string    { return "stub-timeout" }
 func (timedOutScanner) Available() bool { return true }
 
-func (timedOutScanner) Scan(path string) (emailav.Verdict, error) {
+func (timedOutScanner) Scan(_ emailav.Part) (emailav.Verdict, error) {
 	// Sleep longer than the orchestrator timeout so ScanParts marks us timed out.
 	time.Sleep(50 * time.Millisecond)
 	return emailav.Verdict{}, nil
@@ -161,7 +161,7 @@ type cleanScanner struct{}
 
 func (cleanScanner) Name() string    { return "stub-clean" }
 func (cleanScanner) Available() bool { return true }
-func (cleanScanner) Scan(_ string) (emailav.Verdict, error) {
+func (cleanScanner) Scan(_ emailav.Part) (emailav.Verdict, error) {
 	return emailav.Verdict{Infected: false}, nil
 }
 

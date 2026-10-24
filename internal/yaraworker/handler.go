@@ -11,6 +11,8 @@ package yaraworker
 
 import (
 	"fmt"
+	"io"
+	"os"
 	"sync"
 
 	"github.com/pidginhost/csm/internal/yara"
@@ -81,6 +83,16 @@ func (h *handler) ScanFile(a yaraipc.ScanFileArgs) (yaraipc.ScanResult, error) {
 		Matches:       convertMatches(result.Matches),
 		ContentSHA256: result.ContentSHA256,
 	}, nil
+}
+
+// ScanFD scans the first MaxBytes of a descriptor the daemon passed, such as
+// a mail part memfd. Reading it here keeps the bytes out of the daemon.
+func (h *handler) ScanFD(f *os.File, a yaraipc.ScanFDArgs) (yaraipc.ScanResult, error) {
+	data, err := io.ReadAll(io.NewSectionReader(f, 0, int64(a.MaxBytes)))
+	if err != nil {
+		return yaraipc.ScanResult{}, fmt.Errorf("read descriptor: %w", err)
+	}
+	return h.ScanBytes(yaraipc.ScanBytesArgs{Data: data})
 }
 
 func (h *handler) ScanBytes(a yaraipc.ScanBytesArgs) (yaraipc.ScanResult, error) {

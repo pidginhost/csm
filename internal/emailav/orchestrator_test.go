@@ -22,7 +22,7 @@ type mockScanner struct {
 
 func (m *mockScanner) Name() string    { return m.name }
 func (m *mockScanner) Available() bool { return m.available }
-func (m *mockScanner) Scan(path string) (Verdict, error) {
+func (m *mockScanner) Scan(_ Part) (Verdict, error) {
 	if m.delay > 0 {
 		time.Sleep(m.delay)
 	}

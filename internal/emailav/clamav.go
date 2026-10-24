@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"os"
 	"strings"
 	"time"
 )
@@ -32,15 +31,9 @@ func (s *ClamdScanner) Available() bool {
 	return true
 }
 
-// Scan sends the file at path to clamd via INSTREAM and returns the verdict.
-func (s *ClamdScanner) Scan(path string) (Verdict, error) {
-	// #nosec G304 -- path is mail queue file path from mail scanner walk.
-	f, err := os.Open(path)
-	if err != nil {
-		return Verdict{}, fmt.Errorf("opening file: %w", err)
-	}
-	defer f.Close()
-
+// Scan streams the part to clamd via INSTREAM and returns the verdict.
+func (s *ClamdScanner) Scan(part Part) (Verdict, error) {
+	f := io.NewSectionReader(part.File, 0, part.Size)
 	conn, err := net.DialTimeout("unix", s.socketPath, 5*time.Second)
 	if err != nil {
 		return Verdict{}, fmt.Errorf("connecting to clamd: %w", err)

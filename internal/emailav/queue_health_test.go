@@ -19,9 +19,9 @@ type controlledScanner struct {
 	scan func() (Verdict, error)
 }
 
-func (s controlledScanner) Name() string                 { return s.name }
-func (s controlledScanner) Available() bool              { return true }
-func (s controlledScanner) Scan(string) (Verdict, error) { return s.scan() }
+func (s controlledScanner) Name() string               { return s.name }
+func (s controlledScanner) Available() bool            { return true }
+func (s controlledScanner) Scan(Part) (Verdict, error) { return s.scan() }
 
 func emailQueue(t *testing.T, o *Orchestrator) queuehealth.Status {
 	t.Helper()
@@ -149,7 +149,7 @@ func TestEmailQueueBufferedResultsAndConsumerStall(t *testing.T) {
 		results := make(chan engineScanResult, 2)
 		var wg sync.WaitGroup
 		for range 2 {
-			o.startScan(ctx, &mockScanner{name: "clean", available: true}, "part", results, &wg)
+			o.startScan(ctx, &mockScanner{name: "clean", available: true}, Part{}, results, &wg)
 		}
 		wg.Wait()
 		synctest.Wait()
@@ -193,7 +193,7 @@ func TestEmailQueuePerEngineResultWaitKeepsItsAge(t *testing.T) {
 		release := make(chan struct{})
 		results := make(chan engineScanResult, 1)
 		var wg sync.WaitGroup
-		o.startScan(heldDoneContext{ctx, release}, &mockScanner{name: "clean", available: true}, "part", results, &wg)
+		o.startScan(heldDoneContext{ctx, release}, &mockScanner{name: "clean", available: true}, Part{}, results, &wg)
 		synctest.Wait()
 		if s := emailQueue(t, o); s.Depth != 1 || s.InFlight != 0 || s.Status != "ok" || len(results) != 0 {
 			t.Fatalf("engine result before wrapper consumption: %+v buffered=%d", s, len(results))
@@ -224,7 +224,7 @@ func TestEmailQueueLateDispatchKeepsOriginalDeadline(t *testing.T) {
 		results := make(chan engineScanResult, 1)
 		var wg sync.WaitGroup
 		time.Sleep(9 * time.Second)
-		o.startScan(ctx, controlledScanner{"late", func() (Verdict, error) { <-release; return Verdict{}, nil }}, "part", results, &wg)
+		o.startScan(ctx, controlledScanner{"late", func() (Verdict, error) { <-release; return Verdict{}, nil }}, Part{}, results, &wg)
 		synctest.Wait()
 		time.Sleep(2 * time.Second)
 		synctest.Wait()

@@ -1,6 +1,9 @@
 package emailav
 
-import "time"
+import (
+	"os"
+	"time"
+)
 
 // Verdict is the result of scanning a single file.
 type Verdict struct {
@@ -9,10 +12,17 @@ type Verdict struct {
 	Severity  string // "critical", "high", "warning"
 }
 
+// Part is one extracted attachment to scan: its first Size bytes in File.
+// File's offset is shared by concurrent engines, so read it positionally.
+type Part struct {
+	File *os.File
+	Size int64
+}
+
 // Scanner is the interface for an antivirus engine.
 type Scanner interface {
 	Name() string
-	Scan(path string) (Verdict, error)
+	Scan(part Part) (Verdict, error)
 	Available() bool
 }
 

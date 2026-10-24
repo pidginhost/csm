@@ -42,7 +42,16 @@ const (
 	OpScanBytes = "scan_bytes"
 	OpReload    = "reload"
 	OpPing      = "ping"
+	// OpScanFD scans the file passed as the request's one descriptor, so
+	// the worker never opens a path and nothing is copied through JSON.
+	OpScanFD = "scan_fd"
 )
+
+// ScanFDArgs bounds how much of the descriptor the worker reads. No name is
+// sent: the archive-by-name skip is for files on disk, not mail parts.
+type ScanFDArgs struct {
+	MaxBytes int `json:"max_bytes"`
+}
 
 // Frame is the envelope. Request frames carry an Op and typed args in
 // Payload; response frames carry the typed result (or an Error) in

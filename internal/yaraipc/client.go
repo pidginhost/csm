@@ -5,9 +5,12 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/pidginhost/csm/internal/workerproc"
 )
 
 // ErrWorkerClosed means the worker hung up mid-request.
@@ -72,17 +75,23 @@ func (c *Client) dropLocked() error {
 // retried once because the server may intentionally close idle
 // connections after their message budget is spent.
 func (c *Client) roundTrip(req Frame) (Frame, error) {
+	return c.roundTripFDs(req, nil)
+}
+
+// roundTripFDs is roundTrip with descriptors attached. A retry resends the
+// same descriptors, which the caller still owns.
+func (c *Client) roundTripFDs(req Frame, fds []*os.File) (Frame, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	resp, err := c.roundTripLocked(req)
+	resp, err := c.roundTripLocked(req, fds)
 	if err == nil || !isRetryableClosedConn(err) {
 		return resp, err
 	}
-	return c.roundTripLocked(req)
+	return c.roundTripLocked(req, fds)
 }
 
-func (c *Client) roundTripLocked(req Frame) (Frame, error) {
+func (c *Client) roundTripLocked(req Frame, fds []*os.File) (Frame, error) {
 	conn, err := c.ensureConnLocked()
 	if err != nil {
 		return Frame{}, err
@@ -90,7 +99,7 @@ func (c *Client) roundTripLocked(req Frame) (Frame, error) {
 	if c.timeout > 0 {
 		_ = conn.SetDeadline(time.Now().Add(c.timeout))
 	}
-	if werr := WriteFrame(conn, req); werr != nil {
+	if werr := writeRequest(conn, req, fds); werr != nil {
 		_ = c.dropLocked()
 		return Frame{}, fmt.Errorf("yaraipc: write: %w", werr)
 	}
@@ -106,6 +115,37 @@ func (c *Client) roundTripLocked(req Frame) (Frame, error) {
 		return Frame{}, fmt.Errorf("yaraipc: worker: %s", resp.Error)
 	}
 	return resp, nil
+}
+
+func writeRequest(conn net.Conn, req Frame, fds []*os.File) error {
+	if len(fds) == 0 {
+		return WriteFrame(conn, req)
+	}
+	uc, ok := conn.(*net.UnixConn)
+	if !ok {
+		return errors.New("yaraipc: descriptors need a Unix socket")
+	}
+	return workerproc.SendFrame(uc, workerproc.Frame{Op: req.Op, Payload: req.Payload}, fds, MaxFrameBytes)
+}
+
+// ScanFD is the daemon-side shim for OpScanFD: the worker scans the first
+// size bytes of f, read through the descriptor.
+func (c *Client) ScanFD(f *os.File, size int64) (ScanResult, error) {
+	req, err := EncodePayload(OpScanFD, ScanFDArgs{MaxBytes: int(size)})
+	if err != nil {
+		return ScanResult{}, err
+	}
+	resp, err := c.roundTripFDs(req, []*os.File{f})
+	if err != nil {
+		return ScanResult{}, err
+	}
+	var res ScanResult
+	if len(resp.Payload) > 0 {
+		if err := DecodePayload(resp, &res); err != nil {
+			return ScanResult{}, err
+		}
+	}
+	return res, nil
 }
 
 func isRetryableClosedConn(err error) bool {

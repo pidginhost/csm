@@ -69,7 +69,7 @@ func TestClamdScannerClean(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	verdict, err := scanner.Scan(tmpFile)
+	verdict, err := scanner.Scan(openPart(t, tmpFile))
 	if err != nil {
 		t.Fatalf("Scan: %v", err)
 	}
@@ -89,7 +89,7 @@ func TestClamdScannerInfected(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	verdict, err := scanner.Scan(tmpFile)
+	verdict, err := scanner.Scan(openPart(t, tmpFile))
 	if err != nil {
 		t.Fatalf("Scan: %v", err)
 	}

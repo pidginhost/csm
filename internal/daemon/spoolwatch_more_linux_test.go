@@ -433,7 +433,7 @@ type alwaysInfectedScanner struct{}
 
 func (alwaysInfectedScanner) Name() string    { return "stub-infected" }
 func (alwaysInfectedScanner) Available() bool { return true }
-func (alwaysInfectedScanner) Scan(_ string) (emailav.Verdict, error) {
+func (alwaysInfectedScanner) Scan(_ emailav.Part) (emailav.Verdict, error) {
 	return emailav.Verdict{Infected: true, Signature: "TEST.Sig", Severity: "critical"}, nil
 }
 
@@ -717,7 +717,7 @@ type noEnginesAvailableScanner struct{}
 
 func (noEnginesAvailableScanner) Name() string    { return "stub-down" }
 func (noEnginesAvailableScanner) Available() bool { return false }
-func (noEnginesAvailableScanner) Scan(_ string) (emailav.Verdict, error) {
+func (noEnginesAvailableScanner) Scan(_ emailav.Part) (emailav.Verdict, error) {
 	return emailav.Verdict{}, nil
 }
 

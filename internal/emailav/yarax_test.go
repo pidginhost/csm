@@ -76,7 +76,7 @@ func TestYaraXScannerScanCleanFileReturnsNoMatch(t *testing.T) {
 	if err := os.WriteFile(tmp, []byte("benign content"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	v, err := s.Scan(tmp)
+	v, err := s.Scan(openPart(t, tmp))
 	if err != nil {
 		t.Fatalf("Scan: %v", err)
 	}
@@ -101,7 +101,7 @@ func TestYaraXScannerReadsSeverityFromMetadata(t *testing.T) {
 	if err := os.WriteFile(tmp, []byte("payload"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	v, err := s.Scan(tmp)
+	v, err := s.Scan(openPart(t, tmp))
 	if err != nil {
 		t.Fatalf("Scan: %v", err)
 	}
@@ -131,7 +131,7 @@ func TestYaraXScannerDefaultsSeverityWhenMetadataAbsent(t *testing.T) {
 	if err := os.WriteFile(tmp, []byte("anything"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	v, err := s.Scan(tmp)
+	v, err := s.Scan(openPart(t, tmp))
 	if err != nil {
 		t.Fatalf("Scan: %v", err)
 	}
@@ -156,7 +156,7 @@ func TestYaraXScannerEmptySeverityStringFallsBackToDefault(t *testing.T) {
 	if err := os.WriteFile(tmp, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	v, err := s.Scan(tmp)
+	v, err := s.Scan(openPart(t, tmp))
 	if err != nil {
 		t.Fatalf("Scan: %v", err)
 	}
@@ -165,11 +165,12 @@ func TestYaraXScannerEmptySeverityStringFallsBackToDefault(t *testing.T) {
 	}
 }
 
-func TestYaraXScannerScanErrorsOnUnreadableFile(t *testing.T) {
+func TestYaraXScannerScanErrorsOnUnreadablePart(t *testing.T) {
 	s := NewYaraXScanner(&fakeBackend{ruleCount: 1})
-	_, err := s.Scan(filepath.Join(t.TempDir(), "does-not-exist.bin"))
-	if err == nil {
-		t.Fatal("expected error reading nonexistent file")
+	p := partFile(t, "x")
+	_ = p.File.Close()
+	if _, err := s.Scan(p); err == nil {
+		t.Fatal("expected error reading a closed part")
 	}
 }
 
@@ -179,7 +180,7 @@ func TestYaraXScannerNilBackendReturnsError(t *testing.T) {
 	if err := os.WriteFile(tmp, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Scan(tmp); err == nil {
+	if _, err := s.Scan(openPart(t, tmp)); err == nil {
 		t.Fatal("expected error when backend is nil")
 	}
 }
@@ -203,7 +204,7 @@ func TestActiveYaraXScannerFollowsBackendSwap(t *testing.T) {
 	if err := os.WriteFile(tmp, []byte("payload"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Scan(tmp); err != nil {
+	if _, err := s.Scan(openPart(t, tmp)); err != nil {
 		t.Fatalf("Scan with swapped active backend: %v", err)
 	}
 	if len(b.scanned) != 1 {
@@ -225,7 +226,7 @@ func TestActiveYaraXScannerUsesScannedBackendForPostScanHealth(t *testing.T) {
 	if err := os.WriteFile(tmp, []byte("payload"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	v, err := s.Scan(tmp)
+	v, err := s.Scan(openPart(t, tmp))
 	if err != nil {
 		t.Fatalf("Scan should use the scanned backend health, got error: %v", err)
 	}
@@ -250,7 +251,7 @@ func TestYaraXScannerErrorsWhenBackendBecomesUnavailableMidScan(t *testing.T) {
 	if err := os.WriteFile(tmp, []byte("payload"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Scan(tmp); err == nil {
+	if _, err := s.Scan(openPart(t, tmp)); err == nil {
 		t.Fatal("expected fail-closed error when backend went unavailable during scan")
 	}
 }

@@ -83,7 +83,7 @@ func (o *Orchestrator) scanPart(part emime.ExtractedPart, scanners []Scanner) ([
 	}()
 
 	for _, s := range scanners {
-		work = append(work, o.startScan(ctx, s, part.TempPath, results, &wg))
+		work = append(work, o.startScan(ctx, s, Part{File: part.File, Size: part.Size}, results, &wg))
 	}
 
 	// Close results channel when all scans complete
@@ -133,7 +133,7 @@ type engineScanResult struct {
 	work     *scanWork
 }
 
-func (o *Orchestrator) startScan(ctx context.Context, scanner Scanner, path string, results chan<- engineScanResult, wg *sync.WaitGroup) *scanWork {
+func (o *Orchestrator) startScan(ctx context.Context, scanner Scanner, part Part, results chan<- engineScanResult, wg *sync.WaitGroup) *scanWork {
 	deadline, _ := ctx.Deadline()
 	w := o.health.begin(deadline)
 	wg.Add(1)
@@ -150,7 +150,7 @@ func (o *Orchestrator) startScan(ctx context.Context, scanner Scanner, path stri
 			success := false
 			defer func() { w.finishEngine(success) }()
 			w.start()
-			v, err := scanner.Scan(path)
+			v, err := scanner.Scan(part)
 			done <- engineScanResult{engine: scanner.Name(), verdict: v, err: err, work: w}
 			success = err == nil
 		})

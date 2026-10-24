@@ -21,6 +21,6 @@ func NewActiveYaraXScanner() *YaraXScanner {
 
 func (s *YaraXScanner) Name() string    { return "yara-x" }
 func (s *YaraXScanner) Available() bool { return false }
-func (s *YaraXScanner) Scan(_ string) (Verdict, error) {
+func (s *YaraXScanner) Scan(_ Part) (Verdict, error) {
 	return Verdict{}, nil
 }

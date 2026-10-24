@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"sync"
 
 	"github.com/pidginhost/csm/internal/obs"
+	"github.com/pidginhost/csm/internal/workerproc"
 )
 
 // Handler is the worker-side interface. The production implementation
@@ -18,6 +20,11 @@ type Handler interface {
 	ScanBytes(ScanBytesArgs) (ScanResult, error)
 	Reload(ReloadArgs) (ReloadResult, error)
 	Ping() (PingResult, error)
+}
+
+// FDHandler is implemented by handlers that scan a passed descriptor.
+type FDHandler interface {
+	ScanFD(f *os.File, args ScanFDArgs) (ScanResult, error)
 }
 
 // ServeOptions tunes Serve's behaviour. ErrorLog is called for per-frame
@@ -132,7 +139,7 @@ func serveConn(conn net.Conn, h Handler, opts ServeOptions) {
 			}
 			return
 		}
-		req, err := ReadFrame(conn)
+		req, fds, err := readRequest(conn)
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				return
@@ -142,7 +149,10 @@ func serveConn(conn net.Conn, h Handler, opts ServeOptions) {
 			}
 			return
 		}
-		resp := safeDispatch(req, h, opts)
+		resp := safeDispatch(req, fds, h, opts)
+		for _, f := range fds {
+			_ = f.Close()
+		}
 		if err := WriteFrame(conn, resp); err != nil {
 			if opts.ErrorLog != nil {
 				opts.ErrorLog(fmt.Errorf("write: %w", err))
@@ -158,7 +168,7 @@ func serveConn(conn net.Conn, h Handler, opts ServeOptions) {
 // input, a bad arg) would unwind serveConn with no frame written: the client
 // blocks to its deadline, retries, and panics again, while the worker process
 // stays up so the supervisor never restarts it -- that scan never completes.
-func safeDispatch(req Frame, h Handler, opts ServeOptions) (resp Frame) {
+func safeDispatch(req Frame, fds []*os.File, h Handler, opts ServeOptions) (resp Frame) {
 	defer func() {
 		if r := recover(); r != nil {
 			if opts.ErrorLog != nil {
@@ -167,7 +177,51 @@ func safeDispatch(req Frame, h Handler, opts ServeOptions) (resp Frame) {
 			resp = Frame{Error: fmt.Sprintf("handler panic: %v", r)}
 		}
 	}()
+	if req.Op == OpScanFD {
+		return dispatchScanFD(req, fds, h)
+	}
+	if len(fds) != 0 {
+		return Frame{Error: fmt.Sprintf("yaraipc: op %q carries a descriptor", req.Op)}
+	}
 	return dispatch(req, h)
+}
+
+// readRequest reads one frame, with any descriptor that came with it when
+// the connection is a Unix socket; a plain read would drop the descriptor.
+func readRequest(conn net.Conn) (Frame, []*os.File, error) {
+	uc, ok := conn.(*net.UnixConn)
+	if !ok {
+		f, err := ReadFrame(conn)
+		return f, nil, err
+	}
+	wf, fds, err := workerproc.ReceiveFrame(uc, workerproc.Limits{MaxFrameBytes: MaxFrameBytes, MaxFDs: 1})
+	if err != nil {
+		return Frame{}, nil, err
+	}
+	return Frame{Op: wf.Op, Payload: wf.Payload, Error: wf.Error}, fds, nil
+}
+
+func dispatchScanFD(req Frame, fds []*os.File, h Handler) Frame {
+	fh, ok := h.(FDHandler)
+	if !ok {
+		return Frame{Error: "yaraipc: scan_fd not supported"}
+	}
+	if len(fds) != 1 {
+		return Frame{Error: fmt.Sprintf("yaraipc: scan_fd takes one descriptor, got %d", len(fds))}
+	}
+	st, err := fds[0].Stat()
+	if err != nil {
+		return Frame{Error: err.Error()}
+	}
+	if !st.Mode().IsRegular() {
+		return Frame{Error: "yaraipc: scan_fd descriptor is not a regular file"}
+	}
+	var args ScanFDArgs
+	if err = DecodePayload(req, &args); err != nil {
+		return Frame{Error: fmt.Sprintf("decode scan_fd: %v", err)}
+	}
+	res, err := fh.ScanFD(fds[0], args)
+	return responseFrame(res, err)
 }
 
 func dispatch(req Frame, h Handler) Frame {
