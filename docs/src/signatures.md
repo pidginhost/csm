@@ -176,11 +176,11 @@ both engines. The first-line stub signature matches only a file that opens
 with an array holding an empty string followed by an `isset` test with an
 empty body. The line does nothing, outlives cleaners that strip only the
 payload, and no generator writes it. The visitor logger signature needs a site
-or host hash followed by cookie handling and an append-mode `fopen` beside a
-visitor address read, with both structures near a lookup of the upload temp
+or host hash, cookie handling, an append-mode `fopen` and a visitor address
+read, each starting within 1200 bytes of a lookup of the upload temp
 directory. The hook injector signature needs `add_action` or `add_filter`
-called with a hook name returned by a call on an encoded literal, near both
-base64 decoding and a byte-wise XOR loop. Plugins that name hooks in plain
+called with a hook name returned by a call on an encoded literal, starting
+within 4096 bytes of both base64 decoding and a byte-wise XOR loop. Plugins that name hooks in plain
 text, keep caches in the temp directory or mask licence keys with XOR are not
 evidence.
 
