@@ -114,8 +114,10 @@ type SpoolWatcher struct {
 	lastEncryptedAt time.Time
 	panicMu         sync.Mutex
 	lastPanicAt     time.Time
-	limitMu         sync.Mutex
-	lastLimited     map[string]time.Time
+	// findings rate-limits parse worker findings, shared with the daemon;
+	// ownFindings stands in for hand-built test watchers.
+	findings    *findingLimiter
+	ownFindings findingLimiter
 
 	// queueOverflows counts FAN_Q_OVERFLOW records. In permission mode a kernel
 	// queue overflow means opens were let through without a scan verdict, so
@@ -164,7 +166,7 @@ func (evt spoolEvent) finish(sw *SpoolWatcher, response uint32) {
 // NewSpoolWatcher creates a dedicated fanotify instance for Exim spool scanning.
 // Attempts FAN_CLASS_CONTENT with FAN_OPEN_PERM first; falls back to
 // FAN_CLASS_NOTIF with FAN_CLOSE_WRITE if permission events are unavailable.
-func NewSpoolWatcher(cfg *config.Config, alertCh chan<- alert.Finding, orch *emailav.Orchestrator, quar *emailav.Quarantine, onQuarantined func(time.Time, string), extractor mailExtractor) (*SpoolWatcher, error) {
+func NewSpoolWatcher(cfg *config.Config, alertCh chan<- alert.Finding, orch *emailav.Orchestrator, quar *emailav.Quarantine, onQuarantined func(time.Time, string), extractor mailExtractor, findings *findingLimiter) (*SpoolWatcher, error) {
 	if cfg == nil {
 		return nil, errors.New("spool watcher: nil config")
 	}
@@ -176,6 +178,7 @@ func NewSpoolWatcher(cfg *config.Config, alertCh chan<- alert.Finding, orch *ema
 		orchestrator:  orch,
 		quarantine:    quar,
 		extractor:     extractor,
+		findings:      findings,
 		onQuarantined: onQuarantined,
 		selfPID:       os.Getpid(),
 		scanCh:        make(chan spoolEvent, 256),

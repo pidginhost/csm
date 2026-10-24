@@ -199,6 +199,9 @@ type Daemon struct {
 	// locked-down parse worker units, one per scan goroutine. Nil when email
 	// AV is off or the workers could not be set up.
 	mailExtractor *parseworker.Extractor
+	// parseFindings rate-limits parse worker findings across the daemon and
+	// its spool watchers, so one condition raises one finding an hour.
+	parseFindings findingLimiter
 
 	// policies holds the email PHP-relay pattern policies
 	// (suspicious/safe x-mailer classes, HTTP proxy ranges) loaded
@@ -2695,8 +2698,8 @@ func (d *Daemon) startSpoolWatcher() {
 	d.emailQuarantine = quar
 
 	// Create and start spool watcher
-	sw, err := NewSpoolWatcher(d.cfg, d.alertCh, orch, quar, d.mailStats.RecordQuarantine, d.spoolExtractor()) //nolint:staticcheck // The Linux constructor is fallible; the non-Linux stub always returns an error.
-	if err != nil {                                                                                            //nolint:staticcheck // The Linux constructor can also succeed.
+	sw, err := NewSpoolWatcher(d.cfg, d.alertCh, orch, quar, d.mailStats.RecordQuarantine, d.spoolExtractor(), &d.parseFindings) //nolint:staticcheck // The Linux constructor is fallible; the non-Linux stub always returns an error.
+	if err != nil {                                                                                                              //nolint:staticcheck // The Linux constructor can also succeed.
 		fmt.Fprintf(os.Stderr, "[%s] Email AV spool watcher not available: %v\n", ts(), err)
 		d.MarkWatcher("email_av_spool", false)
 		return
@@ -2746,8 +2749,8 @@ type spoolWatcherRuntime interface {
 
 func (d *Daemon) runSpoolWatcherLoop(sw *SpoolWatcher, orch *emailav.Orchestrator, quar *emailav.Quarantine) {
 	d.runSpoolWatcherLoopWithFactory(sw, 2*time.Second, func() (spoolWatcherRuntime, error) {
-		next, err := NewSpoolWatcher(d.cfg, d.alertCh, orch, quar, d.mailStats.RecordQuarantine, d.spoolExtractor()) //nolint:staticcheck // The Linux constructor is fallible; the non-Linux stub always returns an error.
-		if err != nil {                                                                                              //nolint:staticcheck // The Linux constructor can also succeed.
+		next, err := NewSpoolWatcher(d.cfg, d.alertCh, orch, quar, d.mailStats.RecordQuarantine, d.spoolExtractor(), &d.parseFindings) //nolint:staticcheck // The Linux constructor is fallible; the non-Linux stub always returns an error.
+		if err != nil {                                                                                                                //nolint:staticcheck // The Linux constructor can also succeed.
 			return nil, err
 		}
 		d.setSpoolWatcher(next)

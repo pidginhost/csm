@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	emime "github.com/pidginhost/csm/internal/mime"
 	"github.com/pidginhost/csm/internal/workerproc"
@@ -175,5 +176,70 @@ func TestParseWorkersNoMailExtractorWhenEmailAVOff(t *testing.T) {
 	}
 	if _, ok := d.QueueStatuses()["email_extract.requests"]; ok {
 		t.Fatal("mail extraction queue published with email AV off")
+	}
+}
+
+func isolationFindings(ch chan alert.Finding) []alert.Finding {
+	var out []alert.Finding
+	for {
+		select {
+		case f := <-ch:
+			if f.Check == "email_av_isolation_unavailable" {
+				out = append(out, f)
+			}
+		default:
+			return out
+		}
+	}
+}
+
+// Parse workers that cannot run are a Critical condition: mail is handled as
+// incomplete scans and phishing-kit zips go unchecked until it is fixed.
+func TestParseWorkersIsolationUnavailableFinding(t *testing.T) {
+	real := stopParseWorkerUnits
+	stopParseWorkerUnits = func(context.Context, string) error { return nil }
+	t.Cleanup(func() { stopParseWorkerUnits = real })
+
+	path := filepath.Join(t.TempDir(), "csm")
+	if err := os.WriteFile(path, []byte("x"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{}
+	cfg.EmailAV.Enabled = true
+	d := &Daemon{binaryPath: path, cfg: cfg, alertCh: make(chan alert.Finding, 8)}
+	if err := d.initParseWorkers(); err == nil {
+		t.Fatal("owner-only binary accepted")
+	}
+	if d.zipLister != nil || d.mailExtractor != nil {
+		t.Fatal("a pool was installed without a runnable binary")
+	}
+	if fs := isolationFindings(d.alertCh); len(fs) != 1 || fs[0].Severity != alert.Critical {
+		t.Fatalf("isolation findings %+v, want one Critical", fs)
+	}
+
+	// The zip lister's failed starts raise it too, at most once an hour.
+	allowParseWorkerCommand(t)
+	realLaunch := parseWorkerLauncher
+	parseWorkerLauncher = func(workerproc.UnitConfig) workerproc.Launcher {
+		return func(context.Context) (workerproc.Process, error) { return nil, errors.New("systemd-run missing") }
+	}
+	t.Cleanup(func() { parseWorkerLauncher = realLaunch })
+	d = &Daemon{binaryPath: "/opt/csm/csm", cfg: &config.Config{}, alertCh: make(chan alert.Finding, 8)}
+	if err := d.initParseWorkers(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(d.stopParseWorkers)
+	zip, err := os.Create(filepath.Join(t.TempDir(), "kit.zip"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = zip.Close() }()
+	for range 2 {
+		if err := d.zipLister.ListZip(context.Background(), zip, 0, 0, nil); !errors.Is(err, workerproc.ErrSpawn) {
+			t.Fatalf("list with no worker = %v, want ErrSpawn", err)
+		}
+	}
+	if fs := isolationFindings(d.alertCh); len(fs) != 1 || fs[0].Severity != alert.Critical {
+		t.Fatalf("isolation findings %+v, want one Critical an hour", fs)
 	}
 }

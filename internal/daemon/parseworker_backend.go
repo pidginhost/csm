@@ -7,6 +7,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/checks"
 	emime "github.com/pidginhost/csm/internal/mime"
 	"github.com/pidginhost/csm/internal/parseworker"
@@ -23,6 +24,9 @@ var stopParseWorkerUnits = workerproc.StopUnits
 // checkParseWorkerCommand is a seam for tests whose binary path does not exist.
 var checkParseWorkerCommand = workerproc.CheckUnitCommand
 
+// parseWorkerLauncher is a seam for tests that must not start units.
+var parseWorkerLauncher = workerproc.UnitLauncher
+
 func (d *Daemon) initParseWorkers() error {
 	if d.binaryPath == "" {
 		return errors.New("parse worker: daemon binary unknown")
@@ -38,11 +42,17 @@ func (d *Daemon) initParseWorkers() error {
 	// Refused here, once, rather than at every launch: a unit's dynamic user
 	// cannot run an owner-only binary, so each worker would fail at exec.
 	if err := checkParseWorkerCommand(d.binaryPath); err != nil {
+		d.reportIsolationUnavailable(err)
 		return fmt.Errorf("parse worker: %w", err)
 	}
 	lister, err := parseworker.NewLister(parseworker.ListerConfig{
-		Launch: workerproc.UnitLauncher(parseworker.UnitConfig(d.binaryPath, parseWorkerUnitPrefix+"zip0", 64<<20, logf)),
+		Launch: parseWorkerLauncher(parseworker.UnitConfig(d.binaryPath, parseWorkerUnitPrefix+"zip0", 64<<20, logf)),
 		Log:    logf,
+		OnFailure: func(reason string, err error) {
+			if reason == workerproc.ReasonSpawn {
+				d.reportIsolationUnavailable(err)
+			}
+		},
 	})
 	if err != nil {
 		return err
@@ -58,7 +68,7 @@ func (d *Daemon) initParseWorkers() error {
 		Size: d.cfg.EmailAV.ScanConcurrency,
 		Launch: func(slot int) workerproc.Launcher {
 			name := fmt.Sprintf("%smail%d", parseWorkerUnitPrefix, slot)
-			return workerproc.UnitLauncher(parseworker.UnitConfig(d.binaryPath, name, parseworker.FileSizeLimit(d.cfg.EmailAV.MaxAttachmentSize), logf))
+			return parseWorkerLauncher(parseworker.UnitConfig(d.binaryPath, name, parseworker.FileSizeLimit(d.cfg.EmailAV.MaxAttachmentSize), logf))
 		},
 		Log: logf,
 	})
@@ -68,6 +78,13 @@ func (d *Daemon) initParseWorkers() error {
 	d.mailExtractor = extractor
 	d.registerQueueSource("email_extract", extractor)
 	return nil
+}
+
+// reportIsolationUnavailable raises email_av_isolation_unavailable for parse
+// workers that cannot run. It shares the spool watcher's hourly allowance.
+func (d *Daemon) reportIsolationUnavailable(err error) {
+	d.parseFindings.emit(d.alertCh, "email_av_isolation_unavailable", alert.Critical, isolationAlertInterval,
+		fmt.Sprintf("Parse worker units cannot run: %v. Email attachments are handled as incomplete scans under email_av.fail_mode, and phishing-kit zips are reported as not checked.", err))
 }
 
 // mailExtractor is what the spool watcher needs from the mail parse workers;

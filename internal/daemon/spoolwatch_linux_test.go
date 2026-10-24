@@ -13,7 +13,7 @@ import (
 )
 
 func TestNewSpoolWatcherLinuxNilConfig(t *testing.T) {
-	_, err := NewSpoolWatcher(nil, nil, nil, nil, nil, nil)
+	_, err := NewSpoolWatcher(nil, nil, nil, nil, nil, nil, nil)
 	if err == nil {
 		t.Fatal("NewSpoolWatcher must reject a nil config")
 	}

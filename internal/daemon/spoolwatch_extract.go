@@ -109,7 +109,7 @@ func (sw *SpoolWatcher) extractFailed(msgID string, err error) *emime.Extraction
 	case errors.Is(err, workerproc.ErrStopped):
 		// The daemon is shutting down; that is not an outage.
 	case isolation:
-		sw.emitLimited("email_av_isolation_unavailable", alert.Critical, time.Hour,
+		sw.emitLimited("email_av_isolation_unavailable", alert.Critical, isolationAlertInterval,
 			fmt.Sprintf("Email attachments cannot be unpacked in an isolated worker (%s); message %s was handled as an incomplete scan under email_av.fail_mode: %v", reason, msgID, err))
 	default:
 		sw.emitLimited("email_av_parse_worker_failed", alert.Warning, time.Minute,
@@ -147,20 +147,13 @@ func extractFailureReason(err error) (reason string, isolation bool) {
 	}
 }
 
-// emitLimited emits a finding at most once per interval per check. Only a
-// delivered finding uses up the allowance.
+// emitLimited emits a finding at most once per interval per check.
 func (sw *SpoolWatcher) emitLimited(check string, severity alert.Severity, interval time.Duration, message string) {
-	sw.limitMu.Lock()
-	defer sw.limitMu.Unlock()
-	if last, ok := sw.lastLimited[check]; ok && time.Since(last) < interval {
-		return
+	l := sw.findings
+	if l == nil {
+		l = &sw.ownFindings
 	}
-	if sw.emitFinding(check, severity, message) {
-		if sw.lastLimited == nil {
-			sw.lastLimited = make(map[string]time.Time)
-		}
-		sw.lastLimited[check] = time.Now()
-	}
+	l.emit(sw.alertCh, check, severity, interval, message)
 }
 
 // removeLegacyEmailAVTempDir removes the attachment staging directory of

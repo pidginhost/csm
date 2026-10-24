@@ -1321,6 +1321,15 @@ itself incomplete, without counting as lost work. A worker can still leave
 names out; validating the reply does not verify the archive. Name
 classification stays in `internal/checks`.
 
+`workerproc.Pool` holds a fixed number of supervisors, one per slot, and
+`Call` names the slot. The mail extractor (`parseworker.Extractor`, op
+`extract_message`) sizes its pool from `email_av.scan_concurrency` and names
+units `csm-parse-worker-mail<slot>-<generation>`. The worker writes each
+non-empty attachment to a memfd sealed against writes, growth and shrinkage.
+A reply carries at most 200 parts. Names, content types and archive names are
+cut to 255 bytes, the partial reason to 512, and From, Subject and each of at
+most 100 recipients to 998.
+
 The mail extraction API accepts open spool header and body descriptors.
 Its reply must be one UTF-8 JSON object with a `parts` field, which may be
 null for an empty result. Each part must have a readable, sealed descriptor

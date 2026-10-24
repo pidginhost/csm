@@ -57,9 +57,11 @@ calling process's sandbox.
 
 ## Parse worker units
 
-The daemon reads tenant zip listings for the phishing-kit check in a separate
-worker, started on demand as a transient unit with `systemd-run`. Each unit
-gets these properties:
+The daemon reads tenant zip listings for the phishing-kit check, and unpacks
+email attachments when email AV is on, in separate workers. Each starts on
+demand as a transient unit with `systemd-run`: one unit for zip listings, and
+one per `email_av.scan_concurrency` slot for mail. Each unit gets these
+properties:
 
 - `DynamicUser=yes`, `CapabilityBoundingSet=` (empty), `NoNewPrivileges=yes`;
 - `PrivateNetwork=yes`, `RestrictAddressFamilies=AF_UNIX`;
@@ -73,11 +75,14 @@ gets these properties:
   `LockPersonality=yes`, which `systemd-run` on systemd 239 rejects;
 - `MemoryAccounting=yes`, `MemoryLimit=` and `MemoryMax=` set to the
   worker's memory cap, `MemorySwapMax=0`;
-- `TasksMax=64`, `LimitNOFILE=256`, `LimitCORE=0`, `LimitFSIZE=` set above
-  the largest listing, `CPUWeight=50`, and a one-hour `RuntimeMaxSec`.
+- `TasksMax=64`, `LimitNOFILE=256`, `LimitCORE=0`, `CPUWeight=50`, and a
+  one-hour `RuntimeMaxSec`. `LimitFSIZE=` is 64 MiB for zip listings; for mail
+  it is 1 MiB above `email_av.max_attachment_size`, and never below 64 MiB.
 
-The worker receives the zip as an open descriptor and returns entry names in
-a sealed memfd. It cannot create IPv4 or IPv6 sockets. Unix sockets remain
+The zip worker receives the zip as an open descriptor and returns entry names
+in a sealed memfd. A mail worker receives the message's spool header and body
+as open descriptors and returns each attachment in its own sealed memfd; the
+daemon scans those and closes them. It cannot create IPv4 or IPv6 sockets. Unix sockets remain
 available. `/home`, `/root` and `/run/user` are hidden; other account-home
 locations are not. Most host files are read-only. The worker can still read
 world-readable host files outside those directories and write in its private
@@ -90,7 +95,8 @@ unit; systemd supplies the service environment.
 `memory.swap.max` to 0, and refuses to use a worker on a host with swap on but
 no swap accounting. The daemon can write those files because `csm.service`
 has `ProtectControlGroups=no`. A worker whose memory cannot be capped or
-measured gets no request, and the phishing check reports itself incomplete.
+measured gets no request: the phishing check reports itself incomplete, and
+mail is handled as an incomplete scan under `email_av.fail_mode`.
 Without cgroup v2 swap accounting, the watchdog also checks that swap stays
 off throughout the worker's lifetime.
 
@@ -100,8 +106,11 @@ can replace it. Package, CLI and script installs set this mode under any umask
 and make the installation directory searchable by others; its subdirectories
 keep their private modes. A rolled-back upgrade restores the previous mode.
 When the binary or a directory above it is not executable by others, the
-daemon logs one line at startup, starts no worker, and the phishing check
-reports itself incomplete.
+daemon logs one line at startup, raises a Critical
+`email_av_isolation_unavailable` finding, and starts no worker. The phishing
+check reports itself incomplete, and mail is handled as an incomplete scan
+under `email_av.fail_mode`. Failed unit starts raise the same finding, at most
+once an hour.
 
 Workers are killed by unit name with `systemctl kill`, never by a PID. If the
 daemon dies, a worker waiting for a request reads end of file and exits. A
@@ -111,6 +120,7 @@ failures are logged and do not prevent startup.
 
 `disabled_checks: [phishing]` disables scheduled phishing checks. Requested
 account scans can still use the worker, and startup cleanup still runs.
+`email_av.enabled: false` starts no mail workers.
 
 The in-process `csm scan <user>` command starts its own worker on demand.
 Its report warns when worker setup, startup or archive listing fails, even
