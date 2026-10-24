@@ -298,6 +298,40 @@ func TestRuleScanBudgetArchiveLoader(t *testing.T) {
 	})
 }
 
+// The image rule looks for a code construct after every PHP opening tag. Dense
+// tags followed by constructs just outside the window must not multiply.
+func TestRuleScanBudgetPHPInImage(t *testing.T) {
+	png := "\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR"
+	requireRuleScanBudget(t, "backdoor_php_in_image", map[string][]byte{
+		"dense_openers.png":          []byte(png + strings.Repeat("<?= ", 250_000)),
+		"dense_sinks.png":            []byte(png + strings.Repeat(" system(", 125_000)),
+		"openers_far_from_sinks.png": []byte(png + strings.Repeat("<?= ", 120_000) + strings.Repeat(" ", 70_000) + strings.Repeat(" system(", 60_000)),
+		"sinks_before_openers.png":   []byte(png + strings.Repeat(" system(", 60_000) + strings.Repeat("<?= ", 120_000)),
+	})
+}
+
+// Both lists at YARA-X's default match cap, every construct just outside the
+// window, so the loop must visit every opening tag without a match.
+func TestRuleScanBudgetPHPInImageMatchCap(t *testing.T) {
+	content := []byte("\x89PNG\r\n\x1a\n" + strings.Repeat("<?= ", 1_000_001) +
+		strings.Repeat(" ", 70_000) + strings.Repeat(" system(", 1_000_001))
+	rules := shippedRule(t, "backdoor_php_in_image")
+	defer rules.Destroy()
+	scanner := yara_x.NewScanner(rules)
+	defer scanner.Destroy()
+	scanner.SetTimeout(scanBudgetTimeout)
+	result, err := scanner.Scan(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.MatchingRules()) != 0 {
+		t.Fatal("constructs outside every window must not match")
+	}
+	requireRuleScanBudget(t, "backdoor_php_in_image", map[string][]byte{
+		"saturated_disjoint_matches.png": content,
+	})
+}
+
 // Exercise the range lookup with both match lists at YARA-X's default cap.
 // No pair qualifies, so the condition must examine the entire eval list.
 func TestRuleScanBudgetArchiveLoaderMatchCap(t *testing.T) {
