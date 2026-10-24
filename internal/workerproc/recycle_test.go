@@ -55,13 +55,13 @@ func TestCallRecyclesAfterMaxJobs(t *testing.T) {
 	waitWorkerQueueIdle(t, s, 0)
 }
 
-// retiringProcess asks to retire after its first job.
+// retiringProcess asks to retire once the test marks it ready.
 type retiringProcess struct {
 	Process
-	asked atomic.Bool
+	ready atomic.Bool
 }
 
-func (p *retiringProcess) Retire() bool { return !p.asked.Swap(true) }
+func (p *retiringProcess) Retire() bool { return p.ready.Load() }
 
 func TestCallRecyclesWhenWorkerAsksToRetire(t *testing.T) {
 	inner := pairLauncher(t, sleepHandler)
@@ -72,7 +72,9 @@ func TestCallRecyclesWhenWorkerAsksToRetire(t *testing.T) {
 			return nil, err
 		}
 		if first == nil {
-			first = &retiringProcess{Process: p}
+			retiring := &retiringProcess{Process: p}
+			retiring.ready.Store(true)
+			first = retiring
 			return first, nil
 		}
 		return p, nil
@@ -239,7 +241,7 @@ func TestRejectedCallsDoNotExtendWorkerIdleTime(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				s := newRecycleSupervisor(t, Config{Launch: helperLauncher(t, "echo"), IdleTimeout: time.Minute})
-				s.child = &child{proc: exitedProcess(), conn: &fakeTransport{
+				s.child = &child{proc: liveProcess(), conn: &fakeTransport{
 					onReceive: func() (Frame, []*os.File, error) { return Frame{}, nil, nil },
 				}}
 				sleepCall(t, s, 0)
@@ -286,7 +288,7 @@ func TestWorkerRemovalDisarmsIdleTimer(t *testing.T) {
 				ctx := context.Background()
 				check := okCheck
 				if mode != "spawn failure" {
-					s.child = &child{proc: exitedProcess(), conn: &fakeTransport{
+					s.child = &child{proc: liveProcess(), conn: &fakeTransport{
 						onReceive: func() (Frame, []*os.File, error) { return Frame{}, nil, nil },
 					}}
 					sleepCall(t, s, 0)
@@ -297,7 +299,14 @@ func TestWorkerRemovalDisarmsIdleTimer(t *testing.T) {
 				switch mode {
 				case "retire":
 					s.cfg.MaxJobs = 0
-					s.child.proc = &retiringProcess{Process: s.child.proc}
+					// Ask only after the reply, so this case still exercises
+					// disarming the timer on post-request retirement.
+					retiring := &retiringProcess{Process: s.child.proc}
+					s.child.proc = retiring
+					s.child.conn = &fakeTransport{onReceive: func() (Frame, []*os.File, error) {
+						retiring.ready.Store(true)
+						return Frame{}, nil, nil
+					}}
 				case "failure":
 					check = func(Frame, []*os.File) (bool, error) { return false, errors.New("bad reply") }
 				case "canceled":
@@ -333,7 +342,7 @@ func TestWorkerRemovalDisarmsIdleTimer(t *testing.T) {
 func TestZeroLifespanSettingsKeepWorker(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		s := newRecycleSupervisor(t, Config{Launch: helperLauncher(t, "echo")})
-		s.child = &child{proc: exitedProcess(), conn: &fakeTransport{
+		s.child = &child{proc: liveProcess(), conn: &fakeTransport{
 			onReceive: func() (Frame, []*os.File, error) { return Frame{}, nil, nil },
 		}}
 		for range 10 {
@@ -346,4 +355,64 @@ func TestZeroLifespanSettingsKeepWorker(t *testing.T) {
 		}
 		waitWorkerQueueIdle(t, s, 0)
 	})
+}
+
+// A worker that ended on its own, at its lifetime cap or by the watchdog, is
+// replaced before the next request rather than failing it.
+func TestCallReplacesWorkerThatExited(t *testing.T) {
+	s := newRecycleSupervisor(t, Config{Launch: helperLauncher(t, "echo")})
+	if _, _, err := s.Call(context.Background(), Frame{Op: "work", Payload: json.RawMessage(`1`)}, nil, okCheck); err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	proc := s.child.proc
+	s.mu.Unlock()
+	if err := proc.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	<-proc.Done()
+	if _, _, err := s.Call(context.Background(), Frame{Op: "work", Payload: json.RawMessage(`1`)}, nil, okCheck); err != nil {
+		t.Fatalf("call after the worker exited: %v", err)
+	}
+	if st := s.Stats(); st.Spawns != 2 || st.ConsecutiveFailures != 0 {
+		t.Fatalf("stats = %+v, want a fresh worker and no failure", st)
+	}
+	waitWorkerQueueIdle(t, s, 0)
+}
+
+// An idle unit can pass its retirement deadline between requests. The next
+// input must reach a replacement, before systemd ends the old unit's life.
+func TestCallRetiresUnitBeforeReusingIt(t *testing.T) {
+	cfg, _ := fakeUnitConfig(t, "1")
+	launch := UnitLauncher(cfg)
+	var first *unitProcess
+	s := newRecycleSupervisor(t, Config{Launch: func(ctx context.Context) (Process, error) {
+		p, err := launch(ctx)
+		if err == nil && first == nil {
+			first = p.(*unitProcess)
+		}
+		return p, err
+	}})
+	sleepCall(t, s, 0)
+	first.retireAt = time.Now().Add(-time.Second)
+	var got struct{ PID int }
+	_, _, err := s.Call(context.Background(), Frame{Op: "sleep", Payload: json.RawMessage(`0`)}, nil,
+		func(reply Frame, _ []*os.File) (bool, error) {
+			return false, json.Unmarshal(reply.Payload, &got)
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.PID == first.PID() {
+		t.Error("request was sent to the expired unit")
+	}
+	if st := s.Stats(); st.Spawns != 2 || st.ConsecutiveFailures != 0 || st.LastPID != got.PID {
+		t.Fatalf("stats = %+v, want a replacement without a failure", st)
+	}
+	select {
+	case <-first.Done():
+	default:
+		t.Error("retired unit is still running")
+	}
+	waitWorkerQueueIdle(t, s, 0)
 }

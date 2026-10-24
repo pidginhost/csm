@@ -112,6 +112,11 @@ failures are logged and do not prevent startup.
 `disabled_checks: [phishing]` disables scheduled phishing checks. Requested
 account scans can still use the worker, and startup cleanup still runs.
 
+The in-process `csm scan <user>` command starts its own worker on demand.
+Its report warns when worker setup, startup or archive listing fails, even
+if later archives are checked successfully. A scan with unchecked archives
+does not report the account as clean.
+
 ## Limits and validation
 
 These restrictions reduce accidental and misdirected writes. CSM remains a

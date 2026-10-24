@@ -43,7 +43,7 @@ func TestCallOwnsRequestDescriptorsUntilSendFinishes(t *testing.T) {
 			finish := sync.OnceFunc(func() { close(release) })
 			defer finish()
 			sent := make(chan error, 1)
-			s.child = &child{proc: exitedProcess(), conn: &fakeTransport{
+			s.child = &child{proc: liveProcess(), conn: &fakeTransport{
 				onSend: func(_ []byte, fds []*os.File) error {
 					close(entered)
 					<-release
@@ -134,7 +134,7 @@ func TestCallClosesDescriptorsOnEveryReplyError(t *testing.T) {
 			}
 			defer r.Close()
 			defer w.Close()
-			s.child = &child{proc: exitedProcess(), conn: &fakeTransport{onReceive: func() (Frame, []*os.File, error) {
+			s.child = &child{proc: liveProcess(), conn: &fakeTransport{onReceive: func() (Frame, []*os.File, error) {
 				return tc.frame, []*os.File{w}, tc.err
 			}}}
 			if _, fds, callErr := s.Call(context.Background(), Frame{Op: "work"}, nil, tc.check); callErr == nil || fds != nil {
@@ -171,7 +171,7 @@ func TestCallReleasesRequestDescriptors(t *testing.T) {
 				_ = pipeW.Close()
 				requestFDs = append(requestFDs, closed)
 			}
-			s.child = &child{proc: exitedProcess(), conn: &fakeTransport{
+			s.child = &child{proc: liveProcess(), conn: &fakeTransport{
 				onSend: func(_ []byte, fds []*os.File) error {
 					switch mode {
 					case "send-error":

@@ -39,19 +39,22 @@ func (f *fakeTransport) close() error {
 	return f.onClose()
 }
 
-type stubProcess struct{ done chan struct{} }
+// stubProcess stands in for a running child under a fake transport. Kill
+// makes it exit, so the supervisor's reap returns at once.
+type stubProcess struct {
+	done chan struct{}
+	kill sync.Once
+}
 
-func (stubProcess) Conn() *net.UnixConn     { return nil }
-func (stubProcess) Kill() error             { return nil }
-func (p stubProcess) Done() <-chan struct{} { return p.done }
-func (stubProcess) PID() int                { return 0 }
-func (stubProcess) Retire() bool            { return false }
+func (*stubProcess) Conn() *net.UnixConn     { return nil }
+func (p *stubProcess) Kill() error           { p.kill.Do(func() { close(p.done) }); return nil }
+func (p *stubProcess) Done() <-chan struct{} { return p.done }
+func (*stubProcess) PID() int                { return 0 }
+func (*stubProcess) Retire() bool            { return false }
 
-// exitedProcess is a Process that has already exited and been reaped.
-func exitedProcess() Process {
-	done := make(chan struct{})
-	close(done)
-	return stubProcess{done: done}
+// liveProcess is a running Process that exits when killed.
+func liveProcess() Process {
+	return &stubProcess{done: make(chan struct{})}
 }
 
 func isCanceled(err error) bool {
@@ -130,7 +133,7 @@ func installHeldReply(t *testing.T, s *Supervisor) (<-chan struct{}, func()) {
 	t.Helper()
 	entered, release := make(chan struct{}), make(chan struct{})
 	var once sync.Once
-	s.child = &child{proc: exitedProcess(), conn: &fakeTransport{onReceive: func() (Frame, []*os.File, error) {
+	s.child = &child{proc: liveProcess(), conn: &fakeTransport{onReceive: func() (Frame, []*os.File, error) {
 		once.Do(func() { close(entered) })
 		<-release
 		return Frame{Payload: json.RawMessage(`{}`)}, nil, nil
@@ -358,7 +361,7 @@ func TestWorkerQueueBufferedReplyHasIndependentBudget(t *testing.T) {
 
 func TestWorkerQueueRPCExitCountsOnce(t *testing.T) {
 	s := newTestSupervisor(t, helperLauncher(t, "echo"), 20*time.Millisecond)
-	s.child = &child{proc: exitedProcess(), conn: &fakeTransport{onReceive: func() (Frame, []*os.File, error) {
+	s.child = &child{proc: liveProcess(), conn: &fakeTransport{onReceive: func() (Frame, []*os.File, error) {
 		runtime.Goexit()
 		return Frame{}, nil, io.EOF
 	}}}

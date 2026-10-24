@@ -254,3 +254,19 @@ func TestCgroupMemoryReadsRAMAndSwap(t *testing.T) {
 		t.Fatalf("cgroup memory = %d, %v", got, err)
 	}
 }
+
+// A unit is retired at three quarters of RuntimeMaxSec, so systemd's own cap
+// never lands in the middle of a request.
+func TestUnitRetireBeforeRuntimeMax(t *testing.T) {
+	cfg, _ := fakeUnitConfig(t, "1")
+	cfg.RuntimeMax = 200 * time.Millisecond
+	cfg.hooks.pollInterval = time.Hour
+	p := launchUnit(t, cfg)
+	if p.Retire() {
+		t.Fatal("fresh unit retired")
+	}
+	time.Sleep(160 * time.Millisecond)
+	if !p.Retire() {
+		t.Fatal("unit past three quarters of its lifetime cap not retired")
+	}
+}

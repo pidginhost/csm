@@ -988,6 +988,11 @@ func runRehash() {
 	if err := convergeDefaultConfigCopies(cfg.ConfigFile, explicit, preferredConfigPath, legacyConfigPath); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: default config copies not converged: %v\n", err)
 	}
+	// Before the immutable flag: an older deploy script that ran this upgrade
+	// set the new binary to 0700, which no parse worker unit can execute.
+	if err := prepareWorkerExecutable(binaryPath); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: parse worker cannot execute the binary: %v\n", err)
+	}
 	if err := setBinaryImmutable(binaryPath, cfg.Integrity.Immutable); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: updating binary immutable flag: %v\n", err)
 	}

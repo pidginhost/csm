@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 )
@@ -77,5 +78,55 @@ func TestInstallPreparesWorkerExecutable(t *testing.T) {
 				t.Fatalf("installer permissions: %v\n%s", err, out)
 			}
 		})
+	}
+}
+
+func TestPrepareWorkerExecutable(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "opt")
+	if err := os.Mkdir(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	binary := filepath.Join(dir, "csm")
+	if err := os.WriteFile(binary, []byte("x"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := prepareWorkerExecutable(binary); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for path, want := range map[string]os.FileMode{binary: 0711, dir: 0711} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got != want {
+			t.Errorf("%s mode = %#o, want %#o", path, got, want)
+		}
+	}
+}
+
+// Upgrades run by an older deploy script chmod the new binary 0700, then run
+// its rehash; rehash must give the parse worker its execute access back
+// before the immutable flag is set again.
+func TestRehashPreparesWorkerExecutable(t *testing.T) {
+	body, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(body)
+	start := strings.Index(src, "func runRehash()")
+	if start < 0 {
+		t.Fatal("runRehash not found")
+	}
+	end := strings.Index(src[start:], "\nfunc ")
+	if end < 0 {
+		end = len(src) - start
+	}
+	rehash := src[start : start+end]
+	prepare := strings.Index(rehash, "prepareWorkerExecutable(binaryPath)")
+	immutable := strings.Index(rehash, "setBinaryImmutable(binaryPath")
+	if prepare < 0 || immutable < 0 || prepare > immutable {
+		t.Error("runRehash must call prepareWorkerExecutable(binaryPath) before setBinaryImmutable")
 	}
 }
