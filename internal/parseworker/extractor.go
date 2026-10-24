@@ -18,10 +18,14 @@ import (
 	"github.com/pidginhost/csm/internal/workerproc"
 )
 
-// ExtractTimeout bounds one message's extraction in a worker. The spec sets
-// it at three times the measured p99 extraction time, at most 10 s: with a
-// longer deadline a burst of hanging messages would hold every slot.
-const ExtractTimeout = 10 * time.Second
+// ExtractTimeout bounds one message's extraction in a worker: three times the
+// measured p99 (1.14 s for 200 messages up to the 25 MiB attachment cap on a
+// 2-vCPU host), rounded up. It stays under the 5 s hold budget on purpose: a
+// hanging message must end as an incomplete scan before its hold expires,
+// because expired holds count toward the hold bypass, which stops scanning
+// all mail for minutes. A crafted slow message that ends incomplete gains an
+// attacker nothing an encrypted archive does not already give.
+const ExtractTimeout = 4 * time.Second
 
 // extractTimeout is a seam for tests.
 var extractTimeout = ExtractTimeout
