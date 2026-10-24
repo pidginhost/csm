@@ -248,6 +248,18 @@ func TestExtractWorkerCrash(t *testing.T) {
 	}
 }
 
+// Crafted mail that kills workers must not open the breaker: a refused
+// extraction would deliver the next, unrelated message unscanned.
+func TestExtractCrashesDoNotOpenBreaker(t *testing.T) {
+	e := extractorFor(t, "crash")
+	for i := range workerproc.ConsecutiveFailureLimit + 2 {
+		h, d := spoolPair(t, "x", []string{"user@example.com"}, mailPart{"a.bin", []byte("x")})
+		if _, err := e.Extract(context.Background(), 0, h, d, testLimits()); workerproc.FailureReason(err) != workerproc.ReasonCrash {
+			t.Fatalf("extraction %d = %v, want a crash on a fresh worker", i, err)
+		}
+	}
+}
+
 func TestExtractQueuePublication(t *testing.T) {
 	e := extractorFor(t, "")
 	h, d := spoolPair(t, "x", []string{"user@example.com"}, mailPart{"a.bin", []byte("x")})

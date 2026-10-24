@@ -120,6 +120,11 @@ type Config struct {
 	// OnFailure is told of every counted failure, with the supervisor lock
 	// held: it must not block. Optional.
 	OnFailure func(reason string, err error)
+	// BreakOnSpawnOnly lets only failed starts open the breaker. It is for
+	// workers whose callers cannot skip a refused request: there the breaker
+	// would let hostile input that kills a few workers switch the worker off
+	// for unrelated requests. Each request then costs at most one spawn.
+	BreakOnSpawnOnly bool
 }
 
 // Check validates a reply. err rejects it: the worker is killed and the
@@ -406,8 +411,10 @@ func (s *Supervisor) callLocked(ctx context.Context, req Frame, fds []*os.File, 
 // past the limit -- a failed trial request included -- is what makes a
 // persistently broken host retry once per cooldown instead of once per file.
 func (s *Supervisor) recordFailureLocked(f failure) {
-	s.consecutive++
-	s.rearmBreakerLocked()
+	if !s.cfg.BreakOnSpawnOnly || f.reason == ReasonSpawn {
+		s.consecutive++
+		s.rearmBreakerLocked()
+	}
 	if s.kills == nil {
 		s.kills = make(map[string]uint64)
 	}

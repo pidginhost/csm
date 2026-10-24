@@ -634,7 +634,7 @@ email_av:
   #   worker crashed or exited    "parse worker crashed"
   #   reply failed validation     "parse worker reply rejected"
   #   worker unit cannot start    "parse isolation unavailable"
-  #   worker failing repeatedly   "parse worker failing repeatedly"
+  #   unit keeps failing to start "parse worker failing repeatedly"
   # The first four raise email_av_parse_worker_failed, at most once a minute;
   # a rejected reply also raises a Critical email_av_parse_worker_rejected.
   # The last two raise a Critical email_av_isolation_unavailable. Each

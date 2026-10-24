@@ -1239,6 +1239,11 @@ Some errors are not worker failures and never count toward the breaker:
 - PHP parser panics reported in a valid reply, which count as lost requests
   but do not replace the worker.
 
+`Config.BreakOnSpawnOnly` narrows the breaker to failed starts. The mail
+parse workers set it: a refused extraction delivers mail unscanned under
+`fail_mode: open`, so crafted mail that kills workers must not open the
+breaker for unrelated messages. Each message then costs at most one spawn.
+
 A known limit: when the daemon is at its descriptor limit, the kernel drops
 descriptors a reply carries. That looks the same as a worker sending too
 many, so it counts as a worker failure.

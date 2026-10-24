@@ -57,6 +57,9 @@ func NewExtractor(cfg ExtractorConfig) (*Extractor, error) {
 			MaxJobs:     1000,
 			IdleTimeout: 10 * time.Minute,
 			OnFailure:   cfg.OnFailure,
+			// A refused extraction delivers mail unscanned under the open
+			// fail mode, so crafted mail must not be able to open the breaker.
+			BreakOnSpawnOnly: true,
 		}
 	}})
 	if err != nil {
