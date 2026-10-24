@@ -17,6 +17,7 @@ func TestParseSinglePart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseSpoolMessage failed: %v", err)
 	}
+	defer result.Close()
 
 	if result.From != "sender@example.com" {
 		t.Errorf("From = %q, want %q", result.From, "sender@example.com")
@@ -44,6 +45,7 @@ func TestParseMultipartWithAttachment(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseSpoolMessage failed: %v", err)
 	}
+	defer result.Close()
 
 	if result.From != "sender@external.com" {
 		t.Errorf("From = %q, want %q", result.From, "sender@external.com")
@@ -71,11 +73,6 @@ func TestParseMultipartWithAttachment(t *testing.T) {
 	if len(data) == 0 {
 		t.Error("temp file should have decoded content")
 	}
-
-	// Cleanup
-	for _, p := range result.Parts {
-		_ = os.Remove(p.TempPath)
-	}
 }
 
 func TestParseMultipartUsesConfiguredTempDir(t *testing.T) {
@@ -89,11 +86,7 @@ func TestParseMultipartUsesConfiguredTempDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseSpoolMessage failed: %v", err)
 	}
-	defer func() {
-		for _, p := range result.Parts {
-			_ = os.Remove(p.TempPath)
-		}
-	}()
+	defer result.Close()
 
 	if len(result.Parts) != 1 {
 		t.Fatalf("Parts = %d, want 1", len(result.Parts))
@@ -113,6 +106,7 @@ func TestParseMultipartTempDirFailureMarksPartial(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseSpoolMessage failed: %v", err)
 	}
+	defer result.Close()
 
 	if !result.Partial {
 		t.Fatal("Partial = false, want true")
@@ -140,17 +134,13 @@ func TestParseLimitEnforcement(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseSpoolMessage failed: %v", err)
 	}
+	defer result.Close()
 
 	if len(result.Parts) != 0 {
 		t.Errorf("Parts = %d, want 0 (attachment should be skipped)", len(result.Parts))
 	}
 	if !result.Partial {
 		t.Error("Partial should be true when attachment exceeds limit")
-	}
-
-	// Cleanup
-	for _, p := range result.Parts {
-		_ = os.Remove(p.TempPath)
 	}
 }
 
@@ -162,6 +152,7 @@ func TestParseOutboundDirection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseSpoolMessage failed: %v", err)
 	}
+	defer result.Close()
 
 	// simple-H has no Received header, so outbound
 	if result.Direction != "outbound" {
@@ -177,6 +168,7 @@ func TestParseSinglePartAttachment(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseSpoolMessage failed: %v", err)
 	}
+	defer result.Close()
 
 	// Single application/pdf - should be extracted as an attachment
 	if len(result.Parts) != 1 {
@@ -203,11 +195,6 @@ func TestParseSinglePartAttachment(t *testing.T) {
 	if string(data) != wantPDF {
 		t.Errorf("decoded single-part content = %q, want %q", data, wantPDF)
 	}
-
-	// Cleanup
-	for _, p := range result.Parts {
-		_ = os.Remove(p.TempPath)
-	}
 }
 
 // MAIL-01: real Exim -H files prefix every RFC header with a decimal byte
@@ -225,11 +212,7 @@ func TestParseEximRealHeaderFormatDetected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseSpoolMessage failed: %v", err)
 	}
-	defer func() {
-		for _, p := range result.Parts {
-			_ = os.Remove(p.TempPath)
-		}
-	}()
+	defer result.Close()
 
 	if result.From != "sender@external.com" {
 		t.Errorf("From = %q, want sender@external.com (length+flag prefix not parsed)", result.From)
@@ -350,6 +333,7 @@ func TestParseSinglePartTempDirFailureMarksPartial(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseSpoolMessage failed: %v", err)
 	}
+	defer result.Close()
 
 	if !result.Partial {
 		t.Fatal("Partial = false, want true")
@@ -370,6 +354,7 @@ func TestParseSinglePartTextNotExtracted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseSpoolMessage failed: %v", err)
 	}
+	defer result.Close()
 
 	// text/plain body should NOT be extracted as an attachment
 	if len(result.Parts) != 0 {
@@ -407,6 +392,7 @@ func TestParseSpoolMessageCapsLargeBodyRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseSpoolMessage failed: %v", err)
 	}
+	defer result.Close()
 	if !result.Partial {
 		t.Fatal("expected parser to mark oversized body as partial")
 	}

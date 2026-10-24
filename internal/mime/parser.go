@@ -76,7 +76,8 @@ type Limits struct {
 	// another local uid can race the scanner via symlink swaps.
 	TempDir string
 	// PartSink creates the file each part is written to. Nil stages parts
-	// with os.CreateTemp in TempDir.
+	// with os.CreateTemp in TempDir. The parser owns any returned file, even
+	// on error; a custom sink remains responsible for removing named files.
 	PartSink func(prefix string) (*os.File, error)
 	// MaxParts caps how many parts are staged; 0 means no cap. Each staged
 	// part holds an open file, so a process with a descriptor limit needs it.
@@ -100,14 +101,17 @@ func DefaultLimits() Limits {
 }
 
 // Close closes every part's file and removes the ones the default sink
-// staged on disk.
+// staged on disk. Repeated calls do nothing.
 func (r *ExtractionResult) Close() {
-	for _, p := range r.Parts {
+	for i := range r.Parts {
+		p := &r.Parts[i]
 		if p.File != nil {
 			_ = p.File.Close()
+			p.File = nil
 		}
 		if p.TempPath != "" {
 			_ = os.Remove(p.TempPath)
+			p.TempPath = ""
 		}
 	}
 }
@@ -699,7 +703,7 @@ func extractMultipartNested(r io.Reader, boundary string, limits Limits, result 
 // a member of an attached archive) while max_archive_depth allows it. Past the
 // limit its members were never read, so the message is not fully scanned.
 func expandArchive(f *os.File, size int64, rawName, safeName string, limits Limits, result *ExtractionResult, totalSize *int64, depth int) {
-	kind := archiveKindForAttachmentName(rawName, safeName)
+	kind := archiveKindForAttachmentName(rawName)
 	if kind == "" {
 		return
 	}
@@ -1046,6 +1050,15 @@ const maxAttachmentNameBytes = 255
 // caps it at 255 bytes before the name reaches logs, alerts, or JSON
 // responses.
 func SanitizeAttachmentName(name string) string {
+	name = strings.TrimSpace(TruncateUTF8(strings.ToValidUTF8(attachmentBaseName(name), "\uFFFD"), maxAttachmentNameBytes))
+	switch name {
+	case "", ".", "..", "/":
+		return "_unnamed_"
+	}
+	return name
+}
+
+func attachmentBaseName(name string) string {
 	name = strings.ReplaceAll(name, "\\", "/")
 	name = filepath.Base(name)
 	// Truncate at the first control character so a crafted entry
@@ -1053,11 +1066,6 @@ func SanitizeAttachmentName(name string) string {
 	// record past the visible filename.
 	if i := strings.IndexFunc(name, unicode.IsControl); i >= 0 {
 		name = name[:i]
-	}
-	name = strings.TrimSpace(TruncateUTF8(strings.ToValidUTF8(name, "\uFFFD"), maxAttachmentNameBytes))
-	switch name {
-	case "", ".", "..", "/":
-		return "_unnamed_"
 	}
 	return name
 }
@@ -1079,6 +1087,10 @@ func TruncateUTF8(s string, max int) string {
 func (l Limits) createPart(prefix string) (f *os.File, tempPath string, err error) {
 	if l.PartSink != nil {
 		f, err = l.PartSink(prefix)
+		if err != nil && f != nil {
+			discardPart(f, "")
+			f = nil
+		}
 		return f, "", err
 	}
 	f, err = os.CreateTemp(l.TempDir, prefix)
@@ -1105,8 +1117,10 @@ func partsFull(limits Limits, result *ExtractionResult) bool {
 	return true
 }
 
-func archiveKindForAttachmentName(rawName, safeName string) string {
-	for _, name := range []string{safeName, archiveDetectionName(rawName)} {
+func archiveKindForAttachmentName(rawName string) string {
+	// The display cap can remove a real extension or leave a false one at
+	// the cut. Classify the full name with the same control-byte handling.
+	for _, name := range []string{strings.TrimSpace(attachmentBaseName(rawName)), archiveDetectionName(rawName)} {
 		lower := strings.ToLower(name)
 		switch {
 		case strings.HasSuffix(lower, ".zip"):

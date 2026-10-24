@@ -41,6 +41,7 @@ func TestTransferRecoveryStagesWholePayload(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
+					t.Cleanup(result.Close)
 				} else {
 					result = parseSpoolWithCleanup(t, `multipart/mixed; boundary="outer"`, multipartWithEncodedPart("outer", tc.cte, tc.encoded))
 				}

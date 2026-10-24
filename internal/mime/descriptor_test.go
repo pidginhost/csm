@@ -38,11 +38,12 @@ func openPair(t *testing.T, hPath, dPath string) (*os.File, *os.File) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = h.Close() })
 	d, err := os.Open(dPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = h.Close(); _ = d.Close() })
+	t.Cleanup(func() { _ = d.Close() })
 	return h, d
 }
 
@@ -132,10 +133,11 @@ func TestParseSpoolFilesUsesPartSink(t *testing.T) {
 func TestParseSpoolFilesIgnoresSharedOffset(t *testing.T) {
 	pair := descriptorFixtures(t)["plain"]
 	h, d := openPair(t, pair[0], pair[1])
-	if _, err := d.Seek(0, io.SeekEnd); err != nil {
+	dOffset, err := d.Seek(0, io.SeekEnd)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.Seek(7, io.SeekStart); err != nil {
+	if _, err = h.Seek(7, io.SeekStart); err != nil {
 		t.Fatal(err)
 	}
 	res, err := ParseSpoolFiles(h, d, DefaultLimits())
@@ -145,6 +147,11 @@ func TestParseSpoolFilesIgnoresSharedOffset(t *testing.T) {
 	defer res.Close()
 	if len(res.Parts) != 1 || res.Parts[0].Filename != "invoice.pdf" || string(partBytes(t, res.Parts[0])) != "%PDF-1.4 test" {
 		t.Fatalf("parts = %+v", res.Parts)
+	}
+	for f, want := range map[*os.File]int64{h: 7, d: dOffset} {
+		if got, err := f.Seek(0, io.SeekCurrent); err != nil || got != want {
+			t.Fatalf("input offset = %d, %v; want %d", got, err, want)
+		}
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -27,24 +28,50 @@ func sleepFrame(ms int) Frame {
 }
 
 func TestPoolRunsSlotsInParallel(t *testing.T) {
-	p := testPool(t, 3, 5*time.Second, func(int) Launcher { return pairLauncher(t, sleepHandler) })
-	start := time.Now()
+	entered := make(chan int, 3)
+	release, unblock := context.WithCancel(context.Background())
+	defer unblock()
+	p := testPool(t, 3, 5*time.Second, func(slot int) Launcher {
+		payload, _ := json.Marshal(slot)
+		return pairLauncher(t, func(_ context.Context, _ Frame, _ []*os.File) (Frame, []*os.File) {
+			entered <- slot
+			<-release.Done()
+			return Frame{Payload: payload}, nil
+		})
+	})
 	var wg sync.WaitGroup
 	errs := make([]error, 3)
+	replies := make([]Frame, 3)
 	for slot := range 3 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, _, errs[slot] = p.Call(context.Background(), slot, sleepFrame(200), nil, okCheck)
+			replies[slot], _, errs[slot] = p.Call(context.Background(), slot, Frame{Op: "slot"}, nil, okCheck)
 		}()
 	}
-	wg.Wait()
-	if took := time.Since(start); took > 400*time.Millisecond {
-		t.Fatalf("three slots took %s; they did not run in parallel", took)
+	deadline := time.NewTimer(5 * time.Second)
+	defer deadline.Stop()
+	seen := make(map[int]bool)
+	for range 3 {
+		select {
+		case slot := <-entered:
+			if seen[slot] {
+				t.Fatalf("worker slot %d served two callers", slot)
+			}
+			seen[slot] = true
+		case <-deadline.C:
+			t.Fatal("workers did not all enter before any was released")
+		}
 	}
+	unblock()
+	wg.Wait()
 	for slot, st := range p.Stats() {
 		if errs[slot] != nil || st.Spawns != 1 {
 			t.Fatalf("slot %d: err %v stats %+v", slot, errs[slot], st)
+		}
+		var worker int
+		if err := json.Unmarshal(replies[slot].Payload, &worker); err != nil || worker != slot {
+			t.Fatalf("slot %d used worker %d: %v", slot, worker, err)
 		}
 	}
 	if p.Size() != 3 {

@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"compress/gzip"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -117,9 +116,7 @@ func TestDiscardedZipMembersSpendTheBudget(t *testing.T) {
 			t.Fatal("extraction went on after the decompressed budget was spent")
 		}
 	}
-	for _, p := range r.Parts {
-		_ = os.Remove(p.TempPath)
-	}
+	r.Close()
 	requireTempDirEmpty(t, limits.TempDir)
 }
 

@@ -75,11 +75,7 @@ func parseZipAttachment(t *testing.T, archive []byte) *ExtractionResult {
 	if err != nil {
 		t.Fatalf("ParseSpoolMessage: %v", err)
 	}
-	t.Cleanup(func() {
-		for _, part := range result.Parts {
-			_ = os.Remove(part.TempPath)
-		}
-	})
+	t.Cleanup(result.Close)
 	return result
 }
 

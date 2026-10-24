@@ -50,9 +50,7 @@ func TestZipInZipWithinDepthIsExpanded(t *testing.T) {
 	if !found {
 		t.Fatalf("inner member missing or unsanitised: %+v", r.Parts)
 	}
-	for _, p := range r.Parts {
-		_ = os.Remove(p.TempPath)
-	}
+	r.Close()
 	requireTempDirEmpty(t, limits.TempDir)
 }
 
@@ -102,6 +100,7 @@ func TestSinglePartZipNamedByDispositionIsExpanded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer r.Close()
 	var found bool
 	for _, p := range r.Parts {
 		found = found || (p.Filename == "x.txt" && p.Nested)
@@ -129,11 +128,7 @@ func TestNestedZipStopsAtSharedBudget(t *testing.T) {
 	var result ExtractionResult
 	var spent int64
 	extractZIPPath(t, path, "outer.zip", limits, &result, &spent, 1)
-	for _, part := range result.Parts {
-		if err := os.Remove(part.TempPath); err != nil {
-			t.Fatal(err)
-		}
-	}
+	result.Close()
 	requireTempDirEmpty(t, limits.TempDir)
 	if !result.Partial || !strings.Contains(result.PartialReason, "total extraction size") {
 		t.Fatalf("exhausted budget not reported: %+v", result)
@@ -177,11 +172,7 @@ func TestNestedTarEndMarkersSpendSharedBudget(t *testing.T) {
 			var result ExtractionResult
 			var spent int64
 			extractZIPPath(t, path, "outer.zip", limits, &result, &spent, 1)
-			for _, part := range result.Parts {
-				if err := os.Remove(part.TempPath); err != nil {
-					t.Fatal(err)
-				}
-			}
+			result.Close()
 			requireTempDirEmpty(t, limits.TempDir)
 			if spent != wantSpent || result.Partial != tc.partial {
 				t.Fatalf("spent=%d Partial=%v reason=%q; want spent=%d Partial=%v", spent, result.Partial, result.PartialReason, wantSpent, tc.partial)
@@ -205,11 +196,7 @@ func TestNestedZipUnreadDirectoryTailIsPartial(t *testing.T) {
 	limits.TempDir = t.TempDir()
 	body := buildMultipartBody("BOUND", "outer.zip", "application/zip", outer)
 	r := parseWithLimits(t, `multipart/mixed; boundary="BOUND"`, body, limits)
-	for _, part := range r.Parts {
-		if err := os.Remove(part.TempPath); err != nil {
-			t.Fatal(err)
-		}
-	}
+	r.Close()
 	requireTempDirEmpty(t, limits.TempDir)
 	if !r.Partial || !strings.Contains(r.PartialReason, `archive "inner.zip" could not be opened`) {
 		t.Fatalf("unread nested directory reported clean: Partial=%v reason=%q", r.Partial, r.PartialReason)
@@ -264,11 +251,7 @@ func TestNestedTarGzValidatesStreamAfterTarEnd(t *testing.T) {
 			limits.TempDir = t.TempDir()
 			body := buildMultipartBody("BOUND", "outer.zip", "application/zip", outer)
 			r := parseWithLimits(t, `multipart/mixed; boundary="BOUND"`, body, limits)
-			for _, part := range r.Parts {
-				if err := os.Remove(part.TempPath); err != nil {
-					t.Fatal(err)
-				}
-			}
+			r.Close()
 			requireTempDirEmpty(t, limits.TempDir)
 			if r.Partial != tc.partial {
 				t.Fatalf("Partial=%v reason=%q, want Partial=%v", r.Partial, r.PartialReason, tc.partial)
