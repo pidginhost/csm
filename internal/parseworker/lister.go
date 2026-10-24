@@ -105,7 +105,7 @@ func checkListing(ctx context.Context, fds []*os.File, zipSize int64, maxDirByte
 	}
 	// Seal checks precede even Stat: the size and every record must stay
 	// unchanged from validation through delivery to visit.
-	if err := checkListingSeals(fds[0]); err != nil {
+	if err := checkSealed(fds[0]); err != nil {
 		return 0, err
 	}
 	st, err := fds[0].Stat()
