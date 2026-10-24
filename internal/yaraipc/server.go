@@ -221,7 +221,10 @@ func dispatchScanFD(req Frame, fds []*os.File, h Handler) Frame {
 		return Frame{Error: fmt.Sprintf("decode scan_fd: %v", err)}
 	}
 	res, err := fh.ScanFD(fds[0], args)
-	return responseFrame(res, err)
+	if res.Matches == nil {
+		res.Matches = []Match{}
+	}
+	return responseFrame(scanFDResult{Matches: res.Matches}, err)
 }
 
 func dispatch(req Frame, h Handler) Frame {

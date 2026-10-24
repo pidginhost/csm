@@ -53,6 +53,12 @@ type ScanFDArgs struct {
 	MaxBytes int `json:"max_bytes"`
 }
 
+// scanFDResult requires an explicit matches array, including for clean scans.
+// An empty or unrelated worker reply must not stand in for a completed scan.
+type scanFDResult struct {
+	Matches []Match `json:"matches"`
+}
+
 // Frame is the envelope. Request frames carry an Op and typed args in
 // Payload; response frames carry the typed result (or an Error) in
 // Payload and leave Op empty.

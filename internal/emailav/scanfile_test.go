@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -77,7 +78,9 @@ func TestClamdScanStreamsFromFile(t *testing.T) {
 		got <- payload
 	}()
 	s := NewClamdScanner(socket)
-	v, err := s.Scan(partFile(t, "attachment bytes"))
+	p := partFile(t, "attachment bytes ignored suffix")
+	p.Size = int64(len("attachment bytes"))
+	v, err := s.Scan(p)
 	if err != nil || v.Infected {
 		t.Fatalf("Scan = %+v, %v", v, err)
 	}
@@ -88,6 +91,9 @@ func TestClamdScanStreamsFromFile(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("clamd got nothing")
+	}
+	if offset, err := p.File.Seek(0, io.SeekCurrent); err != nil || offset != 3 {
+		t.Fatalf("caller offset = %d, %v", offset, err)
 	}
 }
 
@@ -117,6 +123,19 @@ func TestOrchestratorScansPartFiles(t *testing.T) {
 	for _, r := range []*partRecorder{a, b} {
 		if len(r.parts) != 1 || r.parts[0].File != p.File || r.parts[0].Size != 4 {
 			t.Fatalf("engine %s got %+v", r.name, r.parts)
+		}
+	}
+}
+
+func TestClamdIncompletePartIsEngineError(t *testing.T) {
+	sock, stop := mockClamd(t, "stream: OK\n")
+	defer stop()
+	o := NewOrchestrator([]Scanner{NewClamdScanner(sock)}, 5*time.Second)
+	for _, size := range []int64{-1, 0, 5} {
+		p := partFile(t, "part")
+		res := o.ScanParts("msg", []emime.ExtractedPart{{Filename: "part", File: p.File, Size: size}}, false)
+		if res.Infected || !slices.Equal(res.ErroredEngines, []string{"clamav"}) || len(res.TimedOutEngines) != 0 {
+			t.Errorf("size %d: incomplete scan must error, got %+v", size, res)
 		}
 	}
 }

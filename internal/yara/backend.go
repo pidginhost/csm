@@ -63,6 +63,9 @@ type CheckedFDScanner interface {
 // result. A backend without the capability (in-process YARA) gets the bytes.
 // No name goes with them, so the archive-by-name skip does not apply.
 func ScanFileDescriptorChecked(b Backend, f *os.File, size int64) ([]Match, error) {
+	if size <= 0 {
+		return nil, fmt.Errorf("yara: invalid part size: %d", size)
+	}
 	if b == nil {
 		return nil, errors.New("yara: backend unavailable")
 	}
@@ -72,6 +75,9 @@ func ScanFileDescriptorChecked(b Backend, f *os.File, size int64) ([]Match, erro
 	data, err := io.ReadAll(io.NewSectionReader(f, 0, size))
 	if err != nil {
 		return nil, fmt.Errorf("yara: read part: %w", err)
+	}
+	if int64(len(data)) != size {
+		return nil, fmt.Errorf("yara: read part: got %d of %d bytes: %w", len(data), size, io.ErrUnexpectedEOF)
 	}
 	return ScanBytesChecked(b, "", data)
 }

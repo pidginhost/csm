@@ -2,6 +2,7 @@ package yara
 
 import (
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -69,5 +70,34 @@ func TestScanFileDescriptorCheckedFailsClosed(t *testing.T) {
 	}
 	if _, err := ScanFileDescriptorChecked(nil, fdPayload(t, "x"), 1); err == nil {
 		t.Fatal("nil backend scanned clean")
+	}
+}
+
+func TestScanFileDescriptorCheckedRejectsIncompletePart(t *testing.T) {
+	for _, size := range []int64{-1, 0, 5} {
+		b := &bytesBackend{}
+		if _, err := ScanFileDescriptorChecked(b, fdPayload(t, "part"), size); err == nil {
+			t.Errorf("size %d: incomplete scan succeeded", size)
+		}
+		if b.got != nil {
+			t.Errorf("size %d: scanned incomplete bytes %q", size, b.got)
+		}
+	}
+}
+
+func TestScanFileDescriptorCheckedPreservesOffsetAndLimit(t *testing.T) {
+	f := fdPayload(t, "PK\x03\x04data ignored suffix")
+	if _, err := f.Seek(5, io.SeekStart); err != nil {
+		t.Fatal(err)
+	}
+	b := &bytesBackend{}
+	if _, err := ScanFileDescriptorChecked(b, f, 8); err != nil {
+		t.Fatal(err)
+	}
+	if string(b.got) != "PK\x03\x04data" {
+		t.Fatalf("scanned %q", b.got)
+	}
+	if offset, err := f.Seek(0, io.SeekCurrent); err != nil || offset != 5 {
+		t.Fatalf("offset = %d, %v", offset, err)
 	}
 }

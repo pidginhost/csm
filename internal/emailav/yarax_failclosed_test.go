@@ -67,3 +67,13 @@ func TestYaraScanFDWorkerDownIsEngineError(t *testing.T) {
 type fdErrBackend struct{ checkedErrBackend }
 
 func (b *fdErrBackend) ScanFDChecked(*os.File, int64) ([]yara.Match, error) { return nil, b.err }
+
+func TestYaraIncompletePartIsEngineError(t *testing.T) {
+	b := &fakeBackend{ruleCount: 1}
+	o := NewOrchestrator([]Scanner{NewYaraXScanner(b)}, 5*time.Second)
+	p := partFile(t, "part")
+	res := o.ScanParts("msg", []emime.ExtractedPart{{Filename: "part", File: p.File, Size: p.Size + 1}}, false)
+	if res.Infected || !slices.Equal(res.ErroredEngines, []string{"yara-x"}) || len(res.TimedOutEngines) != 0 || len(b.scanned) != 0 {
+		t.Fatalf("incomplete scan must error before scanning, got %+v, scanned %q", res, b.scanned)
+	}
+}
