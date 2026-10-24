@@ -49,6 +49,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - Automatic mailbox suspension and its release commands now reach the right mailbox when the address holds a plus or percent sign.
 - Scanning a single account now finds a cPanel account whose home sits on an additional home partition instead of reporting it missing.
 - The dashboard's Accounts at Risk list now shows current findings, so a fixed or dismissed finding no longer keeps an account listed.
+- WordPress core files that differ from the official release only in line endings are no longer reported as modified.
 
 ## [4.6.0] - 2026-10-22
 
