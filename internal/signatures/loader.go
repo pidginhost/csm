@@ -16,17 +16,18 @@ import (
 
 // Rule represents a single malware detection rule loaded from an external file.
 type Rule struct {
-	Name            string   `yaml:"name"`
-	Description     string   `yaml:"description"`
-	Severity        string   `yaml:"severity"`         // "critical", "high", "warning"
-	Category        string   `yaml:"category"`         // "webshell", "backdoor", "phishing", "dropper", "exploit"
-	FileTypes       []string `yaml:"file_types"`       // [".php", ".html", "*"] - which extensions to scan
-	Patterns        []string `yaml:"patterns"`         // literal string patterns (case-insensitive match)
-	Regexes         []string `yaml:"regexes"`          // regex patterns (for complex matching)
-	ExcludePatterns []string `yaml:"exclude_patterns"` // if any match, rule is skipped (false positive reduction)
-	ExcludeRegexes  []string `yaml:"exclude_regexes"`  // regex exclusions
-	MinMatch        int      `yaml:"min_match"`        // minimum patterns that must match (default: 1)
-	RequireRegex    bool     `yaml:"require_regex"`    // if true, at least one regex must match in addition to min_match
+	Name            string      `yaml:"name"`
+	Description     string      `yaml:"description"`
+	Severity        string      `yaml:"severity"`         // "critical", "high", "warning"
+	Category        string      `yaml:"category"`         // "webshell", "backdoor", "phishing", "dropper", "exploit"
+	FileTypes       []string    `yaml:"file_types"`       // [".php", ".html", "*"] - which extensions to scan
+	Patterns        []string    `yaml:"patterns"`         // literal string patterns (case-insensitive match)
+	Regexes         []string    `yaml:"regexes"`          // regex patterns (for complex matching)
+	RegexPairs      []RegexPair `yaml:"regex_pairs"`      // each nearby pair counts as one regex match
+	ExcludePatterns []string    `yaml:"exclude_patterns"` // if any match, rule is skipped (false positive reduction)
+	ExcludeRegexes  []string    `yaml:"exclude_regexes"`  // regex exclusions
+	MinMatch        int         `yaml:"min_match"`        // minimum patterns that must match (default: 1)
+	RequireRegex    bool        `yaml:"require_regex"`    // if true, at least one regex must match in addition to min_match
 	// MaxFileBytes skips the rule for content larger than this many bytes
 	// (0 = no limit). MaxFileBytesExemptRegexes retain high-confidence
 	// structural matches above the bound. This bounds weak heuristics by size
@@ -36,6 +37,7 @@ type Rule struct {
 
 	// Populated by compile().
 	compiledRegexes                   []*compiledRegex
+	compiledRegexPairs                []compiledRegexPair
 	compiledExcludeRegexes            []*compiledRegex
 	compiledMaxFileBytesExemptRegexes []*compiledRegex
 }
@@ -291,6 +293,19 @@ func (r *Rule) compileShared(shared map[string]*compiledRegex) error {
 	if r.compiledRegexes, err = compileRuleRegexes(shared, r.Regexes, "invalid regex"); err != nil {
 		return err
 	}
+	r.compiledRegexPairs = nil
+	for _, pair := range r.RegexPairs {
+		if pair.First == "" || pair.Second == "" || pair.MaxDistance < 0 {
+			return fmt.Errorf("regex_pairs require two non-empty regexes and a non-negative max_distance")
+		}
+		compiled, compileErr := compileRuleRegexes(shared, []string{pair.First, pair.Second}, "invalid regex_pairs regex")
+		if compileErr != nil {
+			return compileErr
+		}
+		r.compiledRegexPairs = append(r.compiledRegexPairs, compiledRegexPair{
+			first: compiled[0], second: compiled[1], maxDistance: pair.MaxDistance,
+		})
+	}
 	if r.compiledExcludeRegexes, err = compileRuleRegexes(shared, r.ExcludeRegexes, "invalid exclude regex"); err != nil {
 		return err
 	}
@@ -412,6 +427,12 @@ func (s *Scanner) ScanContentWithSize(content []byte, fileExt string, contentSiz
 		for _, re := range rule.compiledRegexes {
 			if eval.match(re) {
 				matched = append(matched, re.String())
+				regexMatched = true
+			}
+		}
+		for _, pair := range rule.compiledRegexPairs {
+			if eval.matchPair(pair) {
+				matched = append(matched, fmt.Sprintf("%s near %s", pair.first.String(), pair.second.String()))
 				regexMatched = true
 			}
 		}

@@ -56,6 +56,7 @@ rules:
 - `file_types` - file extensions to match (or `["*"]` for all)
 - `patterns` - case-insensitive literal strings
 - `regexes` - regex patterns, compiled case-insensitively
+- `regex_pairs` - entries with `first`, `second` and `max_distance`; each pair counts as one regex match when its match starts are within that many bytes, in either order
 - `exclude_patterns` - literal patterns that suppress a match (false positive reduction)
 - `exclude_regexes` - regex patterns that suppress a match
 - `min_match` - minimum total number of matching literal and regex entries; each entry counts once
@@ -70,6 +71,12 @@ such as function names: a regex with no fixed text of two or more characters
 runs over every file of its types, and realtime pays that cost on each write.
 Required text can include escaped bytes such as `\x00`; these remain part of
 the literal when checking whether a file could match.
+
+Regex pairs compare the ordered, non-overlapping matches of two expressions.
+Both expressions must be non-empty and compile; `max_distance` must be
+non-negative. A distance of zero requires both matches to start at the same
+byte. Use pairs for nearby evidence instead of joining expressions with a
+wide wildcard gap, which can slow finding re-checks on large files.
 
 When a regex includes a literal listed in `patterns`, the same content can
 satisfy both entries. Use independent entries when a rule needs multiple pieces
@@ -148,10 +155,13 @@ superglobal names. A regression check guards against expression drift.
 
 The archive loader signature reports PHP that runs code read out of an
 archive, in both engines. A ZipArchive member read, or a `zip://` or `phar://`
-path, must sit inside an `eval`, `assert` or `create_function` call, share the
-file with an `eval` that leaves PHP mode first, or follow a password set on the
-archive and precede `eval` of a variable. Extracting archives to disk, parsing
-data members and template engines evaluating local text are not evidence.
+path, must sit inside an `eval`, `assert` or `create_function` call, lie
+within 1000 bytes of an `eval` that leaves PHP mode first, before or after it
+(measured between match starts in both engines),
+or follow a password set on the archive and precede `eval` of a variable.
+Extracting archives to disk, parsing data members and template engines
+evaluating local text are not evidence, nor is a bundled tool such as a
+`.phar` whose stub names an archive path far from a template engine's `eval`.
 Including a `zip://` path is reported with or without parentheses. These are
 source-text heuristics, not PHP dataflow analysis. Execution arguments stop
 at the end of their call while allowing balanced prefix calls. Assertions
@@ -160,6 +170,19 @@ passed to `create_function` remain source text, as described in the
 [PHP manual](https://www.php.net/manual/en/function.create-function.php).
 Regression fixtures run through both engines, including mixed-case calls and
 ordinary archive and template code.
+
+Three signatures report code an injection kit leaves in WordPress files, in
+both engines. The first-line stub signature matches only a file that opens
+with an array holding an empty string followed by an `isset` test with an
+empty body. The line does nothing, outlives cleaners that strip only the
+payload, and no generator writes it. The visitor logger signature needs a site
+or host hash, cookie handling, an append-mode `fopen` and a visitor address
+read, each starting within 1200 bytes of a lookup of the upload temp
+directory. The hook injector signature needs `add_action` or `add_filter`
+called with a hook name returned by a call on an encoded literal, starting
+within 4096 bytes of both base64 decoding and a byte-wise XOR loop. Plugins that name hooks in plain
+text, keep caches in the temp directory or mask licence keys with XOR are not
+evidence.
 
 ### Legacy callback parser follow-up
 

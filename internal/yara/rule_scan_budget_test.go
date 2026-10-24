@@ -278,18 +278,104 @@ func TestRuleScanBudgetDownloadAndMinerLines(t *testing.T) {
 }
 
 // The archive loader rule chains a password call, a member read and an
-// execution call across bounded gaps, and checks a bounded span after every
-// execution call. Dense runs of each piece must not multiply into those spans.
+// execution call across bounded gaps, checks a bounded span after every
+// execution call, and looks for a member read near every HTML-mode eval.
+// Dense runs of each piece must not multiply into those spans.
 func TestRuleScanBudgetArchiveLoader(t *testing.T) {
 	requireRuleScanBudget(t, "backdoor_archive_loader", map[string][]byte{
-		"open_assert_calls.php":   []byte("<?php\n" + strings.Repeat("assert(", 150_000)),
-		"nested_assert_reads.php": []byte("<?php\n" + strings.Repeat("assert(gzinflate($z->getFromName('data')) !== false); ", 21_000)),
-		"function_parameters.php": []byte("<?php\n" + strings.Repeat("create_function('$x, ' . $z->getFromName('params'), 'return 1;'); ", 17_000)),
-		"protected_reads.php":     []byte("<?php\n" + strings.Repeat("$z->setPassword($k); $s = $z->getFromName('a'); ", 20_000)),
-		"member_reads.php":        []byte("<?php\n" + strings.Repeat("$p[] = $z->getFromIndex($i); ", 35_000)),
-		"zip_wrapper_paths.php":   []byte("<?php\n" + strings.Repeat("'zip://' ", 125_000)),
-		"open_eval_calls.php":     []byte("<?php\n" + strings.Repeat("eval(", 200_000)),
-		"html_mode_evals.php":     []byte("<?php\n" + strings.Repeat("eval('?>' . $t); ", 60_000)),
-		"read_then_evals.php":     []byte("<?php\n$z->setPassword($k); $s = $z->getFromName('a');\n" + strings.Repeat("eval(", 200_000)),
+		"open_assert_calls.php":    []byte("<?php\n" + strings.Repeat("assert(", 150_000)),
+		"nested_assert_reads.php":  []byte("<?php\n" + strings.Repeat("assert(gzinflate($z->getFromName('data')) !== false); ", 21_000)),
+		"function_parameters.php":  []byte("<?php\n" + strings.Repeat("create_function('$x, ' . $z->getFromName('params'), 'return 1;'); ", 17_000)),
+		"protected_reads.php":      []byte("<?php\n" + strings.Repeat("$z->setPassword($k); $s = $z->getFromName('a'); ", 20_000)),
+		"member_reads.php":         []byte("<?php\n" + strings.Repeat("$p[] = $z->getFromIndex($i); ", 35_000)),
+		"zip_wrapper_paths.php":    []byte("<?php\n" + strings.Repeat("'zip://' ", 125_000)),
+		"open_eval_calls.php":      []byte("<?php\n" + strings.Repeat("eval(", 200_000)),
+		"html_mode_evals.php":      []byte("<?php\n" + strings.Repeat("eval('?>' . $t); ", 60_000)),
+		"read_html_mode_pairs.php": []byte("<?php\n" + strings.Repeat("$s = $z->getFromName('a'); eval('?>' . $s); ", 23_000)),
+		"html_mode_far_from_reads.php": []byte("<?php\n" + strings.Repeat("eval('?>' . $t); ", 30_000) +
+			strings.Repeat(" ", 2_000) + strings.Repeat("$p[] = $z->getFromIndex($i); ", 17_000)),
+		"read_then_evals.php": []byte("<?php\n$z->setPassword($k); $s = $z->getFromName('a');\n" + strings.Repeat("eval(", 200_000)),
+	})
+}
+
+// The image rule looks for a code construct after every PHP opening tag. Dense
+// tags followed by constructs just outside the window must not multiply.
+func TestRuleScanBudgetPHPInImage(t *testing.T) {
+	png := "\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR"
+	requireRuleScanBudget(t, "backdoor_php_in_image", map[string][]byte{
+		"dense_openers.png":          []byte(png + strings.Repeat("<?= ", 250_000)),
+		"dense_sinks.png":            []byte(png + strings.Repeat(" system(", 125_000)),
+		"openers_far_from_sinks.png": []byte(png + strings.Repeat("<?= ", 120_000) + strings.Repeat(" ", 70_000) + strings.Repeat(" system(", 60_000)),
+		"sinks_before_openers.png":   []byte(png + strings.Repeat(" system(", 60_000) + strings.Repeat("<?= ", 120_000)),
+	})
+}
+
+// The kit marker rules anchor on short, frequent tokens. Dense runs of each
+// token, and pairs just outside their windows, must not multiply.
+func TestRuleScanBudgetKitMarkers(t *testing.T) {
+	far := strings.Repeat(" ", 5_000)
+	requireRuleScanBudget(t, "backdoor_first_line_stub", map[string][]byte{
+		"repeated_stubs.php": []byte(strings.Repeat("<?php $abc_defg = ['']; if(isset($abc_defg['key'])) {} ", 18_000)),
+		"open_tags.php":      []byte(strings.Repeat("<?php $a = [''", 70_000)),
+	})
+	requireRuleScanBudget(t, "backdoor_visitor_ip_logger", map[string][]byte{
+		"temp_dir_lookups.php": []byte("<?php\n" + strings.Repeat("ini_get('upload_tmp_dir'); ", 40_000)),
+		"lookups_far_from_hashes.php": []byte("<?php\n" + strings.Repeat("ini_get('upload_tmp_dir'); ", 20_000) + far +
+			strings.Repeat("md5($_SERVER['HTTP_HOST']); fopen($d . $k, 'a'); ", 10_000)),
+		"site_cookie_markers.php": []byte("<?php\n" + strings.Repeat(
+			"$key = md5($_SERVER['HTTP_HOST']); isset($_COOKIE[$key]); ", 16_000)),
+		"visitor_append_markers.php": []byte("<?php\n" + strings.Repeat(
+			"$ip = $_SERVER['REMOTE_ADDR']; fopen($dir . $key, 'ab'); ", 16_000)),
+		"open_fopen_calls.php": []byte("<?php\n" + strings.Repeat("fopen($dir . $name . $x . $y . $z", 30_000)),
+	})
+	requireRuleScanBudget(t, "backdoor_obfuscated_hook_injector", map[string][]byte{
+		"decoded_hooks.php":   []byte("<?php\n" + strings.Repeat("add_action(d('Y2pqcWB3V1A='), 'f'); ", 28_000)),
+		"base64_decoders.php": []byte("<?php\n" + strings.Repeat("$s = base64_decode($s); ", 40_000)),
+		"hooks_far_from_xor.php": []byte("<?php\n" + strings.Repeat("add_action(d('Y2pqcWB3V1A='), 'f'); ", 14_000) + far +
+			strings.Repeat("$s = base64_decode($s); $s[$i] = chr(ord($s[$i]) ^ $k); ", 10_000)),
+	})
+}
+
+// Both lists at YARA-X's default match cap, every construct just outside the
+// window, so the loop must visit every opening tag without a match.
+func TestRuleScanBudgetPHPInImageMatchCap(t *testing.T) {
+	content := []byte("\x89PNG\r\n\x1a\n" + strings.Repeat("<?= ", 1_000_001) +
+		strings.Repeat(" ", 70_000) + strings.Repeat(" system(", 1_000_001))
+	rules := shippedRule(t, "backdoor_php_in_image")
+	defer rules.Destroy()
+	scanner := yara_x.NewScanner(rules)
+	defer scanner.Destroy()
+	scanner.SetTimeout(scanBudgetTimeout)
+	result, err := scanner.Scan(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.MatchingRules()) != 0 {
+		t.Fatal("constructs outside every window must not match")
+	}
+	requireRuleScanBudget(t, "backdoor_php_in_image", map[string][]byte{
+		"saturated_disjoint_matches.png": content,
+	})
+}
+
+// Exercise the range lookup with both match lists at YARA-X's default cap.
+// No pair qualifies, so the condition must examine the entire eval list.
+func TestRuleScanBudgetArchiveLoaderMatchCap(t *testing.T) {
+	content := []byte("<?php\n" + strings.Repeat("eval('?>' . $t); ", 1_000_001) +
+		strings.Repeat(" ", 2000) + strings.Repeat("'zip://' ", 1_000_001))
+	rules := shippedRule(t, "backdoor_archive_loader")
+	defer rules.Destroy()
+	scanner := yara_x.NewScanner(rules)
+	defer scanner.Destroy()
+	scanner.SetTimeout(scanBudgetTimeout)
+	result, err := scanner.Scan(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.MatchingRules()) != 0 {
+		t.Fatal("disjoint matches must traverse the loop without reporting a pair")
+	}
+	requireRuleScanBudget(t, "backdoor_archive_loader", map[string][]byte{
+		"saturated_disjoint_matches.php": content,
 	})
 }

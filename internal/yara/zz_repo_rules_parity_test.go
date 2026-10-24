@@ -38,6 +38,7 @@ func TestRepositoryBackdoorRulesMatchScannerParity(t *testing.T) {
 		absentYaraRule string
 		ext            string
 		want           bool
+		wantCategory   string
 		sample         string
 	}{
 		{
@@ -419,6 +420,162 @@ final class Environment {
         eval('?>' . $this->compileSource($stream));
     }
 }`,
+		},
+		{
+			// A bundled tool keeps many libraries in one file: the archive
+			// path in its stub and a template cache's HTML-mode eval are
+			// unrelated code far apart.
+			name: "bundled tool with an archive stub far from a template eval",
+			rule: "backdoor_archive_loader",
+			sample: "<?php\nPhar::mapPhar('tool.phar');\nrequire 'phar://tool.phar/boot.php';\n__HALT_COMPILER(); ?>\n" +
+				strings.Repeat("<?php\nclass Util { public function size($v) { return strlen($v); } }\n", 40) +
+				"<?php\nclass TemplateCache { public function load($key, $code) { eval('?>' . $code); } }\n",
+		},
+		{
+			name: "HTML-mode eval helper before the archive member read",
+			rule: "backdoor_archive_loader",
+			want: true,
+			sample: `<?php
+function run_cached($src) { eval('?>' . $src); }
+$a = new ZipArchive();
+$a->open('cache.bin');
+run_cached($a->getFromName('main.php'));`,
+		},
+		// backdoor_first_line_stub: an injection kit prepends a line that does
+		// nothing to every file it patches. Only the file's first bytes count.
+		{
+			name:         "kit stub on the first line of a patched file",
+			rule:         "backdoor_first_line_stub",
+			want:         true,
+			wantCategory: "backdoor",
+			sample: `<?php $array_walk_qmzt  =  [''];  if(isset($array_walk_qmzt['str_pad_kx']))  {} 
+/**
+ * Feed cache class.
+ */
+class Example_Feed_Cache {}`,
+		},
+		{
+			name:         "kit stub with double quotes and upper-case keywords",
+			rule:         "backdoor_first_line_stub",
+			want:         true,
+			wantCategory: "backdoor",
+			sample:       "<?PHP $Ucfirst_Abcd = [\"\"]; IF (ISSET($Ucfirst_Abcd[\"key_1\"])) { }\necho 1;",
+		},
+		{
+			name: "same shape later in the file",
+			rule: "backdoor_first_line_stub",
+			sample: `<?php
+// configuration
+$defaults = ['']; if(isset($defaults['mode'])) {}`,
+		},
+		{
+			name:   "default array with a real isset branch",
+			rule:   "backdoor_first_line_stub",
+			sample: `<?php $defaults = ['']; if (isset($defaults['mode'])) { $mode = $defaults['mode']; }`,
+		},
+		// backdoor_visitor_ip_logger: a cookie named after a hash of the site
+		// and visitor addresses appended to a file in the upload temp directory.
+		{
+			name:         "admin visitor address logger",
+			rule:         "backdoor_visitor_ip_logger",
+			want:         true,
+			wantCategory: "backdoor",
+			sample: `<?php
+$seen = md5(md5($_SERVER['DOCUMENT_ROOT']));
+if (!isset($_COOKIE[$seen])) {
+    setcookie($seen, '1', 0, '/');
+    $dir = ini_get('upload_tmp_dir');
+    if (empty($dir)) { $dir = '/tmp/'; }
+    $ip = $_SERVER['REMOTE_ADDR'];
+    if (is_writable($dir)) { $fp = fopen($dir . '/' . $seen, "a"); fputs($fp, "\n" . $ip); fclose($fp); }
+}
+require_once __DIR__ . '/admin.php';`,
+		},
+		{
+			name: "host hashed cache key and temp directory lookup",
+			rule: "backdoor_visitor_ip_logger",
+			sample: `<?php
+function example_cache_dir() {
+    $key = md5($_SERVER['HTTP_HOST']);
+    $dir = ini_get('upload_tmp_dir');
+    return rtrim($dir ? $dir : sys_get_temp_dir(), '/') . '/cache-' . $key;
+}`,
+		},
+		{
+			name: "debug log in the temp directory",
+			rule: "backdoor_visitor_ip_logger",
+			sample: `<?php
+function example_debug_log($line) {
+    $dir = ini_get('upload_tmp_dir');
+    $fp = fopen($dir . '/example-debug.log', 'a');
+    fwrite($fp, $line . "\n");
+    fclose($fp);
+}`,
+		},
+		{
+			name: "site-keyed cache written in the temp directory",
+			rule: "backdoor_visitor_ip_logger",
+			sample: `<?php
+function example_write_cache($value) {
+    $key = md5($_SERVER['HTTP_HOST']);
+    $dir = ini_get('upload_tmp_dir');
+    $fp = fopen($dir . '/cache-' . $key, 'ab');
+    fwrite($fp, serialize($value));
+    fclose($fp);
+}`,
+		},
+		{
+			name: "site hash and temp log far apart in a bundle",
+			rule: "backdoor_visitor_ip_logger",
+			sample: "<?php\n$key = md5($_SERVER['HTTP_HOST']);\n" + strings.Repeat("// filler line for an unrelated library\n", 80) +
+				"$dir = ini_get('upload_tmp_dir');\n" + strings.Repeat("// filler line for an unrelated library\n", 80) +
+				"$fp = fopen($dir . '/trace.log', 'a');\n",
+		},
+		{
+			name:         "logger signals around separate temp directory lookups",
+			rule:         "backdoor_visitor_ip_logger",
+			want:         true,
+			wantCategory: "backdoor",
+			sample: "<?php\n$key = md5($_SERVER['HTTP_HOST']); isset($_COOKIE[$key]);\n" +
+				"$dir = ini_get('upload_tmp_dir');\n" + strings.Repeat("// unrelated bundled code\n", 120) +
+				"$dir = ini_get('upload_tmp_dir');\n$fp = fopen($dir . '/' . $key, 'ab');\n" +
+				"fwrite($fp, $_SERVER['REMOTE_ADDR']);\n",
+		},
+		// backdoor_obfuscated_hook_injector: the hook name itself goes through
+		// a base64 and XOR decoder defined beside the registration.
+		{
+			name:         "footer hook name decoded beside an XOR decoder",
+			rule:         "backdoor_obfuscated_hook_injector",
+			want:         true,
+			wantCategory: "backdoor",
+			sample: `<?php
+function qz_unpack($s, $k) {
+    $s = base64_decode($s);
+    for ($i = 0; $i < strlen($s); $i++) { $s[$i] = chr(ord($s[$i]) ^ $k); }
+    return $s;
+}
+function qz_footer() { echo get_option('qz_banner'); }
+add_action( qz_unpack('Y2pqcWB3V1A=', 5) , "qz_footer" );`,
+		},
+		{
+			name: "plain hook beside a licence XOR helper",
+			rule: "backdoor_obfuscated_hook_injector",
+			sample: `<?php
+function example_mask($s, $k) { for ($i = 0; $i < strlen($s); $i++) { $s[$i] = chr(ord($s[$i]) ^ ord($k[$i % strlen($k)])); } return $s; }
+add_action('init', 'example_register');`,
+		},
+		{
+			name: "derived plain hook beside a licence XOR helper",
+			rule: "backdoor_obfuscated_hook_injector",
+			sample: `<?php
+function example_mask($s, $k) { for ($i = 0; $i < strlen($s); $i++) { $s[$i] = chr(ord($s[$i]) ^ ord($k[$i % strlen($k)])); } return $s; }
+function example_hook($suffix) { return 'example_' . $suffix; }
+add_action(example_hook('plugininit'), 'example_register');`,
+		},
+		{
+			name:   "hook name from a constant without a decoder",
+			rule:   "backdoor_obfuscated_hook_injector",
+			sample: `<?php add_action( constant( 'EXAMPLEHOOK' ), 'example_boot' );`,
 		},
 		{
 			name:     "mixed-case cron downloader",
@@ -1958,7 +2115,8 @@ assert(base64_decode('ZWNobyAiaGVsbG8iOw==')); // ionCube encoded`,
 			if yaraRule == "" {
 				yaraRule = tc.rule
 			}
-			yamlHit := hasSignatureRule(yamlScanner.ScanContent([]byte(tc.sample), ext), tc.rule)
+			yamlMatches := yamlScanner.ScanContent([]byte(tc.sample), ext)
+			yamlHit := hasSignatureRule(yamlMatches, tc.rule)
 			yaraMatches := yaraScanner.ScanBytes([]byte(tc.sample))
 			yaraHit := hasRepositoryYaraRule(yaraMatches, yaraRule)
 			if yamlHit != yaraHit {
@@ -1966,6 +2124,14 @@ assert(base64_decode('ZWNobyAiaGVsbG8iOw==')); // ionCube encoded`,
 			}
 			if yamlHit != tc.want {
 				t.Errorf("%s outcome = %t, want %t", tc.rule, yamlHit, tc.want)
+			}
+			if tc.wantCategory != "" {
+				if category, ok := signatureRuleCategory(yamlMatches, tc.rule); !ok || category != tc.wantCategory {
+					t.Errorf("%s category = %q, want %q", tc.rule, category, tc.wantCategory)
+				}
+				if category, ok := repositoryYaraRuleCategory(yaraMatches, yaraRule); !ok || category != tc.wantCategory {
+					t.Errorf("%s category = %q, want %q", yaraRule, category, tc.wantCategory)
+				}
 			}
 			if tc.absentYaraRule != "" && hasRepositoryYaraRule(yaraMatches, tc.absentYaraRule) {
 				t.Errorf("%s unexpectedly also matched %s", tc.rule, tc.absentYaraRule)
@@ -2588,6 +2754,15 @@ func hasSignatureRule(matches []signatures.Match, name string) bool {
 	return false
 }
 
+func signatureRuleCategory(matches []signatures.Match, name string) (string, bool) {
+	for _, match := range matches {
+		if match.RuleName == name {
+			return match.Category, true
+		}
+	}
+	return "", false
+}
+
 func hasRepositoryYaraRule(matches []csmyara.Match, name string) bool {
 	for _, match := range matches {
 		if match.RuleName == name {
@@ -2595,4 +2770,13 @@ func hasRepositoryYaraRule(matches []csmyara.Match, name string) bool {
 		}
 	}
 	return false
+}
+
+func repositoryYaraRuleCategory(matches []csmyara.Match, name string) (string, bool) {
+	for _, match := range matches {
+		if match.RuleName == name {
+			return match.Meta["category"], true
+		}
+	}
+	return "", false
 }
