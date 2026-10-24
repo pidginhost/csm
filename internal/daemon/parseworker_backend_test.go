@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -243,6 +244,56 @@ func TestParseWorkersIsolationUnavailableFinding(t *testing.T) {
 	}
 	if fs := isolationFindings(d.alertCh); len(fs) != 1 || fs[0].Severity != alert.Critical {
 		t.Fatalf("isolation findings %+v, want one Critical an hour", fs)
+	}
+}
+
+// Resource pressure must report unavailable isolation without opening the
+// worker breaker. Cancellation belongs to the caller and is not an outage.
+func TestParseWorkersReportUncountedLaunchFailures(t *testing.T) {
+	realStop, realLaunch := stopParseWorkerUnits, parseWorkerLauncher
+	stopParseWorkerUnits = func(context.Context, string) error { return nil }
+	t.Cleanup(func() { stopParseWorkerUnits, parseWorkerLauncher = realStop, realLaunch })
+	allowParseWorkerCommand(t)
+	for _, cause := range []error{syscall.EMFILE, syscall.ENFILE, context.Canceled} {
+		t.Run(cause.Error(), func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			parseWorkerLauncher = func(workerproc.UnitConfig) workerproc.Launcher {
+				return func(context.Context) (workerproc.Process, error) {
+					if errors.Is(cause, context.Canceled) {
+						cancel()
+					}
+					return nil, cause
+				}
+			}
+			d := &Daemon{binaryPath: "/opt/csm/csm", alertCh: make(chan alert.Finding, 1)}
+			if err := d.initParseWorkers(); err != nil {
+				t.Fatal(err)
+			}
+			defer d.stopParseWorkers()
+			zip, err := os.Create(filepath.Join(t.TempDir(), "kit.zip"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = zip.Close() }()
+			for range workerproc.ConsecutiveFailureLimit + 1 {
+				err := d.zipLister.ListZip(ctx, zip, 0, 0, nil)
+				if !errors.Is(err, cause) {
+					t.Fatalf("listing error = %v, want %v", err, cause)
+				}
+			}
+			if st := d.zipLister.Stats(); st.BreakerOpen || st.ConsecutiveFailures != 0 || len(st.Kills) != 0 {
+				t.Fatalf("uncounted failure opened the breaker or changed kill counts: %+v", st)
+			}
+			fs := isolationFindings(d.alertCh)
+			if errors.Is(cause, context.Canceled) {
+				if len(fs) != 0 {
+					t.Fatalf("cancellation reported an outage: %+v", fs)
+				}
+			} else if len(fs) != 1 || fs[0].Severity != alert.Critical {
+				t.Fatalf("isolation findings %+v, want one Critical", fs)
+			}
+		})
 	}
 }
 

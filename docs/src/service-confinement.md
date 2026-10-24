@@ -110,7 +110,10 @@ daemon logs one line at startup, raises a Critical
 `email_av_isolation_unavailable` finding, and starts no worker. The phishing
 check reports itself incomplete, and mail is handled as an incomplete scan
 under `email_av.fail_mode`. Failed unit starts raise the same finding, at most
-once an hour.
+once an hour. This includes starts refused because the daemon has exhausted
+its descriptors; those failures do not open the worker breaker. Mail and zip
+workers share this allowance across spool watcher replacements. A finding
+rejected by a full alert queue leaves the allowance available for a retry.
 
 Workers are killed by unit name with `systemctl kill`, never by a PID. If the
 daemon dies, a worker waiting for a request reads end of file and exits. A

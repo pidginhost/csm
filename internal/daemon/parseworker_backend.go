@@ -45,14 +45,18 @@ func (d *Daemon) initParseWorkers() error {
 		d.reportIsolationUnavailable(err)
 		return fmt.Errorf("parse worker: %w", err)
 	}
+	launchZip := parseWorkerLauncher(parseworker.UnitConfig(d.binaryPath, parseWorkerUnitPrefix+"zip0", 64<<20, logf))
 	lister, err := parseworker.NewLister(parseworker.ListerConfig{
-		Launch: parseWorkerLauncher(parseworker.UnitConfig(d.binaryPath, parseWorkerUnitPrefix+"zip0", 64<<20, logf)),
-		Log:    logf,
-		OnFailure: func(reason string, err error) {
-			if reason == workerproc.ReasonSpawn {
+		Launch: func(ctx context.Context) (workerproc.Process, error) {
+			proc, err := launchZip(ctx)
+			// Descriptor exhaustion bypasses the failure hook and breaker,
+			// but still leaves archives without an isolated parser.
+			if err != nil && ctx.Err() == nil {
 				d.reportIsolationUnavailable(err)
 			}
+			return proc, err
 		},
+		Log: logf,
 	})
 	if err != nil {
 		return err

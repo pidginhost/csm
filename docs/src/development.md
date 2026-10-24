@@ -1220,7 +1220,10 @@ Malformed frames and rejected descriptors are protocol failures; a broken
 socket is a crash unless the process reports an OOM kill. A unit worker
 learns of a kernel OOM kill as it happens, from an eventfd on cgroup v1 or
 inotify on `memory.events` on v2: by the time the daemon sees the worker die,
-systemd has removed the unit's cgroup and its counters. Diagnostic text
+systemd has removed the unit's cgroup and its counters. On v1, OOM and removal
+notifications are counted together even when they arrive in separate reads.
+A single notification with the directory gone remains undecided until the
+watch closes after the client's exit. Diagnostic text
 and underlying errors remain unchanged. A failed start matches `ErrSpawn`,
 not `ErrWorkerFailed`.
 

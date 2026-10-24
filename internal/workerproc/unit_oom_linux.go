@@ -5,6 +5,7 @@ package workerproc
 import (
 	"encoding/binary"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -13,8 +14,8 @@ import (
 
 // watchOOM starts following the cgroup's OOM notifications: on cgroup v1 an
 // eventfd registered for memory.oom_control, on v2 inotify on memory.events,
-// whose every change the kernel reports as a modification. Each watch ends
-// when the cgroup goes away, or at stop.
+// whose every change the kernel reports as a modification. After cgroup
+// removal the caller bounds any remaining wait with stop.
 func (c memoryCgroup) watchOOM() (*oomWatch, error) {
 	if c.v2 {
 		return c.watchOOMv2()
@@ -44,21 +45,27 @@ func (c memoryCgroup) watchOOMv1() (*oomWatch, error) {
 	w := &oomWatch{done: make(chan struct{}), stop: func() { _ = ev.Close() }}
 	go func() {
 		defer close(w.done)
-		var buf [8]byte
-		for {
-			if _, err := ev.Read(buf[:]); err != nil {
-				return
-			}
-			alive := isDir(c.dir)
-			if oomFromV1Event(binary.NativeEndian.Uint64(buf[:]), alive) {
-				w.seen.Store(true)
-			}
-			if !alive {
-				return
-			}
-		}
+		w.readOOMv1(ev, func() bool { return isDir(c.dir) })
 	}()
 	return w, nil
+}
+
+func (w *oomWatch) readOOMv1(ev io.Reader, alive func() bool) {
+	var buf [8]byte
+	var count uint64
+	for {
+		if _, err := ev.Read(buf[:]); err != nil {
+			return
+		}
+		count += binary.NativeEndian.Uint64(buf[:])
+		if oomFromV1Event(count, alive()) {
+			w.seen.Store(true)
+			return
+		}
+		// The directory may disappear between read and stat, before its
+		// removal notification arrives. Keep reading until a second event
+		// proves an OOM or the post-exit grace period closes the eventfd.
+	}
 }
 
 func (c memoryCgroup) watchOOMv2() (*oomWatch, error) {
@@ -95,7 +102,7 @@ func (c memoryCgroup) watchOOMv2() (*oomWatch, error) {
 // oomFromV1Event reads a cgroup v1 OOM eventfd wake-up. The eventfd fires at
 // an OOM and once more at cgroup removal, which the kernel signals after the
 // directory is gone. While the directory exists, any wake-up is an OOM; once
-// it is gone, a count above one means an OOM came before the removal.
+// it is gone, a total count above one means an OOM came before the removal.
 func oomFromV1Event(count uint64, alive bool) bool {
 	return alive || count > 1
 }

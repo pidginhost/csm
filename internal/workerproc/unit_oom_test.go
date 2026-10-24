@@ -3,11 +3,45 @@
 package workerproc
 
 import (
+	"encoding/binary"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 )
+
+type oomEventReader func([]byte) (int, error)
+
+func (f oomEventReader) Read(p []byte) (int, error) { return f(p) }
+
+// Removal can happen after the OOM read resets eventfd but before stat.
+// Its notification then arrives in a separate read, not in the first count.
+func TestOOMWatchV1RemovalBetweenReadAndStat(t *testing.T) {
+	for _, tc := range []struct {
+		counts []uint64
+		want   bool
+	}{
+		{[]uint64{1, 1}, true},
+		{[]uint64{2}, true},
+		{[]uint64{1}, false},
+	} {
+		w := &oomWatch{}
+		read := 0
+		ev := oomEventReader(func(p []byte) (int, error) {
+			if read == len(tc.counts) {
+				return 0, io.EOF
+			}
+			binary.NativeEndian.PutUint64(p, tc.counts[read])
+			read++
+			return 8, nil
+		})
+		w.readOOMv1(ev, func() bool { return false })
+		if got := w.seen.Load(); got != tc.want {
+			t.Errorf("event counts %v after removal: OOM = %v, want %v", tc.counts, got, tc.want)
+		}
+	}
+}
 
 // The kernel removes a unit's cgroup about 10 ms after an OOM kill, before
 // the daemon sees the worker die. The watch must read the kill at the
@@ -103,5 +137,36 @@ func TestUnitOOMKilledUsesWatchVerdict(t *testing.T) {
 	p := &unitProcess{cg: memoryCgroup{dir: filepath.Join(t.TempDir(), "gone"), v2: true}, oom: w}
 	if !p.OOMKilled() {
 		t.Fatal("watch saw the kill, but OOMKilled read the gone cgroup")
+	}
+}
+
+// A quiet cgroup may never notify the watcher. Closing its descriptor must
+// still unblock the reader and release every watch on repeated launches.
+func TestOOMWatchStopReleasesResources(t *testing.T) {
+	for _, v2 := range []bool{false, true} {
+		dir := t.TempDir()
+		if v2 {
+			writeValue(t, filepath.Join(dir, "memory.events"), "oom_kill 0\n")
+		} else {
+			writeValue(t, filepath.Join(dir, "memory.oom_control"), "oom_kill 0\n")
+			writeValue(t, filepath.Join(dir, "cgroup.event_control"), "")
+		}
+		before := openFDs(t)
+		for range 10 {
+			w, err := (memoryCgroup{dir: dir, v2: v2}).watchOOM()
+			if err != nil {
+				t.Fatal(err)
+			}
+			w.stop()
+			select {
+			case <-w.done:
+			case <-time.After(time.Second):
+				t.Fatalf("v2=%v: stopped watch left a blocked reader", v2)
+			}
+			if w.seen.Load() {
+				t.Fatalf("v2=%v: stopping the watch reported an OOM", v2)
+			}
+		}
+		assertNoFDLeak(t, before)
 	}
 }
