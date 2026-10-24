@@ -128,7 +128,7 @@ func TestNestedZipStopsAtSharedBudget(t *testing.T) {
 	}
 	var result ExtractionResult
 	var spent int64
-	extractZIP(path, "outer.zip", limits, &result, &spent, 1)
+	extractZIPPath(t, path, "outer.zip", limits, &result, &spent, 1)
 	for _, part := range result.Parts {
 		if err := os.Remove(part.TempPath); err != nil {
 			t.Fatal(err)
@@ -176,7 +176,7 @@ func TestNestedTarEndMarkersSpendSharedBudget(t *testing.T) {
 			}
 			var result ExtractionResult
 			var spent int64
-			extractZIP(path, "outer.zip", limits, &result, &spent, 1)
+			extractZIPPath(t, path, "outer.zip", limits, &result, &spent, 1)
 			for _, part := range result.Parts {
 				if err := os.Remove(part.TempPath); err != nil {
 					t.Fatal(err)

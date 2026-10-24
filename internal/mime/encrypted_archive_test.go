@@ -184,7 +184,7 @@ func TestEncryptedZipReportingLimitDoesNotMarkPartial(t *testing.T) {
 	limits.MaxArchiveFiles = 2
 	result := &ExtractionResult{}
 	var total int64
-	extractZIP(path, "archive.zip", limits, result, &total, 1)
+	extractZIPPath(t, path, "archive.zip", limits, result, &total, 1)
 	if len(result.EncryptedEntries) != 2 {
 		t.Fatalf("reported %d entries, want limit of 2", len(result.EncryptedEntries))
 	}

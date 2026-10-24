@@ -78,7 +78,7 @@ func TestReadBodyFileLimitedMarksPartial(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	data, partial, err := readBodyFileLimited(path, 5)
+	data, partial, err := readBodyFileLimited(t, path, 5)
 	if err != nil {
 		t.Fatalf("readBodyFileLimited: %v", err)
 	}
@@ -96,7 +96,7 @@ func TestReadBodyFileLimitedExactLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	data, partial, err := readBodyFileLimited(path, 5)
+	data, partial, err := readBodyFileLimited(t, path, 5)
 	if err != nil {
 		t.Fatalf("readBodyFileLimited: %v", err)
 	}
