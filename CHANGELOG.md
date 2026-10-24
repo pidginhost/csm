@@ -11,33 +11,32 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Highlights
 
-- Full account scans now detect known malware in website files and no longer report incomplete scans as clean.
-- Scans and real-time checks now detect PHP malware that runs code stored inside archives.
+- Full account scans now run the YARA rules over website files and no longer report an account clean when parts could not be checked.
+- Scans and real-time checks now detect PHP malware that runs code stored inside archives, including password-protected ones.
 - Programs running from website document roots are now checked; malware is reported as Critical, and PHP-launched programs raise a warning.
-- Companion files planted with detected or quarantined malware are now scanned, with suspicious leftovers reported for review.
+- Files planted together with detected or quarantined malware are now scanned, and suspicious ones no scanner matches are reported for review.
 - With the forward guard enforcing, mail tagged as spam is now held instead of forwarded to outside addresses.
 - On LiteSpeed, matches that ModSecurity only logs are no longer reported as blocks or counted toward visitor bans.
-- Email scanning now marks damaged, deeply nested, or oversized archives as incomplete instead of clean.
-- The Email Security page adds a Forwarders tab with per-destination deletion and confirmation; cPanel still manages domain default addresses.
+- Email scanning now unpacks nested archives to the configured depth and marks damaged, deeper or oversized archives as incomplete instead of clean.
+- The Email Security page has a Forwarders tab for deleting forwarder destinations after a confirmation; a domain's default address still changes in cPanel.
 
 ### Security
 
-- Full account scans now detect known malware in website files and no longer report incomplete scans as clean.
-- Scans and real-time checks now detect PHP malware that runs code stored inside archives.
+- Full account scans now run the YARA rules over website files and no longer report an account clean when parts could not be checked.
+- Scans and real-time checks now detect PHP malware that runs code stored inside archives, including password-protected ones.
 - Scans and real-time checks now detect more malicious code injected into WordPress sites.
 - Programs running from website document roots are now checked; malware is reported as Critical, and PHP-launched programs raise a warning.
 - Scans now detect native programs used to plant malicious files in hosted websites.
-- Companion files planted with detected or quarantined malware are now scanned, with suspicious leftovers reported for review.
-- Web configuration checks now detect more malicious access-control changes.
-- Web configuration checks now report a newly detected dropper configuration, and the automatic cleaner can remove it.
-- Email scanning now marks damaged, deeply nested, or oversized archives as incomplete instead of clean.
+- Files planted together with detected or quarantined malware are now scanned, and suspicious ones no scanner matches are reported for review.
+- Web configuration checks now detect more malicious access-control changes and a dropper kit's configuration, which the automatic cleaner can remove.
+- Email scanning now unpacks nested archives to the configured depth and marks damaged, deeper or oversized archives as incomplete instead of clean.
 - Hostile tenant archives can no longer consume unbounded time or memory during phishing-kit scans.
 - On LiteSpeed, matches that ModSecurity only logs are no longer reported as blocks or counted toward visitor bans.
 
 ### Added
 
-- The Email Security page adds a Forwarders tab with per-destination deletion and confirmation; cPanel still manages domain default addresses.
-- Custom signature rules can now combine nearby indicators into a single match.
+- The Email Security page has a Forwarders tab for deleting forwarder destinations after a confirmation; a domain's default address still changes in cPanel.
+- Custom signature rules can now require two patterns to appear near each other in a file.
 
 ### Changed
 
@@ -62,7 +61,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 #### Scans and findings
 
 - Ordinary large photos no longer raise false PHP findings during scans.
-- Verified WordPress core files with harmless formatting differences no longer raise modification findings.
+- WordPress core files proven to differ from the official release only in line endings are no longer reported as modified.
 - Scanning a single account now finds a cPanel account whose home sits on an additional home partition instead of reporting it missing.
 
 #### Web UI
