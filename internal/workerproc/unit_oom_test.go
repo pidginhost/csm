@@ -170,3 +170,29 @@ func TestOOMWatchStopReleasesResources(t *testing.T) {
 		assertNoFDLeak(t, before)
 	}
 }
+
+// memory.events counts the OOM before the kill, and inotify merges an unread
+// event with an identical one. A watch that waits for oom_kill can wake
+// before the kill and next find the cgroup gone: the earlier counter must do.
+func TestOOMWatchV2SeesOOMBeforeKill(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "csm-parse-worker-mail0-3.service")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	events := filepath.Join(dir, "memory.events")
+	writeValue(t, events, "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\n")
+	w, err := memoryCgroup{dir: dir, v2: true}.watchOOM()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(w.stop)
+	rewriteInPlace(t, events, "low 0\nhigh 0\nmax 9\noom 1\noom_kill 0\n")
+	select {
+	case <-w.done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("watch did not report the OOM")
+	}
+	if !w.seen.Load() {
+		t.Fatal("an OOM counted before its kill was not seen")
+	}
+}

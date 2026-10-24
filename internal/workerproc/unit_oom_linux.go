@@ -8,6 +8,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 
 	"golang.org/x/sys/unix"
 )
@@ -86,7 +88,7 @@ func (c memoryCgroup) watchOOMv2() (*oomWatch, error) {
 			if _, err := in.Read(buf); err != nil {
 				return
 			}
-			n, err := c.oomKills()
+			n, err := c.oomEventsV2()
 			if err != nil {
 				return // The cgroup is gone.
 			}
@@ -105,4 +107,28 @@ func (c memoryCgroup) watchOOMv2() (*oomWatch, error) {
 // it is gone, a total count above one means an OOM came before the removal.
 func oomFromV1Event(count uint64, alive bool) bool {
 	return alive || count > 1
+}
+
+// oomEventsV2 counts OOMs in a cgroup v2 memory.events: the oom counter, which
+// rises before the kill, and oom_kill. A worker is one process, so an OOM in
+// its cgroup is what kills it; waiting for oom_kill alone can wake before the
+// kill and then find the cgroup gone.
+func (c memoryCgroup) oomEventsV2() (uint64, error) {
+	data, err := os.ReadFile(filepath.Join(c.dir, "memory.events")) // #nosec G304 -- a file in the worker unit's own cgroup.
+	if err != nil {
+		return 0, err
+	}
+	var total uint64
+	for _, line := range strings.Split(string(data), "\n") {
+		key, value, ok := strings.Cut(line, " ")
+		if !ok || (key != "oom" && key != "oom_kill") {
+			continue
+		}
+		n, err := strconv.ParseUint(strings.TrimSpace(value), 10, 64)
+		if err != nil {
+			return 0, err
+		}
+		total += n
+	}
+	return total, nil
 }
