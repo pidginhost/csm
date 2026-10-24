@@ -40,6 +40,8 @@ func (e inProcessExtractor) Extract(_ context.Context, _ int, header, body *os.F
 type extractCall struct {
 	slot           int
 	header, body   unix.Stat_t
+	headerFile     *os.File
+	bodyFile       *os.File
 	bodyFD         int
 	bodyCloseOnExe bool
 }
@@ -57,7 +59,7 @@ type recordingExtractor struct {
 func (e *recordingExtractor) Size() int { return e.size }
 
 func (e *recordingExtractor) Extract(ctx context.Context, slot int, header, body *os.File, _ emime.Limits) (*emime.ExtractionResult, error) {
-	c := extractCall{slot: slot, bodyFD: int(body.Fd())}
+	c := extractCall{slot: slot, headerFile: header, bodyFile: body, bodyFD: int(body.Fd())}
 	_ = unix.Fstat(int(header.Fd()), &c.header)
 	_ = unix.Fstat(c.bodyFD, &c.body)
 	if flags, err := unix.FcntlInt(body.Fd(), unix.F_GETFD, 0); err == nil {
@@ -135,6 +137,29 @@ func wantResponse(failMode string) uint32 {
 		return FAN_DENY
 	}
 	return FAN_ALLOW
+}
+
+// A close-on-exec body duplicate does not protect the original event fd:
+// queued events must not be inherited by a worker's systemd-run client.
+func TestSpoolWatcherRequestsCloseOnExecEvents(t *testing.T) {
+	real := spoolFanotifyInit
+	t.Cleanup(func() { spoolFanotifyInit = real })
+	var eventFlags []uint
+	spoolFanotifyInit = func(_, flags uint) (int, error) {
+		eventFlags = append(eventFlags, flags)
+		return -1, unix.EPERM
+	}
+	if _, err := NewSpoolWatcher(&config.Config{}, nil, nil, nil, nil, nil, nil); err == nil {
+		t.Fatal("failed fanotify initialization succeeded")
+	}
+	if len(eventFlags) != 2 {
+		t.Fatalf("fanotify attempts = %d, want permission and notification modes", len(eventFlags))
+	}
+	for i, flags := range eventFlags {
+		if flags&unix.O_CLOEXEC == 0 {
+			t.Errorf("attempt %d leaves event descriptors inheritable: flags %#x", i, flags)
+		}
+	}
 }
 
 // A -H that is a link, a FIFO or a directory is never handed to the worker:
@@ -482,6 +507,110 @@ func TestSpoolExtractFindingRateLimits(t *testing.T) {
 	}
 	if n := len(findingsFor(fs, "email_av_parse_worker_failed")); n != 1 {
 		t.Fatalf("worker failed findings = %d, want 1 a minute", n)
+	}
+}
+
+// The watcher has already released pending opens on shutdown. Queued events
+// need closing, not new worker launches or outage findings during the drain.
+func TestSpoolExtractShutdownDrainsWithoutParsing(t *testing.T) {
+	responses := captureResponses(t)
+	dir := t.TempDir()
+	msgID := "1aBcDe-STOP-XX"
+	buildMinimalEximSpool(t, dir, msgID)
+	ex := &recordingExtractor{size: 1, extract: func(context.Context, int) (*emime.ExtractionResult, error) {
+		return nil, workerproc.ErrStopped
+	}}
+	sw, ch := extractWatcher("tempfail", ex)
+	d := &Daemon{stopCh: make(chan struct{})}
+	d.setSpoolWatcher(sw)
+	close(d.stopCh)
+	close(sw.stopCh)
+	evt := bodyEvent(t, dir, msgID)
+	sw.handleSpoolEventSafe(evt)
+	if calls := ex.recorded(); len(calls) != 0 {
+		t.Fatalf("shutdown launched %d extractions", len(calls))
+	}
+	if fs := takeFindings(ch); len(fs) != 0 {
+		t.Fatalf("shutdown reported an outage: %+v", fs)
+	}
+	if got := responses(); len(got) != 1 || got[0].response != FAN_ALLOW {
+		t.Fatalf("shutdown responses %+v, want one release", got)
+	}
+	if _, err := unix.FcntlInt(uintptr(evt.fd), unix.F_GETFD, 0); !errors.Is(err, unix.EBADF) {
+		t.Fatalf("queued event descriptor survived shutdown: %v", err)
+	}
+}
+
+// A broken fanotify instance releases opens too, but its replacement must
+// still wait for queued mail to be scanned before reusing the pool slots.
+func TestSpoolExtractWatcherRestartStillDrains(t *testing.T) {
+	responses := captureResponses(t)
+	dir := t.TempDir()
+	msgID := "1aBcDe-RESTART-XX"
+	buildMinimalEximSpool(t, dir, msgID)
+	ex := &recordingExtractor{size: 1}
+	sw, ch := extractWatcher("tempfail", ex)
+	d := &Daemon{stopCh: make(chan struct{})}
+	d.setSpoolWatcher(sw)
+	close(sw.stopCh)
+	sw.handleSpoolEventSafe(bodyEvent(t, dir, msgID))
+	if calls := ex.recorded(); len(calls) != 1 {
+		t.Fatalf("watcher restart discarded queued mail: %d extractions", len(calls))
+	}
+	if fs := takeFindings(ch); len(fs) != 0 {
+		t.Fatalf("clean extraction during restart reported findings: %+v", fs)
+	}
+	if got := responses(); len(got) != 1 || got[0].response != FAN_ALLOW {
+		t.Fatalf("restart responses %+v, want one release", got)
+	}
+}
+
+type panicAvailableScanner struct{ cleanScanner }
+
+func (panicAvailableScanner) Available() bool { panic("scanner availability failed") }
+
+func TestSpoolExtractClosesDescriptorsOnEveryExit(t *testing.T) {
+	for _, outcome := range []string{"clean", "partial", "extract error", "extract panic", "scan panic"} {
+		t.Run(outcome, func(t *testing.T) {
+			responses := captureResponses(t)
+			dir := t.TempDir()
+			msgID := "1aBcDe-CLOSE-XX"
+			buildMinimalEximSpool(t, dir, msgID)
+			var part *os.File
+			ex := &recordingExtractor{size: 1, extract: func(context.Context, int) (*emime.ExtractionResult, error) {
+				switch outcome {
+				case "extract error":
+					return nil, workerproc.ErrSpawn
+				case "extract panic":
+					panic("extraction failed")
+				}
+				part = memfdPart(t, "body")
+				t.Cleanup(func() { _ = part.Close() })
+				return &emime.ExtractionResult{Partial: outcome == "partial",
+					Parts: []emime.ExtractedPart{{Filename: "part.bin", Size: 4, File: part}}}, nil
+			}}
+			sw, _ := extractWatcher("tempfail", ex)
+			if outcome == "scan panic" {
+				sw.orchestrator = emailav.NewOrchestrator([]emailav.Scanner{panicAvailableScanner{}}, time.Second)
+			}
+			evt := bodyEvent(t, dir, msgID)
+			sw.handleSpoolEventSafe(evt)
+			calls := ex.recorded()
+			if len(calls) != 1 {
+				t.Fatalf("extractions = %d, want 1", len(calls))
+			}
+			for name, f := range map[string]*os.File{"header": calls[0].headerFile, "body": calls[0].bodyFile, "part": part} {
+				if f != nil && f.Fd() != ^uintptr(0) {
+					t.Errorf("%s descriptor left open", name)
+				}
+			}
+			if _, err := unix.FcntlInt(uintptr(evt.fd), unix.F_GETFD, 0); !errors.Is(err, unix.EBADF) {
+				t.Errorf("event descriptor left open: %v", err)
+			}
+			if got := responses(); len(got) != 1 {
+				t.Errorf("event received %d responses, want 1", len(got))
+			}
+		})
 	}
 }
 

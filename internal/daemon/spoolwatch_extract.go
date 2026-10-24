@@ -56,8 +56,8 @@ func openSpoolHeader(path string, body *os.File) (*os.File, error) {
 	return os.NewFile(uintptr(fd), path), nil
 }
 
-// dupEventBody duplicates the fanotify event descriptor of a -D file for the
-// worker. Event descriptors are not close-on-exec; the copy is.
+// dupEventBody gives extraction independent ownership of the event's body
+// descriptor while preserving close-on-exec on the copy.
 func dupEventBody(fd int) (*os.File, error) {
 	dup, err := unix.FcntlInt(uintptr(fd), unix.F_DUPFD_CLOEXEC, 0) // #nosec G115 -- POSIX fd is non-negative.
 	if err != nil {

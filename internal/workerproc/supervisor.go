@@ -357,6 +357,11 @@ func (s *Supervisor) callLocked(ctx context.Context, req Frame, fds []*os.File, 
 		s.jobs = 0
 		s.spawns++
 		s.lastPID = proc.PID()
+		if s.cfg.BreakOnSpawnOnly {
+			// Input can kill this worker next, but its successful start has
+			// already proved that the preceding startup outage is over.
+			s.consecutive = 0
+		}
 	}
 
 	handedOff = true

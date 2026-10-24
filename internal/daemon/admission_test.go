@@ -291,13 +291,31 @@ func TestRunOrdersTheAdmissionOwner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	backend, err := parser.ParseFile(token.NewFileSet(), "parseworker_backend.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var parseWorkerStop *ast.BlockStmt
+	for _, decl := range backend.Decls {
+		if fn, ok := decl.(*ast.FuncDecl); ok && fn.Name.Name == "stopParseWorkers" && fn.Recv != nil {
+			parseWorkerStop = fn.Body
+		}
+	}
+	if parseWorkerStop == nil {
+		t.Fatal("parse worker shutdown method not found")
+	}
 	var calls []string
 	ast.Inspect(f, func(n ast.Node) bool {
 		fn, ok := n.(*ast.FuncDecl)
 		if !ok || fn.Name.Name != "Run" || fn.Recv == nil {
 			return true
 		}
-		ast.Inspect(fn.Body, func(n ast.Node) bool {
+		var inspectCalls func(ast.Node) bool
+		inspectCalls = func(n ast.Node) bool {
+			// Deferred cleanup runs after the explicit shutdown sequence.
+			if _, ok := n.(*ast.DeferStmt); ok {
+				return false
+			}
 			call, ok := n.(*ast.CallExpr)
 			if !ok {
 				return true
@@ -309,11 +327,17 @@ func TestRunOrdersTheAdmissionOwner(t *testing.T) {
 					name = x.Sel.Name + "." + name
 				}
 				calls = append(calls, name)
+				// Keep the producer-drain assertion when shutdown delegates
+				// the wait to the parse pool's lifecycle method.
+				if x, ok := c.X.(*ast.Ident); ok && x.Name == "d" && name == "stopParseWorkers" {
+					ast.Inspect(parseWorkerStop, inspectCalls)
+				}
 			case *ast.Ident:
 				calls = append(calls, c.Name)
 			}
 			return true
-		})
+		}
+		ast.Inspect(fn.Body, inspectCalls)
 		return false
 	})
 	at := func(name string) int {

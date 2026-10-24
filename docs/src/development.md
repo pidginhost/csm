@@ -1246,6 +1246,8 @@ Some errors are not worker failures and never count toward the breaker:
 parse workers set it: a refused extraction delivers mail unscanned under
 `fail_mode: open`, so crafted mail that kills workers must not open the
 breaker for unrelated messages. Each message then costs at most one spawn.
+Every successful start resets the failed-start count, even if that worker
+then fails on its input or the caller cancels the request.
 
 A known limit: when the daemon is at its descriptor limit, the kernel drops
 descriptors a reply carries. That looks the same as a worker sending too
@@ -1334,6 +1336,8 @@ cut to 255 bytes, the partial reason to 512, and From, Subject and each of at
 most 100 recipients to 998.
 
 The mail extraction API accepts open spool header and body descriptors.
+Spool event descriptors are close-on-exec so worker launch commands cannot
+inherit queued messages.
 Its reply must be one UTF-8 JSON object with a `parts` field, which may be
 null for an empty result. Each part must have a readable, sealed descriptor
 of the claimed size. Individual sizes and their total must fit the request's
@@ -1342,6 +1346,10 @@ the worker with reason `protocol`. The spool watcher extracts every message
 through it: each scan goroutine owns one worker slot, because parts are
 charged to the memory cgroup of the worker that wrote them. A failed
 extraction becomes a partial result naming the failure, never an error.
+Watcher replacement waits for the previous scan goroutines to finish before
+reusing their slots. On shutdown, queued spool events release their
+descriptors without starting extractions. The daemon waits for active scans
+and watcher restarts to finish before stopping or clearing the parse pools.
 
 Unit tests use temporary proc and cgroup trees, never the host's. The kernel
 tests in `internal/workerproc/unit_kernel_test.go` run real units as root on

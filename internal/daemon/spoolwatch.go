@@ -33,6 +33,8 @@ var (
 	spoolMetricsOnce        sync.Once
 )
 
+var spoolFanotifyInit = unix.FanotifyInit
+
 func registerSpoolMetrics() {
 	spoolMetricsOnce.Do(func() {
 		spoolQueueOverflowTotal = metrics.NewCounter(
@@ -103,6 +105,9 @@ type SpoolWatcher struct {
 	drainOnce sync.Once
 	stopCh    chan struct{}
 	wg        sync.WaitGroup
+	// daemonStop distinguishes final shutdown from a watcher restart, which
+	// must still scan queued mail before the replacement reuses its slots.
+	daemonStop <-chan struct{}
 
 	pipeClosed     int32 // atomic
 	fdClosed       int32 // atomic - guards sw.fd against double-close
@@ -186,14 +191,14 @@ func NewSpoolWatcher(cfg *config.Config, alertCh chan<- alert.Finding, orch *ema
 	}
 
 	// Try permission-capable class first
-	fd, err := unix.FanotifyInit(FAN_CLASS_CONTENT|FAN_CLOEXEC|FAN_NONBLOCK, unix.O_RDONLY)
+	fd, err := spoolFanotifyInit(FAN_CLASS_CONTENT|FAN_CLOEXEC|FAN_NONBLOCK, unix.O_RDONLY|unix.O_CLOEXEC)
 	if err == nil {
 		sw.fd = fd
 		sw.permissionMode = true
 		fmt.Fprintf(os.Stderr, "[%s] spool watcher: permission events enabled (FAN_OPEN_PERM)\n", ts())
 	} else {
 		// Fallback to notification-only
-		fd, err = unix.FanotifyInit(FAN_CLASS_NOTIF|FAN_CLOEXEC|FAN_NONBLOCK, unix.O_RDONLY)
+		fd, err = spoolFanotifyInit(FAN_CLASS_NOTIF|FAN_CLOEXEC|FAN_NONBLOCK, unix.O_RDONLY|unix.O_CLOEXEC)
 		if err != nil {
 			return nil, fmt.Errorf("fanotify_init: %w (neither permission nor notification mode available)", err)
 		}
@@ -592,6 +597,14 @@ func (sw *SpoolWatcher) handleSpoolEvent(evt spoolEvent) {
 					strings.TrimSuffix(filepath.Base(evt.path), "-D"), spoolHoldBudget))
 		}
 	}()
+
+	// Daemon shutdown releases the fanotify opens. Drain their descriptors
+	// without starting extractions or reporting shutdown as a scan outage.
+	select {
+	case <-sw.daemonStop:
+		return
+	default:
+	}
 
 	// Derive message ID: strip -D suffix and directory
 	base := filepath.Base(evt.path)

@@ -104,6 +104,9 @@ func (d *Daemon) spoolExtractor() mailExtractor {
 }
 
 func (d *Daemon) stopParseWorkers() {
+	// Stop is signalled before this call. A watcher may still be draining
+	// or finishing a restart, and must retain its pool until it returns.
+	d.wg.Wait()
 	checks.SetZipLister(nil)
 	if d.mailExtractor != nil {
 		_ = d.mailExtractor.Stop()

@@ -7,11 +7,13 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	emime "github.com/pidginhost/csm/internal/mime"
+	"github.com/pidginhost/csm/internal/parseworker"
 	"github.com/pidginhost/csm/internal/workerproc"
 )
 
@@ -242,4 +244,48 @@ func TestParseWorkersIsolationUnavailableFinding(t *testing.T) {
 	if fs := isolationFindings(d.alertCh); len(fs) != 1 || fs[0].Severity != alert.Critical {
 		t.Fatalf("isolation findings %+v, want one Critical an hour", fs)
 	}
+}
+
+// Shutdown must keep the pool available to accepted spool work and watcher
+// replacements until the daemon's tracked producers have all returned.
+func TestStopParseWorkersWaitsForSpoolDrain(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		startErr := errors.New("test launcher reached")
+		ex, err := parseworker.NewExtractor(parseworker.ExtractorConfig{Size: 1,
+			Launch: func(int) workerproc.Launcher {
+				return func(context.Context) (workerproc.Process, error) { return nil, startErr }
+			}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		d := &Daemon{mailExtractor: ex}
+		d.wg.Add(1)
+		stopped := make(chan struct{})
+		go func() { d.stopParseWorkers(); close(stopped) }()
+		synctest.Wait()
+		select {
+		case <-stopped:
+			t.Error("parse workers stopped before accepted spool work drained")
+		default:
+		}
+		if d.spoolExtractor() != ex {
+			t.Error("watcher replacement lost its extractor during shutdown")
+		}
+		f, err := os.CreateTemp(t.TempDir(), "spool")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = f.Close() }()
+		if _, err := ex.Extract(context.Background(), 0, f, f, emime.DefaultLimits()); !errors.Is(err, workerproc.ErrSpawn) || !strings.Contains(err.Error(), startErr.Error()) {
+			t.Errorf("accepted spool work could not reach its worker: %v", err)
+		}
+		d.wg.Done()
+		<-stopped
+		if d.spoolExtractor() != nil {
+			t.Error("extractor retained after shutdown")
+		}
+		if _, err := ex.Extract(context.Background(), 0, f, f, emime.DefaultLimits()); !errors.Is(err, workerproc.ErrStopped) {
+			t.Errorf("extractor accepted work after shutdown: %v", err)
+		}
+	})
 }

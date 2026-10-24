@@ -1282,10 +1282,9 @@ func (d *Daemon) Run() error {
 	}
 	d.stopYaraBackend()
 	d.stopPHPTaintAnalyzer()
-	d.stopParseWorkers()
 	csmlog.Info("watchers signalled", "elapsed_ms", time.Since(shutdownStart).Milliseconds())
 
-	d.wg.Wait()
+	d.stopParseWorkers()
 	flushSenderProfiles()
 	stopProcessCtx()
 	// Stop the incident auto-close and retention goroutines before the
@@ -2788,6 +2787,7 @@ func (d *Daemon) runSpoolWatcherLoopWithFactory(current spoolWatcherRuntime, res
 }
 
 func (d *Daemon) setSpoolWatcher(sw *SpoolWatcher) {
+	sw.daemonStop = d.stopCh
 	d.spoolWatcherMu.Lock()
 	if d.spoolWatcher != nil {
 		sw.inheritQueueHealth(d.spoolWatcher)
