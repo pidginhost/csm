@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
+	"unicode"
 
 	"golang.org/x/sys/unix"
 
@@ -42,17 +44,17 @@ func extractMessage(req workerproc.Frame, fds []*os.File) (workerproc.Frame, []*
 		PartSink:          memfdPart,
 	})
 	if err != nil {
-		return extractResult(ExtractResult{Partial: true, PartialReason: emime.TruncateUTF8(err.Error(), maxIncomplete)}), nil
+		return extractResult(ExtractResult{Partial: true, PartialReason: cleanText(err.Error(), maxIncomplete)}), nil
 	}
 	res := ExtractResult{
 		Partial:       parsed.Partial,
-		PartialReason: emime.TruncateUTF8(parsed.PartialReason, maxIncomplete),
+		PartialReason: cleanText(parsed.PartialReason, maxIncomplete),
 		Direction:     parsed.Direction,
-		From:          emime.TruncateUTF8(parsed.From, maxHeaderBytes),
-		Subject:       emime.TruncateUTF8(parsed.Subject, maxHeaderBytes),
+		From:          cleanText(parsed.From, maxHeaderBytes),
+		Subject:       cleanText(parsed.Subject, maxHeaderBytes),
 	}
 	for _, to := range parsed.To[:min(len(parsed.To), maxRecipients)] {
-		res.To = append(res.To, emime.TruncateUTF8(to, maxHeaderBytes))
+		res.To = append(res.To, cleanText(to, maxHeaderBytes))
 	}
 	entries := make([]EncryptedEntry, 0, len(parsed.EncryptedEntries))
 	for _, e := range parsed.EncryptedEntries {
@@ -72,7 +74,7 @@ func extractMessage(req workerproc.Frame, fds []*os.File) (workerproc.Frame, []*
 		}
 		res.Parts = append(res.Parts, ExtractPart{
 			Filename:    p.Filename,
-			ContentType: emime.TruncateUTF8(p.ContentType, maxNameBytes),
+			ContentType: cleanText(p.ContentType, maxNameBytes),
 			Size:        p.Size,
 			Nested:      p.Nested,
 			ArchiveName: p.ArchiveName,
@@ -97,7 +99,26 @@ func memfdPart(string) (*os.File, error) {
 	return os.NewFile(uintptr(fd), "csm-mail-part"), nil
 }
 
+// cleanText makes a header-derived string safe to send: no control
+// characters but tab (the daemon refuses them, as they can forge log
+// lines), valid UTF-8, at most max bytes. Encoded, such a string is at most
+// twice its length, which is what keeps the worst-case reply in its frame.
+func cleanText(s string, max int) string {
+	s = strings.Map(func(r rune) rune {
+		if r != '\t' && unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, s)
+	return emime.TruncateUTF8(strings.ToValidUTF8(s, "\uFFFD"), max)
+}
+
+// extractResult encodes without HTML escaping: escaped, '<' alone would
+// take six bytes and push a crafted reply past the frame cap.
 func extractResult(r ExtractResult) workerproc.Frame {
-	payload, _ := json.Marshal(r) // Numbers, strings and bools cannot fail to marshal.
-	return workerproc.Frame{Payload: payload}
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	_ = enc.Encode(r) // Numbers, strings and bools cannot fail to encode.
+	return workerproc.Frame{Payload: bytes.TrimSuffix(buf.Bytes(), []byte("\n"))}
 }

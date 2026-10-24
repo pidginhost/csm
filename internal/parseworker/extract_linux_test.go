@@ -252,3 +252,58 @@ func TestExtractArgsCarryNoPath(t *testing.T) {
 		}
 	}
 }
+
+// The reply must fit the frame however the strings encode: '"' doubles in
+// JSON, and '<' would grow sixfold with HTML escaping left on.
+func TestExtractWorstCaseReplyFits(t *testing.T) {
+	for _, ch := range []string{`"`, "<"} {
+		name := strings.Repeat(ch, maxNameBytes)
+		header := strings.Repeat(ch, maxHeaderBytes)
+		res := ExtractResult{Partial: true, PartialReason: strings.Repeat(ch, maxIncomplete), From: header, Subject: header, Direction: "inbound"}
+		for range MaxParts {
+			res.Parts = append(res.Parts, ExtractPart{Filename: name, ContentType: name, Size: 1 << 40, Nested: true, ArchiveName: name})
+		}
+		for range maxRecipients {
+			res.To = append(res.To, header)
+		}
+		for range MaxEncryptedEntries {
+			res.EncryptedEntries = append(res.EncryptedEntries, EncryptedEntry{ArchiveName: name, Filename: name})
+		}
+		res.EncryptedEntriesOmitted = 1 << 30
+		var frame bytes.Buffer
+		if err := workerproc.WriteFrame(&frame, extractResult(res), WorkerLimits.MaxFrameBytes); err != nil {
+			t.Fatalf("worst-case reply of %q does not fit its frame: %v", ch, err)
+		}
+	}
+}
+
+func TestExtractCleansHeaderStrings(t *testing.T) {
+	if got := cleanText("\x1bA\xffB\t<", 10); got != "A\uFFFDB\t<" {
+		t.Fatalf("cleanText = %q", got)
+	}
+	h, d := spoolPair(t, "<b>red</b>", []string{"user@example.com"}, mailPart{"a.bin", []byte("x")})
+	conn := servePair(t)
+	if err := workerproc.SendFrame(conn, extractRequest(t), []*os.File{h, d}, WorkerLimits.MaxFrameBytes); err != nil {
+		t.Fatal(err)
+	}
+	reply, fds, err := workerproc.ReceiveFrame(conn, ExtractLimits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range fds {
+		_ = f.Close()
+	}
+	var res ExtractResult
+	if err := json.Unmarshal(reply.Payload, &res); err != nil {
+		t.Fatal(err)
+	}
+	if !utf8.ValidString(res.Subject) || res.Subject != "<b>red</b>" {
+		t.Fatalf("subject %q", res.Subject)
+	}
+	if !bytes.Contains(reply.Payload, []byte("<b>red")) {
+		t.Fatalf("reply escaped HTML: %s", reply.Payload)
+	}
+	if err := checkExtract(reply.Payload, nil, testLimits(), &ExtractResult{}); err != nil && !strings.Contains(err.Error(), "descriptors") {
+		t.Fatalf("daemon refused the cleaned strings: %v", err)
+	}
+}

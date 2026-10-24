@@ -9,6 +9,7 @@
 package workerproc
 
 import (
+	"bytes"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -226,11 +227,18 @@ func (r *rightsReader) fail(err error) {
 	}
 }
 
+// marshalBody encodes without HTML escaping. Frames are never HTML, and
+// escaping grows '<', '>' and '&' sixfold: a peer-influenced payload could
+// otherwise be pushed past its frame cap. That covers a json.RawMessage
+// payload too, which json.Marshal would escape again.
 func marshalBody(f Frame, maxBytes int) ([]byte, error) {
-	body, err := json.Marshal(f)
-	if err != nil {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(f); err != nil {
 		return nil, fmt.Errorf("workerproc: marshal frame: %w", err)
 	}
+	body := bytes.TrimSuffix(buf.Bytes(), []byte("\n"))
 	if len(body) > maxBytes {
 		return nil, fmt.Errorf("workerproc: frame body %d bytes exceeds cap %d", len(body), maxBytes)
 	}

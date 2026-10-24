@@ -1042,8 +1042,9 @@ func extractTarGz(part *os.File, size int64, archiveName string, limits Limits, 
 const maxAttachmentNameBytes = 255
 
 // SanitizeAttachmentName trims an attachment or archive-entry name to its
-// base name, truncates at control characters and caps it at 255 bytes
-// before the name reaches logs, alerts, or JSON responses.
+// base name, truncates at control characters, replaces invalid UTF-8 and
+// caps it at 255 bytes before the name reaches logs, alerts, or JSON
+// responses.
 func SanitizeAttachmentName(name string) string {
 	name = strings.ReplaceAll(name, "\\", "/")
 	name = filepath.Base(name)
@@ -1053,7 +1054,7 @@ func SanitizeAttachmentName(name string) string {
 	if i := strings.IndexFunc(name, unicode.IsControl); i >= 0 {
 		name = name[:i]
 	}
-	name = strings.TrimSpace(TruncateUTF8(name, maxAttachmentNameBytes))
+	name = strings.TrimSpace(TruncateUTF8(strings.ToValidUTF8(name, "\uFFFD"), maxAttachmentNameBytes))
 	switch name {
 	case "", ".", "..", "/":
 		return "_unnamed_"
