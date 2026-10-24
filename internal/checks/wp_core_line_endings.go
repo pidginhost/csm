@@ -14,10 +14,11 @@ import (
 	"github.com/pidginhost/csm/internal/wpcheck"
 )
 
-// An FTP client in ASCII mode rewrites every LF in an uploaded core file as
-// CRLF. wp-cli then reports the file as modified although its code is the
-// release's code. Only that one rewrite is undone before comparing; any other
-// difference, or anything that cannot be checked, leaves the report standing.
+// An FTP client in ASCII mode rewrites the line endings of an uploaded core
+// file: LF becomes CRLF, or the reverse on the way back. wp-cli then reports
+// the file as modified although its code is the release's code. Only that one
+// rewrite is undone before comparing; any other difference, or anything that
+// cannot be checked, leaves the report standing.
 
 // wpCoreLineEndingsMaxBytes bounds the read of a flagged file. Shipped core
 // files are a few megabytes at most; a larger one is not shown to match.
@@ -80,7 +81,9 @@ func (c *wpCoreReleaseChecksums) lineEndingOnly(wpPath string, out []byte) (file
 			}
 			continue
 		}
-		if strings.Contains(line, "should not exist") || strings.Contains(line, "should exist") {
+		// Extra and missing core files are known differences the scan reports
+		// or tolerates elsewhere; they only keep the install from verifying.
+		if strings.Contains(line, "should not exist") || strings.Contains(line, "should exist") || strings.Contains(line, "File doesn't exist: ") {
 			only = false
 			continue
 		}
@@ -115,11 +118,23 @@ func (c *wpCoreReleaseChecksums) lineEndingOnly(wpPath string, out []byte) (file
 
 func wpCoreFileDiffersOnlyInLineEndings(wpPath, rel, want string) bool {
 	data, truncated, err := readWPCoreFileHead(wpPath, rel, wpCoreLineEndingsMaxBytes)
-	if err != nil || truncated || !bytes.Contains(data, []byte("\r\n")) {
+	if err != nil || truncated {
+		return false
+	}
+	// Either direction of one whole-file conversion: CRLF copies of an LF
+	// release, and LF copies of a release that ships CRLF. A file that still
+	// holds a stray CR is not a clean LF conversion.
+	var normalized []byte
+	switch {
+	case bytes.Contains(data, []byte("\r\n")):
+		normalized = bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n"))
+	case bytes.Contains(data, []byte("\n")) && !bytes.Contains(data, []byte("\r")):
+		normalized = bytes.ReplaceAll(data, []byte("\n"), []byte("\r\n"))
+	default:
 		return false
 	}
 	// #nosec G401 -- compared with the MD5 digests wordpress.org publishes
-	sum := md5.Sum(bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n")))
+	sum := md5.Sum(normalized)
 	return hex.EncodeToString(sum[:]) == want
 }
 

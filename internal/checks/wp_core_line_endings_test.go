@@ -104,6 +104,32 @@ func TestCheckWPCoreIgnoresLineEndingOnlyCoreFile(t *testing.T) {
 	}
 }
 
+// Some releases ship a file with CRLF endings; a copy that went through an LF
+// conversion differs only in the other direction.
+func TestCheckWPCoreIgnoresLFCopyOfCRLFRelease(t *testing.T) {
+	db, dirs := wpCoreLineEndingsFixture(t, 1, wpCoreLineEndingsOfficial, wpCoreLineEndingsReport("wp-includes/plugin.php"))
+	stubWPCoreChecksums(t, map[string]string{"wp-includes/plugin.php": wpCoreMD5(withCRLF(wpCoreLineEndingsOfficial))}, nil)
+
+	if got := coreIntegrityFindings(CheckWPCore(withWPInstallCache(context.Background()), nil, nil)); len(got) != 0 {
+		t.Fatalf("an LF copy of a CRLF release file was reported: %+v", got)
+	}
+	if state := wpCoreCoverageState(t, db, dirs[0]); state != "verified" {
+		t.Errorf("coverage state = %q, want verified", state)
+	}
+}
+
+// A file with any CR left in it is not a clean LF conversion, so only the
+// CRLF-to-LF comparison applies to it.
+func TestCheckWPCoreReportsMixedEndingsAgainstCRLFRelease(t *testing.T) {
+	live := strings.Replace(withCRLF(wpCoreLineEndingsOfficial), "\r\n", "\n", 1)
+	wpCoreLineEndingsFixture(t, 1, live, wpCoreLineEndingsReport("wp-includes/plugin.php"))
+	stubWPCoreChecksums(t, map[string]string{"wp-includes/plugin.php": wpCoreMD5(withCRLF(wpCoreLineEndingsOfficial))}, nil)
+
+	if got := coreIntegrityFindings(CheckWPCore(withWPInstallCache(context.Background()), nil, nil)); len(got) != 1 {
+		t.Fatalf("findings = %+v, want the mixed-ending file reported", got)
+	}
+}
+
 // A matching prefix is not enough when wp-cli did not complete the integrity
 // check. The modified-file finding stays until the whole result is trustworthy.
 func TestCheckWPCoreLineEndingsRequireCompletedVerification(t *testing.T) {
@@ -170,6 +196,23 @@ func TestCheckWPCoreLineEndingsWithOtherProblemStayModified(t *testing.T) {
 	got := coreIntegrityFindings(CheckWPCore(withWPInstallCache(context.Background()), nil, nil))
 	if len(got) != 1 || got[0].FilePath != "" {
 		t.Fatalf("findings = %+v, want only the collapsed extra-file finding", got)
+	}
+	if state := wpCoreCoverageState(t, db, dirs[0]); state != "modified" {
+		t.Errorf("coverage state = %q, want modified", state)
+	}
+}
+
+// wp-cli lists a core file missing from the install on its own line. That is
+// a known shape: the line-ending copy still needs no finding, while the
+// missing file keeps the install from counting as verified.
+func TestCheckWPCoreLineEndingsWithMissingCoreFileStayModified(t *testing.T) {
+	output := "Warning: File doesn't exist: wp-admin/css/install-rtl.css\n" + wpCoreLineEndingsReport("wp-includes/plugin.php")
+	db, dirs := wpCoreLineEndingsFixture(t, 1, withCRLF(wpCoreLineEndingsOfficial), output)
+	stubWPCoreChecksums(t, map[string]string{"wp-includes/plugin.php": wpCoreMD5(wpCoreLineEndingsOfficial)}, nil)
+
+	got := coreIntegrityFindings(CheckWPCore(withWPInstallCache(context.Background()), nil, nil))
+	if len(got) != 0 {
+		t.Fatalf("findings = %+v, want none for the line-ending copy", got)
 	}
 	if state := wpCoreCoverageState(t, db, dirs[0]); state != "modified" {
 		t.Errorf("coverage state = %q, want modified", state)
