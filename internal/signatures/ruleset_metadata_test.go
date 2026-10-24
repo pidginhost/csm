@@ -23,7 +23,7 @@ func TestRepositoryRuleSetMetadataAdvancedForNewRules(t *testing.T) {
 	if unmarshalErr := yaml.Unmarshal(yamlData, &metadata); unmarshalErr != nil {
 		t.Fatal(unmarshalErr)
 	}
-	if metadata.Version < 7 || metadata.Updated < "2026-08-02" {
+	if metadata.Version < 52 || metadata.Updated < "2026-10-24" {
 		t.Fatalf("YAML rule-set metadata was not advanced for the new rules: version=%d updated=%q", metadata.Version, metadata.Updated)
 	}
 
@@ -44,7 +44,7 @@ func TestRepositoryRuleSetMetadataAdvancedForNewRules(t *testing.T) {
 	if len(updatedMatch) != 2 {
 		t.Fatal("YARA rule-set update date is missing")
 	}
-	if yaraVersion < 6 || updatedMatch[1] < "2026-08-02" {
+	if yaraVersion < 29 || updatedMatch[1] < "2026-10-24" {
 		t.Fatalf("YARA rule-set metadata was not advanced for the new rules: version=%d updated=%q", yaraVersion, updatedMatch[1])
 	}
 }

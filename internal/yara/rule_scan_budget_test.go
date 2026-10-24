@@ -322,12 +322,17 @@ func TestRuleScanBudgetKitMarkers(t *testing.T) {
 		"temp_dir_lookups.php": []byte("<?php\n" + strings.Repeat("ini_get('upload_tmp_dir'); ", 40_000)),
 		"lookups_far_from_hashes.php": []byte("<?php\n" + strings.Repeat("ini_get('upload_tmp_dir'); ", 20_000) + far +
 			strings.Repeat("md5($_SERVER['HTTP_HOST']); fopen($d . $k, 'a'); ", 10_000)),
+		"site_cookie_markers.php": []byte("<?php\n" + strings.Repeat(
+			"$key = md5($_SERVER['HTTP_HOST']); isset($_COOKIE[$key]); ", 16_000)),
+		"visitor_append_markers.php": []byte("<?php\n" + strings.Repeat(
+			"$ip = $_SERVER['REMOTE_ADDR']; fopen($dir . $key, 'ab'); ", 16_000)),
 		"open_fopen_calls.php": []byte("<?php\n" + strings.Repeat("fopen($dir . $name . $x . $y . $z", 30_000)),
 	})
 	requireRuleScanBudget(t, "backdoor_obfuscated_hook_injector", map[string][]byte{
-		"decoded_hooks.php": []byte("<?php\n" + strings.Repeat("add_action(d('Y2pqcWB3V1A='), 'f'); ", 28_000)),
+		"decoded_hooks.php":   []byte("<?php\n" + strings.Repeat("add_action(d('Y2pqcWB3V1A='), 'f'); ", 28_000)),
+		"base64_decoders.php": []byte("<?php\n" + strings.Repeat("$s = base64_decode($s); ", 40_000)),
 		"hooks_far_from_xor.php": []byte("<?php\n" + strings.Repeat("add_action(d('Y2pqcWB3V1A='), 'f'); ", 14_000) + far +
-			strings.Repeat("$s[$i] = chr(ord($s[$i]) ^ $k); ", 15_000)),
+			strings.Repeat("$s = base64_decode($s); $s[$i] = chr(ord($s[$i]) ^ $k); ", 10_000)),
 	})
 }
 

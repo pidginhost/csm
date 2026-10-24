@@ -33,6 +33,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Fixed
 
+- Scans no longer report temporary cache writers or ordinary dynamic WordPress hooks as injection-kit remnants.
 - Scans no longer report large photos as hiding PHP when unrelated metadata and pixel data happen to resemble code.
 - Spam folder learning now reads the Spam folder of older cPanel mailboxes that keep it as a link to another folder.
 - Email attachments in damaged zip or tar.gz archives are no longer counted as scanned and clean.
