@@ -1316,6 +1316,14 @@ itself incomplete, without counting as lost work. A worker can still leave
 names out; validating the reply does not verify the archive. Name
 classification stays in `internal/checks`.
 
+The mail extraction API accepts open spool header and body descriptors.
+Its reply must be one UTF-8 JSON object with a `parts` field, which may be
+null for an empty result. Each part must have a readable, sealed descriptor
+of the claimed size. Individual sizes and their total must fit the request's
+limits without integer overflow. Invalid replies discard all parts and kill
+the worker with reason `protocol`. The spool handler does not use this API
+yet.
+
 Unit tests use temporary proc and cgroup trees, never the host's. The kernel
 tests in `internal/workerproc/unit_kernel_test.go` run real units as root on
 the CI kernel runner.

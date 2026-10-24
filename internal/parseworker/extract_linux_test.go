@@ -3,6 +3,7 @@ package parseworker
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	emime "github.com/pidginhost/csm/internal/mime"
 	"github.com/pidginhost/csm/internal/workerproc"
 )
 
@@ -90,7 +92,7 @@ func extractVia(t *testing.T, header, body *os.File) (ExtractResult, []*os.File)
 		t.Fatalf("worker error: %s", reply.Error)
 	}
 	var res ExtractResult
-	if err := json.Unmarshal(reply.Payload, &res); err != nil {
+	if err := checkExtract(reply.Payload, fds, emime.DefaultLimits(), &res); err != nil {
 		t.Fatal(err)
 	}
 	return res, fds
@@ -211,9 +213,9 @@ func TestExtractCapsEncryptedEntries(t *testing.T) {
 func TestExtractRequiresTwoRegularDescriptors(t *testing.T) {
 	conn := servePair(t)
 	h, d := spoolPair(t, "x", []string{"user@example.com"}, mailPart{"a.bin", []byte("x")})
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
+	r, w, pipeErr := os.Pipe()
+	if pipeErr != nil {
+		t.Fatal(pipeErr)
 	}
 	defer r.Close()
 	defer w.Close()
@@ -230,7 +232,13 @@ func TestExtractRequiresTwoRegularDescriptors(t *testing.T) {
 	if err := workerproc.SendFrame(conn, extractRequest(t), []*os.File{h, d}, WorkerLimits.MaxFrameBytes); err != nil {
 		t.Fatal(err)
 	}
-	if reply, got, err := workerproc.ReceiveFrame(conn, ExtractLimits); err != nil || reply.Error != "" || len(got) != 1 {
+	reply, got, err := workerproc.ReceiveFrame(conn, ExtractLimits)
+	defer func() {
+		for _, f := range got {
+			_ = f.Close()
+		}
+	}()
+	if err != nil || reply.Error != "" || len(got) != 1 {
 		t.Fatalf("after refusals: %+v %d %v", reply, len(got), err)
 	}
 }
@@ -290,9 +298,11 @@ func TestExtractCleansHeaderStrings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, f := range fds {
-		_ = f.Close()
-	}
+	defer func() {
+		for _, f := range fds {
+			_ = f.Close()
+		}
+	}()
 	var res ExtractResult
 	if err := json.Unmarshal(reply.Payload, &res); err != nil {
 		t.Fatal(err)
@@ -303,7 +313,32 @@ func TestExtractCleansHeaderStrings(t *testing.T) {
 	if !bytes.Contains(reply.Payload, []byte("<b>red")) {
 		t.Fatalf("reply escaped HTML: %s", reply.Payload)
 	}
-	if err := checkExtract(reply.Payload, nil, testLimits(), &ExtractResult{}); err != nil && !strings.Contains(err.Error(), "descriptors") {
+	if err := checkExtract(reply.Payload, fds, testLimits(), &ExtractResult{}); err != nil {
 		t.Fatalf("daemon refused the cleaned strings: %v", err)
+	}
+}
+
+// Hostile mail metadata still comes from an honest parser. It must survive
+// the daemon's checks without discarding the extracted attachment bytes.
+func TestExtractAcceptsCleanedMailMetadata(t *testing.T) {
+	names := []string{"normal.txt", "dir/\xff.bin", "a\x00hidden.bin", strings.Repeat("a", 400), " ", "dir/../member.txt"}
+	var members []mailPart
+	for _, name := range names {
+		members = append(members, mailPart{name, []byte("content")})
+	}
+	h, d := spoolPair(t, "\u0085subject\xff\t<text>", []string{"user@example.com"}, mailPart{"files.zip", zipWithContent(t, members...)})
+	e := extractorFor(t, "")
+	res, err := e.Extract(context.Background(), 0, h, d, emime.DefaultLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Close()
+	if res.Partial || len(res.Parts) != 1+len(members) || res.Subject != "subject\uFFFD\t<text>" {
+		t.Fatalf("unexpected extraction: %+v", res)
+	}
+	for i, p := range res.Parts[1:] {
+		if p.Filename != emime.SanitizeAttachmentName(names[i]) || string(readPart(t, p.File, p.Size)) != "content" {
+			t.Fatalf("member %d: %+v", i, p)
+		}
 	}
 }

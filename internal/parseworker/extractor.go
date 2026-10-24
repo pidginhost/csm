@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
@@ -120,10 +121,32 @@ func (e *Extractor) Extract(ctx context.Context, slot int, header, body *os.File
 // exactly the claimed, non-zero size within the caps, and every string is
 // bounded, valid UTF-8 and in the form the worker's own sanitizing gives.
 func checkExtract(payload []byte, fds []*os.File, limits emime.Limits, res *ExtractResult) error {
+	// encoding/json replaces invalid UTF-8 instead of rejecting it.
+	if !utf8.Valid(payload) {
+		return errors.New("extract_message reply is not UTF-8")
+	}
+	// Parts may be null for an empty result, but it must be present. Keep
+	// its raw value so a missing result cannot look like a clean message.
+	var wire struct {
+		*ExtractResult
+		Parts json.RawMessage `json:"parts"`
+	}
+	wire.ExtractResult = res
 	dec := json.NewDecoder(bytes.NewReader(payload))
 	dec.DisallowUnknownFields()
-	if err := dec.Decode(res); err != nil {
+	if err := dec.Decode(&wire); err != nil {
 		return fmt.Errorf("extract_message reply: %w", err)
+	}
+	if err := dec.Decode(new(json.RawMessage)); err != io.EOF {
+		return errors.New("extract_message reply has trailing data")
+	}
+	if len(wire.Parts) == 0 {
+		return errors.New("extract_message reply has no parts result")
+	}
+	parts := json.NewDecoder(bytes.NewReader(wire.Parts))
+	parts.DisallowUnknownFields()
+	if err := parts.Decode(&res.Parts); err != nil {
+		return fmt.Errorf("extract_message parts: %w", err)
 	}
 	if len(res.Parts) > MaxParts || len(res.Parts) != len(fds) {
 		return fmt.Errorf("reply lists %d parts with %d descriptors", len(res.Parts), len(fds))
@@ -142,10 +165,10 @@ func checkExtract(payload []byte, fds []*os.File, limits emime.Limits, res *Extr
 		if p.Size <= 0 || p.Size > limits.MaxAttachmentSize {
 			return fmt.Errorf("part %d size %d outside 1..%d", i, p.Size, limits.MaxAttachmentSize)
 		}
-		total += p.Size
-		if total > limits.MaxExtractionSize {
+		if p.Size > limits.MaxExtractionSize-total {
 			return fmt.Errorf("parts total more than %d bytes", limits.MaxExtractionSize)
 		}
+		total += p.Size
 		if err := checkSealed(fds[i]); err != nil {
 			return fmt.Errorf("part %d: %w", i, err)
 		}
@@ -155,6 +178,12 @@ func checkExtract(payload []byte, fds []*os.File, limits emime.Limits, res *Extr
 		}
 		if !st.Mode().IsRegular() || st.Size() != p.Size {
 			return fmt.Errorf("part %d is %d bytes, reply says %d", i, st.Size(), p.Size)
+		}
+		// Seals and Stat also succeed on a write-only descriptor. Prove
+		// the scanner can read it before accepting any part of the reply.
+		var probe [1]byte
+		if _, err := fds[i].ReadAt(probe[:], 0); err != nil {
+			return fmt.Errorf("part %d is unreadable: %w", i, err)
 		}
 	}
 	if len(res.EncryptedEntries) > MaxEncryptedEntries || res.EncryptedEntriesOmitted < 0 {

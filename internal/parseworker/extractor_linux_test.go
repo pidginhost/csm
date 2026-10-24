@@ -4,10 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"math"
 	"os"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"golang.org/x/sys/unix"
 
@@ -98,6 +101,20 @@ func lyingExtractor(mode string) workerproc.Handler {
 			return one(ExtractResult{Parts: []ExtractPart{part("a.bin", 0)}}, nil, true)
 		case "too-many-encrypted":
 			return extractResult(ExtractResult{EncryptedEntries: make([]EncryptedEntry, MaxEncryptedEntries+1)}), nil
+		case "null-reply":
+			return workerproc.Frame{Payload: json.RawMessage(`null`)}, nil
+		case "missing-parts":
+			return workerproc.Frame{Payload: json.RawMessage(`{"subject":"missing result"}`)}, nil
+		case "invalid-utf8":
+			return workerproc.Frame{Payload: json.RawMessage("{\"parts\":null,\"subject\":\"\xff\"}")}, nil
+		case "write-only":
+			f := sealedMemfd([]byte("abcd"), true)
+			defer f.Close()
+			w, err := os.OpenFile(fmt.Sprintf("/proc/self/fd/%d", f.Fd()), os.O_WRONLY, 0)
+			if err != nil {
+				panic(err)
+			}
+			return extractResult(ExtractResult{Parts: []ExtractPart{part("a.bin", 4)}}), []*os.File{w}
 		}
 		return workerproc.Frame{Error: "unknown mode " + mode}, nil
 	}
@@ -160,7 +177,8 @@ func TestExtractDeliversParts(t *testing.T) {
 
 func TestExtractRejectsMalformedReply(t *testing.T) {
 	for _, mode := range []string{"unsealed", "size-mismatch", "count-mismatch", "over-attachment-cap", "over-total-cap",
-		"unsanitized-name", "long-subject", "control-subject", "bad-direction", "control-content-type", "empty-part", "too-many-encrypted"} {
+		"unsanitized-name", "long-subject", "control-subject", "bad-direction", "control-content-type", "empty-part", "too-many-encrypted",
+		"null-reply", "missing-parts", "invalid-utf8", "write-only"} {
 		t.Run(mode, func(t *testing.T) {
 			e := extractorFor(t, mode)
 			h, d := spoolPair(t, "x", []string{"user@example.com"}, mailPart{"a.bin", []byte("x")})
@@ -174,6 +192,39 @@ func TestExtractRejectsMalformedReply(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestExtractRejectsOverflowingTotal(t *testing.T) {
+	const size = int64(1 << 62)
+	f := sealedMemfd(nil, false)
+	defer f.Close()
+	if err := f.Truncate(size); err != nil {
+		t.Fatal(err)
+	}
+	if err := sealFile(f); err != nil {
+		t.Fatal(err)
+	}
+	payload := extractResult(ExtractResult{Parts: []ExtractPart{
+		{Filename: "a.bin", ContentType: "application/octet-stream", Size: size},
+		{Filename: "b.bin", ContentType: "application/octet-stream", Size: size},
+	}}).Payload
+	limits := emime.Limits{MaxAttachmentSize: size, MaxExtractionSize: math.MaxInt64}
+	if err := checkExtract(payload, []*os.File{f, f}, limits, &ExtractResult{}); err == nil || !strings.Contains(err.Error(), "parts total") {
+		t.Fatalf("overflowing total must fail the budget check, got %v", err)
+	}
+}
+
+func TestExtractReplyRequiresOneJSONValue(t *testing.T) {
+	for _, payload := range []string{`{"parts":null} {"parts":null}`, `{"parts":null} trailing`} {
+		if err := checkExtract([]byte(payload), nil, testLimits(), &ExtractResult{}); err == nil {
+			t.Errorf("accepted trailing data: %q", payload)
+		}
+	}
+	for _, payload := range []string{`{"parts":null}`, `{"parts":[]}`, " {\"parts\":null} \n"} {
+		if err := checkExtract([]byte(payload), nil, testLimits(), &ExtractResult{}); err != nil {
+			t.Errorf("rejected an empty extraction: %q: %v", payload, err)
+		}
 	}
 }
 
@@ -243,6 +294,10 @@ func FuzzExtractReply(f *testing.F) {
 	f.Add([]byte(`{"parts":[{"filename":"a.bin","content_type":"x","size":2}]}`), []byte{2})
 	f.Add([]byte(`{"parts":null,"subject":"s"}`), []byte{})
 	f.Add([]byte(`{"parts":[{"filename":"a","size":1},{"filename":"b","size":3}],"to":["u@example.com"]}`), []byte{1, 3})
+	f.Add([]byte(`null`), []byte{})
+	f.Add([]byte(`{}`), []byte{})
+	f.Add([]byte(`{"parts":null} {"parts":null}`), []byte{})
+	f.Add([]byte("{\"parts\":null,\"subject\":\"\xff\"}"), []byte{})
 	f.Fuzz(func(t *testing.T, payload, sizes []byte) {
 		if len(sizes) > 8 {
 			sizes = sizes[:8]
@@ -271,6 +326,8 @@ func FuzzExtractReply(f *testing.F) {
 		if total > limits.MaxExtractionSize || len(res.Parts) != len(fds) || len(res.Subject) > 998 || len(res.To) > 100 {
 			t.Fatalf("accepted reply %+v", res)
 		}
-		_ = json.Valid(payload)
+		if !json.Valid(payload) || !utf8.Valid(payload) {
+			t.Fatalf("accepted invalid JSON or UTF-8: %q", payload)
+		}
 	})
 }
