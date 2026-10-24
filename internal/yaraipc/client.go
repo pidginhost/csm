@@ -129,13 +129,20 @@ func writeRequest(conn net.Conn, req Frame, fds []*os.File) error {
 }
 
 // ScanFD is the daemon-side shim for OpScanFD: the worker scans the first
-// size bytes of f, read through the descriptor.
+// size bytes of f, read through the descriptor. The worker gets its own
+// read-only open of f, so it cannot rewrite what the other engines scan.
 func (c *Client) ScanFD(f *os.File, size int64) (ScanResult, error) {
 	req, err := EncodePayload(OpScanFD, ScanFDArgs{MaxBytes: int(size)})
 	if err != nil {
 		return ScanResult{}, err
 	}
-	resp, err := c.roundTripFDs(req, []*os.File{f})
+	// #nosec G304 -- reopens a descriptor this process already holds.
+	ro, err := os.OpenFile(fmt.Sprintf("/proc/self/fd/%d", f.Fd()), os.O_RDONLY, 0)
+	if err != nil {
+		return ScanResult{}, fmt.Errorf("yaraipc: reopen part read-only: %w", err)
+	}
+	defer func() { _ = ro.Close() }()
+	resp, err := c.roundTripFDs(req, []*os.File{ro})
 	if err != nil {
 		return ScanResult{}, err
 	}

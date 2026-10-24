@@ -14,19 +14,22 @@ import (
 	"github.com/pidginhost/csm/internal/workerproc"
 )
 
-// fdHandler records what scan_fd gave it.
+// fdHandler records what scan_fd gave it, and whether it could write
+// through the descriptor.
 type fdHandler struct {
 	fakeHandler
-	mu   sync.Mutex
-	data []byte
-	args ScanFDArgs
+	mu       sync.Mutex
+	data     []byte
+	args     ScanFDArgs
+	writable bool
 }
 
 func (h *fdHandler) ScanFD(f *os.File, args ScanFDArgs) (ScanResult, error) {
 	b, err := io.ReadAll(io.NewSectionReader(f, 0, int64(args.MaxBytes)))
+	_, writeErr := f.WriteAt([]byte("w"), 0)
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.data, h.args = b, args
+	h.data, h.args, h.writable = b, args, writeErr == nil
 	return ScanResult{Matches: []Match{{RuleName: "seen"}}}, err
 }
 
@@ -119,5 +122,35 @@ func TestServerScanFDUnsupportedHandler(t *testing.T) {
 	}
 	if resp := rawRequest(t, socket, req, []*os.File{tempPayload(t, []byte("x"))}); resp.Error == "" {
 		t.Fatal("handler without ScanFD answered scan_fd")
+	}
+}
+
+// The worker scans what the other engines scan next: it must not be able to
+// rewrite the part, even when the daemon holds it open for writing.
+func TestClientScanFDSendsReadOnlyDescriptor(t *testing.T) {
+	h := &fdHandler{}
+	socket, shutdown := startServer(t, h)
+	defer shutdown()
+	path := filepath.Join(t.TempDir(), "part")
+	if err := os.WriteFile(path, []byte("part"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	c := NewClient(socket, 10*time.Second)
+	defer func() { _ = c.Close() }()
+	if _, err = c.ScanFD(f, 4); err != nil {
+		t.Fatal(err)
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.writable || string(h.data) != "part" {
+		t.Fatalf("worker writable=%v, read %q", h.writable, h.data)
+	}
+	if got, _ := os.ReadFile(path); string(got) != "part" { // #nosec G304 -- test temp file
+		t.Fatalf("part rewritten to %q", got)
 	}
 }
