@@ -51,6 +51,9 @@ type unitHooks struct {
 // unitKillTimeout bounds one systemctl kill.
 const unitKillTimeout = 5 * time.Second
 
+// oomWatchGrace bounds how long a dead worker's OOM watch may still report.
+const oomWatchGrace = time.Second
+
 // unitGeneration numbers units. Seeded with the start time so a restarted
 // daemon does not reuse the name of a unit still being torn down.
 var unitGeneration = func() *atomic.Int64 {
@@ -227,6 +230,18 @@ func (p *unitProcess) start(ctx context.Context, cfg UnitConfig, h *unitHooks) e
 		return fmt.Errorf("cannot cap worker memory: %w", capErr)
 	}
 	p.cg = cg
+	if w, werr := cg.watchOOM(); werr != nil {
+		p.logf("unit %s: memory kills will read as crashes: %v", p.unit, werr)
+	} else {
+		p.oom = w
+		go func() {
+			// The watch ends with the cgroup; this bounds it if the kernel
+			// never reports the removal.
+			<-p.done
+			time.Sleep(oomWatchGrace)
+			w.stop()
+		}()
+	}
 	p.usage = func() (uint64, error) { return cg.usage(h.procRoot) }
 	used, err := p.usage()
 	if err != nil {
@@ -306,6 +321,9 @@ type unitProcess struct {
 	// killing the worker for memory.
 	cg         memoryCgroup
 	memoryKill atomic.Bool
+	// oom follows the kernel's OOM kills in cg; nil when it could not be
+	// set up, and then a memory kill reads as a crash.
+	oom *oomWatch
 }
 
 func (p *unitProcess) Conn() *net.UnixConn   { return p.conn }
@@ -347,9 +365,14 @@ func (p *unitProcess) Kill() error {
 }
 
 // OOMKilled reports a memory kill: by the watchdog, or by the kernel as the
-// unit's cgroup records it. A cgroup that is already gone reads as no.
+// OOM watch saw it or the unit's cgroup still records it. The supervisor asks
+// after the worker is gone, when the cgroup normally is too, so it waits
+// briefly for the watch's verdict.
 func (p *unitProcess) OOMKilled() bool {
 	if p.memoryKill.Load() {
+		return true
+	}
+	if p.oom != nil && p.oom.wait(oomWatchGrace) {
 		return true
 	}
 	n, err := p.cg.oomKills()

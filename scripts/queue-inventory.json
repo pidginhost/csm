@@ -1165,6 +1165,30 @@
       "queue": "php_taint"
     },
     {
+      "id": "internal/workerproc/unit_oom_linux.go::memoryCgroup.watchOOMv1::done::channel::1",
+      "path": "internal/workerproc/unit_oom_linux.go",
+      "owner": "memoryCgroup.watchOOMv1",
+      "target": "done",
+      "kind": "channel",
+      "source": "make(chan struct{})",
+      "capacity": "0",
+      "class": "lifecycle",
+      "rationale": "Closed when the OOM watch goroutine ends, with the cgroup or at stop; OOMKilled waits on it, bounded.",
+      "queue": "php_taint"
+    },
+    {
+      "id": "internal/workerproc/unit_oom_linux.go::memoryCgroup.watchOOMv2::done::channel::1",
+      "path": "internal/workerproc/unit_oom_linux.go",
+      "owner": "memoryCgroup.watchOOMv2",
+      "target": "done",
+      "kind": "channel",
+      "source": "make(chan struct{})",
+      "capacity": "0",
+      "class": "lifecycle",
+      "rationale": "Closed when the OOM watch goroutine ends, with the cgroup or at stop; OOMKilled waits on it, bounded.",
+      "queue": "php_taint"
+    },
+    {
       "id": "internal/workerproc/supervisor.go::*Supervisor.roundTripLocked::abandon::channel::1",
       "path": "internal/workerproc/supervisor.go",
       "owner": "*Supervisor.roundTripLocked",

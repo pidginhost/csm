@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
+	"time"
 )
 
 // memoryCgroup is a worker unit's own memory cgroup directory.
@@ -209,4 +211,25 @@ func writeCgroupValue(path, value string, ok func(string) bool) error {
 		return fmt.Errorf("%s reads %q after writing %s", path, got, value)
 	}
 	return nil
+}
+
+// oomWatch follows the kernel's OOM notifications for one worker cgroup. The
+// daemon sees a worker die only once systemd-run exits, after systemd has
+// removed the unit's cgroup and its oom_kill counter with it, so the kill
+// has to be read at the kernel's notification, while the cgroup exists.
+type oomWatch struct {
+	seen atomic.Bool
+	done chan struct{}
+	stop func()
+}
+
+// wait returns whether an OOM kill was seen, after the watch ends or d.
+func (w *oomWatch) wait(d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-w.done:
+	case <-timer.C:
+	}
+	return w.seen.Load()
 }

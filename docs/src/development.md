@@ -1217,7 +1217,10 @@ let through. Each supervisor publishes a `requests` queue-health row.
 `workerproc.FailureReason` classifies counted failures as `timeout`,
 `protocol`, `crash`, `oom`, or `spawn`, including through wrapped errors.
 Malformed frames and rejected descriptors are protocol failures; a broken
-socket is a crash unless the process reports an OOM kill. Diagnostic text
+socket is a crash unless the process reports an OOM kill. A unit worker
+learns of a kernel OOM kill as it happens, from an eventfd on cgroup v1 or
+inotify on `memory.events` on v2: by the time the daemon sees the worker die,
+systemd has removed the unit's cgroup and its counters. Diagnostic text
 and underlying errors remain unchanged. A failed start matches `ErrSpawn`,
 not `ErrWorkerFailed`.
 
