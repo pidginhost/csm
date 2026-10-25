@@ -35,6 +35,27 @@ const (
 // observe verdicts without a live fanotify descriptor.
 var spoolWriteResponse = (*SpoolWatcher).writeResponse
 
+// holdStage is where a suspended open is when its hold budget runs out. Only
+// an open still queued for a scan slot shows that scan capacity is exhausted.
+type holdStage int32
+
+const (
+	holdQueued holdStage = iota
+	holdWaiting
+	holdScanning
+)
+
+func (s holdStage) String() string {
+	switch s {
+	case holdWaiting:
+		return "waiting"
+	case holdScanning:
+		return "scanning"
+	default:
+		return "queued"
+	}
+}
+
 // holdGuard owns the verdict for one suspended open. Whoever gets there first
 // wins -- the scan, or the budget timer -- and the kernel is answered once.
 type holdGuard struct {
@@ -45,7 +66,15 @@ type holdGuard struct {
 	closeOnce      sync.Once
 	timer          *time.Timer
 	expired        atomic.Bool
+	stage          atomic.Int32
 	timeoutVerdict uint32 // read only after respond has joined once
+}
+
+// setStage records where the open is now. Safe on a nil guard.
+func (g *holdGuard) setStage(s holdStage) {
+	if g != nil {
+		g.stage.Store(int32(s))
+	}
 }
 
 // newHoldGuard arms the budget timer for a suspended open. Outside permission
@@ -78,7 +107,15 @@ func (g *holdGuard) expire() {
 		spoolWriteResponse(g.sw, g.fd, g.timeoutVerdict)
 		// Keep all callback work inside once so finishing an event also joins
 		// its timer before the watcher or test hooks can be torn down.
-		g.sw.noteHoldExpiry(time.Now())
+		stage := holdStage(g.stage.Load())
+		if spoolHoldExpiredTotal != nil {
+			spoolHoldExpiredTotal.With(stage.String()).Inc()
+		}
+		// A slow scan, or a message waiting behind its own sender, is not a
+		// capacity problem: one sender must not be able to switch holding off.
+		if stage == holdQueued {
+			g.sw.noteHoldExpiry(time.Now())
+		}
 	})
 }
 
@@ -108,9 +145,10 @@ func (g *holdGuard) finish(response uint32) {
 // timedOut reports whether the budget answered before the scan did.
 func (g *holdGuard) timedOut() bool { return g.expired.Load() }
 
-// holdWatchdog tracks budget expiries. A burst of them means scanning cannot
-// keep up with mail, and holding every further message for the full budget
-// only spreads the delay, so the watcher stops holding for a cooldown.
+// holdWatchdog tracks opens that never got a scan slot: holds that expired in
+// the queue and opens refused by a full queue. A burst of them means scanning
+// cannot keep up with mail, and holding every further message for the full
+// budget only spreads the delay, so the watcher stops holding for a cooldown.
 type holdWatchdog struct {
 	mu          sync.Mutex
 	expiries    []time.Time
@@ -146,7 +184,7 @@ func (w *holdWatchdog) bypassing(now time.Time) bool {
 	return now.Before(w.bypassUntil)
 }
 
-// noteHoldExpiry records an exhausted deadline or admission capacity and
+// noteHoldExpiry records one open that could not start scanning in time and
 // reports the first transition into bypass.
 func (sw *SpoolWatcher) noteHoldExpiry(now time.Time) {
 	if !sw.holds.recordExpiry(now) {
@@ -156,10 +194,10 @@ func (sw *SpoolWatcher) noteHoldExpiry(now time.Time) {
 	if sw.timeoutResponse() == FAN_DENY {
 		action = "deferred without scanning (tempfail mode)"
 	}
-	fmt.Fprintf(os.Stderr, "[%s] spool watcher: scan capacity or hold budget repeatedly exhausted - mail %s for %s\n", ts(), action, spoolBypassCooldown)
+	fmt.Fprintf(os.Stderr, "[%s] spool watcher: scan capacity repeatedly exhausted - mail %s for %s\n", ts(), action, spoolBypassCooldown)
 	sw.emitFinding("email_av_hold_bypass", alert.Critical,
-		fmt.Sprintf("Email AV scanning fell behind mail delivery: scan capacity or the %s hold budget was exhausted %d times within %s. New messages are %s for the next %s; these messages are not queued for a later scan. Scans already running continue. Investigate scanner load.",
-			spoolHoldBudget, spoolHoldExpiryThreshold, spoolHoldExpiryWindow, action, spoolBypassCooldown))
+		fmt.Sprintf("Email AV scanning fell behind mail delivery: scan capacity was exhausted. %d messages within %s could not start scanning within the %s hold budget, or found the scan queue full. New messages are %s for the next %s; these messages are not queued for a later scan. Scans already running continue. Investigate scanner load.",
+			spoolHoldExpiryThreshold, spoolHoldExpiryWindow, spoolHoldBudget, action, spoolBypassCooldown))
 }
 
 // dispatchBypass answers an open immediately while bypassing, without

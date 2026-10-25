@@ -12,6 +12,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 ### Security
 
 - Email attachments are now unpacked in a separate locked-down process with no network access, so a crafted message can no longer stall mail scanning. After upgrade, attachment workers run as systemd units and failures follow email_av.fail_mode.
+- Slow messages can no longer switch off mail scanning for all mail; scanning pauses only when the scan queue itself is full.
 
 ### Fixed
 

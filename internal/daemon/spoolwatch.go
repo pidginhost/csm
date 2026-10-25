@@ -30,6 +30,7 @@ import (
 // registerSpoolMetrics leave it nil, so callers must nil-check.
 var (
 	spoolQueueOverflowTotal *metrics.Counter
+	spoolHoldExpiredTotal   *metrics.CounterVec
 	spoolMetricsOnce        sync.Once
 )
 
@@ -42,6 +43,12 @@ func registerSpoolMetrics() {
 			"FAN_Q_OVERFLOW events on the Exim spool watcher: the kernel queue filled and dropped spool open events. In permission mode the kernel allows the overflowing opens, so mail may be delivered without an AV scan. Any sustained growth needs investigation.",
 		)
 		metrics.MustRegister("csm_spool_fanotify_queue_overflow_total", spoolQueueOverflowTotal)
+		spoolHoldExpiredTotal = metrics.NewCounterVec(
+			"csm_spool_hold_expired_total",
+			"Mail opens answered under email_av.fail_mode because the hold budget ran out, by where the message was: queued (no scan slot yet; counts toward the hold bypass), waiting (behind another message from the same sender) or scanning.",
+			[]string{"stage"},
+		)
+		metrics.MustRegister("csm_spool_hold_expired_total", spoolHoldExpiredTotal)
 	})
 }
 
@@ -508,6 +515,7 @@ func (sw *SpoolWatcher) startScanWorkers() int {
 func (sw *SpoolWatcher) scanWorker(slot int) {
 	defer sw.wg.Done()
 	handle := func(evt spoolEvent) {
+		evt.guard.setStage(holdScanning)
 		evt.slot = slot
 		sw.handleSpoolEventSafe(evt)
 	}

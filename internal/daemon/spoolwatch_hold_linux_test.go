@@ -13,6 +13,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/metrics"
 )
 
 // recordedResponse is one fanotify verdict the watcher handed the kernel.
@@ -335,5 +336,146 @@ func TestSlowScanDoesNotHoldMailPastBudget(t *testing.T) {
 	}
 	if got := responses(); len(got) != 1 {
 		t.Fatalf("responses = %+v, want the late verdict suppressed", got)
+	}
+}
+
+// expireGuards arms n guards in the given stage and lets each hold expire.
+func expireGuards(t *testing.T, sw *SpoolWatcher, n int, stage holdStage) {
+	t.Helper()
+	for range n {
+		fd := openSpoolFD(t)
+		guard := sw.newHoldGuard(fd, true)
+		guard.setStage(stage)
+		guard.expire()
+		guard.finish(FAN_ALLOW)
+	}
+}
+
+func countFindings(ch chan alert.Finding, check string) int {
+	n := 0
+	for len(ch) > 0 {
+		if f := <-ch; f.Check == check {
+			n++
+		}
+	}
+	return n
+}
+
+// Messages that never got a scan slot mean capacity is exhausted: that is the
+// only signal that should stop holding mail.
+func TestHoldExpiryWhileQueuedCounts(t *testing.T) {
+	captureResponses(t)
+	sw, findings := testHoldWatcher(t)
+	expireGuards(t, sw, spoolHoldExpiryThreshold, holdQueued)
+	if !sw.holds.bypassing(time.Now()) {
+		t.Fatal("expiries of queued messages did not start the bypass")
+	}
+	if n := countFindings(findings, "email_av_hold_bypass"); n != 1 {
+		t.Fatalf("hold bypass findings = %d, want 1", n)
+	}
+}
+
+// A slow scan answers under fail_mode at the deadline, but it is not a sign
+// that the scanner lacks capacity, so it must not switch holding off.
+func TestHoldExpiryDuringScanNotCounted(t *testing.T) {
+	for _, mode := range []string{"open", "tempfail"} {
+		t.Run(mode, func(t *testing.T) {
+			responses := captureResponses(t)
+			sw, evt, qdir, findings := deadlineInfectedEvent(t)
+			sw.cfg.EmailAV.FailMode = mode
+			expireGuards(t, sw, spoolHoldExpiryThreshold-1, holdScanning)
+			evt.guard.setStage(holdScanning)
+			evt.guard.expire()
+			sw.handleSpoolEventSafe(evt)
+
+			want := uint32(FAN_ALLOW)
+			if mode == "tempfail" {
+				want = FAN_DENY
+			}
+			got := responses()
+			if len(got) != spoolHoldExpiryThreshold {
+				t.Fatalf("responses = %d, want one per expired hold", len(got))
+			}
+			for _, r := range got {
+				if r.response != want {
+					t.Fatalf("expired hold answered %d, want %d", r.response, want)
+				}
+			}
+			if sw.holds.bypassing(time.Now()) {
+				t.Fatal("expiries during scans started the bypass")
+			}
+			if _, err := os.Stat(filepath.Join(qdir, "deadline-message", "deadline-message-D")); err != nil {
+				t.Errorf("late infected verdict did not quarantine: %v", err)
+			}
+			var bypass, late int
+			for len(findings) > 0 {
+				switch (<-findings).Check {
+				case "email_av_hold_bypass":
+					bypass++
+				case "email_av_late_verdict":
+					late++
+				}
+			}
+			if bypass != 0 {
+				t.Errorf("hold bypass findings = %d, want 0", bypass)
+			}
+			wantLate := 0
+			if mode == "open" {
+				wantLate = 1
+			}
+			if late != wantLate {
+				t.Errorf("late verdict findings = %d, want %d", late, wantLate)
+			}
+		})
+	}
+}
+
+// A message parked behind its own sender has a free slot elsewhere; its
+// expiry says nothing about scan capacity.
+func TestHoldExpiryWhileWaitingNotCounted(t *testing.T) {
+	responses := captureResponses(t)
+	sw, findings := testHoldWatcher(t)
+	expireGuards(t, sw, spoolHoldExpiryThreshold, holdWaiting)
+	if sw.holds.bypassing(time.Now()) {
+		t.Fatal("expiries while waiting behind a source started the bypass")
+	}
+	if n := countFindings(findings, "email_av_hold_bypass"); n != 0 {
+		t.Fatalf("hold bypass findings = %d, want 0", n)
+	}
+	if got := responses(); len(got) != spoolHoldExpiryThreshold {
+		t.Fatalf("responses = %d, want every expired hold answered", len(got))
+	}
+}
+
+// A full scan queue is capacity exhaustion by definition.
+func TestQueueFullStillCountsTowardBypass(t *testing.T) {
+	captureResponses(t)
+	shortHoldBudget(t, time.Minute)
+	sw, findings := testHoldWatcher(t)
+	sw.scanCh <- spoolEvent{fd: -1}
+	for range spoolHoldExpiryThreshold {
+		sw.dispatchEvent(openSpoolFD(t), int32(os.Getpid()+1))
+	}
+	if !sw.holds.bypassing(time.Now()) {
+		t.Fatal("dispatches into a full queue did not start the bypass")
+	}
+	if n := countFindings(findings, "email_av_hold_bypass"); n != 1 {
+		t.Fatalf("hold bypass findings = %d, want 1", n)
+	}
+}
+
+func TestHoldExpiryMetricByStage(t *testing.T) {
+	captureResponses(t)
+	orig := spoolHoldExpiredTotal
+	spoolHoldExpiredTotal = metrics.NewCounterVec("test_spool_hold_expired_total", "", []string{"stage"})
+	t.Cleanup(func() { spoolHoldExpiredTotal = orig })
+	sw, _ := testHoldWatcher(t)
+	for _, stage := range []holdStage{holdQueued, holdWaiting, holdScanning} {
+		expireGuards(t, sw, 1, stage)
+	}
+	for _, label := range []string{"queued", "waiting", "scanning"} {
+		if got := spoolHoldExpiredTotal.With(label).Value(); got != 1 {
+			t.Errorf("stage %s expiries = %v, want 1", label, got)
+		}
 	}
 }

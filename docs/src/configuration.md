@@ -601,10 +601,12 @@ email_av:
   # Permission events have a five-second scan hold budget. When it expires,
   # the open is allowed ("open") or denied for retry ("tempfail"); an admitted
   # scan continues. A full scan queue applies the same policy immediately.
-  # Repeated deadline or capacity exhaustion raises email_av_hold_bypass and
-  # stops queueing new scans for five minutes. During this cooldown new opens
-  # are allowed unscanned ("open") or deferred ("tempfail"). Scanning resumes
-  # automatically afterwards; bypassed messages are not scanned later.
+  # When messages repeatedly cannot start scanning within the hold budget, or
+  # find the scan queue full, CSM raises email_av_hold_bypass and stops
+  # queueing new scans for five minutes. A hold that runs out while the
+  # message is already being scanned does not count. During this cooldown new
+  # opens are allowed unscanned ("open") or deferred ("tempfail"). Scanning
+  # resumes automatically afterwards; bypassed messages are not scanned later.
   # An archive that lists more than ten times max_archive_files entries, or
   # whose decompressed data passes max_extraction_size, counts as not fully
   # scanned and follows fail_mode. Nested archives share that budget. So do

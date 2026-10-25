@@ -193,6 +193,13 @@ curl -o goroutine.txt 'http://127.0.0.1:<port>/debug/pprof/goroutine?debug=2'
   overflows on the mail spool watcher. In permission mode an
   overflowed event means the message was delivered without being
   scanned; a Warning finding is raised when this happens.
+- `csm_spool_hold_expired_total{stage}` (counter): mail opens
+  answered under `email_av.fail_mode` because the hold budget ran
+  out. `stage` is `queued` (no scan slot yet; these count toward
+  the hold bypass), `waiting` (behind another message from the
+  same sender) or `scanning` (a slow scan; the scan continues and
+  can still quarantine). Sustained `queued` growth means scan
+  capacity is short.
 - `csm_fanotify_reconcile_latency_seconds` (histogram): how long
   the post-overflow reconcile pass takes to walk drop-affected
   directories and rescan recent files. Buckets: 0.01 s .. 60 s.
