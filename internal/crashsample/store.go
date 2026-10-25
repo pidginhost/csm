@@ -166,27 +166,15 @@ func (s *Store) openDir(create bool) (*os.Root, error) {
 	return root, nil
 }
 
+// openParent opens the directory that holds the store. That path belongs to
+// root's layout and may contain links (such as /opt on a symlink); only the
+// store directory itself is pinned against replacement.
 func openParent(path string) (*os.Root, error) {
 	abs, err := filepath.Abs(filepath.Dir(path))
 	if err != nil {
 		return nil, err
 	}
-	root, err := os.OpenRoot(string(os.PathSeparator))
-	if err != nil {
-		return nil, err
-	}
-	for _, name := range strings.Split(strings.TrimPrefix(abs, string(os.PathSeparator)), string(os.PathSeparator)) {
-		if name == "" {
-			continue
-		}
-		next, openErr := openChildRoot(root, name)
-		_ = root.Close()
-		if openErr != nil {
-			return nil, openErr
-		}
-		root = next
-	}
-	return root, nil
+	return os.OpenRoot(abs)
 }
 
 func openChildRoot(parent *os.Root, name string) (*os.Root, error) {

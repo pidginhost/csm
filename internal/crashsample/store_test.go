@@ -258,3 +258,27 @@ func TestStoreSweepRemovesOld(t *testing.T) {
 		t.Fatalf("sweep of a missing directory = %d, %v", n, err)
 	}
 }
+
+// The state directory is root's to lay out, and may sit under a linked path
+// such as /opt on a symlink. Only the store directory itself must be real.
+func TestStoreWorksUnderLinkedParent(t *testing.T) {
+	base := t.TempDir()
+	real := filepath.Join(base, "real")
+	if err := os.Mkdir(real, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "state")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	s := New(filepath.Join(link, "parse-crashes"))
+	if err := s.Save("m", []File{file("body", "x")}); err != nil {
+		t.Fatalf("Save under a linked parent: %v", err)
+	}
+	if _, err := s.Sweep(); err != nil {
+		t.Fatalf("Sweep under a linked parent: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(real, "parse-crashes", "m", "body")); err != nil {
+		t.Fatal(err)
+	}
+}
