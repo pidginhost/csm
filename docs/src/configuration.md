@@ -645,10 +645,16 @@ email_av:
   #   reply failed validation     "parse worker reply rejected"
   #   worker unit cannot start    "parse isolation unavailable"
   #   unit keeps failing to start "parse worker failing repeatedly"
-  # The first four raise email_av_parse_worker_failed, at most once a minute;
-  # a rejected reply also raises a Critical email_av_parse_worker_rejected.
-  # The last two raise a Critical email_av_isolation_unavailable. Each
-  # Critical finding is raised at most once an hour.
+  #   message failed twice before "parse worker failed on this message before"
+  # The first four raise email_av_parse_worker_failed, naming the message and
+  # its sender, at most once a minute; a rejected reply also raises a Critical
+  # email_av_parse_worker_rejected. The next two raise a Critical
+  # email_av_isolation_unavailable. Each Critical finding is raised at most
+  # once an hour. A message whose worker failed twice within a day is not
+  # unpacked again on later delivery attempts. When messages from one sender
+  # make workers fail three times, each within ten minutes of the one before,
+  # a High email_av_parse_worker_source names the sender, at most once every
+  # ten minutes; blocking that sender is usually the right response.
 
 # --- Email Protection ---
 email_protection:

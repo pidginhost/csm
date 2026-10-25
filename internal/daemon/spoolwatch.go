@@ -23,6 +23,7 @@ import (
 	emime "github.com/pidginhost/csm/internal/mime"
 	"github.com/pidginhost/csm/internal/obs"
 	"github.com/pidginhost/csm/internal/queuehealth"
+	"github.com/pidginhost/csm/internal/workerproc"
 )
 
 // spoolQueueOverflowTotal counts FAN_Q_OVERFLOW records on the spool watcher.
@@ -149,6 +150,10 @@ type SpoolWatcher struct {
 	holds holdWatchdog
 	// sources lets one message per sender scan at a time.
 	sources sourceGate
+	// mailStrikes counts worker kills per message ID; sourceKills counts
+	// them per source. Nil on hand-built test watchers.
+	mailStrikes *workerproc.Strikes
+	sourceKills *workerproc.Strikes
 
 	queueHealthOnce   sync.Once
 	scannerHealth     *queuehealth.Tracker
@@ -208,6 +213,7 @@ func NewSpoolWatcher(cfg *config.Config, alertCh chan<- alert.Finding, orch *ema
 		scanCh:        make(chan spoolEvent, 256),
 		stopCh:        make(chan struct{}),
 	}
+	sw.initStrikes()
 
 	// Try permission-capable class first
 	fd, err := spoolFanotifyInit(FAN_CLASS_CONTENT|FAN_CLOEXEC|FAN_NONBLOCK, unix.O_RDONLY|unix.O_CLOEXEC)

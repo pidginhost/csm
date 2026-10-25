@@ -79,3 +79,31 @@ func TestStrikesEvictOldestWhenFull(t *testing.T) {
 		t.Fatal("eviction did not drop exactly the oldest input")
 	}
 }
+
+func TestStrikesWithCustomLimit(t *testing.T) {
+	now := time.Unix(1_000_000, 0)
+	s := NewStrikesWith(3, 10*time.Minute)
+	s.now = func() time.Time { return now }
+	for i := range 3 {
+		if s.Blocked("src") {
+			t.Fatalf("blocked after %d failures, want 3", i)
+		}
+		s.Record("src")
+		now = now.Add(4 * time.Minute)
+	}
+	now = now.Add(-4 * time.Minute)
+	if !s.Blocked("src") {
+		t.Fatal("three failures 4 minutes apart did not block")
+	}
+
+	s = NewStrikesWith(3, 10*time.Minute)
+	s.now = func() time.Time { return now }
+	s.Record("src")
+	now = now.Add(4 * time.Minute)
+	s.Record("src")
+	now = now.Add(11 * time.Minute)
+	s.Record("src")
+	if s.Blocked("src") {
+		t.Fatal("a failure 11 minutes after the previous one still counted the old ones")
+	}
+}

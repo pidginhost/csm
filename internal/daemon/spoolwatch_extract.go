@@ -26,6 +26,34 @@ var spoolExtractTimeout = parseworker.ExtractTimeout + 10*time.Second
 // errNoExtractor stands for parse workers that could not be set up.
 var errNoExtractor = errors.New("no mail parse worker")
 
+const (
+	// repeatFailureReason is the partial reason of a message that is not
+	// unpacked again because it made workers fail before.
+	repeatFailureReason = "parse worker failed on this message before"
+	// outcomeSkipped is the job outcome of such a message.
+	outcomeSkipped = "skipped"
+	// sourceKillLimit worker kills from one source, each within
+	// sourceKillWindow of the one before, raise a High finding.
+	sourceKillLimit  = 3
+	sourceKillWindow = 10 * time.Minute
+)
+
+func (sw *SpoolWatcher) initStrikes() {
+	sw.mailStrikes = workerproc.NewStrikes()
+	sw.sourceKills = workerproc.NewStrikesWith(sourceKillLimit, sourceKillWindow)
+}
+
+// countedKill reports a failure the worker's input caused: a timeout, a
+// memory kill, a crash or a rejected reply. Failed starts, the breaker,
+// cancellation and shutdown are not the message's doing.
+func countedKill(err error) bool {
+	switch workerproc.FailureReason(err) {
+	case workerproc.ReasonTimeout, workerproc.ReasonOOM, workerproc.ReasonCrash, workerproc.ReasonProtocol:
+		return true
+	}
+	return false
+}
+
 // openSpoolHeader opens the -H file of the message whose -D is open on
 // bodyFD. It follows no link and does not block on a FIFO, and the result
 // must be a regular file on the body's filesystem: the worker is given
@@ -90,20 +118,53 @@ func (sw *SpoolWatcher) extractSpoolMessage(evt spoolEvent, msgID, headerPath st
 	}
 	defer func() { _ = header.Close() }()
 	if sw.extractor == nil {
-		return sw.extractFailed(msgID, errNoExtractor), nil
+		return sw.extractFailed(msgID, evt.source, errNoExtractor), nil
+	}
+	if sw.mailStrikes != nil && sw.mailStrikes.Blocked(msgID) {
+		recordParseJob("mail", outcomeSkipped, 0)
+		fmt.Fprintf(os.Stderr, "[%s] spool watcher: not unpacking %s again: parse workers failed on it before\n", ts(), msgID)
+		return &emime.ExtractionResult{Partial: true, PartialReason: repeatFailureReason}, nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), spoolExtractTimeout)
 	defer cancel()
 	extraction, err := sw.extractor.Extract(ctx, evt.slot, header, body, limits)
 	if err != nil {
-		return sw.extractFailed(msgID, err), nil
+		if countedKill(err) {
+			sw.recordWorkerKill(msgID, evt.source)
+		}
+		return sw.extractFailed(msgID, evt.source, err), nil
 	}
 	return extraction, nil
 }
 
+// recordWorkerKill charges a worker kill to the message and its source. A
+// source whose messages keep killing workers is named in a High finding.
+func (sw *SpoolWatcher) recordWorkerKill(msgID, source string) {
+	if sw.mailStrikes == nil {
+		return
+	}
+	sw.mailStrikes.Record(msgID)
+	if source == "" {
+		return
+	}
+	sw.sourceKills.Record(source)
+	if sw.sourceKills.Blocked(source) {
+		sw.emitLimited("email_av_parse_worker_source", alert.High, sourceKillWindow,
+			fmt.Sprintf("Messages from source %q killed the attachment parse worker %d times, each within %s of the one before. Their attachments were not scanned and followed email_av.fail_mode. This looks like crafted mail; consider blocking the source.", source, sourceKillLimit, sourceKillWindow))
+	}
+}
+
+// sourceText names a message source for a finding.
+func sourceText(source string) string {
+	if source == "" {
+		return "an unknown source"
+	}
+	return fmt.Sprintf("source %q", source)
+}
+
 // extractFailed reports a failed extraction and turns it into a partial
 // result, which follows fail_mode and is never clean.
-func (sw *SpoolWatcher) extractFailed(msgID string, err error) *emime.ExtractionResult {
+func (sw *SpoolWatcher) extractFailed(msgID, source string, err error) *emime.ExtractionResult {
 	reason, isolation := extractFailureReason(err)
 	fmt.Fprintf(os.Stderr, "[%s] spool watcher: extraction failed for %s: %v\n", ts(), msgID, err)
 	switch {
@@ -114,7 +175,7 @@ func (sw *SpoolWatcher) extractFailed(msgID string, err error) *emime.Extraction
 			fmt.Sprintf("Email attachments cannot be unpacked in an isolated worker (%s); message %s was handled as an incomplete scan under email_av.fail_mode: %v", reason, msgID, err))
 	default:
 		sw.emitLimited("email_av_parse_worker_failed", alert.Warning, time.Minute,
-			fmt.Sprintf("Parse worker failed on message %s (%s); the message was handled as an incomplete scan under email_av.fail_mode", msgID, reason))
+			fmt.Sprintf("Parse worker failed on message %s from %s (%s); the message was handled as an incomplete scan under email_av.fail_mode", msgID, sourceText(source), reason))
 		if workerproc.FailureReason(err) == workerproc.ReasonProtocol {
 			sw.emitLimited("email_av_parse_worker_rejected", alert.Critical, time.Hour,
 				fmt.Sprintf("Parse worker sent an invalid reply for message %s and was killed; a crafted message may have taken it over", msgID))
