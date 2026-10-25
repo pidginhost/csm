@@ -1241,6 +1241,13 @@ starts, and returns an independent snapshot. Cancellation, stopped or
 breaker refusals, and local descriptor exhaustion before the round trip
 do not reach the hook or these counters.
 
+`Config.OnJob` receives one outcome for every request that reached the
+breaker: `ok` with the worker's memory use after the job (0 when unknown),
+a failure reason, or `refused` when the breaker turned the request away. It
+runs under the same lock and rules as `OnFailure`. Cancellation, a stopped
+supervisor and local descriptor exhaustion are not reported. The daemon
+feeds it into the `csm_parse_worker_*` metrics.
+
 Some errors are not worker failures and never count toward the breaker:
 
 - caller cancellation, including during launch; a canceled trial restarts
@@ -1261,7 +1268,8 @@ then fails on its input or the caller cancels the request.
 
 A known limit: when the daemon is at its descriptor limit, the kernel drops
 descriptors a reply carries. That looks the same as a worker sending too
-many, so it counts as a worker failure.
+many, so it counts as a worker failure, classified as a crash rather than a
+protocol violation.
 
 `Config.MaxJobs` retires a worker after that many requests, and
 `Process.Retire` lets a launcher retire one after a request, for example over
@@ -1275,10 +1283,12 @@ before any real request. It honors cancellation and the context deadline,
 refuses reply descriptors and clears the socket deadline before returning.
 
 `workerproc.Strikes` remembers inputs that made a worker fail. Two failures
-within 24 hours block an input, for at most 1,024 inputs. The phishing check
-keys it by the zip's SHA-256 and reports a blocked zip with the
-`phishing_kit_archive_unscannable` warning instead of retrying it on every
-scan.
+within 24 hours block an input, for at most 1,024 inputs; `NewStrikesWith`
+sets another limit and window, each failure within the window of the one
+before. The phishing check keys it by the zip's SHA-256 and reports a blocked
+zip with the `phishing_kit_archive_unscannable` warning instead of retrying
+it on every scan. The spool watcher keys it by Exim message ID, and counts
+kills per message source with a limit of three in ten minutes.
 
 Worker diagnostics must go to stderr; stdout carries the protocol socket. The
 PHP taint worker (`csm phptaint-worker`) runs as a plain child
