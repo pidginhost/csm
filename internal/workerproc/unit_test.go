@@ -318,7 +318,7 @@ func TestCheckUnitCommand(t *testing.T) {
 
 func TestLockdownPropertiesInaccessiblePaths(t *testing.T) {
 	cfg := UnitConfig{Prefix: "csm-parse-worker-mail0", MemoryLimit: 512 << 20, FileSizeLimit: 64 << 20,
-		InaccessiblePaths: []string{"/home3", "/home2", "/home2", "rel", "/a b", "/x/../y", "/", `/q"`, "/p%h", "/c\x01"}}
+		InaccessiblePaths: []string{"/home3", "/home2", "/home2", "", "rel", "/a b", "/x/../y", "/x/", "/", `/q"`, "/q'", `/q\n`, "/p%h", "/c\x01", "/c\x7f", "/c\r", "/c\t", "/c\n"}}
 	var got []string
 	for _, p := range lockdownProperties(cfg) {
 		if strings.HasPrefix(p, "InaccessiblePaths=") {

@@ -115,6 +115,8 @@ directly. Each line is cut to 512 bytes and quoted, so control characters and
 newlines cannot forge log lines, and at most 64 KiB is logged per worker
 unit; after that one "further output dropped" line is logged and the rest is
 discarded. Error text in a worker's reply is quoted the same way.
+When the launcher exits, final diagnostics drain for at most one second.
+The log reader then closes even if another process still holds its writer.
 
 `MemoryLimit` caps RAM only on cgroup v1, so the daemon also writes
 `memory.memsw.limit_in_bytes` in the unit's own memory cgroup, or

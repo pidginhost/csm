@@ -63,6 +63,10 @@ type unitHooks struct {
 // unitKillTimeout bounds one systemctl kill.
 const unitKillTimeout = 5 * time.Second
 
+// unitOutputDrainTimeout lets final diagnostics drain without waiting on
+// a writer inherited by a process that outlives systemd-run.
+const unitOutputDrainTimeout = time.Second
+
 // oomWatchGrace bounds how long a dead worker's OOM watch may still report.
 const oomWatchGrace = time.Second
 
@@ -254,6 +258,10 @@ func startUnit(ctx context.Context, cfg UnitConfig, h *unitHooks) (*unitProcess,
 		_ = cmd.Wait()
 		// The unit belongs to PID 1 and can outlive the systemd-run client.
 		_ = p.Kill()
+		// EOF is not guaranteed if another process still holds the writer.
+		// Allow buffered diagnostics through, then release the reader without
+		// delaying Done and its watchdog shutdown. A closed reader needs no deadline.
+		_ = stderrR.SetReadDeadline(time.Now().Add(unitOutputDrainTimeout))
 		close(p.done)
 	}()
 
