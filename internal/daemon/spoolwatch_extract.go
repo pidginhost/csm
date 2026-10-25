@@ -26,11 +26,12 @@ var spoolExtractTimeout = parseworker.ExtractTimeout + 10*time.Second
 // errNoExtractor stands for parse workers that could not be set up.
 var errNoExtractor = errors.New("no mail parse worker")
 
-// openSpoolHeader opens the -H file of the message whose -D is body. It
-// follows no link and does not block on a FIFO, and the result must be a
-// regular file on body's filesystem: the worker is given whatever this opens.
-// A missing file keeps its ENOENT for the reception race (MAIL-03).
-func openSpoolHeader(path string, body *os.File) (*os.File, error) {
+// openSpoolHeader opens the -H file of the message whose -D is open on
+// bodyFD. It follows no link and does not block on a FIFO, and the result
+// must be a regular file on the body's filesystem: the worker is given
+// whatever this opens. A missing file keeps its ENOENT for the reception race
+// (MAIL-03).
+func openSpoolHeader(path string, bodyFD int) (*os.File, error) {
 	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC|unix.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, &os.PathError{Op: "open", Path: path, Err: err}
@@ -38,7 +39,7 @@ func openSpoolHeader(path string, body *os.File) (*os.File, error) {
 	var hs, bs unix.Stat_t
 	err = unix.Fstat(fd, &hs)
 	if err == nil {
-		err = unix.Fstat(int(body.Fd()), &bs)
+		err = unix.Fstat(bodyFD, &bs)
 	}
 	switch {
 	case err != nil:
@@ -83,7 +84,7 @@ func (sw *SpoolWatcher) extractSpoolMessage(evt spoolEvent, msgID, headerPath st
 		return nil, err
 	}
 	defer func() { _ = body.Close() }()
-	header, err := openSpoolHeader(headerPath, body)
+	header, err := openSpoolHeader(headerPath, evt.fd)
 	if err != nil {
 		return nil, err
 	}

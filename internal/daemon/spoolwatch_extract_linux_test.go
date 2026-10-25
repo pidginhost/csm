@@ -208,7 +208,7 @@ func TestSpoolHeaderOpenRefusesNonRegular(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer func() { _ = body.Close() }()
-			if f, openErr := openSpoolHeader(header, body); openErr == nil {
+			if f, openErr := openSpoolHeader(header, int(body.Fd())); openErr == nil {
 				_ = f.Close()
 				t.Fatal("openSpoolHeader accepted a non-regular -H")
 			}
@@ -320,7 +320,8 @@ func TestSpoolExtractUsesOwnSlot(t *testing.T) {
 	dir := t.TempDir()
 	for i := range n {
 		msgID := fmt.Sprintf("1aBcDe-SLOT%d-XX", i)
-		buildMinimalEximSpool(t, dir, msgID)
+		// One message per sender scans at a time; use three senders.
+		buildSourceSpool(t, dir, msgID, fmt.Sprintf("192.0.2.%d", 10+i))
 		evt := bodyEvent(t, dir, msgID)
 		evt.needResp = false
 		evt.queueTicket = sw.scannerHealth.Begin(time.Now())

@@ -200,6 +200,14 @@ curl -o goroutine.txt 'http://127.0.0.1:<port>/debug/pprof/goroutine?debug=2'
   same sender) or `scanning` (a slow scan; the scan continues and
   can still quarantine). Sustained `queued` growth means scan
   capacity is short.
+- `csm_spool_source_waits_total{outcome}` (counter): mail opens
+  that found another message from the same sender being scanned.
+  `outcome` is `waited` (the message waited its turn without
+  taking a scan slot) or `overflow` (too many messages from that
+  sender were already waiting, so it was answered under
+  `email_av.fail_mode` without a scan). Any `overflow` growth
+  comes with an `email_av_source_backlog` finding naming the
+  sender.
 - `csm_fanotify_reconcile_latency_seconds` (histogram): how long
   the post-overflow reconcile pass takes to walk drop-affected
   directories and rescan recent files. Buckets: 0.01 s .. 60 s.

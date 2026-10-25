@@ -31,6 +31,7 @@ import (
 var (
 	spoolQueueOverflowTotal *metrics.Counter
 	spoolHoldExpiredTotal   *metrics.CounterVec
+	spoolSourceWaitsTotal   *metrics.CounterVec
 	spoolMetricsOnce        sync.Once
 )
 
@@ -49,6 +50,12 @@ func registerSpoolMetrics() {
 			[]string{"stage"},
 		)
 		metrics.MustRegister("csm_spool_hold_expired_total", spoolHoldExpiredTotal)
+		spoolSourceWaitsTotal = metrics.NewCounterVec(
+			"csm_spool_source_waits_total",
+			"Mail opens that found another message from the same sender being scanned: waited (parked until the sender's scan finished) or overflow (too many already waiting; answered under email_av.fail_mode without a scan).",
+			[]string{"outcome"},
+		)
+		metrics.MustRegister("csm_spool_source_waits_total", spoolSourceWaitsTotal)
 	})
 }
 
@@ -140,6 +147,8 @@ type SpoolWatcher struct {
 	lastOverflowAt time.Time
 	// holds tracks hold-budget expiries and decides when to stop holding mail.
 	holds holdWatchdog
+	// sources lets one message per sender scan at a time.
+	sources sourceGate
 
 	queueHealthOnce   sync.Once
 	scannerHealth     *queuehealth.Tracker
@@ -159,6 +168,9 @@ type spoolEvent struct {
 	// guard bounds how long this open stays suspended. Nil for events built
 	// outside dispatchEvent, which answer directly from needResp.
 	guard *holdGuard
+	// source is the sender key from the message's -H, "" when unknown; set
+	// by the scan goroutine.
+	source string
 }
 
 // finish hands the kernel a verdict for this event, once, and closes the
@@ -511,14 +523,11 @@ func (sw *SpoolWatcher) startScanWorkers() int {
 }
 
 // scanWorker processes spool events on its parse worker slot: extract, scan,
-// quarantine/allow.
+// quarantine/allow. It also handles the events parked behind each source it
+// is scanning.
 func (sw *SpoolWatcher) scanWorker(slot int) {
 	defer sw.wg.Done()
-	handle := func(evt spoolEvent) {
-		evt.guard.setStage(holdScanning)
-		evt.slot = slot
-		sw.handleSpoolEventSafe(evt)
-	}
+	handle := func(evt spoolEvent) { sw.handleFair(slot, evt) }
 
 	// drainAndClose closes scanCh after shutdown. Keep draining queued events
 	// until then: dispatchEvent may enqueue a permission fd while Stop is racing,
