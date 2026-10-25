@@ -193,21 +193,6 @@ curl -o goroutine.txt 'http://127.0.0.1:<port>/debug/pprof/goroutine?debug=2'
   overflows on the mail spool watcher. In permission mode an
   overflowed event means the message was delivered without being
   scanned; a Warning finding is raised when this happens.
-- `csm_spool_hold_expired_total{stage}` (counter): mail opens
-  answered under `email_av.fail_mode` because the hold budget ran
-  out. `stage` is `queued` (no scan slot yet; these count toward
-  the hold bypass), `waiting` (behind another message from the
-  same sender) or `scanning` (a slow scan; the scan continues and
-  can still quarantine). Sustained `queued` growth means scan
-  capacity is short.
-- `csm_spool_source_waits_total{outcome}` (counter): mail opens
-  that found another message from the same sender being scanned.
-  `outcome` is `waited` (the message waited its turn without
-  taking a scan slot) or `overflow` (too many messages from that
-  sender were already waiting, so it was answered under
-  `email_av.fail_mode` without a scan). Any `overflow` growth
-  comes with an `email_av_source_backlog` finding naming the
-  sender.
 - `csm_fanotify_reconcile_latency_seconds` (histogram): how long
   the post-overflow reconcile pass takes to walk drop-affected
   directories and rescan recent files. Buckets: 0.01 s .. 60 s.
@@ -236,6 +221,39 @@ curl -o goroutine.txt 'http://127.0.0.1:<port>/debug/pprof/goroutine?debug=2'
   finding history for `webshell_content_realtime` (or the matching
   check name for non-PHP labels) to judge whether a raised cap would
   surface real findings.
+
+### Mail scanning and parse workers
+
+- `csm_spool_hold_expired_total{stage}` (counter): mail opens
+  answered under `email_av.fail_mode` because the hold budget ran
+  out. `stage` is `queued` (no scan slot yet; these count toward
+  the hold bypass), `waiting` (behind another message from the
+  same sender) or `scanning` (a slow scan; the scan continues and
+  can still quarantine). Sustained `queued` growth means scan
+  capacity is short.
+- `csm_spool_source_waits_total{outcome}` (counter): mail opens
+  that found another message from the same sender being scanned.
+  `outcome` is `waited` (the message waited its turn without
+  taking a scan slot) or `overflow` (too many messages from that
+  sender were already waiting, so it was answered under
+  `email_av.fail_mode` without a scan). Any `overflow` growth
+  comes with an `email_av_source_backlog` finding naming the
+  sender.
+- `csm_parse_worker_jobs_total{pool,outcome}` (counter): parse
+  worker jobs. `pool` is `mail` (email attachments) or `zip`
+  (tenant zips checked for phishing kits). `outcome` is `ok`,
+  `timeout`, `oom`, `crash`, `protocol` (reply rejected), `spawn`
+  (the unit did not start), `refused` (the worker is failing
+  repeatedly) or `skipped` (the message killed workers before, so
+  it was not unpacked again). Anything but `ok` means a message or
+  zip was not fully checked.
+- `csm_parse_worker_starts_total{pool}` (counter): worker units
+  started. A worker serves many jobs; a start rate close to the
+  job rate means workers keep dying or being retired.
+- `csm_parse_worker_memory_bytes{pool}` (histogram): worker memory
+  and swap in use after a successful job. Buckets: 32 MiB ..
+  1 GiB. Compare the high buckets with
+  `email_av.worker_memory_limit`.
 
 ### Periodic check runner
 

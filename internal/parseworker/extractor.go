@@ -36,6 +36,7 @@ type ExtractorConfig struct {
 	Size      int
 	Launch    func(slot int) workerproc.Launcher
 	OnFailure func(reason string, err error)
+	OnJob     func(outcome string, memory uint64)
 	Log       func(string, ...any)
 }
 
@@ -61,6 +62,7 @@ func NewExtractor(cfg ExtractorConfig) (*Extractor, error) {
 			MaxJobs:     1000,
 			IdleTimeout: 10 * time.Minute,
 			OnFailure:   cfg.OnFailure,
+			OnJob:       cfg.OnJob,
 			// A refused extraction delivers mail unscanned under the open
 			// fail mode, so crafted mail must not be able to open the breaker.
 			BreakOnSpawnOnly: true,

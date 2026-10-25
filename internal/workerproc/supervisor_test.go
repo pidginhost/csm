@@ -450,3 +450,79 @@ func TestCallLogsLaunchFailure(t *testing.T) {
 		t.Fatalf("launch failure logs = %q", logged)
 	}
 }
+
+// memoryProcess reports a fixed memory use, as a unit's cgroup would.
+type memoryProcess struct {
+	*pairProcess
+	used uint64
+}
+
+func (p memoryProcess) MemoryUsed() uint64 { return p.used }
+
+type jobReport struct {
+	outcome string
+	memory  uint64
+}
+
+func TestCallReportsJobOutcomes(t *testing.T) {
+	var mu sync.Mutex
+	var got []jobReport
+	onJob := func(outcome string, memory uint64) {
+		mu.Lock()
+		got = append(got, jobReport{outcome, memory})
+		mu.Unlock()
+	}
+	take := func() []jobReport {
+		mu.Lock()
+		defer mu.Unlock()
+		out := got
+		got = nil
+		return out
+	}
+
+	pair := pairLauncher(t, echoPayload)
+	ok := newTestSupervisor(t, func(ctx context.Context) (Process, error) {
+		p, err := pair(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return memoryProcess{pairProcess: p.(*pairProcess), used: 64 << 20}, nil
+	}, time.Second)
+	ok.cfg.OnJob = onJob
+	if _, _, err := ok.Call(context.Background(), Frame{Op: "work"}, nil, okCheck); err != nil {
+		t.Fatal(err)
+	}
+	if r := take(); len(r) != 1 || r[0] != (jobReport{OutcomeOK, 67108864}) {
+		t.Fatalf("ok job reported %+v, want one (ok, 67108864)", r)
+	}
+
+	hang := newTestSupervisor(t, helperLauncher(t, "hang"), 200*time.Millisecond)
+	hang.cfg.OnJob = onJob
+	clock := time.Now()
+	hang.now = func() time.Time { return clock }
+	for range ConsecutiveFailureLimit {
+		_, _, _ = hang.Call(context.Background(), Frame{Op: "work"}, nil, okCheck)
+	}
+	r := take()
+	if len(r) != ConsecutiveFailureLimit {
+		t.Fatalf("hung jobs reported %+v, want %d", r, ConsecutiveFailureLimit)
+	}
+	for _, j := range r {
+		if j != (jobReport{ReasonTimeout, 0}) {
+			t.Fatalf("hung job reported %+v, want (timeout, 0)", j)
+		}
+	}
+	if _, _, err := hang.Call(context.Background(), Frame{Op: "work"}, nil, okCheck); !errors.Is(err, ErrBreakerOpen) {
+		t.Fatalf("err = %v, want the breaker open", err)
+	}
+	if r := take(); len(r) != 1 || r[0] != (jobReport{OutcomeRefused, 0}) {
+		t.Fatalf("refused job reported %+v, want one (refused, 0)", r)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, _, _ = ok.Call(ctx, Frame{Op: "work"}, nil, okCheck)
+	if r := take(); len(r) != 0 {
+		t.Fatalf("canceled call reported %+v, want nothing", r)
+	}
+}

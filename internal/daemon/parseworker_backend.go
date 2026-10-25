@@ -45,7 +45,8 @@ func (d *Daemon) initParseWorkers() error {
 		d.reportIsolationUnavailable(err)
 		return fmt.Errorf("parse worker: %w", err)
 	}
-	launchZip := parseWorkerLauncher(parseworker.UnitConfig(d.binaryPath, parseWorkerUnitPrefix+"zip0", 64<<20, logf))
+	registerParseWorkerMetrics()
+	launchZip := countParseWorkerStarts("zip", parseWorkerLauncher(parseworker.UnitConfig(d.binaryPath, parseWorkerUnitPrefix+"zip0", 64<<20, logf)))
 	lister, err := parseworker.NewLister(parseworker.ListerConfig{
 		Launch: func(ctx context.Context) (workerproc.Process, error) {
 			proc, err := launchZip(ctx)
@@ -56,7 +57,8 @@ func (d *Daemon) initParseWorkers() error {
 			}
 			return proc, err
 		},
-		Log: logf,
+		Log:   logf,
+		OnJob: func(outcome string, memory uint64) { recordParseJob("zip", outcome, memory) },
 	})
 	if err != nil {
 		return err
@@ -72,9 +74,10 @@ func (d *Daemon) initParseWorkers() error {
 		Size: d.cfg.EmailAV.ScanConcurrency,
 		Launch: func(slot int) workerproc.Launcher {
 			name := fmt.Sprintf("%smail%d", parseWorkerUnitPrefix, slot)
-			return parseWorkerLauncher(parseworker.UnitConfig(d.binaryPath, name, parseworker.FileSizeLimit(d.cfg.EmailAV.MaxAttachmentSize), logf))
+			return countParseWorkerStarts("mail", parseWorkerLauncher(parseworker.UnitConfig(d.binaryPath, name, parseworker.FileSizeLimit(d.cfg.EmailAV.MaxAttachmentSize), logf)))
 		},
-		Log: logf,
+		Log:   logf,
+		OnJob: func(outcome string, memory uint64) { recordParseJob("mail", outcome, memory) },
 	})
 	if err != nil {
 		return err

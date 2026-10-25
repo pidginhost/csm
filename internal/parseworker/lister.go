@@ -23,6 +23,7 @@ type ListerConfig struct {
 	Launch    workerproc.Launcher
 	Log       func(string, ...any)
 	OnFailure func(reason string, err error)
+	OnJob     func(outcome string, memory uint64)
 }
 
 // Lister lists tenant zips through one parse worker at a time.
@@ -41,6 +42,7 @@ func NewLister(cfg ListerConfig) (*Lister, error) {
 		MaxJobs:     1000,
 		IdleTimeout: 10 * time.Minute,
 		OnFailure:   cfg.OnFailure,
+		OnJob:       cfg.OnJob,
 	})
 	if err != nil {
 		return nil, err

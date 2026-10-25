@@ -387,8 +387,10 @@ type unitProcess struct {
 	kill     sync.Once
 	log      func(string, ...any)
 	// usage reads memory and swap in use; limit is the cap it is held to.
-	usage func() (uint64, error)
-	limit uint64
+	// lastUsed is what Retire last read.
+	usage    func() (uint64, error)
+	limit    uint64
+	lastUsed atomic.Uint64
 	// retireAt is three quarters into RuntimeMaxSec; zero means no cap.
 	retireAt time.Time
 	// cg is the unit's memory cgroup; memoryKill records the watchdog
@@ -419,8 +421,14 @@ func (p *unitProcess) Retire() bool {
 		return false
 	}
 	used, err := p.usage()
+	if err == nil {
+		p.lastUsed.Store(used)
+	}
 	return err != nil || used > p.limit/4*3
 }
+
+// MemoryUsed is the memory and swap in use when Retire last read it, or 0.
+func (p *unitProcess) MemoryUsed() uint64 { return p.lastUsed.Load() }
 
 // Kill asks systemd to SIGKILL the unit and returns at once: the supervisor
 // calls it holding its lock, and a hung systemctl must not freeze it. The
