@@ -104,8 +104,8 @@ type oomReporter interface{ OOMKilled() bool }
 
 // localExhaustion reports the daemon running out of descriptors. That is not
 // the worker's fault, and outside load can push the daemon there, so it must
-// neither kill a healthy worker nor count toward the breaker: otherwise
-// exhausting the daemon's descriptors would switch the worker off.
+// not count toward the breaker. Before a request starts it leaves a healthy
+// worker running; a mid-frame failure still requires retiring the socket.
 func localExhaustion(err error) bool {
 	return errors.Is(err, syscall.EMFILE) || errors.Is(err, syscall.ENFILE)
 }
@@ -298,11 +298,8 @@ func (s *Supervisor) callLocked(ctx context.Context, req Frame, fds []*os.File, 
 	if s.stopped {
 		return Frame{}, nil, ErrStopped
 	}
-	if s.breakerOpenLocked() {
-		work.fail()
-		s.reportJobLocked(OutcomeRefused, 0)
-		return Frame{}, nil, fmt.Errorf("%w: %d failures in a row, next attempt after %s",
-			ErrBreakerOpen, s.consecutive, BreakerCooldown)
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return Frame{}, nil, ctxErr
 	}
 	// Marshalled once: these are the bytes the worker gets.
 	body, err := json.Marshal(req)
@@ -333,6 +330,12 @@ func (s *Supervisor) callLocked(ctx context.Context, req Frame, fds []*os.File, 
 	}()
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return Frame{}, nil, ctxErr
+	}
+	if s.breakerOpenLocked() {
+		work.fail()
+		s.reportJobLocked(OutcomeRefused, 0)
+		return Frame{}, nil, fmt.Errorf("%w: %d failures in a row, next attempt after %s",
+			ErrBreakerOpen, s.consecutive, BreakerCooldown)
 	}
 	if s.child != nil {
 		select {
@@ -365,7 +368,7 @@ func (s *Supervisor) callLocked(ctx context.Context, req Frame, fds []*os.File, 
 			}
 			// The breaker bounds how often this logs: three in a row, then
 			// one trial per cooldown.
-			s.logf("%s did not start: %v", s.cfg.Name, launchErr)
+			s.logf("%s did not start: %q", s.cfg.Name, launchErr)
 			err := failure{err: fmt.Errorf("%w: %v", ErrSpawn, launchErr), reason: ReasonSpawn}
 			s.recordFailureLocked(err)
 			return Frame{}, nil, err
@@ -384,7 +387,7 @@ func (s *Supervisor) callLocked(ctx context.Context, req Frame, fds []*os.File, 
 	handedOff = true
 	reply, replyFDs, lost, reason, err := s.roundTripLocked(ctx, body, ownedFDs, check, work)
 	if err != nil {
-		if reason == ReasonCrash {
+		if reason == ReasonCrash && !localExhaustion(err) {
 			// Asked before the kill below: the unit's cgroup, which holds
 			// the evidence, goes away with it.
 			if r, ok := s.child.proc.(oomReporter); ok && r.OOMKilled() {
@@ -401,6 +404,12 @@ func (s *Supervisor) callLocked(ctx context.Context, req Frame, fds []*os.File, 
 		// spinning, or it may have left a partial frame in the socket that
 		// would desynchronise every later request.
 		s.killLocked()
+		if localExhaustion(err) {
+			// The socket may be mid-frame, so retire it, but never charge
+			// the input for descriptor pressure in this process.
+			s.rearmBreakerLocked()
+			return Frame{}, nil, err
+		}
 		if canceled {
 			// The caller withdrew, so this is not a worker fault and must not
 			// count toward the breaker. It did consume the trial, though: the

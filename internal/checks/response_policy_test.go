@@ -102,8 +102,8 @@ var goldenSubnet = map[string]admission.Entry{
 // the registry means either giving it a Response or adding it here with a
 // reason.
 var nonActionableAttackerSide = map[string]string{
+	"email_av_parse_worker_source": "advisory for an account, address or subnet; no single-IP response",
 	"email_auth_failure_realtime":  "one raw mailbox failure; thresholded checks block",
-	"email_av_parse_worker_source": "names a mail source key, often an authenticated user or local account, not an IP",
 	"email_malware":                "content may come from a compromised local sender",
 	"email_phishing_content":       "content may come from a compromised local sender",
 	"http_asn_crawl":               "subnet-scoped; handled by its own tempban path",

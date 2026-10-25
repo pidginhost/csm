@@ -4,12 +4,14 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/emailav"
 	emime "github.com/pidginhost/csm/internal/mime"
 	"github.com/pidginhost/csm/internal/workerproc"
 )
@@ -48,7 +50,7 @@ func TestSpoolRepeatFailureSkipsWorker(t *testing.T) {
 				t.Fatalf("responses %+v, want %d", got, wantResponse(mode))
 			}
 			d := findingsFor(takeFindings(ch), "email_av_degraded")
-			if len(d) != 1 || !strings.Contains(d[0].Message, "(parse worker failed on this message before)") {
+			if len(d) != 1 || !strings.Contains(d[0].Message, `("parse worker failed on this message before")`) {
 				t.Fatalf("degraded findings %+v, want the repeat-failure reason", d)
 			}
 		})
@@ -107,5 +109,75 @@ func TestSpoolSourceKillsRaiseHigh(t *testing.T) {
 	failed = findingsFor(run(t, []string{""}), "email_av_parse_worker_failed")
 	if len(failed) != 1 || !strings.Contains(failed[0].Message, "unknown source") {
 		t.Fatalf("worker failed findings %+v, want unknown source", failed)
+	}
+}
+
+func TestSpoolRestartPreservesWorkerStrikes(t *testing.T) {
+	previous, _ := strikeWatcher("open", nil)
+	previous.recordWorkerKill("message", "ip:192.0.2.10")
+	previous.recordWorkerKill("message", "ip:192.0.2.10")
+	next, findings := strikeWatcher("open", nil)
+	d := &Daemon{}
+	d.setSpoolWatcher(previous)
+	d.setSpoolWatcher(next)
+	if !next.mailStrikes.Blocked("message") {
+		t.Error("watcher restart forgot blocked message")
+	}
+	next.recordWorkerKill("another", "ip:192.0.2.10")
+	if got := findingsFor(takeFindings(findings), "email_av_parse_worker_source"); len(got) != 1 {
+		t.Fatalf("watcher restart forgot source kills: %+v", got)
+	}
+}
+
+func TestSpoolExtractionErrorQuotesWorkerText(t *testing.T) {
+	text := "worker failed\nforged journal entry\x1b[31m"
+	sw, ch := strikeWatcher("open", nil)
+	logged := captureAppliedBlockStderr(t, func() {
+		sw.extractFailed("message", "ip:192.0.2.10", errors.New(text))
+	})
+	if strings.Contains(logged, text) || !strings.Contains(logged, fmt.Sprintf("%q", text)) {
+		t.Errorf("unquoted worker error in log: %q", logged)
+	}
+	fs := takeFindings(ch)
+	if len(fs) != 1 || strings.Contains(fs[0].Message, text) || !strings.Contains(fs[0].Message, fmt.Sprintf("%q", text)) {
+		t.Errorf("unquoted worker error in finding: %+v", fs)
+	}
+	d := &Daemon{alertCh: ch}
+	d.reportIsolationUnavailable(errors.New(text))
+	fs = takeFindings(ch)
+	if len(fs) != 1 || strings.Contains(fs[0].Message, text) || !strings.Contains(fs[0].Message, fmt.Sprintf("%q", text)) {
+		t.Errorf("unquoted worker launch error in finding: %+v", fs)
+	}
+}
+
+func TestSpoolFindingsQuoteWorkerFields(t *testing.T) {
+	for _, kind := range []string{"partial", "encrypted", "malware"} {
+		t.Run(kind, func(t *testing.T) {
+			text := "worker\t\"text\""
+			result := &emime.ExtractionResult{}
+			check := "email_av_degraded"
+			switch kind {
+			case "partial":
+				result.Partial, result.PartialReason = true, text
+			case "encrypted":
+				result.EncryptedEntries = []emime.EncryptedArchiveEntry{{Filename: text, ArchiveName: text}}
+				check = "email_av_encrypted_archive"
+			case "malware":
+				result.From, result.To, result.Subject, result.Direction = text, []string{text}, text, "inbound"
+				result.Parts = []emime.ExtractedPart{{Filename: "file.bin", File: memfdPart(t, testMarker), Size: int64(len(testMarker))}}
+				check = "email_malware"
+			}
+			ex := &recordingExtractor{size: 1, extract: func(context.Context, int) (*emime.ExtractionResult, error) { return result, nil }}
+			sw, ch := strikeWatcher("open", ex)
+			sw.orchestrator = emailav.NewOrchestrator([]emailav.Scanner{markerScanner{}}, time.Second)
+			captureResponses(t)
+			dir := t.TempDir()
+			buildMinimalEximSpool(t, dir, "1abcDE-000001-AB")
+			sw.handleSpoolEvent(bodyEvent(t, dir, "1abcDE-000001-AB"))
+			fs := findingsFor(takeFindings(ch), check)
+			if len(fs) != 1 || strings.Contains(fs[0].Message, text) || !strings.Contains(fs[0].Message, fmt.Sprintf("%q", text)) {
+				t.Fatalf("unquoted worker fields: %+v", fs)
+			}
+		})
 	}
 }

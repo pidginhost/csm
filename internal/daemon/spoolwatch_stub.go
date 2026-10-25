@@ -27,5 +27,6 @@ func (sw *SpoolWatcher) Stop()                {}
 func (sw *SpoolWatcher) PermissionMode() bool { return false }
 
 func (sw *SpoolWatcher) inheritQueueHealth(_ *SpoolWatcher)                      {}
+func (sw *SpoolWatcher) inheritStrikes(_ *SpoolWatcher)                          {}
 func (sw *SpoolWatcher) setCrashSamples(_ *crashsample.Store)                    {}
 func (sw *SpoolWatcher) queueStatuses(_ time.Time) map[string]queuehealth.Status { return nil }

@@ -44,6 +44,13 @@ func (sw *SpoolWatcher) initStrikes() {
 	sw.sourceKills = workerproc.NewStrikesWith(sourceKillLimit, sourceKillWindow)
 }
 
+func (sw *SpoolWatcher) inheritStrikes(previous *SpoolWatcher) {
+	if previous.mailStrikes != nil {
+		sw.mailStrikes = previous.mailStrikes
+		sw.sourceKills = previous.sourceKills
+	}
+}
+
 // countedKill reports a failure the worker's input caused: a timeout, a
 // memory kill, a crash or a rejected reply. Failed starts, the breaker,
 // cancellation and shutdown are not the message's doing.
@@ -193,13 +200,13 @@ func sourceText(source string) string {
 // result, which follows fail_mode and is never clean.
 func (sw *SpoolWatcher) extractFailed(msgID, source string, err error) *emime.ExtractionResult {
 	reason, isolation := extractFailureReason(err)
-	fmt.Fprintf(os.Stderr, "[%s] spool watcher: extraction failed for %s: %v\n", ts(), msgID, err)
+	fmt.Fprintf(os.Stderr, "[%s] spool watcher: extraction failed for %s: %q\n", ts(), msgID, err)
 	switch {
 	case errors.Is(err, workerproc.ErrStopped):
 		// The daemon is shutting down; that is not an outage.
 	case isolation:
 		sw.emitLimited("email_av_isolation_unavailable", alert.Critical, isolationAlertInterval,
-			fmt.Sprintf("Email attachments cannot be unpacked in an isolated worker (%s); message %s was handled as an incomplete scan under email_av.fail_mode: %v", reason, msgID, err))
+			fmt.Sprintf("Email attachments cannot be unpacked in an isolated worker (%s); message %s was handled as an incomplete scan under email_av.fail_mode: %q", reason, msgID, err))
 	default:
 		sw.emitLimited("email_av_parse_worker_failed", alert.Warning, time.Minute,
 			fmt.Sprintf("Parse worker failed on message %s from %s (%s); the message was handled as an incomplete scan under email_av.fail_mode", msgID, sourceText(source), reason))

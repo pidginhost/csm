@@ -113,7 +113,7 @@ func mailWorkerMemoryLimit(cfg *config.Config) uint64 {
 // workers that cannot run. It shares the spool watcher's hourly allowance.
 func (d *Daemon) reportIsolationUnavailable(err error) {
 	d.parseFindings.emit(d.alertCh, "email_av_isolation_unavailable", alert.Critical, isolationAlertInterval,
-		fmt.Sprintf("Parse worker units cannot run: %v. Email attachments are handled as incomplete scans under email_av.fail_mode, and phishing-kit zips are reported as not checked.", err))
+		fmt.Sprintf("Parse worker units cannot run: %q. Email attachments are handled as incomplete scans under email_av.fail_mode, and phishing-kit zips are reported as not checked.", err))
 }
 
 // mailExtractor is what the spool watcher needs from the mail parse workers;

@@ -69,54 +69,62 @@ func (s *Store) Save(name string, files []File) error {
 		if !validName.MatchString(f.Name) || f.Size < 0 {
 			return fmt.Errorf("crash sample: invalid file %q", f.Name)
 		}
+		if f.Size > s.maxBytes-total {
+			return fmt.Errorf("crash sample exceeds the %d byte cap", s.maxBytes)
+		}
 		total += f.Size
-	}
-	if total > s.maxBytes {
-		return fmt.Errorf("crash sample: %d bytes exceeds the %d byte cap", total, s.maxBytes)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.ensureDir(); err != nil {
+	root, err := s.openDir(true)
+	if err != nil {
 		return err
 	}
-	final := filepath.Join(s.dir, name)
-	if _, err := os.Lstat(final); err == nil {
+	defer func() { _ = root.Close() }()
+	if _, err = s.sweep(root); err != nil {
+		return err
+	}
+	if _, err = root.Lstat(name); err == nil {
 		return nil
-	}
-	if err := s.evict(total); err != nil {
+	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	tmp := filepath.Join(s.dir, tmpPrefix+name)
-	if err := os.RemoveAll(tmp); err != nil {
+	if err = s.evict(root, total); err != nil {
+		return err
+	}
+	tmp := tmpPrefix + name
+	if err = root.Mkdir(tmp, 0o700); err != nil {
 		return fmt.Errorf("crash sample: %w", err)
 	}
-	if err := s.write(tmp, files); err != nil {
-		_ = os.RemoveAll(tmp)
+	defer func() { _ = root.RemoveAll(tmp) }()
+	staging, err := openChildRoot(root, tmp)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = staging.Close() }()
+	if err = s.write(staging, files); err != nil {
 		return err
 	}
 	now := s.now()
-	if err := os.Chtimes(tmp, now, now); err != nil {
-		_ = os.RemoveAll(tmp)
+	if err = staging.Chtimes(".", now, now); err != nil {
 		return fmt.Errorf("crash sample: %w", err)
 	}
-	if err := os.Rename(tmp, final); err != nil {
-		_ = os.RemoveAll(tmp)
+	if err = sameDirectory(root, tmp, staging); err != nil {
+		return err
+	}
+	if err = root.Rename(tmp, name); err != nil {
 		return fmt.Errorf("crash sample: %w", err)
 	}
 	return nil
 }
 
-func (s *Store) write(tmp string, files []File) error {
-	if err := os.Mkdir(tmp, 0o700); err != nil {
-		return fmt.Errorf("crash sample: %w", err)
-	}
+func (s *Store) write(staging *os.Root, files []File) error {
 	for _, f := range files {
-		// #nosec G304 -- tmp is under the store directory and f.Name passed validName.
-		out, err := os.OpenFile(filepath.Join(tmp, f.Name), os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0o600)
+		out, err := staging.OpenFile(f.Name, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0o600)
 		if err != nil {
 			return fmt.Errorf("crash sample: %w", err)
 		}
-		_, err = io.Copy(out, io.NewSectionReader(f.Src, 0, f.Size))
+		_, err = io.CopyN(out, io.NewSectionReader(f.Src, 0, f.Size), f.Size)
 		if cerr := out.Close(); err == nil {
 			err = cerr
 		}
@@ -127,53 +135,134 @@ func (s *Store) write(tmp string, files []File) error {
 	return nil
 }
 
-// ensureDir creates the store directory, or checks that it is a real
-// directory: a link in its place is never followed.
-func (s *Store) ensureDir() error {
-	info, err := os.Lstat(s.dir)
-	if errors.Is(err, os.ErrNotExist) {
-		if mkErr := os.Mkdir(s.dir, 0o700); mkErr != nil {
-			return fmt.Errorf("crash sample: %w", mkErr)
+// Pin the store and staging directories for the whole operation. A path
+// check alone would let a replacement link redirect later copies or cleanup.
+func (s *Store) openDir(create bool) (*os.Root, error) {
+	parent, err := openParent(s.dir)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = parent.Close() }()
+	name := filepath.Base(s.dir)
+	if create {
+		if err = parent.Mkdir(name, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
+			return nil, err
 		}
-		return nil
+	}
+	root, err := openChildRoot(parent, name)
+	if err != nil {
+		return nil, err
+	}
+	// Chmod the pinned directory, not its replaceable pathname.
+	dir, err := root.Open(".")
+	if err == nil {
+		err = dir.Chmod(0o700) // #nosec G302 -- directory needs owner search permission.
+		_ = dir.Close()
 	}
 	if err != nil {
-		return fmt.Errorf("crash sample: %w", err)
+		_ = root.Close()
+		return nil, err
+	}
+	return root, nil
+}
+
+func openParent(path string) (*os.Root, error) {
+	abs, err := filepath.Abs(filepath.Dir(path))
+	if err != nil {
+		return nil, err
+	}
+	root, err := os.OpenRoot(string(os.PathSeparator))
+	if err != nil {
+		return nil, err
+	}
+	for _, name := range strings.Split(strings.TrimPrefix(abs, string(os.PathSeparator)), string(os.PathSeparator)) {
+		if name == "" {
+			continue
+		}
+		next, openErr := openChildRoot(root, name)
+		_ = root.Close()
+		if openErr != nil {
+			return nil, openErr
+		}
+		root = next
+	}
+	return root, nil
+}
+
+func openChildRoot(parent *os.Root, name string) (*os.Root, error) {
+	info, err := parent.Lstat(name)
+	if err != nil {
+		return nil, err
 	}
 	if !info.IsDir() {
-		return fmt.Errorf("crash sample: %s is not a directory", s.dir)
+		return nil, fmt.Errorf("crash sample: %q is not a directory", name)
 	}
-	if info.Mode().Perm() != 0o700 {
-		// #nosec G302 -- a directory; 0700 is the tightest usable mode.
-		return os.Chmod(s.dir, 0o700)
+	root, err := parent.OpenRoot(name)
+	if err != nil {
+		return nil, err
+	}
+	pinned, err := root.Stat(".")
+	if err != nil || !os.SameFile(info, pinned) {
+		_ = root.Close()
+		return nil, fmt.Errorf("crash sample: directory %q changed while opening", name)
+	}
+	return root, nil
+}
+
+func sameDirectory(parent *os.Root, name string, root *os.Root) error {
+	info, err := parent.Lstat(name)
+	if err != nil {
+		return err
+	}
+	pinned, err := root.Stat(".")
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() || !os.SameFile(info, pinned) {
+		return fmt.Errorf("crash sample: directory %q changed while saving", name)
 	}
 	return nil
 }
 
 // list returns the stored samples, oldest first, and removes leftover
 // temporary directories.
-func (s *Store) list() ([]sample, error) {
-	entries, err := os.ReadDir(s.dir)
+func (s *Store) list(root *os.Root) ([]sample, error) {
+	dir, err := root.Open(".")
 	if err != nil {
 		return nil, fmt.Errorf("crash sample: %w", err)
 	}
+	defer dir.Close()
+	entries, err := dir.ReadDir(-1)
+	if err != nil {
+		return nil, err
+	}
 	var out []sample
 	for _, e := range entries {
-		path := filepath.Join(s.dir, e.Name())
 		if strings.HasPrefix(e.Name(), tmpPrefix) {
-			_ = os.RemoveAll(path)
+			if err := root.RemoveAll(e.Name()); err != nil {
+				return nil, err
+			}
 			continue
 		}
-		info, err := os.Lstat(path)
+		info, err := root.Lstat(e.Name())
 		if err != nil {
-			continue
+			return nil, err
 		}
 		smp := sample{name: e.Name(), mtime: info.ModTime()}
-		if files, err := os.ReadDir(path); err == nil {
-			for _, f := range files {
-				if fi, err := f.Info(); err == nil {
-					smp.size += fi.Size()
-				}
+		if info.IsDir() {
+			// Open one component with NOFOLLOW so even a concurrent link
+			// replacement cannot make retention inspect another tree.
+			dir, err := root.OpenFile(e.Name(), os.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW, 0)
+			if err != nil {
+				return nil, err
+			}
+			files, err := dir.Readdir(-1)
+			_ = dir.Close()
+			if err != nil {
+				return nil, err
+			}
+			for _, fi := range files {
+				smp.size += fi.Size()
 			}
 		}
 		out = append(out, smp)
@@ -183,8 +272,8 @@ func (s *Store) list() ([]sample, error) {
 }
 
 // evict removes the oldest samples until one more of size bytes fits.
-func (s *Store) evict(size int64) error {
-	stored, err := s.list()
+func (s *Store) evict(root *os.Root, size int64) error {
+	stored, err := s.list(root)
 	if err != nil {
 		return err
 	}
@@ -193,7 +282,7 @@ func (s *Store) evict(size int64) error {
 		total += smp.size
 	}
 	for len(stored) > 0 && (len(stored) >= MaxSamples || total+size > s.maxBytes) {
-		if err := os.RemoveAll(filepath.Join(s.dir, stored[0].name)); err != nil {
+		if err := root.RemoveAll(stored[0].name); err != nil {
 			return fmt.Errorf("crash sample: %w", err)
 		}
 		total -= stored[0].size
@@ -207,17 +296,19 @@ func (s *Store) evict(size int64) error {
 func (s *Store) Sweep() (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	info, err := os.Lstat(s.dir)
+	root, err := s.openDir(false)
 	if errors.Is(err, os.ErrNotExist) {
 		return 0, nil
 	}
 	if err != nil {
 		return 0, fmt.Errorf("crash sample: %w", err)
 	}
-	if !info.IsDir() {
-		return 0, fmt.Errorf("crash sample: %s is not a directory", s.dir)
-	}
-	stored, err := s.list()
+	defer func() { _ = root.Close() }()
+	return s.sweep(root)
+}
+
+func (s *Store) sweep(root *os.Root) (int, error) {
+	stored, err := s.list(root)
 	if err != nil {
 		return 0, err
 	}
@@ -227,7 +318,7 @@ func (s *Store) Sweep() (int, error) {
 		if !smp.mtime.Before(cutoff) {
 			break
 		}
-		if err := os.RemoveAll(filepath.Join(s.dir, smp.name)); err != nil {
+		if err := root.RemoveAll(smp.name); err != nil {
 			return removed, fmt.Errorf("crash sample: %w", err)
 		}
 		removed++

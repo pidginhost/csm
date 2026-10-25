@@ -84,11 +84,12 @@ func TestCallRoundTripErrorsCannotBypassBreaker(t *testing.T) {
 				} else {
 					wantText += failure.Error()
 				}
+				local := phase != "error frame" && (errors.Is(cause, syscall.EMFILE) || errors.Is(cause, syscall.ENFILE))
 				for i := 1; i <= ConsecutiveFailureLimit; i++ {
 					s.child = &child{proc: liveProcess(), conn: conn}
 					_, _, err := s.Call(context.Background(), Frame{Op: "work"}, nil, check)
-					if !errors.Is(err, ErrWorkerFailed) {
-						t.Errorf("Call = %v, want worker failure", err)
+					if errors.Is(err, ErrWorkerFailed) == local {
+						t.Errorf("Call = %v, want worker failure = %v", err, !local)
 					}
 					if wantCause := phase != "error frame"; errors.Is(err, cause) != wantCause {
 						t.Errorf("Call = %v, want errors.Is(%v) = %t", err, cause, wantCause)
@@ -96,14 +97,51 @@ func TestCallRoundTripErrorsCannotBypassBreaker(t *testing.T) {
 					if err == nil || err.Error() != wantText {
 						t.Errorf("Call text = %v, want %q", err, wantText)
 					}
-					if st := s.Stats(); st.ConsecutiveFailures != i || s.child != nil {
+					wantFailures := i
+					if local {
+						wantFailures = 0
+					}
+					if st := s.Stats(); st.ConsecutiveFailures != wantFailures || s.child != nil {
 						t.Errorf("failure did not retire and count worker: %+v", st)
 					}
 				}
-				if st := s.Stats(); !st.BreakerOpen {
-					t.Errorf("repeated failures did not open breaker: %+v", st)
+				if st := s.Stats(); st.BreakerOpen == local {
+					t.Errorf("breaker state = %+v, want open = %v", st, !local)
 				}
 				waitWorkerQueueIdle(t, s, ConsecutiveFailureLimit)
+			})
+		}
+	}
+}
+
+func TestCallLocalRoundTripExhaustionDoesNotReportJob(t *testing.T) {
+	for _, cause := range []error{syscall.EMFILE, syscall.ENFILE} {
+		for _, phase := range []string{"send", "receive", "check"} {
+			t.Run(phase+"/"+cause.Error(), func(t *testing.T) {
+				s := newTestSupervisor(t, pairLauncher(t, echoPayload), time.Second)
+				conn := &fakeTransport{onReceive: func() (Frame, []*os.File, error) { return Frame{}, nil, nil }}
+				check := okCheck
+				switch phase {
+				case "send":
+					conn.onSend = func([]byte, []*os.File) error { return fmt.Errorf("send: %w", cause) }
+				case "receive":
+					conn.onReceive = func() (Frame, []*os.File, error) { return Frame{}, nil, fmt.Errorf("receive: %w", cause) }
+				case "check":
+					check = func(Frame, []*os.File) (bool, error) { return false, fmt.Errorf("check: %w", cause) }
+				}
+				s.child = &child{proc: liveProcess(), conn: conn}
+				reports := 0
+				s.cfg.OnJob = func(string, uint64) { reports++ }
+				_, _, err := s.Call(context.Background(), Frame{Op: "work"}, nil, check)
+				if !errors.Is(err, cause) || errors.Is(err, ErrWorkerFailed) || FailureReason(err) != "" {
+					t.Errorf("local exhaustion counted as worker failure: %v", err)
+				}
+				if reports != 0 || s.Stats().ConsecutiveFailures != 0 {
+					t.Errorf("local exhaustion reported %d jobs, stats %+v", reports, s.Stats())
+				}
+				if s.child != nil {
+					t.Fatal("desynchronized worker retained")
+				}
 			})
 		}
 	}

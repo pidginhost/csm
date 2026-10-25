@@ -217,7 +217,7 @@ func TestEncryptedArchiveReportLimitAllowsDeliveryAndScansPlainSibling(t *testin
 		t.Fatalf("got %d findings, want exactly the encrypted warning", len(ch))
 	}
 	f := <-ch
-	if f.Check != "email_av_encrypted_archive" || !strings.Contains(f.Message, "encrypted.pdf in documents.zip") || !strings.Contains(f.Message, "1 additional encrypted member(s)") {
+	if f.Check != "email_av_encrypted_archive" || !strings.Contains(f.Message, `"encrypted.pdf" in "documents.zip"`) || !strings.Contains(f.Message, "1 additional encrypted member(s)") {
 		t.Fatalf("warning = %+v", f)
 	}
 	staged, err := os.ReadDir(tempDir)

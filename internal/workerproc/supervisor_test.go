@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"reflect"
 	"strings"
 	"sync"
 	"syscall"
@@ -538,5 +539,57 @@ func TestWorkerErrorTextQuoted(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "\n") || !strings.Contains(err.Error(), `"x\n[ts] spool watcher: forged"`) {
 		t.Fatalf("error text = %q, want the worker text quoted", err.Error())
+	}
+}
+
+func TestCallCanceledAtOpenBreakerDoesNotReportJob(t *testing.T) {
+	s := newTestSupervisor(t, pairLauncher(t, echoPayload), time.Second)
+	s.consecutive = ConsecutiveFailureLimit
+	s.openedAt = time.Now()
+	var reports []jobReport
+	s.cfg.OnJob = func(outcome string, memory uint64) { reports = append(reports, jobReport{outcome, memory}) }
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, _, err := s.Call(ctx, Frame{Op: "work"}, nil, okCheck); !errors.Is(err, context.Canceled) {
+		t.Errorf("canceled call = %v, want cancellation", err)
+	}
+	if len(reports) != 0 {
+		t.Fatalf("canceled call reported %+v", reports)
+	}
+}
+
+func TestCallReportsOnlyAdmittedJobs(t *testing.T) {
+	s := newTestSupervisor(t, func(context.Context) (Process, error) { return nil, errors.New("cannot start") }, time.Second)
+	var reports []jobReport
+	s.cfg.OnJob = func(outcome string, memory uint64) { reports = append(reports, jobReport{outcome, memory}) }
+	for _, req := range []Frame{{Payload: json.RawMessage(`invalid`)}, {Op: strings.Repeat("x", 1<<20)}} {
+		if _, _, err := s.Call(context.Background(), req, nil, okCheck); err == nil {
+			t.Fatal("invalid request accepted")
+		}
+	}
+	for range ConsecutiveFailureLimit + 1 {
+		_, _, _ = s.Call(context.Background(), Frame{Op: "work"}, nil, okCheck)
+	}
+	want := []jobReport{{ReasonSpawn, 0}, {ReasonSpawn, 0}, {ReasonSpawn, 0}, {OutcomeRefused, 0}}
+	if !reflect.DeepEqual(reports, want) {
+		t.Fatalf("reports = %+v, want %+v", reports, want)
+	}
+	if err := s.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	_, _, _ = s.Call(context.Background(), Frame{Op: "work"}, nil, okCheck)
+	if !reflect.DeepEqual(reports, want) {
+		t.Fatalf("stopped call changed reports: %+v", reports)
+	}
+}
+
+func TestCallQuotesWorkerLaunchError(t *testing.T) {
+	workerText := "hello refused\nforged log\x1b[31m"
+	s := newTestSupervisor(t, func(context.Context) (Process, error) { return nil, errors.New(workerText) }, time.Second)
+	var logged string
+	s.cfg.Log = func(format string, args ...any) { logged += fmt.Sprintf(format, args...) }
+	_, _, _ = s.Call(context.Background(), Frame{Op: "work"}, nil, okCheck)
+	if strings.Contains(logged, workerText) || !strings.Contains(logged, fmt.Sprintf("%q", workerText)) {
+		t.Fatalf("unquoted launch error: %q", logged)
 	}
 }

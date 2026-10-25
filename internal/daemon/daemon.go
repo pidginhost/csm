@@ -2799,6 +2799,7 @@ func (d *Daemon) setSpoolWatcher(sw *SpoolWatcher) {
 	d.spoolWatcherMu.Lock()
 	if d.spoolWatcher != nil {
 		sw.inheritQueueHealth(d.spoolWatcher)
+		sw.inheritStrikes(d.spoolWatcher)
 	}
 	d.spoolWatcher = sw
 	d.spoolWatcherMu.Unlock()

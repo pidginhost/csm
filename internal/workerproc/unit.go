@@ -468,6 +468,7 @@ func (p *unitProcess) PID() int              { return p.pid }
 // three quarters into its lifetime cap: systemd ending it mid-request would
 // charge that request's input with a worker failure.
 func (p *unitProcess) Retire() bool {
+	p.lastUsed.Store(0)
 	if !p.retireAt.IsZero() && time.Now().After(p.retireAt) {
 		return true
 	}

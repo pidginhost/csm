@@ -679,10 +679,10 @@ func (sw *SpoolWatcher) handleSpoolEvent(evt spoolEvent) {
 		partialResult := &emailav.ScanResult{PartialExtraction: true}
 		if shouldTempfailEmailDelivery(tempfail, partialResult, nil) {
 			response = FAN_DENY
-			sw.emitDegradedWarning(fmt.Sprintf("Incomplete email attachment extraction for message %s (%s) - delivery deferred (tempfail mode)", msgID, partialExtractionReason(extraction)))
+			sw.emitDegradedWarning(fmt.Sprintf("Incomplete email attachment extraction for message %s (%q) - delivery deferred (tempfail mode)", msgID, partialExtractionReason(extraction)))
 			return
 		}
-		sw.emitDegradedWarning(fmt.Sprintf("Incomplete email attachment extraction for message %s (%s) - delivery allowed (fail-open mode)", msgID, partialExtractionReason(extraction)))
+		sw.emitDegradedWarning(fmt.Sprintf("Incomplete email attachment extraction for message %s (%q) - delivery allowed (fail-open mode)", msgID, partialExtractionReason(extraction)))
 	}
 
 	if len(extraction.Parts) == 0 {
@@ -755,7 +755,7 @@ func (sw *SpoolWatcher) handleSpoolEvent(evt spoolEvent) {
 	for i, f := range result.Findings {
 		sigNames[i] = fmt.Sprintf("%s(%s)", f.Signature, f.Engine)
 	}
-	msg := fmt.Sprintf("Malware detected in %s email from %s to %s: %s [subject: %s]",
+	msg := fmt.Sprintf("Malware detected in %q email from %q to %q: %s [subject: %q]",
 		extraction.Direction, extraction.From, strings.Join(extraction.To, ","),
 		strings.Join(sigNames, ", "), extraction.Subject)
 
@@ -833,7 +833,7 @@ func (sw *SpoolWatcher) emitEncryptedArchiveWarning(msgID string, entries []emim
 
 	named := make([]string, 0, len(entries))
 	for _, e := range entries {
-		named = append(named, fmt.Sprintf("%s in %s", e.Filename, e.ArchiveName))
+		named = append(named, fmt.Sprintf("%q in %q", e.Filename, e.ArchiveName))
 	}
 	if omitted > 0 {
 		named = append(named, fmt.Sprintf("%d additional encrypted member(s) (names omitted)", omitted))

@@ -2,12 +2,95 @@ package crashsample
 
 import (
 	"fmt"
+	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+type readHook struct {
+	io.ReaderAt
+	hook func()
+}
+
+func (r *readHook) ReadAt(b []byte, off int64) (int, error) {
+	if r.hook != nil {
+		hook := r.hook
+		r.hook = nil
+		hook()
+	}
+	return r.ReaderAt.ReadAt(b, off)
+}
+
+func TestStoreSavePinsDirectories(t *testing.T) {
+	for _, replace := range []string{"store", "temporary sample"} {
+		t.Run(replace, func(t *testing.T) {
+			s, dir := newTestStore(t)
+			target := t.TempDir()
+			r := &readHook{ReaderAt: strings.NewReader("body"), hook: func() {
+				path := dir
+				if replace == "temporary sample" {
+					path = filepath.Join(dir, tmpPrefix+"message")
+				} else if err := os.Mkdir(filepath.Join(target, tmpPrefix+"message"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Rename(path, path+"-moved"); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(target, path); err != nil {
+					t.Fatal(err)
+				}
+			}}
+			_ = s.Save("message", []File{{Name: "body", Src: r, Size: 4}, file("header", "private mail")})
+			for _, path := range []string{"header", filepath.Join(tmpPrefix+"message", "header"), filepath.Join("message", "header")} {
+				if _, err := os.Lstat(filepath.Join(target, path)); !os.IsNotExist(err) {
+					t.Errorf("save wrote through replaced %s: %s (%v)", replace, path, err)
+				}
+			}
+		})
+	}
+}
+
+func TestStoreRejectsShortCopy(t *testing.T) {
+	s, dir := newTestStore(t)
+	if err := s.Save("short", []File{{Name: "body", Src: strings.NewReader("x"), Size: 2}}); err == nil {
+		t.Fatal("truncated sample accepted")
+	}
+	if got := samples(t, dir); len(got) != 0 {
+		t.Fatalf("failed copy left samples: %v", got)
+	}
+}
+
+func TestStoreRejectsSizeOverflowBeforeReading(t *testing.T) {
+	s, _ := newTestStore(t)
+	reads := 0
+	r := &readHook{ReaderAt: strings.NewReader(""), hook: func() { reads++ }}
+	err := s.Save("overflow", []File{{Name: "body", Src: r, Size: math.MaxInt64}, {Name: "header", Src: r, Size: math.MaxInt64}})
+	if err == nil || reads != 0 {
+		t.Fatalf("overflow: error %v, reads %d; want rejection before copying", err, reads)
+	}
+}
+
+func TestStoreSaveExpiresExistingSample(t *testing.T) {
+	s, dir := newTestStore(t)
+	if err := s.Save("message", []File{file("body", "old")}); err != nil {
+		t.Fatal(err)
+	}
+	old := s.now().Add(-MaxAge - time.Hour)
+	if err := os.Chtimes(filepath.Join(dir, "message"), old, old); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Save("message", []File{file("body", "new")}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "message", "body"))
+	if err != nil || string(got) != "new" {
+		t.Fatalf("expired sample retained: %q, %v", got, err)
+	}
+}
 
 func file(name, data string) File {
 	return File{Name: name, Src: strings.NewReader(data), Size: int64(len(data))}
@@ -123,6 +206,28 @@ func TestStoreRefusesSymlinkedDir(t *testing.T) {
 	}
 	if entries, _ := os.ReadDir(target); len(entries) != 0 {
 		t.Fatalf("symlink target got %v", entries)
+	}
+}
+
+func TestStoreRefusesSymlinkedParent(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "target")
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "state")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	s := New(filepath.Join(link, "parse-crashes"))
+	if err := s.Save("message", []File{file("body", "private mail")}); err == nil {
+		t.Error("sample saved through symlinked state directory")
+	}
+	if _, err := s.Sweep(); err == nil {
+		t.Error("sweep followed symlinked state directory")
+	}
+	if entries, err := os.ReadDir(target); err != nil || len(entries) != 0 {
+		t.Fatalf("symlink target changed: %v, %v", entries, err)
 	}
 }
 

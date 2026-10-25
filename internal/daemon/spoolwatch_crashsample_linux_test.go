@@ -4,9 +4,12 @@ package daemon
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"syscall"
 	"testing"
 	"time"
 
@@ -51,8 +54,12 @@ func TestSpoolCrashSampleSavedWhenEnabled(t *testing.T) {
 }
 
 func TestSpoolCrashSampleNotSavedByDefault(t *testing.T) {
-	store := filepath.Join(t.TempDir(), "parse-crashes")
-	crashSampleRun(t, nil)
+	state := t.TempDir()
+	d := &Daemon{cfg: &config.Config{StatePath: state}}
+	d.initCrashSamples()
+	t.Cleanup(func() { checks.SetCrashSamples(nil) })
+	store := filepath.Join(state, "parse-crashes")
+	crashSampleRun(t, d.keptCrashSamples())
 	if _, err := os.Lstat(store); !os.IsNotExist(err) {
 		t.Fatalf("crash samples written with the setting off: %v", err)
 	}
@@ -78,18 +85,48 @@ func TestCrashSampleSaveFailureKeepsVerdict(t *testing.T) {
 		}
 		return out
 	}
-	checks := func(fs []alert.Finding) []string {
-		var out []string
-		for _, f := range fs {
-			out = append(out, f.Check+"/"+f.Severity.String())
+	withoutTimes := func(fs []alert.Finding) []alert.Finding {
+		for i := range fs {
+			fs[i].Timestamp = time.Time{}
 		}
-		return out
+		return fs
 	}
-	if !reflect.DeepEqual(strip(gotResp), strip(wantResp)) || !reflect.DeepEqual(checks(gotFindings), checks(wantFindings)) {
-		t.Fatalf("failed save changed the outcome: %v %v, want %v %v", strip(gotResp), checks(gotFindings), strip(wantResp), checks(wantFindings))
+	if !reflect.DeepEqual(strip(gotResp), strip(wantResp)) || !reflect.DeepEqual(withoutTimes(gotFindings), withoutTimes(wantFindings)) {
+		t.Fatalf("failed save changed the outcome: %v %v, want %v %v", strip(gotResp), gotFindings, strip(wantResp), wantFindings)
 	}
 	if entries, _ := os.ReadDir(target); len(entries) != 0 {
 		t.Fatalf("sample written through a link: %v", entries)
+	}
+}
+
+func TestSpoolNonWorkerFailuresNeverStrikeOrSave(t *testing.T) {
+	for _, cause := range []error{workerproc.ErrSpawn, workerproc.ErrBreakerOpen, workerproc.ErrStopped, context.Canceled, context.DeadlineExceeded, syscall.EMFILE, syscall.ENFILE} {
+		t.Run(cause.Error(), func(t *testing.T) {
+			ex := &recordingExtractor{size: 1, extract: func(context.Context, int) (*emime.ExtractionResult, error) {
+				return nil, fmt.Errorf("operation: %w", cause)
+			}}
+			sw, ch := strikeWatcher("open", ex)
+			store := filepath.Join(t.TempDir(), "parse-crashes")
+			sw.setCrashSamples(crashsample.New(store))
+			captureResponses(t)
+			dir := t.TempDir()
+			const id = "1abcDE-000005-AB"
+			buildMinimalEximSpool(t, dir, id)
+			for range sourceKillLimit + 1 {
+				evt := bodyEvent(t, dir, id)
+				evt.source = "ip:192.0.2.10"
+				sw.handleSpoolEvent(evt)
+			}
+			if sw.mailStrikes.Len() != 0 || sw.sourceKills.Len() != 0 || len(ex.recorded()) != sourceKillLimit+1 {
+				t.Fatal("non-worker failure charged to message or source")
+			}
+			if fs := findingsFor(takeFindings(ch), "email_av_parse_worker_source"); len(fs) != 0 {
+				t.Fatalf("non-worker failure raised source findings: %+v", fs)
+			}
+			if _, err := os.Lstat(store); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("non-worker failure saved a sample: %v", err)
+			}
+		})
 	}
 }
 

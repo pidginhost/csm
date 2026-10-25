@@ -464,7 +464,7 @@ func TestSpoolExtractErrorMapping(t *testing.T) {
 					t.Fatalf("%s: responses %+v", mode, got)
 				}
 				fs := takeFindings(ch)
-				if d := findingsFor(fs, "email_av_degraded"); len(d) != 1 || !strings.Contains(d[0].Message, "("+tc.reason+")") {
+				if d := findingsFor(fs, "email_av_degraded"); len(d) != 1 || !strings.Contains(d[0].Message, fmt.Sprintf("(%q)", tc.reason)) {
 					t.Fatalf("%s: degraded findings %+v, want reason %q", mode, d, tc.reason)
 				}
 				for _, check := range others {

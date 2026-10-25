@@ -652,10 +652,13 @@ email_av:
   # email_av_parse_worker_rejected. The next two raise a Critical
   # email_av_isolation_unavailable. Each Critical finding is raised at most
   # once an hour. A message whose worker failed twice within a day is not
-  # unpacked again on later delivery attempts. When messages from one sender
+  # unpacked again on later delivery attempts, including after a spool watcher
+  # restart. Failed starts, cancellation and local descriptor exhaustion do
+  # not count against messages or senders. When messages from one sender
   # make workers fail three times, each within ten minutes of the one before,
   # a High email_av_parse_worker_source names the sender, at most once every
-  # ten minutes; blocking that sender is usually the right response.
+  # ten minutes. This advisory never blocks automatically, and blocking an
+  # address does not hide it.
   worker_memory_limit: 536870912        # memory and swap cap of each attachment worker in bytes (512 MiB); minimum 134217728 (128 MiB)
   # Up to scan_concurrency attachment workers run at once, and each may use up
   # to worker_memory_limit. A worker that reaches it is killed and the message
@@ -666,7 +669,9 @@ email_av:
   # Crash samples are for diagnosing worker crashes. They hold customer mail
   # and tenant files: they are readable by root only, stored in parse-crashes
   # under the state directory, capped at 20 samples and 500 MiB, and deleted
-  # after 7 days, also after this setting is turned off.
+  # after 7 days, also after this setting is turned off. Symlinks in the
+  # storage location are refused. Failed or incomplete copies are discarded
+  # without changing the scan verdict or findings.
 
 # --- Email Protection ---
 email_protection:

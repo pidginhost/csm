@@ -247,6 +247,8 @@ curl -o goroutine.txt 'http://127.0.0.1:<port>/debug/pprof/goroutine?debug=2'
   repeatedly) or `skipped` (the message killed workers before, so
   it was not unpacked again). Anything but `ok` means a message or
   zip was not fully checked.
+  Canceled requests, stopped workers and local descriptor exhaustion do not
+  increment this counter.
 - `csm_parse_worker_starts_total{pool}` (counter): worker units
   started. A worker serves many jobs; a start rate close to the
   job rate means workers keep dying or being retired.
@@ -254,6 +256,7 @@ curl -o goroutine.txt 'http://127.0.0.1:<port>/debug/pprof/goroutine?debug=2'
   and swap in use after a successful job. Buckets: 32 MiB ..
   1 GiB. Compare the high buckets with
   `email_av.worker_memory_limit`.
+  Unavailable memory readings are omitted; earlier readings are not reused.
 
 ### Periodic check runner
 
