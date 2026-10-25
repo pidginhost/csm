@@ -15,6 +15,10 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - One sender can no longer hold up mail scanning for others, and slow messages no longer switch off scanning for all mail. Messages waiting behind their sender follow email_av.fail_mode.
 - A message that keeps crashing the attachment worker is no longer unpacked again on every retry, and repeated crashes from one sender raise a High alert naming it.
 
+### Added
+
+- email_av.keep_crash_samples keeps copies of messages and tenant zips that crash the attachment worker, for diagnosis. Off by default; the copies hold customer mail.
+
 ### Fixed
 
 - Newsletters with many long tracking links are no longer sent to the Spam folder for those links alone.

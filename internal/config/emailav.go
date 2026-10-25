@@ -17,6 +17,9 @@ type EmailAVConfig struct {
 	// "open" (default): deliver mail when engines are down, scans time out, or quarantine fails.
 	// "tempfail": defer delivery (Exim retries later) when scanning cannot complete or infected mail cannot be quarantined.
 	FailMode string `yaml:"fail_mode"`
+	// KeepCrashSamples keeps copies of messages and tenant zips that crash
+	// a parse worker, for diagnosis. They hold customer data.
+	KeepCrashSamples bool `yaml:"keep_crash_samples"`
 }
 
 // ScanTimeoutDuration parses the ScanTimeout string as a time.Duration.

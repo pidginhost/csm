@@ -62,6 +62,10 @@ email_av:
   max_extraction_size: 104857600  # 100 MB
   quarantine_infected: true
   scan_concurrency: 4
+  # Keep copies of messages and tenant zips that crash an attachment worker,
+  # for diagnosis. The copies hold customer mail and tenant files, are
+  # readable by root only and are deleted after 7 days.
+  keep_crash_samples: false
 
 # Optional Sentry integration. Captures goroutine panics with a stack
 # trace + host/component tags, and forwards selected errors for cross-

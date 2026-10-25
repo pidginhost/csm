@@ -13,6 +13,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/crashsample"
 	emime "github.com/pidginhost/csm/internal/mime"
 	"github.com/pidginhost/csm/internal/parseworker"
 	"github.com/pidginhost/csm/internal/workerproc"
@@ -131,6 +132,7 @@ func (sw *SpoolWatcher) extractSpoolMessage(evt spoolEvent, msgID, headerPath st
 	if err != nil {
 		if countedKill(err) {
 			sw.recordWorkerKill(msgID, evt.source)
+			sw.saveCrashSample(msgID, header, body)
 		}
 		return sw.extractFailed(msgID, evt.source, err), nil
 	}
@@ -151,6 +153,31 @@ func (sw *SpoolWatcher) recordWorkerKill(msgID, source string) {
 	if sw.sourceKills.Blocked(source) {
 		sw.emitLimited("email_av_parse_worker_source", alert.High, sourceKillWindow,
 			fmt.Sprintf("Messages from source %q killed the attachment parse worker %d times, each within %s of the one before. Their attachments were not scanned and followed email_av.fail_mode. This looks like crafted mail; consider blocking the source.", source, sourceKillLimit, sourceKillWindow))
+	}
+}
+
+func (sw *SpoolWatcher) setCrashSamples(s *crashsample.Store) { sw.crashSamples = s }
+
+// saveCrashSample keeps a copy of a message that killed a worker, when crash
+// samples are on. A failed save changes nothing else.
+func (sw *SpoolWatcher) saveCrashSample(msgID string, header, body *os.File) {
+	if sw.crashSamples == nil {
+		return
+	}
+	var files []crashsample.File
+	for _, f := range []struct {
+		name string
+		file *os.File
+	}{{"body", body}, {"header", header}} {
+		info, err := f.file.Stat()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[%s] spool watcher: keeping crash sample of %s: %v\n", ts(), msgID, err)
+			return
+		}
+		files = append(files, crashsample.File{Name: f.name, Src: f.file, Size: info.Size()})
+	}
+	if err := sw.crashSamples.Save(msgID, files); err != nil {
+		fmt.Fprintf(os.Stderr, "[%s] spool watcher: keeping crash sample of %s: %v\n", ts(), msgID, err)
 	}
 }
 

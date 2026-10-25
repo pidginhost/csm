@@ -27,6 +27,7 @@ import (
 	"github.com/pidginhost/csm/internal/challenge"
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/crashsample"
 	"github.com/pidginhost/csm/internal/emailav"
 	"github.com/pidginhost/csm/internal/emailspool"
 	"github.com/pidginhost/csm/internal/eximlog"
@@ -199,6 +200,9 @@ type Daemon struct {
 	// locked-down parse worker units, one per scan goroutine. Nil when email
 	// AV is off or the workers could not be set up.
 	mailExtractor *parseworker.Extractor
+	// crashSamples is the parse crash sample store; it is swept even when
+	// email_av.keep_crash_samples is off. Nil without a state path.
+	crashSamples *crashsample.Store
 	// parseFindings rate-limits parse worker findings across the daemon and
 	// its spool watchers, so one condition raises one finding an hour.
 	parseFindings findingLimiter
@@ -801,6 +805,9 @@ func (d *Daemon) Run() error {
 	} else {
 		defer d.stopParseWorkers()
 	}
+	d.initCrashSamples()
+	d.wg.Add(1)
+	obs.Go("parse-crash-sweep", d.crashSampleSweep)
 
 	// Install operator verified-bot ranges before the firewall engine is
 	// exposed and before the initial auto-response pass. The firewall's
@@ -2788,6 +2795,7 @@ func (d *Daemon) runSpoolWatcherLoopWithFactory(current spoolWatcherRuntime, res
 
 func (d *Daemon) setSpoolWatcher(sw *SpoolWatcher) {
 	sw.daemonStop = d.stopCh
+	sw.setCrashSamples(d.keptCrashSamples())
 	d.spoolWatcherMu.Lock()
 	if d.spoolWatcher != nil {
 		sw.inheritQueueHealth(d.spoolWatcher)

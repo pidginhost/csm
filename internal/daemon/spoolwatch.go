@@ -18,6 +18,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/crashsample"
 	"github.com/pidginhost/csm/internal/emailav"
 	"github.com/pidginhost/csm/internal/metrics"
 	emime "github.com/pidginhost/csm/internal/mime"
@@ -154,6 +155,9 @@ type SpoolWatcher struct {
 	// them per source. Nil on hand-built test watchers.
 	mailStrikes *workerproc.Strikes
 	sourceKills *workerproc.Strikes
+	// crashSamples keeps messages that kill a worker; nil when
+	// email_av.keep_crash_samples is off. Set before Run.
+	crashSamples *crashsample.Store
 
 	queueHealthOnce   sync.Once
 	scannerHealth     *queuehealth.Tracker

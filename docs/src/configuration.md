@@ -656,6 +656,11 @@ email_av:
   # make workers fail three times, each within ten minutes of the one before,
   # a High email_av_parse_worker_source names the sender, at most once every
   # ten minutes; blocking that sender is usually the right response.
+  keep_crash_samples: false             # keep copies of messages and tenant zips that crash an attachment worker
+  # Crash samples are for diagnosing worker crashes. They hold customer mail
+  # and tenant files: they are readable by root only, stored in parse-crashes
+  # under the state directory, capped at 20 samples and 500 MiB, and deleted
+  # after 7 days, also after this setting is turned off.
 
 # --- Email Protection ---
 email_protection:

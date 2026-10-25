@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/checks"
+	"github.com/pidginhost/csm/internal/crashsample"
 	emime "github.com/pidginhost/csm/internal/mime"
 	"github.com/pidginhost/csm/internal/parseworker"
 	"github.com/pidginhost/csm/internal/workerproc"
@@ -137,4 +139,53 @@ func (d *Daemon) stopParseWorkers() {
 	}
 	_ = d.zipLister.Stop()
 	d.zipLister = nil
+}
+
+// initCrashSamples sets up the parse crash sample store. Phishing zips are
+// kept only when email_av.keep_crash_samples is on.
+func (d *Daemon) initCrashSamples() {
+	if d.cfg == nil || d.cfg.StatePath == "" {
+		return
+	}
+	d.crashSamples = crashsample.New(filepath.Join(d.cfg.StatePath, "parse-crashes"))
+	checks.SetCrashSamples(d.keptCrashSamples())
+}
+
+// keptCrashSamples is the store new crash samples go to, or nil when
+// email_av.keep_crash_samples is off.
+func (d *Daemon) keptCrashSamples() *crashsample.Store {
+	if d.crashSamples == nil || d.cfg == nil || !d.cfg.EmailAV.KeepCrashSamples {
+		return nil
+	}
+	return d.crashSamples
+}
+
+// crashSampleSweep removes expired crash samples at start and then hourly.
+// It runs whether or not samples are kept, so turning the setting off never
+// leaves customer data behind.
+func (d *Daemon) crashSampleSweep() {
+	defer d.wg.Done()
+	d.sweepCrashSamples()
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-d.stopCh:
+			return
+		case <-ticker.C:
+			d.sweepCrashSamples()
+		}
+	}
+}
+
+func (d *Daemon) sweepCrashSamples() {
+	if d.crashSamples == nil {
+		return
+	}
+	n, err := d.crashSamples.Sweep()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[%s] parse crash samples: sweep: %v\n", ts(), err)
+	} else if n > 0 {
+		fmt.Fprintf(os.Stderr, "[%s] parse crash samples: removed %d expired\n", ts(), n)
+	}
 }

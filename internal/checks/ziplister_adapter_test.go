@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/crashsample"
 	"github.com/pidginhost/csm/internal/workerproc"
 )
 
@@ -220,4 +222,23 @@ func TestScanForPhishingWarnsOnSkippedZip(t *testing.T) {
 		t.Fatalf("skipped zip findings = %+v", got)
 	}
 	expectAttributed(t, got, "alice")
+}
+
+func TestPhishingZipCrashSampleSaved(t *testing.T) {
+	useZipLister(t, &fakeZipLister{err: fmt.Errorf("parse worker: %w", workerproc.ErrWorkerFailed)})
+	dir := filepath.Join(t.TempDir(), "parse-crashes")
+	SetCrashSamples(crashsample.New(dir))
+	t.Cleanup(func() { SetCrashSamples(nil) })
+	path := kitZip(t)
+	sum := fileSHA256(t, path)
+	ctx, _ := withIncompleteCheckCollector(context.Background())
+	classifyKitZip(ctx, path)
+	want, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "zip-"+sum, "archive.zip"))
+	if err != nil || !bytes.Equal(got, want) {
+		t.Fatalf("crash sample = %d bytes, %v; want a copy of the zip", len(got), err)
+	}
 }

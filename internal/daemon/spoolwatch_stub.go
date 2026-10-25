@@ -8,6 +8,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/crashsample"
 	"github.com/pidginhost/csm/internal/emailav"
 	"github.com/pidginhost/csm/internal/queuehealth"
 )
@@ -26,4 +27,5 @@ func (sw *SpoolWatcher) Stop()                {}
 func (sw *SpoolWatcher) PermissionMode() bool { return false }
 
 func (sw *SpoolWatcher) inheritQueueHealth(_ *SpoolWatcher)                      {}
+func (sw *SpoolWatcher) setCrashSamples(_ *crashsample.Store)                    {}
 func (sw *SpoolWatcher) queueStatuses(_ time.Time) map[string]queuehealth.Status { return nil }
