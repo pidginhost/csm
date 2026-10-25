@@ -4,12 +4,15 @@ package daemon
 
 import (
 	"fmt"
+	"os"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/emailspool"
+	"github.com/pidginhost/csm/internal/obs"
 )
 
 // maxSourceWaiting bounds how many messages may wait behind one source's
@@ -62,6 +65,24 @@ func (g *sourceGate) leave(src string) (spoolEvent, bool) {
 	return next, true
 }
 
+// readSpoolSource is a seam for tests.
+var readSpoolSource = emailspool.ReadSource
+
+// safeSpoolSource is spoolSource behind a panic guard: it parses
+// attacker-influenced bytes before handleSpoolEventSafe's own guard, and a
+// parser bug must not crash the daemon on every redelivery. A message whose
+// source cannot be read is scanned without the gate.
+func (sw *SpoolWatcher) safeSpoolSource(evt spoolEvent) (src string) {
+	defer func() {
+		if r := recover(); r != nil {
+			obs.CaptureMsg("spool-scanner", fmt.Sprintf("panic reading the source of %s: %v", evt.path, r))
+			fmt.Fprintf(os.Stderr, "[%s] spool watcher: recovered panic reading the source of %s: %v\n%s", ts(), evt.path, r, debug.Stack())
+			src = ""
+		}
+	}()
+	return sw.spoolSource(evt)
+}
+
 // spoolSource reads the source key of the event's message from its -H file,
 // with the same refusals as extraction. It returns "" when the -H cannot be
 // read, which includes the reception open before Exim writes it (MAIL-03).
@@ -74,7 +95,7 @@ func (sw *SpoolWatcher) spoolSource(evt spoolEvent) string {
 		return ""
 	}
 	defer func() { _ = header.Close() }()
-	src, err := emailspool.ReadSource(header)
+	src, err := readSpoolSource(header)
 	if err != nil {
 		return ""
 	}
@@ -87,7 +108,7 @@ func (sw *SpoolWatcher) spoolSource(evt spoolEvent) string {
 func (sw *SpoolWatcher) handleFair(slot int, evt spoolEvent) {
 	evt.slot = slot
 	evt.guard.setStage(holdScanning)
-	src := sw.spoolSource(evt)
+	src := sw.safeSpoolSource(evt)
 	if src == "" {
 		sw.handleSpoolEventSafe(evt)
 		return

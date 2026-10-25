@@ -5,6 +5,7 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -495,4 +496,30 @@ func TestSourceGatePanicFreesSource(t *testing.T) {
 	if len(sw.sources.busy) != 0 {
 		t.Fatal("panic left source events parked")
 	}
+}
+
+// Source parsing reads attacker-influenced bytes before the handler's panic
+// guard. A parser bug must not crash the daemon on every redelivery.
+func TestSourceGateSurvivesSourceParserPanic(t *testing.T) {
+	responses := captureResponses(t)
+	orig := readSpoolSource
+	readSpoolSource = func(io.Reader) (string, error) { panic("parser bug") }
+	t.Cleanup(func() { readSpoolSource = orig })
+	ex := &recordingExtractor{size: 1}
+	sw, _ := extractWatcher("open", ex)
+	sw.scanCh = make(chan spoolEvent, 1)
+	sw.initQueueHealth()
+	dir := t.TempDir()
+	buildSourceSpool(t, dir, "1aBcDe-PNCSRC-XX", "192.0.2.10")
+	evt := enqueue(t, sw, dir, "1aBcDe-PNCSRC-XX")
+	close(sw.scanCh)
+	sw.wg.Add(1)
+	sw.scanWorker(0)
+	if got := responses(); len(got) != 1 || got[0].response != FAN_ALLOW {
+		t.Fatalf("responses = %+v, want the message handled", got)
+	}
+	if n := len(ex.recorded()); n != 1 {
+		t.Fatalf("extractor calls = %d, want the message still scanned", n)
+	}
+	assertFDClosed(t, evt.fd, "event after a source parser panic")
 }
