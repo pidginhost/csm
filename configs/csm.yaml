@@ -66,6 +66,7 @@ email_av:
   # for diagnosis. The copies hold customer mail and tenant files, are
   # readable by root only and are deleted after 7 days.
   keep_crash_samples: false
+  worker_memory_limit: 536870912  # 512 MB per attachment worker; minimum 134217728
 
 # Optional Sentry integration. Captures goroutine panics with a stack
 # trace + host/component tags, and forwards selected errors for cross-

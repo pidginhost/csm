@@ -353,6 +353,10 @@ func Validate(cfg *Config) []ValidationResult {
 	if cfg.EmailAV.Enabled && cfg.EmailAV.MaxAttachmentSize <= 0 {
 		results = append(results, ValidationResult{"error", "email_av.max_attachment_size", "max_attachment_size must be > 0 when email_av enabled"})
 	}
+	if cfg.EmailAV.WorkerMemoryLimit < 0 || (cfg.EmailAV.WorkerMemoryLimit > 0 && cfg.EmailAV.WorkerMemoryLimit < MinWorkerMemoryLimit) {
+		results = append(results, ValidationResult{"error", "email_av.worker_memory_limit",
+			fmt.Sprintf("worker_memory_limit %d is below the %d byte minimum", cfg.EmailAV.WorkerMemoryLimit, MinWorkerMemoryLimit)})
+	}
 	if cfg.EmailAV.FailMode != "" && cfg.EmailAV.FailMode != "open" && cfg.EmailAV.FailMode != "tempfail" {
 		results = append(results, ValidationResult{"error", "email_av.fail_mode",
 			fmt.Sprintf("invalid fail_mode %q: must be \"open\" or \"tempfail\"", cfg.EmailAV.FailMode)})

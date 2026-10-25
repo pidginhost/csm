@@ -2018,3 +2018,29 @@ func TestDOSExemptKnownMailProvidersFalseSurvivesConfD(t *testing.T) {
 		t.Fatal("ExemptKnownMailProviders() must return false after conf.d override")
 	}
 }
+
+func TestEmailAVDefaultsWorkerMemoryLimit(t *testing.T) {
+	c := &EmailAVConfig{}
+	EmailAVDefaults(c)
+	if c.WorkerMemoryLimit != 536870912 {
+		t.Fatalf("default worker memory limit = %d, want 536870912", c.WorkerMemoryLimit)
+	}
+	c = &EmailAVConfig{WorkerMemoryLimit: 268435456}
+	EmailAVDefaults(c)
+	if c.WorkerMemoryLimit != 268435456 {
+		t.Fatalf("worker memory limit = %d, want the configured 268435456", c.WorkerMemoryLimit)
+	}
+}
+
+func TestValidateWorkerMemoryLimitMinimum(t *testing.T) {
+	for _, tc := range []struct {
+		limit   int64
+		wantErr bool
+	}{{100 << 20, true}, {-1, true}, {128 << 20, false}, {512 << 20, false}} {
+		cfg := &Config{}
+		cfg.EmailAV.WorkerMemoryLimit = tc.limit
+		if got := hasResult(Validate(cfg), "error", "email_av.worker_memory_limit"); got != tc.wantErr {
+			t.Errorf("limit %d: error = %v, want %v", tc.limit, got, tc.wantErr)
+		}
+	}
+}

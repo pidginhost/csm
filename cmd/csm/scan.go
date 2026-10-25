@@ -759,7 +759,7 @@ func scanZipLister(binary string) (*parseworker.Lister, error) {
 	// Concurrent CLI scans must not share the slice's cumulative OOM count.
 	prefix := fmt.Sprintf("%s-%d", scanCLIUnitPrefix, os.Getpid())
 	return parseworker.NewLister(parseworker.ListerConfig{
-		Launch: workerproc.UnitLauncher(parseworker.UnitConfig(binary, prefix, 64<<20, logf)),
+		Launch: workerproc.UnitLauncher(parseworker.UnitConfig(binary, prefix, parseworker.DefaultMemoryLimit, 64<<20, logf)),
 		Log:    logf,
 	})
 }

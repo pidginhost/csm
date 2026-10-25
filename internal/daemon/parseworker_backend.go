@@ -10,6 +10,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/checks"
+	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/crashsample"
 	emime "github.com/pidginhost/csm/internal/mime"
 	"github.com/pidginhost/csm/internal/parseworker"
@@ -48,7 +49,7 @@ func (d *Daemon) initParseWorkers() error {
 		return fmt.Errorf("parse worker: %w", err)
 	}
 	registerParseWorkerMetrics()
-	launchZip := countParseWorkerStarts("zip", parseWorkerLauncher(parseworker.UnitConfig(d.binaryPath, parseWorkerUnitPrefix+"zip0", 64<<20, logf)))
+	launchZip := countParseWorkerStarts("zip", parseWorkerLauncher(parseworker.UnitConfig(d.binaryPath, parseWorkerUnitPrefix+"zip0", parseworker.DefaultMemoryLimit, 64<<20, logf)))
 	lister, err := parseworker.NewLister(parseworker.ListerConfig{
 		Launch: func(ctx context.Context) (workerproc.Process, error) {
 			proc, err := launchZip(ctx)
@@ -76,7 +77,7 @@ func (d *Daemon) initParseWorkers() error {
 		Size: d.cfg.EmailAV.ScanConcurrency,
 		Launch: func(slot int) workerproc.Launcher {
 			name := fmt.Sprintf("%smail%d", parseWorkerUnitPrefix, slot)
-			return countParseWorkerStarts("mail", parseWorkerLauncher(parseworker.UnitConfig(d.binaryPath, name, parseworker.FileSizeLimit(d.cfg.EmailAV.MaxAttachmentSize), logf)))
+			return countParseWorkerStarts("mail", parseWorkerLauncher(parseworker.UnitConfig(d.binaryPath, name, mailWorkerMemoryLimit(d.cfg), parseworker.FileSizeLimit(d.cfg.EmailAV.MaxAttachmentSize), logf)))
 		},
 		Log:   logf,
 		OnJob: func(outcome string, memory uint64) { recordParseJob("mail", outcome, memory) },
@@ -87,6 +88,15 @@ func (d *Daemon) initParseWorkers() error {
 	d.mailExtractor = extractor
 	d.registerQueueSource("email_extract", extractor)
 	return nil
+}
+
+// mailWorkerMemoryLimit is the configured memory cap of each mail parse
+// worker; validation keeps it at or above the minimum.
+func mailWorkerMemoryLimit(cfg *config.Config) uint64 {
+	if cfg.EmailAV.WorkerMemoryLimit < config.MinWorkerMemoryLimit {
+		return parseworker.DefaultMemoryLimit
+	}
+	return uint64(cfg.EmailAV.WorkerMemoryLimit)
 }
 
 // reportIsolationUnavailable raises email_av_isolation_unavailable for parse

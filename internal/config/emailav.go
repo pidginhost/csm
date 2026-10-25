@@ -20,7 +20,17 @@ type EmailAVConfig struct {
 	// KeepCrashSamples keeps copies of messages and tenant zips that crash
 	// a parse worker, for diagnosis. They hold customer data.
 	KeepCrashSamples bool `yaml:"keep_crash_samples"`
+	// WorkerMemoryLimit caps the memory and swap of each attachment parse
+	// worker, in bytes.
+	WorkerMemoryLimit int64 `yaml:"worker_memory_limit"`
 }
+
+// Attachment parse worker memory cap: the default, and the floor below which
+// ordinary messages would fail.
+const (
+	DefaultWorkerMemoryLimit = 512 << 20
+	MinWorkerMemoryLimit     = 128 << 20
+)
 
 // ScanTimeoutDuration parses the ScanTimeout string as a time.Duration.
 func (c *EmailAVConfig) ScanTimeoutDuration() time.Duration {
@@ -61,5 +71,8 @@ func EmailAVDefaults(c *EmailAVConfig) {
 	}
 	if c.ScanConcurrency == 0 {
 		c.ScanConcurrency = 4
+	}
+	if c.WorkerMemoryLimit == 0 {
+		c.WorkerMemoryLimit = DefaultWorkerMemoryLimit
 	}
 }

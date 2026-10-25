@@ -656,6 +656,12 @@ email_av:
   # make workers fail three times, each within ten minutes of the one before,
   # a High email_av_parse_worker_source names the sender, at most once every
   # ten minutes; blocking that sender is usually the right response.
+  worker_memory_limit: 536870912        # memory and swap cap of each attachment worker in bytes (512 MiB); minimum 134217728 (128 MiB)
+  # Up to scan_concurrency attachment workers run at once, and each may use up
+  # to worker_memory_limit. A worker that reaches it is killed and the message
+  # follows fail_mode as "parse worker ran out of memory". The phishing-kit
+  # zip worker keeps the default cap. Changing it takes effect after a daemon
+  # restart.
   keep_crash_samples: false             # keep copies of messages and tenant zips that crash an attachment worker
   # Crash samples are for diagnosing worker crashes. They hold customer mail
   # and tenant files: they are readable by root only, stored in parse-crashes

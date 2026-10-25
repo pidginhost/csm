@@ -18,6 +18,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 ### Added
 
 - email_av.keep_crash_samples keeps copies of messages and tenant zips that crash the attachment worker, for diagnosis. Off by default; the copies hold customer mail.
+- The memory cap of each attachment worker can now be set with email_av.worker_memory_limit.
 
 ### Fixed
 
