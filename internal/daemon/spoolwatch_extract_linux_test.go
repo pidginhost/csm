@@ -139,6 +139,40 @@ func wantResponse(failMode string) uint32 {
 	return FAN_ALLOW
 }
 
+// The worker is handed whatever -H the daemon opens, so a -H on another
+// filesystem than the spool body is refused.
+func TestSpoolHeaderOpenRefusesOtherDevice(t *testing.T) {
+	shm := t.TempDir()
+	if _, err := os.Stat("/dev/shm"); err == nil {
+		if d, mkErr := os.MkdirTemp("/dev/shm", "csm-hdr-"); mkErr == nil {
+			shm = d
+			t.Cleanup(func() { _ = os.RemoveAll(d) })
+		}
+	}
+	bodyDir := t.TempDir()
+	var hs, bs unix.Stat_t
+	if unix.Stat(shm, &hs) != nil || unix.Stat(bodyDir, &bs) != nil || hs.Dev == bs.Dev {
+		t.Skip("no second filesystem for the header")
+	}
+	header := filepath.Join(shm, "1aBcDe-XDEV00-XX-H")
+	if err := os.WriteFile(header, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.Create(filepath.Join(bodyDir, "1aBcDe-XDEV00-XX-D"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = body.Close() }()
+	f, err := openSpoolHeader(header, int(body.Fd()))
+	if err == nil {
+		_ = f.Close()
+		t.Fatal("openSpoolHeader accepted a -H on another filesystem")
+	}
+	if !strings.Contains(err.Error(), "not on the spool filesystem") {
+		t.Fatalf("error = %v, want the filesystem refusal", err)
+	}
+}
+
 // A close-on-exec body duplicate does not protect the original event fd:
 // queued events must not be inherited by a worker's systemd-run client.
 func TestSpoolWatcherRequestsCloseOnExecEvents(t *testing.T) {

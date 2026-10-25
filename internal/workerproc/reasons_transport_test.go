@@ -48,8 +48,10 @@ func TestCallClassifiesInvalidWireReplies(t *testing.T) {
 			wantText:   "workerproc: read body: workerproc: frame carries more than 1 descriptors",
 		},
 		{
+			// The kernel also truncates when this process is out of
+			// descriptors, so truncation is no proof of a hostile worker.
 			name: "truncated descriptors", wire: withHeader([]byte("{}")), fdCount: 3, fdLimit: 2,
-			wantReason: ReasonProtocol,
+			wantReason: ReasonCrash,
 			wantText:   "workerproc: read body: workerproc: descriptors truncated in transit",
 		},
 		{

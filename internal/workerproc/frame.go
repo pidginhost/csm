@@ -174,8 +174,10 @@ func (r *rightsReader) Read(p []byte) (int, error) {
 	if oobn > 0 {
 		r.collect(r.oob[:oobn])
 	}
-	if flags&syscall.MSG_CTRUNC != 0 {
-		r.fail(errors.New("workerproc: descriptors truncated in transit"))
+	if flags&syscall.MSG_CTRUNC != 0 && r.err == nil {
+		// Not a protocol error: the kernel also truncates when this process
+		// is out of descriptors, so it is no proof of a hostile worker.
+		r.err = errors.New("workerproc: descriptors truncated in transit")
 	}
 	if r.err != nil {
 		return n, r.err

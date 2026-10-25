@@ -184,6 +184,21 @@ func TestExtractDropsEmptyParts(t *testing.T) {
 	}
 }
 
+// Empty attachments are not staged, so they cannot use up the part cap and
+// hide a real attachment behind it.
+func TestExtractIgnoresEmptyParts(t *testing.T) {
+	var parts []mailPart
+	for i := range 250 {
+		parts = append(parts, mailPart{fmt.Sprintf("e%03d.bin", i), nil})
+	}
+	parts = append(parts, mailPart{"real.bin", []byte("0123456789")})
+	h, d := spoolPair(t, "empties", []string{"user@example.com"}, parts...)
+	res, fds := extractVia(t, h, d)
+	if res.Partial || len(res.Parts) != 1 || len(fds) != 1 || res.Parts[0].Filename != "real.bin" {
+		t.Fatalf("partial %v (%q), parts %+v", res.Partial, res.PartialReason, res.Parts)
+	}
+}
+
 func TestExtractBoundsStrings(t *testing.T) {
 	var to []string
 	for i := range 150 {
