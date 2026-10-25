@@ -404,3 +404,14 @@ func TestUnitWorkerStderrReachesLog(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+// Empty lines cost log lines too: a worker printing only newlines must hit
+// the same budget instead of flooding the journal.
+func TestUnitWorkerStderrEmptyLinesCharged(t *testing.T) {
+	var c logCapture
+	logWorkerOutput(strings.NewReader(strings.Repeat("\n", 1<<20)), "csm-parse-worker-mail0-1", c.logf)
+	lines := c.all()
+	if len(lines) != 1 || lines[0] != "csm-parse-worker-mail0-1: further output dropped" {
+		t.Fatalf("logged %d lines for empty output, want only the drop notice", len(lines))
+	}
+}

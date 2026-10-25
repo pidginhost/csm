@@ -600,21 +600,24 @@ const (
 )
 
 // logWorkerOutput logs r line by line, quoted, each line cut to
-// maxWorkerLogLine bytes, until maxWorkerLogBytes are logged; then it says so
-// once and drains r to end of file.
+// maxWorkerLogLine bytes, until maxWorkerLogBytes are spent; then it says so
+// once and drains r to end of file. Every line costs its newline too, so
+// empty lines, which are not logged, still spend the budget.
 func logWorkerOutput(r io.Reader, unit string, logf func(string, ...any)) {
 	br := bufio.NewReader(r)
 	budget := maxWorkerLogBytes
 	for {
 		line, err := readCappedLine(br, maxWorkerLogLine)
 		if len(line) > 0 || err == nil {
-			if len(line) > budget {
+			if len(line)+1 > budget {
 				logf("%s: further output dropped", unit)
 				_, _ = io.Copy(io.Discard, br)
 				return
 			}
-			budget -= len(line)
-			logf("%s: %q", unit, line)
+			budget -= len(line) + 1
+			if len(line) > 0 {
+				logf("%s: %q", unit, line)
+			}
 		}
 		if err != nil {
 			return
