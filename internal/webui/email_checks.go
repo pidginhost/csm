@@ -48,6 +48,8 @@ var emailChecks = []emailCheck{
 	{"email_av_parse_error", "malware"},
 	{"email_av_parse_worker_failed", "malware"},
 	{"email_av_parse_worker_rejected", "malware"},
+	{"email_av_parse_worker_source", "malware"},
+	{"email_av_source_backlog", "malware"},
 	{"email_av_isolation_unavailable", "malware"},
 	{"email_av_quarantine_error", "malware"},
 
