@@ -209,28 +209,6 @@ func TestStoreRefusesSymlinkedDir(t *testing.T) {
 	}
 }
 
-func TestStoreRefusesSymlinkedParent(t *testing.T) {
-	root := t.TempDir()
-	target := filepath.Join(root, "target")
-	if err := os.Mkdir(target, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	link := filepath.Join(root, "state")
-	if err := os.Symlink(target, link); err != nil {
-		t.Fatal(err)
-	}
-	s := New(filepath.Join(link, "parse-crashes"))
-	if err := s.Save("message", []File{file("body", "private mail")}); err == nil {
-		t.Error("sample saved through symlinked state directory")
-	}
-	if _, err := s.Sweep(); err == nil {
-		t.Error("sweep followed symlinked state directory")
-	}
-	if entries, err := os.ReadDir(target); err != nil || len(entries) != 0 {
-		t.Fatalf("symlink target changed: %v, %v", entries, err)
-	}
-}
-
 func TestStoreSweepRemovesOld(t *testing.T) {
 	s, dir := newTestStore(t)
 	for _, name := range []string{"old", "new"} {

@@ -669,9 +669,9 @@ email_av:
   # Crash samples are for diagnosing worker crashes. They hold customer mail
   # and tenant files: they are readable by root only, stored in parse-crashes
   # under the state directory, capped at 20 samples and 500 MiB, and deleted
-  # after 7 days, also after this setting is turned off. Symlinks in the
-  # storage location are refused. Failed or incomplete copies are discarded
-  # without changing the scan verdict or findings.
+  # after 7 days, also after this setting is turned off. A link in place of
+  # the parse-crashes directory is refused. Failed or incomplete copies are
+  # discarded without changing the scan verdict or findings.
 
 # --- Email Protection ---
 email_protection:
