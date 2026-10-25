@@ -78,11 +78,21 @@ properties:
 - `TasksMax=64`, `LimitNOFILE=256`, `LimitCORE=0`, `CPUWeight=50`, and a
   one-hour `RuntimeMaxSec`. `LimitFSIZE=` is 64 MiB for zip listings; for mail
   it is 1 MiB above `email_av.max_attachment_size`, and never below 64 MiB;
-- `OOMScoreAdjust=1000`, so a host that runs out of memory kills a parse
-  worker before any service, and `Slice=` set to a slice of its own per unit
+- `OOMScoreAdjust=1000`, making parse workers preferred victims under host
+  memory pressure, and `Slice=` set to a slice of its own per unit
   name prefix directly under `system.slice`, for example
   `system-csm\x2dparse\x2dworker\x2dmail0.slice`. The slices stay after their
-  units end; they are empty and hold no resources.
+  units end; they contain no processes but retain their accounting metadata.
+
+Before launching a worker, CSM sets its slice's runtime `CPUWeight=50`
+through systemd. CPU weights compare siblings: the service's weight alone
+would not limit its share against the daemon outside that slice. Slice setup
+shares the worker's startup timeout, and a failure prevents the launch.
+Empty slices and their runtime settings remain until reboot.
+
+On cgroup v2, a replacement waits for earlier units in its slice to disappear
+before taking the slice's OOM snapshot. If they outlive the startup timeout,
+the replacement gets no request and reports a startup failure.
 
 The zip worker receives the zip as an open descriptor and returns entry names
 in a sealed memfd. A mail worker receives the message's spool header and body
@@ -131,6 +141,8 @@ account scans can still use the worker, and startup cleanup still runs.
 `email_av.enabled: false` starts no mail workers.
 
 The in-process `csm scan <user>` command starts its own worker on demand.
+Its unit prefix includes the CLI process ID, so concurrent scans use distinct
+slices and cannot attribute another scan's OOM kill to their own worker.
 Its report warns when worker setup, startup or archive listing fails, even
 if later archives are checked successfully. A scan with unchecked archives
 does not report the account as clean.

@@ -1220,9 +1220,13 @@ Malformed frames and rejected descriptors are protocol failures; a broken
 socket is a crash unless the process reports an OOM kill. The daemon cannot
 read a unit worker's kill from the unit's own cgroup: by the time it sees the
 worker die, systemd has removed that cgroup and its counters. On cgroup
-v2 each unit runs in a slice of its own, and the slice's `memory.events`,
+v2 each supervisor uses its own slice, and the slice's `memory.events`,
 which counts its children's kills and outlives them, is compared with its
-value at start. On v1 that counter is not hierarchical, so an eventfd on
+value at start. Before that snapshot, startup waits for any previous unit's
+cgroup to disappear, bounded by `StartTimeout`: a reaped `systemd-run` client
+alone does not prove its service has exited. Standalone CLI scans include
+their process ID in the prefix to keep their slices distinct.
+On v1 that counter is not hierarchical, so an eventfd on
 `memory.oom_control` reports the kill as it happens; OOM and removal
 notifications are counted together even when they arrive in separate reads,
 and a single notification with the directory gone remains undecided until the

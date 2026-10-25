@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +17,54 @@ import (
 	"github.com/pidginhost/csm/internal/parseworker"
 	"github.com/pidginhost/csm/internal/workerproc"
 )
+
+func TestScanZipListerUsesProcessSpecificSlice(t *testing.T) {
+	dir := t.TempDir()
+	args := filepath.Join(dir, "args")
+	for name, script := range map[string]string{
+		"systemctl":   "#!/bin/sh\nif [ \"$1\" = kill ]; then : > \"$CSM_TEST_UNIT_ARGS.killed\"; fi\n",
+		"systemd-run": "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$CSM_TEST_UNIT_ARGS\"\nexit 1\n",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("CSM_TEST_UNIT_ARGS", args)
+	lister, err := scanZipLister("/bin/true")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = lister.Stop() })
+	input, err := os.Create(filepath.Join(dir, "input.zip"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer input.Close()
+	err = lister.ListZip(context.Background(), input, 0, 1024, func(string, bool) error { return nil })
+	if !errors.Is(err, workerproc.ErrSpawn) {
+		t.Fatalf("fake launcher error = %v, want spawn failure", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, statErr := os.Stat(args + ".killed"); statErr == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("failed launch did not kill its unit")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	b, err := os.ReadFile(args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prefix := "csm-parse-worker-cli-" + strconv.Itoa(os.Getpid())
+	if !strings.Contains(string(b), "--unit="+prefix+"-") ||
+		!strings.Contains(string(b), `--property=Slice=system-`+strings.ReplaceAll(prefix, "-", `\x2d`)+".slice\n") {
+		t.Fatalf("standalone scans share their worker slice: %s", b)
+	}
+}
 
 func TestParseWorkerProcess(t *testing.T) {
 	if os.Getenv("CSM_TEST_PARSE_WORKER") != "1" {

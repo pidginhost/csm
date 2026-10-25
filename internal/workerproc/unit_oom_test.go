@@ -3,13 +3,116 @@
 package workerproc
 
 import (
+	"context"
 	"encoding/binary"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
 	"testing"
+	"testing/synctest"
 	"time"
 )
+
+func TestWaitForUnitSliceFailsClosed(t *testing.T) {
+	t.Run("previous unit never leaves", func(t *testing.T) {
+		dir := t.TempDir()
+		for _, name := range []string{"old.service", "new.service"} {
+			if err := os.Mkdir(filepath.Join(dir, name), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		synctest.Test(t, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			if err := waitForUnitSlice(ctx, dir, "new.service", time.Millisecond); !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("occupied slice = %v, want startup deadline", err)
+			}
+		})
+	})
+	t.Run("current unit disappeared", func(t *testing.T) {
+		if err := waitForUnitSlice(context.Background(), t.TempDir(), "gone.service", time.Millisecond); err == nil {
+			t.Fatal("missing worker admitted")
+		}
+	})
+	t.Run("slice unreadable", func(t *testing.T) {
+		if err := waitForUnitSlice(context.Background(), filepath.Join(t.TempDir(), "gone"), "u.service", time.Millisecond); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("unreadable slice = %v", err)
+		}
+	})
+}
+
+// A systemd-run client can exit before its service is killed. The next
+// worker must not attribute that service's later OOM to its own input.
+func TestUnitLauncherSnapshotsAfterPreviousCgroupRemoval(t *testing.T) {
+	cfg, f := fakeUnitConfig(t, "1")
+	slice := filepath.Join(f.cgroupRoot, "system.slice", unitSlice(cfg.Prefix))
+	previous := filepath.Join(slice, "previous.service")
+	if err := os.MkdirAll(previous, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeValue(t, filepath.Join(slice, "memory.events"), "oom_kill 2\n")
+	type result struct {
+		p   Process
+		err error
+	}
+	started := make(chan result, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	var res result
+	received := false
+	t.Cleanup(func() {
+		cancel()
+		if !received {
+			res = <-started
+		}
+		if res.p != nil {
+			_ = res.p.Kill()
+			<-res.p.Done()
+		}
+	})
+	ready := make(chan struct{})
+	mainPID := cfg.hooks.mainPID
+	cfg.hooks.mainPID = func(ctx context.Context, p *unitProcess) (int, error) {
+		pid, err := mainPID(ctx, p)
+		close(ready)
+		return pid, err
+	}
+	go func() {
+		p, err := UnitLauncher(cfg)(ctx)
+		started <- result{p, err}
+	}()
+	select {
+	case res = <-started:
+		received = true
+		t.Fatalf("launch returned before admission: %v", res.err)
+	case <-ready:
+	}
+	select {
+	case res = <-started:
+		received = true
+		t.Fatalf("launch returned while the previous unit was still present: %v", res.err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	writeValue(t, filepath.Join(slice, "memory.events"), "oom_kill 3\n")
+	if err := os.Remove(previous); err != nil {
+		t.Fatal(err)
+	}
+	res = <-started
+	received = true
+	if res.err != nil {
+		t.Fatal(res.err)
+	}
+	p := res.p.(*unitProcess)
+	if p.slice == nil || p.sliceOOMKills != 3 || p.OOMKilled() {
+		t.Fatalf("old unit's kill entered the new baseline: slice=%v count=%d", p.slice, p.sliceOOMKills)
+	}
+	writeValue(t, filepath.Join(slice, "memory.events"), "oom_kill 4\n")
+	_ = p.Kill()
+	<-p.Done()
+	if !p.OOMKilled() {
+		t.Fatal("current worker's OOM was lost after its cgroup disappeared")
+	}
+}
 
 type oomEventReader func([]byte) (int, error)
 
@@ -98,8 +201,8 @@ func TestOOMWatchStopReleasesResources(t *testing.T) {
 	assertNoFDLeak(t, before)
 }
 
-// Each prefix gets its own slice under system.slice: one level down, so it
-// shares system.slice's CPU and memory, and holding one live unit at a time.
+// Each prefix gets its own slice one level below system.slice, so it shares
+// system.slice's CPU and memory instead of competing with all host services.
 func TestUnitSliceName(t *testing.T) {
 	if got := unitSlice("csm-parse-worker-zip0"); got != `system-csm\x2dparse\x2dworker\x2dzip0.slice` {
 		t.Fatalf("slice = %q", got)

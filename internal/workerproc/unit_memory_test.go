@@ -13,15 +13,15 @@ import (
 // cgroupDir is where the fake puts unit's memory cgroup for its layout.
 func (f *unitFake) cgroupDir(unit string) string {
 	if strings.HasPrefix(f.layout, "v1") {
-		return filepath.Join(f.cgroupRoot, "memory", "system.slice", unit+".service")
+		return filepath.Join(f.cgroupRoot, "memory", "system.slice", unitSlice(f.prefix), unit+".service")
 	}
-	return filepath.Join(f.cgroupRoot, "system.slice", unit+".service")
+	return filepath.Join(f.cgroupRoot, "system.slice", unitSlice(f.prefix), unit+".service")
 }
 
 // writeCgroup builds the fake /proc/<pid>/cgroup and cgroup files the way a
 // unit started by systemd would see them.
 func (f *unitFake) writeCgroup(pid int, unit string) error {
-	path := "/system.slice/" + unit + ".service"
+	path := "/system.slice/" + unitSlice(f.prefix) + "/" + unit + ".service"
 	procFile := "0::" + path + "\n"
 	if strings.HasPrefix(f.layout, "v1") {
 		procFile = "7:memory:" + path + "\n" + procFile
@@ -39,6 +39,17 @@ func (f *unitFake) writeCgroup(pid int, unit string) error {
 	dir := f.cgroupDir(unit)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
+	}
+	if !strings.HasPrefix(f.layout, "v1") {
+		// A slice survives worker replacements and keeps their kill count.
+		events, err := os.OpenFile(filepath.Join(filepath.Dir(dir), "memory.events"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+		if err == nil {
+			_, err = events.WriteString("oom_kill 0\n")
+			_ = events.Close()
+		}
+		if err != nil && !os.IsExist(err) {
+			return err
+		}
 	}
 	files := map[string]string{}
 	switch f.layout {

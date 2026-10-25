@@ -30,6 +30,13 @@ func TestUnitLauncherRejectsUnsafeMemory(t *testing.T) {
 				t.Fatal(err)
 			}
 		}},
+		{"foreign unit in expected slice", "v2", func(t *testing.T, f *unitFake, p *unitProcess) {
+			writeValue(t, filepath.Join(f.procRoot, strconv.Itoa(p.cmd.Process.Pid), "cgroup"),
+				"0::/system.slice/"+unitSlice(f.prefix)+"/other.service\n")
+			if err := os.Rename(f.cgroupDir(p.unit), f.cgroupDir("other")); err != nil {
+				t.Fatal(err)
+			}
+		}},
 		{"unlimited v2 RAM", "v2", func(t *testing.T, f *unitFake, p *unitProcess) {
 			writeValue(t, filepath.Join(f.cgroupDir(p.unit), "memory.max"), "max")
 		}},
@@ -82,6 +89,11 @@ func TestUnitLauncherRejectsUnsafeMemory(t *testing.T) {
 			if tc.name == "foreign unit" {
 				if got := readTrim(t, filepath.Join(f.cgroupDir("other"), "memory.memsw.limit_in_bytes")); got != "9223372036854771712" {
 					t.Fatalf("modified a foreign unit's limit: %s", got)
+				}
+			}
+			if tc.name == "foreign unit in expected slice" {
+				if got := readTrim(t, filepath.Join(f.cgroupDir("other"), "memory.swap.max")); got != "max" {
+					t.Fatalf("modified a foreign unit's swap limit: %s", got)
 				}
 			}
 		})

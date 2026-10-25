@@ -233,7 +233,7 @@ func TestParseWorkerMemoryWritesStayInsideDaemon(t *testing.T) {
 	if memory.Unsandboxed || !units.Unsandboxed {
 		t.Fatal("memory limits are written by the daemon; only the worker runs outside its sandbox")
 	}
-	if !slices.Equal(units.Writes, []string{"systemd:transient units"}) {
+	if !slices.Equal(units.Writes, []string{"systemd:transient units", "systemd:runtime slice CPU weights"}) {
 		t.Fatalf("unit operation claims in-daemon writes: %v", units.Writes)
 	}
 	if !slices.Equal(memory.Writes, []string{`cgroup:/sys/fs/cgroup/memory/system.slice/system-csm\x2dparse\x2dworker*.slice/csm-parse-worker-*.service`, `cgroup:/sys/fs/cgroup/system.slice/system-csm\x2dparse\x2dworker*.slice/csm-parse-worker-*.service`}) {
@@ -599,7 +599,7 @@ var reviewedRecoveryGaps = map[string]string{
 	"detect.kernel_livepatch_probe": "This inventory does not specify recovery of incidental external cache or log writes by probe commands.",
 	"detect.mail_queue_probe":       "This inventory does not specify recovery of incidental external cache or log writes by probe commands.",
 	"detect.parse_worker_memory":    "Memory and swap limits end with the worker cgroup; this inventory specifies no separate cleanup contract.",
-	"detect.parse_worker_units":     "Worker units and their cgroups end with the unit; startup attempts to kill leftovers and logs failures, but this inventory specifies no contract for that cleanup.",
+	"detect.parse_worker_units":     "Worker units and their cgroups end with the unit; empty slices and their runtime CPU weights remain until reboot. Startup attempts to kill leftover workers and logs failures.",
 	"detect.outbound_connections":   "This inventory does not yet specify verified detach, map restoration and crash recovery for these kernel hooks.",
 	"detect.process_exec":           "This inventory does not yet specify verified detach, map restoration and crash recovery for these kernel hooks.",
 	"detect.sensitive_file_writes":  "This inventory does not yet specify verified detach, map restoration and crash recovery for these kernel hooks.",

@@ -212,10 +212,18 @@ func TestKernelUnitLauncherLockdown(t *testing.T) {
 	if r.Home == "" || r.Shadow == "" || r.Spool == "" || r.Personality == "" {
 		t.Fatalf("file access: %+v", r)
 	}
-	// A host-wide OOM must take the parser first, and the unit's own slice
+	// A host-wide OOM prefers the parser, and the unit's own slice
 	// under system.slice carries its OOM count past the unit's removal.
 	if r.OOMScoreAdj != "1000" || !strings.Contains(r.Cgroup, "/system.slice/"+unitSlice(cfg.Prefix)+"/") {
 		t.Fatalf("oom_score_adj %q, cgroup %q", r.OOMScoreAdj, r.Cgroup)
+	}
+	s.mu.Lock()
+	p := s.child.proc.(*unitProcess)
+	s.mu.Unlock()
+	if p.cg.v2 {
+		if got := readTrim(t, filepath.Join(filepath.Dir(p.cg.dir), "cpu.weight")); got != "50" {
+			t.Fatalf("slice CPU weight = %s, want the daemon's weight", got)
+		}
 	}
 	var w struct{ Error string }
 	if err := callInto(t, s, "fsize", `{}`, &w); err != nil {

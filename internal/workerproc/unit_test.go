@@ -20,7 +20,7 @@ type unitFake struct {
 	killed []*unitProcess
 	// layout is the fake cgroup tree the "unit" lands in: v2, v1-memsw,
 	// v1-noswap, v1-uncappable, or none.
-	layout               string
+	layout, prefix       string
 	procRoot, cgroupRoot string
 }
 
@@ -50,9 +50,9 @@ func (f *unitFake) waitKills(t *testing.T, n int) []*unitProcess {
 // a worker serving fd 0. The "unit" is that process.
 func fakeUnitConfig(t *testing.T, helperArgs ...string) (UnitConfig, *unitFake) {
 	t.Helper()
-	f := &unitFake{layout: "v2", procRoot: t.TempDir(), cgroupRoot: t.TempDir()}
+	f := &unitFake{layout: "v2", prefix: "csm-parse-worker-zip0", procRoot: t.TempDir(), cgroupRoot: t.TempDir()}
 	return UnitConfig{
-		Prefix:        "csm-parse-worker-zip0",
+		Prefix:        f.prefix,
 		Command:       os.Args[0],
 		Args:          append([]string{unitHelperArg}, helperArgs...),
 		MemoryLimit:   512 << 20,
@@ -62,7 +62,8 @@ func fakeUnitConfig(t *testing.T, helperArgs ...string) (UnitConfig, *unitFake) 
 		Protocol:      1,
 		Limits:        Limits{MaxFrameBytes: 1 << 20, MaxFDs: 1},
 		hooks: &unitHooks{
-			systemdRun: os.Args[0],
+			systemdRun:     os.Args[0],
+			configureSlice: func(context.Context, string) error { return nil },
 			mainPID: func(_ context.Context, p *unitProcess) (int, error) {
 				pid := p.cmd.Process.Pid
 				return pid, f.writeCgroup(pid, p.unit)
@@ -71,7 +72,9 @@ func fakeUnitConfig(t *testing.T, helperArgs ...string) (UnitConfig, *unitFake) 
 				f.mu.Lock()
 				f.killed = append(f.killed, p)
 				f.mu.Unlock()
-				return p.cmd.Process.Kill()
+				err := p.cmd.Process.Kill()
+				_ = os.RemoveAll(f.cgroupDir(p.unit))
+				return err
 			},
 			procRoot:     f.procRoot,
 			cgroupRoot:   f.cgroupRoot,
@@ -149,6 +152,45 @@ func TestUnitLauncherServesRequests(t *testing.T) {
 	}
 	if st := s.Stats(); got.PID == 0 || st.LastPID != got.PID {
 		t.Fatalf("LastPID = %d, helper pid %d", st.LastPID, got.PID)
+	}
+}
+
+func TestUnitLauncherSetsSliceCPUWeight(t *testing.T) {
+	cfg, _ := fakeUnitConfig(t, "1")
+	cfg.hooks.configureSlice = nil
+	dir := t.TempDir()
+	args := filepath.Join(dir, "args")
+	command := "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$CSM_TEST_SYSTEMCTL_ARGS\"\n"
+	if err := os.WriteFile(filepath.Join(dir, "systemctl"), []byte(command), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CSM_TEST_SYSTEMCTL_ARGS", args)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	launchUnit(t, cfg)
+	b, err := os.ReadFile(args)
+	if err != nil {
+		t.Fatalf("slice CPU weight was not configured: %v", err)
+	}
+	want := "set-property\n--runtime\n" + unitSlice(cfg.Prefix) + "\nCPUWeight=50\n"
+	if string(b) != want {
+		t.Fatalf("systemctl arguments = %q, want %q", b, want)
+	}
+}
+
+func TestUnitLauncherRejectsSliceSetupFailure(t *testing.T) {
+	cfg, f := fakeUnitConfig(t, "1")
+	want := errors.New("cannot configure slice")
+	cfg.hooks.configureSlice = func(ctx context.Context, name string) error {
+		if _, ok := ctx.Deadline(); !ok {
+			t.Error("slice setup has no startup deadline")
+		}
+		return want
+	}
+	if p, err := UnitLauncher(cfg)(context.Background()); p != nil || !errors.Is(err, want) {
+		t.Fatalf("launch = %v, %v; want slice setup failure", p, err)
+	}
+	if got := len(f.kills()); got != 0 {
+		t.Fatalf("started a worker before configuring its slice: %d kills", got)
 	}
 }
 
