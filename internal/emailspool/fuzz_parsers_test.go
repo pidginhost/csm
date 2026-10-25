@@ -42,3 +42,28 @@ func FuzzParseHeadersReader(f *testing.F) {
 		_, _ = ParseHeadersReader(strings.NewReader(data))
 	})
 }
+
+// The source key is read from the same attacker-influenced preamble. It must
+// never panic and must stay a short, typed key.
+func FuzzReadSource(f *testing.F) {
+	if data, err := os.ReadFile("testdata/sample_phpmailer.H"); err == nil {
+		f.Add(string(data))
+	}
+	f.Add("id-H\nuser 100 100\n<u@example.com>\n0 0\n-host_address 192.0.2.10.25\n-auth_id u@example.com\n1\nrcpt@example.com\n\n")
+	f.Add("id-H\nuser 100 100\n<u@example.com>\n0 0\n--host_address 2001:db8::1.25\n-aclm _x 5\nab\ncd\n-local\n")
+	f.Add("id-H\nuser 100 100\n<u@example.com>\n0 0\n-aclc 0 99999999\n")
+	f.Add("")
+
+	f.Fuzz(func(t *testing.T, data string) {
+		got, err := ReadSource(strings.NewReader(data))
+		if err != nil {
+			return
+		}
+		if got == "" || len(got) > 255 {
+			t.Fatalf("source %q: want 1 to 255 bytes", got)
+		}
+		if !strings.HasPrefix(got, "auth:") && !strings.HasPrefix(got, "ip:") && !strings.HasPrefix(got, "uid:") {
+			t.Fatalf("source %q: unknown prefix", got)
+		}
+	})
+}
