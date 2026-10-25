@@ -218,7 +218,7 @@ func TestManagedContentIncludesFeedFiles(t *testing.T) {
 	}
 }
 
-func TestManagedContentLowersHiddenTextWeight(t *testing.T) {
+func TestManagedContentSetsSymbolWeights(t *testing.T) {
 	if ScoresPath != "/etc/rspamd/local.d/groups.conf" {
 		t.Fatalf("ScoresPath = %s, want rspamd's local groups include", ScoresPath)
 	}
@@ -227,7 +227,9 @@ func TestManagedContentLowersHiddenTextWeight(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := "# csm-managed-version: 1\ngroup \"html\" {\n  symbols {\n    \"HIDDEN_TEXT\" {\n" +
-		"      weight = 2.0;\n      one_shot = true;\n    }\n  }\n}\n"
+		"      weight = 2.0;\n      one_shot = true;\n    }\n  }\n}\n" +
+		"group \"url\" {\n  symbols {\n    \"URL_VERY_LONG\" {\n" +
+		"      weight = 1.5;\n      one_shot = true;\n    }\n  }\n}\n"
 	if managed[ScoresPath] != want {
 		t.Fatalf("%s =\n%q\nwant\n%q", ScoresPath, managed[ScoresPath], want)
 	}
