@@ -415,3 +415,21 @@ func TestUnitWorkerStderrEmptyLinesCharged(t *testing.T) {
 		t.Fatalf("logged %d lines for empty output, want only the drop notice", len(lines))
 	}
 }
+
+// Many tiny lines cost journal entries, not bytes: a worker printing one
+// byte per line must not turn 64 KiB into tens of thousands of log lines.
+func TestUnitWorkerStderrLineCountCapped(t *testing.T) {
+	var c logCapture
+	logWorkerOutput(strings.NewReader(strings.Repeat("x\n", 100000)), "csm-parse-worker-mail0-1", c.logf)
+	lines := c.all()
+	if len(lines) > maxWorkerLogLines+1 || lines[len(lines)-1] != "csm-parse-worker-mail0-1: further output dropped" {
+		t.Fatalf("logged %d lines, want at most %d plus the drop notice", len(lines), maxWorkerLogLines)
+	}
+	total := 0
+	for _, l := range lines {
+		total += len(l) + 1
+	}
+	if total > 64<<10 {
+		t.Fatalf("logged %d bytes, want at most %d", total, 64<<10)
+	}
+}

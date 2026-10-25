@@ -601,30 +601,40 @@ func StopUnits(ctx context.Context, prefix string) error {
 	return nil
 }
 
-// Bounds on worker output in the daemon's log.
+// Bounds on worker output in the daemon's log, per unit.
 const (
 	maxWorkerLogLine  = 512
 	maxWorkerLogBytes = 64 << 10
+	maxWorkerLogLines = 256
 )
 
 // logWorkerOutput logs r line by line, quoted, each line cut to
-// maxWorkerLogLine bytes, until maxWorkerLogBytes are spent; then it says so
-// once and drains r to end of file. Every line costs its newline too, so
-// empty lines, which are not logged, still spend the budget.
+// maxWorkerLogLine bytes, until maxWorkerLogLines lines or maxWorkerLogBytes
+// of log entries are spent; then it says so once and drains r to end of
+// file. An entry costs what it adds to the log, so tiny lines cannot turn
+// the byte budget into tens of thousands of journal entries. Empty lines are
+// not logged but still cost their newline.
 func logWorkerOutput(r io.Reader, unit string, logf func(string, ...any)) {
 	br := bufio.NewReader(r)
-	budget := maxWorkerLogBytes
+	budget, lines := maxWorkerLogBytes, 0
 	for {
 		line, err := readCappedLine(br, maxWorkerLogLine)
 		if len(line) > 0 || err == nil {
-			if len(line)+1 > budget {
+			entry := ""
+			cost := 1
+			if len(line) > 0 {
+				entry = fmt.Sprintf("%s: %q", unit, line)
+				cost = len(entry) + 1
+			}
+			if cost > budget || (entry != "" && lines >= maxWorkerLogLines) {
 				logf("%s: further output dropped", unit)
 				_, _ = io.Copy(io.Discard, br)
 				return
 			}
-			budget -= len(line) + 1
-			if len(line) > 0 {
-				logf("%s: %q", unit, line)
+			budget -= cost
+			if entry != "" {
+				lines++
+				logf("%s", entry)
 			}
 		}
 		if err != nil {

@@ -112,9 +112,9 @@ unit; systemd supplies the service environment.
 
 A worker's standard error reaches the daemon's log through a pipe, never
 directly. Each line is cut to 512 bytes and quoted, so control characters and
-newlines cannot forge log lines, and at most 64 KiB is logged per worker
-unit; after that one "further output dropped" line is logged and the rest is
-discarded. Error text in a worker's reply is quoted the same way.
+newlines cannot forge log lines, and at most 256 lines or 64 KiB of log
+entries are logged per worker unit; after that one "further output dropped"
+line is logged and the rest is discarded. Error text in a worker's reply is quoted the same way.
 When the launcher exits, final diagnostics drain for at most one second.
 The log reader then closes even if another process still holds its writer.
 
