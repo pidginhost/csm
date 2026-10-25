@@ -26,16 +26,15 @@ func ReadSource(r io.Reader) (string, error) {
 	var uid, auth, host string
 	for lineNo := 1; ; lineNo++ {
 		line, err := br.ReadString('\n')
-		if err != nil && line == "" {
+		// A partial identity at EOF or the read limit is not a source key.
+		// Otherwise padding could split one sender across several gates.
+		if err != nil {
 			break
 		}
 		line = strings.TrimSuffix(line, "\n")
 		if lineNo <= 4 {
 			if lineNo == 2 {
 				uid = sourceUID(line)
-			}
-			if err != nil {
-				break
 			}
 			continue
 		}
@@ -64,9 +63,6 @@ func ReadSource(r io.Reader) (string, error) {
 			if host == "" {
 				host = sourceHost(value)
 			}
-		}
-		if err != nil {
-			break
 		}
 	}
 	switch {

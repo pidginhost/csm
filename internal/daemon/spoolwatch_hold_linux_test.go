@@ -479,3 +479,41 @@ func TestHoldExpiryMetricByStage(t *testing.T) {
 		}
 	}
 }
+
+// The response write can overlap a scan starting or a source becoming busy.
+// Classification must reflect the expiry, not the later return from write.
+func TestHoldExpirySnapshotsStageBeforeResponse(t *testing.T) {
+	for _, tc := range []struct {
+		from, to holdStage
+	}{
+		{holdQueued, holdScanning},
+		{holdScanning, holdWaiting},
+		{holdWaiting, holdScanning},
+	} {
+		t.Run(tc.from.String(), func(t *testing.T) {
+			origMetric := spoolHoldExpiredTotal
+			spoolHoldExpiredTotal = metrics.NewCounterVec("test_spool_hold_expired_total", "", []string{"stage"})
+			origWrite := spoolWriteResponse
+			t.Cleanup(func() {
+				spoolHoldExpiredTotal = origMetric
+				spoolWriteResponse = origWrite
+			})
+			sw, _ := testHoldWatcher(t)
+			for range spoolHoldExpiryThreshold {
+				g := &holdGuard{sw: sw, fd: -1, needResp: true}
+				g.setStage(tc.from)
+				spoolWriteResponse = func(_ *SpoolWatcher, _ int32, _ uint32) { g.setStage(tc.to) }
+				g.expire()
+			}
+			if got := spoolHoldExpiredTotal.With(tc.from.String()).Value(); got != spoolHoldExpiryThreshold {
+				t.Errorf("expiries in %s = %v, want %d", tc.from, got, spoolHoldExpiryThreshold)
+			}
+			if got := spoolHoldExpiredTotal.With(tc.to.String()).Value(); got != 0 {
+				t.Errorf("expiries in later stage %s = %v, want 0", tc.to, got)
+			}
+			if got := sw.holds.bypassing(time.Now()); got != (tc.from == holdQueued) {
+				t.Errorf("bypass = %v for expiry in %s", got, tc.from)
+			}
+		})
+	}
+}

@@ -609,7 +609,8 @@ email_av:
   # resumes automatically afterwards; bypassed messages are not scanned later.
   # One message per sender is scanned at a time, so one sender cannot take
   # every scan slot. The sender is the authenticated user, else the sending
-  # address (an IPv6 /64), else the local account. Further messages from that
+  # address (an IPv6 /64), else the local account. Incomplete sender fields
+  # are ignored when choosing the sender. Further messages from that
   # sender wait without taking a slot; when their hold budget runs out they
   # follow fail_mode and are still scanned afterwards. When too many messages
   # from one sender are waiting, further ones are answered under fail_mode at

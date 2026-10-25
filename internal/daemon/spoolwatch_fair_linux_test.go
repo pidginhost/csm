@@ -88,9 +88,7 @@ func gateWatcher(t *testing.T, failMode string, ex *gateExtractor) (*SpoolWatche
 	sw.initQueueHealth()
 	sw.startScanWorkers()
 	t.Cleanup(func() {
-		for range 128 {
-			ex.release <- struct{}{}
-		}
+		close(ex.release)
 		close(sw.scanCh)
 		sw.wg.Wait()
 	})
@@ -241,7 +239,7 @@ func TestSourceGateOverflowAnswersWithoutBypass(t *testing.T) {
 // scanned once its turn comes.
 func TestSourceGateWaitExpiryNotCounted(t *testing.T) {
 	responses := captureResponses(t)
-	shortHoldBudget(t, 50*time.Millisecond)
+	shortHoldBudget(t, time.Minute)
 	orig := spoolHoldExpiredTotal
 	spoolHoldExpiredTotal = metrics.NewCounterVec("test_spool_hold_expired_total", "", []string{"stage"})
 	t.Cleanup(func() { spoolHoldExpiredTotal = orig })
@@ -251,6 +249,7 @@ func TestSourceGateWaitExpiryNotCounted(t *testing.T) {
 	sw.permissionMode = true
 	dir := t.TempDir()
 	ids := []string{"1aBcDe-WX0000-XX", "1aBcDe-WX0001-XX", "1aBcDe-WX0002-XX"}
+	var events []spoolEvent
 	for _, id := range ids {
 		buildSourceSpool(t, dir, id, "192.0.2.10")
 	}
@@ -258,12 +257,18 @@ func TestSourceGateWaitExpiryNotCounted(t *testing.T) {
 		evt := bodyEvent(t, dir, id)
 		evt.queueTicket = sw.scannerHealth.Begin(time.Now())
 		evt.guard = sw.newHoldGuard(int32(evt.fd), true) // #nosec G115 -- test fd fits in int32.
+		events = append(events, evt)
 		sw.scanCh <- evt
 		if i == 0 {
 			waitArrival(t, ex, id)
 		} else {
 			waitCounter(t, waits.With("waited"), float64(i))
 		}
+	}
+	// Expire only after each event reached its intended stage. Wall-clock
+	// timers could fire in the admission queue on a loaded test runner.
+	for _, evt := range events {
+		evt.guard.expire()
 	}
 	got := waitForResponses(t, responses, 3, 5*time.Second)
 	if len(got) != 3 {
@@ -284,53 +289,93 @@ func TestSourceGateWaitExpiryNotCounted(t *testing.T) {
 		ex.release <- struct{}{}
 		waitArrival(t, ex, id)
 	}
+	ex.release <- struct{}{}
+	close(sw.stopCh)
+	sw.wg.Wait()
 	if len(responses()) != 3 {
 		t.Fatal("a late scan wrote a second verdict")
+	}
+	for _, evt := range events {
+		assertFDClosed(t, evt.fd, "expired source event")
 	}
 }
 
 func TestSourceGateDrainsOnStop(t *testing.T) {
-	responses := captureResponses(t)
-	waits := freshSourceWaits(t)
-	ex := newGateExtractor(4)
-	sw, _ := extractWatcher("open", ex)
-	daemonStop := make(chan struct{})
-	sw.daemonStop = daemonStop
-	sw.scanCh = make(chan spoolEvent, 16)
-	sw.initQueueHealth()
-	sw.startScanWorkers()
-	dir := t.TempDir()
-	var fds []int
-	for i := range 6 {
-		id := fmt.Sprintf("1aBcDe-ST%04d-XX", i)
-		buildSourceSpool(t, dir, id, "192.0.2.10")
-		fds = append(fds, enqueue(t, sw, dir, id).fd)
-		if i == 0 {
-			waitArrival(t, ex, id)
-		} else {
-			waitCounter(t, waits.With("waited"), float64(i))
-		}
-	}
-	close(daemonStop)
-	close(sw.stopCh)
-	ex.release <- struct{}{}
-	close(sw.scanCh)
-	done := make(chan struct{})
-	go func() { sw.wg.Wait(); close(done) }()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("scan goroutines did not return after stop")
-	}
-	got := responses()
-	if len(got) != len(fds) {
-		t.Fatalf("responses = %+v, want one for each of %d events", got, len(fds))
-	}
-	for _, fd := range fds {
-		assertFDClosed(t, fd, "event drained on stop")
-	}
-	if _, order := ex.snapshot(); len(order) != 1 {
-		t.Fatalf("extractions = %v, want only the one running before stop", order)
+	for _, shutdown := range []bool{true, false} {
+		t.Run(fmt.Sprintf("daemon_stop=%v", shutdown), func(t *testing.T) {
+			responses := captureResponses(t)
+			shortHoldBudget(t, time.Minute)
+			waits := freshSourceWaits(t)
+			dir := t.TempDir()
+			ex := newGateExtractor(4)
+			sw, _ := gateWatcher(t, "tempfail", ex)
+			sw.permissionMode = true
+			daemonStop := make(chan struct{})
+			sw.daemonStop = daemonStop
+			var events []spoolEvent
+			for i := range 6 {
+				id := fmt.Sprintf("1aBcDe-ST%04d-XX", i)
+				buildSourceSpool(t, dir, id, "192.0.2.10")
+				evt := bodyEvent(t, dir, id)
+				evt.queueTicket = sw.scannerHealth.Begin(time.Now())
+				evt.guard = sw.newHoldGuard(int32(evt.fd), true) // #nosec G115 -- test fd fits in int32.
+				events = append(events, evt)
+				sw.scanCh <- evt
+				if i == 0 {
+					waitArrival(t, ex, id)
+				} else {
+					waitCounter(t, waits.With("waited"), float64(i))
+				}
+			}
+			if shutdown {
+				close(daemonStop)
+			}
+			close(sw.stopCh)
+			// Shutdown skips parked extractions; a restart must finish them
+			// before the replacement watcher can reuse the worker slots.
+			ex.release <- struct{}{}
+			if !shutdown {
+				for range len(events) - 1 {
+					ex.release <- struct{}{}
+				}
+			}
+			done := make(chan struct{})
+			go func() { sw.wg.Wait(); close(done) }()
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("scan goroutines did not return after stop")
+			}
+			got := responses()
+			if len(got) != len(events) {
+				t.Fatalf("responses = %+v, want one per event", got)
+			}
+			for _, evt := range events {
+				n := 0
+				for _, r := range got {
+					if int(r.fd) == evt.fd && r.response == FAN_ALLOW {
+						n++
+					}
+				}
+				if n != 1 {
+					t.Errorf("fd %d got %d allow responses, want 1", evt.fd, n)
+				}
+				assertFDClosed(t, evt.fd, "event drained on stop")
+			}
+			wantScans := len(events)
+			if shutdown {
+				wantScans = 1
+			}
+			if maxActive, order := ex.snapshot(); maxActive != 1 || len(order) != wantScans {
+				t.Fatalf("extractions = %v (max active %d), want %d serial scans", order, maxActive, wantScans)
+			}
+			if len(sw.sources.busy) != 0 {
+				t.Fatal("stopped watcher retained parked source events")
+			}
+			if q := sw.scannerHealth.Snapshot(time.Now()); q.Depth != 0 || q.InFlight != 0 {
+				t.Fatalf("stopped watcher retained queue work: %+v", q)
+			}
+		})
 	}
 }
 
@@ -400,7 +445,7 @@ func TestSourceGateSkipsUnreadableHeader(t *testing.T) {
 }
 
 func TestSourceGatePanicFreesSource(t *testing.T) {
-	captureResponses(t)
+	responses := captureResponses(t)
 	waits := freshSourceWaits(t)
 	orig := spoolEventHandler
 	t.Cleanup(func() { spoolEventHandler = orig })
@@ -424,11 +469,11 @@ func TestSourceGatePanicFreesSource(t *testing.T) {
 	dir := t.TempDir()
 	buildSourceSpool(t, dir, "1aBcDe-PANIC0-XX", "192.0.2.10")
 	buildSourceSpool(t, dir, "1aBcDe-AFTER0-XX", "192.0.2.10")
-	enqueue(t, sw, dir, "1aBcDe-PANIC0-XX")
+	first := enqueue(t, sw, dir, "1aBcDe-PANIC0-XX")
 	if got := <-started; got != "1aBcDe-PANIC0-XX-D" {
 		t.Fatalf("first handled %s", got)
 	}
-	enqueue(t, sw, dir, "1aBcDe-AFTER0-XX")
+	next := enqueue(t, sw, dir, "1aBcDe-AFTER0-XX")
 	waitCounter(t, waits.With("waited"), 1)
 	close(release)
 	select {
@@ -441,4 +486,13 @@ func TestSourceGatePanicFreesSource(t *testing.T) {
 	}
 	close(sw.scanCh)
 	sw.wg.Wait()
+	got := responses()
+	if len(got) != 2 || int(got[0].fd) != first.fd || int(got[1].fd) != next.fd {
+		t.Fatalf("responses = %+v, want one for the panicking event and one for its waiter", got)
+	}
+	assertFDClosed(t, first.fd, "panicking event")
+	assertFDClosed(t, next.fd, "event parked behind panic")
+	if len(sw.sources.busy) != 0 {
+		t.Fatal("panic left source events parked")
+	}
 }

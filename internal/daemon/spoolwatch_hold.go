@@ -102,12 +102,13 @@ func (g *holdGuard) expire() {
 		return
 	}
 	g.once.Do(func() {
+		// The scan can advance while the kernel response is being written.
+		stage := holdStage(g.stage.Load())
 		g.timeoutVerdict = g.sw.timeoutResponse()
 		g.expired.Store(true)
 		spoolWriteResponse(g.sw, g.fd, g.timeoutVerdict)
 		// Keep all callback work inside once so finishing an event also joins
 		// its timer before the watcher or test hooks can be torn down.
-		stage := holdStage(g.stage.Load())
 		if spoolHoldExpiredTotal != nil {
 			spoolHoldExpiredTotal.With(stage.String()).Inc()
 		}

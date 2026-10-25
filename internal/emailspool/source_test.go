@@ -107,6 +107,25 @@ func TestReadSourceSkipsACLValues(t *testing.T) {
 	}
 }
 
+func TestReadSourceQuotedOptionsAndACL(t *testing.T) {
+	value := "\n--(smtp)auth_id forged@example.net\n-host_address 203.0.113.9.25\n"
+	for _, name := range []string{"acl", "aclc", "aclm"} {
+		for _, prefix := range []string{"-", "--", "--(smtp)"} {
+			t.Run(prefix+name, func(t *testing.T) {
+				acl := fmt.Sprintf("%s%s _x %d\n%s", prefix, name, len(value), value)
+				data := spoolHeader(acl, "--(smtp)host_address 192.0.2.10.25")
+				if got := readSource(t, data); got != "ip:192.0.2.10" {
+					t.Fatalf("source = %q, want the host after the ACL value", got)
+				}
+				data = spoolHeader(acl, "--(smtp)host_address 192.0.2.10.25", "--(smtp)auth_id User@Example.com")
+				if got := readSource(t, data); got != "auth:user@example.com" {
+					t.Fatalf("source = %q, want the auth id after the ACL value", got)
+				}
+			})
+		}
+	}
+}
+
 type countingReader struct {
 	r    io.Reader
 	read int
@@ -131,6 +150,50 @@ func TestReadSourceBounded(t *testing.T) {
 	}
 	if cr.read > maxSourcePreamble {
 		t.Fatalf("read %d bytes, want at most %d", cr.read, maxSourcePreamble)
+	}
+}
+
+func TestReadSourceACLValueAtReadLimit(t *testing.T) {
+	value := strings.Repeat("x", maxSourcePreamble-1)
+	data := spoolHeader("-host_address 192.0.2.10.25", aclLine("_x", value), "-auth_id forged@example.net")
+	cr := &countingReader{r: strings.NewReader(data)}
+	got, err := ReadSource(cr)
+	if err != nil || got != "ip:192.0.2.10" {
+		t.Fatalf("source = %q, %v; want host before truncated ACL value", got, err)
+	}
+	if cr.read != maxSourcePreamble {
+		t.Fatalf("read %d bytes, want exactly the %d-byte limit", cr.read, maxSourcePreamble)
+	}
+}
+
+// A read limit or truncated file must not turn part of an identity into a
+// different source key. Padding before auth_id must not split one sender.
+func TestReadSourceIgnoresTruncatedIdentity(t *testing.T) {
+	preamble := "id-H\nexample 1001 1001\n<sender@example.com>\n0 0\n-host_address 192.0.2.10.25\n"
+	for _, option := range []string{"-auth_id ", "--auth_id ", "--(smtp)auth_id "} {
+		t.Run(option, func(t *testing.T) {
+			for _, prefix := range []string{"u", "user", "user@example"} {
+				padding := "-unused " + strings.Repeat("x", maxSourcePreamble-len(preamble)-len("-unused \n")-len(option)-len(prefix)) + "\n"
+				data := preamble + padding + option + "user@example.com\n1\nrcpt@example.com\n\n"
+				cr := &countingReader{r: strings.NewReader(data)}
+				got, err := ReadSource(cr)
+				if err != nil || got != "ip:192.0.2.10" {
+					t.Errorf("limit after %q: source = %q, %v; want complete host identity", prefix, got, err)
+				}
+				if cr.read > maxSourcePreamble {
+					t.Fatalf("read %d bytes, want at most %d", cr.read, maxSourcePreamble)
+				}
+			}
+		})
+	}
+	if got := readSource(t, preamble+"-auth_id user"); got != "ip:192.0.2.10" {
+		t.Errorf("truncated auth: source = %q, want complete host identity", got)
+	}
+	if got := readSource(t, preamble+"-auth_id user@example.com\n"); got != "auth:user@example.com" {
+		t.Errorf("complete auth: source = %q, want auth:user@example.com", got)
+	}
+	if got, err := ReadSource(strings.NewReader("id-H\nexample 10")); err == nil {
+		t.Errorf("truncated uid: source = %q, want an error", got)
 	}
 }
 

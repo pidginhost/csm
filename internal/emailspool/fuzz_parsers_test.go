@@ -52,10 +52,17 @@ func FuzzReadSource(f *testing.F) {
 	f.Add("id-H\nuser 100 100\n<u@example.com>\n0 0\n-host_address 192.0.2.10.25\n-auth_id u@example.com\n1\nrcpt@example.com\n\n")
 	f.Add("id-H\nuser 100 100\n<u@example.com>\n0 0\n--host_address 2001:db8::1.25\n-aclm _x 5\nab\ncd\n-local\n")
 	f.Add("id-H\nuser 100 100\n<u@example.com>\n0 0\n-aclc 0 99999999\n")
+	f.Add(spoolHeader("--(smtp)host_address 192.0.2.10.25", "--(smtp)auth_id user@example.com"))
+	f.Add(spoolHeader(aclLine("_x", "\n--(smtp)auth_id forged@example.com\n"), "--host_address 192.0.2.10.25"))
+	f.Add(spoolHeader(aclLine("_x", strings.Repeat("x", maxSourcePreamble-1))))
 	f.Add("")
 
 	f.Fuzz(func(t *testing.T, data string) {
-		got, err := ReadSource(strings.NewReader(data))
+		cr := &countingReader{r: strings.NewReader(data)}
+		got, err := ReadSource(cr)
+		if cr.read > maxSourcePreamble {
+			t.Fatalf("read %d bytes, want at most %d", cr.read, maxSourcePreamble)
+		}
 		if err != nil {
 			return
 		}

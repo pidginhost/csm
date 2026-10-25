@@ -226,8 +226,8 @@ curl -o goroutine.txt 'http://127.0.0.1:<port>/debug/pprof/goroutine?debug=2'
 
 - `csm_spool_hold_expired_total{stage}` (counter): mail opens
   answered under `email_av.fail_mode` because the hold budget ran
-  out. `stage` is `queued` (no scan slot yet; these count toward
-  the hold bypass), `waiting` (behind another message from the
+  out. `stage` records where the message was when its hold expired:
+  `queued` (no scan slot yet; these count toward the hold bypass), `waiting` (behind another message from the
   same sender) or `scanning` (a slow scan; the scan continues and
   can still quarantine). Sustained `queued` growth means scan
   capacity is short.
