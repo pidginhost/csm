@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -311,5 +313,94 @@ func TestCheckUnitCommand(t *testing.T) {
 	}
 	if err := CheckUnitCommand("csm"); err == nil {
 		t.Fatal("relative command accepted")
+	}
+}
+
+func TestLockdownPropertiesInaccessiblePaths(t *testing.T) {
+	cfg := UnitConfig{Prefix: "csm-parse-worker-mail0", MemoryLimit: 512 << 20, FileSizeLimit: 64 << 20,
+		InaccessiblePaths: []string{"/home3", "/home2", "/home2", "rel", "/a b", "/x/../y", "/", `/q"`, "/p%h", "/c\x01"}}
+	var got []string
+	for _, p := range lockdownProperties(cfg) {
+		if strings.HasPrefix(p, "InaccessiblePaths=") {
+			got = append(got, p)
+		}
+	}
+	want := []string{"InaccessiblePaths=-/home2", "InaccessiblePaths=-/home3"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("InaccessiblePaths properties = %q, want %q", got, want)
+	}
+}
+
+type logCapture struct {
+	mu    sync.Mutex
+	lines []string
+}
+
+func (c *logCapture) logf(format string, args ...any) {
+	c.mu.Lock()
+	c.lines = append(c.lines, fmt.Sprintf(format, args...))
+	c.mu.Unlock()
+}
+
+func (c *logCapture) all() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string(nil), c.lines...)
+}
+
+// Worker output reaches the daemon's log quoted and bounded: a compromised
+// worker must not forge log lines or flood the journal.
+func TestUnitWorkerStderrQuotedAndCapped(t *testing.T) {
+	var in strings.Builder
+	in.WriteString("ok\n")
+	in.WriteString("\x1b[31mred\n")
+	in.WriteString(strings.Repeat("L", 2048) + "\n")
+	for range 200 { // 100 KiB that survives the per-line cut
+		in.WriteString(strings.Repeat("f", 511) + "\n")
+	}
+	var c logCapture
+	logWorkerOutput(strings.NewReader(in.String()), "csm-parse-worker-mail0-1", c.logf)
+	lines := c.all()
+	if len(lines) < 3 || lines[0] != `csm-parse-worker-mail0-1: "ok"` || lines[1] != `csm-parse-worker-mail0-1: "\x1b[31mred"` {
+		t.Fatalf("first lines = %q", lines[:min(3, len(lines))])
+	}
+	if lines[2] != `csm-parse-worker-mail0-1: "`+strings.Repeat("L", 512)+`"` {
+		t.Fatalf("long line not cut to 512 bytes: %d bytes logged", len(lines[2]))
+	}
+	logged := 0
+	for i, line := range lines[:len(lines)-1] {
+		quoted := strings.TrimPrefix(line, "csm-parse-worker-mail0-1: ")
+		raw, err := strconv.Unquote(quoted)
+		if err != nil || len(raw) > 512 {
+			t.Fatalf("line %d %q: not a quoted line of at most 512 bytes", i, line)
+		}
+		logged += len(raw)
+	}
+	if logged > 64<<10 {
+		t.Fatalf("logged %d bytes of worker output, want at most %d", logged, 64<<10)
+	}
+	if last := lines[len(lines)-1]; last != "csm-parse-worker-mail0-1: further output dropped" {
+		t.Fatalf("last line = %q, want the drop notice", last)
+	}
+}
+
+// The launcher pipes a real worker's stderr through the same logger.
+func TestUnitWorkerStderrReachesLog(t *testing.T) {
+	cfg, _ := fakeUnitConfig(t, "stderr-then-exit")
+	var c logCapture
+	cfg.Log = c.logf
+	if _, err := UnitLauncher(cfg)(context.Background()); err == nil {
+		t.Fatal("a worker that exits before hello was handed out")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		joined := strings.Join(c.all(), "\n")
+		if strings.Contains(joined, `: "hello from stderr"`) && strings.Contains(joined, `: "\x1b[31mforged"`) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("worker stderr not logged quoted: %q", c.all())
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

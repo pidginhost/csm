@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"syscall"
 	"testing"
 	"time"
@@ -77,7 +78,12 @@ func TestCallRoundTripErrorsCannotBypassBreaker(t *testing.T) {
 					}
 					wantText += "worker: "
 				}
-				wantText += failure.Error()
+				if phase == "error frame" {
+					// Worker text is quoted so it cannot forge log lines.
+					wantText += strconv.Quote(failure.Error())
+				} else {
+					wantText += failure.Error()
+				}
 				for i := 1; i <= ConsecutiveFailureLimit; i++ {
 					s.child = &child{proc: liveProcess(), conn: conn}
 					_, _, err := s.Call(context.Background(), Frame{Op: "work"}, nil, check)

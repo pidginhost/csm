@@ -14,6 +14,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - Email attachments are now unpacked in a separate locked-down process with no network access, so a crafted message can no longer stall mail scanning. After upgrade, attachment workers run as systemd units and failures follow email_av.fail_mode.
 - One sender can no longer hold up mail scanning for others, and slow messages no longer switch off scanning for all mail. Messages waiting behind their sender follow email_av.fail_mode.
 - A message that keeps crashing the attachment worker is no longer unpacked again on every retry, and repeated crashes from one sender raise a High alert naming it.
+- Attachment workers can no longer read account files on extra home partitions, and their output is quoted and capped in the daemon log.
 
 ### Added
 

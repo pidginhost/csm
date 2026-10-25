@@ -1,18 +1,23 @@
 package workerproc
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 
 	"github.com/pidginhost/csm/internal/systemdrun"
 )
@@ -36,6 +41,11 @@ type UnitConfig struct {
 	// Limits applies to the hello reply.
 	Limits Limits
 	Log    func(string, ...any)
+	// InaccessiblePaths are hidden from the worker on top of ProtectHome:
+	// account homes on other volumes. Paths that are not absolute and clean,
+	// or that hold spaces, quotes, backslashes, percent signs or control
+	// bytes, are dropped.
+	InaccessiblePaths []string
 
 	hooks *unitHooks // tests only; nil means the real system
 }
@@ -68,7 +78,7 @@ var unitGeneration = func() *atomic.Int64 {
 // network, no host files, no privileges, bounded memory, tasks and files.
 func lockdownProperties(cfg UnitConfig) []string {
 	memory := strconv.FormatUint(cfg.MemoryLimit, 10)
-	return []string{
+	props := []string{
 		"DynamicUser=yes",
 		"CapabilityBoundingSet=",
 		"NoNewPrivileges=yes",
@@ -105,6 +115,30 @@ func lockdownProperties(cfg UnitConfig) []string {
 		"OOMScoreAdjust=1000",
 		"Slice=" + unitSlice(cfg.Prefix),
 	}
+	paths, _ := inaccessiblePaths(cfg.InaccessiblePaths)
+	for _, p := range paths {
+		// "-": a path missing on this host is not an error.
+		props = append(props, "InaccessiblePaths=-"+p)
+	}
+	return props
+}
+
+// inaccessiblePaths returns the usable paths sorted and without duplicates,
+// and the ones it dropped.
+func inaccessiblePaths(in []string) (keep, dropped []string) {
+	seen := make(map[string]bool, len(in))
+	for _, p := range in {
+		if p == "/" || !filepath.IsAbs(p) || filepath.Clean(p) != p || strings.ContainsAny(p, " \t\n\"'\\%") || strings.ContainsFunc(p, unicode.IsControl) {
+			dropped = append(dropped, p)
+			continue
+		}
+		if !seen[p] {
+			seen[p] = true
+			keep = append(keep, p)
+		}
+	}
+	sort.Strings(keep)
+	return keep, dropped
 }
 
 // unitSlice is the slice a prefix's units run in: one per prefix, directly
@@ -141,6 +175,9 @@ func UnitLauncher(cfg UnitConfig) Launcher {
 	}
 	if h.pollInterval <= 0 {
 		h.pollInterval = 500 * time.Millisecond
+	}
+	if _, dropped := inaccessiblePaths(cfg.InaccessiblePaths); len(dropped) > 0 && cfg.Log != nil {
+		cfg.Log("%s: not hiding unusable paths %q", cfg.Prefix, dropped)
 	}
 	return func(ctx context.Context) (Process, error) {
 		if err := ctx.Err(); err != nil {
@@ -183,18 +220,35 @@ func startUnit(ctx context.Context, cfg UnitConfig, h *unitHooks) (*unitProcess,
 	}, cfg.Command, cfg.Args...)
 	// Not CommandContext: ending the request must not kill the worker.
 	cmd := exec.Command(name, args...) // #nosec G204 -- systemd-run with fixed flags and the daemon's own binary.
+	// The worker's output is untrusted: it reaches the log quoted and capped.
+	stderrR, stderrW, err := os.Pipe()
+	if err != nil {
+		_ = childFile.Close()
+		_ = conn.Close()
+		return nil, err
+	}
 	cmd.Stdin = childFile
 	cmd.Stdout = childFile
-	cmd.Stderr = os.Stderr
+	cmd.Stderr = stderrW
 	err = cmd.Start()
 	// Closed at once, not deferred: while the daemon holds the child's end,
 	// a systemd-run that exits early leaves the hello waiting for its
 	// deadline instead of reading end of file.
 	_ = childFile.Close()
+	_ = stderrW.Close()
 	if err != nil {
+		_ = stderrR.Close()
 		_ = conn.Close()
 		return nil, fmt.Errorf("start systemd-run: %w", err)
 	}
+	logf := cfg.Log
+	if logf == nil {
+		logf = func(format string, args ...any) { fmt.Fprintf(os.Stderr, format+"\n", args...) }
+	}
+	go func() {
+		defer func() { _ = stderrR.Close() }()
+		logWorkerOutput(stderrR, unit, logf)
+	}()
 	p := &unitProcess{unit: unit, cmd: cmd, conn: conn, done: make(chan struct{}), killUnit: h.killUnit, log: cfg.Log}
 	go func() {
 		_ = cmd.Wait()
@@ -536,4 +590,49 @@ func StopUnits(ctx context.Context, prefix string) error {
 		return fmt.Errorf("workerproc: stop units %s*: %w: %s", prefix, err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+// Bounds on worker output in the daemon's log.
+const (
+	maxWorkerLogLine  = 512
+	maxWorkerLogBytes = 64 << 10
+)
+
+// logWorkerOutput logs r line by line, quoted, each line cut to
+// maxWorkerLogLine bytes, until maxWorkerLogBytes are logged; then it says so
+// once and drains r to end of file.
+func logWorkerOutput(r io.Reader, unit string, logf func(string, ...any)) {
+	br := bufio.NewReader(r)
+	budget := maxWorkerLogBytes
+	for {
+		line, err := readCappedLine(br, maxWorkerLogLine)
+		if len(line) > 0 || err == nil {
+			if len(line) > budget {
+				logf("%s: further output dropped", unit)
+				_, _ = io.Copy(io.Discard, br)
+				return
+			}
+			budget -= len(line)
+			logf("%s: %q", unit, line)
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
+// readCappedLine reads one line and returns at most max bytes of it, without
+// the newline. The rest of a longer line is read and discarded.
+func readCappedLine(br *bufio.Reader, max int) ([]byte, error) {
+	var line []byte
+	for {
+		chunk, err := br.ReadSlice('\n')
+		chunk = bytes.TrimSuffix(chunk, []byte("\n"))
+		if room := max - len(line); room > 0 {
+			line = append(line, chunk[:min(room, len(chunk))]...)
+		}
+		if err != bufio.ErrBufferFull {
+			return line, err
+		}
+	}
 }

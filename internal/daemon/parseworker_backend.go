@@ -30,6 +30,10 @@ var checkParseWorkerCommand = workerproc.CheckUnitCommand
 // parseWorkerLauncher is a seam for tests that must not start units.
 var parseWorkerLauncher = workerproc.UnitLauncher
 
+// parseWorkerHiddenPaths is a seam for tests: the account home volumes
+// ProtectHome does not hide from workers.
+var parseWorkerHiddenPaths = checks.AccountHomeVolumes
+
 func (d *Daemon) initParseWorkers() error {
 	if d.binaryPath == "" {
 		return errors.New("parse worker: daemon binary unknown")
@@ -49,7 +53,13 @@ func (d *Daemon) initParseWorkers() error {
 		return fmt.Errorf("parse worker: %w", err)
 	}
 	registerParseWorkerMetrics()
-	launchZip := countParseWorkerStarts("zip", parseWorkerLauncher(parseworker.UnitConfig(d.binaryPath, parseWorkerUnitPrefix+"zip0", parseworker.DefaultMemoryLimit, 64<<20, logf)))
+	hidden := parseWorkerHiddenPaths()
+	unitConfig := func(name string, memoryLimit, fileSizeLimit uint64) workerproc.UnitConfig {
+		cfg := parseworker.UnitConfig(d.binaryPath, name, memoryLimit, fileSizeLimit, logf)
+		cfg.InaccessiblePaths = hidden
+		return cfg
+	}
+	launchZip := countParseWorkerStarts("zip", parseWorkerLauncher(unitConfig(parseWorkerUnitPrefix+"zip0", parseworker.DefaultMemoryLimit, 64<<20)))
 	lister, err := parseworker.NewLister(parseworker.ListerConfig{
 		Launch: func(ctx context.Context) (workerproc.Process, error) {
 			proc, err := launchZip(ctx)
@@ -77,7 +87,7 @@ func (d *Daemon) initParseWorkers() error {
 		Size: d.cfg.EmailAV.ScanConcurrency,
 		Launch: func(slot int) workerproc.Launcher {
 			name := fmt.Sprintf("%smail%d", parseWorkerUnitPrefix, slot)
-			return countParseWorkerStarts("mail", parseWorkerLauncher(parseworker.UnitConfig(d.binaryPath, name, mailWorkerMemoryLimit(d.cfg), parseworker.FileSizeLimit(d.cfg.EmailAV.MaxAttachmentSize), logf)))
+			return countParseWorkerStarts("mail", parseWorkerLauncher(unitConfig(name, mailWorkerMemoryLimit(d.cfg), parseworker.FileSizeLimit(d.cfg.EmailAV.MaxAttachmentSize))))
 		},
 		Log:   logf,
 		OnJob: func(outcome string, memory uint64) { recordParseJob("mail", outcome, memory) },

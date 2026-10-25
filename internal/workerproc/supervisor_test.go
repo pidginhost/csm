@@ -526,3 +526,17 @@ func TestCallReportsJobOutcomes(t *testing.T) {
 		t.Fatalf("canceled call reported %+v, want nothing", r)
 	}
 }
+
+// Error frame text comes from the worker. It must not reach a log line raw.
+func TestWorkerErrorTextQuoted(t *testing.T) {
+	s := newTestSupervisor(t, pairLauncher(t, func(context.Context, Frame, []*os.File) (Frame, []*os.File) {
+		return Frame{Error: "x\n[ts] spool watcher: forged"}, nil
+	}), time.Second)
+	_, _, err := s.Call(context.Background(), Frame{Op: "work"}, nil, okCheck)
+	if err == nil {
+		t.Fatal("error frame accepted")
+	}
+	if strings.Contains(err.Error(), "\n") || !strings.Contains(err.Error(), `"x\n[ts] spool watcher: forged"`) {
+		t.Fatalf("error text = %q, want the worker text quoted", err.Error())
+	}
+}

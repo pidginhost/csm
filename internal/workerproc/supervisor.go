@@ -553,7 +553,7 @@ func (s *Supervisor) roundTripLocked(ctx context.Context, body []byte, ownedFDs 
 		lost := false
 		switch {
 		case res.frame.Error != "":
-			err = fmt.Errorf("%s: worker: %s", s.cfg.Name, res.frame.Error)
+			err = fmt.Errorf("%s: worker: %q", s.cfg.Name, res.frame.Error)
 		case res.frame.Op != "":
 			err = fmt.Errorf("%s: response carries op %q", s.cfg.Name, res.frame.Op)
 		default:

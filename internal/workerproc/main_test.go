@@ -49,6 +49,10 @@ func runUnitHelper(args []string) int {
 	if args[0] == "exit-now" {
 		return 1
 	}
+	if args[0] == "stderr-then-exit" {
+		fmt.Fprint(os.Stderr, "hello from stderr\n\x1b[31mforged\n")
+		return 1
+	}
 	protocol, err := strconv.Atoi(args[0])
 	if err != nil {
 		return 2
