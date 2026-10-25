@@ -102,21 +102,22 @@ var goldenSubnet = map[string]admission.Entry{
 // the registry means either giving it a Response or adding it here with a
 // reason.
 var nonActionableAttackerSide = map[string]string{
-	"email_auth_failure_realtime": "one raw mailbox failure; thresholded checks block",
-	"email_malware":               "content may come from a compromised local sender",
-	"email_phishing_content":      "content may come from a compromised local sender",
-	"http_asn_crawl":              "subnet-scoped; handled by its own tempban path",
-	"local_threat_score":          "retired: nothing emits it; kept so a scan clears stored findings",
-	"http_distributed_flood":      "describes a targeted vhost, not one source",
-	"mail_account_spray":          "per-mailbox summary of many sources",
-	"mail_bruteforce_suspected":   "advisory for an established source",
-	"mail_subnet_spray":           "subnet summary; no single-IP block or challenge policy",
-	"smtp_subnet_spray":           "subnet summary; no single-IP block or challenge policy",
-	"modsec_block_realtime":       "ModSecurity already denied the request",
-	"modsec_low_confidence_burst": "low-confidence advisory",
-	"modsec_warning_realtime":     "warning-level WAF event",
-	"smtp_account_spray":          "per-mailbox summary of many sources",
-	"whm_unauth_scripts_realtime": "unauthenticated WHM script probe; visibility only",
+	"email_auth_failure_realtime":  "one raw mailbox failure; thresholded checks block",
+	"email_av_parse_worker_source": "names a mail source key, often an authenticated user or local account, not an IP",
+	"email_malware":                "content may come from a compromised local sender",
+	"email_phishing_content":       "content may come from a compromised local sender",
+	"http_asn_crawl":               "subnet-scoped; handled by its own tempban path",
+	"local_threat_score":           "retired: nothing emits it; kept so a scan clears stored findings",
+	"http_distributed_flood":       "describes a targeted vhost, not one source",
+	"mail_account_spray":           "per-mailbox summary of many sources",
+	"mail_bruteforce_suspected":    "advisory for an established source",
+	"mail_subnet_spray":            "subnet summary; no single-IP block or challenge policy",
+	"smtp_subnet_spray":            "subnet summary; no single-IP block or challenge policy",
+	"modsec_block_realtime":        "ModSecurity already denied the request",
+	"modsec_low_confidence_burst":  "low-confidence advisory",
+	"modsec_warning_realtime":      "warning-level WAF event",
+	"smtp_account_spray":           "per-mailbox summary of many sources",
+	"whm_unauth_scripts_realtime":  "unauthenticated WHM script probe; visibility only",
 }
 
 func TestAttackerSideChecksHaveAResponseDecision(t *testing.T) {
