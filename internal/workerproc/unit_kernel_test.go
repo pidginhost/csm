@@ -15,6 +15,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unsafe"
 
 	"golang.org/x/sys/unix"
 )
@@ -74,15 +75,31 @@ func probeOp(json.RawMessage) Frame {
 	return Frame{Payload: out}
 }
 
-// allocOp allocates the payload's MiB and touches every page.
+// allocOp allocates the payload's MiB and has the kernel fill every page by
+// reading /dev/zero with raw syscalls. Go-level writes would be instrumented
+// under -race, and the race runtime releasing its shadow memory under pressure
+// keeps the cgroup reclaiming at its cap instead of reaching an OOM kill:
+// a test artifact, since production workers are never race builds.
 func allocOp(payload json.RawMessage) Frame {
 	var mib int
 	if err := json.Unmarshal(payload, &mib); err != nil {
 		return Frame{Error: err.Error()}
 	}
-	b := make([]byte, mib<<20)
-	for i := 0; i < len(b); i += 4096 {
-		b[i] = 1
+	b, err := unix.Mmap(-1, 0, mib<<20, unix.PROT_READ|unix.PROT_WRITE, unix.MAP_PRIVATE|unix.MAP_ANONYMOUS)
+	if err != nil {
+		return Frame{Error: err.Error()}
+	}
+	zero, err := unix.Open("/dev/zero", unix.O_RDONLY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return Frame{Error: err.Error()}
+	}
+	defer func() { _ = unix.Close(zero) }()
+	const chunk = 1 << 20
+	for off := 0; off < len(b); off += chunk {
+		// #nosec G103 -- the kernel writes into our own anonymous mapping.
+		if _, _, errno := unix.Syscall(unix.SYS_READ, uintptr(zero), uintptr(unsafe.Pointer(&b[off])), chunk); errno != 0 {
+			return Frame{Error: errno.Error()}
+		}
 	}
 	runtime.KeepAlive(b)
 	return Frame{Payload: json.RawMessage(`{}`)}
