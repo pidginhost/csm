@@ -99,7 +99,18 @@ func lockdownProperties(cfg UnitConfig) []string {
 		"LimitFSIZE=" + strconv.FormatUint(cfg.FileSizeLimit, 10),
 		// Matches csm.service, so a worker never outweighs the daemon.
 		"CPUWeight=50",
+		// A host out of memory kills a hostile parser before a service.
+		"OOMScoreAdjust=1000",
+		"Slice=" + unitSlice(cfg.Prefix),
 	}
+}
+
+// unitSlice is the slice a prefix's units run in: one per prefix, directly
+// under system.slice, so workers share system.slice's resources and each
+// slice holds one live unit at a time. On cgroup v2 its memory.events counts
+// that unit's OOM kills and outlives the unit's own cgroup.
+func unitSlice(prefix string) string {
+	return "system-" + strings.ReplaceAll(prefix, "-", `\x2d`) + ".slice"
 }
 
 // UnitLauncher starts each worker as its own transient unit through
@@ -230,7 +241,19 @@ func (p *unitProcess) start(ctx context.Context, cfg UnitConfig, h *unitHooks) e
 		return fmt.Errorf("cannot cap worker memory: %w", capErr)
 	}
 	p.cg = cg
-	if w, werr := cg.watchOOM(); werr != nil {
+	if cg.v2 {
+		// The unit's own counters vanish with its cgroup before the daemon
+		// sees the worker die; the slice's hierarchical ones stay.
+		if dir := filepath.Dir(cg.dir); filepath.Base(dir) == unitSlice(cfg.Prefix) {
+			slice := memoryCgroup{dir: dir, v2: true}
+			if n, serr := slice.oomKills(); serr == nil {
+				p.slice, p.sliceOOMKills = &slice, n
+			}
+		}
+		if p.slice == nil {
+			p.logf("unit %s: memory kills will read as crashes: no slice counter", p.unit)
+		}
+	} else if w, werr := cg.watchOOM(); werr != nil {
 		p.logf("unit %s: memory kills will read as crashes: %v", p.unit, werr)
 	} else {
 		p.oom = w
@@ -321,9 +344,12 @@ type unitProcess struct {
 	// killing the worker for memory.
 	cg         memoryCgroup
 	memoryKill atomic.Bool
-	// oom follows the kernel's OOM kills in cg; nil when it could not be
-	// set up, and then a memory kill reads as a crash.
-	oom *oomWatch
+	// oom follows the kernel's OOM kills in cg on cgroup v1; slice and
+	// sliceOOMKills, the count at start, read them on v2. Without either a
+	// memory kill reads as a crash.
+	oom           *oomWatch
+	slice         *memoryCgroup
+	sliceOOMKills uint64
 }
 
 func (p *unitProcess) Conn() *net.UnixConn   { return p.conn }
@@ -371,6 +397,11 @@ func (p *unitProcess) Kill() error {
 func (p *unitProcess) OOMKilled() bool {
 	if p.memoryKill.Load() {
 		return true
+	}
+	if p.slice != nil {
+		if n, err := p.slice.oomKills(); err == nil && n > p.sliceOOMKills {
+			return true
+		}
 	}
 	if p.oom != nil && p.oom.wait(oomWatchGrace) {
 		return true

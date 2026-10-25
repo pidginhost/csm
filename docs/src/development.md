@@ -1217,12 +1217,15 @@ let through. Each supervisor publishes a `requests` queue-health row.
 `workerproc.FailureReason` classifies counted failures as `timeout`,
 `protocol`, `crash`, `oom`, or `spawn`, including through wrapped errors.
 Malformed frames and rejected descriptors are protocol failures; a broken
-socket is a crash unless the process reports an OOM kill. A unit worker
-learns of a kernel OOM kill as it happens, from an eventfd on cgroup v1 or
-inotify on `memory.events` on v2: by the time the daemon sees the worker die,
-systemd has removed the unit's cgroup and its counters. On v1, OOM and removal
-notifications are counted together even when they arrive in separate reads.
-A single notification with the directory gone remains undecided until the
+socket is a crash unless the process reports an OOM kill. The daemon cannot
+read a unit worker's kill from the unit's own cgroup: by the time it sees the
+worker die, systemd has removed that cgroup and its counters. On cgroup
+v2 each unit runs in a slice of its own, and the slice's `memory.events`,
+which counts its children's kills and outlives them, is compared with its
+value at start. On v1 that counter is not hierarchical, so an eventfd on
+`memory.oom_control` reports the kill as it happens; OOM and removal
+notifications are counted together even when they arrive in separate reads,
+and a single notification with the directory gone remains undecided until the
 watch closes after the client's exit. Diagnostic text
 and underlying errors remain unchanged. A failed start matches `ErrSpawn`,
 not `ErrWorkerFailed`.

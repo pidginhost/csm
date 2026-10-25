@@ -244,7 +244,7 @@ var operations = []Op{
 		Summary:          "cap the memory and swap of the archive and mail parse workers through kernel cgroup controls inside the daemon sandbox",
 		Privileges:       []Privilege{Root},
 		Trigger:          Automatic,
-		Writes:           []string{"cgroup:/sys/fs/cgroup/memory/system.slice/csm-parse-worker-*.service", "cgroup:/sys/fs/cgroup/system.slice/csm-parse-worker-*.service"},
+		Writes:           []string{`cgroup:/sys/fs/cgroup/memory/system.slice/system-csm\x2dparse\x2dworker*.slice/csm-parse-worker-*.service`, `cgroup:/sys/fs/cgroup/system.slice/system-csm\x2dparse\x2dworker*.slice/csm-parse-worker-*.service`},
 		DisableReason:    "disabled_checks only suppresses scheduled phishing checks and email_av.enabled: false stops the mail workers; requested account scans remain",
 		WithoutPrivilege: "a worker gets no request if its memory and swap cannot be capped: the phishing check reports itself incomplete and email attachments are handled as incomplete scans under email_av.fail_mode",
 	},

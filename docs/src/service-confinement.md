@@ -77,7 +77,12 @@ properties:
   worker's memory cap, `MemorySwapMax=0`;
 - `TasksMax=64`, `LimitNOFILE=256`, `LimitCORE=0`, `CPUWeight=50`, and a
   one-hour `RuntimeMaxSec`. `LimitFSIZE=` is 64 MiB for zip listings; for mail
-  it is 1 MiB above `email_av.max_attachment_size`, and never below 64 MiB.
+  it is 1 MiB above `email_av.max_attachment_size`, and never below 64 MiB;
+- `OOMScoreAdjust=1000`, so a host that runs out of memory kills a parse
+  worker before any service, and `Slice=` set to a slice of its own per unit
+  name prefix directly under `system.slice`, for example
+  `system-csm\x2dparse\x2dworker\x2dmail0.slice`. The slices stay after their
+  units end; they are empty and hold no resources.
 
 The zip worker receives the zip as an open descriptor and returns entry names
 in a sealed memfd. A mail worker receives the message's spool header and body

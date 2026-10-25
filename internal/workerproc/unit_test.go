@@ -95,7 +95,7 @@ func launchUnit(t *testing.T, cfg UnitConfig) *unitProcess {
 }
 
 func TestLockdownPropertiesExact(t *testing.T) {
-	got := lockdownProperties(UnitConfig{MemoryLimit: 512 << 20, FileSizeLimit: 64 << 20})
+	got := lockdownProperties(UnitConfig{Prefix: "csm-parse-worker-mail0", MemoryLimit: 512 << 20, FileSizeLimit: 64 << 20})
 	want := []string{
 		"DynamicUser=yes",
 		"CapabilityBoundingSet=",
@@ -125,6 +125,8 @@ func TestLockdownPropertiesExact(t *testing.T) {
 		"LimitCORE=0",
 		"LimitFSIZE=67108864",
 		"CPUWeight=50",
+		"OOMScoreAdjust=1000",
+		`Slice=system-csm\x2dparse\x2dworker\x2dmail0.slice`,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("properties = %q", got)

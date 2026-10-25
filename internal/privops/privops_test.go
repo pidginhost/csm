@@ -236,7 +236,7 @@ func TestParseWorkerMemoryWritesStayInsideDaemon(t *testing.T) {
 	if !slices.Equal(units.Writes, []string{"systemd:transient units"}) {
 		t.Fatalf("unit operation claims in-daemon writes: %v", units.Writes)
 	}
-	if !slices.Equal(memory.Writes, []string{"cgroup:/sys/fs/cgroup/memory/system.slice/csm-parse-worker-*.service", "cgroup:/sys/fs/cgroup/system.slice/csm-parse-worker-*.service"}) {
+	if !slices.Equal(memory.Writes, []string{`cgroup:/sys/fs/cgroup/memory/system.slice/system-csm\x2dparse\x2dworker*.slice/csm-parse-worker-*.service`, `cgroup:/sys/fs/cgroup/system.slice/system-csm\x2dparse\x2dworker*.slice/csm-parse-worker-*.service`}) {
 		t.Fatalf("memory operation does not name both kernel cgroup layouts: %v", memory.Writes)
 	}
 	if memory.DisableKey != "" || !strings.Contains(memory.DisableReason, "requested account scans") {
