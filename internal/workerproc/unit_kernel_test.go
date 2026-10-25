@@ -15,6 +15,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unsafe"
 
 	"golang.org/x/sys/unix"
 )
@@ -28,6 +29,7 @@ func init() {
 type probeResult struct {
 	UID                                           int
 	INET, INET6, Home, Shadow, Spool, Personality string
+	OOMScoreAdj, Cgroup                           string
 }
 
 func errText(err error) string {
@@ -63,19 +65,41 @@ func probeOp(json.RawMessage) Frame {
 	if errno != 0 {
 		r.Personality = errno.Error()
 	}
+	if b, readErr := os.ReadFile("/proc/self/oom_score_adj"); readErr == nil {
+		r.OOMScoreAdj = strings.TrimSpace(string(b))
+	}
+	if b, readErr := os.ReadFile("/proc/self/cgroup"); readErr == nil {
+		r.Cgroup = string(b)
+	}
 	out, _ := json.Marshal(r)
 	return Frame{Payload: out}
 }
 
-// allocOp allocates the payload's MiB and touches every page.
+// allocOp allocates the payload's MiB and has the kernel fill every page by
+// reading /dev/zero with raw syscalls. Go-level writes would be instrumented
+// under -race, and the race runtime releasing its shadow memory under pressure
+// keeps the cgroup reclaiming at its cap instead of reaching an OOM kill:
+// a test artifact, since production workers are never race builds.
 func allocOp(payload json.RawMessage) Frame {
 	var mib int
 	if err := json.Unmarshal(payload, &mib); err != nil {
 		return Frame{Error: err.Error()}
 	}
-	b := make([]byte, mib<<20)
-	for i := 0; i < len(b); i += 4096 {
-		b[i] = 1
+	b, err := unix.Mmap(-1, 0, mib<<20, unix.PROT_READ|unix.PROT_WRITE, unix.MAP_PRIVATE|unix.MAP_ANONYMOUS)
+	if err != nil {
+		return Frame{Error: err.Error()}
+	}
+	zero, err := unix.Open("/dev/zero", unix.O_RDONLY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return Frame{Error: err.Error()}
+	}
+	defer func() { _ = unix.Close(zero) }()
+	const chunk = 1 << 20
+	for off := 0; off < len(b); off += chunk {
+		// #nosec G103 -- the kernel writes into our own anonymous mapping.
+		if _, _, errno := unix.Syscall(unix.SYS_READ, uintptr(zero), uintptr(unsafe.Pointer(&b[off])), chunk); errno != 0 {
+			return Frame{Error: errno.Error()}
+		}
 	}
 	runtime.KeepAlive(b)
 	return Frame{Payload: json.RawMessage(`{}`)}
@@ -188,6 +212,19 @@ func TestKernelUnitLauncherLockdown(t *testing.T) {
 	if r.Home == "" || r.Shadow == "" || r.Spool == "" || r.Personality == "" {
 		t.Fatalf("file access: %+v", r)
 	}
+	// A host-wide OOM prefers the parser, and the unit's own slice
+	// under system.slice carries its OOM count past the unit's removal.
+	if r.OOMScoreAdj != "1000" || !strings.Contains(r.Cgroup, "/system.slice/"+unitSlice(cfg.Prefix)+"/") {
+		t.Fatalf("oom_score_adj %q, cgroup %q", r.OOMScoreAdj, r.Cgroup)
+	}
+	s.mu.Lock()
+	p := s.child.proc.(*unitProcess)
+	s.mu.Unlock()
+	if p.cg.v2 {
+		if got := readTrim(t, filepath.Join(filepath.Dir(p.cg.dir), "cpu.weight")); got != "50" {
+			t.Fatalf("slice CPU weight = %s, want the daemon's weight", got)
+		}
+	}
 	var w struct{ Error string }
 	if err := callInto(t, s, "fsize", `{}`, &w); err != nil {
 		t.Fatal(err)
@@ -237,7 +274,20 @@ func TestKernelUnitLauncherMemoryCap(t *testing.T) {
 	s, err := New(Config{Name: "unit worker", Timeout: 60 * time.Second, Limits: cfg.Limits, Launch: func(ctx context.Context) (Process, error) {
 		p, err := launch(ctx)
 		if err == nil {
-			units = append(units, p.(*unitProcess).unit)
+			up := p.(*unitProcess)
+			units = append(units, up.unit)
+			// Shown when the reason is wrong: an unkillable worker or a
+			// missing slice counter explains a timeout or a crash.
+			adj, _ := os.ReadFile(fmt.Sprintf("/proc/%d/oom_score_adj", up.PID()))
+			t.Logf("unit %s pid %d oom_score_adj %s cgroup %s slice counter %v (start %d)",
+				up.unit, up.PID(), strings.TrimSpace(string(adj)), up.cg.dir, up.slice != nil, up.sliceOOMKills)
+			if up.slice != nil {
+				t.Cleanup(func() {
+					if b, readErr := os.ReadFile(filepath.Join(up.slice.dir, "memory.events")); readErr == nil {
+						t.Logf("slice memory.events after the test: %q", b)
+					}
+				})
+			}
 		}
 		return p, err
 	}})
@@ -245,8 +295,12 @@ func TestKernelUnitLauncherMemoryCap(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = s.Stop() })
-	if err := callInto(t, s, "alloc", `256`, nil); !errors.Is(err, ErrWorkerFailed) {
+	err = callInto(t, s, "alloc", `256`, nil)
+	if !errors.Is(err, ErrWorkerFailed) {
 		t.Fatalf("256 MiB under a 64 MiB cap: %v", err)
+	}
+	if got := FailureReason(err); got != ReasonOOM {
+		t.Fatalf("memory kill reported as %q, want %q", got, ReasonOOM)
 	}
 	if len(units) != 1 {
 		t.Fatalf("units = %v", units)

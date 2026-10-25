@@ -712,8 +712,11 @@ Attribution gaps:
 | `email_av_degraded` | ignored | self-health |  |
 | `email_av_encrypted_archive` | ignored | self-health |  |
 | `email_av_hold_bypass` | ignored | self-health |  |
+| `email_av_isolation_unavailable` | ignored | self-health |  |
 | `email_av_late_verdict` | ignored | self-health |  |
 | `email_av_parse_error` | ignored | self-health |  |
+| `email_av_parse_worker_failed` | ignored | self-health |  |
+| `email_av_parse_worker_rejected` | ignored | self-health |  |
 | `email_av_quarantine_error` | ignored | self-health |  |
 | `email_av_queue_overflow` | ignored | self-health |  |
 | `email_av_scan_error` | ignored | self-health |  |

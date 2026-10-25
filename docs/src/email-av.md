@@ -8,8 +8,8 @@ CSM scans email attachments in real-time using ClamAV and YARA-X on the Exim mai
 2. Attachments are extracted and scanned by ClamAV (socket) and YARA-X (if available)
    Base64 and quoted-printable decoding tolerates stray characters, missing padding and malformed escapes. Encoded multipart bodies are decoded at every level. Ambiguous base64 is scanned under quartet and alphabet-only interpretations, and a valid padded prefix is scanned separately when data follows it. At most 16 additional interpretations are scanned per message. If decoding or multipart parsing reports an error, recovered content and later attachments are still scanned and the message is reported as incompletely scanned. Extraction size and MIME nesting limits still apply
 3. Zip and tar.gz attachments are unpacked within configured size and file limits
-4. Extracted parts are staged under `state_path/emailav-tmp`, which must stay daemon-owned and private
-5. Attachment names written to logs and the UI use sanitized base names
+4. Attachments are unpacked in a separate locked-down process with no network access, one per concurrent scan (`scan_concurrency`), started on first use. Extracted parts reach the scanners in memory and are never written to disk; each scan holds at most `max_extraction_size` of them. A process that times out, runs out of memory, crashes or sends an invalid reply makes the message an incomplete scan, which follows `fail_mode`
+5. Attachment names written to logs and the UI use sanitized, shortened base names. Archive detection uses the full name, so shortening a displayed name does not prevent unpacking
 6. Infected messages are quarantined with full metadata
 7. Sender, recipient, and message ID are logged
 

@@ -9,6 +9,7 @@ import (
 	"mime/quotedprintable"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"testing/iotest"
 
@@ -192,6 +193,46 @@ func FuzzTransferDecoder(f *testing.F) {
 		}
 		if !bytes.Equal(got, data) {
 			t.Fatalf("quoted-printable round trip changed %d bytes into %d", len(data), len(got))
+		}
+	})
+}
+
+// FuzzParseSpoolFiles drives the whole extractor, archives included, from
+// descriptors: no panic, every part's size is its file's length, and Close
+// leaves nothing behind.
+func FuzzParseSpoolFiles(f *testing.F) {
+	f.Add([]byte("multipart/mixed; boundary=b"), []byte("--b\r\nContent-Type: application/zip; name=\"a.zip\"\r\n\r\nPK\x05\x06\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\r\n--b--\r\n"))
+	f.Add([]byte("application/octet-stream; name=\"x.tgz\""), []byte("\x1f\x8b\x08\x00"))
+	f.Fuzz(func(t *testing.T, contentType, body []byte) {
+		hPath, dPath := buildEximSpool(t, strings.ReplaceAll(string(contentType), "\n", " "), string(body))
+		h, err := os.Open(hPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer h.Close()
+		d, err := os.Open(dPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer d.Close()
+		dir := t.TempDir()
+		limits := DefaultLimits()
+		limits.TempDir = dir
+		limits.MaxAttachmentSize = 1 << 20
+		limits.MaxExtractionSize = 4 << 20
+		res, err := ParseSpoolFiles(h, d, limits)
+		if err != nil {
+			return
+		}
+		for _, p := range res.Parts {
+			st, statErr := p.File.Stat()
+			if statErr != nil || st.Size() != p.Size {
+				t.Fatalf("part %q size %d, file %v %v", p.Filename, p.Size, st, statErr)
+			}
+		}
+		res.Close()
+		if left, _ := filepath.Glob(filepath.Join(dir, "*")); len(left) != 0 {
+			t.Fatalf("Close left %v", left)
 		}
 	})
 }

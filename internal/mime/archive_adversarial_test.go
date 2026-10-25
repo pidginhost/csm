@@ -69,16 +69,12 @@ func extractArchiveFixture(t *testing.T, name string, data []byte, limits Limits
 	result := &ExtractionResult{}
 	var total int64
 	if strings.HasSuffix(name, ".zip") {
-		extractZIP(path, name, limits, result, &total, 1)
+		extractZIPPath(t, path, name, limits, result, &total, 1)
 	} else {
-		extractTarGz(path, name, limits, result, &total, 1)
+		extractTarGzPath(t, path, name, limits, result, &total, 1)
 	}
 	t.Cleanup(func() {
-		for _, p := range result.Parts {
-			if err := os.Remove(p.TempPath); err != nil {
-				t.Error(err)
-			}
-		}
+		result.Close()
 		requireTempDirEmpty(t, limits.TempDir)
 	})
 	return result, total

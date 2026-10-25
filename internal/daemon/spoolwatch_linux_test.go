@@ -13,7 +13,7 @@ import (
 )
 
 func TestNewSpoolWatcherLinuxNilConfig(t *testing.T) {
-	_, err := NewSpoolWatcher(nil, nil, nil, nil, nil)
+	_, err := NewSpoolWatcher(nil, nil, nil, nil, nil, nil, nil)
 	if err == nil {
 		t.Fatal("NewSpoolWatcher must reject a nil config")
 	}
@@ -28,10 +28,11 @@ func TestSpoolWatcher_Run_EpollSetupFailureDrainsWorkers(t *testing.T) {
 	cfg.EmailAV.ScanConcurrency = 2
 
 	sw := &SpoolWatcher{
-		cfg:    cfg,
-		fd:     -1, // EpollCtl(EPOLL_CTL_ADD, -1) fails with EBADF
-		scanCh: make(chan spoolEvent, 4),
-		stopCh: make(chan struct{}),
+		extractor: inProcessExtractor{},
+		cfg:       cfg,
+		fd:        -1, // EpollCtl(EPOLL_CTL_ADD, -1) fails with EBADF
+		scanCh:    make(chan spoolEvent, 4),
+		stopCh:    make(chan struct{}),
 	}
 	if err := unix.Pipe2(sw.pipeFds[:], unix.O_NONBLOCK|unix.O_CLOEXEC); err != nil {
 		t.Fatal(err)

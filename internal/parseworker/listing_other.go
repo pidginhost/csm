@@ -7,6 +7,6 @@ import (
 	"os"
 )
 
-func checkListingSeals(*os.File) error {
+func checkSealed(*os.File) error {
 	return errors.New("parseworker: sealed listings require Linux")
 }

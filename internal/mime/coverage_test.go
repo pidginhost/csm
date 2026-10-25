@@ -78,7 +78,7 @@ func TestReadBodyFileLimitedMarksPartial(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	data, partial, err := readBodyFileLimited(path, 5)
+	data, partial, err := readBodyFileLimited(t, path, 5)
 	if err != nil {
 		t.Fatalf("readBodyFileLimited: %v", err)
 	}
@@ -96,7 +96,7 @@ func TestReadBodyFileLimitedExactLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	data, partial, err := readBodyFileLimited(path, 5)
+	data, partial, err := readBodyFileLimited(t, path, 5)
 	if err != nil {
 		t.Fatalf("readBodyFileLimited: %v", err)
 	}
@@ -306,11 +306,7 @@ func TestExtractZIP(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseSpoolMessage: %v", err)
 	}
-	defer func() {
-		for _, p := range result.Parts {
-			_ = os.Remove(p.TempPath)
-		}
-	}()
+	defer result.Close()
 
 	// Expect at least the outer .zip AND its contents extracted.
 	hasZIP := false
@@ -340,11 +336,7 @@ func TestExtractZIPCorruptArchive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseSpoolMessage: %v", err)
 	}
-	defer func() {
-		for _, p := range result.Parts {
-			_ = os.Remove(p.TempPath)
-		}
-	}()
+	defer result.Close()
 	// Outer file should still be present, but no extracted children.
 	count := 0
 	for _, p := range result.Parts {
@@ -372,11 +364,7 @@ func TestExtractZIPExceedsMaxFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseSpoolMessage: %v", err)
 	}
-	defer func() {
-		for _, p := range result.Parts {
-			_ = os.Remove(p.TempPath)
-		}
-	}()
+	defer result.Close()
 
 	if !result.Partial {
 		t.Errorf("Partial should be true when archive exceeds MaxArchiveFiles")
@@ -398,11 +386,7 @@ func TestExtractTarGz(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseSpoolMessage: %v", err)
 	}
-	defer func() {
-		for _, p := range result.Parts {
-			_ = os.Remove(p.TempPath)
-		}
-	}()
+	defer result.Close()
 
 	hasTgz := false
 	hasInner := false
@@ -430,11 +414,7 @@ func TestExtractTarGzCorruptArchive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseSpoolMessage: %v", err)
 	}
-	defer func() {
-		for _, p := range result.Parts {
-			_ = os.Remove(p.TempPath)
-		}
-	}()
+	defer result.Close()
 
 	count := 0
 	for _, p := range result.Parts {
@@ -464,11 +444,7 @@ func TestExtractTarGzExceedsMaxFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseSpoolMessage: %v", err)
 	}
-	defer func() {
-		for _, p := range result.Parts {
-			_ = os.Remove(p.TempPath)
-		}
-	}()
+	defer result.Close()
 	if !result.Partial {
 		t.Error("Partial should be true when tar.gz exceeds MaxArchiveFiles")
 	}
@@ -494,11 +470,7 @@ func TestExtractZIPTotalSizeExceeded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseSpoolMessage: %v", err)
 	}
-	defer func() {
-		for _, p := range result.Parts {
-			_ = os.Remove(p.TempPath)
-		}
-	}()
+	defer result.Close()
 	if !result.Partial || !strings.Contains(result.PartialReason, "total extraction size") {
 		t.Errorf("expected total extraction size partial, got Partial=%v reason=%q", result.Partial, result.PartialReason)
 	}

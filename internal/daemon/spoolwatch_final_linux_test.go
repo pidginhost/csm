@@ -27,7 +27,7 @@ type timedOutScanner struct{}
 func (timedOutScanner) Name() string    { return "stub-timeout" }
 func (timedOutScanner) Available() bool { return true }
 
-func (timedOutScanner) Scan(path string) (emailav.Verdict, error) {
+func (timedOutScanner) Scan(_ emailav.Part) (emailav.Verdict, error) {
 	// Sleep longer than the orchestrator timeout so ScanParts marks us timed out.
 	time.Sleep(50 * time.Millisecond)
 	return emailav.Verdict{}, nil
@@ -43,9 +43,9 @@ func TestSpoolWatcherHandleSpoolEventTimeoutFailOpen(t *testing.T) {
 	// Orchestrator with a very short timeout → forces TimedOutEngines populated.
 	orch := emailav.NewOrchestrator([]emailav.Scanner{timedOutScanner{}}, 5*time.Millisecond)
 
-	tmpFd, err := unix.Open(dir, unix.O_RDONLY|unix.O_DIRECTORY, 0)
+	tmpFd, err := unix.Open(filepath.Join(dir, msgID+"-D"), unix.O_RDONLY|unix.O_CLOEXEC, 0)
 	if err != nil {
-		t.Skipf("open dir: %v", err)
+		t.Fatalf("open body: %v", err)
 	}
 
 	cfg := &config.Config{}
@@ -57,6 +57,7 @@ func TestSpoolWatcherHandleSpoolEventTimeoutFailOpen(t *testing.T) {
 
 	ch := make(chan alert.Finding, 16)
 	sw := &SpoolWatcher{
+		extractor:    inProcessExtractor{},
 		cfg:          cfg,
 		alertCh:      ch,
 		orchestrator: orch,
@@ -100,16 +101,17 @@ func TestSpoolWatcherScanWorkerExitsOnChannelClose(t *testing.T) {
 	cfg.EmailAV.ScanConcurrency = 1
 
 	sw := &SpoolWatcher{
-		cfg:      cfg,
-		alertCh:  make(chan alert.Finding, 4),
-		scanCh:   make(chan spoolEvent, 4),
-		stopCh:   make(chan struct{}),
-		fdClosed: 1,
+		extractor: inProcessExtractor{},
+		cfg:       cfg,
+		alertCh:   make(chan alert.Finding, 4),
+		scanCh:    make(chan spoolEvent, 4),
+		stopCh:    make(chan struct{}),
+		fdClosed:  1,
 	}
 	sw.wg.Add(1)
 	done := make(chan struct{})
 	go func() {
-		sw.scanWorker()
+		sw.scanWorker(0)
 		close(done)
 	}()
 
@@ -131,16 +133,17 @@ func TestSpoolWatcherScanWorkerExitsOnStop(t *testing.T) {
 	cfg.EmailAV.FailMode = "open"
 
 	sw := &SpoolWatcher{
-		cfg:      cfg,
-		alertCh:  make(chan alert.Finding, 4),
-		scanCh:   make(chan spoolEvent, 4),
-		stopCh:   make(chan struct{}),
-		fdClosed: 1,
+		extractor: inProcessExtractor{},
+		cfg:       cfg,
+		alertCh:   make(chan alert.Finding, 4),
+		scanCh:    make(chan spoolEvent, 4),
+		stopCh:    make(chan struct{}),
+		fdClosed:  1,
 	}
 	sw.wg.Add(1)
 	done := make(chan struct{})
 	go func() {
-		sw.scanWorker()
+		sw.scanWorker(0)
 		close(done)
 	}()
 
@@ -161,7 +164,7 @@ type cleanScanner struct{}
 
 func (cleanScanner) Name() string    { return "stub-clean" }
 func (cleanScanner) Available() bool { return true }
-func (cleanScanner) Scan(_ string) (emailav.Verdict, error) {
+func (cleanScanner) Scan(_ emailav.Part) (emailav.Verdict, error) {
 	return emailav.Verdict{Infected: false}, nil
 }
 
@@ -172,9 +175,9 @@ func TestSpoolWatcherHandleSpoolEventCleanWithAttachmentAllows(t *testing.T) {
 
 	orch := emailav.NewOrchestrator([]emailav.Scanner{cleanScanner{}}, 5*time.Second)
 
-	tmpFd, err := unix.Open(dir, unix.O_RDONLY|unix.O_DIRECTORY, 0)
+	tmpFd, err := unix.Open(filepath.Join(dir, msgID+"-D"), unix.O_RDONLY|unix.O_CLOEXEC, 0)
 	if err != nil {
-		t.Skipf("open dir: %v", err)
+		t.Fatalf("open body: %v", err)
 	}
 
 	cfg := &config.Config{}
@@ -186,6 +189,7 @@ func TestSpoolWatcherHandleSpoolEventCleanWithAttachmentAllows(t *testing.T) {
 
 	ch := make(chan alert.Finding, 4)
 	sw := &SpoolWatcher{
+		extractor:    inProcessExtractor{},
 		cfg:          cfg,
 		alertCh:      ch,
 		orchestrator: orch,
@@ -260,7 +264,7 @@ func TestNewSpoolWatcherNoSpoolDirs(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.EmailAV.FailMode = "open"
 
-	sw, err := NewSpoolWatcher(cfg, make(chan alert.Finding, 1), nil, nil, nil)
+	sw, err := NewSpoolWatcher(cfg, make(chan alert.Finding, 1), nil, nil, nil, nil, nil)
 	if err == nil {
 		// Some kernels/users may have root + exim installed — accept both.
 		if sw != nil {

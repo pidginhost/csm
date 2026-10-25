@@ -11,7 +11,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 	"unsafe"
 
@@ -33,6 +32,8 @@ var (
 	spoolQueueOverflowTotal *metrics.Counter
 	spoolMetricsOnce        sync.Once
 )
+
+var spoolFanotifyInit = unix.FanotifyInit
 
 func registerSpoolMetrics() {
 	spoolMetricsOnce.Do(func() {
@@ -84,12 +85,9 @@ type SpoolWatcher struct {
 	markedMu   sync.Mutex
 	marked     map[string]struct{}
 
-	// emailAVTempDir is the staging directory CreateTemp uses for
-	// extracted attachments. Established once at watcher construction
-	// (0700, daemon-owned) so an unprivileged local uid cannot race
-	// the scanner via /tmp symlink swaps. Empty is only for hand-built
-	// test watchers; production construction requires state_path.
-	emailAVTempDir string
+	// extractor unpacks attachments in parse worker units; nil means none
+	// could be set up, and every message is an incomplete scan.
+	extractor mailExtractor
 
 	// onQuarantined is called with the time and Exim message ID of each
 	// message the watcher quarantined. Nil for hand-built test watchers.
@@ -107,6 +105,9 @@ type SpoolWatcher struct {
 	drainOnce sync.Once
 	stopCh    chan struct{}
 	wg        sync.WaitGroup
+	// daemonStop distinguishes final shutdown from a watcher restart, which
+	// must still scan queued mail before the replacement reuses its slots.
+	daemonStop <-chan struct{}
 
 	pipeClosed     int32 // atomic
 	fdClosed       int32 // atomic - guards sw.fd against double-close
@@ -118,6 +119,10 @@ type SpoolWatcher struct {
 	lastEncryptedAt time.Time
 	panicMu         sync.Mutex
 	lastPanicAt     time.Time
+	// findings rate-limits parse worker findings, shared with the daemon;
+	// ownFindings stands in for hand-built test watchers.
+	findings    *findingLimiter
+	ownFindings findingLimiter
 
 	// queueOverflows counts FAN_Q_OVERFLOW records. In permission mode a kernel
 	// queue overflow means opens were let through without a scan verdict, so
@@ -141,6 +146,9 @@ type spoolEvent struct {
 	fd          int // fanotify event fd (for permission response)
 	pid         int32
 	needResp    bool // true if permission event requiring response
+	// slot is the parse worker slot of the scan goroutine handling this
+	// event; set by scanWorker.
+	slot int
 	// guard bounds how long this open stays suspended. Nil for events built
 	// outside dispatchEvent, which answer directly from needResp.
 	guard *holdGuard
@@ -163,33 +171,34 @@ func (evt spoolEvent) finish(sw *SpoolWatcher, response uint32) {
 // NewSpoolWatcher creates a dedicated fanotify instance for Exim spool scanning.
 // Attempts FAN_CLASS_CONTENT with FAN_OPEN_PERM first; falls back to
 // FAN_CLASS_NOTIF with FAN_CLOSE_WRITE if permission events are unavailable.
-func NewSpoolWatcher(cfg *config.Config, alertCh chan<- alert.Finding, orch *emailav.Orchestrator, quar *emailav.Quarantine, onQuarantined func(time.Time, string)) (*SpoolWatcher, error) {
-	emailAVTempDir, err := resolveEmailAVTempDir(cfg)
-	if err != nil {
-		return nil, err
+func NewSpoolWatcher(cfg *config.Config, alertCh chan<- alert.Finding, orch *emailav.Orchestrator, quar *emailav.Quarantine, onQuarantined func(time.Time, string), extractor mailExtractor, findings *findingLimiter) (*SpoolWatcher, error) {
+	if cfg == nil {
+		return nil, errors.New("spool watcher: nil config")
 	}
+	removeLegacyEmailAVTempDir(cfg.StatePath)
 	registerSpoolMetrics()
 	sw := &SpoolWatcher{
-		cfg:            cfg,
-		alertCh:        alertCh,
-		orchestrator:   orch,
-		quarantine:     quar,
-		emailAVTempDir: emailAVTempDir,
-		onQuarantined:  onQuarantined,
-		selfPID:        os.Getpid(),
-		scanCh:         make(chan spoolEvent, 256),
-		stopCh:         make(chan struct{}),
+		cfg:           cfg,
+		alertCh:       alertCh,
+		orchestrator:  orch,
+		quarantine:    quar,
+		extractor:     extractor,
+		findings:      findings,
+		onQuarantined: onQuarantined,
+		selfPID:       os.Getpid(),
+		scanCh:        make(chan spoolEvent, 256),
+		stopCh:        make(chan struct{}),
 	}
 
 	// Try permission-capable class first
-	fd, err := unix.FanotifyInit(FAN_CLASS_CONTENT|FAN_CLOEXEC|FAN_NONBLOCK, unix.O_RDONLY)
+	fd, err := spoolFanotifyInit(FAN_CLASS_CONTENT|FAN_CLOEXEC|FAN_NONBLOCK, unix.O_RDONLY|unix.O_CLOEXEC)
 	if err == nil {
 		sw.fd = fd
 		sw.permissionMode = true
 		fmt.Fprintf(os.Stderr, "[%s] spool watcher: permission events enabled (FAN_OPEN_PERM)\n", ts())
 	} else {
 		// Fallback to notification-only
-		fd, err = unix.FanotifyInit(FAN_CLASS_NOTIF|FAN_CLOEXEC|FAN_NONBLOCK, unix.O_RDONLY)
+		fd, err = spoolFanotifyInit(FAN_CLASS_NOTIF|FAN_CLOEXEC|FAN_NONBLOCK, unix.O_RDONLY|unix.O_CLOEXEC)
 		if err != nil {
 			return nil, fmt.Errorf("fanotify_init: %w (neither permission nor notification mode available)", err)
 		}
@@ -303,14 +312,7 @@ func (sw *SpoolWatcher) Run() {
 	// Start scanner workers
 	atomic.StoreInt32(&sw.runActive, 1)
 	defer atomic.StoreInt32(&sw.runActive, 0)
-	concurrency := sw.cfg.EmailAV.ScanConcurrency
-	if concurrency < 1 {
-		concurrency = 4
-	}
-	for i := 0; i < concurrency; i++ {
-		sw.wg.Add(1)
-		obs.Go("spool-scanner", sw.scanWorker)
-	}
+	sw.startScanWorkers()
 
 	events := make([]unix.EpollEvent, 16)
 	buf := make([]byte, 4096)
@@ -483,9 +485,32 @@ func (sw *SpoolWatcher) dispatchEvent(fd int32, pid int32) {
 	}
 }
 
-// scanWorker processes spool events: MIME parse, scan, quarantine/allow.
-func (sw *SpoolWatcher) scanWorker() {
+// startScanWorkers starts the scan goroutines and returns how many. With an
+// extractor there is one per worker slot: parts live in the memory cgroup of
+// the worker that wrote them, so two scans must never share a worker.
+func (sw *SpoolWatcher) startScanWorkers() int {
+	n := sw.cfg.EmailAV.ScanConcurrency
+	if sw.extractor != nil {
+		n = sw.extractor.Size()
+	}
+	if n < 1 {
+		n = 4
+	}
+	for slot := range n {
+		sw.wg.Add(1)
+		obs.Go("spool-scanner", func() { sw.scanWorker(slot) })
+	}
+	return n
+}
+
+// scanWorker processes spool events on its parse worker slot: extract, scan,
+// quarantine/allow.
+func (sw *SpoolWatcher) scanWorker(slot int) {
 	defer sw.wg.Done()
+	handle := func(evt spoolEvent) {
+		evt.slot = slot
+		sw.handleSpoolEventSafe(evt)
+	}
 
 	// drainAndClose closes scanCh after shutdown. Keep draining queued events
 	// until then: dispatchEvent may enqueue a permission fd while Stop is racing,
@@ -496,11 +521,11 @@ func (sw *SpoolWatcher) scanWorker() {
 			if !ok {
 				return
 			}
-			sw.handleSpoolEventSafe(evt)
+			handle(evt)
 		case <-sw.stopCh:
 			if atomic.LoadInt32(&sw.runActive) != 0 {
 				for evt := range sw.scanCh {
-					sw.handleSpoolEventSafe(evt)
+					handle(evt)
 				}
 				return
 			}
@@ -510,7 +535,7 @@ func (sw *SpoolWatcher) scanWorker() {
 					if !ok {
 						return
 					}
-					sw.handleSpoolEventSafe(evt)
+					handle(evt)
 				default:
 					return
 				}
@@ -573,26 +598,33 @@ func (sw *SpoolWatcher) handleSpoolEvent(evt spoolEvent) {
 		}
 	}()
 
+	// Daemon shutdown releases the fanotify opens. Drain their descriptors
+	// without starting extractions or reporting shutdown as a scan outage.
+	select {
+	case <-sw.daemonStop:
+		return
+	default:
+	}
+
 	// Derive message ID: strip -D suffix and directory
 	base := filepath.Base(evt.path)
 	msgID := strings.TrimSuffix(base, "-D")
 	spoolDir := filepath.Dir(evt.path)
 
 	headerPath := filepath.Join(spoolDir, msgID+"-H")
-	bodyPath := evt.path
 
-	// MIME parse - fail-open on error
+	// MIME parse in a parse worker - fail-open on error
 	limits := emime.Limits{
 		MaxAttachmentSize: sw.cfg.EmailAV.MaxAttachmentSize,
 		MaxArchiveDepth:   sw.cfg.EmailAV.MaxArchiveDepth,
 		MaxArchiveFiles:   sw.cfg.EmailAV.MaxArchiveFiles,
 		MaxExtractionSize: sw.cfg.EmailAV.MaxExtractionSize,
-		TempDir:           sw.emailAVTempDir,
+		MaxParts:          emime.MaxParts,
 	}
 
 	tempfail := sw.cfg.EmailAV.FailMode == "tempfail" && evt.needResp
 
-	extraction, err := emime.ParseSpoolMessage(headerPath, bodyPath, limits)
+	extraction, err := sw.extractSpoolMessage(evt, msgID, headerPath, limits)
 	if err != nil {
 		// MAIL-03: Exim opens the -D body file before it writes the matching
 		// -H header file (the -H lands only after the message is accepted).
@@ -604,22 +636,15 @@ func (sw *SpoolWatcher) handleSpoolEvent(evt spoolEvent) {
 		if errors.Is(err, os.ErrNotExist) {
 			return
 		}
-		fmt.Fprintf(os.Stderr, "[%s] spool watcher: MIME parse error for %s: %v\n", ts(), msgID, err)
-		sw.emitFinding("email_av_parse_error", alert.Warning, fmt.Sprintf("MIME parse failed for message %s: %v", msgID, err))
+		fmt.Fprintf(os.Stderr, "[%s] spool watcher: cannot open spool files of %s: %v\n", ts(), msgID, err)
+		sw.emitFinding("email_av_parse_error", alert.Warning, fmt.Sprintf("Spool files of message %s could not be opened for scanning: %v", msgID, err))
 		if tempfail {
 			response = FAN_DENY // tempfail: Exim retries later
 		}
 		return
 	}
 
-	// Clean up temp files when done
-	defer func() {
-		for _, p := range extraction.Parts {
-			if err := os.Remove(p.TempPath); err != nil && !os.IsNotExist(err) {
-				fmt.Fprintf(os.Stderr, "[%s] spoolwatch: temp part not removed: %v\n", ts(), err)
-			}
-		}
-	}()
+	defer extraction.Close()
 
 	sw.emitEncryptedArchiveWarning(msgID, extraction.EncryptedEntries, extraction.EncryptedEntriesOmitted)
 
@@ -823,88 +848,6 @@ func (sw *SpoolWatcher) drainAndClose() {
 // PermissionMode returns true if using FAN_OPEN_PERM, false if FAN_CLOSE_WRITE fallback.
 func (sw *SpoolWatcher) PermissionMode() bool {
 	return sw.permissionMode
-}
-
-// resolveEmailAVTempDir returns the private directory CreateTemp should use
-// for extracted email parts.
-func resolveEmailAVTempDir(cfg *config.Config) (string, error) {
-	if cfg == nil {
-		return "", fmt.Errorf("email AV temp dir: nil config")
-	}
-	if cfg.StatePath == "" {
-		return "", fmt.Errorf("email AV temp dir: state_path is empty")
-	}
-	dir := filepath.Join(cfg.StatePath, "emailav-tmp")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", fmt.Errorf("creating email AV temp dir %s: %w", dir, err)
-	}
-	if err := secureEmailAVTempDir(dir); err != nil {
-		return "", err
-	}
-	return dir, nil
-}
-
-func secureEmailAVTempDir(dir string) error {
-	info, err := os.Lstat(dir)
-	if err != nil {
-		return fmt.Errorf("checking email AV temp dir %s: %w", dir, err)
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("email AV temp dir %s is a symlink", dir)
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("email AV temp dir %s is not a directory", dir)
-	}
-
-	uid, gid, ok := fileOwner(info)
-	if ok {
-		euid := os.Geteuid()
-		if uid != euid {
-			if euid != 0 {
-				return fmt.Errorf("email AV temp dir %s is owned by uid %d, want uid %d", dir, uid, euid)
-			}
-			if chownErr := os.Chown(dir, euid, os.Getegid()); chownErr != nil {
-				return fmt.Errorf("owning email AV temp dir %s: %w", dir, chownErr)
-			}
-		} else if gid != os.Getegid() && euid == 0 {
-			if chownErr := os.Chown(dir, euid, os.Getegid()); chownErr != nil {
-				return fmt.Errorf("owning email AV temp dir %s: %w", dir, chownErr)
-			}
-		}
-	}
-	// #nosec G302 -- 0700 is the intended directory mode: daemon-only
-	// execute+read+write so unprivileged uids cannot enumerate or race
-	// staged email attachments. gosec's <=0600 rule does not distinguish
-	// directories from regular files.
-	if chmodErr := os.Chmod(dir, 0o700); chmodErr != nil {
-		return fmt.Errorf("chmod email AV temp dir %s: %w", dir, chmodErr)
-	}
-
-	info, err = os.Lstat(dir)
-	if err != nil {
-		return fmt.Errorf("checking email AV temp dir %s after chmod: %w", dir, err)
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("email AV temp dir %s became a symlink", dir)
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("email AV temp dir %s is not a directory", dir)
-	}
-	if info.Mode().Perm() != 0o700 {
-		return fmt.Errorf("email AV temp dir %s mode is %o, want 700", dir, info.Mode().Perm())
-	}
-	if uid, _, ok := fileOwner(info); ok && uid != os.Geteuid() {
-		return fmt.Errorf("email AV temp dir %s is owned by uid %d, want uid %d", dir, uid, os.Geteuid())
-	}
-	return nil
-}
-
-func fileOwner(info os.FileInfo) (uid, gid int, ok bool) {
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	if !ok {
-		return 0, 0, false
-	}
-	return int(stat.Uid), int(stat.Gid), true
 }
 
 // Stop signals the event loop to exit.

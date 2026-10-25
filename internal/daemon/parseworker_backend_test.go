@@ -6,10 +6,15 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 
+	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	emime "github.com/pidginhost/csm/internal/mime"
+	"github.com/pidginhost/csm/internal/parseworker"
 	"github.com/pidginhost/csm/internal/workerproc"
 )
 
@@ -125,5 +130,260 @@ func TestParseWorkersRejectUnexecutableBinary(t *testing.T) {
 	}
 	if stopped != 1 {
 		t.Fatalf("leftover units not stopped first: %d", stopped)
+	}
+}
+
+// One mail slot per spool scan goroutine, each started on first use.
+func TestParseWorkersBuildMailExtractor(t *testing.T) {
+	real := stopParseWorkerUnits
+	stopParseWorkerUnits = func(context.Context, string) error { return nil }
+	t.Cleanup(func() { stopParseWorkerUnits = real })
+	allowParseWorkerCommand(t)
+	cfg := &config.Config{}
+	cfg.EmailAV.Enabled = true
+	cfg.EmailAV.ScanConcurrency = 3
+	d := &Daemon{binaryPath: "/opt/csm/csm", cfg: cfg}
+	if err := d.initParseWorkers(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(d.stopParseWorkers)
+	if d.mailExtractor == nil || d.mailExtractor.Size() != 3 {
+		t.Fatalf("mail extractor = %v", d.mailExtractor)
+	}
+	q, ok := d.QueueStatuses()["email_extract.requests"]
+	if !ok || q.Status != "ok" || q.Capacity != 3 || q.InFlight != 0 {
+		t.Fatalf("mail extraction queue was not published: found=%v status=%+v", ok, q)
+	}
+	ex := d.mailExtractor
+	d.stopParseWorkers()
+	if d.mailExtractor != nil {
+		t.Fatal("mail extractor survived shutdown")
+	}
+	if _, err := ex.Extract(context.Background(), 0, nil, nil, emime.DefaultLimits()); !errors.Is(err, workerproc.ErrStopped) {
+		t.Fatalf("extractor accepted work after shutdown: %v", err)
+	}
+}
+
+func TestParseWorkersNoMailExtractorWhenEmailAVOff(t *testing.T) {
+	real := stopParseWorkerUnits
+	stopParseWorkerUnits = func(context.Context, string) error { return nil }
+	t.Cleanup(func() { stopParseWorkerUnits = real })
+	allowParseWorkerCommand(t)
+	d := &Daemon{binaryPath: "/opt/csm/csm", cfg: &config.Config{}}
+	if err := d.initParseWorkers(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(d.stopParseWorkers)
+	if d.mailExtractor != nil {
+		t.Fatal("mail extractor built with email AV off")
+	}
+	if _, ok := d.QueueStatuses()["email_extract.requests"]; ok {
+		t.Fatal("mail extraction queue published with email AV off")
+	}
+}
+
+func isolationFindings(ch chan alert.Finding) []alert.Finding {
+	var out []alert.Finding
+	for {
+		select {
+		case f := <-ch:
+			if f.Check == "email_av_isolation_unavailable" {
+				out = append(out, f)
+			}
+		default:
+			return out
+		}
+	}
+}
+
+// Parse workers that cannot run are a Critical condition: mail is handled as
+// incomplete scans and phishing-kit zips go unchecked until it is fixed.
+func TestParseWorkersIsolationUnavailableFinding(t *testing.T) {
+	real := stopParseWorkerUnits
+	stopParseWorkerUnits = func(context.Context, string) error { return nil }
+	t.Cleanup(func() { stopParseWorkerUnits = real })
+
+	path := filepath.Join(t.TempDir(), "csm")
+	if err := os.WriteFile(path, []byte("x"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{}
+	cfg.EmailAV.Enabled = true
+	d := &Daemon{binaryPath: path, cfg: cfg, alertCh: make(chan alert.Finding, 8)}
+	if err := d.initParseWorkers(); err == nil {
+		t.Fatal("owner-only binary accepted")
+	}
+	if d.zipLister != nil || d.mailExtractor != nil {
+		t.Fatal("a pool was installed without a runnable binary")
+	}
+	if fs := isolationFindings(d.alertCh); len(fs) != 1 || fs[0].Severity != alert.Critical {
+		t.Fatalf("isolation findings %+v, want one Critical", fs)
+	}
+
+	// The zip lister's failed starts raise it too, at most once an hour.
+	allowParseWorkerCommand(t)
+	realLaunch := parseWorkerLauncher
+	parseWorkerLauncher = func(workerproc.UnitConfig) workerproc.Launcher {
+		return func(context.Context) (workerproc.Process, error) { return nil, errors.New("systemd-run missing") }
+	}
+	t.Cleanup(func() { parseWorkerLauncher = realLaunch })
+	d = &Daemon{binaryPath: "/opt/csm/csm", cfg: &config.Config{}, alertCh: make(chan alert.Finding, 8)}
+	if err := d.initParseWorkers(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(d.stopParseWorkers)
+	zip, err := os.Create(filepath.Join(t.TempDir(), "kit.zip"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = zip.Close() }()
+	for range 2 {
+		if err := d.zipLister.ListZip(context.Background(), zip, 0, 0, nil); !errors.Is(err, workerproc.ErrSpawn) {
+			t.Fatalf("list with no worker = %v, want ErrSpawn", err)
+		}
+	}
+	if fs := isolationFindings(d.alertCh); len(fs) != 1 || fs[0].Severity != alert.Critical {
+		t.Fatalf("isolation findings %+v, want one Critical an hour", fs)
+	}
+}
+
+// Resource pressure must report unavailable isolation without opening the
+// worker breaker. Cancellation belongs to the caller and is not an outage.
+func TestParseWorkersReportUncountedLaunchFailures(t *testing.T) {
+	realStop, realLaunch := stopParseWorkerUnits, parseWorkerLauncher
+	stopParseWorkerUnits = func(context.Context, string) error { return nil }
+	t.Cleanup(func() { stopParseWorkerUnits, parseWorkerLauncher = realStop, realLaunch })
+	allowParseWorkerCommand(t)
+	for _, cause := range []error{syscall.EMFILE, syscall.ENFILE, context.Canceled} {
+		t.Run(cause.Error(), func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			parseWorkerLauncher = func(workerproc.UnitConfig) workerproc.Launcher {
+				return func(context.Context) (workerproc.Process, error) {
+					if errors.Is(cause, context.Canceled) {
+						cancel()
+					}
+					return nil, cause
+				}
+			}
+			d := &Daemon{binaryPath: "/opt/csm/csm", alertCh: make(chan alert.Finding, 1)}
+			if err := d.initParseWorkers(); err != nil {
+				t.Fatal(err)
+			}
+			defer d.stopParseWorkers()
+			zip, err := os.Create(filepath.Join(t.TempDir(), "kit.zip"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = zip.Close() }()
+			for range workerproc.ConsecutiveFailureLimit + 1 {
+				err := d.zipLister.ListZip(ctx, zip, 0, 0, nil)
+				if !errors.Is(err, cause) {
+					t.Fatalf("listing error = %v, want %v", err, cause)
+				}
+			}
+			if st := d.zipLister.Stats(); st.BreakerOpen || st.ConsecutiveFailures != 0 || len(st.Kills) != 0 {
+				t.Fatalf("uncounted failure opened the breaker or changed kill counts: %+v", st)
+			}
+			fs := isolationFindings(d.alertCh)
+			if errors.Is(cause, context.Canceled) {
+				if len(fs) != 0 {
+					t.Fatalf("cancellation reported an outage: %+v", fs)
+				}
+			} else if len(fs) != 1 || fs[0].Severity != alert.Critical {
+				t.Fatalf("isolation findings %+v, want one Critical", fs)
+			}
+		})
+	}
+}
+
+// Shutdown must keep the pool available to accepted spool work and watcher
+// replacements until the daemon's tracked producers have all returned.
+func TestStopParseWorkersWaitsForSpoolDrain(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		startErr := errors.New("test launcher reached")
+		ex, err := parseworker.NewExtractor(parseworker.ExtractorConfig{Size: 1,
+			Launch: func(int) workerproc.Launcher {
+				return func(context.Context) (workerproc.Process, error) { return nil, startErr }
+			}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		d := &Daemon{mailExtractor: ex, stopCh: make(chan struct{})}
+		close(d.stopCh) // shutdown signalled
+		d.wg.Add(1)
+		stopped := make(chan struct{})
+		go func() { d.stopParseWorkers(); close(stopped) }()
+		synctest.Wait()
+		select {
+		case <-stopped:
+			t.Error("parse workers stopped before accepted spool work drained")
+		default:
+		}
+		if d.spoolExtractor() != ex {
+			t.Error("watcher replacement lost its extractor during shutdown")
+		}
+		f, err := os.CreateTemp(t.TempDir(), "spool")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = f.Close() }()
+		if _, err := ex.Extract(context.Background(), 0, f, f, emime.DefaultLimits()); !errors.Is(err, workerproc.ErrSpawn) || !strings.Contains(err.Error(), startErr.Error()) {
+			t.Errorf("accepted spool work could not reach its worker: %v", err)
+		}
+		d.wg.Done()
+		<-stopped
+		if d.spoolExtractor() != nil {
+			t.Error("extractor retained after shutdown")
+		}
+		if _, err := ex.Extract(context.Background(), 0, f, f, emime.DefaultLimits()); !errors.Is(err, workerproc.ErrStopped) {
+			t.Errorf("extractor accepted work after shutdown: %v", err)
+		}
+	})
+}
+
+// A panic unwinding Run runs the deferred stop before shutdown is signalled.
+// Nothing has told the daemon's goroutines to stop, so waiting for them would
+// hang the process instead of letting it crash and be restarted.
+func TestStopParseWorkersDoesNotWaitBeforeShutdown(t *testing.T) {
+	d := &Daemon{stopCh: make(chan struct{})}
+	d.wg.Add(1)
+	t.Cleanup(d.wg.Done)
+	stopped := make(chan struct{})
+	go func() { d.stopParseWorkers(); close(stopped) }()
+	select {
+	case <-stopped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("parse worker stop waited for goroutines that were never told to stop")
+	}
+}
+
+// Panic cleanup skips the producer drain, so a watcher replacement can still
+// be reading the shared extractor while cleanup clears it.
+func TestStopParseWorkersDuringWatcherRestart(t *testing.T) {
+	ex, err := parseworker.NewExtractor(parseworker.ExtractorConfig{Size: 1,
+		Launch: func(int) workerproc.Launcher {
+			return func(context.Context) (workerproc.Process, error) {
+				return nil, errors.New("unexpected worker launch")
+			}
+		}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := &Daemon{mailExtractor: ex, stopCh: make(chan struct{})}
+	d.wg.Add(1)
+	go func() {
+		defer d.wg.Done()
+		if got := d.spoolExtractor(); got != nil && got != ex {
+			t.Errorf("replacement received an invalid extractor: %v", got)
+		}
+	}()
+	d.stopParseWorkers()
+	d.wg.Wait()
+	if d.spoolExtractor() != nil {
+		t.Fatal("extractor retained after cleanup")
+	}
+	if _, err := ex.Extract(context.Background(), 0, nil, nil, emime.DefaultLimits()); !errors.Is(err, workerproc.ErrStopped) {
+		t.Fatalf("extractor accepted work after cleanup: %v", err)
 	}
 }

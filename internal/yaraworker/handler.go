@@ -11,6 +11,8 @@ package yaraworker
 
 import (
 	"fmt"
+	"io"
+	"os"
 	"sync"
 
 	"github.com/pidginhost/csm/internal/yara"
@@ -81,6 +83,33 @@ func (h *handler) ScanFile(a yaraipc.ScanFileArgs) (yaraipc.ScanResult, error) {
 		Matches:       convertMatches(result.Matches),
 		ContentSHA256: result.ContentSHA256,
 	}, nil
+}
+
+// ScanFD scans the first MaxBytes of a descriptor the daemon passed, such as
+// a mail part memfd. Reading it here keeps the bytes out of the daemon.
+func (h *handler) ScanFD(f *os.File, a yaraipc.ScanFDArgs) (yaraipc.ScanResult, error) {
+	if a.MaxBytes <= 0 {
+		return yaraipc.ScanResult{}, fmt.Errorf("invalid descriptor scan size: %d", a.MaxBytes)
+	}
+	sc, compileErr := h.currentState()
+	if sc == nil || sc.RuleCount() == 0 {
+		if compileErr == "" {
+			compileErr = "no compiled rules"
+		}
+		return yaraipc.ScanResult{}, fmt.Errorf("yara scanner unavailable: %s", compileErr)
+	}
+	data, err := io.ReadAll(io.NewSectionReader(f, 0, int64(a.MaxBytes)))
+	if err != nil {
+		return yaraipc.ScanResult{}, fmt.Errorf("read descriptor: %w", err)
+	}
+	if len(data) != a.MaxBytes {
+		return yaraipc.ScanResult{}, fmt.Errorf("read descriptor: got %d of %d bytes: %w", len(data), a.MaxBytes, io.ErrUnexpectedEOF)
+	}
+	matches, err := sc.ScanBytesChecked(data)
+	if err != nil {
+		return yaraipc.ScanResult{}, err
+	}
+	return yaraipc.ScanResult{Matches: convertMatches(matches)}, nil
 }
 
 func (h *handler) ScanBytes(a yaraipc.ScanBytesArgs) (yaraipc.ScanResult, error) {

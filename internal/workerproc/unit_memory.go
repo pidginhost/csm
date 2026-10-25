@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
+	"time"
 )
 
 // memoryCgroup is a worker unit's own memory cgroup directory.
@@ -142,6 +144,24 @@ func (c memoryCgroup) usage(procRoot string) (uint64, error) {
 	return used, err
 }
 
+// oomKills is how many processes the kernel OOM-killed in the cgroup.
+func (c memoryCgroup) oomKills() (uint64, error) {
+	name := "memory.oom_control"
+	if c.v2 {
+		name = "memory.events"
+	}
+	data, err := os.ReadFile(filepath.Join(c.dir, name)) // #nosec G304 -- a file in the worker unit's own cgroup.
+	if err != nil {
+		return 0, err
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if value, ok := strings.CutPrefix(line, "oom_kill "); ok {
+			return strconv.ParseUint(strings.TrimSpace(value), 10, 64)
+		}
+	}
+	return 0, nil
+}
+
 // noSwap fails when any swap area is active.
 func noSwap(procRoot string) error {
 	data, err := os.ReadFile(filepath.Join(procRoot, "swaps")) // #nosec G304 -- procfs.
@@ -191,4 +211,25 @@ func writeCgroupValue(path, value string, ok func(string) bool) error {
 		return fmt.Errorf("%s reads %q after writing %s", path, got, value)
 	}
 	return nil
+}
+
+// oomWatch follows the kernel's OOM notifications for one worker cgroup. The
+// daemon sees a worker die only once systemd-run exits, after systemd has
+// removed the unit's cgroup and its oom_kill counter with it, so the kill
+// has to be read at the kernel's notification, while the cgroup exists.
+type oomWatch struct {
+	seen atomic.Bool
+	done chan struct{}
+	stop func()
+}
+
+// wait returns whether an OOM kill was seen, after the watch ends or d.
+func (w *oomWatch) wait(d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-w.done:
+	case <-timer.C:
+	}
+	return w.seen.Load()
 }

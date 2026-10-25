@@ -46,6 +46,9 @@ var emailChecks = []emailCheck{
 	{"email_av_encrypted_archive", "malware"},
 	{"email_av_timeout", "malware"},
 	{"email_av_parse_error", "malware"},
+	{"email_av_parse_worker_failed", "malware"},
+	{"email_av_parse_worker_rejected", "malware"},
+	{"email_av_isolation_unavailable", "malware"},
 	{"email_av_quarantine_error", "malware"},
 
 	{"mail_per_account", "queue_alert"},

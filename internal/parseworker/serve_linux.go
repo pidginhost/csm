@@ -18,7 +18,7 @@ import (
 
 // Serve answers parse requests on conn until the daemon closes it.
 func Serve(ctx context.Context, conn *net.UnixConn) error {
-	return workerproc.Serve(ctx, conn, Limits, handle)
+	return workerproc.Serve(ctx, conn, WorkerLimits, handle)
 }
 
 func handle(ctx context.Context, req workerproc.Frame, fds []*os.File) (workerproc.Frame, []*os.File) {
@@ -27,6 +27,8 @@ func handle(ctx context.Context, req workerproc.Frame, fds []*os.File) (workerpr
 		return workerproc.HelloReply(ProtocolVersion), nil
 	case OpListZip:
 		return listZip(ctx, req, fds)
+	case OpExtractMessage:
+		return extractMessage(req, fds)
 	default:
 		return workerproc.Frame{Error: fmt.Sprintf("unknown op %q", req.Op)}, nil
 	}

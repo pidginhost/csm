@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/binary"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -198,7 +199,7 @@ func TestEncryptedArchiveReportLimitAllowsDeliveryAndScansPlainSibling(t *testin
 	cfg.EmailAV.FailMode = "tempfail"
 	engine := &recordingEncryptedMailScanner{}
 	ch := make(chan alert.Finding, 8)
-	sw := &SpoolWatcher{cfg: cfg, alertCh: ch, fd: pipe[1], emailAVTempDir: tempDir,
+	sw := &SpoolWatcher{cfg: cfg, alertCh: ch, fd: pipe[1], extractor: inProcessExtractor{dir: tempDir},
 		orchestrator: emailav.NewOrchestrator([]emailav.Scanner{engine}, time.Second)}
 	sw.handleSpoolEvent(spoolEvent{path: bodyPath, fd: fileFD, needResp: true})
 	var response [responseSize]byte
@@ -229,8 +230,8 @@ type recordingEncryptedMailScanner struct{ bodies [][]byte }
 
 func (*recordingEncryptedMailScanner) Name() string    { return "recording" }
 func (*recordingEncryptedMailScanner) Available() bool { return true }
-func (s *recordingEncryptedMailScanner) Scan(path string) (emailav.Verdict, error) {
-	body, err := os.ReadFile(path)
+func (s *recordingEncryptedMailScanner) Scan(part emailav.Part) (emailav.Verdict, error) {
+	body, err := io.ReadAll(io.NewSectionReader(part.File, 0, part.Size))
 	if err == nil {
 		s.bodies = append(s.bodies, body)
 	}

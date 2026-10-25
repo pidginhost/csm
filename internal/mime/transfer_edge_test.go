@@ -30,6 +30,7 @@ func parseEncodedSpool(t *testing.T, contentType, cte, body string) *ExtractionR
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(result.Close)
 	return result
 }
 
@@ -233,6 +234,7 @@ func TestSinglePartDecodeVariantsRespectTotalLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer result.Close()
 	var total int64
 	for _, part := range result.Parts {
 		total += part.Size

@@ -19,11 +19,7 @@ func parseWithLimits(t *testing.T, contentType, body string, limits Limits) *Ext
 	if err != nil {
 		t.Fatalf("ParseSpoolMessage: %v", err)
 	}
-	t.Cleanup(func() {
-		for _, p := range result.Parts {
-			_ = os.Remove(p.TempPath)
-		}
-	})
+	t.Cleanup(result.Close)
 	return result
 }
 

@@ -38,7 +38,7 @@ func TestYaraXStubAvailableIsFalse(t *testing.T) {
 
 func TestYaraXStubScanReturnsCleanVerdict(t *testing.T) {
 	s := NewYaraXScanner(nil)
-	v, err := s.Scan("/any/path.eml")
+	v, err := s.Scan(Part{})
 	if err != nil {
 		t.Fatalf("Scan: %v", err)
 	}

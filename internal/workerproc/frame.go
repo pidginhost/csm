@@ -9,6 +9,7 @@
 package workerproc
 
 import (
+	"bytes"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -40,6 +41,13 @@ type Limits struct {
 	MaxFDs        int
 }
 
+// protocolError distinguishes a rejected peer frame from socket failure
+// without changing the diagnostic text or hiding its underlying error.
+type protocolError struct{ err error }
+
+func (e protocolError) Error() string { return e.err.Error() }
+func (e protocolError) Unwrap() error { return e.err }
+
 // WriteFrame writes one length-prefixed frame.
 func WriteFrame(w io.Writer, f Frame, maxBytes int) error {
 	body, err := marshalBody(f, maxBytes)
@@ -64,7 +72,7 @@ func ReadFrame(r io.Reader, maxBytes int) (Frame, error) {
 	}
 	size := binary.BigEndian.Uint32(hdr[:])
 	if int64(size) > int64(maxBytes) {
-		return Frame{}, fmt.Errorf("workerproc: declared frame size %d exceeds cap %d", size, maxBytes)
+		return Frame{}, protocolError{fmt.Errorf("workerproc: declared frame size %d exceeds cap %d", size, maxBytes)}
 	}
 	body := make([]byte, size)
 	if _, err := io.ReadFull(r, body); err != nil {
@@ -76,7 +84,7 @@ func ReadFrame(r io.Reader, maxBytes int) (Frame, error) {
 	}
 	var f Frame
 	if err := json.Unmarshal(body, &f); err != nil {
-		return Frame{}, fmt.Errorf("workerproc: unmarshal frame: %w", err)
+		return Frame{}, protocolError{fmt.Errorf("workerproc: unmarshal frame: %w", err)}
 	}
 	return f, nil
 }
@@ -215,15 +223,22 @@ func (r *rightsReader) collect(oob []byte) {
 
 func (r *rightsReader) fail(err error) {
 	if r.err == nil {
-		r.err = err
+		r.err = protocolError{err}
 	}
 }
 
+// marshalBody encodes without HTML escaping. Frames are never HTML, and
+// escaping grows '<', '>' and '&' sixfold: a peer-influenced payload could
+// otherwise be pushed past its frame cap. That covers a json.RawMessage
+// payload too, which json.Marshal would escape again.
 func marshalBody(f Frame, maxBytes int) ([]byte, error) {
-	body, err := json.Marshal(f)
-	if err != nil {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(f); err != nil {
 		return nil, fmt.Errorf("workerproc: marshal frame: %w", err)
 	}
+	body := bytes.TrimSuffix(buf.Bytes(), []byte("\n"))
 	if len(body) > maxBytes {
 		return nil, fmt.Errorf("workerproc: frame body %d bytes exceeds cap %d", len(body), maxBytes)
 	}

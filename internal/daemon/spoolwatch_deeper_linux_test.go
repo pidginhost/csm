@@ -240,16 +240,17 @@ func TestSpoolWatcherHandleSpoolEventMIMEParseErrorFailOpen(t *testing.T) {
 	cfg.EmailAV.FailMode = "open"
 
 	// Open a real tempfile to use as the event fd (defer will close it).
-	tmpFd, err := unix.Open(dir, unix.O_RDONLY|unix.O_DIRECTORY, 0)
+	tmpFd, err := unix.Open(bodyPath, unix.O_RDONLY|unix.O_CLOEXEC, 0)
 	if err != nil {
-		t.Skipf("open dir: %v", err)
+		t.Fatalf("open body: %v", err)
 	}
 
 	sw := &SpoolWatcher{
-		cfg:      cfg,
-		alertCh:  ch,
-		stopCh:   make(chan struct{}),
-		fdClosed: 1, // skip real close in writeResponse path
+		extractor: inProcessExtractor{},
+		cfg:       cfg,
+		alertCh:   ch,
+		stopCh:    make(chan struct{}),
+		fdClosed:  1, // skip real close in writeResponse path
 	}
 
 	evt := spoolEvent{

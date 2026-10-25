@@ -115,7 +115,7 @@ func TestSpoolWatcherCreateAndStop(t *testing.T) {
 		}
 	})
 
-	sw, err := daemon.NewSpoolWatcher(cfg, ch, nil, nil, nil)
+	sw, err := daemon.NewSpoolWatcher(cfg, ch, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("SpoolWatcher unavailable on integration host: %v", err)
 	}

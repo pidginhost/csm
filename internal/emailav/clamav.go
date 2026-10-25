@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"os"
 	"strings"
 	"time"
 )
@@ -32,15 +31,12 @@ func (s *ClamdScanner) Available() bool {
 	return true
 }
 
-// Scan sends the file at path to clamd via INSTREAM and returns the verdict.
-func (s *ClamdScanner) Scan(path string) (Verdict, error) {
-	// #nosec G304 -- path is mail queue file path from mail scanner walk.
-	f, err := os.Open(path)
-	if err != nil {
-		return Verdict{}, fmt.Errorf("opening file: %w", err)
+// Scan streams the part to clamd via INSTREAM and returns the verdict.
+func (s *ClamdScanner) Scan(part Part) (Verdict, error) {
+	if part.Size <= 0 {
+		return Verdict{}, fmt.Errorf("invalid part size: %d", part.Size)
 	}
-	defer f.Close()
-
+	f := io.NewSectionReader(part.File, 0, part.Size)
 	conn, err := net.DialTimeout("unix", s.socketPath, 5*time.Second)
 	if err != nil {
 		return Verdict{}, fmt.Errorf("connecting to clamd: %w", err)
@@ -61,8 +57,10 @@ func (s *ClamdScanner) Scan(path string) (Verdict, error) {
 	// Stream file content in chunks
 	buf := make([]byte, 8192)
 	lenBuf := make([]byte, 4)
+	var sent int64
 	for {
 		n, readErr := f.Read(buf)
+		sent += int64(n)
 		if n > 0 {
 			// #nosec G115 -- n is bounded by len(buf)=8192; fits in uint32.
 			binary.BigEndian.PutUint32(lenBuf, uint32(n))
@@ -76,6 +74,9 @@ func (s *ClamdScanner) Scan(path string) (Verdict, error) {
 			}
 		}
 		if readErr == io.EOF {
+			if sent != part.Size {
+				return Verdict{}, fmt.Errorf("reading part: got %d of %d bytes: %w", sent, part.Size, io.ErrUnexpectedEOF)
+			}
 			break
 		}
 		if readErr != nil {

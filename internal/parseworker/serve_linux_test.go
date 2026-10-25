@@ -197,17 +197,22 @@ func TestServeListZipRequiresOneDescriptor(t *testing.T) {
 	if reply, fds := roundTrip(t, a, listZipRequest(t), []*os.File{zf}); reply.Error != "" || len(fds) != 1 {
 		t.Fatalf("loop did not continue: reply %+v fds %d", reply, len(fds))
 	}
-	// Two descriptors exceed the frame limit: the worker drops the
-	// connection rather than guess where the next frame starts.
-	if err := workerproc.SendFrame(a, listZipRequest(t), []*os.File{zf, zf}, Limits.MaxFrameBytes); err != nil {
+	// Two descriptors fit the worker's frame limit (extract_message takes
+	// two), so list_zip refuses them with an Error reply and the loop goes on.
+	if reply, fds := roundTrip(t, a, listZipRequest(t), []*os.File{zf, zf}); reply.Error == "" || len(fds) != 0 {
+		t.Fatalf("two descriptors: reply %+v fds %d", reply, len(fds))
+	}
+	// Three exceed it: the worker drops the connection rather than guess
+	// where the next frame starts.
+	if err := workerproc.SendFrame(a, listZipRequest(t), []*os.File{zf, zf, zf}, Limits.MaxFrameBytes); err != nil {
 		t.Fatal(err)
 	}
 	select {
 	case err := <-served:
 		if err == nil {
-			t.Fatal("Serve accepted two descriptors")
+			t.Fatal("Serve accepted three descriptors")
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("Serve kept running after a frame with two descriptors")
+		t.Fatal("Serve kept running after a frame with three descriptors")
 	}
 }

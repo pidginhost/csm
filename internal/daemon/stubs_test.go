@@ -10,7 +10,7 @@ import (
 // --- SpoolWatcher stub ------------------------------------------------
 
 func TestNewSpoolWatcherReturnsError(t *testing.T) {
-	_, err := NewSpoolWatcher(nil, nil, nil, nil, nil)
+	_, err := NewSpoolWatcher(nil, nil, nil, nil, nil, nil, nil)
 	if err == nil {
 		t.Error("expected error on non-linux")
 	}

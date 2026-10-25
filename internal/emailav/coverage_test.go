@@ -9,11 +9,14 @@ import (
 
 // --- ClamdScanner error paths ------------------------------------------
 
-func TestClamdScannerScanMissingFile(t *testing.T) {
-	s := NewClamdScanner("/var/run/nonexistent.sock")
-	_, err := s.Scan("/nonexistent/file")
-	if err == nil {
-		t.Fatal("Scan on missing file should error")
+func TestClamdScannerScanUnreadablePart(t *testing.T) {
+	sock, cleanup := mockClamd(t, "stream: OK\n")
+	defer cleanup()
+	s := NewClamdScanner(sock)
+	p := partFile(t, "hello")
+	_ = p.File.Close()
+	if _, err := s.Scan(p); err == nil {
+		t.Fatal("Scan of an unreadable part should error, not report clean")
 	}
 }
 
@@ -25,7 +28,7 @@ func TestClamdScannerScanConnectFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := NewClamdScanner(filepath.Join(dir, "no-such.sock"))
-	_, err := s.Scan(path)
+	_, err := s.Scan(openPart(t, path))
 	if err == nil {
 		t.Fatal("Scan with missing clamd socket should error")
 	}

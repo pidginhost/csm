@@ -1214,6 +1214,33 @@ its error matches `workerproc.ErrWorkerFailed` with its text unchanged. Three
 failures in a row pause spawning for 60 seconds, then one trial request is
 let through. Each supervisor publishes a `requests` queue-health row.
 
+`workerproc.FailureReason` classifies counted failures as `timeout`,
+`protocol`, `crash`, `oom`, or `spawn`, including through wrapped errors.
+Malformed frames and rejected descriptors are protocol failures; a broken
+socket is a crash unless the process reports an OOM kill. The daemon cannot
+read a unit worker's kill from the unit's own cgroup: by the time it sees the
+worker die, systemd has removed that cgroup and its counters. On cgroup
+v2 each supervisor uses its own slice, and the slice's `memory.events`,
+which counts its children's kills and outlives them, is compared with its
+value at start. Before that snapshot, startup waits for any previous unit's
+cgroup to disappear, bounded by `StartTimeout`: a reaped `systemd-run` client
+alone does not prove its service has exited. Standalone CLI scans include
+their process ID in the prefix to keep their slices distinct.
+On v1 that counter is not hierarchical, so an eventfd on
+`memory.oom_control` reports the kill as it happens; OOM and removal
+notifications are counted together even when they arrive in separate reads,
+and a single notification with the directory gone remains undecided until the
+watch closes after the client's exit. Diagnostic text
+and underlying errors remain unchanged. A failed start matches `ErrSpawn`,
+not `ErrWorkerFailed`.
+
+`Config.OnFailure` receives each counted failure while the supervisor lock
+is held. The callback must return promptly and must not call back into the
+supervisor. `Stats.Kills` counts these failures by reason, including failed
+starts, and returns an independent snapshot. Cancellation, stopped or
+breaker refusals, and local descriptor exhaustion before the round trip
+do not reach the hook or these counters.
+
 Some errors are not worker failures and never count toward the breaker:
 
 - caller cancellation, including during launch; a canceled trial restarts
@@ -1224,6 +1251,13 @@ Some errors are not worker failures and never count toward the breaker:
   descriptor limit, and that must not switch a worker off;
 - PHP parser panics reported in a valid reply, which count as lost requests
   but do not replace the worker.
+
+`Config.BreakOnSpawnOnly` narrows the breaker to failed starts. The mail
+parse workers set it: a refused extraction delivers mail unscanned under
+`fail_mode: open`, so crafted mail that kills workers must not open the
+breaker for unrelated messages. Each message then costs at most one spawn.
+Every successful start resets the failed-start count, even if that worker
+then fails on its input or the caller cancels the request.
 
 A known limit: when the daemon is at its descriptor limit, the kernel drops
 descriptors a reply carries. That looks the same as a worker sending too
@@ -1274,9 +1308,14 @@ or usage already over the cap fail the start. Process RSS polling cannot
 replace this: it misses memfd pages and other processes in the unit.
 
 A watchdog reads the cgroup counters every 500 ms and kills a worker over its
-cap, or whose usage cannot be read. A worker over three quarters of its cap
-after a request is retired. Units also retire at three quarters of their
-lifetime cap. The supervisor checks retirement before reusing an idle
+cap, or whose usage cannot be read. It skips a tick when the daemon itself
+runs out of descriptors (EMFILE or ENFILE). Memory kills are identified by
+the watchdog or the unit's cgroup OOM counter; a missing or unreadable
+counter alone is not evidence of an OOM kill.
+
+A worker over three quarters of its cap after a request is retired. Units
+also retire at three quarters of their lifetime cap. The supervisor checks
+retirement before reusing an idle
 worker, as well as after a request, so expired workers get no new input.
 Kill closes the socket at once and asks systemd
 to kill the unit by name; it never signals a PID and never blocks. The daemon
@@ -1296,6 +1335,34 @@ reports. A malformed reply kills the worker and matches
 itself incomplete, without counting as lost work. A worker can still leave
 names out; validating the reply does not verify the archive. Name
 classification stays in `internal/checks`.
+
+`workerproc.Pool` holds a fixed number of supervisors, one per slot, and
+`Call` names the slot. The mail extractor (`parseworker.Extractor`, op
+`extract_message`) sizes its pool from `email_av.scan_concurrency` and names
+units `csm-parse-worker-mail<slot>-<generation>`. The worker writes each
+non-empty attachment to a memfd sealed against writes, growth and shrinkage.
+A reply carries at most 200 parts. Names, content types and archive names are
+cut to 255 bytes, the partial reason to 512, and From, Subject and each of at
+most 100 recipients to 998.
+
+The mail extraction API accepts open spool header and body descriptors.
+Spool event descriptors are close-on-exec so worker launch commands cannot
+inherit queued messages.
+Its reply must be one UTF-8 JSON object with a `parts` field, which may be
+null for an empty result. Each part must have a readable, sealed descriptor
+of the claimed size. Individual sizes and their total must fit the request's
+limits without integer overflow. Invalid replies discard all parts and kill
+the worker with reason `protocol`. The spool watcher extracts every message
+through it: each scan goroutine owns one worker slot, because parts are
+charged to the memory cgroup of the worker that wrote them. A failed
+extraction becomes a partial result naming the failure, never an error.
+Watcher replacement waits for the previous scan goroutines to finish before
+reusing their slots. On shutdown, queued spool events release their
+descriptors without starting extractions. The daemon waits for active scans
+and watcher restarts to finish before stopping or clearing the parse pools.
+If a panic unwinds the daemon before shutdown is signalled, cleanup skips
+that wait so the process can exit. Extractor lookup and removal share the
+watcher lifecycle lock because a replacement may still be starting.
 
 Unit tests use temporary proc and cgroup trees, never the host's. The kernel
 tests in `internal/workerproc/unit_kernel_test.go` run real units as root on
@@ -1362,6 +1429,16 @@ rule metadata on every match (`yaraipc.Match.Meta` /
 backends produce the same verdict shape. Non-string metadata (ints,
 floats, bytes) is deliberately dropped at the worker boundary; add a
 typed value struct here only if a future consumer actually needs one.
+
+Mail parts are scanned from open descriptors using positional reads. The
+claimed size must be positive and fully readable; a short read is an engine
+error, never a clean result. Clamd streams that exact range with INSTREAM.
+The YARA worker receives a separate read-only open, so its file offset does
+not affect other scanners. Descriptor scans do not apply archive-name skips.
+They require compiled rules and an explicit `matches` array in the reply,
+including an empty array for clean results. Missing or malformed results and
+unexpected reply descriptors fail the scan. Other YARA scan operations keep
+their existing wire format.
 
 Testing:
 

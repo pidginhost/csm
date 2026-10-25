@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/pidginhost/csm/internal/zipdir"
 )
@@ -25,6 +26,11 @@ type ExtractedPart struct {
 	Filename    string
 	ContentType string
 	Size        int64
+	// File holds the part's bytes. Its offset is unspecified: read it with
+	// io.NewSectionReader(File, 0, Size).
+	File *os.File
+	// TempPath names the file when the default sink staged it on disk, and
+	// is empty for any other sink.
 	TempPath    string
 	Nested      bool
 	ArchiveName string
@@ -69,7 +75,19 @@ type Limits struct {
 	// attachments are not staged in a world-writable directory where
 	// another local uid can race the scanner via symlink swaps.
 	TempDir string
+	// PartSink creates the file each part is written to. Nil stages parts
+	// with os.CreateTemp in TempDir. The parser owns any returned file, even
+	// on error; a custom sink remains responsible for removing named files.
+	PartSink func(prefix string) (*os.File, error)
+	// MaxParts caps how many parts are staged; 0 means no cap. Each staged
+	// part holds an open file, so a process with a descriptor limit needs it.
+	MaxParts int
 }
+
+// MaxParts caps the parts one message stages. Each holds an open file
+// until the scan ends, so the cap keeps a message of thousands of tiny
+// attachments from exhausting the process's descriptors.
+const MaxParts = 200
 
 // DefaultLimits returns the default extraction limits.
 func DefaultLimits() Limits {
@@ -78,19 +96,63 @@ func DefaultLimits() Limits {
 		MaxArchiveDepth:   1,
 		MaxArchiveFiles:   50,
 		MaxExtractionSize: 100 * 1024 * 1024,
+		MaxParts:          MaxParts,
+	}
+}
+
+// Close closes every part's file and removes the ones the default sink
+// staged on disk. Repeated calls do nothing.
+func (r *ExtractionResult) Close() {
+	for i := range r.Parts {
+		p := &r.Parts[i]
+		if p.File != nil {
+			_ = p.File.Close()
+			p.File = nil
+		}
+		if p.TempPath != "" {
+			_ = os.Remove(p.TempPath)
+			p.TempPath = ""
+		}
 	}
 }
 
 // ParseSpoolMessage parses an Exim spool message (-H and -D files) and
-// extracts attachments to a temp directory. Caller must remove the temp
-// files in result.Parts[*].TempPath when done.
+// extracts its attachments. The caller closes the result.
 func ParseSpoolMessage(headerPath, bodyPath string, limits Limits) (*ExtractionResult, error) {
-	envelope, hdrs, err := parseEximHeader(headerPath)
-	if errors.Is(err, errHeaderOverBudget) {
-		return &ExtractionResult{Partial: true, PartialReason: "message header exceeds parser memory budget"}, nil
-	}
+	// #nosec G304 -- path is Exim -H file path from mail queue scanner walk.
+	header, err := os.Open(headerPath)
 	if err != nil {
 		return nil, fmt.Errorf("parsing header file: %w", err)
+	}
+	defer header.Close()
+	// #nosec G304 -- path is mail queue file path from scanner walk.
+	body, err := os.Open(bodyPath)
+	if err != nil {
+		return nil, fmt.Errorf("reading body file: %w", err)
+	}
+	defer body.Close()
+	return parseSpool(header, body, filepath.Base(bodyPath), limits)
+}
+
+// ParseSpoolFiles is ParseSpoolMessage over open -H and -D files. Both are
+// read with positional reads only: a descriptor's offset may be shared with
+// whoever opened it. The -D marker line is named after the message ID on
+// the first line of -H.
+func ParseSpoolFiles(header, body *os.File, limits Limits) (*ExtractionResult, error) {
+	return parseSpool(header, body, "", limits)
+}
+
+func parseSpool(header, body io.ReaderAt, bodyMarker string, limits Limits) (*ExtractionResult, error) {
+	headerData, err := io.ReadAll(io.NewSectionReader(header, 0, maxHeaderFileBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("parsing header file: %w", err)
+	}
+	if len(headerData) > maxHeaderFileBytes {
+		return &ExtractionResult{Partial: true, PartialReason: "message header exceeds parser memory budget"}, nil
+	}
+	envelope, hdrs := parseEximHeaderData(headerData)
+	if bodyMarker == "" {
+		bodyMarker = bodyMarkerFromHeader(headerData)
 	}
 
 	result := &ExtractionResult{
@@ -103,7 +165,7 @@ func ParseSpoolMessage(headerPath, bodyPath string, limits Limits) (*ExtractionR
 	result.Direction = detectDirection(hdrs)
 
 	maxBodyBytes := bodyReadLimit(limits)
-	bodyData, partial, err := readBodyFileLimited(bodyPath, maxBodyBytes)
+	bodyData, partial, err := readBodyLimited(body, maxBodyBytes)
 	if err != nil {
 		return nil, fmt.Errorf("reading body file: %w", err)
 	}
@@ -116,7 +178,7 @@ func ParseSpoolMessage(headerPath, bodyPath string, limits Limits) (*ExtractionR
 	// Exim -D files open with a "<message-id>-D" marker line; strip it before
 	// any body decode so single-part base64/QP payloads are not corrupted by
 	// the marker bytes.
-	bodyData = stripSpoolBodyMarker(bodyData, bodyPath)
+	bodyData = stripSpoolBodyMarker(bodyData, bodyMarker)
 
 	ct := hdrs.Get("Content-Type")
 	if ct == "" {
@@ -160,12 +222,14 @@ func ParseSpoolMessage(headerPath, bodyPath string, limits Limits) (*ExtractionR
 					markPartial(result, "total extraction size exceeds limit")
 					break
 				}
-				tmpFile, tmpErr := os.CreateTemp(limits.TempDir, "csm-emailav-single-*")
+				if partsFull(limits, result) {
+					break
+				}
+				tmpFile, tempPath, tmpErr := limits.createPart("csm-emailav-single-*")
 				if tmpErr == nil {
 					n, writeErr := tmpFile.Write(decoded)
-					closeErr := tmpFile.Close()
-					if writeErr != nil || closeErr != nil || n != len(decoded) {
-						_ = os.Remove(tmpFile.Name())
+					if writeErr != nil || n != len(decoded) {
+						discardPart(tmpFile, tempPath)
 						markPartial(result, "could not stage single-part attachment for scanning")
 					} else {
 						totalSize += int64(n)
@@ -181,14 +245,15 @@ func ParseSpoolMessage(headerPath, bodyPath string, limits Limits) (*ExtractionR
 						if rawFilename == "" {
 							rawFilename = "attachment"
 						}
-						filename := sanitizeAttachmentName(rawFilename)
+						filename := SanitizeAttachmentName(rawFilename)
 						result.Parts = append(result.Parts, ExtractedPart{
 							Filename:    filename,
 							ContentType: mediaType,
 							Size:        int64(len(decoded)),
-							TempPath:    tmpFile.Name(),
+							File:        tmpFile,
+							TempPath:    tempPath,
 						})
-						expandArchive(tmpFile.Name(), rawFilename, filename, limits, result, &totalSize, 0)
+						expandArchive(tmpFile, int64(n), rawFilename, filename, limits, result, &totalSize, 0)
 					}
 				} else {
 					markPartial(result, "could not stage single-part attachment for scanning")
@@ -233,22 +298,12 @@ func readFileLimited(path string, limit int64) ([]byte, error) {
 	return data, nil
 }
 
-// readBodyFileLimited opens the spool body file once and reads up to
-// limit+1 bytes. Returns (data, partial=true, nil) when the file
-// exceeds the limit so the caller can mark the result as partial.
-// Folding the size check into the same file descriptor closes the
-// TOCTOU window: previously the Stat-then-Open sequence let an
-// attacker swap the file for a larger one between the two syscalls
-// and bypass the limit.
-func readBodyFileLimited(path string, limit int64) ([]byte, bool, error) {
-	// #nosec G304 -- path is mail queue file path from scanner walk.
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, false, err
-	}
-	defer f.Close()
-
-	data, err := io.ReadAll(io.LimitReader(f, limit+1))
+// readBodyLimited reads up to limit+1 bytes of the spool body from offset
+// 0. Returns (data, partial=true, nil) when the body exceeds the limit so
+// the caller can mark the result as partial. Reading the size from the
+// same read closes the TOCTOU window a Stat-then-Open sequence had.
+func readBodyLimited(r io.ReaderAt, limit int64) ([]byte, bool, error) {
+	data, err := io.ReadAll(io.NewSectionReader(r, 0, limit+1))
 	if err != nil {
 		return nil, false, err
 	}
@@ -279,31 +334,22 @@ func decodeSinglePart(r io.Reader, limit int64) ([]byte, bool, error) {
 // header size limit keeps real mail far below it.
 const maxHeaderFileBytes = 16 << 20
 
-var errHeaderOverBudget = errors.New("message header exceeds parser memory budget")
-
 type envelope struct {
 	from    string
 	to      []string
 	subject string
 }
 
-// parseEximHeader reads an Exim -H file and extracts envelope info and headers.
-func parseEximHeader(path string) (*envelope, textproto.MIMEHeader, error) {
-	// #nosec G304 -- path is Exim -H file path from mail queue scanner walk.
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, nil, err
+// bodyMarkerFromHeader names the -D marker line after the message ID Exim
+// writes on the first line of -H ("<id>-H"), or "" when that line is not
+// one.
+func bodyMarkerFromHeader(headerData []byte) string {
+	first, _, _ := bytes.Cut(headerData, []byte("\n"))
+	id, ok := strings.CutSuffix(string(bytes.TrimRight(first, "\r")), "-H")
+	if !ok || id == "" {
+		return ""
 	}
-	defer f.Close()
-	data, err := io.ReadAll(io.LimitReader(f, maxHeaderFileBytes+1))
-	if err != nil {
-		return nil, nil, err
-	}
-	if len(data) > maxHeaderFileBytes {
-		return nil, nil, errHeaderOverBudget
-	}
-	env, hdrs := parseEximHeaderData(data)
-	return env, hdrs, nil
+	return id + "-D"
 }
 
 // parseEximHeaderData parses the bytes of an Exim -H spool file into the
@@ -466,8 +512,10 @@ func isEximFlagByte(b byte) bool {
 // the -D file's base name, so matching on that is exact: bodies that lack a
 // marker (or callers that pass a raw body) are left untouched. Without this,
 // single-part base64/QP payloads decode the marker bytes as content and fail.
-func stripSpoolBodyMarker(bodyData []byte, bodyPath string) []byte {
-	marker := filepath.Base(bodyPath)
+func stripSpoolBodyMarker(bodyData []byte, marker string) []byte {
+	if marker == "" {
+		return bodyData
+	}
 	nl := bytes.IndexByte(bodyData, '\n')
 	var first []byte
 	if nl < 0 {
@@ -587,7 +635,7 @@ func extractMultipartNested(r io.Reader, boundary string, limits Limits, result 
 			filename = "unnamed_attachment"
 		}
 		rawFilename := filename
-		filename = sanitizeAttachmentName(filename)
+		filename = SanitizeAttachmentName(filename)
 
 		readers, readErr := transferReaders(cte, part, result)
 		if readErr != nil {
@@ -597,8 +645,10 @@ func extractMultipartNested(r io.Reader, boundary string, limits Limits, result 
 			// Decode the part body based on Content-Transfer-Encoding
 			bodyReader := &readErrRecorder{r: reader}
 
-			// Write to temp file with size limit
-			tmpFile, err := os.CreateTemp(limits.TempDir, "csm-emailav-*")
+			if partsFull(limits, result) {
+				return nil
+			}
+			tmpFile, tempPath, err := limits.createPart("csm-emailav-*")
 			if err != nil {
 				markPartial(result, "could not stage attachment for scanning")
 				return fmt.Errorf("creating temp file: %w", err)
@@ -606,9 +656,8 @@ func extractMultipartNested(r io.Reader, boundary string, limits Limits, result 
 
 			limited := io.LimitReader(bodyReader, limits.MaxAttachmentSize+1)
 			n, err := io.Copy(tmpFile, limited)
-			closeErr := tmpFile.Close()
-			if closeErr != nil || (err != nil && err != bodyReader.err) {
-				_ = os.Remove(tmpFile.Name())
+			if err != nil && err != bodyReader.err {
+				discardPart(tmpFile, tempPath)
 				markPartial(result, "could not stage attachment for scanning")
 				continue // fail-open: skip this part
 			}
@@ -617,13 +666,13 @@ func extractMultipartNested(r io.Reader, boundary string, limits Limits, result 
 				// must be scanned even though the rest of the part is lost.
 				markPartial(result, fmt.Sprintf("could not decode attachment %q: %v", filename, bodyReader.err))
 				if n == 0 {
-					_ = os.Remove(tmpFile.Name())
+					discardPart(tmpFile, tempPath)
 					continue
 				}
 			}
 
 			if n > limits.MaxAttachmentSize {
-				_ = os.Remove(tmpFile.Name())
+				discardPart(tmpFile, tempPath)
 				result.Partial = true
 				result.PartialReason = fmt.Sprintf("attachment %q exceeds max size %d", filename, limits.MaxAttachmentSize)
 				continue
@@ -631,7 +680,7 @@ func extractMultipartNested(r io.Reader, boundary string, limits Limits, result 
 
 			*totalSize += n
 			if *totalSize > limits.MaxExtractionSize {
-				_ = os.Remove(tmpFile.Name())
+				discardPart(tmpFile, tempPath)
 				result.Partial = true
 				result.PartialReason = fmt.Sprintf("total extraction size exceeds %d bytes", limits.MaxExtractionSize)
 				return nil // stop extracting
@@ -641,10 +690,11 @@ func extractMultipartNested(r io.Reader, boundary string, limits Limits, result 
 				Filename:    filename,
 				ContentType: mediaType,
 				Size:        n,
-				TempPath:    tmpFile.Name(),
+				File:        tmpFile,
+				TempPath:    tempPath,
 			})
 
-			expandArchive(tmpFile.Name(), rawFilename, filename, limits, result, totalSize, depth)
+			expandArchive(tmpFile, n, rawFilename, filename, limits, result, totalSize, depth)
 		}
 	}
 }
@@ -652,8 +702,8 @@ func extractMultipartNested(r io.Reader, boundary string, limits Limits, result 
 // expandArchive unpacks an archive found at depth (0 for an attachment, 1 for
 // a member of an attached archive) while max_archive_depth allows it. Past the
 // limit its members were never read, so the message is not fully scanned.
-func expandArchive(path, rawName, safeName string, limits Limits, result *ExtractionResult, totalSize *int64, depth int) {
-	kind := archiveKindForAttachmentName(rawName, safeName)
+func expandArchive(f *os.File, size int64, rawName, safeName string, limits Limits, result *ExtractionResult, totalSize *int64, depth int) {
+	kind := archiveKindForAttachmentName(rawName)
 	if kind == "" {
 		return
 	}
@@ -663,9 +713,9 @@ func expandArchive(path, rawName, safeName string, limits Limits, result *Extrac
 	}
 	switch kind {
 	case "zip":
-		extractZIP(path, safeName, limits, result, totalSize, depth+1)
+		extractZIP(f, size, safeName, limits, result, totalSize, depth+1)
 	case "tar.gz":
-		extractTarGz(path, safeName, limits, result, totalSize, depth+1)
+		extractTarGz(f, size, safeName, limits, result, totalSize, depth+1)
 	}
 }
 
@@ -741,31 +791,21 @@ func markArchiveUnopened(result *ExtractionResult, archiveName string, err error
 // encrypted. APPNOTE.TXT section 4.4.4.
 const zipEncryptedFlag = 0x1
 
-func extractZIP(zipPath, archiveName string, limits Limits, result *ExtractionResult, totalSize *int64, depth int) {
+// extractZIP reads the archive from its staged part file, which stays open
+// and owned by the result.
+func extractZIP(part *os.File, size int64, archiveName string, limits Limits, result *ExtractionResult, totalSize *int64, depth int) {
 	// An archive that cannot be opened was not scanned inside: a mail client
 	// may still repair and open it, so it must never count as clean.
-	// #nosec G304 -- zipPath is CreateTemp-produced path from the caller.
-	f, err := os.Open(zipPath)
-	if err != nil {
-		markArchiveUnopened(result, archiveName, err)
-		return
-	}
-	defer f.Close()
-
-	info, err := f.Stat()
-	if err != nil {
-		markArchiveUnopened(result, archiveName, err)
-		return
-	}
+	f := io.NewSectionReader(part, 0, size)
 	// Validate the listing itself before zip.NewReader allocates per entry;
 	// the sender controls both the directory and the end record's counts.
 	walkCap := archiveWalkCap(limits)
-	dir, err := zipdir.Read(f, info.Size(), maxZipDirectoryBytes)
+	dir, err := zipdir.Read(f, size, maxZipDirectoryBytes)
 	if err != nil {
 		markArchiveUnopened(result, archiveName, err)
 		return
 	}
-	if err = validateZIPDirectory(f, info.Size(), dir, walkCap); err != nil {
+	if err = validateZIPDirectory(f, size, dir, walkCap); err != nil {
 		if errors.Is(err, errArchiveWalk) {
 			markArchiveWalkCap(result, archiveName, walkCap)
 		} else {
@@ -773,7 +813,7 @@ func extractZIP(zipPath, archiveName string, limits Limits, result *ExtractionRe
 		}
 		return
 	}
-	zr, err := zip.NewReader(f, info.Size())
+	zr, err := zip.NewReader(f, size)
 	if err != nil {
 		markArchiveUnopened(result, archiveName, err)
 		return
@@ -786,7 +826,7 @@ func extractZIP(zipPath, archiveName string, limits Limits, result *ExtractionRe
 			markArchiveWalkCap(result, archiveName, walkCap)
 			return
 		}
-		safeName := sanitizeAttachmentName(zf.Name)
+		safeName := SanitizeAttachmentName(zf.Name)
 
 		// Bit 0 of the general purpose flag marks an encrypted entry. Both
 		// encryption schemes in the wild set it, which matters because they
@@ -833,7 +873,11 @@ func extractZIP(zipPath, archiveName string, limits Limits, result *ExtractionRe
 			continue
 		}
 
-		tmpFile, err := os.CreateTemp(limits.TempDir, "csm-emailav-zip-*")
+		if partsFull(limits, result) {
+			rc.Close()
+			return
+		}
+		tmpFile, tempPath, err := limits.createPart("csm-emailav-zip-*")
 		if err != nil {
 			rc.Close()
 			markPartial(result, fmt.Sprintf("could not stage file %q in archive %q for scanning: %v", safeName, archiveName, err))
@@ -846,26 +890,22 @@ func extractZIP(zipPath, archiveName string, limits Limits, result *ExtractionRe
 		budget := &budgetReader{r: rc, spent: &inflated, limit: limits.MaxExtractionSize - before}
 		limited := io.LimitReader(budget, limits.MaxAttachmentSize+1)
 		n, err := io.Copy(tmpFile, limited)
-		closeErr := tmpFile.Close()
 		rc.Close()
 		*totalSize = before + max(compressed, inflated)
 
 		if errors.Is(err, errExtractionBudget) || *totalSize > limits.MaxExtractionSize {
-			_ = os.Remove(tmpFile.Name())
+			discardPart(tmpFile, tempPath)
 			markExtractionBudget(result, limits)
 			return
 		}
 
-		if err != nil || closeErr != nil || n > limits.MaxAttachmentSize {
-			_ = os.Remove(tmpFile.Name())
-			switch {
-			case n > limits.MaxAttachmentSize:
+		if err != nil || n > limits.MaxAttachmentSize {
+			discardPart(tmpFile, tempPath)
+			if n > limits.MaxAttachmentSize {
 				result.Partial = true
 				result.PartialReason = fmt.Sprintf("file %q in archive exceeds max size", safeName)
-			case err != nil:
+			} else {
 				markPartial(result, fmt.Sprintf("could not decompress file %q in archive %q: %v", safeName, archiveName, err))
-			default:
-				markPartial(result, fmt.Sprintf("could not stage file %q in archive %q for scanning: %v", safeName, archiveName, closeErr))
 			}
 			continue
 		}
@@ -874,25 +914,20 @@ func extractZIP(zipPath, archiveName string, limits Limits, result *ExtractionRe
 			Filename:    safeName,
 			ContentType: "application/octet-stream",
 			Size:        n,
-			TempPath:    tmpFile.Name(),
+			File:        tmpFile,
+			TempPath:    tempPath,
 			Nested:      true,
 			ArchiveName: archiveName,
 		})
 		extracted++
-		expandArchive(tmpFile.Name(), zf.Name, safeName, limits, result, totalSize, depth)
+		expandArchive(tmpFile, n, zf.Name, safeName, limits, result, totalSize, depth)
 	}
 }
 
-func extractTarGz(tgzPath, archiveName string, limits Limits, result *ExtractionResult, totalSize *int64, depth int) {
-	// #nosec G304 -- tgzPath is CreateTemp-produced path from the caller.
-	f, err := os.Open(tgzPath)
-	if err != nil {
-		markArchiveUnopened(result, archiveName, err)
-		return
-	}
-	defer f.Close()
-
-	compressed := bufio.NewReader(f)
+// extractTarGz reads the archive from its staged part file, which stays
+// open and owned by the result.
+func extractTarGz(part *os.File, size int64, archiveName string, limits Limits, result *ExtractionResult, totalSize *int64, depth int) {
+	compressed := bufio.NewReader(io.NewSectionReader(part, 0, size))
 	gr, err := gzip.NewReader(compressed)
 	if err != nil {
 		markArchiveUnopened(result, archiveName, err)
@@ -940,7 +975,7 @@ func extractTarGz(tgzPath, archiveName string, limits Limits, result *Extraction
 		}
 		if hdr.Typeflag != tar.TypeReg {
 			if walk.remaining > 0 && hdr.Typeflag != tar.TypeXGlobalHeader {
-				markPartial(result, fmt.Sprintf("unsupported file %q in archive %q contains unread data", sanitizeAttachmentName(hdr.Name), archiveName))
+				markPartial(result, fmt.Sprintf("unsupported file %q in archive %q contains unread data", SanitizeAttachmentName(hdr.Name), archiveName))
 			}
 			continue
 		}
@@ -949,9 +984,12 @@ func extractTarGz(tgzPath, archiveName string, limits Limits, result *Extraction
 			result.PartialReason = fmt.Sprintf("archive %q exceeds max files %d", archiveName, limits.MaxArchiveFiles)
 			return
 		}
-		safeName := sanitizeAttachmentName(hdr.Name)
+		safeName := SanitizeAttachmentName(hdr.Name)
 
-		tmpFile, err := os.CreateTemp(limits.TempDir, "csm-emailav-tgz-*")
+		if partsFull(limits, result) {
+			return
+		}
+		tmpFile, tempPath, err := limits.createPart("csm-emailav-tgz-*")
 		if err != nil {
 			markPartial(result, fmt.Sprintf("could not stage file %q in archive %q for scanning: %v", safeName, archiveName, err))
 			continue
@@ -965,7 +1003,6 @@ func extractTarGz(tgzPath, archiveName string, limits Limits, result *Extraction
 		logical := &budgetReader{r: tr, spent: &logicalN, limit: limits.MaxExtractionSize - before}
 		limited := io.LimitReader(logical, limits.MaxAttachmentSize+1)
 		n, err := io.Copy(tmpFile, limited)
-		closeErr := tmpFile.Close()
 		*totalSize += max(logicalN-(*totalSize-before), 0)
 		if *totalSize > limits.MaxExtractionSize {
 			budget.err = errExtractionBudget
@@ -975,20 +1012,17 @@ func extractTarGz(tgzPath, archiveName string, limits Limits, result *Extraction
 		}
 
 		if errors.Is(err, errExtractionBudget) {
-			_ = os.Remove(tmpFile.Name())
+			discardPart(tmpFile, tempPath)
 			markExtractionBudget(result, limits)
 			return
 		}
-		if err != nil || closeErr != nil || n > limits.MaxAttachmentSize {
-			_ = os.Remove(tmpFile.Name())
-			switch {
-			case n > limits.MaxAttachmentSize:
+		if err != nil || n > limits.MaxAttachmentSize {
+			discardPart(tmpFile, tempPath)
+			if n > limits.MaxAttachmentSize {
 				result.Partial = true
 				result.PartialReason = fmt.Sprintf("file %q in archive exceeds max size", safeName)
-			case err != nil:
+			} else {
 				markPartial(result, fmt.Sprintf("could not read file %q from archive %q: %v", safeName, archiveName, err))
-			default:
-				markPartial(result, fmt.Sprintf("could not stage file %q in archive %q for scanning: %v", safeName, archiveName, closeErr))
 			}
 			continue
 		}
@@ -997,19 +1031,34 @@ func extractTarGz(tgzPath, archiveName string, limits Limits, result *Extraction
 			Filename:    safeName,
 			ContentType: "application/octet-stream",
 			Size:        n,
-			TempPath:    tmpFile.Name(),
+			File:        tmpFile,
+			TempPath:    tempPath,
 			Nested:      true,
 			ArchiveName: archiveName,
 		})
 		extracted++
-		expandArchive(tmpFile.Name(), hdr.Name, safeName, limits, result, totalSize, depth)
+		expandArchive(tmpFile, n, hdr.Name, safeName, limits, result, totalSize, depth)
 	}
 }
 
-// sanitizeAttachmentName trims an attachment or archive-entry name to
-// its base name and truncates at control characters before the name
-// reaches logs, alerts, or JSON responses.
-func sanitizeAttachmentName(name string) string {
+// maxAttachmentNameBytes caps a name that reaches logs, alerts and the parse
+// worker's replies.
+const maxAttachmentNameBytes = 255
+
+// SanitizeAttachmentName trims an attachment or archive-entry name to its
+// base name, truncates at control characters, replaces invalid UTF-8 and
+// caps it at 255 bytes before the name reaches logs, alerts, or JSON
+// responses.
+func SanitizeAttachmentName(name string) string {
+	name = strings.TrimSpace(TruncateUTF8(strings.ToValidUTF8(attachmentBaseName(name), "\uFFFD"), maxAttachmentNameBytes))
+	switch name {
+	case "", ".", "..", "/":
+		return "_unnamed_"
+	}
+	return name
+}
+
+func attachmentBaseName(name string) string {
 	name = strings.ReplaceAll(name, "\\", "/")
 	name = filepath.Base(name)
 	// Truncate at the first control character so a crafted entry
@@ -1018,16 +1067,60 @@ func sanitizeAttachmentName(name string) string {
 	if i := strings.IndexFunc(name, unicode.IsControl); i >= 0 {
 		name = name[:i]
 	}
-	name = strings.TrimSpace(name)
-	switch name {
-	case "", ".", "..", "/":
-		return "_unnamed_"
-	}
 	return name
 }
 
-func archiveKindForAttachmentName(rawName, safeName string) string {
-	for _, name := range []string{safeName, archiveDetectionName(rawName)} {
+// TruncateUTF8 cuts s to at most max bytes without splitting a rune.
+func TruncateUTF8(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	cut := max
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
+}
+
+// createPart opens the file for one staged part. tempPath is set only when
+// the default sink put it on disk.
+func (l Limits) createPart(prefix string) (f *os.File, tempPath string, err error) {
+	if l.PartSink != nil {
+		f, err = l.PartSink(prefix)
+		if err != nil && f != nil {
+			discardPart(f, "")
+			f = nil
+		}
+		return f, "", err
+	}
+	f, err = os.CreateTemp(l.TempDir, prefix)
+	if err != nil {
+		return nil, "", err
+	}
+	return f, f.Name(), nil
+}
+
+func discardPart(f *os.File, tempPath string) {
+	_ = f.Close()
+	if tempPath != "" {
+		_ = os.Remove(tempPath)
+	}
+}
+
+// partsFull reports, and records as partial, a message that already staged
+// MaxParts parts.
+func partsFull(limits Limits, result *ExtractionResult) bool {
+	if limits.MaxParts <= 0 || len(result.Parts) < limits.MaxParts {
+		return false
+	}
+	markPartial(result, fmt.Sprintf("message has more than %d attachments", limits.MaxParts))
+	return true
+}
+
+func archiveKindForAttachmentName(rawName string) string {
+	// The display cap can remove a real extension or leave a false one at
+	// the cut. Classify the full name with the same control-byte handling.
+	for _, name := range []string{strings.TrimSpace(attachmentBaseName(rawName)), archiveDetectionName(rawName)} {
 		lower := strings.ToLower(name)
 		switch {
 		case strings.HasSuffix(lower, ".zip"):

@@ -626,6 +626,19 @@ email_av:
   # Both encryption schemes are covered:
   # legacy ZipCrypto and WinZip AES. Blocking such mail outright is an Exim
   # policy decision and is not something CSM does for you.
+  # Attachments are unpacked in locked-down worker processes, one per
+  # scan_concurrency slot, started on first use. When a worker cannot finish,
+  # the message counts as not fully scanned and follows fail_mode:
+  #   worker deadline reached     "parse worker timed out"
+  #   worker memory cap reached   "parse worker ran out of memory"
+  #   worker crashed or exited    "parse worker crashed"
+  #   reply failed validation     "parse worker reply rejected"
+  #   worker unit cannot start    "parse isolation unavailable"
+  #   unit keeps failing to start "parse worker failing repeatedly"
+  # The first four raise email_av_parse_worker_failed, at most once a minute;
+  # a rejected reply also raises a Critical email_av_parse_worker_rejected.
+  # The last two raise a Critical email_av_isolation_unavailable. Each
+  # Critical finding is raised at most once an hour.
 
 # --- Email Protection ---
 email_protection:

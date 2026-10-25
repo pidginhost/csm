@@ -27,11 +27,7 @@ func TestExtractedZIPMemberYARAScanPreservesOffsetZero(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseSpoolMessage: %v", err)
 	}
-	defer func() {
-		for _, part := range result.Parts {
-			_ = os.Remove(part.TempPath)
-		}
-	}()
+	defer result.Close()
 
 	scanner, err := csmyara.NewScanner(filepath.Join("..", "..", "configs"))
 	if err != nil {

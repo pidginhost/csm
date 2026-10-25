@@ -1165,6 +1165,18 @@
       "queue": "php_taint"
     },
     {
+      "id": "internal/workerproc/unit_oom_linux.go::memoryCgroup.watchOOMv1::done::channel::1",
+      "path": "internal/workerproc/unit_oom_linux.go",
+      "owner": "memoryCgroup.watchOOMv1",
+      "target": "done",
+      "kind": "channel",
+      "source": "make(chan struct{})",
+      "capacity": "0",
+      "class": "lifecycle",
+      "rationale": "Closed when the OOM watch goroutine ends, with the cgroup or at stop; OOMKilled waits on it, bounded.",
+      "queue": "php_taint"
+    },
+    {
       "id": "internal/workerproc/supervisor.go::*Supervisor.roundTripLocked::abandon::channel::1",
       "path": "internal/workerproc/supervisor.go",
       "owner": "*Supervisor.roundTripLocked",
@@ -3975,6 +3987,69 @@
           "path": "internal/parseworker/lister.go",
           "symbol": "Lister.proc",
           "shape": "*workerproc.Supervisor"
+        }
+      ]
+    },
+    {
+      "id": "email_extract",
+      "rows": [
+        "email_extract.requests"
+      ],
+      "bounds": "One extraction RPC per slot; each spool scan goroutine owns one slot, so no caller waits on another. Parts remain charged to the writing worker's memory cgroup until their memfds are closed after scanning.",
+      "publication": [
+        {
+          "package": "github.com/pidginhost/csm/internal/parseworker",
+          "name": "TestExtractQueuePublication",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestParseWorkersBuildMailExtractor",
+          "mode": "portable"
+        }
+      ],
+      "lifecycle": [
+        {
+          "package": "github.com/pidginhost/csm/internal/workerproc",
+          "name": "TestPoolSlotFailureIsolated",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/parseworker",
+          "name": "TestExtractRejectsMalformedReply",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/parseworker",
+          "name": "TestExtractWorkerHangTimesOut",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/parseworker",
+          "name": "TestExtractWorkerCrash",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestStopParseWorkersWaitsForSpoolDrain",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestSpoolExtractShutdownDrainsWithoutParsing",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestSpoolExtractWatcherRestartStillDrains",
+          "mode": "portable"
+        }
+      ],
+      "anchors": [
+        {
+          "path": "internal/parseworker/extractor.go",
+          "symbol": "Extractor.pool",
+          "shape": "*workerproc.Pool"
         }
       ]
     },

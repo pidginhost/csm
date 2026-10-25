@@ -39,11 +39,7 @@ func parseSpoolWithCleanup(t *testing.T, contentType, body string) *ExtractionRe
 	if err != nil {
 		t.Fatalf("ParseSpoolMessage: %v", err)
 	}
-	t.Cleanup(func() {
-		for _, p := range result.Parts {
-			_ = os.Remove(p.TempPath)
-		}
-	})
+	t.Cleanup(result.Close)
 	return result
 }
 
@@ -128,11 +124,7 @@ func TestSinglePartBase64IgnoresCharactersOutsideAlphabet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseSpoolMessage: %v", err)
 	}
-	t.Cleanup(func() {
-		for _, p := range result.Parts {
-			_ = os.Remove(p.TempPath)
-		}
-	})
+	t.Cleanup(result.Close)
 	requireSingleStagedPart(t, result, transferPayload())
 }
 
@@ -200,16 +192,12 @@ func TestSinglePartBase64DecodeFailureNamesDecoding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseSpoolMessage: %v", err)
 	}
+	t.Cleanup(result.Close)
 	if !result.Partial {
 		t.Fatal("Partial = false, want true for data after padding")
 	}
 	if !strings.Contains(result.PartialReason, "could not decode single-part attachment") {
 		t.Fatalf("PartialReason = %q, want a decode failure", result.PartialReason)
 	}
-	t.Cleanup(func() {
-		for _, p := range result.Parts {
-			_ = os.Remove(p.TempPath)
-		}
-	})
 	requireStagedPrefix(t, result, append([]byte("ab"), transferPayload()...), []byte("ab"))
 }

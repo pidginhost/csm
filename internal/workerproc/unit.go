@@ -19,7 +19,8 @@ import (
 
 // UnitConfig describes workers run as locked-down transient systemd units.
 type UnitConfig struct {
-	// Prefix names the units: Prefix + "-" + a generation number.
+	// Prefix names the units: Prefix + "-" + a generation number. Each
+	// supervisor needs a distinct prefix because it owns the slice's count.
 	Prefix  string
 	Command string
 	Args    []string
@@ -42,6 +43,7 @@ type UnitConfig struct {
 // unitHooks are the system calls the launcher makes, replaced in tests.
 type unitHooks struct {
 	systemdRun           string
+	configureSlice       func(ctx context.Context, name string) error
 	mainPID              func(ctx context.Context, p *unitProcess) (int, error)
 	killUnit             func(ctx context.Context, p *unitProcess) error
 	procRoot, cgroupRoot string
@@ -50,6 +52,9 @@ type unitHooks struct {
 
 // unitKillTimeout bounds one systemctl kill.
 const unitKillTimeout = 5 * time.Second
+
+// oomWatchGrace bounds how long a dead worker's OOM watch may still report.
+const oomWatchGrace = time.Second
 
 // unitGeneration numbers units. Seeded with the start time so a restarted
 // daemon does not reuse the name of a unit still being torn down.
@@ -94,9 +99,20 @@ func lockdownProperties(cfg UnitConfig) []string {
 		"LimitNOFILE=256",
 		"LimitCORE=0",
 		"LimitFSIZE=" + strconv.FormatUint(cfg.FileSizeLimit, 10),
-		// Matches csm.service, so a worker never outweighs the daemon.
+		// The containing slice gets the same weight before launch.
 		"CPUWeight=50",
+		// Prefer a hostile parser as the victim under host memory pressure.
+		"OOMScoreAdjust=1000",
+		"Slice=" + unitSlice(cfg.Prefix),
 	}
+}
+
+// unitSlice is the slice a prefix's units run in: one per prefix, directly
+// under system.slice, so workers share system.slice's resources. On cgroup
+// v2, work is admitted only once earlier units are gone; memory.events then
+// counts the current unit's OOM kills and outlives its own cgroup.
+func unitSlice(prefix string) string {
+	return "system-" + strings.ReplaceAll(prefix, "-", `\x2d`) + ".slice"
 }
 
 // UnitLauncher starts each worker as its own transient unit through
@@ -110,6 +126,9 @@ func UnitLauncher(cfg UnitConfig) Launcher {
 	}
 	if h.mainPID == nil {
 		h.mainPID = systemctlMainPID
+	}
+	if h.configureSlice == nil {
+		h.configureSlice = systemctlConfigureSlice
 	}
 	if h.killUnit == nil {
 		h.killUnit = systemctlKill
@@ -136,12 +155,19 @@ func UnitLauncher(cfg UnitConfig) Launcher {
 }
 
 func startUnit(ctx context.Context, cfg UnitConfig, h *unitHooks) (*unitProcess, error) {
+	startCtx, cancel := context.WithTimeout(ctx, cfg.StartTimeout)
+	defer cancel()
 	path := h.systemdRun
 	if path == "" {
 		var err error
 		if path, err = exec.LookPath("systemd-run"); err != nil {
 			return nil, err
 		}
+	}
+	// CPU weights compare siblings. A weight on the only service in a
+	// default-weight slice would let it outweigh csm.service instead.
+	if err := h.configureSlice(startCtx, unitSlice(cfg.Prefix)); err != nil {
+		return nil, fmt.Errorf("configure worker slice: %w", err)
 	}
 	conn, childFile, err := workerSocket()
 	if err != nil {
@@ -177,8 +203,6 @@ func startUnit(ctx context.Context, cfg UnitConfig, h *unitHooks) (*unitProcess,
 		close(p.done)
 	}()
 
-	startCtx, cancel := context.WithTimeout(ctx, cfg.StartTimeout)
-	defer cancel()
 	if err := p.start(startCtx, cfg, h); err != nil {
 		_ = p.Kill()
 		_ = conn.Close()
@@ -226,6 +250,36 @@ func (p *unitProcess) start(ctx context.Context, cfg UnitConfig, h *unitHooks) e
 	if capErr := cg.capSwap(cfg.MemoryLimit, h.procRoot); capErr != nil {
 		return fmt.Errorf("cannot cap worker memory: %w", capErr)
 	}
+	p.cg = cg
+	if cg.v2 {
+		// The unit's own counters vanish with its cgroup before the daemon
+		// sees the worker die; the slice's hierarchical ones stay.
+		if dir := filepath.Dir(cg.dir); filepath.Base(dir) == unitSlice(cfg.Prefix) {
+			// Reaping systemd-run is not proof that its service is gone:
+			// killing the unit is asynchronous and can fail or time out.
+			if waitErr := waitForUnitSlice(ctx, dir, filepath.Base(cg.dir), h.pollInterval); waitErr != nil {
+				return fmt.Errorf("wait for worker slice: %w", waitErr)
+			}
+			slice := memoryCgroup{dir: dir, v2: true}
+			if n, serr := slice.oomKills(); serr == nil {
+				p.slice, p.sliceOOMKills = &slice, n
+			}
+		}
+		if p.slice == nil {
+			p.logf("unit %s: memory kills will read as crashes: no slice counter", p.unit)
+		}
+	} else if w, werr := cg.watchOOM(); werr != nil {
+		p.logf("unit %s: memory kills will read as crashes: %v", p.unit, werr)
+	} else {
+		p.oom = w
+		go func() {
+			// The watch ends with the cgroup; this bounds it if the kernel
+			// never reports the removal.
+			<-p.done
+			time.Sleep(oomWatchGrace)
+			w.stop()
+		}()
+	}
 	p.usage = func() (uint64, error) { return cg.usage(h.procRoot) }
 	used, err := p.usage()
 	if err != nil {
@@ -248,6 +302,42 @@ func (p *unitProcess) start(ctx context.Context, cfg UnitConfig, h *unitHooks) e
 	return nil
 }
 
+func waitForUnitSlice(ctx context.Context, dir, unit string, interval time.Duration) error {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			return err
+		}
+		found, shared := false, false
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			if entry.Name() == unit {
+				found = true
+			} else {
+				shared = true
+			}
+		}
+		if !found {
+			return errors.New("worker cgroup disappeared")
+		}
+		if !shared {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
 // watch kills the worker once its memory and swap pass the cap, in case the
 // kernel's own limit did not take effect. It fails closed: usage that cannot
 // be read while the worker is alive kills it too.
@@ -264,6 +354,11 @@ func (p *unitProcess) watch(interval time.Duration) {
 		if err == nil && used <= p.limit {
 			continue
 		}
+		if err != nil && localExhaustion(err) {
+			// The daemon is out of descriptors, not the worker out of
+			// line; the kernel cap was verified at start.
+			continue
+		}
 		select {
 		case <-p.done:
 			return // Gone already: its counters vanished with it.
@@ -273,6 +368,7 @@ func (p *unitProcess) watch(interval time.Duration) {
 			p.logf("unit %s: cannot read memory, killing: %v", p.unit, err)
 		} else {
 			p.logf("unit %s: memory %d over cap %d, killing", p.unit, used, p.limit)
+			p.memoryKill.Store(true)
 		}
 		_ = p.Kill()
 		return
@@ -295,6 +391,16 @@ type unitProcess struct {
 	limit uint64
 	// retireAt is three quarters into RuntimeMaxSec; zero means no cap.
 	retireAt time.Time
+	// cg is the unit's memory cgroup; memoryKill records the watchdog
+	// killing the worker for memory.
+	cg         memoryCgroup
+	memoryKill atomic.Bool
+	// oom follows the kernel's OOM kills in cg on cgroup v1; slice and
+	// sliceOOMKills, the count at start, read them on v2. Without either a
+	// memory kill reads as a crash.
+	oom           *oomWatch
+	slice         *memoryCgroup
+	sliceOOMKills uint64
 }
 
 func (p *unitProcess) Conn() *net.UnixConn   { return p.conn }
@@ -335,6 +441,26 @@ func (p *unitProcess) Kill() error {
 	return nil
 }
 
+// OOMKilled reports a memory kill: by the watchdog, or by the kernel as the
+// v2 slice recorded it or the v1 OOM watch saw it. The unit's own counters
+// are a fallback while its cgroup still exists. On v1 it waits briefly for
+// the watch's verdict, since the removal notification may still be pending.
+func (p *unitProcess) OOMKilled() bool {
+	if p.memoryKill.Load() {
+		return true
+	}
+	if p.slice != nil {
+		if n, err := p.slice.oomKills(); err == nil && n > p.sliceOOMKills {
+			return true
+		}
+	}
+	if p.oom != nil && p.oom.wait(oomWatchGrace) {
+		return true
+	}
+	n, err := p.cg.oomKills()
+	return err == nil && n > 0
+}
+
 func (p *unitProcess) logf(format string, args ...any) {
 	if p.log != nil {
 		p.log(format, args...)
@@ -347,6 +473,14 @@ func systemctlMainPID(ctx context.Context, p *unitProcess) (int, error) {
 		return 0, err
 	}
 	return strconv.Atoi(strings.TrimSpace(string(out)))
+}
+
+func systemctlConfigureSlice(ctx context.Context, name string) error {
+	out, err := exec.CommandContext(ctx, "systemctl", "set-property", "--runtime", name, "CPUWeight=50").CombinedOutput() // #nosec G204 -- the slice name comes from the caller's unit prefix.
+	if err != nil {
+		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 func systemctlKill(ctx context.Context, p *unitProcess) error {

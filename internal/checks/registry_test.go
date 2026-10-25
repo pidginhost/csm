@@ -81,6 +81,7 @@ func TestJSKeyloggerChecksHaveExpectedRegistryVisibility(t *testing.T) {
 //     sendAlert(sev, "name", ...)
 //     sendAlertWithPath(sev, "name", ...)
 //     emitFinding("name", ...)            // first arg
+//     emitLimited("name", ...)            // first arg
 //     emitReloadFinding(sev, "name", ...)
 //   - Multi-return classifiers: `return alert.Warning, "name", ...`
 //
@@ -103,6 +104,7 @@ func TestCheckRegistryCoversProductionCode(t *testing.T) {
 		regexp.MustCompile(`\bcheck\s*:?=\s*"([A-Za-z_][A-Za-z0-9_]*)"`),
 		regexp.MustCompile(`\bsendAlert(?:WithPath)?\(\s*[^,]+?,\s*"([A-Za-z_][A-Za-z0-9_]*)"`),
 		regexp.MustCompile(`\bemitFinding\(\s*"([A-Za-z_][A-Za-z0-9_]*)"`),
+		regexp.MustCompile(`\bemitLimited\(\s*"([A-Za-z_][A-Za-z0-9_]*)"`),
 		regexp.MustCompile(`\bemitReloadFinding\(\s*[^,]+?,\s*"([A-Za-z_][A-Za-z0-9_]*)"`),
 		regexp.MustCompile(`\breturn\s+alert\.(?:Warning|High|Critical)\s*,\s*"([A-Za-z_][A-Za-z0-9_]*)"`),
 	}

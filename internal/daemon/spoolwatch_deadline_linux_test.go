@@ -313,7 +313,7 @@ func TestSpoolDeadlineShutdownDrainsGuardedEventsOnce(t *testing.T) {
 	}
 	sw.Stop()
 	sw.wg.Add(1)
-	go sw.scanWorker()
+	go sw.scanWorker(0)
 	sw.drainAndClose()
 	got := responses()
 	if len(got) != len(fds) {
@@ -360,7 +360,7 @@ type deadlineBarrierScanner struct {
 
 func (s deadlineBarrierScanner) Name() string    { return "deadline-test" }
 func (s deadlineBarrierScanner) Available() bool { return true }
-func (s deadlineBarrierScanner) Scan(string) (emailav.Verdict, error) {
+func (s deadlineBarrierScanner) Scan(emailav.Part) (emailav.Verdict, error) {
 	s.started <- struct{}{}
 	<-s.release
 	return emailav.Verdict{Infected: true, Signature: "test-infected"}, nil

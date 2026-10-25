@@ -1,13 +1,19 @@
 package yaraipc
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"sync"
 	"syscall"
 	"time"
+	"unicode/utf8"
+
+	"github.com/pidginhost/csm/internal/workerproc"
 )
 
 // ErrWorkerClosed means the worker hung up mid-request.
@@ -72,17 +78,23 @@ func (c *Client) dropLocked() error {
 // retried once because the server may intentionally close idle
 // connections after their message budget is spent.
 func (c *Client) roundTrip(req Frame) (Frame, error) {
+	return c.roundTripFDs(req, nil)
+}
+
+// roundTripFDs is roundTrip with descriptors attached. A retry resends the
+// same descriptors, which the caller still owns.
+func (c *Client) roundTripFDs(req Frame, fds []*os.File) (Frame, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	resp, err := c.roundTripLocked(req)
+	resp, err := c.roundTripLocked(req, fds)
 	if err == nil || !isRetryableClosedConn(err) {
 		return resp, err
 	}
-	return c.roundTripLocked(req)
+	return c.roundTripLocked(req, fds)
 }
 
-func (c *Client) roundTripLocked(req Frame) (Frame, error) {
+func (c *Client) roundTripLocked(req Frame, fds []*os.File) (Frame, error) {
 	conn, err := c.ensureConnLocked()
 	if err != nil {
 		return Frame{}, err
@@ -90,11 +102,23 @@ func (c *Client) roundTripLocked(req Frame) (Frame, error) {
 	if c.timeout > 0 {
 		_ = conn.SetDeadline(time.Now().Add(c.timeout))
 	}
-	if werr := WriteFrame(conn, req); werr != nil {
+	if werr := writeRequest(conn, req, fds); werr != nil {
 		_ = c.dropLocked()
 		return Frame{}, fmt.Errorf("yaraipc: write: %w", werr)
 	}
-	resp, rerr := ReadFrame(conn)
+	var resp Frame
+	var rerr error
+	if req.Op == OpScanFD {
+		uc, ok := conn.(*net.UnixConn)
+		if !ok {
+			return Frame{}, errors.New("yaraipc: descriptors need a Unix socket")
+		}
+		var wf workerproc.Frame
+		wf, _, rerr = workerproc.ReceiveFrame(uc, workerproc.Limits{MaxFrameBytes: MaxFrameBytes})
+		resp = Frame{Op: wf.Op, Payload: wf.Payload, Error: wf.Error}
+	} else {
+		resp, rerr = ReadFrame(conn)
+	}
 	if rerr != nil {
 		_ = c.dropLocked()
 		if errors.Is(rerr, io.EOF) {
@@ -106,6 +130,85 @@ func (c *Client) roundTripLocked(req Frame) (Frame, error) {
 		return Frame{}, fmt.Errorf("yaraipc: worker: %s", resp.Error)
 	}
 	return resp, nil
+}
+
+func writeRequest(conn net.Conn, req Frame, fds []*os.File) error {
+	if len(fds) == 0 {
+		return WriteFrame(conn, req)
+	}
+	uc, ok := conn.(*net.UnixConn)
+	if !ok {
+		return errors.New("yaraipc: descriptors need a Unix socket")
+	}
+	return workerproc.SendFrame(uc, workerproc.Frame{Op: req.Op, Payload: req.Payload}, fds, MaxFrameBytes)
+}
+
+// ScanFD is the daemon-side shim for OpScanFD: the worker scans the first
+// size bytes of f, read through the descriptor. The worker gets its own
+// read-only open of f, so it cannot rewrite what the other engines scan.
+func (c *Client) ScanFD(f *os.File, size int64) (ScanResult, error) {
+	if size <= 0 || size > int64(int(^uint(0)>>1)) {
+		return ScanResult{}, fmt.Errorf("yaraipc: invalid descriptor scan size: %d", size)
+	}
+	// #nosec G115 -- size was checked against the native int range above.
+	req, err := EncodePayload(OpScanFD, ScanFDArgs{MaxBytes: int(size)})
+	if err != nil {
+		return ScanResult{}, err
+	}
+	ro, err := reopenReadOnly(f)
+	if err != nil {
+		return ScanResult{}, fmt.Errorf("yaraipc: reopen part read-only: %w", err)
+	}
+	defer func() { _ = ro.Close() }()
+	resp, err := c.roundTripFDs(req, []*os.File{ro})
+	if err != nil {
+		return ScanResult{}, err
+	}
+	return decodeScanFDResult(resp)
+}
+
+func reopenReadOnly(f *os.File) (*os.File, error) {
+	st, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !st.Mode().IsRegular() {
+		return nil, errors.New("descriptor is not a regular file")
+	}
+	rc, err := f.SyscallConn()
+	if err != nil {
+		return nil, err
+	}
+	var ro *os.File
+	var openErr error
+	// Control keeps the source open across the reopen even if the scan's
+	// owner closes it after a timeout. Fd neither pins it nor preserves flags.
+	if err := rc.Control(func(fd uintptr) {
+		// #nosec G304 -- reopens a descriptor this process holds open inside Control.
+		ro, openErr = os.OpenFile(fmt.Sprintf("/proc/self/fd/%d", fd), os.O_RDONLY, 0)
+	}); err != nil {
+		return nil, err
+	}
+	return ro, openErr
+}
+
+func decodeScanFDResult(resp Frame) (ScanResult, error) {
+	if resp.Op != "" || !utf8.Valid(resp.Payload) {
+		return ScanResult{}, errors.New("yaraipc: invalid scan_fd reply")
+	}
+	var res scanFDResult
+	dec := json.NewDecoder(bytes.NewReader(resp.Payload))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&res); err != nil {
+		return ScanResult{}, fmt.Errorf("yaraipc: decode scan_fd reply: %w", err)
+	}
+	if res.Matches == nil {
+		return ScanResult{}, errors.New("yaraipc: scan_fd reply has no matches array")
+	}
+	if err := dec.Decode(new(json.RawMessage)); err != io.EOF {
+		return ScanResult{}, errors.New("yaraipc: scan_fd reply has trailing data")
+	}
+	return ScanResult{Matches: res.Matches}, nil
 }
 
 func isRetryableClosedConn(err error) bool {

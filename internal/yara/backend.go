@@ -4,6 +4,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"sync/atomic"
 
 	"github.com/pidginhost/csm/internal/contenttype"
@@ -48,6 +50,36 @@ type FileScanResult struct {
 // reopen the file without turning a worker or read failure into a clean scan.
 type CheckedFileScanner interface {
 	ScanFileChecked(path string, maxBytes int) (FileScanResult, error)
+}
+
+// CheckedFDScanner scans an open file the backend reads itself, such as a
+// mail part memfd passed to the YARA worker.
+type CheckedFDScanner interface {
+	ScanFDChecked(f *os.File, size int64) ([]Match, error)
+}
+
+// ScanFileDescriptorChecked scans the first size bytes of f, failing closed:
+// a backend that cannot take the descriptor returns an error, never a clean
+// result. A backend without the capability (in-process YARA) gets the bytes.
+// No name goes with them, so the archive-by-name skip does not apply.
+func ScanFileDescriptorChecked(b Backend, f *os.File, size int64) ([]Match, error) {
+	if size <= 0 {
+		return nil, fmt.Errorf("yara: invalid part size: %d", size)
+	}
+	if b == nil {
+		return nil, errors.New("yara: backend unavailable")
+	}
+	if fs, ok := b.(CheckedFDScanner); ok {
+		return fs.ScanFDChecked(f, size)
+	}
+	data, err := io.ReadAll(io.NewSectionReader(f, 0, size))
+	if err != nil {
+		return nil, fmt.Errorf("yara: read part: %w", err)
+	}
+	if int64(len(data)) != size {
+		return nil, fmt.Errorf("yara: read part: got %d of %d bytes: %w", len(data), size, io.ErrUnexpectedEOF)
+	}
+	return ScanBytesChecked(b, "", data)
 }
 
 // ScanBytesChecked scans data, read from the file called name, via b,

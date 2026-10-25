@@ -75,5 +75,7 @@
   {"Package":"github.com/pidginhost/csm/scripts/testgate","Name":"TestInventoryTracksBuildTagsAndNewPackages"},
   {"Package":"github.com/pidginhost/csm/scripts/testgate","Name":"TestAdditionalTagsSelectNewPackagesAndArbitraryTestNames"},
   {"Package":"github.com/pidginhost/csm/internal/webui","Name":"TestAPIStatusCarriesHealthSnapshotContract"},
-  {"Package":"github.com/pidginhost/csm/internal/webui","Name":"TestApiStatus_SecurityPostureWarnsOnDegradedSnapshot"}
+  {"Package":"github.com/pidginhost/csm/internal/webui","Name":"TestApiStatus_SecurityPostureWarnsOnDegradedSnapshot"},
+  {"Package":"github.com/pidginhost/csm/internal/daemon","Name":"TestSpoolExtractWorkerHangIsPartial"},
+  {"Package":"github.com/pidginhost/csm/internal/parseworker","Name":"TestExtractRejectsMalformedReply"}
 ]

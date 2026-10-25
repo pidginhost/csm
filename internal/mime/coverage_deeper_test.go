@@ -41,11 +41,7 @@ func TestExtractMultipartNestedMultipart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseSpoolMessage: %v", err)
 	}
-	defer func() {
-		for _, p := range result.Parts {
-			_ = os.Remove(p.TempPath)
-		}
-	}()
+	defer result.Close()
 
 	if len(result.Parts) != 1 {
 		t.Fatalf("Parts = %d, want 1 (nested text parts should be skipped)", len(result.Parts))
@@ -78,11 +74,7 @@ func TestExtractMultipartCapsMimeNestingDepth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseSpoolMessage: %v", err)
 	}
-	defer func() {
-		for _, p := range result.Parts {
-			_ = os.Remove(p.TempPath)
-		}
-	}()
+	defer result.Close()
 
 	if !result.Partial {
 		t.Fatal("64-deep MIME nesting must mark the extraction partial")
@@ -109,11 +101,7 @@ func TestExtractMultipartAllowsTypicalNesting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseSpoolMessage: %v", err)
 	}
-	defer func() {
-		for _, p := range result.Parts {
-			_ = os.Remove(p.TempPath)
-		}
-	}()
+	defer result.Close()
 
 	if result.Partial {
 		t.Fatalf("typical 4-level nesting must not be partial: %s", result.PartialReason)
@@ -144,11 +132,7 @@ func TestExtractMultipartUnnamedNonTextAttachment(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseSpoolMessage: %v", err)
 	}
-	defer func() {
-		for _, p := range result.Parts {
-			_ = os.Remove(p.TempPath)
-		}
-	}()
+	defer result.Close()
 
 	if len(result.Parts) != 1 {
 		t.Fatalf("Parts = %d, want 1 (unnamed non-text should still be extracted)", len(result.Parts))
@@ -177,11 +161,7 @@ func TestExtractMultipartQuotedPrintableAttachment(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseSpoolMessage: %v", err)
 	}
-	defer func() {
-		for _, p := range result.Parts {
-			_ = os.Remove(p.TempPath)
-		}
-	}()
+	defer result.Close()
 
 	found := false
 	for _, p := range result.Parts {
@@ -229,11 +209,7 @@ func TestExtractMultipartTotalSizeExceeded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseSpoolMessage: %v", err)
 	}
-	defer func() {
-		for _, p := range result.Parts {
-			_ = os.Remove(p.TempPath)
-		}
-	}()
+	defer result.Close()
 
 	if !result.Partial {
 		t.Error("Partial should be true when total extraction size exceeded")
@@ -260,11 +236,7 @@ func TestExtractMultipartAttachmentExceedsMaxSize(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseSpoolMessage: %v", err)
 	}
-	defer func() {
-		for _, p := range result.Parts {
-			_ = os.Remove(p.TempPath)
-		}
-	}()
+	defer result.Close()
 
 	if !result.Partial {
 		t.Error("Partial should be true when attachment exceeds max size")
@@ -290,11 +262,7 @@ func TestExtractTgzExtension(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseSpoolMessage: %v", err)
 	}
-	defer func() {
-		for _, p := range result.Parts {
-			_ = os.Remove(p.TempPath)
-		}
-	}()
+	defer result.Close()
 
 	hasInner := false
 	for _, p := range result.Parts {
@@ -327,11 +295,7 @@ func TestExtractZIPInnerFileExceedsMaxSize(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseSpoolMessage: %v", err)
 	}
-	defer func() {
-		for _, p := range result.Parts {
-			_ = os.Remove(p.TempPath)
-		}
-	}()
+	defer result.Close()
 
 	if !result.Partial {
 		t.Error("Partial should be true when zip inner file exceeds max")
@@ -362,11 +326,7 @@ func TestExtractTarGzInnerFileExceedsMaxSizeSetsPartial(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseSpoolMessage: %v", err)
 	}
-	defer func() {
-		for _, p := range result.Parts {
-			_ = os.Remove(p.TempPath)
-		}
-	}()
+	defer result.Close()
 
 	if !result.Partial {
 		t.Error("Partial should be true when tar.gz inner file exceeds max")
@@ -401,11 +361,7 @@ func TestExtractTarGzTotalSizeExceeded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseSpoolMessage: %v", err)
 	}
-	defer func() {
-		for _, p := range result.Parts {
-			_ = os.Remove(p.TempPath)
-		}
-	}()
+	defer result.Close()
 
 	if !result.Partial || !strings.Contains(result.PartialReason, "total extraction size") {
 		t.Errorf("expected total extraction size partial, got Partial=%v reason=%q", result.Partial, result.PartialReason)
@@ -442,11 +398,7 @@ func TestExtractZIPSkipsDirectoryEntries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseSpoolMessage: %v", err)
 	}
-	defer func() {
-		for _, p := range result.Parts {
-			_ = os.Remove(p.TempPath)
-		}
-	}()
+	defer result.Close()
 
 	// Only the actual file should be extracted, not the directory entry.
 	nestedCount := 0
@@ -509,11 +461,7 @@ func TestExtractTarGzSkipsNonRegularFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseSpoolMessage: %v", err)
 	}
-	defer func() {
-		for _, p := range result.Parts {
-			_ = os.Remove(p.TempPath)
-		}
-	}()
+	defer result.Close()
 
 	nestedCount := 0
 	for _, p := range result.Parts {
@@ -573,11 +521,7 @@ func TestExtractZIPSanitizesEntryName(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ParseSpoolMessage: %v", err)
 			}
-			defer func() {
-				for _, p := range result.Parts {
-					_ = os.Remove(p.TempPath)
-				}
-			}()
+			defer result.Close()
 			var nested *ExtractedPart
 			for i := range result.Parts {
 				if result.Parts[i].Nested {
@@ -611,11 +555,7 @@ func TestExtractTarGzSanitizesEntryName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseSpoolMessage: %v", err)
 	}
-	defer func() {
-		for _, p := range result.Parts {
-			_ = os.Remove(p.TempPath)
-		}
-	}()
+	defer result.Close()
 
 	var nested *ExtractedPart
 	for i := range result.Parts {
@@ -648,11 +588,7 @@ func TestExtractMultipartSanitizesAttachmentFilenameAndArchiveName(t *testing.T)
 	if err != nil {
 		t.Fatalf("ParseSpoolMessage: %v", err)
 	}
-	defer func() {
-		for _, p := range result.Parts {
-			_ = os.Remove(p.TempPath)
-		}
-	}()
+	defer result.Close()
 
 	var outer, nested *ExtractedPart
 	for i := range result.Parts {
@@ -692,11 +628,7 @@ func TestExtractMultipartDetectsArchiveWithControlBeforeExtension(t *testing.T) 
 	if err != nil {
 		t.Fatalf("ParseSpoolMessage: %v", err)
 	}
-	defer func() {
-		for _, p := range result.Parts {
-			_ = os.Remove(p.TempPath)
-		}
-	}()
+	defer result.Close()
 
 	hasNested := false
 	for _, p := range result.Parts {
@@ -727,11 +659,7 @@ func TestExtractZIPDepthLimitPreventsNesting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseSpoolMessage: %v", err)
 	}
-	defer func() {
-		for _, p := range result.Parts {
-			_ = os.Remove(p.TempPath)
-		}
-	}()
+	defer result.Close()
 
 	// The outer .zip should be extracted, but nested.txt should NOT.
 	for _, p := range result.Parts {
@@ -800,11 +728,7 @@ func TestParseSinglePartAttachmentOverSizeLimit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseSpoolMessage: %v", err)
 	}
-	defer func() {
-		for _, p := range result.Parts {
-			_ = os.Remove(p.TempPath)
-		}
-	}()
+	defer result.Close()
 
 	if !result.Partial {
 		t.Error("single-part attachment over limit should set Partial=true")
@@ -837,11 +761,7 @@ func TestExtractMultipartFilenameFromContentDisposition(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseSpoolMessage: %v", err)
 	}
-	defer func() {
-		for _, p := range result.Parts {
-			_ = os.Remove(p.TempPath)
-		}
-	}()
+	defer result.Close()
 
 	found := false
 	for _, p := range result.Parts {

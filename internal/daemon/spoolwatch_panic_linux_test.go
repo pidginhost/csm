@@ -36,14 +36,15 @@ func TestSpoolScanWorkerSurvivesHandlerPanic(t *testing.T) {
 
 	alertCh := make(chan alert.Finding, 8)
 	sw := &SpoolWatcher{
-		cfg:     &config.Config{},
-		alertCh: alertCh,
-		scanCh:  make(chan spoolEvent, 4),
-		stopCh:  make(chan struct{}),
+		extractor: inProcessExtractor{},
+		cfg:       &config.Config{},
+		alertCh:   alertCh,
+		scanCh:    make(chan spoolEvent, 4),
+		stopCh:    make(chan struct{}),
 	}
 	sw.initQueueHealth()
 	sw.wg.Add(1)
-	go sw.scanWorker()
+	go sw.scanWorker(0)
 	for range 3 {
 		sw.scanCh <- spoolEvent{path: "/spool/bad-D", fd: -1, queueTicket: sw.scannerHealth.Begin(time.Now())}
 	}

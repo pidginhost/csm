@@ -13,9 +13,11 @@ import (
 )
 
 // SpoolWatcher is a no-op on non-Linux platforms.
-type SpoolWatcher struct{}
+type SpoolWatcher struct {
+	daemonStop <-chan struct{}
+}
 
-func NewSpoolWatcher(_ *config.Config, _ chan<- alert.Finding, _ *emailav.Orchestrator, _ *emailav.Quarantine, _ func(time.Time, string)) (*SpoolWatcher, error) {
+func NewSpoolWatcher(_ *config.Config, _ chan<- alert.Finding, _ *emailav.Orchestrator, _ *emailav.Quarantine, _ func(time.Time, string), _ mailExtractor, _ *findingLimiter) (*SpoolWatcher, error) {
 	return nil, fmt.Errorf("spool watcher requires Linux (fanotify)")
 }
 

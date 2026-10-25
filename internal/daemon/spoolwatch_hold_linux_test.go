@@ -52,6 +52,7 @@ func testHoldWatcher(t *testing.T) (*SpoolWatcher, chan alert.Finding) {
 	t.Helper()
 	alertCh := make(chan alert.Finding, 16)
 	sw := &SpoolWatcher{
+		extractor:      inProcessExtractor{},
 		cfg:            &config.Config{},
 		alertCh:        alertCh,
 		scanCh:         make(chan spoolEvent, 1),
@@ -313,7 +314,7 @@ func TestSlowScanDoesNotHoldMailPastBudget(t *testing.T) {
 	}
 
 	sw.wg.Add(1)
-	go sw.scanWorker()
+	go sw.scanWorker(0)
 	t.Cleanup(func() { close(sw.stopCh); sw.wg.Wait() })
 
 	start := time.Now()
