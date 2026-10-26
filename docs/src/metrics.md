@@ -232,11 +232,12 @@ curl -o goroutine.txt 'http://127.0.0.1:<port>/debug/pprof/goroutine?debug=2'
   can still quarantine). Sustained `queued` growth means scan
   capacity is short.
 - `csm_spool_source_waits_total{outcome}` (counter): mail opens
-  that found another message from the same sender being scanned.
+  whose sender was already using its share of the scan slots.
   `outcome` is `waited` (the message waited its turn without
   taking a scan slot) or `overflow` (too many messages from that
   sender were already waiting, so it was scanned at once without
-  waiting its turn). `overflow` growth raises an
+  waiting its turn). Overflow scans can use every scan slot.
+  `overflow` growth raises an
   `email_av_source_backlog` finding naming the sender, at most
   once a minute.
 - `csm_parse_worker_jobs_total{pool,outcome}` (counter): parse

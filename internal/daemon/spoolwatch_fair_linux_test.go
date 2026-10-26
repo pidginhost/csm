@@ -135,8 +135,42 @@ func waitCounter(t *testing.T, c *metrics.Counter, want float64) {
 	}
 }
 
-// One sender may scan on at most half the slots, so the others always keep
-// the rest. Its further messages wait their turn in arrival order.
+func TestSourceGateSlotLimits(t *testing.T) {
+	for _, tc := range []struct{ slots, want int }{
+		{1, 1}, {2, 1}, {3, 1}, {4, 2}, {5, 2}, {8, 4},
+	} {
+		t.Run(fmt.Sprintf("slots=%d", tc.slots), func(t *testing.T) {
+			var g sourceGate
+			g.setLimit(tc.slots)
+			for i := range tc.want {
+				if run, overflow := g.enter("sender", spoolEvent{}); !run || overflow {
+					t.Fatalf("scan %d: run=%v overflow=%v, want admitted", i, run, overflow)
+				}
+			}
+			if run, overflow := g.enter("sender", spoolEvent{path: "waiting"}); run || overflow {
+				t.Fatalf("extra scan: run=%v overflow=%v, want parked", run, overflow)
+			}
+			if next, more := g.leave("sender"); !more || next.path != "waiting" {
+				t.Fatalf("handoff = %+v, %v, want parked event", next, more)
+			}
+			for remaining := tc.want - 1; remaining >= 0; remaining-- {
+				if _, more := g.leave("sender"); more {
+					t.Fatal("handoff returned the parked event twice")
+				}
+				if remaining > 0 {
+					if scans := g.busy["sender"]; scans == nil || scans.running != remaining {
+						t.Fatalf("source = %+v, want %d running scans", scans, remaining)
+					}
+				} else if len(g.busy) != 0 {
+					t.Fatalf("finished source retained: %+v", g.busy)
+				}
+			}
+		})
+	}
+}
+
+// Below the overflow limit, one sender uses at most half the slots. Its
+// further messages wait their turn in arrival order.
 func TestSourceGateLimitsOneSource(t *testing.T) {
 	captureResponses(t)
 	waits := freshSourceWaits(t)
@@ -183,8 +217,6 @@ func TestSourceGateOtherSourceNotBlocked(t *testing.T) {
 	waitArrival(t, ex, "1aBcDe-SRCB00-XX")
 }
 
-// A flood from one sender beyond the wait cap is answered at once under
-// fail_mode. It is not capacity exhaustion, so it never starts the bypass.
 // A sender past its wait limit is still scanned: one sender key can stand
 // for a whole gateway, localhost or Exim's own bounces, so answering without
 // a scan would let a slow message open the door for everyone behind it.
@@ -196,11 +228,12 @@ func TestSourceGateOverflowStillScans(t *testing.T) {
 	dir := t.TempDir()
 	id := func(i int) string { return fmt.Sprintf("1aBcDe-FL%04d-XX", i) }
 	const total = 2 + maxSourceWaiting + 2
+	var events []spoolEvent
 	for i := range total {
 		buildSourceSpool(t, dir, id(i), "192.0.2.10")
 	}
 	for i := range total {
-		enqueue(t, sw, dir, id(i))
+		events = append(events, enqueue(t, sw, dir, id(i)))
 		switch {
 		case i < 2:
 			waitArrival(t, ex, id(i))
@@ -235,6 +268,8 @@ func TestSourceGateOverflowStillScans(t *testing.T) {
 	for range total {
 		ex.release <- struct{}{}
 	}
+	close(sw.stopCh)
+	sw.wg.Wait()
 	got := waitForResponses(t, responses, total, 10*time.Second)
 	if len(got) != total {
 		t.Fatalf("responses = %d, want all %d messages scanned and answered", len(got), total)
@@ -246,6 +281,75 @@ func TestSourceGateOverflowStillScans(t *testing.T) {
 	}
 	if _, order := ex.snapshot(); len(order) != total {
 		t.Fatalf("extractions = %d, want %d", len(order), total)
+	}
+	for _, evt := range events {
+		count := 0
+		for _, r := range got {
+			if int(r.fd) == evt.fd {
+				count++
+			}
+		}
+		if count != 1 {
+			t.Errorf("fd %d received %d responses, want one", evt.fd, count)
+		}
+		assertFDClosed(t, evt.fd, "scanned source event")
+	}
+	if len(sw.sources.busy) != 0 {
+		t.Fatalf("finished scans retained sources: %+v", sw.sources.busy)
+	}
+	if q := sw.scannerHealth.Snapshot(time.Now()); q.Depth != 0 || q.InFlight != 0 {
+		t.Fatalf("finished scans retained queue work: %+v", q)
+	}
+}
+
+// Completing an overflow scan must not release an admitted scan's claim or
+// take any parked work, even if the overflow handler panics.
+func TestSourceGateOverflowPreservesClaims(t *testing.T) {
+	for _, panics := range []bool{false, true} {
+		t.Run(fmt.Sprintf("panic=%v", panics), func(t *testing.T) {
+			responses := captureResponses(t)
+			sw, _ := extractWatcher("open", &recordingExtractor{size: 4})
+			sw.sources.setLimit(4)
+			const src = "ip:192.0.2.10"
+			for range 2 {
+				sw.sources.enter(src, spoolEvent{fd: -1})
+			}
+			for i := range maxSourceWaiting {
+				sw.sources.enter(src, spoolEvent{fd: -1, path: fmt.Sprintf("waiting-%d", i)})
+			}
+			original := spoolEventHandler
+			t.Cleanup(func() { spoolEventHandler = original })
+			calls := 0
+			spoolEventHandler = func(_ *SpoolWatcher, evt spoolEvent) {
+				calls++
+				if evt.slot != 2 || evt.source != src {
+					t.Errorf("overflow slot=%d source=%q, want slot 2 and %q", evt.slot, evt.source, src)
+				}
+				if panics {
+					panic("overflow scan failed")
+				}
+			}
+			dir := t.TempDir()
+			buildSourceSpool(t, dir, "1aBcDe-CLAIMS-XX", "192.0.2.10")
+			evt := bodyEvent(t, dir, "1aBcDe-CLAIMS-XX")
+			sw.handleFair(2, evt)
+			if calls != 1 {
+				t.Fatalf("handler calls=%d, want only the overflow scan", calls)
+			}
+			if got := responses(); len(got) != 1 || int(got[0].fd) != evt.fd || got[0].response != FAN_ALLOW {
+				t.Fatalf("responses=%+v, want one allow for overflow", got)
+			}
+			assertFDClosed(t, evt.fd, "completed overflow event")
+			scans := sw.sources.busy[src]
+			if scans == nil || scans.running != 2 || len(scans.waiting) != maxSourceWaiting {
+				t.Fatalf("source after overflow=%+v, want two claims and all waiters", scans)
+			}
+			for i, queued := range scans.waiting {
+				if queued.path != fmt.Sprintf("waiting-%d", i) {
+					t.Fatalf("waiter %d=%q, want its original position", i, queued.path)
+				}
+			}
+		})
 	}
 }
 

@@ -607,17 +607,18 @@ email_av:
   # message is already being scanned does not count. During this cooldown new
   # opens are allowed unscanned ("open") or deferred ("tempfail"). Scanning
   # resumes automatically afterwards; bypassed messages are not scanned later.
-  # One sender's messages are scanned on at most half the scan_concurrency
-  # slots (at least one), so one sender cannot take every scan slot. The
-  # sender is the authenticated user, else the sending address (an IPv6 /64),
-  # else the local account. Incomplete sender fields are ignored when choosing
-  # the sender. Mail relayed through a filtering gateway, unauthenticated mail
-  # submitted over SMTP from localhost, and bounces Exim creates each count as
-  # one sender. Further messages from a sender wait without taking a slot;
+  # One sender's messages normally use at most half the scan_concurrency
+  # slots (at least one), leaving slots for others when concurrency exceeds
+  # one. The sender is the authenticated user, else the sending address (an
+  # IPv6 /64), else the local account. Incomplete sender fields are ignored
+  # when choosing the sender. Mail relayed through a filtering gateway,
+  # unauthenticated mail submitted over SMTP from localhost, and bounces Exim
+  # creates each count as one sender. Further messages wait without taking a slot;
   # when their hold budget runs out they follow fail_mode and are still
   # scanned afterwards. When too many messages from one sender are waiting,
-  # further ones are scanned at once without waiting their turn, and
-  # email_av_source_backlog names the sender, at most once a minute.
+  # further ones are scanned at once without waiting their turn. This overflow
+  # can use every scan slot; email_av_source_backlog names the sender, at most
+  # once a minute.
   # An archive that lists more than ten times max_archive_files entries, or
   # whose decompressed data passes max_extraction_size, counts as not fully
   # scanned and follows fail_mode. Nested archives share that budget. So do
