@@ -60,7 +60,7 @@ email_av:
   max_archive_depth: 1
   max_archive_files: 50
   max_extraction_size: 104857600  # 100 MB
-  quarantine_infected: true
+  quarantine_infected: true      # default false: infected mail is delivered and reported
   scan_concurrency: 4
   # Keep copies of messages and tenant zips that crash an attachment worker,
   # for diagnosis. The copies hold customer mail and tenant files, are

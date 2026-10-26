@@ -10,7 +10,7 @@ CSM scans email attachments in real-time using ClamAV and YARA-X on the Exim mai
 3. Zip and tar.gz attachments are unpacked within configured size and file limits
 4. Attachments are unpacked in a separate locked-down process with no network access, one per concurrent scan (`scan_concurrency`), started on first use. Extracted parts reach the scanners in memory and are never written to disk; each scan holds at most `max_extraction_size` of them. A process that times out, runs out of memory, crashes or sends an invalid reply makes the message an incomplete scan, which follows `fail_mode`
 5. Attachment names written to logs and the UI use sanitized, shortened base names. Archive detection uses the full name, so shortening a displayed name does not prevent unpacking
-6. Infected messages are quarantined with full metadata
+6. Infected messages raise a Critical finding; with `quarantine_infected: true` they are also quarantined with full metadata instead of delivered
 7. Sender, recipient, and message ID are logged
 
 Quarantine and release preserve each queue file's ownership, permissions, and

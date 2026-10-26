@@ -595,7 +595,7 @@ email_av:
   max_archive_depth: 1                  # archive levels unpacked (1: attached archives only); a deeper archive counts as not fully scanned
   max_archive_files: 50                 # max files extracted per archive; also caps encrypted member names reported per message
   max_extraction_size: 104857600        # max total extraction size in bytes (100MB)
-  quarantine_infected: true             # quarantine emails with infected attachments
+  quarantine_infected: false            # true moves infected messages to quarantine; false delivers them with a Critical email_malware finding
   scan_concurrency: 4                   # parallel scan workers
   fail_mode: "open"                     # behavior when a scan cannot complete: "open" (default) delivers; "tempfail" defers so Exim retries
   # Permission events have a five-second scan hold budget. When it expires,
