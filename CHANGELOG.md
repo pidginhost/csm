@@ -9,6 +9,14 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ## [Unreleased]
 
+### Highlights
+
+- Email attachments are now unpacked by a separate locked-down process, so a crafted message can no longer stall mail scanning. Check email_av.fail_mode before upgrading.
+- One sender can no longer hold up mail scanning for others; messages waiting behind their sender follow email_av.fail_mode.
+- Each attachment worker's memory cap can be set with email_av.worker_memory_limit, and email_av.keep_crash_samples keeps messages that crash it.
+- Infected mail is delivered with a Critical finding unless email_av.quarantine_infected is true, and the configuration reference now says so.
+- Dry-run firewall forecasts now show capacity and drain in status and doctor.
+
 ### Security
 
 - Email attachments are now unpacked in memory by a separate locked-down process with no network access, so a crafted message can no longer stall mail scanning. After upgrade, failures follow email_av.fail_mode and the old attachment folder is deleted.
@@ -27,6 +35,8 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - Since 4.7.0 the csm program is installed so other local users can run it but not read it. csm rehash restores this after a manual copy.
 
 ### Fixed
+
+#### Email
 
 - The configuration reference now shows that infected mail is delivered unless email_av.quarantine_infected is set to true.
 - Observe mode no longer refuses email_av.quarantine_infected set to true while email antivirus scanning is turned off.
