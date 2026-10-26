@@ -259,6 +259,25 @@ sitting.
 **Depends on:** [durable action lifecycle](#action-log-covers-seven-of-43-host-changing-operations).
 **Size:** L.
 
+## YARA and PHP taint workers still run as root
+
+**Problem:** mail and archive parsing run in short-lived workers with no user,
+network or filesystem access, a deadline and a memory cap. The YARA worker
+is still a root child of the daemon that opens tenant paths itself, and the
+PHP taint worker has its own supervisor and no lockdown, so a crafted file
+that breaks either scanner reaches a root process.
+
+**Acceptance:** both workers run on the shared worker framework under the
+parse worker's lockdown; every YARA caller hands the worker an open
+descriptor and the path-based scan request is gone; rules are compiled once
+by the daemon and handed over, so a worker restart does not recompile; a file
+scan that could not run YARA is reported incomplete, never clean; the old
+YARA supervisor is deleted; `csm validate` warns when YARA runs inside the
+daemon.
+
+**Depends on:** the mail parse worker running cleanly in production for a
+week. **Size:** M.
+
 ## Optional MFA for browser administrators
 
 **Problem:** administrator logins have no second factor. Add optional
@@ -286,8 +305,9 @@ finally, no handler performs a host mutation directly.
 
 ## Parser and input hardening
 
-**Problem:** 55 test files carry fuzz targets and the PHP parser runs out of
-process, but no inventory maps every parser of external input (archives,
+**Problem:** 76 test files carry fuzz targets, and PHP parsing, mail
+extraction and phishing-kit archive listing run out of process, but no
+inventory maps every parser of external input (archives,
 logs, configuration, CMS state, PHP, JavaScript, mail, challenge and control
 protocols) to a fuzz target.
 
