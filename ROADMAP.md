@@ -270,12 +270,12 @@ file that breaks either scanner reaches a root process.
 
 **Acceptance:** both workers run under the parse worker's lockdown and the
 YARA worker moves onto the shared worker framework; every YARA caller hands
-the worker an open descriptor, the path-based scan request is gone and no
-scan copies a file to disk; rules are compiled once
-by the daemon and handed over, so a worker restart does not recompile; a file
-scan that could not run YARA is reported incomplete, never clean; the old
-YARA supervisor is deleted; `csm validate` warns when YARA runs inside the
-daemon.
+the worker an open descriptor, the path-based scan request is gone and no scan
+copies a file to disk; rules are compiled once in a short-lived locked-down
+worker, not the daemon, and handed over, so a scan worker restart does not
+recompile; a file scan that could not run YARA is reported incomplete, never
+clean; the old YARA supervisor is deleted; `csm validate` warns when YARA runs
+inside the daemon.
 
 **Depends on:** the mail parse worker running cleanly in production for a
 week. **Size:** M.
