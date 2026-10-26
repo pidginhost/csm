@@ -137,12 +137,13 @@ func TestShadowReservedOnlyCeiling(t *testing.T) {
 	}
 }
 
-// Real occupancy 8 of 10: two distinct picks fit and the third finds the
-// modelled set full, whatever their address families. A full set refuses
-// before the ceiling is tried.
+// Eight unclaimed real blocks of 11 leave three automatic slots: one
+// reserved, two general. Two general picks fit, whatever their address
+// families, and the third finds its partition full while the reserve
+// stays free. A full set refuses before the ceiling is tried.
 func TestShadowFillsTheTemporarySet(t *testing.T) {
 	s := testShadow(t, freshCeiling(t, 2000), nil)
-	adm := firewall.BlockAdmission{Temporary: 8, Limit: 10}
+	adm := firewall.BlockAdmission{Temporary: 8, Unclaimed: 8, Limit: 11}
 	for i, ip := range []string{"203.0.113.1", "2001:db8::1"} {
 		if p := admitNow(t, s, ip, generalOnly, shadowT0, adm); p != admission.PredictCapacityAdmit {
 			t.Fatalf("pick %d = %s", i, p)
@@ -152,16 +153,76 @@ func TestShadowFillsTheTemporarySet(t *testing.T) {
 	if p := admitNow(t, s, "203.0.113.3", generalOnly, shadowT0, adm); p != admission.PredictSetFull {
 		t.Fatalf("third = %s, want set_full", p)
 	}
-	if s.ceiling != used || !s.full(adm) || len(s.entries) != 2 {
-		t.Fatal("a full set charged the ceiling or took an entry")
+	if s.ceiling != used || !s.full(adm, generalOnly) || s.full(adm, directGen) || len(s.entries) != 2 {
+		t.Fatal("a full set charged the ceiling or took an entry, or the reserve filled")
 	}
 	// A real block of a shadow address counts once: as real occupancy.
-	if s.full(firewall.BlockAdmission{Temporary: 9, Limit: 11, ShadowTemporary: 1}) {
+	if s.full(firewall.BlockAdmission{Temporary: 9, Unclaimed: 9, Limit: 12, ShadowHeld: map[string]bool{"203.0.113.1": true}}, generalOnly) {
 		t.Fatal("an address held by a real and a shadow block counted twice")
 	}
 	// A real permanent block of a shadow address takes no temporary slot.
-	if s.full(firewall.BlockAdmission{Temporary: 8, Limit: 10, ShadowPermanent: 1}) {
+	if s.full(firewall.BlockAdmission{Temporary: 8, Unclaimed: 8, Limit: 11, ShadowHeld: map[string]bool{"2001:db8::1": true}}, generalOnly) {
 		t.Fatal("permanent coverage counted as temporary demand")
+	}
+}
+
+// The reserve is ceil(20%) of the automatic slots, and only work eligible
+// for a reserved lane takes it (spec 5.6). Of five slots general work
+// takes four; eligible work then fits once more on its reserved lane and
+// occupies the reserved partition. Eligible work served on its reserved
+// lane uses its general turn once the reserve is full.
+func TestShadowKeepsTheReserve(t *testing.T) {
+	s := testShadow(t, freshCeiling(t, 2000), nil)
+	adm := firewall.BlockAdmission{Limit: 5}
+	for i := 1; i <= 4; i++ {
+		if p := admitNow(t, s, fmt.Sprintf("203.0.113.%d", i), generalOnly, shadowT0, adm); p != admission.PredictCapacityAdmit {
+			t.Fatalf("general pick %d = %s", i, p)
+		}
+	}
+	if p := admitNow(t, s, "203.0.113.5", generalOnly, shadowT0, adm); p != admission.PredictSetFull {
+		t.Fatalf("fifth general pick = %s, want set_full", p)
+	}
+	if p := admitNow(t, s, "203.0.113.6", directGen, shadowT0, adm); p != admission.PredictCapacityAdmit ||
+		s.entries["203.0.113.6"].partition != admission.PartitionReserved || s.charges[len(s.charges)-1].Lane != admission.LaneDirect {
+		t.Fatalf("eligible pick = %s, entry %+v, charges %+v", p, s.entries["203.0.113.6"], s.charges)
+	}
+	if p := admitNow(t, s, "203.0.113.7", directGen, shadowT0, adm); p != admission.PredictSetFull {
+		t.Fatalf("eligible pick on a full set = %s, want set_full", p)
+	}
+	if s.entries["203.0.113.1"].partition != admission.PartitionGeneral {
+		t.Fatalf("general entry = %+v", s.entries["203.0.113.1"])
+	}
+	s = testShadow(t, freshCeiling(t, 2000), nil)
+	reservedFirst := []admission.Lane{admission.LaneDirect, admission.LaneGeneral}
+	if p := admitNow(t, s, "203.0.113.8", reservedFirst, shadowT0, adm); p != admission.PredictCapacityAdmit || s.entries["203.0.113.8"].partition != admission.PartitionReserved {
+		t.Fatalf("reserved pick = %s, entry %+v", p, s.entries["203.0.113.8"])
+	}
+	if p := admitNow(t, s, "203.0.113.9", reservedFirst, shadowT0, adm); p != admission.PredictCapacityAdmit ||
+		s.entries["203.0.113.9"].partition != admission.PartitionGeneral || s.charges[len(s.charges)-1].Lane != admission.LaneGeneral {
+		t.Fatalf("reserved pick on a full reserve = %s, entry %+v, charges %+v", p, s.entries["203.0.113.9"], s.charges)
+	}
+}
+
+// Real automatic blocks, legacy imports and admission's own, occupy the
+// general partition; unclaimed entries shrink the set; an unlimited set is
+// the finite automatic capacity (spec 5.6).
+func TestShadowCountsRealAutomaticOccupants(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		adm  firewall.BlockAdmission
+	}{
+		{"imports fill general", firewall.BlockAdmission{Limit: 10, Imported: 8}},
+		{"admission blocks fill general", firewall.BlockAdmission{Limit: 10, Admission: 8}},
+		{"imports and admission blocks fill general", firewall.BlockAdmission{Limit: 10, Imported: 5, Admission: 3}},
+		{"unclaimed entries leave only the reserve", firewall.BlockAdmission{Unclaimed: admission.TemporaryCapacity - 1}},
+	} {
+		s := testShadow(t, freshCeiling(t, 2000), nil)
+		if p := admitNow(t, s, "203.0.113.1", generalOnly, shadowT0, tc.adm); p != admission.PredictSetFull {
+			t.Fatalf("%s: general pick = %s, want set_full", tc.name, p)
+		}
+		if p := admitNow(t, s, "203.0.113.2", directGen, shadowT0, tc.adm); p != admission.PredictCapacityAdmit {
+			t.Fatalf("%s: eligible pick = %s", tc.name, p)
+		}
 	}
 }
 
@@ -249,11 +310,19 @@ func TestShadowClocks(t *testing.T) {
 	}
 }
 
-// The forecast models at most 20000 active blocks. With an unlimited or a
-// larger set the next unique address is forecast-limited, not set-full,
-// and consumes nothing; an expiry frees a slot.
+// The forecast models at most 20000 active blocks. With a set larger than
+// that the next unique address is forecast-limited, not set-full, and
+// consumes nothing; an expiry frees a slot. An unlimited set is the finite
+// automatic capacity, so it fills first.
 func TestShadowForecastBound(t *testing.T) {
-	for _, limit := range []int{0, firewall.MaxShadowBlocks + 5000} {
+	s := testShadow(t, freshCeiling(t, 2000), nil)
+	for i := range forecastEntries {
+		s.entries[fmt.Sprintf("2001:db8::%x", i+1)] = shadowEntry{kind: admission.KindBlockIP, expires: shadowExpiry}
+	}
+	if p := admitNow(t, s, "203.0.113.1", generalOnly, shadowT0, room); p != admission.PredictSetFull {
+		t.Fatalf("unlimited set at the bound = %s, want set_full", p)
+	}
+	for _, limit := range []int{2 * firewall.MaxShadowBlocks} {
 		s := testShadow(t, freshCeiling(t, 2000), nil)
 		for i := range forecastEntries {
 			s.entries[fmt.Sprintf("2001:db8::%x", i+1)] = shadowEntry{kind: admission.KindBlockIP, expires: shadowExpiry.Add(time.Duration(i))}
@@ -346,7 +415,7 @@ func TestShadowLimitPrecedence(t *testing.T) {
 	if p := admitNow(t, s, "203.0.113.2", generalOnly, shadowT0, firewall.BlockAdmission{Limit: forecastEntries}); p != admission.PredictSetFull {
 		t.Fatalf("full, limited and spent = %s, want set_full", p)
 	}
-	if p := admitNow(t, s, "203.0.113.2", generalOnly, shadowT0, room); p != admission.PredictForecastLimited {
+	if p := admitNow(t, s, "203.0.113.2", generalOnly, shadowT0, firewall.BlockAdmission{Limit: 2 * forecastEntries}); p != admission.PredictForecastLimited {
 		t.Fatalf("limited and spent = %s, want forecast_limited", p)
 	}
 }
@@ -459,6 +528,69 @@ func TestShadowDoesNotModelOtherKinds(t *testing.T) {
 				if s.ceiling != before || len(s.entries) != 0 || len(s.charges) != 0 || s.picks[admission.PredictNotModelled] != 1 {
 					t.Fatal("an unmodelled kind changed forecast capacity or counted the wrong outcome")
 				}
+			}
+		})
+	}
+}
+
+func TestShadowCapacityAndCeilingUseTheSameLane(t *testing.T) {
+	for _, reserved := range []admission.Lane{admission.LaneDirect, admission.LaneCorroborated} {
+		for _, first := range []bool{false, true} {
+			for _, full := range []bool{false, true} {
+				s := testShadow(t, freshCeiling(t, 5), nil)
+				var err error
+				s.ceiling, err = s.ceiling.Charge(reserved, 1)
+				if err != nil {
+					t.Fatal(err)
+				}
+				lanes := []admission.Lane{admission.LaneGeneral, reserved}
+				if first {
+					lanes[0], lanes[1] = lanes[1], lanes[0]
+				}
+				adm := firewall.BlockAdmission{Limit: 5, Imported: 4}
+				if full {
+					s.entries["203.0.113.90"] = shadowEntry{kind: admission.KindBlockIP, expires: shadowExpiry, partition: admission.PartitionReserved}
+				}
+				before := s.ceiling
+				pred, change, err := s.admit("203.0.113.91", admission.KindBlockIP, shadowExpiry, lanes, shadowT0, adm)
+				want := admission.PredictCeiling
+				if full {
+					want = admission.PredictSetFull
+				}
+				if err != nil || pred != want || change != nil || s.ceiling != before {
+					t.Fatalf("reserved=%s first=%t full=%t: %s %+v %v", reserved, first, full, pred, change, err)
+				}
+			}
+		}
+	}
+}
+
+func TestShadowOverlapUsesRealOwnership(t *testing.T) {
+	for _, tc := range []struct {
+		name                    string
+		adm                     firewall.BlockAdmission
+		general, reserved, only int
+	}{
+		{"unclaimed", firewall.BlockAdmission{Temporary: 1, Unclaimed: 1}, 0, 0, 0},
+		{"import", firewall.BlockAdmission{Temporary: 1, Imported: 1}, 1, 0, 0},
+		{"admission", firewall.BlockAdmission{Temporary: 1, Admission: 1}, 1, 0, 0},
+		{"permanent", firewall.BlockAdmission{}, 0, 0, 0},
+		{"unrelated held key", firewall.BlockAdmission{Temporary: 1, Unclaimed: 1}, 0, 1, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := testShadow(t, freshCeiling(t, 2000), nil)
+			s.entries["2001:db8::90"] = shadowEntry{kind: admission.KindBlockIP, expires: shadowExpiry, partition: admission.PartitionReserved}
+			tc.adm.Limit = 10
+			key := "2001:db8::90"
+			if tc.name == "unrelated held key" {
+				key = "2001:db8::91"
+			}
+			tc.adm.ShadowHeld = map[string]bool{key: true}
+			s.adm = &tc.adm
+			got := s.occupancyStatus()
+			slots := s.occupancy(tc.adm).Slots()
+			if got.ShadowOnly != tc.only || got.Predicted != got.Actual+tc.only || got.General.Used != tc.general || got.Reserved.Used != tc.reserved || got.General.Free != slots.FreeGeneral || got.Reserved.Free != slots.FreeReserved {
+				t.Fatalf("overlap: %+v", got)
 			}
 		})
 	}

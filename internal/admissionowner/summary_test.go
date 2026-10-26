@@ -158,7 +158,8 @@ func TestOwnerSummarizesADryRunMinute(t *testing.T) {
 	p := withTestRegistry(t)
 	f := newOwnerFixture(t)
 	blocks := newFakeBlocks()
-	blocks.limit = 150
+	// Of 188 slots the reserve holds 38 the general picks never take.
+	blocks.limit = 188
 	o, _, mono, sink := summaryOwner(t, f, blocks)
 	w := watchExamples(t, o)
 	queueMany(t, o, p, f, 200, 1)

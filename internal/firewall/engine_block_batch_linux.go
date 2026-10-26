@@ -73,7 +73,7 @@ func (e *Engine) BlockBatchRequest(header ActionRequest, members []ActionRequest
 			continue
 		}
 		ran = append(ran, ActionMember{Request: m, Budget: budget})
-		next.Blocked = append(next.Blocked, BlockedEntry{IP: m.Target, Reason: m.Reason, Source: InferProvenance("block", m.Reason), BlockedAt: at, ExpiresAt: at.Add(m.TTL), ActionID: m.ID})
+		next.Blocked = append(next.Blocked, BlockedEntry{IP: m.Target, Reason: m.Reason, Source: InferProvenance("block", m.Reason), BlockedAt: at, ExpiresAt: at.Add(m.TTL), ActionID: m.ID, Automatic: m.Automatic})
 	}
 	if len(ran) == 0 {
 		return result, nil

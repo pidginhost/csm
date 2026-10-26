@@ -19,6 +19,7 @@ type BlockedEntry struct {
 	ExpiresAt  time.Time `json:"expires_at"`
 	ActionID   string    `json:"action_id,omitempty"`
 	Unverified bool      `json:"unverified,omitempty"`
+	Automatic  bool      `json:"automatic,omitempty"`
 }
 
 type AllowedEntry struct {

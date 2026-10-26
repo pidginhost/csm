@@ -1,6 +1,8 @@
 package admissionowner
 
 import (
+	"time"
+
 	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/health"
 )
@@ -58,15 +60,23 @@ func predictionMap(counts [admission.PredictionSlots]uint64) map[string]uint64 {
 }
 
 // occupancyStatus is the temporary capacity as the last snapshot saw it,
-// with the forecast blocks the real sets do not hold; nil without one.
+// with the forecast blocks the real sets do not hold and the modelled
+// partitions of the automatic slots; nil without one.
 func (s *shadow) occupancyStatus() *health.AdmissionDryRunOccupancy {
 	if s.adm == nil {
 		return nil
 	}
-	only := max(len(s.entries)-s.adm.ShadowTemporary-s.adm.ShadowPermanent, 0)
+	adm := *s.adm
+	occ := s.occupancy(adm)
+	slots := occ.Slots()
+	only := occ.General + occ.Reserved - adm.Imported - adm.Admission
+	actual := adm.Unclaimed + adm.Imported + adm.Admission
 	return &health.AdmissionDryRunOccupancy{
-		Actual: s.adm.Temporary, ShadowOnly: only, Predicted: s.adm.Temporary + only, Limit: s.adm.Limit,
-		Unlimited: s.adm.Limit == 0, Limited: s.limited(),
+		Actual: actual, ShadowOnly: only, Predicted: actual + only, Limit: adm.Limit,
+		Unlimited: adm.Limit <= 0, Limited: s.limited(),
+		Capacity: slots.Capacity, Unclaimed: adm.Unclaimed, Imported: adm.Imported, DrainSeconds: int64(adm.Drain / time.Second),
+		General:  health.AdmissionDryRunPartition{Size: slots.General, Used: occ.General, Free: slots.FreeGeneral},
+		Reserved: health.AdmissionDryRunPartition{Size: slots.Reserved, Used: occ.Reserved, Free: slots.FreeReserved},
 	}
 }
 

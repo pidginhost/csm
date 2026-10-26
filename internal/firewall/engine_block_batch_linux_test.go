@@ -792,3 +792,28 @@ func TestBlockBatchAllowExpiryUsesWallSnapshot(t *testing.T) {
 		t.Fatalf("allow expiry changed the planned members: %#v", plan)
 	}
 }
+
+// A singleton has no member ActionID, so its request stamp must survive.
+func TestLegacyStampDurablePlans(t *testing.T) {
+	for _, count := range []int{1, 2} {
+		kept := BlockedEntry{IP: "203.0.113.90", Automatic: true, ExpiresAt: time.Now().Add(time.Hour)}
+		e, store := batchPlanEngine(t, FirewallConfig{}, FirewallState{Blocked: []BlockedEntry{kept}})
+		members := []ActionRequest{batchMember("member-a", "203.0.113.91")}
+		if count == 2 {
+			members = append(members, batchMember("member-b", "203.0.113.92"))
+		}
+		_, err := e.BlockBatchRequest(batchHeader(), members, nil)
+		if !errors.Is(err, errBatchPlanStop) || len(store.admitted) != 1 {
+			t.Fatalf("planning: %v %+v", err, store.admitted)
+		}
+		plan := store.admitted[0]
+		if len(plan.Before.Blocked) != 1 || !SameBlockedEntry(plan.Before.Blocked[0], kept) || len(plan.After.Blocked) != count+1 || !SameBlockedEntry(plan.After.Blocked[0], kept) {
+			t.Fatalf("state copies lost provenance: %+v", plan)
+		}
+		for _, row := range plan.After.Blocked[1:] {
+			if !row.Automatic {
+				t.Fatalf("automatic batch row lost provenance: %+v", row)
+			}
+		}
+	}
+}

@@ -85,9 +85,10 @@ func (e *Engine) BlockActionsUnproven() error {
 }
 
 // evictionVictimLocked picks the temporary block a new one replaces at the
-// cap. It leaves out the rows admission actions wrote while their attempts
-// are unproven, and always for an automatic block, which never removes a
-// block admission owns (design C8).
+// cap. It leaves out the rows admission actions wrote: no legacy block,
+// automatic or operator, removes a block admission owns (design C8, spec
+// 5.6). Under the durable lifecycle, where no admission action writes rows,
+// only an automatic block or unproven rows leave its action rows out.
 func (e *Engine) evictionVictimLocked(st FirewallState, excludeIP string, automatic bool) (string, bool) {
 	addresses := make(map[string]int)
 	if e.lifecycle != nil {
@@ -95,7 +96,7 @@ func (e *Engine) evictionVictimLocked(st FirewallState, excludeIP string, automa
 			addresses[stateIPKey(row.IP)]++
 		}
 	}
-	if e.blockActionsUnproven != nil || automatic {
+	if e.lifecycle == nil || e.blockActionsUnproven != nil || automatic {
 		var kept []BlockedEntry
 		for _, row := range st.Blocked {
 			if row.ActionID == "" {

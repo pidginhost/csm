@@ -485,8 +485,8 @@ func TestLegacyEvictionSkipsUnverifiedRows(t *testing.T) {
 }
 
 // Without a readable ledger at startup nothing proves which rows of its
-// attempts the kernel enforces. They are restored as before, but none is
-// ever chosen to make room for a new block (P11).
+// attempts the kernel enforces. They are restored as before, and, as with
+// a readable ledger, none is ever chosen to make room for a new block (P11).
 func TestUnprovenBlockActionsAreNeverEvicted(t *testing.T) {
 	at := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
 	state := FirewallState{Blocked: []BlockedEntry{
@@ -497,8 +497,8 @@ func TestUnprovenBlockActionsAreNeverEvicted(t *testing.T) {
 	e.mu.Lock()
 	victim, ok := e.evictionVictimLocked(state, "", false)
 	e.mu.Unlock()
-	if !ok || victim != "192.0.2.30" {
-		t.Fatalf("victim = %q, %t; want the soonest row while the ledger was read", victim, ok)
+	if !ok || victim != "203.0.113.30" {
+		t.Fatalf("victim = %q, %t; want the row no attempt wrote while the ledger was read", victim, ok)
 	}
 	if err := e.saveState(&state); err != nil {
 		t.Fatal(err)
@@ -533,20 +533,23 @@ func TestUnprovenBlockActionsAreNeverEvicted(t *testing.T) {
 	}
 }
 
-// At the temporary cap a new block finds no victim among unproven rows and
-// is refused rather than evicting one.
+// At the temporary cap a new block finds no victim among admission rows,
+// proven or not. An automatic block is refused rather than evicting one;
+// an operator's block is added above the limit.
 func TestUnprovenBlockActionsHoldTheTempCap(t *testing.T) {
 	for _, unproven := range []bool{false, true} {
-		e := &Engine{statePath: t.TempDir(), cfg: &FirewallConfig{DenyTempIPLimit: 1}, setBlocked: namedIPv4Set("blocked_ips")}
-		state := FirewallState{Blocked: []BlockedEntry{{IP: "192.0.2.31", ExpiresAt: time.Now().Add(time.Hour), ActionID: "act_cap"}}}
-		if err := e.saveState(&state); err != nil {
-			t.Fatal(err)
-		}
-		if unproven {
-			e.SetBlockActionsUnproven(errors.New("ledger unreadable"))
-		}
-		if _, err := e.validateBlockIP("198.51.100.31", time.Hour, false); unproven != (err != nil) {
-			t.Fatalf("unproven=%v: validation = %v; want a refusal only for unproven rows", unproven, err)
+		for _, automatic := range []bool{false, true} {
+			e := &Engine{statePath: t.TempDir(), cfg: &FirewallConfig{DenyTempIPLimit: 1}, setBlocked: namedIPv4Set("blocked_ips")}
+			state := FirewallState{Blocked: []BlockedEntry{{IP: "192.0.2.31", ExpiresAt: time.Now().Add(time.Hour), ActionID: "act_cap"}}}
+			if err := e.saveState(&state); err != nil {
+				t.Fatal(err)
+			}
+			if unproven {
+				e.SetBlockActionsUnproven(errors.New("ledger unreadable"))
+			}
+			if _, err := e.validateBlockIP("198.51.100.31", time.Hour, automatic); automatic != (err != nil) {
+				t.Fatalf("unproven=%v automatic=%v: validation = %v; want a refusal only for an automatic block", unproven, automatic, err)
+			}
 		}
 	}
 }

@@ -447,7 +447,7 @@ func TestOwnerCountsDryRunEndingsByPrediction(t *testing.T) {
 	f := newOwnerFixture(t)
 	comparisonClock(t, f.host.now)
 	blocks := newFakeBlocks()
-	blocks.temp, blocks.limit = 8, 10
+	blocks.temp, blocks.limit = 8, 11
 	sink := &actionSink{}
 	opts := executeOptions(f, blocks)
 	opts.WriteAudit = sink.write

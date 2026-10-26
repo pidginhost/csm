@@ -15,9 +15,16 @@ import (
 // minting capability the test keeps.
 func withTestRegistry(t testing.TB) *admission.Producer {
 	t.Helper()
+	return withTestRegistryBasis(t, admission.BasisLocal)
+}
+
+// withTestRegistryBasis is withTestRegistry with its check supporting
+// basis: BasisCompromise makes every pick direct-compromise work.
+func withTestRegistryBasis(t testing.TB, basis admission.Basis) *admission.Producer {
+	t.Helper()
 	reg, err := admission.NewRegistry(func(check string) (string, admission.Policy, bool) {
 		if check == "ssh_brute" {
-			return check, admission.Policy{Family: admission.FamilySSH, Basis: admission.BasisLocal}, true
+			return check, admission.Policy{Family: admission.FamilySSH, Basis: basis}, true
 		}
 		return "", admission.Policy{}, false
 	})

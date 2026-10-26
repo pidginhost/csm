@@ -358,21 +358,76 @@ func (e *Engine) BlockAdmissionSnapshot(members []BlockMember, shadow []string) 
 		refusals[i] = e.blockRefusalLocked(m, verified[i], snap, snap.at, nil, nil)
 	}
 	e.ageExistingLocked(members, refusals, snap)
-	out := BlockAdmission{Answers: make([]BlockAnswer, len(members)), Temporary: snap.temp, Limit: e.cfg.DenyTempIPLimit}
+	snap.elapsed = e.lease.at
+	out := BlockAdmission{Answers: make([]BlockAnswer, len(members)), Temporary: snap.temp, Limit: e.cfg.DenyTempIPLimit, ShadowHeld: map[string]bool{}}
 	for i, m := range members {
 		out.Answers[i] = BlockAnswer{Action: m.Action, IP: m.IP, BlockCheck: BlockCheck{Refusal: refusals[i], Existing: snap.existing(m, refusals[i])}}
 	}
+	snap.occupants(&out, e.expiryNow())
 	for _, ip := range shadow {
-		observed, present := snap.live[ip]
-		switch {
-		case !present:
-		case observed.temporary:
-			out.ShadowTemporary++
-		default:
-			out.ShadowPermanent++
+		if _, present := snap.live[ip]; present {
+			out.ShadowHeld[ip] = true
 		}
 	}
 	return out, nil
+}
+
+// occupants classes the snapshot's timed elements and timed subnet rows
+// into out, subnet expiry read at now.
+func (snap blockSnapshot) occupants(out *BlockAdmission, now time.Time) {
+	owners := occupantOwners(snap.prior.Blocked, snap.at)
+	for ip, observed := range snap.live {
+		if !observed.temporary {
+			continue
+		}
+		row, held := owners[stateIPKey(ip)]
+		switch {
+		case held && row.ActionID != "":
+			out.Admission++
+			continue
+		case held && row.Automatic && !row.Unverified:
+			out.Imported++
+		default:
+			out.Unclaimed++
+		}
+		if observed.el.Expires <= 0 {
+			out.Drain = -time.Second
+		} else if out.Drain >= 0 {
+			// The sample can be as late as the end of its dump. Age that
+			// upper bound through later dumps and member checks without
+			// letting a wall-clock step change a kernel timeout.
+			out.Drain = max(out.Drain, observed.el.Expires-snap.elapsed.Sub(observed.after))
+		}
+	}
+	for _, row := range snap.state.BlockedNet {
+		if !row.ExpiresAt.After(now) {
+			continue
+		}
+		// A prefix encodes as at most two interval elements (spec 5.6).
+		out.Unclaimed += 2
+		if out.Drain >= 0 {
+			out.Drain = max(out.Drain, row.ExpiresAt.Sub(now))
+		}
+	}
+}
+
+// occupantOwners requires retained raw rows at an address to agree on ownership.
+// Address normalization may select a longer-lived row for protection checks;
+// that selection must not turn an unknown occupant into an automatic import.
+func occupantOwners(rows []BlockedEntry, at time.Time) map[string]BlockedEntry {
+	rows, _ = pruneBlocked(rows, at)
+	owners := make(map[string]BlockedEntry, len(rows))
+	for _, row := range rows {
+		ip := stateIPKey(row.IP)
+		if old, found := owners[ip]; found && (!old.ExpiresAt.After(at) || old.ActionID != row.ActionID || (row.ActionID == "" && (old.Automatic != row.Automatic || old.Unverified != row.Unverified))) {
+			row = BlockedEntry{}
+		}
+		if !row.ExpiresAt.After(at) {
+			row = BlockedEntry{}
+		}
+		owners[ip] = row
+	}
+	return owners
 }
 
 // existing names the block that holds m's address when m is refused as an

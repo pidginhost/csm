@@ -5,6 +5,7 @@ package firewall
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"testing"
 	"time"
 
@@ -59,9 +60,8 @@ func TestBlockAdmissionSnapshotChecksWithoutSlots(t *testing.T) {
 	}
 }
 
-// The snapshot counts which forecast addresses the sets already hold, as a
-// timed element and as an untimed one, both address families together.
-// Addresses the sets do not hold count in neither.
+// The snapshot names the forecast addresses the sets already hold, as a
+// timed element or an untimed one, both address families together.
 func TestBlockAdmissionSnapshotCountsShadowOverlap(t *testing.T) {
 	f := newBatchFixture(t, FirewallState{
 		Blocked: []BlockedEntry{{IP: "203.0.113.52", Reason: "operator"}},
@@ -75,14 +75,14 @@ func TestBlockAdmissionSnapshotCountsShadowOverlap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Temporary != 3 || got.ShadowTemporary != 2 || got.ShadowPermanent != 2 || len(got.Answers) != 0 {
+	if got.Temporary != 3 || !maps.Equal(got.ShadowHeld, map[string]bool{"203.0.113.50": true, "203.0.113.51": true, "203.0.113.52": true, "2001:db8::50": true}) || len(got.Answers) != 0 {
 		t.Fatalf("snapshot = %+v", got)
 	}
 }
 
 // Only an address element counts as coverage. A forecast address inside a
-// real permanent subnet block counts in neither overlap, so the forecast
-// still models it as temporary demand.
+// real permanent subnet block is not held, so the forecast still models it
+// as temporary demand; a permanent subnet takes no temporary slot.
 func TestBlockAdmissionSnapshotIgnoresSubnetCoverage(t *testing.T) {
 	f := newBatchFixture(t, FirewallState{
 		BlockedNet: []SubnetEntry{{CIDR: "203.0.113.0/24", Reason: "operator"}, {CIDR: "2001:db8::/64", Reason: "operator"}},
@@ -91,8 +91,55 @@ func TestBlockAdmissionSnapshotIgnoresSubnetCoverage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Temporary != 0 || got.ShadowTemporary != 0 || got.ShadowPermanent != 0 {
+	if got.Temporary != 0 || got.Unclaimed != 0 || len(got.ShadowHeld) != 0 {
 		t.Fatalf("snapshot = %+v, want no coverage from subnet blocks", got)
+	}
+}
+
+// The snapshot sorts the set's timed occupants by recorded ownership
+// (spec 5.6). Elements of admission rows are admission's own. Elements of
+// rows a legacy automatic block marked are known automatic imports. Every
+// other timed element, an operator's or one with no row, and two elements
+// for each timed subnet row, are unclaimed: admission never evicts them.
+// Untimed elements, rows without an element and expired subnet rows take
+// no temporary slot. Drain is when the last unclaimed or imported occupant
+// ends; admission occupants do not delay it.
+func TestBlockAdmissionSnapshotClassesTheTimedOccupants(t *testing.T) {
+	at := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
+	state := FirewallState{
+		Blocked: []BlockedEntry{
+			{IP: "203.0.113.80", Reason: "CSM auto-block: owner", BlockedAt: at, ExpiresAt: at.Add(5 * time.Hour), ActionID: "act_0123456789abcdef0123456789abcd80"},
+			{IP: "203.0.113.81", Reason: "auto-block: legacy", BlockedAt: at, ExpiresAt: at.Add(30 * time.Minute), Automatic: true},
+			{IP: "2001:db8::81", Reason: "auto-block: legacy", BlockedAt: at, ExpiresAt: at.Add(10 * time.Minute), Automatic: true},
+			{IP: "203.0.113.82", Reason: "operator tempban", BlockedAt: at, ExpiresAt: at.Add(2 * time.Hour)},
+			{IP: "203.0.113.84", Reason: "operator"},
+			{IP: "203.0.113.85", Reason: "auto-block: gone", BlockedAt: at, ExpiresAt: at.Add(4 * time.Hour), Automatic: true},
+		},
+		BlockedNet: []SubnetEntry{
+			{CIDR: "198.51.100.64/26", Reason: "auto-netblock", BlockedAt: at, ExpiresAt: at.Add(time.Hour)},
+			{CIDR: "192.0.2.0/24", Reason: "operator"},
+			{CIDR: "192.0.2.128/25", Reason: "auto-netblock", BlockedAt: at.Add(-2 * time.Hour), ExpiresAt: at.Add(-time.Hour)},
+		},
+	}
+	f := newBatchFixture(t, state)
+	f.live["203.0.113.80"] = 5 * time.Hour
+	f.live["203.0.113.81"] = 30 * time.Minute
+	f.live["2001:db8::81"] = 10 * time.Minute
+	f.live["203.0.113.82"] = 2 * time.Hour
+	f.live["203.0.113.83"] = 90 * time.Minute
+	f.live["203.0.113.84"] = 0
+	got, err := f.e.BlockAdmissionSnapshot(nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Temporary != 5 || got.Admission != 1 || got.Imported != 2 || got.Unclaimed != 4 || got.Drain != 2*time.Hour {
+		t.Fatalf("occupants = %+v; want 5 timed elements: 1 admission, 2 imported, 4 unclaimed with the subnet, draining in 2h", got)
+	}
+	// A subnet row that ends last sets the drain.
+	state.BlockedNet[0].ExpiresAt = at.Add(3 * time.Hour)
+	writeEngineStateFile(t, f.e.statePath, state)
+	if got, err = f.e.BlockAdmissionSnapshot(nil, nil); err != nil || got.Unclaimed != 4 || got.Drain != 3*time.Hour {
+		t.Fatalf("with a later subnet: %+v, %v; want 4 unclaimed draining in 3h", got, err)
 	}
 }
 
@@ -131,7 +178,7 @@ func TestBlockAdmissionSnapshotRefusesTheWholeCall(t *testing.T) {
 	if dumps != 0 {
 		t.Fatalf("a refused call read the kernel %d times", dumps)
 	}
-	if got, err := f.e.BlockAdmissionSnapshot(nil, shadow[:MaxShadowBlocks]); err != nil || got.ShadowTemporary != 0 {
+	if got, err := f.e.BlockAdmissionSnapshot(nil, shadow[:MaxShadowBlocks]); err != nil || len(got.ShadowHeld) != 0 {
 		t.Fatalf("the full forecast bound = %+v, %v", got, err)
 	}
 	cause := errors.New("dump failed")
@@ -157,5 +204,153 @@ func TestBlockAdmissionSnapshotVerifiedCallbackRunsOutsideLock(t *testing.T) {
 	got, err := f.e.BlockAdmissionSnapshot([]BlockMember{f.member("act_one", "203.0.113.20")}, nil)
 	if err != nil || len(got.Answers) != 1 || got.Answers[0].Refusal != "" || calls != 1 {
 		t.Fatalf("snapshot = %+v, %v, %d calls", got, err, calls)
+	}
+}
+
+func TestBlockAdmissionSnapshotUsesUnmergedOwnership(t *testing.T) {
+	for _, kind := range []string{"unverified import", "unverified admission", "mixed alias", "different actions", "permanent intent", "no element"} {
+		t.Run(kind, func(t *testing.T) {
+			f := newBatchFixture(t, FirewallState{})
+			row := BlockedEntry{IP: "203.0.113.90", Automatic: true, ExpiresAt: f.at.Add(time.Hour)}
+			state := FirewallState{Blocked: []BlockedEntry{row}}
+			f.live[row.IP] = time.Hour
+			wantA, wantI, wantU, wantT := 0, 0, 1, 1
+			switch kind {
+			case "unverified import":
+				state.Blocked[0].Unverified = true
+			case "unverified admission":
+				state.Blocked[0].Unverified = true
+				state.Blocked[0].ActionID = "act_one"
+				wantA, wantU = 1, 0
+			case "mixed alias":
+				alias := row
+				alias.IP = "::ffff:203.0.113.90"
+				alias.Automatic = false
+				alias.ExpiresAt = f.at.Add(time.Minute)
+				state.Blocked = append(state.Blocked, alias)
+			case "different actions":
+				state.Blocked[0].ActionID = "act_one"
+				alias := row
+				alias.IP = "::ffff:203.0.113.90"
+				alias.ActionID = "act_two"
+				alias.ExpiresAt = f.at.Add(time.Minute)
+				state.Blocked = append(state.Blocked, alias)
+			case "permanent intent":
+				state.Blocked[0].ExpiresAt = time.Time{}
+				wantU, wantT = 0, 0
+			case "no element":
+				delete(f.live, row.IP)
+				wantU, wantT = 0, 0
+			}
+			for pass := 0; pass < 2; pass++ {
+				if len(state.Blocked) == 2 {
+					state.Blocked[0], state.Blocked[1] = state.Blocked[1], state.Blocked[0]
+				}
+				writeEngineStateFile(t, f.e.statePath, state)
+				got, err := f.e.BlockAdmissionSnapshot(nil, nil)
+				if err != nil || got.Admission != wantA || got.Imported != wantI || got.Unclaimed != wantU || got.Temporary != wantT {
+					t.Fatalf("occupants: %+v %v", got, err)
+				}
+			}
+		})
+	}
+}
+
+// Subnet expiry uses the wall clock even when the address lease clock is ahead.
+func TestBlockAdmissionSnapshotSubnetClock(t *testing.T) {
+	f := newBatchFixture(t, FirewallState{})
+	wall := f.at
+	f.e.expiryClock = func() time.Time { return wall }
+	f.e.leaseClock = func() (time.Time, time.Time) { return f.at.Add(3 * time.Hour), f.at }
+	state := FirewallState{BlockedNet: []SubnetEntry{{CIDR: "203.0.113.0/24", ExpiresAt: f.at.Add(time.Hour)}}}
+	writeEngineStateFile(t, f.e.statePath, state)
+	got, err := f.e.BlockAdmissionSnapshot(nil, nil)
+	if err != nil || got.Unclaimed != 2 || got.Drain != time.Hour {
+		t.Fatalf("subnet used lease clock: %+v %v", got, err)
+	}
+	dump := f.e.liveBlockedDump
+	f.e.liveBlockedDump = func(set *nftables.Set) ([]nftables.SetElement, error) { wall = f.at.Add(time.Hour); return dump(set) }
+	got, err = f.e.BlockAdmissionSnapshot(nil, nil)
+	if err != nil || got.Unclaimed != 0 || got.Drain != 0 {
+		t.Fatalf("subnet expired during dump: %+v %v", got, err)
+	}
+}
+
+// A positive timeout without a remaining expiry cannot promise a drain horizon.
+func TestBlockAdmissionSnapshotUnknownDrain(t *testing.T) {
+	f := newBatchFixture(t, FirewallState{})
+	f.live["203.0.113.90"] = time.Hour
+	f.expires["203.0.113.90"] = 0
+	f.live["203.0.113.91"] = 2 * time.Hour
+	state := FirewallState{BlockedNet: []SubnetEntry{{CIDR: "192.0.2.0/24", ExpiresAt: f.at.Add(3 * time.Hour)}}}
+	writeEngineStateFile(t, f.e.statePath, state)
+	got, err := f.e.BlockAdmissionSnapshot(nil, nil)
+	if err != nil || got.Unclaimed != 4 || got.Drain != -time.Second {
+		t.Fatalf("missing expiry advertised a horizon: %+v %v", got, err)
+	}
+}
+
+// Ended verified aliases are not live ownership; uncertain aliases still are.
+// Admission identity takes precedence over the legacy stamp.
+func TestBlockAdmissionSnapshotAliasLifetimes(t *testing.T) {
+	for _, kind := range []string{"expired alias", "expired unverified alias", "same action different stamp", "same action different verification", "permanent alias"} {
+		t.Run(kind, func(t *testing.T) {
+			f := newBatchFixture(t, FirewallState{})
+			row := BlockedEntry{IP: "203.0.113.90", ActionID: "act_owned", ExpiresAt: f.at.Add(time.Hour)}
+			alias := row
+			alias.IP = "::ffff:203.0.113.90"
+			wantA, wantU, wantT := 1, 0, 1
+			switch kind {
+			case "expired alias", "expired unverified alias":
+				alias.ActionID, alias.ExpiresAt = "", f.at
+				if kind == "expired unverified alias" {
+					alias.Unverified, wantA, wantU = true, 0, 1
+				}
+			case "same action different stamp":
+				alias.Automatic = true
+			case "same action different verification":
+				alias.Unverified = true
+			case "permanent alias":
+				alias.ActionID, alias.ExpiresAt, wantA, wantT = "", time.Time{}, 0, 0
+			}
+			f.live[row.IP] = time.Hour
+			rows := []BlockedEntry{row, alias}
+			for pass := 0; pass < 2; pass++ {
+				rows[0], rows[1] = rows[1], rows[0]
+				writeEngineStateFile(t, f.e.statePath, FirewallState{Blocked: rows})
+				got, err := f.e.BlockAdmissionSnapshot(nil, nil)
+				if err != nil || got.Admission != wantA || got.Imported != 0 || got.Unclaimed != wantU || got.Temporary != wantT {
+					t.Fatalf("alias %s: %+v %v", kind, got, err)
+				}
+			}
+		})
+	}
+}
+
+func TestBlockAdmissionSnapshotFamilyBoundaries(t *testing.T) {
+	for _, disabled := range []bool{false, true} {
+		f := newBatchFixture(t, FirewallState{})
+		f.live["203.0.113.90"] = time.Hour
+		f.live["2001:db8::90"] = time.Hour
+		if disabled {
+			f.e.cfg.IPv6, f.e.setBlocked6 = false, nil
+		}
+		cause := errors.New("second family unavailable")
+		dump, calls := f.e.liveBlockedDump, 0
+		f.e.liveBlockedDump = func(set *nftables.Set) ([]nftables.SetElement, error) {
+			calls++
+			if calls == 2 {
+				return nil, cause
+			}
+			return dump(set)
+		}
+		got, err := f.e.BlockAdmissionSnapshot(nil, nil)
+		if disabled {
+			if err != nil || calls != 1 || got.Unclaimed != 1 || got.Temporary != 1 {
+				t.Fatalf("IPv4-only: %+v %v calls=%d", got, err, calls)
+			}
+		} else if !errors.Is(err, cause) || calls != 2 || got.Temporary != 0 || got.Admission != 0 || got.Imported != 0 || got.Unclaimed != 0 || got.Drain != 0 || len(got.ShadowHeld) != 0 {
+			t.Fatalf("partial snapshot published: %+v %v calls=%d", got, err, calls)
+		}
 	}
 }

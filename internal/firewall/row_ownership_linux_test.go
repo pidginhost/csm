@@ -55,7 +55,7 @@ func TestAutomaticBlockNeverReplacesAnAdmissionRow(t *testing.T) {
 
 // At the temporary cap an automatic block never evicts a row an admission
 // action wrote (design C8); it is refused when no other row can make room.
-// An operator's block still may.
+// Nor does an operator's block: it is added above the limit instead.
 func TestAutomaticBlockNeverEvictsAnAdmissionRow(t *testing.T) {
 	for _, automatic := range []bool{false, true} {
 		e := &Engine{statePath: t.TempDir(), cfg: &FirewallConfig{DenyTempIPLimit: 1}, setBlocked: namedIPv4Set("blocked_ips")}
@@ -69,8 +69,8 @@ func TestAutomaticBlockNeverEvictsAnAdmissionRow(t *testing.T) {
 		e.mu.Lock()
 		victim, ok := e.evictionVictimLocked(state, "", automatic)
 		e.mu.Unlock()
-		if automatic == ok || (ok && victim != "192.0.2.31") {
-			t.Fatalf("automatic=%v: victim = %q, %t", automatic, victim, ok)
+		if ok {
+			t.Fatalf("automatic=%v: victim = %q", automatic, victim)
 		}
 	}
 }

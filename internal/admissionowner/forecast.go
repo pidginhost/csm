@@ -138,10 +138,11 @@ func (o *Owner) forecast() (err error) {
 // refused target ends or waits as a live check has it. A real block that
 // already covers the address ends the pick as existing_actual, and a
 // usable panel allow as verdict_allow, before any modelled capacity is
-// judged. A covering or shorter forecast block or a full modelled set ends
-// it without a call. With the callback on, any other pick is asked about
-// first (D8) and waits for its answer with no forecast change; then the
-// forecast bound or the modelled ceiling can still end it. Only a capacity
+// judged. A covering or shorter forecast block, or a modelled set with no
+// free slot in a partition the pick may occupy, ends it without a call.
+// With the callback on, any other pick is asked about first (D8) and waits
+// for its answer with no forecast change; then the forecast bound or the
+// modelled ceiling can still end it. Only a capacity
 // admission changes the model. Without an engine, snapshot or sound clock
 // the picks wait, with no call or forecast change.
 func (o *Owner) forecastBlocks(picks []execPick) error {
@@ -202,7 +203,7 @@ func (o *Owner) forecastBlocks(picks []execPick) error {
 			continue
 		case pred != 0:
 			// A forecast block holds the address: nothing to ask.
-		case o.shadow.full(adm):
+		case o.shadow.full(adm, lanesOf(p.pick)):
 			pred = admission.PredictSetFull
 		case o.policy.VerdictEnabled && !answered:
 			o.askVerdict(p.pick.ID, p.c, m.IP, m.Reason)

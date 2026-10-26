@@ -338,10 +338,29 @@ startup, on entry into dry run or after its model failed, and leaving dry
 run keeps the last session's identity. `modelled_kinds` and
 `prediction_scope` say what the model covers: `block_ip` against the hourly
 ceiling and the temporary block capacity. `occupancy` gives the real
-temporary blocks (`actual`), the forecast blocks the real sets do not hold
+temporary occupancy (`actual`, addresses plus two elements per timed subnet),
+the forecast addresses the real sets do not hold
 (`shadow_only`), their sum (`predicted`), the `limit`, whether the set is
 `unlimited` and whether the model holds as many blocks as it can (`limited`);
-it is null while no snapshot is available. `ceiling` is the forecast's own
+it is null while no snapshot is available. `capacity` is the finite capacity
+automatic admission is modelled within: a positive limit, or 10000 for an
+unlimited set. Until validation rejects negative limits, they use the same
+fallback as zero and retain their configured value in `limit`. `unclaimed` counts the real timed entries it never evicts (operator
+blocks, blocks of unknown origin and two per timed subnet), `imported` the
+real verified stamped legacy automatic blocks, and `drain_seconds` estimates how long the last of
+them has left at the snapshot, or -1 when a kernel expiry is unavailable.
+Zero means no remaining known whole seconds. Treat -1 as unknown, not as
+expired; a combined horizon is unknown if any contributing horizon is unknown.
+New blocks, renewals and subnet wall-clock
+changes can extend that estimate; it is not an automatic removal deadline. `general` and `reserved` divide the slots the unclaimed
+entries leave, a fifth rounded up reserved for direct or corroborated work,
+each with its `size`, the real and forecast automatic blocks it holds
+(`used`) and its `free` slots, also bounded by total remaining capacity.
+Existing occupants keep their partition when limits change; a full or
+overfull set admits no additional forecast block. Real coverage replaces forecast occupancy: a
+manual timed block reduces available capacity, an automatic block counts in
+general until ledger partitions are wired, and permanent coverage takes no
+temporary slot. These fields do not select eviction victims. `ceiling` is the forecast's own
 copy of the hourly ceiling: `limit`, `general_used`, `reserved_used`,
 `general_budget` and `reserved_budget`, null while no forecast runs. `picks`
 counts the session's predictions by name and `last_hour` the last sixty
@@ -370,8 +389,11 @@ every block. Admission rows say existing blocking is unaffected, and
 `admission execution` warns while execution is held. The dry-run rows of an
 owner that forecasts (`admission dry run`, `admission dry-run
 capacity` and `admission dry-run examples`) show the forecast's session,
-real against predicted capacity and lost examples. A dry run alone is not a
-failure; a held forecast, model limits, waits the model predicts and lost
+real against predicted capacity and lost examples. The capacity row also
+shows the automatic slots of each partition and how long the entries
+automatic admission never evicts take to drain. A dry run alone is not a
+failure; a held forecast, model limits, waits the model predicts, a set
+those entries fill, no free automatic slot, an unknown drain time and lost
 or stale examples warn. Rows warn when
 the ledger owner is not running, its clock reading
 is refused, an owner turn fails (`admission turns`), retiring an uncertain

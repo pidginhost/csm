@@ -260,6 +260,10 @@ type BlockedEntry struct {
 	// ended unknown or has not been settled. It is not reported as a block
 	// and not restored into the kernel.
 	Unverified bool `json:"unverified,omitempty"`
+	// Automatic marks a timed row a legacy automatic block wrote: explicit
+	// provenance, where Source is read from the reason text (spec 6).
+	// Admission rows carry ActionID instead. Older builds ignore it.
+	Automatic bool `json:"automatic,omitempty"`
 }
 
 // AllowedEntry represents an allowed IP with metadata.
@@ -2706,6 +2710,7 @@ func (e *Engine) blockIPRequestLocked(ip string, reason string, timeout time.Dur
 		entry.ExpiresAt = expiresAt
 	}
 	expiresAt = entry.ExpiresAt
+	entry.Automatic = req.Automatic && !expiresAt.IsZero()
 
 	var evictSet *nftables.Set
 	var evictKey []byte
@@ -2977,37 +2982,44 @@ func (e *Engine) blockIPTargetFromStates(ip string, timeout time.Duration, skipE
 	// against the cap. Fall back to the cached state.json count
 	// (existing behaviour) if the live query is unavailable.
 	if e.cfg.DenyIPLimit > 0 || e.cfg.DenyTempIPLimit > 0 {
-		perm, temp, ok := e.livePermTempCountsLocked(st)
-		stateEntry, replacingStateEntry := blockedStateEntry(st, ip)
-		if ok && !skipExisting {
-			if replacingStateEntry && !stateEntry.Unverified {
-				// Replacing an element already occupying a limit slot is not a new
-				// block. Only subtract it when the kernel confirms the state entry
-				// is still live; stale state must not hide some other live element.
-				if live, liveErr := e.isBlockedLiveLocked(ip); liveErr == nil && live {
-					if stateEntry.ExpiresAt.IsZero() && perm > 0 {
-						perm--
-					} else if !stateEntry.ExpiresAt.IsZero() && temp > 0 {
+		var perm, temp int
+		if timeout > 0 && !skipExisting && e.lifecycle == nil && hasAdmissionRows(st) {
+			// Count ownership and occupancy from one image, including replacement.
+			temp = e.operatorTempCountLocked(st, ip)
+		} else {
+			var ok bool
+			perm, temp, ok = e.livePermTempCountsLocked(st)
+			stateEntry, replacingStateEntry := blockedStateEntry(st, ip)
+			if ok && !skipExisting {
+				if replacingStateEntry && !stateEntry.Unverified {
+					// Replacing an element already occupying a limit slot is not a new
+					// block. Only subtract it when the kernel confirms the state entry
+					// is still live; stale state must not hide some other live element.
+					if live, liveErr := e.isBlockedLiveLocked(ip); liveErr == nil && live {
+						if stateEntry.ExpiresAt.IsZero() && perm > 0 {
+							perm--
+						} else if !stateEntry.ExpiresAt.IsZero() && temp > 0 {
+							temp--
+						}
+					}
+				} else if live, temporary, classified := e.liveBlockElementKindLocked(targetSet, key); classified && live {
+					// Recovery may leave a kernel element with no state row. It still
+					// occupies one of the counted slots, so replacing it must release
+					// that same slot before enforcing the limit.
+					if temporary && temp > 0 {
 						temp--
+					} else if !temporary && perm > 0 {
+						perm--
 					}
 				}
-			} else if live, temporary, classified := e.liveBlockElementKindLocked(targetSet, key); classified && live {
-				// Recovery may leave a kernel element with no state row. It still
-				// occupies one of the counted slots, so replacing it must release
-				// that same slot before enforcing the limit.
-				if temporary && temp > 0 {
-					temp--
-				} else if !temporary && perm > 0 {
-					perm--
+			}
+			if !ok {
+				excludeIP := ""
+				if cachedBlockMissingLive || (!skipExisting && replacingStateEntry) {
+					excludeIP = ip
 				}
+				perm, temp = blockedStatePermTempCounts(st, excludeIP)
 			}
-		}
-		if !ok {
-			excludeIP := ""
-			if cachedBlockMissingLive || (!skipExisting && replacingStateEntry) {
-				excludeIP = ip
-			}
-			perm, temp = blockedStatePermTempCounts(st, excludeIP)
 		}
 		if timeout == 0 && e.cfg.DenyIPLimit > 0 && perm >= e.cfg.DenyIPLimit {
 			return nil, nil, false, "", fmt.Errorf("permanent deny limit reached (%d)", e.cfg.DenyIPLimit)
@@ -3098,6 +3110,83 @@ func soonestExpiringTempIP(st FirewallState, excludeIP string) (string, bool) {
 func firewallStateHasBlocked(state FirewallState, ip string) bool {
 	_, ok := blockedStateEntry(state, ip)
 	return ok
+}
+
+func hasAdmissionRows(state FirewallState) bool {
+	for _, row := range state.Blocked {
+		if row.ActionID != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// operatorTempCountLocked counts non-admission occupants from one complete
+// live image. Partial dumps fall back as a whole to lease-pruned policy.
+// The aggregate liveBlockCounts test seam cannot describe ownership.
+func (e *Engine) operatorTempCountLocked(state FirewallState, excludeIP string) int {
+	var conn *nftables.Conn
+	readable := e.liveBlockedDump != nil
+	if !readable {
+		var err error
+		conn, err = newLifecycleConn(e)
+		readable = err == nil
+	}
+	live := make(map[string]nftables.SetElement)
+	gotAny := false
+	for _, set := range []*nftables.Set{e.setBlocked, e.setBlocked6} {
+		if !readable || set == nil || (set == e.setBlocked6 && !e.cfg.IPv6) {
+			continue
+		}
+		elements, err := e.blockSnapshotElementsLocked(conn, set)
+		if err != nil {
+			readable = false
+			break
+		}
+		gotAny = true
+		for _, el := range elements {
+			if ip, valid := blockSetIP(set, el.Key); valid {
+				live[ip] = el
+			}
+		}
+	}
+	// A lease may end while the last family is read.
+	at := e.leaseNowLocked()
+	state = copyFirewallState(state)
+	state.Blocked, _ = pruneBlocked(state.Blocked, at)
+	owners := make(map[string]string)
+	for _, row := range state.Blocked {
+		ip := stateIPKey(row.IP)
+		id := row.ActionID
+		if !row.ExpiresAt.After(at) {
+			id = ""
+		}
+		if prior, exists := owners[ip]; exists && prior != id {
+			id = ""
+		}
+		owners[ip] = id
+	}
+	// Use the same permanent-over-timed precedence as the policy view.
+	normalizeFirewallStateIPs(&state)
+	types := blockedStateTempByIP(state)
+	if readable && gotAny {
+		n := 0
+		for ip, el := range live {
+			if !sameIPString(ip, excludeIP) && liveBlockTemporary(el, ip, types) && owners[ip] == "" {
+				n++
+			}
+		}
+		return n
+	}
+	var other []BlockedEntry
+	for _, row := range state.Blocked {
+		if owners[stateIPKey(row.IP)] == "" {
+			other = append(other, row)
+		}
+	}
+	state.Blocked = other
+	_, n := blockedStatePermTempCounts(state, excludeIP)
+	return n
 }
 
 func blockedStateEntry(state FirewallState, ip string) (BlockedEntry, bool) {

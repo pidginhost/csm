@@ -199,15 +199,18 @@ func dryRunView(at time.Time) *health.AdmissionStatus {
 	return &health.AdmissionStatus{CheckedAt: at, Ingress: &admission.IngressHealth{Admitting: true}, Owner: &health.AdmissionOwner{
 		DryRun: &health.AdmissionDryRun{Active: true, SessionID: &id, Since: &since, ResetReason: &reset,
 			ModelledKinds: []string{"block_ip"}, PredictionScope: "ceiling_and_temporary_capacity",
-			Occupancy: &health.AdmissionDryRunOccupancy{Actual: 8, ShadowOnly: 2, Predicted: 10, Limit: 50},
-			Ceiling:   &health.AdmissionDryRunCeiling{Limit: 2000, GeneralUsed: 7, GeneralBudget: 259, ReservedBudget: 66},
-			Picks:     picks, LastHour: recent},
+			Occupancy: &health.AdmissionDryRunOccupancy{Actual: 8, ShadowOnly: 2, Predicted: 10, Limit: 50, Capacity: 50, Unclaimed: 6, Imported: 2, DrainSeconds: 7200,
+				General: health.AdmissionDryRunPartition{Size: 35, Used: 4, Free: 31}, Reserved: health.AdmissionDryRunPartition{Size: 9, Free: 9}},
+			Ceiling: &health.AdmissionDryRunCeiling{Limit: 2000, GeneralUsed: 7, GeneralBudget: 259, ReservedBudget: 66},
+			Picks:   picks, LastHour: recent},
 	}}
 }
 
 // Spec 3.8: a dry run alone is not a failure. Doctor names the forecast's
-// session and coverage, actual against predicted capacity and the modelled
-// ceiling, and says a prediction is not a block.
+// session and coverage, actual against predicted capacity, the modelled
+// partitions of the automatic slots with the entries admission never
+// evicts and when they drain, and the modelled ceiling, and says a
+// prediction is not a block.
 func TestDoctorRendersAHealthyDryRun(t *testing.T) {
 	at := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
 	report := doctorReportForSnapshot(t, admissionSnapshot(dryRunView(at)))
@@ -218,12 +221,22 @@ func TestDoctorRendersAHealthyDryRun(t *testing.T) {
 	}
 	capacity, ok := doctorCheckNamed(report, "admission dry-run capacity")
 	if !ok || capacity.Status != "ok" || !strings.Contains(capacity.Message, "8 real") || !strings.Contains(capacity.Message, "10 of 50 predicted") ||
-		!strings.Contains(capacity.Message, "259 general") || !strings.Contains(capacity.Message, "66 reserved") {
+		!strings.Contains(capacity.Message, "259 general") || !strings.Contains(capacity.Message, "66 reserved") ||
+		!strings.Contains(capacity.Message, "4 of 35 general") || !strings.Contains(capacity.Message, "0 of 9 reserved") ||
+		!strings.Contains(capacity.Message, "6 entries automatic admission never evicts") || !strings.Contains(capacity.Message, "2 legacy automatic") ||
+		!strings.Contains(capacity.Message, "2h0m0s") {
 		t.Fatalf("admission dry-run capacity = %+v (%v)", capacity, ok)
 	}
 	examples, ok := doctorCheckNamed(report, "admission dry-run examples")
 	if !ok || examples.Status != "ok" {
 		t.Fatalf("admission dry-run examples = %+v (%v)", examples, ok)
+	}
+	// Only the reserve left is not a full set.
+	view := dryRunView(at)
+	view.Owner.DryRun.Occupancy.General = health.AdmissionDryRunPartition{}
+	view.Owner.DryRun.Occupancy.Reserved = health.AdmissionDryRunPartition{Size: 1, Free: 1}
+	if reserve, ok := doctorCheckNamed(doctorReportForSnapshot(t, admissionSnapshot(view)), "admission dry-run capacity"); !ok || reserve.Status != "ok" {
+		t.Fatalf("admission dry-run capacity with only the reserve = %+v (%v)", reserve, ok)
 	}
 	for _, c := range report.Checks {
 		if strings.HasPrefix(c.Name, "admission ") && c.Status == "fail" {
@@ -246,8 +259,11 @@ func TestDoctorWarnsOnDryRunModelProblems(t *testing.T) {
 			d.LastHour["ceiling"], d.LastHour["set_full"] = 2, 1
 		}},
 		{"model bound", "admission dry-run capacity", "models no more", func(d *health.AdmissionDryRun) { d.Occupancy.Limited = true }},
-		{"unlimited set", "admission dry-run capacity", "unlimited", func(d *health.AdmissionDryRun) {
-			d.Occupancy.Limit, d.Occupancy.Unlimited = 0, true
+		{"unlimited set", "admission dry-run capacity", "modelled at 10000", func(d *health.AdmissionDryRun) {
+			d.Occupancy.Limit, d.Occupancy.Unlimited, d.Occupancy.Capacity = 0, true, 10000
+		}},
+		{"set held by entries admission never evicts", "admission dry-run capacity", "fill the set", func(d *health.AdmissionDryRun) {
+			d.Occupancy.Unclaimed, d.Occupancy.General, d.Occupancy.Reserved = 50, health.AdmissionDryRunPartition{}, health.AdmissionDryRunPartition{}
 		}},
 		{"held forecast", "admission dry run", "engine_unavailable", func(d *health.AdmissionDryRun) {
 			code, when := "engine_unavailable", at.Add(-time.Minute)
@@ -292,5 +308,44 @@ func TestDoctorRendersAnInactiveDryRun(t *testing.T) {
 		if strings.HasPrefix(c.Name, "admission dry") {
 			t.Fatalf("a comparison owner printed %+v", c)
 		}
+	}
+}
+
+func TestDoctorCapacityExplainsReserveOnly(t *testing.T) {
+	view := dryRunView(time.Now()).Owner.DryRun
+	view.Occupancy.General = health.AdmissionDryRunPartition{}
+	view.Occupancy.Reserved = health.AdmissionDryRunPartition{Size: 1, Free: 1}
+	got := dryRunCapacityCheck(view)
+	if got.Status != "ok" || !strings.Contains(got.Message, "general work waits") {
+		t.Fatalf("reserve-only explanation: %+v", got)
+	}
+	view.Occupancy.Reserved = health.AdmissionDryRunPartition{}
+	got = dryRunCapacityCheck(view)
+	if got.Status != "warn" || !strings.Contains(got.Fix, "inspect existing blocks") || !strings.Contains(got.Fix, "renewals") {
+		t.Fatalf("full-set action: %+v", got)
+	}
+}
+
+func TestDoctorWarnsOnUnknownDrain(t *testing.T) {
+	view := dryRunView(time.Now()).Owner.DryRun
+	view.Occupancy.DrainSeconds = -1
+	got := dryRunCapacityCheck(view)
+	if got.Status != "warn" || !strings.Contains(got.Message, "unknown drain time") || strings.Contains(got.Message, "-1s") || !strings.Contains(got.Fix, "inspect existing blocks") {
+		t.Fatalf("unknown drain: %+v", got)
+	}
+}
+
+func TestDoctorCapacityExplainsOccupiedGeneral(t *testing.T) {
+	view := dryRunView(time.Now()).Owner.DryRun
+	view.Occupancy.General = health.AdmissionDryRunPartition{Size: 4, Used: 4}
+	view.Occupancy.Reserved = health.AdmissionDryRunPartition{Size: 1, Free: 1}
+	got := dryRunCapacityCheck(view)
+	if got.Status != "ok" || !strings.Contains(got.Message, "general work waits") {
+		t.Fatalf("only reserved room: %+v", got)
+	}
+	view.Occupancy.Reserved.Free, view.Occupancy.Reserved.Used = 0, 1
+	got = dryRunCapacityCheck(view)
+	if got.Status != "warn" || !strings.Contains(got.Message, "no free automatic slot") || strings.Contains(got.Message, "only direct or corroborated work has a set slot") {
+		t.Fatalf("full reserve promised room: %+v", got)
 	}
 }

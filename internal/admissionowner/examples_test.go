@@ -75,7 +75,7 @@ func TestOwnerWritesOneExampleBatchPerTurn(t *testing.T) {
 	p := withTestRegistry(t)
 	f := newOwnerFixture(t)
 	blocks := newFakeBlocks()
-	blocks.temp, blocks.limit = 8, 10
+	blocks.temp, blocks.limit = 8, 11
 	o, _, _ := policyOwner(t, f, blocks, dryPolicy(1))
 	w := watchExamples(t, o)
 	ids := map[string]admission.CandidateID{}
