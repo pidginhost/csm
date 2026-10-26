@@ -34,7 +34,7 @@ var ErrStateNotKeptAside = errors.New("firewall state unreadable and not kept as
 func SameBlockedEntry(a, b BlockedEntry) bool {
 	return a.IP == b.IP && a.Reason == b.Reason && a.Source == b.Source &&
 		a.BlockedAt.Equal(b.BlockedAt) && a.ExpiresAt.Equal(b.ExpiresAt) &&
-		a.ActionID == b.ActionID && a.Unverified == b.Unverified
+		a.ActionID == b.ActionID && a.Unverified == b.Unverified && a.Automatic == b.Automatic
 }
 
 // LoadState reads the authoritative firewall state file directly without requiring

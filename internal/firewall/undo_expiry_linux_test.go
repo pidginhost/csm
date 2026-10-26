@@ -100,3 +100,18 @@ func TestMemberUndoChecksAliasesOnLeaseClock(t *testing.T) {
 		})
 	}
 }
+
+// Durable recovery restores an earlier image without turning it into a new operator block.
+func TestLegacyStampDurableUndo(t *testing.T) {
+	at := time.Now()
+	e := newBlockedSetWireTestEngine(t, leaseActionReadConn(t, nil))
+	e.expiryClock = func() time.Time { return at }
+	row := BlockedEntry{IP: "203.0.113.90", Automatic: true, ExpiresAt: at.Add(time.Hour)}
+	plan := FirewallAction{Request: ActionRequest{Operation: "undo"}, After: FirewallState{Blocked: []BlockedEntry{row}}}
+	if err := (engineActionKernel{e}).PrepareFirewallUndo(&plan); err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.After.Blocked) != 1 || !SameBlockedEntry(plan.After.Blocked[0], row) {
+		t.Fatalf("durable undo changed stamp: %+v", plan.After)
+	}
+}

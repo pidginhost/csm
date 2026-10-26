@@ -603,3 +603,35 @@ func TestSingleUnblockClearsMappedOperatorEvidence(t *testing.T) {
 		t.Fatal("mapped unblock left in-memory operator evidence")
 	}
 }
+
+// The provenance stamp participates in undo's compare-and-restore guard.
+func TestUndoSnapshotRejectsChangedAutomaticStamp(t *testing.T) {
+	s, rb := threatTestServer(t)
+	ip := "192.0.2.127"
+	row := firewall.BlockedEntry{IP: ip, Reason: "auto-block: snapshot", ExpiresAt: time.Now().Add(time.Hour), Automatic: true}
+	rb.entries[ip] = row
+	if err := rb.save(); err != nil {
+		t.Fatal(err)
+	}
+	snapshots, err := snapshotFirewallBlocks(s.cfg.StatePath)
+	if err != nil || !snapshots[ip].Automatic {
+		t.Fatalf("snapshot: %+v %v", snapshots, err)
+	}
+	payload := undoPayloadIPs{IPs: []string{ip}, BlockSnapshot: true, ExpectedBlocks: snapshots}
+	raw, err := encodeUndoPayload(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded undoPayloadIPs
+	if err = decodeUndoPayload(raw, &decoded); err != nil || !decoded.ExpectedBlocks[ip].Automatic {
+		t.Fatalf("payload: %+v %v", decoded, err)
+	}
+	row.Automatic = false
+	rb.entries[ip] = row
+	if err = rb.save(); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := s.undoSnapshotBlocks(decoded, false); n != 0 || !errors.Is(err, firewall.ErrBlockChanged) {
+		t.Fatalf("changed stamp accepted: %d %v", n, err)
+	}
+}
