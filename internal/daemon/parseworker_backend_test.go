@@ -387,3 +387,46 @@ func TestStopParseWorkersDuringWatcherRestart(t *testing.T) {
 		t.Fatalf("extractor accepted work after cleanup: %v", err)
 	}
 }
+
+func TestInitParseWorkersUsesConfiguredMemoryLimit(t *testing.T) {
+	realStop := stopParseWorkerUnits
+	stopParseWorkerUnits = func(context.Context, string) error { return nil }
+	t.Cleanup(func() { stopParseWorkerUnits = realStop })
+	allowParseWorkerCommand(t)
+	limits := map[string]uint64{}
+	hidden := map[string][]string{}
+	realLauncher := parseWorkerLauncher
+	parseWorkerLauncher = func(cfg workerproc.UnitConfig) workerproc.Launcher {
+		limits[cfg.Prefix] = cfg.MemoryLimit
+		hidden[cfg.Prefix] = cfg.InaccessiblePaths
+		return realLauncher(cfg)
+	}
+	realHidden := parseWorkerHiddenPaths
+	parseWorkerHiddenPaths = func() []string { return []string{"/home2"} }
+	t.Cleanup(func() { parseWorkerLauncher, parseWorkerHiddenPaths = realLauncher, realHidden })
+	cfg := &config.Config{}
+	cfg.EmailAV.Enabled = true
+	cfg.EmailAV.ScanConcurrency = 2
+	cfg.EmailAV.WorkerMemoryLimit = 256 << 20
+	d := &Daemon{binaryPath: "/opt/csm/csm", cfg: cfg}
+	if err := d.initParseWorkers(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(d.stopParseWorkers)
+	want := map[string]uint64{
+		"csm-parse-worker-zip0":  parseworker.DefaultMemoryLimit,
+		"csm-parse-worker-mail0": 256 << 20,
+		"csm-parse-worker-mail1": 256 << 20,
+	}
+	if len(limits) != len(want) {
+		t.Fatalf("units configured = %v, want %v", limits, want)
+	}
+	for prefix, limit := range want {
+		if limits[prefix] != limit {
+			t.Errorf("%s memory limit = %d, want %d", prefix, limits[prefix], limit)
+		}
+		if len(hidden[prefix]) != 1 || hidden[prefix][0] != "/home2" {
+			t.Errorf("%s hides %q, want the account home volumes", prefix, hidden[prefix])
+		}
+	}
+}

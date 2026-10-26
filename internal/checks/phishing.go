@@ -1928,6 +1928,7 @@ func classifyKitZip(ctx context.Context, path string) (zipVerdict, string) {
 		if errors.Is(err, workerproc.ErrWorkerFailed) {
 			if sum, hashErr := zipSHA256(f, info); hashErr == nil {
 				zipStrikes.Record(sum)
+				saveZipCrashSample(sum, f, info.Size())
 			}
 		}
 	}

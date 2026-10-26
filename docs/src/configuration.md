@@ -601,10 +601,24 @@ email_av:
   # Permission events have a five-second scan hold budget. When it expires,
   # the open is allowed ("open") or denied for retry ("tempfail"); an admitted
   # scan continues. A full scan queue applies the same policy immediately.
-  # Repeated deadline or capacity exhaustion raises email_av_hold_bypass and
-  # stops queueing new scans for five minutes. During this cooldown new opens
-  # are allowed unscanned ("open") or deferred ("tempfail"). Scanning resumes
-  # automatically afterwards; bypassed messages are not scanned later.
+  # When messages repeatedly cannot start scanning within the hold budget, or
+  # find the scan queue full, CSM raises email_av_hold_bypass and stops
+  # queueing new scans for five minutes. A hold that runs out while the
+  # message is already being scanned does not count. During this cooldown new
+  # opens are allowed unscanned ("open") or deferred ("tempfail"). Scanning
+  # resumes automatically afterwards; bypassed messages are not scanned later.
+  # One sender's messages normally use at most half the scan_concurrency
+  # slots (at least one), leaving slots for others when concurrency exceeds
+  # one. The sender is the authenticated user, else the sending address (an
+  # IPv6 /64), else the local account. Incomplete sender fields are ignored
+  # when choosing the sender. Mail relayed through a filtering gateway,
+  # unauthenticated mail submitted over SMTP from localhost, and bounces Exim
+  # creates each count as one sender. Further messages wait without taking a slot;
+  # when their hold budget runs out they follow fail_mode and are still
+  # scanned afterwards. When too many messages from one sender are waiting,
+  # further ones are scanned at once without waiting their turn. This overflow
+  # can use every scan slot; email_av_source_backlog names the sender, at most
+  # once a minute.
   # An archive that lists more than ten times max_archive_files entries, or
   # whose decompressed data passes max_extraction_size, counts as not fully
   # scanned and follows fail_mode. Nested archives share that budget. So do
@@ -635,10 +649,32 @@ email_av:
   #   reply failed validation     "parse worker reply rejected"
   #   worker unit cannot start    "parse isolation unavailable"
   #   unit keeps failing to start "parse worker failing repeatedly"
-  # The first four raise email_av_parse_worker_failed, at most once a minute;
-  # a rejected reply also raises a Critical email_av_parse_worker_rejected.
-  # The last two raise a Critical email_av_isolation_unavailable. Each
-  # Critical finding is raised at most once an hour.
+  #   message failed twice before "parse worker failed on this message before"
+  # The first four raise email_av_parse_worker_failed, naming the message and
+  # its sender, at most once a minute; a rejected reply also raises a Critical
+  # email_av_parse_worker_rejected. The next two raise a Critical
+  # email_av_isolation_unavailable. Each Critical finding is raised at most
+  # once an hour. A message whose worker failed twice within a day is not
+  # unpacked again on later delivery attempts, including after a spool watcher
+  # restart. Failed starts, cancellation and local descriptor exhaustion do
+  # not count against messages or senders. When messages from one sender
+  # make workers fail three times, each within ten minutes of the one before,
+  # a High email_av_parse_worker_source names the sender, at most once every
+  # ten minutes. This advisory never blocks automatically, and blocking an
+  # address does not hide it.
+  worker_memory_limit: 536870912        # memory and swap cap of each attachment worker in bytes (512 MiB); minimum 134217728 (128 MiB)
+  # Up to scan_concurrency attachment workers run at once, and each may use up
+  # to worker_memory_limit. A worker that reaches it is killed and the message
+  # follows fail_mode as "parse worker ran out of memory". The phishing-kit
+  # zip worker keeps the default cap. Changing it takes effect after a daemon
+  # restart.
+  keep_crash_samples: false             # keep copies of messages and tenant zips that crash an attachment worker
+  # Crash samples are for diagnosing worker crashes. They hold customer mail
+  # and tenant files: they are readable by root only, stored in parse-crashes
+  # under the state directory, capped at 20 samples and 500 MiB, and deleted
+  # after 7 days, also after this setting is turned off. A link in place of
+  # the parse-crashes directory is refused. Failed or incomplete copies are
+  # discarded without changing the scan verdict or findings.
 
 # --- Email Protection ---
 email_protection:

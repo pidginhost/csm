@@ -27,9 +27,10 @@ func IPResponseAnswersFinding(cfg *config.Config, f alert.Finding, blocked bool)
 		return false
 	}
 	switch f.Check {
-	case "email_phishing_content", "email_malware":
+	case "email_phishing_content", "email_malware", "email_av_parse_worker_source":
 		// Mail content may be evidence of a compromised local sender, and
-		// any IP in its message may come from an untrusted mail header.
+		// an IP in the message may come from a mail header or an account
+		// name. A parse source can also represent a whole IPv6 subnet.
 		return false
 	case "mail_account_spray", "smtp_account_spray", "mail_subnet_spray", "smtp_subnet_spray",
 		"http_distributed_flood", "http_asn_crawl":

@@ -58,6 +58,7 @@ func TestIPResponsePolicyKeepsMailAndDistributedEvidence(t *testing.T) {
 	// can contain an IP, and account-spray SourceIP is only the latest sender
 	// among many. None describes an attack answered by blocking that one IP.
 	findings := []alert.Finding{
+		{Check: "email_av_parse_worker_source", Severity: alert.High, Message: `Messages from source "auth:example (203.0.113.40)" repeatedly killed the attachment parse worker`},
 		{Check: "email_phishing_content", Severity: alert.Critical, Message: "Suspicious outbound email from sender@example.test (message: 203.0.113.40)"},
 		{Check: "email_malware", Severity: alert.Critical, Message: "Malware detected in outbound email from sender@example.test to recipient@example.test: test-signature [subject: update 203.0.113.40 notice]"},
 		{Check: "mail_account_spray", Severity: alert.High, SourceIP: "203.0.113.40", Message: "Mail password spray targeting mailbox@example.test: 10 unique IPs in 5m0s"},

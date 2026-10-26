@@ -139,6 +139,40 @@ func wantResponse(failMode string) uint32 {
 	return FAN_ALLOW
 }
 
+// The worker is handed whatever -H the daemon opens, so a -H on another
+// filesystem than the spool body is refused.
+func TestSpoolHeaderOpenRefusesOtherDevice(t *testing.T) {
+	shm := t.TempDir()
+	if _, err := os.Stat("/dev/shm"); err == nil {
+		if d, mkErr := os.MkdirTemp("/dev/shm", "csm-hdr-"); mkErr == nil {
+			shm = d
+			t.Cleanup(func() { _ = os.RemoveAll(d) })
+		}
+	}
+	bodyDir := t.TempDir()
+	var hs, bs unix.Stat_t
+	if unix.Stat(shm, &hs) != nil || unix.Stat(bodyDir, &bs) != nil || hs.Dev == bs.Dev {
+		t.Skip("no second filesystem for the header")
+	}
+	header := filepath.Join(shm, "1aBcDe-XDEV00-XX-H")
+	if err := os.WriteFile(header, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.Create(filepath.Join(bodyDir, "1aBcDe-XDEV00-XX-D"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = body.Close() }()
+	f, err := openSpoolHeader(header, int(body.Fd()))
+	if err == nil {
+		_ = f.Close()
+		t.Fatal("openSpoolHeader accepted a -H on another filesystem")
+	}
+	if !strings.Contains(err.Error(), "not on the spool filesystem") {
+		t.Fatalf("error = %v, want the filesystem refusal", err)
+	}
+}
+
 // A close-on-exec body duplicate does not protect the original event fd:
 // queued events must not be inherited by a worker's systemd-run client.
 func TestSpoolWatcherRequestsCloseOnExecEvents(t *testing.T) {
@@ -208,7 +242,7 @@ func TestSpoolHeaderOpenRefusesNonRegular(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer func() { _ = body.Close() }()
-			if f, openErr := openSpoolHeader(header, body); openErr == nil {
+			if f, openErr := openSpoolHeader(header, int(body.Fd())); openErr == nil {
 				_ = f.Close()
 				t.Fatal("openSpoolHeader accepted a non-regular -H")
 			}
@@ -320,7 +354,8 @@ func TestSpoolExtractUsesOwnSlot(t *testing.T) {
 	dir := t.TempDir()
 	for i := range n {
 		msgID := fmt.Sprintf("1aBcDe-SLOT%d-XX", i)
-		buildMinimalEximSpool(t, dir, msgID)
+		// One message per sender scans at a time; use three senders.
+		buildSourceSpool(t, dir, msgID, fmt.Sprintf("192.0.2.%d", 10+i))
 		evt := bodyEvent(t, dir, msgID)
 		evt.needResp = false
 		evt.queueTicket = sw.scannerHealth.Begin(time.Now())
@@ -463,7 +498,7 @@ func TestSpoolExtractErrorMapping(t *testing.T) {
 					t.Fatalf("%s: responses %+v", mode, got)
 				}
 				fs := takeFindings(ch)
-				if d := findingsFor(fs, "email_av_degraded"); len(d) != 1 || !strings.Contains(d[0].Message, "("+tc.reason+")") {
+				if d := findingsFor(fs, "email_av_degraded"); len(d) != 1 || !strings.Contains(d[0].Message, fmt.Sprintf("(%q)", tc.reason)) {
 					t.Fatalf("%s: degraded findings %+v, want reason %q", mode, d, tc.reason)
 				}
 				for _, check := range others {

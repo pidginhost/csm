@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -10,11 +11,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/crashsample"
 	"github.com/pidginhost/csm/internal/workerproc"
 )
 
@@ -220,4 +223,48 @@ func TestScanForPhishingWarnsOnSkippedZip(t *testing.T) {
 		t.Fatalf("skipped zip findings = %+v", got)
 	}
 	expectAttributed(t, got, "alice")
+}
+
+func TestPhishingZipCrashSampleSaved(t *testing.T) {
+	useZipLister(t, &fakeZipLister{err: fmt.Errorf("parse worker: %w", workerproc.ErrWorkerFailed)})
+	dir := filepath.Join(t.TempDir(), "parse-crashes")
+	SetCrashSamples(crashsample.New(dir))
+	t.Cleanup(func() { SetCrashSamples(nil) })
+	path := kitZip(t)
+	sum := fileSHA256(t, path)
+	ctx, _ := withIncompleteCheckCollector(context.Background())
+	classifyKitZip(ctx, path)
+	want, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "zip-"+sum, "archive.zip"))
+	if err != nil || !bytes.Equal(got, want) {
+		t.Fatalf("crash sample = %d bytes, %v; want a copy of the zip", len(got), err)
+	}
+}
+
+func TestPhishingZipNonWorkerFailuresDoNotSaveSamples(t *testing.T) {
+	for _, cause := range []error{workerproc.ErrSpawn, workerproc.ErrBreakerOpen, workerproc.ErrStopped, context.Canceled, context.DeadlineExceeded, syscall.EMFILE, syscall.ENFILE} {
+		t.Run(cause.Error(), func(t *testing.T) {
+			fake := &fakeZipLister{err: fmt.Errorf("operation: %w", cause)}
+			useZipLister(t, fake)
+			dir := filepath.Join(t.TempDir(), "parse-crashes")
+			SetCrashSamples(crashsample.New(dir))
+			t.Cleanup(func() { SetCrashSamples(nil) })
+			path := kitZip(t)
+			for range workerproc.StrikeLimit + 1 {
+				ctx, c := withIncompleteCheckCollector(context.Background())
+				if verdict, _ := classifyKitZip(ctx, path); verdict != zipNotKit || !c.contains("phishing") {
+					t.Fatal("non-worker failure changed the coverage result")
+				}
+			}
+			if zipStrikes.Len() != 0 || fake.calls != workerproc.StrikeLimit+1 {
+				t.Fatal("non-worker failure charged to archive")
+			}
+			if _, err := os.Lstat(dir); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("non-worker failure saved a sample: %v", err)
+			}
+		})
+	}
 }

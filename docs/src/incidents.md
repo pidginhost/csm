@@ -717,10 +717,12 @@ Attribution gaps:
 | `email_av_parse_error` | ignored | self-health |  |
 | `email_av_parse_worker_failed` | ignored | self-health |  |
 | `email_av_parse_worker_rejected` | ignored | self-health |  |
+| `email_av_parse_worker_source` | ignored | attacker-side |  |
 | `email_av_quarantine_error` | ignored | self-health |  |
 | `email_av_queue_overflow` | ignored | self-health |  |
 | `email_av_scan_error` | ignored | self-health |  |
 | `email_av_scanner_panic` | ignored | self-health |  |
+| `email_av_source_backlog` | ignored | self-health |  |
 | `email_av_timeout` | ignored | self-health |  |
 | `email_cloud_relay_abuse` | security event |  |  |
 | `email_compromised_account` | security event |  |  |

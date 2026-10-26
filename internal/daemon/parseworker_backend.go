@@ -5,10 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/checks"
+	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/crashsample"
 	emime "github.com/pidginhost/csm/internal/mime"
 	"github.com/pidginhost/csm/internal/parseworker"
 	"github.com/pidginhost/csm/internal/workerproc"
@@ -26,6 +29,10 @@ var checkParseWorkerCommand = workerproc.CheckUnitCommand
 
 // parseWorkerLauncher is a seam for tests that must not start units.
 var parseWorkerLauncher = workerproc.UnitLauncher
+
+// parseWorkerHiddenPaths is a seam for tests: the account home volumes
+// ProtectHome does not hide from workers.
+var parseWorkerHiddenPaths = checks.AccountHomeVolumes
 
 func (d *Daemon) initParseWorkers() error {
 	if d.binaryPath == "" {
@@ -45,7 +52,14 @@ func (d *Daemon) initParseWorkers() error {
 		d.reportIsolationUnavailable(err)
 		return fmt.Errorf("parse worker: %w", err)
 	}
-	launchZip := parseWorkerLauncher(parseworker.UnitConfig(d.binaryPath, parseWorkerUnitPrefix+"zip0", 64<<20, logf))
+	registerParseWorkerMetrics()
+	hidden := parseWorkerHiddenPaths()
+	unitConfig := func(name string, memoryLimit, fileSizeLimit uint64) workerproc.UnitConfig {
+		cfg := parseworker.UnitConfig(d.binaryPath, name, memoryLimit, fileSizeLimit, logf)
+		cfg.InaccessiblePaths = hidden
+		return cfg
+	}
+	launchZip := countParseWorkerStarts("zip", parseWorkerLauncher(unitConfig(parseWorkerUnitPrefix+"zip0", parseworker.DefaultMemoryLimit, 64<<20)))
 	lister, err := parseworker.NewLister(parseworker.ListerConfig{
 		Launch: func(ctx context.Context) (workerproc.Process, error) {
 			proc, err := launchZip(ctx)
@@ -56,7 +70,8 @@ func (d *Daemon) initParseWorkers() error {
 			}
 			return proc, err
 		},
-		Log: logf,
+		Log:   logf,
+		OnJob: func(outcome string, memory uint64) { recordParseJob("zip", outcome, memory) },
 	})
 	if err != nil {
 		return err
@@ -72,9 +87,10 @@ func (d *Daemon) initParseWorkers() error {
 		Size: d.cfg.EmailAV.ScanConcurrency,
 		Launch: func(slot int) workerproc.Launcher {
 			name := fmt.Sprintf("%smail%d", parseWorkerUnitPrefix, slot)
-			return parseWorkerLauncher(parseworker.UnitConfig(d.binaryPath, name, parseworker.FileSizeLimit(d.cfg.EmailAV.MaxAttachmentSize), logf))
+			return countParseWorkerStarts("mail", parseWorkerLauncher(unitConfig(name, mailWorkerMemoryLimit(d.cfg), parseworker.FileSizeLimit(d.cfg.EmailAV.MaxAttachmentSize))))
 		},
-		Log: logf,
+		Log:   logf,
+		OnJob: func(outcome string, memory uint64) { recordParseJob("mail", outcome, memory) },
 	})
 	if err != nil {
 		return err
@@ -84,11 +100,20 @@ func (d *Daemon) initParseWorkers() error {
 	return nil
 }
 
+// mailWorkerMemoryLimit is the configured memory cap of each mail parse
+// worker; validation keeps it at or above the minimum.
+func mailWorkerMemoryLimit(cfg *config.Config) uint64 {
+	if cfg.EmailAV.WorkerMemoryLimit < config.MinWorkerMemoryLimit {
+		return parseworker.DefaultMemoryLimit
+	}
+	return uint64(cfg.EmailAV.WorkerMemoryLimit)
+}
+
 // reportIsolationUnavailable raises email_av_isolation_unavailable for parse
 // workers that cannot run. It shares the spool watcher's hourly allowance.
 func (d *Daemon) reportIsolationUnavailable(err error) {
 	d.parseFindings.emit(d.alertCh, "email_av_isolation_unavailable", alert.Critical, isolationAlertInterval,
-		fmt.Sprintf("Parse worker units cannot run: %v. Email attachments are handled as incomplete scans under email_av.fail_mode, and phishing-kit zips are reported as not checked.", err))
+		fmt.Sprintf("Parse worker units cannot run: %q. Email attachments are handled as incomplete scans under email_av.fail_mode, and phishing-kit zips are reported as not checked.", err))
 }
 
 // mailExtractor is what the spool watcher needs from the mail parse workers;
@@ -134,4 +159,53 @@ func (d *Daemon) stopParseWorkers() {
 	}
 	_ = d.zipLister.Stop()
 	d.zipLister = nil
+}
+
+// initCrashSamples sets up the parse crash sample store. Phishing zips are
+// kept only when email_av.keep_crash_samples is on.
+func (d *Daemon) initCrashSamples() {
+	if d.cfg == nil || d.cfg.StatePath == "" {
+		return
+	}
+	d.crashSamples = crashsample.New(filepath.Join(d.cfg.StatePath, "parse-crashes"))
+	checks.SetCrashSamples(d.keptCrashSamples())
+}
+
+// keptCrashSamples is the store new crash samples go to, or nil when
+// email_av.keep_crash_samples is off.
+func (d *Daemon) keptCrashSamples() *crashsample.Store {
+	if d.crashSamples == nil || d.cfg == nil || !d.cfg.EmailAV.KeepCrashSamples {
+		return nil
+	}
+	return d.crashSamples
+}
+
+// crashSampleSweep removes expired crash samples at start and then hourly.
+// It runs whether or not samples are kept, so turning the setting off never
+// leaves customer data behind.
+func (d *Daemon) crashSampleSweep() {
+	defer d.wg.Done()
+	d.sweepCrashSamples()
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-d.stopCh:
+			return
+		case <-ticker.C:
+			d.sweepCrashSamples()
+		}
+	}
+}
+
+func (d *Daemon) sweepCrashSamples() {
+	if d.crashSamples == nil {
+		return
+	}
+	n, err := d.crashSamples.Sweep()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[%s] parse crash samples: sweep: %v\n", ts(), err)
+	} else if n > 0 {
+		fmt.Fprintf(os.Stderr, "[%s] parse crash samples: removed %d expired\n", ts(), n)
+	}
 }

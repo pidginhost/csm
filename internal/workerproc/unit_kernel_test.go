@@ -24,6 +24,18 @@ func init() {
 	unitHelperOps["probe"] = probeOp
 	unitHelperOps["alloc"] = allocOp
 	unitHelperOps["fsize"] = fsizeOp
+	unitHelperOps["read"] = readOp
+}
+
+// readOp reads the file named by the payload and reports the error, if any.
+func readOp(payload json.RawMessage) Frame {
+	var path string
+	if err := json.Unmarshal(payload, &path); err != nil {
+		return Frame{Error: err.Error()}
+	}
+	_, err := os.ReadFile(path) // #nosec G304 -- test helper reading a test-made file.
+	out, _ := json.Marshal(map[string]string{"error": errText(err)})
+	return Frame{Payload: out}
 }
 
 type probeResult struct {
@@ -234,6 +246,41 @@ func TestKernelUnitLauncherLockdown(t *testing.T) {
 	}
 	if err := callInto(t, s, "probe", `{}`, &r); err != nil {
 		t.Fatalf("worker did not survive EFBIG: %v", err)
+	}
+}
+
+// Account homes outside /home are hidden by name: ProtectHome covers only
+// /home, /root and /run/user.
+func TestKernelUnitInaccessiblePaths(t *testing.T) {
+	dir, err := os.MkdirTemp("/run", "csm-ktest-volume-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(dir, "public_html")
+	if err := os.WriteFile(file, []byte("tenant data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	payload, _ := json.Marshal(file)
+	read := func(cfg UnitConfig) string {
+		var r struct{ Error string }
+		if err := callInto(t, kernelSupervisor(t, cfg), "read", string(payload), &r); err != nil {
+			t.Fatal(err)
+		}
+		return r.Error
+	}
+	open := kernelUnitConfig(t, 128<<20, 1<<20)
+	if e := read(open); e != "" {
+		t.Fatalf("control unit could not read %s: %s", file, e)
+	}
+	hidden := kernelUnitConfig(t, 128<<20, 1<<20)
+	hidden.Prefix += "-hidden"
+	hidden.InaccessiblePaths = []string{dir}
+	if e := read(hidden); e == "" {
+		t.Fatalf("unit with InaccessiblePaths=%s read %s", dir, file)
 	}
 }
 

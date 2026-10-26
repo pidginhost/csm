@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -311,5 +313,196 @@ func TestCheckUnitCommand(t *testing.T) {
 	}
 	if err := CheckUnitCommand("csm"); err == nil {
 		t.Fatal("relative command accepted")
+	}
+}
+
+func TestLockdownPropertiesInaccessiblePaths(t *testing.T) {
+	cfg := UnitConfig{Prefix: "csm-parse-worker-mail0", MemoryLimit: 512 << 20, FileSizeLimit: 64 << 20,
+		InaccessiblePaths: []string{"/home3", "/home2", "/home2", "", "rel", "/a b", "/x/../y", "/x/", "/", `/q"`, "/q'", `/q\n`, "/p%h", "/c\x01", "/c\x7f", "/c\r", "/c\t", "/c\n"}}
+	var got []string
+	for _, p := range lockdownProperties(cfg) {
+		if strings.HasPrefix(p, "InaccessiblePaths=") {
+			got = append(got, p)
+		}
+	}
+	want := []string{"InaccessiblePaths=-/home2", "InaccessiblePaths=-/home3"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("InaccessiblePaths properties = %q, want %q", got, want)
+	}
+}
+
+type logCapture struct {
+	mu    sync.Mutex
+	lines []string
+}
+
+func (c *logCapture) logf(format string, args ...any) {
+	c.mu.Lock()
+	c.lines = append(c.lines, fmt.Sprintf(format, args...))
+	c.mu.Unlock()
+}
+
+func (c *logCapture) all() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string(nil), c.lines...)
+}
+
+// Worker output reaches the daemon's log quoted and bounded: a compromised
+// worker must not forge log lines or flood the journal.
+func TestUnitWorkerStderrQuotedAndCapped(t *testing.T) {
+	var in strings.Builder
+	in.WriteString("ok\n")
+	in.WriteString("\x1b[31mred\n")
+	in.WriteString(strings.Repeat("L", 2048) + "\n")
+	for range 200 { // 100 KiB that survives the per-line cut
+		in.WriteString(strings.Repeat("f", 511) + "\n")
+	}
+	var c logCapture
+	logWorkerOutput(strings.NewReader(in.String()), "csm-parse-worker-mail0-1", c.logf)
+	lines := c.all()
+	if len(lines) < 3 || lines[0] != `csm-parse-worker-mail0-1: "ok"` || lines[1] != `csm-parse-worker-mail0-1: "\x1b[31mred"` {
+		t.Fatalf("first lines = %q", lines[:min(3, len(lines))])
+	}
+	if lines[2] != `csm-parse-worker-mail0-1: "`+strings.Repeat("L", 512)+`"` {
+		t.Fatalf("long line not cut to 512 bytes: %d bytes logged", len(lines[2]))
+	}
+	logged := 0
+	for i, line := range lines[:len(lines)-1] {
+		quoted := strings.TrimPrefix(line, "csm-parse-worker-mail0-1: ")
+		raw, err := strconv.Unquote(quoted)
+		if err != nil || len(raw) > 512 {
+			t.Fatalf("line %d %q: not a quoted line of at most 512 bytes", i, line)
+		}
+		logged += len(raw)
+	}
+	if logged > 64<<10 {
+		t.Fatalf("logged %d bytes of worker output, want at most %d", logged, 64<<10)
+	}
+	if last := lines[len(lines)-1]; last != "csm-parse-worker-mail0-1: further output dropped" {
+		t.Fatalf("last line = %q, want the drop notice", last)
+	}
+}
+
+// The launcher pipes a real worker's stderr through the same logger.
+func TestUnitWorkerStderrReachesLog(t *testing.T) {
+	cfg, _ := fakeUnitConfig(t, "stderr-then-exit")
+	var c logCapture
+	cfg.Log = c.logf
+	if _, err := UnitLauncher(cfg)(context.Background()); err == nil {
+		t.Fatal("a worker that exits before hello was handed out")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		joined := strings.Join(c.all(), "\n")
+		if strings.Contains(joined, `: "hello from stderr"`) && strings.Contains(joined, `: "\x1b[31mforged"`) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("worker stderr not logged quoted: %q", c.all())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// Empty lines cost log lines too: a worker printing only newlines must hit
+// the same budget instead of flooding the journal.
+func TestUnitWorkerStderrEmptyLinesCharged(t *testing.T) {
+	var c logCapture
+	logWorkerOutput(strings.NewReader(strings.Repeat("\n", 1<<20)), "csm-parse-worker-mail0-1", c.logf)
+	lines := c.all()
+	if len(lines) != 1 || lines[0] != "csm-parse-worker-mail0-1: further output dropped" {
+		t.Fatalf("logged %d lines for empty output, want only the drop notice", len(lines))
+	}
+}
+
+// Many tiny lines cost journal entries, not bytes: a worker printing one
+// byte per line must not turn 64 KiB into tens of thousands of log lines.
+func TestUnitWorkerStderrLineCountCapped(t *testing.T) {
+	var c logCapture
+	logWorkerOutput(strings.NewReader(strings.Repeat("x\n", 100000)), "csm-parse-worker-mail0-1", c.logf)
+	lines := c.all()
+	if len(lines) != maxWorkerLogLines+1 || lines[len(lines)-1] != "csm-parse-worker-mail0-1: further output dropped" {
+		t.Fatalf("logged %d lines, want %d plus the drop notice", len(lines), maxWorkerLogLines)
+	}
+	total := 0
+	for _, l := range lines {
+		total += len(l) + 1
+	}
+	if total > 64<<10 {
+		t.Fatalf("logged %d bytes, want at most %d", total, 64<<10)
+	}
+}
+
+// Quoting hostile bytes and adding the unit prefix must spend the byte
+// budget, even when the worker has not reached its line limit.
+func TestUnitWorkerStderrEntryBytesCapped(t *testing.T) {
+	const unit = "csm-parse-worker-mail0-1"
+	for _, tc := range []struct {
+		name, raw, quoted string
+	}{
+		{"printable", strings.Repeat("x", 512), `"` + strings.Repeat("x", 512) + `"`},
+		{"escaped", strings.Repeat("\x00", 512), `"` + strings.Repeat(`\x00`, 512) + `"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			input := strings.NewReader(strings.Repeat(tc.raw+"\n", 300) + "last unterminated line")
+			var c logCapture
+			logWorkerOutput(input, unit, c.logf)
+			entry := unit + ": " + tc.quoted
+			want := (64 << 10) / (len(entry) + 1)
+			lines := c.all()
+			if len(lines) != want+1 {
+				t.Fatalf("logged %d entries, want %d plus the drop notice", len(lines), want)
+			}
+			for i, line := range lines[:want] {
+				if line != entry {
+					t.Errorf("entry %d=%q, want %q", i, line, entry)
+				}
+			}
+			if lines[want] != unit+": further output dropped" {
+				t.Fatalf("last entry=%q, want the drop notice", lines[want])
+			}
+			if input.Len() != 0 {
+				t.Fatalf("left %d input bytes undrained", input.Len())
+			}
+		})
+	}
+}
+
+func TestUnitWorkerStderrExactBudgets(t *testing.T) {
+	const unit = "csm-parse-worker-mail0-1"
+	// This payload makes a quoted entry, prefix and newline exactly 512 bytes.
+	bytePayload := strings.Repeat("x", 512-len(unit)-5)
+	for _, tc := range []struct {
+		name, payload string
+		count         int
+	}{
+		{"bytes", bytePayload, 128},
+		{"lines", "x", 256},
+	} {
+		for _, extra := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/extra=%v", tc.name, extra), func(t *testing.T) {
+				input := strings.Repeat(tc.payload+"\n", tc.count)
+				want := tc.count
+				if extra {
+					input += "x" // A final line needs no newline to count.
+					want++
+				}
+				var c logCapture
+				logWorkerOutput(strings.NewReader(input), unit, c.logf)
+				lines := c.all()
+				if len(lines) != want {
+					t.Fatalf("logged %d entries, want %d", len(lines), want)
+				}
+				for i, line := range lines[:tc.count] {
+					if line != unit+`: "`+tc.payload+`"` {
+						t.Errorf("entry %d=%q, want intact payload", i, line)
+					}
+				}
+				if extra && lines[tc.count] != unit+": further output dropped" {
+					t.Fatalf("last entry=%q, want the drop notice", lines[tc.count])
+				}
+			})
+		}
 	}
 }

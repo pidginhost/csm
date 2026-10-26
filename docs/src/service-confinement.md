@@ -83,6 +83,11 @@ properties:
   name prefix directly under `system.slice`, for example
   `system-csm\x2dparse\x2dworker\x2dmail0.slice`. The slices stay after their
   units end; they contain no processes but retain their accounting metadata.
+- `InaccessiblePaths=-` for each account home volume that `ProtectHome=yes`
+  does not cover: the account roots outside `/home` (for example
+  `/var/www/vhosts` on Plesk) and the sibling volumes registered cPanel
+  accounts live on, such as `/home2`. The list is read once when the daemon
+  sets up its workers, or when `csm scan` starts one.
 
 Before launching a worker, CSM sets its slice's runtime `CPUWeight=50`
 through systemd. CPU weights compare siblings: the service's weight alone
@@ -98,11 +103,20 @@ The zip worker receives the zip as an open descriptor and returns entry names
 in a sealed memfd. A mail worker receives the message's spool header and body
 as open descriptors and returns each attachment in its own sealed memfd; the
 daemon scans those and closes them. It cannot create IPv4 or IPv6 sockets. Unix sockets remain
-available. `/home`, `/root` and `/run/user` are hidden; other account-home
-locations are not. Most host files are read-only. The worker can still read
+available. `/home`, `/root`, `/run/user` and the account home volumes listed
+above are hidden; an account volume created after the daemon started is not
+hidden until it restarts. Most host files are read-only. The worker can still read
 world-readable host files outside those directories and write in its private
 temporary directories. The daemon does not forward its environment to the
 unit; systemd supplies the service environment.
+
+A worker's standard error reaches the daemon's log through a pipe, never
+directly. Each line is cut to 512 bytes and quoted, so control characters and
+newlines cannot forge log lines, and at most 256 lines or 64 KiB of log
+entries are logged per worker unit; after that one "further output dropped"
+line is logged and the rest is discarded. Error text in a worker's reply is quoted the same way.
+When the launcher exits, final diagnostics drain for at most one second.
+The log reader then closes even if another process still holds its writer.
 
 `MemoryLimit` caps RAM only on cgroup v1, so the daemon also writes
 `memory.memsw.limit_in_bytes` in the unit's own memory cgroup, or

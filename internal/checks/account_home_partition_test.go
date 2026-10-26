@@ -4,6 +4,8 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -134,5 +136,38 @@ func TestAccountHomeDirRejectsEscapingPasswdHomes(t *testing.T) {
 				t.Fatalf("unsafe home accepted: %q, want %q", got, want)
 			}
 		})
+	}
+}
+
+func (r registryOS) ReadDir(name string) ([]os.DirEntry, error) {
+	if name == "/var/cpanel/users" {
+		return os.ReadDir(r.users)
+	}
+	return r.realOS.ReadDir(name)
+}
+
+// Parse workers run with ProtectHome, which hides /home. Accounts on other
+// home volumes need hiding by name.
+func TestAccountHomeVolumes(t *testing.T) {
+	base := withPartitionedAccounts(t, strings.Join([]string{
+		"a:x:1001:1001::BASE/home/a:/bin/bash",
+		"b:x:1002:1002::BASE/home2/b:/bin/bash",
+		"c:x:1003:1003::BASE/data/c:/bin/bash",
+	}, "\n")+"\n", "a", "b", "c")
+	for _, dir := range []string{"home/a", "home2/b", "data/c"} {
+		if err := os.MkdirAll(filepath.Join(base, dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	orig := protectHomeDirs
+	protectHomeDirs = []string{filepath.Join(base, "home"), "/root", "/run/user"}
+	t.Cleanup(func() { protectHomeDirs = orig })
+	if got := AccountHomeVolumes(); !reflect.DeepEqual(got, []string{filepath.Join(base, "home2")}) {
+		t.Fatalf("home volumes = %q, want only %s", got, filepath.Join(base, "home2"))
+	}
+	vhosts := filepath.Join(base, "vhosts")
+	withAccountHomeRoots(t, vhosts)
+	if got := AccountHomeVolumes(); !slices.Contains(got, vhosts) {
+		t.Fatalf("home volumes = %q, want the Plesk root %s", got, vhosts)
 	}
 }

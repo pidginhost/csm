@@ -1,18 +1,23 @@
 package workerproc
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 
 	"github.com/pidginhost/csm/internal/systemdrun"
 )
@@ -36,6 +41,11 @@ type UnitConfig struct {
 	// Limits applies to the hello reply.
 	Limits Limits
 	Log    func(string, ...any)
+	// InaccessiblePaths are hidden from the worker on top of ProtectHome:
+	// account homes on other volumes. Paths that are not absolute and clean,
+	// or that hold spaces, quotes, backslashes, percent signs or control
+	// bytes, are dropped.
+	InaccessiblePaths []string
 
 	hooks *unitHooks // tests only; nil means the real system
 }
@@ -53,6 +63,10 @@ type unitHooks struct {
 // unitKillTimeout bounds one systemctl kill.
 const unitKillTimeout = 5 * time.Second
 
+// unitOutputDrainTimeout lets final diagnostics drain without waiting on
+// a writer inherited by a process that outlives systemd-run.
+const unitOutputDrainTimeout = time.Second
+
 // oomWatchGrace bounds how long a dead worker's OOM watch may still report.
 const oomWatchGrace = time.Second
 
@@ -68,7 +82,7 @@ var unitGeneration = func() *atomic.Int64 {
 // network, no host files, no privileges, bounded memory, tasks and files.
 func lockdownProperties(cfg UnitConfig) []string {
 	memory := strconv.FormatUint(cfg.MemoryLimit, 10)
-	return []string{
+	props := []string{
 		"DynamicUser=yes",
 		"CapabilityBoundingSet=",
 		"NoNewPrivileges=yes",
@@ -105,6 +119,30 @@ func lockdownProperties(cfg UnitConfig) []string {
 		"OOMScoreAdjust=1000",
 		"Slice=" + unitSlice(cfg.Prefix),
 	}
+	paths, _ := inaccessiblePaths(cfg.InaccessiblePaths)
+	for _, p := range paths {
+		// "-": a path missing on this host is not an error.
+		props = append(props, "InaccessiblePaths=-"+p)
+	}
+	return props
+}
+
+// inaccessiblePaths returns the usable paths sorted and without duplicates,
+// and the ones it dropped.
+func inaccessiblePaths(in []string) (keep, dropped []string) {
+	seen := make(map[string]bool, len(in))
+	for _, p := range in {
+		if p == "/" || !filepath.IsAbs(p) || filepath.Clean(p) != p || strings.ContainsAny(p, " \t\n\"'\\%") || strings.ContainsFunc(p, unicode.IsControl) {
+			dropped = append(dropped, p)
+			continue
+		}
+		if !seen[p] {
+			seen[p] = true
+			keep = append(keep, p)
+		}
+	}
+	sort.Strings(keep)
+	return keep, dropped
 }
 
 // unitSlice is the slice a prefix's units run in: one per prefix, directly
@@ -141,6 +179,9 @@ func UnitLauncher(cfg UnitConfig) Launcher {
 	}
 	if h.pollInterval <= 0 {
 		h.pollInterval = 500 * time.Millisecond
+	}
+	if _, dropped := inaccessiblePaths(cfg.InaccessiblePaths); len(dropped) > 0 && cfg.Log != nil {
+		cfg.Log("%s: not hiding unusable paths %q", cfg.Prefix, dropped)
 	}
 	return func(ctx context.Context) (Process, error) {
 		if err := ctx.Err(); err != nil {
@@ -183,23 +224,44 @@ func startUnit(ctx context.Context, cfg UnitConfig, h *unitHooks) (*unitProcess,
 	}, cfg.Command, cfg.Args...)
 	// Not CommandContext: ending the request must not kill the worker.
 	cmd := exec.Command(name, args...) // #nosec G204 -- systemd-run with fixed flags and the daemon's own binary.
+	// The worker's output is untrusted: it reaches the log quoted and capped.
+	stderrR, stderrW, err := os.Pipe()
+	if err != nil {
+		_ = childFile.Close()
+		_ = conn.Close()
+		return nil, err
+	}
 	cmd.Stdin = childFile
 	cmd.Stdout = childFile
-	cmd.Stderr = os.Stderr
+	cmd.Stderr = stderrW
 	err = cmd.Start()
 	// Closed at once, not deferred: while the daemon holds the child's end,
 	// a systemd-run that exits early leaves the hello waiting for its
 	// deadline instead of reading end of file.
 	_ = childFile.Close()
+	_ = stderrW.Close()
 	if err != nil {
+		_ = stderrR.Close()
 		_ = conn.Close()
 		return nil, fmt.Errorf("start systemd-run: %w", err)
 	}
+	logf := cfg.Log
+	if logf == nil {
+		logf = func(format string, args ...any) { fmt.Fprintf(os.Stderr, format+"\n", args...) }
+	}
+	go func() {
+		defer func() { _ = stderrR.Close() }()
+		logWorkerOutput(stderrR, unit, logf)
+	}()
 	p := &unitProcess{unit: unit, cmd: cmd, conn: conn, done: make(chan struct{}), killUnit: h.killUnit, log: cfg.Log}
 	go func() {
 		_ = cmd.Wait()
 		// The unit belongs to PID 1 and can outlive the systemd-run client.
 		_ = p.Kill()
+		// EOF is not guaranteed if another process still holds the writer.
+		// Allow buffered diagnostics through, then release the reader without
+		// delaying Done and its watchdog shutdown. A closed reader needs no deadline.
+		_ = stderrR.SetReadDeadline(time.Now().Add(unitOutputDrainTimeout))
 		close(p.done)
 	}()
 
@@ -387,8 +449,10 @@ type unitProcess struct {
 	kill     sync.Once
 	log      func(string, ...any)
 	// usage reads memory and swap in use; limit is the cap it is held to.
-	usage func() (uint64, error)
-	limit uint64
+	// lastUsed is what Retire last read.
+	usage    func() (uint64, error)
+	limit    uint64
+	lastUsed atomic.Uint64
 	// retireAt is three quarters into RuntimeMaxSec; zero means no cap.
 	retireAt time.Time
 	// cg is the unit's memory cgroup; memoryKill records the watchdog
@@ -412,6 +476,7 @@ func (p *unitProcess) PID() int              { return p.pid }
 // three quarters into its lifetime cap: systemd ending it mid-request would
 // charge that request's input with a worker failure.
 func (p *unitProcess) Retire() bool {
+	p.lastUsed.Store(0)
 	if !p.retireAt.IsZero() && time.Now().After(p.retireAt) {
 		return true
 	}
@@ -419,8 +484,14 @@ func (p *unitProcess) Retire() bool {
 		return false
 	}
 	used, err := p.usage()
+	if err == nil {
+		p.lastUsed.Store(used)
+	}
 	return err != nil || used > p.limit/4*3
 }
+
+// MemoryUsed is the memory and swap in use when Retire last read it, or 0.
+func (p *unitProcess) MemoryUsed() uint64 { return p.lastUsed.Load() }
 
 // Kill asks systemd to SIGKILL the unit and returns at once: the supervisor
 // calls it holding its lock, and a hung systemctl must not freeze it. The
@@ -528,4 +599,62 @@ func StopUnits(ctx context.Context, prefix string) error {
 		return fmt.Errorf("workerproc: stop units %s*: %w: %s", prefix, err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+// Bounds on worker output in the daemon's log, per unit.
+const (
+	maxWorkerLogLine  = 512
+	maxWorkerLogBytes = 64 << 10
+	maxWorkerLogLines = 256
+)
+
+// logWorkerOutput logs r line by line, quoted, each line cut to
+// maxWorkerLogLine bytes, until maxWorkerLogLines lines or maxWorkerLogBytes
+// of log entries are spent; then it says so once and drains r to end of
+// file. An entry costs what it adds to the log, so tiny lines cannot turn
+// the byte budget into tens of thousands of journal entries. Empty lines are
+// not logged but still cost their newline.
+func logWorkerOutput(r io.Reader, unit string, logf func(string, ...any)) {
+	br := bufio.NewReader(r)
+	budget, lines := maxWorkerLogBytes, 0
+	for {
+		line, err := readCappedLine(br, maxWorkerLogLine)
+		if len(line) > 0 || err == nil {
+			entry := ""
+			cost := 1
+			if len(line) > 0 {
+				entry = fmt.Sprintf("%s: %q", unit, line)
+				cost = len(entry) + 1
+			}
+			if cost > budget || (entry != "" && lines >= maxWorkerLogLines) {
+				logf("%s: further output dropped", unit)
+				_, _ = io.Copy(io.Discard, br)
+				return
+			}
+			budget -= cost
+			if entry != "" {
+				lines++
+				logf("%s", entry)
+			}
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
+// readCappedLine reads one line and returns at most max bytes of it, without
+// the newline. The rest of a longer line is read and discarded.
+func readCappedLine(br *bufio.Reader, max int) ([]byte, error) {
+	var line []byte
+	for {
+		chunk, err := br.ReadSlice('\n')
+		chunk = bytes.TrimSuffix(chunk, []byte("\n"))
+		if room := max - len(line); room > 0 {
+			line = append(line, chunk[:min(room, len(chunk))]...)
+		}
+		if err != bufio.ErrBufferFull {
+			return line, err
+		}
+	}
 }

@@ -2,6 +2,7 @@ package workerproc
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -9,6 +10,29 @@ import (
 	"testing"
 	"time"
 )
+
+func TestUnitMemorySampleDoesNotReuseEarlierJob(t *testing.T) {
+	for _, reason := range []string{"read failed", "lifetime reached"} {
+		t.Run(reason, func(t *testing.T) {
+			p := &unitProcess{limit: 1024, usage: func() (uint64, error) { return 100, nil }}
+			if p.Retire() || p.MemoryUsed() != 100 {
+				t.Fatal("healthy memory sample missing")
+			}
+			if reason == "read failed" {
+				p.usage = func() (uint64, error) { return 0, errors.New("gone") }
+			} else {
+				p.retireAt = time.Now().Add(-time.Second)
+				p.usage = func() (uint64, error) { return 200, nil }
+			}
+			if !p.Retire() {
+				t.Fatal("worker was not retired")
+			}
+			if got := p.MemoryUsed(); got != 0 {
+				t.Fatalf("memory use = %d, want unknown after retirement without a reading", got)
+			}
+		})
+	}
+}
 
 // cgroupDir is where the fake puts unit's memory cgroup for its layout.
 func (f *unitFake) cgroupDir(unit string) string {

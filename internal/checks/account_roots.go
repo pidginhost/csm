@@ -3,6 +3,7 @@ package checks
 import (
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/pidginhost/csm/internal/config"
@@ -60,6 +61,42 @@ func readAccountHomes() ([]accountHome, error) {
 // this platform: /home, or /var/www/vhosts on Plesk.
 func AccountHomeRoots() []string {
 	return accountHomeRoots()
+}
+
+// protectHomeDirs are the trees ProtectHome=yes already hides from a unit.
+var protectHomeDirs = []string{"/home", "/root", "/run/user"}
+
+// AccountHomeVolumes returns the directories holding account homes that
+// ProtectHome does not hide from a unit: the account roots, and the sibling
+// home volumes registered cPanel accounts live on.
+func AccountHomeVolumes() []string {
+	roots := accountHomeRoots()
+	dirs := make(map[string]bool)
+	for _, root := range roots {
+		dirs[filepath.Clean(root)] = true
+	}
+	if entries, err := osFS.ReadDir("/var/cpanel/users"); err == nil {
+		for _, e := range entries {
+			if home, ok := registeredAccountHome(roots, e.Name()); ok {
+				dirs[filepath.Dir(home)] = true
+			}
+		}
+	}
+	var out []string
+	for dir := range dirs {
+		hidden := false
+		for _, p := range protectHomeDirs {
+			if dir == p || strings.HasPrefix(dir, p+"/") {
+				hidden = true
+				break
+			}
+		}
+		if !hidden {
+			out = append(out, dir)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 func accountContentDir(name string) bool {

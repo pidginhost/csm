@@ -66,6 +66,15 @@ const (
 	ReasonSpawn    = "spawn"
 )
 
+// Job outcomes reported to Config.OnJob besides the failure reasons.
+const (
+	OutcomeOK      = "ok"
+	OutcomeRefused = "refused"
+)
+
+// memoryReporter is implemented by processes that know their memory use.
+type memoryReporter interface{ MemoryUsed() uint64 }
+
 // failure tags a counted failure with its reason without changing its text,
 // which callers already report as coverage-gap reasons. Only round-trip
 // failures match ErrWorkerFailed; a failed launch is ErrSpawn.
@@ -95,8 +104,8 @@ type oomReporter interface{ OOMKilled() bool }
 
 // localExhaustion reports the daemon running out of descriptors. That is not
 // the worker's fault, and outside load can push the daemon there, so it must
-// neither kill a healthy worker nor count toward the breaker: otherwise
-// exhausting the daemon's descriptors would switch the worker off.
+// not count toward the breaker. Before a request starts it leaves a healthy
+// worker running; a mid-frame failure still requires retiring the socket.
 func localExhaustion(err error) bool {
 	return errors.Is(err, syscall.EMFILE) || errors.Is(err, syscall.ENFILE)
 }
@@ -120,6 +129,13 @@ type Config struct {
 	// OnFailure is told of every counted failure, with the supervisor lock
 	// held: it must not block. Optional.
 	OnFailure func(reason string, err error)
+	// OnJob is told the outcome of every request that reached the breaker:
+	// OutcomeOK with the worker's memory use after the job (0 when
+	// unknown), a failure reason, or OutcomeRefused when the breaker
+	// refused it. Cancellation, a stopped supervisor and the daemon's own
+	// descriptor exhaustion are not reported. It runs with the supervisor
+	// lock held and must not block. Optional.
+	OnJob func(outcome string, memory uint64)
 	// BreakOnSpawnOnly lets only failed starts open the breaker. It is for
 	// workers whose callers cannot skip a refused request: there the breaker
 	// would let hostile input that kills a few workers switch the worker off
@@ -282,10 +298,8 @@ func (s *Supervisor) callLocked(ctx context.Context, req Frame, fds []*os.File, 
 	if s.stopped {
 		return Frame{}, nil, ErrStopped
 	}
-	if s.breakerOpenLocked() {
-		work.fail()
-		return Frame{}, nil, fmt.Errorf("%w: %d failures in a row, next attempt after %s",
-			ErrBreakerOpen, s.consecutive, BreakerCooldown)
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return Frame{}, nil, ctxErr
 	}
 	// Marshalled once: these are the bytes the worker gets.
 	body, err := json.Marshal(req)
@@ -316,6 +330,12 @@ func (s *Supervisor) callLocked(ctx context.Context, req Frame, fds []*os.File, 
 	}()
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return Frame{}, nil, ctxErr
+	}
+	if s.breakerOpenLocked() {
+		work.fail()
+		s.reportJobLocked(OutcomeRefused, 0)
+		return Frame{}, nil, fmt.Errorf("%w: %d failures in a row, next attempt after %s",
+			ErrBreakerOpen, s.consecutive, BreakerCooldown)
 	}
 	if s.child != nil {
 		select {
@@ -348,7 +368,7 @@ func (s *Supervisor) callLocked(ctx context.Context, req Frame, fds []*os.File, 
 			}
 			// The breaker bounds how often this logs: three in a row, then
 			// one trial per cooldown.
-			s.logf("%s did not start: %v", s.cfg.Name, launchErr)
+			s.logf("%s did not start: %q", s.cfg.Name, launchErr)
 			err := failure{err: fmt.Errorf("%w: %v", ErrSpawn, launchErr), reason: ReasonSpawn}
 			s.recordFailureLocked(err)
 			return Frame{}, nil, err
@@ -367,7 +387,7 @@ func (s *Supervisor) callLocked(ctx context.Context, req Frame, fds []*os.File, 
 	handedOff = true
 	reply, replyFDs, lost, reason, err := s.roundTripLocked(ctx, body, ownedFDs, check, work)
 	if err != nil {
-		if reason == ReasonCrash {
+		if reason == ReasonCrash && !localExhaustion(err) {
 			// Asked before the kill below: the unit's cgroup, which holds
 			// the evidence, goes away with it.
 			if r, ok := s.child.proc.(oomReporter); ok && r.OOMKilled() {
@@ -384,6 +404,12 @@ func (s *Supervisor) callLocked(ctx context.Context, req Frame, fds []*os.File, 
 		// spinning, or it may have left a partial frame in the socket that
 		// would desynchronise every later request.
 		s.killLocked()
+		if localExhaustion(err) {
+			// The socket may be mid-frame, so retire it, but never charge
+			// the input for descriptor pressure in this process.
+			s.rearmBreakerLocked()
+			return Frame{}, nil, err
+		}
 		if canceled {
 			// The caller withdrew, so this is not a worker fault and must not
 			// count toward the breaker. It did consume the trial, though: the
@@ -403,7 +429,14 @@ func (s *Supervisor) callLocked(ctx context.Context, req Frame, fds []*os.File, 
 	// Retiring a healthy worker is not a failure: the reply stands and
 	// nothing counts toward the breaker.
 	s.jobs++
-	if (s.cfg.MaxJobs > 0 && s.jobs >= s.cfg.MaxJobs) || s.child.proc.Retire() {
+	// Retire reads the worker's memory, so ask it first, every time.
+	retire := s.child.proc.Retire() || (s.cfg.MaxJobs > 0 && s.jobs >= s.cfg.MaxJobs)
+	var memory uint64
+	if m, ok := s.child.proc.(memoryReporter); ok {
+		memory = m.MemoryUsed()
+	}
+	s.reportJobLocked(OutcomeOK, memory)
+	if retire {
 		s.logf("%s %d retired", s.cfg.Name, s.child.proc.PID())
 		s.killLocked()
 	}
@@ -426,6 +459,13 @@ func (s *Supervisor) recordFailureLocked(f failure) {
 	s.kills[f.reason]++
 	if s.cfg.OnFailure != nil {
 		s.cfg.OnFailure(f.reason, f)
+	}
+	s.reportJobLocked(f.reason, 0)
+}
+
+func (s *Supervisor) reportJobLocked(outcome string, memory uint64) {
+	if s.cfg.OnJob != nil {
+		s.cfg.OnJob(outcome, memory)
 	}
 }
 
@@ -522,7 +562,7 @@ func (s *Supervisor) roundTripLocked(ctx context.Context, body []byte, ownedFDs 
 		lost := false
 		switch {
 		case res.frame.Error != "":
-			err = fmt.Errorf("%s: worker: %s", s.cfg.Name, res.frame.Error)
+			err = fmt.Errorf("%s: worker: %q", s.cfg.Name, res.frame.Error)
 		case res.frame.Op != "":
 			err = fmt.Errorf("%s: response carries op %q", s.cfg.Name, res.frame.Op)
 		default:

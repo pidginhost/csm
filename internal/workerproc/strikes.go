@@ -22,6 +22,8 @@ type Strikes struct {
 	mu      sync.Mutex
 	entries map[string]strike
 	now     func() time.Time
+	limit   int
+	ttl     time.Duration
 }
 
 type strike struct {
@@ -29,9 +31,14 @@ type strike struct {
 	last  time.Time
 }
 
-// NewStrikes returns an empty record.
-func NewStrikes() *Strikes {
-	return &Strikes{entries: make(map[string]strike), now: time.Now}
+// NewStrikes returns an empty record that blocks after StrikeLimit failures
+// within StrikeTTL.
+func NewStrikes() *Strikes { return NewStrikesWith(StrikeLimit, StrikeTTL) }
+
+// NewStrikesWith returns an empty record that blocks a key after limit
+// failures, each within ttl of the one before.
+func NewStrikesWith(limit int, ttl time.Duration) *Strikes {
+	return &Strikes{entries: make(map[string]strike), now: time.Now, limit: limit, ttl: ttl}
 }
 
 // Record counts one worker failure on key.
@@ -40,7 +47,7 @@ func (s *Strikes) Record(key string) {
 	defer s.mu.Unlock()
 	now := s.now()
 	e, ok := s.entries[key]
-	if ok && now.Sub(e.last) > StrikeTTL {
+	if ok && now.Sub(e.last) > s.ttl {
 		e = strike{}
 	}
 	if !ok && len(s.entries) >= maxStrikeKeys {
@@ -58,13 +65,13 @@ func (s *Strikes) Record(key string) {
 	s.entries[key] = e
 }
 
-// Blocked reports StrikeLimit or more failures on key, the last within
-// StrikeTTL.
+// Blocked reports the limit of failures on key reached, the last within the
+// TTL.
 func (s *Strikes) Blocked(key string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	e, ok := s.entries[key]
-	return ok && e.count >= StrikeLimit && s.now().Sub(e.last) <= StrikeTTL
+	return ok && e.count >= s.limit && s.now().Sub(e.last) <= s.ttl
 }
 
 // Len is how many inputs have unexpired failures. Dropping expired entries
@@ -74,7 +81,7 @@ func (s *Strikes) Len() int {
 	defer s.mu.Unlock()
 	now := s.now()
 	for key, entry := range s.entries {
-		if now.Sub(entry.last) > StrikeTTL {
+		if now.Sub(entry.last) > s.ttl {
 			delete(s.entries, key)
 		}
 	}

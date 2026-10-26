@@ -215,7 +215,7 @@ func parseSpool(header, body io.ReaderAt, bodyMarker string, limits Limits) (*Ex
 			}
 
 			switch {
-			case decodeErr != nil && len(decoded) == 0:
+			case len(decoded) == 0:
 				// Nothing decoded, nothing to scan.
 			case !truncated && int64(len(decoded)) <= limits.MaxAttachmentSize:
 				if int64(len(decoded)) > limits.MaxExtractionSize-totalSize {
@@ -644,6 +644,15 @@ func extractMultipartNested(r io.Reader, boundary string, limits Limits, result 
 		for _, reader := range readers {
 			// Decode the part body based on Content-Transfer-Encoding
 			bodyReader := &readErrRecorder{r: reader}
+			// An empty attachment has nothing to scan. Staging it would use
+			// up the part cap and could hide a real attachment behind it.
+			body := bufio.NewReader(bodyReader)
+			if _, peekErr := body.Peek(1); peekErr != nil {
+				if bodyReader.err != nil {
+					markPartial(result, fmt.Sprintf("could not decode attachment %q: %v", filename, bodyReader.err))
+				}
+				continue
+			}
 
 			if partsFull(limits, result) {
 				return nil
@@ -654,7 +663,7 @@ func extractMultipartNested(r io.Reader, boundary string, limits Limits, result 
 				return fmt.Errorf("creating temp file: %w", err)
 			}
 
-			limited := io.LimitReader(bodyReader, limits.MaxAttachmentSize+1)
+			limited := io.LimitReader(body, limits.MaxAttachmentSize+1)
 			n, err := io.Copy(tmpFile, limited)
 			if err != nil && err != bodyReader.err {
 				discardPart(tmpFile, tempPath)

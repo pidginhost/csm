@@ -11,7 +11,19 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Security
 
-- Email attachments are now unpacked in a separate locked-down process with no network access, so a crafted message can no longer stall mail scanning. After upgrade, attachment workers run as systemd units and failures follow email_av.fail_mode.
+- Email attachments are now unpacked in memory by a separate locked-down process with no network access, so a crafted message can no longer stall mail scanning. After upgrade, failures follow email_av.fail_mode and the old attachment folder is deleted.
+- One sender can no longer hold up mail scanning for others, and slow messages no longer switch off scanning for all mail. Messages waiting behind their sender follow email_av.fail_mode.
+- A message that keeps crashing the attachment worker is no longer unpacked again on every retry, and repeated crashes from one sender raise a High alert naming it.
+- Attachment workers can no longer read account files on extra home partitions, and their output is quoted and capped in the daemon log.
+
+### Added
+
+- email_av.keep_crash_samples keeps copies of messages and tenant zips that crash the attachment worker, for diagnosis. Off by default; the copies hold customer mail.
+- The memory cap of each attachment worker can now be set with email_av.worker_memory_limit.
+
+### Changed
+
+- Since 4.7.0 the csm program is installed so other local users can run it but not read it. csm rehash restores this after a manual copy.
 
 ### Fixed
 

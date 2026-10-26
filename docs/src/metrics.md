@@ -222,6 +222,43 @@ curl -o goroutine.txt 'http://127.0.0.1:<port>/debug/pprof/goroutine?debug=2'
   check name for non-PHP labels) to judge whether a raised cap would
   surface real findings.
 
+### Mail scanning and parse workers
+
+- `csm_spool_hold_expired_total{stage}` (counter): mail opens
+  answered under `email_av.fail_mode` because the hold budget ran
+  out. `stage` records where the message was when its hold expired:
+  `queued` (no scan slot yet; these count toward the hold bypass), `waiting` (behind another message from the
+  same sender) or `scanning` (a slow scan; the scan continues and
+  can still quarantine). Sustained `queued` growth means scan
+  capacity is short.
+- `csm_spool_source_waits_total{outcome}` (counter): mail opens
+  whose sender was already using its share of the scan slots.
+  `outcome` is `waited` (the message waited its turn without
+  taking a scan slot) or `overflow` (too many messages from that
+  sender were already waiting, so it was scanned at once without
+  waiting its turn). Overflow scans can use every scan slot.
+  `overflow` growth raises an
+  `email_av_source_backlog` finding naming the sender, at most
+  once a minute.
+- `csm_parse_worker_jobs_total{pool,outcome}` (counter): parse
+  worker jobs. `pool` is `mail` (email attachments) or `zip`
+  (tenant zips checked for phishing kits). `outcome` is `ok`,
+  `timeout`, `oom`, `crash`, `protocol` (reply rejected), `spawn`
+  (the unit did not start), `refused` (the worker is failing
+  repeatedly) or `skipped` (the message killed workers before, so
+  it was not unpacked again). Anything but `ok` means a message or
+  zip was not fully checked.
+  Canceled requests, stopped workers and local descriptor exhaustion do not
+  increment this counter.
+- `csm_parse_worker_starts_total{pool}` (counter): worker units
+  started. A worker serves many jobs; a start rate close to the
+  job rate means workers keep dying or being retired.
+- `csm_parse_worker_memory_bytes{pool}` (histogram): worker memory
+  and swap in use after a successful job. Buckets: 32 MiB ..
+  1 GiB. Compare the high buckets with
+  `email_av.worker_memory_limit`.
+  Unavailable memory readings are omitted; earlier readings are not reused.
+
 ### Periodic check runner
 
 - `csm_checks_crontab_base64_truncated_total` (counter):

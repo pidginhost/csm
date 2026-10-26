@@ -21,10 +21,10 @@ import (
 // ExtractTimeout bounds one message's extraction in a worker: three times the
 // measured p99 (1.14 s for 200 messages up to the 25 MiB attachment cap on a
 // 2-vCPU host), rounded up. It stays under the 5 s hold budget on purpose: a
-// hanging message must end as an incomplete scan before its hold expires,
-// because expired holds count toward the hold bypass, which stops scanning
-// all mail for minutes. A crafted slow message that ends incomplete gains an
-// attacker nothing an encrypted archive does not already give.
+// hanging message gets its verdict before the hold answers, so tempfail and
+// quarantine still apply in time, and the scan slot is freed quickly. A
+// message that kills the worker has none of its attachments scanned and
+// follows email_av.fail_mode.
 const ExtractTimeout = 4 * time.Second
 
 // extractTimeout is a seam for tests.
@@ -36,6 +36,7 @@ type ExtractorConfig struct {
 	Size      int
 	Launch    func(slot int) workerproc.Launcher
 	OnFailure func(reason string, err error)
+	OnJob     func(outcome string, memory uint64)
 	Log       func(string, ...any)
 }
 
@@ -61,6 +62,7 @@ func NewExtractor(cfg ExtractorConfig) (*Extractor, error) {
 			MaxJobs:     1000,
 			IdleTimeout: 10 * time.Minute,
 			OnFailure:   cfg.OnFailure,
+			OnJob:       cfg.OnJob,
 			// A refused extraction delivers mail unscanned under the open
 			// fail mode, so crafted mail must not be able to open the breaker.
 			BreakOnSpawnOnly: true,

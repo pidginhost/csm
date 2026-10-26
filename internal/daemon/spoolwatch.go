@@ -18,11 +18,13 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/crashsample"
 	"github.com/pidginhost/csm/internal/emailav"
 	"github.com/pidginhost/csm/internal/metrics"
 	emime "github.com/pidginhost/csm/internal/mime"
 	"github.com/pidginhost/csm/internal/obs"
 	"github.com/pidginhost/csm/internal/queuehealth"
+	"github.com/pidginhost/csm/internal/workerproc"
 )
 
 // spoolQueueOverflowTotal counts FAN_Q_OVERFLOW records on the spool watcher.
@@ -30,6 +32,8 @@ import (
 // registerSpoolMetrics leave it nil, so callers must nil-check.
 var (
 	spoolQueueOverflowTotal *metrics.Counter
+	spoolHoldExpiredTotal   *metrics.CounterVec
+	spoolSourceWaitsTotal   *metrics.CounterVec
 	spoolMetricsOnce        sync.Once
 )
 
@@ -42,6 +46,18 @@ func registerSpoolMetrics() {
 			"FAN_Q_OVERFLOW events on the Exim spool watcher: the kernel queue filled and dropped spool open events. In permission mode the kernel allows the overflowing opens, so mail may be delivered without an AV scan. Any sustained growth needs investigation.",
 		)
 		metrics.MustRegister("csm_spool_fanotify_queue_overflow_total", spoolQueueOverflowTotal)
+		spoolHoldExpiredTotal = metrics.NewCounterVec(
+			"csm_spool_hold_expired_total",
+			"Mail opens answered under email_av.fail_mode because the hold budget ran out, by where the message was: queued (no scan slot yet; counts toward the hold bypass), waiting (behind another message from the same sender) or scanning.",
+			[]string{"stage"},
+		)
+		metrics.MustRegister("csm_spool_hold_expired_total", spoolHoldExpiredTotal)
+		spoolSourceWaitsTotal = metrics.NewCounterVec(
+			"csm_spool_source_waits_total",
+			"Mail opens whose sender was already scanning on its share of the slots: waited (parked until one of the sender's scans finished) or overflow (too many already waiting; scanned at once without waiting its turn).",
+			[]string{"outcome"},
+		)
+		metrics.MustRegister("csm_spool_source_waits_total", spoolSourceWaitsTotal)
 	})
 }
 
@@ -133,6 +149,15 @@ type SpoolWatcher struct {
 	lastOverflowAt time.Time
 	// holds tracks hold-budget expiries and decides when to stop holding mail.
 	holds holdWatchdog
+	// sources lets one sender scan on at most half the slots.
+	sources sourceGate
+	// mailStrikes counts worker kills per message ID; sourceKills counts
+	// them per source. Nil on hand-built test watchers.
+	mailStrikes *workerproc.Strikes
+	sourceKills *workerproc.Strikes
+	// crashSamples keeps messages that kill a worker; nil when
+	// email_av.keep_crash_samples is off. Set before Run.
+	crashSamples *crashsample.Store
 
 	queueHealthOnce   sync.Once
 	scannerHealth     *queuehealth.Tracker
@@ -152,6 +177,9 @@ type spoolEvent struct {
 	// guard bounds how long this open stays suspended. Nil for events built
 	// outside dispatchEvent, which answer directly from needResp.
 	guard *holdGuard
+	// source is the sender key from the message's -H, "" when unknown; set
+	// by the scan goroutine.
+	source string
 }
 
 // finish hands the kernel a verdict for this event, once, and closes the
@@ -189,6 +217,7 @@ func NewSpoolWatcher(cfg *config.Config, alertCh chan<- alert.Finding, orch *ema
 		scanCh:        make(chan spoolEvent, 256),
 		stopCh:        make(chan struct{}),
 	}
+	sw.initStrikes()
 
 	// Try permission-capable class first
 	fd, err := spoolFanotifyInit(FAN_CLASS_CONTENT|FAN_CLOEXEC|FAN_NONBLOCK, unix.O_RDONLY|unix.O_CLOEXEC)
@@ -496,6 +525,7 @@ func (sw *SpoolWatcher) startScanWorkers() int {
 	if n < 1 {
 		n = 4
 	}
+	sw.sources.setLimit(n)
 	for slot := range n {
 		sw.wg.Add(1)
 		obs.Go("spool-scanner", func() { sw.scanWorker(slot) })
@@ -504,13 +534,11 @@ func (sw *SpoolWatcher) startScanWorkers() int {
 }
 
 // scanWorker processes spool events on its parse worker slot: extract, scan,
-// quarantine/allow.
+// quarantine/allow. It also handles the events parked behind each source it
+// is scanning.
 func (sw *SpoolWatcher) scanWorker(slot int) {
 	defer sw.wg.Done()
-	handle := func(evt spoolEvent) {
-		evt.slot = slot
-		sw.handleSpoolEventSafe(evt)
-	}
+	handle := func(evt spoolEvent) { sw.handleFair(slot, evt) }
 
 	// drainAndClose closes scanCh after shutdown. Keep draining queued events
 	// until then: dispatchEvent may enqueue a permission fd while Stop is racing,
@@ -652,10 +680,10 @@ func (sw *SpoolWatcher) handleSpoolEvent(evt spoolEvent) {
 		partialResult := &emailav.ScanResult{PartialExtraction: true}
 		if shouldTempfailEmailDelivery(tempfail, partialResult, nil) {
 			response = FAN_DENY
-			sw.emitDegradedWarning(fmt.Sprintf("Incomplete email attachment extraction for message %s (%s) - delivery deferred (tempfail mode)", msgID, partialExtractionReason(extraction)))
+			sw.emitDegradedWarning(fmt.Sprintf("Incomplete email attachment extraction for message %s (%q) - delivery deferred (tempfail mode)", msgID, partialExtractionReason(extraction)))
 			return
 		}
-		sw.emitDegradedWarning(fmt.Sprintf("Incomplete email attachment extraction for message %s (%s) - delivery allowed (fail-open mode)", msgID, partialExtractionReason(extraction)))
+		sw.emitDegradedWarning(fmt.Sprintf("Incomplete email attachment extraction for message %s (%q) - delivery allowed (fail-open mode)", msgID, partialExtractionReason(extraction)))
 	}
 
 	if len(extraction.Parts) == 0 {
@@ -728,7 +756,7 @@ func (sw *SpoolWatcher) handleSpoolEvent(evt spoolEvent) {
 	for i, f := range result.Findings {
 		sigNames[i] = fmt.Sprintf("%s(%s)", f.Signature, f.Engine)
 	}
-	msg := fmt.Sprintf("Malware detected in %s email from %s to %s: %s [subject: %s]",
+	msg := fmt.Sprintf("Malware detected in %q email from %q to %q: %s [subject: %q]",
 		extraction.Direction, extraction.From, strings.Join(extraction.To, ","),
 		strings.Join(sigNames, ", "), extraction.Subject)
 
@@ -806,7 +834,7 @@ func (sw *SpoolWatcher) emitEncryptedArchiveWarning(msgID string, entries []emim
 
 	named := make([]string, 0, len(entries))
 	for _, e := range entries {
-		named = append(named, fmt.Sprintf("%s in %s", e.Filename, e.ArchiveName))
+		named = append(named, fmt.Sprintf("%q in %q", e.Filename, e.ArchiveName))
 	}
 	if omitted > 0 {
 		named = append(named, fmt.Sprintf("%d additional encrypted member(s) (names omitted)", omitted))
