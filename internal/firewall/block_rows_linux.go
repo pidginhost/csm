@@ -97,9 +97,18 @@ func (e *Engine) evictionVictimLocked(st FirewallState, excludeIP string, automa
 		}
 	}
 	if e.lifecycle == nil || e.blockActionsUnproven != nil || automatic {
+		owned := make(map[string]bool)
+		if e.lifecycle == nil {
+			for _, row := range st.Blocked {
+				if row.ActionID != "" {
+					owned[stateIPKey(row.IP)] = true
+				}
+			}
+		}
 		var kept []BlockedEntry
 		for _, row := range st.Blocked {
-			if row.ActionID == "" {
+			// Deleting an alias deletes the same element as its admission row.
+			if row.ActionID == "" && !owned[stateIPKey(row.IP)] {
 				kept = append(kept, row)
 			}
 		}

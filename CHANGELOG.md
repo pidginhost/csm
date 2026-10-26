@@ -27,6 +27,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Fixed
 
+- With admission-owned blocks present, manual blocking preserves those addresses and ignores saved IPv6 blocks when IPv6 is disabled.
 - Newsletters with many long tracking links are no longer sent to the Spam folder for those links alone.
 
 ## [4.7.0] - 2026-10-24
