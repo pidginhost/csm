@@ -5,8 +5,10 @@ import (
 	"crypto/md5" // #nosec G501 -- wordpress.org publishes MD5 digests for core files
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -345,6 +347,209 @@ func TestVerifyWPCoreLineEndingsDoNotResolveOtherwise(t *testing.T) {
 			res := VerifyFinding("wp_core_integrity", "WordPress core file modified for alice", "Path: "+dir)
 			if res.Resolved || res.Checked != tc.checked {
 				t.Fatalf("got %+v, want unresolved with Checked=%v", res, tc.checked)
+			}
+		})
+	}
+}
+
+type wpCoreLineEndingsLogLine struct {
+	msg  string
+	args []any
+}
+
+func (l wpCoreLineEndingsLogLine) String() string {
+	return fmt.Sprint(append([]any{l.msg}, l.args...)...)
+}
+
+func captureWPCoreLineEndingsLog(t *testing.T) *[]wpCoreLineEndingsLogLine {
+	t.Helper()
+	var lines []wpCoreLineEndingsLogLine
+	old := logWPCoreLineEndings
+	logWPCoreLineEndings = func(msg string, args ...any) {
+		lines = append(lines, wpCoreLineEndingsLogLine{msg: msg, args: args})
+	}
+	t.Cleanup(func() { logWPCoreLineEndings = old })
+	return &lines
+}
+
+// A file the check could not prove stays reported with nothing to say why, so
+// each one leaves a log line naming the file and the reason.
+func TestWPCoreLineEndingsLogWhyFileStaysReported(t *testing.T) {
+	withMockOS(t, realOS{})
+	const rel = "wp-includes/plugin.php"
+	const secretish = "PHP Warning: synthetic-db-password-in-output"
+	official := map[string]string{rel: wpCoreMD5(wpCoreLineEndingsOfficial)}
+	for _, tc := range []struct {
+		name, content, output string
+		checksums             map[string]string
+		fetchErr              error
+		want                  string
+	}{
+		{"beyond_line_endings", withCRLF(wpCoreLineEndingsOfficial + "function synthetic_added() {}\n"), wpCoreLineEndingsReport(rel), official, nil, "differs beyond line endings"},
+		{"fetch_failed", withCRLF(wpCoreLineEndingsOfficial), wpCoreLineEndingsReport(rel), official, errors.New("HTTP 503"), "HTTP 503"},
+		{"not_in_release", withCRLF(wpCoreLineEndingsOfficial), wpCoreLineEndingsReport(rel), map[string]string{"wp-includes/load.php": wpCoreMD5(wpCoreLineEndingsOfficial)}, nil, "not in the release checksums"},
+		{"too_large", withCRLF(strings.Repeat("xy\n", wpCoreLineEndingsMaxBytes/3)), wpCoreLineEndingsReport(rel), official, nil, "larger than the read limit"},
+		{"unrecognized_output", withCRLF(wpCoreLineEndingsOfficial), secretish + "\n" + wpCoreLineEndingsReport(rel), official, nil, "unrecognized"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			install := t.TempDir()
+			writeWPCoreFile(t, install, "wp-includes/version.php", "<?php\n$wp_version = '6.5.2';\n")
+			writeWPCoreFile(t, install, rel, tc.content)
+			stubWPCoreChecksums(t, tc.checksums, tc.fetchErr)
+			logged := captureWPCoreLineEndingsLog(t)
+
+			var releases wpCoreReleaseChecksums
+			if files, _ := releases.lineEndingOnly(install, []byte(tc.output)); files[rel] {
+				t.Fatalf("%s was accepted as line endings only", rel)
+			}
+			if len(*logged) != 1 {
+				t.Fatalf("logged %d lines, want 1: %v", len(*logged), *logged)
+			}
+			line := (*logged)[0].String()
+			if !strings.Contains(line, install) || !strings.Contains(line, tc.want) {
+				t.Errorf("log %q does not name the install and %q", line, tc.want)
+			}
+			if strings.Contains(line, "synthetic-db-password") {
+				t.Errorf("log %q copied raw wp-cli output", line)
+			}
+		})
+	}
+}
+
+func TestWPCoreLineEndingsProvenFileLogsNothing(t *testing.T) {
+	withMockOS(t, realOS{})
+	const rel = "wp-includes/plugin.php"
+	install := t.TempDir()
+	writeWPCoreFile(t, install, "wp-includes/version.php", "<?php\n$wp_version = '6.5.2';\n")
+	writeWPCoreFile(t, install, rel, withCRLF(wpCoreLineEndingsOfficial))
+	stubWPCoreChecksums(t, map[string]string{rel: wpCoreMD5(wpCoreLineEndingsOfficial)}, nil)
+	logged := captureWPCoreLineEndingsLog(t)
+
+	var releases wpCoreReleaseChecksums
+	if files, only := releases.lineEndingOnly(install, []byte(wpCoreLineEndingsReport(rel))); !only || !files[rel] {
+		t.Fatalf("line-ending copy not accepted: files=%v only=%v", files, only)
+	}
+	if len(*logged) != 0 {
+		t.Errorf("proven file logged %v", *logged)
+	}
+}
+
+// The verification parser accepts mismatch text inside other output. Logging
+// must not treat that extracted text as a filename without release evidence.
+func TestWPCoreLineEndingsLogDoesNotCopyUnlistedOutput(t *testing.T) {
+	withMockOS(t, realOS{})
+	const rel = "wp-includes/plugin.php"
+	const privateOutput = "synthetic-private-output"
+	for _, tc := range []struct{ name, line string }{
+		{"embedded_current", "PHP Warning: doesn't verify against checksum: " + privateOutput},
+		{"embedded_legacy", "PHP Warning: " + privateOutput + " doesn't verify against checksum."},
+		{"trailing_output", "Warning: File doesn't verify against checksum: " + rel + " " + privateOutput},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			install := t.TempDir()
+			writeWPCoreFile(t, install, "wp-includes/version.php", "<?php\n$wp_version = '6.5.2';\n")
+			writeWPCoreFile(t, install, rel, withCRLF(wpCoreLineEndingsOfficial))
+			stubWPCoreChecksums(t, map[string]string{rel: wpCoreMD5(wpCoreLineEndingsOfficial)}, nil)
+			logged := captureWPCoreLineEndingsLog(t)
+
+			var releases wpCoreReleaseChecksums
+			files, only := releases.lineEndingOnly(install, []byte("\n"+tc.line+"\n"+wpCoreLineEndingsReport(rel)))
+			if only || len(files) != 1 || !files[rel] {
+				t.Fatalf("verification decisions changed: files=%v only=%v", files, only)
+			}
+			if len(*logged) != 1 {
+				t.Fatalf("logged %d lines, want 1", len(*logged))
+			}
+			entry := (*logged)[0]
+			if strings.Contains(entry.String(), privateOutput) {
+				t.Error("log copied untrusted command output")
+			}
+			fields := make(map[string]any)
+			for i := 0; i < len(entry.args); i += 2 {
+				fields[entry.args[i].(string)] = entry.args[i+1]
+			}
+			if fields["line"] != 2 || fields["release"] != "6.5.2/en_US" || fields["path"] != strconv.QuoteToASCII(install) {
+				t.Errorf("log does not identify the report line and release: %v", fields)
+			}
+			if _, ok := fields["file"]; ok {
+				t.Error("log includes a filename not confirmed by the release")
+			}
+		})
+	}
+}
+
+func TestWPCoreLineEndingsLogDoesNotCopyInvalidRelease(t *testing.T) {
+	withMockOS(t, realOS{})
+	const privateValue = "synthetic-private-value"
+	for _, tc := range []struct{ name, content string }{
+		{"version", "<?php\n$wp_version = '" + privateValue + "';\n"},
+		{"locale", "<?php\n$wp_version = '6.5.2';\n$wp_local_package = '" + privateValue + "';\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			install := t.TempDir()
+			writeWPCoreFile(t, install, "wp-includes/version.php", tc.content)
+			calls := stubWPCoreChecksums(t, nil, nil)
+			logged := captureWPCoreLineEndingsLog(t)
+
+			var releases wpCoreReleaseChecksums
+			files, only := releases.lineEndingOnly(install, []byte(wpCoreLineEndingsReport("wp-includes/plugin.php")))
+			if only || len(files) != 0 || calls.Load() != 0 {
+				t.Fatalf("invalid release reached verification: files=%v only=%v fetches=%d", files, only, calls.Load())
+			}
+			if len(*logged) != 1 {
+				t.Fatalf("logged %d lines, want 1", len(*logged))
+			}
+			line := (*logged)[0].String()
+			if strings.Contains(line, privateValue) {
+				t.Error("log copied invalid release content")
+			}
+			if !strings.Contains(line, "invalid release metadata") {
+				t.Errorf("log does not explain the parse failure: %s", line)
+			}
+		})
+	}
+}
+
+// Tenant directory names must not create extra records or terminal controls
+// in the default text logger, including when an OS error repeats the path.
+func TestWPCoreLineEndingsLogQuotesControlCharacters(t *testing.T) {
+	withMockOS(t, realOS{})
+	const rel = "wp-includes/plugin.php"
+	for _, failure := range []string{"unrecognized_output", "unlisted_file", "version_read", "core_read", "modified_file"} {
+		t.Run(failure, func(t *testing.T) {
+			install := filepath.Join(t.TempDir(), "install\nforged\t\x1b[31m")
+			mkdirTest(t, install)
+			if failure != "version_read" {
+				writeWPCoreFile(t, install, "wp-includes/version.php", "<?php\n$wp_version = '6.5.2';\n")
+			}
+			if failure != "core_read" {
+				writeWPCoreFile(t, install, rel, withCRLF(wpCoreLineEndingsOfficial+"function synthetic_added() {}\n"))
+			}
+			checksums := map[string]string{rel: wpCoreMD5(wpCoreLineEndingsOfficial)}
+			if failure == "unlisted_file" {
+				checksums = nil
+			}
+			stubWPCoreChecksums(t, checksums, nil)
+			logged := captureWPCoreLineEndingsLog(t)
+			output := wpCoreLineEndingsReport(rel)
+			if failure == "unrecognized_output" {
+				output = "PHP Warning: synthetic diagnostic\n" + output
+			}
+
+			var releases wpCoreReleaseChecksums
+			files, only := releases.lineEndingOnly(install, []byte(output))
+			if only || len(files) != 0 {
+				t.Fatalf("failed verification was accepted: files=%v only=%v", files, only)
+			}
+			if len(*logged) != 1 {
+				t.Fatalf("logged %d lines, want 1", len(*logged))
+			}
+			line := (*logged)[0].String()
+			if strings.ContainsAny(line, "\r\n\t\x1b") {
+				t.Error("log contains unescaped control characters")
+			}
+			if !strings.Contains(line, strconv.QuoteToASCII(install)) {
+				t.Error("log does not identify the quoted install path")
 			}
 		})
 	}
