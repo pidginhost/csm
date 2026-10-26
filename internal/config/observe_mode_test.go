@@ -148,6 +148,14 @@ func TestObserveModeAllowsManualVirtualPatch(t *testing.T) {
 	}
 }
 
+// Quarantine only happens in the spool watcher, which does not start while
+// the scanner is off, so the switch changes nothing on such a host.
+func TestObserveModeAllowsQuarantineWhileScannerOff(t *testing.T) {
+	if _, err := LoadBytes([]byte("hostname: test\nmode: observe\nemail_av:\n  enabled: false\n  quarantine_infected: true\n")); err != nil {
+		t.Fatalf("observe mode rejected quarantine with the scanner off: %v", err)
+	}
+}
+
 func TestEnforceModeLeavesEveryStateSwitchAlone(t *testing.T) {
 	cfg, err := LoadBytes([]byte("hostname: test\nauto_response:\n  enabled: true\nfirewall:\n  enabled: true\n"))
 	if err != nil {

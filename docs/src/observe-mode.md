@@ -56,13 +56,12 @@ auto_response.enabled (set false), firewall.enabled (set false)
 The keys checked are `auto_response.enabled`, `firewall.enabled`,
 `php_shield.enabled`, `bpf_enforcement.enabled`,
 `email_protection.forward_guard.enabled`, `email_protection.antispam.enabled`,
-`email_av.quarantine_infected`,
 `auto_response.php_relay.freeze`,
 `auto_response.mail_auth_recovery.restart_enabled`, and
 `auto_response.virtual_patch_exposed_files` set to `auto`. It also refuses
 `auto_response.copy_fail_kill_process: true` and, when the antivirus scanner is
-enabled, `email_av.fail_mode: tempfail`, both of which act on a host
-independently of `auto_response.enabled`.
+enabled, `email_av.quarantine_infected: true` and `email_av.fail_mode: tempfail`,
+all of which act on a host independently of `auto_response.enabled`.
 
 CSM refuses rather than silently turning those switches off in memory, because
 the config re-hash path marshals the in-memory config back over `csm.yaml`:

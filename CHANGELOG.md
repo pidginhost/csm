@@ -29,6 +29,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 ### Fixed
 
 - The configuration reference now shows that infected mail is delivered unless email_av.quarantine_infected is set to true.
+- Observe mode no longer refuses email_av.quarantine_infected set to true while email antivirus scanning is turned off.
 - Newsletters with many long tracking links are no longer sent to the Spam folder for those links alone.
 
 ## [4.7.0] - 2026-10-24
