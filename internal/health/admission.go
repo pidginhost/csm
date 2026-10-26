@@ -125,6 +125,28 @@ type AdmissionDryRunOccupancy struct {
 	Limit      int  `json:"limit"`
 	Unlimited  bool `json:"unlimited"`
 	Limited    bool `json:"limited"`
+	// Capacity is the finite capacity automatic admission is modelled
+	// within: the limit, or 10000 for an unlimited set. Unclaimed counts
+	// the real timed entries it never evicts (operator blocks, blocks of
+	// unknown origin and two per timed subnet) and Imported the real
+	// legacy automatic blocks; DrainSeconds is how long the last of them
+	// has left, or -1 when a kernel expiry is unavailable.
+	Capacity     int   `json:"capacity"`
+	Unclaimed    int   `json:"unclaimed"`
+	Imported     int   `json:"imported"`
+	DrainSeconds int64 `json:"drain_seconds"`
+	// General and Reserved divide the slots the unclaimed entries leave:
+	// a fifth, rounded up, is reserved for direct or corroborated work.
+	General  AdmissionDryRunPartition `json:"general"`
+	Reserved AdmissionDryRunPartition `json:"reserved"`
+}
+
+// AdmissionDryRunPartition is one modelled partition of the automatic
+// slots: its size and the real and forecast automatic blocks in it.
+type AdmissionDryRunPartition struct {
+	Size int `json:"size"`
+	Used int `json:"used"`
+	Free int `json:"free"`
 }
 
 // AdmissionDryRunCeiling is the forecast's own copy of the hourly ceiling.

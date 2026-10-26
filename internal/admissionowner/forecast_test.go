@@ -92,14 +92,15 @@ func liveUsed(t *testing.T, o *Owner) uint32 {
 
 // D1, spec 3.3: under a dry-run policy each block pick ends as a dry run
 // with a prediction and no attempt, charge, link or engine change. One
-// read-only snapshot answers the turn. With real occupancy 8 of 10, two
+// read-only snapshot answers the turn. With real occupancy 8 of 11, of
+// which the reserve keeps one slot, two
 // distinct picks, of either family, fit the forecast and the third finds
 // the modelled set full. Only the forecast's own ceiling is charged.
 func TestOwnerEndsDryRunPicksAsForecasts(t *testing.T) {
 	p := withTestRegistry(t)
 	f := newOwnerFixture(t)
 	blocks := newFakeBlocks()
-	blocks.temp, blocks.limit = 8, 10
+	blocks.temp, blocks.limit = 8, 11
 	o, _, _ := policyOwner(t, f, blocks, dryPolicy(1))
 	var ids []admission.CandidateID
 	for _, addr := range []string{"192.0.2.10", "2001:db8::10", "192.0.2.11"} {
@@ -474,7 +475,7 @@ func TestOwnerForecastCountsRealBlocksOfForecastAddresses(t *testing.T) {
 	p := withTestRegistry(t)
 	f := newOwnerFixture(t)
 	blocks := newFakeBlocks()
-	blocks.temp, blocks.limit = 8, 10
+	blocks.temp, blocks.limit = 8, 11
 	blocks.liveTemp, blocks.livePerm = map[string]bool{}, map[string]bool{}
 	o, _, _ := policyOwner(t, f, blocks, dryPolicy(1))
 	queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.10")
@@ -545,18 +546,48 @@ func TestOwnerForecastAsksThePanel(t *testing.T) {
 	}
 }
 
+// Spec 5.6: the forecast keeps the reserve for direct or corroborated
+// work. With one automatic slot left, which the reserve holds, a general
+// pick ends set_full and a direct-compromise pick is forecast into the
+// reserved partition on its reserved lane.
+func TestOwnerForecastKeepsTheReserve(t *testing.T) {
+	for _, tc := range []struct {
+		basis admission.Basis
+		want  admission.Prediction
+	}{
+		{admission.BasisLocal, admission.PredictSetFull},
+		{admission.BasisCompromise, admission.PredictCapacityAdmit},
+	} {
+		p := withTestRegistryBasis(t, tc.basis)
+		f := newOwnerFixture(t)
+		blocks := newFakeBlocks()
+		blocks.temp, blocks.limit = 4, 5
+		o, _, _ := policyOwner(t, f, blocks, dryPolicy(1))
+		queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.10")
+		turn(t, o)
+		fc := forecastOf(t, o)
+		if fc.picks[tc.want] != 1 {
+			t.Fatalf("basis %s: forecast = %+v, want one %s", tc.basis, fc, tc.want)
+		}
+		if tc.want == admission.PredictCapacityAdmit && (fc.entries["192.0.2.10"].partition != admission.PartitionReserved || fc.ceiling.Reserved.Used != 1) {
+			t.Fatalf("basis %s: entry %+v, ceiling %+v", tc.basis, fc.entries["192.0.2.10"], fc.ceiling)
+		}
+	}
+}
+
 // D5, spec 3.3 step 3, 4.1: a ready allow ends its pick as verdict_allow
 // before any modelled capacity is judged, so it takes no forecast slot or
 // charge, even once the set is full. Ready block answers then meet the
 // model in order: a decision committed earlier in the turn fills the set
 // for the next.
 func TestOwnerForecastEndsPanelAllowsFirst(t *testing.T) {
+	// Of 11 slots the reserve holds one the general picks never take.
 	for name, temp := range map[string]int{"room": 9, "full": 10} {
 		t.Run(name, func(t *testing.T) {
 			p := withTestRegistry(t)
 			f := newOwnerFixture(t)
 			blocks := newFakeBlocks()
-			blocks.temp, blocks.limit = 8, 10
+			blocks.temp, blocks.limit = 8, 11
 			panel := newFakePanel("block")
 			panel.answer = func(ip string) (verdict.Response, error) {
 				if ip == "192.0.2.10" {
@@ -600,7 +631,7 @@ func TestOwnerForecastPendingPicksTakeNoSlot(t *testing.T) {
 	p := withTestRegistry(t)
 	f := newOwnerFixture(t)
 	blocks := newFakeBlocks()
-	blocks.temp, blocks.limit = 8, 10
+	blocks.temp, blocks.limit = 8, 11
 	gate := make(chan struct{})
 	panel := newFakePanel("block")
 	panel.answer = func(ip string) (verdict.Response, error) {
@@ -913,5 +944,24 @@ func TestOwnerForecastOrdersAllowsBetweenRealAndForecastBlocks(t *testing.T) {
 	fc := forecastOf(t, o)
 	if fc.picks[admission.PredictExistingActual] != 1 || fc.picks[admission.PredictExistingShadow]+fc.picks[admission.PredictPendingRecovery] != 0 || verdictState(t, o).AllowEndings != 1 {
 		t.Fatalf("forecast = %+v", fc)
+	}
+}
+
+// A general pick cannot ask the panel when only the set reserve is free.
+func TestOwnerForecastFullPartitionDoesNotAskPanel(t *testing.T) {
+	p := withTestRegistry(t)
+	f := newOwnerFixture(t)
+	blocks := newFakeBlocks()
+	blocks.temp, blocks.limit = 4, 5
+	panel := newFakePanel("block")
+	o, _, _ := policyOwner(t, f, blocks, dryVerdictPolicy(1, panel))
+	queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.90")
+	turn(t, o)
+	if state := verdictState(t, o); state.Asked != 0 || state.Pending != 0 {
+		t.Fatalf("full general partition asked the panel: %+v", state)
+	}
+	fc := forecastOf(t, o)
+	if fc.picks[admission.PredictSetFull] != 1 || len(fc.entries) != 0 || fc.ceiling.General.Used != 0 || fc.ceiling.Reserved.Used != 0 {
+		t.Fatalf("full partition changed forecast: %+v", fc)
 	}
 }

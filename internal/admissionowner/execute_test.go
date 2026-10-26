@@ -46,9 +46,10 @@ type fakeBlocks struct {
 	retireStep  func([]firewall.BlockAction)
 	retires     [][]firewall.BlockAction
 	// temp and limit are the temporary occupancy an admission snapshot
-	// reports; snapshots records its calls and shadows the forecast
-	// addresses each call named. liveTemp and livePerm are the addresses
-	// the sets hold as a timed and an untimed element.
+	// reports, every timed element unclaimed; snapshots records its calls
+	// and shadows the forecast addresses each call named. liveTemp and
+	// livePerm are the addresses the sets hold as a timed and an untimed
+	// element.
 	temp, limit        int
 	snapshots          [][]firewall.BlockMember
 	shadows            [][]string
@@ -98,7 +99,7 @@ func (f *fakeBlocks) BlockAdmissionSnapshot(members []firewall.BlockMember, shad
 	if f.checkErr != nil {
 		return firewall.BlockAdmission{}, f.checkErr
 	}
-	out := firewall.BlockAdmission{Answers: make([]firewall.BlockAnswer, len(members)), Temporary: f.temp, Limit: f.limit}
+	out := firewall.BlockAdmission{Answers: make([]firewall.BlockAnswer, len(members)), Temporary: f.temp, Unclaimed: f.temp, Limit: f.limit}
 	for _, ip := range shadow {
 		if f.liveTemp[ip] || f.livePerm[ip] {
 			if out.ShadowHeld == nil {

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/admission"
+	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/health"
 	"github.com/pidginhost/csm/internal/store"
 )
@@ -62,14 +63,15 @@ func TestOwnerStatusDoesNotExposeCachedForecast(t *testing.T) {
 }
 
 // Spec 3.8: an executable owner in dry run shows its session, the model's
-// fixed coverage, real against predicted temporary occupancy, the modelled
-// ceiling, every prediction counter including zeros, and its process
-// counters. A comparison-only owner shows no dry-run object.
+// fixed coverage, real against predicted temporary occupancy with the
+// modelled partitions of the automatic slots, the modelled ceiling, every
+// prediction counter including zeros, and its process counters. A
+// comparison-only owner shows no dry-run object.
 func TestOwnerDryRunStatus(t *testing.T) {
 	p := withTestRegistry(t)
 	f := newOwnerFixture(t)
 	blocks := newFakeBlocks()
-	blocks.temp, blocks.limit = 8, 10
+	blocks.temp, blocks.limit = 8, 11
 	o, _, _ := policyOwner(t, f, blocks, dryPolicy(1))
 	before := dryRunState(t, o)
 	if before == nil || !before.Active || before.SessionID != nil || before.Since != nil || before.ResetReason != nil || before.Occupancy != nil || before.Ceiling != nil {
@@ -91,7 +93,8 @@ func TestOwnerDryRunStatus(t *testing.T) {
 	if !reflect.DeepEqual(d.ModelledKinds, []string{"block_ip"}) || d.PredictionScope != "ceiling_and_temporary_capacity" {
 		t.Fatalf("coverage = %v %q", d.ModelledKinds, d.PredictionScope)
 	}
-	if d.Occupancy == nil || *d.Occupancy != (health.AdmissionDryRunOccupancy{Actual: 8, ShadowOnly: 2, Predicted: 10, Limit: 10}) {
+	if d.Occupancy == nil || *d.Occupancy != (health.AdmissionDryRunOccupancy{Actual: 8, ShadowOnly: 2, Predicted: 10, Limit: 11, Capacity: 11, Unclaimed: 8,
+		General: health.AdmissionDryRunPartition{Size: 2, Used: 2}, Reserved: health.AdmissionDryRunPartition{Size: 1, Free: 1}}) {
 		t.Fatalf("occupancy = %+v", d.Occupancy)
 	}
 	if d.Ceiling == nil || d.Ceiling.Limit != 2000 || d.Ceiling.GeneralUsed+d.Ceiling.ReservedUsed != 2 ||
@@ -285,7 +288,8 @@ func TestOwnerDryRunStatusAfterLeavingDryRun(t *testing.T) {
 	if !d.Active || d.SessionID == nil || *d.SessionID == session.id || *d.ResetReason != "mode_change" {
 		t.Fatalf("a new session = %+v", d)
 	}
-	if d.Occupancy == nil || *d.Occupancy != (health.AdmissionDryRunOccupancy{ShadowOnly: 1, Predicted: 1, Unlimited: true}) {
+	if d.Occupancy == nil || *d.Occupancy != (health.AdmissionDryRunOccupancy{ShadowOnly: 1, Predicted: 1, Unlimited: true, Capacity: admission.TemporaryCapacity,
+		General: health.AdmissionDryRunPartition{Size: 8000, Used: 1, Free: 7999}, Reserved: health.AdmissionDryRunPartition{Size: 2000, Free: 2000}}) {
 		t.Fatalf("occupancy of the new session = %+v, with stored examples counted?", d.Occupancy)
 	}
 }
@@ -307,5 +311,53 @@ func TestOwnerDryRunStatusAfterARestart(t *testing.T) {
 	o = f.start(opts)
 	if d := dryRunState(t, o); !d.ComparisonIncomplete {
 		t.Fatalf("a restart = %+v", d)
+	}
+}
+
+// Status divides the automatic slots as the model does: unclaimed entries
+// shrink the set, real automatic blocks fill the general partition, each
+// forecast block not held by a real one fills its own, and the drain of
+// the entries admission never evicts shows in seconds.
+func TestShadowOccupancyStatusDividesTheSlots(t *testing.T) {
+	s := testShadow(t, freshCeiling(t, 2000), nil)
+	for ip, part := range map[string]admission.Partition{"203.0.113.1": admission.PartitionGeneral, "203.0.113.2": admission.PartitionGeneral, "203.0.113.3": admission.PartitionReserved, "203.0.113.4": admission.PartitionGeneral} {
+		s.entries[ip] = shadowEntry{kind: admission.KindBlockIP, expires: shadowExpiry, partition: part}
+	}
+	s.adm = &firewall.BlockAdmission{Temporary: 5, Limit: 20, Unclaimed: 3, Imported: 1, Admission: 1, Drain: 90 * time.Minute, ShadowHeld: map[string]bool{"203.0.113.4": true}}
+	want := health.AdmissionDryRunOccupancy{Actual: 5, ShadowOnly: 3, Predicted: 8, Limit: 20, Capacity: 20, Unclaimed: 3, Imported: 1, DrainSeconds: 5400,
+		General: health.AdmissionDryRunPartition{Size: 13, Used: 4, Free: 9}, Reserved: health.AdmissionDryRunPartition{Size: 4, Used: 1, Free: 3}}
+	if got := s.occupancyStatus(); got == nil || *got != want {
+		t.Fatalf("occupancy = %+v, want %+v", got, want)
+	}
+}
+
+// Address-only execution totals must not hide subnet occupancy in status.
+func TestShadowOccupancyStatusIncludesSubnets(t *testing.T) {
+	s := testShadow(t, freshCeiling(t, 2000), nil)
+	s.adm = &firewall.BlockAdmission{Temporary: 1, Limit: 5, Unclaimed: 3, Drain: time.Hour}
+	s.entries["203.0.113.90"] = shadowEntry{kind: admission.KindBlockIP, expires: shadowExpiry, partition: admission.PartitionGeneral}
+	got := s.occupancyStatus()
+	if got.Actual != 3 || got.ShadowOnly != 1 || got.Predicted != 4 || got.General != (health.AdmissionDryRunPartition{Size: 1, Used: 1}) || got.Reserved != (health.AdmissionDryRunPartition{Size: 1, Free: 1}) {
+		t.Fatalf("subnet occupancy: %+v", got)
+	}
+}
+
+func TestShadowOccupancyStatusKeepsUnknownDrain(t *testing.T) {
+	s := testShadow(t, freshCeiling(t, 2000), nil)
+	s.adm = &firewall.BlockAdmission{Temporary: 1, Unclaimed: 1, Drain: -time.Second}
+	if got := s.occupancyStatus(); got.DrainSeconds != -1 {
+		t.Fatalf("unknown drain lost: %+v", got)
+	}
+}
+
+// Invalid negative limits follow the zero-limit fallback until validation changes.
+func TestShadowOccupancyStatusFiniteFallback(t *testing.T) {
+	for _, limit := range []int{0, -1} {
+		s := testShadow(t, freshCeiling(t, 2000), nil)
+		s.adm = &firewall.BlockAdmission{Limit: limit}
+		got := s.occupancyStatus()
+		if !got.Unlimited || got.Limit != limit || got.Capacity != admission.TemporaryCapacity || got.General.Size != 8000 || got.Reserved.Size != 2000 {
+			t.Fatalf("limit %d: %+v", limit, got)
+		}
 	}
 }

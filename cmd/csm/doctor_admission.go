@@ -189,8 +189,9 @@ func dryRunDoctorChecks(d *health.AdmissionDryRun) []DoctorCheck {
 	return append(rows, examples)
 }
 
-// dryRunCapacityCheck compares real and predicted temporary capacity and
-// the modelled ceiling, and warns on model limits and modelled waits.
+// dryRunCapacityCheck compares real and predicted temporary capacity, the
+// modelled partitions of the automatic slots and the modelled ceiling, and
+// warns on model limits and modelled waits.
 func dryRunCapacityCheck(d *health.AdmissionDryRun) DoctorCheck {
 	occ, ceil := d.Occupancy, d.Ceiling
 	limit := fmt.Sprintf("of %d", occ.Limit)
@@ -198,11 +199,32 @@ func dryRunCapacityCheck(d *health.AdmissionDryRun) DoctorCheck {
 		limit = "of an unlimited set"
 	}
 	c := DoctorCheck{Name: "admission dry-run capacity", Status: "ok", Message: fmt.Sprintf(
-		"%d real temporary blocks, %d %s predicted with %d forecast blocks; the modelled ceiling has %d general and %d reserved units left",
-		occ.Actual, occ.Predicted, limit, occ.ShadowOnly, ceil.GeneralBudget, ceil.ReservedBudget)}
+		"%d real temporary elements, %d %s predicted with %d forecast blocks; automatic blocks use %d of %d general and %d of %d reserved slots; the modelled ceiling has %d general and %d reserved units left",
+		occ.Actual, occ.Predicted, limit, occ.ShadowOnly, occ.General.Used, occ.General.Size, occ.Reserved.Used, occ.Reserved.Size, ceil.GeneralBudget, ceil.ReservedBudget)}
+	if occ.Unclaimed > 0 || occ.Imported > 0 {
+		c.Message += fmt.Sprintf("; %d entries automatic admission never evicts and %d legacy automatic blocks",
+			occ.Unclaimed, occ.Imported)
+		if occ.DrainSeconds >= 0 {
+			c.Message += fmt.Sprintf(" have an estimated drain time of %s", time.Duration(occ.DrainSeconds)*time.Second)
+		} else {
+			c.Message += " have an unknown drain time"
+		}
+	}
 	var warnings []string
+	if occ.DrainSeconds < 0 {
+		warnings = append(warnings, "a remaining kernel expiry is unavailable; inspect the affected blocks")
+	}
 	if occ.Unlimited {
-		warnings = append(warnings, "the temporary set is unlimited, which the forecast follows only in staging")
+		warnings = append(warnings, fmt.Sprintf("the temporary set is unlimited for operator blocks; automatic admission is modelled at %d slots", occ.Capacity))
+	}
+	if occ.General.Size+occ.Reserved.Size == 0 {
+		warnings = append(warnings, "entries automatic admission never evicts fill the set; review these blocks or wait for expiry")
+	}
+	if occ.General.Free+occ.Reserved.Free == 0 && occ.General.Size+occ.Reserved.Size > 0 {
+		warnings = append(warnings, "the temporary set has no free automatic slot; review existing blocks or wait for expiry")
+	}
+	if occ.General.Free == 0 && occ.Reserved.Free > 0 {
+		c.Message += "; only direct or corroborated work has a set slot; general work waits for more capacity"
 	}
 	if occ.Limited {
 		warnings = append(warnings, "the forecast models no more active blocks")
@@ -218,7 +240,10 @@ func dryRunCapacityCheck(d *health.AdmissionDryRun) DoctorCheck {
 	}
 	if len(warnings) > 0 {
 		c.Status, c.Message = "warn", c.Message+"; "+strings.Join(warnings, "; ")
-		c.Fix = "a forecast wait is a model result, not a block; review auto_response.max_blocks_per_hour and firewall.deny_temp_ip_limit before going live"
+		c.Fix = "a forecast wait is a model result, not a block; inspect existing blocks and their expiries, then review auto_response.max_blocks_per_hour and firewall.deny_temp_ip_limit before going live"
+		if occ.Unclaimed > 0 || occ.Imported > 0 {
+			c.Fix += "; the drain estimate can change with renewals or new blocks; a missing kernel expiry needs operator review"
+		}
 	}
 	return c
 }

@@ -64,10 +64,12 @@ func newSessionID(r io.Reader) (string, error) {
 	return hex.EncodeToString(b[:]), nil
 }
 
-// shadowEntry is one forecast block: its kind and absolute lease expiry.
+// shadowEntry is one forecast block: its kind, absolute lease expiry and
+// the partition of the set it occupies.
 type shadowEntry struct {
-	kind    admission.Kind
-	expires time.Time
+	kind      admission.Kind
+	expires   time.Time
+	partition admission.Partition
 }
 
 // shadowChange is a capacity admission a forecast decided and has not
@@ -178,17 +180,35 @@ func (s *shadow) covering(ip string, expires time.Time) admission.Prediction {
 	return admission.PredictExistingShadow
 }
 
-// occupancy is the predicted temporary occupancy: the real one, plus the
-// forecast blocks, less those the real sets already hold as a timed or an
-// untimed element. adm is this turn's snapshot, taken after expire.
-func (s *shadow) occupancy(adm firewall.BlockAdmission) int {
-	return adm.Temporary + len(s.entries) - len(adm.ShadowHeld)
+// occupancy is the modelled temporary set: the real timed occupants, with
+// real automatic blocks in the general partition, and in their own
+// partitions the forecast blocks the real sets do not already hold as a
+// timed or an untimed element. adm is this turn's snapshot, taken after
+// expire.
+func (s *shadow) occupancy(adm firewall.BlockAdmission) admission.SetOccupancy {
+	occ := admission.SetOccupancy{Limit: adm.Limit, Unclaimed: adm.Unclaimed, General: adm.Imported + adm.Admission}
+	for ip, e := range s.entries {
+		switch {
+		case adm.ShadowHeld[ip]:
+		case e.partition == admission.PartitionReserved:
+			occ.Reserved++
+		default:
+			occ.General++
+		}
+	}
+	return occ
 }
 
-// full reports whether real and forecast blocks fill the temporary limit.
-// A zero limit is the base engine's unlimited set.
-func (s *shadow) full(adm firewall.BlockAdmission) bool {
-	return adm.Limit > 0 && s.occupancy(adm) >= adm.Limit
+// full reports whether no partition a pick on lanes may occupy has a free
+// slot. A zero limit is the finite automatic capacity.
+func (s *shadow) full(adm firewall.BlockAdmission, lanes []admission.Lane) bool {
+	slots := s.occupancy(adm).Slots()
+	for _, lane := range lanes {
+		if slots.Free(lane) > 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // limited reports whether the forecast can model no other active block.
@@ -196,20 +216,26 @@ func (s *shadow) limited() bool { return len(s.entries) >= forecastEntries }
 
 // admit decides a ready pick of kind for ip lasting until expires, at
 // admission time now, against this turn's snapshot: a full set first, then
-// the modelling bound, then the ceiling on each of lanes in order, the
-// selected lane first. Only a capacity admission returns a change; nothing
-// is installed until commit. Kinds outside the address model take no capacity.
+// the modelling bound, then the ceiling on each of lanes in order whose
+// partition has a free slot, the selected lane first. The block occupies
+// the partition of the lane it is charged on. Only a capacity admission
+// returns a change; nothing is installed until commit. Kinds outside the
+// address model take no capacity.
 func (s *shadow) admit(ip string, kind admission.Kind, expires time.Time, lanes []admission.Lane, now time.Time, adm firewall.BlockAdmission) (admission.Prediction, *shadowChange, error) {
 	switch {
 	case kind != admission.KindBlockIP:
 		return admission.PredictNotModelled, nil, nil
-	case s.full(adm):
+	case s.full(adm, lanes):
 		return admission.PredictSetFull, nil, nil
 	case s.limited():
 		return admission.PredictForecastLimited, nil, nil
 	}
+	slots := s.occupancy(adm).Slots()
 	cost := kind.CeilingCost()
 	for _, lane := range lanes {
+		if slots.Free(lane) == 0 {
+			continue
+		}
 		next, err := s.ceiling.Charge(lane, cost)
 		if reason, refused := admission.ReasonOf(err); refused && reason == admission.ReasonCeiling {
 			continue
@@ -218,7 +244,7 @@ func (s *shadow) admit(ip string, kind admission.Kind, expires time.Time, lanes 
 			return 0, nil, err
 		}
 		return admission.PredictCapacityAdmit, &shadowChange{
-			ip: ip, entry: shadowEntry{kind: kind, expires: expires}, next: next,
+			ip: ip, entry: shadowEntry{kind: kind, expires: expires, partition: admission.PartitionOf(lane)}, next: next,
 			charge: admission.Charge{At: now, Lane: lane, Cost: cost, Elapsed: s.ceiling.Elapsed},
 		}, nil
 	}
