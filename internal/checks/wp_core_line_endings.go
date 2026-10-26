@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"crypto/md5" // #nosec G501 -- wordpress.org publishes MD5 digests for core files
 	"encoding/hex"
+	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 
+	csmlog "github.com/pidginhost/csm/internal/log"
 	"github.com/pidginhost/csm/internal/safepath"
 	"github.com/pidginhost/csm/internal/wpcheck"
 )
@@ -29,6 +32,16 @@ const wpCoreLineEndingsMaxBytes = 8 << 20
 const wpVersionFileMaxBytes = 64 << 10
 
 var fetchWPCoreChecksums = wpcheck.FetchChecksums
+
+// logWPCoreLineEndings names why a flagged file stays reported; the finding
+// alone cannot say whether the file differs or the check could not run.
+var logWPCoreLineEndings = csmlog.Info
+
+var (
+	errWPCoreBeyondLineEndings = errors.New("differs beyond line endings")
+	errWPCoreFileTooLarge      = errors.New("larger than the read limit")
+	errWPCoreNotInRelease      = errors.New("not in the release checksums")
+)
 
 // wpCoreReleaseChecksums holds the official checksums of each release for one
 // run, so installs on the same release cost one request and a release that
@@ -68,7 +81,7 @@ func (c *wpCoreReleaseChecksums) lineEndingOnly(wpPath string, out []byte) (file
 	files = make(map[string]bool)
 	only = true
 	var modified []string
-	for _, line := range strings.Split(string(out), "\n") {
+	for i, line := range strings.Split(string(out), "\n") {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" || strings.EqualFold(trimmed, wpChecksumFailureSummary) {
 			continue
@@ -87,27 +100,27 @@ func (c *wpCoreReleaseChecksums) lineEndingOnly(wpPath string, out []byte) (file
 			only = false
 			continue
 		}
+		// Only the line number: PHP output can carry secrets.
+		logWPCoreLineEndings("WordPress core line-ending check stopped at unrecognized wp-cli output", "path", wpPath, "line", i+1)
 		return files, false
 	}
 	if len(modified) == 0 {
 		return files, false
 	}
 
-	versionFile, truncated, err := readWPCoreFileHead(wpPath, filepath.Join("wp-includes", "version.php"), wpVersionFileMaxBytes)
-	if err != nil || truncated {
-		return files, false
-	}
-	version, locale, err := wpcheck.ParseVersionContent(versionFile)
+	release, checksums, err := c.installChecksums(wpPath)
 	if err != nil {
-		return files, false
-	}
-	checksums, err := c.lookup(version, locale)
-	if err != nil {
+		logWPCoreLineEndings("WordPress core line-ending check has no release checksums", "path", wpPath, "release", release, "err", err)
 		return files, false
 	}
 	for _, rel := range modified {
 		want, listed := checksums[rel]
-		if !listed || !wpCoreFileDiffersOnlyInLineEndings(wpPath, rel, want) {
+		err := errWPCoreNotInRelease
+		if listed {
+			err = wpCoreFileDiffersOnlyInLineEndings(wpPath, rel, want)
+		}
+		if err != nil {
+			logWPCoreLineEndings("WordPress core file not proven to differ only in line endings", "path", wpPath, "file", rel, "release", release, "err", err)
 			only = false
 			continue
 		}
@@ -116,10 +129,27 @@ func (c *wpCoreReleaseChecksums) lineEndingOnly(wpPath string, out []byte) (file
 	return files, only && len(files) > 0
 }
 
-func wpCoreFileDiffersOnlyInLineEndings(wpPath, rel, want string) bool {
-	data, truncated, err := readWPCoreFileHead(wpPath, rel, wpCoreLineEndingsMaxBytes)
-	if err != nil || truncated {
-		return false
+// installChecksums returns the official checksums of the release the install
+// names in version.php, and that release as version/locale.
+func (c *wpCoreReleaseChecksums) installChecksums(wpPath string) (release string, checksums map[string]string, err error) {
+	versionFile, err := readWPCoreFile(wpPath, filepath.Join("wp-includes", "version.php"), wpVersionFileMaxBytes)
+	if err != nil {
+		return "", nil, fmt.Errorf("reading version.php: %w", err)
+	}
+	version, locale, err := wpcheck.ParseVersionContent(versionFile)
+	if err != nil {
+		return "", nil, err
+	}
+	checksums, err = c.lookup(version, locale)
+	return version + "/" + locale, checksums, err
+}
+
+// wpCoreFileDiffersOnlyInLineEndings returns nil when one whole-file line
+// ending conversion turns the file into the release's file.
+func wpCoreFileDiffersOnlyInLineEndings(wpPath, rel, want string) error {
+	data, err := readWPCoreFile(wpPath, rel, wpCoreLineEndingsMaxBytes)
+	if err != nil {
+		return err
 	}
 	// Either direction of one whole-file conversion: CRLF copies of an LF
 	// release, and LF copies of a release that ships CRLF. A file that still
@@ -131,11 +161,23 @@ func wpCoreFileDiffersOnlyInLineEndings(wpPath, rel, want string) bool {
 	case bytes.Contains(data, []byte("\n")) && !bytes.Contains(data, []byte("\r")):
 		normalized = bytes.ReplaceAll(data, []byte("\n"), []byte("\r\n"))
 	default:
-		return false
+		return errWPCoreBeyondLineEndings
 	}
 	// #nosec G401 -- compared with the MD5 digests wordpress.org publishes
 	sum := md5.Sum(normalized)
-	return hex.EncodeToString(sum[:]) == want
+	if got := hex.EncodeToString(sum[:]); got != want {
+		return fmt.Errorf("%w: converted md5 %s, release md5 %s", errWPCoreBeyondLineEndings, got, want)
+	}
+	return nil
+}
+
+// readWPCoreFile reads a whole core file; one past the limit is an error.
+func readWPCoreFile(wpPath, rel string, limit int64) ([]byte, error) {
+	data, truncated, err := readWPCoreFileHead(wpPath, rel, limit)
+	if err == nil && truncated {
+		err = errWPCoreFileTooLarge
+	}
+	return data, err
 }
 
 // readWPCoreFileHead keeps every account-controlled component beneath the

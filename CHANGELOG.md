@@ -25,6 +25,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 - Dry-run forecasts now keep room for direct or corroborated attacks, count subnet blocks, treat an unlimited firewall.deny_temp_ip_limit as finite, and show capacity and drain in status and doctor.
 - Since 4.7.0 the csm program is installed so other local users can run it but not read it. csm rehash restores this after a manual copy.
+- The daemon log now says why a modified WordPress core file was not cleared as a line-ending-only copy.
 
 ### Fixed
 
