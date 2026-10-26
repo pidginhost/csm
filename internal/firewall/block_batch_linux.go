@@ -358,6 +358,7 @@ func (e *Engine) BlockAdmissionSnapshot(members []BlockMember, shadow []string) 
 		refusals[i] = e.blockRefusalLocked(m, verified[i], snap, snap.at, nil, nil)
 	}
 	e.ageExistingLocked(members, refusals, snap)
+	snap.elapsed = e.lease.at
 	out := BlockAdmission{Answers: make([]BlockAnswer, len(members)), Temporary: snap.temp, Limit: e.cfg.DenyTempIPLimit, ShadowHeld: map[string]bool{}}
 	for i, m := range members {
 		out.Answers[i] = BlockAnswer{Action: m.Action, IP: m.IP, BlockCheck: BlockCheck{Refusal: refusals[i], Existing: snap.existing(m, refusals[i])}}
@@ -392,7 +393,10 @@ func (snap blockSnapshot) occupants(out *BlockAdmission, now time.Time) {
 		if observed.el.Expires <= 0 {
 			out.Drain = -time.Second
 		} else if out.Drain >= 0 {
-			out.Drain = max(out.Drain, observed.el.Expires)
+			// The sample can be as late as the end of its dump. Age that
+			// upper bound through later dumps and member checks without
+			// letting a wall-clock step change a kernel timeout.
+			out.Drain = max(out.Drain, observed.el.Expires-snap.elapsed.Sub(observed.after))
 		}
 	}
 	for _, row := range snap.state.BlockedNet {

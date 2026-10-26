@@ -157,8 +157,9 @@ type BlockAdmission struct {
 	// timed element plus two elements per timed subnet row, which
 	// admission never evicts.
 	Admission, Imported, Unclaimed int
-	// Drain is how long the last unclaimed or imported occupant has left;
-	// zero when there is none, -time.Second when a kernel expiry is missing.
+	// Drain bounds how long the last unclaimed or imported occupant has left
+	// after collection and member checks; zero when no time remains,
+	// -time.Second when a kernel expiry is missing.
 	Drain time.Duration
 	// ShadowHeld names the forecast addresses the sets already hold as a
 	// timed or an untimed element.

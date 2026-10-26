@@ -34,6 +34,12 @@ are admitted through reserved lanes and fair scope shares in
 `internal/admission`, so independently supported findings keep bounded
 capacity when one scope floods.
 
+The firewall's admission snapshot also estimates how long imported and
+unclaimed temporary occupants have left. Kernel estimates age through later
+set reads and member checks using elapsed time. Subnet estimates follow the
+wall clock. A missing kernel expiry leaves the drain estimate unknown. These
+estimates are observation only; no host enforces admission from them.
+
 ## Risk tiers
 
 Every operation in `internal/privops` carries a risk tier, and a test fails
