@@ -263,13 +263,15 @@ sitting.
 
 **Problem:** mail and archive parsing run in short-lived workers with no user,
 network or filesystem access, a deadline and a memory cap. The YARA worker
-is still a root child of the daemon that opens tenant paths itself, and the
-PHP taint worker has its own supervisor and no lockdown, so a crafted file
-that breaks either scanner reaches a root process.
+is still a root child of the daemon and reads large files by path, from
+copies the daemon writes to disk. The PHP taint worker uses the shared worker
+framework but starts as a plain root child without the lockdown. A crafted
+file that breaks either scanner reaches a root process.
 
-**Acceptance:** both workers run on the shared worker framework under the
-parse worker's lockdown; every YARA caller hands the worker an open
-descriptor and the path-based scan request is gone; rules are compiled once
+**Acceptance:** both workers run under the parse worker's lockdown and the
+YARA worker moves onto the shared worker framework; every YARA caller hands
+the worker an open descriptor, the path-based scan request is gone and no
+scan copies a file to disk; rules are compiled once
 by the daemon and handed over, so a worker restart does not recompile; a file
 scan that could not run YARA is reported incomplete, never clean; the old
 YARA supervisor is deleted; `csm validate` warns when YARA runs inside the
