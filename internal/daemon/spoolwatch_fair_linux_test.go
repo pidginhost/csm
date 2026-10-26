@@ -29,7 +29,8 @@ func buildSourceSpool(t *testing.T, dir, msgID, host string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	data = []byte(strings.Replace(string(data), "-local\n", "-host_address "+host+".25\n", 1))
+	// Exim 4.100 writes the client as [address]:port.
+	data = []byte(strings.Replace(string(data), "-local\n", "-host_address ["+host+"]:25\n", 1))
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatal(err)
 	}

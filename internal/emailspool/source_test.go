@@ -51,6 +51,22 @@ func TestReadSourceTaintedOptions(t *testing.T) {
 	}
 }
 
+// Exim 4.100 writes the client as [address]:port; older releases wrote
+// address.port.
+func TestReadSourceBracketedHost(t *testing.T) {
+	for in, want := range map[string]string{
+		"-host_address [192.0.2.10]:56662":         "ip:192.0.2.10",
+		"--host_address [192.0.2.10]:25":           "ip:192.0.2.10",
+		"-host_address [2001:db8:1:2::5]:25":       "ip:2001:db8:1:2::/64",
+		"-host_address [::ffff:198.51.100.7]:587":  "ip:198.51.100.7",
+		"-host_address [2001:db8:1:2:ffff::9]:465": "ip:2001:db8:1:2::/64",
+	} {
+		if got := readSource(t, spoolHeader(in)); got != want {
+			t.Errorf("%q: source = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestReadSourceIPv6SharesSlash64(t *testing.T) {
 	a := readSource(t, spoolHeader("-host_address 2001:db8:1:2::5.25"))
 	b := readSource(t, spoolHeader("-host_address 2001:db8:1:2:ffff::9.25"))
@@ -204,9 +220,11 @@ func TestReadSourceMalformed(t *testing.T) {
 	if _, err := ReadSource(strings.NewReader("1abcDE-000001-AB-H\n")); err == nil {
 		t.Fatal("input without line 2 gave no error")
 	}
-	for _, bad := range []string{"-host_address garbage", "-host_address 192.0.2.10", "-host_address 999.0.2.10.25", "-host_address"} {
-		if got := readSource(t, spoolHeader(bad)); got != "uid:1001" {
-			t.Errorf("%q: source = %q, want uid:1001", bad, got)
+	// Line 2 of a message received over the network names Exim's own user,
+	// shared by all such mail, so an unreadable host never falls back to it.
+	for _, bad := range []string{"-host_address garbage", "-host_address 192.0.2.10", "-host_address 999.0.2.10.25", "-host_address", "-host_address [192.0.2.10", "-host_address [192.0.2.10]x"} {
+		if got, err := ReadSource(strings.NewReader(spoolHeader(bad))); err == nil {
+			t.Errorf("%q: source = %q, want an error", bad, got)
 		}
 	}
 	if got := readSource(t, spoolHeader("-aclm _x notanumber", "-host_address 192.0.2.10.25")); got != "uid:1001" {

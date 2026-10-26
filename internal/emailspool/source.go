@@ -20,10 +20,12 @@ const maxSourceKey = 255
 // options preamble of its Exim -H file: "auth:<id>" for an authenticated
 // client, else "ip:<addr>" for a remote host (an IPv6 host as its /64), else
 // "uid:<n>" for the local user that submitted it. It reads at most
-// maxSourcePreamble bytes and errors only when no key can be found.
+// maxSourcePreamble bytes and errors when no key can be found, including a
+// network message whose host address cannot be read.
 func ReadSource(r io.Reader) (string, error) {
 	br := bufio.NewReader(io.LimitReader(r, maxSourcePreamble))
 	var uid, auth, host string
+	sawHost := false
 	for lineNo := 1; ; lineNo++ {
 		line, err := br.ReadString('\n')
 		// A partial identity at EOF or the read limit is not a source key.
@@ -60,6 +62,7 @@ func ReadSource(r io.Reader) (string, error) {
 				auth = sourceAuth(value)
 			}
 		case "host_address":
+			sawHost = true
 			if host == "" {
 				host = sourceHost(value)
 			}
@@ -70,6 +73,10 @@ func ReadSource(r io.Reader) (string, error) {
 		return auth, nil
 	case host != "":
 		return host, nil
+	case sawHost:
+		// Line 2 of a message received over the network names Exim's own
+		// user, which all such mail shares; it is not this message's source.
+		return "", errors.New("emailspool: unreadable host address in header")
 	case uid != "":
 		return uid, nil
 	}
@@ -129,17 +136,27 @@ func sourceAuth(id string) string {
 	return "auth:" + strings.ToLower(id)
 }
 
-// sourceHost parses "<addr>.<port>". One IPv6 customer gets a /64, so an
-// IPv6 host is keyed by its /64.
+// sourceHost parses "[<addr>]:<port>", as Exim 4.100 writes it, or
+// "<addr>.<port>", as older releases did. One IPv6 customer gets a /64, so
+// an IPv6 host is keyed by its /64.
 func sourceHost(value string) string {
-	i := strings.LastIndexByte(value, '.')
-	if i < 0 {
+	var host, port string
+	if rest, ok := strings.CutPrefix(value, "["); ok {
+		var found bool
+		if host, port, found = strings.Cut(rest, "]:"); !found {
+			return ""
+		}
+	} else {
+		i := strings.LastIndexByte(value, '.')
+		if i < 0 {
+			return ""
+		}
+		host, port = value[:i], value[i+1:]
+	}
+	if _, err := strconv.ParseUint(port, 10, 16); err != nil {
 		return ""
 	}
-	if _, err := strconv.ParseUint(value[i+1:], 10, 16); err != nil {
-		return ""
-	}
-	addr, err := netip.ParseAddr(value[:i])
+	addr, err := netip.ParseAddr(host)
 	if err != nil {
 		return ""
 	}
