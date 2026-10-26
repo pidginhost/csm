@@ -11,6 +11,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Security
 
+- WordPress core diagnostics no longer expose unrecognized command output or invalid release metadata, and keep unusual filenames from disrupting logs.
 - Email attachments are now unpacked in memory by a separate locked-down process with no network access, so a crafted message can no longer stall mail scanning. After upgrade, failures follow email_av.fail_mode and the old attachment folder is deleted.
 - One sender can no longer hold up mail scanning for others, and slow messages no longer switch off scanning for all mail. Messages waiting behind their sender follow email_av.fail_mode.
 - A message that keeps crashing the attachment worker is no longer unpacked again on every retry, and repeated crashes from one sender raise a High alert naming it.
