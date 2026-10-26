@@ -19,8 +19,9 @@ const (
 	IngressPositions = 64
 )
 
-// Partition is the part of the queue a candidate holds its position in.
-// Values are persisted: append, never renumber.
+// Partition is the part of the queue a candidate holds its position in,
+// and the part of the temporary set an automatic entry occupies (spec
+// 5.6). Values are persisted: append, never renumber.
 type Partition uint8
 
 const (
