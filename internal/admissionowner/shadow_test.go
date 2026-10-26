@@ -156,11 +156,11 @@ func TestShadowFillsTheTemporarySet(t *testing.T) {
 		t.Fatal("a full set charged the ceiling or took an entry")
 	}
 	// A real block of a shadow address counts once: as real occupancy.
-	if s.full(firewall.BlockAdmission{Temporary: 9, Limit: 11, ShadowTemporary: 1}) {
+	if s.full(firewall.BlockAdmission{Temporary: 9, Limit: 11, ShadowHeld: map[string]bool{"203.0.113.1": true}}) {
 		t.Fatal("an address held by a real and a shadow block counted twice")
 	}
 	// A real permanent block of a shadow address takes no temporary slot.
-	if s.full(firewall.BlockAdmission{Temporary: 8, Limit: 10, ShadowPermanent: 1}) {
+	if s.full(firewall.BlockAdmission{Temporary: 8, Limit: 10, ShadowHeld: map[string]bool{"2001:db8::1": true}}) {
 		t.Fatal("permanent coverage counted as temporary demand")
 	}
 }

@@ -182,7 +182,7 @@ func (s *shadow) covering(ip string, expires time.Time) admission.Prediction {
 // forecast blocks, less those the real sets already hold as a timed or an
 // untimed element. adm is this turn's snapshot, taken after expire.
 func (s *shadow) occupancy(adm firewall.BlockAdmission) int {
-	return adm.Temporary + len(s.entries) - adm.ShadowTemporary - adm.ShadowPermanent
+	return adm.Temporary + len(s.entries) - len(adm.ShadowHeld)
 }
 
 // full reports whether real and forecast blocks fill the temporary limit.

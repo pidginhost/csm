@@ -151,9 +151,18 @@ type BlockAdmission struct {
 	// address families together; Limit is the configured temporary limit,
 	// zero for none.
 	Temporary, Limit int
-	// ShadowTemporary and ShadowPermanent count the forecast addresses the
-	// sets already hold as a timed element and as an untimed one.
-	ShadowTemporary, ShadowPermanent int
+	// The timed occupants by recorded ownership (spec 5.6): Admission
+	// counts the elements of rows admission actions wrote, Imported those
+	// of rows legacy automatic blocks marked, and Unclaimed every other
+	// timed element plus two elements per timed subnet row, which
+	// admission never evicts.
+	Admission, Imported, Unclaimed int
+	// Drain is how long the last unclaimed or imported occupant has left;
+	// zero when there is none, -time.Second when a kernel expiry is missing.
+	Drain time.Duration
+	// ShadowHeld names the forecast addresses the sets already hold as a
+	// timed or an untimed element.
+	ShadowHeld map[string]bool
 }
 
 // Full reports whether the temporary set has no slot left for any member.

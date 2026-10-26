@@ -100,11 +100,11 @@ func (f *fakeBlocks) BlockAdmissionSnapshot(members []firewall.BlockMember, shad
 	}
 	out := firewall.BlockAdmission{Answers: make([]firewall.BlockAnswer, len(members)), Temporary: f.temp, Limit: f.limit}
 	for _, ip := range shadow {
-		switch {
-		case f.liveTemp[ip]:
-			out.ShadowTemporary++
-		case f.livePerm[ip]:
-			out.ShadowPermanent++
+		if f.liveTemp[ip] || f.livePerm[ip] {
+			if out.ShadowHeld == nil {
+				out.ShadowHeld = map[string]bool{}
+			}
+			out.ShadowHeld[ip] = true
 		}
 	}
 	for i, m := range members {

@@ -63,7 +63,7 @@ func (s *shadow) occupancyStatus() *health.AdmissionDryRunOccupancy {
 	if s.adm == nil {
 		return nil
 	}
-	only := max(len(s.entries)-s.adm.ShadowTemporary-s.adm.ShadowPermanent, 0)
+	only := max(len(s.entries)-len(s.adm.ShadowHeld), 0)
 	return &health.AdmissionDryRunOccupancy{
 		Actual: s.adm.Temporary, ShadowOnly: only, Predicted: s.adm.Temporary + only, Limit: s.adm.Limit,
 		Unlimited: s.adm.Limit == 0, Limited: s.limited(),
