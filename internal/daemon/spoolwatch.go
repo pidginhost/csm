@@ -54,7 +54,7 @@ func registerSpoolMetrics() {
 		metrics.MustRegister("csm_spool_hold_expired_total", spoolHoldExpiredTotal)
 		spoolSourceWaitsTotal = metrics.NewCounterVec(
 			"csm_spool_source_waits_total",
-			"Mail opens that found another message from the same sender being scanned: waited (parked until the sender's scan finished) or overflow (too many already waiting; answered under email_av.fail_mode without a scan).",
+			"Mail opens whose sender was already scanning on its share of the slots: waited (parked until one of the sender's scans finished) or overflow (too many already waiting; scanned at once without waiting its turn).",
 			[]string{"outcome"},
 		)
 		metrics.MustRegister("csm_spool_source_waits_total", spoolSourceWaitsTotal)
@@ -149,7 +149,7 @@ type SpoolWatcher struct {
 	lastOverflowAt time.Time
 	// holds tracks hold-budget expiries and decides when to stop holding mail.
 	holds holdWatchdog
-	// sources lets one message per sender scan at a time.
+	// sources lets one sender scan on at most half the slots.
 	sources sourceGate
 	// mailStrikes counts worker kills per message ID; sourceKills counts
 	// them per source. Nil on hand-built test watchers.
@@ -525,6 +525,7 @@ func (sw *SpoolWatcher) startScanWorkers() int {
 	if n < 1 {
 		n = 4
 	}
+	sw.sources.setLimit(n)
 	for slot := range n {
 		sw.wg.Add(1)
 		obs.Go("spool-scanner", func() { sw.scanWorker(slot) })

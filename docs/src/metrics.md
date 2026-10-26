@@ -235,10 +235,10 @@ curl -o goroutine.txt 'http://127.0.0.1:<port>/debug/pprof/goroutine?debug=2'
   that found another message from the same sender being scanned.
   `outcome` is `waited` (the message waited its turn without
   taking a scan slot) or `overflow` (too many messages from that
-  sender were already waiting, so it was answered under
-  `email_av.fail_mode` without a scan). Any `overflow` growth
-  comes with an `email_av_source_backlog` finding naming the
-  sender.
+  sender were already waiting, so it was scanned at once without
+  waiting its turn). `overflow` growth raises an
+  `email_av_source_backlog` finding naming the sender, at most
+  once a minute.
 - `csm_parse_worker_jobs_total{pool,outcome}` (counter): parse
   worker jobs. `pool` is `mail` (email attachments) or `zip`
   (tenant zips checked for phishing kits). `outcome` is `ok`,

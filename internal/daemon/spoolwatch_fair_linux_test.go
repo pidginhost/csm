@@ -135,30 +135,35 @@ func waitCounter(t *testing.T, c *metrics.Counter, want float64) {
 	}
 }
 
-func TestSourceGateSerializesOneSource(t *testing.T) {
+// One sender may scan on at most half the slots, so the others always keep
+// the rest. Its further messages wait their turn in arrival order.
+func TestSourceGateLimitsOneSource(t *testing.T) {
 	captureResponses(t)
 	waits := freshSourceWaits(t)
 	ex := newGateExtractor(4)
 	sw, _ := gateWatcher(t, "open", ex)
 	dir := t.TempDir()
-	ids := []string{"1aBcDe-SRC000-XX", "1aBcDe-SRC001-XX", "1aBcDe-SRC002-XX"}
+	ids := []string{"1aBcDe-SRC000-XX", "1aBcDe-SRC001-XX", "1aBcDe-SRC002-XX", "1aBcDe-SRC003-XX"}
 	for _, id := range ids {
 		buildSourceSpool(t, dir, id, "192.0.2.10")
 	}
-	enqueue(t, sw, dir, ids[0])
-	waitArrival(t, ex, ids[0])
-	enqueue(t, sw, dir, ids[1])
-	waitCounter(t, waits.With("waited"), 1)
-	enqueue(t, sw, dir, ids[2])
-	waitCounter(t, waits.With("waited"), 2)
-	for _, id := range ids[1:] {
+	for i, id := range ids {
+		enqueue(t, sw, dir, id)
+		if i < 2 {
+			waitArrival(t, ex, id)
+		} else {
+			waitCounter(t, waits.With("waited"), float64(i-1))
+		}
+	}
+	for _, id := range ids[2:] {
 		ex.release <- struct{}{}
 		waitArrival(t, ex, id)
 	}
 	ex.release <- struct{}{}
+	ex.release <- struct{}{}
 	maxActive, order := ex.snapshot()
-	if maxActive != 1 {
-		t.Fatalf("%d messages from one source extracted at once, want 1", maxActive)
+	if maxActive != 2 {
+		t.Fatalf("%d messages from one source extracted at once on 4 slots, want 2", maxActive)
 	}
 	if strings.Join(order, ",") != strings.Join(ids, ",") {
 		t.Fatalf("scan order %v, want arrival order %v", order, ids)
@@ -180,58 +185,67 @@ func TestSourceGateOtherSourceNotBlocked(t *testing.T) {
 
 // A flood from one sender beyond the wait cap is answered at once under
 // fail_mode. It is not capacity exhaustion, so it never starts the bypass.
-func TestSourceGateOverflowAnswersWithoutBypass(t *testing.T) {
-	for _, mode := range []string{"open", "tempfail"} {
-		t.Run(mode, func(t *testing.T) {
-			responses := captureResponses(t)
-			waits := freshSourceWaits(t)
-			ex := newGateExtractor(4)
-			sw, findings := gateWatcher(t, mode, ex)
-			dir := t.TempDir()
-			id := func(i int) string { return fmt.Sprintf("1aBcDe-FL%04d-XX", i) }
-			for i := range 44 {
-				buildSourceSpool(t, dir, id(i), "192.0.2.10")
-			}
-			enqueue(t, sw, dir, id(0))
-			waitArrival(t, ex, id(0))
-			var overflowFDs []int
-			for i := 1; i < 44; i++ {
-				evt := enqueue(t, sw, dir, id(i))
-				if i > maxSourceWaiting {
-					overflowFDs = append(overflowFDs, evt.fd)
-				}
-				if i <= maxSourceWaiting {
-					waitCounter(t, waits.With("waited"), float64(i))
-				}
-			}
-			waitCounter(t, waits.With("overflow"), 11)
-			got := waitForResponses(t, responses, 11, 5*time.Second)
-			if len(got) != 11 {
-				t.Fatalf("responses = %d, want the 11 overflowing events answered", len(got))
-			}
-			for _, r := range got {
-				if r.response != wantResponse(mode) {
-					t.Fatalf("overflow answered %d, want %d", r.response, wantResponse(mode))
-				}
-			}
-			for _, fd := range overflowFDs {
-				assertFDClosed(t, fd, "overflowing event")
-			}
-			buildSourceSpool(t, dir, "1aBcDe-OTHER0-XX", "198.51.100.7")
-			enqueue(t, sw, dir, "1aBcDe-OTHER0-XX")
-			waitArrival(t, ex, "1aBcDe-OTHER0-XX")
-			fs := takeFindings(findings)
-			if n := len(findingsFor(fs, "email_av_hold_bypass")); n != 0 {
-				t.Fatalf("hold bypass findings = %d, want 0", n)
-			}
-			backlog := findingsFor(fs, "email_av_source_backlog")
-			if len(backlog) != 1 || !strings.Contains(backlog[0].Message, `"ip:192.0.2.10"`) || backlog[0].Severity != alert.Warning {
-				t.Fatalf("source backlog findings = %+v, want one Warning naming the source", backlog)
-			}
-			if sw.holds.bypassing(time.Now()) {
-				t.Fatal("overflow started the hold bypass")
-			}
-		})
+// A sender past its wait limit is still scanned: one sender key can stand
+// for a whole gateway, localhost or Exim's own bounces, so answering without
+// a scan would let a slow message open the door for everyone behind it.
+func TestSourceGateOverflowStillScans(t *testing.T) {
+	responses := captureResponses(t)
+	waits := freshSourceWaits(t)
+	ex := newGateExtractor(4)
+	sw, findings := gateWatcher(t, "tempfail", ex)
+	dir := t.TempDir()
+	id := func(i int) string { return fmt.Sprintf("1aBcDe-FL%04d-XX", i) }
+	const total = 2 + maxSourceWaiting + 2
+	for i := range total {
+		buildSourceSpool(t, dir, id(i), "192.0.2.10")
+	}
+	for i := range total {
+		enqueue(t, sw, dir, id(i))
+		switch {
+		case i < 2:
+			waitArrival(t, ex, id(i))
+		case i < 2+maxSourceWaiting:
+			waitCounter(t, waits.With("waited"), float64(i-1))
+		}
+	}
+	waitCounter(t, waits.With("overflow"), 2)
+	overflow := map[string]bool{}
+	for range 2 {
+		select {
+		case got := <-ex.arrived:
+			overflow[got] = true
+		case <-time.After(5 * time.Second):
+			t.Fatal("overflowing messages were not scanned")
+		}
+	}
+	if !overflow[id(total-2)] || !overflow[id(total-1)] {
+		t.Fatalf("scanned %v, want the two overflowing messages", overflow)
+	}
+	if got := responses(); len(got) != 0 {
+		t.Fatalf("responses = %+v, want no message answered before its scan", got)
+	}
+	fs := takeFindings(findings)
+	if n := len(findingsFor(fs, "email_av_hold_bypass")); n != 0 {
+		t.Fatalf("hold bypass findings = %d, want 0", n)
+	}
+	backlog := findingsFor(fs, "email_av_source_backlog")
+	if len(backlog) != 1 || !strings.Contains(backlog[0].Message, `"ip:192.0.2.10"`) || backlog[0].Severity != alert.Warning {
+		t.Fatalf("source backlog findings = %+v, want one Warning naming the source", backlog)
+	}
+	for range total {
+		ex.release <- struct{}{}
+	}
+	got := waitForResponses(t, responses, total, 10*time.Second)
+	if len(got) != total {
+		t.Fatalf("responses = %d, want all %d messages scanned and answered", len(got), total)
+	}
+	for _, r := range got {
+		if r.response != FAN_ALLOW {
+			t.Fatalf("clean message answered %d, want allowed after its scan", r.response)
+		}
+	}
+	if _, order := ex.snapshot(); len(order) != total {
+		t.Fatalf("extractions = %d, want %d", len(order), total)
 	}
 }
 
@@ -249,7 +263,7 @@ func TestSourceGateWaitExpiryNotCounted(t *testing.T) {
 	sw, findings := gateWatcher(t, "tempfail", ex)
 	sw.permissionMode = true
 	dir := t.TempDir()
-	ids := []string{"1aBcDe-WX0000-XX", "1aBcDe-WX0001-XX", "1aBcDe-WX0002-XX"}
+	ids := []string{"1aBcDe-WX0000-XX", "1aBcDe-WX0001-XX", "1aBcDe-WX0002-XX", "1aBcDe-WX0003-XX"}
 	var events []spoolEvent
 	for _, id := range ids {
 		buildSourceSpool(t, dir, id, "192.0.2.10")
@@ -260,10 +274,10 @@ func TestSourceGateWaitExpiryNotCounted(t *testing.T) {
 		evt.guard = sw.newHoldGuard(int32(evt.fd), true) // #nosec G115 -- test fd fits in int32.
 		events = append(events, evt)
 		sw.scanCh <- evt
-		if i == 0 {
+		if i < 2 {
 			waitArrival(t, ex, id)
 		} else {
-			waitCounter(t, waits.With("waited"), float64(i))
+			waitCounter(t, waits.With("waited"), float64(i-1))
 		}
 	}
 	// Expire only after each event reached its intended stage. Wall-clock
@@ -271,8 +285,8 @@ func TestSourceGateWaitExpiryNotCounted(t *testing.T) {
 	for _, evt := range events {
 		evt.guard.expire()
 	}
-	got := waitForResponses(t, responses, 3, 5*time.Second)
-	if len(got) != 3 {
+	got := waitForResponses(t, responses, 4, 5*time.Second)
+	if len(got) != 4 {
 		t.Fatalf("responses = %d, want every expired hold answered", len(got))
 	}
 	for _, r := range got {
@@ -286,14 +300,15 @@ func TestSourceGateWaitExpiryNotCounted(t *testing.T) {
 	if sw.holds.bypassing(time.Now()) || len(findingsFor(takeFindings(findings), "email_av_hold_bypass")) != 0 {
 		t.Fatal("expiries behind a busy source started the bypass")
 	}
-	for _, id := range ids[1:] {
+	for _, id := range ids[2:] {
 		ex.release <- struct{}{}
 		waitArrival(t, ex, id)
 	}
 	ex.release <- struct{}{}
+	ex.release <- struct{}{}
 	close(sw.stopCh)
 	sw.wg.Wait()
-	if len(responses()) != 3 {
+	if len(responses()) != 4 {
 		t.Fatal("a late scan wrote a second verdict")
 	}
 	for _, evt := range events {
@@ -322,10 +337,10 @@ func TestSourceGateDrainsOnStop(t *testing.T) {
 				evt.guard = sw.newHoldGuard(int32(evt.fd), true) // #nosec G115 -- test fd fits in int32.
 				events = append(events, evt)
 				sw.scanCh <- evt
-				if i == 0 {
+				if i < 2 {
 					waitArrival(t, ex, id)
 				} else {
-					waitCounter(t, waits.With("waited"), float64(i))
+					waitCounter(t, waits.With("waited"), float64(i-1))
 				}
 			}
 			if shutdown {
@@ -335,8 +350,9 @@ func TestSourceGateDrainsOnStop(t *testing.T) {
 			// Shutdown skips parked extractions; a restart must finish them
 			// before the replacement watcher can reuse the worker slots.
 			ex.release <- struct{}{}
+			ex.release <- struct{}{}
 			if !shutdown {
-				for range len(events) - 1 {
+				for range len(events) - 2 {
 					ex.release <- struct{}{}
 				}
 			}
@@ -365,10 +381,10 @@ func TestSourceGateDrainsOnStop(t *testing.T) {
 			}
 			wantScans := len(events)
 			if shutdown {
-				wantScans = 1
+				wantScans = 2
 			}
-			if maxActive, order := ex.snapshot(); maxActive != 1 || len(order) != wantScans {
-				t.Fatalf("extractions = %v (max active %d), want %d serial scans", order, maxActive, wantScans)
+			if maxActive, order := ex.snapshot(); maxActive != 2 || len(order) != wantScans {
+				t.Fatalf("extractions = %v (max active %d), want %d scans, at most 2 at once", order, maxActive, wantScans)
 			}
 			if len(sw.sources.busy) != 0 {
 				t.Fatal("stopped watcher retained parked source events")
