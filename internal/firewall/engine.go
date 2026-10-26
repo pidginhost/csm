@@ -153,15 +153,12 @@ type Engine struct {
 	// maps are rebuilt every time stateCache is repopulated so
 	// O(1) lookups stay coherent with the cached slices. blockedIPIndex
 	// stores the slice position for each canonical IP.
-	stateCache    *FirewallState
-	stateCacheKey stateFileCacheKey
-	// Retain unmerged ownership only when admission rows exist; policy
-	// normalization must not erase aliases needed by later block decisions.
-	blockOwnershipRows []BlockedEntry
-	blockedIPIndex     map[string]int
-	allowedIPIndex     map[string]struct{}
-	portAllowedIndex   map[string]struct{}
-	blockedCIDRIndex   map[string]struct{}
+	stateCache       *FirewallState
+	stateCacheKey    stateFileCacheKey
+	blockedIPIndex   map[string]int
+	allowedIPIndex   map[string]struct{}
+	portAllowedIndex map[string]struct{}
+	blockedCIDRIndex map[string]struct{}
 
 	// expiryDue is the earliest moment an entry of stateCache can expire.
 	// Lookups skip the expiry scan until then: the netblock and auto-block
@@ -2773,7 +2770,7 @@ func (e *Engine) blockIPRequestLocked(ip string, reason string, timeout time.Dur
 		return BlockOutcomeLive, nil
 	}
 
-	if err := persistFirewallIntentUsing(priorState, nextState, e.saveBlockStateLocked); err != nil {
+	if err := e.persistFirewallIntent(priorState, nextState); err != nil {
 		return BlockOutcomeNoop, fmt.Errorf("persisting block for %s: %w", ip, err)
 	}
 
@@ -2928,12 +2925,6 @@ func (e *Engine) validateBlockIP(ip string, timeout time.Duration, skipExisting 
 func (e *Engine) blockPlanningStatesLocked() (FirewallState, FirewallState, error) {
 	if e.lifecycle == nil {
 		state := e.loadStateFile()
-		if e.blockOwnershipRows != nil {
-			prior := copyFirewallState(state)
-			prior.Blocked = append([]BlockedEntry(nil), e.blockOwnershipRows...)
-			e.overlayUnverifiedBlockActionsLocked(&prior)
-			return prior, state, nil
-		}
 		return state, state, nil
 	}
 	state, _, err := e.readCommittedStateLocked()
@@ -2992,10 +2983,9 @@ func (e *Engine) blockIPTargetFromStates(ip string, timeout time.Duration, skipE
 	// (existing behaviour) if the live query is unavailable.
 	if e.cfg.DenyIPLimit > 0 || e.cfg.DenyTempIPLimit > 0 {
 		var perm, temp int
-		operatorAdmission := timeout > 0 && !skipExisting && e.lifecycle == nil && hasAdmissionRows(victimState)
-		if operatorAdmission {
+		if timeout > 0 && !skipExisting && e.lifecycle == nil && hasAdmissionRows(st) {
 			// Count ownership and occupancy from one image, including replacement.
-			temp = e.operatorTempCountLocked(victimState, ip)
+			temp = e.operatorTempCountLocked(st, ip)
 		} else {
 			var ok bool
 			perm, temp, ok = e.livePermTempCountsLocked(st)
@@ -3037,22 +3027,6 @@ func (e *Engine) blockIPTargetFromStates(ip string, timeout time.Duration, skipE
 		if timeout > 0 && e.cfg.DenyTempIPLimit > 0 && temp >= e.cfg.DenyTempIPLimit {
 			// Validation must stay read-only because verdict and dry-run gates run
 			// after it. The live block path applies this eviction target.
-			if e.lifecycle == nil && hasAdmissionRows(victimState) {
-				// The saved ownership image can contain rows absent from policy.
-				// Keep admission identities even after expiry to protect aliases.
-				at := e.leaseNowLocked()
-				var active []BlockedEntry
-				for _, row := range victimState.Blocked {
-					if row.ActionID == "" && !row.ExpiresAt.IsZero() && !row.ExpiresAt.After(at) {
-						continue
-					}
-					if parsed := net.ParseIP(row.IP); operatorAdmission && !e.cfg.IPv6 && parsed != nil && parsed.To4() == nil {
-						continue
-					}
-					active = append(active, row)
-				}
-				victimState.Blocked = active
-			}
 			victim, ok := e.evictionVictimLocked(victimState, ip, skipExisting)
 			if !ok {
 				return nil, nil, false, "", fmt.Errorf("temporary deny limit reached (%d) and no temp entry to evict", e.cfg.DenyTempIPLimit)
@@ -3206,9 +3180,6 @@ func (e *Engine) operatorTempCountLocked(state FirewallState, excludeIP string) 
 	}
 	var other []BlockedEntry
 	for _, row := range state.Blocked {
-		if parsed := net.ParseIP(row.IP); parsed != nil && parsed.To4() == nil && !e.cfg.IPv6 {
-			continue
-		}
 		if owners[stateIPKey(row.IP)] == "" {
 			other = append(other, row)
 		}
@@ -4780,7 +4751,6 @@ func (e *Engine) ensureStateCacheAtLocked(now time.Time) {
 	}
 
 	e.overlayUnverifiedBlockActionsLocked(&fresh)
-	e.cacheBlockOwnershipLocked(fresh)
 	normalizeFirewallStateIPs(&fresh)
 	e.stateCache = &fresh
 	e.applyExpiryAtLocked(now)
@@ -5134,7 +5104,6 @@ func (e *Engine) setStateCacheLocked(path string, s *FirewallState) {
 
 	state := copyFirewallState(*s)
 	e.overlayUnverifiedBlockActionsLocked(&state)
-	e.cacheBlockOwnershipLocked(state)
 	normalizeFirewallStateIPs(&state)
 	e.stateCache = &FirewallState{
 		Blocked:     append([]BlockedEntry(nil), state.Blocked...),
@@ -5148,7 +5117,6 @@ func (e *Engine) setStateCacheLocked(path string, s *FirewallState) {
 
 func (e *Engine) clearStateCacheLocked() {
 	e.stateCache = nil
-	e.blockOwnershipRows = nil
 	e.stateCacheKey = stateFileCacheKey{}
 	e.rebuildIndexLocked()
 }
@@ -5232,7 +5200,7 @@ func isNftNotFound(err error) bool {
 }
 
 func (e *Engine) restoreBlockStateAfterFailureLocked(state FirewallState, ip string) error {
-	if err := e.saveBlockStateLocked(&state); err != nil {
+	if err := e.saveState(&state); err != nil {
 		fmt.Fprintf(os.Stderr, "firewall: restore state after failed block for %s failed: %v\n", ip, err)
 		return err
 	}

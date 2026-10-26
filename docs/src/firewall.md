@@ -203,12 +203,7 @@ blocks is evicted to make room for a new one, and `csm doctor` warns until a
 restart reads the ledger. `automation.firewall_ledger_error` carries the
 reason. With a readable ledger such blocks are never evicted either: an
 operator block that finds the temporary limit reached only because of them
-is added above the limit. Alternate spellings of an admission-owned address
-cannot make it an eviction target. Conflicting saved ownership counts as
-unknown occupancy, and block writes and rollback preserve those saved rows.
-When IPv6 is disabled, its saved entries do not consume space for this
-operator decision or become eviction targets, including when a live set
-cannot be read. New timed automatic blocks record their origin
+is added above the limit. New timed automatic blocks record their origin
 explicitly; operator blocks and operator undo do not acquire that origin
 from their reason text. Older unstamped rows keep unknown origin.
 
