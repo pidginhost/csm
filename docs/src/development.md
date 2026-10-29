@@ -210,6 +210,10 @@ The default suite executes on every pipeline even when compiled packages
 are cached. Release build and package jobs stay on separate runners and do
 not consume these caches.
 
+The test job uses `gocover-cobertura -strict` so unresolved package information
+fails coverage conversion. A successful test job must include every covered
+package in its report.
+
 When an image definition changes on a branch, run its blocking manual
 image jobs: ci-tools, or both builder architectures. Preflight waits for
 those builds, and both release builds wait for preflight while still
