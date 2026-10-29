@@ -32,6 +32,15 @@ linters:
       enable-all: true
       disable:
         - fieldalignment
+  exclusions:
+    rules:
+      # errcheck reports a bare receive from a chan error. In tests a bare
+      # receive joins a goroutine whose result is already checked or no
+      # longer needed, and staticcheck rejects the `_ = <-ch` alternative.
+      - path: _test\.go
+        linters:
+          - errcheck
+        source: '^\s*(case )?<-\w+:?\s*$'
 
 formatters:
   enable:

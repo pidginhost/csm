@@ -20,7 +20,7 @@
 #   docker build -f build/Dockerfile.builder -t csm/builder:glibc-2.28 .
 #   docker tag csm/builder:glibc-2.28 csm/builder:latest
 
-FROM almalinux:8@sha256:bc9ff06f1e0d3fa623384eb4a86cf1d5dc825cf91a31b61455139ee4ca9f47e5
+FROM almalinux:8@sha256:2d0f2eb2a83cc09dbc2eb92fade4dbe8f709628149e81aa00aec70630406603b
 
 # System development tooling. PowerTools (aka CRB on newer Alma)
 # exposes dev packages that are not in the base repos.
@@ -86,8 +86,8 @@ ENV GOTOOLCHAIN=local
 # Analysers the tagged lint and gosec jobs run, built with this image's Go
 # so they read its export data. Keep the versions equal to
 # Dockerfile.ci-tools.
-ARG GOLANGCI_LINT_VERSION=v2.14.0
-ARG GOSEC_VERSION=v2.29.1-0.20261005092323-d2b649ec0182
+ARG GOLANGCI_LINT_VERSION=v2.15.0
+ARG GOSEC_VERSION=v2.30.0
 RUN GOBIN=/usr/local/bin go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${GOLANGCI_LINT_VERSION} \
     && GOBIN=/usr/local/bin go install github.com/securego/gosec/v2/cmd/gosec@${GOSEC_VERSION} \
     && rm -rf /root/.cache/go-build /root/go/pkg/mod
@@ -102,7 +102,7 @@ RUN curl -fsSL https://sh.rustup.rs | \
         sh -s -- -y --default-toolchain stable --profile minimal
 
 # cargo-c: builds Rust libraries as C-compatible .a + .h + .pc.
-RUN cargo install cargo-c@0.10.20 --locked
+RUN cargo install cargo-c@0.10.26 --locked
 
 # Compile YARA-X v1.21.0 static library, install to /usr/local. The
 # --library-type=staticlib flag ensures cargo-c emits only the .a
