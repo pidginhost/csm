@@ -18,7 +18,7 @@ module is absent and fail when `CSM_REQUIRE_PYTHON_VERIFIER=1`, which the CI
 test jobs set so a missing module cannot pass as a silent skip. The Web UI
 JavaScript tests need Node 24 or newer the same way: they skip without it and
 fail when `CSM_REQUIRE_NODE=1`, which the CI test job sets. Builds with `yara,journal,bpf` also need
-CGO, pkg-config, YARA-X 1.22.1 and the systemd
+CGO, pkg-config, YARA-X 1.22.0 and the systemd
 development library. Use the release builder or the documented test images.
 CI images ship the module toolchain and run with `GOTOOLCHAIN=local`, so a
 stale image fails instead of downloading another toolchain in every job.
