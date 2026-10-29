@@ -4,9 +4,9 @@
 # instead of fetching a newer one), the Go analysers, node for the Web UI
 # JavaScript tests, and the apt packages the test and integration jobs use.
 #
-# Tag: registry.pidginhost.cloud/csm/ci-tools:go-1.27.3-r1
+# Tag: registry.pidginhost.cloud/csm/ci-tools:go-1.27.3-r3
 # Build: docker build -f build/Dockerfile.ci-tools \
-#          -t registry.pidginhost.cloud/csm/ci-tools:go-1.27.3-r1 .
+#          -t registry.pidginhost.cloud/csm/ci-tools:go-1.27.3-r3 .
 # Push: triggered manually by build-ci-tools-image job in .gitlab-ci.yml
 #
 # Bump the tag suffix whenever a pinned tool version changes or a new
@@ -21,13 +21,13 @@ FROM golang:1.27.3-bookworm
 # pipeline pulls the rebuilt image instead of the stale one.
 # golangci-lint and gosec are also built into Dockerfile.builder for the
 # tagged jobs; keep the versions equal.
-ARG GOLANGCI_LINT_VERSION=v2.14.0
-ARG GOVULNCHECK_VERSION=v1.8.0
-ARG GOCOVER_COBERTURA_VERSION=v1.2.0
+ARG GOLANGCI_LINT_VERSION=v2.15.0
+ARG GOVULNCHECK_VERSION=v1.9.0
+ARG GOCOVER_COBERTURA_VERSION=v1.5.0
 ARG GOCOVMERGE_VERSION=v0.0.0-20160331181800-b5bfa59ec0ad
-# gosec: an untagged commit until a release can read Go 1.27.2 export data.
-ARG GOSEC_VERSION=v2.29.1-0.20261005092323-d2b649ec0182
-ARG PHCTL_VERSION=v0.6.2
+# gosec: keep the module loader fix until it ships in a tagged release.
+ARG GOSEC_VERSION=v2.30.1-0.20261026162949-ff25931a2edd
+ARG PHCTL_VERSION=v0.20.1
 
 # openssh-client + jq + ca-certificates for integration:, php-cli for
 # the PHP Shield runtime tests and python3-cryptography for the EL8
@@ -59,4 +59,4 @@ RUN go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${GOLANGCI
 # node runs the Web UI JavaScript tests (scripts/uitest). Taken from the
 # official image rather than apt: bookworm's nodejs is past upstream end of
 # life. The binary needs only glibc and libstdc++, both in this base.
-COPY --from=node:24.21.0-bookworm-slim /usr/local/bin/node /usr/local/bin/node
+COPY --from=node:24.22.2-bookworm-slim /usr/local/bin/node /usr/local/bin/node

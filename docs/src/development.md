@@ -18,7 +18,7 @@ module is absent and fail when `CSM_REQUIRE_PYTHON_VERIFIER=1`, which the CI
 test jobs set so a missing module cannot pass as a silent skip. The Web UI
 JavaScript tests need Node 24 or newer the same way: they skip without it and
 fail when `CSM_REQUIRE_NODE=1`, which the CI test job sets. Builds with `yara,journal,bpf` also need
-CGO, pkg-config, YARA-X 1.21.0 and the systemd
+CGO, pkg-config, YARA-X 1.22.0 and the systemd
 development library. Use the release builder or the documented test images.
 CI images ship the module toolchain and run with `GOTOOLCHAIN=local`, so a
 stale image fails instead of downloading another toolchain in every job.
@@ -175,6 +175,11 @@ vulnerability and fixture checks. For an aggregate local check use `make ci`,
 then run the full default and production commands above. Passing local checks
 does not replace the required kernel and cloud jobs.
 
+The gosec pin includes the upstream module loader fix. Version 2.30.0 can
+split large packages in deeply nested checkouts and report false type errors.
+Keep this pin aligned in the Makefile and both build images until a tagged
+release includes the fix.
+
 Linter config in `.golangci.yml`: errcheck, govet, staticcheck, unused, ineffassign, gocritic, misspell, bodyclose, nilerr.
 
 ## CI/CD
@@ -204,6 +209,10 @@ detect changes to installed C libraries. Module downloads remain shared.
 The default suite executes on every pipeline even when compiled packages
 are cached. Release build and package jobs stay on separate runners and do
 not consume these caches.
+
+The test job uses `gocover-cobertura -strict` so unresolved package information
+fails coverage conversion. A successful test job must include every covered
+package in its report.
 
 When an image definition changes on a branch, run its blocking manual
 image jobs: ci-tools, or both builder architectures. Preflight waits for

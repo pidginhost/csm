@@ -78,7 +78,7 @@ func (w *Writer) replace(content []byte, gid int) (bool, error) {
 	name := tmp.Name()
 	defer func() { _ = os.Remove(name) }()
 	if _, err = tmp.Write(content); err == nil {
-		err = tmp.Chmod(0o640)
+		err = tmp.Chmod(0o640) // #nosec G302 -- rspamd's service group must read the published map.
 	}
 	if err == nil {
 		err = w.chown(name, gid)
