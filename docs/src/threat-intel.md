@@ -355,6 +355,10 @@ attacker. Unblock & Clear accepts private addresses for an internal host that
 is not in `infra_ips`. Whitelist and allow actions refuse private addresses
 and point to `infra_ips` instead.
 
+Clear and whitelist actions remove attack records under all equivalent
+address spellings, including IPv4-mapped and expanded IPv6 addresses.
+The event history remains available.
+
 ## API Endpoints
 
 ```

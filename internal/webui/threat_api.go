@@ -467,7 +467,8 @@ func (s *Server) releaseIP(ip string, rel ipRelease) ([]string, error) {
 			}
 		}
 		if adb := attackdb.Global(); adb != nil {
-			adb.RemoveIP(ip)
+			// Historical imports can retain equivalent address spellings.
+			adb.ForgetIP(net.ParseIP(ip))
 			actions = append(actions, "removed from attack DB")
 		}
 	})
