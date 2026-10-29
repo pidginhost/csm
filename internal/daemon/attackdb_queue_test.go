@@ -72,3 +72,40 @@ func TestDaemonReportsActualAttackRecordQueue(t *testing.T) {
 		t.Fatalf("shutdown hid retained record retries: found=%v status=%+v", ok, s)
 	}
 }
+
+// Events recorded before an address joined infra_ips keep it ranked as an
+// attacker for the 90-day record lifetime unless startup drops them.
+func TestPrepareAttackDatabaseForgetsInfraIPs(t *testing.T) {
+	previous := store.Global()
+	sdb, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.SetGlobal(sdb)
+	t.Cleanup(func() { store.SetGlobal(previous); _ = sdb.Close() })
+	d := New(&config.Config{
+		StatePath: t.TempDir(),
+		InfraIPs:  []string{"198.51.100.0/24", " 203.0.113.9 ", "infra.example.com"},
+	}, nil, nil, "")
+	db := attackdb.NewForTest(nil)
+	t.Cleanup(db.Stop)
+	for _, ip := range []string{"198.51.100.23", "203.0.113.9", "203.0.113.10", "192.0.2.10"} {
+		db.RecordFinding(alert.Finding{Check: "ssh_login_unknown_ip", SourceIP: ip})
+	}
+
+	d.prepareAttackDatabase(db)
+
+	for _, ip := range []string{"198.51.100.23", "203.0.113.9"} {
+		if rec := db.LookupIP(ip); rec != nil {
+			t.Errorf("infra address %s kept its attack record: %+v", ip, rec)
+		}
+	}
+	for _, ip := range []string{"203.0.113.10", "192.0.2.10"} {
+		if db.LookupIP(ip) == nil {
+			t.Errorf("non-infra address %s lost its attack record", ip)
+		}
+	}
+	if got := db.TotalIPs(); got != 2 {
+		t.Fatalf("TotalIPs = %d, want 2", got)
+	}
+}

@@ -349,6 +349,10 @@ for timed blocks. Expired blocks stay expired, and a later block, clear, or
 whitelist decision invalidates the older undo action. Only successful
 firewall reversals restore the corresponding threat evidence.
 
+When CSM starts it drops the attack records of addresses inside `infra_ips`,
+so an internal host listed after it was recorded stops ranking as an
+attacker.
+
 ## API Endpoints
 
 ```
