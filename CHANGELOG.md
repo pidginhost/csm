@@ -9,9 +9,14 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ## [Unreleased]
 
+### Security
+
+- A crafted web page or database post can no longer stall the phishing and hidden link scans.
+
 ### Changed
 
 - The daemon log now says why a modified WordPress core file was not cleared as a line-ending-only copy.
+- Go dependencies are updated to their current releases.
 
 ### Fixed
 
