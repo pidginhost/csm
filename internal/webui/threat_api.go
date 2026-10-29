@@ -194,7 +194,7 @@ func (s *Server) apiThreatWhitelistIP(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, "IP is required", http.StatusBadRequest)
 		return
 	}
-	parsedIP, err := parseAndValidateIP(req.IP)
+	parsedIP, err := parseAllowIP(req.IP)
 	if err != nil {
 		writeJSONError(w, err.Error(), http.StatusBadRequest)
 		return
@@ -467,7 +467,8 @@ func (s *Server) releaseIP(ip string, rel ipRelease) ([]string, error) {
 			}
 		}
 		if adb := attackdb.Global(); adb != nil {
-			adb.RemoveIP(ip)
+			// Historical imports can retain equivalent address spellings.
+			adb.ForgetIP(net.ParseIP(ip))
 			actions = append(actions, "removed from attack DB")
 		}
 	})
@@ -498,7 +499,7 @@ func (s *Server) apiThreatClearIP(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, "IP is required", http.StatusBadRequest)
 		return
 	}
-	parsedIP, err := parseAndValidateIP(req.IP)
+	parsedIP, err := parseRecordedIP(req.IP)
 	if err != nil {
 		writeJSONError(w, err.Error(), http.StatusBadRequest)
 		return
@@ -539,7 +540,7 @@ func (s *Server) apiThreatTempWhitelistIP(w http.ResponseWriter, r *http.Request
 		writeJSONError(w, "IP is required", http.StatusBadRequest)
 		return
 	}
-	parsedIP, err := parseAndValidateIP(req.IP)
+	parsedIP, err := parseAllowIP(req.IP)
 	if err != nil {
 		writeJSONError(w, err.Error(), http.StatusBadRequest)
 		return
@@ -623,8 +624,12 @@ func (s *Server) apiThreatBulkAction(w http.ResponseWriter, r *http.Request) {
 	succeeded := make([]string, 0, len(req.IPs))
 	var removedThreats []undoThreatRow
 	var warnings []string
+	parseIP := parseAllowIP
+	if blockAction {
+		parseIP = parseAndValidateIP
+	}
 	for _, ipStr := range req.IPs {
-		parsedIP, err := parseAndValidateIP(ipStr)
+		parsedIP, err := parseIP(ipStr)
 		if err != nil {
 			warnings = append(warnings, ipStr+": "+err.Error())
 			continue

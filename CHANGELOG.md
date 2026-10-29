@@ -13,6 +13,12 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 - The daemon log now says why a modified WordPress core file was not cleared as a line-ending-only copy.
 
+### Fixed
+
+- An address added to infra_ips no longer stays ranked as an attacker after CSM restarts.
+- Unblock & Clear now works on private addresses, and whitelisting one now says to add it to infra_ips.
+- Unblock & Clear no longer leaves duplicate attacker entries for alternate spellings of the same address.
+
 ## [4.8.0] - 2026-10-26
 
 ### Highlights
