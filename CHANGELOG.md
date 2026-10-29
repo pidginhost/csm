@@ -16,6 +16,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 ### Fixed
 
 - An address added to infra_ips no longer stays ranked as an attacker after CSM restarts.
+- Unblock & Clear now works on private addresses, and whitelisting one now says to add it to infra_ips.
 
 ## [4.8.0] - 2026-10-26
 

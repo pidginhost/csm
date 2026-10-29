@@ -204,7 +204,7 @@ func (s *Server) apiFirewallAllowIP(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, "IP is required", http.StatusBadRequest)
 		return
 	}
-	parsedIP, err := parseAndValidateIP(req.IP)
+	parsedIP, err := parseAllowIP(req.IP)
 	if err != nil {
 		writeJSONError(w, err.Error(), http.StatusBadRequest)
 		return

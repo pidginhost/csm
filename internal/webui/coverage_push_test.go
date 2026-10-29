@@ -659,14 +659,14 @@ func TestAPIThreatBlockIPSuccessWithBlocker(t *testing.T) {
 // threat_api.go — apiThreatClearIP with blocker
 // =========================================================================
 
-func TestAPIThreatClearIPPrivateIP(t *testing.T) {
+func TestAPIThreatClearIPLoopback(t *testing.T) {
 	s := newTestServer(t, "tok")
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest("POST", "/", strings.NewReader(`{"ip":"10.0.0.1"}`))
+	req := httptest.NewRequest("POST", "/", strings.NewReader(`{"ip":"127.0.0.1"}`))
 	req.Header.Set("Content-Type", "application/json")
 	s.apiThreatClearIP(w, req)
 	if w.Code != http.StatusBadRequest {
-		t.Errorf("private IP = %d, want 400", w.Code)
+		t.Errorf("loopback = %d, want 400", w.Code)
 	}
 }
 

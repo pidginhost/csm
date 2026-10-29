@@ -351,7 +351,9 @@ firewall reversals restore the corresponding threat evidence.
 
 When CSM starts it drops the attack records of addresses inside `infra_ips`,
 so an internal host listed after it was recorded stops ranking as an
-attacker.
+attacker. Unblock & Clear accepts private addresses for an internal host that
+is not in `infra_ips`. Whitelist and allow actions refuse private addresses
+and point to `infra_ips` instead.
 
 ## API Endpoints
 

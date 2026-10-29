@@ -1780,7 +1780,7 @@ func flushCphulkIPs(ips []string) error {
 	args := []string{"flush_cphulk_login_history_for_ips"}
 	valid := 0
 	for _, ip := range ips {
-		parsed, err := parseAndValidateIP(ip)
+		parsed, err := parseRecordedIP(ip)
 		if err != nil {
 			continue
 		}

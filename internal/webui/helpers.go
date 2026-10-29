@@ -219,6 +219,34 @@ func validateAccountName(name string) error {
 // RFC 5737 documentation ranges (192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24)
 // are intentionally allowed.
 func parseAndValidateIP(s string) (net.IP, error) {
+	ip, err := parseRecordedIP(s)
+	if err != nil {
+		return nil, err
+	}
+	if ip.IsPrivate() {
+		return nil, fmt.Errorf("private address not allowed: %s", strings.TrimSpace(s))
+	}
+	return ip, nil
+}
+
+// parseAllowIP validates an address for an allow action. A private address is
+// internal infrastructure: an allow rule does not stop CSM from flagging it,
+// infra_ips does.
+func parseAllowIP(s string) (net.IP, error) {
+	ip, err := parseRecordedIP(s)
+	if err != nil {
+		return nil, err
+	}
+	if ip.IsPrivate() {
+		return nil, fmt.Errorf("private address not allowed: %s; list internal addresses in infra_ips and restart CSM", strings.TrimSpace(s))
+	}
+	return ip, nil
+}
+
+// parseRecordedIP accepts any address CSM can record as an attack source:
+// the routable ones parseAndValidateIP accepts plus private addresses, which
+// internal hosts missing from infra_ips get recorded under.
+func parseRecordedIP(s string) (net.IP, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return nil, fmt.Errorf("IP address is required")
@@ -231,9 +259,6 @@ func parseAndValidateIP(s string) (net.IP, error) {
 
 	if ip.IsLoopback() {
 		return nil, fmt.Errorf("loopback address not allowed: %s", s)
-	}
-	if ip.IsPrivate() {
-		return nil, fmt.Errorf("private address not allowed: %s", s)
 	}
 	if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
 		return nil, fmt.Errorf("link-local address not allowed: %s", s)
