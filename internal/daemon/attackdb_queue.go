@@ -36,14 +36,5 @@ func forgetInfraAttackRecords(adb *attackdb.DB, infraIPs []string) int {
 			nets = append(nets, n)
 		}
 	}
-	if len(nets) == 0 {
-		return 0
-	}
-	dropped := 0
-	for _, rec := range adb.AllRecords() {
-		if ip := net.ParseIP(rec.IP); ip != nil && netutil.IPInAnyNet(ip, nets) {
-			dropped += len(adb.ForgetIP(ip))
-		}
-	}
-	return dropped
+	return adb.ForgetNetworks(nets)
 }

@@ -6,7 +6,9 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/attackdb"
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/store"
 )
 
@@ -76,6 +78,12 @@ func TestDaemonReportsActualAttackRecordQueue(t *testing.T) {
 // Events recorded before an address joined infra_ips keep it ranked as an
 // attacker for the 90-day record lifetime unless startup drops them.
 func TestPrepareAttackDatabaseForgetsInfraIPs(t *testing.T) {
+	// Firewall protection and Cloudflare membership do not exempt recording.
+	checks.SetCloudflareNets([]string{"192.0.2.0/24"})
+	t.Cleanup(func() { checks.SetCloudflareNets(nil) })
+	if !checks.IsInfraIP("192.0.2.10", nil) {
+		t.Fatal("Cloudflare fixture is not protected")
+	}
 	previous := store.Global()
 	sdb, err := store.Open(t.TempDir())
 	if err != nil {
@@ -86,6 +94,7 @@ func TestPrepareAttackDatabaseForgetsInfraIPs(t *testing.T) {
 	d := New(&config.Config{
 		StatePath: t.TempDir(),
 		InfraIPs:  []string{"198.51.100.0/24", " 203.0.113.9 ", "infra.example.com"},
+		Firewall:  &firewall.FirewallConfig{InfraIPs: []string{"203.0.113.10"}},
 	}, nil, nil, "")
 	db := attackdb.NewForTest(nil)
 	t.Cleanup(db.Stop)
@@ -107,5 +116,9 @@ func TestPrepareAttackDatabaseForgetsInfraIPs(t *testing.T) {
 	}
 	if got := db.TotalIPs(); got != 2 {
 		t.Fatalf("TotalIPs = %d, want 2", got)
+	}
+	persisted := sdb.LoadAllIPRecords()
+	if len(persisted) != 2 || persisted["203.0.113.10"] == nil || persisted["192.0.2.10"] == nil {
+		t.Fatalf("startup persisted the wrong records: %+v", persisted)
 	}
 }
