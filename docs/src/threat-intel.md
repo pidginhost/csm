@@ -349,19 +349,15 @@ for timed blocks. Expired blocks stay expired, and a later block, clear, or
 whitelist decision invalidates the older undo action. Only successful
 firewall reversals restore the corresponding threat evidence.
 
-When CSM starts it drops the attack records of addresses inside top-level
-`infra_ips` addresses and CIDRs in one database pass, so large infrastructure
-histories do not delay startup with repeated full scans. Hostname entries,
-`firewall.infra_ips`, and Cloudflare membership do not trigger this cleanup.
-The event history remains available.
+When CSM starts it drops the attack records of addresses inside the
+top-level `infra_ips` list, so an internal host listed after it was recorded
+stops ranking as an attacker. Only addresses and CIDRs count; hostnames and
+`firewall.infra_ips` do not. Event history is kept.
 
-Unblock & Clear accepts private addresses for an internal host that
-is not in `infra_ips`. Whitelist and allow actions refuse private addresses
-and point to `infra_ips` instead.
-
-Clear and whitelist actions remove attack records under all equivalent
-address spellings, including IPv4-mapped and expanded IPv6 addresses.
-The event history remains available.
+Unblock & Clear accepts private addresses for an internal host that is not in
+`infra_ips`. Clear and whitelist remove the attack record under every
+equivalent spelling of the address, such as an IPv4-mapped form. Whitelist and
+allow actions refuse private addresses and point to `infra_ips` instead.
 
 ## API Endpoints
 
