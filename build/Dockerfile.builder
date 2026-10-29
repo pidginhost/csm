@@ -87,7 +87,7 @@ ENV GOTOOLCHAIN=local
 # so they read its export data. Keep the versions equal to
 # Dockerfile.ci-tools.
 ARG GOLANGCI_LINT_VERSION=v2.15.0
-ARG GOSEC_VERSION=v2.30.0
+ARG GOSEC_VERSION=v2.30.1-0.20261026162949-ff25931a2edd
 RUN GOBIN=/usr/local/bin go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${GOLANGCI_LINT_VERSION} \
     && GOBIN=/usr/local/bin go install github.com/securego/gosec/v2/cmd/gosec@${GOSEC_VERSION} \
     && rm -rf /root/.cache/go-build /root/go/pkg/mod

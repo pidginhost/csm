@@ -661,7 +661,7 @@ func backupHtaccessBeforePatch(htaccess string, state htaccessState, patched []b
 			return virtualPatchBackup{}, false, fmt.Errorf("writing backup: %v", writeErr)
 		}
 	}
-	if chmodErr := backupFile.Chmod(0640); chmodErr != nil {
+	if chmodErr := backupFile.Chmod(0640); chmodErr != nil { // #nosec G302 -- backups permit administrative group reads inside the private quarantine directory.
 		return virtualPatchBackup{}, false, fmt.Errorf("setting backup mode: %v", chmodErr)
 	}
 	if syncErr := backupFile.Sync(); syncErr != nil {

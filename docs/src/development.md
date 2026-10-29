@@ -175,6 +175,11 @@ vulnerability and fixture checks. For an aggregate local check use `make ci`,
 then run the full default and production commands above. Passing local checks
 does not replace the required kernel and cloud jobs.
 
+The gosec pin includes the upstream module loader fix. Version 2.30.0 can
+split large packages in deeply nested checkouts and report false type errors.
+Keep this pin aligned in the Makefile and both build images until a tagged
+release includes the fix.
+
 Linter config in `.golangci.yml`: errcheck, govet, staticcheck, unused, ineffassign, gocritic, misspell, bodyclose, nilerr.
 
 ## CI/CD

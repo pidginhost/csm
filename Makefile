@@ -2,8 +2,8 @@
 
 # Pinned tool versions -- bump deliberately, keep in sync with .gitlab-ci.yml
 GOLANGCI_LINT_VERSION := v2.15.0
-# gosec: an untagged commit until a release can read Go 1.27.2 export data.
-GOSEC_VERSION := v2.30.0
+# gosec: keep the module loader fix until it ships in a tagged release.
+GOSEC_VERSION := v2.30.1-0.20261026162949-ff25931a2edd
 GOVULNCHECK_VERSION := v1.9.0
 
 BINARY_NAME := csm
