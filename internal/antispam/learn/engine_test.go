@@ -613,3 +613,89 @@ func TestEnginePauseKeepsFreshMatching(t *testing.T) {
 		t.Fatalf("a real closure did not owe an audit rotation: %+v err %v", out, err)
 	}
 }
+
+// multipartReport maps altMessage to two new part digests and returns its
+// single-part messages, the larger first.
+func (f *auditFixture) multipartReport(t *testing.T, first, second Digest) ([]byte, [][]byte) {
+	t.Helper()
+	parts := textPartMessages([]byte(altMessage))
+	if len(parts) != 2 {
+		t.Fatalf("parts %q", parts)
+	}
+	f.storage.mu.Lock()
+	defer f.storage.mu.Unlock()
+	f.storage.inspect[altMessage] = []Result{{Queried: digest('h')}, {Queried: digest('p')}}
+	f.storage.bodies[string(parts[0])] = first
+	f.storage.bodies[string(parts[1])] = second
+	return []byte(altMessage), parts
+}
+
+func TestEngineSeedsNewMultipartReportFromOnePart(t *testing.T) {
+	f := newAuditFixture(t)
+	e := newTestEngine(t, f)
+	snap, parts := f.multipartReport(t, digest('h'), digest('p'))
+	out, err := e.SubmitReport(context.Background(), Candidate{UID: 1002, Snapshot: snap})
+	if err != nil || len(out.Committed) != 1 {
+		t.Fatalf("outcome %+v err %v", out, err)
+	}
+	c, ok := f.cluster(t, out.Committed[0])
+	if !ok || c.Anchor != digest('h') || c.BodyLen != int64(len(parts[0])) {
+		t.Fatalf("cluster %+v", c)
+	}
+	body, err := f.bodies.Read(c.ID, c.BodyLen, c.BodySHA)
+	if err != nil || string(body) != string(parts[0]) {
+		t.Fatalf("stored body %q err %v", body, err)
+	}
+	if v, _ := f.storage.value(digest('h')); v != UIDWeight {
+		t.Fatalf("anchor value %d", v)
+	}
+	if _, ok := f.storage.value(digest('p')); ok {
+		t.Fatal("the other part was published")
+	}
+	if !reflect.DeepEqual(out.Skips, []Skip{{Digest: digest('p'), Reason: SkipMultipartSeed}}) {
+		t.Fatalf("skips %+v", out.Skips)
+	}
+	if u := f.usage(t, 1002); u != (Usage{BodyBytes: int64(len(parts[0])), Aliases: 1}) {
+		t.Fatalf("usage %+v", u)
+	}
+}
+
+func TestEngineMultipartSeedNeedsAReportDigest(t *testing.T) {
+	f := newAuditFixture(t)
+	e := newTestEngine(t, f)
+	// Neither single-part message hashes to a digest of the report.
+	snap, _ := f.multipartReport(t, digest('x'), digest('y'))
+	out, err := e.SubmitReport(context.Background(), Candidate{UID: 1002, Snapshot: snap})
+	if err != nil || len(out.Committed) != 0 || len(out.Pending) != 0 {
+		t.Fatalf("outcome %+v err %v", out, err)
+	}
+	want := []Skip{{Digest: digest('h'), Reason: SkipMultipartSeed}, {Digest: digest('p'), Reason: SkipMultipartSeed}}
+	if !reflect.DeepEqual(out.Skips, want) {
+		t.Fatalf("skips %+v", out.Skips)
+	}
+	if _, _, adds, _ := f.storage.native(); adds != 0 {
+		t.Fatalf("%d adds", adds)
+	}
+}
+
+func TestEngineOperatorSeedsNewMultipartFile(t *testing.T) {
+	f := newAuditFixture(t)
+	e := newTestEngine(t, f)
+	// The smaller part is the one that hashes to a report digest.
+	snap, parts := f.multipartReport(t, digest('x'), digest('p'))
+	req := OperatorRequest{Action: ActionSpam, RequestID: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", Snapshot: snap, SnapshotSHA: sha(snap)}
+	res, err := e.Operator(context.Background(), req)
+	if err != nil || len(res.Clusters) != 2 || res.Clusters[0].Result != ResultCommitted || res.Clusters[1].Result != ResultSkipped+":"+SkipMultipartSeed {
+		t.Fatalf("result %+v err %v", res, err)
+	}
+	c, ok := f.cluster(t, res.Clusters[0].ClusterID)
+	if !ok || c.Anchor != digest('p') || c.BodyLen != int64(len(parts[1])) || !reflect.DeepEqual(c.Marks, []string{req.RequestID}) {
+		t.Fatalf("cluster %+v", c)
+	}
+	if got, _ := f.targetOf(t, digest('p')); got.T != OperatorWeight {
+		t.Fatalf("target %+v", got)
+	}
+	if !reflect.DeepEqual(res.Digests, []Digest{digest('h'), digest('p')}) {
+		t.Fatalf("audited digests %v", res.Digests)
+	}
+}
