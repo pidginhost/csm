@@ -279,6 +279,17 @@ longest-lived pair determines how long corroboration remains available.
 Equal deadlines and input order do not affect the result. Direct compromise
 evidence may expire while corroboration continues to preserve the same class.
 
+Effect records use an expiry-ordered key followed by the action ID. Decoding
+requires a canonical value that reproduces the key and all recorded fields.
+Their partition tally rejects negative counts, underflow and overflow;
+failed additions return the original tally. Combining a tally with set
+occupancy also returns an error and the original occupancy if either
+partition's total is invalid or overflows. Callers must handle that error
+before using the occupancy. These primitives are not yet wired into the
+ledger. Store callers still use preview notices: a full-set deferral raises
+a capacity notice only for Critical work. The live notice classifier raises
+it for any valid tier, without changing other deferral reasons.
+
 Policy lookups can overlap across registration, minting and validation, so
 they must be immutable or safe for concurrent use. Callers must serialize
 every operation on an inventory generation tracker. Off cPanel, hosting

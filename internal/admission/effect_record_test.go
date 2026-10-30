@@ -3,6 +3,7 @@ package admission
 import (
 	"bytes"
 	"encoding/binary"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -94,8 +95,13 @@ func TestEffectRecordRefusesImpossibleRecords(t *testing.T) {
 		"a scope with a space":         func(e *EffectRecord) { e.Scope = "alice smith" },
 		"an oversized scope":           func(e *EffectRecord) { e.Scope = strings.Repeat("s", 129) },
 		"no expiry":                    func(e *EffectRecord) { e.ExpiresAt = time.Time{} },
+		"expiry at the epoch":          func(e *EffectRecord) { e.ExpiresAt = time.Unix(0, 0) },
 		"an expiry before the epoch":   func(e *EffectRecord) { e.ExpiresAt = time.Unix(-1, 0) },
+		"overflowing expiry":           func(e *EffectRecord) { e.ExpiresAt = time.Unix(0, math.MaxInt64).Add(time.Nanosecond) },
+		"wrapped positive expiry":      func(e *EffectRecord) { e.ExpiresAt = time.Unix(0, 1).AddDate(600, 0, 0) },
+		"application at the epoch":     func(e *EffectRecord) { e.Applied = time.Unix(0, 0) },
 		"an application before epoch":  func(e *EffectRecord) { e.Applied = time.Unix(-1, 0) },
+		"overflowing application":      func(e *EffectRecord) { e.Applied = time.Unix(0, math.MaxInt64).Add(time.Nanosecond) },
 		"elapsed time without applied": func(e *EffectRecord) { e.Elapsed = time.Minute },
 		"negative elapsed time":        func(e *EffectRecord) { e.Applied, e.Elapsed = t0, -time.Nanosecond },
 	} {
@@ -106,6 +112,83 @@ func TestEffectRecordRefusesImpossibleRecords(t *testing.T) {
 		}
 		if _, err := e.MarshalBinary(); err == nil {
 			t.Errorf("%s: record accepted", name)
+		}
+	}
+}
+
+func TestEffectRecordKeyOrderAndBoundaries(t *testing.T) {
+	first := ActionID("act_" + strings.Repeat("0", 32))
+	last := ActionID("act_" + strings.Repeat("f", 32))
+	var previous []byte
+	for _, nanos := range []int64{1, 255, 256, 1 << 32, math.MaxInt64} {
+		for _, action := range []ActionID{first, last} {
+			expires := time.Unix(0, nanos).UTC()
+			key, err := EffectRecordKey(action, expires)
+			if err != nil || len(key) != effectKeyLen {
+				t.Fatalf("key at %d: %x, %v", nanos, key, err)
+			}
+			if binary.BigEndian.Uint64(key[:8]) != uint64(nanos) || string(key[8:]) != string(action) {
+				t.Fatalf("key at %d lost its expiry or action: %x", nanos, key)
+			}
+			if previous != nil && bytes.Compare(previous, key) >= 0 {
+				t.Fatalf("key order is not expiry then action: %x before %x", previous, key)
+			}
+			previous = key
+		}
+	}
+	for _, expires := range []time.Time{
+		{}, time.Unix(0, 0), time.Unix(0, -1),
+		time.Unix(0, math.MaxInt64).Add(time.Nanosecond),
+		time.Unix(0, 1).AddDate(600, 0, 0),
+	} {
+		if _, err := EffectRecordKey(first, expires); err == nil {
+			t.Errorf("accepted invalid expiry %v", expires)
+		}
+	}
+}
+
+func TestEffectRecordRejectsResealedCorruption(t *testing.T) {
+	e := testEffect(t, 1)
+	key, rec, err := e.record()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, mutate := range map[string]func(*effectRecordRecord){
+		"version":            func(r *effectRecordRecord) { r.V++ },
+		"mapped target":      func(r *effectRecordRecord) { r.Target = "ip:::ffff:192.0.2.10" },
+		"prefix target":      func(r *effectRecordRecord) { r.Target = "net:198.51.100.0/24" },
+		"partition":          func(r *effectRecordRecord) { r.Partition = partitionEnd },
+		"lane":               func(r *effectRecordRecord) { r.Lane = laneEnd },
+		"general in reserve": func(r *effectRecordRecord) { r.Partition = PartitionReserved },
+		"class":              func(r *effectRecordRecord) { r.Class = 0 },
+		"severity":           func(r *effectRecordRecord) { r.Severity = 0 },
+		"reserved evidence":  func(r *effectRecordRecord) { r.Direct = true },
+		"scope":              func(r *effectRecordRecord) { r.Scope = "" },
+		"negative applied":   func(r *effectRecordRecord) { r.Applied = -1 },
+		"negative elapsed":   func(r *effectRecordRecord) { r.Applied, r.Elapsed = 1, -1 },
+		"pending elapsed":    func(r *effectRecordRecord) { r.Elapsed = 1 },
+	} {
+		t.Run(name, func(t *testing.T) {
+			bad := rec
+			mutate(&bad)
+			data, sealErr := sealRecord(bad)
+			if sealErr != nil {
+				t.Fatal(sealErr)
+			}
+			if _, decodeErr := UnmarshalEffectRecord(key, data); decodeErr != ErrCorruptRecord {
+				t.Fatalf("accepted resealed corruption: %v", decodeErr)
+			}
+		})
+	}
+	data, err := e.MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expires := range []uint64{0, 1 << 63, math.MaxUint64} {
+		bad := bytes.Clone(key)
+		binary.BigEndian.PutUint64(bad[:8], expires)
+		if _, err := UnmarshalEffectRecord(bad, data); err != ErrCorruptRecord {
+			t.Errorf("accepted invalid key expiry %d: %v", expires, err)
 		}
 	}
 }
@@ -137,8 +220,8 @@ func TestEffectTallyCountsPartitions(t *testing.T) {
 	if tally != (EffectTally{General: 1, Reserved: 1}) {
 		t.Fatalf("tally %+v", tally)
 	}
-	if got := tally.Occupy(SetOccupancy{Limit: 10, Unclaimed: 2, General: 3}); got != (SetOccupancy{Limit: 10, Unclaimed: 2, General: 4, Reserved: 1}) {
-		t.Fatalf("occupancy %+v", got)
+	if got, occupyErr := tally.Occupy(SetOccupancy{Limit: 10, Unclaimed: 2, General: 3}); occupyErr != nil || got != (SetOccupancy{Limit: 10, Unclaimed: 2, General: 4, Reserved: 1}) {
+		t.Fatalf("occupancy %+v, %v", got, occupyErr)
 	}
 	if _, err = tally.Add(PartitionReserved, -2); err == nil {
 		t.Fatal("a tally below zero was accepted")
@@ -157,6 +240,91 @@ func TestEffectTallyCountsPartitions(t *testing.T) {
 	data[len(data)-1] ^= 1
 	if _, err = UnmarshalEffectTally(data); err != ErrCorruptRecord {
 		t.Fatalf("flipped tally: %v", err)
+	}
+}
+
+func TestEffectTallyAddRefusesUnchanged(t *testing.T) {
+	for _, p := range []Partition{PartitionGeneral, PartitionReserved} {
+		for _, tc := range []struct {
+			name  string
+			tally EffectTally
+			delta int
+		}{
+			{"underflow", EffectTally{General: 1, Reserved: 1}, -2},
+			{"minimum delta", EffectTally{General: 1, Reserved: 1}, math.MinInt},
+			{"overflow", EffectTally{General: math.MaxInt, Reserved: math.MaxInt}, 1},
+			{"damaged general", EffectTally{General: -1, Reserved: 1}, 1},
+			{"damaged reserved", EffectTally{General: 1, Reserved: -1}, 1},
+			{"wrapped underflow", EffectTally{General: -1, Reserved: -1}, math.MinInt},
+		} {
+			t.Run(p.String()+"/"+tc.name, func(t *testing.T) {
+				got, err := tc.tally.Add(p, tc.delta)
+				if err != ErrCorruptRecord || got != tc.tally {
+					t.Fatalf("Add(%d) = %+v, %v; want unchanged %+v and corrupt record", tc.delta, got, err, tc.tally)
+				}
+			})
+		}
+	}
+}
+
+func TestEffectTallyOccupyDoesNotWrap(t *testing.T) {
+	for _, tally := range []EffectTally{{General: math.MaxInt}, {Reserved: math.MaxInt}} {
+		data, err := tally.MarshalBinary()
+		if err != nil {
+			t.Fatal(err)
+		}
+		back, err := UnmarshalEffectTally(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		before := SetOccupancy{Limit: 10, General: 1, Reserved: 1}
+		got, err := back.Occupy(before)
+		if err != ErrCorruptRecord || got != before {
+			t.Errorf("overflow = %+v, %v; want unchanged %+v and corrupt record", got, err, before)
+		}
+	}
+}
+
+func TestEffectTallyArithmeticBoundaries(t *testing.T) {
+	for _, p := range []Partition{PartitionGeneral, PartitionReserved} {
+		var tally EffectTally
+		for _, delta := range []int{math.MaxInt, 0, -math.MaxInt} {
+			var err error
+			tally, err = tally.Add(p, delta)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := EffectTally{}
+			if delta >= 0 {
+				if p == PartitionGeneral {
+					want.General = math.MaxInt
+				} else {
+					want.Reserved = math.MaxInt
+				}
+			}
+			if tally != want {
+				t.Fatalf("%s after delta %d: %+v, want %+v", p, delta, tally, want)
+			}
+		}
+	}
+	before := SetOccupancy{Limit: 10, Unclaimed: 2, General: 1, Reserved: 1}
+	got, err := (EffectTally{General: math.MaxInt - 1, Reserved: math.MaxInt - 1}).Occupy(before)
+	want := SetOccupancy{Limit: 10, Unclaimed: 2, General: math.MaxInt, Reserved: math.MaxInt}
+	if err != nil || got != want {
+		t.Fatalf("largest occupancy = %+v, %v; want %+v", got, err, want)
+	}
+	if slots := got.Slots(); slots.FreeGeneral != 0 || slots.FreeReserved != 0 {
+		t.Fatalf("full partitions reported free slots: %+v", slots)
+	}
+	for _, tally := range []EffectTally{{General: -1}, {Reserved: -1}} {
+		if got, err := tally.Occupy(before); err != ErrCorruptRecord || got != before {
+			t.Fatalf("negative tally = %+v, %v; want unchanged %+v and corrupt record", got, err, before)
+		}
+	}
+	for _, occ := range []SetOccupancy{{General: -1}, {Reserved: -1}} {
+		if got, err := (EffectTally{General: 1, Reserved: 1}).Occupy(occ); err != ErrCorruptRecord || got != occ {
+			t.Fatalf("negative occupancy = %+v, %v; want unchanged %+v and corrupt record", got, err, occ)
+		}
 	}
 }
 
@@ -185,5 +353,30 @@ func TestGapNoticeFullSetOnceLive(t *testing.T) {
 	}
 	if got := GapNotice(GapEnded, ReasonSetFull, 0, high, true); got != 0 {
 		t.Errorf("a full set ends nothing: %v", got)
+	}
+}
+
+func TestGapNoticeLiveOnlyBroadensFullSetDeferrals(t *testing.T) {
+	for class := ClassC1; class <= ClassC3; class++ {
+		for severity := SeverityWarning; severity <= SeverityCritical; severity++ {
+			tier := Tier{Class: class, Severity: severity}
+			for reason := ReasonCeiling; reason < reasonEnd; reason++ {
+				for event := GapDeferred; event <= GapOutcome; event++ {
+					for outcome := Disposition(0); outcome < dispositionEnd; outcome++ {
+						preview := GapNotice(event, reason, outcome, tier, false)
+						want := preview
+						if event == GapDeferred && reason == ReasonSetFull {
+							want = NoticeCapacity
+							if severity != SeverityCritical && preview != 0 {
+								t.Fatalf("preview raised a full-set notice for %v", tier)
+							}
+						}
+						if got := GapNotice(event, reason, outcome, tier, true); got != want {
+							t.Fatalf("live event %v, reason %v, outcome %v, tier %v: %v, want %v", event, reason, outcome, tier, got, want)
+						}
+					}
+				}
+			}
+		}
 	}
 }

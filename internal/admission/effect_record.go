@@ -3,6 +3,7 @@ package admission
 import (
 	"bytes"
 	"encoding/binary"
+	"math"
 	"time"
 )
 
@@ -169,8 +170,8 @@ type effectTallyRecord struct {
 	Reserved int   `json:"reserved"`
 }
 
-// Add counts delta more records in partition p; a count below zero is
-// corrupt.
+// Add counts delta more records in partition p. Invalid counts, underflow
+// and overflow return the original tally with an error.
 func (t EffectTally) Add(p Partition, delta int) (EffectTally, error) {
 	n := &t.General
 	switch p {
@@ -180,17 +181,23 @@ func (t EffectTally) Add(p Partition, delta int) (EffectTally, error) {
 	default:
 		return t, refuse(ReasonInvalid, "effect tally names no partition")
 	}
-	if *n += delta; *n < 0 {
+	if t.General < 0 || t.Reserved < 0 || delta < -*n || delta > math.MaxInt-*n {
 		return t, ErrCorruptRecord
 	}
+	*n += delta
 	return t, nil
 }
 
-// Occupy adds the counted records to the automatic entries of o.
-func (t EffectTally) Occupy(o SetOccupancy) SetOccupancy {
+// Occupy adds the counted records to the automatic entries of o. Invalid
+// counts or overflow return the original occupancy with an error.
+func (t EffectTally) Occupy(o SetOccupancy) (SetOccupancy, error) {
+	if t.General < 0 || t.Reserved < 0 || o.General < 0 || o.Reserved < 0 ||
+		t.General > math.MaxInt-o.General || t.Reserved > math.MaxInt-o.Reserved {
+		return o, ErrCorruptRecord
+	}
 	o.General += t.General
 	o.Reserved += t.Reserved
-	return o
+	return o, nil
 }
 
 func (t EffectTally) MarshalBinary() ([]byte, error) {
