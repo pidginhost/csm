@@ -619,13 +619,7 @@ func (e *Engine) seedFromPart(ctx context.Context, src Source, snapshot []byte, 
 	for _, r := range insp.Results {
 		report[r.Queried] = true
 	}
-	for i, part := range textPartMessages(snapshot) {
-		// A report has at most MaxExplicitDigests digests, so trying no more
-		// parts than it has digests bounds the inspections a tenant-built
-		// message with many small parts can cause.
-		if i == insp.Distinct {
-			break
-		}
+	for part := range textPartMessages(snapshot, insp.Distinct) {
 		pi, err := e.cfg.Client.Inspect(ctx, part)
 		if errors.Is(err, ErrMessageRejected) {
 			continue

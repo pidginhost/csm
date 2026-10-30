@@ -657,8 +657,9 @@ contribute only once to that cluster.
 
 Messages that share most of their text join the same cluster, so later
 variants of a campaign score too. A new message whose plain text and HTML
-versions differ starts its cluster from one of them, normally the larger;
-later copies score through that version. Newsletters built from one
+versions differ starts its cluster from one inline version, normally the larger;
+attached messages are excluded. Candidate selection and inspection are bounded,
+and later copies score through the selected version. Newsletters built from one
 template can also be close enough to join. Lowering or correcting a
 learned value removes and re-adds it, which can leave a short gap in which
 the message scores lower.

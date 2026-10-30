@@ -618,7 +618,7 @@ func TestEnginePauseKeepsFreshMatching(t *testing.T) {
 // single-part messages, the larger first.
 func (f *auditFixture) multipartReport(t *testing.T, first, second Digest) ([]byte, [][]byte) {
 	t.Helper()
-	parts := textPartMessages([]byte(altMessage))
+	parts := slices.Collect(textPartMessages([]byte(altMessage), MaxExplicitDigests))
 	if len(parts) != 2 {
 		t.Fatalf("parts %q", parts)
 	}

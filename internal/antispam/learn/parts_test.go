@@ -3,6 +3,7 @@ package learn
 import (
 	"bytes"
 	"net/mail"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -25,7 +26,7 @@ const altMessage = "From: shop@example.com\n" +
 	"--b1--\n"
 
 func TestTextPartMessagesSplitsAlternative(t *testing.T) {
-	got := textPartMessages([]byte(altMessage))
+	got := slices.Collect(textPartMessages([]byte(altMessage), MaxExplicitDigests))
 	if len(got) != 2 {
 		t.Fatalf("got %d messages", len(got))
 	}
@@ -84,7 +85,7 @@ func TestTextPartMessagesNestedSkipsAttachments(t *testing.T) {
 		"\r\n" +
 		"%PDF-1.4\r\n" +
 		"--outer--\r\n"
-	got := textPartMessages([]byte(msg))
+	got := slices.Collect(textPartMessages([]byte(msg), MaxExplicitDigests))
 	if len(got) != 2 {
 		t.Fatalf("got %d messages: %q", len(got), got)
 	}
@@ -105,11 +106,11 @@ func TestTextPartMessagesNone(t *testing.T) {
 		"no header break": "Subject: s",
 		"too deep":        nested(maxPartDepth + 1),
 	} {
-		if got := textPartMessages([]byte(msg)); got != nil {
+		if got := slices.Collect(textPartMessages([]byte(msg), MaxExplicitDigests)); got != nil {
 			t.Errorf("%s: got %q", name, got)
 		}
 	}
-	if got := textPartMessages([]byte(nested(maxPartDepth))); len(got) != 1 {
+	if got := slices.Collect(textPartMessages([]byte(nested(maxPartDepth)), MaxExplicitDigests)); len(got) != 1 {
 		t.Errorf("deepest allowed nesting: got %d messages", len(got))
 	}
 }
@@ -126,25 +127,4 @@ func nested(depth int) string {
 		b.WriteString("--b" + string(rune('a'+i)) + "--\n")
 	}
 	return b.String()
-}
-
-func FuzzTextPartMessages(f *testing.F) {
-	f.Add([]byte(altMessage))
-	f.Add([]byte(nested(3)))
-	f.Add([]byte("Content-Type: multipart/mixed; boundary=x\n\n--x\nContent-Type: text/plain\n\n"))
-	f.Fuzz(func(t *testing.T, msg []byte) {
-		for _, m := range textPartMessages(msg) {
-			parsed, err := mail.ReadMessage(bytes.NewReader(m))
-			if err != nil {
-				t.Fatalf("derived message does not parse: %v", err)
-			}
-			if strings.HasPrefix(strings.ToLower(parsed.Header.Get("Content-Type")), "multipart/") {
-				t.Fatal("derived message is multipart")
-			}
-			// Only the rebuilt MIME lines can grow; nothing is copied twice.
-			if len(m) > len(msg)+64 {
-				t.Fatal("derived message is larger than its source")
-			}
-		}
-	})
 }

@@ -1,7 +1,9 @@
 package learn
 
 import (
+	"bytes"
 	"math"
+	"net/mail"
 	"strings"
 	"testing"
 )
@@ -56,6 +58,36 @@ func FuzzParseInspection(f *testing.F) {
 				}
 			} else if r.Value != 0 || r.Prob != 0 || r.Stored != "" || r.Flag != 0 || r.Confirmed {
 				t.Fatalf("invalid miss accepted: %+v", r)
+			}
+		}
+	})
+}
+
+func FuzzTextPartMessages(f *testing.F) {
+	f.Add([]byte(altMessage), uint8(2))
+	f.Add([]byte(nested(3)), uint8(1))
+	f.Add([]byte("Content-Type: multipart/mixed; boundary=x\n\n--x\nContent-Type: text/plain\n\n"), uint8(2))
+	f.Fuzz(func(t *testing.T, msg []byte, budget uint8) {
+		if len(msg) > MaxBody {
+			return
+		}
+		limit := int(budget) % (MaxExplicitDigests + 1)
+		count := 0
+		for m := range textPartMessages(msg, limit) {
+			count++
+			if count > limit {
+				t.Fatal("derived messages exceeded the inspection budget")
+			}
+			parsed, err := mail.ReadMessage(bytes.NewReader(m))
+			if err != nil {
+				t.Fatalf("derived message does not parse: %v", err)
+			}
+			if strings.HasPrefix(strings.ToLower(parsed.Header.Get("Content-Type")), "multipart/") {
+				t.Fatal("derived message is multipart")
+			}
+			// Only the rebuilt MIME lines can grow; nothing is copied twice.
+			if len(m) > len(msg)+64 {
+				t.Fatal("derived message is larger than its source")
 			}
 		}
 	})

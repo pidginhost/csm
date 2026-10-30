@@ -4,10 +4,11 @@ import (
 	"bufio"
 	"bytes"
 	"io"
+	"iter"
 	"mime"
 	"mime/multipart"
 	"net/textproto"
-	"slices"
+	"sort"
 	"strings"
 )
 
@@ -21,56 +22,62 @@ type textPart struct {
 	body   []byte
 }
 
-// textPartMessages returns one single-part message per inline text/plain or
-// text/html part of a multipart msg, the largest part first. Each keeps the
+// textPartMessages yields up to limit single-part messages from inline
+// text/plain or text/html parts, the largest first. Each keeps the
 // original header fields except Content-* and MIME-Version, then the part's
 // own content type and transfer encoding, then its undecoded body. A message
 // that is not multipart, has no header break, carries an unreadable header or
 // nests deeper than maxPartDepth yields none. Parts after a broken boundary
-// are dropped.
-func textPartMessages(msg []byte) [][]byte {
-	head, body, eol, ok := splitHeader(msg)
-	if !ok {
-		return nil
-	}
-	h, err := textproto.NewReader(bufio.NewReader(io.MultiReader(bytes.NewReader(head), strings.NewReader(eol)))).ReadMIMEHeader()
-	if err != nil {
-		return nil
-	}
-	var parts []textPart
-	if !collectTextParts(h, body, 1, &parts) {
-		return nil
-	}
-	slices.SortStableFunc(parts, func(a, b textPart) int { return len(b.body) - len(a.body) })
-	fields := keptFields(head)
-	out := make([][]byte, 0, len(parts))
-	for _, p := range parts {
-		var b bytes.Buffer
-		b.Write(fields)
-		b.WriteString("MIME-Version: 1.0" + eol)
-		if ct := p.header.Get("Content-Type"); ct != "" {
-			b.WriteString("Content-Type: " + ct + eol)
+// are dropped. The caller supplies its inspection budget as limit. Shared
+// headers are copied only when a message is requested, so many small parts
+// cannot multiply a large header into an unbounded allocation.
+func textPartMessages(msg []byte, limit int) iter.Seq[[]byte] {
+	return func(yield func([]byte) bool) {
+		if limit <= 0 {
+			return
 		}
-		if cte := p.header.Get("Content-Transfer-Encoding"); cte != "" {
-			b.WriteString("Content-Transfer-Encoding: " + cte + eol)
+		head, body, eol, ok := splitHeader(msg)
+		if !ok {
+			return
 		}
-		b.WriteString(eol)
-		b.Write(p.body)
-		out = append(out, b.Bytes())
+		h, err := textproto.NewReader(bufio.NewReader(io.MultiReader(bytes.NewReader(head), strings.NewReader(eol)))).ReadMIMEHeader()
+		if err != nil {
+			return
+		}
+		parts := make([]textPart, 0, limit)
+		if !collectTextParts(h, body, 1, limit, &parts) || len(parts) == 0 {
+			return
+		}
+		fields := keptFields(head)
+		for _, p := range parts {
+			var b bytes.Buffer
+			b.Write(fields)
+			b.WriteString("MIME-Version: 1.0" + eol)
+			if ct := p.header.Get("Content-Type"); ct != "" {
+				b.WriteString("Content-Type: " + ct + eol)
+			}
+			if cte := p.header.Get("Content-Transfer-Encoding"); cte != "" {
+				b.WriteString("Content-Transfer-Encoding: " + cte + eol)
+			}
+			b.WriteString(eol)
+			b.Write(p.body)
+			if !yield(b.Bytes()) {
+				return
+			}
+		}
 	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
 }
 
-// collectTextParts appends the inline text parts of the multipart entity
-// with header h and body. It reports false when h is not multipart or the
-// nesting is too deep.
-func collectTextParts(h textproto.MIMEHeader, body []byte, depth int, out *[]textPart) bool {
+// collectTextParts keeps only the largest limit inline parts, in descending
+// size and wire order for ties. It reports false when h is not multipart or
+// the nesting is too deep.
+func collectTextParts(h textproto.MIMEHeader, body []byte, depth, limit int, out *[]textPart) bool {
 	mt, params, err := mime.ParseMediaType(h.Get("Content-Type"))
 	if err != nil || !strings.HasPrefix(mt, "multipart/") || params["boundary"] == "" {
 		return false
+	}
+	if attachment(h) {
+		return true
 	}
 	r := multipart.NewReader(bytes.NewReader(body), params["boundary"])
 	for {
@@ -78,9 +85,8 @@ func collectTextParts(h textproto.MIMEHeader, body []byte, depth int, out *[]tex
 		if err != nil {
 			return true
 		}
-		raw, err := io.ReadAll(p)
-		if err != nil {
-			return true
+		if attachment(p.Header) {
+			continue
 		}
 		pmt := "text/plain"
 		if ct := p.Header.Get("Content-Type"); ct != "" {
@@ -88,13 +94,28 @@ func collectTextParts(h textproto.MIMEHeader, body []byte, depth int, out *[]tex
 				continue
 			}
 		}
+		if pmt != "text/plain" && pmt != "text/html" && !strings.HasPrefix(pmt, "multipart/") {
+			continue
+		}
+		raw, err := io.ReadAll(p)
+		if err != nil {
+			return true
+		}
 		switch {
 		case strings.HasPrefix(pmt, "multipart/"):
-			if depth == maxPartDepth || !collectTextParts(p.Header, raw, depth+1, out) {
+			if depth == maxPartDepth || !collectTextParts(p.Header, raw, depth+1, limit, out) {
 				return false
 			}
-		case (pmt == "text/plain" || pmt == "text/html") && !attachment(p.Header):
-			*out = append(*out, textPart{header: p.Header, body: raw})
+		default:
+			i := sort.Search(len(*out), func(i int) bool { return len((*out)[i].body) < len(raw) })
+			if i == limit {
+				continue
+			}
+			if len(*out) < limit {
+				*out = append(*out, textPart{})
+			}
+			copy((*out)[i+1:], (*out)[i:])
+			(*out)[i] = textPart{header: p.Header, body: raw}
 		}
 	}
 }
