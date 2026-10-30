@@ -478,8 +478,8 @@ func TestReadUnresolvedIntents(t *testing.T) {
 	}
 	for name, damage := range map[string]func(*bolt.Tx) error{
 		"future schema": func(tx *bolt.Tx) error {
-			// Schema 11 holds the live start; 12 is the first this build cannot read.
-			return tx.Bucket([]byte(admissionMetaBucket)).Put(admissionSchemaKey, []byte{admissionSchemaLive + 1})
+			// Schema 12 holds effect records; 13 is the first this build cannot read.
+			return tx.Bucket([]byte(admissionMetaBucket)).Put(admissionSchemaKey, []byte{admissionSchemaEffects + 1})
 		},
 		"no schema":  func(tx *bolt.Tx) error { return tx.Bucket([]byte(admissionMetaBucket)).Delete(admissionSchemaKey) },
 		"no intents": func(tx *bolt.Tx) error { return tx.DeleteBucket([]byte(admissionIntentsBucket)) },

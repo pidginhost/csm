@@ -174,8 +174,13 @@ func (f *ledgerFixture) snapshot() map[string]string {
 	f.t.Helper()
 	out := map[string]string{}
 	if err := f.db.bolt.View(func(tx *bolt.Tx) error {
-		for _, name := range admissionBuckets {
-			if err := tx.Bucket([]byte(name)).ForEach(func(k, v []byte) error {
+		for _, name := range append(append([]string(nil), admissionBuckets...), admissionEffectsBucket) {
+			b := tx.Bucket([]byte(name))
+			if b == nil {
+				continue
+			}
+			out[name+":"] = "bucket"
+			if err := b.ForEach(func(k, v []byte) error {
 				out[name+":"+string(k)] = string(v)
 				return nil
 			}); err != nil {

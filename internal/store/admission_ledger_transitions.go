@@ -307,7 +307,7 @@ func (l *AdmissionLedger) Reserve(id admission.CandidateID, lane admission.Lane,
 		if txErr != nil {
 			return txErr
 		}
-		if c, a, granted, txErr = l.reserveTx(q, id, lane, expiresAt); txErr != nil {
+		if c, a, granted, txErr = l.reserveTx(q, id, lane, expiresAt, true); txErr != nil {
 			return txErr
 		}
 		return q.flush()
@@ -318,7 +318,10 @@ func (l *AdmissionLedger) Reserve(id admission.CandidateID, lane admission.Lane,
 	return c, a, granted, nil
 }
 
-func (l *AdmissionLedger) reserveTx(q *queueTx, id admission.CandidateID, lane admission.Lane, expiresAt time.Time) (admission.Candidate, admission.AttemptRecord, bool, error) {
+// reserveTx reserves the next attempt of candidate id. With hold, a block
+// a live ledger reserves holds its temporary set slot from now on; only a
+// live owner executes, so no record predates the live start.
+func (l *AdmissionLedger) reserveTx(q *queueTx, id admission.CandidateID, lane admission.Lane, expiresAt time.Time, hold bool) (admission.Candidate, admission.AttemptRecord, bool, error) {
 	tx, now := q.tx, q.now
 	c, err := loadCandidate(tx, id)
 	if err != nil {
@@ -408,6 +411,11 @@ func (l *AdmissionLedger) reserveTx(q *queueTx, id admission.CandidateID, lane a
 	}
 	if err := putAttempt(tx, a); err != nil {
 		return c, a, false, err
+	}
+	if hold && q.started && c.Key.Kind == admission.KindBlockIP {
+		if err := q.holdSlot(c, a, entry); err != nil {
+			return c, a, false, err
+		}
 	}
 	return c, a, true, putCandidate(tx, c)
 }
@@ -711,7 +719,7 @@ func (l *AdmissionLedger) Observe(id admission.CandidateID, lane admission.Lane,
 		if txErr != nil {
 			return txErr
 		}
-		if c, a, granted, txErr = l.reserveTx(q, id, lane, expiresAt); txErr != nil || !granted {
+		if c, a, granted, txErr = l.reserveTx(q, id, lane, expiresAt, false); txErr != nil || !granted {
 			return txErr
 		}
 		from := c.State
@@ -780,6 +788,18 @@ func (q *queueTx) finishAttempt(a *admission.AttemptRecord, c *admission.Candida
 		}
 	}
 	a.State, a.Disposition, a.Finished = state, d, q.now
+	// A verified block keeps its slot until its expiry, and so does an
+	// unknown one, which may hold it; any other outcome gives it back.
+	switch state {
+	case admission.StateVerified:
+		err = q.markApplied(*a)
+	case admission.StateUnknown:
+	default:
+		err = q.releaseSlot(*a)
+	}
+	if err != nil {
+		return false, err
+	}
 	if err = q.outcomes.Add(admission.AttemptOutcome(d, e.Tier)); err != nil {
 		return false, err
 	}

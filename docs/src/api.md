@@ -300,8 +300,10 @@ It never applies them; the view is not an enforcement record.
   outcomes, ingress generations, the hourly ceiling with its general and
   reserved lanes, storage, the outbox, notice records and `unresolved`
   outcomes (`running` and `unknown` counts and when the next unknown one can
-  retire). Each section carries its own `error`, so one damaged record does
-  not hide the rest.
+  retire), and `effects`: the temporary set slots the ledger's own automatic
+  blocks hold, pending and verified, in `general` and `reserved`, with `next`
+  when the first of them expires. Each section carries its own `error`, so
+  one damaged record does not hide the rest.
 - `ingress` says whether automatic responses are admitted and, while they are
   not, since when and how many Critical arrivals were refused.
 - `owner` says whether admission runs automatic blocks (`executing`) and

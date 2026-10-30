@@ -174,6 +174,8 @@ type queueTx struct {
 	// rows.
 	held, heldDelta map[string]int
 	heldTargets     map[string]bool
+	// started is the handle's live start (AdmissionLedger.live).
+	started bool
 }
 
 func (l *AdmissionLedger) openQueue(tx *bolt.Tx, now time.Time) (*queueTx, error) {
@@ -181,7 +183,7 @@ func (l *AdmissionLedger) openQueue(tx *bolt.Tx, now time.Time) (*queueTx, error
 	if err != nil {
 		return nil, err
 	}
-	q.held, q.heldDelta = l.held, l.heldDelta
+	q.held, q.heldDelta, q.started = l.held, l.heldDelta, l.live
 	return q, nil
 }
 
