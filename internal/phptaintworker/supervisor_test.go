@@ -3,6 +3,7 @@ package phptaintworker
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -523,5 +524,50 @@ func TestSupervisorOversizeWinsOverOpenBreaker(t *testing.T) {
 	_ = s.Stop()
 	if rep := s.Analyze(context.Background(), big); rep.Status != phptaint.StatusOversize {
 		t.Fatalf("stopped: %s", rep.Status)
+	}
+}
+
+func TestSupervisorUsesConfiguredLauncher(t *testing.T) {
+	var calls int
+	s, err := NewSupervisor(SupervisorConfig{
+		Launch: func(ctx context.Context) (workerproc.Process, error) {
+			calls++
+			return workerproc.ExecLauncher(os.Args[0], []string{"-test.run=TestHelperWorkerProcess", "--"}, append(os.Environ(), "CSM_HELPER_WORKER=reply-op"))(ctx)
+		},
+		Timeout: 2 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Stop() })
+	s.Analyze(context.Background(), []byte(workerInput))
+	if calls != 1 {
+		t.Fatalf("launcher calls = %d, want 1", calls)
+	}
+}
+
+func TestNewSupervisorNeedsCommandOrLauncher(t *testing.T) {
+	if _, err := NewSupervisor(SupervisorConfig{Timeout: time.Second}); err == nil {
+		t.Fatal("supervisor without a way to start a worker was accepted")
+	}
+}
+
+// A worker that cannot start is a coverage gap on every call, breaker open
+// or not, never a clean report.
+func TestAnalyzeLaunchFailureIsGap(t *testing.T) {
+	s, err := NewSupervisor(SupervisorConfig{
+		Launch: func(context.Context) (workerproc.Process, error) {
+			return nil, errors.New("isolation unavailable")
+		},
+		Timeout: time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Stop() })
+	for i := range ConsecutiveFailureLimit + 1 {
+		if rep := s.Analyze(context.Background(), []byte(workerInput)); rep.Status != phptaint.StatusWorkerFailure {
+			t.Fatalf("call %d: status %s", i, rep.Status)
+		}
 	}
 }

@@ -20,8 +20,11 @@ const ConsecutiveFailureLimit = workerproc.ConsecutiveFailureLimit
 
 // SupervisorConfig describes how to start the worker process.
 type SupervisorConfig struct {
-	// Command and Args start the worker. In production this is the CSM binary
-	// re-executing itself as a subcommand.
+	// Launch starts a worker. The daemon passes workerproc.UnitLauncher so
+	// the worker runs locked down; nil runs Command directly, which only
+	// tests do.
+	Launch workerproc.Launcher
+	// Command and Args start the worker when Launch is nil.
 	Command string
 	Args    []string
 	Env     []string
@@ -47,8 +50,8 @@ type Supervisor struct {
 // NewSupervisor validates config. It does not start a worker: the first
 // analysis does, so a scan that never admits a candidate never forks.
 func NewSupervisor(cfg SupervisorConfig) (*Supervisor, error) {
-	if cfg.Command == "" {
-		return nil, errors.New("phptaintworker: empty command")
+	if cfg.Command == "" && cfg.Launch == nil {
+		return nil, errors.New("phptaintworker: no launcher or command")
 	}
 	if cfg.Timeout <= 0 {
 		return nil, errors.New("phptaintworker: timeout must be positive")
@@ -69,6 +72,9 @@ func NewSupervisor(cfg SupervisorConfig) (*Supervisor, error) {
 }
 
 func (s *Supervisor) launch(ctx context.Context) (workerproc.Process, error) {
+	if s.cfg.Launch != nil {
+		return s.cfg.Launch(ctx)
+	}
 	s.mu.Lock()
 	mode := s.mode
 	s.mu.Unlock()

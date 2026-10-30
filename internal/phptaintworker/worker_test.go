@@ -174,3 +174,16 @@ func TestWorkerRejectsTruncatedFrame(t *testing.T) {
 		t.Fatalf("error = %v, want io.ErrUnexpectedEOF", err)
 	}
 }
+
+// The unit launcher sends hello before any analysis; the worker must answer
+// with its protocol or the daemon refuses it.
+func TestServeAnswersHello(t *testing.T) {
+	parent, child := socketPair(t)
+	go func() { _ = Serve(context.Background(), child) }()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	lim := workerproc.Limits{MaxFrameBytes: phptaintipc.MaxFrameBytes}
+	if err := workerproc.Handshake(ctx, parent, lim, phptaintipc.ProtocolVersion); err != nil {
+		t.Fatal(err)
+	}
+}

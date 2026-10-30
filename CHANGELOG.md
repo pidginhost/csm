@@ -13,6 +13,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 - The daemon log now escapes line breaks and control characters in values, so crafted file names cannot forge log lines.
 - YARA scans no longer reopen tenant files by path or write temporary copies of large files to disk.
+- PHP taint analysis now runs in a locked-down worker with no root, network or file access.
 
 ### Fixed
 

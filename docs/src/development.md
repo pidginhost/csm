@@ -1300,9 +1300,10 @@ it on every scan. The spool watcher keys it by Exim message ID, and counts
 kills per message source with a limit of three in ten minutes.
 
 Worker diagnostics must go to stderr; stdout carries the protocol socket. The
-PHP taint worker (`csm phptaint-worker`) runs as a plain child
-(`ExecLauncher`). The YARA worker moves to this package later; until then the
-section below describes it.
+PHP taint worker (`csm phptaint-worker`) runs through `UnitLauncher` as
+`csm-phptaint-worker-<generation>`, with the parse worker's lockdown and a
+512 MiB memory cap. The YARA worker moves to this package later; until then
+the section below describes it.
 
 ### Parse worker units
 

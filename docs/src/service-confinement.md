@@ -154,6 +154,14 @@ failures are logged and do not prevent startup.
 account scans can still use the worker, and startup cleanup still runs.
 `email_av.enabled: false` starts no mail workers.
 
+The PHP taint worker runs in the same kind of unit, named
+`csm-phptaint-worker-<generation>`, with a 512 MiB memory cap and no file
+writes. At startup the daemon attempts to kill leftover `csm-phptaint-worker-*`
+units. When the binary cannot run as the unit's dynamic user, PHP taint
+analysis stays off and the daemon logs why. A worker that fails to start or
+dies leaves its file reported as not analyzed. `disabled_checks:
+[php_taint_deep]` stops new analyses; startup cleanup still runs.
+
 The in-process `csm scan <user>` command starts its own worker on demand.
 Its unit prefix includes the CLI process ID, so concurrent scans use distinct
 slices and cannot attribute another scan's OOM kill to their own worker.
