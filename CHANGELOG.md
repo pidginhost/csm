@@ -9,10 +9,6 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ## [Unreleased]
 
-### Security
-
-- Crafted multipart spam reports no longer exhaust learner memory, and attached messages no longer supply new learning samples.
-
 ### Fixed
 
 - Spam whose plain-text and HTML versions differ is now learned from Spam folder reports and operator marks instead of being skipped.
