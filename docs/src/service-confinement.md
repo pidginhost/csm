@@ -157,9 +157,10 @@ account scans can still use the worker, and startup cleanup still runs.
 The PHP taint worker runs in the same kind of unit, named
 `csm-phptaint-worker-<generation>`, with a 512 MiB memory cap and no file
 writes. At startup the daemon attempts to kill leftover `csm-phptaint-worker-*`
-units. When the binary cannot run as the unit's dynamic user, PHP taint
-analysis stays off and the daemon logs why. A worker that fails to start or
-dies leaves its file reported as not analyzed. `disabled_checks:
+units. The binary's permissions are checked before each worker launch. If
+the dynamic user cannot execute it, the daemon logs why and candidate files
+are reported as not analyzed, just as when a unit fails to start or dies.
+These failures appear as `worker_failure` coverage gaps. `disabled_checks:
 [php_taint_deep]` stops new analyses; startup cleanup still runs.
 
 The in-process `csm scan <user>` command starts its own worker on demand.

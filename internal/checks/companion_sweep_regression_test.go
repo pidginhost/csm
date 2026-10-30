@@ -684,6 +684,15 @@ func TestCompanionSweepNotesYARAUnavailable(t *testing.T) {
 			if !companionReportMentions(got, "YARA could not scan it") {
 				t.Fatalf("unscanned file not noted: %+v", got)
 			}
+			if countByCheck(got, "malware_companion_scan_incomplete") != 1 {
+				t.Fatalf("unscanned file must produce one incomplete-scan finding: %+v", got)
+			}
+			for _, finding := range got {
+				if finding.Check == "malware_companion_scan_incomplete" &&
+					(finding.Severity != alert.Warning || !strings.Contains(finding.Details, "Could not fully scan 1 file(s)") || !strings.Contains(finding.Details, "payload.php")) {
+					t.Fatalf("incomplete scan lost its severity, count or file: %+v", finding)
+				}
+			}
 		})
 	}
 }

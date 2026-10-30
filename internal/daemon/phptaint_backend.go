@@ -36,15 +36,18 @@ func (d *Daemon) initPHPTaintAnalyzer() error {
 		logf("stop leftover units: %v", err)
 	}
 	cancel()
-	// A unit's dynamic user cannot run an owner-only binary; refuse once here
-	// rather than fail every analysis at exec.
-	if err := checkParseWorkerCommand(d.binaryPath); err != nil {
-		return fmt.Errorf("phptaint worker: %w", err)
-	}
 	unit := phptaintworker.UnitConfig(d.binaryPath, phpTaintWorkerUnitPrefix, logf)
 	unit.InaccessiblePaths = parseWorkerHiddenPaths()
+	launch := phpTaintWorkerLauncher(unit)
 	sup, err := phptaintworker.NewSupervisor(phptaintworker.SupervisorConfig{
-		Launch:  phpTaintWorkerLauncher(unit),
+		Launch: func(ctx context.Context) (workerproc.Process, error) {
+			// Keep preflight failures inside the supervisor: an absent analyzer
+			// disables dispatch and would hide these files' coverage gaps.
+			if err := checkParseWorkerCommand(unit.Command); err != nil {
+				return nil, fmt.Errorf("phptaint worker: %w", err)
+			}
+			return launch(ctx)
+		},
 		Timeout: phpTaintWorkerTimeout,
 		Log:     logf,
 	})
