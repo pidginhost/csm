@@ -283,7 +283,11 @@ func (s *Supervisor) ScanBytesChecked(data []byte) ([]yara.Match, error) {
 	}
 	res, err := client.ScanBytes(yaraipc.ScanBytesArgs{Data: data})
 	if err != nil {
-		s.logScanErr(err)
+		// The client refuses an oversize payload before sending it, and the
+		// caller then has the worker read the file. The worker did not fail.
+		if !errors.Is(err, yaraipc.ErrPayloadTooLarge) {
+			s.logScanErr(err)
+		}
 		return nil, fmt.Errorf("yaraworker scan_bytes: %w", err)
 	}
 	return toYaraMatches(res.Matches), nil
