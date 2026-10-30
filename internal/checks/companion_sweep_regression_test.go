@@ -560,6 +560,8 @@ func TestCompanionSweepResultsDoNotScheduleAnotherSweep(t *testing.T) {
 }
 
 func TestCompanionReportsNeverRemediateUnmatchedFiles(t *testing.T) {
+	// No YARA engine: the report must be clean, not incomplete, in every build.
+	withYARAAvailable(t, false)
 	q := withCompanionQueue(t)
 	dir := kitDir(t)
 	path := writeKitFile(t, dir, "anchor.php", []byte("<?php\n"))
@@ -654,4 +656,58 @@ func companionReportMentions(findings []alert.Finding, text string) bool {
 		}
 	}
 	return false
+}
+
+// zeroRuleBackend is a YARA backend whose worker has no usable rules.
+type zeroRuleBackend struct{ deepYARATestBackend }
+
+func (*zeroRuleBackend) RuleCount() int { return 0 }
+
+func withYARAAvailable(t *testing.T, available bool) {
+	t.Helper()
+	prev := yaraAvailable
+	yaraAvailable = func() bool { return available }
+	t.Cleanup(func() { yaraAvailable = prev })
+}
+
+// A kit file YARA should have checked but could not is reported as such,
+// never listed as if it had been scanned.
+func TestCompanionSweepNotesYARAUnavailable(t *testing.T) {
+	for name, backend := range map[string]yara.Backend{"no rules": &zeroRuleBackend{}, "no backend": nil} {
+		t.Run(name, func(t *testing.T) {
+			withYARAAvailable(t, true)
+			useCompanionYARA(t, backend)
+			dir := kitDir(t)
+			path := writeKitFile(t, dir, "shell.php", []byte("<?php\n"))
+			writeKitFile(t, dir, "payload.php", []byte("dormant malware"))
+			got := sweepCompanions(context.Background(), &config.Config{}, anchorAt(t, path, time.Now()))
+			if !companionReportMentions(got, "YARA could not scan it") {
+				t.Fatalf("unscanned file not noted: %+v", got)
+			}
+		})
+	}
+}
+
+func TestCompanionSweepNoYARANoteWhenOperatorDisabledIt(t *testing.T) {
+	withYARAAvailable(t, true)
+	useCompanionYARA(t, &zeroRuleBackend{})
+	dir := kitDir(t)
+	path := writeKitFile(t, dir, "shell.php", []byte("<?php\n"))
+	writeKitFile(t, dir, "payload.php", []byte("dormant malware"))
+	got := sweepCompanions(context.Background(), &config.Config{DisabledChecks: []string{"yara_deep"}}, anchorAt(t, path, time.Now()))
+	if companionReportMentions(got, "YARA could not scan it") {
+		t.Fatalf("disabled YARA reported as a failure: %+v", got)
+	}
+}
+
+func TestCompanionSweepNoYARANoteWithoutEngine(t *testing.T) {
+	withYARAAvailable(t, false)
+	useCompanionYARA(t, nil)
+	dir := kitDir(t)
+	path := writeKitFile(t, dir, "shell.php", []byte("<?php\n"))
+	writeKitFile(t, dir, "payload.php", []byte("dormant malware"))
+	got := sweepCompanions(context.Background(), &config.Config{}, anchorAt(t, path, time.Now()))
+	if companionReportMentions(got, "YARA could not scan it") {
+		t.Fatalf("build without YARA reported a failure: %+v", got)
+	}
 }

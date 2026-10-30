@@ -547,13 +547,21 @@ func scanCompanionFile(ctx context.Context, cfg *config.Config, dir *tenantDirec
 	contentSHA256 := hex.EncodeToString(digest[:])
 
 	var findings []alert.Finding
-	if backend := activeYARABackend(); backend != nil && backend.RuleCount() > 0 && !yaraDeepConsumerDisabled(cfg) {
-		matches, err := yara.ScanBytesChecked(backend, path, data)
-		if err != nil {
+	if !yaraDeepConsumerDisabled(cfg) {
+		backend := activeYARABackend()
+		switch {
+		case backend != nil && backend.RuleCount() > 0:
+			matches, err := yara.ScanBytesChecked(backend, path, data)
+			if err != nil {
+				file.note = "YARA could not scan it"
+			}
+			for _, m := range matches {
+				findings = append(findings, scheduledYARAFinding(m, path, data, contentSHA256))
+			}
+		case yaraAvailable():
+			// YARA should have checked this file and could not: say so
+			// rather than list it as if it had been scanned.
 			file.note = "YARA could not scan it"
-		}
-		for _, m := range matches {
-			findings = append(findings, scheduledYARAFinding(m, path, data, contentSHA256))
 		}
 	}
 	if contenttype.IsPHPSourceName(strings.ToLower(name)) && !runnerDisabled(cfg, "php_content") {
