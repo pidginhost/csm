@@ -59,7 +59,7 @@ func (l *AdmissionLedger) Status() admission.LedgerStatus {
 		s.Outbox.Error = section(func() error { return outboxStatus(tx, &s.Outbox) }, admissionOutboxBucket)
 		s.Notices.Error = section(func() error { return noticesStatus(tx, &s.Notices) }, admissionOutboxBucket)
 		s.Unresolved.Error = section(func() error { return unresolvedStatus(tx, &s.Unresolved) }, admissionIntentsBucket, admissionAttemptsBucket, admissionCandidatesBucket)
-		s.Effects.Error = section(func() error { return effectsStatus(tx, &s.Effects) }, admissionQueueStateBucket)
+		s.Effects.Error = section(func() error { return effectsStatus(tx, &s.Effects) }, admissionMetaBucket, admissionQueueStateBucket)
 		return nil
 	})
 	if err != nil {

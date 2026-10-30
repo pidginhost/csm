@@ -171,11 +171,15 @@ func sweepEffects(tx *bolt.Tx, tick admission.ClockTick) error {
 	return nil
 }
 
-// proveEffects checks at opening that effect records exist exactly when
+// proveEffects checks that effect records exist exactly when
 // the schema announces them, decode, and match their tally.
 func proveEffects(tx *bolt.Tx) error {
 	b := tx.Bucket([]byte(admissionEffectsBucket))
-	announced := tx.Bucket([]byte(admissionMetaBucket)).Get(admissionSchemaKey)[0] >= admissionSchemaEffects
+	schema := tx.Bucket([]byte(admissionMetaBucket)).Get(admissionSchemaKey)
+	if len(schema) != 1 || schema[0] < admissionSchemaVersion || schema[0] > admissionSchemaEffects {
+		return ErrAdmissionSchema
+	}
+	announced := schema[0] == admissionSchemaEffects
 	tallied := tx.Bucket([]byte(admissionQueueStateBucket)).Get(effectTallyKey) != nil
 	if (b != nil) != announced || announced != tallied {
 		return admission.ErrCorruptRecord
@@ -207,6 +211,9 @@ func proveEffects(tx *bolt.Tx) error {
 // effectsStatus reads the slots the records hold and the expiry of the
 // first one.
 func effectsStatus(tx *bolt.Tx, out *admission.EffectsStatus) error {
+	if err := proveEffects(tx); err != nil {
+		return err
+	}
 	tally, err := loadEffectTally(tx)
 	if err != nil {
 		return err
