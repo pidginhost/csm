@@ -11,7 +11,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Changed
 
-- Admission status reports held automatic block slots and damaged slot accounting for firewall.deny_temp_ip_limit; blocking is unchanged.
+- Admission status now reports held automatic block slots for firewall.deny_temp_ip_limit; blocking is unchanged.
 
 ## [4.8.1] - 2026-10-30
 
