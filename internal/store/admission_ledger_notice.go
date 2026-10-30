@@ -146,7 +146,7 @@ func noticeCheck(tx *bolt.Tx, c admission.Candidate) (string, error) {
 // gap raises the notice an event of candidate c raises, if any (spec
 // 5.17). transitions is c's count after the event.
 func (q *queueTx) gap(event admission.GapEvent, reason admission.Reason, outcome admission.Disposition, entry admission.QueueEntry, id admission.CandidateID, c admission.Candidate, transitions uint32) error {
-	kind := admission.GapNotice(event, reason, outcome, entry.Tier)
+	kind := admission.GapNotice(event, reason, outcome, entry.Tier, false)
 	if kind == 0 {
 		return nil
 	}
