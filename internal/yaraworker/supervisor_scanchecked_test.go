@@ -139,3 +139,33 @@ func TestSupervisorReloadInvalidatesVerdicts(t *testing.T) {
 		t.Fatal("worker reload retained cached verdicts")
 	}
 }
+
+// An empty file has nothing to scan: no round trip, even to a worker whose
+// scans would fail. A stopped supervisor still fails closed.
+func TestScanBytesCheckedEmptyData(t *testing.T) {
+	stopped, err := NewSupervisor(SupervisorConfig{BinaryPath: "/usr/bin/true", SocketPath: "/tmp/unused.sock"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = stopped.ScanBytesChecked(nil); err == nil {
+		t.Fatal("stopped supervisor scanned empty data clean")
+	}
+	sup, err := NewSupervisor(SupervisorConfig{
+		BinaryPath: os.Args[0], SocketPath: shortSockPath(t),
+		StartTimeout: 3 * time.Second, ClientTimeout: 2 * time.Second,
+		Env: helperEnv("normal", "YARAWORKER_COMPILE_ERR=bad rule"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = sup.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sup.Stop() }()
+	if _, err = sup.ScanBytesChecked([]byte("x")); err == nil {
+		t.Fatal("failing worker scanned clean")
+	}
+	if m, err := sup.ScanBytesChecked(nil); err != nil || m != nil {
+		t.Fatalf("empty data = %v, %v", m, err)
+	}
+}

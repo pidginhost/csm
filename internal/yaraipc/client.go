@@ -240,29 +240,28 @@ func (c *Client) ScanFile(args ScanFileArgs) (ScanResult, error) {
 	return res, nil
 }
 
-// ScanBytes is the daemon-side shim for OpScanBytes.
-func (c *Client) ScanBytes(args ScanBytesArgs) (ScanResult, error) {
-	// Reject up front so an oversize buffer becomes a legible, typed error
-	// rather than a generic WriteFrame failure after a wasteful multi-MiB
-	// marshal. Callers must treat this as "could not scan", never as clean.
-	if len(args.Data) > MaxScanBytes {
-		return ScanResult{}, fmt.Errorf("%w (%d > %d bytes)", ErrPayloadTooLarge, len(args.Data), MaxScanBytes)
+// ScanBytes scans data the daemon already holds. The bytes travel as a
+// sealed memfd over scan_fd, so no frame size limits them and the worker
+// cannot change what it was given. Callers must treat any error as "could
+// not scan", never as clean.
+func (c *Client) ScanBytes(data []byte) (ScanResult, error) {
+	if len(data) == 0 {
+		return ScanResult{}, errors.New("yaraipc: empty byte scan")
 	}
-	req, err := EncodePayload(OpScanBytes, args)
+	req, err := EncodePayload(OpScanFD, ScanFDArgs{MaxBytes: len(data), EmptyRulesClean: true})
 	if err != nil {
 		return ScanResult{}, err
 	}
-	resp, err := c.roundTrip(req)
+	f, err := sealedMemfd(data)
 	if err != nil {
 		return ScanResult{}, err
 	}
-	var res ScanResult
-	if len(resp.Payload) > 0 {
-		if err := DecodePayload(resp, &res); err != nil {
-			return ScanResult{}, err
-		}
+	defer func() { _ = f.Close() }()
+	resp, err := c.roundTripFDs(req, []*os.File{f})
+	if err != nil {
+		return ScanResult{}, err
 	}
-	return res, nil
+	return decodeScanFDResult(resp)
 }
 
 // Reload is the daemon-side shim for OpReload.

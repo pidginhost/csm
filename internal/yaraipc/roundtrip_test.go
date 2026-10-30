@@ -133,7 +133,7 @@ func TestClientServerScanFile(t *testing.T) {
 }
 
 func TestClientServerScanBytes(t *testing.T) {
-	h := &fakeHandler{}
+	h := &fdHandler{}
 	socketPath, stop := startServer(t, h)
 	defer stop()
 
@@ -143,24 +143,31 @@ func TestClientServerScanBytes(t *testing.T) {
 	// Synthetic webshell-ish payload; we only care that it round-trips
 	// byte-for-byte, not that any rule matches it.
 	payload := []byte("<?php " + "ev" + "al($_POST['x']); ?>")
-	if _, err := c.ScanBytes(ScanBytesArgs{Data: payload}); err != nil {
+	if _, err := c.ScanBytes(payload); err != nil {
 		t.Fatalf("ScanBytes: %v", err)
 	}
-	if len(h.scanBytesArgs) != 1 {
-		t.Fatalf("handler saw %d requests, want 1", len(h.scanBytesArgs))
-	}
-	if string(h.scanBytesArgs[0].Data) != string(payload) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if string(h.data) != string(payload) {
 		t.Errorf("payload mismatch")
 	}
 }
+
+// resultFDHandler answers scan_fd with a prepared result.
+type resultFDHandler struct {
+	fakeHandler
+	res ScanResult
+}
+
+func (h *resultFDHandler) ScanFD(*os.File, ScanFDArgs) (ScanResult, error) { return h.res, nil }
 
 func TestClientServerScanMetadataRoundTrips(t *testing.T) {
 	// Match metadata travels end-to-end via JSON; this asserts the wire
 	// shape does not silently drop Meta on either encode or decode, and
 	// that a match without metadata round-trips as nil (not an empty
 	// map promoted by the JSON layer).
-	h := &fakeHandler{
-		scanBytesRes: ScanResult{Matches: []Match{
+	h := &resultFDHandler{
+		res: ScanResult{Matches: []Match{
 			{
 				RuleName: "webshell_p0wny",
 				Meta:     map[string]string{"severity": "critical", "description": "p0wny shell"},
@@ -176,7 +183,7 @@ func TestClientServerScanMetadataRoundTrips(t *testing.T) {
 	c := NewClient(socketPath, 2*time.Second)
 	defer func() { _ = c.Close() }()
 
-	res, err := c.ScanBytes(ScanBytesArgs{Data: []byte("doesnt matter, fake handler")})
+	res, err := c.ScanBytes([]byte("doesnt matter, fake handler"))
 	if err != nil {
 		t.Fatalf("ScanBytes: %v", err)
 	}
@@ -379,13 +386,13 @@ func TestServerRejectsUnknownOp(t *testing.T) {
 	}
 }
 
-// panicHandler panics on ScanBytes to model a handler crash (pathological
+// panicHandler panics on ScanFD to model a handler crash (pathological
 // rules, bad scan input). The server must convert the panic into an error
 // frame so the client gets a real error instead of a closed connection that
 // it retries into the same panic forever.
 type panicHandler struct{ fakeHandler }
 
-func (p *panicHandler) ScanBytes(ScanBytesArgs) (ScanResult, error) {
+func (p *panicHandler) ScanFD(*os.File, ScanFDArgs) (ScanResult, error) {
 	panic("boom in scan")
 }
 
@@ -397,7 +404,7 @@ func TestServerRecoversHandlerPanic(t *testing.T) {
 	c := NewClient(socketPath, 2*time.Second)
 	defer func() { _ = c.Close() }()
 
-	_, err := c.ScanBytes(ScanBytesArgs{Data: []byte("payload")})
+	_, err := c.ScanBytes([]byte("payload"))
 	if err == nil {
 		t.Fatal("expected an error from a panicking handler")
 	}

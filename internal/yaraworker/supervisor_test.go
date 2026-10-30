@@ -150,6 +150,12 @@ func (s *scriptedHandler) ScanFile(_ yaraipc.ScanFileArgs) (yaraipc.ScanResult, 
 func (s *scriptedHandler) ScanBytes(_ yaraipc.ScanBytesArgs) (yaraipc.ScanResult, error) {
 	return yaraipc.ScanResult{}, nil
 }
+func (s *scriptedHandler) ScanFD(_ *os.File, _ yaraipc.ScanFDArgs) (yaraipc.ScanResult, error) {
+	if s.compileErr != "" {
+		return yaraipc.ScanResult{}, fmt.Errorf("yara scanner unavailable: %s", s.compileErr)
+	}
+	return yaraipc.ScanResult{}, nil
+}
 func (s *scriptedHandler) Reload(_ yaraipc.ReloadArgs) (yaraipc.ReloadResult, error) {
 	return yaraipc.ReloadResult{RuleCount: s.ruleCount, CompileError: s.compileErr}, nil
 }

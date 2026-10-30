@@ -268,9 +268,8 @@ func (s *Supervisor) ScanBytes(data []byte) []yara.Match {
 
 // ScanBytesChecked is the fail-closed entrypoint: unlike ScanBytes it returns
 // a non-nil error when the worker is down or the request could not be
-// delivered (e.g. the payload exceeds the IPC frame budget, or the worker
-// crashed mid-request), so a caller does not mistake an unscanned payload for
-// a clean one.
+// delivered (the worker crashed mid-request, no memfd could be made), so a
+// caller does not mistake an unscanned payload for a clean one.
 func (s *Supervisor) ScanBytesChecked(data []byte) ([]yara.Match, error) {
 	if !s.running.Load() {
 		return nil, errors.New("yaraworker: supervisor not running")
@@ -281,13 +280,13 @@ func (s *Supervisor) ScanBytesChecked(data []byte) ([]yara.Match, error) {
 	if client == nil {
 		return nil, errors.New("yaraworker: no client")
 	}
-	res, err := client.ScanBytes(yaraipc.ScanBytesArgs{Data: data})
+	if len(data) == 0 {
+		// Nothing to scan; a round trip would only fail on the size.
+		return nil, nil
+	}
+	res, err := client.ScanBytes(data)
 	if err != nil {
-		// The client refuses an oversize payload before sending it, and the
-		// caller then has the worker read the file. The worker did not fail.
-		if !errors.Is(err, yaraipc.ErrPayloadTooLarge) {
-			s.logScanErr(err)
-		}
+		s.logScanErr(err)
 		return nil, fmt.Errorf("yaraworker scan_bytes: %w", err)
 	}
 	return toYaraMatches(res.Matches), nil

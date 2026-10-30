@@ -93,6 +93,9 @@ func (h *handler) ScanFD(f *os.File, a yaraipc.ScanFDArgs) (yaraipc.ScanResult, 
 	}
 	sc, compileErr := h.currentState()
 	if sc == nil || sc.RuleCount() == 0 {
+		if a.EmptyRulesClean && compileErr == "" {
+			return yaraipc.ScanResult{}, nil
+		}
 		if compileErr == "" {
 			compileErr = "no compiled rules"
 		}

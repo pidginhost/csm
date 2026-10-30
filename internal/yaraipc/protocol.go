@@ -49,8 +49,13 @@ const (
 
 // ScanFDArgs bounds how much of the descriptor the worker reads. No name is
 // sent: the archive-by-name skip is for files on disk, not mail parts.
+//
+// EmptyRulesClean keeps the old scan_bytes contract for byte scans: a worker
+// with no rules and no compile error answers clean, as the in-process scanner
+// does. Mail parts leave it unset, so a worker without rules fails them.
 type ScanFDArgs struct {
-	MaxBytes int `json:"max_bytes"`
+	MaxBytes        int  `json:"max_bytes"`
+	EmptyRulesClean bool `json:"empty_rules_clean,omitempty"`
 }
 
 // scanFDResult requires an explicit matches array, including for clean scans.
