@@ -9,8 +9,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
+	"unicode"
 
 	csmlog "github.com/pidginhost/csm/internal/log"
 	"github.com/pidginhost/csm/internal/safepath"
@@ -140,14 +142,25 @@ func (c *wpCoreReleaseChecksums) lineEndingOnly(wpPath string, out []byte) (file
 	return files, only && len(files) > 0
 }
 
-// wpCLIPHPDeprecation reports a PHP deprecation notice, in the format PHP logs
-// it or the one it displays. A site's bundled libraries raise them on newer
-// PHP, and PHP writes them into wp-cli's output whenever its own log file is
-// read-only, as inside the daemon's sandbox. They describe code that still
-// runs. Warnings stay unrecognized: one can mean wp-cli could not read files
-// it was checking.
+var (
+	wpCLIPHPDeprecationLine = regexp.MustCompile(`^(?:PHP )?Deprecated: .+ in .+ on line [0-9]+$`)
+	// PHP method names can contain Error:: or Warning::; the scope operator
+	// is not a diagnostic label, but a later single-colon label still is.
+	wpCLIPHPDeprecationClaim = regexp.MustCompile(`(?i)(?:warning|error|success):(?:[^:]|$)|doesn't verify against checksum|should (?:not )?exist|file doesn't exist`)
+)
+
+// wpCLIPHPDeprecation accepts only a standalone notice in PHP's logged or
+// displayed format. PHP writes them into wp-cli's output whenever its own log
+// file is read-only, as inside the daemon's sandbox, and a site's bundled
+// libraries raise them on newer PHP. Site output is untrusted and stdout and
+// stderr are combined: even a complete-looking notice must not swallow a
+// warning, error, or wp-cli claim. Warnings can mean files were skipped and
+// must stay visible.
 func wpCLIPHPDeprecation(line string) bool {
-	return strings.HasPrefix(line, "PHP Deprecated:") || strings.HasPrefix(line, "Deprecated:")
+	if !wpCLIPHPDeprecationLine.MatchString(line) || strings.IndexFunc(line, unicode.IsControl) >= 0 {
+		return false
+	}
+	return !wpCLIPHPDeprecationClaim.MatchString(line)
 }
 
 // installChecksums returns the official checksums of the release the install

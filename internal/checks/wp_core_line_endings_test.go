@@ -236,7 +236,7 @@ const (
 func TestCheckWPCoreLineEndingsIgnorePHPDeprecations(t *testing.T) {
 	for _, notice := range []string{wpCorePHPDeprecationLogged, wpCorePHPDeprecationDisplayed} {
 		t.Run(strings.SplitN(notice, ":", 2)[0], func(t *testing.T) {
-			output := notice + "\n" + notice + "\n" + wpCoreLineEndingsReport("wp-includes/plugin.php")
+			output := notice + "\n" + notice + "\n" + strings.ReplaceAll(wpCoreLineEndingsReport("wp-includes/plugin.php"), "\n", "\n"+notice+"\n")
 			db, dirs := wpCoreLineEndingsFixture(t, 1, withCRLF(wpCoreLineEndingsOfficial), output)
 			stubWPCoreChecksums(t, map[string]string{"wp-includes/plugin.php": wpCoreMD5(wpCoreLineEndingsOfficial)}, nil)
 			logged := captureWPCoreLineEndingsLog(t)
@@ -262,6 +262,107 @@ func TestVerifyWPCoreResolvesLineEndingsBehindPHPDeprecations(t *testing.T) {
 	res := VerifyFinding("wp_core_integrity", "WordPress core file modified for alice", "Path: "+dir)
 	if !res.Checked || !res.Resolved || !strings.Contains(res.Detail, "line endings") {
 		t.Fatalf("line-ending-only differences behind PHP deprecation notices must resolve, got %+v", res)
+	}
+}
+
+// Combined output can put a wp-cli claim after an unterminated PHP message.
+// A deprecation prefix must not hide that claim from either caller.
+func TestWPCoreDeprecationCannotHideUnverifiedOutput(t *testing.T) {
+	for _, tc := range []struct{ name, line string }{
+		{"bare_prefix", "PHP Deprecated:"},
+		{"missing_location", "Deprecated: incomplete diagnostic"},
+		{"joined_error", "PHP Deprecated: synthetic notice Error: Could not read installation files"},
+		{"wrapped_error", "PHP Deprecated: synthetic notice Error: Could not read installation files in /srv/synthetic/Jar.php on line 9"},
+		{"wrapped_warning", "Deprecated: synthetic notice Warning: unreadable directory in /srv/synthetic/Jar.php on line 9"},
+		{"empty_mismatch", "PHP Deprecated: synthetic notice Warning: File doesn't verify against checksum: "},
+		{"carriage_return", "PHP Deprecated: synthetic notice\rError: unreadable directory in /srv/synthetic/Jar.php on line 9"},
+		{"php_warning", "PHP Warning: opendir(): Permission denied in /srv/synthetic/Jar.php on line 9"},
+		{"warning", "Warning: opendir(): Permission denied in /srv/synthetic/Jar.php on line 9"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			output := tc.line + "\n" + wpCoreLineEndingsReport("wp-includes/plugin.php")
+			t.Run("scan", func(t *testing.T) {
+				db, dirs := wpCoreLineEndingsFixture(t, 1, withCRLF(wpCoreLineEndingsOfficial), output)
+				stubWPCoreChecksums(t, map[string]string{"wp-includes/plugin.php": wpCoreMD5(wpCoreLineEndingsOfficial)}, nil)
+				logged := captureWPCoreLineEndingsLog(t)
+
+				got := coreIntegrityFindings(CheckWPCore(withWPInstallCache(context.Background()), nil, nil))
+				if len(got) != 1 || got[0].FilePath != filepath.Join(dirs[0], "wp-includes/plugin.php") {
+					t.Errorf("ambiguous output suppressed the modified-file finding: %+v", got)
+				}
+				if state := wpCoreCoverageState(t, db, dirs[0]); state != "modified" {
+					t.Errorf("coverage state = %q, want modified", state)
+				}
+				if len(*logged) != 1 || !strings.Contains((*logged)[0].msg, "unrecognized") {
+					t.Errorf("ambiguous output was not diagnosed: %v", *logged)
+				}
+				for _, entry := range *logged {
+					if strings.Contains(entry.String(), tc.line) {
+						t.Error("log copied raw PHP output")
+					}
+				}
+			})
+			t.Run("recheck", func(t *testing.T) {
+				dir := wpCoreLineEndingsVerifyInstall(t)
+				wpCoreVerifyMock(t, []byte(output), refusedCommand(t))
+				res := VerifyFinding("wp_core_integrity", "WordPress core file modified for alice", "Path: "+dir)
+				if !res.Checked || res.Resolved {
+					t.Fatalf("ambiguous output must retain the modified-file finding: %+v", res)
+				}
+			})
+		})
+	}
+}
+
+func TestWPCLIPHPDeprecation(t *testing.T) {
+	for _, line := range []string{
+		wpCorePHPDeprecationLogged,
+		wpCorePHPDeprecationDisplayed,
+		"PHP Deprecated: Function synthetic() is deprecated in Unknown on line 0",
+		"PHP Deprecated: Return type of Synthetic_Error::offsetGet($key) should be compatible with ArrayAccess::offsetGet(mixed $offset): mixed in /srv/synthetic/Jar.php on line 9",
+	} {
+		if !wpCLIPHPDeprecation(line) {
+			t.Errorf("standalone deprecation was not recognized: %q", line)
+		}
+	}
+	for _, claim := range []string{
+		"Warning: File doesn't verify against checksum: wp-includes/load.php",
+		"Warning: wp-includes/load.php doesn't verify against checksum.",
+		"Warning: File doesn't verify against checksum:",
+		"File should not exist: wp-includes/extra.php",
+		"File should exist: wp-includes/load.php",
+		"File doesn't exist: wp-includes/load.php",
+		"Error: Could not read installation files",
+		"Success: WordPress installation verifies against checksums.",
+		"PHP Warning: opendir(): Permission denied",
+		"PHP Fatal error: initialization failed",
+		"PHP Parse error: syntax error",
+	} {
+		for _, prefix := range []string{"PHP Deprecated: ", "Deprecated: "} {
+			for _, text := range []string{claim, strings.ToLower(claim)} {
+				line := prefix + text + " in /srv/synthetic/Jar.php on line 9"
+				if wpCLIPHPDeprecation(line) {
+					t.Errorf("claim-bearing output was accepted as a deprecation: %q", line)
+				}
+			}
+		}
+	}
+	for _, line := range []string{
+		"PHP Warning: opendir(): Permission denied in /srv/synthetic/Jar.php on line 9",
+		"Warning: opendir(): Permission denied in /srv/synthetic/Jar.php on line 9",
+		"PHP Notice: synthetic diagnostic in /srv/synthetic/Jar.php on line 9",
+		"PHP Deprecated:",
+		"Deprecated: synthetic diagnostic",
+		"PHP Deprecated: synthetic diagnostic in /srv/synthetic/Jar.php on line nine",
+		"PHP Deprecated: synthetic diagnostic in /srv/synthetic/Jar.php on line 9 trailing output",
+		"PHP Deprecated: synthetic\rdiagnostic in /srv/synthetic/Jar.php on line 9",
+		"PHP Deprecated: synthetic\ndiagnostic in /srv/synthetic/Jar.php on line 9",
+		"PHP Deprecated: synthetic\x00diagnostic in /srv/synthetic/Jar.php on line 9",
+		"PHP Deprecated: synthetic\x1b[2Kdiagnostic in /srv/synthetic/Jar.php on line 9",
+	} {
+		if wpCLIPHPDeprecation(line) {
+			t.Errorf("non-deprecation or incomplete output was accepted: %q", line)
+		}
 	}
 }
 
