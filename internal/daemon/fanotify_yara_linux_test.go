@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/yara"
 )
@@ -24,6 +25,7 @@ type snapshotBackend struct {
 	beforeScan func()
 	scanned    []byte
 	scanErr    error
+	noMatch    bool
 }
 
 func (*snapshotBackend) ScanBytes([]byte) []yara.Match { return nil }
@@ -42,7 +44,7 @@ func (b *snapshotBackend) ScanBytesChecked(data []byte) ([]yara.Match, error) {
 	if b.scanErr != nil {
 		return nil, b.scanErr
 	}
-	if bytes.Contains(data, []byte("include 'original.png'")) {
+	if !b.noMatch && bytes.Contains(data, []byte("include 'original.png'")) {
 		return []yara.Match{{RuleName: "oversize_payload"}}, nil
 	}
 	return nil, nil
@@ -121,8 +123,8 @@ func TestRealtimeYARAScansOversizeSnapshotFromBytes(t *testing.T) {
 	}
 }
 
-// Every realtime YARA finding names the digest of the bytes it matched, so
-// a later fingerprint stamp never reopens a path that may name new content.
+// A whole-file realtime YARA finding keeps the digest of the bytes it matched,
+// even when the path is no longer available to the later fingerprint stamp.
 func TestRealtimeYARAFindingCarriesSnapshotDigest(t *testing.T) {
 	data := []byte("<?php include 'original.png'; ?>")
 	yara.SetActive(&snapshotBackend{t: t})
@@ -192,16 +194,61 @@ func TestRealtimeYARAScansEventNotPath(t *testing.T) {
 // leaves the digest to the later whole-file stamp, so Re-check can clear an
 // unchanged file once the rule no longer matches it.
 func TestRealtimeYARAPartialWindowLeavesDigestToStamp(t *testing.T) {
-	data := append([]byte("<?php include 'original.png'; ?>"), bytes.Repeat([]byte(" "), 32<<10)...)
-	yara.SetActive(&snapshotBackend{t: t})
-	t.Cleanup(func() { yara.SetActive(nil) })
-	alerts := make(chan alert.Finding, 8)
-	fm := &FileMonitor{cfg: &config.Config{}, alertCh: alerts}
-	if !fm.runSignatureScanWithSize(data, int64(len(data))+8<<10, filepath.Join(t.TempDir(), "big.php"), ".php", "", nil) {
-		t.Fatal("window was not matched")
-	}
-	got := drainYARAAlerts(alerts)
-	if len(got) != 1 || got[0].ContentSHA256 != "" {
-		t.Fatalf("partial window fingerprinted: %+v", got)
+	for _, ext := range []string{".php", ".htaccess", ".ini", ".html", ".cgi"} {
+		t.Run(ext, func(t *testing.T) {
+			data := bytes.Repeat([]byte(" "), 32<<10)
+			copy(data, "<?php include 'original.png'; ?>")
+			whole := append(bytes.Clone(data), bytes.Repeat([]byte(" "), 8<<10)...)
+			path := filepath.Join(t.TempDir(), "big"+ext)
+			if err := os.WriteFile(path, whole, 0600); err != nil {
+				t.Fatal(err)
+			}
+			event, err := os.Open(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer event.Close()
+
+			backend := &snapshotBackend{t: t}
+			yara.SetActive(backend)
+			t.Cleanup(func() { yara.SetActive(nil) })
+			alerts := make(chan alert.Finding, 8)
+			fm := &FileMonitor{cfg: &config.Config{}, alertCh: alerts}
+			var matched bool
+			if ext == ".php" {
+				// Exercise the explicit size independently of the fd identity.
+				matched = fm.runSignatureScanWithSize(data, int64(len(whole)), path, ext, "", nil)
+			} else {
+				// These callers pass len(data); only the event fd reveals the tail.
+				matched = fm.runEventSignatureScan(int(event.Fd()), data, path, ext, "")
+			}
+			if !matched || !bytes.Equal(backend.scanned, data) {
+				t.Fatal("partial window was not scanned and matched")
+			}
+			got := drainYARAAlerts(alerts)
+			if len(got) != 1 || got[0].Check != "yara_match_realtime" {
+				t.Fatalf("alerts = %+v", got)
+			}
+			want := fmt.Sprintf("%x", sha256.Sum256(whole))
+			if got[0].ContentSHA256 != want || got[0].DetectLogic == "" {
+				t.Fatalf("fingerprint = %q, version = %q; want %q and nonempty version", got[0].ContentSHA256, got[0].DetectLogic, want)
+			}
+
+			in := checks.VerifyInput{Check: got[0].Check, Path: path, ContentSHA256: got[0].ContentSHA256}
+			if result := checks.VerifyFindingInput(in); !result.Checked || result.Resolved {
+				t.Fatalf("matching file should stay open: %+v", result)
+			}
+			backend.noMatch = true
+			if result := checks.VerifyFindingInput(in); !result.Checked || !result.Resolved {
+				t.Fatalf("unchanged file should resolve after the rule stops matching: %+v", result)
+			}
+			whole[len(whole)-1] = 'x'
+			if err := os.WriteFile(path, whole, 0600); err != nil {
+				t.Fatal(err)
+			}
+			if result := checks.VerifyFindingInput(in); !result.Checked || result.Resolved || !strings.Contains(result.Detail, "modified since detection") {
+				t.Fatalf("modified tail should stay open: %+v", result)
+			}
+		})
 	}
 }

@@ -54,10 +54,14 @@ arrival without a usable create or close-write event is also first examined
 by the rolling content scan; the watcher does not subscribe to rename events.
 
 Realtime YARA scans hand the worker a sealed memory-backed copy of the
-captured bytes, whatever their size, so the event path is never reopened.
-Alert payload details describe that snapshot, and so does the finding
-fingerprint when the snapshot is the whole file. Content outside the read
-window remains subject to the scheduled scan limits.
+captured bytes, whatever their size, without reopening the event path for
+scanning. Alert payload details describe that snapshot. When it is the whole
+file, the finding keeps the snapshot's fingerprint. For partial reads, CSM
+reopens the path to fingerprint the whole file when preparing the finding;
+unreadable files and files above the fingerprint limit receive no fingerprint.
+Re-check compares whole-file fingerprints, so an unchanged file can clear when
+YARA no longer matches it. Content outside the read window remains subject to
+the scheduled scan limits.
 A failed scan raises `yara_realtime_scan_error`.
 
 For WordPress atomic saves, the intended basename can select a core or plugin
