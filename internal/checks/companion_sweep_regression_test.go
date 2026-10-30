@@ -190,6 +190,8 @@ func TestCompanionYARAByteScanErrorNotedWithoutPathRetry(t *testing.T) {
 }
 
 func TestCompanionAccountFindingsHaveTimestamps(t *testing.T) {
+	// Without a scanner, a yara build adds a scan-incomplete warning.
+	withYARAAvailable(t, false)
 	dir := kitDir(t)
 	path := writeKitFile(t, dir, "shell.php", []byte("<?php\n"))
 	writeKitFile(t, dir, "blob", []byte("companion"))
