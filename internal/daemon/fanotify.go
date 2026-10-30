@@ -2827,7 +2827,7 @@ func (fm *FileMonitor) runSignatureScanWithSize(data []byte, contentSize int64, 
 	}
 
 	if yaraScanner := yara.Active(); yaraScanner != nil {
-		matches, scannedSHA, err := scanRealtimeYARA(yaraScanner, path, data)
+		matches, err := yara.ScanBytesChecked(yaraScanner, path, data)
 		if err != nil {
 			fm.reportYARAScanError(path, err)
 			return matched
@@ -2840,7 +2840,7 @@ func (fm *FileMonitor) runSignatureScanWithSize(data []byte, contentSize int64, 
 				Details:       fmt.Sprintf("Matched %d YARA rule(s)", len(matches)) + signatures.ReferencedPayloadDetail(data),
 				FilePath:      path,
 				ProcessInfo:   procInfo,
-				ContentSHA256: scannedSHA,
+				ContentSHA256: fmt.Sprintf("%x", sha256.Sum256(data)),
 			})
 			return true
 		}

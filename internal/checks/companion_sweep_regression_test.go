@@ -129,33 +129,38 @@ func TestRefusedCleaningDoesNotQueueCompanionSweep(t *testing.T) {
 	}
 }
 
-type companionOversizeBackend struct {
+// companionSnapshotBackend rewrites the file while it scans, to prove the
+// sweep scans the bytes it selected. A path scan fails the test.
+type companionSnapshotBackend struct {
 	deepYARATestBackend
-	t    *testing.T
-	path string
-	read []byte
+	t       *testing.T
+	path    string
+	read    []byte
+	scanErr error
 }
 
-func (b *companionOversizeBackend) ScanBytesChecked([]byte) ([]yara.Match, error) {
-	if err := os.WriteFile(b.path, []byte("replacement!!!"), 0600); err != nil {
-		b.t.Fatal(err)
+func (b *companionSnapshotBackend) ScanBytesChecked(data []byte) ([]yara.Match, error) {
+	if b.path != "" {
+		if err := os.WriteFile(b.path, []byte("replacement!!!"), 0600); err != nil {
+			b.t.Fatal(err)
+		}
 	}
-	return nil, yaraipc.ErrPayloadTooLarge
+	b.read = append([]byte(nil), data...)
+	if b.scanErr != nil {
+		return nil, b.scanErr
+	}
+	return []yara.Match{{RuleName: "example", Meta: map[string]string{"severity": "critical"}}}, nil
 }
-func (b *companionOversizeBackend) ScanFileChecked(path string, _ int) (yara.FileScanResult, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return yara.FileScanResult{}, err
-	}
-	b.read = data
-	return yara.FileScanResult{Matches: []yara.Match{{RuleName: "example", Meta: map[string]string{"severity": "critical"}}}, ContentSHA256: fmt.Sprintf("%x", sha256.Sum256(data))}, nil
+func (b *companionSnapshotBackend) ScanFileChecked(path string, _ int) (yara.FileScanResult, error) {
+	b.t.Errorf("companion sweep reopened %s by path", path)
+	return yara.FileScanResult{}, errors.New("path scan")
 }
 
-func TestCompanionYARAFallbackScansTheSelectedSnapshot(t *testing.T) {
+func TestCompanionYARAScansTheSelectedSnapshot(t *testing.T) {
 	dir := kitDir(t)
 	path := writeKitFile(t, dir, "shell.php", []byte("<?php\n"))
 	payload := writeKitFile(t, dir, "payload.php", []byte("dormant malware"))
-	backend := &companionOversizeBackend{t: t, path: payload}
+	backend := &companionSnapshotBackend{t: t, path: payload}
 	useCompanionYARA(t, backend)
 	got := sweepCompanions(context.Background(), &config.Config{}, anchorAt(t, path, time.Now()))
 	if string(backend.read) != "dormant malware" {
@@ -164,6 +169,28 @@ func TestCompanionYARAFallbackScansTheSelectedSnapshot(t *testing.T) {
 	hits := findingsByCheck(got, "yara_match_scheduled")
 	if len(hits) != 1 || hits[0].ContentSHA256 != fmt.Sprintf("%x", sha256.Sum256([]byte("dormant malware"))) {
 		t.Fatalf("wrong snapshot finding: %+v", hits)
+	}
+}
+
+// A failed byte scan is noted on the file. It is never retried by path and
+// never leaves a copy of the file in the temp directory.
+func TestCompanionYARAByteScanErrorNotedWithoutPathRetry(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	dir := kitDir(t)
+	path := writeKitFile(t, dir, "shell.php", []byte("<?php\n"))
+	writeKitFile(t, dir, "payload.php", []byte("dormant malware"))
+	backend := &companionSnapshotBackend{t: t, scanErr: fmt.Errorf("worker: %w", yaraipc.ErrPayloadTooLarge)}
+	useCompanionYARA(t, backend)
+	got := sweepCompanions(context.Background(), &config.Config{}, anchorAt(t, path, time.Now()))
+	if hits := findingsByCheck(got, "yara_match_scheduled"); len(hits) != 0 {
+		t.Fatalf("failed scan produced matches: %+v", hits)
+	}
+	if !companionReportMentions(got, "YARA could not scan it") {
+		t.Fatalf("failed scan not noted: %+v", got)
+	}
+	if entries, err := os.ReadDir(tmp); err != nil || len(entries) != 0 {
+		t.Fatalf("scan left temp copies: %v, %v", entries, err)
 	}
 }
 
@@ -623,4 +650,13 @@ func TestCompanionHtaccessSiblingScanIsBounded(t *testing.T) {
 			}
 		})
 	}
+}
+
+func companionReportMentions(findings []alert.Finding, text string) bool {
+	for _, f := range findings {
+		if strings.Contains(f.Message, text) || strings.Contains(f.Details, text) {
+			return true
+		}
+	}
+	return false
 }

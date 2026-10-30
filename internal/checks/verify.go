@@ -349,18 +349,12 @@ func contentStillMatches(check, path string, info os.FileInfo) (bool, string, st
 		if err != nil {
 			return false, "", "", fmt.Errorf("cannot read file: %w", err)
 		}
-		// A payload too large for one IPC frame is retried by path, so a big
-		// file is re-checked rather than being stuck forever: the finding could
-		// otherwise never be confirmed or cleared.
-		hits, scannedSHA, err := yara.ScanContentOrPathChecked(y, path, snap.data, len(snap.data))
+		hits, err := yara.ScanBytesChecked(y, path, snap.data)
 		if err != nil {
 			// Fail closed: a scan that could not complete (worker down, a
 			// transport error) must not auto-clear a still-infected finding as
 			// a superseded false positive.
 			return false, "", "", fmt.Errorf("YARA scan error: %v", err)
-		}
-		if scannedSHA != "" {
-			snap.sha256 = scannedSHA
 		}
 		if len(hits) > 0 {
 			return true, fmt.Sprintf("%d YARA rule match(es)", len(hits)), snap.sha256, nil

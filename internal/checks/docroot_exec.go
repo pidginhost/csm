@@ -223,17 +223,11 @@ func inspectDocrootBinary(cfg *config.Config, file *os.File) (docrootBinaryVerdi
 			v.gap, final = "no YARA rules are loaded", false
 			break
 		}
-		// The worker has its own descriptor table. Keep our descriptor open
-		// through the synchronous retry so exit or rename cannot redirect it.
-		snapshotPath := fmt.Sprintf("/proc/%d/fd/%d", os.Getpid(), file.Fd())
-		// #nosec G115 -- maxBytes is FullScanMaxFileBytes, at most a few hundred MiB.
-		matches, scannedSHA, scanErr := yara.ScanContentOrPathChecked(backend, snapshotPath, data, int(maxBytes))
+		// No name: a program is scanned whatever it is called.
+		matches, scanErr := yara.ScanBytesChecked(backend, "", data)
 		if scanErr != nil {
 			v.gap, final = "YARA scan failed: "+scanErr.Error(), false
 			break
-		}
-		if scannedSHA != "" && scannedSHA != v.sha256 {
-			return docrootBinaryVerdict{}, false
 		}
 		v.matches = matches
 	}

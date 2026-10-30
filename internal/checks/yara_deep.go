@@ -682,22 +682,13 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 			if !yaraWants {
 				continue
 			}
-			yaraSHA256 := contentSHA256
-			// Within the deep-scan size budget but possibly too large for one
-			// inline IPC frame once JSON base64 expands it; the helper retries
-			// by path so a payload cannot be hidden behind the inline ceiling.
-			// JS analysis is unaffected: it already consumed the snapshot above.
-			// #nosec G115 -- maxBytes is FullScanMaxFileBytes (int) widened to int64; the round-trip back to int is lossless.
-			matches, scannedSHA, scanErr := yara.ScanContentOrPathChecked(backend, path, data, int(maxBytes))
-			if scannedSHA != "" {
-				yaraSHA256 = scannedSHA
-			}
+			matches, scanErr := yara.ScanBytesChecked(backend, path, data)
 			if scanErr != nil {
 				recordYARAScanGap(path, scanErr)
 				continue
 			}
 			for _, match := range matches {
-				findings = append(findings, scheduledYARAFinding(match, path, data, yaraSHA256))
+				findings = append(findings, scheduledYARAFinding(match, path, data, contentSHA256))
 			}
 		}
 	}

@@ -2,6 +2,7 @@ package checks
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -75,3 +76,41 @@ func (scanErrBackend) ScanBytesChecked([]byte) ([]yara.Match, error) {
 }
 func (scanErrBackend) Reload() error  { return nil }
 func (scanErrBackend) RuleCount() int { return 5 }
+
+// byteOnlyErrBackend fails byte scans with a transport error and fails the
+// test if anything retries by path.
+type byteOnlyErrBackend struct{ t *testing.T }
+
+func (b byteOnlyErrBackend) ScanFile(path string, _ int) []yara.Match {
+	b.t.Errorf("re-check reopened %s by path", path)
+	return nil
+}
+func (b byteOnlyErrBackend) ScanFileChecked(path string, _ int) (yara.FileScanResult, error) {
+	b.t.Errorf("re-check reopened %s by path", path)
+	return yara.FileScanResult{}, errors.New("path scan")
+}
+func (byteOnlyErrBackend) ScanBytes([]byte) []yara.Match { return nil }
+func (byteOnlyErrBackend) ScanBytesChecked([]byte) ([]yara.Match, error) {
+	return nil, fmt.Errorf("worker: %w", yaraipc.ErrPayloadTooLarge)
+}
+func (byteOnlyErrBackend) Reload() error  { return nil }
+func (byteOnlyErrBackend) RuleCount() int { return 5 }
+
+// A failed re-check scan fails closed and is never retried by path.
+func TestReverifyYARAByteScanErrorFailsClosedWithoutPathRetry(t *testing.T) {
+	prev := contentYARAScanner
+	contentYARAScanner = func() yara.Backend { return byteOnlyErrBackend{t: t} }
+	t.Cleanup(func() { contentYARAScanner = prev })
+	path := filepath.Join(t.TempDir(), "x.php")
+	if err := os.WriteFile(path, []byte("<?php echo 1;"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	matched, _, _, err := contentStillMatches("yara_match_scheduled", path, info)
+	if err == nil || matched {
+		t.Fatalf("failed scan = matched %v, err %v; want an error", matched, err)
+	}
+}

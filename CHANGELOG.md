@@ -12,12 +12,14 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 ### Security
 
 - The daemon log now escapes line breaks and control characters in values, so crafted file names cannot forge log lines.
+- YARA scans no longer reopen tenant files by path or write temporary copies of large files to disk.
 
 ### Fixed
 
 - WordPress core files that differ only in line endings are no longer reported on sites whose PHP prints deprecation notices.
-- The daemon log no longer reports a YARA scan failure for large files the scanner reads directly instead.
+- The daemon log no longer reports a YARA scan failure for large files.
 - The daemon log now says when a parse worker is retired or exits on its own, instead of only that it was killed.
+- A real-time YARA finding now fingerprints the content it matched, not whatever the file holds when the finding is stored.
 
 ## [4.8.1] - 2026-10-30
 

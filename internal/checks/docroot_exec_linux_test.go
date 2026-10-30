@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -70,10 +69,10 @@ func TestInspectDocrootExecFallbackDoesNotBlockOnFIFO(t *testing.T) {
 	}
 }
 
-func TestInspectDocrootExecPathRetryPinsOriginalProgram(t *testing.T) {
+func TestInspectDocrootExecScansOpenedProgramBytes(t *testing.T) {
 	f := newDocrootExecFixture(t)
 	path := f.write(t, "tool", testELFHeader+"payload-fetcher")
-	b := &docrootPathRetryBackend{beforeRetry: func() {
+	b := &docrootSnapshotBackend{t: t, beforeScan: func() {
 		if err := os.Rename(path, path+".old"); err != nil {
 			t.Fatal(err)
 		}
@@ -82,10 +81,7 @@ func TestInspectDocrootExecPathRetryPinsOriginalProgram(t *testing.T) {
 	activeYARABackend = func() yara.Backend { return b }
 	got := InspectDocrootExec(nil, 704, 1001, path, "bash", f.roots)
 	if got == nil || got.Severity != alert.Critical {
-		t.Fatalf("retry lost the opened malware program: %+v", got)
-	}
-	if !strings.HasPrefix(b.retryPath, "/proc/") || !strings.Contains(b.retryPath, "/fd/") || strings.HasPrefix(b.retryPath, "/proc/self/") {
-		t.Fatalf("retry path = %q, want a descriptor in the scanner parent's process", b.retryPath)
+		t.Fatalf("scan lost the opened malware program: %+v", got)
 	}
 }
 

@@ -53,12 +53,11 @@ read already in progress must still finish before shutdown completes. A rename-o
 arrival without a usable create or close-write event is also first examined
 by the rolling content scan; the watcher does not subscribe to rename events.
 
-When a realtime YARA snapshot exceeds the worker message limit, the worker
-scans a sealed memory-backed copy of the captured bytes. This preserves the
-realtime read window, including a bounded prefix of a larger file, without
-reopening the event path. Alert payload details and the retry fingerprint
-describe that snapshot; content outside the read window remains subject to
-the scheduled scan limits. A failed retry raises `yara_realtime_scan_error`.
+Realtime YARA scans hand the worker a sealed memory-backed copy of the
+captured bytes, whatever their size, so the event path is never reopened.
+Alert payload details and the finding fingerprint describe that snapshot;
+content outside the read window remains subject to the scheduled scan limits.
+A failed scan raises `yara_realtime_scan_error`.
 
 For WordPress atomic saves, the intended basename can select a core or plugin
 checksum entry. Only a match against the complete event-file content verifies
