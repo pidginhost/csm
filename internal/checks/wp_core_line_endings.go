@@ -9,7 +9,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 
@@ -36,7 +35,6 @@ var fetchWPCoreChecksums = wpcheck.FetchChecksums
 
 // logWPCoreLineEndings names why a flagged file stays reported; the finding
 // alone cannot say whether the file differs or the check could not run.
-// The text logger does not escape fields, so paths and errors must be quoted.
 var logWPCoreLineEndings = csmlog.Info
 
 var (
@@ -110,7 +108,7 @@ func (c *wpCoreReleaseChecksums) lineEndingOnly(wpPath string, out []byte) (file
 			continue
 		}
 		// Only the line number: PHP output can carry secrets.
-		logWPCoreLineEndings("WordPress core line-ending check stopped at unrecognized wp-cli output", "path", strconv.QuoteToASCII(wpPath), "line", i+1)
+		logWPCoreLineEndings("WordPress core line-ending check stopped at unrecognized wp-cli output", "path", wpPath, "line", i+1)
 		return files, false
 	}
 	if len(modified) == 0 {
@@ -119,7 +117,7 @@ func (c *wpCoreReleaseChecksums) lineEndingOnly(wpPath string, out []byte) (file
 
 	release, checksums, err := c.installChecksums(wpPath)
 	if err != nil {
-		logWPCoreLineEndings("WordPress core line-ending check has no release checksums", "path", strconv.QuoteToASCII(wpPath), "release", release, "err", strconv.QuoteToASCII(err.Error()))
+		logWPCoreLineEndings("WordPress core line-ending check has no release checksums", "path", wpPath, "release", release, "err", err)
 		return files, false
 	}
 	for _, file := range modified {
@@ -128,12 +126,12 @@ func (c *wpCoreReleaseChecksums) lineEndingOnly(wpPath string, out []byte) (file
 		if !listed {
 			// The parser also accepts mismatch text embedded in PHP output.
 			// Only release-listed names are safe to copy into the log.
-			logWPCoreLineEndings("WordPress core line-ending check cannot identify reported file", "path", strconv.QuoteToASCII(wpPath), "line", file.line, "release", release, "err", errWPCoreNotInRelease)
+			logWPCoreLineEndings("WordPress core line-ending check cannot identify reported file", "path", wpPath, "line", file.line, "release", release, "err", errWPCoreNotInRelease)
 			only = false
 			continue
 		}
 		if err := wpCoreFileDiffersOnlyInLineEndings(wpPath, rel, want); err != nil {
-			logWPCoreLineEndings("WordPress core file not proven to differ only in line endings", "path", strconv.QuoteToASCII(wpPath), "file", strconv.QuoteToASCII(rel), "release", release, "err", strconv.QuoteToASCII(err.Error()))
+			logWPCoreLineEndings("WordPress core file not proven to differ only in line endings", "path", wpPath, "file", rel, "release", release, "err", err)
 			only = false
 			continue
 		}

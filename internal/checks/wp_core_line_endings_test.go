@@ -1,11 +1,13 @@
 package checks
 
 import (
+	"bytes"
 	"context"
 	"crypto/md5" // #nosec G501 -- wordpress.org publishes MD5 digests for core files
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -14,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/pidginhost/csm/internal/alert"
+	csmlog "github.com/pidginhost/csm/internal/log"
 	"github.com/pidginhost/csm/internal/store"
 )
 
@@ -509,7 +512,7 @@ func TestWPCoreLineEndingsLogDoesNotCopyUnlistedOutput(t *testing.T) {
 			for i := 0; i < len(entry.args); i += 2 {
 				fields[entry.args[i].(string)] = entry.args[i+1]
 			}
-			if fields["line"] != 2 || fields["release"] != "6.5.2/en_US" || fields["path"] != strconv.QuoteToASCII(install) {
+			if fields["line"] != 2 || fields["release"] != "6.5.2/en_US" || fields["path"] != install {
 				t.Errorf("log does not identify the report line and release: %v", fields)
 			}
 			if _, ok := fields["file"]; ok {
@@ -585,12 +588,14 @@ func TestWPCoreLineEndingsLogQuotesControlCharacters(t *testing.T) {
 			if len(*logged) != 1 {
 				t.Fatalf("logged %d lines, want 1", len(*logged))
 			}
-			line := (*logged)[0].String()
+			var buf bytes.Buffer
+			slog.New(csmlog.NewTextHandler(&buf, slog.LevelInfo)).Info((*logged)[0].msg, (*logged)[0].args...)
+			line := strings.TrimSuffix(buf.String(), "\n")
 			if strings.ContainsAny(line, "\r\n\t\x1b") {
-				t.Error("log contains unescaped control characters")
+				t.Errorf("log contains unescaped control characters: %q", line)
 			}
-			if !strings.Contains(line, strconv.QuoteToASCII(install)) {
-				t.Error("log does not identify the quoted install path")
+			if !strings.Contains(line, "path="+strconv.Quote(install)) {
+				t.Errorf("log %q does not identify the escaped install path", line)
 			}
 		})
 	}

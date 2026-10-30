@@ -9,6 +9,10 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ## [Unreleased]
 
+### Security
+
+- The daemon log now escapes line breaks and control characters in values, so crafted file names cannot forge log lines.
+
 ### Fixed
 
 - WordPress core files that differ only in line endings are no longer reported on sites whose PHP prints deprecation notices.
