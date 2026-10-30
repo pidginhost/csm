@@ -342,11 +342,13 @@ func (s *Supervisor) callLocked(ctx context.Context, req Frame, fds []*os.File, 
 		case <-s.child.proc.Done():
 			// It ended on its own: a lifetime cap, a watchdog, the kernel.
 			// Not this request's fault, and nothing to count against it.
+			s.logf("%s %d exited", s.cfg.Name, s.child.proc.PID())
 			s.killLocked()
 		default:
 			// An idle worker may have reached its retirement deadline
 			// since the last reply. Replace it before sending new input.
 			if s.child.proc.Retire() {
+				s.logf("%s %d retired", s.cfg.Name, s.child.proc.PID())
 				s.killLocked()
 			}
 		}
