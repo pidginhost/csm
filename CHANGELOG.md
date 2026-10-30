@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md), [3.30 to 3.39](docs/changelog/3.30-3.39.md), [3.20 to 3.29](docs/changelog/3.20-3.29.md), [3.10 to 3.19](docs/changelog/3.10-3.19.md), [3.0 to 3.9](docs/changelog/3.0-3.9.md), [2.x](docs/changelog/2.x.md).
 
+## [Unreleased]
+
+### Security
+
+- The daemon log now escapes line breaks and control characters in values, so crafted file names cannot forge log lines.
+
+### Fixed
+
+- WordPress core files that differ only in line endings are no longer reported on sites whose PHP prints deprecation notices.
+- The daemon log no longer reports a YARA scan failure for large files the scanner reads directly instead.
+- The daemon log now says when a parse worker is retired or exits on its own, instead of only that it was killed.
+
 ## [4.8.1] - 2026-10-30
 
 ### Security

@@ -3,10 +3,13 @@ package yaraworker
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/pidginhost/csm/internal/yaraipc"
 )
 
 // A scanner that cannot load its rules fails identically for every buffer it
@@ -116,5 +119,40 @@ func TestScanErrLogCapacityCannotResetSuppression(t *testing.T) {
 	}
 	if got := s.scanErrSeen[known.Error()]; got == nil || got.suppressed != 500 {
 		t.Fatalf("capacity churn lost the recurring error's suppression: %+v", got)
+	}
+}
+
+// An inline payload over the frame limit never reaches the worker: the client
+// refuses it, and every caller then has the worker read the file itself. That
+// is not a scan failure, so it must not be logged as one -- a real failure
+// still is.
+func TestScanBytesOversizePayloadIsNotLoggedAsFailure(t *testing.T) {
+	var mu sync.Mutex
+	var lines []string
+	s := &Supervisor{}
+	s.cfg.Logf = func(format string, args ...any) {
+		mu.Lock()
+		defer mu.Unlock()
+		lines = append(lines, fmt.Sprintf(format, args...))
+	}
+	s.client = yaraipc.NewClient(filepath.Join(t.TempDir(), "absent.sock"), time.Second)
+	s.running.Store(true)
+
+	if _, err := s.ScanBytesChecked(make([]byte, yaraipc.MaxScanBytes+1)); !errors.Is(err, yaraipc.ErrPayloadTooLarge) {
+		t.Fatalf("oversize payload: err = %v, want ErrPayloadTooLarge", err)
+	}
+	mu.Lock()
+	if len(lines) != 0 {
+		t.Errorf("oversize payload was logged as a scan failure: %q", lines)
+	}
+	mu.Unlock()
+
+	if _, err := s.ScanBytesChecked([]byte("payload")); err == nil {
+		t.Fatal("scan against an absent worker socket succeeded")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(lines) != 1 {
+		t.Errorf("worker failure logged %d lines, want 1: %q", len(lines), lines)
 	}
 }

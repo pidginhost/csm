@@ -1196,7 +1196,7 @@ csmlog.Warn("log not found, will retry", "path", path, "retry_in", "60s")
 csmlog.Error("alert dispatch failed", "err", err, "channel", "email")
 ```
 
-Keys should be snake_case. Values should be machine-parseable (numbers, strings, booleans) -- avoid formatted strings when you can pass the raw value.
+Keys should be snake_case. Values should be machine-parseable (numbers, strings, booleans) -- avoid formatted strings when you can pass the raw value. Pass paths and errors as they are: the text handler quotes and escapes any value with whitespace, a quote or a control character, so a value quoted beforehand is escaped twice.
 
 ### Migrating legacy call sites
 

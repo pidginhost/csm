@@ -1,11 +1,13 @@
 package checks
 
 import (
+	"bytes"
 	"context"
 	"crypto/md5" // #nosec G501 -- wordpress.org publishes MD5 digests for core files
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -14,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/pidginhost/csm/internal/alert"
+	csmlog "github.com/pidginhost/csm/internal/log"
 	"github.com/pidginhost/csm/internal/store"
 )
 
@@ -218,6 +221,148 @@ func TestCheckWPCoreLineEndingsWithMissingCoreFileStayModified(t *testing.T) {
 	}
 	if state := wpCoreCoverageState(t, db, dirs[0]); state != "modified" {
 		t.Errorf("coverage state = %q, want modified", state)
+	}
+}
+
+// A site's bundled libraries raise PHP deprecation notices on newer PHP, and
+// PHP writes them into wp-cli's output when its own log file is read-only, as
+// it is inside the daemon's sandbox. They say nothing about the install, in
+// either of the formats PHP logs or displays them in.
+const (
+	wpCorePHPDeprecationLogged    = "PHP Deprecated:  Return type of Synthetic_Jar::offsetGet($key) should either be compatible with ArrayAccess::offsetGet(mixed $offset): mixed in /srv/synthetic/Jar.php on line 9"
+	wpCorePHPDeprecationDisplayed = "Deprecated: Return type of Synthetic_Jar::offsetGet($key) should either be compatible with ArrayAccess::offsetGet(mixed $offset): mixed in /srv/synthetic/Jar.php on line 9"
+)
+
+func TestCheckWPCoreLineEndingsIgnorePHPDeprecations(t *testing.T) {
+	for _, notice := range []string{wpCorePHPDeprecationLogged, wpCorePHPDeprecationDisplayed} {
+		t.Run(strings.SplitN(notice, ":", 2)[0], func(t *testing.T) {
+			output := notice + "\n" + notice + "\n" + strings.ReplaceAll(wpCoreLineEndingsReport("wp-includes/plugin.php"), "\n", "\n"+notice+"\n")
+			db, dirs := wpCoreLineEndingsFixture(t, 1, withCRLF(wpCoreLineEndingsOfficial), output)
+			stubWPCoreChecksums(t, map[string]string{"wp-includes/plugin.php": wpCoreMD5(wpCoreLineEndingsOfficial)}, nil)
+			logged := captureWPCoreLineEndingsLog(t)
+
+			if got := coreIntegrityFindings(CheckWPCore(withWPInstallCache(context.Background()), nil, nil)); len(got) != 0 {
+				t.Fatalf("a line-ending-only core file was reported behind PHP deprecation notices: %+v", got)
+			}
+			if state := wpCoreCoverageState(t, db, dirs[0]); state != "verified" {
+				t.Errorf("coverage state = %q, want verified", state)
+			}
+			if len(*logged) != 0 {
+				t.Errorf("deprecation notices were logged as unrecognized output: %v", *logged)
+			}
+		})
+	}
+}
+
+func TestVerifyWPCoreResolvesLineEndingsBehindPHPDeprecations(t *testing.T) {
+	dir := wpCoreLineEndingsVerifyInstall(t)
+	output := wpCorePHPDeprecationLogged + "\n" + wpCoreLineEndingsReport("wp-includes/plugin.php")
+	wpCoreVerifyMock(t, []byte(output), refusedCommand(t))
+
+	res := VerifyFinding("wp_core_integrity", "WordPress core file modified for alice", "Path: "+dir)
+	if !res.Checked || !res.Resolved || !strings.Contains(res.Detail, "line endings") {
+		t.Fatalf("line-ending-only differences behind PHP deprecation notices must resolve, got %+v", res)
+	}
+}
+
+// Combined output can put a wp-cli claim after an unterminated PHP message.
+// A deprecation prefix must not hide that claim from either caller.
+func TestWPCoreDeprecationCannotHideUnverifiedOutput(t *testing.T) {
+	for _, tc := range []struct{ name, line string }{
+		{"bare_prefix", "PHP Deprecated:"},
+		{"missing_location", "Deprecated: incomplete diagnostic"},
+		{"joined_error", "PHP Deprecated: synthetic notice Error: Could not read installation files"},
+		{"wrapped_error", "PHP Deprecated: synthetic notice Error: Could not read installation files in /srv/synthetic/Jar.php on line 9"},
+		{"wrapped_warning", "Deprecated: synthetic notice Warning: unreadable directory in /srv/synthetic/Jar.php on line 9"},
+		{"empty_mismatch", "PHP Deprecated: synthetic notice Warning: File doesn't verify against checksum: "},
+		{"carriage_return", "PHP Deprecated: synthetic notice\rError: unreadable directory in /srv/synthetic/Jar.php on line 9"},
+		{"php_warning", "PHP Warning: opendir(): Permission denied in /srv/synthetic/Jar.php on line 9"},
+		{"warning", "Warning: opendir(): Permission denied in /srv/synthetic/Jar.php on line 9"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			output := tc.line + "\n" + wpCoreLineEndingsReport("wp-includes/plugin.php")
+			t.Run("scan", func(t *testing.T) {
+				db, dirs := wpCoreLineEndingsFixture(t, 1, withCRLF(wpCoreLineEndingsOfficial), output)
+				stubWPCoreChecksums(t, map[string]string{"wp-includes/plugin.php": wpCoreMD5(wpCoreLineEndingsOfficial)}, nil)
+				logged := captureWPCoreLineEndingsLog(t)
+
+				got := coreIntegrityFindings(CheckWPCore(withWPInstallCache(context.Background()), nil, nil))
+				if len(got) != 1 || got[0].FilePath != filepath.Join(dirs[0], "wp-includes/plugin.php") {
+					t.Errorf("ambiguous output suppressed the modified-file finding: %+v", got)
+				}
+				if state := wpCoreCoverageState(t, db, dirs[0]); state != "modified" {
+					t.Errorf("coverage state = %q, want modified", state)
+				}
+				if len(*logged) != 1 || !strings.Contains((*logged)[0].msg, "unrecognized") {
+					t.Errorf("ambiguous output was not diagnosed: %v", *logged)
+				}
+				for _, entry := range *logged {
+					if strings.Contains(entry.String(), tc.line) {
+						t.Error("log copied raw PHP output")
+					}
+				}
+			})
+			t.Run("recheck", func(t *testing.T) {
+				dir := wpCoreLineEndingsVerifyInstall(t)
+				wpCoreVerifyMock(t, []byte(output), refusedCommand(t))
+				res := VerifyFinding("wp_core_integrity", "WordPress core file modified for alice", "Path: "+dir)
+				if !res.Checked || res.Resolved {
+					t.Fatalf("ambiguous output must retain the modified-file finding: %+v", res)
+				}
+			})
+		})
+	}
+}
+
+func TestWPCLIPHPDeprecation(t *testing.T) {
+	for _, line := range []string{
+		wpCorePHPDeprecationLogged,
+		wpCorePHPDeprecationDisplayed,
+		"PHP Deprecated: Function synthetic() is deprecated in Unknown on line 0",
+		"PHP Deprecated: Return type of Synthetic_Error::offsetGet($key) should be compatible with ArrayAccess::offsetGet(mixed $offset): mixed in /srv/synthetic/Jar.php on line 9",
+	} {
+		if !wpCLIPHPDeprecation(line) {
+			t.Errorf("standalone deprecation was not recognized: %q", line)
+		}
+	}
+	for _, claim := range []string{
+		"Warning: File doesn't verify against checksum: wp-includes/load.php",
+		"Warning: wp-includes/load.php doesn't verify against checksum.",
+		"Warning: File doesn't verify against checksum:",
+		"File should not exist: wp-includes/extra.php",
+		"File should exist: wp-includes/load.php",
+		"File doesn't exist: wp-includes/load.php",
+		"Error: Could not read installation files",
+		"Success: WordPress installation verifies against checksums.",
+		"PHP Warning: opendir(): Permission denied",
+		"PHP Fatal error: initialization failed",
+		"PHP Parse error: syntax error",
+	} {
+		for _, prefix := range []string{"PHP Deprecated: ", "Deprecated: "} {
+			for _, text := range []string{claim, strings.ToLower(claim)} {
+				line := prefix + text + " in /srv/synthetic/Jar.php on line 9"
+				if wpCLIPHPDeprecation(line) {
+					t.Errorf("claim-bearing output was accepted as a deprecation: %q", line)
+				}
+			}
+		}
+	}
+	for _, line := range []string{
+		"PHP Warning: opendir(): Permission denied in /srv/synthetic/Jar.php on line 9",
+		"Warning: opendir(): Permission denied in /srv/synthetic/Jar.php on line 9",
+		"PHP Notice: synthetic diagnostic in /srv/synthetic/Jar.php on line 9",
+		"PHP Deprecated:",
+		"Deprecated: synthetic diagnostic",
+		"PHP Deprecated: synthetic diagnostic in /srv/synthetic/Jar.php on line nine",
+		"PHP Deprecated: synthetic diagnostic in /srv/synthetic/Jar.php on line 9 trailing output",
+		"PHP Deprecated: synthetic\rdiagnostic in /srv/synthetic/Jar.php on line 9",
+		"PHP Deprecated: synthetic\ndiagnostic in /srv/synthetic/Jar.php on line 9",
+		"PHP Deprecated: synthetic\x00diagnostic in /srv/synthetic/Jar.php on line 9",
+		"PHP Deprecated: synthetic\x1b[2Kdiagnostic in /srv/synthetic/Jar.php on line 9",
+	} {
+		if wpCLIPHPDeprecation(line) {
+			t.Errorf("non-deprecation or incomplete output was accepted: %q", line)
+		}
 	}
 }
 
@@ -468,7 +613,7 @@ func TestWPCoreLineEndingsLogDoesNotCopyUnlistedOutput(t *testing.T) {
 			for i := 0; i < len(entry.args); i += 2 {
 				fields[entry.args[i].(string)] = entry.args[i+1]
 			}
-			if fields["line"] != 2 || fields["release"] != "6.5.2/en_US" || fields["path"] != strconv.QuoteToASCII(install) {
+			if fields["line"] != 2 || fields["release"] != "6.5.2/en_US" || fields["path"] != install {
 				t.Errorf("log does not identify the report line and release: %v", fields)
 			}
 			if _, ok := fields["file"]; ok {
@@ -544,12 +689,14 @@ func TestWPCoreLineEndingsLogQuotesControlCharacters(t *testing.T) {
 			if len(*logged) != 1 {
 				t.Fatalf("logged %d lines, want 1", len(*logged))
 			}
-			line := (*logged)[0].String()
+			var buf bytes.Buffer
+			slog.New(csmlog.NewTextHandler(&buf, slog.LevelInfo)).Info((*logged)[0].msg, (*logged)[0].args...)
+			line := strings.TrimSuffix(buf.String(), "\n")
 			if strings.ContainsAny(line, "\r\n\t\x1b") {
-				t.Error("log contains unescaped control characters")
+				t.Errorf("log contains unescaped control characters: %q", line)
 			}
-			if !strings.Contains(line, strconv.QuoteToASCII(install)) {
-				t.Error("log does not identify the quoted install path")
+			if !strings.Contains(line, "path="+strconv.Quote(install)) {
+				t.Errorf("log %q does not identify the escaped install path", line)
 			}
 		})
 	}

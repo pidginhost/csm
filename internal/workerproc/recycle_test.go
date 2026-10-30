@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -92,6 +94,80 @@ func TestCallRecyclesWhenWorkerAsksToRetire(t *testing.T) {
 	}
 	if got := s.Stats().ConsecutiveFailures; got != 0 {
 		t.Fatalf("retirement counted as failure: %d", got)
+	}
+}
+
+// A worker can reach its retirement point between requests, such as a lifetime
+// cap passing while it sits idle. Replacing it before the next request is the
+// same planned retirement as after a reply, and the log must say so rather
+// than read as a bare kill.
+func TestCallLogsRetirementBeforeRequest(t *testing.T) {
+	inner := pairLauncher(t, sleepHandler)
+	var first *retiringProcess
+	launch := func(ctx context.Context) (Process, error) {
+		p, err := inner(ctx)
+		if err != nil || first != nil {
+			return p, err
+		}
+		first = &retiringProcess{Process: p}
+		return first, nil
+	}
+	var mu sync.Mutex
+	var lines []string
+	s := newRecycleSupervisor(t, Config{Launch: launch, Log: func(format string, args ...any) {
+		mu.Lock()
+		defer mu.Unlock()
+		lines = append(lines, fmt.Sprintf(format, args...))
+	}})
+	sleepCall(t, s, 0)
+	pid := first.PID()
+	first.ready.Store(true)
+	sleepCall(t, s, 0)
+
+	if got := s.Stats().Spawns; got != 2 {
+		t.Fatalf("spawns = %d, want the retiring worker replaced", got)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	want := []string{fmt.Sprintf("test worker %d retired", pid), fmt.Sprintf("test worker %d killed", pid)}
+	if !slices.Equal(lines, want) {
+		t.Fatalf("log = %q, want %q", lines, want)
+	}
+}
+
+// A worker that ended on its own between requests -- a lifetime cap, a
+// watchdog, the kernel -- is replaced before the next one, and the log says it
+// exited rather than reading as a kill the supervisor chose.
+func TestCallLogsWorkerThatExitedBeforeRequest(t *testing.T) {
+	inner := pairLauncher(t, sleepHandler)
+	var first Process
+	launch := func(ctx context.Context) (Process, error) {
+		p, err := inner(ctx)
+		if err == nil && first == nil {
+			first = p
+		}
+		return p, err
+	}
+	var mu sync.Mutex
+	var lines []string
+	s := newRecycleSupervisor(t, Config{Launch: launch, Log: func(format string, args ...any) {
+		mu.Lock()
+		defer mu.Unlock()
+		lines = append(lines, fmt.Sprintf(format, args...))
+	}})
+	sleepCall(t, s, 0)
+	pid := first.PID()
+	if err := first.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	<-first.Done()
+	sleepCall(t, s, 0)
+
+	mu.Lock()
+	defer mu.Unlock()
+	want := []string{fmt.Sprintf("test worker %d exited", pid), fmt.Sprintf("test worker %d killed", pid)}
+	if !slices.Equal(lines, want) {
+		t.Fatalf("log = %q, want %q", lines, want)
 	}
 }
 

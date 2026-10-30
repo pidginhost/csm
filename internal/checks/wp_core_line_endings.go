@@ -9,9 +9,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strconv"
+	"regexp"
 	"strings"
 	"sync"
+	"unicode"
 
 	csmlog "github.com/pidginhost/csm/internal/log"
 	"github.com/pidginhost/csm/internal/safepath"
@@ -36,7 +37,6 @@ var fetchWPCoreChecksums = wpcheck.FetchChecksums
 
 // logWPCoreLineEndings names why a flagged file stays reported; the finding
 // alone cannot say whether the file differs or the check could not run.
-// The text logger does not escape fields, so paths and errors must be quoted.
 var logWPCoreLineEndings = csmlog.Info
 
 var (
@@ -106,8 +106,11 @@ func (c *wpCoreReleaseChecksums) lineEndingOnly(wpPath string, out []byte) (file
 			only = false
 			continue
 		}
+		if wpCLIPHPDeprecation(trimmed) {
+			continue
+		}
 		// Only the line number: PHP output can carry secrets.
-		logWPCoreLineEndings("WordPress core line-ending check stopped at unrecognized wp-cli output", "path", strconv.QuoteToASCII(wpPath), "line", i+1)
+		logWPCoreLineEndings("WordPress core line-ending check stopped at unrecognized wp-cli output", "path", wpPath, "line", i+1)
 		return files, false
 	}
 	if len(modified) == 0 {
@@ -116,7 +119,7 @@ func (c *wpCoreReleaseChecksums) lineEndingOnly(wpPath string, out []byte) (file
 
 	release, checksums, err := c.installChecksums(wpPath)
 	if err != nil {
-		logWPCoreLineEndings("WordPress core line-ending check has no release checksums", "path", strconv.QuoteToASCII(wpPath), "release", release, "err", strconv.QuoteToASCII(err.Error()))
+		logWPCoreLineEndings("WordPress core line-ending check has no release checksums", "path", wpPath, "release", release, "err", err)
 		return files, false
 	}
 	for _, file := range modified {
@@ -125,18 +128,39 @@ func (c *wpCoreReleaseChecksums) lineEndingOnly(wpPath string, out []byte) (file
 		if !listed {
 			// The parser also accepts mismatch text embedded in PHP output.
 			// Only release-listed names are safe to copy into the log.
-			logWPCoreLineEndings("WordPress core line-ending check cannot identify reported file", "path", strconv.QuoteToASCII(wpPath), "line", file.line, "release", release, "err", errWPCoreNotInRelease)
+			logWPCoreLineEndings("WordPress core line-ending check cannot identify reported file", "path", wpPath, "line", file.line, "release", release, "err", errWPCoreNotInRelease)
 			only = false
 			continue
 		}
 		if err := wpCoreFileDiffersOnlyInLineEndings(wpPath, rel, want); err != nil {
-			logWPCoreLineEndings("WordPress core file not proven to differ only in line endings", "path", strconv.QuoteToASCII(wpPath), "file", strconv.QuoteToASCII(rel), "release", release, "err", strconv.QuoteToASCII(err.Error()))
+			logWPCoreLineEndings("WordPress core file not proven to differ only in line endings", "path", wpPath, "file", rel, "release", release, "err", err)
 			only = false
 			continue
 		}
 		files[rel] = true
 	}
 	return files, only && len(files) > 0
+}
+
+var (
+	wpCLIPHPDeprecationLine = regexp.MustCompile(`^(?:PHP )?Deprecated: .+ in .+ on line [0-9]+$`)
+	// PHP method names can contain Error:: or Warning::; the scope operator
+	// is not a diagnostic label, but a later single-colon label still is.
+	wpCLIPHPDeprecationClaim = regexp.MustCompile(`(?i)(?:warning|error|success):(?:[^:]|$)|doesn't verify against checksum|should (?:not )?exist|file doesn't exist`)
+)
+
+// wpCLIPHPDeprecation accepts only a standalone notice in PHP's logged or
+// displayed format. PHP writes them into wp-cli's output whenever its own log
+// file is read-only, as inside the daemon's sandbox, and a site's bundled
+// libraries raise them on newer PHP. Site output is untrusted and stdout and
+// stderr are combined: even a complete-looking notice must not swallow a
+// warning, error, or wp-cli claim. Warnings can mean files were skipped and
+// must stay visible.
+func wpCLIPHPDeprecation(line string) bool {
+	if !wpCLIPHPDeprecationLine.MatchString(line) || strings.IndexFunc(line, unicode.IsControl) >= 0 {
+		return false
+	}
+	return !wpCLIPHPDeprecationClaim.MatchString(line)
 }
 
 // installChecksums returns the official checksums of the release the install

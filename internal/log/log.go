@@ -27,10 +27,13 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 // global is the package-level logger, loaded lazily on first use.
@@ -111,6 +114,12 @@ type legacyTextHandler struct {
 	group string
 }
 
+// NewTextHandler returns the handler Init installs for the text format,
+// writing to w.
+func NewTextHandler(w io.Writer, level slog.Level) slog.Handler {
+	return newLegacyTextHandler(w, level)
+}
+
 func newLegacyTextHandler(w io.Writer, level slog.Level) *legacyTextHandler {
 	return &legacyTextHandler{
 		w:     w,
@@ -171,17 +180,19 @@ func writeAttr(sb *strings.Builder, a slog.Attr) {
 	sb.WriteString("  ")
 	sb.WriteString(a.Key)
 	sb.WriteByte('=')
-	v := a.Value.Resolve()
-	s := v.String()
-	// Quote values that contain whitespace so the key=value pairs stay
-	// parseable when operators grep the log.
-	if strings.ContainsAny(s, " \t") {
-		sb.WriteByte('"')
-		sb.WriteString(s)
-		sb.WriteByte('"')
+	s := a.Value.Resolve().String()
+	// Values can name tenant files. Quote and escape any value with
+	// whitespace, a quote or an unprintable byte, so the key=value pairs stay
+	// parseable and a value can neither end the line nor forge another.
+	if strings.ContainsFunc(s, needsQuoting) || !utf8.ValidString(s) {
+		sb.WriteString(strconv.Quote(s))
 	} else {
 		sb.WriteString(s)
 	}
+}
+
+func needsQuoting(r rune) bool {
+	return r == '"' || unicode.IsSpace(r) || !unicode.IsPrint(r)
 }
 
 func (h *legacyTextHandler) WithAttrs(attrs []slog.Attr) slog.Handler {

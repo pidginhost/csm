@@ -5,6 +5,7 @@ import (
 	"context"
 	"log/slog"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -72,6 +73,41 @@ func TestLegacyTextHandler_QuotesValuesWithSpaces(t *testing.T) {
 	out := buf.String()
 	if !strings.Contains(out, `message="two words"`) {
 		t.Errorf("values with spaces should be quoted, got %q", out)
+	}
+}
+
+// Field values can name tenant files. A line break, a quote or a terminal
+// escape in one must not end the line, forge another one or garble the
+// key=value pairs, and a value is escaped once, never wrapped twice.
+func TestLegacyTextHandler_EscapesUnsafeValues(t *testing.T) {
+	for _, value := range []string{
+		"/home/alice/x.php\n[2026-01-01 00:00:00] AUTO-UNBLOCK: 192.0.2.1 removed",
+		"differs beyond line endings",
+		`say "hi"`,
+		"tab\there",
+		"esc\x1b[31m",
+		"bad\xffutf8",
+		"line separator",
+	} {
+		var buf bytes.Buffer
+		slog.New(newLegacyTextHandler(&buf, slog.LevelInfo)).Info("event", "path", value)
+
+		out := buf.String()
+		if strings.Count(out, "\n") != 1 || !strings.HasSuffix(out, "\n") {
+			t.Errorf("value %q broke the line: %q", value, out)
+		}
+		if want := "  path=" + strconv.Quote(value) + "\n"; !strings.HasSuffix(out, want) {
+			t.Errorf("value %q: got %q, want suffix %q", value, out, want)
+		}
+	}
+}
+
+func TestLegacyTextHandler_LeavesPlainValuesBare(t *testing.T) {
+	var buf bytes.Buffer
+	slog.New(newLegacyTextHandler(&buf, slog.LevelInfo)).Info("event", "path", "/home/alice/ăîș.php", "line", 3)
+
+	if out := buf.String(); !strings.HasSuffix(out, "  path=/home/alice/ăîș.php  line=3\n") {
+		t.Errorf("plain values should stay bare, got %q", out)
 	}
 }
 

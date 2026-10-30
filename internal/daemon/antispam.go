@@ -6,7 +6,6 @@ import (
 	"errors"
 	"net/netip"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -448,8 +447,7 @@ type rspamdStatsSource struct {
 // A completed pass also publishes where rspamd's counters can be read.
 func (d *Daemon) reportAntispam(out reconcile.Outcome) {
 	if out.Err != nil && !errors.Is(out.Err, context.Canceled) {
-		// A worker error can carry the worker's diagnostics across lines.
-		csmlog.Warn("antispam reconcile did not complete", "err", strconv.Quote(out.Err.Error()))
+		csmlog.Warn("antispam reconcile did not complete", "err", out.Err)
 	}
 	if len(out.Checks) > 0 {
 		d.rspamdStats.Store(&rspamdStatsSource{ep: out.Stats, reason: out.StatsReason})
