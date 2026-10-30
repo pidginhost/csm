@@ -356,6 +356,11 @@ func contentStillMatches(check, path string, info os.FileInfo) (bool, string, st
 			// a superseded false positive.
 			return false, "", "", fmt.Errorf("YARA scan error: %v", err)
 		}
+		// YARA findings carry the scanned digest even above the size cap
+		// used by path-based fingerprinting. Compare the same complete bytes.
+		if snap.sha256 == "" {
+			snap.sha256 = fmt.Sprintf("%x", sha256.Sum256(snap.data))
+		}
 		if len(hits) > 0 {
 			return true, fmt.Sprintf("%d YARA rule match(es)", len(hits)), snap.sha256, nil
 		}
