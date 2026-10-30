@@ -15,7 +15,6 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/yara"
-	"github.com/pidginhost/csm/internal/yaraipc"
 )
 
 // docrootExecBackend reports a critical match for content carrying the
@@ -478,10 +477,8 @@ func TestInspectDocrootExecRejectsPermissionFallback(t *testing.T) {
 }
 
 // docrootSnapshotBackend runs beforeScan, then scans the bytes it is handed.
-// A path scan would follow a replaced name, so it fails the test.
 type docrootSnapshotBackend struct {
 	docrootExecBackend
-	t          *testing.T
 	beforeScan func()
 	scanErr    error
 }
@@ -496,18 +493,12 @@ func (b *docrootSnapshotBackend) ScanBytesChecked(data []byte) ([]yara.Match, er
 	return b.docrootExecBackend.ScanBytesChecked(data)
 }
 
-func (b *docrootSnapshotBackend) ScanFileChecked(path string, _ int) (yara.FileScanResult, error) {
-	b.t.Errorf("docroot exec reopened %s by path", path)
-	return yara.FileScanResult{}, errors.New("path scan")
-}
-
-// A failed byte scan leaves the program unscanned, with the reason. It is
-// never retried through a /proc descriptor path.
+// A failed byte scan leaves the program unscanned, with the reason.
 func TestInspectDocrootExecByteScanErrorIsGapWithoutPathRetry(t *testing.T) {
 	f := newDocrootExecFixture(t)
 	path := f.write(t, "tool", testELFHeader+"payload-fetcher")
 	f.procs[705] = path
-	b := &docrootSnapshotBackend{t: t, scanErr: fmt.Errorf("worker: %w", yaraipc.ErrPayloadTooLarge)}
+	b := &docrootSnapshotBackend{scanErr: errors.New("worker connection closed")}
 	activeYARABackend = func() yara.Backend { return b }
 	got := InspectDocrootExec(nil, 705, 1001, path, "lsphp", f.roots)
 	if got == nil || !strings.Contains(got.Details, "YARA scan failed") {

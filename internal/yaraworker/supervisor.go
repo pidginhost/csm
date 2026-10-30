@@ -228,36 +228,6 @@ func (s *Supervisor) Stop() error {
 	return nil
 }
 
-// ScanFile is the compatibility entrypoint. Callers that must distinguish a
-// worker failure from a clean path scan should use ScanFileChecked.
-func (s *Supervisor) ScanFile(path string, maxBytes int) []yara.Match {
-	result, _ := s.ScanFileChecked(path, maxBytes)
-	return result.Matches
-}
-
-// ScanFileChecked returns a non-nil error when the worker is down or the path
-// scan could not be delivered or completed.
-func (s *Supervisor) ScanFileChecked(path string, maxBytes int) (yara.FileScanResult, error) {
-	if !s.running.Load() {
-		return yara.FileScanResult{}, errors.New("yaraworker: supervisor not running")
-	}
-	s.mu.Lock()
-	client := s.client
-	s.mu.Unlock()
-	if client == nil {
-		return yara.FileScanResult{}, errors.New("yaraworker: no client")
-	}
-	res, err := client.ScanFile(yaraipc.ScanFileArgs{Path: path, MaxBytes: maxBytes})
-	if err != nil {
-		s.logf("scan_file: %v", err)
-		return yara.FileScanResult{}, fmt.Errorf("yaraworker scan_file: %w", err)
-	}
-	return yara.FileScanResult{
-		Matches:       toYaraMatches(res.Matches),
-		ContentSHA256: res.ContentSHA256,
-	}, nil
-}
-
 // ScanBytes is the daemon-facing entrypoint for already-in-memory data. A
 // worker error surfaces as zero matches; callers that must fail closed on an
 // unscannable payload should use ScanBytesChecked instead.

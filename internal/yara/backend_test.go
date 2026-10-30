@@ -3,21 +3,11 @@ package yara
 import "testing"
 
 type mockBackend struct {
-	files     []fileReq
 	bytesLen  int
 	reloaded  int
 	ruleCount int
 }
 
-type fileReq struct {
-	path string
-	max  int
-}
-
-func (m *mockBackend) ScanFile(path string, max int) []Match {
-	m.files = append(m.files, fileReq{path, max})
-	return []Match{{RuleName: "mock_file_match"}}
-}
 func (m *mockBackend) ScanBytes(data []byte) []Match {
 	m.bytesLen = len(data)
 	return []Match{{RuleName: "mock_bytes_match"}}
@@ -43,9 +33,9 @@ func TestActiveReturnsOverride(t *testing.T) {
 	if got := b.RuleCount(); got != 42 {
 		t.Errorf("RuleCount: got %d want 42", got)
 	}
-	b.ScanFile("/tmp/x", 1024)
-	if len(mb.files) != 1 || mb.files[0].path != "/tmp/x" {
-		t.Errorf("ScanFile did not reach override: %+v", mb.files)
+	b.ScanBytes([]byte("abc"))
+	if mb.bytesLen != 3 {
+		t.Errorf("ScanBytes did not reach override: %d bytes", mb.bytesLen)
 	}
 	if err := b.Reload(); err != nil {
 		t.Errorf("Reload: %v", err)

@@ -221,25 +221,6 @@ func isRetryableClosedConn(err error) bool {
 		errors.Is(err, syscall.ECONNABORTED)
 }
 
-// ScanFile is the daemon-side shim for OpScanFile.
-func (c *Client) ScanFile(args ScanFileArgs) (ScanResult, error) {
-	req, err := EncodePayload(OpScanFile, args)
-	if err != nil {
-		return ScanResult{}, err
-	}
-	resp, err := c.roundTrip(req)
-	if err != nil {
-		return ScanResult{}, err
-	}
-	var res ScanResult
-	if len(resp.Payload) > 0 {
-		if err := DecodePayload(resp, &res); err != nil {
-			return ScanResult{}, err
-		}
-	}
-	return res, nil
-}
-
 // ScanBytes scans data the daemon already holds. The bytes travel as a
 // sealed memfd over scan_fd, so no frame size limits them and the worker
 // cannot change what it was given. Callers must treat any error as "could

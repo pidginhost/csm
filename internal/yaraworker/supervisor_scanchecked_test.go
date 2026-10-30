@@ -49,9 +49,6 @@ func TestSupervisorScanAvailabilityAcrossRestart(t *testing.T) {
 		if _, scanErr := sup.ScanBytesChecked([]byte("payload")); scanErr == nil {
 			t.Error("byte scan succeeded during the crash callback")
 		}
-		if _, scanErr := sup.ScanFileChecked("/unused", 1024); scanErr == nil {
-			t.Error("file scan succeeded during the crash callback")
-		}
 		close(crashed)
 	}
 	if err = sup.Start(context.Background()); err != nil {
@@ -75,9 +72,6 @@ func TestSupervisorScanAvailabilityAcrossRestart(t *testing.T) {
 		_, err := sup.ScanBytesChecked([]byte("payload"))
 		return err == nil
 	})
-	if _, err := sup.ScanFileChecked("/unused", 1024); err != nil {
-		t.Fatalf("file scan after restart: %v", err)
-	}
 	if yara.CacheGeneration() == generation {
 		t.Fatal("worker restart retained cached verdicts")
 	}

@@ -20,7 +20,6 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/phptaint"
 	"github.com/pidginhost/csm/internal/yara"
-	"github.com/pidginhost/csm/internal/yaraipc"
 )
 
 func TestCompanionQueueDeduplicatesRepeatedDetections(t *testing.T) {
@@ -130,7 +129,7 @@ func TestRefusedCleaningDoesNotQueueCompanionSweep(t *testing.T) {
 }
 
 // companionSnapshotBackend rewrites the file while it scans, to prove the
-// sweep scans the bytes it selected. A path scan fails the test.
+// sweep scans the bytes it selected.
 type companionSnapshotBackend struct {
 	deepYARATestBackend
 	t       *testing.T
@@ -151,10 +150,6 @@ func (b *companionSnapshotBackend) ScanBytesChecked(data []byte) ([]yara.Match, 
 	}
 	return []yara.Match{{RuleName: "example", Meta: map[string]string{"severity": "critical"}}}, nil
 }
-func (b *companionSnapshotBackend) ScanFileChecked(path string, _ int) (yara.FileScanResult, error) {
-	b.t.Errorf("companion sweep reopened %s by path", path)
-	return yara.FileScanResult{}, errors.New("path scan")
-}
 
 func TestCompanionYARAScansTheSelectedSnapshot(t *testing.T) {
 	dir := kitDir(t)
@@ -172,15 +167,15 @@ func TestCompanionYARAScansTheSelectedSnapshot(t *testing.T) {
 	}
 }
 
-// A failed byte scan is noted on the file. It is never retried by path and
-// never leaves a copy of the file in the temp directory.
+// A failed byte scan is noted on the file. It never leaves a copy of the
+// file in the temp directory.
 func TestCompanionYARAByteScanErrorNotedWithoutPathRetry(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("TMPDIR", tmp)
 	dir := kitDir(t)
 	path := writeKitFile(t, dir, "shell.php", []byte("<?php\n"))
 	writeKitFile(t, dir, "payload.php", []byte("dormant malware"))
-	backend := &companionSnapshotBackend{t: t, scanErr: fmt.Errorf("worker: %w", yaraipc.ErrPayloadTooLarge)}
+	backend := &companionSnapshotBackend{t: t, scanErr: errors.New("worker connection closed")}
 	useCompanionYARA(t, backend)
 	got := sweepCompanions(context.Background(), &config.Config{}, anchorAt(t, path, time.Now()))
 	if hits := findingsByCheck(got, "yara_match_scheduled"); len(hits) != 0 {

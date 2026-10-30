@@ -16,15 +16,10 @@ import (
 // Handler is the worker-side interface. The production implementation
 // wraps internal/yara; tests supply fakes to drive the Serve loop.
 type Handler interface {
-	ScanFile(ScanFileArgs) (ScanResult, error)
-	ScanBytes(ScanBytesArgs) (ScanResult, error)
+	// ScanFD scans the first args.MaxBytes of a descriptor the daemon passed.
+	ScanFD(f *os.File, args ScanFDArgs) (ScanResult, error)
 	Reload(ReloadArgs) (ReloadResult, error)
 	Ping() (PingResult, error)
-}
-
-// FDHandler is implemented by handlers that scan a passed descriptor.
-type FDHandler interface {
-	ScanFD(f *os.File, args ScanFDArgs) (ScanResult, error)
 }
 
 // ServeOptions tunes Serve's behaviour. ErrorLog is called for per-frame
@@ -202,10 +197,6 @@ func readRequest(conn net.Conn) (Frame, []*os.File, error) {
 }
 
 func dispatchScanFD(req Frame, fds []*os.File, h Handler) Frame {
-	fh, ok := h.(FDHandler)
-	if !ok {
-		return Frame{Error: "yaraipc: scan_fd not supported"}
-	}
 	if len(fds) != 1 {
 		return Frame{Error: fmt.Sprintf("yaraipc: scan_fd takes one descriptor, got %d", len(fds))}
 	}
@@ -220,7 +211,7 @@ func dispatchScanFD(req Frame, fds []*os.File, h Handler) Frame {
 	if err = DecodePayload(req, &args); err != nil {
 		return Frame{Error: fmt.Sprintf("decode scan_fd: %v", err)}
 	}
-	res, err := fh.ScanFD(fds[0], args)
+	res, err := h.ScanFD(fds[0], args)
 	if res.Matches == nil {
 		res.Matches = []Match{}
 	}
@@ -229,20 +220,6 @@ func dispatchScanFD(req Frame, fds []*os.File, h Handler) Frame {
 
 func dispatch(req Frame, h Handler) Frame {
 	switch req.Op {
-	case OpScanFile:
-		var args ScanFileArgs
-		if err := DecodePayload(req, &args); err != nil {
-			return Frame{Error: fmt.Sprintf("decode scan_file: %v", err)}
-		}
-		res, err := h.ScanFile(args)
-		return responseFrame(res, err)
-	case OpScanBytes:
-		var args ScanBytesArgs
-		if err := DecodePayload(req, &args); err != nil {
-			return Frame{Error: fmt.Sprintf("decode scan_bytes: %v", err)}
-		}
-		res, err := h.ScanBytes(args)
-		return responseFrame(res, err)
 	case OpReload:
 		// Reload payload is optional; an empty frame means reuse the
 		// worker's startup RulesDir.

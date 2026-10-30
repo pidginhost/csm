@@ -56,7 +56,7 @@ func TestServerScanFDScansDescriptor(t *testing.T) {
 	h := &fdHandler{}
 	socket, shutdown := startServer(t, h)
 	defer shutdown()
-	payload := bytes.Repeat([]byte("x"), 20<<20) // past MaxScanBytes
+	payload := bytes.Repeat([]byte("x"), 20<<20) // past any frame cap
 	c := NewClient(socket, 10*time.Second)
 	defer func() { _ = c.Close() }()
 	res, err := c.ScanFD(tempPayload(t, payload), int64(len(payload)))
@@ -92,7 +92,7 @@ func TestServerRefusesDescriptorOnOtherOps(t *testing.T) {
 	socket, shutdown := startServer(t, &fdHandler{})
 	defer shutdown()
 	f := tempPayload(t, []byte("x"))
-	for _, op := range []string{OpPing, OpScanFile, OpScanBytes, OpReload, "unknown"} {
+	for _, op := range []string{OpPing, OpReload, "scan_file", "scan_bytes", "unknown"} {
 		resp := rawRequest(t, socket, Frame{Op: op}, []*os.File{f})
 		if resp.Error == "" || !strings.Contains(resp.Error, "descriptor") {
 			t.Fatalf("%s with a descriptor: %+v", op, resp)
@@ -142,20 +142,6 @@ func TestServerScanFDRequiresOneRegularFile(t *testing.T) {
 	if resp := rawRequest(t, socket, req, []*os.File{r}); resp.Error == "" {
 		t.Fatal("scan_fd with a pipe accepted")
 	}
-}
-
-func TestServerScanFDUnsupportedHandler(t *testing.T) {
-	socket, shutdown := startServer(t, &fakeHandler{})
-	defer shutdown()
-	req, err := EncodePayload(OpScanFD, ScanFDArgs{MaxBytes: 1})
-	if err != nil {
-		t.Fatal(err)
-	}
-	f := tempPayload(t, []byte("x"))
-	if resp := rawRequest(t, socket, req, []*os.File{f}); resp.Error == "" {
-		t.Fatal("handler without ScanFD answered scan_fd")
-	}
-	assertOnlySourceOpen(t, f)
 }
 
 // The worker scans what the other engines scan next: it must not be able to
@@ -390,6 +376,20 @@ func TestServerScanFDClosesAfterDispatch(t *testing.T) {
 		}
 		if _, err := h.file.Stat(); !errors.Is(err, os.ErrClosed) {
 			t.Fatalf("received descriptor still open after dispatch: %v", err)
+		}
+	}
+}
+
+// The worker reads only descriptors the daemon passes. A request naming a
+// path, or carrying bytes inline, is an unknown op, never a scan.
+func TestServeRejectsPathAndInlineScans(t *testing.T) {
+	h := &fdHandler{}
+	socket, shutdown := startServer(t, h)
+	defer shutdown()
+	for _, op := range []string{"scan_file", "scan_bytes"} {
+		resp := rawRequest(t, socket, Frame{Op: op, Payload: json.RawMessage(`{"path":"/etc/shadow","max_bytes":1,"data":"eA=="}`)}, nil)
+		if want := fmt.Sprintf("yaraipc: unknown op %q", op); resp.Error != want {
+			t.Errorf("%s answered %+v, want error %q", op, resp, want)
 		}
 	}
 }

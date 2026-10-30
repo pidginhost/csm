@@ -3,7 +3,6 @@ package checks
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,7 +15,6 @@ import (
 	"github.com/pidginhost/csm/internal/state"
 	"github.com/pidginhost/csm/internal/store"
 	"github.com/pidginhost/csm/internal/yara"
-	"github.com/pidginhost/csm/internal/yaraipc"
 )
 
 type deepYARATestBackend struct {
@@ -88,22 +86,11 @@ func TestCheckYARADeepReportsIncompleteScan(t *testing.T) {
 	}
 }
 
-// failingByteBackend fails every byte scan the way a lost worker does. Its
-// path scan must never run: the deep scan holds the bytes it read, and a
-// path names whatever the account put there since.
+// failingByteBackend fails every byte scan the way a lost worker does.
 type failingByteBackend struct {
-	scanFileCalls int32
-	onScan        func()
+	onScan func()
 }
 
-func (b *failingByteBackend) ScanFile(string, int) []yara.Match {
-	result, _ := b.ScanFileChecked("", 0)
-	return result.Matches
-}
-func (b *failingByteBackend) ScanFileChecked(string, int) (yara.FileScanResult, error) {
-	atomic.AddInt32(&b.scanFileCalls, 1)
-	return yara.FileScanResult{Matches: []yara.Match{{RuleName: "webshell_php_exec_ladder"}}, ContentSHA256: strings.Repeat("a", 64)}, nil
-}
 func (b *failingByteBackend) ScanBytes(data []byte) []yara.Match {
 	m, _ := b.ScanBytesChecked(data)
 	return m
@@ -112,12 +99,12 @@ func (b *failingByteBackend) ScanBytesChecked([]byte) ([]yara.Match, error) {
 	if b.onScan != nil {
 		b.onScan()
 	}
-	return nil, fmt.Errorf("worker: %w", yaraipc.ErrPayloadTooLarge)
+	return nil, errors.New("worker connection closed")
 }
 func (b *failingByteBackend) RuleCount() int { return 1 }
 func (b *failingByteBackend) Reload() error  { return nil }
 
-func TestCheckYARADeepReportsFailedByteScanWithoutPathRetry(t *testing.T) {
+func TestCheckYARADeepReportsFailedByteScan(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "large.php")
 	if err := os.WriteFile(path, []byte("padded payload"), 0o600); err != nil {
@@ -129,9 +116,6 @@ func TestCheckYARADeepReportsFailedByteScanWithoutPathRetry(t *testing.T) {
 
 	ctx, collector := withIncompleteCheckCollector(context.Background())
 	findings := CheckYARADeep(ctx, &config.Config{AccountRoots: []string{root}}, nil)
-	if n := atomic.LoadInt32(&backend.scanFileCalls); n != 0 {
-		t.Fatalf("failed byte scan was retried by path %d times", n)
-	}
 	if containsFindingCheck(findings, "yara_match_scheduled") {
 		t.Fatalf("failed scan produced a match: %+v", findings)
 	}

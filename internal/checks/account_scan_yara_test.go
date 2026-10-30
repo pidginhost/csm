@@ -3,7 +3,6 @@ package checks
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -16,7 +15,6 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/state"
 	"github.com/pidginhost/csm/internal/yara"
-	"github.com/pidginhost/csm/internal/yaraipc"
 )
 
 // countingYARABackend matches "dormant malware" like deepYARATestBackend and
@@ -282,11 +280,10 @@ func TestAccountYARAPassRejectsDirectoryReplacement(t *testing.T) {
 	}
 }
 
-// accountYARASnapshotBackend scans only the bytes it is handed. A path scan
-// would reopen a tenant path, so it fails the test.
+// accountYARASnapshotBackend records the bytes it is handed; a backend has
+// no way to reopen the tenant path.
 type accountYARASnapshotBackend struct {
 	countingYARABackend
-	t        *testing.T
 	onInline func()
 	data     []byte
 	scanErr  error
@@ -301,11 +298,6 @@ func (b *accountYARASnapshotBackend) ScanBytesChecked(data []byte) ([]yara.Match
 		return nil, b.scanErr
 	}
 	return b.deepYARATestBackend.ScanBytesChecked(data)
-}
-
-func (b *accountYARASnapshotBackend) ScanFileChecked(path string, _ int) (yara.FileScanResult, error) {
-	b.t.Errorf("account scan reopened %s by path", path)
-	return yara.FileScanResult{}, errors.New("path scan")
 }
 
 func assertNoStateCopies(t *testing.T, statePath string) {
@@ -325,7 +317,7 @@ func TestAccountYARAScansTheOriginalSnapshot(t *testing.T) {
 	withAccountHomeRoots(t, root)
 	path := writeYARADeepFile(t, root, "alice/public_html/a.dat", "dormant malware")
 	outside := writeYARADeepFile(t, base, "outside/b.dat", "outside account")
-	backend := &accountYARASnapshotBackend{t: t, onInline: func() {
+	backend := &accountYARASnapshotBackend{onInline: func() {
 		if err := os.Rename(path, path+"-moved"); err != nil {
 			t.Fatal(err)
 		}
@@ -346,13 +338,13 @@ func TestAccountYARAScansTheOriginalSnapshot(t *testing.T) {
 	assertNoStateCopies(t, cfg.StatePath)
 }
 
-// A failed byte scan is a coverage gap. It is never retried by path and never
-// leaves a copy of tenant bytes in daemon state.
+// A failed byte scan is a coverage gap. It never leaves a copy of tenant
+// bytes in daemon state.
 func TestAccountYARAByteScanErrorIsGapWithoutPathRetry(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "home")
 	withAccountHomeRoots(t, root)
 	path := writeYARADeepFile(t, root, "alice/public_html/a.dat", "dormant malware")
-	backend := &accountYARASnapshotBackend{t: t, scanErr: fmt.Errorf("worker: %w", yaraipc.ErrPayloadTooLarge)}
+	backend := &accountYARASnapshotBackend{scanErr: errors.New("worker connection closed")}
 	yara.SetActive(backend)
 	t.Cleanup(func() { yara.SetActive(nil) })
 	cfg := &config.Config{StatePath: t.TempDir()}

@@ -72,7 +72,7 @@ func TestInspectDocrootExecFallbackDoesNotBlockOnFIFO(t *testing.T) {
 func TestInspectDocrootExecScansOpenedProgramBytes(t *testing.T) {
 	f := newDocrootExecFixture(t)
 	path := f.write(t, "tool", testELFHeader+"payload-fetcher")
-	b := &docrootSnapshotBackend{t: t, beforeScan: func() {
+	b := &docrootSnapshotBackend{beforeScan: func() {
 		if err := os.Rename(path, path+".old"); err != nil {
 			t.Fatal(err)
 		}

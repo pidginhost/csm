@@ -3,8 +3,6 @@
 package yara
 
 import (
-	"os"
-	"path/filepath"
 	"testing"
 )
 
@@ -49,26 +47,6 @@ func TestArchiveContentIsNotScanned(t *testing.T) {
 		if len(hits) == 0 {
 			t.Errorf("%s magic in front of a .php webshell suppressed every rule", tt.name)
 		}
-	}
-}
-
-func TestArchiveFileIsNotScanned(t *testing.T) {
-	s := loadRepoYaraScanner(t)
-	archive := append([]byte{'P', 'K', 0x03, 0x04}, []byte("<?php system($_POST['cmd']);")...)
-	path := filepath.Join(t.TempDir(), "backup.zip")
-	if err := os.WriteFile(path, archive, 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	result, err := s.ScanFileChecked(path, len(archive)+1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(result.Matches) != 0 {
-		t.Fatalf("checked file scan matched compressed archive: %v", ruleNames(result.Matches))
-	}
-	if matches := s.ScanFile(path, len(archive)+1); len(matches) != 0 {
-		t.Fatalf("legacy file scan matched compressed archive: %v", ruleNames(matches))
 	}
 }
 
