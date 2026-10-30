@@ -197,7 +197,7 @@ func (s *Supervisor) Stop() error {
 		return nil
 	}
 	s.stopped = true
-	// Clear running so post-Stop ScanFile/ScanBytes/Reload short-circuit to
+	// Clear running so post-Stop scans and reloads short-circuit to
 	// the degraded path instead of redialing the now-closed worker socket on
 	// every call and logging dial errors.
 	s.running.Store(false)

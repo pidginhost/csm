@@ -10,10 +10,8 @@ import (
 	"github.com/pidginhost/csm/internal/yara"
 )
 
-// A YARA scan that could not complete (worker down, payload too large for one
-// IPC frame, transport error) must NOT let the re-check auto-resolve a
-// still-infected finding as a false positive. Before the fix the worker mapped
-// such errors to zero matches, so a 12.6-16 MiB infected file was auto-cleared.
+// A failed YARA scan must leave the finding open and the re-check inconclusive.
+// Returning no matches after a worker failure would clear unscanned content.
 func TestContentReverifyYARAScanErrorFailsClosed(t *testing.T) {
 	tmp := t.TempDir()
 	withQuarantineAllowedRoots(t, tmp)
@@ -39,14 +37,14 @@ func TestContentReverifyYARAScanErrorFailsClosed(t *testing.T) {
 	}
 }
 
-func TestContentReverifyOversizeArchiveResolvesWithoutYARAScan(t *testing.T) {
+func TestContentReverifyLargeArchiveResolvesWithoutYARAScan(t *testing.T) {
 	tmp := t.TempDir()
 	withQuarantineAllowedRoots(t, tmp)
 	orig := contentYARAScanner
 	contentYARAScanner = func() yara.Backend { return scanErrBackend{} }
 	t.Cleanup(func() { contentYARAScanner = orig })
 
-	archive := make([]byte, 13<<20) // larger than a worker frame
+	archive := make([]byte, 13<<20)
 	copy(archive, []byte{'P', 'K', 0x03, 0x04})
 	p := filepath.Join(tmp, "oversize.zip")
 	if err := os.WriteFile(p, archive, 0o600); err != nil {
@@ -54,23 +52,23 @@ func TestContentReverifyOversizeArchiveResolvesWithoutYARAScan(t *testing.T) {
 	}
 	hash := FileContentSHA256(p)
 	if hash == "" {
-		t.Fatal("oversize inline archive must remain within the reverify fingerprint limit")
+		t.Fatal("large archive must remain within the reverify fingerprint limit")
 	}
 
 	res := reverifyContentFinding(VerifyInput{Check: "yara_match_realtime", Path: p, ContentSHA256: hash})
 	if !res.Checked || !res.Resolved {
-		t.Fatalf("unchanged archive must resolve before the backend rejects its size, got %+v", res)
+		t.Fatalf("unchanged archive must resolve without calling the failing backend, got %+v", res)
 	}
 }
 
 // scanErrBackend looks healthy (RuleCount>0) but its checked scan always
-// fails, modelling an oversize payload or a crashed worker.
+// fails, modelling a crashed worker.
 type scanErrBackend struct{}
 
 func (scanErrBackend) ScanFile(string, int) []yara.Match { return nil }
 func (scanErrBackend) ScanBytes([]byte) []yara.Match     { return nil }
 func (scanErrBackend) ScanBytesChecked([]byte) ([]yara.Match, error) {
-	return nil, errors.New("frame length exceeds cap")
+	return nil, errors.New("worker connection closed")
 }
 func (scanErrBackend) Reload() error  { return nil }
 func (scanErrBackend) RuleCount() int { return 5 }

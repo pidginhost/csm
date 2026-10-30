@@ -24,7 +24,7 @@ type Backend interface {
 }
 
 // CheckedScanner is an optional capability on a Backend. ScanBytesChecked
-// reports a scan failure (worker down, payload too large for the IPC frame, a
+// reports a scan failure (worker down, descriptor creation failure, or a
 // transport error) distinctly from "no matches". Plain ScanBytes cannot: it
 // returns nil for both a clean file and a failed scan, so a caller with a
 // fail-closed policy -- email AV, finding re-check -- would auto-clear a file

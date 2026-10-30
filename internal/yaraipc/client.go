@@ -208,7 +208,7 @@ func decodeScanFDResult(resp Frame) (ScanResult, error) {
 	if err := dec.Decode(new(json.RawMessage)); err != io.EOF {
 		return ScanResult{}, errors.New("yaraipc: scan_fd reply has trailing data")
 	}
-	return ScanResult{Matches: res.Matches}, nil
+	return ScanResult(res), nil
 }
 
 func isRetryableClosedConn(err error) bool {

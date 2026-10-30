@@ -215,7 +215,7 @@ func dispatchScanFD(req Frame, fds []*os.File, h Handler) Frame {
 	if res.Matches == nil {
 		res.Matches = []Match{}
 	}
-	return responseFrame(scanFDResult{Matches: res.Matches}, err)
+	return responseFrame(scanFDResult(res), err)
 }
 
 func dispatch(req Frame, h Handler) Frame {

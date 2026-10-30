@@ -8,7 +8,7 @@ import (
 // A backend that implements CheckedScanner must have its scan error surfaced,
 // so callers can distinguish "scan failed" from "file is clean".
 func TestScanBytesCheckedSurfacesCheckedScannerError(t *testing.T) {
-	eb := &errCheckedBackend{err: errors.New("frame length exceeds cap")}
+	eb := &errCheckedBackend{err: errors.New("worker connection closed")}
 	_, err := ScanBytesChecked(eb, "x.php", []byte("x"))
 	if err == nil {
 		t.Fatal("ScanBytesChecked must surface a CheckedScanner error")

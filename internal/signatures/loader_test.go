@@ -263,10 +263,8 @@ func hasRule(matches []Match, ruleName string) bool {
 	return false
 }
 
-// ScanFile read hardening: a negative maxBytes (which can arrive unvalidated
-// off the IPC wire via ScanFileArgs.MaxBytes) must not panic on
-// make([]byte, maxBytes), and a full file within maxBytes must be scanned in
-// full rather than from a possibly-short first read.
+// Invalid read limits must not panic, and a file within the limit must be
+// scanned in full rather than from a possibly-short first read.
 func TestScanFileReadHardening(t *testing.T) {
 	dir := t.TempDir()
 	rulesYAML := `
