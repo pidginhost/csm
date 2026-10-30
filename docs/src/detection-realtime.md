@@ -55,8 +55,9 @@ by the rolling content scan; the watcher does not subscribe to rename events.
 
 Realtime YARA scans hand the worker a sealed memory-backed copy of the
 captured bytes, whatever their size, so the event path is never reopened.
-Alert payload details and the finding fingerprint describe that snapshot;
-content outside the read window remains subject to the scheduled scan limits.
+Alert payload details describe that snapshot, and so does the finding
+fingerprint when the snapshot is the whole file. Content outside the read
+window remains subject to the scheduled scan limits.
 A failed scan raises `yara_realtime_scan_error`.
 
 For WordPress atomic saves, the intended basename can select a core or plugin

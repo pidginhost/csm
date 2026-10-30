@@ -2840,13 +2840,24 @@ func (fm *FileMonitor) runSignatureScanWithSize(data []byte, contentSize int64, 
 				Details:       fmt.Sprintf("Matched %d YARA rule(s)", len(matches)) + signatures.ReferencedPayloadDetail(data),
 				FilePath:      path,
 				ProcessInfo:   procInfo,
-				ContentSHA256: fmt.Sprintf("%x", sha256.Sum256(data)),
+				ContentSHA256: windowDigest(data, contentSize, scanned),
 			})
 			return true
 		}
 	}
 
 	return matched
+}
+
+// windowDigest fingerprints the scanned bytes only when they are the whole
+// file. A window short of it would never match the whole-file digest Re-check
+// compares against, so it is left empty for the later whole-file stamp.
+func windowDigest(data []byte, contentSize int64, scanned os.FileInfo) string {
+	n := int64(len(data))
+	if n != contentSize || (scanned != nil && scanned.Size() != n) {
+		return ""
+	}
+	return fmt.Sprintf("%x", sha256.Sum256(data))
 }
 
 // stopping reports whether this monitor has been signalled to stop. A nil

@@ -101,8 +101,15 @@ func TestRealtimeYARAScansOversizeSnapshotFromBytes(t *testing.T) {
 			if len(got) != 1 || got[0].Check != "yara_match_realtime" {
 				t.Fatalf("alerts = %+v", got)
 			}
-			if got[0].ContentSHA256 != fmt.Sprintf("%x", sha256.Sum256(data)) {
-				t.Fatalf("finding fingerprint does not describe scanned content: %s", got[0].ContentSHA256)
+			// A window short of the file must not stand in for its digest:
+			// Re-check compares against the whole file and would call an
+			// unchanged file modified.
+			want := fmt.Sprintf("%x", sha256.Sum256(data))
+			if scenario == "prefix" {
+				want = ""
+			}
+			if got[0].ContentSHA256 != want {
+				t.Fatalf("finding fingerprint = %q, want %q", got[0].ContentSHA256, want)
 			}
 			if got[0].FilePath != path || got[0].ProcessInfo != "pid=123" {
 				t.Fatalf("lost event provenance: %+v", got[0])
@@ -178,5 +185,23 @@ func TestRealtimeYARAScansEventNotPath(t *testing.T) {
 	}
 	if !bytes.Equal(backend.scanned, data) {
 		t.Fatal("scan did not use the clean snapshot")
+	}
+}
+
+// Real-time PHP scans read a 32 KiB window. For a larger file the finding
+// leaves the digest to the later whole-file stamp, so Re-check can clear an
+// unchanged file once the rule no longer matches it.
+func TestRealtimeYARAPartialWindowLeavesDigestToStamp(t *testing.T) {
+	data := append([]byte("<?php include 'original.png'; ?>"), bytes.Repeat([]byte(" "), 32<<10)...)
+	yara.SetActive(&snapshotBackend{t: t})
+	t.Cleanup(func() { yara.SetActive(nil) })
+	alerts := make(chan alert.Finding, 8)
+	fm := &FileMonitor{cfg: &config.Config{}, alertCh: alerts}
+	if !fm.runSignatureScanWithSize(data, int64(len(data))+8<<10, filepath.Join(t.TempDir(), "big.php"), ".php", "", nil) {
+		t.Fatal("window was not matched")
+	}
+	got := drainYARAAlerts(alerts)
+	if len(got) != 1 || got[0].ContentSHA256 != "" {
+		t.Fatalf("partial window fingerprinted: %+v", got)
 	}
 }
