@@ -106,6 +106,9 @@ func (c *wpCoreReleaseChecksums) lineEndingOnly(wpPath string, out []byte) (file
 			only = false
 			continue
 		}
+		if wpCLIPHPDeprecation(trimmed) {
+			continue
+		}
 		// Only the line number: PHP output can carry secrets.
 		logWPCoreLineEndings("WordPress core line-ending check stopped at unrecognized wp-cli output", "path", strconv.QuoteToASCII(wpPath), "line", i+1)
 		return files, false
@@ -137,6 +140,16 @@ func (c *wpCoreReleaseChecksums) lineEndingOnly(wpPath string, out []byte) (file
 		files[rel] = true
 	}
 	return files, only && len(files) > 0
+}
+
+// wpCLIPHPDeprecation reports a PHP deprecation notice, in the format PHP logs
+// it or the one it displays. A site's bundled libraries raise them on newer
+// PHP, and PHP writes them into wp-cli's output whenever its own log file is
+// read-only, as inside the daemon's sandbox. They describe code that still
+// runs. Warnings stay unrecognized: one can mean wp-cli could not read files
+// it was checking.
+func wpCLIPHPDeprecation(line string) bool {
+	return strings.HasPrefix(line, "PHP Deprecated:") || strings.HasPrefix(line, "Deprecated:")
 }
 
 // installChecksums returns the official checksums of the release the install

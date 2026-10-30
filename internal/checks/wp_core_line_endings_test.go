@@ -221,6 +221,47 @@ func TestCheckWPCoreLineEndingsWithMissingCoreFileStayModified(t *testing.T) {
 	}
 }
 
+// A site's bundled libraries raise PHP deprecation notices on newer PHP, and
+// PHP writes them into wp-cli's output when its own log file is read-only, as
+// it is inside the daemon's sandbox. They say nothing about the install, in
+// either of the formats PHP logs or displays them in.
+const (
+	wpCorePHPDeprecationLogged    = "PHP Deprecated:  Return type of Synthetic_Jar::offsetGet($key) should either be compatible with ArrayAccess::offsetGet(mixed $offset): mixed in /srv/synthetic/Jar.php on line 9"
+	wpCorePHPDeprecationDisplayed = "Deprecated: Return type of Synthetic_Jar::offsetGet($key) should either be compatible with ArrayAccess::offsetGet(mixed $offset): mixed in /srv/synthetic/Jar.php on line 9"
+)
+
+func TestCheckWPCoreLineEndingsIgnorePHPDeprecations(t *testing.T) {
+	for _, notice := range []string{wpCorePHPDeprecationLogged, wpCorePHPDeprecationDisplayed} {
+		t.Run(strings.SplitN(notice, ":", 2)[0], func(t *testing.T) {
+			output := notice + "\n" + notice + "\n" + wpCoreLineEndingsReport("wp-includes/plugin.php")
+			db, dirs := wpCoreLineEndingsFixture(t, 1, withCRLF(wpCoreLineEndingsOfficial), output)
+			stubWPCoreChecksums(t, map[string]string{"wp-includes/plugin.php": wpCoreMD5(wpCoreLineEndingsOfficial)}, nil)
+			logged := captureWPCoreLineEndingsLog(t)
+
+			if got := coreIntegrityFindings(CheckWPCore(withWPInstallCache(context.Background()), nil, nil)); len(got) != 0 {
+				t.Fatalf("a line-ending-only core file was reported behind PHP deprecation notices: %+v", got)
+			}
+			if state := wpCoreCoverageState(t, db, dirs[0]); state != "verified" {
+				t.Errorf("coverage state = %q, want verified", state)
+			}
+			if len(*logged) != 0 {
+				t.Errorf("deprecation notices were logged as unrecognized output: %v", *logged)
+			}
+		})
+	}
+}
+
+func TestVerifyWPCoreResolvesLineEndingsBehindPHPDeprecations(t *testing.T) {
+	dir := wpCoreLineEndingsVerifyInstall(t)
+	output := wpCorePHPDeprecationLogged + "\n" + wpCoreLineEndingsReport("wp-includes/plugin.php")
+	wpCoreVerifyMock(t, []byte(output), refusedCommand(t))
+
+	res := VerifyFinding("wp_core_integrity", "WordPress core file modified for alice", "Path: "+dir)
+	if !res.Checked || !res.Resolved || !strings.Contains(res.Detail, "line endings") {
+		t.Fatalf("line-ending-only differences behind PHP deprecation notices must resolve, got %+v", res)
+	}
+}
+
 // Installs on one release share its checksums, and a release that cannot be
 // fetched is not asked again for every flagged file.
 func TestCheckWPCoreFetchesEachReleaseOnce(t *testing.T) {
