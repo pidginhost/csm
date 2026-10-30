@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md), [3.30 to 3.39](docs/changelog/3.30-3.39.md), [3.20 to 3.29](docs/changelog/3.20-3.29.md), [3.10 to 3.19](docs/changelog/3.10-3.19.md), [3.0 to 3.9](docs/changelog/3.0-3.9.md), [2.x](docs/changelog/2.x.md).
 
-## [Unreleased]
+## [4.8.1] - 2026-10-30
 
 ### Security
 
@@ -15,15 +15,14 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Changed
 
-- The daemon log now says why a modified WordPress core file was not cleared as a line-ending-only copy.
-- Go dependencies are updated to their current releases.
 - The malware scanning engine moves to YARA-X 1.22.0, which scans faster and uses less memory; shipped rules compile and match as before.
+- Go dependencies are updated to their current releases.
+- The daemon log now says why a modified WordPress core file was not cleared as a line-ending-only copy.
 
 ### Fixed
 
 - An address added to infra_ips no longer stays ranked as an attacker after CSM restarts.
-- Unblock & Clear now works on private addresses, and whitelisting one now says to add it to infra_ips.
-- Unblock & Clear no longer leaves duplicate attacker entries for alternate spellings of the same address.
+- Unblock & Clear now works on private addresses and removes every spelling of the address; whitelisting a private address says to add it to infra_ips.
 
 ## [4.8.0] - 2026-10-26
 
@@ -687,6 +686,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 - **Breaking:** `POST /api/v1/rules/modsec-escalation`, which replaced the whole escalation exclusion list without checking rule IDs, is removed. Use `POST /api/v1/modsec/rules/escalation` to change one rule at a time.
 
+[4.8.1]: https://github.com/pidginhost/csm/compare/v4.8.0...v4.8.1
 [4.8.0]: https://github.com/pidginhost/csm/compare/v4.7.0...v4.8.0
 [4.7.0]: https://github.com/pidginhost/csm/compare/v4.6.0...v4.7.0
 [4.6.0]: https://github.com/pidginhost/csm/compare/v4.5.0...v4.6.0
