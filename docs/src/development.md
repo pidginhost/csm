@@ -284,11 +284,9 @@ requires a canonical value that reproduces the key and all recorded fields.
 Their partition tally rejects negative counts, underflow and overflow;
 failed additions return the original tally. Combining a tally with set
 occupancy also returns an error and the original occupancy if either
-partition's total is invalid or overflows. Callers must handle that error
-before using the occupancy. These primitives are not yet wired into the
-ledger. Store callers still use preview notices: a full-set deferral raises
-a capacity notice only for Critical work. The live notice classifier raises
-it for any valid tier, without changing other deferral reasons.
+partition's total is invalid or overflows. A full-set deferral raises the
+capacity notice for any assessed tier once the ledger runs live, and for
+Critical work only before that.
 
 Policy lookups can overlap across registration, minting and validation, so
 they must be immutable or safe for concurrent use. Callers must serialize
