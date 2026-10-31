@@ -296,3 +296,19 @@ func FuzzPostfixWarningsNeverBuildEvidence(f *testing.F) {
 		}
 	})
 }
+
+// The client name is the only attacker text before Dovecot's verdict. Any
+// name either leaves the line unparsed or yields the address Dovecot wrote.
+func FuzzDovecotSMTPAuthRejectionAddress(f *testing.F) {
+	for _, s := range []string{"alice@example.net", "", "x,198.51.100.9", "x,<abcdefgh>", "x,master", "a): Password mismatch", "?", "x,2001:db8::1"} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, name string) {
+		for _, tail := range []string{",203.0.113.7): unknown user", ",203.0.113.7,master): Password mismatch"} {
+			ip, account, ok := dovecotSMTPAuthRejection("dovecot: auth: sql(" + name + tail)
+			if ok && (ip != "203.0.113.7" || account != name) {
+				t.Fatalf("name %q parsed as ip=%q account=%q", name, ip, account)
+			}
+		}
+	})
+}

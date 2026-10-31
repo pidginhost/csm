@@ -130,6 +130,10 @@ type Daemon struct {
 	smtpProbeTracker *smtpProbeTracker
 	mailAuthTracker  *mailAuthTracker
 	authBackend      *authBackendHealth
+	// smtpAuthFromExim is set before the log readers start when the Exim
+	// mainlog feeds smtpAuthTracker; Dovecot verdicts for MTA logins are
+	// then skipped so one attempt is not counted twice.
+	smtpAuthFromExim bool
 	startTime        time.Time
 
 	// mailStats counts mail decisions for the Email Security page on the
@@ -2120,6 +2124,7 @@ func (d *Daemon) startLogWatchers() {
 	hostInfo := platform.Detect()
 
 	watchExim := shouldWatchEximMainlog(hostInfo, os.Stat)
+	d.smtpAuthFromExim = watchExim
 	logFiles := d.fixedLogSpecs(hostInfo, d.handleEximLine, watchExim)
 	if hostInfo.IsCPanel() {
 		d.wg.Add(1)
@@ -2467,10 +2472,20 @@ func (d *Daemon) handleEximLine(line string, obs alert.Observation, cfg *config.
 // with mailAuthTracker augmentation for IMAP/POP3/ManageSieve brute-force,
 // subnet spray, account spray, and compromise detection. obs names the line.
 // Postfix SASL warnings omit the auth status and can reuse a stale reason
-// during backend outages, so they cannot supply brute-force evidence.
+// during backend outages, so SMTP AUTH evidence comes from Dovecot's verdict
+// for the same attempt instead.
 func (d *Daemon) handleMailLine(line string, obs alert.Observation, cfg *config.Config) []alert.Finding {
 	d.recordMailStatsMail(line, obs.ObservedAt)
 	findings := parseDovecotLogLine(line, cfg)
+	// A sessionless verdict is fully handled here, so the client-chosen name
+	// in it never reaches the backend-failure match below.
+	if ip, account, ok := dovecotSMTPAuthRejection(line); ok {
+		if d.smtpAuthFromExim || d.smtpAuthTracker == nil ||
+			isInfraIPDaemon(ip, cfg.InfraIPs) || isPrivateOrLoopback(ip) {
+			return findings
+		}
+		return append(findings, d.smtpAuthTracker.RecordObserved(ip, account, obs)...)
+	}
 	authLine := isMailAuthLine(line)
 	// Auth-backend failures (dovecot cannot reach the credential backend)
 	// arrive on their own lines, not login lines. Feed them to the degraded

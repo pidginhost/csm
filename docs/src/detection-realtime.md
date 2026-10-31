@@ -230,7 +230,7 @@ Tails auth, access, and mail logs in real-time. The exact file paths are chosen 
 | Auth log | All | SSH logins and failures. `/var/log/auth.log` on Debian/Ubuntu, `/var/log/secure` on RHEL family and cPanel |
 | Exim mainlog (`/var/log/exim_mainlog`) | cPanel; non-cPanel when the file exists | Mail anomalies, queue issues, SMTP brute force, probe abuse, and cloud relay abuse |
 | Apache/LiteSpeed/Nginx access log | All | WordPress brute force (wp-login.php, xmlrpc.php), real-time. Paths: `/var/log/apache2/access.log` (Debian), `/var/log/httpd/access_log` (RHEL), `/var/log/nginx/access.log` (Nginx), `/usr/local/apache/logs/access_log`, then `/var/log/apache2/access_log` and `/etc/apache2/logs/access_log` (cPanel, also written by LiteSpeed). Automatic candidates exclude the cPanel access log |
-| Mail log (platform file or journal) | All hosts with Postfix/Dovecot logs | IMAP/POP3/ManageSieve account compromise and mail brute-force |
+| Mail log (platform file or journal) | All hosts with Postfix/Dovecot logs | IMAP/POP3/ManageSieve account compromise and mail brute-force; SMTP brute force on hosts without an Exim mainlog |
 | FTP log (`/var/log/messages`) | cPanel only | FTP logins and failures |
 | ModSecurity error log | All (if ModSec installed) | WAF blocks and attacks. Auto-discovered from the detected web server |
 | Nginx error log (`/var/log/nginx/error.log`) | Nginx hosts | General web errors, ModSecurity denies |
@@ -361,11 +361,14 @@ Journal input requires a build with journal support.
 
 Detects credential stuffing, password spray, and raw SMTP probe storms. Runs as part of the Exim mainlog watcher on cPanel hosts and on non-cPanel Exim hosts where `/var/log/exim_mainlog` exists.
 
-Postfix SMTP AUTH warnings are excluded from brute-force evidence. Their text does not distinguish rejected credentials from temporary backend failures. A silent Dovecot handshake failure can reuse an earlier reason and account name, even when the reason says `authentication failure`. A reachable authentication socket does not remove this ambiguity.
+On hosts without that log, such as Postfix servers that check SMTP logins against Dovecot, the tracker reads Dovecot's verdict for each SMTP login from the mail log file. Postfix's own SASL warnings are not used: their text does not distinguish a rejected password from a Dovecot or database outage. Dovecot writes a `Password mismatch` or `unknown user` line only after the password database answered, and only with verbose auth logging on:
 
-CSM therefore does not detect or block Postfix SMTP password guessing from these warnings. This applies to file input as well as journal input. Supporting Postfix SMTP AUTH requires a trustworthy authentication result that distinguishes credential rejection from backend failure; CSM does not currently consume such a source. Successful Postfix logins are not recorded by this tracker either.
+```
+# /etc/dovecot/conf.d/10-logging.conf
+auth_verbose = yes
+```
 
-Exim SMTP detection and Dovecot IMAP, POP3 and ManageSieve detection continue to work. `smtp_probe_abuse` reads Exim lines only.
+Leave `auth_verbose_passwords` at `no`; lines that carry a logged password are ignored. Verdicts for IMAP, POP3 and ManageSieve logins carry a session id and are counted by the mail tracker below instead. Successful Postfix logins are not recorded, so a later success does not clear the slow brute-force signal for that address. `smtp_probe_abuse` reads Exim lines only.
 
 Four attack patterns:
 
