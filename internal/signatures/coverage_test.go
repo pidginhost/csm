@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/pidginhost/csm/internal/yara"
 )
 
 // --- helpers -----------------------------------------------------------
@@ -538,7 +540,7 @@ func TestForgeUpdateHappyPath(t *testing.T) {
 	})
 
 	rulesDir := t.TempDir()
-	newVersion, ruleCount, err := ForgeUpdateFromURL(rulesDir, "core", "v2026.01.01", pubHex, "https://mirror.example/yara-forge-rules-{tier}.zip", nil, nil)
+	newVersion, ruleCount, err := ForgeUpdateFromURL(rulesDir, "core", "v2026.01.01", pubHex, "https://mirror.example/yara-forge-rules-{tier}.zip", nil, yara.TestCompile)
 	if err != nil {
 		t.Fatalf("ForgeUpdate: %v", err)
 	}
@@ -580,7 +582,7 @@ func TestForgeUpdateSameVersionNoOp(t *testing.T) {
 	swapDefaultTransport(t, &forgeRoundTripper{
 		releases: []byte(`{"tag_name":"v2026.04.11"}`),
 	})
-	version, count, err := ForgeUpdateFromURL(t.TempDir(), "core", "v2026.04.11", pubHex, "https://mirror.example/yara-forge-rules-{tier}.zip", nil, nil)
+	version, count, err := ForgeUpdateFromURL(t.TempDir(), "core", "v2026.04.11", pubHex, "https://mirror.example/yara-forge-rules-{tier}.zip", nil, yara.TestCompile)
 	if err != nil {
 		t.Fatalf("ForgeUpdate: %v", err)
 	}
@@ -598,7 +600,7 @@ func TestForgeUpdateReleasesAPIError(t *testing.T) {
 		releases: nil,
 		status:   http.StatusInternalServerError,
 	})
-	_, _, err := ForgeUpdateFromURL(t.TempDir(), "core", "", pubHex, "https://mirror.example/yara-forge-rules-{tier}.zip", nil, nil)
+	_, _, err := ForgeUpdateFromURL(t.TempDir(), "core", "", pubHex, "https://mirror.example/yara-forge-rules-{tier}.zip", nil, yara.TestCompile)
 	if err == nil {
 		t.Fatal("API error should propagate")
 	}
@@ -615,7 +617,7 @@ func TestForgeUpdateBadSignature(t *testing.T) {
 		zipBody:  zipData,
 		sigBody:  badSig,
 	})
-	_, _, err := ForgeUpdateFromURL(t.TempDir(), "core", "", pubHex, "https://mirror.example/yara-forge-rules-{tier}.zip", nil, nil)
+	_, _, err := ForgeUpdateFromURL(t.TempDir(), "core", "", pubHex, "https://mirror.example/yara-forge-rules-{tier}.zip", nil, yara.TestCompile)
 	if err == nil || !strings.Contains(err.Error(), "signature invalid") {
 		t.Fatalf("err = %v, want signature invalid", err)
 	}
@@ -641,7 +643,7 @@ rule drop_me { condition: false }
 	})
 
 	rulesDir := t.TempDir()
-	_, ruleCount, err := ForgeUpdateFromURL(rulesDir, "core", "v2026.01.01", pubHex, "https://mirror.example/{version}/yara-forge-rules-{tier}.zip", []string{"drop_me"}, nil)
+	_, ruleCount, err := ForgeUpdateFromURL(rulesDir, "core", "v2026.01.01", pubHex, "https://mirror.example/{version}/yara-forge-rules-{tier}.zip", []string{"drop_me"}, yara.TestCompile)
 	if err != nil {
 		t.Fatalf("ForgeUpdate: %v", err)
 	}

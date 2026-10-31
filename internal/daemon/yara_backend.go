@@ -55,6 +55,11 @@ const (
 	yaraCompileTimeout = 2 * time.Minute
 )
 
+// yaraBootCompileTimeout bounds the first compile, which runs before the
+// daemon reports ready to systemd. A compile still running then is handed to
+// the background retry, which has the full compile timeout.
+var yaraBootCompileTimeout = 45 * time.Second
+
 // yaraWorkerLauncher is a seam for tests that must not start units.
 var yaraWorkerLauncher = workerproc.UnitLauncher
 
@@ -134,7 +139,9 @@ func (d *Daemon) initYaraBackend() error {
 		return nil
 	}
 
-	err = b.Reload()
+	bootCtx, cancelBoot := context.WithTimeout(context.Background(), yaraBootCompileTimeout)
+	err = b.ReloadContext(bootCtx)
+	cancelBoot()
 	switch {
 	case err == nil:
 		d.activateYaraBackend(b)
@@ -158,8 +165,11 @@ func (d *Daemon) initYaraBackend() error {
 func retryableYaraCompile(err error) bool {
 	// Descriptor pressure belongs to the daemon, so workerproc deliberately
 	// leaves it out of worker failure accounting. It still needs a retry.
+	// A boot compile that outlived its bound is retried with the full
+	// compile timeout.
 	return workerproc.FailureReason(err) != "" || errors.Is(err, workerproc.ErrSpawn) ||
-		errors.Is(err, syscall.EMFILE) || errors.Is(err, syscall.ENFILE)
+		errors.Is(err, syscall.EMFILE) || errors.Is(err, syscall.ENFILE) ||
+		errors.Is(err, context.DeadlineExceeded)
 }
 
 // checkedYaraLauncher refuses each launch while the dynamic user cannot run
@@ -354,12 +364,14 @@ func (d *Daemon) onYaraWorkerFailure(reason string, err error) {
 	now := time.Now()
 	d.yaraCrashMu.Lock()
 	d.MarkWatcher(yaraWorkerWatcher, false)
-	last := d.yaraLastCrashAlert
-	d.yaraLastCrashAlert = now
-	d.yaraCrashMu.Unlock()
-	if !last.IsZero() && now.Sub(last) < time.Minute {
+	// Only an emitted alert starts the quiet minute: failures seconds apart
+	// must not keep pushing it forward and silence a persistent fault.
+	if last := d.yaraLastCrashAlert; !last.IsZero() && now.Sub(last) < time.Minute {
+		d.yaraCrashMu.Unlock()
 		return
 	}
+	d.yaraLastCrashAlert = now
+	d.yaraCrashMu.Unlock()
 	detail := err.Error()
 	if len(detail) > maxYaraFindingErr {
 		detail = strings.ToValidUTF8(detail[:maxYaraFindingErr], "") + "..."

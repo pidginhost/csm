@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/pidginhost/csm/internal/yara"
 )
 
 // A compromised CDN or signing key could serve a small ZIP whose .yar entry
@@ -76,7 +78,7 @@ func TestForgeUpdateCreatesRulesDir(t *testing.T) {
 	})
 
 	rulesDir := filepath.Join(t.TempDir(), "missing", "rules")
-	if _, _, err := ForgeUpdateFromURL(rulesDir, "core", "v2026.01.01", pubHex, "https://mirror.example/yara-forge-rules-{tier}.zip", nil, nil); err != nil {
+	if _, _, err := ForgeUpdateFromURL(rulesDir, "core", "v2026.01.01", pubHex, "https://mirror.example/yara-forge-rules-{tier}.zip", nil, yara.TestCompile); err != nil {
 		t.Fatalf("ForgeUpdate: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(rulesDir, "yara-forge-core.yar")); err != nil {
@@ -106,7 +108,7 @@ func TestForgeUpdateKeepsExistingTierWhenInstallFails(t *testing.T) {
 	}
 	t.Cleanup(func() { forgeAtomicWrite = prev })
 
-	_, _, err := ForgeUpdateFromURL(rulesDir, "core", "v2026.01.01", pubHex, "https://mirror.example/yara-forge-rules-{tier}.zip", nil, nil)
+	_, _, err := ForgeUpdateFromURL(rulesDir, "core", "v2026.01.01", pubHex, "https://mirror.example/yara-forge-rules-{tier}.zip", nil, yara.TestCompile)
 	if err == nil || !strings.Contains(err.Error(), "installing rules") {
 		t.Fatalf("err = %v, want installing rules", err)
 	}
@@ -134,7 +136,7 @@ func TestForgeUpdateRemovesInactiveTierAfterInstall(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, _, err := ForgeUpdateFromURL(rulesDir, "core", "v2026.01.01", pubHex, "https://mirror.example/yara-forge-rules-{tier}.zip", nil, nil); err != nil {
+	if _, _, err := ForgeUpdateFromURL(rulesDir, "core", "v2026.01.01", pubHex, "https://mirror.example/yara-forge-rules-{tier}.zip", nil, yara.TestCompile); err != nil {
 		t.Fatalf("ForgeUpdate: %v", err)
 	}
 	if _, err := os.Stat(oldTier); !os.IsNotExist(err) {
@@ -164,7 +166,7 @@ func TestForgeUpdateCleanupFailureKeepsNewTier(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, _, err := ForgeUpdateFromURL(rulesDir, "core", "v2026.01.01", pubHex, "https://mirror.example/yara-forge-rules-{tier}.zip", nil, nil)
+	_, _, err := ForgeUpdateFromURL(rulesDir, "core", "v2026.01.01", pubHex, "https://mirror.example/yara-forge-rules-{tier}.zip", nil, yara.TestCompile)
 	if err == nil || !strings.Contains(err.Error(), "removing inactive Forge tier extended") {
 		t.Fatalf("err = %v, want inactive tier removal failure", err)
 	}
@@ -197,7 +199,7 @@ func TestForgeUpdateSameTierCleanupFailureKeepsExistingRules(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, _, err := ForgeUpdateFromURL(rulesDir, "core", "v2026.01.01", pubHex, "https://mirror.example/yara-forge-rules-{tier}.zip", nil, nil)
+	_, _, err := ForgeUpdateFromURL(rulesDir, "core", "v2026.01.01", pubHex, "https://mirror.example/yara-forge-rules-{tier}.zip", nil, yara.TestCompile)
 	if err == nil || !strings.Contains(err.Error(), "removing inactive Forge tier extended") {
 		t.Fatalf("err = %v, want inactive tier removal failure", err)
 	}
@@ -364,7 +366,7 @@ func TestForgeUpdateResolvesVersionFromMirror(t *testing.T) {
 		sigBody:       sign(priv, zipData),
 	})
 	rulesDir := t.TempDir()
-	newVersion, _, err := ForgeUpdateFromURL(rulesDir, "core", "20260628", pubHex, "https://mirror.example/yara-forge/{version}/yara-forge-rules-{tier}.zip", nil, nil)
+	newVersion, _, err := ForgeUpdateFromURL(rulesDir, "core", "20260628", pubHex, "https://mirror.example/yara-forge/{version}/yara-forge-rules-{tier}.zip", nil, yara.TestCompile)
 	if err != nil {
 		t.Fatalf("ForgeUpdateFromURL: %v", err)
 	}
@@ -471,5 +473,24 @@ func TestForgeUpdateUsesCompileCheck(t *testing.T) {
 	}
 	if data, readErr := os.ReadFile(oldTier); readErr != nil || !strings.Contains(string(data), "old_tier") {
 		t.Fatalf("existing tier changed after a failed compile check: %q, %v", data, readErr)
+	}
+}
+
+// Downloaded rules must never compile in this process by omission: a caller
+// that passes no compile check is refused before anything is written.
+func TestForgeUpdateRequiresCompileCheck(t *testing.T) {
+	pubHex, priv := genSigningKey(t)
+	zipData := buildForgeZip(t)
+	swapDefaultTransport(t, &forgeRoundTripper{
+		releases: []byte(`{"tag_name":"v2026.04.11"}`),
+		zipBody:  zipData,
+		sigBody:  sign(priv, zipData),
+	})
+	rulesDir := t.TempDir()
+	if _, _, err := ForgeUpdateFromURL(rulesDir, "core", "v2026.01.01", pubHex, "https://mirror.example/yara-forge-rules-{tier}.zip", nil, nil); err == nil {
+		t.Fatal("a Forge update with no compile check was accepted")
+	}
+	if _, err := os.Stat(filepath.Join(rulesDir, "yara-forge-core.yar")); !os.IsNotExist(err) {
+		t.Fatalf("a tier was written without a compile check: %v", err)
 	}
 }

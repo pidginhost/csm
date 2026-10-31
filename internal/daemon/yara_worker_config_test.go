@@ -213,3 +213,45 @@ func TestYaraWorkerWatcherFollowsJobs(t *testing.T) {
 		t.Fatal("a request during shutdown marked the worker attached")
 	}
 }
+
+// The boot compile runs before the daemon tells systemd it is ready, so it
+// is bounded: a compile that has not finished hands over to the background
+// retry instead of holding startup past systemd's start timeout.
+func TestInitYaraBackendBootCompileIsBounded(t *testing.T) {
+	var launches atomic.Int32
+	stubYaraUnits(t, true, func(ctx context.Context) (workerproc.Process, error) {
+		launches.Add(1)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	})
+	allowParseWorkerCommand(t)
+	realBoot := yaraBootCompileTimeout
+	yaraBootCompileTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { yaraBootCompileTimeout = realBoot })
+	cfg := &config.Config{}
+	cfg.Signatures.RulesDir = filepath.Join(t.TempDir(), "rules")
+	if err := os.Mkdir(cfg.Signatures.RulesDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfg.Signatures.RulesDir, "rules.yar"), []byte("rule r { condition: true }"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	d := yaraWorkerDaemon(t, cfg)
+	began := time.Now()
+	if err := d.initYaraBackend(); err == nil {
+		t.Fatal("init reported success while the boot compile hung")
+	}
+	if took := time.Since(began); took > 5*time.Second {
+		t.Fatalf("boot compile held startup for %s", took)
+	}
+	if d.yaraSup.CompileError() == "" {
+		t.Fatal("a boot compile that never finished left scans answering as if rules were empty")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for launches.Load() < 2 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if launches.Load() < 2 {
+		t.Fatal("a timed-out boot compile was not retried in the background")
+	}
+}

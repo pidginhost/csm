@@ -164,3 +164,25 @@ func TestOnYaraWorkerFailureBoundsErrorText(t *testing.T) {
 		t.Fatalf("finding message is %d bytes", len(f.Message))
 	}
 }
+
+// Only an emitted alert starts the quiet minute. A worker that fails every
+// few seconds must alert again a minute after the last alert, not go silent
+// because each suppressed failure pushed the window forward.
+func TestOnYaraWorkerFailureSuppressedFailureKeepsWindow(t *testing.T) {
+	d := newDaemonForYaraBackendTest(t)
+	d.onYaraWorkerFailure(workerproc.ReasonCrash, errWorkerDied)
+	<-d.alertCh
+	alerted := time.Now().Add(-59 * time.Second)
+	d.yaraCrashMu.Lock()
+	d.yaraLastCrashAlert = alerted
+	d.yaraCrashMu.Unlock()
+
+	d.onYaraWorkerFailure(workerproc.ReasonCrash, errWorkerDied)
+
+	d.yaraCrashMu.Lock()
+	got := d.yaraLastCrashAlert
+	d.yaraCrashMu.Unlock()
+	if !got.Equal(alerted) {
+		t.Fatalf("a suppressed failure moved the alert window from %s to %s", alerted, got)
+	}
+}

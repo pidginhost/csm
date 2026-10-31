@@ -1431,7 +1431,10 @@ in `internal/yaraworker/worker.go`.
   Compiles run one at a time; a canceled startup retry stops waiting even
   when a rule update is already compiling.
 - Forge downloads are compile-tested in the compile unit before they are
-  installed.
+  installed. If the merged reload afterwards fails because the compile unit
+  could not run, the new tier stays on disk, its version is not recorded,
+  and a Critical `yara_backend_unavailable` finding says so; only rules that
+  do not compile, or a collapsed rule count, roll the tier back.
 - At startup the daemon attempts to kill leftover units of both prefixes;
   cleanup failures are logged without preventing startup.
 
@@ -1440,13 +1443,20 @@ Failures and findings:
 - The backend is active from boot, before the first compile. While no rules
   are loaded because a compile failed or could not run, every scan returns
   an error, never a clean result.
-- A compile unit that cannot start at boot is retried in the background with
-  backoff; after three failures a Critical `yara_backend_unavailable` finding
-  fires. Rules that do not compile raise Critical
-  `yara_worker_compile_failed`.
+- The boot compile runs before the daemon reports ready to systemd, so it is
+  bounded to 45 seconds. A compile that cannot start, crashes, times out or
+  outlives that bound is retried in the background with backoff; when the
+  boot attempt and three retries have failed, a Critical
+  `yara_backend_unavailable` finding fires.
+- Rules that do not compile raise Critical `yara_worker_compile_failed` and
+  are not retried. So does a rule set the compile unit cannot fit: more than
+  1024 rule files (refused before a unit starts), an out-of-memory kill under
+  the 1 GiB cap, or compiled rules over 256 MiB. Each message names
+  `signatures.yara_worker_enabled: false`, which compiles in the daemon.
 - Any counted scan worker failure (failed start, timeout, crash, out of memory,
   protocol) marks `watcher: yara_worker` failed and raises Critical
-  `yara_worker_crashed`, at most once a minute; an attached worker is killed.
+  `yara_worker_crashed`, at most once a minute after the last alert; an
+  attached worker is killed.
   The next request starts a replacement; a served request marks the watcher
   attached again.
 - Only failed starts count toward the worker breaker (`BreakOnSpawnOnly`),
