@@ -11,8 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
