@@ -361,13 +361,11 @@ Journal input requires a build with journal support.
 
 Detects credential stuffing, password spray, and raw SMTP probe storms. Runs as part of the Exim mainlog watcher on cPanel hosts and on non-cPanel Exim hosts where `/var/log/exim_mainlog` exists.
 
-On Postfix hosts that read the mail log from a file (`mail_logs.source: file`, or `auto` with the log present), smtpd's SASL authentication failures feed the same tracker. Account names are unavailable on older Postfix versions, so these failures count toward `smtp_bruteforce` and `smtp_subnet_spray` but not `smtp_account_spray` or the slow mailbox-walk detector. Successful Postfix logins are not recorded by this tracker. `smtp_probe_abuse` reads Exim lines only.
+Postfix SMTP AUTH warnings are excluded from brute-force evidence. Their text does not distinguish rejected credentials from temporary backend failures. A silent Dovecot handshake failure can reuse an earlier reason and account name, even when the reason says `authentication failure`. A reachable authentication socket does not remove this ambiguity.
 
-Recognized authentication backend errors, including lost Dovecot connections, malformed backend replies and temporary Cyrus failures, are not counted. Account names appended by newer Postfix versions do not affect this classification.
+CSM therefore does not detect or block Postfix SMTP password guessing from these warnings. This applies to file input as well as journal input. Supporting Postfix SMTP AUTH requires a trustworthy authentication result that distinguishes credential rejection from backend failure; CSM does not currently consume such a source. Successful Postfix logins are not recorded by this tracker either.
 
-Postfix backend connection and handshake diagnostics exclude the next authentication failure from the same smtpd worker, even when its reason is missing or left over from an earlier attempt. Excluded attempts do not build up IP or subnet evidence. Other workers continue to contribute failures. Correlation uses the existing SMTP tracking window and tracking budget; if the budget fills, Postfix failure counting pauses for that window.
-
-Some Postfix failures omit the reason or report `(reason unavailable)`. These still count when there is no matching backend diagnostic. Postfix can also close a backend handshake without logging a diagnostic, and missing log records cannot be recovered by this filter. Those failures are indistinguishable from rejected credentials without a status-bearing authentication log. Do not rely on this filter alone to prevent blocks during every authentication outage.
+Exim SMTP detection and Dovecot IMAP, POP3 and ManageSieve detection continue to work. `smtp_probe_abuse` reads Exim lines only.
 
 Four attack patterns:
 

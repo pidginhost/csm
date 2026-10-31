@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"io/fs"
-	"net"
 	"path/filepath"
 	"strconv"
 	"testing"
@@ -273,48 +272,27 @@ func FuzzPAMObservation(f *testing.F) {
 	})
 }
 
-func FuzzPostfixSASLFailureIP(f *testing.F) {
-	for _, s := range []string{"x[198.51.100.9]: SASL LOGIN authentication failed: x", "UGFzc3dvcmQ6", "", "]: SASL ", "Connection lost to authentication server", "temporary@example.net", ", sasl_username=Authentication backend error"} {
+func FuzzPostfixWarningsNeverBuildEvidence(f *testing.F) {
+	for _, s := range []string{"x[198.51.100.9]: SASL LOGIN authentication failed: x", "UGFzc3dvcmQ6", "", "]: SASL ", "Connection lost to authentication server", "temporary@example.net", ", sasl_username=Authentication backend error", "SASL: Protocol version error", "warning: SASL: Couldn't send handshake: Broken pipe"} {
 		f.Add(s)
 	}
 	f.Fuzz(func(t *testing.T, s string) {
-		// Client-supplied text echoed into another warning never names an
-		// address, and text after a real failure never changes it.
-		echoed := "Oct 31 12:34:11 mail postfix/smtpd[99]: warning: Illegal address syntax from unknown[203.0.113.65] in RCPT command: <" + s + ">"
-		if got := postfixSASLFailureIP(echoed); got != "" {
-			t.Fatalf("echoed client text named %q: %q", got, s)
-		}
-		failed := "Oct 31 12:34:11 mail postfix/smtpd[99]: warning: unknown[203.0.113.66]: SASL LOGIN authentication failed: " + s
-		if got := postfixSASLFailureIP(failed); got != "" && got != "203.0.113.66" {
-			t.Fatalf("reply text moved the client to %q: %q", got, s)
-		}
-		withUser := "Oct 31 12:34:11 mail postfix/smtpd[99]: warning: unknown[203.0.113.66]: SASL PLAIN authentication failed: authentication failure, sasl_username=" + s
-		if got := postfixSASLFailureIP(withUser); got != "203.0.113.66" {
-			t.Fatalf("username changed the failure address to %q: %q", got, s)
-		}
-		if got := postfixSASLFailureIP(s); got != "" && net.ParseIP(got) == nil {
-			t.Fatalf("returned %q, not an address", got)
-		}
-	})
-}
-
-func FuzzPostfixSASLBackendCorrelation(f *testing.F) {
-	for _, text := range []string{"", "SASL: Protocol version error", "warning: SASL: Couldn't send handshake: Broken pipe", "x[198.51.100.9]: SASL LOGIN authentication failed: x"} {
-		f.Add(text)
-	}
-	f.Fuzz(func(t *testing.T, text string) {
-		tr := newTestTracker(t, &staticClock{t: time.Unix(1_700_000_000, 0)})
-		for _, line := range []string{
-			"postfix/smtpd[99]: warning: Illegal address syntax from unknown[203.0.113.61] in RCPT command: <" + text + ">",
-			"postfix/smtpd[99]: warning: unknown[203.0.113.61]: SASL PLAIN authentication failed: authentication failure, sasl_username=" + text,
-			"postfix/smtpd[98]: " + text,
-			"dovecot: " + text,
+		clock := &staticClock{t: time.Unix(1_700_000_000, 0)}
+		d := New(&config.Config{}, nil, nil, "")
+		d.smtpAuthTracker = newTestTracker(t, clock)
+		d.mailAuthTracker = newTestMailTracker(t, clock)
+		for _, msg := range []string{
+			"Illegal address syntax from unknown[203.0.113.65] in RCPT command: <" + s + ">",
+			"unknown[203.0.113.66]: SASL LOGIN authentication failed: " + s,
+			"unknown[203.0.113.66]: SASL PLAIN authentication failed: authentication failure, sasl_username=" + s,
+			s,
 		} {
-			_ = tr.postfixSASLFailureIP(line)
-			failed := "postfix/smtpd[99]: warning: unknown[203.0.113.61]: SASL PLAIN authentication failed: (reason unavailable)"
-			if got := tr.postfixSASLFailureIP(failed); got != "203.0.113.61" {
-				t.Fatalf("unrelated text suppressed AUTH: names %q, input %q", got, text)
+			if got := d.handleMailLine("postfix/smtpd[99]: warning: "+msg, alert.Observation{}, d.currentCfg()); len(got) != 0 {
+				t.Fatalf("Postfix warning raised findings: %+v", got)
 			}
+		}
+		if calls, _ := d.smtpAuthTracker.Stats(); calls != 0 || d.smtpAuthTracker.Size() != 0 || d.mailAuthTracker.Size() != 0 {
+			t.Fatalf("Postfix warning left evidence: %d calls, %d SMTP entries, %d mail entries", calls, d.smtpAuthTracker.Size(), d.mailAuthTracker.Size())
 		}
 	})
 }

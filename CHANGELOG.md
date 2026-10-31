@@ -15,6 +15,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - Postfix SMTP login protection no longer counts reported backend reconnect outages or malformed authentication warnings as password guessing.
 - Postfix login protection no longer misses password guessing against some account names or blocks users for reported authentication backend errors.
 - Password guessing against SMTP login on Postfix servers is now detected and blocked, as it already was on Exim servers.
+- Postfix SMTP login warnings no longer trigger blocking during authentication outages; password guessing detection from those warnings is suspended.
 - The daemon log now escapes line breaks and control characters in values, so crafted file names cannot forge log lines.
 - YARA scans no longer reopen tenant files by path or write temporary copies of large files to disk.
 - PHP taint analysis now runs in a locked-down worker with no root, network or account file access; files are reported unexamined when it cannot start.
