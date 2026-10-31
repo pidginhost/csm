@@ -2,16 +2,20 @@ package daemon
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/maillog"
+	"github.com/pidginhost/csm/internal/platform"
 )
 
 // Dovecot's auth_verbose lines are written only after the password database
-// answered, so they are the per-attempt verdict Postfix's own SASL warning
-// lacks. Requests without a login session come from an MTA such as Postfix.
+// answered. With one terminal database, these are the credential verdicts
+// Postfix's own SASL warning lacks. MTA requests have no login session.
 func TestDovecotSMTPAuthRejectionsCount(t *testing.T) {
 	cases := []struct {
 		name, line, ip, account string
@@ -22,6 +26,10 @@ func TestDovecotSMTPAuthRejectionsCount(t *testing.T) {
 		{"blocking passdb worker", "Oct 31 20:44:23 mail dovecot: auth-worker(4567): pam(dave,203.0.113.83): unknown user", "203.0.113.83", "dave"},
 		{"worker with master connection prefix", "Oct 31 20:44:23 mail dovecot: auth-worker(4567): conn unix:auth-worker (pid=4560,uid=97): auth-worker<1>: pam(erin,203.0.113.84): Password mismatch", "203.0.113.84", "erin"},
 		{"master user login", "Oct 31 20:44:23 mail dovecot: auth: sql(frank@example.net,203.0.113.85,master): Password mismatch", "203.0.113.85", "frank@example.net"},
+		{"punctuation in name", "dovecot: auth: sql(a): b(<c>,203.0.113.88): unknown user", "203.0.113.88", "a): b(<c>"},
+		// Dovecot uses the configured passdb name instead of the driver
+		// when one is set; it is not limited to lowercase driver names.
+		{"named passdb", "dovecot: auth: SQL.Primary(a,203.0.113.95): unknown user", "203.0.113.95", "a"},
 		// The address is the field Dovecot appends after the name, so a name
 		// that embeds another address cannot redirect the block.
 		{"name embeds another address", "Oct 31 20:44:23 mail dovecot: auth: sql(x,198.51.100.9,203.0.113.86): unknown user", "203.0.113.86", "x,198.51.100.9"},
@@ -33,6 +41,10 @@ func TestDovecotSMTPAuthRejectionsCount(t *testing.T) {
 			d := New(&config.Config{}, nil, nil, "")
 			d.smtpAuthTracker = newTestTracker(t, clock)
 			d.mailAuthTracker = newTestMailTracker(t, clock)
+			ip, account, ok := dovecotSMTPAuthRejection(tc.line)
+			if !ok || ip != tc.ip || account != tc.account {
+				t.Fatalf("parsed (%q, %q, %v), want (%q, %q, true)", ip, account, ok, tc.ip, tc.account)
+			}
 			var got []alert.Finding
 			for i := 0; i < 5; i++ {
 				got = append(got, d.handleMailLine(tc.line, alert.Observation{}, d.currentCfg())...)
@@ -45,6 +57,75 @@ func TestDovecotSMTPAuthRejectionsCount(t *testing.T) {
 			}
 			if d.mailAuthTracker.Size() != 0 {
 				t.Fatalf("SMTP rejection reached the IMAP tracker")
+			}
+		})
+	}
+}
+
+// Verbose verdicts also contain attacker text when they are excluded from
+// SMTP scoring. Neither a session nor password logging makes it an outage.
+func TestDovecotVerdictsCannotForgeBackendOutages(t *testing.T) {
+	for _, line := range []string{
+		"dovecot: auth: sql(Temporary authentication failure,203.0.113.90,<s>): unknown user",
+		"dovecot: auth-worker(12): pam(connection refused,203.0.113.90,<s>): Password mismatch",
+		"dovecot: auth-worker(12): conn unix:auth-worker (pid=11,uid=97): auth-worker<1>: pam(internal error,203.0.113.90,<s>): unknown user",
+		"dovecot: auth: sql(a,203.0.113.90): Password mismatch (given password: Temporary authentication failure)",
+		"dovecot: auth-worker(12): pam(a,203.0.113.90): Password mismatch (given password: connection refused",
+	} {
+		t.Run(line, func(t *testing.T) {
+			clock := &staticClock{t: time.Date(2026, 10, 31, 20, 0, 0, 0, time.UTC)}
+			d := New(&config.Config{}, nil, nil, "")
+			d.smtpAuthTracker = newTestTracker(t, clock)
+			d.mailAuthTracker = newTestMailTracker(t, clock)
+			for i := 0; i < mailBackendDegradedThreshold; i++ {
+				if got := d.handleMailLine(line, alert.Observation{}, d.currentCfg()); len(got) != 0 {
+					t.Fatalf("verdict generated findings: %+v", got)
+				}
+			}
+			if len(d.mailAuthTracker.backendErr) != 0 {
+				t.Fatalf("verdict recorded %d backend failures", len(d.mailAuthTracker.backendErr))
+			}
+			if calls, _ := d.smtpAuthTracker.Stats(); calls != 0 {
+				t.Fatalf("excluded verdict recorded %d SMTP failures", calls)
+			}
+		})
+	}
+}
+
+func TestDovecotVerdictFilterKeepsBackendErrors(t *testing.T) {
+	for _, line := range []string{
+		"dovecot: auth: Error: sql(a,203.0.113.90): Temporary authentication failure",
+		"dovecot: auth-worker(12): Error: pam(a): unknown user,203.0.113.90): connection refused",
+	} {
+		clock := &staticClock{t: time.Date(2026, 10, 31, 20, 0, 0, 0, time.UTC)}
+		d := New(&config.Config{}, nil, nil, "")
+		d.mailAuthTracker = newTestMailTracker(t, clock)
+		var got []alert.Finding
+		for i := 0; i < mailBackendDegradedThreshold; i++ {
+			got = append(got, d.handleMailLine(line, alert.Observation{}, d.currentCfg())...)
+		}
+		if len(got) != 1 || got[0].Check != "mail_auth_backend_degraded" {
+			t.Fatalf("backend error %q raised %+v, want one outage warning", line, got)
+		}
+	}
+}
+
+func TestDovecotSessionFailuresCountOnlyLoginSummary(t *testing.T) {
+	for _, protocol := range []string{"imap", "pop3", "managesieve"} {
+		t.Run(protocol, func(t *testing.T) {
+			clock := &staticClock{t: time.Date(2026, 10, 31, 20, 0, 0, 0, time.UTC)}
+			d := New(&config.Config{}, nil, nil, "")
+			d.mailAuthTracker = newTestMailTracker(t, clock)
+			for i := 0; i < 3; i++ {
+				d.handleMailLine("dovecot: auth: sql(a,203.0.113.90,<session>): Password mismatch", alert.Observation{}, d.currentCfg())
+			}
+			line := "dovecot: " + protocol + "-login: Login aborted: (auth failed, 3 attempts in 2 secs): user=<a>, method=PLAIN, rip=203.0.113.90"
+			d.handleMailLine(line, alert.Observation{}, d.currentCfg())
+			if calls, _ := d.mailAuthTracker.Stats(); calls != 3 {
+				t.Fatalf("mail failures = %d, want 3 attempts", calls)
+			}
+			if calls, _ := d.smtpAuthTracker.Stats(); calls != 0 {
+				t.Fatalf("sessioned verdicts recorded %d SMTP failures", calls)
 			}
 		})
 	}
@@ -96,7 +177,6 @@ func TestDovecotAuthLinesThatMustNotCountAsSMTP(t *testing.T) {
 		{"mechanism error", "dovecot: auth: login(?,203.0.113.94): Request timed out waiting for client to continue authentication (150 secs)"},
 		{"no address", "dovecot: auth: sql(a): unknown user"},
 		{"not an address", "dovecot: auth: sql(a,localhost): unknown user"},
-		{"uppercase driver", "dovecot: auth: SQL(a,203.0.113.95): unknown user"},
 		{"other dovecot process", "dovecot: lmtp(4321): sql(a,203.0.113.96): unknown user"},
 		{"other program", "postfix/smtpd[99]: auth: sql(a,203.0.113.97): unknown user"},
 		{"bad worker pid", "dovecot: auth-worker(x): sql(a,203.0.113.98): unknown user"},
@@ -135,5 +215,77 @@ func TestDovecotSMTPAuthSkippedWhenEximLogCounts(t *testing.T) {
 	}
 	if calls, _ := d.smtpAuthTracker.Stats(); calls != 0 {
 		t.Fatalf("SMTP tracker recorded %d failures, want 0", calls)
+	}
+}
+
+func TestDovecotSMTPAuthJournalMessages(t *testing.T) {
+	for _, tc := range []struct {
+		unit, message string
+		want          int64
+	}{
+		{"dovecot.service", "auth: sql(a,203.0.113.99): unknown user", 5},
+		{"dovecot.service", "dovecot: auth: sql(a,203.0.113.99): unknown user", 5},
+		{"postfix.service", "auth: sql(a,203.0.113.99): unknown user", 0},
+	} {
+		t.Run(tc.unit+tc.message, func(t *testing.T) {
+			clock := &staticClock{t: time.Date(2026, 10, 31, 20, 0, 0, 0, time.UTC)}
+			d := New(&config.Config{}, nil, nil, "")
+			d.smtpAuthTracker = newTestTracker(t, clock)
+			for i := 0; i < 5; i++ {
+				if !d.dispatchMailLogLine(maillog.Line{Source: "journal", Unit: tc.unit, Message: tc.message}, d.handleMailLine) {
+					t.Fatal("mail dispatch stopped")
+				}
+			}
+			if calls, _ := d.smtpAuthTracker.Stats(); calls != tc.want {
+				t.Fatalf("SMTP failures = %d, want %d", calls, tc.want)
+			}
+		})
+	}
+}
+
+// Exercise startup, not a manually assigned flag: the mail goroutine must
+// see the Exim selection even when its own reader attaches first.
+func TestDovecotSMTPAuthEximSelectionPrecedesReaders(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "mail.log")
+	if err := os.WriteFile(path, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	panel, server := platform.PanelCPanel, platform.WSNone
+	platform.ResetForTest()
+	platform.SetOverrides(platform.Overrides{Panel: &panel, WebServer: &server})
+	t.Cleanup(platform.ResetForTest)
+	cfg := &config.Config{MailLogs: config.MailLogsConfig{Source: "file", File: path}}
+	previous := config.Active()
+	config.SetActive(cfg)
+	t.Cleanup(func() { config.SetActive(previous) })
+	d := New(cfg, nil, nil, "")
+	d.staleSession401 = newStaleSession401s()
+	d.startLogWatchers()
+	t.Cleanup(func() {
+		close(d.stopCh)
+		d.wg.Wait()
+	})
+	deadline := time.Now().Add(5 * time.Second)
+	for !d.WatcherStatuses()["maillog"] {
+		if time.Now().After(deadline) {
+			t.Fatal("mail reader did not attach")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	appendLog(t, path, "dovecot: auth: sql(a,203.0.113.99): unknown user\n"+
+		"dovecot: imap-login: Login aborted: (auth failed, 1 attempts in 2 secs): user=<a>, method=PLAIN, rip=203.0.113.99\n")
+	for {
+		calls, _ := d.mailAuthTracker.Stats()
+		if calls == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("mail reader processed %d login failures, want 1", calls)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if calls, _ := d.smtpAuthTracker.Stats(); calls != 0 {
+		t.Fatalf("Exim host counted %d Dovecot SMTP failures", calls)
 	}
 }

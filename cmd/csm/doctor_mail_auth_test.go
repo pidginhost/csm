@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"errors"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -56,8 +58,24 @@ func TestSMTPAuthLoggingDoctorSkipped(t *testing.T) {
 	if checks := smtpAuthLoggingDoctorCheck(platform.MTAUnknown, doveconfValues("no", "no")); len(checks) != 0 {
 		t.Fatalf("unknown MTA: checks = %+v, want none", checks)
 	}
-	noDovecot := func(string) (string, error) { return "", errors.New("doveconf: not found") }
+	noDovecot := func(string) (string, error) { return "", &exec.Error{Name: "doveconf", Err: exec.ErrNotFound} }
 	if checks := smtpAuthLoggingDoctorCheck(platform.MTAPostfix, noDovecot); len(checks) != 0 {
 		t.Fatalf("no Dovecot: checks = %+v, want none", checks)
+	}
+}
+
+func TestSMTPAuthLoggingDoctorReportsLookupFailures(t *testing.T) {
+	for _, key := range []string{"auth_verbose", "auth_verbose_passwords"} {
+		for _, err := range []error{context.DeadlineExceeded, errors.New("configuration unreadable")} {
+			checks := smtpAuthLoggingDoctorCheck(platform.MTAPostfix, func(k string) (string, error) {
+				if k == key {
+					return "", err
+				}
+				return doveconfValues("yes", "no")(k)
+			})
+			if len(checks) != 1 || checks[0].Status != "warn" || !strings.Contains(checks[0].Message, key) || checks[0].Fix == "" {
+				t.Fatalf("%s lookup failure: checks = %+v, want one actionable warning", key, checks)
+			}
+		}
 	}
 }

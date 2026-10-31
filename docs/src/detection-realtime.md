@@ -361,14 +361,16 @@ Journal input requires a build with journal support.
 
 Detects credential stuffing, password spray, and raw SMTP probe storms. Runs as part of the Exim mainlog watcher on cPanel hosts and on non-cPanel Exim hosts where `/var/log/exim_mainlog` exists.
 
-On hosts without that log, such as Postfix servers that check SMTP logins against Dovecot, the tracker reads Dovecot's verdict for each SMTP login from the mail log file. Postfix's own SASL warnings are not used: their text does not distinguish a rejected password from a Dovecot or database outage. Dovecot writes a `Password mismatch` or `unknown user` line only after the password database answered, and only with verbose auth logging on:
+On hosts without that log, such as Postfix servers that check SMTP logins against Dovecot, the tracker reads Dovecot's password database verdicts from the mail log file or the configured `dovecot.service` journal source. Configured database names are supported. Postfix's own SASL warnings are not used: their text does not distinguish a rejected password from a Dovecot or database outage. Dovecot writes a `Password mismatch` or `unknown user` line only after the password database answered, and only with verbose auth logging on:
 
 ```
 # /etc/dovecot/conf.d/10-logging.conf
 auth_verbose = yes
 ```
 
-Leave `auth_verbose_passwords` at `no`; lines that carry a logged password are ignored. Verdicts for IMAP, POP3 and ManageSieve logins carry a session id and are counted by the mail tracker below instead. Successful Postfix logins are not recorded, so a later success does not clear the slow brute-force signal for that address. `smtp_probe_abuse` reads Exim lines only.
+Leave `auth_verbose_passwords` at `no`; lines that carry a logged password are ignored. Excluded verdicts cannot mark the authentication backend as unavailable. Verdicts for IMAP, POP3 and ManageSieve logins carry a session id and are counted by the mail tracker below instead. Successful Postfix logins are not recorded, so a later success does not clear the slow brute-force signal for that address. `smtp_probe_abuse` reads Exim lines only.
+
+This source is unsafe for automatic blocking with multiple password databases or success-on-failure policies. A database rejection can precede a successful login or a temporary failure in another database. The same attempt can also produce several verdicts. These lines lack the request identity and final result needed to distinguish those cases. Keep `auto_response.dry_run: true` on such hosts. `csm doctor` checks logging settings, not whether database verdicts are final authentication results.
 
 Four attack patterns:
 

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os/exec"
 	"strings"
 	"time"
@@ -16,19 +17,22 @@ func smtpAuthLoggingDoctorChecks() []DoctorCheck {
 }
 
 // smtpAuthLoggingDoctorCheck applies the rule to an MTA and a doveconf
-// lookup. Exim logs its own SMTP AUTH failures, and a host whose doveconf
-// cannot answer has no Dovecot verdicts to read, so both return nothing.
+// lookup. Exim logs its own SMTP AUTH failures. A missing doveconf can mean
+// Postfix uses another SASL provider; other lookup errors need attention.
 func smtpAuthLoggingDoctorCheck(mta platform.MTAKind, doveconf func(string) (string, error)) []DoctorCheck {
 	if mta != platform.MTAPostfix {
 		return nil
 	}
 	verbose, err := doveconf("auth_verbose")
-	if err != nil {
+	if errors.Is(err, exec.ErrNotFound) {
 		return nil
+	}
+	if err != nil {
+		return smtpAuthLoggingLookupWarning("auth_verbose")
 	}
 	passwords, err := doveconf("auth_verbose_passwords")
 	if err != nil {
-		return nil
+		return smtpAuthLoggingLookupWarning("auth_verbose_passwords")
 	}
 	check := DoctorCheck{Name: "smtp auth logging", Status: "ok", Message: "Dovecot logs rejected SMTP logins"}
 	switch {
@@ -42,6 +46,14 @@ func smtpAuthLoggingDoctorCheck(mta platform.MTAKind, doveconf func(string) (str
 		check.Fix = "set auth_verbose_passwords = no in /etc/dovecot/conf.d/10-logging.conf, then run doveadm reload"
 	}
 	return []DoctorCheck{check}
+}
+
+func smtpAuthLoggingLookupWarning(key string) []DoctorCheck {
+	return []DoctorCheck{{
+		Name: "smtp auth logging", Status: "warn",
+		Message: "Could not read Dovecot " + key + "; SMTP auth logging is unverified",
+		Fix:     "run doveconf -h " + key + " as root, resolve the error, then rerun csm doctor",
+	}}
 }
 
 // doveconfValue returns one Dovecot setting as doveconf resolves it.

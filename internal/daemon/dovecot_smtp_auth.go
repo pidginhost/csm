@@ -19,21 +19,17 @@ import (
 // appends, so the address, master flag and session marker are read from the
 // right. A logged password follows the verdict, so such lines are refused,
 // including one that syslog cut short right after a forged verdict inside
-// the password: the fields then hold a second "): ", which Dovecot's default
-// name characters never allow.
+// the password. An earlier verdict makes the boundary ambiguous; other
+// punctuation in the name does not.
 //
-// ponytail: a passdb chain that consults several databases logs one verdict
-// per database, so one attempt can count more than once there.
+// A passdb chain logs per database, not per authentication result. A later
+// database can succeed or fail internally after this rejection. These lines
+// cannot distinguish that case or correlate multiple verdicts for one attempt.
 func dovecotSMTPAuthRejection(line string) (ip, account string, ok bool) {
-	seg := dovecotPassdbSegment(dovecotServiceMessage(line))
-	if seg == "" {
+	inner := dovecotPassdbFields(line)
+	if inner == "" {
 		return "", "", false
 	}
-	open := strings.IndexByte(seg, '(')
-	if open <= 0 || !isPassdbDriverName(seg[:open]) {
-		return "", "", false
-	}
-	inner := seg[open+1:]
 	switch {
 	case strings.HasSuffix(inner, "): Password mismatch"):
 		inner = strings.TrimSuffix(inner, "): Password mismatch")
@@ -42,7 +38,7 @@ func dovecotSMTPAuthRejection(line string) (ip, account string, ok bool) {
 	default:
 		return "", "", false
 	}
-	if strings.Contains(inner, "): ") {
+	if containsDovecotAuthVerdict(inner) {
 		return "", "", false
 	}
 	inner = strings.TrimSuffix(inner, ",master")
@@ -60,9 +56,23 @@ func dovecotSMTPAuthRejection(line string) (ip, account string, ok bool) {
 	return addr.String(), inner[:comma], true
 }
 
-// dovecotPassdbSegment strips the auth process prefix from a Dovecot message
-// and returns the "driver(fields): verdict" part, or "" for anything else,
-// including Error and Warning lines.
+func dovecotPassdbFields(line string) string {
+	seg := dovecotPassdbSegment(dovecotServiceMessage(line))
+	open := strings.IndexByte(seg, '(')
+	if open <= 0 || !isDovecotPassdbName(seg[:open]) {
+		return ""
+	}
+	return seg[open+1:]
+}
+
+// Even an excluded or truncated verdict carries client text. It must not
+// reach the outage detector, which also searches for phrases in the line.
+func containsDovecotAuthVerdict(fields string) bool {
+	return strings.Contains(fields, "): Password mismatch") || strings.Contains(fields, "): unknown user")
+}
+
+// dovecotPassdbSegment strips the auth process prefix from a Dovecot message.
+// Severity prefixes remain so the caller can reject non-verdict lines.
 func dovecotPassdbSegment(msg string) string {
 	if rest, ok := strings.CutPrefix(msg, "auth: "); ok {
 		return rest
@@ -91,10 +101,15 @@ func dovecotPassdbSegment(msg string) string {
 	return rest
 }
 
-func isPassdbDriverName(s string) bool {
+func isDovecotPassdbName(s string) bool {
+	// Dovecot substitutes the configured database name for the driver.
+	// A severity prefix, however, is not part of an informational verdict.
+	if strings.Contains(s, ": ") {
+		return false
+	}
 	for i := 0; i < len(s); i++ {
 		c := s[i]
-		if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '-' && c != '_' {
+		if c < ' ' || c == 0x7f {
 			return false
 		}
 	}

@@ -16,6 +16,8 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - Postfix login protection no longer misses password guessing against some account names or blocks users for reported authentication backend errors.
 - Password guessing against SMTP login on Postfix servers is now detected and blocked, as it already was on Exim servers.
 - Postfix SMTP login warnings no longer trigger blocking during authentication outages; password guessing detection from those warnings is suspended.
+- Mail login protection no longer pauses because of crafted login attempts.
+- SMTP password guessing is now detected with journal logging and custom authentication database names.
 - Password guessing against SMTP login on Postfix servers is now detected and blocked. It needs verbose auth logging turned on in Dovecot.
 - `csm doctor` now warns on Postfix servers when Dovecot logging is not set up for SMTP password guessing detection.
 - The daemon log now escapes line breaks and control characters in values, so crafted file names cannot forge log lines.
@@ -35,6 +37,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 ### Fixed
 
 - The daemon log no longer reports a memory failure or a kill when CSM stops a worker on purpose.
+- Postfix diagnostics now warn when Dovecot logging settings cannot be read.
 - WordPress core files that differ only in line endings are no longer reported on sites whose PHP prints deprecation notices.
 - The daemon log no longer reports a YARA scan failure for large files.
 - The daemon log now says when a parse worker is retired or exits on its own, instead of only that it was killed.
