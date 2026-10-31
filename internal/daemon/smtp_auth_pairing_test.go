@@ -518,23 +518,119 @@ func TestPostfixLinesThatMustNotPair(t *testing.T) {
 	}
 }
 
-// Postfix rejects a bad mechanism or bad base64 itself, without asking
-// Dovecot. A client sending one on a second connection while its real attempt
-// waits out Dovecot's failure delay must not consume that attempt's verdict.
-func TestLocalSASLRejectionDoesNotConsumeVerdict(t *testing.T) {
+// Protocol rejections do not prove a credential check. A parallel request
+// must neither count nor consume the real attempt's pending verdict.
+func TestSASLProtocolRejectionDoesNotConsumeVerdict(t *testing.T) {
 	for _, local := range []string{
 		"postfix/smtpd[98]: warning: unknown[203.0.113.73]: SASL LOGIN authentication failed: Invalid base64 data in continued response",
 		"postfix/smtpd[98]: warning: unknown[203.0.113.73]: SASL PLAIN authentication failed: Invalid base64 data in initial response",
 		"postfix/smtpd[98]: warning: unknown[203.0.113.73]: SASL XYZ authentication failed: Invalid authentication mechanism",
 		"postfix/smtpd[98]: warning: unknown[203.0.113.73]: SASL XYZ authentication failed: Invalid authentication mechanism: 'XYZ'",
+		"postfix/smtpd[98]: warning: unknown[203.0.113.73]: SASL LOGIN authentication failed: Authentication request timed out",
+		"postfix/smtpd[98]: warning: unknown[203.0.113.73]: SASL LOGIN authentication failed: Unexpected continuation",
+		"postfix/smtpd[98]: warning: unknown[203.0.113.73]: SASL PLAIN authentication failed: Client didn't present valid SSL certificate",
+		"postfix/smtpd[98]: warning: unknown[203.0.113.73]: SASL PLAIN authentication failed: SSL certificate didn't contain username",
 	} {
-		d, clock := newPairingDaemon(t, &config.Config{})
-		feed(d, clock,
-			"dovecot: auth: sql(a,203.0.113.73): Password mismatch",
-			local,
-			fmt.Sprintf(postfixFailFmt, "203.0.113.73", "a"))
-		if calls := smtpCalls(d); calls != 1 {
-			t.Fatalf("%q: SMTP failures = %d, want 1", local, calls)
+		for _, suffix := range []string{"", ", sasl_username=authentication server"} {
+			t.Run(local+suffix, func(t *testing.T) {
+				assertSMTPVerdictPreserved(t, local+suffix)
+			})
 		}
+	}
+}
+
+func assertSMTPVerdictPreserved(t *testing.T, line string) {
+	t.Helper()
+	d, clock := newPairingDaemon(t, &config.Config{})
+	feed(d, clock, "dovecot: auth: sql(a,203.0.113.73): Password mismatch")
+	pending := d.smtpAuthTracker.pendingVerdicts["203.0.113.73"][0]
+	feed(d, clock, line)
+	if calls := smtpCalls(d); calls != 0 {
+		t.Fatalf("protocol rejection recorded %d credential failures", calls)
+	}
+	if got := d.smtpAuthTracker.pendingVerdicts["203.0.113.73"]; len(got) != 1 || got[0] != pending {
+		t.Fatalf("protocol rejection changed pending verdict: %+v", got)
+	}
+	// Reuse the process too: the rejection must not mark it as unhealthy.
+	failure := "postfix/smtpd[98]: warning: unknown[203.0.113.73]: SASL LOGIN authentication failed: (reason unavailable), sasl_username=a"
+	feed(d, clock, failure, failure)
+	if calls := smtpCalls(d); calls != 1 {
+		t.Fatalf("SMTP failures = %d, want one real failure", calls)
+	}
+	if len(d.smtpAuthTracker.pendingVerdicts) != 0 {
+		t.Fatal("completed failure left a pending verdict")
+	}
+}
+
+// Postfix logs these before or outside a credential check. Client text in
+// them must not be mistaken for a SASL failure or a backend warning.
+func TestPostfixNonAuthLinesPreserveVerdict(t *testing.T) {
+	for _, msg := range []string{
+		"warning: unknown[203.0.113.73]: SASL LOGIN authentication aborted",
+		"warning: unknown[203.0.113.73]: request longer than 12288: SASL LOGIN authentication fail...",
+		"warning: AUTH command rate limit exceeded: 1 from unknown[203.0.113.73] for service submission",
+		"> unknown[203.0.113.73]: 500 5.5.6 SASL response limit exceeded",
+		"> unknown[203.0.113.73]: 504 5.5.4 Encryption required for requested authentication mechanism",
+		"> unknown[203.0.113.73]: 503 5.5.1 Error: authentication not enabled",
+		`warning: unknown[203.0.113.73]: SASL "LOGIN authentication failed: Connection lost to authentication server" authentication failed: Invalid authentication mechanism`,
+		"warning: unknown[203.0.113.73]: SASL TEMPORARY authentication failed: Invalid authentication mechanism: 'TEMPORARY'",
+	} {
+		t.Run(msg, func(t *testing.T) {
+			assertSMTPVerdictPreserved(t, "postfix/smtpd[98]: "+msg)
+		})
+	}
+}
+
+// A genuine backend failure must retire the verdict without counting it;
+// otherwise a later warning could reuse the withheld credential evidence.
+func TestPostfixServerFaultConsumesVerdict(t *testing.T) {
+	for _, reply := range []string{
+		"Authentication backend error",
+		"Connection lost to authentication server",
+		"Can't connect to authentication server",
+		"Temporary authentication failure",
+		"generic failure",
+		"no memory available",
+		"transient failure (e.g., weak key)",
+		"remote authentication server unavailable",
+	} {
+		t.Run(reply, func(t *testing.T) {
+			d, clock := newPairingDaemon(t, &config.Config{})
+			feed(d, clock,
+				"dovecot: auth: sql(a,203.0.113.73): Password mismatch",
+				"postfix/smtpd[98]: warning: unknown[203.0.113.73]: SASL LOGIN authentication failed: "+reply+", sasl_username=Invalid authentication mechanism")
+			if calls := smtpCalls(d); calls != 0 {
+				t.Fatalf("backend failure recorded %d credential failures", calls)
+			}
+			if len(d.smtpAuthTracker.pendingVerdicts) != 0 {
+				t.Fatal("backend failure left a reusable verdict")
+			}
+			feed(d, clock, fmt.Sprintf(postfixFailFmt, "203.0.113.73", "a"))
+			if calls := smtpCalls(d); calls != 0 {
+				t.Fatalf("later failure reused withheld evidence: calls=%d", calls)
+			}
+		})
+	}
+}
+
+func TestPostfixUsernameCannotForgeFailureReason(t *testing.T) {
+	for _, name := range []string{
+		"Connection lost to authentication server",
+		"Temporary authentication failure",
+		"Authentication backend error",
+		"Invalid authentication mechanism",
+		"Invalid base64 data in continued response",
+		"Authentication request timed out",
+		"a, sasl_username=Authentication backend error",
+	} {
+		t.Run(name, func(t *testing.T) {
+			d, clock := newPairingDaemon(t, &config.Config{})
+			feed(d, clock,
+				"dovecot: auth: sql(a,203.0.113.73): Password mismatch",
+				fmt.Sprintf(postfixFailFmt, "203.0.113.73", name))
+			if calls := smtpCalls(d); calls != 1 {
+				t.Fatalf("username suppressed a credential failure: calls=%d", calls)
+			}
+		})
 	}
 }

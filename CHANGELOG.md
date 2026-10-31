@@ -22,6 +22,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - `csm doctor` now reports the Postfix SMTP detection gap even when verbose authentication logging is enabled.
 - Password guessing against SMTP login on Postfix servers is now detected and blocked. It needs verbose auth logging in Dovecot, which `csm doctor` checks.
 - Password guessing against Postfix SMTP logins is now detected with safeguards against false blocks. Enable verbose Dovecot logging; `csm doctor` checks the settings.
+- SMTP login protection on Postfix servers no longer counts authentication protocol refusals as password failures.
 - Password guessing against SMTP login on Postfix servers is now detected and blocked. It needs verbose auth logging in Dovecot, which `csm doctor` checks.
 - Crafted login names no longer pause mail brute-force protection.
 - The daemon log now escapes line breaks and control characters in values, so crafted file names cannot forge log lines.

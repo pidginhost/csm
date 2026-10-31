@@ -81,11 +81,17 @@ func isPostfixSASLNonCredentialReply(reply string) bool {
 	return strings.Contains(reply, "authentication server") || strings.Contains(reply, "temporar")
 }
 
-// isPostfixSASLLocalReply reports a failure smtpd decided itself, before any
-// credentials reached Dovecot. Such a request has no Dovecot verdict to claim.
-func isPostfixSASLLocalReply(reply string) bool {
+// isPostfixSASLProtocolReply reports protocol refusals from either smtpd or
+// Dovecot. They do not establish a credential check and must not claim a
+// parallel request's pending verdict.
+func isPostfixSASLProtocolReply(reply string) bool {
 	switch reply {
 	case "invalid authentication mechanism", "invalid base64 data in initial response", "invalid base64 data in continued response":
+		return true
+	case "authentication request timed out", "unexpected continuation",
+		"client didn't present valid ssl certificate", "ssl certificate didn't contain username":
+		// Dovecot sends these before processing the SASL response. Postfix
+		// forwards them in the same warning as a wrong password.
 		return true
 	}
 	return strings.HasPrefix(reply, "invalid authentication mechanism:")

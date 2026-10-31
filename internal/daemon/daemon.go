@@ -2552,7 +2552,7 @@ func (d *Daemon) handleSMTPAuthPairing(line string, obs alert.Observation, cfg *
 	// A client can send these on a second connection while its real attempt
 	// waits out Dovecot's failure delay; claiming a verdict here would hide
 	// that attempt.
-	if isPostfixSASLLocalReply(reply) {
+	if isPostfixSASLProtocolReply(reply) {
 		return nil, true
 	}
 	// Claim the verdict even for a server-blamed reply so it cannot pair
