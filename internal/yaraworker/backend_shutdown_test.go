@@ -103,6 +103,7 @@ func TestReloadContextCancelsWhileCompileBusy(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("compile did not start")
 	}
+	health := b.CompileError()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	reloaded := make(chan error, 1)
@@ -116,8 +117,8 @@ func TestReloadContextCancelsWhileCompileBusy(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("canceled reload waited for another compile")
 	}
-	if b.CompileError() != "" {
-		t.Fatalf("canceled waiter changed compile health: %s", b.CompileError())
+	if got := b.CompileError(); got != health {
+		t.Fatalf("canceled waiter changed compile health from %q to %q", health, got)
 	}
 }
 

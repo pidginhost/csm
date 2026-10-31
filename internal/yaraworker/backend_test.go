@@ -546,6 +546,33 @@ func TestReloadInvalidatesVerdicts(t *testing.T) {
 
 // Zero bytes are clean without a round trip, even when rules failed to
 // compile; a stopped backend still refuses them.
+// Until a reload compiles the rules or finds the directory empty, no scan
+// reads clean. A reload that ends with neither, such as one canceled at
+// startup, leaves file scans failing closed.
+func TestScansFailClosedUntilRulesConfirmed(t *testing.T) {
+	b := newBackend(t, &backendFixture{})
+	if m, err := b.ScanBytesChecked([]byte("evil")); err == nil {
+		t.Fatalf("byte scan read clean before any reload: %+v", m)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := b.ReloadContext(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled reload = %v, want context.Canceled", err)
+	}
+	if m, err := b.ScanBytesChecked([]byte("evil")); err == nil {
+		t.Fatalf("byte scan read clean after a canceled reload: %+v", m)
+	}
+	if b.CompileError() == "" {
+		t.Fatal("no compile error reported while no rules are loaded")
+	}
+	if err := b.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	if got := b.CompileError(); got != "" {
+		t.Fatalf("compile error %q kept after rules compiled", got)
+	}
+}
+
 func TestScanBytesCheckedEmptyData(t *testing.T) {
 	fx := &backendFixture{dir: rulesDir(t, map[string]string{"rules.yar": "syntax error"})}
 	b := newBackend(t, fx)
