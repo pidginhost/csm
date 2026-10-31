@@ -9,10 +9,9 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 )
 
-// Postfix with dovecot SASL logs a failed SMTP AUTH as a smtpd warning that
-// names the client but not the account. These are the formats rsyslog writes
-// on Debian and RHEL hosts, including a submission service with its own
-// syslog_name.
+// Older Postfix logs name only the client; newer versions can append the
+// attempted account. Both must count, even when the account resembles a
+// backend error. Include both rsyslog timestamp formats and per-service tags.
 func TestPostfixSASLFailuresRaiseSMTPBruteForce(t *testing.T) {
 	cases := []struct {
 		name, format, ip string
@@ -23,6 +22,8 @@ func TestPostfixSASLFailuresRaiseSMTPBruteForce(t *testing.T) {
 		{"no reply text", "Oct 31 12:34:11 mail postfix/smtpd[1234]: warning: unknown[%s]: SASL LOGIN authentication failed", "203.0.113.51"},
 		{"client port logging", "Oct 31 12:34:11 mail postfix/smtpd[1234]: warning: unknown[%s]:51234: SASL LOGIN authentication failed: UGFzc3dvcmQ6", "203.0.113.52"},
 		{"client port logging ipv6", "Oct 31 12:34:11 mail postfix/smtpd[1234]: warning: unknown[%s]:51234: SASL LOGIN authentication failed: UGFzc3dvcmQ6", "2001:db8::6"},
+		{"username resembles outage", "Oct 31 12:34:11 mail postfix/smtpd[1234]: warning: unknown[%s]: SASL PLAIN authentication failed: authentication failure, sasl_username=temporary@example.net", "203.0.113.53"},
+		{"username contains server phrase", "Oct 31 12:34:11 mail postfix/smtpd[1234]: warning: unknown[%s]: SASL LOGIN authentication failed: (reason unavailable), sasl_username=authentication server", "203.0.113.54"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -48,6 +49,13 @@ func TestPostfixSASLLinesThatMustNotCount(t *testing.T) {
 	}{
 		{"auth server lost", "Oct 31 12:34:11 mail postfix/submission/smtpd[99]: warning: unknown[203.0.113.60]: SASL PLAIN authentication failed: Connection lost to authentication server"},
 		{"auth server temporary failure", "Oct 31 12:34:11 mail postfix/submission/smtpd[99]: warning: unknown[203.0.113.61]: SASL PLAIN authentication failed: Temporary authentication failure"},
+		{"auth backend error", "Oct 31 12:34:11 mail postfix/submission/smtpd[99]: warning: unknown[203.0.113.61]: SASL PLAIN authentication failed: Authentication backend error"},
+		{"auth backend error with username", "Oct 31 12:34:11 mail postfix/submission/smtpd[99]: warning: unknown[203.0.113.61]: SASL PLAIN authentication failed: Authentication backend error, sasl_username=alice@example.net"},
+		{"auth server connect failure", "Oct 31 12:34:11 mail postfix/smtpd[99]: warning: unknown[203.0.113.61]: SASL PLAIN authentication failed: Can't connect to authentication server"},
+		{"cyrus generic failure", "Oct 31 12:34:11 mail postfix/smtpd[99]: warning: unknown[203.0.113.61]: SASL PLAIN authentication failed: generic failure"},
+		{"cyrus memory failure", "Oct 31 12:34:11 mail postfix/smtpd[99]: warning: unknown[203.0.113.61]: SASL PLAIN authentication failed: no memory available"},
+		{"cyrus transient failure", "Oct 31 12:34:11 mail postfix/smtpd[99]: warning: unknown[203.0.113.61]: SASL PLAIN authentication failed: transient failure (e.g., weak key)"},
+		{"cyrus server unavailable", "Oct 31 12:34:11 mail postfix/smtpd[99]: warning: unknown[203.0.113.61]: SASL PLAIN authentication failed: remote authentication server unavailable"},
 		{"other program", "Oct 31 12:34:11 mail dovecot: warning: unknown[203.0.113.62]: SASL LOGIN authentication failed: UGFzc3dvcmQ6"},
 		{"postfix non-smtpd", "Oct 31 12:34:11 mail postfix/smtp[99]: warning: unknown[203.0.113.63]: SASL LOGIN authentication failed: UGFzc3dvcmQ6"},
 		{"aborted by client", "Oct 31 12:34:11 mail postfix/smtpd[99]: warning: unknown[203.0.113.64]: SASL LOGIN authentication aborted"},

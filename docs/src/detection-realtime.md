@@ -361,7 +361,11 @@ Journal input requires a build with journal support.
 
 Detects credential stuffing, password spray, and raw SMTP probe storms. Runs as part of the Exim mainlog watcher on cPanel hosts and on non-cPanel Exim hosts where `/var/log/exim_mainlog` exists.
 
-On Postfix hosts that read the mail log from a file (`mail_logs.source: file`, or `auto` with the log present), smtpd's SASL authentication failures feed the same tracker. Postfix does not log the account it tried, so these failures count toward `smtp_bruteforce` and `smtp_subnet_spray` but not `smtp_account_spray`. Failures the authentication server causes, such as a lost connection to Dovecot, are not counted. `smtp_probe_abuse` reads Exim lines only.
+On Postfix hosts that read the mail log from a file (`mail_logs.source: file`, or `auto` with the log present), smtpd's SASL authentication failures feed the same tracker. Account names are unavailable on older Postfix versions, so these failures count toward `smtp_bruteforce` and `smtp_subnet_spray` but not `smtp_account_spray` or the slow mailbox-walk detector. Successful Postfix logins are not recorded by this tracker. `smtp_probe_abuse` reads Exim lines only.
+
+Recognized authentication backend errors, including lost Dovecot connections, malformed backend replies and temporary Cyrus failures, are not counted. Account names appended by newer Postfix versions do not affect this classification.
+
+Some Postfix failures omit the reason or report `(reason unavailable)`. These still count, but the log line alone cannot distinguish a rejected credential from a failed backend reconnect. Do not rely on this filter alone to prevent blocks during every authentication outage.
 
 Four attack patterns:
 

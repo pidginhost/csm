@@ -7,7 +7,7 @@ import (
 
 // postfixSASLFailureIP returns the client address of a postfix smtpd
 // "warning: name[addr]: SASL <mech> authentication failed: <reply>" line, or
-// "" for any other line. Postfix does not log the account it tried.
+// "" for any other line. Account names are unavailable on older Postfix.
 //
 // The client field must open the warning as one space-free token: smtpd
 // echoes client-supplied text (RCPT, HELO) into other warnings, and a match
@@ -40,7 +40,17 @@ func postfixSASLFailureIP(line string) string {
 	if !ok {
 		return ""
 	}
-	reply = strings.ToLower(reply)
+	// Newer smtpd versions append the attempted username. It is untrusted
+	// text and must not turn a credential failure into a backend outage.
+	reply, _, _ = strings.Cut(reply, ", sasl_username=")
+	reply = strings.ToLower(strings.TrimSpace(strings.TrimPrefix(reply, ":")))
+	// smtpd_sasl_glue logs the SASL reason, not the SMTP status. Dovecot's
+	// malformed backend replies and Cyrus's temporary errors do not all
+	// include "temporary" or "authentication server" in that reason.
+	switch reply {
+	case "authentication backend error", "generic failure", "no memory available", "transient failure (e.g., weak key)":
+		return ""
+	}
 	if strings.Contains(reply, "authentication server") || strings.Contains(reply, "temporar") {
 		return ""
 	}

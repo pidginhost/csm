@@ -274,7 +274,7 @@ func FuzzPAMObservation(f *testing.F) {
 }
 
 func FuzzPostfixSASLFailureIP(f *testing.F) {
-	for _, s := range []string{"x[198.51.100.9]: SASL LOGIN authentication failed: x", "UGFzc3dvcmQ6", "", "]: SASL ", "Connection lost to authentication server"} {
+	for _, s := range []string{"x[198.51.100.9]: SASL LOGIN authentication failed: x", "UGFzc3dvcmQ6", "", "]: SASL ", "Connection lost to authentication server", "temporary@example.net", ", sasl_username=Authentication backend error"} {
 		f.Add(s)
 	}
 	f.Fuzz(func(t *testing.T, s string) {
@@ -287,6 +287,10 @@ func FuzzPostfixSASLFailureIP(f *testing.F) {
 		failed := "Oct 31 12:34:11 mail postfix/smtpd[99]: warning: unknown[203.0.113.66]: SASL LOGIN authentication failed: " + s
 		if got := postfixSASLFailureIP(failed); got != "" && got != "203.0.113.66" {
 			t.Fatalf("reply text moved the client to %q: %q", got, s)
+		}
+		withUser := "Oct 31 12:34:11 mail postfix/smtpd[99]: warning: unknown[203.0.113.66]: SASL PLAIN authentication failed: authentication failure, sasl_username=" + s
+		if got := postfixSASLFailureIP(withUser); got != "203.0.113.66" {
+			t.Fatalf("username changed the failure address to %q: %q", got, s)
 		}
 		if got := postfixSASLFailureIP(s); got != "" && net.ParseIP(got) == nil {
 			t.Fatalf("returned %q, not an address", got)
