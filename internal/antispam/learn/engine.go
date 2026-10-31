@@ -549,6 +549,15 @@ func (e *Engine) admit(ctx context.Context, src Source, snapshot []byte, intentI
 		err = fmt.Errorf("%w: %w", ErrStateIO, viewErr)
 		return admitResult{deferred: true, digests: digests}, err
 	}
+	if allNewParts(a, insp) {
+		pa, part, partErr := e.seedFromPart(ctx, src, snapshot, insp, gaps)
+		if partErr != nil {
+			return admitResult{deferred: true, digests: digests}, partErr
+		}
+		if part != nil {
+			a, snapshot = pa, part
+		}
+	}
 	res := admitResult{skips: a.Skips, duplicates: a.Duplicates, digests: digests}
 	switch {
 	case len(a.Mismatch) > 0:
@@ -584,6 +593,60 @@ func (e *Engine) admit(ctx context.Context, src Source, snapshot []byte, intentI
 	e.stateErr = nil
 	res.committed, res.pending, err = e.publishIntent(ctx, id)
 	return res, err
+}
+
+// allNewParts reports an admission that refused every digest of a report
+// with several parts because none of them is learned yet.
+func allNewParts(a Admission, insp Inspection) bool {
+	if insp.Distinct < 2 || len(a.Skips) != insp.Distinct {
+		return false
+	}
+	for _, s := range a.Skips {
+		if s.Reason != SkipMultipartSeed {
+			return false
+		}
+	}
+	return true
+}
+
+// seedFromPart retries a report whose parts are all new with one text part
+// at a time, the largest first. A single-part message qualifies when its own
+// inspection is exactly one still-new digest of the report, so publishing it
+// adds only that digest. It returns the admission and the body to store, or
+// a nil body when no part qualifies.
+func (e *Engine) seedFromPart(ctx context.Context, src Source, snapshot []byte, insp Inspection, gaps map[uint64]bool) (Admission, []byte, error) {
+	report := map[Digest]bool{}
+	for _, r := range insp.Results {
+		report[r.Queried] = true
+	}
+	for part := range textPartMessages(snapshot, insp.Distinct) {
+		pi, err := e.cfg.Client.Inspect(ctx, part)
+		if errors.Is(err, ErrMessageRejected) {
+			continue
+		}
+		if err != nil {
+			return Admission{}, nil, fmt.Errorf("%w: %w", ErrReadFailed, err)
+		}
+		if pi.Distinct != 1 || pi.Results[0].Found || !report[pi.Results[0].Queried] {
+			continue
+		}
+		src.BodyLen = int64(len(part))
+		var a Admission
+		if err := e.cfg.Ledger.View(func(v LedgerView) error {
+			var assignErr error
+			a, assignErr = Assign(pi, src, v, gaps)
+			return assignErr
+		}); err != nil {
+			return Admission{}, nil, fmt.Errorf("%w: %w", ErrStateIO, err)
+		}
+		for _, r := range insp.Results {
+			if r.Queried != pi.Results[0].Queried {
+				a.Skips = append(a.Skips, Skip{Digest: r.Queried, Reason: SkipMultipartSeed})
+			}
+		}
+		return a, part, nil
+	}
+	return Admission{}, nil, nil
 }
 
 // gaps lists clusters whose positive anchor has a publication in progress;
