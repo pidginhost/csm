@@ -182,7 +182,7 @@ type Daemon struct {
 	// yaraWorkerOn(cfg) is true (the default; see ROADMAP item 2).
 	// Nil when the in-process scanner is in use
 	// (cfg.Signatures.YaraWorkerEnabled explicitly set to false).
-	yaraSup            *yaraworker.Supervisor
+	yaraSup            *yaraworker.Backend
 	yaraCrashMu        sync.Mutex
 	yaraLastCrashAlert time.Time
 	realtimeRulesMu    sync.Mutex
@@ -3497,6 +3497,12 @@ func (d *Daemon) doForgeUpdate() {
 		currentVersion = db.GetMetaString("forge_version_" + d.cfg.Signatures.YaraForge.Tier)
 	}
 
+	// In worker mode the downloaded tier compiles in the compile unit, never
+	// in this root process.
+	compileCheck := yara.TestCompile
+	if d.yaraSup != nil {
+		compileCheck = d.yaraSup.TestCompile
+	}
 	newVersion, count, err := signatures.ForgeUpdateFromURL(
 		d.cfg.Signatures.RulesDir,
 		d.cfg.Signatures.YaraForge.Tier,
@@ -3504,6 +3510,7 @@ func (d *Daemon) doForgeUpdate() {
 		d.cfg.Signatures.SigningKey,
 		d.cfg.Signatures.YaraForge.DownloadURL,
 		d.cfg.Signatures.DisabledRules,
+		compileCheck,
 	)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[%s] YARA Forge update failed: %v\n", ts(), err)

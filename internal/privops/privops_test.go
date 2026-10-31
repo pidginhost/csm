@@ -273,6 +273,41 @@ func TestPHPTaintWorkerMemoryWritesStayInsideDaemon(t *testing.T) {
 	}
 }
 
+func TestYARAWorkerMemoryWritesStayInsideDaemon(t *testing.T) {
+	var memory, units *Op
+	for _, op := range Operations() {
+		switch op.ID {
+		case "detect.yara_worker_memory":
+			memory = &op
+		case "detect.yara_worker_units":
+			units = &op
+		}
+	}
+	if memory == nil || units == nil {
+		t.Fatal("YARA worker memory controls and transient units need separate operations")
+	}
+	if memory.Unsandboxed || !units.Unsandboxed {
+		t.Fatal("memory limits are written by the daemon; only the worker runs outside its sandbox")
+	}
+	if !slices.Equal(units.Writes, []string{"systemd:transient units", "systemd:runtime slice CPU weights"}) {
+		t.Fatalf("unit operation claims in-daemon writes: %v", units.Writes)
+	}
+	want := []string{
+		`cgroup:/sys/fs/cgroup/memory/system.slice/system-csm\x2dyara\x2dworker.slice/csm-yara-worker-*.service`,
+		`cgroup:/sys/fs/cgroup/system.slice/system-csm\x2dyara\x2dworker.slice/csm-yara-worker-*.service`,
+		`cgroup:/sys/fs/cgroup/memory/system.slice/system-csm\x2dyara\x2dcompile\x2dworker.slice/csm-yara-compile-worker-*.service`,
+		`cgroup:/sys/fs/cgroup/system.slice/system-csm\x2dyara\x2dcompile\x2dworker.slice/csm-yara-compile-worker-*.service`,
+	}
+	if !slices.Equal(memory.Writes, want) {
+		t.Fatalf("memory operation does not name both units in both kernel cgroup layouts: %v", memory.Writes)
+	}
+	for _, op := range []*Op{memory, units} {
+		if op.DisableKey != "signatures.yara_worker_enabled" || op.DisableValue != "false" {
+			t.Fatalf("%s disable = %s: %s, want signatures.yara_worker_enabled: false", op.ID, op.DisableKey, op.DisableValue)
+		}
+	}
+}
+
 func TestDisableValuesAreValidConfigYAML(t *testing.T) {
 	for _, op := range Operations() {
 		if op.DisableKey == "" {
@@ -536,6 +571,8 @@ var reviewedRiskTiers = map[string]RiskTier{
 	"detect.parse_worker_units":     RiskReversible,
 	"detect.phptaint_worker_memory": RiskReversible,
 	"detect.phptaint_worker_units":  RiskReversible,
+	"detect.yara_worker_memory":     RiskReversible,
+	"detect.yara_worker_units":      RiskReversible,
 	"detect.outbound_connections":   RiskReversible,
 	"detect.pam_events":             RiskObserve,
 	"detect.process_exec":           RiskReversible,
@@ -633,6 +670,8 @@ var reviewedRecoveryGaps = map[string]string{
 	"detect.parse_worker_units":     "Worker units and their cgroups end with the unit; empty slices and their runtime CPU weights remain until reboot. Startup attempts to kill leftover workers and logs failures.",
 	"detect.phptaint_worker_memory": "Memory and swap limits end with the worker cgroup; this inventory specifies no separate cleanup contract.",
 	"detect.phptaint_worker_units":  "Worker units and their cgroups end with the unit; empty slices and their runtime CPU weights remain until reboot. Startup attempts to kill leftover workers and logs failures.",
+	"detect.yara_worker_memory":     "Memory and swap limits end with the worker cgroup; this inventory specifies no separate cleanup contract.",
+	"detect.yara_worker_units":      "Worker units and their cgroups end with the unit; empty slices and their runtime CPU weights remain until reboot. Startup attempts to kill leftover workers and logs failures.",
 	"detect.outbound_connections":   "This inventory does not yet specify verified detach, map restoration and crash recovery for these kernel hooks.",
 	"detect.process_exec":           "This inventory does not yet specify verified detach, map restoration and crash recovery for these kernel hooks.",
 	"detect.sensitive_file_writes":  "This inventory does not yet specify verified detach, map restoration and crash recovery for these kernel hooks.",

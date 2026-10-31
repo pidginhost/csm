@@ -1,21 +1,20 @@
 package daemon
 
 import (
-	"syscall"
 	"testing"
-	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/workerproc"
 )
 
 // A worker exit during the daemon's drain precedes cancellation of the
 // supervisor. The shutdown channel must suppress that late crash finding.
-func TestOnYaraWorkerRestartSilentDuringShutdown(t *testing.T) {
+func TestOnYaraWorkerFailureSilentDuringShutdown(t *testing.T) {
 	d := newDaemonForYaraBackendTest(t)
 	d.stopCh = make(chan struct{})
 	close(d.stopCh)
 
-	d.onYaraWorkerRestart(-1, syscall.SIGTERM, 35*time.Minute)
+	d.onYaraWorkerFailure(workerproc.ReasonCrash, errWorkerDied)
 
 	select {
 	case f := <-d.alertCh:
@@ -27,11 +26,11 @@ func TestOnYaraWorkerRestartSilentDuringShutdown(t *testing.T) {
 // The guard must not cost us the alert it exists to preserve: a worker that
 // dies while the daemon is running is a real crash and still has to be
 // reported.
-func TestOnYaraWorkerRestartReportsCrashWhileRunning(t *testing.T) {
+func TestOnYaraWorkerFailureReportsCrashWhileRunning(t *testing.T) {
 	d := newDaemonForYaraBackendTest(t)
 	d.stopCh = make(chan struct{}) // open: daemon is running
 
-	d.onYaraWorkerRestart(1, syscall.SIGSEGV, 5*time.Second)
+	d.onYaraWorkerFailure(workerproc.ReasonCrash, errWorkerDied)
 
 	select {
 	case f := <-d.alertCh:
@@ -50,13 +49,13 @@ func TestOnYaraWorkerRestartReportsCrashWhileRunning(t *testing.T) {
 // must be treated as running, not as shutting down. Reading a nil channel
 // blocks forever, so a guard written as a plain receive would swallow every
 // crash finding on such a daemon.
-func TestOnYaraWorkerRestartNilStopChStillReports(t *testing.T) {
+func TestOnYaraWorkerFailureNilStopChStillReports(t *testing.T) {
 	d := newDaemonForYaraBackendTest(t)
 	if d.stopCh != nil {
 		t.Fatal("harness unexpectedly set stopCh; this test covers the nil case")
 	}
 
-	d.onYaraWorkerRestart(1, syscall.SIGSEGV, 5*time.Second)
+	d.onYaraWorkerFailure(workerproc.ReasonCrash, errWorkerDied)
 
 	select {
 	case <-d.alertCh:

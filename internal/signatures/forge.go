@@ -41,13 +41,19 @@ var forgeAtomicWrite = atomicio.AtomicWrite
 // A detached signature is fetched from the ZIP URL + ".sig" and verified
 // against the raw ZIP content before extraction.
 func ForgeUpdate(rulesDir, tier, currentVersion, signingKey string, disabledRules []string) (newVersion string, ruleCount int, err error) {
-	return ForgeUpdateFromURL(rulesDir, tier, currentVersion, signingKey, "", disabledRules)
+	return ForgeUpdateFromURL(rulesDir, tier, currentVersion, signingKey, "", disabledRules, nil)
 }
 
 // ForgeUpdateFromURL is ForgeUpdate with an explicit signed ZIP source. The
 // downloadURL may contain {tier} and {version}; the signature is fetched from
-// the resolved ZIP URL plus ".sig".
-func ForgeUpdateFromURL(rulesDir, tier, currentVersion, signingKey, downloadURL string, disabledRules []string) (newVersion string, ruleCount int, err error) {
+// the resolved ZIP URL plus ".sig". compileCheck compiles the downloaded tier
+// before it replaces anything on disk; the daemon passes its compile worker so
+// downloaded rules never compile in a root process. nil compiles in this
+// process.
+func ForgeUpdateFromURL(rulesDir, tier, currentVersion, signingKey, downloadURL string, disabledRules []string, compileCheck func(string) error) (newVersion string, ruleCount int, err error) {
+	if compileCheck == nil {
+		compileCheck = yara.TestCompile
+	}
 	if _, ok := forgeTierAsset[tier]; !ok {
 		return "", 0, fmt.Errorf("unknown YARA Forge tier: %q (valid: core, extended, full)", tier)
 	}
@@ -99,7 +105,7 @@ func ForgeUpdateFromURL(rulesDir, tier, currentVersion, signingKey, downloadURL 
 		return "", 0, fmt.Errorf("checking existing Forge tier: %w", err)
 	}
 
-	if err := yara.TestCompile(string(yarContent)); err != nil {
+	if err := compileCheck(string(yarContent)); err != nil {
 		return "", 0, fmt.Errorf("YARA compilation test failed (keeping existing rules): %w", err)
 	}
 

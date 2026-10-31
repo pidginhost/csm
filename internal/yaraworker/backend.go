@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/pidginhost/csm/internal/obs"
 	"github.com/pidginhost/csm/internal/queuehealth"
 	"github.com/pidginhost/csm/internal/workerproc"
 	"github.com/pidginhost/csm/internal/yara"
@@ -33,6 +34,9 @@ type BackendConfig struct {
 	OnFailure func(reason string, err error)
 	OnJob     func(outcome string, memory uint64)
 	Log       func(string, ...any)
+	// WarmAfterReload starts a scan worker in the background after every
+	// successful reload, so the rules load off the scan path.
+	WarmAfterReload bool
 }
 
 // Backend is the YARA backend the daemon installs with yara.SetActive. It
@@ -136,6 +140,10 @@ func (b *Backend) Reload() error {
 		_ = old.file.Close()
 	}
 	yara.InvalidateCaches()
+	if b.cfg.WarmAfterReload && count > 0 {
+		// A failed warm-up is reported through OnFailure like any request.
+		obs.Go("yara-worker-warm", func() { _ = b.Warm() })
+	}
 	return nil
 }
 

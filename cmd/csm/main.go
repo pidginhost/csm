@@ -103,7 +103,7 @@ func main() {
 	case "antispam-worker":
 		runAntispamWorker()
 	case "yara-worker":
-		runYaraWorker()
+		runYaraWorker(os.Args[2:])
 	case "phptaint-worker":
 		runPHPTaintWorker(os.Args[2:])
 	case "parse-worker":
@@ -442,36 +442,25 @@ func runDaemon() {
 	}
 }
 
-// runYaraWorker is the entry point for the supervised child process
-// that hosts YARA-X. The daemon is the only expected caller; an
-// operator invoking it by hand is supported for debugging but is not a
-// documented workflow.
-//
-// Flags:
-//
-//	--socket <path>     Unix socket to bind (default /var/run/csm/yara-worker.sock)
-//	--rules-dir <path>  YARA rules directory (default empty: no rules loaded)
-//
-// Fatal startup errors exit 1. During daemon shutdown, the supervisor marks
-// itself stopped before signaling the worker, so that child exit is not
-// treated as a restart candidate.
-func runYaraWorker() {
-	// The worker is a separate process that hosts YARA-X for the
-	// supervisor. Use the supervisor's config so both agree on the
-	// Sentry DSN and tags; failures to init are non-fatal.
-	workerCfg, cfg, err := yaraWorkerConfig(os.Args[2:])
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "yara-worker:", err)
-		os.Exit(1)
+// runYaraWorker is the isolated child entry point for YARA-X: the same
+// process compiles rules in the compile unit and scans in the scan unit. Fd 0
+// and fd 1 are the launcher's socket; diagnostics go to stderr so they cannot
+// corrupt the protocol. It reads no config file: the unit can reach none.
+func runYaraWorker(args []string) {
+	fs := flag.NewFlagSet("yara-worker", flag.ContinueOnError)
+	memoryLimit := fs.Int64("memory-limit", 0, "the unit's memory cap in bytes")
+	err := fs.Parse(args)
+	if err == nil && *memoryLimit > 0 {
+		// Make the collector work harder before the kernel kills the unit.
+		debug.SetMemoryLimit(*memoryLimit * 8 / 10)
 	}
-	if initErr := obs.Init(cfg, Version, BuildHash); initErr != nil {
-		fmt.Fprintf(os.Stderr, "sentry: %v (continuing without telemetry)\n", initErr)
+	var conn *net.UnixConn
+	if err == nil {
+		conn, err = workerproc.ChildConn()
 	}
-	workerCfg.ErrorLog = func(err error) {
-		fmt.Fprintln(os.Stderr, "yara-worker:", err)
+	if err == nil {
+		err = yaraworker.Serve(context.Background(), conn, yaraworker.DefaultEngine())
 	}
-	err = yaraworker.Run(context.Background(), workerCfg)
-	obs.Flush()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "yara-worker:", err)
 		os.Exit(1)

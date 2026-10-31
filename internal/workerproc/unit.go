@@ -46,6 +46,10 @@ type UnitConfig struct {
 	// or that hold spaces, quotes, backslashes, percent signs or control
 	// bytes, are dropped.
 	InaccessiblePaths []string
+	// AllowExecutableMemory turns MemoryDenyWriteExecute off, for YARA-X:
+	// wasmtime maps its compiled rules executable and cannot load them
+	// otherwise. Every other worker keeps the denial.
+	AllowExecutableMemory bool
 
 	hooks *unitHooks // tests only; nil means the real system
 }
@@ -82,6 +86,10 @@ var unitGeneration = func() *atomic.Int64 {
 // network, no host files, no privileges, bounded memory, tasks and files.
 func lockdownProperties(cfg UnitConfig) []string {
 	memory := strconv.FormatUint(cfg.MemoryLimit, 10)
+	denyWriteExecute := "MemoryDenyWriteExecute=yes"
+	if cfg.AllowExecutableMemory {
+		denyWriteExecute = "MemoryDenyWriteExecute=no"
+	}
 	props := []string{
 		"DynamicUser=yes",
 		"CapabilityBoundingSet=",
@@ -97,7 +105,7 @@ func lockdownProperties(cfg UnitConfig) []string {
 		"ProtectControlGroups=yes",
 		"RestrictNamespaces=yes",
 		"RestrictRealtime=yes",
-		"MemoryDenyWriteExecute=yes",
+		denyWriteExecute,
 		"UMask=0077",
 		"SystemCallFilter=@system-service",
 		// In place of LockPersonality=yes, which systemd-run on systemd 239

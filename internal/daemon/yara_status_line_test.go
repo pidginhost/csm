@@ -11,7 +11,7 @@ import (
 // scan then completed with no findings, which reads as clean rather than as
 // blind.
 func TestYaraWorkerStatusLineZeroRules(t *testing.T) {
-	line := yaraWorkerStatusLine(0, 4242)
+	line := yaraWorkerStatusLine(0)
 
 	if strings.Contains(strings.ToLower(line), "active") {
 		t.Errorf("a zero-rule worker is described as active: %q", line)
@@ -23,19 +23,16 @@ func TestYaraWorkerStatusLineZeroRules(t *testing.T) {
 	if !strings.Contains(strings.ToLower(line), "scanning nothing") {
 		t.Errorf("line does not say what a zero-rule worker means: %q", line)
 	}
-	if !strings.Contains(line, "4242") {
-		t.Errorf("line does not carry the child pid: %q", line)
-	}
 }
 
 // The healthy case must still read as healthy and keep its detail.
 func TestYaraWorkerStatusLineWithRules(t *testing.T) {
-	line := yaraWorkerStatusLine(162, 4242)
+	line := yaraWorkerStatusLine(162)
 
 	if !strings.Contains(line, "active") {
 		t.Errorf("a loaded worker is not described as active: %q", line)
 	}
-	for _, want := range []string{"162", "4242"} {
+	for _, want := range []string{"162"} {
 		if !strings.Contains(line, want) {
 			t.Errorf("line missing %q: %q", want, line)
 		}
