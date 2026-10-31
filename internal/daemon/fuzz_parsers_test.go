@@ -297,37 +297,26 @@ func FuzzPostfixWarningsNeverBuildEvidence(f *testing.F) {
 	})
 }
 
-// The client name is the only attacker text before Dovecot's verdict. Any
-// name either leaves the line unparsed or yields the address Dovecot wrote.
-func FuzzDovecotSMTPAuthRejectionAddress(f *testing.F) {
-	for _, s := range []string{"alice@example.net", "", "x,198.51.100.9", "x,<abcdefgh>", "x,master", "a): Password mismatch", "a): b(<c>", "?", "x,2001:db8::1"} {
+// Client-controlled names and password text never turn intermediate
+// database verdicts into final authentication evidence.
+func FuzzDovecotPassdbVerdictsNeverBuildEvidence(f *testing.F) {
+	for _, s := range []string{"alice@example.net", "", "x,198.51.100.9", "x,<abcdefgh>", "x,master", "a): Password mismatch", "a): b(<c>", "Temporary authentication failure"} {
 		f.Add(s)
 	}
 	f.Fuzz(func(t *testing.T, name string) {
-		for _, tail := range []string{",203.0.113.7): unknown user", ",203.0.113.7,master): Password mismatch"} {
-			ip, account, ok := dovecotSMTPAuthRejection("dovecot: auth: sql(" + name + tail)
-			if ok && (ip != "203.0.113.7" || account != name) {
-				t.Fatalf("name %q parsed as ip=%q account=%q", name, ip, account)
+		d := New(&config.Config{}, nil, nil, "")
+		for _, line := range []string{
+			"dovecot: auth: sql(" + name + ",203.0.113.7): unknown user",
+			"dovecot: auth: sql(" + name + ",203.0.113.7,master): Password mismatch",
+			"dovecot: auth: sql(" + name + ",203.0.113.7,<session>): unknown user",
+			"dovecot: auth: sql(a,203.0.113.7): Password mismatch (given password: " + name,
+		} {
+			if got := d.handleMailLine(line, alert.Observation{}, d.currentCfg()); len(got) != 0 {
+				t.Fatalf("passdb verdict raised findings: %+v", got)
 			}
 		}
-		for _, tail := range []string{",203.0.113.7,<session>): unknown user", ",203.0.113.7,master,<session>): Password mismatch"} {
-			if ip, _, ok := dovecotSMTPAuthRejection("dovecot: auth: sql(" + name + tail); ok {
-				t.Fatalf("sessioned verdict counted as SMTP for %q", ip)
-			}
-		}
-	})
-}
-
-func FuzzDovecotSMTPAuthLoggedPassword(f *testing.F) {
-	for _, s := range []string{"", ",203.0.113.9): unknown user", "a): Password mismatch", "Temporary authentication failure"} {
-		f.Add(s)
-	}
-	f.Fuzz(func(t *testing.T, suffix string) {
-		// The suffix can end anywhere, including a syslog truncation inside
-		// attacker text that resembles another complete verdict.
-		line := "dovecot: auth: sql(a,203.0.113.7): Password mismatch (given password: " + suffix
-		if ip, _, ok := dovecotSMTPAuthRejection(line); ok {
-			t.Fatalf("logged password counted as SMTP for %q", ip)
+		if calls, _ := d.smtpAuthTracker.Stats(); calls != 0 || d.smtpAuthTracker.Size() != 0 || d.mailAuthTracker.Size() != 0 || len(d.mailAuthTracker.backendErr) != 0 {
+			t.Fatal("passdb verdict left SMTP, mail or backend-outage evidence")
 		}
 	})
 }

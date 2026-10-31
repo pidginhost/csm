@@ -230,7 +230,7 @@ Tails auth, access, and mail logs in real-time. The exact file paths are chosen 
 | Auth log | All | SSH logins and failures. `/var/log/auth.log` on Debian/Ubuntu, `/var/log/secure` on RHEL family and cPanel |
 | Exim mainlog (`/var/log/exim_mainlog`) | cPanel; non-cPanel when the file exists | Mail anomalies, queue issues, SMTP brute force, probe abuse, and cloud relay abuse |
 | Apache/LiteSpeed/Nginx access log | All | WordPress brute force (wp-login.php, xmlrpc.php), real-time. Paths: `/var/log/apache2/access.log` (Debian), `/var/log/httpd/access_log` (RHEL), `/var/log/nginx/access.log` (Nginx), `/usr/local/apache/logs/access_log`, then `/var/log/apache2/access_log` and `/etc/apache2/logs/access_log` (cPanel, also written by LiteSpeed). Automatic candidates exclude the cPanel access log |
-| Mail log (platform file or journal) | All hosts with Postfix/Dovecot logs | IMAP/POP3/ManageSieve account compromise and mail brute-force; SMTP brute force on hosts without an Exim mainlog |
+| Mail log (platform file or journal) | All hosts with Postfix/Dovecot logs | IMAP/POP3/ManageSieve account compromise and mail brute-force |
 | FTP log (`/var/log/messages`) | cPanel only | FTP logins and failures |
 | ModSecurity error log | All (if ModSec installed) | WAF blocks and attacks. Auto-discovered from the detected web server |
 | Nginx error log (`/var/log/nginx/error.log`) | Nginx hosts | General web errors, ModSecurity denies |
@@ -361,16 +361,13 @@ Journal input requires a build with journal support.
 
 Detects credential stuffing, password spray, and raw SMTP probe storms. Runs as part of the Exim mainlog watcher on cPanel hosts and on non-cPanel Exim hosts where `/var/log/exim_mainlog` exists.
 
-On hosts without that log, such as Postfix servers that check SMTP logins against Dovecot, the tracker reads Dovecot's password database verdicts from the mail log file or the configured `dovecot.service` journal source. Configured database names are supported. Postfix's own SASL warnings are not used: their text does not distinguish a rejected password from a Dovecot or database outage. Dovecot writes a `Password mismatch` or `unknown user` line only after the password database answered, and only with verbose auth logging on:
+Postfix SMTP AUTH warnings and Dovecot `auth_verbose` password database verdicts are excluded from brute-force evidence. Postfix warnings do not distinguish rejected credentials from temporary backend failures. A Dovecot database rejection can precede a successful login or an internal failure in another database, and one request can produce several rejections. These verdicts lack the request identity and final result needed to correlate them safely.
 
-```
-# /etc/dovecot/conf.d/10-logging.conf
-auth_verbose = yes
-```
+CSM therefore does not detect or block Postfix SMTP password guessing from file or journal input. Enabling `auth_verbose` does not restore that coverage. Keep `auth_verbose_passwords = no` to avoid logging passwords. `csm doctor` reports the detection gap on Postfix hosts with Dovecot and also warns about password logging or unreadable settings.
 
-Leave `auth_verbose_passwords` at `no`; lines that carry a logged password are ignored. Excluded verdicts cannot mark the authentication backend as unavailable. Verdicts for IMAP, POP3 and ManageSieve logins carry a session id and are counted by the mail tracker below instead. Successful Postfix logins are not recorded, so a later success does not clear the slow brute-force signal for that address. `smtp_probe_abuse` reads Exim lines only.
+A replacement needs a trusted final credential result tied to each request. Dovecot's `auth_request_finished` JSON export is not a substitute: its failure outcome can be absent for both credential rejection and internal failure. Treating a missing success field as a rejection would recreate the false blocks. See [Dovecot's result event implementation](https://github.com/dovecot/core/blob/2.3.21/src/auth/auth-request.c#L205-L245).
 
-This source is unsafe for automatic blocking with multiple password databases or success-on-failure policies. A database rejection can precede a successful login or a temporary failure in another database. The same attempt can also produce several verdicts. These lines lack the request identity and final result needed to distinguish those cases. Keep `auto_response.dry_run: true` on such hosts. `csm doctor` checks logging settings, not whether database verdicts are final authentication results.
+Exim SMTP detection and Dovecot IMAP, POP3 and ManageSieve detection continue to work. Excluded password database verdicts do not count again alongside their login summaries or mark the backend as unavailable. `smtp_probe_abuse` reads Exim lines only.
 
 Four attack patterns:
 

@@ -13,27 +13,26 @@ import (
 	"github.com/pidginhost/csm/internal/platform"
 )
 
-// Dovecot's auth_verbose lines are written only after the password database
-// answered. With one terminal database, these are the credential verdicts
-// Postfix's own SASL warning lacks. MTA requests have no login session.
-func TestDovecotSMTPAuthRejectionsCount(t *testing.T) {
+// A database verdict is not a final authentication result. The same line
+// can precede a successful fallback login or a temporary backend failure.
+func TestDovecotPassdbVerdictsNeverCount(t *testing.T) {
 	cases := []struct {
-		name, line, ip, account string
+		name, line string
 	}{
-		{"password mismatch iso timestamp", "2026-10-31T20:44:13.494854+02:00 mail dovecot: auth: sql(alice@example.net,203.0.113.80): Password mismatch", "203.0.113.80", "alice@example.net"},
-		{"unknown user classic timestamp", "Oct 31 20:44:23 mail dovecot: auth: sql(bob,198.51.100.81): unknown user", "198.51.100.81", "bob"},
-		{"syslog pid tag ipv6", "Oct 31 20:44:23 mail dovecot[812]: auth: passwd-file(carol@example.net,2001:db8::82): Password mismatch", "2001:db8::82", "carol@example.net"},
-		{"blocking passdb worker", "Oct 31 20:44:23 mail dovecot: auth-worker(4567): pam(dave,203.0.113.83): unknown user", "203.0.113.83", "dave"},
-		{"worker with master connection prefix", "Oct 31 20:44:23 mail dovecot: auth-worker(4567): conn unix:auth-worker (pid=4560,uid=97): auth-worker<1>: pam(erin,203.0.113.84): Password mismatch", "203.0.113.84", "erin"},
-		{"master user login", "Oct 31 20:44:23 mail dovecot: auth: sql(frank@example.net,203.0.113.85,master): Password mismatch", "203.0.113.85", "frank@example.net"},
-		{"punctuation in name", "dovecot: auth: sql(a): b(<c>,203.0.113.88): unknown user", "203.0.113.88", "a): b(<c>"},
+		{"password mismatch iso timestamp", "2026-10-31T20:44:13.494854+02:00 mail dovecot: auth: sql(alice@example.net,203.0.113.80): Password mismatch"},
+		{"unknown user classic timestamp", "Oct 31 20:44:23 mail dovecot: auth: sql(bob,198.51.100.81): unknown user"},
+		{"syslog pid tag ipv6", "Oct 31 20:44:23 mail dovecot[812]: auth: passwd-file(carol@example.net,2001:db8::82): Password mismatch"},
+		{"blocking passdb worker", "Oct 31 20:44:23 mail dovecot: auth-worker(4567): pam(dave,203.0.113.83): unknown user"},
+		{"worker with master connection prefix", "Oct 31 20:44:23 mail dovecot: auth-worker(4567): conn unix:auth-worker (pid=4560,uid=97): auth-worker<1>: pam(erin,203.0.113.84): Password mismatch"},
+		{"master user login", "Oct 31 20:44:23 mail dovecot: auth: sql(frank@example.net,203.0.113.85,master): Password mismatch"},
+		{"punctuation in name", "dovecot: auth: sql(a): b(<c>,203.0.113.88): unknown user"},
 		// Dovecot uses the configured passdb name instead of the driver
 		// when one is set; it is not limited to lowercase driver names.
-		{"named passdb", "dovecot: auth: SQL.Primary(a,203.0.113.95): unknown user", "203.0.113.95", "a"},
+		{"named passdb", "dovecot: auth: SQL.Primary(a,203.0.113.95): unknown user"},
 		// The address is the field Dovecot appends after the name, so a name
 		// that embeds another address cannot redirect the block.
-		{"name embeds another address", "Oct 31 20:44:23 mail dovecot: auth: sql(x,198.51.100.9,203.0.113.86): unknown user", "203.0.113.86", "x,198.51.100.9"},
-		{"name embeds a session marker", "Oct 31 20:44:23 mail dovecot: auth: sql(x,<abcdefgh>,203.0.113.87): unknown user", "203.0.113.87", "x,<abcdefgh>"},
+		{"name embeds another address", "Oct 31 20:44:23 mail dovecot: auth: sql(x,198.51.100.9,203.0.113.86): unknown user"},
+		{"name embeds a session marker", "Oct 31 20:44:23 mail dovecot: auth: sql(x,<abcdefgh>,203.0.113.87): unknown user"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -41,19 +40,13 @@ func TestDovecotSMTPAuthRejectionsCount(t *testing.T) {
 			d := New(&config.Config{}, nil, nil, "")
 			d.smtpAuthTracker = newTestTracker(t, clock)
 			d.mailAuthTracker = newTestMailTracker(t, clock)
-			ip, account, ok := dovecotSMTPAuthRejection(tc.line)
-			if !ok || ip != tc.ip || account != tc.account {
-				t.Fatalf("parsed (%q, %q, %v), want (%q, %q, true)", ip, account, ok, tc.ip, tc.account)
-			}
-			var got []alert.Finding
 			for i := 0; i < 5; i++ {
-				got = append(got, d.handleMailLine(tc.line, alert.Observation{}, d.currentCfg())...)
+				if got := d.handleMailLine(tc.line, alert.Observation{}, d.currentCfg()); len(got) != 0 {
+					t.Fatalf("intermediate verdict raised findings: %+v", got)
+				}
 			}
-			if len(got) != 1 || got[0].Check != "smtp_bruteforce" || got[0].SourceIP != tc.ip {
-				t.Fatalf("findings = %+v, want one smtp_bruteforce for %s", got, tc.ip)
-			}
-			if calls, _ := d.smtpAuthTracker.Stats(); calls != 5 {
-				t.Fatalf("SMTP tracker calls = %d, want 5", calls)
+			if calls, _ := d.smtpAuthTracker.Stats(); calls != 0 {
+				t.Fatalf("SMTP tracker calls = %d, want 0", calls)
 			}
 			if d.mailAuthTracker.Size() != 0 {
 				t.Fatalf("SMTP rejection reached the IMAP tracker")
@@ -131,8 +124,8 @@ func TestDovecotSessionFailuresCountOnlyLoginSummary(t *testing.T) {
 	}
 }
 
-// The logged name keys the per-mailbox spray signal.
-func TestDovecotSMTPAuthRejectionFeedsAccountSpray(t *testing.T) {
+// Ambiguous verdicts must not form an account-spray finding either.
+func TestDovecotPassdbVerdictsCannotFormAccountSpray(t *testing.T) {
 	clock := &staticClock{t: time.Date(2026, 10, 31, 20, 0, 0, 0, time.UTC)}
 	d := New(&config.Config{}, nil, nil, "")
 	d.smtpAuthTracker = newTestTracker(t, clock)
@@ -141,14 +134,11 @@ func TestDovecotSMTPAuthRejectionFeedsAccountSpray(t *testing.T) {
 		line := fmt.Sprintf("dovecot: auth: sql(Alice@Example.net,203.0.113.%d): Password mismatch", 100+i)
 		got = append(got, d.handleMailLine(line, alert.Observation{}, d.currentCfg())...)
 	}
-	var spray []alert.Finding
-	for _, f := range got {
-		if f.Check == "smtp_account_spray" {
-			spray = append(spray, f)
-		}
+	if len(got) != 0 {
+		t.Fatalf("intermediate verdicts raised findings: %+v", got)
 	}
-	if len(spray) != 1 || spray[0].Mailbox != "alice@example.net" {
-		t.Fatalf("findings = %+v, want one smtp_account_spray for alice@example.net", got)
+	if calls, _ := d.smtpAuthTracker.Stats(); calls != 0 {
+		t.Fatalf("intermediate verdicts recorded %d failures", calls)
 	}
 }
 
@@ -201,13 +191,11 @@ func TestDovecotAuthLinesThatMustNotCountAsSMTP(t *testing.T) {
 	}
 }
 
-// Exim logs its own SMTP AUTH failures, which already feed the tracker.
-// Counting Dovecot's verdict for the same attempt would count it twice.
-func TestDovecotSMTPAuthSkippedWhenEximLogCounts(t *testing.T) {
+// Repeating a verdict never makes its intermediate result authoritative.
+func TestDovecotRepeatedPassdbVerdictsNeverCount(t *testing.T) {
 	clock := &staticClock{t: time.Date(2026, 10, 31, 20, 0, 0, 0, time.UTC)}
 	d := New(&config.Config{}, nil, nil, "")
 	d.smtpAuthTracker = newTestTracker(t, clock)
-	d.smtpAuthFromExim = true
 	for i := 0; i < 10; i++ {
 		if got := d.handleMailLine("dovecot: auth: sql(a,203.0.113.99): unknown user", alert.Observation{}, d.currentCfg()); len(got) != 0 {
 			t.Fatalf("findings = %+v, want none", got)
@@ -223,8 +211,8 @@ func TestDovecotSMTPAuthJournalMessages(t *testing.T) {
 		unit, message string
 		want          int64
 	}{
-		{"dovecot.service", "auth: sql(a,203.0.113.99): unknown user", 5},
-		{"dovecot.service", "dovecot: auth: sql(a,203.0.113.99): unknown user", 5},
+		{"dovecot.service", "auth: sql(a,203.0.113.99): unknown user", 0},
+		{"dovecot.service", "dovecot: auth: sql(a,203.0.113.99): unknown user", 0},
 		{"postfix.service", "auth: sql(a,203.0.113.99): unknown user", 0},
 	} {
 		t.Run(tc.unit+tc.message, func(t *testing.T) {
@@ -243,9 +231,9 @@ func TestDovecotSMTPAuthJournalMessages(t *testing.T) {
 	}
 }
 
-// Exercise startup, not a manually assigned flag: the mail goroutine must
-// see the Exim selection even when its own reader attaches first.
-func TestDovecotSMTPAuthEximSelectionPrecedesReaders(t *testing.T) {
+// Exercise the real reader: passdb verdicts must not count while login
+// summaries still reach the independent IMAP tracker.
+func TestDovecotPassdbVerdictsExcludedByMailReader(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "mail.log")
 	if err := os.WriteFile(path, nil, 0600); err != nil {

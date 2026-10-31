@@ -17,9 +17,8 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - Password guessing against SMTP login on Postfix servers is now detected and blocked, as it already was on Exim servers.
 - Postfix SMTP login warnings no longer trigger blocking during authentication outages; password guessing detection from those warnings is suspended.
 - Mail login protection no longer pauses because of crafted login attempts.
-- SMTP password guessing is now detected with journal logging and custom authentication database names.
-- Password guessing against SMTP login on Postfix servers is now detected and blocked. It needs verbose auth logging turned on in Dovecot.
-- `csm doctor` now warns on Postfix servers when Dovecot logging is not set up for SMTP password guessing detection.
+- Successful SMTP logins and authentication outages no longer trigger false blocks; Postfix SMTP password guessing detection is suspended.
+- `csm doctor` now reports the Postfix SMTP detection gap even when verbose authentication logging is enabled.
 - The daemon log now escapes line breaks and control characters in values, so crafted file names cannot forge log lines.
 - YARA scans no longer reopen tenant files by path or write temporary copies of large files to disk.
 - PHP taint analysis now runs in a locked-down worker with no root, network or account file access; files are reported unexamined when it cannot start.
