@@ -135,8 +135,6 @@ func TestTextOnlyMessageWithoutText(t *testing.T) {
 	for name, msg := range map[string]string{
 		"pdf body":   "Subject: s\nContent-Type: application/pdf\n\nJVBERi0xLjQK\n",
 		"image only": "Subject: s\nContent-Type: multipart/mixed; boundary=m\n\n--m\nContent-Type: image/png\n\nx\n--m--\n",
-		"text only attached": "Subject: s\nContent-Type: multipart/mixed; boundary=m\n\n" +
-			"--m\nContent-Type: text/plain\nContent-Disposition: attachment\n\nx\n--m--\n",
 	} {
 		if got := textOnlyMessage([]byte(msg)); got != nil {
 			t.Errorf("%s: got %q", name, got)

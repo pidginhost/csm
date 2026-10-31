@@ -12,24 +12,45 @@ import (
 
 func TestTextOnlyMessageRejectsUnsafeMIME(t *testing.T) {
 	for name, msg := range map[string]string{
-		"bad content type":              "Content-Type: multipart/mixed; boundary\n\nbody\n",
-		"unreadable header":             "broken header\n" + pdfMessage,
-		"invalid type":                  strings.Replace(pdfMessage, "multipart/mixed; boundary=\"m\"", "multipart/mixed; boundary=\"m\"; broken", 1),
-		"missing boundary":              strings.Replace(pdfMessage, "multipart/mixed; boundary=\"m\"", "multipart/mixed", 1),
-		"unreadable nested multipart":   strings.Replace(pdfMessage, "multipart/related; boundary=\"r\"", "multipart/related", 1),
-		"too deep":                      strings.Replace(nested(maxPartDepth+1), "deep text\n", "deep text\n--bi\nContent-Type: application/pdf\n\n%PDF-1.4\n", 1),
+		"bad content type":            "Content-Type: multipart/mixed; boundary\n\nbody\n",
+		"unreadable header":           "broken header\n" + pdfMessage,
+		"invalid type":                strings.Replace(pdfMessage, "multipart/mixed; boundary=\"m\"", "multipart/mixed; boundary=\"m\"; broken", 1),
+		"missing boundary":            strings.Replace(pdfMessage, "multipart/mixed; boundary=\"m\"", "multipart/mixed", 1),
+		"unreadable nested multipart": strings.Replace(pdfMessage, "multipart/related; boundary=\"r\"", "multipart/related", 1),
+		"too deep":                    strings.Replace(nested(maxPartDepth+1), "deep text\n", "deep text\n--bi\nContent-Type: application/pdf\n\n%PDF-1.4\n", 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := textOnlyMessage([]byte(msg)); got != nil {
+				t.Fatal("returned a message that cannot be restricted to its text parts")
+			}
+		})
+	}
+}
+
+// rspamd hashes every text/* part, attached or inline (check_text_attachements
+// defaults to true), so those parts stay learnable.
+func TestTextOnlyMessageKeepsTextAttachments(t *testing.T) {
+	for name, msg := range map[string]string{
 		"attached text":                 "Content-Type: text/plain\nContent-Disposition: attachment\n\nattached text",
 		"attached default type":         "Content-Disposition: attachment\n\nattached text",
 		"attachment with bad parameter": "Content-Type: text/plain\nContent-Disposition: attachment; filename\n\nattached text",
 		"nested attachment with bad parameter": "Content-Type: multipart/mixed; boundary=m\n\n" +
 			"--m\nContent-Type: text/plain\nContent-Disposition: attachment; filename\n\nattached text\n--m--\n",
-		"unsupported text type": "Content-Type: text/calendar\n\ncalendar data",
+		"other text type": "Content-Type: text/calendar\n\ncalendar data",
 	} {
 		t.Run(name, func(t *testing.T) {
-			if got := textOnlyMessage([]byte(msg)); got != nil {
-				t.Fatal("returned a message that cannot be restricted to inline plain text or HTML")
+			if got := textOnlyMessage([]byte(msg)); string(got) != msg {
+				t.Fatalf("changed to %q", got)
 			}
 		})
+	}
+	msg := "Subject: s\nContent-Type: multipart/mixed; boundary=m\n\n" +
+		"--m\nContent-Type: text/plain\n\nbody\n" +
+		"--m\nContent-Type: text/plain\nContent-Disposition: attachment; filename=a.txt\n\nattached text\n" +
+		"--m\nContent-Type: application/pdf\nContent-Disposition: attachment\n\nJVBERi0xLjQK\n--m--\n"
+	_, parts := leaves(t, textOnlyMessage([]byte(msg)))
+	if !reflect.DeepEqual(parts, [][2]string{{"text/plain", "attached text"}, {"text/plain", "body"}}) {
+		t.Fatalf("leaves %q", parts)
 	}
 }
 
@@ -109,16 +130,27 @@ func TestEngineSkipsTextRebuildOverBodyLimit(t *testing.T) {
 	}
 }
 
+// sniffedMessage carries text under a non-text type, which rspamd may still
+// detect and hash as a text part.
+const sniffedMessage = "Subject: s\nContent-Type: multipart/mixed; boundary=m\n\n" +
+	"--m\nContent-Type: text/plain\n\nshort\n" +
+	"--m\nContent-Type: application/octet-stream\n\nplain words sniffed as text\n--m--\n"
+
 func TestPublishStoredMessageUsesVerifiedTextOnlyBody(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		body    string
+		asIs    Digest
 		digest  Digest
 		wantErr error
 	}{
 		{name: "same digest", body: pdfMessage, digest: digest('a')},
 		{name: "changed digest", body: pdfMessage, digest: digest('b'), wantErr: ErrStateMismatch},
-		{name: "no inline text", body: "Content-Type: application/pdf\n\n%PDF-1.4\n", wantErr: ErrStateMismatch},
+		{name: "no inline text", body: "Content-Type: application/pdf\n\n%PDF-1.4\n", wantErr: ErrReadFailed},
+		// A body kept before text-only learning that still hashes to its
+		// anchor is published as stored, even when its text-only form,
+		// without a part rspamd sniffed as text, would not.
+		{name: "stored body still hashes", body: sniffedMessage, asIs: digest('a'), digest: digest('x')},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newAuditFixture(t)
@@ -138,6 +170,9 @@ func TestPublishStoredMessageUsesVerifiedTextOnlyBody(t *testing.T) {
 			text := textOnlyMessage(body)
 			if text != nil {
 				f.storage.bodies[string(text)] = tc.digest
+			}
+			if tc.asIs != "" {
+				f.storage.bodies[string(body)] = tc.asIs
 			}
 			res, err := turn(t, f.publisher(), anchor)
 			if tc.wantErr != nil {

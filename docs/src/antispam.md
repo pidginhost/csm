@@ -637,11 +637,10 @@ such as one delivery shared by several mailboxes, counts once it and its
 links have stayed unchanged for a full pass, so a move into or out of Spam
 can finish first. Messages are skipped when any `X-Spam-Status` header
 says `Yes`, when that header cannot be parsed, and when the header block
-is malformed or too large, linked or not. Only the inline plain text and
-HTML parts of a report are learned; attachments and images never are.
-Messages whose MIME structure cannot be read safely, or whose text-only
-form exceeds the message limit, are skipped as `no_digest`. This also
-applies to operator learning requests.
+is malformed or too large, linked or not. Only the text parts of a report
+are learned, attached text included; images and other attachments never
+are. A message whose MIME structure CSM cannot read is skipped as
+`no_digest`, for operator requests too.
 
 Reports are not authenticated. Tenants control their own mail: they can
 move any message they received, or deliver one locally, and a forged
@@ -816,15 +815,13 @@ a completed pass confirms that learning can resume.
 
 Each learned cluster keeps one message, the first one reported, so the
 learner can restore its value if Redis loses it. CSM keeps its headers and
-inline text parts, without attachments or images, under
+text parts, without images or other attachments, under
 `/var/lib/csm/antispam/learning/anchors`, readable only by root. A cluster
 started from one version of a message keeps only that version. CSM deletes
 it when the cluster retires, 90 days after its last report, or when an
 operator forgets it. Backups and file system snapshots can keep a copy
-longer.
-Messages saved by older versions can still contain attachments. Recovery
-checks the saved bytes first, then sends only their inline text. The text
-must still match the cluster's recorded digest before its score is restored.
+longer. Messages saved by older versions keep their attachments until
+their cluster retires.
 If deleting a retained message fails, CSM still removes its retired score
 and reports the cleanup error. New reports wait until cleanup succeeds.
 Disabling learning, observe mode or unmet prerequisites can delay retirement

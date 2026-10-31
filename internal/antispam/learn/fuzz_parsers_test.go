@@ -140,11 +140,11 @@ func FuzzTextOnlyMessage(f *testing.F) {
 						t.Fatalf("rebuilt part type: %v", err)
 					}
 				}
-				if pt != "text/plain" && pt != "text/html" {
+				if !strings.HasPrefix(pt, "text/") {
 					t.Fatalf("rebuilt leaf %q", pt)
 				}
 			}
-		} else if mt != "text/plain" && mt != "text/html" {
+		} else if !strings.HasPrefix(mt, "text/") {
 			t.Fatalf("rebuilt type %q", mt)
 		}
 		// Rebuilt MIME lines and a longer boundary per kept part are the only

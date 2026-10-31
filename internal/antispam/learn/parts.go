@@ -48,7 +48,7 @@ func textPartMessages(msg []byte, limit int) iter.Seq[[]byte] {
 		}
 		parts := make([]textPart, 0, limit)
 		var dropped bool
-		if !collectTextParts(h, body, 1, limit, &parts, &dropped) || len(parts) == 0 {
+		if !collectTextParts(h, body, 1, limit, inlinePlainOrHTML, &parts, &dropped) || len(parts) == 0 {
 			return
 		}
 		fields := keptFields(head)
@@ -66,19 +66,20 @@ func textPartMessages(msg []byte, limit int) iter.Seq[[]byte] {
 	}
 }
 
-// textOnlyMessage returns msg with only its inline text/plain and text/html
-// parts: the form the learner inspects, publishes and stores. An attachment
-// that rspamd hashes on its own, such as a PDF with scripts, then can neither
-// break an inspection nor publish a digest the ledger does not track. A
-// message with nothing to drop comes back unchanged. Unreadable MIME, no
-// inline text or a rebuild exceeding MaxBody yields nil.
+// textOnlyMessage returns msg with only its text parts: the form the learner
+// inspects, publishes and stores. rspamd hashes every text/* part, attached
+// or inline, so those stay; a non-text part that rspamd hashes on its own,
+// such as a PDF with scripts, can then neither break an inspection nor
+// publish a digest the ledger does not track. A message with nothing to drop
+// comes back unchanged. Unreadable MIME, no text or a rebuild exceeding
+// MaxBody yields nil.
 func textOnlyMessage(msg []byte) []byte {
 	head, body, eol, ok := splitHeader(msg)
 	if !ok {
 		return msg
 	}
 	h, err := readHeader(head, eol)
-	if err != nil || attachment(h) {
+	if err != nil {
 		return nil
 	}
 	ct := h.Get("Content-Type")
@@ -89,7 +90,7 @@ func textOnlyMessage(msg []byte) []byte {
 	switch {
 	case err != nil:
 		return nil
-	case mt == "text/plain" || mt == "text/html":
+	case strings.HasPrefix(mt, "text/"):
 		return msg
 	case !strings.HasPrefix(mt, "multipart/"):
 		return nil
@@ -97,7 +98,7 @@ func textOnlyMessage(msg []byte) []byte {
 	var parts []textPart
 	var dropped bool
 	switch {
-	case !collectTextParts(h, body, 1, MaxExplicitDigests, &parts, &dropped):
+	case !collectTextParts(h, body, 1, MaxExplicitDigests, anyText, &parts, &dropped):
 		return nil
 	case len(parts) == 0:
 		return nil
@@ -163,10 +164,24 @@ func readHeader(head []byte, eol string) (textproto.MIMEHeader, error) {
 	return textproto.NewReader(bufio.NewReader(io.MultiReader(bytes.NewReader(head), strings.NewReader(eol)))).ReadMIMEHeader()
 }
 
-// collectTextParts keeps only the largest limit inline parts, in descending
-// size and wire order for ties, and sets dropped when it leaves any part out.
-// It reports false when h is not multipart or the nesting is too deep.
-func collectTextParts(h textproto.MIMEHeader, body []byte, depth, limit int, out *[]textPart, dropped *bool) bool {
+// keepPart says whether collectTextParts keeps a leaf part.
+type keepPart func(mt string, h textproto.MIMEHeader) bool
+
+// inlinePlainOrHTML selects seed candidates.
+func inlinePlainOrHTML(mt string, h textproto.MIMEHeader) bool {
+	return (mt == "text/plain" || mt == "text/html") && !attachment(h)
+}
+
+// anyText selects what rspamd hashes as text, attachments included.
+func anyText(mt string, _ textproto.MIMEHeader) bool {
+	return strings.HasPrefix(mt, "text/")
+}
+
+// collectTextParts keeps the largest limit leaf parts that keep accepts, in
+// descending size and wire order for ties, and sets dropped when it leaves
+// any part out. It reports false when h is not multipart or the nesting is
+// too deep.
+func collectTextParts(h textproto.MIMEHeader, body []byte, depth, limit int, keep keepPart, out *[]textPart, dropped *bool) bool {
 	mt, params, err := mime.ParseMediaType(h.Get("Content-Type"))
 	if err != nil || !strings.HasPrefix(mt, "multipart/") || params["boundary"] == "" {
 		return false
@@ -182,10 +197,6 @@ func collectTextParts(h textproto.MIMEHeader, body []byte, depth, limit int, out
 			*dropped = *dropped || err != io.EOF
 			return true
 		}
-		if attachment(p.Header) {
-			*dropped = true
-			continue
-		}
 		pmt := "text/plain"
 		// RFC 2046 gives digest children an attached-message default.
 		if mt == "multipart/digest" {
@@ -197,7 +208,8 @@ func collectTextParts(h textproto.MIMEHeader, body []byte, depth, limit int, out
 				continue
 			}
 		}
-		if pmt != "text/plain" && pmt != "text/html" && !strings.HasPrefix(pmt, "multipart/") {
+		nested := strings.HasPrefix(pmt, "multipart/")
+		if nested && attachment(p.Header) || !nested && !keep(pmt, p.Header) {
 			*dropped = true
 			continue
 		}
@@ -206,25 +218,24 @@ func collectTextParts(h textproto.MIMEHeader, body []byte, depth, limit int, out
 			*dropped = true
 			return true
 		}
-		switch {
-		case strings.HasPrefix(pmt, "multipart/"):
-			if depth == maxPartDepth || !collectTextParts(p.Header, raw, depth+1, limit, out, dropped) {
+		if nested {
+			if depth == maxPartDepth || !collectTextParts(p.Header, raw, depth+1, limit, keep, out, dropped) {
 				return false
 			}
-		default:
-			i := sort.Search(len(*out), func(i int) bool { return len((*out)[i].body) < len(raw) })
-			if i == limit {
-				*dropped = true
-				continue
-			}
-			if len(*out) < limit {
-				*out = append(*out, textPart{})
-			} else {
-				*dropped = true
-			}
-			copy((*out)[i+1:], (*out)[i:])
-			(*out)[i] = textPart{header: p.Header, body: raw}
+			continue
 		}
+		i := sort.Search(len(*out), func(i int) bool { return len((*out)[i].body) < len(raw) })
+		if i == limit {
+			*dropped = true
+			continue
+		}
+		if len(*out) < limit {
+			*out = append(*out, textPart{})
+		} else {
+			*dropped = true
+		}
+		copy((*out)[i+1:], (*out)[i:])
+		(*out)[i] = textPart{header: p.Header, body: raw}
 	}
 }
 
