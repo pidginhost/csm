@@ -656,10 +656,12 @@ Copies in multiple Spam folders or mailboxes of the same account still
 contribute only once to that cluster.
 
 Messages that share most of their text join the same cluster, so later
-variants of a campaign score too. Newsletters built from one template can
-also be close enough to join. Lowering or correcting a learned value
-removes and re-adds it, which can leave a short gap in which the message
-scores lower.
+variants of a campaign score too. A new message whose plain text and HTML
+versions differ starts its cluster from one of them, normally the larger;
+attached messages are never used. Later copies score through that version.
+Newsletters built from one template can also be close enough to join.
+Lowering or correcting a learned value removes and re-adds it, which can
+leave a short gap in which the message scores lower.
 
 Learning writes scores with either value of antispam's `dry_run` setting.
 In dry run they affect the measured score; what happens to the message
@@ -811,10 +813,11 @@ a completed pass confirms that learning can resume.
 Each learned cluster keeps one message, the first one reported, so the
 learner can restore its value if Redis loses it. The message is stored
 whole, headers and attachments included, under
-`/var/lib/csm/antispam/learning/anchors`, readable only by root. CSM
-deletes it when the cluster retires, 90 days after its last report, or
-when an operator forgets it. Backups and file system snapshots can keep a
-copy longer.
+`/var/lib/csm/antispam/learning/anchors`, readable only by root. A cluster
+started from one version of a message keeps only that text part with the
+message headers. CSM deletes it when the cluster retires, 90 days after
+its last report, or when an operator forgets it. Backups and file system
+snapshots can keep a copy longer.
 If deleting a retained message fails, CSM still removes its retired score
 and reports the cleanup error. New reports wait until cleanup succeeds.
 Disabling learning, observe mode or unmet prerequisites can delay retirement
