@@ -3,16 +3,13 @@
 package yara
 
 import (
-	"crypto/sha256"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 
 	yara_x "github.com/VirusTotal/yara-x/go"
-	"github.com/pidginhost/csm/internal/contenttype"
 )
 
 // Scanner wraps YARA-X for malware file scanning.
@@ -211,79 +208,6 @@ func extractStringMeta(entries []yara_x.Metadata) map[string]string {
 		out[m.Identifier()] = v
 	}
 	return out
-}
-
-// ScanFile reads up to maxBytes from a file and flattens read or scan failures
-// to no matches. It retains the legacy prefix-scan behavior for callers that
-// use the error-free Backend interface.
-func (s *Scanner) ScanFile(path string, maxBytes int) []Match {
-	if maxBytes <= 0 {
-		return nil
-	}
-	f, err := os.Open(path) // #nosec G304 -- This API scans caller-selected local files; contents are read only and byte-limited.
-	if err != nil {
-		return nil
-	}
-	defer func() { _ = f.Close() }()
-
-	buf, err := io.ReadAll(io.LimitReader(f, int64(maxBytes)))
-	if err != nil || len(buf) == 0 {
-		return nil
-	}
-	// Path scans see both the name and the bytes, so they apply the same
-	// archive policy the daemon boundary applies to inline scans.
-	if contenttype.IsArchiveFile(path, buf) {
-		return nil
-	}
-	return s.ScanBytes(buf)
-}
-
-// ScanFileChecked reads a file up to maxBytes and returns a non-nil error when
-// the file cannot be read completely or the YARA engine fails.
-func (s *Scanner) ScanFileChecked(path string, maxBytes int) (FileScanResult, error) {
-	if maxBytes <= 0 {
-		return FileScanResult{}, fmt.Errorf("yara scan file: maxBytes must be positive")
-	}
-	f, err := os.Open(path) // #nosec G304 -- This API scans caller-selected local files; contents are read only and byte-limited.
-	if err != nil {
-		return FileScanResult{}, fmt.Errorf("yara scan file: open %s: %w", path, err)
-	}
-
-	// ReadAll over a LimitReader rather than one f.Read into a pre-sized
-	// buffer: a short first read would scan only a prefix and silently miss
-	// malware deeper in the file, and a negative maxBytes off the IPC wire
-	// would panic make([]byte, maxBytes).
-	buf, readErr := io.ReadAll(io.LimitReader(f, int64(maxBytes)))
-	var limitErr error
-	if readErr == nil && len(buf) == maxBytes {
-		var extra [1]byte
-		n, extraErr := f.Read(extra[:])
-		switch {
-		case n > 0:
-			limitErr = fmt.Errorf("yara scan file: %s exceeds %d-byte limit", path, maxBytes)
-		case extraErr != nil && extraErr != io.EOF:
-			readErr = extraErr
-		}
-	}
-	closeErr := f.Close()
-	if readErr != nil {
-		return FileScanResult{}, fmt.Errorf("yara scan file: read %s: %w", path, readErr)
-	}
-	if closeErr != nil {
-		return FileScanResult{}, fmt.Errorf("yara scan file: close %s: %w", path, closeErr)
-	}
-	if limitErr != nil {
-		return FileScanResult{}, limitErr
-	}
-	digest := fmt.Sprintf("%x", sha256.Sum256(buf))
-	if contenttype.IsArchiveFile(path, buf) {
-		return FileScanResult{ContentSHA256: digest}, nil
-	}
-	matches, err := s.ScanBytesChecked(buf)
-	if err != nil {
-		return FileScanResult{}, err
-	}
-	return FileScanResult{Matches: matches, ContentSHA256: digest}, nil
 }
 
 // RuleCount returns the number of compiled rule files.

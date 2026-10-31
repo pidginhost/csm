@@ -7,25 +7,42 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/phptaint"
+	"github.com/pidginhost/csm/internal/phptaintipc"
 	"github.com/pidginhost/csm/internal/phptaintworker"
+	"github.com/pidginhost/csm/internal/workerproc"
 )
 
 func TestPHPTaintWorkerProcess(t *testing.T) {
 	if os.Getenv("CSM_TEST_PHPTAINT_WORKER") != "1" {
 		return
 	}
-	os.Args = []string{"csm", "phptaint-worker"}
+	os.Args = []string{"csm", "phptaint-worker", "--memory-limit=536870912"}
 	main()
 	os.Exit(0) // The test runner's PASS line must not enter the protocol socket.
 }
 
 // Exercise CLI startup as well as the parser: stdout is the protocol socket,
-// so any diagnostic there would corrupt this or the next response.
+// so any diagnostic there would corrupt the hello or a later response.
 func TestSupervisedPHPTaintWorkerKeepsSocketFraming(t *testing.T) {
+	exec := workerproc.ExecLauncher(os.Args[0], []string{"-test.run=^TestPHPTaintWorkerProcess$"},
+		append(os.Environ(), "CSM_TEST_PHPTAINT_WORKER=1"))
+	launch := func(ctx context.Context) (workerproc.Process, error) {
+		p, err := exec(ctx)
+		if err != nil {
+			return nil, err
+		}
+		hctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		if err := workerproc.Handshake(hctx, p.Conn(), workerproc.Limits{MaxFrameBytes: phptaintipc.MaxFrameBytes}, phptaintipc.ProtocolVersion); err != nil {
+			_ = p.Conn().Close()
+			_ = p.Kill()
+			<-p.Done()
+			return nil, err
+		}
+		return p, nil
+	}
 	s, err := phptaintworker.NewSupervisor(phptaintworker.SupervisorConfig{
-		Command: os.Args[0],
-		Args:    []string{"-test.run=^TestPHPTaintWorkerProcess$"},
-		Env:     append(os.Environ(), "CSM_TEST_PHPTAINT_WORKER=1"),
+		Launch:  launch,
 		Timeout: 5 * time.Second,
 	})
 	if err != nil {

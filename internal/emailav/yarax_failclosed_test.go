@@ -14,15 +14,15 @@ import (
 	"github.com/pidginhost/csm/internal/yara"
 )
 
-// A scan that could not complete (worker down, attachment too large for one
-// IPC frame, transport error) must fail closed: the adapter returns an error
-// so the orchestrator records the engine as errored, instead of a false
-// "clean" verdict that lets an infected attachment through.
+// A scan that could not complete (worker down, descriptor or transport error)
+// must fail closed: the adapter returns an error so the orchestrator records
+// the engine as errored, instead of a false "clean" verdict that lets an
+// infected attachment through.
 func TestYaraXScannerFailsClosedOnScanError(t *testing.T) {
-	b := &checkedErrBackend{ruleCount: 1, err: errors.New("frame length 17000000 exceeds cap 16777216")}
+	b := &checkedErrBackend{ruleCount: 1, err: errors.New("worker connection closed")}
 	s := NewYaraXScanner(b)
 	tmp := filepath.Join(t.TempDir(), "big.bin")
-	if err := os.WriteFile(tmp, []byte("infected-but-too-big-to-scan"), 0o600); err != nil {
+	if err := os.WriteFile(tmp, []byte("infected-but-unscannable"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	v, err := s.Scan(openPart(t, tmp))

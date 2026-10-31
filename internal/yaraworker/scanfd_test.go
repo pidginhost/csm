@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/yara"
@@ -28,7 +29,7 @@ func scanFDPart(t *testing.T) *os.File {
 func TestHandlerScanFDRejectsIncompletePart(t *testing.T) {
 	for _, size := range []int{-1, 0, 32} {
 		s := &fakeScanner{ruleCount: 1}
-		h := NewHandler(s).(yaraipc.FDHandler)
+		h := NewHandler(s)
 		if _, err := h.ScanFD(scanFDPart(t), yaraipc.ScanFDArgs{MaxBytes: size}); err == nil {
 			t.Errorf("size %d: incomplete scan succeeded", size)
 		}
@@ -44,7 +45,7 @@ func TestHandlerScanFDReadsPositionally(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := &fakeScanner{ruleCount: 1, bytesMatches: []yara.Match{{RuleName: "archive", Meta: map[string]string{"severity": "critical"}}}}
-	h := NewHandler(s).(yaraipc.FDHandler)
+	h := NewHandler(s)
 	res, err := h.ScanFD(f, yaraipc.ScanFDArgs{MaxBytes: 11})
 	if err != nil || len(res.Matches) != 1 || res.Matches[0].Meta["severity"] != "critical" {
 		t.Fatalf("scan = %+v, %v", res, err)
@@ -73,8 +74,27 @@ func TestHandlerScanFDWithoutEngineFailsClosed(t *testing.T) {
 		NewHandler(&fakeScanner{}),
 		newRecoverableHandler(nil, nil, "invalid rules"),
 	} {
-		if _, err := h.(yaraipc.FDHandler).ScanFD(scanFDPart(t), yaraipc.ScanFDArgs{MaxBytes: 11}); err == nil {
+		if _, err := h.ScanFD(scanFDPart(t), yaraipc.ScanFDArgs{MaxBytes: 11}); err == nil {
 			t.Error("unavailable engine reported a clean descriptor scan")
 		}
+	}
+}
+
+// Byte scans keep the old scan_bytes contract: a worker with no rules and no
+// compile error answers clean, as the in-process scanner does.
+func TestScanFDEmptyRulesCleanWithoutRules(t *testing.T) {
+	for _, h := range []yaraipc.Handler{NewHandler(nil), NewHandler(&fakeScanner{})} {
+		res, err := h.ScanFD(scanFDPart(t), yaraipc.ScanFDArgs{MaxBytes: 11, EmptyRulesClean: true})
+		if err != nil || len(res.Matches) != 0 {
+			t.Fatalf("scan = %+v, %v", res, err)
+		}
+	}
+}
+
+func TestScanFDEmptyRulesCleanKeepsCompileError(t *testing.T) {
+	h := newRecoverableHandler(nil, nil, "boom")
+	_, err := h.ScanFD(scanFDPart(t), yaraipc.ScanFDArgs{MaxBytes: 11, EmptyRulesClean: true})
+	if err == nil || !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("compile error hidden: %v", err)
 	}
 }

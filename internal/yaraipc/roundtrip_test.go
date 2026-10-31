@@ -17,34 +17,24 @@ import (
 type fakeHandler struct {
 	mu sync.Mutex
 
-	scanFileArgs  []ScanFileArgs
-	scanBytesArgs []ScanBytesArgs
-	reloadArgs    []ReloadArgs
-	pingCount     int
+	scanFDArgs []ScanFDArgs
+	reloadArgs []ReloadArgs
+	pingCount  int
 
-	scanFileRes  ScanResult
-	scanBytesRes ScanResult
-	reloadRes    ReloadResult
-	pingRes      PingResult
+	scanRes   ScanResult
+	reloadRes ReloadResult
+	pingRes   PingResult
 
-	scanFileErr  error
-	scanBytesErr error
-	reloadErr    error
-	pingErr      error
+	scanErr   error
+	reloadErr error
+	pingErr   error
 }
 
-func (f *fakeHandler) ScanFile(a ScanFileArgs) (ScanResult, error) {
+func (f *fakeHandler) ScanFD(_ *os.File, a ScanFDArgs) (ScanResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.scanFileArgs = append(f.scanFileArgs, a)
-	return f.scanFileRes, f.scanFileErr
-}
-
-func (f *fakeHandler) ScanBytes(a ScanBytesArgs) (ScanResult, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.scanBytesArgs = append(f.scanBytesArgs, a)
-	return f.scanBytesRes, f.scanBytesErr
+	f.scanFDArgs = append(f.scanFDArgs, a)
+	return f.scanRes, f.scanErr
 }
 
 func (f *fakeHandler) Reload(a ReloadArgs) (ReloadResult, error) {
@@ -98,42 +88,8 @@ func startServerWithOptions(t *testing.T, h Handler, opts ServeOptions) (socketP
 	}
 }
 
-func TestClientServerScanFile(t *testing.T) {
-	h := &fakeHandler{
-		scanFileRes: ScanResult{
-			Matches:       []Match{{RuleName: "webshell_generic"}},
-			ContentSHA256: "abc123",
-		},
-	}
-	socketPath, stop := startServer(t, h)
-	defer stop()
-
-	c := NewClient(socketPath, 2*time.Second)
-	defer func() { _ = c.Close() }()
-
-	res, err := c.ScanFile(ScanFileArgs{Path: "/tmp/suspect.php", MaxBytes: 4096})
-	if err != nil {
-		t.Fatalf("ScanFile: %v", err)
-	}
-	if len(res.Matches) != 1 || res.Matches[0].RuleName != "webshell_generic" {
-		t.Errorf("matches: got %+v", res.Matches)
-	}
-	if res.ContentSHA256 != "abc123" {
-		t.Errorf("content hash: got %q want abc123", res.ContentSHA256)
-	}
-	if len(h.scanFileArgs) != 1 {
-		t.Fatalf("handler saw %d requests, want 1", len(h.scanFileArgs))
-	}
-	if h.scanFileArgs[0].Path != "/tmp/suspect.php" {
-		t.Errorf("path: got %q want /tmp/suspect.php", h.scanFileArgs[0].Path)
-	}
-	if h.scanFileArgs[0].MaxBytes != 4096 {
-		t.Errorf("max_bytes: got %d want 4096", h.scanFileArgs[0].MaxBytes)
-	}
-}
-
 func TestClientServerScanBytes(t *testing.T) {
-	h := &fakeHandler{}
+	h := &fdHandler{}
 	socketPath, stop := startServer(t, h)
 	defer stop()
 
@@ -143,24 +99,31 @@ func TestClientServerScanBytes(t *testing.T) {
 	// Synthetic webshell-ish payload; we only care that it round-trips
 	// byte-for-byte, not that any rule matches it.
 	payload := []byte("<?php " + "ev" + "al($_POST['x']); ?>")
-	if _, err := c.ScanBytes(ScanBytesArgs{Data: payload}); err != nil {
+	if _, err := c.ScanBytes(payload); err != nil {
 		t.Fatalf("ScanBytes: %v", err)
 	}
-	if len(h.scanBytesArgs) != 1 {
-		t.Fatalf("handler saw %d requests, want 1", len(h.scanBytesArgs))
-	}
-	if string(h.scanBytesArgs[0].Data) != string(payload) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if string(h.data) != string(payload) {
 		t.Errorf("payload mismatch")
 	}
 }
+
+// resultFDHandler answers scan_fd with a prepared result.
+type resultFDHandler struct {
+	fakeHandler
+	res ScanResult
+}
+
+func (h *resultFDHandler) ScanFD(*os.File, ScanFDArgs) (ScanResult, error) { return h.res, nil }
 
 func TestClientServerScanMetadataRoundTrips(t *testing.T) {
 	// Match metadata travels end-to-end via JSON; this asserts the wire
 	// shape does not silently drop Meta on either encode or decode, and
 	// that a match without metadata round-trips as nil (not an empty
 	// map promoted by the JSON layer).
-	h := &fakeHandler{
-		scanBytesRes: ScanResult{Matches: []Match{
+	h := &resultFDHandler{
+		res: ScanResult{Matches: []Match{
 			{
 				RuleName: "webshell_p0wny",
 				Meta:     map[string]string{"severity": "critical", "description": "p0wny shell"},
@@ -176,7 +139,7 @@ func TestClientServerScanMetadataRoundTrips(t *testing.T) {
 	c := NewClient(socketPath, 2*time.Second)
 	defer func() { _ = c.Close() }()
 
-	res, err := c.ScanBytes(ScanBytesArgs{Data: []byte("doesnt matter, fake handler")})
+	res, err := c.ScanBytes([]byte("doesnt matter, fake handler"))
 	if err != nil {
 		t.Fatalf("ScanBytes: %v", err)
 	}
@@ -232,14 +195,14 @@ func TestClientServerPing(t *testing.T) {
 }
 
 func TestClientSurfaceHandlerError(t *testing.T) {
-	h := &fakeHandler{scanFileErr: errors.New("rules not loaded")}
+	h := &fakeHandler{scanErr: errors.New("rules not loaded")}
 	socketPath, stop := startServer(t, h)
 	defer stop()
 
 	c := NewClient(socketPath, 2*time.Second)
 	defer func() { _ = c.Close() }()
 
-	_, err := c.ScanFile(ScanFileArgs{Path: "/tmp/x"})
+	_, err := c.ScanBytes([]byte("x"))
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -379,13 +342,13 @@ func TestServerRejectsUnknownOp(t *testing.T) {
 	}
 }
 
-// panicHandler panics on ScanBytes to model a handler crash (pathological
+// panicHandler panics on ScanFD to model a handler crash (pathological
 // rules, bad scan input). The server must convert the panic into an error
 // frame so the client gets a real error instead of a closed connection that
 // it retries into the same panic forever.
 type panicHandler struct{ fakeHandler }
 
-func (p *panicHandler) ScanBytes(ScanBytesArgs) (ScanResult, error) {
+func (p *panicHandler) ScanFD(*os.File, ScanFDArgs) (ScanResult, error) {
 	panic("boom in scan")
 }
 
@@ -397,7 +360,7 @@ func TestServerRecoversHandlerPanic(t *testing.T) {
 	c := NewClient(socketPath, 2*time.Second)
 	defer func() { _ = c.Close() }()
 
-	_, err := c.ScanBytes(ScanBytesArgs{Data: []byte("payload")})
+	_, err := c.ScanBytes([]byte("payload"))
 	if err == nil {
 		t.Fatal("expected an error from a panicking handler")
 	}

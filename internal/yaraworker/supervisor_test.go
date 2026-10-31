@@ -144,10 +144,10 @@ type scriptedHandler struct {
 	compileErr      string
 }
 
-func (s *scriptedHandler) ScanFile(_ yaraipc.ScanFileArgs) (yaraipc.ScanResult, error) {
-	return yaraipc.ScanResult{}, nil
-}
-func (s *scriptedHandler) ScanBytes(_ yaraipc.ScanBytesArgs) (yaraipc.ScanResult, error) {
+func (s *scriptedHandler) ScanFD(_ *os.File, _ yaraipc.ScanFDArgs) (yaraipc.ScanResult, error) {
+	if s.compileErr != "" {
+		return yaraipc.ScanResult{}, fmt.Errorf("yara scanner unavailable: %s", s.compileErr)
+	}
 	return yaraipc.ScanResult{}, nil
 }
 func (s *scriptedHandler) Reload(_ yaraipc.ReloadArgs) (yaraipc.ReloadResult, error) {
@@ -232,7 +232,7 @@ func TestSupervisorStartsAndStops(t *testing.T) {
 	}
 }
 
-// After Stop, the supervisor must report not-running so ScanFile/ScanBytes
+// After Stop, the supervisor must report not-running so ScanBytes
 // short-circuit instead of redialing the closed worker socket on every call.
 func TestSupervisorScansShortCircuitAfterStop(t *testing.T) {
 	sock := shortSockPath(t)
@@ -263,11 +263,8 @@ func TestSupervisorScansShortCircuitAfterStop(t *testing.T) {
 	if got := sup.ScanBytes([]byte("payload")); got != nil {
 		t.Fatalf("ScanBytes after Stop should return nil, got %v", got)
 	}
-	if got := sup.ScanFile("/tmp/x.php", 4096); got != nil {
-		t.Fatalf("ScanFile after Stop should return nil, got %v", got)
-	}
-	if _, err := sup.ScanFileChecked("/tmp/x.php", 4096); err == nil {
-		t.Fatal("ScanFileChecked after Stop must report the unavailable worker")
+	if _, err := sup.ScanBytesChecked([]byte("payload")); err == nil {
+		t.Fatal("ScanBytesChecked after Stop must report the unavailable worker")
 	}
 }
 
@@ -519,9 +516,6 @@ func TestSupervisorScanBeforeStartReturnsEmpty(t *testing.T) {
 	sup, err := NewSupervisor(cfg)
 	if err != nil {
 		t.Fatalf("NewSupervisor: %v", err)
-	}
-	if got := sup.ScanFile("/tmp/x", 8192); got != nil {
-		t.Errorf("ScanFile before Start: got %+v, want nil", got)
 	}
 	if got := sup.ScanBytes([]byte("x")); got != nil {
 		t.Errorf("ScanBytes before Start: got %+v, want nil", got)

@@ -16,32 +16,18 @@ import (
 	"io"
 )
 
-// MaxFrameBytes caps a single request or response payload. Sized to cover
-// a file sent inline via OpScanBytes up to the scanner's usual 8 MiB read
-// ceiling, with headroom for JSON base64 expansion.
+// MaxFrameBytes caps a single request or response payload. Scanned bytes
+// never travel in a frame: they come as a descriptor. The cap bounds what a
+// confused or hostile peer can make the other side allocate.
 const MaxFrameBytes = 16 << 20
-
-// MaxScanBytes is the largest raw payload OpScanBytes can carry in one frame.
-// A []byte is base64-encoded in JSON (4/3 expansion) plus a small envelope, so
-// the raw ceiling sits well below MaxFrameBytes. Callers reject an oversize
-// buffer up front with ErrPayloadTooLarge instead of marshalling a multi-MiB
-// frame only to have WriteFrame fail -- and, crucially, an oversize payload
-// must surface as an error, never be silently treated as a clean scan.
-const MaxScanBytes = (MaxFrameBytes - 256) * 3 / 4
-
-// ErrPayloadTooLarge is returned by the client when an inline OpScanBytes
-// payload would not fit in a single protocol frame.
-var ErrPayloadTooLarge = errors.New("yaraipc: scan payload exceeds max inline size")
 
 // Op selects the handler on the worker side. Strings (not iota ints) so
 // adding a new op is additive and mismatched client/worker versions fail
 // with a recognisable "unknown op" error instead of silently dispatching
 // the wrong handler.
 const (
-	OpScanFile  = "scan_file"
-	OpScanBytes = "scan_bytes"
-	OpReload    = "reload"
-	OpPing      = "ping"
+	OpReload = "reload"
+	OpPing   = "ping"
 	// OpScanFD scans the file passed as the request's one descriptor, so
 	// the worker never opens a path and nothing is copied through JSON.
 	OpScanFD = "scan_fd"
@@ -49,8 +35,13 @@ const (
 
 // ScanFDArgs bounds how much of the descriptor the worker reads. No name is
 // sent: the archive-by-name skip is for files on disk, not mail parts.
+//
+// EmptyRulesClean keeps the old scan_bytes contract for byte scans: a worker
+// with no rules and no compile error answers clean, as the in-process scanner
+// does. Mail parts leave it unset, so a worker without rules fails them.
 type ScanFDArgs struct {
-	MaxBytes int `json:"max_bytes"`
+	MaxBytes        int  `json:"max_bytes"`
+	EmptyRulesClean bool `json:"empty_rules_clean,omitempty"`
 }
 
 // scanFDResult requires an explicit matches array, including for clean scans.
@@ -66,21 +57,6 @@ type Frame struct {
 	Op      string          `json:"op,omitempty"`
 	Payload json.RawMessage `json:"payload,omitempty"`
 	Error   string          `json:"error,omitempty"`
-}
-
-// ScanFileArgs asks the worker to read and scan a file by path. MaxBytes
-// bounds the read so the daemon cannot make the worker allocate more than
-// it agreed to.
-type ScanFileArgs struct {
-	Path     string `json:"path"`
-	MaxBytes int    `json:"max_bytes"`
-}
-
-// ScanBytesArgs carries file content inline. Used when the caller already
-// has the bytes (fanotify buffered reads) and avoids a second file open in
-// the worker.
-type ScanBytesArgs struct {
-	Data []byte `json:"data"`
 }
 
 // ReloadArgs triggers a rule recompile. RulesDir is optional; if empty
@@ -106,11 +82,9 @@ type Match struct {
 	Meta     map[string]string `json:"meta,omitempty"`
 }
 
-// ScanResult is returned for OpScanFile and OpScanBytes. ContentSHA256 is set
-// for path scans so callers bind findings to the bytes scanned by the worker.
+// ScanResult is the outcome of a scan_fd request.
 type ScanResult struct {
-	Matches       []Match `json:"matches,omitempty"`
-	ContentSHA256 string  `json:"content_sha256,omitempty"`
+	Matches []Match `json:"matches,omitempty"`
 }
 
 // ReloadResult is returned for OpReload. CompileError is non-empty when the

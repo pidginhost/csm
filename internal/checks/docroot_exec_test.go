@@ -2,7 +2,6 @@ package checks
 
 import (
 	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -16,7 +15,6 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/yara"
-	"github.com/pidginhost/csm/internal/yaraipc"
 )
 
 // docrootExecBackend reports a critical match for content carrying the
@@ -478,28 +476,34 @@ func TestInspectDocrootExecRejectsPermissionFallback(t *testing.T) {
 	}
 }
 
-// The worker fallback must read the pinned inode even when the start name
-// has been replaced after the inline scan was rejected.
-type docrootPathRetryBackend struct {
+// docrootSnapshotBackend runs beforeScan, then scans the bytes it is handed.
+type docrootSnapshotBackend struct {
 	docrootExecBackend
-	beforeRetry func()
-	retryPath   string
+	beforeScan func()
+	scanErr    error
 }
 
-func (b *docrootPathRetryBackend) ScanBytesChecked([]byte) ([]yara.Match, error) {
-	b.beforeRetry()
-	return nil, yaraipc.ErrPayloadTooLarge
-}
-
-func (b *docrootPathRetryBackend) ScanFileChecked(path string, _ int) (yara.FileScanResult, error) {
-	b.retryPath = path
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return yara.FileScanResult{}, err
+func (b *docrootSnapshotBackend) ScanBytesChecked(data []byte) ([]yara.Match, error) {
+	if b.beforeScan != nil {
+		b.beforeScan()
 	}
-	matches, err := b.docrootExecBackend.ScanBytesChecked(data)
-	sum := sha256.Sum256(data)
-	return yara.FileScanResult{Matches: matches, ContentSHA256: fmt.Sprintf("%x", sum)}, err
+	if b.scanErr != nil {
+		return nil, b.scanErr
+	}
+	return b.docrootExecBackend.ScanBytesChecked(data)
+}
+
+// A failed byte scan leaves the program unscanned, with the reason.
+func TestInspectDocrootExecByteScanErrorIsGapWithoutPathRetry(t *testing.T) {
+	f := newDocrootExecFixture(t)
+	path := f.write(t, "tool", testELFHeader+"payload-fetcher")
+	f.procs[705] = path
+	b := &docrootSnapshotBackend{scanErr: errors.New("worker connection closed")}
+	activeYARABackend = func() yara.Backend { return b }
+	got := InspectDocrootExec(nil, 705, 1001, path, "lsphp", f.roots)
+	if got == nil || !strings.Contains(got.Details, "YARA scan failed") {
+		t.Fatalf("failed scan was not reported as unscanned: %+v", got)
+	}
 }
 
 func TestInspectDocrootExecCacheBound(t *testing.T) {

@@ -280,12 +280,11 @@ func TestCheckYARADeepYARAErrorRetainsJSResult(t *testing.T) {
 	}
 }
 
-func TestCheckYARADeepJSTaintHashStaysBoundToSharedSnapshotOnYARAFallback(t *testing.T) {
+func TestCheckYARADeepJSTaintHashStaysBoundToSharedSnapshotOnYARAFailure(t *testing.T) {
 	useRollingStore(t)
 	root := t.TempDir()
 	path := writeYARADeepFile(t, root, "probe.js", jsKeyloggerFixture)
-	workerSHA := strings.Repeat("a", sha256.Size*2)
-	backend := &oversizeInlineBackend{scanFileSHA: workerSHA}
+	backend := &failingByteBackend{}
 	yara.SetActive(backend)
 	t.Cleanup(func() { yara.SetActive(nil) })
 
@@ -299,9 +298,8 @@ func TestCheckYARADeepJSTaintHashStaysBoundToSharedSnapshotOnYARAFallback(t *tes
 	if jsFindings[0].FilePath != path || jsFindings[0].ContentSHA256 != wantSnapshotSHA {
 		t.Fatalf("JS finding = %+v, want in-memory snapshot hash %q", jsFindings[0], wantSnapshotSHA)
 	}
-	yaraFindings := jsFindingsByCheck(findings, "yara_match_scheduled")
-	if len(yaraFindings) != 1 || yaraFindings[0].ContentSHA256 != workerSHA {
-		t.Fatalf("YARA findings = %+v, want path-worker hash %q", yaraFindings, workerSHA)
+	if yaraFindings := jsFindingsByCheck(findings, "yara_match_scheduled"); len(yaraFindings) != 0 {
+		t.Fatalf("failed YARA scan produced findings: %+v", yaraFindings)
 	}
 }
 

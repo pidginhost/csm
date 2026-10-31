@@ -105,7 +105,7 @@ func main() {
 	case "yara-worker":
 		runYaraWorker()
 	case "phptaint-worker":
-		runPHPTaintWorker()
+		runPHPTaintWorker(os.Args[2:])
 	case "parse-worker":
 		runParseWorker(os.Args[2:])
 	case "install":
@@ -481,8 +481,18 @@ func runYaraWorker() {
 // runPHPTaintWorker is the isolated child entry point for PHP taint analysis.
 // Fd 0 and fd 1 are the supervisor's socket; diagnostics go to stderr so a
 // parser failure cannot corrupt the supervisor protocol.
-func runPHPTaintWorker() {
-	conn, err := workerproc.ChildConn()
+func runPHPTaintWorker(args []string) {
+	fs := flag.NewFlagSet("phptaint-worker", flag.ContinueOnError)
+	memoryLimit := fs.Int64("memory-limit", 0, "the unit's memory cap in bytes")
+	err := fs.Parse(args)
+	if err == nil && *memoryLimit > 0 {
+		// Make the collector work harder before the kernel kills the unit.
+		debug.SetMemoryLimit(*memoryLimit * 8 / 10)
+	}
+	var conn *net.UnixConn
+	if err == nil {
+		conn, err = workerproc.ChildConn()
+	}
 	if err == nil {
 		err = phptaintworker.Serve(context.Background(), conn)
 	}

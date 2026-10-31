@@ -41,7 +41,7 @@ func TestRunHonorsDisabledRulesAfterCompileRecovery(t *testing.T) {
 		if err != nil || result.RuleCount != 1 || result.CompileError != "" {
 			t.Fatalf("reload %d: %+v, %v", i, result, err)
 		}
-		matches, err := c.ScanBytes(yaraipc.ScanBytesArgs{Data: []byte("probe")})
+		matches, err := c.ScanBytes([]byte("probe"))
 		if err != nil || len(matches.Matches) != 1 || matches.Matches[0].RuleName != "drop_extra" {
 			t.Fatalf("scan after reload %d: %+v, %v", i, matches, err)
 		}
@@ -53,7 +53,7 @@ func TestRunHonorsDisabledRulesAfterCompileRecovery(t *testing.T) {
 	if err != nil || result.RuleCount != 0 || result.CompileError != "" {
 		t.Fatalf("fully disabled reload: %+v, %v", result, err)
 	}
-	matches, err := c.ScanBytes(yaraipc.ScanBytesArgs{Data: []byte("probe")})
+	matches, err := c.ScanBytes([]byte("probe"))
 	if err != nil || len(matches.Matches) != 0 {
 		t.Fatalf("fully disabled worker retained stale rules: %+v, %v", matches, err)
 	}
