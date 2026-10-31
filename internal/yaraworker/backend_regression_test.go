@@ -42,7 +42,13 @@ func TestBackendStopDuringReload(t *testing.T) {
 	h := newHelper("worker")
 	fx := &backendFixture{compileFn: func(ctx context.Context) (workerproc.Process, error) {
 		close(started)
-		<-resume
+		// Like the unit launcher, a start in progress ends when its caller
+		// cancels: Stop cancels the compile and waits for it to return.
+		select {
+		case <-resume:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 		return h.launch(ctx)
 	}}
 	b := newBackend(t, fx)

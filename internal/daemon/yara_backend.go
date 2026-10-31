@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -80,9 +81,6 @@ func (d *Daemon) initYaraBackend() error {
 		}
 		return nil
 	}
-	if d.binaryPath == "" {
-		return errors.New("yara worker: daemon binary unknown")
-	}
 	logf := func(format string, args ...any) {
 		fmt.Fprintf(os.Stderr, "[%s] yara-worker: "+format+"\n", append([]any{ts()}, args...)...)
 	}
@@ -141,7 +139,7 @@ func (d *Daemon) initYaraBackend() error {
 	case err == nil:
 		d.activateYaraBackend(b)
 		return nil
-	case workerproc.FailureReason(err) != "":
+	case retryableYaraCompile(err):
 		// The compile worker could not run: every YARA scan fails until it
 		// does. Report it where doctor and the status API look, and keep
 		// trying in the background.
@@ -149,11 +147,19 @@ func (d *Daemon) initYaraBackend() error {
 		obs.Go("yara-init-retry", func() { d.retryYaraStart(b) })
 		return fmt.Errorf("compiling yara rules (retrying in background): %w", err)
 	default:
+		d.MarkWatcher(yaraWorkerWatcher, false)
 		fmt.Fprintf(os.Stderr, "[%s] %s\n", ts(), yaraWorkerStatusLine(0))
 		d.reportYaraCompileStatus(b.CompileError())
 		d.reportRealtimeRuleCoverage(yamlRuleCount(), 0, false)
 		return nil
 	}
+}
+
+func retryableYaraCompile(err error) bool {
+	// Descriptor pressure belongs to the daemon, so workerproc deliberately
+	// leaves it out of worker failure accounting. It still needs a retry.
+	return workerproc.FailureReason(err) != "" || errors.Is(err, workerproc.ErrSpawn) ||
+		errors.Is(err, syscall.EMFILE) || errors.Is(err, syscall.ENFILE)
 }
 
 // checkedYaraLauncher refuses each launch while the dynamic user cannot run
@@ -194,9 +200,9 @@ func yaraWorkerStatusLine(ruleCount int) string {
 func (d *Daemon) retryYaraStart(b *yaraworker.Backend) {
 	var rulesErr error
 	ok := retryStartWithStopContext(
-		func(context.Context) error {
-			err := b.Reload()
-			if err != nil && workerproc.FailureReason(err) == "" {
+		func(ctx context.Context) error {
+			err := b.ReloadContext(ctx)
+			if err != nil && !retryableYaraCompile(err) {
 				rulesErr = err
 				return nil
 			}
@@ -226,6 +232,7 @@ func (d *Daemon) retryYaraStart(b *yaraworker.Backend) {
 
 func retryStartWithStopContext(start func(context.Context) error, stop <-chan struct{}, minBackoff, maxBackoff time.Duration, alertAfter int, onPersistent func(attempt int, err error)) bool {
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	retryDone := make(chan struct{})
 	obs.Go("yara-init-retry-stop", func() {
 		select {
@@ -241,9 +248,6 @@ func retryStartWithStopContext(start func(context.Context) error, stop <-chan st
 		onPersistent,
 	)
 	close(retryDone)
-	if !ok {
-		cancel()
-	}
 	return ok
 }
 
@@ -302,6 +306,9 @@ func (d *Daemon) reportYaraCompileStatus(compileErr string) {
 // emitYaraFinding pushes a finding without blocking; a saturated alert channel
 // is accounted for by the daemon's general drop counter.
 func (d *Daemon) emitYaraFinding(sev alert.Severity, check, msg string) bool {
+	if stopRequested(d.stopCh) {
+		return false
+	}
 	finding := alert.Finding{Severity: sev, Check: check, Message: msg, Timestamp: time.Now()}
 	if alert.TryEnqueue(d.alertCh, finding) {
 		return true

@@ -47,6 +47,8 @@ type BackendConfig struct {
 type Backend struct {
 	cfg  BackendConfig
 	proc *workerproc.Supervisor
+	ctx  context.Context
+	stop context.CancelFunc
 
 	// reloadMu runs one compile at a time: each can need a gigabyte.
 	reloadMu sync.Mutex
@@ -95,6 +97,7 @@ func NewBackend(cfg BackendConfig) (*Backend, error) {
 		return nil, err
 	}
 	b.proc = proc
+	b.ctx, b.stop = context.WithCancel(context.Background())
 	return b, nil
 }
 
@@ -104,10 +107,19 @@ func NewBackend(cfg BackendConfig) (*Backend, error) {
 // fail closed. An error that workerproc.FailureReason classifies came from
 // the compile worker, not the rules.
 func (b *Backend) Reload() error {
+	return b.ReloadContext(context.Background())
+}
+
+// ReloadContext lets startup retries cancel a compile as soon as shutdown
+// begins, before the daemon finishes draining its other workers.
+func (b *Backend) ReloadContext(ctx context.Context) error {
 	b.reloadMu.Lock()
 	defer b.reloadMu.Unlock()
 	if b.isStopped() {
 		return workerproc.ErrStopped
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	sources, disabled, err := yara.ReadSources(b.cfg.RulesDir, b.cfg.DisabledRules)
 	if err != nil {
@@ -125,7 +137,7 @@ func (b *Backend) Reload() error {
 		b.compileErr = ""
 		return nil
 	}
-	f, count, err := b.compile(sources)
+	f, count, err := b.compile(ctx, sources)
 	if err == nil && count == 0 && disabled == 0 {
 		_ = f.Close()
 		err = fmt.Errorf("no YARA rules compiled from %s", b.cfg.RulesDir)
@@ -135,9 +147,12 @@ func (b *Backend) Reload() error {
 	}
 
 	b.mu.Lock()
-	if b.stopped {
+	if b.stopped || ctx.Err() != nil {
 		b.mu.Unlock()
 		_ = f.Close()
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		return workerproc.ErrStopped
 	}
 	old := b.rules
@@ -175,7 +190,7 @@ func (b *Backend) TestCompile(source string) error {
 	if b.isStopped() {
 		return workerproc.ErrStopped
 	}
-	f, count, err := b.compile([]yara.Source{{Name: "source", Text: []byte(source)}})
+	f, count, err := b.compile(context.Background(), []yara.Source{{Name: "source", Text: []byte(source)}})
 	if err != nil {
 		return err
 	}
@@ -188,7 +203,16 @@ func (b *Backend) TestCompile(source string) error {
 
 // compile runs one compile worker over sources and returns the compiled
 // rules copied into a memfd this process owns and sealed.
-func (b *Backend) compile(sources []yara.Source) (*os.File, int, error) {
+func (b *Backend) compile(ctx context.Context, sources []yara.Source) (*os.File, int, error) {
+	if b.isStopped() {
+		return nil, 0, workerproc.ErrStopped
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	stop := context.AfterFunc(b.ctx, cancel)
+	defer func() { stop(); cancel() }()
+	if err := ctx.Err(); err != nil {
+		return nil, 0, err
+	}
 	var args yaraipc.CompileArgs
 	var text bytes.Buffer
 	for _, src := range sources {
@@ -221,7 +245,7 @@ func (b *Backend) compile(sources []yara.Source) (*os.File, int, error) {
 		CompileError string `json:"compile_error,omitempty"`
 	}
 	var size int64
-	_, fds, err := sup.Call(context.Background(), workerproc.Frame{Op: yaraipc.OpCompile, Payload: payload}, []*os.File{input},
+	_, fds, err := sup.Call(ctx, workerproc.Frame{Op: yaraipc.OpCompile, Payload: payload}, []*os.File{input},
 		func(reply workerproc.Frame, fds []*os.File) (bool, error) {
 			if decodeErr := decodeArgs(reply.Payload, &res); decodeErr != nil {
 				return false, fmt.Errorf("compile reply: %w", decodeErr)
@@ -477,14 +501,21 @@ func (b *Backend) CompileError() string {
 	return compileErr
 }
 
-// Stop kills the scan worker and refuses later scans and reloads.
+// Stop cancels compilation, kills the scan worker, and refuses later work.
 func (b *Backend) Stop() error {
 	b.mu.Lock()
 	b.stopped = true
+	b.stop()
+	b.mu.Unlock()
+	err := b.proc.Stop()
+	// A compile owns its short-lived supervisor until it returns. Wait for
+	// its canceled call to kill and reap that worker before finishing stop.
+	b.reloadMu.Lock()
+	defer b.reloadMu.Unlock()
+	b.mu.Lock()
 	rules := b.rules
 	b.rules = nil
 	b.mu.Unlock()
-	err := b.proc.Stop()
 	if rules != nil {
 		_ = rules.file.Close()
 	}

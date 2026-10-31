@@ -386,7 +386,7 @@ signatures:
 2. If different from the installed version, downloads the ZIP for the configured tier from `yara_forge.download_url` and its detached signature
 3. Verifies the download against `signatures.signing_key`
 4. Filters out any rules listed in `disabled_rules`
-5. Compile-tests the rules with YARA-X before installing
+5. Compile-tests the rules with YARA-X before installing, in the compile unit when worker mode is enabled
 6. Atomically replaces the previous Forge rules file
 7. Reloads the YARA scanner
 
