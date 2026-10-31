@@ -2044,3 +2044,26 @@ func TestValidateWorkerMemoryLimitMinimum(t *testing.T) {
 		}
 	}
 }
+
+// signatures.yara_worker_enabled: false keeps YARA-X inside the root daemon,
+// where a crafted file that breaks the scanner reaches a root process.
+func TestValidateWarnsYaraInDaemon(t *testing.T) {
+	off, on := false, true
+	for _, tc := range []struct {
+		name string
+		val  *bool
+		warn bool
+	}{{"unset", nil, false}, {"true", &on, false}, {"false", &off, true}} {
+		cfg := baseValidationConfig()
+		cfg.Signatures.YaraWorkerEnabled = tc.val
+		results := Validate(cfg)
+		if got := hasResult(results, "warn", "signatures.yara_worker_enabled"); got != tc.warn {
+			t.Fatalf("%s: warn = %v, want %v", tc.name, got, tc.warn)
+		}
+		for _, r := range results {
+			if r.Field == "signatures.yara_worker_enabled" && !strings.Contains(r.Message, "root") {
+				t.Fatalf("%s: warning does not say why: %q", tc.name, r.Message)
+			}
+		}
+	}
+}

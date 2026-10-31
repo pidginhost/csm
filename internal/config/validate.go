@@ -365,6 +365,10 @@ func Validate(cfg *Config) []ValidationResult {
 		results = append(results, ValidationResult{"error", "signatures.signing_key",
 			"signing_key is required when signatures.update_url is configured"})
 	}
+	if cfg.Signatures.YaraWorkerEnabled != nil && !*cfg.Signatures.YaraWorkerEnabled {
+		results = append(results, ValidationResult{"warn", "signatures.yara_worker_enabled",
+			"false runs YARA-X inside the root daemon, so a crafted file that breaks the scanner reaches a root process; remove it to scan in a locked-down worker"})
+	}
 	if cfg.Signatures.YaraForge.Enabled && cfg.Signatures.SigningKey == "" {
 		results = append(results, ValidationResult{"error", "signatures.signing_key",
 			"signing_key is required when signatures.yara_forge.enabled is true"})
