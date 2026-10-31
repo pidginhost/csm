@@ -323,3 +323,36 @@ func FuzzDovecotPassdbVerdictsNeverBuildEvidence(f *testing.F) {
 		}
 	})
 }
+
+// A client chooses its login name and, through its HELO and rDNS, text that
+// smtpd echoes. Pairing still only counts the address Dovecot appended, and a
+// verdict pairs once.
+func FuzzSMTPAuthPairingAddress(f *testing.F) {
+	for _, s := range []string{"alice@example.net", "", "x,198.51.100.9", "x[198.51.100.9]", "x): unknown user", ", sasl_username=", "unknown[198.51.100.9]: SASL LOGIN authentication failed: x"} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, name string) {
+		clock := &staticClock{t: time.Unix(1_700_000_000, 0)}
+		d := New(&config.Config{}, nil, nil, "")
+		d.smtpAuthTracker = newTestTracker(t, clock)
+		for _, line := range []string{
+			"dovecot: auth: sql(" + name + ",203.0.113.7): unknown user",
+			"postfix/smtpd[9]: warning: unknown[198.51.100.9]: SASL LOGIN authentication failed: x, sasl_username=" + name,
+			"postfix/smtpd[9]: warning: " + name + "[198.51.100.9]: SASL LOGIN authentication failed: x",
+			"postfix/smtpd[9]: warning: Illegal address syntax from unknown[198.51.100.9] in RCPT command: <" + name + ">",
+			"postfix/smtpd[9]: warning: unknown[203.0.113.7]: SASL LOGIN authentication failed: x",
+			"postfix/smtpd[9]: warning: unknown[203.0.113.7]: SASL LOGIN authentication failed: x",
+		} {
+			clock.advance(time.Second)
+			d.handleMailLine(line, alert.Observation{}, d.currentCfg())
+		}
+		if calls, _ := d.smtpAuthTracker.Stats(); calls > 1 {
+			t.Fatalf("one verdict counted %d times", calls)
+		}
+		for ip := range d.smtpAuthTracker.ips {
+			if ip != "203.0.113.7" {
+				t.Fatalf("name %q counted a failure for %s", name, ip)
+			}
+		}
+	})
+}

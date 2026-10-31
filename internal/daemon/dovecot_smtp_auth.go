@@ -1,6 +1,90 @@
 package daemon
 
-import "strings"
+import (
+	"net"
+	"strings"
+)
+
+// dovecotRejectionVerdicts end a Dovecot auth_verbose line in which one
+// password database rejected the credentials. The PAM form is what passdb-pam
+// logs for PAM_AUTH_ERR.
+var dovecotRejectionVerdicts = []string{
+	"): Password mismatch",
+	"): unknown user",
+	"): pam_authenticate() failed: Authentication failure (Password mismatch?)",
+}
+
+// dovecotSessionlessRejection parses a rejection verdict for a request with
+// no login session, which is how an MTA such as Postfix asks Dovecot to check
+// SMTP AUTH:
+//
+//	auth: sql(alice@example.net,203.0.113.5): Password mismatch
+//
+// One verdict is one database's answer, not the request's result: a later
+// database can still accept the login or fail internally. Callers pair it
+// with the MTA's own failure line for the same client.
+//
+// The client name is attacker text before the fields Dovecot appends, so the
+// address and master flag are read from the right; a login session marker
+// there never parses as an address. A logged password follows the verdict,
+// so lines whose fields hold a second "): " are refused: syslog may have cut
+// the line right after a verdict forged inside the password, and Dovecot's
+// default name characters never allow that sequence.
+func dovecotSessionlessRejection(line string) (ip, account string, ok bool) {
+	seg := dovecotAuthSegment(dovecotServiceMessage(line))
+	open := strings.IndexByte(seg, '(')
+	if open <= 0 || !isDovecotAuthRequestName(seg[:open]) || strings.Contains(seg[:open], ": ") {
+		return "", "", false
+	}
+	inner := seg[open+1:]
+	found := false
+	for _, verdict := range dovecotRejectionVerdicts {
+		if fields, cut := strings.CutSuffix(inner, verdict); cut {
+			inner, found = fields, true
+			break
+		}
+	}
+	if !found || strings.Contains(inner, "): ") {
+		return "", "", false
+	}
+	inner = strings.TrimSuffix(inner, ",master")
+	comma := strings.LastIndexByte(inner, ',')
+	if comma < 0 {
+		return "", "", false
+	}
+	addr := net.ParseIP(inner[comma+1:])
+	if addr == nil {
+		return "", "", false
+	}
+	return addr.String(), inner[:comma], true
+}
+
+// dovecotAuthTroubleIPs returns every address named in the request fields of
+// a Dovecot auth Error, Warning, Fatal or Panic line. A client name can add
+// addresses here, which only withholds evidence for them.
+func dovecotAuthTroubleIPs(line string) []string {
+	seg := dovecotAuthSegment(dovecotServiceMessage(line))
+	rest := ""
+	for _, severity := range []string{"Error: ", "Warning: ", "Fatal: ", "Panic: "} {
+		if r, ok := strings.CutPrefix(seg, severity); ok {
+			rest = r
+			break
+		}
+	}
+	var ips []string
+	for i := strings.IndexByte(rest, ','); i >= 0; {
+		rest = rest[i+1:]
+		end := strings.IndexAny(rest, ",)")
+		if end < 0 {
+			break
+		}
+		if addr := net.ParseIP(rest[:end]); addr != nil {
+			ips = append(ips, addr.String())
+		}
+		i = strings.IndexByte(rest, ',')
+	}
+	return ips
+}
 
 // Informational auth messages can contain arbitrary client names and logged
 // passwords. Match their trusted prefix, not a verdict in the untrusted body:

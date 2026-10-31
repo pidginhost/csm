@@ -10,40 +10,47 @@ import (
 	"github.com/pidginhost/csm/internal/platform"
 )
 
-// Verbose database results cannot prove whether an SMTP login failed.
-// No logging setting can make this unsupported evidence source safe.
-func TestSMTPAuthLoggingDoctorReportsDetectionGap(t *testing.T) {
-	for _, verbose := range []string{"yes", "no"} {
-		for _, passwords := range []string{"no", "No", " no\n"} {
-			checks := smtpAuthLoggingDoctorCheck(platform.MTAPostfix, func(key string) (string, error) {
-				if key == "auth_verbose" {
-					return verbose, nil
-				}
-				if key == "auth_verbose_passwords" {
-					return passwords, nil
-				}
-				t.Fatalf("unexpected setting %q", key)
-				return "", nil
-			})
-			if len(checks) != 1 || checks[0].Status != "warn" || !strings.Contains(checks[0].Message, "not detected") || strings.Contains(checks[0].Fix, "auth_verbose = yes") {
-				t.Fatalf("checks = %+v, want an explicit detection-gap warning", checks)
-			}
-			if strings.Contains(checks[0].Message, "logs passwords") || strings.Contains(checks[0].Fix, "auth_verbose_passwords = no") {
-				t.Fatalf("auth_verbose_passwords=%q: disabled password logging was reported as enabled: %+v", passwords, checks)
-			}
+func doveconfValues(verbose, passwords string) func(string) (string, error) {
+	return func(key string) (string, error) {
+		switch key {
+		case "auth_verbose":
+			return verbose, nil
+		case "auth_verbose_passwords":
+			return passwords, nil
 		}
+		return "", errors.New("unexpected key " + key)
+	}
+}
+
+// SMTP AUTH on Postfix is detected by pairing Postfix failures with Dovecot's
+// rejection lines, which Dovecot writes only with auth_verbose on.
+func TestSMTPAuthLoggingDoctorWarnsWhenDovecotIsQuiet(t *testing.T) {
+	checks := smtpAuthLoggingDoctorCheck(platform.MTAPostfix, doveconfValues("no", "no"))
+	if len(checks) != 1 || checks[0].Status != "warn" || !strings.Contains(checks[0].Message, "not detected") || !strings.Contains(checks[0].Fix, "auth_verbose = yes") {
+		t.Fatalf("checks = %+v, want one warn naming auth_verbose = yes", checks)
 	}
 }
 
 func TestSMTPAuthLoggingDoctorWarnsWhenPasswordsAreLogged(t *testing.T) {
 	for _, value := range []string{"plain", "sha1", "plain:8", "yes"} {
-		checks := smtpAuthLoggingDoctorCheck(platform.MTAPostfix, func(string) (string, error) { return value, nil })
-		if len(checks) != 1 || checks[0].Status != "warn" || !strings.Contains(checks[0].Fix, "auth_verbose_passwords = no") || !strings.Contains(checks[0].Message, "not detected") {
-			t.Fatalf("auth_verbose_passwords=%s: checks = %+v, want password logging and detection-gap warning", value, checks)
+		checks := smtpAuthLoggingDoctorCheck(platform.MTAPostfix, doveconfValues("yes", value))
+		if len(checks) != 1 || checks[0].Status != "warn" || !strings.Contains(checks[0].Fix, "auth_verbose_passwords = no") {
+			t.Fatalf("auth_verbose_passwords=%s: checks = %+v, want one warn naming auth_verbose_passwords = no", value, checks)
 		}
 	}
 }
 
+func TestSMTPAuthLoggingDoctorOK(t *testing.T) {
+	for _, passwords := range []string{"no", "No", " no\n"} {
+		checks := smtpAuthLoggingDoctorCheck(platform.MTAPostfix, doveconfValues("yes\n", passwords))
+		if len(checks) != 1 || checks[0].Status != "ok" {
+			t.Fatalf("auth_verbose_passwords=%q: checks = %+v, want one ok", passwords, checks)
+		}
+	}
+}
+
+// Exim logs its own SMTP AUTH failures; a Postfix host without Dovecot has
+// no verdicts to read.
 func TestSMTPAuthLoggingDoctorSkipped(t *testing.T) {
 	for _, mta := range []platform.MTAKind{platform.MTAExim, platform.MTAUnknown} {
 		checks := smtpAuthLoggingDoctorCheck(mta, func(string) (string, error) {
@@ -61,10 +68,17 @@ func TestSMTPAuthLoggingDoctorSkipped(t *testing.T) {
 }
 
 func TestSMTPAuthLoggingDoctorReportsLookupFailures(t *testing.T) {
-	for _, err := range []error{context.DeadlineExceeded, errors.New("configuration unreadable")} {
-		checks := smtpAuthLoggingDoctorCheck(platform.MTAPostfix, func(string) (string, error) { return "", err })
-		if len(checks) != 1 || checks[0].Status != "warn" || !strings.Contains(checks[0].Message, "auth_verbose_passwords") || !strings.Contains(checks[0].Message, "not detected") || checks[0].Fix == "" {
-			t.Fatalf("lookup failure: checks = %+v, want one actionable warning", checks)
+	for _, key := range []string{"auth_verbose", "auth_verbose_passwords"} {
+		for _, err := range []error{context.DeadlineExceeded, errors.New("configuration unreadable")} {
+			checks := smtpAuthLoggingDoctorCheck(platform.MTAPostfix, func(k string) (string, error) {
+				if k == key {
+					return "", err
+				}
+				return doveconfValues("yes", "no")(k)
+			})
+			if len(checks) != 1 || checks[0].Status != "warn" || !strings.Contains(checks[0].Message, key) || checks[0].Fix == "" {
+				t.Fatalf("%s lookup failure: checks = %+v, want one actionable warning", key, checks)
+			}
 		}
 	}
 }

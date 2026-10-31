@@ -130,6 +130,10 @@ type Daemon struct {
 	smtpProbeTracker *smtpProbeTracker
 	mailAuthTracker  *mailAuthTracker
 	authBackend      *authBackendHealth
+	// smtpAuthFromExim is set before the log readers start when the Exim
+	// mainlog feeds smtpAuthTracker; Postfix pairing is then skipped so one
+	// attempt is not counted twice.
+	smtpAuthFromExim bool
 	startTime        time.Time
 
 	// mailStats counts mail decisions for the Email Security page on the
@@ -2120,6 +2124,7 @@ func (d *Daemon) startLogWatchers() {
 	hostInfo := platform.Detect()
 
 	watchExim := shouldWatchEximMainlog(hostInfo, os.Stat)
+	d.smtpAuthFromExim = watchExim
 	logFiles := d.fixedLogSpecs(hostInfo, d.handleEximLine, watchExim)
 	if hostInfo.IsCPanel() {
 		d.wg.Add(1)
@@ -2466,12 +2471,15 @@ func (d *Daemon) handleEximLine(line string, obs alert.Observation, cfg *config.
 // handleMailLine composes parseDovecotLogLine (preserving email_suspicious_geo)
 // with mailAuthTracker augmentation for IMAP/POP3/ManageSieve brute-force,
 // subnet spray, account spray, and compromise detection. obs names the line.
-// Postfix SASL warnings omit the auth status and can reuse a stale reason
-// during backend outages. Dovecot passdb verdicts are intermediate results,
-// so neither source supplies final SMTP credential-rejection evidence.
+// Neither a Postfix SASL warning (it omits the auth status and can reuse a
+// stale reason) nor a Dovecot passdb verdict (one database's answer) is SMTP
+// credential evidence alone; handleSMTPAuthPairing counts them together.
 func (d *Daemon) handleMailLine(line string, obs alert.Observation, cfg *config.Config) []alert.Finding {
 	d.recordMailStatsMail(line, obs.ObservedAt)
 	findings := parseDovecotLogLine(line, cfg)
+	if paired, handled := d.handleSMTPAuthPairing(line, obs, cfg); handled {
+		return append(findings, paired...)
+	}
 	// Intermediate auth results are not login failures, and their client
 	// text must not reach the outage detector even without a full verdict.
 	if isDovecotAuthRequestInfo(line) {
@@ -2509,6 +2517,39 @@ func (d *Daemon) handleMailLine(line string, obs alert.Observation, cfg *config.
 		findings = append(findings, recordDovecotFailure(d.mailAuthTracker, ip, account, line, obs)...)
 	}
 	return findings
+}
+
+// handleSMTPAuthPairing feeds Postfix SMTP AUTH evidence on hosts whose
+// SMTP AUTH failures do not come from the Exim mainlog. It reports whether the
+// line was a Dovecot verdict or a Postfix failure, which need no further
+// handling; Dovecot error lines are noted and still reach the outage detector.
+func (d *Daemon) handleSMTPAuthPairing(line string, obs alert.Observation, cfg *config.Config) ([]alert.Finding, bool) {
+	t := d.smtpAuthTracker
+	if t == nil || d.smtpAuthFromExim {
+		return nil, false
+	}
+	if ip, account, ok := dovecotSessionlessRejection(line); ok {
+		if !isInfraIPDaemon(ip, cfg.InfraIPs) && !isPrivateOrLoopback(ip) {
+			t.NoteDovecotRejection(ip, account)
+		}
+		return nil, true
+	}
+	if ips := dovecotAuthTroubleIPs(line); len(ips) > 0 {
+		t.NoteDovecotTrouble(ips)
+		return nil, false
+	}
+	ip, serverFault := postfixSASLAuthFailure(line)
+	if ip == "" {
+		return nil, false
+	}
+	// Claim the verdict even for a server-blamed reply so it cannot pair
+	// with a later failure. Infra, private and loopback clients never have
+	// a pending verdict.
+	account, ok := t.PairMTAFailure(ip)
+	if !ok || serverFault {
+		return nil, true
+	}
+	return t.RecordObserved(ip, account, obs), true
 }
 
 func (d *Daemon) dispatchMailLogLine(line maillog.Line, handler ObservedLineHandler) bool {
