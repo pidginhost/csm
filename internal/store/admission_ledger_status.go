@@ -59,12 +59,13 @@ func (l *AdmissionLedger) Status() admission.LedgerStatus {
 		s.Outbox.Error = section(func() error { return outboxStatus(tx, &s.Outbox) }, admissionOutboxBucket)
 		s.Notices.Error = section(func() error { return noticesStatus(tx, &s.Notices) }, admissionOutboxBucket)
 		s.Unresolved.Error = section(func() error { return unresolvedStatus(tx, &s.Unresolved) }, admissionIntentsBucket, admissionAttemptsBucket, admissionCandidatesBucket)
+		s.Effects.Error = section(func() error { return effectsStatus(tx, &s.Effects) }, admissionMetaBucket, admissionQueueStateBucket)
 		return nil
 	})
 	if err != nil {
 		for _, section := range []*string{
 			&s.Clock.Error, &s.Queue.Error, &s.Counters.Error, &s.Outcomes.Error, &s.Ingress.Error,
-			&s.Ceiling.Error, &s.Storage.Error, &s.Outbox.Error, &s.Notices.Error, &s.Unresolved.Error,
+			&s.Ceiling.Error, &s.Storage.Error, &s.Outbox.Error, &s.Notices.Error, &s.Unresolved.Error, &s.Effects.Error,
 		} {
 			*section = err.Error()
 		}

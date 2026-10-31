@@ -101,6 +101,11 @@ type AdmissionLedger struct {
 	// live is set once the live start ran (design C7); guarded by mu.
 	live bool
 
+	// set is the temporary set outside the ledger's effect records, as
+	// the owner last read it (SetOccupants); nil leaves block work without
+	// a slot budget. Guarded by mu.
+	set *admission.SetOccupancy
+
 	// revalidated is set once this handle has checked every queued
 	// candidate at a current reading. A reopened ledger cannot know what
 	// changed while it was closed, so its first schedule checks them all.
@@ -161,7 +166,7 @@ func OpenAdmissionLedger(db *DB, reg *admission.Registry) (*AdmissionLedger, err
 			return n
 		}
 		if err := tx.ForEach(func(name []byte, _ *bolt.Bucket) error {
-			if strings.HasPrefix(string(name), "adm:") && !slices.Contains(admissionBuckets, string(name)) {
+			if strings.HasPrefix(string(name), "adm:") && !slices.Contains(admissionBuckets, string(name)) && string(name) != admissionEffectsBucket {
 				return admission.ErrCorruptRecord
 			}
 			return nil
@@ -286,7 +291,7 @@ func OpenAdmissionLedger(db *DB, reg *admission.Registry) (*AdmissionLedger, err
 				if err := upgradeLedgerToSchemaSeven(tx); err != nil {
 					return err
 				}
-			case len(schema) == 1 && schema[0] >= admissionSchemaVersion && schema[0] <= admissionSchemaLive:
+			case len(schema) == 1 && schema[0] >= admissionSchemaVersion && schema[0] <= admissionSchemaEffects:
 				if existing != len(admissionBuckets) {
 					return admission.ErrCorruptRecord
 				}
@@ -321,6 +326,9 @@ func OpenAdmissionLedger(db *DB, reg *admission.Registry) (*AdmissionLedger, err
 			return err
 		}
 		if err := proveEpisodes(tx); err != nil {
+			return err
+		}
+		if err := proveEffects(tx); err != nil {
 			return err
 		}
 		held, err := proveIntents(tx)
@@ -489,6 +497,9 @@ func (l *AdmissionLedger) Tick(r admission.ClockReading) (admission.ClockTick, e
 		if err := pruneOutcomes(tx, t.Now); err != nil {
 			return err
 		}
+		if err := sweepEffects(tx, t); err != nil {
+			return err
+		}
 		return l.meterStorage(tx, t)
 	})
 	if err != nil {
@@ -594,7 +605,7 @@ func validateStateKeys(tx *bolt.Tx) error {
 		keys [][]byte
 	}{
 		{admissionMetaBucket, [][]byte{admissionSchemaKey, admissionClockKey, admissionClockPendingKey, admissionTrackerKey, admissionInventoryKey, admissionAmbiguousKey}},
-		{admissionQueueStateBucket, [][]byte{queueStateKey, queueCountersKey, scheduleStateKey, ingressStateKey, ceilingStateKey, storageStateKey, episodeStateKey, liveStartKey}},
+		{admissionQueueStateBucket, [][]byte{queueStateKey, queueCountersKey, scheduleStateKey, ingressStateKey, ceilingStateKey, storageStateKey, episodeStateKey, liveStartKey, effectTallyKey}},
 	} {
 		b := tx.Bucket([]byte(state.name))
 		if b == nil {

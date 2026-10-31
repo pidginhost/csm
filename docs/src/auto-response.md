@@ -400,8 +400,12 @@ applies at the owner's next clock tick; a failed change is retried on later
 ticks before admission resumes, with elapsed time credited at the saved
 ceiling before the new one applies. Existing blocking paths remain unchanged:
 every automatic response they select is also handed to the ledger, which
-previews it within this ceiling, or forecasts it in dry run, and never
-applies it. With the firewall on, queued responses disabled by the current
+previews it within this ceiling and the free slots of the temporary block
+set, or forecasts it in dry run, and never applies it. A preview the set has
+no room for waits as `set_full` until a slot frees: the slots operator,
+unknown and subnet blocks leave are divided as in the forecast, legacy
+automatic blocks occupy general slots, and an unlimited set counts as 10000
+entries. With the firewall on, queued responses disabled by the current
 policy end as `disabled` without a withheld alert, including when their evidence expires before a
 restart or configuration reload. Turning a response back on requires a new
 eligible observation; ended work is not replayed. Status, `csm doctor` and findings

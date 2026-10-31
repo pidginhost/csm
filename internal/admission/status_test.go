@@ -54,6 +54,7 @@ func TestDoctorChecksWarnOnDamagedSections(t *testing.T) {
 		"outbox":     func(s *LedgerStatus) { s.Outbox.Error = "x" },
 		"notices":    func(s *LedgerStatus) { s.Notices.Error = "x" },
 		"unresolved": func(s *LedgerStatus) { s.Unresolved.Error = "x" },
+		"effects":    func(s *LedgerStatus) { s.Effects.Error = "x" },
 	} {
 		s := healthyStatus()
 		damage(s)

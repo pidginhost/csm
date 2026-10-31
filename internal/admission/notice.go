@@ -130,12 +130,16 @@ const (
 // exactly the work the reserved lane serves, so a lost C3 candidate is
 // lost reserved work. Capacity reasons raise only the capacity notice. Only a
 // failure that ends the candidate or an unknown outcome is a gap; an
-// existing verified effect is not.
-func GapNotice(event GapEvent, reason Reason, outcome Disposition, tier Tier) NoticeKind {
+// existing verified effect is not. Once the ledger runs live, work a full
+// set defers raises the capacity notice at any tier (spec 5.6); a preview
+// raises it for Critical work only.
+func GapNotice(event GapEvent, reason Reason, outcome Disposition, tier Tier, live bool) NoticeKind {
 	critical, c3 := tier.Severity == SeverityCritical, tier.Class == ClassC3
 	switch event {
 	case GapDeferred:
 		switch {
+		case live && reason == ReasonSetFull && tier.Valid():
+			return NoticeCapacity
 		case !critical:
 			return 0
 		case reason.Capacity():

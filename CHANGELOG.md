@@ -15,6 +15,10 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - YARA scans no longer reopen tenant files by path or write temporary copies of large files to disk.
 - PHP taint analysis now runs in a locked-down worker with no root, network or account file access; files are reported unexamined when it cannot start.
 
+### Changed
+
+- With auto_response.dry_run off, admission previews now wait for free slots under firewall.deny_temp_ip_limit, and csm doctor warns while that set is full; blocking is unchanged.
+
 ### Fixed
 
 - WordPress core files that differ only in line endings are no longer reported on sites whose PHP prints deprecation notices.

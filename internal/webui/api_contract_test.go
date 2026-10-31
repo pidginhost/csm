@@ -37,7 +37,8 @@ func TestAPIStatusCarriesHealthSnapshotContract(t *testing.T) {
 			DryRun: &health.AdmissionDryRun{Active: true, SessionID: &session, Since: &now, ResetReason: &reset,
 				ModelledKinds: []string{"block_ip"}, PredictionScope: "ceiling_and_temporary_capacity",
 				Occupancy: &health.AdmissionDryRunOccupancy{Actual: 8}, Ceiling: &health.AdmissionDryRunCeiling{Limit: 5},
-				Picks: map[string]uint64{"capacity_admit": 1}, LastHour: map[string]uint64{"capacity_admit": 1}}}}
+				Picks: map[string]uint64{"capacity_admit": 1}, LastHour: map[string]uint64{"capacity_admit": 1}},
+			Set: &health.AdmissionSet{Limit: 5, Capacity: 5}, SetError: "fixture set read failure"}}
 	pending, live := 2, 5
 	learning := &health.LearningStatus{Publishing: true, LastPass: now, PendingReports: &pending, OldestPending: now.Add(-time.Hour), LiveClusters: &live}
 	s.SetHealthProvider(learningStatusProvider{learning: learning, admissionStatusProvider: admissionStatusProvider{status: adm, statusFakeProvider: statusFakeProvider{
@@ -141,6 +142,11 @@ func TestAPIStatusCarriesHealthSnapshotContract(t *testing.T) {
 		}
 		assertJSONKeys(t, nested, jsonStructKeys(typ))
 	}
+	setView, isObject := owner["set"].(map[string]any)
+	if !isObject {
+		t.Fatalf("admission set payload = %T, want object", owner["set"])
+	}
+	assertJSONKeys(t, setView, jsonStructKeys(reflect.TypeOf(health.AdmissionSet{})))
 }
 
 func TestAPICapabilitiesContract(t *testing.T) {

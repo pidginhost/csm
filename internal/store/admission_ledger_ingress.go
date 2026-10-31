@@ -133,7 +133,7 @@ func (l *AdmissionLedger) EnqueueGroup(arrivals []admission.Arrival, checkpoint 
 				}
 				// A refused arrival names no stored candidate: its
 				// notice has its own check and family, and no example.
-				if kind := admission.GapNotice(admission.GapEnded, reason, 0, tier); kind != 0 {
+				if kind := admission.GapNotice(admission.GapEnded, reason, 0, tier, false); kind != 0 {
 					key := admission.NoticeKey{Kind: kind, Reason: reason, Check: a.Evidence.Check(), Effect: a.Request.Kind.Effect()}
 					if txErr = q.raise(key, "", 0); txErr != nil {
 						return txErr
@@ -187,7 +187,7 @@ func (q *queueTx) countCheckpoint(previous, next *admission.IngressCheckpoint) e
 		if err = q.outcomes.AddCount(admission.QueueOutcome(k.Event, k.Reason, tier), n); err != nil {
 			return err
 		}
-		if kind := admission.GapNotice(admission.GapEnded, k.Reason, 0, tier); kind != 0 {
+		if kind := admission.GapNotice(admission.GapEnded, k.Reason, 0, tier, false); kind != 0 {
 			if err = q.raiseCount(admission.NoticeKey{Kind: kind, Reason: k.Reason}, n); err != nil {
 				return err
 			}

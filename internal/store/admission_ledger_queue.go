@@ -174,6 +174,10 @@ type queueTx struct {
 	// rows.
 	held, heldDelta map[string]int
 	heldTargets     map[string]bool
+	// started is the handle's live start (AdmissionLedger.live) and set
+	// the handle's set occupancy (AdmissionLedger.set).
+	started bool
+	set     *admission.SetOccupancy
 }
 
 func (l *AdmissionLedger) openQueue(tx *bolt.Tx, now time.Time) (*queueTx, error) {
@@ -181,7 +185,7 @@ func (l *AdmissionLedger) openQueue(tx *bolt.Tx, now time.Time) (*queueTx, error
 	if err != nil {
 		return nil, err
 	}
-	q.held, q.heldDelta = l.held, l.heldDelta
+	q.held, q.heldDelta, q.started, q.set = l.held, l.heldDelta, l.live, l.set
 	return q, nil
 }
 
@@ -659,6 +663,10 @@ func (l *AdmissionLedger) scheduleTx(q *queueTx, lim admission.ScheduleLimits, a
 	if err != nil {
 		return nil, err
 	}
+	slots, err := q.slots()
+	if err != nil {
+		return nil, err
+	}
 	live, err := q.live()
 	if err != nil {
 		return nil, err
@@ -670,7 +678,7 @@ func (l *AdmissionLedger) scheduleTx(q *queueTx, lim admission.ScheduleLimits, a
 	// A pick that fails revalidation ends, and the schedule is computed
 	// again from the stored position without it, so its turn is not spent.
 	for {
-		picks, next, schedErr := admission.Schedule(items, st, lim)
+		picks, next, schedErr := admission.Schedule(items, st, slots.limit(lim))
 		if schedErr != nil {
 			return nil, schedErr
 		}
@@ -689,7 +697,7 @@ func (l *AdmissionLedger) scheduleTx(q *queueTx, lim admission.ScheduleLimits, a
 			refused[p.ID] = true
 		}
 		if len(refused) == 0 {
-			if err = q.deferUnserved(items, byID, picks, lim, answers); err != nil {
+			if err = q.deferUnserved(items, byID, picks, lim, slots, answers); err != nil {
 				return nil, err
 			}
 			return picks, putScheduleState(q.tx, next)
@@ -1066,21 +1074,24 @@ func (q *queueTx) challengeWake(history *liveHistory, lc liveCandidate, earliest
 }
 
 // deferUnserved records why ready work the schedule left queued waits: its
-// lanes ran out of ceiling budget or history budget, or its details do not
-// fit the recovery reserve (spec 5.17). Work passed over for the member
-// bound or another scope's fair turn waits without a reason, and so does a
-// retry in its backoff. A changed reason is one transition, counted and
-// announced once, as Defer records it. Pending work keeps its reason.
-func (q *queueTx) deferUnserved(items []admission.ScheduleItem, byID map[admission.CandidateID]liveCandidate, picks []admission.Pick, lim admission.ScheduleLimits, answers map[admission.CandidateID]admission.Answer) error {
+// lanes ran out of ceiling budget, of free set slots in the partitions
+// they occupy or of history budget, or its details do not fit the recovery
+// reserve (spec 5.17). Work passed over for the member bound or another
+// scope's fair turn waits without a reason, and so does a retry in its
+// backoff. A changed reason is one transition, counted and announced once,
+// as Defer records it. Pending work keeps its reason, and so does set_full
+// work while the ledger has no set to judge it by: the engine refused it.
+func (q *queueTx) deferUnserved(items []admission.ScheduleItem, byID map[admission.CandidateID]liveCandidate, picks []admission.Pick, lim admission.ScheduleLimits, slots setBudget, answers map[admission.CandidateID]admission.Answer) error {
 	picked := make(map[admission.CandidateID]bool, len(picks))
 	general, reserved := lim.General, lim.Reserved
+	generalSlots, reservedSlots := slots.general, slots.reserved
 	generalBytes, reservedBytes := lim.GeneralBytes, lim.ReservedBytes
 	for _, p := range picks {
 		picked[p.ID] = true
 		if p.Lane == admission.LaneGeneral {
-			general, generalBytes = general-p.Cost, generalBytes-uint64(p.Bytes)
+			general, generalSlots, generalBytes = general-p.Cost, generalSlots-p.Cost, generalBytes-uint64(p.Bytes)
 		} else {
-			reserved, reservedBytes = reserved-p.Cost, reservedBytes-uint64(p.Bytes)
+			reserved, reservedSlots, reservedBytes = reserved-p.Cost, reservedSlots-p.Cost, reservedBytes-uint64(p.Bytes)
 		}
 	}
 	recovery := lim.RecoveryBytes
@@ -1094,9 +1105,14 @@ func (q *queueTx) deferUnserved(items []admission.ScheduleItem, byID map[admissi
 			continue
 		}
 		lc := byID[it.ID]
+		if lc.c.Reason == admission.ReasonSetFull && !slots.bounded {
+			continue
+		}
 		eligible := it.Direct || it.Corroborated
 		generalCeiling := general >= it.CeilingCost
 		reservedCeiling := eligible && reserved >= it.CeilingCost
+		generalRoom := generalCeiling && generalSlots >= it.CeilingCost
+		reservedRoom := reservedCeiling && reservedSlots >= it.CeilingCost
 		held, err := q.heldTarget(lc.c.Key.Target)
 		if err != nil {
 			return err
@@ -1109,7 +1125,9 @@ func (q *queueTx) deferUnserved(items []admission.ScheduleItem, byID map[admissi
 			reason = admission.ReasonPendingRecovery
 		case !generalCeiling && !reservedCeiling:
 			reason = admission.ReasonCeiling
-		case (!generalCeiling || generalBytes < uint64(it.Bytes)) && (!reservedCeiling || reservedBytes < uint64(it.Bytes)):
+		case !generalRoom && !reservedRoom:
+			reason = admission.ReasonSetFull
+		case (!generalRoom || generalBytes < uint64(it.Bytes)) && (!reservedRoom || reservedBytes < uint64(it.Bytes)):
 			reason = admission.ReasonStorageShare
 		case uint64(it.Recovery) > recovery:
 			reason = admission.ReasonPendingRecovery
@@ -1120,7 +1138,7 @@ func (q *queueTx) deferUnserved(items []admission.ScheduleItem, byID map[admissi
 		c := lc.c
 		if reason == 0 {
 			switch c.Reason {
-			case admission.ReasonCeiling, admission.ReasonStorageShare, admission.ReasonPendingRecovery:
+			case admission.ReasonCeiling, admission.ReasonSetFull, admission.ReasonStorageShare, admission.ReasonPendingRecovery:
 			default:
 				continue
 			}
@@ -1191,7 +1209,9 @@ func (q *queueTx) scheduleItems(live []liveCandidate, room uint64, answers map[a
 
 // NextWake is the earliest admission time at which queued work changes
 // without a new report: a retry wait ends, a queued deadline passes, or
-// ready work gains ceiling budget or history budget on a lane it can use.
+// ready work gains ceiling budget, a set slot or history budget on a lane
+// it can use. Work waiting for a set slot on either eligible lane wakes
+// at the next future effect expiry or setRecheck, whichever is sooner.
 // It is the stored admission time when a schedule would serve ready work
 // already. The engine's timer ticks and schedules then. ok is false when
 // nothing waits. Pending work, as Schedule passes it over, wakes only at
@@ -1210,7 +1230,7 @@ func (l *AdmissionLedger) NextWake(answers map[admission.CandidateID]admission.A
 		if err != nil {
 			return err
 		}
-		q.held = l.held
+		q.held, q.set = l.held, l.set
 		live, err := q.live()
 		if err != nil {
 			return err
@@ -1237,13 +1257,17 @@ func (l *AdmissionLedger) NextWake(answers map[admission.CandidateID]admission.A
 		if err != nil {
 			return err
 		}
+		slots, err := q.slots()
+		if err != nil {
+			return err
+		}
 		// A due sweep must assess imported entries before the scheduler
 		// can use their tiers. Overdue work needs attention now.
 		if !wake.IsZero() && !wake.After(clock.Now()) {
 			wake = clock.Now()
 			return nil
 		}
-		var general, reserved bool
+		var general, reserved, full bool
 		for _, it := range items {
 			// A retry cannot become ready at its backoff while recovery
 			// space is unavailable, nor while it waits on an outside
@@ -1256,6 +1280,10 @@ func (l *AdmissionLedger) NextWake(answers map[admission.CandidateID]admission.A
 			}
 			if it.Ready {
 				general, reserved = true, reserved || it.Direct || it.Corroborated
+				eligible := it.Direct || it.Corroborated
+				// Either lane can free a slot before the other earns enough
+				// ceiling or history credit to use its existing room.
+				full = full || slots.free(admission.LaneGeneral) < it.CeilingCost || (eligible && slots.free(admission.LaneDirect) < it.CeilingCost)
 			}
 		}
 		if !general {
@@ -1265,13 +1293,23 @@ func (l *AdmissionLedger) NextWake(answers map[admission.CandidateID]admission.A
 		if err != nil {
 			return err
 		}
-		picks, _, err := admission.Schedule(items, st, lim)
+		picks, _, err := admission.Schedule(items, st, slots.limit(lim))
 		if err != nil {
 			return err
 		}
 		if len(picks) > 0 {
 			earliest(clock.Now())
 			return nil
+		}
+		if full {
+			earliest(clock.Now().Add(setRecheck))
+			at, ok, soonErr := soonestEffect(tx, clock.Now())
+			if soonErr != nil {
+				return soonErr
+			}
+			if ok {
+				earliest(at)
+			}
 		}
 		storage, err := q.storageState()
 		if err != nil {
@@ -1325,7 +1363,7 @@ func (l *AdmissionLedger) NextWake(answers map[admission.CandidateID]admission.A
 					}
 					laneItems = append(laneItems, item)
 				}
-				heads, _, probeErr := admission.Schedule(laneItems, st, probe)
+				heads, _, probeErr := admission.Schedule(laneItems, st, slots.limit(probe))
 				if probeErr != nil {
 					return probeErr
 				}

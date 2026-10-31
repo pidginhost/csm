@@ -46,14 +46,19 @@ type fakeBlocks struct {
 	retireStep  func([]firewall.BlockAction)
 	retires     [][]firewall.BlockAction
 	// temp and limit are the temporary occupancy an admission snapshot
-	// reports, every timed element unclaimed; snapshots records its calls
-	// and shadows the forecast addresses each call named. liveTemp and
-	// livePerm are the addresses the sets hold as a timed and an untimed
-	// element.
-	temp, limit        int
-	snapshots          [][]firewall.BlockMember
-	shadows            [][]string
-	liveTemp, livePerm map[string]bool
+	// reports, every timed element unclaimed, and imported the legacy
+	// automatic blocks among them. admitted counts the admission-owned
+	// rows in temp; snapshots records its calls that name
+	// members or forecast addresses and shadows the forecast addresses each
+	// call named, while setReads counts the reads of the set alone.
+	// liveTemp and livePerm are the addresses the sets hold as a timed and
+	// an untimed element.
+	temp, limit, imported int
+	snapshots             [][]firewall.BlockMember
+	shadows               [][]string
+	setReads              int
+	admitted              int
+	liveTemp, livePerm    map[string]bool
 }
 
 // fakeExisting names a proven block unless a test names it otherwise.
@@ -94,12 +99,16 @@ func (f *fakeBlocks) CheckBlockBatchEffects(members []firewall.BlockMember) ([]f
 func (f *fakeBlocks) BlockAdmissionSnapshot(members []firewall.BlockMember, shadow []string) (firewall.BlockAdmission, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.snapshots = append(f.snapshots, append([]firewall.BlockMember(nil), members...))
-	f.shadows = append(f.shadows, append([]string(nil), shadow...))
+	if len(members) == 0 && len(shadow) == 0 {
+		f.setReads++
+	} else {
+		f.snapshots = append(f.snapshots, append([]firewall.BlockMember(nil), members...))
+		f.shadows = append(f.shadows, append([]string(nil), shadow...))
+	}
 	if f.checkErr != nil {
 		return firewall.BlockAdmission{}, f.checkErr
 	}
-	out := firewall.BlockAdmission{Answers: make([]firewall.BlockAnswer, len(members)), Temporary: f.temp, Unclaimed: f.temp, Limit: f.limit}
+	out := firewall.BlockAdmission{Answers: make([]firewall.BlockAnswer, len(members)), Temporary: f.temp, Unclaimed: f.temp - f.imported - f.admitted, Imported: f.imported, Admission: f.admitted, Limit: f.limit}
 	for _, ip := range shadow {
 		if f.liveTemp[ip] || f.livePerm[ip] {
 			if out.ShadowHeld == nil {
@@ -121,7 +130,7 @@ func (f *fakeBlocks) BlockAdmissionSnapshot(members []firewall.BlockMember, shad
 			out.Answers[i].Refusal = refusal
 		}
 	}
-	if f.shortChecks {
+	if f.shortChecks && len(out.Answers) > 0 {
 		out.Answers = out.Answers[:len(out.Answers)-1]
 	}
 	return out, nil

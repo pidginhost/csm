@@ -27,6 +27,17 @@ type LedgerStatus struct {
 	Notices  NoticesStatus  `json:"notices"`
 	// Unresolved is the attempts whose outcome is unresolved.
 	Unresolved UnresolvedStatus `json:"unresolved"`
+	Effects    EffectsStatus    `json:"effects"`
+}
+
+// EffectsStatus is the temporary set slots the ledger's automatic blocks
+// hold, pending and verified together, by partition, and when the first
+// of them expires.
+type EffectsStatus struct {
+	General  int       `json:"general"`
+	Reserved int       `json:"reserved"`
+	Next     time.Time `json:"next,omitempty"`
+	Error    string    `json:"error,omitempty"`
 }
 
 // ClockStatus is the stored high-water mark; zero before the first
@@ -340,7 +351,7 @@ func ledgerRow(s *LedgerStatus, executing bool) DoctorRow {
 		{"clock", s.Clock.Error}, {"queue", s.Queue.Error}, {"counters", s.Counters.Error},
 		{"outcomes", s.Outcomes.Error}, {"ingress", s.Ingress.Error}, {"ceiling", s.Ceiling.Error},
 		{"storage", s.Storage.Error}, {"outbox", s.Outbox.Error}, {"notices", s.Notices.Error},
-		{"unresolved", s.Unresolved.Error},
+		{"unresolved", s.Unresolved.Error}, {"effects", s.Effects.Error},
 	} {
 		if section.err != "" {
 			damaged = append(damaged, section.name+": "+section.err)

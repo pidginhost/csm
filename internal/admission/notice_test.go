@@ -50,7 +50,7 @@ func TestGapNoticeClassifiesEvents(t *testing.T) {
 		{"c3 turned off", GapEnded, ReasonDisabled, 0, c3, 0},
 		{"critical dry run", GapOutcome, 0, DispositionDryRun, crit, 0},
 	} {
-		if got := GapNotice(tc.event, tc.reason, tc.outcome, tc.tier); got != tc.want {
+		if got := GapNotice(tc.event, tc.reason, tc.outcome, tc.tier, false); got != tc.want {
 			t.Errorf("%s: %v, want %v", tc.name, got, tc.want)
 		}
 	}

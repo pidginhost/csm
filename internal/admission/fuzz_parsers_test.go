@@ -172,7 +172,7 @@ func FuzzLedgerRecords(f *testing.F) {
 		}},
 		ceiling, charge, history, EvidenceRefs{Refs: 2}, EvidenceRefs{Loose: 7},
 		StorageState{General: HistoryMeter{Credit: 5, Used: 9}, Recovery: 3, Ended: RingState{Count: 1, Last: 4}, AuditSlots: 3, NoticeRecords: FixedNotices},
-		auditRow, notice, outcomes,
+		auditRow, notice, outcomes, EffectTally{}, EffectTally{General: 1, Reserved: 2},
 	} {
 		data, err := rec.MarshalBinary()
 		if err != nil {
@@ -261,6 +261,9 @@ func FuzzLedgerRecords(f *testing.F) {
 			if c, err := UnmarshalOutcomeCounts(data); err == nil {
 				roundTrip("outcome counts", c)
 			}
+			if tally, err := UnmarshalEffectTally(data); err == nil {
+				roundTrip("effect tally", tally)
+			}
 			if span, start, err := ParseSpanKey(data); err == nil {
 				if again := span.Key(start); !bytes.Equal(again, data) {
 					t.Fatalf("accepted outcome bucket key does not re-encode to its input: %q", data)
@@ -279,6 +282,53 @@ func FuzzLedgerRecords(f *testing.F) {
 		}
 		check(data)
 		if len(data) >= 8 {
+			check(resealFuzzRecord(data))
+		}
+	})
+}
+
+func FuzzEffectRecord(f *testing.F) {
+	target, err := CanonicalAddress("192.0.2.10", Caps{})
+	if err != nil {
+		f.Fatal(err)
+	}
+	e := EffectRecord{
+		Action: "act_00000000000000000000000000000001", Target: target,
+		Partition: PartitionGeneral, Lane: LaneGeneral,
+		Tier: Tier{Class: ClassC2, Severity: SeverityHigh}, Scope: "host/address", ExpiresAt: t0.Add(time.Hour),
+	}
+	key, err := e.Key()
+	if err != nil {
+		f.Fatal(err)
+	}
+	for _, applied := range []time.Time{{}, t0} {
+		e.Applied = applied
+		data, err := e.MarshalBinary()
+		if err != nil {
+			f.Fatal(err)
+		}
+		f.Add(key, data)
+	}
+	f.Fuzz(func(t *testing.T, key, data []byte) {
+		check := func(data []byte) {
+			e, err := UnmarshalEffectRecord(key, data)
+			if err != nil {
+				if err != ErrCorruptRecord {
+					t.Fatalf("unexpected decode error: %v", err)
+				}
+				return
+			}
+			againKey, err := e.Key()
+			if err != nil || !bytes.Equal(againKey, key) {
+				t.Fatalf("accepted effect key does not re-encode to its input: %v", err)
+			}
+			again, err := e.MarshalBinary()
+			if err != nil || !bytes.Equal(again, data) {
+				t.Fatalf("accepted effect value does not re-encode to its input: %v", err)
+			}
+		}
+		check(data)
+		if len(data) >= 8 && len(data) <= MaxEffectRecordBytes {
 			check(resealFuzzRecord(data))
 		}
 	})

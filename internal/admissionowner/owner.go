@@ -12,6 +12,7 @@ import (
 	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/checks"
+	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/health"
 	"github.com/pidginhost/csm/internal/queuehealth"
 	"github.com/pidginhost/csm/internal/store"
@@ -214,6 +215,10 @@ type Owner struct {
 	// applyHold keeps an apply fault that snapshot repair cannot prove fixed.
 	applyHold  error
 	probeCheck bool
+	// set is the temporary set the turn's schedule budgets block work by,
+	// and setErr why the turn could not read it (readSet).
+	set    *firewall.BlockAdmission
+	setErr error
 	// policy is the installed execution policy and seenEpoch the newest
 	// epoch read, valid or not. policyErr holds execution while set.
 	policy    ExecutionPolicy
@@ -957,10 +962,14 @@ func (o *Owner) runTurn(selecting bool) error {
 // serve runs the schedule's picks. With an engine its block_ip picks run
 // as one batch, and a refused policy holds every firewall pick; any other
 // pick is previewed. The schedule has already deferred the work its
-// budgets cannot serve and revalidated each pick under the same state.
+// budgets and the set's free slots cannot serve and revalidated each pick
+// under the same state.
 func (o *Owner) serve() error {
 	if err := o.refuseDisabled(); err != nil {
 		return err
+	}
+	if err := o.readSet(); err != nil {
+		return fmt.Errorf("reading queued work: %w", err)
 	}
 	picks, err := scheduleLedger(o.ledger, previewLimits, o.answers())
 	if err != nil {
@@ -1220,6 +1229,12 @@ func (o *Owner) refreshStatus() {
 	if o.ledger != nil {
 		ls := o.ledger.Status()
 		s.Ledger = &ls
+		if o.set != nil && ls.Effects.Error == "" {
+			s.Owner.Set = setStatus(*o.set, ls.Effects)
+		}
+	}
+	if o.setErr != nil {
+		s.Owner.SetError = o.setErr.Error()
 	}
 	if o.ingress != nil {
 		in := o.ingress.Health()

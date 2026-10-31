@@ -33,6 +33,7 @@ func TestBuildOwnsAdmissionSnapshot(t *testing.T) {
 	}
 	class, at := "timeout", time.Unix(50, 0).UTC()
 	status.Owner.Verdict = &AdmissionVerdict{Pending: 8, LastError: &class, LastErrorAt: &at}
+	status.Owner.Set = &AdmissionSet{Limit: 10, General: AdmissionDryRunPartition{Size: 8, Used: 1, Free: 7}}
 	snapshot := Build(admissionFakeProvider{&fakeProvider{}, status}, "v", nil)
 	before, err := json.Marshal(snapshot.Admission)
 	if err != nil {
@@ -48,6 +49,7 @@ func TestBuildOwnsAdmissionSnapshot(t *testing.T) {
 	status.Ledger.Notices.Records[0].Count++
 	status.Owner.CeilingSource = "configured"
 	status.Owner.Import.Units++
+	status.Owner.Set.General.Used++
 	status.Owner.Verdict.Pending++
 	*status.Owner.Verdict.LastError = "transport"
 	*status.Owner.Verdict.LastErrorAt = time.Unix(60, 0)

@@ -71,6 +71,30 @@ type AdmissionOwner struct {
 	Verdict *AdmissionVerdict `json:"verdict,omitempty"`
 	// DryRun is the dry-run forecast of an owner with an engine.
 	DryRun *AdmissionDryRun `json:"dry_run,omitempty"`
+	// Set combines the last scheduling turn's non-admission snapshot with
+	// current ledger holds outside a dry run; SetError is why that turn
+	// could not read the set.
+	Set      *AdmissionSet `json:"set,omitempty"`
+	SetError string        `json:"set_error,omitempty"`
+}
+
+// AdmissionSet is the temporary block set as automatic admission divides
+// it (spec 5.6): the firewall's entries and the ledger's automatic blocks,
+// pending and verified. Capacity is the limit, or 10000 for an unlimited
+// set; Unclaimed counts the entries admission never evicts (operator
+// blocks, blocks of unknown origin and two per timed subnet) and Imported
+// the legacy automatic blocks; DrainSeconds is how long the last of them
+// has left, or -1 when a kernel expiry is unavailable. The partitions'
+// free slots bound the block work a schedule serves.
+type AdmissionSet struct {
+	Limit        int                      `json:"limit"`
+	Unlimited    bool                     `json:"unlimited"`
+	Capacity     int                      `json:"capacity"`
+	Unclaimed    int                      `json:"unclaimed"`
+	Imported     int                      `json:"imported"`
+	DrainSeconds int64                    `json:"drain_seconds"`
+	General      AdmissionDryRunPartition `json:"general"`
+	Reserved     AdmissionDryRunPartition `json:"reserved"`
 }
 
 // AdmissionDryRun is an executing owner's dry-run forecast (spec 3.8): a
@@ -266,6 +290,10 @@ func (in *AdmissionStatus) Clone() *AdmissionStatus {
 				v.LastErrorAt = &at
 			}
 			owner.Verdict = &v
+		}
+		if in.Owner.Set != nil {
+			set := *in.Owner.Set
+			owner.Set = &set
 		}
 		owner.DryRun = in.Owner.DryRun.clone()
 		out.Owner = &owner
