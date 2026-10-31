@@ -77,12 +77,18 @@ func isPostfixSASLNonCredentialReply(reply string) bool {
 	switch reply {
 	case "authentication backend error", "generic failure", "no memory available", "transient failure (e.g., weak key)":
 		return true
+	}
+	return strings.Contains(reply, "authentication server") || strings.Contains(reply, "temporar")
+}
+
+// isPostfixSASLLocalReply reports a failure smtpd decided itself, before any
+// credentials reached Dovecot. Such a request has no Dovecot verdict to claim.
+func isPostfixSASLLocalReply(reply string) bool {
+	switch reply {
 	case "invalid authentication mechanism", "invalid base64 data in initial response", "invalid base64 data in continued response":
-		// These fail locally without sending credentials to Dovecot.
 		return true
 	}
-	return strings.Contains(reply, "authentication server") || strings.Contains(reply, "temporar") ||
-		strings.HasPrefix(reply, "invalid authentication mechanism:")
+	return strings.HasPrefix(reply, "invalid authentication mechanism:")
 }
 
 func postfixClientIP(client string) string {

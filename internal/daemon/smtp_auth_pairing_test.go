@@ -517,3 +517,24 @@ func TestPostfixLinesThatMustNotPair(t *testing.T) {
 		})
 	}
 }
+
+// Postfix rejects a bad mechanism or bad base64 itself, without asking
+// Dovecot. A client sending one on a second connection while its real attempt
+// waits out Dovecot's failure delay must not consume that attempt's verdict.
+func TestLocalSASLRejectionDoesNotConsumeVerdict(t *testing.T) {
+	for _, local := range []string{
+		"postfix/smtpd[98]: warning: unknown[203.0.113.73]: SASL LOGIN authentication failed: Invalid base64 data in continued response",
+		"postfix/smtpd[98]: warning: unknown[203.0.113.73]: SASL PLAIN authentication failed: Invalid base64 data in initial response",
+		"postfix/smtpd[98]: warning: unknown[203.0.113.73]: SASL XYZ authentication failed: Invalid authentication mechanism",
+		"postfix/smtpd[98]: warning: unknown[203.0.113.73]: SASL XYZ authentication failed: Invalid authentication mechanism: 'XYZ'",
+	} {
+		d, clock := newPairingDaemon(t, &config.Config{})
+		feed(d, clock,
+			"dovecot: auth: sql(a,203.0.113.73): Password mismatch",
+			local,
+			fmt.Sprintf(postfixFailFmt, "203.0.113.73", "a"))
+		if calls := smtpCalls(d); calls != 1 {
+			t.Fatalf("%q: SMTP failures = %d, want 1", local, calls)
+		}
+	}
+}
