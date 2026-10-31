@@ -33,6 +33,52 @@ const (
 	OpScanFD = "scan_fd"
 )
 
+// ProtocolVersion is the hello version of the worker protocol: workerproc
+// frames on the unit's socket pair, ops compile, load, ping and scan_fd.
+const ProtocolVersion = 1
+
+// Ops of the unit worker. OpPing and OpScanFD above keep their names.
+const (
+	// OpCompile compiles the rule text passed as the request's one
+	// descriptor, split by CompileArgs, and returns the compiled rules in a
+	// sealed memfd.
+	OpCompile = "compile"
+	// OpLoad loads compiled rules from the request's one descriptor. A worker
+	// answers ping and scan_fd only after a load.
+	OpLoad = "load"
+)
+
+// MaxSources caps the rule files one compile request may name.
+const MaxSources = 1024
+
+// MaxSerializedRules caps compiled rules in bytes. Forge full serializes to
+// about 25 MB.
+const MaxSerializedRules = 256 << 20
+
+// SourceSpan names one rule file inside a compile request's descriptor: the
+// files sit back to back, in order, Size bytes each.
+type SourceSpan struct {
+	Name string `json:"name"`
+	Size int64  `json:"size"`
+}
+
+// CompileArgs lists the rule files in a compile request's descriptor.
+type CompileArgs struct {
+	Sources []SourceSpan `json:"sources"`
+}
+
+// CompileResult answers OpCompile. A rule that does not compile is a result,
+// not a worker failure: CompileError is set and no descriptor comes back.
+type CompileResult struct {
+	RuleCount    int    `json:"rule_count"`
+	CompileError string `json:"compile_error,omitempty"`
+}
+
+// LoadResult answers OpLoad and OpPing with the loaded rule count.
+type LoadResult struct {
+	RuleCount int `json:"rule_count"`
+}
+
 // ScanFDArgs bounds how much of the descriptor the worker reads. No name is
 // sent: the archive-by-name skip is for files on disk, not mail parts.
 //

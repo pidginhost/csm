@@ -1,8 +1,6 @@
 package yaraipc
 
 import (
-	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -11,7 +9,6 @@ import (
 	"sync"
 	"syscall"
 	"time"
-	"unicode/utf8"
 
 	"github.com/pidginhost/csm/internal/workerproc"
 )
@@ -155,7 +152,7 @@ func (c *Client) ScanFD(f *os.File, size int64) (ScanResult, error) {
 	if err != nil {
 		return ScanResult{}, err
 	}
-	ro, err := reopenReadOnly(f)
+	ro, err := ReopenReadOnly(f)
 	if err != nil {
 		return ScanResult{}, fmt.Errorf("yaraipc: reopen part read-only: %w", err)
 	}
@@ -167,48 +164,15 @@ func (c *Client) ScanFD(f *os.File, size int64) (ScanResult, error) {
 	return decodeScanFDResult(resp)
 }
 
-func reopenReadOnly(f *os.File) (*os.File, error) {
-	st, err := f.Stat()
-	if err != nil {
-		return nil, err
-	}
-	if !st.Mode().IsRegular() {
-		return nil, errors.New("descriptor is not a regular file")
-	}
-	rc, err := f.SyscallConn()
-	if err != nil {
-		return nil, err
-	}
-	var ro *os.File
-	var openErr error
-	// Control keeps the source open across the reopen even if the scan's
-	// owner closes it after a timeout. Fd neither pins it nor preserves flags.
-	if err := rc.Control(func(fd uintptr) {
-		// #nosec G304 -- reopens a descriptor this process holds open inside Control.
-		ro, openErr = os.OpenFile(fmt.Sprintf("/proc/self/fd/%d", fd), os.O_RDONLY, 0)
-	}); err != nil {
-		return nil, err
-	}
-	return ro, openErr
-}
-
 func decodeScanFDResult(resp Frame) (ScanResult, error) {
-	if resp.Op != "" || !utf8.Valid(resp.Payload) {
+	if resp.Op != "" {
 		return ScanResult{}, errors.New("yaraipc: invalid scan_fd reply")
 	}
-	var res scanFDResult
-	dec := json.NewDecoder(bytes.NewReader(resp.Payload))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&res); err != nil {
-		return ScanResult{}, fmt.Errorf("yaraipc: decode scan_fd reply: %w", err)
+	matches, err := DecodeScanReply(resp.Payload)
+	if err != nil {
+		return ScanResult{}, err
 	}
-	if res.Matches == nil {
-		return ScanResult{}, errors.New("yaraipc: scan_fd reply has no matches array")
-	}
-	if err := dec.Decode(new(json.RawMessage)); err != io.EOF {
-		return ScanResult{}, errors.New("yaraipc: scan_fd reply has trailing data")
-	}
-	return ScanResult(res), nil
+	return ScanResult{Matches: matches}, nil
 }
 
 func isRetryableClosedConn(err error) bool {
@@ -233,7 +197,7 @@ func (c *Client) ScanBytes(data []byte) (ScanResult, error) {
 	if err != nil {
 		return ScanResult{}, err
 	}
-	f, err := sealedMemfd(data)
+	f, err := SealedMemfd("csm-yara-scan", data)
 	if err != nil {
 		return ScanResult{}, err
 	}

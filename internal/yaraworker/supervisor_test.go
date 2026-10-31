@@ -22,14 +22,6 @@ import (
 // tests spawn the test binary itself as the worker process, avoiding
 // the cost (and CI fragility) of building a separate helper binary.
 
-func TestMain(m *testing.M) {
-	if mode := os.Getenv("YARAWORKER_HELPER"); mode != "" {
-		runHelper(mode)
-		return
-	}
-	os.Exit(m.Run())
-}
-
 func runHelper(mode string) {
 	sock := ""
 	for i := 0; i < len(os.Args); i++ {
