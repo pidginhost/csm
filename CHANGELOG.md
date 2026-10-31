@@ -15,6 +15,10 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - YARA scans no longer reopen tenant files by path or write temporary copies of large files to disk.
 - PHP taint analysis now runs in a locked-down worker with no root, network or account file access; files are reported unexamined when it cannot start.
 
+### Changed
+
+- Learned spam is now stored with its headers and text only, without attachments or images.
+
 ### Fixed
 
 - WordPress core files that differ only in line endings are no longer reported on sites whose PHP prints deprecation notices.
@@ -23,6 +27,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - A real-time YARA finding on a file scanned in full now fingerprints the content it matched, not whatever the file holds when the finding is stored.
 - Phishing-kit companion reports now say when YARA could not check a file instead of listing it as checked.
 - Spam whose plain-text and HTML versions differ is now learned from Spam folder reports and operator marks instead of being skipped.
+- Spam with a PDF attachment that carries scripts is now learned instead of holding up the other Spam folder reports of its mailbox.
 
 ## [4.8.1] - 2026-10-30
 

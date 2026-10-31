@@ -520,6 +520,10 @@ func (e *Engine) admit(ctx context.Context, src Source, snapshot []byte, intentI
 	if len(snapshot) > MaxBody {
 		return admitResult{skips: []Skip{{Reason: SkipNoDigest}}}, errors.New("message is larger than the learning limit")
 	}
+	if snapshot = textOnlyMessage(snapshot); snapshot == nil {
+		return admitResult{skips: []Skip{{Reason: SkipNoDigest}}}, nil
+	}
+	src.BodyLen = int64(len(snapshot))
 	if err := ctx.Err(); err != nil {
 		return admitResult{deferred: true}, err
 	}
@@ -1297,9 +1301,13 @@ func (e *Engine) forget(ctx context.Context, r OperatorRequest) ([]ClusterOutcom
 		if err := ctx.Err(); err != nil {
 			return nil, digests, err
 		}
-		insp, err := e.cfg.Client.Inspect(ctx, r.Snapshot)
-		if err != nil {
-			return nil, digests, fmt.Errorf("%w: %w", ErrReadFailed, err)
+		// Learning inspects the text-only form; forget must match it.
+		var insp Inspection
+		if body := textOnlyMessage(r.Snapshot); body != nil {
+			var err error
+			if insp, err = e.cfg.Client.Inspect(ctx, body); err != nil {
+				return nil, digests, fmt.Errorf("%w: %w", ErrReadFailed, err)
+			}
 		}
 		digests = digestsOf(insp)
 		if recordErr := e.recordOperatorDigests(r.RequestID, digests); recordErr != nil {
