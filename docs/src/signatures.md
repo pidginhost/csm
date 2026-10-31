@@ -288,7 +288,14 @@ that event time. This error finding is suppressed while the file monitor is
 stopping: the YARA backend is stopped before the file monitor has finished
 draining, and a clean restart is not an outage.
 
-Without the `yara` build tag, YARA rules are not loaded or evaluated.
+With `signatures.yara_worker_enabled: true` (the default), files are reported
+as not scanned until the first rule load succeeds, including while a failed
+startup compile is retried. An empty rules directory counts as loaded for
+files, but mail parts are reported as not scanned until at least one rule
+loads. A failed reload keeps the rules already loaded.
+
+Without the `yara` build tag, YARA rules are not loaded or evaluated, and the
+worker backend reports files as not scanned.
 
 ## Updating Rules
 

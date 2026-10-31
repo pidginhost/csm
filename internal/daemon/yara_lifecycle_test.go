@@ -25,6 +25,59 @@ func testYaraRulesDir(t *testing.T) string {
 	return dir
 }
 
+func TestInitYaraBackendWithoutEngineFailsClosed(t *testing.T) {
+	var launches int
+	stubYaraUnits(t, false, func(context.Context) (workerproc.Process, error) {
+		launches++
+		return nil, errors.New("unexpected worker launch")
+	})
+	allowParseWorkerCommand(t)
+	d := yaraWorkerDaemon(t, &config.Config{})
+	if err := d.initYaraBackend(); err != nil {
+		t.Fatal(err)
+	}
+	b := yara.Active()
+	if b == nil || d.yaraSup == nil || b != yara.Backend(d.yaraSup) {
+		t.Fatal("missing engine left YARA inactive")
+	}
+	if m, err := yara.ScanBytesChecked(b, "test.php", []byte("test")); err == nil {
+		t.Fatalf("missing engine allowed a clean scan: %+v", m)
+	}
+	if launches != 0 {
+		t.Fatalf("missing engine launched %d workers", launches)
+	}
+	select {
+	case f := <-d.alertCh:
+		t.Fatalf("missing engine reported an unattempted compile: %s: %s", f.Check, f.Message)
+	default:
+	}
+}
+
+func TestInitYaraBackendExpiredBootFailsClosed(t *testing.T) {
+	stubYaraUnits(t, true, nil)
+	allowParseWorkerCommand(t)
+	realBoot := yaraBootCompileTimeout
+	yaraBootCompileTimeout = -time.Second
+	t.Cleanup(func() { yaraBootCompileTimeout = realBoot })
+	cfg := &config.Config{}
+	cfg.Signatures.RulesDir = testYaraRulesDir(t)
+	d := yaraWorkerDaemon(t, cfg)
+	if err := d.initYaraBackend(); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("init = %v, want context.DeadlineExceeded", err)
+	}
+	if m, err := yara.ScanBytesChecked(yara.Active(), "test.php", []byte("test")); err == nil {
+		t.Fatalf("expired boot compile allowed a clean scan: %+v", m)
+	}
+	if healthy, found := d.WatcherStatuses()[yaraWorkerWatcher]; !found || healthy {
+		t.Fatalf("watcher healthy=%v found=%v, want recorded failure", healthy, found)
+	}
+	select {
+	case f := <-d.alertCh:
+		t.Fatalf("expired boot reported an unattempted compile: %s: %s", f.Check, f.Message)
+	default:
+	}
+}
+
 func TestInitYaraBackendUnknownBinaryFailsClosed(t *testing.T) {
 	stubYaraUnits(t, true, nil)
 	cfg := &config.Config{}

@@ -325,8 +325,14 @@ func TestScanWorkerCrashKeepsBreakerClosed(t *testing.T) {
 func TestEmptyRulesDirByteScanIsClean(t *testing.T) {
 	fx := &backendFixture{dir: rulesDir(t, nil)}
 	b := newBackend(t, fx)
+	if m, err := b.ScanBytesChecked([]byte("evil")); err == nil {
+		t.Fatalf("byte scan with an unchecked directory read clean: %+v", m)
+	}
 	if err := b.Reload(); err != nil {
 		t.Fatal(err)
+	}
+	if got := b.CompileError(); got != "" {
+		t.Fatalf("confirmed empty directory kept compile error: %q", got)
 	}
 	if m, err := b.ScanBytesChecked([]byte("evil")); err != nil || m != nil {
 		t.Fatalf("byte scan with no rules = %+v, %v; want clean", m, err)
@@ -544,11 +550,8 @@ func TestReloadInvalidatesVerdicts(t *testing.T) {
 	}
 }
 
-// Zero bytes are clean without a round trip, even when rules failed to
-// compile; a stopped backend still refuses them.
-// Until a reload compiles the rules or finds the directory empty, no scan
-// reads clean. A reload that ends with neither, such as one canceled at
-// startup, leaves file scans failing closed.
+// Until a reload compiles the rules or finds the directory empty, non-empty
+// scans fail closed, including after a canceled startup reload.
 func TestScansFailClosedUntilRulesConfirmed(t *testing.T) {
 	b := newBackend(t, &backendFixture{})
 	if m, err := b.ScanBytesChecked([]byte("evil")); err == nil {
@@ -571,8 +574,13 @@ func TestScansFailClosedUntilRulesConfirmed(t *testing.T) {
 	if got := b.CompileError(); got != "" {
 		t.Fatalf("compile error %q kept after rules compiled", got)
 	}
+	if got := ruleNames(t, b, "evil"); len(got) != 1 || got[0] != "evil" {
+		t.Fatalf("scan after retry missed the loaded rule: %v", got)
+	}
 }
 
+// Zero bytes are clean without a round trip, even when rules failed to
+// compile; a stopped backend still refuses them.
 func TestScanBytesCheckedEmptyData(t *testing.T) {
 	fx := &backendFixture{dir: rulesDir(t, map[string]string{"rules.yar": "syntax error"})}
 	b := newBackend(t, fx)
