@@ -27,6 +27,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Fixed
 
+- The daemon log no longer reports a memory failure or a kill when CSM stops a worker on purpose.
 - WordPress core files that differ only in line endings are no longer reported on sites whose PHP prints deprecation notices.
 - The daemon log no longer reports a YARA scan failure for large files.
 - The daemon log now says when a parse worker is retired or exits on its own, instead of only that it was killed.

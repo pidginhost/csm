@@ -439,13 +439,13 @@ func (p *unitProcess) watch(interval time.Duration) {
 			return // Gone already: its counters vanished with it.
 		default:
 		}
-		if err != nil {
-			p.logf("unit %s: cannot read memory, killing: %v", p.unit, err)
-		} else {
-			p.logf("unit %s: memory %d over cap %d, killing", p.unit, used, p.limit)
-			p.memoryKill.Store(true)
+		if p.requestKill(err == nil) {
+			if err != nil {
+				p.logf("unit %s: cannot read memory, killing: %v", p.unit, err)
+			} else {
+				p.logf("unit %s: memory %d over cap %d, killing", p.unit, used, p.limit)
+			}
 		}
-		_ = p.Kill()
 		return
 	}
 }
@@ -511,8 +511,19 @@ func (p *unitProcess) MemoryUsed() uint64 { return p.lastUsed.Load() }
 // calls it holding its lock, and a hung systemctl must not freeze it. The
 // worker is killed by unit name, never by a PID it could have influenced.
 func (p *unitProcess) Kill() error {
-	p.killing.Store(true)
+	p.requestKill(false)
+	return nil
+}
+
+// requestKill records only the winning cause, before closing the socket can
+// make the supervisor ask for an OOM verdict. A watchdog read racing with a
+// deliberate kill must neither relabel that kill nor log another one.
+func (p *unitProcess) requestKill(memory bool) bool {
+	requested := false
 	p.kill.Do(func() {
+		requested = true
+		p.killing.Store(true)
+		p.memoryKill.Store(memory)
 		// A failed watchdog check must prevent further requests even while
 		// systemctl is stalled or fails to reach the manager.
 		_ = p.conn.Close()
@@ -524,7 +535,7 @@ func (p *unitProcess) Kill() error {
 			}
 		}()
 	})
-	return nil
+	return requested
 }
 
 // OOMKilled reports a memory kill: by the watchdog, or by the kernel as the

@@ -150,6 +150,9 @@ worker stuck parsing may remain until the lifetime cap stops it. At startup,
 the daemon attempts to kill leftover `csm-parse-worker-*` units; cleanup
 failures are logged and do not prevent startup.
 
+A worker the daemon stops on purpose, such as at shutdown, is logged as
+`stopped` and never as a memory failure.
+
 `disabled_checks: [phishing]` disables scheduled phishing checks. Requested
 account scans can still use the worker, and startup cleanup still runs.
 `email_av.enabled: false` starts no mail workers.
