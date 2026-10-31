@@ -75,11 +75,23 @@ func (b setBudget) free(lane admission.Lane) uint32 {
 	return b.reserved
 }
 
-// soonestEffect is when the first effect record expires; false without one.
-func soonestEffect(tx *bolt.Tx) (time.Time, bool, error) {
-	var s admission.EffectsStatus
-	if err := effectsStatus(tx, &s); err != nil || s.Next.IsZero() {
+// soonestEffect is the first future effect expiry. A degraded reading can
+// retain past expiries; they must neither spin the timer nor hide a future one.
+func soonestEffect(tx *bolt.Tx, now time.Time) (time.Time, bool, error) {
+	if err := proveEffects(tx); err != nil {
 		return time.Time{}, false, err
 	}
-	return s.Next, true, nil
+	if b := tx.Bucket([]byte(admissionEffectsBucket)); b != nil {
+		cur := b.Cursor()
+		for k, v := cur.First(); k != nil; k, v = cur.Next() {
+			rec, err := admission.UnmarshalEffectRecord(k, v)
+			if err != nil {
+				return time.Time{}, false, err
+			}
+			if rec.ExpiresAt.After(now) {
+				return rec.ExpiresAt, true, nil
+			}
+		}
+	}
+	return time.Time{}, false, nil
 }

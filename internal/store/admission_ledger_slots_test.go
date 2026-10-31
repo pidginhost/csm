@@ -1,6 +1,7 @@
 package store
 
 import (
+	"fmt"
 	"reflect"
 	"testing"
 	"time"
@@ -307,5 +308,156 @@ func TestAdmissionLedgerSlotBudgetDoesNotGateForecast(t *testing.T) {
 	}
 	if !reflect.DeepEqual(before, f.candidateOf(id)) {
 		t.Fatal("forecast changed an engine-owned wait")
+	}
+}
+
+// Either eligible lane may become usable first: a free slot on a lane
+// waiting for credit must not hide the other lane's earlier slot wake.
+func TestAdmissionLedgerSlotWakeWithCreditOnTheFullLane(t *testing.T) {
+	for _, fullLane := range []admission.Lane{admission.LaneGeneral, admission.LaneDirect} {
+		for _, recorded := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/recorded=%v", fullLane, recorded), func(t *testing.T) {
+				f := liveLedgerFixture(t)
+				if err := f.l.SetCeiling(10); err != nil {
+					t.Fatal(err)
+				}
+				base := admission.SetOccupancy{Limit: 2}
+				want := f.wall.Add(setRecheck)
+				switch {
+				case recorded:
+					want = f.wall.Add(30 * time.Second)
+					if _, _, _, err := f.l.Reserve(f.directAt("192.0.2.10"), fullLane, want); err != nil {
+						t.Fatal(err)
+					}
+				case fullLane == admission.LaneGeneral:
+					base.General = 1
+				default:
+					base.Reserved = 1
+				}
+				f.l.SetOccupants(&base)
+				if fullLane == admission.LaneGeneral {
+					f.leaveCeilingCredit(1, 0)
+				} else {
+					f.leaveCeilingCredit(0, 1)
+				}
+				id := f.directAt("192.0.2.11")
+				if picks, err := f.l.Schedule(allSlots, nil); err != nil || len(picks) != 0 {
+					t.Fatalf("split shortages: %+v %v", picks, err)
+				}
+				if c := f.candidateOf(id); c.Reason != admission.ReasonSetFull {
+					t.Fatalf("waiting reason %s, want set_full", c.Reason)
+				}
+				before := f.snapshot()
+				if wake, ok, err := f.l.NextWake(nil); err != nil || !ok || !wake.Equal(want) {
+					t.Fatalf("wake %v %v %v, want %v", wake, ok, err, want)
+				}
+				if !reflect.DeepEqual(before, f.snapshot()) {
+					t.Fatal("wake probe changed the ledger")
+				}
+				f.tickAt(want)
+				if !recorded {
+					f.l.SetOccupants(&admission.SetOccupancy{Limit: 2})
+				}
+				if picks, err := f.l.Schedule(allSlots, nil); err != nil || len(picks) != 1 || picks[0].ID != id || picks[0].Lane != fullLane {
+					t.Fatalf("freed slot: %+v %v", picks, err)
+				}
+			})
+		}
+	}
+}
+
+// A retained past expiry must neither spin the timer nor hide the next
+// future expiry that can free a slot before the periodic recheck.
+func TestAdmissionLedgerSlotWakePastExpiryKeepsFutureExpiry(t *testing.T) {
+	f := liveLedgerFixture(t)
+	f.l.SetOccupants(&admission.SetOccupancy{Limit: 3})
+	past := f.wall.Add(30 * time.Second)
+	future := f.wall.Add(2 * time.Minute)
+	for i, expires := range []time.Time{past, future} {
+		id := f.queuedAt(fmt.Sprintf("192.0.2.%d", 10+i))
+		if _, _, _, err := f.l.Reserve(id, admission.LaneGeneral, expires); err != nil {
+			t.Fatal(err)
+		}
+	}
+	id := f.queuedAt("192.0.2.12")
+	if picks, err := f.l.Schedule(allSlots, nil); err != nil || len(picks) != 0 {
+		t.Fatalf("held slots: %+v %v", picks, err)
+	}
+	at := past.Add(time.Minute)
+	tick, err := f.l.Tick(admission.ClockReading{Wall: at, BootID: ledgerBoot, SinceBoot: f.since})
+	if err != nil || !tick.Degraded {
+		t.Fatalf("forward step: %+v %v", tick, err)
+	}
+	if records, _, _ := f.effectRecords(); len(records) != 2 {
+		t.Fatalf("degraded reading retained %d slots, want 2", len(records))
+	}
+	before := f.snapshot()
+	for range 3 {
+		if wake, ok, err := f.l.NextWake(nil); err != nil || !ok || !wake.Equal(future) {
+			t.Fatalf("wake %v %v %v, want future expiry %v", wake, ok, err, future)
+		}
+	}
+	if !reflect.DeepEqual(before, f.snapshot()) {
+		t.Fatal("wake probe changed the ledger")
+	}
+	f.wall = at
+	f.tickAt(future)
+	if picks, err := f.l.Schedule(allSlots, nil); err != nil || len(picks) != 1 || picks[0].ID != id {
+		t.Fatalf("freed slots: %+v %v", picks, err)
+	}
+}
+
+// A refused pick spends no slots when selection restarts. The final
+// picks alone consume the bounded or unbounded budget used for deferrals.
+func TestAdmissionLedgerSlotBudgetAfterRefusedPick(t *testing.T) {
+	for _, bounded := range []bool{false, true} {
+		t.Run(fmt.Sprintf("bounded=%v", bounded), func(t *testing.T) {
+			f, raise := newFloorLedger(t)
+			highRoot := f.published(evidenceSpec{owner: f.owner("alice"), cursor: "high"})
+			_, refused := f.enqueue(f.request("192.0.2.10", highRoot))
+			var valid []admission.CandidateID
+			for i := range 3 {
+				target := fmt.Sprintf("192.0.2.%d", 11+i)
+				root := f.published(evidenceSpec{owner: f.owner("bob"), target: target, cursor: target, severity: admission.SeverityCritical})
+				_, id := f.enqueue(f.request(target, root))
+				valid = append(valid, id)
+			}
+			f.schedule(admission.ScheduleLimits{Members: 1})
+			raise(admission.SeverityCritical)
+			lim := allSlots
+			wantReason := admission.ReasonCeiling
+			if bounded {
+				f.l.SetOccupants(&admission.SetOccupancy{Limit: 3})
+				wantReason = admission.ReasonSetFull
+			} else {
+				lim.General = 2
+			}
+			picks := f.schedule(lim)
+			if len(picks) != 2 {
+				t.Fatalf("picks after refusal: %+v, want two", picks)
+			}
+			if c := f.candidateOf(refused); c.State != admission.StateRefused || c.Reason != admission.ReasonPolicy {
+				t.Fatalf("invalid pick survived revalidation: %+v", c)
+			}
+			lanes := pickLanes(picks)
+			waiting := 0
+			for _, id := range valid {
+				want := wantReason
+				if lane, picked := lanes[id]; picked {
+					if lane != admission.LaneGeneral {
+						t.Fatalf("pick used lane %s, want general", lane)
+					}
+					want = 0
+				} else {
+					waiting++
+				}
+				if c := f.candidateOf(id); c.Reason != want {
+					t.Fatalf("candidate %s reason %s, want %s", id, c.Reason, want)
+				}
+			}
+			if waiting != 1 {
+				t.Fatalf("waiting candidates %d, want one", waiting)
+			}
+		})
 	}
 }

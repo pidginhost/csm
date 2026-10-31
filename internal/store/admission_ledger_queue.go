@@ -1210,8 +1210,8 @@ func (q *queueTx) scheduleItems(live []liveCandidate, room uint64, answers map[a
 // NextWake is the earliest admission time at which queued work changes
 // without a new report: a retry wait ends, a queued deadline passes, or
 // ready work gains ceiling budget, a set slot or history budget on a lane
-// it can use. Work a full set defers wakes when the first effect record
-// expires, and no later than setRecheck from now.
+// it can use. Work waiting for a set slot on either eligible lane wakes
+// at the next future effect expiry or setRecheck, whichever is sooner.
 // It is the stored admission time when a schedule would serve ready work
 // already. The engine's timer ticks and schedules then. ok is false when
 // nothing waits. Pending work, as Schedule passes it over, wakes only at
@@ -1281,7 +1281,9 @@ func (l *AdmissionLedger) NextWake(answers map[admission.CandidateID]admission.A
 			if it.Ready {
 				general, reserved = true, reserved || it.Direct || it.Corroborated
 				eligible := it.Direct || it.Corroborated
-				full = full || (slots.free(admission.LaneGeneral) < it.CeilingCost && (!eligible || slots.free(admission.LaneDirect) < it.CeilingCost))
+				// Either lane can free a slot before the other earns enough
+				// ceiling or history credit to use its existing room.
+				full = full || slots.free(admission.LaneGeneral) < it.CeilingCost || (eligible && slots.free(admission.LaneDirect) < it.CeilingCost)
 			}
 		}
 		if !general {
@@ -1301,11 +1303,11 @@ func (l *AdmissionLedger) NextWake(answers map[admission.CandidateID]admission.A
 		}
 		if full {
 			earliest(clock.Now().Add(setRecheck))
-			at, ok, soonErr := soonestEffect(tx)
+			at, ok, soonErr := soonestEffect(tx, clock.Now())
 			if soonErr != nil {
 				return soonErr
 			}
-			if ok && at.After(clock.Now()) {
+			if ok {
 				earliest(at)
 			}
 		}
