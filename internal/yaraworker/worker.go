@@ -215,7 +215,7 @@ func (w *worker) load(f *os.File) (workerproc.Frame, []*os.File) {
 }
 
 func (w *worker) scan(req workerproc.Frame, f *os.File) (workerproc.Frame, []*os.File) {
-	if w.rules == nil {
+	if w.rules == nil || w.rules.Count() == 0 {
 		return fail("no rules loaded")
 	}
 	var args yaraipc.ScanFDArgs

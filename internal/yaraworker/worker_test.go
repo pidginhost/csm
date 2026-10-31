@@ -199,6 +199,13 @@ func TestWorkerScanBeforeLoadFails(t *testing.T) {
 	}
 }
 
+func TestWorkerScanEmptyRulesFails(t *testing.T) {
+	c := loadedWorker(t)
+	if reply, _ := call(t, c, yaraipc.OpScanFD, yaraipc.ScanFDArgs{MaxBytes: 4}, memfd(t, "evil")); reply.Error == "" {
+		t.Fatal("a descriptor scan with no active rules read clean")
+	}
+}
+
 func TestWorkerLoadThenScan(t *testing.T) {
 	c := loadedWorker(t, "evil")
 	reply, fds := call(t, c, yaraipc.OpScanFD, yaraipc.ScanFDArgs{MaxBytes: 10}, memfd(t, "xx evil xx"))

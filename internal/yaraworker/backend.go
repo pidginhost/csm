@@ -114,12 +114,15 @@ func (b *Backend) Reload() error {
 		return b.failReload(err)
 	}
 	if len(sources) == 0 {
-		if b.current() != nil {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		if b.stopped {
+			return workerproc.ErrStopped
+		}
+		if b.rules != nil {
 			return fmt.Errorf("no YARA rule files found in %s", b.cfg.RulesDir)
 		}
-		b.mu.Lock()
 		b.compileErr = ""
-		b.mu.Unlock()
 		return nil
 	}
 	f, count, err := b.compile(sources)
@@ -132,6 +135,11 @@ func (b *Backend) Reload() error {
 	}
 
 	b.mu.Lock()
+	if b.stopped {
+		b.mu.Unlock()
+		_ = f.Close()
+		return workerproc.ErrStopped
+	}
 	old := b.rules
 	b.rules = &compiledRules{file: f, count: count, gen: b.gen.Add(1)}
 	b.compileErr = ""
@@ -149,10 +157,13 @@ func (b *Backend) Reload() error {
 
 func (b *Backend) failReload(err error) error {
 	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.stopped {
+		return workerproc.ErrStopped
+	}
 	if b.rules == nil {
 		b.compileErr = err.Error()
 	}
-	b.mu.Unlock()
 	return err
 }
 
@@ -161,6 +172,9 @@ func (b *Backend) failReload(err error) error {
 func (b *Backend) TestCompile(source string) error {
 	b.reloadMu.Lock()
 	defer b.reloadMu.Unlock()
+	if b.isStopped() {
+		return workerproc.ErrStopped
+	}
 	f, count, err := b.compile([]yara.Source{{Name: "source", Text: []byte(source)}})
 	if err != nil {
 		return err
@@ -202,15 +216,21 @@ func (b *Backend) compile(sources []yara.Source) (*os.File, int, error) {
 	}
 	defer func() { _ = sup.Stop() }()
 
-	var res yaraipc.CompileResult
+	var res struct {
+		RuleCount    *int   `json:"rule_count"`
+		CompileError string `json:"compile_error,omitempty"`
+	}
 	var size int64
 	_, fds, err := sup.Call(context.Background(), workerproc.Frame{Op: yaraipc.OpCompile, Payload: payload}, []*os.File{input},
 		func(reply workerproc.Frame, fds []*os.File) (bool, error) {
 			if decodeErr := decodeArgs(reply.Payload, &res); decodeErr != nil {
 				return false, fmt.Errorf("compile reply: %w", decodeErr)
 			}
+			if res.RuleCount == nil || *res.RuleCount < 0 {
+				return false, errors.New("compile reply: missing or invalid rule count")
+			}
 			if res.CompileError != "" {
-				if len(fds) != 0 {
+				if len(fds) != 0 || *res.RuleCount != 0 {
 					return false, errors.New("compile reply: a failed compile returned rules")
 				}
 				return false, nil
@@ -239,7 +259,7 @@ func (b *Backend) compile(sources []yara.Source) (*os.File, int, error) {
 	if err != nil {
 		return nil, 0, err
 	}
-	return kept, res.RuleCount, nil
+	return kept, *res.RuleCount, nil
 }
 
 // launch starts a scan worker and loads the current rules into it before the
@@ -272,6 +292,7 @@ func (b *Backend) launch(ctx context.Context) (workerproc.Process, error) {
 			err = fmt.Errorf("%w (out of memory)", err)
 		}
 		_ = p.Kill()
+		_ = p.Conn().Close()
 		return nil, err
 	}
 	return &rulesProcess{Process: p, gen: rules.gen, current: &b.gen}, nil
@@ -298,14 +319,27 @@ func (b *Backend) loadRules(ctx context.Context, p workerproc.Process, rules *os
 	if reply.Error != "" || reply.Op != "" {
 		return fmt.Errorf("load rules: worker refused: %q", reply.Error)
 	}
-	var res yaraipc.LoadResult
-	if err := decodeArgs(reply.Payload, &res); err != nil {
+	loaded, err := decodeRuleCount(reply.Payload)
+	if err != nil {
 		return fmt.Errorf("load rules: %w", err)
 	}
-	if res.RuleCount != count {
-		return fmt.Errorf("load rules: worker loaded %d rules, want %d", res.RuleCount, count)
+	if loaded != count {
+		return fmt.Errorf("load rules: worker loaded %d rules, want %d", loaded, count)
 	}
 	return nil
+}
+
+func decodeRuleCount(payload json.RawMessage) (int, error) {
+	var res struct {
+		RuleCount *int `json:"rule_count"`
+	}
+	if err := decodeArgs(payload, &res); err != nil {
+		return 0, err
+	}
+	if res.RuleCount == nil || *res.RuleCount < 0 {
+		return 0, errors.New("missing or invalid rule count")
+	}
+	return *res.RuleCount, nil
 }
 
 // rulesProcess is a scan worker that retires once newer rules exist. It
@@ -347,13 +381,13 @@ func (b *Backend) ScanBytes(data []byte) []yara.Match {
 // answers clean without a worker, as the in-process scanner does, unless the
 // rules failed to compile.
 func (b *Backend) ScanBytesChecked(data []byte) ([]yara.Match, error) {
-	if b.isStopped() {
+	rules, compileErr, stopped := b.state()
+	if stopped {
 		return nil, workerproc.ErrStopped
 	}
 	if len(data) == 0 {
 		return nil, nil
 	}
-	rules, compileErr := b.state()
 	if rules == nil || rules.count == 0 {
 		if compileErr == "" {
 			return nil, nil
@@ -375,10 +409,10 @@ func (b *Backend) ScanFDChecked(f *os.File, size int64) ([]yara.Match, error) {
 	if size <= 0 || size > int64(int(^uint(0)>>1)) {
 		return nil, fmt.Errorf("yaraworker: invalid descriptor scan size: %d", size)
 	}
-	if b.isStopped() {
+	rules, compileErr, stopped := b.state()
+	if stopped {
 		return nil, workerproc.ErrStopped
 	}
-	rules, compileErr := b.state()
 	if rules == nil || rules.count == 0 {
 		if compileErr == "" {
 			compileErr = "no compiled rules"
@@ -417,20 +451,20 @@ func (b *Backend) scan(f *os.File, size int) ([]yara.Match, error) {
 // Warm starts the scan worker and loads the rules now, so the first scan
 // after a compile does not wait for the load. Without rules it does nothing.
 func (b *Backend) Warm() error {
-	if rules, _ := b.state(); rules == nil || rules.count == 0 {
+	if rules, _, _ := b.state(); rules == nil || rules.count == 0 {
 		return nil
 	}
 	_, _, err := b.proc.Call(context.Background(), workerproc.Frame{Op: yaraipc.OpPing}, nil,
 		func(reply workerproc.Frame, _ []*os.File) (bool, error) {
-			var res yaraipc.LoadResult
-			return false, decodeArgs(reply.Payload, &res)
+			_, decodeErr := decodeRuleCount(reply.Payload)
+			return false, decodeErr
 		})
 	return err
 }
 
 // RuleCount is the number of compiled rules scans use.
 func (b *Backend) RuleCount() int {
-	if rules, _ := b.state(); rules != nil {
+	if rules, _, _ := b.state(); rules != nil {
 		return rules.count
 	}
 	return 0
@@ -439,7 +473,7 @@ func (b *Backend) RuleCount() int {
 // CompileError is why no rules are loaded, or "" when rules are loaded or
 // the rule set is empty.
 func (b *Backend) CompileError() string {
-	_, compileErr := b.state()
+	_, compileErr, _ := b.state()
 	return compileErr
 }
 
@@ -465,14 +499,16 @@ func (b *Backend) QueueStatuses(now time.Time) map[string]queuehealth.Status {
 	return b.proc.QueueStatuses(now)
 }
 
-func (b *Backend) state() (*compiledRules, string) {
+// Snapshot shutdown and rules together: Stop clears the rules, which must
+// not be mistaken for the empty-directory exception in a byte scan.
+func (b *Backend) state() (*compiledRules, string, bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.rules, b.compileErr
+	return b.rules, b.compileErr, b.stopped
 }
 
 func (b *Backend) current() *compiledRules {
-	rules, _ := b.state()
+	rules, _, _ := b.state()
 	return rules
 }
 

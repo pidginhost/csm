@@ -81,7 +81,35 @@ func injectFault(mode string, req workerproc.Frame, fds []*os.File) (workerproc.
 		if mode == "load-error" {
 			return workerproc.Frame{Error: "injected load failure"}, nil, true
 		}
+		if mode == "load-missing-count" {
+			return workerproc.Frame{Payload: []byte(`{}`)}, nil, true
+		}
+	case yaraipc.OpPing:
+		if payload, ok := map[string]string{
+			"ping-negative":      `{"rule_count":-1}`,
+			"ping-missing-count": `{}`,
+			"ping-null-count":    `{"rule_count":null}`,
+			"ping-null":          `null`,
+		}[mode]; ok {
+			return workerproc.Frame{Payload: []byte(payload)}, nil, true
+		}
 	case yaraipc.OpCompile:
+		if payload, ok := map[string]string{
+			"compile-negative":      `{"rule_count":-1}`,
+			"compile-missing-count": `{}`,
+			"compile-null-count":    `{"rule_count":null}`,
+			"compile-null":          `null`,
+			"compile-error-count":   `{"rule_count":1,"compile_error":"broken source"}`,
+		}[mode]; ok {
+			if mode == "compile-error-count" {
+				return workerproc.Frame{Payload: []byte(payload)}, nil, true
+			}
+			out, err := yaraipc.SealedMemfd("csm-yara-reply", []byte(fakeRulesHeader+"evil\n"))
+			if err != nil {
+				return workerproc.Frame{Error: err.Error()}, nil, true
+			}
+			return workerproc.Frame{Payload: []byte(payload)}, []*os.File{out}, true
+		}
 		var out *os.File
 		switch mode {
 		case "compile-nofd":
@@ -94,6 +122,7 @@ func injectFault(mode string, req workerproc.Frame, fds []*os.File) (workerproc.
 			out = os.NewFile(uintptr(fd), "csm-yara-huge")
 			// Sparse: the size is a claim, no memory backs it.
 			if err := out.Truncate(yaraipc.MaxSerializedRules + 1); err != nil {
+				_ = out.Close()
 				return workerproc.Frame{Error: err.Error()}, nil, true
 			}
 		case "compile-empty":
