@@ -232,9 +232,11 @@ CGO_LDFLAGS="$(pkg-config --libs --static yara_x_capi)" go build -tags yara ./cm
 ```
 
 The rules directory and rule files must be owned by root or the scanner user and
-must not be group- or world-writable. The standard service and its YARA worker
-run as root; the installer uses `0750` for the directory and `0640` for shipped
-rules. Custom rules must also remain readable by the scanner.
+must not be group- or world-writable. The standard service runs as root and
+reads the rule files; the YARA workers get the rule text from it and never open
+them. The installer uses `0750` for the directory and `0640` for shipped rules.
+Custom rules must also remain readable by the service. Rule files cannot include
+other files.
 
 Place `.yar` or `.yara` files alongside YAML rules in `/opt/csm/rules/`. CSM compiles them at startup and uses them for:
 - Real-time fanotify file scanning
@@ -411,8 +413,8 @@ costs.
 Names are matched in full, ignoring surrounding whitespace and letter case;
 prefixes and substrings do not match. Removing a YARA rule preserves neighboring
 rules, including when declarations share a line or literals contain braces.
-The YARA worker receives the daemon's effective disabled list and configuration
-paths; rule reloads and worker crash recovery retain that list.
+The daemon strips disabled rules before every compile, so rule reloads and
+worker restarts keep honoring the list.
 
 A valid ruleset whose rules are all disabled loads as an empty set, including
 on reload; stale rules are not retained. The self-test reports the resulting

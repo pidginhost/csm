@@ -1199,17 +1199,6 @@
       "class": "work",
       "rationale": "Transfers a worker reply while request ownership survives cancellation and child cleanup; a reply the caller abandoned has its descriptors closed by the sender.",
       "queue": "php_taint"
-    },
-    {
-      "id": "internal/yaraworker/supervisor.go::*Supervisor.Start::s.done::channel::1",
-      "path": "internal/yaraworker/supervisor.go",
-      "owner": "*Supervisor.Start",
-      "target": "s.done",
-      "kind": "channel",
-      "source": "make(chan struct{})",
-      "capacity": "0",
-      "class": "lifecycle",
-      "rationale": "Joins child-process reaping; request work remains with the calling scan owner."
     }
   ],
   "owners": [

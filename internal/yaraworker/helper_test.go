@@ -21,15 +21,10 @@ import (
 
 // TestMain turns the test binary into a worker when a helper variable is
 // set, so tests launch real worker processes without a separate binary.
-// CSM_YARA_HELPER serves the workerproc protocol with fakeEngine;
-// YARAWORKER_HELPER is the socket worker of the old supervisor's tests.
+// CSM_YARA_HELPER serves the workerproc protocol with fakeEngine.
 func TestMain(m *testing.M) {
 	if mode := os.Getenv("CSM_YARA_HELPER"); mode != "" {
 		os.Exit(runYaraHelper(mode))
-	}
-	if mode := os.Getenv("YARAWORKER_HELPER"); mode != "" {
-		runHelper(mode)
-		return
 	}
 	os.Exit(m.Run())
 }
@@ -40,6 +35,8 @@ func TestMain(m *testing.M) {
 //	crash-on:<word>  exit when a scan's content contains <word>
 //	load-error       answer load with an Error frame
 //	report-ro        fail a scan whose descriptor is writable
+//	report-sealed    fail a scan whose descriptor is not sealed
+//	load-hang        never answer load
 //	compile-nofd     answer compile with success but no descriptor
 //	compile-huge     answer compile with a descriptor over MaxSerializedRules
 //	compile-empty    answer compile with an empty descriptor
@@ -72,12 +69,21 @@ func injectFault(mode string, req workerproc.Frame, fds []*os.File) (workerproc.
 				os.Exit(3)
 			}
 		}
+		if mode == "report-sealed" && len(fds) == 1 {
+			want := unix.F_SEAL_WRITE | unix.F_SEAL_GROW | unix.F_SEAL_SHRINK
+			if seals, err := unix.FcntlInt(fds[0].Fd(), unix.F_GET_SEALS, 0); err != nil || seals&want != want {
+				return workerproc.Frame{Error: "scan descriptor is not sealed"}, nil, true
+			}
+		}
 		if mode == "report-ro" && len(fds) == 1 {
 			if fl, err := unix.FcntlInt(fds[0].Fd(), unix.F_GETFL, 0); err != nil || fl&unix.O_ACCMODE != unix.O_RDONLY {
 				return workerproc.Frame{Error: "scan descriptor is writable"}, nil, true
 			}
 		}
 	case yaraipc.OpLoad:
+		if mode == "load-hang" {
+			select {}
+		}
 		if mode == "load-error" {
 			return workerproc.Frame{Error: "injected load failure"}, nil, true
 		}

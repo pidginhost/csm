@@ -44,3 +44,13 @@ func TestCopySealedMemfdRejectsShortSource(t *testing.T) {
 		t.Fatal("a source shorter than size was copied")
 	}
 }
+
+func TestSealedMemfdFailsWhenMemfdUnavailable(t *testing.T) {
+	prev := memfdCreate
+	memfdCreate = func(string, int) (int, error) { return -1, unix.EMFILE }
+	t.Cleanup(func() { memfdCreate = prev })
+	if f, err := SealedMemfd("csm-yara-scan", []byte("payload")); err == nil {
+		_ = f.Close()
+		t.Fatal("a memfd was made while memfd_create fails")
+	}
+}

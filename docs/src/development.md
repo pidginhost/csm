@@ -1311,8 +1311,8 @@ kills per message source with a limit of three in ten minutes.
 Worker diagnostics must go to stderr; stdout carries the protocol socket. The
 PHP taint worker (`csm phptaint-worker`) runs through `UnitLauncher` as
 `csm-phptaint-worker-<generation>`, with the parse worker's lockdown and a
-512 MiB memory cap. The YARA worker moves to this package later; until then
-the section below describes it.
+512 MiB memory cap. The YARA workers run through it too; the section below
+describes them.
 
 ### Parse worker units
 
@@ -1399,94 +1399,80 @@ the CI kernel runner.
 
 ## YARA-X Worker Process
 
-CSM runs YARA-X in a supervised child process by default (since the
-2026-04-23 default-flip). The goal is blast-radius control: a cgo
-crash inside yara_x_capi (the 2026-04-16 production incident) stays
-contained to the child and the daemon keeps its fanotify watchers,
-log watchers, and firewall engine alive. Wiring lives in
-`internal/daemon/yara_backend.go`; process supervision lives in
-`internal/yaraworker/supervisor.go`. Completed work is recorded in
-`CHANGELOG.md` and git history.
+By default CSM never compiles or scans YARA rules in the root daemon. Two
+kinds of `csm yara-worker` process run through `workerproc.UnitLauncher`
+with the parse worker's lockdown: no root, no network, no host files, a
+memory cap and a lifetime cap. Wiring lives in
+`internal/daemon/yara_backend.go`; the daemon side is `yaraworker.Backend`
+in `internal/yaraworker/backend.go` and the worker side `yaraworker.Serve`
+in `internal/yaraworker/worker.go`.
 
-The knob is a tri-state `*bool`: omit it (or set `true`) for the
-default-on child process; set `false` to fall back to the in-process
-scanner.
+- The compile unit, `csm-yara-compile-worker-<generation>`, runs for one
+  compile: 1 GiB memory cap, files up to 256 MiB (its reply), two minutes.
+  The daemon reads the rule files (trust check, disabled-rule stripping)
+  and passes their text in one sealed memfd. The worker compiles with
+  includes disabled, so rule text comes only from that memfd, and returns
+  `Rules.WriteTo` output in a sealed memfd. The daemon copies it into its
+  own sealed memfd and keeps it.
+- The scan unit, `csm-yara-worker-<generation>`, is a single worker: memory
+  cap 512 MiB plus `thresholds.full_scan_max_file_mb`, no file writes, 24
+  hour lifetime. Before the supervisor may send it a scan, the launcher
+  loads the kept rules into it. A restart loads them again and never
+  recompiles: 55 ms for the shipped rules, about 3.4 s for Forge full.
+- Both units run with `MemoryDenyWriteExecute=no`
+  (`UnitConfig.AllowExecutableMemory`): wasmtime maps the compiled rules
+  executable, and with the denial the load fails as "invalid YARA-X
+  compiled rules file". No `RLIMIT_AS` is set; the cgroup cap is the limit.
+- A reload compiles in a new compile unit. On success the new rules replace
+  the kept ones, the scan worker on the old rules retires before its next
+  request, and a background warm-up starts its replacement. On failure the
+  current rules stay; with none loaded the failure is `CompileError()`.
+- Forge downloads are compile-tested in the compile unit before they are
+  installed.
+- At startup the daemon kills leftover units of both prefixes.
 
-```yaml
-signatures:
-  # yara_worker_enabled: true    # default; omit for default-on
-  # yara_worker_enabled: false   # explicit opt-out -> in-process
-```
+Failures and findings:
 
-When on, daemon startup:
+- The backend is active from boot, before the first compile. While no rules
+  are loaded because a compile failed or could not run, every scan returns
+  an error, never a clean result.
+- A compile unit that cannot start at boot is retried in the background with
+  backoff; after three failures a Critical `yara_backend_unavailable` finding
+  fires. Rules that do not compile raise Critical
+  `yara_worker_compile_failed`.
+- Any counted scan worker failure (timeout, crash, out of memory, protocol)
+  kills the worker, marks `watcher: yara_worker` failed and raises Critical
+  `yara_worker_crashed`, at most once a minute. The next request starts a
+  replacement; a served request marks the watcher attached again.
+- Only failed starts count toward the worker breaker (`BreakOnSpawnOnly`),
+  so content that kills the worker costs one restart per scan and cannot
+  switch YARA off for other files.
 
-1. Does *not* call `yara.Init()` in the daemon process.
-2. Builds a `yaraworker.Supervisor` and calls `Start(ctx)`.
-3. The supervisor executes the running daemon binary with `yara-worker`,
-   the worker socket path and the configured rules directory.
-4. Supervisor waits for the worker's first `Ping` before returning.
-5. Installs itself as `yara.SetActive(...)` so the existing
-   `yara.Active()` callers (fanotify, rule reload) route transparently
-   through the IPC.
+`signatures.yara_worker_enabled: false` runs YARA-X inside the root daemon
+instead; `csm validate` warns about it.
 
-Operator view:
+Wire contract (workerproc frames on the unit's socket pair):
 
-- `ps axf` shows the daemon with one `csm yara-worker` child.
-- New socket: `/var/run/csm/yara-worker.sock` (0600, root-only).
-- Crashes produce a Critical `yara_worker_crashed` finding (rate-
-  limited to one per minute) and restart with exponential backoff
-  (1 s, 2 s, 4 s, capped at 60 s). Restarts reset to 1 s after the
-  worker stays up for 30 s.
-- The crash finding is emitted before a restart is attempted, while YARA
-  scans cannot run. Scans can resume once a replacement worker serves
-  requests; they do not wait for the 30 s health check. The finding does
-  not confirm a successful restart or recovery.
-- `csm doctor` reports `watcher: yara_worker` as failed from a crash until
-  a restarted worker has stayed up for 30 s, so a worker that keeps
-  crashing shortly after each restart keeps doctor failing. This also
-  covers crashes between initial readiness and backend activation.
-  Shutdown waits for any in-flight recovery callback to finish.
-- A `csm update-rules` run that completes triggers the supervisor's
-  in-process `Reload` (the worker recompiles). Escalate to a full
-  worker restart from Go code via `Supervisor.RestartWorker()`. An explicit
-  restart also marks the watcher failed until the replacement stays up.
+| Op | Request descriptors | Reply |
+|---|---|---|
+| `hello` | 0 | protocol version |
+| `compile` | 1: rule texts back to back, named and sized by `sources` | `rule_count` and a sealed memfd of compiled rules, or `compile_error` and no descriptor |
+| `load` | 1: compiled rules | `rule_count` |
+| `ping` | 0 | `rule_count` of the loaded rules |
+| `scan_fd` | 1: content, read positionally up to `max_bytes` | `matches`, always an array |
 
-Emailav under worker mode: the IPC wire format carries string-valued
-rule metadata on every match (`yaraipc.Match.Meta` /
-`yara.Match.Meta`). The emailav adapter consumes
-`Meta["severity"]` via `yara.Active()`, so both in-process and worker
-backends produce the same verdict shape. Non-string metadata (ints,
-floats, bytes) is deliberately dropped at the worker boundary; add a
-typed value struct here only if a future consumer actually needs one.
+Malformed requests get an error frame, which kills the worker. A rule compile
+error is a result, never a worker failure, and its text is cut to fit the
+frame. Scans need a regular descriptor and every requested byte; the worker
+gets its own read-only open of a file. Byte scans travel as sealed memfds, so
+the frame cap does not limit them. With no rules, or every rule disabled,
+byte scans answer clean without a worker unless compilation failed, and
+mail-part scans fail.
 
-The worker accepts only `scan_fd`, `reload`, and `ping`. The former
-`scan_file` and `scan_bytes` operations return an unknown-operation error.
-The daemon sends buffers as sealed memory-backed descriptors; scan contents
-never travel inside JSON frames, so the frame cap does not limit scan size.
-Callers still apply their configured file-size limits before dispatch.
-
-Mail parts are scanned from open descriptors using positional reads. The
-claimed size must be positive and fully readable; a short read is an engine
-error, never a clean result. Clamd streams that exact range with INSTREAM.
-The YARA worker receives a separate read-only open, so its file offset does
-not affect other scanners. Mail-part scans do not apply archive-name skips.
-They require compiled rules and an explicit `matches` array in the reply,
-including an empty array for clean results. Missing or malformed results and
-unexpected reply descriptors fail the scan. Buffer scans use the same
-descriptor protocol but retain the in-process behavior when no rules are
-loaded: they return no matches unless rule compilation failed. A transport,
-descriptor, or engine failure is an error, never a clean scan.
-
-Testing:
-
-- Unit-level: `internal/yaraipc` (protocol framing + round-trip) and
-  `internal/yaraworker` (handler adapter, Run, supervisor). The
-  supervisor tests re-invoke the test binary as a mock worker via the
-  standard `TestMain` + env-var helper-process pattern, including a
-  real `SIGKILL`-driven signal-death test that exercises the
-  `syscall.WaitStatus.Signaled()` branch.
-- Integration: staged in the GitLab pipeline's `integration` stage against
-  AlmaLinux, Ubuntu, and the configured clean cPanel release image.
+Testing: `internal/yaraworker` launches the test binary as the worker with a
+fake engine (`helper_test.go`), including fault modes for crashes, hung loads
+and bad compile replies. Tests tagged `yara` run the real engine. Unit
+lockdown is verified on the CI kernel runner and on scratch hosts.
 
 ## Building the Documentation
 

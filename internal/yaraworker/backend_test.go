@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/workerproc"
+	"github.com/pidginhost/csm/internal/yara"
 	"github.com/pidginhost/csm/internal/yaraipc"
 )
 
@@ -507,5 +508,103 @@ func TestZeroRuleSetFollowsEmptyPolicy(t *testing.T) {
 	}
 	if spawns := b.Stats().Spawns; spawns != 0 {
 		t.Fatalf("spawns = %d, want 0: an empty rule set needs no worker", spawns)
+	}
+}
+
+// A worker that never answers the load is killed at the load deadline, and
+// the scan that started it fails instead of waiting forever.
+func TestLoadTimeoutKillsHungWorker(t *testing.T) {
+	fx := &backendFixture{scan: newHelper("load-hang")}
+	b := newBackend(t, fx)
+	b.cfg.LoadTimeout = 300 * time.Millisecond
+	if err := b.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	began := time.Now()
+	if m, err := b.ScanBytesChecked([]byte("evil")); err == nil {
+		t.Fatalf("scan on a worker that never loaded read clean: %+v", m)
+	}
+	if took := time.Since(began); took > 5*time.Second {
+		t.Fatalf("scan waited %s for a hung load", took)
+	}
+	if b.Stats().Running {
+		t.Fatal("a worker that never loaded was kept")
+	}
+}
+
+func TestReloadInvalidatesVerdicts(t *testing.T) {
+	b := newBackend(t, &backendFixture{})
+	generation := yara.CacheGeneration()
+	if err := b.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	if yara.CacheGeneration() == generation {
+		t.Fatal("a reload kept cached verdicts")
+	}
+}
+
+// Zero bytes are clean without a round trip, even when rules failed to
+// compile; a stopped backend still refuses them.
+func TestScanBytesCheckedEmptyData(t *testing.T) {
+	fx := &backendFixture{dir: rulesDir(t, map[string]string{"rules.yar": "syntax error"})}
+	b := newBackend(t, fx)
+	if err := b.Reload(); err == nil {
+		t.Fatal("bad rules compiled")
+	}
+	if _, err := b.ScanBytesChecked([]byte("x")); err == nil {
+		t.Fatal("a backend whose rules failed scanned clean")
+	}
+	if m, err := b.ScanBytesChecked(nil); err != nil || m != nil {
+		t.Fatalf("empty data = %v, %v", m, err)
+	}
+	if b.Stats().Spawns != 0 {
+		t.Fatal("an empty scan started a worker")
+	}
+	_ = b.Stop()
+	if _, err := b.ScanBytesChecked(nil); err == nil {
+		t.Fatal("a stopped backend scanned empty data clean")
+	}
+}
+
+// The disabled list applies to every compile, including the one that
+// recovers from broken rules.
+func TestReloadHonorsDisabledRulesAfterRecovery(t *testing.T) {
+	fx := &backendFixture{
+		dir:      rulesDir(t, map[string]string{"rules.yar": "syntax error"}),
+		disabled: []string{"drop_me"},
+	}
+	b := newBackend(t, fx)
+	if err := b.Reload(); err == nil {
+		t.Fatal("bad rules compiled")
+	}
+	writeRule(t, fx.dir, "rules.yar", "marker:other\nrule drop_me {\nmarker:evil\n}\n")
+	if err := b.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	if got := ruleNames(t, b, "evil"); len(got) != 0 {
+		t.Fatalf("a disabled rule matched after recovery: %v", got)
+	}
+}
+
+func TestScanBytesSendsSealedDescriptor(t *testing.T) {
+	fx := &backendFixture{scan: newHelper("report-sealed")}
+	b := newBackend(t, fx)
+	if err := b.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	if got := ruleNames(t, b, "an evil payload"); len(got) != 1 {
+		t.Fatalf("scan through a sealed descriptor = %v", got)
+	}
+}
+
+// Byte scans travel as a descriptor, so the frame cap does not limit them.
+func TestScanBytesHasNoFrameCeiling(t *testing.T) {
+	b := newBackend(t, &backendFixture{})
+	if err := b.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	data := append(make([]byte, yaraipc.MaxFrameBytes+1), []byte("evil")...)
+	if got := ruleNames(t, b, string(data)); len(got) != 1 {
+		t.Fatalf("a scan past the frame cap = %v", got)
 	}
 }

@@ -116,10 +116,10 @@ curl -o goroutine.txt 'http://127.0.0.1:<port>/debug/pprof/goroutine?debug=2'
 ### YARA-X worker (default-on; off only if `signatures.yara_worker_enabled: false`)
 
 - `csm_yara_worker_restarts_total` (counter): cumulative number of
-  times the supervisor has restarted the `csm yara-worker` child.
-  Alert on sustained growth: a single restart is routine (rule
-  deploys), a steady climb means the worker is crash-looping and
-  real-time YARA scans are degraded.
+  YARA scan workers killed after a failure (timeout, crash, out of memory
+  or protocol). Rule reloads and lifetime retirement do not count. Alert on
+  sustained growth: a steady climb means scans keep failing and are
+  reported as not scanned.
 
 ### Findings
 

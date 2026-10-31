@@ -3,6 +3,7 @@
 package yaraworker
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -32,11 +33,11 @@ func TestWorkerCompileRefusesFilesystemIncludes(t *testing.T) {
 	w := &worker{eng: DefaultEngine()}
 	t.Cleanup(w.close)
 	args, all := compileArgs(map[string]string{"request.yar": source}, "request.yar")
-	req, err := yaraipc.EncodePayload(yaraipc.OpCompile, args)
+	payload, err := json.Marshal(args)
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp, fds := w.compile(workerproc.Frame{Payload: req.Payload}, memfd(t, all))
+	resp, fds := w.compile(workerproc.Frame{Payload: payload}, memfd(t, all))
 	for _, fd := range fds {
 		defer fd.Close()
 	}
@@ -51,11 +52,11 @@ func TestWorkerRealEngineRoundTrip(t *testing.T) {
 	w := &worker{eng: DefaultEngine()}
 	t.Cleanup(w.close)
 	args, all := compileArgs(map[string]string{"test.yar": `rule hit { meta: severity = "critical" strings: $a = "marker" condition: $a }`}, "test.yar")
-	req, err := yaraipc.EncodePayload(yaraipc.OpCompile, args)
+	payload, err := json.Marshal(args)
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp, fds := w.compile(workerproc.Frame{Payload: req.Payload}, memfd(t, all))
+	resp, fds := w.compile(workerproc.Frame{Payload: payload}, memfd(t, all))
 	var result yaraipc.CompileResult
 	decode(t, resp, &result)
 	if result.RuleCount != 1 || result.CompileError != "" || len(fds) != 1 {
@@ -71,11 +72,11 @@ func TestWorkerRealEngineRoundTrip(t *testing.T) {
 		if _, err := f.Seek(2, io.SeekStart); err != nil {
 			t.Fatal(err)
 		}
-		req, err := yaraipc.EncodePayload(yaraipc.OpScanFD, yaraipc.ScanFDArgs{MaxBytes: len(data)})
+		payload, err := json.Marshal(yaraipc.ScanFDArgs{MaxBytes: len(data)})
 		if err != nil {
 			t.Fatal(err)
 		}
-		resp, _ = w.scan(workerproc.Frame{Payload: req.Payload}, f)
+		resp, _ = w.scan(workerproc.Frame{Payload: payload}, f)
 		matches, err := yaraipc.DecodeScanReply(resp.Payload)
 		if resp.Error != "" || err != nil {
 			t.Fatalf("scan = %+v, %v", resp, err)
@@ -97,11 +98,11 @@ func TestWorkerRealCompileErrorFitsFrame(t *testing.T) {
 	w := &worker{eng: DefaultEngine()}
 	source := "rule bad { condition: " + strings.Repeat("x", yaraipc.MaxFrameBytes) + " }"
 	args, all := compileArgs(map[string]string{"bad.yar": source}, "bad.yar")
-	req, err := yaraipc.EncodePayload(yaraipc.OpCompile, args)
+	payload, err := json.Marshal(args)
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp, fds := w.compile(workerproc.Frame{Payload: req.Payload}, memfd(t, all))
+	resp, fds := w.compile(workerproc.Frame{Payload: payload}, memfd(t, all))
 	for _, fd := range fds {
 		defer fd.Close()
 	}
