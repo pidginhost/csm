@@ -121,6 +121,11 @@ func (o *Owner) refreshPolicy() error {
 		if o.policyErr != nil && before == nil && (o.policy.DryRun || p.DryRun) {
 			o.noteForecastError(forecastInvalidPolicy)
 		}
+		// The new policy is visible even if the next clock reading fails.
+		// Discard the live set before publishing a dry-run policy.
+		if o.forecasting() && o.ledger != nil {
+			o.clearSet()
+		}
 		// Status shows the refusal while it holds execution.
 		if o.policyErr != before && o.current.Load() != nil {
 			o.publishExecutionHold()

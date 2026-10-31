@@ -923,7 +923,6 @@ func (o *Owner) runTurn(selecting bool) error {
 	}
 	nextWake := (*store.AdmissionLedger).NextWake
 	if o.forecasting() {
-		o.clearSet()
 		nextWake = (*store.AdmissionLedger).PreviewWake
 	}
 	switch {

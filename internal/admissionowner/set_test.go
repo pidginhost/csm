@@ -117,6 +117,67 @@ func TestOwnerReadsTheSetOnlyForSlotWork(t *testing.T) {
 	}
 }
 
+type advancingSetEngine struct {
+	BlockEngine
+	host *fakeHost
+}
+
+func (e advancingSetEngine) BlockAdmissionSnapshot(members []firewall.BlockMember, shadow []string) (firewall.BlockAdmission, error) {
+	e.host.advance(time.Nanosecond)
+	return e.BlockEngine.BlockAdmissionSnapshot(members, shadow)
+}
+
+// Time spent reading the engine cannot make a retry ready within the
+// turn. At its exact deadline the next turn must read and enforce the set.
+func TestOwnerSetReadKeepsTheCommittedAdmissionTime(t *testing.T) {
+	withLiveExecution(t, false)
+	p := withTestRegistry(t)
+	f := newOwnerFixture(t)
+	blocks := newFakeBlocks()
+	blocks.limit = 2
+	opts := executeOptions(f, blocks)
+	opts.Blocks = func() BlockEngine { return advancingSetEngine{BlockEngine: blocks, host: f.host} }
+	o := f.start(opts)
+	retry, now := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.10")
+	if err := o.do(func() error {
+		_, attempt, _, err := o.ledger.Reserve(retry, admission.LaneGeneral, now.Add(time.Hour))
+		if err != nil {
+			return err
+		}
+		_, _, err = o.ledger.Finish(attempt.Attempt.ID, admission.DispositionFailed)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	due := candidate(t, o, retry).NotBefore
+	f.host.advance(admission.RetryBackoff(1) - time.Nanosecond)
+	ready, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.11")
+	turn(t, o)
+	if c := candidate(t, o, ready); c.State != admission.StateObserved {
+		t.Fatalf("ready work was not previewed: %+v", c)
+	}
+	if c := candidate(t, o, retry); c.State != admission.StateQueued || c.Attempts != 1 || c.NotBefore != due {
+		t.Fatalf("the set read advanced retry readiness: %+v", c)
+	}
+	if blocks.setReads != 1 || !f.host.now().Equal(due) {
+		t.Fatalf("set reads = %d, wall time = %v, want one read reaching %v", blocks.setReads, f.host.now(), due)
+	}
+	if st := o.status(); !st.Owner.LastTick.Equal(due.Add(-time.Nanosecond)) {
+		t.Fatalf("a tick ran between the set read and schedule: %v", st.Owner.LastTick)
+	}
+	blocks.set(func(b *fakeBlocks) { b.temp = b.limit })
+	turn(t, o)
+	if c := candidate(t, o, retry); c.State != admission.StateQueued || c.Attempts != 1 || c.Reason != admission.ReasonSetFull {
+		t.Fatalf("retry at its deadline escaped the full set: %+v", c)
+	}
+	if blocks.setReads != 2 {
+		t.Fatalf("retry at its exact deadline made %d set reads, want two total", blocks.setReads)
+	}
+	if checks, applies := blocks.calls(); len(checks) != 0 || len(applies) != 0 {
+		t.Fatalf("preview reached the engine: %d checks, %d applies", len(checks), len(applies))
+	}
+}
+
 // A set the turn could not read shows in status and leaves block work
 // without a slot budget; the preview goes on.
 func TestOwnerShowsAnUnreadableSet(t *testing.T) {
@@ -168,6 +229,69 @@ func TestOwnerForecastDropsTheLiveSet(t *testing.T) {
 	turn(t, o)
 	if set, setErr := ownerSet(t, o); set != nil || setErr != "" {
 		t.Fatalf("forecast kept the live set: %+v %q", set, setErr)
+	}
+}
+
+// Installing a dry-run policy must discard the live set and its read error
+// even when no selection follows or the next clock reading fails.
+func TestOwnerDryRunPolicyDropsTheSetBeforeATurn(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		reload      bool
+		selecting   bool
+		clockFailed bool
+	}{
+		{name: "reload", reload: true},
+		{name: "reload with failed clock", reload: true, clockFailed: true},
+		{name: "turn with failed clock", selecting: true, clockFailed: true},
+		{name: "maintenance with failed clock", clockFailed: true},
+	} {
+		for _, unreadable := range []bool{false, true} {
+			name := tc.name + "/snapshot"
+			if unreadable {
+				name = tc.name + "/read error"
+			}
+			t.Run(name, func(t *testing.T) {
+				withLiveExecution(t, false)
+				p := withTestRegistry(t)
+				f := newOwnerFixture(t)
+				blocks := newFakeBlocks()
+				blocks.limit, blocks.temp = 1, 1
+				if unreadable {
+					blocks.checkErr = errors.New("set dump failed")
+				}
+				o, r, _ := policyOwner(t, f, blocks, validPolicy(1))
+				queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.10")
+				turn(t, o)
+				set, setErr := ownerSet(t, o)
+				if unreadable && (set != nil || setErr != "set dump failed") || !unreadable && (set == nil || setErr != "") {
+					t.Fatalf("initial set status = %+v %q", set, setErr)
+				}
+				reads := blocks.setReads
+				r.publish(dryPolicy(2))
+				var clockErr error
+				if tc.clockFailed {
+					clockErr = errors.New("clock unavailable")
+					f.host.set(func(h *fakeHost) { h.clockErr = clockErr })
+				}
+				var err error
+				if tc.reload {
+					err = o.Reload()
+				} else {
+					err = o.do(func() error { return o.runTurn(tc.selecting) })
+				}
+				if !errors.Is(err, clockErr) {
+					t.Fatalf("policy boundary error = %v, want %v", err, clockErr)
+				}
+				s := o.Status().Owner
+				if s.DryRun == nil || !s.DryRun.Active || s.Set != nil || s.SetError != "" {
+					t.Fatalf("dry-run policy retained live set status: %+v", s)
+				}
+				if blocks.setReads != reads {
+					t.Fatalf("policy boundary read the set: %d reads, want %d", blocks.setReads, reads)
+				}
+			})
+		}
 	}
 }
 

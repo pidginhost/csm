@@ -346,7 +346,9 @@ slots of the partition its lane occupies; other block work waits as
 The object is absent when the last scheduling turn found no ready block
 work, in dry run and when the set could not be read. A maintenance-only
 turn keeps the last non-admission snapshot unless the owner enters dry run;
-status still refreshes the ledger holds. Engine admission counts are not
+status still refreshes the ledger holds. Entering dry run, including through
+a reload, clears both `set` and `set_error` before the next clock reading or
+forecast is attempted. Engine admission counts are not
 added again, and this view is not a fresh kernel inventory.
 
 `owner.dry_run` is a capacity forecast, not a record of blocks. `active` is
