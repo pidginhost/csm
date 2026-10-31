@@ -7,7 +7,7 @@ import (
 	"unicode/utf8"
 )
 
-func FuzzScanFDResult(f *testing.F) {
+func FuzzDecodeScanReply(f *testing.F) {
 	for _, seed := range []string{
 		`{"matches":[]}`, `{"matches":[{"rule":"hit"}]}`, `null`, `{}`,
 		`{"matches":null}`, `{"matches":[],"partial":true}`,
@@ -16,11 +16,11 @@ func FuzzScanFDResult(f *testing.F) {
 		f.Add([]byte(seed))
 	}
 	f.Fuzz(func(t *testing.T, payload []byte) {
-		res, err := decodeScanFDResult(Frame{Payload: payload})
+		matches, err := DecodeScanReply(payload)
 		if err != nil {
 			return
 		}
-		if !json.Valid(payload) || !utf8.Valid(payload) || res.Matches == nil {
+		if !json.Valid(payload) || !utf8.Valid(payload) || matches == nil {
 			t.Fatalf("accepted invalid scan result: %q", payload)
 		}
 		var fields map[string]json.RawMessage

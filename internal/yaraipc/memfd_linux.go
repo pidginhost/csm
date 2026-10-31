@@ -4,6 +4,7 @@ package yaraipc
 
 import (
 	"fmt"
+	"io"
 	"os"
 
 	"golang.org/x/sys/unix"
@@ -12,22 +13,51 @@ import (
 // memfdCreate is a seam so tests can make memfd creation fail.
 var memfdCreate = unix.MemfdCreate
 
-// sealedMemfd copies data into a memory-backed file and seals it, so the
+// SealedMemfd copies data into a memory-backed file and seals it, so the
 // worker that receives it can read the bytes but cannot change them.
-func sealedMemfd(data []byte) (*os.File, error) {
-	fd, err := memfdCreate("csm-yara-scan", unix.MFD_CLOEXEC|unix.MFD_ALLOW_SEALING)
+func SealedMemfd(name string, data []byte) (*os.File, error) {
+	f, err := newMemfd(name)
 	if err != nil {
-		return nil, fmt.Errorf("yaraipc: create scan memfd: %w", err)
+		return nil, err
 	}
-	f := os.NewFile(uintptr(fd), "csm-yara-scan") // #nosec G115 -- memfd_create returned a valid descriptor.
 	if _, err = f.Write(data); err == nil {
 		err = sealFile(f)
 	}
 	if err != nil {
 		_ = f.Close()
-		return nil, fmt.Errorf("yaraipc: fill scan memfd: %w", err)
+		return nil, fmt.Errorf("yaraipc: fill %s memfd: %w", name, err)
 	}
 	return f, nil
+}
+
+// CopySealedMemfd copies the first size bytes of src into a new sealed memfd
+// owned by this process, so nothing another process kept open can change it.
+// A source shorter than size is an error.
+func CopySealedMemfd(name string, src *os.File, size int64) (*os.File, error) {
+	f, err := newMemfd(name)
+	if err != nil {
+		return nil, err
+	}
+	n, err := io.Copy(f, io.NewSectionReader(src, 0, size))
+	if err == nil && n != size {
+		err = fmt.Errorf("copied %d of %d bytes: %w", n, size, io.ErrUnexpectedEOF)
+	}
+	if err == nil {
+		err = sealFile(f)
+	}
+	if err != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("yaraipc: copy %s memfd: %w", name, err)
+	}
+	return f, nil
+}
+
+func newMemfd(name string) (*os.File, error) {
+	fd, err := memfdCreate(name, unix.MFD_CLOEXEC|unix.MFD_ALLOW_SEALING)
+	if err != nil {
+		return nil, fmt.Errorf("yaraipc: create %s memfd: %w", name, err)
+	}
+	return os.NewFile(uintptr(fd), name), nil // #nosec G115 -- memfd_create returned a valid descriptor.
 }
 
 func sealFile(f *os.File) error {

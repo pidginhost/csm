@@ -259,25 +259,6 @@ sitting.
 **Depends on:** [durable action lifecycle](#action-log-covers-seven-of-43-host-changing-operations).
 **Size:** L.
 
-## YARA and PHP taint workers still run as root
-
-**Problem:** mail parsing, archive parsing and PHP taint analysis run in
-short-lived workers with no user, network or filesystem access, a deadline and
-a memory cap. The YARA worker is still a root child of the daemon. A crafted
-file that breaks it reaches a root process.
-
-**Acceptance:** both workers run under the parse worker's lockdown and the
-YARA worker moves onto the shared worker framework; every YARA caller hands
-the worker an open descriptor, the path-based scan request is gone and no scan
-copies a file to disk; rules are compiled once in a short-lived locked-down
-worker, not the daemon, and handed over, so a scan worker restart does not
-recompile; a file scan that could not run YARA is reported incomplete, never
-clean; the old YARA supervisor is deleted; `csm validate` warns when YARA runs
-inside the daemon.
-
-**Depends on:** the mail parse worker running cleanly in production for a
-week. **Size:** M.
-
 ## Optional MFA for browser administrators
 
 **Problem:** administrator logins have no second factor. Add optional

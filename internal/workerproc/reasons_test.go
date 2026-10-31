@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -249,8 +250,180 @@ func TestUnitWatchdogSkipsDaemonExhaustion(t *testing.T) {
 			case <-time.After(time.Second):
 				t.Fatal("watchdog did not ask systemd to kill the unit")
 			}
+			if err := p.Kill(); err != nil {
+				t.Fatal(err)
+			}
 			if !p.OOMKilled() {
-				t.Fatal("watchdog memory kill not reported without cgroup evidence")
+				t.Fatal("watchdog memory kill lost after a repeated kill without cgroup evidence")
+			}
+		})
+	}
+}
+
+// A worker being stopped on purpose loses its cgroup before systemd-run
+// exits. The watchdog must not read that gap as a fault and log a kill of a
+// worker that is already going.
+func TestUnitWatchdogQuietAfterRequestedKill(t *testing.T) {
+	conn, _ := socketPair(t)
+	var mu sync.Mutex
+	var lines []string
+	finished := make(chan struct{})
+	p := &unitProcess{
+		unit: "u", conn: conn, done: make(chan struct{}), limit: 1 << 20,
+		cg: memoryCgroup{dir: t.TempDir(), v2: true},
+		usage: func() (uint64, error) {
+			return 0, fmt.Errorf("read memory: %w", os.ErrNotExist)
+		},
+		killUnit: func(context.Context, *unitProcess) error { return nil },
+		log: func(format string, args ...any) {
+			mu.Lock()
+			defer mu.Unlock()
+			lines = append(lines, fmt.Sprintf(format, args...))
+		},
+	}
+	defer close(p.done)
+	if err := p.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		defer close(finished)
+		p.watch(time.Millisecond)
+	}()
+	select {
+	case <-finished:
+	case <-time.After(time.Second):
+		t.Fatal("watchdog kept polling a worker already being killed")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(lines) != 0 {
+		t.Fatalf("watchdog logged %q for a worker already being killed", lines)
+	}
+}
+
+// A deliberate kill can remove the cgroup while a watchdog read is already
+// in flight. That read must not relabel the stop as a memory fault.
+func TestUnitWatchdogKillDuringMemoryRead(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		used uint64
+		err  error
+	}{
+		{name: "cgroup removed", err: fmt.Errorf("read memory: %w", os.ErrNotExist)},
+		{name: "over cap", used: 2 << 20},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			conn, _ := socketPair(t)
+			reading, release := make(chan struct{}), make(chan struct{})
+			releaseRead := sync.OnceFunc(func() { close(release) })
+			defer releaseRead()
+			finished, killed := make(chan struct{}), make(chan struct{})
+			var kills atomic.Int32
+			var mu sync.Mutex
+			var lines []string
+			p := &unitProcess{
+				unit: "u", conn: conn, done: make(chan struct{}), limit: 1 << 20,
+				cg: memoryCgroup{dir: t.TempDir(), v2: true},
+				usage: func() (uint64, error) {
+					close(reading)
+					<-release
+					return tc.used, tc.err
+				},
+				killUnit: func(context.Context, *unitProcess) error {
+					if kills.Add(1) == 1 {
+						close(killed)
+					}
+					return nil
+				},
+				log: func(format string, args ...any) {
+					mu.Lock()
+					defer mu.Unlock()
+					lines = append(lines, fmt.Sprintf(format, args...))
+				},
+			}
+			defer close(p.done)
+			go func() {
+				defer close(finished)
+				p.watch(time.Millisecond)
+			}()
+			select {
+			case <-reading:
+			case <-time.After(time.Second):
+				t.Fatal("watchdog did not read memory")
+			}
+			if err := p.Kill(); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case <-killed:
+			case <-time.After(time.Second):
+				t.Fatal("kill was not sent while the memory read was pending")
+			}
+			releaseRead()
+			select {
+			case <-finished:
+			case <-time.After(time.Second):
+				t.Fatal("watchdog kept running after the requested kill")
+			}
+			if p.OOMKilled() {
+				t.Error("deliberate kill reported as an OOM kill")
+			}
+			if got := kills.Load(); got != 1 {
+				t.Errorf("unit killed %d times, want once", got)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if len(lines) != 0 {
+				t.Errorf("watchdog logged %q after a deliberate kill", lines)
+			}
+		})
+	}
+}
+
+// Kernel OOM evidence can arrive after a requested kill ends memory polling.
+// That polling shutdown must leave the independent kernel verdict available.
+func TestUnitKillKeepsKernelOOMVerdict(t *testing.T) {
+	for _, version := range []string{"v1", "v2"} {
+		t.Run(version, func(t *testing.T) {
+			conn, _ := socketPair(t)
+			p := &unitProcess{
+				unit: "u", conn: conn, done: make(chan struct{}),
+				cg: memoryCgroup{dir: t.TempDir(), v2: version == "v2"},
+				usage: func() (uint64, error) {
+					t.Error("watchdog read memory after a requested kill")
+					return 0, os.ErrNotExist
+				},
+				killUnit: func(context.Context, *unitProcess) error { return nil },
+			}
+			defer close(p.done)
+			if version == "v1" {
+				p.oom = &oomWatch{done: make(chan struct{})}
+			} else {
+				p.slice = &memoryCgroup{dir: t.TempDir(), v2: true}
+				p.sliceOOMKills = 2
+				writeValue(t, filepath.Join(p.slice.dir, "memory.events"), "oom_kill 2\n")
+			}
+			if err := p.Kill(); err != nil {
+				t.Fatal(err)
+			}
+			finished := make(chan struct{})
+			go func() {
+				defer close(finished)
+				p.watch(time.Millisecond)
+			}()
+			select {
+			case <-finished:
+			case <-time.After(time.Second):
+				t.Fatal("watchdog kept running after a requested kill")
+			}
+			if version == "v1" {
+				p.oom.seen.Store(true)
+				close(p.oom.done)
+			} else {
+				writeValue(t, filepath.Join(p.slice.dir, "memory.events"), "oom_kill 3\n")
+			}
+			if !p.OOMKilled() {
+				t.Fatal("kernel OOM verdict lost after the watchdog stopped")
 			}
 		})
 	}

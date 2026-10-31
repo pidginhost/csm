@@ -988,6 +988,10 @@ refusal after an intentional stop do not add losses. Status reads memory without
 the worker lock, and shutdown retains the supervisor's health evidence.
 Recovered analyzer panics also count as failed work when delivered in a valid
 worker reply. The report and worker reuse policy remain unchanged.
+`yara.requests` follows scans waiting for the single YARA scan worker, the
+active scan and the rules load of a freshly started worker. Capacity is
+unavailable because callers have no fixed global waiting limit. Worker
+failures and breaker refusals count once per request.
 `central.actions` reports 1,024 waiting central-intelligence actions and one
 running action. Backlog remains visible while the signed feed refreshes;
 processing time includes the action handler and its evidence delivery.

@@ -2,7 +2,11 @@
 
 package yara
 
-import "testing"
+import (
+	"bytes"
+	"errors"
+	"testing"
+)
 
 func TestNewScannerReturnsNil(t *testing.T) {
 	s, err := NewScanner("/nonexistent")
@@ -52,5 +56,29 @@ func TestInitWithoutYara(t *testing.T) {
 func TestGlobalWithoutInit(t *testing.T) {
 	if g := Global(); g != nil {
 		t.Error("Global without Init should return nil")
+	}
+}
+
+func TestRulesStubReportsNoEngine(t *testing.T) {
+	if rules, err := CompileSources([]Source{{Name: "test.yar", Text: []byte("rule test { condition: true }")}}); rules != nil || !errors.Is(err, ErrNoEngine) {
+		t.Fatalf("CompileSources = %v, %v; want nil, ErrNoEngine", rules, err)
+	}
+	input := bytes.NewBufferString("compiled rules")
+	if rules, err := LoadRules(input); rules != nil || !errors.Is(err, ErrNoEngine) {
+		t.Fatalf("LoadRules = %v, %v; want nil, ErrNoEngine", rules, err)
+	}
+	if input.String() != "compiled rules" {
+		t.Fatal("LoadRules consumed input without an engine")
+	}
+	rules := &Rules{}
+	var output bytes.Buffer
+	if n, err := rules.WriteTo(&output); n != 0 || !errors.Is(err, ErrNoEngine) || output.Len() != 0 {
+		t.Fatalf("WriteTo = %d, %v, %d output bytes; want 0, ErrNoEngine, no output", n, err, output.Len())
+	}
+	if matches, err := rules.Scan([]byte("probe")); matches != nil || !errors.Is(err, ErrNoEngine) {
+		t.Fatalf("Scan = %v, %v; want nil, ErrNoEngine", matches, err)
+	}
+	if rules.Count() != 0 {
+		t.Fatal("rules without an engine must have zero count")
 	}
 }

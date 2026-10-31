@@ -1,110 +1,75 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"os"
-	"path/filepath"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/pidginhost/csm/internal/yaraworker"
+	"github.com/pidginhost/csm/internal/workerproc"
+	"github.com/pidginhost/csm/internal/yaraipc"
 )
 
-// Run the real worker entry point in a child test process, including its
-// config loading. Argument-recording helpers cannot catch config fallback.
+// Run the real worker entry point in a child test process.
 func TestYaraWorkerProcess(t *testing.T) {
 	if os.Getenv("CSM_TEST_YARA_WORKER") != "1" {
 		return
 	}
-	for i, arg := range os.Args {
-		if arg == "--" {
-			os.Args = append([]string{os.Args[0]}, os.Args[i+1:]...)
-			runYaraWorker()
-			return
-		}
-	}
-	t.Fatal("missing worker arguments")
+	os.Args = []string{"csm", "yara-worker", "--memory-limit=553648128"}
+	main()
+	os.Exit(0) // The test runner's PASS line must not enter the protocol socket.
 }
 
-func TestSupervisedYaraWorkerKeepsConfigDir(t *testing.T) {
-	for _, envDir := range []string{"missing", "invalid-fragment"} {
-		t.Run(envDir, func(t *testing.T) {
-			dir := t.TempDir()
-			configPath := filepath.Join(dir, "csm.yaml")
-			if err := os.WriteFile(configPath, []byte("{}\n"), 0600); err != nil {
-				t.Fatal(err)
-			}
-			selectedDir := filepath.Join(dir, "selected")
-			fallbackDir := filepath.Join(dir, "environment")
-			if envDir == "invalid-fragment" {
-				if err := os.Mkdir(fallbackDir, 0700); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(filepath.Join(fallbackDir, "bad.yaml"), []byte("[invalid"), 0600); err != nil {
-					t.Fatal(err)
-				}
-			}
-			t.Setenv("CSM_CONFIG_DIR", fallbackDir)
-			t.Setenv("CSM_TEST_YARA_WORKER", "1")
-			executable, exeErr := os.Executable()
-			if exeErr != nil {
-				t.Fatal(exeErr)
-			}
-			t.Setenv("CSM_TEST_EXECUTABLE", executable)
-			worker := filepath.Join(dir, "worker")
-			if err := os.WriteFile(worker, []byte("#!/bin/sh\nexec \"$CSM_TEST_EXECUTABLE\" -test.run=^TestYaraWorkerProcess$ -- \"$@\"\n"), 0700); err != nil {
-				t.Fatal(err)
-			}
-			sup, err := yaraworker.NewSupervisor(yaraworker.SupervisorConfig{
-				BinaryPath: worker, SocketPath: filepath.Join(dir, "worker.sock"),
-				ConfigFile: configPath, ConfigDir: selectedDir,
-				RulesDir: filepath.Join(dir, "rules"), StartTimeout: 3 * time.Second,
-				MinRestartInterval: 10 * time.Millisecond, MaxRestartInterval: 20 * time.Millisecond,
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { _ = sup.Stop() })
-			if err := sup.Start(context.Background()); err != nil {
-				t.Fatalf("worker re-selected config instead of allowing missing inherited directory: %v", err)
-			}
-			// A later creation and removal must keep the same selection on
-			// both restarts, including when an environment override is set.
-			for _, present := range []bool{true, false} {
-				if present {
-					if err := os.Mkdir(selectedDir, 0700); err != nil {
-						t.Fatal(err)
-					}
-				} else if err := os.Remove(selectedDir); err != nil {
-					t.Fatal(err)
-				}
-				pid := sup.ChildPID()
-				if err := sup.RestartWorker(); err != nil {
-					t.Fatal(err)
-				}
-				deadline := time.Now().Add(5 * time.Second)
-				for time.Now().Before(deadline) {
-					if next := sup.ChildPID(); next != 0 && next != pid && sup.Reload() == nil {
-						break
-					}
-					time.Sleep(10 * time.Millisecond)
-				}
-				if next := sup.ChildPID(); next == 0 || next == pid {
-					t.Fatalf("worker did not restart with directory present=%t", present)
-				}
-				if err := sup.Reload(); err != nil {
-					t.Fatalf("worker unavailable with directory present=%t: %v", present, err)
-				}
-			}
-		})
+// Exercise CLI startup: stdout is the protocol socket, so any diagnostic
+// there would corrupt the hello or a later reply.
+func TestSupervisedYaraWorkerKeepsSocketFraming(t *testing.T) {
+	launch := workerproc.ExecLauncher(os.Args[0], []string{"-test.run=^TestYaraWorkerProcess$"},
+		append(os.Environ(), "CSM_TEST_YARA_WORKER=1"))
+	p, err := launch(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = p.Conn().Close()
+		_ = p.Kill()
+		<-p.Done()
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	lim := workerproc.Limits{MaxFrameBytes: yaraipc.MaxFrameBytes}
+	if err = workerproc.Handshake(ctx, p.Conn(), lim, yaraipc.ProtocolVersion); err != nil {
+		t.Fatal(err)
+	}
+	if err = p.Conn().SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err = workerproc.SendFrame(p.Conn(), workerproc.Frame{Op: yaraipc.OpPing}, nil, yaraipc.MaxFrameBytes); err != nil {
+		t.Fatal(err)
+	}
+	reply, _, err := workerproc.ReceiveFrame(p.Conn(), lim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply.Error, "no rules loaded") {
+		t.Fatalf("ping before load = %+v, want the worker's own refusal", reply)
 	}
 }
 
-func TestYaraWorkerExplicitMissingConfigDirIsRejected(t *testing.T) {
-	missing := filepath.Join(t.TempDir(), "missing")
-	_, err := resolveConfDirFromArgs([]string{"csm", "yara-worker", "--config-dir", missing})
-	if err == nil || !strings.Contains(err.Error(), "--config-dir refused") {
-		t.Fatalf("explicit missing directory error = %v", err)
+// Started by hand, the worker has a terminal or a pipe on fd 0 and must
+// refuse to run rather than read garbage frames.
+func TestYaraWorkerRefusesNonSocketStdin(t *testing.T) {
+	cmd := exec.Command(os.Args[0], "-test.run=^TestYaraWorkerProcess$") // #nosec G204 -- the test binary itself.
+	cmd.Env = append(os.Environ(), "CSM_TEST_YARA_WORKER=1")
+	cmd.Stdin = strings.NewReader("")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err == nil {
+		t.Fatal("worker ran without a socket on fd 0")
+	}
+	if !strings.Contains(stderr.String(), "not a socket") {
+		t.Fatalf("stderr = %q, want the reason", stderr.String())
 	}
 }

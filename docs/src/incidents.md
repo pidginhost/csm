@@ -952,6 +952,7 @@ Attribution gaps:
 | `wp_plugin_inventory_unverified` | ignored | self-health |  |
 | `wp_user_enumeration` | ignored | attacker-side |  |
 | `xmlrpc_abuse` | ignored | attacker-side |  |
+| `yara_backend_unavailable` | ignored | self-health |  |
 | `yara_forge_rollback` | ignored | self-health |  |
 | `yara_match_realtime` | security event |  |  |
 | `yara_match_scheduled` | security event |  |  |

@@ -554,7 +554,7 @@ signatures:
     update_interval: "168h"             # how often to check for updates (default: weekly)
     download_url: ""                    # signed ZIP URL/template; supports {tier} and {version}
   disabled_rules: []                    # rule names to switch off, in Forge and in the shipped rules
-  # yara_worker_enabled: true           # tri-state: omit for the default (on), `false` to explicitly disable
+  # yara_worker_enabled: true           # omit for the default: YARA-X runs in locked-down worker units; `false` runs it inside the root daemon
 
 # signatures.signing_key is mandatory whenever either signatures.update_url
 # is set or signatures.yara_forge.enabled is true. It must be the hex
@@ -1184,7 +1184,7 @@ Config-management workflows (Ansible, Puppet, Chef) should:
 
 Files matching `/etc/csm/conf.d/*.yaml` are loaded after the main config and **deep-merged** on top of it. Override with `--config-dir <path>` or `CSM_CONFIG_DIR`; the flag wins when both are set.
 
-The YARA-X worker inherits the daemon's selected directory on every start. If it is absent, the worker loads no fragments from it; it does not fall back to another directory. Explicit operator overrides still require an existing directory.
+Explicit operator overrides require an existing directory.
 
 - **Order:** lexicographic by filename. Scalar keys in `20-overrides.yaml` override the same keys in `10-base.yaml`. Use a numeric prefix.
 - **Merge semantics:** maps merge recursively; scalars replace the value from the main file; lists append in fragment order. All-scalar lists drop duplicate entries while keeping the first occurrence; structured lists such as `webui.tokens` keep every entry.

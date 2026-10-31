@@ -150,6 +150,9 @@ worker stuck parsing may remain until the lifetime cap stops it. At startup,
 the daemon attempts to kill leftover `csm-parse-worker-*` units; cleanup
 failures are logged and do not prevent startup.
 
+A worker the daemon stops on purpose, such as at shutdown, is logged as
+`stopped` and never as a memory failure.
+
 `disabled_checks: [phishing]` disables scheduled phishing checks. Requested
 account scans can still use the worker, and startup cleanup still runs.
 `email_av.enabled: false` starts no mail workers.
@@ -162,6 +165,18 @@ the dynamic user cannot execute it, the daemon logs why and candidate files
 are reported as not analyzed, just as when a unit fails to start or dies.
 These failures appear as `worker_failure` coverage gaps. `disabled_checks:
 [php_taint_deep]` stops new analyses; startup cleanup still runs.
+
+YARA-X runs in two units of the same kind. Each rule compile runs in
+`csm-yara-compile-worker-<generation>` with a 1 GiB memory cap, from rule
+text the daemon passes in memory; the compiler cannot open include files.
+Scans run in one `csm-yara-worker-<generation>` with a memory cap of 512 MiB
+plus `thresholds.full_scan_max_file_mb`, no file writes and the compiled rules
+loaded from memory. Both allow executable memory, which YARA-X needs for its
+compiled rules; the other lockdown properties are unchanged. At startup the
+daemon attempts to kill leftover units of both kinds. While no worker can
+scan, files and mail attachments are reported as not scanned by YARA, never
+as clean. `signatures.yara_worker_enabled: false` runs YARA-X inside the
+daemon as root instead; `csm validate` warns about it.
 
 The in-process `csm scan <user>` command starts its own worker on demand.
 Its unit prefix includes the CLI process ID, so concurrent scans use distinct

@@ -46,6 +46,10 @@ type UnitConfig struct {
 	// or that hold spaces, quotes, backslashes, percent signs or control
 	// bytes, are dropped.
 	InaccessiblePaths []string
+	// AllowExecutableMemory turns MemoryDenyWriteExecute off, for YARA-X:
+	// wasmtime maps its compiled rules executable and cannot load them
+	// otherwise. Every other worker keeps the denial.
+	AllowExecutableMemory bool
 
 	hooks *unitHooks // tests only; nil means the real system
 }
@@ -82,6 +86,10 @@ var unitGeneration = func() *atomic.Int64 {
 // network, no host files, no privileges, bounded memory, tasks and files.
 func lockdownProperties(cfg UnitConfig) []string {
 	memory := strconv.FormatUint(cfg.MemoryLimit, 10)
+	denyWriteExecute := "MemoryDenyWriteExecute=yes"
+	if cfg.AllowExecutableMemory {
+		denyWriteExecute = "MemoryDenyWriteExecute=no"
+	}
 	props := []string{
 		"DynamicUser=yes",
 		"CapabilityBoundingSet=",
@@ -97,7 +105,7 @@ func lockdownProperties(cfg UnitConfig) []string {
 		"ProtectControlGroups=yes",
 		"RestrictNamespaces=yes",
 		"RestrictRealtime=yes",
-		"MemoryDenyWriteExecute=yes",
+		denyWriteExecute,
 		"UMask=0077",
 		"SystemCallFilter=@system-service",
 		// In place of LockPersonality=yes, which systemd-run on systemd 239
@@ -412,6 +420,11 @@ func (p *unitProcess) watch(interval time.Duration) {
 			return
 		case <-ticker.C:
 		}
+		if p.killing.Load() {
+			// Already being killed: its cgroup can vanish before systemd-run
+			// exits, and that gap is not a fault to report.
+			return
+		}
 		used, err := p.usage()
 		if err == nil && used <= p.limit {
 			continue
@@ -426,13 +439,13 @@ func (p *unitProcess) watch(interval time.Duration) {
 			return // Gone already: its counters vanished with it.
 		default:
 		}
-		if err != nil {
-			p.logf("unit %s: cannot read memory, killing: %v", p.unit, err)
-		} else {
-			p.logf("unit %s: memory %d over cap %d, killing", p.unit, used, p.limit)
-			p.memoryKill.Store(true)
+		if p.requestKill(err == nil) {
+			if err != nil {
+				p.logf("unit %s: cannot read memory, killing: %v", p.unit, err)
+			} else {
+				p.logf("unit %s: memory %d over cap %d, killing", p.unit, used, p.limit)
+			}
 		}
-		_ = p.Kill()
 		return
 	}
 }
@@ -447,6 +460,7 @@ type unitProcess struct {
 	pid      int
 	killUnit func(ctx context.Context, p *unitProcess) error
 	kill     sync.Once
+	killing  atomic.Bool
 	log      func(string, ...any)
 	// usage reads memory and swap in use; limit is the cap it is held to.
 	// lastUsed is what Retire last read.
@@ -497,7 +511,19 @@ func (p *unitProcess) MemoryUsed() uint64 { return p.lastUsed.Load() }
 // calls it holding its lock, and a hung systemctl must not freeze it. The
 // worker is killed by unit name, never by a PID it could have influenced.
 func (p *unitProcess) Kill() error {
+	p.requestKill(false)
+	return nil
+}
+
+// requestKill records only the winning cause, before closing the socket can
+// make the supervisor ask for an OOM verdict. A watchdog read racing with a
+// deliberate kill must neither relabel that kill nor log another one.
+func (p *unitProcess) requestKill(memory bool) bool {
+	requested := false
 	p.kill.Do(func() {
+		requested = true
+		p.killing.Store(true)
+		p.memoryKill.Store(memory)
 		// A failed watchdog check must prevent further requests even while
 		// systemctl is stalled or fails to reach the manager.
 		_ = p.conn.Close()
@@ -509,7 +535,7 @@ func (p *unitProcess) Kill() error {
 			}
 		}()
 	})
-	return nil
+	return requested
 }
 
 // OOMKilled reports a memory kill: by the watchdog, or by the kernel as the

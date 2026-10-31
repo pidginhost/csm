@@ -14,14 +14,20 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - The daemon log now escapes line breaks and control characters in values, so crafted file names cannot forge log lines.
 - YARA scans no longer reopen tenant files by path or write temporary copies of large files to disk.
 - PHP taint analysis now runs in a locked-down worker with no root, network or account file access; files are reported unexamined when it cannot start.
+- YARA scanning now runs in a locked-down worker without root, so a crafted file can no longer reach a root process through it.
 
 ### Changed
 
+- With the default YARA worker enabled, rule files can no longer include other files; inline included rules instead.
+- On hosts with YARA but no loaded rules, companion file reports now warn that YARA did not check the files; `disabled_checks: [yara_deep]` turns this off.
+- `csm validate` now warns when `signatures.yara_worker_enabled: false` makes the daemon run YARA as root.
+- A YARA rule set too large for the locked-down compile worker now raises a compile-failure finding saying so; `signatures.yara_worker_enabled: false` compiles it in the daemon instead.
 - With auto_response.dry_run off, admission previews now wait for free slots under firewall.deny_temp_ip_limit, and csm doctor warns while that set is full; blocking is unchanged.
 - Learned spam is now stored with its headers and text only, without images or other attachments.
 
 ### Fixed
 
+- The daemon log no longer reports a memory failure or a kill when CSM stops a worker on purpose.
 - WordPress core files that differ only in line endings are no longer reported on sites whose PHP prints deprecation notices.
 - The daemon log no longer reports a YARA scan failure for large files.
 - The daemon log now says when a parse worker is retired or exits on its own, instead of only that it was killed.

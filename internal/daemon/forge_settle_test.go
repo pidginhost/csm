@@ -2,12 +2,14 @@ package daemon
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/workerproc"
 )
 
 type forgeFakeBackend struct {
@@ -66,5 +68,33 @@ func TestSettleForgeInstallRollsBackOnCountCollapse(t *testing.T) {
 	}
 	if _, err := os.Stat(forgeFile); !os.IsNotExist(err) {
 		t.Fatalf("collapsed tier left on disk: %v", err)
+	}
+}
+
+// A merged reload that fails because the compile worker could not run says
+// nothing about the rules: the tier stays on disk, the version is not
+// recorded so the next cycle tries again, and no rollback is reported.
+func TestSettleForgeInstallKeepsTierOnWorkerFailure(t *testing.T) {
+	rulesDir := t.TempDir()
+	forgeFile := filepath.Join(rulesDir, "yara-forge-core.yar")
+	if err := os.WriteFile(forgeFile, []byte("rule forge_ok { condition: true }\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	d := New(&config.Config{}, nil, nil, "")
+	backend := &forgeFakeBackend{reloadErr: fmt.Errorf("yara compile worker: %w: systemd-run failed", workerproc.ErrSpawn)}
+
+	if ok := d.settleForgeInstall(backend, forgeFile, 5000); ok {
+		t.Fatal("a reload the compile worker never ran reported a settled install")
+	}
+	if _, err := os.Stat(forgeFile); err != nil {
+		t.Fatalf("tier removed after a compile worker failure: %v", err)
+	}
+	select {
+	case f := <-d.alertCh:
+		if f.Check == "yara_forge_rollback" {
+			t.Fatalf("a compile worker failure was reported as a rollback: %s", f.Message)
+		}
+	default:
+		t.Fatal("a compile worker failure after a Forge install raised no finding")
 	}
 }

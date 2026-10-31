@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -503,6 +504,29 @@ func TestUnitWorkerStderrExactBudgets(t *testing.T) {
 					t.Fatalf("last entry=%q, want the drop notice", lines[tc.count])
 				}
 			})
+		}
+	}
+}
+
+// YARA-X needs executable memory for its compiled rules; every other worker
+// keeps the denial, and the switch changes nothing else.
+func TestLockdownExecutableMemoryIsOptIn(t *testing.T) {
+	base := UnitConfig{Prefix: "csm-yara-worker", MemoryLimit: 512 << 20}
+	deny := lockdownProperties(base)
+	base.AllowExecutableMemory = true
+	allow := lockdownProperties(base)
+	if !slices.Contains(deny, "MemoryDenyWriteExecute=yes") || slices.Contains(deny, "MemoryDenyWriteExecute=no") {
+		t.Fatalf("default properties do not deny executable memory: %q", deny)
+	}
+	if !slices.Contains(allow, "MemoryDenyWriteExecute=no") || slices.Contains(allow, "MemoryDenyWriteExecute=yes") {
+		t.Fatalf("opt-in properties still deny executable memory: %q", allow)
+	}
+	if len(deny) != len(allow) {
+		t.Fatalf("opt-in changed the property count: %d -> %d", len(deny), len(allow))
+	}
+	for i := range deny {
+		if deny[i] != allow[i] && deny[i] != "MemoryDenyWriteExecute=yes" {
+			t.Fatalf("opt-in changed %q to %q", deny[i], allow[i])
 		}
 	}
 }

@@ -2,268 +2,256 @@ package daemon
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
-	"reflect"
-	"strings"
-	"syscall"
+	"slices"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/health"
+	"github.com/pidginhost/csm/internal/workerproc"
+	"github.com/pidginhost/csm/internal/yara"
 	"github.com/pidginhost/csm/internal/yaraworker"
 )
 
-// recordYaraWorkerArgs starts the backend against a helper that records its
-// arguments and exits, and returns the flags the worker was given.
-func recordYaraWorkerArgs(t *testing.T, cfg *config.Config) map[string]string {
+// stubYaraUnits replaces the unit seams, records what init asked for, and
+// makes every launch fail unless launch is given.
+func stubYaraUnits(t *testing.T, engine bool, launch workerproc.Launcher) (stopped *[]string, units *[]workerproc.UnitConfig) {
 	t.Helper()
-	dir := t.TempDir()
-	argsPath := filepath.Join(dir, "args")
-	worker := filepath.Join(dir, "worker")
-	if err := os.WriteFile(worker, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > '"+argsPath+"'\nexit 1\n"), 0700); err != nil {
-		t.Fatal(err)
+	stopped, units = new([]string), new([]workerproc.UnitConfig)
+	realStop, realLauncher, realHidden, realEngine := stopParseWorkerUnits, yaraWorkerLauncher, parseWorkerHiddenPaths, yaraEngineAvailable
+	stopParseWorkerUnits = func(_ context.Context, prefix string) error {
+		*stopped = append(*stopped, prefix)
+		return nil
 	}
-	d := &Daemon{cfg: cfg, binaryPath: worker, stopCh: make(chan struct{})}
-	// Avoid a retry loop after the deliberately short-lived helper exits.
-	close(d.stopCh)
-	if err := d.initYaraBackend(); err == nil {
-		t.Fatal("argument recorder unexpectedly served YARA requests")
-	}
-	defer d.stopYaraBackend()
-	data, err := os.ReadFile(argsPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	args := strings.Split(strings.TrimSpace(string(data)), "\n")
-	values := make(map[string]string)
-	for i := 1; i+1 < len(args); i += 2 {
-		values[args[i]] = args[i+1]
-	}
-	return values
-}
-
-func TestYaraWorkerInheritsEffectiveRuleConfiguration(t *testing.T) {
-	confDir := t.TempDir()
-	cfg := &config.Config{ConfigFile: "/custom/csm.yaml", ConfigDir: confDir}
-	cfg.Signatures.RulesDir = "/custom/rules"
-	cfg.Signatures.DisabledRules = []string{"php_goto_obfuscation", "Other_Rule"}
-
-	values := recordYaraWorkerArgs(t, cfg)
-
-	for flag, want := range map[string]string{"--config": cfg.ConfigFile, "--inherited-config-dir": cfg.ConfigDir, "--rules-dir": cfg.Signatures.RulesDir} {
-		if values[flag] != want {
-			t.Errorf("%s = %q, want %q", flag, values[flag], want)
+	yaraWorkerLauncher = func(cfg workerproc.UnitConfig) workerproc.Launcher {
+		*units = append(*units, cfg)
+		if launch != nil {
+			return launch
 		}
+		return func(context.Context) (workerproc.Process, error) { return nil, errors.New("no units in tests") }
 	}
-	var disabled []string
-	if err := json.Unmarshal([]byte(values["--disabled-rules"]), &disabled); err != nil {
-		t.Fatalf("missing effective disabled list: %v", err)
-	}
-	if !reflect.DeepEqual(disabled, cfg.Signatures.DisabledRules) {
-		t.Fatalf("disabled rules = %v, want %v", disabled, cfg.Signatures.DisabledRules)
-	}
+	parseWorkerHiddenPaths = func() []string { return []string{"/home2"} }
+	yaraEngineAvailable = func() bool { return engine }
+	t.Cleanup(func() {
+		stopParseWorkerUnits, yaraWorkerLauncher, parseWorkerHiddenPaths, yaraEngineAvailable = realStop, realLauncher, realHidden, realEngine
+	})
+	return stopped, units
 }
 
-// The daemon treats a missing conf.d as "no fragments", but the worker treats
-// an explicit --config-dir that does not exist as a fatal error. The internal
-// handoff must preserve the path without turning it into an operator override.
-func TestYaraWorkerInheritsMissingConfigDir(t *testing.T) {
-	cfg := &config.Config{ConfigFile: "/custom/csm.yaml", ConfigDir: filepath.Join(t.TempDir(), "conf.d")}
-	cfg.Signatures.RulesDir = "/custom/rules"
-
-	values := recordYaraWorkerArgs(t, cfg)
-
-	if got, ok := values["--config-dir"]; ok {
-		t.Fatalf("worker was given missing conf.d %q", got)
+func yaraWorkerDaemon(t *testing.T, cfg *config.Config) *Daemon {
+	t.Helper()
+	if cfg.Signatures.RulesDir == "" {
+		cfg.Signatures.RulesDir = t.TempDir()
 	}
-	if got := values["--inherited-config-dir"]; got != cfg.ConfigDir {
-		t.Fatalf("inherited directory = %q, want %q", got, cfg.ConfigDir)
-	}
-	if values["--config"] != cfg.ConfigFile {
-		t.Fatalf("--config = %q, want %q", values["--config"], cfg.ConfigFile)
-	}
-}
-
-// A worker that cannot start leaves every YARA scan disabled. Record it as a
-// failed watcher so doctor and the status API report the outage instead of an
-// overall OK, and record recovery once the backend activates.
-func TestYaraWorkerStartReportsWatcherState(t *testing.T) {
-	cfg := &config.Config{}
-	cfg.Signatures.RulesDir = t.TempDir()
-	dir := t.TempDir()
-	worker := filepath.Join(dir, "worker")
-	if err := os.WriteFile(worker, []byte("#!/bin/sh\nexit 1\n"), 0700); err != nil {
-		t.Fatal(err)
-	}
-	d := &Daemon{cfg: cfg, binaryPath: worker, stopCh: make(chan struct{})}
+	d := &Daemon{cfg: cfg, binaryPath: "/opt/csm/csm", stopCh: make(chan struct{}), alertCh: make(chan alert.Finding, 16)}
 	t.Cleanup(func() {
 		close(d.stopCh)
 		d.stopYaraBackend()
 	})
-	if err := d.initYaraBackend(); err == nil {
-		t.Fatal("failing worker unexpectedly started")
-	}
+	return d
+}
 
+func TestInitYaraBackendStopsLeftoverUnits(t *testing.T) {
+	stopped, _ := stubYaraUnits(t, false, nil)
+	allowParseWorkerCommand(t)
+	d := yaraWorkerDaemon(t, &config.Config{})
+	if err := d.initYaraBackend(); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"csm-yara-worker-", "csm-yara-compile-worker-"}; !slices.Equal(*stopped, want) {
+		t.Fatalf("leftover units stopped with %q, want %q", *stopped, want)
+	}
+	if yara.Active() != yara.Backend(d.yaraSup) {
+		t.Fatal("the worker backend is not the active YARA backend")
+	}
+	if _, ok := d.QueueStatuses()["yara.requests"]; !ok {
+		t.Fatal("the YARA worker queue is not published")
+	}
+}
+
+func TestInitYaraBackendScanMemoryFollowsFileCap(t *testing.T) {
+	_, units := stubYaraUnits(t, false, nil)
+	allowParseWorkerCommand(t)
+	cfg := &config.Config{}
+	cfg.Thresholds.FullScanMaxFileMB = 64
+	d := yaraWorkerDaemon(t, cfg)
+	if err := d.initYaraBackend(); err != nil {
+		t.Fatal(err)
+	}
+	if len(*units) != 2 {
+		t.Fatalf("unit configs = %d, want scan and compile", len(*units))
+	}
+	scan, compile := (*units)[0], (*units)[1]
+	if scan.Prefix != yaraworker.ScanUnitPrefix || scan.MemoryLimit != 512<<20+64<<20 {
+		t.Fatalf("scan unit %q memory %d, want 576 MiB", scan.Prefix, scan.MemoryLimit)
+	}
+	if compile.Prefix != yaraworker.CompileUnitPrefix || compile.MemoryLimit != 1<<30 {
+		t.Fatalf("compile unit %q memory %d", compile.Prefix, compile.MemoryLimit)
+	}
+	for _, u := range []workerproc.UnitConfig{scan, compile} {
+		if u.Command != d.binaryPath || !slices.Equal(u.InaccessiblePaths, []string{"/home2"}) || !u.AllowExecutableMemory {
+			t.Fatalf("unit %q runs %q, hides %q, executable memory %v", u.Prefix, u.Command, u.InaccessiblePaths, u.AllowExecutableMemory)
+		}
+	}
+}
+
+// A compile unit that cannot start must not leave YARA silently off: the
+// backend is active and every scan errors, the watcher reports the outage,
+// and a background retry keeps trying.
+func TestInitYaraBackendCompileUnavailableFailsClosed(t *testing.T) {
+	var launches atomic.Int32
+	stubYaraUnits(t, true, func(context.Context) (workerproc.Process, error) {
+		launches.Add(1)
+		return nil, errors.New("systemd-run unavailable")
+	})
+	allowParseWorkerCommand(t)
+	cfg := &config.Config{}
+	cfg.Signatures.RulesDir = filepath.Join(t.TempDir(), "rules")
+	if err := os.Mkdir(cfg.Signatures.RulesDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfg.Signatures.RulesDir, "rules.yar"), []byte("rule r { condition: true }"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	d := yaraWorkerDaemon(t, cfg)
+	if err := d.initYaraBackend(); err == nil {
+		t.Fatal("init reported success with no compile worker")
+	}
+	backend := yara.Active()
+	if backend == nil || backend != yara.Backend(d.yaraSup) {
+		t.Fatal("YARA is not active while the compile worker is down; scans would skip it silently")
+	}
+	if m, err := yara.ScanBytesChecked(backend, "x.php", []byte("<?php echo 1;")); err == nil {
+		t.Fatalf("byte scan read clean with no compiled rules: %+v", m)
+	}
+	part := filepath.Join(t.TempDir(), "part")
+	if err := os.WriteFile(part, []byte("part"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(part)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if _, err := yara.ScanFileDescriptorChecked(backend, f, 4); err == nil {
+		t.Fatal("mail part scan read clean with no compiled rules")
+	}
 	attached, recorded := d.WatcherStatuses()[yaraWorkerWatcher]
 	if !recorded || attached {
-		t.Fatalf("failed worker start recorded=%t attached=%t, want recorded failure", recorded, attached)
+		t.Fatalf("watcher recorded=%t attached=%t, want a recorded failure", recorded, attached)
 	}
 	snapshot := health.Snapshot{StartedAt: time.Now(), StoreHealthy: true, Watchers: d.WatcherStatuses()}
 	if got := snapshot.OverallStatus(); got != "degraded" {
-		t.Fatalf("failed worker health = %q, want degraded", got)
+		t.Fatalf("health = %q, want degraded", got)
+	}
+	first := launches.Load()
+	deadline := time.Now().Add(5 * time.Second)
+	for launches.Load() == first && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if launches.Load() == first {
+		t.Fatal("no background retry of the compile")
+	}
+}
+
+// The watcher follows the scan worker: a failure marks it failed, a served
+// request marks it attached, alert throttling never throttles the health
+// transition, activation does not erase a failure, and shutdown changes
+// nothing.
+func TestYaraWorkerWatcherFollowsJobs(t *testing.T) {
+	d := &Daemon{cfg: &config.Config{}, stopCh: make(chan struct{}), alertCh: make(chan alert.Finding, 16)}
+	status := func() bool { return d.WatcherStatuses()[yaraWorkerWatcher] }
+
+	d.onYaraWorkerJob(workerproc.OutcomeOK, 0)
+	if !status() {
+		t.Fatal("a served request did not mark the worker attached")
+	}
+	d.onYaraWorkerFailure(workerproc.ReasonCrash, errWorkerDied)
+	if status() {
+		t.Fatal("a failure left the worker attached")
+	}
+	d.onYaraWorkerJob(workerproc.OutcomeOK, 0)
+	d.onYaraWorkerFailure(workerproc.ReasonCrash, errWorkerDied) // rate-limited alert
+	if status() {
+		t.Fatal("a rate-limited failure left the worker attached")
+	}
+	d.onYaraWorkerJob(workerproc.ReasonTimeout, 0)
+	if status() {
+		t.Fatal("a failed outcome marked the worker attached")
 	}
 
-	executable, err := os.Executable()
+	b, err := yaraworker.NewBackend(yaraworker.BackendConfig{
+		ScanLaunch:     func(context.Context) (workerproc.Process, error) { return nil, errors.New("unused") },
+		CompileLaunch:  func(context.Context) (workerproc.Process, error) { return nil, errors.New("unused") },
+		ScanTimeout:    time.Second,
+		LoadTimeout:    time.Second,
+		CompileTimeout: time.Second,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("CSM_DAEMON_TEST_EXECUTABLE", executable)
-	t.Setenv("CSM_DAEMON_TEST_YARA_WORKER", "1")
-	if err := os.WriteFile(worker+".ready", []byte("#!/bin/sh\nexec \"$CSM_DAEMON_TEST_EXECUTABLE\" -test.run=^TestYaraWorkerReadyProcess$ -- \"$@\"\n"), 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Rename(worker+".ready", worker); err != nil {
-		t.Fatal(err)
-	}
-	deadline := time.Now().Add(5 * time.Second)
-	for !d.WatcherStatuses()[yaraWorkerWatcher] && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
-	if !d.WatcherStatuses()[yaraWorkerWatcher] || d.yaraSup.ChildPID() == 0 {
-		t.Fatal("worker retry did not recover watcher state")
-	}
-	snapshot.Watchers = d.WatcherStatuses()
-	if got := snapshot.OverallStatus(); got != "ok" {
-		t.Fatalf("recovered worker health = %q, want ok", got)
-	}
-}
-
-func TestYaraWorkerReadyProcess(t *testing.T) {
-	if os.Getenv("CSM_DAEMON_TEST_YARA_WORKER") != "1" {
-		return
-	}
-	for i, arg := range os.Args {
-		if arg == "--socket" && i+1 < len(os.Args) {
-			if err := yaraworker.Run(context.Background(), yaraworker.Config{SocketPath: os.Args[i+1]}); err != nil {
-				t.Fatal(err)
-			}
-			return
-		}
-	}
-	t.Fatal("missing worker socket")
-}
-
-// A worker that crashes after a healthy start is offline until the supervisor
-// brings back one that stays up. The watcher follows that, so a crash loop
-// keeps doctor failing instead of reporting the boot-time success.
-func TestYaraWorkerCrashLoopReportsWatcherState(t *testing.T) {
-	d := &Daemon{cfg: &config.Config{}, binaryPath: "/usr/local/bin/csm", stopCh: make(chan struct{})}
-	cfg := d.yaraSupervisorConfig()
-	if cfg.OnRestart == nil || cfg.OnStable == nil {
-		t.Fatal("supervisor is not wired to report worker crashes and recovery")
-	}
-	d.MarkWatcher(yaraWorkerWatcher, true)
-
-	cfg.OnRestart(139, 0, 5*time.Second)
-	if attached, ok := d.WatcherStatuses()[yaraWorkerWatcher]; !ok || attached {
-		t.Fatalf("crashed worker watcher recorded=%t attached=%t, want failure", ok, attached)
+	defer func() { _ = b.Stop() }()
+	d.activateYaraBackend(b)
+	if status() {
+		t.Fatal("activation erased a worker failure")
 	}
 
-	cfg.OnStable()
-	if !d.WatcherStatuses()[yaraWorkerWatcher] {
-		t.Fatal("worker that stayed up was not recorded as recovered")
-	}
-
-	// Alert throttling must never throttle the health transition.
-	cfg.OnRestart(139, 0, 5*time.Second)
-	if d.WatcherStatuses()[yaraWorkerWatcher] {
-		t.Fatal("rate-limited crash left the worker watcher healthy")
-	}
-}
-
-// During shutdown the worker exits on purpose; that must not flip the watcher.
-func TestYaraWorkerWatcherIgnoresShutdownExit(t *testing.T) {
-	d := &Daemon{cfg: &config.Config{}, binaryPath: "/usr/local/bin/csm", stopCh: make(chan struct{})}
-	cfg := d.yaraSupervisorConfig()
 	d.MarkWatcher(yaraWorkerWatcher, true)
 	close(d.stopCh)
-
-	cfg.OnRestart(0, 0, time.Minute)
-	if !d.WatcherStatuses()[yaraWorkerWatcher] {
-		t.Fatal("shutdown exit marked the worker watcher failed")
+	d.onYaraWorkerFailure(workerproc.ReasonCrash, errWorkerDied)
+	if !status() {
+		t.Fatal("a failure during shutdown marked the worker failed")
 	}
-
 	d.MarkWatcher(yaraWorkerWatcher, false)
-	cfg.OnStable()
-	if d.WatcherStatuses()[yaraWorkerWatcher] {
-		t.Fatal("shutdown recovery marked the worker watcher healthy")
+	d.onYaraWorkerJob(workerproc.OutcomeOK, 0)
+	if status() {
+		t.Fatal("a request during shutdown marked the worker attached")
 	}
 }
 
-// Start launches supervision before returning to the daemon. A crash in that
-// window must not be erased when boot or boot-retry activation catches up.
-func TestYaraWorkerActivationPreservesCrashState(t *testing.T) {
-	// macOS's default temporary directory exceeds the Unix socket path limit.
-	t.Setenv("TMPDIR", "/tmp")
-	executable, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("CSM_DAEMON_TEST_EXECUTABLE", executable)
-	t.Setenv("CSM_DAEMON_TEST_YARA_WORKER", "1")
-	dir := t.TempDir()
-	worker := filepath.Join(dir, "worker")
-	if writeErr := os.WriteFile(worker, []byte("#!/bin/sh\nexec \"$CSM_DAEMON_TEST_EXECUTABLE\" -test.run=^TestYaraWorkerReadyProcess$ -- \"$@\"\n"), 0700); writeErr != nil {
-		t.Fatal(writeErr)
-	}
-	d := &Daemon{cfg: &config.Config{}, binaryPath: worker, stopCh: make(chan struct{})}
-	cfg := d.yaraSupervisorConfig()
-	cfg.SocketPath = filepath.Join(dir, "worker.sock")
-	cfg.MinRestartInterval = time.Hour
-	crashed := make(chan struct{})
-	cfg.OnRestart = func(code int, sig syscall.Signal, ranFor time.Duration) {
-		d.onYaraWorkerRestart(code, sig, ranFor)
-		close(crashed)
-	}
-	sup, err := yaraworker.NewSupervisor(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	d.yaraSup = sup
-	t.Cleanup(func() {
-		close(d.stopCh)
-		d.stopYaraBackend()
+// The boot compile runs before the daemon tells systemd it is ready, so it
+// is bounded: a compile that has not finished hands over to the background
+// retry instead of holding startup past systemd's start timeout.
+func TestInitYaraBackendBootCompileIsBounded(t *testing.T) {
+	var launches atomic.Int32
+	stubYaraUnits(t, true, func(ctx context.Context) (workerproc.Process, error) {
+		launches.Add(1)
+		<-ctx.Done()
+		return nil, ctx.Err()
 	})
-	if startErr := sup.Start(context.Background()); startErr != nil {
-		t.Fatal(startErr)
-	}
-	child, err := os.FindProcess(sup.ChildPID())
-	if err != nil {
+	allowParseWorkerCommand(t)
+	realBoot := yaraBootCompileTimeout
+	yaraBootCompileTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { yaraBootCompileTimeout = realBoot })
+	cfg := &config.Config{}
+	cfg.Signatures.RulesDir = filepath.Join(t.TempDir(), "rules")
+	if err := os.Mkdir(cfg.Signatures.RulesDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := child.Kill(); err != nil {
+	if err := os.WriteFile(filepath.Join(cfg.Signatures.RulesDir, "rules.yar"), []byte("rule r { condition: true }"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case <-crashed:
-	case <-time.After(5 * time.Second):
-		t.Fatal("worker crash was not reported")
+	d := yaraWorkerDaemon(t, cfg)
+	began := time.Now()
+	if err := d.initYaraBackend(); err == nil {
+		t.Fatal("init reported success while the boot compile hung")
 	}
-	if attached, recorded := d.WatcherStatuses()[yaraWorkerWatcher]; !recorded || attached {
-		t.Fatal("worker crash did not publish a failed watcher")
+	if took := time.Since(began); took > 5*time.Second {
+		t.Fatalf("boot compile held startup for %s", took)
 	}
-	failedAt := d.WatcherChangedAt()[yaraWorkerWatcher]
-	if failedAt.IsZero() {
-		t.Fatal("worker crash did not record the outage timestamp")
+	if d.yaraSup.CompileError() == "" {
+		t.Fatal("a boot compile that never finished left scans answering as if rules were empty")
 	}
-	d.activateYaraBackend(sup)
-	if attached, recorded := d.WatcherStatuses()[yaraWorkerWatcher]; !recorded || attached {
-		t.Fatal("backend activation overwrote the crashed worker's failed state")
+	deadline := time.Now().Add(5 * time.Second)
+	for launches.Load() < 2 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
 	}
-	if got := d.WatcherChangedAt()[yaraWorkerWatcher]; !got.Equal(failedAt) {
-		t.Fatal("backend activation reset the worker outage timestamp")
+	if launches.Load() < 2 {
+		t.Fatal("a timed-out boot compile was not retried in the background")
 	}
 }

@@ -1,18 +1,19 @@
 package daemon
 
 import (
+	"errors"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/workerproc"
 )
 
 // newDaemonForYaraBackendTest builds a Daemon minimal enough to drive
 // the non-worker branch of initYaraBackend, all of stopYaraBackend, and
-// every rate-limit arm of onYaraWorkerRestart.
+// every rate-limit arm of onYaraWorkerFailure.
 func newDaemonForYaraBackendTest(t *testing.T) *Daemon {
 	t.Helper()
 	return &Daemon{
@@ -53,12 +54,14 @@ func TestStopYaraBackendNoSupervisorIsNoop(t *testing.T) {
 	d.stopYaraBackend()
 }
 
-// --- onYaraWorkerRestart ----------------------------------------------
+// --- onYaraWorkerFailure ----------------------------------------------
 
-func TestOnYaraWorkerRestartFirstCallEmitsCriticalFinding(t *testing.T) {
+var errWorkerDied = errors.New("yara worker: EOF")
+
+func TestOnYaraWorkerFailureFirstCallEmitsCriticalFinding(t *testing.T) {
 	d := newDaemonForYaraBackendTest(t)
 
-	d.onYaraWorkerRestart(1, syscall.SIGSEGV, 5*time.Second)
+	d.onYaraWorkerFailure(workerproc.ReasonCrash, errWorkerDied)
 
 	select {
 	case f := <-d.alertCh:
@@ -72,20 +75,18 @@ func TestOnYaraWorkerRestartFirstCallEmitsCriticalFinding(t *testing.T) {
 			t.Error("message must not be empty")
 		}
 	case <-time.After(200 * time.Millisecond):
-		t.Fatal("no finding emitted on first crash")
+		t.Fatal("no finding emitted on first failure")
 	}
 }
 
-// Two crashes within a minute: the second must be rate-limited
-// regardless of how extreme the signal is. The alert channel receives
-// exactly one finding.
-func TestOnYaraWorkerRestartRateLimitsWithinOneMinute(t *testing.T) {
+// Two failures within a minute: the second is rate-limited. A file that kills
+// the worker on every scan must not turn into one alert per scan.
+func TestOnYaraWorkerFailureRateLimitsWithinOneMinute(t *testing.T) {
 	d := newDaemonForYaraBackendTest(t)
 
-	d.onYaraWorkerRestart(1, syscall.SIGSEGV, time.Second)
-	d.onYaraWorkerRestart(1, syscall.SIGSEGV, time.Second)
+	d.onYaraWorkerFailure(workerproc.ReasonCrash, errWorkerDied)
+	d.onYaraWorkerFailure(workerproc.ReasonTimeout, errWorkerDied)
 
-	// One finding, then nothing within a reasonable window.
 	select {
 	case <-d.alertCh:
 	case <-time.After(200 * time.Millisecond):
@@ -93,21 +94,19 @@ func TestOnYaraWorkerRestartRateLimitsWithinOneMinute(t *testing.T) {
 	}
 	select {
 	case f := <-d.alertCh:
-		t.Errorf("second crash within 60s must be suppressed, got %+v", f)
+		t.Errorf("second failure within 60s must be suppressed, got %+v", f)
 	case <-time.After(100 * time.Millisecond):
 	}
 }
 
-// If the last-alert timestamp is older than a minute, the next crash
-// emits a fresh finding. Simulated by writing yaraLastCrashAlert
-// directly into the past.
-func TestOnYaraWorkerRestartEmitsAgainAfterOneMinute(t *testing.T) {
+// If the last alert is older than a minute, the next failure alerts again.
+func TestOnYaraWorkerFailureEmitsAgainAfterOneMinute(t *testing.T) {
 	d := newDaemonForYaraBackendTest(t)
 	d.yaraCrashMu.Lock()
 	d.yaraLastCrashAlert = time.Now().Add(-2 * time.Minute)
 	d.yaraCrashMu.Unlock()
 
-	d.onYaraWorkerRestart(2, syscall.SIGABRT, 500*time.Millisecond)
+	d.onYaraWorkerFailure(workerproc.ReasonOOM, errWorkerDied)
 
 	select {
 	case f := <-d.alertCh:
@@ -119,25 +118,22 @@ func TestOnYaraWorkerRestartEmitsAgainAfterOneMinute(t *testing.T) {
 	}
 }
 
-// Channel saturation must be swallowed silently -- the comment in
-// onYaraWorkerRestart explains the daemon's general drop-counter
-// tracks it elsewhere, so this function's `default` arm is a no-op.
-func TestOnYaraWorkerRestartDropsWhenAlertChFull(t *testing.T) {
+// The callback runs under the worker supervisor's lock, so a saturated alert
+// channel must be swallowed, never waited on.
+func TestOnYaraWorkerFailureDropsWhenAlertChFull(t *testing.T) {
 	d := newDaemonForYaraBackendTest(t)
 	d.alertCh = make(chan alert.Finding, 1)
 	d.alertCh <- alert.Finding{Check: "placeholder"}
 
-	// Must not panic or block.
-	d.onYaraWorkerRestart(1, syscall.SIGKILL, time.Millisecond)
+	d.onYaraWorkerFailure(workerproc.ReasonCrash, errWorkerDied)
 }
 
-// The finding is raised when the worker exits, before the supervisor has
-// restarted anything. Claiming recovery told operators scanning was back
-// while it was still offline, including through a crash loop.
-func TestOnYaraWorkerRestartMessageDoesNotClaimRecovery(t *testing.T) {
+// The finding is raised when the worker fails, before any replacement has
+// loaded the rules. It must say what operators lose, not claim recovery.
+func TestOnYaraWorkerFailureMessageDoesNotClaimRecovery(t *testing.T) {
 	d := newDaemonForYaraBackendTest(t)
 
-	d.onYaraWorkerRestart(139, syscall.SIGSEGV, 5*time.Second)
+	d.onYaraWorkerFailure(workerproc.ReasonCrash, errWorkerDied)
 
 	select {
 	case f := <-d.alertCh:
@@ -146,16 +142,47 @@ func TestOnYaraWorkerRestartMessageDoesNotClaimRecovery(t *testing.T) {
 				t.Errorf("message claims %q before any restart: %s", claim, f.Message)
 			}
 		}
-		for _, want := range []string{
-			"exit=139", "signal=segmentation fault", "after 5s",
-			"YARA scanning is offline; supervisor will attempt a restart.",
-			"Worker health remains failed until a restarted worker stays up for " + d.yaraSupervisorConfig().StableDuration.String(),
-		} {
+		for _, want := range []string{"crash", errWorkerDied.Error(), "reported as not scanned"} {
 			if !strings.Contains(f.Message, want) {
 				t.Errorf("message missing %q: %s", want, f.Message)
 			}
 		}
 	case <-time.After(200 * time.Millisecond):
-		t.Fatal("no finding emitted on crash")
+		t.Fatal("no finding emitted on failure")
+	}
+}
+
+// Worker error text can be long (a quoted worker diagnostic); the finding
+// carries a bounded excerpt.
+func TestOnYaraWorkerFailureBoundsErrorText(t *testing.T) {
+	d := newDaemonForYaraBackendTest(t)
+
+	d.onYaraWorkerFailure(workerproc.ReasonProtocol, errors.New(strings.Repeat("x", 10000)))
+
+	f := <-d.alertCh
+	if len(f.Message) > 1024 {
+		t.Fatalf("finding message is %d bytes", len(f.Message))
+	}
+}
+
+// Only an emitted alert starts the quiet minute. A worker that fails every
+// few seconds must alert again a minute after the last alert, not go silent
+// because each suppressed failure pushed the window forward.
+func TestOnYaraWorkerFailureSuppressedFailureKeepsWindow(t *testing.T) {
+	d := newDaemonForYaraBackendTest(t)
+	d.onYaraWorkerFailure(workerproc.ReasonCrash, errWorkerDied)
+	<-d.alertCh
+	alerted := time.Now().Add(-59 * time.Second)
+	d.yaraCrashMu.Lock()
+	d.yaraLastCrashAlert = alerted
+	d.yaraCrashMu.Unlock()
+
+	d.onYaraWorkerFailure(workerproc.ReasonCrash, errWorkerDied)
+
+	d.yaraCrashMu.Lock()
+	got := d.yaraLastCrashAlert
+	d.yaraCrashMu.Unlock()
+	if !got.Equal(alerted) {
+		t.Fatalf("a suppressed failure moved the alert window from %s to %s", alerted, got)
 	}
 }

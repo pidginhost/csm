@@ -612,7 +612,13 @@ func (s *Supervisor) killLocked() {
 		s.logf("%s %d did not exit after SIGKILL", s.cfg.Name, c.proc.PID())
 		return
 	}
-	s.logf("%s %d killed", s.cfg.Name, c.proc.PID())
+	// Stop is the only caller with stopped set: a worker ended on purpose,
+	// not one killed for a fault or a retirement already logged.
+	ended := "killed"
+	if s.stopped {
+		ended = "stopped"
+	}
+	s.logf("%s %d %s", s.cfg.Name, c.proc.PID(), ended)
 }
 
 func (s *Supervisor) logf(format string, args ...any) {

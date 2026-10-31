@@ -2,22 +2,26 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/metrics"
 	"github.com/pidginhost/csm/internal/obs"
+	"github.com/pidginhost/csm/internal/workerproc"
 	"github.com/pidginhost/csm/internal/yara"
 	"github.com/pidginhost/csm/internal/yaraworker"
 )
 
-// yaraMetricsOnce guards registration of the yara-worker restart
+// yaraMetricsOnce guards registration of the yara-worker failure
 // counter hook so a baseline re-run or a second daemon instance in the
 // same test binary does not panic with "duplicate registration".
 var yaraMetricsOnce sync.Once
@@ -42,19 +46,39 @@ func yaraWorkerOn(cfg *config.Config) bool {
 // yaraWorkerWatcher names the YARA-X worker in the watcher status map.
 const yaraWorkerWatcher = "yara_worker"
 
-// initYaraBackend wires up either the out-of-process YARA-X supervisor
-// (default, per ROADMAP item 2 follow-up) or the in-process scanner
-// (when config.Signatures.YaraWorkerEnabled is explicitly *false).
-// Both paths register themselves as the yara package's active backend
-// so existing callers work unchanged.
+// Limits for the YARA worker units. A scan gets as long as the old socket
+// client allowed. A fresh worker loading Forge full takes about 3.4 s, and
+// compiling it about 10 s.
+const (
+	yaraScanTimeout    = 30 * time.Second
+	yaraLoadTimeout    = 60 * time.Second
+	yaraCompileTimeout = 2 * time.Minute
+)
+
+// yaraBootCompileTimeout bounds the first compile, which runs before the
+// daemon reports ready to systemd. A compile still running then is handed to
+// the background retry, which has the full compile timeout.
+var yaraBootCompileTimeout = 45 * time.Second
+
+// yaraWorkerLauncher is a seam for tests that must not start units.
+var yaraWorkerLauncher = workerproc.UnitLauncher
+
+// yaraEngineAvailable is a seam: plain-build tests force the yara build's
+// answer.
+var yaraEngineAvailable = yara.Available
+
+// maxYaraFindingErr bounds the worker error text a finding quotes.
+const maxYaraFindingErr = 512
+
+// initYaraBackend wires up either the locked-down worker backend (default)
+// or the in-process scanner (when config.Signatures.YaraWorkerEnabled is
+// explicitly *false). Both register as the yara package's active backend.
 //
-// In worker mode, yara.Init is deliberately NOT called: the rule
-// compile happens inside the child process, not the daemon. This is
-// the point of the feature (ROADMAP item 2) — a cgo crash while
-// compiling or scanning stays contained to the child. Matches carry
-// string-valued rule metadata (see yara.Match.Meta / yaraipc.Match.Meta)
-// so the emailav YARA-X adapter works identically under both backends
-// — severity no longer needs the in-process *yara_x.Rules object.
+// In worker mode the daemon never compiles or scans: rules compile in a
+// short-lived compile unit and scans run in a scan unit, both without root,
+// network or host files. The backend is installed before the first compile,
+// so a compile that cannot run leaves scans failing closed rather than YARA
+// skipped.
 func (d *Daemon) initYaraBackend() error {
 	if !yaraWorkerOn(d.cfg) {
 		if yaraScanner := yara.Init(d.cfg.Signatures.RulesDir, d.cfg.Signatures.DisabledRules...); yaraScanner != nil {
@@ -62,122 +86,163 @@ func (d *Daemon) initYaraBackend() error {
 		}
 		return nil
 	}
-
-	sup, err := yaraworker.NewSupervisor(d.yaraSupervisorConfig())
+	logf := func(format string, args ...any) {
+		fmt.Fprintf(os.Stderr, "[%s] yara-worker: "+format+"\n", append([]any{ts()}, args...)...)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	for _, prefix := range []string{yaraworker.ScanUnitPrefix, yaraworker.CompileUnitPrefix} {
+		if err := stopParseWorkerUnits(ctx, prefix+"-"); err != nil {
+			logf("stop leftover units: %v", err)
+		}
+	}
+	cancel()
+	hidden := parseWorkerHiddenPaths()
+	// #nosec G115 -- FullScanMaxFileBytes is positive and at most 4 GiB.
+	scanUnit := yaraworker.ScanUnitConfig(d.binaryPath, yaraworker.ScanMemoryBase+uint64(checks.FullScanMaxFileBytes(d.cfg)), logf)
+	scanUnit.InaccessiblePaths = hidden
+	compileUnit := yaraworker.CompileUnitConfig(d.binaryPath, logf)
+	compileUnit.InaccessiblePaths = hidden
+	b, err := yaraworker.NewBackend(yaraworker.BackendConfig{
+		ScanLaunch:      d.checkedYaraLauncher(yaraWorkerLauncher(scanUnit)),
+		CompileLaunch:   d.checkedYaraLauncher(yaraWorkerLauncher(compileUnit)),
+		RulesDir:        d.cfg.Signatures.RulesDir,
+		DisabledRules:   d.cfg.Signatures.DisabledRules,
+		ScanTimeout:     yaraScanTimeout,
+		LoadTimeout:     yaraLoadTimeout,
+		CompileTimeout:  yaraCompileTimeout,
+		OnFailure:       d.onYaraWorkerFailure,
+		OnJob:           d.onYaraWorkerJob,
+		Log:             logf,
+		WarmAfterReload: true,
+	})
 	if err != nil {
-		return fmt.Errorf("creating yara-worker supervisor: %w", err)
+		return fmt.Errorf("creating yara worker backend: %w", err)
 	}
-	// Own the supervisor before the first Start attempt. If startup fails and
-	// the retry goroutine is still trying to bring it online when the daemon
-	// stops, stopYaraBackend can cancel/kill that in-flight Start instead of
-	// leaving an orphaned worker attempt outside shutdown ownership.
-	d.yaraSup = sup
-	if err := sup.Start(context.Background()); err != nil {
-		// Every YARA scan is off until the worker starts, so report it where
-		// doctor and the status API look for components that failed to attach.
-		d.MarkWatcher(yaraWorkerWatcher, false)
-		// A boot-time start failure must not disable YARA for the daemon's
-		// whole lifetime. Retry in the background with backoff and raise a
-		// finding once the failure looks persistent, mirroring the
-		// post-start crash path (onYaraWorkerRestart). The daemon keeps
-		// running; scanning comes online once the worker starts.
-		obs.Go("yara-init-retry", func() { d.retryYaraStart(sup) })
-		return fmt.Errorf("starting yara-worker (retrying in background): %w", err)
-	}
-
-	d.activateYaraBackend(sup)
-	return nil
-}
-
-// activateYaraBackend installs a started supervisor as the active YARA
-// backend, wires its restart metric, and surfaces a still-broken rule compile
-// as a finding so a worker that is up but scanning nothing is visible instead
-// of masquerading as a healthy zero-rule host.
-func (d *Daemon) activateYaraBackend(sup *yaraworker.Supervisor) {
-	yara.SetActive(sup)
-	// Start launches supervision before returning. Serialize boot readiness
-	// with crash reporting so activation cannot erase an early crash; only
-	// the stable callback may restore health after an exit.
-	d.yaraCrashMu.Lock()
-	if sup.RestartCount() == 0 {
-		d.MarkWatcher(yaraWorkerWatcher, true)
-	}
-	d.yaraCrashMu.Unlock()
-
-	// Expose the supervisor's cumulative restart count to Prometheus.
-	// Registered once per process; subsequent calls re-point nothing
-	// (the closure captures `sup`, and a second daemon.Run in the
-	// same process would need to arrange for the metric to follow).
+	d.yaraSup = b
+	yara.SetActive(b)
+	d.registerQueueSource("yara", b)
 	yaraMetricsOnce.Do(func() {
 		metrics.RegisterCounterFunc(
 			"csm_yara_worker_restarts_total",
-			"Number of times the YARA-X worker subprocess has been restarted by its supervisor.",
-			func() float64 { return float64(sup.RestartCount()) },
+			"Number of counted YARA-X scan worker failures, including failed starts.",
+			func() float64 {
+				var total uint64
+				for _, n := range b.Stats().Kills {
+					total += n
+				}
+				return float64(total)
+			},
 		)
 	})
+	if !yaraEngineAvailable() {
+		fmt.Fprintf(os.Stderr, "[%s] %s\n", ts(), yaraWorkerStatusLine(0))
+		return nil
+	}
 
-	fmt.Fprintf(os.Stderr, "[%s] %s\n", ts(), yaraWorkerStatusLine(sup.RuleCount(), sup.ChildPID()))
-
-	d.reportYaraCompileStatus(sup.CompileError())
-	d.reportRealtimeRuleCoverage(yamlRuleCount(), sup.RuleCount(), sup.CompileError() == "")
-}
-
-// yaraSupervisorConfig describes the worker the daemon runs and how its
-// lifecycle is reported.
-func (d *Daemon) yaraSupervisorConfig() yaraworker.SupervisorConfig {
-	return yaraworker.SupervisorConfig{
-		BinaryPath:         d.binaryPath,
-		SocketPath:         yaraworker.DefaultSocketPath(),
-		RulesDir:           d.cfg.Signatures.RulesDir,
-		ConfigFile:         d.cfg.ConfigFile,
-		ConfigDir:          d.cfg.ConfigDir,
-		DisabledRules:      d.cfg.Signatures.DisabledRules,
-		StartTimeout:       10 * time.Second,
-		MinRestartInterval: time.Second,
-		MaxRestartInterval: 60 * time.Second,
-		StableDuration:     30 * time.Second,
-		ClientTimeout:      30 * time.Second,
-		OnRestart:          d.onYaraWorkerRestart,
-		OnStable:           d.onYaraWorkerStable,
-		Logf: func(format string, args ...any) {
-			fmt.Fprintf(os.Stderr, "[%s] yara-worker: "+format+"\n", append([]any{ts()}, args...)...)
-		},
+	bootCtx, cancelBoot := context.WithTimeout(context.Background(), yaraBootCompileTimeout)
+	err = b.ReloadContext(bootCtx)
+	cancelBoot()
+	switch {
+	case err == nil:
+		d.activateYaraBackend(b)
+		return nil
+	case retryableYaraCompile(err):
+		// The compile worker could not run: every YARA scan fails until it
+		// does. Report it where doctor and the status API look, and keep
+		// trying in the background.
+		d.MarkWatcher(yaraWorkerWatcher, false)
+		obs.Go("yara-init-retry", func() { d.retryYaraStart(b) })
+		return fmt.Errorf("compiling yara rules (retrying in background): %w", err)
+	default:
+		d.MarkWatcher(yaraWorkerWatcher, false)
+		fmt.Fprintf(os.Stderr, "[%s] %s\n", ts(), yaraWorkerStatusLine(0))
+		d.reportYaraCompileStatus(b.CompileError())
+		d.reportRealtimeRuleCoverage(yamlRuleCount(), 0, false)
+		return nil
 	}
 }
 
-// yaraWorkerStatusLine describes the worker's startup state. A worker that
-// compiled zero rules is running but matches nothing, so it must not be
-// called active: that wording let a host report a healthy scanner while every
-// scan silently checked against an empty rule set.
-func yaraWorkerStatusLine(ruleCount int, childPID int) string {
+func retryableYaraCompile(err error) bool {
+	// Descriptor pressure belongs to the daemon, so workerproc deliberately
+	// leaves it out of worker failure accounting. It still needs a retry.
+	// A boot compile that outlived its bound is retried with the full
+	// compile timeout.
+	return workerproc.FailureReason(err) != "" || errors.Is(err, workerproc.ErrSpawn) ||
+		errors.Is(err, syscall.EMFILE) || errors.Is(err, syscall.ENFILE) ||
+		errors.Is(err, context.DeadlineExceeded)
+}
+
+// checkedYaraLauncher refuses each launch while the dynamic user cannot run
+// the binary, so the failure reaches the scan as an error instead of every
+// unit failing at exec.
+func (d *Daemon) checkedYaraLauncher(launch workerproc.Launcher) workerproc.Launcher {
+	return func(ctx context.Context) (workerproc.Process, error) {
+		if err := checkParseWorkerCommand(d.binaryPath); err != nil {
+			return nil, fmt.Errorf("yara worker: %w", err)
+		}
+		return launch(ctx)
+	}
+}
+
+// activateYaraBackend reports a backend whose rules compiled. The watcher is
+// left to the scan worker's own requests, so activation cannot erase a
+// failure seen in the meantime.
+func (d *Daemon) activateYaraBackend(b *yaraworker.Backend) {
+	fmt.Fprintf(os.Stderr, "[%s] %s\n", ts(), yaraWorkerStatusLine(b.RuleCount()))
+	d.reportRealtimeRuleCoverage(yamlRuleCount(), b.RuleCount(), true)
+}
+
+// yaraWorkerStatusLine describes the compiled rules at startup. A worker with
+// zero rules matches nothing, so it must not be called active: that wording
+// let a host report a healthy scanner while every scan checked against an
+// empty rule set.
+func yaraWorkerStatusLine(ruleCount int) string {
 	if ruleCount == 0 {
-		return fmt.Sprintf("YARA-X worker started with 0 rules compiled - scanning nothing until rules load (pid=%d)", childPID)
+		return "YARA-X worker has 0 rules compiled - scanning nothing until rules load"
 	}
-	return fmt.Sprintf("YARA-X worker active: %d rule(s) compiled in child process (pid=%d)", ruleCount, childPID)
+	return fmt.Sprintf("YARA-X worker active: %d rule(s) compiled, scanning in a locked-down unit", ruleCount)
 }
 
-// retryYaraStart re-attempts a failed worker start with capped exponential
-// backoff until it succeeds or the daemon stops, raising one finding once the
-// failure is persistent so the outage is visible.
-func (d *Daemon) retryYaraStart(sup *yaraworker.Supervisor) {
+// retryYaraStart re-attempts a first compile whose worker could not run, with
+// capped exponential backoff, until it runs or the daemon stops, raising one
+// finding once the failure is persistent. A compile that runs and finds the
+// rules broken ends the retries: recompiling would fail the same way.
+func (d *Daemon) retryYaraStart(b *yaraworker.Backend) {
+	var rulesErr error
 	ok := retryStartWithStopContext(
-		func(ctx context.Context) error { return sup.Start(ctx) },
+		func(ctx context.Context) error {
+			err := b.ReloadContext(ctx)
+			if err != nil && !retryableYaraCompile(err) {
+				rulesErr = err
+				return nil
+			}
+			return err
+		},
 		d.stopCh,
 		time.Second, 60*time.Second, 3,
 		func(attempt int, err error) {
 			d.emitYaraFinding(alert.Critical, "yara_backend_unavailable",
-				fmt.Sprintf("YARA-X worker has failed to start %d times (%v); real-time malware scanning is disabled while the supervisor keeps retrying.", attempt, err))
+				fmt.Sprintf("YARA-X rules could not be compiled: the compile worker failed %d times (%v). Files and mail parts are reported as not scanned while CSM keeps retrying.", attempt, err))
 		},
 	)
 	if !ok {
 		return
 	}
-	fmt.Fprintf(os.Stderr, "[%s] yara-worker started after retrying a failed boot\n", ts())
-	d.activateYaraBackend(sup)
+	if rulesErr != nil {
+		d.reportYaraCompileStatus(b.CompileError())
+		return
+	}
+	fmt.Fprintf(os.Stderr, "[%s] yara rules compiled after retrying\n", ts())
+	if b.RuleCount() == 0 {
+		// No scan worker is needed, and the compile worker just ran.
+		d.MarkWatcher(yaraWorkerWatcher, true)
+	}
+	d.activateYaraBackend(b)
 }
 
 func retryStartWithStopContext(start func(context.Context) error, stop <-chan struct{}, minBackoff, maxBackoff time.Duration, alertAfter int, onPersistent func(attempt int, err error)) bool {
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	retryDone := make(chan struct{})
 	obs.Go("yara-init-retry-stop", func() {
 		select {
@@ -193,9 +258,6 @@ func retryStartWithStopContext(start func(context.Context) error, stop <-chan st
 		onPersistent,
 	)
 	close(retryDone)
-	if !ok {
-		cancel()
-	}
 	return ok
 }
 
@@ -241,19 +303,22 @@ func stopRequested(stop <-chan struct{}) bool {
 	}
 }
 
-// reportYaraCompileStatus raises a finding when the worker is alive but its
-// rules failed to compile. A clean compile ("") is silent.
+// reportYaraCompileStatus raises a finding when the rules failed to compile
+// and none are loaded. A clean compile ("") is silent.
 func (d *Daemon) reportYaraCompileStatus(compileErr string) {
 	if compileErr == "" {
 		return
 	}
 	d.emitYaraFinding(alert.Critical, "yara_worker_compile_failed",
-		fmt.Sprintf("YARA-X worker is up but its rules failed to compile: %s. Real-time malware scanning is disabled until the rules are fixed and reloaded.", compileErr))
+		fmt.Sprintf("YARA-X rules failed to compile: %s. Files and mail parts are reported as not scanned by YARA until the rules are fixed and reloaded.", compileErr))
 }
 
 // emitYaraFinding pushes a finding without blocking; a saturated alert channel
 // is accounted for by the daemon's general drop counter.
 func (d *Daemon) emitYaraFinding(sev alert.Severity, check, msg string) bool {
+	if stopRequested(d.stopCh) {
+		return false
+	}
 	finding := alert.Finding{Severity: sev, Check: check, Message: msg, Timestamp: time.Now()}
 	if alert.TryEnqueue(d.alertCh, finding) {
 		return true
@@ -275,56 +340,46 @@ func (d *Daemon) stopYaraBackend() {
 	yara.SetActive(nil)
 }
 
-// onYaraWorkerStable records a worker that stayed up after starting or
-// restarting as attached again.
-func (d *Daemon) onYaraWorkerStable() {
-	select {
-	case <-d.stopCh:
+// onYaraWorkerJob marks the worker attached after a served request. It runs
+// under the worker supervisor's lock and only takes the watcher lock.
+func (d *Daemon) onYaraWorkerJob(outcome string, _ uint64) {
+	if outcome != workerproc.OutcomeOK || stopRequested(d.stopCh) {
 		return
-	default:
 	}
 	d.MarkWatcher(yaraWorkerWatcher, true)
 }
 
-// onYaraWorkerRestart is called once per unplanned worker exit. Emits
-// a Critical finding the first time, then one every minute after to
-// avoid spamming alerts while a broken rule package is in place.
-func (d *Daemon) onYaraWorkerRestart(exitCode int, sig syscall.Signal, ranFor time.Duration) {
-	// The supervisor suppresses this callback once its own context is
-	// cancelled, but that happens in stopYaraBackend, late in shutdown.
-	// stopCh closes at the top of shutdown and covers that window. The unit's
-	// KillMode=mixed lets the daemon begin shutdown before stopping workers;
-	// a worker can still exit independently during the drain.
-	//
-	// A nil stopCh (zero-value Daemon, several tests) blocks forever on
-	// receive, so the default arm is what keeps those reporting.
-	select {
-	case <-d.stopCh:
+// onYaraWorkerFailure is called once per counted scan worker failure. It
+// marks the watcher failed and emits a Critical finding at most once a
+// minute: a file that kills the worker on every scan must not become one
+// alert per scan. It runs under the worker supervisor's lock and must not
+// block.
+func (d *Daemon) onYaraWorkerFailure(reason string, err error) {
+	// stopCh closes at the top of shutdown; workers stopped from then on are
+	// not failures. A nil stopCh (zero-value Daemon, several tests) means
+	// running.
+	if stopRequested(d.stopCh) {
 		return
-	default:
 	}
-
 	now := time.Now()
 	d.yaraCrashMu.Lock()
-	// Pair with activation's readiness publication. Scanning stays failed
-	// until a restarted worker proves it stays up.
 	d.MarkWatcher(yaraWorkerWatcher, false)
-	last := d.yaraLastCrashAlert
-	d.yaraLastCrashAlert = now
-	d.yaraCrashMu.Unlock()
-
-	fmt.Fprintf(os.Stderr, "[%s] yara-worker exited code=%d signal=%v ran=%s\n",
-		ts(), exitCode, sig, ranFor.Round(time.Millisecond))
-
-	if !last.IsZero() && now.Sub(last) < time.Minute {
+	// Only an emitted alert starts the quiet minute: failures seconds apart
+	// must not keep pushing it forward and silence a persistent fault.
+	if last := d.yaraLastCrashAlert; !last.IsZero() && now.Sub(last) < time.Minute {
+		d.yaraCrashMu.Unlock()
 		return
 	}
-
-	finding := alert.Finding{
+	d.yaraLastCrashAlert = now
+	d.yaraCrashMu.Unlock()
+	detail := err.Error()
+	if len(detail) > maxYaraFindingErr {
+		detail = strings.ToValidUTF8(detail[:maxYaraFindingErr], "") + "..."
+	}
+	alert.TryEnqueue(d.alertCh, alert.Finding{
 		Severity:  alert.Critical,
 		Check:     "yara_worker_crashed",
 		Timestamp: now,
-		Message:   fmt.Sprintf("YARA-X worker crashed (exit=%d signal=%v after %s); YARA scanning is offline; supervisor will attempt a restart. Worker health remains failed until a restarted worker stays up for 30s.", exitCode, sig, ranFor.Round(time.Millisecond)),
-	}
-	alert.TryEnqueue(d.alertCh, finding)
+		Message:   fmt.Sprintf("YARA-X worker failed (%s: %s); files and mail parts are reported as not scanned until a replacement worker loads the rules.", reason, detail),
+	})
 }

@@ -4,9 +4,9 @@ package yara
 
 import (
 	"fmt"
+	"io"
 	"os"
-	"path/filepath"
-	"strings"
+	"runtime"
 	"sync"
 
 	yara_x "github.com/VirusTotal/yara-x/go"
@@ -55,61 +55,15 @@ func (s *Scanner) Reload() error {
 	if s.rulesDir == "" {
 		return nil
 	}
-
-	// Refuse to compile rules from a directory or file that a third
-	// party could overwrite. An attacker who can drop a blank rule
-	// silently disables every detection downstream of YARA - the
-	// scanner stays "Available" with rule_count > 0 while matching
-	// nothing.
-	if err := validateRulesDir(s.rulesDir); err != nil {
+	if _, err := os.Stat(s.rulesDir); os.IsNotExist(err) {
+		return nil
+	}
+	sources, disabledCount, err := ReadSources(s.rulesDir, s.disabled)
+	if err != nil {
 		return err
 	}
 
-	entries, err := os.ReadDir(s.rulesDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return fmt.Errorf("reading YARA rules dir: %w", err)
-	}
-
-	compiler, err := yara_x.NewCompiler()
-	if err != nil {
-		return fmt.Errorf("creating YARA compiler: %w", err)
-	}
-
-	fileCount := 0
-	disabledCount := 0
-	disabled := s.strippedRuleNames()
-	for _, entry := range entries {
-		name := entry.Name()
-		if entry.IsDir() {
-			continue
-		}
-		ext := strings.ToLower(filepath.Ext(name))
-		if ext != ".yar" && ext != ".yara" {
-			continue
-		}
-		fileCount++
-
-		path := filepath.Join(s.rulesDir, name)
-		data, err := os.ReadFile(path) // #nosec G304 -- ReadDir supplies a basename in the operator-selected directory; rule files are trust-checked above.
-		if err != nil {
-			return fmt.Errorf("reading %s: %w", path, err)
-		}
-
-		// Strip at compile time, not only at download time: a tier already on
-		// disk would otherwise keep firing until the next weekly update. The
-		// operator's own list rides along, so switching off a shipped rule
-		// does not mean editing rule files on a production host.
-		filtered, removed := stripRules(data, disabled)
-		disabledCount += removed
-		if err := compiler.AddSource(string(filtered)); err != nil {
-			return fmt.Errorf("compiling %s: %w", path, err)
-		}
-	}
-
-	if fileCount == 0 {
+	if len(sources) == 0 {
 		s.mu.RLock()
 		hadRules := s.rules != nil || s.ruleCount > 0
 		s.mu.RUnlock()
@@ -119,7 +73,11 @@ func (s *Scanner) Reload() error {
 		return nil
 	}
 
-	rules := compiler.Build()
+	compiled, err := CompileSources(sources)
+	if err != nil {
+		return err
+	}
+	rules := compiled.rules
 	if rules.Count() == 0 && disabledCount == 0 {
 		return fmt.Errorf("no YARA rules compiled from %s", s.rulesDir)
 	}
@@ -131,8 +89,97 @@ func (s *Scanner) Reload() error {
 	InvalidateCaches()
 	s.mu.Unlock()
 
-	fmt.Fprintf(os.Stderr, "yara: compiled %d rules from %d file(s) in %s\n", s.ruleCount, fileCount, s.rulesDir)
+	fmt.Fprintf(os.Stderr, "yara: compiled %d rules from %d file(s) in %s\n", s.ruleCount, len(sources), s.rulesDir)
 	return nil
+}
+
+// Rules is a compiled rule set that can be saved and loaded again without
+// recompiling, so one process can compile what another scans with.
+type Rules struct {
+	rules *yara_x.Rules
+}
+
+// CompileSources compiles sources into one rule set. A compile failure names
+// the source it came from.
+func CompileSources(sources []Source) (*Rules, error) {
+	return compileSources(sources)
+}
+
+// CompileIsolatedSources compiles only the supplied text. Includes are
+// disabled so a worker cannot read files outside its request descriptors.
+func CompileIsolatedSources(sources []Source) (*Rules, error) {
+	return compileSources(sources, yara_x.EnableIncludes(false))
+}
+
+func compileSources(sources []Source, opts ...yara_x.CompileOption) (*Rules, error) {
+	compiler, err := yara_x.NewCompiler(opts...)
+	if err != nil {
+		return nil, fmt.Errorf("creating YARA compiler: %w", err)
+	}
+	defer compiler.Destroy()
+	for _, src := range sources {
+		if err := compiler.AddSource(string(src.Text)); err != nil {
+			return nil, fmt.Errorf("compiling %s: %w", src.Name, err)
+		}
+	}
+	return &Rules{rules: compiler.Build()}, nil
+}
+
+// LoadRules reads a rule set that Rules.WriteTo saved.
+func LoadRules(r io.Reader) (*Rules, error) {
+	rules, err := yara_x.ReadFrom(r)
+	if err != nil {
+		return nil, fmt.Errorf("loading compiled YARA rules: %w", err)
+	}
+	// ReadFrom omits the finalizer that the binding's compiler installs.
+	// Attach it to the native wrapper so every scanner reference keeps it alive.
+	runtime.SetFinalizer(rules, (*yara_x.Rules).Destroy)
+	return &Rules{rules: rules}, nil
+}
+
+// Count is the number of rules in the set.
+func (r *Rules) Count() int { return r.rules.Count() }
+
+// Destroy releases the native rules. The caller must stop using them first.
+func (r *Rules) Destroy() { r.rules.Destroy() }
+
+// WriteTo saves the compiled rule set and counts bytes written even on failure.
+func (r *Rules) WriteTo(w io.Writer) (int64, error) {
+	// The binding drops the byte count on errors and accepts short writes.
+	writer := &rulesWriter{writer: w}
+	_, err := r.rules.WriteTo(writer)
+	return writer.written, err
+}
+
+type rulesWriter struct {
+	writer  io.Writer
+	written int64
+}
+
+func (w *rulesWriter) Write(p []byte) (int, error) {
+	n, err := w.writer.Write(p)
+	w.written += int64(n)
+	if err == nil && n != len(p) {
+		err = io.ErrShortWrite
+	}
+	return n, err
+}
+
+// Scan scans data and returns the matching rules with their string metadata.
+// An engine error is returned, never flattened to no matches.
+func (r *Rules) Scan(data []byte) ([]Match, error) {
+	results, err := r.rules.Scan(data)
+	if err != nil {
+		return nil, fmt.Errorf("yara scan: %w", err)
+	}
+	var matches []Match
+	for _, m := range results.MatchingRules() {
+		matches = append(matches, Match{
+			RuleName: m.Identifier(),
+			Meta:     extractStringMeta(m.Metadata()),
+		})
+	}
+	return matches, nil
 }
 
 // Match represents a YARA rule that matched a file. Meta carries
@@ -171,19 +218,7 @@ func (s *Scanner) ScanBytesChecked(data []byte) ([]Match, error) {
 	// a payload should reach it (the archive skip) is decided at the daemon
 	// boundary in ScanBytesChecked, which knows the file name; the worker
 	// process behind the IPC backend only ever sees bytes.
-	results, err := rules.Scan(data)
-	if err != nil {
-		return nil, fmt.Errorf("yara scan: %w", err)
-	}
-
-	var matches []Match
-	for _, r := range results.MatchingRules() {
-		matches = append(matches, Match{
-			RuleName: r.Identifier(),
-			Meta:     extractStringMeta(r.Metadata()),
-		})
-	}
-	return matches, nil
+	return (&Rules{rules: rules}).Scan(data)
 }
 
 // extractStringMeta projects YARA-X metadata entries whose Value() is a
@@ -234,36 +269,12 @@ func Available() bool {
 // Returns nil if compilation succeeds, error otherwise.
 // Used by the Forge fetcher to validate downloaded rules before installing.
 func TestCompile(source string) error {
-	compiler, err := yara_x.NewCompiler()
+	compiled, err := CompileSources([]Source{{Name: "source", Text: []byte(source)}})
 	if err != nil {
-		return fmt.Errorf("creating YARA compiler: %w", err)
+		return err
 	}
-	if err := compiler.AddSource(source); err != nil {
-		return fmt.Errorf("compiling rules: %w", err)
-	}
-	rules := compiler.Build()
-	if rules.Count() == 0 {
+	if compiled.Count() == 0 {
 		return fmt.Errorf("no rules compiled from source")
 	}
 	return nil
-}
-
-// strippedRuleNames merges the built-in suppressions with the operator's
-// disabled list, dropping blanks and duplicates.
-func (s *Scanner) strippedRuleNames() []string {
-	builtin := SuppressedRuleNames()
-	seen := make(map[string]struct{}, len(builtin)+len(s.disabled))
-	out := make([]string, 0, len(builtin)+len(s.disabled))
-	for _, name := range append(builtin, s.disabled...) {
-		trimmed := strings.TrimSpace(name)
-		if trimmed == "" {
-			continue
-		}
-		if _, dup := seen[trimmed]; dup {
-			continue
-		}
-		seen[trimmed] = struct{}{}
-		out = append(out, trimmed)
-	}
-	return out
 }

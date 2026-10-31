@@ -1,12 +1,13 @@
 package daemon
 
 import (
+	"errors"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/workerproc"
 )
 
 func TestYaraHealthFindingsStampTimestamp(t *testing.T) {
@@ -15,7 +16,7 @@ func TestYaraHealthFindingsStampTimestamp(t *testing.T) {
 		emit  func(*Daemon)
 	}{
 		{"yara_worker_compile_failed", func(d *Daemon) { d.reportYaraCompileStatus("invalid rule") }},
-		{"yara_worker_crashed", func(d *Daemon) { d.onYaraWorkerRestart(1, syscall.SIGSEGV, time.Second) }},
+		{"yara_worker_crashed", func(d *Daemon) { d.onYaraWorkerFailure(workerproc.ReasonCrash, errors.New("worker died")) }},
 	} {
 		t.Run(tc.check, func(t *testing.T) {
 			d := newDaemonForYaraBackendTest(t)

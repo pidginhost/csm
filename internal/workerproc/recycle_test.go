@@ -171,6 +171,32 @@ func TestCallLogsWorkerThatExitedBeforeRequest(t *testing.T) {
 	}
 }
 
+// Stop ends a healthy worker on purpose, so the log says it stopped rather
+// than reading as a kill forced by a fault.
+func TestStopLogsStoppedWorker(t *testing.T) {
+	var mu sync.Mutex
+	var lines []string
+	s := newRecycleSupervisor(t, Config{Launch: pairLauncher(t, sleepHandler), Log: func(format string, args ...any) {
+		mu.Lock()
+		defer mu.Unlock()
+		lines = append(lines, fmt.Sprintf(format, args...))
+	}})
+	sleepCall(t, s, 0)
+	s.mu.Lock()
+	pid := s.child.proc.PID()
+	s.mu.Unlock()
+	if err := s.Stop(); err != nil {
+		t.Fatal(err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	want := []string{fmt.Sprintf("test worker %d stopped", pid)}
+	if !slices.Equal(lines, want) {
+		t.Fatalf("log = %q, want %q", lines, want)
+	}
+}
+
 func TestIdleWorkerIsStopped(t *testing.T) {
 	s := newRecycleSupervisor(t, Config{Launch: pairLauncher(t, sleepHandler), IdleTimeout: 50 * time.Millisecond})
 	sleepCall(t, s, 0)
