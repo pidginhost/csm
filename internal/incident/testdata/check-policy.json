@@ -262,6 +262,7 @@
       "whm_password_change_noninfra",
       "world_writable_php",
       "wp_core_integrity",
+      "yara_backend_unavailable",
       "yara_forge_rollback",
       "yara_match_realtime",
       "yara_match_scheduled",
