@@ -325,8 +325,14 @@ func TestScanWorkerCrashKeepsBreakerClosed(t *testing.T) {
 func TestEmptyRulesDirByteScanIsClean(t *testing.T) {
 	fx := &backendFixture{dir: rulesDir(t, nil)}
 	b := newBackend(t, fx)
+	if m, err := b.ScanBytesChecked([]byte("evil")); err == nil {
+		t.Fatalf("byte scan with an unchecked directory read clean: %+v", m)
+	}
 	if err := b.Reload(); err != nil {
 		t.Fatal(err)
+	}
+	if got := b.CompileError(); got != "" {
+		t.Fatalf("confirmed empty directory kept compile error: %q", got)
 	}
 	if m, err := b.ScanBytesChecked([]byte("evil")); err != nil || m != nil {
 		t.Fatalf("byte scan with no rules = %+v, %v; want clean", m, err)
@@ -541,6 +547,35 @@ func TestReloadInvalidatesVerdicts(t *testing.T) {
 	}
 	if yara.CacheGeneration() == generation {
 		t.Fatal("a reload kept cached verdicts")
+	}
+}
+
+// Until a reload compiles the rules or finds the directory empty, non-empty
+// scans fail closed, including after a canceled startup reload.
+func TestScansFailClosedUntilRulesConfirmed(t *testing.T) {
+	b := newBackend(t, &backendFixture{})
+	if m, err := b.ScanBytesChecked([]byte("evil")); err == nil {
+		t.Fatalf("byte scan read clean before any reload: %+v", m)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := b.ReloadContext(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled reload = %v, want context.Canceled", err)
+	}
+	if m, err := b.ScanBytesChecked([]byte("evil")); err == nil {
+		t.Fatalf("byte scan read clean after a canceled reload: %+v", m)
+	}
+	if b.CompileError() == "" {
+		t.Fatal("no compile error reported while no rules are loaded")
+	}
+	if err := b.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	if got := b.CompileError(); got != "" {
+		t.Fatalf("compile error %q kept after rules compiled", got)
+	}
+	if got := ruleNames(t, b, "evil"); len(got) != 1 || got[0] != "evil" {
+		t.Fatalf("scan after retry missed the loaded rule: %v", got)
 	}
 }
 

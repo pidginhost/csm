@@ -81,7 +81,9 @@ func NewBackend(cfg BackendConfig) (*Backend, error) {
 	if cfg.ScanTimeout <= 0 || cfg.LoadTimeout <= 0 || cfg.CompileTimeout <= 0 {
 		return nil, errors.New("yaraworker: timeouts must be positive")
 	}
-	b := &Backend{cfg: cfg, compileGate: semaphore.NewWeighted(1)}
+	// Scans fail closed until a reload compiles the rules or finds none to
+	// compile; a reload that ends any other way leaves this in place.
+	b := &Backend{cfg: cfg, compileGate: semaphore.NewWeighted(1), compileErr: "no YARA rules compiled yet"}
 	proc, err := workerproc.New(workerproc.Config{
 		Name:    "yara worker",
 		Launch:  b.launch,
