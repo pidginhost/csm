@@ -11,7 +11,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Changed
 
-- Admission previews now wait for free temporary slots under firewall.deny_temp_ip_limit, with capacity shown in status and doctor; blocking is unchanged.
+- With auto_response.dry_run off, admission previews now wait for free slots under firewall.deny_temp_ip_limit, and csm doctor warns while that set is full; blocking is unchanged.
 
 ## [4.8.1] - 2026-10-30
 
