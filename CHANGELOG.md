@@ -17,6 +17,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - Password guessing against SMTP login on Postfix servers is now detected and blocked, as it already was on Exim servers.
 - Postfix SMTP login warnings no longer trigger blocking during authentication outages; password guessing detection from those warnings is suspended.
 - Mail login protection no longer pauses because of crafted login attempts.
+- Crafted login names no longer pause mail brute-force protection across Dovecot authentication and logging modes.
 - Successful SMTP logins and authentication outages no longer trigger false blocks; Postfix SMTP password guessing detection is suspended.
 - `csm doctor` now reports the Postfix SMTP detection gap even when verbose authentication logging is enabled.
 - The daemon log now escapes line breaks and control characters in values, so crafted file names cannot forge log lines.

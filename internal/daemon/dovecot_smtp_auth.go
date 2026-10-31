@@ -2,24 +2,20 @@ package daemon
 
 import "strings"
 
-func dovecotPassdbFields(line string) string {
-	seg := dovecotPassdbSegment(dovecotServiceMessage(line))
-	open := strings.IndexByte(seg, '(')
-	if open <= 0 || !isDovecotPassdbName(seg[:open]) {
-		return ""
+// Informational auth messages can contain arbitrary client names and logged
+// passwords. Match their trusted prefix, not a verdict in the untrusted body:
+// drivers use different verdicts, and syslog can truncate the body anywhere.
+func isDovecotAuthRequestInfo(line string) bool {
+	seg := dovecotAuthSegment(dovecotServiceMessage(line))
+	if strings.HasPrefix(seg, "Debug: ") {
+		return true
 	}
-	return seg[open+1:]
+	open := strings.IndexByte(seg, '(')
+	return open > 0 && isDovecotAuthRequestName(seg[:open])
 }
 
-// Even an excluded or truncated verdict carries client text. It must not
-// reach the outage detector, which also searches for phrases in the line.
-func containsDovecotAuthVerdict(fields string) bool {
-	return strings.Contains(fields, "): Password mismatch") || strings.Contains(fields, "): unknown user")
-}
-
-// dovecotPassdbSegment strips the auth process prefix from a Dovecot message.
-// Severity prefixes remain so the caller can reject non-verdict lines.
-func dovecotPassdbSegment(msg string) string {
+// Severity prefixes remain so the caller can preserve error diagnostics.
+func dovecotAuthSegment(msg string) string {
 	if rest, ok := strings.CutPrefix(msg, "auth: "); ok {
 		return rest
 	}
@@ -47,11 +43,13 @@ func dovecotPassdbSegment(msg string) string {
 	return rest
 }
 
-func isDovecotPassdbName(s string) bool {
+func isDovecotAuthRequestName(s string) bool {
 	// Dovecot substitutes the configured database name for the driver.
-	// A severity prefix, however, is not part of an informational verdict.
-	if strings.Contains(s, ": ") {
-		return false
+	// Only leading severity markers distinguish diagnostics from that name.
+	for _, severity := range []string{"Error: ", "Warning: ", "Fatal: ", "Panic: "} {
+		if strings.HasPrefix(s, severity) {
+			return false
+		}
 	}
 	for i := 0; i < len(s); i++ {
 		c := s[i]

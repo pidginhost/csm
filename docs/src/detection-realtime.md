@@ -367,7 +367,7 @@ CSM therefore does not detect or block Postfix SMTP password guessing from file 
 
 A replacement needs a trusted final credential result tied to each request. Dovecot's `auth_request_finished` JSON export is not a substitute: its failure outcome can be absent for both credential rejection and internal failure. Treating a missing success field as a rejection would recreate the false blocks. See [Dovecot's result event implementation](https://github.com/dovecot/core/blob/2.3.21/src/auth/auth-request.c#L205-L245).
 
-Exim SMTP detection and Dovecot IMAP, POP3 and ManageSieve detection continue to work. Excluded password database verdicts do not count again alongside their login summaries or mark the backend as unavailable. `smtp_probe_abuse` reads Exim lines only.
+Exim SMTP detection and Dovecot IMAP, POP3 and ManageSieve detection continue to work. Informational authentication messages and debug output do not count again alongside login summaries or mark the backend as unavailable, even when incomplete. These messages can contain client-controlled text. Error and warning diagnostics still reach the backend-outage detector. `smtp_probe_abuse` reads Exim lines only.
 
 Four attack patterns:
 

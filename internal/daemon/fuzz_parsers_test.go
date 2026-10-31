@@ -310,6 +310,9 @@ func FuzzDovecotPassdbVerdictsNeverBuildEvidence(f *testing.F) {
 			"dovecot: auth: sql(" + name + ",203.0.113.7,master): Password mismatch",
 			"dovecot: auth: sql(" + name + ",203.0.113.7,<session>): unknown user",
 			"dovecot: auth: sql(a,203.0.113.7): Password mismatch (given password: " + name,
+			"dovecot: auth-worker(12): pam(" + name + ",203.0.113.7): pam_authenticate() failed: Authentication failure (Password mismatch?)",
+			"dovecot: auth: Debug: sql(" + name + ",203.0.113.7): Performing passdb lookup",
+			"dovecot: auth-worker(12): pam(" + name,
 		} {
 			if got := d.handleMailLine(line, alert.Observation{}, d.currentCfg()); len(got) != 0 {
 				t.Fatalf("passdb verdict raised findings: %+v", got)

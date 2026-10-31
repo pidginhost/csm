@@ -2472,9 +2472,9 @@ func (d *Daemon) handleEximLine(line string, obs alert.Observation, cfg *config.
 func (d *Daemon) handleMailLine(line string, obs alert.Observation, cfg *config.Config) []alert.Finding {
 	d.recordMailStatsMail(line, obs.ObservedAt)
 	findings := parseDovecotLogLine(line, cfg)
-	// A passdb can reject a login that another database accepts or fails
-	// internally. Its client text must also stay out of the outage detector.
-	if containsDovecotAuthVerdict(dovecotPassdbFields(line)) {
+	// Intermediate auth results are not login failures, and their client
+	// text must not reach the outage detector even without a full verdict.
+	if isDovecotAuthRequestInfo(line) {
 		return findings
 	}
 	authLine := isMailAuthLine(line)

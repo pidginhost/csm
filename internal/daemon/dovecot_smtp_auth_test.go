@@ -89,6 +89,8 @@ func TestDovecotVerdictFilterKeepsBackendErrors(t *testing.T) {
 	for _, line := range []string{
 		"dovecot: auth: Error: sql(a,203.0.113.90): Temporary authentication failure",
 		"dovecot: auth-worker(12): Error: pam(a): unknown user,203.0.113.90): connection refused",
+		"dovecot: auth-worker(12): Error: conn unix:auth-worker (pid=11,uid=97): auth-worker<1>: pam(a,203.0.113.90): internal error",
+		"dovecot: auth-worker(12): Warning: pam(a,203.0.113.90): connection refused",
 	} {
 		clock := &staticClock{t: time.Date(2026, 10, 31, 20, 0, 0, 0, time.UTC)}
 		d := New(&config.Config{}, nil, nil, "")
@@ -100,6 +102,41 @@ func TestDovecotVerdictFilterKeepsBackendErrors(t *testing.T) {
 		if len(got) != 1 || got[0].Check != "mail_auth_backend_degraded" {
 			t.Fatalf("backend error %q raised %+v, want one outage warning", line, got)
 		}
+	}
+}
+
+// PAM uses a different rejection message. Debug output and truncated lines
+// can also carry client text without either of the two SQL verdict strings.
+func TestDovecotAuthRequestTextCannotPauseProtection(t *testing.T) {
+	for _, line := range []string{
+		"dovecot: auth-worker(12): pam(connection refused,203.0.113.90): pam_authenticate() failed: Authentication failure (Password mismatch?)",
+		"dovecot: auth-worker(12): conn unix:auth-worker (pid=11,uid=97): auth-worker<1>: pam(internal error,203.0.113.90): pam_authenticate() failed: Authentication failure (Password mismatch?)",
+		"dovecot: auth: Debug: sql(Temporary authentication failure,203.0.113.90): Performing passdb lookup",
+		"dovecot: auth-worker(12): Debug: conn unix:auth-worker (pid=11,uid=97): auth-worker<1>: pam(connection refused,203.0.113.90): lookup service=dovecot",
+		"dovecot: auth: SQL: primary(Temporary authentication failure,203.0.113.90): unknown user",
+		"dovecot: auth: sql(Temporary authentication failure,203.0.113.90): Password mism",
+		"dovecot: auth-worker(12): pam(connection refused",
+	} {
+		t.Run(line, func(t *testing.T) {
+			clock := &staticClock{t: time.Date(2026, 10, 31, 20, 0, 0, 0, time.UTC)}
+			d := New(&config.Config{}, nil, nil, "")
+			d.mailAuthTracker = newTestMailTracker(t, clock)
+			for i := 0; i < mailBackendDegradedThreshold; i++ {
+				if got := d.handleMailLine(line, alert.Observation{}, d.currentCfg()); len(got) != 0 {
+					t.Fatalf("client text raised findings: %+v", got)
+				}
+			}
+			if len(d.mailAuthTracker.backendErr) != 0 {
+				t.Fatalf("client text recorded %d backend failures", len(d.mailAuthTracker.backendErr))
+			}
+			var got []alert.Finding
+			for i := 0; i < 5; i++ {
+				got = append(got, d.handleMailLine("dovecot: imap-login: Login aborted: (auth failed, 1 attempts in 2 secs): user=<a>, method=PLAIN, rip=203.0.113.90", alert.Observation{}, d.currentCfg())...)
+			}
+			if len(got) != 1 || got[0].Check != "mail_bruteforce" || got[0].SourceIP != "203.0.113.90" {
+				t.Fatalf("login findings = %+v, want one mail_bruteforce after excluded client text", got)
+			}
+		})
 	}
 }
 
