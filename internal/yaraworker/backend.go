@@ -335,8 +335,9 @@ func (b *Backend) ScanBytes(data []byte) []yara.Match {
 }
 
 // ScanBytesChecked scans bytes the daemon holds; they reach the worker as a
-// sealed memfd. With no rules loaded it answers clean, as the in-process
-// scanner does, unless the rules failed to compile.
+// sealed memfd. With no rules, or a set whose every rule is disabled, it
+// answers clean without a worker, as the in-process scanner does, unless the
+// rules failed to compile.
 func (b *Backend) ScanBytesChecked(data []byte) ([]yara.Match, error) {
 	if b.isStopped() {
 		return nil, workerproc.ErrStopped
@@ -345,7 +346,7 @@ func (b *Backend) ScanBytesChecked(data []byte) ([]yara.Match, error) {
 		return nil, nil
 	}
 	rules, compileErr := b.state()
-	if rules == nil {
+	if rules == nil || rules.count == 0 {
 		if compileErr == "" {
 			return nil, nil
 		}
@@ -361,7 +362,7 @@ func (b *Backend) ScanBytesChecked(data []byte) ([]yara.Match, error) {
 }
 
 // ScanFDChecked scans the first size bytes of f, such as a mail part. The
-// worker gets its own read-only open. It requires compiled rules.
+// worker gets its own read-only open. It requires at least one compiled rule.
 func (b *Backend) ScanFDChecked(f *os.File, size int64) ([]yara.Match, error) {
 	if size <= 0 || size > int64(int(^uint(0)>>1)) {
 		return nil, fmt.Errorf("yaraworker: invalid descriptor scan size: %d", size)
@@ -370,7 +371,7 @@ func (b *Backend) ScanFDChecked(f *os.File, size int64) ([]yara.Match, error) {
 		return nil, workerproc.ErrStopped
 	}
 	rules, compileErr := b.state()
-	if rules == nil {
+	if rules == nil || rules.count == 0 {
 		if compileErr == "" {
 			compileErr = "no compiled rules"
 		}
@@ -406,9 +407,9 @@ func (b *Backend) scan(f *os.File, size int) ([]yara.Match, error) {
 }
 
 // Warm starts the scan worker and loads the rules now, so the first scan
-// after a compile does not wait for the load. It is a no-op without rules.
+// after a compile does not wait for the load. Without rules it does nothing.
 func (b *Backend) Warm() error {
-	if rules, _ := b.state(); rules == nil {
+	if rules, _ := b.state(); rules == nil || rules.count == 0 {
 		return nil
 	}
 	_, _, err := b.proc.Call(context.Background(), workerproc.Frame{Op: yaraipc.OpPing}, nil,

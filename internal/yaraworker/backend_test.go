@@ -483,3 +483,29 @@ func TestScanBytesLargePayloadFailureIsLogged(t *testing.T) {
 		t.Errorf("scan failure logged %d times, want 1: %q", scanLines, lines)
 	}
 }
+
+// Disabling every rule leaves a compiled set with no rules. It follows the
+// empty-rule policy without a worker: byte scans are clean, mail parts are
+// not scanned.
+func TestZeroRuleSetFollowsEmptyPolicy(t *testing.T) {
+	fx := &backendFixture{
+		dir:      rulesDir(t, map[string]string{"rules.yar": "rule drop_me {\nmarker:evil\n}\n"}),
+		disabled: []string{"drop_me"},
+	}
+	b := newBackend(t, fx)
+	if err := b.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	if b.RuleCount() != 0 || b.CompileError() != "" {
+		t.Fatalf("RuleCount=%d CompileError=%q", b.RuleCount(), b.CompileError())
+	}
+	if m, err := b.ScanBytesChecked([]byte("evil")); err != nil || m != nil {
+		t.Fatalf("byte scan with every rule disabled = %+v, %v; want clean", m, err)
+	}
+	if _, err := b.ScanFDChecked(tempFile(t, "evil"), 4); err == nil {
+		t.Fatal("a mail part scanned with every rule disabled")
+	}
+	if spawns := b.Stats().Spawns; spawns != 0 {
+		t.Fatalf("spawns = %d, want 0: an empty rule set needs no worker", spawns)
+	}
+}
