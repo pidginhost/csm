@@ -70,16 +70,16 @@ func textPartMessages(msg []byte, limit int) iter.Seq[[]byte] {
 // parts: the form the learner inspects, publishes and stores. An attachment
 // that rspamd hashes on its own, such as a PDF with scripts, then can neither
 // break an inspection nor publish a digest the ledger does not track. A
-// message with nothing to drop, or one this parser cannot read, comes back
-// unchanged; one without inline text yields nil.
+// message with nothing to drop comes back unchanged. Unreadable MIME, no
+// inline text or a rebuild exceeding MaxBody yields nil.
 func textOnlyMessage(msg []byte) []byte {
 	head, body, eol, ok := splitHeader(msg)
 	if !ok {
 		return msg
 	}
 	h, err := readHeader(head, eol)
-	if err != nil {
-		return msg
+	if err != nil || attachment(h) {
+		return nil
 	}
 	ct := h.Get("Content-Type")
 	if ct == "" {
@@ -87,7 +87,9 @@ func textOnlyMessage(msg []byte) []byte {
 	}
 	mt, _, err := mime.ParseMediaType(ct)
 	switch {
-	case err != nil || strings.HasPrefix(mt, "text/"):
+	case err != nil:
+		return nil
+	case mt == "text/plain" || mt == "text/html":
 		return msg
 	case !strings.HasPrefix(mt, "multipart/"):
 		return nil
@@ -96,7 +98,7 @@ func textOnlyMessage(msg []byte) []byte {
 	var dropped bool
 	switch {
 	case !collectTextParts(h, body, 1, MaxExplicitDigests, &parts, &dropped):
-		return msg
+		return nil
 	case len(parts) == 0:
 		return nil
 	case !dropped:
@@ -109,18 +111,23 @@ func textOnlyMessage(msg []byte) []byte {
 		writePartHeader(&b, parts[0], eol)
 		b.WriteString(eol)
 		b.Write(parts[0].body)
-		return b.Bytes()
+	} else {
+		boundary := textBoundary(msg, parts)
+		b.WriteString("Content-Type: multipart/mixed; boundary=\"" + boundary + "\"" + eol + eol)
+		for _, p := range parts {
+			b.WriteString("--" + boundary + eol)
+			writePartHeader(&b, p, eol)
+			b.WriteString(eol)
+			b.Write(p.body)
+			b.WriteString(eol)
+		}
+		b.WriteString("--" + boundary + "--" + eol)
 	}
-	boundary := textBoundary(msg, parts)
-	b.WriteString("Content-Type: multipart/mixed; boundary=\"" + boundary + "\"" + eol + eol)
-	for _, p := range parts {
-		b.WriteString("--" + boundary + eol)
-		writePartHeader(&b, p, eol)
-		b.WriteString(eol)
-		b.Write(p.body)
-		b.WriteString(eol)
+	// Longer MIME boundaries can grow an otherwise admissible snapshot.
+	// Do not send a body the client and retained-body store would reject.
+	if b.Len() > MaxBody {
+		return nil
 	}
-	b.WriteString("--" + boundary + "--" + eol)
 	return b.Bytes()
 }
 
@@ -180,6 +187,10 @@ func collectTextParts(h textproto.MIMEHeader, body []byte, depth, limit int, out
 			continue
 		}
 		pmt := "text/plain"
+		// RFC 2046 gives digest children an attached-message default.
+		if mt == "multipart/digest" {
+			pmt = "message/rfc822"
+		}
 		if ct := p.Header.Get("Content-Type"); ct != "" {
 			if pmt, _, err = mime.ParseMediaType(ct); err != nil {
 				*dropped = true
@@ -218,8 +229,10 @@ func collectTextParts(h textproto.MIMEHeader, body []byte, depth, limit int, out
 }
 
 func attachment(h textproto.MIMEHeader) bool {
-	d, _, err := mime.ParseMediaType(h.Get("Content-Disposition"))
-	return err == nil && d == "attachment"
+	// ParseMediaType still returns the disposition when only its parameters
+	// are malformed. A broken filename must not turn an attachment inline.
+	d, _, _ := mime.ParseMediaType(h.Get("Content-Disposition"))
+	return d == "attachment"
 }
 
 // splitHeader returns the header block with its last line break, the body,

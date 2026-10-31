@@ -63,15 +63,21 @@ func leaves(t *testing.T, msg []byte) (*mail.Message, [][2]string) {
 			t.Fatalf("content type %q: %v", ct, err)
 		}
 		if !strings.HasPrefix(mt, "multipart/") {
-			b, _ := io.ReadAll(body)
+			b, err := io.ReadAll(body)
+			if err != nil {
+				t.Fatalf("leaf body: %v", err)
+			}
 			out = append(out, [2]string{mt, string(b)})
 			return
 		}
 		r := multipart.NewReader(body, params["boundary"])
 		for {
 			p, err := r.NextRawPart()
-			if err != nil {
+			if err == io.EOF {
 				return
+			}
+			if err != nil {
+				t.Fatalf("multipart body: %v", err)
 			}
 			walk(p.Header.Get("Content-Type"), p)
 		}
@@ -118,7 +124,6 @@ func TestTextOnlyMessageKeepsMessagesWithNothingToDrop(t *testing.T) {
 		"single text part": "Subject: s\nContent-Type: text/plain\n\nbody\n",
 		"no content type":  "Subject: s\n\nbody\n",
 		"no header break":  "fresh spam",
-		"bad content type": "Content-Type: multipart/mixed; boundary\n\nbody\n",
 	} {
 		if got := textOnlyMessage([]byte(msg)); string(got) != msg {
 			t.Errorf("%s: changed to %q", name, got)
@@ -137,52 +142,6 @@ func TestTextOnlyMessageWithoutText(t *testing.T) {
 			t.Errorf("%s: got %q", name, got)
 		}
 	}
-}
-
-func FuzzTextOnlyMessage(f *testing.F) {
-	f.Add([]byte(pdfMessage))
-	f.Add([]byte(altMessage))
-	f.Add([]byte(nested(3)))
-	f.Fuzz(func(t *testing.T, msg []byte) {
-		got := textOnlyMessage(msg)
-		if got == nil || bytes.Equal(got, msg) {
-			return
-		}
-		m, err := mail.ReadMessage(bytes.NewReader(got))
-		if err != nil {
-			t.Fatalf("rebuilt message does not parse: %v", err)
-		}
-		// A missing content type is text/plain (RFC 2045).
-		mt, params := "text/plain", map[string]string(nil)
-		if ct := m.Header.Get("Content-Type"); ct != "" {
-			if mt, params, err = mime.ParseMediaType(ct); err != nil {
-				t.Fatalf("rebuilt content type: %v", err)
-			}
-		}
-		if strings.HasPrefix(mt, "multipart/") {
-			r := multipart.NewReader(m.Body, params["boundary"])
-			for {
-				p, err := r.NextRawPart()
-				if err != nil {
-					break
-				}
-				pt := "text/plain"
-				if ct := p.Header.Get("Content-Type"); ct != "" {
-					pt, _, _ = mime.ParseMediaType(ct)
-				}
-				if pt != "text/plain" && pt != "text/html" {
-					t.Fatalf("rebuilt leaf %q", pt)
-				}
-			}
-		} else if mt != "text/plain" && mt != "text/html" {
-			t.Fatalf("rebuilt type %q", mt)
-		}
-		// Rebuilt MIME lines and a longer boundary per kept part are the only
-		// growth; no content is copied twice.
-		if len(got) > len(msg)+256+64*MaxExplicitDigests {
-			t.Fatal("rebuilt message is larger than its source")
-		}
-	})
 }
 
 func TestEngineLearnsTextOnlyVersionOfReport(t *testing.T) {

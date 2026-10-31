@@ -291,8 +291,8 @@ func (p *Publisher) sendAdd(ctx context.Context, t Target, v int64) (bool, error
 	return p.verify(ctx, t.Digest, func(v int64, present bool) bool { return present && v >= int64(t.T) })
 }
 
-// anchorBody returns the cluster's stored body after checking its length,
-// hash and that the current hash generation still yields the anchor.
+// anchorBody verifies the stored bytes and returns the text-only message
+// only if the current hash generation still yields the recorded anchor.
 func (p *Publisher) anchorBody(ctx context.Context, t Target) ([]byte, error) {
 	var c Cluster
 	var ok bool
@@ -315,6 +315,12 @@ func (p *Publisher) anchorBody(ctx context.Context, t Target) ([]byte, error) {
 	}
 	if err = ctx.Err(); err != nil {
 		return nil, err
+	}
+	// Bodies retained before text-only learning may still carry attachments.
+	// Verify their recorded bytes first, then inspect and publish the same
+	// safe form without changing the immutable body or its ledger metadata.
+	if body = textOnlyMessage(body); body == nil {
+		return nil, fmt.Errorf("%w: the anchor body has no usable inline text", ErrStateMismatch)
 	}
 	insp, err := p.client.Inspect(ctx, body)
 	if err != nil {

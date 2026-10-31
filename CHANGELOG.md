@@ -11,6 +11,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Security
 
+- Spam learning excludes more attached content and skips unreadable reports that could stall learning.
 - The daemon log now escapes line breaks and control characters in values, so crafted file names cannot forge log lines.
 - YARA scans no longer reopen tenant files by path or write temporary copies of large files to disk.
 - PHP taint analysis now runs in a locked-down worker with no root, network or account file access; files are reported unexamined when it cannot start.
@@ -21,6 +22,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Fixed
 
+- Learned spam scores can be restored from older saved messages with attachments, and oversized text rebuilds no longer stall reports.
 - WordPress core files that differ only in line endings are no longer reported on sites whose PHP prints deprecation notices.
 - The daemon log no longer reports a YARA scan failure for large files.
 - The daemon log now says when a parse worker is retired or exits on its own, instead of only that it was killed.

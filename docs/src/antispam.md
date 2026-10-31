@@ -639,6 +639,9 @@ can finish first. Messages are skipped when any `X-Spam-Status` header
 says `Yes`, when that header cannot be parsed, and when the header block
 is malformed or too large, linked or not. Only the inline plain text and
 HTML parts of a report are learned; attachments and images never are.
+Messages whose MIME structure cannot be read safely, or whose text-only
+form exceeds the message limit, are skipped as `no_digest`. This also
+applies to operator learning requests.
 
 Reports are not authenticated. Tenants control their own mail: they can
 move any message they received, or deliver one locally, and a forged
@@ -819,6 +822,9 @@ started from one version of a message keeps only that version. CSM deletes
 it when the cluster retires, 90 days after its last report, or when an
 operator forgets it. Backups and file system snapshots can keep a copy
 longer.
+Messages saved by older versions can still contain attachments. Recovery
+checks the saved bytes first, then sends only their inline text. The text
+must still match the cluster's recorded digest before its score is restored.
 If deleting a retained message fails, CSM still removes its retired score
 and reports the cleanup error. New reports wait until cleanup succeeds.
 Disabling learning, observe mode or unmet prerequisites can delay retirement

@@ -2,7 +2,10 @@ package learn
 
 import (
 	"bytes"
+	"io"
 	"math"
+	"mime"
+	"mime/multipart"
 	"net/mail"
 	"strings"
 	"testing"
@@ -89,6 +92,65 @@ func FuzzTextPartMessages(f *testing.F) {
 			if len(m) > len(msg)+64 {
 				t.Fatal("derived message is larger than its source")
 			}
+		}
+	})
+}
+
+func FuzzTextOnlyMessage(f *testing.F) {
+	f.Add([]byte(pdfMessage))
+	f.Add([]byte(altMessage))
+	f.Add([]byte(nested(3)))
+	f.Add([]byte("Content-Type: multipart/digest; boundary=d\n\n--d\n\n" + pdfMessage + "\n--d--\n"))
+	f.Add([]byte("Content-Type: text/plain\nContent-Disposition: attachment; filename\n\nattached text"))
+	f.Fuzz(func(t *testing.T, msg []byte) {
+		got := textOnlyMessage(msg)
+		if got == nil {
+			return
+		}
+		if again := textOnlyMessage(got); !bytes.Equal(again, got) {
+			t.Fatal("text-only body changes when inspected again")
+		}
+		if bytes.Equal(got, msg) {
+			return
+		}
+		m, err := mail.ReadMessage(bytes.NewReader(got))
+		if err != nil {
+			t.Fatalf("rebuilt message does not parse: %v", err)
+		}
+		// A missing content type is text/plain (RFC 2045).
+		mt, params := "text/plain", map[string]string(nil)
+		if ct := m.Header.Get("Content-Type"); ct != "" {
+			if mt, params, err = mime.ParseMediaType(ct); err != nil {
+				t.Fatalf("rebuilt content type: %v", err)
+			}
+		}
+		if strings.HasPrefix(mt, "multipart/") {
+			r := multipart.NewReader(m.Body, params["boundary"])
+			for {
+				p, err := r.NextRawPart()
+				if err == io.EOF {
+					break
+				}
+				if err != nil {
+					t.Fatalf("rebuilt multipart: %v", err)
+				}
+				pt := "text/plain"
+				if ct := p.Header.Get("Content-Type"); ct != "" {
+					if pt, _, err = mime.ParseMediaType(ct); err != nil {
+						t.Fatalf("rebuilt part type: %v", err)
+					}
+				}
+				if pt != "text/plain" && pt != "text/html" {
+					t.Fatalf("rebuilt leaf %q", pt)
+				}
+			}
+		} else if mt != "text/plain" && mt != "text/html" {
+			t.Fatalf("rebuilt type %q", mt)
+		}
+		// Rebuilt MIME lines and a longer boundary per kept part are the only
+		// growth; no content is copied twice.
+		if len(got) > len(msg)+256+64*MaxExplicitDigests {
+			t.Fatal("rebuilt message is larger than its source")
 		}
 	})
 }
