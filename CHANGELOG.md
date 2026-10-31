@@ -11,7 +11,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Changed
 
-- Admission previews wait for free temporary slots under firewall.deny_temp_ip_limit, with status and doctor reflecting dry-run mode; blocking is unchanged.
+- Admission previews now wait for free temporary slots under firewall.deny_temp_ip_limit, with capacity shown in status and doctor; blocking is unchanged.
 
 ## [4.8.1] - 2026-10-30
 
