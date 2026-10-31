@@ -12,6 +12,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 ### Security
 
 - Files are now reported as not scanned by YARA until its rules have loaded, instead of passing unchecked.
+- Password guessing against SMTP login on Postfix servers is now detected and blocked, as it already was on Exim servers.
 - The daemon log now escapes line breaks and control characters in values, so crafted file names cannot forge log lines.
 - YARA scans no longer reopen tenant files by path or write temporary copies of large files to disk.
 - PHP taint analysis now runs in a locked-down worker with no root, network or account file access; files are reported unexamined when it cannot start.

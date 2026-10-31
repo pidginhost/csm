@@ -2465,10 +2465,17 @@ func (d *Daemon) handleEximLine(line string, obs alert.Observation, cfg *config.
 
 // handleMailLine composes parseDovecotLogLine (preserving email_suspicious_geo)
 // with mailAuthTracker augmentation for IMAP/POP3/ManageSieve brute-force,
-// subnet spray, account spray, and compromise detection. obs names the line.
+// subnet spray, account spray, and compromise detection. Postfix SMTP AUTH
+// failures go to smtpAuthTracker, as Exim's do. obs names the line.
 func (d *Daemon) handleMailLine(line string, obs alert.Observation, cfg *config.Config) []alert.Finding {
 	d.recordMailStatsMail(line, obs.ObservedAt)
 	findings := parseDovecotLogLine(line, cfg)
+	if ip := postfixSASLFailureIP(line); ip != "" {
+		if d.smtpAuthTracker != nil && !isInfraIPDaemon(ip, cfg.InfraIPs) && !isPrivateOrLoopback(ip) {
+			findings = append(findings, d.smtpAuthTracker.RecordObserved(ip, "", obs)...)
+		}
+		return findings
+	}
 	authLine := isMailAuthLine(line)
 	// Auth-backend failures (dovecot cannot reach the credential backend)
 	// arrive on their own lines, not login lines. Feed them to the degraded

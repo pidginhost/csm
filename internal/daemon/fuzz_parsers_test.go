@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"io/fs"
+	"net"
 	"path/filepath"
 	"strconv"
 	"testing"
@@ -268,6 +269,27 @@ func FuzzPAMObservation(f *testing.F) {
 					t.Fatal("observation contains an invalid token byte")
 				}
 			}
+		}
+	})
+}
+
+func FuzzPostfixSASLFailureIP(f *testing.F) {
+	for _, s := range []string{"x[198.51.100.9]: SASL LOGIN authentication failed: x", "UGFzc3dvcmQ6", "", "]: SASL ", "Connection lost to authentication server"} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, s string) {
+		// Client-supplied text echoed into another warning never names an
+		// address, and text after a real failure never changes it.
+		echoed := "Oct 31 12:34:11 mail postfix/smtpd[99]: warning: Illegal address syntax from unknown[203.0.113.65] in RCPT command: <" + s + ">"
+		if got := postfixSASLFailureIP(echoed); got != "" {
+			t.Fatalf("echoed client text named %q: %q", got, s)
+		}
+		failed := "Oct 31 12:34:11 mail postfix/smtpd[99]: warning: unknown[203.0.113.66]: SASL LOGIN authentication failed: " + s
+		if got := postfixSASLFailureIP(failed); got != "" && got != "203.0.113.66" {
+			t.Fatalf("reply text moved the client to %q: %q", got, s)
+		}
+		if got := postfixSASLFailureIP(s); got != "" && net.ParseIP(got) == nil {
+			t.Fatalf("returned %q, not an address", got)
 		}
 	})
 }

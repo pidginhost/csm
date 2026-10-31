@@ -361,6 +361,8 @@ Journal input requires a build with journal support.
 
 Detects credential stuffing, password spray, and raw SMTP probe storms. Runs as part of the Exim mainlog watcher on cPanel hosts and on non-cPanel Exim hosts where `/var/log/exim_mainlog` exists.
 
+On Postfix hosts that read the mail log from a file (`mail_logs.source: file`, or `auto` with the log present), smtpd's SASL authentication failures feed the same tracker. Postfix does not log the account it tried, so these failures count toward `smtp_bruteforce` and `smtp_subnet_spray` but not `smtp_account_spray`. Failures the authentication server causes, such as a lost connection to Dovecot, are not counted. `smtp_probe_abuse` reads Exim lines only.
+
 Four attack patterns:
 
 | Signal | What triggers it | Auto-response |
