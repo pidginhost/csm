@@ -324,14 +324,30 @@ It never applies them; the view is not an enforcement record.
   outside observe mode, adds `execution_held` with `execution_held_by`
   (`policy` for a refused execution policy, `firewall` for the firewall
   engine), a `verdict` object for the panel verdict callback, whose counters
-  count this process and restart at zero, and a `dry_run` object for its
-  dry-run forecast, described below. `verdict.enabled` is true only while the
+  count this process and restart at zero, a `dry_run` object for its
+  dry-run forecast and a `set` object for the temporary block set outside a
+  dry run, both described below, with `set_error` when the last turn could
+  not read the set. `verdict.enabled` is true only while the
   owner itself asks the panel, during a dry-run forecast; under a live policy
   it reads false even with the callback configured. This
   build never lets it run automatic blocks itself (`executing`): under a
   live policy it previews. This staging route does not advertise
   `admission.dry_run_verdict.v1`; that capability requires the complete
   admission-gates contract and activation evidence.
+
+`owner.set` combines the non-admission occupants from the last scheduling
+turn with the current ledger holds, divided as automatic admission divides it: `limit`,
+`unlimited`, `capacity`, `unclaimed`, `imported` and `drain_seconds` as in
+the forecast's `occupancy` below, and `general` and `reserved` with each
+partition's `size`, the legacy and admission blocks it holds (`used`) and its
+`free` slots. A schedule serves block work, previewed or run, only into free
+slots of the partition its lane occupies; other block work waits as
+`set_full` and is checked again when a held slot expires or after a minute.
+The object is absent when the last scheduling turn found no ready block
+work, in dry run and when the set could not be read. A maintenance-only
+turn keeps the last non-admission snapshot unless the owner enters dry run;
+status still refreshes the ledger holds. Engine admission counts are not
+added again, and this view is not a fresh kernel inventory.
 
 `owner.dry_run` is a capacity forecast, not a record of blocks. `active` is
 true while the owner forecasts instead of blocking. `session_id`, `since`
@@ -398,7 +414,9 @@ shows the automatic slots of each partition and how long the entries
 automatic admission never evicts take to drain. A dry run alone is not a
 failure; a held forecast, model limits, waits the model predicts, a set
 those entries fill, no free automatic slot, an unknown drain time and lost
-or stale examples warn. Rows warn when
+or stale examples warn. Outside a dry run, `admission set` shows the slots
+the last turn budgeted block work by and warns in the same cases and when
+the set could not be read. Rows warn when
 the ledger owner is not running, its clock reading
 is refused, an owner turn fails (`admission turns`), retiring an uncertain
 block fails (`admission retirement`), the ledger is damaged, admission has stopped or a Critical

@@ -203,6 +203,55 @@ func TestAdmissionLedgerFullSetNoticeOnceLive(t *testing.T) {
 	}
 }
 
+// Only queued work that takes a slot and is out of its retry wait needs a
+// read of the set: not a challenge, a retry in its backoff or reserved work.
+func TestAdmissionLedgerHasChargedWork(t *testing.T) {
+	f := newLedgerFixture(t)
+	want := func(what string, charged bool) {
+		t.Helper()
+		if got, err := f.l.HasChargedWork(); err != nil || got != charged {
+			t.Fatalf("%s: %v %v, want %v", what, got, err, charged)
+		}
+	}
+	want("an empty queue", false)
+	root := f.published(evidenceSpec{target: "192.0.2.20", cursor: "challenge"})
+	req := f.request("192.0.2.20", root)
+	req.Kind = admission.KindChallenge
+	f.enqueue(req)
+	want("a challenge", false)
+	id := f.queuedAt("192.0.2.10")
+	want("a block", true)
+	_, a, _, err := f.l.Reserve(id, admission.LaneGeneral, f.wall.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want("a reserved block", false)
+	if _, _, err = f.l.Finish(a.Attempt.ID, admission.DispositionFailed); err != nil {
+		t.Fatal(err)
+	}
+	want("a retry in its backoff", false)
+	ready := f.queuedAt("192.0.2.30")
+	want("ready work alongside a retry in backoff", true)
+	if _, _, _, err = f.l.Reserve(ready, admission.LaneGeneral, f.wall.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	want("only the retry remains queued", false)
+	due := f.candidateOf(id).NotBefore
+	f.tickAt(due.Add(-time.Nanosecond))
+	want("one nanosecond before retry readiness", false)
+	f.tickAt(due)
+	want("a retry exactly at its deadline", true)
+	before := f.snapshot()
+	want("a second read at the same admission time", true)
+	if !reflect.DeepEqual(before, f.snapshot()) {
+		t.Fatal("ready-work read changed the ledger")
+	}
+	picks, err := f.l.Schedule(allSlots, nil)
+	if err != nil || pickLanes(picks)[id] != admission.LaneGeneral {
+		t.Fatalf("schedule disagrees with ready-work read at NotBefore: %+v %v", picks, err)
+	}
+}
+
 // Each lane's history/ceiling probe respects a full set. Otherwise a
 // shorter credit wait wakes a turn that still cannot admit any block.
 func TestAdmissionLedgerSlotWakeBudgetsEveryProbe(t *testing.T) {

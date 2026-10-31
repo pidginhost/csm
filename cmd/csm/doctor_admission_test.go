@@ -289,6 +289,65 @@ func TestDoctorWarnsOnDryRunModelProblems(t *testing.T) {
 	}
 }
 
+// setView is an owner whose last turn read the temporary set: 460 slots
+// left by 40 entries admission never evicts, 60 legacy automatic blocks and
+// 11 of admission's own.
+func setView(at time.Time) *health.AdmissionStatus {
+	return &health.AdmissionStatus{CheckedAt: at, Ingress: &admission.IngressHealth{Admitting: true}, Owner: &health.AdmissionOwner{
+		Set: &health.AdmissionSet{Limit: 500, Capacity: 500, Unclaimed: 40, Imported: 60, DrainSeconds: 3600,
+			General: health.AdmissionDryRunPartition{Size: 368, Used: 70, Free: 298}, Reserved: health.AdmissionDryRunPartition{Size: 92, Used: 1, Free: 91}}}}
+}
+
+// Doctor shows the set the last turn budgeted block work by: the
+// partitions of the automatic slots and the entries admission never evicts
+// with their drain time. Only the reserve left is not a full set.
+func TestDoctorRendersTheTemporarySet(t *testing.T) {
+	at := time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC)
+	row, ok := doctorCheckNamed(doctorReportForSnapshot(t, admissionSnapshot(setView(at))), "admission set")
+	if !ok || row.Status != "ok" || !strings.Contains(row.Message, "70 of 368 general") || !strings.Contains(row.Message, "1 of 92 reserved") ||
+		!strings.Contains(row.Message, "of 500") || !strings.Contains(row.Message, "40 entries automatic admission never evicts") ||
+		!strings.Contains(row.Message, "60 legacy automatic") || !strings.Contains(row.Message, "1h0m0s") || row.Fix != "" {
+		t.Fatalf("admission set = %+v (%v)", row, ok)
+	}
+	view := setView(at)
+	view.Owner.Set.General.Free = 0
+	if row, ok = doctorCheckNamed(doctorReportForSnapshot(t, admissionSnapshot(view)), "admission set"); !ok || row.Status != "ok" || !strings.Contains(row.Message, "only direct or corroborated") {
+		t.Fatalf("admission set with only the reserve = %+v (%v)", row, ok)
+	}
+	view.Owner.Set = nil
+	if _, ok = doctorCheckNamed(doctorReportForSnapshot(t, admissionSnapshot(view)), "admission set"); ok {
+		t.Fatal("a turn that read no set printed a row")
+	}
+}
+
+// A set with no slot for automatic blocks, one modelled for an unlimited
+// limit, one held by entries admission never evicts, an unknown drain and
+// an unreadable set warn, with a fix.
+func TestDoctorWarnsOnTheTemporarySet(t *testing.T) {
+	at := time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name, text string
+		mutate     func(*health.AdmissionOwner)
+	}{
+		{"no free slot", "no free automatic slot", func(o *health.AdmissionOwner) { o.Set.General.Free, o.Set.Reserved.Free = 0, 0 }},
+		{"unlimited set", "modelled at 10000", func(o *health.AdmissionOwner) {
+			o.Set.Limit, o.Set.Unlimited, o.Set.Capacity = 0, true, 10000
+		}},
+		{"held by entries admission never evicts", "fill the set", func(o *health.AdmissionOwner) {
+			o.Set.Unclaimed, o.Set.General, o.Set.Reserved = 500, health.AdmissionDryRunPartition{}, health.AdmissionDryRunPartition{}
+		}},
+		{"unknown drain", "kernel expiry", func(o *health.AdmissionOwner) { o.Set.DrainSeconds = -1 }},
+		{"unreadable set", "could not be read: set dump failed", func(o *health.AdmissionOwner) { o.Set, o.SetError = nil, "set dump failed" }},
+	} {
+		view := setView(at)
+		tc.mutate(view.Owner)
+		row, ok := doctorCheckNamed(doctorReportForSnapshot(t, admissionSnapshot(view)), "admission set")
+		if !ok || row.Status != "warn" || !strings.Contains(row.Message, tc.text) || row.Fix == "" {
+			t.Errorf("%s: admission set = %+v (%v), want a warning naming %q with a fix", tc.name, row, ok, tc.text)
+		}
+	}
+}
+
 // Leaving dry run shows the last session and no forecast; a comparison
 // owner shows no dry-run rows at all.
 func TestDoctorRendersAnInactiveDryRun(t *testing.T) {

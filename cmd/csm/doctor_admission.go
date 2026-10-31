@@ -135,7 +135,73 @@ func ownerDoctorChecks(a *health.AdmissionStatus) []DoctorCheck {
 			Fix: "restart csm.service so opening the ledger proves every record; " + keep + ", and report the damage",
 		})
 	}
+	if o.Set != nil || o.SetError != "" {
+		rows = append(rows, setDoctorCheck(o, closing))
+	}
 	return append(rows, dryRunDoctorChecks(o.DryRun)...)
+}
+
+// setDoctorCheck shows the temporary set the owner's last turn budgeted
+// block work by (spec 5.6): the partitions of the automatic slots and the
+// entries admission never evicts with their drain time. It warns as the
+// forecast's model does, and when the turn could not read the set.
+func setDoctorCheck(o *health.AdmissionOwner, closing string) DoctorCheck {
+	if o.Set == nil {
+		return DoctorCheck{Name: "admission set", Status: "warn",
+			Message: "the temporary set could not be read: " + o.SetError + "; block work has no slot budget until a turn reads it; " + closing,
+			Fix:     "the owner reads the set again at its next turn; check the firewall engine and the blocked sets"}
+	}
+	s := o.Set
+	of := fmt.Sprintf("of %d", s.Limit)
+	if s.Unlimited {
+		of = "of an unlimited set"
+	}
+	c := DoctorCheck{Name: "admission set", Status: "ok", Message: fmt.Sprintf("automatic blocks use %d of %d general and %d of %d reserved temporary slots %s",
+		s.General.Used, s.General.Size, s.Reserved.Used, s.Reserved.Size, of) + setOccupants(s.Unclaimed, s.Imported, s.DrainSeconds)}
+	warnings, note := setWarnings(s.Unlimited, s.Capacity, s.DrainSeconds, s.General, s.Reserved)
+	c.Message += note
+	if len(warnings) > 0 {
+		c.Status, c.Message = "warn", c.Message+"; "+strings.Join(warnings, "; ")
+		c.Fix = "block work waits for a free slot; inspect existing blocks and their expiries, and review firewall.deny_temp_ip_limit"
+	}
+	c.Message += "; " + closing
+	return c
+}
+
+// setOccupants describes the entries automatic admission never evicts and
+// the legacy automatic blocks with their drain time; empty without either.
+func setOccupants(unclaimed, imported int, drainSeconds int64) string {
+	if unclaimed == 0 && imported == 0 {
+		return ""
+	}
+	s := fmt.Sprintf("; %d entries automatic admission never evicts and %d legacy automatic blocks", unclaimed, imported)
+	if drainSeconds < 0 {
+		return s + " have an unknown drain time"
+	}
+	return s + fmt.Sprintf(" have an estimated drain time of %s", time.Duration(drainSeconds)*time.Second)
+}
+
+// setWarnings are the warnings of a set as automatic admission divides it:
+// an unknown drain, the modelled capacity of an unlimited set, a set the
+// entries admission never evicts fill and no free automatic slot. note
+// explains a set where only the reserve has room.
+func setWarnings(unlimited bool, capacity int, drainSeconds int64, general, reserved health.AdmissionDryRunPartition) (warnings []string, note string) {
+	if drainSeconds < 0 {
+		warnings = append(warnings, "a remaining kernel expiry is unavailable; inspect the affected blocks")
+	}
+	if unlimited {
+		warnings = append(warnings, fmt.Sprintf("the temporary set is unlimited for operator blocks; automatic admission is modelled at %d slots", capacity))
+	}
+	if general.Size+reserved.Size == 0 {
+		warnings = append(warnings, "entries automatic admission never evicts fill the set; review these blocks or wait for expiry")
+	}
+	if general.Free+reserved.Free == 0 && general.Size+reserved.Size > 0 {
+		warnings = append(warnings, "the temporary set has no free automatic slot; review existing blocks or wait for expiry")
+	}
+	if general.Free == 0 && reserved.Free > 0 {
+		note = "; only direct or corroborated work has a set slot; general work waits for more capacity"
+	}
+	return warnings, note
 }
 
 // dryRunDoctorChecks renders the dry-run forecast of an owner that runs
@@ -201,31 +267,9 @@ func dryRunCapacityCheck(d *health.AdmissionDryRun) DoctorCheck {
 	c := DoctorCheck{Name: "admission dry-run capacity", Status: "ok", Message: fmt.Sprintf(
 		"%d real temporary elements, %d %s predicted with %d forecast blocks; automatic blocks use %d of %d general and %d of %d reserved slots; the modelled ceiling has %d general and %d reserved units left",
 		occ.Actual, occ.Predicted, limit, occ.ShadowOnly, occ.General.Used, occ.General.Size, occ.Reserved.Used, occ.Reserved.Size, ceil.GeneralBudget, ceil.ReservedBudget)}
-	if occ.Unclaimed > 0 || occ.Imported > 0 {
-		c.Message += fmt.Sprintf("; %d entries automatic admission never evicts and %d legacy automatic blocks",
-			occ.Unclaimed, occ.Imported)
-		if occ.DrainSeconds >= 0 {
-			c.Message += fmt.Sprintf(" have an estimated drain time of %s", time.Duration(occ.DrainSeconds)*time.Second)
-		} else {
-			c.Message += " have an unknown drain time"
-		}
-	}
-	var warnings []string
-	if occ.DrainSeconds < 0 {
-		warnings = append(warnings, "a remaining kernel expiry is unavailable; inspect the affected blocks")
-	}
-	if occ.Unlimited {
-		warnings = append(warnings, fmt.Sprintf("the temporary set is unlimited for operator blocks; automatic admission is modelled at %d slots", occ.Capacity))
-	}
-	if occ.General.Size+occ.Reserved.Size == 0 {
-		warnings = append(warnings, "entries automatic admission never evicts fill the set; review these blocks or wait for expiry")
-	}
-	if occ.General.Free+occ.Reserved.Free == 0 && occ.General.Size+occ.Reserved.Size > 0 {
-		warnings = append(warnings, "the temporary set has no free automatic slot; review existing blocks or wait for expiry")
-	}
-	if occ.General.Free == 0 && occ.Reserved.Free > 0 {
-		c.Message += "; only direct or corroborated work has a set slot; general work waits for more capacity"
-	}
+	c.Message += setOccupants(occ.Unclaimed, occ.Imported, occ.DrainSeconds)
+	warnings, note := setWarnings(occ.Unlimited, occ.Capacity, occ.DrainSeconds, occ.General, occ.Reserved)
+	c.Message += note
 	if occ.Limited {
 		warnings = append(warnings, "the forecast models no more active blocks")
 	}

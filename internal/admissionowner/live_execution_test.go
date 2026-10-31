@@ -28,8 +28,9 @@ func withLiveExecution(t *testing.T, on bool) {
 
 // Ruling C2: until live execution is turned on, an owner with an engine
 // previews its block picks under a live policy as an owner without one
-// does. Nothing reaches the engine or the panel, status says it does not
-// execute and its callback stage does not run.
+// does. Nothing reaches the engine but one read of the set a turn, which
+// budgets the previews (ruling T1), nothing reaches the panel, status says
+// it does not execute and its callback stage does not run.
 func TestOwnerPreviewsBlockPicksUnderALivePolicy(t *testing.T) {
 	withLiveExecution(t, false)
 	p := withTestRegistry(t)
@@ -50,8 +51,8 @@ func TestOwnerPreviewsBlockPicksUnderALivePolicy(t *testing.T) {
 		}
 	}
 	checks, applies := blocks.calls()
-	if len(checks) != 0 || len(applies) != 0 || len(blocks.snapshots) != 0 || blocks.marks != 0 || blocks.stateProbes != 0 {
-		t.Fatalf("engine calls: %d checks, %d applies, %d snapshots, %d marks, %d probes", len(checks), len(applies), len(blocks.snapshots), blocks.marks, blocks.stateProbes)
+	if len(checks) != 0 || len(applies) != 0 || len(blocks.snapshots) != 0 || blocks.setReads != 1 || blocks.marks != 0 || blocks.stateProbes != 0 || len(blocks.retireCalls()) != 0 {
+		t.Fatalf("engine calls: %d checks, %d applies, %d snapshots, %d set reads, %d marks, %d probes", len(checks), len(applies), len(blocks.snapshots), blocks.setReads, blocks.marks, blocks.stateProbes)
 	}
 	if asked, _, _, _ := panel.state(); len(asked) != 0 {
 		t.Fatalf("the panel was asked about %v", asked)

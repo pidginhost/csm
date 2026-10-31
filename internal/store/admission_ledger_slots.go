@@ -29,6 +29,31 @@ func (l *AdmissionLedger) SetOccupants(base *admission.SetOccupancy) {
 	l.set = base
 }
 
+// HasChargedWork reports whether a queued candidate that charges the
+// ceiling, so takes a set slot, is past its retry wait: the only work a
+// read of the set can budget.
+func (l *AdmissionLedger) HasChargedWork() (bool, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var found bool
+	err := l.db.bolt.View(func(tx *bolt.Tx) error {
+		clock, err := loadLedgerClock(tx.Bucket([]byte(admissionMetaBucket)))
+		if err != nil {
+			return err
+		}
+		q, err := openQueueWith(tx, l.reg, l.Inventory(), clock.Now())
+		if err != nil {
+			return err
+		}
+		live, err := q.live()
+		for _, lc := range live {
+			found = found || (lc.c.State == admission.StateQueued && lc.c.Key.Kind.CeilingCost() > 0 && !q.now.Before(lc.c.NotBefore))
+		}
+		return err
+	})
+	return found, err
+}
+
 // setBudget is the free slots of each partition in block units; without a
 // set it bounds nothing.
 type setBudget struct {
