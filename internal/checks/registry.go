@@ -198,6 +198,7 @@ var checkRegistry = []CheckInfo{
 	{Name: "yara_match_scheduled", Category: CategoryMalware, Correlation: CorrelationSecurityEvent, Response: ResponsePolicy{NeverChallenge: true}},
 	{Name: "yara_scan_incomplete", Category: CategoryMalware, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
 	{Name: "yara_realtime_scan_error", Category: CategoryMalware, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
+	{Name: "yara_backend_unavailable", Category: CategoryMalware, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
 	{Name: "yara_worker_crashed", Category: CategoryMalware, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
 
 	// --- Web & Application ----------------------------------------------
