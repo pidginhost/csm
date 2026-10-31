@@ -19,6 +19,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 ### Changed
 
 - YARA rule files can no longer include other files; inline the included rules instead.
+- On hosts with YARA but no loaded rules, companion file reports now warn that YARA did not check the files; `disabled_checks: [yara_deep]` turns this off.
 
 ### Changed
 
