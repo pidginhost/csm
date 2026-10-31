@@ -57,11 +57,17 @@ type Rules struct{}
 // CompileSources returns ErrNoEngine without YARA-X.
 func CompileSources(_ []Source) (*Rules, error) { return nil, ErrNoEngine }
 
+// CompileIsolatedSources returns ErrNoEngine without YARA-X.
+func CompileIsolatedSources(_ []Source) (*Rules, error) { return nil, ErrNoEngine }
+
 // LoadRules returns ErrNoEngine without YARA-X.
 func LoadRules(_ io.Reader) (*Rules, error) { return nil, ErrNoEngine }
 
 // Count returns 0 without YARA-X.
 func (r *Rules) Count() int { return 0 }
+
+// Destroy is a no-op without YARA-X.
+func (r *Rules) Destroy() {}
 
 // WriteTo returns ErrNoEngine without YARA-X.
 func (r *Rules) WriteTo(_ io.Writer) (int64, error) { return 0, ErrNoEngine }

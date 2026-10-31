@@ -154,6 +154,8 @@ func (fakeEngine) Load(r io.Reader) (Rules, error) {
 
 func (r *fakeRules) Count() int { return len(r.words) }
 
+func (r *fakeRules) Destroy() {}
+
 func (r *fakeRules) WriteTo(w io.Writer) (int64, error) {
 	n, err := io.WriteString(w, fakeRulesHeader+strings.Join(r.words, "\n"))
 	return int64(n), err

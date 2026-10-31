@@ -22,6 +22,11 @@ import (
 // other end.
 func startWorker(t *testing.T) *net.UnixConn {
 	t.Helper()
+	return startWorkerWithEngine(t, fakeEngine{})
+}
+
+func startWorkerWithEngine(t *testing.T, eng Engine) *net.UnixConn {
+	t.Helper()
 	pair, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM|syscall.SOCK_CLOEXEC, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -37,7 +42,7 @@ func startWorker(t *testing.T) *net.UnixConn {
 		conns[i] = c.(*net.UnixConn)
 	}
 	done := make(chan error, 1)
-	go func() { done <- Serve(context.Background(), conns[1], fakeEngine{}) }()
+	go func() { done <- Serve(context.Background(), conns[1], eng) }()
 	t.Cleanup(func() {
 		_ = conns[0].Close()
 		<-done

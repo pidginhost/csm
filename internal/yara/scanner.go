@@ -102,10 +102,21 @@ type Rules struct {
 // CompileSources compiles sources into one rule set. A compile failure names
 // the source it came from.
 func CompileSources(sources []Source) (*Rules, error) {
-	compiler, err := yara_x.NewCompiler()
+	return compileSources(sources)
+}
+
+// CompileIsolatedSources compiles only the supplied text. Includes are
+// disabled so a worker cannot read files outside its request descriptors.
+func CompileIsolatedSources(sources []Source) (*Rules, error) {
+	return compileSources(sources, yara_x.EnableIncludes(false))
+}
+
+func compileSources(sources []Source, opts ...yara_x.CompileOption) (*Rules, error) {
+	compiler, err := yara_x.NewCompiler(opts...)
 	if err != nil {
 		return nil, fmt.Errorf("creating YARA compiler: %w", err)
 	}
+	defer compiler.Destroy()
 	for _, src := range sources {
 		if err := compiler.AddSource(string(src.Text)); err != nil {
 			return nil, fmt.Errorf("compiling %s: %w", src.Name, err)
@@ -128,6 +139,9 @@ func LoadRules(r io.Reader) (*Rules, error) {
 
 // Count is the number of rules in the set.
 func (r *Rules) Count() int { return r.rules.Count() }
+
+// Destroy releases the native rules. The caller must stop using them first.
+func (r *Rules) Destroy() { r.rules.Destroy() }
 
 // WriteTo saves the compiled rule set and counts bytes written even on failure.
 func (r *Rules) WriteTo(w io.Writer) (int64, error) {

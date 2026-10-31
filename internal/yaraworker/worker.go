@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/pidginhost/csm/internal/workerproc"
 	"github.com/pidginhost/csm/internal/yara"
@@ -23,9 +24,10 @@ type Engine interface {
 	Load(r io.Reader) (Rules, error)
 }
 
-// Rules is a compiled rule set as the worker uses it.
+// Rules is a compiled rule set owned by the worker until Destroy.
 type Rules interface {
 	Count() int
+	Destroy()
 	WriteTo(w io.Writer) (int64, error)
 	Scan(data []byte) ([]yara.Match, error)
 }
@@ -37,7 +39,7 @@ func DefaultEngine() Engine { return yaraEngine{} }
 type yaraEngine struct{}
 
 func (yaraEngine) Compile(sources []yara.Source) (Rules, error) {
-	r, err := yara.CompileSources(sources)
+	r, err := yara.CompileIsolatedSources(sources)
 	if err != nil {
 		return nil, err
 	}
@@ -61,12 +63,20 @@ const maxSourceName = 255
 // keeps the rules it loaded for the life of the connection.
 func Serve(ctx context.Context, conn *net.UnixConn, eng Engine) error {
 	w := &worker{eng: eng}
+	defer w.close()
 	return workerproc.Serve(ctx, conn, workerproc.Limits{MaxFrameBytes: yaraipc.MaxFrameBytes, MaxFDs: 1}, w.handle)
 }
 
 type worker struct {
 	eng   Engine
 	rules Rules
+}
+
+func (w *worker) close() {
+	if w.rules != nil {
+		w.rules.Destroy()
+		w.rules = nil
+	}
 }
 
 // fdCount is how many request descriptors each op takes.
@@ -79,6 +89,9 @@ var fdCount = map[string]int{
 }
 
 func (w *worker) handle(_ context.Context, req workerproc.Frame, fds []*os.File) (workerproc.Frame, []*os.File) {
+	if req.Error != "" {
+		return fail("request carries an error")
+	}
 	want, known := fdCount[req.Op]
 	if !known {
 		return fail("unknown op %q", req.Op)
@@ -86,8 +99,20 @@ func (w *worker) handle(_ context.Context, req workerproc.Frame, fds []*os.File)
 	if len(fds) != want {
 		return fail("%s takes %d descriptors, got %d", req.Op, want, len(fds))
 	}
+	if (req.Op == yaraipc.OpLoad || req.Op == yaraipc.OpPing) && len(req.Payload) != 0 {
+		if err := decodeArgs(req.Payload, &struct{}{}); err != nil {
+			return fail("%s: %v", req.Op, err)
+		}
+	}
 	switch req.Op {
 	case workerproc.OpHello:
+		var hello workerproc.Hello
+		if err := decodeArgs(req.Payload, &hello); err != nil {
+			return fail("hello: %v", err)
+		}
+		if hello.Protocol != yaraipc.ProtocolVersion {
+			return fail("hello: unsupported protocol %d", hello.Protocol)
+		}
 		return workerproc.HelloReply(yaraipc.ProtocolVersion), nil
 	case yaraipc.OpCompile:
 		return w.compile(req, fds[0])
@@ -128,17 +153,27 @@ func (w *worker) compile(req workerproc.Frame, f *os.File) (workerproc.Frame, []
 	rules, err := w.eng.Compile(sources)
 	if err != nil {
 		// The operator's rules are broken, not the worker.
-		return reply(yaraipc.CompileResult{CompileError: err.Error()}), nil
+		return reply(yaraipc.CompileResult{CompileError: boundedDiagnostic(err.Error())}), nil
 	}
-	var buf bytes.Buffer
+	defer rules.Destroy()
+	var buf serializedRulesBuffer
 	if _, err = rules.WriteTo(&buf); err != nil {
 		return fail("compile: serialize: %v", err)
 	}
-	out, err := yaraipc.SealedMemfd("csm-yara-rules", buf.Bytes())
+	out, err := yaraipc.SealedMemfd("csm-yara-rules", buf.buf.Bytes())
 	if err != nil {
 		return fail("compile: %v", err)
 	}
 	return reply(yaraipc.CompileResult{RuleCount: rules.Count()}), []*os.File{out}
+}
+
+type serializedRulesBuffer struct{ buf bytes.Buffer }
+
+func (b *serializedRulesBuffer) Write(p []byte) (int, error) {
+	if len(p) > yaraipc.MaxSerializedRules-b.buf.Len() {
+		return 0, errors.New("compiled rules exceed size limit")
+	}
+	return b.buf.Write(p)
 }
 
 // checkSpans requires named spans that exactly cover size bytes.
@@ -167,10 +202,14 @@ func (w *worker) load(f *os.File) (workerproc.Frame, []*os.File) {
 	if err != nil {
 		return fail("load: %v", err)
 	}
+	if size > yaraipc.MaxSerializedRules {
+		return fail("load: compiled rules exceed size limit")
+	}
 	rules, err := w.eng.Load(io.NewSectionReader(f, 0, size))
 	if err != nil {
 		return fail("load: %v", err)
 	}
+	w.close()
 	w.rules = rules
 	return reply(yaraipc.LoadResult{RuleCount: rules.Count()}), nil
 }
@@ -185,6 +224,9 @@ func (w *worker) scan(req workerproc.Frame, f *os.File) (workerproc.Frame, []*os
 	}
 	if args.MaxBytes <= 0 {
 		return fail("invalid descriptor scan size: %d", args.MaxBytes)
+	}
+	if _, err := regularSize(f); err != nil {
+		return fail("scan_fd: %v", err)
 	}
 	data, err := io.ReadAll(io.NewSectionReader(f, 0, int64(args.MaxBytes)))
 	if err != nil {
@@ -218,12 +260,19 @@ func regularSize(f *os.File) (int64, error) {
 }
 
 func decodeArgs(payload json.RawMessage, out any) error {
-	if len(payload) == 0 {
-		return errors.New("empty payload")
+	payload = bytes.Trim(payload, " \t\r\n")
+	if len(payload) == 0 || payload[0] != '{' || !utf8.Valid(payload) {
+		return errors.New("payload must be a UTF-8 JSON object")
 	}
 	dec := json.NewDecoder(bytes.NewReader(payload))
 	dec.DisallowUnknownFields()
-	return dec.Decode(out)
+	if err := dec.Decode(out); err != nil {
+		return err
+	}
+	if err := dec.Decode(new(json.RawMessage)); err != io.EOF {
+		return errors.New("payload has trailing data")
+	}
+	return nil
 }
 
 func reply(v any) workerproc.Frame {
@@ -235,5 +284,16 @@ func reply(v any) workerproc.Frame {
 }
 
 func fail(format string, args ...any) (workerproc.Frame, []*os.File) {
-	return workerproc.Frame{Error: fmt.Sprintf(format, args...)}, nil
+	return workerproc.Frame{Error: boundedDiagnostic(fmt.Sprintf(format, args...))}, nil
+}
+
+func boundedDiagnostic(s string) string {
+	// JSON can expand each byte to six characters. Reserve framing space so
+	// even a diagnostic quoting a huge source line remains a result, not a
+	// transport failure that would count against worker health.
+	const limit = (yaraipc.MaxFrameBytes - 128) / 6
+	if len(s) > limit {
+		return strings.ToValidUTF8(s[:limit], "?") + "..."
+	}
+	return s
 }
