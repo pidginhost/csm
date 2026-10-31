@@ -378,6 +378,16 @@ func (l *AdmissionLedger) reserveTx(q *queueTx, id admission.CandidateID, lane a
 	if err = laneFits(q, liveCandidate{id: id, c: c, entry: entry}, lane); err != nil {
 		return c, admission.AttemptRecord{}, false, err
 	}
+	// The slots are rechecked under the lock, before anything is charged.
+	if cost := c.Key.Kind.CeilingCost(); cost > 0 {
+		slots, slotErr := q.slots()
+		if slotErr != nil {
+			return c, admission.AttemptRecord{}, false, slotErr
+		}
+		if slots.free(lane) < cost {
+			return c, admission.AttemptRecord{}, false, refusal(admission.ReasonSetFull, "the temporary set has no free slot for the lane")
+		}
+	}
 	next, err := admission.NewAttempt(id, c.Attempts+1)
 	if err != nil {
 		return c, admission.AttemptRecord{}, false, err

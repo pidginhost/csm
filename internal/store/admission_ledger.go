@@ -101,6 +101,11 @@ type AdmissionLedger struct {
 	// live is set once the live start ran (design C7); guarded by mu.
 	live bool
 
+	// set is the temporary set outside the ledger's effect records, as
+	// the owner last read it (SetOccupants); nil leaves block work without
+	// a slot budget. Guarded by mu.
+	set *admission.SetOccupancy
+
 	// revalidated is set once this handle has checked every queued
 	// candidate at a current reading. A reopened ledger cannot know what
 	// changed while it was closed, so its first schedule checks them all.
