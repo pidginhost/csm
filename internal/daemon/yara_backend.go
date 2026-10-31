@@ -119,7 +119,7 @@ func (d *Daemon) initYaraBackend() error {
 	yaraMetricsOnce.Do(func() {
 		metrics.RegisterCounterFunc(
 			"csm_yara_worker_restarts_total",
-			"Number of YARA-X scan workers killed after a failure.",
+			"Number of counted YARA-X scan worker failures, including failed starts.",
 			func() float64 {
 				var total uint64
 				for _, n := range b.Stats().Kills {

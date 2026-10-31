@@ -1,6 +1,7 @@
 [
   {"Package":"github.com/pidginhost/csm/internal/emailav","Name":"TestYaraXScannerFailsClosedOnScanError"},
   {"Package":"github.com/pidginhost/csm/internal/yaraworker","Name":"TestWorkerRealEngineRoundTrip"},
+  {"Package":"github.com/pidginhost/csm/internal/yaraworker","Name":"TestBackendRealEngineRecovery"},
   {"Package":"github.com/pidginhost/csm/internal/yaraworker","Name":"TestWorkerCompileRefusesFilesystemIncludes"},
   {"Package":"github.com/pidginhost/csm/internal/yara","Name":"TestCompiledRulesRoundTrip"},
   {"Package":"github.com/pidginhost/csm/internal/checks","Name":"TestContentReverifyCompressedArchiveResolvesYARAFinding"},

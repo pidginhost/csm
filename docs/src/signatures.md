@@ -235,8 +235,8 @@ The rules directory and rule files must be owned by root or the scanner user and
 must not be group- or world-writable. The standard service runs as root and
 reads the rule files; the YARA workers get the rule text from it and never open
 them. The installer uses `0750` for the directory and `0640` for shipped rules.
-Custom rules must also remain readable by the service. Rule files cannot include
-other files.
+Custom rules must also remain readable by the service. With the default worker
+enabled, rule files cannot include other files.
 
 Place `.yar` or `.yara` files alongside YAML rules in `/opt/csm/rules/`. CSM compiles them at startup and uses them for:
 - Real-time fanotify file scanning

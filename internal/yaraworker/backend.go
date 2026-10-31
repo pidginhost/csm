@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"golang.org/x/sync/semaphore"
+
 	"github.com/pidginhost/csm/internal/obs"
 	"github.com/pidginhost/csm/internal/queuehealth"
 	"github.com/pidginhost/csm/internal/workerproc"
@@ -50,8 +52,9 @@ type Backend struct {
 	ctx  context.Context
 	stop context.CancelFunc
 
-	// reloadMu runs one compile at a time: each can need a gigabyte.
-	reloadMu sync.Mutex
+	// compileGate runs one compile at a time: each can need a gigabyte.
+	// Waiting reloads must be able to cancel without stopping its owner.
+	compileGate *semaphore.Weighted
 
 	mu         sync.Mutex
 	rules      *compiledRules
@@ -78,7 +81,7 @@ func NewBackend(cfg BackendConfig) (*Backend, error) {
 	if cfg.ScanTimeout <= 0 || cfg.LoadTimeout <= 0 || cfg.CompileTimeout <= 0 {
 		return nil, errors.New("yaraworker: timeouts must be positive")
 	}
-	b := &Backend{cfg: cfg}
+	b := &Backend{cfg: cfg, compileGate: semaphore.NewWeighted(1)}
 	proc, err := workerproc.New(workerproc.Config{
 		Name:    "yara worker",
 		Launch:  b.launch,
@@ -113,8 +116,10 @@ func (b *Backend) Reload() error {
 // ReloadContext lets startup retries cancel a compile as soon as shutdown
 // begins, before the daemon finishes draining its other workers.
 func (b *Backend) ReloadContext(ctx context.Context) error {
-	b.reloadMu.Lock()
-	defer b.reloadMu.Unlock()
+	if err := b.compileGate.Acquire(ctx, 1); err != nil {
+		return err
+	}
+	defer b.compileGate.Release(1)
 	if b.isStopped() {
 		return workerproc.ErrStopped
 	}
@@ -185,8 +190,10 @@ func (b *Backend) failReload(err error) error {
 // TestCompile compiles source alone, without touching the scanning rules,
 // so a downloaded rule file can be checked before it is installed.
 func (b *Backend) TestCompile(source string) error {
-	b.reloadMu.Lock()
-	defer b.reloadMu.Unlock()
+	if err := b.compileGate.Acquire(b.ctx, 1); err != nil {
+		return workerproc.ErrStopped
+	}
+	defer b.compileGate.Release(1)
 	if b.isStopped() {
 		return workerproc.ErrStopped
 	}
@@ -510,8 +517,8 @@ func (b *Backend) Stop() error {
 	err := b.proc.Stop()
 	// A compile owns its short-lived supervisor until it returns. Wait for
 	// its canceled call to kill and reap that worker before finishing stop.
-	b.reloadMu.Lock()
-	defer b.reloadMu.Unlock()
+	_ = b.compileGate.Acquire(context.Background(), 1)
+	defer b.compileGate.Release(1)
 	b.mu.Lock()
 	rules := b.rules
 	b.rules = nil

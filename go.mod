@@ -19,6 +19,7 @@ require (
 	github.com/tdewolff/parse/v2 v2.8.20
 	go.etcd.io/bbolt v1.5.0
 	golang.org/x/net v0.62.0
+	golang.org/x/sync v0.24.0
 	golang.org/x/sys v0.49.0
 	golang.org/x/text v0.43.0
 	gopkg.in/yaml.v3 v3.0.1
@@ -32,6 +33,5 @@ require (
 	github.com/mdlayher/socket v0.8.0 // indirect
 	github.com/vishvananda/netns v0.0.5 // indirect
 	go.uber.org/atomic v1.12.0 // indirect
-	golang.org/x/sync v0.24.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
 )

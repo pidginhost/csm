@@ -1401,14 +1401,15 @@ the CI kernel runner.
 
 By default CSM never compiles or scans YARA rules in the root daemon. Two
 kinds of `csm yara-worker` process run through `workerproc.UnitLauncher`
-with the parse worker's lockdown: no root, no network, no host files, a
+with the parse worker's lockdown: no root, no network, no account files, a
 memory cap and a lifetime cap. Wiring lives in
 `internal/daemon/yara_backend.go`; the daemon side is `yaraworker.Backend`
 in `internal/yaraworker/backend.go` and the worker side `yaraworker.Serve`
 in `internal/yaraworker/worker.go`.
 
 - The compile unit, `csm-yara-compile-worker-<generation>`, runs for one
-  compile: 1 GiB memory cap, files up to 256 MiB (its reply), two minutes.
+  compile: 1 GiB memory cap, files up to 256 MiB (its reply), five-minute
+  unit lifetime. The daemon allows two minutes for the compile request.
   The daemon reads the rule files (trust check, disabled-rule stripping)
   and passes their text in one sealed memfd. The worker compiles with
   includes disabled, so rule text comes only from that memfd, and returns
@@ -1427,9 +1428,12 @@ in `internal/yaraworker/worker.go`.
   the kept ones, the scan worker on the old rules retires before its next
   request, and a background warm-up starts its replacement. On failure the
   current rules stay; with none loaded the failure is `CompileError()`.
+  Compiles run one at a time; a canceled startup retry stops waiting even
+  when a rule update is already compiling.
 - Forge downloads are compile-tested in the compile unit before they are
   installed.
-- At startup the daemon kills leftover units of both prefixes.
+- At startup the daemon attempts to kill leftover units of both prefixes;
+  cleanup failures are logged without preventing startup.
 
 Failures and findings:
 
@@ -1440,10 +1444,11 @@ Failures and findings:
   backoff; after three failures a Critical `yara_backend_unavailable` finding
   fires. Rules that do not compile raise Critical
   `yara_worker_compile_failed`.
-- Any counted scan worker failure (timeout, crash, out of memory, protocol)
-  kills the worker, marks `watcher: yara_worker` failed and raises Critical
-  `yara_worker_crashed`, at most once a minute. The next request starts a
-  replacement; a served request marks the watcher attached again.
+- Any counted scan worker failure (failed start, timeout, crash, out of memory,
+  protocol) marks `watcher: yara_worker` failed and raises Critical
+  `yara_worker_crashed`, at most once a minute; an attached worker is killed.
+  The next request starts a replacement; a served request marks the watcher
+  attached again.
 - Only failed starts count toward the worker breaker (`BreakOnSpawnOnly`),
   so content that kills the worker costs one restart per scan and cannot
   switch YARA off for other files.
@@ -1471,7 +1476,8 @@ mail-part scans fail.
 
 Testing: `internal/yaraworker` launches the test binary as the worker with a
 fake engine (`helper_test.go`), including fault modes for crashes, hung loads
-and bad compile replies. Tests tagged `yara` run the real engine. Unit
+and bad compile replies. Tests tagged `yara` run the real engine, including
+backend recovery from invalid rules with disabled rules still excluded. Unit
 lockdown is verified on the CI kernel runner and on scratch hosts.
 
 ## Building the Documentation
