@@ -3,13 +3,10 @@ package yaraworker
 import (
 	"errors"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/pidginhost/csm/internal/yaraipc"
 )
 
 // A scanner that cannot load its rules fails identically for every buffer it
@@ -22,8 +19,8 @@ import (
 func TestScanErrLogIsDeduplicated(t *testing.T) {
 	var mu sync.Mutex
 	var lines []string
-	s := &Supervisor{}
-	s.cfg.Logf = func(format string, args ...any) {
+	s := &Backend{}
+	s.cfg.Log = func(format string, args ...any) {
 		mu.Lock()
 		defer mu.Unlock()
 		lines = append(lines, format)
@@ -47,8 +44,8 @@ func TestScanErrLogIsDeduplicated(t *testing.T) {
 func TestScanErrLogReportsDistinctErrors(t *testing.T) {
 	var mu sync.Mutex
 	var lines []string
-	s := &Supervisor{}
-	s.cfg.Logf = func(format string, args ...any) {
+	s := &Backend{}
+	s.cfg.Log = func(format string, args ...any) {
 		mu.Lock()
 		defer mu.Unlock()
 		lines = append(lines, format)
@@ -72,8 +69,8 @@ func TestScanErrLogReportsDistinctErrors(t *testing.T) {
 func TestScanErrLogResurfacesAfterWindowWithCount(t *testing.T) {
 	var mu sync.Mutex
 	var msgs []string
-	s := &Supervisor{}
-	s.cfg.Logf = func(format string, args ...any) {
+	s := &Backend{}
+	s.cfg.Log = func(format string, args ...any) {
 		mu.Lock()
 		defer mu.Unlock()
 		msgs = append(msgs, fmt.Sprintf(format, args...))
@@ -86,11 +83,11 @@ func TestScanErrLogResurfacesAfterWindowWithCount(t *testing.T) {
 	}
 
 	// Age the window rather than sleeping through it.
-	s.scanErrMu.Lock()
-	for _, rec := range s.scanErrSeen {
+	s.scanErrs.mu.Lock()
+	for _, rec := range s.scanErrs.seen {
 		rec.at = time.Now().Add(-2 * scanErrLogWindow)
 	}
-	s.scanErrMu.Unlock()
+	s.scanErrs.mu.Unlock()
 
 	s.logScanErr(err)
 
@@ -106,8 +103,8 @@ func TestScanErrLogResurfacesAfterWindowWithCount(t *testing.T) {
 
 func TestScanErrLogCapacityCannotResetSuppression(t *testing.T) {
 	var lines []string
-	s := &Supervisor{}
-	s.cfg.Logf = func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) }
+	s := &Backend{}
+	s.cfg.Log = func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) }
 	known := errors.New("rules unavailable")
 	s.logScanErr(known)
 	for i := range 500 {
@@ -117,32 +114,7 @@ func TestScanErrLogCapacityCannotResetSuppression(t *testing.T) {
 	if len(lines) != scanErrMaxTracked+1 {
 		t.Fatalf("distinct error churn produced %d logs, want %d bounded records", len(lines), scanErrMaxTracked+1)
 	}
-	if got := s.scanErrSeen[known.Error()]; got == nil || got.suppressed != 500 {
+	if got := s.scanErrs.seen[known.Error()]; got == nil || got.suppressed != 500 {
 		t.Fatalf("capacity churn lost the recurring error's suppression: %+v", got)
-	}
-}
-
-// A payload larger than one socket frame goes to the worker as a descriptor,
-// so the client never refuses it on size. When the worker is absent, that is
-// a real scan failure and must be logged.
-func TestScanBytesLargePayloadFailureIsLogged(t *testing.T) {
-	var mu sync.Mutex
-	var lines []string
-	s := &Supervisor{}
-	s.cfg.Logf = func(format string, args ...any) {
-		mu.Lock()
-		defer mu.Unlock()
-		lines = append(lines, fmt.Sprintf(format, args...))
-	}
-	s.client = yaraipc.NewClient(filepath.Join(t.TempDir(), "absent.sock"), time.Second)
-	s.running.Store(true)
-
-	if _, err := s.ScanBytesChecked(make([]byte, yaraipc.MaxFrameBytes+1)); err == nil {
-		t.Fatal("scan against an absent worker socket succeeded")
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	if len(lines) != 1 {
-		t.Errorf("worker failure logged %d lines, want 1: %q", len(lines), lines)
 	}
 }

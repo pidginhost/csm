@@ -1,0 +1,493 @@
+package yaraworker
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/pidginhost/csm/internal/queuehealth"
+	"github.com/pidginhost/csm/internal/workerproc"
+	"github.com/pidginhost/csm/internal/yara"
+	"github.com/pidginhost/csm/internal/yaraipc"
+)
+
+// BackendConfig describes the daemon side of out-of-process YARA.
+type BackendConfig struct {
+	// ScanLaunch starts the scan worker and CompileLaunch a compile worker.
+	// The daemon passes locked-down unit launchers.
+	ScanLaunch, CompileLaunch workerproc.Launcher
+	RulesDir                  string
+	DisabledRules             []string
+	// ScanTimeout bounds one scan, LoadTimeout a fresh worker loading the
+	// compiled rules, CompileTimeout one compile.
+	ScanTimeout, LoadTimeout, CompileTimeout time.Duration
+	// OnFailure is told of every counted scan worker failure, and OnJob of
+	// every scan worker request outcome. Both run under the worker
+	// supervisor's lock and must not block.
+	OnFailure func(reason string, err error)
+	OnJob     func(outcome string, memory uint64)
+	Log       func(string, ...any)
+}
+
+// Backend is the YARA backend the daemon installs with yara.SetActive. It
+// reads rule text, has a short-lived compile worker compile it, keeps the
+// compiled rules in a sealed memfd, and loads them into each scan worker it
+// starts: a worker restart reloads, it never recompiles. Every scan reaches
+// the worker as a descriptor, and a scan that did not run is an error.
+type Backend struct {
+	cfg  BackendConfig
+	proc *workerproc.Supervisor
+
+	// reloadMu runs one compile at a time: each can need a gigabyte.
+	reloadMu sync.Mutex
+
+	mu         sync.Mutex
+	rules      *compiledRules
+	compileErr string
+	stopped    bool
+	// gen numbers rule sets. A worker loaded with an older one retires.
+	gen atomic.Uint64
+
+	scanErrs scanErrLog
+}
+
+// compiledRules is one compiled rule set, held by the daemon.
+type compiledRules struct {
+	file  *os.File
+	count int
+	gen   uint64
+}
+
+// NewBackend validates cfg. It compiles nothing and starts no worker.
+func NewBackend(cfg BackendConfig) (*Backend, error) {
+	if cfg.ScanLaunch == nil || cfg.CompileLaunch == nil {
+		return nil, errors.New("yaraworker: scan and compile launchers are required")
+	}
+	if cfg.ScanTimeout <= 0 || cfg.LoadTimeout <= 0 || cfg.CompileTimeout <= 0 {
+		return nil, errors.New("yaraworker: timeouts must be positive")
+	}
+	b := &Backend{cfg: cfg}
+	proc, err := workerproc.New(workerproc.Config{
+		Name:    "yara worker",
+		Launch:  b.launch,
+		Timeout: cfg.ScanTimeout,
+		// MaxFDs 0: a scan reply carrying a descriptor is a protocol failure.
+		Limits:    workerproc.Limits{MaxFrameBytes: yaraipc.MaxFrameBytes},
+		Log:       cfg.Log,
+		OnFailure: cfg.OnFailure,
+		OnJob:     cfg.OnJob,
+		// A file that kills the worker must not switch YARA off for every
+		// other file on the host: only a failed start counts toward the
+		// breaker, so hostile content costs one restart per scan.
+		BreakOnSpawnOnly: true,
+	})
+	if err != nil {
+		return nil, err
+	}
+	b.proc = proc
+	return b, nil
+}
+
+// Reload compiles the rules directory in a compile worker and, on success,
+// makes the result the rules every later scan uses. On failure the current
+// rules stay; with none loaded the failure becomes CompileError and scans
+// fail closed. An error that workerproc.FailureReason classifies came from
+// the compile worker, not the rules.
+func (b *Backend) Reload() error {
+	b.reloadMu.Lock()
+	defer b.reloadMu.Unlock()
+	if b.isStopped() {
+		return workerproc.ErrStopped
+	}
+	sources, disabled, err := yara.ReadSources(b.cfg.RulesDir, b.cfg.DisabledRules)
+	if err != nil {
+		return b.failReload(err)
+	}
+	if len(sources) == 0 {
+		if b.current() != nil {
+			return fmt.Errorf("no YARA rule files found in %s", b.cfg.RulesDir)
+		}
+		b.mu.Lock()
+		b.compileErr = ""
+		b.mu.Unlock()
+		return nil
+	}
+	f, count, err := b.compile(sources)
+	if err == nil && count == 0 && disabled == 0 {
+		_ = f.Close()
+		err = fmt.Errorf("no YARA rules compiled from %s", b.cfg.RulesDir)
+	}
+	if err != nil {
+		return b.failReload(err)
+	}
+
+	b.mu.Lock()
+	old := b.rules
+	b.rules = &compiledRules{file: f, count: count, gen: b.gen.Add(1)}
+	b.compileErr = ""
+	b.mu.Unlock()
+	if old != nil {
+		_ = old.file.Close()
+	}
+	yara.InvalidateCaches()
+	return nil
+}
+
+func (b *Backend) failReload(err error) error {
+	b.mu.Lock()
+	if b.rules == nil {
+		b.compileErr = err.Error()
+	}
+	b.mu.Unlock()
+	return err
+}
+
+// TestCompile compiles source alone, without touching the scanning rules,
+// so a downloaded rule file can be checked before it is installed.
+func (b *Backend) TestCompile(source string) error {
+	b.reloadMu.Lock()
+	defer b.reloadMu.Unlock()
+	f, count, err := b.compile([]yara.Source{{Name: "source", Text: []byte(source)}})
+	if err != nil {
+		return err
+	}
+	_ = f.Close()
+	if count == 0 {
+		return errors.New("no rules compiled from source")
+	}
+	return nil
+}
+
+// compile runs one compile worker over sources and returns the compiled
+// rules copied into a memfd this process owns and sealed.
+func (b *Backend) compile(sources []yara.Source) (*os.File, int, error) {
+	var args yaraipc.CompileArgs
+	var text bytes.Buffer
+	for _, src := range sources {
+		args.Sources = append(args.Sources, yaraipc.SourceSpan{Name: src.Name, Size: int64(len(src.Text))})
+		text.Write(src.Text)
+	}
+	input, err := yaraipc.SealedMemfd("csm-yara-sources", text.Bytes())
+	if err != nil {
+		return nil, 0, err
+	}
+	defer func() { _ = input.Close() }()
+	payload, err := json.Marshal(args)
+	if err != nil {
+		return nil, 0, err
+	}
+	sup, err := workerproc.New(workerproc.Config{
+		Name:    "yara compile worker",
+		Launch:  b.cfg.CompileLaunch,
+		Timeout: b.cfg.CompileTimeout,
+		Limits:  workerproc.Limits{MaxFrameBytes: yaraipc.MaxFrameBytes, MaxFDs: 1},
+		Log:     b.cfg.Log,
+	})
+	if err != nil {
+		return nil, 0, err
+	}
+	defer func() { _ = sup.Stop() }()
+
+	var res yaraipc.CompileResult
+	var size int64
+	_, fds, err := sup.Call(context.Background(), workerproc.Frame{Op: yaraipc.OpCompile, Payload: payload}, []*os.File{input},
+		func(reply workerproc.Frame, fds []*os.File) (bool, error) {
+			if decodeErr := decodeArgs(reply.Payload, &res); decodeErr != nil {
+				return false, fmt.Errorf("compile reply: %w", decodeErr)
+			}
+			if res.CompileError != "" {
+				if len(fds) != 0 {
+					return false, errors.New("compile reply: a failed compile returned rules")
+				}
+				return false, nil
+			}
+			if len(fds) != 1 {
+				return false, fmt.Errorf("compile reply: %d descriptors, want 1", len(fds))
+			}
+			st, statErr := fds[0].Stat()
+			if statErr != nil {
+				return false, fmt.Errorf("compile reply: %w", statErr)
+			}
+			if !st.Mode().IsRegular() || st.Size() <= 0 || st.Size() > yaraipc.MaxSerializedRules {
+				return false, fmt.Errorf("compile reply: compiled rules of %d bytes, want 1 to %d", st.Size(), yaraipc.MaxSerializedRules)
+			}
+			size = st.Size()
+			return false, nil
+		})
+	if err != nil {
+		return nil, 0, err
+	}
+	if res.CompileError != "" {
+		return nil, 0, errors.New(res.CompileError)
+	}
+	defer func() { _ = fds[0].Close() }()
+	kept, err := yaraipc.CopySealedMemfd("csm-yara-rules", fds[0], size)
+	if err != nil {
+		return nil, 0, err
+	}
+	return kept, res.RuleCount, nil
+}
+
+// launch starts a scan worker and loads the current rules into it before the
+// supervisor may send it a scan.
+func (b *Backend) launch(ctx context.Context) (workerproc.Process, error) {
+	b.mu.Lock()
+	rules := b.rules
+	var ro *os.File
+	var err error
+	if rules != nil {
+		// Under the lock: a reload closes the file it replaces.
+		ro, err = yaraipc.ReopenReadOnly(rules.file)
+	}
+	b.mu.Unlock()
+	if rules == nil {
+		return nil, errors.New("no compiled YARA rules")
+	}
+	if err != nil {
+		return nil, fmt.Errorf("compiled YARA rules: %w", err)
+	}
+	defer func() { _ = ro.Close() }()
+
+	p, err := b.cfg.ScanLaunch(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := b.loadRules(ctx, p, ro, rules.count); err != nil {
+		// Asked before the kill: the unit's cgroup holds the evidence.
+		if r, ok := p.(interface{ OOMKilled() bool }); ok && r.OOMKilled() {
+			err = fmt.Errorf("%w (out of memory)", err)
+		}
+		_ = p.Kill()
+		return nil, err
+	}
+	return &rulesProcess{Process: p, gen: rules.gen, current: &b.gen}, nil
+}
+
+func (b *Backend) loadRules(ctx context.Context, p workerproc.Process, rules *os.File, count int) error {
+	conn := p.Conn()
+	deadline := time.Now().Add(b.cfg.LoadTimeout)
+	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
+		deadline = d
+	}
+	if err := conn.SetDeadline(deadline); err != nil {
+		return fmt.Errorf("load rules: %w", err)
+	}
+	defer func() { _ = conn.SetDeadline(time.Time{}) }()
+	if err := workerproc.SendFrame(conn, workerproc.Frame{Op: yaraipc.OpLoad}, []*os.File{rules}, yaraipc.MaxFrameBytes); err != nil {
+		return fmt.Errorf("load rules: %w", err)
+	}
+	// MaxFDs 0: ReceiveFrame closes and refuses any descriptor.
+	reply, _, err := workerproc.ReceiveFrame(conn, workerproc.Limits{MaxFrameBytes: yaraipc.MaxFrameBytes})
+	if err != nil {
+		return fmt.Errorf("load rules: %w", err)
+	}
+	if reply.Error != "" || reply.Op != "" {
+		return fmt.Errorf("load rules: worker refused: %q", reply.Error)
+	}
+	var res yaraipc.LoadResult
+	if err := decodeArgs(reply.Payload, &res); err != nil {
+		return fmt.Errorf("load rules: %w", err)
+	}
+	if res.RuleCount != count {
+		return fmt.Errorf("load rules: worker loaded %d rules, want %d", res.RuleCount, count)
+	}
+	return nil
+}
+
+// rulesProcess is a scan worker that retires once newer rules exist. It
+// passes on the optional memory interfaces workerproc looks for, which
+// embedding the Process interface alone would hide.
+type rulesProcess struct {
+	workerproc.Process
+	gen     uint64
+	current *atomic.Uint64
+}
+
+func (p *rulesProcess) Retire() bool {
+	return p.gen != p.current.Load() || p.Process.Retire()
+}
+
+func (p *rulesProcess) MemoryUsed() uint64 {
+	if r, ok := p.Process.(interface{ MemoryUsed() uint64 }); ok {
+		return r.MemoryUsed()
+	}
+	return 0
+}
+
+func (p *rulesProcess) OOMKilled() bool {
+	if r, ok := p.Process.(interface{ OOMKilled() bool }); ok {
+		return r.OOMKilled()
+	}
+	return false
+}
+
+// ScanBytes flattens a failed scan to no matches; callers that must fail
+// closed use ScanBytesChecked.
+func (b *Backend) ScanBytes(data []byte) []yara.Match {
+	m, _ := b.ScanBytesChecked(data)
+	return m
+}
+
+// ScanBytesChecked scans bytes the daemon holds; they reach the worker as a
+// sealed memfd. With no rules loaded it answers clean, as the in-process
+// scanner does, unless the rules failed to compile.
+func (b *Backend) ScanBytesChecked(data []byte) ([]yara.Match, error) {
+	if b.isStopped() {
+		return nil, workerproc.ErrStopped
+	}
+	if len(data) == 0 {
+		return nil, nil
+	}
+	rules, compileErr := b.state()
+	if rules == nil {
+		if compileErr == "" {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("yara scanner unavailable: %s", compileErr)
+	}
+	f, err := yaraipc.SealedMemfd("csm-yara-scan", data)
+	if err != nil {
+		b.logScanErr(err)
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	return b.scan(f, len(data))
+}
+
+// ScanFDChecked scans the first size bytes of f, such as a mail part. The
+// worker gets its own read-only open. It requires compiled rules.
+func (b *Backend) ScanFDChecked(f *os.File, size int64) ([]yara.Match, error) {
+	if size <= 0 || size > int64(int(^uint(0)>>1)) {
+		return nil, fmt.Errorf("yaraworker: invalid descriptor scan size: %d", size)
+	}
+	if b.isStopped() {
+		return nil, workerproc.ErrStopped
+	}
+	rules, compileErr := b.state()
+	if rules == nil {
+		if compileErr == "" {
+			compileErr = "no compiled rules"
+		}
+		return nil, fmt.Errorf("yara scanner unavailable: %s", compileErr)
+	}
+	ro, err := yaraipc.ReopenReadOnly(f)
+	if err != nil {
+		err = fmt.Errorf("yaraworker: reopen read-only: %w", err)
+		b.logScanErr(err)
+		return nil, err
+	}
+	defer func() { _ = ro.Close() }()
+	return b.scan(ro, int(size))
+}
+
+func (b *Backend) scan(f *os.File, size int) ([]yara.Match, error) {
+	payload, err := json.Marshal(yaraipc.ScanFDArgs{MaxBytes: size})
+	if err != nil {
+		return nil, err
+	}
+	var matches []yaraipc.Match
+	_, _, err = b.proc.Call(context.Background(), workerproc.Frame{Op: yaraipc.OpScanFD, Payload: payload}, []*os.File{f},
+		func(reply workerproc.Frame, _ []*os.File) (bool, error) {
+			m, decodeErr := yaraipc.DecodeScanReply(reply.Payload)
+			matches = m
+			return false, decodeErr
+		})
+	if err != nil {
+		b.logScanErr(err)
+		return nil, err
+	}
+	return toYaraMatches(matches), nil
+}
+
+// Warm starts the scan worker and loads the rules now, so the first scan
+// after a compile does not wait for the load. It is a no-op without rules.
+func (b *Backend) Warm() error {
+	if rules, _ := b.state(); rules == nil {
+		return nil
+	}
+	_, _, err := b.proc.Call(context.Background(), workerproc.Frame{Op: yaraipc.OpPing}, nil,
+		func(reply workerproc.Frame, _ []*os.File) (bool, error) {
+			var res yaraipc.LoadResult
+			return false, decodeArgs(reply.Payload, &res)
+		})
+	return err
+}
+
+// RuleCount is the number of compiled rules scans use.
+func (b *Backend) RuleCount() int {
+	if rules, _ := b.state(); rules != nil {
+		return rules.count
+	}
+	return 0
+}
+
+// CompileError is why no rules are loaded, or "" when rules are loaded or
+// the rule set is empty.
+func (b *Backend) CompileError() string {
+	_, compileErr := b.state()
+	return compileErr
+}
+
+// Stop kills the scan worker and refuses later scans and reloads.
+func (b *Backend) Stop() error {
+	b.mu.Lock()
+	b.stopped = true
+	rules := b.rules
+	b.rules = nil
+	b.mu.Unlock()
+	err := b.proc.Stop()
+	if rules != nil {
+		_ = rules.file.Close()
+	}
+	return err
+}
+
+// Stats is the scan worker supervisor's state.
+func (b *Backend) Stats() workerproc.Stats { return b.proc.Stats() }
+
+// QueueStatuses reports the scan worker's request queue.
+func (b *Backend) QueueStatuses(now time.Time) map[string]queuehealth.Status {
+	return b.proc.QueueStatuses(now)
+}
+
+func (b *Backend) state() (*compiledRules, string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.rules, b.compileErr
+}
+
+func (b *Backend) current() *compiledRules {
+	rules, _ := b.state()
+	return rules
+}
+
+func (b *Backend) isStopped() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.stopped
+}
+
+func (b *Backend) logScanErr(err error) { b.scanErrs.log(b.logf, err) }
+
+func (b *Backend) logf(format string, args ...any) {
+	if b.cfg.Log != nil {
+		b.cfg.Log(format, args...)
+	}
+}
+
+func toYaraMatches(in []yaraipc.Match) []yara.Match {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]yara.Match, len(in))
+	for i := range in {
+		out[i] = yara.Match{RuleName: in[i].RuleName, Meta: in[i].Meta}
+	}
+	return out
+}

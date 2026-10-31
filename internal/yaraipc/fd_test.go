@@ -75,12 +75,12 @@ func TestReopenReadOnlyRejectsNonRegular(t *testing.T) {
 	}
 	defer r.Close()
 	defer w.Close()
-	if f, err := ReopenReadOnly(r); err == nil {
+	if f, reopenErr := ReopenReadOnly(r); reopenErr == nil {
 		_ = f.Close()
 		t.Fatal("a pipe was reopened")
 	}
 	path := filepath.Join(t.TempDir(), "part")
-	if err := os.WriteFile(path, []byte("part"), 0o600); err != nil {
+	if err = os.WriteFile(path, []byte("part"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	closed, err := os.Open(path)
@@ -108,14 +108,14 @@ func TestReopenReadOnlyKeepsCallerFlags(t *testing.T) {
 	defer f.Close()
 	flags := func(f *os.File) int {
 		t.Helper()
-		rc, err := f.SyscallConn()
-		if err != nil {
-			t.Fatal(err)
+		rc, connErr := f.SyscallConn()
+		if connErr != nil {
+			t.Fatal(connErr)
 		}
 		var fl int
 		var flErr error
-		if err := rc.Control(func(fd uintptr) { fl, flErr = unix.FcntlInt(fd, unix.F_GETFL, 0) }); err != nil || flErr != nil {
-			t.Fatalf("flags: %v, %v", err, flErr)
+		if ctlErr := rc.Control(func(fd uintptr) { fl, flErr = unix.FcntlInt(fd, unix.F_GETFL, 0) }); ctlErr != nil || flErr != nil {
+			t.Fatalf("flags: %v, %v", ctlErr, flErr)
 		}
 		return fl
 	}

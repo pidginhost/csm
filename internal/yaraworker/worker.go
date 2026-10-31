@@ -112,14 +112,14 @@ func (w *worker) compile(req workerproc.Frame, f *os.File) (workerproc.Frame, []
 	if err != nil {
 		return fail("compile: %v", err)
 	}
-	if err := checkSpans(args.Sources, size); err != nil {
+	if err = checkSpans(args.Sources, size); err != nil {
 		return fail("compile: %v", err)
 	}
 	sources := make([]yara.Source, 0, len(args.Sources))
 	var off int64
 	for _, span := range args.Sources {
 		text := make([]byte, span.Size)
-		if _, err := io.ReadFull(io.NewSectionReader(f, off, span.Size), text); err != nil {
+		if _, err = io.ReadFull(io.NewSectionReader(f, off, span.Size), text); err != nil {
 			return fail("compile: read %s: %v", span.Name, err)
 		}
 		off += span.Size
@@ -131,7 +131,7 @@ func (w *worker) compile(req workerproc.Frame, f *os.File) (workerproc.Frame, []
 		return reply(yaraipc.CompileResult{CompileError: err.Error()}), nil
 	}
 	var buf bytes.Buffer
-	if _, err := rules.WriteTo(&buf); err != nil {
+	if _, err = rules.WriteTo(&buf); err != nil {
 		return fail("compile: serialize: %v", err)
 	}
 	out, err := yaraipc.SealedMemfd("csm-yara-rules", buf.Bytes())
