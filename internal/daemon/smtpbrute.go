@@ -153,7 +153,7 @@ type smtpAuthTracker struct {
 	backendDownFn func() bool
 
 	// Postfix SMTP AUTH pairing state (see smtp_auth_pairing.go), bounded by
-	// maxTracked clients each and expired after smtpAuthPairWindow.
+	// maxTracked entries each and expired after smtpAuthPairWindow.
 	pendingVerdicts          map[string][]smtpPendingVerdict
 	authTrouble              map[string]time.Time
 	authTroubleOverflowUntil time.Time

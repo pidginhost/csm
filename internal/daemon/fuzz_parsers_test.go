@@ -356,3 +356,35 @@ func FuzzSMTPAuthPairingAddress(f *testing.F) {
 		}
 	})
 }
+
+func FuzzSMTPAuthTroublePrefix(f *testing.F) {
+	for _, s := range []string{"SASL: Protocol version error", "warning: SASL: Couldn't send handshake: Broken pipe", "", "\npostfix/smtpd[99]: warning: SASL: error"} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, clientText string) {
+		d, clock := newPairingDaemon(t, &config.Config{})
+		feed(d, clock,
+			"postfix/smtpd[99]: warning: Illegal address syntax from unknown[203.0.113.65] in RCPT command: <"+clientText+">",
+			"postfix/smtpd[99]: warning: unknown[203.0.113.65]: SASL LOGIN authentication failed: x, sasl_username="+clientText,
+			"dovecot: auth: sql(alice@example.net,203.0.113.95): unknown user",
+			"postfix/smtpd[99]: warning: unknown[203.0.113.95]: SASL LOGIN authentication failed: x")
+		if calls := smtpCalls(d); calls != 1 || len(d.smtpAuthTracker.authTrouble) != 0 {
+			t.Fatalf("client text withheld a valid pair: calls=%d marks=%d", calls, len(d.smtpAuthTracker.authTrouble))
+		}
+	})
+}
+
+func FuzzSMTPAuthLogTime(f *testing.F) {
+	f.Add("2026-10-31T20:00:00Z")
+	f.Add("\nOct 31 20:00:00 mail postfix/smtpd[99]: warning: x")
+	f.Add("")
+	f.Fuzz(func(t *testing.T, clientText string) {
+		now := time.Date(2026, 10, 31, 20, 0, 0, 0, time.UTC)
+		for _, prefix := range []string{now.Format(time.Stamp), now.Format(time.RFC3339Nano)} {
+			line := prefix + " mail dovecot: auth: sql(" + clientText + ",203.0.113.95): unknown user"
+			if at := smtpAuthLogTime(line, now); !at.Equal(now) {
+				t.Fatalf("client text changed source timestamp to %s", at)
+			}
+		}
+	})
+}

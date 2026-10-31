@@ -166,6 +166,187 @@ func TestSeveralVerdictsOneFailureCountsOnce(t *testing.T) {
 	}
 }
 
+// Extra passdb answers must not corroborate a later reconnect failure that
+// repeats the previous SASL reply without a new credential check.
+func TestSeveralVerdictsCannotFeedLaterFailure(t *testing.T) {
+	d, clock := newPairingDaemon(t, &config.Config{})
+	feed(d, clock,
+		"dovecot: auth: sql(alice@example.net,203.0.113.95): unknown user",
+		"dovecot: auth: passwd-file(alice@example.net,203.0.113.95): unknown user",
+		fmt.Sprintf(postfixFailFmt, "203.0.113.95", "alice@example.net"),
+		"postfix/submission/smtpd[2245421]: warning: SASL: Connect to Dovecot auth socket 'private/auth' failed: Connection refused",
+		fmt.Sprintf(postfixFailFmt, "203.0.113.95", "alice@example.net"))
+	if calls := smtpCalls(d); calls != 1 {
+		t.Fatalf("SMTP failures = %d, want only the completed request", calls)
+	}
+}
+
+// Concurrent requests can finish in a different order from their passdb
+// answers. The address is known, but the mailbox cannot be picked by FIFO.
+func TestPairingOmitsAmbiguousMailbox(t *testing.T) {
+	d, clock := newPairingDaemon(t, &config.Config{})
+	feed(d, clock,
+		"dovecot: auth: sql(alice@example.net,203.0.113.95): unknown user",
+		"dovecot: auth: sql(bob@example.net,203.0.113.95): unknown user",
+		fmt.Sprintf(postfixFailFmt, "203.0.113.95", "bob@example.net"),
+		fmt.Sprintf(postfixFailFmt, "203.0.113.95", "alice@example.net"))
+	if calls := smtpCalls(d); calls != 2 {
+		t.Fatalf("SMTP failures = %d, want 2", calls)
+	}
+	if len(d.smtpAuthTracker.accounts) != 0 {
+		t.Fatalf("ambiguous mailbox created account evidence: %+v", d.smtpAuthTracker.accounts)
+	}
+}
+
+// A successful fallback leaves an unused passdb rejection. If smtpd then
+// loses its backend, that rejection must not authenticate its stale reply.
+func TestPostfixBackendWarningWithholdsPairing(t *testing.T) {
+	for _, warning := range []string{
+		"SASL: Connect to Dovecot auth socket 'private/auth' failed: Connection refused",
+		"SASL: Couldn't send handshake: Broken pipe",
+		"SASL: Protocol version mismatch (2 vs. 1)",
+	} {
+		t.Run(warning, func(t *testing.T) {
+			d, clock := newPairingDaemon(t, &config.Config{})
+			feed(d, clock,
+				"dovecot: auth: sql(alice@example.net,203.0.113.95): unknown user",
+				"postfix/submission/smtpd[2245421]: warning: "+warning,
+				fmt.Sprintf(postfixFailFmt, "203.0.113.95", "alice@example.net"))
+			if calls := smtpCalls(d); calls != 0 {
+				t.Fatalf("SMTP failures = %d during smtpd backend failure", calls)
+			}
+			feed(d, clock,
+				"dovecot: auth: sql(bob@example.net,203.0.113.96): unknown user",
+				"postfix/smtpd[99]: warning: unknown[203.0.113.96]: SASL LOGIN authentication failed: x")
+			if calls := smtpCalls(d); calls != 1 {
+				t.Fatalf("other smtpd process suppressed: failures = %d, want 1", calls)
+			}
+			clock.advance(time.Minute)
+			feed(d, clock,
+				"dovecot: auth: sql(alice@example.net,203.0.113.95): unknown user",
+				fmt.Sprintf(postfixFailFmt, "203.0.113.95", "alice@example.net"))
+			if calls := smtpCalls(d); calls != 2 {
+				t.Fatalf("recovered smtpd process suppressed: failures = %d, want 2", calls)
+			}
+		})
+	}
+}
+
+func TestPairingOverflowIncludesWindowBoundary(t *testing.T) {
+	d, clock := newPairingDaemon(t, &config.Config{})
+	d.smtpAuthTracker.maxTracked = 1
+	feed(d, clock,
+		"dovecot: auth: Error: ldap(a,198.51.100.1): failed",
+		"dovecot: auth: Error: ldap(a,203.0.113.95): failed")
+	clock.advance(smtpAuthPairWindow - 2*time.Second)
+	feed(d, clock,
+		"dovecot: auth: sql(alice@example.net,203.0.113.95): unknown user",
+		fmt.Sprintf(postfixFailFmt, "203.0.113.95", "alice@example.net"))
+	if calls := smtpCalls(d); calls != 0 {
+		t.Fatalf("overflow mark expired before the inclusive window: failures = %d", calls)
+	}
+}
+
+func TestPairingHonorsNewInfraProtection(t *testing.T) {
+	d, clock := newPairingDaemon(t, &config.Config{})
+	feed(d, clock, "dovecot: auth: sql(alice@example.net,203.0.113.95): unknown user")
+	cfg := &config.Config{InfraIPs: []string{"203.0.113.95"}}
+	d.handleMailLine(fmt.Sprintf(postfixFailFmt, "203.0.113.95", "alice@example.net"), alert.Observation{}, cfg)
+	if calls := smtpCalls(d); calls != 0 {
+		t.Fatalf("newly protected address recorded %d failures", calls)
+	}
+}
+
+func TestPairingOmitsMailboxAfterPendingOverflow(t *testing.T) {
+	d, clock := newPairingDaemon(t, &config.Config{})
+	feed(d, clock, "dovecot: auth: sql(alice@example.net,203.0.113.95): unknown user")
+	for i := 0; i < smtpAuthPairMaxPending; i++ {
+		feed(d, clock, "dovecot: auth: sql(bob@example.net,203.0.113.95): unknown user")
+	}
+	feed(d, clock, fmt.Sprintf(postfixFailFmt, "203.0.113.95", "alice@example.net"))
+	if calls := smtpCalls(d); calls != 1 || len(d.smtpAuthTracker.accounts) != 0 {
+		t.Fatalf("overflow lost mailbox ambiguity: calls=%d accounts=%+v", calls, d.smtpAuthTracker.accounts)
+	}
+}
+
+func TestPostfixProtocolFailuresDoNotClaimCredentialEvidence(t *testing.T) {
+	for _, reply := range []string{
+		"Invalid authentication mechanism",
+		"Invalid authentication mechanism: 'INVALID'",
+		"Invalid base64 data in initial response",
+		"Invalid base64 data in continued response",
+	} {
+		t.Run(reply, func(t *testing.T) {
+			d, clock := newPairingDaemon(t, &config.Config{})
+			feed(d, clock,
+				"dovecot: auth: sql(alice@example.net,203.0.113.95): unknown user",
+				"postfix/smtpd[99]: warning: unknown[203.0.113.95]: SASL LOGIN authentication failed: "+reply)
+			if calls := smtpCalls(d); calls != 0 {
+				t.Fatalf("local protocol rejection recorded %d credential failures", calls)
+			}
+		})
+	}
+}
+
+// Reading a backlog quickly must not turn an old, unused passdb rejection
+// into evidence for a much later Postfix failure.
+func TestPairingRespectsLoggedTime(t *testing.T) {
+	for _, tc := range []struct {
+		name, verdictTime, failureTime string
+		want                           int64
+	}{
+		{"rfc3339 stale", "2026-10-31T19:50:00Z", "2026-10-31T20:00:00Z", 0},
+		{"syslog stale", "Oct 31 19:50:00", "Oct 31 20:00:00", 0},
+		{"out of order", "2026-10-31T20:00:03Z", "2026-10-31T20:00:02Z", 0},
+		{"rfc3339 fresh", "2026-10-31T19:59:58Z", "2026-10-31T20:00:00Z", 1},
+		{"syslog fresh", "Oct 31 19:59:58", "Oct 31 20:00:00", 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d, clock := newPairingDaemon(t, &config.Config{})
+			feed(d, clock,
+				tc.verdictTime+" mail dovecot: auth: sql(alice@example.net,203.0.113.95): unknown user",
+				tc.failureTime+" mail postfix/smtpd[99]: warning: unknown[203.0.113.95]: SASL LOGIN authentication failed: x")
+			if calls := smtpCalls(d); calls != tc.want {
+				t.Fatalf("SMTP failures = %d, want %d", calls, tc.want)
+			}
+		})
+	}
+}
+
+func TestPairingAcrossSyslogNewYear(t *testing.T) {
+	d, clock := newPairingDaemon(t, &config.Config{})
+	clock.t = time.Date(2027, 1, 1, 0, 0, 3, 0, time.Local)
+	feed(d, clock,
+		"Dec 31 23:59:59 mail dovecot: auth: sql(alice@example.net,203.0.113.95): unknown user",
+		"Jan  1 00:00:01 mail postfix/smtpd[99]: warning: unknown[203.0.113.95]: SASL LOGIN authentication failed: x")
+	if calls := smtpCalls(d); calls != 1 {
+		t.Fatalf("year rollover lost a fresh pair: failures = %d", calls)
+	}
+}
+
+// Saturation drops new verdicts, but must not evict a retained client's
+// evidence or leave the map unavailable after old entries expire.
+func TestPairingPendingCapacityRecovers(t *testing.T) {
+	d, clock := newPairingDaemon(t, &config.Config{})
+	d.smtpAuthTracker.maxTracked = 1
+	feed(d, clock,
+		"dovecot: auth: sql(alice@example.net,203.0.113.95): unknown user",
+		"dovecot: auth: sql(bob@example.net,203.0.113.96): unknown user",
+		fmt.Sprintf(postfixFailFmt, "203.0.113.96", "bob@example.net"),
+		fmt.Sprintf(postfixFailFmt, "203.0.113.95", "alice@example.net"))
+	if calls := smtpCalls(d); calls != 1 {
+		t.Fatalf("saturated map recorded %d failures, want 1 retained verdict", calls)
+	}
+	feed(d, clock, "dovecot: auth: sql(alice@example.net,203.0.113.95): unknown user")
+	clock.advance(time.Minute)
+	feed(d, clock,
+		"dovecot: auth: sql(bob@example.net,203.0.113.96): unknown user",
+		fmt.Sprintf(postfixFailFmt, "203.0.113.96", "bob@example.net"))
+	if calls := smtpCalls(d); calls != 2 {
+		t.Fatalf("expired map did not recover: failures = %d, want 2", calls)
+	}
+}
+
 // Postfix failures without a fresh Dovecot rejection (outages, stale replies)
 // never count, whatever their reply text says.
 func TestUnpairedPostfixFailureNeverCounts(t *testing.T) {

@@ -6,23 +6,24 @@ import (
 	"strings"
 )
 
-// postfixSMTPDMessage returns the message of a postfix smtpd log line, or ""
-// when the line comes from any other program.
-func postfixSMTPDMessage(line string) string {
+// postfixSMTPDMessage returns the process tag and message of a postfix smtpd
+// log line. Backend warnings omit the client address, so their process tag
+// must be retained to withhold that process's subsequent failures.
+func postfixSMTPDMessage(line string) (process, msg string) {
 	tagEnd := strings.Index(line, ": ")
 	if tagEnd < 0 {
-		return ""
+		return "", ""
 	}
-	if !isPostfixSMTPDTag(line[strings.LastIndexAny(line[:tagEnd], " \t")+1 : tagEnd]) {
-		return ""
+	process = line[strings.LastIndexAny(line[:tagEnd], " \t")+1 : tagEnd]
+	if !isPostfixSMTPDTag(process) {
+		return "", ""
 	}
-	return line[tagEnd+2:]
+	return process, line[tagEnd+2:]
 }
 
-// postfixSASLAuthFailure reports the client address of a postfix smtpd
+// postfixSASLFailure reports the client address of a postfix smtpd
 // "warning: name[addr]: SASL <mech> authentication failed: <reply>" line and
-// whether the reply blames the authentication server. It returns "" for any
-// other line.
+// the reply text. It returns "" for any other line.
 //
 // The client field must open the warning as one space-free token: smtpd
 // echoes client-supplied text (RCPT, HELO) into other warnings, and a match
@@ -31,11 +32,6 @@ func postfixSMTPDMessage(line string) string {
 // The line alone is never evidence: Postfix logs a Dovecot temporary failure
 // the same way as a wrong password, and a failed reconnect can repeat an
 // earlier reply. Callers pair it with Dovecot's verdict for the request.
-func postfixSASLAuthFailure(line string) (ip string, serverFault bool) {
-	ip, reply := postfixSASLFailure(postfixSMTPDMessage(line))
-	return ip, isPostfixSASLBackendReply(reply)
-}
-
 func postfixSASLFailure(msg string) (ip, reply string) {
 	msg, ok := strings.CutPrefix(msg, "warning: ")
 	if !ok {
@@ -74,15 +70,19 @@ func postfixSASLFailure(msg string) (ip, reply string) {
 	return ip, strings.ToLower(strings.TrimSpace(reply))
 }
 
-func isPostfixSASLBackendReply(reply string) bool {
+func isPostfixSASLNonCredentialReply(reply string) bool {
 	// smtpd_sasl_glue logs the SASL reason, not the SMTP status. Dovecot's
 	// malformed backend replies and Cyrus's temporary errors do not all
 	// include "temporary" or "authentication server" in that reason.
 	switch reply {
 	case "authentication backend error", "generic failure", "no memory available", "transient failure (e.g., weak key)":
 		return true
+	case "invalid authentication mechanism", "invalid base64 data in initial response", "invalid base64 data in continued response":
+		// These fail locally without sending credentials to Dovecot.
+		return true
 	}
-	return strings.Contains(reply, "authentication server") || strings.Contains(reply, "temporar")
+	return strings.Contains(reply, "authentication server") || strings.Contains(reply, "temporar") ||
+		strings.HasPrefix(reply, "invalid authentication mechanism:")
 }
 
 func postfixClientIP(client string) string {

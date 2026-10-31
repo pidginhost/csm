@@ -2530,23 +2530,30 @@ func (d *Daemon) handleSMTPAuthPairing(line string, obs alert.Observation, cfg *
 	}
 	if ip, account, ok := dovecotSessionlessRejection(line); ok {
 		if !isInfraIPDaemon(ip, cfg.InfraIPs) && !isPrivateOrLoopback(ip) {
-			t.NoteDovecotRejection(ip, account)
+			t.NoteDovecotRejection(ip, account, smtpAuthLogTime(line, t.now()))
 		}
 		return nil, true
 	}
 	if ips := dovecotAuthTroubleIPs(line); len(ips) > 0 {
-		t.NoteDovecotTrouble(ips)
+		t.NoteAuthTrouble(ips...)
 		return nil, false
 	}
-	ip, serverFault := postfixSASLAuthFailure(line)
+	process, msg := postfixSMTPDMessage(line)
+	if strings.HasPrefix(msg, "warning: SASL: ") {
+		// A failed backend reconnect can leave smtpd's previous reply
+		// intact. This trusted prefix has no client-supplied text.
+		t.NoteAuthTrouble(process)
+		return nil, true
+	}
+	ip, reply := postfixSASLFailure(msg)
 	if ip == "" {
 		return nil, false
 	}
 	// Claim the verdict even for a server-blamed reply so it cannot pair
-	// with a later failure. Infra, private and loopback clients never have
-	// a pending verdict.
-	account, ok := t.PairMTAFailure(ip)
-	if !ok || serverFault {
+	// with a later failure. Recheck infra protection in case configuration
+	// changed between the two log lines.
+	account, ok := t.PairMTAFailure(ip, process, smtpAuthLogTime(line, t.now()))
+	if !ok || isPostfixSASLNonCredentialReply(reply) || isInfraIPDaemon(ip, cfg.InfraIPs) || isPrivateOrLoopback(ip) {
 		return nil, true
 	}
 	return t.RecordObserved(ip, account, obs), true

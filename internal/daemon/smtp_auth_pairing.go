@@ -1,6 +1,9 @@
 package daemon
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 const (
 	// smtpAuthPairWindow bounds the gap between Dovecot's verdict and the
@@ -12,14 +15,14 @@ const (
 )
 
 type smtpPendingVerdict struct {
-	at      time.Time
-	account string
+	at, loggedAt time.Time
+	account      string
 }
 
 // NoteDovecotRejection keeps a sessionless Dovecot rejection until the MTA's
 // failure line for the same client claims it. Callers filter infra, private
 // and loopback addresses first.
-func (t *smtpAuthTracker) NoteDovecotRejection(ip, account string) {
+func (t *smtpAuthTracker) NoteDovecotRejection(ip, account string, loggedAt time.Time) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	now := t.now()
@@ -34,20 +37,35 @@ func (t *smtpAuthTracker) NoteDovecotRejection(ip, account string) {
 	if t.pendingVerdicts == nil {
 		t.pendingVerdicts = make(map[string][]smtpPendingVerdict)
 	}
+	for len(pending) > 0 && pending[0].at.Before(now.Add(-smtpAuthPairWindow)) {
+		pending = pending[1:]
+	}
+	for _, verdict := range pending {
+		if verdict.account != account {
+			account = ""
+			// Preserve ambiguity even when the queue drops an older
+			// answer or a different request finishes first.
+			for i := range pending {
+				pending[i].account = ""
+			}
+			break
+		}
+	}
 	if len(pending) >= smtpAuthPairMaxPending {
 		pending = pending[1:]
 	}
-	t.pendingVerdicts[ip] = append(pending, smtpPendingVerdict{at: now, account: account})
+	t.pendingVerdicts[ip] = append(pending, smtpPendingVerdict{at: now, loggedAt: loggedAt, account: account})
 }
 
-// NoteDovecotTrouble marks clients whose requests hit a Dovecot error. Their
-// MTA failures inside the pairing window are not credential evidence.
-func (t *smtpAuthTracker) NoteDovecotTrouble(ips []string) {
+// NoteAuthTrouble marks Dovecot client addresses or Postfix process tags.
+// Their failures inside the pairing window are not credential evidence.
+// Process tags and canonical IP addresses cannot collide.
+func (t *smtpAuthTracker) NoteAuthTrouble(keys ...string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	now := t.now()
-	for _, ip := range ips {
-		if _, exists := t.authTrouble[ip]; !exists && len(t.authTrouble) >= t.maxTracked {
+	for _, key := range keys {
+		if _, exists := t.authTrouble[key]; !exists && len(t.authTrouble) >= t.maxTracked {
 			t.prunePairing(now)
 			if len(t.authTrouble) >= t.maxTracked {
 				// Losing a mark could turn an outage into evidence, so
@@ -59,41 +77,73 @@ func (t *smtpAuthTracker) NoteDovecotTrouble(ips []string) {
 		if t.authTrouble == nil {
 			t.authTrouble = make(map[string]time.Time)
 		}
-		t.authTrouble[ip] = now
+		t.authTrouble[key] = now
 	}
 }
 
-// PairMTAFailure claims the oldest pending rejection for ip when the MTA logs
-// that request's failure. It reports the rejected account and whether the
-// failure is credential evidence: a fresh rejection, and no Dovecot error for
-// the client inside the window. One failure claims one verdict, so a request
-// that several databases rejected counts once.
-func (t *smtpAuthTracker) PairMTAFailure(ip string) (account string, ok bool) {
+// PairMTAFailure claims the oldest pending rejection for ip. There is no
+// request ID in these lines, and concurrent requests can finish out of order,
+// so account attribution requires all pending answers to agree. Dovecot
+// client errors and Postfix process errors withhold evidence for the window.
+func (t *smtpAuthTracker) PairMTAFailure(ip, process string, loggedAt time.Time) (account string, ok bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	now := t.now()
 	cutoff := now.Add(-smtpAuthPairWindow)
 	pending := t.pendingVerdicts[ip]
-	for len(pending) > 0 && pending[0].at.Before(cutoff) {
+	for len(pending) > 0 {
+		p := pending[0]
+		badLogTime := !p.loggedAt.IsZero() && !loggedAt.IsZero() &&
+			(loggedAt.Before(p.loggedAt) || loggedAt.Sub(p.loggedAt) > smtpAuthPairWindow)
+		if !p.at.Before(cutoff) && !badLogTime {
+			break
+		}
 		pending = pending[1:]
 	}
 	if len(pending) == 0 {
 		delete(t.pendingVerdicts, ip)
 		return "", false
 	}
-	claimed := pending[0]
+	account = pending[0].account
 	if len(pending) == 1 {
 		delete(t.pendingVerdicts, ip)
 	} else {
 		t.pendingVerdicts[ip] = pending[1:]
 	}
-	if now.Before(t.authTroubleOverflowUntil) {
+	if !now.After(t.authTroubleOverflowUntil) {
 		return "", false
 	}
-	if at, marked := t.authTrouble[ip]; marked && !at.Before(cutoff) {
-		return "", false
+	for _, key := range []string{ip, process} {
+		if at, marked := t.authTrouble[key]; marked && !at.Before(cutoff) {
+			return "", false
+		}
 	}
-	return claimed.account, true
+	return account, true
+}
+
+// smtpAuthLogTime keeps buffered file input from extending the pairing
+// window. Bare messages have no source time; their receipt-time bound still
+// applies. Traditional syslog omits the year and uses the host's timezone.
+func smtpAuthLogTime(line string, now time.Time) time.Time {
+	if end := strings.IndexAny(line, " \t"); end > 0 {
+		if at, err := time.Parse(time.RFC3339Nano, line[:end]); err == nil {
+			return at
+		}
+	}
+	if len(line) < len(time.Stamp) {
+		return time.Time{}
+	}
+	at, err := time.ParseInLocation(time.Stamp, line[:len(time.Stamp)], now.Location())
+	if err != nil {
+		return time.Time{}
+	}
+	at = time.Date(now.Year(), at.Month(), at.Day(), at.Hour(), at.Minute(), at.Second(), 0, now.Location())
+	// A December line read in January belongs to the previous year. Allow
+	// a day's clock skew rather than mistaking it for a year-old message.
+	if at.After(now.AddDate(0, 0, 1)) {
+		at = at.AddDate(-1, 0, 0)
+	}
+	return at
 }
 
 // prunePairing drops expired verdicts and error marks. Caller holds t.mu.
