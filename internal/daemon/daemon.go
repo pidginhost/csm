@@ -2470,7 +2470,7 @@ func (d *Daemon) handleEximLine(line string, obs alert.Observation, cfg *config.
 func (d *Daemon) handleMailLine(line string, obs alert.Observation, cfg *config.Config) []alert.Finding {
 	d.recordMailStatsMail(line, obs.ObservedAt)
 	findings := parseDovecotLogLine(line, cfg)
-	if ip := postfixSASLFailureIP(line); ip != "" {
+	if ip := d.smtpAuthTracker.postfixSASLFailureIP(line); ip != "" {
 		if d.smtpAuthTracker != nil && !isInfraIPDaemon(ip, cfg.InfraIPs) && !isPrivateOrLoopback(ip) {
 			findings = append(findings, d.smtpAuthTracker.RecordObserved(ip, "", obs)...)
 		}

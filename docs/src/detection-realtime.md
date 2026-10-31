@@ -365,7 +365,9 @@ On Postfix hosts that read the mail log from a file (`mail_logs.source: file`, o
 
 Recognized authentication backend errors, including lost Dovecot connections, malformed backend replies and temporary Cyrus failures, are not counted. Account names appended by newer Postfix versions do not affect this classification.
 
-Some Postfix failures omit the reason or report `(reason unavailable)`. These still count, but the log line alone cannot distinguish a rejected credential from a failed backend reconnect. Do not rely on this filter alone to prevent blocks during every authentication outage.
+Postfix backend connection and handshake diagnostics exclude the next authentication failure from the same smtpd worker, even when its reason is missing or left over from an earlier attempt. Excluded attempts do not build up IP or subnet evidence. Other workers continue to contribute failures. Correlation uses the existing SMTP tracking window and tracking budget; if the budget fills, Postfix failure counting pauses for that window.
+
+Some Postfix failures omit the reason or report `(reason unavailable)`. These still count when there is no matching backend diagnostic. Postfix can also close a backend handshake without logging a diagnostic, and missing log records cannot be recovered by this filter. Those failures are indistinguishable from rejected credentials without a status-bearing authentication log. Do not rely on this filter alone to prevent blocks during every authentication outage.
 
 Four attack patterns:
 

@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -97,5 +98,226 @@ func TestPostfixSASLFailureTracksTheClientAddress(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].SourceIP != "203.0.113.70" {
 		t.Fatalf("findings = %+v, want one finding for 203.0.113.70", got)
+	}
+}
+
+// xsasl_dovecot_server_first returns XSASL_AUTH_TEMP without changing the
+// reply when reconnect fails. The warning can reuse any earlier SASL reply.
+func TestPostfixSASLReconnectFailureDoesNotCount(t *testing.T) {
+	for _, diagnostic := range []string{
+		"SASL: Connect to Dovecot auth socket 'private/auth' failed: Connection refused",
+		"SASL: Couldn't send handshake: Broken pipe",
+		"SASL: Protocol version error",
+		"SASL: Protocol version mismatch (2 vs. 1)",
+		"SASL: Connected to wrong auth socket (auth-master instead of auth-client)",
+	} {
+		for _, reply := range []string{"", "(reason unavailable)", "UGFzc3dvcmQ6", "authentication failure"} {
+			t.Run(diagnostic+"/"+reply, func(t *testing.T) {
+				clock := &staticClock{t: time.Now()}
+				d := New(&config.Config{}, nil, nil, "")
+				d.smtpAuthTracker = newTestTracker(t, clock)
+				const prefix = "Oct 31 12:34:11 mail postfix/submission/smtpd[99]: warning: "
+				for i := 0; i < 10; i++ {
+					if got := d.handleMailLine(prefix+diagnostic, alert.Observation{}, d.currentCfg()); len(got) != 0 {
+						t.Fatalf("backend diagnostic raised findings: %+v", got)
+					}
+					line := prefix + "unknown[203.0.113.61]: SASL PLAIN authentication failed: " + reply
+					if got := d.handleMailLine(line, alert.Observation{}, d.currentCfg()); len(got) != 0 {
+						t.Fatalf("backend failure raised findings: %+v", got)
+					}
+				}
+				if calls, _ := d.smtpAuthTracker.Stats(); calls != 0 {
+					t.Fatalf("backend failures entered tracker: %d calls", calls)
+				}
+				// The next result from a recovered backend must start fresh.
+				for i := 0; i < 5; i++ {
+					got := d.handleMailLine(prefix+"unknown[203.0.113.61]: SASL PLAIN authentication failed: "+reply, alert.Observation{}, d.currentCfg())
+					want := 0
+					if i == 4 {
+						want = 1
+					}
+					if len(got) != want || (want == 1 && (got[0].Check != "smtp_bruteforce" || got[0].SourceIP != "203.0.113.61")) {
+						t.Fatalf("recovery attempt %d: findings = %+v", i+1, got)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestPostfixSASLBackendErrorsStayWithTheirProcess(t *testing.T) {
+	clock := &staticClock{t: time.Now()}
+	d := New(&config.Config{}, nil, nil, "")
+	d.smtpAuthTracker = newTestTracker(t, clock)
+	const diagnostic = "warning: SASL: Connect to Dovecot auth socket 'private/auth' failed: Connection refused"
+	const failed = "warning: unknown[203.0.113.61]: SASL PLAIN authentication failed: (reason unavailable)"
+	for i := 0; i < 5; i++ {
+		// Both the PID and the service distinguish independent workers.
+		for _, tag := range []string{"postfix/smtpd[98]", "postfix/submission/smtpd[99]"} {
+			if got := d.handleMailLine(tag+": "+diagnostic, alert.Observation{}, d.currentCfg()); len(got) != 0 {
+				t.Fatalf("backend diagnostic raised findings: %+v", got)
+			}
+		}
+		got := d.handleMailLine("postfix/smtpd[99]: "+failed, alert.Observation{}, d.currentCfg())
+		want := 0
+		if i == 4 {
+			want = 1
+		}
+		if len(got) != want || (want == 1 && got[0].Check != "smtp_bruteforce") {
+			t.Fatalf("healthy worker attempt %d: findings = %+v", i+1, got)
+		}
+	}
+}
+
+func TestPostfixSASLWarningGrammar(t *testing.T) {
+	for _, msg := range []string{
+		// The AUTH mechanism is client-supplied, including quotes and spaces.
+		`unknown[203.0.113.61]: SASL "LOGIN authentication failed: x" authentication aborted`,
+		"unknown[203.0.113.61]: SASL LOGIN authentication failedness: x",
+		"203.0.113.61]: SASL LOGIN authentication failed: x",
+		"unknown[203.0.113.61]:not-a-port: SASL LOGIN authentication failed: x",
+		"unknown[203.0.113.61]:70000: SASL LOGIN authentication failed: x",
+		"unknown[203.0.113.61]: SASL LOGIN authentication failed: x",
+	} {
+		line := "postfix/smtpd[99]: warning: " + msg
+		want := ""
+		if msg == "unknown[203.0.113.61]: SASL LOGIN authentication failed: x" {
+			want = "203.0.113.61"
+		}
+		if got := postfixSASLFailureIP(line); got != want {
+			t.Errorf("%q: got %q, want %q", line, got, want)
+		}
+	}
+}
+
+func TestPostfixSASLBackendCorrelationLifecycle(t *testing.T) {
+	const diagnostic = "postfix/smtpd[99]: warning: SASL: Couldn't send handshake: Broken pipe"
+	const failed = "postfix/smtpd[99]: warning: unknown[203.0.113.61]: SASL PLAIN authentication failed: (reason unavailable)"
+	for _, boundary := range []string{
+		"connect from unknown[203.0.113.61]",
+		"warning: unknown[203.0.113.61]: SASL PLAIN authentication failed: Authentication backend error",
+	} {
+		t.Run(boundary, func(t *testing.T) {
+			tr := newTestTracker(t, &staticClock{t: time.Now()})
+			if got := tr.postfixSASLFailureIP(diagnostic); got != "" {
+				t.Fatalf("diagnostic names %q", got)
+			}
+			if got := tr.postfixSASLFailureIP("postfix/smtpd[99]: " + boundary); got != "" {
+				t.Fatalf("boundary names %q", got)
+			}
+			if got := tr.postfixSASLFailureIP(failed); got != "203.0.113.61" {
+				t.Fatalf("next connection or AUTH result names %q", got)
+			}
+		})
+	}
+	var tr *smtpAuthTracker
+	if got := tr.postfixSASLFailureIP(failed); got != "" {
+		t.Fatalf("disabled tracker names %q", got)
+	}
+}
+
+func TestPostfixSASLBackendCorrelationBudget(t *testing.T) {
+	clock := &staticClock{t: time.Now()}
+	tr := newTestTracker(t, clock)
+	tr.maxTracked = 2
+	for i := 0; i < 3; i++ {
+		line := fmt.Sprintf("postfix/smtpd[%d]: warning: SASL: Protocol version error", i+1)
+		if got := tr.postfixSASLFailureIP(line); got != "" {
+			t.Fatalf("diagnostic names %q", got)
+		}
+	}
+	if got := len(tr.postfixBackendErrors); got != 2 {
+		t.Fatalf("pending errors = %d, want bounded at 2", got)
+	}
+	const failed = "postfix/smtpd[3]: warning: unknown[203.0.113.61]: SASL PLAIN authentication failed: (reason unavailable)"
+	if got := tr.postfixSASLFailureIP(failed); got != "" {
+		t.Fatalf("overflow lost a backend error: names %q", got)
+	}
+	clock.advance(tr.window)
+	tr.Purge()
+	if got := len(tr.postfixBackendErrors); got != 0 {
+		t.Fatalf("expired errors = %d, want 0", got)
+	}
+	if got := tr.postfixSASLFailureIP(failed); got != "203.0.113.61" {
+		t.Fatalf("expired overflow still suppresses: names %q", got)
+	}
+}
+
+func TestPostfixSASLBackendCorrelationConcurrentWorkers(t *testing.T) {
+	tr := newTestTracker(t, &staticClock{t: time.Now()})
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Go(func() {
+			prefix := fmt.Sprintf("postfix/smtpd[%d]: warning: ", i+1)
+			if got := tr.postfixSASLFailureIP(prefix + "SASL: Protocol version error"); got != "" {
+				t.Errorf("diagnostic names %q", got)
+			}
+			tr.Purge()
+			if got := tr.postfixSASLFailureIP(prefix + "unknown[203.0.113.61]: SASL PLAIN authentication failed: (reason unavailable)"); got != "" {
+				t.Errorf("reconnect failure names %q", got)
+			}
+		})
+	}
+	wg.Wait()
+	if got := len(tr.postfixBackendErrors); got != 0 {
+		t.Fatalf("consumed errors retained: %d", got)
+	}
+}
+
+func TestPostfixSASLOutageDoesNotAccumulateSubnetEvidence(t *testing.T) {
+	clock := &staticClock{t: time.Now()}
+	d := New(&config.Config{}, nil, nil, "")
+	d.smtpAuthTracker = newTestTracker(t, clock)
+	for i := 1; i <= 10; i++ {
+		prefix := fmt.Sprintf("postfix/smtpd[%d]: warning: ", i)
+		for _, msg := range []string{
+			"SASL: Couldn't send handshake: Broken pipe",
+			fmt.Sprintf("unknown[203.0.113.%d]: SASL PLAIN authentication failed: (reason unavailable)", i),
+		} {
+			if got := d.handleMailLine(prefix+msg, alert.Observation{}, d.currentCfg()); len(got) != 0 {
+				t.Fatalf("outage raised findings: %+v", got)
+			}
+		}
+	}
+	if calls, _ := d.smtpAuthTracker.Stats(); calls != 0 || d.smtpAuthTracker.Size() != 0 {
+		t.Fatalf("outage left evidence: %d calls, %d entries", calls, d.smtpAuthTracker.Size())
+	}
+	for i := 1; i <= 8; i++ {
+		obs := alert.Observation{Producer: "mail_log", Stream: "mail", Cursor: fmt.Sprint(i), ObservedAt: clock.Now()}
+		line := fmt.Sprintf("postfix/smtpd[%d]: warning: unknown[203.0.113.%d]: SASL PLAIN authentication failed: (reason unavailable)", i, i)
+		got := d.handleMailLine(line, obs, d.currentCfg())
+		want := 0
+		if i == 8 {
+			want = 1
+		}
+		if len(got) != want {
+			t.Fatalf("recovery attempt %d raised %+v", i, got)
+		}
+		if want == 1 && (got[0].Check != "smtp_subnet_spray" || len(got[0].SprayConstituents) != 8) {
+			t.Fatalf("subnet evidence missing: %+v", got)
+		}
+	}
+}
+
+func TestPostfixSASLActiveProbeOutageDoesNotAccumulate(t *testing.T) {
+	d := New(&config.Config{}, nil, nil, "")
+	d.smtpAuthTracker = newTestTracker(t, &staticClock{t: time.Now()})
+	down := true
+	d.smtpAuthTracker.SetBackendDownCheck(func() bool { return down })
+	const line = "postfix/smtpd[99]: warning: unknown[203.0.113.61]: SASL PLAIN authentication failed: (reason unavailable)"
+	for i := 0; i < 10; i++ {
+		if got := d.handleMailLine(line, alert.Observation{}, d.currentCfg()); len(got) != 0 {
+			t.Fatalf("active probe outage raised findings: %+v", got)
+		}
+	}
+	if calls, _ := d.smtpAuthTracker.Stats(); calls != 0 || d.smtpAuthTracker.Size() != 0 {
+		t.Fatalf("active probe outage left evidence: %d calls, %d entries", calls, d.smtpAuthTracker.Size())
+	}
+	down = false
+	if got := d.handleMailLine(line, alert.Observation{}, d.currentCfg()); len(got) != 0 {
+		t.Fatalf("outage traffic caused a block after recovery: %+v", got)
+	}
+	if calls, _ := d.smtpAuthTracker.Stats(); calls != 1 {
+		t.Fatalf("recovered backend not counted: %d calls", calls)
 	}
 }

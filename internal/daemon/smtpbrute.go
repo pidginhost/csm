@@ -151,6 +151,9 @@ type smtpAuthTracker struct {
 	// sees the mail auth backend down. SMTP-AUTH (exim->dovecot) fails the same
 	// way during a cpdoveauthd outage, so suppress brute/subnet auto-block then.
 	backendDownFn func() bool
+
+	postfixBackendErrors        map[string]time.Time
+	postfixBackendOverflowUntil time.Time
 }
 
 // SetBackendDownCheck installs the active-probe callback the tracker consults to
@@ -455,6 +458,7 @@ func (t *smtpAuthTracker) Purge() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	now := t.now()
+	t.prunePostfixBackendErrors(now)
 	activityCutoff := now.Add(-(t.window + t.suppression))
 	slowCutoff := now.Add(-t.slowWindow)
 

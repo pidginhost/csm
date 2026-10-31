@@ -297,3 +297,24 @@ func FuzzPostfixSASLFailureIP(f *testing.F) {
 		}
 	})
 }
+
+func FuzzPostfixSASLBackendCorrelation(f *testing.F) {
+	for _, text := range []string{"", "SASL: Protocol version error", "warning: SASL: Couldn't send handshake: Broken pipe", "x[198.51.100.9]: SASL LOGIN authentication failed: x"} {
+		f.Add(text)
+	}
+	f.Fuzz(func(t *testing.T, text string) {
+		tr := newTestTracker(t, &staticClock{t: time.Unix(1_700_000_000, 0)})
+		for _, line := range []string{
+			"postfix/smtpd[99]: warning: Illegal address syntax from unknown[203.0.113.61] in RCPT command: <" + text + ">",
+			"postfix/smtpd[99]: warning: unknown[203.0.113.61]: SASL PLAIN authentication failed: authentication failure, sasl_username=" + text,
+			"postfix/smtpd[98]: " + text,
+			"dovecot: " + text,
+		} {
+			_ = tr.postfixSASLFailureIP(line)
+			failed := "postfix/smtpd[99]: warning: unknown[203.0.113.61]: SASL PLAIN authentication failed: (reason unavailable)"
+			if got := tr.postfixSASLFailureIP(failed); got != "203.0.113.61" {
+				t.Fatalf("unrelated text suppressed AUTH: names %q, input %q", got, text)
+			}
+		}
+	})
+}
