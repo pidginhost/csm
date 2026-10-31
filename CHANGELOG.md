@@ -18,6 +18,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 ### Changed
 
 - With auto_response.dry_run off, admission previews now wait for free slots under firewall.deny_temp_ip_limit, and csm doctor warns while that set is full; blocking is unchanged.
+- Learned spam is now stored with its headers and text only, without images or other attachments.
 
 ### Fixed
 
@@ -27,6 +28,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - A real-time YARA finding on a file scanned in full now fingerprints the content it matched, not whatever the file holds when the finding is stored.
 - Phishing-kit companion reports now say when YARA could not check a file instead of listing it as checked.
 - Spam whose plain-text and HTML versions differ is now learned from Spam folder reports and operator marks instead of being skipped.
+- Spam with a PDF attachment that carries scripts is now learned instead of holding up the other Spam folder reports of its mailbox.
 
 ## [4.8.1] - 2026-10-30
 

@@ -1,6 +1,7 @@
 package learn
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -291,8 +292,8 @@ func (p *Publisher) sendAdd(ctx context.Context, t Target, v int64) (bool, error
 	return p.verify(ctx, t.Digest, func(v int64, present bool) bool { return present && v >= int64(t.T) })
 }
 
-// anchorBody returns the cluster's stored body after checking its length,
-// hash and that the current hash generation still yields the anchor.
+// anchorBody verifies the stored bytes and returns the text-only message
+// only if the current hash generation still yields the recorded anchor.
 func (p *Publisher) anchorBody(ctx context.Context, t Target) ([]byte, error) {
 	var c Cluster
 	var ok bool
@@ -316,14 +317,34 @@ func (p *Publisher) anchorBody(ctx context.Context, t Target) ([]byte, error) {
 	if err = ctx.Err(); err != nil {
 		return nil, err
 	}
+	// A clean inspection proves the stored bytes publish only the anchor.
+	// Bodies kept before text-only learning may carry an attachment that
+	// rspamd now hashes on its own; their text-only form, verified the same
+	// way, is published instead. The stored body and its ledger record stay.
+	err = p.yieldsAnchor(ctx, body, t.Digest)
+	if err == nil {
+		return body, nil
+	}
+	text := textOnlyMessage(body)
+	if text == nil || bytes.Equal(text, body) {
+		return nil, err
+	}
+	if err = p.yieldsAnchor(ctx, text, t.Digest); err != nil {
+		return nil, err
+	}
+	return text, nil
+}
+
+// yieldsAnchor inspects body and checks it hashes to exactly d.
+func (p *Publisher) yieldsAnchor(ctx context.Context, body []byte, d Digest) error {
 	insp, err := p.client.Inspect(ctx, body)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrReadFailed, err)
+		return fmt.Errorf("%w: %w", ErrReadFailed, err)
 	}
-	if insp.Distinct != 1 || insp.Results[0].Queried != t.Digest {
-		return nil, fmt.Errorf("%w: the anchor body no longer hashes to its digest", ErrStateMismatch)
+	if insp.Distinct != 1 || insp.Results[0].Queried != d {
+		return fmt.Errorf("%w: the anchor body no longer hashes to its digest", ErrStateMismatch)
 	}
-	return body, nil
+	return nil
 }
 
 // verify flushes and polls exact checks until done reports true or the

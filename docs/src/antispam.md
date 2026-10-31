@@ -635,9 +635,12 @@ A report is a regular file owned by the account, at most 10 MiB, that did
 not change while CSM read it. A message still linked from another folder,
 such as one delivery shared by several mailboxes, counts once it and its
 links have stayed unchanged for a full pass, so a move into or out of Spam
-can finish first. Messages are skipped when any `X-Spam-Status` header says
-`Yes`, when that header cannot be parsed, and when the header block is
-malformed or too large, linked or not.
+can finish first. Messages are skipped when any `X-Spam-Status` header
+says `Yes`, when that header cannot be parsed, and when the header block
+is malformed or too large, linked or not. Only the text parts of a report
+are learned, attached text included; images and other attachments never
+are. A message whose MIME structure CSM cannot read is skipped as
+`no_digest`, for operator requests too.
 
 Reports are not authenticated. Tenants control their own mail: they can
 move any message they received, or deliver one locally, and a forged
@@ -811,13 +814,14 @@ a completed pass confirms that learning can resume.
 ### Stored messages
 
 Each learned cluster keeps one message, the first one reported, so the
-learner can restore its value if Redis loses it. The message is stored
-whole, headers and attachments included, under
+learner can restore its value if Redis loses it. CSM keeps its headers and
+text parts, without images or other attachments, under
 `/var/lib/csm/antispam/learning/anchors`, readable only by root. A cluster
-started from one version of a message keeps only that text part with the
-message headers. CSM deletes it when the cluster retires, 90 days after
-its last report, or when an operator forgets it. Backups and file system
-snapshots can keep a copy longer.
+started from one version of a message keeps only that version. CSM deletes
+it when the cluster retires, 90 days after its last report, or when an
+operator forgets it. Backups and file system snapshots can keep a copy
+longer. Messages saved by older versions keep their attachments until
+their cluster retires.
 If deleting a retained message fails, CSM still removes its retired score
 and reports the cleanup error. New reports wait until cleanup succeeds.
 Disabling learning, observe mode or unmet prerequisites can delay retirement
