@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 	"sync"
 
 	yara_x "github.com/VirusTotal/yara-x/go"
@@ -119,14 +120,36 @@ func LoadRules(r io.Reader) (*Rules, error) {
 	if err != nil {
 		return nil, fmt.Errorf("loading compiled YARA rules: %w", err)
 	}
+	// ReadFrom omits the finalizer that the binding's compiler installs.
+	// Attach it to the native wrapper so every scanner reference keeps it alive.
+	runtime.SetFinalizer(rules, (*yara_x.Rules).Destroy)
 	return &Rules{rules: rules}, nil
 }
 
 // Count is the number of rules in the set.
 func (r *Rules) Count() int { return r.rules.Count() }
 
-// WriteTo saves the compiled rule set.
-func (r *Rules) WriteTo(w io.Writer) (int64, error) { return r.rules.WriteTo(w) }
+// WriteTo saves the compiled rule set and counts bytes written even on failure.
+func (r *Rules) WriteTo(w io.Writer) (int64, error) {
+	// The binding drops the byte count on errors and accepts short writes.
+	writer := &rulesWriter{writer: w}
+	_, err := r.rules.WriteTo(writer)
+	return writer.written, err
+}
+
+type rulesWriter struct {
+	writer  io.Writer
+	written int64
+}
+
+func (w *rulesWriter) Write(p []byte) (int, error) {
+	n, err := w.writer.Write(p)
+	w.written += int64(n)
+	if err == nil && n != len(p) {
+		err = io.ErrShortWrite
+	}
+	return n, err
+}
 
 // Scan scans data and returns the matching rules with their string metadata.
 // An engine error is returned, never flattened to no matches.
