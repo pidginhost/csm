@@ -4,6 +4,7 @@ package yaraworker
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -110,8 +111,12 @@ func TestWorkerCompileRejectsOversizeOutput(t *testing.T) {
 	for _, fd := range fds {
 		_ = fd.Close()
 	}
-	if resp.Error == "" || len(fds) != 0 {
-		t.Fatalf("oversize serialization accepted: %+v, %d fds", resp, len(fds))
+	var res yaraipc.CompileResult
+	if resp.Error != "" || json.Unmarshal(resp.Payload, &res) != nil || res.CompileError == "" || res.RuleCount != 0 || len(fds) != 0 {
+		t.Fatalf("oversize serialization accepted or reported as a worker failure: %+v, %d fds", resp, len(fds))
+	}
+	if !strings.Contains(res.CompileError, "signatures.yara_worker_enabled") {
+		t.Fatalf("oversize compile error does not name the way out: %q", res.CompileError)
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -606,5 +607,81 @@ func TestScanBytesHasNoFrameCeiling(t *testing.T) {
 	data := append(make([]byte, yaraipc.MaxFrameBytes+1), []byte("evil")...)
 	if got := ruleNames(t, b, string(data)); len(got) != 1 {
 		t.Fatalf("a scan past the frame cap = %v", got)
+	}
+}
+
+// More rule files than one compile accepts is a property of the rule set:
+// it is refused before any worker starts and is never reported as a worker
+// outage to retry.
+func TestReloadRefusesTooManyRuleFiles(t *testing.T) {
+	files := make(map[string]string, yaraipc.MaxSources+1)
+	for i := 0; i <= yaraipc.MaxSources; i++ {
+		files[fmt.Sprintf("r%04d.yar", i)] = "marker:evil\n"
+	}
+	fx := &backendFixture{dir: rulesDir(t, files)}
+	b := newBackend(t, fx)
+	err := b.Reload()
+	if err == nil || workerproc.FailureReason(err) != "" || !strings.Contains(err.Error(), "signatures.yara_worker_enabled") {
+		t.Fatalf("reload error = %v (reason %q), want a rule-set error naming the knob", err, workerproc.FailureReason(err))
+	}
+	if fx.compile.launches.Load() != 0 {
+		t.Fatal("a rule set over the file limit started a compile worker")
+	}
+}
+
+// oomProcess is a compile worker the kernel killed for memory: its socket
+// is already closed and it reports an OOM kill.
+type oomProcess struct {
+	conn *net.UnixConn
+	done chan struct{}
+}
+
+func newOOMProcess(t *testing.T) *oomProcess {
+	t.Helper()
+	pair, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM|syscall.SOCK_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = syscall.Close(pair[1])
+	f := os.NewFile(uintptr(pair[0]), "oom-worker")
+	c, err := net.FileConn(f)
+	_ = f.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	close(done)
+	return &oomProcess{conn: c.(*net.UnixConn), done: done}
+}
+
+func (p *oomProcess) Conn() *net.UnixConn   { return p.conn }
+func (p *oomProcess) Kill() error           { return p.conn.Close() }
+func (p *oomProcess) Done() <-chan struct{} { return p.done }
+func (*oomProcess) PID() int                { return 1 }
+func (*oomProcess) Retire() bool            { return false }
+func (*oomProcess) OOMKilled() bool         { return true }
+
+// A compile killed for memory under the compile worker's fixed cap failed
+// because of the rule set: the error says so, names the way out, and is not
+// classified as a worker outage to retry.
+func TestCompileOutOfMemoryIsARuleSetError(t *testing.T) {
+	fx := &backendFixture{compileFn: func(context.Context) (workerproc.Process, error) { return newOOMProcess(t), nil }}
+	b := newBackend(t, fx)
+	err := b.Reload()
+	if err == nil || workerproc.FailureReason(err) != "" || !strings.Contains(err.Error(), "signatures.yara_worker_enabled") {
+		t.Fatalf("reload error = %v (reason %q), want a rule-set error naming the knob", err, workerproc.FailureReason(err))
+	}
+	if b.CompileError() == "" {
+		t.Fatal("an out-of-memory first compile left no compile error")
+	}
+}
+
+// A compile worker that dies stays a worker failure, and the error names why.
+func TestCompileCrashNamesReason(t *testing.T) {
+	fx := &backendFixture{compile: newHelper("compile-crash")}
+	b := newBackend(t, fx)
+	err := b.Reload()
+	if workerproc.FailureReason(err) != workerproc.ReasonCrash || !strings.Contains(err.Error(), "(crash)") {
+		t.Fatalf("reload error = %v (reason %q), want a crash naming itself", err, workerproc.FailureReason(err))
 	}
 }

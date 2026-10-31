@@ -42,6 +42,7 @@ func TestMain(m *testing.M) {
 //	compile-huge     answer compile with a descriptor over MaxSerializedRules
 //	compile-empty    answer compile with an empty descriptor
 //	compile-hang     never finish compiling
+//	compile-crash    exit on compile
 func runYaraHelper(mode string) int {
 	conn, err := workerproc.ChildConn()
 	if err == nil {
@@ -120,6 +121,8 @@ func injectFault(mode string, req workerproc.Frame, fds []*os.File) (workerproc.
 		}
 		var out *os.File
 		switch mode {
+		case "compile-crash":
+			os.Exit(3)
 		case "compile-hang":
 			time.Sleep(time.Hour)
 			return workerproc.Frame{}, nil, true

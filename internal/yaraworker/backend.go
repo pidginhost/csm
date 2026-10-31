@@ -130,6 +130,9 @@ func (b *Backend) ReloadContext(ctx context.Context) error {
 	if err != nil {
 		return b.failReload(err)
 	}
+	if len(sources) > yaraipc.MaxSources {
+		return b.failReload(fmt.Errorf("%d YARA rule files in %s, more than the %d one compile accepts; merge rule files or set signatures.yara_worker_enabled: false", len(sources), b.cfg.RulesDir, yaraipc.MaxSources))
+	}
 	if len(sources) == 0 {
 		b.mu.Lock()
 		defer b.mu.Unlock()
@@ -280,7 +283,7 @@ func (b *Backend) compile(ctx context.Context, sources []yara.Source) (*os.File,
 			return false, nil
 		})
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, compileFailure(err)
 	}
 	if res.CompileError != "" {
 		return nil, 0, errors.New(res.CompileError)
@@ -291,6 +294,22 @@ func (b *Backend) compile(ctx context.Context, sources []yara.Source) (*os.File,
 		return nil, 0, err
 	}
 	return kept, *res.RuleCount, nil
+}
+
+// compileFailure says why a compile worker failed. Running out of memory
+// under the compile worker's fixed cap comes from the rule set, so it is
+// returned as a plain error that callers treat like broken rules, not as a
+// worker outage to retry. Other failures keep their classification and name
+// their reason.
+func compileFailure(err error) error {
+	switch reason := workerproc.FailureReason(err); reason {
+	case "":
+		return err
+	case workerproc.ReasonOOM:
+		return fmt.Errorf("the YARA rule set needs more memory than the compile worker may use (%v); trim the rules or set signatures.yara_worker_enabled: false", err)
+	default:
+		return fmt.Errorf("%w (%s)", err, reason)
+	}
 }
 
 // launch starts a scan worker and loads the current rules into it before the

@@ -157,7 +157,13 @@ func (w *worker) compile(req workerproc.Frame, f *os.File) (workerproc.Frame, []
 	}
 	defer rules.Destroy()
 	var buf serializedRulesBuffer
-	if _, err = rules.WriteTo(&buf); err != nil {
+	if _, err = rules.WriteTo(&buf); errors.Is(err, errRulesTooLarge) {
+		// Like a syntax error, a rule set too big to hand over is a
+		// property of the rules, not a worker failure to retry.
+		return reply(yaraipc.CompileResult{CompileError: fmt.Sprintf(
+			"compiled rules exceed the %d MiB limit; trim the rules or set signatures.yara_worker_enabled: false",
+			yaraipc.MaxSerializedRules>>20)}), nil
+	} else if err != nil {
 		return fail("compile: serialize: %v", err)
 	}
 	out, err := yaraipc.SealedMemfd("csm-yara-rules", buf.buf.Bytes())
@@ -167,11 +173,13 @@ func (w *worker) compile(req workerproc.Frame, f *os.File) (workerproc.Frame, []
 	return reply(yaraipc.CompileResult{RuleCount: rules.Count()}), []*os.File{out}
 }
 
+var errRulesTooLarge = errors.New("compiled rules exceed size limit")
+
 type serializedRulesBuffer struct{ buf bytes.Buffer }
 
 func (b *serializedRulesBuffer) Write(p []byte) (int, error) {
 	if len(p) > yaraipc.MaxSerializedRules-b.buf.Len() {
-		return 0, errors.New("compiled rules exceed size limit")
+		return 0, errRulesTooLarge
 	}
 	return b.buf.Write(p)
 }
