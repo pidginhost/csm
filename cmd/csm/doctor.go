@@ -237,6 +237,7 @@ func buildDoctorReport(loadConfig func() (*config.Config, error), readStatus fun
 	// version predating mandatory verification keeps installing unverified
 	// releases until somebody reads it.
 	report.Checks = append(report.Checks, deployScriptDoctorChecks()...)
+	report.Checks = append(report.Checks, smtpAuthLoggingDoctorChecks()...)
 
 	if cfg.PHPShield.Enabled {
 		report.Checks = append(report.Checks, phpShieldCageFSDoctorChecks()...)
