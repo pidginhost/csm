@@ -22,9 +22,6 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - On hosts with YARA but no loaded rules, companion file reports now warn that YARA did not check the files; `disabled_checks: [yara_deep]` turns this off.
 - `csm validate` now warns when `signatures.yara_worker_enabled: false` makes the daemon run YARA as root.
 - A YARA rule set too large for the locked-down compile worker now raises a compile-failure finding saying so; `signatures.yara_worker_enabled: false` compiles it in the daemon instead.
-
-### Changed
-
 - With auto_response.dry_run off, admission previews now wait for free slots under firewall.deny_temp_ip_limit, and csm doctor warns while that set is full; blocking is unchanged.
 - Learned spam is now stored with its headers and text only, without images or other attachments.
 
