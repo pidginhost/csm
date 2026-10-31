@@ -50,6 +50,10 @@ const (
 	OpPing    = "ping"
 )
 
+// ProtocolVersion is what the worker answers to workerproc's hello. Bump it
+// when a frame changes shape, so a worker from another build is refused.
+const ProtocolVersion = 1
+
 // ErrSourceTooLarge is returned when a source buffer exceeds what phptaint
 // would analyze anyway. Rejecting it here keeps the ceiling in one place and
 // avoids marshalling a multi-megabyte frame only to have the worker decline it.

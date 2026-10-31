@@ -22,12 +22,6 @@ func TestScannerStubMethods(t *testing.T) {
 	if got := s.ScanBytes([]byte("test")); got != nil {
 		t.Errorf("ScanBytes = %v", got)
 	}
-	if got := s.ScanFile("/tmp/test", 0); got != nil {
-		t.Errorf("ScanFile = %v", got)
-	}
-	if _, err := s.ScanFileChecked("/tmp/test", 1024); err == nil {
-		t.Error("ScanFileChecked must report the unavailable scanner")
-	}
 	if got := s.RuleCount(); got != 0 {
 		t.Errorf("RuleCount = %d", got)
 	}

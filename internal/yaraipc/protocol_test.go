@@ -11,8 +11,8 @@ import (
 )
 
 func TestFrameRoundTrip(t *testing.T) {
-	args := ScanFileArgs{Path: "/tmp/x", MaxBytes: 4096}
-	orig, err := EncodePayload(OpScanFile, args)
+	args := ScanFDArgs{MaxBytes: 4096, EmptyRulesClean: true}
+	orig, err := EncodePayload(OpScanFD, args)
 	if err != nil {
 		t.Fatalf("EncodePayload: %v", err)
 	}
@@ -25,11 +25,11 @@ func TestFrameRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFrame: %v", err)
 	}
-	if got.Op != OpScanFile {
-		t.Errorf("op: got %q want %q", got.Op, OpScanFile)
+	if got.Op != OpScanFD {
+		t.Errorf("op: got %q want %q", got.Op, OpScanFD)
 	}
 
-	var decoded ScanFileArgs
+	var decoded ScanFDArgs
 	if err := DecodePayload(got, &decoded); err != nil {
 		t.Fatalf("DecodePayload: %v", err)
 	}
@@ -121,7 +121,7 @@ func TestWriteFrameRejectsOversizeBody(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	f := Frame{Op: OpScanBytes, Payload: raw}
+	f := Frame{Op: OpScanFD, Payload: raw}
 
 	var buf bytes.Buffer
 	if werr := WriteFrame(&buf, f); werr == nil {

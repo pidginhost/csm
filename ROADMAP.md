@@ -261,12 +261,10 @@ sitting.
 
 ## YARA and PHP taint workers still run as root
 
-**Problem:** mail and archive parsing run in short-lived workers with no user,
-network or filesystem access, a deadline and a memory cap. The YARA worker
-is still a root child of the daemon and reads large files by path, from
-copies the daemon writes to disk. The PHP taint worker uses the shared worker
-framework but starts as a plain root child without the lockdown. A crafted
-file that breaks either scanner reaches a root process.
+**Problem:** mail parsing, archive parsing and PHP taint analysis run in
+short-lived workers with no user, network or filesystem access, a deadline and
+a memory cap. The YARA worker is still a root child of the daemon. A crafted
+file that breaks it reaches a root process.
 
 **Acceptance:** both workers run under the parse worker's lockdown and the
 YARA worker moves onto the shared worker framework; every YARA caller hands

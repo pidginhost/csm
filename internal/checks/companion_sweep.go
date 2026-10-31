@@ -23,7 +23,6 @@ import (
 	"github.com/pidginhost/csm/internal/contenttype"
 	"github.com/pidginhost/csm/internal/phptaint"
 	"github.com/pidginhost/csm/internal/yara"
-	"github.com/pidginhost/csm/internal/yaraipc"
 )
 
 // companionPlantWindow is how far another file's change time may lie from the
@@ -548,14 +547,21 @@ func scanCompanionFile(ctx context.Context, cfg *config.Config, dir *tenantDirec
 	contentSHA256 := hex.EncodeToString(digest[:])
 
 	var findings []alert.Finding
-	if backend := activeYARABackend(); backend != nil && backend.RuleCount() > 0 && !yaraDeepConsumerDisabled(cfg) {
-		// #nosec G115 -- FullScanMaxFileBytes is at most a few GiB; it fits int on the 64-bit hosts CSM supports.
-		matches, err := scanCompanionYARA(backend, path, data, int(maxBytes))
-		if err != nil {
+	if !yaraDeepConsumerDisabled(cfg) {
+		backend := activeYARABackend()
+		switch {
+		case backend != nil && backend.RuleCount() > 0:
+			matches, err := yara.ScanBytesChecked(backend, path, data)
+			if err != nil {
+				file.note = "YARA could not scan it"
+			}
+			for _, m := range matches {
+				findings = append(findings, scheduledYARAFinding(m, path, data, contentSHA256))
+			}
+		case yaraAvailable():
+			// YARA should have checked this file and could not: say so
+			// rather than list it as if it had been scanned.
 			file.note = "YARA could not scan it"
-		}
-		for _, m := range matches {
-			findings = append(findings, scheduledYARAFinding(m, path, data, contentSHA256))
 		}
 	}
 	if contenttype.IsPHPSourceName(strings.ToLower(name)) && !runnerDisabled(cfg, "php_content") {
@@ -628,36 +634,6 @@ func (r companionContextReader) Read(p []byte) (int, error) {
 		return 0, err
 	}
 	return r.reader.Read(p)
-}
-
-// The worker's large-payload fallback must not reopen a tenant-controlled
-// pathname after selection. Give it a private snapshot of the validated bytes.
-func scanCompanionYARA(backend yara.Backend, path string, data []byte, maxBytes int) ([]yara.Match, error) {
-	matches, err := yara.ScanBytesChecked(backend, path, data)
-	if !errors.Is(err, yaraipc.ErrPayloadTooLarge) {
-		return matches, err
-	}
-	f, err := os.CreateTemp("", "csm-companion-*")
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = os.Remove(f.Name()) }()
-	if _, err = f.Write(data); err != nil {
-		_ = f.Close()
-		return nil, err
-	}
-	if err = f.Close(); err != nil {
-		return nil, err
-	}
-	result, err := yara.ScanFileChecked(backend, f.Name(), maxBytes)
-	if err != nil {
-		return nil, err
-	}
-	digest := sha256.Sum256(data)
-	if result.ContentSHA256 != hex.EncodeToString(digest[:]) {
-		return nil, errFileChanged
-	}
-	return result.Matches, nil
 }
 
 // companionKind names the kinds of file a kit carries. Anything else in the

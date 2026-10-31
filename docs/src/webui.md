@@ -351,6 +351,10 @@ database rows, administrator accounts, and database objects. Re-check uses the
 stored finding identity and current host state; the browser cannot substitute a
 different path, row, account, or object.
 
+YARA Re-check compares the complete scanned content with the finding's recorded
+fingerprint, including large files admitted by `thresholds.full_scan_max_file_mb`.
+If the content is unchanged and YARA no longer flags it, the finding clears.
+
 The operation fails closed. Missing or unreadable evidence, package-manager
 errors, failed CMS discovery, and failed database queries leave the finding
 active. A file whose bytes changed since detection is never cleared either,

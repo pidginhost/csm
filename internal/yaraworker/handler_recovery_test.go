@@ -44,8 +44,8 @@ func TestHandlerReloadRecoversFromNilScanner(t *testing.T) {
 	}
 
 	// Scans now route to the rebuilt scanner.
-	if _, err := h.ScanBytes(yaraipc.ScanBytesArgs{Data: []byte("x")}); err != nil {
-		t.Fatalf("ScanBytes after recovery: %v", err)
+	if _, err := h.ScanFD(scanFDPart(t), yaraipc.ScanFDArgs{MaxBytes: 1, EmptyRulesClean: true}); err != nil {
+		t.Fatalf("scan after recovery: %v", err)
 	}
 	if len(rebuilt.bytesCalls) != 1 {
 		t.Errorf("scan did not reach the rebuilt scanner: %d calls", len(rebuilt.bytesCalls))

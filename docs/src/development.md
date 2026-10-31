@@ -1300,9 +1300,10 @@ it on every scan. The spool watcher keys it by Exim message ID, and counts
 kills per message source with a limit of three in ten minutes.
 
 Worker diagnostics must go to stderr; stdout carries the protocol socket. The
-PHP taint worker (`csm phptaint-worker`) runs as a plain child
-(`ExecLauncher`). The YARA worker moves to this package later; until then the
-section below describes it.
+PHP taint worker (`csm phptaint-worker`) runs through `UnitLauncher` as
+`csm-phptaint-worker-<generation>`, with the parse worker's lockdown and a
+512 MiB memory cap. The YARA worker moves to this package later; until then
+the section below describes it.
 
 ### Parse worker units
 
@@ -1449,15 +1450,23 @@ backends produce the same verdict shape. Non-string metadata (ints,
 floats, bytes) is deliberately dropped at the worker boundary; add a
 typed value struct here only if a future consumer actually needs one.
 
+The worker accepts only `scan_fd`, `reload`, and `ping`. The former
+`scan_file` and `scan_bytes` operations return an unknown-operation error.
+The daemon sends buffers as sealed memory-backed descriptors; scan contents
+never travel inside JSON frames, so the frame cap does not limit scan size.
+Callers still apply their configured file-size limits before dispatch.
+
 Mail parts are scanned from open descriptors using positional reads. The
 claimed size must be positive and fully readable; a short read is an engine
 error, never a clean result. Clamd streams that exact range with INSTREAM.
 The YARA worker receives a separate read-only open, so its file offset does
-not affect other scanners. Descriptor scans do not apply archive-name skips.
+not affect other scanners. Mail-part scans do not apply archive-name skips.
 They require compiled rules and an explicit `matches` array in the reply,
 including an empty array for clean results. Missing or malformed results and
-unexpected reply descriptors fail the scan. Other YARA scan operations keep
-their existing wire format.
+unexpected reply descriptors fail the scan. Buffer scans use the same
+descriptor protocol but retain the in-process behavior when no rules are
+loaded: they return no matches unless rule compilation failed. A transport,
+descriptor, or engine failure is an error, never a clean scan.
 
 Testing:
 

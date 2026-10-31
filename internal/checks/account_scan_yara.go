@@ -3,7 +3,6 @@ package checks
 import (
 	"context"
 	"crypto/sha256"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -17,7 +16,6 @@ import (
 	"github.com/pidginhost/csm/internal/signatures"
 	"github.com/pidginhost/csm/internal/state"
 	"github.com/pidginhost/csm/internal/yara"
-	"github.com/pidginhost/csm/internal/yaraipc"
 )
 
 // checkAccountYARA is the YARA content pass of a full account scan. It walks
@@ -93,7 +91,7 @@ func checkAccountYARA(ctx context.Context, cfg *config.Config, _ *state.Store) [
 				}
 				walk(path, child)
 			case entry.Type().IsRegular():
-				matches := scanAccountYARAFile(backend, gaps, pinned, path, maxBytes, cfg.StatePath)
+				matches := scanAccountYARAFile(backend, gaps, pinned, path, maxBytes)
 				findings = append(findings, matches...)
 				publishAccountScanFindings(ctx, matches)
 			}
@@ -170,7 +168,7 @@ func openAccountYARAHome(home string) (*safepath.Dir, error) {
 
 // scanAccountYARAFile sends one regular file through the backend. The size
 // check comes first so a large media file or dump is never read at all.
-func scanAccountYARAFile(backend yara.Backend, gaps *yaraGapCollector, dir *safepath.Dir, path string, maxBytes int64, statePath string) []alert.Finding {
+func scanAccountYARAFile(backend yara.Backend, gaps *yaraGapCollector, dir *safepath.Dir, path string, maxBytes int64) []alert.Finding {
 	file, err := dir.OpenFile(filepath.Base(path), os.O_RDONLY, 0)
 	if err != nil {
 		gaps.record(path, "read_error")
@@ -199,7 +197,7 @@ func scanAccountYARAFile(backend yara.Backend, gaps *yaraGapCollector, dir *safe
 	if len(data) == 0 {
 		return nil
 	}
-	matches, err := scanAccountYARASnapshot(backend, path, data, statePath)
+	matches, err := yara.ScanBytesChecked(backend, path, data)
 	if err != nil {
 		gaps.record(path, "scan_error")
 		return nil
@@ -221,33 +219,6 @@ func scanAccountYARAFile(backend yara.Backend, gaps *yaraGapCollector, dir *safe
 		})
 	}
 	return findings
-}
-
-func scanAccountYARASnapshot(backend yara.Backend, path string, data []byte, statePath string) ([]yara.Match, error) {
-	matches, err := yara.ScanBytesChecked(backend, path, data)
-	if !errors.Is(err, yaraipc.ErrPayloadTooLarge) {
-		return matches, err
-	}
-	// The worker cannot receive large snapshots inline. A private copy keeps
-	// its retry bound to these bytes even if the tenant replaces the source.
-	// Keep it with daemon state, outside the monitored account and temp trees.
-	snapshot, err := os.CreateTemp(statePath, "account-yara-*")
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = os.Remove(snapshot.Name()) }()
-	defer func() { _ = snapshot.Close() }()
-	if _, writeErr := snapshot.Write(data); writeErr != nil {
-		return nil, writeErr
-	}
-	result, err := yara.ScanFileChecked(backend, snapshot.Name(), len(data))
-	if err != nil {
-		return nil, err
-	}
-	if result.ContentSHA256 != fmt.Sprintf("%x", sha256.Sum256(data)) {
-		return nil, errFileChanged
-	}
-	return result.Matches, nil
 }
 
 // ignoredPath reports whether path matches the operator's ignore_paths.

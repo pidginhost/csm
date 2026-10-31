@@ -23,9 +23,6 @@ import (
 // interface (rather than the concrete type) so tests can inject a fake
 // without pulling in the cgo build tag.
 type Scanner interface {
-	ScanFile(path string, maxBytes int) []yara.Match
-	ScanFileChecked(path string, maxBytes int) (yara.FileScanResult, error)
-	ScanBytes(data []byte) []yara.Match
 	ScanBytesChecked(data []byte) ([]yara.Match, error)
 	Reload() error
 	RuleCount() int
@@ -67,24 +64,6 @@ func (h *handler) currentState() (Scanner, string) {
 	return h.scanner, h.compileErr
 }
 
-func (h *handler) ScanFile(a yaraipc.ScanFileArgs) (yaraipc.ScanResult, error) {
-	sc, compileErr := h.currentState()
-	if sc == nil {
-		if compileErr != "" {
-			return yaraipc.ScanResult{}, fmt.Errorf("yara scanner unavailable: %s", compileErr)
-		}
-		return yaraipc.ScanResult{}, nil
-	}
-	result, err := sc.ScanFileChecked(a.Path, a.MaxBytes)
-	if err != nil {
-		return yaraipc.ScanResult{}, err
-	}
-	return yaraipc.ScanResult{
-		Matches:       convertMatches(result.Matches),
-		ContentSHA256: result.ContentSHA256,
-	}, nil
-}
-
 // ScanFD scans the first MaxBytes of a descriptor the daemon passed, such as
 // a mail part memfd. Reading it here keeps the bytes out of the daemon.
 func (h *handler) ScanFD(f *os.File, a yaraipc.ScanFDArgs) (yaraipc.ScanResult, error) {
@@ -93,6 +72,9 @@ func (h *handler) ScanFD(f *os.File, a yaraipc.ScanFDArgs) (yaraipc.ScanResult, 
 	}
 	sc, compileErr := h.currentState()
 	if sc == nil || sc.RuleCount() == 0 {
+		if a.EmptyRulesClean && compileErr == "" {
+			return yaraipc.ScanResult{}, nil
+		}
 		if compileErr == "" {
 			compileErr = "no compiled rules"
 		}
@@ -106,21 +88,6 @@ func (h *handler) ScanFD(f *os.File, a yaraipc.ScanFDArgs) (yaraipc.ScanResult, 
 		return yaraipc.ScanResult{}, fmt.Errorf("read descriptor: got %d of %d bytes: %w", len(data), a.MaxBytes, io.ErrUnexpectedEOF)
 	}
 	matches, err := sc.ScanBytesChecked(data)
-	if err != nil {
-		return yaraipc.ScanResult{}, err
-	}
-	return yaraipc.ScanResult{Matches: convertMatches(matches)}, nil
-}
-
-func (h *handler) ScanBytes(a yaraipc.ScanBytesArgs) (yaraipc.ScanResult, error) {
-	sc, compileErr := h.currentState()
-	if sc == nil {
-		if compileErr != "" {
-			return yaraipc.ScanResult{}, fmt.Errorf("yara scanner unavailable: %s", compileErr)
-		}
-		return yaraipc.ScanResult{}, nil
-	}
-	matches, err := sc.ScanBytesChecked(a.Data)
 	if err != nil {
 		return yaraipc.ScanResult{}, err
 	}

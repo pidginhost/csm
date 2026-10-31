@@ -2,9 +2,7 @@ package checks
 
 import (
 	"context"
-	"crypto/sha256"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -17,7 +15,6 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/state"
 	"github.com/pidginhost/csm/internal/yara"
-	"github.com/pidginhost/csm/internal/yaraipc"
 )
 
 // countingYARABackend matches "dormant malware" like deepYARATestBackend and
@@ -283,56 +280,44 @@ func TestAccountYARAPassRejectsDirectoryReplacement(t *testing.T) {
 	}
 }
 
-type accountYARAFallbackBackend struct {
+// accountYARASnapshotBackend records the bytes it is handed; a backend has
+// no way to reopen the tenant path.
+type accountYARASnapshotBackend struct {
 	countingYARABackend
-	onInline  func()
-	path      string
-	data      []byte
-	mode      os.FileMode
-	fileErr   error
-	wrongHash bool
+	onInline func()
+	data     []byte
+	scanErr  error
 }
 
-func (b *accountYARAFallbackBackend) ScanBytesChecked([]byte) ([]yara.Match, error) {
+func (b *accountYARASnapshotBackend) ScanBytesChecked(data []byte) ([]yara.Match, error) {
 	if b.onInline != nil {
 		b.onInline()
 	}
-	return nil, yaraipc.ErrPayloadTooLarge
+	b.data = append([]byte(nil), data...)
+	if b.scanErr != nil {
+		return nil, b.scanErr
+	}
+	return b.deepYARATestBackend.ScanBytesChecked(data)
 }
 
-func (b *accountYARAFallbackBackend) ScanFileChecked(path string, limit int) (yara.FileScanResult, error) {
-	b.path = path
-	info, err := os.Stat(path)
+func assertNoStateCopies(t *testing.T, statePath string) {
+	t.Helper()
+	entries, err := os.ReadDir(statePath)
 	if err != nil {
-		return yara.FileScanResult{}, err
+		t.Fatal(err)
 	}
-	b.mode = info.Mode()
-	if info.Size() > int64(limit) {
-		return yara.FileScanResult{}, errors.New("snapshot exceeds worker limit")
+	if len(entries) != 0 {
+		t.Fatalf("scan left %d files in daemon state, first %q", len(entries), entries[0].Name())
 	}
-	if b.fileErr != nil {
-		return yara.FileScanResult{}, b.fileErr
-	}
-	data, err := os.ReadFile(path)
-	b.data = data
-	if err != nil {
-		return yara.FileScanResult{}, err
-	}
-	matches, err := b.deepYARATestBackend.ScanBytesChecked(data)
-	digest := fmt.Sprintf("%x", sha256.Sum256(data))
-	if b.wrongHash {
-		digest = strings.Repeat("0", 64)
-	}
-	return yara.FileScanResult{Matches: matches, ContentSHA256: digest}, err
 }
 
-func TestAccountYARAFallbackScansTheOriginalSnapshot(t *testing.T) {
+func TestAccountYARAScansTheOriginalSnapshot(t *testing.T) {
 	base := t.TempDir()
 	root := filepath.Join(base, "home")
 	withAccountHomeRoots(t, root)
 	path := writeYARADeepFile(t, root, "alice/public_html/a.dat", "dormant malware")
 	outside := writeYARADeepFile(t, base, "outside/b.dat", "outside account")
-	backend := &accountYARAFallbackBackend{onInline: func() {
+	backend := &accountYARASnapshotBackend{onInline: func() {
 		if err := os.Rename(path, path+"-moved"); err != nil {
 			t.Fatal(err)
 		}
@@ -345,51 +330,32 @@ func TestAccountYARAFallbackScansTheOriginalSnapshot(t *testing.T) {
 	cfg := &config.Config{StatePath: t.TempDir()}
 	findings := checkAccountYARA(fullAccountYARAContext("alice", FullScanOptions(nil, false)), cfg, nil)
 	if string(backend.data) != "dormant malware" {
-		t.Fatalf("fallback reopened tenant path: scanned %q", backend.data)
+		t.Fatalf("scan reopened tenant path: scanned %q", backend.data)
 	}
 	if got := yaraMatchPaths(findings); len(got) != 1 || got[0] != path {
 		t.Fatalf("snapshot match lost: %+v", findings)
 	}
-	if filepath.Dir(backend.path) != cfg.StatePath || backend.mode.Perm() != 0o600 {
-		t.Fatalf("snapshot is not private daemon state: %q (%v)", backend.path, backend.mode)
-	}
-	if _, err := os.Stat(backend.path); !os.IsNotExist(err) {
-		t.Fatalf("temporary snapshot remains: %v", err)
-	}
+	assertNoStateCopies(t, cfg.StatePath)
 }
 
-func TestAccountYARAFallbackFailuresReportGapsAndRemoveSnapshots(t *testing.T) {
-	for _, failure := range []string{"worker", "digest", "storage"} {
-		t.Run(failure, func(t *testing.T) {
-			root := filepath.Join(t.TempDir(), "home")
-			withAccountHomeRoots(t, root)
-			path := writeYARADeepFile(t, root, "alice/public_html/a.dat", "dormant malware")
-			backend := &accountYARAFallbackBackend{}
-			cfg := &config.Config{StatePath: t.TempDir()}
-			switch failure {
-			case "worker":
-				backend.fileErr = errors.New("worker unavailable")
-			case "digest":
-				backend.wrongHash = true
-			case "storage":
-				cfg.StatePath = filepath.Join(cfg.StatePath, "missing")
-			}
-			yara.SetActive(backend)
-			t.Cleanup(func() { yara.SetActive(nil) })
-			findings := checkAccountYARA(fullAccountYARAContext("alice", FullScanOptions(nil, false)), cfg, nil)
-			if got := yaraMatchPaths(findings); len(got) != 0 {
-				t.Fatalf("failed scan produced matches: %v", got)
-			}
-			if gap := findingByCheck(findings, "yara_scan_incomplete"); !strings.Contains(gap.Details, "scan_error=1") || !strings.Contains(gap.Details, path) {
-				t.Fatalf("failed scan not reported: %+v", findings)
-			}
-			if backend.path != "" {
-				if _, err := os.Stat(backend.path); !os.IsNotExist(err) {
-					t.Fatalf("failed scan left snapshot: %v", err)
-				}
-			}
-		})
+// A failed byte scan is a coverage gap. It never leaves a copy of tenant
+// bytes in daemon state.
+func TestAccountYARAByteScanErrorIsGapWithoutPathRetry(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "home")
+	withAccountHomeRoots(t, root)
+	path := writeYARADeepFile(t, root, "alice/public_html/a.dat", "dormant malware")
+	backend := &accountYARASnapshotBackend{scanErr: errors.New("worker connection closed")}
+	yara.SetActive(backend)
+	t.Cleanup(func() { yara.SetActive(nil) })
+	cfg := &config.Config{StatePath: t.TempDir()}
+	findings := checkAccountYARA(fullAccountYARAContext("alice", FullScanOptions(nil, false)), cfg, nil)
+	if got := yaraMatchPaths(findings); len(got) != 0 {
+		t.Fatalf("failed scan produced matches: %v", got)
 	}
+	if gap := findingByCheck(findings, "yara_scan_incomplete"); !strings.Contains(gap.Details, "scan_error=1") || !strings.Contains(gap.Details, path) {
+		t.Fatalf("failed scan not reported: %+v", findings)
+	}
+	assertNoStateCopies(t, cfg.StatePath)
 }
 
 func TestAccountYARAPassKeepsFindingsWhenBackendExceedsDeadline(t *testing.T) {

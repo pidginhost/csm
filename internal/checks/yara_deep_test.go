@@ -3,7 +3,6 @@ package checks
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,7 +15,6 @@ import (
 	"github.com/pidginhost/csm/internal/state"
 	"github.com/pidginhost/csm/internal/store"
 	"github.com/pidginhost/csm/internal/yara"
-	"github.com/pidginhost/csm/internal/yaraipc"
 )
 
 type deepYARATestBackend struct {
@@ -88,123 +86,60 @@ func TestCheckYARADeepReportsIncompleteScan(t *testing.T) {
 	}
 }
 
-// oversizeInlineBackend rejects inline byte scans the way the real IPC client
-// does for a payload past the frame ceiling, and matches only when the file is
-// scanned by path. It proves the deep scan falls back to a path scan instead of
-// dropping a large file into the coverage gap.
-type oversizeInlineBackend struct {
-	scanFileCalls int32
-	scanFileErr   error
-	scanFileSHA   string
-	onScanFile    func(string)
+// failingByteBackend fails every byte scan the way a lost worker does.
+type failingByteBackend struct {
+	onScan func()
 }
 
-func (b *oversizeInlineBackend) ScanFile(string, int) []yara.Match {
-	result, _ := b.ScanFileChecked("", 0)
-	return result.Matches
-}
-func (b *oversizeInlineBackend) ScanFileChecked(path string, _ int) (yara.FileScanResult, error) {
-	atomic.AddInt32(&b.scanFileCalls, 1)
-	if b.onScanFile != nil {
-		b.onScanFile(path)
-	}
-	if b.scanFileErr != nil {
-		return yara.FileScanResult{}, b.scanFileErr
-	}
-	return yara.FileScanResult{
-		Matches:       []yara.Match{{RuleName: "webshell_php_exec_ladder", Meta: map[string]string{"severity": "critical"}}},
-		ContentSHA256: b.scanFileSHA,
-	}, nil
-}
-func (b *oversizeInlineBackend) ScanBytes(data []byte) []yara.Match {
+func (b *failingByteBackend) ScanBytes(data []byte) []yara.Match {
 	m, _ := b.ScanBytesChecked(data)
 	return m
 }
-func (b *oversizeInlineBackend) ScanBytesChecked([]byte) ([]yara.Match, error) {
-	return nil, fmt.Errorf("%w (%d > %d bytes)", yaraipc.ErrPayloadTooLarge, 15000000, yaraipc.MaxScanBytes)
+func (b *failingByteBackend) ScanBytesChecked([]byte) ([]yara.Match, error) {
+	if b.onScan != nil {
+		b.onScan()
+	}
+	return nil, errors.New("worker connection closed")
 }
-func (b *oversizeInlineBackend) RuleCount() int { return 1 }
-func (b *oversizeInlineBackend) Reload() error  { return nil }
+func (b *failingByteBackend) RuleCount() int { return 1 }
+func (b *failingByteBackend) Reload() error  { return nil }
 
-func TestCheckYARADeepScansOversizeInlineFileByPath(t *testing.T) {
-	root := t.TempDir()
-	path := filepath.Join(root, "wp-content", "big.js")
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, []byte("padded bundle content"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	backend := &oversizeInlineBackend{scanFileSHA: strings.Repeat("a", 64)}
-	yara.SetActive(backend)
-	t.Cleanup(func() { yara.SetActive(nil) })
-
-	findings := CheckYARADeep(context.Background(), &config.Config{AccountRoots: []string{root}}, nil)
-	if atomic.LoadInt32(&backend.scanFileCalls) == 0 {
-		t.Fatal("oversize-inline file was not scanned by path")
-	}
-	var got *alert.Finding
-	for i := range findings {
-		if findings[i].Check == "yara_scan_incomplete" {
-			t.Fatalf("oversize file recorded as coverage gap instead of scanned: %+v", findings[i])
-		}
-		if findings[i].Check == "yara_match_scheduled" {
-			got = &findings[i]
-		}
-	}
-	if got == nil || got.FilePath != path {
-		t.Fatalf("findings = %+v, want yara_match_scheduled for %s", findings, path)
-	}
-	if got.ContentSHA256 != backend.scanFileSHA {
-		t.Fatalf("finding hash = %q, want worker-scanned content hash %q", got.ContentSHA256, backend.scanFileSHA)
-	}
-}
-
-func TestCheckYARADeepReportsFailedOversizePathScan(t *testing.T) {
+func TestCheckYARADeepReportsFailedByteScan(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "large.php")
 	if err := os.WriteFile(path, []byte("padded payload"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	backend := &oversizeInlineBackend{scanFileErr: errors.New("worker exited during path scan")}
+	backend := &failingByteBackend{}
 	yara.SetActive(backend)
 	t.Cleanup(func() { yara.SetActive(nil) })
 
 	ctx, collector := withIncompleteCheckCollector(context.Background())
 	findings := CheckYARADeep(ctx, &config.Config{AccountRoots: []string{root}}, nil)
-	if atomic.LoadInt32(&backend.scanFileCalls) == 0 {
-		t.Fatal("oversize-inline file was not retried by path")
-	}
-	if !containsFindingCheck(findings, "yara_scan_incomplete") {
-		t.Fatalf("failed path fallback was reported clean: %+v", findings)
+	if containsFindingCheck(findings, "yara_match_scheduled") {
+		t.Fatalf("failed scan produced a match: %+v", findings)
 	}
 	gap := findingByCheck(findings, "yara_scan_incomplete")
 	if !strings.Contains(gap.Details, path) {
-		t.Fatalf("failed path scan was not attributed to %s: %q", path, gap.Details)
+		t.Fatalf("failed scan was not attributed to %s: %+v", path, findings)
 	}
 	if collector.contains("yara_deep") {
 		t.Fatal("an attributable gap must not suppress the purge for the whole owner")
 	}
 }
 
-func TestCheckYARADeepPathFallbackDirectoryRaceIsUnknownRange(t *testing.T) {
+func TestCheckYARADeepFailedScanDirectoryRaceIsUnknownRange(t *testing.T) {
 	useRollingStore(t)
 	root := t.TempDir()
 	path := writeYARADeepFile(t, root, "raced.dat", "padded payload")
-	backend := &oversizeInlineBackend{
-		scanFileErr: errors.New("worker could not read replacement"),
-		onScanFile: func(scannedPath string) {
-			if scannedPath != path {
-				t.Fatalf("path fallback scanned %q, want %q", scannedPath, path)
-			}
-			if err := os.Remove(path); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.Mkdir(path, 0o700); err != nil {
-				t.Fatal(err)
-			}
-		},
-	}
+	backend := &failingByteBackend{onScan: func() {
+		if err := os.Remove(path); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}}
 	yara.SetActive(backend)
 	t.Cleanup(func() { yara.SetActive(nil) })
 
@@ -212,26 +147,23 @@ func TestCheckYARADeepPathFallbackDirectoryRaceIsUnknownRange(t *testing.T) {
 	findings := CheckYARADeep(ctx, &config.Config{AccountRoots: []string{root}}, nil)
 
 	if !collector.contains("yara_deep") {
-		t.Fatal("a failed path fallback raced to a directory must hold the YARA owner")
+		t.Fatal("a failed scan raced to a directory must hold the YARA owner")
 	}
 	gap := findingByCheck(findings, "yara_scan_incomplete")
 	if !strings.Contains(gap.Details, "unreadable-range=1") || !strings.Contains(gap.Details, path) {
-		t.Fatalf("path fallback directory race was not reported as an unknown range: %+v", gap)
+		t.Fatalf("directory race was not reported as an unknown range: %+v", gap)
 	}
 }
 
-func TestCheckYARADeepPathFallbackDeleteRaceIsUnknownRange(t *testing.T) {
+func TestCheckYARADeepFailedScanDeleteRaceIsUnknownRange(t *testing.T) {
 	useRollingStore(t)
 	root := t.TempDir()
 	path := writeYARADeepFile(t, root, "raced.dat", "padded payload")
-	backend := &oversizeInlineBackend{
-		scanFileErr: errors.New("worker lost the path"),
-		onScanFile: func(string) {
-			if err := os.Remove(path); err != nil {
-				t.Fatal(err)
-			}
-		},
-	}
+	backend := &failingByteBackend{onScan: func() {
+		if err := os.Remove(path); err != nil {
+			t.Fatal(err)
+		}
+	}}
 	yara.SetActive(backend)
 	t.Cleanup(func() { yara.SetActive(nil) })
 
@@ -239,11 +171,11 @@ func TestCheckYARADeepPathFallbackDeleteRaceIsUnknownRange(t *testing.T) {
 	findings := CheckYARADeep(ctx, &config.Config{AccountRoots: []string{root}}, nil)
 
 	if !collector.contains("yara_deep") {
-		t.Fatal("ENOENT after a failed path fallback must hold the YARA owner")
+		t.Fatal("ENOENT after a failed scan must hold the YARA owner")
 	}
 	gap := findingByCheck(findings, "yara_scan_incomplete")
 	if !strings.Contains(gap.Details, "unreadable-range=1") || !strings.Contains(gap.Details, path) {
-		t.Fatalf("path fallback delete race was not reported as an unknown range: %+v", gap)
+		t.Fatalf("delete race was not reported as an unknown range: %+v", gap)
 	}
 }
 

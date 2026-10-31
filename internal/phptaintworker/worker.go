@@ -44,6 +44,9 @@ func Serve(ctx context.Context, conn *net.UnixConn) error {
 
 func handle(ctx context.Context, req workerproc.Frame) workerproc.Frame {
 	switch req.Op {
+	case workerproc.OpHello:
+		return workerproc.HelloReply(phptaintipc.ProtocolVersion)
+
 	case phptaintipc.OpPing:
 		return reply(phptaintipc.OpPing, phptaintipc.PingResult{OK: true})
 

@@ -208,7 +208,7 @@ func decodeScanFDResult(resp Frame) (ScanResult, error) {
 	if err := dec.Decode(new(json.RawMessage)); err != io.EOF {
 		return ScanResult{}, errors.New("yaraipc: scan_fd reply has trailing data")
 	}
-	return ScanResult{Matches: res.Matches}, nil
+	return ScanResult(res), nil
 }
 
 func isRetryableClosedConn(err error) bool {
@@ -221,48 +221,28 @@ func isRetryableClosedConn(err error) bool {
 		errors.Is(err, syscall.ECONNABORTED)
 }
 
-// ScanFile is the daemon-side shim for OpScanFile.
-func (c *Client) ScanFile(args ScanFileArgs) (ScanResult, error) {
-	req, err := EncodePayload(OpScanFile, args)
+// ScanBytes scans data the daemon already holds. The bytes travel as a
+// sealed memfd over scan_fd, so no frame size limits them and the worker
+// cannot change what it was given. Callers must treat any error as "could
+// not scan", never as clean.
+func (c *Client) ScanBytes(data []byte) (ScanResult, error) {
+	if len(data) == 0 {
+		return ScanResult{}, errors.New("yaraipc: empty byte scan")
+	}
+	req, err := EncodePayload(OpScanFD, ScanFDArgs{MaxBytes: len(data), EmptyRulesClean: true})
 	if err != nil {
 		return ScanResult{}, err
 	}
-	resp, err := c.roundTrip(req)
+	f, err := sealedMemfd(data)
 	if err != nil {
 		return ScanResult{}, err
 	}
-	var res ScanResult
-	if len(resp.Payload) > 0 {
-		if err := DecodePayload(resp, &res); err != nil {
-			return ScanResult{}, err
-		}
-	}
-	return res, nil
-}
-
-// ScanBytes is the daemon-side shim for OpScanBytes.
-func (c *Client) ScanBytes(args ScanBytesArgs) (ScanResult, error) {
-	// Reject up front so an oversize buffer becomes a legible, typed error
-	// rather than a generic WriteFrame failure after a wasteful multi-MiB
-	// marshal. Callers must treat this as "could not scan", never as clean.
-	if len(args.Data) > MaxScanBytes {
-		return ScanResult{}, fmt.Errorf("%w (%d > %d bytes)", ErrPayloadTooLarge, len(args.Data), MaxScanBytes)
-	}
-	req, err := EncodePayload(OpScanBytes, args)
+	defer func() { _ = f.Close() }()
+	resp, err := c.roundTripFDs(req, []*os.File{f})
 	if err != nil {
 		return ScanResult{}, err
 	}
-	resp, err := c.roundTrip(req)
-	if err != nil {
-		return ScanResult{}, err
-	}
-	var res ScanResult
-	if len(resp.Payload) > 0 {
-		if err := DecodePayload(resp, &res); err != nil {
-			return ScanResult{}, err
-		}
-	}
-	return res, nil
+	return decodeScanFDResult(resp)
 }
 
 // Reload is the daemon-side shim for OpReload.

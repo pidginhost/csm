@@ -122,11 +122,10 @@ func TestScanErrLogCapacityCannotResetSuppression(t *testing.T) {
 	}
 }
 
-// An inline payload over the frame limit never reaches the worker: the client
-// refuses it, and every caller then has the worker read the file itself. That
-// is not a scan failure, so it must not be logged as one -- a real failure
-// still is.
-func TestScanBytesOversizePayloadIsNotLoggedAsFailure(t *testing.T) {
+// A payload larger than one socket frame goes to the worker as a descriptor,
+// so the client never refuses it on size. When the worker is absent, that is
+// a real scan failure and must be logged.
+func TestScanBytesLargePayloadFailureIsLogged(t *testing.T) {
 	var mu sync.Mutex
 	var lines []string
 	s := &Supervisor{}
@@ -138,16 +137,7 @@ func TestScanBytesOversizePayloadIsNotLoggedAsFailure(t *testing.T) {
 	s.client = yaraipc.NewClient(filepath.Join(t.TempDir(), "absent.sock"), time.Second)
 	s.running.Store(true)
 
-	if _, err := s.ScanBytesChecked(make([]byte, yaraipc.MaxScanBytes+1)); !errors.Is(err, yaraipc.ErrPayloadTooLarge) {
-		t.Fatalf("oversize payload: err = %v, want ErrPayloadTooLarge", err)
-	}
-	mu.Lock()
-	if len(lines) != 0 {
-		t.Errorf("oversize payload was logged as a scan failure: %q", lines)
-	}
-	mu.Unlock()
-
-	if _, err := s.ScanBytesChecked([]byte("payload")); err == nil {
+	if _, err := s.ScanBytesChecked(make([]byte, yaraipc.MaxFrameBytes+1)); err == nil {
 		t.Fatal("scan against an absent worker socket succeeded")
 	}
 	mu.Lock()
