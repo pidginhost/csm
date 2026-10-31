@@ -255,3 +255,44 @@ func TestUnitWatchdogSkipsDaemonExhaustion(t *testing.T) {
 		})
 	}
 }
+
+// A worker being stopped on purpose loses its cgroup before systemd-run
+// exits. The watchdog must not read that gap as a fault and log a kill of a
+// worker that is already going.
+func TestUnitWatchdogQuietAfterRequestedKill(t *testing.T) {
+	conn, _ := socketPair(t)
+	var mu sync.Mutex
+	var lines []string
+	finished := make(chan struct{})
+	p := &unitProcess{
+		unit: "u", conn: conn, done: make(chan struct{}), limit: 1 << 20,
+		cg: memoryCgroup{dir: t.TempDir(), v2: true},
+		usage: func() (uint64, error) {
+			return 0, fmt.Errorf("read memory: %w", os.ErrNotExist)
+		},
+		killUnit: func(context.Context, *unitProcess) error { return nil },
+		log: func(format string, args ...any) {
+			mu.Lock()
+			defer mu.Unlock()
+			lines = append(lines, fmt.Sprintf(format, args...))
+		},
+	}
+	defer close(p.done)
+	if err := p.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		defer close(finished)
+		p.watch(time.Millisecond)
+	}()
+	select {
+	case <-finished:
+	case <-time.After(time.Second):
+		t.Fatal("watchdog kept polling a worker already being killed")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(lines) != 0 {
+		t.Fatalf("watchdog logged %q for a worker already being killed", lines)
+	}
+}

@@ -420,6 +420,11 @@ func (p *unitProcess) watch(interval time.Duration) {
 			return
 		case <-ticker.C:
 		}
+		if p.killing.Load() {
+			// Already being killed: its cgroup can vanish before systemd-run
+			// exits, and that gap is not a fault to report.
+			return
+		}
 		used, err := p.usage()
 		if err == nil && used <= p.limit {
 			continue
@@ -455,6 +460,7 @@ type unitProcess struct {
 	pid      int
 	killUnit func(ctx context.Context, p *unitProcess) error
 	kill     sync.Once
+	killing  atomic.Bool
 	log      func(string, ...any)
 	// usage reads memory and swap in use; limit is the cap it is held to.
 	// lastUsed is what Retire last read.
@@ -505,6 +511,7 @@ func (p *unitProcess) MemoryUsed() uint64 { return p.lastUsed.Load() }
 // calls it holding its lock, and a hung systemctl must not freeze it. The
 // worker is killed by unit name, never by a PID it could have influenced.
 func (p *unitProcess) Kill() error {
+	p.killing.Store(true)
 	p.kill.Do(func() {
 		// A failed watchdog check must prevent further requests even while
 		// systemctl is stalled or fails to reach the manager.
