@@ -2,6 +2,8 @@
 
 package yara
 
+import "io"
+
 // Scanner is a no-op stub when YARA-X is not compiled in.
 type Scanner struct{}
 
@@ -48,3 +50,21 @@ func Available() bool {
 func TestCompile(source string) error {
 	return nil
 }
+
+// Rules is an empty stand-in: without YARA-X nothing compiles or loads.
+type Rules struct{}
+
+// CompileSources returns ErrNoEngine without YARA-X.
+func CompileSources(_ []Source) (*Rules, error) { return nil, ErrNoEngine }
+
+// LoadRules returns ErrNoEngine without YARA-X.
+func LoadRules(_ io.Reader) (*Rules, error) { return nil, ErrNoEngine }
+
+// Count returns 0 without YARA-X.
+func (r *Rules) Count() int { return 0 }
+
+// WriteTo returns ErrNoEngine without YARA-X.
+func (r *Rules) WriteTo(_ io.Writer) (int64, error) { return 0, ErrNoEngine }
+
+// Scan returns ErrNoEngine without YARA-X.
+func (r *Rules) Scan(_ []byte) ([]Match, error) { return nil, ErrNoEngine }
