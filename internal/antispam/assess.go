@@ -118,8 +118,9 @@ func hasMarker(s string) bool {
 // checkActionsTarget judges a Postfix host's actions.conf while CSM
 // enforces: CSM then owns it like a core file, and the worker refuses one it
 // cannot replace safely. As for a core file, a check that could not run is
-// temporary, so a passing read error never removes an installation. A dry
-// run leaves the file to the host.
+// temporary, so a passing read error never removes an installation, and
+// unsafe metadata collected before it stays definite. A dry run leaves the
+// file to the host.
 func checkActionsTarget(s Settings, f HostFacts) []Problem {
 	if f.Stack != StackPostfix || s.HostActions() {
 		return nil
@@ -128,13 +129,23 @@ func checkActionsTarget(s Settings, f HostFacts) []Problem {
 		if t.Path != ActionsPath {
 			continue
 		}
-		if err := OptionalUsable(t); err != nil {
-			sev := Definite
-			if !errors.Is(t.Err, fs.ErrNotExist) && (t.Err != nil || len(t.Parents) == 0) {
-				sev = Temporary
-			}
-			return []Problem{{Code: CodeTargets, Severity: sev, Detail: err.Error()}}
+		err := OptionalUsable(t)
+		if err == nil {
+			return nil
 		}
+		sev := Definite
+		if !errors.Is(t.Err, fs.ErrNotExist) && (t.Err != nil || len(t.Parents) == 0) {
+			sev = Temporary
+			// Metadata collected before the error still counts: a symlink,
+			// loose mode, foreign owner or loose parent stays definite. A
+			// file whose lstat failed has zero facts, which pass.
+			collected := t
+			collected.Err = nil
+			if unsafe := OptionalUsable(collected); unsafe != nil && len(t.Parents) > 0 {
+				err, sev = unsafe, Definite
+			}
+		}
+		return []Problem{{Code: CodeTargets, Severity: sev, Detail: err.Error()}}
 	}
 	return nil
 }

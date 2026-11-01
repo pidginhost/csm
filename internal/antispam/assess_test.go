@@ -903,8 +903,9 @@ func TestAssessPostfixDryRunIgnoresHostActions(t *testing.T) {
 // Enforcing on Postfix, CSM owns actions.conf like a core file: one it
 // cannot replace safely is a definite precondition problem, reported before
 // any worker runs, and one it could not check is temporary, so a passing
-// read error never removes an installation. A dry run leaves the file to the
-// host and never judges it.
+// read error never removes an installation. Unsafe metadata collected before
+// such an error stays definite. A dry run leaves the file to the host and
+// never judges it.
 func TestAssessPostfixEnforceJudgesActions(t *testing.T) {
 	for name, tc := range map[string]struct {
 		mutate func(*TargetFacts)
@@ -922,6 +923,23 @@ func TestAssessPostfixEnforceJudgesActions(t *testing.T) {
 		}, Definite},
 		"unreadable":          {func(tg *TargetFacts) { tg.Content, tg.Err = "", errors.New("permission denied") }, Temporary},
 		"parents not checked": {func(tg *TargetFacts) { tg.Parents = nil }, Temporary},
+		"lookup failed": {func(tg *TargetFacts) {
+			tg.File, tg.Content, tg.Err = PathFacts{}, "", errors.New("permission denied")
+		}, Temporary},
+		// Metadata collected before a read or lookup error still counts.
+		"loose mode, unreadable": {func(tg *TargetFacts) {
+			tg.File.Mode, tg.Content, tg.Err = 0o666, "", errors.New("permission denied")
+		}, Definite},
+		"symlink, unreadable": {func(tg *TargetFacts) {
+			tg.File.Mode, tg.Content, tg.Err = fs.ModeSymlink|0o777, "", errors.New("too many levels of symbolic links")
+		}, Definite},
+		"other owner, unreadable": {func(tg *TargetFacts) {
+			tg.File.UID, tg.Content, tg.Err = 1001, "", errors.New("permission denied")
+		}, Definite},
+		"loose directory, lookup failed": {func(tg *TargetFacts) {
+			tg.Parents[len(tg.Parents)-1].Mode = fs.ModeDir | 0o777
+			tg.File, tg.Content, tg.Err = PathFacts{}, "", errors.New("permission denied")
+		}, Definite},
 	} {
 		for _, dry := range []bool{false, true} {
 			s := postfixSettings(dry)
