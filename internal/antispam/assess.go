@@ -2,6 +2,8 @@ package antispam
 
 import (
 	"encoding/json"
+	"errors"
+	"io/fs"
 	"path"
 	"slices"
 	"strings"
@@ -114,7 +116,9 @@ func hasMarker(s string) bool {
 
 // checkActionsTarget judges a Postfix host's actions.conf while CSM
 // enforces: CSM then owns it like a core file, and the worker refuses one it
-// cannot replace safely. A dry run leaves the file to the host.
+// cannot replace safely. As for a core file, a check that could not run is
+// temporary, so a passing read error never removes an installation. A dry
+// run leaves the file to the host.
 func checkActionsTarget(s Settings, f HostFacts) []Problem {
 	if f.Stack != StackPostfix || s.HostActions() {
 		return nil
@@ -124,7 +128,11 @@ func checkActionsTarget(s Settings, f HostFacts) []Problem {
 			continue
 		}
 		if err := OptionalUsable(t); err != nil {
-			return []Problem{{Code: CodeTargets, Severity: Definite, Detail: err.Error()}}
+			sev := Definite
+			if !errors.Is(t.Err, fs.ErrNotExist) && (t.Err != nil || len(t.Parents) == 0) {
+				sev = Temporary
+			}
+			return []Problem{{Code: CodeTargets, Severity: sev, Detail: err.Error()}}
 		}
 	}
 	return nil

@@ -2,6 +2,7 @@ package antispam
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"path"
 	"slices"
@@ -788,18 +789,27 @@ func TestAssessPostfixDryRunIgnoresHostActions(t *testing.T) {
 }
 
 // Enforcing on Postfix, CSM owns actions.conf like a core file: one it
-// cannot safely replace is a definite precondition problem, reported before
-// any worker runs. A dry run leaves the file to the host and never judges it.
+// cannot replace safely is a definite precondition problem, reported before
+// any worker runs, and one it could not check is temporary, so a passing
+// read error never removes an installation. A dry run leaves the file to the
+// host and never judges it.
 func TestAssessPostfixEnforceJudgesActions(t *testing.T) {
-	for name, mutate := range map[string]func(*TargetFacts){
-		"safe":        func(*TargetFacts) {},
-		"symlink":     func(tg *TargetFacts) { tg.File.Mode = fs.ModeSymlink | 0o777 },
-		"loose mode":  func(tg *TargetFacts) { tg.File.Mode = 0o666 },
-		"other owner": func(tg *TargetFacts) { tg.File.UID = 1001 },
-		"unreadable":  func(tg *TargetFacts) { tg.Content, tg.Err = "", errors.New("permission denied") },
-		"loose directory": func(tg *TargetFacts) {
+	for name, tc := range map[string]struct {
+		mutate func(*TargetFacts)
+		sev    Severity
+	}{
+		"safe":        {func(*TargetFacts) {}, Definite},
+		"symlink":     {func(tg *TargetFacts) { tg.File.Mode = fs.ModeSymlink | 0o777 }, Definite},
+		"loose mode":  {func(tg *TargetFacts) { tg.File.Mode = 0o666 }, Definite},
+		"other owner": {func(tg *TargetFacts) { tg.File.UID = 1001 }, Definite},
+		"loose directory": {func(tg *TargetFacts) {
 			tg.Parents[len(tg.Parents)-1].Mode = fs.ModeDir | 0o777
-		},
+		}, Definite},
+		"missing directory": {func(tg *TargetFacts) {
+			tg.Missing, tg.File, tg.Content, tg.Err = false, PathFacts{}, "", fmt.Errorf("lstat: %w", fs.ErrNotExist)
+		}, Definite},
+		"unreadable":          {func(tg *TargetFacts) { tg.Content, tg.Err = "", errors.New("permission denied") }, Temporary},
+		"parents not checked": {func(tg *TargetFacts) { tg.Parents = nil }, Temporary},
 	} {
 		for _, dry := range []bool{false, true} {
 			s := postfixSettings(dry)
@@ -808,7 +818,7 @@ func TestAssessPostfixEnforceJudgesActions(t *testing.T) {
 			for i := range f.Targets {
 				if tg := &f.Targets[i]; tg.Path == RspamdLocalDir+"/actions.conf" {
 					tg.Missing, tg.File, tg.Content = false, PathFacts{Path: tg.Path, Mode: 0o644}, "actions { reject = 70; }\n"
-					mutate(tg)
+					tc.mutate(tg)
 				}
 			}
 			a := Assess(true, s, f)
@@ -818,10 +828,35 @@ func TestAssessPostfixEnforceJudgesActions(t *testing.T) {
 				if a.Action != Install || len(a.Problems) != 0 {
 					t.Errorf("%s, dry run %t: %+v; want Install without problems", name, dry, a)
 				}
-			case a.Action != Keep || len(a.Problems) != 1 || !hasProblem(a, CodeTargets, Definite):
-				t.Errorf("%s, enforce: %+v; want Keep with one definite target problem", name, a)
+			case a.Action != Keep || len(a.Problems) != 1 || !hasProblem(a, CodeTargets, tc.sev):
+				t.Errorf("%s, enforce: %+v; want Keep with one target problem of severity %d", name, a, tc.sev)
 			}
 		}
+		if name == "safe" || tc.sev != Temporary {
+			continue
+		}
+		// An installation stays when its actions.conf could not be checked.
+		s := postfixSettings(false)
+		f := installedPostfixFacts(t, s)
+		for i := range f.Targets {
+			if tg := &f.Targets[i]; tg.Path == RspamdLocalDir+"/actions.conf" {
+				tc.mutate(tg)
+			}
+		}
+		if a := Assess(true, s, f); a.Action != Keep || !a.Installed || len(a.Problems) != 1 || !hasProblem(a, CodeTargets, Temporary) {
+			t.Errorf("%s, installed: %+v; want Keep with one temporary target problem", name, a)
+		}
+	}
+	// An installation whose actions.conf CSM cannot safely own is removed.
+	s := postfixSettings(false)
+	installed := installedPostfixFacts(t, s)
+	for i := range installed.Targets {
+		if tg := &installed.Targets[i]; tg.Path == RspamdLocalDir+"/actions.conf" {
+			tg.File.Mode = 0o666
+		}
+	}
+	if a := Assess(true, s, installed); a.Action != Uninstall || !hasProblem(a, CodeTargets, Definite) {
+		t.Errorf("loose mode, installed: %+v; want Uninstall with a definite target problem", a)
 	}
 	// A directory every core file shares is reported once.
 	f := postfixFacts()
