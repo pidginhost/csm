@@ -586,12 +586,18 @@ func (e *Engine) readbackLocked(conn *nftables.Conn, set *nftables.Set) ([]nftab
 
 // ApplyBlockBatch runs the members of one batch: it checks them again
 // against the current state and kernel, writes every remaining row (with
-// its action ID) in one state write, adds their elements in one netlink
-// transaction on a fresh connection with a deadline, and reads the sets
-// back. A member is applied only when the readback shows its element as
-// encoded. A kernel rejection fails every member and restores the state;
-// any other uncertainty leaves them unknown, their rows marked unverified.
-// An error means nothing was written or sent.
+// its action ID) in one state write, and in one netlink transaction on a
+// fresh connection with a deadline deletes each qualifying victim and adds
+// the members' elements; then it reads the sets back. A member is applied
+// only when the readback shows its element as encoded, and its victim is
+// removed only when the readback of the victim's set shows it gone; a
+// member whose removal is unproven is unknown. A victim's row stays until
+// the owner retires it after the ledger records the outcome, so a restart
+// before that restores it. A kernel rejection, including the ENOENT of a
+// victim the kernel expired before the send, fails every member and
+// restores the state; the owner retries with new charged attempts (spec
+// 5.5). Any other uncertainty leaves the members unknown, their rows
+// marked unverified. An error means nothing was written or sent.
 func (e *Engine) ApplyBlockBatch(members []BlockMember) ([]BlockResult, error) {
 	if len(members) == 0 || len(members) > MaxBlockBatchMembers {
 		return nil, fmt.Errorf("a block batch has 1 to %d members", MaxBlockBatchMembers)
@@ -622,11 +628,12 @@ func (e *Engine) ApplyBlockBatch(members []BlockMember) ([]BlockResult, error) {
 	}()
 	next := copyFirewallState(snap.prior)
 	encoded := make(map[int]time.Duration)
+	evicts := e.victimsLocked(members, snap)
 	var run []int
 	var elems4, elems6 []nftables.SetElement
-	for i, refusal := range e.checkBlockMembersLocked(members, verified, snap, now, make([]bool, len(members))) {
+	for i, refusal := range e.checkBlockMembersLocked(members, verified, snap, now, evicts) {
 		if refusal != "" {
-			results[i] = BlockResult{Effect: BlockFailed, Refusal: refusal, Existing: snap.existing(members[i], refusal)}
+			results[i] = BlockResult{Effect: BlockFailed, Refusal: refusal, Existing: snap.existing(members[i], refusal), Victim: spared(members[i])}
 			continue
 		}
 		m := members[i]
@@ -640,12 +647,13 @@ func (e *Engine) ApplyBlockBatch(members []BlockMember) ([]BlockResult, error) {
 		e.suppressFailedBlockActionsLocked(blockActions(members, run))
 		e.blockBatchStateErr = errors.Join(ErrBlockBatchState, persistErr)
 		for _, i := range run {
-			results[i] = BlockResult{Effect: BlockFailed, Err: e.blockBatchStateErr}
+			results[i] = BlockResult{Effect: BlockFailed, Err: e.blockBatchStateErr, Victim: spared(members[i])}
 		}
 		return results, nil
 	}
 
 	conn, err := newBlockBatchConn(e)
+	var dels4, dels6 []nftables.SetElement
 	if err == nil {
 		defer func() { _ = conn.CloseLasting() }()
 		// State persistence can consume a member's remaining lifetime.
@@ -656,7 +664,7 @@ func (e *Engine) ApplyBlockBatch(members []BlockMember) ([]BlockResult, error) {
 			m := members[i]
 			timeout, ok := blockTimeout(m.ExpiresAt, sendAt)
 			if !ok {
-				results[i] = BlockResult{Effect: BlockFailed, Refusal: BlockRefusedExpired}
+				results[i] = BlockResult{Effect: BlockFailed, Refusal: BlockRefusedExpired, Victim: spared(m)}
 				e.suppressFailedBlockActionsLocked([]string{m.Action})
 				removeBlockedIPFromState(&next, m.IP)
 				continue
@@ -668,12 +676,27 @@ func (e *Engine) ApplyBlockBatch(members []BlockMember) ([]BlockResult, error) {
 			} else {
 				elems6 = append(elems6, nftables.SetElement{Key: parsed.To16(), Timeout: timeout})
 			}
+			// The victim leaves in the same transaction as its member's add.
+			if evicts[i] {
+				victim := net.ParseIP(m.Victim.IP)
+				if ip4 := victim.To4(); ip4 != nil {
+					dels4 = append(dels4, nftables.SetElement{Key: ip4})
+				} else {
+					dels6 = append(dels6, nftables.SetElement{Key: victim.To16()})
+				}
+			}
 			ready = append(ready, i)
 		}
 		run = ready
 		if len(run) == 0 {
 			return results, nil
 		}
+	}
+	if err == nil && len(dels4) > 0 {
+		err = conn.SetDeleteElements(e.setBlocked, dels4)
+	}
+	if err == nil && len(dels6) > 0 {
+		err = conn.SetDeleteElements(e.setBlocked6, dels6)
 	}
 	if err == nil && len(elems4) > 0 {
 		err = conn.SetAddElements(e.setBlocked, elems4)
@@ -695,25 +718,40 @@ func (e *Engine) ApplyBlockBatch(members []BlockMember) ([]BlockResult, error) {
 			err = errors.Join(ErrBlockBatchRejected, err)
 		}
 		for _, i := range run {
-			results[i] = BlockResult{Effect: BlockFailed, Err: err}
+			results[i] = BlockResult{Effect: BlockFailed, Err: err, Victim: spared(members[i])}
 		}
 		return results, nil
 	}
 
 	var found map[string]nftables.SetElement
+	var read blockFamilies
 	if err == nil {
-		found, err = e.readbackBatchLocked(conn, len(elems4) > 0, len(elems6) > 0)
+		found, read, err = e.readbackBatchLocked(conn, len(elems4)+len(dels4) > 0, len(elems6)+len(dels6) > 0)
 	}
 	window := time.Since(start) + blockReadbackSlack
 	var unknown []int
 	for _, i := range run {
 		m := members[i]
-		if el, ok := found[m.IP]; ok && readbackMatches(el, encoded[i], window) {
-			results[i] = BlockResult{Effect: BlockApplied}
+		victim := VictimUnproven
+		switch {
+		case m.Victim == (BlockVictim{}):
+			victim = ""
+		case !evicts[i]:
+			victim = VictimSpared
+		case read.has(m.Victim.IP):
+			if _, live := found[m.Victim.IP]; !live {
+				victim = VictimRemoved
+				e.legacyFileAuditLocked("evict_temp", m.Victim.IP, evictTempReason, SourceSystem, 0)
+			}
+		}
+		// An unproven removal leaves the member unknown even when its add is
+		// proven: the victim may still hold the slot.
+		if el, ok := found[m.IP]; ok && readbackMatches(el, encoded[i], window) && victim != VictimUnproven {
+			results[i] = BlockResult{Effect: BlockApplied, Victim: victim}
 			e.legacyFileAuditLocked("block", m.IP, m.Reason, SourceAutoResponse, encoded[i])
 			continue
 		}
-		results[i] = BlockResult{Effect: BlockUnknown, Err: err}
+		results[i] = BlockResult{Effect: BlockUnknown, Err: err, Victim: victim}
 		unknown = append(unknown, i)
 	}
 	if len(unknown) > 0 {
@@ -726,28 +764,56 @@ func (e *Engine) ApplyBlockBatch(members []BlockMember) ([]BlockResult, error) {
 	return results, nil
 }
 
-func (e *Engine) readbackBatchLocked(conn *nftables.Conn, v4, v6 bool) (map[string]nftables.SetElement, error) {
+// spared is the victim effect of a member that never ran: none without a
+// victim.
+func spared(m BlockMember) BlockVictimEffect {
+	if m.Victim == (BlockVictim{}) {
+		return ""
+	}
+	return VictimSpared
+}
+
+// blockFamilies says which address families a readback read.
+type blockFamilies struct {
+	v4, v6 bool
+}
+
+// has reports whether ip's family is set.
+func (f blockFamilies) has(ip string) bool {
+	if net.ParseIP(ip).To4() != nil {
+		return f.v4
+	}
+	return f.v6
+}
+
+// readbackBatchLocked reads the sets of the families asked for and merges
+// their elements; read says which reads succeeded, and the error joins the
+// failures.
+func (e *Engine) readbackBatchLocked(conn *nftables.Conn, v4, v6 bool) (map[string]nftables.SetElement, blockFamilies, error) {
 	found := map[string]nftables.SetElement{}
+	var read blockFamilies
 	var readErr error
-	for _, read := range []struct {
+	for _, r := range []struct {
 		set  *nftables.Set
 		used bool
-	}{{e.setBlocked, v4}, {e.setBlocked6, v6}} {
-		if !read.used {
+		ok   *bool
+	}{{e.setBlocked, v4, &read.v4}, {e.setBlocked6, v6, &read.v6}} {
+		if !r.used {
 			continue
 		}
-		elements, err := e.readbackLocked(conn, read.set)
+		elements, err := e.readbackLocked(conn, r.set)
 		if err != nil {
-			readErr = errors.Join(readErr, fmt.Errorf("reading back blocked set %s: %w", read.set.Name, err))
+			readErr = errors.Join(readErr, fmt.Errorf("reading back blocked set %s: %w", r.set.Name, err))
 			continue
 		}
+		*r.ok = true
 		for _, el := range elements {
-			if ip, ok := blockSetIP(read.set, el.Key); ok {
+			if ip, ok := blockSetIP(r.set, el.Key); ok {
 				found[ip] = el
 			}
 		}
 	}
-	return found, readErr
+	return found, read, readErr
 }
 
 // flagUnknownRowsLocked persists unknown marks; failed persistence keeps

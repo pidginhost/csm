@@ -57,9 +57,18 @@ func KillPointTestEngine(t *testing.T, dir string, wall time.Time, boot string, 
 	flushed := false
 	if !rejected {
 		f.reply = func(req []netlink.Message) ([]netlink.Message, error) {
-			elements, valid := killBatchElements(t, req)
+			elements, deleted, valid := killBatchElements(t, req)
 			if !valid {
 				return nltest.Error(int(syscall.EINVAL), req)
+			}
+			// Deleting a missing element rejects the whole transaction.
+			for _, ip := range deleted {
+				if _, live := kernel[ip]; !live {
+					return nltest.Error(int(syscall.ENOENT), req)
+				}
+			}
+			for _, ip := range deleted {
+				delete(kernel, ip)
 			}
 			for ip, ttl := range elements {
 				// Loss may remove a sent element, never invent one.
@@ -177,26 +186,36 @@ func killElements(t *testing.T, msg netlink.Message) map[string]time.Duration {
 	return out
 }
 
-// Batch sends can only add to the existing blocked sets. Validate every
-// message before any effect: one bad family must reject the other too.
-func killBatchElements(t *testing.T, req []netlink.Message) (map[string]time.Duration, bool) {
+// Batch sends can only add to or delete from the existing blocked sets.
+// Validate every message before any effect: one bad family must reject the
+// other too. It returns the added elements and the deleted addresses.
+func killBatchElements(t *testing.T, req []netlink.Message) (map[string]time.Duration, []string, bool) {
 	t.Helper()
 	if len(req) < 3 || req[0].Header.Type != unix.NFNL_MSG_BATCH_BEGIN || req[len(req)-1].Header.Type != unix.NFNL_MSG_BATCH_END {
-		return nil, false
+		return nil, nil, false
 	}
 	out := map[string]time.Duration{}
+	var deleted []string
 	for _, msg := range req[1 : len(req)-1] {
-		if msg.Header.Type != netlink.HeaderType(unix.NFNL_SUBSYS_NFTABLES<<8|unix.NFT_MSG_NEWSETELEM) || len(msg.Data) < 4 || msg.Data[0] != byte(nftables.TableFamilyINet) {
-			return nil, false
+		del := msg.Header.Type == delSetElemMsg
+		if (msg.Header.Type != newSetElemMsg && !del) || len(msg.Data) < 4 || msg.Data[0] != byte(nftables.TableFamilyINet) {
+			return nil, nil, false
 		}
 		attrs := killAttrs(t, msg.Data[4:])
 		table, set := string(attrs[unix.NFTA_SET_ELEM_LIST_TABLE]), string(attrs[unix.NFTA_SET_ELEM_LIST_SET])
 		if table != "csm\x00" || (set != "blocked_ips\x00" && set != "blocked_ips6\x00") {
-			return nil, false
+			return nil, nil, false
 		}
-		maps.Copy(out, killElements(t, msg))
+		if !del {
+			maps.Copy(out, killElements(t, msg))
+			continue
+		}
+		msg.Header.Type = newSetElemMsg
+		for ip := range killElements(t, msg) {
+			deleted = append(deleted, ip)
+		}
 	}
-	return out, true
+	return out, deleted, true
 }
 
 // An IPv4-mapped key in the IPv6 set cannot enforce an IPv4 block. The

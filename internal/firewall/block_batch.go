@@ -85,14 +85,31 @@ const (
 	BlockUnknown BlockEffect = "unknown"
 )
 
+// BlockVictimEffect is what a batch did to a member's victim.
+type BlockVictimEffect string
+
+const (
+	// VictimRemoved: deleted in the member's transaction, and the readback
+	// proved it gone.
+	VictimRemoved BlockVictimEffect = "removed"
+	// VictimSpared: never deleted, because the member did not run, the
+	// kernel rejected the transaction or the victim no longer qualified.
+	VictimSpared BlockVictimEffect = "spared"
+	// VictimUnproven: the deletion was sent, but neither an uncertain
+	// reply nor the readback proves it.
+	VictimUnproven BlockVictimEffect = "unproven"
+)
+
 // BlockResult is one member's outcome: its effect, the check that refused
 // it before the kernel batch, or the error behind a failed or unknown one.
-// Existing names the block behind an existing-effect refusal.
+// Existing names the block behind an existing-effect refusal. Victim is
+// what the batch did to the member's victim; empty when it named none.
 type BlockResult struct {
 	Effect   BlockEffect
 	Refusal  BlockRefusal
 	Existing ExistingBlock
 	Err      error
+	Victim   BlockVictimEffect
 }
 
 // ExistingBlock names the block that already holds an address, so a member

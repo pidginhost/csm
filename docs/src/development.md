@@ -805,7 +805,17 @@ each applied member's key and timed lifetime. Capacity is checked only at
 apply: a check before reservation never answers set_full. Victim checks require
 retained rows at the address to agree on action, expiry and verification.
 An unreadable startup ledger disqualifies all victims; members can still use
-free slots. Apply does not yet remove victims. Definitive kernel rejection
+free slots. A member whose
+victim, the admission block the ledger claimed, still has that row, action,
+expiry and proven element takes the victim's slot if the resulting set fits the current limit: the same
+transaction deletes the victim's element, and only a readback of the victim's set
+proves it removed; a member whose removal is unproven is unknown, even
+with its own add read back. A victim that no longer qualifies is spared
+and its member needs a free slot. A victim the kernel expired before the
+send rejects the whole transaction with ENOENT, which fails its members
+like any rejection. The victim's row stays until the owner retires it
+after the ledger records the outcome, so a restart before then restores
+the victim. Definitive kernel rejection
 restores state; uncertain exchanges retain unknown rows. Unknown rows are
 marked unverified and excluded from counts and seeding. Expiry retains them
 until the owner retires the matching attempt. A failed state
@@ -824,7 +834,10 @@ leaves the rows held back and the next start removes them.
 The engine's kill-point tests stop a batch around its intent write, kernel
 batch, readback, unknown marking and rejected-state restoration, then start
 the ledger and a new engine over the same state, after a process restart or
-after a reboot that empties the kernel. An unreadable ledger restores
+after a reboot that empties the kernel. Around an eviction they also stop
+before the outcome and before the victim's row is retired: until the ledger
+records the eviction a restart restores the victim and holds the block
+back, and after it the victim's row goes and only the block is restored. An unreadable ledger restores
 unexpired unmarked rows with degraded coverage; a readable ledger keeps a
 committed applied outcome and holds the rest. Attempts without a committed
 outcome are unknown. Their rows are held back, a new block of an address a
