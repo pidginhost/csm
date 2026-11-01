@@ -49,6 +49,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - Spam whose plain-text and HTML versions differ is now learned from Spam folder reports and operator marks instead of being skipped.
 - Spam with a PDF attachment that carries scripts is now learned instead of holding up the other Spam folder reports of its mailbox.
 - A Spam folder report that learning cannot process is now set aside after a few tries instead of holding up the reports behind it.
+- `csm validate` and `csm doctor` no longer warn about a missing rspamd token when the rspamd controller runs on the same host.
 
 ## [4.8.1] - 2026-10-30
 

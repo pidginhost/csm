@@ -509,7 +509,7 @@ reputation:
   rspamd:
     enabled: false                      # include rspamd rolling history in IP reputation
     url: "http://127.0.0.1:11334"       # rspamd controller URL
-    token: ""                           # controller password, or use token_env
+    token: ""                           # controller password, or use token_env; not needed for a loopback url
     token_env: ""                       # env var read at query time
   upstream:
     enabled: false                      # include panel-side threat-intel cache scores

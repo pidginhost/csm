@@ -2067,3 +2067,30 @@ func TestValidateWarnsYaraInDaemon(t *testing.T) {
 		}
 	}
 }
+
+// rspamd lets loopback clients read the controller without a password by
+// default, so a missing token is only worth a warning for a remote controller.
+func TestValidateRspamdTokenWarnsOnlyForRemoteController(t *testing.T) {
+	for _, tc := range []struct {
+		url  string
+		warn bool
+	}{
+		{"http://127.0.0.1:11334", false},
+		{"http://127.0.0.2:11334", false},
+		{"http://localhost:11334", false},
+		{"http://[::1]:11334", false},
+		{"http://192.0.2.10:11334", true},
+		{"https://rspamd.example.com", true},
+	} {
+		t.Run(tc.url, func(t *testing.T) {
+			t.Setenv("CSM_TEST_RSPAMD_TOKEN", "")
+			cfg := baseValidationConfig()
+			cfg.Reputation.Rspamd.Enabled = true
+			cfg.Reputation.Rspamd.URL = tc.url
+			cfg.Reputation.Rspamd.TokenEnv = "CSM_TEST_RSPAMD_TOKEN"
+			if got := hasResult(Validate(cfg), "warn", "reputation.rspamd.token"); got != tc.warn {
+				t.Errorf("token warning = %v, want %v", got, tc.warn)
+			}
+		})
+	}
+}
