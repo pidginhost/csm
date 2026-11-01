@@ -134,6 +134,7 @@ func classSet(names []string) map[reporting.Class]bool {
 		reporting.ClassPHPRelay:           true,
 		reporting.ClassCredentialStuffing: true,
 		reporting.ClassBadASNEgress:       true,
+		reporting.ClassSpam:               true,
 	}
 	out := make(map[reporting.Class]bool)
 	for _, n := range names {

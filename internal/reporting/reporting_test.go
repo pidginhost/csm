@@ -3,6 +3,7 @@ package reporting
 import (
 	"bytes"
 	"encoding/json"
+	"net"
 	"testing"
 	"time"
 
@@ -162,6 +163,95 @@ func TestMinimizedReportLeaksNoPII(t *testing.T) {
 	}
 	if len(got) != len(wantKeys) {
 		t.Fatalf("report keys = %v, want exactly %v", got, wantKeys)
+	}
+}
+
+func TestSpamClassReportsHighFindings(t *testing.T) {
+	g := Gate{Enabled: map[Class]bool{ClassSpam: true}, SharedSenders: func(net.IP) bool { return false }}
+	at := time.Date(2026, 10, 31, 14, 5, 9, 0, time.FixedZone("UTC+2", 2*60*60))
+	r, ok := g.Consider(alert.Finding{Check: "mail_spam_source", Severity: alert.High, SourceIP: "198.51.100.7", Timestamp: at})
+	if !ok {
+		t.Fatal("High mail_spam_source finding not reported")
+	}
+	if r.IP != "198.51.100.7" || r.Class != ClassSpam || r.Count != 1 {
+		t.Fatalf("report = %+v", r)
+	}
+	for name, got := range map[string]time.Time{"first_seen": r.FirstSeen, "last_seen": r.LastSeen} {
+		if !got.Equal(at) || got.Location() != time.UTC {
+			t.Fatalf("%s = %v, want %v in UTC", name, got, at.UTC())
+		}
+	}
+	if _, ok := g.Consider(alert.Finding{Check: "mail_spam_source", Severity: alert.Critical, SourceIP: "198.51.100.7", Timestamp: at}); !ok {
+		t.Fatal("Critical mail_spam_source finding not reported")
+	}
+	if _, ok := g.Consider(alert.Finding{Check: "mail_spam_source", Severity: alert.Warning, SourceIP: "198.51.100.7", Timestamp: at}); ok {
+		t.Fatal("Warning mail_spam_source finding reported; the class needs High")
+	}
+}
+
+// A shared mail service relays for many customers, so its addresses must never
+// be reported as spam sources. Without a guard the gate cannot tell, so it
+// refuses the class.
+func TestSpamClassNeedsTheSharedSenderGuard(t *testing.T) {
+	spam := alert.Finding{Check: "mail_spam_source", Severity: alert.High, SourceIP: "198.51.100.7", Timestamp: ts}
+	enabled := map[Class]bool{ClassSpam: true, ClassBruteforce: true}
+
+	if _, ok := (Gate{Enabled: enabled}).Consider(spam); ok {
+		t.Fatal("spam reported without a shared-sender guard")
+	}
+
+	var asked []string
+	shared := Gate{Enabled: enabled, SharedSenders: func(ip net.IP) bool {
+		asked = append(asked, ip.String())
+		return true
+	}}
+	if _, ok := shared.Consider(spam); ok {
+		t.Fatal("spam reported for a shared sender")
+	}
+	if len(asked) != 1 || asked[0] != "198.51.100.7" {
+		t.Fatalf("guard asked about %v, want exactly [198.51.100.7]", asked)
+	}
+
+	protected := Gate{
+		Enabled:       enabled,
+		Protected:     func(net.IP) bool { return true },
+		SharedSenders: func(net.IP) bool { return false },
+	}
+	if _, ok := protected.Consider(spam); ok {
+		t.Fatal("spam reported for a protected address")
+	}
+
+	brute := alert.Finding{Check: "pam_bruteforce", Severity: alert.Critical, SourceIP: "203.0.113.5", Timestamp: ts}
+	if _, ok := (Gate{Enabled: enabled}).Consider(brute); !ok {
+		t.Fatal("bruteforce refused by a missing spam guard")
+	}
+	if _, ok := shared.Consider(brute); !ok {
+		t.Fatal("bruteforce refused by the spam guard")
+	}
+
+	r, ok := (Gate{Enabled: enabled, SharedSenders: func(net.IP) bool { return false }}).Consider(spam)
+	if !ok {
+		t.Fatal("spam not reported for a non-shared sender")
+	}
+	body, err := json.Marshal(r)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	wantJSON := `{"ip":"198.51.100.7","class":"spam","count":1,"first_seen":"2023-11-14T22:13:20Z","last_seen":"2023-11-14T22:13:20Z"}`
+	if string(body) != wantJSON {
+		t.Fatalf("report JSON = %s, want exactly %s", body, wantJSON)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(got) != 5 {
+		t.Fatalf("report keys = %v, want exactly ip, class, count, first_seen, last_seen", got)
+	}
+	for _, k := range []string{"ip", "class", "count", "first_seen", "last_seen"} {
+		if _, ok := got[k]; !ok {
+			t.Fatalf("report keys = %v, missing %q", got, k)
+		}
 	}
 }
 

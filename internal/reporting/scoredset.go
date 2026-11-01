@@ -58,7 +58,7 @@ type VerifiedScoredDiff struct {
 
 func knownClass(c Class) bool {
 	switch c {
-	case ClassBruteforce, ClassPHPRelay, ClassCredentialStuffing, ClassBadASNEgress:
+	case ClassBruteforce, ClassPHPRelay, ClassCredentialStuffing, ClassBadASNEgress, ClassSpam:
 		return true
 	}
 	return false

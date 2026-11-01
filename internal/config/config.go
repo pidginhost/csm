@@ -978,7 +978,7 @@ type Config struct {
 		// Opt-in; default off. Keys/secrets resolve from *_env at startup.
 		Report struct {
 			Enabled   bool     `yaml:"enabled"`
-			Classes   []string `yaml:"classes"`    // bruteforce, php_relay, credential_stuffing, bad_asn_egress
+			Classes   []string `yaml:"classes"`    // bruteforce, php_relay, credential_stuffing, bad_asn_egress, spam
 			SpoolPath string   `yaml:"spool_path"` // bbolt file; default <state_dir>/abuse_reports.db
 			SpoolMax  int      `yaml:"spool_max"`  // bounded queue size; default 10000
 			Targets   []struct {

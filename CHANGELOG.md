@@ -17,6 +17,10 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - PHP taint analysis now runs in a locked-down worker with no root, network or account file access; files are reported unexamined when it cannot start.
 - YARA scanning now runs in a locked-down worker without root, so a crafted file can no longer reach a root process through it.
 
+### Added
+
+- Nodes can now load central abuse lists that include spam sources.
+
 ### Changed
 
 - With the default YARA worker enabled, rule files can no longer include other files; inline included rules instead.

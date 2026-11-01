@@ -29,6 +29,13 @@ func TestClassSetParsesKnownSkipsUnknown(t *testing.T) {
 	}
 }
 
+func TestClassSetKnowsSpam(t *testing.T) {
+	got := classSet([]string{"spam"})
+	if len(got) != 1 || !got[reporting.ClassSpam] {
+		t.Fatalf("classes = %v, want exactly map[spam:true]", got)
+	}
+}
+
 func TestAbuseReportQueueSizeTracksDefaultSpoolCapacity(t *testing.T) {
 	if got := abuseReportQueueSize(abuseReportSpoolDefault); got != abuseReportSpoolDefault {
 		t.Fatalf("queue size = %d, want %d", got, abuseReportSpoolDefault)

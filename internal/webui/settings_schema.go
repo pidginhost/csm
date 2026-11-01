@@ -289,7 +289,7 @@ var settingsSections = []SettingsSection{
 			{YAMLPath: "upstream.timeout_sec", Type: "int", Label: "Upstream request timeout (sec)", Min: int64p(1), Max: int64p(60)},
 
 			{YAMLPath: "report.enabled", Type: "bool", Label: "Report confirmed abuse", Help: "Send signed, minimized reports for confirmed-abuse IPs. Targets are configured in YAML.", FieldGroup: FieldGroupAbuseReporting},
-			{YAMLPath: "report.classes", Type: "[]string", Label: "Reported classes", Help: "bruteforce, php_relay, credential_stuffing, bad_asn_egress", FieldGroup: FieldGroupAbuseReporting},
+			{YAMLPath: "report.classes", Type: "[]string", Label: "Reported classes", Help: "bruteforce, php_relay, credential_stuffing, bad_asn_egress, spam", FieldGroup: FieldGroupAbuseReporting},
 			{YAMLPath: "report.spool_max", Type: "int", Label: "Report spool size", Min: int64p(0), FieldGroup: FieldGroupAbuseReporting},
 
 			{YAMLPath: "central.enabled", Type: "bool", Label: "Consume central abuse database", FieldGroup: FieldGroupCentralDB},

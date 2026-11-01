@@ -155,7 +155,7 @@ the [Abuse Report Contract](abuse-report-contract.md).
 ### Reported findings
 
 Each class covers these checks. Only Critical findings are reported, except
-`bad_asn_egress`, which reports High findings too.
+`bad_asn_egress` and `spam`, which report High findings too.
 
 | Class | Checks |
 |---|---|
@@ -163,6 +163,10 @@ Each class covers these checks. Only Critical findings are reported, except
 | `credential_stuffing` | `credential_stuffing` |
 | `php_relay` | `email_php_relay_abuse` |
 | `bad_asn_egress` | `bad_asn_outbound` |
+| `spam` | `mail_spam_source` |
+
+Nodes accept `spam` entries in downloaded central lists. A node reports the
+class once its spam source detector is enabled.
 
 A report carries only the source address, the class, a count and the time.
 List the classes to send in `reputation.report.classes`. An empty list keeps

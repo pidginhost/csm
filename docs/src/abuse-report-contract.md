@@ -13,7 +13,7 @@ CSM reports a finding only when all of these hold:
 
 - Its check maps to a class listed in `reputation.report.classes`. The
   mapping is in [Threat Intelligence](threat-intel.md#reported-findings).
-- It is Critical, or High or above for `bad_asn_egress`.
+- It is Critical, or High or above for `bad_asn_egress` and `spam`.
 - It names a source address that parses as an IP address.
 - Its finding timestamp is not zero.
 - That address passes CSM's protection checks. CSM excludes private,
@@ -24,6 +24,7 @@ CSM reports a finding only when all of these hold:
   resolve infrastructure hostnames or consult rDNS crawler results.
   Teredo clients are not excluded solely for using Teredo. For NAT64 and
   6to4 sources, the same checks also apply to the embedded IPv4 address.
+- For `spam`, the address does not belong to a shared mail service.
 
 ## Request
 
@@ -51,8 +52,8 @@ request times out after 15 seconds.
 
 - `ip`: the source address in canonical text form. IPv6 is compressed and
   lowercase. An IPv4-mapped IPv6 address is sent as dotted IPv4.
-- `class`: `bruteforce`, `php_relay`, `credential_stuffing` or
-  `bad_asn_egress`.
+- `class`: `bruteforce`, `php_relay`, `credential_stuffing`,
+  `bad_asn_egress` or `spam`.
 - `count`: observations in this report. Version 1 always sends 1.
 - `first_seen`, `last_seen`: RFC 3339 UTC time of the finding, which may
   carry fractional seconds. Version 1 sends the same value in both.

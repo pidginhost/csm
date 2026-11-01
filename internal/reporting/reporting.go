@@ -17,6 +17,7 @@ const (
 	// #nosec G101 -- abuse-class label, not a credential.
 	ClassCredentialStuffing Class = "credential_stuffing"
 	ClassBadASNEgress       Class = "bad_asn_egress"
+	ClassSpam               Class = "spam"
 )
 
 // checkClass maps a CSM finding check name to its public abuse class. Only
@@ -34,11 +35,13 @@ var checkClass = map[string]Class{
 	"credential_stuffing":    ClassCredentialStuffing,
 	"email_php_relay_abuse":  ClassPHPRelay,
 	"bad_asn_outbound":       ClassBadASNEgress,
+	"mail_spam_source":       ClassSpam,
 }
 
 // classMinSeverity is the least severe finding a class reports.
 func classMinSeverity(class Class) alert.Severity {
-	if class == ClassBadASNEgress {
+	switch class {
+	case ClassBadASNEgress, ClassSpam:
 		return alert.High
 	}
 	return alert.Critical
@@ -73,6 +76,12 @@ type Gate struct {
 	// edges, verified crawlers). The daemon supplies the same predicate it
 	// uses before acting on central intelligence. Nil protects nothing.
 	Protected func(net.IP) bool
+	// SharedSenders reports whether an address belongs to a shared mail
+	// service, which sends for many customers and must never be reported as
+	// a spam source. Only the spam class consults it, and while it is nil
+	// spam is refused. It runs on the alert path, so it must not do network
+	// I/O.
+	SharedSenders func(net.IP) bool
 }
 
 // Consider returns the minimized report for f, or ok=false when f must not be
@@ -85,8 +94,8 @@ func (g Gate) Consider(f alert.Finding) (Report, bool) {
 	}
 	// Severity values grow more severe as they increase (Warning < High < Critical).
 	// Brute-force and relay classes need the Critical verdict; bad-ASN
-	// egress is only ever emitted as High, so demanding Critical made that
-	// class a dead option.
+	// egress and spam are only ever emitted as High, so demanding Critical
+	// would make those classes dead options.
 	if f.Severity < classMinSeverity(class) {
 		return Report{}, false
 	}
@@ -95,6 +104,9 @@ func (g Gate) Consider(f alert.Finding) (Report, bool) {
 		return Report{}, false
 	}
 	if g.Protected != nil && g.Protected(ip) {
+		return Report{}, false
+	}
+	if class == ClassSpam && (g.SharedSenders == nil || g.SharedSenders(ip)) {
 		return Report{}, false
 	}
 	ts := f.Timestamp

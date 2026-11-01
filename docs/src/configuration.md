@@ -520,7 +520,7 @@ reputation:
     timeout_sec: 5                      # upstream request timeout
   report:
     enabled: false                      # opt-in abuse report delivery; restart required
-    classes: []                         # bruteforce | php_relay | credential_stuffing | bad_asn_egress
+    classes: []                         # bruteforce | php_relay | credential_stuffing | bad_asn_egress | spam
     spool_path: ""                      # default: <state_path>/abuse_reports.db
     spool_max: 10000                    # max queued reports, shared by all targets
     targets:
