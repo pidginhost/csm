@@ -143,9 +143,7 @@ func (r *JournalReader) loop(ctx context.Context, j journalEntries, out chan<- L
 			continue
 		}
 		r.queue.journal.outcome(false, false)
-		unit := entry.Fields["_SYSTEMD_UNIT"]
-		msg := entry.Fields["MESSAGE"]
-		if !r.queue.sendJournal(ctx, out, Line{Source: "journal", Unit: unit, Message: msg, Position: journalPosition(entry)}) {
+		if !r.queue.sendJournal(ctx, out, JournalLine(entry.Fields, journalPosition(entry))) {
 			normal = true
 			return
 		}

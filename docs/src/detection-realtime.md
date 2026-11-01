@@ -230,7 +230,7 @@ Tails auth, access, and mail logs in real-time. The exact file paths are chosen 
 | Auth log | All | SSH logins and failures. `/var/log/auth.log` on Debian/Ubuntu, `/var/log/secure` on RHEL family and cPanel |
 | Exim mainlog (`/var/log/exim_mainlog`) | cPanel; non-cPanel when the file exists | Mail anomalies, queue issues, SMTP brute force, probe abuse, and cloud relay abuse |
 | Apache/LiteSpeed/Nginx access log | All | WordPress brute force (wp-login.php, xmlrpc.php), real-time. Paths: `/var/log/apache2/access.log` (Debian), `/var/log/httpd/access_log` (RHEL), `/var/log/nginx/access.log` (Nginx), `/usr/local/apache/logs/access_log`, then `/var/log/apache2/access_log` and `/etc/apache2/logs/access_log` (cPanel, also written by LiteSpeed). Automatic candidates exclude the cPanel access log |
-| Mail log (platform file or journal) | All hosts with Postfix/Dovecot logs | IMAP/POP3/ManageSieve account compromise and mail brute-force; SMTP brute force on Postfix hosts with Dovecot (file input) |
+| Mail log (platform file or journal) | All hosts with Postfix/Dovecot logs | IMAP/POP3/ManageSieve account compromise and mail brute-force; SMTP brute force on Postfix hosts with Dovecot |
 | FTP log (`/var/log/messages`) | cPanel only | FTP logins and failures |
 | ModSecurity error log | All (if ModSec installed) | WAF blocks and attacks. Auto-discovered from the detected web server |
 | Nginx error log (`/var/log/nginx/error.log`) | Nginx hosts | General web errors, ModSecurity denies |
@@ -355,13 +355,15 @@ services with no prior entries; it does not replay older records on attachment.
 
 Explicit `file` and `journal` modes retry their selected source without
 switching, and a working reader stays attached until it stops or loses its file.
-Journal input requires a build with journal support.
+Journal input requires a build with journal support. Each journal record reaches
+the mail detectors with its program name, process id and time, as a mail log
+file records them, so every mail detection works the same with either source.
 
 ## SMTP / Dovecot Brute-Force Tracker
 
 Detects credential stuffing, password spray, and raw SMTP probe storms. Runs as part of the Exim mainlog watcher on cPanel hosts and on non-cPanel Exim hosts where `/var/log/exim_mainlog` exists.
 
-On hosts without that log, such as Postfix servers that check SMTP logins against Dovecot, the tracker counts a failed SMTP login when two lines from the mail log file agree:
+On hosts without that log, such as Postfix servers that check SMTP logins against Dovecot, the tracker counts a failed SMTP login when two lines from the mail log agree:
 
 - Postfix's `SASL ... authentication failed` warning, which is the final result of the request, and
 - Dovecot's rejection for the same client address shortly before it: `Password mismatch`, `unknown user`, or PAM's authentication failure.
@@ -377,7 +379,7 @@ Dovecot writes rejections only with verbose auth logging on:
 auth_verbose = yes
 ```
 
-Leave `auth_verbose_passwords` at `no`; lines that carry a logged password are ignored. `csm doctor` checks both settings on Postfix hosts with Dovecot. Rejections for IMAP, POP3 and ManageSieve logins carry a session id and are counted by the mail tracker below from their login summaries. With journal input, Postfix lines lack the program name this pairing needs, so Postfix SMTP detection reads the mail log file only. A successful Postfix login, logged when the client's first recipient is accepted, keeps its address out of the slow brute-force block, as an authenticated Exim delivery does.
+Leave `auth_verbose_passwords` at `no`; lines that carry a logged password are ignored. `csm doctor` checks both settings on Postfix hosts with Dovecot. Rejections for IMAP, POP3 and ManageSieve logins carry a session id and are counted by the mail tracker below from their login summaries. A successful Postfix login, logged when the client's first recipient is accepted, keeps its address out of the slow brute-force block, as an authenticated Exim delivery does.
 
 Dovecot's informational and debug authentication messages can contain client text; they never mark the authentication backend as unavailable. Error and warning diagnostics still reach the backend-outage detector. `smtp_probe_abuse` reads Exim lines only.
 

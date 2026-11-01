@@ -2582,11 +2582,6 @@ func (d *Daemon) handleSMTPAuthPairing(line string, obs alert.Observation, cfg *
 }
 
 func (d *Daemon) dispatchMailLogLine(line maillog.Line, handler ObservedLineHandler) bool {
-	// Journal MESSAGE omits the syslog program tag. Its trusted unit name
-	// supplies the origin that the Dovecot parsers require for file input.
-	if line.Source == "journal" && line.Unit == "dovecot.service" && dovecotServiceMessage(line.Message) == "" {
-		line.Message = "dovecot: " + line.Message
-	}
 	var obs alert.Observation
 	if line.Position.Stream != "" {
 		obs = alert.Observation{Producer: string(checks.ProducerMailLog), Stream: line.Position.Stream, Cursor: line.Position.Cursor, ObservedAt: line.Position.ObservedAt}

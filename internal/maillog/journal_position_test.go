@@ -13,6 +13,7 @@ import (
 type positionJournal struct {
 	read   bool
 	cancel context.CancelFunc
+	fields map[string]string
 }
 
 func (j *positionJournal) Next() (uint64, error) {
@@ -24,8 +25,12 @@ func (j *positionJournal) Next() (uint64, error) {
 }
 
 func (j *positionJournal) GetEntry() (*sdjournal.JournalEntry, error) {
+	fields := j.fields
+	if fields == nil {
+		fields = map[string]string{"_SYSTEMD_UNIT": "dovecot.service", "MESSAGE": "auth failed"}
+	}
 	return &sdjournal.JournalEntry{
-		Fields:            map[string]string{"_SYSTEMD_UNIT": "dovecot.service", "MESSAGE": "auth failed"},
+		Fields:            fields,
 		Cursor:            "s=0123;i=4567;b=89ab;m=cdef;t=1;x=2",
 		RealtimeTimestamp: 1_790_000_000_123_456,
 	}, nil
@@ -54,6 +59,26 @@ func TestJournalLinePosition(t *testing.T) {
 	want := Position{Stream: "journal", Cursor: journalCursor("s=0123;i=4567;b=89ab;m=cdef;t=1;x=2"), ObservedAt: time.UnixMicro(1_790_000_000_123_456)}
 	if line.Position != want {
 		t.Fatalf("position %+v, want %+v", line.Position, want)
+	}
+}
+
+// The reader hands the parsers the entry's program tag and time, not the
+// bare MESSAGE field.
+func TestJournalReaderRendersSyslogLine(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	queue := NewQueue()
+	out := queue.channel()
+	fields := map[string]string{"_SYSTEMD_UNIT": "postfix.service", "SYSLOG_IDENTIFIER": "postfix/smtpd", "_PID": "99", "MESSAGE": "warning: unknown[203.0.113.5]: SASL LOGIN authentication failed: x"}
+	NewJournalReader([]string{"postfix"}, queue).loop(ctx, &positionJournal{cancel: cancel, fields: fields}, out)
+	line, ok := <-out
+	if !ok {
+		t.Fatal("no journal line")
+	}
+	line.Process(func(Line) bool { return true })
+	want := time.UnixMicro(1_790_000_000_123_456).Format(time.RFC3339Nano) + " postfix/smtpd[99]: warning: unknown[203.0.113.5]: SASL LOGIN authentication failed: x"
+	if line.Message != want || line.Unit != "postfix.service" {
+		t.Fatalf("line = %+v, want message %q", line, want)
 	}
 }
 

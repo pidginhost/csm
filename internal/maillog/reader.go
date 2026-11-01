@@ -14,7 +14,7 @@ import (
 type Line struct {
 	Source  string // "file" | "journal"
 	Unit    string // e.g., "postfix", "dovecot" (empty when from a file)
-	Message string // raw log message (for file: full line; for journal: MESSAGE field)
+	Message string // log line (for file: full line; for journal: see JournalLine)
 	// Position is where the line was read; empty Stream when unknown.
 	Position Position
 	ticket   queuehealth.Ticket
