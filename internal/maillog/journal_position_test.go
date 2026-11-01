@@ -100,14 +100,14 @@ func TestJournalLinePositionRejectsUnencodableTime(t *testing.T) {
 // Configured names become exact _SYSTEMD_UNIT values, so the Debian Postfix
 // instance needs its own entry.
 func TestJournalUnitName(t *testing.T) {
-	for name, want := range map[string]string{
-		"postfix":           "postfix.service",
-		"postfix@-":         "postfix@-.service",
-		"postfix@-.service": "postfix@-.service",
-		" dovecot ":         "dovecot.service",
+	for _, tc := range []struct{ name, want string }{
+		{"postfix", "postfix.service"},
+		{"postfix@-", "postfix@-.service"},
+		{"postfix@-.service", "postfix@-.service"},
+		{" dovecot ", "dovecot.service"},
 	} {
-		if got := journalUnitName(name); got != want {
-			t.Errorf("journalUnitName(%q) = %q, want %q", name, got, want)
+		if got := journalUnitName(tc.name); got != tc.want {
+			t.Errorf("journalUnitName(%q) = %q, want %q", tc.name, got, tc.want)
 		}
 	}
 }

@@ -118,3 +118,42 @@ func TestPostfixSASLSuccessSkippedOnEximHosts(t *testing.T) {
 		t.Fatalf("successful logins = %v, want none", got)
 	}
 }
+
+// A working account must not erase the fast failure counter, even when each
+// guess is followed by a successful login using that account.
+func TestPostfixSASLSuccessDoesNotSuppressFastBrute(t *testing.T) {
+	const ip = "203.0.113.126"
+	d, clock := newPairingDaemon(t, &config.Config{})
+	var got []alert.Finding
+	for i := 0; i < d.smtpAuthTracker.perIPThreshold; i++ {
+		got = append(got, feed(d, clock,
+			"dovecot: auth: sql(target@example.net,"+ip+"): Password mismatch",
+			fmt.Sprintf(postfixFailFmt, ip, "target@example.net"),
+			"postfix/smtpd[99]: 4ABC123: client=unknown["+ip+"], sasl_method=PLAIN, sasl_username=owned@example.net")...)
+	}
+	if len(got) != 1 || got[0].Check != "smtp_bruteforce" || got[0].SourceIP != ip {
+		t.Fatalf("findings = %+v, want one fast brute-force finding", got)
+	}
+	if calls := smtpCalls(d); calls != int64(d.smtpAuthTracker.perIPThreshold) {
+		t.Fatalf("success lost failures: got %d calls", calls)
+	}
+}
+
+// Success grants only the same bounded slow-brute exemption as Exim.
+func TestPostfixSASLSuccessExemptionExpires(t *testing.T) {
+	const ip = "203.0.113.127"
+	d, clock := newPairingDaemon(t, &config.Config{})
+	feed(d, clock, "postfix/smtpd[99]: 4ABC123: client=unknown["+ip+"], sasl_method=PLAIN, sasl_username=owned@example.net")
+	clock.advance(d.smtpAuthTracker.slowWindow)
+	var got []alert.Finding
+	for i := 0; i < slowBruteWalkAccounts; i++ {
+		clock.advance(8 * time.Minute)
+		account := fmt.Sprintf("user%02d@example.net", i)
+		got = append(got, feed(d, clock,
+			"dovecot: auth: sql("+account+","+ip+"): Password mismatch",
+			fmt.Sprintf(postfixFailFmt, ip, account))...)
+	}
+	if len(got) != 1 || got[0].Check != "smtp_bruteforce" || got[0].SourceIP != ip {
+		t.Fatalf("findings = %+v, want one slow brute-force finding after expiry", got)
+	}
+}

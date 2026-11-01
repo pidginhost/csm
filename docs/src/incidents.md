@@ -18,7 +18,8 @@ on the attacker source IP, not on the victim they name:
   pre-auth SMTP probes from one source. A failed login is an attack attempt,
   not a takeover, so it keys on the attacker IP rather than the targeted
   mailbox. A threat-intelligence match on an address seen failing IMAP or POP3
-  logins opens this kind too.
+  logins opens this kind too, including alerts queued during shutdown and
+  delivered after restart.
 
 Compromise kinds are reserved for evidence that an attack succeeded:
 `web_account_compromise` (on-disk or behavioural signals such as a webshell or

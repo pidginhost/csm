@@ -361,6 +361,12 @@ Journal input requires a build with journal support. The default units are
 as `postfix@postfix-out`, in `mail_logs.units`. Each journal record reaches
 the mail detectors with its program name, process id and time, as a mail log
 file records them, so every mail detection works the same with either source.
+Journal selection uses the trusted systemd unit, not the caller-supplied syslog
+identifier. Keep `mail_logs.units` limited to mail services. File input has no
+sender credentials: a local user who can submit mail-facility syslog messages
+can forge failures or successes there. On hosts with untrusted local users,
+use `mail_logs.source: journal` with the mail service units, or restrict the
+syslog input that writes the mail log.
 
 ## SMTP / Dovecot Brute-Force Tracker
 
@@ -383,6 +389,10 @@ auth_verbose = yes
 ```
 
 Leave `auth_verbose_passwords` at `no`; lines that carry a logged password are ignored. `csm doctor` checks both settings on Postfix hosts with Dovecot. Rejections for IMAP, POP3 and ManageSieve logins carry a session id and are counted by the mail tracker below from their login summaries. A successful Postfix login, logged when the client's first recipient is accepted, keeps its address out of the slow brute-force block, as an authenticated Exim delivery does.
+
+The success exemption expires with the slow detection window. It does not
+clear failed attempts or exempt the address from fast brute-force or spray
+detection, matching Exim's success handling.
 
 Dovecot's informational and debug authentication messages can contain client text; they never mark the authentication backend as unavailable. Error and warning diagnostics still reach the backend-outage detector. `smtp_probe_abuse` reads Exim lines only.
 
