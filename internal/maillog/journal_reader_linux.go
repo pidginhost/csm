@@ -21,7 +21,8 @@ type JournalReader struct {
 }
 
 // NewJournalReader constructs a JournalReader matching the given systemd
-// unit names (e.g., "postfix", "dovecot", or full "*.service" names).
+// unit names (e.g., "postfix", "postfix@-", "dovecot", or full "*.service"
+// names). Journal matches are exact; a name is never a glob.
 func NewJournalReader(units []string, queue *Queue) *JournalReader {
 	return &JournalReader{units: units, queue: queue}
 }

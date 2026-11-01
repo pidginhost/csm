@@ -588,7 +588,7 @@ func TestPackagedDefaultFeatureSamplesPreserveEffectiveDefaults(t *testing.T) {
 	if cfg.MailLogs.File != "" {
 		t.Errorf("mail_logs.file = %q, want empty", cfg.MailLogs.File)
 	}
-	if want := []string{"postfix", "dovecot"}; !reflect.DeepEqual(cfg.MailLogs.Units, want) {
+	if want := []string{"postfix", "postfix@-", "dovecot"}; !reflect.DeepEqual(cfg.MailLogs.Units, want) {
 		t.Errorf("mail_logs.units = %v, want %v", cfg.MailLogs.Units, want)
 	}
 
@@ -1069,6 +1069,20 @@ func TestMailLogs_DefaultsToAuto(t *testing.T) {
 	}
 	if cfg.MailLogs.Source != "auto" {
 		t.Fatalf("expected default source=auto, got %q", cfg.MailLogs.Source)
+	}
+}
+
+// Debian and Ubuntu run the Postfix daemons in the postfix@- instance unit;
+// postfix.service there only starts it. Other distributions run them in
+// postfix.service. The journal matches unit names exactly, so the default
+// names both.
+func TestMailLogs_DefaultUnitsCoverPostfixInstance(t *testing.T) {
+	cfg, err := LoadBytes([]byte(``))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"postfix", "postfix@-", "dovecot"}; !reflect.DeepEqual(cfg.MailLogs.Units, want) {
+		t.Fatalf("default mail_logs.units = %v, want %v", cfg.MailLogs.Units, want)
 	}
 }
 

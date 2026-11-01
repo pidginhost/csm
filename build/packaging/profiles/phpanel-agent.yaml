@@ -86,6 +86,7 @@ mail_logs:
   source: journal
   units:
     - postfix
+    - postfix@-       # Debian/Ubuntu Postfix instance unit
     - dovecot
 
 # Per-account brute-force scoring keys on dovecot's user=<...> field by default.

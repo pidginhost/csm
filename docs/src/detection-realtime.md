@@ -355,7 +355,10 @@ services with no prior entries; it does not replay older records on attachment.
 
 Explicit `file` and `journal` modes retry their selected source without
 switching, and a working reader stays attached until it stops or loses its file.
-Journal input requires a build with journal support. Each journal record reaches
+Journal input requires a build with journal support. The default units are
+`postfix`, `postfix@-` (the Postfix instance on Debian and Ubuntu) and
+`dovecot`. Unit names match exactly, so list any further Postfix instance, such
+as `postfix@postfix-out`, in `mail_logs.units`. Each journal record reaches
 the mail detectors with its program name, process id and time, as a mail log
 file records them, so every mail detection works the same with either source.
 
