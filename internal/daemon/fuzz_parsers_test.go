@@ -271,3 +271,120 @@ func FuzzPAMObservation(f *testing.F) {
 		}
 	})
 }
+
+func FuzzPostfixWarningsNeverBuildEvidence(f *testing.F) {
+	for _, s := range []string{"x[198.51.100.9]: SASL LOGIN authentication failed: x", "UGFzc3dvcmQ6", "", "]: SASL ", "Connection lost to authentication server", "temporary@example.net", ", sasl_username=Authentication backend error", "SASL: Protocol version error", "warning: SASL: Couldn't send handshake: Broken pipe"} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, s string) {
+		clock := &staticClock{t: time.Unix(1_700_000_000, 0)}
+		d := New(&config.Config{}, nil, nil, "")
+		d.smtpAuthTracker = newTestTracker(t, clock)
+		d.mailAuthTracker = newTestMailTracker(t, clock)
+		for _, msg := range []string{
+			"Illegal address syntax from unknown[203.0.113.65] in RCPT command: <" + s + ">",
+			"unknown[203.0.113.66]: SASL LOGIN authentication failed: " + s,
+			"unknown[203.0.113.66]: SASL PLAIN authentication failed: authentication failure, sasl_username=" + s,
+			s,
+		} {
+			if got := d.handleMailLine("postfix/smtpd[99]: warning: "+msg, alert.Observation{}, d.currentCfg()); len(got) != 0 {
+				t.Fatalf("Postfix warning raised findings: %+v", got)
+			}
+		}
+		if calls, _ := d.smtpAuthTracker.Stats(); calls != 0 || d.smtpAuthTracker.Size() != 0 || d.mailAuthTracker.Size() != 0 {
+			t.Fatalf("Postfix warning left evidence: %d calls, %d SMTP entries, %d mail entries", calls, d.smtpAuthTracker.Size(), d.mailAuthTracker.Size())
+		}
+	})
+}
+
+// Client-controlled names and password text never turn intermediate
+// database verdicts into final authentication evidence.
+func FuzzDovecotPassdbVerdictsNeverBuildEvidence(f *testing.F) {
+	for _, s := range []string{"alice@example.net", "", "x,198.51.100.9", "x,<abcdefgh>", "x,master", "a): Password mismatch", "a): b(<c>", "Temporary authentication failure"} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, name string) {
+		d := New(&config.Config{}, nil, nil, "")
+		for _, line := range []string{
+			"dovecot: auth: sql(" + name + ",203.0.113.7): unknown user",
+			"dovecot: auth: sql(" + name + ",203.0.113.7,master): Password mismatch",
+			"dovecot: auth: sql(" + name + ",203.0.113.7,<session>): unknown user",
+			"dovecot: auth: sql(a,203.0.113.7): Password mismatch (given password: " + name,
+			"dovecot: auth-worker(12): pam(" + name + ",203.0.113.7): pam_authenticate() failed: Authentication failure (Password mismatch?)",
+			"dovecot: auth: Debug: sql(" + name + ",203.0.113.7): Performing passdb lookup",
+			"dovecot: auth-worker(12): pam(" + name,
+		} {
+			if got := d.handleMailLine(line, alert.Observation{}, d.currentCfg()); len(got) != 0 {
+				t.Fatalf("passdb verdict raised findings: %+v", got)
+			}
+		}
+		if calls, _ := d.smtpAuthTracker.Stats(); calls != 0 || d.smtpAuthTracker.Size() != 0 || d.mailAuthTracker.Size() != 0 || len(d.mailAuthTracker.backendErr) != 0 {
+			t.Fatal("passdb verdict left SMTP, mail or backend-outage evidence")
+		}
+	})
+}
+
+// A client chooses its login name and, through its HELO and rDNS, text that
+// smtpd echoes. Pairing still only counts the address Dovecot appended, and a
+// verdict pairs once.
+func FuzzSMTPAuthPairingAddress(f *testing.F) {
+	for _, s := range []string{"alice@example.net", "", "x,198.51.100.9", "x[198.51.100.9]", "x): unknown user", ", sasl_username=", "unknown[198.51.100.9]: SASL LOGIN authentication failed: x"} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, name string) {
+		clock := &staticClock{t: time.Unix(1_700_000_000, 0)}
+		d := New(&config.Config{}, nil, nil, "")
+		d.smtpAuthTracker = newTestTracker(t, clock)
+		for _, line := range []string{
+			"dovecot: auth: sql(" + name + ",203.0.113.7): unknown user",
+			"postfix/smtpd[9]: warning: unknown[198.51.100.9]: SASL LOGIN authentication failed: x, sasl_username=" + name,
+			"postfix/smtpd[9]: warning: " + name + "[198.51.100.9]: SASL LOGIN authentication failed: x",
+			"postfix/smtpd[9]: warning: Illegal address syntax from unknown[198.51.100.9] in RCPT command: <" + name + ">",
+			"postfix/smtpd[9]: warning: unknown[203.0.113.7]: SASL LOGIN authentication failed: x",
+			"postfix/smtpd[9]: warning: unknown[203.0.113.7]: SASL LOGIN authentication failed: x",
+		} {
+			clock.advance(time.Second)
+			d.handleMailLine(line, alert.Observation{}, d.currentCfg())
+		}
+		if calls, _ := d.smtpAuthTracker.Stats(); calls > 1 {
+			t.Fatalf("one verdict counted %d times", calls)
+		}
+		for ip := range d.smtpAuthTracker.ips {
+			if ip != "203.0.113.7" {
+				t.Fatalf("name %q counted a failure for %s", name, ip)
+			}
+		}
+	})
+}
+
+func FuzzSMTPAuthTroublePrefix(f *testing.F) {
+	for _, s := range []string{"SASL: Protocol version error", "warning: SASL: Couldn't send handshake: Broken pipe", "", "\npostfix/smtpd[99]: warning: SASL: error"} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, clientText string) {
+		d, clock := newPairingDaemon(t, &config.Config{})
+		feed(d, clock,
+			"postfix/smtpd[99]: warning: Illegal address syntax from unknown[203.0.113.65] in RCPT command: <"+clientText+">",
+			"postfix/smtpd[99]: warning: unknown[203.0.113.65]: SASL LOGIN authentication failed: x, sasl_username="+clientText,
+			"dovecot: auth: sql(alice@example.net,203.0.113.95): unknown user",
+			"postfix/smtpd[99]: warning: unknown[203.0.113.95]: SASL LOGIN authentication failed: x")
+		if calls := smtpCalls(d); calls != 1 || len(d.smtpAuthTracker.authTrouble) != 0 {
+			t.Fatalf("client text withheld a valid pair: calls=%d marks=%d", calls, len(d.smtpAuthTracker.authTrouble))
+		}
+	})
+}
+
+func FuzzSMTPAuthLogTime(f *testing.F) {
+	f.Add("2026-10-31T20:00:00Z")
+	f.Add("\nOct 31 20:00:00 mail postfix/smtpd[99]: warning: x")
+	f.Add("")
+	f.Fuzz(func(t *testing.T, clientText string) {
+		now := time.Date(2026, 10, 31, 20, 0, 0, 0, time.UTC)
+		for _, prefix := range []string{now.Format(time.Stamp), now.Format(time.RFC3339Nano)} {
+			line := prefix + " mail dovecot: auth: sql(" + clientText + ",203.0.113.95): unknown user"
+			if at := smtpAuthLogTime(line, now); !at.Equal(now) {
+				t.Fatalf("client text changed source timestamp to %s", at)
+			}
+		}
+	})
+}

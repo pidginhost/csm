@@ -230,7 +230,7 @@ Tails auth, access, and mail logs in real-time. The exact file paths are chosen 
 | Auth log | All | SSH logins and failures. `/var/log/auth.log` on Debian/Ubuntu, `/var/log/secure` on RHEL family and cPanel |
 | Exim mainlog (`/var/log/exim_mainlog`) | cPanel; non-cPanel when the file exists | Mail anomalies, queue issues, SMTP brute force, probe abuse, and cloud relay abuse |
 | Apache/LiteSpeed/Nginx access log | All | WordPress brute force (wp-login.php, xmlrpc.php), real-time. Paths: `/var/log/apache2/access.log` (Debian), `/var/log/httpd/access_log` (RHEL), `/var/log/nginx/access.log` (Nginx), `/usr/local/apache/logs/access_log`, then `/var/log/apache2/access_log` and `/etc/apache2/logs/access_log` (cPanel, also written by LiteSpeed). Automatic candidates exclude the cPanel access log |
-| Mail log (platform file or journal) | All hosts with Postfix/Dovecot logs | IMAP/POP3/ManageSieve account compromise and mail brute-force |
+| Mail log (platform file or journal) | All hosts with Postfix/Dovecot logs | IMAP/POP3/ManageSieve account compromise and mail brute-force; SMTP brute force on Postfix hosts with Dovecot (file input) |
 | FTP log (`/var/log/messages`) | cPanel only | FTP logins and failures |
 | ModSecurity error log | All (if ModSec installed) | WAF blocks and attacks. Auto-discovered from the detected web server |
 | Nginx error log (`/var/log/nginx/error.log`) | Nginx hosts | General web errors, ModSecurity denies |
@@ -360,6 +360,26 @@ Journal input requires a build with journal support.
 ## SMTP / Dovecot Brute-Force Tracker
 
 Detects credential stuffing, password spray, and raw SMTP probe storms. Runs as part of the Exim mainlog watcher on cPanel hosts and on non-cPanel Exim hosts where `/var/log/exim_mainlog` exists.
+
+On hosts without that log, such as Postfix servers that check SMTP logins against Dovecot, the tracker counts a failed SMTP login when two lines from the mail log file agree:
+
+- Postfix's `SASL ... authentication failed` warning, which is the final result of the request, and
+- Dovecot's rejection for the same client address shortly before it: `Password mismatch`, `unknown user`, or PAM's authentication failure.
+
+Neither line counts alone. Postfix logs a Dovecot outage the same way as a wrong password, and a Dovecot rejection is one password database's answer: a later database can still accept the login or fail. A rejection followed by a successful login leaves no Postfix warning, a Dovecot error or warning for the same client within the pairing window withholds the failure, and one Postfix warning counts once however many databases rejected the request. Postfix SASL backend warnings also withhold failures from that SMTP process, including stale replies after a failed reconnect. Replies that blame the authentication server or reject the authentication protocol without checking credentials never count.
+
+Pairing is bounded by both receipt time and, when present, the timestamps in traditional syslog or RFC3339 records. Reading a backlog does not make an old timestamped rejection fresh. The mailbox for `smtp_account_spray` comes from Dovecot; when pending rejections for an address name different mailboxes, they count only toward address and subnet detection. Each credential or backend failure consumes one pending rejection, including failures withheld for backend errors. Authentication protocol refusals from Postfix or Dovecot neither count nor consume a pending rejection. Tracking capacity is bounded: new verdicts are dropped when full, and error-mark overflow withholds pairing until the affected window expires. Infrastructure protection is checked again before a paired failure counts.
+
+Dovecot writes rejections only with verbose auth logging on:
+
+```
+# /etc/dovecot/conf.d/10-logging.conf
+auth_verbose = yes
+```
+
+Leave `auth_verbose_passwords` at `no`; lines that carry a logged password are ignored. `csm doctor` checks both settings on Postfix hosts with Dovecot. Rejections for IMAP, POP3 and ManageSieve logins carry a session id and are counted by the mail tracker below from their login summaries. With journal input, Postfix lines lack the program name this pairing needs, so Postfix SMTP detection reads the mail log file only. Successful Postfix logins are not recorded, so a later success does not clear the slow brute-force signal for that address.
+
+Dovecot's informational and debug authentication messages can contain client text; they never mark the authentication backend as unavailable. Error and warning diagnostics still reach the backend-outage detector. `smtp_probe_abuse` reads Exim lines only.
 
 Four attack patterns:
 

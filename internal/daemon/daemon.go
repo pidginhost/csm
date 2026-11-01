@@ -131,6 +131,10 @@ type Daemon struct {
 	smtpProbeTracker *smtpProbeTracker
 	mailAuthTracker  *mailAuthTracker
 	authBackend      *authBackendHealth
+	// smtpAuthFromExim is set before the log readers start when the Exim
+	// mainlog feeds smtpAuthTracker; Postfix pairing is then skipped so one
+	// attempt is not counted twice.
+	smtpAuthFromExim bool
 	startTime        time.Time
 
 	// mailStats counts mail decisions for the Email Security page on the
@@ -2127,6 +2131,7 @@ func (d *Daemon) startLogWatchers() {
 	hostInfo := platform.Detect()
 
 	watchExim := shouldWatchEximMainlog(hostInfo, os.Stat)
+	d.smtpAuthFromExim = watchExim
 	logFiles := d.fixedLogSpecs(hostInfo, d.handleEximLine, watchExim)
 	if hostInfo.IsCPanel() {
 		d.wg.Add(1)
@@ -2474,9 +2479,20 @@ func (d *Daemon) handleEximLine(line string, obs alert.Observation, cfg *config.
 // handleMailLine composes parseDovecotLogLine (preserving email_suspicious_geo)
 // with mailAuthTracker augmentation for IMAP/POP3/ManageSieve brute-force,
 // subnet spray, account spray, and compromise detection. obs names the line.
+// Neither a Postfix SASL warning (it omits the auth status and can reuse a
+// stale reason) nor a Dovecot passdb verdict (one database's answer) is SMTP
+// credential evidence alone; handleSMTPAuthPairing counts them together.
 func (d *Daemon) handleMailLine(line string, obs alert.Observation, cfg *config.Config) []alert.Finding {
 	d.recordMailStatsMail(line, obs.ObservedAt)
 	findings := parseDovecotLogLine(line, cfg)
+	if paired, handled := d.handleSMTPAuthPairing(line, obs, cfg); handled {
+		return append(findings, paired...)
+	}
+	// Intermediate auth results are not login failures, and their client
+	// text must not reach the outage detector even without a full verdict.
+	if isDovecotAuthRequestInfo(line) {
+		return findings
+	}
 	authLine := isMailAuthLine(line)
 	// Auth-backend failures (dovecot cannot reach the credential backend)
 	// arrive on their own lines, not login lines. Feed them to the degraded
@@ -2511,7 +2527,58 @@ func (d *Daemon) handleMailLine(line string, obs alert.Observation, cfg *config.
 	return findings
 }
 
+// handleSMTPAuthPairing feeds Postfix SMTP AUTH evidence on hosts whose
+// SMTP AUTH failures do not come from the Exim mainlog. It reports whether the
+// line was a Dovecot verdict or a Postfix failure, which need no further
+// handling; Dovecot error lines are noted and still reach the outage detector.
+func (d *Daemon) handleSMTPAuthPairing(line string, obs alert.Observation, cfg *config.Config) ([]alert.Finding, bool) {
+	t := d.smtpAuthTracker
+	if t == nil || d.smtpAuthFromExim {
+		return nil, false
+	}
+	if ip, account, ok := dovecotSessionlessRejection(line); ok {
+		if !isInfraIPDaemon(ip, cfg.InfraIPs) && !isPrivateOrLoopback(ip) {
+			t.NoteDovecotRejection(ip, account, smtpAuthLogTime(line, t.now()))
+		}
+		return nil, true
+	}
+	if ips := dovecotAuthTroubleIPs(line); len(ips) > 0 {
+		t.NoteAuthTrouble(ips...)
+		return nil, false
+	}
+	process, msg := postfixSMTPDMessage(line)
+	if strings.HasPrefix(msg, "warning: SASL: ") {
+		// A failed backend reconnect can leave smtpd's previous reply
+		// intact. This trusted prefix has no client-supplied text.
+		t.NoteAuthTrouble(process)
+		return nil, true
+	}
+	ip, reply := postfixSASLFailure(msg)
+	if ip == "" {
+		return nil, false
+	}
+	// A client can send these on a second connection while its real attempt
+	// waits out Dovecot's failure delay; claiming a verdict here would hide
+	// that attempt.
+	if isPostfixSASLProtocolReply(reply) {
+		return nil, true
+	}
+	// Claim the verdict even for a server-blamed reply so it cannot pair
+	// with a later failure. Recheck infra protection in case configuration
+	// changed between the two log lines.
+	account, ok := t.PairMTAFailure(ip, process, smtpAuthLogTime(line, t.now()))
+	if !ok || isPostfixSASLNonCredentialReply(reply) || isInfraIPDaemon(ip, cfg.InfraIPs) || isPrivateOrLoopback(ip) {
+		return nil, true
+	}
+	return t.RecordObserved(ip, account, obs), true
+}
+
 func (d *Daemon) dispatchMailLogLine(line maillog.Line, handler ObservedLineHandler) bool {
+	// Journal MESSAGE omits the syslog program tag. Its trusted unit name
+	// supplies the origin that the Dovecot parsers require for file input.
+	if line.Source == "journal" && line.Unit == "dovecot.service" && dovecotServiceMessage(line.Message) == "" {
+		line.Message = "dovecot: " + line.Message
+	}
 	var obs alert.Observation
 	if line.Position.Stream != "" {
 		obs = alert.Observation{Producer: string(checks.ProducerMailLog), Stream: line.Position.Stream, Cursor: line.Position.Cursor, ObservedAt: line.Position.ObservedAt}
