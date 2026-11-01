@@ -22,9 +22,9 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Added
 
+- Antispam DNS blocklists now work through your own resolvers on public addresses when they are listed in `infra_ips`.
 - Nodes can now load central abuse lists that include spam sources.
 - Operators can opt in to report repeated spam senders to the central abuse database; shared mail services are never reported.
-- Antispam DNS blocklists now work through your own resolvers on public addresses when they are listed in `infra_ips`.
 
 ### Changed
 
@@ -37,10 +37,8 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Fixed
 
-- IMAP, POP3 and ManageSieve login protection now works when mail logs are read from the systemd journal.
-- Antispam recognizes owned resolvers across equivalent address forms and keeps local resolvers on alternate ports usable.
-- Antispam checks all systemd-resolved upstreams before enabling DNS blocklists and reports unavailable resolver information.
 - Antispam no longer turns on DNS blocklists when systemd-resolved forwards to a public resolver the lists refuse.
+- IMAP, POP3 and ManageSieve login protection now works when mail logs are read from the systemd journal.
 - The daemon log no longer reports a memory failure or a kill when CSM stops a worker on purpose.
 - WordPress core files that differ only in line endings are no longer reported on sites whose PHP prints deprecation notices.
 - The daemon log no longer reports a YARA scan failure for large files.
