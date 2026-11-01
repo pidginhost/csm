@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/pidginhost/csm/internal/admission"
+	"github.com/pidginhost/csm/internal/antispam/dovecot"
 )
 
 func FuzzBaseName(f *testing.F) {
@@ -88,7 +89,7 @@ func FuzzParseMailboxPasswd(f *testing.F) {
 			t.Fatalf("names are not sorted and distinct: %v", names)
 		}
 		for _, n := range names {
-			if !ValidMailbox(n) {
+			if !dovecot.ValidMailbox(n) {
 				t.Fatalf("invalid name %q returned", n)
 			}
 		}

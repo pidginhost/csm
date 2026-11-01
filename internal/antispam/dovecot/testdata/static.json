@@ -1,0 +1,33 @@
+{
+ "image": "docker.io/dovecot/dovecot:2.3.21@sha256:1c18c756f20d03867077a1b509a6e2e3008ab1eafa56377b6f2eca12dc1ba581",
+ "commands": [
+  {
+   "argv": [
+    "dovecot",
+    "--version"
+   ],
+   "stdout": "2.3.21 (47349e2482)\n",
+   "stderr": "",
+   "exit": 0
+  },
+  {
+   "argv": [
+    "doveconf",
+    "-n"
+   ],
+   "stdout": "# 2.3.21 (47349e2482): /etc/dovecot/dovecot.conf\n# Pigeonhole version 0.5.21 (f6cd4b8e)\n# OS: Linux 6.18.15 x86_64 Debian 11.7 \n# Hostname: mail.example.com\nlisten = *\nmail_location = maildir:~/Maildir\nmanagesieve_notify_capability = mailto\nmanagesieve_sieve_capability = fileinto reject envelope encoded-character vacation subaddress comparator-i;ascii-numeric relational regex imap4flags copy include variables body enotify environment mailbox date index ihave duplicate mime foreverypart extracttext\npassdb {\n  args = password=#hidden_use-P_to_show#\n  driver = static\n}\nprotocols = imap\nssl = no\nuserdb {\n  args = uid=1000 gid=1000 home=/srv/static/%u\n  driver = static\n}\n",
+   "stderr": "",
+   "exit": 0
+  },
+  {
+   "argv": [
+    "doveadm",
+    "user",
+    "*"
+   ],
+   "stdout": "",
+   "stderr": "Error: auth-master: userdb list: User listing returned failure\nFatal: user listing failed\n",
+   "exit": 75
+  }
+ ]
+}

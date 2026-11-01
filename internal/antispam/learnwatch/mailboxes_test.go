@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"syscall"
 	"testing"
 )
@@ -36,72 +35,6 @@ func TestMailboxReadBudgetIncludesGrowingLists(t *testing.T) {
 	}
 	if bytesLeft > 0 {
 		t.Fatalf("rejected lists left %d bytes of budget", bytesLeft)
-	}
-}
-
-func TestValidDomainRules(t *testing.T) {
-	label63 := strings.Repeat("a", 63)
-	// 63+1+63+1+63+1+61 = 253 bytes.
-	d253 := label63 + "." + label63 + "." + label63 + "." + strings.Repeat("b", 61)
-	for in, want := range map[string]bool{
-		"example.com":       true,
-		"Example.COM":       true,
-		"a-b.example.net":   true,
-		"xn--bcher-kva.com": true,
-		d253:                true,
-		d253 + "c":          false,
-		label63 + ".com":    true,
-		label63 + "a.com":   false,
-		"-a.example.com":    false,
-		"a-.example.com":    false,
-		"a..example.com":    false,
-		".example.com":      false,
-		"example.com.":      false,
-		"":                  false,
-		"localhost":         false,
-		"virtual":           false,
-		"b\u00fccher.com":   false,
-		"a_b.example.com":   false,
-		"a b.example.com":   false,
-		"../example.com":    false,
-		"example.com/x":     false,
-		"exa\x00mple.com":   false,
-	} {
-		if got := ValidDomain(in); got != want {
-			t.Errorf("ValidDomain(%q) = %v", in, got)
-		}
-	}
-}
-
-func TestValidMailboxRules(t *testing.T) {
-	for in, want := range map[string]bool{
-		"user":                  true,
-		"first.last":            true,
-		"a+tag":                 true,
-		"o'brien":               true,
-		"x_y-z":                 true,
-		strings.Repeat("a", 64): true,
-		strings.Repeat("a", 65): false,
-		".user":                 false,
-		"user.":                 false,
-		"a..b":                  false,
-		"":                      false,
-		".":                     false,
-		"..":                    false,
-		"a/b":                   false,
-		"a\\b":                  false,
-		"a b":                   false,
-		"a\tb":                  false,
-		"a\x01b":                false,
-		"\"quoted\"":            false,
-		"a\"b":                  false,
-		"m\u00fcller":           false,
-		"a@b":                   false,
-		"a,b":                   false,
-	} {
-		if got := ValidMailbox(in); got != want {
-			t.Errorf("ValidMailbox(%q) = %v", in, got)
-		}
 	}
 }
 

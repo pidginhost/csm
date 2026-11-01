@@ -11,6 +11,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/pidginhost/csm/internal/antispam/dovecot"
 	"github.com/pidginhost/csm/internal/antispam/learn"
 	"github.com/pidginhost/csm/internal/safepath"
 )
@@ -114,7 +115,7 @@ func mailboxPath(m Mailbox, folder, sub string) (string, error) {
 	switch {
 	case m == Mailbox{}:
 		return "mail", nil
-	case ValidDomain(m.Domain) && ValidMailbox(m.Box):
+	case dovecot.ValidDomain(m.Domain) && dovecot.ValidMailbox(m.Box):
 		return "mail/" + m.Domain + "/" + m.Box, nil
 	}
 	return "", fmt.Errorf("%w: unsupported mailbox name", ErrUnsafePath)

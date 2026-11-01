@@ -1,0 +1,14 @@
+{
+ "image": "docker.io/dovecot/dovecot:2.4.1@sha256:1296e0f1029cdd95e6849fb82f5d142a6e2a46218451773316cea678de75254b",
+ "commands": [
+  {
+   "argv": [
+    "dovecot",
+    "--version"
+   ],
+   "stdout": "2.4.1 (7d8c0e5759)\n",
+   "stderr": "",
+   "exit": 0
+  }
+ ]
+}

@@ -1,0 +1,125 @@
+{
+ "image": "docker.io/dovecot/dovecot:2.3.21@sha256:1c18c756f20d03867077a1b509a6e2e3008ab1eafa56377b6f2eca12dc1ba581",
+ "commands": [
+  {
+   "argv": [
+    "dovecot",
+    "--version"
+   ],
+   "stdout": "2.3.21 (47349e2482)\n",
+   "stderr": "",
+   "exit": 0
+  },
+  {
+   "argv": [
+    "doveconf",
+    "-n"
+   ],
+   "stdout": "# 2.3.21 (47349e2482): /etc/dovecot/dovecot.conf\n# Pigeonhole version 0.5.21 (f6cd4b8e)\n# OS: Linux 6.18.15 x86_64 Debian 11.7 \n# Hostname: mail.example.com\nfirst_valid_uid = 1000\nlisten = *\nmail_gid = vmail\nmail_home = /srv/vmail/%d/%n\nmail_location = maildir:~/Maildir:UTF-8\nmail_uid = vmail\nmanagesieve_notify_capability = mailto\nmanagesieve_sieve_capability = fileinto reject envelope encoded-character vacation subaddress comparator-i;ascii-numeric relational regex imap4flags copy include variables body enotify environment mailbox date index ihave duplicate mime foreverypart extracttext\nnamespace archive {\n  location = maildir:/srv/archive/%d/%n\n  mailbox Junk {\n    auto = create\n    special_use = \\Junk\n  }\n  prefix = Archive/\n  separator = /\n}\nnamespace inbox {\n  inbox = yes\n  location = \n  mailbox \"Pourriel é\" {\n    auto = create\n    special_use = \\Junk\n  }\n  mailbox Spam/Sub {\n    auto = create\n    special_use = \\Junk\n  }\n  prefix = \n  separator = /\n}\npassdb {\n  args = /etc/dovecot/users\n  driver = passwd-file\n}\nprotocols = imap\nssl = no\nuserdb {\n  args = /etc/dovecot/users\n  driver = passwd-file\n}\n",
+   "stderr": "",
+   "exit": 0
+  },
+  {
+   "argv": [
+    "doveadm",
+    "user",
+    "*"
+   ],
+   "stdout": "alice@example.com\nbob@example.org\n",
+   "stderr": "",
+   "exit": 0
+  },
+  {
+   "argv": [
+    "doveadm",
+    "user",
+    "-e",
+    "%u\t%{uid}\t%{gid}\t%h\t%{userdb:mail}\t%{userdb:mail_plugins}\tmaildir:~/Maildir:UTF-8\tmaildir:/srv/archive/%d/%n",
+    "--",
+    "alice@example.com",
+    "bob@example.org"
+   ],
+   "stdout": "alice@example.com\t1000\t1000\t/srv/vmail/example.com/alice\t\t\tmaildir:~/Maildir:UTF-8\tmaildir:/srv/archive/example.com/alice\n\nbob@example.org\t1000\t1000\t/srv/vmail/example.org/bob\t\t\tmaildir:~/Maildir:UTF-8\tmaildir:/srv/archive/example.org/bob\n",
+   "stderr": "",
+   "exit": 0
+  },
+  {
+   "argv": [
+    "doveadm",
+    "mailbox",
+    "path",
+    "-u",
+    "alice@example.com",
+    "Spam/Sub"
+   ],
+   "stdout": "/srv/vmail/example.com/alice/Maildir/.Spam.Sub\n",
+   "stderr": "",
+   "exit": 0
+  },
+  {
+   "argv": [
+    "doveadm",
+    "mailbox",
+    "path",
+    "-u",
+    "alice@example.com",
+    "Pourriel é"
+   ],
+   "stdout": "/srv/vmail/example.com/alice/Maildir/.Pourriel é\n",
+   "stderr": "",
+   "exit": 0
+  },
+  {
+   "argv": [
+    "doveadm",
+    "mailbox",
+    "path",
+    "-u",
+    "alice@example.com",
+    "Archive/Junk"
+   ],
+   "stdout": "/srv/archive/example.com/alice/.Junk\n",
+   "stderr": "",
+   "exit": 0
+  },
+  {
+   "argv": [
+    "doveadm",
+    "mailbox",
+    "path",
+    "-u",
+    "bob@example.org",
+    "Spam/Sub"
+   ],
+   "stdout": "/srv/vmail/example.org/bob/Maildir/.Spam.Sub\n",
+   "stderr": "",
+   "exit": 0
+  },
+  {
+   "argv": [
+    "doveadm",
+    "mailbox",
+    "path",
+    "-u",
+    "bob@example.org",
+    "Pourriel é"
+   ],
+   "stdout": "/srv/vmail/example.org/bob/Maildir/.Pourriel é\n",
+   "stderr": "",
+   "exit": 0
+  },
+  {
+   "argv": [
+    "doveadm",
+    "mailbox",
+    "path",
+    "-u",
+    "bob@example.org",
+    "Archive/Junk"
+   ],
+   "stdout": "/srv/archive/example.org/bob/.Junk\n",
+   "stderr": "",
+   "exit": 0
+  }
+ ]
+}
