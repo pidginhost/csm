@@ -593,7 +593,7 @@ func TestPassReportsPostfixScanSource(t *testing.T) {
 		f.Postconf = antispam.CommandResult{Stdout: "inet:127.0.0.1:11332\naccept\n0\n/var/spool/postfix\n3.7.11\n"}
 		f.RspamdWorkers = antispam.CommandResult{Stdout: `{"rspamd_proxy": {"bind_socket": "localhost:11332", "milter": true}}`}
 	}
-	want := &antispam.ScanSource{Log: "/var/log/rspamd/rspamd.log", Milters: []string{"inet:127.0.0.1:11332"}}
+	want := &antispam.ScanSource{Stack: antispam.StackPostfix, Log: "/var/log/rspamd/rspamd.log", Milters: []string{"inet:127.0.0.1:11332"}, MilterAction: "accept"}
 	for _, tc := range []struct {
 		name    string
 		enabled bool

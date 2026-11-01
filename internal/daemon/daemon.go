@@ -2472,7 +2472,11 @@ func (d *Daemon) handleEximLine(line string, obs alert.Observation, cfg *config.
 	at := lineReadAt(obs)
 	d.recordMailStatsExim(line, at)
 	if s, ok := antispam.ParseScan(line); ok {
-		findings = append(findings, d.recordScan(s, line, at, cfg)...)
+		// Exim logs the marker with the SMTP client's own address, so it is
+		// evidence about that sender.
+		d.recordSpamEvidence(s, at, cfg)
+		d.recordSpamSource(s, at, cfg)
+		findings = append(findings, d.recordScan(s, line, at)...)
 	}
 	return findings
 }

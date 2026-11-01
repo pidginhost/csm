@@ -3,7 +3,9 @@ package daemon
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -66,7 +68,8 @@ func TestPostfixMilterFailure(t *testing.T) {
 }
 
 // A milter failure leaves no scan record, so postfix's warning raises
-// antispam_scan_error like a failed Exim scan.
+// antispam_scan_error like a failed Exim scan, in Postfix's words: what
+// happens to the mail is milter_default_action's choice.
 func TestMilterFailureRaisesScanError(t *testing.T) {
 	d := newTestDaemon(t)
 	enableAntispam(t, d, true)
@@ -74,7 +77,7 @@ func TestMilterFailureRaisesScanError(t *testing.T) {
 	if got := d.handleMailLine(milterFailureLine, alert.Observation{}, d.currentCfg()); len(got) != 0 {
 		t.Fatalf("failure counted before a pass named rspamd's milters: %+v", got)
 	}
-	d.antispamScanSource.Store(&antispam.ScanSource{Milters: []string{rspamdMilter}})
+	d.reportAntispam(reconcile.Outcome{ScanSource: &antispam.ScanSource{Stack: antispam.StackPostfix, Milters: []string{rspamdMilter}, MilterAction: "tempfail"}})
 	if got := d.handleMailLine(echo, alert.Observation{}, d.currentCfg()); len(got) != 0 || len(d.antispamHealth.Active()) != 0 {
 		t.Fatalf("client text counted as a failure: %+v", got)
 	}
@@ -82,16 +85,19 @@ func TestMilterFailureRaisesScanError(t *testing.T) {
 	if len(got) != 1 || got[0].Check != reconcile.CheckScanError {
 		t.Fatalf("milter failure raised %+v, want one %s", got, reconcile.CheckScanError)
 	}
-	if active := d.antispamHealth.Active(); len(active) != 1 || active[0].Check != reconcile.CheckScanError {
+	if !strings.HasPrefix(got[0].Details, "Postfix logged 1 failed scan since ") || !strings.Contains(got[0].Details, " Mail is deferred until rspamd answers; ") {
+		t.Fatalf("details %q, want Postfix's wording for tempfail", got[0].Details)
+	}
+	if active := d.antispamHealth.Active(); len(active) != 1 || active[0].Details != got[0].Details {
 		t.Fatalf("active %+v", active)
 	}
 }
 
-// Each scan record in rspamd's log counts like an Exim scan marker: spam
-// evidence on the sender, the Email Security counts and scan health. The
-// log is read from where it ends when CSM starts on it, and only CSM's
-// records count.
-func TestRspamdLogScanFeedsHealthEvidenceStats(t *testing.T) {
+// Each scan record in rspamd's log counts for scan health and the Email
+// Security counts. It is no evidence against its sender (see
+// TestRspamdLogScanIsNoSenderEvidence). The log is read from where it ends
+// when CSM starts on it, and only CSM's records count.
+func TestRspamdLogScanFeedsHealthAndStats(t *testing.T) {
 	now := mailStatsTestNow
 	d := newMailStatsTestDaemon(t, &now)
 	adb := useTestAttackDB(t)
@@ -119,24 +125,23 @@ func TestRspamdLogScanFeedsHealthEvidenceStats(t *testing.T) {
 		t.Fatalf("milter failure not tracked: %+v", d.antispamHealth.Active())
 	}
 
-	w := d.followRspamdLog(nil)
+	var tail rspamdLogTail
+	t.Cleanup(tail.stop)
+	d.followRspamdLog(&tail)
+	w := tail.w
 	if w == nil {
 		t.Fatal("rspamd's log is not followed")
 	}
-	t.Cleanup(func() { w.Stop() })
 	writeLog(
 		"2026-10-20 12:10:00 #2273(normal) <9f7812>; lua; other.lua:12: subject: x; "+rspamdRecord("198.51.100.81")[len("2026-10-20 12:10:00 #2273(normal) <9f7812>; "):],
 		"2026-10-20 12:10:00 #2273(normal) <9f7812>; task; rspamd_task_write_log: id: <x@example.com>, qid: <4XyZ0b1c2D>, ip: 198.51.100.80",
 		rspamdRecord("198.51.100.80"),
 	)
-	if next := d.followRspamdLog(w); next != w {
-		t.Fatalf("watcher replaced while the log stayed: %p, %p", next, w)
+	if d.followRspamdLog(&tail); tail.w != w {
+		t.Fatalf("watcher replaced while the log stayed: %p, %p", tail.w, w)
 	}
 
-	if rec := adb.LookupIP("198.51.100.80"); rec == nil || rec.Mail == nil || rec.Mail.Spam != 1 {
-		t.Fatalf("record after a spam scan: %+v", rec)
-	}
-	for _, ip := range []string{"198.51.100.79", "198.51.100.81"} {
+	for _, ip := range []string{"198.51.100.79", "198.51.100.80", "198.51.100.81"} {
 		if rec := adb.LookupIP(ip); rec != nil {
 			t.Errorf("%s recorded: %+v", ip, rec.Mail)
 		}
@@ -154,35 +159,75 @@ func TestRspamdLogScanFeedsHealthEvidenceStats(t *testing.T) {
 
 	// A pass that finds no file log stops reading, and so does disabling.
 	d.antispamScanSource.Store(&antispam.ScanSource{Milters: []string{rspamdMilter}})
-	if next := d.followRspamdLog(w); next != nil {
+	if d.followRspamdLog(&tail); tail.w != nil {
 		t.Fatal("still reading a log rspamd no longer writes")
 	}
 	d.antispamScanSource.Store(&antispam.ScanSource{Log: path})
 	enableAntispam(t, d, false)
-	if next := d.followRspamdLog(nil); next != nil {
-		next.Stop()
+	if d.followRspamdLog(&tail); tail.w != nil {
 		t.Fatal("reading rspamd's log with antispam disabled")
 	}
 }
 
-// A missing log is retried on the next poll; a file appearing later is read
-// from its end like every log CSM starts on.
+// Any local process can have rspamd log a genuine record naming any sender,
+// through rspamd's scan listeners. A Postfix record is never evidence
+// against the address it names: no attack DB verdict and no spam source.
+// The same rejects in Exim's log raise both, so the detector was listening.
+func TestRspamdLogScanIsNoSenderEvidence(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		useSpamStore(t)
+		adb := useTestAttackDB(t)
+		cfg := spamSourceConfig(t)
+		d := startSpamDaemon(t, cfg, &spamDNS{})
+		const forged, real = "198.51.100.90", "198.51.100.91"
+		base := time.Now()
+		for _, at := range []time.Time{base, base.Add(2 * time.Hour)} {
+			d.handleRspamdLogLine(rspamdRecord(forged), alert.Observation{ObservedAt: at}, cfg)
+		}
+		if got := spamFindings(d); len(got) != 0 {
+			t.Fatalf("rspamd records raised %+v", got)
+		}
+		if rec := adb.LookupIP(forged); rec != nil {
+			t.Fatalf("rspamd records became evidence: %+v", rec.Mail)
+		}
+		eximAt(d, cfg, rejectMarker(real), base)
+		eximAt(d, cfg, rejectMarker(real), base.Add(2*time.Hour))
+		wantSpamFinding(t, spamFindings(d), real, base.Add(2*time.Hour))
+		if rec := adb.LookupIP(real); rec == nil || rec.Mail == nil || rec.Mail.Spam != 2 {
+			t.Fatalf("Exim markers lost their evidence: %+v", rec)
+		}
+	})
+}
+
+// A log CSM cannot open is retried on every poll and reported once; a file
+// appearing later is reported once and read from its end like every log
+// CSM starts on.
 func TestFollowRspamdLogWaitsForTheFile(t *testing.T) {
 	d := newTestDaemon(t)
 	enableAntispam(t, d, true)
 	path := filepath.Join(t.TempDir(), "rspamd.log")
 	d.antispamScanSource.Store(&antispam.ScanSource{Log: path})
-	if w := d.followRspamdLog(nil); w != nil {
-		t.Fatal("watching a missing file")
+	finish := captureCSMLog(t)
+	t.Cleanup(func() { finish() })
+	var tail rspamdLogTail
+	t.Cleanup(tail.stop)
+	for range 3 {
+		if d.followRspamdLog(&tail); tail.w != nil {
+			t.Fatal("watching a missing file")
+		}
 	}
 	if err := os.WriteFile(path, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	w := d.followRspamdLog(nil)
-	if w == nil {
-		t.Fatal("file not followed once it exists")
+	for range 2 {
+		if d.followRspamdLog(&tail); tail.w == nil {
+			t.Fatal("file not followed once it exists")
+		}
 	}
-	w.Stop()
+	got := finish()
+	if strings.Count(got, "rspamd log not readable, will retry") != 1 || strings.Count(got, "watching rspamd log (appeared after retry)") != 1 || !strings.Contains(got, path) {
+		t.Fatalf("log = %q, want one retry warning and one recovery for %s", got, path)
+	}
 }
 
 // A pass that could not read where scan records come from keeps the last

@@ -234,20 +234,20 @@ func TestPostfixScanSource(t *testing.T) {
 		wantOK bool
 	}{
 		{"inet milter", HostFacts{RspamdLog: log, Postconf: CommandResult{Stdout: postconfOut("inet:localhost:8891, inet:127.0.0.1:11332", "0")}, RspamdWorkers: CommandResult{Stdout: proxyWorkers}},
-			ScanSource{Log: "/var/log/rspamd/rspamd.log", Milters: []string{"inet:127.0.0.1:11332"}}, true},
+			ScanSource{Stack: StackPostfix, Log: "/var/log/rspamd/rspamd.log", Milters: []string{"inet:127.0.0.1:11332"}, MilterAction: "accept"}, true},
 		{"chrooted unix milters", HostFacts{RspamdLog: log, Postconf: CommandResult{Stdout: postconfOut("{ unix:/rspamd/milter.sock, connect_timeout=10s }, unix:rspamd/milter.sock", "0")},
 			PostfixMaster: chrooted, RspamdWorkers: CommandResult{Stdout: unixProxy}},
-			ScanSource{Log: "/var/log/rspamd/rspamd.log", Milters: []string{"unix:/rspamd/milter.sock", "unix:rspamd/milter.sock"}}, true},
+			ScanSource{Stack: StackPostfix, Log: "/var/log/rspamd/rspamd.log", Milters: []string{"unix:/rspamd/milter.sock", "unix:rspamd/milter.sock"}, MilterAction: "accept"}, true},
 		// Mail that never reaches rspamd leaves no failure to read.
 		{"not wired", HostFacts{RspamdLog: log, Postconf: CommandResult{Stdout: postconfOut("inet:localhost:8891", "0")}, RspamdWorkers: CommandResult{Stdout: proxyWorkers}},
-			ScanSource{Log: "/var/log/rspamd/rspamd.log"}, true},
+			ScanSource{Stack: StackPostfix, Log: "/var/log/rspamd/rspamd.log", MilterAction: "accept"}, true},
 		{"journal", HostFacts{RspamdLog: LogFacts{Type: "console"}, Postconf: CommandResult{Stdout: postconfOut("inet:127.0.0.1:11332", "0")}, RspamdWorkers: CommandResult{Stdout: proxyWorkers}},
-			ScanSource{Milters: []string{"inet:127.0.0.1:11332"}}, true},
+			ScanSource{Stack: StackPostfix, Milters: []string{"inet:127.0.0.1:11332"}, MilterAction: "accept"}, true},
 		// A log CSM could not inspect is still the file rspamd writes.
 		{"log not inspectable", HostFacts{RspamdLog: LogFacts{Type: "file", Path: "/var/log/rspamd/rspamd.log", Err: boom}, Postconf: CommandResult{Stdout: postconfOut("inet:127.0.0.1:11332", "0")}, RspamdWorkers: CommandResult{Stdout: proxyWorkers}},
-			ScanSource{Log: "/var/log/rspamd/rspamd.log", Milters: []string{"inet:127.0.0.1:11332"}}, true},
+			ScanSource{Stack: StackPostfix, Log: "/var/log/rspamd/rspamd.log", Milters: []string{"inet:127.0.0.1:11332"}, MilterAction: "accept"}, true},
 		{"relative log", HostFacts{RspamdLog: LogFacts{Type: "file", Path: "rspamd.log", Err: boom}, Postconf: CommandResult{Stdout: postconfOut("inet:127.0.0.1:11332", "0")}, RspamdWorkers: CommandResult{Stdout: proxyWorkers}},
-			ScanSource{Milters: []string{"inet:127.0.0.1:11332"}}, true},
+			ScanSource{Stack: StackPostfix, Milters: []string{"inet:127.0.0.1:11332"}, MilterAction: "accept"}, true},
 		{"logging settings unreadable", HostFacts{RspamdLog: LogFacts{Err: boom}, Postconf: CommandResult{Stdout: postconfOut("inet:127.0.0.1:11332", "0")}, RspamdWorkers: CommandResult{Stdout: proxyWorkers}},
 			ScanSource{}, false},
 		{"postconf failed", HostFacts{RspamdLog: log, Postconf: CommandResult{Err: boom}, RspamdWorkers: CommandResult{Stdout: proxyWorkers}}, ScanSource{}, false},

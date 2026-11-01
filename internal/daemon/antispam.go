@@ -363,12 +363,10 @@ func (d *Daemon) antispamHealthLoop(ctx context.Context) {
 	}
 }
 
-// recordScan feeds one scan record, from Exim's main log or rspamd's, to
-// spam evidence, the spam source detector, the Email Security counts and
-// scan health. at is when it was read; the counts use the line's own time.
-func (d *Daemon) recordScan(s antispam.Scan, line string, at time.Time, cfg *config.Config) []alert.Finding {
-	d.recordSpamEvidence(s, at, cfg)
-	d.recordSpamSource(s, at, cfg)
+// recordScan counts one scan record, from Exim's main log or rspamd's, for
+// the Email Security page and scan health. at is when it was read; the
+// counts use the line's own time.
+func (d *Daemon) recordScan(s antispam.Scan, line string, at time.Time) []alert.Finding {
 	d.mailStats.RecordScan(mailstats.LineTime(line, time.Local, at), s)
 	return d.recordAntispamScan(s, at)
 }
@@ -470,8 +468,14 @@ func (d *Daemon) reportAntispam(out reconcile.Outcome) {
 	if len(out.Checks) > 0 {
 		d.rspamdStats.Store(&rspamdStatsSource{ep: out.Stats, reason: out.StatsReason})
 	}
-	if out.ScanSource != nil {
-		d.antispamScanSource.Store(out.ScanSource)
+	if src := out.ScanSource; src != nil {
+		// Word scan errors for this host before its milters can raise one.
+		h := &d.antispamHealth
+		h.mu.Lock()
+		h.SetStack(src.Stack, src.MilterAction)
+		d.storeAntispamHealthLocked()
+		h.mu.Unlock()
+		d.antispamScanSource.Store(src)
 	}
 	d.processScanFindings(d.currentCfg(), out.Findings, out.Checks, "antispam")
 }

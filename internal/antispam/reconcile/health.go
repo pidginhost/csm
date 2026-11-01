@@ -29,6 +29,9 @@ type Health struct {
 	// scanErrors counts failed scans since the last successful one.
 	scanErrors        int
 	firstErr, lastErr time.Time
+	// stack and milterAction word the scan error finding.
+	stack        antispam.MailStack
+	milterAction string
 }
 
 // SetEnabled starts or stops tracking. Stopping forgets every count and
@@ -44,6 +47,15 @@ func (h *Health) SetEnabled(enabled bool, socket string) {
 		h.fails, h.oks, h.down = 0, 0, false
 	}
 	h.enabled, h.socket = enabled, socket
+}
+
+// SetStack words failed scans for the host's mail stack: on Postfix by
+// what milterAction, postfix's milter_default_action, does with mail while
+// rspamd's milter fails.
+func (h *Health) SetStack(stack antispam.MailStack, milterAction string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.stack, h.milterAction = stack, milterAction
 }
 
 // Ping records one /ping result for socket and returns the finding to
@@ -103,7 +115,7 @@ func (h *Health) Scan(s antispam.Scan, now time.Time) (findings []alert.Finding,
 		return nil, false
 	}
 	h.firstErr = now
-	return []alert.Finding{scanErrorFinding(1, now, now)}, false
+	return []alert.Finding{scanErrorFinding(1, now, now, h.stack, h.milterAction)}, false
 }
 
 // Active returns the health conditions true now.
@@ -115,7 +127,7 @@ func (h *Health) Active() []alert.Finding {
 		out = append(out, rspamdDownFinding(h.socket, h.downSince))
 	}
 	if h.scanErrors > 0 {
-		out = append(out, scanErrorFinding(h.scanErrors, h.firstErr, h.lastErr))
+		out = append(out, scanErrorFinding(h.scanErrors, h.firstErr, h.lastErr, h.stack, h.milterAction))
 	}
 	return out
 }

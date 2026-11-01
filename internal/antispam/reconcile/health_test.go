@@ -116,7 +116,7 @@ func assertScanErrors(t *testing.T, got []alert.Finding, count int, first, last 
 	if count == 1 {
 		scans = "scan"
 	}
-	want := fmt.Sprintf("The mail server logged %d failed %s since %s, the last at %s.",
+	want := fmt.Sprintf("Exim logged %d failed %s since %s, the last at %s.",
 		count, scans, first.UTC().Format(time.RFC3339), last.UTC().Format(time.RFC3339))
 	if !strings.HasPrefix(got[0].Details, want) {
 		t.Fatalf("scan error details %q, want prefix %q", got[0].Details, want)
@@ -196,6 +196,44 @@ func TestHealthScanCountsPostfixFailures(t *testing.T) {
 	if got, _ := h.Scan(antispam.Scan{}, at(5)); len(got) != 0 || len(h.Active()) != 0 {
 		t.Fatalf("disabled health counted a failure: %+v", got)
 	}
+}
+
+// On Postfix a failed scan is a milter call postfix could not complete, and
+// what happens to the mail is milter_default_action's choice. postfix reads
+// the action without regard to case.
+func TestHealthPostfixScanErrorText(t *testing.T) {
+	for _, tc := range []struct{ action, effect string }{
+		{"accept", "Mail is delivered without spam filtering while scans fail"},
+		{"TempFail", "Mail is deferred until rspamd answers"},
+		{"tempfail", "Mail is deferred until rspamd answers"},
+		{"reject", "Mail is rejected while scans fail"},
+		{"quarantine", "Mail is held in postfix's hold queue while scans fail"},
+		{"", "Postfix's milter_default_action is unknown, so what happens to that mail is unknown"},
+		{"discard", "Postfix's milter_default_action is unknown, so what happens to that mail is unknown"},
+	} {
+		t.Run(tc.action, func(t *testing.T) {
+			h := enabledHealth()
+			h.SetStack(antispam.StackPostfix, tc.action)
+			h.Scan(antispam.Scan{}, at(0))
+			got, _ := h.Scan(antispam.Scan{}, at(4))
+			if len(got) != 0 {
+				t.Fatalf("second failure reported again: %+v", got)
+			}
+			want := fmt.Sprintf("Postfix logged 2 failed scans since %s, the last at %s. %s; check rspamd's log.",
+				at(0).UTC().Format(time.RFC3339), at(4).UTC().Format(time.RFC3339), tc.effect)
+			active := h.Active()
+			assertHealthFinding(t, active, CheckScanError, "scan", at(4))
+			if active[0].Details != want {
+				t.Fatalf("details %q, want %q", active[0].Details, want)
+			}
+		})
+	}
+	// Any other stack keeps Exim's wording.
+	h := enabledHealth()
+	h.SetStack(antispam.StackPostfix, "tempfail")
+	h.SetStack(antispam.StackExim, "")
+	first, _ := h.Scan(antispam.Scan{}, at(0))
+	assertScanErrors(t, first, 1, at(0), at(0))
 }
 
 func TestHealthIgnoresForgedMarkers(t *testing.T) {
@@ -445,7 +483,7 @@ func TestHealthStalePingsPreserveCurrentStreaks(t *testing.T) {
 func TestHealthFindingText(t *testing.T) {
 	h := enabledHealth()
 	got, _ := h.Line(scanErrorLine, at(0))
-	if len(got) != 1 || !strings.HasPrefix(got[0].Details, "The mail server logged 1 failed scan since ") {
+	if len(got) != 1 || !strings.HasPrefix(got[0].Details, "Exim logged 1 failed scan since ") {
 		t.Fatalf("first scan error: %+v", got)
 	}
 	for i := range pingDown {

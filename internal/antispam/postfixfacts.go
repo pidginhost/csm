@@ -216,10 +216,14 @@ func RspamdMilters(f HostFacts) (addrs, names []string, err error) {
 // ScanSource is where CSM reads a Postfix host's scan records (spec section
 // 5.2): Log is the rspamd log file, "" when rspamd logs elsewhere, and
 // Milters are the milters that reach rspamd as smtpd_milters names them,
-// the way postfix's warnings name a milter that failed.
+// the way postfix's warnings name a milter that failed. MilterAction is
+// milter_default_action, what postfix does with mail while a milter fails.
+// Stack is StackPostfix; the zero ScanSource stands for any other host.
 type ScanSource struct {
-	Log     string
-	Milters []string
+	Stack        MailStack
+	Log          string
+	Milters      []string
+	MilterAction string
 }
 
 // PostfixScanSource reads the ScanSource of a Postfix host. ok is false
@@ -237,7 +241,9 @@ func PostfixScanSource(f HostFacts) (src ScanSource, ok bool) {
 	if err != nil && !errors.Is(err, errNotWired) {
 		return ScanSource{}, false
 	}
-	src.Milters = names
+	// RspamdMilters has read postconf.
+	pc, _ := ParsePostconf(f.Postconf.Stdout)
+	src.Stack, src.Milters, src.MilterAction = StackPostfix, names, pc.DefaultAction
 	return src, true
 }
 

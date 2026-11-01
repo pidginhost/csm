@@ -641,13 +641,20 @@ func TestCheckHostPostfixRspamdLog(t *testing.T) {
 		detail string
 	}{
 		{LogFacts{Type: "file", Path: "/var/log/rspamd/rspamd.log"}, ""},
-		{LogFacts{Type: "file", Path: "/var/log/rspamd/rspamd.log", Missing: true}, ""},
+		// A log CSM could not inspect is still read; the daemon reports one
+		// it cannot open.
+		{LogFacts{Type: "file", Path: "/var/log/rspamd/rspamd.log", Err: errors.New("permission denied")}, ""},
+		{LogFacts{Type: "file", Path: "/var/log/rspamd/rspamd.log", Missing: true},
+			"rspamd's log file /var/log/rspamd/rspamd.log does not exist; CSM reads scan records from it once rspamd writes it"},
+		{LogFacts{Type: "file", Path: "rspamd.log", Err: errors.New("rspamd's log file is not an absolute path")},
+			"rspamd's log file is not an absolute path; CSM reads scan records only from one"},
 		// Unreadable logging settings are reported where they matter.
 		{LogFacts{Err: errors.New("rspamd's logging settings are not readable")}, ""},
 		{LogFacts{Type: "console"}, "rspamd logs to the journal; CSM reads scan records from a file log"},
 		{LogFacts{Type: "syslog"}, "rspamd logs to syslog; CSM reads scan records from a file log"},
+		{LogFacts{Type: "pipe"}, `rspamd's log type "pipe" is not a file; CSM reads scan records from a file log`},
 	} {
-		t.Run(tc.log.Type, func(t *testing.T) {
+		t.Run(tc.log.Type+" "+tc.log.Path, func(t *testing.T) {
 			f := postfixFacts()
 			f.RspamdLog = tc.log
 			got := CheckHost(f)

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"net/netip"
+	"path/filepath"
 	"slices"
 )
 
@@ -391,17 +392,33 @@ func checkPostfixHost(f HostFacts) []Problem {
 		}
 		out = append(out, checkPostfixMessageSize(pc.SizeLimit, f.RspamdOptions)...)
 	}
-	// Scan records stay in rspamd's log. Unreadable logging settings
-	// leave Type empty and say nothing about where it is.
-	if t := f.RspamdLog.Type; t != "" && t != "file" {
-		where := "the journal"
-		if t == "syslog" {
-			where = "syslog"
-		}
-		out = append(out, Problem{Code: CodeRspamdLog, Severity: Warning, Detail: "rspamd logs to " + where + "; CSM reads scan records from a file log"})
-	}
+	out = append(out, checkRspamdLog(f.RspamdLog)...)
 	out = append(out, checkServices(f)...)
 	return append(out, checkTargets(f.Stack, f.Targets, false)...)
+}
+
+// checkRspamdLog warns when CSM cannot read the scan records rspamd logs on
+// a Postfix host. Unreadable logging settings leave Type empty and say
+// nothing about where rspamd logs.
+func checkRspamdLog(l LogFacts) []Problem {
+	var detail string
+	switch {
+	case l.Type == "":
+		return nil
+	case l.Type == "console":
+		detail = "rspamd logs to the journal; CSM reads scan records from a file log"
+	case l.Type == "syslog":
+		detail = "rspamd logs to syslog; CSM reads scan records from a file log"
+	case l.Type != "file":
+		detail = fmt.Sprintf("rspamd's log type %q is not a file; CSM reads scan records from a file log", l.Type)
+	case !filepath.IsAbs(l.Path):
+		detail = "rspamd's log file is not an absolute path; CSM reads scan records only from one"
+	case l.Missing:
+		detail = fmt.Sprintf("rspamd's log file %s does not exist; CSM reads scan records from it once rspamd writes it", l.Path)
+	default:
+		return nil
+	}
+	return []Problem{{Code: CodeRspamdLog, Severity: Warning, Detail: detail}}
 }
 
 // firstUnverifiable returns the first error that marks an Exim file CSM

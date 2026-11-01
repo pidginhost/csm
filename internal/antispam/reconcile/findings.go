@@ -7,6 +7,7 @@ package reconcile
 import (
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -139,17 +140,39 @@ func rspamdRecoveredFinding(socket string, now time.Time) alert.Finding {
 	}
 }
 
-func scanErrorFinding(count int, first, last time.Time) alert.Finding {
+func scanErrorFinding(count int, first, last time.Time, stack antispam.MailStack, milterAction string) alert.Finding {
 	scans := "scans"
 	if count == 1 {
 		scans = "scan"
 	}
+	details := fmt.Sprintf("Exim logged %d failed %s since %s, the last at %s. Mail is delivered without spam filtering while scans fail; check rspamd's log.",
+		count, scans, first.UTC().Format(time.RFC3339), last.UTC().Format(time.RFC3339))
+	if stack == antispam.StackPostfix {
+		details = fmt.Sprintf("Postfix logged %d failed %s since %s, the last at %s. %s; check rspamd's log.",
+			count, scans, first.UTC().Format(time.RFC3339), last.UTC().Format(time.RFC3339), milterEffect(milterAction))
+	}
 	return alert.Finding{
 		Severity: alert.Warning, Check: CheckScanError, DedupKey: "scan", Timestamp: last,
 		Message: "Antispam scans are failing",
-		Details: fmt.Sprintf("The mail server logged %d failed %s since %s, the last at %s. Mail is delivered without spam filtering while scans fail; check rspamd's log.",
-			count, scans, first.UTC().Format(time.RFC3339), last.UTC().Format(time.RFC3339)),
+		Details: details,
 	}
+}
+
+// milterEffect says what postfix does with mail while rspamd's milter
+// fails, by milter_default_action, which postfix reads without regard to
+// case.
+func milterEffect(action string) string {
+	switch strings.ToLower(action) {
+	case "accept":
+		return "Mail is delivered without spam filtering while scans fail"
+	case "tempfail":
+		return "Mail is deferred until rspamd answers"
+	case "reject":
+		return "Mail is rejected while scans fail"
+	case "quarantine":
+		return "Mail is held in postfix's hold queue while scans fail"
+	}
+	return "Postfix's milter_default_action is unknown, so what happens to that mail is unknown"
 }
 
 // replacedFinding reports one operator file CSM backed up and replaced,
