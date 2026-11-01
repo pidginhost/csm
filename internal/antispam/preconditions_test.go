@@ -553,9 +553,6 @@ func TestCheckHostPostfix(t *testing.T) {
 			f.RspamdWorkers.Stdout = unixProxy
 		}},
 		{"inet milter, chroot unknown", func(f *HostFacts) { f.PostfixMaster = CommandResult{Err: boom} }},
-		{"auth macro without braces", func(f *HostFacts) {
-			f.Postconf.Stdout = strings.Replace(f.Postconf.Stdout, postfixMailMacros, "i auth_authen", 1)
-		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := postfixFacts()
@@ -583,6 +580,9 @@ func TestCheckHostPostfix(t *testing.T) {
 		// mail as remote mail, and CSM would reject it.
 		{"auth macro missing", func(f *HostFacts) {
 			f.Postconf.Stdout = strings.Replace(f.Postconf.Stdout, postfixMailMacros, "i {auth_type} {mail_addr}", 1)
+		}, CodeMilter, Definite, noAuthUser},
+		{"auth macro without braces", func(f *HostFacts) {
+			f.Postconf.Stdout = strings.Replace(f.Postconf.Stdout, postfixMailMacros, "i auth_authen", 1)
 		}, CodeMilter, Definite, noAuthUser},
 		{"no mail macros", func(f *HostFacts) {
 			f.Postconf.Stdout = strings.Replace(f.Postconf.Stdout, postfixMailMacros, "", 1)

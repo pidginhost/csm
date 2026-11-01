@@ -29,12 +29,14 @@ func TestParsePostconf(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %+v, %v; want %+v", got, err, want)
 	}
-	// rspamd reads the authenticated user from {auth_authen}, which postfix
-	// also sends when the list names it without braces.
+	// rspamd reads the authenticated user only from {auth_authen}. Postfix
+	// sends a macro under the name the list gives, so auth_authen without
+	// braces never reaches rspamd as the user.
 	base := "inet:127.0.0.1:11332\naccept\n0\n/var/spool/postfix\n3.7.11\n"
 	for macros, want := range map[string]bool{
-		"i, auth_authen":                  true,
+		"i,{auth_authen}":                 true,
 		"{auth_authen}":                   true,
+		"i, auth_authen":                  false,
 		"i {auth_type} {mail_addr}":       false,
 		"{auth_authen_x} {x_auth_authen}": false,
 		"":                                false,

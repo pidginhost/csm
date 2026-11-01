@@ -49,10 +49,10 @@ func ParsePostconf(out string) (Postconf, error) {
 		return Postconf{}, errors.New("postconf queue_directory is not an absolute path")
 	}
 	p := Postconf{DefaultAction: strings.TrimSpace(lines[1]), SizeLimit: size, QueueDirectory: queue, Version: strings.TrimSpace(lines[4])}
-	// Postfix sends a macro under the name the list gives, with or without
-	// braces, and rspamd reads either.
+	// Postfix sends a macro under the name the list gives, and rspamd reads
+	// the user only from the braced name.
 	macros := strings.FieldsFunc(lines[5], func(r rune) bool { return strings.ContainsRune(", \t\r", r) })
-	p.AuthUser = slices.Contains(macros, "{auth_authen}") || slices.Contains(macros, "auth_authen")
+	p.AuthUser = slices.Contains(macros, "{auth_authen}")
 	// Postfix separates list items with whitespace or commas; braces group
 	// a milter with its name=value settings.
 	for _, item := range strings.FieldsFunc(lines[0], func(r rune) bool { return strings.ContainsRune(", \t\r{}", r) }) {

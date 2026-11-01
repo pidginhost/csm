@@ -622,11 +622,12 @@ about cPanel accounts, Exim and Roundcube do not apply.
    smtpd runs chrooted, a `unix:` milter path is resolved inside Postfix's
    queue directory, as Postfix does. Without this wiring CSM reports a
    definite `postfix_milter` precondition and installs nothing.
-   `milter_mail_macros` must also include `{auth_authen}`, as Postfix's
-   default does: rspamd knows authenticated mail by it. Without it CSM
-   reports the same precondition, because customers' outbound mail would be
-   filtered as remote mail. CSM reads both settings from `main.cf` only;
-   per-service `-o smtpd_milters` overrides in `master.cf` are not read.
+   `milter_mail_macros` must also include `{auth_authen}`, with the braces,
+   as Postfix's default does: rspamd knows authenticated mail by it. Without
+   it CSM reports the same precondition, because customers' outbound mail
+   would be filtered as remote mail. CSM reads both settings from `main.cf`
+   only; per-service `-o smtpd_milters` overrides in `master.cf` are not
+   read.
 2. **rspamd 4.2 is recommended.** CSM accepts rspamd 3 or later, but its
    scope rule is tested with rspamd 4.2.3.
 3. **`/etc/rspamd/lua.local.d` exists**, owned by root and not writable by
