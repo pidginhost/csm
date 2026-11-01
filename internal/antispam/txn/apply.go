@@ -25,6 +25,11 @@ func (h *Host) Apply(s antispam.Settings) antispam.Result {
 	if err := blocking(problems); err != nil {
 		return failed(StepPreconditions, err)
 	}
+	// Takeovers re-check the files of the worker's own detection, so it
+	// must match the stack preflight collected.
+	if f.Stack != h.stack() {
+		return failed(StepPreconditions, errors.New("the host's mail stack changed while CSM checked it"))
+	}
 	// The host's mail stack picks the files CSM renders; a request never
 	// names it.
 	s.Stack = f.Stack

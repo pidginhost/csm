@@ -156,6 +156,31 @@ func TestApplyPostfixProbesEveryRspamdMilter(t *testing.T) {
 	}
 }
 
+// The worker detects the stack itself for the files it re-checks before a
+// takeover. When that disagrees with what preflight collected, the host is
+// changing under the transaction: nothing is written or reloaded.
+func TestApplyRefusesChangedStack(t *testing.T) {
+	for _, tc := range []struct{ collected, detected antispam.MailStack }{
+		{antispam.StackPostfix, antispam.StackNone},
+		{antispam.StackPostfix, antispam.StackExim},
+		{antispam.StackExim, antispam.StackPostfix},
+	} {
+		f := newFake(t)
+		f.stack = tc.collected
+		before := f.state()
+		h := f.host()
+		h.stack = func() antispam.MailStack { return tc.detected }
+		r := h.Apply(enforce())
+		if r.OK || r.FailedStep != StepPreconditions || r.Rollback != antispam.RollbackNone || !strings.Contains(r.Error, "mail stack") {
+			t.Errorf("collected %q, detected %q: %+v", tc.collected, tc.detected, r)
+		}
+		if len(f.calls) != 0 || len(f.milters) != 0 || fmt.Sprint(f.state()) != fmt.Sprint(before) {
+			t.Errorf("collected %q, detected %q: ran %v, probed %q or changed files", tc.collected, tc.detected, f.calls, f.milters)
+		}
+		wantBackups(t, f, nil)
+	}
+}
+
 // A milter rspamd does not answer before the change fails the
 // preconditions: nothing is written or reloaded.
 func TestApplyPostfixNeedsReachableMilter(t *testing.T) {
