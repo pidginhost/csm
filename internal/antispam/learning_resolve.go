@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -122,6 +123,9 @@ func ResolveLearning(s Settings, f HostFacts) (Settings, LearningGate, []Problem
 	case c.has(ReasonStateMismatch, ReasonUnsupported, ReasonUnsafe, ReasonConfigConflict):
 	case c.has(ReasonBackendUnavailable):
 		gate.Install = installed
+		// An outage keeps what is installed, including its Redis: a new
+		// redis_socket is used once a pass has checked it.
+		s.LearningRedisSocket = installedLearningRedis(f)
 	default:
 		gate.Install, gate.Publish = true, true
 	}
@@ -169,6 +173,27 @@ func learningInstalled(f HostFacts) bool {
 		}
 	}
 	return false
+}
+
+// installedLearningRedis returns the dedicated Redis socket CSM's installed
+// fuzzy worker selects, "" when it uses rspamd's Redis or none is installed.
+func installedLearningRedis(f HostFacts) string {
+	if !learningInstalled(f) {
+		return ""
+	}
+	for _, t := range f.Targets {
+		if t.Path != LearningWorkerPath {
+			continue
+		}
+		for _, line := range strings.Split(t.Content, "\n") {
+			if quoted, ok := strings.CutPrefix(line, "servers = "); ok {
+				// CSM rendered it with %q from a validated socket path.
+				socket, _ := strconv.Unquote(strings.TrimSuffix(quoted, ";"))
+				return socket
+			}
+		}
+	}
+	return ""
 }
 
 func checkLearningVersions(c *learningCheck, f HostFacts) {
@@ -329,16 +354,18 @@ func checkLearningRedis(c *learningCheck, s Settings, f HostFacts) {
 	}
 }
 
-// CheckLearningRedis rechecks the dedicated learning Redis for the worker,
+// CheckLearningRedis rechecks s's dedicated learning Redis for the worker,
 // which applies under its lock after the pass judged it: the socket can be
-// replaced or opened in between. An error names a definite failure; an
-// outage is left to the next pass.
-func CheckLearningRedis(f HostFacts) error {
+// replaced or opened in between. A definite failure is an error. So is an
+// outage, unless the installed worker already uses that socket: a worker
+// file never names a Redis no check has passed.
+func CheckLearningRedis(s Settings, f HostFacts) error {
 	var c learningCheck
 	checkLearningRedisVersion(&c, f.Redis)
 	checkLearningRedisEndpoint(&c, f)
+	switching := installedLearningRedis(f) != s.LearningRedisSocket
 	for _, p := range c.problems {
-		if p.Key == ReasonUnsafe || p.Key == ReasonUnsupported {
+		if p.Key == ReasonUnsafe || p.Key == ReasonUnsupported || switching && p.Key == ReasonBackendUnavailable {
 			return errors.New(p.Detail)
 		}
 	}
@@ -353,6 +380,9 @@ func checkLearningRedisEndpoint(c *learningCheck, f HostFacts) {
 		return
 	case !r.Unix:
 		c.add(ReasonUnsafe, "fuzzy storage uses Redis over TCP; learning needs a Unix socket only")
+		return
+	case r.Inherits != nil:
+		c.add(ReasonUnsafe, "rspamd's global redis settings would reach the learning Redis: "+r.Inherits.Error())
 		return
 	case r.Unprotected:
 		c.add(ReasonUnsafe, "the Redis socket's owner, directories or peer do not prove that Redis serves it")

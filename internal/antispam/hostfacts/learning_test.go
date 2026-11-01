@@ -615,13 +615,17 @@ func dedicatedRedis(t *testing.T) (collector, antispam.HostFacts, string, *[]str
 	return c, f, sock, &probed
 }
 
+func dedicatedSettings(socket string) antispam.Settings {
+	return antispam.Settings{Learning: true, LearningDir: antispam.DefaultLearningDir, LearningRedisSocket: socket}
+}
+
 // A configured learning Redis is probed as named and without rspamd's
 // password; Postfix never falls back to rspamd's own Redis.
 func TestCollectProbesConfiguredRedisSocket(t *testing.T) {
 	for _, stack := range []antispam.MailStack{antispam.StackExim, antispam.StackPostfix} {
 		c, f, sock, probed := dedicatedRedis(t)
 		f.Stack = stack
-		s := antispam.Settings{Learning: true, LearningDir: antispam.DefaultLearningDir, LearningRedisSocket: sock}
+		s := dedicatedSettings(sock)
 		c.learningFacts(context.Background(), s, &f)
 		r := f.Redis
 		if len(*probed) != 1 || (*probed)[0] != sock || r.Endpoint != sock || !r.Unix || r.Err != nil || r.Shared || r.SharedErr != nil {
@@ -630,7 +634,7 @@ func TestCollectProbesConfiguredRedisSocket(t *testing.T) {
 		if f.AccountNamesErr != nil {
 			t.Fatalf("%s: accounts not read: %v", stack, f.AccountNamesErr)
 		}
-		if err := antispam.CheckLearningRedis(f); err != nil {
+		if err := antispam.CheckLearningRedis(s, f); err != nil {
 			t.Fatalf("%s: safe dedicated Redis refused: %v", stack, err)
 		}
 	}
@@ -650,15 +654,16 @@ func TestCollectProbesConfiguredRedisSocket(t *testing.T) {
 // or replaced after the pass judged it is refused there.
 func TestCollectLearningRedisSeesChangedSocket(t *testing.T) {
 	c, f, sock, _ := dedicatedRedis(t)
+	s := dedicatedSettings(sock)
 	c.learningRedis(context.Background(), sock, &f)
-	if err := antispam.CheckLearningRedis(f); err != nil {
+	if err := antispam.CheckLearningRedis(s, f); err != nil {
 		t.Fatalf("baseline: %v", err)
 	}
 	if err := os.Chmod(sock, 0o777); err != nil {
 		t.Fatal(err)
 	}
 	c.learningRedis(context.Background(), sock, &f)
-	if err := antispam.CheckLearningRedis(f); err == nil {
+	if err := antispam.CheckLearningRedis(s, f); err == nil {
 		t.Fatalf("opened socket accepted: %+v", f.Redis)
 	}
 	// Replaced by a link into a directory anyone can write to.
@@ -677,7 +682,7 @@ func TestCollectLearningRedisSeesChangedSocket(t *testing.T) {
 		t.Fatal(err)
 	}
 	c.learningRedis(context.Background(), sock, &f)
-	if err := antispam.CheckLearningRedis(f); err == nil || !f.Redis.Unprotected {
+	if err := antispam.CheckLearningRedis(s, f); err == nil || !f.Redis.Unprotected {
 		t.Fatalf("replaced socket accepted: %v %+v", err, f.Redis)
 	}
 }
@@ -742,7 +747,62 @@ func TestLearningRedisSharedWithOtherModule(t *testing.T) {
 	c, f, dsock, _ := dedicatedRedis(t)
 	f.RspamdConfig.Stdout = `{"redis":{"servers":"` + dsock + `"}}`
 	c.learningRedis(context.Background(), dsock, &f)
-	if err := antispam.CheckLearningRedis(f); !f.Redis.Shared || err == nil {
+	if err := antispam.CheckLearningRedis(dedicatedSettings(dsock), f); !f.Redis.Shared || err == nil {
 		t.Fatalf("shared dedicated Redis: %v %+v", err, f.Redis)
+	}
+}
+
+// rspamd merges its global redis section into CSM's fuzzy worker, and an
+// empty password clears only the password. A setting that would make the
+// worker reach Redis other than as CSM probed it is refused as discovery
+// refuses it, even while the socket is down. redis.fuzzy is not merged into
+// a worker with its own servers.
+func TestCollectRefusesInheritedGlobalRedisOptions(t *testing.T) {
+	const (
+		sentinel = "redis sentinel backend cannot be identified from config alone"
+		tls      = "redis TLS backend cannot be probed"
+		named    = "redis named-user authentication cannot be probed"
+	)
+	for name, tc := range map[string]struct{ dump, refusal string }{
+		"no redis section": {`{"options":{}}`, ""},
+		"plain":            {`{"redis":{"servers":"/run/redis-rspamd/redis.sock","password":"pw","db":"2","timeout":1.0}}`, ""},
+		"sentinels":        {`{"redis":{"servers":"mymaster","sentinels":"192.0.2.1:26379"}}`, sentinel},
+		"ssl":              {`{"redis":{"ssl":true}}`, tls},
+		"ssl off":          {`{"redis":{"ssl":false}}`, ""},
+		"username":         {`{"redis":{"username":"csm","password":"pw"}}`, named},
+		"username default": {`{"redis":{"username":"default","password":"pw"}}`, ""},
+		"username empty":   {`{"redis":{"username":""}}`, ""},
+		"username null":    {`{"redis":{"username":null}}`, named},
+		"username number":  {`{"redis":{"username":7}}`, named},
+		"fuzzy section":    {`{"redis":{"fuzzy":{"sentinels":"192.0.2.1:26379","ssl":true,"username":"csm"}}}`, ""},
+		// An unreadable dump is the shared check's to report.
+		"unreadable": {`{"redis":`, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c, f, sock, _ := dedicatedRedis(t)
+			f.RspamdConfig.Stdout = tc.dump
+			c.learningRedis(context.Background(), sock, &f)
+			got := ""
+			if f.Redis.Inherits != nil {
+				got = f.Redis.Inherits.Error()
+			}
+			if got != tc.refusal {
+				t.Fatalf("refusal %q, want %q", got, tc.refusal)
+			}
+			err := antispam.CheckLearningRedis(dedicatedSettings(sock), f)
+			if tc.refusal != "" && (err == nil || !strings.HasSuffix(err.Error(), tc.refusal)) {
+				t.Fatalf("worker recheck: %v", err)
+			}
+			if tc.refusal != "" {
+				// Definite while the socket is down too.
+				if err := os.Remove(sock); err != nil {
+					t.Fatal(err)
+				}
+				c.learningRedis(context.Background(), sock, &f)
+				if f.Redis.Inherits == nil || !f.Redis.Socket.Missing {
+					t.Fatalf("socket down: %+v", f.Redis)
+				}
+			}
+		})
 	}
 }

@@ -1012,8 +1012,10 @@ disable core filtering; `antispam_learning` names the reason.
   `tls-port` setting;
 - with `learning.redis_socket` set, that Redis instead of rspamd's: CSM
   applies the checks above to it, refuses it while any other rspamd module
-  or rspamd's global Redis settings name the same socket, and points the
-  fuzzy worker at it with no password;
+  or rspamd's global Redis settings name the same socket, or while those
+  global settings use sentinels, TLS or a named user, and points the fuzzy
+  worker at it with no password. Learning moves to a new socket only after
+  it passes these checks; until then it keeps its current Redis;
 - rspamd's log unreadable to other users, by file permissions or by CloudLinux
   CageFS. CageFS qualifies only for a file log under `/var/log/rspamd`, with
   every account confined and that directory absent from its skeleton;

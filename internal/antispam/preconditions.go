@@ -626,6 +626,10 @@ type RedisFacts struct {
 	// learning Redis; SharedErr when CSM could not tell.
 	Shared    bool
 	SharedErr error
+	// Inherits names a setting of rspamd's global redis section that rspamd
+	// merges into a fuzzy worker on the dedicated Redis and CSM cannot
+	// probe with.
+	Inherits error
 }
 
 // CageFSFacts say whether CloudLinux CageFS confines every account and

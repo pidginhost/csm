@@ -456,6 +456,9 @@ func (c collector) redis(ctx context.Context, f antispam.HostFacts, socket strin
 		}
 	}
 	r := antispam.RedisFacts{Endpoint: endpoint, Unix: unix, ServiceUID: -1}
+	if socket != "" {
+		r.Inherits = globalRedisRefusal(f.RspamdConfig)
+	}
 	if !unix {
 		return r
 	}
@@ -477,8 +480,21 @@ func (c collector) redis(ctx context.Context, f antispam.HostFacts, socket strin
 	}
 	probed := c.redisProbe(ctx, endpoint, password, owner)
 	probed.Endpoint, probed.Unix, probed.Socket, probed.GroupMembers = endpoint, unix, r.Socket, r.GroupMembers
-	probed.Shared, probed.SharedErr = r.Shared, r.SharedErr
+	probed.Shared, probed.SharedErr, probed.Inherits = r.Shared, r.SharedErr, r.Inherits
 	return probed
+}
+
+// globalRedisRefusal refuses rspamd's global redis settings that rspamd
+// merges into a fuzzy worker with its own servers, CSM's on the dedicated
+// Redis, and that an empty password cannot clear. redis.fuzzy is not
+// merged into such a worker. An unreadable dump is sharedRedis's to report.
+func globalRedisRefusal(dump antispam.CommandResult) error {
+	root, rootErr := antispam.ParseRspamdDumpObject([]byte(dump.Stdout))
+	global, globalErr := antispam.ParseRspamdDumpObject(root["redis"])
+	if dump.Err == nil && rootErr == nil && globalErr == nil {
+		return unprobedRedisOptions(func(name string) json.RawMessage { return global[name] })
+	}
+	return nil
 }
 
 // sharedRedis reports whether a Redis consumer in rspamd's loaded

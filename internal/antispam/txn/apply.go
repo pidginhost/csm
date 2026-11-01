@@ -60,7 +60,7 @@ func (h *Host) Apply(s antispam.Settings) antispam.Result {
 		}
 		// The pass judged the dedicated Redis before this lock was taken.
 		if s.LearningRedisSocket != "" {
-			if err := antispam.CheckLearningRedis(f); err != nil {
+			if err := antispam.CheckLearningRedis(s, f); err != nil {
 				return failed(StepPreconditions, err)
 			}
 		}

@@ -361,8 +361,10 @@ func TestApplyLearningControllerDownIsProbeFailure(t *testing.T) {
 }
 
 // The worker applies under its lock after the pass judged the dedicated
-// Redis: a socket opened up, replaced or shared in between refuses the apply
-// before anything changes. An outage is the next pass's to judge.
+// Redis: a socket opened up, replaced, shared or reached by rspamd's global
+// redis settings in between refuses the apply before anything changes. An
+// outage refuses it too while no installed worker uses that socket yet: a
+// worker file never names a Redis no check has passed.
 func TestWorkerRechecksLearningRedisUnderLock(t *testing.T) {
 	const socket = "/run/redis-csm/redis.sock"
 	safe := func() antispam.RedisFacts {
@@ -373,18 +375,25 @@ func TestWorkerRechecksLearningRedisUnderLock(t *testing.T) {
 			GroupMembers: []string{"redis"}, Port: "0", TLSPort: "0", Policy: "noeviction", AppendOnly: "yes",
 			MaxMemory: 1 << 30, MaxMemoryKnown: true, Used: 1 << 20, Version: "7.2.4"}
 	}
+	down := func(r *antispam.RedisFacts) { r.Err = errors.New("redis: cannot connect to the socket as its owner") }
 	for name, tc := range map[string]struct {
 		change func(*antispam.RedisFacts)
-		ok     bool
+		// installed applies once with a safe Redis first, so the worker
+		// file already names the socket.
+		installed, ok bool
 	}{
-		"unchanged": {func(*antispam.RedisFacts) {}, true},
-		"down":      {func(r *antispam.RedisFacts) { r.Err = errors.New("redis: cannot connect to the socket as its owner") }, true},
-		"opened":    {func(r *antispam.RedisFacts) { r.Socket.Socket.Mode = fs.ModeSocket | 0o777 }, false},
-		"replaced": {func(r *antispam.RedisFacts) {
+		"unchanged":      {change: func(*antispam.RedisFacts) {}, ok: true},
+		"down, new":      {change: down},
+		"missing, new":   {change: func(r *antispam.RedisFacts) { r.Socket.Missing = true }},
+		"down, in use":   {change: down, installed: true, ok: true},
+		"opened":         {change: func(r *antispam.RedisFacts) { r.Socket.Socket.Mode = fs.ModeSocket | 0o777 }},
+		"opened, in use": {change: func(r *antispam.RedisFacts) { r.Socket.Socket.Mode = fs.ModeSocket | 0o777 }, installed: true},
+		"replaced": {change: func(r *antispam.RedisFacts) {
 			r.Unprotected, r.Err = true, errors.New("redis socket is not protected; CSM sends it no password")
-		}, false},
-		"evicting": {func(r *antispam.RedisFacts) { r.Policy = "allkeys-lru" }, false},
-		"shared":   {func(r *antispam.RedisFacts) { r.Shared = true }, false},
+		}},
+		"evicting":  {change: func(r *antispam.RedisFacts) { r.Policy = "allkeys-lru" }},
+		"shared":    {change: func(r *antispam.RedisFacts) { r.Shared = true }},
+		"inherited": {change: func(r *antispam.RedisFacts) { r.Inherits = errors.New("redis TLS backend cannot be probed") }, installed: true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newFake(t)
@@ -392,12 +401,19 @@ func TestWorkerRechecksLearningRedisUnderLock(t *testing.T) {
 			s.LearningRedisSocket = socket
 			h := f.host()
 			preflight := h.preflight
+			redis := safe()
 			h.preflight = func(ctx context.Context, s antispam.Settings) (antispam.HostFacts, []antispam.Problem) {
 				facts, problems := preflight(ctx, s)
-				facts.Redis = safe()
-				tc.change(&facts.Redis)
+				facts.Redis = redis
 				return facts, problems
 			}
+			if tc.installed {
+				wantOK(t, h.Apply(s))
+				f.reset()
+				// Another change, so the worker has something to write.
+				s.RejectScore++
+			}
+			tc.change(&redis)
 			before := f.state()
 			r := h.Apply(s)
 			if tc.ok {

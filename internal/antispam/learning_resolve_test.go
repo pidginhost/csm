@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io/fs"
+	"slices"
 	"testing"
 )
 
@@ -89,7 +90,14 @@ func safeLearningFacts() HostFacts {
 // installLearning marks the learning files as installed by CSM.
 func installLearning(t *testing.T, f *HostFacts) {
 	t.Helper()
-	files, err := RenderLearning(learningSettings())
+	installLearningFor(t, f, learningSettings())
+}
+
+// installLearningFor marks the learning files CSM renders for s as
+// installed.
+func installLearningFor(t *testing.T, f *HostFacts, s Settings) {
+	t.Helper()
+	files, err := RenderLearning(s)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -616,26 +624,35 @@ func TestResolveLearningPostfixNeedsRedisSocket(t *testing.T) {
 }
 
 // The safety checks judge the dedicated Redis exactly like rspamd's, on
-// either stack, and a Redis another rspamd module also uses is refused.
+// either stack, and a Redis another rspamd module also uses, or one rspamd's
+// global redis settings would reach, is refused. An outage keeps an
+// installation but never moves it to a Redis no check has passed.
 func TestLearningRedisSocketSafetyChecks(t *testing.T) {
 	for name, tc := range map[string]struct {
 		change func(*RedisFacts)
 		reason string
 	}{
-		"TCP port":       {func(r *RedisFacts) { r.Port = "6379" }, ReasonUnsafe},
-		"TLS port":       {func(r *RedisFacts) { r.TLSPort = "6380" }, ReasonUnsafe},
-		"eviction":       {func(r *RedisFacts) { r.Policy = "allkeys-lru" }, ReasonUnsafe},
-		"no maxmemory":   {func(r *RedisFacts) { r.MaxMemory = 0 }, ReasonUnsafe},
-		"socket mode":    {func(r *RedisFacts) { r.Socket.Socket.Mode = fs.ModeSocket | 0o777 }, ReasonUnsafe},
-		"socket ACL":     {func(r *RedisFacts) { r.Socket.Socket.ExtACL = true }, ReasonUnsafe},
-		"unprotected":    {func(r *RedisFacts) { r.Unprotected, r.Err = true, errors.New("not protected") }, ReasonUnsafe},
-		"shared":         {func(r *RedisFacts) { r.Shared = true }, ReasonUnsafe},
+		"TCP port":     {func(r *RedisFacts) { r.Port = "6379" }, ReasonUnsafe},
+		"TLS port":     {func(r *RedisFacts) { r.TLSPort = "6380" }, ReasonUnsafe},
+		"eviction":     {func(r *RedisFacts) { r.Policy = "allkeys-lru" }, ReasonUnsafe},
+		"no maxmemory": {func(r *RedisFacts) { r.MaxMemory = 0 }, ReasonUnsafe},
+		"socket mode":  {func(r *RedisFacts) { r.Socket.Socket.Mode = fs.ModeSocket | 0o777 }, ReasonUnsafe},
+		"socket ACL":   {func(r *RedisFacts) { r.Socket.Socket.ExtACL = true }, ReasonUnsafe},
+		"unprotected":  {func(r *RedisFacts) { r.Unprotected, r.Err = true, errors.New("not protected") }, ReasonUnsafe},
+		"shared":       {func(r *RedisFacts) { r.Shared = true }, ReasonUnsafe},
+		"inherited": {func(r *RedisFacts) {
+			r.Inherits = errors.New("redis sentinel backend cannot be identified from config alone")
+		}, ReasonUnsafe},
+		"inherited down": {func(r *RedisFacts) {
+			r.Inherits, r.Socket.Missing = errors.New("redis TLS backend cannot be probed"), true
+		}, ReasonUnsafe},
 		"version":        {func(r *RedisFacts) { r.Version = "8.0.2" }, ReasonUnsupported},
 		"shared unknown": {func(r *RedisFacts) { r.SharedErr = errors.New("dump unreadable") }, ReasonBackendUnavailable},
 		"socket missing": {func(r *RedisFacts) { r.Socket.Missing = true }, ReasonBackendUnavailable},
 		"probe failed":   {func(r *RedisFacts) { r.Err = errors.New("redis: INFO server failed") }, ReasonBackendUnavailable},
 	} {
 		t.Run(name, func(t *testing.T) {
+			definite := tc.reason != ReasonBackendUnavailable
 			for _, stack := range []MailStack{StackExim, StackPostfix} {
 				s := learningSettings()
 				s.LearningRedisSocket = dedicatedSocket
@@ -645,30 +662,86 @@ func TestLearningRedisSocketSafetyChecks(t *testing.T) {
 				checkLearningVersions(&c, f)
 				checkLearningRedis(&c, s, f)
 				onlyLearningReason(t, c.problems, tc.reason)
-				if stack == StackExim {
-					// Installed, so an outage keeps the files and a definite
-					// failure removes them.
-					installed := f
-					installLearning(t, &installed)
-					_, gate, problems := ResolveLearning(s, installed)
-					onlyLearningReason(t, problems, tc.reason)
-					if definite := tc.reason != ReasonBackendUnavailable; gate.Install == definite || gate.Publish {
-						t.Fatalf("gate %+v for %s", gate, tc.reason)
-					}
+				// Nothing installed yet: the worker never writes a worker
+				// file naming this Redis.
+				if err := CheckLearningRedis(s, f); err == nil {
+					t.Fatalf("%v: worker recheck accepted an unchecked new Redis", stack)
 				}
-				err := CheckLearningRedis(f)
-				if definite := tc.reason != ReasonBackendUnavailable; (err != nil) != definite {
-					t.Fatalf("%v: worker recheck error %v", stack, err)
+				// The installed worker already uses it: only a definite
+				// failure stops the worker.
+				same := withLearning(t, f, dedicatedSocket)
+				if err := CheckLearningRedis(s, same); (err != nil) != definite {
+					t.Fatalf("%v: worker recheck on the installed Redis: %v", stack, err)
+				}
+				if stack != StackExim {
+					continue
+				}
+				// A definite failure removes learning; an outage keeps the
+				// installation on the Redis it already uses.
+				for installedSocket, installed := range map[string]HostFacts{"": withLearning(t, f, ""), dedicatedSocket: same} {
+					got, gate, problems := ResolveLearning(s, installed)
+					onlyLearningReason(t, problems, tc.reason)
+					if gate.Install == definite || gate.Publish {
+						t.Fatalf("installed on %q: gate %+v", installedSocket, gate)
+					}
+					if !definite && got.LearningRedisSocket != installedSocket {
+						t.Fatalf("installed on %q: an outage moved learning to %q", installedSocket, got.LearningRedisSocket)
+					}
 				}
 			}
 		})
 	}
-	if err := CheckLearningRedis(dedicatedRedisFacts(StackPostfix, dedicatedSocket)); err != nil {
+	s := learningSettings()
+	s.LearningRedisSocket = dedicatedSocket
+	if err := CheckLearningRedis(s, dedicatedRedisFacts(StackPostfix, dedicatedSocket)); err != nil {
 		t.Fatalf("safe dedicated Redis: %v", err)
 	}
 	f := dedicatedRedisFacts(StackExim, dedicatedSocket)
 	f.Redis.Shared = true
-	if err := CheckLearningRedis(f); err == nil || err.Error() != "the learning Redis is shared with another rspamd module" {
+	if err := CheckLearningRedis(s, f); err == nil || err.Error() != "the learning Redis is shared with another rspamd module" {
 		t.Fatalf("shared Redis: %v", err)
+	}
+	f = dedicatedRedisFacts(StackExim, dedicatedSocket)
+	f.Redis.Inherits = errors.New("redis named-user authentication cannot be probed")
+	want := "rspamd's global redis settings would reach the learning Redis: redis named-user authentication cannot be probed"
+	if err := CheckLearningRedis(s, f); err == nil || err.Error() != want {
+		t.Fatalf("inherited option: %v", err)
+	}
+}
+
+// withLearning returns f with CSM's learning files installed, and loaded
+// as written, for a worker on redisSocket ("" for rspamd's own Redis).
+func withLearning(t *testing.T, f HostFacts, redisSocket string) HostFacts {
+	t.Helper()
+	s := learningSettings()
+	s.LearningRedisSocket = redisSocket
+	f.Targets = slices.Clone(f.Targets)
+	installLearningFor(t, &f, s)
+	d := newLoadedDumps(s.LearningKeys)
+	if redisSocket != "" {
+		d.fuzzyWorker()["servers"], d.fuzzyWorker()["password"] = redisSocket, ""
+	}
+	d.apply(&f)
+	return f
+}
+
+// Setting or changing redis_socket moves learning only once the new Redis
+// passes every check; meanwhile the installed worker keeps its Redis.
+func TestResolveLearningRedisOutageKeepsInstalledTarget(t *testing.T) {
+	const old = "/run/redis-old/redis.sock"
+	s := learningSettings()
+	s.LearningRedisSocket = dedicatedSocket
+	for installedSocket, wantOutage := range map[string]string{"": "", old: old, dedicatedSocket: dedicatedSocket} {
+		f := withLearning(t, dedicatedRedisFacts(StackExim, dedicatedSocket), installedSocket)
+		got, gate, problems := ResolveLearning(s, f)
+		if !gate.Install || !gate.Publish || len(problems) != 0 || got.LearningRedisSocket != dedicatedSocket {
+			t.Fatalf("verified Redis from %q: socket %q gate %+v problems %+v", installedSocket, got.LearningRedisSocket, gate, problems)
+		}
+		f.Redis.Socket.Missing = true
+		got, gate, problems = ResolveLearning(s, f)
+		if !gate.Install || gate.Publish || got.LearningRedisSocket != wantOutage || !got.Learning {
+			t.Fatalf("outage from %q: socket %q gate %+v", installedSocket, got.LearningRedisSocket, gate)
+		}
+		onlyLearningReason(t, problems, ReasonBackendUnavailable)
 	}
 }
