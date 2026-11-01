@@ -365,8 +365,10 @@ firewall:
 
 When `passive_ftp_start` and `passive_ftp_end` are both unset, CSM opens TCP
 49152-65534 for passive FTP data connections only on cPanel hosts and on hosts
-with pure-ftpd, proftpd or vsftpd installed. Other hosts keep the range closed.
-A value you set is always used, and `0` keeps the range closed.
+with pure-ftpd, proftpd or vsftpd installed. This includes Plesk's ProFTPD and
+Debian's MySQL, PostgreSQL and LDAP Pure-FTPd packages. Other hosts keep the
+range closed. Explicit values take precedence; set both endpoints to `0` to
+keep the range closed.
 
 Full firewall reference: [Configuration - Firewall](configuration.md#full-reference).
 

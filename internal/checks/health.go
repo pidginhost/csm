@@ -42,9 +42,12 @@ func CheckHealth(ctx context.Context, cfg *config.Config, _ *state.Store) []aler
 	}
 	for cmd, impact := range optionalCmds {
 		if _, err := cmdExec.LookPath(cmd); err != nil {
-			// wp-cli only runs against WordPress installs.
-			if cmd == "wp" && len(wpInstalls(ctx, "")) == 0 {
-				continue
+			if cmd == "wp" {
+				// Failed discovery cannot establish that wp-cli is unnecessary.
+				discovery := lookupWPInstalls(ctx, "")
+				if len(discovery.installs) == 0 && !discovery.incomplete {
+					continue
+				}
 			}
 			findings = append(findings, alert.Finding{
 				Severity: alert.Warning,

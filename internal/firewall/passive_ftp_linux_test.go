@@ -32,6 +32,7 @@ func TestInputChainPassiveFTPRange(t *testing.T) {
 		want       bool
 	}{
 		{"default range", 49152, 65534, true},
+		{"custom range", 55000, 56000, true},
 		{"closed", 0, 0, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -56,9 +57,14 @@ func TestInputChainPassiveFTPRange(t *testing.T) {
 				t.Fatal(err)
 			}
 			for _, family := range []byte{2, 10} {
-				rule := captureChainRuleData(t, "input", passiveRangeRule(family, tc.start, tc.end))
-				if got := outputRuleIndex(*captured, rule) >= 0; got != tc.want {
-					t.Errorf("family %d range accept present = %v, want %v", family, got, tc.want)
+				// Looking only for a 0-0 rule would miss an accidental fallback
+				// that reopens the default range when FTP is disabled.
+				for _, ports := range [][2]int{{49152, 65534}, {55000, 56000}, {0, 0}} {
+					rule := captureChainRuleData(t, "input", passiveRangeRule(family, ports[0], ports[1]))
+					want := tc.want && ports[0] == tc.start && ports[1] == tc.end
+					if got := outputRuleIndex(*captured, rule) >= 0; got != want {
+						t.Errorf("family %d range %d-%d accept present = %v, want %v", family, ports[0], ports[1], got, want)
+					}
 				}
 			}
 		})

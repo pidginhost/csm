@@ -53,6 +53,8 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - `csm validate` and `csm doctor` no longer warn about a missing rspamd token when the rspamd controller runs on the same host.
 - Hosts without WordPress sites no longer get a warning that the wp command is missing.
 - `csm doctor` no longer fails on queued automatic blocks while the firewall is disabled; it says why they are not applied.
+- Passive FTP stays available by default with Plesk and Debian's alternative FTP server packages.
+- Missing WordPress tooling warnings remain visible when site discovery cannot complete.
 
 ## [4.8.1] - 2026-10-30
 

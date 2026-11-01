@@ -1038,7 +1038,7 @@ firewall:
   required_tcp_out: []          # outbound ports a service on this host needs; checked, never merged
   # Passive FTP data ports. Left unset, 49152-65534 is opened on cPanel hosts
   # and hosts with pure-ftpd, proftpd or vsftpd installed, and stays closed
-  # elsewhere. A value you set is always used; 0 keeps the range closed.
+  # elsewhere. Explicit values take precedence; set both to 0 to close it.
   # passive_ftp_start: 49152
   # passive_ftp_end: 65534
   # Destination-scoped outbound TCP. tcp_out holds single ports only, so a

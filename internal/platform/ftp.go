@@ -8,9 +8,18 @@ func FTPServerInstalled() bool {
 	if pathExists("/usr/local/cpanel/version") {
 		return true
 	}
-	return binaryInstalled([]string{"pure-ftpd", "proftpd", "vsftpd"}, []string{
+	// Plesk renames ProFTPD, and Debian's Pure-FTPd authentication packages
+	// install distinct server binaries instead of the vanilla executable.
+	return binaryInstalled([]string{
+		"pure-ftpd", "pure-ftpd-mysql", "pure-ftpd-postgresql", "pure-ftpd-ldap",
+		"proftpd", "in.proftpd", "vsftpd",
+	}, []string{
 		"/usr/sbin/pure-ftpd",
+		"/usr/sbin/pure-ftpd-mysql",
+		"/usr/sbin/pure-ftpd-postgresql",
+		"/usr/sbin/pure-ftpd-ldap",
 		"/usr/sbin/proftpd",
+		"/usr/sbin/in.proftpd",
 		"/usr/sbin/vsftpd",
 	})
 }
