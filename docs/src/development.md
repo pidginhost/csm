@@ -1474,7 +1474,10 @@ Failures and findings:
   attached again.
 - Only failed starts count toward the worker breaker (`BreakOnSpawnOnly`),
   so content that kills the worker costs one restart per scan and cannot
-  switch YARA off for other files.
+  switch YARA off for other files. The backend keeps `workerproc.Strikes`
+  by content SHA-256: content with two counted failures within a day is
+  refused without a worker, as a scan error, until a reload installs new
+  rules. Hashing only runs while a strike is recorded.
 
 `signatures.yara_worker_enabled: false` runs YARA-X inside the root daemon
 instead; `csm validate` warns about it.

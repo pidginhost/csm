@@ -308,8 +308,10 @@ func TestScanWorkerCrashKeepsBreakerClosed(t *testing.T) {
 	if err := b.Reload(); err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < workerproc.ConsecutiveFailureLimit+2; i++ {
-		_, err := b.ScanBytesChecked([]byte("boom"))
+	const crashes = workerproc.ConsecutiveFailureLimit + 2
+	for i := 0; i < crashes; i++ {
+		// Distinct content each time, as an attacker would send.
+		_, err := b.ScanBytesChecked([]byte(fmt.Sprintf("boom %d", i)))
 		if err == nil {
 			t.Fatalf("scan %d of crashing content read clean", i)
 		}
@@ -317,8 +319,56 @@ func TestScanWorkerCrashKeepsBreakerClosed(t *testing.T) {
 			t.Fatalf("scan %d: content that kills the worker opened the breaker: %v", i, err)
 		}
 	}
+	if got := fx.scan.launches.Load(); got != crashes {
+		t.Fatalf("%d crashing scans started %d workers, want one each", crashes, got)
+	}
 	if got := ruleNames(t, b, "evil"); len(got) != 1 {
 		t.Fatalf("scan after crashes = %v", got)
+	}
+	if got := fx.scan.launches.Load(); got != crashes+1 {
+		t.Fatalf("scan after crashes started %d workers in all, want %d", got, crashes+1)
+	}
+}
+
+// Content that keeps killing the worker is refused without a worker once it
+// has struck out, through either scan path, and still never reads clean. A
+// reload forgives it: the new rules may scan it.
+func TestRepeatedWorkerKillerIsRefused(t *testing.T) {
+	fx := &backendFixture{scan: newHelper("crash-on:boom")}
+	b := newBackend(t, fx)
+	if err := b.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < workerproc.StrikeLimit; i++ {
+		if _, err := b.ScanBytesChecked([]byte("boom")); err == nil {
+			t.Fatalf("scan %d of crashing content read clean", i)
+		}
+	}
+	if got := ruleNames(t, b, "evil"); len(got) != 1 {
+		t.Fatalf("other content after strikes = %v", got)
+	}
+	launched := fx.scan.launches.Load()
+	if _, err := b.ScanBytesChecked([]byte("boom")); err == nil {
+		t.Fatal("struck content read clean")
+	}
+	if _, err := b.ScanFDChecked(tempFile(t, "boom"), 4); err == nil {
+		t.Fatal("struck content read clean as a mail part")
+	}
+	if got := fx.scan.launches.Load(); got != launched {
+		t.Fatalf("struck content started %d more workers", got-launched)
+	}
+	if got := ruleNames(t, b, "evil"); len(got) != 1 {
+		t.Fatalf("other content after refusals = %v", got)
+	}
+	if err := b.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	launched = fx.scan.launches.Load()
+	if _, err := b.ScanBytesChecked([]byte("boom")); err == nil {
+		t.Fatal("crashing content read clean after a reload")
+	}
+	if got := fx.scan.launches.Load(); got != launched+1 {
+		t.Fatalf("a reload did not give struck content a new scan: %d workers started", got-launched)
 	}
 }
 

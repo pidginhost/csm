@@ -3,9 +3,12 @@ package yaraworker
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -62,6 +65,9 @@ type Backend struct {
 	stopped    bool
 	// gen numbers rule sets. A worker loaded with an older one retires.
 	gen atomic.Uint64
+	// strikes remembers, by SHA-256, content that made the scan worker fail
+	// under the current rules.
+	strikes atomic.Pointer[workerproc.Strikes]
 
 	scanErrs scanErrLog
 }
@@ -103,6 +109,7 @@ func NewBackend(cfg BackendConfig) (*Backend, error) {
 	}
 	b.proc = proc
 	b.ctx, b.stop = context.WithCancel(context.Background())
+	b.strikes.Store(workerproc.NewStrikes())
 	return b, nil
 }
 
@@ -172,6 +179,8 @@ func (b *Backend) ReloadContext(ctx context.Context) error {
 	if old != nil {
 		_ = old.file.Close()
 	}
+	// The new rules get a new chance at content that failed the old ones.
+	b.strikes.Store(workerproc.NewStrikes())
 	yara.InvalidateCaches()
 	if b.cfg.WarmAfterReload && count > 0 {
 		// A failed warm-up is reported through OnFailure like any request.
@@ -503,7 +512,25 @@ func (b *Backend) ScanFDChecked(f *os.File, size int64) ([]yara.Match, error) {
 	return b.scan(ro, int(size))
 }
 
+// errStruckOut refuses content that kept making the scan worker fail: each
+// attempt would cost a worker restart, a rules load and up to a timeout.
+var errStruckOut = errors.New("yaraworker: not scanned: this content made the YARA worker fail repeatedly")
+
 func (b *Backend) scan(f *os.File, size int) ([]yara.Match, error) {
+	strikes := b.strikes.Load()
+	key := ""
+	if strikes.Len() > 0 {
+		var err error
+		if key, err = contentKey(f, size); err != nil {
+			err = fmt.Errorf("yaraworker: hash content: %w", err)
+			b.logScanErr(err)
+			return nil, err
+		}
+		if strikes.Blocked(key) {
+			b.logScanErr(errStruckOut)
+			return nil, errStruckOut
+		}
+	}
 	payload, err := json.Marshal(yaraipc.ScanFDArgs{MaxBytes: size})
 	if err != nil {
 		return nil, err
@@ -516,10 +543,26 @@ func (b *Backend) scan(f *os.File, size int) ([]yara.Match, error) {
 			return false, decodeErr
 		})
 	if err != nil {
+		if errors.Is(err, workerproc.ErrWorkerFailed) {
+			if key == "" {
+				key, _ = contentKey(f, size)
+			}
+			if key != "" {
+				strikes.Record(key)
+			}
+		}
 		b.logScanErr(err)
 		return nil, err
 	}
 	return toYaraMatches(matches), nil
+}
+
+func contentKey(f *os.File, size int) (string, error) {
+	h := sha256.New()
+	if _, err := io.CopyN(h, io.NewSectionReader(f, 0, int64(size)), int64(size)); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // Warm starts the scan worker and loads the rules now, so the first scan
