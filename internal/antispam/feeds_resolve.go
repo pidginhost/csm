@@ -13,9 +13,10 @@ import (
 )
 
 // OptionalUsable reports why CSM cannot write optional target t, or nil:
-// its directory must exist, every parent and the file must be protected
-// root-owned objects, and an existing file must be CSM's. The daemon leaves
-// out the feed or redirect that needs t; the worker refuses to write it.
+// its directory must exist, and every parent and the file must be protected
+// root-owned objects. The worker backs up and replaces a protected file that
+// is not CSM's. Otherwise the daemon leaves out the feed or redirect that
+// needs t, and the worker refuses to write it.
 func OptionalUsable(t TargetFacts) error {
 	if t.Err != nil {
 		if errors.Is(t.Err, fs.ErrNotExist) {
@@ -42,9 +43,6 @@ func OptionalUsable(t TargetFacts) error {
 	}
 	if problem := unprotected(t.File); problem != "" {
 		return fmt.Errorf("%s %s", t.Path, problem)
-	}
-	if !ManagedFor(t.Kind, t.Content) {
-		return fmt.Errorf("%s is not managed by CSM", t.Path)
 	}
 	return nil
 }
@@ -413,8 +411,8 @@ func (l LogFacts) exposed(uid int, trustedGroup func(int) bool) (bool, string) {
 // redirects were verified on.
 const minFeedsRspamdMajor = 4
 
-// ResolveScores leaves out the symbol weights file when CSM cannot own it,
-// with a Warning: rspamd then keeps its own weights.
+// ResolveScores leaves out the symbol weights file when CSM cannot write it
+// safely, with a Warning: rspamd then keeps its own weights.
 func ResolveScores(s Settings, f HostFacts) (Settings, []Problem) {
 	s.SkipScores = false
 	err := fmt.Errorf("%s was not checked", ScoresPath)
@@ -429,7 +427,7 @@ func ResolveScores(s Settings, f HostFacts) (Settings, []Problem) {
 	}
 	s.SkipScores = true
 	return s, []Problem{{Code: CodeScores, Severity: Warning,
-		Detail: fmt.Sprintf("%v, so rspamd keeps its full weight for hidden text, which can tag newsletters; move your weights out of it so CSM can own it", err)}}
+		Detail: fmt.Sprintf("%v, so rspamd keeps its full weight for hidden text, which can tag newsletters", err)}}
 }
 
 // FeedsSupported reports whether rspamd is recent enough for feed files

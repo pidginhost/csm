@@ -72,6 +72,7 @@ var emailChecks = []emailCheck{
 	{"mail_spam_source", ""},
 	{"antispam_apply_failed", ""},
 	{"antispam_controller_open", ""},
+	{"antispam_file_replaced", ""},
 	{"antispam_feed", ""},
 	{"antispam_ip_map", ""},
 	{"antispam_learning", ""},

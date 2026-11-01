@@ -33,6 +33,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - A YARA rule set too large for the locked-down compile worker now raises a compile-failure finding saying so; `signatures.yara_worker_enabled: false` compiles it in the daemon instead.
 - With auto_response.dry_run off, admission previews now wait for free slots under firewall.deny_temp_ip_limit, and csm doctor warns while that set is full; blocking is unchanged.
 - Learned spam is now stored with its headers and text only, without images or other attachments.
+- Enabling antispam now replaces your own rspamd files at the paths CSM needs, keeping a backup and warning you, instead of refusing to install.
 
 ### Fixed
 

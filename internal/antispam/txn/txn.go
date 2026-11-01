@@ -120,10 +120,12 @@ type change struct {
 	next   fileState
 }
 
-// written is one file edit made, for rollback.
+// written is one file edit made, for rollback. backup is the copy of the
+// operator file the edit replaced, if any.
 type written struct {
 	path         string
 	before, next fileState
+	backup       string
 }
 
 // tx is one transaction's progress, which rollback reads.
@@ -154,6 +156,9 @@ type tx struct {
 	// rspamdProbe confirms rspamd after a reload.
 	rspamdProbe         func(context.Context) error
 	rspamdRollbackProbe func(context.Context) error
+	// backups are the copies of operator files this transaction made. A
+	// rollback that restores every file deletes them again.
+	backups []string
 }
 
 func (h *Host) begin() *tx {
@@ -317,9 +322,17 @@ func (t *tx) write(c change) error {
 	if !sameContent(before, fileState{exists: !c.target.Missing, content: c.target.Content}) {
 		return fmt.Errorf("%s %w", p, errConflict)
 	}
+	// An operator file at a path CSM owns outright is kept before it is
+	// replaced (spec 5.5).
+	backup := ""
+	if c.target.Kind.WholeFile() && before.exists && !antispam.ManagedFor(c.target.Kind, before.content) {
+		if backup, err = t.backup(c.target.Path, before.content); err != nil {
+			return err
+		}
+	}
 	err = t.h.replace(p, before, c.next)
 	if err == nil || errors.Is(err, errDurability) {
-		t.writes = append(t.writes, written{path: p, before: before, next: c.next})
+		t.writes = append(t.writes, written{path: p, before: before, next: c.next, backup: backup})
 		if !c.target.Kind.WholeFile() {
 			t.eximTouched = true
 		}
@@ -328,6 +341,40 @@ func (t *tx) write(c change) error {
 		return t.fwd.Err()
 	}
 	return err
+}
+
+// backup copies the operator file at target into ReplacedDir, root-only
+// and durable. It never overwrites an earlier copy: a name already taken
+// fails the write, and the next pass tries again with a new time.
+func (t *tx) backup(target, content string) (string, error) {
+	dir := t.h.path(antispam.ReplacedDir)
+	if err := privateDir(dir); err != nil {
+		return "", err
+	}
+	p := filepath.Join(dir, antispam.BackupName(target, t.h.now()))
+	tmp, err := stageFile(p, content)
+	if err != nil {
+		return "", err
+	}
+	defer discardTemp(tmp)
+	err = publishFile(p, tmp, 0o600, -1, -1, false)
+	if err == nil || errors.Is(err, errDurability) {
+		// The target is still unchanged, so a rollback may delete this copy.
+		t.backups = append(t.backups, p)
+	}
+	return p, err
+}
+
+// dropBackups deletes the copies this transaction made, once every operator
+// file they hold is back in place.
+func (t *tx) dropBackups() error {
+	var errs []error
+	for _, p := range t.backups {
+		if err := deleteFile(p); err != nil {
+			errs = append(errs, fmt.Errorf("removing backup %s: %w", strings.TrimPrefix(p, t.h.root), err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // readRecord reads the completion record into t.record.
@@ -741,6 +788,7 @@ func (t *tx) rollback() (state string, rollbackErr error) {
 			errs = append(errs, err)
 		}
 	}
+	restoreFailed := false
 	for i := len(t.writes) - 1; i >= 0; i-- {
 		if err := ctx.Err(); err != nil {
 			return antispam.RollbackFailed, err
@@ -762,6 +810,14 @@ func (t *tx) rollback() (state string, rollbackErr error) {
 		}
 		if err := t.h.replace(w.path, w.next, before); err != nil {
 			errs = append(errs, fmt.Errorf("restoring %s: %w", strings.TrimPrefix(w.path, t.h.root), err))
+			restoreFailed = true
+		}
+	}
+	// A backup may be the only copy of an operator file until that file is
+	// back in place.
+	if !restoreFailed {
+		if err := t.dropBackups(); err != nil {
+			errs = append(errs, err)
 		}
 	}
 	loadable := false

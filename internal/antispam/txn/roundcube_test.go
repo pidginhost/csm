@@ -181,6 +181,8 @@ func TestRoundcubeRemoveVerifiesAbsence(t *testing.T) {
 	}
 }
 
+// Without the include, CSM does not need its path: an operator file there
+// stays and nothing is backed up.
 func TestRoundcubeForeignFileUntouched(t *testing.T) {
 	f := newFake(t)
 	foreign := "<?php\n$config['junk_mbox'] = 'Junk';\n"
@@ -190,6 +192,34 @@ func TestRoundcubeForeignFileUntouched(t *testing.T) {
 	if f.file(antispam.RoundcubeIncludePath) != foreign {
 		t.Fatal("foreign include changed")
 	}
+	wantBackups(t, f, nil)
+}
+
+func TestRoundcubeForeignFileReplaced(t *testing.T) {
+	f := newFake(t)
+	foreign := "<?php\n$config['junk_mbox'] = 'Junk';\n"
+	writeTest(t, f.root+antispam.RoundcubeIncludePath, foreign, 0o644)
+	r := f.host().Apply(roundcubeApply(f))
+	wantOK(t, r)
+	if r.Roundcube != "" || f.file(antispam.RoundcubeIncludePath) != antispam.RenderRoundcube() {
+		t.Fatalf("result %+v, include %q", r, f.file(antispam.RoundcubeIncludePath))
+	}
+	wantBackups(t, f, map[string]string{antispam.RoundcubeIncludePath: foreign})
+}
+
+// An include Roundcube does not load is put back alone. The operator's file
+// is back in place, so its backup goes too.
+func TestRoundcubeUnverifiedTakeoverDropsBackup(t *testing.T) {
+	f := newFake(t)
+	foreign := "<?php\n$config['junk_mbox'] = 'Junk';\n"
+	writeTest(t, f.root+antispam.RoundcubeIncludePath, foreign, 0o644)
+	f.roundcubeOverride = "INBOX.Trash"
+	r := f.host().Apply(roundcubeApply(f))
+	wantOK(t, r)
+	if !strings.HasPrefix(r.Roundcube, antispam.RoundcubeUnavailable) || f.file(antispam.RoundcubeIncludePath) != foreign {
+		t.Fatalf("result %+v, include %q", r, f.file(antispam.RoundcubeIncludePath))
+	}
+	wantBackups(t, f, nil)
 }
 
 func TestRoundcubeStagingNameNotGlobbed(t *testing.T) {

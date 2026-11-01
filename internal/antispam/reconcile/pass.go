@@ -81,6 +81,9 @@ type Reconciler struct {
 	// Learner returns the running learning engine's problems; nil when no
 	// engine runs.
 	Learner func() []antispam.Problem
+	// Replaced lists the operator files the worker backed up and replaced;
+	// nil reports none.
+	Replaced func() ([]antispam.Replacement, error)
 	// resolveLearning replaces antispam.ResolveLearning in tests.
 	resolveLearning func(s antispam.Settings, f antispam.HostFacts) (antispam.Settings, antispam.LearningGate, []antispam.Problem)
 	// assess replaces antispam.Assess in tests.
@@ -225,6 +228,18 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) (out Outcome) {
 	if d.Enabled {
 		out.Stats, out.StatsReason = antispam.StatsEndpointFor(f)
 	}
+	// A backup stays until the operator deletes it, whatever the mode or
+	// the apply's outcome. An unreadable directory keeps the last result.
+	replacedSettled := false
+	if r.Replaced != nil {
+		if replaced, err := r.Replaced(); err == nil {
+			replacedSettled = true
+			out.Checks = append(out.Checks, CheckFileReplaced)
+			for _, rep := range replaced {
+				out.Findings = append(out.Findings, replacedFinding(rep, now))
+			}
+		}
+	}
 	// Prerequisites alone do not prove that the requested integration is
 	// active. A worker must finish an apply, or the installed state must
 	// already be current, before the learner may publish.
@@ -336,6 +351,9 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) (out Outcome) {
 		out.Checks = []string{CheckPrecondition, CheckFeed}
 		if controllerSettled {
 			out.Checks = append(out.Checks, CheckControllerOpen)
+		}
+		if replacedSettled {
+			out.Checks = append(out.Checks, CheckFileReplaced)
 		}
 	}
 	if result.FailedStep == antispam.FeedsCheckStep {

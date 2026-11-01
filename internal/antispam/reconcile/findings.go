@@ -24,6 +24,7 @@ const (
 	CheckIPMap           = "antispam_ip_map"
 	CheckControllerOpen  = "antispam_controller_open"
 	CheckLearning        = "antispam_learning"
+	CheckFileReplaced    = "antispam_file_replaced"
 )
 
 // clean escapes control and non-ASCII characters: problem details and
@@ -148,6 +149,20 @@ func scanErrorFinding(count int, first, last time.Time) alert.Finding {
 		Message: "Antispam scans are failing",
 		Details: fmt.Sprintf("Exim logged %d failed %s since %s, the last at %s. Mail is delivered without spam filtering while scans fail; check rspamd's log.",
 			count, scans, first.UTC().Format(time.RFC3339), last.UTC().Format(time.RFC3339)),
+	}
+}
+
+// replacedFinding reports one operator file CSM backed up and replaced,
+// until the operator deletes the backup.
+func replacedFinding(rep antispam.Replacement, now time.Time) alert.Finding {
+	return alert.Finding{
+		Severity: alert.Warning,
+		Check:    CheckFileReplaced,
+		DedupKey: rep.Backup,
+		Message:  "Antispam replaced " + clean(rep.Path),
+		Details: "CSM now owns " + clean(rep.Path) + " and kept your previous file at " + clean(rep.Backup) +
+			". Move any settings you still need into a file CSM does not manage, then delete the backup to clear this warning.",
+		Timestamp: now,
 	}
 }
 

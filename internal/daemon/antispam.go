@@ -84,6 +84,9 @@ var antispamReconciler = func() reconcile.Reconciler {
 		},
 		LoadKeys:        hostfacts.LoadLearningKeys,
 		CollectLearning: hostfacts.CollectLearning,
+		Replaced: func() ([]antispam.Replacement, error) {
+			return hostfacts.Replaced(antispam.ReplacedDir)
+		},
 	}
 }
 
