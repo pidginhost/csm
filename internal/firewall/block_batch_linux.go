@@ -239,9 +239,22 @@ func (e *Engine) checkBlockMembersLocked(members []BlockMember, verified []bool,
 // admission block the ledger claimed, so the batch may remove it (spec
 // 5.5): a well-formed action at an address no member targets, named by no
 // earlier member, whose row there carries that action and expiry and
-// whose timed element snap proves live at that canonical address.
+// whose timed element snap proves live at that canonical address. Retained
+// rows there must agree; normalization alone cannot prove ownership.
 func (e *Engine) victimsLocked(members []BlockMember, snap blockSnapshot) []bool {
 	out := make([]bool, len(members))
+	if e.blockActionsUnproven != nil {
+		return out
+	}
+	conflicted := map[string]bool{}
+	rows, _ := pruneBlocked(snap.prior.Blocked, snap.at)
+	for _, row := range rows {
+		key := stateIPKey(row.IP)
+		selected := snap.blocked[key]
+		if row.Unverified || row.ActionID != selected.ActionID || !row.ExpiresAt.Equal(selected.ExpiresAt) {
+			conflicted[key] = true
+		}
+	}
 	targets, taken := map[string]bool{}, map[string]bool{}
 	for _, m := range members {
 		targets[stateIPKey(m.IP)] = true
@@ -254,7 +267,7 @@ func (e *Engine) victimsLocked(members []BlockMember, snap blockSnapshot) []bool
 		key := stateIPKey(v.IP)
 		row, held := snap.blocked[key]
 		observed, live := snap.live[v.IP]
-		if targets[key] || taken[key] || !held || row.ActionID != v.Action || !row.ExpiresAt.Equal(v.ExpiresAt) || !snap.proves(row, observed, live) {
+		if targets[key] || taken[key] || conflicted[key] || !held || row.ActionID != v.Action || !row.ExpiresAt.Equal(v.ExpiresAt) || !snap.proves(row, observed, live) {
 			continue
 		}
 		out[i], taken[key] = true, true

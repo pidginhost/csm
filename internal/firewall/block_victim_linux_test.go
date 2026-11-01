@@ -3,6 +3,7 @@
 package firewall
 
 import (
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -116,6 +117,80 @@ func TestBlockVictimMustStillQualify(t *testing.T) {
 				t.Fatalf("refusal %q, evicts %v; want %q without the victim", refusals[0], evicts[0], tc.want)
 			}
 		})
+	}
+}
+
+// Restoring rows without a readable ledger does not prove their admission
+// outcomes, even when their kernel elements match.
+func TestBlockVictimRequiresProvenStartupActions(t *testing.T) {
+	for _, limit := range []int{2, 3} {
+		t.Run(fmt.Sprint(limit), func(t *testing.T) {
+			f, victim := newVictimFixture(t)
+			f.e.cfg.DenyTempIPLimit = limit
+			f.e.SetBlockActionsUnproven(errors.New("ledger unavailable"))
+			refusals, evicts := f.checkMembers(t, []BlockMember{f.evicting("act_evict", "203.0.113.21", victim)})
+			var want BlockRefusal
+			if limit == 2 {
+				want = BlockRefusedFull
+			}
+			if len(refusals) != 1 || refusals[0] != want || len(evicts) != 1 || evicts[0] {
+				t.Fatalf("refusals %q, evicts %v; want %q without the victim", refusals, evicts, want)
+			}
+		})
+	}
+}
+
+// Normalization chooses one row for protection checks, but deleting its
+// element also removes any other retained block at the same address.
+func TestBlockVictimRequiresAgreementAcrossRows(t *testing.T) {
+	for _, address := range []struct{ canonical, alias string }{
+		{"203.0.113.60", "::ffff:203.0.113.60"},
+		{"2001:db8::60", "2001:0db8:0:0:0:0:0:60"},
+	} {
+		for _, kind := range []string{"operator", "another action", "another expiry", "unverified", "expired unverified", "expired operator", "matching"} {
+			for _, reverse := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/%s/reverse=%t", address.canonical, kind, reverse), func(t *testing.T) {
+					f, victim := newVictimFixture(t)
+					delete(f.live, victim.IP)
+					victim.IP = address.canonical
+					f.live[victim.IP] = time.Hour
+					row := BlockedEntry{IP: victim.IP, Source: SourceAutoResponse, ActionID: victim.Action, ExpiresAt: victim.ExpiresAt}
+					alias := row
+					alias.IP = address.alias
+					wantEvict := false
+					switch kind {
+					case "operator":
+						alias.ActionID, alias.Source, alias.ExpiresAt = "", "", f.at.Add(time.Minute)
+					case "another action":
+						alias.ActionID = victimAction(2)
+					case "another expiry":
+						alias.ExpiresAt = f.at.Add(time.Minute)
+					case "unverified":
+						alias.Unverified = true
+					case "expired unverified":
+						alias.Unverified, alias.ExpiresAt = true, f.at
+					case "expired operator":
+						alias.ActionID, alias.Source, alias.ExpiresAt = "", "", f.at
+						wantEvict = true
+					case "matching":
+						wantEvict = true
+					}
+					rows := []BlockedEntry{row, alias, {IP: "203.0.113.61", ExpiresAt: f.at.Add(time.Hour)}}
+					if reverse {
+						rows[0], rows[1] = rows[1], rows[0]
+					}
+					writeEngineStateFile(t, f.e.statePath, FirewallState{Blocked: rows})
+					refusals, evicts := f.checkMembers(t, []BlockMember{f.evicting("act_evict", "203.0.113.21", victim)})
+					wantRefusal := BlockRefusedFull
+					if wantEvict {
+						wantRefusal = ""
+					}
+					if len(refusals) != 1 || refusals[0] != wantRefusal || len(evicts) != 1 || evicts[0] != wantEvict {
+						t.Fatalf("refusals %q, evicts %v; want %q, %t", refusals, evicts, wantRefusal, wantEvict)
+					}
+				})
+			}
+		}
 	}
 }
 

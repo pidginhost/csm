@@ -802,7 +802,10 @@ intent with expiry instants stored in UTC, refreshes timeouts after the
 write, and uses one atomic transaction
 on a fresh socket with a two-second deadline. Exact-family readback proves
 each applied member's key and timed lifetime. Capacity is checked only at
-apply: a check before reservation never answers set_full. Definitive kernel rejection
+apply: a check before reservation never answers set_full. Victim checks require
+retained rows at the address to agree on action, expiry and verification.
+An unreadable startup ledger disqualifies all victims; members can still use
+free slots. Apply does not yet remove victims. Definitive kernel rejection
 restores state; uncertain exchanges retain unknown rows. Unknown rows are
 marked unverified and excluded from counts and seeding. Expiry retains them
 until the owner retires the matching attempt. A failed state
