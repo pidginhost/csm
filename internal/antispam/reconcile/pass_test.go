@@ -2,6 +2,7 @@ package reconcile
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -612,5 +613,50 @@ func TestPassScopesInfraNets(t *testing.T) {
 		if len(got) != 1 || !slices.Equal(got[0], nets) {
 			t.Fatalf("enabled %t: assessed scope networks %v, want %v", enabled, got, nets)
 		}
+	}
+}
+
+// The worker renders from the request alone, so on Postfix it must carry
+// the exemptions and infra networks: the generation the worker installs is
+// the one the next pass expects.
+func TestPassSendsPostfixScopeToWorker(t *testing.T) {
+	h := &fakeHost{result: antispam.Result{OK: true, Generation: "g"}}
+	r := h.reconciler()
+	r.Collect = func(context.Context, string) antispam.HostFacts {
+		f := goodFeedFacts()
+		f.Stack = antispam.StackPostfix
+		return f
+	}
+	var assessed antispam.Settings
+	r.assess = func(_ bool, s antispam.Settings, _ antispam.HostFacts) antispam.Assessment {
+		assessed = s
+		return antispam.Assessment{Action: antispam.Install}
+	}
+	d := desired(true)
+	d.Settings.Exempt = []string{"example.org", "a@example.com"}
+	d.InfraNets = []netip.Prefix{netip.MustParsePrefix("198.51.100.0/24"), netip.MustParsePrefix("2001:db8::/32")}
+	r.Pass(context.Background(), d)
+	if len(h.requests) != 1 {
+		t.Fatalf("requests %+v", h.requests)
+	}
+	body, err := json.Marshal(h.requests[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, worker, err := antispam.DecodeRequest(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker.Stack = antispam.StackPostfix
+	want, err := antispam.ManagedContent(assessed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := antispam.ManagedContent(worker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(worker.Exempt, d.Settings.Exempt) || !slices.Equal(worker.ScopeNets, d.InfraNets) || antispam.Generation(got) != antispam.Generation(want) {
+		t.Fatalf("worker settings %+v render another generation than the daemon's %+v", worker, assessed)
 	}
 }

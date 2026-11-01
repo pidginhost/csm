@@ -10,7 +10,8 @@ import (
 
 // Remove takes out CSM's integration (spec section 6.4): Exim first, then
 // CSM's rspamd files, then the record. Foreign local.d files stay. A stopped
-// service is not reloaded, and the scan socket is not needed.
+// service is not reloaded, and the scan socket is not needed. Postfix mail
+// never passes through Exim, so there it removes rspamd files only.
 func (h *Host) Remove() antispam.Result {
 	t := h.begin()
 	defer t.cancel()
@@ -22,8 +23,10 @@ func (h *Host) Remove() antispam.Result {
 	}
 	// A remove request carries no socket, so rollback checks rspamd the same way.
 	t.rspamdRollbackProbe = t.rspamdProbe
+	stack := h.stack()
+	exim := stack != antispam.StackPostfix
 	targets := h.targets()
-	if err := blocking(antispam.CheckRemoval(antispam.StackExim, targets)); err != nil {
+	if err := blocking(antispam.CheckRemoval(stack, targets)); err != nil {
 		return failed(StepPreconditions, err)
 	}
 	changes, err := plan(targets, nil)
@@ -34,24 +37,29 @@ func (h *Host) Remove() antispam.Result {
 	if _, _, err = t.readRecord(); err != nil {
 		return failed(StepRecord, err)
 	}
-	conf, err := readFile(h.path(antispam.GeneratedEximConfPath))
-	generated := err == nil && conf.exists && !strings.Contains(conf.content, antispam.MarkerBegin) && !strings.Contains(conf.content, antispam.MarkerEnd)
 	// A record, complete or not, means an earlier transaction may have
 	// changed files without a confirmed reload.
-	rebuildExim := len(eximChanges) > 0 || t.record.exists || !generated
+	rebuildExim := false
+	if exim {
+		conf, readErr := readFile(h.path(antispam.GeneratedEximConfPath))
+		generated := readErr == nil && conf.exists && !strings.Contains(conf.content, antispam.MarkerBegin) && !strings.Contains(conf.content, antispam.MarkerEnd)
+		rebuildExim = len(eximChanges) > 0 || t.record.exists || !generated
+	}
 	reloadRspamd := len(rspamdChanges) > 0 || t.record.exists
 	if !rebuildExim && !reloadRspamd && len(roundcubeChanges) == 0 {
 		return antispam.Result{OK: true}
 	}
-	// A broken generated configuration must not prevent removing its hooks:
-	// without listener settings the probe after reload checks activity only.
-	opts, _ := t.eximSettings(t.fwd)
-	t.rememberEximBlocks(targets, opts)
-	if t.eximActive, err = t.serviceActive(t.fwd, antispam.EximUnit); err != nil {
-		return failed(StepPreconditions, err)
-	}
-	if t.eximActive {
-		_ = t.listenerGreeting(opts)
+	if exim {
+		// A broken generated configuration must not prevent removing its hooks:
+		// without listener settings the probe after reload checks activity only.
+		opts, _ := t.eximSettings(t.fwd)
+		t.rememberEximBlocks(targets, opts)
+		if t.eximActive, err = t.serviceActive(t.fwd, antispam.EximUnit); err != nil {
+			return failed(StepPreconditions, err)
+		}
+		if t.eximActive {
+			_ = t.listenerGreeting(opts)
+		}
 	}
 	if t.rspamdActive, err = t.serviceActive(t.fwd, antispam.RspamdUnit); err != nil {
 		return failed(StepPreconditions, err)

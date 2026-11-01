@@ -56,6 +56,9 @@ func (h *Host) Apply(s antispam.Settings) antispam.Result {
 		s.LearningKeys = f.LearningKeys
 	}
 	installed := antispam.InstalledContent(f.Targets)
+	if f.Stack == antispam.StackPostfix {
+		return t.applyPostfix(s, f, installed)
+	}
 	rollbackSocket := s.Socket
 	// An update can select a new socket. Rollback must probe the scanner
 	// referenced by the hooks it restores, rather than the failed update.
@@ -70,31 +73,16 @@ func (h *Host) Apply(s antispam.Settings) antispam.Result {
 	if err != nil {
 		return failed(StepPreconditions, err)
 	}
-	managed, err := antispam.ManagedContent(s)
+	managed, changes, err := changesFor(s, f)
 	if err != nil {
 		return failed(StepPreconditions, err)
 	}
 	generation := antispam.Generation(managed)
-	changes, err := plan(f.Targets, managed)
-	if err != nil {
-		return failed(StepPreconditions, err)
-	}
-	if secrets := s.SecretTargets(); len(secrets) > 0 {
-		if f.RspamdGID < 0 {
-			return failed(StepPreconditions, errors.New("rspamd's group is unknown, so secret files cannot be restricted to it"))
-		}
-		changes = secureSecret(changes, f.Targets, f.RspamdGID, secrets)
-	}
 	rspamdChanges, eximChanges, roundcubeChanges := split(changes)
-	record, valid, err := t.readRecord()
+	matches, err := t.recorded(installed, generation)
 	if err != nil {
 		return failed(StepRecord, err)
 	}
-	// A completed installed or desired generation proves the unchanged
-	// services were already reloaded. Repairing drift in just one target
-	// must not reload the others. An incomplete record proves neither.
-	matches := valid && record.Complete() &&
-		(*record.Generation == antispam.Generation(installed) || *record.Generation == generation)
 	opts, err := t.eximSettings(t.fwd)
 	if err != nil {
 		return failed(StepPreconditions, err)
@@ -118,31 +106,8 @@ func (h *Host) Apply(s antispam.Settings) antispam.Result {
 		return t.fail(StepRecord, err)
 	}
 	if reloadRspamd {
-		for _, c := range rspamdChanges {
-			if err := t.write(c); err != nil {
-				return t.fail(StepRspamdFiles, err)
-			}
-		}
-		if err := t.checkRspamd(t.fwd, &s); err != nil {
-			step := StepRspamdCheck
-			if errors.Is(err, errFeedsLoaded) {
-				step = StepFeedsCheck
-			} else if errors.Is(err, errLearningLoaded) {
-				step = StepLearningCheck
-			}
+		if step, err := t.rspamd(rspamdChanges, &s, f); err != nil {
 			return t.fail(step, err)
-		}
-		if err := t.reloadRspamd(t.fwd, t.rspamdProbe); err != nil {
-			return t.fail(StepRspamdReload, err)
-		}
-		if s.Learning {
-			if err := t.checkLearning(t.fwd, f, s.LearningKeys); err != nil {
-				step := StepLearningCheck
-				if errors.Is(err, errLearningProbe) {
-					step = StepLearningProbe
-				}
-				return t.fail(step, err)
-			}
 		}
 	}
 	if rebuildExim {
@@ -171,4 +136,122 @@ func (h *Host) Apply(s antispam.Settings) antispam.Result {
 		return t.fail(StepComplete, err)
 	}
 	return antispam.Result{OK: true, Generation: generation, Roundcube: roundcube}
+}
+
+// applyPostfix installs or updates CSM's rspamd files on a Postfix host.
+// rspamd's milter enforces there, so the transaction never touches Exim or
+// postfix's configuration; probes after each reload include a connection to
+// every milter postfix passes mail to rspamd through.
+func (t *tx) applyPostfix(s antispam.Settings, f antispam.HostFacts, installed map[string]string) antispam.Result {
+	milters, err := antispam.RspamdMilters(f)
+	if err != nil {
+		return failed(StepPreconditions, err)
+	}
+	reachable := func(ctx context.Context) error {
+		for _, m := range milters {
+			if t.h.milter(ctx, m) != nil {
+				return errors.New("rspamd's milter does not accept connections")
+			}
+		}
+		return nil
+	}
+	ping := t.rspamdProbe
+	t.rspamdProbe = func(ctx context.Context) error {
+		if pingErr := ping(ctx); pingErr != nil {
+			return pingErr
+		}
+		return retry(ctx, t.h.rspamdWait, reachable)
+	}
+	t.rspamdRollbackProbe = t.rspamdProbe
+	managed, changes, err := changesFor(s, f)
+	if err != nil {
+		return failed(StepPreconditions, err)
+	}
+	generation := antispam.Generation(managed)
+	matches, err := t.recorded(installed, generation)
+	if err != nil {
+		return failed(StepRecord, err)
+	}
+	if len(changes) == 0 && matches {
+		return antispam.Result{OK: true, Generation: generation}
+	}
+	// As with Exim's listener, the probe after the reload compares like
+	// with like.
+	if err := retry(t.fwd, t.h.rspamdWait, reachable); err != nil {
+		return failed(StepPreconditions, err)
+	}
+	if err := t.writeRecord(""); err != nil {
+		return t.fail(StepRecord, err)
+	}
+	if step, err := t.rspamd(changes, &s, f); err != nil {
+		return t.fail(step, err)
+	}
+	if err := t.writeRecord(generation); err != nil {
+		return t.fail(StepComplete, err)
+	}
+	return antispam.Result{OK: true, Generation: generation}
+}
+
+// changesFor renders s and plans the edits that bring f's targets to it.
+func changesFor(s antispam.Settings, f antispam.HostFacts) (map[string]string, []change, error) {
+	managed, err := antispam.ManagedContent(s)
+	if err != nil {
+		return nil, nil, err
+	}
+	changes, err := plan(f.Targets, managed)
+	if err != nil {
+		return nil, nil, err
+	}
+	if secrets := s.SecretTargets(); len(secrets) > 0 {
+		if f.RspamdGID < 0 {
+			return nil, nil, errors.New("rspamd's group is unknown, so secret files cannot be restricted to it")
+		}
+		changes = secureSecret(changes, f.Targets, f.RspamdGID, secrets)
+	}
+	return managed, changes, nil
+}
+
+// recorded reads the record and reports whether it completed installed or
+// generation. Either proves the unchanged services were already reloaded,
+// so repairing drift in just one target must not reload the others. An
+// incomplete record proves neither.
+func (t *tx) recorded(installed map[string]string, generation string) (bool, error) {
+	record, valid, err := t.readRecord()
+	if err != nil {
+		return false, err
+	}
+	return valid && record.Complete() &&
+		(*record.Generation == antispam.Generation(installed) || *record.Generation == generation), nil
+}
+
+// rspamd writes the rspamd edits, validates them against s, reloads rspamd
+// and probes it, then verifies learning as loaded (spec 6.3 step 2).
+func (t *tx) rspamd(changes []change, s *antispam.Settings, f antispam.HostFacts) (string, error) {
+	for _, c := range changes {
+		if err := t.write(c); err != nil {
+			return StepRspamdFiles, err
+		}
+	}
+	if err := t.checkRspamd(t.fwd, s); err != nil {
+		step := StepRspamdCheck
+		if errors.Is(err, errFeedsLoaded) {
+			step = StepFeedsCheck
+		} else if errors.Is(err, errLearningLoaded) {
+			step = StepLearningCheck
+		}
+		return step, err
+	}
+	if err := t.reloadRspamd(t.fwd, t.rspamdProbe); err != nil {
+		return StepRspamdReload, err
+	}
+	if s.Learning {
+		if err := t.checkLearning(t.fwd, f, s.LearningKeys); err != nil {
+			step := StepLearningCheck
+			if errors.Is(err, errLearningProbe) {
+				step = StepLearningProbe
+			}
+			return step, err
+		}
+	}
+	return "", nil
 }

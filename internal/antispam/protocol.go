@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/netip"
 	"strings"
 )
 
@@ -53,6 +54,10 @@ type Request struct {
 	Learning    *bool   `json:"learning,omitempty"`
 	LearningDir *string `json:"learning_dir,omitempty"`
 	Roundcube   *bool   `json:"roundcube,omitempty"`
+	// Exempt and ScopeNets are comma-separated. Exim renders neither, so
+	// they never travel from an Exim host and its requests keep their form.
+	Exempt    *string `json:"exempt,omitempty"`
+	ScopeNets *string `json:"scope_nets,omitempty"`
 }
 
 // ApplyRequest is the request that installs s.
@@ -90,6 +95,18 @@ func ApplyRequest(s Settings) Request {
 		roundcube := true
 		r.Roundcube = &roundcube
 	}
+	if s.Stack != StackExim && len(s.Exempt) > 0 {
+		v := strings.Join(s.Exempt, ",")
+		r.Exempt = &v
+	}
+	if s.Stack != StackExim && len(s.ScopeNets) > 0 {
+		nets := make([]string, len(s.ScopeNets))
+		for i, p := range s.ScopeNets {
+			nets[i] = p.String()
+		}
+		v := strings.Join(nets, ",")
+		r.ScopeNets = &v
+	}
 	return r
 }
 
@@ -103,6 +120,7 @@ var requestKeys = map[string]bool{
 	"rspamd_socket": true, "reject_score": true, "tag_score": true,
 	"feeds": true, "skip_maps": true, "skip_scores": true, "dqs_key_file": true,
 	"learning": true, "learning_dir": true, "roundcube": true,
+	"exempt": true, "scope_nets": true,
 }
 
 // splitNames reads a comma-separated request field.
@@ -124,7 +142,7 @@ func DecodeRequest(data []byte) (Request, Settings, error) {
 	if err != nil {
 		return Request{}, Settings{}, err
 	}
-	for _, key := range []string{"feeds", "skip_maps", "skip_scores", "dqs_key_file", "learning_dir", "learning", "roundcube"} {
+	for _, key := range []string{"feeds", "skip_maps", "skip_scores", "dqs_key_file", "learning_dir", "learning", "roundcube", "exempt", "scope_nets"} {
 		if value, present := fields[key]; present {
 			var valid bool
 			if key == "skip_scores" || key == "learning" || key == "roundcube" {
@@ -159,6 +177,14 @@ func DecodeRequest(data []byte) (Request, Settings, error) {
 		s.Roundcube = r.Roundcube != nil && *r.Roundcube
 		if s.Learning && r.LearningDir != nil {
 			s.LearningDir = *r.LearningDir
+		}
+		s.Exempt = splitNames(r.Exempt)
+		for _, n := range splitNames(r.ScopeNets) {
+			p, err := netip.ParsePrefix(n)
+			if err != nil {
+				return Request{}, Settings{}, errors.New("request has an invalid infra_ips network")
+			}
+			s.ScopeNets = append(s.ScopeNets, p)
 		}
 		if err := s.Validate(); err != nil {
 			return Request{}, Settings{}, err

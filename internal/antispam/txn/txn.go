@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pidginhost/csm/internal/antispam"
@@ -72,7 +73,12 @@ type Host struct {
 	replace   func(p string, want, next fileState) error
 	preflight func(ctx context.Context, s antispam.Settings) (antispam.HostFacts, []antispam.Problem)
 	targets   func() []antispam.TargetFacts
-	ping      func(ctx context.Context, socket string) error
+	// stack is the host's mail stack, which picks targets' files.
+	stack func() antispam.MailStack
+	ping  func(ctx context.Context, socket string) error
+	// milter connects to a postfix milter address, inet:host:port or
+	// unix:path, as postfix would.
+	milter func(ctx context.Context, addr string) error
 	// unprivileged returns the uid and gid Roundcube's PHP runs as.
 	unprivileged func() (uid, gid int, err error)
 	// controllerGet reads one controller path over a private Unix socket.
@@ -83,11 +89,14 @@ type Host struct {
 	rspamdWait, eximWait time.Duration
 }
 
-// New returns a Host for the live cPanel paths.
+// New returns a Host for the live paths of the host's mail stack, which it
+// detects once.
 func New() *Host {
+	stack := sync.OnceValue(hostfacts.DetectStack)
 	return &Host{
 		run:     hostfacts.RunCommand,
 		replace: replaceFile,
+		stack:   stack,
 		preflight: func(ctx context.Context, s antispam.Settings) (antispam.HostFacts, []antispam.Problem) {
 			f := hostfacts.Collect(ctx, s.Socket)
 			if s.HasFeed(antispam.FeedSpamhausDQS) {
@@ -98,11 +107,12 @@ func New() *Host {
 			}
 			return f, antispam.CheckHost(f)
 		},
-		targets: func() []antispam.TargetFacts { return hostfacts.Targets(antispam.MutationTargets(antispam.StackExim)) },
+		targets: func() []antispam.TargetFacts { return hostfacts.Targets(antispam.MutationTargets(stack())) },
 		ping: func(ctx context.Context, socket string) error {
 			_, err := hostfacts.Ping(ctx, socket)
 			return err
 		},
+		milter:        connectMilter,
 		greet:         smtpGreeting,
 		controllerGet: hostfacts.ControllerGet,
 		unprivileged:  nobody,
@@ -678,14 +688,17 @@ func (t *tx) checkRspamd(ctx context.Context, s *antispam.Settings) error {
 	if s.Learning && !enabled["fuzzy_check"] {
 		return errors.Join(errLearningLoaded, errors.New("rspamd module fuzzy_check is disabled"))
 	}
-	acts := t.cmd(ctx, commandLimit, "rspamadm", "configdump", "-j", "actions")
-	if acts.Err != nil {
-		return cmdErr("rspamadm configdump -j actions", acts)
-	}
-	actions, err := antispam.ParseActions([]byte(acts.Stdout))
-	if err != nil {
-		// Object-form actions hide their thresholds: a conflict, not drift.
-		return errors.New("rspamadm configdump -j actions: rspamd configuration conflict")
+	var actions antispam.Actions
+	// The host's own actions keep enforcing in a Postfix dry run.
+	if !s.HostActions() {
+		acts := t.cmd(ctx, commandLimit, "rspamadm", "configdump", "-j", "actions")
+		if acts.Err != nil {
+			return cmdErr("rspamadm configdump -j actions", acts)
+		}
+		if actions, err = antispam.ParseActions([]byte(acts.Stdout)); err != nil {
+			// Object-form actions hide their thresholds: a conflict, not drift.
+			return errors.New("rspamadm configdump -j actions: rspamd configuration conflict")
+		}
 	}
 	if conflicts := antispam.CheckRspamd(enabled, actions, *s); len(conflicts) > 0 {
 		return errors.New("rspamadm configdump -j actions: rspamd configuration conflict")

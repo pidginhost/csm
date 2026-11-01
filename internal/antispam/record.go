@@ -118,7 +118,7 @@ func ManagedContent(s Settings) (map[string]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	if s.Stack == StackPostfix && s.DryRun {
+	if s.HostActions() {
 		delete(files, "actions.conf")
 	}
 	for name, text := range files {

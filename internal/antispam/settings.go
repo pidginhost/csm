@@ -130,6 +130,10 @@ func validateLearning(s Settings) error {
 // HasFeed reports whether name is among s.Feeds.
 func (s Settings) HasFeed(name string) bool { return slices.Contains(s.Feeds, name) }
 
+// HostActions reports whether the host's own actions decide, not CSM's
+// actions.conf: a Postfix dry run, so the host keeps enforcing (spec 9.2).
+func (s Settings) HostActions() bool { return s.Stack == StackPostfix && s.DryRun }
+
 // DNSFeeds returns the catalogue entries of s's DNS feeds in catalogue
 // order, so rendering never depends on the order the operator wrote.
 func (s Settings) DNSFeeds() []Feed {

@@ -152,8 +152,7 @@ func checkRspamdModules(enabled map[string]bool, s Settings) []string {
 }
 
 func checkRspamdActions(a Actions, s Settings) []string {
-	// A Postfix dry run leaves actions to the host (spec 9.2).
-	if s.Stack == StackPostfix && s.DryRun {
+	if s.HostActions() {
 		return nil
 	}
 	var out []string

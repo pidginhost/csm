@@ -61,6 +61,13 @@ type fakeHost struct {
 	// stack is the mail stack preflight reports; its targets are the ones
 	// the host holds.
 	stack antispam.MailStack
+	// postconf and workers replace the Postfix milters and rspamd workers
+	// preflight reports when set.
+	postconf, workers string
+	// milterFail lists the 1-based milter connections that fail; milters
+	// records every address a connection was made to.
+	milterFail []int
+	milters    []string
 }
 
 // inactiveExit is how systemctl is-active reports a unit that is not active.
@@ -118,13 +125,30 @@ func (f *fakeHost) host() *Host {
 		}
 		return out
 	}
+	postconf, workers := f.postconf, f.workers
+	if postconf == "" {
+		postconf = "inet:127.0.0.1:11332\naccept\n52428800\n/var/spool/postfix\n3.8.6\n"
+	}
+	if workers == "" {
+		workers = `{"rspamd_proxy": {"bind_socket": "localhost:11332", "milter": true}}`
+	}
 	return &Host{
 		root:    f.root,
 		run:     f.run,
 		replace: replaceFile,
+		stack:   func() antispam.MailStack { return f.stack },
+		milter: func(_ context.Context, addr string) error {
+			f.milters = append(f.milters, addr)
+			if contains(f.milterFail, len(f.milters)) {
+				return errors.New("connection refused")
+			}
+			return nil
+		},
 		preflight: func(context.Context, antispam.Settings) (antispam.HostFacts, []antispam.Problem) {
 			return antispam.HostFacts{Stack: f.stack, Targets: snapshot(), RspamdGID: os.Getgid(), DQSKey: f.key,
-				LearningKeys: f.learning, LearningKeysErr: f.learningErr,
+				Postconf: antispam.CommandResult{Stdout: postconf}, RspamdWorkers: antispam.CommandResult{Stdout: workers},
+				PostfixMaster: antispam.CommandResult{Stdout: "smtp/inet/command = smtpd\nsmtp/inet/chroot = y\n"},
+				LearningKeys:  f.learning, LearningKeysErr: f.learningErr,
 				Controller: antispam.ControllerConfig{Present: true, PasswordSet: true, Listeners: []antispam.ControllerListener{
 					{Raw: fakeControllerSocket + " mode=0600", Unix: true, Path: fakeControllerSocket, Mode: 0o600}}},
 				ControllerHost: antispam.ControllerHostFacts{RspamdUID: 979, Sockets: map[string]antispam.SocketFacts{

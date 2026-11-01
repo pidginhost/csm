@@ -2,6 +2,7 @@ package antispam
 
 import (
 	"encoding/json"
+	"path"
 	"slices"
 	"strings"
 )
@@ -47,6 +48,7 @@ func Assess(enabled bool, s Settings, f HostFacts) Assessment {
 		return a
 	}
 	a.Problems = CheckHost(f)
+	a.report(checkActionsTarget(s, f))
 	isCurrent := a.Installed && current(s, f)
 	if isCurrent {
 		// A temporary host probe failure cannot hide a confirmed override.
@@ -82,8 +84,8 @@ func (a *Assessment) uninstall(f HostFacts) {
 	a.Action = Uninstall
 }
 
-// report adds the problems not already reported: CheckHost and
-// CheckRemoval share the path rules.
+// report adds the problems not already reported: CheckHost, CheckRemoval
+// and checkActionsTarget share the path rules.
 func (a *Assessment) report(problems []Problem) {
 	for _, p := range problems {
 		if !slices.Contains(a.Problems, p) {
@@ -110,9 +112,27 @@ func hasMarker(s string) bool {
 	return strings.Contains(s, MarkerBegin) || strings.Contains(s, MarkerEnd)
 }
 
+// checkActionsTarget judges a Postfix host's actions.conf while CSM
+// enforces: CSM then owns it like a core file, and the worker refuses one it
+// cannot replace safely. A dry run leaves the file to the host.
+func checkActionsTarget(s Settings, f HostFacts) []Problem {
+	if f.Stack != StackPostfix || s.HostActions() {
+		return nil
+	}
+	for _, t := range f.Targets {
+		if t.Path != path.Join(RspamdLocalDir, "actions.conf") {
+			continue
+		}
+		if err := OptionalUsable(t); err != nil {
+			return []Problem{{Code: CodeTargets, Severity: Definite, Detail: err.Error()}}
+		}
+	}
+	return nil
+}
+
 // current reports whether the host holds exactly s: CSM's files, a
-// completed record for them, and the hooks active in the generated
-// configuration.
+// completed record for them, and on cPanel the hooks active in the
+// generated configuration.
 func current(s Settings, f HostFacts) bool {
 	managed, err := ManagedContent(s)
 	if err != nil {
@@ -130,6 +150,9 @@ func current(s Settings, f HostFacts) bool {
 		if !secretFileOK(f, p) {
 			return false
 		}
+	}
+	if f.Stack == StackPostfix {
+		return true
 	}
 	hooks, err := RenderExim(s)
 	if err != nil || f.GeneratedErr != nil || f.EximSettings.Err != nil {
@@ -174,12 +197,15 @@ func loadedConflicts(s Settings, f HostFacts) []Problem {
 		}
 	}
 	data := []byte(f.RspamdActions.Stdout)
-	if f.RspamdActions.Err != nil || !json.Valid(data) {
+	switch actions, err := ParseActions(data); {
+	case s.HostActions():
+		// The host's own actions keep enforcing, whatever their form.
+	case f.RspamdActions.Err != nil || !json.Valid(data):
 		unreadable = true
-	} else if actions, err := ParseActions(data); err != nil {
+	case err != nil:
 		out = append(out, Problem{Code: CodeRspamdConfig, Severity: Definite,
 			Detail: "rspamd actions use a form CSM cannot compare; set them only through CSM's local.d/actions.conf"})
-	} else {
+	default:
 		conflicts = append(conflicts, checkRspamdActions(actions, s)...)
 	}
 	data = []byte(f.RspamdPhishing.Stdout)

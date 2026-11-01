@@ -265,3 +265,32 @@ func TestRetryStopsAtWindow(t *testing.T) {
 		t.Errorf("err %v after %d calls in %v", err, calls, time.Since(start))
 	}
 }
+
+// The milter probe reaches postfix's inet: and unix: milter forms, and fails
+// where nothing listens.
+func TestConnectMilter(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	tcp, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sock := t.TempDir() + "/milter.sock"
+	unix, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range []string{"inet:" + tcp.Addr().String(), "unix:" + sock} {
+		if err := connectMilter(ctx, m); err != nil {
+			t.Errorf("%s: %v", m, err)
+		}
+	}
+	closed := "inet:" + tcp.Addr().String()
+	_ = tcp.Close()
+	_ = unix.Close()
+	for _, m := range []string{closed, "unix:" + sock} {
+		if err := connectMilter(ctx, m); err == nil {
+			t.Errorf("%s: connected with nothing listening", m)
+		}
+	}
+}

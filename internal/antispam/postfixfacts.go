@@ -185,6 +185,30 @@ func milterBinds(proxy json.RawMessage) ([]string, error) {
 	return workerBinds(fields)
 }
 
+// RspamdMilters returns the postfix milters that reach rspamd's proxy
+// worker, as MilterAddrs resolves them. Errors quote no command output.
+func RspamdMilters(f HostFacts) ([]string, error) {
+	pc, err := ParsePostconf(f.Postconf.Stdout)
+	if f.Postconf.Err != nil || err != nil {
+		return nil, errors.New("postconf did not report postfix's milters")
+	}
+	binds, err := ProxyMilterAddrs([]byte(f.RspamdWorkers.Stdout))
+	if f.RspamdWorkers.Err != nil || err != nil {
+		return nil, errors.New("rspamadm configdump did not report rspamd's proxy worker")
+	}
+	milters, _ := pc.MilterAddrs(f.PostfixMaster)
+	var out []string
+	for _, m := range milters {
+		if MilterWired([]string{m}, binds) {
+			out = append(out, m)
+		}
+	}
+	if len(out) == 0 {
+		return nil, errors.New("postfix does not pass mail to rspamd's proxy worker")
+	}
+	return out, nil
+}
+
 // MilterWired reports whether any postfix milter reaches one of the proxy
 // worker's bind addresses.
 func MilterWired(milters, proxyAddrs []string) bool {

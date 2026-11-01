@@ -504,6 +504,8 @@ func FuzzDecodeRequest(f *testing.F) {
 		strings.TrimSuffix(validApply, "}") + `,"learning_dir":"/var/lib/csm/antispam/learning"}`,
 		strings.TrimSuffix(validApply, "}") + `,"learning":false,"learning_dir":"/var/lib/csm/antispam/learning"}`,
 		strings.TrimSuffix(validApply, "}") + `,"feeds":"psbl,"}`,
+		strings.TrimSuffix(validApply, "}") + `,"exempt":"abuse@example.com,example.org","scope_nets":"203.0.113.0/24,2001:db8::/32"}`,
+		strings.TrimSuffix(validApply, "}") + `,"scope_nets":"203.0.113.7/24"}`,
 		`{"operation":"remove"}`,
 		`{"operation":"remove","operation":"apply"}`,
 		`{"Operation":"remove"}`,
