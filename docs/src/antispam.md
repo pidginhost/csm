@@ -575,9 +575,12 @@ returning to dry run does the same for `actions.conf`, see
 [Dry run and enforce](#dry-run-and-enforce). Older copies of the same file
 stay, and CSM never restores over a file it did not write. A restored file
 gets the owner and mode CSM's file had, which after a takeover are your
-original ones. If someone loosened CSM's file, the copy comes back owned by
-root with mode 0644. Each warning says what CSM will do with its copy. The
-warnings describe past replacements, including after antispam is disabled.
+original ones. `/etc/rspamd/override.d/rbl.conf` written while a DQS key is
+set is the exception: CSM's file is owned by root, in rspamd's group, with
+mode 0640, and the restored file keeps that. If someone loosened CSM's file,
+the copy comes back owned by root with mode 0644. Each warning says what CSM
+will do with its copy. The warnings describe past replacements, including
+after antispam is disabled.
 
 ## Rolling it out
 
@@ -622,7 +625,8 @@ about cPanel accounts, Exim and Roundcube do not apply.
    `milter_mail_macros` must also include `{auth_authen}`, as Postfix's
    default does: rspamd knows authenticated mail by it. Without it CSM
    reports the same precondition, because customers' outbound mail would be
-   filtered as remote mail.
+   filtered as remote mail. CSM reads both settings from `main.cf` only;
+   per-service `-o smtpd_milters` overrides in `master.cf` are not read.
 2. **rspamd 4.2 is recommended.** CSM accepts rspamd 3 or later, but its
    scope rule is tested with rspamd 4.2.3.
 3. **`/etc/rspamd/lua.local.d` exists**, owned by root and not writable by
@@ -644,8 +648,9 @@ about cPanel accounts, Exim and Roundcube do not apply.
 5. **rspamd logs to a file at `info` level.** CSM reads its scan records
    from rspamd's log file, for example `/var/log/rspamd/rspamd.log`. When
    rspamd logs to the journal or syslog, CSM warns and sees no scan records.
-   At `notice`, `warning` or `error` level rspamd does not write them; set
-   `level = "info";` in `/etc/rspamd/local.d/logging.inc`.
+   `info` is rspamd's default. At `notice`, `warning` or `error` level rspamd
+   does not write them, and CSM does not warn; set `level = "info";` in
+   `/etc/rspamd/local.d/logging.inc`.
 6. **rspamd accepts every message Postfix accepts.** CSM warns when rspamd's
    `max_message` is below Postfix's `message_size_limit`.
 7. **Postfix and rspamd are running.**
@@ -708,8 +713,9 @@ below CSM's reject score of 15".
 
 With `dry_run: false` CSM takes over `/etc/rspamd/local.d/actions.conf`. An
 existing file is copied first, see [Replaced files](#replaced-files). rspamd
-then rejects at `reject_score` and adds headers at `tag_score`, and never
-rejects or tags authenticated, local, `infra_ips` or exempt mail.
+then rejects at `reject_score` and adds headers at `tag_score`. CSM's
+thresholds never reject or tag authenticated, local, `infra_ips` or exempt
+mail; other rspamd modules, such as antivirus, can still reject it.
 
 Going back to dry run puts your `actions.conf` back from its newest copy,
 deletes that copy and clears its warning. The file gets the owner and mode
@@ -734,7 +740,8 @@ files `X-Spam: Yes` into Junk. CSM does not manage Sieve.
 ### Scan records
 
 CSM's scope rule writes one `CSM-ANTISPAM event=scan` line per scored message
-into rspamd's log. Authenticated, local and `infra_ips` mail get none. These
+into rspamd's log, at `info` level: rspamd logging at `notice` or above
+hides them. Authenticated, local and `infra_ips` mail get none. These
 records count toward scan health and the Email Security page only. They do
 not feed spam evidence, the CSM IP map, the Threat page or abuse reports:
 any local process can make rspamd log such a line through its local scan and
