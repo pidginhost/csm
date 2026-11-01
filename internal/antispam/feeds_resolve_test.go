@@ -683,7 +683,7 @@ func TestResolveFeedsInfraMatchesMappedIPv6Nameserver(t *testing.T) {
 func TestResolveFeedsJudgesResolvedStubUpstream(t *testing.T) {
 	f := feedFacts()
 	f.ResolvConf = "nameserver 127.0.0.53\n"
-	f.ResolvedUpstream = "nameserver 198.51.100.53\n"
+	f.ResolvedDNS = []netip.Addr{netip.MustParseAddr("198.51.100.53")}
 	got, problems := ResolveFeeds(dqsSettings(), f)
 	if len(got.Feeds) != 0 || len(problems) != 2 || !strings.Contains(problems[0].Detail, "systemd-resolved") {
 		t.Fatalf("feeds %v, problems %+v", got.Feeds, problems)
@@ -693,7 +693,7 @@ func TestResolveFeedsJudgesResolvedStubUpstream(t *testing.T) {
 func TestResolveFeedsStubUpstreamInInfra(t *testing.T) {
 	f := feedFacts()
 	f.ResolvConf = "nameserver 127.0.0.54\n"
-	f.ResolvedUpstream = "nameserver 198.51.100.53\n"
+	f.ResolvedDNS = []netip.Addr{netip.MustParseAddr("198.51.100.53")}
 	f.InfraNets = ParseInfraNets([]string{"198.51.100.53"})
 	got, problems := ResolveFeeds(dqsSettings(), f)
 	if len(problems) != 0 || len(got.Feeds) != 2 {
@@ -704,9 +704,9 @@ func TestResolveFeedsStubUpstreamInInfra(t *testing.T) {
 func TestResolveFeedsStubUpstreamUnreadable(t *testing.T) {
 	f := feedFacts()
 	f.ResolvConf = "nameserver 127.0.0.53\n"
-	f.ResolvedUpstreamErr = fs.ErrNotExist
+	f.ResolvedDNSErr = fs.ErrNotExist
 	got, problems := ResolveFeeds(dqsSettings(), f)
-	if len(got.Feeds) != 0 || len(problems) != 2 || !strings.Contains(problems[0].Detail, "/run/systemd/resolve/resolv.conf") {
+	if len(got.Feeds) != 0 || len(problems) != 2 || !strings.Contains(problems[0].Detail, "busctl") {
 		t.Fatalf("feeds %v, problems %+v", got.Feeds, problems)
 	}
 }
@@ -714,7 +714,7 @@ func TestResolveFeedsStubUpstreamUnreadable(t *testing.T) {
 func TestResolveFeedsStubWithoutUpstream(t *testing.T) {
 	f := feedFacts()
 	f.RspamdOptions = CommandResult{Stdout: `{"dns":{"nameserver":["127.0.0.53"]}}`}
-	f.ResolvedUpstream = "# no servers\n"
+	f.ResolvedDNS = nil
 	got, problems := ResolveFeeds(dqsSettings(), f)
 	if len(got.Feeds) != 0 || len(problems) != 2 || !strings.Contains(problems[0].Detail, "systemd-resolved") {
 		t.Fatalf("feeds %v, problems %+v", got.Feeds, problems)
@@ -725,17 +725,63 @@ func TestResolveFeedsStubWithoutUpstream(t *testing.T) {
 func TestResolveFeedsLoopbackResolverIsNotTheStub(t *testing.T) {
 	f := feedFacts()
 	f.ResolvConf = "nameserver 127.0.0.1\n"
-	f.ResolvedUpstreamErr = fs.ErrNotExist
+	f.ResolvedDNSErr = fs.ErrNotExist
 	if got, problems := ResolveFeeds(dqsSettings(), f); len(problems) != 0 || len(got.Feeds) != 2 {
 		t.Fatalf("feeds %v, problems %+v", got.Feeds, problems)
 	}
 }
 
-func TestResolveFeedsStubUnreadableUpstreamEntry(t *testing.T) {
+func TestResolveFeedsStubUnknownUpstreamEntry(t *testing.T) {
 	f := feedFacts()
 	f.ResolvConf = "nameserver 127.0.0.53\n"
-	f.ResolvedUpstream = "nameserver 127.0.0.1\nnameserver not-an-address\n"
+	f.ResolvedDNS = []netip.Addr{netip.MustParseAddr("127.0.0.1"), {}}
 	if got, problems := ResolveFeeds(dqsSettings(), f); len(got.Feeds) != 0 || len(problems) != 2 {
 		t.Fatalf("feeds %v, problems %+v", got.Feeds, problems)
+	}
+}
+
+func TestResolveFeedsInfraAddressForms(t *testing.T) {
+	for _, tc := range []struct {
+		name, infra, server string
+		want                bool
+	}{
+		{"mapped host prefix", "::ffff:198.51.100.53/128", "198.51.100.53", true},
+		{"mapped network", "::ffff:198.51.100.53/120", "198.51.100.54", true},
+		{"mapped nameserver and network", "::ffff:198.51.100.53/120", "::ffff:198.51.100.54", true},
+		{"outside mapped network", "::ffff:198.51.100.53/120", "203.0.113.53", false},
+		{"outside mapped host", "::ffff:198.51.100.53/128", "198.51.100.54", false},
+		{"scoped IPv6", "2001:db8::/64", "2001:db8::53%eth0", true},
+		{"outside scoped IPv6", "2001:db8::/64", "2001:db8:1::53%eth0", false},
+		{"IPv6 is not IPv4", "::/0", "198.51.100.53", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := feedFacts()
+			f.InfraNets = ParseInfraNets([]string{tc.infra})
+			f.ResolvConf = "nameserver " + tc.server + "\n"
+			s := dqsSettings()
+			got, problems := ResolveFeeds(s, f)
+			if tc.want {
+				if !slices.Equal(got.Feeds, s.Feeds) || len(problems) != 0 {
+					t.Fatalf("own resolver rejected: feeds %v, problems %+v", got.Feeds, problems)
+				}
+			} else if len(got.Feeds) != 0 || len(problems) != len(s.Feeds) {
+				t.Fatalf("untrusted resolver accepted: feeds %v, problems %+v", got.Feeds, problems)
+			}
+		})
+	}
+}
+
+func TestResolveFeedsStubAddressOnAnotherPort(t *testing.T) {
+	for _, endpoint := range []string{"127.0.0.53:5353", "127.0.0.54:5353", "[::ffff:127.0.0.53]:5353"} {
+		t.Run(endpoint, func(t *testing.T) {
+			f := feedFacts()
+			f.RspamdOptions.Stdout = `{"dns":{"nameserver":"` + endpoint + `"}}`
+			f.ResolvedDNSErr = fs.ErrNotExist
+			s := dqsSettings()
+			got, problems := ResolveFeeds(s, f)
+			if !slices.Equal(got.Feeds, s.Feeds) || len(problems) != 0 {
+				t.Fatalf("local resolver mistaken for the stub: feeds %v, problems %+v", got.Feeds, problems)
+			}
+		})
 	}
 }

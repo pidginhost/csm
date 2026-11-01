@@ -2,11 +2,13 @@ package hostfacts
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -14,6 +16,47 @@ import (
 
 	"github.com/pidginhost/csm/internal/antispam"
 )
+
+func FuzzParseResolvedDNS(f *testing.F) {
+	for _, seed := range []string{
+		"", "a(iiay) 0", "a(iiay) 1 0 2 4 192 0 2 53",
+		"a(iiay) 2 0 2 4 192 0 2 53 2 10 16 32 1 13 184 0 0 0 0 0 0 0 0 0 0 0 53",
+		"a(iiay) 1 0 2 4 192 0 2 256", "a(iiay) 4294967295",
+	} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, output string) {
+		got, err := parseResolvedDNS(output)
+		if err != nil {
+			if got != nil {
+				t.Fatal("invalid inventory returned partial servers")
+			}
+			return
+		}
+		var encoded strings.Builder
+		encoded.WriteString("a(iiay) " + strconv.Itoa(len(got)))
+		for _, server := range got {
+			if server.link < 0 || !server.addr.IsValid() {
+				t.Fatal("accepted an invalid server")
+			}
+			family := 10
+			if server.addr.Is4() {
+				family = 2
+			}
+			data := server.addr.AsSlice()
+			fmt.Fprintf(&encoded, " %d %d %d", server.link, family, len(data))
+			for _, b := range data {
+				fmt.Fprintf(&encoded, " %d", b)
+			}
+		}
+		if again, err := parseResolvedDNS(encoded.String()); err != nil || !slices.Equal(again, got) {
+			t.Fatal("inventory changed after re-encoding")
+		}
+		if _, err := parseResolvedDNS(output + " trailing"); err == nil {
+			t.Fatal("accepted trailing data")
+		}
+	})
+}
 
 func FuzzRedisEndpoint(f *testing.F) {
 	for _, config := range []string{`{"servers":"/r.sock"}`, `{"servers":["192.0.2.1"]}`, `{"fuzzy":null}`, `null`, `{}`} {

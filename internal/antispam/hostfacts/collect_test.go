@@ -54,7 +54,6 @@ func testCollector(d string, run *fakeRun) collector {
 			GlobalEnable:  filepath.Join(d, "global_spamassassin_enable"),
 			Record:        filepath.Join(d, "installed.json"),
 			ResolvConf:    filepath.Join(d, "resolv.conf"),
-			ResolvedConf:  filepath.Join(d, "resolved-upstream.conf"),
 		},
 		cpanel:         func() bool { return true },
 		eximMTA:        func() bool { return true },
@@ -592,7 +591,6 @@ func TestCollectKeepsRspamdStateErrors(t *testing.T) {
 func TestCollectReadsFeedFacts(t *testing.T) {
 	d := t.TempDir()
 	write(t, filepath.Join(d, "resolv.conf"), "nameserver 127.0.0.1\n")
-	write(t, filepath.Join(d, "resolved-upstream.conf"), "nameserver 203.0.113.53\n")
 	run := &fakeRun{results: map[string]antispam.CommandResult{
 		"rspamadm configdump -j rbl": {Stdout: `{"rbls":{}}`},
 		"rspamadm configdump -j":     {Stdout: `{"multimap":{}}`},
@@ -601,12 +599,6 @@ func TestCollectReadsFeedFacts(t *testing.T) {
 	f := testCollector(d, run).collect(context.Background(), filepath.Join(d, "sock"))
 	if f.ResolvConf != "nameserver 127.0.0.1\n" || f.ResolvConfErr != nil {
 		t.Fatalf("resolv.conf = %q, %v", f.ResolvConf, f.ResolvConfErr)
-	}
-	if f.ResolvedUpstream != "nameserver 203.0.113.53\n" || f.ResolvedUpstreamErr != nil {
-		t.Fatalf("resolved upstream = %q, %v", f.ResolvedUpstream, f.ResolvedUpstreamErr)
-	}
-	if live().layout.ResolvedConf != "/run/systemd/resolve/resolv.conf" {
-		t.Fatalf("live collector reads %q", live().layout.ResolvedConf)
 	}
 	if f.RspamdRBL.Stdout != `{"rbls":{}}` || f.RspamdConfig.Stdout != `{"multimap":{}}` {
 		t.Fatalf("configdumps = %+v, %+v", f.RspamdRBL, f.RspamdConfig)

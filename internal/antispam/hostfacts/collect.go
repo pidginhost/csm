@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -38,9 +39,7 @@ type Layout struct {
 	GlobalEnable  string
 	Record        string
 	ResolvConf    string
-	// ResolvedConf lists the servers systemd-resolved's stub forwards to.
-	ResolvedConf string
-	Targets      []antispam.Target
+	Targets       []antispam.Target
 	// IPMap is the CSM IP map file rspamd reads.
 	IPMap string
 	// Learning fact sources.
@@ -82,7 +81,6 @@ func live() collector {
 			GlobalEnable:      "/etc/global_spamassassin_enable",
 			Record:            antispam.RecordPath,
 			ResolvConf:        "/etc/resolv.conf",
-			ResolvedConf:      "/run/systemd/resolve/resolv.conf",
 			Targets:           antispam.MutationTargets(),
 			IPMap:             ipmap.DefaultPath,
 			ProcNetUDP:        procNetUDP,
@@ -150,7 +148,10 @@ func (c collector) collect(ctx context.Context, socket string) antispam.HostFact
 	f.SpamdDisabled, f.SpamdDisabledErr = exists(c.layout.SpamdDisabled)
 	f.GlobalEnable, f.GlobalEnableErr = exists(c.layout.GlobalEnable)
 	f.ResolvConf, f.ResolvConfErr = readText(c.layout.ResolvConf)
-	f.ResolvedUpstream, f.ResolvedUpstreamErr = readText(c.layout.ResolvedConf)
+	servers, err := antispam.Nameservers([]byte(f.RspamdOptions.Stdout), f.ResolvConf)
+	if f.RspamdOptions.Err == nil && err == nil && slices.ContainsFunc(servers, antispam.ResolvedStub) {
+		f.ResolvedDNS, f.ResolvedDNSErr = c.resolvedDNS(ctx)
+	}
 
 	settings := map[string]string{}
 	if f.EximSettings.Err == nil {

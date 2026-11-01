@@ -38,6 +38,8 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 ### Fixed
 
 - IMAP, POP3 and ManageSieve login protection now works when mail logs are read from the systemd journal.
+- Antispam recognizes owned resolvers across equivalent address forms and keeps local resolvers on alternate ports usable.
+- Antispam checks all systemd-resolved upstreams before enabling DNS blocklists and reports unavailable resolver information.
 - Antispam no longer turns on DNS blocklists when systemd-resolved forwards to a public resolver the lists refuse.
 - The daemon log no longer reports a memory failure or a kill when CSM stops a worker on purpose.
 - WordPress core files that differ only in line endings are no longer reported on sites whose PHP prints deprecation notices.
