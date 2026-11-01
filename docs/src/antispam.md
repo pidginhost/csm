@@ -993,7 +993,7 @@ Definite failures request removal of the learning configuration. Temporary
 probe failures keep an existing installation. Learning findings do not
 disable core filtering; `antispam_learning` names the reason.
 
-- rspamd 4.2.x and Redis 5.0.x or 6.2.x; other versions are refused;
+- rspamd 4.2.x and Redis 5.0.x, 6.2.x or 7.x; other versions are refused;
 - exactly one private controller Unix socket owned by rspamd, mode 0600, in
   directories only root and rspamd can write to, with no extended ACLs, and
   no other controller listener granting other users admin or read-only
@@ -1010,6 +1010,10 @@ disable core filtering; `antispam_learning` names the reason.
   from replacement. Redis needs a positive `maxmemory` and
   `maxmemory-policy noeviction`. A Redis build without TLS needs no
   `tls-port` setting;
+- with `learning.redis_socket` set, that Redis instead of rspamd's: CSM
+  applies the checks above to it, refuses it while any other rspamd module
+  or rspamd's global Redis settings name the same socket, and points the
+  fuzzy worker at it with no password;
 - rspamd's log unreadable to other users, by file permissions or by CloudLinux
   CageFS. CageFS qualifies only for a file log under `/var/log/rspamd`, with
   every account confined and that directory absent from its skeleton;

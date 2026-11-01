@@ -196,7 +196,7 @@ func (h *learningHost) reconciler() Reconciler {
 		}
 		return syntheticKeys(), nil
 	}
-	r.CollectLearning = func(context.Context, *antispam.HostFacts) {}
+	r.CollectLearning = func(context.Context, antispam.Settings, *antispam.HostFacts) {}
 	r.resolveLearning = func(s antispam.Settings, f antispam.HostFacts) (antispam.Settings, antispam.LearningGate, []antispam.Problem) {
 		h.resolved = append(h.resolved, f)
 		if h.resolve != nil {
@@ -464,7 +464,7 @@ func TestLearnerTargetUsesHashConfigurationGeneration(t *testing.T) {
 	r := h.reconciler()
 	const socket = "/run/rspamd/controller.sock"
 	const uid = 979
-	r.CollectLearning = func(_ context.Context, f *antispam.HostFacts) {
+	r.CollectLearning = func(_ context.Context, _ antispam.Settings, f *antispam.HostFacts) {
 		f.Controller = antispam.ControllerConfig{Listeners: []antispam.ControllerListener{{Unix: true, Path: socket}}}
 		f.ControllerHost = antispam.ControllerHostFacts{
 			RspamdUID: uid,
@@ -487,5 +487,58 @@ func TestLearnerTargetUsesHashConfigurationGeneration(t *testing.T) {
 	// the keys. A changed digest recipe must not reuse the old ledger.
 	if out.Learner.HashGeneration != antispam.HashGeneration(k) {
 		t.Fatal("learner binding omits the hash configuration")
+	}
+}
+
+// The learning probes target what the pass is about to request: the
+// dedicated Redis of the desired settings, before it is installed.
+func TestPassCollectsLearningForDesiredSettings(t *testing.T) {
+	h := newLearningHost(antispam.Assessment{Action: antispam.Install})
+	r := h.reconciler()
+	var got []string
+	r.CollectLearning = func(_ context.Context, s antispam.Settings, _ *antispam.HostFacts) {
+		got = append(got, s.LearningRedisSocket)
+	}
+	d := learningDesired()
+	d.Settings.LearningRedisSocket = "/run/redis-csm/redis.sock"
+	r.Pass(context.Background(), d)
+	if len(got) != 1 || got[0] != "/run/redis-csm/redis.sock" {
+		t.Fatalf("collected for %q", got)
+	}
+	if req := h.requests[0]; req.LearningRedisSocket == nil || *req.LearningRedisSocket != "/run/redis-csm/redis.sock" {
+		t.Fatalf("request = %+v", req)
+	}
+}
+
+// A new dedicated Redis is a new installation target, so it lifts a hold
+// placed on the old one, whether or not the keys are readable.
+func TestPassRedisSocketChangeLiftsHold(t *testing.T) {
+	h := newLearningHost(antispam.Assessment{Action: antispam.Install})
+	h.result = antispam.Result{Operation: antispam.OpApply, FailedStep: antispam.LearningCheckStep,
+		Rollback: antispam.RollbackVerified, Error: "rspamd's loaded learning configuration could not be verified"}
+	r := h.reconciler()
+	d := learningDesired()
+	d.Settings.LearningRedisSocket = "/run/redis-csm/redis.sock"
+	r.Pass(context.Background(), d)
+	h.result = antispam.Result{Operation: antispam.OpApply, OK: true}
+	r.Pass(context.Background(), d)
+	if len(h.requests) != 2 || h.requests[1].Learning != nil {
+		t.Fatalf("unchanged configuration not held: %+v", h.requests)
+	}
+	d.Settings.LearningRedisSocket = "/run/redis-learning/redis.sock"
+	r.Pass(context.Background(), d)
+	if len(h.requests) != 3 || h.requests[2].Learning == nil {
+		t.Fatalf("new Redis still held: %+v", h.requests[2])
+	}
+	// Without readable keys the generation is the directory and the socket.
+	s := d.Settings
+	other := s
+	other.LearningRedisSocket = "/run/redis-csm/redis.sock"
+	if learningGeneration(s) == learningGeneration(other) {
+		t.Fatal("keyless generation ignores the dedicated Redis")
+	}
+	s.LearningRedisSocket = ""
+	if got := learningGeneration(s); got != "dir:"+antispam.DefaultLearningDir {
+		t.Fatalf("keyless generation without the key changed: %q", got)
 	}
 }

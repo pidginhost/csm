@@ -83,7 +83,7 @@ type Reconciler struct {
 	// All run only while learning is requested.
 	EnsureKeys      func(ctx context.Context, dir string) (bool, error)
 	LoadKeys        func(dir string) (antispam.LearningKeys, error)
-	CollectLearning func(ctx context.Context, f *antispam.HostFacts)
+	CollectLearning func(ctx context.Context, s antispam.Settings, f *antispam.HostFacts)
 	// Learner returns the running learning engine's problems; nil when no
 	// engine runs.
 	Learner func() []antispam.Problem
@@ -205,7 +205,7 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) (out Outcome) {
 		}
 		if wantLearning {
 			if r.CollectLearning != nil {
-				r.CollectLearning(ctx, &f)
+				r.CollectLearning(ctx, d.Settings, &f)
 			}
 			f.LearningKeys, f.LearningKeysErr = keys, keysErr
 			f.RedisGuardPaused = r.Learning.redisPaused()

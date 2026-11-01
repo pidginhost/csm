@@ -622,6 +622,10 @@ type RedisFacts struct {
 	// the socket's owner, directories or peer do not prove who serves it.
 	Unprotected bool
 	Err         error
+	// Shared is set when another rspamd Redis consumer names the dedicated
+	// learning Redis; SharedErr when CSM could not tell.
+	Shared    bool
+	SharedErr error
 }
 
 // CageFSFacts say whether CloudLinux CageFS confines every account and

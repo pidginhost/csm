@@ -242,3 +242,59 @@ func TestManagedContentGenerationChangesWithKeys(t *testing.T) {
 		}
 	}
 }
+
+// An Exim host without learning.redis_socket keeps byte-identical learning
+// files and install generation; the values were computed before the
+// dedicated Redis existed.
+func TestLearningGenerationUnchangedForExim(t *testing.T) {
+	s := learningSettings()
+	s.Stack, s.Roundcube = StackExim, true
+	files, err := RenderLearning(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := Generation(files); got != "cc92fd420fd7a75dda3d9e35f8bed7fbaa7ff3f31739c8d45b64ec448d27f844" {
+		t.Errorf("learning generation %s", got)
+	}
+	managed, err := ManagedContent(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := Generation(managed); got != "67efef7ece297d3ea5319543750edf10225172748522c3c245868df946e7d547" {
+		t.Errorf("install generation %s", got)
+	}
+}
+
+// A dedicated learning Redis adds only its selection and an empty password
+// to the fuzzy worker: rspamd 4.2 would otherwise send the global Redis
+// password to it (TestFuzzyWorkerUsesDedicatedRedisWithoutGlobalAuth).
+// Every other learning file stays as without it.
+func TestRenderLearningWorkerServers(t *testing.T) {
+	plain, err := RenderLearning(learningSettings())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(plain[LearningWorkerPath], "servers") || strings.Contains(plain[LearningWorkerPath], "password") {
+		t.Fatalf("worker without the key selects a Redis:\n%s", plain[LearningWorkerPath])
+	}
+	s := learningSettings()
+	s.LearningRedisSocket = "/run/redis-csm/redis.sock"
+	files, err := RenderLearning(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := strings.Replace(plain[LearningWorkerPath], "backend = \"redis\";\n",
+		"backend = \"redis\";\nservers = \"/run/redis-csm/redis.sock\";\npassword = \"\";\n", 1)
+	if files[LearningWorkerPath] != want {
+		t.Fatalf("worker:\n%s\nwant:\n%s", files[LearningWorkerPath], want)
+	}
+	for p, text := range plain {
+		if p != LearningWorkerPath && files[p] != text {
+			t.Errorf("%s changed with the dedicated Redis", p)
+		}
+	}
+	s.LearningRedisSocket = `/run/redis".sock`
+	if files, err := RenderLearning(s); err == nil || len(files) != 0 {
+		t.Fatal("a socket path that could leave its UCL string rendered")
+	}
+}

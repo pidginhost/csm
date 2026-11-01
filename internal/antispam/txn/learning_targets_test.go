@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"maps"
 	"os"
 	"strings"
@@ -164,6 +165,18 @@ func (f *fakeHost) loaded() fakeLoaded {
 		return fakeLoaded{fuzzyCheck: `{"rule":{"rspamd.com":{}}}`, worker: `[{"fuzzy":{"count":-1}}]`, group: `{"fuzzy":{"max_score":12.0}}`, symbols: `[]`}
 	}
 	k := f.learning
+	// The worker selects the dedicated Redis its file names, as rspamd
+	// loads it.
+	redis := ""
+	if st, _ := readFile(f.root + antispam.LearningWorkerPath); st.exists {
+		for _, line := range strings.Split(st.content, "\n") {
+			for _, key := range []string{"servers", "password"} {
+				if value, ok := strings.CutPrefix(line, key+" = "); ok {
+					redis += `"` + key + `":` + strings.TrimSuffix(value, ";") + ","
+				}
+			}
+		}
+	}
 	rule := func(extra string) string {
 		return fmt.Sprintf(`{"servers":"127.0.0.1:11335","fuzzy_key":%q,"fuzzy_shingles_key":%q,"read_encryption_key":%q,`+
 			`"skip_unknown":true,"max_score":18.0,"min_length":32,"text_hashes":true,"text_shingles":true,"html_shingles":false,`+
@@ -172,7 +185,7 @@ func (f *fakeHost) loaded() fakeLoaded {
 	return fakeLoaded{
 		fuzzyCheck: `{"enabled":true,"rule":[{"csm":` + rule(`"read_only":true,"fuzzy_map":{"CSM_FUZZY_SPAM":{"flag":1,"max_score":18.0}}`) + `},` +
 			`{"csm_learn":` + rule(fmt.Sprintf(`"mode":"write_only","retransmits":0,"write_encryption_key":%q,"fuzzy_map":{"CSM_FUZZY_LEARN":{"flag":1,"max_score":18.0}}`, k.Write.Public)) + `}]}`,
-		worker: fmt.Sprintf(`[{"fuzzy":{"allow_update":[],"backend":"redis","bind_socket":"127.0.0.1:11335","count":1,"encrypted_only":true,`+
+		worker: fmt.Sprintf(`[{"fuzzy":{`+redis+`"allow_update":[],"backend":"redis","bind_socket":"127.0.0.1:11335","count":1,"encrypted_only":true,`+
 			`"expire":7776000.0,"prefix":%q,"keypair":[{"extensions":{"allowed_ops":["read"]},"privkey":%q,"pubkey":%q},`+
 			`{"extensions":{"allowed_ops":["read","write","delete"]},"privkey":%q,"pubkey":%q}]}}]`,
 			k.Prefix, k.Read.Private.Reveal(), k.Read.Public, k.Write.Private.Reveal(), k.Write.Public),
@@ -344,5 +357,62 @@ func TestApplyLearningControllerDownIsProbeFailure(t *testing.T) {
 	r := h.Apply(s)
 	if r.OK || r.FailedStep != antispam.LearningProbeStep || r.Rollback != antispam.RollbackVerified || !maps.Equal(before, f.state()) {
 		t.Fatalf("result = %+v", r)
+	}
+}
+
+// The worker applies under its lock after the pass judged the dedicated
+// Redis: a socket opened up, replaced or shared in between refuses the apply
+// before anything changes. An outage is the next pass's to judge.
+func TestWorkerRechecksLearningRedisUnderLock(t *testing.T) {
+	const socket = "/run/redis-csm/redis.sock"
+	safe := func() antispam.RedisFacts {
+		return antispam.RedisFacts{Endpoint: socket, Unix: true, ServiceUID: 990,
+			Socket: antispam.SocketFacts{Socket: antispam.PathFacts{Path: socket, UID: 990, GID: 990, Mode: fs.ModeSocket | 0o700},
+				Parents: []antispam.PathFacts{{Path: "/", Mode: fs.ModeDir | 0o755}, {Path: "/run", Mode: fs.ModeDir | 0o755},
+					{Path: "/run/redis-csm", UID: 990, GID: 990, Mode: fs.ModeDir | 0o750}}},
+			GroupMembers: []string{"redis"}, Port: "0", TLSPort: "0", Policy: "noeviction", AppendOnly: "yes",
+			MaxMemory: 1 << 30, MaxMemoryKnown: true, Used: 1 << 20, Version: "7.2.4"}
+	}
+	for name, tc := range map[string]struct {
+		change func(*antispam.RedisFacts)
+		ok     bool
+	}{
+		"unchanged": {func(*antispam.RedisFacts) {}, true},
+		"down":      {func(r *antispam.RedisFacts) { r.Err = errors.New("redis: cannot connect to the socket as its owner") }, true},
+		"opened":    {func(r *antispam.RedisFacts) { r.Socket.Socket.Mode = fs.ModeSocket | 0o777 }, false},
+		"replaced": {func(r *antispam.RedisFacts) {
+			r.Unprotected, r.Err = true, errors.New("redis socket is not protected; CSM sends it no password")
+		}, false},
+		"evicting": {func(r *antispam.RedisFacts) { r.Policy = "allkeys-lru" }, false},
+		"shared":   {func(r *antispam.RedisFacts) { r.Shared = true }, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFake(t)
+			s := learningApply(f)
+			s.LearningRedisSocket = socket
+			h := f.host()
+			preflight := h.preflight
+			h.preflight = func(ctx context.Context, s antispam.Settings) (antispam.HostFacts, []antispam.Problem) {
+				facts, problems := preflight(ctx, s)
+				facts.Redis = safe()
+				tc.change(&facts.Redis)
+				return facts, problems
+			}
+			before := f.state()
+			r := h.Apply(s)
+			if tc.ok {
+				wantOK(t, r)
+				if !strings.Contains(f.file(antispam.LearningWorkerPath), `servers = "`+socket+`";`) {
+					t.Fatalf("worker file:\n%s", f.file(antispam.LearningWorkerPath))
+				}
+				return
+			}
+			if r.OK || r.FailedStep != StepPreconditions || r.Rollback != antispam.RollbackNone {
+				t.Fatalf("result = %+v", r)
+			}
+			if len(f.calls) != 0 || !maps.Equal(before, f.state()) {
+				t.Fatalf("refused apply ran %v or changed files", f.calls)
+			}
+		})
 	}
 }

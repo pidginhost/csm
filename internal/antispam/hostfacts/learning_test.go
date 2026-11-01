@@ -326,11 +326,11 @@ func TestCollectRedisProbesOnlyProtectedSockets(t *testing.T) {
 		return c, f, &probes
 	}
 	c, f, probes := setup(t, 0o750, "redis")
-	if r := c.redis(context.Background(), f); r.Err != nil || *probes != 1 {
+	if r := c.redis(context.Background(), f, ""); r.Err != nil || *probes != 1 {
 		t.Fatalf("protected socket: probes=%d facts=%+v", *probes, r)
 	}
 	c, f, probes = setup(t, 0o777, "redis")
-	if r := c.redis(context.Background(), f); r.Err == nil || *probes != 0 {
+	if r := c.redis(context.Background(), f, ""); r.Err == nil || *probes != 0 {
 		t.Fatalf("world-writable parent: probes=%d facts=%+v", *probes, r)
 	}
 	c, f, probes = setup(t, 0o750, "tenant", "tenant")
@@ -338,23 +338,23 @@ func TestCollectRedisProbesOnlyProtectedSockets(t *testing.T) {
 	if os.Getuid() == 0 {
 		wantProbes = 1 // Root remains trusted regardless of account names.
 	}
-	if r := c.redis(context.Background(), f); (r.Err == nil) != (wantProbes == 1) || *probes != wantProbes {
+	if r := c.redis(context.Background(), f, ""); (r.Err == nil) != (wantProbes == 1) || *probes != wantProbes {
 		t.Fatalf("account-owned socket: probes=%d facts=%+v", *probes, r)
 	}
 	// A cPanel account named redis is a tenant, not the service. Root stays
 	// trusted; TestTrustedRedisOwner covers these names for other uids.
 	c, f, probes = setup(t, 0o750, "redis", "redis")
-	if r := c.redis(context.Background(), f); (r.Err == nil) != (wantProbes == 1) || *probes != wantProbes {
+	if r := c.redis(context.Background(), f, ""); (r.Err == nil) != (wantProbes == 1) || *probes != wantProbes {
 		t.Fatalf("account named redis: probes=%d facts=%+v", *probes, r)
 	}
 	// Tenant code can run as shared service users such as nobody.
 	c, f, probes = setup(t, 0o750, "nobody")
-	if r := c.redis(context.Background(), f); (r.Err == nil) != (wantProbes == 1) || *probes != wantProbes {
+	if r := c.redis(context.Background(), f, ""); (r.Err == nil) != (wantProbes == 1) || *probes != wantProbes {
 		t.Fatalf("socket owned by an unpinned user: probes=%d facts=%+v", *probes, r)
 	}
 	c, f, probes = setup(t, 0o750, "redis")
 	f.LearningDumps.Redis = []byte(`{"servers":"192.0.2.1:6379","password":"pw"}`)
-	if r := c.redis(context.Background(), f); *probes != 0 || r.Unix {
+	if r := c.redis(context.Background(), f, ""); *probes != 0 || r.Unix {
 		t.Fatalf("TCP endpoint: probes=%d facts=%+v", *probes, r)
 	}
 }
@@ -385,7 +385,7 @@ func TestCollectLearningLogGroups(t *testing.T) {
 		File:    antispam.PathFacts{GID: 974},
 		Parents: []antispam.PathFacts{{GID: 975}},
 	}}
-	c.learningFacts(context.Background(), &f)
+	c.learningFacts(context.Background(), antispam.Settings{}, &f)
 	for gid, member := range map[int]string{974: "alpha", 975: "bravo"} {
 		if got := f.ControllerHost.GroupMembers[gid]; len(got) != 1 || got[0] != member {
 			t.Errorf("group %d members = %v, want %s", gid, got, member)
@@ -562,5 +562,187 @@ func TestCollectRoundcubeNeverEvaluates(t *testing.T) {
 	}
 	if len(run.calls) != 0 {
 		t.Fatalf("collector ran %v", run.calls)
+	}
+}
+
+// safeRedisProbe answers like a Redis that passes every learning check.
+func safeRedisProbe(endpoint string, peer int) antispam.RedisFacts {
+	return antispam.RedisFacts{Endpoint: endpoint, Unix: true, ServiceUID: peer, Port: "0", TLSPort: "0",
+		MaxMemory: 1 << 30, MaxMemoryKnown: true, Used: 1 << 20, Policy: "noeviction", AppendOnly: "yes", Version: "7.2.4"}
+}
+
+// dedicatedRedis serves a socket in a private directory as the configured
+// learning Redis and records every probe.
+func dedicatedRedis(t *testing.T) (collector, antispam.HostFacts, string, *[]string) {
+	t.Helper()
+	c, d := learningCollector(t, &fakeRun{})
+	var probed []string
+	c.redisProbe = func(_ context.Context, endpoint string, password antispam.Secret, peer int) antispam.RedisFacts {
+		probed = append(probed, endpoint)
+		if password.Reveal() != "" {
+			t.Errorf("CSM sent a password to the dedicated Redis")
+		}
+		if peer != os.Getuid() {
+			t.Errorf("probe expects peer %d, want the socket owner %d", peer, os.Getuid())
+		}
+		return safeRedisProbe(endpoint, peer)
+	}
+	c.userName = func(string) (string, error) { return "redis", nil }
+	c.uid = func(name string) (int, error) {
+		if name == "redis" {
+			return os.Getuid(), nil
+		}
+		return -1, errors.New("unknown user")
+	}
+	dir := filepath.Join(d, "redis-csm")
+	if err := os.Mkdir(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	sock := serve(t, dir, pong)
+	if err := os.Chmod(sock, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(c.layout.CPanelUsers, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// rspamd's own Redis, with a password, is not the dedicated one; the
+	// worker dump would send discovery to yet another socket.
+	f := antispam.HostFacts{
+		Stack:         antispam.StackExim,
+		RspamdConfig:  antispam.CommandResult{Stdout: `{"redis":{"servers":"/run/redis-rspamd/redis.sock","password":"pw"},"worker":[{"fuzzy":{"servers":"/run/other/redis.sock"}}]}`},
+		LearningDumps: antispam.LearningDumps{Redis: []byte(`{"servers":"/run/redis-rspamd/redis.sock","password":"pw"}`)},
+	}
+	return c, f, sock, &probed
+}
+
+// A configured learning Redis is probed as named and without rspamd's
+// password; Postfix never falls back to rspamd's own Redis.
+func TestCollectProbesConfiguredRedisSocket(t *testing.T) {
+	for _, stack := range []antispam.MailStack{antispam.StackExim, antispam.StackPostfix} {
+		c, f, sock, probed := dedicatedRedis(t)
+		f.Stack = stack
+		s := antispam.Settings{Learning: true, LearningDir: antispam.DefaultLearningDir, LearningRedisSocket: sock}
+		c.learningFacts(context.Background(), s, &f)
+		r := f.Redis
+		if len(*probed) != 1 || (*probed)[0] != sock || r.Endpoint != sock || !r.Unix || r.Err != nil || r.Shared || r.SharedErr != nil {
+			t.Fatalf("%s: probes=%v facts=%+v", stack, *probed, r)
+		}
+		if f.AccountNamesErr != nil {
+			t.Fatalf("%s: accounts not read: %v", stack, f.AccountNamesErr)
+		}
+		if err := antispam.CheckLearningRedis(f); err != nil {
+			t.Fatalf("%s: safe dedicated Redis refused: %v", stack, err)
+		}
+	}
+	c, f, _, probed := dedicatedRedis(t)
+	f.Stack = antispam.StackPostfix
+	if r := c.redis(context.Background(), f, ""); len(*probed) != 0 || r.Endpoint != "" || r.Err == nil {
+		t.Fatalf("Postfix discovered a Redis: probes=%v facts=%+v", *probed, r)
+	}
+	// Exim without the key keeps discovery: the worker's own servers.
+	f.Stack = antispam.StackExim
+	if r := c.redis(context.Background(), f, ""); r.Endpoint != "/run/other/redis.sock" {
+		t.Fatalf("Exim discovery changed: %+v", r)
+	}
+}
+
+// The worker rereads the dedicated Redis under its lock; a socket opened up
+// or replaced after the pass judged it is refused there.
+func TestCollectLearningRedisSeesChangedSocket(t *testing.T) {
+	c, f, sock, _ := dedicatedRedis(t)
+	c.learningRedis(context.Background(), sock, &f)
+	if err := antispam.CheckLearningRedis(f); err != nil {
+		t.Fatalf("baseline: %v", err)
+	}
+	if err := os.Chmod(sock, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	c.learningRedis(context.Background(), sock, &f)
+	if err := antispam.CheckLearningRedis(f); err == nil {
+		t.Fatalf("opened socket accepted: %+v", f.Redis)
+	}
+	// Replaced by a link into a directory anyone can write to.
+	open := filepath.Join(t.TempDir(), "open")
+	if err := os.Mkdir(open, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	other := serve(t, open, pong)
+	if err := os.Chmod(open, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(sock); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(other, sock); err != nil {
+		t.Fatal(err)
+	}
+	c.learningRedis(context.Background(), sock, &f)
+	if err := antispam.CheckLearningRedis(f); err == nil || !f.Redis.Unprotected {
+		t.Fatalf("replaced socket accepted: %v %+v", err, f.Redis)
+	}
+}
+
+// A Redis endpoint is the socket file, however a module spells its path.
+func TestLearningRedisSharedWithOtherModule(t *testing.T) {
+	d := t.TempDir()
+	sock := serve(t, d, pong)
+	link := filepath.Join(d, "link.sock")
+	if err := os.Symlink(sock, link); err != nil {
+		t.Fatal(err)
+	}
+	otherDir := filepath.Join(d, "other")
+	if err := os.Mkdir(otherDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	other := serve(t, otherDir, pong)
+	spelled := d + "/./" + filepath.Base(sock)
+	for name, tc := range map[string]struct {
+		dump   string
+		shared bool
+	}{
+		"global":          {`{"redis":{"servers":"` + sock + `","password":"pw"}}`, true},
+		"global symlink":  {`{"redis":{"servers":"` + link + `"}}`, true},
+		"global spelling": {`{"redis":{"servers":"` + spelled + `"}}`, true},
+		"rotation list":   {`{"redis":{"servers":"master-slave:` + sock + `,` + other + `"}}`, true},
+		"write servers":   {`{"redis":{"servers":"` + other + `","write_servers":"` + sock + `"}}`, true},
+		"read servers":    {`{"redis":{"read_servers":["` + other + `","` + sock + `"]}}`, true},
+		"module section":  {`{"redis":{"servers":"` + other + `","ratelimit":{"servers":"` + sock + `"}}}`, true},
+		"bayes":           {`{"classifier":{"bayes":{"backend":"redis","servers":"` + sock + `"}}}`, true},
+		"module own":      {`{"history_redis":{"server":"` + sock + `"}}`, true},
+		"nested redis":    {`{"neural":{"redis":{"servers":"` + sock + `"}}}`, true},
+		"normal worker":   {`{"worker":[{"normal":{"servers":"` + sock + `"}}]}`, true},
+		"fuzzy worker":    {`{"worker":[{"normal":{"bind_socket":"localhost:11333"}},{"fuzzy":{"servers":"` + sock + `"}}]}`, false},
+		"typed fuzzy":     {`{"worker":{"type":"fuzzy","servers":"` + sock + `"}}`, false},
+		"redis fuzzy":     {`{"redis":{"servers":"` + other + `","fuzzy":{"servers":"` + sock + `"}}}`, false},
+		"redis storage":   {`{"redis":{"fuzzy_storage":{"servers":"` + sock + `"}}}`, false},
+		"other socket":    {`{"redis":{"servers":"` + other + `"}}`, false},
+		"absent socket":   {`{"redis":{"servers":"` + filepath.Join(d, "gone.sock") + `"}}`, false},
+		"under a socket":  {`{"redis":{"servers":"` + sock + `/x"}}`, false},
+		"tcp":             {`{"redis":{"servers":"127.0.0.1:6379"}}`, false},
+		"none":            {`{"options":{}}`, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			shared, err := sharedRedis(antispam.CommandResult{Stdout: tc.dump}, sock)
+			if err != nil || shared != tc.shared {
+				t.Fatalf("shared=%v err=%v, want %v", shared, err, tc.shared)
+			}
+		})
+	}
+	for name, dump := range map[string]antispam.CommandResult{
+		"relative path": {Stdout: `{"redis":{"servers":"./redis.sock"}}`},
+		"unreadable":    {Stdout: `{"redis":`},
+		"duplicate key": {Stdout: `{"redis":{"servers":"` + other + `","servers":"` + sock + `"}}`},
+		"failed":        {Err: errors.New("exit status 1")},
+	} {
+		if _, err := sharedRedis(dump, sock); err == nil {
+			t.Errorf("%s: no error", name)
+		}
+	}
+	// The collector reports it, and the worker refuses it.
+	c, f, dsock, _ := dedicatedRedis(t)
+	f.RspamdConfig.Stdout = `{"redis":{"servers":"` + dsock + `"}}`
+	c.learningRedis(context.Background(), dsock, &f)
+	if err := antispam.CheckLearningRedis(f); !f.Redis.Shared || err == nil {
+		t.Fatalf("shared dedicated Redis: %v %+v", err, f.Redis)
 	}
 }

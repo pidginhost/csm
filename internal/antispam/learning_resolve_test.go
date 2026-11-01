@@ -171,7 +171,7 @@ func TestResolveLearningDefiniteFailures(t *testing.T) {
 		reason string
 	}{
 		"UnsupportedRspamd": {func(f *HostFacts) { f.RspamdVersion.Stdout = "Rspamd daemon version 4.3.0\n" }, ReasonUnsupported},
-		"UnsupportedRedis":  {func(f *HostFacts) { f.Redis.Version = "7.2.4" }, ReasonUnsupported},
+		"UnsupportedRedis":  {func(f *HostFacts) { f.Redis.Version = "8.0.2" }, ReasonUnsupported},
 		"ControllerExposed": {func(f *HostFacts) { f.Controller.PasswordSet = false }, ReasonUnsafe},
 		"ControllerUnverifiable": {func(f *HostFacts) {
 			f.ControllerUnverifiable = errors.New("configdump worker controller: bind_socket systemd endpoint")
@@ -435,7 +435,7 @@ func TestResolveLearningReportsEachReasonOnce(t *testing.T) {
 	f.Redis.MaxMemory, f.Controller.PasswordSet = 0, false
 	f.RspamdLog.File.Mode = 0o644
 	f.RspamdLog.Parents[3].Mode = fs.ModeDir | 0o755
-	f.Redis.Version = "7.2.4"
+	f.Redis.Version = "8.0.2"
 	_, gate, problems := ResolveLearning(learningSettings(), f)
 	if gate.Install || len(problems) != 2 {
 		t.Fatalf("gate=%+v problems=%+v", gate, problems)
@@ -556,5 +556,119 @@ func TestResolveLearningForeignListenerWithProbeFailure(t *testing.T) {
 		if len(problems) != 2 || !unsafe || !unavailable {
 			t.Fatalf("installed=%v: problems=%+v, want unsafe listener and probe failure", installed, problems)
 		}
+	}
+}
+
+// Redis 7 is qualified next to 5.0 and 6.2; anything else, including a
+// release-candidate suffix, stays refused.
+func TestRedisVersionAccepts7(t *testing.T) {
+	for _, v := range []string{"5.0.3", "6.2.14", "7.0.15", "7.2.4", "7.4.1"} {
+		f := safeLearningFacts()
+		f.Redis.Version = v
+		if _, gate, problems := ResolveLearning(learningSettings(), f); !gate.Install || !gate.Publish || len(problems) != 0 {
+			t.Errorf("Redis %s: gate=%+v problems=%+v", v, gate, problems)
+		}
+	}
+	for _, v := range []string{"6.0.16", "8.0.2", "7.2", "7.2.4-rc1", "17.0.1", "4.0.14"} {
+		f := safeLearningFacts()
+		f.Redis.Version = v
+		_, gate, problems := ResolveLearning(learningSettings(), f)
+		if gate.Install {
+			t.Errorf("Redis %s installed learning", v)
+		}
+		onlyLearningReason(t, problems, ReasonUnsupported)
+	}
+}
+
+// dedicatedRedisFacts is safeLearningFacts with the dedicated learning Redis
+// probed at socket on the given stack.
+func dedicatedRedisFacts(stack MailStack, socket string) HostFacts {
+	f := safeLearningFacts()
+	f.Stack = stack
+	f.Redis.Endpoint = socket
+	f.Redis.Socket.Socket.Path = socket
+	return f
+}
+
+const dedicatedSocket = "/run/redis-csm/redis.sock"
+
+// Decision 7: on Postfix only a dedicated Redis named in csm.yaml qualifies.
+// ResolveLearning still keeps Postfix off, so the check is exercised
+// directly.
+func TestResolveLearningPostfixNeedsRedisSocket(t *testing.T) {
+	s := learningSettings()
+	var c learningCheck
+	checkLearningRedis(&c, s, dedicatedRedisFacts(StackPostfix, dedicatedSocket))
+	onlyLearningReason(t, c.problems, ReasonUnsupported)
+	if want := "learning on Postfix needs a dedicated Redis: set email_protection.antispam.learning.redis_socket"; c.problems[0].Detail != want {
+		t.Fatalf("detail %q, want %q", c.problems[0].Detail, want)
+	}
+	s.LearningRedisSocket = dedicatedSocket
+	c = learningCheck{}
+	if checkLearningRedis(&c, s, dedicatedRedisFacts(StackPostfix, dedicatedSocket)); len(c.problems) != 0 {
+		t.Fatalf("dedicated Redis on Postfix: %+v", c.problems)
+	}
+	// Exim keeps rspamd's Redis when no dedicated one is named.
+	c = learningCheck{}
+	if checkLearningRedis(&c, learningSettings(), safeLearningFacts()); len(c.problems) != 0 {
+		t.Fatalf("Exim without the key: %+v", c.problems)
+	}
+}
+
+// The safety checks judge the dedicated Redis exactly like rspamd's, on
+// either stack, and a Redis another rspamd module also uses is refused.
+func TestLearningRedisSocketSafetyChecks(t *testing.T) {
+	for name, tc := range map[string]struct {
+		change func(*RedisFacts)
+		reason string
+	}{
+		"TCP port":       {func(r *RedisFacts) { r.Port = "6379" }, ReasonUnsafe},
+		"TLS port":       {func(r *RedisFacts) { r.TLSPort = "6380" }, ReasonUnsafe},
+		"eviction":       {func(r *RedisFacts) { r.Policy = "allkeys-lru" }, ReasonUnsafe},
+		"no maxmemory":   {func(r *RedisFacts) { r.MaxMemory = 0 }, ReasonUnsafe},
+		"socket mode":    {func(r *RedisFacts) { r.Socket.Socket.Mode = fs.ModeSocket | 0o777 }, ReasonUnsafe},
+		"socket ACL":     {func(r *RedisFacts) { r.Socket.Socket.ExtACL = true }, ReasonUnsafe},
+		"unprotected":    {func(r *RedisFacts) { r.Unprotected, r.Err = true, errors.New("not protected") }, ReasonUnsafe},
+		"shared":         {func(r *RedisFacts) { r.Shared = true }, ReasonUnsafe},
+		"version":        {func(r *RedisFacts) { r.Version = "8.0.2" }, ReasonUnsupported},
+		"shared unknown": {func(r *RedisFacts) { r.SharedErr = errors.New("dump unreadable") }, ReasonBackendUnavailable},
+		"socket missing": {func(r *RedisFacts) { r.Socket.Missing = true }, ReasonBackendUnavailable},
+		"probe failed":   {func(r *RedisFacts) { r.Err = errors.New("redis: INFO server failed") }, ReasonBackendUnavailable},
+	} {
+		t.Run(name, func(t *testing.T) {
+			for _, stack := range []MailStack{StackExim, StackPostfix} {
+				s := learningSettings()
+				s.LearningRedisSocket = dedicatedSocket
+				f := dedicatedRedisFacts(stack, dedicatedSocket)
+				tc.change(&f.Redis)
+				var c learningCheck
+				checkLearningVersions(&c, f)
+				checkLearningRedis(&c, s, f)
+				onlyLearningReason(t, c.problems, tc.reason)
+				if stack == StackExim {
+					// Installed, so an outage keeps the files and a definite
+					// failure removes them.
+					installed := f
+					installLearning(t, &installed)
+					_, gate, problems := ResolveLearning(s, installed)
+					onlyLearningReason(t, problems, tc.reason)
+					if definite := tc.reason != ReasonBackendUnavailable; gate.Install == definite || gate.Publish {
+						t.Fatalf("gate %+v for %s", gate, tc.reason)
+					}
+				}
+				err := CheckLearningRedis(f)
+				if definite := tc.reason != ReasonBackendUnavailable; (err != nil) != definite {
+					t.Fatalf("%v: worker recheck error %v", stack, err)
+				}
+			}
+		})
+	}
+	if err := CheckLearningRedis(dedicatedRedisFacts(StackPostfix, dedicatedSocket)); err != nil {
+		t.Fatalf("safe dedicated Redis: %v", err)
+	}
+	f := dedicatedRedisFacts(StackExim, dedicatedSocket)
+	f.Redis.Shared = true
+	if err := CheckLearningRedis(f); err == nil || err.Error() != "the learning Redis is shared with another rspamd module" {
+		t.Fatalf("shared Redis: %v", err)
 	}
 }

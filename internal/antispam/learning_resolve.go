@@ -52,7 +52,7 @@ const stockFuzzyRule = "rspamd.com"
 
 var (
 	learningRspamdVersion = regexp.MustCompile(`^4\.2\.\d+$`)
-	learningRedisVersion  = regexp.MustCompile(`^(5\.0|6\.2)\.\d+$`)
+	learningRedisVersion  = regexp.MustCompile(`^(5\.0|6\.2|7\.\d+)\.\d+$`)
 )
 
 // learningCheck collects learning problems, one per reason, in the order
@@ -107,7 +107,7 @@ func ResolveLearning(s Settings, f HostFacts) (Settings, LearningGate, []Problem
 	}
 	checkLearningVersions(&c, f)
 	checkLearningController(&c, f)
-	checkLearningRedis(&c, f)
+	checkLearningRedis(&c, s, f)
 	checkLearningLogs(&c, f)
 	checkLearningConflicts(&c, s, f)
 	if f.FuzzyListenErr != nil {
@@ -179,10 +179,14 @@ func checkLearningVersions(c *learningCheck, f HostFacts) {
 	} else if !learningRspamdVersion.MatchString(v) {
 		c.add(ReasonUnsupported, "learning is qualified on rspamd 4.2 only")
 	}
-	if f.Redis.Version == "" && f.Redis.Err == nil && f.Redis.Unix {
+	checkLearningRedisVersion(c, f.Redis)
+}
+
+func checkLearningRedisVersion(c *learningCheck, r RedisFacts) {
+	if r.Version == "" && r.Err == nil && r.Unix {
 		c.add(ReasonBackendUnavailable, "Redis's version is unknown")
-	} else if f.Redis.Version != "" && !learningRedisVersion.MatchString(f.Redis.Version) {
-		c.add(ReasonUnsupported, "learning is qualified on Redis 5.0 and 6.2 only")
+	} else if r.Version != "" && !learningRedisVersion.MatchString(r.Version) {
+		c.add(ReasonUnsupported, "learning is qualified on Redis 5.0, 6.2 and 7 only")
 	}
 }
 
@@ -311,13 +315,39 @@ func withSocket(host ControllerHostFacts, p string, s SocketFacts) ControllerHos
 }
 
 // checkLearningRedis requires a socket-only Redis no tenant can reach, with
-// a finite maxmemory and noeviction (spec 6.3).
-func checkLearningRedis(c *learningCheck, f HostFacts) {
-	r := f.Redis
+// a finite maxmemory and noeviction (spec 6.3). On Postfix it must be a
+// Redis dedicated to learning (decision 7): rspamd's own serves tenants'
+// modules too.
+func checkLearningRedis(c *learningCheck, s Settings, f HostFacts) {
 	switch {
+	case f.Stack == StackPostfix && s.LearningRedisSocket == "":
+		c.add(ReasonUnsupported, "learning on Postfix needs a dedicated Redis: set email_protection.antispam.learning.redis_socket")
 	case f.LearningDumps.Err != nil:
 		c.add(ReasonBackendUnavailable, "CSM cannot read rspamd's loaded configuration")
-		return
+	default:
+		checkLearningRedisEndpoint(c, f)
+	}
+}
+
+// CheckLearningRedis rechecks the dedicated learning Redis for the worker,
+// which applies under its lock after the pass judged it: the socket can be
+// replaced or opened in between. An error names a definite failure; an
+// outage is left to the next pass.
+func CheckLearningRedis(f HostFacts) error {
+	var c learningCheck
+	checkLearningRedisVersion(&c, f.Redis)
+	checkLearningRedisEndpoint(&c, f)
+	for _, p := range c.problems {
+		if p.Key == ReasonUnsafe || p.Key == ReasonUnsupported {
+			return errors.New(p.Detail)
+		}
+	}
+	return nil
+}
+
+func checkLearningRedisEndpoint(c *learningCheck, f HostFacts) {
+	r := f.Redis
+	switch {
 	case r.Endpoint == "":
 		c.add(ReasonUnsafe, "CSM cannot identify the one Redis server fuzzy storage uses")
 		return
@@ -330,6 +360,12 @@ func checkLearningRedis(c *learningCheck, f HostFacts) {
 	case r.Socket.Err != nil || r.Socket.Missing:
 		c.add(ReasonBackendUnavailable, "the Redis socket cannot be checked")
 		return
+	case r.Shared:
+		c.add(ReasonUnsafe, "the learning Redis is shared with another rspamd module")
+		return
+	}
+	if r.SharedErr != nil {
+		c.add(ReasonBackendUnavailable, "CSM cannot tell whether another rspamd module uses the learning Redis")
 	}
 	// A protected socket as well as protected directories (spec 6.3):
 	// no access for others and no ACL CSM cannot evaluate.
@@ -500,7 +536,7 @@ func checkLearningStillLoaded(c *learningCheck, s Settings, f HostFacts) {
 		c.add(ReasonBackendUnavailable, "rspamd's actions are not readable")
 		return
 	}
-	if err := CheckLearningLoaded(d.FuzzyCheck, d.Worker, d.Group, d.Symbols, actions, s.LearningKeys); err != nil {
+	if err := CheckLearningLoaded(d.FuzzyCheck, d.Worker, d.Group, d.Symbols, actions, s.LearningKeys, s.LearningRedisSocket); err != nil {
 		c.add(ReasonConfigConflict, "rspamd no longer loads CSM's learning configuration as written: "+err.Error())
 	}
 }
