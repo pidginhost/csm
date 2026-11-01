@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -736,5 +737,14 @@ func TestProbeStorageNeedsOneAnsweredDigest(t *testing.T) {
 	}
 	if _, after, _, _ := f.storage.native(); after != before {
 		t.Fatal("probe inspected with learning closed")
+	}
+}
+
+// rspamd skips text parts shorter than the rule's minimum word count. A
+// probe below it would never answer and would hold every failed report.
+func TestProbeMessageIsLongEnoughToHash(t *testing.T) {
+	_, text, ok := strings.Cut(probeMessage, "\r\n\r\n")
+	if words := len(strings.Fields(text)); !ok || words <= antispam.LearningMinLength {
+		t.Fatalf("probe text has %d words, rspamd hashes parts over %d", words, antispam.LearningMinLength)
 	}
 }
