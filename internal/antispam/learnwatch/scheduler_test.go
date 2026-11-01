@@ -27,6 +27,26 @@ type fakeEngine struct {
 	cancelErr error
 	// held lists the UIDs ReportUIDs reports as holding reservations.
 	held []int
+	// probe answers ProbeStorage; nil means storage answers.
+	probe  func() error
+	probes int
+}
+
+func (e *fakeEngine) ProbeStorage(context.Context) error {
+	e.mu.Lock()
+	e.probes++
+	probe := e.probe
+	e.mu.Unlock()
+	if probe != nil {
+		return probe()
+	}
+	return nil
+}
+
+func (e *fakeEngine) probed() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.probes
 }
 
 func (e *fakeEngine) ReportUIDs(context.Context) ([]int, error) {

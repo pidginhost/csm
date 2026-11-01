@@ -30,6 +30,11 @@ type Inspection struct {
 // still invalidates the inspection, but says nothing about backend health.
 var ErrMessageRejected = errors.New("inspection rejected the message")
 
+// ErrInspectionFailed marks a body inspection the controller answered with
+// an error status or an incomplete, failed or malformed reply. Storage or
+// the body can cause it, so blaming the message needs other evidence.
+var ErrInspectionFailed = errors.New("inspection reply failed")
+
 // rawResult keeps every field optional so absence is detectable.
 type rawResult struct {
 	Queried   *string         `json:"queried"`
