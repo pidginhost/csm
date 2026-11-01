@@ -498,6 +498,9 @@ func TestPassReportsReplacedFiles(t *testing.T) {
 				!strings.Contains(f.Message, rep.Path) || !strings.Contains(f.Details, rep.Path) || !strings.Contains(f.Details, rep.Backup) {
 				t.Fatalf("finding %+v", f)
 			}
+			if !tc.d.Enabled && strings.Contains(found[0].Details, "now owns") {
+				t.Fatal("a historical backup claims the removed integration still owns the target")
+			}
 
 			r = tc.host.reconciler()
 			r.Replaced = func() ([]antispam.Replacement, error) { return nil, errors.New("permission denied") }
@@ -509,6 +512,40 @@ func TestPassReportsReplacedFiles(t *testing.T) {
 			out = tc.host.reconciler().Pass(context.Background(), tc.d)
 			if slices.Contains(out.Checks, CheckFileReplaced) || len(replacedFindings(out)) != 0 {
 				t.Fatalf("no hook settled: checks %q, findings %+v", out.Checks, out.Findings)
+			}
+		})
+	}
+}
+
+// A pass must report the copies its worker left, not the directory listing
+// from before the worker started.
+func TestPassReportsReplacementsAfterWorker(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		result antispam.Result
+	}{
+		{"applied", antispam.Result{OK: true}},
+		{"rollback failed", antispam.Result{FailedStep: "rspamd_check", Rollback: antispam.RollbackFailed}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := &fakeHost{assessment: antispam.Assessment{Action: antispam.Install}}
+			r := h.reconciler()
+			var replaced []antispam.Replacement
+			rep := antispam.Replacement{Path: antispam.ScoresPath, Backup: antispam.ReplacedDir + "/copy"}
+			r.Run = func(context.Context, antispam.Request) (antispam.Result, error) {
+				replaced = []antispam.Replacement{rep}
+				return tc.result, nil
+			}
+			r.Replaced = func() ([]antispam.Replacement, error) { return replaced, nil }
+			out := r.Pass(context.Background(), desired(true))
+			var found []alert.Finding
+			for _, f := range out.Findings {
+				if f.Check == CheckFileReplaced {
+					found = append(found, f)
+				}
+			}
+			if !slices.Contains(out.Checks, CheckFileReplaced) || len(found) != 1 || found[0].DedupKey != rep.Backup {
+				t.Fatalf("worker's replacement was not reported: checks %v, findings %+v", out.Checks, found)
 			}
 		})
 	}

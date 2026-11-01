@@ -228,18 +228,19 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) (out Outcome) {
 	if d.Enabled {
 		out.Stats, out.StatsReason = antispam.StatsEndpointFor(f)
 	}
-	// A backup stays until the operator deletes it, whatever the mode or
-	// the apply's outcome. An unreadable directory keeps the last result.
-	replacedSettled := false
-	if r.Replaced != nil {
+	// List backups after the worker finishes, including failed rollbacks.
+	// An unreadable directory or an abandoned pass keeps the last findings.
+	defer func() {
+		if r.Replaced == nil || len(out.Checks) == 0 {
+			return
+		}
 		if replaced, err := r.Replaced(); err == nil {
-			replacedSettled = true
 			out.Checks = append(out.Checks, CheckFileReplaced)
 			for _, rep := range replaced {
 				out.Findings = append(out.Findings, replacedFinding(rep, now))
 			}
 		}
-	}
+	}()
 	// Prerequisites alone do not prove that the requested integration is
 	// active. A worker must finish an apply, or the installed state must
 	// already be current, before the learner may publish.
@@ -351,9 +352,6 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) (out Outcome) {
 		out.Checks = []string{CheckPrecondition, CheckFeed}
 		if controllerSettled {
 			out.Checks = append(out.Checks, CheckControllerOpen)
-		}
-		if replacedSettled {
-			out.Checks = append(out.Checks, CheckFileReplaced)
 		}
 	}
 	if result.FailedStep == antispam.FeedsCheckStep {

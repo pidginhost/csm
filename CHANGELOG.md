@@ -13,6 +13,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 - Password guessing against SMTP login on Postfix servers is now detected and blocked. It needs verbose auth logging in Dovecot, which `csm doctor` checks.
 - Crafted login names no longer pause mail brute-force protection.
+- Antispam refuses operator files that become unsafe during an update, and failed changes preserve their original access restrictions.
 - Files are now reported as not scanned by YARA until its rules have loaded, instead of passing unchecked.
 - Mail provider lookups no longer risk excessive memory use.
 - The daemon log now escapes line breaks and control characters in values, so crafted file names cannot forge log lines.
@@ -38,6 +39,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 ### Fixed
 
 - IMAP, POP3 and ManageSieve login protection now works when mail logs are read from the systemd journal.
+- Antispam replacement warnings now reflect completed changes, and failed updates retain backups only until each original is safely restored.
 - The daemon log no longer reports a memory failure or a kill when CSM stops a worker on purpose.
 - WordPress core files that differ only in line endings are no longer reported on sites whose PHP prints deprecation notices.
 - The daemon log no longer reports a YARA scan failure for large files.

@@ -526,14 +526,22 @@ original path, for example
 CSM replaces only a regular file owned by root, with no group or other write
 access and no extra ACL entries, in directories protected the same way. Any
 other file at one of these paths blocks the install, or leaves the optional
-feature that needs it off. The Exim hook files and `/etc/exim.conf.local`
+feature that needs it off. CSM repeats these checks before copying the file
+and before replacing it. The Exim hook files and `/etc/exim.conf.local`
 are shared: CSM edits its own block there and never replaces them.
 
-Each copy raises one `antispam_file_replaced` warning naming the file and the
-copy. Move any settings you still need into a file CSM does not manage, then
-delete the copy to clear the warning. When a change fails and CSM restores
-your file, it deletes the copy too. Disabling antispam deletes CSM's files and
-does not restore the copies.
+Each retained copy raises one `antispam_file_replaced` warning naming the
+file and the copy in the same check that runs the update. Move any settings
+you still need into a file CSM does not manage, then delete the copy to clear
+the warning.
+
+When a change fails, CSM restores your file with its original owner, group
+and permissions. It deletes that copy only after the restore is durable,
+even if another file could not be restored. Copies made for replacements
+that never happened are removed too. If a restore cannot be confirmed, its
+copy remains for recovery. Disabling antispam deletes CSM's files and does
+not restore the copies. The warnings describe past replacements, including
+after antispam is disabled.
 
 ## Rolling it out
 

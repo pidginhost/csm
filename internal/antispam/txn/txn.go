@@ -156,9 +156,9 @@ type tx struct {
 	// rspamdProbe confirms rspamd after a reload.
 	rspamdProbe         func(context.Context) error
 	rspamdRollbackProbe func(context.Context) error
-	// backups are the copies of operator files this transaction made. A
-	// rollback that restores every file deletes them again.
-	backups []string
+	// backups maps each copy to whether its original still needs a durable
+	// restore. A failed replacement leaves its copy eligible for cleanup.
+	backups map[string]bool
 }
 
 func (h *Host) begin() *tx {
@@ -313,6 +313,12 @@ func (t *tx) write(c change) error {
 		return err
 	}
 	p := t.h.path(c.target.Path)
+	takeover := c.target.Kind.WholeFile() && !c.target.Missing && !antispam.ManagedFor(c.target.Kind, c.target.Content)
+	if takeover {
+		if err := t.checkTakeover(c.target.Path); err != nil {
+			return err
+		}
+	}
 	// Read the file again for the owner and mode a rollback must restore,
 	// including those of a file the transaction deletes.
 	before, err := readFile(p)
@@ -325,14 +331,22 @@ func (t *tx) write(c change) error {
 	// An operator file at a path CSM owns outright is kept before it is
 	// replaced (spec 5.5).
 	backup := ""
-	if c.target.Kind.WholeFile() && before.exists && !antispam.ManagedFor(c.target.Kind, before.content) {
+	if takeover {
 		if backup, err = t.backup(c.target.Path, before.content); err != nil {
+			return err
+		}
+		// Copying and syncing the backup can take time. Content checks alone
+		// do not catch an operator loosening the file or its parents meanwhile.
+		if err = t.checkTakeover(c.target.Path); err != nil {
 			return err
 		}
 	}
 	err = t.h.replace(p, before, c.next)
 	if err == nil || errors.Is(err, errDurability) {
 		t.writes = append(t.writes, written{path: p, before: before, next: c.next, backup: backup})
+		if backup != "" {
+			t.backups[backup] = true
+		}
 		if !c.target.Kind.WholeFile() {
 			t.eximTouched = true
 		}
@@ -341,6 +355,17 @@ func (t *tx) write(c change) error {
 		return t.fwd.Err()
 	}
 	return err
+}
+
+// checkTakeover reuses the same protection requirements as preflight before
+// reading an operator file and again before publishing its replacement.
+func (t *tx) checkTakeover(p string) error {
+	for _, target := range t.h.targets() {
+		if target.Path == p {
+			return antispam.OptionalUsable(target)
+		}
+	}
+	return fmt.Errorf("%s was not checked", p)
 }
 
 // backup copies the operator file at target into ReplacedDir, root-only
@@ -360,18 +385,26 @@ func (t *tx) backup(target, content string) (string, error) {
 	err = publishFile(p, tmp, 0o600, -1, -1, false)
 	if err == nil || errors.Is(err, errDurability) {
 		// The target is still unchanged, so a rollback may delete this copy.
-		t.backups = append(t.backups, p)
+		if t.backups == nil {
+			t.backups = make(map[string]bool)
+		}
+		t.backups[p] = false
 	}
 	return p, err
 }
 
-// dropBackups deletes the copies this transaction made, once every operator
-// file they hold is back in place.
+// dropBackups deletes only copies whose originals are durably back in
+// place or were never replaced. Other failed restores must not delay them.
 func (t *tx) dropBackups() error {
 	var errs []error
-	for _, p := range t.backups {
+	for p, pending := range t.backups {
+		if pending {
+			continue
+		}
 		if err := deleteFile(p); err != nil {
 			errs = append(errs, fmt.Errorf("removing backup %s: %w", strings.TrimPrefix(p, t.h.root), err))
+		} else {
+			delete(t.backups, p)
 		}
 	}
 	return errors.Join(errs...)
@@ -769,7 +802,7 @@ func (t *tx) fail(step string, err error) antispam.Result {
 // reload was attempted. "verified" needs every restore, rebuild, reload and
 // probe to succeed; otherwise the incomplete record stays for reconcile.
 func (t *tx) rollback() (state string, rollbackErr error) {
-	if !t.recordWritten && len(t.writes) == 0 && !t.eximTouched && !t.rspamdReloaded {
+	if !t.recordWritten && len(t.writes) == 0 && len(t.backups) == 0 && !t.eximTouched && !t.rspamdReloaded {
 		return antispam.RollbackNone, nil
 	}
 	ctx, cancel := context.WithDeadline(context.Background(), t.start.Add(totalBudget))
@@ -780,6 +813,14 @@ func (t *tx) rollback() (state string, rollbackErr error) {
 			rollbackErr = errors.Join(rollbackErr, t.replaceRecord(ctx, ""))
 		}
 	}()
+	// Cleanup must also run when the rollback deadline interrupts later
+	// restores. A failed cleanup prevents a verified completion record.
+	defer func() {
+		if err := t.dropBackups(); err != nil {
+			state = antispam.RollbackFailed
+			rollbackErr = errors.Join(rollbackErr, err)
+		}
+	}()
 	var errs []error
 	// Completion can reach disk before its fsync fails. Invalidate it
 	// before recovery, which may consume the rest of the rollback budget.
@@ -788,7 +829,6 @@ func (t *tx) rollback() (state string, rollbackErr error) {
 			errs = append(errs, err)
 		}
 	}
-	restoreFailed := false
 	for i := len(t.writes) - 1; i >= 0; i-- {
 		if err := ctx.Err(); err != nil {
 			return antispam.RollbackFailed, err
@@ -796,6 +836,9 @@ func (t *tx) rollback() (state string, rollbackErr error) {
 		w := t.writes[i]
 		before := w.before
 		switch {
+		case w.backup != "":
+			// An operator's private file must not inherit the replacement's
+			// service group or more permissive mode.
 		case slices.Contains(antispam.SecretPaths(), strings.TrimPrefix(w.path, t.h.root)):
 			// Rollback can put secrets back into this file, so it never
 			// keeps a mode someone loosened meanwhile: it gets the private
@@ -810,15 +853,12 @@ func (t *tx) rollback() (state string, rollbackErr error) {
 		}
 		if err := t.h.replace(w.path, w.next, before); err != nil {
 			errs = append(errs, fmt.Errorf("restoring %s: %w", strings.TrimPrefix(w.path, t.h.root), err))
-			restoreFailed = true
+		} else if w.backup != "" {
+			t.backups[w.backup] = false
 		}
 	}
-	// A backup may be the only copy of an operator file until that file is
-	// back in place.
-	if !restoreFailed {
-		if err := t.dropBackups(); err != nil {
-			errs = append(errs, err)
-		}
+	if err := t.dropBackups(); err != nil {
+		errs = append(errs, err)
 	}
 	loadable := false
 	if t.eximTouched {

@@ -67,9 +67,10 @@ func (t *tx) restoreLast() error {
 		return nil
 	}
 	// On failure the backup stays listed, so an enclosing rollback retries.
+	t.backups[w.backup] = false
 	if err := deleteFile(w.backup); err != nil {
 		return err
 	}
-	t.backups = slices.DeleteFunc(t.backups, func(b string) bool { return b == w.backup })
+	delete(t.backups, w.backup)
 	return nil
 }

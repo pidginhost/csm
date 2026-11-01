@@ -160,7 +160,7 @@ func replacedFinding(rep antispam.Replacement, now time.Time) alert.Finding {
 		Check:    CheckFileReplaced,
 		DedupKey: rep.Backup,
 		Message:  "Antispam replaced " + clean(rep.Path),
-		Details: "CSM now owns " + clean(rep.Path) + " and kept your previous file at " + clean(rep.Backup) +
+		Details: "CSM replaced " + clean(rep.Path) + " and kept your previous file at " + clean(rep.Backup) +
 			". Move any settings you still need into a file CSM does not manage, then delete the backup to clear this warning.",
 		Timestamp: now,
 	}
