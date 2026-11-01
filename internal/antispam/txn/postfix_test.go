@@ -432,9 +432,25 @@ func TestApplyPostfixDryRunRestoresOverLoosenedFile(t *testing.T) {
 	f.reset()
 	dry := enforce()
 	dry.DryRun = true
-	wantOK(t, f.host().Apply(dry))
+	h := f.host()
+	// The owner the restore asks for is recorded; a test without root
+	// cannot set it, so there the file keeps the test's own.
+	var restores []fileState
+	h.replace = func(p string, want, next fileState) error {
+		if p == f.root+actionsPath && next.exists {
+			restores = append(restores, next)
+			if os.Geteuid() != 0 {
+				next.uid, next.gid = -1, -1
+			}
+		}
+		return replaceFile(p, want, next)
+	}
+	wantOK(t, h.Apply(dry))
 	if f.file(actionsPath) != foreignActions {
 		t.Fatalf("actions.conf = %q", f.file(actionsPath))
+	}
+	if len(restores) != 1 || !restores[0].metadata || restores[0].uid != 0 || restores[0].gid != 0 || restores[0].perm != 0o644 {
+		t.Fatalf("restores %+v, want one as root:root 0644", restores)
 	}
 	wantMode(t, f.root+actionsPath, 0o644, 0)
 	wantBackups(t, f, nil)
@@ -631,4 +647,48 @@ func TestRemovePostfixRollsBack(t *testing.T) {
 		t.Errorf("rollback left %v, want %v", after, before)
 	}
 	noExim(t, f)
+}
+
+// A pass that restores nothing leaves the copy directory alone, even while
+// it holds copies of other files: no listing, mode change or sync. An equal
+// dry run pass and a removal with nothing installed are such passes.
+func TestPostfixPassWithoutRestoreLeavesCopiesAlone(t *testing.T) {
+	const kept = "use = [];\n"
+	dry := enforce()
+	dry.DryRun = true
+	for name, setup := range map[string]func(*fakeHost) func() antispam.Result{
+		"equal dry run": func(f *fakeHost) func() antispam.Result {
+			writeTest(t, f.root+antispam.MilterHeadersPath, kept, 0o644)
+			wantOK(t, f.host().Apply(dry))
+			return func() antispam.Result { return f.host().Apply(dry) }
+		},
+		"nothing to remove": func(f *fakeHost) func() antispam.Result {
+			writeTest(t, f.root+antispam.ReplacedDir+"/"+antispam.BackupName(antispam.MilterHeadersPath, f.start), kept, 0o600)
+			return f.host().Remove
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := postfixFake(t)
+			pass := setup(f)
+			// A mode the worker would make 0700 shows any change.
+			dir := f.root + antispam.ReplacedDir
+			if err := os.Chmod(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			before := f.state()
+			f.reset()
+			wantOK(t, pass())
+			if len(f.calls) != 0 || fmt.Sprint(f.state()) != fmt.Sprint(before) {
+				t.Errorf("ran %v or changed files", f.calls)
+			}
+			info, err := os.Stat(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if info.Mode().Perm() != 0o755 {
+				t.Errorf("copy directory mode %v after the pass, want 0755", info.Mode().Perm())
+			}
+			wantBackups(t, f, map[string]string{antispam.MilterHeadersPath: kept})
+		})
+	}
 }

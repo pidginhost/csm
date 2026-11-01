@@ -2,7 +2,10 @@ package daemon
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -74,7 +77,7 @@ func (d *Daemon) followRspamdLog(t *rspamdLogTail) {
 		return
 	}
 	// Like every log CSM watches, a file is read from where it ends.
-	w, err := NewLogWatcher(path, d.cfg, nil, d.alertCh)
+	w, err := newLogWatcher(path, d.cfg, nil, d.alertCh, openRspamdLog)
 	if err != nil {
 		if t.missing != path {
 			t.missing = path
@@ -88,6 +91,26 @@ func (d *Daemon) followRspamdLog(t *rspamdLogTail) {
 	t.missing = ""
 	w.observed = d.handleRspamdLogLine
 	t.w = w
+}
+
+// openRspamdLog opens rspamd's log without following a symlink or blocking
+// on a FIFO, and only as a regular file: rspamd's user owns the log
+// directory and can put either there.
+func openRspamdLog(path string) (*os.File, error) {
+	// #nosec G304 -- rspamd's log file as its configuration names it; no-follow and the regular-file check below bound the open.
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, err
+	}
+	info, err := f.Stat()
+	if err == nil && !info.Mode().IsRegular() {
+		err = fmt.Errorf("%s is not a regular file", path)
+	}
+	if err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	return f, nil
 }
 
 // handleRspamdLogLine counts a scan record in rspamd's log for scan health

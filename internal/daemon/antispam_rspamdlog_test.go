@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -227,6 +228,84 @@ func TestFollowRspamdLogWaitsForTheFile(t *testing.T) {
 	got := finish()
 	if strings.Count(got, "rspamd log not readable, will retry") != 1 || strings.Count(got, "watching rspamd log (appeared after retry)") != 1 || !strings.Contains(got, path) {
 		t.Fatalf("log = %q, want one retry warning and one recovery for %s", got, path)
+	}
+}
+
+// rspamd's user owns its log directory, so it can put a FIFO or a symlink
+// where the log was. CSM opens neither, when it starts following the log or
+// reopens it: a FIFO would block the open and with it daemon shutdown, and a
+// symlink would point the tail at another file. A refused log is reported
+// like a missing one and tried again.
+func TestFollowRspamdLogRefusesFIFOAndSymlink(t *testing.T) {
+	within := func(t *testing.T, what string, fn func()) {
+		t.Helper()
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			fn()
+		}()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s blocked", what)
+		}
+	}
+	for name, plant := range map[string]func(t *testing.T, path string){
+		"fifo": func(t *testing.T, path string) {
+			if err := syscall.Mkfifo(path, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"symlink": func(t *testing.T, path string) {
+			other := filepath.Join(filepath.Dir(path), "other.log")
+			if err := os.WriteFile(other, []byte(rspamdRecord("198.51.100.79")+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(other, path); err != nil {
+				t.Fatal(err)
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			d := newTestDaemon(t)
+			enableAntispam(t, d, true)
+			path := filepath.Join(t.TempDir(), "rspamd.log")
+			plant(t, path)
+			d.antispamScanSource.Store(&antispam.ScanSource{Log: path})
+			finish := captureCSMLog(t)
+			t.Cleanup(func() { finish() })
+			var tail rspamdLogTail
+			within(t, "following the log", func() { d.followRspamdLog(&tail) })
+			if tail.w != nil {
+				tail.stop()
+				t.Fatalf("followed a %s", name)
+			}
+			if got := finish(); !strings.Contains(got, "rspamd log not readable, will retry") || !strings.Contains(got, path) {
+				t.Fatalf("log = %q, want a retry warning for %s", got, path)
+			}
+
+			// The same swap after CSM opened the log is refused on reopen.
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			d.followRspamdLog(&tail)
+			if tail.w == nil {
+				t.Fatal("regular log not followed")
+			}
+			t.Cleanup(tail.stop)
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+			plant(t, path)
+			within(t, "reopening the log", tail.w.reopen)
+			within(t, "reading the log", func() { d.followRspamdLog(&tail) })
+			if tail.w.file != nil {
+				t.Fatalf("reopened a %s", name)
+			}
+		})
 	}
 }
 

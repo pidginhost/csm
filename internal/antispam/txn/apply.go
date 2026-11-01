@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/pidginhost/csm/internal/antispam"
@@ -222,8 +223,13 @@ type restoredCopy struct {
 // them. A file someone loosened still goes, as removal would delete it, and
 // the copy comes back root-owned 0644: that owner and mode cannot be
 // trusted. Its directories were checked with the other targets. Files
-// without a copy are deleted.
+// without a copy are deleted. Without such a deletion the copy directory is
+// not touched.
 func (t *tx) restoreCopies(changes []change, want func(path string) bool) error {
+	selected := func(c change) bool { return !c.next.exists && c.target.Kind.WholeFile() && want(c.target.Path) }
+	if !slices.ContainsFunc(changes, selected) {
+		return nil
+	}
 	dir := t.h.path(antispam.ReplacedDir)
 	copies, err := hostfacts.Replaced(dir)
 	if err != nil || len(copies) == 0 {
@@ -239,7 +245,7 @@ func (t *tx) restoreCopies(changes []change, want func(path string) bool) error 
 	}
 	for i, c := range changes {
 		p, ok := newest[c.target.Path]
-		if !ok || c.next.exists || !c.target.Kind.WholeFile() || !want(c.target.Path) {
+		if !ok || !selected(c) {
 			continue
 		}
 		saved, readErr := readFile(p)
