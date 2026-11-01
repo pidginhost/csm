@@ -169,3 +169,95 @@ func TestRecoveryHoldsRoomForTheIntent(t *testing.T) {
 		t.Fatalf("representable hold = %+v, %v", got, err)
 	}
 }
+
+func testVictim(t *testing.T) Victim {
+	t.Helper()
+	target, err := ParseTargetKey("ip:192.0.2.2", v6)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return Victim{Action: testActionID(t, 2), Target: target, ExpiresAt: time.Unix(1_700_000_000, 0).UTC()}
+}
+
+// An intent that evicts names its victim, so a restart knows which block
+// the batch may have removed (spec 5.4). An intent without one keeps the
+// version 1 encoding.
+func TestIntentCarriesItsVictim(t *testing.T) {
+	plain := testIntent(t)
+	plainData, err := plain.MarshalBinary()
+	if err != nil || !strings.Contains(string(plainData), `"v":1`) {
+		t.Fatalf("intent without a victim: %s %v", plainData, err)
+	}
+	in := plain
+	in.Victim = testVictim(t)
+	data, err := in.MarshalBinary()
+	if err != nil || !strings.Contains(string(data), `"v":2`) {
+		t.Fatalf("intent with a victim: %s %v", data, err)
+	}
+	out, err := UnmarshalIntent(data)
+	if err != nil || out != in {
+		t.Fatalf("round trip = %+v %v, want %+v", out, err, in)
+	}
+	for name, e := range map[string]Intent{"version 2 without a victim": plain, "version 1 with a victim": in} {
+		rec, err := e.record()
+		if err != nil {
+			t.Fatal(err)
+		}
+		rec.V = 3 - rec.V
+		sealed, err := sealRecord(rec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = UnmarshalIntent(sealed); err != ErrCorruptRecord {
+			t.Errorf("%s decoded: %v", name, err)
+		}
+	}
+}
+
+func TestIntentRefusesImpossibleVictims(t *testing.T) {
+	service, err := ParseTargetKey("svc:192.0.2.1/tcp/443", v6)
+	if err != nil {
+		t.Fatal(err)
+	}
+	subnet, err := ParseTargetKey("net:198.51.100.0/24", v6)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, mutate := range map[string]func(*Intent){
+		"service block evicts": func(in *Intent) { in.Kind, in.Target = KindBlockService, service },
+		"victim is the member": func(in *Intent) { in.Victim.Action = in.Action },
+		"victim at the target": func(in *Intent) { in.Victim.Target = in.Target },
+		"victim is a prefix":   func(in *Intent) { in.Victim.Target = subnet },
+		"victim has no action": func(in *Intent) { in.Victim.Action = "" },
+		"victim has no target": func(in *Intent) { in.Victim.Target = Target{} },
+		"victim has no expiry": func(in *Intent) { in.Victim.ExpiresAt = time.Time{} },
+		"victim before epoch":  func(in *Intent) { in.Victim.ExpiresAt = time.Unix(-1, 0).UTC() },
+	} {
+		in := testIntent(t)
+		in.Victim = testVictim(t)
+		mutate(&in)
+		_, err := in.MarshalBinary()
+		wantReason(t, name, err, ReasonInvalid)
+	}
+}
+
+func TestStoredIntentWithAVictimFitsItsBound(t *testing.T) {
+	far := time.Unix(0, math.MaxInt64).UTC()
+	in := testIntent(t)
+	target, err := ParseTargetKey("ip:2001:db8:ffff:ffff:ffff:ffff:ffff:ffff", v6)
+	if err != nil {
+		t.Fatal(err)
+	}
+	victim, err := ParseTargetKey("ip:2001:db8:ffff:ffff:ffff:ffff:ffff:fffe", v6)
+	if err != nil {
+		t.Fatal(err)
+	}
+	in.Target, in.ExpiresAt = target, far
+	in.Victim = Victim{Action: testActionID(t, 2), Target: victim, ExpiresAt: far}
+	data, err := in.MarshalBinary()
+	// Each documentation address is one byte short of the maximum
+	// canonical IPv6 width. Both addresses must fit at that width.
+	if err != nil || len(data)+2 > 384 || MaxIntentBytes != 384 {
+		t.Fatalf("widest evicting intent: %d bytes (bound %d), %v", len(data), MaxIntentBytes, err)
+	}
+}

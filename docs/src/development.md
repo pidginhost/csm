@@ -285,8 +285,12 @@ Their partition tally rejects negative counts, underflow and overflow;
 failed additions return the original tally. Combining a tally with set
 occupancy also returns an error and the original occupancy if either
 partition's total is invalid or overflows. A full-set deferral raises the
-capacity notice for any assessed tier once the ledger runs live, and for
-Critical work only before that.
+capacity notice for any assessed tier in a live ledger. A preview ledger
+raises it only for Critical work. A pending block that evicts names its
+victim in its effect record and its intent; the victim's record names the
+block that claimed it and stops holding a slot once that block's
+application is verified. Records and intents without an eviction keep
+their version 1 encoding.
 
 Policy lookups can overlap across registration, minting and validation, so
 they must be immutable or safe for concurrent use. Callers must serialize

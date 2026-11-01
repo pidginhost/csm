@@ -380,3 +380,127 @@ func TestGapNoticeLiveOnlyBroadensFullSetDeferrals(t *testing.T) {
 		}
 	}
 }
+
+// An eviction is kept on both records: the pending block names the
+// verified record it claimed, and the victim names the block that claimed
+// it until that block's verified outcome marks it evicted. Records
+// without either keep the version 1 encoding.
+func TestEffectRecordCarriesItsEviction(t *testing.T) {
+	victim := testEffect(t, 1)
+	victim.Applied, victim.Elapsed = t0.Add(time.Minute), time.Minute
+	plain, err := victim.MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	member := testEffect(t, 2)
+	member.Target, member.Tier = mustAddr(t, "192.0.2.20"), Tier{Class: ClassC2, Severity: SeverityCritical}
+	member.Victim = EffectRef{Action: victim.Action, ExpiresAt: victim.ExpiresAt}
+	claimed := victim
+	claimed.EvictedBy = member.Action
+	evicted := claimed
+	evicted.Evicted = true
+	for _, e := range []EffectRecord{member, claimed, evicted} {
+		key, keyErr := e.Key()
+		if keyErr != nil {
+			t.Fatal(keyErr)
+		}
+		data, encodeErr := e.MarshalBinary()
+		if encodeErr != nil || !bytes.Contains(data, []byte(`"v":2`)) {
+			t.Fatalf("%+v: %s %v", e, data, encodeErr)
+		}
+		back, decodeErr := UnmarshalEffectRecord(key, data)
+		if decodeErr != nil || back != e {
+			t.Fatalf("round trip %+v: %+v %v", e, back, decodeErr)
+		}
+	}
+	if !bytes.Contains(plain, []byte(`"v":1`)) {
+		t.Fatalf("a record without an eviction changed its encoding: %s", plain)
+	}
+	ref, err := member.Victim.Key()
+	if want, _ := victim.Key(); err != nil || !bytes.Equal(ref, want) {
+		t.Fatalf("victim reference key %x %v, want %x", ref, err, want)
+	}
+	if claimed.Holds() != true || evicted.Holds() != false || member.Holds() != true {
+		t.Fatal("only an evicted record gives up its slot")
+	}
+}
+
+func TestEffectRecordRefusesImpossibleEvictions(t *testing.T) {
+	other := testActionID(t, 9)
+	for name, mutate := range map[string]func(*EffectRecord){
+		"verified block names a victim": func(e *EffectRecord) {
+			e.Applied = t0
+			e.Victim = EffectRef{Action: other, ExpiresAt: t0}
+		},
+		"victim names itself":      func(e *EffectRecord) { e.Victim = EffectRef{Action: e.Action, ExpiresAt: t0} },
+		"victim has no expiry":     func(e *EffectRecord) { e.Victim = EffectRef{Action: other} },
+		"victim has no action":     func(e *EffectRecord) { e.Victim = EffectRef{ExpiresAt: t0} },
+		"pending block is evicted": func(e *EffectRecord) { e.EvictedBy = other },
+		"evicted by itself": func(e *EffectRecord) {
+			e.Applied, e.EvictedBy = t0, e.Action
+		},
+		"evicted by nothing": func(e *EffectRecord) {
+			e.Applied, e.Evicted = t0, true
+		},
+		"malformed evictor": func(e *EffectRecord) { e.Applied, e.EvictedBy = t0, "act_x" },
+	} {
+		e := testEffect(t, 1)
+		mutate(&e)
+		_, err := e.MarshalBinary()
+		wantReason(t, name, err, ReasonInvalid)
+	}
+	plain := testEffect(t, 1)
+	claimed := plain
+	claimed.Applied, claimed.EvictedBy = t0, other
+	for name, e := range map[string]EffectRecord{"version 2 without an eviction": plain, "version 1 with an eviction": claimed} {
+		key, rec, err := e.record()
+		if err != nil {
+			t.Fatal(err)
+		}
+		rec.V = 3 - rec.V
+		data, err := sealRecord(rec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = UnmarshalEffectRecord(key, data); err != ErrCorruptRecord {
+			t.Errorf("%s decoded: %v", name, err)
+		}
+	}
+}
+
+func TestEffectRecordWidestEvictionFits(t *testing.T) {
+	far := time.Unix(0, 1<<63-1).UTC()
+	member := testEffect(t, MaxAttempts)
+	member.Target, member.Partition, member.Lane = mustAddr(t, "2001:db8:ffff:ffff:ffff:ffff:ffff:ffff"), PartitionGeneral, LaneCorroborated
+	member.Tier, member.Corroborated = Tier{Class: ClassC3, Severity: SeverityCritical}, true
+	member.Scope, member.ExpiresAt = strings.Repeat("s", 128), far
+	member.Victim = EffectRef{Action: testActionID(t, 9), ExpiresAt: far}
+	evicted := member
+	evicted.Victim = EffectRef{}
+	evicted.Applied, evicted.Elapsed = far, time.Duration(1<<63-1)
+	evicted.EvictedBy, evicted.Evicted = testActionID(t, 9), true
+	inv, err := NewInventory(map[string]uint64{strings.Repeat("a", 64): ^uint64(0)}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonical := Scope{Owner: inv.Resolve(Claim{Kind: ClaimAccount, Value: strings.Repeat("a", 64)}), Effect: EffectAddress}.Key()
+	for _, e := range []EffectRecord{member, evicted} {
+		for _, scope := range []string{strings.Repeat("s", 128), canonical} {
+			e.Scope = scope
+			data, err := e.MarshalBinary()
+			// A documentation IPv6 address is one byte shorter than the
+			// maximum canonical address. Reserve that byte as well.
+			if err != nil || len(data)+1 > 512 || MaxEffectRecordBytes != 512 {
+				t.Fatalf("widest effect: %d bytes, %v; bound %d", len(data), err, MaxEffectRecordBytes)
+			}
+			key, err := e.Key()
+			if err != nil {
+				t.Fatal(err)
+			}
+			back, err := UnmarshalEffectRecord(key, data)
+			if err != nil || back != e {
+				t.Fatalf("widest round trip: %+v %v", back, err)
+			}
+		}
+	}
+}

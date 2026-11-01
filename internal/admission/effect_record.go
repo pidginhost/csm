@@ -9,11 +9,17 @@ import (
 
 // MaxEffectRecordBytes bounds one encoded effect record. With a known set
 // of capacity C, slot admission bounds new records to C times the sum of
-// this size and effectKeyLen. A reduced limit or an unavailable snapshot
-// can leave more records until their expiry sweep.
-const MaxEffectRecordBytes = 384
+// this size and effectKeyLen, plus the evicted records kept until their
+// expiry. A reduced limit or an unavailable snapshot can leave more
+// records until their expiry sweep.
+const MaxEffectRecordBytes = 512
 
-const effectRecordVersion = 1
+// effectRecordVersion is the encoding of a record without an eviction;
+// a record that names a victim or an evictor is evictionRecordVersion.
+const (
+	effectRecordVersion   = 1
+	evictionRecordVersion = 2
+)
 
 // effectKeyLen is the length of an effect record's key: its expiry, then
 // its action.
@@ -43,10 +49,34 @@ type EffectRecord struct {
 	// charge's window does.
 	Applied time.Time
 	Elapsed time.Duration
+	// Victim is the verified record a pending block claimed to evict
+	// (spec 5.6); zero when the block took a free slot, and cleared when
+	// its application is verified.
+	Victim EffectRef
+	// EvictedBy is the pending block that claimed this verified record as
+	// its victim. Evicted is set when that block's application is
+	// verified: the record then holds no slot and stays, as the ledger's
+	// record of the eviction, until its expiry sweep.
+	EvictedBy ActionID
+	Evicted   bool
 }
+
+// EffectRef names an effect record by its action and expiry, which make
+// its key.
+type EffectRef struct {
+	Action    ActionID
+	ExpiresAt time.Time
+}
+
+// Key is the storage key of the record r names.
+func (r EffectRef) Key() ([]byte, error) { return EffectRecordKey(r.Action, r.ExpiresAt) }
 
 // Verified reports whether the block's application was verified.
 func (e EffectRecord) Verified() bool { return !e.Applied.IsZero() }
+
+// Holds reports whether the record holds a set slot: every record does
+// until an eviction of it is verified.
+func (e EffectRecord) Holds() bool { return !e.Evicted }
 
 type effectRecordRecord struct {
 	V            uint8     `json:"v"`
@@ -60,6 +90,10 @@ type effectRecordRecord struct {
 	Corroborated bool      `json:"corroborated,omitempty"`
 	Applied      int64     `json:"applied,omitempty"`
 	Elapsed      int64     `json:"elapsed,omitempty"`
+	Victim       ActionID  `json:"victim,omitempty"`
+	VictimEnds   int64     `json:"victim_expires,omitempty"`
+	EvictedBy    ActionID  `json:"evicted_by,omitempty"`
+	Evicted      bool      `json:"evicted,omitempty"`
 }
 
 func (e EffectRecord) record() ([]byte, effectRecordRecord, error) {
@@ -88,9 +122,33 @@ func (e EffectRecord) record() ([]byte, effectRecordRecord, error) {
 		return bad("effect scope is malformed")
 	case e.Elapsed < 0, e.Elapsed > 0 && e.Applied.IsZero():
 		return bad("effect elapsed time has no application")
+	case e.Victim != EffectRef{} && e.Verified():
+		return bad("a verified block keeps no victim claim")
+	case e.EvictedBy != "" && !e.Verified():
+		return bad("only a verified block is a victim")
+	case e.Evicted && e.EvictedBy == "":
+		return bad("an evicted block names no evictor")
+	case e.Victim.Action != "" && e.Victim.Action == e.Action, e.EvictedBy != "" && e.EvictedBy == e.Action:
+		return bad("a block cannot evict itself")
 	}
 	rec := effectRecordRecord{V: effectRecordVersion, Target: e.Target.Key(), Partition: e.Partition, Lane: e.Lane, Class: e.Tier.Class,
 		Severity: e.Tier.Severity, Scope: e.Scope, Direct: e.Direct, Corroborated: e.Corroborated, Elapsed: int64(e.Elapsed)}
+	if e.Victim != (EffectRef{}) {
+		ends, inRange := unixNano(e.Victim.ExpiresAt)
+		if _, err := e.Victim.Key(); err != nil || !inRange || ends <= 0 {
+			return bad("effect victim is malformed")
+		}
+		rec.Victim, rec.VictimEnds = e.Victim.Action, ends
+	}
+	if e.EvictedBy != "" {
+		if _, err := ParseActionID(string(e.EvictedBy)); err != nil {
+			return bad("effect evictor is malformed")
+		}
+		rec.EvictedBy, rec.Evicted = e.EvictedBy, e.Evicted
+	}
+	if rec.Victim != "" || rec.EvictedBy != "" {
+		rec.V = evictionRecordVersion
+	}
 	if e.Verified() {
 		if rec.Applied, ok = unixNano(e.Applied); !ok || rec.Applied < 0 {
 			return bad("effect has no application after the epoch")
@@ -134,7 +192,7 @@ func (e EffectRecord) MarshalBinary() ([]byte, error) {
 // value and checks its invariants.
 func UnmarshalEffectRecord(key, data []byte) (EffectRecord, error) {
 	var rec effectRecordRecord
-	if len(data) > MaxEffectRecordBytes || openRecord(data, &rec) != nil || len(key) != effectKeyLen || rec.V != effectRecordVersion {
+	if len(data) > MaxEffectRecordBytes || openRecord(data, &rec) != nil || len(key) != effectKeyLen {
 		return EffectRecord{}, ErrCorruptRecord
 	}
 	expires := binary.BigEndian.Uint64(key[:8])
@@ -147,7 +205,11 @@ func UnmarshalEffectRecord(key, data []byte) (EffectRecord, error) {
 	}
 	e := EffectRecord{Action: ActionID(key[8:]), Target: target, Partition: rec.Partition, Lane: rec.Lane,
 		Tier: Tier{Class: rec.Class, Severity: rec.Severity}, Scope: rec.Scope, Direct: rec.Direct, Corroborated: rec.Corroborated,
-		ExpiresAt: fromNano(int64(expires)), Applied: fromNano(rec.Applied), Elapsed: time.Duration(rec.Elapsed)}
+		ExpiresAt: fromNano(int64(expires)), Applied: fromNano(rec.Applied), Elapsed: time.Duration(rec.Elapsed),
+		EvictedBy: rec.EvictedBy, Evicted: rec.Evicted}
+	if rec.Victim != "" {
+		e.Victim = EffectRef{Action: rec.Victim, ExpiresAt: fromNano(rec.VictimEnds)}
+	}
 	again, againRec, err := e.record()
 	if err != nil || !bytes.Equal(again, key) || againRec != rec {
 		return EffectRecord{}, ErrCorruptRecord
