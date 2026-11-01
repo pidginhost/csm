@@ -72,6 +72,32 @@ func TestPassSendsResolvedFeeds(t *testing.T) {
 	}
 }
 
+// A resolver on a public address listed in infra_ips keeps DNS feeds on.
+func TestPassKeepsFeedsThroughInfraResolver(t *testing.T) {
+	h := &fakeHost{}
+	r := h.reconciler()
+	r.Feeds = NewFeedState()
+	r.Collect = func(context.Context, string) antispam.HostFacts {
+		f := goodFeedFacts()
+		f.ResolvConf = "nameserver 198.51.100.53\n"
+		return f
+	}
+	r.assess = func(bool, antispam.Settings, antispam.HostFacts) antispam.Assessment {
+		return antispam.Assessment{Action: antispam.Install}
+	}
+	d := feedDesired(antispam.FeedPSBL)
+	d.InfraNets = antispam.ParseInfraNets([]string{"198.51.100.53"})
+	out := r.Pass(context.Background(), d)
+	for _, f := range out.Findings {
+		if f.Check == CheckFeed {
+			t.Fatalf("feed finding %+v", f)
+		}
+	}
+	if len(h.requests) != 1 || h.requests[0].Feeds == nil || *h.requests[0].Feeds != antispam.FeedPSBL {
+		t.Fatalf("requests %+v", h.requests)
+	}
+}
+
 func TestPassBlocksFeedsAfterFeedsCheck(t *testing.T) {
 	h := &fakeHost{result: antispam.Result{Operation: antispam.OpApply, FailedStep: antispam.FeedsCheckStep, Rollback: antispam.RollbackVerified, Error: "x"}}
 	r := h.reconciler()

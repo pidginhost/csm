@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/netip"
 	"slices"
 )
 
@@ -132,6 +133,13 @@ type HostFacts struct {
 	// options.dns.nameserver is set.
 	ResolvConf    string
 	ResolvConfErr error
+	// ResolvedDNS includes systemd-resolved's global and per-link DNS
+	// servers, plus fallback servers when no default DNS route exists.
+	ResolvedDNS    []netip.Addr
+	ResolvedDNSErr error
+	// InfraNets are the infra_ips addresses and CIDRs. The pass supplies
+	// them; a nameserver inside counts as the operator's own.
+	InfraNets []netip.Prefix
 	// DQSKey is the Spamhaus DQS key file. Collect leaves it unset; the
 	// caller reads it only when spamhaus_dqs is enabled.
 	DQSKey KeyFacts

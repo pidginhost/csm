@@ -10,6 +10,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/pidginhost/csm/internal/netutil"
 )
 
 // OptionalUsable reports why CSM cannot write optional target t, or nil:
@@ -123,16 +125,8 @@ func Nameservers(options []byte, resolvConf string) ([]netip.AddrPort, error) {
 		} else if err := json.Unmarshal(raw, &entries); err != nil {
 			return nil, errors.New("rspamd's dns.nameserver is neither a string nor a list of strings")
 		}
-	} else {
-		for _, line := range strings.Split(resolvConf, "\n") {
-			line, _, _ = strings.Cut(line, "#")
-			if fields := strings.Fields(line); len(fields) >= 2 && fields[0] == "nameserver" {
-				entries = append(entries, fields[1])
-			}
-		}
-		if len(entries) == 0 {
-			return nil, errNoSystemNameserver
-		}
+	} else if entries = resolvConfEntries(resolvConf); len(entries) == 0 {
+		return nil, errNoSystemNameserver
 	}
 	var out []netip.AddrPort
 	for _, entry := range entries {
@@ -159,6 +153,18 @@ func Nameservers(options []byte, resolvConf string) ([]netip.AddrPort, error) {
 		return nil, errors.New("rspamd has no nameserver")
 	}
 	return out, nil
+}
+
+// resolvConfEntries returns the nameserver addresses a resolv.conf lists.
+func resolvConfEntries(text string) []string {
+	var out []string
+	for _, line := range strings.Split(text, "\n") {
+		line, _, _ = strings.Cut(line, "#")
+		if fields := strings.Fields(line); len(fields) >= 2 && fields[0] == "nameserver" {
+			out = append(out, fields[1])
+		}
+	}
+	return out
 }
 
 // nameserverEndpoint reads one rspamd nameserver entry: an address, optionally
@@ -207,11 +213,57 @@ func nameserverEndpoint(s string) (netip.AddrPort, error) {
 	return netip.AddrPortFrom(addr, port), nil
 }
 
-// localResolver reports whether rspamd's queries stay on this host or a
-// private network. Lists refuse public resolvers (feeds spec 4.4).
-func localResolver(a netip.Addr) bool { return a.IsLoopback() || a.IsPrivate() }
+// ownResolver reports whether rspamd's queries stay on this host, a private
+// network, or a resolver the operator lists in infra_ips. Lists refuse public
+// resolvers (feeds spec 4.4). The test is a plain prefix match: the wider
+// infra test also trusts Cloudflare's ranges, which hold a public resolver.
+func ownResolver(a netip.Addr, infra []netip.Prefix) bool {
+	a = a.WithZone("").Unmap()
+	return a.IsLoopback() || a.IsPrivate() || slices.ContainsFunc(infra, func(p netip.Prefix) bool { return p.Contains(a) })
+}
 
-const resolverFix = "DNS blocklists refuse queries from public resolvers. Run a local recursive resolver and add dns { nameserver = ['127.0.0.1']; } to /etc/rspamd/local.d/options.inc"
+// ParseInfraNets reads infra_ips entries that are addresses or CIDRs.
+// Hostnames and invalid entries are skipped: the resolver check never
+// resolves names.
+func ParseInfraNets(entries []string) []netip.Prefix {
+	var out []netip.Prefix
+	for _, e := range entries {
+		if n := netutil.ParseCIDROrIP(e); n != nil {
+			a, _ := netip.AddrFromSlice(n.IP)
+			bits, _ := n.Mask.Size()
+			out = append(out, netip.PrefixFrom(a.Unmap(), bits))
+		}
+	}
+	return out
+}
+
+// ResolvedStub identifies systemd-resolved's standard stub endpoints.
+// Other ports on those addresses can belong to an independent resolver.
+func ResolvedStub(server netip.AddrPort) bool {
+	a := server.Addr().Unmap()
+	return server.Port() == 53 && (a == netip.AddrFrom4([4]byte{127, 0, 0, 53}) || a == netip.AddrFrom4([4]byte{127, 0, 0, 54}))
+}
+
+// resolverProblem returns why rspamd's nameservers would be refused by
+// blocklists, or "". A systemd-resolved stub is judged by its upstreams.
+func resolverProblem(servers []netip.AddrPort, f HostFacts) string {
+	public := func(a netip.AddrPort) bool { return !ownResolver(a.Addr(), f.InfraNets) }
+	if slices.ContainsFunc(servers, ResolvedStub) {
+		if f.ResolvedDNSErr != nil {
+			return "CSM cannot read systemd-resolved's live DNS servers through busctl. " + resolverFix
+		}
+		if len(f.ResolvedDNS) == 0 || slices.ContainsFunc(f.ResolvedDNS, func(a netip.Addr) bool { return !ownResolver(a, f.InfraNets) }) {
+			return "rspamd uses systemd-resolved, which forwards to a public or unknown nameserver. " + resolverFix
+		}
+		servers = slices.DeleteFunc(slices.Clone(servers), ResolvedStub)
+	}
+	if slices.ContainsFunc(servers, public) {
+		return "rspamd uses a public nameserver. " + resolverFix
+	}
+	return ""
+}
+
+const resolverFix = "DNS blocklists refuse queries from public resolvers. Point rspamd at a local recursive resolver or at your own resolver listed in infra_ips, for example dns { nameserver = ['127.0.0.1']; } in /etc/rspamd/local.d/options.inc"
 
 // ResolveFeeds returns the settings this host can take. Map redirects whose
 // file CSM cannot own are skipped; DNS feeds go off when their files cannot
@@ -274,8 +326,8 @@ func ResolveFeeds(s Settings, f HostFacts) (Settings, []Problem) {
 				reason = "CSM cannot read /etc/resolv.conf, which rspamd uses without dns.nameserver. " + resolverFix
 			case err != nil:
 				reason = err.Error() + ". " + resolverFix
-			case slices.ContainsFunc(servers, func(a netip.AddrPort) bool { return !localResolver(a.Addr()) }):
-				reason = "rspamd uses a public nameserver. " + resolverFix
+			default:
+				reason = resolverProblem(servers, f)
 			}
 		}
 		if reason != "" {

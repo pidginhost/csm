@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -147,6 +148,10 @@ func (c collector) collect(ctx context.Context, socket string) antispam.HostFact
 	f.SpamdDisabled, f.SpamdDisabledErr = exists(c.layout.SpamdDisabled)
 	f.GlobalEnable, f.GlobalEnableErr = exists(c.layout.GlobalEnable)
 	f.ResolvConf, f.ResolvConfErr = readText(c.layout.ResolvConf)
+	servers, err := antispam.Nameservers([]byte(f.RspamdOptions.Stdout), f.ResolvConf)
+	if f.RspamdOptions.Err == nil && err == nil && slices.ContainsFunc(servers, antispam.ResolvedStub) {
+		f.ResolvedDNS, f.ResolvedDNSErr = c.resolvedDNS(ctx)
+	}
 
 	settings := map[string]string{}
 	if f.EximSettings.Err == nil {

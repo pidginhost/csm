@@ -636,3 +636,152 @@ func TestResolveScoresSkipsForeignGroups(t *testing.T) {
 		t.Fatalf("problem %+v", p)
 	}
 }
+
+func TestParseInfraNets(t *testing.T) {
+	got := ParseInfraNets([]string{"198.51.100.7", " 203.0.113.9/24 ", "2001:db8::1", "::ffff:192.0.2.5", "mail.example.com", "", "bogus/99"})
+	want := []netip.Prefix{
+		netip.MustParsePrefix("198.51.100.7/32"),
+		netip.MustParsePrefix("203.0.113.0/24"),
+		netip.MustParsePrefix("2001:db8::1/128"),
+		netip.MustParsePrefix("192.0.2.5/32"),
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+}
+
+func TestResolveFeedsAcceptsInfraResolver(t *testing.T) {
+	f := feedFacts()
+	f.ResolvConf = "nameserver 198.51.100.53\nnameserver 203.0.113.54\n"
+	f.InfraNets = ParseInfraNets([]string{"198.51.100.53", "203.0.113.0/24"})
+	got, problems := ResolveFeeds(dqsSettings(), f)
+	if len(problems) != 0 || !slices.Equal(got.Feeds, []string{FeedPSBL, FeedSpamhausDQS}) {
+		t.Fatalf("feeds %v, problems %+v", got.Feeds, problems)
+	}
+}
+
+func TestResolveFeedsInfraDoesNotCoverOtherPublicResolver(t *testing.T) {
+	f := feedFacts()
+	f.ResolvConf = "nameserver 198.51.100.53\nnameserver 198.51.100.54\n"
+	f.InfraNets = ParseInfraNets([]string{"198.51.100.53"})
+	got, problems := ResolveFeeds(dqsSettings(), f)
+	if len(got.Feeds) != 0 || len(problems) != 2 || !strings.Contains(problems[0].Detail, "public nameserver") {
+		t.Fatalf("feeds %v, problems %+v", got.Feeds, problems)
+	}
+}
+
+func TestResolveFeedsInfraMatchesMappedIPv6Nameserver(t *testing.T) {
+	f := feedFacts()
+	f.RspamdOptions = CommandResult{Stdout: `{"dns":{"nameserver":"[::ffff:198.51.100.53]:53"}}`}
+	f.InfraNets = ParseInfraNets([]string{"198.51.100.53"})
+	got, problems := ResolveFeeds(dqsSettings(), f)
+	if len(problems) != 0 || len(got.Feeds) != 2 {
+		t.Fatalf("feeds %v, problems %+v", got.Feeds, problems)
+	}
+}
+
+func TestResolveFeedsJudgesResolvedStubUpstream(t *testing.T) {
+	f := feedFacts()
+	f.ResolvConf = "nameserver 127.0.0.53\n"
+	f.ResolvedDNS = []netip.Addr{netip.MustParseAddr("198.51.100.53")}
+	got, problems := ResolveFeeds(dqsSettings(), f)
+	if len(got.Feeds) != 0 || len(problems) != 2 || !strings.Contains(problems[0].Detail, "systemd-resolved") {
+		t.Fatalf("feeds %v, problems %+v", got.Feeds, problems)
+	}
+}
+
+func TestResolveFeedsStubUpstreamInInfra(t *testing.T) {
+	f := feedFacts()
+	f.ResolvConf = "nameserver 127.0.0.54\n"
+	f.ResolvedDNS = []netip.Addr{netip.MustParseAddr("198.51.100.53")}
+	f.InfraNets = ParseInfraNets([]string{"198.51.100.53"})
+	got, problems := ResolveFeeds(dqsSettings(), f)
+	if len(problems) != 0 || len(got.Feeds) != 2 {
+		t.Fatalf("feeds %v, problems %+v", got.Feeds, problems)
+	}
+}
+
+func TestResolveFeedsStubUpstreamUnreadable(t *testing.T) {
+	f := feedFacts()
+	f.ResolvConf = "nameserver 127.0.0.53\n"
+	f.ResolvedDNSErr = fs.ErrNotExist
+	got, problems := ResolveFeeds(dqsSettings(), f)
+	if len(got.Feeds) != 0 || len(problems) != 2 || !strings.Contains(problems[0].Detail, "busctl") {
+		t.Fatalf("feeds %v, problems %+v", got.Feeds, problems)
+	}
+}
+
+func TestResolveFeedsStubWithoutUpstream(t *testing.T) {
+	f := feedFacts()
+	f.RspamdOptions = CommandResult{Stdout: `{"dns":{"nameserver":["127.0.0.53"]}}`}
+	f.ResolvedDNS = nil
+	got, problems := ResolveFeeds(dqsSettings(), f)
+	if len(got.Feeds) != 0 || len(problems) != 2 || !strings.Contains(problems[0].Detail, "systemd-resolved") {
+		t.Fatalf("feeds %v, problems %+v", got.Feeds, problems)
+	}
+}
+
+// A local resolver other than the stub is judged as today.
+func TestResolveFeedsLoopbackResolverIsNotTheStub(t *testing.T) {
+	f := feedFacts()
+	f.ResolvConf = "nameserver 127.0.0.1\n"
+	f.ResolvedDNSErr = fs.ErrNotExist
+	if got, problems := ResolveFeeds(dqsSettings(), f); len(problems) != 0 || len(got.Feeds) != 2 {
+		t.Fatalf("feeds %v, problems %+v", got.Feeds, problems)
+	}
+}
+
+func TestResolveFeedsStubUnknownUpstreamEntry(t *testing.T) {
+	f := feedFacts()
+	f.ResolvConf = "nameserver 127.0.0.53\n"
+	f.ResolvedDNS = []netip.Addr{netip.MustParseAddr("127.0.0.1"), {}}
+	if got, problems := ResolveFeeds(dqsSettings(), f); len(got.Feeds) != 0 || len(problems) != 2 {
+		t.Fatalf("feeds %v, problems %+v", got.Feeds, problems)
+	}
+}
+
+func TestResolveFeedsInfraAddressForms(t *testing.T) {
+	for _, tc := range []struct {
+		name, infra, server string
+		want                bool
+	}{
+		{"mapped host prefix", "::ffff:198.51.100.53/128", "198.51.100.53", true},
+		{"mapped network", "::ffff:198.51.100.53/120", "198.51.100.54", true},
+		{"mapped nameserver and network", "::ffff:198.51.100.53/120", "::ffff:198.51.100.54", true},
+		{"outside mapped network", "::ffff:198.51.100.53/120", "203.0.113.53", false},
+		{"outside mapped host", "::ffff:198.51.100.53/128", "198.51.100.54", false},
+		{"scoped IPv6", "2001:db8::/64", "2001:db8::53%eth0", true},
+		{"outside scoped IPv6", "2001:db8::/64", "2001:db8:1::53%eth0", false},
+		{"IPv6 is not IPv4", "::/0", "198.51.100.53", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := feedFacts()
+			f.InfraNets = ParseInfraNets([]string{tc.infra})
+			f.ResolvConf = "nameserver " + tc.server + "\n"
+			s := dqsSettings()
+			got, problems := ResolveFeeds(s, f)
+			if tc.want {
+				if !slices.Equal(got.Feeds, s.Feeds) || len(problems) != 0 {
+					t.Fatalf("own resolver rejected: feeds %v, problems %+v", got.Feeds, problems)
+				}
+			} else if len(got.Feeds) != 0 || len(problems) != len(s.Feeds) {
+				t.Fatalf("untrusted resolver accepted: feeds %v, problems %+v", got.Feeds, problems)
+			}
+		})
+	}
+}
+
+func TestResolveFeedsStubAddressOnAnotherPort(t *testing.T) {
+	for _, endpoint := range []string{"127.0.0.53:5353", "127.0.0.54:5353", "[::ffff:127.0.0.53]:5353"} {
+		t.Run(endpoint, func(t *testing.T) {
+			f := feedFacts()
+			f.RspamdOptions.Stdout = `{"dns":{"nameserver":"` + endpoint + `"}}`
+			f.ResolvedDNSErr = fs.ErrNotExist
+			s := dqsSettings()
+			got, problems := ResolveFeeds(s, f)
+			if !slices.Equal(got.Feeds, s.Feeds) || len(problems) != 0 {
+				t.Fatalf("local resolver mistaken for the stub: feeds %v, problems %+v", got.Feeds, problems)
+			}
+		})
+	}
+}
