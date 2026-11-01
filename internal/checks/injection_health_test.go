@@ -135,6 +135,7 @@ func TestCheckHealthCPanelReportsMissingWhmapi1AsOptional(t *testing.T) {
 	platform.SetOverrides(platform.Overrides{
 		Panel: ptrPanel(platform.PanelCPanel),
 	})
+	withMockOS(t, &mockOSGlobRoots{files: []string{"/home/alice/public_html/wp-config.php"}})
 	withMockCmd(t, &mockCmd{
 		lookPath: func(name string) (string, error) {
 			if name == "whmapi1" || name == "wp" {
@@ -159,6 +160,44 @@ func TestCheckHealthCPanelReportsMissingWhmapi1AsOptional(t *testing.T) {
 	}
 	if !hasWP {
 		t.Error("expected optional wp finding")
+	}
+}
+
+// wp-cli only runs against WordPress installs, so its absence matters only
+// where there is one.
+func TestCheckHealthReportsMissingWPOnlyWithWordPressInstalls(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		files []string
+		want  int
+	}{
+		{"no installs", nil, 0},
+		{"one install", []string{"/home/alice/public_html/wp-config.php"}, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			platform.ResetForTest()
+			t.Cleanup(platform.ResetForTest)
+			platform.SetOverrides(platform.Overrides{Panel: ptrPanel(platform.PanelNone)})
+			withMockOS(t, &mockOSGlobRoots{files: tc.files})
+			withMockCmd(t, &mockCmd{
+				lookPath: func(name string) (string, error) {
+					if name == "wp" {
+						return "", errors.New("not found")
+					}
+					return "/usr/bin/" + name, nil
+				},
+			})
+
+			got := 0
+			for _, f := range CheckHealth(context.Background(), &config.Config{}, nil) {
+				if f.Message == "Optional command not found: wp" {
+					got++
+				}
+			}
+			if got != tc.want {
+				t.Errorf("missing wp findings = %d, want %d", got, tc.want)
+			}
+		})
 	}
 }
 
