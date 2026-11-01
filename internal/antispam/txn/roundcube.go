@@ -50,6 +50,7 @@ func (t *tx) roundcube(changes []change) (string, error) {
 
 // restoreLast puts the last written file back to its snapshot and drops it
 // from the rollback list, so an enclosing rollback does not find it changed.
+// Once an operator file is back, its backup goes too.
 func (t *tx) restoreLast() error {
 	last := len(t.writes) - 1
 	w := t.writes[last]
@@ -62,5 +63,14 @@ func (t *tx) restoreLast() error {
 		return err
 	}
 	t.writes = slices.Delete(t.writes, last, len(t.writes))
+	if w.backup == "" {
+		return nil
+	}
+	// On failure the backup stays listed, so an enclosing rollback retries.
+	t.backups[w.backup] = false
+	if err := deleteFile(w.backup); err != nil {
+		return err
+	}
+	delete(t.backups, w.backup)
 	return nil
 }

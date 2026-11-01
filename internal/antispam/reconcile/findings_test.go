@@ -14,7 +14,7 @@ import (
 var testNow = time.Date(2026, 10, 13, 9, 0, 0, 0, time.UTC)
 
 func TestFindingChecksAreRegistered(t *testing.T) {
-	for _, name := range []string{CheckPrecondition, CheckApplyFailed, CheckRspamdDown, CheckRspamdRecovered, CheckScanError, CheckIPMap} {
+	for _, name := range []string{CheckPrecondition, CheckApplyFailed, CheckRspamdDown, CheckRspamdRecovered, CheckScanError, CheckIPMap, CheckFileReplaced} {
 		info, ok := checks.LookupCheck(name)
 		if !ok {
 			t.Errorf("%s is not registered", name)

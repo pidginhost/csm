@@ -242,17 +242,26 @@ func TestResolveFeedsDropsDNSFeedsWhenOverrideFileUnusable(t *testing.T) {
 	}
 }
 
-func TestResolveFeedsSkipsForeignRedirect(t *testing.T) {
+// A protected operator file at a redirect path is backed up and replaced by
+// the worker; a loosened one still keeps the redirect out.
+func TestResolveFeedsTakesOverForeignRedirect(t *testing.T) {
 	f := feedFacts()
 	p := RedirectPath(RedirectWhitelist)
+	var tg *TargetFacts
 	for i := range f.Targets {
 		if f.Targets[i].Path == p {
-			f.Targets[i].Missing, f.Targets[i].File, f.Targets[i].Content = false, PathFacts{Path: p, Mode: 0o644}, "operator\n"
+			tg = &f.Targets[i]
 		}
 	}
+	tg.Missing, tg.File, tg.Content = false, PathFacts{Path: p, Mode: 0o644}, "operator\n"
 	got, problems := ResolveFeeds(defaults(false), f)
+	if len(got.SkipMaps) != 0 || len(problems) != 0 {
+		t.Fatalf("protected foreign file: got %+v, problems %+v", got, problems)
+	}
+	tg.File.Mode = 0o664
+	got, problems = ResolveFeeds(defaults(false), f)
 	if !slices.Equal(got.SkipMaps, []string{RedirectWhitelist}) || len(problems) != 1 || problems[0].Key != FeedRspamdMaps || !strings.Contains(problems[0].Detail, p) {
-		t.Fatalf("got %+v, problems %+v", got, problems)
+		t.Fatalf("loosened foreign file: got %+v, problems %+v", got, problems)
 	}
 	s := defaults(false)
 	s.Feeds = []string{FeedRspamdMaps}
@@ -531,10 +540,10 @@ func TestResolveFeedsDropsTheIPMap(t *testing.T) {
 		"map missing":    func(f *HostFacts) { f.IPMap = FileFacts{Missing: true} },
 		"map unreadable": func(f *HostFacts) { f.IPMap = FileFacts{Err: errors.New("boom")} },
 		"group unknown":  func(f *HostFacts) { f.RspamdGID = -1 },
-		"multimap foreign": func(f *HostFacts) {
+		"multimap loosened": func(f *HostFacts) {
 			for i := range f.Targets {
 				if f.Targets[i].Path == RedirectPath(RedirectMultimap) {
-					f.Targets[i].Missing, f.Targets[i].File, f.Targets[i].Content = false, PathFacts{Path: f.Targets[i].Path, Mode: 0o644}, "operator\n"
+					f.Targets[i].Missing, f.Targets[i].File, f.Targets[i].Content = false, PathFacts{Path: f.Targets[i].Path, Mode: 0o664}, "operator\n"
 				}
 			}
 		},
@@ -548,6 +557,22 @@ func TestResolveFeedsDropsTheIPMap(t *testing.T) {
 		if got.HasFeed(FeedCSMIPMap) || !slices.ContainsFunc(problems, func(p Problem) bool { return p.Key == FeedCSMIPMap }) {
 			t.Errorf("%s: got %+v, problems %+v", name, got, problems)
 		}
+	}
+}
+
+// The worker backs up and replaces a protected operator multimap.conf, so
+// the IP map feed keeps its rule.
+func TestResolveFeedsKeepsTheIPMapOverForeignMultimap(t *testing.T) {
+	f := ipMapFacts()
+	for i := range f.Targets {
+		if f.Targets[i].Path == RedirectPath(RedirectMultimap) {
+			f.Targets[i].Missing, f.Targets[i].File, f.Targets[i].Content = false, PathFacts{Path: f.Targets[i].Path, Mode: 0o644}, "operator\n"
+		}
+	}
+	s := defaults(false)
+	s.Feeds = []string{FeedCSMIPMap, FeedPSBL}
+	if got, problems := ResolveFeeds(s, f); !got.HasFeed(FeedCSMIPMap) || len(problems) != 0 {
+		t.Fatalf("got %+v, problems %+v", got, problems)
 	}
 }
 
@@ -616,23 +641,30 @@ func TestResolveFeedsChecksIPMapDirectories(t *testing.T) {
 	}
 }
 
-func TestResolveScoresSkipsForeignGroups(t *testing.T) {
+func TestResolveScoresTakesOverForeignGroups(t *testing.T) {
 	f := feedFacts()
 	s := defaults(false)
 	s.SkipScores = true
 	if got, problems := ResolveScores(s, f); got.SkipScores || len(problems) != 0 {
 		t.Fatalf("usable file: got %+v, problems %+v", got, problems)
 	}
+	var tg *TargetFacts
 	for i := range f.Targets {
 		if f.Targets[i].Path == ScoresPath {
-			f.Targets[i].Missing, f.Targets[i].File, f.Targets[i].Content = false, PathFacts{Path: ScoresPath, Mode: 0o644}, "operator\n"
+			tg = &f.Targets[i]
 		}
 	}
+	tg.Missing, tg.File, tg.Content = false, PathFacts{Path: ScoresPath, Mode: 0o644}, "operator\n"
+	if got, problems := ResolveScores(s, f); got.SkipScores || len(problems) != 0 {
+		t.Fatalf("protected foreign file: got %+v, problems %+v", got, problems)
+	}
+	tg.File.Mode = 0o664
 	got, problems := ResolveScores(defaults(false), f)
 	if !got.SkipScores || len(problems) != 1 {
-		t.Fatalf("foreign file: got %+v, problems %+v", got, problems)
+		t.Fatalf("loosened foreign file: got %+v, problems %+v", got, problems)
 	}
-	if p := problems[0]; p.Code != CodeScores || p.Severity != Warning || !strings.Contains(p.Detail, ScoresPath) {
+	if p := problems[0]; p.Code != CodeScores || p.Severity != Warning || !strings.Contains(p.Detail, ScoresPath) ||
+		strings.Contains(p.Detail, "move your weights") {
 		t.Fatalf("problem %+v", p)
 	}
 }

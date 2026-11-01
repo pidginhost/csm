@@ -446,7 +446,7 @@ func checkLearningConflicts(c *learningCheck, s Settings, f HostFacts) {
 			continue
 		}
 		if err := OptionalUsable(t); err != nil {
-			c.add(ReasonConfigConflict, "a learning file CSM would write belongs to someone else or cannot be written safely")
+			c.add(ReasonConfigConflict, "a learning file CSM would write cannot be written safely")
 			return
 		}
 	}
@@ -617,11 +617,7 @@ func fuzzyWorkerEnabled(section json.RawMessage) (bool, error) {
 func roundcubeUsable(c *learningCheck, f HostFacts) bool {
 	rc := f.Roundcube
 	if rc.Err != nil || !rc.IncludeMechanism || !rc.PHP || OptionalUsable(rc.Include) != nil {
-		detail := "the webmail Junk-button include cannot be installed or verified; learning continues without it"
-		if inc := rc.Include; !inc.Missing && inc.Err == nil && inc.Content != "" && !ManagedFor(inc.Kind, inc.Content) {
-			detail = "another file holds the webmail Junk-button include path; learning continues without CSM's include"
-		}
-		c.add(ReasonRoundcube, detail)
+		c.add(ReasonRoundcube, "the webmail Junk-button include cannot be installed or verified; learning continues without it")
 		return false
 	}
 	return true

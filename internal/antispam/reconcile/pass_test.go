@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/netip"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -465,5 +466,98 @@ func TestDesiredFromConfigLearning(t *testing.T) {
 	got = DesiredFromConfig(cfg).Settings
 	if got.Learning || got.LearningDir != "" || got.Roundcube {
 		t.Fatalf("learning off: %+v", got)
+	}
+}
+
+// Each backup the worker kept is one warning until the operator deletes it,
+// whether antispam is enabled, disabled or observed, and while a busy lock
+// holds the apply back. An unreadable backup directory keeps the last
+// findings; a reconciler without the hook settles nothing.
+func TestPassReportsReplacedFiles(t *testing.T) {
+	rep := antispam.Replacement{Path: "/etc/rspamd/local.d/actions.conf",
+		Backup: antispam.ReplacedDir + "/20260102T030405Z_%2Fetc%2Frspamd%2Flocal.d%2Factions.conf"}
+	for _, tc := range []struct {
+		name string
+		host *fakeHost
+		d    Desired
+	}{
+		{"enabled", &fakeHost{}, desired(true)},
+		{"applied", &fakeHost{assessment: antispam.Assessment{Action: antispam.Install}, result: antispam.Result{OK: true}}, desired(true)},
+		{"disabled", &fakeHost{}, desired(false)},
+		{"observe", &fakeHost{assessment: antispam.Assessment{Action: antispam.Uninstall, Installed: true}}, Desired{Observe: true}},
+		{"busy", &fakeHost{assessment: antispam.Assessment{Action: antispam.Install},
+			result: antispam.Result{Operation: antispam.OpApply, Busy: true, FailedStep: "lock", Rollback: antispam.RollbackNone}}, desired(true)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			replacedFindings := func(out Outcome) []alert.Finding {
+				var found []alert.Finding
+				for _, f := range out.Findings {
+					if f.Check == CheckFileReplaced {
+						found = append(found, f)
+					}
+				}
+				return found
+			}
+			r := tc.host.reconciler()
+			r.Replaced = func() ([]antispam.Replacement, error) { return []antispam.Replacement{rep}, nil }
+			out := r.Pass(context.Background(), tc.d)
+			found := replacedFindings(out)
+			if !slices.Contains(out.Checks, CheckFileReplaced) || len(found) != 1 {
+				t.Fatalf("checks %q, findings %+v", out.Checks, out.Findings)
+			}
+			if f := found[0]; f.Severity != alert.Warning || f.DedupKey != rep.Backup || !f.Timestamp.Equal(testNow) ||
+				!strings.Contains(f.Message, rep.Path) || !strings.Contains(f.Details, rep.Path) || !strings.Contains(f.Details, rep.Backup) {
+				t.Fatalf("finding %+v", f)
+			}
+			if !tc.d.Enabled && strings.Contains(found[0].Details, "now owns") {
+				t.Fatal("a historical backup claims the removed integration still owns the target")
+			}
+
+			r = tc.host.reconciler()
+			r.Replaced = func() ([]antispam.Replacement, error) { return nil, errors.New("permission denied") }
+			out = r.Pass(context.Background(), tc.d)
+			if slices.Contains(out.Checks, CheckFileReplaced) || len(replacedFindings(out)) != 0 {
+				t.Fatalf("unreadable directory settled: checks %q, findings %+v", out.Checks, out.Findings)
+			}
+
+			out = tc.host.reconciler().Pass(context.Background(), tc.d)
+			if slices.Contains(out.Checks, CheckFileReplaced) || len(replacedFindings(out)) != 0 {
+				t.Fatalf("no hook settled: checks %q, findings %+v", out.Checks, out.Findings)
+			}
+		})
+	}
+}
+
+// A pass must report the copies its worker left, not the directory listing
+// from before the worker started.
+func TestPassReportsReplacementsAfterWorker(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		result antispam.Result
+	}{
+		{"applied", antispam.Result{OK: true}},
+		{"rollback failed", antispam.Result{FailedStep: "rspamd_check", Rollback: antispam.RollbackFailed}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := &fakeHost{assessment: antispam.Assessment{Action: antispam.Install}}
+			r := h.reconciler()
+			var replaced []antispam.Replacement
+			rep := antispam.Replacement{Path: antispam.ScoresPath, Backup: antispam.ReplacedDir + "/copy"}
+			r.Run = func(context.Context, antispam.Request) (antispam.Result, error) {
+				replaced = []antispam.Replacement{rep}
+				return tc.result, nil
+			}
+			r.Replaced = func() ([]antispam.Replacement, error) { return replaced, nil }
+			out := r.Pass(context.Background(), desired(true))
+			var found []alert.Finding
+			for _, f := range out.Findings {
+				if f.Check == CheckFileReplaced {
+					found = append(found, f)
+				}
+			}
+			if !slices.Contains(out.Checks, CheckFileReplaced) || len(found) != 1 || found[0].DedupKey != rep.Backup {
+				t.Fatalf("worker's replacement was not reported: checks %v, findings %+v", out.Checks, found)
+			}
+		})
 	}
 }

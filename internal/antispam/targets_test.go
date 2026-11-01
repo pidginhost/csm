@@ -152,14 +152,6 @@ func TestCheckHostTargetProblems(t *testing.T) {
 		{"directory missing", func(f *HostFacts) {
 			target(f, TargetRspamd).Err = fmt.Errorf("%s: %w", RspamdLocalDir, fs.ErrNotExist)
 		}, CodeTargets, Definite},
-		{"foreign rspamd file", func(f *HostFacts) {
-			tg := target(f, TargetRspamd)
-			tg.Missing, tg.File, tg.Content = false, PathFacts{Path: tg.Path, Mode: 0o644}, "reject = 15;\n"
-		}, CodeTargets, Definite},
-		{"newer managed version", func(f *HostFacts) {
-			tg := target(f, TargetRspamd)
-			tg.Missing, tg.File, tg.Content = false, PathFacts{Path: tg.Path, Mode: 0o644}, "# csm-managed-version: 2\n"
-		}, CodeTargets, Definite},
 		{"target is a symlink", func(f *HostFacts) { target(f, TargetEximHook).File.Mode = fs.ModeSymlink | 0o777 }, CodeTargets, Definite},
 		{"target is a directory", func(f *HostFacts) { target(f, TargetEximHook).File.Mode = fs.ModeDir | 0o755 }, CodeTargets, Definite},
 		{"target writable by others", func(f *HostFacts) { target(f, TargetEximHook).File.Mode = 0o666 }, CodeTargets, Definite},
@@ -344,8 +336,32 @@ func TestCheckRemovalLeavesForeignFiles(t *testing.T) {
 			t.Errorf("removal refused: %+v", got)
 		}
 	}
-	if got := checkTargets(targets, false); len(got) != 3 {
-		t.Errorf("apply problems = %+v, want foreign file, missing directory and @CONFIG@", got)
+	// The foreign file is taken over on apply.
+	if got := checkTargets(targets, false); len(got) != 2 {
+		t.Errorf("apply problems = %+v, want missing directory and @CONFIG@", got)
+	}
+}
+
+// A protected operator file at a core path no longer blocks the install: the
+// worker backs it up and replaces it. One someone else could have written
+// is still refused.
+func TestCheckTargetsTakesOverForeignCoreFile(t *testing.T) {
+	for _, content := range []string{"actions { reject = 70; }\n", "reject = 15;\n", "# csm-managed-version: 2\n"} {
+		f := goodFacts()
+		tg := target(&f, TargetRspamd)
+		if tg.Path != RspamdLocalDir+"/actions.conf" {
+			t.Fatalf("first core target is %s", tg.Path)
+		}
+		tg.Missing, tg.File, tg.Content = false, PathFacts{Path: tg.Path, Mode: 0o644}, content
+		if got := checkTargets(f.Targets, false); len(got) != 0 {
+			t.Errorf("%q: protected foreign file reported %+v", content, got)
+		}
+		tg.File.Mode = 0o664
+		got := checkTargets(f.Targets, false)
+		if len(got) != 1 || got[0].Code != CodeTargets || got[0].Severity != Definite ||
+			got[0].Detail != tg.Path+" is writable by group or others" {
+			t.Errorf("%q: loosened foreign file reported %+v", content, got)
+		}
 	}
 }
 
@@ -458,11 +474,17 @@ func TestOptionalUsable(t *testing.T) {
 	if err := OptionalUsable(ok); err != nil {
 		t.Fatalf("missing file in a safe directory: %v", err)
 	}
+	// The worker backs up and replaces a protected foreign file.
+	foreign := ok
+	foreign.Missing, foreign.File, foreign.Content = false, PathFacts{Path: ok.Path, Mode: 0o644}, "x\n"
+	if err := OptionalUsable(foreign); err != nil {
+		t.Fatalf("protected foreign file: %v", err)
+	}
 	for name, mutate := range map[string]func(*TargetFacts){
 		"missing dir":   func(f *TargetFacts) { f.Err = fmt.Errorf("lstat: %w", fs.ErrNotExist) },
 		"unsafe parent": func(f *TargetFacts) { f.Parents[1].Mode = fs.ModeDir | 0o777 },
-		"foreign": func(f *TargetFacts) {
-			f.Missing, f.File, f.Content = false, PathFacts{Path: f.Path, Mode: 0o644}, "x\n"
+		"foreign group writable": func(f *TargetFacts) {
+			f.Missing, f.File, f.Content = false, PathFacts{Path: f.Path, Mode: 0o664}, "x\n"
 		},
 		"symlink": func(f *TargetFacts) { f.Missing, f.File = false, PathFacts{Path: f.Path, Mode: fs.ModeSymlink | 0o777} },
 		"group writable": func(f *TargetFacts) {

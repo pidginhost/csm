@@ -352,6 +352,7 @@ func TestApplyInstallsOnFreshHost(t *testing.T) {
 	if got := f.file(antispam.RecordPath); got != string(antispam.EncodeRecord(r.Generation)) {
 		t.Errorf("record = %q", got)
 	}
+	wantBackups(t, f, nil)
 	info, _ := os.Stat(f.root + antispam.RecordPath)
 	dir, _ := os.Stat(filepath.Dir(f.root + antispam.RecordPath))
 	if info.Mode().Perm() != 0o600 || dir.Mode().Perm() != 0o700 {
@@ -464,6 +465,8 @@ func TestApplyKeepsOperatorContent(t *testing.T) {
 	if post := f.file(antispam.HookPostPath); !strings.HasSuffix(post, antispam.MarkerEnd+"\nwarn\n  log_message = operator rule\n") {
 		t.Errorf("hook lost operator rule: %q", post)
 	}
+	// Shared files keep the operator's content, so nothing is backed up.
+	wantBackups(t, f, nil)
 }
 
 func TestApplyRefusesBlockingProblems(t *testing.T) {
@@ -802,9 +805,11 @@ func TestApplySkipsNothingCoreWhenRedirectForeign(t *testing.T) {
 	}
 }
 
-func TestApplyRefusesForeignWantedOptionalFile(t *testing.T) {
+// A protected operator file is backed up and replaced (takeover_test.go);
+// one that others could have written is refused.
+func TestApplyRefusesLoosenedWantedOptionalFile(t *testing.T) {
 	f := newFake(t)
-	writeTest(t, f.root+antispam.RedirectPath(antispam.RedirectWhitelist), "operator\n", 0o644)
+	writeTest(t, f.root+antispam.RedirectPath(antispam.RedirectWhitelist), "operator\n", 0o664)
 	r := f.host().Apply(enforce()) // the request did not skip it: a race with the daemon
 	if r.OK || r.FailedStep != StepPreconditions {
 		t.Fatalf("result %+v", r)

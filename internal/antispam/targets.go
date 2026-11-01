@@ -144,7 +144,8 @@ func CheckRemoval(targets []TargetFacts) []Problem {
 
 // checkTargets applies spec section 6.2 item 9: every file CSM writes is a
 // regular root-owned file without symlinks, in root-owned directories nobody
-// else can write, and its content belongs to CSM or has room for CSM's block.
+// else can write, and a shared file has room for CSM's block. A whole file
+// that is not CSM's is backed up and replaced by the worker (spec 5.5).
 // For removal only the rules that protect an edit apply.
 func checkTargets(targets []TargetFacts, removal bool) []Problem {
 	var out []Problem
@@ -212,10 +213,6 @@ func checkTargets(targets []TargetFacts, removal bool) []Problem {
 			continue
 		}
 		switch t.Kind {
-		case TargetRspamd, TargetRspamdOptional, TargetLuaOptional, TargetRoundcube:
-			if !removal && !ManagedFor(t.Kind, t.Content) {
-				add(CodeTargets, Definite, "%s is not managed by CSM; remove or rename it so CSM can write its own", t.Path)
-			}
 		case TargetEximLocal:
 			if !removal {
 				// A blank file is filled with cPanel's skeleton, as forward

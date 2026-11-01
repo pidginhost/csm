@@ -23,11 +23,18 @@ func TestAntispamChecksRegistered(t *testing.T) {
 	for _, name := range []string{
 		reconcile.CheckPrecondition, reconcile.CheckApplyFailed, reconcile.CheckRspamdDown,
 		reconcile.CheckRspamdRecovered, reconcile.CheckScanError, reconcile.CheckFeed,
-		reconcile.CheckIPMap, reconcile.CheckControllerOpen, reconcile.CheckLearning,
+		reconcile.CheckIPMap, reconcile.CheckControllerOpen, reconcile.CheckLearning, reconcile.CheckFileReplaced,
 	} {
 		if _, ok := checks.LookupCheck(name); !ok {
 			t.Errorf("check %s is not registered", name)
 		}
+	}
+}
+
+// Without the hook, files the worker backed up and replaced go unreported.
+func TestAntispamReconcilerWiresReplaced(t *testing.T) {
+	if antispamReconciler().Replaced == nil {
+		t.Fatal("daemon reconciler does not list replaced files")
 	}
 }
 

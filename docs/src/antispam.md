@@ -110,8 +110,8 @@ CSM also refuses to install while any of these hold, and names the cause:
 - an Exim main log other than the one CSM reads (`log_file_path`);
 - an Exim or rspamd unit that cannot reload;
 - disabled custom ACL hooks or invalid named lists used by the hooks;
-- unsafe mutation targets, malformed CSM markers or foreign rspamd files in
-  the locations CSM manages;
+- unsafe mutation targets or malformed CSM markers in the locations CSM
+  manages;
 - an rspamd override that defeats CSM's settings below.
 
 CSM does not change WHM options, account toggles, Redis or rspamd worker
@@ -313,7 +313,9 @@ leaves the installed configuration intact. The next regular check retries
 with the current host facts.
 
 The feed needs CSM to own `/etc/rspamd/local.d/multimap.conf`, even with
-`rspamd_maps` selected. An operator-owned file there leaves the feed off.
+`rspamd_maps` selected. CSM replaces an operator-owned file there, see
+[Replaced files](#replaced-files); one that is not safe to replace leaves the
+feed off.
 Like the other feeds, it needs rspamd 4 or later.
 
 CSM checks that rspamd uses the current map by scanning a canary message
@@ -388,12 +390,14 @@ CSM owns these files while a feed or map redirect needs them:
   and `multimap.conf` in `/etc/rspamd/local.d`, without `rspamd_maps`.
   The local IP feed also needs `multimap.conf` when `rspamd_maps` is selected.
 
-An operator-owned file at one of these optional locations is left alone:
-CSM omits DNS feeds or the affected map redirect. Its contents can still
-conflict with required settings and block core filtering. In particular,
-an `override.d/rbl.conf` that enables the RBL module defeats CSM's attempt
-to turn it off when no DNS feeds are usable. Resolve that conflict before
-enabling antispam.
+CSM replaces an operator-owned file at one of these locations while it
+needs the file, see [Replaced files](#replaced-files). A file that is not
+safe to replace makes CSM omit the DNS feeds or the affected map redirect
+instead. An operator file CSM does not need stays, and its contents can
+still conflict with required settings and block core filtering. In
+particular, an `override.d/rbl.conf` that enables the RBL module defeats
+CSM's attempt to turn it off when no DNS feeds are usable. Resolve that
+conflict before enabling antispam.
 
 ### Feed findings
 
@@ -477,19 +481,18 @@ those zones or of other configured resolvers.
   `HIDDEN_TEXT` weight from 5 to 2. Newsletters hide their preview line, and
   at the default `tag_score` that rule plus one minor symbol tagged them. It
   also counts `URL_VERY_LONG` once per message instead of once per long
-  link, so newsletters full of tracking links are not tagged for that. An
-  operator-owned `groups.conf` is left alone: rspamd keeps its own weights and
-  CSM reports an `rspamd_scores` warning. Move your weights out of that file
-  if CSM should manage it;
+  link, so newsletters full of tracking links are not tagged for that. CSM
+  replaces an operator-owned `groups.conf`. One that is not safe to replace
+  is left alone: rspamd keeps its own weights and CSM reports an
+  `rspamd_scores` warning;
 - with learning on, the learning files listed under
   [Learning from Spam folders](#learning-from-spam-folders);
 - a completion record in `/var/lib/csm/antispam`.
 
 Content outside CSM's markers, including forward-guard blocks, is preserved.
 CSM regenerates its own blocks and files, so manual edits to them are
-overwritten. A core file of the same name without CSM's header blocks the
-install; removal leaves it alone. Optional feed and map files follow the
-conflict handling described under [Files](#files).
+overwritten. A file of the same name without CSM's header is replaced, see
+[Replaced files](#replaced-files); removal leaves it alone.
 
 The loaded `phishtank_enabled` setting must be the boolean `false`. Missing,
 duplicate or non-boolean values are configuration conflicts, just like `true`.
@@ -519,6 +522,35 @@ antispam is enabled, at the next regular check while it is disabled.
 Existing Exim SMTP sessions retain their old hooks; new sessions use the
 updated hooks. Account toggles are still read at each recipient. Reloading
 rspamd can change scoring for scans from either generation of Exim hooks.
+
+### Replaced files
+
+CSM owns its rspamd files and the Roundcube include outright. When antispam
+is enabled and one of those paths holds your own file, CSM copies it to
+`/var/lib/csm/antispam/replaced` before writing its own. Each copy is
+readable by root only. Its name is the UTC time followed by the escaped
+original path, for example
+`20261101T120000Z_%2Fetc%2Frspamd%2Flocal.d%2Factions.conf`.
+
+CSM replaces only a regular file owned by root, with no group or other write
+access and no extra ACL entries, in directories protected the same way. Any
+other file at one of these paths blocks the install, or leaves the optional
+feature that needs it off. CSM repeats these checks before copying the file
+and before replacing it. The Exim hook files and `/etc/exim.conf.local`
+are shared: CSM edits its own block there and never replaces them.
+
+Each retained copy raises one `antispam_file_replaced` warning naming the
+file and the copy in the same check that runs the update. Move any settings
+you still need into a file CSM does not manage, then delete the copy to clear
+the warning.
+
+When a change fails, CSM restores your file with its original owner, group
+and permissions. It deletes that copy only after the restore is durable,
+even if another file could not be restored. Copies made for replacements
+that never happened are removed too. If a restore cannot be confirmed, its
+copy remains for recovery. Disabling antispam deletes CSM's files and does
+not restore the copies. The warnings describe past replacements, including
+after antispam is disabled.
 
 ## Rolling it out
 
@@ -786,9 +818,9 @@ learning is active, CSM rebuilds missing learned values from stored messages.
 - `/usr/local/cpanel/base/3rdparty/roundcube/config/inc.d/zz-csm-antispam.inc.php`,
   which points Roundcube's Junk button at the Spam folder. This changes the
   Junk button for every webmail user on the server, regardless of the
-  account's Spam Filters switch. CSM leaves an operator-owned file at that
-  path alone. The `markasjunk` plugin must already be enabled; CSM does not
-  enable it.
+  account's Spam Filters switch. CSM replaces an operator-owned file at that
+  path, see [Replaced files](#replaced-files). The `markasjunk` plugin must
+  already be enabled; CSM does not enable it.
 
 CSM checks the include by loading Roundcube's configuration with cPanel's
 PHP as the `nobody` user, never as root. If Roundcube does not load the Junk
@@ -968,6 +1000,7 @@ reports server readiness; the running learner adds the reasons from
 |---|---|---|
 | `antispam_precondition` | Warning | A condition above is not met. The message names the cause, such as `rspamd_socket` or `spamassassin_enabled`. A temporary cause keeps an installed integration; a definite one removes it when that is safe. |
 | `antispam_apply_failed` | Warning, or Critical when the previous state could not be confirmed | An install, update or removal failed at the named step, or pending changes could not be canceled. |
+| `antispam_file_replaced` | Warning | CSM replaced your own file at one of its paths and kept a copy. Deleting the copy clears it. See [Replaced files](#replaced-files). |
 | `antispam_rspamd_down` | Warning | Three probes of the scan socket in a row failed. CSM probes every 20 seconds while antispam is enabled. |
 | `antispam_rspamd_recovered` | Warning | Two probes in a row succeeded after an outage. |
 | `antispam_scan_error` | Warning | Exim logged a failed scan. One finding covers every failure until a scan succeeds. |

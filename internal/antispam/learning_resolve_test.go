@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io/fs"
-	"strings"
 	"testing"
 )
 
@@ -116,6 +115,19 @@ func setTarget(f *HostFacts, p string, content string) {
 	}
 }
 
+// setLoosenedTarget is setTarget for a file group and others can write.
+func setLoosenedTarget(f *HostFacts, p string, content string) {
+	setTarget(f, p, content)
+	for i := range f.Targets {
+		if f.Targets[i].Path == p {
+			f.Targets[i].File.Mode = 0o664
+			if p == RoundcubeIncludePath {
+				f.Roundcube.Include = f.Targets[i]
+			}
+		}
+	}
+}
+
 func onlyLearningReason(t *testing.T, problems []Problem, reason string) {
 	t.Helper()
 	if len(problems) != 1 || problems[0].Code != CodeLearning || problems[0].Key != reason || problems[0].Severity != Warning || problems[0].Detail == "" {
@@ -191,8 +203,8 @@ func TestResolveLearningDefiniteFailures(t *testing.T) {
 		"ForeignFuzzyWorker": {func(f *HostFacts) {
 			f.LearningDumps.Worker = []byte(`[{"fuzzy": {"bind_socket": "localhost:11335", "count": 2}}]`)
 		}, ReasonConfigConflict},
-		"ForeignOptionalFile":  {func(f *HostFacts) { setTarget(f, LearningWorkerPath, "count = 4;\n") }, ReasonConfigConflict},
-		"ForeignLuaFile":       {func(f *HostFacts) { setTarget(f, LearningLuaPath, "-- operator plugin\n") }, ReasonConfigConflict},
+		"LoosenedOptionalFile": {func(f *HostFacts) { setLoosenedTarget(f, LearningWorkerPath, "count = 4;\n") }, ReasonConfigConflict},
+		"LoosenedLuaFile":      {func(f *HostFacts) { setLoosenedTarget(f, LearningLuaPath, "-- operator plugin\n") }, ReasonConfigConflict},
 		"KeysIncomplete":       {func(f *HostFacts) { f.LearningKeysErr = errors.New("learning keys are incomplete: missing prefix") }, ReasonStateMismatch},
 		"FuzzyListenerForeign": {func(f *HostFacts) { f.FuzzyListenForeign = true }, ReasonUnsafe},
 	} {
@@ -205,6 +217,22 @@ func TestResolveLearningDefiniteFailures(t *testing.T) {
 			}
 			onlyLearningReason(t, problems, tc.reason)
 		})
+	}
+}
+
+// The worker backs up and replaces a protected operator file at a learning
+// path, so it no longer holds learning back.
+func TestResolveLearningTakesOverForeignFiles(t *testing.T) {
+	for p, content := range map[string]string{
+		LearningWorkerPath: "count = 4;\n",
+		LearningLuaPath:    "-- operator plugin\n",
+	} {
+		f := safeLearningFacts()
+		setTarget(&f, p, content)
+		s, gate, problems := ResolveLearning(learningSettings(), f)
+		if !gate.Install || !gate.Publish || !s.Learning || len(problems) != 0 {
+			t.Errorf("%s: gate=%+v learning=%v problems=%+v", p, gate, s.Learning, problems)
+		}
 	}
 }
 
@@ -337,7 +365,9 @@ func TestResolveLearningRoundcube(t *testing.T) {
 		"RoundcubeUnsafeParent": func(f *HostFacts) {
 			f.Roundcube.Include.Parents = []PathFacts{dir("/", 0, 0, 0o777)}
 		},
-		"RoundcubeForeignFile": func(f *HostFacts) { setTarget(f, RoundcubeIncludePath, "<?php\n$config['junk_mbox'] = 'Junk';\n") },
+		"RoundcubeLoosenedFile": func(f *HostFacts) {
+			setLoosenedTarget(f, RoundcubeIncludePath, "<?php\n$config['junk_mbox'] = 'Junk';\n")
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := safeLearningFacts()
@@ -480,17 +510,14 @@ func TestResolveLearningKeepVerifiesLoaded(t *testing.T) {
 	}
 }
 
-// A foreign include at CSM's path is reported as such; CSM never runs it.
+// A protected foreign include at CSM's path is backed up and replaced by the
+// worker, so the include stays on.
 func TestResolveLearningRoundcubeForeignInclude(t *testing.T) {
 	f := safeLearningFacts()
 	setTarget(&f, RoundcubeIncludePath, "<?php\n$config['junk_mbox'] = 'Junk';\n")
-	_, gate, problems := ResolveLearning(learningSettings(), f)
-	if !gate.Install || gate.Roundcube {
-		t.Fatalf("gate = %+v", gate)
-	}
-	onlyLearningReason(t, problems, ReasonRoundcube)
-	if !strings.Contains(problems[0].Detail, "another file holds") {
-		t.Fatalf("detail = %q", problems[0].Detail)
+	s, gate, problems := ResolveLearning(learningSettings(), f)
+	if !gate.Install || !gate.Roundcube || !s.Roundcube || len(problems) != 0 {
+		t.Fatalf("gate = %+v, roundcube = %v, problems = %+v", gate, s.Roundcube, problems)
 	}
 }
 

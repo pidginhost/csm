@@ -200,7 +200,7 @@ func TestPassMergesFeedProblemsSharingAKey(t *testing.T) {
 			switch f.Targets[i].Path {
 			case antispam.RedirectPath(antispam.RedirectWhitelist), antispam.RedirectPath(antispam.RedirectMID):
 				f.Targets[i].Missing = false
-				f.Targets[i].File = antispam.PathFacts{Path: f.Targets[i].Path, Mode: 0o644}
+				f.Targets[i].File = antispam.PathFacts{Path: f.Targets[i].Path, Mode: 0o664}
 				f.Targets[i].Content = "operator\n"
 			}
 		}
@@ -867,7 +867,9 @@ func TestIPMapFindingKeyIgnoresDetails(t *testing.T) {
 	}
 }
 
-func TestPassSkipsForeignScoresFile(t *testing.T) {
+// A protected operator weights file is backed up and replaced by the
+// worker, so the request keeps CSM's weights and no scores warning is raised.
+func TestPassTakesOverForeignScoresFile(t *testing.T) {
 	h := &fakeHost{}
 	r := h.reconciler()
 	r.Collect = func(context.Context, string) antispam.HostFacts {
@@ -885,16 +887,12 @@ func TestPassSkipsForeignScoresFile(t *testing.T) {
 		return antispam.Assessment{Action: antispam.Install}
 	}
 	out := r.Pass(context.Background(), feedDesired())
-	if len(h.requests) != 1 || h.requests[0].SkipScores == nil || !*h.requests[0].SkipScores {
+	if len(h.requests) != 1 || h.requests[0].SkipScores != nil {
 		t.Fatalf("requests %+v", h.requests)
 	}
-	found := false
 	for _, f := range out.Findings {
-		if f.Check == CheckPrecondition && strings.Contains(f.Message, antispam.CodeScores) && strings.Contains(f.Details, antispam.ScoresPath) {
-			found = true
+		if strings.Contains(f.Message, antispam.CodeScores) {
+			t.Fatalf("scores finding for a file CSM takes over: %+v", f)
 		}
-	}
-	if !found {
-		t.Fatalf("no scores finding in %+v", out.Findings)
 	}
 }

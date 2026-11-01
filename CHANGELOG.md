@@ -28,6 +28,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Changed
 
+- Enabling antispam now replaces your own rspamd files at the paths CSM needs, keeping a backup and warning you, instead of refusing to install.
 - With the default YARA worker enabled, rule files can no longer include other files; inline included rules instead.
 - On hosts with YARA but no loaded rules, companion file reports now warn that YARA did not check the files; `disabled_checks: [yara_deep]` turns this off.
 - `csm validate` now warns when `signatures.yara_worker_enabled: false` makes the daemon run YARA as root.
