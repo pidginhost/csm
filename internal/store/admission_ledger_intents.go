@@ -391,7 +391,17 @@ func ReadSettledBlockActions(db *DB, ids []string) ([]string, error) {
 
 // evictedBlock reports whether verified attempt a's block was evicted.
 func evictedBlock(tx *bolt.Tx, a admission.AttemptRecord) (bool, error) {
-	rec, _, found, err := loadEffect(tx, a)
+	// Startup reads before the owner proves the ledger. A damaged layout
+	// must not masquerade as a ledger without effect records.
+	b := tx.Bucket([]byte(admissionEffectsBucket))
+	schema := tx.Bucket([]byte(admissionMetaBucket)).Get(admissionSchemaKey)
+	if (b != nil) != (schema[0] == admissionSchemaEffects) {
+		return false, admission.ErrCorruptRecord
+	}
+	rec, key, found, err := loadEffect(tx, a)
+	if err == nil && !found && b != nil && b.Bucket(key) != nil {
+		return false, admission.ErrCorruptRecord
+	}
 	return found && rec.Evicted, err
 }
 

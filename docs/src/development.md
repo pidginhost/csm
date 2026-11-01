@@ -294,7 +294,9 @@ block that never removed its victim releases the claim; an unproven
 removal is an unknown outcome, never a verified one. A definite failure
 releases the victim claim; unknown outcomes keep it through retirement
 until the victim expires. Startup drops the state row of a victim whose
-eviction the ledger verified.
+eviction the ledger verified. Startup readers report an error if the
+effects bucket disagrees with the schema or an effect is a nested bucket;
+they do not treat damaged eviction storage as an absent record.
 Expiry can remove either record first. A late definite outcome still ends
 the claim using the retained intent. A reservation that expired without
 running releases its claim. Only records still holding slots contribute
@@ -809,10 +811,10 @@ held. The admission owner must reconcile action-linked rows before startup
 or any downgrade to a build that ignores their verification fields.
 The retry marker for a kernel rejection requires a successful state restore.
 Marking with no action IDs still writes the safe state to release a state hold.
-`RemoveBlockActionRows` removes, in one state write, the rows of attempts the
-ledger has settled (failed, or retired after their expiry); an error reports
-no completed removal, including a durability failure after rename. Startup
-calls it after marking every unproven row, with the settled subset
+`RemoveBlockActionRows` removes, in one state write, the rows the ledger has
+settled (failed, retired after expiry, or evicted with proven removal).
+An error reports no completed removal, including a durability failure after
+rename. Startup calls it after marking every unproven row, with the settled subset
 `store.ReadSettledBlockActions` returns, so a start that stops between the two
 leaves the rows held back and the next start removes them.
 The engine's kill-point tests stop a batch around its intent write, kernel
@@ -1166,10 +1168,11 @@ class, never response text. Its outstanding jobs are also the
 late or duplicate results cannot count another call or consume a different job.
 
 The admission ledger exposes two row-recovery reads. `ReadSettledBlockActions`
-names failed attempts and retired unknown outcomes among the supplied action
-IDs; `ReadUnprovenBlockActions` continues to include every non-verified
-attempt. `UnresolvedIntents` gives the owner the same ordered intents as the
-handle-free startup reader. Callers must inspect each attempt's outcome:
+names failed attempts, retired unknown outcomes and verified blocks later
+evicted by a proven removal among the supplied action IDs.
+`ReadUnprovenBlockActions` includes every non-verified attempt and those
+evicted blocks. `UnresolvedIntents` gives the owner the same ordered intents
+as the handle-free startup reader. Callers must inspect each attempt's outcome:
 an executing intent is unresolved but cannot be retired as unknown.
 
 ### Attack event storage
