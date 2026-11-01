@@ -600,8 +600,9 @@ an hour after the last observation, even while work of another kind is
 queued or in flight; an unknown outcome or a response of another kind does
 not end it. The expiry is set on the engine's lease clock, which after a
 wall clock step back leads admission time; the owner passes that lead to
-`FinishOnLease`, so the episode ends when the kernel element expires in
-admission time, and an isolated member's isolation ends the same way.
+`FinishOnLease` or, with a victim, `FinishEviction`, so the episode ends when
+the kernel element expires in admission time. An isolated member's isolation
+ends the same way.
 Retirement and retry staleness stay on the lease frame: late retirement
 only holds an address longer, and the engine refuses an expired member.
 
@@ -898,21 +899,26 @@ without a charge. If the ledger refuses that link (no history budget for
 it), the pick stays queued with the deferral reason and the rest of the
 batch runs; the next check tries again. Each member carries the victim its
 reservation claimed, as its intent names it, and the ledger records what the
-batch did to that victim with the member's outcome. Once a verified eviction
-is recorded, the owner marks the victim's row and retires it, as startup
+batch did to that victim with the member's outcome. Whole-batch failures,
+short replies and delayed outcome writes keep the victim and lease clock
+information. Once a verified eviction is recorded, the owner marks the
+victim's row and retires it, as startup
 does, rotating failed or held rows behind waiting rows and retrying on
-later turns. Cleanup follows the retirement policy, respects state-repair
-probe waits and preserves independent apply faults. Its errors remain
+later turns, including while waiting for an absent engine during dry run.
+Cleanup follows the retirement policy, respects state-repair probe waits
+and preserves independent apply faults. Its errors remain
 visible alongside unknown-attempt retirement errors; a restart
 removes the row before the firewall restores its state. After an unknown
-outcome the victim's row stays until the victim expires. A proven block found only when the batch applies is
-checked again when the outcome is written: with a fresh proof the attempt
-fails, with its charge, and the pick ends refused as an existing effect,
-linked to the block, in one ledger write, so nothing retries against it.
-Without a fresh proof, or if that write fails, the failure alone is attempted
-at once. If both writes fail transiently, execution waits for the pending
-outcome; a crash before it is saved leaves an unknown attempt. After a successful
-write the ordinary bounded retry or the next check decides. On the
+outcome the victim's row stays until the victim expires. A proven block
+found only when the batch applies is checked again when the outcome is written.
+With a fresh proof the pick ends refused as an existing effect, linked to
+the block, keeping its charge. A member with a victim records its eviction
+outcome before attempting that link; a member without one records its
+failure and link in one write. Without a fresh proof, or if the link write
+fails, the attempt still records its failure. If the outcome cannot be
+saved, execution waits for the pending write; a crash before it is saved
+leaves an unknown attempt. After a successful write the ordinary bounded
+retry or the next check decides. On the
 last attempt the pick already ends failed. The rest are reserved,
 recorded as running with their intents, applied and finished by their own
 effect. Failed outcome writes retry before more work is selected and once at
