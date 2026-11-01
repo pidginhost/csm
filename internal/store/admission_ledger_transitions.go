@@ -559,13 +559,31 @@ func (l *AdmissionLedger) Finish(id admission.ActionID, d admission.Disposition)
 // its expiry. A lead at or below zero ends the episode at the expiry
 // itself, never later.
 func (l *AdmissionLedger) FinishOnLease(id admission.ActionID, d admission.Disposition, lead time.Duration) (admission.Candidate, admission.AttemptRecord, error) {
+	return l.FinishEviction(id, d, admission.VictimRemoved, lead)
+}
+
+// FinishEviction is FinishOnLease with what the attempt did to the victim
+// it claimed. Only a verified block's claim depends on it: a removal the
+// applier proved evicts the victim and a victim it never removed returns
+// to the pool. An unproven removal is an unknown outcome, never a verified
+// one. A failure always returns the victim; an unknown outcome keeps it.
+func (l *AdmissionLedger) FinishEviction(id admission.ActionID, d admission.Disposition, v admission.VictimOutcome, lead time.Duration) (admission.Candidate, admission.AttemptRecord, error) {
 	switch d {
 	case admission.DispositionApplied, admission.DispositionNarrowed, admission.DispositionFailed, admission.DispositionUnknown:
 	default:
 		return admission.Candidate{}, admission.AttemptRecord{}, refusal(admission.ReasonInvalid, "disposition is not an attempt outcome")
 	}
+	switch v {
+	case admission.VictimRemoved, admission.VictimSpared:
+	case admission.VictimUnproven:
+		if d == admission.DispositionApplied || d == admission.DispositionNarrowed {
+			return admission.Candidate{}, admission.AttemptRecord{}, refusal(admission.ReasonInvalid, "an unproven removal is an unknown outcome")
+		}
+	default:
+		return admission.Candidate{}, admission.AttemptRecord{}, refusal(admission.ReasonInvalid, "no victim outcome")
+	}
 	cand, att, _, err := l.attemptStep("finish", id, l.recordedClock, func(q *queueTx, a *admission.AttemptRecord, c *admission.Candidate) (bool, error) {
-		return q.finishAttempt(a, c, d, lead)
+		return q.finishAttempt(a, c, d, v, lead)
 	})
 	return cand, att, err
 }
@@ -608,7 +626,7 @@ func (l *AdmissionLedger) FinishExisting(id admission.ActionID, link admission.E
 			return loadErr
 		}
 		from := c.State
-		changed, stepErr := q.finishAttempt(&a, &c, admission.DispositionFailed, 0)
+		changed, stepErr := q.finishAttempt(&a, &c, admission.DispositionFailed, admission.VictimSpared, 0)
 		if stepErr != nil {
 			return stepErr
 		}
@@ -694,7 +712,7 @@ func (l *AdmissionLedger) Settle() (failed, unknown int, err error) {
 			} else {
 				failed++
 			}
-			if _, txErr = q.finishAttempt(&a, &c, d, 0); txErr != nil {
+			if _, txErr = q.finishAttempt(&a, &c, d, admission.VictimSpared, 0); txErr != nil {
 				return txErr
 			}
 			c.Transitions++
@@ -738,7 +756,7 @@ func (l *AdmissionLedger) Observe(id admission.CandidateID, lane admission.Lane,
 			return txErr
 		}
 		from := c.State
-		if _, txErr = q.finishAttempt(&a, &c, admission.DispositionObserve, 0); txErr != nil {
+		if _, txErr = q.finishAttempt(&a, &c, admission.DispositionObserve, admission.VictimSpared, 0); txErr != nil {
 			return txErr
 		}
 		if !admission.CanTransition(from, c.State) {
@@ -761,7 +779,7 @@ func (l *AdmissionLedger) Observe(id admission.CandidateID, lane admission.Lane,
 // finishAttempt records outcome d of the candidate's current attempt a and
 // reports whether it changed anything. The caller counts the transition
 // and stores both records.
-func (q *queueTx) finishAttempt(a *admission.AttemptRecord, c *admission.Candidate, d admission.Disposition, lead time.Duration) (bool, error) {
+func (q *queueTx) finishAttempt(a *admission.AttemptRecord, c *admission.Candidate, d admission.Disposition, v admission.VictimOutcome, lead time.Duration) (bool, error) {
 	var state admission.State
 	switch d {
 	case admission.DispositionApplied, admission.DispositionNarrowed:
@@ -793,7 +811,7 @@ func (q *queueTx) finishAttempt(a *admission.AttemptRecord, c *admission.Candida
 	// lifecycle table decides which outcomes a reserved attempt allows.
 	from := c.State
 	if state != admission.StateUnknown {
-		if err = q.endSweptClaim(*a, state == admission.StateVerified); err != nil {
+		if err = q.endSweptClaim(*a, state == admission.StateVerified, v); err != nil {
 			return false, err
 		}
 	}
@@ -812,7 +830,7 @@ func (q *queueTx) finishAttempt(a *admission.AttemptRecord, c *admission.Candida
 	// unknown one, which may hold it; any other outcome gives it back.
 	switch state {
 	case admission.StateVerified:
-		err = q.markApplied(*a)
+		err = q.markApplied(*a, v)
 	case admission.StateUnknown:
 	default:
 		err = q.releaseSlot(*a)

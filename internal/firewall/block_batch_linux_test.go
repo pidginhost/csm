@@ -325,7 +325,11 @@ func TestCheckBlockBatchSkipsDisabledIPv6WithAStaleSet(t *testing.T) {
 	}
 }
 
-func TestCheckBlockBatchFillsTheTemporarySetInOrder(t *testing.T) {
+// Capacity is the ledger's before reservation and the apply's after it:
+// a check before anything is reserved never answers set_full, so a member
+// that may evict is not deferred before its victim is known. The apply
+// fills the temporary set in order.
+func TestCheckBlockBatchLeavesCapacityToTheApply(t *testing.T) {
 	f := newBatchFixture(t, FirewallState{})
 	f.e.cfg.DenyTempIPLimit = 3
 	f.live["203.0.113.50"] = time.Hour
@@ -338,9 +342,14 @@ func TestCheckBlockBatchFillsTheTemporarySetInOrder(t *testing.T) {
 		f.member("act_four", "203.0.113.23"),
 	}
 	got, err := f.e.CheckBlockBatch(members)
-	want := []BlockRefusal{"", BlockRefusedInvalid, "", BlockRefusedFull, BlockRefusedFull}
+	want := []BlockRefusal{"", BlockRefusedInvalid, "", "", ""}
 	if err != nil || fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("CheckBlockBatch = %q, %v; want %q", got, err, want)
+	}
+	f.kernelHolds(map[string]time.Duration{"203.0.113.20": time.Hour, "2001:db8::20": time.Hour})
+	results, err := f.e.ApplyBlockBatch(members)
+	if got := effects(results); err != nil || got != "applied/ failed/invalid applied/ failed/set_full failed/set_full" {
+		t.Fatalf("ApplyBlockBatch = %s, %v", got, err)
 	}
 }
 
@@ -441,7 +450,13 @@ func TestCheckBlockBatchIgnoresWrongFamilyKeys(t *testing.T) {
 	}
 	got, err := f.e.CheckBlockBatch([]BlockMember{f.member("act_v4", "203.0.113.20")})
 	if err != nil || len(got) != 1 || got[0] != "" {
-		t.Fatalf("answers %q, %v; wrong-family key must not take a slot or name a target", got, err)
+		t.Fatalf("answers %q, %v; wrong-family key must not name a target", got, err)
+	}
+	f.e.mu.Lock()
+	snap, err := f.e.blockSnapshotLocked()
+	f.e.mu.Unlock()
+	if err != nil || snap.temp != 0 {
+		t.Fatalf("temporary occupancy %d, %v; a wrong-family key takes no slot", snap.temp, err)
 	}
 }
 

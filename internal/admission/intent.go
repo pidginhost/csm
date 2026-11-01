@@ -92,6 +92,23 @@ type Victim struct {
 	ExpiresAt time.Time
 }
 
+// VictimOutcome is what a verified block's attempt did to the victim it
+// claimed, as the applier proved it.
+type VictimOutcome uint8
+
+const (
+	// VictimRemoved: the batch removed the victim and its readback proved
+	// it gone, so the victim is evicted.
+	VictimRemoved VictimOutcome = iota + 1
+	// VictimSpared: the batch never removed the victim, which returns to
+	// the pool with its slot.
+	VictimSpared
+	// VictimUnproven: the batch sent the removal without proving it. The
+	// victim may still be enforced: the attempt's outcome is unknown,
+	// which keeps the claim until the victim's expiry.
+	VictimUnproven
+)
+
 type intentRecord struct {
 	V         uint8    `json:"v"`
 	Action    ActionID `json:"action"`

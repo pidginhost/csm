@@ -33,6 +33,7 @@ type fakeBlocks struct {
 	reject       int
 	markErr      error
 	marks        int
+	marked       [][]string
 	stateProbes  int
 	shortResults bool
 	shortChecks  bool
@@ -206,6 +207,7 @@ func (f *fakeBlocks) MarkBlockActionsUnverified(actions []string) (int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.marks++
+	f.marked = append(f.marked, append([]string(nil), actions...))
 	return 0, f.markErr
 }
 

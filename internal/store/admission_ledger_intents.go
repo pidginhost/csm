@@ -359,30 +359,55 @@ func currentLedger(tx *bolt.Tx) (bool, error) {
 }
 
 // ReadUnprovenBlockActions returns, in order, the actions among ids whose
-// attempt the ledger records with anything but a verified outcome: it
-// runs, ended unknown (retired or not) or failed. Startup marks their
-// firewall rows unverified before the firewall restores its state, whether
-// or not the ledger owner started. A name the ledger never recorded is not
-// returned: no attempt claims its row. An error means the ledger cannot be
-// read.
+// attempt the ledger records with anything but a verified outcome (it
+// runs, ended unknown, retired or not, or failed) or whose verified block
+// a proven removal evicted. Startup marks their firewall rows unverified
+// before the firewall restores its state, whether or not the ledger owner
+// started. A name the ledger never recorded is not returned: no attempt
+// claims its row. An error means the ledger cannot be read.
 func ReadUnprovenBlockActions(db *DB, ids []string) ([]string, error) {
-	return readBlockActions(db, ids, func(a admission.AttemptRecord) bool { return a.State != admission.StateVerified })
+	return readBlockActions(db, ids, func(tx *bolt.Tx, a admission.AttemptRecord) (bool, error) {
+		if a.State == admission.StateVerified {
+			return evictedBlock(tx, a)
+		}
+		return true, nil
+	})
 }
 
 // ReadSettledBlockActions returns, in order, the actions among ids whose
-// attempt can have left nothing in the kernel: it failed, or ended unknown
-// and was retired after its expiry found nothing of it. Startup removes
-// their firewall rows; the other unproven ones stay held. A name the ledger
+// attempt can have left nothing in the kernel: it failed, ended unknown
+// and was retired after its expiry found nothing of it, or was verified
+// and then evicted by a removal the applier proved. Startup removes their
+// firewall rows; the other unproven ones stay held. A name the ledger
 // never recorded is not returned. An error means the ledger cannot be read.
 func ReadSettledBlockActions(db *DB, ids []string) ([]string, error) {
-	return readBlockActions(db, ids, func(a admission.AttemptRecord) bool {
-		return a.State == admission.StateFailed || (a.State == admission.StateUnknown && a.Retired)
+	return readBlockActions(db, ids, func(tx *bolt.Tx, a admission.AttemptRecord) (bool, error) {
+		if a.State == admission.StateVerified {
+			return evictedBlock(tx, a)
+		}
+		return a.State == admission.StateFailed || (a.State == admission.StateUnknown && a.Retired), nil
 	})
+}
+
+// evictedBlock reports whether verified attempt a's block was evicted.
+func evictedBlock(tx *bolt.Tx, a admission.AttemptRecord) (bool, error) {
+	// Startup reads before the owner proves the ledger. A damaged layout
+	// must not masquerade as a ledger without effect records.
+	b := tx.Bucket([]byte(admissionEffectsBucket))
+	schema := tx.Bucket([]byte(admissionMetaBucket)).Get(admissionSchemaKey)
+	if (b != nil) != (schema[0] == admissionSchemaEffects) {
+		return false, admission.ErrCorruptRecord
+	}
+	rec, key, found, err := loadEffect(tx, a)
+	if err == nil && !found && b != nil && b.Bucket(key) != nil {
+		return false, admission.ErrCorruptRecord
+	}
+	return found && rec.Evicted, err
 }
 
 // readBlockActions returns, in order, the recorded actions among ids whose
 // attempt keep accepts.
-func readBlockActions(db *DB, ids []string, keep func(admission.AttemptRecord) bool) ([]string, error) {
+func readBlockActions(db *DB, ids []string, keep func(*bolt.Tx, admission.AttemptRecord) (bool, error)) ([]string, error) {
 	var out []string
 	err := db.bolt.View(func(tx *bolt.Tx) error {
 		if current, err := currentLedger(tx); !current {
@@ -410,7 +435,11 @@ func readBlockActions(db *DB, ids []string, keep func(admission.AttemptRecord) b
 			if string(a.Attempt.ID) != id {
 				return admission.ErrCorruptRecord
 			}
-			if keep(a) {
+			kept, err := keep(tx, a)
+			if err != nil {
+				return err
+			}
+			if kept {
 				out = append(out, id)
 			}
 		}

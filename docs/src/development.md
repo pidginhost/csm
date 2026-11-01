@@ -289,8 +289,14 @@ capacity notice for any assessed tier in a live ledger. A preview ledger
 raises it only for Critical work. A pending block that evicts names its
 victim in its effect record and its intent; the victim's record names the
 block that claimed it and stops holding a slot once that block's
-application is verified. A definite failure releases the victim claim;
-unknown outcomes keep it through retirement until the victim expires.
+application is verified with the victim's removal proven. A verified
+block that never removed its victim releases the claim; an unproven
+removal is an unknown outcome, never a verified one. A definite failure
+releases the victim claim; unknown outcomes keep it through retirement
+until the victim expires. Startup drops the state row of a victim whose
+eviction the ledger verified. Startup readers report an error if the
+effects bucket disagrees with the schema or an effect is a nested bucket;
+they do not treat damaged eviction storage as an absent record.
 Expiry can remove either record first. A late definite outcome still ends
 the claim using the retained intent. A reservation that expired without
 running releases its claim. Only records still holding slots contribute
@@ -594,8 +600,9 @@ an hour after the last observation, even while work of another kind is
 queued or in flight; an unknown outcome or a response of another kind does
 not end it. The expiry is set on the engine's lease clock, which after a
 wall clock step back leads admission time; the owner passes that lead to
-`FinishOnLease`, so the episode ends when the kernel element expires in
-admission time, and an isolated member's isolation ends the same way.
+`FinishOnLease` or, with a victim, `FinishEviction`, so the episode ends when
+the kernel element expires in admission time. An isolated member's isolation
+ends the same way.
 Retirement and retry staleness stay on the lease frame: late retirement
 only holds an address longer, and the engine refuses an expired member.
 
@@ -795,7 +802,23 @@ and after a restart. The batch rechecks, writes one
 intent with expiry instants stored in UTC, refreshes timeouts after the
 write, and uses one atomic transaction
 on a fresh socket with a two-second deadline. Exact-family readback proves
-each applied member's key and timed lifetime. Definitive kernel rejection
+each applied member's key and timed lifetime. Capacity is checked only at
+apply: a check before reservation never answers set_full. Victim checks require
+retained rows at the address to agree on action, expiry and verification.
+An unreadable startup ledger disqualifies all victims; members can still use
+free slots. A member whose
+victim, the admission block the ledger claimed, still has that row, action,
+expiry and proven element takes the victim's slot if the resulting set fits the current limit: the same
+transaction deletes the victim's element, and only a readback of the victim's set
+proves it removed; a member whose removal is unproven is unknown, even
+with its own add read back. A victim that no longer qualifies is spared
+and its member needs a free slot. A victim with no more than the batch's
+minimum lifetime left at the send is spared and its member fails set_full
+alone, since its expiry in the kernel would reject the whole transaction.
+A victim removed by other means before the send rejects the whole
+transaction with ENOENT, which fails its members like any rejection. The victim's row stays until the owner retires it
+after the ledger records the outcome, so a restart before then restores
+the victim. Definitive kernel rejection
 restores state; uncertain exchanges retain unknown rows. Unknown rows are
 marked unverified and excluded from counts and seeding. Expiry retains them
 until the owner retires the matching attempt. A failed state
@@ -805,16 +828,19 @@ held. The admission owner must reconcile action-linked rows before startup
 or any downgrade to a build that ignores their verification fields.
 The retry marker for a kernel rejection requires a successful state restore.
 Marking with no action IDs still writes the safe state to release a state hold.
-`RemoveBlockActionRows` removes, in one state write, the rows of attempts the
-ledger has settled (failed, or retired after their expiry); an error reports
-no completed removal, including a durability failure after rename. Startup
-calls it after marking every unproven row, with the settled subset
+`RemoveBlockActionRows` removes, in one state write, the rows the ledger has
+settled (failed, retired after expiry, or evicted with proven removal).
+An error reports no completed removal, including a durability failure after
+rename. Startup calls it after marking every unproven row, with the settled subset
 `store.ReadSettledBlockActions` returns, so a start that stops between the two
 leaves the rows held back and the next start removes them.
 The engine's kill-point tests stop a batch around its intent write, kernel
 batch, readback, unknown marking and rejected-state restoration, then start
 the ledger and a new engine over the same state, after a process restart or
-after a reboot that empties the kernel. An unreadable ledger restores
+after a reboot that empties the kernel. Around an eviction they also stop
+before the outcome and before the victim's row is retired: until the ledger
+records the eviction a restart restores the victim and holds the block
+back, and after it the victim's row goes and only the block is restored. An unreadable ledger restores
 unexpired unmarked rows with degraded coverage; a readable ledger keeps a
 committed applied outcome and holds the rest. Attempts without a committed
 outcome are unknown. Their rows are held back, a new block of an address a
@@ -867,20 +893,34 @@ element. A malformed or repeated forecast address refuses the call before
 any read, and other platforms report the snapshot unavailable.
 
 With an engine, each owner turn runs its `block_ip` picks as one batch. The
-engine checks every member against one snapshot before anything is reserved. A
-full set, or an address a row or element holds without proof, defers a member;
+engine checks every member against one snapshot before anything is reserved. An
+address a row or element holds without proof defers a member;
 a block the engine proves already holds the address ends it linked to that
 block, and an invalid or protected address or a spent lifetime ends it, all
 without a charge. If the ledger refuses that link (no history budget for
 it), the pick stays queued with the deferral reason and the rest of the
-batch runs; the next check tries again. A proven block found only when the batch applies is
-checked again when the outcome is written: with a fresh proof the attempt
-fails, with its charge, and the pick ends refused as an existing effect,
-linked to the block, in one ledger write, so nothing retries against it.
-Without a fresh proof, or if that write fails, the failure alone is attempted
-at once. If both writes fail transiently, execution waits for the pending
-outcome; a crash before it is saved leaves an unknown attempt. After a successful
-write the ordinary bounded retry or the next check decides. On the
+batch runs; the next check tries again. Each member carries the victim its
+reservation claimed, as its intent names it, and the ledger records what the
+batch did to that victim with the member's outcome. Whole-batch failures,
+short replies and delayed outcome writes keep the victim and lease clock
+information. Once a verified eviction is recorded, the owner marks the
+victim's row and retires it, as startup
+does, rotating failed or held rows behind waiting rows and retrying on
+later turns, including while waiting for an absent engine during dry run.
+Cleanup follows the retirement policy, respects state-repair probe waits
+and preserves independent apply faults. Its errors remain
+visible alongside unknown-attempt retirement errors; a restart
+removes the row before the firewall restores its state. After an unknown
+outcome the victim's row stays until the victim expires. A proven block
+found only when the batch applies is checked again when the outcome is written.
+With a fresh proof the pick ends refused as an existing effect, linked to
+the block, keeping its charge. A member with a victim records its eviction
+outcome before attempting that link; a member without one records its
+failure and link in one write. Without a fresh proof, or if the link write
+fails, the attempt still records its failure. If the outcome cannot be
+saved, execution waits for the pending write; a crash before it is saved
+leaves an unknown attempt. After a successful write the ordinary bounded
+retry or the next check decides. On the
 last attempt the pick already ends failed. The rest are reserved,
 recorded as running with their intents, applied and finished by their own
 effect. Failed outcome writes retry before more work is selected and once at
@@ -1138,7 +1178,8 @@ each `block_ip` pick before anything is reserved, as a dry run does before
 it forecasts one. One read-only admission
 snapshot answers the turn's local checks without giving any pick a slot:
 a refused, protected or already enforced target ends or waits as a batch
-check would have it, and a full set defers the pick, all without a call.
+check would have it, all without a call. Room is the ledger's: it
+schedules a pick only on a free slot or a victim it can claim.
 Any other pick is asked about, as `CSM auto-block: <check>` for its
 canonical address, and stays queued; the schedule passes it over until
 the answer arrives. Workers, outstanding jobs and cached answers are bounded;
@@ -1162,10 +1203,11 @@ class, never response text. Its outstanding jobs are also the
 late or duplicate results cannot count another call or consume a different job.
 
 The admission ledger exposes two row-recovery reads. `ReadSettledBlockActions`
-names failed attempts and retired unknown outcomes among the supplied action
-IDs; `ReadUnprovenBlockActions` continues to include every non-verified
-attempt. `UnresolvedIntents` gives the owner the same ordered intents as the
-handle-free startup reader. Callers must inspect each attempt's outcome:
+names failed attempts, retired unknown outcomes and verified blocks later
+evicted by a proven removal among the supplied action IDs.
+`ReadUnprovenBlockActions` includes every non-verified attempt and those
+evicted blocks. `UnresolvedIntents` gives the owner the same ordered intents
+as the handle-free startup reader. Callers must inspect each attempt's outcome:
 an executing intent is unresolved but cannot be retired as unknown.
 
 ### Attack event storage
