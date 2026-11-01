@@ -573,13 +573,18 @@ restore the copies. On a Postfix host, disabling antispam puts the newest
 copy of each file back over CSM's own file and deletes that copy, and
 returning to dry run does the same for `actions.conf`, see
 [Dry run and enforce](#dry-run-and-enforce). Older copies of the same file
-stay, and CSM never restores over a file it did not write. A restored file
-gets the owner and mode CSM's file had, which after a takeover are your
-original ones. `/etc/rspamd/override.d/rbl.conf` written while a DQS key is
-set is the exception: CSM's file is owned by root, in rspamd's group, with
-mode 0640, and the restored file keeps that. If someone loosened CSM's file,
-the copy comes back owned by root with mode 0644. Each warning says what CSM
-will do with its copy. The warnings describe past replacements, including
+stay, and CSM never restores over a file it did not write. Restores require
+root-owned backups with mode 0600 in a root-only directory. A symlink,
+unsafe backup or unsafe destination permissions stop the transaction
+before mail configuration changes. Correct the permissions and retry.
+If a backup changes before completion, CSM rolls back and keeps that edit.
+Restores and their rollbacks never follow directory symlinks.
+A restored file gets the owner and mode checked before the restore, which
+after a takeover are your original ones. `/etc/rspamd/override.d/rbl.conf`
+written while a DQS key is set is the exception: CSM's file is owned by root,
+in rspamd's group, with mode 0640, and the restored file keeps that.
+Each warning says what CSM will do with its copy. The warnings describe
+past replacements, including
 after antispam is disabled.
 
 ## Rolling it out

@@ -11,6 +11,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Security
 
+- Postfix antispam restores now reject unsafe backups and preserve private settings and concurrent operator edits.
 - Password guessing against SMTP login on Postfix servers is now detected and blocked. It needs verbose auth logging in Dovecot, which `csm doctor` checks.
 - Crafted login names no longer pause mail brute-force protection.
 - Files are now reported as not scanned by YARA until its rules have loaded, instead of passing unchecked.

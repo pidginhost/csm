@@ -3,12 +3,9 @@ package txn
 import (
 	"context"
 	"errors"
-	"fmt"
-	"slices"
 	"strings"
 
 	"github.com/pidginhost/csm/internal/antispam"
-	"github.com/pidginhost/csm/internal/antispam/hostfacts"
 )
 
 var errEximInactive = errors.New("exim is not running; CSM changes its configuration only while it can confirm the reload")
@@ -208,76 +205,6 @@ func (t *tx) applyPostfix(s antispam.Settings, f antispam.HostFacts, installed m
 		return t.fail(StepComplete, err)
 	}
 	return antispam.Result{OK: true, Generation: generation}
-}
-
-// restoredCopy is an operator copy a Postfix transaction puts back.
-// consumed is set once the copy is deleted; rollback publishes it again.
-type restoredCopy struct {
-	path, content string
-	consumed      bool
-}
-
-// restoreCopies turns each planned deletion of a CSM file that want selects
-// into a restore of the operator's newest copy of that file. A takeover
-// kept the operator's owner and mode on CSM's file, and the restore keeps
-// them. A file someone loosened still goes, as removal would delete it, and
-// the copy comes back root-owned 0644: that owner and mode cannot be
-// trusted. Its directories were checked with the other targets. Files
-// without a copy are deleted. Without such a deletion the copy directory is
-// not touched.
-func (t *tx) restoreCopies(changes []change, want func(path string) bool) error {
-	selected := func(c change) bool { return !c.next.exists && c.target.Kind.WholeFile() && want(c.target.Path) }
-	if !slices.ContainsFunc(changes, selected) {
-		return nil
-	}
-	dir := t.h.path(antispam.ReplacedDir)
-	copies, err := hostfacts.Replaced(dir)
-	if err != nil || len(copies) == 0 {
-		return err
-	}
-	// Names start with the UTC time, so the newest copy sorts last.
-	newest := map[string]string{}
-	for _, c := range copies {
-		newest[c.Path] = max(newest[c.Path], c.Backup)
-	}
-	if err = privateDir(dir); err != nil {
-		return err
-	}
-	for i, c := range changes {
-		p, ok := newest[c.target.Path]
-		if !ok || !selected(c) {
-			continue
-		}
-		saved, readErr := readFile(p)
-		if readErr != nil {
-			return readErr
-		}
-		if !saved.exists {
-			return fmt.Errorf("%s disappeared", strings.TrimPrefix(p, t.h.root))
-		}
-		next := fileState{exists: true, content: saved.content}
-		if antispam.OptionalUsable(c.target) != nil {
-			next.uid, next.gid, next.perm, next.metadata = 0, 0, 0o644, true
-		}
-		changes[i].next = next
-		t.restored = append(t.restored, &restoredCopy{path: p, content: saved.content})
-	}
-	return nil
-}
-
-// consumeRestored deletes the copies the transaction put back, which clears
-// their warnings.
-func (t *tx) consumeRestored() error {
-	for _, r := range t.restored {
-		err := deleteFile(r.path)
-		if err == nil || errors.Is(err, errDurability) {
-			r.consumed = true
-		}
-		if err != nil {
-			return err
-		}
-	}
-	return t.fwd.Err()
 }
 
 // changesFor renders s and plans the edits that bring f's targets to it.

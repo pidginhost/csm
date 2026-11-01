@@ -94,9 +94,11 @@ type Host struct {
 func New() *Host {
 	stack := sync.OnceValue(hostfacts.DetectStack)
 	return &Host{
-		run:     hostfacts.RunCommand,
-		replace: replaceFile,
-		stack:   stack,
+		run: hostfacts.RunCommand,
+		replace: func(p string, want, next fileState) error {
+			return replacementFor(stack())(p, want, next)
+		},
+		stack: stack,
 		preflight: func(ctx context.Context, s antispam.Settings) (antispam.HostFacts, []antispam.Problem) {
 			f := hostfacts.Collect(ctx, s.Socket)
 			if s.HasFeed(antispam.FeedSpamhausDQS) {
@@ -176,6 +178,13 @@ type tx struct {
 func (h *Host) begin() *tx {
 	t := &tx{h: h, start: h.now()}
 	t.fwd, t.cancel = context.WithDeadline(context.Background(), t.start.Add(forwardBudget))
+	cancel := t.cancel
+	t.cancel = func() {
+		cancel()
+		for _, r := range t.restored {
+			r.target.Close()
+		}
+	}
 	return t
 }
 
@@ -849,6 +858,11 @@ func (t *tx) rollback() (state string, rollbackErr error) {
 			errs = append(errs, err)
 		}
 	}
+	// Recreate consumed operator copies before overwriting their restored
+	// files. This preservation must run even after the rollback deadline.
+	if err := t.restoreConsumedCopies(); err != nil {
+		return antispam.RollbackFailed, errors.Join(append(errs, err)...)
+	}
 	for i := len(t.writes) - 1; i >= 0; i-- {
 		if err := ctx.Err(); err != nil {
 			return antispam.RollbackFailed, err
@@ -875,17 +889,6 @@ func (t *tx) rollback() (state string, rollbackErr error) {
 			errs = append(errs, fmt.Errorf("restoring %s: %w", strings.TrimPrefix(w.path, t.h.root), err))
 		} else if w.backup != "" {
 			t.backups[w.backup] = false
-		}
-	}
-	// CSM's files are back, so the operator's copies must be too.
-	for _, r := range t.restored {
-		if !r.consumed {
-			continue
-		}
-		if err := publishCopy(r.path, r.content); err != nil {
-			errs = append(errs, fmt.Errorf("restoring backup %s: %w", strings.TrimPrefix(r.path, t.h.root), err))
-		} else {
-			r.consumed = false
 		}
 	}
 	if err := t.dropBackups(); err != nil {

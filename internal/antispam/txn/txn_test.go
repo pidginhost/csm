@@ -135,7 +135,7 @@ func (f *fakeHost) host() *Host {
 	return &Host{
 		root:    f.root,
 		run:     f.run,
-		replace: replaceFile,
+		replace: replacementFor(f.stack),
 		stack:   func() antispam.MailStack { return f.stack },
 		milter: func(_ context.Context, addr string) error {
 			f.milters = append(f.milters, addr)

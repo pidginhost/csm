@@ -418,13 +418,10 @@ func TestApplyPostfixDryRunRestoresActions(t *testing.T) {
 	}
 }
 
-// A CSM actions.conf someone loosened still goes on the switch to dry run,
-// as removal would delete it: the copy comes back in its place, root-owned
-// 0644, because the loosened owner and mode cannot be trusted. The switch
-// never fails on it and leaves CSM's thresholds enforcing.
-func TestApplyPostfixDryRunRestoresOverLoosenedFile(t *testing.T) {
+// Without an operator backup, a loosened CSM actions.conf can still be
+// deleted on the switch to dry run. No private content is restored there.
+func TestApplyPostfixDryRunDeletesLoosenedFileWithoutCopy(t *testing.T) {
 	f := postfixFake(t)
-	writeTest(t, f.root+actionsPath, foreignActions, 0o640)
 	wantOK(t, f.host().Apply(enforce()))
 	if err := os.Chmod(f.root+actionsPath, 0o666); err != nil {
 		t.Fatal(err)
@@ -432,27 +429,10 @@ func TestApplyPostfixDryRunRestoresOverLoosenedFile(t *testing.T) {
 	f.reset()
 	dry := enforce()
 	dry.DryRun = true
-	h := f.host()
-	// The owner the restore asks for is recorded; a test without root
-	// cannot set it, so there the file keeps the test's own.
-	var restores []fileState
-	h.replace = func(p string, want, next fileState) error {
-		if p == f.root+actionsPath && next.exists {
-			restores = append(restores, next)
-			if os.Geteuid() != 0 {
-				next.uid, next.gid = -1, -1
-			}
-		}
-		return replaceFile(p, want, next)
+	wantOK(t, f.host().Apply(dry))
+	if f.file(actionsPath) != "<absent>" {
+		t.Fatal("loosened actions.conf remains without a backup to restore")
 	}
-	wantOK(t, h.Apply(dry))
-	if f.file(actionsPath) != foreignActions {
-		t.Fatalf("actions.conf = %q", f.file(actionsPath))
-	}
-	if len(restores) != 1 || !restores[0].metadata || restores[0].uid != 0 || restores[0].gid != 0 || restores[0].perm != 0o644 {
-		t.Fatalf("restores %+v, want one as root:root 0644", restores)
-	}
-	wantMode(t, f.root+actionsPath, 0o644, 0)
 	wantBackups(t, f, nil)
 }
 
