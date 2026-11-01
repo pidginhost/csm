@@ -770,9 +770,11 @@ firewall:
   # Integrations declare theirs in their own conf.d fragment.
   required_tcp_out: []
 
-  # Passive FTP range
-  passive_ftp_start: 49152
-  passive_ftp_end: 65534
+  # Passive FTP data ports. Left unset, 49152-65534 is opened on cPanel hosts
+  # and hosts with pure-ftpd, proftpd or vsftpd installed, and stays closed
+  # elsewhere. A value you set is always used; 0 keeps the range closed.
+  # passive_ftp_start: 49152
+  # passive_ftp_end: 65534
 
   # Destination-scoped outbound TCP. tcp_out holds single ports only, so a
   # port range can only be expressed here -- needed when this host is an FTP

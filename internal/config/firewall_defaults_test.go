@@ -13,6 +13,7 @@ import (
 // per-field merging, "firewall:\n  enabled: true" produced an empty
 // tcp_in/tcp_out on a DROP-policy chain - an instant lockout.
 func TestPartialFirewallBlockKeepsDefaults(t *testing.T) {
+	withFTPServer(t, true)
 	cfg, err := LoadBytes([]byte("firewall:\n  enabled: true\n"))
 	if err != nil {
 		t.Fatal(err)
@@ -73,6 +74,7 @@ func TestPartialFirewallBlockKeepsExplicitValues(t *testing.T) {
 
 // A missing firewall: block keeps the full DefaultConfig behaviour.
 func TestMissingFirewallBlockGetsFullDefaults(t *testing.T) {
+	withFTPServer(t, true)
 	cfg, err := LoadBytes([]byte("hostname: x\n"))
 	if err != nil {
 		t.Fatal(err)
@@ -84,6 +86,7 @@ func TestMissingFirewallBlockGetsFullDefaults(t *testing.T) {
 }
 
 func TestNullFirewallBlockGetsFullDefaults(t *testing.T) {
+	withFTPServer(t, true)
 	for _, body := range []string{"firewall:\n", "firewall: null\n", "firewall: ~\n"} {
 		cfg, err := LoadBytes([]byte(body))
 		if err != nil {
@@ -97,6 +100,7 @@ func TestNullFirewallBlockGetsFullDefaults(t *testing.T) {
 }
 
 func TestFirewallPresenceSupportsFlowStyleAndAliases(t *testing.T) {
+	withFTPServer(t, true)
 	tests := map[string]string{
 		"top-level alias": `<<: &base
   firewall: &policy {enabled: true, tcp_in: &empty [], tcp_out: *empty, syn_flood_protection: false, conn_limit: 0, log_rate: 0}
@@ -127,6 +131,7 @@ firewall: *policy
 }
 
 func TestFirewallPresenceIncludesAliasedDropInKeys(t *testing.T) {
+	withFTPServer(t, true)
 	dir := t.TempDir()
 	main := filepath.Join(dir, "csm.yaml")
 	confd := filepath.Join(dir, "conf.d")
@@ -204,5 +209,46 @@ func TestFirewallPresenceIncludesEveryDropInKey(t *testing.T) {
 	}
 	if !reflect.DeepEqual(cfg.Firewall, want) {
 		t.Errorf("firewall = %#v, want %#v", cfg.Firewall, want)
+	}
+}
+
+// withFTPServer pins the host probe. DefaultConfig describes a host with an
+// FTP server, so tests comparing against it pin installed=true.
+func withFTPServer(t *testing.T, installed bool) {
+	t.Helper()
+	old := ftpServerInstalled
+	ftpServerInstalled = func() bool { return installed }
+	t.Cleanup(func() { ftpServerInstalled = old })
+}
+
+// The default passive range opens 16k public ports. A host without an FTP
+// server gets it only when the operator sets it; an explicit value always wins.
+func TestPassiveFTPRangeDefaultFollowsFTPServer(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		ftp        bool
+		yaml       string
+		start, end int
+	}{
+		{"ftp host default", true, "firewall:\n  enabled: true\n", 49152, 65534},
+		{"ftp host missing section", true, "hostname: x\n", 49152, 65534},
+		{"no ftp default", false, "firewall:\n  enabled: true\n", 0, 0},
+		{"no ftp missing section", false, "hostname: x\n", 0, 0},
+		{"no ftp null keys", false, "firewall:\n  passive_ftp_start: null\n  passive_ftp_end: ~\n", 0, 0},
+		{"no ftp explicit range", false, "firewall:\n  passive_ftp_start: 50000\n  passive_ftp_end: 51000\n", 50000, 51000},
+		{"no ftp start only", false, "firewall:\n  passive_ftp_start: 60000\n", 60000, 65534},
+		{"no ftp end only", false, "firewall:\n  passive_ftp_end: 60000\n", 49152, 60000},
+		{"ftp host explicit zero", true, "firewall:\n  passive_ftp_start: 0\n  passive_ftp_end: 0\n", 0, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			withFTPServer(t, tc.ftp)
+			cfg, err := LoadBytes([]byte(tc.yaml))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Firewall.PassiveFTPStart != tc.start || cfg.Firewall.PassiveFTPEnd != tc.end {
+				t.Errorf("passive range = %d-%d, want %d-%d", cfg.Firewall.PassiveFTPStart, cfg.Firewall.PassiveFTPEnd, tc.start, tc.end)
+			}
+		})
 	}
 }

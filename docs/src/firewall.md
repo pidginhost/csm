@@ -361,6 +361,13 @@ firewall:
     - "monitoring.example.com"
 ```
 
+### Passive FTP range
+
+When `passive_ftp_start` and `passive_ftp_end` are both unset, CSM opens TCP
+49152-65534 for passive FTP data connections only on cPanel hosts and on hosts
+with pure-ftpd, proftpd or vsftpd installed. Other hosts keep the range closed.
+A value you set is always used, and `0` keeps the range closed.
+
 Full firewall reference: [Configuration - Firewall](configuration.md#full-reference).
 
 ## Auto-response interaction

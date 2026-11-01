@@ -18,6 +18,7 @@ import (
 	"github.com/pidginhost/csm/internal/antispam"
 	"github.com/pidginhost/csm/internal/atomicio"
 	"github.com/pidginhost/csm/internal/firewall"
+	"github.com/pidginhost/csm/internal/platform"
 )
 
 // WebUIToken is one entry in WebUI.Tokens. Scope must be "admin", "read" or
@@ -1938,9 +1939,8 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 	}
 	if cfg.Firewall == nil {
 		cfg.Firewall = firewall.DefaultConfig()
-	} else {
-		applyFirewallFieldDefaults(cfg.Firewall, presence.firewall)
 	}
+	applyFirewallFieldDefaults(cfg.Firewall, presence.firewall)
 	if len(cfg.GeoIP.Editions) == 0 {
 		cfg.GeoIP.Editions = []string{"GeoLite2-City", "GeoLite2-ASN"}
 	}
@@ -2477,6 +2477,8 @@ func applyForwardGuardDefaults(fg *ForwardGuardConfig, p forwardGuardPresence) {
 	}
 }
 
+var ftpServerInstalled = platform.FTPServerInstalled
+
 // applyFirewallFieldDefaults fills absent firewall: keys from DefaultConfig.
 // The whole-pointer default used to be all-or-nothing: any partial firewall
 // block ("enabled: true" alone) lost every unlisted default and produced a
@@ -2485,6 +2487,11 @@ func applyForwardGuardDefaults(fg *ForwardGuardConfig, p forwardGuardPresence) {
 // and false. Fields whose default is the zero value need no entry here.
 func applyFirewallFieldDefaults(fc *firewall.FirewallConfig, present map[string]bool) {
 	def := firewall.DefaultConfig()
+	// The default passive range opens 16k public ports for an FTP server to
+	// use. Without one it stays closed unless the operator sets either end.
+	if !present["passive_ftp_start"] && !present["passive_ftp_end"] && !ftpServerInstalled() {
+		def.PassiveFTPStart, def.PassiveFTPEnd = 0, 0
+	}
 	if !present["tcp_in"] {
 		fc.TCPIn = def.TCPIn
 	}
