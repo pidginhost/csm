@@ -466,6 +466,40 @@ func (e *Engine) resume(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
+// probeMessage is plain text long enough to hash to one digest. It is
+// inspected, never learned.
+const probeMessage = "From: csm@localhost\r\nSubject: csm learning probe\r\n\r\n" +
+	"This fixed message lets the security monitor confirm that rspamd can inspect a plain text message and query its fuzzy storage. " +
+	"It is never learned and never stored. The words below only make the text long enough to be hashed: " +
+	"alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november oscar papa quebec romeo sierra tango uniform victor whiskey xray yankee zulu.\r\n"
+
+// ProbeStorage inspects probeMessage. It returns nil only when storage
+// answered the probe's one digest, which shows the controller, the plugin
+// and fuzzy storage serve an ordinary body.
+func (e *Engine) ProbeStorage(ctx context.Context) error {
+	var err error
+	if doErr := e.do(ctx, func() { err = e.probe(ctx) }); doErr != nil {
+		return doErr
+	}
+	return err
+}
+
+func (e *Engine) probe(caller context.Context) error {
+	ctx, end, ok := e.turnCtx(caller)
+	if !ok {
+		return errors.New("learning is not publishing")
+	}
+	defer end()
+	insp, err := e.cfg.Client.Inspect(ctx, []byte(probeMessage))
+	if err != nil {
+		return err
+	}
+	if insp.Distinct != 1 {
+		return fmt.Errorf("probe inspection queried %d digests, want 1", insp.Distinct)
+	}
+	return nil
+}
+
 // SubmitReport admits one report. A closed gate or frozen ledger defers it
 // without reading the snapshot.
 func (e *Engine) SubmitReport(ctx context.Context, c Candidate) (Outcome, error) {

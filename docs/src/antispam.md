@@ -704,8 +704,11 @@ starts with the accounts after the one that failed. Reports stay pending
 while rspamd's fuzzy storage answers no lookup, however long that lasts. A
 failure counts against a message only when storage answered a lookup for
 another report earlier in the same pass, or when rspamd cannot process the
-message; such a message does not stop other accounts' reports. A message
-with three counted failures, including unclassified learner errors, is
+message; such a message does not stop other accounts' reports. When rspamd
+answers a message's inspection with an error, CSM inspects a fixed test
+message: if storage answers it, the failure counts against the message and
+the pass goes on with the next report; otherwise it is a backend error. A
+message with three counted failures, including unclassified learner errors, is
 skipped as `failed`. Canceled passes, reconciliation pauses, unsent
 controller requests, a wrong controller peer and local state failures
 never count. Unreadable learning

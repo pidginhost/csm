@@ -285,3 +285,43 @@ func TestMutationAcceptsNativeHashes(t *testing.T) {
 		t.Fatalf("native success reply: %v, requests=%d", err, calls.Load())
 	}
 }
+
+// A body inspection the controller answered with a failure is marked; a
+// rejected body, an unanswered request and an exact check are not.
+func TestInspectMarksFailedReplies(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   string
+		failed bool
+	}{
+		{"incomplete", http.StatusOK, `{"results":[],"errors":["unexpected reply"],"complete":false,"distinct":1}`, true},
+		{"malformed", http.StatusOK, `not json`, true},
+		{"error status", http.StatusInternalServerError, ``, true},
+		{"rejected body", http.StatusOK, `{"results":[],"errors":["cannot process message"],"complete":false,"distinct":0}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sock, _ := serveController(t, func(w http.ResponseWriter, r *http.Request) {
+				_, _ = io.ReadAll(r.Body)
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			})
+			_, err := testClient(sock).Inspect(context.Background(), []byte("report"))
+			if err == nil || errors.Is(err, ErrInspectionFailed) != tc.failed {
+				t.Fatalf("body inspection: err=%v", err)
+			}
+			if _, err = testClient(sock).InspectDigests(context.Background(), []Digest{digest('a')}); err == nil || errors.Is(err, ErrInspectionFailed) {
+				t.Fatalf("exact check: err=%v", err)
+			}
+		})
+	}
+	sock, _ := serveController(t, func(_ http.ResponseWriter, r *http.Request) {
+		_, _ = io.ReadAll(r.Body)
+		time.Sleep(300 * time.Millisecond)
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if _, err := testClient(sock).Inspect(ctx, []byte("report")); !errors.Is(err, ErrUncertain) || errors.Is(err, ErrInspectionFailed) {
+		t.Fatalf("unanswered inspection: err=%v", err)
+	}
+}

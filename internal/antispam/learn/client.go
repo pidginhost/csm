@@ -61,10 +61,17 @@ func (c Client) Inspect(ctx context.Context, body []byte) (Inspection, error) {
 		return Inspection{}, errors.New("message is larger than the learning limit")
 	}
 	reply, err := c.inspect(ctx, InspectPath, body)
+	if errors.Is(err, ErrRejected) {
+		return Inspection{}, fmt.Errorf("%w: %w", ErrInspectionFailed, err)
+	}
 	if err != nil {
 		return Inspection{}, err
 	}
-	return ParseInspection(reply, nil)
+	insp, err := ParseInspection(reply, nil)
+	if err != nil && !errors.Is(err, ErrMessageRejected) {
+		err = fmt.Errorf("%w: %w", ErrInspectionFailed, err)
+	}
+	return insp, err
 }
 
 // InspectDigests runs an exact-only check of full digests.

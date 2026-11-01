@@ -699,3 +699,42 @@ func TestEngineOperatorSeedsNewMultipartFile(t *testing.T) {
 		t.Fatalf("audited digests %v", res.Digests)
 	}
 }
+
+// The probe passes only when storage answers the probe message's one digest.
+func TestProbeStorageNeedsOneAnsweredDigest(t *testing.T) {
+	f := newAuditFixture(t)
+	e := newTestEngine(t, f)
+	ctx := context.Background()
+	set := func(fn func(s *fakeStorage)) {
+		f.storage.mu.Lock()
+		defer f.storage.mu.Unlock()
+		fn(f.storage)
+	}
+	set(func(s *fakeStorage) { s.bodies[probeMessage] = digest('p') })
+	if err := e.ProbeStorage(ctx); err != nil {
+		t.Fatalf("answered probe failed: %v", err)
+	}
+	set(func(s *fakeStorage) { s.inspect[probeMessage] = []Result{} })
+	if err := e.ProbeStorage(ctx); err == nil {
+		t.Fatal("probe without a digest passed")
+	}
+	set(func(s *fakeStorage) {
+		s.inspect[probeMessage] = []Result{{Queried: digest('p')}, {Queried: digest('q')}}
+	})
+	if err := e.ProbeStorage(ctx); err == nil {
+		t.Fatal("probe with two digests passed")
+	}
+	set(func(s *fakeStorage) { delete(s.inspect, probeMessage); s.readErr = errors.New("storage down") })
+	if err := e.ProbeStorage(ctx); err == nil {
+		t.Fatal("probe passed while storage failed")
+	}
+	set(func(s *fakeStorage) { s.readErr = nil })
+	e.SetGate(antispam.LearningGate{})
+	_, before, _, _ := f.storage.native()
+	if err := e.ProbeStorage(ctx); err == nil {
+		t.Fatal("probe passed with learning closed")
+	}
+	if _, after, _, _ := f.storage.native(); after != before {
+		t.Fatal("probe inspected with learning closed")
+	}
+}

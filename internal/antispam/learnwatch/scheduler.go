@@ -61,6 +61,7 @@ const (
 
 type submitter interface {
 	SubmitReport(context.Context, learn.Candidate) (learn.Outcome, error)
+	ProbeStorage(context.Context) error
 	CancelUnsent(ctx context.Context, uid int, confirm func() (bool, error)) error
 	ReportUIDs(context.Context) ([]int, error)
 }
@@ -1083,6 +1084,13 @@ func (r *accountRun) attempt(ctx context.Context, rep *PassReport) {
 			return
 		}
 		failure := errors.Join(err, out.Err)
+		// A failed inspection reply while storage answers the probe comes
+		// from this body, as a rejection does, so the pass goes on.
+		if !rejected && ctx.Err() == nil && !hostSideFailure(failure) &&
+			errors.Is(failure, learn.ErrInspectionFailed) && r.w.cfg.Engine.ProbeStorage(ctx) == nil {
+			rejected, r.w.answered = true, true
+			r.w.submitStopped, r.w.stoppedBy = false, 0
+		}
 		// Only failures known to come from the pass, the host or local
 		// learning state always spare the message's allowance. A message
 		// cannot cancel a context or break the ledger; it can cause any

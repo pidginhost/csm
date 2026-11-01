@@ -401,3 +401,117 @@ func TestSchedulerUnknownErrorCountsAgainstEntry(t *testing.T) {
 		})
 	}
 }
+
+const poisonBody = "Subject: poison\r\n\r\npoison"
+
+// failInspection fails the poison report the way a controller reply does
+// when inspecting that body breaks.
+func failInspection(c learn.Candidate) (learn.Outcome, error) {
+	if string(c.Snapshot) != poisonBody {
+		return learn.Outcome{Committed: []uint64{1}}, nil
+	}
+	return learn.Outcome{Deferred: true, Err: fmt.Errorf("%w: %w: inspection is incomplete", learn.ErrReadFailed, learn.ErrInspectionFailed)}, nil
+}
+
+func poisonErrors(t *testing.T, f *watchFixture) int {
+	t.Helper()
+	n := -1
+	if err := f.cfg.State.View(func(tx StateTx) error {
+		items, err := tx.Pending(FolderKey{UID: f.accounts[0].UID, Folder: ".spam"})
+		for _, it := range items {
+			if it.Errors > n {
+				n = it.Errors
+			}
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// A failed inspection reply while storage answers the probe is the
+// message's fault: it is charged even when no other report got an answer,
+// and the reports behind it go on in the same pass.
+func TestSchedulerFailedInspectionChargedWhenProbeAnswers(t *testing.T) {
+	f := newWatch(t, 1)
+	f.pass()
+	f.deliver(0, "new", 1, poisonBody)
+	f.engine.respond = failInspection
+	for pass := range MaxEntryErrors {
+		f.now = f.now.Add(PassEvery)
+		f.deliver(0, "new", 1, spamBody)
+		pending, failed := 1, 0
+		if pass == MaxEntryErrors-1 {
+			pending, failed = 0, 1
+		}
+		if r := f.pass(); r.Submitted != 1 || r.Pending != pending || r.Skipped[SkipFailed] != failed {
+			t.Fatalf("pass %d: poison report held up the queue or was not charged: %+v", pass+1, r)
+		}
+		if pass < MaxEntryErrors-1 {
+			if got := poisonErrors(t, f); got != pass+1 {
+				t.Fatalf("pass %d: poison charged %d times", pass+1, got)
+			}
+		}
+		f.restart()
+	}
+	if got := f.engine.probed(); got != MaxEntryErrors {
+		t.Fatalf("probed %d times, want %d", got, MaxEntryErrors)
+	}
+	before := len(f.engine.submitted())
+	if r := f.pass(); r.Submitted != 0 || r.Pending != 0 || len(f.engine.submitted()) != before {
+		t.Fatalf("failed report was retried: %+v", r)
+	}
+}
+
+// Spec 7.5 still holds when the probe gets no answer: the failure is the
+// backend's, nothing is charged and the pass stops at the first report.
+func TestSchedulerFailedInspectionKeptWhenProbeFails(t *testing.T) {
+	f := newWatch(t, 1)
+	f.pass()
+	f.deliver(0, "new", 1, poisonBody)
+	// Storage down: every reply fails, the probe's too.
+	f.engine.respond = func(learn.Candidate) (learn.Outcome, error) {
+		return learn.Outcome{Deferred: true, Err: fmt.Errorf("%w: %w: inspection is incomplete", learn.ErrReadFailed, learn.ErrInspectionFailed)}, nil
+	}
+	f.engine.probe = func() error { return errors.New("storage does not answer") }
+	if r := f.pass(); r.Pending != 1 || poisonErrors(t, f) != 0 {
+		t.Fatalf("outage charged the report: %+v", r)
+	}
+	f.deliver(0, "new", 1, spamBody)
+	for pass := range MaxEntryErrors + 1 {
+		f.now = f.now.Add(PassEvery)
+		f.restart()
+		if r := f.pass(); r.Submitted != 0 || r.Pending != 2 || r.Skipped[SkipFailed] != 0 || poisonErrors(t, f) != 0 || len(f.engine.submitted()) != pass+2 {
+			t.Fatalf("pass %d of an outage charged or passed the report: %+v", pass+1, r)
+		}
+	}
+	f.engine.probe, f.engine.respond = nil, nil
+	f.restart()
+	if r := f.pass(); r.Submitted != 2 || r.Pending != 0 {
+		t.Fatalf("reports did not resume after the outage: %+v", r)
+	}
+}
+
+// Only a failed reply calls for a probe. Unanswered requests, rejected
+// bodies and local failures keep their own handling.
+func TestSchedulerProbesOnlyFailedInspectionReplies(t *testing.T) {
+	for _, failure := range []error{learn.ErrUncertain, learn.ErrMessageRejected, learn.ErrStateIO, errors.New("unexpected learner failure")} {
+		t.Run(failure.Error(), func(t *testing.T) {
+			f := newWatch(t, 1)
+			f.pass()
+			f.deliver(0, "new", 1, poisonBody)
+			f.engine.respond = func(learn.Candidate) (learn.Outcome, error) {
+				return learn.Outcome{Deferred: true, Err: fmt.Errorf("%w: %w", learn.ErrReadFailed, failure)}, nil
+			}
+			for range MaxEntryErrors + 1 {
+				f.now = f.now.Add(PassEvery)
+				f.pass()
+				f.restart()
+			}
+			if got := f.engine.probed(); got != 0 {
+				t.Fatalf("probed %d times", got)
+			}
+		})
+	}
+}
