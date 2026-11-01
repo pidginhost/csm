@@ -51,6 +51,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - A Spam folder report that learning cannot process is now set aside after a few tries instead of holding up the reports behind it.
 - `csm validate` and `csm doctor` no longer warn about a missing rspamd token when the rspamd controller runs on the same host.
 - Hosts without WordPress sites no longer get a warning that the wp command is missing.
+- `csm doctor` no longer fails on queued automatic blocks while the firewall is disabled; it says why they are not applied.
 
 ## [4.8.1] - 2026-10-30
 
