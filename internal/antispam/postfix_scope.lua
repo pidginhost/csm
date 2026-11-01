@@ -14,6 +14,9 @@ local EXEMPT = { $EXEMPT }
 local nets
 if #NETS > 0 then
   nets = rspamd_config:radix_from_ucl(NETS, 'CSM infra_ips')
+  if not nets then
+    rspamd_logger.errx(rspamd_config, 'csm_scope: cannot build the infra_ips map; mail from infra_ips is enforced like remote mail')
+  end
 end
 local mailboxes, domains = {}, {}
 for _, e in ipairs(EXEMPT) do
@@ -55,6 +58,30 @@ local function scope(task)
   return 'off', false
 end
 
+-- The actions CSM owns, lifted out of reach on mail it never enforces on.
+local NO_ACTIONS = { reject = 100000, ['add header'] = 100000,
+  ['rewrite subject'] = 100000, greylist = 100000 }
+
+-- unenforce merges NO_ACTIONS into the settings already applied, so an
+-- operator's settings rule keeps everything else it set. An underscore
+-- alias would compete with CSM's limit, so it goes.
+local function unenforce(task)
+  local settings = task:get_settings() or {}
+  if type(settings.actions) ~= 'table' then
+    settings.actions = {}
+  end
+  for name, limit in pairs(NO_ACTIONS) do
+    settings.actions[(name:gsub(' ', '_'))] = nil
+    settings.actions[name] = limit
+  end
+  task:set_settings(settings)
+end
+
+-- task:set_settings replaces the task's settings, so whichever of CSM and
+-- the settings plugin ran last would win. CSM_SCOPE runs after
+-- SETTINGS_APPLY, the settings plugin's last step, which waits for its rule
+-- and Redis lookups: the operator's rule is applied by then, and unenforce
+-- merges into it.
 rspamd_config:register_symbol({
   name = 'CSM_SCOPE',
   type = 'prefilter',
@@ -65,11 +92,11 @@ rspamd_config:register_symbol({
       task:set_milter_reply({ remove_headers = { ['X-Spam-Status'] = 0 } })
     end
     if MODE == 'enforce' and policy ~= 'on' then
-      task:set_settings({ actions = { reject = 100000, ['add header'] = 100000,
-        ['rewrite subject'] = 100000, greylist = 100000 } })
+      unenforce(task)
     end
   end,
 })
+rspamd_config:register_dependency('CSM_SCOPE', 'SETTINGS_APPLY')
 
 -- One record per scored message. The score is in tenths, rounded down, so
 -- it meets a threshold exactly when rspamd's score does.

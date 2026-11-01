@@ -56,6 +56,8 @@ func TestRenderPostfixScopeLua(t *testing.T) {
 		"\nlocal EXEMPT = { \"b@example.org\", \"example.com\", \"a@example.org\" }\n",
 		"name = 'CSM_SCOPE'",
 		"name = 'CSM_MARKER'",
+		"rspamd_logger.errx(rspamd_config, 'csm_scope: ",
+		"rspamd_config:register_dependency('CSM_SCOPE', 'SETTINGS_APPLY')",
 		"'CSM-ANTISPAM event=scan mode=%s policy=%s result=ok score=%d action=\"%s\" decision=%s ip=%s qid=%s'",
 	} {
 		if !strings.Contains(lua, want) {

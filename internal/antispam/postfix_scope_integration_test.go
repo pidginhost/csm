@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -60,7 +61,7 @@ func TestPostfixScopeAgainstRspamd(t *testing.T) {
 		r := startScopeRspamd(t, s)
 		for _, c := range []scopeCase{
 			{name: "remote", score: 20, forged: "No, forged", args: join(remote, rcpt("user@example.com")),
-				action: "reject", record: "on reject", strip: true, status: "Yes, score="},
+				action: "reject", record: "on reject", strip: true, status: "Yes, score=", has: "MISSING_DATE"},
 			{name: "authenticated", score: 20, forged: "No, forged", args: join(remote, []string{"--user", "sender@example.net"}, rcpt("user@example.com")),
 				action: "no action", strip: true},
 			{name: "local", score: 20, forged: "No, forged", args: join([]string{"--ip", "127.0.0.1"}, rcpt("user@example.com")),
@@ -75,6 +76,27 @@ func TestPostfixScopeAgainstRspamd(t *testing.T) {
 				action: "reject", record: "on reject"},
 			{name: "forged yes", score: -40, forged: "Yes, forged", args: join(remote, rcpt("user@example.com")),
 				action: "no action", record: "on none", strip: true, status: "No, score="},
+		} {
+			r.check(t, s, c)
+		}
+		// The operator's settings rules keep working beside CSM's scope: on
+		// scored mail they apply as written. On mail CSM never enforces on,
+		// CSM's no-action limits replace the rule's own reject and add_header
+		// limits while the rest of the rule stays in the task's settings.
+		allowed, quiet := []string{"--from", "sender@allowed.example.net"}, []string{"--from", "sender@quiet.example.net"}
+		for _, c := range []scopeCase{
+			{name: "operator allow", score: 20, args: join(remote, allowed, rcpt("user@example.com")),
+				action: "no action", record: "on reject"},
+			{name: "operator rule", score: 20, args: join(remote, quiet, rcpt("user@example.com")),
+				action: "reject", record: "on reject", lacks: "MISSING_DATE", limits: map[string]float64{"add header": 3}, kept: true},
+			{name: "operator rule, authenticated", score: 20, forged: "No, forged", args: join(remote, quiet, []string{"--user", "sender@example.net"}, rcpt("user@example.com")),
+				action: "no action", strip: true, lacks: "MISSING_DATE", lifted: true, kept: true},
+			{name: "operator rule, local", score: 20, args: join([]string{"--ip", "127.0.0.1"}, quiet, rcpt("user@example.com")),
+				action: "no action", lacks: "MISSING_DATE", lifted: true, kept: true},
+			{name: "operator netblock, infra", score: 20, args: join([]string{"--ip", "198.51.100.7"}, rcpt("user@example.com")),
+				action: "no action", lacks: "MISSING_DATE", lifted: true, kept: true},
+			{name: "operator rule, exempt", score: 20, args: join(remote, quiet, rcpt("exempt@example.com")),
+				action: "no action", record: "off unfiltered", lacks: "MISSING_DATE", lifted: true, kept: true},
 		} {
 			r.check(t, s, c)
 		}
@@ -112,6 +134,16 @@ type scopeCase struct {
 	// and status is empty.
 	strip  bool
 	status string
+	// has and lacks name a symbol the reply must or must not carry.
+	has, lacks string
+	// limits are action thresholds rspamd must report.
+	limits map[string]float64
+	// kept asks for the operator's symbols_disabled in the task's settings
+	// at the end of the scan.
+	kept bool
+	// lifted asks for CSM's no-action limits: rspamd reports them, and no
+	// underscore alias left in the task's settings competes with them.
+	lifted bool
 }
 
 type scopeReply struct {
@@ -123,6 +155,8 @@ type scopeReply struct {
 		} `json:"add_headers"`
 		Remove map[string]int `json:"remove_headers"`
 	} `json:"milter"`
+	Symbols    map[string]json.RawMessage `json:"symbols"`
+	Thresholds map[string]float64         `json:"thresholds"`
 }
 
 type scopeRspamd struct {
@@ -131,8 +165,20 @@ type scopeRspamd struct {
 }
 
 // scopeTestSymbol adds the X-Test-Score header's value to the score, which
-// a GTUBE message cannot do: GTUBE ends the scan before any prefilter.
-const scopeTestSymbol = `rspamd_config:register_symbol({
+// a GTUBE message cannot do: GTUBE ends the scan before any prefilter. It
+// also logs the task's final settings.
+const scopeTestSymbol = `local rspamd_logger = require 'rspamd_logger'
+local ucl = require 'ucl'
+rspamd_config:register_symbol({
+  name = 'CSM_TEST_SETTINGS',
+  type = 'idempotent',
+  callback = function(task)
+    local s = task:get_settings()
+    rspamd_logger.infox(task, '%s', 'CSM-TEST settings=' .. (s and ucl.to_format(s, 'json-compact') or 'null') ..
+      ' qid=' .. (task:get_queue_id() or ''))
+  end,
+})
+rspamd_config:register_symbol({
   name = 'CSM_TEST_SCORE',
   score = 1.0,
   callback = function(task)
@@ -142,6 +188,40 @@ const scopeTestSymbol = `rspamd_config:register_symbol({
     end
   end,
 })
+`
+
+// operatorSettings are operator rules in local.d/settings.conf, as a host
+// keeps them: an allow rule for a sender domain, a rule for another sender
+// domain that drops a symbol and sets an add_header limit, and one for the
+// operator's own netblock that drops a symbol.
+const operatorSettings = `operator_allow {
+  priority = high;
+  from = "@allowed.example.net";
+  apply {
+    actions {
+      reject = 1000;
+      "add header" = 1000;
+      greylist = 1000;
+    }
+  }
+}
+operator_quiet {
+  priority = high;
+  from = "@quiet.example.net";
+  apply {
+    symbols_disabled = ["MISSING_DATE"];
+    actions {
+      add_header = 3;
+    }
+  }
+}
+operator_netblock {
+  priority = high;
+  ip = "198.51.100.0/24";
+  apply {
+    symbols_disabled = ["MISSING_DATE"];
+  }
+}
 `
 
 // startScopeRspamd runs rspamd with CSM's files for s in a temporary tree
@@ -172,6 +252,7 @@ func startScopeRspamd(t *testing.T, s Settings) *scopeRspamd {
 		write(rel, text)
 	}
 	write("lua.local.d/csm_test_score.lua", scopeTestSymbol)
+	write("local.d/settings.conf", operatorSettings)
 	write("local.d/options.inc", "dns {\n  nameserver = [\"127.0.0.1:1\"];\n  timeout = 0.5s;\n  retransmits = 0;\n}\n")
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -272,6 +353,17 @@ func (r *scopeRspamd) check(t *testing.T, s Settings, c scopeCase) {
 	if err := json.Unmarshal(out, &reply); err != nil {
 		t.Fatalf("%s: rspamc reply: %v\n%s", c.name, err, out)
 	}
+	if _, ok := reply.Symbols[c.has]; c.has != "" && !ok {
+		t.Errorf("%s: reply lacks %s", c.name, c.has)
+	}
+	if _, ok := reply.Symbols[c.lacks]; ok {
+		t.Errorf("%s: reply carries %s, which the operator's rule disables", c.name, c.lacks)
+	}
+	for action, limit := range c.limits {
+		if got, ok := reply.Thresholds[action]; !ok || got != limit {
+			t.Errorf("%s: %s threshold %v (set %t), want %v", c.name, action, got, ok, limit)
+		}
+	}
 	if reply.Action != c.action {
 		t.Errorf("%s: action %q (score %.2f), want %q", c.name, reply.Action, reply.Score, c.action)
 	}
@@ -286,7 +378,37 @@ func (r *scopeRspamd) check(t *testing.T, s Settings, c scopeCase) {
 		t.Errorf("%s: milter adds X-Spam-Status %q to mail CSM does not score", c.name, status.Value)
 	}
 
-	records := r.records(t, qid)
+	if c.lifted {
+		for _, action := range []string{"reject", "add header"} {
+			if got := reply.Thresholds[action]; got != 100000 {
+				t.Errorf("%s: %s threshold %v, want CSM's 100000", c.name, action, got)
+			}
+		}
+	}
+	if c.kept || c.lifted {
+		dumps := r.logged(t, qid, "CSM-TEST settings=")
+		if len(dumps) != 1 {
+			t.Fatalf("%s: %d settings dumps, want 1", c.name, len(dumps))
+		}
+		dump := dumps[0][strings.Index(dumps[0], "CSM-TEST settings=")+len("CSM-TEST settings="):]
+		dump, _, _ = strings.Cut(dump, " qid=")
+		var final struct {
+			SymbolsDisabled []string           `json:"symbols_disabled"`
+			Actions         map[string]float64 `json:"actions"`
+		}
+		if err := json.Unmarshal([]byte(dump), &final); err != nil {
+			t.Fatalf("%s: settings dump %q: %v", c.name, dump, err)
+		}
+		if c.kept && !slices.Contains(final.SymbolsDisabled, "MISSING_DATE") {
+			t.Errorf("%s: the operator's rule is gone from the task's settings: %s", c.name, dump)
+		}
+		for _, alias := range []string{"add_header", "rewrite_subject"} {
+			if _, ok := final.Actions[alias]; c.lifted && ok {
+				t.Errorf("%s: %s competes with CSM's limit in the task's settings: %s", c.name, alias, dump)
+			}
+		}
+	}
+	records := r.logged(t, qid, "CSM-ANTISPAM")
 	if c.record == "" {
 		if len(records) != 0 {
 			t.Errorf("%s: logged %q for mail CSM does not score", c.name, records)
@@ -324,9 +446,9 @@ func (r *scopeRspamd) check(t *testing.T, s Settings, c scopeCase) {
 	}
 }
 
-// records waits for rspamd's own log line for qid, which follows the scan
-// record, and returns the scan records naming qid.
-func (r *scopeRspamd) records(t *testing.T, qid string) []string {
+// logged waits for rspamd's own log line for qid, which follows every line
+// a symbol logs for it, and returns the lines naming qid that hold marker.
+func (r *scopeRspamd) logged(t *testing.T, qid, marker string) []string {
 	t.Helper()
 	for deadline := time.Now().Add(20 * time.Second); ; {
 		text, err := os.ReadFile(r.log)
@@ -339,7 +461,7 @@ func (r *scopeRspamd) records(t *testing.T, qid string) []string {
 			if strings.Contains(line, "qid: <"+qid+">,") {
 				logged = true
 			}
-			if strings.Contains(line, "CSM-ANTISPAM") && strings.Contains(line, qid) {
+			if strings.Contains(line, marker) && strings.Contains(line, qid) {
 				found = append(found, line)
 			}
 		}
@@ -350,5 +472,50 @@ func (r *scopeRspamd) records(t *testing.T, qid string) []string {
 			t.Fatalf("rspamd logged no result for %s", qid)
 		}
 		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// When rspamd cannot build the infra_ips map, the scope Lua logs an error
+// on every load instead of quietly enforcing on infra senders. The rendered
+// Lua runs under rspamadm with rspamd_config and the logger stubbed.
+func TestPostfixScopeReportsMissingInfraMap(t *testing.T) {
+	if _, err := exec.LookPath("rspamadm"); err != nil {
+		t.Skip("rspamadm is not on PATH")
+	}
+	s := defaults(false)
+	s.Stack, s.ScopeNets = StackPostfix, []netip.Prefix{netip.MustParsePrefix("198.51.100.0/24")}
+	files, err := RenderPostfix(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	lua := filepath.Join(dir, "csm_scope.lua")
+	if err = os.WriteFile(lua, []byte(files[PostfixScopeLuaPath]), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	harness := filepath.Join(dir, "harness.lua")
+	script := fmt.Sprintf(`
+local errors = {}
+package.loaded.rspamd_logger = {
+  errx = function(_, f, ...) errors[#errors + 1] = string.format(f, ...) end,
+  infox = function() end,
+}
+rspamd_config = {
+  radix_from_ucl = function() return nil end,
+  register_symbol = function() end,
+  register_dependency = function() end,
+}
+dofile(%q)
+print('errors: ' .. table.concat(errors, ' | '))
+`, lua)
+	if err = os.WriteFile(harness, []byte(script), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, err := exec.Command("rspamadm", "lua", "-b", harness).CombinedOutput()
+	if err != nil {
+		t.Fatalf("harness: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "errors: csm_scope: ") || !strings.Contains(string(out), "infra_ips") {
+		t.Fatalf("no error for a missing infra_ips map:\n%s", out)
 	}
 }
