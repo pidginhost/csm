@@ -58,6 +58,8 @@ type pendingFinish struct {
 	// block instead of retrying against it.
 	existing bool
 	member   firewall.BlockMember
+	// victim is what the batch did to the member's victim.
+	victim admission.VictimOutcome
 	// lead is how far the engine's lease clock ran ahead of admission
 	// time when the member ran: its block ends that much earlier in
 	// admission time (design C6).
@@ -191,7 +193,8 @@ func (o *Owner) execute(picks []execPick) error {
 		ids[k], batch[k] = admission.ActionID(members[i].Action), members[i]
 	}
 	// A batch the ledger will not record as running dispatches nothing.
-	if _, granted, executeErr := executeLedger(o.ledger, ids); executeErr != nil || !granted {
+	intents, granted, executeErr := executeLedger(o.ledger, ids)
+	if executeErr != nil || !granted {
 		if o.execHold != nil && o.applyHold != nil {
 			o.hold(o.execHold, true)
 		}
@@ -204,6 +207,18 @@ func (o *Owner) execute(picks []execPick) error {
 			return errors.Join(stopped, failErr)
 		}
 		return errors.Join(fmt.Errorf("running a block batch: %w", err), stopped, failErr)
+	}
+	// Each member removes the victim its reservation claimed, as its
+	// intent names it (spec 5.6).
+	victims := make(map[admission.ActionID]admission.Victim, len(intents))
+	for _, in := range intents {
+		victims[in.Action] = in.Victim
+	}
+	for k := range batch {
+		if v := victims[ids[k]]; v != (admission.Victim{}) {
+			addr, _ := v.Target.Addr()
+			batch[k].Victim = firewall.BlockVictim{Action: string(v.Action), IP: addr.String(), ExpiresAt: v.ExpiresAt}
+		}
 	}
 	o.nextBatch = monoNow().Add(batchEvery)
 	results, err := engine.ApplyBlockBatch(batch)
@@ -233,7 +248,7 @@ func (o *Owner) execute(picks []execPick) error {
 			id: ids[k], disposition: effectDisposition(r.Effect),
 			rejected: r.Effect == firewall.BlockFailed && errors.Is(r.Err, firewall.ErrBlockBatchRejected),
 			existing: r.Effect == firewall.BlockFailed && r.Refusal == firewall.BlockRefusedExisting,
-			member:   batch[k], lead: lead,
+			member:   batch[k], victim: victimOutcome(r), lead: lead,
 		})
 	}
 	switch {
@@ -250,7 +265,79 @@ func (o *Owner) execute(picks []execPick) error {
 	case o.execHold != nil:
 		o.release()
 	}
-	return errors.Join(stopped, o.finishPending())
+	err = o.finishPending()
+	// A failed retirement waits for the next turn.
+	_ = o.retireEvicted()
+	return errors.Join(stopped, err)
+}
+
+// victimOutcome is what r says the batch did to its member's victim, as
+// the ledger records it; a member without a victim spared none.
+func victimOutcome(r firewall.BlockResult) admission.VictimOutcome {
+	switch r.Victim {
+	case firewall.VictimRemoved:
+		return admission.VictimRemoved
+	case firewall.VictimUnproven:
+		return admission.VictimUnproven
+	}
+	return admission.VictimSpared
+}
+
+// retireEvicted removes the rows of victims whose eviction is committed.
+// Mark before removing so a reload between the calls cannot restore them.
+// Failed and held rows rotate behind the rest; startup is the durable
+// cleanup path. State faults use the existing execution hold and probe wait.
+func (o *Owner) retireEvicted() (err error) {
+	if len(o.evicted) == 0 || !o.mayRetire() {
+		return nil
+	}
+	if errors.Is(o.execHold, firewall.ErrBlockBatchState) && monoNow().Before(o.probeAt) {
+		o.noteRetirementRetry(o.probeAt)
+		return nil
+	}
+	engine := o.opts.Blocks()
+	if engine == nil {
+		return nil
+	}
+	batch := o.evicted[:min(len(o.evicted), firewall.MaxBlockBatchMembers)]
+	var gone []bool
+	defer func() {
+		// An error (including a short answer) proves no row clear.
+		rest := o.evicted[len(batch):]
+		for i, a := range batch {
+			if err != nil || !gone[i] {
+				rest = append(rest, a)
+			}
+		}
+		o.evicted = rest
+		if errors.Is(err, firewall.ErrBlockBatchState) {
+			o.hold(err, false)
+		}
+		// Unknown-attempt retirement owns retireErr. Keep these faults
+		// separate so a healthy pass cannot clear the other pass's fault.
+		if o.evictedErr != err {
+			o.evictedErr = err
+			o.refreshStatus()
+		}
+		if len(o.evicted) > 0 {
+			o.noteRetirementRetry(monoNow().Add(defaultScheduleEvery))
+		}
+	}()
+	ids := make([]string, len(batch))
+	for i, a := range batch {
+		ids[i] = a.Action
+	}
+	if _, markErr := engine.MarkBlockActionsUnverified(ids); markErr != nil {
+		return fmt.Errorf("marking evicted blocks: %w", markErr)
+	}
+	gone, err = engine.RetireBlockActions(batch)
+	if err == nil && len(gone) != len(batch) {
+		err = fmt.Errorf("%d retirement answers for %d evicted blocks", len(gone), len(batch))
+	}
+	if err != nil {
+		return fmt.Errorf("retiring evicted blocks: %w", err)
+	}
+	return nil
 }
 
 // memberOf is p's next attempt as a block member, lasting from lease.
@@ -299,9 +386,10 @@ func (o *Owner) endRefused(p execPick, check firewall.BlockCheck) (bool, error) 
 // for its answer takes no room from a ready one. A refused or already
 // enforced pick ends or waits as a batch check would have it, with no
 // call; an allowed pick ends uncharged as verdict_allow, whatever the
-// capacity; a pick a full set cannot take waits as set_full, with no call;
-// any other pick is asked about and stays queued until its answer
-// arrives. A failed write stops the turn.
+// capacity; any other pick is asked about and stays queued until its
+// answer arrives. Room is the ledger's: it scheduled the pick on a free
+// slot or a victim it can claim, which a full set does not rule out. A
+// failed write stops the turn.
 func (o *Owner) gateVerdicts(engine BlockEngine, picks []execPick, lease time.Time) ([]execPick, error) {
 	members := make([]firewall.BlockMember, len(picks))
 	for i, p := range picks {
@@ -339,8 +427,6 @@ func (o *Owner) gateVerdicts(engine BlockEngine, picks []execPick, lease time.Ti
 			err = o.endAllowed(p, r)
 		case ok:
 			ready = append(ready, p)
-		case adm.Full():
-			err = o.endPick(p, admission.ReasonSetFull)
 		default:
 			o.askVerdict(p.pick.ID, p.c, members[i].IP, members[i].Reason)
 		}
@@ -607,7 +693,12 @@ func (o *Owner) finishPending() error {
 				}
 			}
 		}
-		if !linked {
+		evicting := outcome.member.Victim != (firewall.BlockVictim{})
+		switch {
+		case linked:
+		case evicting:
+			c, a, finishErr = finishEvictionLedger(o.ledger, outcome.id, outcome.disposition, outcome.victim, outcome.lead)
+		default:
 			c, a, finishErr = finishLedger(o.ledger, outcome.id, outcome.disposition, outcome.lead)
 		}
 		if finishErr != nil {
@@ -619,6 +710,11 @@ func (o *Owner) finishPending() error {
 				pending = append(pending, outcome)
 			}
 			continue
+		}
+		// Only a verified eviction retires the victim's row; after an
+		// unknown outcome the row stays until the victim's expiry.
+		if evicting && !linked && outcome.victim == admission.VictimRemoved && a.State == admission.StateVerified {
+			o.evicted = append(o.evicted, firewall.BlockAction{Action: outcome.member.Victim.Action, IP: outcome.member.Victim.IP})
 		}
 		id := a.Attempt.Candidate
 		if c.State == admission.StateUnknown {

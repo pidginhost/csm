@@ -58,10 +58,13 @@ var (
 	scheduleLedger = (*store.AdmissionLedger).Schedule
 	monoNow        = time.Now
 	// executeLedger records a batch as running; tests make it refuse.
-	executeLedger   = (*store.AdmissionLedger).ExecuteBatch
-	reserveLedger   = (*store.AdmissionLedger).Reserve
-	finishLedger    = (*store.AdmissionLedger).FinishOnLease
-	terminateLedger = (*store.AdmissionLedger).Terminate
+	executeLedger = (*store.AdmissionLedger).ExecuteBatch
+	reserveLedger = (*store.AdmissionLedger).Reserve
+	finishLedger  = (*store.AdmissionLedger).FinishOnLease
+	// finishEvictionLedger finishes a member that claimed a victim, with
+	// what the batch did to it.
+	finishEvictionLedger = (*store.AdmissionLedger).FinishEviction
+	terminateLedger      = (*store.AdmissionLedger).Terminate
 	// finishExistingLedger and terminateExistingLedger end a pick linked to
 	// the block that already enforces it; tests make them fail.
 	finishExistingLedger    = (*store.AdmissionLedger).FinishExisting
@@ -255,6 +258,10 @@ type Owner struct {
 	retireNext time.Time
 	retireAt   time.Time
 	retireWait time.Duration
+	// evicted names the victims whose eviction the ledger recorded and
+	// whose rows the engine has yet to retire.
+	evicted    []firewall.BlockAction
+	evictedErr error
 	// Per-action monotonic waits keep held entries from monopolizing a batch.
 	retireRetry map[admission.ActionID]time.Time
 	// retireDelay is each action's current wait while the ledger refuses
@@ -918,6 +925,7 @@ func (o *Owner) runTurn(selecting bool) error {
 	// Retirement first: it can release the holds pending_recovery waits on.
 	// Its faults are reported apart and never fail the turn (C4).
 	o.reportRetirement(o.retire())
+	_ = o.retireEvicted()
 	if o.executable() {
 		o.sweepVerdicts()
 	}
@@ -1205,8 +1213,8 @@ func (o *Owner) refreshStatus() {
 	if o.scheduleErr != nil {
 		s.Owner.TurnError = o.scheduleErr.Error()
 	}
-	if o.retireErr != nil {
-		s.Owner.RetirementError = o.retireErr.Error()
+	if err := errors.Join(o.retireErr, o.evictedErr); err != nil {
+		s.Owner.RetirementError = err.Error()
 	}
 	if o.auditErr != nil {
 		s.Owner.AuditError = o.auditErr.Error()

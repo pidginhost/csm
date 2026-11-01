@@ -890,13 +890,22 @@ element. A malformed or repeated forecast address refuses the call before
 any read, and other platforms report the snapshot unavailable.
 
 With an engine, each owner turn runs its `block_ip` picks as one batch. The
-engine checks every member against one snapshot before anything is reserved. A
-full set, or an address a row or element holds without proof, defers a member;
+engine checks every member against one snapshot before anything is reserved. An
+address a row or element holds without proof defers a member;
 a block the engine proves already holds the address ends it linked to that
 block, and an invalid or protected address or a spent lifetime ends it, all
 without a charge. If the ledger refuses that link (no history budget for
 it), the pick stays queued with the deferral reason and the rest of the
-batch runs; the next check tries again. A proven block found only when the batch applies is
+batch runs; the next check tries again. Each member carries the victim its
+reservation claimed, as its intent names it, and the ledger records what the
+batch did to that victim with the member's outcome. Once a verified eviction
+is recorded, the owner marks the victim's row and retires it, as startup
+does, rotating failed or held rows behind waiting rows and retrying on
+later turns. Cleanup follows the retirement policy, respects state-repair
+probe waits and preserves independent apply faults. Its errors remain
+visible alongside unknown-attempt retirement errors; a restart
+removes the row before the firewall restores its state. After an unknown
+outcome the victim's row stays until the victim expires. A proven block found only when the batch applies is
 checked again when the outcome is written: with a fresh proof the attempt
 fails, with its charge, and the pick ends refused as an existing effect,
 linked to the block, in one ledger write, so nothing retries against it.
@@ -1161,7 +1170,8 @@ each `block_ip` pick before anything is reserved, as a dry run does before
 it forecasts one. One read-only admission
 snapshot answers the turn's local checks without giving any pick a slot:
 a refused, protected or already enforced target ends or waits as a batch
-check would have it, and a full set defers the pick, all without a call.
+check would have it, all without a call. Room is the ledger's: it
+schedules a pick only on a free slot or a victim it can claim.
 Any other pick is asked about, as `CSM auto-block: <check>` for its
 canonical address, and stays queued; the schedule passes it over until
 the answer arrives. Workers, outstanding jobs and cached answers are bounded;
