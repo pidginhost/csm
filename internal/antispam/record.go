@@ -90,24 +90,36 @@ func Generation(content map[string]string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// ManagedContent maps each file CSM writes to the text it owns there: a
-// whole rspamd file, or the CSM block of a shared Exim file. Optional files
-// appear only while a feed, map redirect, learning or the Roundcube include
-// needs them; the symbol weights appear unless the operator owns that file.
+// ManagedContent maps each file CSM writes on s.Stack to the text it owns
+// there: a whole rspamd file, or the CSM block of a shared Exim file.
+// Optional files appear only while a feed, map redirect, learning or the
+// Roundcube include needs them; the symbol weights appear unless the
+// operator owns that file. A Postfix host has no Exim file or Roundcube
+// include, and in dry run its own actions.conf keeps enforcing (spec 9.2).
 func ManagedContent(s Settings) (map[string]string, error) {
-	hooks, err := RenderExim(s)
-	if err != nil {
-		return nil, err
+	out := make(map[string]string)
+	if s.Stack == StackPostfix {
+		postfix, err := RenderPostfix(s)
+		if err != nil {
+			return nil, err
+		}
+		maps.Copy(out, postfix)
+	} else {
+		hooks, err := RenderExim(s)
+		if err != nil {
+			return nil, err
+		}
+		out[HookRCPTPath], out[HookScanPath], out[HookPostPath], out[LocalEximConfPath] = hooks.RCPT, hooks.Scan, hooks.Post, hooks.Config
+		if s.Roundcube {
+			out[RoundcubeIncludePath] = RenderRoundcube()
+		}
 	}
 	files, err := RenderRspamd(s)
 	if err != nil {
 		return nil, err
 	}
-	out := map[string]string{
-		HookRCPTPath:      hooks.RCPT,
-		HookScanPath:      hooks.Scan,
-		HookPostPath:      hooks.Post,
-		LocalEximConfPath: hooks.Config,
+	if s.Stack == StackPostfix && s.DryRun {
+		delete(files, "actions.conf")
 	}
 	for name, text := range files {
 		out[path.Join(RspamdLocalDir, name)] = text
@@ -125,9 +137,6 @@ func ManagedContent(s Settings) (map[string]string, error) {
 		return nil, err
 	}
 	maps.Copy(out, learning)
-	if s.Roundcube {
-		out[RoundcubeIncludePath] = RenderRoundcube()
-	}
 	return out, nil
 }
 

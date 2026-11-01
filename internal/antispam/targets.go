@@ -20,6 +20,13 @@ const (
 	RspamdLocalDir    = "/etc/rspamd/local.d"
 )
 
+// Files CSM writes only on a Postfix host (spec section 5.1): the headers
+// rspamd's milter adds and removes, and the Lua that scopes enforcement.
+const (
+	MilterHeadersPath   = RspamdLocalDir + "/milter_headers.conf"
+	PostfixScopeLuaPath = RspamdLuaDir + "/csm_scope.lua"
+)
+
 // TargetKind says which ownership rule a mutation target follows.
 type TargetKind int
 
@@ -32,7 +39,8 @@ const (
 	TargetEximLocal
 	// TargetRspamdOptional is an rspamd file CSM owns outright while a feed
 	// or map redirect needs it. A file CSM cannot own never blocks core: the
-	// daemon leaves the feed or redirect out instead (feeds spec 5.3).
+	// daemon leaves the feed or redirect out instead (feeds spec 5.3). On a
+	// Postfix host actions.conf is one too, needed only to enforce.
 	TargetRspamdOptional
 	// TargetLuaOptional is an rspamd Lua plugin CSM owns outright while
 	// learning needs it. Its marker is a Lua comment.
@@ -40,6 +48,9 @@ const (
 	// TargetRoundcube is the webmail include CSM owns outright while
 	// learning sets the Junk button's folder. It needs no service reload.
 	TargetRoundcube
+	// TargetRspamdLua is an rspamd Lua file CSM owns outright on every
+	// install. Its marker is a Lua comment.
+	TargetRspamdLua
 )
 
 // RoundcubeIncludePath is the Roundcube include that points the Junk button
@@ -48,7 +59,7 @@ const RoundcubeIncludePath = "/usr/local/cpanel/base/3rdparty/roundcube/config/i
 
 // WholeFile reports whether CSM owns the target's entire content.
 func (k TargetKind) WholeFile() bool {
-	return k == TargetRspamd || k.Optional()
+	return k == TargetRspamd || k == TargetRspamdLua || k.Optional()
 }
 
 // Optional reports whether CSM writes the target only while a feature
@@ -60,7 +71,7 @@ func (k TargetKind) Optional() bool {
 // ReloadsRspamd reports whether a change to the target needs an rspamd
 // reload.
 func (k TargetKind) ReloadsRspamd() bool {
-	return k == TargetRspamd || k == TargetRspamdOptional || k == TargetLuaOptional
+	return k == TargetRspamd || k == TargetRspamdOptional || k == TargetLuaOptional || k == TargetRspamdLua
 }
 
 // ManagedFor reports whether content is a whole file CSM wrote for a target
@@ -70,7 +81,7 @@ func ManagedFor(k TargetKind, content string) bool {
 	switch k {
 	case TargetRspamd, TargetRspamdOptional:
 		return IsManaged(content)
-	case TargetLuaOptional:
+	case TargetLuaOptional, TargetRspamdLua:
 		first, _, _ := strings.Cut(content, "\n")
 		return first == LuaManagedHeader
 	case TargetRoundcube:
@@ -87,14 +98,25 @@ type Target struct {
 	Kind TargetKind
 }
 
-// MutationTargets lists every file CSM writes, rspamd first as in the apply
-// transaction (spec section 6.3).
-func MutationTargets() []Target {
+// MutationTargets lists every file CSM writes on a host of stack, rspamd
+// first as in the apply transaction (spec section 6.3). A Postfix host gets
+// the milter headers and the scope Lua and no cPanel file; its actions.conf
+// is optional, because a dry run leaves it to the host (spec 9.2). Any other
+// stack gets the cPanel list, as CheckHost checks such a host like cPanel.
+func MutationTargets(stack MailStack) []Target {
+	postfix := stack == StackPostfix
 	optional := OptionalRspamdPaths()
 	learning := LearningPaths()
 	out := make([]Target, 0, len(RspamdFiles)+len(optional)+len(learning)+5)
 	for _, name := range RspamdFiles {
-		out = append(out, Target{Path: path.Join(RspamdLocalDir, name), Kind: TargetRspamd})
+		kind := TargetRspamd
+		if postfix && name == "actions.conf" {
+			kind = TargetRspamdOptional
+		}
+		out = append(out, Target{Path: path.Join(RspamdLocalDir, name), Kind: kind})
+	}
+	if postfix {
+		out = append(out, Target{Path: MilterHeadersPath, Kind: TargetRspamd}, Target{Path: PostfixScopeLuaPath, Kind: TargetRspamdLua})
 	}
 	for _, p := range optional {
 		out = append(out, Target{Path: p, Kind: TargetRspamdOptional})
@@ -105,6 +127,9 @@ func MutationTargets() []Target {
 			kind = TargetLuaOptional
 		}
 		out = append(out, Target{Path: p, Kind: kind})
+	}
+	if postfix {
+		return out
 	}
 	return append(out,
 		Target{Path: RoundcubeIncludePath, Kind: TargetRoundcube},
@@ -137,9 +162,10 @@ type TargetFacts struct {
 // CheckRemoval applies the target rules that still hold when CSM removes its
 // integration (spec section 6.4): it never writes through an unsafe path or
 // edits a file whose markers it cannot identify. A foreign local.d file stays
-// in place and a missing directory has nothing to remove.
-func CheckRemoval(targets []TargetFacts) []Problem {
-	return checkTargets(targets, true)
+// in place and a missing directory has nothing to remove. targets must be
+// the facts of MutationTargets(stack).
+func CheckRemoval(stack MailStack, targets []TargetFacts) []Problem {
+	return checkTargets(stack, targets, true)
 }
 
 // checkTargets applies spec section 6.2 item 9: every file CSM writes is a
@@ -147,12 +173,12 @@ func CheckRemoval(targets []TargetFacts) []Problem {
 // else can write, and a shared file has room for CSM's block. A whole file
 // that is not CSM's is backed up and replaced by the worker (spec 5.5).
 // For removal only the rules that protect an edit apply.
-func checkTargets(targets []TargetFacts, removal bool) []Problem {
+func checkTargets(stack MailStack, targets []TargetFacts, removal bool) []Problem {
 	var out []Problem
 	add := func(code string, sev Severity, format string, args ...any) {
 		out = append(out, Problem{Code: code, Severity: sev, Detail: fmt.Sprintf(format, args...)})
 	}
-	if len(targets) != len(MutationTargets()) {
+	if len(targets) != len(MutationTargets(stack)) {
 		add(CodeTargets, Temporary, "the files CSM writes were not checked")
 	}
 	reported := make(map[string]bool)

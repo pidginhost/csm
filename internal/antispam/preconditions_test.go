@@ -504,7 +504,8 @@ func TestCheckHostNamesEachEximOptionQuery(t *testing.T) {
 }
 
 // postfixFacts is a Postfix host whose milter reaches rspamd's proxy
-// worker. Its Exim facts are unset, as the collector leaves them there.
+// worker. Its Exim facts are unset and its targets are the Postfix list, as
+// the collector leaves them there.
 func postfixFacts() HostFacts {
 	f := goodFacts()
 	f.Stack = StackPostfix
@@ -515,6 +516,7 @@ func postfixFacts() HostFacts {
 	f.PostfixMaster = CommandResult{Stdout: "smtp/inet/command = smtpd\nsmtp/inet/chroot = n\n"}
 	f.PostfixService = CommandResult{Stdout: "LoadState=loaded\nActiveState=active\n"}
 	f.RspamdWorkers = CommandResult{Stdout: proxyWorkers}
+	f.Targets = stackTargets(StackPostfix)
 	return f
 }
 

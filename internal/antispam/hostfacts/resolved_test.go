@@ -40,7 +40,7 @@ func TestCollectChecksAllResolvedNameservers(t *testing.T) {
 			}}
 			f := testCollector(d, run).collect(context.Background(), filepath.Join(d, "sock"))
 			f.InfraNets = antispam.ParseInfraNets([]string{"192.0.2.53"})
-			for _, target := range antispam.MutationTargets() {
+			for _, target := range antispam.MutationTargets(antispam.StackExim) {
 				f.Targets = append(f.Targets, antispam.TargetFacts{Target: target, Missing: true,
 					Parents: []antispam.PathFacts{{Path: "/", Mode: fs.ModeDir | 0o755}}})
 			}

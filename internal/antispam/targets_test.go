@@ -23,12 +23,16 @@ func rootChain(dir string) []PathFacts {
 
 // goodTargets is a fresh host: no rspamd files yet, cPanel's empty hook
 // files and an exim.conf.local with the cPanel section skeleton.
-func goodTargets() []TargetFacts {
+func goodTargets() []TargetFacts { return stackTargets(StackExim) }
+
+// stackTargets is a fresh host of stack: no rspamd files yet and, on
+// cPanel, empty hook files and the exim.conf.local skeleton.
+func stackTargets(stack MailStack) []TargetFacts {
 	var out []TargetFacts
-	for _, t := range MutationTargets() {
+	for _, t := range MutationTargets(stack) {
 		f := TargetFacts{Target: t, Parents: rootChain(path.Dir(t.Path))}
 		switch t.Kind {
-		case TargetRspamd, TargetRspamdOptional:
+		case TargetRspamd, TargetRspamdOptional, TargetRspamdLua:
 			f.Missing = true
 		case TargetEximHook:
 			f.File = PathFacts{Path: t.Path, Mode: 0o644}
@@ -79,7 +83,7 @@ func TestMutationTargetsCoverSpecFiles(t *testing.T) {
 		"/usr/local/cpanel/etc/exim/acls/ACL_CHECK_MESSAGE_POST_BLOCK/custom_begin_check_message_post": TargetEximHook,
 		"/etc/exim.conf.local":                                                                         TargetEximLocal,
 	}
-	got := MutationTargets()
+	got := MutationTargets(StackExim)
 	if len(got) != len(want) {
 		t.Fatalf("got %d targets, want %d: %+v", len(got), len(want), got)
 	}
@@ -332,12 +336,12 @@ func TestCheckRemovalLeavesForeignFiles(t *testing.T) {
 		"@AUTH@\n" + MarkerBegin + "\nspamd_address = /run/rspamd/normal.sock\n" + MarkerEnd + "\n",
 	} {
 		targets[len(targets)-1].Content = content
-		if got := CheckRemoval(targets); len(got) != 0 {
+		if got := CheckRemoval(StackExim, targets); len(got) != 0 {
 			t.Errorf("removal refused: %+v", got)
 		}
 	}
 	// The foreign file is taken over on apply.
-	if got := checkTargets(targets, false); len(got) != 2 {
+	if got := checkTargets(StackExim, targets, false); len(got) != 2 {
 		t.Errorf("apply problems = %+v, want missing directory and @CONFIG@", got)
 	}
 }
@@ -353,11 +357,11 @@ func TestCheckTargetsTakesOverForeignCoreFile(t *testing.T) {
 			t.Fatalf("first core target is %s", tg.Path)
 		}
 		tg.Missing, tg.File, tg.Content = false, PathFacts{Path: tg.Path, Mode: 0o644}, content
-		if got := checkTargets(f.Targets, false); len(got) != 0 {
+		if got := checkTargets(StackExim, f.Targets, false); len(got) != 0 {
 			t.Errorf("%q: protected foreign file reported %+v", content, got)
 		}
 		tg.File.Mode = 0o664
-		got := checkTargets(f.Targets, false)
+		got := checkTargets(StackExim, f.Targets, false)
 		if len(got) != 1 || got[0].Code != CodeTargets || got[0].Severity != Definite ||
 			got[0].Detail != tg.Path+" is writable by group or others" {
 			t.Errorf("%q: loosened foreign file reported %+v", content, got)
@@ -367,7 +371,7 @@ func TestCheckTargetsTakesOverForeignCoreFile(t *testing.T) {
 
 func TestCheckRemovalRefusesUnsafeEdits(t *testing.T) {
 	// The three ACL hook files follow the rspamd files.
-	hook := len(MutationTargets()) - 4
+	hook := len(MutationTargets(StackExim)) - 4
 	for name, edit := range map[string]func([]TargetFacts){
 		"symlinked parent": func(ts []TargetFacts) { ts[6].Parents[2].Mode = fs.ModeSymlink | 0o777 },
 		"tenant file":      func(ts []TargetFacts) { ts[hook].File.UID = 1000 },
@@ -375,7 +379,7 @@ func TestCheckRemovalRefusesUnsafeEdits(t *testing.T) {
 	} {
 		targets := goodTargets()
 		edit(targets)
-		if got := CheckRemoval(targets); len(got) == 0 || got[0].Severity != Definite {
+		if got := CheckRemoval(StackExim, targets); len(got) == 0 || got[0].Severity != Definite {
 			t.Errorf("%s: removal problems = %+v", name, got)
 		}
 	}
@@ -399,7 +403,7 @@ func TestCheckRemovalRefusesAmbiguousLocalBlocks(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			f := goodFacts()
 			target(&f, TargetEximLocal).Content = tc.content
-			got := CheckRemoval(f.Targets)
+			got := CheckRemoval(StackExim, f.Targets)
 			if len(got) != 1 || got[0].Code != tc.code || got[0].Severity != tc.sev {
 				t.Fatalf("removal reported %+v, want one %s/%d problem", got, tc.code, tc.sev)
 			}
@@ -437,7 +441,7 @@ func TestCheckHostReportsMissingDirectoryOnce(t *testing.T) {
 
 func TestMutationTargetsListOptionalFiles(t *testing.T) {
 	var optional []string
-	for _, tgt := range MutationTargets() {
+	for _, tgt := range MutationTargets(StackExim) {
 		if tgt.Kind == TargetRspamdOptional {
 			optional = append(optional, tgt.Path)
 		}
@@ -461,10 +465,10 @@ func TestCheckTargetsIgnoresForeignOptionalFiles(t *testing.T) {
 			targets[i].Content = "operator text\n"
 		}
 	}
-	if problems := checkTargets(targets, false); len(problems) != 0 {
+	if problems := checkTargets(StackExim, targets, false); len(problems) != 0 {
 		t.Fatalf("foreign optional files blocked core: %+v", problems)
 	}
-	if problems := checkTargets(targets, true); len(problems) != 0 {
+	if problems := checkTargets(StackExim, targets, true); len(problems) != 0 {
 		t.Fatalf("removal must leave foreign optional files alone: %+v", problems)
 	}
 }
@@ -509,12 +513,12 @@ func TestCheckTargetsLetsRemovalDeleteLoosenedOptionalFiles(t *testing.T) {
 			targets[i].Content = ManagedHeader + "\n"
 		}
 	}
-	if problems := checkTargets(targets, false); len(problems) != 0 {
+	if problems := checkTargets(StackExim, targets, false); len(problems) != 0 {
 		t.Fatalf("an unsafe optional file blocked core: %+v", problems)
 	}
 	// Removal only deletes these files, which needs a safe directory, not a
 	// safe file: a loosened file can hold the DQS key and must go.
-	if problems := checkTargets(targets, true); len(problems) != 0 {
+	if problems := checkTargets(StackExim, targets, true); len(problems) != 0 {
 		t.Fatalf("removal refused to delete a loosened CSM file: %+v", problems)
 	}
 	for i := range targets {
@@ -523,7 +527,7 @@ func TestCheckTargetsLetsRemovalDeleteLoosenedOptionalFiles(t *testing.T) {
 			targets[i].Parents[2].Mode |= 0o002
 		}
 	}
-	if problems := checkTargets(targets, true); len(problems) == 0 || problems[0].Severity != Definite {
+	if problems := checkTargets(StackExim, targets, true); len(problems) == 0 || problems[0].Severity != Definite {
 		t.Fatalf("removal through an unsafe directory must stay refused: %+v", problems)
 	}
 }
@@ -591,5 +595,150 @@ func TestSecretPaths(t *testing.T) {
 	s.Feeds, s.DQSKeyFile = []string{FeedPSBL}, ""
 	if got := s.SecretTargets(); len(got) != 2 || got[0] != LearningCheckPath {
 		t.Fatalf("learning only: %v", got)
+	}
+}
+
+// The cPanel list is pinned: a change reorders or adds writes on every
+// cPanel host.
+func TestMutationTargetsExim(t *testing.T) {
+	want := []Target{
+		{"/etc/rspamd/local.d/actions.conf", TargetRspamd},
+		{"/etc/rspamd/local.d/greylist.conf", TargetRspamd},
+		{"/etc/rspamd/local.d/rbl.conf", TargetRspamd},
+		{"/etc/rspamd/local.d/emails.conf", TargetRspamd},
+		{"/etc/rspamd/local.d/fuzzy_check.conf", TargetRspamd},
+		{"/etc/rspamd/local.d/asn.conf", TargetRspamd},
+		{"/etc/rspamd/local.d/phishing.conf", TargetRspamd},
+		{"/etc/rspamd/local.d/regexp.conf", TargetRspamd},
+		{"/etc/rspamd/override.d/rbl.conf", TargetRspamdOptional},
+		{"/etc/rspamd/override.d/rbl_group.conf", TargetRspamdOptional},
+		{"/etc/rspamd/local.d/forged_recipients.conf", TargetRspamdOptional},
+		{"/etc/rspamd/local.d/mid.conf", TargetRspamdOptional},
+		{"/etc/rspamd/local.d/mime_types.conf", TargetRspamdOptional},
+		{"/etc/rspamd/local.d/whitelist.conf", TargetRspamdOptional},
+		{"/etc/rspamd/local.d/multimap.conf", TargetRspamdOptional},
+		{"/etc/rspamd/local.d/groups.conf", TargetRspamdOptional},
+		{"/etc/rspamd/override.d/fuzzy_check.conf", TargetRspamdOptional},
+		{"/etc/rspamd/override.d/worker-fuzzy.inc", TargetRspamdOptional},
+		{"/etc/rspamd/local.d/fuzzy_group.conf", TargetRspamdOptional},
+		{"/etc/rspamd/lua.local.d/csm_learning.lua", TargetLuaOptional},
+		{"/usr/local/cpanel/base/3rdparty/roundcube/config/inc.d/zz-csm-antispam.inc.php", TargetRoundcube},
+		{"/usr/local/cpanel/etc/exim/acls/ACL_SPAM_SCAN_CHECK_BLOCK/custom_begin_spam_scan_check", TargetEximHook},
+		{"/usr/local/cpanel/etc/exim/acls/ACL_SPAM_SCAN_BLOCK/custom_begin_spam_scan", TargetEximHook},
+		{"/usr/local/cpanel/etc/exim/acls/ACL_CHECK_MESSAGE_POST_BLOCK/custom_begin_check_message_post", TargetEximHook},
+		{"/etc/exim.conf.local", TargetEximLocal},
+	}
+	if got := MutationTargets(StackExim); !slices.Equal(got, want) {
+		t.Fatalf("cPanel targets changed:\n got %v\nwant %v", got, want)
+	}
+	// A host without a supported stack runs the cPanel checks, so it is
+	// checked against the same list.
+	if got := MutationTargets(StackNone); !slices.Equal(got, want) {
+		t.Fatalf("unsupported host targets %v", got)
+	}
+}
+
+// Postfix hosts get CSM's rspamd files, the milter headers and the scope
+// Lua: no Exim hook, no exim.conf.local, no Roundcube include. actions.conf
+// is optional there, because dry run leaves it to the host.
+func TestMutationTargetsPostfix(t *testing.T) {
+	if MilterHeadersPath != "/etc/rspamd/local.d/milter_headers.conf" || PostfixScopeLuaPath != "/etc/rspamd/lua.local.d/csm_scope.lua" {
+		t.Fatalf("paths %q %q", MilterHeadersPath, PostfixScopeLuaPath)
+	}
+	want := []Target{
+		{"/etc/rspamd/local.d/actions.conf", TargetRspamdOptional},
+		{"/etc/rspamd/local.d/greylist.conf", TargetRspamd},
+		{"/etc/rspamd/local.d/rbl.conf", TargetRspamd},
+		{"/etc/rspamd/local.d/emails.conf", TargetRspamd},
+		{"/etc/rspamd/local.d/fuzzy_check.conf", TargetRspamd},
+		{"/etc/rspamd/local.d/asn.conf", TargetRspamd},
+		{"/etc/rspamd/local.d/phishing.conf", TargetRspamd},
+		{"/etc/rspamd/local.d/regexp.conf", TargetRspamd},
+		{"/etc/rspamd/local.d/milter_headers.conf", TargetRspamd},
+		{"/etc/rspamd/lua.local.d/csm_scope.lua", TargetRspamdLua},
+		{"/etc/rspamd/override.d/rbl.conf", TargetRspamdOptional},
+		{"/etc/rspamd/override.d/rbl_group.conf", TargetRspamdOptional},
+		{"/etc/rspamd/local.d/forged_recipients.conf", TargetRspamdOptional},
+		{"/etc/rspamd/local.d/mid.conf", TargetRspamdOptional},
+		{"/etc/rspamd/local.d/mime_types.conf", TargetRspamdOptional},
+		{"/etc/rspamd/local.d/whitelist.conf", TargetRspamdOptional},
+		{"/etc/rspamd/local.d/multimap.conf", TargetRspamdOptional},
+		{"/etc/rspamd/local.d/groups.conf", TargetRspamdOptional},
+		{"/etc/rspamd/override.d/fuzzy_check.conf", TargetRspamdOptional},
+		{"/etc/rspamd/override.d/worker-fuzzy.inc", TargetRspamdOptional},
+		{"/etc/rspamd/local.d/fuzzy_group.conf", TargetRspamdOptional},
+		{"/etc/rspamd/lua.local.d/csm_learning.lua", TargetLuaOptional},
+	}
+	if got := MutationTargets(StackPostfix); !slices.Equal(got, want) {
+		t.Fatalf("Postfix targets:\n got %v\nwant %v", got, want)
+	}
+}
+
+// The scope Lua is CSM's whole file, written on every Postfix install and
+// recognised by the Lua comment marker only.
+func TestManagedForRspamdLua(t *testing.T) {
+	k := TargetRspamdLua
+	if !k.WholeFile() || k.Optional() || !k.ReloadsRspamd() {
+		t.Fatalf("whole %v optional %v reloads %v", k.WholeFile(), k.Optional(), k.ReloadsRspamd())
+	}
+	for content, want := range map[string]bool{
+		LuaManagedHeader + "\n":                   true,
+		LuaManagedHeader + "\nlocal x = 1\n":      true,
+		ManagedHeader + "\n":                      false,
+		" " + LuaManagedHeader + "\n":             false,
+		"local x = 1\n" + LuaManagedHeader + "\n": false,
+		"": false,
+	} {
+		if got := ManagedFor(k, content); got != want {
+			t.Errorf("ManagedFor(TargetRspamdLua, %q) = %v, want %v", content, got, want)
+		}
+	}
+}
+
+// A Postfix host has no cPanel tree. Its target list must not send the
+// collector there, or every Postfix host would report missing directories.
+func TestCheckTargetsPostfixIgnoresMissingCPanelDirs(t *testing.T) {
+	noCPanel := func(ts []TargetFacts) []TargetFacts {
+		for i := range ts {
+			if strings.HasPrefix(ts[i].Path, "/usr/local/cpanel/") {
+				ts[i] = TargetFacts{Target: ts[i].Target, Err: fmt.Errorf("lstat %s: %w", path.Dir(ts[i].Path), fs.ErrNotExist)}
+			}
+		}
+		return ts
+	}
+	targets := noCPanel(stackTargets(StackPostfix))
+	if got := checkTargets(StackPostfix, targets, false); len(got) != 0 {
+		t.Fatalf("Postfix targets reported %+v", got)
+	}
+	if got := CheckRemoval(StackPostfix, targets); len(got) != 0 {
+		t.Fatalf("Postfix removal reported %+v", got)
+	}
+	f := postfixFacts()
+	f.Targets = targets
+	if got := CheckHost(f); len(got) != 0 {
+		t.Fatalf("Postfix host reported %+v", got)
+	}
+	// The cPanel list on the same host does reach the missing tree.
+	got := checkTargets(StackExim, noCPanel(stackTargets(StackExim)), false)
+	if !slices.ContainsFunc(got, func(p Problem) bool {
+		return p.Severity == Definite && strings.Contains(p.Detail, "/usr/local/cpanel/")
+	}) {
+		t.Fatalf("cPanel targets without cPanel reported %+v", got)
+	}
+}
+
+// Each stack is checked against its own list: one stack's facts never pass
+// as the other's.
+func TestCheckTargetsCountsTheStackList(t *testing.T) {
+	for _, tc := range []struct{ stack, facts MailStack }{
+		{StackPostfix, StackExim},
+		{StackExim, StackPostfix},
+	} {
+		for _, removal := range []bool{false, true} {
+			got := checkTargets(tc.stack, stackTargets(tc.facts), removal)
+			if !slices.Contains(got, Problem{Code: CodeTargets, Severity: Temporary, Detail: "the files CSM writes were not checked"}) {
+				t.Errorf("%s facts checked as %s (removal %t): %+v", tc.facts, tc.stack, removal, got)
+			}
+		}
 	}
 }

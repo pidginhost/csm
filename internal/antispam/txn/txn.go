@@ -98,7 +98,7 @@ func New() *Host {
 			}
 			return f, antispam.CheckHost(f)
 		},
-		targets: func() []antispam.TargetFacts { return hostfacts.Targets(antispam.MutationTargets()) },
+		targets: func() []antispam.TargetFacts { return hostfacts.Targets(antispam.MutationTargets(antispam.StackExim)) },
 		ping: func(ctx context.Context, socket string) error {
 			_, err := hostfacts.Ping(ctx, socket)
 			return err

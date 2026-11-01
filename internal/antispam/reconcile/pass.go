@@ -214,6 +214,8 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) (out Outcome) {
 	if err := ctx.Err(); err != nil {
 		return Outcome{Err: err}
 	}
+	// The host's mail stack picks the files CSM renders.
+	d.Settings.Stack = f.Stack
 	assess := r.assess
 	if assess == nil {
 		assess = antispam.Assess

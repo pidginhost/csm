@@ -1,6 +1,8 @@
 package antispam
 
 import (
+	"maps"
+	"path"
 	"strings"
 	"testing"
 )
@@ -78,7 +80,7 @@ func TestManagedContentCoversEveryTarget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	targets := MutationTargets()
+	targets := MutationTargets(StackExim)
 	if len(content) != len(targets) {
 		t.Fatalf("%d managed texts for %d targets", len(content), len(targets))
 	}
@@ -106,7 +108,7 @@ func installedTargets(t *testing.T, s Settings) []TargetFacts {
 		t.Fatal(err)
 	}
 	var out []TargetFacts
-	for _, target := range MutationTargets() {
+	for _, target := range MutationTargets(StackExim) {
 		text := content[target.Path]
 		switch target.Kind {
 		case TargetEximHook:
@@ -240,5 +242,64 @@ func TestManagedContentSetsSymbolWeights(t *testing.T) {
 	}
 	if _, ok := managed[ScoresPath]; ok {
 		t.Fatalf("skipped %s rendered", ScoresPath)
+	}
+}
+
+// On Postfix CSM owns the rspamd files, the milter headers and the scope
+// Lua, never an Exim file or the Roundcube include. In dry run the host's
+// own actions.conf keeps enforcing, so CSM leaves that file out.
+func TestManagedContentPostfixDryRunOmitsActions(t *testing.T) {
+	s := everyOptional()
+	s.Stack = StackPostfix
+	actions := path.Join(RspamdLocalDir, "actions.conf")
+	postfix, err := RenderPostfix(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, dry := range []bool{false, true} {
+		s.DryRun = dry
+		content, err := ManagedContent(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := map[string]bool{}
+		for _, target := range MutationTargets(StackPostfix) {
+			want[target.Path] = true
+		}
+		if dry {
+			delete(want, actions)
+		}
+		if len(content) != len(want) {
+			t.Errorf("dry run %t: %d managed texts for %d targets", dry, len(content), len(want))
+		}
+		for p, text := range content {
+			if !want[p] || text == "" {
+				t.Errorf("dry run %t: unexpected managed text for %s", dry, p)
+			}
+		}
+		for p, text := range postfix {
+			if content[p] != text {
+				t.Errorf("dry run %t: %s = %q, want %q", dry, p, content[p], text)
+			}
+		}
+	}
+}
+
+// The daemon now names the stack on cPanel hosts; the content and its
+// generation must stay what an unnamed stack produced.
+func TestManagedContentEximStackUnchanged(t *testing.T) {
+	for _, s := range []Settings{defaults(false), defaults(true), everyOptional()} {
+		unset, err := ManagedContent(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		s.Stack = StackExim
+		exim, err := ManagedContent(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !maps.Equal(unset, exim) {
+			t.Errorf("StackExim changed the managed content for %+v", s)
+		}
 	}
 }

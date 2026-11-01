@@ -25,6 +25,9 @@ func (h *Host) Apply(s antispam.Settings) antispam.Result {
 	if err := blocking(problems); err != nil {
 		return failed(StepPreconditions, err)
 	}
+	// The host's mail stack picks the files CSM renders; a request never
+	// names it.
+	s.Stack = f.Stack
 	// The host can change while the resolved request waits for the worker.
 	if len(s.DNSFeeds()) > 0 || s.Redirects() || s.HasFeed(antispam.FeedCSMIPMap) {
 		if ok, why := antispam.FeedsSupported(f.RspamdVersion); !ok {

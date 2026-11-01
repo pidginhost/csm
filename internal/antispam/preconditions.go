@@ -337,7 +337,7 @@ func CheckHost(f HostFacts) []Problem {
 		}
 	}
 
-	out = append(out, checkTargets(f.Targets, false)...)
+	out = append(out, checkTargets(f.Stack, f.Targets, false)...)
 
 	probes := NamedListProbes()
 	if len(f.NamedLists) != len(probes) {
@@ -391,7 +391,7 @@ func checkPostfixHost(f HostFacts) []Problem {
 		out = append(out, checkPostfixMessageSize(pc.SizeLimit, f.RspamdOptions)...)
 	}
 	out = append(out, checkServices(f)...)
-	return append(out, checkTargets(f.Targets, false)...)
+	return append(out, checkTargets(f.Stack, f.Targets, false)...)
 }
 
 // firstUnverifiable returns the first error that marks an Exim file CSM

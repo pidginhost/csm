@@ -30,7 +30,7 @@ func feedDesired(feeds ...string) Desired {
 // goodFeedFacts: every optional file writable, loopback resolver.
 func goodFeedFacts() antispam.HostFacts {
 	var targets []antispam.TargetFacts
-	for _, tgt := range antispam.MutationTargets() {
+	for _, tgt := range antispam.MutationTargets(antispam.StackExim) {
 		targets = append(targets, antispam.TargetFacts{Target: tgt, Missing: true,
 			Parents: []antispam.PathFacts{{Path: "/", Mode: fs.ModeDir | 0o755}}})
 	}

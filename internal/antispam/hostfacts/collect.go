@@ -39,7 +39,10 @@ type Layout struct {
 	GlobalEnable  string
 	Record        string
 	ResolvConf    string
-	Targets       []antispam.Target
+	// Targets are the files CSM writes on a cPanel host, PostfixTargets
+	// those on a Postfix host.
+	Targets        []antispam.Target
+	PostfixTargets []antispam.Target
 	// IPMap is the CSM IP map file rspamd reads.
 	IPMap string
 	// Learning fact sources.
@@ -80,7 +83,8 @@ func live() collector {
 			GlobalEnable:      "/etc/global_spamassassin_enable",
 			Record:            antispam.RecordPath,
 			ResolvConf:        "/etc/resolv.conf",
-			Targets:           antispam.MutationTargets(),
+			Targets:           antispam.MutationTargets(antispam.StackExim),
+			PostfixTargets:    antispam.MutationTargets(antispam.StackPostfix),
 			IPMap:             ipmap.DefaultPath,
 			ProcNetUDP:        procNetUDP,
 			ProcNetUDP6:       procNetUDP6,
@@ -212,7 +216,11 @@ func (c collector) collect(ctx context.Context, socket string) antispam.HostFact
 			f.SystemFilter, f.SystemFilterErr = readText(name)
 		}
 	}
-	f.Targets = Targets(c.layout.Targets)
+	targets := c.layout.Targets
+	if f.Stack == antispam.StackPostfix {
+		targets = c.layout.PostfixTargets
+	}
+	f.Targets = Targets(targets)
 	f.Record = c.record()
 
 	f.Socket = socketFacts(ctx, socket)
@@ -225,9 +233,9 @@ func (c collector) collect(ctx context.Context, socket string) antispam.HostFact
 }
 
 // CollectInstalled reads only what shows whether CSM's integration is on
-// the host: the files CSM writes, the generated Exim configuration and the
-// completion record. It leaves other facts unset, including platform facts
-// whose detection can run commands.
+// the host: the files CSM writes on a cPanel host, the generated Exim
+// configuration and the completion record. It leaves other facts unset,
+// including platform facts whose detection can run commands.
 func CollectInstalled() antispam.HostFacts {
 	return live().installed()
 }

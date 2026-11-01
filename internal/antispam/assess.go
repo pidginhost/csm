@@ -40,7 +40,7 @@ func Assess(enabled bool, s Settings, f HostFacts) Assessment {
 		if !a.Installed {
 			return a
 		}
-		a.Problems = CheckRemoval(f.Targets)
+		a.Problems = CheckRemoval(f.Stack, f.Targets)
 		if !blocking(a.Problems) {
 			a.Action = Uninstall
 		}
@@ -59,7 +59,7 @@ func Assess(enabled bool, s Settings, f HostFacts) Assessment {
 		return a
 	case !isCurrent:
 		// Replacing a shared block must be just as safe as removing it.
-		if removal := CheckRemoval(f.Targets); blocking(removal) {
+		if removal := CheckRemoval(f.Stack, f.Targets); blocking(removal) {
 			a.report(removal)
 			return a
 		}
@@ -74,7 +74,7 @@ func (a *Assessment) uninstall(f HostFacts) {
 	if !a.Installed {
 		return
 	}
-	removal := CheckRemoval(f.Targets)
+	removal := CheckRemoval(f.Stack, f.Targets)
 	if blocking(removal) {
 		a.report(removal)
 		return

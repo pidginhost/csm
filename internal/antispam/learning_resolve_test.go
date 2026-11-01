@@ -29,7 +29,7 @@ const privateController = "/run/rspamd/csm-controller.sock"
 func safeLearningFacts() HostFacts {
 	root := []PathFacts{dir("/", 0, 0, 0o755), dir("/run", 0, 0, 0o755)}
 	var targets []TargetFacts
-	for _, t := range MutationTargets() {
+	for _, t := range MutationTargets(StackExim) {
 		targets = append(targets, TargetFacts{Target: t, Missing: true, Parents: []PathFacts{dir("/", 0, 0, 0o755)}})
 	}
 	f := HostFacts{

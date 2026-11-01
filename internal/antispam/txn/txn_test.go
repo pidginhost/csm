@@ -58,6 +58,9 @@ type fakeHost struct {
 	builds                 int
 	// onCall runs before a command line is answered.
 	onCall func(line string)
+	// stack is the mail stack preflight reports; its targets are the ones
+	// the host holds.
+	stack antispam.MailStack
 }
 
 // inactiveExit is how systemctl is-active reports a unit that is not active.
@@ -91,7 +94,7 @@ func newFake(t *testing.T) *fakeHost {
 func (f *fakeHost) host() *Host {
 	snapshot := func() []antispam.TargetFacts {
 		var out []antispam.TargetFacts
-		for _, target := range antispam.MutationTargets() {
+		for _, target := range antispam.MutationTargets(f.stack) {
 			st, err := readFile(f.root + target.Path)
 			if err != nil {
 				f.t.Fatal(err)
@@ -120,7 +123,7 @@ func (f *fakeHost) host() *Host {
 		run:     f.run,
 		replace: replaceFile,
 		preflight: func(context.Context, antispam.Settings) (antispam.HostFacts, []antispam.Problem) {
-			return antispam.HostFacts{Targets: snapshot(), RspamdGID: os.Getgid(), DQSKey: f.key,
+			return antispam.HostFacts{Stack: f.stack, Targets: snapshot(), RspamdGID: os.Getgid(), DQSKey: f.key,
 				LearningKeys: f.learning, LearningKeysErr: f.learningErr,
 				Controller: antispam.ControllerConfig{Present: true, PasswordSet: true, Listeners: []antispam.ControllerListener{
 					{Raw: fakeControllerSocket + " mode=0600", Unix: true, Path: fakeControllerSocket, Mode: 0o600}}},
@@ -297,7 +300,7 @@ func (f *fakeHost) file(p string) string {
 // state is every file a transaction may change.
 func (f *fakeHost) state() map[string]string {
 	out := map[string]string{}
-	for _, target := range antispam.MutationTargets() {
+	for _, target := range antispam.MutationTargets(f.stack) {
 		out[target.Path] = f.file(target.Path)
 	}
 	out[antispam.GeneratedEximConfPath] = f.file(antispam.GeneratedEximConfPath)
@@ -339,7 +342,7 @@ func TestApplyInstallsOnFreshHost(t *testing.T) {
 	if r.Generation != antispam.Generation(managed) {
 		t.Errorf("generation %s, want %s", r.Generation, antispam.Generation(managed))
 	}
-	for _, target := range antispam.MutationTargets() {
+	for _, target := range antispam.MutationTargets(antispam.StackExim) {
 		got := f.file(target.Path)
 		if target.Kind == antispam.TargetRspamd && got != managed[target.Path] ||
 			target.Kind != antispam.TargetRspamd && !strings.Contains(got, managed[target.Path]) {

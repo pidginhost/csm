@@ -207,7 +207,7 @@ func TestAntispamShutdownDuringPassPreservesFindings(t *testing.T) {
 						// A stale record still needs removal after the other
 						// integration directories have disappeared.
 						facts := antispam.HostFacts{Record: antispam.RecordFacts{Content: "stale"}}
-						for _, target := range antispam.MutationTargets() {
+						for _, target := range antispam.MutationTargets(antispam.StackExim) {
 							facts.Targets = append(facts.Targets, antispam.TargetFacts{Target: target, Err: fs.ErrNotExist})
 						}
 						return facts

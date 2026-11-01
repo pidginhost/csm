@@ -561,3 +561,24 @@ func TestPassReportsReplacementsAfterWorker(t *testing.T) {
 		})
 	}
 }
+
+// The host's mail stack, found by the collector, picks the files CSM
+// renders; configuration never names it.
+func TestPassRendersForTheCollectedStack(t *testing.T) {
+	h := &fakeHost{}
+	r := h.reconciler()
+	r.Collect = func(context.Context, string) antispam.HostFacts {
+		f := goodFeedFacts()
+		f.Stack = antispam.StackPostfix
+		return f
+	}
+	var got []antispam.MailStack
+	r.assess = func(_ bool, s antispam.Settings, _ antispam.HostFacts) antispam.Assessment {
+		got = append(got, s.Stack)
+		return antispam.Assessment{}
+	}
+	r.Pass(context.Background(), desired(true))
+	if !slices.Equal(got, []antispam.MailStack{antispam.StackPostfix}) {
+		t.Fatalf("assessed stacks %q, want postfix", got)
+	}
+}

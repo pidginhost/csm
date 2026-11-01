@@ -28,7 +28,7 @@ func installTestIPMap(t *testing.T, cfg *config.Config, r reconcile.Reconciler) 
 	r.Now = time.Now
 	r.Collect = func(context.Context, string) antispam.HostFacts {
 		var targets []antispam.TargetFacts
-		for _, target := range antispam.MutationTargets() {
+		for _, target := range antispam.MutationTargets(antispam.StackExim) {
 			targets = append(targets, antispam.TargetFacts{Target: target, Missing: true, Parents: parents})
 		}
 		return antispam.HostFacts{

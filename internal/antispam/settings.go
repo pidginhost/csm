@@ -53,6 +53,10 @@ type Settings struct {
 	// LearningKeys are loaded from LearningDir by the caller, like DQSKey;
 	// they never travel in a request.
 	LearningKeys LearningKeys
+	// Stack is the host's mail stack, which picks the files CSM writes. The
+	// daemon and the worker each read it from the host; it never travels
+	// in a request.
+	Stack MailStack
 }
 
 // DefaultLearningDir holds learning state, inside CSM's state directory.

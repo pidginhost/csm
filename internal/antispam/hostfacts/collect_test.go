@@ -820,3 +820,25 @@ func TestCollectIPMapDoesNotFollowDirectorySymlink(t *testing.T) {
 		t.Fatalf("unsafe map parent was not recorded: %+v", last)
 	}
 }
+
+// The collector checks the files CSM writes for the host's mail stack.
+func TestCollectTargetsFollowStack(t *testing.T) {
+	d := t.TempDir()
+	c := testCollector(d, &fakeRun{})
+	c.layout.Targets = []antispam.Target{{Path: filepath.Join(d, "exim.target"), Kind: antispam.TargetRspamd}}
+	c.layout.PostfixTargets = []antispam.Target{{Path: filepath.Join(d, "postfix.target"), Kind: antispam.TargetRspamd}}
+	for stack, want := range map[antispam.MailStack]string{
+		antispam.StackExim: "exim.target", antispam.StackPostfix: "postfix.target", antispam.StackNone: "exim.target",
+	} {
+		c.stack = func() antispam.MailStack { return stack }
+		f := c.collect(context.Background(), "/csm-antispam-test-missing/s")
+		if len(f.Targets) != 1 || filepath.Base(f.Targets[0].Path) != want {
+			t.Errorf("stack %q collected %+v, want %s", stack, f.Targets, want)
+		}
+	}
+	l := live().layout
+	if !slices.Equal(l.Targets, antispam.MutationTargets(antispam.StackExim)) ||
+		!slices.Equal(l.PostfixTargets, antispam.MutationTargets(antispam.StackPostfix)) {
+		t.Errorf("live targets %v / %v", l.Targets, l.PostfixTargets)
+	}
+}
