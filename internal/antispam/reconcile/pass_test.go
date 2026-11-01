@@ -582,3 +582,35 @@ func TestPassRendersForTheCollectedStack(t *testing.T) {
 		t.Fatalf("assessed stacks %q, want postfix", got)
 	}
 }
+
+// Exemptions come from csm.yaml in the order written; the config loader has
+// already lowered their case.
+func TestDesiredFromConfigExempt(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.EmailProtection.Antispam = config.AntispamConfig{Enabled: true, RspamdSocket: antispam.DefaultSocket, RejectScore: 15, TagScore: 6,
+		Exempt: []string{"example.org", "a@example.com"}}
+	if got := DesiredFromConfig(cfg).Settings.Exempt; !slices.Equal(got, []string{"example.org", "a@example.com"}) {
+		t.Fatalf("exempt = %q", got)
+	}
+}
+
+// Mail from infra_ips is never enforced on a Postfix host: the pass hands
+// the infra networks to rendering, disabled passes included.
+func TestPassScopesInfraNets(t *testing.T) {
+	nets := []netip.Prefix{netip.MustParsePrefix("198.51.100.0/24"), netip.MustParsePrefix("2001:db8::/32")}
+	for _, enabled := range []bool{true, false} {
+		h := &fakeHost{}
+		r := h.reconciler()
+		var got [][]netip.Prefix
+		r.assess = func(_ bool, s antispam.Settings, _ antispam.HostFacts) antispam.Assessment {
+			got = append(got, s.ScopeNets)
+			return antispam.Assessment{}
+		}
+		d := desired(enabled)
+		d.InfraNets = nets
+		r.Pass(context.Background(), d)
+		if len(got) != 1 || !slices.Equal(got[0], nets) {
+			t.Fatalf("enabled %t: assessed scope networks %v, want %v", enabled, got, nets)
+		}
+	}
+}

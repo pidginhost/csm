@@ -252,12 +252,13 @@ func TestManagedContentPostfixDryRunOmitsActions(t *testing.T) {
 	s := everyOptional()
 	s.Stack = StackPostfix
 	actions := path.Join(RspamdLocalDir, "actions.conf")
-	postfix, err := RenderPostfix(s)
-	if err != nil {
-		t.Fatal(err)
-	}
 	for _, dry := range []bool{false, true} {
 		s.DryRun = dry
+		// The scope Lua names the mode, so it is rendered per mode.
+		postfix, err := RenderPostfix(s)
+		if err != nil {
+			t.Fatal(err)
+		}
 		content, err := ManagedContent(s)
 		if err != nil {
 			t.Fatal(err)

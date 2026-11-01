@@ -152,6 +152,10 @@ func checkRspamdModules(enabled map[string]bool, s Settings) []string {
 }
 
 func checkRspamdActions(a Actions, s Settings) []string {
+	// A Postfix dry run leaves actions to the host (spec 9.2).
+	if s.Stack == StackPostfix && s.DryRun {
+		return nil
+	}
 	var out []string
 	if !equals(a.Reject, s.RejectScore) {
 		out = append(out, fmt.Sprintf("rspamd reject threshold is %s, want %d", show(a.Reject), s.RejectScore))

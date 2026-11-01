@@ -28,7 +28,7 @@ type Desired struct {
 	Observe  bool
 	Settings antispam.Settings
 	// InfraNets are infra_ips as prefixes; DNS feeds trust a nameserver
-	// inside them.
+	// inside them, and a Postfix host never enforces on mail they send.
 	InfraNets []netip.Prefix
 }
 
@@ -44,6 +44,7 @@ func DesiredFromConfig(cfg *config.Config) Desired {
 			RejectScore: as.RejectScore, TagScore: as.TagScore,
 			Feeds:      slices.Sorted(slices.Values(as.Feeds.Enabled)),
 			DQSKeyFile: as.Feeds.SpamhausDQSKeyFile,
+			Exempt:     as.Exempt,
 		},
 	}
 	if as.Learning.Enabled {
@@ -215,7 +216,7 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) (out Outcome) {
 		return Outcome{Err: err}
 	}
 	// The host's mail stack picks the files CSM renders.
-	d.Settings.Stack = f.Stack
+	d.Settings.Stack, d.Settings.ScopeNets = f.Stack, d.InfraNets
 	assess := r.assess
 	if assess == nil {
 		assess = antispam.Assess

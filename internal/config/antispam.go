@@ -2,6 +2,7 @@ package config
 
 import (
 	"errors"
+	"fmt"
 
 	"gopkg.in/yaml.v3"
 )
@@ -14,17 +15,8 @@ func validateAntispamFeedTypes(node yaml.Node) error {
 		return err
 	}
 	if enabled, ok := fields["enabled"]; ok && !yamlNodeIsNull(&enabled) {
-		if yamlResolvedTag(&enabled) != "!!seq" {
-			return errors.New("email_protection.antispam.feeds.enabled must be a list of strings")
-		}
-		var names []yaml.Node
-		if err := enabled.Decode(&names); err != nil {
+		if err := validateStringList(enabled, "email_protection.antispam.feeds.enabled"); err != nil {
 			return err
-		}
-		for _, name := range names {
-			if yamlResolvedTag(&name) != "!!str" {
-				return errors.New("email_protection.antispam.feeds.enabled must contain only strings")
-			}
 		}
 	}
 	if keyFile, ok := fields["spamhaus_dqs_key_file"]; ok && !yamlNodeIsNull(&keyFile) && yamlResolvedTag(&keyFile) != "!!str" {
@@ -45,6 +37,24 @@ func validateAntispamLearningTypes(node yaml.Node) error {
 	}
 	if enabled, ok := fields["enabled"]; ok && !yamlNodeIsNull(&enabled) && yamlResolvedTag(&enabled) != "!!bool" {
 		return errors.New("email_protection.antispam.learning.enabled must be true or false")
+	}
+	return nil
+}
+
+// validateStringList requires a YAML sequence of strings, for the same
+// reasons as validateAntispamFeedTypes.
+func validateStringList(node yaml.Node, key string) error {
+	if yamlResolvedTag(&node) != "!!seq" {
+		return fmt.Errorf("%s must be a list of strings", key)
+	}
+	var items []yaml.Node
+	if err := node.Decode(&items); err != nil {
+		return err
+	}
+	for _, item := range items {
+		if yamlResolvedTag(&item) != "!!str" {
+			return fmt.Errorf("%s must contain only strings", key)
+		}
 	}
 	return nil
 }

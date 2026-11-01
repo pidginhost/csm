@@ -1671,6 +1671,10 @@ type AntispamConfig struct {
 	TagScore     int                    `yaml:"tag_score"`
 	Feeds        AntispamFeedsConfig    `yaml:"feeds"`
 	Learning     AntispamLearningConfig `yaml:"learning"`
+	// Exempt lists recipient mailboxes and domains never filtered on a
+	// Postfix host. Exim ignores it; each cPanel account's Spam Filters
+	// toggle decides there.
+	Exempt []string `yaml:"exempt"`
 }
 
 // AntispamLearningConfig turns on learning from the mail users move to
@@ -2423,6 +2427,11 @@ func defaultPresenceFromYAML(data []byte) (defaultPresence, error) {
 			return presence, err
 		}
 	}
+	if node, ok := as["exempt"]; ok && !yamlNodeIsNull(&node) {
+		if err := validateStringList(node, "email_protection.antispam.exempt"); err != nil {
+			return presence, err
+		}
+	}
 	presence.antispam = antispamPresence{
 		dryRun:      set("dry_run"),
 		socket:      set("rspamd_socket"),
@@ -2558,7 +2567,11 @@ func applyFirewallFieldDefaults(fc *firewall.FirewallConfig, present map[string]
 
 // applyAntispamDefaults fills omitted or null antispam fields. dry_run defaults
 // on; an explicit false, empty socket or zero score is kept for validation.
+// Exemptions are lowered to their canonical case before validation.
 func applyAntispamDefaults(as *AntispamConfig, p antispamPresence) {
+	for i, e := range as.Exempt {
+		as.Exempt[i] = strings.ToLower(e)
+	}
 	if !p.dryRun {
 		as.DryRun = true
 	}
@@ -2593,6 +2606,9 @@ func validateAntispam(cfg *Config) error {
 	}
 	if err := antispam.ValidateFeeds(as.Feeds.Enabled, as.Feeds.SpamhausDQSKeyFile); err != nil {
 		return fmt.Errorf("email_protection.antispam.feeds: %w", err)
+	}
+	if err := antispam.ValidateExempt(as.Exempt); err != nil {
+		return fmt.Errorf("email_protection.antispam.exempt: %w", err)
 	}
 	return nil
 }

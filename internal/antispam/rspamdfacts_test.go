@@ -223,3 +223,25 @@ func TestCheckRspamdModulesAllowsRBLWithDNSFeeds(t *testing.T) {
 		t.Fatalf("rbl without feeds must stay a core conflict: %v", got)
 	}
 }
+
+// In a Postfix dry run the host's own actions keep enforcing (spec 9.2),
+// so their thresholds are not CSM's to compare. Enforce on Postfix and every
+// Exim mode still compare them.
+func TestCheckRspamdActionsSkippedInPostfixDryRun(t *testing.T) {
+	five := float64(5)
+	host := Actions{Reject: &five, Greylist: &five}
+	s := defaults(true)
+	s.Stack = StackPostfix
+	if got := checkRspamdActions(host, s); len(got) != 0 {
+		t.Fatalf("postfix dry run compared the host's actions: %v", got)
+	}
+	s.DryRun = false
+	if got := checkRspamdActions(host, s); len(got) != 3 {
+		t.Fatalf("postfix enforce: %v, want three conflicts", got)
+	}
+	for _, dry := range []bool{false, true} {
+		if got := checkRspamdActions(host, defaults(dry)); len(got) != 3 {
+			t.Fatalf("exim dry run %t: %v, want three conflicts", dry, got)
+		}
+	}
+}

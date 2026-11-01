@@ -6,7 +6,9 @@ package antispam
 import (
 	"errors"
 	"fmt"
+	"net/netip"
 	"path"
+	"regexp"
 	"slices"
 	"strings"
 	"unicode"
@@ -57,6 +59,13 @@ type Settings struct {
 	// daemon and the worker each read it from the host; it never travels
 	// in a request.
 	Stack MailStack
+	// Exempt lists recipient mailboxes and domains, in lower case, whose
+	// mail a Postfix host scores and logs but never enforces on. Exim
+	// ignores it: each cPanel account's own toggle decides there.
+	Exempt []string
+	// ScopeNets are the infra_ips networks. A Postfix host never enforces
+	// on mail they send.
+	ScopeNets []netip.Prefix
 }
 
 // DefaultLearningDir holds learning state, inside CSM's state directory.
@@ -76,7 +85,32 @@ func (s Settings) Validate() error {
 	if err := validateLearning(s); err != nil {
 		return err
 	}
+	if err := ValidateExempt(s.Exempt); err != nil {
+		return err
+	}
+	for _, p := range s.ScopeNets {
+		if !p.IsValid() {
+			return errors.New("an infra_ips network is not valid")
+		}
+	}
 	return ValidateSkipMaps(s.SkipMaps)
+}
+
+var (
+	exemptMailbox = regexp.MustCompile(`^[a-z0-9._+-]+@[a-z0-9.-]+$`)
+	exemptDomain  = regexp.MustCompile(`^[a-z0-9.-]+$`)
+)
+
+// ValidateExempt accepts lower-case mailboxes and domains only. These are
+// the only operator strings rendered into the scope Lua, so none may hold a
+// quote, backslash, space or wildcard.
+func ValidateExempt(entries []string) error {
+	for i, e := range entries {
+		if !exemptMailbox.MatchString(e) && !exemptDomain.MatchString(e) {
+			return fmt.Errorf("entry %d is not a lower-case mailbox or domain, such as user@example.com or example.com", i+1)
+		}
+	}
+	return nil
 }
 
 func validateLearning(s Settings) error {
