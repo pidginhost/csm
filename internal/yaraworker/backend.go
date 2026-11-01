@@ -147,7 +147,7 @@ func (b *Backend) ReloadContext(ctx context.Context) error {
 		b.compileErr = ""
 		return nil
 	}
-	f, count, err := b.compile(ctx, sources)
+	f, count, err := b.compile(ctx, sources, true)
 	if err == nil && count == 0 && disabled == 0 {
 		_ = f.Close()
 		err = fmt.Errorf("no YARA rules compiled from %s", b.cfg.RulesDir)
@@ -202,20 +202,23 @@ func (b *Backend) TestCompile(source string) error {
 	if b.isStopped() {
 		return workerproc.ErrStopped
 	}
-	f, count, err := b.compile(context.Background(), []yara.Source{{Name: "source", Text: []byte(source)}})
+	_, count, err := b.compile(context.Background(), []yara.Source{{Name: "source", Text: []byte(source)}}, false)
 	if err != nil {
 		return err
 	}
-	_ = f.Close()
 	if count == 0 {
 		return errors.New("no rules compiled from source")
 	}
 	return nil
 }
 
-// compile runs one compile worker over sources and returns the compiled
-// rules copied into a memfd this process owns and sealed.
-func (b *Backend) compile(ctx context.Context, sources []yara.Source) (*os.File, int, error) {
+// copySealedMemfd is a seam for tests that count rule copies.
+var copySealedMemfd = yaraipc.CopySealedMemfd
+
+// compile runs one compile worker over sources and returns the rule count.
+// With keep it also returns the compiled rules copied into a memfd this
+// process owns and sealed.
+func (b *Backend) compile(ctx context.Context, sources []yara.Source, keep bool) (*os.File, int, error) {
 	if b.isStopped() {
 		return nil, 0, workerproc.ErrStopped
 	}
@@ -291,7 +294,10 @@ func (b *Backend) compile(ctx context.Context, sources []yara.Source) (*os.File,
 		return nil, 0, errors.New(res.CompileError)
 	}
 	defer func() { _ = fds[0].Close() }()
-	kept, err := yaraipc.CopySealedMemfd("csm-yara-rules", fds[0], size)
+	if !keep {
+		return nil, *res.RuleCount, nil
+	}
+	kept, err := copySealedMemfd("csm-yara-rules", fds[0], size)
 	if err != nil {
 		return nil, 0, err
 	}

@@ -404,6 +404,30 @@ func TestTestCompileLeavesRulesAlone(t *testing.T) {
 	}
 }
 
+// A compile test only needs the verdict: it must not copy rules it drops.
+func TestTestCompileKeepsNoRulesCopy(t *testing.T) {
+	var copies atomic.Int32
+	realCopy := copySealedMemfd
+	copySealedMemfd = func(name string, src *os.File, size int64) (*os.File, error) {
+		copies.Add(1)
+		return realCopy(name, src, size)
+	}
+	t.Cleanup(func() { copySealedMemfd = realCopy })
+	b := newBackend(t, &backendFixture{})
+	if err := b.TestCompile("marker:x\n"); err != nil {
+		t.Fatal(err)
+	}
+	if got := copies.Load(); got != 0 {
+		t.Fatalf("a compile test copied the compiled rules %d times", got)
+	}
+	if err := b.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	if got := copies.Load(); got != 1 {
+		t.Fatalf("a reload copied the compiled rules %d times, want 1", got)
+	}
+}
+
 func TestWarmStartsWorker(t *testing.T) {
 	fx := &backendFixture{}
 	b := newBackend(t, fx)
