@@ -121,11 +121,52 @@ func TestAssessDisabled(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := tc.facts(t)
-			a := Assess(false, s, HostFacts{Targets: f.Targets, GeneratedConf: f.GeneratedConf, Record: f.Record})
+			a := Assess(false, s, HostFacts{Stack: f.Stack, Targets: f.Targets, GeneratedConf: f.GeneratedConf, Record: f.Record})
 			if a.Action != tc.action || a.Installed != tc.installed || len(a.Problems) != 0 {
 				t.Fatalf("got %+v, want action %d installed %t", a, tc.action, tc.installed)
 			}
 		})
+	}
+}
+
+// A disabled Postfix host with only CSM's milter headers or scope Lua left,
+// as after an interrupted removal, still gets them removed.
+func TestAssessDisabledFindsPostfixLeftovers(t *testing.T) {
+	for _, p := range []string{MilterHeadersPath, PostfixScopeLuaPath} {
+		f := HostFacts{Stack: StackPostfix, Targets: stackTargets(StackPostfix), Record: RecordFacts{Missing: true}}
+		for i := range f.Targets {
+			tg := &f.Targets[i]
+			if tg.Path != p {
+				continue
+			}
+			header := ManagedHeader
+			if tg.Kind == TargetRspamdLua {
+				header = LuaManagedHeader
+			}
+			tg.Missing, tg.File, tg.Content = false, PathFacts{Path: p, Mode: 0o644}, header+"\n"
+		}
+		if a := Assess(false, enforceSettings(), f); a.Action != Uninstall || !a.Installed || len(a.Problems) != 0 {
+			t.Errorf("%s left: got %+v, want uninstall", p, a)
+		}
+	}
+}
+
+// A Postfix host whose MTA restarts, with both MTAs installed, reads as no
+// stack. Neither an enabled nor a disabled pass may remove CSM's
+// integration then: removal needs the stack's own files, and the Exim path
+// would rebuild a configuration the host does not have.
+func TestAssessKeepsInstallWhenStackUnknown(t *testing.T) {
+	f := HostFacts{
+		Stack:   StackNone,
+		Targets: stackTargets(StackNone),
+		Record:  RecordFacts{Content: string(EncodeRecord(strings.Repeat("a", 64)))},
+	}
+	for _, enabled := range []bool{true, false} {
+		a := Assess(enabled, enforceSettings(), f)
+		if a.Action != Keep || !a.Installed || len(a.Problems) != 1 ||
+			a.Problems[0].Code != CodePlatform || a.Problems[0].Severity != Temporary {
+			t.Fatalf("enabled %t: got %+v, want keep with one temporary platform problem", enabled, a)
+		}
 	}
 }
 

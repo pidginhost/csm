@@ -203,6 +203,13 @@ func TestConfdRehashFragmentCapabilityAlwaysPresent(t *testing.T) {
 	}
 }
 
+// The panel checks this before offering antispam on a Postfix host.
+func TestCapabilitiesIncludeAntispamOnPostfix(t *testing.T) {
+	if !contains(Capabilities(), "mail.antispam.postfix.v1") {
+		t.Fatal("mail.antispam.postfix.v1 capability missing")
+	}
+}
+
 func TestCapabilitiesIncludeLearning(t *testing.T) {
 	if !contains(Capabilities(), "mail.antispam.learning.v1") {
 		t.Fatal("mail.antispam.learning.v1 capability missing")

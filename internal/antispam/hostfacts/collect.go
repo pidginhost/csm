@@ -216,11 +216,7 @@ func (c collector) collect(ctx context.Context, socket string) antispam.HostFact
 			f.SystemFilter, f.SystemFilterErr = readText(name)
 		}
 	}
-	targets := c.layout.Targets
-	if f.Stack == antispam.StackPostfix {
-		targets = c.layout.PostfixTargets
-	}
-	f.Targets = Targets(targets)
+	f.Targets = Targets(c.targets(f.Stack))
 	f.Record = c.record()
 
 	f.Socket = socketFacts(ctx, socket)
@@ -233,19 +229,27 @@ func (c collector) collect(ctx context.Context, socket string) antispam.HostFact
 }
 
 // CollectInstalled reads only what shows whether CSM's integration is on
-// the host: the files CSM writes on a cPanel host, the generated Exim
-// configuration and the completion record. It leaves other facts unset,
-// including platform facts whose detection can run commands.
+// the host: its mail stack, the files CSM writes on that stack, the
+// generated Exim configuration and the completion record. Detecting the
+// stack is the only step that can run commands. Other facts stay unset.
 func CollectInstalled() antispam.HostFacts {
 	return live().installed()
 }
 
 func (c collector) installed() antispam.HostFacts {
-	var f antispam.HostFacts
+	f := antispam.HostFacts{Stack: c.stack()}
 	f.GeneratedConf, f.GeneratedErr = readText(c.layout.GeneratedConf)
-	f.Targets = Targets(c.layout.Targets)
+	f.Targets = Targets(c.targets(f.Stack))
 	f.Record = c.record()
 	return f
+}
+
+// targets are the files CSM writes on a host of stack.
+func (c collector) targets(stack antispam.MailStack) []antispam.Target {
+	if stack == antispam.StackPostfix {
+		return c.layout.PostfixTargets
+	}
+	return c.layout.Targets
 }
 
 func (c collector) record() antispam.RecordFacts {

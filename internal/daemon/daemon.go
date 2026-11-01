@@ -146,8 +146,8 @@ type Daemon struct {
 	// merges, so each outcome is logged once.
 	mailStatsLoadFailing atomic.Bool
 
-	// antispamLoop runs antispam reconcile passes on a cPanel host. It
-	// stays nil elsewhere and until startup reaches it.
+	// antispamLoop runs antispam reconcile passes on a host antispam
+	// supports. It stays nil elsewhere and until startup reaches it.
 	antispamLoop atomic.Pointer[reconcile.Loop]
 	// Namespace replacement must wait for passes that can still create keys
 	// or publish a learner target. Reloads can still stop learning at once.
@@ -950,7 +950,8 @@ func (d *Daemon) Run() error {
 
 	// Reconcile the opt-in antispam integration and probe rspamd while it is
 	// enabled. Started after the forward guard's own reconcile, so the two
-	// startup transactions do not contend for the Exim lock. cPanel only.
+	// startup transactions do not contend for the Exim lock. cPanel and
+	// Postfix hosts only.
 	d.startAntispam()
 
 	// Snapshot the live config ONCE for the entire initial-scan tick

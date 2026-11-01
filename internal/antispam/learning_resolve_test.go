@@ -149,6 +149,21 @@ func TestResolveLearningSafeBaseline(t *testing.T) {
 	}
 }
 
+// Learning from Junk folders on Postfix hosts comes later: until then the
+// resolver keeps learning off there and says so once, whatever the facts.
+func TestResolveLearningOffOnPostfix(t *testing.T) {
+	f := safeLearningFacts()
+	f.Stack = StackPostfix
+	s, gate, problems := ResolveLearning(learningSettings(), f)
+	if s.Learning || s.Roundcube || gate != (LearningGate{}) {
+		t.Fatalf("learning on a Postfix host: settings %+v, gate %+v", s, gate)
+	}
+	onlyLearningReason(t, problems, ReasonUnsupported)
+	if want := "learning from Junk folders on Postfix hosts is not available yet"; problems[0].Detail != want {
+		t.Fatalf("detail %q, want %q", problems[0].Detail, want)
+	}
+}
+
 // definite is a fact change that must turn learning off with one reason.
 func TestResolveLearningDefiniteFailures(t *testing.T) {
 	for name, tc := range map[string]struct {

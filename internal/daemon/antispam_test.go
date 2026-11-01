@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -26,12 +27,27 @@ import (
 	"github.com/pidginhost/csm/internal/platform"
 )
 
-// usePanel makes platform detection report panel for one test.
+// usePanel makes platform detection report panel for one test. Antispam's
+// mail stack follows, as on a real host: Exim on cPanel, none elsewhere.
 func usePanel(t *testing.T, panel platform.Panel) {
 	t.Helper()
 	platform.ResetForTest()
 	t.Cleanup(platform.ResetForTest)
 	platform.SetOverrides(platform.Overrides{Panel: &panel})
+	stack := antispam.StackNone
+	if panel == platform.PanelCPanel {
+		stack = antispam.StackExim
+	}
+	useMailStack(t, stack, false)
+}
+
+// useMailStack makes antispam's start check see stack, with CSM's
+// integration installed or not, for one test.
+func useMailStack(t *testing.T, stack antispam.MailStack, installed bool) {
+	t.Helper()
+	prev := antispamHostState
+	t.Cleanup(func() { antispamHostState = prev })
+	antispamHostState = func() (antispam.MailStack, bool) { return stack, installed }
 }
 
 // useActiveConfig publishes cfg as the live config for one test.
@@ -105,19 +121,81 @@ func antispamTestShutdown(t *testing.T, d *Daemon) func() {
 	return stop
 }
 
-func TestStartAntispamSkipsHostsWithoutCPanel(t *testing.T) {
+func TestStartAntispamSkipsHostsWithoutSupportedMailStack(t *testing.T) {
 	usePanel(t, platform.PanelNone)
 	passes := useAntispamHost(t)
 	d := newTestDaemon(t)
 	stop := antispamTestShutdown(t, d)
 	d.startAntispam()
 	if d.antispamLoop.Load() != nil {
-		t.Fatal("antispam reconcile started on a host without cPanel")
+		t.Fatal("antispam reconcile started on a host without a supported mail stack")
 	}
 	d.reconcileAntispam() // must not block or panic without a loop
 	stop()
 	if len(passes) != 0 {
-		t.Fatal("antispam collected host facts without cPanel")
+		t.Fatal("antispam collected host facts without a supported mail stack")
+	}
+}
+
+func TestStartAntispamRunsOnPostfix(t *testing.T) {
+	usePanel(t, platform.PanelNone)
+	useMailStack(t, antispam.StackPostfix, false)
+	passes := useAntispamHost(t)
+	d := newTestDaemon(t)
+	useActiveConfig(t, d.cfg)
+	stop := antispamTestShutdown(t, d)
+	d.startAntispam()
+	waitPass(t, passes)
+	if d.antispamLoop.Load() == nil {
+		t.Fatal("antispam reconcile did not start on a Postfix host")
+	}
+	stop()
+}
+
+// A Postfix host whose MTA restarts, with both MTAs installed, reads as no
+// stack. With CSM's integration installed the loop still starts, keeps the
+// integration and says why, whether antispam is enabled or not: a CSM
+// restart at that moment neither removes filtering nor stops watching it.
+func TestAntispamKeepsInstallWhileStackIsUnknown(t *testing.T) {
+	for _, enabled := range []bool{true, false} {
+		t.Run(fmt.Sprint("enabled ", enabled), func(t *testing.T) {
+			usePanel(t, platform.PanelNone)
+			useMailStack(t, antispam.StackNone, true)
+			installed := antispam.HostFacts{Stack: antispam.StackNone, Record: antispam.RecordFacts{Content: string(antispam.EncodeRecord(""))}}
+			passes := make(chan struct{}, 16)
+			useAntispamReconciler(t, reconcile.Reconciler{
+				Collect: func(context.Context, string) antispam.HostFacts {
+					passes <- struct{}{}
+					return installed
+				},
+				Installed: func() antispam.HostFacts {
+					passes <- struct{}{}
+					return installed
+				},
+				Run: func(_ context.Context, req antispam.Request) (antispam.Result, error) {
+					t.Errorf("%s requested while the host's mail stack is unknown", req.Operation)
+					return antispam.Result{}, nil
+				},
+				Now: time.Now,
+			})
+			d := newTestDaemon(t)
+			cfg := &config.Config{}
+			cfg.EmailProtection.Antispam = config.AntispamConfig{Enabled: enabled, DryRun: true, RspamdSocket: testScanSocket, RejectScore: 15, TagScore: 6}
+			useActiveConfig(t, cfg)
+			stop := antispamTestShutdown(t, d)
+			d.startAntispam()
+			waitPass(t, passes)
+			deadline := time.Now().Add(5 * time.Second)
+			for !slices.ContainsFunc(d.store.LatestFindings(), func(f alert.Finding) bool {
+				return f.Check == reconcile.CheckPrecondition && strings.Contains(f.Details, "CSM keeps any installed antispam integration")
+			}) {
+				if time.Now().After(deadline) {
+					t.Fatalf("no temporary precondition finding: %+v", d.store.LatestFindings())
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			stop()
+		})
 	}
 }
 
@@ -206,7 +284,7 @@ func TestAntispamShutdownDuringPassPreservesFindings(t *testing.T) {
 					Installed: func() antispam.HostFacts {
 						// A stale record still needs removal after the other
 						// integration directories have disappeared.
-						facts := antispam.HostFacts{Record: antispam.RecordFacts{Content: "stale"}}
+						facts := antispam.HostFacts{Stack: antispam.StackExim, Record: antispam.RecordFacts{Content: "stale"}}
 						for _, target := range antispam.MutationTargets(antispam.StackExim) {
 							facts.Targets = append(facts.Targets, antispam.TargetFacts{Target: target, Err: fs.ErrNotExist})
 						}
@@ -1215,8 +1293,9 @@ func TestAntispamHealthNoticesSpareTheAlertBudget(t *testing.T) {
 	}
 }
 
-// Antispam integrates with cPanel's Exim only. Enabling it elsewhere does
-// nothing, so the daemon says why at startup and on each reload.
+// Antispam integrates with cPanel's Exim and with Postfix. Enabling it
+// elsewhere does nothing, so the daemon says why at startup and on each
+// reload.
 func TestAntispamEnabledWithoutCPanelLogsWhyItIsInactive(t *testing.T) {
 	usePanel(t, platform.PanelNone)
 	useAntispamHost(t)
@@ -1228,33 +1307,39 @@ func TestAntispamEnabledWithoutCPanelLogsWhyItIsInactive(t *testing.T) {
 	t.Cleanup(func() { finish() })
 	d.startAntispam()
 	d.reconcileAntispam()
-	if got := finish(); strings.Count(got, "antispam is enabled but inactive: it supports cPanel hosts only") != 2 {
+	if got := finish(); strings.Count(got, "antispam is enabled but inactive: it needs a cPanel host running Exim, or a Postfix host") != 2 {
 		t.Fatalf("startup and reload did not each explain inactive antispam: %q", got)
 	}
 }
 
-// The explanation is only for an enabled switch on a host without cPanel. A
-// cPanel host whose reload arrives before antispam starts is not inactive.
+// The explanation is only for an enabled switch on a host antispam cannot
+// run on. A host it runs on, or one still holding CSM's integration, whose
+// reload arrives before antispam starts is not inactive.
 func TestAntispamInactiveReasonOnlyWithoutCPanel(t *testing.T) {
 	enabled := &config.Config{}
 	enabled.EmailProtection.Antispam = config.AntispamConfig{Enabled: true, DryRun: true, RspamdSocket: testScanSocket, RejectScore: 15, TagScore: 6}
 	for _, tc := range []struct {
-		name  string
-		panel platform.Panel
-		cfg   *config.Config
+		name      string
+		panel     platform.Panel
+		stack     antispam.MailStack
+		installed bool
+		cfg       *config.Config
 	}{
-		{"disabled without cPanel", platform.PanelNone, &config.Config{}},
-		{"cPanel reload before start", platform.PanelCPanel, enabled},
+		{"disabled without cPanel", platform.PanelNone, antispam.StackNone, false, &config.Config{}},
+		{"cPanel reload before start", platform.PanelCPanel, antispam.StackExim, false, enabled},
+		{"Postfix reload before start", platform.PanelNone, antispam.StackPostfix, false, enabled},
+		{"installed, stack unknown, reload before start", platform.PanelNone, antispam.StackNone, true, enabled},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			usePanel(t, tc.panel)
+			useMailStack(t, tc.stack, tc.installed)
 			useAntispamHost(t)
 			d := newTestDaemon(t)
 			useActiveConfig(t, tc.cfg)
 			finish := captureCSMLog(t)
 			t.Cleanup(func() { finish() })
 			d.reconcileAntispam()
-			if tc.panel == platform.PanelNone {
+			if tc.stack == antispam.StackNone && !tc.installed {
 				d.startAntispam()
 			}
 			if got := finish(); strings.Contains(got, "antispam is enabled but inactive") {

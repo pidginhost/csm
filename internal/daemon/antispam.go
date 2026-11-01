@@ -23,7 +23,6 @@ import (
 	"github.com/pidginhost/csm/internal/mailstats"
 	"github.com/pidginhost/csm/internal/netutil"
 	"github.com/pidginhost/csm/internal/obs"
-	"github.com/pidginhost/csm/internal/platform"
 )
 
 // antispamProbeInterval is how often rspamd's scan socket is probed while
@@ -64,6 +63,13 @@ const (
 	antispamCanaryDelay   = 30 * time.Second
 )
 
+// antispamHostState reports the host's mail stack and whether CSM's
+// antispam integration is installed; tests replace it.
+var antispamHostState = func() (antispam.MailStack, bool) {
+	f := hostfacts.CollectInstalled()
+	return f.Stack, antispam.Assess(false, antispam.Settings{}, f).Installed
+}
+
 // antispamReconciler returns the host the antispam reconcile loop works on;
 // tests replace it.
 var antispamReconciler = func() reconcile.Reconciler {
@@ -91,13 +97,13 @@ var antispamReconciler = func() reconcile.Reconciler {
 	}
 }
 
-// startAntispam starts antispam reconciliation on a cPanel host: a pass at
-// start, after each config reload, every 15 minutes, and 20 seconds after a
-// busy lock (spec section 6.5). It also starts the rspamd probe. Shutdown
-// cancels a running pass or probe.
+// startAntispam starts antispam reconciliation on a host it supports: a
+// pass at start, after each config reload, every 15 minutes, and 20 seconds
+// after a busy lock (spec section 6.5). It also starts the rspamd probe.
+// Shutdown cancels a running pass or probe.
 func (d *Daemon) startAntispam() {
-	if !platform.Detect().IsCPanel() {
-		warnAntispamWithoutCPanel(d.currentCfg())
+	if antispamUnsupported() {
+		warnAntispamUnsupported(d.currentCfg())
 		return
 	}
 	// Health state starts empty; findings kept from before a restart
@@ -317,18 +323,29 @@ func (d *Daemon) reconcileAntispam() {
 		loop.Trigger()
 		return
 	}
-	// A cPanel host can reload before startAntispam publishes the loop;
-	// startup then reads the new config itself.
-	if !platform.Detect().IsCPanel() {
-		warnAntispamWithoutCPanel(d.currentCfg())
+	// A supported host can reload before startAntispam publishes the loop;
+	// startup then reads the new config itself. Only an enabled switch needs
+	// the host check, which can run commands.
+	if cfg := d.currentCfg(); cfg.EmailProtection.Antispam.Enabled && antispamUnsupported() {
+		warnAntispamUnsupported(cfg)
 	}
 }
 
-// warnAntispamWithoutCPanel explains an enabled switch that does nothing:
-// the integration exists only for cPanel's Exim.
-func warnAntispamWithoutCPanel(cfg *config.Config) {
+// antispamUnsupported reports a host antispam does not run on: no mail
+// stack it integrates with and nothing of CSM's installed. A Postfix host
+// can read as no stack while postfix restarts; with CSM's integration
+// installed its passes must still run, to keep the integration in place
+// and report why.
+func antispamUnsupported() bool {
+	stack, installed := antispamHostState()
+	return stack == antispam.StackNone && !installed
+}
+
+// warnAntispamUnsupported explains an enabled switch that does nothing:
+// the integration exists only for cPanel's Exim and for Postfix.
+func warnAntispamUnsupported(cfg *config.Config) {
 	if cfg.EmailProtection.Antispam.Enabled {
-		csmlog.Warn("antispam is enabled but inactive: it supports cPanel hosts only")
+		csmlog.Warn("antispam is enabled but inactive: it needs a cPanel host running Exim, or a Postfix host")
 	}
 }
 

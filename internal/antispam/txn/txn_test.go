@@ -84,7 +84,7 @@ type call struct {
 
 func newFake(t *testing.T) *fakeHost {
 	t.Helper()
-	f := &fakeHost{t: t, root: t.TempDir(), start: time.Now(), fail: map[string][]int{}, seen: map[string]int{},
+	f := &fakeHost{t: t, root: t.TempDir(), start: time.Now(), fail: map[string][]int{}, seen: map[string]int{}, stack: antispam.StackExim,
 		key: antispam.KeyFacts{Path: "/etc/csm/k", UID: 0, Mode: 0o600, Key: antispam.NewSecret("abcdefghijklmnopqrstu23456")}}
 	for _, dir := range []string{antispam.RspamdLocalDir, antispam.RspamdOverrideDir, antispam.RspamdLuaDir, path.Dir(antispam.RoundcubeIncludePath), "/var/lib/csm"} {
 		if err := os.MkdirAll(f.root+dir, 0o755); err != nil {

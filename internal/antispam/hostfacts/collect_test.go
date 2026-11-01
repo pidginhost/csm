@@ -324,7 +324,7 @@ func TestRootServiceUserDoesNotProveWorkerIdentity(t *testing.T) {
 			if uid != -1 {
 				t.Errorf("worker uid = %d; a root-started rspamd can drop privileges with -u", uid)
 			}
-			f := antispam.HostFacts{Socket: antispam.SocketFacts{
+			f := antispam.HostFacts{Stack: antispam.StackExim, Socket: antispam.SocketFacts{
 				Socket: antispam.PathFacts{Path: antispam.DefaultSocket, UID: 979, Mode: fs.ModeSocket | 0o666},
 				Parents: []antispam.PathFacts{
 					{Path: "/", Mode: fs.ModeDir | 0o755},
@@ -570,7 +570,7 @@ func TestCollectReadsRecordAndRspamdState(t *testing.T) {
 }
 
 // Reconcile checks a disabled host for CSM leftovers every pass, so that
-// check runs no command.
+// check runs no command beyond detecting the mail stack once.
 func TestCollectInstalledRunsNoCommands(t *testing.T) {
 	d := t.TempDir()
 	commandLog := filepath.Join(d, "commands")
@@ -590,11 +590,13 @@ func TestCollectInstalledRunsNoCommands(t *testing.T) {
 	c.layout = testCollector(d, run).layout
 	c.run = run.run
 	c.layout.Targets = []antispam.Target{{Path: filepath.Join(d, "local.d", "rbl.conf"), Kind: antispam.TargetRspamd}}
+	detections := 0
+	c.stack = func() antispam.MailStack { detections++; return antispam.StackExim }
 
 	f := c.installed()
 
-	if len(run.calls) != 0 {
-		t.Errorf("commands %q", run.calls)
+	if len(run.calls) != 0 || detections != 1 {
+		t.Errorf("commands %q, stack detections %d, want none and 1", run.calls, detections)
 	}
 	if data, err := os.ReadFile(commandLog); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("platform detection ran commands: %q, error %v", data, err)
@@ -602,6 +604,40 @@ func TestCollectInstalledRunsNoCommands(t *testing.T) {
 	if f.GeneratedConf != "generated\n" || f.GeneratedErr != nil ||
 		f.Record.Content != string(antispam.EncodeRecord("")) || len(f.Targets) != 1 {
 		t.Errorf("facts %+v", f)
+	}
+}
+
+// With antispam disabled, the leftover check reads the files CSM writes on
+// the detected stack, so a Postfix host's milter headers and scope Lua are
+// found (TestAssessDisabledFindsPostfixLeftovers requests their removal).
+func TestCollectInstalledReadsTheStacksFiles(t *testing.T) {
+	d := t.TempDir()
+	mkdir(t, filepath.Join(d, "lua.local.d"))
+	scope := filepath.Join(d, "lua.local.d", "csm_scope.lua")
+	write(t, scope, antispam.LuaManagedHeader+"\n")
+	c := testCollector(d, &fakeRun{})
+	c.layout.Targets = []antispam.Target{{Path: filepath.Join(d, "local.d", "rbl.conf"), Kind: antispam.TargetRspamd}}
+	c.layout.PostfixTargets = []antispam.Target{
+		{Path: filepath.Join(d, "local.d", "milter_headers.conf"), Kind: antispam.TargetRspamd},
+		{Path: scope, Kind: antispam.TargetRspamdLua},
+	}
+	for _, stack := range []antispam.MailStack{antispam.StackExim, antispam.StackPostfix} {
+		c.stack = func() antispam.MailStack { return stack }
+		f := c.installed()
+		want := c.layout.Targets
+		if stack == antispam.StackPostfix {
+			want = c.layout.PostfixTargets
+		}
+		var got []antispam.Target
+		for _, tg := range f.Targets {
+			got = append(got, tg.Target)
+		}
+		if f.Stack != stack || !slices.Equal(got, want) {
+			t.Errorf("stack %q: facts for %q with targets %v, want %v", stack, f.Stack, got, want)
+		}
+		if read := f.Targets[len(f.Targets)-1]; stack == antispam.StackPostfix && (read.Path != scope || read.Missing || read.Err != nil) {
+			t.Errorf("scope Lua read as %+v", read)
+		}
 	}
 }
 

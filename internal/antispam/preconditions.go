@@ -230,16 +230,18 @@ type HostFacts struct {
 // before CSM writes anything, for the host's mail stack. Staged rspamd
 // settings are checked separately with CheckRspamd.
 func CheckHost(f HostFacts) []Problem {
-	if f.Stack == StackPostfix {
+	switch {
+	case f.Stack == StackPostfix:
 		return checkPostfixHost(f)
+	case f.Stack != StackExim && leftovers(f):
+		return []Problem{stackUnknown}
+	case f.Stack != StackExim:
+		// The collector gathers no Exim facts here.
+		return []Problem{{Code: CodePlatform, Severity: Definite, Detail: "needs a cPanel host running Exim, or a Postfix host"}}
 	}
 	var out []Problem
 	add := func(code string, sev Severity, format string, args ...any) {
 		out = append(out, Problem{Code: code, Severity: sev, Detail: fmt.Sprintf(format, args...)})
-	}
-
-	if f.Stack != StackExim {
-		add(CodePlatform, Definite, "needs a cPanel host running Exim, or a Postfix host")
 	}
 
 	switch v, err := ParseEximVersion(f.EximVersion.Stdout); {

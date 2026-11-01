@@ -606,6 +606,8 @@ func TestPassReportsPostfixScanSource(t *testing.T) {
 			f.RspamdLog = antispam.LogFacts{Err: errors.New("rspamd's logging settings are not readable")}
 		}, nil},
 		{"exim", true, func(f *antispam.HostFacts) { f.Stack = antispam.StackExim }, &antispam.ScanSource{}},
+		// A Postfix host whose MTA restarts can read as no stack for a pass.
+		{"stack unknown", true, func(f *antispam.HostFacts) { f.Stack = antispam.StackNone }, nil},
 		{"disabled", false, postfix, &antispam.ScanSource{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -1,12 +1,16 @@
 # Inbound spam filtering
 
-CSM can filter inbound mail on cPanel hosts through rspamd, with each cPanel
-account deciding for itself whether its mail is filtered. It is off by default.
+CSM can filter inbound mail through rspamd on cPanel hosts, where each cPanel
+account decides for itself whether its mail is filtered, and on Postfix hosts,
+where every local domain is filtered. It is off by default.
 
-The operator installs rspamd. CSM configures it, wires it into Exim, keeps the
-integration current and reports when filtering is not working. CSM is never in
-the live mail path: Exim talks to rspamd directly, and stopping CSM leaves the
-installed filtering in place.
+The operator installs rspamd. CSM configures it, wires it into Exim on cPanel,
+keeps the integration current and reports when filtering is not working. CSM is
+never in the live mail path: Exim or Postfix talks to rspamd directly, and
+stopping CSM leaves the installed filtering in place.
+
+Most of this page describes cPanel hosts. [Postfix hosts](#postfix-hosts) lists
+what differs there.
 
 ## What each account gets
 
@@ -67,6 +71,9 @@ never filtered: mail to a domain from that domain's remote MX hosts, hosts in
 `-bounces` addresses and suspended recipients.
 
 ## Before you enable it
+
+This section is for cPanel hosts. Postfix hosts have their own
+[requirements](#requirements).
 
 Install rspamd from the upstream [rspamd.com](https://rspamd.com/downloads.html)
 repository and keep its systemd unit's `User=` setting (the upstream package
@@ -130,20 +137,27 @@ email_protection:
     feeds:
       enabled: []
       spamhaus_dqs_key_file: ""
+    exempt: []
 ```
 
 - `enabled` turns the integration on. Setting it back to `false` requests
   removal of CSM's owned content; conflicts or failures can prevent removal
-  and produce findings. On a host without cPanel it stays inactive; the
-  daemon logs a warning at startup and whenever a configuration change is
-  reloaded.
+  and produce findings. On a host that is neither a cPanel host running Exim
+  nor a Postfix host it stays inactive; the daemon logs a warning at startup
+  and whenever a configuration change is reloaded.
 - `dry_run` scans and logs what would happen without rejecting, tagging or
-  splitting recipients.
+  splitting recipients. On a Postfix host the host's own rspamd actions keep
+  deciding; see [Dry run and enforce](#dry-run-and-enforce).
 - `rspamd_socket` is the scan socket above: an absolute path of at most 107
   characters using letters, digits, `/`, `.`, `_` and `-`.
 - `reject_score` and `tag_score` are whole rspamd scores with
   `0 < tag_score < reject_score <= 1000`.
 - `feeds` selects optional blocklists; see [Feeds](#feeds).
+- `exempt` lists recipient domains and mailboxes that are never filtered on a
+  Postfix host, such as `example.com` or `postmaster@example.net`. Entries are
+  lower-cased, and only plain domains and mailboxes are accepted. cPanel hosts
+  ignore it: there each account's Spam Filters switch decides. See
+  [Which mail is filtered](#which-mail-is-filtered).
 
 All of these are hot-reloadable: after antispam starts, `systemctl reload csm` or a
 Settings save updates health tracking and requests a reconcile pass before
@@ -156,7 +170,8 @@ setting reads rspamd's scan history for IP reputation and is unrelated to
 filtering.
 
 The capabilities API lists `mail.antispam.v1` when a build supports this
-integration; it does not mean filtering is installed on the host.
+integration, and `mail.antispam.postfix.v1` when it also supports Postfix
+hosts; neither means filtering is installed on the host.
 `mail.antispam.learning.v1` means the build can learn from Spam folders;
 while learning runs, `csm status --json` carries an `antispam_learning`
 block.
@@ -344,7 +359,7 @@ the scan failed. The score the CSM IP map gave the sender is subtracted
 first, so the map never feeds its own evidence. Dry run and enforce record
 the same way, and so do recipients with filtering off: the verdict is about
 the sender. Whitelisted, `infra_ips`, private and the server's own addresses
-are skipped.
+are skipped. Postfix hosts record no verdicts; see [Scan records](#scan-records).
 This works with or without `csm_ip_map`, so you can review the data before
 turning the map on. After a CSM restart with `csm_ip_map` enabled, verdicts
 are not recorded until CSM has written the map again, because the map's
@@ -576,6 +591,143 @@ installed integration untouched.
 Sessions opened before removal retain their old hooks and may still scan.
 Those scans use operator or default rspamd settings after CSM's settings are
 removed; scores can change and external lists can become active again.
+
+## Postfix hosts
+
+On a host without cPanel that runs Postfix, CSM manages rspamd only. Postfix
+already passes mail to rspamd's proxy worker as a milter, and rspamd applies
+the decision. CSM never edits Postfix's configuration. The sections above
+about cPanel accounts, Exim and Roundcube do not apply.
+
+### Requirements
+
+1. **Postfix passes mail to rspamd's proxy worker.** `smtpd_milters` must
+   name the address of an rspamd proxy worker that has `milter = yes`. CSM
+   checks this read-only with `postconf` and rspamd's worker settings. When
+   smtpd runs chrooted, a `unix:` milter path is resolved inside Postfix's
+   queue directory, as Postfix does. Without this wiring CSM reports a
+   definite `postfix_milter` precondition and installs nothing.
+2. **rspamd 4.2.** CSM's scope rule is tested with rspamd 4.2.3.
+3. **`/etc/rspamd/lua.local.d` exists**, owned by root and not writable by
+   group or others. CSM's scope rule goes there.
+4. **A scan socket for CSM.** CSM uses it to check that rspamd answers. Add
+   a Unix socket to rspamd's normal worker in
+   `/etc/rspamd/local.d/worker-normal.inc`:
+
+   ```
+   bind_socket = "localhost:11333";
+   bind_socket = "/run/rspamd/csm-normal.sock mode=0600";
+   ```
+
+   Only CSM uses this socket, as root, so mode 0600 is enough. Keep the
+   first line if your proxy worker passes mail on to the normal worker
+   instead of scanning it itself. The socket and every parent directory must
+   be owned by root or the rspamd user and not writable by group or others.
+   Run `rspamadm configtest`, then `systemctl reload rspamd`.
+5. **rspamd logs to a file at `info` level.** CSM reads its scan records
+   from rspamd's log file, for example `/var/log/rspamd/rspamd.log`. When
+   rspamd logs to the journal or syslog, CSM warns and sees no scan records.
+   At `notice`, `warning` or `error` level rspamd does not write them; set
+   `level = "info";` in `/etc/rspamd/local.d/logging.inc`.
+6. **rspamd accepts every message Postfix accepts.** CSM warns when rspamd's
+   `max_message` is below Postfix's `message_size_limit`.
+7. **Postfix and rspamd are running.**
+
+### Which mail is filtered
+
+Every local domain is filtered. Only unauthenticated mail from remote hosts
+is scored against `reject_score` and `tag_score`. CSM never rejects or tags
+mail:
+
+- from a sender who authenticated to Postfix;
+- from rspamd's local networks (`local_addrs`), which include loopback and
+  the private address ranges by default;
+- from an address in `infra_ips`.
+
+Mail whose every recipient is in `exempt` is scored and logged, but never
+rejected or tagged. A domain entry matches that domain only, not its
+subdomains. One recipient outside the list is enough: the whole message is
+then filtered.
+
+Your own rspamd settings rules, for example in
+`/etc/rspamd/local.d/settings.conf`, keep working. For mail CSM does not
+filter, CSM only raises the action thresholds on top of what your rule set.
+A rule that limits which symbols run (`symbols_enabled` or `groups_enabled`)
+also skips CSM's scope rule: mail it matches keeps the normal thresholds, even
+when it is authenticated, local or exempt, and gets no scan record.
+
+### Dry run and enforce
+
+In dry run CSM does not write `actions.conf`. The host's own actions keep
+deciding, as before. CSM logs what it would have done with each scored
+message: `decision=reject`, `tag` or `none`, and `unfiltered` for exempt
+mail.
+
+With `dry_run: false` CSM takes over `/etc/rspamd/local.d/actions.conf`. An
+existing file is copied first, see [Replaced files](#replaced-files). rspamd
+then rejects at `reject_score` and adds headers at `tag_score`. Going back
+to dry run deletes CSM's `actions.conf`, so rspamd's built-in actions apply,
+not your old file, and they reject too. Restore your copy to get your own
+thresholds back.
+
+### Headers and the Junk folder
+
+CSM owns `/etc/rspamd/local.d/milter_headers.conf`. rspamd removes any
+`X-Spam-Status` header a message arrives with and adds its own:
+`X-Spam-Status: Yes, score=...` at the add header threshold, `No` below it.
+For authenticated and local mail, which rspamd's milter headers skip, CSM's
+scope rule removes the inbound copy itself. In dry run the header follows
+the host's own add header threshold.
+
+CSM leaves the `X-Spam: Yes` header of rspamd's proxy worker alone. Filing
+tagged mail into the Junk folder stays your Sieve rule, for example one that
+files `X-Spam: Yes` into Junk. CSM does not manage Sieve.
+
+### Scan records
+
+CSM's scope rule writes one `CSM-ANTISPAM event=scan` line per scored message
+into rspamd's log. Authenticated, local and `infra_ips` mail get none. These
+records count toward scan health and the Email Security page only. They do
+not feed spam evidence, the CSM IP map, the Threat page or abuse reports:
+any local process can make rspamd log such a line through its local scan and
+milter listeners.
+
+Failed scans come from Postfix's mail log: Postfix logs a warning each time
+its milter call to rspamd fails, and CSM raises `antispam_scan_error`. What
+happens to that mail depends on Postfix's `milter_default_action`: `accept`
+delivers it unfiltered, `tempfail` defers it, `reject` rejects it and
+`quarantine` holds it in Postfix's hold queue.
+
+### Files and learning
+
+CSM writes the rspamd files and the completion record listed under
+[What CSM writes](#what-csm-writes), `actions.conf` only while it enforces,
+plus `milter_headers.conf` in `/etc/rspamd/local.d` and `csm_scope.lua` in
+`/etc/rspamd/lua.local.d`. It writes no Exim or Roundcube file. Each change
+reloads rspamd only.
+
+Learning from Junk folders is not available on Postfix hosts yet. With
+`learning.enabled: true` CSM keeps learning off there and reports an
+`antispam_learning` warning, reason `unsupported`.
+
+If CSM cannot tell which mail server runs, for example while Postfix
+restarts on a host that also has Exim installed, it leaves an installed
+integration in place and reports a temporary `platform` precondition.
+
+### Rolling it out on Postfix
+
+1. Meet the requirements above and enable with `dry_run: true`. Leave
+   `exempt` empty unless a recipient must never be filtered.
+2. Check that rspamd's loaded actions did not change
+   (`rspamadm configdump actions`), that `CSM-ANTISPAM` lines appear in
+   rspamd's log, and that mail at the host's add header threshold still
+   carries `X-Spam: Yes`.
+3. Leave dry run on for at least 7 days. Review each would-reject decision
+   in rspamd's log (`CSM-ANTISPAM event=scan ... decision=reject`) and watch
+   for scan-error findings.
+4. Set `dry_run: false`. Check every reject for a week. On a confirmed false
+   positive, return to dry run and restore your own `actions.conf` from its
+   copy.
 
 ## rspamd admin interface
 
@@ -974,7 +1126,7 @@ reports server readiness; the running learner adds the reasons from
 
 | Reason | Meaning |
 |---|---|
-| `unsupported` | An rspamd or Redis version is outside the supported versions above; learning is disabled. |
+| `unsupported` | An rspamd or Redis version is outside the supported versions above, or the host runs Postfix; learning is disabled. |
 | `unsafe_prerequisite` | Required isolation or Redis settings are unsafe or cannot be established; learning is disabled. |
 | `state_mismatch` | Learning keys could not be created or loaded safely, restored learning state awaits confirmation, or the learner found its state out of step with its storage; learning is disabled and nothing is adopted or deleted. |
 | `config_conflict` | Operator configuration conflicts with CSM's learning setup; learning is disabled. |
@@ -1003,16 +1155,18 @@ reports server readiness; the running learner adds the reasons from
 | `antispam_file_replaced` | Warning | CSM replaced your own file at one of its paths and kept a copy. Deleting the copy clears it. See [Replaced files](#replaced-files). |
 | `antispam_rspamd_down` | Warning | Three probes of the scan socket in a row failed. CSM probes every 20 seconds while antispam is enabled. |
 | `antispam_rspamd_recovered` | Warning | Two probes in a row succeeded after an outage. |
-| `antispam_scan_error` | Warning | Exim logged a failed scan. One finding covers every failure until a scan succeeds. |
+| `antispam_scan_error` | Warning | The mail server logged a failed scan. One finding covers every failure until a scan succeeds. |
 | `antispam_controller_open` | Warning | Other users may reach rspamd's admin or read-only interface, or CSM cannot verify isolation. See [rspamd admin interface](#rspamd-admin-interface). |
 | `antispam_feed` | Warning, or Critical when a list answers for everything | A feed or map redirect is off, loaded rules differ, a list misbehaves, or rspamd still fetches maps from rspamd.com. These findings alone do not disable filtering. See [Feeds](#feeds). |
 | `antispam_ip_map` | Warning | The IP map could not be written, or rspamd has not confirmed the current map 5 minutes after a write. Core filtering is unaffected. See [CSM IP map](#csm-ip-map). |
 | `antispam_learning` | Warning | One finding per learning readiness or removal problem. Core filtering is unaffected. See [Learning findings](#learning-findings). |
 
-While rspamd is down or scans fail, mail is delivered without spam filtering.
-Exim adds no rejection for a scanner failure, and other mail checks keep
-running. Disabling antispam clears the down and scan-error findings without
-a recovery notice. Preconditions or removal failures can still be reported.
+While rspamd is down or scans fail on a cPanel host, mail is delivered
+without spam filtering. Exim adds no rejection for a scanner failure, and
+other mail checks keep running. On a Postfix host, Postfix's
+`milter_default_action` decides, see [Scan records](#scan-records).
+Disabling antispam clears the down and scan-error findings without a
+recovery notice. Preconditions or removal failures can still be reported.
 
 Scan records in the Exim main log include the connecting sender's address as
 `ip=`. Scan health ignores records with a malformed non-empty address. Older

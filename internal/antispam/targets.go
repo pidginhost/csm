@@ -102,7 +102,7 @@ type Target struct {
 // first as in the apply transaction (spec section 6.3). A Postfix host gets
 // the milter headers and the scope Lua and no cPanel file; its actions.conf
 // is optional, because a dry run leaves it to the host (spec 9.2). Any other
-// stack gets the cPanel list, as CheckHost checks such a host like cPanel.
+// stack gets the cPanel list.
 func MutationTargets(stack MailStack) []Target {
 	postfix := stack == StackPostfix
 	optional := OptionalRspamdPaths()
@@ -165,8 +165,18 @@ type TargetFacts struct {
 // in place and a missing directory has nothing to remove. targets must be
 // the facts of MutationTargets(stack).
 func CheckRemoval(stack MailStack, targets []TargetFacts) []Problem {
+	if stack != StackExim && stack != StackPostfix {
+		return []Problem{stackUnknown}
+	}
 	return checkTargets(stack, targets, true)
 }
+
+// stackUnknown stops changes to an installed integration on a host whose
+// mail stack CSM cannot tell. A cPanel host always runs Exim, so this is a
+// Postfix host, for example one with both MTAs installed while postfix
+// restarts. Removal needs the stack's own files, and the Exim path would
+// rebuild a configuration the host does not have.
+var stackUnknown = Problem{Code: CodePlatform, Severity: Temporary, Detail: "CSM cannot tell which mail server this host runs, for example while Postfix restarts"}
 
 // checkTargets applies spec section 6.2 item 9: every file CSM writes is a
 // regular root-owned file without symlinks, in root-owned directories nobody

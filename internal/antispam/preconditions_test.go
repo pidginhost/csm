@@ -65,7 +65,7 @@ func TestCheckHostProblems(t *testing.T) {
 		code   string
 		sev    Severity
 	}{
-		{"stack none", func(f *HostFacts) { f.Stack = StackNone }, CodePlatform, Definite},
+		{"stack none", func(f *HostFacts) { f.Stack, f.Record = StackNone, RecordFacts{Missing: true} }, CodePlatform, Definite},
 		{"exim -bV failed", func(f *HostFacts) { f.EximVersion = CommandResult{Err: boom} }, CodeEximVersion, Temporary},
 		{"exim too old", func(f *HostFacts) { f.EximVersion.Stdout = strings.Replace(eximBV, "4.100.1", "4.96", 1) }, CodeEximVersion, Definite},
 		{"no content scanning", func(f *HostFacts) { f.EximVersion.Stdout = strings.Replace(eximBV, "Content_Scanning ", "", 1) }, CodeEximVersion, Definite},
@@ -624,11 +624,32 @@ func TestCheckHostPostfix(t *testing.T) {
 	}
 
 	none := goodFacts()
-	none.Stack = StackNone
+	none.Stack, none.Record = StackNone, RecordFacts{Missing: true}
 	got := CheckHost(none)
 	if len(got) != 1 || got[0].Code != CodePlatform || got[0].Severity != Definite ||
 		got[0].Detail != "needs a cPanel host running Exim, or a Postfix host" {
 		t.Fatalf("host without a supported stack: got %+v", got)
+	}
+}
+
+// A host without a supported mail stack is refused with one problem; the
+// collector gathered no Exim facts there, so no Exim check runs. With CSM's
+// integration installed it is a Postfix host whose MTA is down or
+// restarting (a cPanel host always runs Exim), so the problem is temporary
+// and the integration stays.
+func TestCheckHostUnknownStack(t *testing.T) {
+	bare := HostFacts{Stack: StackNone, Record: RecordFacts{Missing: true}}
+	got := CheckHost(bare)
+	if len(got) != 1 || got[0].Code != CodePlatform || got[0].Severity != Definite ||
+		got[0].Detail != "needs a cPanel host running Exim, or a Postfix host" {
+		t.Fatalf("host without a supported stack: got %+v", got)
+	}
+	installed := bare
+	installed.Record = RecordFacts{Content: string(EncodeRecord(""))}
+	got = CheckHost(installed)
+	if len(got) != 1 || got[0].Code != CodePlatform || got[0].Severity != Temporary ||
+		got[0].Detail != "CSM cannot tell which mail server this host runs, for example while Postfix restarts" {
+		t.Fatalf("installed host without a detected stack: got %+v", got)
 	}
 }
 

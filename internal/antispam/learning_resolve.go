@@ -92,6 +92,11 @@ func ResolveLearning(s Settings, f HostFacts) (Settings, LearningGate, []Problem
 		s.Roundcube = false
 		return s, LearningGate{}, nil
 	}
+	if f.Stack == StackPostfix {
+		s.Learning, s.Roundcube = false, false
+		return s, LearningGate{}, []Problem{{Code: CodeLearning, Severity: Warning, Key: ReasonUnsupported,
+			Detail: "learning from Junk folders on Postfix hosts is not available yet"}}
+	}
 	var c learningCheck
 	installed := learningInstalled(f)
 	if f.LearningKeysErr != nil {

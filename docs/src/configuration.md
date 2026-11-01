@@ -726,10 +726,12 @@ email_protection:
       bad_sender_ip: true               # originating IP has bad reputation (enforceable)
       auth_fail: true                   # sender failed SPF/DKIM/DMARC auth (dry-run/accounting only)
 
-  # Inbound spam filtering through rspamd (cPanel only). Opt-in. The operator
-  # installs rspamd and adds the scan socket; CSM writes the Exim hooks and its
-  # own rspamd settings. Each account's cPanel Spam Filters switch decides
-  # whether its mail is filtered. See docs/src/antispam.md.
+  # Inbound spam filtering through rspamd on cPanel and Postfix hosts. Opt-in.
+  # The operator installs rspamd and adds the scan socket. On cPanel CSM writes
+  # the Exim hooks and its own rspamd settings, and each account's Spam Filters
+  # switch decides whether its mail is filtered. On Postfix CSM writes only
+  # rspamd files, every local domain is filtered and `exempt` lists the
+  # exceptions. See docs/src/antispam.md.
   antispam:
     enabled: false                      # master switch (default off)
     dry_run: true                       # scan and log only; no reject, tag or split (default true)
@@ -741,6 +743,7 @@ email_protection:
       spamhaus_dqs_key_file: ""         # root-owned file holding the Spamhaus DQS key; needed only for spamhaus_dqs
     learning:
       enabled: false                    # learn from mail users move to Spam and keep one message per cluster; needs antispam; see docs/src/antispam.md
+    exempt: []                          # Postfix only: recipient domains and mailboxes never filtered, e.g. [example.com, postmaster@example.net]
 
 # --- Firewall ---
 firewall:

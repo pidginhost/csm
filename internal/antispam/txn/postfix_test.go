@@ -375,6 +375,27 @@ func TestRemovePostfix(t *testing.T) {
 	}
 }
 
+// A worker that cannot tell the host's mail stack, as while Postfix
+// restarts, refuses a removal before any change: the Exim path would
+// rebuild a configuration the host does not have and leave the Postfix
+// files behind.
+func TestRemoveRefusesUnknownStack(t *testing.T) {
+	f := postfixFake(t)
+	wantOK(t, f.host().Apply(enforce()))
+	before := f.state()
+	f.reset()
+	// The worker detects the stack once, and its targets follow it.
+	f.stack = antispam.StackNone
+	r := f.host().Remove()
+	f.stack = antispam.StackPostfix
+	if r.OK || r.FailedStep != StepPreconditions || r.Rollback != antispam.RollbackNone {
+		t.Fatalf("result %+v", r)
+	}
+	if len(f.calls) != 0 || fmt.Sprint(f.state()) != fmt.Sprint(before) {
+		t.Fatalf("refused remove ran %v or changed files", f.calls)
+	}
+}
+
 // A failed reload after removal restores CSM's files, without Exim.
 func TestRemovePostfixRollsBack(t *testing.T) {
 	f := postfixFake(t)

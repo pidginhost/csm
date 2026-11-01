@@ -136,8 +136,8 @@ type LearnerTarget struct {
 }
 
 // Pass brings the host towards d once (spec sections 6.1 and 6.5). A
-// disabled pass reads only CSM's own files and runs no command unless it
-// finds something to remove.
+// disabled pass reads only the host's mail stack and CSM's own files, and
+// runs no other command unless it finds something to remove.
 func (r Reconciler) Pass(ctx context.Context, d Desired) (out Outcome) {
 	if err := ctx.Err(); err != nil {
 		return Outcome{Err: err}
@@ -241,9 +241,11 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) (out Outcome) {
 		out.Stats, out.StatsReason = antispam.StatsEndpointFor(f)
 	}
 	out.ScanSource = &antispam.ScanSource{}
-	if d.Enabled && f.Stack == antispam.StackPostfix {
+	// A pass that cannot tell the stack, as while postfix restarts, keeps the
+	// last source.
+	if d.Enabled && f.Stack != antispam.StackExim {
 		out.ScanSource = nil
-		if src, ok := antispam.PostfixScanSource(f); ok {
+		if src, ok := antispam.PostfixScanSource(f); ok && f.Stack == antispam.StackPostfix {
 			out.ScanSource = &src
 		}
 	}
