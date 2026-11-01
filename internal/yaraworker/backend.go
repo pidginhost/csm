@@ -68,6 +68,9 @@ type Backend struct {
 	// strikes remembers, by SHA-256, content that made the scan worker fail
 	// under the current rules.
 	strikes atomic.Pointer[workerproc.Strikes]
+	// loadedStrikes follows the rules actually loaded by launch, even when
+	// a reload lands during admission. Only the supervisor's lock protects it.
+	loadedStrikes *workerproc.Strikes
 
 	scanErrs scanErrLog
 }
@@ -175,12 +178,12 @@ func (b *Backend) ReloadContext(ctx context.Context) error {
 	old := b.rules
 	b.rules = &compiledRules{file: f, count: count, gen: b.gen.Add(1)}
 	b.compileErr = ""
+	// The new rules get a new chance at content that failed the old ones.
+	b.strikes.Store(workerproc.NewStrikes())
 	b.mu.Unlock()
 	if old != nil {
 		_ = old.file.Close()
 	}
-	// The new rules get a new chance at content that failed the old ones.
-	b.strikes.Store(workerproc.NewStrikes())
 	yara.InvalidateCaches()
 	if b.cfg.WarmAfterReload && count > 0 {
 		// A failed warm-up is reported through OnFailure like any request.
@@ -334,6 +337,7 @@ func compileFailure(err error) error {
 func (b *Backend) launch(ctx context.Context) (workerproc.Process, error) {
 	b.mu.Lock()
 	rules := b.rules
+	strikes := b.strikes.Load()
 	var ro *os.File
 	var err error
 	if rules != nil {
@@ -362,6 +366,7 @@ func (b *Backend) launch(ctx context.Context) (workerproc.Process, error) {
 		_ = p.Conn().Close()
 		return nil, err
 	}
+	b.loadedStrikes = strikes
 	return &rulesProcess{Process: p, gen: rules.gen, current: &b.gen}, nil
 }
 
@@ -517,18 +522,30 @@ func (b *Backend) ScanFDChecked(f *os.File, size int64) ([]yara.Match, error) {
 var errStruckOut = errors.New("yaraworker: not scanned: this content made the YARA worker fail repeatedly")
 
 func (b *Backend) scan(f *os.File, size int) ([]yara.Match, error) {
-	strikes := b.strikes.Load()
 	key := ""
-	if strikes.Len() > 0 {
-		var err error
-		if key, err = contentKey(f, size); err != nil {
-			err = fmt.Errorf("yaraworker: hash content: %w", err)
-			b.logScanErr(err)
-			return nil, err
+	// Both callbacks run in the supervisor's request order. Checking before
+	// joining its queue would let queued copies bypass newly recorded strikes.
+	before := func() error {
+		strikes := b.strikes.Load()
+		if strikes.Len() > 0 {
+			var err error
+			if key, err = contentKey(f, size); err != nil {
+				return fmt.Errorf("yaraworker: hash content: %w", err)
+			}
+			if strikes.Blocked(key) {
+				return errStruckOut
+			}
 		}
-		if strikes.Blocked(key) {
-			b.logScanErr(errStruckOut)
-			return nil, errStruckOut
+		return nil
+	}
+	after := func(err error) {
+		if errors.Is(err, workerproc.ErrWorkerFailed) {
+			if key == "" {
+				key, _ = contentKey(f, size)
+			}
+			if key != "" {
+				b.loadedStrikes.Record(key)
+			}
 		}
 	}
 	payload, err := json.Marshal(yaraipc.ScanFDArgs{MaxBytes: size})
@@ -536,21 +553,13 @@ func (b *Backend) scan(f *os.File, size int) ([]yara.Match, error) {
 		return nil, err
 	}
 	var matches []yaraipc.Match
-	_, _, err = b.proc.Call(b.ctx, workerproc.Frame{Op: yaraipc.OpScanFD, Payload: payload}, []*os.File{f},
+	_, _, err = b.proc.CallGuarded(b.ctx, workerproc.Frame{Op: yaraipc.OpScanFD, Payload: payload}, []*os.File{f},
 		func(reply workerproc.Frame, _ []*os.File) (bool, error) {
 			m, decodeErr := yaraipc.DecodeScanReply(reply.Payload)
 			matches = m
 			return false, decodeErr
-		})
+		}, before, after)
 	if err != nil {
-		if errors.Is(err, workerproc.ErrWorkerFailed) {
-			if key == "" {
-				key, _ = contentKey(f, size)
-			}
-			if key != "" {
-				strikes.Record(key)
-			}
-		}
 		b.logScanErr(err)
 		return nil, err
 	}

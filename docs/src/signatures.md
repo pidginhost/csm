@@ -293,8 +293,11 @@ as not scanned until the first rule load succeeds, including while a failed
 startup compile is retried. An empty rules directory counts as loaded for
 files, but mail parts are reported as not scanned until at least one rule
 loads. A failed reload keeps the rules already loaded. A file or mail part
-whose content made the scan worker fail twice within a day is reported as not
-scanned without another attempt, until the next successful rule load.
+whose content made the scan worker fail twice within a day is temporarily
+reported as not scanned without another attempt, including when copies are
+already queued. A successful rule load clears these failures; they also
+expire a day after the last failure. The oldest failures may be forgotten
+earlier if many different inputs fail.
 
 Without the `yara` build tag, YARA rules are not loaded or evaluated, and the
 worker backend reports files as not scanned.

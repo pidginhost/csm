@@ -203,6 +203,9 @@ func TestStopCancelsInFlightWork(t *testing.T) {
 				if err == nil {
 					t.Fatal("work canceled by stop succeeded")
 				}
+				if got := b.strikes.Load().Len(); got != 0 {
+					t.Fatalf("shutdown struck %d inputs", got)
+				}
 			case <-time.After(time.Second):
 				t.Fatal("work still running after stop")
 			}
