@@ -153,6 +153,11 @@ type Finding struct {
 	// Intel names the threat intelligence a reputation finding rests on and
 	// when that claim lapses. Internal-only like Claims.
 	Intel *admission.IntelRef `json:"-"`
+	// MailLoginFailure marks an address finding raised because the address
+	// failed mailbox logins when its check name does not say so, as for a
+	// reputation match. Incidents file it as mailbox brute force.
+	// Internal-only like Intel.
+	MailLoginFailure bool `json:"-"`
 	// Cause names the finding a derived finding was made from, such as the
 	// database finding behind a session-attacker block. Internal-only.
 	Cause *Cause `json:"-"`

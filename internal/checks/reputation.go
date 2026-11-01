@@ -202,13 +202,14 @@ func CheckIPReputation(ctx context.Context, cfg *config.Config, scanState *state
 					expires = match.ExpiresAt
 				}
 				findings = append(findings, alert.Finding{
-					Severity:  reputationSightingSeverity(source),
-					Check:     "ip_reputation",
-					Message:   fmt.Sprintf(reputationMessagePrefix+"%s (source: %s)", ip, match.Source),
-					Details:   fmt.Sprintf("Detected via: %s\nMatched in local threat intelligence database", source),
-					Timestamp: seen,
-					SourceIP:  ip,
-					Intel:     &admission.IntelRef{Source: intelSource("threatdb:", match.Source), Expires: expires},
+					Severity:         reputationSightingSeverity(source),
+					Check:            "ip_reputation",
+					Message:          fmt.Sprintf(reputationMessagePrefix+"%s (source: %s)", ip, match.Source),
+					Details:          fmt.Sprintf("Detected via: %s\nMatched in local threat intelligence database", source),
+					Timestamp:        seen,
+					SourceIP:         ip,
+					Intel:            &admission.IntelRef{Source: intelSource("threatdb:", match.Source), Expires: expires},
+					MailLoginFailure: source == reputationViaMailLogin,
 				})
 				continue
 			}
@@ -509,6 +510,10 @@ func reputationSightingSeverity(detectedVia string) alert.Severity {
 	}
 }
 
+// reputationViaMailLogin names the sighting of an address in failed IMAP or
+// POP3 logins. Its findings are mail attacks, not web attacks.
+const reputationViaMailLogin = "Dovecot IMAP/POP3 auth failure"
+
 // reputationMessagePrefix opens every ip_reputation message; the address
 // follows it up to " (". ReputationMessageSourceIP depends on that form.
 const reputationMessagePrefix = "Known malicious IP accessing server: "
@@ -518,13 +523,14 @@ const reputationMessagePrefix = "Known malicious IP accessing server: "
 // cache period for a fresh one.
 func appendReputationFinding(findings *[]alert.Finding, ip, detectedVia, provider string, score int, category string, expires time.Time) {
 	*findings = append(*findings, alert.Finding{
-		Severity:  reputationSightingSeverity(detectedVia),
-		Check:     "ip_reputation",
-		Message:   fmt.Sprintf(reputationMessagePrefix+"%s (%s score: %d/100)", ip, provider, score),
-		Details:   fmt.Sprintf("Detected via: %s\nCategory: %s\nThis IP is reported in threat intelligence databases", detectedVia, category),
-		Timestamp: time.Now(),
-		SourceIP:  ip,
-		Intel:     &admission.IntelRef{Source: intelSource("", strings.ToLower(provider)), Expires: expires},
+		Severity:         reputationSightingSeverity(detectedVia),
+		Check:            "ip_reputation",
+		Message:          fmt.Sprintf(reputationMessagePrefix+"%s (%s score: %d/100)", ip, provider, score),
+		Details:          fmt.Sprintf("Detected via: %s\nCategory: %s\nThis IP is reported in threat intelligence databases", detectedVia, category),
+		Timestamp:        time.Now(),
+		SourceIP:         ip,
+		Intel:            &admission.IntelRef{Source: intelSource("", strings.ToLower(provider)), Expires: expires},
+		MailLoginFailure: detectedVia == reputationViaMailLogin,
 	})
 }
 
@@ -688,7 +694,7 @@ func collectRecentIPs(cfg *config.Config) map[string]string {
 		for _, line := range tailFile(mailLog, 50) {
 			if strings.Contains(line, "auth failed") || strings.Contains(line, "Aborted login") {
 				if ip := extractIPAfterKeyword(line, "rip="); ip != "" {
-					addIfNotInfra(ips, ip, "Dovecot IMAP/POP3 auth failure", cfg)
+					addIfNotInfra(ips, ip, reputationViaMailLogin, cfg)
 				}
 			}
 		}
