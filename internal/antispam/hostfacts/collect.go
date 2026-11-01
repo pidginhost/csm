@@ -127,6 +127,19 @@ func RspamdGroup(ctx context.Context) int {
 	return c.serviceGroup(c.run(ctx, "systemctl", antispam.UnitShowArgs(antispam.RspamdUnit)...))
 }
 
+// postfixService reads the unit running postfix's master: the Debian
+// instance unit where it exists, else postfix.service.
+func (c collector) postfixService(ctx context.Context) antispam.CommandResult {
+	show := func(unit string) antispam.CommandResult {
+		return c.run(ctx, "systemctl", "show", "-p", "LoadState", "-p", "ActiveState", unit)
+	}
+	r := show(antispam.PostfixInstanceUnit)
+	if r.Err == nil && antispam.ParseUnitShow(r.Stdout)["LoadState"] == "not-found" {
+		return show(antispam.PostfixUnit)
+	}
+	return r
+}
+
 // Collect reads every fact antispam.CheckHost evaluates for the scan socket.
 // It changes nothing on the host.
 func Collect(ctx context.Context, socket string) antispam.HostFacts {
@@ -161,8 +174,9 @@ func (c collector) collect(ctx context.Context, socket string) antispam.HostFact
 		f.EximService = c.run(ctx, "systemctl", antispam.UnitShowArgs(antispam.EximUnit)...)
 	case antispam.StackPostfix:
 		// -x expands $name references, so the values are the ones postfix uses.
-		f.Postconf = c.run(ctx, "postconf", "-x", "-h", "smtpd_milters", "milter_default_action", "message_size_limit")
-		f.PostfixService = c.run(ctx, "systemctl", "show", "-p", "LoadState", "-p", "ActiveState", antispam.PostfixUnit)
+		f.Postconf = c.run(ctx, "postconf", append([]string{"-x", "-h"}, antispam.PostconfNames()...)...)
+		f.PostfixMaster = c.run(ctx, "postconf", append([]string{"-F"}, antispam.SmtpdChrootFields()...)...)
+		f.PostfixService = c.postfixService(ctx)
 		f.RspamdWorkers = c.run(ctx, "rspamadm", "configdump", "-j", "worker")
 	}
 	_, f.SystemdRunErr = c.lookPath("systemd-run")

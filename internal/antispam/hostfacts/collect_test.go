@@ -157,46 +157,71 @@ func TestCollectReadsEveryFact(t *testing.T) {
 }
 
 func TestCollectPostfixFacts(t *testing.T) {
-	d := t.TempDir()
-	// Exim's files exist, so reading them on Postfix would show.
-	write(t, filepath.Join(d, "exim.conf"), "generated\n")
-	write(t, filepath.Join(d, "spamddisable"), "")
-	mkdir(t, filepath.Join(d, "rspamd"))
-	sock := serve(t, filepath.Join(d, "rspamd"), pong)
-
 	const (
-		postconf = "postconf -x -h smtpd_milters milter_default_action message_size_limit"
-		postfix  = "systemctl show -p LoadState -p ActiveState postfix.service"
+		postconf = "postconf -x -h smtpd_milters milter_default_action message_size_limit queue_directory mail_version"
+		master   = "postconf -F smtp/inet/command smtp/inet/chroot smtpd/pass/chroot"
+		instance = "systemctl show -p LoadState -p ActiveState postfix@-.service"
+		wrapper  = "systemctl show -p LoadState -p ActiveState postfix.service"
 		workers  = "rspamadm configdump -j worker"
 		rspamd   = "systemctl show -p LoadState -p User -p Group -p CanReload rspamd.service"
 	)
-	run := &fakeRun{results: map[string]antispam.CommandResult{
-		rspamd:   {Stdout: "User=_rspamd\nLoadState=loaded\nCanReload=yes\n"},
-		postconf: {Stdout: "inet:127.0.0.1:11332\naccept\n52428800\n"},
-		postfix:  {Stdout: "LoadState=loaded\nActiveState=active\n"},
-		workers:  {Stdout: `{"rspamd_proxy": {"bind_socket": "localhost:11332", "milter": true}}`},
-	}}
-	c := testCollector(d, run)
-	c.stack = func() antispam.MailStack { return antispam.StackPostfix }
+	down := antispam.CommandResult{Stdout: "LoadState=loaded\nActiveState=failed\n"}
+	up := antispam.CommandResult{Stdout: "LoadState=loaded\nActiveState=active\n"}
+	for _, tc := range []struct {
+		name     string
+		instance antispam.CommandResult
+		want     antispam.CommandResult
+		queried  []string
+	}{
+		// Debian and Ubuntu run postfix in postfix@-.service; postfix.service
+		// is a oneshot wrapper that stays active while postfix is down.
+		{"instance unit", down, down, []string{instance}},
+		{"single unit", antispam.CommandResult{Stdout: "LoadState=not-found\nActiveState=inactive\n"}, up, []string{instance, wrapper}},
+		{"instance query failed", antispam.CommandResult{Err: errors.New("exit status 1")}, antispam.CommandResult{Err: errors.New("exit status 1")}, []string{instance}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := t.TempDir()
+			// Exim's files exist, so reading them on Postfix would show.
+			write(t, filepath.Join(d, "exim.conf"), "generated\n")
+			write(t, filepath.Join(d, "spamddisable"), "")
+			mkdir(t, filepath.Join(d, "rspamd"))
+			sock := serve(t, filepath.Join(d, "rspamd"), pong)
+			run := &fakeRun{results: map[string]antispam.CommandResult{
+				rspamd:   {Stdout: "User=_rspamd\nLoadState=loaded\nCanReload=yes\n"},
+				postconf: {Stdout: "inet:127.0.0.1:11332\naccept\n52428800\n/var/spool/postfix\n3.7.11\n"},
+				master:   {Stdout: "smtp/inet/command = smtpd\nsmtp/inet/chroot = y\n"},
+				instance: tc.instance,
+				wrapper:  up,
+				workers:  {Stdout: `{"rspamd_proxy": {"bind_socket": "localhost:11332", "milter": true}}`},
+			}}
+			c := testCollector(d, run)
+			c.stack = func() antispam.MailStack { return antispam.StackPostfix }
 
-	f := c.collect(context.Background(), sock)
+			f := c.collect(context.Background(), sock)
 
-	if f.Stack != antispam.StackPostfix || f.Postconf != run.results[postconf] || f.PostfixService != run.results[postfix] || f.RspamdWorkers != run.results[workers] {
-		t.Errorf("Postfix facts %q %+v %+v %+v", f.Stack, f.Postconf, f.PostfixService, f.RspamdWorkers)
-	}
-	if f.MonitoredLog != "" || f.GeneratedConf != "" || f.GeneratedErr != nil || f.SpamdDisabled || f.SystemFilterErr != nil ||
-		f.Socket.EximUID != -1 || f.Socket.EximGID != -1 {
-		t.Errorf("Exim facts collected on Postfix: log %q, config %q %v, spamd %t, filter %v, exim ids %d %d",
-			f.MonitoredLog, f.GeneratedConf, f.GeneratedErr, f.SpamdDisabled, f.SystemFilterErr, f.Socket.EximUID, f.Socket.EximGID)
-	}
-	if f.Socket.Missing || f.Socket.PingErr != nil || f.Socket.RspamdUID != 979 {
-		t.Errorf("socket %+v", f.Socket)
-	}
-	want := []string{"rspamd --version", "rspamadm --version", "rspamadm configdump -j options",
-		"rspamadm configdump -j actions", "rspamadm configdump -m", "rspamadm configdump -j phishing",
-		"rspamadm configdump -j rbl", "rspamadm configdump -j", rspamd, postconf, postfix, workers}
-	if !slices.Equal(run.calls, want) {
-		t.Errorf("commands\n got %q\nwant %q", run.calls, want)
+			if f.Stack != antispam.StackPostfix || f.Postconf != run.results[postconf] || f.PostfixMaster != run.results[master] ||
+				f.RspamdWorkers != run.results[workers] {
+				t.Errorf("Postfix facts %q %+v %+v %+v", f.Stack, f.Postconf, f.PostfixMaster, f.RspamdWorkers)
+			}
+			if f.PostfixService.Stdout != tc.want.Stdout || (f.PostfixService.Err == nil) != (tc.want.Err == nil) {
+				t.Errorf("postfix service %+v, want %+v", f.PostfixService, tc.want)
+			}
+			if f.MonitoredLog != "" || f.GeneratedConf != "" || f.GeneratedErr != nil || f.SpamdDisabled || f.SystemFilterErr != nil ||
+				f.Socket.EximUID != -1 || f.Socket.EximGID != -1 {
+				t.Errorf("Exim facts collected on Postfix: log %q, config %q %v, spamd %t, filter %v, exim ids %d %d",
+					f.MonitoredLog, f.GeneratedConf, f.GeneratedErr, f.SpamdDisabled, f.SystemFilterErr, f.Socket.EximUID, f.Socket.EximGID)
+			}
+			if f.Socket.Missing || f.Socket.PingErr != nil || f.Socket.RspamdUID != 979 {
+				t.Errorf("socket %+v", f.Socket)
+			}
+			want := []string{"rspamd --version", "rspamadm --version", "rspamadm configdump -j options",
+				"rspamadm configdump -j actions", "rspamadm configdump -m", "rspamadm configdump -j phishing",
+				"rspamadm configdump -j rbl", "rspamadm configdump -j", rspamd, postconf, master}
+			want = append(append(want, tc.queried...), workers)
+			if !slices.Equal(run.calls, want) {
+				t.Errorf("commands\n got %q\nwant %q", run.calls, want)
+			}
+		})
 	}
 }
 

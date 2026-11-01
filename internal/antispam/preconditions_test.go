@@ -511,7 +511,8 @@ func postfixFacts() HostFacts {
 	f.EximVersion, f.EximOptions, f.EximSettings, f.EximService = CommandResult{}, CommandResult{}, CommandResult{}, CommandResult{}
 	f.GeneratedConf, f.LocalConf, f.NamedLists, f.SpamdDisabled, f.MonitoredLog = "", "", nil, false, ""
 	f.Socket.EximUID, f.Socket.EximGID = -1, -1
-	f.Postconf = CommandResult{Stdout: "inet:127.0.0.1:11332\naccept\n52428800\n"}
+	f.Postconf = CommandResult{Stdout: postconfOut("inet:127.0.0.1:11332", "52428800")}
+	f.PostfixMaster = CommandResult{Stdout: "smtp/inet/command = smtpd\nsmtp/inet/chroot = n\n"}
 	f.PostfixService = CommandResult{Stdout: "LoadState=loaded\nActiveState=active\n"}
 	f.RspamdWorkers = CommandResult{Stdout: proxyWorkers}
 	return f
@@ -532,6 +533,34 @@ func TestCheckHostPostfix(t *testing.T) {
 	}
 
 	boom := errors.New("boom")
+	// Debian's layout: smtpd chrooted into the queue directory, rspamd's
+	// proxy listening inside it.
+	const unixProxy = `{"rspamd_proxy": {"bind_socket": "/var/spool/postfix/rspamd/milter.sock mode=0666", "milter": true}}`
+	for _, tc := range []struct {
+		name   string
+		mutate func(*HostFacts)
+	}{
+		{"chrooted unix milter", func(f *HostFacts) {
+			f.Postconf.Stdout = postconfOut("unix:/rspamd/milter.sock", "52428800")
+			f.PostfixMaster.Stdout = "smtp/inet/command = postscreen\nsmtp/inet/chroot = y\nsmtpd/pass/chroot = y\n"
+			f.RspamdWorkers.Stdout = unixProxy
+		}},
+		{"relative unix milter", func(f *HostFacts) {
+			f.Postconf.Stdout = postconfOut("unix:rspamd/milter.sock", "52428800")
+			f.PostfixMaster = CommandResult{Err: boom}
+			f.RspamdWorkers.Stdout = unixProxy
+		}},
+		{"inet milter, chroot unknown", func(f *HostFacts) { f.PostfixMaster = CommandResult{Err: boom} }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := postfixFacts()
+			tc.mutate(&f)
+			if got := CheckHost(f); len(got) != 0 {
+				t.Fatalf("wired Postfix host reported %+v", got)
+			}
+		})
+	}
+
 	const unwired = "postfix does not pass mail to rspamd's proxy worker"
 	for _, tc := range []struct {
 		name   string
@@ -540,13 +569,26 @@ func TestCheckHostPostfix(t *testing.T) {
 		sev    Severity
 		detail string
 	}{
-		{"milter elsewhere", func(f *HostFacts) { f.Postconf.Stdout = "inet:127.0.0.1:8891\naccept\n52428800\n" }, CodeMilter, Definite, unwired},
-		{"no milters", func(f *HostFacts) { f.Postconf.Stdout = "\naccept\n52428800\n" }, CodeMilter, Definite, unwired},
+		{"milter elsewhere", func(f *HostFacts) { f.Postconf.Stdout = postconfOut("inet:127.0.0.1:8891", "52428800") }, CodeMilter, Definite, unwired},
+		{"no milters", func(f *HostFacts) { f.Postconf.Stdout = postconfOut("", "52428800") }, CodeMilter, Definite, unwired},
+		// Postfix reads an absolute path as written when smtpd is not chrooted.
+		{"unix milter, smtpd not chrooted", func(f *HostFacts) {
+			f.Postconf.Stdout = postconfOut("unix:/rspamd/milter.sock", "52428800")
+			f.RspamdWorkers.Stdout = unixProxy
+		}, CodeMilter, Definite, unwired},
+		{"unix milter, chroot unknown", func(f *HostFacts) {
+			f.Postconf.Stdout = postconfOut("unix:/rspamd/milter.sock", "52428800")
+			f.PostfixMaster = CommandResult{Err: boom}
+			f.RspamdWorkers.Stdout = unixProxy
+		}, CodeMilter, Temporary, "cannot tell whether postfix smtpd runs chrooted"},
 		{"proxy is no milter", func(f *HostFacts) {
 			f.RspamdWorkers.Stdout = `{"rspamd_proxy": {"bind_socket": "localhost:11332"}}`
 		}, CodeMilter, Definite, unwired},
 		{"postconf failed", func(f *HostFacts) { f.Postconf.Err = boom }, CodeMilter, Temporary, ""},
 		{"postconf unreadable", func(f *HostFacts) { f.Postconf.Stdout = "inet:127.0.0.1:11332\n" }, CodeMilter, Temporary, ""},
+		{"queue directory unreadable", func(f *HostFacts) {
+			f.Postconf.Stdout = "unix:rspamd/milter.sock\naccept\n52428800\n\n3.7.11\n"
+		}, CodeMilter, Temporary, ""},
 		{"worker dump failed", func(f *HostFacts) { f.RspamdWorkers.Err = boom }, CodeMilter, Temporary, ""},
 		{"worker dump unreadable", func(f *HostFacts) { f.RspamdWorkers.Stdout = "Section worker NOT FOUND\n" }, CodeMilter, Temporary, ""},
 		{"postfix query failed", func(f *HostFacts) { f.PostfixService.Err = boom }, CodeSystemd, Temporary, ""},
@@ -607,7 +649,7 @@ func TestCheckHostPostfixMessageSize(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := postfixFacts()
-			f.Postconf.Stdout = "inet:127.0.0.1:11332\naccept\n" + tc.limit + "\n"
+			f.Postconf.Stdout = postconfOut("inet:127.0.0.1:11332", tc.limit)
 			f.RspamdOptions = tc.options
 			got := CheckHost(f)
 			if len(got) != tc.want || tc.want == 1 && (got[0].Code != CodeMessageSize || got[0].Severity != tc.sev) {

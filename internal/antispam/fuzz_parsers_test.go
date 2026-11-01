@@ -955,27 +955,39 @@ func FuzzParseRspamdCounters(f *testing.F) {
 }
 
 func FuzzPostfixMilterFacts(f *testing.F) {
-	for _, seed := range []struct{ postconf, workers string }{
-		{"inet:127.0.0.1:11332\naccept\n52428800\n", proxyWorkers},
-		{"{inet:localhost:11332, default_action=accept}, unix:/run/x.sock\ntempfail\n0\n", `{"type": "rspamd_proxy", "bind_socket": ["*:11332", "/run/x.sock mode=0666"], "milter": 1}`},
-		{"inet:[::1]:11332\naccept\n10240000\n", `{"rspamd_proxy": {"bind_socket": "[::1]:11332", "milter": true, "count": 0}}`},
-		{"inet:127.0.0.1\naccept\n-1\n", `{"rspamd_proxy": {"bind_socket": 1}}`},
-		{"\n\n\n", ""},
+	for _, seed := range []struct{ postconf, master, workers string }{
+		{postconfOut("inet:127.0.0.1:11332", "52428800"), "smtp/inet/command = smtpd\nsmtp/inet/chroot = n\n", proxyWorkers},
+		{postconfOut("{inet:localhost:11332, default_action=accept}, unix:/run/x.sock", "0"),
+			"smtp/inet/command = postscreen\nsmtpd/pass/chroot = y\n",
+			`{"type": "rspamd_proxy", "bind_socket": ["*v4:11332", "/var/spool/postfix/run/x.sock mode=0666"], "milter": 1}`},
+		{postconfOut("unix:rspamd/milter.sock inet:[::1]:11332", "10240000"), "smtp/inet/command = smtpd\nsmtp/inet/chroot = -\n",
+			`{"rspamd_proxy": {"bind_socket": "[::]:11332", "milter": true, "count": 0}}`},
+		{"inet:127.0.0.1\naccept\n-1\nspool\n2\n", "", `{"rspamd_proxy": {"bind_socket": 1}}`},
+		{"\n\n\n\n\n", "smtp/inet/command =\n", ""},
 	} {
-		f.Add(seed.postconf, []byte(seed.workers))
+		f.Add(seed.postconf, seed.master, []byte(seed.workers))
 	}
-	f.Fuzz(func(t *testing.T, postconf string, workers []byte) {
-		milters, action, size, err := ParsePostconf(postconf)
+	f.Fuzz(func(t *testing.T, postconf, master string, workers []byte) {
+		p, err := ParsePostconf(postconf)
 		if err != nil {
-			if milters != nil || action != "" || size != 0 {
+			if !reflect.DeepEqual(p, Postconf{}) {
 				t.Fatal("rejected postconf output returned values")
 			}
-		} else if size < 0 {
-			t.Fatalf("negative message_size_limit %d", size)
+		} else if p.SizeLimit < 0 || !strings.HasPrefix(p.QueueDirectory, "/") {
+			t.Fatalf("accepted size %d, queue directory %q", p.SizeLimit, p.QueueDirectory)
 		}
-		for _, m := range milters {
+		for _, m := range p.Milters {
 			if m == "" || strings.ContainsAny(m, " \t\n,{}=") {
 				t.Fatalf("milter %q is not one address", m)
+			}
+		}
+		if chroot, chrootErr := SmtpdChroot(master, p.Version); chrootErr != nil && chroot {
+			t.Fatal("unreadable chroot flag reported as chrooted")
+		}
+		milters, _ := p.MilterAddrs(CommandResult{Stdout: master})
+		for _, m := range milters {
+			if !strings.HasPrefix(m, "inet:") && !strings.HasPrefix(m, "unix:/") {
+				t.Fatalf("resolved milter %q is neither inet: nor an absolute unix: path", m)
 			}
 		}
 		addrs, err := ProxyMilterAddrs(workers)

@@ -155,12 +155,13 @@ type HostFacts struct {
 	MonitoredLog string
 	// SystemdRunErr is nil when systemd-run is on PATH.
 	SystemdRunErr error
-	// Postconf is `postconf -x -h smtpd_milters milter_default_action
-	// message_size_limit`, PostfixService `systemctl show` of PostfixUnit's
-	// LoadState and ActiveState and RspamdWorkers `rspamadm configdump -j
-	// worker`, read only on Postfix. The worker dump holds the controller
-	// password, so it never reaches a finding or log.
+	// Read only on Postfix: Postconf is `postconf -x -h` for PostconfNames,
+	// PostfixMaster `postconf -F` for SmtpdChrootFields, PostfixService the
+	// LoadState and ActiveState of the unit running postfix's master and
+	// RspamdWorkers `rspamadm configdump -j worker`. The worker dump holds
+	// the controller password, so it never reaches a finding or log.
 	Postconf       CommandResult
+	PostfixMaster  CommandResult
 	PostfixService CommandResult
 	RspamdWorkers  CommandResult
 	// RspamdService and EximService are `systemctl` with UnitShowArgs.
@@ -367,23 +368,27 @@ func checkPostfixHost(f HostFacts) []Problem {
 	add := func(sev Severity, detail string) {
 		out = append(out, Problem{Code: CodeMilter, Severity: sev, Detail: detail})
 	}
-	milters, _, limit, err := ParsePostconf(f.Postconf.Stdout)
+	pc, err := ParsePostconf(f.Postconf.Stdout)
 	switch {
 	case f.Postconf.Err != nil:
 		add(Temporary, "postconf failed; check postfix")
 	case err != nil:
-		add(Temporary, "postconf did not report readable smtpd_milters, milter_default_action and message_size_limit")
+		add(Temporary, "postconf did not report readable smtpd_milters, milter_default_action, message_size_limit, queue_directory and mail_version")
 	default:
+		milters, complete := pc.MilterAddrs(f.PostfixMaster)
 		addrs, err := ProxyMilterAddrs([]byte(f.RspamdWorkers.Stdout))
 		switch {
 		case f.RspamdWorkers.Err != nil:
 			add(Temporary, "rspamadm configdump worker failed; check rspamd")
 		case err != nil:
 			add(Temporary, "rspamadm configdump did not report readable worker settings")
-		case !MilterWired(milters, addrs):
+		case MilterWired(milters, addrs):
+		case !complete:
+			add(Temporary, "cannot tell whether postfix smtpd runs chrooted")
+		default:
 			add(Definite, "postfix does not pass mail to rspamd's proxy worker")
 		}
-		out = append(out, checkPostfixMessageSize(limit, f.RspamdOptions)...)
+		out = append(out, checkPostfixMessageSize(pc.SizeLimit, f.RspamdOptions)...)
 	}
 	out = append(out, checkServices(f)...)
 	return append(out, checkTargets(f.Targets, false)...)

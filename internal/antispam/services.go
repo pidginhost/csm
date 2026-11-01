@@ -11,8 +11,13 @@ const (
 	EximUnit   = "exim.service"
 )
 
-// PostfixUnit is only read: CSM never changes postfix.
-const PostfixUnit = "postfix.service"
+// The units postfix runs in; CSM only reads them and never changes postfix.
+// Debian and Ubuntu run the master in PostfixInstanceUnit and make
+// PostfixUnit a oneshot wrapper that stays active while postfix is down.
+const (
+	PostfixUnit         = "postfix.service"
+	PostfixInstanceUnit = "postfix@-.service"
+)
 
 // UnitShowArgs are the `systemctl` arguments the collector runs per unit.
 func UnitShowArgs(unit string) []string {
@@ -65,11 +70,11 @@ func checkServices(f HostFacts) []Problem {
 		props := ParseUnitShow(f.PostfixService.Stdout)
 		switch {
 		case f.PostfixService.Err != nil:
-			add(Temporary, "systemctl show %s failed; check systemd", PostfixUnit)
+			add(Temporary, "systemctl show for postfix failed; check systemd")
 		case props["LoadState"] != "loaded":
-			add(Temporary, "%s is not loaded; check that it is installed", PostfixUnit)
+			add(Temporary, "the postfix service is not loaded; check that postfix is installed")
 		case props["ActiveState"] != "active":
-			add(Temporary, "%s is not active; check the postfix service", PostfixUnit)
+			add(Temporary, "the postfix service is not active; check postfix")
 		}
 	}
 	return out
