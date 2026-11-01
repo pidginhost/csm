@@ -1477,16 +1477,15 @@ Failures and findings:
   switch YARA off for other files. The backend keeps `workerproc.Strikes`
   by SHA-256 of exactly the bytes sent for scanning. Content with two scan
   worker failures within a day is refused as a scan error without starting
-  another worker. The check and failure recording share the supervisor's
-  request lock, so queued copies see preceding failures and queued scans
-  use the strike list current when they reach the worker. A failure is
-  recorded against the rules the worker actually loaded, even if a reload
-  lands while it starts. Failed starts,
-  cancellation, breaker refusals and descriptor pressure do not strike
-  content. Hashing runs only while an unexpired strike is recorded or to
-  record a new failure. Records expire a day after the last failure and
-  a successful rule reload clears them. The list holds at most 1024 content
-  hashes, evicting the oldest failure when full.
+  another worker. The check and failure recording run under the
+  supervisor's request lock (`Supervisor.CallGuarded`), so queued copies
+  see the failures ahead of them. A failure is recorded against the rules
+  the worker actually loaded, even if a reload lands while it starts.
+  Failed starts, cancellation, breaker refusals and descriptor pressure do
+  not strike content. Hashing runs only while an unexpired strike is
+  recorded or to record a new failure. Records expire a day after the last
+  failure and a successful rule reload clears them. The list holds at most
+  1024 content hashes, evicting the oldest failure when full.
 
 `signatures.yara_worker_enabled: false` runs YARA-X inside the root daemon
 instead; `csm validate` warns about it.

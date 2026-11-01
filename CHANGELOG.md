@@ -36,7 +36,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - With auto_response.dry_run off, admission previews now wait for free slots under firewall.deny_temp_ip_limit, and csm doctor warns while that set is full; blocking is unchanged.
 - Learned spam is now stored with its headers and text only, without images or other attachments.
 - The firewall now opens the passive FTP port range by default only on cPanel hosts and hosts with an FTP server installed.
-- Files and attachments that repeatedly crash the YARA worker are temporarily reported as not scanned, including during concurrent scans.
+- A file or attachment that keeps crashing the YARA worker is now temporarily reported as not scanned instead of being scanned again each time.
 - The `csm_yara_worker_restarts_total` metric now counts YARA worker failures, including failed starts, and no longer counts rule reloads.
 
 ### Fixed
