@@ -584,6 +584,38 @@ func TestPassRendersForTheCollectedStack(t *testing.T) {
 	}
 }
 
+// On Postfix, returning to dry run restores the operator's actions.conf, so
+// its copy's warning says that instead of asking the operator to move the
+// settings elsewhere. Other copies, and cPanel's actions.conf, keep the
+// general advice.
+func TestPassReplacedActionsOnPostfix(t *testing.T) {
+	actions := antispam.Replacement{Path: antispam.ActionsPath, Backup: antispam.ReplacedDir + "/a"}
+	headers := antispam.Replacement{Path: antispam.MilterHeadersPath, Backup: antispam.ReplacedDir + "/b"}
+	for _, stack := range []antispam.MailStack{antispam.StackPostfix, antispam.StackExim} {
+		r := (&fakeHost{}).reconciler()
+		r.Collect = func(context.Context, string) antispam.HostFacts {
+			f := goodFeedFacts()
+			f.Stack = stack
+			return f
+		}
+		r.Replaced = func() ([]antispam.Replacement, error) { return []antispam.Replacement{actions, headers}, nil }
+		out := r.Pass(context.Background(), desired(true))
+		details := map[string]string{}
+		for _, f := range out.Findings {
+			if f.Check == CheckFileReplaced {
+				details[f.DedupKey] = f.Details
+			}
+		}
+		restores := stack == antispam.StackPostfix
+		if got := details[actions.Backup]; strings.Contains(got, "dry run puts it back") != restores || strings.Contains(got, "Move any settings") == restores {
+			t.Errorf("stack %q: actions.conf copy says %q", stack, got)
+		}
+		if got := details[headers.Backup]; !strings.Contains(got, "Move any settings") || strings.Contains(got, "dry run") {
+			t.Errorf("stack %q: milter_headers.conf copy says %q", stack, got)
+		}
+	}
+}
+
 // A pass on a Postfix host says where its scan records come from; a pass
 // that could not read that keeps the last answer, and every other pass
 // clears it.

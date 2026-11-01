@@ -245,8 +245,10 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) (out Outcome) {
 	// last source.
 	if d.Enabled && f.Stack != antispam.StackExim {
 		out.ScanSource = nil
-		if src, ok := antispam.PostfixScanSource(f); ok && f.Stack == antispam.StackPostfix {
-			out.ScanSource = &src
+		if f.Stack == antispam.StackPostfix {
+			if src, ok := antispam.PostfixScanSource(f); ok {
+				out.ScanSource = &src
+			}
 		}
 	}
 	// List backups after the worker finishes, including failed rollbacks.
@@ -258,7 +260,8 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) (out Outcome) {
 		if replaced, err := r.Replaced(); err == nil {
 			out.Checks = append(out.Checks, CheckFileReplaced)
 			for _, rep := range replaced {
-				out.Findings = append(out.Findings, replacedFinding(rep, now))
+				restores := f.Stack == antispam.StackPostfix && rep.Path == antispam.ActionsPath
+				out.Findings = append(out.Findings, replacedFinding(rep, restores, now))
 			}
 		}
 	}()

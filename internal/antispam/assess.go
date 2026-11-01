@@ -3,8 +3,8 @@ package antispam
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
-	"path"
 	"slices"
 	"strings"
 )
@@ -51,6 +51,7 @@ func Assess(enabled bool, s Settings, f HostFacts) Assessment {
 	}
 	a.Problems = CheckHost(f)
 	a.report(checkActionsTarget(s, f))
+	a.report(checkDryRunRejects(s, f))
 	isCurrent := a.Installed && current(s, f)
 	if isCurrent {
 		// A temporary host probe failure cannot hide a confirmed override.
@@ -124,7 +125,7 @@ func checkActionsTarget(s Settings, f HostFacts) []Problem {
 		return nil
 	}
 	for _, t := range f.Targets {
-		if t.Path != path.Join(RspamdLocalDir, "actions.conf") {
+		if t.Path != ActionsPath {
 			continue
 		}
 		if err := OptionalUsable(t); err != nil {
@@ -136,6 +137,28 @@ func checkActionsTarget(s Settings, f HostFacts) []Problem {
 		}
 	}
 	return nil
+}
+
+// checkDryRunRejects warns that a Postfix dry run still rejects mail: the
+// host's own actions apply to CSM's scores, and a reject threshold at or
+// below CSM's turns away what CSM would. rspamd's built-in actions, loaded
+// without an actions.conf, reject at 15. CSM's own actions.conf, which this
+// pass restores or removes, says nothing about the host's.
+func checkDryRunRejects(s Settings, f HostFacts) []Problem {
+	if f.Stack != StackPostfix || !s.DryRun || f.RspamdActions.Err != nil {
+		return nil
+	}
+	for _, t := range f.Targets {
+		if t.Path == ActionsPath && !t.Missing && ManagedFor(t.Kind, t.Content) {
+			return nil
+		}
+	}
+	a, err := ParseActions([]byte(f.RspamdActions.Stdout))
+	if err != nil || a.Reject == nil || *a.Reject > float64(s.RejectScore) {
+		return nil
+	}
+	return []Problem{{Code: CodeDryRunRejects, Severity: Warning, Detail: fmt.Sprintf(
+		"dry run on this host still rejects: rspamd rejects at %g, at or below CSM's reject score of %d", *a.Reject, s.RejectScore)}}
 }
 
 // current reports whether the host holds exactly s: CSM's files, a

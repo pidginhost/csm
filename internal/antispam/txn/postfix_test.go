@@ -1,12 +1,15 @@
 package txn
 
 import (
+	"errors"
 	"fmt"
 	"maps"
 	"os"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/antispam"
 )
@@ -372,6 +375,116 @@ func TestRemovePostfix(t *testing.T) {
 	wantOK(t, f.host().Remove())
 	if len(f.calls) != 0 {
 		t.Errorf("remove on a clean host ran %v", f.calls)
+	}
+}
+
+// Going back to dry run on Postfix puts the operator's actions.conf back
+// from its newest copy, so the host's own thresholds decide again. The
+// takeover kept the operator's owner and mode on CSM's file, so the
+// restored file has them too. The copy is consumed, which clears its
+// warning; an older copy stays.
+func TestApplyPostfixDryRunRestoresActions(t *testing.T) {
+	f := postfixFake(t)
+	writeTest(t, f.root+actionsPath, foreignActions, 0o640)
+	gid := os.Getgid()
+	if os.Geteuid() == 0 {
+		gid = 12
+		if err := os.Chown(f.root+actionsPath, 0, gid); err != nil {
+			t.Fatal(err)
+		}
+	}
+	wantOK(t, f.host().Apply(enforce()))
+	older := f.root + antispam.ReplacedDir + "/" + antispam.BackupName(actionsPath, f.start.Add(-time.Hour))
+	writeTest(t, older, "older copy\n", 0o600)
+	f.reset()
+	dry := enforce()
+	dry.DryRun = true
+	r := f.host().Apply(dry)
+	wantOK(t, r)
+	managed := wantPostfixFiles(t, f, dry)
+	if f.file(actionsPath) != foreignActions || r.Generation != antispam.Generation(managed) {
+		t.Fatalf("dry run left actions.conf %q with generation %s", f.file(actionsPath), r.Generation)
+	}
+	info, err := os.Stat(f.root + actionsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st := info.Sys().(*syscall.Stat_t); info.Mode().Perm() != 0o640 || st.Uid != 0 && os.Geteuid() == 0 || int(st.Gid) != gid {
+		t.Errorf("restored actions.conf has mode %v, owner %d:%d; want 0640, 0:%d", info.Mode(), st.Uid, st.Gid, gid)
+	}
+	wantBackups(t, f, map[string]string{actionsPath: "older copy\n"})
+	if f.count("systemctl reload rspamd.service") != 1 {
+		t.Errorf("restore ran %v", f.calls)
+	}
+}
+
+// The restore writes through actions.conf like any file CSM owns, so a
+// loosened file is refused before any change, and the copy stays.
+func TestApplyPostfixDryRunRestoreNeedsSafeTarget(t *testing.T) {
+	f := postfixFake(t)
+	writeTest(t, f.root+actionsPath, foreignActions, 0o644)
+	wantOK(t, f.host().Apply(enforce()))
+	if err := os.Chmod(f.root+actionsPath, 0o666); err != nil {
+		t.Fatal(err)
+	}
+	before := f.state()
+	f.reset()
+	dry := enforce()
+	dry.DryRun = true
+	r := f.host().Apply(dry)
+	if r.OK || r.FailedStep != StepPreconditions || r.Rollback != antispam.RollbackNone {
+		t.Fatalf("result %+v", r)
+	}
+	if len(f.calls) != 0 || fmt.Sprint(f.state()) != fmt.Sprint(before) {
+		t.Fatalf("refused restore ran %v or changed files", f.calls)
+	}
+	wantBackups(t, f, map[string]string{actionsPath: foreignActions})
+}
+
+// A restore that fails puts CSM's file back and keeps the copy, also once
+// the copy was consumed and only the completion record failed.
+func TestApplyPostfixDryRunRestoreRollsBack(t *testing.T) {
+	for name, tc := range map[string]struct {
+		step  string
+		setup func(*fakeHost, *Host)
+	}{
+		"reload": {StepRspamdReload, func(f *fakeHost, _ *Host) { f.fail["systemctl reload rspamd.service"] = []int{1} }},
+		"completion record": {StepComplete, func(f *fakeHost, h *Host) {
+			injected := false
+			h.replace = func(p string, want, next fileState) error {
+				if !injected && p == f.root+antispam.RecordPath && next.exists && next.content != string(antispam.EncodeRecord("")) {
+					injected = true
+					if len(f.replaced()) != 0 {
+						f.t.Error("the restored copy was not consumed before completion")
+					}
+					return errors.New("test failure")
+				}
+				return replaceFile(p, want, next)
+			}
+		}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := postfixFake(t)
+			writeTest(t, f.root+actionsPath, foreignActions, 0o640)
+			wantOK(t, f.host().Apply(enforce()))
+			before := f.state()
+			f.reset()
+			h := f.host()
+			tc.setup(f, h)
+			dry := enforce()
+			dry.DryRun = true
+			r := h.Apply(dry)
+			if r.OK || r.FailedStep != tc.step || r.Rollback != antispam.RollbackVerified {
+				t.Fatalf("result %+v", r)
+			}
+			if after := f.state(); fmt.Sprint(after) != fmt.Sprint(before) {
+				t.Errorf("rollback left %v, want %v", after, before)
+			}
+			if info, err := os.Stat(f.root + actionsPath); err != nil || info.Mode().Perm() != 0o640 {
+				t.Errorf("actions.conf after rollback: %v, %v", info, err)
+			}
+			wantBackups(t, f, map[string]string{actionsPath: foreignActions})
+		})
 	}
 }
 

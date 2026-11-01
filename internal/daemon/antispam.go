@@ -97,14 +97,26 @@ var antispamReconciler = func() reconcile.Reconciler {
 	}
 }
 
-// startAntispam starts antispam reconciliation on a host it supports: a
-// pass at start, after each config reload, every 15 minutes, and 20 seconds
-// after a busy lock (spec section 6.5). It also starts the rspamd probe.
-// Shutdown cancels a running pass or probe.
+// startAntispam starts antispam at daemon startup on a host it supports,
+// and otherwise says why an enabled switch does nothing.
 func (d *Daemon) startAntispam() {
-	if antispamUnsupported() {
+	d.antispamStarted.Store(true)
+	if !d.startAntispamLoop() {
 		warnAntispamUnsupported(d.currentCfg())
-		return
+	}
+}
+
+// startAntispamLoop starts antispam reconciliation once, on a host it
+// supports: a pass at start, after each config reload, every 15 minutes,
+// and 20 seconds after a busy lock (spec section 6.5). It also starts the
+// rspamd probe. Shutdown cancels a running pass or probe. It reports
+// whether the host is supported.
+func (d *Daemon) startAntispamLoop() bool {
+	if antispamUnsupported() {
+		return false
+	}
+	if d.scanContext().Err() != nil || !d.antispamClaimed.CompareAndSwap(false, true) {
+		return true
 	}
 	// Health state starts empty; findings kept from before a restart
 	// describe an outage no longer tracked.
@@ -143,6 +155,7 @@ func (d *Daemon) startAntispam() {
 		defer d.wg.Done()
 		d.rspamdLogLoop(ctx)
 	})
+	return true
 }
 
 // withIPMap gives the reconciler the IP map writer's hooks and shares its
@@ -323,10 +336,19 @@ func (d *Daemon) reconcileAntispam() {
 		loop.Trigger()
 		return
 	}
-	// A supported host can reload before startAntispam publishes the loop;
-	// startup then reads the new config itself. Only an enabled switch needs
-	// the host check, which can run commands.
-	if cfg := d.currentCfg(); cfg.EmailProtection.Antispam.Enabled && antispamUnsupported() {
+	// Only an enabled switch needs the host check, which can run commands.
+	cfg := d.currentCfg()
+	if !cfg.EmailProtection.Antispam.Enabled {
+		return
+	}
+	// Before startup reaches antispam, startup reads the new config itself.
+	// After it, a host antispam did not support then, for example one where
+	// Postfix started after CSM, gets its loop now.
+	supported := !antispamUnsupported()
+	if d.antispamStarted.Load() {
+		supported = d.startAntispamLoop()
+	}
+	if !supported {
 		warnAntispamUnsupported(cfg)
 	}
 }

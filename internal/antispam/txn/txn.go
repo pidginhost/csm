@@ -169,6 +169,8 @@ type tx struct {
 	// backups maps each copy to whether its original still needs a durable
 	// restore. A failed replacement leaves its copy eligible for cleanup.
 	backups map[string]bool
+	// restored is the copy a Postfix dry run puts back, if any.
+	restored *restoredCopy
 }
 
 func (h *Host) begin() *tx {
@@ -387,12 +389,7 @@ func (t *tx) backup(target, content string) (string, error) {
 		return "", err
 	}
 	p := filepath.Join(dir, antispam.BackupName(target, t.h.now()))
-	tmp, err := stageFile(p, content)
-	if err != nil {
-		return "", err
-	}
-	defer discardTemp(tmp)
-	err = publishFile(p, tmp, 0o600, -1, -1, false)
+	err := publishCopy(p, content)
 	if err == nil || errors.Is(err, errDurability) {
 		// The target is still unchanged, so a rollback may delete this copy.
 		if t.backups == nil {
@@ -401,6 +398,16 @@ func (t *tx) backup(target, content string) (string, error) {
 		t.backups[p] = false
 	}
 	return p, err
+}
+
+// publishCopy writes a root-only copy at p, never over an existing file.
+func publishCopy(p, content string) error {
+	tmp, err := stageFile(p, content)
+	if err != nil {
+		return err
+	}
+	defer discardTemp(tmp)
+	return publishFile(p, tmp, 0o600, -1, -1, false)
 }
 
 // dropBackups deletes only copies whose originals are durably back in
@@ -868,6 +875,14 @@ func (t *tx) rollback() (state string, rollbackErr error) {
 			errs = append(errs, fmt.Errorf("restoring %s: %w", strings.TrimPrefix(w.path, t.h.root), err))
 		} else if w.backup != "" {
 			t.backups[w.backup] = false
+		}
+	}
+	// CSM's actions.conf is back, so the operator's copy must be too.
+	if r := t.restored; r != nil && r.consumed {
+		if err := publishCopy(r.path, r.content); err != nil {
+			errs = append(errs, fmt.Errorf("restoring backup %s: %w", strings.TrimPrefix(r.path, t.h.root), err))
+		} else {
+			r.consumed = false
 		}
 	}
 	if err := t.dropBackups(); err != nil {

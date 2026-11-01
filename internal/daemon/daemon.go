@@ -148,7 +148,11 @@ type Daemon struct {
 
 	// antispamLoop runs antispam reconcile passes on a host antispam
 	// supports. It stays nil elsewhere and until startup reaches it.
-	antispamLoop atomic.Pointer[reconcile.Loop]
+	// antispamStarted records that startup reached antispam, after which a
+	// reload may start the loop; antispamClaimed lets only one start win.
+	antispamLoop    atomic.Pointer[reconcile.Loop]
+	antispamStarted atomic.Bool
+	antispamClaimed atomic.Bool
 	// Namespace replacement must wait for passes that can still create keys
 	// or publish a learner target. Reloads can still stop learning at once.
 	antispamReconcileMu sync.Mutex

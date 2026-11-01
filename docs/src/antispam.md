@@ -144,10 +144,13 @@ email_protection:
   removal of CSM's owned content; conflicts or failures can prevent removal
   and produce findings. On a host that is neither a cPanel host running Exim
   nor a Postfix host it stays inactive; the daemon logs a warning at startup
-  and whenever a configuration change is reloaded.
+  and whenever a configuration change is reloaded. Once such a host runs
+  Postfix, for example after Postfix was installed or started after CSM, the
+  next reload (`systemctl reload csm`) starts antispam without a restart.
 - `dry_run` scans and logs what would happen without rejecting, tagging or
-  splitting recipients. On a Postfix host the host's own rspamd actions keep
-  deciding; see [Dry run and enforce](#dry-run-and-enforce).
+  splitting recipients. On a Postfix host CSM's rspamd files already apply in
+  dry run, and the host's own action thresholds decide on CSM's scores; see
+  [Dry run and enforce](#dry-run-and-enforce).
 - `rspamd_socket` is the scan socket above: an absolute path of at most 107
   characters using letters, digits, `/`, `.`, `_` and `-`.
 - `reject_score` and `tag_score` are whole rspamd scores with
@@ -565,7 +568,9 @@ even if another file could not be restored. Copies made for replacements
 that never happened are removed too. If a restore cannot be confirmed, its
 copy remains for recovery. Disabling antispam deletes CSM's files and does
 not restore the copies. The warnings describe past replacements, including
-after antispam is disabled.
+after antispam is disabled. On a Postfix host, returning to dry run puts
+your `actions.conf` back from its newest copy and deletes that copy; see
+[Dry run and enforce](#dry-run-and-enforce).
 
 ## Rolling it out
 
@@ -607,7 +612,8 @@ about cPanel accounts, Exim and Roundcube do not apply.
    smtpd runs chrooted, a `unix:` milter path is resolved inside Postfix's
    queue directory, as Postfix does. Without this wiring CSM reports a
    definite `postfix_milter` precondition and installs nothing.
-2. **rspamd 4.2.** CSM's scope rule is tested with rspamd 4.2.3.
+2. **rspamd 4.2 is recommended.** CSM accepts rspamd 3 or later, but its
+   scope rule is tested with rspamd 4.2.3.
 3. **`/etc/rspamd/lua.local.d` exists**, owned by root and not writable by
    group or others. CSM's scope rule goes there.
 4. **A scan socket for CSM.** CSM uses it to check that rspamd answers. Add
@@ -635,9 +641,10 @@ about cPanel accounts, Exim and Roundcube do not apply.
 
 ### Which mail is filtered
 
-Every local domain is filtered. Only unauthenticated mail from remote hosts
-is scored against `reject_score` and `tag_score`. CSM never rejects or tags
-mail:
+All unauthenticated mail from remote hosts is filtered, whatever domain it
+is addressed to. That includes mail Postfix relays for hosts in
+`mynetworks` on public addresses; list those in `infra_ips`. CSM never
+rejects or tags mail:
 
 - from a sender who authenticated to Postfix;
 - from rspamd's local networks (`local_addrs`), which include loopback and
@@ -658,17 +665,45 @@ when it is authenticated, local or exempt, and gets no scan record.
 
 ### Dry run and enforce
 
-In dry run CSM does not write `actions.conf`. The host's own actions keep
-deciding, as before. CSM logs what it would have done with each scored
-message: `decision=reject`, `tag` or `none`, and `unfiltered` for exempt
-mail.
+A dry run on Postfix already changes how rspamd scores mail. rspamd is in
+the mail path, and CSM installs its scoring files from the first dry run, so
+it can predict its own decisions. From then on:
+
+- greylisting, the emails module and public fuzzy storage are off;
+- rspamd's own DNS block lists are off, unless you name DNS feeds in
+  `feeds.enabled`;
+- sender-IP and phishtank lookups to rspamd.com are off, and without the
+  `rspamd_maps` feed the rspamd.com maps CSM manages are read from local
+  copies, so the freemail and disposable-address lists stay empty until you
+  fill them, see [Maps without any feed](#maps-without-any-feed);
+- CSM's symbol weights and its invisible-character Subject rule apply;
+- CSM's `milter_headers.conf` replaces yours, so other header routines you
+  enabled there stop;
+- your own files at those paths are replaced, with a copy kept and an
+  `antispam_file_replaced` warning, see [Replaced files](#replaced-files).
+
+What CSM leaves to the host in dry run is `actions.conf`: rspamd keeps
+rejecting and tagging at the host's own thresholds, now applied to CSM's
+scores, for all mail, including authenticated, local and exempt mail. Mail
+can therefore score differently than before CSM, in both directions. CSM
+logs what it would have done with each scored message: `decision=reject`,
+`tag` or `none`, and `unfiltered` for exempt mail.
+
+When the host's own reject threshold is at or below `reject_score`, as with
+rspamd's built-in actions when there is no `actions.conf`, the dry run still
+rejects mail. CSM raises a `dry_run_rejects` precondition warning, for
+example "dry run on this host still rejects: rspamd rejects at 15, at or
+below CSM's reject score of 15".
 
 With `dry_run: false` CSM takes over `/etc/rspamd/local.d/actions.conf`. An
 existing file is copied first, see [Replaced files](#replaced-files). rspamd
-then rejects at `reject_score` and adds headers at `tag_score`. Going back
-to dry run deletes CSM's `actions.conf`, so rspamd's built-in actions apply,
-not your old file, and they reject too. Restore your copy to get your own
-thresholds back.
+then rejects at `reject_score` and adds headers at `tag_score`, and never
+rejects or tags authenticated, local, `infra_ips` or exempt mail.
+
+Going back to dry run puts your `actions.conf` back from its newest copy,
+with the owner and mode it had, deletes that copy and clears its warning.
+Your thresholds decide again. Without a copy CSM deletes its own file, and
+rspamd's built-in actions apply, which reject too.
 
 ### Headers and the Junk folder
 
@@ -708,7 +743,9 @@ reloads rspamd only.
 
 Learning from Junk folders is not available on Postfix hosts yet. With
 `learning.enabled: true` CSM keeps learning off there and reports an
-`antispam_learning` warning, reason `unsupported`.
+`antispam_learning` warning, reason `unsupported`. It still creates the
+learning keys under `/var/lib/csm/antispam/learning`, and nothing is
+learned or published.
 
 If CSM cannot tell which mail server runs, for example while Postfix
 restarts on a host that also has Exim installed, it leaves an installed
@@ -716,18 +753,21 @@ integration in place and reports a temporary `platform` precondition.
 
 ### Rolling it out on Postfix
 
-1. Meet the requirements above and enable with `dry_run: true`. Leave
-   `exempt` empty unless a recipient must never be filtered.
-2. Check that rspamd's loaded actions did not change
-   (`rspamadm configdump actions`), that `CSM-ANTISPAM` lines appear in
-   rspamd's log, and that mail at the host's add header threshold still
-   carries `X-Spam: Yes`.
+1. Meet the requirements above. Choose `feeds.enabled` first: the dry run
+   already turns off rspamd's own DNS block lists and greylisting. Enable
+   with `dry_run: true`. Leave `exempt` empty unless a recipient must never
+   be filtered.
+2. Check that rspamd's loaded actions are still the host's
+   (`rspamadm configdump actions`) and that no `dry_run_rejects` warning
+   appears. Review each `antispam_file_replaced` copy, and check that
+   greylisting and DNS block lists are as you intend. Then check that
+   `CSM-ANTISPAM` lines appear in rspamd's log and that mail at the host's
+   add header threshold still carries `X-Spam: Yes`.
 3. Leave dry run on for at least 7 days. Review each would-reject decision
    in rspamd's log (`CSM-ANTISPAM event=scan ... decision=reject`) and watch
    for scan-error findings.
 4. Set `dry_run: false`. Check every reject for a week. On a confirmed false
-   positive, return to dry run and restore your own `actions.conf` from its
-   copy.
+   positive, return to dry run: CSM puts your own `actions.conf` back.
 
 ## rspamd admin interface
 

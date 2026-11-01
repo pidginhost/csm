@@ -3,9 +3,12 @@ package txn
 import (
 	"context"
 	"errors"
+	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/pidginhost/csm/internal/antispam"
+	"github.com/pidginhost/csm/internal/antispam/hostfacts"
 )
 
 var errEximInactive = errors.New("exim is not running; CSM changes its configuration only while it can confirm the reload")
@@ -172,6 +175,11 @@ func (t *tx) applyPostfix(s antispam.Settings, f antispam.HostFacts, installed m
 	if err != nil {
 		return failed(StepPreconditions, err)
 	}
+	if s.HostActions() {
+		if err = t.restoreActions(changes); err != nil {
+			return failed(StepPreconditions, err)
+		}
+	}
 	generation := antispam.Generation(managed)
 	matches, err := t.recorded(installed, generation)
 	if err != nil {
@@ -191,10 +199,82 @@ func (t *tx) applyPostfix(s antispam.Settings, f antispam.HostFacts, installed m
 	if step, err := t.rspamd(changes, &s, f); err != nil {
 		return t.fail(step, err)
 	}
+	if err := t.consumeRestored(); err != nil {
+		return t.fail(StepComplete, err)
+	}
 	if err := t.writeRecord(generation); err != nil {
 		return t.fail(StepComplete, err)
 	}
 	return antispam.Result{OK: true, Generation: generation}
+}
+
+// restoredCopy is the operator copy a Postfix dry run puts back at
+// actions.conf. consumed is set once the copy is deleted; rollback
+// publishes it again.
+type restoredCopy struct {
+	path, content string
+	consumed      bool
+}
+
+// restoreActions turns the deletion of CSM's actions.conf in a Postfix dry
+// run into a restore of the operator's newest copy, so the host's own
+// thresholds decide again instead of rspamd's built-in ones (spec 9.2).
+// The takeover kept the operator's owner and mode on CSM's file, and the
+// restore keeps them. Without a copy CSM's file is deleted.
+func (t *tx) restoreActions(changes []change) error {
+	i := slices.IndexFunc(changes, func(c change) bool { return c.target.Path == antispam.ActionsPath && !c.next.exists })
+	if i < 0 {
+		return nil
+	}
+	dir := t.h.path(antispam.ReplacedDir)
+	copies, err := hostfacts.Replaced(dir)
+	if err != nil {
+		return err
+	}
+	newest := ""
+	for _, c := range copies {
+		// Names start with the UTC time, so the newest sorts last.
+		if c.Path == antispam.ActionsPath && c.Backup > newest {
+			newest = c.Backup
+		}
+	}
+	if newest == "" {
+		return nil
+	}
+	// The restore writes through the path like any file CSM owns.
+	if err = antispam.OptionalUsable(changes[i].target); err != nil {
+		return err
+	}
+	if err = privateDir(dir); err != nil {
+		return err
+	}
+	saved, err := readFile(newest)
+	if err != nil {
+		return err
+	}
+	if !saved.exists {
+		return fmt.Errorf("%s disappeared", strings.TrimPrefix(newest, t.h.root))
+	}
+	changes[i].next = fileState{exists: true, content: saved.content}
+	t.restored = &restoredCopy{path: newest, content: saved.content}
+	return nil
+}
+
+// consumeRestored deletes the copy a dry run put back, which clears its
+// warning.
+func (t *tx) consumeRestored() error {
+	r := t.restored
+	if r == nil {
+		return nil
+	}
+	err := deleteFile(r.path)
+	if err == nil || errors.Is(err, errDurability) {
+		r.consumed = true
+	}
+	if err == nil {
+		return t.fwd.Err()
+	}
+	return err
 }
 
 // changesFor renders s and plans the edits that bring f's targets to it.

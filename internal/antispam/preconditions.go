@@ -57,6 +57,7 @@ const (
 	CodeControllerOpen = "controller_open"
 	CodeMilter         = "postfix_milter"
 	CodeRspamdLog      = "rspamd_log"
+	CodeDryRunRejects  = "dry_run_rejects"
 )
 
 const (

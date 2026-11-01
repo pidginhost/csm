@@ -18,6 +18,8 @@ const (
 	HookPostPath      = "/usr/local/cpanel/etc/exim/acls/ACL_CHECK_MESSAGE_POST_BLOCK/custom_begin_check_message_post"
 	LocalEximConfPath = "/etc/exim.conf.local"
 	RspamdLocalDir    = "/etc/rspamd/local.d"
+	// ActionsPath holds rspamd's action thresholds.
+	ActionsPath = RspamdLocalDir + "/actions.conf"
 )
 
 // Files CSM writes only on a Postfix host (spec section 5.1): the headers

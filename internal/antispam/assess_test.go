@@ -780,9 +780,79 @@ func installedPostfixFacts(t *testing.T, s Settings) HostFacts {
 	}
 	f.Record = RecordFacts{Content: string(EncodeRecord(Generation(managed)))}
 	f.RspamdActions = CommandResult{Stdout: loadedActions}
+	if s.DryRun {
+		// The host's own actions decide in a dry run.
+		f.RspamdActions = CommandResult{Stdout: hostActions}
+	}
 	f.RspamdModules = CommandResult{Stdout: loadedModules}
 	f.RspamdPhishing = CommandResult{Stdout: loadedPhishing}
 	return f
+}
+
+// hostActions are a Postfix host's own thresholds, rejecting well above
+// CSM's default reject score.
+const hostActions = `{"reject": 70, "add_header": 5, "greylist": null}`
+
+// A Postfix dry run leaves rspamd's actions to the host, which apply to
+// CSM's scores. A host that rejects at or below CSM's reject score, as with
+// rspamd's built-in actions when it has no actions.conf, still rejects in
+// "dry run", and CSM says so. Disabled rejects, unreadable actions, CSM's
+// own actions.conf (about to be restored or removed), enforce and Exim get
+// no warning.
+func TestAssessWarnsWhenPostfixDryRunRejects(t *testing.T) {
+	const detail = "dry run on this host still rejects: rspamd rejects at %s, at or below CSM's reject score of 15"
+	for name, tc := range map[string]struct {
+		actions string
+		mutate  func(*HostFacts)
+		s       Settings
+		want    string
+	}{
+		"host rejects at 70":     {hostActions, nil, postfixSettings(true), ""},
+		"built-in actions":       {`{"reject": 15, "add_header": 6, "greylist": 4}`, nil, postfixSettings(true), fmt.Sprintf(detail, "15")},
+		"host rejects below CSM": {`{"reject": 10.5}`, nil, postfixSettings(true), fmt.Sprintf(detail, "10.5")},
+		"reject disabled":        {`{"reject": null, "add_header": 6}`, nil, postfixSettings(true), ""},
+		"unreadable":             {"not JSON", nil, postfixSettings(true), ""},
+		"CSM's actions.conf left": {loadedActions, func(f *HostFacts) {
+			managed, err := ManagedContent(postfixSettings(false))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for i := range f.Targets {
+				if tg := &f.Targets[i]; tg.Path == ActionsPath {
+					tg.Missing, tg.File, tg.Content = false, PathFacts{Path: tg.Path, Mode: 0o644}, managed[ActionsPath]
+				}
+			}
+		}, postfixSettings(true), ""},
+		"enforce": {loadedActions, nil, postfixSettings(false), ""},
+	} {
+		f := installedPostfixFacts(t, tc.s)
+		f.RspamdActions = CommandResult{Stdout: tc.actions}
+		if tc.mutate != nil {
+			tc.mutate(&f)
+		}
+		a := Assess(true, tc.s, f)
+		var got []Problem
+		for _, p := range a.Problems {
+			if p.Code == CodeDryRunRejects {
+				got = append(got, p)
+			}
+		}
+		switch {
+		case tc.want == "" && len(got) != 0:
+			t.Errorf("%s: %+v, want no dry run warning", name, got)
+		case tc.want != "" && (len(got) != 1 || got[0].Severity != Warning || got[0].Detail != tc.want || a.Action != Keep):
+			t.Errorf("%s: %+v (action %d), want one warning %q and Keep", name, got, a.Action, tc.want)
+		}
+	}
+	// Exim scans in dry run without rspamd acting, so rspamd's actions
+	// never reject there, even before CSM's actions.conf is installed.
+	s := enforceSettings()
+	s.DryRun = true
+	f := freshFacts()
+	f.RspamdActions = CommandResult{Stdout: `{"reject": 15, "add_header": 6, "greylist": 4}`}
+	if a := Assess(true, s, f); hasProblem(a, CodeDryRunRejects, Warning) {
+		t.Fatalf("Exim dry run warned: %+v", a)
+	}
 }
 
 func TestAssessPostfixCurrent(t *testing.T) {
@@ -805,7 +875,8 @@ func TestAssessPostfixCurrent(t *testing.T) {
 }
 
 // In a dry run the host's own actions keep enforcing, whatever their form,
-// so CSM does not compare or even read them.
+// so CSM does not compare them; it only warns when they still reject at or
+// below its reject score (TestAssessWarnsWhenPostfixDryRunRejects).
 func TestAssessPostfixDryRunIgnoresHostActions(t *testing.T) {
 	s := postfixSettings(true)
 	for name, actions := range map[string]CommandResult{

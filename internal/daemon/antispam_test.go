@@ -152,6 +152,41 @@ func TestStartAntispamRunsOnPostfix(t *testing.T) {
 	stop()
 }
 
+// A host that antispam did not support at startup, for example one where
+// Postfix was installed or started after CSM, gets antispam on the next
+// reload: one loop, however many reloads arrive.
+func TestReloadStartsAntispamOnceTheHostIsSupported(t *testing.T) {
+	usePanel(t, platform.PanelNone)
+	passes := useAntispamHost(t)
+	var builds atomic.Int32
+	factory := antispamReconciler
+	t.Cleanup(func() { antispamReconciler = factory })
+	antispamReconciler = func() reconcile.Reconciler {
+		builds.Add(1)
+		return factory()
+	}
+	d := newTestDaemon(t)
+	cfg := &config.Config{}
+	cfg.EmailProtection.Antispam = config.AntispamConfig{Enabled: true, DryRun: true, RspamdSocket: testScanSocket, RejectScore: 15, TagScore: 6}
+	useActiveConfig(t, cfg)
+	stop := antispamTestShutdown(t, d)
+	d.startAntispam()
+	if d.antispamLoop.Load() != nil {
+		t.Fatal("antispam started on a host without a supported mail stack")
+	}
+	useMailStack(t, antispam.StackPostfix, false)
+	var wg sync.WaitGroup
+	for range 10 {
+		wg.Go(d.reconcileAntispam)
+	}
+	wg.Wait()
+	waitPass(t, passes)
+	if d.antispamLoop.Load() == nil || builds.Load() != 1 {
+		t.Fatalf("reloads started %d antispam loops, want 1", builds.Load())
+	}
+	stop()
+}
+
 // A Postfix host whose MTA restarts, with both MTAs installed, reads as no
 // stack. With CSM's integration installed the loop still starts, keeps the
 // integration and says why, whether antispam is enabled or not: a CSM
@@ -1307,8 +1342,9 @@ func TestAntispamEnabledWithoutCPanelLogsWhyItIsInactive(t *testing.T) {
 	t.Cleanup(func() { finish() })
 	d.startAntispam()
 	d.reconcileAntispam()
-	if got := finish(); strings.Count(got, "antispam is enabled but inactive: it needs a cPanel host running Exim, or a Postfix host") != 2 {
-		t.Fatalf("startup and reload did not each explain inactive antispam: %q", got)
+	d.reconcileAntispam()
+	if got := finish(); strings.Count(got, "antispam is enabled but inactive: it needs a cPanel host running Exim, or a Postfix host") != 3 {
+		t.Fatalf("startup and each reload did not explain inactive antispam: %q", got)
 	}
 }
 
@@ -1339,6 +1375,9 @@ func TestAntispamInactiveReasonOnlyWithoutCPanel(t *testing.T) {
 			finish := captureCSMLog(t)
 			t.Cleanup(func() { finish() })
 			d.reconcileAntispam()
+			if d.antispamLoop.Load() != nil {
+				t.Fatal("a reload before startup reached antispam started it")
+			}
 			if tc.stack == antispam.StackNone && !tc.installed {
 				d.startAntispam()
 			}

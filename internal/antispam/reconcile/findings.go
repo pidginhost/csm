@@ -176,15 +176,19 @@ func milterEffect(action string) string {
 }
 
 // replacedFinding reports one operator file CSM backed up and replaced,
-// until the operator deletes the backup.
-func replacedFinding(rep antispam.Replacement, now time.Time) alert.Finding {
+// until the operator deletes the backup. restores is set for a Postfix
+// host's actions.conf, which a return to dry run puts back.
+func replacedFinding(rep antispam.Replacement, restores bool, now time.Time) alert.Finding {
+	advice := ". Move any settings you still need into a file CSM does not manage, then delete the backup to clear this warning."
+	if restores {
+		advice = ". Returning antispam to dry run puts it back and clears this warning; delete the backup if you do not want it back."
+	}
 	return alert.Finding{
-		Severity: alert.Warning,
-		Check:    CheckFileReplaced,
-		DedupKey: rep.Backup,
-		Message:  "Antispam replaced " + clean(rep.Path),
-		Details: "CSM replaced " + clean(rep.Path) + " and kept your previous file at " + clean(rep.Backup) +
-			". Move any settings you still need into a file CSM does not manage, then delete the backup to clear this warning.",
+		Severity:  alert.Warning,
+		Check:     CheckFileReplaced,
+		DedupKey:  rep.Backup,
+		Message:   "Antispam replaced " + clean(rep.Path),
+		Details:   "CSM replaced " + clean(rep.Path) + " and kept your previous file at " + clean(rep.Backup) + advice,
 		Timestamp: now,
 	}
 }
