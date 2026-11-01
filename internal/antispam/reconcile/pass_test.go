@@ -653,7 +653,7 @@ func TestPassReplacedFileAdvice(t *testing.T) {
 func TestPassReportsPostfixScanSource(t *testing.T) {
 	postfix := func(f *antispam.HostFacts) {
 		f.Stack = antispam.StackPostfix
-		f.Postconf = antispam.CommandResult{Stdout: "inet:127.0.0.1:11332\naccept\n0\n/var/spool/postfix\n3.7.11\n"}
+		f.Postconf = antispam.CommandResult{Stdout: "inet:127.0.0.1:11332\naccept\n0\n/var/spool/postfix\n3.7.11\ni {auth_type} {auth_authen} {auth_author} {mail_addr} {mail_host} {mail_mailer}\n"}
 		f.RspamdWorkers = antispam.CommandResult{Stdout: `{"rspamd_proxy": {"bind_socket": "localhost:11332", "milter": true}}`}
 	}
 	want := &antispam.ScanSource{Stack: antispam.StackPostfix, Log: "/var/log/rspamd/rspamd.log", Milters: []string{"inet:127.0.0.1:11332"}, MilterAction: "accept"}

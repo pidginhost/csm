@@ -158,7 +158,7 @@ func TestCollectReadsEveryFact(t *testing.T) {
 
 func TestCollectPostfixFacts(t *testing.T) {
 	const (
-		postconf = "postconf -x -h smtpd_milters milter_default_action message_size_limit queue_directory mail_version"
+		postconf = "postconf -x -h smtpd_milters milter_default_action message_size_limit queue_directory mail_version milter_mail_macros"
 		master   = "postconf -F smtp/inet/command smtp/inet/chroot smtpd/pass/chroot"
 		instance = "systemctl show -p LoadState -p ActiveState postfix@-.service"
 		wrapper  = "systemctl show -p LoadState -p ActiveState postfix.service"
@@ -188,7 +188,7 @@ func TestCollectPostfixFacts(t *testing.T) {
 			sock := serve(t, filepath.Join(d, "rspamd"), pong)
 			run := &fakeRun{results: map[string]antispam.CommandResult{
 				rspamd:   {Stdout: "User=_rspamd\nLoadState=loaded\nCanReload=yes\n"},
-				postconf: {Stdout: "inet:127.0.0.1:11332\naccept\n52428800\n/var/spool/postfix\n3.7.11\n"},
+				postconf: {Stdout: "inet:127.0.0.1:11332\naccept\n52428800\n/var/spool/postfix\n3.7.11\ni {auth_type} {auth_authen} {auth_author} {mail_addr} {mail_host} {mail_mailer}\n"},
 				master:   {Stdout: "smtp/inet/command = smtpd\nsmtp/inet/chroot = y\n"},
 				instance: tc.instance,
 				wrapper:  up,

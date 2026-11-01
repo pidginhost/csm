@@ -1008,7 +1008,7 @@ func FuzzPostfixMilterFacts(f *testing.F) {
 		{postconfOut("unix:rspamd/milter.sock inet:[::1]:11332", "10240000"), "smtp/inet/command = smtpd\nsmtp/inet/chroot = -\n",
 			`{"rspamd_proxy": {"bind_socket": "[::]:11332", "milter": true, "count": 0}}`},
 		{"inet:127.0.0.1\naccept\n-1\nspool\n2\n", "", `{"rspamd_proxy": {"bind_socket": 1}}`},
-		{"\n\n\n\n\n", "smtp/inet/command =\n", ""},
+		{"\n\n\n\n\n\n", "smtp/inet/command =\n", ""},
 	} {
 		f.Add(seed.postconf, seed.master, []byte(seed.workers))
 	}

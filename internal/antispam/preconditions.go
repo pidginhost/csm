@@ -378,7 +378,7 @@ func checkPostfixHost(f HostFacts) []Problem {
 	case f.Postconf.Err != nil:
 		add(Temporary, "postconf failed; check postfix")
 	case err != nil:
-		add(Temporary, "postconf did not report readable smtpd_milters, milter_default_action, message_size_limit, queue_directory and mail_version")
+		add(Temporary, "postconf did not report readable smtpd_milters, milter_default_action, message_size_limit, queue_directory, mail_version and milter_mail_macros")
 	default:
 		milters, complete := pc.MilterAddrs(f.PostfixMaster)
 		addrs, err := ProxyMilterAddrs([]byte(f.RspamdWorkers.Stdout))
@@ -392,6 +392,11 @@ func checkPostfixHost(f HostFacts) []Problem {
 			add(Temporary, "cannot tell whether postfix smtpd runs chrooted")
 		default:
 			add(Definite, "postfix does not pass mail to rspamd's proxy worker")
+		}
+		// Without it rspamd scores authenticated mail as remote mail, so
+		// CSM would reject customers' outbound mail.
+		if !pc.AuthUser {
+			add(Definite, "postfix does not pass the authenticated user to rspamd; add {auth_authen} to milter_mail_macros")
 		}
 		out = append(out, checkPostfixMessageSize(pc.SizeLimit, f.RspamdOptions)...)
 	}

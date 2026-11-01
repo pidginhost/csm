@@ -23,12 +23,15 @@ type Postconf struct {
 	SizeLimit      int64
 	QueueDirectory string
 	Version        string
+	// AuthUser is set when milter_mail_macros sends {auth_authen}, the
+	// name a client authenticated as. rspamd knows authenticated mail by it.
+	AuthUser bool
 }
 
 // PostconfNames are the parameters the collector reads with one
 // `postconf -x -h`, which prints one value per line in this order.
 func PostconfNames() []string {
-	return []string{"smtpd_milters", "milter_default_action", "message_size_limit", "queue_directory", "mail_version"}
+	return []string{"smtpd_milters", "milter_default_action", "message_size_limit", "queue_directory", "mail_version", "milter_mail_macros"}
 }
 
 // ParsePostconf reads `postconf -x -h` for PostconfNames.
@@ -46,6 +49,10 @@ func ParsePostconf(out string) (Postconf, error) {
 		return Postconf{}, errors.New("postconf queue_directory is not an absolute path")
 	}
 	p := Postconf{DefaultAction: strings.TrimSpace(lines[1]), SizeLimit: size, QueueDirectory: queue, Version: strings.TrimSpace(lines[4])}
+	// Postfix sends a macro under the name the list gives, with or without
+	// braces, and rspamd reads either.
+	macros := strings.FieldsFunc(lines[5], func(r rune) bool { return strings.ContainsRune(", \t\r", r) })
+	p.AuthUser = slices.Contains(macros, "{auth_authen}") || slices.Contains(macros, "auth_authen")
 	// Postfix separates list items with whitespace or commas; braces group
 	// a milter with its name=value settings.
 	for _, item := range strings.FieldsFunc(lines[0], func(r rune) bool { return strings.ContainsRune(", \t\r{}", r) }) {

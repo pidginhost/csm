@@ -553,6 +553,9 @@ func TestCheckHostPostfix(t *testing.T) {
 			f.RspamdWorkers.Stdout = unixProxy
 		}},
 		{"inet milter, chroot unknown", func(f *HostFacts) { f.PostfixMaster = CommandResult{Err: boom} }},
+		{"auth macro without braces", func(f *HostFacts) {
+			f.Postconf.Stdout = strings.Replace(f.Postconf.Stdout, postfixMailMacros, "i auth_authen", 1)
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := postfixFacts()
@@ -563,7 +566,10 @@ func TestCheckHostPostfix(t *testing.T) {
 		})
 	}
 
-	const unwired = "postfix does not pass mail to rspamd's proxy worker"
+	const (
+		unwired    = "postfix does not pass mail to rspamd's proxy worker"
+		noAuthUser = "postfix does not pass the authenticated user to rspamd; add {auth_authen} to milter_mail_macros"
+	)
 	for _, tc := range []struct {
 		name   string
 		mutate func(*HostFacts)
@@ -573,6 +579,14 @@ func TestCheckHostPostfix(t *testing.T) {
 	}{
 		{"milter elsewhere", func(f *HostFacts) { f.Postconf.Stdout = postconfOut("inet:127.0.0.1:8891", "52428800") }, CodeMilter, Definite, unwired},
 		{"no milters", func(f *HostFacts) { f.Postconf.Stdout = postconfOut("", "52428800") }, CodeMilter, Definite, unwired},
+		// Without the authenticated user rspamd scores customers' outbound
+		// mail as remote mail, and CSM would reject it.
+		{"auth macro missing", func(f *HostFacts) {
+			f.Postconf.Stdout = strings.Replace(f.Postconf.Stdout, postfixMailMacros, "i {auth_type} {mail_addr}", 1)
+		}, CodeMilter, Definite, noAuthUser},
+		{"no mail macros", func(f *HostFacts) {
+			f.Postconf.Stdout = strings.Replace(f.Postconf.Stdout, postfixMailMacros, "", 1)
+		}, CodeMilter, Definite, noAuthUser},
 		// Postfix reads an absolute path as written when smtpd is not chrooted.
 		{"unix milter, smtpd not chrooted", func(f *HostFacts) {
 			f.Postconf.Stdout = postconfOut("unix:/rspamd/milter.sock", "52428800")

@@ -142,7 +142,7 @@ func TestApplyPostfixFreshHost(t *testing.T) {
 // the path CSM sees outside postfix's chroot, and no other milter.
 func TestApplyPostfixProbesEveryRspamdMilter(t *testing.T) {
 	f := postfixFake(t)
-	f.postconf = "inet:127.0.0.1:8891, unix:/rspamd/milter.sock inet:localhost:11332\naccept\n52428800\n/var/spool/postfix\n3.8.6\n"
+	f.postconf = "inet:127.0.0.1:8891, unix:/rspamd/milter.sock inet:localhost:11332\naccept\n52428800\n/var/spool/postfix\n3.8.6\ni {auth_type} {auth_authen} {auth_author} {mail_addr} {mail_host} {mail_mailer}\n"
 	f.workers = `{"rspamd_proxy": {"bind_socket": ["localhost:11332", "/var/spool/postfix/rspamd/milter.sock mode=0666"], "milter": true}}`
 	wantOK(t, f.host().Apply(enforce()))
 	rspamd := []string{"unix:/var/spool/postfix/rspamd/milter.sock", "inet:localhost:11332"}
@@ -151,7 +151,7 @@ func TestApplyPostfixProbesEveryRspamdMilter(t *testing.T) {
 	}
 	// Without a milter to rspamd there is nothing to enforce through.
 	f = postfixFake(t)
-	f.postconf = "inet:127.0.0.1:8891\naccept\n52428800\n/var/spool/postfix\n3.8.6\n"
+	f.postconf = "inet:127.0.0.1:8891\naccept\n52428800\n/var/spool/postfix\n3.8.6\ni {auth_type} {auth_authen} {auth_author} {mail_addr} {mail_host} {mail_mailer}\n"
 	before := f.state()
 	r := f.host().Apply(enforce())
 	if r.OK || r.FailedStep != StepPreconditions || r.Rollback != antispam.RollbackNone || len(f.calls) != 0 || fmt.Sprint(f.state()) != fmt.Sprint(before) {

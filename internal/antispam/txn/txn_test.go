@@ -127,7 +127,7 @@ func (f *fakeHost) host() *Host {
 	}
 	postconf, workers := f.postconf, f.workers
 	if postconf == "" {
-		postconf = "inet:127.0.0.1:11332\naccept\n52428800\n/var/spool/postfix\n3.8.6\n"
+		postconf = "inet:127.0.0.1:11332\naccept\n52428800\n/var/spool/postfix\n3.8.6\ni {auth_type} {auth_authen} {auth_author} {mail_addr} {mail_host} {mail_mailer}\n"
 	}
 	if workers == "" {
 		workers = `{"rspamd_proxy": {"bind_socket": "localhost:11332", "milter": true}}`

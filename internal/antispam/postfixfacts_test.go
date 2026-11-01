@@ -14,17 +14,34 @@ const proxyWorkers = `{"normal": {"bind_socket": "localhost:11333"}}
 {"rspamd_proxy": {"bind_socket": "localhost:11332", "milter": true, "timeout": 120.0}}
 `
 
+// postfixMailMacros is postfix's default milter_mail_macros.
+const postfixMailMacros = "i {auth_type} {auth_authen} {auth_author} {mail_addr} {mail_host} {mail_mailer}"
+
 // postconfOut is `postconf -x -h` for PostconfNames on a Postfix 3 host.
 func postconfOut(milters, sizeLimit string) string {
-	return milters + "\naccept\n" + sizeLimit + "\n/var/spool/postfix\n3.7.11\n"
+	return milters + "\naccept\n" + sizeLimit + "\n/var/spool/postfix\n3.7.11\n" + postfixMailMacros + "\n"
 }
 
 func TestParsePostconf(t *testing.T) {
 	got, err := ParsePostconf(postconfOut("inet:127.0.0.1:11332", "52428800"))
 	want := Postconf{Milters: []string{"inet:127.0.0.1:11332"}, DefaultAction: "accept", SizeLimit: 52428800,
-		QueueDirectory: "/var/spool/postfix", Version: "3.7.11"}
+		QueueDirectory: "/var/spool/postfix", Version: "3.7.11", AuthUser: true}
 	if err != nil || !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %+v, %v; want %+v", got, err, want)
+	}
+	// rspamd reads the authenticated user from {auth_authen}, which postfix
+	// also sends when the list names it without braces.
+	base := "inet:127.0.0.1:11332\naccept\n0\n/var/spool/postfix\n3.7.11\n"
+	for macros, want := range map[string]bool{
+		"i, auth_authen":                  true,
+		"{auth_authen}":                   true,
+		"i {auth_type} {mail_addr}":       false,
+		"{auth_authen_x} {x_auth_authen}": false,
+		"":                                false,
+	} {
+		if got, err := ParsePostconf(base + macros + "\n"); err != nil || got.AuthUser != want {
+			t.Errorf("milter_mail_macros %q: AuthUser %t, %v; want %t", macros, got.AuthUser, err, want)
+		}
 	}
 	for _, tc := range []struct {
 		name, line string
@@ -47,9 +64,9 @@ func TestParsePostconf(t *testing.T) {
 		postconfOut("inet:127.0.0.1:11332", "50M"),
 		postconfOut("inet:127.0.0.1:11332", "-1"),
 		postconfOut("inet:127.0.0.1:11332", ""),
-		"inet:127.0.0.1:11332\naccept\n52428800\nspool\n3.7.11\n",
-		"inet:127.0.0.1:11332\naccept\n52428800\n\n3.7.11\n",
-		"inet:127.0.0.1:11332\naccept\n52428800\n/var/spool/postfix\n",
+		"inet:127.0.0.1:11332\naccept\n52428800\nspool\n3.7.11\n" + postfixMailMacros + "\n",
+		"inet:127.0.0.1:11332\naccept\n52428800\n\n3.7.11\n" + postfixMailMacros + "\n",
+		"inet:127.0.0.1:11332\naccept\n52428800\n/var/spool/postfix\n3.7.11\n",
 		postconfOut("inet:127.0.0.1:11332", "52428800") + "extra\n",
 		"",
 	} {
