@@ -60,6 +60,10 @@ const (
 // the background retry, which has the full compile timeout.
 var yaraBootCompileTimeout = 45 * time.Second
 
+// yaraRetryMinBackoff is the first wait of the background compile retry; a
+// seam so tests reach the persistent-failure finding quickly.
+var yaraRetryMinBackoff = time.Second
+
 // yaraWorkerLauncher is a seam for tests that must not start units.
 var yaraWorkerLauncher = workerproc.UnitLauncher
 
@@ -249,7 +253,7 @@ func (d *Daemon) retryYaraStart(b *yaraworker.Backend) {
 			return err
 		},
 		d.stopCh,
-		time.Second, 60*time.Second, 3,
+		yaraRetryMinBackoff, 60*time.Second, 3,
 		func(attempt int, err error) {
 			d.emitYaraFinding(alert.Critical, "yara_backend_unavailable",
 				fmt.Sprintf("YARA-X rules could not be compiled: the compile worker failed %d times (%v). Files and mail parts are reported as not scanned while CSM keeps retrying.", attempt, err))

@@ -157,6 +157,9 @@ func TestInitYaraBackendCompileUnavailableFailsClosed(t *testing.T) {
 		return nil, errors.New("systemd-run unavailable")
 	})
 	allowParseWorkerCommand(t)
+	realBackoff := yaraRetryMinBackoff
+	yaraRetryMinBackoff = 10 * time.Millisecond
+	t.Cleanup(func() { yaraRetryMinBackoff = realBackoff })
 	cfg := &config.Config{}
 	cfg.Signatures.RulesDir = filepath.Join(t.TempDir(), "rules")
 	if err := os.Mkdir(cfg.Signatures.RulesDir, 0o700); err != nil {
@@ -203,6 +206,20 @@ func TestInitYaraBackendCompileUnavailableFailsClosed(t *testing.T) {
 	}
 	if launches.Load() == first {
 		t.Fatal("no background retry of the compile")
+	}
+	timeout := time.After(5 * time.Second)
+	for {
+		select {
+		case f := <-d.alertCh:
+			if f.Check == "yara_backend_unavailable" {
+				if f.Severity != alert.Critical {
+					t.Fatalf("yara_backend_unavailable severity %v, want Critical", f.Severity)
+				}
+				return
+			}
+		case <-timeout:
+			t.Fatal("a compile worker that never starts raised no yara_backend_unavailable")
+		}
 	}
 }
 
