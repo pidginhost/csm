@@ -5,6 +5,8 @@ package yaraworker
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -162,5 +164,62 @@ func TestStopReapsRunningCompiler(t *testing.T) {
 	}
 	if b.RuleCount() != 0 {
 		t.Fatal("compile installed rules after stop")
+	}
+}
+
+// Stop must not wait out a scan or a rules load: the daemon stops its
+// workers on shutdown, and each can take until its timeout.
+func TestStopCancelsInFlightWork(t *testing.T) {
+	for _, tc := range []struct {
+		name, mode string
+		call       func(*Backend) error
+	}{
+		{"scan", "scan-hang:", func(b *Backend) error { _, err := b.ScanBytesChecked([]byte("evil")); return err }},
+		{"load before a scan", "load-hang:", func(b *Backend) error { _, err := b.ScanBytesChecked([]byte("evil")); return err }},
+		{"load on warm-up", "load-hang:", (*Backend).Warm},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mark := filepath.Join(t.TempDir(), "arrived")
+			fx := &backendFixture{scan: newHelper(tc.mode + mark)}
+			b := newBackend(t, fx)
+			if err := b.Reload(); err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan error, 1)
+			go func() { done <- tc.call(b) }()
+			waitForFile(t, mark)
+			stopped := make(chan error, 1)
+			go func() { stopped <- b.Stop() }()
+			select {
+			case err := <-stopped:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("stop waited for the worker's timeout")
+			}
+			select {
+			case err := <-done:
+				if err == nil {
+					t.Fatal("work canceled by stop succeeded")
+				}
+			case <-time.After(time.Second):
+				t.Fatal("work still running after stop")
+			}
+		})
+	}
+}
+
+func waitForFile(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s never appeared", path)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

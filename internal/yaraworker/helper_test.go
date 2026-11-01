@@ -38,6 +38,8 @@ func TestMain(m *testing.M) {
 //	report-ro        fail a scan whose descriptor is writable
 //	report-sealed    fail a scan whose descriptor is not sealed
 //	load-hang        never answer load
+//	load-hang:<path> create <path>, then never answer load
+//	scan-hang:<path> create <path>, then never answer a scan
 //	compile-nofd     answer compile with success but no descriptor
 //	compile-huge     answer compile with a descriptor over MaxSerializedRules
 //	compile-empty    answer compile with an empty descriptor
@@ -66,6 +68,9 @@ func runYaraHelper(mode string) int {
 func injectFault(mode string, req workerproc.Frame, fds []*os.File) (workerproc.Frame, []*os.File, bool) {
 	switch req.Op {
 	case yaraipc.OpScanFD:
+		if path, ok := strings.CutPrefix(mode, "scan-hang:"); ok {
+			hangAfterMark(path)
+		}
 		if word, ok := strings.CutPrefix(mode, "crash-on:"); ok && len(fds) == 1 {
 			data, _ := io.ReadAll(io.NewSectionReader(fds[0], 0, 1<<20))
 			if bytes.Contains(data, []byte(word)) {
@@ -86,6 +91,9 @@ func injectFault(mode string, req workerproc.Frame, fds []*os.File) (workerproc.
 	case yaraipc.OpLoad:
 		if mode == "load-hang" {
 			select {}
+		}
+		if path, ok := strings.CutPrefix(mode, "load-hang:"); ok {
+			hangAfterMark(path)
 		}
 		if mode == "load-error" {
 			return workerproc.Frame{Error: "injected load failure"}, nil, true
@@ -150,6 +158,14 @@ func injectFault(mode string, req workerproc.Frame, fds []*os.File) (workerproc.
 		return reply(yaraipc.CompileResult{RuleCount: 1}), []*os.File{out}, true
 	}
 	return workerproc.Frame{}, nil, false
+}
+
+// hangAfterMark tells the test the request arrived, then never answers it.
+func hangAfterMark(path string) {
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		os.Exit(4)
+	}
+	select {}
 }
 
 // fakeEngine stands in for YARA-X in builds without it. A source line

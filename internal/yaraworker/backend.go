@@ -350,7 +350,7 @@ func (b *Backend) launch(ctx context.Context) (workerproc.Process, error) {
 	return &rulesProcess{Process: p, gen: rules.gen, current: &b.gen}, nil
 }
 
-func (b *Backend) loadRules(ctx context.Context, p workerproc.Process, rules *os.File, count int) error {
+func (b *Backend) loadRules(ctx context.Context, p workerproc.Process, rules *os.File, count int) (retErr error) {
 	conn := p.Conn()
 	deadline := time.Now().Add(b.cfg.LoadTimeout)
 	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
@@ -359,7 +359,23 @@ func (b *Backend) loadRules(ctx context.Context, p workerproc.Process, rules *os
 	if err := conn.SetDeadline(deadline); err != nil {
 		return fmt.Errorf("load rules: %w", err)
 	}
-	defer func() { _ = conn.SetDeadline(time.Time{}) }()
+	var canceled sync.WaitGroup
+	canceled.Add(1)
+	stop := context.AfterFunc(ctx, func() {
+		defer canceled.Done()
+		_ = conn.SetDeadline(time.Now())
+	})
+	defer func() {
+		// A cancellation callback already running must finish before the
+		// deadline is cleared, or it could poison the first scan.
+		if !stop() {
+			canceled.Wait()
+		}
+		_ = conn.SetDeadline(time.Time{})
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			retErr = ctxErr
+		}
+	}()
 	if err := workerproc.SendFrame(conn, workerproc.Frame{Op: yaraipc.OpLoad}, []*os.File{rules}, yaraipc.MaxFrameBytes); err != nil {
 		return fmt.Errorf("load rules: %w", err)
 	}
@@ -487,7 +503,7 @@ func (b *Backend) scan(f *os.File, size int) ([]yara.Match, error) {
 		return nil, err
 	}
 	var matches []yaraipc.Match
-	_, _, err = b.proc.Call(context.Background(), workerproc.Frame{Op: yaraipc.OpScanFD, Payload: payload}, []*os.File{f},
+	_, _, err = b.proc.Call(b.ctx, workerproc.Frame{Op: yaraipc.OpScanFD, Payload: payload}, []*os.File{f},
 		func(reply workerproc.Frame, _ []*os.File) (bool, error) {
 			m, decodeErr := yaraipc.DecodeScanReply(reply.Payload)
 			matches = m
@@ -506,7 +522,7 @@ func (b *Backend) Warm() error {
 	if rules, _, _ := b.state(); rules == nil || rules.count == 0 {
 		return nil
 	}
-	_, _, err := b.proc.Call(context.Background(), workerproc.Frame{Op: yaraipc.OpPing}, nil,
+	_, _, err := b.proc.Call(b.ctx, workerproc.Frame{Op: yaraipc.OpPing}, nil,
 		func(reply workerproc.Frame, _ []*os.File) (bool, error) {
 			_, decodeErr := decodeRuleCount(reply.Payload)
 			return false, decodeErr
@@ -529,7 +545,8 @@ func (b *Backend) CompileError() string {
 	return compileErr
 }
 
-// Stop cancels compilation, kills the scan worker, and refuses later work.
+// Stop cancels compilation and in-flight scans, kills the scan worker, and
+// refuses later work.
 func (b *Backend) Stop() error {
 	b.mu.Lock()
 	b.stopped = true
