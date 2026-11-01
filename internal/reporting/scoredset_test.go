@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
+	"slices"
 	"testing"
 	"time"
 )
@@ -19,14 +20,17 @@ func sampleSnapshot() ScoredSnapshot {
 // Cross-repo golden: this JSON must equal what csm-abuse-db's publisher signs
 // for the same snapshot. The identical literal is asserted in the central
 // publish test; if either side's encoding drifts, one golden fails.
+const scoredSnapshotGolden = `{"version":7,"entries":[{"ip":"203.0.113.5","score":80,"classes":["bruteforce"],"last_seen":"2023-11-14T22:13:20Z"}]}`
+
+const scoredDiffGolden = `{"from_version":1,"to_version":2,"added":[{"ip":"203.0.113.9","score":55,"classes":["bruteforce","php_relay"],"last_seen":"2023-11-14T22:13:20Z"}],"removed":["198.51.100.7"],"changed":[{"ip":"203.0.113.5","score":90,"classes":["bruteforce"],"last_seen":"2023-11-14T22:13:20Z"}]}`
+
 func TestScoredSetGoldenCanonical(t *testing.T) {
 	b, ok := MarshalScoredSnapshot(sampleSnapshot())
 	if !ok {
 		t.Fatal("marshal failed")
 	}
-	const golden = `{"version":7,"entries":[{"ip":"203.0.113.5","score":80,"classes":["bruteforce"],"last_seen":"2023-11-14T22:13:20Z"}]}`
-	if string(b) != golden {
-		t.Fatalf("canonical scored-set drift:\n got=%s\nwant=%s", b, golden)
+	if string(b) != scoredSnapshotGolden {
+		t.Fatalf("canonical scored-set drift:\n got=%s\nwant=%s", b, scoredSnapshotGolden)
 	}
 }
 
@@ -166,9 +170,8 @@ func TestScoredDiffGoldenCanonical(t *testing.T) {
 	if !ok {
 		t.Fatal("marshal diff failed")
 	}
-	const golden = `{"from_version":1,"to_version":2,"added":[{"ip":"203.0.113.9","score":55,"classes":["bruteforce","php_relay"],"last_seen":"2023-11-14T22:13:20Z"}],"removed":["198.51.100.7"],"changed":[{"ip":"203.0.113.5","score":90,"classes":["bruteforce"],"last_seen":"2023-11-14T22:13:20Z"}]}`
-	if string(b) != golden {
-		t.Fatalf("canonical diff drift:\n got=%s\nwant=%s", b, golden)
+	if string(b) != scoredDiffGolden {
+		t.Fatalf("canonical diff drift:\n got=%s\nwant=%s", b, scoredDiffGolden)
 	}
 }
 
@@ -409,5 +412,90 @@ func TestSetLookupNormalizesStoredIPAndCopiesClasses(t *testing.T) {
 	got, ok = set.Lookup("203.0.113.5")
 	if !ok || got.Classes[0] != ClassBruteforce {
 		t.Fatalf("lookup leaked mutable classes: %+v ok=%v", got, ok)
+	}
+}
+
+// A node must accept a central list that carries spam sources, and lists
+// published before the class existed must keep verifying byte for byte.
+func TestSpamSnapshotVerifies(t *testing.T) {
+	payload, sig, pub := signSnap(t, ScoredSnapshot{Version: 9, Entries: []ScoredEntry{
+		{IP: "203.0.113.5", Score: 70, Classes: []Class{ClassSpam, ClassBruteforce}, LastSeen: setTS},
+		{IP: "198.51.100.7", Score: 40, Classes: []Class{ClassSpam}, LastSeen: setTS},
+	}})
+	got, err := OpenSnapshot(payload, sig, pub)
+	if err != nil {
+		t.Fatalf("open snapshot with spam: %v", err)
+	}
+	if got.Version != 9 || len(got.Entries) != 2 {
+		t.Fatalf("decoded = %+v", got)
+	}
+	if got.Entries[0].IP != "198.51.100.7" || !slices.Equal(got.Entries[0].Classes, []Class{ClassSpam}) {
+		t.Fatalf("entry 0 = %+v, want 198.51.100.7 [spam]", got.Entries[0])
+	}
+	if got.Entries[1].IP != "203.0.113.5" || !slices.Equal(got.Entries[1].Classes, []Class{ClassBruteforce, ClassSpam}) {
+		t.Fatalf("entry 1 = %+v, want 203.0.113.5 [bruteforce spam]", got.Entries[1])
+	}
+
+	unknown := []byte(`{"version":9,"entries":[{"ip":"203.0.113.5","score":70,"classes":["phishing"],"last_seen":"2023-11-14T22:13:20Z"}]}`)
+	usig, upub := signRawSet(t, unknown)
+	if _, err = OpenSnapshot(unknown, usig, upub); err != ErrSetInvalid {
+		t.Fatalf("unknown class: got %v, want ErrSetInvalid", err)
+	}
+
+	osig, opub := signRawSet(t, []byte(scoredSnapshotGolden))
+	old, err := OpenSnapshot([]byte(scoredSnapshotGolden), osig, opub)
+	if err != nil {
+		t.Fatalf("old-class snapshot: %v", err)
+	}
+	if old.Version != 7 || len(old.Entries) != 1 || !slices.Equal(old.Entries[0].Classes, []Class{ClassBruteforce}) {
+		t.Fatalf("old-class snapshot = %+v", old)
+	}
+}
+
+func TestSpamDiffApplies(t *testing.T) {
+	base := ScoredSnapshot{Version: 1, Entries: []ScoredEntry{
+		{IP: "203.0.113.5", Score: 80, Classes: []Class{ClassBruteforce}, LastSeen: setTS},
+	}}
+	out, err := ApplyDiff(base, openDiffForApply(t, ScoredDiff{
+		FromVersion: 1,
+		ToVersion:   2,
+		Added:       []ScoredEntry{{IP: "198.51.100.7", Score: 40, Classes: []Class{ClassSpam}, LastSeen: setTS}},
+		Changed:     []ScoredEntry{{IP: "203.0.113.5", Score: 90, Classes: []Class{ClassSpam, ClassBruteforce}, LastSeen: setTS}},
+	}))
+	if err != nil {
+		t.Fatalf("apply diff with spam: %v", err)
+	}
+	if out.Version != 2 || len(out.Entries) != 2 {
+		t.Fatalf("applied = %+v", out)
+	}
+	set := NewSet(out)
+	if e, ok := set.Lookup("198.51.100.7"); !ok || e.Score != 40 || !slices.Equal(e.Classes, []Class{ClassSpam}) {
+		t.Fatalf("added entry = %+v ok=%v, want score 40 [spam]", e, ok)
+	}
+	if e, ok := set.Lookup("203.0.113.5"); !ok || e.Score != 90 || !slices.Equal(e.Classes, []Class{ClassBruteforce, ClassSpam}) {
+		t.Fatalf("changed entry = %+v ok=%v, want score 90 [bruteforce spam]", e, ok)
+	}
+
+	unknown := []byte(`{"from_version":2,"to_version":3,"added":[{"ip":"203.0.113.9","score":50,"classes":["phishing"],"last_seen":"2023-11-14T22:13:20Z"}],"removed":[],"changed":[]}`)
+	usig, upub := signRawSet(t, unknown)
+	if _, err = OpenDiff(unknown, usig, upub); err != ErrSetInvalid {
+		t.Fatalf("unknown class: got %v, want ErrSetInvalid", err)
+	}
+
+	osig, opub := signRawSet(t, []byte(scoredDiffGolden))
+	oldDiff, err := OpenDiff([]byte(scoredDiffGolden), osig, opub)
+	if err != nil {
+		t.Fatalf("old-class diff: %v", err)
+	}
+	oldBase := ScoredSnapshot{Version: 1, Entries: []ScoredEntry{
+		{IP: "203.0.113.5", Score: 80, Classes: []Class{ClassBruteforce}, LastSeen: setTS},
+		{IP: "198.51.100.7", Score: 40, Classes: []Class{ClassPHPRelay}, LastSeen: setTS},
+	}}
+	applied, err := ApplyDiff(oldBase, oldDiff)
+	if err != nil {
+		t.Fatalf("apply old-class diff: %v", err)
+	}
+	if applied.Version != 2 || len(applied.Entries) != 2 {
+		t.Fatalf("old-class diff applied = %+v", applied)
 	}
 }

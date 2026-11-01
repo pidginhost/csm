@@ -419,6 +419,16 @@
     ]
   },
   {
+    "kind": "remote_reputation",
+    "selectors": [
+      "isRemoteIPThreatCheck"
+    ],
+    "reason": "Reputation this node builds for a remote sender from repeated reject verdicts. It names the sender's address but never vouches for that address by itself, so it keys on the address in the attacker bucket; one finding cannot open an incident under the daemon threshold, and joining an open incident never promotes its kind.",
+    "checks": [
+      "mail_spam_source"
+    ]
+  },
+  {
     "kind": "web_attack",
     "selectors": [
       "isInboundWebAttackCheck"

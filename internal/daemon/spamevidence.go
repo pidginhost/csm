@@ -46,13 +46,17 @@ func (d *Daemon) recordSpamEvidence(line string, at time.Time, cfg *config.Confi
 	if w != nil && !removed {
 		weight = w.Weight
 	}
-	never := func(a netip.Addr) bool {
-		return notRecordable(a) || isInfraIPDaemon(a.String(), d.antispamInfraIPs(cfg))
-	}
+	never := func(a netip.Addr) bool { return d.spamSenderExcluded(a, cfg) }
 	ip, v := spamEvidence(line, cfg.EmailProtection.Antispam, never, weight)
 	if v != ipmap.NoVerdict {
 		adb.RecordMailVerdict(ip, v == ipmap.SpamVerdict, at)
 	}
+}
+
+// spamSenderExcluded reports a sender no spam evidence may name: whitelisted,
+// the host's own or an infra_ips address.
+func (d *Daemon) spamSenderExcluded(a netip.Addr, cfg *config.Config) bool {
+	return notRecordable(a) || isInfraIPDaemon(a.String(), d.antispamInfraIPs(cfg))
 }
 
 // notRecordable reports a whitelisted or host-owned address.

@@ -12,10 +12,16 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 ### Security
 
 - Files are now reported as not scanned by YARA until its rules have loaded, instead of passing unchecked.
+- Mail provider lookups no longer risk excessive memory use.
 - The daemon log now escapes line breaks and control characters in values, so crafted file names cannot forge log lines.
 - YARA scans no longer reopen tenant files by path or write temporary copies of large files to disk.
 - PHP taint analysis now runs in a locked-down worker with no root, network or account file access; files are reported unexamined when it cannot start.
 - YARA scanning now runs in a locked-down worker without root, so a crafted file can no longer reach a root process through it.
+
+### Added
+
+- Nodes can now load central abuse lists that include spam sources.
+- Operators can opt in to report repeated spam senders to the central abuse database; shared mail services are never reported.
 
 ### Changed
 

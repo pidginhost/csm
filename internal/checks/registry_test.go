@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -43,6 +44,20 @@ func TestPublicCheckInfosExcludesInternal(t *testing.T) {
 	for _, c := range PublicCheckInfos() {
 		if c.Internal {
 			t.Errorf("PublicCheckInfos should not include internal check %q", c.Name)
+		}
+	}
+}
+
+// mail_spam_source is report only: the reporting node never blocks or
+// challenges the sender, and no producer mints admission evidence from it.
+func TestMailSpamSourceHasNoResponse(t *testing.T) {
+	want := CheckInfo{Name: "mail_spam_source", Category: CategoryEmail, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide}
+	if got, ok := LookupCheck("mail_spam_source"); !ok || got != want {
+		t.Fatalf("registry entry = %+v (found %v), want %+v", got, ok, want)
+	}
+	for _, p := range ProducerTable() {
+		if slices.Contains(p.Spec.Checks, "mail_spam_source") {
+			t.Errorf("producer %s lists mail_spam_source", p.Spec.ID)
 		}
 	}
 }

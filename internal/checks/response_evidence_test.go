@@ -83,6 +83,7 @@ var notAddressEvidence = map[string]string{
 	"ftp_login_after_bruteforce":   "no response policy; candidate for a reviewed compromise decision",
 	"mail_account_spray":           "most recent of many sources of a per-mailbox summary",
 	"mail_bruteforce_suspected":    "advisory for an established source",
+	"mail_spam_source":             "report only; no local response by design",
 	"modsec_block_realtime":        "ModSecurity already denied the request",
 	"modsec_classifier_gap":        "record of CSM's own rule classification coverage",
 	"modsec_low_confidence_burst":  "low-confidence advisory",
@@ -330,8 +331,8 @@ func TestAddressProducersAreClassified(t *testing.T) {
 	}
 	// The database malware response reports session addresses instead of
 	// emitting an address-bearing finding (ruling R9).
-	if len(producers) != 67 {
-		t.Fatalf("scan found %d address producers; review the change from the pinned 67 producers", len(producers))
+	if len(producers) != 68 {
+		t.Fatalf("scan found %d address producers; review the change from the pinned 68 producers", len(producers))
 	}
 	for name, reason := range notAddressEvidence {
 		if strings.TrimSpace(reason) == "" {

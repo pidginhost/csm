@@ -352,6 +352,7 @@ var checkRegistry = []CheckInfo{
 	{Name: "mail_per_account", Category: CategoryEmail, Correlation: CorrelationSecurityEvent, CorrelationGap: gapEnvelopeSender},
 	{Name: "mail_queue", Category: CategoryEmail, Correlation: CorrelationIgnored, CorrelationReason: reasonHostScope},
 	{Name: "mail_queue_unavailable", Category: CategoryEmail, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
+	{Name: "mail_spam_source", Category: CategoryEmail, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide},
 	{Name: "phishing_credential_log", Category: CategoryEmail, Correlation: CorrelationSecurityEvent, Response: ResponsePolicy{NeverChallenge: true}},
 	{Name: "phishing_directory", Category: CategoryEmail, Correlation: CorrelationSecurityEvent, Response: ResponsePolicy{NeverChallenge: true}},
 	{Name: "phishing_iframe", Category: CategoryEmail, Correlation: CorrelationSecurityEvent, Response: ResponsePolicy{NeverChallenge: true}},

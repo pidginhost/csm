@@ -182,7 +182,7 @@ func TestClassifyKindStateChangingAccountActionNotWebAttack(t *testing.T) {
 // compromised tenant, so they classify as web_attack (24h window) rather
 // than the 7-day web_account_compromise bucket.
 func TestClassifyKindRemoteIPThreatScoreIsWebAttack(t *testing.T) {
-	for _, check := range []string{"ip_reputation"} {
+	for _, check := range []string{"ip_reputation", "mail_spam_source"} {
 		got := ClassifyKind(alert.Finding{Check: check, Severity: alert.Critical, SourceIP: "203.0.113.7"})
 		if got != KindWebAttack {
 			t.Errorf("%s with only a source IP: got %v, want web_attack", check, got)

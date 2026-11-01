@@ -347,6 +347,12 @@ spam verdicts and no ham reach 50, which lists the sender as `CSM_IP_SPAM`.
 Spam evidence never blocks an address, never changes its threat score and is
 never reported to AbuseIPDB.
 
+With `spam` in `reputation.report.classes`, a sender that rspamd keeps
+rejecting, and that has sent no clean mail recently, is reported to the
+central abuse database. Senders of the shared mail services are never
+reported. Dry-run nodes count their verdicts too. See
+[Abuse Reporting](threat-intel.md#abuse-reporting).
+
 The Threat page's Spam column shows spam and ham counts and the spam score,
 with a badge once the score reaches the listing threshold of 50. The badge
 does not confirm a listing: the feed may be off, and the map still skips

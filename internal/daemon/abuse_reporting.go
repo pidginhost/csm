@@ -73,6 +73,10 @@ func (d *Daemon) startAbuseReporting() func() {
 		Enabled:   enabled,
 		Protected: func(ip net.IP) bool { return firebreak(ip.String()) },
 	}
+	spam := d.newSpamSources(enabled)
+	if spam != nil {
+		gate.SharedSenders = spam.covers
+	}
 	stopCh := make(chan struct{})
 	doneCh := make(chan struct{})
 	d.abuseReportStop = stopCh
@@ -84,6 +88,10 @@ func (d *Daemon) startAbuseReporting() func() {
 			consumer.enqueue(r)
 		}
 	})
+	if spam != nil {
+		// Started after the hook, so every finding it raises can be reported.
+		d.startSpamSources(spam)
+	}
 	log.Printf("abuse-reporting: enabled for %d target(s), %d class(es)", len(targets), len(enabled))
 
 	return func() {
@@ -110,6 +118,11 @@ func (q abuseReportQueues) QueueStatuses(now time.Time) map[string]queuehealth.S
 }
 
 func (d *Daemon) stopAbuseReporting() {
+	// Run has stopped the log watchers by now, so this final save holds every
+	// spam scan they read.
+	if r := d.spamSources.Swap(nil); r != nil {
+		r.stop()
+	}
 	if d.abuseReportStop == nil {
 		return
 	}
@@ -134,6 +147,7 @@ func classSet(names []string) map[reporting.Class]bool {
 		reporting.ClassPHPRelay:           true,
 		reporting.ClassCredentialStuffing: true,
 		reporting.ClassBadASNEgress:       true,
+		reporting.ClassSpam:               true,
 	}
 	out := make(map[reporting.Class]bool)
 	for _, n := range names {

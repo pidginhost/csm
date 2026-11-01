@@ -69,6 +69,7 @@ var emailChecks = []emailCheck{
 	{"email_password_audit_incomplete", ""},
 	{"mail_auth_backend_degraded", ""},
 	{"mail_log_source_unavailable", ""},
+	{"mail_spam_source", ""},
 	{"antispam_apply_failed", ""},
 	{"antispam_controller_open", ""},
 	{"antispam_feed", ""},

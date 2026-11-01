@@ -50,6 +50,7 @@ import (
 	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/queuehealth"
 	"github.com/pidginhost/csm/internal/sdnotify"
+	"github.com/pidginhost/csm/internal/sharedsenders"
 	"github.com/pidginhost/csm/internal/signatures"
 	"github.com/pidginhost/csm/internal/state"
 	"github.com/pidginhost/csm/internal/store"
@@ -171,6 +172,12 @@ type Daemon struct {
 	antispamFeeds atomic.Pointer[reconcile.FeedState]
 	// rspamdStats is written by reconcile passes and read by web UI requests.
 	rspamdStats atomic.Pointer[rspamdStatsSource]
+	// spamSources is set by startAbuseReporting after the log watchers that
+	// read it have started.
+	spamSources atomic.Pointer[spamSourceRunner]
+	// spamSourceDNS is the resolver of the spam source detector; nil means
+	// the system resolver. Tests set it before startAbuseReporting.
+	spamSourceDNS sharedsenders.Resolver
 	// forwardGuardMu prevents overlapping attempts from applying stale config.
 	forwardGuardMu sync.Mutex
 	// forwardGuardRetry retains failed or deferred reconcile requests.
@@ -2459,6 +2466,7 @@ func (d *Daemon) handleEximLine(line string, obs alert.Observation, cfg *config.
 		at = time.Now()
 	}
 	d.recordSpamEvidence(line, at, cfg)
+	d.recordSpamSource(line, at, cfg)
 	d.recordMailStatsExim(line, at)
 	return append(findings, d.recordAntispamLine(line, at)...)
 }

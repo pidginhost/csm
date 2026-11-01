@@ -111,6 +111,7 @@ var nonActionableAttackerSide = map[string]string{
 	"http_distributed_flood":       "describes a targeted vhost, not one source",
 	"mail_account_spray":           "per-mailbox summary of many sources",
 	"mail_bruteforce_suspected":    "advisory for an established source",
+	"mail_spam_source":             "report only; no local response by design",
 	"mail_subnet_spray":            "subnet summary; no single-IP block or challenge policy",
 	"smtp_subnet_spray":            "subnet summary; no single-IP block or challenge policy",
 	"modsec_block_realtime":        "ModSecurity already denied the request",
