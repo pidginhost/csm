@@ -185,28 +185,60 @@ func milterBinds(proxy json.RawMessage) ([]string, error) {
 	return workerBinds(fields)
 }
 
+var errNotWired = errors.New("postfix does not pass mail to rspamd's proxy worker")
+
 // RspamdMilters returns the postfix milters that reach rspamd's proxy
-// worker, as MilterAddrs resolves them. Errors quote no command output.
-func RspamdMilters(f HostFacts) ([]string, error) {
+// worker, as MilterAddrs resolves them and as smtpd_milters names them.
+// Errors quote no command output.
+func RspamdMilters(f HostFacts) (addrs, names []string, err error) {
 	pc, err := ParsePostconf(f.Postconf.Stdout)
 	if f.Postconf.Err != nil || err != nil {
-		return nil, errors.New("postconf did not report postfix's milters")
+		return nil, nil, errors.New("postconf did not report postfix's milters")
 	}
 	binds, err := ProxyMilterAddrs([]byte(f.RspamdWorkers.Stdout))
 	if f.RspamdWorkers.Err != nil || err != nil {
-		return nil, errors.New("rspamadm configdump did not report rspamd's proxy worker")
+		return nil, nil, errors.New("rspamadm configdump did not report rspamd's proxy worker")
 	}
-	milters, _ := pc.MilterAddrs(f.PostfixMaster)
-	var out []string
-	for _, m := range milters {
-		if MilterWired([]string{m}, binds) {
-			out = append(out, m)
+	for _, m := range pc.Milters {
+		one := pc
+		one.Milters = []string{m}
+		resolved, _ := one.MilterAddrs(f.PostfixMaster)
+		if MilterWired(resolved, binds) {
+			addrs, names = append(addrs, resolved...), append(names, m)
 		}
 	}
-	if len(out) == 0 {
-		return nil, errors.New("postfix does not pass mail to rspamd's proxy worker")
+	if len(addrs) == 0 {
+		return nil, nil, errNotWired
 	}
-	return out, nil
+	return addrs, names, nil
+}
+
+// ScanSource is where CSM reads a Postfix host's scan records (spec section
+// 5.2): Log is the rspamd log file, "" when rspamd logs elsewhere, and
+// Milters are the milters that reach rspamd as smtpd_milters names them,
+// the way postfix's warnings name a milter that failed.
+type ScanSource struct {
+	Log     string
+	Milters []string
+}
+
+// PostfixScanSource reads the ScanSource of a Postfix host. ok is false
+// when rspamd's logging settings, postconf or rspamd's worker dump could
+// not be read.
+func PostfixScanSource(f HostFacts) (src ScanSource, ok bool) {
+	switch {
+	case f.RspamdLog.Type == "":
+		return ScanSource{}, false
+	// A log CSM could not inspect is still the file rspamd writes.
+	case f.RspamdLog.Type == "file" && path.IsAbs(f.RspamdLog.Path):
+		src.Log = f.RspamdLog.Path
+	}
+	_, names, err := RspamdMilters(f)
+	if err != nil && !errors.Is(err, errNotWired) {
+		return ScanSource{}, false
+	}
+	src.Milters = names
+	return src, true
 }
 
 // MilterWired reports whether any postfix milter reaches one of the proxy

@@ -13,23 +13,19 @@ import (
 	"github.com/pidginhost/csm/internal/netutil"
 )
 
-// spamEvidence reads one Exim main-log line as a verdict about the sender
-// of a scanned message (feeds spec 7). never excludes whitelisted and the
-// host's own addresses; weight is the CSM_IP score the last written map
-// gives the sender, in tenths.
-func spamEvidence(line string, as config.AntispamConfig, never func(netip.Addr) bool, weight func(netip.Addr) int) (string, ipmap.Verdict) {
-	if !as.Enabled {
-		return "", ipmap.NoVerdict
-	}
-	s, ok := antispam.ParseScan(line)
-	if !ok || !ipmap.Recordable(s.IP, nil) || never(s.IP) {
+// spamEvidence reads one scan as a verdict about the sender of the scanned
+// message (feeds spec 7). never excludes whitelisted and the host's own
+// addresses; weight is the CSM_IP score the last written map gives the
+// sender, in tenths.
+func spamEvidence(s antispam.Scan, as config.AntispamConfig, never func(netip.Addr) bool, weight func(netip.Addr) int) (string, ipmap.Verdict) {
+	if !as.Enabled || !ipmap.Recordable(s.IP, nil) || never(s.IP) {
 		return "", ipmap.NoVerdict
 	}
 	return s.IP.String(), ipmap.Judge(s.OK, s.Score, weight(s.IP), as.RejectScore, as.TagScore)
 }
 
 // recordSpamEvidence stores one verdict on the sender's attack DB record.
-func (d *Daemon) recordSpamEvidence(line string, at time.Time, cfg *config.Config) {
+func (d *Daemon) recordSpamEvidence(s antispam.Scan, at time.Time, cfg *config.Config) {
 	adb := attackdb.Global()
 	if adb == nil {
 		return
@@ -47,7 +43,7 @@ func (d *Daemon) recordSpamEvidence(line string, at time.Time, cfg *config.Confi
 		weight = w.Weight
 	}
 	never := func(a netip.Addr) bool { return d.spamSenderExcluded(a, cfg) }
-	ip, v := spamEvidence(line, cfg.EmailProtection.Antispam, never, weight)
+	ip, v := spamEvidence(s, cfg.EmailProtection.Antispam, never, weight)
 	if v != ipmap.NoVerdict {
 		adb.RecordMailVerdict(ip, v == ipmap.SpamVerdict, at)
 	}

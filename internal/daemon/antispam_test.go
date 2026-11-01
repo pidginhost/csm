@@ -510,7 +510,7 @@ func TestAntispamProbeStopsWhenDisabled(t *testing.T) {
 	refused := errors.New("connection refused")
 	calls := usePing(t, refused, refused, refused)
 	delivered := captureDispatch(t)
-	d.recordAntispamLine(scanErrorLine, time.Now())
+	d.recordAntispamScan(scanOf(scanErrorLine), time.Now())
 	probeTimes(d, 3, time.Now())
 	if got := latestChecks(d); got[reconcile.CheckRspamdDown] != 1 || got[reconcile.CheckScanError] != 1 {
 		t.Fatalf("latest while enabled: %v", got)
@@ -601,7 +601,7 @@ func TestStartAntispamKeepsReloadDuringSetup(t *testing.T) {
 	d.scanCtx, d.scanCancel = ctx, cancel
 	t.Cleanup(func() { cancel(); d.wg.Wait() })
 	d.startAntispam()
-	if got := d.recordAntispamLine(scanErrorLine, time.Now()); len(got) != 1 || got[0].Check != reconcile.CheckScanError {
+	if got := d.recordAntispamScan(scanOf(scanErrorLine), time.Now()); len(got) != 1 || got[0].Check != reconcile.CheckScanError {
 		t.Fatalf("startup lost the reloaded antispam switch: %+v", got)
 	}
 }
@@ -620,7 +620,7 @@ func TestReconcileAntispamFollowsTheReloadedSwitch(t *testing.T) {
 		d.wg.Wait()
 	})
 	d.startAntispam()
-	if got := d.recordAntispamLine(scanErrorLine, time.Now()); len(got) != 0 {
+	if got := d.recordAntispamScan(scanOf(scanErrorLine), time.Now()); len(got) != 0 {
 		t.Fatalf("disabled antispam counted a scan error: %+v", got)
 	}
 
@@ -628,7 +628,7 @@ func TestReconcileAntispamFollowsTheReloadedSwitch(t *testing.T) {
 	cfg.EmailProtection.Antispam = config.AntispamConfig{Enabled: true, DryRun: true, RspamdSocket: testScanSocket, RejectScore: 15, TagScore: 6}
 	config.SetActive(cfg)
 	d.reconcileAntispam()
-	if got := d.recordAntispamLine(scanErrorLine, time.Now()); len(got) != 1 || got[0].Check != reconcile.CheckScanError {
+	if got := d.recordAntispamScan(scanOf(scanErrorLine), time.Now()); len(got) != 1 || got[0].Check != reconcile.CheckScanError {
 		t.Fatalf("enabled antispam missed a scan error: %+v", got)
 	}
 
@@ -686,7 +686,7 @@ func TestConfigReloadReconcilesAntispam(t *testing.T) {
 	config.SetActive(cfg)
 	d.reconcileHotReloadables()
 	waitPass(t, passes)
-	if got := d.recordAntispamLine(scanErrorLine, time.Now()); len(got) != 1 {
+	if got := d.recordAntispamScan(scanOf(scanErrorLine), time.Now()); len(got) != 1 {
 		t.Fatalf("reload left health tracking off: %+v", got)
 	}
 }
@@ -717,7 +717,7 @@ func TestUnchangedConfigReloadRechecksAntispam(t *testing.T) {
 			waitPass(t, passes)
 
 			if enabled {
-				if got := d.recordAntispamLine(scanErrorLine, time.Now()); len(got) != 1 || got[0].Check != reconcile.CheckScanError {
+				if got := d.recordAntispamScan(scanOf(scanErrorLine), time.Now()); len(got) != 1 || got[0].Check != reconcile.CheckScanError {
 					t.Fatalf("enabled antispam did not record a scan error: %+v", got)
 				}
 			}
@@ -822,7 +822,7 @@ func TestAntispamReloadClearsLatestHealth(t *testing.T) {
 			refused := errors.New("connection refused")
 			usePing(t, refused, refused, refused)
 			delivered := captureDispatch(t)
-			d.recordAntispamLine(scanErrorLine, time.Now())
+			d.recordAntispamScan(scanOf(scanErrorLine), time.Now())
 			probeTimes(d, 3, time.Now())
 			if got := latestChecks(d); got[reconcile.CheckRspamdDown] != 1 || got[reconcile.CheckScanError] != 1 {
 				t.Fatalf("latest before reload: %v", got)

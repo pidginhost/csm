@@ -55,6 +55,7 @@ const (
 	CodeScores         = "rspamd_scores"
 	CodeControllerOpen = "controller_open"
 	CodeMilter         = "postfix_milter"
+	CodeRspamdLog      = "rspamd_log"
 )
 
 const (
@@ -389,6 +390,15 @@ func checkPostfixHost(f HostFacts) []Problem {
 			add(Definite, "postfix does not pass mail to rspamd's proxy worker")
 		}
 		out = append(out, checkPostfixMessageSize(pc.SizeLimit, f.RspamdOptions)...)
+	}
+	// Scan records stay in rspamd's log. Unreadable logging settings
+	// leave Type empty and say nothing about where it is.
+	if t := f.RspamdLog.Type; t != "" && t != "file" {
+		where := "the journal"
+		if t == "syslog" {
+			where = "syslog"
+		}
+		out = append(out, Problem{Code: CodeRspamdLog, Severity: Warning, Detail: "rspamd logs to " + where + "; CSM reads scan records from a file log"})
 	}
 	out = append(out, checkServices(f)...)
 	return append(out, checkTargets(f.Stack, f.Targets, false)...)

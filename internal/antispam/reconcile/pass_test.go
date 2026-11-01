@@ -584,6 +584,52 @@ func TestPassRendersForTheCollectedStack(t *testing.T) {
 	}
 }
 
+// A pass on a Postfix host says where its scan records come from; a pass
+// that could not read that keeps the last answer, and every other pass
+// clears it.
+func TestPassReportsPostfixScanSource(t *testing.T) {
+	postfix := func(f *antispam.HostFacts) {
+		f.Stack = antispam.StackPostfix
+		f.Postconf = antispam.CommandResult{Stdout: "inet:127.0.0.1:11332\naccept\n0\n/var/spool/postfix\n3.7.11\n"}
+		f.RspamdWorkers = antispam.CommandResult{Stdout: `{"rspamd_proxy": {"bind_socket": "localhost:11332", "milter": true}}`}
+	}
+	want := &antispam.ScanSource{Log: "/var/log/rspamd/rspamd.log", Milters: []string{"inet:127.0.0.1:11332"}}
+	for _, tc := range []struct {
+		name    string
+		enabled bool
+		mutate  func(*antispam.HostFacts)
+		want    *antispam.ScanSource
+	}{
+		{"postfix", true, postfix, want},
+		{"postfix, logging unreadable", true, func(f *antispam.HostFacts) {
+			postfix(f)
+			f.RspamdLog = antispam.LogFacts{Err: errors.New("rspamd's logging settings are not readable")}
+		}, nil},
+		{"exim", true, func(f *antispam.HostFacts) { f.Stack = antispam.StackExim }, &antispam.ScanSource{}},
+		{"disabled", false, postfix, &antispam.ScanSource{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := &fakeHost{}
+			r := h.reconciler()
+			r.Collect = func(context.Context, string) antispam.HostFacts {
+				f := goodFeedFacts()
+				tc.mutate(&f)
+				return f
+			}
+			r.Installed = func() antispam.HostFacts { return r.Collect(context.Background(), "") }
+			out := r.Pass(context.Background(), desired(tc.enabled))
+			if !reflect.DeepEqual(out.ScanSource, tc.want) {
+				t.Fatalf("scan source %+v, want %+v", out.ScanSource, tc.want)
+			}
+		})
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if out := (&fakeHost{}).reconciler().Pass(ctx, desired(true)); out.ScanSource != nil {
+		t.Fatalf("canceled pass replaced the scan source with %+v", out.ScanSource)
+	}
+}
+
 // Exemptions come from csm.yaml in the order written; the config loader has
 // already lowered their case.
 func TestDesiredFromConfigExempt(t *testing.T) {

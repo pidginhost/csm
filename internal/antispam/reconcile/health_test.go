@@ -3,6 +3,7 @@ package reconcile
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/antispam"
 )
 
 const (
@@ -114,7 +116,7 @@ func assertScanErrors(t *testing.T, got []alert.Finding, count int, first, last 
 	if count == 1 {
 		scans = "scan"
 	}
-	want := fmt.Sprintf("Exim logged %d failed %s since %s, the last at %s.",
+	want := fmt.Sprintf("The mail server logged %d failed %s since %s, the last at %s.",
 		count, scans, first.UTC().Format(time.RFC3339), last.UTC().Format(time.RFC3339))
 	if !strings.HasPrefix(got[0].Details, want) {
 		t.Fatalf("scan error details %q, want prefix %q", got[0].Details, want)
@@ -153,6 +155,47 @@ func TestHealthTracksScanErrors(t *testing.T) {
 	next, _ := h.Line(scanErrorLine, at(9))
 	assertScanErrors(t, next, 1, at(9), at(9))
 	assertScanErrors(t, h.Active(), 1, at(9), at(9))
+}
+
+// Line is ParseScan and Scan: an Exim line counts exactly as its parsed
+// scan does, and a line that is no marker counts as nothing.
+func TestHealthScanMatchesLine(t *testing.T) {
+	lines := []string{scanErrorLine, forgedLine, scanErrorLine, scanOKLine, scanOKLine, scanOKLine + " extra", scanErrorLine, ""}
+	byLine, byScan := enabledHealth(), enabledHealth()
+	for i, line := range lines {
+		lineFindings, lineRecovered := byLine.Line(line, at(i))
+		var scanFindings []alert.Finding
+		var scanRecovered bool
+		if s, ok := antispam.ParseScan(line); ok {
+			scanFindings, scanRecovered = byScan.Scan(s, at(i))
+		}
+		if !reflect.DeepEqual(lineFindings, scanFindings) || lineRecovered != scanRecovered {
+			t.Fatalf("line %d: Line = %+v, %t; Scan = %+v, %t", i, lineFindings, lineRecovered, scanFindings, scanRecovered)
+		}
+		if a, b := byLine.Active(), byScan.Active(); !reflect.DeepEqual(a, b) {
+			t.Fatalf("line %d: active %+v through Line, %+v through Scan", i, a, b)
+		}
+	}
+	assertScanErrors(t, byScan.Active(), 1, at(6), at(6))
+}
+
+// Postfix logs no scan record for mail it could not pass to rspamd: the
+// daemon reports each failure as a failed scan, and rspamd's next record
+// clears it.
+func TestHealthScanCountsPostfixFailures(t *testing.T) {
+	h := enabledHealth()
+	first, _ := h.Scan(antispam.Scan{}, at(0))
+	assertScanErrors(t, first, 1, at(0), at(0))
+	h.Scan(antispam.Scan{}, at(3))
+	assertScanErrors(t, h.Active(), 2, at(0), at(3))
+	record := antispam.Scan{OK: true, Mode: "enforce", Policy: "on", Score: 229, Decision: "reject", MsgID: "4XyZ0b1c2D"}
+	if got, recovered := h.Scan(record, at(4)); len(got) != 0 || !recovered || len(h.Active()) != 0 {
+		t.Fatalf("scan record: notices %+v, recovered %t, active %+v", got, recovered, h.Active())
+	}
+	h.SetEnabled(false, testSocket)
+	if got, _ := h.Scan(antispam.Scan{}, at(5)); len(got) != 0 || len(h.Active()) != 0 {
+		t.Fatalf("disabled health counted a failure: %+v", got)
+	}
 }
 
 func TestHealthIgnoresForgedMarkers(t *testing.T) {
@@ -402,7 +445,7 @@ func TestHealthStalePingsPreserveCurrentStreaks(t *testing.T) {
 func TestHealthFindingText(t *testing.T) {
 	h := enabledHealth()
 	got, _ := h.Line(scanErrorLine, at(0))
-	if len(got) != 1 || !strings.HasPrefix(got[0].Details, "Exim logged 1 failed scan since ") {
+	if len(got) != 1 || !strings.HasPrefix(got[0].Details, "The mail server logged 1 failed scan since ") {
 		t.Fatalf("first scan error: %+v", got)
 	}
 	for i := range pingDown {

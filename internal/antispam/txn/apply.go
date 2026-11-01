@@ -148,7 +148,7 @@ func (h *Host) Apply(s antispam.Settings) antispam.Result {
 // postfix's configuration; probes after each reload include a connection to
 // every milter postfix passes mail to rspamd through.
 func (t *tx) applyPostfix(s antispam.Settings, f antispam.HostFacts, installed map[string]string) antispam.Result {
-	milters, err := antispam.RspamdMilters(f)
+	milters, _, err := antispam.RspamdMilters(f)
 	if err != nil {
 		return failed(StepPreconditions, err)
 	}

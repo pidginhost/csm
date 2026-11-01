@@ -248,3 +248,69 @@ func TestParseScanRejectsMalformedSender(t *testing.T) {
 		}
 	}
 }
+
+// rspamdPrefix is what rspamd writes before a Lua plugin's message: the
+// time, process, task ID, module and the Lua file and line.
+const rspamdPrefix = "2026-11-01 15:19:06 #2273(normal) <9f7812>; lua; csm_scope.lua:91: "
+
+func TestParseRspamdScan(t *testing.T) {
+	const record = `CSM-ANTISPAM event=scan mode=enforce policy=on result=ok score=229 action="reject" decision=reject ip=198.51.100.7 qid=CSMSCOPE04`
+	for _, tc := range []struct {
+		name string
+		line string
+		want Scan
+	}{
+		{"reject", rspamdPrefix + record,
+			Scan{OK: true, Mode: "enforce", Policy: "on", Score: 229, Decision: "reject", IP: netip.MustParseAddr("198.51.100.7"), MsgID: "CSMSCOPE04"}},
+		{"exempt", rspamdPrefix + `CSM-ANTISPAM event=scan mode=dry-run policy=off result=ok score=-15 action="no action" decision=unfiltered ip=2001:db8::25 qid=4XyZ0b1c2D`,
+			Scan{OK: true, Mode: "dry-run", Policy: "off", Score: -15, Decision: "unfiltered", IP: netip.MustParseAddr("2001:db8::25"), MsgID: "4XyZ0b1c2D"}},
+		{"mapped sender, no queue id", rspamdPrefix + `CSM-ANTISPAM event=scan mode=enforce policy=on result=ok score=0 action="no action" decision=none ip=::ffff:203.0.113.9 qid=`,
+			Scan{OK: true, Mode: "enforce", Policy: "on", Decision: "none", IP: netip.MustParseAddr("203.0.113.9")}},
+		{"no sender", rspamdPrefix + `CSM-ANTISPAM event=scan mode=enforce policy=on result=ok score=60 action="add_header" decision=tag ip= qid=CSMSCOPE05`,
+			Scan{OK: true, Mode: "enforce", Policy: "on", Score: 60, Decision: "tag", MsgID: "CSMSCOPE05"}},
+		{"other line number, fractional seconds", "2026-11-01 15:19:06.042 #31(rspamd_proxy) <0a1b2c>; lua; csm_scope.lua:7: " + record,
+			Scan{OK: true, Mode: "enforce", Policy: "on", Score: 229, Decision: "reject", IP: netip.MustParseAddr("198.51.100.7"), MsgID: "CSMSCOPE04"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := ParseRspamdScan(tc.line)
+			if !ok || got != tc.want {
+				t.Fatalf("ParseRspamdScan(%q) = %+v, %v; want %+v", tc.line, got, ok, tc.want)
+			}
+		})
+	}
+
+	for _, tc := range []struct{ name, line string }{
+		{"other Lua file", strings.Replace(rspamdPrefix, "csm_scope.lua", "other.lua", 1) + record},
+		{"Lua file with a longer name", strings.Replace(rspamdPrefix, "csm_scope.lua", "my_csm_scope.lua", 1) + record},
+		{"other module", strings.Replace(rspamdPrefix, "; lua; ", "; task; ", 1) + record},
+		// The record opens right after rspamd's own prefix.
+		{"record after another field", strings.Replace(rspamdPrefix, "; lua; ", "; task; lua; ", 1) + record},
+		{"no line number", strings.Replace(rspamdPrefix, ".lua:91:", ".lua::", 1) + record},
+		{"quoted by another plugin", "2026-11-01 15:19:06 #2273(normal) <9f7812>; lua; other.lua:12: subject: x; lua; csm_scope.lua:91: " + record},
+		{"quoted by a task log", "2026-11-01 15:19:06 #2273(normal) <9f7812>; task; rspamd_task_write_log: id: <x; lua; csm_scope.lua:91: " + record},
+		{"quoted in a line without a task", "2026-11-01 15:19:06 #2273(normal) rspamd_url_parse: url x; lua; csm_scope.lua:91: " + record},
+		{"quoted after a task ID", "2026-11-01 15:19:06 #2273(normal) lua_log: <x>; lua; csm_scope.lua:91: " + record},
+		{"text after the record", rspamdPrefix + record + " extra"},
+		{"second record after the record", rspamdPrefix + record + " " + record},
+		{"carriage return", rspamdPrefix + record + "\r"},
+		{"control character in prefix", strings.Replace(rspamdPrefix, " ", "\x00", 1) + record},
+		{"Unicode space in prefix", strings.Replace(rspamdPrefix, " ", "\u0085", 1) + record},
+		{"opted-out decision", rspamdPrefix + strings.Replace(record, "policy=on", "policy=off", 1)},
+		{"opted-in unfiltered", rspamdPrefix + strings.Replace(record, "decision=reject", "decision=unfiltered", 1)},
+		{"scan error", rspamdPrefix + `CSM-ANTISPAM event=scan mode=enforce policy=on result=error score=none action="unavailable" decision=none ip=198.51.100.7 qid=CSMSCOPE04`},
+		{"no queue id field", rspamdPrefix + strings.TrimSuffix(record, " qid=CSMSCOPE04")},
+		{"no sender field", rspamdPrefix + strings.Replace(record, " ip=198.51.100.7", "", 1)},
+		{"malformed sender", rspamdPrefix + strings.Replace(record, "198.51.100.7", "198.51.100.256", 1)},
+		{"queue id with punctuation", rspamdPrefix + strings.Replace(record, "CSMSCOPE04", "CSM.SCOPE", 1)},
+		{"score out of range", rspamdPrefix + strings.Replace(record, "score=229", "score=2147483648", 1)},
+		{"Exim marker", markerPrefix + `CSM-ANTISPAM event=scan mode=enforce policy=on result=ok score=229 action="reject" decision=reject ip=198.51.100.7`},
+		{"record alone", record},
+		{"empty", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got, ok := ParseRspamdScan(tc.line); ok || got != (Scan{}) {
+				t.Fatalf("ParseRspamdScan(%q) = %+v, %v; want no record", tc.line, got, ok)
+			}
+		})
+	}
+}

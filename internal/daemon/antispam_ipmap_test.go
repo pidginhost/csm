@@ -257,7 +257,7 @@ func TestIPMapMonitorsRetainedMapAfterFailedRemoval(t *testing.T) {
 		t.Errorf("active retained map write failure raised %d findings, want 1", got)
 	}
 	line := strings.Replace(spamLine("203.0.113.130"), "score=200", "score=170", 1)
-	d.recordSpamEvidence(line, time.Now(), cfg)
+	d.recordSpamEvidence(scanOf(line), time.Now(), cfg)
 	if rec := adb.LookupIP("203.0.113.130"); rec != nil {
 		t.Errorf("retained map's own score became spam evidence: %+v", rec.Mail)
 	}

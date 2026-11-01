@@ -219,3 +219,45 @@ func TestMilterWired(t *testing.T) {
 		})
 	}
 }
+
+// Postfix names a milter in its warnings as smtpd_milters does, before the
+// chroot resolves a unix path, so the source keeps the configured names.
+func TestPostfixScanSource(t *testing.T) {
+	const unixProxy = `{"rspamd_proxy": {"bind_socket": "/var/spool/postfix/rspamd/milter.sock mode=0666", "milter": true}}`
+	log := LogFacts{Type: "file", Path: "/var/log/rspamd/rspamd.log"}
+	chrooted := CommandResult{Stdout: "smtp/inet/command = smtpd\nsmtp/inet/chroot = y\n"}
+	boom := errors.New("boom")
+	for _, tc := range []struct {
+		name   string
+		f      HostFacts
+		want   ScanSource
+		wantOK bool
+	}{
+		{"inet milter", HostFacts{RspamdLog: log, Postconf: CommandResult{Stdout: postconfOut("inet:localhost:8891, inet:127.0.0.1:11332", "0")}, RspamdWorkers: CommandResult{Stdout: proxyWorkers}},
+			ScanSource{Log: "/var/log/rspamd/rspamd.log", Milters: []string{"inet:127.0.0.1:11332"}}, true},
+		{"chrooted unix milters", HostFacts{RspamdLog: log, Postconf: CommandResult{Stdout: postconfOut("{ unix:/rspamd/milter.sock, connect_timeout=10s }, unix:rspamd/milter.sock", "0")},
+			PostfixMaster: chrooted, RspamdWorkers: CommandResult{Stdout: unixProxy}},
+			ScanSource{Log: "/var/log/rspamd/rspamd.log", Milters: []string{"unix:/rspamd/milter.sock", "unix:rspamd/milter.sock"}}, true},
+		// Mail that never reaches rspamd leaves no failure to read.
+		{"not wired", HostFacts{RspamdLog: log, Postconf: CommandResult{Stdout: postconfOut("inet:localhost:8891", "0")}, RspamdWorkers: CommandResult{Stdout: proxyWorkers}},
+			ScanSource{Log: "/var/log/rspamd/rspamd.log"}, true},
+		{"journal", HostFacts{RspamdLog: LogFacts{Type: "console"}, Postconf: CommandResult{Stdout: postconfOut("inet:127.0.0.1:11332", "0")}, RspamdWorkers: CommandResult{Stdout: proxyWorkers}},
+			ScanSource{Milters: []string{"inet:127.0.0.1:11332"}}, true},
+		// A log CSM could not inspect is still the file rspamd writes.
+		{"log not inspectable", HostFacts{RspamdLog: LogFacts{Type: "file", Path: "/var/log/rspamd/rspamd.log", Err: boom}, Postconf: CommandResult{Stdout: postconfOut("inet:127.0.0.1:11332", "0")}, RspamdWorkers: CommandResult{Stdout: proxyWorkers}},
+			ScanSource{Log: "/var/log/rspamd/rspamd.log", Milters: []string{"inet:127.0.0.1:11332"}}, true},
+		{"relative log", HostFacts{RspamdLog: LogFacts{Type: "file", Path: "rspamd.log", Err: boom}, Postconf: CommandResult{Stdout: postconfOut("inet:127.0.0.1:11332", "0")}, RspamdWorkers: CommandResult{Stdout: proxyWorkers}},
+			ScanSource{Milters: []string{"inet:127.0.0.1:11332"}}, true},
+		{"logging settings unreadable", HostFacts{RspamdLog: LogFacts{Err: boom}, Postconf: CommandResult{Stdout: postconfOut("inet:127.0.0.1:11332", "0")}, RspamdWorkers: CommandResult{Stdout: proxyWorkers}},
+			ScanSource{}, false},
+		{"postconf failed", HostFacts{RspamdLog: log, Postconf: CommandResult{Err: boom}, RspamdWorkers: CommandResult{Stdout: proxyWorkers}}, ScanSource{}, false},
+		{"worker dump unreadable", HostFacts{RspamdLog: log, Postconf: CommandResult{Stdout: postconfOut("inet:127.0.0.1:11332", "0")}, RspamdWorkers: CommandResult{Stdout: "Section worker NOT FOUND\n"}}, ScanSource{}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := PostfixScanSource(tc.f)
+			if ok != tc.wantOK || !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("PostfixScanSource = %+v, %t; want %+v, %t", got, ok, tc.want, tc.wantOK)
+			}
+		})
+	}
+}

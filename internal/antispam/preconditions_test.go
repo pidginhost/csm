@@ -632,6 +632,44 @@ func TestCheckHostPostfix(t *testing.T) {
 	}
 }
 
+// CSM reads a Postfix host's scan records from rspamd's log file. rspamd
+// logging elsewhere leaves the integration working without them, so CSM
+// warns instead of refusing.
+func TestCheckHostPostfixRspamdLog(t *testing.T) {
+	for _, tc := range []struct {
+		log    LogFacts
+		detail string
+	}{
+		{LogFacts{Type: "file", Path: "/var/log/rspamd/rspamd.log"}, ""},
+		{LogFacts{Type: "file", Path: "/var/log/rspamd/rspamd.log", Missing: true}, ""},
+		// Unreadable logging settings are reported where they matter.
+		{LogFacts{Err: errors.New("rspamd's logging settings are not readable")}, ""},
+		{LogFacts{Type: "console"}, "rspamd logs to the journal; CSM reads scan records from a file log"},
+		{LogFacts{Type: "syslog"}, "rspamd logs to syslog; CSM reads scan records from a file log"},
+	} {
+		t.Run(tc.log.Type, func(t *testing.T) {
+			f := postfixFacts()
+			f.RspamdLog = tc.log
+			got := CheckHost(f)
+			if tc.detail == "" {
+				if len(got) != 0 {
+					t.Fatalf("got %+v, want none", got)
+				}
+				return
+			}
+			if len(got) != 1 || got[0] != (Problem{Code: CodeRspamdLog, Severity: Warning, Detail: tc.detail}) {
+				t.Fatalf("got %+v, want one %s warning %q", got, CodeRspamdLog, tc.detail)
+			}
+		})
+	}
+	// The Exim backend reads its own markers from Exim's log.
+	exim := goodFacts()
+	exim.RspamdLog = LogFacts{Type: "console"}
+	if got := CheckHost(exim); len(got) != 0 {
+		t.Fatalf("Exim host reported %+v", got)
+	}
+}
+
 // rspamd passes a message over max_message unscanned; that is the host's
 // choice, so CSM warns instead of refusing.
 func TestCheckHostPostfixMessageSize(t *testing.T) {

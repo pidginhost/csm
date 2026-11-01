@@ -328,8 +328,8 @@ worker "normal" {
 	return &scopeRspamd{addr: addr, log: log}
 }
 
-// scopeRecord is a scan record as Task 5 reads it: logged from CSM's Lua
-// file, then the full grammar.
+// scopeRecord is a scan record: logged from CSM's Lua file, then the full
+// grammar.
 var scopeRecord = regexp.MustCompile(`; lua; csm_scope\.lua:[0-9]+: CSM-ANTISPAM (event=scan mode=(?:enforce|dry-run) policy=(?:on|off) result=ok score=(-?[0-9]+) action="[a-z_ ]*" decision=(?:unfiltered|reject|tag|none) ip=[0-9a-f.:]* qid=[0-9A-Za-z_]*)$`)
 
 func (r *scopeRspamd) check(t *testing.T, s Settings, c scopeCase) {
@@ -443,6 +443,14 @@ func (r *scopeRspamd) check(t *testing.T, s Settings, c scopeCase) {
 		mode, policy, score, reply.Action, decision, ip, qid)
 	if m[1] != want {
 		t.Errorf("%s: scan record\n%s\nwant\n%s", c.name, m[1], want)
+	}
+	// The daemon reads the line as rspamd wrote it, prefix included.
+	wantScan := Scan{OK: true, Mode: mode, Policy: policy, Score: score, Decision: decision, MsgID: qid}
+	if ip != "" {
+		wantScan.IP = netip.MustParseAddr(ip)
+	}
+	if got, ok := ParseRspamdScan(records[0]); !ok || got != wantScan {
+		t.Errorf("%s: ParseRspamdScan(%q) = %+v, %t; want %+v", c.name, records[0], got, ok, wantScan)
 	}
 }
 

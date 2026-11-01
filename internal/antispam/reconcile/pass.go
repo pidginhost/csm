@@ -120,6 +120,10 @@ type Outcome struct {
 	// controller.
 	Stats       antispam.StatsEndpoint
 	StatsReason string
+	// ScanSource is where the daemon reads scan records on a Postfix host,
+	// empty elsewhere and while antispam is disabled. Nil when this pass
+	// could not tell; the last one stands.
+	ScanSource *antispam.ScanSource
 }
 
 // LearnerTarget is what a learning engine is built for. A change means a
@@ -235,6 +239,13 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) (out Outcome) {
 	out = Outcome{Checks: []string{CheckPrecondition, CheckApplyFailed, CheckFeed, CheckLearning}, LearningGate: gate}
 	if d.Enabled {
 		out.Stats, out.StatsReason = antispam.StatsEndpointFor(f)
+	}
+	out.ScanSource = &antispam.ScanSource{}
+	if d.Enabled && f.Stack == antispam.StackPostfix {
+		out.ScanSource = nil
+		if src, ok := antispam.PostfixScanSource(f); ok {
+			out.ScanSource = &src
+		}
 	}
 	// List backups after the worker finishes, including failed rollbacks.
 	// An unreadable directory or an abandoned pass keeps the last findings.

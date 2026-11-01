@@ -761,6 +761,49 @@ func FuzzParseScan(f *testing.F) {
 	})
 }
 
+func FuzzParseRspamdScanNeverPanics(f *testing.F) {
+	const record = `CSM-ANTISPAM event=scan mode=enforce policy=on result=ok score=229 action="reject" decision=reject ip=198.51.100.7 qid=CSMSCOPE04`
+	for _, seed := range []string{
+		rspamdPrefix + record,
+		rspamdPrefix + `CSM-ANTISPAM event=scan mode=dry-run policy=off result=ok score=-15 action="no action" decision=unfiltered ip=2001:db8::25 qid=`,
+		"2026-11-01 15:19:06 #2273(normal) <9f7812>; lua; other.lua:12: subject: x; lua; csm_scope.lua:91: " + record,
+		"2026-11-01 15:19:06 #2273(normal) rspamd_url_parse: url x; lua; csm_scope.lua:91: " + record,
+		rspamdPrefix + record + " extra",
+		markerPrefix + record,
+		"", "; ", "; lua; csm_scope.lua:", ": ; lua; csm_scope.lua:1: " + record,
+	} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, line string) {
+		s, ok := ParseRspamdScan(line)
+		if !ok {
+			if s != (Scan{}) {
+				t.Fatalf("no record but %+v", s)
+			}
+			return
+		}
+		i := strings.Index(line, "; ")
+		if i < 0 || !strings.HasPrefix(line[i:], "; lua; csm_scope.lua:") || strings.Contains(line[:i], ": ") || strings.ContainsAny(line, "\r\n") {
+			t.Fatalf("accepted %q", line)
+		}
+		for _, r := range line {
+			if r < ' ' || r > '~' {
+				t.Fatalf("accepted non-printable ASCII character %U", r)
+			}
+		}
+		if !s.OK || (s.Policy == "off") != (s.Decision == "unfiltered") || int(int32(s.Score)) != s.Score {
+			t.Fatalf("inconsistent record %+v from %q", s, line)
+		}
+		rest, qid, _ := strings.Cut(line[strings.LastIndex(line, " ip="):], " qid=")
+		if qid != s.MsgID {
+			t.Fatalf("queue ID %q, want %q", s.MsgID, qid)
+		}
+		if a, err := netip.ParseAddr(strings.TrimPrefix(rest, " ip=")); (err == nil) != s.IP.IsValid() || err == nil && a.Unmap() != s.IP {
+			t.Fatalf("sender %v does not match %q", s.IP, rest)
+		}
+	})
+}
+
 func FuzzParseControllerConfig(f *testing.F) {
 	for _, seed := range []string{
 		workerDump(`{"bind_socket":"localhost:11334","count":1,"password":"q1","secure_ip":["127.0.0.1","::1"]}`),

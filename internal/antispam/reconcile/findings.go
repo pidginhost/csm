@@ -147,7 +147,7 @@ func scanErrorFinding(count int, first, last time.Time) alert.Finding {
 	return alert.Finding{
 		Severity: alert.Warning, Check: CheckScanError, DedupKey: "scan", Timestamp: last,
 		Message: "Antispam scans are failing",
-		Details: fmt.Sprintf("Exim logged %d failed %s since %s, the last at %s. Mail is delivered without spam filtering while scans fail; check rspamd's log.",
+		Details: fmt.Sprintf("The mail server logged %d failed %s since %s, the last at %s. Mail is delivered without spam filtering while scans fail; check rspamd's log.",
 			count, scans, first.UTC().Format(time.RFC3339), last.UTC().Format(time.RFC3339)),
 	}
 }

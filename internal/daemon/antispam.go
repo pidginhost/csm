@@ -20,6 +20,7 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/ipmap"
 	csmlog "github.com/pidginhost/csm/internal/log"
+	"github.com/pidginhost/csm/internal/mailstats"
 	"github.com/pidginhost/csm/internal/netutil"
 	"github.com/pidginhost/csm/internal/obs"
 	"github.com/pidginhost/csm/internal/platform"
@@ -118,7 +119,7 @@ func (d *Daemon) startAntispam() {
 	// reload during setup is either picked up here or applies itself.
 	d.syncAntispamHealth()
 	ctx := d.scanContext()
-	d.wg.Add(3)
+	d.wg.Add(4)
 	obs.Go("antispam-reconcile", func() {
 		defer d.wg.Done()
 		defer d.stopLearner()
@@ -131,6 +132,10 @@ func (d *Daemon) startAntispam() {
 	obs.Go("antispam-ipmap", func() {
 		defer d.wg.Done()
 		d.antispamIPMapLoop(ctx)
+	})
+	obs.Go("antispam-rspamd-log", func() {
+		defer d.wg.Done()
+		d.rspamdLogLoop(ctx)
 	})
 }
 
@@ -358,11 +363,21 @@ func (d *Daemon) antispamHealthLoop(ctx context.Context) {
 	}
 }
 
-func (d *Daemon) recordAntispamLine(line string, now time.Time) []alert.Finding {
+// recordScan feeds one scan record, from Exim's main log or rspamd's, to
+// spam evidence, the spam source detector, the Email Security counts and
+// scan health. at is when it was read; the counts use the line's own time.
+func (d *Daemon) recordScan(s antispam.Scan, line string, at time.Time, cfg *config.Config) []alert.Finding {
+	d.recordSpamEvidence(s, at, cfg)
+	d.recordSpamSource(s, at, cfg)
+	d.mailStats.RecordScan(mailstats.LineTime(line, time.Local, at), s)
+	return d.recordAntispamScan(s, at)
+}
+
+func (d *Daemon) recordAntispamScan(s antispam.Scan, now time.Time) []alert.Finding {
 	h := &d.antispamHealth
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	findings, recovered := h.Line(line, now)
+	findings, recovered := h.Scan(s, now)
 	if recovered {
 		// Recovery can end before the next probe. Publish it while new log
 		// lines and probes cannot reactivate the condition being rearmed.
@@ -454,6 +469,9 @@ func (d *Daemon) reportAntispam(out reconcile.Outcome) {
 	}
 	if len(out.Checks) > 0 {
 		d.rspamdStats.Store(&rspamdStatsSource{ep: out.Stats, reason: out.StatsReason})
+	}
+	if out.ScanSource != nil {
+		d.antispamScanSource.Store(out.ScanSource)
 	}
 	d.processScanFindings(d.currentCfg(), out.Findings, out.Checks, "antispam")
 }

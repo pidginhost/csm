@@ -14,9 +14,9 @@ const (
 	pingUp   = 2
 )
 
-// Health tracks rspamd's scan socket and Exim's scan markers while antispam
-// is enabled (spec section 7). The probe loop and the Exim log watcher use
-// it concurrently.
+// Health tracks rspamd's scan socket and the scans the mail logs record
+// while antispam is enabled (spec section 7). The probe loop and the log
+// watchers use it concurrently.
 type Health struct {
 	mu      sync.Mutex
 	enabled bool
@@ -74,20 +74,25 @@ func (h *Health) Ping(socket string, err error, now time.Time) []alert.Finding {
 	return nil
 }
 
-// Line records one Exim main-log line and returns the finding to report
-// when scans start failing, and whether a successful scan cleared a failure.
-// Only a scan marker Exim wrote counts.
+// Line records one Exim main-log line: a scan marker Exim wrote counts as
+// Scan counts it, any other line not at all.
 func (h *Health) Line(line string, now time.Time) (findings []alert.Finding, recovered bool) {
-	marker, ok := antispam.ScanMarker(line)
+	s, marker := antispam.ParseScan(line)
 	if !marker {
 		return nil, false
 	}
+	return h.Scan(s, now)
+}
+
+// Scan records one scan and returns the finding to report when scans start
+// failing, and whether a successful scan cleared a failure.
+func (h *Health) Scan(s antispam.Scan, now time.Time) (findings []alert.Finding, recovered bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	switch {
 	case !h.enabled:
 		return nil, false
-	case ok:
+	case s.OK:
 		recovered = h.scanErrors > 0
 		h.scanErrors = 0
 		return nil, recovered

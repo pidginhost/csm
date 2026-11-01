@@ -189,17 +189,13 @@ func (r *spamSourceRunner) stop() {
 	r.save()
 }
 
-// recordSpamSource feeds one Exim main-log line to the tracker and hands a
-// sender that qualifies to the DNS check. It never blocks the log path: with
-// the queue full the check ends unreported, and the sender's next reject
-// starts another.
-func (d *Daemon) recordSpamSource(line string, at time.Time, cfg *config.Config) {
+// recordSpamSource feeds one scan to the tracker and hands a sender that
+// qualifies to the DNS check. It never blocks the log path: with the queue
+// full the check ends unreported, and the sender's next reject starts
+// another.
+func (d *Daemon) recordSpamSource(s antispam.Scan, at time.Time, cfg *config.Config) {
 	r := d.spamSources.Load()
-	if r == nil || !cfg.EmailProtection.Antispam.Enabled {
-		return
-	}
-	s, ok := antispam.ParseScan(line)
-	if !ok || !ipmap.Recordable(s.IP, nil) {
+	if r == nil || !cfg.EmailProtection.Antispam.Enabled || !ipmap.Recordable(s.IP, nil) {
 		return
 	}
 	reject, clean := spamSourceObservation(s, cfg.EmailProtection.Antispam)

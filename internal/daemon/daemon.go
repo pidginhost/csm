@@ -19,6 +19,7 @@ import (
 	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/admissionowner"
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/antispam"
 	"github.com/pidginhost/csm/internal/antispam/reconcile"
 	"github.com/pidginhost/csm/internal/attackdb"
 	"github.com/pidginhost/csm/internal/auditd"
@@ -176,6 +177,9 @@ type Daemon struct {
 	antispamFeeds atomic.Pointer[reconcile.FeedState]
 	// rspamdStats is written by reconcile passes and read by web UI requests.
 	rspamdStats atomic.Pointer[rspamdStatsSource]
+	// antispamScanSource is written by reconcile passes and read by the mail
+	// log and rspamd log watchers; nil until a pass says.
+	antispamScanSource atomic.Pointer[antispam.ScanSource]
 	// spamSources is set by startAbuseReporting after the log watchers that
 	// read it have started.
 	spamSources atomic.Pointer[spamSourceRunner]
@@ -2464,16 +2468,22 @@ func (d *Daemon) handleEximLine(line string, obs alert.Observation, cfg *config.
 	recordEximSMTPAuthSuccess(line, cfg, d.smtpAuthTracker)
 
 	// CSM's scan hook logs one marker per scan; a failed scan raises
-	// antispam_scan_error while antispam is enabled. Some sources carry no
-	// observation time.
-	at := obs.ObservedAt
-	if at.IsZero() {
-		at = time.Now()
-	}
-	d.recordSpamEvidence(line, at, cfg)
-	d.recordSpamSource(line, at, cfg)
+	// antispam_scan_error while antispam is enabled.
+	at := lineReadAt(obs)
 	d.recordMailStatsExim(line, at)
-	return append(findings, d.recordAntispamLine(line, at)...)
+	if s, ok := antispam.ParseScan(line); ok {
+		findings = append(findings, d.recordScan(s, line, at, cfg)...)
+	}
+	return findings
+}
+
+// lineReadAt is when a line was read; some sources carry no observation
+// time.
+func lineReadAt(obs alert.Observation) time.Time {
+	if obs.ObservedAt.IsZero() {
+		return time.Now()
+	}
+	return obs.ObservedAt
 }
 
 // handleMailLine composes parseDovecotLogLine (preserving email_suspicious_geo)
@@ -2485,6 +2495,11 @@ func (d *Daemon) handleEximLine(line string, obs alert.Observation, cfg *config.
 func (d *Daemon) handleMailLine(line string, obs alert.Observation, cfg *config.Config) []alert.Finding {
 	d.recordMailStatsMail(line, obs.ObservedAt)
 	findings := parseDovecotLogLine(line, cfg)
+	// Mail postfix could not pass to rspamd has no scan record; the
+	// failure counts as a failed scan.
+	if src := d.antispamScanSource.Load(); src != nil && postfixMilterFailure(line, src.Milters) {
+		return append(findings, d.recordAntispamScan(antispam.Scan{}, lineReadAt(obs))...)
+	}
 	if paired, handled := d.handleSMTPAuthPairing(line, obs, cfg); handled {
 		return append(findings, paired...)
 	}
