@@ -3,6 +3,7 @@ package checks
 import (
 	"context"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 
@@ -135,6 +136,7 @@ func TestCheckHealthCPanelReportsMissingWhmapi1AsOptional(t *testing.T) {
 	platform.SetOverrides(platform.Overrides{
 		Panel: ptrPanel(platform.PanelCPanel),
 	})
+	withMockOS(t, &mockOSGlobRoots{files: []string{"/home/alice/public_html/wp-config.php"}})
 	withMockCmd(t, &mockCmd{
 		lookPath: func(name string) (string, error) {
 			if name == "whmapi1" || name == "wp" {
@@ -162,6 +164,44 @@ func TestCheckHealthCPanelReportsMissingWhmapi1AsOptional(t *testing.T) {
 	}
 }
 
+// wp-cli only runs against WordPress installs, so its absence matters only
+// where there is one.
+func TestCheckHealthReportsMissingWPOnlyWithWordPressInstalls(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		files []string
+		want  int
+	}{
+		{"no installs", nil, 0},
+		{"one install", []string{"/home/alice/public_html/wp-config.php"}, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			platform.ResetForTest()
+			t.Cleanup(platform.ResetForTest)
+			platform.SetOverrides(platform.Overrides{Panel: ptrPanel(platform.PanelNone)})
+			withMockOS(t, &mockOSGlobRoots{files: tc.files})
+			withMockCmd(t, &mockCmd{
+				lookPath: func(name string) (string, error) {
+					if name == "wp" {
+						return "", errors.New("not found")
+					}
+					return "/usr/bin/" + name, nil
+				},
+			})
+
+			got := 0
+			for _, f := range CheckHealth(context.Background(), &config.Config{}, nil) {
+				if f.Message == "Optional command not found: wp" {
+					got++
+				}
+			}
+			if got != tc.want {
+				t.Errorf("missing wp findings = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestCheckHealthNonCPanelDoesNotReportWhmapi1(t *testing.T) {
 	platform.ResetForTest()
 	t.Cleanup(platform.ResetForTest)
@@ -177,6 +217,64 @@ func TestCheckHealthNonCPanelDoesNotReportWhmapi1(t *testing.T) {
 		if strings.Contains(f.Message, "whmapi1") {
 			t.Errorf("non-cPanel host should not report whmapi1, got %+v", f)
 		}
+	}
+}
+
+// An empty discovery with read errors is not proof that WordPress is absent.
+func TestCheckHealthKeepsMissingWPWarningWhenDiscoveryIncomplete(t *testing.T) {
+	const wpConfig = "/home/alice/public_html/wp-config.php"
+	for _, failure := range []string{"domain map", "home glob", "config stat"} {
+		t.Run(failure, func(t *testing.T) {
+			platform.ResetForTest()
+			t.Cleanup(platform.ResetForTest)
+			platform.SetOverrides(platform.Overrides{Panel: ptrPanel(platform.PanelNone)})
+			fs := &mockOS{
+				readFile: func(name string) ([]byte, error) {
+					if failure == "domain map" && name == userdataDomainsPath {
+						return nil, os.ErrPermission
+					}
+					return nil, os.ErrNotExist
+				},
+				glob: func(string) ([]string, error) {
+					switch failure {
+					case "home glob":
+						return nil, os.ErrPermission
+					case "config stat":
+						return []string{wpConfig}, nil
+					default:
+						return nil, nil
+					}
+				},
+				lstat: func(name string) (os.FileInfo, error) {
+					if name == wpConfig {
+						return nil, os.ErrPermission
+					}
+					return mockPathInfo(name, []string{wpConfig})
+				},
+			}
+			withMockOS(t, fs)
+			withMockCmd(t, &mockCmd{
+				lookPath: func(name string) (string, error) {
+					if name == "wp" {
+						return "", errors.New("not found")
+					}
+					return "/usr/bin/" + name, nil
+				},
+			})
+
+			ctx := withWPInstallCache(context.Background())
+			for range 2 {
+				got := 0
+				for _, f := range CheckHealth(ctx, &config.Config{}, nil) {
+					if f.Check == "csm_health" && f.Message == "Optional command not found: wp" && f.Severity == alert.Warning {
+						got++
+					}
+				}
+				if got != 1 {
+					t.Errorf("missing wp warnings = %d, want one despite incomplete discovery", got)
+				}
+			}
+		})
 	}
 }
 

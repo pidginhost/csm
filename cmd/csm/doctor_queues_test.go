@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -101,5 +102,59 @@ func TestDoctorWarnsOnAdvisoryQueueOverload(t *testing.T) {
 	}
 	if report.OverallStatus == "fail" {
 		t.Fatalf("a best-effort queue failed doctor: %s", report.OverallStatus)
+	}
+}
+
+// With the firewall disabled no engine exists to apply a block, so queued
+// auto-blocks fail until they age out. Doctor must explain that state instead
+// of reporting a stuck queue, and keep failing whenever an engine could drain it.
+func TestDoctorExplainsAutoBlockQueueWithoutFirewall(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		queue            string
+		firewall, dryRun bool
+		reason           string
+		want             string
+		explain          []string
+	}{
+		{"firewall off dry run", "auto_block.pending", false, true, "retry_failed", "ok", []string{"firewall disabled", "dry_run"}},
+		{"firewall off live", "auto_block.pending", false, false, "retry_failed", "ok", []string{"firewall disabled"}},
+		{"firewall off stale", "auto_block.pending", false, true, "backlog_lag", "ok", []string{"firewall disabled"}},
+		{"firewall off state io", "auto_block.pending", false, true, "state_io", "fail", nil},
+		{"firewall off cleanup", "auto_block.cleanup", false, true, "retry_failed", "fail", nil},
+		{"firewall on live", "auto_block.pending", true, false, "retry_failed", "fail", nil},
+		{"firewall on dry run", "auto_block.pending", true, true, "retry_failed", "fail", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			wire := fmt.Sprintf(`{"snapshot":{"started_at":"2026-09-09T12:00:00Z","store_healthy":true,"watchers":{"fanotify":true},"automation":{"auto_response_enabled":true,"auto_response_block_ips":true,"auto_response_dry_run":%t,"firewall_enabled":%t,"firewall_managed":%t},"queues":{%q:{"status":"degraded","reason":%q,"depth":1,"capacity":1000}}}}`, tc.dryRun, tc.firewall, tc.firewall, tc.queue, tc.reason)
+			report := buildDoctorReport(func() (*config.Config, error) { return validDoctorConfig(), nil }, func() ([]byte, error) { return []byte(wire), nil }, integrityOK)
+			count := 0
+			for _, c := range report.Checks {
+				if c.Name != "queue: "+tc.queue {
+					continue
+				}
+				count++
+				if c.Status != tc.want {
+					t.Errorf("status = %q, want %q: %+v", c.Status, tc.want, c)
+				}
+				if !strings.Contains(c.Message, tc.reason) {
+					t.Errorf("message %q lost the queue reason %q", c.Message, tc.reason)
+				}
+				for _, want := range tc.explain {
+					if !strings.Contains(c.Message, want) {
+						t.Errorf("message %q does not say %q", c.Message, want)
+					}
+				}
+				if tc.want == "fail" && c.Fix == "" {
+					t.Errorf("failing queue lost its recovery guidance: %+v", c)
+				}
+				if got := strings.Contains(c.Message, "dry_run"); tc.want == "ok" && got != tc.dryRun {
+					t.Errorf("message %q mentions dry_run = %v, want %v", c.Message, got, tc.dryRun)
+				}
+			}
+			if count != 1 {
+				t.Fatalf("got %d %s checks, want one", count, tc.queue)
+			}
+		})
 	}
 }

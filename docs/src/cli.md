@@ -87,6 +87,8 @@ scan still has no YARA pass.
 waiting and running work, losses and lag. A sustained backlog or drop rate
 fails the named queue check and includes recovery guidance. Queues whose work
 is best effort warn instead of failing, so they never change the exit status.
+While the firewall is disabled, queued automatic blocks pass the check, which
+says the blocks are not applied and whether dry run is on.
 The same evidence appears in `csm status --json` and the HTTP status response.
 
 ## Backup & restore

@@ -616,7 +616,11 @@ func Validate(cfg *Config) []ValidationResult {
 				secret = v
 			}
 		}
-		if secret == "" {
+		// rspamd's default secure_ip lets loopback clients read the controller
+		// without a password, so only a remote controller needs a token.
+		u, err := url.Parse(cfg.Reputation.Rspamd.URL)
+		loopback := err == nil && isLoopbackHost(u.Hostname())
+		if secret == "" && !loopback {
 			results = append(results, ValidationResult{"warn", "reputation.rspamd.token", "rspamd enabled but no token configured (rspamd controller history may require auth)"})
 		}
 	}

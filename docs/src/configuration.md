@@ -509,7 +509,7 @@ reputation:
   rspamd:
     enabled: false                      # include rspamd rolling history in IP reputation
     url: "http://127.0.0.1:11334"       # rspamd controller URL
-    token: ""                           # controller password, or use token_env
+    token: ""                           # controller password, or use token_env; not needed for a loopback url
     token_env: ""                       # env var read at query time
   upstream:
     enabled: false                      # include panel-side threat-intel cache scores
@@ -770,9 +770,11 @@ firewall:
   # Integrations declare theirs in their own conf.d fragment.
   required_tcp_out: []
 
-  # Passive FTP range
-  passive_ftp_start: 49152
-  passive_ftp_end: 65534
+  # Passive FTP data ports. Left unset, 49152-65534 is opened on cPanel hosts
+  # and hosts with pure-ftpd, proftpd or vsftpd installed, and stays closed
+  # elsewhere. Explicit values take precedence; set both to 0 to close it.
+  # passive_ftp_start: 49152
+  # passive_ftp_end: 65534
 
   # Destination-scoped outbound TCP. tcp_out holds single ports only, so a
   # port range can only be expressed here -- needed when this host is an FTP

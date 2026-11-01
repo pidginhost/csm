@@ -132,7 +132,7 @@ var (
 // to leave a binary on disk. cPanel is authoritative because it runs Exim
 // while retaining Postfix binaries; elsewhere an active service wins.
 func DetectMTA() MTAKind {
-	if mtaPathExists("/usr/local/cpanel/version") {
+	if pathExists("/usr/local/cpanel/version") {
 		return MTAExim
 	}
 	eximActive := mtaServiceActive("exim") || mtaServiceActive("exim4")
@@ -146,11 +146,11 @@ func DetectMTA() MTAKind {
 		return MTAPostfix
 	}
 
-	eximInstalled := mtaInstalled([]string{"exim", "exim4"}, []string{
+	eximInstalled := binaryInstalled([]string{"exim", "exim4"}, []string{
 		"/usr/sbin/exim",
 		"/usr/sbin/exim4",
 	})
-	postfixInstalled := mtaInstalled([]string{"postfix"}, []string{
+	postfixInstalled := binaryInstalled([]string{"postfix"}, []string{
 		"/usr/sbin/postfix",
 		"/usr/libexec/postfix/master",
 		"/usr/lib/postfix/sbin/master",
@@ -164,7 +164,7 @@ func DetectMTA() MTAKind {
 	return MTAPostfix
 }
 
-func mtaPathExists(path string) bool {
+func pathExists(path string) bool {
 	_, err := mtaStat(path)
 	return err == nil
 }
@@ -176,10 +176,10 @@ func systemdMTAServiceActive(unit string) bool {
 	return exec.CommandContext(ctx, "systemctl", "is-active", "--quiet", unit).Run() == nil
 }
 
-// mtaInstalled reports whether any of the named binaries is on PATH or at
+// binaryInstalled reports whether any of the named binaries is on PATH or at
 // one of the absolute locations. The daemon runs with a minimal PATH, so
 // the absolute probes carry most installs.
-func mtaInstalled(binaries, paths []string) bool {
+func binaryInstalled(binaries, paths []string) bool {
 	for _, b := range binaries {
 		if _, err := mtaLookPath(b); err == nil {
 			return true
