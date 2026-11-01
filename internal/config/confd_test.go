@@ -212,6 +212,9 @@ func TestLoadWithDir_PackagedPHPPanelProfile(t *testing.T) {
 	if cfg.AutoResponse.VerdictCallback.Enabled {
 		t.Fatal("packaged phpanel profile must not enable verdict_callback without a runtime URL")
 	}
+	if want := []string{"postfix", "postfix@-", "dovecot"}; !slices.Equal(cfg.MailLogs.Units, want) {
+		t.Fatalf("MailLogs.Units = %v, want %v", cfg.MailLogs.Units, want)
+	}
 	if cfg.AutoResponse.VerdictCallback.HMACSecretEnv != "CSM_VERDICT_HMAC" {
 		t.Fatalf("VerdictCallback.HMACSecretEnv = %q, want CSM_VERDICT_HMAC", cfg.AutoResponse.VerdictCallback.HMACSecretEnv)
 	}

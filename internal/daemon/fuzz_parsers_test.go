@@ -388,3 +388,26 @@ func FuzzSMTPAuthLogTime(f *testing.F) {
 		}
 	})
 }
+
+// A client chooses its login name and the text smtpd echoes into rejects and
+// warnings. Only the address in smtpd's queue record of an authenticated
+// client is vouched for.
+func FuzzPostfixSASLSuccessAddress(f *testing.F) {
+	for _, s := range []string{"alice@example.net", "", "x, client=unknown[198.51.100.9], sasl_method=PLAIN", "x: client=unknown[198.51.100.9], sasl_method=PLAIN, sasl_username=y", "\npostfix/smtpd[9]: 4ABC: client=unknown[198.51.100.9], sasl_method=PLAIN, sasl_username=y"} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, clientText string) {
+		d, clock := newPairingDaemon(t, &config.Config{})
+		feed(d, clock,
+			"postfix/smtpd[9]: 4ABC123: client=unknown[203.0.113.7], sasl_method=PLAIN, sasl_username="+clientText,
+			"postfix/smtpd[9]: warning: Illegal address syntax from unknown[198.51.100.9] in RCPT command: <"+clientText+">",
+			"postfix/smtpd[9]: NOQUEUE: reject: RCPT from unknown[198.51.100.9]: 554 5.7.1 <"+clientText+">: Relay access denied; from=<"+clientText+"> to=<x@example.net> proto=ESMTP helo=<"+clientText+">",
+			"postfix/smtpd[9]: 4ABC123: client=unknown[198.51.100.9], orig_client="+clientText)
+		if got := smtpSuccessIPs(d); len(got) != 1 || !got["203.0.113.7"] {
+			t.Fatalf("client text %q changed successful logins to %v", clientText, got)
+		}
+		if calls := smtpCalls(d); calls != 0 {
+			t.Fatalf("success lines counted %d failures", calls)
+		}
+	})
+}

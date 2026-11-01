@@ -8,6 +8,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -21,7 +23,7 @@ func TestKernelJournalDelivery(t *testing.T) {
 			units := []string{"csm-mail-first-" + suffix, "csm-mail-second-" + suffix}
 			directory := t.TempDir()
 			started := make(map[string]bool)
-			command := func(args ...string) {
+			command := func(args ...string) string {
 				t.Helper()
 				runCtx, stop := context.WithTimeout(ctx, 10*time.Second)
 				defer stop()
@@ -29,6 +31,7 @@ func TestKernelJournalDelivery(t *testing.T) {
 				if err != nil {
 					t.Fatalf("%s: %v: %s", args[0], err, output)
 				}
+				return strings.TrimSpace(string(output))
 			}
 			t.Cleanup(func() {
 				for unit := range started {
@@ -66,6 +69,23 @@ func TestKernelJournalDelivery(t *testing.T) {
 			}
 			// Only systemd can supply the trusted unit field used by this filter.
 			emit("csm-mail-unrelated-"+suffix, "wrong-unit")
+			for i, forged := range []struct{ ident, message string }{
+				{"postfix/smtpd", "warning: unknown[203.0.113.7]: SASL LOGIN authentication failed: x, sasl_username=" + suffix},
+				{"postfix/smtpd", "4ABC123: client=unknown[203.0.113.7], sasl_method=PLAIN, sasl_username=" + suffix},
+				{"dovecot", "auth: sql(" + suffix + ",203.0.113.7): Password mismatch"},
+			} {
+				unit := fmt.Sprintf("csm-mail-forged-%d-%s", i, suffix)
+				started[unit] = true
+				command("systemd-run", "--quiet", "--unit="+unit, "--property=Type=oneshot", "--remain-after-exit",
+					"--property=User=nobody", "/usr/bin/logger", "--socket-errors=on", "-p", "mail.info", "-t", forged.ident, forged.message)
+				command("journalctl", "--sync")
+				// Verify the forged message reached journald, so its absence
+				// from the reader proves filtering rather than failed logging.
+				logged := command("journalctl", "--no-pager", "-o", "cat", "-t", forged.ident, "--grep="+suffix)
+				if !strings.Contains(logged, forged.message) {
+					t.Fatalf("forged %s message did not reach the journal", forged.ident)
+				}
+			}
 			for i, unit := range units {
 				emit(unit, fmt.Sprintf("csm-mail-%d", i))
 			}
@@ -83,7 +103,15 @@ func TestKernelJournalDelivery(t *testing.T) {
 					if _, exists := got[line.Unit]; exists {
 						t.Fatalf("duplicate line: %+v", line)
 					}
-					got[line.Unit] = line.Message
+					if line.Position.Stream != "journal" || line.Position.Cursor == "" || line.Position.ObservedAt.IsZero() {
+						t.Fatalf("journal line lost its position: %+v", line)
+					}
+					rest, tagged := strings.CutPrefix(line.Message, line.Position.ObservedAt.Format(time.RFC3339Nano)+" cat[")
+					pid, message, delimited := strings.Cut(rest, "]: ")
+					if n, parseErr := strconv.ParseUint(pid, 10, 32); !tagged || !delimited || parseErr != nil || n == 0 {
+						t.Fatalf("journal line lost its process tag: %+v", line)
+					}
+					got[line.Unit] = message
 					line.Process(func(Line) bool { return true })
 				case <-deadline:
 					t.Fatalf("journal delivery timed out: %+v", got)

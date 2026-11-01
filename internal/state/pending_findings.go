@@ -33,13 +33,15 @@ type pendingFinding struct {
 	ResponseIntel *admission.IntelRef `json:"response_intel,omitempty"`
 	// ResponseCause distinguishes database-session responses from retired scores.
 	ResponseCause *alert.Cause `json:"response_cause,omitempty"`
+	// ResponseMailLoginFailure keeps mail reputation hits in mail incidents.
+	ResponseMailLoginFailure bool `json:"response_mail_login_failure,omitempty"`
 }
 
 func toPendingRecords(findings []alert.Finding) []pendingFinding {
 	records := make([]pendingFinding, len(findings))
 	for i, f := range findings {
 		records[i] = pendingFinding{Finding: f, ResponseCIDRs: f.CIDRs, ResponseSprayTargets: f.SprayTargets, ResponseClaims: f.Claims,
-			ResponseSprayConstituents: f.SprayConstituents, ResponseCause: f.Cause}
+			ResponseSprayConstituents: f.SprayConstituents, ResponseCause: f.Cause, ResponseMailLoginFailure: f.MailLoginFailure}
 		// An unencodable expiry costs only its intel, not the whole batch.
 		if f.Intel != nil {
 			if _, err := f.Intel.Expires.MarshalJSON(); err == nil {
@@ -71,6 +73,7 @@ func fromPendingRecords(records []pendingFinding) []alert.Finding {
 		findings[i].SprayConstituents = r.ResponseSprayConstituents
 		findings[i].Intel = r.ResponseIntel
 		findings[i].Cause = r.ResponseCause
+		findings[i].MailLoginFailure = r.ResponseMailLoginFailure
 		if r.ResponseObservation != nil {
 			findings[i].Observation = *r.ResponseObservation
 		}

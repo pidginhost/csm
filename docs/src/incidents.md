@@ -17,7 +17,9 @@ on the attacker source IP, not on the victim they name:
 - `mailbox_bruteforce` -- failed mailbox logins, mail brute-force bursts, and
   pre-auth SMTP probes from one source. A failed login is an attack attempt,
   not a takeover, so it keys on the attacker IP rather than the targeted
-  mailbox.
+  mailbox. A threat-intelligence match on an address seen failing IMAP or POP3
+  logins opens this kind too, including alerts queued during shutdown and
+  delivered after restart.
 
 Compromise kinds are reserved for evidence that an attack succeeded:
 `web_account_compromise` (on-disk or behavioural signals such as a webshell or
@@ -334,14 +336,15 @@ the ban.
 - `web_account_compromise` -- findings attributable to a hosted account
   or script (PHP relay, webshell, account-scoped login bruteforce, etc.).
 - `web_attack` -- an inbound web attack or remote-IP reputation/threat-score
-  signal. When the finding includes a victim domain or account, that field is
-  recorded as target context, not as the correlation key. Keyed on the source
-  IP and given attacker-grade retention (default 24h) so defended probes and
-  attacker-IP reputation hits do not inflate the account-compromise count or
-  its longer review window.
+  signal not tied to failed mailbox logins. When the finding includes a victim
+  domain or account, that field is recorded as target context, not as the
+  correlation key. Keyed on the source IP and given attacker-grade retention
+  (default 24h) so defended probes and attacker-IP reputation hits do not
+  inflate the account-compromise count or its longer review window.
 - `mailbox_bruteforce` -- failed mailbox authentication, mail brute-force
-  bursts, account-spray signals, and pre-auth SMTP probes. Keyed on the
-  attacker source IP with attacker-grade retention (default 24h).
+  bursts, account-spray signals, pre-auth SMTP probes, and remote-IP
+  reputation matches on addresses seen failing IMAP or POP3 logins. Keyed on
+  the attacker source IP with attacker-grade retention (default 24h).
 - `mailbox_takeover` -- post-authentication mailbox abuse such as suspicious
   geo, credential leaks, cloud relay abuse, spam outbreaks, and confirmed
   compromised-account signals.

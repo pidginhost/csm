@@ -68,8 +68,12 @@ func ClassifyKind(f alert.Finding) Kind {
 	// Remote-IP reputation / threat-score with no victim attribution -- an
 	// attacking source IP flagged by reputation, not a compromised tenant.
 	// Kept on the strict remote-IP-keyed gate: a reputation hit tied to an
-	// account is about that account, not an anonymous attacker.
+	// account is about that account, not an anonymous attacker. A hit on an
+	// address found failing mailbox logins is a mail attack.
 	if isRemoteIPThreatCheck(check) && isRemoteIPKeyed(f) {
+		if f.MailLoginFailure {
+			return KindMailboxBruteforce
+		}
 		return KindWebAttack
 	}
 

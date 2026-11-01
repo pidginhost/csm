@@ -39,6 +39,9 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Fixed
 
+- A threat-intelligence match on an address failing IMAP or POP3 logins now opens a mailbox brute force incident instead of a web attack.
+- Postfix SMTP login guessing is now detected when mail logs are read from the systemd journal.
+- On Postfix servers, an address with successful SMTP logins is no longer blocked as a slow brute force for occasional mistyped passwords.
 - Antispam no longer turns on DNS blocklists when systemd-resolved forwards to a public resolver the lists refuse.
 - IMAP, POP3 and ManageSieve login protection now works when mail logs are read from the systemd journal.
 - The daemon log no longer reports a memory failure or a kill when CSM stops a worker on purpose.

@@ -317,7 +317,7 @@ infra_ips: []                           # management IPs/CIDRs/hostnames - never
 mail_logs:
   source: auto                          # auto | file | journal
   file: ""                              # optional path override for file source
-  units: ["postfix", "dovecot"]         # journal units for source=journal or auto fallback
+  units: ["postfix", "postfix@-", "dovecot"]  # journal units for source=journal or auto fallback; postfix@- is the Debian/Ubuntu instance
 
 # --- State ---
 state_path: "/var/lib/csm/state"        # bbolt DB and state files

@@ -2117,7 +2117,9 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 		cfg.MailLogs.Source = "auto"
 	}
 	if len(cfg.MailLogs.Units) == 0 {
-		cfg.MailLogs.Units = []string{"postfix", "dovecot"}
+		// Debian and Ubuntu run Postfix in the postfix@- instance unit.
+		// Journal matches are exact, so other instances must be listed.
+		cfg.MailLogs.Units = []string{"postfix", "postfix@-", "dovecot"}
 	}
 
 	if cfg.Updates.Interval == "" {

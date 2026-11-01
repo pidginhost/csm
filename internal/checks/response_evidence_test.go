@@ -282,6 +282,7 @@ var reviewedEvidenceRestores = map[string]reviewedEvidenceRestore{
 		findings[i].SprayConstituents = r.ResponseSprayConstituents
 		findings[i].Intel = r.ResponseIntel
 		findings[i].Cause = r.ResponseCause
+		findings[i].MailLoginFailure = r.ResponseMailLoginFailure
 		if r.ResponseObservation != nil {
 			findings[i].Observation = *r.ResponseObservation
 		}
@@ -1033,6 +1034,7 @@ func TestAddressProducerScannerRejectsUnreviewedRestoreChanges(t *testing.T) {
 		findings[i].SprayConstituents = r.ResponseSprayConstituents
 		findings[i].Intel = r.ResponseIntel
 		findings[i].Cause = r.ResponseCause
+		findings[i].MailLoginFailure = r.ResponseMailLoginFailure
 		if r.ResponseObservation != nil {
 			findings[i].Observation = *r.ResponseObservation
 		}
@@ -1050,6 +1052,7 @@ func TestAddressProducerScannerRejectsUnreviewedRestoreChanges(t *testing.T) {
 		{"new source", strings.Replace(declaration, "findings[i].CIDRs = r.ResponseCIDRs", `findings[i].CIDRs = []string{"192.0.2.0/24"}`, 1), 1, false},
 		{"new field", strings.Replace(declaration, "return findings", `findings[0].SourceIP = "192.0.2.2"; return findings`, 1), 2, false},
 		{"changed provenance", strings.Replace(declaration, "findings[i] = r.Finding", `findings[i] = alert.Finding{Check: "other"}`, 1), 1, false},
+		{"changed mail classification", strings.Replace(declaration, "findings[i].MailLoginFailure = r.ResponseMailLoginFailure", "findings[i].MailLoginFailure = false", 1), 1, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
