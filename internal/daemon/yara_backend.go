@@ -61,7 +61,8 @@ const (
 var yaraBootCompileTimeout = 45 * time.Second
 
 // yaraRetryMinBackoff is the first wait of the background compile retry; a
-// seam so tests reach the persistent-failure finding quickly.
+// seam so tests reach the persistent-failure finding quickly. Init reads it
+// once: a retry left running by an earlier test must not race a change.
 var yaraRetryMinBackoff = time.Second
 
 // yaraWorkerLauncher is a seam for tests that must not start units.
@@ -152,7 +153,8 @@ func (d *Daemon) initYaraBackend() error {
 		// does. Report it where doctor and the status API look, and keep
 		// trying in the background.
 		d.MarkWatcher(yaraWorkerWatcher, false)
-		obs.Go("yara-init-retry", func() { d.retryYaraStart(b) })
+		minBackoff := yaraRetryMinBackoff
+		obs.Go("yara-init-retry", func() { d.retryYaraStart(b, minBackoff) })
 		return fmt.Errorf("compiling yara rules (retrying in background): %w", err)
 	default:
 		d.MarkWatcher(yaraWorkerWatcher, false)
@@ -241,7 +243,7 @@ func yaraWorkerStatusLine(ruleCount int) string {
 // capped exponential backoff, until it runs or the daemon stops, raising one
 // finding once the failure is persistent. A compile that runs and finds the
 // rules broken ends the retries: recompiling would fail the same way.
-func (d *Daemon) retryYaraStart(b *yaraworker.Backend) {
+func (d *Daemon) retryYaraStart(b *yaraworker.Backend, minBackoff time.Duration) {
 	var rulesErr error
 	ok := retryStartWithStopContext(
 		func(ctx context.Context) error {
@@ -253,7 +255,7 @@ func (d *Daemon) retryYaraStart(b *yaraworker.Backend) {
 			return err
 		},
 		d.stopCh,
-		yaraRetryMinBackoff, 60*time.Second, 3,
+		minBackoff, 60*time.Second, 3,
 		func(attempt int, err error) {
 			d.emitYaraFinding(alert.Critical, "yara_backend_unavailable",
 				fmt.Sprintf("YARA-X rules could not be compiled: the compile worker failed %d times (%v). Files and mail parts are reported as not scanned while CSM keeps retrying.", attempt, err))
