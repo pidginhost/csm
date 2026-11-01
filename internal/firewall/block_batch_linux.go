@@ -593,10 +593,11 @@ func (e *Engine) readbackLocked(conn *nftables.Conn, set *nftables.Set) ([]nftab
 // removed only when the readback of the victim's set shows it gone; a
 // member whose removal is unproven is unknown. A victim's row stays until
 // the owner retires it after the ledger records the outcome, so a restart
-// before that restores it. A kernel rejection, including the ENOENT of a
-// victim the kernel expired before the send, fails every member and
-// restores the state; the owner retries with new charged attempts (spec
-// 5.5). Any other uncertainty leaves the members unknown, their rows
+// before that restores it. A victim that could expire before the kernel
+// runs the transaction is spared and its member alone fails set_full. A
+// kernel rejection, including the ENOENT of a victim removed before the
+// send, fails every member and restores the state; the owner retries with
+// new charged attempts (spec 5.5). Any other uncertainty leaves the members unknown, their rows
 // marked unverified. An error means nothing was written or sent.
 func (e *Engine) ApplyBlockBatch(members []BlockMember) ([]BlockResult, error) {
 	if len(members) == 0 || len(members) > MaxBlockBatchMembers {
@@ -665,6 +666,15 @@ func (e *Engine) ApplyBlockBatch(members []BlockMember) ([]BlockResult, error) {
 			timeout, ok := blockTimeout(m.ExpiresAt, sendAt)
 			if !ok {
 				results[i] = BlockResult{Effect: BlockFailed, Refusal: BlockRefusedExpired, Victim: spared(m)}
+				e.suppressFailedBlockActionsLocked([]string{m.Action})
+				removeBlockedIPFromState(&next, m.IP)
+				continue
+			}
+			// A victim that could expire before the kernel runs the
+			// transaction would reject it whole with ENOENT and fail every
+			// member: its member fails alone and the victim is spared.
+			if evicts[i] && !m.Victim.ExpiresAt.After(sendAt.Add(blockBatchMinLifetime)) {
+				results[i] = BlockResult{Effect: BlockFailed, Refusal: BlockRefusedFull, Victim: VictimSpared}
 				e.suppressFailedBlockActionsLocked([]string{m.Action})
 				removeBlockedIPFromState(&next, m.IP)
 				continue

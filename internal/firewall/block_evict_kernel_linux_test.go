@@ -4,10 +4,13 @@ package firewall
 
 import (
 	"errors"
+	"net"
 	"os"
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/google/nftables"
 )
 
 // kernelVictim applies an admission block of ip that lasts ttl and returns
@@ -47,20 +50,52 @@ func TestKernelBlockBatchEvictsAVictimInOneTransaction(t *testing.T) {
 	}
 }
 
-// A victim that expires between the snapshot and the send makes the
-// kernel reject the deletion with ENOENT, and with it the whole
-// transaction: the member is not added and the victim is reported spared.
-func TestKernelBlockBatchRejectsAVictimThatExpired(t *testing.T) {
+// A victim with no more than a batch's minimum lifetime left at the send
+// could expire before the kernel runs the transaction. Its member fails
+// set_full and nothing is sent: the kernel keeps the victim and never sees
+// the member.
+func TestKernelBlockBatchSparesAVictimAboutToExpire(t *testing.T) {
 	e := newKernelBatchEngine(t)
 	e.cfg.DenyTempIPLimit = 1
 	victim := kernelVictim(t, e, "203.0.113.60", 2*time.Second)
 	m := kernelBlockMember("act_evict", "203.0.113.21", time.Hour)
 	m.Victim = victim
+	results, err := e.ApplyBlockBatch([]BlockMember{m})
+	if err != nil || effects(results) != "failed/set_full" || results[0].Victim != VictimSpared || results[0].Err != nil {
+		t.Fatalf("results %+v, %v", results, err)
+	}
+	v4 := kernelBlockElements(t, e, e.setBlocked)
+	if _, member := v4[m.IP]; member {
+		t.Fatalf("a spared victim's member was added: %v", v4)
+	}
+	if _, kept := v4[victim.IP]; !kept {
+		t.Fatalf("the victim was removed: %v", v4)
+	}
+}
+
+// A victim removed from the kernel between the snapshot and the send makes
+// the kernel reject its deletion with ENOENT, and with it the whole
+// transaction: the member is not added and the victim is reported spared.
+func TestKernelBlockBatchRejectsAVanishedVictim(t *testing.T) {
+	e := newKernelBatchEngine(t)
+	e.cfg.DenyTempIPLimit = 1
+	victim := kernelVictim(t, e, "203.0.113.60", time.Hour)
+	m := kernelBlockMember("act_evict", "203.0.113.21", time.Hour)
+	m.Victim = victim
 	prev := writeFirewallStateJSON
 	t.Cleanup(func() { writeFirewallStateJSON = prev })
+	removed := false
 	writeFirewallStateJSON = func(path string, perm os.FileMode, v any) error {
 		// The intent write runs after the snapshot proved the victim.
-		time.Sleep(time.Until(victim.ExpiresAt) + 500*time.Millisecond)
+		if !removed {
+			removed = true
+			if err := e.conn.SetDeleteElements(e.setBlocked, []nftables.SetElement{{Key: net.ParseIP(victim.IP).To4()}}); err != nil {
+				return err
+			}
+			if err := e.conn.Flush(); err != nil {
+				return err
+			}
+		}
 		return prev(path, perm, v)
 	}
 	results, err := e.ApplyBlockBatch([]BlockMember{m})

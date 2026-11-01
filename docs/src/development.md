@@ -812,9 +812,11 @@ expiry and proven element takes the victim's slot if the resulting set fits the 
 transaction deletes the victim's element, and only a readback of the victim's set
 proves it removed; a member whose removal is unproven is unknown, even
 with its own add read back. A victim that no longer qualifies is spared
-and its member needs a free slot. A victim the kernel expired before the
-send rejects the whole transaction with ENOENT, which fails its members
-like any rejection. The victim's row stays until the owner retires it
+and its member needs a free slot. A victim with no more than the batch's
+minimum lifetime left at the send is spared and its member fails set_full
+alone, since its expiry in the kernel would reject the whole transaction.
+A victim removed by other means before the send rejects the whole
+transaction with ENOENT, which fails its members like any rejection. The victim's row stays until the owner retires it
 after the ledger records the outcome, so a restart before then restores
 the victim. Definitive kernel rejection
 restores state; uncertain exchanges retain unknown rows. Unknown rows are

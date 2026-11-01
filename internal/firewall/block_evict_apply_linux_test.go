@@ -216,8 +216,8 @@ func TestApplyBlockBatchUnreadVictimFamilyIsUnproven(t *testing.T) {
 	}
 }
 
-// A victim the kernel expired between the snapshot and the send makes the
-// kernel reject the whole transaction (ENOENT). The batch fails as any
+// A victim removed from the kernel between the snapshot and the send makes
+// the kernel reject the whole transaction (ENOENT). The batch fails as any
 // rejection does: nothing applies, the state is restored and the victim is
 // spared; the owner retries with new charged attempts.
 func TestApplyBlockBatchVanishedVictimRejectsTheBatch(t *testing.T) {
@@ -270,6 +270,48 @@ func TestApplyBlockBatchExpiredMemberSparesItsVictim(t *testing.T) {
 	}
 	if _, live := f.live[victim.IP]; !live {
 		t.Fatal("the victim was removed")
+	}
+}
+
+// A victim with no more than a batch's minimum lifetime left at the send
+// could expire before the kernel runs the transaction, which would then
+// reject it whole with ENOENT and fail every member. Its member fails
+// set_full alone instead: nothing is deleted and the other members apply.
+// A millisecond more and the victim is removed.
+func TestApplyBlockBatchSparesAVictimAboutToExpire(t *testing.T) {
+	for _, tc := range []struct {
+		left             time.Duration
+		effects, victims string
+		dels             int
+	}{
+		{blockBatchMinLifetime, "failed/set_full applied/", "spared ", 0},
+		{blockBatchMinLifetime + time.Millisecond, "applied/ applied/", "removed ", 1},
+	} {
+		t.Run(tc.left.String(), func(t *testing.T) {
+			f, victim := newVictimFixture(t)
+			f.e.cfg.DenyTempIPLimit = 3
+			sent := f.modelKernel(t, nil)
+			evict := f.evicting("act_evict", "203.0.113.21", victim)
+			free := f.member("act_free", "203.0.113.20")
+			evict.ExpiresAt, free.ExpiresAt = f.at.Add(2*time.Hour), f.at.Add(2*time.Hour)
+			prev := writeFirewallStateJSON
+			t.Cleanup(func() { writeFirewallStateJSON = prev })
+			writeFirewallStateJSON = func(path string, mode os.FileMode, v any) error {
+				err := prev(path, mode, v)
+				f.at = victim.ExpiresAt.Add(-tc.left)
+				return err
+			}
+			results, err := f.e.ApplyBlockBatch([]BlockMember{evict, free})
+			if err != nil || effects(results) != tc.effects || victimEffects(results) != tc.victims {
+				t.Fatalf("results %+v, %v", results, err)
+			}
+			if adds, dels := sentElements(t, (*sent)[0]); len(*sent) != 1 || len(dels) != tc.dels || adds[free.IP] == 0 {
+				t.Fatalf("%d transactions, adds %v, deletes %v", len(*sent), adds, dels)
+			}
+			if _, live := f.live[victim.IP]; live != (tc.dels == 0) {
+				t.Fatalf("victim live %t after %d deletes", live, tc.dels)
+			}
+		})
 	}
 }
 
