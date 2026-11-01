@@ -1,10 +1,16 @@
 package hostfacts
 
 import (
+	"context"
 	"errors"
+	"fmt"
+	"io/fs"
+	"maps"
 	"os"
 	"os/user"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/antispam"
@@ -184,5 +190,132 @@ func TestTrustedRedisOwner(t *testing.T) {
 				t.Fatalf("trusted=%v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+// postfixPasswd is a Postfix and Dovecot host's /etc/passwd: rspamd runs as
+// _rspamd and virtual mail belongs to vmail.
+const postfixPasswd = `root:x:0:0:root:/root:/bin/bash
+daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin
+www-data:x:33:33:www-data:/var/www:/usr/sbin/nologin
+nobody:x:65534:65534:nobody:/nonexistent:/usr/sbin/nologin
+_rspamd:x:979:974::/var/lib/rspamd:/usr/sbin/nologin
+redis:x:990:990::/var/lib/redis:/usr/sbin/nologin
+dovecot:x:991:991::/usr/lib/dovecot:/usr/sbin/nologin
+dovenull:x:992:992::/nonexistent:/usr/sbin/nologin
+postfix:x:993:993::/var/spool/postfix:/usr/sbin/nologin
+vmail:x:5000:5000::/srv/vmail:/usr/sbin/nologin
+alice:x:1000:1000::/home/alice:/bin/bash
+`
+
+// postfixCollector reads passwd as /etc/passwd and resolves names from it
+// the way NSS does, first entry first. Its facts are a Postfix host's whose
+// rspamd unit runs as _rspamd.
+func postfixCollector(t *testing.T, passwd string) (collector, antispam.HostFacts) {
+	t.Helper()
+	c, _ := learningCollector(t, &fakeRun{})
+	c.readPasswd = func() ([]byte, error) { return []byte(passwd), nil }
+	c.uid = func(name string) (int, error) {
+		for line := range strings.SplitSeq(passwd, "\n") {
+			if fields := strings.Split(line, ":"); len(fields) == 7 && fields[0] == name {
+				return strconv.Atoi(fields[2])
+			}
+		}
+		return -1, user.UnknownUserError(name)
+	}
+	f := antispam.HostFacts{Stack: antispam.StackPostfix}
+	f.ControllerHost.RspamdUser = "_rspamd"
+	f.Socket.RspamdUID = 979
+	return c, f
+}
+
+// A Postfix host has no account registry: every passwd user except root
+// and the pinned service users may run tenant code. The mail uid user is
+// not pinned: tenants' sieve scripts and Dovecot's mail processes run as it.
+func TestPostfixUntrustedUsersFromPasswd(t *testing.T) {
+	c, f := postfixCollector(t, postfixPasswd)
+	c.learningRedis(context.Background(), "", &f)
+	want := map[string]bool{"daemon": true, "www-data": true, "nobody": true, "vmail": true, "alice": true}
+	if f.AccountNamesErr != nil || !maps.Equal(f.AccountNames, want) {
+		t.Fatalf("untrusted users = %v (%v), want %v", f.AccountNames, f.AccountNamesErr, want)
+	}
+	// rspamd's user is pinned by the name its unit runs as; unknown, it is
+	// a user like any other.
+	f.ControllerHost.RspamdUser = ""
+	c.learningRedis(context.Background(), "", &f)
+	if f.AccountNamesErr != nil || !f.AccountNames["_rspamd"] || len(f.AccountNames) != len(want)+1 {
+		t.Fatalf("unknown rspamd user: %v (%v)", f.AccountNames, f.AccountNamesErr)
+	}
+	// A record that does not parse may hide a user.
+	for name, read := range map[string]func() ([]byte, error){
+		"unreadable": func() ([]byte, error) { return nil, os.ErrPermission },
+		"malformed":  func() ([]byte, error) { return []byte(postfixPasswd + "broken\n"), nil },
+	} {
+		c.readPasswd = read
+		c.learningRedis(context.Background(), "", &f)
+		if f.AccountNamesErr == nil || f.AccountNames != nil {
+			t.Fatalf("%s passwd: %v (%v)", name, f.AccountNames, f.AccountNamesErr)
+		}
+	}
+}
+
+// On Postfix the Redis owner is trusted as on cPanel: root, rspamd's
+// service user or the redis user, and only while no untrusted user shares
+// its uid. Dovecot's and Postfix's users are pinned, not trusted with Redis.
+func TestTrustedRedisOwnerPostfix(t *testing.T) {
+	vmailIsRedis := strings.Replace(postfixPasswd, "vmail:x:5000:5000", "vmail:x:990:990", 1)
+	for _, tc := range []struct {
+		name   string
+		passwd string
+		uid    int
+		want   bool
+	}{
+		{name: "root", passwd: postfixPasswd, uid: 0, want: true},
+		{name: "redis", passwd: postfixPasswd, uid: 990, want: true},
+		{name: "rspamd", passwd: postfixPasswd, uid: 979, want: true},
+		{name: "vmail", passwd: postfixPasswd, uid: 5000},
+		{name: "dovecot", passwd: postfixPasswd, uid: 991},
+		{name: "dovenull", passwd: postfixPasswd, uid: 992},
+		{name: "postfix", passwd: postfixPasswd, uid: 993},
+		{name: "nobody", passwd: postfixPasswd, uid: 65534},
+		{name: "login user", passwd: postfixPasswd, uid: 1000},
+		{name: "mail uid shares redis's", passwd: vmailIsRedis, uid: 990},
+		{name: "alias of rspamd", passwd: postfixPasswd + "builder:x:979:979::/home/builder:/bin/sh\n", uid: 979},
+		{name: "passwd malformed", passwd: postfixPasswd + "broken\n", uid: 990},
+		{name: "passwd malformed root", passwd: postfixPasswd + "broken\n", uid: 0, want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, f := postfixCollector(t, tc.passwd)
+			c.learningRedis(context.Background(), "", &f)
+			if got := c.trustedRedisOwner(tc.uid, f); got != tc.want {
+				t.Fatalf("trusted=%v, want %v (untrusted users %v, %v)", got, tc.want, f.AccountNames, f.AccountNamesErr)
+			}
+		})
+	}
+
+	// The socket's group grants access: only root, redis and rspamd's user
+	// may be in it.
+	for members, want := range map[string]string{
+		"redis,_rspamd":  "",
+		"redis,vmail":    "the Redis socket: socket reachable by other users",
+		"redis,dovecot":  "the Redis socket: socket reachable by other users",
+		"redis,dovenull": "the Redis socket: socket reachable by other users",
+		"redis,postfix":  "the Redis socket: socket reachable by other users",
+	} {
+		c, f := postfixCollector(t, postfixPasswd)
+		c.learningRedis(context.Background(), "", &f)
+		const socket = "/run/redis-csm/redis.sock"
+		root := antispam.PathFacts{Path: "/", Mode: fs.ModeDir | 0o755}
+		run := antispam.PathFacts{Path: "/run", Mode: fs.ModeDir | 0o755}
+		f.Redis = antispam.RedisFacts{Endpoint: socket, Unix: true, ServiceUID: 990, GroupMembers: strings.Split(members, ","),
+			Socket: antispam.SocketFacts{
+				Socket:  antispam.PathFacts{Path: socket, UID: 990, GID: 974, Mode: fs.ModeSocket | 0o770},
+				Parents: []antispam.PathFacts{root, run, {Path: "/run/redis-csm", UID: 990, GID: 974, Mode: fs.ModeDir | 0o750}},
+			},
+			Port: "0", TLSPort: "0", MaxMemory: 1 << 30, MaxMemoryKnown: true, Used: 1 << 20, Policy: "noeviction", AppendOnly: "yes", Version: "7.2.4"}
+		err := antispam.CheckLearningRedis(dedicatedSettings(socket), f)
+		if got := fmt.Sprint(err); want == "" && err != nil || want != "" && got != want {
+			t.Errorf("group %s: %v, want %q", members, err, want)
+		}
 	}
 }

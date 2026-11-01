@@ -98,6 +98,12 @@ func ResolveLearning(s Settings, f HostFacts) (Settings, LearningGate, []Problem
 		return s, LearningGate{}, []Problem{{Code: CodeLearning, Severity: Warning, Key: ReasonUnsupported,
 			Detail: "learning from Junk folders on Postfix hosts is not available yet"}}
 	}
+	return resolveLearning(s, f)
+}
+
+// resolveLearning judges requested learning on a host whose stack supports
+// it.
+func resolveLearning(s Settings, f HostFacts) (Settings, LearningGate, []Problem) {
 	var c learningCheck
 	installed := learningInstalled(f)
 	if f.LearningKeysErr != nil {
@@ -139,7 +145,8 @@ func ResolveLearning(s Settings, f HostFacts) (Settings, LearningGate, []Problem
 		c.add(ReasonRedisCapacity, "Redis is at the learning memory guard; new hashes wait until usage falls below 70%")
 		gate.Publish = false
 	}
-	if gate.Install {
+	// The Junk-button include is for cPanel's Roundcube.
+	if gate.Install && f.Stack != StackPostfix {
 		gate.Roundcube = roundcubeUsable(&c, f)
 	}
 	s.Learning, s.Roundcube = gate.Install, gate.Roundcube
@@ -441,16 +448,16 @@ func checkLearningRedisEndpoint(c *learningCheck, f HostFacts) {
 // and root are trusted, and a group member counts as another user unless it
 // is root, redis or rspamd's service user. Shared users such as nobody can
 // run tenant code, so only these names are trusted, and redis or rspamd's
-// user only while the account list is readable and no account carries the
-// name. Unknown group members count as other users.
-func redisExposure(r RedisFacts, rspamdUser string, accounts map[string]bool, accountsErr error) string {
+// user only while the untrusted users are known and none carries the name.
+// Unknown group members count as other users.
+func redisExposure(r RedisFacts, rspamdUser string, untrusted map[string]bool, untrustedErr error) string {
 	owner := r.Socket.Socket.UID
 	host := ControllerHostFacts{Sockets: map[string]SocketFacts{r.Endpoint: r.Socket}, RspamdUID: owner, GroupMembers: map[int][]string{}}
 	trusted := func(m string) bool {
 		if m == "root" {
 			return true
 		}
-		if accountsErr != nil || accounts[m] {
+		if untrustedErr != nil || untrusted[m] {
 			return false
 		}
 		return m == "redis" || (rspamdUser != "" && m == rspamdUser)

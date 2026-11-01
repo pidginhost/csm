@@ -279,6 +279,41 @@ func TestCollectAccountNames(t *testing.T) {
 	}
 }
 
+// A Postfix host has no cPanel: learning reads neither the account
+// registry nor cPanel's Roundcube, and reports nothing about them. Its
+// untrusted users come from /etc/passwd.
+func TestCollectLearningPostfixSkipsCPanelFacts(t *testing.T) {
+	c, f := postfixCollector(t, postfixPasswd)
+	mkdir(t, c.layout.CPanelUsers)
+	write(t, filepath.Join(c.layout.CPanelUsers, "cpanelonly"), "")
+	c.learningFacts(context.Background(), antispam.Settings{Learning: true}, &f)
+	if f.AccountNamesErr != nil || f.AccountNames["cpanelonly"] || !f.AccountNames["vmail"] {
+		t.Fatalf("untrusted users = %v (%v)", f.AccountNames, f.AccountNamesErr)
+	}
+	if rc := f.Roundcube; rc.Err != nil || rc.IncludeMechanism || rc.PHP || rc.Include.Path != "" {
+		t.Fatalf("Roundcube judged on Postfix: %+v", rc)
+	}
+	// Without a registry on disk nothing changes.
+	if err := os.RemoveAll(c.layout.CPanelUsers); err != nil {
+		t.Fatal(err)
+	}
+	c.learningFacts(context.Background(), antispam.Settings{Learning: true}, &f)
+	if f.AccountNamesErr != nil || !f.AccountNames["vmail"] {
+		t.Fatalf("no registry: %v (%v)", f.AccountNames, f.AccountNamesErr)
+	}
+	// cPanel hosts still read both.
+	mkdir(t, c.layout.CPanelUsers)
+	write(t, filepath.Join(c.layout.CPanelUsers, "cpanelonly"), "")
+	f.Stack = antispam.StackExim
+	c.learningFacts(context.Background(), antispam.Settings{Learning: true}, &f)
+	if f.AccountNamesErr != nil || len(f.AccountNames) != 1 || !f.AccountNames["cpanelonly"] {
+		t.Fatalf("cPanel accounts = %v (%v)", f.AccountNames, f.AccountNamesErr)
+	}
+	if f.Roundcube.Err == nil {
+		t.Fatalf("cPanel's Roundcube not read: %+v", f.Roundcube)
+	}
+}
+
 // CSM sends the Redis password only to a socket nobody but its owner or root
 // could have created, owned by a user that is not a cPanel account.
 func TestCollectRedisProbesOnlyProtectedSockets(t *testing.T) {

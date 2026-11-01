@@ -50,7 +50,9 @@ func (c collector) learningFacts(ctx context.Context, s antispam.Settings, f *an
 	c.logGroups(f)
 	f.FuzzyListening, f.FuzzyListenForeign, f.FuzzyListenErr = c.fuzzyListening(f.Socket.RspamdUID)
 	f.CageFS = c.cageFS(ctx)
-	f.Roundcube = c.roundcube(*f)
+	if f.Stack != antispam.StackPostfix {
+		f.Roundcube = c.roundcube(*f)
+	}
 	c.learningRedis(ctx, s.LearningRedisSocket, f)
 }
 
@@ -62,7 +64,11 @@ func CollectLearningRedis(ctx context.Context, socket string, f *antispam.HostFa
 }
 
 func (c collector) learningRedis(ctx context.Context, socket string, f *antispam.HostFacts) {
-	f.AccountNames, f.AccountNamesErr = c.accountNames()
+	if f.Stack == antispam.StackPostfix {
+		f.AccountNames, f.AccountNamesErr = c.untrustedLocalUsers(f.ControllerHost.RspamdUser)
+	} else {
+		f.AccountNames, f.AccountNamesErr = c.accountNames()
+	}
 	f.Redis = c.redis(ctx, *f, socket)
 }
 
@@ -638,9 +644,9 @@ func socketEntries(raw json.RawMessage) []string {
 var upstreamRotations = map[string]bool{"random": true, "master-slave": true, "round-robin": true, "hash": true, "sequential": true}
 
 // trustedRedisOwner reports whether uid may serve the Redis socket: root,
-// rspamd's service user or the system user named redis, and no cPanel
-// account shares the uid. Any other owner, including shared users such as
-// nobody that can run tenant code, gets no password.
+// rspamd's service user or the system user named redis, and no untrusted
+// user (f.AccountNames) shares the uid. Any other owner, including shared
+// users such as nobody that can run tenant code, gets no password.
 func (c collector) trustedRedisOwner(uid int, f antispam.HostFacts) bool {
 	if uid == 0 {
 		return true

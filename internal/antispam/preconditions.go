@@ -220,8 +220,11 @@ type HostFacts struct {
 	FuzzyListenErr     error
 	CageFS             CageFSFacts
 	Roundcube          RoundcubeFacts
-	AccountNames       map[string]bool
-	AccountNamesErr    error
+	// AccountNames are the local users that may run tenant code: the cPanel
+	// accounts on Exim; on Postfix every passwd user but root and the
+	// pinned service users.
+	AccountNames    map[string]bool
+	AccountNamesErr error
 	// RedisGuardPaused is the pass's last memory-guard state, so the guard
 	// keeps its hysteresis between passes.
 	RedisGuardPaused bool

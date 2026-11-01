@@ -623,6 +623,31 @@ func TestResolveLearningPostfixNeedsRedisSocket(t *testing.T) {
 	}
 }
 
+// Roundcube is cPanel's webmail: on Postfix the collector reads nothing
+// about it and the resolver neither judges nor reports its include.
+// ResolveLearning keeps Postfix off until Junk folders are watched there,
+// so the judging step is exercised directly.
+func TestResolveLearningPostfixNoRoundcubeWarning(t *testing.T) {
+	s := learningSettings()
+	s.LearningRedisSocket = dedicatedSocket
+	f := dedicatedRedisFacts(StackPostfix, dedicatedSocket)
+	f.Targets, f.Roundcube = nil, RoundcubeFacts{}
+	for _, tg := range MutationTargets(StackPostfix) {
+		f.Targets = append(f.Targets, TargetFacts{Target: tg, Missing: true, Parents: []PathFacts{dir("/", 0, 0, 0o755)}})
+	}
+	got, gate, problems := resolveLearning(s, f)
+	if !gate.Install || !gate.Publish || gate.Roundcube || !got.Learning || got.Roundcube || len(problems) != 0 {
+		t.Fatalf("Postfix: settings %+v gate %+v problems %+v", got, gate, problems)
+	}
+	// The same facts on cPanel still miss the include.
+	f.Stack = StackExim
+	_, gate, problems = resolveLearning(s, f)
+	if !gate.Install || gate.Roundcube {
+		t.Fatalf("cPanel: gate %+v", gate)
+	}
+	onlyLearningReason(t, problems, ReasonRoundcube)
+}
+
 // The safety checks judge the dedicated Redis exactly like rspamd's, on
 // either stack, and a Redis another rspamd module also uses, or one rspamd's
 // global redis settings would reach, is refused. An outage keeps an

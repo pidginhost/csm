@@ -32,3 +32,24 @@ func (c collector) localAccountNames() (map[string]bool, error) {
 	}
 	return names, nil
 }
+
+// postfixServiceUsers run no tenant code on a Postfix host. The mail uid
+// user (vmail) is not one of them: tenants' sieve scripts and Dovecot's mail
+// processes run as it. Being pinned grants no access: Redis trusts only
+// root, redis and rspamd's user, the controller only root and rspamd's user.
+var postfixServiceUsers = []string{"root", "redis", "dovecot", "dovenull", "postfix"}
+
+// untrustedLocalUsers lists the users that may run tenant code on a Postfix
+// host, which has no account registry: every user in /etc/passwd but
+// rspamd's service user and postfixServiceUsers.
+func (c collector) untrustedLocalUsers(rspamdUser string) (map[string]bool, error) {
+	names, err := c.localAccountNames()
+	if err != nil {
+		return nil, err
+	}
+	for _, name := range postfixServiceUsers {
+		delete(names, name)
+	}
+	delete(names, rspamdUser)
+	return names, nil
+}
