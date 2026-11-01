@@ -1,6 +1,7 @@
 package admission
 
 import (
+	"fmt"
 	"slices"
 	"testing"
 	"time"
@@ -8,7 +9,7 @@ import (
 
 func victimAt(t *testing.T, n byte, tier Tier, p Partition, expires time.Time) EvictionVictim {
 	t.Helper()
-	return EvictionVictim{Action: testActionID(t, n), Tier: tier, Partition: p, ExpiresAt: expires}
+	return EvictionVictim{Action: testActionID(t, n), Target: mustAddr(t, fmt.Sprintf("198.51.100.%d", n)), Tier: tier, Partition: p, ExpiresAt: expires}
 }
 
 var (
@@ -257,5 +258,19 @@ func TestSlotLimitsTakeConsumesOnlyGrantedSlots(t *testing.T) {
 			check(1, false)
 			check(0, true)
 		})
+	}
+}
+
+// Work never evicts the block of its own address: an intent and the
+// ledger's open proof both refuse that removal.
+func TestSlotLimitsNeverEvictTheSameAddress(t *testing.T) {
+	own := victimAt(t, 1, warning, PartitionGeneral, t0.Add(time.Hour))
+	other := victimAt(t, 2, warning, PartitionGeneral, t0.Add(2*time.Hour))
+	work := SlotDemand{Tier: critical, Cost: 1, Evicts: true, Target: own.Target}
+	if v, ok := NewSlotLimits(0, 0, []EvictionVictim{own, other}).Room(LaneGeneral, work); !ok || v.Action != other.Action {
+		t.Fatalf("room = %+v %v, want the other address", v, ok)
+	}
+	if v, ok := NewSlotLimits(0, 0, []EvictionVictim{own}).Take(LaneGeneral, work); ok {
+		t.Fatalf("took the own address %+v", v)
 	}
 }

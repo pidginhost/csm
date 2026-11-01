@@ -387,7 +387,7 @@ func (l *AdmissionLedger) reserveTx(q *queueTx, id admission.CandidateID, lane a
 		if slotErr != nil {
 			return c, admission.AttemptRecord{}, false, slotErr
 		}
-		d := admission.SlotDemand{Tier: entry.Tier, Cost: cost, Evicts: c.Key.Kind == admission.KindBlockIP && cost == 1, Reserved: entry.Direct || entry.Corroborated}
+		d := admission.SlotDemand{Tier: entry.Tier, Cost: cost, Evicts: c.Key.Kind == admission.KindBlockIP && cost == 1, Reserved: entry.Direct || entry.Corroborated, Target: c.Key.Target}
 		var ok bool
 		if victim, ok = slots.Room(lane, d); !ok {
 			return c, admission.AttemptRecord{}, false, refusal(admission.ReasonSetFull, "the temporary set has no free slot for the lane")

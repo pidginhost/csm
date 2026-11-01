@@ -9,6 +9,7 @@ import (
 // may evict when the set has no free slot for it (spec 5.6).
 type EvictionVictim struct {
 	Action    ActionID
+	Target    Target
 	Tier      Tier
 	Partition Partition
 	ExpiresAt time.Time
@@ -45,6 +46,9 @@ type SlotDemand struct {
 	Evicts bool
 	// Reserved is set for work eligible for a reserved lane.
 	Reserved bool
+	// Target is the work's address; the block of that address is never
+	// its victim.
+	Target Target
 }
 
 // SlotLimits bound block work by the temporary set: the free slots of each
@@ -150,7 +154,7 @@ func (s *SlotLimits) room(lane Lane, d SlotDemand) (int, bool) {
 		return -1, false
 	}
 	for i, v := range s.victims {
-		if v.Tier.Less(d.Tier) && (reserved || v.Partition == PartitionGeneral) {
+		if v.Tier.Less(d.Tier) && v.Target != d.Target && (reserved || v.Partition == PartitionGeneral) {
 			return i, true
 		}
 	}

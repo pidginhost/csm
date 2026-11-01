@@ -944,3 +944,23 @@ func TestAdmissionLedgerEvictionVictimSweptAfterExecution(t *testing.T) {
 		})
 	}
 }
+
+// A new generation for an address already blocked never claims that
+// block as its victim: it waits for a slot, and the ledger still opens.
+func TestAdmissionLedgerEvictionSkipsTheSameAddress(t *testing.T) {
+	f := liveLedgerFixture(t)
+	f.l.SetOccupants(&fullGeneral)
+	low := f.verifiedWith("192.0.2.10", admission.SeverityWarning, time.Hour)
+	root := f.published(evidenceSpec{target: "192.0.2.10", cursor: "evict-again", severity: admission.SeverityCritical})
+	req := f.request("192.0.2.10", root)
+	req.Generation++
+	_, again := f.enqueue(req)
+	_, _, _, err := f.l.Reserve(again, admission.LaneGeneral, f.wall.Add(2*time.Hour))
+	wantLedgerReason(t, "the same address", err, admission.ReasonSetFull)
+	if victim, _ := f.effectOf(low); victim.EvictedBy != "" {
+		t.Fatalf("victim record %+v claimed by its own address", victim)
+	}
+	if _, err = OpenAdmissionLedger(f.db, f.reg); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -97,7 +97,7 @@ func victimPool(tx *bolt.Tx, now time.Time) ([]admission.EvictionVictim, error) 
 	err := b.ForEach(func(k, v []byte) error {
 		rec, err := admission.UnmarshalEffectRecord(k, v)
 		if err == nil && rec.Verified() && rec.Holds() && rec.EvictedBy == "" && rec.ExpiresAt.After(now) {
-			pool = append(pool, admission.EvictionVictim{Action: rec.Action, Tier: rec.Tier, Partition: rec.Partition, ExpiresAt: rec.ExpiresAt})
+			pool = append(pool, admission.EvictionVictim{Action: rec.Action, Target: rec.Target, Tier: rec.Tier, Partition: rec.Partition, ExpiresAt: rec.ExpiresAt})
 		}
 		return err
 	})
@@ -118,10 +118,10 @@ func limitBySlots(lim admission.ScheduleLimits, slots *admission.SlotLimits) adm
 }
 
 // demandOf is what schedule item it of candidate lc asks of the set: only
-// one-unit block_ip work may evict.
+// one-unit block_ip work may evict, never the block of its own address.
 func demandOf(it admission.ScheduleItem, lc liveCandidate) admission.SlotDemand {
 	return admission.SlotDemand{Tier: it.Tier, Cost: it.CeilingCost, Evicts: lc.c.Key.Kind == admission.KindBlockIP && it.CeilingCost == 1,
-		Reserved: it.Direct || it.Corroborated}
+		Reserved: it.Direct || it.Corroborated, Target: lc.c.Key.Target}
 }
 
 // reservedLane is the reserved lane item it is eligible for; zero for
