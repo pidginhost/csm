@@ -22,7 +22,6 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Fixed
 
-- Automatic blocking capacity estimates no longer count highest-priority protections as replaceable.
 - WordPress core files that differ only in line endings are no longer reported on sites whose PHP prints deprecation notices.
 - The daemon log no longer reports a YARA scan failure for large files.
 - The daemon log now says when a parse worker is retired or exits on its own, instead of only that it was killed.
