@@ -1,6 +1,7 @@
 package admission
 
 import (
+	"slices"
 	"testing"
 	"time"
 )
@@ -143,11 +144,118 @@ func TestNewSlotLimitsOwnsItsPool(t *testing.T) {
 		victimAt(t, 1, high, PartitionGeneral, t0.Add(time.Hour)),
 		victimAt(t, 2, warning, PartitionGeneral, t0.Add(time.Hour)),
 	}
+	original := slices.Clone(pool)
 	s := NewSlotLimits(0, 0, pool)
+	if !slices.Equal(pool, original) {
+		t.Fatal("constructing limits reordered the caller's pool")
+	}
 	for i := range pool {
 		pool[i].Tier = critical
 	}
 	if v, ok := s.Take(LaneGeneral, SlotDemand{Tier: high, Cost: 1, Evicts: true}); !ok || v.Action != testActionID(t, 2) || v.Tier != warning {
 		t.Fatalf("pool aliased its caller: %+v %v", v, ok)
+	}
+}
+
+// The highest valid tier cannot be evicted by any work, so it cannot
+// fund a lane's budget even when every partition is full.
+func TestSlotLimitsBudgetExcludesHighestTier(t *testing.T) {
+	belowCritical := Tier{Class: ClassC3, Severity: SeverityHigh}
+	pool := []EvictionVictim{
+		victimAt(t, 1, critical, PartitionGeneral, t0.Add(time.Hour)),
+		victimAt(t, 2, critical, PartitionReserved, t0.Add(time.Hour)),
+		victimAt(t, 3, belowCritical, PartitionGeneral, t0.Add(time.Hour)),
+		victimAt(t, 4, belowCritical, PartitionReserved, t0.Add(time.Hour)),
+	}
+	for _, lane := range []Lane{LaneGeneral, LaneDirect, LaneCorroborated} {
+		t.Run(lane.String(), func(t *testing.T) {
+			s := NewSlotLimits(0, 0, pool)
+			demand := SlotDemand{Tier: critical, Cost: 1, Evicts: true, Reserved: lane != LaneGeneral}
+			want := uint32(1)
+			if lane != LaneGeneral {
+				want = 2
+			}
+			for want > 0 {
+				if got := s.Budget(lane); got != want {
+					t.Errorf("budget = %d, want %d evictable entries", got, want)
+				}
+				v, ok := s.Take(lane, demand)
+				if !ok || v.Tier != belowCritical {
+					t.Fatalf("take = %+v, %v; want a lower-tier victim", v, ok)
+				}
+				want--
+			}
+			if got := s.Budget(lane); got != 0 {
+				t.Errorf("exhausted budget = %d, want 0", got)
+			}
+			if v, ok := s.Take(lane, demand); ok || v != (EvictionVictim{}) {
+				t.Fatalf("exhausted take = %+v, %v", v, ok)
+			}
+		})
+	}
+}
+
+func TestSlotLimitsCloneOwnsVictims(t *testing.T) {
+	pool := []EvictionVictim{
+		victimAt(t, 1, warning, PartitionGeneral, t0.Add(time.Hour)),
+		victimAt(t, 2, high, PartitionGeneral, t0.Add(time.Hour)),
+		victimAt(t, 3, high, PartitionReserved, t0.Add(2*time.Hour)),
+	}
+	original := NewSlotLimits(0, 0, pool)
+	clone := original.Clone()
+	demand := SlotDemand{Tier: critical, Cost: 1, Evicts: true, Reserved: true}
+	for _, want := range pool {
+		for _, limits := range []*SlotLimits{clone, original} {
+			v, ok := limits.Take(LaneDirect, demand)
+			if !ok || v != want {
+				t.Fatalf("take = %+v, %v; want %+v from each copy", v, ok, want)
+			}
+		}
+	}
+	for _, limits := range []*SlotLimits{clone, original} {
+		if _, ok := limits.Take(LaneDirect, demand); ok {
+			t.Fatal("a consumed victim was granted again")
+		}
+	}
+}
+
+func TestSlotLimitsTakeConsumesOnlyGrantedSlots(t *testing.T) {
+	for _, lane := range []Lane{LaneGeneral, LaneDirect, LaneCorroborated} {
+		t.Run(lane.String(), func(t *testing.T) {
+			s := NewSlotLimits(2, 2, nil)
+			demand := SlotDemand{Tier: critical, Cost: 3, Evicts: true, Reserved: lane != LaneGeneral}
+			check := func(cost uint32, wantOK bool) {
+				t.Helper()
+				demand.Cost = cost
+				beforeGeneral, beforeReserved := s.freeGeneral, s.freeReserved
+				room, roomOK := s.Room(lane, demand)
+				if s.freeGeneral != beforeGeneral || s.freeReserved != beforeReserved {
+					t.Fatal("Room consumed free slots")
+				}
+				v, ok := s.Take(lane, demand)
+				if ok != wantOK || roomOK != wantOK || v != (EvictionVictim{}) || room != v {
+					t.Fatalf("cost %d: Room = %+v, %v; Take = %+v, %v; want %v", cost, room, roomOK, v, ok, wantOK)
+				}
+				wantGeneral, wantReserved := beforeGeneral, beforeReserved
+				if wantOK {
+					if lane == LaneGeneral {
+						wantGeneral -= cost
+					} else {
+						wantReserved -= cost
+					}
+				}
+				if s.freeGeneral != wantGeneral || s.freeReserved != wantReserved {
+					t.Fatalf("slots = (%d, %d), want (%d, %d)", s.freeGeneral, s.freeReserved, wantGeneral, wantReserved)
+				}
+			}
+			check(^uint32(0), false)
+			check(3, false)
+			check(0, true)
+			check(1, true)
+			check(2, false)
+			check(1, true)
+			check(1, false)
+			check(0, true)
+		})
 	}
 }

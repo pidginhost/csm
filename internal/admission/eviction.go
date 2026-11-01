@@ -72,7 +72,8 @@ func (s *SlotLimits) Clone() *SlotLimits {
 	return &SlotLimits{freeGeneral: s.freeGeneral, freeReserved: s.freeReserved, victims: slices.Clone(s.victims)}
 }
 
-// Budget bounds a lane by its free slots or, under pressure, its victims.
+// Budget bounds a lane by its free slots or, under pressure, its victims
+// below the highest valid tier, which no work may evict.
 // Per-lane readiness and Take decide whether each pick can use that room.
 func (s *SlotLimits) Budget(lane Lane) uint32 {
 	if s == nil {
@@ -85,7 +86,11 @@ func (s *SlotLimits) Budget(lane Lane) uint32 {
 	if free > 0 || (PartitionOf(lane) == PartitionReserved && s.freeGeneral > 0) {
 		return min(free, MaxCeiling)
 	}
+	highest := Tier{Class: ClassC3, Severity: SeverityCritical}
 	for _, v := range s.victims {
+		if !v.Tier.Less(highest) {
+			break
+		}
 		if PartitionOf(lane) == PartitionReserved || v.Partition == PartitionGeneral {
 			n++
 		}
