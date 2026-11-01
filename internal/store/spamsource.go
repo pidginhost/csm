@@ -3,6 +3,7 @@ package store
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	bolt "go.etcd.io/bbolt"
@@ -64,8 +65,11 @@ func (db *DB) LoadSpamSources() (map[string]SpamSource, error) {
 		}
 		return b.ForEach(func(k, v []byte) error {
 			var src SpamSource
-			if json.Unmarshal(v, &src) != nil {
-				return nil //nolint:nilerr // skip corrupt entry
+			if err := json.Unmarshal(v, &src); err != nil {
+				return fmt.Errorf("decode spam source state: %w", err)
+			}
+			if src.Seen.IsZero() {
+				return errors.New("spam source state has no observation time")
 			}
 			out[string(k)] = src
 			return nil

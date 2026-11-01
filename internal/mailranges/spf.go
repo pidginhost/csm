@@ -431,20 +431,37 @@ func resolveSPFRec(ctx context.Context, r Resolver, domain string, st *spfResolv
 	// Validate and collect ip4:/ip6: prefixes before recursing so a bad record
 	// causes an immediate error rather than a partial result.
 	var collected []*net.IPNet
+	// Repeated includes and overlapping subtrees must not multiply the
+	// working set, even when memoization keeps the DNS lookup count small.
+	seenNets := make(map[string]bool)
+	collect := func(n *net.IPNet) {
+		key := n.String()
+		if !seenNets[key] {
+			seenNets[key] = true
+			collected = append(collected, n)
+		}
+	}
 	for _, n := range rec.nets {
 		if !isPublicPrefix(n) {
 			return nil, fmt.Errorf("spf: non-public prefix %s in record for %q", n, domain)
 		}
-		collected = append(collected, n)
+		collect(n)
 	}
 
 	// Recurse into includes.
+	seenIncludes := make(map[string]bool)
 	for _, inc := range rec.includes {
+		if seenIncludes[inc] {
+			continue
+		}
+		seenIncludes[inc] = true
 		sub, err := resolveSPFRec(ctx, r, inc, st, depth+1)
 		if err != nil {
 			return nil, err
 		}
-		collected = append(collected, sub...)
+		for _, n := range sub {
+			collect(n)
+		}
 	}
 
 	// Follow redirect= (at most one per record, enforced by parseSPFRecord).
@@ -453,7 +470,9 @@ func resolveSPFRec(ctx context.Context, r Resolver, domain string, st *spfResolv
 		if err != nil {
 			return nil, err
 		}
-		collected = append(collected, sub...)
+		for _, n := range sub {
+			collect(n)
+		}
 	}
 
 	// Cache only on full success so a partially-resolved domain is never reused.

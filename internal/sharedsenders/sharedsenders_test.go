@@ -72,7 +72,7 @@ func (f *fakeResolver) LookupAddr(ctx context.Context, addr string) ([]string, e
 }
 
 func (f *fakeResolver) LookupIP(ctx context.Context, network, host string) ([]net.IP, error) {
-	if network != "ip" {
+	if network != "ip4" && network != "ip6" {
 		return nil, fmt.Errorf("unexpected network %q", network)
 	}
 	if err := f.start(ctx, "ip:"+host); err != nil {
@@ -86,12 +86,16 @@ func (f *fakeResolver) LookupIP(ctx context.Context, network, host string) ([]ne
 
 func providerNames() []string { return slices.Sorted(maps.Keys(providers)) }
 
-// allProviders returns a policy for every provider: the one in extra, or an
-// empty one.
+// allProviders returns a policy for every provider: the one in extra, or a
+// documentation prefix outside the candidate addresses.
 func allProviders(extra map[string]mailranges.Policy) map[string]mailranges.Policy {
 	m := make(map[string]mailranges.Policy, len(providers))
 	for _, name := range providerNames() {
-		m[name] = extra[name]
+		policy, ok := extra[name]
+		if !ok {
+			policy.Nets = []*net.IPNet{{IP: net.ParseIP("192.0.2.254"), Mask: net.CIDRMask(32, 32)}}
+		}
+		m[name] = policy
 	}
 	return m
 }
@@ -137,7 +141,7 @@ func spfTrees(suffix string) map[string][]string {
 func validCache() cacheFile {
 	c := cacheFile{Version: 1, Providers: make(map[string]cacheProvider, len(providers))}
 	for name, root := range providers {
-		c.Providers[name] = cacheProvider{Root: root, ResolvedAt: testNow.Unix()}
+		c.Providers[name] = cacheProvider{Root: root, ResolvedAt: testNow.Unix(), Nets: []string{"192.0.2.254/32"}}
 	}
 	g := c.Providers["google"]
 	g.Nets = []string{"198.51.100.0/24"}
@@ -687,24 +691,33 @@ func TestLoadKeepsAFutureStamp(t *testing.T) {
 }
 
 func TestCacheWritesEmptyListsAsArrays(t *testing.T) {
-	want := `{"version":1,"providers":{"yahoo":{"root":"` + providers["yahoo"] + `","resolved_at":1793000000,"nets":[],"ptr":[]}}}`
-	fromLoad, err := parseCache([]byte(`{"version":1,"providers":{"yahoo":{"root":"` + providers["yahoo"] + `","resolved_at":1793000000,"nets":null}}}`))
-	if err != nil {
-		t.Fatal(err)
-	}
 	for _, tc := range []struct {
-		desc string
-		s    snapshot
+		name       string
+		policy     mailranges.Policy
+		inputLists string
+		wantLists  string
 	}{
-		{"resolved policy", NewForTest(map[string]mailranges.Policy{"yahoo": {}}, testNow).current()},
-		{"loaded cache with null and missing lists", fromLoad},
+		{"prefix only", mailranges.Policy{Nets: []*net.IPNet{mustNet(t, "192.0.2.254/32")}},
+			`"nets":["192.0.2.254/32"],"ptr":null`, `"nets":["192.0.2.254/32"],"ptr":[]`},
+		{"ptr only", mailranges.Policy{PTRDomains: []string{"mail.example.net"}},
+			`"ptr":["mail.example.net"]`, `"nets":[],"ptr":["mail.example.net"]`},
 	} {
-		got, err := encodeCache(tc.s)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if string(got) != want {
-			t.Errorf("%s: cache\n%s\nwant\n%s", tc.desc, got, want)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			prefix := `{"version":1,"providers":{"yahoo":{"root":"` + providers["yahoo"] + `","resolved_at":1793000000,`
+			want := prefix + tc.wantLists + `}}}`
+			fromLoad, err := parseCache([]byte(prefix + tc.inputLists + `}}}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, s := range []snapshot{NewForTest(map[string]mailranges.Policy{"yahoo": tc.policy}, testNow).current(), fromLoad} {
+				got, err := encodeCache(s)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if string(got) != want {
+					t.Errorf("cache = %s, want %s", got, want)
+				}
+			}
+		})
 	}
 }

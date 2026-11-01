@@ -96,7 +96,7 @@ func writeSharedSenders(t *testing.T, statePath string, now time.Time) {
 	}
 	providers := make(map[string]entry, len(sharedSenderRoots))
 	for name, root := range sharedSenderRoots {
-		providers[name] = entry{Root: root, ResolvedAt: now.Unix(), Nets: []string{}, PTR: []string{}}
+		providers[name] = entry{Root: root, ResolvedAt: now.Unix(), Nets: []string{"192.0.2.254/32"}, PTR: []string{}}
 	}
 	providers["google"] = entry{Root: sharedSenderRoots["google"], ResolvedAt: now.Unix(), Nets: []string{"203.0.113.0/24"}, PTR: []string{}}
 	providers["yahoo"] = entry{Root: sharedSenderRoots["yahoo"], ResolvedAt: now.Unix(), Nets: []string{}, PTR: []string{"mail.example.net"}}
@@ -645,7 +645,7 @@ func TestSpamSourceQueueFullEndsTheCheck(t *testing.T) {
 		inFlight := func(ip string) bool {
 			r.tracker.mu.Lock()
 			defer r.tracker.mu.Unlock()
-			return r.tracker.entries[netip.MustParseAddr(ip)].checking
+			return r.tracker.checking[netip.MustParseAddr(ip)] != nil
 		}
 		if !inFlight("198.51.100.163") {
 			t.Fatal("the last queued sender is not in flight")

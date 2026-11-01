@@ -226,8 +226,14 @@ func (g *Guard) Shared(ctx context.Context, r Resolver, ip netip.Addr, now time.
 		if !ok {
 			continue
 		}
-		// Rooted, so the resolver does not also try the host's search domains.
-		addrs, lookupErr := r.LookupIP(ctx, "ip", host+".")
+		// Ask only for the sender's family: a combined lookup can hide a
+		// failure behind the other family's successful answer. Root the name
+		// so the resolver does not also try the host's search domains.
+		network := "ip6"
+		if ip.Is4() {
+			network = "ip4"
+		}
+		addrs, lookupErr := r.LookupIP(ctx, network, host+".")
 		if lookupErr != nil {
 			if notFound(lookupErr) {
 				continue
@@ -316,6 +322,8 @@ func parseProvider(name string, c cacheProvider) (provider, error) {
 	switch {
 	case c.Root != providers[name]:
 		return provider{}, fmt.Errorf("root %q, want %q", c.Root, providers[name])
+	case len(c.Nets) == 0 && len(c.PTR) == 0:
+		return provider{}, errors.New("empty sender policy")
 	case len(c.Nets) > maxNets:
 		return provider{}, fmt.Errorf("%d prefixes, over %d", len(c.Nets), maxNets)
 	case len(c.PTR) > maxPTRDomains:
