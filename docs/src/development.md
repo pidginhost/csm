@@ -1428,8 +1428,9 @@ in `internal/yaraworker/worker.go`.
   `Rules.WriteTo` output in a sealed memfd. The daemon copies it into its
   own sealed memfd and keeps it.
 - The scan unit, `csm-yara-worker-<generation>`, is a single worker: memory
-  cap 512 MiB plus `thresholds.full_scan_max_file_mb`, no file writes, 24
-  hour lifetime. Before the supervisor may send it a scan, the launcher
+  cap 512 MiB plus the larger of `thresholds.full_scan_max_file_mb` and, with
+  mail scanning on, `email_av.max_attachment_size`, read from the live config
+  at each launch; no file writes, 24 hour lifetime. Before the supervisor may send it a scan, the launcher
   loads the kept rules into it. A restart loads them again and never
   recompiles: 55 ms for the shipped rules, about 3.4 s for Forge full.
 - Both units run with `MemoryDenyWriteExecute=no`

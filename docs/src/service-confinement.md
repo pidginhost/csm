@@ -170,8 +170,10 @@ YARA-X runs in two units of the same kind. Each rule compile runs in
 `csm-yara-compile-worker-<generation>` with a 1 GiB memory cap, from rule
 text the daemon passes in memory; the compiler cannot open include files.
 Scans run in one `csm-yara-worker-<generation>` with a memory cap of 512 MiB
-plus `thresholds.full_scan_max_file_mb`, no file writes and the compiled rules
-loaded from memory. Both allow executable memory, which YARA-X needs for its
+plus the larger of `thresholds.full_scan_max_file_mb` and, with mail scanning
+on, `email_av.max_attachment_size`, no file writes and the compiled rules
+loaded from memory. A reload that changes the file cap applies to the next
+scan worker. Both allow executable memory, which YARA-X needs for its
 compiled rules; the other lockdown properties are unchanged. At startup the
 daemon attempts to kill leftover units of both kinds. While no worker can
 scan, files and mail attachments are reported as not scanned by YARA, never
