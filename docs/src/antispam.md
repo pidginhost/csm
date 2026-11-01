@@ -215,15 +215,13 @@ enabled modules after the integration is installed and current.
 
 Some blocklists refuse queries from public resolvers. CSM enables a DNS feed
 only when every nameserver rspamd uses is loopback, private, or inside
-the top-level `infra_ips`. Use literal addresses or CIDRs for resolver
-trust; hostnames are not resolved on this check. IPv4-mapped IPv6 addresses
-and CIDRs match their IPv4 equivalents. IPv6 interface scopes stay on the
-probe endpoint but do not change address matching.
+the top-level `infra_ips`. rspamd uses `dns.nameserver` from its options, or
+`/etc/resolv.conf` when that is unset.
 
-rspamd uses `dns.nameserver` from its options, or
-`/etc/resolv.conf` when that is unset. When your own resolvers sit on public
-addresses and refuse other networks, list them in `infra_ips`. Otherwise run
-a recursive resolver on the host and add this line to
+When your own resolvers sit on public addresses and refuse other networks,
+list their addresses or CIDRs in `infra_ips`; hostnames do not count for this
+check. `infra_ips` changes need a CSM restart, not a reload. Otherwise run a
+recursive resolver on the host and add this line to
 `/etc/rspamd/local.d/options.inc`:
 
 ```
@@ -231,17 +229,12 @@ dns { nameserver = ["127.0.0.1"]; }
 ```
 
 cPanel's local BIND usually recurses for localhost; cPanel's PowerDNS does
-not. When rspamd uses the standard systemd-resolved stub (127.0.0.53 or
-127.0.0.54 on port 53), CSM reads its live DNS inventory through `busctl`.
-It checks global and per-link servers, including route-only servers and
-servers on other ports. It also checks fallback servers when neither a
-global server nor a link with a default DNS route is configured. An
-unreadable or empty inventory leaves DNS feeds off with a warning. The
-generated `/run/systemd/resolve/resolv.conf` cannot supply this inventory
-because it omits some servers.
-
-Other ports on the stub addresses are treated as separate local resolvers.
-When PowerDNS holds port 53, run the resolver
+not. When rspamd uses the systemd-resolved stub (127.0.0.53 or 127.0.0.54
+on port 53), CSM asks systemd-resolved for every server it can forward to,
+including its fallback servers when no other server is configured, and
+judges those. If CSM cannot read that list, DNS feeds stay off with a
+warning. Other ports on the stub addresses count as separate local
+resolvers. When PowerDNS holds port 53, run the resolver
 on another port and name it with that port, for example
 `dns { nameserver = ["127.0.0.1:5353"]; }`. A loopback or private address passes CSM's
 address check, but a resolver that forwards to a public resolver can still
