@@ -11,20 +11,9 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Security
 
-- Files are now reported as not scanned by YARA until its rules have loaded, instead of passing unchecked.
-- Postfix SMTP login protection no longer counts reported backend reconnect outages or malformed authentication warnings as password guessing.
-- Postfix login protection no longer misses password guessing against some account names or blocks users for reported authentication backend errors.
-- Password guessing against SMTP login on Postfix servers is now detected and blocked, as it already was on Exim servers.
-- Postfix SMTP login warnings no longer trigger blocking during authentication outages; password guessing detection from those warnings is suspended.
-- Mail login protection no longer pauses because of crafted login attempts.
-- Crafted login names no longer pause mail brute-force protection across Dovecot authentication and logging modes.
-- Successful SMTP logins and authentication outages no longer trigger false blocks; Postfix SMTP password guessing detection is suspended.
-- `csm doctor` now reports the Postfix SMTP detection gap even when verbose authentication logging is enabled.
-- Password guessing against SMTP login on Postfix servers is now detected and blocked. It needs verbose auth logging in Dovecot, which `csm doctor` checks.
-- Password guessing against Postfix SMTP logins is now detected with safeguards against false blocks. Enable verbose Dovecot logging; `csm doctor` checks the settings.
-- SMTP login protection on Postfix servers no longer counts authentication protocol refusals as password failures.
 - Password guessing against SMTP login on Postfix servers is now detected and blocked. It needs verbose auth logging in Dovecot, which `csm doctor` checks.
 - Crafted login names no longer pause mail brute-force protection.
+- Files are now reported as not scanned by YARA until its rules have loaded, instead of passing unchecked.
 - The daemon log now escapes line breaks and control characters in values, so crafted file names cannot forge log lines.
 - YARA scans no longer reopen tenant files by path or write temporary copies of large files to disk.
 - PHP taint analysis now runs in a locked-down worker with no root, network or account file access; files are reported unexamined when it cannot start.
@@ -41,9 +30,8 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Fixed
 
-- The daemon log no longer reports a memory failure or a kill when CSM stops a worker on purpose.
-- Postfix diagnostics now warn when Dovecot logging settings cannot be read.
 - IMAP, POP3 and ManageSieve login protection now works when mail logs are read from the systemd journal.
+- The daemon log no longer reports a memory failure or a kill when CSM stops a worker on purpose.
 - WordPress core files that differ only in line endings are no longer reported on sites whose PHP prints deprecation notices.
 - The daemon log no longer reports a YARA scan failure for large files.
 - The daemon log now says when a parse worker is retired or exits on its own, instead of only that it was killed.
