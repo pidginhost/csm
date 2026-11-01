@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/netip"
 	"reflect"
 	"strings"
 	"testing"
@@ -202,6 +203,16 @@ func TestDesiredFromConfig(t *testing.T) {
 		Feeds: []string{"psbl", "uribl"}, DQSKeyFile: "/etc/csm/k"}}
 	if got := DesiredFromConfig(cfg); !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %+v, want %+v", got, want)
+	}
+}
+
+// Resolvers listed in infra_ips count as the operator's own; hostnames are
+// never resolved on this path.
+func TestDesiredFromConfigInfraNets(t *testing.T) {
+	cfg := &config.Config{InfraIPs: []string{"198.51.100.53", "fw.example.com"}}
+	got := DesiredFromConfig(cfg).InfraNets
+	if want := []netip.Prefix{netip.MustParsePrefix("198.51.100.53/32")}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v, want %v", got, want)
 	}
 }
 

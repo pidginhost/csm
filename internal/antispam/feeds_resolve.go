@@ -207,11 +207,33 @@ func nameserverEndpoint(s string) (netip.AddrPort, error) {
 	return netip.AddrPortFrom(addr, port), nil
 }
 
-// localResolver reports whether rspamd's queries stay on this host or a
-// private network. Lists refuse public resolvers (feeds spec 4.4).
-func localResolver(a netip.Addr) bool { return a.IsLoopback() || a.IsPrivate() }
+// ownResolver reports whether rspamd's queries stay on this host, a private
+// network, or a resolver the operator lists in infra_ips. Lists refuse public
+// resolvers (feeds spec 4.4). The test is a plain prefix match: the wider
+// infra test also trusts Cloudflare's ranges, which hold a public resolver.
+func ownResolver(a netip.Addr, infra []netip.Prefix) bool {
+	a = a.Unmap()
+	return a.IsLoopback() || a.IsPrivate() || slices.ContainsFunc(infra, func(p netip.Prefix) bool { return p.Contains(a) })
+}
 
-const resolverFix = "DNS blocklists refuse queries from public resolvers. Run a local recursive resolver and add dns { nameserver = ['127.0.0.1']; } to /etc/rspamd/local.d/options.inc"
+// ParseInfraNets reads infra_ips entries that are addresses or CIDRs.
+// Hostnames and invalid entries are skipped: the resolver check never
+// resolves names.
+func ParseInfraNets(entries []string) []netip.Prefix {
+	var out []netip.Prefix
+	for _, e := range entries {
+		e = strings.TrimSpace(e)
+		if p, err := netip.ParsePrefix(e); err == nil {
+			out = append(out, p.Masked())
+		} else if a, err := netip.ParseAddr(e); err == nil {
+			a = a.Unmap()
+			out = append(out, netip.PrefixFrom(a, a.BitLen()))
+		}
+	}
+	return out
+}
+
+const resolverFix = "DNS blocklists refuse queries from public resolvers. Point rspamd at a local recursive resolver or at your own resolver listed in infra_ips, for example dns { nameserver = ['127.0.0.1']; } in /etc/rspamd/local.d/options.inc"
 
 // ResolveFeeds returns the settings this host can take. Map redirects whose
 // file CSM cannot own are skipped; DNS feeds go off when their files cannot
@@ -274,7 +296,7 @@ func ResolveFeeds(s Settings, f HostFacts) (Settings, []Problem) {
 				reason = "CSM cannot read /etc/resolv.conf, which rspamd uses without dns.nameserver. " + resolverFix
 			case err != nil:
 				reason = err.Error() + ". " + resolverFix
-			case slices.ContainsFunc(servers, func(a netip.AddrPort) bool { return !localResolver(a.Addr()) }):
+			case slices.ContainsFunc(servers, func(a netip.AddrPort) bool { return !ownResolver(a.Addr(), f.InfraNets) }):
 				reason = "rspamd uses a public nameserver. " + resolverFix
 			}
 		}

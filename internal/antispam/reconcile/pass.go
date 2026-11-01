@@ -27,14 +27,18 @@ type Desired struct {
 	Enabled  bool
 	Observe  bool
 	Settings antispam.Settings
+	// InfraNets are infra_ips as prefixes; DNS feeds trust a nameserver
+	// inside them.
+	InfraNets []netip.Prefix
 }
 
 // DesiredFromConfig reads the antispam settings and mode from cfg.
 func DesiredFromConfig(cfg *config.Config) Desired {
 	as := cfg.EmailProtection.Antispam
 	d := Desired{
-		Enabled: as.Enabled,
-		Observe: cfg.ObserveMode(),
+		Enabled:   as.Enabled,
+		Observe:   cfg.ObserveMode(),
+		InfraNets: antispam.ParseInfraNets(cfg.InfraIPs),
 		Settings: antispam.Settings{
 			DryRun: as.DryRun, Socket: as.RspamdSocket,
 			RejectScore: as.RejectScore, TagScore: as.TagScore,
@@ -186,6 +190,7 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) (out Outcome) {
 			_ = r.IPMap.Write(ctx)
 		}
 		f = r.Collect(ctx, d.Settings.Socket)
+		f.InfraNets = d.InfraNets
 		if d.Settings.HasFeed(antispam.FeedSpamhausDQS) && r.ReadKey != nil {
 			f.DQSKey = r.ReadKey(d.Settings.DQSKeyFile)
 		}

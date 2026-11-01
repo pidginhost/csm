@@ -214,9 +214,11 @@ enabled modules after the integration is installed and current.
 ### DNS feeds need a local resolver
 
 Some blocklists refuse queries from public resolvers. CSM enables a DNS feed
-only when every nameserver rspamd uses is loopback or private. rspamd uses
-`dns.nameserver` from its options, or `/etc/resolv.conf` when that is unset.
-Run a recursive resolver on the host and add this line to
+only when every nameserver rspamd uses is loopback, private, or inside
+`infra_ips`. rspamd uses `dns.nameserver` from its options, or
+`/etc/resolv.conf` when that is unset. When your own resolvers sit on public
+addresses and refuse other networks, list them in `infra_ips`. Otherwise run
+a recursive resolver on the host and add this line to
 `/etc/rspamd/local.d/options.inc`:
 
 ```

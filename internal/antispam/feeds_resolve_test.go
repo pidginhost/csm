@@ -636,3 +636,46 @@ func TestResolveScoresSkipsForeignGroups(t *testing.T) {
 		t.Fatalf("problem %+v", p)
 	}
 }
+
+func TestParseInfraNets(t *testing.T) {
+	got := ParseInfraNets([]string{"198.51.100.7", " 203.0.113.9/24 ", "2001:db8::1", "::ffff:192.0.2.5", "mail.example.com", "", "bogus/99"})
+	want := []netip.Prefix{
+		netip.MustParsePrefix("198.51.100.7/32"),
+		netip.MustParsePrefix("203.0.113.0/24"),
+		netip.MustParsePrefix("2001:db8::1/128"),
+		netip.MustParsePrefix("192.0.2.5/32"),
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+}
+
+func TestResolveFeedsAcceptsInfraResolver(t *testing.T) {
+	f := feedFacts()
+	f.ResolvConf = "nameserver 198.51.100.53\nnameserver 203.0.113.54\n"
+	f.InfraNets = ParseInfraNets([]string{"198.51.100.53", "203.0.113.0/24"})
+	got, problems := ResolveFeeds(dqsSettings(), f)
+	if len(problems) != 0 || !slices.Equal(got.Feeds, []string{FeedPSBL, FeedSpamhausDQS}) {
+		t.Fatalf("feeds %v, problems %+v", got.Feeds, problems)
+	}
+}
+
+func TestResolveFeedsInfraDoesNotCoverOtherPublicResolver(t *testing.T) {
+	f := feedFacts()
+	f.ResolvConf = "nameserver 198.51.100.53\nnameserver 198.51.100.54\n"
+	f.InfraNets = ParseInfraNets([]string{"198.51.100.53"})
+	got, problems := ResolveFeeds(dqsSettings(), f)
+	if len(got.Feeds) != 0 || len(problems) != 2 || !strings.Contains(problems[0].Detail, "public nameserver") {
+		t.Fatalf("feeds %v, problems %+v", got.Feeds, problems)
+	}
+}
+
+func TestResolveFeedsInfraMatchesMappedIPv6Nameserver(t *testing.T) {
+	f := feedFacts()
+	f.RspamdOptions = CommandResult{Stdout: `{"dns":{"nameserver":"[::ffff:198.51.100.53]:53"}}`}
+	f.InfraNets = ParseInfraNets([]string{"198.51.100.53"})
+	got, problems := ResolveFeeds(dqsSettings(), f)
+	if len(problems) != 0 || len(got.Feeds) != 2 {
+		t.Fatalf("feeds %v, problems %+v", got.Feeds, problems)
+	}
+}
