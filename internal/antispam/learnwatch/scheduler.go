@@ -1087,7 +1087,17 @@ func (r *accountRun) attempt(ctx context.Context, rep *PassReport) {
 		// A failed inspection reply while storage answers the probe comes
 		// from this body, as a rejection does, so the pass goes on.
 		if !rejected && ctx.Err() == nil && !hostSideFailure(failure) &&
-			errors.Is(failure, learn.ErrInspectionFailed) && r.w.cfg.Engine.ProbeStorage(ctx) == nil {
+			errors.Is(failure, learn.ErrInspectionFailed) {
+			probeErr := r.w.cfg.Engine.ProbeStorage(ctx)
+			if !allowed() {
+				return
+			}
+			// A failed probe overrides earlier answers: storage may have
+			// stopped responding since those reports were processed.
+			if probeErr != nil {
+				retry()
+				return
+			}
 			rejected, r.w.answered = true, true
 			r.w.submitStopped, r.w.stoppedBy = false, 0
 		}

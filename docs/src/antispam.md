@@ -707,13 +707,15 @@ another report earlier in the same pass, or when rspamd cannot process the
 message; such a message does not stop other accounts' reports. When rspamd
 answers a message's inspection with an error, CSM inspects a fixed test
 message: if storage answers it, the failure counts against the message and
-the pass goes on with the next report; otherwise it is a backend error. A
-message with three counted failures, including unclassified learner errors, is
-skipped as `failed`. Canceled passes, reconciliation pauses, unsent
-controller requests, a wrong controller peer and local state failures
-never count. Unreadable learning
-state holds reports even when the learner cannot finish startup; the
-reports resume once the state is available.
+the pass goes on with the next report. If the probe fails, submissions stop
+and the report stays pending without a counted failure, even if storage
+answered earlier in the pass. A message with three counted failures,
+including unclassified learner errors, is skipped as `failed`. Canceled or
+expired passes, reconciliation pauses, unsent controller requests, a wrong
+controller peer and local state failures never count. CSM rechecks the
+pass and learning gates after the probe returns. Unreadable learning state
+holds reports even when the learner cannot finish startup; the reports
+resume once the state is available.
 
 ### Prerequisites
 

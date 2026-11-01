@@ -36,7 +36,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - Phishing-kit companion reports now say when YARA could not check a file instead of listing it as checked.
 - Spam whose plain-text and HTML versions differ is now learned from Spam folder reports and operator marks instead of being skipped.
 - Spam with a PDF attachment that carries scripts is now learned instead of holding up the other Spam folder reports of its mailbox.
-- A Spam folder report that learning cannot process is now set aside after a few tries instead of holding up the reports behind it.
+- Spam folder reports stay pending during learning outages or pauses, while reports that cannot be processed are set aside without holding up other reports.
 
 ## [4.8.1] - 2026-10-30
 
