@@ -377,7 +377,7 @@ Dovecot writes rejections only with verbose auth logging on:
 auth_verbose = yes
 ```
 
-Leave `auth_verbose_passwords` at `no`; lines that carry a logged password are ignored. `csm doctor` checks both settings on Postfix hosts with Dovecot. Rejections for IMAP, POP3 and ManageSieve logins carry a session id and are counted by the mail tracker below from their login summaries. With journal input, Postfix lines lack the program name this pairing needs, so Postfix SMTP detection reads the mail log file only. Successful Postfix logins are not recorded, so a later success does not clear the slow brute-force signal for that address.
+Leave `auth_verbose_passwords` at `no`; lines that carry a logged password are ignored. `csm doctor` checks both settings on Postfix hosts with Dovecot. Rejections for IMAP, POP3 and ManageSieve logins carry a session id and are counted by the mail tracker below from their login summaries. With journal input, Postfix lines lack the program name this pairing needs, so Postfix SMTP detection reads the mail log file only. A successful Postfix login, logged when the client's first recipient is accepted, keeps its address out of the slow brute-force block, as an authenticated Exim delivery does.
 
 Dovecot's informational and debug authentication messages can contain client text; they never mark the authentication backend as unavailable. Error and warning diagnostics still reach the backend-outage detector. `smtp_probe_abuse` reads Exim lines only.
 

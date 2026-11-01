@@ -70,6 +70,38 @@ func postfixSASLFailure(msg string) (ip, reply string) {
 	return ip, strings.ToLower(strings.TrimSpace(reply))
 }
 
+// postfixSASLSuccess reports the client address of a postfix smtpd
+// "QUEUEID: client=name[addr], sasl_method=MECH, sasl_username=USER" line,
+// which smtpd logs when it accepts the first recipient from a client that
+// authenticated. It returns "" for any other line.
+//
+// The queue ID must open the message and be followed directly by the client
+// field. Rejects and header warnings that echo client text put other words
+// after the queue ID, and the login name comes after the fields read here.
+func postfixSASLSuccess(msg string) string {
+	queueID, rest, ok := strings.Cut(msg, ": client=")
+	if !ok || !isASCIIAlnum(queueID) {
+		return ""
+	}
+	// postfixClientIP refuses whitespace, so the method field must follow
+	// the client field directly.
+	client, _, ok := strings.Cut(rest, ", sasl_method=")
+	if !ok {
+		return ""
+	}
+	return postfixClientIP(client)
+}
+
+func isASCIIAlnum(s string) bool {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c < '0' || c > '9' && c < 'A' || c > 'Z' && c < 'a' || c > 'z' {
+			return false
+		}
+	}
+	return s != ""
+}
+
 func isPostfixSASLNonCredentialReply(reply string) bool {
 	// smtpd_sasl_glue logs the SASL reason, not the SMTP status. Dovecot's
 	// malformed backend replies and Cyrus's temporary errors do not all

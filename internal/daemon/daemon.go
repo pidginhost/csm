@@ -2528,8 +2528,8 @@ func (d *Daemon) handleMailLine(line string, obs alert.Observation, cfg *config.
 }
 
 // handleSMTPAuthPairing feeds Postfix SMTP AUTH evidence on hosts whose
-// SMTP AUTH failures do not come from the Exim mainlog. It reports whether the
-// line was a Dovecot verdict or a Postfix failure, which need no further
+// SMTP AUTH results do not come from the Exim mainlog. It reports whether the
+// line was a Dovecot verdict or a Postfix result, which need no further
 // handling; Dovecot error lines are noted and still reach the outage detector.
 func (d *Daemon) handleSMTPAuthPairing(line string, obs alert.Observation, cfg *config.Config) ([]alert.Finding, bool) {
 	t := d.smtpAuthTracker
@@ -2547,6 +2547,14 @@ func (d *Daemon) handleSMTPAuthPairing(line string, obs alert.Observation, cfg *
 		return nil, false
 	}
 	process, msg := postfixSMTPDMessage(line)
+	// Like an authenticated Exim delivery, this keeps a source with working
+	// logins out of the slow-brute block.
+	if ip := postfixSASLSuccess(msg); ip != "" {
+		if !isInfraIPDaemon(ip, cfg.InfraIPs) && !isPrivateOrLoopback(ip) {
+			t.RecordSuccess(ip)
+		}
+		return nil, true
+	}
 	if strings.HasPrefix(msg, "warning: SASL: ") {
 		// A failed backend reconnect can leave smtpd's previous reply
 		// intact. This trusted prefix has no client-supplied text.
