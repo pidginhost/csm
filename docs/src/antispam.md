@@ -226,8 +226,9 @@ dns { nameserver = ["127.0.0.1"]; }
 ```
 
 cPanel's local BIND usually recurses for localhost; cPanel's PowerDNS does
-not, and the systemd-resolved stub forwards to its upstream resolvers, which
-are usually public. When PowerDNS holds port 53, run the resolver
+not. When rspamd uses the systemd-resolved stub (127.0.0.53 or 127.0.0.54),
+CSM judges the servers the stub forwards to, listed in
+`/run/systemd/resolve/resolv.conf`. When PowerDNS holds port 53, run the resolver
 on another port and name it with that port, for example
 `dns { nameserver = ["127.0.0.1:5353"]; }`. A loopback or private address passes CSM's
 address check, but a resolver that forwards to a public resolver can still

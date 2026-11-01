@@ -679,3 +679,63 @@ func TestResolveFeedsInfraMatchesMappedIPv6Nameserver(t *testing.T) {
 		t.Fatalf("feeds %v, problems %+v", got.Feeds, problems)
 	}
 }
+
+func TestResolveFeedsJudgesResolvedStubUpstream(t *testing.T) {
+	f := feedFacts()
+	f.ResolvConf = "nameserver 127.0.0.53\n"
+	f.ResolvedUpstream = "nameserver 198.51.100.53\n"
+	got, problems := ResolveFeeds(dqsSettings(), f)
+	if len(got.Feeds) != 0 || len(problems) != 2 || !strings.Contains(problems[0].Detail, "systemd-resolved") {
+		t.Fatalf("feeds %v, problems %+v", got.Feeds, problems)
+	}
+}
+
+func TestResolveFeedsStubUpstreamInInfra(t *testing.T) {
+	f := feedFacts()
+	f.ResolvConf = "nameserver 127.0.0.54\n"
+	f.ResolvedUpstream = "nameserver 198.51.100.53\n"
+	f.InfraNets = ParseInfraNets([]string{"198.51.100.53"})
+	got, problems := ResolveFeeds(dqsSettings(), f)
+	if len(problems) != 0 || len(got.Feeds) != 2 {
+		t.Fatalf("feeds %v, problems %+v", got.Feeds, problems)
+	}
+}
+
+func TestResolveFeedsStubUpstreamUnreadable(t *testing.T) {
+	f := feedFacts()
+	f.ResolvConf = "nameserver 127.0.0.53\n"
+	f.ResolvedUpstreamErr = fs.ErrNotExist
+	got, problems := ResolveFeeds(dqsSettings(), f)
+	if len(got.Feeds) != 0 || len(problems) != 2 || !strings.Contains(problems[0].Detail, "/run/systemd/resolve/resolv.conf") {
+		t.Fatalf("feeds %v, problems %+v", got.Feeds, problems)
+	}
+}
+
+func TestResolveFeedsStubWithoutUpstream(t *testing.T) {
+	f := feedFacts()
+	f.RspamdOptions = CommandResult{Stdout: `{"dns":{"nameserver":["127.0.0.53"]}}`}
+	f.ResolvedUpstream = "# no servers\n"
+	got, problems := ResolveFeeds(dqsSettings(), f)
+	if len(got.Feeds) != 0 || len(problems) != 2 || !strings.Contains(problems[0].Detail, "systemd-resolved") {
+		t.Fatalf("feeds %v, problems %+v", got.Feeds, problems)
+	}
+}
+
+// A local resolver other than the stub is judged as today.
+func TestResolveFeedsLoopbackResolverIsNotTheStub(t *testing.T) {
+	f := feedFacts()
+	f.ResolvConf = "nameserver 127.0.0.1\n"
+	f.ResolvedUpstreamErr = fs.ErrNotExist
+	if got, problems := ResolveFeeds(dqsSettings(), f); len(problems) != 0 || len(got.Feeds) != 2 {
+		t.Fatalf("feeds %v, problems %+v", got.Feeds, problems)
+	}
+}
+
+func TestResolveFeedsStubUnreadableUpstreamEntry(t *testing.T) {
+	f := feedFacts()
+	f.ResolvConf = "nameserver 127.0.0.53\n"
+	f.ResolvedUpstream = "nameserver 127.0.0.1\nnameserver not-an-address\n"
+	if got, problems := ResolveFeeds(dqsSettings(), f); len(got.Feeds) != 0 || len(problems) != 2 {
+		t.Fatalf("feeds %v, problems %+v", got.Feeds, problems)
+	}
+}

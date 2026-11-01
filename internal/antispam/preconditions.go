@@ -133,6 +133,10 @@ type HostFacts struct {
 	// options.dns.nameserver is set.
 	ResolvConf    string
 	ResolvConfErr error
+	// ResolvedUpstream is systemd-resolved's /run/systemd/resolve/resolv.conf:
+	// the servers its local stub forwards to.
+	ResolvedUpstream    string
+	ResolvedUpstreamErr error
 	// InfraNets are the infra_ips addresses and CIDRs. The pass supplies
 	// them; a nameserver inside counts as the operator's own.
 	InfraNets []netip.Prefix
