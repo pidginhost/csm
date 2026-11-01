@@ -1635,6 +1635,7 @@ type antispamPresence struct {
 	socket      bool
 	rejectScore bool
 	tagScore    bool
+	reporter    bool
 }
 
 // phpRelayPresence records PHP-relay fields where a literal zero has runtime
@@ -1681,6 +1682,13 @@ type AntispamConfig struct {
 // their Spam folder. It requires antispam and is off by default.
 type AntispamLearningConfig struct {
 	Enabled bool `yaml:"enabled"`
+	// RedisSocket is the Unix socket of a Redis used only by learning.
+	// Empty means none: a cPanel host then uses the Redis rspamd is
+	// configured with, and a Postfix host cannot learn.
+	RedisSocket string `yaml:"redis_socket"`
+	// Reporter decides who casts one learning vote on a Postfix host: each
+	// mail domain ("domain", the default) or each mailbox ("mailbox").
+	Reporter string `yaml:"reporter"`
 }
 
 // AntispamFeedsConfig selects optional anti-spam data sources. Every feed
@@ -2401,8 +2409,8 @@ func defaultPresenceFromYAML(data []byte) (defaultPresence, error) {
 	}
 
 	as := raw.EmailProtection.Antispam
-	set := func(key string) bool {
-		node, ok := as[key]
+	set := func(fields map[string]yaml.Node, key string) bool {
+		node, ok := fields[key]
 		return ok && !yamlNodeIsNull(&node)
 	}
 	// yaml.v3 truncates 6.5 into an int field without an error, so a score
@@ -2422,8 +2430,10 @@ func defaultPresenceFromYAML(data []byte) (defaultPresence, error) {
 			return presence, err
 		}
 	}
+	var learning map[string]yaml.Node
 	if node, ok := as["learning"]; ok && !yamlNodeIsNull(&node) {
-		if err := validateAntispamLearningTypes(node); err != nil {
+		var err error
+		if learning, err = antispamLearningFields(node); err != nil {
 			return presence, err
 		}
 	}
@@ -2433,10 +2443,11 @@ func defaultPresenceFromYAML(data []byte) (defaultPresence, error) {
 		}
 	}
 	presence.antispam = antispamPresence{
-		dryRun:      set("dry_run"),
-		socket:      set("rspamd_socket"),
-		rejectScore: set("reject_score"),
-		tagScore:    set("tag_score"),
+		dryRun:      set(as, "dry_run"),
+		socket:      set(as, "rspamd_socket"),
+		rejectScore: set(as, "reject_score"),
+		tagScore:    set(as, "tag_score"),
+		reporter:    set(learning, "reporter"),
 	}
 	return presence, nil
 }
@@ -2566,8 +2577,9 @@ func applyFirewallFieldDefaults(fc *firewall.FirewallConfig, present map[string]
 }
 
 // applyAntispamDefaults fills omitted or null antispam fields. dry_run defaults
-// on; an explicit false, empty socket or zero score is kept for validation.
-// Exemptions are lowered to their canonical case before validation.
+// on and the learning reporter to domain; an explicit false, empty socket,
+// empty reporter or zero score is kept for validation. Exemptions are lowered
+// to their canonical case before validation.
 func applyAntispamDefaults(as *AntispamConfig, p antispamPresence) {
 	for i, e := range as.Exempt {
 		as.Exempt[i] = strings.ToLower(e)
@@ -2583,6 +2595,9 @@ func applyAntispamDefaults(as *AntispamConfig, p antispamPresence) {
 	}
 	if !p.tagScore {
 		as.TagScore = antispam.DefaultTagScore
+	}
+	if !p.reporter {
+		as.Learning.Reporter = "domain"
 	}
 }
 
@@ -2609,6 +2624,18 @@ func validateAntispam(cfg *Config) error {
 	}
 	if err := antispam.ValidateExempt(as.Exempt); err != nil {
 		return fmt.Errorf("email_protection.antispam.exempt: %w", err)
+	}
+	// Like antispam itself, a disabled learning block is not range-checked.
+	if !as.Learning.Enabled {
+		return nil
+	}
+	if as.Learning.Reporter != "domain" && as.Learning.Reporter != "mailbox" {
+		return errors.New("email_protection.antispam.learning.reporter must be domain or mailbox")
+	}
+	if as.Learning.RedisSocket != "" {
+		if err := antispam.ValidateLearningRedisSocket(as.Learning.RedisSocket); err != nil {
+			return fmt.Errorf("email_protection.antispam.learning: %w", err)
+		}
 	}
 	return nil
 }

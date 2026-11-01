@@ -49,6 +49,7 @@ func DesiredFromConfig(cfg *config.Config) Desired {
 	}
 	if as.Learning.Enabled {
 		d.Settings.Learning, d.Settings.LearningDir = true, antispam.DefaultLearningDir
+		d.Settings.LearningRedisSocket = as.Learning.RedisSocket
 	}
 	return d
 }

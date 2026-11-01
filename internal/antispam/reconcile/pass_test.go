@@ -470,6 +470,23 @@ func TestDesiredFromConfigLearning(t *testing.T) {
 	}
 }
 
+// The reporter mode stays with the daemon's watcher; only the socket
+// reaches the settings, and only while learning is on.
+func TestDesiredFromConfigLearningRedisSocket(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.EmailProtection.Antispam = config.AntispamConfig{Enabled: true, RspamdSocket: antispam.DefaultSocket, RejectScore: 15, TagScore: 6,
+		Learning: config.AntispamLearningConfig{Enabled: true, RedisSocket: "/run/redis-csm/redis.sock", Reporter: "mailbox"}}
+	want := antispam.Settings{Socket: antispam.DefaultSocket, RejectScore: 15, TagScore: 6,
+		Learning: true, LearningDir: antispam.DefaultLearningDir, LearningRedisSocket: "/run/redis-csm/redis.sock"}
+	if got := DesiredFromConfig(cfg).Settings; !reflect.DeepEqual(got, want) {
+		t.Fatalf("learning on: got %+v, want %+v", got, want)
+	}
+	cfg.EmailProtection.Antispam.Learning.Enabled = false
+	if got := DesiredFromConfig(cfg).Settings; got.LearningRedisSocket != "" {
+		t.Fatalf("learning off: %+v", got)
+	}
+}
+
 // Each backup the worker kept is one warning until the operator deletes it,
 // whether antispam is enabled, disabled or observed, and while a busy lock
 // holds the apply back. An unreadable backup directory keeps the last
