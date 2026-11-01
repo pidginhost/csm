@@ -42,12 +42,19 @@ func effectKey(a admission.AttemptRecord) ([]byte, error) {
 }
 
 // holdSlot records that reserved attempt a of block c holds a temporary
-// set slot in the partition of its lane. The first record creates the
-// bucket and raises the schema.
-func (q *queueTx) holdSlot(c admission.Candidate, a admission.AttemptRecord, e admission.QueueEntry) error {
+// set slot in the partition of its lane or, when it evicts, of its victim,
+// which it claims in the same transaction (spec 5.6: the slot keeps its
+// partition). The first record creates the bucket and raises the schema.
+func (q *queueTx) holdSlot(c admission.Candidate, a admission.AttemptRecord, e admission.QueueEntry, victim admission.EvictionVictim) error {
 	rec := admission.EffectRecord{
 		Action: a.Attempt.ID, Target: c.Key.Target, Partition: admission.PartitionOf(a.Lane), Lane: a.Lane,
 		Tier: e.Tier, Scope: c.Scope.Key(), Direct: e.Direct, Corroborated: e.Corroborated, ExpiresAt: a.ExpiresAt,
+	}
+	if victim != (admission.EvictionVictim{}) {
+		rec.Partition, rec.Victim = victim.Partition, admission.EffectRef{Action: victim.Action, ExpiresAt: victim.ExpiresAt}
+		if err := q.claimVictim(rec.Victim, rec.Action); err != nil {
+			return err
+		}
 	}
 	key, err := rec.Key()
 	if err != nil {
@@ -67,14 +74,37 @@ func (q *queueTx) holdSlot(c admission.Candidate, a admission.AttemptRecord, e a
 	if err = raiseSchema(q.tx, admissionSchemaEffects); err != nil {
 		return err
 	}
-	tally, err := loadEffectTally(q.tx)
+	if err = addEffectTally(q.tx, rec.Partition, 1); err != nil {
+		return err
+	}
+	return b.Put(key, data)
+}
+
+// claimVictim names block as the pending evictor of the verified,
+// unclaimed record ref names.
+func (q *queueTx) claimVictim(ref admission.EffectRef, block admission.ActionID) error {
+	key, err := ref.Key()
 	if err != nil {
 		return err
 	}
-	if tally, err = tally.Add(rec.Partition, 1); err != nil {
+	b := q.tx.Bucket([]byte(admissionEffectsBucket))
+	if b == nil {
+		return admission.ErrCorruptRecord
+	}
+	raw := b.Get(key)
+	if raw == nil {
+		return admission.ErrCorruptRecord
+	}
+	rec, err := admission.UnmarshalEffectRecord(key, raw)
+	if err != nil {
 		return err
 	}
-	if err = putEffectTally(q.tx, tally); err != nil {
+	if !rec.Verified() || !rec.Holds() || rec.EvictedBy != "" {
+		return admission.ErrCorruptRecord
+	}
+	rec.EvictedBy = block
+	data, err := rec.MarshalBinary()
+	if err != nil {
 		return err
 	}
 	return b.Put(key, data)
@@ -100,8 +130,10 @@ func loadEffect(tx *bolt.Tx, a admission.AttemptRecord) (admission.EffectRecord,
 
 // markApplied records the verified application of attempt a's block at
 // admission time, with the ceiling's elapsed time as the proof a minimum
-// hold needs. An attempt without a record (a preview, or one reserved by
-// an earlier build) holds no slot.
+// hold needs, and the eviction of the victim it claimed: the victim's
+// record gives up its slot and stays, evicted, until its expiry. An
+// attempt without a record (a preview, or one reserved by an earlier
+// build) holds no slot.
 func (q *queueTx) markApplied(a admission.AttemptRecord) error {
 	rec, key, found, err := loadEffect(q.tx, a)
 	if err != nil || !found {
@@ -111,7 +143,12 @@ func (q *queueTx) markApplied(a admission.AttemptRecord) error {
 	if err != nil {
 		return err
 	}
-	rec.Applied, rec.Elapsed = q.now, ceiling.Elapsed
+	if rec.Victim != (admission.EffectRef{}) {
+		if err = q.endClaim(rec.Victim, rec.Action, true); err != nil {
+			return err
+		}
+	}
+	rec.Applied, rec.Elapsed, rec.Victim = q.now, ceiling.Elapsed, admission.EffectRef{}
 	data, err := rec.MarshalBinary()
 	if err != nil {
 		return err
@@ -119,27 +156,105 @@ func (q *queueTx) markApplied(a admission.AttemptRecord) error {
 	return q.tx.Bucket([]byte(admissionEffectsBucket)).Put(key, data)
 }
 
-// releaseSlot removes the record attempt a holds, if any.
+// releaseSlot removes the record attempt a holds, if any, and gives back
+// the claim on its victim.
 func (q *queueTx) releaseSlot(a admission.AttemptRecord) error {
 	rec, key, found, err := loadEffect(q.tx, a)
 	if err != nil || !found {
 		return err
 	}
+	if rec.Victim != (admission.EffectRef{}) {
+		if err = q.endClaim(rec.Victim, rec.Action, false); err != nil {
+			return err
+		}
+	}
 	return deleteEffect(q.tx, key, rec)
 }
 
-func deleteEffect(tx *bolt.Tx, key []byte, rec admission.EffectRecord) error {
+// endClaim ends block's claim on the record ref names: evicted, it gives
+// up its slot; otherwise it returns to the victim pool. A victim swept at
+// its own expiry needs neither.
+func (q *queueTx) endClaim(ref admission.EffectRef, block admission.ActionID, evicted bool) error {
+	key, err := ref.Key()
+	if err != nil {
+		return err
+	}
+	b := q.tx.Bucket([]byte(admissionEffectsBucket))
+	raw := b.Get(key)
+	if raw == nil {
+		return nil
+	}
+	rec, err := admission.UnmarshalEffectRecord(key, raw)
+	if err != nil {
+		return err
+	}
+	if rec.EvictedBy != block || rec.Evicted {
+		return admission.ErrCorruptRecord
+	}
+	if evicted {
+		if err = addEffectTally(q.tx, rec.Partition, -1); err != nil {
+			return err
+		}
+		rec.Evicted = true
+	} else {
+		rec.EvictedBy = ""
+	}
+	data, err := rec.MarshalBinary()
+	if err != nil {
+		return err
+	}
+	return b.Put(key, data)
+}
+
+func addEffectTally(tx *bolt.Tx, p admission.Partition, delta int) error {
 	tally, err := loadEffectTally(tx)
 	if err != nil {
 		return err
 	}
-	if tally, err = tally.Add(rec.Partition, -1); err != nil {
+	if tally, err = tally.Add(p, delta); err != nil {
 		return err
 	}
-	if err = putEffectTally(tx, tally); err != nil {
-		return err
+	return putEffectTally(tx, tally)
+}
+
+// deleteEffect removes a record; one that still holds its slot leaves the
+// tally, an evicted one left it at its eviction.
+func deleteEffect(tx *bolt.Tx, key []byte, rec admission.EffectRecord) error {
+	if rec.Holds() {
+		if err := addEffectTally(tx, rec.Partition, -1); err != nil {
+			return err
+		}
 	}
 	return tx.Bucket([]byte(admissionEffectsBucket)).Delete(key)
+}
+
+// claimedVictim is the victim reserved attempt a's record claimed, as an
+// intent names it; zero when it claimed none or the victim's record is
+// gone at its own expiry. Execution clears a vanished claim in the same
+// transaction so a v1 intent cannot hide a still-recorded removal.
+func claimedVictim(tx *bolt.Tx, a admission.AttemptRecord) (admission.Victim, error) {
+	rec, ownKey, found, err := loadEffect(tx, a)
+	if err != nil || !found || rec.Victim == (admission.EffectRef{}) {
+		return admission.Victim{}, err
+	}
+	key, err := rec.Victim.Key()
+	if err != nil {
+		return admission.Victim{}, err
+	}
+	raw := tx.Bucket([]byte(admissionEffectsBucket)).Get(key)
+	if raw == nil {
+		rec.Victim = admission.EffectRef{}
+		data, encodeErr := rec.MarshalBinary()
+		if encodeErr != nil {
+			return admission.Victim{}, encodeErr
+		}
+		return admission.Victim{}, tx.Bucket([]byte(admissionEffectsBucket)).Put(ownKey, data)
+	}
+	victim, err := admission.UnmarshalEffectRecord(key, raw)
+	if err != nil {
+		return admission.Victim{}, err
+	}
+	return admission.Victim{Action: victim.Action, Target: victim.Target, ExpiresAt: victim.ExpiresAt}, nil
 }
 
 // sweepEffects removes the records whose expiry has passed at a trusted
@@ -164,6 +279,18 @@ func sweepEffects(tx *bolt.Tx, tick admission.ClockTick) error {
 		expired, recs = append(expired, k), append(recs, rec)
 	}
 	for i, k := range expired {
+		if recs[i].Victim != (admission.EffectRef{}) {
+			a, err := loadAttempt(tx, recs[i].Action)
+			if err != nil {
+				return err
+			}
+			if a.State == admission.StateReserved {
+				q := queueTx{tx: tx}
+				if err := q.endClaim(recs[i].Victim, recs[i].Action, false); err != nil {
+					return err
+				}
+			}
+		}
 		if err := deleteEffect(tx, k, recs[i]); err != nil {
 			return err
 		}
@@ -188,15 +315,25 @@ func proveEffects(tx *bolt.Tx) error {
 		return nil
 	}
 	var counted admission.EffectTally
+	records := map[admission.ActionID]admission.EffectRecord{}
 	if err := b.ForEach(func(k, v []byte) error {
 		rec, err := admission.UnmarshalEffectRecord(k, v)
 		if err != nil {
 			return err
 		}
-		counted, err = counted.Add(rec.Partition, 1)
+		if _, seen := records[rec.Action]; seen {
+			return admission.ErrCorruptRecord
+		}
+		records[rec.Action] = rec
+		if rec.Holds() {
+			counted, err = counted.Add(rec.Partition, 1)
+		}
 		return err
 	}); err != nil {
 		return err
+	}
+	if !evictionsAgree(tx, records) {
+		return admission.ErrCorruptRecord
 	}
 	tally, err := loadEffectTally(tx)
 	if err != nil {
@@ -206,6 +343,48 @@ func proveEffects(tx *bolt.Tx) error {
 		return admission.ErrCorruptRecord
 	}
 	return nil
+}
+
+// evictionsAgree proves each eviction from both ends while both records
+// remain (either may be swept at its own expiry first): a pending block
+// names a victim it claimed, a claimed victim names a pending block that
+// names it back, and an evicted victim names a verified block. Retained
+// attempts distinguish a swept evictor from a prematurely missing one.
+func evictionsAgree(tx *bolt.Tx, records map[admission.ActionID]admission.EffectRecord) bool {
+	clock, err := loadLedgerClock(tx.Bucket([]byte(admissionMetaBucket)))
+	if err != nil {
+		return false
+	}
+	for _, rec := range records {
+		if rec.Victim.Action != "" {
+			victim, ok := records[rec.Victim.Action]
+			if ok {
+				if !victim.ExpiresAt.Equal(rec.Victim.ExpiresAt) || victim.EvictedBy != rec.Action || victim.Evicted || victim.Partition != rec.Partition || !victim.Tier.Less(rec.Tier) || victim.Target == rec.Target {
+					return false
+				}
+			} else if clock.Now().Before(rec.Victim.ExpiresAt) {
+				return false
+			}
+		}
+		if rec.EvictedBy == "" {
+			continue
+		}
+		if block, ok := records[rec.EvictedBy]; ok {
+			claimed := block.Victim == admission.EffectRef{Action: rec.Action, ExpiresAt: rec.ExpiresAt}
+			if rec.Evicted != block.Verified() || rec.Evicted == claimed || rec.Partition != block.Partition || !rec.Tier.Less(block.Tier) || rec.Target == block.Target {
+				return false
+			}
+		} else if raw := tx.Bucket([]byte(admissionAttemptsBucket)).Get([]byte(rec.EvictedBy)); raw != nil {
+			a, decodeErr := admission.UnmarshalAttempt(raw)
+			if decodeErr != nil || clock.Now().Before(a.ExpiresAt) || (rec.Evicted && a.State != admission.StateVerified) || (!rec.Evicted && a.State != admission.StateExecuting && a.State != admission.StateUnknown) {
+				return false
+			}
+		} else if clock.Now().Before(rec.Applied.Add(admission.HistoryRetention)) {
+			// An evictor cannot have finished before its victim was applied.
+			return false
+		}
+	}
+	return true
 }
 
 // effectsStatus reads the slots the records hold and the expiry of the
@@ -220,12 +399,100 @@ func effectsStatus(tx *bolt.Tx, out *admission.EffectsStatus) error {
 	}
 	out.General, out.Reserved = tally.General, tally.Reserved
 	if b := tx.Bucket([]byte(admissionEffectsBucket)); b != nil {
-		if k, v := b.Cursor().First(); k != nil {
+		cur := b.Cursor()
+		for k, v := cur.First(); k != nil; k, v = cur.Next() {
 			rec, decodeErr := admission.UnmarshalEffectRecord(k, v)
 			if decodeErr != nil {
 				return decodeErr
 			}
-			out.Next = rec.ExpiresAt
+			if rec.Holds() {
+				out.Next = rec.ExpiresAt
+				break
+			}
+		}
+	}
+	return nil
+}
+
+// A swept evictor still owns its execution intent until finishAttempt
+// deletes it. End that claim before deletion; ordinary records use the
+// markApplied/releaseSlot paths instead.
+func (q *queueTx) endSweptClaim(a admission.AttemptRecord, verified bool) error {
+	_, _, found, err := loadEffect(q.tx, a)
+	if err != nil || found {
+		return err
+	}
+	in, _, err := loadIntent(q.tx, a.Attempt.ID)
+	if err != nil || in.Victim == (admission.Victim{}) {
+		return err
+	}
+	return q.endClaim(admission.EffectRef{Action: in.Victim.Action, ExpiresAt: in.Victim.ExpiresAt}, a.Attempt.ID, verified)
+}
+
+// Both records can expire independently. While either remains it must
+// agree with the intent, including the victim address. Missing records
+// are accepted only where expiry or history retention permits them.
+func proveIntentVictim(tx *bolt.Tx, a admission.AttemptRecord, in admission.Intent) error {
+	rec, _, found, err := loadEffect(tx, a)
+	if err != nil {
+		return err
+	}
+	ref := admission.EffectRef{}
+	if in.Victim != (admission.Victim{}) {
+		ref = admission.EffectRef{Action: in.Victim.Action, ExpiresAt: in.Victim.ExpiresAt}
+	}
+	if found && rec.Victim != ref {
+		return admission.ErrCorruptRecord
+	}
+	b := tx.Bucket([]byte(admissionEffectsBucket))
+	if b == nil {
+		if ref != (admission.EffectRef{}) {
+			return admission.ErrCorruptRecord
+		}
+		return nil
+	}
+	// The member may have been swept first. Its claimed victim still
+	// proves that the intent cannot omit or substitute the removal.
+	if !found {
+		if err = b.ForEach(func(k, v []byte) error {
+			victim, decodeErr := admission.UnmarshalEffectRecord(k, v)
+			if decodeErr != nil {
+				return decodeErr
+			}
+			if victim.EvictedBy == a.Attempt.ID && (victim.Evicted || ref != (admission.EffectRef{Action: victim.Action, ExpiresAt: victim.ExpiresAt})) {
+				return admission.ErrCorruptRecord
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
+	}
+	if ref == (admission.EffectRef{}) {
+		return nil
+	}
+	key, err := ref.Key()
+	if err != nil {
+		return err
+	}
+	if raw := b.Get(key); raw != nil {
+		victim, decodeErr := admission.UnmarshalEffectRecord(key, raw)
+		if decodeErr != nil || victim.Target != in.Victim.Target || victim.EvictedBy != a.Attempt.ID || victim.Evicted {
+			return admission.ErrCorruptRecord
+		}
+	} else {
+		clock, clockErr := loadLedgerClock(tx.Bucket([]byte(admissionMetaBucket)))
+		if clockErr != nil || clock.Now().Before(ref.ExpiresAt) {
+			return admission.ErrCorruptRecord
+		}
+		if raw := tx.Bucket([]byte(admissionAttemptsBucket)).Get([]byte(ref.Action)); raw != nil {
+			victim, decodeErr := admission.UnmarshalAttempt(raw)
+			if decodeErr != nil || victim.State != admission.StateVerified || !victim.ExpiresAt.Equal(ref.ExpiresAt) {
+				return admission.ErrCorruptRecord
+			}
+			c, loadErr := loadCandidate(tx, victim.Attempt.Candidate)
+			if loadErr != nil || c.Key.Target != in.Victim.Target || c.Key.Kind != admission.KindBlockIP {
+				return admission.ErrCorruptRecord
+			}
 		}
 	}
 	return nil

@@ -83,6 +83,13 @@ type ScheduleItem struct {
 	// Ready is false while a proven failure's retry wait lasts. A waiting
 	// candidate is never picked, but its scope keeps its deficit.
 	Ready bool
+	// Slot readiness differs by lane; membership stays intact so blocked
+	// work retains its earned scope turns. Zero values add no constraint.
+	BlockedGeneral, BlockedReserved bool
+}
+
+func (it ScheduleItem) readyOn(reserved bool) bool {
+	return it.Ready && ((!reserved && !it.BlockedGeneral) || (reserved && !it.BlockedReserved))
 }
 
 // Answer is an outside answer a queued candidate waits on, such as the
@@ -228,7 +235,7 @@ func buildRings(items []ScheduleItem) [ringCount]ringMembers {
 	for i := range items {
 		it := &items[i]
 		for r := range rings {
-			if !memberOf(r, it) || !it.Ready {
+			if !memberOf(r, it) || !it.readyOn(r >= ringDirect) {
 				continue
 			}
 			bySeverity := rings[r].ready[it.Scope]

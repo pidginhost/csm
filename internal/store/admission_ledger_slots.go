@@ -1,6 +1,7 @@
 package store
 
 import (
+	"slices"
 	"time"
 
 	"github.com/pidginhost/csm/internal/admission"
@@ -54,29 +55,53 @@ func (l *AdmissionLedger) HasChargedWork() (bool, error) {
 	return found, err
 }
 
-// setBudget is the free slots of each partition in block units; without a
-// set it bounds nothing.
-type setBudget struct {
-	bounded           bool
-	general, reserved uint32
-}
-
-// slots is the set budget of this transaction: the handle's set with the
-// ledger's effect records added.
-func (q *queueTx) slots() (setBudget, error) {
+// slots is the set budget of this transaction: nil without a set, else
+// the free slots the handle's set and the ledger's records leave, with the
+// verified records strictly higher work may evict once the general
+// partition is full (no work evicts while it has a free slot).
+func (q *queueTx) slots() (*admission.SlotLimits, error) {
 	if q.set == nil {
-		return setBudget{general: admission.MaxCeiling, reserved: admission.MaxCeiling}, nil
+		return nil, nil
 	}
 	tally, err := loadEffectTally(q.tx)
 	if err != nil {
-		return setBudget{}, err
+		return nil, err
 	}
 	occ, err := tally.Occupy(*q.set)
 	if err != nil {
-		return setBudget{}, err
+		return nil, err
 	}
 	s := occ.Slots()
-	return setBudget{bounded: true, general: slotUnits(s.FreeGeneral), reserved: slotUnits(s.FreeReserved)}, nil
+	var pool []admission.EvictionVictim
+	if s.FreeGeneral == 0 && occ.General+occ.Reserved <= s.Available {
+		if pool, err = victimPool(q.tx, q.now); err != nil {
+			return nil, err
+		}
+	}
+	pool = slices.DeleteFunc(pool, func(v admission.EvictionVictim) bool {
+		return (v.Partition == admission.PartitionGeneral && occ.General > s.General) ||
+			(v.Partition == admission.PartitionReserved && occ.Reserved > s.Reserved)
+	})
+	return admission.NewSlotLimits(slotUnits(s.FreeGeneral), slotUnits(s.FreeReserved), pool), nil
+}
+
+// victimPool is the records strictly higher work may evict (spec 5.6):
+// verified, holding their slot and claimed by no pending block.
+// The full-set path walks the records once; free-slot admission skips it.
+func victimPool(tx *bolt.Tx, now time.Time) ([]admission.EvictionVictim, error) {
+	b := tx.Bucket([]byte(admissionEffectsBucket))
+	if b == nil {
+		return nil, nil
+	}
+	var pool []admission.EvictionVictim
+	err := b.ForEach(func(k, v []byte) error {
+		rec, err := admission.UnmarshalEffectRecord(k, v)
+		if err == nil && rec.Verified() && rec.Holds() && rec.EvictedBy == "" && rec.ExpiresAt.After(now) {
+			pool = append(pool, admission.EvictionVictim{Action: rec.Action, Tier: rec.Tier, Partition: rec.Partition, ExpiresAt: rec.ExpiresAt})
+		}
+		return err
+	})
+	return pool, err
 }
 
 // slotUnits is n free slots as block units; no lane budget exceeds the
@@ -85,19 +110,53 @@ func slotUnits(n int) uint32 {
 	return uint32(min(max(n, 0), int(admission.MaxCeiling))) // #nosec G115 -- clamped to the ceiling's range.
 }
 
-// limit lowers lim's lane budgets to the free slots of the partitions the
-// lanes occupy.
-func (b setBudget) limit(lim admission.ScheduleLimits) admission.ScheduleLimits {
-	lim.General, lim.Reserved = min(lim.General, b.general), min(lim.Reserved, b.reserved)
+// limitBySlots lowers lane budgets to free slots or victims under
+// pressure; readiness and contention checks decide each pick's fit.
+func limitBySlots(lim admission.ScheduleLimits, slots *admission.SlotLimits) admission.ScheduleLimits {
+	lim.General, lim.Reserved = min(lim.General, slots.Budget(admission.LaneGeneral)), min(lim.Reserved, slots.Budget(admission.LaneDirect))
 	return lim
 }
 
-// free is the slots a pick on lane may take.
-func (b setBudget) free(lane admission.Lane) uint32 {
-	if lane == admission.LaneGeneral {
-		return b.general
+// demandOf is what schedule item it of candidate lc asks of the set: only
+// one-unit block_ip work may evict.
+func demandOf(it admission.ScheduleItem, lc liveCandidate) admission.SlotDemand {
+	return admission.SlotDemand{Tier: it.Tier, Cost: it.CeilingCost, Evicts: lc.c.Key.Kind == admission.KindBlockIP && it.CeilingCost == 1,
+		Reserved: it.Direct || it.Corroborated}
+}
+
+// reservedLane is the reserved lane item it is eligible for; zero for
+// general-only work.
+func reservedLane(it admission.ScheduleItem) admission.Lane {
+	switch {
+	case it.Direct:
+		return admission.LaneDirect
+	case it.Corroborated:
+		return admission.LaneCorroborated
 	}
-	return b.reserved
+	return 0
+}
+
+// roomOn reports whether item it finds room in slots on its general lane
+// and on its reserved lane, if any.
+func roomOn(slots *admission.SlotLimits, it admission.ScheduleItem, lc liveCandidate) (general, reserved bool) {
+	d := demandOf(it, lc)
+	_, general = slots.Room(admission.LaneGeneral, d)
+	if lane := reservedLane(it); lane != 0 {
+		_, reserved = slots.Room(lane, d)
+	}
+	return general, reserved
+}
+
+// slotReady refines lane readiness without changing the overall Ready
+// control: slot pressure preserves saved turns, while backoff releases
+// a saved ceiling turn through the scheduler's existing rule.
+func slotReady(items []admission.ScheduleItem, byID map[admission.CandidateID]liveCandidate, slots *admission.SlotLimits) []admission.ScheduleItem {
+	out := slices.Clone(items)
+	for i := range out {
+		general, reserved := roomOn(slots, out[i], byID[out[i].ID])
+		out[i].BlockedGeneral, out[i].BlockedReserved = !general, !reserved
+	}
+	return out
 }
 
 // soonestEffect is the first future effect expiry. A degraded reading can
@@ -113,7 +172,7 @@ func soonestEffect(tx *bolt.Tx, now time.Time) (time.Time, bool, error) {
 			if err != nil {
 				return time.Time{}, false, err
 			}
-			if rec.ExpiresAt.After(now) {
+			if rec.Holds() && rec.ExpiresAt.After(now) {
 				return rec.ExpiresAt, true, nil
 			}
 		}

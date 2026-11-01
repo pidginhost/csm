@@ -23,21 +23,28 @@ func (h *CeilingHold) valid(reserved bool) bool {
 
 func (s *scheduler) freeReady(items []ScheduleItem, reserved bool) bool {
 	for _, it := range items {
-		if it.Ready && it.CeilingCost == 0 && !s.picked[it.ID] && (!reserved || it.Direct || it.Corroborated) {
+		if it.readyOn(reserved) && it.CeilingCost == 0 && !s.picked[it.ID] && (!reserved || it.Direct || it.Corroborated) {
 			return true
 		}
 	}
 	return false
 }
 
-func (s *scheduler) held(h **CeilingHold) *ScheduleItem {
+func (s *scheduler) held(h **CeilingHold, items []ScheduleItem) *ScheduleItem {
 	if *h == nil {
 		return nil
 	}
-	for _, it := range s.rings[(*h).Ring].ready[(*h).Scope][severityPattern[(*h).Slot]] {
-		if it.ID == (*h).ID && !s.picked[it.ID] {
-			return it
+	for i := range items {
+		it := &items[i]
+		if it.ID != (*h).ID || s.picked[it.ID] || !it.Ready || !memberOf(int((*h).Ring), it) || it.Scope != (*h).Scope || it.Tier.Severity != severityPattern[(*h).Slot] {
+			continue
 		}
+		if !it.readyOn((*h).Ring >= ringDirect) {
+			// A blocked lane cannot spend the saved turn, but a later
+			// free slot must restore it ahead of new work.
+			return nil
+		}
+		return it
 	}
 	*h = nil
 	return nil
@@ -175,7 +182,7 @@ func (s *scheduler) lane(items []ScheduleItem, reserved bool, budget, fullBudget
 	if reserved {
 		h = &s.st.ReservedHold
 	}
-	owed := s.held(h)
+	owed := s.held(h, items)
 	history, chargedHistory := s.historyHeld(reserved)
 	if owed != nil && owed.CeilingCost <= budget && !history {
 		it, blocked := s.serveHeld(h, owed, bytes, recovery)
