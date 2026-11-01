@@ -820,6 +820,7 @@ Attribution gaps:
 | `mail_per_account` | security event |  | envelope-sender |
 | `mail_queue` | ignored | host-scope |  |
 | `mail_queue_unavailable` | ignored | self-health |  |
+| `mail_spam_source` | ignored | attacker-side |  |
 | `mail_subnet_spray` | ignored | attacker-side |  |
 | `malware_companion_files` | security event |  |  |
 | `malware_companion_scan_incomplete` | ignored | self-health |  |

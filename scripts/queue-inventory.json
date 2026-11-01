@@ -899,6 +899,17 @@
       "queue": "scans"
     },
     {
+      "id": "internal/daemon/spamsource_loop.go::*Daemon.newSpamSources::candidates::channel::1",
+      "path": "internal/daemon/spamsource_loop.go",
+      "owner": "*Daemon.newSpamSources",
+      "target": "candidates",
+      "kind": "channel",
+      "source": "make(chan spamCandidate, spamSourceCandidates)",
+      "capacity": "64",
+      "class": "maintenance",
+      "rationale": "Hands senders the spam source tracker marked in flight to its one DNS check worker. A sender normally has one queued check; one evicted from the tracker mid-check can queue another, and only one finding can follow. The tracker keeps each sender's evidence: a full queue ends that check unreported and the sender's next reject queues it again. Checks still queued at shutdown need no settlement because in-flight marks are never saved."
+    },
+    {
       "id": "internal/daemon/spoolwatch.go::NewSpoolWatcher::scanCh::channel::1",
       "path": "internal/daemon/spoolwatch.go",
       "owner": "NewSpoolWatcher",

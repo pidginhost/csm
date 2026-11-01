@@ -165,8 +165,19 @@ Each class covers these checks. Only Critical findings are reported, except
 | `bad_asn_egress` | `bad_asn_outbound` |
 | `spam` | `mail_spam_source` |
 
-Nodes accept `spam` entries in downloaded central lists. A node reports the
-class once its spam source detector is enabled.
+Nodes accept `spam` entries in downloaded central lists. With `spam` in
+`reputation.report.classes`, a node raises `mail_spam_source` for a sender
+that rspamd keeps rejecting and that has sent it no clean mail recently, and
+reports that sender. Dry-run antispam nodes count their verdicts too. The
+finding never blocks or challenges the sender on the reporting node.
+
+Shared mail services are never reported: Google, Microsoft, Amazon SES,
+SendGrid, Mailgun, Brevo, Yahoo and iCloud. CSM reads their sending hosts
+from each provider's published SPF records and refreshes the list in the
+background. Spam reports wait while that list cannot be loaded.
+
+The class needs `email_protection.antispam.enabled`. Turning either on or off
+takes a restart.
 
 A report carries only the source address, the class, a count and the time.
 List the classes to send in `reputation.report.classes`. An empty list keeps

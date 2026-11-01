@@ -182,6 +182,41 @@ func TestRegisteredCheckKindPolicy(t *testing.T) {
 	}
 }
 
+// mail_spam_source is reputation of a remote sender, keyed on its address.
+// Under the daemon's open threshold one finding opens nothing. When it seeds
+// an incident another finding for the address opens, that incident is an
+// attack from the address, not an account compromise. Joining an incident
+// already open for the address never promotes its kind.
+func TestSpamSourceIsRemoteAttackEvidence(t *testing.T) {
+	c := incident.NewCorrelator(incident.CorrelatorConfig{OpenThreshold: 2})
+	if id, created, err := c.OnFinding(alert.Finding{Check: "mail_spam_source", Severity: alert.High, SourceIP: "198.51.100.7"}); err != nil || created || id != "" {
+		t.Fatalf("lone spam source: id=%q created=%v err=%v", id, created, err)
+	}
+
+	if id, created, err := c.OnFinding(alert.Finding{Check: "mail_spam_source", Severity: alert.High, SourceIP: "198.51.100.9"}); err != nil || created || id != "" {
+		t.Fatalf("seeding spam source: id=%q created=%v err=%v", id, created, err)
+	}
+	seededID, created, err := c.OnFinding(alert.Finding{Check: "mail_bruteforce", Severity: alert.High, SourceIP: "198.51.100.9"})
+	if err != nil || !created || seededID == "" {
+		t.Fatalf("brute force after a spam source: id=%q created=%v err=%v", seededID, created, err)
+	}
+	if inc, ok := c.Get(seededID); !ok || inc.Kind != incident.KindWebAttack {
+		t.Fatalf("incident seeded by a spam source = %+v, want kind %s", inc, incident.KindWebAttack)
+	}
+
+	openID, created, err := c.OnFinding(alert.Finding{Check: "mail_bruteforce", Severity: alert.Critical, SourceIP: "198.51.100.8"})
+	if err != nil || !created || openID == "" {
+		t.Fatalf("brute force: id=%q created=%v err=%v", openID, created, err)
+	}
+	joinID, created, err := c.OnFinding(alert.Finding{Check: "mail_spam_source", Severity: alert.High, SourceIP: "198.51.100.8"})
+	if err != nil || created || joinID != openID {
+		t.Fatalf("spam source for an open address: id=%q created=%v err=%v, want %q", joinID, created, err, openID)
+	}
+	if inc, ok := c.Get(openID); !ok || inc.Kind != incident.KindMailboxBruteforce {
+		t.Fatalf("incident after the spam source = %+v, want kind %s", inc, incident.KindMailboxBruteforce)
+	}
+}
+
 func TestIncidentPolicyGuardRejectsDrift(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

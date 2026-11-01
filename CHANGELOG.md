@@ -20,6 +20,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 ### Added
 
 - Nodes can now load central abuse lists that include spam sources.
+- Operators can opt in to report repeated spam senders to the central abuse database; shared mail services are never reported.
 
 ### Changed
 
