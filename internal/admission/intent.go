@@ -8,8 +8,9 @@ import (
 	"time"
 )
 
-// MaxIntentBytes bounds one encoded intent.
-const MaxIntentBytes = 256
+// MaxIntentBytes bounds one encoded intent, with the victim of an
+// evicting block.
+const MaxIntentBytes = 384
 
 // UnknownHoldBytes is what an unknown outcome holds in the recovery reserve
 // besides its history and its rows: its intent and the slot of the row that
@@ -21,7 +22,12 @@ const UnknownHoldBytes = AuditSlotBytes + MaxIntentBytes
 // outcome holds.
 const AttemptRecoveryBytes = AttemptAuditBytes + UnknownHoldBytes
 
-const intentVersion = 1
+// intentVersion is the encoding of an intent without a victim; an
+// evicting intent is victimIntentVersion.
+const (
+	intentVersion       = 1
+	victimIntentVersion = 2
+)
 
 // BatchID names one execution batch.
 type BatchID string
@@ -62,13 +68,26 @@ func ParseBatchID(s string) (BatchID, error) {
 // Intent is what one attempt may apply, recorded before the attempt
 // dispatches any host change (spec 5.4): the batch it runs in, its kind,
 // its target and the absolute expiry of the effect. Every member adds its
-// target until that expiry; nothing is removed. The ledger keeps it while
-// the attempt runs and, after an unknown outcome, until recovery retires
-// the uncertainty, so a restart knows which effects are unproven.
+// target until that expiry; a member that evicts also removes its victim.
+// The ledger keeps it while the attempt runs and, after an unknown
+// outcome, until recovery retires the uncertainty, so a restart knows
+// which effects are unproven.
 type Intent struct {
 	Action    ActionID
 	Batch     BatchID
 	Kind      Kind
+	Target    Target
+	ExpiresAt time.Time
+	// Victim is the automatic block the member evicts; zero when it takes
+	// a free slot. Only a block_ip member evicts, one victim for its one
+	// unit (spec 5.6).
+	Victim Victim
+}
+
+// Victim is an automatic block an evicting member removes: its action, its
+// address and the absolute expiry it was applied with.
+type Victim struct {
+	Action    ActionID
 	Target    Target
 	ExpiresAt time.Time
 }
@@ -80,6 +99,9 @@ type intentRecord struct {
 	Kind      Kind     `json:"kind"`
 	Target    string   `json:"target"`
 	ExpiresAt int64    `json:"expires_at"`
+	Victim    ActionID `json:"victim,omitempty"`
+	VictimAt  string   `json:"victim_target,omitempty"`
+	VictimEnd int64    `json:"victim_expires,omitempty"`
 }
 
 func (in Intent) record() (intentRecord, error) {
@@ -96,7 +118,27 @@ func (in Intent) record() (intentRecord, error) {
 	if !ok || expires < 0 {
 		return intentRecord{}, refuse(ReasonInvalid, "intent has no expiry after the epoch")
 	}
-	return intentRecord{V: intentVersion, Action: in.Action, Batch: in.Batch, Kind: in.Kind, Target: in.Target.Key(), ExpiresAt: expires}, nil
+	rec := intentRecord{V: intentVersion, Action: in.Action, Batch: in.Batch, Kind: in.Kind, Target: in.Target.Key(), ExpiresAt: expires}
+	if in.Victim == (Victim{}) {
+		return rec, nil
+	}
+	v := in.Victim
+	ends, ok := unixNano(v.ExpiresAt)
+	switch {
+	case in.Kind != KindBlockIP:
+		return intentRecord{}, refuse(ReasonInvalid, "only a block_ip member evicts")
+	case ValidateKindTarget(KindBlockIP, v.Target) != nil:
+		return intentRecord{}, refuse(ReasonInvalid, "intent victim is not an address")
+	case v.Target == in.Target || v.Action == in.Action:
+		return intentRecord{}, refuse(ReasonInvalid, "a member cannot evict itself")
+	case !ok || ends <= 0:
+		return intentRecord{}, refuse(ReasonInvalid, "intent victim has no expiry after the epoch")
+	}
+	if _, err := ParseActionID(string(v.Action)); err != nil {
+		return intentRecord{}, err
+	}
+	rec.V, rec.Victim, rec.VictimAt, rec.VictimEnd = victimIntentVersion, v.Action, v.Target.Key(), ends
+	return rec, nil
 }
 
 // Validate checks the intent's invariants.
@@ -124,6 +166,13 @@ func UnmarshalIntent(data []byte) (Intent, error) {
 		return Intent{}, ErrCorruptRecord
 	}
 	in := Intent{Action: rec.Action, Batch: rec.Batch, Kind: rec.Kind, Target: target, ExpiresAt: fromNano(rec.ExpiresAt)}
+	if rec.Victim != "" {
+		victim, err := ParseTargetKey(rec.VictimAt, Caps{IPv6: true})
+		if err != nil {
+			return Intent{}, ErrCorruptRecord
+		}
+		in.Victim = Victim{Action: rec.Victim, Target: victim, ExpiresAt: fromNano(rec.VictimEnd)}
+	}
 	if again, err := in.record(); err != nil || again != rec {
 		return Intent{}, ErrCorruptRecord
 	}

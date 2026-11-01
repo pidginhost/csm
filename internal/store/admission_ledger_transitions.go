@@ -378,13 +378,18 @@ func (l *AdmissionLedger) reserveTx(q *queueTx, id admission.CandidateID, lane a
 	if err = laneFits(q, liveCandidate{id: id, c: c, entry: entry}, lane); err != nil {
 		return c, admission.AttemptRecord{}, false, err
 	}
-	// The slots are rechecked under the lock, before anything is charged.
+	// The slots are rechecked under the lock, before anything is charged:
+	// a free slot of the lane's partition, or under pressure a victim the
+	// block strictly outranks (spec 5.6).
+	var victim admission.EvictionVictim
 	if cost := c.Key.Kind.CeilingCost(); cost > 0 {
 		slots, slotErr := q.slots()
 		if slotErr != nil {
 			return c, admission.AttemptRecord{}, false, slotErr
 		}
-		if slots.free(lane) < cost {
+		d := admission.SlotDemand{Tier: entry.Tier, Cost: cost, Evicts: c.Key.Kind == admission.KindBlockIP && cost == 1, Reserved: entry.Direct || entry.Corroborated, Target: c.Key.Target}
+		var ok bool
+		if victim, ok = slots.Room(lane, d); !ok {
 			return c, admission.AttemptRecord{}, false, refusal(admission.ReasonSetFull, "the temporary set has no free slot for the lane")
 		}
 	}
@@ -423,7 +428,7 @@ func (l *AdmissionLedger) reserveTx(q *queueTx, id admission.CandidateID, lane a
 		return c, a, false, err
 	}
 	if hold && q.started && c.Key.Kind == admission.KindBlockIP {
-		if err := q.holdSlot(c, a, entry); err != nil {
+		if err := q.holdSlot(c, a, entry, victim); err != nil {
 			return c, a, false, err
 		}
 	}
@@ -787,6 +792,11 @@ func (q *queueTx) finishAttempt(a *admission.AttemptRecord, c *admission.Candida
 	// The candidate moves in step with its current attempt, so the
 	// lifecycle table decides which outcomes a reserved attempt allows.
 	from := c.State
+	if state != admission.StateUnknown {
+		if err = q.endSweptClaim(*a, state == admission.StateVerified); err != nil {
+			return false, err
+		}
+	}
 	// An attempt that never ran returns the slot of its execution row. One
 	// that ran keeps its intent only while its outcome is unknown.
 	var unused uint64

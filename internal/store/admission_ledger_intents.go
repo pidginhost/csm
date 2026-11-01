@@ -151,6 +151,9 @@ func proveIntents(tx *bolt.Tx) (map[string]int, error) {
 		if !unsettled(a) || in.Kind != c.Key.Kind || in.Target != c.Key.Target || !in.ExpiresAt.Equal(a.ExpiresAt) {
 			return admission.ErrCorruptRecord
 		}
+		if err := proveIntentVictim(tx, a, in); err != nil {
+			return err
+		}
 		rows[id] = true
 		held[in.Target.Key()]++
 		return nil
@@ -215,6 +218,12 @@ func (l *AdmissionLedger) execute(ids []admission.ActionID) ([]admission.Intent,
 			}
 			in := admission.Intent{Action: id, Batch: batch, Kind: c.Key.Kind, Target: c.Key.Target, ExpiresAt: a.ExpiresAt}
 			switch {
+			case a.State == admission.StateReserved:
+				victim, victimErr := claimedVictim(tx, a)
+				if victimErr != nil {
+					return victimErr
+				}
+				in.Victim = victim
 			case a.State == admission.StateExecuting:
 				var found bool
 				var intentErr error

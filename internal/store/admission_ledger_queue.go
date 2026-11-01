@@ -677,10 +677,24 @@ func (l *AdmissionLedger) scheduleTx(q *queueTx, lim admission.ScheduleLimits, a
 	}
 	// A pick that fails revalidation ends, and the schedule is computed
 	// again from the stored position without it, so its turn is not spent.
+	// So is the schedule after a pick that earlier picks left no room: work
+	// that finds no room on any lane is not ready to the scheduler.
+	sched := slotReady(items, byID, slots)
 	for {
-		picks, next, schedErr := admission.Schedule(items, st, slots.limit(lim))
+		picks, next, schedErr := admission.Schedule(sched, st, limitBySlots(lim, slots))
 		if schedErr != nil {
 			return nil, schedErr
+		}
+		unfit := map[admission.CandidateID]admission.Lane{}
+		room := slots.Clone()
+		for _, p := range picks {
+			for _, it := range sched {
+				if it.ID == p.ID {
+					if _, ok := room.Take(p.Lane, demandOf(it, byID[p.ID])); !ok {
+						unfit[p.ID] = p.Lane
+					}
+				}
+			}
 		}
 		refused := map[admission.CandidateID]bool{}
 		for _, p := range picks {
@@ -696,19 +710,32 @@ func (l *AdmissionLedger) scheduleTx(q *queueTx, lim admission.ScheduleLimits, a
 			}
 			refused[p.ID] = true
 		}
-		if len(refused) == 0 {
+		if len(refused) == 0 && len(unfit) == 0 {
 			if err = q.deferUnserved(items, byID, picks, lim, slots, answers); err != nil {
 				return nil, err
 			}
 			return picks, putScheduleState(q.tx, next)
 		}
-		kept := items[:0:0]
-		for _, it := range items {
+		kept, keptSched := items[:0:0], sched[:0:0]
+		for i, it := range items {
 			if !refused[it.ID] {
 				kept = append(kept, it)
+				if lane, blocked := unfit[it.ID]; blocked {
+					if lane == admission.LaneGeneral {
+						sched[i].BlockedGeneral = true
+					} else {
+						sched[i].BlockedReserved = true
+					}
+				}
+				keptSched = append(keptSched, sched[i])
 			}
 		}
-		items = kept
+		items, sched = kept, keptSched
+		if len(refused) > 0 {
+			// Refused picks consumed no room. Reconsider every surviving
+			// lane against the original pool and fair position.
+			sched = slotReady(items, byID, slots)
+		}
 	}
 }
 
@@ -1081,17 +1108,22 @@ func (q *queueTx) challengeWake(history *liveHistory, lc liveCandidate, earliest
 // backoff. A changed reason is one transition, counted and announced once,
 // as Defer records it. Pending work keeps its reason, and so does set_full
 // work while the ledger has no set to judge it by: the engine refused it.
-func (q *queueTx) deferUnserved(items []admission.ScheduleItem, byID map[admission.CandidateID]liveCandidate, picks []admission.Pick, lim admission.ScheduleLimits, slots setBudget, answers map[admission.CandidateID]admission.Answer) error {
+func (q *queueTx) deferUnserved(items []admission.ScheduleItem, byID map[admission.CandidateID]liveCandidate, picks []admission.Pick, lim admission.ScheduleLimits, slots *admission.SlotLimits, answers map[admission.CandidateID]admission.Answer) error {
 	picked := make(map[admission.CandidateID]bool, len(picks))
 	general, reserved := lim.General, lim.Reserved
-	generalSlots, reservedSlots := slots.general, slots.reserved
 	generalBytes, reservedBytes := lim.GeneralBytes, lim.ReservedBytes
+	rest := slots.Clone()
 	for _, p := range picks {
 		picked[p.ID] = true
 		if p.Lane == admission.LaneGeneral {
-			general, generalSlots, generalBytes = general-p.Cost, generalSlots-p.Cost, generalBytes-uint64(p.Bytes)
+			general, generalBytes = general-p.Cost, generalBytes-uint64(p.Bytes)
 		} else {
-			reserved, reservedSlots, reservedBytes = reserved-p.Cost, reservedSlots-p.Cost, reservedBytes-uint64(p.Bytes)
+			reserved, reservedBytes = reserved-p.Cost, reservedBytes-uint64(p.Bytes)
+		}
+		for _, it := range items {
+			if it.ID == p.ID {
+				rest.Take(p.Lane, demandOf(it, byID[p.ID]))
+			}
 		}
 	}
 	recovery := lim.RecoveryBytes
@@ -1105,14 +1137,15 @@ func (q *queueTx) deferUnserved(items []admission.ScheduleItem, byID map[admissi
 			continue
 		}
 		lc := byID[it.ID]
-		if lc.c.Reason == admission.ReasonSetFull && !slots.bounded {
+		if lc.c.Reason == admission.ReasonSetFull && slots == nil {
 			continue
 		}
 		eligible := it.Direct || it.Corroborated
 		generalCeiling := general >= it.CeilingCost
 		reservedCeiling := eligible && reserved >= it.CeilingCost
-		generalRoom := generalCeiling && generalSlots >= it.CeilingCost
-		reservedRoom := reservedCeiling && reservedSlots >= it.CeilingCost
+		generalSet, reservedSet := roomOn(rest, it, lc)
+		generalRoom := generalCeiling && generalSet
+		reservedRoom := reservedCeiling && reservedSet
 		held, err := q.heldTarget(lc.c.Key.Target)
 		if err != nil {
 			return err
@@ -1280,10 +1313,10 @@ func (l *AdmissionLedger) NextWake(answers map[admission.CandidateID]admission.A
 			}
 			if it.Ready {
 				general, reserved = true, reserved || it.Direct || it.Corroborated
-				eligible := it.Direct || it.Corroborated
 				// Either lane can free a slot before the other earns enough
 				// ceiling or history credit to use its existing room.
-				full = full || slots.free(admission.LaneGeneral) < it.CeilingCost || (eligible && slots.free(admission.LaneDirect) < it.CeilingCost)
+				generalSet, reservedSet := roomOn(slots, it, byID[it.ID])
+				full = full || !generalSet || (reservedLane(it) != 0 && !reservedSet)
 			}
 		}
 		if !general {
@@ -1293,7 +1326,10 @@ func (l *AdmissionLedger) NextWake(answers map[admission.CandidateID]admission.A
 		if err != nil {
 			return err
 		}
-		picks, _, err := admission.Schedule(items, st, slots.limit(lim))
+		// Work no lane has room for is not ready, so a victim it cannot
+		// take never wakes the owner at once.
+		items = slotReady(items, byID, slots)
+		picks, _, err := admission.Schedule(items, st, limitBySlots(lim, slots))
 		if err != nil {
 			return err
 		}
@@ -1363,7 +1399,7 @@ func (l *AdmissionLedger) NextWake(answers map[admission.CandidateID]admission.A
 					}
 					laneItems = append(laneItems, item)
 				}
-				heads, _, probeErr := admission.Schedule(laneItems, st, slots.limit(probe))
+				heads, _, probeErr := admission.Schedule(laneItems, st, limitBySlots(probe, slots))
 				if probeErr != nil {
 					return probeErr
 				}

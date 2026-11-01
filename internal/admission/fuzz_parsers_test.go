@@ -301,8 +301,14 @@ func FuzzEffectRecord(f *testing.F) {
 	if err != nil {
 		f.Fatal(err)
 	}
-	for _, applied := range []time.Time{{}, t0} {
-		e.Applied = applied
+	victim := EffectRef{Action: "act_00000000000000000000000000000002", ExpiresAt: t0.Add(time.Minute)}
+	for _, seed := range []struct {
+		applied   time.Time
+		victim    EffectRef
+		evictedBy ActionID
+		evicted   bool
+	}{{}, {applied: t0}, {victim: victim}, {applied: t0, evictedBy: victim.Action}, {applied: t0, evictedBy: victim.Action, evicted: true}} {
+		e.Applied, e.Victim, e.EvictedBy, e.Evicted = seed.applied, seed.victim, seed.evictedBy, seed.evicted
 		data, err := e.MarshalBinary()
 		if err != nil {
 			f.Fatal(err)
@@ -329,6 +335,49 @@ func FuzzEffectRecord(f *testing.F) {
 		}
 		check(data)
 		if len(data) >= 8 && len(data) <= MaxEffectRecordBytes {
+			check(resealFuzzRecord(data))
+		}
+	})
+}
+
+// FuzzIntent decodes arbitrary intents, with and without a victim: a
+// decoded intent re-encodes to its input.
+func FuzzIntent(f *testing.F) {
+	member, err := CanonicalAddress("192.0.2.1", Caps{})
+	if err != nil {
+		f.Fatal(err)
+	}
+	victim, err := CanonicalAddress("192.0.2.2", Caps{})
+	if err != nil {
+		f.Fatal(err)
+	}
+	action := ActionID("act_00000000000000000000000000000001")
+	batch, err := NewBatchID([]ActionID{action})
+	if err != nil {
+		f.Fatal(err)
+	}
+	in := Intent{Action: action, Batch: batch, Kind: KindBlockIP, Target: member, ExpiresAt: t0.Add(time.Hour)}
+	for _, v := range []Victim{{}, {Action: "act_00000000000000000000000000000002", Target: victim, ExpiresAt: t0.Add(time.Minute)}} {
+		in.Victim = v
+		data, err := in.MarshalBinary()
+		if err != nil {
+			f.Fatal(err)
+		}
+		f.Add(data)
+	}
+	f.Fuzz(func(t *testing.T, data []byte) {
+		check := func(data []byte) {
+			in, err := UnmarshalIntent(data)
+			if err != nil {
+				return
+			}
+			again, err := in.MarshalBinary()
+			if err != nil || !bytes.Equal(again, data) {
+				t.Fatalf("accepted intent does not re-encode to its input: %v", err)
+			}
+		}
+		check(data)
+		if len(data) >= 8 && len(data) <= MaxIntentBytes {
 			check(resealFuzzRecord(data))
 		}
 	})
