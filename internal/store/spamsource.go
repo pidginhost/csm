@@ -3,7 +3,6 @@ package store
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"time"
 
 	bolt "go.etcd.io/bbolt"
@@ -55,7 +54,9 @@ func (db *DB) SaveSpamSources(m map[string]SpamSource) error {
 }
 
 // LoadSpamSources returns the persisted tracker state keyed by IP, or an empty
-// map when nothing has been saved yet.
+// map when nothing has been saved yet. An entry that does not decode or has no
+// observation time is skipped: failing the load would keep the detector off on
+// every restart, while skipping loses only that sender's history.
 func (db *DB) LoadSpamSources() (map[string]SpamSource, error) {
 	out := make(map[string]SpamSource)
 	err := db.bolt.View(func(tx *bolt.Tx) error {
@@ -65,11 +66,8 @@ func (db *DB) LoadSpamSources() (map[string]SpamSource, error) {
 		}
 		return b.ForEach(func(k, v []byte) error {
 			var src SpamSource
-			if err := json.Unmarshal(v, &src); err != nil {
-				return fmt.Errorf("decode spam source state: %w", err)
-			}
-			if src.Seen.IsZero() {
-				return errors.New("spam source state has no observation time")
+			if json.Unmarshal(v, &src) != nil || src.Seen.IsZero() {
+				return nil //nolint:nilerr // skip corrupt entry
 			}
 			out[string(k)] = src
 			return nil

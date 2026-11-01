@@ -9,7 +9,8 @@ import (
 // FuzzParseSPFRecord exercises the pure record-token parser against arbitrary
 // input. parseSPFRecord makes no network calls and must never panic regardless
 // of the TXT string content. Unbounded recursion cannot occur here because the
-// function parses ONE record's tokens; recursion over DNS lives in ResolveSPF.
+// function parses ONE record's tokens; recursion over DNS lives in
+// resolveSPFRec, shared by ResolveSPF and ResolveSPFPolicy.
 //
 // Run the seed corpus as regression tests with `go test -run=Fuzz ./internal/mailranges/`.
 // Run actual fuzzing with `go test -fuzz=FuzzParseSPFRecord -fuzztime=30s ./internal/mailranges/`.

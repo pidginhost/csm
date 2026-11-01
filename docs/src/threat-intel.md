@@ -176,9 +176,9 @@ SendGrid, Mailgun, Brevo, Yahoo and iCloud. CSM reads their sending hosts
 from each provider's published SPF records and refreshes the list in the
 background. Spam reports wait while that list cannot be loaded.
 
-CSM keeps sender history across restarts. Spam reporting stays off if that
-history cannot be read safely; the daemon log explains the failure. Pending
-checks cannot reuse replacement history when the tracker reaches capacity.
+CSM keeps sender history across restarts. If that history cannot be read at
+startup, spam reports stay off until the next restart and the daemon log says
+why.
 
 The class needs `email_protection.antispam.enabled`. Turning either on or off
 takes a restart.

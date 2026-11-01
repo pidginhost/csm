@@ -146,7 +146,7 @@ func TestSaveSpamSourcesSkipsEmptyKey(t *testing.T) {
 	}
 }
 
-func TestLoadSpamSourcesRejectsCorruptEntries(t *testing.T) {
+func TestLoadSpamSourcesSkipsCorruptEntries(t *testing.T) {
 	db := openTestDB(t)
 
 	seen := time.Date(2026, 10, 31, 10, 0, 0, 0, time.UTC)
@@ -161,22 +161,40 @@ func TestLoadSpamSourcesRejectsCorruptEntries(t *testing.T) {
 		t.Fatalf("writing corrupt entry: %v", err)
 	}
 
-	if _, err := db.LoadSpamSources(); err == nil {
-		t.Fatal("corrupt state must fail loading rather than forget clean mail or a report throttle")
+	got, err := db.LoadSpamSources()
+	if err != nil {
+		t.Fatalf("LoadSpamSources: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("loaded %d IPs, want 1: %v", len(got), got)
+	}
+	if !got["198.51.100.7"].Seen.Equal(seen) {
+		t.Errorf("198.51.100.7 Seen = %v, want %v", got["198.51.100.7"].Seen, seen)
 	}
 }
 
-func TestLoadSpamSourcesRejectsMissingState(t *testing.T) {
+func TestLoadSpamSourcesSkipsMissingState(t *testing.T) {
 	for _, raw := range []string{"null", "{}", `{"last_clean":"2026-10-31T10:00:00Z"}`} {
 		t.Run(raw, func(t *testing.T) {
 			db := openTestDB(t)
+			seen := time.Date(2026, 10, 31, 10, 0, 0, 0, time.UTC)
+			if err := db.SaveSpamSources(map[string]SpamSource{
+				"198.51.100.7": {Seen: seen},
+			}); err != nil {
+				t.Fatalf("SaveSpamSources: %v", err)
+			}
 			if err := db.bolt.Update(func(tx *bolt.Tx) error {
-				return tx.Bucket([]byte(spamSourceBucket)).Put([]byte("198.51.100.7"), []byte(raw))
+				return tx.Bucket([]byte(spamSourceBucket)).Put([]byte("198.51.100.9"), []byte(raw))
 			}); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := db.LoadSpamSources(); err == nil {
-				t.Fatal("incomplete state would be dropped along with its clean mail history")
+
+			got, err := db.LoadSpamSources()
+			if err != nil {
+				t.Fatalf("LoadSpamSources: %v", err)
+			}
+			if len(got) != 1 || !got["198.51.100.7"].Seen.Equal(seen) {
+				t.Errorf("loaded %v, want only 198.51.100.7 seen at %v", got, seen)
 			}
 		})
 	}

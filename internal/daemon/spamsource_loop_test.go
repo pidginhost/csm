@@ -23,6 +23,7 @@ import (
 	"github.com/pidginhost/csm/internal/netutil"
 	"github.com/pidginhost/csm/internal/reporting"
 	"github.com/pidginhost/csm/internal/store"
+	bolt "go.etcd.io/bbolt"
 )
 
 const (
@@ -598,6 +599,60 @@ func TestSpamSourceStatePersistsAcrossRestart(t *testing.T) {
 		eximAt(d, cfg, rejectMarker(throttled), base.Add(4*time.Hour))
 		eximAt(d, cfg, rejectMarker(throttled), base.Add(6*time.Hour))
 		wantSpamFinding(t, spamFindings(d), control, day.Add(2*time.Hour))
+	})
+}
+
+// Nothing rewrites the saved state while the detector is off, so a corrupt
+// entry that failed the load would keep spam reports off on every restart.
+func TestSpamSourceStartsWithCorruptSavedEntry(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const valid, corrupt = "198.51.100.14", "198.51.100.15"
+		base := time.Now()
+		first := base.Add(-2 * time.Hour)
+		saved, err := json.Marshal(store.SpamSource{Occasions: []time.Time{first}, Seen: first})
+		if err != nil {
+			t.Fatal(err)
+		}
+		dir := t.TempDir()
+		raw, err := bolt.Open(filepath.Join(dir, "csm.db"), 0o600, &bolt.Options{Timeout: time.Second})
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = raw.Update(func(tx *bolt.Tx) error {
+			b, berr := tx.CreateBucketIfNotExists([]byte("mail:spam_source"))
+			if berr != nil {
+				return berr
+			}
+			if perr := b.Put([]byte(valid), saved); perr != nil {
+				return perr
+			}
+			return b.Put([]byte(corrupt), []byte("{not json"))
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = raw.Close(); err != nil {
+			t.Fatal(err)
+		}
+		db, err := store.Open(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		prev := store.Global()
+		store.SetGlobal(db)
+		t.Cleanup(func() {
+			store.SetGlobal(prev)
+			_ = db.Close()
+		})
+
+		cfg := spamSourceConfig(t)
+		d := startSpamDaemon(t, cfg, &spamDNS{})
+		if d.spamSources.Load() == nil {
+			t.Fatal("one corrupt saved entry switched spam source detection off")
+		}
+		// The saved occasion is the first; this reject is the second.
+		eximAt(d, cfg, rejectMarker(valid), base)
+		wantSpamFinding(t, spamFindings(d), valid, base)
 	})
 }
 
