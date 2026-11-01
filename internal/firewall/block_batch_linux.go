@@ -206,8 +206,13 @@ func (e *Engine) verifiedRanges(members []BlockMember) []bool {
 
 // checkBlockMembersLocked answers every member against one snapshot. An
 // invalid member is refused alone: it takes no slot and names nothing a
-// later member could collide with.
-func (e *Engine) checkBlockMembersLocked(members []BlockMember, verified []bool, snap blockSnapshot, now time.Time) []BlockRefusal {
+// later member could collide with. With evicts the temporary set's
+// capacity applies: a member whose victim qualifies (evicts[i]) takes that
+// victim's slot, any other a free one, or it is refused set_full. The
+// complete result must fit the current limit even for a replacement. Without
+// it capacity is left to the apply, since the ledger claims victims only
+// when it reserves.
+func (e *Engine) checkBlockMembersLocked(members []BlockMember, verified []bool, snap blockSnapshot, now time.Time, evicts []bool) []BlockRefusal {
 	out := make([]BlockRefusal, len(members))
 	seenIP, seenAction := map[string]bool{}, map[string]bool{}
 	temp := snap.temp
@@ -216,14 +221,44 @@ func (e *Engine) checkBlockMembersLocked(members []BlockMember, verified []bool,
 		if out[i] != "" {
 			continue
 		}
-		if e.cfg.DenyTempIPLimit > 0 && temp >= e.cfg.DenyTempIPLimit {
+		switch {
+		case evicts == nil || (evicts[i] && (e.cfg.DenyTempIPLimit <= 0 || temp <= e.cfg.DenyTempIPLimit)):
+		case e.cfg.DenyTempIPLimit > 0 && temp >= e.cfg.DenyTempIPLimit:
 			out[i] = BlockRefusedFull
 			continue
+		default:
+			temp++
 		}
-		temp++
 		seenIP[m.IP], seenAction[m.Action] = true, true
 	}
 	e.ageExistingLocked(members, out, snap)
+	return out
+}
+
+// victimsLocked reports, per member, whether its victim is still the
+// admission block the ledger claimed, so the batch may remove it (spec
+// 5.5): a well-formed action at an address no member targets, named by no
+// earlier member, whose row there carries that action and expiry and
+// whose timed element snap proves live at that canonical address.
+func (e *Engine) victimsLocked(members []BlockMember, snap blockSnapshot) []bool {
+	out := make([]bool, len(members))
+	targets, taken := map[string]bool{}, map[string]bool{}
+	for _, m := range members {
+		targets[stateIPKey(m.IP)] = true
+	}
+	for i, m := range members {
+		v := m.Victim
+		if !admissionAction(v.Action) || v.ExpiresAt.IsZero() {
+			continue
+		}
+		key := stateIPKey(v.IP)
+		row, held := snap.blocked[key]
+		observed, live := snap.live[v.IP]
+		if targets[key] || taken[key] || !held || row.ActionID != v.Action || !row.ExpiresAt.Equal(v.ExpiresAt) || !snap.proves(row, observed, live) {
+			continue
+		}
+		out[i], taken[key] = true, true
+	}
 	return out
 }
 
@@ -318,7 +353,7 @@ func (e *Engine) CheckBlockBatchEffects(members []BlockMember) ([]BlockCheck, er
 		return nil, err
 	}
 	out := make([]BlockCheck, len(members))
-	for i, refusal := range e.checkBlockMembersLocked(members, verified, snap, snap.at) {
+	for i, refusal := range e.checkBlockMembersLocked(members, verified, snap, snap.at, nil) {
 		out[i] = BlockCheck{Refusal: refusal, Existing: snap.existing(members[i], refusal)}
 	}
 	return out, nil
@@ -576,7 +611,7 @@ func (e *Engine) ApplyBlockBatch(members []BlockMember) ([]BlockResult, error) {
 	encoded := make(map[int]time.Duration)
 	var run []int
 	var elems4, elems6 []nftables.SetElement
-	for i, refusal := range e.checkBlockMembersLocked(members, verified, snap, now) {
+	for i, refusal := range e.checkBlockMembersLocked(members, verified, snap, now, make([]bool, len(members))) {
 		if refusal != "" {
 			results[i] = BlockResult{Effect: BlockFailed, Refusal: refusal, Existing: snap.existing(members[i], refusal)}
 			continue

@@ -801,7 +801,8 @@ and after a restart. The batch rechecks, writes one
 intent with expiry instants stored in UTC, refreshes timeouts after the
 write, and uses one atomic transaction
 on a fresh socket with a two-second deadline. Exact-family readback proves
-each applied member's key and timed lifetime. Definitive kernel rejection
+each applied member's key and timed lifetime. Capacity is checked only at
+apply: a check before reservation never answers set_full. Definitive kernel rejection
 restores state; uncertain exchanges retain unknown rows. Unknown rows are
 marked unverified and excluded from counts and seeding. Expiry retains them
 until the owner retires the matching attempt. A failed state

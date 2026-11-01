@@ -17,11 +17,23 @@ const MaxBlockReasonBytes = 256
 
 // BlockMember is one timed full-address block an admission attempt may
 // apply: the attempt's ID, the canonical address, the reason written on
-// its row and the absolute expiry its element never outlives.
+// its row and the absolute expiry its element never outlives. Victim is
+// the admission block whose slot it takes, as the ledger claimed it; zero
+// when it takes a free slot.
 type BlockMember struct {
 	Action    string
 	IP        string
 	Reason    string
+	ExpiresAt time.Time
+	Victim    BlockVictim
+}
+
+// BlockVictim is an admission block a member removes to take its slot
+// (spec 5.6): its action, its canonical address and the absolute expiry
+// it was applied with.
+type BlockVictim struct {
+	Action    string
+	IP        string
 	ExpiresAt time.Time
 }
 
