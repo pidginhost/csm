@@ -953,3 +953,37 @@ func FuzzParseRspamdCounters(f *testing.F) {
 		}
 	})
 }
+
+func FuzzPostfixMilterFacts(f *testing.F) {
+	for _, seed := range []struct{ postconf, workers string }{
+		{"inet:127.0.0.1:11332\naccept\n52428800\n", proxyWorkers},
+		{"{inet:localhost:11332, default_action=accept}, unix:/run/x.sock\ntempfail\n0\n", `{"type": "rspamd_proxy", "bind_socket": ["*:11332", "/run/x.sock mode=0666"], "milter": 1}`},
+		{"inet:[::1]:11332\naccept\n10240000\n", `{"rspamd_proxy": {"bind_socket": "[::1]:11332", "milter": true, "count": 0}}`},
+		{"inet:127.0.0.1\naccept\n-1\n", `{"rspamd_proxy": {"bind_socket": 1}}`},
+		{"\n\n\n", ""},
+	} {
+		f.Add(seed.postconf, []byte(seed.workers))
+	}
+	f.Fuzz(func(t *testing.T, postconf string, workers []byte) {
+		milters, action, size, err := ParsePostconf(postconf)
+		if err != nil {
+			if milters != nil || action != "" || size != 0 {
+				t.Fatal("rejected postconf output returned values")
+			}
+		} else if size < 0 {
+			t.Fatalf("negative message_size_limit %d", size)
+		}
+		for _, m := range milters {
+			if m == "" || strings.ContainsAny(m, " \t\n,{}=") {
+				t.Fatalf("milter %q is not one address", m)
+			}
+		}
+		addrs, err := ProxyMilterAddrs(workers)
+		if err != nil && addrs != nil {
+			t.Fatal("rejected worker dump returned addresses")
+		}
+		if MilterWired(milters, addrs) && (len(milters) == 0 || len(addrs) == 0) {
+			t.Fatal("wired without a milter and a proxy address")
+		}
+	})
+}

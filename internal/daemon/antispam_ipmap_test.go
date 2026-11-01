@@ -32,7 +32,7 @@ func installTestIPMap(t *testing.T, cfg *config.Config, r reconcile.Reconciler) 
 			targets = append(targets, antispam.TargetFacts{Target: target, Missing: true, Parents: parents})
 		}
 		return antispam.HostFacts{
-			CPanel: true, MTAExim: true, SpamdDisabled: true,
+			Stack: antispam.StackExim, SpamdDisabled: true,
 			EximVersion:     antispam.CommandResult{Stdout: "Exim version 4.100.1\nSupport for: Content_Scanning\n"},
 			EximOptions:     antispam.CommandResult{Stdout: "no_prdr_enable\nchunking_advertise_hosts =\n"},
 			EximSettings:    antispam.CommandResult{Stdout: "message_size_limit = 50M\nlog_file_path = /var/log/exim_%slog\n"},

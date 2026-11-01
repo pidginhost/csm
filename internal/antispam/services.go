@@ -11,6 +11,9 @@ const (
 	EximUnit   = "exim.service"
 )
 
+// PostfixUnit is only read: CSM never changes postfix.
+const PostfixUnit = "postfix.service"
+
 // UnitShowArgs are the `systemctl` arguments the collector runs per unit.
 func UnitShowArgs(unit string) []string {
 	return []string{"show", "-p", "LoadState", "-p", "User", "-p", "Group", "-p", "CanReload", unit}
@@ -28,7 +31,8 @@ func ParseUnitShow(out string) map[string]string {
 }
 
 // checkServices applies spec section 6.2 item 1: CSM mutates only through
-// systemd-run, and both services must reload in place.
+// systemd-run, and the services it reloads must reload in place. Postfix,
+// which CSM only reads, must be running.
 func checkServices(f HostFacts) []Problem {
 	var out []Problem
 	add := func(sev Severity, format string, args ...any) {
@@ -37,10 +41,14 @@ func checkServices(f HostFacts) []Problem {
 	if f.SystemdRunErr != nil {
 		add(Temporary, "systemd-run is not available; CSM changes mail configuration only through it")
 	}
-	for _, s := range []struct {
+	reloaded := []struct {
 		unit string
 		show CommandResult
-	}{{RspamdUnit, f.RspamdService}, {EximUnit, f.EximService}} {
+	}{{RspamdUnit, f.RspamdService}, {EximUnit, f.EximService}}
+	if f.Stack == StackPostfix {
+		reloaded = reloaded[:1]
+	}
+	for _, s := range reloaded {
 		props := ParseUnitShow(s.show.Stdout)
 		switch {
 		case s.show.Err != nil:
@@ -51,6 +59,17 @@ func checkServices(f HostFacts) []Problem {
 			add(Definite, "%s cannot reload; CSM applies changes only by reload, never by restart", s.unit)
 		case props["CanReload"] != "yes":
 			add(Temporary, "systemctl show %s did not report a readable CanReload property", s.unit)
+		}
+	}
+	if f.Stack == StackPostfix {
+		props := ParseUnitShow(f.PostfixService.Stdout)
+		switch {
+		case f.PostfixService.Err != nil:
+			add(Temporary, "systemctl show %s failed; check systemd", PostfixUnit)
+		case props["LoadState"] != "loaded":
+			add(Temporary, "%s is not loaded; check that it is installed", PostfixUnit)
+		case props["ActiveState"] != "active":
+			add(Temporary, "%s is not active; check the postfix service", PostfixUnit)
 		}
 	}
 	return out

@@ -53,8 +53,7 @@ type Layout struct {
 
 type collector struct {
 	layout   Layout
-	cpanel   func() bool
-	eximMTA  func() bool
+	stack    func() antispam.MailStack
 	run      func(ctx context.Context, name string, args ...string) antispam.CommandResult
 	lookPath func(string) (string, error)
 	uid      func(name string) (int, error)
@@ -92,8 +91,7 @@ func live() collector {
 		},
 		redisProbe:     RedisProbe,
 		controllerGet:  ControllerGet,
-		cpanel:         func() bool { return platform.Detect().IsCPanel() },
-		eximMTA:        func() bool { return platform.DetectMTA() == platform.MTAExim },
+		stack:          DetectStack,
 		run:            runCommand,
 		lookPath:       exec.LookPath,
 		uid:            lookupUID,
@@ -104,6 +102,22 @@ func live() collector {
 		readGroup:      func() ([]byte, error) { return readAccountFile("/etc/group") },
 		readPasswd:     func() ([]byte, error) { return readAccountFile("/etc/passwd") },
 	}
+}
+
+// DetectStack reports the mail stack antispam integrates with: Exim on a
+// cPanel host, Postfix on a host without cPanel, else none.
+func DetectStack() antispam.MailStack {
+	return stackFor(platform.Detect().IsCPanel(), platform.DetectMTA())
+}
+
+func stackFor(cpanel bool, mta platform.MTAKind) antispam.MailStack {
+	switch {
+	case cpanel && mta == platform.MTAExim:
+		return antispam.StackExim
+	case !cpanel && mta == platform.MTAPostfix:
+		return antispam.StackPostfix
+	}
+	return antispam.StackNone
 }
 
 // RspamdGroup is rspamd's service group, or -1 when unknown (a root-started
@@ -120,12 +134,16 @@ func Collect(ctx context.Context, socket string) antispam.HostFacts {
 }
 
 func (c collector) collect(ctx context.Context, socket string) antispam.HostFacts {
-	f := antispam.HostFacts{CPanel: c.cpanel(), MTAExim: c.eximMTA(), MonitoredLog: platform.EximMainLog}
-	f.EximVersion = c.run(ctx, "exim", "-bV")
-	f.EximOptions = c.run(ctx, "exim", "-bP", "prdr_enable", "chunking_advertise_hosts")
-	f.EximSettings = c.run(ctx, "exim", append([]string{"-bP"}, antispam.EximSettingNames()...)...)
-	for _, probe := range antispam.NamedListProbes() {
-		f.NamedLists = append(f.NamedLists, c.run(ctx, "exim", "-C", c.layout.GeneratedConf, "-be", probe))
+	f := antispam.HostFacts{Stack: c.stack()}
+	exim := f.Stack == antispam.StackExim
+	if exim {
+		f.MonitoredLog = platform.EximMainLog
+		f.EximVersion = c.run(ctx, "exim", "-bV")
+		f.EximOptions = c.run(ctx, "exim", "-bP", "prdr_enable", "chunking_advertise_hosts")
+		f.EximSettings = c.run(ctx, "exim", append([]string{"-bP"}, antispam.EximSettingNames()...)...)
+		for _, probe := range antispam.NamedListProbes() {
+			f.NamedLists = append(f.NamedLists, c.run(ctx, "exim", "-C", c.layout.GeneratedConf, "-be", probe))
+		}
 	}
 	f.RspamdVersion = c.run(ctx, "rspamd", "--version")
 	f.RspamadmVersion = c.run(ctx, "rspamadm", "--version")
@@ -138,15 +156,25 @@ func (c collector) collect(ctx context.Context, socket string) antispam.HostFact
 	f.RspamdLog = rspamdLog(f.RspamdConfig)
 	f.IPMap = fileFacts(c.layout.IPMap)
 	f.RspamdService = c.run(ctx, "systemctl", antispam.UnitShowArgs(antispam.RspamdUnit)...)
-	f.EximService = c.run(ctx, "systemctl", antispam.UnitShowArgs(antispam.EximUnit)...)
+	switch f.Stack {
+	case antispam.StackExim:
+		f.EximService = c.run(ctx, "systemctl", antispam.UnitShowArgs(antispam.EximUnit)...)
+	case antispam.StackPostfix:
+		// -x expands $name references, so the values are the ones postfix uses.
+		f.Postconf = c.run(ctx, "postconf", "-x", "-h", "smtpd_milters", "milter_default_action", "message_size_limit")
+		f.PostfixService = c.run(ctx, "systemctl", "show", "-p", "LoadState", "-p", "ActiveState", antispam.PostfixUnit)
+		f.RspamdWorkers = c.run(ctx, "rspamadm", "configdump", "-j", "worker")
+	}
 	_, f.SystemdRunErr = c.lookPath("systemd-run")
 
-	f.GeneratedConf, f.GeneratedErr = readText(c.layout.GeneratedConf)
-	if f.LocalConf, f.LocalErr = readText(c.layout.LocalConf); errors.Is(f.LocalErr, fs.ErrNotExist) {
-		f.LocalConf, f.LocalErr = "", nil
+	if exim {
+		f.GeneratedConf, f.GeneratedErr = readText(c.layout.GeneratedConf)
+		if f.LocalConf, f.LocalErr = readText(c.layout.LocalConf); errors.Is(f.LocalErr, fs.ErrNotExist) {
+			f.LocalConf, f.LocalErr = "", nil
+		}
+		f.SpamdDisabled, f.SpamdDisabledErr = exists(c.layout.SpamdDisabled)
+		f.GlobalEnable, f.GlobalEnableErr = exists(c.layout.GlobalEnable)
 	}
-	f.SpamdDisabled, f.SpamdDisabledErr = exists(c.layout.SpamdDisabled)
-	f.GlobalEnable, f.GlobalEnableErr = exists(c.layout.GlobalEnable)
 	f.ResolvConf, f.ResolvConfErr = readText(c.layout.ResolvConf)
 	servers, err := antispam.Nameservers([]byte(f.RspamdOptions.Stdout), f.ResolvConf)
 	if f.RspamdOptions.Err == nil && err == nil && slices.ContainsFunc(servers, antispam.ResolvedStub) {
@@ -154,19 +182,21 @@ func (c collector) collect(ctx context.Context, socket string) antispam.HostFact
 	}
 
 	settings := map[string]string{}
-	if f.EximSettings.Err == nil {
-		settings = antispam.ParseEximOptions(f.EximSettings.Stdout)
-	}
-	name, known := settings["system_filter"]
-	switch {
-	case !known && f.EximSettings.Err == nil:
-		f.SystemFilterErr = errors.New("exim -bP did not report system_filter")
-	case name != "" && (!filepath.IsAbs(name) || strings.Contains(name, "$")):
-		// The collector cannot reproduce Exim's delivery-time expansion
-		// or working directory.
-		f.SystemFilterErr = errors.New("system_filter is not a literal absolute path")
-	case name != "":
-		f.SystemFilter, f.SystemFilterErr = readText(name)
+	if exim {
+		if f.EximSettings.Err == nil {
+			settings = antispam.ParseEximOptions(f.EximSettings.Stdout)
+		}
+		name, known := settings["system_filter"]
+		switch {
+		case !known && f.EximSettings.Err == nil:
+			f.SystemFilterErr = errors.New("exim -bP did not report system_filter")
+		case name != "" && (!filepath.IsAbs(name) || strings.Contains(name, "$")):
+			// The collector cannot reproduce Exim's delivery-time expansion
+			// or working directory.
+			f.SystemFilterErr = errors.New("system_filter is not a literal absolute path")
+		case name != "":
+			f.SystemFilter, f.SystemFilterErr = readText(name)
+		}
 	}
 	f.Targets = Targets(c.layout.Targets)
 	f.Record = c.record()

@@ -55,8 +55,7 @@ func testCollector(d string, run *fakeRun) collector {
 			Record:        filepath.Join(d, "installed.json"),
 			ResolvConf:    filepath.Join(d, "resolv.conf"),
 		},
-		cpanel:         func() bool { return true },
-		eximMTA:        func() bool { return true },
+		stack:          func() antispam.MailStack { return antispam.StackExim },
 		run:            run.run,
 		lookPath:       func(string) (string, error) { return "/usr/bin/systemd-run", nil },
 		uid:            lookup(map[string]int{"_rspamd": 979, "mailnull": 47}),
@@ -105,8 +104,8 @@ func TestCollectReadsEveryFact(t *testing.T) {
 
 	f := c.collect(context.Background(), sock)
 
-	if !f.CPanel || !f.MTAExim || f.MonitoredLog != platform.EximMainLog {
-		t.Errorf("platform facts %t %t %q", f.CPanel, f.MTAExim, f.MonitoredLog)
+	if f.Stack != antispam.StackExim || f.MonitoredLog != platform.EximMainLog {
+		t.Errorf("platform facts %q %q", f.Stack, f.MonitoredLog)
 	}
 	if f.EximVersion.Stdout != "Exim version 4.100.1 #2\n" || f.EximOptions.Stdout != "no_prdr_enable\n" ||
 		!strings.Contains(f.EximSettings.Stdout, "message_size_limit = 50M") || f.RspamdOptions.Stdout != `{"max_message": 62914560}` ||
@@ -154,6 +153,88 @@ func TestCollectReadsEveryFact(t *testing.T) {
 		"systemctl show -p LoadState -p User -p Group -p CanReload exim.service")
 	if !slices.Equal(run.calls, want) {
 		t.Errorf("commands\n got %q\nwant %q", run.calls, want)
+	}
+}
+
+func TestCollectPostfixFacts(t *testing.T) {
+	d := t.TempDir()
+	// Exim's files exist, so reading them on Postfix would show.
+	write(t, filepath.Join(d, "exim.conf"), "generated\n")
+	write(t, filepath.Join(d, "spamddisable"), "")
+	mkdir(t, filepath.Join(d, "rspamd"))
+	sock := serve(t, filepath.Join(d, "rspamd"), pong)
+
+	const (
+		postconf = "postconf -x -h smtpd_milters milter_default_action message_size_limit"
+		postfix  = "systemctl show -p LoadState -p ActiveState postfix.service"
+		workers  = "rspamadm configdump -j worker"
+		rspamd   = "systemctl show -p LoadState -p User -p Group -p CanReload rspamd.service"
+	)
+	run := &fakeRun{results: map[string]antispam.CommandResult{
+		rspamd:   {Stdout: "User=_rspamd\nLoadState=loaded\nCanReload=yes\n"},
+		postconf: {Stdout: "inet:127.0.0.1:11332\naccept\n52428800\n"},
+		postfix:  {Stdout: "LoadState=loaded\nActiveState=active\n"},
+		workers:  {Stdout: `{"rspamd_proxy": {"bind_socket": "localhost:11332", "milter": true}}`},
+	}}
+	c := testCollector(d, run)
+	c.stack = func() antispam.MailStack { return antispam.StackPostfix }
+
+	f := c.collect(context.Background(), sock)
+
+	if f.Stack != antispam.StackPostfix || f.Postconf != run.results[postconf] || f.PostfixService != run.results[postfix] || f.RspamdWorkers != run.results[workers] {
+		t.Errorf("Postfix facts %q %+v %+v %+v", f.Stack, f.Postconf, f.PostfixService, f.RspamdWorkers)
+	}
+	if f.MonitoredLog != "" || f.GeneratedConf != "" || f.GeneratedErr != nil || f.SpamdDisabled || f.SystemFilterErr != nil ||
+		f.Socket.EximUID != -1 || f.Socket.EximGID != -1 {
+		t.Errorf("Exim facts collected on Postfix: log %q, config %q %v, spamd %t, filter %v, exim ids %d %d",
+			f.MonitoredLog, f.GeneratedConf, f.GeneratedErr, f.SpamdDisabled, f.SystemFilterErr, f.Socket.EximUID, f.Socket.EximGID)
+	}
+	if f.Socket.Missing || f.Socket.PingErr != nil || f.Socket.RspamdUID != 979 {
+		t.Errorf("socket %+v", f.Socket)
+	}
+	want := []string{"rspamd --version", "rspamadm --version", "rspamadm configdump -j options",
+		"rspamadm configdump -j actions", "rspamadm configdump -m", "rspamadm configdump -j phishing",
+		"rspamadm configdump -j rbl", "rspamadm configdump -j", rspamd, postconf, postfix, workers}
+	if !slices.Equal(run.calls, want) {
+		t.Errorf("commands\n got %q\nwant %q", run.calls, want)
+	}
+}
+
+// On Postfix too, failed probes are temporary: a broken probe must never
+// remove an installed integration.
+func TestCollectPostfixFailedProbesStayTemporary(t *testing.T) {
+	c := testCollector(t.TempDir(), &fakeRun{})
+	c.stack = func() antispam.MailStack { return antispam.StackPostfix }
+	c.lookPath = func(string) (string, error) { return "", errors.New("not found") }
+
+	problems := antispam.CheckHost(c.collect(context.Background(), "/csm-antispam-test-missing/s"))
+
+	if len(problems) == 0 {
+		t.Fatal("no problems on a host where every probe failed")
+	}
+	for _, p := range problems {
+		if p.Severity != antispam.Temporary {
+			t.Errorf("%s is %d (%s), want temporary", p.Code, p.Severity, p.Detail)
+		}
+	}
+}
+
+func TestStackFor(t *testing.T) {
+	for _, tc := range []struct {
+		cpanel bool
+		mta    platform.MTAKind
+		want   antispam.MailStack
+	}{
+		{true, platform.MTAExim, antispam.StackExim},
+		{true, platform.MTAPostfix, antispam.StackNone},
+		{true, platform.MTAUnknown, antispam.StackNone},
+		{false, platform.MTAPostfix, antispam.StackPostfix},
+		{false, platform.MTAExim, antispam.StackNone},
+		{false, platform.MTAUnknown, antispam.StackNone},
+	} {
+		if got := stackFor(tc.cpanel, tc.mta); got != tc.want {
+			t.Errorf("stackFor(%t, %q) = %q, want %q", tc.cpanel, tc.mta, got, tc.want)
+		}
 	}
 }
 

@@ -149,17 +149,44 @@ func checkMessageSize(settings map[string]string, options CommandResult) []Probl
 		add(Definite, "Exim's message_size_limit is unlimited; set a finite limit so rspamd can scan every accepted message")
 		return out
 	}
-	if options.Err != nil {
-		add(Temporary, "rspamadm configdump options failed; check rspamd")
-		return out
-	}
-	maxMessage, err := MaxMessage([]byte(options.Stdout))
-	switch {
-	case err != nil:
-		add(Temporary, "rspamadm configdump did not report a readable max_message")
-	case maxMessage != 0 && maxMessage < limit+sizeHeadroom:
+	if maxMessage, ok := rspamdMaxMessage(options, add); ok && maxMessage != 0 && maxMessage < limit+sizeHeadroom {
 		add(Definite, "rspamd max_message is %d bytes, below Exim's message_size_limit of %d bytes plus %d bytes for the envelope Exim adds; raise max_message in /etc/rspamd/local.d/options.inc",
 			maxMessage, limit, sizeHeadroom)
 	}
 	return out
+}
+
+// checkPostfixMessageSize warns when postfix accepts messages rspamd does
+// not scan. The proxy worker passes them on, so mail keeps flowing; raising
+// the limit is the operator's call. A limit of 0 is unlimited on both sides.
+func checkPostfixMessageSize(limit int64, options CommandResult) []Problem {
+	var out []Problem
+	add := func(sev Severity, format string, args ...any) {
+		out = append(out, Problem{Code: CodeMessageSize, Severity: sev, Detail: fmt.Sprintf(format, args...)})
+	}
+	maxMessage, ok := rspamdMaxMessage(options, add)
+	switch {
+	case !ok || maxMessage == 0:
+	case limit == 0:
+		add(Warning, "postfix's message_size_limit is unlimited and rspamd max_message is %d bytes; rspamd does not scan larger messages", maxMessage)
+	case maxMessage < limit:
+		add(Warning, "rspamd max_message is %d bytes, below postfix's message_size_limit of %d bytes; rspamd does not scan larger messages; raise max_message in /etc/rspamd/local.d/options.inc",
+			maxMessage, limit)
+	}
+	return out
+}
+
+// rspamdMaxMessage reads rspamd's loaded max_message, or reports why it
+// cannot.
+func rspamdMaxMessage(options CommandResult, add func(Severity, string, ...any)) (int64, bool) {
+	if options.Err != nil {
+		add(Temporary, "rspamadm configdump options failed; check rspamd")
+		return 0, false
+	}
+	maxMessage, err := MaxMessage([]byte(options.Stdout))
+	if err != nil {
+		add(Temporary, "rspamadm configdump did not report a readable max_message")
+		return 0, false
+	}
+	return maxMessage, true
 }
