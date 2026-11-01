@@ -584,35 +584,66 @@ func TestPassRendersForTheCollectedStack(t *testing.T) {
 	}
 }
 
-// On Postfix, returning to dry run restores the operator's actions.conf, so
-// its copy's warning says that instead of asking the operator to move the
-// settings elsewhere. Other copies, and cPanel's actions.conf, keep the
-// general advice.
-func TestPassReplacedActionsOnPostfix(t *testing.T) {
-	actions := antispam.Replacement{Path: antispam.ActionsPath, Backup: antispam.ReplacedDir + "/a"}
-	headers := antispam.Replacement{Path: antispam.MilterHeadersPath, Backup: antispam.ReplacedDir + "/b"}
-	for _, stack := range []antispam.MailStack{antispam.StackPostfix, antispam.StackExim} {
-		r := (&fakeHost{}).reconciler()
-		r.Collect = func(context.Context, string) antispam.HostFacts {
-			f := goodFeedFacts()
-			f.Stack = stack
-			return f
-		}
-		r.Replaced = func() ([]antispam.Replacement, error) { return []antispam.Replacement{actions, headers}, nil }
-		out := r.Pass(context.Background(), desired(true))
-		details := map[string]string{}
-		for _, f := range out.Findings {
-			if f.Check == CheckFileReplaced {
-				details[f.DedupKey] = f.Details
+// The replaced-file warning says what CSM will do with the copy, and must be
+// true in every state. On Postfix, removal restores the newest copy of each
+// file over CSM's own, and returning to dry run does so for actions.conf;
+// an older copy is never restored. cPanel restores nothing (spec 5.5).
+func TestPassReplacedFileAdvice(t *testing.T) {
+	dir := antispam.ReplacedDir + "/"
+	newestActions := antispam.Replacement{Path: antispam.ActionsPath, Backup: dir + "20260102T030405Z_actions"}
+	olderActions := antispam.Replacement{Path: antispam.ActionsPath, Backup: dir + "20260101T030405Z_actions"}
+	headers := antispam.Replacement{Path: antispam.MilterHeadersPath, Backup: dir + "20260101T030405Z_headers"}
+	const (
+		disabling = "puts this copy back when antispam is disabled"
+		dryRun    = "returning antispam to dry run"
+		older     = "restores only the newest"
+		move      = "Move any settings"
+	)
+	for _, tc := range []struct {
+		name    string
+		stack   antispam.MailStack
+		enabled bool
+		rep     antispam.Replacement
+		has     []string
+		lacks   []string
+	}{
+		{"postfix actions.conf", antispam.StackPostfix, true, newestActions, []string{disabling, dryRun}, []string{older, move}},
+		{"postfix actions.conf, disabled", antispam.StackPostfix, false, newestActions, []string{disabling, dryRun}, []string{older, move}},
+		{"postfix other file", antispam.StackPostfix, true, headers, []string{disabling}, []string{dryRun, older, move}},
+		{"postfix older copy", antispam.StackPostfix, true, olderActions, []string{older}, []string{disabling, dryRun, move}},
+		{"exim", antispam.StackExim, true, newestActions, []string{move}, []string{disabling, dryRun, older}},
+		{"exim, disabled", antispam.StackExim, false, headers, []string{move}, []string{disabling, dryRun, older}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := (&fakeHost{}).reconciler()
+			facts := func() antispam.HostFacts {
+				f := goodFeedFacts()
+				f.Stack = tc.stack
+				return f
 			}
-		}
-		restores := stack == antispam.StackPostfix
-		if got := details[actions.Backup]; strings.Contains(got, "dry run puts it back") != restores || strings.Contains(got, "Move any settings") == restores {
-			t.Errorf("stack %q: actions.conf copy says %q", stack, got)
-		}
-		if got := details[headers.Backup]; !strings.Contains(got, "Move any settings") || strings.Contains(got, "dry run") {
-			t.Errorf("stack %q: milter_headers.conf copy says %q", stack, got)
-		}
+			r.Collect = func(context.Context, string) antispam.HostFacts { return facts() }
+			r.Installed = facts
+			r.Replaced = func() ([]antispam.Replacement, error) {
+				return []antispam.Replacement{newestActions, olderActions, headers}, nil
+			}
+			out := r.Pass(context.Background(), desired(tc.enabled))
+			got := ""
+			for _, f := range out.Findings {
+				if f.Check == CheckFileReplaced && f.DedupKey == tc.rep.Backup {
+					got = f.Details
+				}
+			}
+			for _, want := range tc.has {
+				if !strings.Contains(got, want) {
+					t.Errorf("%q lacks %q", got, want)
+				}
+			}
+			for _, bad := range tc.lacks {
+				if strings.Contains(got, bad) {
+					t.Errorf("%q says %q", got, bad)
+				}
+			}
+		})
 	}
 }
 

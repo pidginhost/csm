@@ -566,11 +566,18 @@ When a change fails, CSM restores your file with its original owner, group
 and permissions. It deletes that copy only after the restore is durable,
 even if another file could not be restored. Copies made for replacements
 that never happened are removed too. If a restore cannot be confirmed, its
-copy remains for recovery. Disabling antispam deletes CSM's files and does
-not restore the copies. The warnings describe past replacements, including
-after antispam is disabled. On a Postfix host, returning to dry run puts
-your `actions.conf` back from its newest copy and deletes that copy; see
-[Dry run and enforce](#dry-run-and-enforce).
+copy remains for recovery.
+
+On a cPanel host, disabling antispam deletes CSM's files and does not
+restore the copies. On a Postfix host, disabling antispam puts the newest
+copy of each file back over CSM's own file and deletes that copy, and
+returning to dry run does the same for `actions.conf`, see
+[Dry run and enforce](#dry-run-and-enforce). Older copies of the same file
+stay, and CSM never restores over a file it did not write. A restored file
+gets the owner and mode CSM's file had, which after a takeover are your
+original ones. If someone loosened CSM's file, the copy comes back owned by
+root with mode 0644. Each warning says what CSM will do with its copy. The
+warnings describe past replacements, including after antispam is disabled.
 
 ## Rolling it out
 
@@ -701,7 +708,9 @@ then rejects at `reject_score` and adds headers at `tag_score`, and never
 rejects or tags authenticated, local, `infra_ips` or exempt mail.
 
 Going back to dry run puts your `actions.conf` back from its newest copy,
-with the owner and mode it had, deletes that copy and clears its warning.
+deletes that copy and clears its warning. The file gets the owner and mode
+CSM's file had, which after a takeover are your original ones, or root
+ownership and mode 0644 when CSM's file was loosened.
 Your thresholds decide again. Without a copy CSM deletes its own file, and
 rspamd's built-in actions apply, which reject too.
 
@@ -739,7 +748,9 @@ CSM writes the rspamd files and the completion record listed under
 [What CSM writes](#what-csm-writes), `actions.conf` only while it enforces,
 plus `milter_headers.conf` in `/etc/rspamd/local.d` and `csm_scope.lua` in
 `/etc/rspamd/lua.local.d`. It writes no Exim or Roundcube file. Each change
-reloads rspamd only.
+reloads rspamd only. Disabling antispam removes these files and puts back
+the newest copy of each file CSM replaced, see
+[Replaced files](#replaced-files).
 
 Learning from Junk folders is not available on Postfix hosts yet. With
 `learning.enabled: true` CSM keeps learning off there and reports an
@@ -768,6 +779,9 @@ integration in place and reports a temporary `platform` precondition.
    for scan-error findings.
 4. Set `dry_run: false`. Check every reject for a week. On a confirmed false
    positive, return to dry run: CSM puts your own `actions.conf` back.
+
+To roll back, set `enabled: false`. CSM removes its rspamd files, puts back
+the files it replaced and reloads rspamd.
 
 ## rspamd admin interface
 
@@ -1192,7 +1206,7 @@ reports server readiness; the running learner adds the reasons from
 |---|---|---|
 | `antispam_precondition` | Warning | A condition above is not met. The message names the cause, such as `rspamd_socket` or `spamassassin_enabled`. A temporary cause keeps an installed integration; a definite one removes it when that is safe. |
 | `antispam_apply_failed` | Warning, or Critical when the previous state could not be confirmed | An install, update or removal failed at the named step, or pending changes could not be canceled. |
-| `antispam_file_replaced` | Warning | CSM replaced your own file at one of its paths and kept a copy. Deleting the copy clears it. See [Replaced files](#replaced-files). |
+| `antispam_file_replaced` | Warning | CSM replaced your own file at one of its paths and kept a copy. Deleting the copy clears it, and so does CSM putting the copy back on a Postfix host. See [Replaced files](#replaced-files). |
 | `antispam_rspamd_down` | Warning | Three probes of the scan socket in a row failed. CSM probes every 20 seconds while antispam is enabled. |
 | `antispam_rspamd_recovered` | Warning | Two probes in a row succeeded after an outage. |
 | `antispam_scan_error` | Warning | The mail server logged a failed scan. One finding covers every failure until a scan succeeds. |

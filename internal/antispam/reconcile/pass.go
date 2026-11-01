@@ -259,9 +259,13 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) (out Outcome) {
 		}
 		if replaced, err := r.Replaced(); err == nil {
 			out.Checks = append(out.Checks, CheckFileReplaced)
+			// Names start with the UTC time, so the newest copy sorts last.
+			newest := map[string]string{}
 			for _, rep := range replaced {
-				restores := f.Stack == antispam.StackPostfix && rep.Path == antispam.ActionsPath
-				out.Findings = append(out.Findings, replacedFinding(rep, restores, now))
+				newest[rep.Path] = max(newest[rep.Path], rep.Backup)
+			}
+			for _, rep := range replaced {
+				out.Findings = append(out.Findings, replacedFinding(rep, f.Stack == antispam.StackPostfix, newest[rep.Path] == rep.Backup, now))
 			}
 		}
 	}()

@@ -176,12 +176,20 @@ func milterEffect(action string) string {
 }
 
 // replacedFinding reports one operator file CSM backed up and replaced,
-// until the operator deletes the backup. restores is set for a Postfix
-// host's actions.conf, which a return to dry run puts back.
-func replacedFinding(rep antispam.Replacement, restores bool, now time.Time) alert.Finding {
-	advice := ". Move any settings you still need into a file CSM does not manage, then delete the backup to clear this warning."
-	if restores {
-		advice = ". Returning antispam to dry run puts it back and clears this warning; delete the backup if you do not want it back."
+// until the backup is gone. On a Postfix host removal puts the newest copy
+// of each file back over CSM's own, and so does a return to dry run for
+// actions.conf; cPanel restores nothing (spec 5.5).
+func replacedFinding(rep antispam.Replacement, postfix, newest bool, now time.Time) alert.Finding {
+	var advice string
+	switch {
+	case !postfix:
+		advice = ". Move any settings you still need into a file CSM does not manage, then delete the backup to clear this warning."
+	case !newest:
+		advice = ". CSM restores only the newest copy of a file, so this older one stays. Copy it back by hand if you need it, or delete it to clear this warning."
+	case rep.Path == antispam.ActionsPath:
+		advice = ". If CSM's own file is still there, CSM puts this copy back when antispam is disabled, and also on returning antispam to dry run, which clears this warning. Delete the backup if you do not want it back."
+	default:
+		advice = ". If CSM's own file is still there, CSM puts this copy back when antispam is disabled, which clears this warning. Delete the backup if you do not want it back."
 	}
 	return alert.Finding{
 		Severity:  alert.Warning,

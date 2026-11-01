@@ -11,7 +11,9 @@ import (
 // Remove takes out CSM's integration (spec section 6.4): Exim first, then
 // CSM's rspamd files, then the record. Foreign local.d files stay. A stopped
 // service is not reloaded, and the scan socket is not needed. Postfix mail
-// never passes through Exim, so there it removes rspamd files only.
+// never passes through Exim, so there it removes rspamd files only, and it
+// puts back the operator files CSM took over: rspamd enforces there, and
+// its built-in actions and greylisting would change the host's mail flow.
 func (h *Host) Remove() antispam.Result {
 	t := h.begin()
 	defer t.cancel()
@@ -32,6 +34,11 @@ func (h *Host) Remove() antispam.Result {
 	changes, err := plan(targets, nil)
 	if err != nil {
 		return failed(StepPreconditions, err)
+	}
+	if !exim {
+		if err = t.restoreCopies(changes, func(string) bool { return true }); err != nil {
+			return failed(StepPreconditions, err)
+		}
 	}
 	rspamdChanges, eximChanges, roundcubeChanges := split(changes)
 	if _, _, err = t.readRecord(); err != nil {
@@ -97,6 +104,9 @@ func (h *Host) Remove() antispam.Result {
 	roundcube, rcErr := t.roundcube(roundcubeChanges)
 	if rcErr != nil {
 		return t.fail(StepRoundcube, rcErr)
+	}
+	if err := t.consumeRestored(); err != nil {
+		return t.fail(StepComplete, err)
 	}
 	if err := t.removeRecord(); err != nil {
 		return t.fail(StepComplete, err)

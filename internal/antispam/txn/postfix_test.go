@@ -418,27 +418,40 @@ func TestApplyPostfixDryRunRestoresActions(t *testing.T) {
 	}
 }
 
-// The restore writes through actions.conf like any file CSM owns, so a
-// loosened file is refused before any change, and the copy stays.
-func TestApplyPostfixDryRunRestoreNeedsSafeTarget(t *testing.T) {
+// A CSM actions.conf someone loosened still goes on the switch to dry run,
+// as removal would delete it: the copy comes back in its place, root-owned
+// 0644, because the loosened owner and mode cannot be trusted. The switch
+// never fails on it and leaves CSM's thresholds enforcing.
+func TestApplyPostfixDryRunRestoresOverLoosenedFile(t *testing.T) {
 	f := postfixFake(t)
-	writeTest(t, f.root+actionsPath, foreignActions, 0o644)
+	writeTest(t, f.root+actionsPath, foreignActions, 0o640)
 	wantOK(t, f.host().Apply(enforce()))
 	if err := os.Chmod(f.root+actionsPath, 0o666); err != nil {
 		t.Fatal(err)
 	}
-	before := f.state()
 	f.reset()
 	dry := enforce()
 	dry.DryRun = true
-	r := f.host().Apply(dry)
-	if r.OK || r.FailedStep != StepPreconditions || r.Rollback != antispam.RollbackNone {
-		t.Fatalf("result %+v", r)
+	wantOK(t, f.host().Apply(dry))
+	if f.file(actionsPath) != foreignActions {
+		t.Fatalf("actions.conf = %q", f.file(actionsPath))
 	}
-	if len(f.calls) != 0 || fmt.Sprint(f.state()) != fmt.Sprint(before) {
-		t.Fatalf("refused restore ran %v or changed files", f.calls)
+	wantMode(t, f.root+actionsPath, 0o644, 0)
+	wantBackups(t, f, nil)
+}
+
+// wantMode checks p's mode and, when the test runs as root and can set
+// owners, its root owner and group gid.
+func wantMode(t *testing.T, p string, perm os.FileMode, gid int) {
+	t.Helper()
+	info, err := os.Stat(p)
+	if err != nil {
+		t.Fatal(err)
 	}
-	wantBackups(t, f, map[string]string{actionsPath: foreignActions})
+	st := info.Sys().(*syscall.Stat_t)
+	if info.Mode().Perm() != perm || os.Geteuid() == 0 && (st.Uid != 0 || int(st.Gid) != gid) {
+		t.Errorf("%s has mode %v, owner %d:%d; want %v, 0:%d", p, info.Mode(), st.Uid, st.Gid, perm, gid)
+	}
 }
 
 // A restore that fails puts CSM's file back and keeps the copy, also once
@@ -506,6 +519,100 @@ func TestRemoveRefusesUnknownStack(t *testing.T) {
 	}
 	if len(f.calls) != 0 || fmt.Sprint(f.state()) != fmt.Sprint(before) {
 		t.Fatalf("refused remove ran %v or changed files", f.calls)
+	}
+}
+
+// Disabling antispam on Postfix gives each file CSM took over back to the
+// operator, with its bytes, owner and mode, and consumes the copies; CSM's
+// other files go as before. rspamd enforces there, so leaving its built-in
+// actions and greylisting behind would change the host's mail flow.
+func TestRemovePostfixRestoresCopies(t *testing.T) {
+	f := postfixFake(t)
+	gid := 0
+	if os.Geteuid() == 0 {
+		gid = 12
+	}
+	originals := map[string]struct {
+		content string
+		perm    os.FileMode
+	}{
+		actionsPath: {foreignActions, 0o640},
+		antispam.RspamdLocalDir + "/greylist.conf": {"enabled = true;\n", 0o600},
+		antispam.MilterHeadersPath:                 {"use = [\"x-spamd-bar\"];\n", 0o644},
+	}
+	for p, o := range originals {
+		writeTest(t, f.root+p, o.content, o.perm)
+		if os.Geteuid() == 0 {
+			if err := os.Chown(f.root+p, 0, gid); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	wantOK(t, f.host().Apply(enforce()))
+	if len(f.replaced()) != len(originals) {
+		t.Fatalf("takeover kept %v", f.replaced())
+	}
+	f.reset()
+	wantOK(t, f.host().Remove())
+	for _, target := range antispam.MutationTargets(antispam.StackPostfix) {
+		o, restored := originals[target.Path]
+		want := "<absent>"
+		if restored {
+			want = o.content
+			wantMode(t, f.root+target.Path, o.perm, gid)
+		}
+		if got := f.file(target.Path); got != want {
+			t.Errorf("%s = %q after remove, want %q", target.Path, got, want)
+		}
+	}
+	wantBackups(t, f, nil)
+	if f.file(antispam.RecordPath) != "<absent>" || f.count("systemctl reload rspamd.service") != 1 {
+		t.Errorf("record %q, calls %v", f.file(antispam.RecordPath), f.calls)
+	}
+	noExim(t, f)
+}
+
+// A removal that fails after restoring puts CSM's files back and keeps
+// every copy, also once the copies were consumed and only the record
+// removal failed.
+func TestRemovePostfixRestoreRollsBack(t *testing.T) {
+	for name, tc := range map[string]struct {
+		step  string
+		setup func(*fakeHost, *Host)
+	}{
+		"reload": {StepRspamdReload, func(f *fakeHost, _ *Host) { f.fail["systemctl reload rspamd.service"] = []int{1} }},
+		"record removal": {StepComplete, func(f *fakeHost, h *Host) {
+			injected := false
+			h.replace = func(p string, want, next fileState) error {
+				if !injected && p == f.root+antispam.RecordPath && !next.exists {
+					injected = true
+					if len(f.replaced()) != 0 {
+						f.t.Error("the restored copies were not consumed before the record went")
+					}
+					return errors.New("test failure")
+				}
+				return replaceFile(p, want, next)
+			}
+		}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := postfixFake(t)
+			writeTest(t, f.root+actionsPath, foreignActions, 0o640)
+			writeTest(t, f.root+antispam.MilterHeadersPath, "use = [];\n", 0o644)
+			wantOK(t, f.host().Apply(enforce()))
+			before := f.state()
+			f.reset()
+			h := f.host()
+			tc.setup(f, h)
+			r := h.Remove()
+			if r.OK || r.FailedStep != tc.step || r.Rollback != antispam.RollbackVerified {
+				t.Fatalf("result %+v", r)
+			}
+			if after := f.state(); fmt.Sprint(after) != fmt.Sprint(before) {
+				t.Errorf("rollback left %v, want %v", after, before)
+			}
+			wantBackups(t, f, map[string]string{actionsPath: foreignActions, antispam.MilterHeadersPath: "use = [];\n"})
+		})
 	}
 }
 

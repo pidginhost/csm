@@ -169,8 +169,8 @@ type tx struct {
 	// backups maps each copy to whether its original still needs a durable
 	// restore. A failed replacement leaves its copy eligible for cleanup.
 	backups map[string]bool
-	// restored is the copy a Postfix dry run puts back, if any.
-	restored *restoredCopy
+	// restored are the copies a Postfix transaction puts back.
+	restored []*restoredCopy
 }
 
 func (h *Host) begin() *tx {
@@ -877,8 +877,11 @@ func (t *tx) rollback() (state string, rollbackErr error) {
 			t.backups[w.backup] = false
 		}
 	}
-	// CSM's actions.conf is back, so the operator's copy must be too.
-	if r := t.restored; r != nil && r.consumed {
+	// CSM's files are back, so the operator's copies must be too.
+	for _, r := range t.restored {
+		if !r.consumed {
+			continue
+		}
 		if err := publishCopy(r.path, r.content); err != nil {
 			errs = append(errs, fmt.Errorf("restoring backup %s: %w", strings.TrimPrefix(r.path, t.h.root), err))
 		} else {
