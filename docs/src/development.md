@@ -289,8 +289,12 @@ capacity notice for any assessed tier in a live ledger. A preview ledger
 raises it only for Critical work. A pending block that evicts names its
 victim in its effect record and its intent; the victim's record names the
 block that claimed it and stops holding a slot once that block's
-application is verified. A definite failure releases the victim claim;
-unknown outcomes keep it through retirement until the victim expires.
+application is verified with the victim's removal proven. A verified
+block that never removed its victim releases the claim; an unproven
+removal is an unknown outcome, never a verified one. A definite failure
+releases the victim claim; unknown outcomes keep it through retirement
+until the victim expires. Startup drops the state row of a victim whose
+eviction the ledger verified.
 Expiry can remove either record first. A late definite outcome still ends
 the claim using the retained intent. A reservation that expired without
 running releases its claim. Only records still holding slots contribute

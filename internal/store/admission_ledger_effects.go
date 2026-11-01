@@ -130,11 +130,12 @@ func loadEffect(tx *bolt.Tx, a admission.AttemptRecord) (admission.EffectRecord,
 
 // markApplied records the verified application of attempt a's block at
 // admission time, with the ceiling's elapsed time as the proof a minimum
-// hold needs, and the eviction of the victim it claimed: the victim's
-// record gives up its slot and stays, evicted, until its expiry. An
+// hold needs, and what it did to the victim it claimed (v): a proven
+// removal evicts the victim, whose record gives up its slot and stays,
+// evicted, until its expiry; a spared victim returns to the pool. An
 // attempt without a record (a preview, or one reserved by an earlier
 // build) holds no slot.
-func (q *queueTx) markApplied(a admission.AttemptRecord) error {
+func (q *queueTx) markApplied(a admission.AttemptRecord, v admission.VictimOutcome) error {
 	rec, key, found, err := loadEffect(q.tx, a)
 	if err != nil || !found {
 		return err
@@ -144,7 +145,7 @@ func (q *queueTx) markApplied(a admission.AttemptRecord) error {
 		return err
 	}
 	if rec.Victim != (admission.EffectRef{}) {
-		if err = q.endClaim(rec.Victim, rec.Action, true); err != nil {
+		if err = q.endClaim(rec.Victim, rec.Action, v == admission.VictimRemoved); err != nil {
 			return err
 		}
 	}
@@ -415,9 +416,10 @@ func effectsStatus(tx *bolt.Tx, out *admission.EffectsStatus) error {
 }
 
 // A swept evictor still owns its execution intent until finishAttempt
-// deletes it. End that claim before deletion; ordinary records use the
-// markApplied/releaseSlot paths instead.
-func (q *queueTx) endSweptClaim(a admission.AttemptRecord, verified bool) error {
+// deletes it. End that claim before deletion as markApplied would (v for
+// a verified block); ordinary records use the markApplied/releaseSlot
+// paths instead.
+func (q *queueTx) endSweptClaim(a admission.AttemptRecord, verified bool, v admission.VictimOutcome) error {
 	_, _, found, err := loadEffect(q.tx, a)
 	if err != nil || found {
 		return err
@@ -426,7 +428,7 @@ func (q *queueTx) endSweptClaim(a admission.AttemptRecord, verified bool) error 
 	if err != nil || in.Victim == (admission.Victim{}) {
 		return err
 	}
-	return q.endClaim(admission.EffectRef{Action: in.Victim.Action, ExpiresAt: in.Victim.ExpiresAt}, a.Attempt.ID, verified)
+	return q.endClaim(admission.EffectRef{Action: in.Victim.Action, ExpiresAt: in.Victim.ExpiresAt}, a.Attempt.ID, verified && v == admission.VictimRemoved)
 }
 
 // Both records can expire independently. While either remains it must
