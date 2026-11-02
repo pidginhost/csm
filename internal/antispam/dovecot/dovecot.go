@@ -128,6 +128,14 @@ func (d Dovecot) Snapshot(ctx context.Context) (Snapshot, error) {
 			lookup = append(lookup, name)
 		}
 	}
+	if conf.conditional() {
+		// No such lookup is trusted: its users stay present, unwatched.
+		for _, name := range lookup {
+			user, _, _ := canonical(name)
+			snap.Skips = append(snap.Skips, Skip{User: user, Reason: SkipLocation})
+		}
+		lookup = nil
+	}
 	for batch := range slices.Chunk(lookup, batchSize) {
 		found, derr := d.details(ctx, conf, batch)
 		if derr != nil {
@@ -378,6 +386,19 @@ func hasVariable(s string) bool {
 	return false
 }
 
+// conditional reports a location in the lookup template that uses %{if}.
+// doveadm prints nothing, and still exits 0, for a user whose %{if} fails
+// to expand, so such a lookup cannot vouch for one record per user.
+func (c config) conditional() bool {
+	return slices.ContainsFunc(append([]string{c.location}, c.locs...), usesIf)
+}
+
+// usesIf matches %{if} as Dovecot does: in any case and after modifiers
+// such as %L.
+func usesIf(loc string) bool {
+	return strings.Contains(strings.ToLower(loc), "{if")
+}
+
 // template has doveadm print, per user, one tab-separated line: %u, uid,
 // gid, home, the userdb mail and mail_plugins fields, every location
 // expanded for that user, then %u again. doveadm escapes nothing, and %u is
@@ -614,8 +635,9 @@ func parseLocation(loc, home string) (root string, utf8Names bool, reason string
 		root = home + root[1:]
 	}
 	// doveadm expands every location but a userdb mail field, which Dovecot
-	// expands later: a % left there is a variable, not a path.
-	if !absClean(root) || strings.Contains(root, "%") {
+	// expands later: a % left there is a variable, not a path, and a
+	// conditional may put any parameter anywhere.
+	if !absClean(root) || strings.Contains(root, "%") || usesIf(loc) {
 		return "", false, SkipLocation
 	}
 	return filepath.Clean(root), utf8Names, ""

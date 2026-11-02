@@ -818,9 +818,11 @@ The [learning prerequisites](#prerequisites) apply, and also:
    way: another driver such as `mdbox` or `mbox`, `LAYOUT=fs`, or the `zlib`
    or `mail_crypt` plugin. It also skips a mailbox whose uid is 0, whose
    name, home or mail location it cannot use, such as a location with
-   `DIRNAME` or `MAILBOXDIR`, or whose userdb lookup fails. Skipped
-   mailboxes are counted by reason in one `mailboxes_skipped` warning that
-   names none of them; learning goes on for the others.
+   `DIRNAME`, `MAILBOXDIR` or a `%{if}` condition, or whose userdb lookup
+   fails. A `%{if}` in `mail_location` or in the location of a namespace
+   with a Junk folder skips every mailbox. Skipped mailboxes are counted by
+   reason in one `mailboxes_skipped` warning that names none of them;
+   learning goes on for the others.
 4. **A Redis of its own.** Learning never uses rspamd's Redis on Postfix,
    because other rspamd modules share it. Run a second Redis instance and
    set `learning.redis_socket` to its socket; without it CSM reports

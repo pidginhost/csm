@@ -491,12 +491,39 @@ func TestSnapshotUnsupportedLocations(t *testing.T) {
 		"maildir:/srv/mail/../../etc":       SkipLocation,
 		"maildir:":                          SkipLocation,
 		"maildir:/srv/vmail/%d/%n":          SkipLocation,
+		// Dovecot expands a userdb mail field later; CSM cannot tell
+		// where a conditional puts anything.
+		"maildir:~/Maildir:INDEX=%{IF;%d;eq;example.com;/a;/b}": SkipLocation,
+		"maildir:~/Maildir:CONTROL=%L{if;%n;eq;x;~/c;~/d}":      SkipLocation,
 	} {
 		h := newHost(t, "alice@example.com")
 		h.set("alice@example.com", 4, mail)
 		snap, err := h.snapshot()
 		if err != nil || snap.Mailboxes != nil || !reflect.DeepEqual(reasons(snap), map[string]string{"alice@example.com": reason}) {
 			t.Errorf("mail %q: snapshot %+v, err %v", mail, snap, err)
+		}
+	}
+}
+
+// doveadm prints nothing, and still exits 0, for a user whose %{if} fails
+// to expand, so a lookup whose template holds one cannot vouch for one
+// record per user. A global or namespace location with %{if} is never
+// looked up: every user is skipped as location, present but not watched.
+func TestSnapshotConditionalLocationSkipsEveryMailbox(t *testing.T) {
+	for _, c := range []struct{ from, to string }{
+		{"mail_location = maildir:~/Maildir\n", "mail_location = maildir:~/Maildir:INDEX=%{if;%d;eq;example.com;/var/idx;/srv/idx}\n"},
+		{"mail_location = maildir:~/Maildir\n", "mail_location = maildir:~/Maildir:CONTROL=%L{IF;%n;gt;5;~/c;~/d}\n"},
+		{"  location = \n  mailbox \"Courrier", "  location = maildir:~/Maildir:INDEX=%{If;%u;=~;^a;/a;/b}\n  mailbox \"Courrier"},
+	} {
+		h := newHost(t, "alice@example.com", "bob@example.com", "dave")
+		h.edit(c.from, c.to)
+		snap, err := h.snapshot()
+		want := map[string]string{"alice@example.com": SkipLocation, "bob@example.com": SkipLocation, "dave": SkipLocation}
+		if err != nil || !snap.Complete || snap.Mailboxes != nil || !reflect.DeepEqual(reasons(snap), want) {
+			t.Errorf("%s: snapshot %+v, err %v", c.to, snap, err)
+		}
+		if h.batches != nil || h.listings != 2 {
+			t.Errorf("%s: lookups %q, %d listings", c.to, h.batches, h.listings)
 		}
 	}
 }
