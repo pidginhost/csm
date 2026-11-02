@@ -100,6 +100,63 @@ func TestBlockAdmissionSnapshotListsNoImportWhileActionsAreUnproven(t *testing.T
 	}
 }
 
+// Member checks age both the row's lease and its sampled kernel lifetime.
+// A wall step must not hide a live import or list one past its lease.
+func TestBlockAdmissionSnapshotAgesImportProofs(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		delay    time.Duration
+		wallStep time.Duration
+		alias    bool
+		listed   bool
+	}{
+		{name: "slow check", delay: 3 * time.Second, listed: true},
+		{name: "wall back", delay: 3 * time.Second, wallStep: -time.Hour, listed: true},
+		{name: "expired during check", delay: time.Hour},
+		{name: "wall forward", wallStep: time.Hour},
+		{name: "operator alias expires", delay: 3 * time.Second, alias: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newBatchFixture(t, FirewallState{})
+			row := f.importRow("203.0.113.70", time.Hour)
+			rows := []BlockedEntry{row}
+			imported, unclaimed := 1, 0
+			if tc.alias {
+				rows = append(rows, BlockedEntry{IP: "::ffff:203.0.113.70", Reason: "operator", ExpiresAt: f.at.Add(2 * time.Second)})
+				imported, unclaimed = 0, 1
+			}
+			writeEngineStateFile(t, f.e.statePath, FirewallState{Blocked: rows})
+			f.live[row.IP] = time.Hour
+			clock := &leaseSteps{wall: f.at, elapsed: f.at}
+			f.e.leaseClock, f.e.expiryClock = clock.read, func() time.Time { return clock.wall }
+			checks := 0
+			f.e.localAddrsLookup = func() ([]string, error) {
+				checks++
+				clock.advance(tc.delay)
+				clock.step(tc.wallStep)
+				return nil, nil
+			}
+			got, err := f.e.BlockAdmissionSnapshot([]BlockMember{f.member("act_new", "203.0.113.71")}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if checks != 1 || len(got.Answers) != 1 || got.Answers[0].Refusal != "" {
+				t.Fatalf("checks %d, answers %+v; want one successful check", checks, got.Answers)
+			}
+			if got.Temporary != 1 || got.Imported != imported || got.Admission != 0 || got.Unclaimed != unclaimed {
+				t.Fatalf("import proof changed occupancy: %+v", got)
+			}
+			if tc.listed {
+				if len(got.Imports) != 1 || got.Imports[0] != importOf(row) {
+					t.Fatalf("imports %+v; want the live import %+v", got.Imports, importOf(row))
+				}
+			} else if len(got.Imports) != 0 {
+				t.Fatalf("imports %+v; want no eligible import", got.Imports)
+			}
+		})
+	}
+}
+
 // newImportFixture is a batch fixture whose temporary set of two is full:
 // an import and an operator tempban, which is never a victim.
 func newImportFixture(t *testing.T) (*batchFixture, BlockedEntry) {
@@ -232,6 +289,60 @@ func TestRetireBlockActionsKnowsImportsByName(t *testing.T) {
 	}
 	if rows := f.storedRows(t); len(rows) != 3 || rows[row.IP] != row || rows[operator.IP] != operator || rows[unstamped.IP] != unstamped {
 		t.Fatalf("rows %v; want the live import and both unstamped rows kept", rows)
+	}
+}
+
+// Aliases with different names can prove the same live element. They must
+// not retire one another and leave that element without a retained row.
+func TestRetireBlockActionsKeepsLiveImportAliases(t *testing.T) {
+	for _, aliasIP := range []string{"203.0.113.60", "::ffff:203.0.113.60", "::ffff:203.0.113.60%eth0"} {
+		for _, reverse := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/reverse=%t", aliasIP, reverse), func(t *testing.T) {
+				f := newBatchFixture(t, FirewallState{})
+				row := f.importRow("203.0.113.60", time.Hour)
+				alias := row
+				alias.IP, alias.Source = aliasIP, "other automatic source"
+				rows := []BlockedEntry{row, alias}
+				if reverse {
+					rows[0], rows[1] = rows[1], rows[0]
+				}
+				writeEngineStateFile(t, f.e.statePath, FirewallState{Blocked: rows})
+				f.live[row.IP] = time.Hour
+				actions := []BlockAction{{Action: blockEffectID(rows[0]), IP: row.IP}, {Action: blockEffectID(rows[1]), IP: row.IP}}
+				clear, err := f.e.RetireBlockActions(actions)
+				if err != nil || fmt.Sprint(clear) != "[false false]" {
+					t.Fatalf("live aliases retired one another: %v, %v", clear, err)
+				}
+				if got := readRawFirewallState(t, f.e).Blocked; fmt.Sprint(got) != fmt.Sprint(rows) {
+					t.Fatalf("retirement changed live rows: %+v; want %+v", got, rows)
+				}
+				delete(f.live, row.IP)
+				clear, err = f.e.RetireBlockActions(actions)
+				if err != nil || fmt.Sprint(clear) != "[true true]" {
+					t.Fatalf("retiring absent aliases: %v, %v", clear, err)
+				}
+				if got := readRawFirewallState(t, f.e).Blocked; len(got) != 0 {
+					t.Fatalf("retirement kept absent imports: %+v", got)
+				}
+			})
+		}
+	}
+}
+
+// A replacement with a different proven lifetime still releases the old
+// import; only the live replacement keeps its row.
+func TestRetireBlockActionsRetiresReplacedImport(t *testing.T) {
+	f := newBatchFixture(t, FirewallState{})
+	old := f.importRow("203.0.113.60", time.Hour)
+	replacement := f.importRow("::ffff:203.0.113.60", 2*time.Hour)
+	writeEngineStateFile(t, f.e.statePath, FirewallState{Blocked: []BlockedEntry{old, replacement}})
+	f.live[old.IP] = 2 * time.Hour
+	clear, err := f.e.RetireBlockActions([]BlockAction{{Action: blockEffectID(old), IP: old.IP}, {Action: blockEffectID(replacement), IP: old.IP}})
+	if err != nil || fmt.Sprint(clear) != "[true false]" {
+		t.Fatalf("retiring replaced import: %v, %v", clear, err)
+	}
+	if got := readRawFirewallState(t, f.e).Blocked; len(got) != 1 || got[0] != replacement {
+		t.Fatalf("retirement changed replacement: %+v; want %+v", got, replacement)
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"slices"
 )
 
 // RemoveBlockActionRows removes, in one state write, the rows the named
@@ -57,11 +58,12 @@ func (e *Engine) RemoveBlockActionRows(actions []string) (int, error) {
 	return removed, nil
 }
 
-// RetireBlockActions reports, for each unknown attempt the owner would
-// retire after its expiry, whether nothing it may have applied can remain
-// in the kernel (spec 5.4): its address has no element, or the element
-// belongs to a verified row of another action. Each clear attempt's own row
-// (same action ID and address) goes in one state write, under the same
+// RetireBlockActions reports, for each expired unknown attempt or evicted
+// import, whether nothing it may have applied can remain in the kernel
+// (spec 5.4): its address has no element, or the element belongs to a
+// verified row of another action. An import stays held while its own row
+// proves the live element, even if an alias does too. Each clear row
+// (same action ID or import name and address) goes in one state write, under the same
 // engine lock as the snapshot, so no batch writes the address in between.
 // An element still there otherwise keeps the attempt held, as after a
 // forward wall step that made its expiry look past, and so does an address
@@ -109,7 +111,9 @@ func (e *Engine) RetireBlockActions(actions []BlockAction) ([]bool, error) {
 	out := make([]bool, len(actions))
 	gone := make(map[BlockAction]bool, len(actions))
 	for i, m := range canonical {
-		if unread[i] {
+		// Aliased imports can prove the same element under different
+		// names. They cannot retire each other while their own proof holds.
+		if unread[i] || (importName(m.Action) && slices.Contains(owners[m.IP], m.Action)) {
 			continue
 		}
 		_, live := snap.live[m.IP]

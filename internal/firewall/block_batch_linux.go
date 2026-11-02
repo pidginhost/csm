@@ -310,9 +310,13 @@ func (snap blockSnapshot) importRows() map[string]BlockedEntry {
 
 // imports lists the import rows whose temporary element snap proves live,
 // soonest expiry first, then name, at most MaxBlockImports.
-func (snap blockSnapshot) imports() []BlockImport {
+func (snap blockSnapshot) imports(at, elapsed time.Time) []BlockImport {
+	rows := snap.importRows()
+	// Age proof without reclassifying occupants: an alias expiring during
+	// member checks must not promote an unclaimed occupant into the list.
+	snap.at, snap.elapsed = at, elapsed
 	var out []BlockImport
-	for key, row := range snap.importRows() {
+	for key, row := range rows {
 		observed, live := snap.live[key]
 		if !live || !observed.temporary || !snap.proves(row, observed, live) {
 			continue
@@ -466,7 +470,10 @@ func (e *Engine) BlockAdmissionSnapshot(members []BlockMember, shadow []string) 
 	}
 	snap.occupants(&out, e.expiryNow())
 	if e.blockActionsUnproven == nil {
-		out.Imports = snap.imports()
+		// Import proof must age the row and the kernel sample to the same
+		// instant, including time spent checking members and any wall step.
+		at := e.leaseNowLocked()
+		out.Imports = snap.imports(at, e.lease.at)
 	}
 	for _, ip := range shadow {
 		if _, present := snap.live[ip]; present {
