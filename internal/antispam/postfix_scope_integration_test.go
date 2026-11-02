@@ -40,6 +40,10 @@ func TestPostfixScopeAgainstRspamd(t *testing.T) {
 		ScopeNets: []netip.Prefix{netip.MustParsePrefix("198.51.100.0/24"), netip.MustParsePrefix("2001:db8:1::/48")},
 	}
 	remote := []string{"--ip", "203.0.113.5"}
+	forgedAuth := []string{
+		"forged.example.net; dkim=pass header.d=forged.example.net",
+		"forged.example.org; spf=pass smtp.mailfrom=forged@example.org",
+	}
 	rcpt := func(addrs ...string) []string {
 		var out []string
 		for _, a := range addrs {
@@ -61,20 +65,24 @@ func TestPostfixScopeAgainstRspamd(t *testing.T) {
 		r := startScopeRspamd(t, s)
 		for _, c := range []scopeCase{
 			{name: "remote", score: 20, forged: "No, forged", args: join(remote, rcpt("user@example.com")),
-				action: "reject", record: "on reject", strip: true, status: "Yes, score=", has: "MISSING_DATE"},
+				action: "reject", record: "on reject", strip: true, status: "Yes, score=", has: "MISSING_DATE", authHeaders: forgedAuth},
 			{name: "authenticated", score: 20, forged: "No, forged", args: join(remote, []string{"--user", "sender@example.net"}, rcpt("user@example.com")),
-				action: "no action", strip: true},
+				action: "no action", strip: true, authHeaders: forgedAuth, keepAuth: true},
 			{name: "local", score: 20, forged: "No, forged", args: join([]string{"--ip", "127.0.0.1"}, rcpt("user@example.com")),
-				action: "no action", strip: true},
-			{name: "infra ipv4", score: 20, args: join([]string{"--ip", "198.51.100.7"}, rcpt("user@example.com")), action: "no action"},
-			{name: "infra ipv6", score: 20, args: join([]string{"--ip", "2001:db8:1::5"}, rcpt("user@example.com")), action: "no action"},
+				action: "no action", strip: true, authHeaders: forgedAuth, keepAuth: true},
+			{name: "local ipv6", score: 20, forged: "No, forged", args: join([]string{"--ip", "::1"}, rcpt("user@example.com")),
+				action: "no action", strip: true, authHeaders: forgedAuth, keepAuth: true},
+			{name: "infra ipv4", score: 20, args: join([]string{"--ip", "198.51.100.7"}, rcpt("user@example.com")), action: "no action", authHeaders: forgedAuth},
+			{name: "infra ipv6", score: 20, args: join([]string{"--ip", "2001:db8:1::5"}, rcpt("user@example.com")), action: "no action", authHeaders: forgedAuth},
 			{name: "exempt mailbox", score: 20, args: join(remote, rcpt("exempt@example.com")),
-				action: "no action", record: "off unfiltered"},
+				action: "no action", record: "off unfiltered", authHeaders: forgedAuth},
 			{name: "exempt domain", score: 20, args: join(remote, rcpt("a@example.org", "B@Example.ORG")),
-				action: "no action", record: "off unfiltered"},
+				action: "no action", record: "off unfiltered", authHeaders: forgedAuth},
 			{name: "exempt and normal", score: 20, args: join(remote, rcpt("exempt@example.com", "user@example.com")),
-				action: "reject", record: "on reject"},
+				action: "reject", record: "on reject", authHeaders: forgedAuth},
 			{name: "forged yes", score: -40, forged: "Yes, forged", args: join(remote, rcpt("user@example.com")),
+				action: "no action", record: "on none", strip: true, status: "No, score=", authHeaders: forgedAuth},
+			{name: "remote without auth headers", score: -40, args: join(remote, rcpt("user@example.com")),
 				action: "no action", record: "on none", strip: true, status: "No, score="},
 		} {
 			r.check(t, s, c)
@@ -86,17 +94,17 @@ func TestPostfixScopeAgainstRspamd(t *testing.T) {
 		allowed, quiet := []string{"--from", "sender@allowed.example.net"}, []string{"--from", "sender@quiet.example.net"}
 		for _, c := range []scopeCase{
 			{name: "operator allow", score: 20, args: join(remote, allowed, rcpt("user@example.com")),
-				action: "no action", record: "on reject"},
+				action: "no action", record: "on reject", authHeaders: forgedAuth},
 			{name: "operator rule", score: 20, args: join(remote, quiet, rcpt("user@example.com")),
-				action: "reject", record: "on reject", lacks: "MISSING_DATE", limits: map[string]float64{"add header": 3}, kept: true},
+				action: "reject", record: "on reject", lacks: "MISSING_DATE", limits: map[string]float64{"add header": 3}, kept: true, authHeaders: forgedAuth},
 			{name: "operator rule, authenticated", score: 20, forged: "No, forged", args: join(remote, quiet, []string{"--user", "sender@example.net"}, rcpt("user@example.com")),
-				action: "no action", strip: true, lacks: "MISSING_DATE", lifted: true, kept: true},
+				action: "no action", strip: true, lacks: "MISSING_DATE", lifted: true, kept: true, authHeaders: forgedAuth, keepAuth: true},
 			{name: "operator rule, local", score: 20, args: join([]string{"--ip", "127.0.0.1"}, quiet, rcpt("user@example.com")),
-				action: "no action", lacks: "MISSING_DATE", lifted: true, kept: true},
+				action: "no action", lacks: "MISSING_DATE", lifted: true, kept: true, authHeaders: forgedAuth, keepAuth: true},
 			{name: "operator netblock, infra", score: 20, args: join([]string{"--ip", "198.51.100.7"}, rcpt("user@example.com")),
-				action: "no action", lacks: "MISSING_DATE", lifted: true, kept: true},
+				action: "no action", lacks: "MISSING_DATE", lifted: true, kept: true, authHeaders: forgedAuth},
 			{name: "operator rule, exempt", score: 20, args: join(remote, quiet, rcpt("exempt@example.com")),
-				action: "no action", record: "off unfiltered", lacks: "MISSING_DATE", lifted: true, kept: true},
+				action: "no action", record: "off unfiltered", lacks: "MISSING_DATE", lifted: true, kept: true, authHeaders: forgedAuth},
 		} {
 			r.check(t, s, c)
 		}
@@ -109,10 +117,14 @@ func TestPostfixScopeAgainstRspamd(t *testing.T) {
 		s.DryRun, s.RejectScore, s.TagScore = true, 100, 10
 		r := startScopeRspamd(t, s)
 		for _, c := range []scopeCase{
-			{name: "remote", score: 50, args: join(remote, rcpt("user@example.com")), action: "reject", record: "on tag"},
-			{name: "exempt mailbox", score: 50, args: join(remote, rcpt("exempt@example.com")), action: "reject", record: "off unfiltered"},
+			{name: "remote", score: 50, args: join(remote, rcpt("user@example.com")), action: "reject", record: "on tag", authHeaders: forgedAuth},
+			{name: "exempt mailbox", score: 50, args: join(remote, rcpt("exempt@example.com")), action: "reject", record: "off unfiltered", authHeaders: forgedAuth},
+			{name: "remote without auth headers", score: -40, args: join(remote, rcpt("user@example.com")),
+				action: "no action", record: "on none", strip: true, status: "No, score="},
 			{name: "authenticated", score: -40, forged: "Yes, forged", args: join(remote, []string{"--user", "sender@example.net"}, rcpt("user@example.com")),
-				action: "no action", strip: true},
+				action: "no action", strip: true, authHeaders: forgedAuth, keepAuth: true},
+			{name: "local ipv6", score: -40, forged: "Yes, forged", args: join([]string{"--ip", "::1"}, rcpt("user@example.com")),
+				action: "no action", strip: true, authHeaders: forgedAuth, keepAuth: true},
 		} {
 			r.check(t, s, c)
 		}
@@ -134,6 +146,10 @@ type scopeCase struct {
 	// and status is empty.
 	strip  bool
 	status string
+	// authHeaders are inbound Authentication-Results values. keepAuth asks
+	// for no additions or removals; otherwise every copy must be replaced.
+	authHeaders []string
+	keepAuth    bool
 	// has and lacks name a symbol the reply must or must not carry.
 	has, lacks string
 	// limits are action thresholds rspamd must report.
@@ -337,6 +353,9 @@ func (r *scopeRspamd) check(t *testing.T, s Settings, c scopeCase) {
 	r.scans++
 	qid := fmt.Sprintf("CSMSCOPE%02d", r.scans)
 	msg := fmt.Sprintf("From: sender@example.net\r\nTo: user@example.com\r\nSubject: scope test\r\nX-Test-Score: %d\r\n", c.score)
+	for _, header := range c.authHeaders {
+		msg += "Authentication-Results: " + header + "\r\n"
+	}
 	if c.forged != "" {
 		msg += "X-Spam-Status: " + c.forged + "\r\n"
 	}
@@ -376,6 +395,30 @@ func (r *scopeRspamd) check(t *testing.T, s Settings, c scopeCase) {
 		t.Errorf("%s: milter adds X-Spam-Status %q, want %q...", c.name, status.Value, c.status)
 	case c.status == "" && c.strip && added:
 		t.Errorf("%s: milter adds X-Spam-Status %q to mail CSM does not score", c.name, status.Value)
+	}
+
+	// Mail from the internet gets the host's own Authentication-Results and
+	// loses any copy it arrived with. Authenticated and local mail keep
+	// theirs and get none, so no login name reaches an outbound header.
+	auth, arAdded := reply.Milter.Add["Authentication-Results"]
+	arRemove, arRemoved := reply.Milter.Remove["Authentication-Results"]
+	if c.keepAuth {
+		if arAdded || arRemoved {
+			t.Errorf("%s: milter changes Authentication-Results on authenticated or local mail: %s", c.name, out)
+		}
+	} else {
+		if !arAdded || strings.TrimSpace(auth.Value) == "" {
+			t.Errorf("%s: milter adds no Authentication-Results value: %s", c.name, out)
+		}
+		if !arRemoved || arRemove != 0 {
+			t.Errorf("%s: milter does not remove every inbound Authentication-Results: %s", c.name, out)
+		}
+		if strings.Contains(auth.Value, "forged.example.") {
+			t.Errorf("%s: milter repeats forged Authentication-Results: %q", c.name, auth.Value)
+		}
+	}
+	if strings.Contains(auth.Value, "smtp.auth=") {
+		t.Errorf("%s: Authentication-Results exposes an authenticated login: %q", c.name, auth.Value)
 	}
 
 	if c.lifted {

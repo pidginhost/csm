@@ -7,11 +7,12 @@ import (
 )
 
 // milter_headers.conf adds X-Spam-Status, which learning reads, and strips
-// inbound copies so a sender cannot forge it. It leaves X-Spam alone: the
-// proxy worker's own X-Spam: Yes is what the host's sieve files into Junk.
+// inbound copies so a sender cannot forge it. It adds Authentication-Results
+// for the receiving side. It leaves X-Spam alone: the proxy worker's own
+// X-Spam: Yes is what the host's sieve files into Junk.
 func TestRenderPostfixMilterHeaders(t *testing.T) {
 	const want = "# csm-managed-version: 1\n" +
-		"use = [\"x-spam-status\"];\n" +
+		"use = [\"x-spam-status\", \"authentication-results\"];\n" +
 		"remove = { \"X-Spam-Status\" = 0; };\n"
 	for _, dry := range []bool{false, true} {
 		files, err := RenderPostfix(defaults(dry))
