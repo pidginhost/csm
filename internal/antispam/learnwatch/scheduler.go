@@ -644,13 +644,18 @@ func (r *accountRun) open(k FolderKey, sub string) (*Folder, error) {
 }
 
 // owner is the UID the files of k must belong to: the account's, or the
-// userdb uid of a Postfix mailbox, never its reporter id. Every folder of
-// a Postfix run is one of r.junk's.
+// userdb uid of a Postfix mailbox, never its reporter id. A Postfix folder
+// that is not one of r.junk's gets -1, which owns no file, so it is refused
+// as unsafe.
 func (r *accountRun) owner(k FolderKey) int {
 	if r.w.cfg.Postfix == nil {
 		return ownerUID(r.a)
 	}
-	return ownerUID(Account{UID: r.junk[k]})
+	uid, ok := r.junk[k]
+	if !ok {
+		return -1
+	}
+	return ownerUID(Account{UID: uid})
 }
 
 // eligible rechecks the Spam Filters switch. An opt-out cancels the

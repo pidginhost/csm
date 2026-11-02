@@ -465,6 +465,28 @@ func TestSchedulerPostfixSkippedMailboxKeepsState(t *testing.T) {
 	}
 }
 
+// A Postfix folder opens only as one of its reporter's mailboxes, owned by
+// that mailbox's uid. A key the registry did not give the run is refused as
+// unsafe, never owner-checked as uid 0's.
+func TestSchedulerPostfixUnknownFolderRefused(t *testing.T) {
+	f := newPostfixWatch(t, antispam.ReporterDomain, "alice@example.com")
+	m := f.boxes["alice@example.com"]
+	k := FolderKey{UID: f.id("alice@example.com"), Domain: m.Domain, Box: m.User, Folder: m.Junk[0]}
+	r := &accountRun{w: f.w, a: Account{UID: k.UID}, junk: map[FolderKey]int{k: m.UID}}
+	known, err := r.open(k, "new")
+	if err != nil {
+		t.Fatalf("known folder: %v", err)
+	}
+	_ = known.Close()
+	r.junk = map[FolderKey]int{}
+	if unknown, err := r.open(k, "new"); !errors.Is(err, ErrUnsafePath) {
+		if unknown != nil {
+			_ = unknown.Close()
+		}
+		t.Fatalf("unknown folder: err %v", err)
+	}
+}
+
 // OpenJunk pins the mail root, refuses links anywhere on the way, a folder
 // that is not Maildir++ and a root another uid owns. A missing folder is
 // only absent.
