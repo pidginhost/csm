@@ -12,7 +12,6 @@ func mcpBase() *Config {
 	cfg.WebUI.Listen = "0.0.0.0:9443"
 	cfg.WebUI.Tokens = []WebUIToken{{Name: "admin", Token: strings.Repeat("a", 48), Scope: "admin"}}
 	cfg.MCP.Enabled = true
-	cfg.MCP.Listen = DefaultMCPListen
 	cfg.MCP.Tokens = []MCPToken{{Name: "agent", Token: strings.Repeat("b", 48)}}
 	return cfg
 }
@@ -61,40 +60,15 @@ func TestMCPValidationNeedsUsableToken(t *testing.T) {
 	}
 }
 
-func TestMCPValidationWarnsOffLoopbackAndShortToken(t *testing.T) {
+func TestMCPValidationWarnsShortToken(t *testing.T) {
 	cfg := mcpBase()
-	cfg.MCP.Listen = "0.0.0.0:9444"
 	cfg.MCP.Tokens[0].Token = "short"
 	errs, warns := mcpResultsByLevel(cfg)
 	if len(errs) != 0 {
 		t.Fatalf("errors %v", errs)
 	}
-	joined := strings.Join(warns, "\n")
-	if !strings.Contains(joined, "off the loopback") || !strings.Contains(joined, "guessable") {
+	if len(warns) != 1 || !strings.Contains(warns[0], "guessable") {
 		t.Fatalf("warnings %v", warns)
-	}
-}
-
-func TestMCPValidationListenForms(t *testing.T) {
-	cfg := mcpBase()
-	cfg.MCP.Listen = "unix:/run/csm/mcp.sock"
-	if errs, _ := mcpResultsByLevel(cfg); len(errs) != 0 {
-		t.Fatalf("unix socket: %v", errs)
-	}
-	if err := validateMCPTokens(cfg); err != nil {
-		t.Fatalf("unix socket hard validation: %v", err)
-	}
-	cfg.MCP.Listen = "unix:relative.sock"
-	if err := validateMCPTokens(cfg); err == nil || !strings.Contains(err.Error(), "absolute") {
-		t.Fatalf("relative socket accepted: %v", err)
-	}
-	cfg.MCP.Listen = "nonsense"
-	if errs, _ := mcpResultsByLevel(cfg); len(errs) != 1 || !strings.Contains(errs[0], "host:port") {
-		t.Fatalf("bad listen: %v", errs)
-	}
-	cfg.MCP.Listen = cfg.WebUI.Listen
-	if errs, _ := mcpResultsByLevel(cfg); len(errs) == 0 {
-		t.Fatal("same address as webui accepted")
 	}
 }
 
@@ -152,17 +126,11 @@ mcp:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.MCP.Listen != DefaultMCPListen {
-		t.Errorf("listen default = %q", cfg.MCP.Listen)
-	}
 	red := Redact(cfg)
 	if red.MCP.Tokens[0].Token != RedactedValue {
 		t.Errorf("mcp token not redacted: %q", red.MCP.Tokens[0].Token)
 	}
 	if cfg.MCP.Tokens[0].Token == RedactedValue {
 		t.Error("Redact modified the original")
-	}
-	if MCPUnixSocketPath("unix:/a.sock") != "/a.sock" || MCPUnixSocketPath("127.0.0.1:1") != "" {
-		t.Error("MCPUnixSocketPath")
 	}
 }

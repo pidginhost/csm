@@ -32,15 +32,12 @@ func ConfigSummary(cfg *config.Config, info platform.Info) map[string]any {
 	}
 	t := cfg.Thresholds
 	return map[string]any{
-		"hostname":     cfg.Hostname,
-		"mode":         cfg.Mode,
-		"observe_mode": cfg.ObserveMode(),
-		"state_path":   cfg.StatePath,
-		"platform":     PlatformFacts(info),
-		"listeners": map[string]any{
-			"webui": cfg.WebUI.Listen,
-			"mcp":   cfg.MCP.Listen,
-		},
+		"hostname":        cfg.Hostname,
+		"mode":            cfg.Mode,
+		"observe_mode":    cfg.ObserveMode(),
+		"state_path":      cfg.StatePath,
+		"platform":        PlatformFacts(info),
+		"webui_listen":    cfg.WebUI.Listen,
 		"infra_ips":       strs(cfg.InfraIPs),
 		"account_roots":   strs(cfg.AccountRoots),
 		"disabled_checks": strs(cfg.DisabledChecks),

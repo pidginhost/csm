@@ -2,29 +2,16 @@ package config
 
 import (
 	"fmt"
-	"net"
 	"net/netip"
-	"path/filepath"
 	"strings"
 	"time"
 )
 
-// DefaultMCPListen is where the MCP endpoint answers when mcp.listen is
-// unset: loopback only, one port above the Web UI default.
-const DefaultMCPListen = "127.0.0.1:9444"
-
-// MCPConfig is the mcp: block. Every credential in Tokens is read-only;
-// there is no scope field because the endpoint has no other scope.
+// MCPConfig is the mcp: block. The endpoint answers at /mcp on the Web UI
+// listener. Every credential in Tokens is read-only; there is no scope
+// field because the endpoint has no other scope.
 type MCPConfig struct {
-	Enabled bool `yaml:"enabled"`
-	// Listen is a host:port for a TLS listener, or "unix:/absolute/path"
-	// for a Unix socket without TLS.
-	Listen string `yaml:"listen"`
-	// TLSCert and TLSKey select the certificate for a TCP listener. Empty
-	// means the Web UI certificate: webui.tls_cert/tls_key, or the
-	// generated one under the state directory.
-	TLSCert string     `yaml:"tls_cert"`
-	TLSKey  string     `yaml:"tls_key"`
+	Enabled bool       `yaml:"enabled"`
 	Tokens  []MCPToken `yaml:"tokens"`
 }
 
@@ -47,15 +34,6 @@ func (t MCPToken) AcceptsFrom(addr netip.Addr) bool {
 // Current reports whether the credential is usable at now.
 func (t MCPToken) Current(now time.Time) bool {
 	return WebUITokenCurrent(t.IssuedAt, t.ExpiresAt, now)
-}
-
-// MCPUnixSocketPath returns the socket path when listen names a Unix
-// socket ("unix:/path"), or "" for a TCP address.
-func MCPUnixSocketPath(listen string) string {
-	if path, ok := strings.CutPrefix(listen, "unix:"); ok {
-		return path
-	}
-	return ""
 }
 
 // validateMCPTokens is the hard validation that aborts a config load:
@@ -94,9 +72,6 @@ func validateMCPTokens(cfg *Config) error {
 			return fmt.Errorf("mcp.tokens[%d]: token is also webui.metrics_token; the MCP endpoint needs its own credential", i)
 		}
 	}
-	if path := MCPUnixSocketPath(cfg.MCP.Listen); path != "" && !filepath.IsAbs(path) {
-		return fmt.Errorf("mcp.listen: unix socket path %q must be absolute", path)
-	}
 	return nil
 }
 
@@ -127,24 +102,6 @@ func mcpResults(cfg *Config, now time.Time) []ValidationResult {
 	if usable == 0 {
 		results = append(results, ValidationResult{"error", "mcp.tokens", "mcp enabled but no usable token configured"})
 	}
-	if path := MCPUnixSocketPath(cfg.MCP.Listen); path != "" {
-		results = append(results, ValidationResult{"ok", "mcp", "listening on unix socket " + path})
-		return results
-	}
-	host, _, err := net.SplitHostPort(cfg.MCP.Listen)
-	if err != nil {
-		results = append(results, ValidationResult{"error", "mcp.listen", fmt.Sprintf("%q is not host:port or unix:/path", cfg.MCP.Listen)})
-		return results
-	}
-	if cfg.MCP.Listen == cfg.WebUI.Listen {
-		results = append(results, ValidationResult{"error", "mcp.listen", "same address as webui.listen"})
-	}
-	ip := net.ParseIP(host)
-	loopback := strings.EqualFold(host, "localhost") || (ip != nil && ip.IsLoopback())
-	if !loopback {
-		results = append(results, ValidationResult{"warn", "mcp.listen",
-			fmt.Sprintf("MCP endpoint listens on %s, off the loopback interface; restrict it with a host firewall or token allowed_ips", cfg.MCP.Listen)})
-	}
-	results = append(results, ValidationResult{"ok", "mcp", "listening on https://" + cfg.MCP.Listen})
+	results = append(results, ValidationResult{"ok", "mcp", "served at https://" + cfg.WebUI.Listen + "/mcp"})
 	return results
 }

@@ -2,58 +2,51 @@
 
 CSM can expose what it knows about a server to an LLM support agent through
 the [Model Context Protocol](https://modelcontextprotocol.io/). The endpoint
-is off by default, listens on its own address with its own credentials, and
-is read-only by construction: every tool is answered by dispatching a `GET`
-to one route from a fixed allowlist of API reads, in-process, so no tool can
-block, unblock, fix, scan, quarantine or change settings. It is meant for
-agents that verify support tickets about the server ("is my IP blocked",
-"why does this account have findings", "is mail stuck").
+is off by default, answers at `/mcp` on the Web UI listener with credentials
+of its own, and is read-only by construction: every tool is answered by
+dispatching a `GET` to one route from a fixed allowlist of API reads,
+in-process, so no tool can block, unblock, fix, scan, quarantine or change
+settings. It is meant for agents that verify support tickets about the
+server ("is my IP blocked", "why does this account have findings", "is mail
+stuck").
 
 ## Enable it
 
 ```yaml
 webui:
-  enabled: true           # the endpoint reads through the Web UI server
+  enabled: true           # the endpoint is served by the Web UI listener
 mcp:
   enabled: true
-  listen: "127.0.0.1:9444"
   tokens:
     - name: "support-agent"
       token: "<64 random hex characters>"
       issued_at: "2026-11-02T10:00:00Z"
-      allowed_ips: ["127.0.0.1"]
+      allowed_ips: ["198.51.100.0/24"]
 ```
 
-Restart the daemon (`systemctl restart csm`); the listener starts once.
-`csm validate` checks the block: it refuses `mcp.enabled` without
-`webui.enabled`, a configuration without a usable token, a token that is
-also a Web UI or metrics token, and warns about short tokens and a listen
-address off the loopback interface.
+Restart the daemon (`systemctl restart csm`); the endpoint is wired at
+startup. `csm validate` checks the block: it refuses `mcp.enabled` without
+`webui.enabled`, a configuration without a usable token, and a token that is
+also a Web UI or metrics token, and warns about short tokens.
 
-`listen` is either `host:port` or `unix:/absolute/path`:
-
-- A TCP listener always uses TLS: `mcp.tls_cert`/`mcp.tls_key`, or, when
-  both are empty, the Web UI certificate (the configured one or the
-  self-signed one CSM generates under the state directory). Reach it from
-  another host over an SSH tunnel or with `allowed_ips` and a host firewall
-  in front of it.
-- A Unix socket (`unix:/run/csm/mcp.sock`, mode 0660, owned by the daemon
-  user) is the private channel for an agent that runs on the server itself.
-  No TLS and no `allowed_ips` apply to it.
+The endpoint shares the Web UI's TLS certificate, port and firewall
+exposure. Limit who reaches it with the token's `allowed_ips`.
 
 Tokens are bearer credentials with the same dates and source restriction as
 `webui.tokens`, without a scope: there is only one, read-only. A Web UI token
-is never accepted on the MCP listener and an MCP token is never accepted on
-the Web UI. Five unknown-token attempts per minute per client (IPv4 address
-or IPv6 /64) are allowed before the client is refused for a minute. Up to
-four tool calls run at once and each call has 30 seconds.
+or browser session never opens `/mcp`, and an MCP token opens nothing else.
+Unknown tokens draw on the same budget as Web UI login and API token
+guesses: five failed attempts per minute per client (IPv4 address or IPv6
+/64), after which the client is refused for a minute. `/mcp` also counts
+toward the API request rate limit. Up to four tool calls run at once and
+each call has 30 seconds.
 
 ## Transport
 
 The MCP Streamable HTTP transport, JSON-RPC 2.0, stateless:
 
 ```bash
-curl -sk https://127.0.0.1:9444/mcp \
+curl -sk https://server.example.com:9443/mcp \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"csm_lookup_ip","arguments":{"ip":"203.0.113.9"}}}'
@@ -69,8 +62,9 @@ curl -sk https://127.0.0.1:9444/mcp \
   answered as a batch.
 - A request body is limited to 1 MiB. A tool answer larger than 4 MiB is
   refused with a message asking for `limit`, `offset` or a filter.
-- An `Origin` header, when a browser sends one, must be loopback or name the
-  listener's host.
+- A browser `Origin` header must pass the same check as on the API: the
+  configured Web UI origin, an entry in `webui.allowed_origins`, or a
+  loopback origin that matches the request host.
 
 A client configuration for an agent runtime that takes a URL and a header:
 
@@ -78,7 +72,7 @@ A client configuration for an agent runtime that takes a URL and a header:
 {
   "mcpServers": {
     "csm-web01": {
-      "url": "https://web01.example.com:9444/mcp",
+      "url": "https://web01.example.com:9443/mcp",
       "headers": { "Authorization": "Bearer <token>" }
     }
   }
@@ -99,7 +93,7 @@ Composite tools:
 | --- | --- |
 | `csm_overview` | hostname, platform, version, `status`, `health`, `capabilities` |
 | `csm_lookup_ip` | `firewall/check`, the `blocked-ips` entry, `threat/ip`, `geoip` for one address |
-| `csm_config_summary` | non-secret configuration facts from an explicit field list: mode, platform, listeners, enabled protections, auto-response limits, brute-force thresholds. Token values, keys, DSNs and URLs are never read |
+| `csm_config_summary` | non-secret configuration facts from an explicit field list: mode, platform, Web UI listen address, enabled protections, auto-response limits, brute-force thresholds. Token values, keys, DSNs and URLs are never read |
 
 Route tools, one per API read (the description names the route):
 

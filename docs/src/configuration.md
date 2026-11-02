@@ -588,10 +588,7 @@ webui:
 
 # --- MCP (read-only endpoint for support agents) ---
 mcp:
-  enabled: false                        # own listener; needs webui.enabled: true; restart required
-  listen: "127.0.0.1:9444"              # host:port (TLS) or "unix:/run/csm/mcp.sock" (no TLS)
-  tls_cert: ""                          # empty: the Web UI certificate (configured or generated)
-  tls_key: ""
+  enabled: false                        # serves /mcp on the Web UI listener; needs webui.enabled: true; restart required
   tokens: []                            # name/token, optional issued_at, expires_at and allowed_ips; all read-only, never valid on the Web UI
 
 # --- Email AV ---

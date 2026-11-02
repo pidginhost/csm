@@ -1,8 +1,8 @@
 // Package mcp serves a read-only Model Context Protocol endpoint for support
-// agents. It speaks JSON-RPC 2.0 over the MCP Streamable HTTP transport on
-// a listener of its own, authenticates against mcp.tokens, and answers every
-// tool call by dispatching a GET to an allowlisted API read in-process. It
-// holds no route that changes anything.
+// agents. It speaks JSON-RPC 2.0 over the MCP Streamable HTTP transport for
+// requests the Web UI listener has authenticated against mcp.tokens, and
+// answers every tool call by dispatching a GET to an allowlisted API read
+// in-process. It holds no route that changes anything.
 package mcp
 
 import (

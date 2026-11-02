@@ -2,28 +2,18 @@ package mcp
 
 import (
 	"context"
-	"crypto/subtle"
-	"crypto/tls"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
-	"net/netip"
-	"net/url"
-	"os"
 	"strings"
-	"sync"
 	"time"
 
-	"github.com/pidginhost/csm/internal/config"
 	csmlog "github.com/pidginhost/csm/internal/log"
 )
 
 const (
-	// Endpoint is the only path the listener serves.
-	Endpoint = "/mcp"
 	// maxBodyBytes bounds one JSON-RPC request body.
 	maxBodyBytes = 1 << 20
 	// maxConcurrentCalls bounds tool calls running at once, since several
@@ -34,37 +24,26 @@ const (
 	callTimeout = 30 * time.Second
 	// queueWait bounds how long a call waits for a free slot.
 	queueWait = 10 * time.Second
-	// credentialAttemptsPerMinute is the unknown-token budget per client,
-	// as on the Web UI.
-	credentialAttemptsPerMinute = 5
-	// maxTrackedClients bounds the attempt map.
-	maxTrackedClients = 10000
 	// maxBatch bounds one JSON-RPC batch.
 	maxBatch = 20
 )
 
 // Options wires a Server.
 type Options struct {
-	Config config.MCPConfig
-	// Dispatcher serves the allowlisted reads; required.
+	// Dispatcher serves the allowlisted reads.
 	Dispatcher Dispatcher
 	// Version, Hostname and Platform are reported by csm_overview.
 	Version  string
 	Hostname string
 	Platform map[string]any
-	// ConfigSummary answers csm_config_summary; nil disables the tool's
-	// data with an error result.
+	// ConfigSummary answers csm_config_summary; nil makes the tool answer
+	// an error result.
 	ConfigSummary func() map[string]any
-	// GetCertificate supplies the TLS certificate for a TCP listener. It is
-	// required for a TCP listen address and ignored for a Unix socket.
-	GetCertificate func(*tls.ClientHelloInfo) (*tls.Certificate, error)
-	// Now is the clock for token expiry and rate limits; nil means time.Now.
-	Now func() time.Time
 }
 
-// Server is the MCP listener.
+// Server speaks MCP over requests the Web UI listener has already
+// authenticated; it holds no listener or credentials of its own.
 type Server struct {
-	cfg           config.MCPConfig
 	dispatcher    Dispatcher
 	tools         map[string]tool
 	descriptors   []toolDescriptor
@@ -72,88 +51,22 @@ type Server struct {
 	hostname      string
 	platform      map[string]any
 	configSummary func() map[string]any
-	now           func() time.Time
-	getCert       func(*tls.ClientHelloInfo) (*tls.Certificate, error)
-
-	httpSrv  *http.Server
-	calls    chan struct{}
-	attempts map[string][]time.Time
-	mu       sync.Mutex
-	listenMu sync.Mutex
-	listener net.Listener
+	calls         chan struct{}
 }
 
-// New builds a server; it does not listen until Start.
-func New(opts Options) (*Server, error) {
-	if opts.Dispatcher == nil {
-		return nil, errors.New("mcp: dispatcher is required")
-	}
-	if !opts.Config.Enabled {
-		return nil, errors.New("mcp: not enabled")
-	}
-	usable := 0
-	for _, tok := range opts.Config.Tokens {
-		if tok.Token != "" && strings.TrimSpace(tok.Name) != "" {
-			usable++
-		}
-	}
-	if usable == 0 {
-		return nil, errors.New("mcp: no token configured")
-	}
-	listen := opts.Config.Listen
-	if listen == "" {
-		listen = config.DefaultMCPListen
-	}
-	if config.MCPUnixSocketPath(listen) == "" {
-		if _, _, err := net.SplitHostPort(listen); err != nil {
-			return nil, fmt.Errorf("mcp: listen %q: %w", listen, err)
-		}
-		if opts.GetCertificate == nil {
-			return nil, errors.New("mcp: a TCP listener needs a TLS certificate")
-		}
-	}
+// New builds a server for opts.
+func New(opts Options) *Server {
 	s := &Server{
-		cfg:           opts.Config,
 		dispatcher:    opts.Dispatcher,
 		version:       opts.Version,
 		hostname:      opts.Hostname,
 		platform:      opts.Platform,
 		configSummary: opts.ConfigSummary,
-		now:           opts.Now,
-		getCert:       opts.GetCertificate,
 		calls:         make(chan struct{}, maxConcurrentCalls),
-		attempts:      make(map[string][]time.Time),
-	}
-	s.cfg.Listen = listen
-	if s.now == nil {
-		s.now = time.Now
 	}
 	s.tools, s.descriptors = toolTable(opts.Dispatcher)
-	mux := http.NewServeMux()
-	mux.HandleFunc(Endpoint, s.handle)
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		writeError(w, http.StatusNotFound, "not found")
-	})
-	s.httpSrv = &http.Server{
-		Handler:           mux,
-		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      callTimeout + 10*time.Second,
-		IdleTimeout:       120 * time.Second,
-		MaxHeaderBytes:    1 << 16,
-	}
-	if s.getCert != nil {
-		s.httpSrv.TLSConfig = &tls.Config{
-			MinVersion:     tls.VersionTLS12,
-			NextProtos:     []string{"http/1.1"},
-			GetCertificate: s.getCert,
-		}
-	}
-	return s, nil
+	return s
 }
-
-// Handler exposes the HTTP handler for tests and embedding.
-func (s *Server) Handler() http.Handler { return s.httpSrv.Handler }
 
 // Tools lists the tool names the server offers, for logs and tests.
 func (s *Server) Tools() []string {
@@ -164,95 +77,10 @@ func (s *Server) Tools() []string {
 	return names
 }
 
-// Start listens and serves until Shutdown. A Unix socket is created with
-// mode 0660 after removing a stale file at the path.
-func (s *Server) Start() error {
-	var ln net.Listener
-	if path := config.MCPUnixSocketPath(s.cfg.Listen); path != "" {
-		if err := removeStaleSocket(path); err != nil {
-			return err
-		}
-		l, err := net.Listen("unix", path)
-		if err != nil {
-			return fmt.Errorf("mcp: listen %s: %w", path, err)
-		}
-		// #nosec G302 -- group access is the point of the socket: a local
-		// agent in the daemon's group connects without a TCP listener.
-		if err := os.Chmod(path, 0o660); err != nil {
-			_ = l.Close()
-			return fmt.Errorf("mcp: chmod %s: %w", path, err)
-		}
-		ln = l
-		csmlog.Info("mcp listening", "socket", path, "tools", len(s.descriptors))
-	} else {
-		l, err := net.Listen("tcp", s.cfg.Listen)
-		if err != nil {
-			return fmt.Errorf("mcp: listen %s: %w", s.cfg.Listen, err)
-		}
-		ln = tls.NewListener(l, s.httpSrv.TLSConfig)
-		csmlog.Info("mcp listening", "addr", "https://"+s.cfg.Listen+Endpoint, "tools", len(s.descriptors))
-	}
-	s.listenMu.Lock()
-	s.listener = ln
-	s.listenMu.Unlock()
-	err := s.httpSrv.Serve(ln)
-	if errors.Is(err, http.ErrServerClosed) {
-		return nil
-	}
-	return err
-}
-
-func removeStaleSocket(path string) error {
-	info, err := os.Lstat(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return fmt.Errorf("mcp: %s: %w", path, err)
-	}
-	if info.Mode()&os.ModeSocket == 0 {
-		return fmt.Errorf("mcp: %s exists and is not a socket", path)
-	}
-	if err := os.Remove(path); err != nil {
-		return fmt.Errorf("mcp: remove stale socket %s: %w", path, err)
-	}
-	return nil
-}
-
-// Shutdown stops the listener and waits for in-flight calls up to ctx.
-func (s *Server) Shutdown(ctx context.Context) error {
-	err := s.httpSrv.Shutdown(ctx)
-	if path := config.MCPUnixSocketPath(s.cfg.Listen); path != "" {
-		_ = os.Remove(path)
-	}
-	return err
-}
-
-// --- HTTP layer ---
-
-func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("X-Content-Type-Options", "nosniff")
-	switch r.Method {
-	case http.MethodPost:
-	case http.MethodGet, http.MethodDelete:
-		// No server-initiated stream and no sessions: the spec allows 405.
-		w.Header().Set("Allow", http.MethodPost)
-		writeError(w, http.StatusMethodNotAllowed, "this endpoint accepts POST only")
-		return
-	default:
-		w.Header().Set("Allow", http.MethodPost)
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	if !s.originAllowed(r) {
-		writeError(w, http.StatusForbidden, "origin not allowed")
-		return
-	}
-	tok, ok := s.authenticate(w, r)
-	if !ok {
-		return
-	}
+// ServeMCP answers one POST of the Streamable HTTP transport. The caller
+// has checked the method, origin and credential; caller names the
+// credential for the call log.
+func (s *Server) ServeMCP(w http.ResponseWriter, r *http.Request, caller string) {
 	if v := r.Header.Get("MCP-Protocol-Version"); v != "" && !supportedProtocol(v) {
 		writeError(w, http.StatusBadRequest, "unsupported MCP protocol version "+v)
 		return
@@ -266,7 +94,6 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusRequestEntityTooLarge, "request body too large")
 		return
 	}
-	peer := r.RemoteAddr
 	requests, batch, perr := parseRequests(body)
 	if perr != nil {
 		writeJSON(w, http.StatusOK, newError(nil, perr.Code, perr.Message))
@@ -274,7 +101,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	var responses []rpcResponse
 	for _, req := range requests {
-		resp, ok := s.dispatch(r.Context(), req, tok.Name, peer)
+		resp, ok := s.dispatch(r.Context(), req, caller, r.RemoteAddr)
 		if ok {
 			responses = append(responses, resp)
 		}
@@ -396,7 +223,7 @@ func (s *Server) runCall(ctx context.Context, p toolsCallParams, tokenName, peer
 	defer func() { <-s.calls }()
 	ctx, cancel := context.WithTimeout(ctx, callTimeout)
 	defer cancel()
-	start := s.now()
+	start := time.Now()
 	result, status, err := s.callTool(ctx, p.Name, p.Arguments, peer)
 	outcome := "ok"
 	switch {
@@ -406,7 +233,7 @@ func (s *Server) runCall(ctx context.Context, p toolsCallParams, tokenName, peer
 		outcome = "error"
 	}
 	csmlog.Info("mcp tool call", "token", tokenName, "tool", p.Name, "peer", peerForLog(peer),
-		"status", status, "outcome", outcome, "duration_ms", s.now().Sub(start).Milliseconds(),
+		"status", status, "outcome", outcome, "duration_ms", time.Since(start).Milliseconds(),
 		"args", argsForLog(p.Arguments))
 	return result, err
 }
@@ -414,9 +241,6 @@ func (s *Server) runCall(ctx context.Context, p toolsCallParams, tokenName, peer
 func peerForLog(peer string) string {
 	if host, _, err := net.SplitHostPort(peer); err == nil {
 		return host
-	}
-	if peer == "" || peer == "@" {
-		return "unix"
 	}
 	return peer
 }
@@ -428,134 +252,6 @@ func argsForLog(raw json.RawMessage) string {
 		s = s[:200] + "…"
 	}
 	return s
-}
-
-// --- auth ---
-
-// authenticate checks the bearer token against mcp.tokens. The attempt
-// budget is charged for unknown tokens only; a known token outside its
-// source restriction or past its expiry is refused without a charge, as it
-// is not a guess.
-func (s *Server) authenticate(w http.ResponseWriter, r *http.Request) (config.MCPToken, bool) {
-	refuse := func(status int, msg string) (config.MCPToken, bool) {
-		w.Header().Set("WWW-Authenticate", `Bearer realm="csm-mcp"`)
-		writeError(w, status, msg)
-		return config.MCPToken{}, false
-	}
-	supplied, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-	supplied = strings.TrimSpace(supplied)
-	if !ok || supplied == "" {
-		return refuse(http.StatusUnauthorized, "bearer token required")
-	}
-	key := rateLimitKey(r.RemoteAddr)
-	s.mu.Lock()
-	now := s.now()
-	recent := s.recentAttempts(key, now)
-	if len(recent) >= credentialAttemptsPerMinute {
-		s.mu.Unlock()
-		csmlog.Warn("mcp auth rate limited", "peer", peerForLog(r.RemoteAddr))
-		return refuse(http.StatusTooManyRequests, "too many failed token attempts")
-	}
-	tok, known := s.lookupToken(supplied)
-	if !known {
-		if len(s.attempts) >= maxTrackedClients {
-			s.attempts = make(map[string][]time.Time)
-		}
-		s.attempts[key] = append(recent, now)
-	}
-	s.mu.Unlock()
-	if !known {
-		csmlog.Warn("mcp auth failed", "peer", peerForLog(r.RemoteAddr), "reason", "unknown token")
-		return refuse(http.StatusUnauthorized, "invalid token")
-	}
-	if !tok.Current(now) {
-		csmlog.Warn("mcp auth failed", "peer", peerForLog(r.RemoteAddr), "token", tok.Name, "reason", "expired or not yet valid")
-		return refuse(http.StatusUnauthorized, "token expired")
-	}
-	if addr, isTCP := peerAddr(r.RemoteAddr); isTCP && !tok.AcceptsFrom(addr) {
-		csmlog.Warn("mcp auth failed", "peer", peerForLog(r.RemoteAddr), "token", tok.Name, "reason", "source not allowed")
-		return refuse(http.StatusUnauthorized, "token not accepted from this address")
-	}
-	return tok, true
-}
-
-func (s *Server) lookupToken(supplied string) (config.MCPToken, bool) {
-	var found config.MCPToken
-	matched := false
-	for _, tok := range s.cfg.Tokens {
-		if tok.Token == "" {
-			continue
-		}
-		// Compare every entry so timing does not reveal which one matched.
-		if subtle.ConstantTimeCompare([]byte(tok.Token), []byte(supplied)) == 1 && !matched {
-			found, matched = tok, true
-		}
-	}
-	return found, matched
-}
-
-func (s *Server) recentAttempts(key string, now time.Time) []time.Time {
-	var recent []time.Time
-	for _, t := range s.attempts[key] {
-		if now.Sub(t) < time.Minute {
-			recent = append(recent, t)
-		}
-	}
-	return recent
-}
-
-// peerAddr parses a TCP peer. A Unix socket peer has no address and is
-// reported as not TCP, so allowed_ips does not apply to it.
-func peerAddr(remote string) (netip.Addr, bool) {
-	host, _, err := net.SplitHostPort(remote)
-	if err != nil {
-		host = remote
-	}
-	addr, err := netip.ParseAddr(host)
-	if err != nil {
-		return netip.Addr{}, false
-	}
-	return addr, true
-}
-
-// rateLimitKey is the IPv4 address or the IPv6 /64 of a peer; a Unix peer
-// shares one key.
-func rateLimitKey(remote string) string {
-	addr, ok := peerAddr(remote)
-	if !ok {
-		return "unix"
-	}
-	addr = addr.WithZone("").Unmap()
-	if addr.Is4() {
-		return addr.String()
-	}
-	return netip.PrefixFrom(addr, 64).Masked().String()
-}
-
-// originAllowed is the DNS-rebinding guard the transport asks for: a
-// browser-style Origin must be loopback or name this listener's host.
-// Requests without an Origin, the normal case for an agent, pass.
-func (s *Server) originAllowed(r *http.Request) bool {
-	origin := r.Header.Get("Origin")
-	if origin == "" || origin == "null" {
-		return origin == ""
-	}
-	u, err := url.Parse(origin)
-	if err != nil || u.Host == "" {
-		return false
-	}
-	host := u.Hostname()
-	if strings.EqualFold(host, "localhost") {
-		return true
-	}
-	if ip, parseErr := netip.ParseAddr(host); parseErr == nil && ip.IsLoopback() {
-		return true
-	}
-	listenHost, _, err := net.SplitHostPort(s.cfg.Listen)
-	if err != nil || listenHost == "" {
-		return false
-	}
-	return strings.EqualFold(host, listenHost) || strings.EqualFold(u.Host, r.Host)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

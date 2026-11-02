@@ -18,7 +18,6 @@ func TestConfigSummaryHoldsNoSecret(t *testing.T) {
 	cfg.WebUI.AuthToken = marker
 	cfg.WebUI.MetricsToken = marker
 	cfg.WebUI.Tokens = []config.WebUIToken{{Name: "a", Token: marker, Scope: "admin"}}
-	cfg.MCP.Listen = "127.0.0.1:9444"
 	cfg.MCP.Tokens = []config.MCPToken{{Name: "agent", Token: marker}}
 	cfg.Alerts.Webhook.HMACSecret = marker
 	cfg.GeoIP.LicenseKey = marker
@@ -42,7 +41,7 @@ func TestConfigSummaryHoldsNoSecret(t *testing.T) {
 	}
 	var m map[string]any
 	_ = json.Unmarshal(out, &m)
-	if m["hostname"] != "h" || m["listeners"].(map[string]any)["mcp"] != "127.0.0.1:9444" {
+	if m["hostname"] != "h" || m["webui_listen"] != "0.0.0.0:9443" {
 		t.Errorf("summary: %s", out)
 	}
 	if m["platform"].(map[string]any)["panel"] != "cpanel" {

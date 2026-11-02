@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -13,8 +12,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/pidginhost/csm/internal/config"
 )
 
 // fakeDispatcher records every dispatch and answers canned JSON. It fails
@@ -96,34 +93,15 @@ func newFake() *fakeDispatcher {
 	}
 }
 
-const testToken = "0123456789abcdef0123456789abcdef0123456789abcdef"
-
-func testConfig(listen string) config.MCPConfig {
-	return config.MCPConfig{
-		Enabled: true,
-		Listen:  listen,
-		Tokens: []config.MCPToken{
-			{Name: "agent", Token: testToken},
-			{Name: "office", Token: "ffffffffffffffffffffffffffffffffffffffffffffffff", AllowedIPs: []string{"198.51.100.0/24"}},
-			{Name: "old", Token: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", ExpiresAt: "2020-01-01T00:00:00Z"},
-		},
-	}
-}
-
 func newTestServer(t *testing.T, d Dispatcher) *Server {
 	t.Helper()
-	s, err := New(Options{
-		Config:        testConfig("unix:/tmp/csm-mcp-test.sock"),
+	return New(Options{
 		Dispatcher:    d,
 		Version:       "9.9.9",
 		Hostname:      "host.example",
 		Platform:      map[string]any{"panel": "cpanel"},
 		ConfigSummary: func() map[string]any { return map[string]any{"mode": "standard"} },
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return s
 }
 
 type rpcCall struct {
@@ -132,7 +110,9 @@ type rpcCall struct {
 	resp   rpcResponse
 }
 
-func post(t *testing.T, s *Server, token string, payload any, headers ...string) rpcCall {
+// post sends payload to ServeMCP as the Web UI does after authenticating
+// the request.
+func post(t *testing.T, s *Server, payload any, headers ...string) rpcCall {
 	t.Helper()
 	var body []byte
 	switch v := payload.(type) {
@@ -141,17 +121,14 @@ func post(t *testing.T, s *Server, token string, payload any, headers ...string)
 	default:
 		body, _ = json.Marshal(v)
 	}
-	req := httptest.NewRequest(http.MethodPost, Endpoint, bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader(body))
 	req.RemoteAddr = "127.0.0.1:4000"
 	req.Header.Set("Content-Type", "application/json")
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
 	for i := 0; i+1 < len(headers); i += 2 {
 		req.Header.Set(headers[i], headers[i+1])
 	}
 	w := httptest.NewRecorder()
-	s.Handler().ServeHTTP(w, req)
+	s.ServeMCP(w, req, "agent")
 	out := rpcCall{status: w.Code, body: w.Body.Bytes()}
 	_ = json.Unmarshal(out.body, &out.resp)
 	return out
@@ -183,7 +160,7 @@ func toolText(t *testing.T, c rpcCall) (string, bool) {
 
 func TestInitializeAndToolsList(t *testing.T) {
 	s := newTestServer(t, newFake())
-	c := post(t, s, testToken, rpc(1, "initialize", map[string]any{"protocolVersion": "2025-03-26"}))
+	c := post(t, s, rpc(1, "initialize", map[string]any{"protocolVersion": "2025-03-26"}))
 	if c.status != 200 || c.resp.Error != nil {
 		t.Fatalf("initialize: %d %s", c.status, c.body)
 	}
@@ -194,12 +171,12 @@ func TestInitializeAndToolsList(t *testing.T) {
 	if _, ok := res["capabilities"].(map[string]any)["tools"]; !ok {
 		t.Errorf("tools capability missing: %v", res)
 	}
-	c = post(t, s, testToken, rpc(2, "initialize", map[string]any{"protocolVersion": "1999-01-01"}))
+	c = post(t, s, rpc(2, "initialize", map[string]any{"protocolVersion": "1999-01-01"}))
 	if v := c.resp.Result.(map[string]any)["protocolVersion"]; v != protocolVersions[0] {
 		t.Errorf("unknown client version answered %v", v)
 	}
 
-	c = post(t, s, testToken, rpc(3, "tools/list", nil))
+	c = post(t, s, rpc(3, "tools/list", nil))
 	raw, _ := json.Marshal(c.resp.Result)
 	var list struct {
 		Tools []toolDescriptor `json:"tools"`
@@ -235,7 +212,7 @@ func TestInitializeAndToolsList(t *testing.T) {
 func TestToolCallDispatchesGETOnly(t *testing.T) {
 	fake := newFake()
 	s := newTestServer(t, fake)
-	c := post(t, s, testToken, rpc(1, "tools/call", map[string]any{"name": "csm_history", "arguments": map[string]any{"limit": 5, "severity": "HIGH"}}))
+	c := post(t, s, rpc(1, "tools/call", map[string]any{"name": "csm_history", "arguments": map[string]any{"limit": 5, "severity": "HIGH"}}))
 	text, isErr := toolText(t, c)
 	if isErr || text != `{"items":[],"total":0}` {
 		t.Fatalf("history: isError=%v text=%s", isErr, text)
@@ -255,7 +232,7 @@ func TestToolCallDispatchesGETOnly(t *testing.T) {
 func TestToolCallPathValue(t *testing.T) {
 	fake := newFake()
 	s := newTestServer(t, fake)
-	c := post(t, s, testToken, rpc(1, "tools/call", map[string]any{"name": "csm_incident", "arguments": map[string]any{"id": "abc"}}))
+	c := post(t, s, rpc(1, "tools/call", map[string]any{"name": "csm_incident", "arguments": map[string]any{"id": "abc"}}))
 	text, isErr := toolText(t, c)
 	if isErr || text != `{"id":"abc"}` {
 		t.Fatalf("incident: %v %s", isErr, text)
@@ -264,7 +241,7 @@ func TestToolCallPathValue(t *testing.T) {
 		t.Errorf("path: %s", fake.calls[0].path)
 	}
 	// A path-traversal id never reaches the dispatcher.
-	c = post(t, s, testToken, rpc(2, "tools/call", map[string]any{"name": "csm_incident", "arguments": map[string]any{"id": "../fix"}}))
+	c = post(t, s, rpc(2, "tools/call", map[string]any{"name": "csm_incident", "arguments": map[string]any{"id": "../fix"}}))
 	if _, isErr := toolText(t, c); !isErr {
 		t.Errorf("traversal id accepted")
 	}
@@ -285,12 +262,12 @@ func TestToolCallArgumentValidation(t *testing.T) {
 		{"csm_history", map[string]any{"limit": []int{1}}, "must be a scalar"},
 	}
 	for _, tc := range cases {
-		c := post(t, s, testToken, rpc(1, "tools/call", map[string]any{"name": tc.name, "arguments": tc.args}))
+		c := post(t, s, rpc(1, "tools/call", map[string]any{"name": tc.name, "arguments": tc.args}))
 		if c.resp.Error == nil || !strings.Contains(c.resp.Error.Message, tc.want) {
 			t.Errorf("%s %v: got %+v, want %q", tc.name, tc.args, c.resp.Error, tc.want)
 		}
 	}
-	c := post(t, s, testToken, rpc(1, "tools/call", map[string]any{"name": "csm_block_ip", "arguments": map[string]any{"ip": "1.2.3.4"}}))
+	c := post(t, s, rpc(1, "tools/call", map[string]any{"name": "csm_block_ip", "arguments": map[string]any{"ip": "1.2.3.4"}}))
 	if c.resp.Error == nil || c.resp.Error.Code != codeInvalidParams {
 		t.Errorf("unknown tool: %+v", c.resp.Error)
 	}
@@ -298,7 +275,7 @@ func TestToolCallArgumentValidation(t *testing.T) {
 
 func TestRouteErrorBecomesToolError(t *testing.T) {
 	s := newTestServer(t, newFake())
-	c := post(t, s, testToken, rpc(1, "tools/call", map[string]any{"name": "csm_account", "arguments": map[string]any{"name": "nobody"}}))
+	c := post(t, s, rpc(1, "tools/call", map[string]any{"name": "csm_account", "arguments": map[string]any{"name": "nobody"}}))
 	text, isErr := toolText(t, c)
 	if !isErr || text != "account not found" {
 		t.Errorf("isError=%v text=%q", isErr, text)
@@ -309,7 +286,7 @@ func TestTruncatedResponseAsksToNarrow(t *testing.T) {
 	fake := newFake()
 	fake.huge = true
 	s := newTestServer(t, fake)
-	c := post(t, s, testToken, rpc(1, "tools/call", map[string]any{"name": "csm_history"}))
+	c := post(t, s, rpc(1, "tools/call", map[string]any{"name": "csm_history"}))
 	text, isErr := toolText(t, c)
 	if !isErr || !strings.Contains(text, "narrow") {
 		t.Errorf("isError=%v text=%q", isErr, text)
@@ -319,7 +296,7 @@ func TestTruncatedResponseAsksToNarrow(t *testing.T) {
 func TestCompositeTools(t *testing.T) {
 	fake := newFake()
 	s := newTestServer(t, fake)
-	c := post(t, s, testToken, rpc(1, "tools/call", map[string]any{"name": "csm_lookup_ip", "arguments": map[string]any{"ip": "203.0.113.9"}}))
+	c := post(t, s, rpc(1, "tools/call", map[string]any{"name": "csm_lookup_ip", "arguments": map[string]any{"ip": "203.0.113.9"}}))
 	text, isErr := toolText(t, c)
 	if isErr {
 		t.Fatalf("lookup: %s", text)
@@ -340,7 +317,7 @@ func TestCompositeTools(t *testing.T) {
 		}
 	}
 
-	c = post(t, s, testToken, rpc(2, "tools/call", map[string]any{"name": "csm_overview"}))
+	c = post(t, s, rpc(2, "tools/call", map[string]any{"name": "csm_overview"}))
 	text, isErr = toolText(t, c)
 	if isErr {
 		t.Fatalf("overview: %s", text)
@@ -351,118 +328,43 @@ func TestCompositeTools(t *testing.T) {
 		t.Errorf("overview: %v", out)
 	}
 
-	c = post(t, s, testToken, rpc(3, "tools/call", map[string]any{"name": "csm_config_summary"}))
+	c = post(t, s, rpc(3, "tools/call", map[string]any{"name": "csm_config_summary"}))
 	text, isErr = toolText(t, c)
 	if isErr || text != `{"mode":"standard"}` {
 		t.Errorf("config summary: %v %s", isErr, text)
 	}
 }
 
-func TestAuth(t *testing.T) {
-	s := newTestServer(t, newFake())
-	if c := post(t, s, "", rpc(1, "ping", nil)); c.status != http.StatusUnauthorized {
-		t.Errorf("no token: %d", c.status)
-	}
-	if c := post(t, s, "wrong", rpc(1, "ping", nil)); c.status != http.StatusUnauthorized {
-		t.Errorf("wrong token: %d", c.status)
-	}
-	if c := post(t, s, "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", rpc(1, "ping", nil)); c.status != http.StatusUnauthorized {
-		t.Errorf("expired token: %d", c.status)
-	}
-	// office token is bound to 198.51.100.0/24; the test peer is loopback.
-	if c := post(t, s, "ffffffffffffffffffffffffffffffffffffffffffffffff", rpc(1, "ping", nil)); c.status != http.StatusUnauthorized {
-		t.Errorf("token from wrong source: %d", c.status)
-	}
-	req := httptest.NewRequest(http.MethodPost, Endpoint, strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"ping"}`))
-	req.RemoteAddr = "198.51.100.7:555"
-	req.Header.Set("Authorization", "Bearer ffffffffffffffffffffffffffffffffffffffffffffffff")
-	w := httptest.NewRecorder()
-	s.Handler().ServeHTTP(w, req)
-	if w.Code != 200 {
-		t.Errorf("token from allowed source: %d %s", w.Code, w.Body)
-	}
-	if c := post(t, s, testToken, rpc(1, "ping", nil)); c.status != 200 || c.resp.Error != nil {
-		t.Errorf("valid token: %d %s", c.status, c.body)
-	}
-	// A Web UI token is not an MCP token.
-	if c := post(t, s, "webui-token-not-here", rpc(1, "ping", nil)); c.status != http.StatusUnauthorized {
-		t.Errorf("foreign token: %d", c.status)
-	}
-}
-
-func TestUnknownTokenRateLimit(t *testing.T) {
-	s := newTestServer(t, newFake())
-	for i := 0; i < credentialAttemptsPerMinute; i++ {
-		if c := post(t, s, fmt.Sprintf("guess-%d", i), rpc(1, "ping", nil)); c.status != http.StatusUnauthorized {
-			t.Fatalf("guess %d: %d", i, c.status)
-		}
-	}
-	if c := post(t, s, testToken, rpc(1, "ping", nil)); c.status != http.StatusTooManyRequests {
-		t.Errorf("after budget, even the right token: %d", c.status)
-	}
-	// Another client is unaffected.
-	req := httptest.NewRequest(http.MethodPost, Endpoint, strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"ping"}`))
-	req.RemoteAddr = "10.0.0.2:1"
-	req.Header.Set("Authorization", "Bearer "+testToken)
-	w := httptest.NewRecorder()
-	s.Handler().ServeHTTP(w, req)
-	if w.Code != 200 {
-		t.Errorf("other client: %d", w.Code)
-	}
-}
-
 func TestTransportRules(t *testing.T) {
 	s := newTestServer(t, newFake())
-	for _, m := range []string{http.MethodGet, http.MethodDelete, http.MethodPut} {
-		req := httptest.NewRequest(m, Endpoint, nil)
-		req.Header.Set("Authorization", "Bearer "+testToken)
-		w := httptest.NewRecorder()
-		s.Handler().ServeHTTP(w, req)
-		if w.Code != http.StatusMethodNotAllowed {
-			t.Errorf("%s: %d", m, w.Code)
-		}
-	}
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/status", nil)
-	req.Header.Set("Authorization", "Bearer "+testToken)
-	w := httptest.NewRecorder()
-	s.Handler().ServeHTTP(w, req)
-	if w.Code != http.StatusNotFound {
-		t.Errorf("other path: %d", w.Code)
-	}
-	if c := post(t, s, testToken, rpc(1, "ping", nil), "Origin", "https://evil.example"); c.status != http.StatusForbidden {
-		t.Errorf("foreign origin: %d", c.status)
-	}
-	if c := post(t, s, testToken, rpc(1, "ping", nil), "Origin", "http://localhost:3000"); c.status != 200 {
-		t.Errorf("loopback origin: %d", c.status)
-	}
-	if c := post(t, s, testToken, rpc(1, "ping", nil), "MCP-Protocol-Version", "2000-01-01"); c.status != http.StatusBadRequest {
+	if c := post(t, s, rpc(1, "ping", nil), "MCP-Protocol-Version", "2000-01-01"); c.status != http.StatusBadRequest {
 		t.Errorf("bad protocol version: %d", c.status)
 	}
-	if c := post(t, s, testToken, rpc(1, "ping", nil), "MCP-Protocol-Version", "2025-06-18"); c.status != 200 {
+	if c := post(t, s, rpc(1, "ping", nil), "MCP-Protocol-Version", "2025-06-18"); c.status != 200 {
 		t.Errorf("good protocol version: %d", c.status)
 	}
-	if c := post(t, s, testToken, strings.Repeat("x", maxBodyBytes+1)); c.status != http.StatusRequestEntityTooLarge {
+	if c := post(t, s, strings.Repeat("x", maxBodyBytes+1)); c.status != http.StatusRequestEntityTooLarge {
 		t.Errorf("oversized body: %d", c.status)
 	}
-	if c := post(t, s, testToken, "{not json"); c.resp.Error == nil || c.resp.Error.Code != codeParse {
+	if c := post(t, s, "{not json"); c.resp.Error == nil || c.resp.Error.Code != codeParse {
 		t.Errorf("parse error: %+v", c.resp)
 	}
-	if c := post(t, s, testToken, rpc(1, "no/such", nil)); c.resp.Error == nil || c.resp.Error.Code != codeMethodNotFound {
+	if c := post(t, s, rpc(1, "no/such", nil)); c.resp.Error == nil || c.resp.Error.Code != codeMethodNotFound {
 		t.Errorf("unknown method: %+v", c.resp)
 	}
 	// Notifications get 202 and no body.
-	c := post(t, s, testToken, map[string]any{"jsonrpc": "2.0", "method": "notifications/initialized"})
+	c := post(t, s, map[string]any{"jsonrpc": "2.0", "method": "notifications/initialized"})
 	if c.status != http.StatusAccepted || len(c.body) != 0 {
 		t.Errorf("notification: %d %q", c.status, c.body)
 	}
 	// Batches answer a batch; notifications inside are dropped.
-	c = post(t, s, testToken, []any{rpc(1, "ping", nil), map[string]any{"jsonrpc": "2.0", "method": "notifications/initialized"}, rpc(2, "tools/list", nil)})
+	c = post(t, s, []any{rpc(1, "ping", nil), map[string]any{"jsonrpc": "2.0", "method": "notifications/initialized"}, rpc(2, "tools/list", nil)})
 	var batch []rpcResponse
 	if err := json.Unmarshal(c.body, &batch); err != nil || len(batch) != 2 {
 		t.Errorf("batch: %v %s", err, c.body)
 	}
 	for _, m := range []string{"resources/list", "prompts/list"} {
-		if c := post(t, s, testToken, rpc(1, m, nil)); c.resp.Error != nil {
+		if c := post(t, s, rpc(1, m, nil)); c.resp.Error != nil {
 			t.Errorf("%s: %+v", m, c.resp.Error)
 		}
 	}
@@ -473,7 +375,7 @@ func TestCallTimeoutCancelsDispatch(t *testing.T) {
 	fake.block = make(chan struct{})
 	s := newTestServer(t, fake)
 	done := make(chan rpcCall, 1)
-	go func() { done <- post(t, s, testToken, rpc(1, "tools/call", map[string]any{"name": "csm_status"})) }()
+	go func() { done <- post(t, s, rpc(1, "tools/call", map[string]any{"name": "csm_status"})) }()
 	select {
 	case <-done:
 		t.Fatal("call returned while the dispatcher was blocked")
@@ -483,33 +385,5 @@ func TestCallTimeoutCancelsDispatch(t *testing.T) {
 	c := <-done
 	if _, isErr := toolText(t, c); isErr {
 		t.Errorf("unblocked call failed: %s", c.body)
-	}
-}
-
-func TestNewRefusesBadOptions(t *testing.T) {
-	d := newFake()
-	if _, err := New(Options{Config: config.MCPConfig{Enabled: true, Tokens: []config.MCPToken{{Name: "a", Token: "b"}}}, Dispatcher: d}); err == nil {
-		t.Error("TCP listener without certificate accepted")
-	}
-	if _, err := New(Options{Config: config.MCPConfig{Enabled: true, Listen: "unix:/tmp/x.sock"}, Dispatcher: d}); err == nil {
-		t.Error("no tokens accepted")
-	}
-	if _, err := New(Options{Config: testConfig("unix:/tmp/x.sock")}); err == nil {
-		t.Error("no dispatcher accepted")
-	}
-	if _, err := New(Options{Config: config.MCPConfig{Enabled: true, Listen: "nonsense", Tokens: []config.MCPToken{{Name: "a", Token: "b"}}}, Dispatcher: d}); err == nil {
-		t.Error("bad listen accepted")
-	}
-}
-
-func TestRateLimitKey(t *testing.T) {
-	if k := rateLimitKey("203.0.113.9:1"); k != "203.0.113.9" {
-		t.Errorf("v4: %s", k)
-	}
-	if k := rateLimitKey("[2001:db8::1]:1"); k != "2001:db8::/64" {
-		t.Errorf("v6: %s", k)
-	}
-	if k := rateLimitKey("@"); k != "unix" {
-		t.Errorf("unix: %s", k)
 	}
 }

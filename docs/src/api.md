@@ -69,8 +69,8 @@ The legacy single-token `webui.auth_token:`, with its optional `webui.auth_token
 
 ### Read-only MCP endpoint
 
-Support agents that speak the Model Context Protocol get the same reads
-through a separate listener with its own credentials; see
+Support agents that speak the Model Context Protocol get these reads at
+`/mcp` on the same listener, with their own credentials; see
 [MCP endpoint](mcp.md). It cannot reach any route that changes state.
 
 ## Errors
