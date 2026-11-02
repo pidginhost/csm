@@ -91,13 +91,16 @@ func (st *LearningState) roundcubeHeld(generation string) (string, bool) {
 
 // learningGeneration identifies the desired learning configuration: the
 // rendered learning files when their keys are loaded, else the directory
-// they come from.
+// they come from and the dedicated Redis, a new installation target.
 func learningGeneration(s antispam.Settings) string {
 	if !s.Learning {
 		return ""
 	}
 	if files, err := antispam.RenderLearning(s); err == nil {
 		return antispam.Generation(files)
+	}
+	if s.LearningRedisSocket != "" {
+		return "dir:" + s.LearningDir + "\nredis:" + s.LearningRedisSocket
 	}
 	return "dir:" + s.LearningDir
 }

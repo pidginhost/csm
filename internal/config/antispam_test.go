@@ -47,7 +47,8 @@ func TestLoadBytesAntispamExplicitValuesKept(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := AntispamConfig{Enabled: true, DryRun: false, RspamdSocket: "/var/run/rspamd/scan.sock", RejectScore: 20, TagScore: 8}
+	want := AntispamConfig{Enabled: true, DryRun: false, RspamdSocket: "/var/run/rspamd/scan.sock", RejectScore: 20, TagScore: 8,
+		Learning: AntispamLearningConfig{Reporter: "domain"}}
 	if !reflect.DeepEqual(cfg.EmailProtection.Antispam, want) {
 		t.Errorf("got %+v, want %+v", cfg.EmailProtection.Antispam, want)
 	}
@@ -277,10 +278,17 @@ func TestAntispamLearningHotReloadable(t *testing.T) {
 		}
 		return cfg
 	}
-	off := load("")
-	on := load("    learning:\n      enabled: true\n")
-	if RestartRequired(Diff(off, on)) {
-		t.Fatal("learning changes must apply on reload; the reconciler handles them")
+	steps := []*Config{
+		load(""),
+		load("    learning:\n      enabled: true\n"),
+		load("    learning:\n      enabled: true\n      redis_socket: /run/redis-csm/redis.sock\n"),
+		load("    learning:\n      enabled: true\n      redis_socket: /run/redis-csm/redis.sock\n      reporter: mailbox\n"),
+	}
+	for i := 1; i < len(steps); i++ {
+		changes := Diff(steps[i-1], steps[i])
+		if len(changes) == 0 || RestartRequired(changes) {
+			t.Fatalf("step %d: changes %+v; learning changes must apply on reload, the reconciler handles them", i, changes)
+		}
 	}
 }
 
@@ -373,5 +381,98 @@ func TestLoadBytesAntispamExemptTypes(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestAntispamLearningReporterDefaultsDomain(t *testing.T) {
+	for _, body := range []string{
+		"{}",
+		"email_protection:\n  antispam:\n    enabled: true\n",
+		"email_protection:\n  antispam:\n    enabled: true\n    learning:\n",
+		"email_protection:\n  antispam:\n    enabled: true\n    learning:\n      enabled: true\n",
+		"email_protection:\n  antispam:\n    enabled: true\n    learning:\n      enabled: true\n      reporter: null\n",
+		"email_protection:\n  antispam:\n    enabled: true\n    learning:\n      enabled: true\n      reporter: &unset null\n      redis_socket: *unset\n",
+	} {
+		cfg, err := LoadBytes([]byte(body))
+		if err != nil {
+			t.Fatalf("%q: %v", body, err)
+		}
+		if l := cfg.EmailProtection.Antispam.Learning; l.Reporter != "domain" || l.RedisSocket != "" {
+			t.Fatalf("%q: learning = %+v, want reporter domain and no Redis socket", body, l)
+		}
+	}
+	for _, reporter := range []string{"domain", "mailbox"} {
+		cfg, err := loadAntispam(t, "    enabled: true\n    learning:\n      enabled: true\n      reporter: "+reporter+"\n")
+		if err != nil || cfg.EmailProtection.Antispam.Learning.Reporter != reporter {
+			t.Fatalf("reporter %s: cfg=%+v err=%v", reporter, cfg, err)
+		}
+	}
+}
+
+func TestAntispamLearningReporterRejectsOther(t *testing.T) {
+	for _, value := range []string{"user", `""`, "Domain", "mailboxes"} {
+		_, err := loadAntispam(t, "    enabled: true\n    learning:\n      enabled: true\n      reporter: "+value+"\n")
+		if err == nil || !strings.Contains(err.Error(), "email_protection.antispam.learning.reporter") {
+			t.Fatalf("reporter %s: err = %v, want an error naming email_protection.antispam.learning.reporter", value, err)
+		}
+	}
+	// yaml.v3 would coerce these into strings, so the type fails the load
+	// even while learning or antispam is off.
+	for _, value := range []string{"1", "true", "[domain]", "{domain: true}"} {
+		for _, prefix := range []string{"    enabled: true\n    learning:\n      enabled: true\n", "    enabled: true\n    learning:\n", "    enabled: false\n    learning:\n"} {
+			_, err := loadAntispam(t, prefix+"      reporter: "+value+"\n")
+			if err == nil || !strings.Contains(err.Error(), "email_protection.antispam.learning.reporter must be a string") {
+				t.Fatalf("%q reporter %s: err = %v, want a type error", prefix, value, err)
+			}
+		}
+	}
+	if _, err := loadAntispam(t, "    enabled: false\n    learning:\n      <<: {reporter: 1}\n"); err == nil || !strings.Contains(err.Error(), "email_protection.antispam.learning.reporter must be a string") {
+		t.Fatalf("inherited reporter: err = %v, want a type error", err)
+	}
+	// A disabled learning block is not range-checked.
+	cfg, err := loadAntispam(t, "    enabled: true\n    learning:\n      enabled: false\n      reporter: user\n")
+	if err != nil || cfg.EmailProtection.Antispam.Learning.Reporter != "user" {
+		t.Fatalf("dormant reporter: cfg=%+v err=%v", cfg, err)
+	}
+}
+
+func TestAntispamLearningRedisSocketValidation(t *testing.T) {
+	const learning = "    enabled: true\n    learning:\n      enabled: true\n"
+	cfg, err := loadAntispam(t, learning+"      redis_socket: /run/redis-csm/redis.sock\n")
+	if err != nil || cfg.EmailProtection.Antispam.Learning.RedisSocket != "/run/redis-csm/redis.sock" {
+		t.Fatalf("valid socket: cfg=%+v err=%v", cfg, err)
+	}
+	// Empty is the same as unset.
+	cfg, err = loadAntispam(t, learning+"      redis_socket: \"\"\n")
+	if err != nil || cfg.EmailProtection.Antispam.Learning.RedisSocket != "" {
+		t.Fatalf("empty socket: cfg=%+v err=%v", cfg, err)
+	}
+	for name, value := range map[string]string{
+		"relative":   "run/redis.sock",
+		"quote":      `"/run/redis\"csm.sock"`,
+		"space":      `"/run/redis csm.sock"`,
+		"dot dot":    "/run/redis/../csm.sock",
+		"trailing /": "/run/redis/",
+		"newline":    "|\n        /run/redis.sock",
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, loadErr := loadAntispam(t, learning+"      redis_socket: "+value+"\n")
+			if loadErr == nil || !strings.Contains(loadErr.Error(), "email_protection.antispam.learning") || !strings.Contains(loadErr.Error(), "redis_socket") || strings.Contains(loadErr.Error(), "rspamd_socket") {
+				t.Fatalf("err = %v, want an error naming email_protection.antispam.learning and redis_socket", loadErr)
+			}
+		})
+	}
+	for _, value := range []string{"6", "false", "[/run/redis.sock]", "{path: /run/redis.sock}"} {
+		for _, prefix := range []string{learning, "    enabled: true\n    learning:\n", "    enabled: false\n    learning:\n"} {
+			_, loadErr := loadAntispam(t, prefix+"      redis_socket: "+value+"\n")
+			if loadErr == nil || !strings.Contains(loadErr.Error(), "email_protection.antispam.learning.redis_socket must be a string") {
+				t.Fatalf("%q redis_socket %s: err = %v, want a type error", prefix, value, loadErr)
+			}
+		}
+	}
+	// A disabled learning block is not range-checked.
+	cfg, err = loadAntispam(t, "    enabled: true\n    learning:\n      redis_socket: run/redis.sock\n")
+	if err != nil || cfg.EmailProtection.Antispam.Learning.RedisSocket != "run/redis.sock" {
+		t.Fatalf("dormant socket: cfg=%+v err=%v", cfg, err)
 	}
 }

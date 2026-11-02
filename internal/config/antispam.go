@@ -25,20 +25,27 @@ func validateAntispamFeedTypes(node yaml.Node) error {
 	return nil
 }
 
-// Enabling learning is consent to reading Spam mail, so only a YAML boolean
-// counts; yaml.v3 would otherwise coerce values such as 1.
-func validateAntispamLearningTypes(node yaml.Node) error {
+// antispamLearningFields checks the learning block's types and returns its
+// fields. Enabling learning is consent to reading Spam mail, so only a YAML
+// boolean counts; yaml.v3 would otherwise coerce values such as 1, and turn
+// any scalar into a string.
+func antispamLearningFields(node yaml.Node) (map[string]yaml.Node, error) {
 	if yamlResolvedTag(&node) != "!!map" {
-		return errors.New("email_protection.antispam.learning must be a mapping")
+		return nil, errors.New("email_protection.antispam.learning must be a mapping")
 	}
 	var fields map[string]yaml.Node
 	if err := node.Decode(&fields); err != nil {
-		return err
+		return nil, err
 	}
 	if enabled, ok := fields["enabled"]; ok && !yamlNodeIsNull(&enabled) && yamlResolvedTag(&enabled) != "!!bool" {
-		return errors.New("email_protection.antispam.learning.enabled must be true or false")
+		return nil, errors.New("email_protection.antispam.learning.enabled must be true or false")
 	}
-	return nil
+	for _, key := range []string{"redis_socket", "reporter"} {
+		if value, ok := fields[key]; ok && !yamlNodeIsNull(&value) && yamlResolvedTag(&value) != "!!str" {
+			return nil, fmt.Errorf("email_protection.antispam.learning.%s must be a string", key)
+		}
+	}
+	return fields, nil
 }
 
 // validateStringList requires a YAML sequence of strings, for the same

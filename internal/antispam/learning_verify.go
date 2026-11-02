@@ -37,14 +37,15 @@ var (
 // (spec 6.1 to 6.3): exactly the rules csm and csm_learn with the pinned
 // attributes and only flag 1, one fuzzy worker with the pinned transport
 // and two keypairs, the fuzzy group cap, the effective CSM_FUZZY_SPAM weight
-// from the controller's /symbols, and no score rescaling. Errors name the
-// attribute, never a value that could be a key.
-func CheckLearningLoaded(fuzzyCheck, worker, group, symbols []byte, a Actions, keys LearningKeys) error {
+// from the controller's /symbols, and no score rescaling. With a dedicated
+// learning Redis the worker must select exactly redisSocket. Errors name
+// the attribute, never a value that could be a key.
+func CheckLearningLoaded(fuzzyCheck, worker, group, symbols []byte, a Actions, keys LearningKeys, redisSocket string) error {
 	scan, learn, err := checkLearningRules(fuzzyCheck, keys)
 	if err != nil {
 		return err
 	}
-	if err := checkLearningWorker(worker, scan, learn, keys); err != nil {
+	if err := checkLearningWorker(worker, scan, learn, keys, redisSocket); err != nil {
 		return err
 	}
 	if err := checkLearningGroup(group); err != nil {
@@ -156,7 +157,7 @@ func checkRule(name string, rule map[string]json.RawMessage, attrs []string, sym
 
 // checkLearningWorker requires exactly one fuzzy worker with the pinned
 // transport and the two keypairs the rules use.
-func checkLearningWorker(section []byte, scan, learn map[string]json.RawMessage, keys LearningKeys) error {
+func checkLearningWorker(section []byte, scan, learn map[string]json.RawMessage, keys LearningKeys, redisSocket string) error {
 	workers, err := fuzzyWorkers(section)
 	if err != nil {
 		return errors.New("loaded fuzzy worker is not readable")
@@ -177,6 +178,20 @@ func checkLearningWorker(section []byte, scan, learn map[string]json.RawMessage,
 	}
 	if p, ok := isString(w["prefix"]); !ok || p != keys.Prefix {
 		return errors.New("fuzzy worker: prefix differs from CSM's")
+	}
+	if redisSocket != "" {
+		// Any other server key would send reads or writes elsewhere.
+		for _, key := range []string{"server", "read_servers", "write_servers"} {
+			if _, ok := w[key]; ok {
+				return fmt.Errorf("fuzzy worker: %s is set besides CSM's servers", key)
+			}
+		}
+		if value(w["servers"]) != redisSocket {
+			return errors.New("fuzzy worker: servers differs from CSM's")
+		}
+		if value(w["password"]) != "" {
+			return errors.New("fuzzy worker: password differs from CSM's")
+		}
 	}
 	var pairs []json.RawMessage
 	if json.Unmarshal(w["keypair"], &pairs) != nil || len(pairs) != 2 {

@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/antispam"
+	"github.com/pidginhost/csm/internal/antispam/dovecot"
 	"github.com/pidginhost/csm/internal/ipmap"
 	"github.com/pidginhost/csm/internal/platform"
 )
@@ -72,6 +73,8 @@ type collector struct {
 	redisProbe func(ctx context.Context, endpoint string, password antispam.Secret, peer int) antispam.RedisFacts
 	// controllerGet reads one path from rspamd's private controller socket.
 	controllerGet func(ctx context.Context, socket, path string, limit int64, peer int) ([]byte, error)
+	// dovecot lists a Postfix host's mailboxes for learning.
+	dovecot func(context.Context) (dovecot.Snapshot, error)
 }
 
 func live() collector {
@@ -95,6 +98,7 @@ func live() collector {
 		},
 		redisProbe:     RedisProbe,
 		controllerGet:  ControllerGet,
+		dovecot:        dovecot.Dovecot{}.Snapshot,
 		stack:          DetectStack,
 		run:            runCommand,
 		lookPath:       exec.LookPath,

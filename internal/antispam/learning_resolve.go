@@ -2,12 +2,18 @@ package antispam
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"path/filepath"
 	"regexp"
+	"slices"
+	"strconv"
 	"strings"
+
+	"github.com/pidginhost/csm/internal/antispam/dovecot"
 )
 
 // CodeLearning is the problem code of every learning finding (spec 10).
@@ -35,6 +41,9 @@ const (
 	ReasonRequestErrors     = "request_errors"
 	ReasonBackendRebuilding = "backend_rebuilding"
 	ReasonAccountCapacity   = "account_capacity"
+	// ReasonMailboxesSkipped: Dovecot mailboxes learning does not watch on
+	// a Postfix host, counted by reason.
+	ReasonMailboxesSkipped = "mailboxes_skipped"
 )
 
 // LearningGate says what learning may do this pass. Install: CSM's learning
@@ -52,7 +61,7 @@ const stockFuzzyRule = "rspamd.com"
 
 var (
 	learningRspamdVersion = regexp.MustCompile(`^4\.2\.\d+$`)
-	learningRedisVersion  = regexp.MustCompile(`^(5\.0|6\.2)\.\d+$`)
+	learningRedisVersion  = regexp.MustCompile(`^(5\.0|6\.2|7\.\d+)\.\d+$`)
 )
 
 // learningCheck collects learning problems, one per reason, in the order
@@ -92,11 +101,11 @@ func ResolveLearning(s Settings, f HostFacts) (Settings, LearningGate, []Problem
 		s.Roundcube = false
 		return s, LearningGate{}, nil
 	}
-	if f.Stack == StackPostfix {
-		s.Learning, s.Roundcube = false, false
-		return s, LearningGate{}, []Problem{{Code: CodeLearning, Severity: Warning, Key: ReasonUnsupported,
-			Detail: "learning from Junk folders on Postfix hosts is not available yet"}}
-	}
+	return resolveLearning(s, f)
+}
+
+// resolveLearning judges requested learning.
+func resolveLearning(s Settings, f HostFacts) (Settings, LearningGate, []Problem) {
 	var c learningCheck
 	installed := learningInstalled(f)
 	if f.LearningKeysErr != nil {
@@ -105,9 +114,10 @@ func ResolveLearning(s Settings, f HostFacts) (Settings, LearningGate, []Problem
 	if f.LearnerMismatch {
 		c.add(ReasonStateMismatch, "learning state does not match its storage; new reports are held and nothing is adopted or deleted")
 	}
+	checkLearningDovecot(&c, s, f)
 	checkLearningVersions(&c, f)
 	checkLearningController(&c, f)
-	checkLearningRedis(&c, f)
+	checkLearningRedis(&c, s, f)
 	checkLearningLogs(&c, f)
 	checkLearningConflicts(&c, s, f)
 	if f.FuzzyListenErr != nil {
@@ -122,6 +132,9 @@ func ResolveLearning(s Settings, f HostFacts) (Settings, LearningGate, []Problem
 	case c.has(ReasonStateMismatch, ReasonUnsupported, ReasonUnsafe, ReasonConfigConflict):
 	case c.has(ReasonBackendUnavailable):
 		gate.Install = installed
+		// An outage keeps what is installed, including its Redis: a new
+		// redis_socket is used once a pass has checked it.
+		s.LearningRedisSocket = installedLearningRedis(f)
 	default:
 		gate.Install, gate.Publish = true, true
 	}
@@ -135,7 +148,8 @@ func ResolveLearning(s Settings, f HostFacts) (Settings, LearningGate, []Problem
 		c.add(ReasonRedisCapacity, "Redis is at the learning memory guard; new hashes wait until usage falls below 70%")
 		gate.Publish = false
 	}
-	if gate.Install {
+	// The Junk-button include is for cPanel's Roundcube.
+	if gate.Install && f.Stack != StackPostfix {
 		gate.Roundcube = roundcubeUsable(&c, f)
 	}
 	s.Learning, s.Roundcube = gate.Install, gate.Roundcube
@@ -171,6 +185,83 @@ func learningInstalled(f HostFacts) bool {
 	return false
 }
 
+// installedLearningRedis returns the dedicated Redis socket CSM's installed
+// fuzzy worker selects, "" when it uses rspamd's Redis or none is installed.
+func installedLearningRedis(f HostFacts) string {
+	if !learningInstalled(f) {
+		return ""
+	}
+	for _, t := range f.Targets {
+		if t.Path != LearningWorkerPath {
+			continue
+		}
+		for _, line := range strings.Split(t.Content, "\n") {
+			if quoted, ok := strings.CutPrefix(line, "servers = "); ok {
+				// CSM rendered it with %q from a validated socket path.
+				socket, _ := strconv.Unquote(strings.TrimSuffix(quoted, ";"))
+				return socket
+			}
+		}
+	}
+	return ""
+}
+
+// DovecotProblem is the learning problem of a Dovecot listing that failed:
+// definite when Dovecot cannot serve learning as configured, temporary
+// otherwise. Its detail is fixed text, never command output.
+func DovecotProblem(err error) Problem {
+	p := Problem{Code: CodeLearning, Severity: Warning, Key: ReasonBackendUnavailable,
+		Detail: "CSM cannot list Dovecot's mailboxes; learning waits for the next check"}
+	switch {
+	case errors.Is(err, dovecot.ErrCannotIterate):
+		p.Key, p.Detail = ReasonUnsupported, "Dovecot cannot list its users; learning needs a userdb that supports iteration"
+	case errors.Is(err, dovecot.ErrDovecot24):
+		p.Key, p.Detail = ReasonUnsupported, "Dovecot 2.4 mail settings are not supported yet"
+	case errors.Is(err, context.DeadlineExceeded):
+		p.Detail = "listing Dovecot's mailboxes timed out; learning waits for the next check"
+	}
+	return p
+}
+
+// checkLearningDovecot judges what Dovecot told a Postfix host's pass: a
+// failed listing, mail stored as rspamd's or Redis's uid, which tenants'
+// sieve scripts and mail processes run as (L12), and the mailboxes learning
+// skips. Exempt mailboxes are not watched, so their skips are no problem.
+func checkLearningDovecot(c *learningCheck, s Settings, f HostFacts) {
+	if f.Stack != StackPostfix {
+		return
+	}
+	d := f.Dovecot
+	if d.Err != nil {
+		p := DovecotProblem(d.Err)
+		c.add(p.Key, p.Detail)
+		return
+	}
+	for _, uid := range d.UIDs {
+		// Mail uids are never 0, so an unread socket owner never matches.
+		if uid == f.ControllerHost.RspamdUID || uid == f.Redis.Socket.Socket.UID {
+			c.add(ReasonUnsafe, "Dovecot stores mail as rspamd's or Redis's user; learning needs a separate mail user")
+			break
+		}
+	}
+	skipped := map[string]int{}
+	total := 0
+	for _, sk := range d.Skips {
+		if !IsExempt(s.Exempt, sk.User) {
+			skipped[sk.Reason]++
+			total++
+		}
+	}
+	if total == 0 {
+		return
+	}
+	var parts []string
+	for _, reason := range slices.Sorted(maps.Keys(skipped)) {
+		parts = append(parts, fmt.Sprintf("%s %d", reason, skipped[reason]))
+	}
+	c.add(ReasonMailboxesSkipped, fmt.Sprintf("mailboxes not watched for learning: %d (%s)", total, strings.Join(parts, ", ")))
+}
+
 func checkLearningVersions(c *learningCheck, f HostFacts) {
 	if f.RspamdVersion.Err != nil {
 		c.add(ReasonBackendUnavailable, "rspamd's version is unknown")
@@ -179,10 +270,14 @@ func checkLearningVersions(c *learningCheck, f HostFacts) {
 	} else if !learningRspamdVersion.MatchString(v) {
 		c.add(ReasonUnsupported, "learning is qualified on rspamd 4.2 only")
 	}
-	if f.Redis.Version == "" && f.Redis.Err == nil && f.Redis.Unix {
+	checkLearningRedisVersion(c, f.Redis)
+}
+
+func checkLearningRedisVersion(c *learningCheck, r RedisFacts) {
+	if r.Version == "" && r.Err == nil && r.Unix {
 		c.add(ReasonBackendUnavailable, "Redis's version is unknown")
-	} else if f.Redis.Version != "" && !learningRedisVersion.MatchString(f.Redis.Version) {
-		c.add(ReasonUnsupported, "learning is qualified on Redis 5.0 and 6.2 only")
+	} else if r.Version != "" && !learningRedisVersion.MatchString(r.Version) {
+		c.add(ReasonUnsupported, "learning is qualified on Redis 5.0, 6.2 and 7 only")
 	}
 }
 
@@ -228,6 +323,14 @@ func checkLearningController(c *learningCheck, f HostFacts) {
 	private := len(privateControllerSockets(f))
 	if private > 1 || private == 0 && !unknownSocket && f.ControllerErr == nil && host.RspamdUID >= 0 {
 		c.add(ReasonUnsafe, "learning needs exactly one private controller socket owned by rspamd with mode 0600")
+	}
+	// The controller trusts rspamd's uid, so no tenant may hold it. Not
+	// knowing only pauses learning: creating an alias takes root (P6).
+	switch {
+	case f.RspamdUIDShared:
+		c.add(ReasonUnsafe, "rspamd's uid is shared with a user that can run tenant code")
+	case f.RspamdUIDErr != nil:
+		c.add(ReasonBackendUnavailable, "CSM cannot rule out that another user shares rspamd's uid; learning waits for the next check")
 	}
 }
 
@@ -311,18 +414,50 @@ func withSocket(host ControllerHostFacts, p string, s SocketFacts) ControllerHos
 }
 
 // checkLearningRedis requires a socket-only Redis no tenant can reach, with
-// a finite maxmemory and noeviction (spec 6.3).
-func checkLearningRedis(c *learningCheck, f HostFacts) {
-	r := f.Redis
+// a finite maxmemory and noeviction (spec 6.3). On Postfix it must be a
+// Redis dedicated to learning (decision 7): rspamd's own serves tenants'
+// modules too.
+func checkLearningRedis(c *learningCheck, s Settings, f HostFacts) {
 	switch {
+	case f.Stack == StackPostfix && s.LearningRedisSocket == "":
+		c.add(ReasonUnsupported, "learning on Postfix needs a dedicated Redis: set email_protection.antispam.learning.redis_socket")
 	case f.LearningDumps.Err != nil:
 		c.add(ReasonBackendUnavailable, "CSM cannot read rspamd's loaded configuration")
-		return
+	default:
+		checkLearningRedisEndpoint(c, f)
+	}
+}
+
+// CheckLearningRedis rechecks s's dedicated learning Redis for the worker,
+// which applies under its lock after the pass judged it: the socket can be
+// replaced or opened in between. A definite failure is an error. So is an
+// outage, unless the installed worker already uses that socket: a worker
+// file never names a Redis no check has passed.
+func CheckLearningRedis(s Settings, f HostFacts) error {
+	var c learningCheck
+	checkLearningDovecot(&c, s, f)
+	checkLearningRedisVersion(&c, f.Redis)
+	checkLearningRedisEndpoint(&c, f)
+	switching := installedLearningRedis(f) != s.LearningRedisSocket
+	for _, p := range c.problems {
+		if p.Key == ReasonUnsafe || p.Key == ReasonUnsupported || switching && p.Key == ReasonBackendUnavailable {
+			return errors.New(p.Detail)
+		}
+	}
+	return nil
+}
+
+func checkLearningRedisEndpoint(c *learningCheck, f HostFacts) {
+	r := f.Redis
+	switch {
 	case r.Endpoint == "":
 		c.add(ReasonUnsafe, "CSM cannot identify the one Redis server fuzzy storage uses")
 		return
 	case !r.Unix:
 		c.add(ReasonUnsafe, "fuzzy storage uses Redis over TCP; learning needs a Unix socket only")
+		return
+	case r.Inherits != nil:
+		c.add(ReasonUnsafe, "rspamd's global redis settings would reach the learning Redis: "+r.Inherits.Error())
 		return
 	case r.Unprotected:
 		c.add(ReasonUnsafe, "the Redis socket's owner, directories or peer do not prove that Redis serves it")
@@ -330,6 +465,12 @@ func checkLearningRedis(c *learningCheck, f HostFacts) {
 	case r.Socket.Err != nil || r.Socket.Missing:
 		c.add(ReasonBackendUnavailable, "the Redis socket cannot be checked")
 		return
+	case r.Shared:
+		c.add(ReasonUnsafe, "the learning Redis is shared with another rspamd module")
+		return
+	}
+	if r.SharedErr != nil {
+		c.add(ReasonBackendUnavailable, "CSM cannot tell whether another rspamd module uses the learning Redis")
 	}
 	// A protected socket as well as protected directories (spec 6.3):
 	// no access for others and no ACL CSM cannot evaluate.
@@ -338,8 +479,12 @@ func checkLearningRedis(c *learningCheck, f HostFacts) {
 		return
 	}
 	if why := redisExposure(r, f.ControllerHost.RspamdUser, f.AccountNames, f.AccountNamesErr); why != "" {
-		c.add(ReasonUnsafe, why)
-		return
+		if f.Stack == StackPostfix && (f.AccountNamesErr != nil || r.GroupMembers == nil) {
+			c.add(ReasonBackendUnavailable, "CSM cannot check the Redis socket's account and group membership")
+		} else {
+			c.add(ReasonUnsafe, why)
+			return
+		}
 	}
 	// Successful CONFIG reads remain evidence even when a later INFO
 	// request fails. Definite exposure takes precedence over that outage.
@@ -375,16 +520,16 @@ func checkLearningRedis(c *learningCheck, f HostFacts) {
 // and root are trusted, and a group member counts as another user unless it
 // is root, redis or rspamd's service user. Shared users such as nobody can
 // run tenant code, so only these names are trusted, and redis or rspamd's
-// user only while the account list is readable and no account carries the
-// name. Unknown group members count as other users.
-func redisExposure(r RedisFacts, rspamdUser string, accounts map[string]bool, accountsErr error) string {
+// user only while the untrusted users are known and none carries the name.
+// Unknown group members count as other users.
+func redisExposure(r RedisFacts, rspamdUser string, untrusted map[string]bool, untrustedErr error) string {
 	owner := r.Socket.Socket.UID
 	host := ControllerHostFacts{Sockets: map[string]SocketFacts{r.Endpoint: r.Socket}, RspamdUID: owner, GroupMembers: map[int][]string{}}
 	trusted := func(m string) bool {
 		if m == "root" {
 			return true
 		}
-		if accountsErr != nil || accounts[m] {
+		if untrustedErr != nil || untrusted[m] {
 			return false
 		}
 		return m == "redis" || (rspamdUser != "" && m == rspamdUser)
@@ -500,7 +645,7 @@ func checkLearningStillLoaded(c *learningCheck, s Settings, f HostFacts) {
 		c.add(ReasonBackendUnavailable, "rspamd's actions are not readable")
 		return
 	}
-	if err := CheckLearningLoaded(d.FuzzyCheck, d.Worker, d.Group, d.Symbols, actions, s.LearningKeys); err != nil {
+	if err := CheckLearningLoaded(d.FuzzyCheck, d.Worker, d.Group, d.Symbols, actions, s.LearningKeys, s.LearningRedisSocket); err != nil {
 		c.add(ReasonConfigConflict, "rspamd no longer loads CSM's learning configuration as written: "+err.Error())
 	}
 }

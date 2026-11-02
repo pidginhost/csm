@@ -1,10 +1,17 @@
 package antispam
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
+	"os/exec"
+	"slices"
+	"strings"
 	"testing"
+
+	"github.com/pidginhost/csm/internal/antispam/dovecot"
 )
 
 const (
@@ -89,7 +96,14 @@ func safeLearningFacts() HostFacts {
 // installLearning marks the learning files as installed by CSM.
 func installLearning(t *testing.T, f *HostFacts) {
 	t.Helper()
-	files, err := RenderLearning(learningSettings())
+	installLearningFor(t, f, learningSettings())
+}
+
+// installLearningFor marks the learning files CSM renders for s as
+// installed.
+func installLearningFor(t *testing.T, f *HostFacts, s Settings) {
+	t.Helper()
+	files, err := RenderLearning(s)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,18 +163,182 @@ func TestResolveLearningSafeBaseline(t *testing.T) {
 	}
 }
 
-// Learning from Junk folders on Postfix hosts comes later: until then the
-// resolver keeps learning off there and says so once, whatever the facts.
-func TestResolveLearningOffOnPostfix(t *testing.T) {
-	f := safeLearningFacts()
-	f.Stack = StackPostfix
-	s, gate, problems := ResolveLearning(learningSettings(), f)
-	if s.Learning || s.Roundcube || gate != (LearningGate{}) {
-		t.Fatalf("learning on a Postfix host: settings %+v, gate %+v", s, gate)
+// postfixLearningFacts is a Postfix and Dovecot host where every learning
+// prerequisite holds: a dedicated Redis, no Roundcube, mail stored as vmail.
+func postfixLearningFacts() HostFacts {
+	f := dedicatedRedisFacts(StackPostfix, dedicatedSocket)
+	f.Targets, f.Roundcube = nil, RoundcubeFacts{}
+	for _, tg := range MutationTargets(StackPostfix) {
+		f.Targets = append(f.Targets, TargetFacts{Target: tg, Missing: true, Parents: []PathFacts{dir("/", 0, 0, 0o755)}})
 	}
-	onlyLearningReason(t, problems, ReasonUnsupported)
-	if want := "learning from Junk folders on Postfix hosts is not available yet"; problems[0].Detail != want {
-		t.Fatalf("detail %q, want %q", problems[0].Detail, want)
+	f.Dovecot = DovecotFacts{UIDs: []int{5000}}
+	return f
+}
+
+func postfixLearningSettings() Settings {
+	s := learningSettings()
+	s.LearningRedisSocket = dedicatedSocket
+	return s
+}
+
+// Learning runs on a Postfix host that meets its prerequisites, without the
+// webmail Junk-button include.
+func TestResolveLearningOnPostfix(t *testing.T) {
+	s, gate, problems := ResolveLearning(postfixLearningSettings(), postfixLearningFacts())
+	if !s.Learning || s.Roundcube || gate != (LearningGate{Install: true, Publish: true}) || len(problems) != 0 {
+		t.Fatalf("Postfix: settings %+v, gate %+v, problems %+v", s, gate, problems)
+	}
+}
+
+// Dovecot's answers decide learning on Postfix (L10-L12): a userdb that
+// cannot list users or Dovecot 2.4 turn learning off, a failed or slow
+// listing waits, mail stored as rspamd's or Redis's user is unsafe, and
+// skipped mailboxes are counted by reason in one warning. No detail carries
+// command output or a mailbox name.
+func TestResolveLearningPostfixDovecot(t *testing.T) {
+	const leaked = "alice@example.com"
+	for name, tc := range map[string]struct {
+		dovecot DovecotFacts
+		reason  string
+		detail  string
+	}{
+		"cannot iterate": {DovecotFacts{Err: fmt.Errorf("listing: %w", dovecot.ErrCannotIterate)}, ReasonUnsupported,
+			"Dovecot cannot list its users; learning needs a userdb that supports iteration"},
+		"dovecot 2.4": {DovecotFacts{Err: dovecot.ErrDovecot24}, ReasonUnsupported,
+			"Dovecot 2.4 mail settings are not supported yet"},
+		"timeout": {DovecotFacts{Err: fmt.Errorf("doveadm: %w", context.DeadlineExceeded)}, ReasonBackendUnavailable,
+			"listing Dovecot's mailboxes timed out; learning waits for the next check"},
+		"exit error": {DovecotFacts{Err: errors.New("doveadm: exit status 75: " + leaked)}, ReasonBackendUnavailable,
+			"CSM cannot list Dovecot's mailboxes; learning waits for the next check"},
+		"mail as rspamd": {DovecotFacts{UIDs: []int{5000, testRspamdUID}}, ReasonUnsafe,
+			"Dovecot stores mail as rspamd's or Redis's user; learning needs a separate mail user"},
+		"mail as redis": {DovecotFacts{UIDs: []int{testRedisUID}}, ReasonUnsafe,
+			"Dovecot stores mail as rspamd's or Redis's user; learning needs a separate mail user"},
+		"skipped": {DovecotFacts{UIDs: []int{5000}, Skips: []dovecot.Skip{
+			{User: leaked, Reason: dovecot.SkipDriver}, {User: "bob@example.com", Reason: dovecot.SkipLookupFailed},
+			{User: "carol@example.net", Reason: dovecot.SkipDriver}, {Reason: dovecot.SkipInvalidName},
+			{User: "dave@example.org", Reason: dovecot.SkipNoJunk}, {User: "erin@example.org", Reason: dovecot.SkipPluginZlib},
+			{User: "frank@example.org", Reason: dovecot.SkipSharedPath},
+		}}, ReasonMailboxesSkipped, "mailboxes not watched for learning: 6 (driver 2, invalid_name 1, lookup_failed 1, plugin_zlib 1, shared_path 1)"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := postfixLearningSettings()
+			// An exempt mailbox is never watched: its skip is no problem.
+			s.Exempt = []string{"dave@example.org"}
+			f := postfixLearningFacts()
+			f.Dovecot = tc.dovecot
+			got, gate, problems := ResolveLearning(s, f)
+			onlyLearningReason(t, problems, tc.reason)
+			if problems[0].Detail != tc.detail {
+				t.Fatalf("detail %q, want %q", problems[0].Detail, tc.detail)
+			}
+			if strings.Contains(problems[0].Detail, leaked) || strings.Contains(problems[0].Detail, "exit status") {
+				t.Fatalf("detail leaks command output: %q", problems[0].Detail)
+			}
+			switch tc.reason {
+			case ReasonMailboxesSkipped:
+				if !got.Learning || gate != (LearningGate{Install: true, Publish: true}) {
+					t.Fatalf("a skipped mailbox stopped learning: %+v %+v", got, gate)
+				}
+			case ReasonBackendUnavailable:
+				if got.Learning || gate != (LearningGate{}) {
+					t.Fatalf("a failed listing installed learning: %+v %+v", got, gate)
+				}
+				// An installed learning stays and stops publishing.
+				installed := withLearning(t, f, dedicatedSocket)
+				if _, gate, _ = ResolveLearning(s, installed); gate != (LearningGate{Install: true}) {
+					t.Fatalf("installed learning on a failed listing: gate %+v", gate)
+				}
+			default:
+				if got.Learning || gate != (LearningGate{}) {
+					t.Fatalf("learning stayed on: %+v %+v", got, gate)
+				}
+			}
+		})
+	}
+	// Exim hosts read nothing from Dovecot and are not judged by it.
+	f := safeLearningFacts()
+	f.Dovecot = DovecotFacts{Err: dovecot.ErrCannotIterate, UIDs: []int{testRspamdUID}}
+	if _, gate, problems := ResolveLearning(learningSettings(), f); !gate.Install || !gate.Publish || len(problems) != 0 {
+		t.Fatalf("Exim judged by Dovecot facts: gate %+v problems %+v", gate, problems)
+	}
+}
+
+// Dovecot 2.3 answers every failed listing alike. An SQL userdb whose
+// database is down is an outage: installed learning stays and waits. Only
+// a configuration with no userdb that can list users turns learning off.
+func TestResolveLearningDovecotListingFailure(t *testing.T) {
+	for userdb, reason := range map[string]string{
+		"userdb {\n  args = /etc/dovecot/dovecot-sql.conf.ext\n  driver = sql\n}\n":            ReasonBackendUnavailable,
+		"userdb {\n  args = uid=vmail gid=vmail home=/srv/vmail/%d/%n\n  driver = static\n}\n": ReasonUnsupported,
+	} {
+		run := func(_ context.Context, name string, args ...string) ([]byte, error) {
+			switch strings.Join(append([]string{name}, args...), " ") {
+			case "dovecot --version":
+				return []byte("2.3.21 (47349e2482)\n"), nil
+			case "doveconf -n":
+				return []byte("mail_location = maildir:~/Maildir\n" + userdb), nil
+			case "doveadm user *":
+				var exit *exec.ExitError
+				if err := exec.Command("sh", "-c", "exit 75").Run(); !errors.As(err, &exit) {
+					t.Fatalf("exit 75: %v", err)
+				}
+				exit.Stderr = []byte("Error: auth-master: userdb list: User listing returned failure\nFatal: user listing failed\n")
+				return nil, exit
+			}
+			t.Errorf("unexpected command %s %q", name, args)
+			return nil, errors.New("unexpected command")
+		}
+		_, err := dovecot.Dovecot{Run: run}.Snapshot(context.Background())
+		f := withLearning(t, postfixLearningFacts(), dedicatedSocket)
+		f.Dovecot = DovecotFacts{Err: err}
+		_, gate, problems := ResolveLearning(postfixLearningSettings(), f)
+		onlyLearningReason(t, problems, reason)
+		want := LearningGate{Install: true}
+		if reason == ReasonUnsupported {
+			want = LearningGate{}
+		}
+		if gate != want {
+			t.Fatalf("%q: gate %+v, want %+v", userdb, gate, want)
+		}
+	}
+}
+
+// A user that may run tenant code and shares rspamd's uid could reach the
+// controller as rspamd: learning refuses on either stack. When CSM cannot
+// rule a share out, learning waits instead (ruling P6): an installation
+// stays and publishes nothing new, a first one is not made.
+func TestResolveLearningRspamdUIDShared(t *testing.T) {
+	for stack, pair := range map[MailStack]struct {
+		s Settings
+		f HostFacts
+	}{
+		StackExim:    {learningSettings(), safeLearningFacts()},
+		StackPostfix: {postfixLearningSettings(), postfixLearningFacts()},
+	} {
+		shared := pair.f
+		shared.RspamdUIDShared = true
+		for _, f := range []HostFacts{shared, withLearning(t, shared, pair.s.LearningRedisSocket)} {
+			got, gate, problems := ResolveLearning(pair.s, f)
+			onlyLearningReason(t, problems, ReasonUnsafe)
+			if want := "rspamd's uid is shared with a user that can run tenant code"; problems[0].Detail != want || got.Learning || gate != (LearningGate{}) {
+				t.Fatalf("%s: problems %+v gate %+v", stack, problems, gate)
+			}
+		}
+		unknown := pair.f
+		unknown.RspamdUIDErr = errors.New("lookup of tenant failed")
+		const want = "CSM cannot rule out that another user shares rspamd's uid; learning waits for the next check"
+		got, gate, problems := ResolveLearning(pair.s, unknown)
+		onlyLearningReason(t, problems, ReasonBackendUnavailable)
+		if problems[0].Detail != want || got.Learning || gate != (LearningGate{}) {
+			t.Fatalf("%s first install: problems %+v gate %+v", stack, problems, gate)
+		}
+		got, gate, problems = ResolveLearning(pair.s, withLearning(t, unknown, pair.s.LearningRedisSocket))
+		onlyLearningReason(t, problems, ReasonBackendUnavailable)
+		// Nothing is removed: on cPanel the Junk-button include stays too.
+		if problems[0].Detail != want || !got.Learning || !gate.Install || gate.Publish || gate.Roundcube != (stack == StackExim) {
+			t.Fatalf("%s installed: problems %+v gate %+v settings %+v", stack, problems, gate, got)
+		}
 	}
 }
 
@@ -171,7 +349,7 @@ func TestResolveLearningDefiniteFailures(t *testing.T) {
 		reason string
 	}{
 		"UnsupportedRspamd": {func(f *HostFacts) { f.RspamdVersion.Stdout = "Rspamd daemon version 4.3.0\n" }, ReasonUnsupported},
-		"UnsupportedRedis":  {func(f *HostFacts) { f.Redis.Version = "7.2.4" }, ReasonUnsupported},
+		"UnsupportedRedis":  {func(f *HostFacts) { f.Redis.Version = "8.0.2" }, ReasonUnsupported},
 		"ControllerExposed": {func(f *HostFacts) { f.Controller.PasswordSet = false }, ReasonUnsafe},
 		"ControllerUnverifiable": {func(f *HostFacts) {
 			f.ControllerUnverifiable = errors.New("configdump worker controller: bind_socket systemd endpoint")
@@ -435,7 +613,7 @@ func TestResolveLearningReportsEachReasonOnce(t *testing.T) {
 	f.Redis.MaxMemory, f.Controller.PasswordSet = 0, false
 	f.RspamdLog.File.Mode = 0o644
 	f.RspamdLog.Parents[3].Mode = fs.ModeDir | 0o755
-	f.Redis.Version = "7.2.4"
+	f.Redis.Version = "8.0.2"
 	_, gate, problems := ResolveLearning(learningSettings(), f)
 	if gate.Install || len(problems) != 2 {
 		t.Fatalf("gate=%+v problems=%+v", gate, problems)
@@ -556,5 +734,205 @@ func TestResolveLearningForeignListenerWithProbeFailure(t *testing.T) {
 		if len(problems) != 2 || !unsafe || !unavailable {
 			t.Fatalf("installed=%v: problems=%+v, want unsafe listener and probe failure", installed, problems)
 		}
+	}
+}
+
+// Redis 7 is qualified next to 5.0 and 6.2; anything else, including a
+// release-candidate suffix, stays refused.
+func TestRedisVersionAccepts7(t *testing.T) {
+	for _, v := range []string{"5.0.3", "6.2.14", "7.0.15", "7.2.4", "7.4.1"} {
+		f := safeLearningFacts()
+		f.Redis.Version = v
+		if _, gate, problems := ResolveLearning(learningSettings(), f); !gate.Install || !gate.Publish || len(problems) != 0 {
+			t.Errorf("Redis %s: gate=%+v problems=%+v", v, gate, problems)
+		}
+	}
+	for _, v := range []string{"6.0.16", "8.0.2", "7.2", "7.2.4-rc1", "17.0.1", "4.0.14"} {
+		f := safeLearningFacts()
+		f.Redis.Version = v
+		_, gate, problems := ResolveLearning(learningSettings(), f)
+		if gate.Install {
+			t.Errorf("Redis %s installed learning", v)
+		}
+		onlyLearningReason(t, problems, ReasonUnsupported)
+	}
+}
+
+// dedicatedRedisFacts is safeLearningFacts with the dedicated learning Redis
+// probed at socket on the given stack.
+func dedicatedRedisFacts(stack MailStack, socket string) HostFacts {
+	f := safeLearningFacts()
+	f.Stack = stack
+	f.Redis.Endpoint = socket
+	f.Redis.Socket.Socket.Path = socket
+	return f
+}
+
+const dedicatedSocket = "/run/redis-csm/redis.sock"
+
+// Decision 7: on Postfix only a dedicated Redis named in csm.yaml qualifies.
+func TestResolveLearningPostfixNeedsRedisSocket(t *testing.T) {
+	s := learningSettings()
+	var c learningCheck
+	checkLearningRedis(&c, s, dedicatedRedisFacts(StackPostfix, dedicatedSocket))
+	onlyLearningReason(t, c.problems, ReasonUnsupported)
+	if want := "learning on Postfix needs a dedicated Redis: set email_protection.antispam.learning.redis_socket"; c.problems[0].Detail != want {
+		t.Fatalf("detail %q, want %q", c.problems[0].Detail, want)
+	}
+	s.LearningRedisSocket = dedicatedSocket
+	c = learningCheck{}
+	if checkLearningRedis(&c, s, dedicatedRedisFacts(StackPostfix, dedicatedSocket)); len(c.problems) != 0 {
+		t.Fatalf("dedicated Redis on Postfix: %+v", c.problems)
+	}
+	// Exim keeps rspamd's Redis when no dedicated one is named.
+	c = learningCheck{}
+	if checkLearningRedis(&c, learningSettings(), safeLearningFacts()); len(c.problems) != 0 {
+		t.Fatalf("Exim without the key: %+v", c.problems)
+	}
+}
+
+// Roundcube is cPanel's webmail: on Postfix the collector reads nothing
+// about it and the resolver neither judges nor reports its include.
+func TestResolveLearningPostfixNoRoundcubeWarning(t *testing.T) {
+	s := learningSettings()
+	s.LearningRedisSocket = dedicatedSocket
+	f := dedicatedRedisFacts(StackPostfix, dedicatedSocket)
+	f.Targets, f.Roundcube = nil, RoundcubeFacts{}
+	for _, tg := range MutationTargets(StackPostfix) {
+		f.Targets = append(f.Targets, TargetFacts{Target: tg, Missing: true, Parents: []PathFacts{dir("/", 0, 0, 0o755)}})
+	}
+	got, gate, problems := resolveLearning(s, f)
+	if !gate.Install || !gate.Publish || gate.Roundcube || !got.Learning || got.Roundcube || len(problems) != 0 {
+		t.Fatalf("Postfix: settings %+v gate %+v problems %+v", got, gate, problems)
+	}
+	// The same facts on cPanel still miss the include.
+	f.Stack = StackExim
+	_, gate, problems = resolveLearning(s, f)
+	if !gate.Install || gate.Roundcube {
+		t.Fatalf("cPanel: gate %+v", gate)
+	}
+	onlyLearningReason(t, problems, ReasonRoundcube)
+}
+
+// The safety checks judge the dedicated Redis exactly like rspamd's, on
+// either stack, and a Redis another rspamd module also uses, or one rspamd's
+// global redis settings would reach, is refused. An outage keeps an
+// installation but never moves it to a Redis no check has passed.
+func TestLearningRedisSocketSafetyChecks(t *testing.T) {
+	for name, tc := range map[string]struct {
+		change func(*RedisFacts)
+		reason string
+	}{
+		"TCP port":     {func(r *RedisFacts) { r.Port = "6379" }, ReasonUnsafe},
+		"TLS port":     {func(r *RedisFacts) { r.TLSPort = "6380" }, ReasonUnsafe},
+		"eviction":     {func(r *RedisFacts) { r.Policy = "allkeys-lru" }, ReasonUnsafe},
+		"no maxmemory": {func(r *RedisFacts) { r.MaxMemory = 0 }, ReasonUnsafe},
+		"socket mode":  {func(r *RedisFacts) { r.Socket.Socket.Mode = fs.ModeSocket | 0o777 }, ReasonUnsafe},
+		"socket ACL":   {func(r *RedisFacts) { r.Socket.Socket.ExtACL = true }, ReasonUnsafe},
+		"unprotected":  {func(r *RedisFacts) { r.Unprotected, r.Err = true, errors.New("not protected") }, ReasonUnsafe},
+		"shared":       {func(r *RedisFacts) { r.Shared = true }, ReasonUnsafe},
+		"inherited": {func(r *RedisFacts) {
+			r.Inherits = errors.New("redis sentinel backend cannot be identified from config alone")
+		}, ReasonUnsafe},
+		"inherited down": {func(r *RedisFacts) {
+			r.Inherits, r.Socket.Missing = errors.New("redis TLS backend cannot be probed"), true
+		}, ReasonUnsafe},
+		"version":        {func(r *RedisFacts) { r.Version = "8.0.2" }, ReasonUnsupported},
+		"shared unknown": {func(r *RedisFacts) { r.SharedErr = errors.New("dump unreadable") }, ReasonBackendUnavailable},
+		"socket missing": {func(r *RedisFacts) { r.Socket.Missing = true }, ReasonBackendUnavailable},
+		"probe failed":   {func(r *RedisFacts) { r.Err = errors.New("redis: INFO server failed") }, ReasonBackendUnavailable},
+	} {
+		t.Run(name, func(t *testing.T) {
+			definite := tc.reason != ReasonBackendUnavailable
+			for _, stack := range []MailStack{StackExim, StackPostfix} {
+				s := learningSettings()
+				s.LearningRedisSocket = dedicatedSocket
+				f := dedicatedRedisFacts(stack, dedicatedSocket)
+				tc.change(&f.Redis)
+				var c learningCheck
+				checkLearningVersions(&c, f)
+				checkLearningRedis(&c, s, f)
+				onlyLearningReason(t, c.problems, tc.reason)
+				// Nothing installed yet: the worker never writes a worker
+				// file naming this Redis.
+				if err := CheckLearningRedis(s, f); err == nil {
+					t.Fatalf("%v: worker recheck accepted an unchecked new Redis", stack)
+				}
+				// The installed worker already uses it: only a definite
+				// failure stops the worker.
+				same := withLearning(t, f, dedicatedSocket)
+				if err := CheckLearningRedis(s, same); (err != nil) != definite {
+					t.Fatalf("%v: worker recheck on the installed Redis: %v", stack, err)
+				}
+				if stack != StackExim {
+					continue
+				}
+				// A definite failure removes learning; an outage keeps the
+				// installation on the Redis it already uses.
+				for installedSocket, installed := range map[string]HostFacts{"": withLearning(t, f, ""), dedicatedSocket: same} {
+					got, gate, problems := ResolveLearning(s, installed)
+					onlyLearningReason(t, problems, tc.reason)
+					if gate.Install == definite || gate.Publish {
+						t.Fatalf("installed on %q: gate %+v", installedSocket, gate)
+					}
+					if !definite && got.LearningRedisSocket != installedSocket {
+						t.Fatalf("installed on %q: an outage moved learning to %q", installedSocket, got.LearningRedisSocket)
+					}
+				}
+			}
+		})
+	}
+	s := learningSettings()
+	s.LearningRedisSocket = dedicatedSocket
+	if err := CheckLearningRedis(s, dedicatedRedisFacts(StackPostfix, dedicatedSocket)); err != nil {
+		t.Fatalf("safe dedicated Redis: %v", err)
+	}
+	f := dedicatedRedisFacts(StackExim, dedicatedSocket)
+	f.Redis.Shared = true
+	if err := CheckLearningRedis(s, f); err == nil || err.Error() != "the learning Redis is shared with another rspamd module" {
+		t.Fatalf("shared Redis: %v", err)
+	}
+	f = dedicatedRedisFacts(StackExim, dedicatedSocket)
+	f.Redis.Inherits = errors.New("redis named-user authentication cannot be probed")
+	want := "rspamd's global redis settings would reach the learning Redis: redis named-user authentication cannot be probed"
+	if err := CheckLearningRedis(s, f); err == nil || err.Error() != want {
+		t.Fatalf("inherited option: %v", err)
+	}
+}
+
+// withLearning returns f with CSM's learning files installed, and loaded
+// as written, for a worker on redisSocket ("" for rspamd's own Redis).
+func withLearning(t *testing.T, f HostFacts, redisSocket string) HostFacts {
+	t.Helper()
+	s := learningSettings()
+	s.LearningRedisSocket = redisSocket
+	f.Targets = slices.Clone(f.Targets)
+	installLearningFor(t, &f, s)
+	d := newLoadedDumps(s.LearningKeys)
+	if redisSocket != "" {
+		d.fuzzyWorker()["servers"], d.fuzzyWorker()["password"] = redisSocket, ""
+	}
+	d.apply(&f)
+	return f
+}
+
+// Setting or changing redis_socket moves learning only once the new Redis
+// passes every check; meanwhile the installed worker keeps its Redis.
+func TestResolveLearningRedisOutageKeepsInstalledTarget(t *testing.T) {
+	const old = "/run/redis-old/redis.sock"
+	s := learningSettings()
+	s.LearningRedisSocket = dedicatedSocket
+	for installedSocket, wantOutage := range map[string]string{"": "", old: old, dedicatedSocket: dedicatedSocket} {
+		f := withLearning(t, dedicatedRedisFacts(StackExim, dedicatedSocket), installedSocket)
+		got, gate, problems := ResolveLearning(s, f)
+		if !gate.Install || !gate.Publish || len(problems) != 0 || got.LearningRedisSocket != dedicatedSocket {
+			t.Fatalf("verified Redis from %q: socket %q gate %+v problems %+v", installedSocket, got.LearningRedisSocket, gate, problems)
+		}
+		f.Redis.Socket.Missing = true
+		got, gate, problems = ResolveLearning(s, f)
+		if !gate.Install || gate.Publish || got.LearningRedisSocket != wantOutage || !got.Learning {
+			t.Fatalf("outage from %q: socket %q gate %+v", installedSocket, got.LearningRedisSocket, gate)
+		}
+		onlyLearningReason(t, problems, ReasonBackendUnavailable)
 	}
 }

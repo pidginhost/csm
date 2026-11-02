@@ -91,6 +91,20 @@ func TestSettingsValidateFeedsAndSkipMaps(t *testing.T) {
 
 // Exemptions are lower-case mailboxes or domains; the config loader lowers
 // the case before validation, so anything else here is refused.
+// IsExempt matches as the scope Lua does: the whole lower-case address or
+// its exact domain, never a parent domain or a name without an @.
+func TestIsExempt(t *testing.T) {
+	exempt := []string{"bob@example.com", "example.net"}
+	for mailbox, want := range map[string]bool{
+		"bob@example.com": true, "Bob@Example.COM": true, "carol@example.net": true,
+		"alice@example.com": false, "x@sub.example.net": false, "example.net": false, "bob": false,
+	} {
+		if got := IsExempt(exempt, mailbox); got != want {
+			t.Errorf("IsExempt(%q) = %v", mailbox, got)
+		}
+	}
+}
+
 func TestValidateExempt(t *testing.T) {
 	if err := ValidateExempt([]string{"a@example.com", "example.com", "first.last+tag@mail.example.org", "x-y_z@example.net", "sub.example.net"}); err != nil {
 		t.Fatalf("valid entries refused: %v", err)

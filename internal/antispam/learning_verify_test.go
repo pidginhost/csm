@@ -18,6 +18,8 @@ type loadedDumps struct {
 	symbols    []any
 	actions    Actions
 	keys       LearningKeys
+	// redisSocket is the dedicated learning Redis CSM rendered, if any.
+	redisSocket string
 }
 
 func newLoadedDumps(k LearningKeys) *loadedDumps {
@@ -87,7 +89,7 @@ func (d *loadedDumps) check() error {
 		group.Write(enc(g))
 		group.WriteString("\n")
 	}
-	return CheckLearningLoaded(enc(d.fuzzyCheck), enc(d.worker), []byte(group.String()), enc(d.symbols), d.actions, d.keys)
+	return CheckLearningLoaded(enc(d.fuzzyCheck), enc(d.worker), []byte(group.String()), enc(d.symbols), d.actions, d.keys, d.redisSocket)
 }
 
 func TestCheckLearningLoadedExact(t *testing.T) {
@@ -273,5 +275,40 @@ func TestCheckLearningRejectsAmbiguousFields(t *testing.T) {
 func TestParseActionsRejectsAmbiguousGrowFactor(t *testing.T) {
 	if _, err := ParseActions([]byte(`{"reject":15,"add_header":6,"grow_factor":2,"grow_factor":1}`)); err == nil {
 		t.Fatal("ambiguous score rescaling accepted")
+	}
+}
+
+// With a dedicated learning Redis the loaded worker must select exactly that
+// socket, with no password; any other server key would send reads or writes
+// elsewhere, and an inherited password would reach that socket.
+func TestCheckLearningLoadedWantsServers(t *testing.T) {
+	const socket = "/run/redis-csm/redis.sock"
+	dedicated := func() *loadedDumps {
+		d := newLoadedDumps(syntheticLearningKeys())
+		d.redisSocket = socket
+		d.fuzzyWorker()["servers"] = socket
+		d.fuzzyWorker()["password"] = ""
+		return d
+	}
+	if err := dedicated().check(); err != nil {
+		t.Fatalf("worker on the dedicated Redis: %v", err)
+	}
+	for name, change := range map[string]func(w map[string]any){
+		"missing":       func(w map[string]any) { delete(w, "servers") },
+		"other socket":  func(w map[string]any) { w["servers"] = "/run/redis-rspamd/redis.sock" },
+		"list":          func(w map[string]any) { w["servers"] = []any{socket, "/run/redis-rspamd/redis.sock"} },
+		"write servers": func(w map[string]any) { w["write_servers"] = "/run/redis-rspamd/redis.sock" },
+		"read servers":  func(w map[string]any) { w["read_servers"] = "/run/redis-rspamd/redis.sock" },
+		"server":        func(w map[string]any) { w["server"] = "/run/redis-rspamd/redis.sock" },
+		"password":      func(w map[string]any) { w["password"] = "x" },
+		"no password":   func(w map[string]any) { delete(w, "password") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			d := dedicated()
+			change(d.fuzzyWorker())
+			if err := d.check(); err == nil || !strings.Contains(err.Error(), "fuzzy worker:") {
+				t.Fatalf("err = %v", err)
+			}
+		})
 	}
 }

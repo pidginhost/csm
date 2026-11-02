@@ -52,6 +52,10 @@ type Settings struct {
 	Learning    bool
 	LearningDir string
 	Roundcube   bool
+	// LearningRedisSocket is the Unix socket of a Redis used only by
+	// learning; empty means none. Like LearningDir it is ignored while
+	// Learning is off.
+	LearningRedisSocket string
 	// LearningKeys are loaded from LearningDir by the caller, like DQSKey;
 	// they never travel in a request.
 	LearningKeys LearningKeys
@@ -101,6 +105,22 @@ var (
 	exemptDomain  = regexp.MustCompile(`^[a-z0-9.-]+$`)
 )
 
+// Reporter modes of learning on a Postfix host: one vote per mail domain or
+// one per mailbox.
+const (
+	ReporterDomain  = "domain"
+	ReporterMailbox = "mailbox"
+)
+
+// IsExempt reports whether mailbox is exempt, matched as the scope Lua
+// matches a recipient: in lower case, as the whole address or as the part
+// after its last @. A name without an @ is never exempt.
+func IsExempt(exempt []string, mailbox string) bool {
+	mailbox = strings.ToLower(mailbox)
+	at := strings.LastIndexByte(mailbox, '@')
+	return at >= 0 && (slices.Contains(exempt, mailbox) || slices.Contains(exempt, mailbox[at+1:]))
+}
+
 // ValidateExempt accepts lower-case mailboxes and domains only. These are
 // the only operator strings rendered into the scope Lua, so none may hold a
 // quote, backslash, space or wildcard.
@@ -123,6 +143,9 @@ func validateLearning(s Settings) error {
 	dir := s.LearningDir
 	if !path.IsAbs(dir) || path.Clean(dir) != dir || strings.ContainsFunc(dir, unicode.IsControl) {
 		return errors.New("learning directory must be an absolute clean path")
+	}
+	if s.LearningRedisSocket != "" {
+		return ValidateLearningRedisSocket(s.LearningRedisSocket)
 	}
 	return nil
 }
@@ -168,15 +191,21 @@ func ValidateSkipMaps(names []string) error {
 // digits, '/', '.', '_' and '-'. The socket path is the only operator string
 // rendered into Exim configuration, so it may hold no expansion, list or
 // whitespace character.
-func ValidateSocket(p string) error {
+func ValidateSocket(p string) error { return validateSocketPath("rspamd_socket", p) }
+
+// ValidateLearningRedisSocket applies the same rules to the learning Redis
+// socket, which is rendered into a quoted rspamd UCL string.
+func ValidateLearningRedisSocket(p string) error { return validateSocketPath("redis_socket", p) }
+
+func validateSocketPath(key, p string) error {
 	if p == "" {
-		return errors.New("rspamd_socket is empty")
+		return fmt.Errorf("%s is empty", key)
 	}
 	if len(p) > maxSocketPath {
-		return fmt.Errorf("rspamd_socket is longer than %d bytes", maxSocketPath)
+		return fmt.Errorf("%s is longer than %d bytes", key, maxSocketPath)
 	}
 	if p[0] != '/' || p == "/" {
-		return errors.New("rspamd_socket must be an absolute path to a socket file")
+		return fmt.Errorf("%s must be an absolute path to a socket file", key)
 	}
 	for i := 0; i < len(p); i++ {
 		c := p[i]
@@ -184,11 +213,11 @@ func ValidateSocket(p string) error {
 		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9',
 			c == '/', c == '.', c == '_', c == '-':
 		default:
-			return fmt.Errorf("rspamd_socket contains %q; only letters, digits, '/', '.', '_' and '-' are allowed", c)
+			return fmt.Errorf("%s contains %q; only letters, digits, '/', '.', '_' and '-' are allowed", key, c)
 		}
 	}
 	if path.Clean(p) != p {
-		return errors.New("rspamd_socket must be a clean path: no empty, '.' or '..' elements and no trailing slash")
+		return fmt.Errorf("%s must be a clean path: no empty, '.' or '..' elements and no trailing slash", key)
 	}
 	return nil
 }

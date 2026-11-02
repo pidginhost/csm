@@ -42,11 +42,12 @@ func Capabilities() []string {
 		"webui.undo.v1",        // bulk-action undo
 		"mail.filter.exfil.v1", // BEC mail-filter exfiltration detection
 		"mail.queue.composition.v1",
-		"mail.forward_guard.v1",          // opt-in MTA-native forward-guard (hold spam/backscatter forward copies)
-		"mail.antispam.v1",               // opt-in inbound spam filtering through rspamd with per-account cPanel opt-out
-		"mail.antispam.postfix.v1",       // the same filtering on Postfix hosts that pass mail to rspamd, with an operator exempt list
-		"mail.antispam.learning.v1",      // opt-in learning from Spam folders and operator reports, health in status
-		"detect.http_scanner_profile.v1", // URL scanner-profile detector + challenge/block action
+		"mail.forward_guard.v1",             // opt-in MTA-native forward-guard (hold spam/backscatter forward copies)
+		"mail.antispam.v1",                  // opt-in inbound spam filtering through rspamd with per-account cPanel opt-out
+		"mail.antispam.postfix.v1",          // the same filtering on Postfix hosts that pass mail to rspamd, with an operator exempt list
+		"mail.antispam.learning.v1",         // opt-in learning from Spam folders and operator reports, health in status
+		"mail.antispam.learning.postfix.v1", // the same learning on Postfix hosts from Dovecot Junk folders, with a dedicated Redis
+		"detect.http_scanner_profile.v1",    // URL scanner-profile detector + challenge/block action
 		"challenge.stats.v1",
 		"verified_bots.editor.v1",   // operator-managed verified-bot allowlist (rDNS + IP ranges) with web editor
 		"status.firewall_health.v1", // status snapshot reports firewall enabled/managed state + block counts

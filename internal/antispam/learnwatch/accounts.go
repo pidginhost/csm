@@ -4,6 +4,7 @@ package learnwatch
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -27,8 +28,9 @@ const (
 	SkipRootUID  = "root_uid"
 )
 
-// Account is one cPanel account with its passwd identity. Home may sit on
-// any partition; its owner is checked when it is opened.
+// Account is one cPanel account with its passwd identity, or a Postfix
+// reporter with only its id. Home may sit on any partition; its owner is
+// checked when it is opened.
 type Account struct {
 	Name     string
 	UID, GID int
@@ -87,6 +89,55 @@ func (s LiveSource) Passwd() ([]byte, error) {
 type pwEntry struct {
 	uid, gid int
 	home     string
+}
+
+// registry is one pass's reporters: cPanel accounts with their homes, or
+// Postfix reporters with their Junk folders.
+type registry struct {
+	accounts []Account
+	// skips holds the reason of every name left out.
+	skips []string
+	// held are the ids that keep their reservations: every reporter, and
+	// those that only skipped names still hold.
+	held map[int]bool
+	// junk maps each Postfix reporter's Junk folders to the uid that owns
+	// their mailbox's files.
+	junk map[int]map[FolderKey]int
+	// unchecked ids keep their folder state; complete false keeps every
+	// reporter's.
+	unchecked []int
+	complete  bool
+	// removed rechecks with a fresh read that uid is gone.
+	removed func(ctx context.Context, uid int) (bool, error)
+}
+
+func cpanelRegistry(src Source) (registry, error) {
+	accounts, skips, err := Accounts(src)
+	if err != nil {
+		return registry{}, err
+	}
+	// A registry name without a usable UID cannot be distinguished from a
+	// deleted account by the UID-keyed persisted state.
+	reg := registry{accounts: accounts, held: map[int]bool{}, complete: len(skips) == 0}
+	for _, a := range accounts {
+		reg.held[a.UID] = true
+	}
+	// An account CSM cannot read still holds its UID.
+	for _, s := range skips {
+		reg.skips = append(reg.skips, s.Reason)
+		if s.Reason == SkipBadHome {
+			reg.held[s.UID] = true
+		}
+	}
+	reg.removed = func(_ context.Context, uid int) (bool, error) {
+		current, skipped, err := Accounts(src)
+		if err != nil {
+			return false, err
+		}
+		return !slices.ContainsFunc(current, func(a Account) bool { return a.UID == uid }) &&
+			!slices.ContainsFunc(skipped, func(s Skip) bool { return s.Reason == SkipBadHome && s.UID == uid }), nil
+	}
+	return reg, nil
 }
 
 // Accounts joins registry names with passwd. Names outside the account

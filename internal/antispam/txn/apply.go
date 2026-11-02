@@ -58,6 +58,12 @@ func (h *Host) Apply(s antispam.Settings) antispam.Result {
 		if f.LearningKeysErr != nil {
 			return failed(StepPreconditions, f.LearningKeysErr)
 		}
+		// The pass judged the dedicated Redis before this lock was taken.
+		if s.LearningRedisSocket != "" {
+			if err := antispam.CheckLearningRedis(s, f); err != nil {
+				return failed(StepPreconditions, err)
+			}
+		}
 		s.LearningKeys = f.LearningKeys
 	}
 	installed := antispam.InstalledContent(f.Targets)
@@ -260,7 +266,7 @@ func (t *tx) rspamd(changes []change, s *antispam.Settings, f antispam.HostFacts
 		return StepRspamdReload, err
 	}
 	if s.Learning {
-		if err := t.checkLearning(t.fwd, f, s.LearningKeys); err != nil {
+		if err := t.checkLearning(t.fwd, f, s.LearningKeys, s.LearningRedisSocket); err != nil {
 			step := StepLearningCheck
 			if errors.Is(err, errLearningProbe) {
 				step = StepLearningProbe

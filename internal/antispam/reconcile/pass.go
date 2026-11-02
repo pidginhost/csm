@@ -49,6 +49,7 @@ func DesiredFromConfig(cfg *config.Config) Desired {
 	}
 	if as.Learning.Enabled {
 		d.Settings.Learning, d.Settings.LearningDir = true, antispam.DefaultLearningDir
+		d.Settings.LearningRedisSocket = as.Learning.RedisSocket
 	}
 	return d
 }
@@ -82,7 +83,7 @@ type Reconciler struct {
 	// All run only while learning is requested.
 	EnsureKeys      func(ctx context.Context, dir string) (bool, error)
 	LoadKeys        func(dir string) (antispam.LearningKeys, error)
-	CollectLearning func(ctx context.Context, f *antispam.HostFacts)
+	CollectLearning func(ctx context.Context, s antispam.Settings, f *antispam.HostFacts)
 	// Learner returns the running learning engine's problems; nil when no
 	// engine runs.
 	Learner func() []antispam.Problem
@@ -120,6 +121,9 @@ type Outcome struct {
 	// controller.
 	Stats       antispam.StatsEndpoint
 	StatsReason string
+	// Stack is the mail stack this pass found; the daemon picks the Spam
+	// folder watcher by it.
+	Stack antispam.MailStack
 	// ScanSource is where the daemon reads scan records on a Postfix host,
 	// empty elsewhere and while antispam is disabled. Nil when this pass
 	// could not tell; the last one stands.
@@ -204,7 +208,7 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) (out Outcome) {
 		}
 		if wantLearning {
 			if r.CollectLearning != nil {
-				r.CollectLearning(ctx, &f)
+				r.CollectLearning(ctx, d.Settings, &f)
 			}
 			f.LearningKeys, f.LearningKeysErr = keys, keysErr
 			f.RedisGuardPaused = r.Learning.redisPaused()
@@ -236,7 +240,7 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) (out Outcome) {
 	}
 	a := assess(d.Enabled, settings, f)
 	now := r.Now()
-	out = Outcome{Checks: []string{CheckPrecondition, CheckApplyFailed, CheckFeed, CheckLearning}, LearningGate: gate}
+	out = Outcome{Checks: []string{CheckPrecondition, CheckApplyFailed, CheckFeed, CheckLearning}, LearningGate: gate, Stack: f.Stack}
 	if d.Enabled {
 		out.Stats, out.StatsReason = antispam.StatsEndpointFor(f)
 	}
@@ -276,7 +280,8 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) (out Outcome) {
 	if d.Observe || a.Action == antispam.Uninstall {
 		out.LearningGate = antispam.LearningGate{}
 	}
-	if wantLearning && !d.Observe && keysErr == nil {
+	// On Postfix the learner starts only for learning that resolved on.
+	if wantLearning && !d.Observe && keysErr == nil && (f.Stack != antispam.StackPostfix || out.LearningGate.Install) {
 		if socket, uid, ok := antispam.LearnerEndpoint(f); ok {
 			out.Learner = LearnerTarget{Controller: socket, RspamdUID: uid, HashGeneration: antispam.HashGeneration(keys), Prefix: keys.Prefix}
 		}

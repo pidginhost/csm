@@ -30,14 +30,17 @@ func SkippedStatus(reason string) string { return "skipped:" + reason }
 var errNoFolder = errors.New("learnwatch: folder has no state; open it first")
 
 // FolderKey names one observed folder of one mailbox; its new and cur
-// subdirectories share the seen identities.
+// subdirectories share the seen identities. UID is the account's UID or a
+// Postfix reporter id; a Postfix Folder is the folder's absolute path.
 type FolderKey struct {
 	UID                 int
 	Domain, Box, Folder string
 }
 
+// uidPrefix is 8 bytes big-endian, so account UIDs keep their keys and
+// reporter ids, below 2^62, start below the meta and pending keys.
 func uidPrefix(uid int) []byte {
-	// #nosec G115 -- account UIDs are positive and below 2^32
+	// #nosec G115 -- UIDs and reporter ids are never negative
 	return binary.BigEndian.AppendUint64(nil, uint64(uid))
 }
 
@@ -316,7 +319,8 @@ func (t StateTx) LinkedSettled(k FolderKey, base string, m Meta) (bool, error) {
 }
 
 // Pending index keys sit in the folders bucket after every folder key,
-// whose first byte is the high byte of a UID below 2^32; meta keys too.
+// whose first byte is the high byte of a UID or reporter id below 2^62;
+// meta keys too.
 var (
 	cursorKey = []byte("\xfecursor")
 	pruneKey  = []byte("\xfeprune")
@@ -449,7 +453,7 @@ func (t StateTx) Cursor() (int, error) {
 	if err != nil || len(raw) != 8 {
 		return 0, err
 	}
-	// #nosec G115 -- stored by SetCursor from a positive UID
+	// #nosec G115 -- stored by SetCursor from a UID or reporter id below 2^62
 	return int(binary.BigEndian.Uint64(raw)), nil
 }
 

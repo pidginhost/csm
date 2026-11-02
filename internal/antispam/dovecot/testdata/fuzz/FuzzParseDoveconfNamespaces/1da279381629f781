@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("mail_location=mAildir:/\nnamespace {\nmailbox é{\nspecial_use=\\Junk\n}\n}")

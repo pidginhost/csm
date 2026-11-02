@@ -80,7 +80,7 @@ func RenderLearning(s Settings) (map[string]string, error) {
 	}
 	return map[string]string{
 		LearningCheckPath:  renderLearningRules(k),
-		LearningWorkerPath: renderLearningWorker(k),
+		LearningWorkerPath: renderLearningWorker(k, s.LearningRedisSocket),
 		LearningGroupPath: ManagedHeader + "\nmax_score = " + learningGroupCap + ";\nsymbols {\n" +
 			"  CSM_FUZZY_SPAM { weight = " + learningWeight + "; }\n" +
 			"  CSM_FUZZY_LEARN { weight = 0.0; }\n}\n",
@@ -117,12 +117,19 @@ func renderLearningRules(k LearningKeys) string {
 }
 
 // renderLearningWorker writes the loopback fuzzy worker: encrypted traffic
-// only, no address-based updates, and one keypair per operation set.
-func renderLearningWorker(k LearningKeys) string {
+// only, no address-based updates, and one keypair per operation set. A
+// dedicated Redis is selected by its socket, with an empty password: rspamd
+// fills a worker's missing password from the global redis section and would
+// send that to the dedicated socket. Without one the worker keeps rspamd's
+// Redis settings.
+func renderLearningWorker(k LearningKeys, redisSocket string) string {
 	var b strings.Builder
 	b.WriteString(ManagedHeader + "\ncount = 1;\n")
 	fmt.Fprintf(&b, "bind_socket = %q;\n", learningServer)
 	b.WriteString("backend = \"redis\";\n")
+	if redisSocket != "" {
+		fmt.Fprintf(&b, "servers = %q;\npassword = \"\";\n", redisSocket)
+	}
 	fmt.Fprintf(&b, "prefix = %q;\n", k.Prefix)
 	b.WriteString("expire = " + learningExpire + ";\nallow_update = [];\nencrypted_only = true;\n")
 	for _, kp := range []struct {

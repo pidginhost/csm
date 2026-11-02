@@ -503,6 +503,8 @@ func FuzzDecodeRequest(f *testing.F) {
 		strings.TrimSuffix(validApply, "}") + `,"learning":true,"learning_dir":"/var/lib/csm/antispam/learning","roundcube":true}`,
 		strings.TrimSuffix(validApply, "}") + `,"learning_dir":"/var/lib/csm/antispam/learning"}`,
 		strings.TrimSuffix(validApply, "}") + `,"learning":false,"learning_dir":"/var/lib/csm/antispam/learning"}`,
+		strings.TrimSuffix(validApply, "}") + `,"learning":true,"learning_dir":"/var/lib/csm/antispam/learning","learning_redis_socket":"/run/redis-csm/redis.sock"}`,
+		strings.TrimSuffix(validApply, "}") + `,"learning_redis_socket":"/run/redis-csm/redis.sock"}`,
 		strings.TrimSuffix(validApply, "}") + `,"feeds":"psbl,"}`,
 		strings.TrimSuffix(validApply, "}") + `,"exempt":"abuse@example.com,example.org","scope_nets":"203.0.113.0/24,2001:db8::/32"}`,
 		strings.TrimSuffix(validApply, "}") + `,"scope_nets":"203.0.113.7/24"}`,
@@ -920,7 +922,7 @@ func FuzzCheckLearningLoaded(f *testing.F) {
 	f.Fuzz(func(t *testing.T, section uint8, data []byte) {
 		inputs := slices.Clone(baseline)
 		inputs[int(section)%len(inputs)] = data
-		err := CheckLearningLoaded(inputs[0], inputs[1], inputs[2], inputs[3], Actions{}, d.keys)
+		err := CheckLearningLoaded(inputs[0], inputs[1], inputs[2], inputs[3], Actions{}, d.keys, "")
 		if err != nil {
 			for _, key := range []string{d.keys.Fuzzy.Reveal(), d.keys.Shingles.Reveal(), d.keys.Read.Private.Reveal(), d.keys.Write.Private.Reveal()} {
 				if strings.Contains(err.Error(), key) {
@@ -933,7 +935,7 @@ func FuzzCheckLearningLoaded(f *testing.F) {
 		// keys rather than treating the loaded values as their own authority.
 		other := d.keys
 		other.Fuzzy = NewSecret(strings.Repeat("7a", 32))
-		if CheckLearningLoaded(inputs[0], inputs[1], inputs[2], inputs[3], Actions{}, other) == nil {
+		if CheckLearningLoaded(inputs[0], inputs[1], inputs[2], inputs[3], Actions{}, other, "") == nil {
 			t.Fatal("accepted the same dumps for a different hash generation")
 		}
 	})

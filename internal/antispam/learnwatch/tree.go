@@ -11,6 +11,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/pidginhost/csm/internal/antispam/dovecot"
 	"github.com/pidginhost/csm/internal/antispam/learn"
 	"github.com/pidginhost/csm/internal/safepath"
 )
@@ -114,7 +115,7 @@ func mailboxPath(m Mailbox, folder, sub string) (string, error) {
 	switch {
 	case m == Mailbox{}:
 		return "mail", nil
-	case ValidDomain(m.Domain) && ValidMailbox(m.Box):
+	case dovecot.ValidDomain(m.Domain) && dovecot.ValidMailbox(m.Box):
 		return "mail/" + m.Domain + "/" + m.Box, nil
 	}
 	return "", fmt.Errorf("%w: unsupported mailbox name", ErrUnsafePath)
@@ -147,6 +148,34 @@ func (h *Home) OpenFolder(m Mailbox, folder, sub string) (*Folder, error) {
 	if errors.Is(err, syscall.ENOTDIR) || errors.Is(err, syscall.ELOOP) {
 		d, err = h.openSibling(rel, folder, sub, err)
 	}
+	return openedFolder(d, err)
+}
+
+// OpenJunk opens subdirectory sub of a Postfix Junk folder: path is the
+// absolute Maildir++ folder, directly under its mail root. The root is
+// pinned from the filesystem root without following links and must belong
+// to uid; the folder is walked as OpenFolder walks one, with no sibling
+// link allowed. Errors are classified as OpenFolder's; a root another uid
+// owns wraps ErrUnsafePath.
+func OpenJunk(path, sub string, uid int) (*Folder, error) {
+	name := filepath.Base(path)
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path || !strings.HasPrefix(name, ".") || !plainName(name) || !slices.Contains(Subdirs, sub) {
+		return nil, fmt.Errorf("%w: folder is not observed", ErrUnsafePath)
+	}
+	root, err := OpenHome(Account{UID: uid, Home: filepath.Dir(path)})
+	if errors.Is(err, errHomeOwner) {
+		return nil, fmt.Errorf("%w: %w", ErrUnsafePath, err)
+	}
+	if err != nil {
+		return openedFolder(nil, err)
+	}
+	defer func() { _ = root.Close() }()
+	return openedFolder(root.dir.Walk(name + "/" + sub))
+}
+
+// openedFolder classifies a walk to a folder's subdirectory and records the
+// subdirectory's identity.
+func openedFolder(d *safepath.Dir, err error) (*Folder, error) {
 	if err != nil {
 		if errors.Is(err, syscall.ENOTDIR) || errors.Is(err, syscall.ELOOP) {
 			return nil, fmt.Errorf("%w: %w", ErrUnsafePath, err)

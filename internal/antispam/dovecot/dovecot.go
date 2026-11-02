@@ -1,0 +1,934 @@
+// Package dovecot lists the users of a Dovecot 2.3 host and the Maildir++
+// folders of their \Junk mailboxes, checking directory aliases on disk.
+// It imports none of the learning packages that consume it.
+package dovecot
+
+import (
+	"bytes"
+	"cmp"
+	"context"
+	"encoding/base64"
+	"encoding/binary"
+	"errors"
+	"fmt"
+	"io/fs"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"slices"
+	"strconv"
+	"strings"
+	"syscall"
+	"time"
+	"unicode"
+	"unicode/utf16"
+	"unicode/utf8"
+)
+
+const (
+	// MaxMailboxes bounds the users one listing may name.
+	MaxMailboxes = 10000
+	// MaxListBytes bounds the output of every command.
+	MaxListBytes = 4 << 20
+	// commandTimeout bounds each command.
+	commandTimeout = 10 * time.Second
+	// batchSize users are looked up per doveadm call.
+	batchSize = 100
+)
+
+// Skip reasons. A reason is a fixed string and never carries command output.
+const (
+	SkipInvalidName     = "invalid_name"
+	SkipLookupFailed    = "lookup_failed"
+	SkipUIDRoot         = "uid_root"
+	SkipPluginZlib      = "plugin_zlib"
+	SkipPluginMailCrypt = "plugin_mail_crypt"
+	SkipDriver          = "driver"
+	SkipLayoutFS        = "layout_fs"
+	SkipLocation        = "location"
+	SkipInvalidHome     = "invalid_home"
+	SkipNoJunk          = "no_junk"
+	// SkipSharedPath: the mail directories are, hold or lie inside another
+	// listed user's.
+	SkipSharedPath = "shared_path"
+)
+
+var (
+	// ErrCannotIterate reports a configuration with no userdb that can list
+	// its users.
+	ErrCannotIterate = errors.New("the Dovecot userdb cannot list users")
+	// ErrDovecot24 reports Dovecot 2.4, whose mail settings differ.
+	ErrDovecot24 = errors.New("dovecot 2.4 mail settings are not supported yet")
+	// errListFailed is Dovecot's answer to any failed listing: a userdb that
+	// cannot iterate, or an SQL, LDAP or passwd-file backend that failed to.
+	errListFailed = errors.New("the Dovecot userdb did not list its users")
+)
+
+// DovecotMailbox is one user whose \Junk folders can be watched. User is the
+// userdb name in lower case and Domain its domain, empty for a domainless
+// system user. Home is empty when the userdb has none. Junk holds the
+// absolute Maildir++ folder of every \Junk mailbox, sorted.
+type DovecotMailbox struct {
+	User, Domain string
+	UID, GID     int
+	Home         string
+	Junk         []string
+}
+
+// Skip is a listed user that is not watched.
+type Skip struct {
+	User, Reason string
+	// UID is retained after a successful lookup, even when mail cannot be watched.
+	UID int
+}
+
+// Snapshot is one discovery pass. Complete is set only when the listing,
+// every identity and a second listing that matches the first were checked.
+// A user confirmed absent is skipped; temporary lookup failures abort the pass.
+// Skipped users are present, not removed.
+type Snapshot struct {
+	Mailboxes []DovecotMailbox
+	Skips     []Skip
+	Complete  bool
+}
+
+// Dovecot discovers mailboxes by running dovecot, doveconf and doveadm
+// through Run; a nil Run executes them.
+type Dovecot struct {
+	Run func(ctx context.Context, name string, args ...string) ([]byte, error)
+}
+
+// Snapshot lists every user and resolves its \Junk folders. Any failure that
+// leaves the listing in doubt returns an error and an empty Snapshot. A user
+// the listing names but doveadm confirms absent is skipped, not dropped.
+func (d Dovecot) Snapshot(ctx context.Context) (Snapshot, error) {
+	if err := d.version(ctx); err != nil {
+		return Snapshot{}, err
+	}
+	out, err := d.cmd(ctx, "doveconf", "-n")
+	if err != nil {
+		return Snapshot{}, err
+	}
+	conf, err := parseConfig(out)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	listed, err := d.users(ctx)
+	if errors.Is(err, errListFailed) && !conf.iterable() {
+		return Snapshot{}, ErrCannotIterate
+	}
+	if err != nil {
+		return Snapshot{}, err
+	}
+	var snap Snapshot
+	var lookup []string
+	seen := map[string]bool{}
+	for _, name := range listed {
+		user, _, ok := canonical(name)
+		switch {
+		case !ok || seen[user]:
+			return Snapshot{}, errors.New("the Dovecot user list has unsupported or ambiguous identities")
+		default:
+			seen[user] = true
+			lookup = append(lookup, name)
+		}
+	}
+	lookupConf := conf
+	conditional := conf.conditional()
+	if conditional {
+		// Read identities without expanding a conditional that could suppress
+		// a record. Skipped mailboxes still determine service UID isolation.
+		lookupConf.location, lookupConf.locs = "", nil
+	}
+	var watch []DovecotMailbox
+	paths := map[string][]string{}
+	unknownPaths := map[int]bool{}
+	for batch := range slices.Chunk(lookup, batchSize) {
+		found, derr := d.details(ctx, lookupConf, batch)
+		if derr != nil {
+			return Snapshot{}, derr
+		}
+		for _, name := range batch {
+			user, domain, _ := canonical(name)
+			det, ok := found[name]
+			if !ok {
+				snap.Skips = append(snap.Skips, Skip{User: user, Reason: SkipLookupFailed})
+				continue
+			}
+			if conditional {
+				snap.Skips = append(snap.Skips, Skip{User: user, Reason: SkipLocation, UID: det.uid})
+				continue
+			}
+			dirs, complete := conf.paths(det)
+			if !complete {
+				unknownPaths[det.uid] = true
+			}
+			paths[user], err = resolveMailPaths(dirs)
+			if err != nil {
+				return Snapshot{}, err
+			}
+			m, reason := conf.mailbox(user, domain, det)
+			if reason != "" {
+				snap.Skips = append(snap.Skips, Skip{User: user, Reason: reason, UID: det.uid})
+				continue
+			}
+			watch = append(watch, m)
+		}
+	}
+	shared := sharedPaths(paths)
+	for _, m := range watch {
+		if unknownPaths[m.UID] {
+			snap.Skips = append(snap.Skips, Skip{User: m.User, Reason: SkipLocation, UID: m.UID})
+			continue
+		}
+		if shared[m.User] {
+			snap.Skips = append(snap.Skips, Skip{User: m.User, Reason: SkipSharedPath, UID: m.UID})
+			continue
+		}
+		snap.Mailboxes = append(snap.Mailboxes, m)
+	}
+	final, err := d.users(ctx)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	if !slices.Equal(listed, final) {
+		return Snapshot{}, errors.New("the Dovecot user list changed during discovery")
+	}
+	slices.SortFunc(snap.Mailboxes, func(a, b DovecotMailbox) int { return strings.Compare(a.User, b.User) })
+	slices.SortFunc(snap.Skips, func(a, b Skip) int { return strings.Compare(a.User, b.User) })
+	snap.Complete = true
+	return snap, nil
+}
+
+// cmd runs one command within commandTimeout and MaxListBytes. On a non-zero
+// exit it returns the output with the error.
+func (d Dovecot) cmd(ctx context.Context, name string, args ...string) ([]byte, error) {
+	run := d.Run
+	if run == nil {
+		run = runCommand
+	}
+	ctx, cancel := context.WithTimeout(ctx, commandTimeout)
+	defer cancel()
+	out, err := run(ctx, name, args...)
+	switch {
+	case ctx.Err() != nil:
+		return nil, fmt.Errorf("%s: %w", name, ctx.Err())
+	case len(out) > MaxListBytes:
+		return nil, fmt.Errorf("%s: %w", name, errTooLarge)
+	case err != nil:
+		return out, fmt.Errorf("%s: %w", name, err)
+	}
+	return out, nil
+}
+
+// version accepts Dovecot 2.3 only: 2.4 renamed the mail settings read here.
+func (d Dovecot) version(ctx context.Context) error {
+	out, err := d.cmd(ctx, "dovecot", "--version")
+	if err != nil {
+		return err
+	}
+	v, _, _ := strings.Cut(strings.TrimSpace(string(out)), " ")
+	major, rest, _ := strings.Cut(v, ".")
+	minor, _, _ := strings.Cut(rest, ".")
+	maj, err1 := strconv.Atoi(major)
+	low, err2 := strconv.Atoi(minor)
+	switch {
+	case err1 != nil || err2 != nil:
+		return errors.New("unrecognised Dovecot version")
+	case maj == 2 && low == 3:
+		return nil
+	case maj > 2 || maj == 2 && low > 3:
+		return ErrDovecot24
+	}
+	return errors.New("dovecot before 2.3 is not supported")
+}
+
+// Users is the identity-only listing: the names Snapshot would look up, in
+// lower case, sorted and distinct. It runs one doveadm command and looks no
+// user up, so a caller can recheck a removal without another Snapshot.
+func (d Dovecot) Users(ctx context.Context) ([]string, error) {
+	listed, err := d.users(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	seen := map[string]bool{}
+	for _, name := range listed {
+		user, _, ok := canonical(name)
+		if !ok || seen[user] {
+			return nil, errors.New("the Dovecot user list has unsupported or ambiguous identities")
+		}
+		seen[user] = true
+		out = append(out, user)
+	}
+	slices.Sort(out)
+	return slices.Compact(out), nil
+}
+
+// users returns the sorted distinct names the userdb lists.
+func (d Dovecot) users(ctx context.Context) ([]string, error) {
+	out, err := d.cmd(ctx, "doveadm", "user", "*")
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && bytes.Contains(exit.Stderr, []byte("User listing returned failure")) {
+		return nil, errListFailed
+	}
+	if err != nil {
+		return nil, err
+	}
+	return parseUsers(out)
+}
+
+// doveadm user goes on past a user it cannot look up, prints no record for
+// it and exits EX_NOUSER (unknown user) or EX_TEMPFAIL (lookup failed).
+const (
+	exNoUser   = 67
+	exTempFail = 75
+)
+
+// details accepts a successful batch only with one record per user in order.
+// EX_NOUSER can mask an earlier temporary failure, so every requested user
+// is rechecked alone on that exit. Unescaped userdb fields can also forge
+// another user's batch record; none is trusted without its own lookup.
+func (d Dovecot) details(ctx context.Context, conf config, batch []string) (map[string]detail, error) {
+	out, err := d.lookup(ctx, conf, batch)
+	var exit *exec.ExitError
+	partial := errors.As(err, &exit) && exit.ExitCode() == exNoUser
+	if err != nil && !partial {
+		return nil, err
+	}
+	recs, err := parseDetails(out, batch, len(conf.locs))
+	if err != nil {
+		return nil, err
+	}
+	if !partial {
+		return inOrder(recs, batch)
+	}
+	found := make(map[string]detail, len(batch))
+	for _, name := range batch {
+		out, lookupErr := d.lookup(ctx, conf, []string{name})
+		if lookupErr != nil && (!errors.As(lookupErr, &exit) || exit.ExitCode() != exNoUser) {
+			return nil, lookupErr
+		}
+		one, err := parseDetails(out, []string{name}, len(conf.locs))
+		if err != nil {
+			return nil, err
+		}
+		if lookupErr != nil {
+			if len(one) != 0 || slices.ContainsFunc(recs, func(r named) bool { return r.name == name }) {
+				return nil, lookupErr
+			}
+			continue
+		}
+		confirmed, err := inOrder(one, []string{name})
+		if err != nil {
+			return nil, err
+		}
+		found[name] = confirmed[name]
+	}
+	return found, nil
+}
+
+// lookup runs doveadm user for names. They come after "--" so none is read
+// as an option, and none contains a mask character.
+func (d Dovecot) lookup(ctx context.Context, conf config, names []string) ([]byte, error) {
+	return d.cmd(ctx, "doveadm", append([]string{"user", "-e", conf.template(), "--"}, names...)...)
+}
+
+// inOrder accepts the records of a lookup that exited 0: exactly one per
+// requested user, in request order.
+func inOrder(recs []named, names []string) (map[string]detail, error) {
+	if !slices.EqualFunc(recs, names, func(r named, name string) bool { return r.name == name }) {
+		return nil, errors.New("doveadm user did not print one record per user in order")
+	}
+	found := make(map[string]detail, len(recs))
+	for _, r := range recs {
+		found[r.name] = r.detail
+	}
+	return found, nil
+}
+
+// canonical validates a listed name and returns it in lower case with its
+// domain. doveadm reads names holding * or ? as masks.
+func canonical(name string) (user, domain string, ok bool) {
+	if strings.ContainsAny(name, "*?") {
+		return "", "", false
+	}
+	local, domain, found := strings.Cut(name, "@")
+	if !ValidMailbox(local) || found && !ValidDomain(domain) {
+		return "", "", false
+	}
+	return strings.ToLower(name), strings.ToLower(domain), true
+}
+
+var errTooLarge = errors.New("output exceeds the bound")
+
+// detail is one user's record: its effective uid, gid and home, the userdb
+// mail and mail_plugins fields, and the configured locations expanded for
+// that user.
+type detail struct {
+	uid, gid            int
+	home, mail, plugins string
+	locs                []string
+}
+
+// junkBox is a \Junk mailbox of a private namespace; loc 0 is the user's
+// mail location, n the namespace location config.locs[n-1].
+type junkBox struct {
+	name, sep string
+	loc       int
+}
+
+// config is what Snapshot reads from doveconf -n: the global mail_location,
+// mail_plugins of every protocol, the \Junk mailboxes with the locations of
+// every private namespace that sets its own location, and the userdbs.
+type config struct {
+	location string
+	plugins  []string
+	locs     []string
+	junk     []junkBox
+	userdbs  []userdb
+}
+
+type userdb struct{ driver, args string }
+
+// iterable reports whether a userdb can list its users. In Dovecot 2.3
+// static, checkpassword and prefetch cannot, nor can passwd-file with a
+// %variable in its path. Any other driver counts as able, so its failure
+// is an outage that keeps learning, not a reason to remove it.
+func (c config) iterable() bool {
+	return slices.ContainsFunc(c.userdbs, func(u userdb) bool {
+		switch u.driver {
+		case "static", "checkpassword", "prefetch":
+			return false
+		case "passwd-file":
+			// The only option a userdb passwd-file takes comes first.
+			path := u.args
+			if strings.HasPrefix(path, "username_format=") {
+				_, path, _ = strings.Cut(path, " ")
+			}
+			return !hasVariable(path)
+		}
+		return true
+	})
+}
+
+// hasVariable reports a % that starts a variable; %% is a literal %.
+func hasVariable(s string) bool {
+	for i := 0; i+1 < len(s); i++ {
+		if s[i] == '%' {
+			if s[i+1] != '%' {
+				return true
+			}
+			i++
+		}
+	}
+	return false
+}
+
+// conditional reports a location in the lookup template that uses %{if}.
+// doveadm prints nothing, and still exits 0, for a user whose %{if} fails
+// to expand, so such a lookup cannot vouch for one record per user.
+func (c config) conditional() bool {
+	return slices.ContainsFunc(append([]string{c.location}, c.locs...), usesIf)
+}
+
+// usesIf matches %{if} as Dovecot does: in any case and after modifiers
+// such as %L.
+func usesIf(loc string) bool {
+	return strings.Contains(strings.ToLower(loc), "{if")
+}
+
+// template has doveadm print, per user, one tab-separated line: %u, uid,
+// gid, home, the userdb mail and mail_plugins fields, every location
+// expanded for that user, then %u again. doveadm escapes nothing, and %u is
+// the name after lookup, which a userdb may rename. So a line counts as a
+// record only with the exact field count, no control byte, and a first and
+// last field equal to a requested name, as listed or in lower case. Even
+// then a newline inside one user's fields can make lines that pass for other
+// users' records; details trusts records only from a lookup that exited 0
+// and printed exactly one per user in request order. Any extra line or tab
+// breaks that count.
+func (c config) template() string {
+	f := append([]string{"%u", "%{uid}", "%{gid}", "%h", "%{userdb:mail}", "%{userdb:mail_plugins}", c.location}, c.locs...)
+	return strings.Join(append(f, "%u"), "\t")
+}
+
+func (c config) mailbox(user, domain string, d detail) (DovecotMailbox, string) {
+	plugins := append(strings.Fields(d.plugins), c.plugins...)
+	switch {
+	case d.uid == 0:
+		return DovecotMailbox{}, SkipUIDRoot
+	case slices.Contains(plugins, "zlib"):
+		return DovecotMailbox{}, SkipPluginZlib
+	case slices.Contains(plugins, "mail_crypt") || slices.Contains(plugins, "mail_crypt_acl"):
+		return DovecotMailbox{}, SkipPluginMailCrypt
+	case d.home != "" && !absClean(d.home):
+		return DovecotMailbox{}, SkipInvalidHome
+	case len(c.junk) == 0:
+		return DovecotMailbox{}, SkipNoJunk
+	}
+	var junk []string
+	for _, j := range c.junk {
+		loc := cmp.Or(d.mail, d.locs[0])
+		if j.loc > 0 {
+			loc = d.locs[j.loc]
+		}
+		root, utf8Names, reason := parseLocation(loc, d.home)
+		if reason != "" {
+			return DovecotMailbox{}, reason
+		}
+		dir, ok := folderDir(j.name, j.sep, utf8Names)
+		if !ok {
+			return DovecotMailbox{}, SkipInvalidName
+		}
+		junk = append(junk, filepath.Join(root, dir))
+	}
+	slices.Sort(junk)
+	home := d.home
+	if home != "" {
+		home = filepath.Clean(home)
+	}
+	return DovecotMailbox{User: user, Domain: domain, UID: d.uid, GID: d.gid, Home: home, Junk: slices.Compact(junk)}, ""
+}
+
+// paths are the directories a user's mail lives in, as far as CSM can tell:
+// the root of the location its INBOX and each private namespace use, and any
+// INBOX override. An unresolved path prevents other users of the same mail
+// UID from borrowing it undetected.
+func (c config) paths(d detail) ([]string, bool) {
+	var out []string
+	complete := true
+	for _, loc := range append([]string{cmp.Or(d.mail, d.locs[0])}, d.locs[1:]...) {
+		_, rest, hasDriver := strings.Cut(loc, ":")
+		if !hasDriver {
+			rest = loc
+		}
+		params := strings.Split(rest, ":")
+		dirs := []string{params[0]}
+		for _, p := range params[1:] {
+			if inbox, ok := strings.CutPrefix(p, "INBOX="); ok {
+				dirs = append(dirs, inbox)
+			}
+		}
+		for _, dir := range dirs {
+			if dir == "~" || strings.HasPrefix(dir, "~/") {
+				if !absClean(d.home) {
+					complete = false
+					continue
+				}
+				dir = d.home + dir[1:]
+			}
+			if absClean(dir) && !strings.Contains(dir, "%") {
+				out = append(out, filepath.Clean(dir))
+			} else {
+				complete = false
+			}
+		}
+	}
+	return out, complete
+}
+
+// Aliased directories belong to the same mailbox even when only one path
+// can be opened without following links. Nonexistent roots hold no mail;
+// other lookup errors leave the snapshot unable to prove isolation.
+func resolveMailPaths(paths []string) ([]string, error) {
+	out := slices.Clone(paths)
+	for _, path := range paths {
+		resolved, err := filepath.EvalSymlinks(path)
+		switch {
+		case err == nil:
+			if resolved != path {
+				out = append(out, resolved)
+			}
+		case errors.Is(err, fs.ErrNotExist), errors.Is(err, syscall.ENOTDIR):
+		default:
+			return nil, errors.New("a Dovecot mail path could not be checked")
+		}
+	}
+	return out, nil
+}
+
+// sharedPaths returns the users with a mail directory that is, holds or
+// lies inside one of another user's. On a shared mail uid file owners
+// cannot tell such users apart.
+func sharedPaths(paths map[string][]string) map[string]bool {
+	owners := map[string][]string{}
+	for user, dirs := range paths {
+		for _, dir := range dirs {
+			if !slices.Contains(owners[dir], user) {
+				owners[dir] = append(owners[dir], user)
+			}
+		}
+	}
+	shared := map[string]bool{}
+	for user, dirs := range paths {
+		for _, dir := range dirs {
+			for up := dir; ; up = filepath.Dir(up) {
+				for _, other := range owners[up] {
+					if other != user {
+						shared[user], shared[other] = true, true
+					}
+				}
+				if up == "/" {
+					break
+				}
+			}
+		}
+	}
+	return shared
+}
+
+// parseUsers reads one name per line, at most MaxMailboxes lines.
+func parseUsers(out []byte) ([]string, error) {
+	var names []string
+	for line := range strings.SplitSeq(string(out), "\n") {
+		if line != "" {
+			names = append(names, line)
+		}
+	}
+	switch {
+	case len(names) == 0:
+		return nil, errors.New("doveadm listed no users")
+	case len(names) > MaxMailboxes:
+		return nil, fmt.Errorf("doveadm listed more than %d users", MaxMailboxes)
+	}
+	slices.Sort(names)
+	return slices.Compact(names), nil
+}
+
+// named is a record under the requested name it matched.
+type named struct {
+	name string
+	detail
+}
+
+// parseDetails returns the records in output order. Every non-empty line
+// must be a record, as template describes, of a distinct requested user;
+// anything else fails the batch.
+func parseDetails(out []byte, batch []string, nloc int) ([]named, error) {
+	errFraming := errors.New("doveadm user printed a malformed record")
+	want := make(map[string]string, 2*len(batch))
+	for _, name := range batch {
+		want[name] = name
+		want[strings.ToLower(name)] = name
+	}
+	var recs []named
+	seen := map[string]bool{}
+	for line := range strings.SplitSeq(string(out), "\n") {
+		if line == "" {
+			continue
+		}
+		f := strings.Split(line, "\t")
+		if len(f) != 8+nloc || f[len(f)-1] != f[0] || strings.ContainsFunc(line, func(r rune) bool { return r != '\t' && control(r) }) {
+			return nil, errFraming
+		}
+		name, ok := want[f[0]]
+		uid, err1 := strconv.ParseUint(f[1], 10, 32)
+		gid, err2 := strconv.ParseUint(f[2], 10, 32)
+		if !ok || seen[name] || err1 != nil || err2 != nil {
+			return nil, errFraming
+		}
+		seen[name] = true
+		recs = append(recs, named{name, detail{uid: int(uid), gid: int(gid), home: f[3], mail: f[4], plugins: f[5], locs: f[6 : len(f)-1]}})
+	}
+	return recs, nil
+}
+
+// parseConfig reads doveconf -n output: settings as "key = value", sections
+// as "kind [name] {" ... "}". Values and names may be double-quoted.
+func parseConfig(out []byte) (config, error) {
+	errSyntax := errors.New("doveconf -n printed a malformed configuration")
+	var c config
+	var stack []string
+	var nsType, nsSep, nsLoc string
+	var boxes []string
+	var box string
+	var junk bool
+	for line := range strings.SplitSeq(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		inNS := len(stack) > 0 && stack[0] == "namespace"
+		switch {
+		case line == "" || line[0] == '#':
+		case line == "}":
+			if len(stack) == 0 {
+				return config{}, errSyntax
+			}
+			top := stack[len(stack)-1]
+			stack = stack[:len(stack)-1]
+			switch {
+			case len(stack) == 1 && inNS && top == "mailbox" && junk:
+				boxes = append(boxes, box)
+			case len(stack) == 0 && inNS && (nsType == "" || nsType == "private"):
+				c.addNamespace(boxes, cmp.Or(nsSep, "."), nsLoc)
+			}
+		case strings.HasSuffix(line, "{"):
+			kind, name, _ := strings.Cut(strings.TrimSpace(strings.TrimSuffix(line, "{")), " ")
+			stack = append(stack, kind)
+			switch {
+			case len(stack) == 1 && kind == "namespace":
+				nsType, nsSep, nsLoc, boxes = "", "", "", nil
+			case len(stack) == 2 && inNS && kind == "mailbox":
+				box, junk = unquote(strings.TrimSpace(name)), false
+			case kind == "userdb":
+				c.userdbs = append(c.userdbs, userdb{})
+			}
+		default:
+			key, value, ok := strings.Cut(line, "=")
+			if !ok {
+				return config{}, errSyntax
+			}
+			key, value = strings.TrimSpace(key), unquote(strings.TrimSpace(value))
+			inUserdb := len(stack) > 0 && stack[len(stack)-1] == "userdb"
+			switch {
+			case inUserdb && key == "driver":
+				c.userdbs[len(c.userdbs)-1].driver = value
+			case inUserdb && key == "args":
+				c.userdbs[len(c.userdbs)-1].args = value
+			case key == "mail_plugins":
+				c.plugins = append(c.plugins, strings.Fields(value)...)
+			case len(stack) == 0 && key == "mail_location":
+				c.location = value
+			case len(stack) == 1 && inNS && key == "type":
+				nsType = value
+			case len(stack) == 1 && inNS && key == "separator":
+				nsSep = value
+			case len(stack) == 1 && inNS && key == "location":
+				nsLoc = value
+			case len(stack) == 2 && inNS && stack[1] == "mailbox" && key == "name":
+				box = value
+			case len(stack) == 2 && inNS && stack[1] == "mailbox" && key == "special_use":
+				junk = slices.ContainsFunc(strings.Fields(value), func(f string) bool { return strings.EqualFold(f, `\Junk`) })
+			}
+		}
+	}
+	if len(stack) != 0 {
+		return config{}, errSyntax
+	}
+	return c, nil
+}
+
+func (c *config) addNamespace(boxes []string, sep, location string) {
+	loc := 0
+	if location != "" {
+		c.locs = append(c.locs, location)
+		loc = len(c.locs)
+	}
+	for _, b := range boxes {
+		c.junk = append(c.junk, junkBox{name: b, sep: sep, loc: loc})
+	}
+}
+
+// unquote strips the quotes doveconf puts around names and values with
+// spaces. doveconf prints backslashes as they are.
+func unquote(s string) string {
+	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
+		return s[1 : len(s)-1]
+	}
+	return s
+}
+
+// harmlessParams are maildir location parameters that leave folder paths
+// unchanged.
+var harmlessParams = map[string]bool{
+	"INBOX": true, "INDEX": true, "INDEXPVT": true, "CONTROL": true, "VOLATILEDIR": true,
+	"LISTINDEX": true, "SUBSCRIPTIONS": true, "BROKENCHAR": true, "ITERINDEX": true, "NO-NOSELECT": true,
+}
+
+// parseLocation returns the Maildir++ root of a mail location and whether
+// folder names are stored as UTF-8. A leading ~ expands to home only.
+func parseLocation(loc, home string) (root string, utf8Names bool, reason string) {
+	driver, rest, ok := strings.Cut(loc, ":")
+	if !ok || !strings.EqualFold(driver, "maildir") {
+		return "", false, SkipDriver
+	}
+	params := strings.Split(rest, ":")
+	root = params[0]
+	for _, p := range params[1:] {
+		key, value, _ := strings.Cut(p, "=")
+		switch {
+		case key == "LAYOUT" && value == "fs":
+			return "", false, SkipLayoutFS
+		case key == "LAYOUT" && value == "maildir++":
+		case key == "UTF-8":
+			utf8Names = true
+		case !harmlessParams[key]:
+			// Includes "" from a "::" escape, DIRNAME and MAILBOXDIR.
+			return "", false, SkipLocation
+		}
+	}
+	if root == "~" || strings.HasPrefix(root, "~/") {
+		if !absClean(home) {
+			return "", false, SkipInvalidHome
+		}
+		root = home + root[1:]
+	}
+	// doveadm expands every location but a userdb mail field, which Dovecot
+	// expands later: a % left there is a variable, not a path, and a
+	// conditional may put any parameter anywhere.
+	if !absClean(root) || strings.Contains(root, "%") || usesIf(loc) {
+		return "", false, SkipLocation
+	}
+	return filepath.Clean(root), utf8Names, ""
+}
+
+// absClean accepts absolute paths without ".." components. Control bytes
+// never get here: parseDetails refuses them in every field.
+func absClean(p string) bool {
+	return strings.HasPrefix(p, "/") && !slices.Contains(strings.Split(p, "/"), "..")
+}
+
+func control(r rune) bool { return r < 0x20 || r == 0x7f }
+
+// folderDir is the Maildir++ directory of a namespace-relative mailbox name:
+// a dot, then the hierarchy levels joined by dots. A level holding a dot or a
+// slash cannot be stored, so the name is refused.
+func folderDir(name, sep string, utf8Names bool) (string, bool) {
+	if len(sep) != 1 || !utf8.ValidString(name) || strings.EqualFold(name, "INBOX") {
+		return "", false
+	}
+	levels := strings.Split(name, sep)
+	for i, l := range levels {
+		if l == "" || strings.ContainsAny(l, "./") || strings.ContainsFunc(l, unicode.IsControl) {
+			return "", false
+		}
+		if !utf8Names {
+			levels[i] = mutf7(l)
+		}
+	}
+	return "." + strings.Join(levels, "."), true
+}
+
+var imapBase64 = base64.NewEncoding("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+,").WithPadding(base64.NoPadding)
+
+// mutf7 is IMAP modified UTF-7 (RFC 3501 5.1.3), the encoding Dovecot uses
+// for folder names on disk unless the location says UTF-8.
+func mutf7(s string) string {
+	var b strings.Builder
+	var wide []rune
+	flush := func() {
+		if len(wide) == 0 {
+			return
+		}
+		var raw []byte
+		for _, u := range utf16.Encode(wide) {
+			raw = binary.BigEndian.AppendUint16(raw, u)
+		}
+		b.WriteString("&" + imapBase64.EncodeToString(raw) + "-")
+		wide = wide[:0]
+	}
+	for _, r := range s {
+		if r < 0x20 || r > 0x7e {
+			wide = append(wide, r)
+			continue
+		}
+		flush()
+		b.WriteRune(r)
+		if r == '&' {
+			b.WriteByte('-')
+		}
+	}
+	flush()
+	return b.String()
+}
+
+// runCommand executes a command with stdin closed. Stdout over MaxListBytes
+// stops it with an error; the first stderr bytes ride on an exec.ExitError.
+// Cancelling ctx kills its whole process group, since doveconf forks.
+func runCommand(ctx context.Context, name string, args ...string) ([]byte, error) {
+	stdout := &capped{limit: MaxListBytes}
+	stderr := &head{limit: 4096}
+	cmd := exec.CommandContext(ctx, name, args...) // #nosec G204 -- fixed Dovecot tools; arguments are constants, doveconf locations and validated user names after "--"
+	cmd.Stdout, cmd.Stderr = stdout, stderr
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		if errors.Is(err, syscall.ESRCH) {
+			return os.ErrProcessDone
+		}
+		return err
+	}
+	cmd.WaitDelay = time.Second
+	err := cmd.Run()
+	if stdout.over {
+		return nil, errTooLarge
+	}
+	var exit *exec.ExitError
+	if errors.As(err, &exit) {
+		exit.Stderr = stderr.buf.Bytes()
+	}
+	return stdout.buf.Bytes(), err
+}
+
+// capped fails a write past limit, which closes the pipe on the child. The
+// buffer is a field, not embedded: an embedded ReadFrom would bypass Write.
+type capped struct {
+	buf   bytes.Buffer
+	limit int
+	over  bool
+}
+
+func (c *capped) Write(p []byte) (int, error) {
+	if c.buf.Len()+len(p) > c.limit {
+		c.over = true
+		return 0, errTooLarge
+	}
+	return c.buf.Write(p)
+}
+
+// head keeps the first limit bytes and drops the rest.
+type head struct {
+	buf   bytes.Buffer
+	limit int
+}
+
+func (h *head) Write(p []byte) (int, error) {
+	h.buf.Write(p[:min(len(p), max(h.limit-h.buf.Len(), 0))])
+	return len(p), nil
+}
+
+func alnum(c byte) bool {
+	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9'
+}
+
+// ValidDomain accepts ASCII DNS names of at most 253 bytes with at least two
+// nonempty labels of at most 63 letters, digits or hyphens, no edge hyphens.
+// Single-label names such as the virtual namespace are not domains.
+func ValidDomain(s string) bool {
+	if len(s) > 253 {
+		return false
+	}
+	labels := strings.Split(s, ".")
+	if len(labels) < 2 {
+		return false
+	}
+	for _, l := range labels {
+		if l == "" || len(l) > 63 || l[0] == '-' || l[len(l)-1] == '-' {
+			return false
+		}
+		for i := 0; i < len(l); i++ {
+			if !alnum(l[i]) && l[i] != '-' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// atextSpecials is RFC 5322 atext punctuation without the slash.
+const atextSpecials = "!#$%&'*+-=?^_`{|}~"
+
+// ValidMailbox accepts ASCII dot-atoms of at most 64 bytes with no leading,
+// trailing or repeated dot. Quoted local parts, whitespace, controls,
+// slashes, backslashes and non-ASCII bytes are refused.
+func ValidMailbox(s string) bool {
+	if s == "" || len(s) > 64 || s[0] == '.' || s[len(s)-1] == '.' || strings.Contains(s, "..") {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !alnum(c) && c != '.' && strings.IndexByte(atextSpecials, c) < 0 {
+			return false
+		}
+	}
+	return true
+}

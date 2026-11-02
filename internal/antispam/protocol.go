@@ -35,8 +35,8 @@ const FeedsCheckStep = "feeds_check"
 
 // Request is the one JSON object the daemon sends to the antispam worker. It
 // carries settings only: no command or Exim text. Its paths are the scan
-// socket, DQS key file and learning directory; keys never travel, because
-// the request is recorded on disk.
+// socket, DQS key file, learning directory and learning Redis socket; keys
+// never travel, because the request is recorded on disk.
 type Request struct {
 	Operation    string  `json:"operation"`
 	Enabled      *bool   `json:"enabled,omitempty"`
@@ -51,9 +51,10 @@ type Request struct {
 	DQSKeyFile *string `json:"dqs_key_file,omitempty"`
 	// Learning fields are omitted when learning is off, so older records
 	// keep their form.
-	Learning    *bool   `json:"learning,omitempty"`
-	LearningDir *string `json:"learning_dir,omitempty"`
-	Roundcube   *bool   `json:"roundcube,omitempty"`
+	Learning            *bool   `json:"learning,omitempty"`
+	LearningDir         *string `json:"learning_dir,omitempty"`
+	LearningRedisSocket *string `json:"learning_redis_socket,omitempty"`
+	Roundcube           *bool   `json:"roundcube,omitempty"`
 	// Exempt and ScopeNets are comma-separated. Exim renders neither, so
 	// they never travel from an Exim host and its requests keep their form.
 	Exempt    *string `json:"exempt,omitempty"`
@@ -90,6 +91,10 @@ func ApplyRequest(s Settings) Request {
 	if s.Learning {
 		learning, dir := true, s.LearningDir
 		r.Learning, r.LearningDir = &learning, &dir
+		if s.LearningRedisSocket != "" {
+			socket := s.LearningRedisSocket
+			r.LearningRedisSocket = &socket
+		}
 	}
 	if s.Roundcube {
 		roundcube := true
@@ -119,7 +124,7 @@ var requestKeys = map[string]bool{
 	"operation": true, "enabled": true, "dry_run": true,
 	"rspamd_socket": true, "reject_score": true, "tag_score": true,
 	"feeds": true, "skip_maps": true, "skip_scores": true, "dqs_key_file": true,
-	"learning": true, "learning_dir": true, "roundcube": true,
+	"learning": true, "learning_dir": true, "learning_redis_socket": true, "roundcube": true,
 	"exempt": true, "scope_nets": true,
 }
 
@@ -142,7 +147,7 @@ func DecodeRequest(data []byte) (Request, Settings, error) {
 	if err != nil {
 		return Request{}, Settings{}, err
 	}
-	for _, key := range []string{"feeds", "skip_maps", "skip_scores", "dqs_key_file", "learning_dir", "learning", "roundcube", "exempt", "scope_nets"} {
+	for _, key := range []string{"feeds", "skip_maps", "skip_scores", "dqs_key_file", "learning_dir", "learning_redis_socket", "learning", "roundcube", "exempt", "scope_nets"} {
 		if value, present := fields[key]; present {
 			var valid bool
 			if key == "skip_scores" || key == "learning" || key == "roundcube" {
@@ -177,6 +182,9 @@ func DecodeRequest(data []byte) (Request, Settings, error) {
 		s.Roundcube = r.Roundcube != nil && *r.Roundcube
 		if s.Learning && r.LearningDir != nil {
 			s.LearningDir = *r.LearningDir
+		}
+		if s.Learning && r.LearningRedisSocket != nil {
+			s.LearningRedisSocket = *r.LearningRedisSocket
 		}
 		s.Exempt = splitNames(r.Exempt)
 		for _, n := range splitNames(r.ScopeNets) {

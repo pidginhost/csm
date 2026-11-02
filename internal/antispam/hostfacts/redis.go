@@ -186,17 +186,8 @@ func redisEndpoint(d antispam.LearningDumps, fullDump []byte) (endpoint string, 
 		}
 		return global[name]
 	}
-	if raw := option("sentinels"); raw != nil {
-		return "", false, antispam.Secret{}, errors.New("redis sentinel backend cannot be identified from config alone")
-	}
-	if raw := option("ssl"); raw != nil && string(raw) != "false" {
-		return "", false, antispam.Secret{}, errors.New("redis TLS backend cannot be probed")
-	}
-	if raw := option("username"); raw != nil {
-		var username string
-		if string(raw) == "null" || json.Unmarshal(raw, &username) != nil || (username != "" && username != "default") {
-			return "", false, antispam.Secret{}, errors.New("redis named-user authentication cannot be probed")
-		}
+	if err := unprobedRedisOptions(option); err != nil {
+		return "", false, antispam.Secret{}, err
 	}
 	var servers []string
 	readKey := ""
@@ -235,6 +226,26 @@ func redisEndpoint(d antispam.LearningDumps, fullDump []byte) (endpoint string, 
 		password = antispam.NewSecret(value)
 	}
 	return servers[0], strings.HasPrefix(servers[0], "/"), password, nil
+}
+
+// unprobedRedisOptions refuses Redis settings that make rspamd reach a
+// server other than the one CSM probes, or reach it another way: sentinels
+// pick the server at runtime, TLS and named users differ from CSM's plain
+// connection.
+func unprobedRedisOptions(option func(name string) json.RawMessage) error {
+	if raw := option("sentinels"); raw != nil {
+		return errors.New("redis sentinel backend cannot be identified from config alone")
+	}
+	if raw := option("ssl"); raw != nil && string(raw) != "false" {
+		return errors.New("redis TLS backend cannot be probed")
+	}
+	if raw := option("username"); raw != nil {
+		var username string
+		if string(raw) == "null" || json.Unmarshal(raw, &username) != nil || (username != "" && username != "default") {
+			return errors.New("redis named-user authentication cannot be probed")
+		}
+	}
+	return nil
 }
 
 func redisServers(raw json.RawMessage) ([]string, error) {

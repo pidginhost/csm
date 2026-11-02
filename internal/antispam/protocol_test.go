@@ -450,3 +450,108 @@ func TestDecodeRequestRejectsBadPostfixScope(t *testing.T) {
 		}
 	}
 }
+
+// Records written before the learning Redis socket existed decode to the
+// settings they always did and serialize to the same bytes, so the worker's
+// record comparison keeps matching them.
+func TestRequestWithoutRedisSocketDecodesAsBefore(t *testing.T) {
+	learning := defaults(true)
+	learning.Feeds, learning.SkipMaps = []string{FeedPSBL, FeedSpamhausDQS}, []string{RedirectWhitelist}
+	learning.SkipScores, learning.DQSKeyFile = true, "/etc/csm/spamhaus-dqs.key"
+	learning.Learning, learning.LearningDir, learning.Roundcube = true, DefaultLearningDir, true
+	postfix := defaults(false)
+	postfix.Learning, postfix.LearningDir = true, DefaultLearningDir
+	postfix.Exempt = []string{"abuse@example.com", "example.org"}
+	postfix.ScopeNets = []netip.Prefix{netip.MustParsePrefix("203.0.113.0/24"), netip.MustParsePrefix("2001:db8::/32")}
+	for _, tc := range []struct {
+		name, record string
+		stack        MailStack
+		want         Settings
+	}{
+		{"exim", validApply, StackExim, defaults(false)},
+		{"exim learning",
+			`{"operation":"apply","enabled":true,"dry_run":true,"rspamd_socket":"/run/rspamd/csm-normal.sock","reject_score":15,"tag_score":6,"feeds":"psbl,spamhaus_dqs","skip_maps":"whitelist","skip_scores":true,"dqs_key_file":"/etc/csm/spamhaus-dqs.key","learning":true,"learning_dir":"/var/lib/csm/antispam/learning","roundcube":true}`,
+			StackExim, learning},
+		{"postfix learning",
+			`{"operation":"apply","enabled":true,"dry_run":false,"rspamd_socket":"/run/rspamd/csm-normal.sock","reject_score":15,"tag_score":6,"learning":true,"learning_dir":"/var/lib/csm/antispam/learning","exempt":"abuse@example.com,example.org","scope_nets":"203.0.113.0/24,2001:db8::/32"}`,
+			StackPostfix, postfix},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req, got, err := DecodeRequest([]byte(tc.record))
+			if err != nil || !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("DecodeRequest = %+v, %v; want %+v", got, err, tc.want)
+			}
+			if data, err := json.Marshal(req); err != nil || string(data) != tc.record {
+				t.Fatalf("decoded request serializes to %s, %v; want %s", data, err, tc.record)
+			}
+			got.Stack = tc.stack
+			if data, err := json.Marshal(ApplyRequest(got)); err != nil || string(data) != tc.record {
+				t.Fatalf("ApplyRequest serializes to %s, %v; want %s", data, err, tc.record)
+			}
+		})
+	}
+}
+
+// The learning Redis socket travels with learning, so the worker renders
+// the same fuzzy worker the daemon did.
+func TestRequestRoundTripLearningRedisSocket(t *testing.T) {
+	want := defaults(false)
+	want.Learning, want.LearningDir, want.LearningRedisSocket = true, DefaultLearningDir, "/run/redis-csm/redis.sock"
+	data, err := json.Marshal(ApplyRequest(want))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(string(data), `,"learning":true,"learning_dir":"/var/lib/csm/antispam/learning","learning_redis_socket":"/run/redis-csm/redis.sock"}`) {
+		t.Fatalf("wire form = %s", data)
+	}
+	_, got, err := DecodeRequest(data)
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("DecodeRequest = %+v, %v; want %+v", got, err, want)
+	}
+	learning := strings.TrimSuffix(validApply, "}") + `,"learning":true,"learning_dir":"/var/lib/csm/antispam/learning"`
+	for _, bad := range []string{
+		`"learning_redis_socket":"run/redis.sock"`,
+		`"learning_redis_socket":"/run/redis csm.sock"`,
+		`"learning_redis_socket":"/run/redis\"csm.sock"`,
+		`"learning_redis_socket":"/run/redis/../csm.sock"`,
+		`"learning_redis_socket":7`,
+		`"learning_redis_socket":null`,
+		`"Learning_Redis_Socket":"/run/redis-csm/redis.sock"`,
+	} {
+		req, s, decodeErr := DecodeRequest([]byte(learning + `,` + bad + `}`))
+		if decodeErr == nil || !reflect.DeepEqual(req, Request{}) || !reflect.DeepEqual(s, Settings{}) {
+			t.Errorf("expected rejection without a partial request for %s", bad)
+		}
+	}
+	// Without learning the socket is inactive, like the learning directory.
+	_, got, err = DecodeRequest([]byte(strings.TrimSuffix(validApply, "}") + `,"learning_redis_socket":"/run/redis-csm/redis.sock"}`))
+	if err != nil || !reflect.DeepEqual(got, defaults(false)) {
+		t.Fatalf("inactive socket changed settings: %+v, %v", got, err)
+	}
+	off := want
+	off.Learning = false
+	if data, err := json.Marshal(ApplyRequest(off)); err != nil || string(data) != validApply {
+		t.Fatalf("request without learning = %s, %v; want %s", data, err, validApply)
+	}
+	if _, _, err := DecodeRequest([]byte(`{"operation":"remove","learning_redis_socket":"/run/redis-csm/redis.sock"}`)); err == nil {
+		t.Error("remove accepted learning_redis_socket")
+	}
+}
+
+func TestSettingsValidateLearningRedisSocket(t *testing.T) {
+	s := defaults(true)
+	s.Learning, s.LearningDir = true, DefaultLearningDir
+	for _, p := range []string{"run/redis.sock", "/run/redis csm.sock", `/run/redis"csm.sock`, "/run/redis/", "/run/redis.sock\n"} {
+		s.LearningRedisSocket = p
+		err := s.Validate()
+		if err == nil || !strings.Contains(err.Error(), "redis_socket") || strings.Contains(err.Error(), "rspamd_socket") {
+			t.Errorf("LearningRedisSocket %q: err = %v, want an error naming redis_socket", p, err)
+		}
+	}
+	for _, p := range []string{"", "/run/redis-csm/redis.sock"} {
+		s.LearningRedisSocket = p
+		if err := s.Validate(); err != nil {
+			t.Errorf("LearningRedisSocket %q: %v", p, err)
+		}
+	}
+}

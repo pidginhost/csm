@@ -11,6 +11,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/pidginhost/csm/internal/antispam/dovecot"
 	"github.com/pidginhost/csm/internal/safepath"
 )
 
@@ -20,10 +21,10 @@ import (
 // enumeration has a separate MaxMailboxes bound.
 const (
 	MaxMailboxListBytes = 1 << 20
-	MaxMailboxes        = 10000
+	MaxMailboxes        = dovecot.MaxMailboxes
 	// MaxAccountMailboxListBytes bounds all of one account's lists; real
 	// lists take a few hundred bytes per mailbox.
-	MaxAccountMailboxListBytes = 4 << 20
+	MaxAccountMailboxListBytes = dovecot.MaxListBytes
 )
 
 // Mailbox discovery skip reasons. Skips carry no tenant-supplied names.
@@ -33,53 +34,6 @@ const (
 	SkipMailboxLimit        = "mailbox_limit"
 	SkipUnsafePath          = "unsafe_path"
 )
-
-func alnum(c byte) bool {
-	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9'
-}
-
-// ValidDomain accepts ASCII DNS names of at most 253 bytes with at least two
-// nonempty labels of at most 63 letters, digits or hyphens, no edge hyphens.
-// Single-label names such as the virtual namespace are not domains.
-func ValidDomain(s string) bool {
-	if len(s) > 253 {
-		return false
-	}
-	labels := strings.Split(s, ".")
-	if len(labels) < 2 {
-		return false
-	}
-	for _, l := range labels {
-		if l == "" || len(l) > 63 || l[0] == '-' || l[len(l)-1] == '-' {
-			return false
-		}
-		for i := 0; i < len(l); i++ {
-			if !alnum(l[i]) && l[i] != '-' {
-				return false
-			}
-		}
-	}
-	return true
-}
-
-// atextSpecials is RFC 5322 atext punctuation without the slash.
-const atextSpecials = "!#$%&'*+-=?^_`{|}~"
-
-// ValidMailbox accepts ASCII dot-atoms of at most 64 bytes with no leading,
-// trailing or repeated dot. Quoted local parts, whitespace, controls,
-// slashes, backslashes and non-ASCII bytes are refused.
-func ValidMailbox(s string) bool {
-	if s == "" || len(s) > 64 || s[0] == '.' || s[len(s)-1] == '.' || strings.Contains(s, "..") {
-		return false
-	}
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if !alnum(c) && c != '.' && strings.IndexByte(atextSpecials, c) < 0 {
-			return false
-		}
-	}
-	return true
-}
 
 // ParseMailboxPasswd returns the sorted distinct valid names from at most
 // limit records of a cPanel mailbox passwd file, including empty lines.
@@ -109,7 +63,7 @@ func parseMailboxPasswd(data []byte, remaining *int) ([]string, []Skip) {
 		raw, _, found := bytes.Cut(line, []byte{':'})
 		name := string(raw)
 		switch {
-		case !found || !ValidMailbox(name):
+		case !found || !dovecot.ValidMailbox(name):
 			skips = append(skips, Skip{Reason: SkipUnsupportedName})
 			continue
 		case seen[name]:
@@ -184,7 +138,7 @@ func domainDirs(etc *safepath.Dir) ([]string, []Skip, error) {
 			// like files, are ignored: cPanel keeps non-domain links here.
 			switch {
 			case strings.HasPrefix(name, "."):
-			case !ValidDomain(name):
+			case !dovecot.ValidDomain(name):
 				if typ.IsDir() {
 					skips = append(skips, Skip{Reason: SkipUnsupportedName})
 				}

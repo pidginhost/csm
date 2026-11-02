@@ -1,6 +1,7 @@
 package hostfacts
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,8 +10,11 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
+	"slices"
 	"strconv"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/antispam"
@@ -33,13 +37,14 @@ const (
 	fuzzyWildcardAddr = "00000000:2C47"
 )
 
-// CollectLearning adds the learning prerequisites to f, which must already
-// hold the core facts (full rspamd dump, options and targets).
-func CollectLearning(ctx context.Context, f *antispam.HostFacts) {
-	live().learningFacts(ctx, f)
+// CollectLearning adds the learning prerequisites for the desired settings
+// s to f, which must already hold the core facts (full rspamd dump, options
+// and targets).
+func CollectLearning(ctx context.Context, s antispam.Settings, f *antispam.HostFacts) {
+	live().learningFacts(ctx, s, f)
 }
 
-func (c collector) learningFacts(ctx context.Context, f *antispam.HostFacts) {
+func (c collector) learningFacts(ctx context.Context, s antispam.Settings, f *antispam.HostFacts) {
 	c.learningDumps(ctx, f)
 	c.learningSymbols(ctx, f)
 	c.controlSocket(f)
@@ -47,9 +52,64 @@ func (c collector) learningFacts(ctx context.Context, f *antispam.HostFacts) {
 	c.logGroups(f)
 	f.FuzzyListening, f.FuzzyListenForeign, f.FuzzyListenErr = c.fuzzyListening(f.Socket.RspamdUID)
 	f.CageFS = c.cageFS(ctx)
-	f.Roundcube = c.roundcube(*f)
-	f.AccountNames, f.AccountNamesErr = c.accountNames()
-	f.Redis = c.redis(ctx, *f)
+	if f.Stack != antispam.StackPostfix {
+		f.Roundcube = c.roundcube(*f)
+	}
+	c.learningRedis(ctx, s.LearningRedisSocket, f)
+	f.RspamdUIDShared, f.RspamdUIDErr = false, nil
+	if f.ControllerHost.RspamdUID > 0 {
+		f.RspamdUIDShared, f.RspamdUIDErr = c.sharesUntrustedUID(f.ControllerHost.RspamdUID, *f)
+	}
+}
+
+// dovecotDeadline bounds the pass's Dovecot listing, which runs while the
+// learner is paused. It is learnwatch.PassDeadline, the bound the watcher's
+// pass puts on the same listing: one that cannot finish within it cannot
+// serve the watcher either.
+var dovecotDeadline = 4 * time.Minute
+
+// dovecotFacts lists a Postfix host's mailboxes for the pass: the uids mail
+// is stored as and the users discovery skips. Only a complete snapshot
+// counts.
+func (c collector) dovecotFacts(ctx context.Context) antispam.DovecotFacts {
+	ctx, cancel := context.WithTimeout(ctx, dovecotDeadline)
+	defer cancel()
+	snap, err := c.dovecot(ctx)
+	if err == nil && !snap.Complete {
+		err = errors.New("the Dovecot mailbox listing is incomplete")
+	}
+	if err != nil {
+		return antispam.DovecotFacts{Err: err}
+	}
+	var uids []int
+	for _, m := range snap.Mailboxes {
+		uids = append(uids, m.UID)
+	}
+	for _, sk := range snap.Skips {
+		if sk.UID > 0 {
+			uids = append(uids, sk.UID)
+		}
+	}
+	slices.Sort(uids)
+	return antispam.DovecotFacts{UIDs: slices.Compact(uids), Skips: snap.Skips}
+}
+
+// CollectLearningRedis reads learning's Redis at socket, the dedicated one
+// named in csm.yaml, into f, which must hold the core facts. The worker
+// calls it under its lock: the socket can change after the pass judged it.
+func CollectLearningRedis(ctx context.Context, socket string, f *antispam.HostFacts) {
+	live().learningRedis(ctx, socket, f)
+}
+
+func (c collector) learningRedis(ctx context.Context, socket string, f *antispam.HostFacts) {
+	if f.Stack == antispam.StackPostfix {
+		// Both the pass and the locked worker must use current mail UIDs.
+		f.Dovecot = c.dovecotFacts(ctx)
+		f.AccountNames, f.AccountNamesErr = c.untrustedLocalUsers(f.ControllerHost.RspamdUser, f.Dovecot.UIDs)
+	} else {
+		f.AccountNames, f.AccountNamesErr = c.accountNames()
+	}
+	f.Redis = c.redis(ctx, *f, socket)
 }
 
 // learningDumps reads the rspamd sections learning verifies. Any failure is
@@ -420,19 +480,31 @@ func (c collector) accountNames() (map[string]bool, error) {
 	return out, nil
 }
 
-// redis identifies the fuzzy worker's Redis backend and probes it. CSM
-// sends the password only to a Unix socket nobody but its owner or root could
-// have put there, owned by a pinned service user; a TCP endpoint is never
-// probed, it fails isolation anyway.
-func (c collector) redis(ctx context.Context, f antispam.HostFacts) antispam.RedisFacts {
-	if f.LearningDumps.Err != nil {
+// redis identifies learning's Redis and probes it: the dedicated socket when
+// one is configured, which gets no password, else on cPanel the fuzzy
+// worker's backend. CSM sends the password only to a Unix socket nobody but
+// its owner or root could have put there, owned by a pinned service user; a
+// TCP endpoint is never probed, it fails isolation anyway.
+func (c collector) redis(ctx context.Context, f antispam.HostFacts, socket string) antispam.RedisFacts {
+	endpoint, unix, password := socket, true, antispam.Secret{}
+	switch {
+	case socket != "":
+	case f.Stack == antispam.StackPostfix:
+		// rspamd's own Redis serves every module on Postfix; learning
+		// there uses only a dedicated one.
+		return antispam.RedisFacts{ServiceUID: -1, Err: errors.New("learning on Postfix has no dedicated Redis")}
+	case f.LearningDumps.Err != nil:
 		return antispam.RedisFacts{ServiceUID: -1, Err: errors.New("rspamd's redis settings were not read")}
-	}
-	endpoint, unix, password, err := redisEndpoint(f.LearningDumps, []byte(f.RspamdConfig.Stdout))
-	if err != nil {
-		return antispam.RedisFacts{ServiceUID: -1, Err: err}
+	default:
+		var err error
+		if endpoint, unix, password, err = redisEndpoint(f.LearningDumps, []byte(f.RspamdConfig.Stdout)); err != nil {
+			return antispam.RedisFacts{ServiceUID: -1, Err: err}
+		}
 	}
 	r := antispam.RedisFacts{Endpoint: endpoint, Unix: unix, ServiceUID: -1}
+	if socket != "" {
+		r.Inherits = globalRedisRefusal(f.RspamdConfig)
+	}
 	if !unix {
 		return r
 	}
@@ -441,33 +513,217 @@ func (c collector) redis(ctx context.Context, f antispam.HostFacts) antispam.Red
 		r.Err = errors.New("redis socket cannot be checked")
 		return r
 	}
+	if f.Stack == antispam.StackPostfix && f.Dovecot.Err != nil {
+		r.Err = errors.New("the Dovecot mail UIDs could not be checked")
+		return r
+	}
 	owner := r.Socket.Socket.UID
 	gid := r.Socket.Socket.GID
 	r.GroupMembers = c.groupMembers(map[int]bool{gid: true})[gid]
-	if !c.trustedRedisOwner(owner, f) || !protectedRedisPath(endpoint, owner, pathFacts) {
+	trusted, trustErr := c.trustedRedisOwner(owner, f)
+	if trustErr != nil && f.Stack == antispam.StackPostfix {
+		r.Err = errors.New("the Redis owner isolation could not be checked")
+		return r
+	}
+	if !trusted || !protectedRedisPath(endpoint, owner, pathFacts) {
 		r.Unprotected = true
 		r.Err = errors.New("redis socket is not protected; CSM sends it no password")
 		return r
 	}
+	if socket != "" {
+		r.Shared, r.SharedErr = sharedRedis(f.RspamdConfig, endpoint)
+	}
 	probed := c.redisProbe(ctx, endpoint, password, owner)
 	probed.Endpoint, probed.Unix, probed.Socket, probed.GroupMembers = endpoint, unix, r.Socket, r.GroupMembers
+	probed.Shared, probed.SharedErr, probed.Inherits = r.Shared, r.SharedErr, r.Inherits
 	return probed
 }
 
+// globalRedisRefusal refuses rspamd's global redis settings that rspamd
+// merges into a fuzzy worker with its own servers, CSM's on the dedicated
+// Redis, and that an empty password cannot clear. redis.fuzzy is not
+// merged into such a worker. An unreadable dump is sharedRedis's to report.
+func globalRedisRefusal(dump antispam.CommandResult) error {
+	root, rootErr := antispam.ParseRspamdDumpObject([]byte(dump.Stdout))
+	global, globalErr := antispam.ParseRspamdDumpObject(root["redis"])
+	if dump.Err == nil && rootErr == nil && globalErr == nil {
+		return unprobedRedisOptions(func(name string) json.RawMessage { return global[name] })
+	}
+	return nil
+}
+
+// sharedRedis reports whether a Redis consumer in rspamd's loaded
+// configuration, other than fuzzy storage, names the socket at endpoint.
+// Paths are compared as files, so a symlink, a bind mount or another
+// spelling of the path is the same endpoint. Fuzzy workers and the
+// redis.fuzzy settings are left out: CSM's worker selects the socket itself,
+// and any other fuzzy worker is a configuration conflict.
+func sharedRedis(dump antispam.CommandResult, endpoint string) (bool, error) {
+	self, err := os.Stat(endpoint)
+	if err != nil {
+		return false, errors.New("cannot read the learning Redis socket")
+	}
+	root, err := antispam.ParseRspamdDumpObject([]byte(dump.Stdout))
+	if dump.Err != nil || err != nil {
+		return false, errors.New("rspamd's loaded configuration is not readable")
+	}
+	var paths []string
+	for key, raw := range root {
+		switch key {
+		case "worker":
+			entries, err := workerEntries(raw)
+			if err != nil {
+				return false, err
+			}
+			for _, entry := range entries {
+				var kind string
+				if _, named := entry["fuzzy"]; named || json.Unmarshal(entry["type"], &kind) == nil && kind == "fuzzy" {
+					continue
+				}
+				if err = redisPaths(entry, &paths); err != nil {
+					return false, err
+				}
+			}
+		case "redis":
+			global, err := antispam.ParseRspamdDumpObject(raw)
+			if err != nil {
+				return false, errors.New("rspamd's redis settings are not readable")
+			}
+			delete(global, "fuzzy")
+			delete(global, "fuzzy_storage")
+			if err = redisPaths(global, &paths); err != nil {
+				return false, err
+			}
+		default:
+			if err := redisPathsIn(raw, &paths); err != nil {
+				return false, err
+			}
+		}
+	}
+	for _, p := range paths {
+		if !strings.HasPrefix(p, "/") {
+			return false, errors.New("rspamd names a Redis socket by a relative path")
+		}
+		info, err := os.Stat(p)
+		switch {
+		case err == nil:
+			if os.SameFile(self, info) {
+				return true, nil
+			}
+		case errors.Is(err, fs.ErrNotExist), errors.Is(err, syscall.ENOTDIR):
+		default:
+			return false, errors.New("cannot check a Redis socket rspamd names")
+		}
+	}
+	return false, nil
+}
+
+// redisServerKeys select Redis servers in an rspamd section.
+var redisServerKeys = map[string]bool{"servers": true, "server": true, "read_servers": true, "write_servers": true}
+
+// redisPaths adds the socket paths the server keys of section name, and
+// those below it.
+func redisPaths(section map[string]json.RawMessage, out *[]string) error {
+	for key, raw := range section {
+		if redisServerKeys[key] {
+			*out = append(*out, socketEntries(raw)...)
+		}
+		if err := redisPathsIn(raw, out); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func redisPathsIn(raw json.RawMessage, out *[]string) error {
+	switch trimmed := bytes.TrimSpace(raw); {
+	case len(trimmed) > 0 && trimmed[0] == '{':
+		section, err := antispam.ParseRspamdDumpObject(trimmed)
+		if err != nil {
+			return errors.New("rspamd's loaded configuration is not readable")
+		}
+		return redisPaths(section, out)
+	case len(trimmed) > 0 && trimmed[0] == '[':
+		var items []json.RawMessage
+		if json.Unmarshal(trimmed, &items) != nil {
+			return errors.New("rspamd's loaded configuration is not readable")
+		}
+		for _, item := range items {
+			if err := redisPathsIn(item, out); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// socketEntries lists the Unix socket entries of an rspamd upstream list: a
+// string or list of strings, each with an optional rotation prefix and
+// entries separated by commas, semicolons or spaces. Unix sockets start
+// with '/' or '.'; other entries are network addresses.
+func socketEntries(raw json.RawMessage) []string {
+	var lines []string
+	var line string
+	if json.Unmarshal(raw, &line) == nil {
+		lines = []string{line}
+	} else {
+		var list []json.RawMessage
+		_ = json.Unmarshal(raw, &list)
+		for _, item := range list {
+			if json.Unmarshal(item, &line) == nil {
+				lines = append(lines, line)
+			}
+		}
+	}
+	var out []string
+	for _, line := range lines {
+		if mode, rest, ok := strings.Cut(line, ":"); ok && upstreamRotations[mode] {
+			line = rest
+		}
+		for _, entry := range strings.FieldsFunc(line, func(r rune) bool { return strings.ContainsRune(",; \t\r\n", r) }) {
+			if strings.HasPrefix(entry, "/") || strings.HasPrefix(entry, ".") {
+				out = append(out, entry)
+			}
+		}
+	}
+	return out
+}
+
+// upstreamRotations are the prefixes rspamd accepts before an upstream list.
+var upstreamRotations = map[string]bool{"random": true, "master-slave": true, "round-robin": true, "hash": true, "sequential": true}
+
 // trustedRedisOwner reports whether uid may serve the Redis socket: root,
-// rspamd's service user or the system user named redis, and no cPanel
-// account shares the uid. Any other owner, including shared users such as
-// nobody that can run tenant code, gets no password.
-func (c collector) trustedRedisOwner(uid int, f antispam.HostFacts) bool {
+// rspamd's service user or the system user named redis, and no untrusted
+// user (f.AccountNames) shares the uid. Any other owner, including shared
+// users such as nobody that can run tenant code, gets no password.
+func (c collector) trustedRedisOwner(uid int, f antispam.HostFacts) (bool, error) {
 	if uid == 0 {
-		return true
+		return true, nil
 	}
-	// A cPanel account can carry the name redis on a host without the
-	// service user, and a uid can have several names; such a uid is a tenant.
-	if f.AccountNamesErr != nil || f.AccountNames["redis"] {
-		return false
+	// A pinned service name does not make a shared UID safe.
+	shared, err := c.sharesUntrustedUID(uid, f)
+	if f.AccountNames["redis"] || shared {
+		return false, nil
 	}
-	var localNames map[string]bool
+	if err != nil {
+		return false, err
+	}
+	if f.Socket.RspamdUID >= 0 && uid == f.Socket.RspamdUID {
+		return true, nil
+	}
+	redisUID, err := c.uid("redis")
+	return err == nil && redisUID >= 0 && uid == redisUID, err
+}
+
+// sharesUntrustedUID reports whether a user in f.AccountNames, which may
+// run tenant code, has uid. The error says CSM cannot rule that out; a
+// proven share wins over it.
+func (c collector) sharesUntrustedUID(uid int, f antispam.HostFacts) (bool, error) {
+	if f.AccountNamesErr != nil {
+		return false, f.AccountNamesErr
+	}
+	var local map[string]int
+	var localErr, unknown error
 	for account := range f.AccountNames {
 		accountUID, err := c.uid(account)
 		// cPanel keeps registry records with no system user, such as its own
@@ -475,26 +731,27 @@ func (c collector) trustedRedisOwner(uid int, f antispam.HostFacts) bool {
 		// from /etc/passwd has no uid to share. NSS can report an unavailable
 		// backend as an unknown user, so the unknown reply alone is not proof.
 		if errors.As(err, new(user.UnknownUserError)) {
-			if localNames == nil {
-				localNames, err = c.localAccountNames()
-				if err != nil {
-					return false
-				}
+			if local == nil && localErr == nil {
+				local, localErr = c.localAccounts()
 			}
-			if localNames[account] {
-				return false
+			switch localUID, listed := local[account]; {
+			case localErr != nil:
+				unknown = localErr
+			case listed && localUID == uid:
+				return true, nil
+			case listed:
+				unknown = errors.New("an account NSS does not know is listed in /etc/passwd")
 			}
 			continue
 		}
-		if err != nil || accountUID == uid {
-			return false
+		switch {
+		case err != nil:
+			unknown = err
+		case accountUID == uid:
+			return true, nil
 		}
 	}
-	if f.Socket.RspamdUID >= 0 && uid == f.Socket.RspamdUID {
-		return true
-	}
-	redisUID, err := c.uid("redis")
-	return err == nil && redisUID >= 0 && uid == redisUID
+	return false, unknown
 }
 
 // protectedRedisPath verifies each lookup, including symlinks and repeated

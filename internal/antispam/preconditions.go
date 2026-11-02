@@ -7,6 +7,8 @@ import (
 	"net/netip"
 	"path/filepath"
 	"slices"
+
+	"github.com/pidginhost/csm/internal/antispam/dovecot"
 )
 
 // Severity says what a failed precondition means for an installation
@@ -220,8 +222,17 @@ type HostFacts struct {
 	FuzzyListenErr     error
 	CageFS             CageFSFacts
 	Roundcube          RoundcubeFacts
-	AccountNames       map[string]bool
-	AccountNamesErr    error
+	// AccountNames are the local users that may run tenant code: the cPanel
+	// accounts on Exim; on Postfix every passwd user but root and the
+	// pinned service users, and every name of a uid Dovecot stores mail as.
+	AccountNames    map[string]bool
+	AccountNamesErr error
+	// RspamdUIDShared is set when a user in AccountNames has rspamd's uid;
+	// RspamdUIDErr when CSM cannot rule that out.
+	RspamdUIDShared bool
+	RspamdUIDErr    error
+	// Dovecot is what learning reads from Dovecot on a Postfix host.
+	Dovecot DovecotFacts
 	// RedisGuardPaused is the pass's last memory-guard state, so the guard
 	// keeps its hysteresis between passes.
 	RedisGuardPaused bool
@@ -622,6 +633,23 @@ type RedisFacts struct {
 	// the socket's owner, directories or peer do not prove who serves it.
 	Unprotected bool
 	Err         error
+	// Shared is set when another rspamd Redis consumer names the dedicated
+	// learning Redis; SharedErr when CSM could not tell.
+	Shared    bool
+	SharedErr error
+	// Inherits names a setting of rspamd's global redis section that rspamd
+	// merges into a fuzzy worker on the dedicated Redis and CSM cannot
+	// probe with.
+	Inherits error
+}
+
+// DovecotFacts are what learning on a Postfix host reads from Dovecot: the
+// uids mail is stored as, the users discovery does not watch, and why it
+// could not list them.
+type DovecotFacts struct {
+	UIDs  []int
+	Skips []dovecot.Skip
+	Err   error
 }
 
 // CageFSFacts say whether CloudLinux CageFS confines every account and

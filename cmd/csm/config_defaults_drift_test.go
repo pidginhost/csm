@@ -199,7 +199,9 @@ func TestAntispamReferenceMatchesRuntimeDefaults(t *testing.T) {
 			"spamhaus_dqs_key_file": as.Feeds.SpamhausDQSKeyFile,
 		},
 		"learning": map[string]any{
-			"enabled": as.Learning.Enabled,
+			"enabled":      as.Learning.Enabled,
+			"redis_socket": as.Learning.RedisSocket,
+			"reporter":     as.Learning.Reporter,
 		},
 		"exempt": exempt,
 	}

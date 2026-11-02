@@ -106,6 +106,9 @@ func New() *Host {
 			}
 			if s.Learning {
 				f.LearningKeys, f.LearningKeysErr = hostfacts.LoadLearningKeys(s.LearningDir)
+				if s.LearningRedisSocket != "" {
+					hostfacts.CollectLearningRedis(ctx, s.LearningRedisSocket, &f)
+				}
 			}
 			return f, antispam.CheckHost(f)
 		},
@@ -751,7 +754,7 @@ func (t *tx) checkRspamd(ctx context.Context, s *antispam.Settings) error {
 // checkLearning compares what rspamd loaded after the reload with CSM's
 // learning files, including the effective weight only the controller shows.
 // Errors carry no command output: the dumps hold keys.
-func (t *tx) checkLearning(ctx context.Context, f antispam.HostFacts, keys antispam.LearningKeys) error {
+func (t *tx) checkLearning(ctx context.Context, f antispam.HostFacts, keys antispam.LearningKeys, redisSocket string) error {
 	socket, ok := antispam.PrivateControllerSocket(f)
 	if !ok {
 		return errors.Join(errLearningLoaded, errors.New("learning needs one private controller socket"))
@@ -794,7 +797,7 @@ func (t *tx) checkLearning(ctx context.Context, f antispam.HostFacts, keys antis
 		if getErr != nil {
 			return errors.Join(errLearningProbe, getErr)
 		}
-		return antispam.CheckLearningLoaded([]byte(fuzzyCheck), root["worker"], []byte(group), symbols, actions, keys)
+		return antispam.CheckLearningLoaded([]byte(fuzzyCheck), root["worker"], []byte(group), symbols, actions, keys, redisSocket)
 	})
 	switch {
 	case err == nil:

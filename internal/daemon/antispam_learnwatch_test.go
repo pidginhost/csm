@@ -4,27 +4,31 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/pidginhost/csm/internal/antispam"
+	"github.com/pidginhost/csm/internal/antispam/dovecot"
 	"github.com/pidginhost/csm/internal/antispam/learn"
 	"github.com/pidginhost/csm/internal/antispam/learnwatch"
 	"github.com/pidginhost/csm/internal/antispam/reconcile"
 	"github.com/pidginhost/csm/internal/store"
 )
 
-// fakeWatcher records its config and how long Run ran.
+// fakeWatcher records its config and how long Run ran; Last returns last.
 type fakeWatcher struct {
 	cfg     learnwatch.WatcherConfig
 	mu      sync.Mutex
 	running bool
 	stopped chan struct{}
+	last    learnwatch.PassReport
 }
 
 func (w *fakeWatcher) Run(ctx context.Context) {
@@ -38,7 +42,15 @@ func (w *fakeWatcher) Run(ctx context.Context) {
 func (w *fakeWatcher) Pass(context.Context) learnwatch.PassReport { return learnwatch.PassReport{} }
 
 func (w *fakeWatcher) Last() (learnwatch.PassReport, time.Time) {
-	return learnwatch.PassReport{}, time.Time{}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.last, time.Time{}
+}
+
+func (w *fakeWatcher) setLast(r learnwatch.PassReport) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.last = r
 }
 
 func withFakeWatchers(t *testing.T) *[]*fakeWatcher {
@@ -290,4 +302,156 @@ func TestDeclaredRestoreHoldsLearningUntilDisabled(t *testing.T) {
 	if mismatch() {
 		t.Fatal("re-enabled learning still held")
 	}
+}
+
+func postfixOutcome(gate antispam.LearningGate, target reconcile.LearnerTarget) reconcile.Outcome {
+	out := learnedOutcome(gate, target)
+	out.Stack = antispam.StackPostfix
+	return out
+}
+
+// fakeDovecot stands in for Dovecot discovery; the watcher must not call it
+// in these tests.
+type fakeDovecot struct{}
+
+func (fakeDovecot) Snapshot(context.Context) (dovecot.Snapshot, error) {
+	return dovecot.Snapshot{}, nil
+}
+func (fakeDovecot) Users(context.Context) ([]string, error) { return nil, nil }
+
+func withFakeDovecot(t *testing.T) {
+	t.Helper()
+	saved := learnwatchDovecot
+	learnwatchDovecot = fakeDovecot{}
+	t.Cleanup(func() { learnwatchDovecot = saved })
+}
+
+// On Postfix the watcher reads reporters from Dovecot with the configured
+// reporter mode and exempt list, and never the cPanel account source or
+// opt-in files; cPanel keeps its source.
+func TestLearnwatchPostfixSource(t *testing.T) {
+	engines := withFakeEngines(t)
+	watchers := withFakeWatchers(t)
+	withFakeDovecot(t)
+	d := newLearningDaemon(t)
+	d.cfg.EmailProtection.Antispam.Learning.Reporter = antispam.ReporterMailbox
+	d.cfg.EmailProtection.Antispam.Exempt = []string{"postmaster@example.com"}
+	d.syncLearner(postfixOutcome(antispam.LearningGate{Install: true, Publish: true}, testTarget))
+	if len(*watchers) != 1 {
+		t.Fatalf("%d watchers", len(*watchers))
+	}
+	cfg := (*watchers)[0].cfg
+	p := cfg.Postfix
+	if p == nil || p.Dovecot != (fakeDovecot{}) || p.Reporter != antispam.ReporterMailbox || !slices.Equal(p.Exempt, []string{"postmaster@example.com"}) {
+		t.Fatalf("Postfix watcher %+v", p)
+	}
+	if cfg.Source != nil || cfg.Engine != (*engines)[0] || cfg.State == nil {
+		t.Fatalf("Postfix watcher config %+v", cfg)
+	}
+	// The exempt list is the watcher's own copy.
+	d.cfg.EmailProtection.Antispam.Exempt[0] = "other@example.com"
+	if p.Exempt[0] != "postmaster@example.com" {
+		t.Fatal("the watcher shares the config's exempt list")
+	}
+	d.stopLearner()
+	d.syncLearner(learnedOutcome(antispam.LearningGate{Install: true, Publish: true}, testTarget))
+	if cfg := (*watchers)[1].cfg; cfg.Postfix != nil || cfg.Source == nil {
+		t.Fatalf("cPanel watcher config %+v", cfg)
+	}
+}
+
+// A Postfix watcher's registry failure reaches antispam_learning through
+// the learner's problems: definite for a userdb that cannot list users or
+// Dovecot 2.4, temporary otherwise, never with command output, and gone
+// after a pass that reads the registry. cPanel reports nothing new.
+func TestLearnwatchPostfixRegistryErrorRaisesFinding(t *testing.T) {
+	withFakeEngines(t)
+	watchers := withFakeWatchers(t)
+	withFakeDovecot(t)
+	d := newLearningDaemon(t)
+	d.syncLearner(postfixOutcome(antispam.LearningGate{Install: true, Publish: true}, testTarget))
+	w := (*watchers)[0]
+	const leaked = "alice@example.com"
+	for _, tc := range []struct {
+		err            error
+		reason, detail string
+	}{
+		{fmt.Errorf("listing: %w", dovecot.ErrCannotIterate), antispam.ReasonUnsupported, "Dovecot cannot list its users; learning needs a userdb that supports iteration"},
+		{dovecot.ErrDovecot24, antispam.ReasonUnsupported, "Dovecot 2.4 mail settings are not supported yet"},
+		{fmt.Errorf("doveadm: %w", context.DeadlineExceeded), antispam.ReasonBackendUnavailable, "listing Dovecot's mailboxes timed out; learning waits for the next check"},
+		{errors.New("doveadm: exit status 75: " + leaked), antispam.ReasonBackendUnavailable, "CSM cannot list Dovecot's mailboxes; learning waits for the next check"},
+	} {
+		w.setLast(learnwatch.PassReport{RegistryErr: tc.err, Skipped: map[string]int{learnwatch.SkipRegistryUnreadable: 1}})
+		problems := d.learnerProblems()
+		if len(problems) != 1 || problems[0].Code != antispam.CodeLearning || problems[0].Key != tc.reason || problems[0].Detail != tc.detail {
+			t.Fatalf("%v: problems %+v", tc.err, problems)
+		}
+		if strings.Contains(problems[0].Detail, leaked) {
+			t.Fatalf("problem leaks command output: %q", problems[0].Detail)
+		}
+	}
+	w.setLast(learnwatch.PassReport{Skipped: map[string]int{}})
+	if problems := d.learnerProblems(); len(problems) != 0 {
+		t.Fatalf("a good pass left problems: %+v", problems)
+	}
+	d.stopLearner()
+	d.syncLearner(learnedOutcome(antispam.LearningGate{Install: true, Publish: true}, testTarget))
+	(*watchers)[1].setLast(learnwatch.PassReport{RegistryErr: errors.New("cannot list cPanel accounts")})
+	if problems := d.learnerProblems(); len(problems) != 0 {
+		t.Fatalf("cPanel registry error reported: %+v", problems)
+	}
+}
+
+// A7: the watcher follows its configuration, not only the learner target.
+// Changing the reporter mode or the exempt list on Postfix restarts it; a
+// pass that cannot tell the stack keeps it; cPanel ignores both keys.
+func TestReporterModeChangeRestartsWatcher(t *testing.T) {
+	withFakeEngines(t)
+	watchers := withFakeWatchers(t)
+	withFakeDovecot(t)
+	d := newLearningDaemon(t)
+	as := &d.cfg.EmailProtection.Antispam
+	as.Learning.Reporter = antispam.ReporterDomain
+	open := antispam.LearningGate{Install: true, Publish: true}
+	step := func(out reconcile.Outcome, want int) *fakeWatcher {
+		t.Helper()
+		d.syncLearner(out)
+		if len(*watchers) != want {
+			t.Fatalf("%d watchers, want %d", len(*watchers), want)
+		}
+		w := (*watchers)[want-1]
+		for _, old := range (*watchers)[:want-1] {
+			select {
+			case <-old.stopped:
+			default:
+				t.Fatal("a replaced watcher still runs")
+			}
+		}
+		return w
+	}
+	step(postfixOutcome(open, testTarget), 1)
+	step(postfixOutcome(open, testTarget), 1)
+	as.Learning.Reporter = antispam.ReporterMailbox
+	if w := step(postfixOutcome(open, testTarget), 2); w.cfg.Postfix.Reporter != antispam.ReporterMailbox {
+		t.Fatalf("restarted watcher reporter %q", w.cfg.Postfix.Reporter)
+	}
+	as.Exempt = []string{"example.com"}
+	if w := step(postfixOutcome(open, testTarget), 3); !slices.Equal(w.cfg.Postfix.Exempt, as.Exempt) {
+		t.Fatalf("restarted watcher exempt %v", w.cfg.Postfix.Exempt)
+	}
+	// Postfix restarting reads as no stack: the running watcher stays.
+	step(learnedOutcome(open, testTarget), 3)
+	// cPanel: neither key is the watcher's.
+	step(func() reconcile.Outcome {
+		o := learnedOutcome(open, testTarget)
+		o.Stack = antispam.StackExim
+		return o
+	}(), 4)
+	as.Learning.Reporter = antispam.ReporterDomain
+	as.Exempt = nil
+	step(func() reconcile.Outcome {
+		o := learnedOutcome(open, testTarget)
+		o.Stack = antispam.StackExim
+		return o
+	}(), 4)
 }

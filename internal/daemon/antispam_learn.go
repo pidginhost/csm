@@ -36,6 +36,7 @@ var newLearnEngine = func(cfg learn.EngineConfig) learnEngine { return learn.New
 // they were built for.
 type learnerRunner struct {
 	target  reconcile.LearnerTarget
+	watch   watchConfig
 	engine  learnEngine
 	watcher learnWatcher
 	gate    atomic.Pointer[antispam.LearningGate]
@@ -89,13 +90,15 @@ func (d *Daemon) syncLearner(out reconcile.Outcome) {
 	}
 	cur := d.antispamLearner.Load()
 	if out.Learner == (reconcile.LearnerTarget{}) {
-		// Wanted, but this pass could not name its controller or keys.
+		// Wanted, but this pass named no learner: no controller or keys,
+		// or learning on Postfix did not resolve on.
 		if cur != nil {
 			cur.setGate(antispam.LearningGate{})
 		}
 		return
 	}
-	if cur != nil && cur.target != out.Learner {
+	watch := watchConfigFor(out.Stack, cfg, cur)
+	if cur != nil && (cur.target != out.Learner || !cur.watch.equal(watch)) {
 		d.stopLearnerLocked()
 		cur = nil
 	}
@@ -104,7 +107,7 @@ func (d *Daemon) syncLearner(out reconcile.Outcome) {
 		if !d.learningWanted() {
 			return
 		}
-		if cur = d.startLearning(d.scanContext(), out.Learner, out.LearningGate); cur == nil {
+		if cur = d.startLearning(d.scanContext(), out.Learner, watch, out.LearningGate); cur == nil {
 			return
 		}
 		if !d.learningWanted() {
@@ -140,7 +143,7 @@ func (d *Daemon) pauseLearner() {
 
 // startLearning applies the first gate before launching either loop, so
 // the watcher's immediate pass cannot miss an already open gate.
-func (d *Daemon) startLearning(ctx context.Context, target reconcile.LearnerTarget, gate antispam.LearningGate) *learnerRunner {
+func (d *Daemon) startLearning(ctx context.Context, target reconcile.LearnerTarget, watch watchConfig, gate antispam.LearningGate) *learnerRunner {
 	db := store.Global()
 	if db == nil {
 		csmlog.Warn("antispam learning cannot start: the state database is not open")
@@ -155,7 +158,7 @@ func (d *Daemon) startLearning(ctx context.Context, target reconcile.LearnerTarg
 		OnReportCommit: func() { learningMetricsSet().Committed.Inc() },
 	})
 	runCtx, cancel := context.WithCancel(ctx)
-	r := &learnerRunner{target: target, engine: engine, cancel: cancel}
+	r := &learnerRunner{target: target, watch: watch, engine: engine, cancel: cancel}
 	r.setGate(gate)
 	r.watcher = newRunnerWatcher(db, r)
 	r.wg.Add(2)
@@ -207,7 +210,13 @@ func (d *Daemon) learnerProblems() []antispam.Problem {
 		}
 	}
 	if r := d.antispamLearner.Load(); r != nil {
-		return withWatcherCapacity(r.engine.Problems(), r.watcher)
+		problems := withWatcherCapacity(r.engine.Problems(), r.watcher)
+		// The last pass's registry error stands until a pass reads the
+		// registry; cPanel's has no finding.
+		if rep, _ := r.watcher.Last(); r.watch.postfix && rep.RegistryErr != nil {
+			problems = append(problems, antispam.DovecotProblem(rep.RegistryErr))
+		}
+		return problems
 	}
 	return nil
 }

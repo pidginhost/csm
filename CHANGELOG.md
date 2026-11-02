@@ -19,6 +19,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - YARA scans no longer reopen tenant files by path or write temporary copies of large files to disk.
 - PHP taint analysis now runs in a locked-down worker with no root, network or account file access; files are reported unexamined when it cannot start.
 - YARA scanning now runs in a locked-down worker without root, so a crafted file can no longer reach a root process through it.
+- Antispam learning is now refused when a hosting account shares rspamd's user ID, which would let that account reach rspamd's controller.
 
 ### Added
 
@@ -26,6 +27,8 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - Antispam DNS blocklists now work through your own resolvers on public addresses when they are listed in `infra_ips`.
 - Nodes can now load central abuse lists that include spam sources.
 - Operators can opt in to report repeated spam senders to the central abuse database; shared mail services are never reported.
+- Antispam learning now accepts Redis 7 and can use a Redis of its own set by `learning.redis_socket`, refused while another rspamd module shares it.
+- Antispam on Postfix servers now learns from mail users move into their Junk folder, using a dedicated Redis.
 
 ### Changed
 
