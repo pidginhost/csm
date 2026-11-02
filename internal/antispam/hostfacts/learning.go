@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/antispam"
@@ -64,10 +65,18 @@ func (c collector) learningFacts(ctx context.Context, s antispam.Settings, f *an
 	}
 }
 
+// dovecotDeadline bounds the pass's Dovecot listing, which runs while the
+// learner is paused. It is learnwatch.PassDeadline, the bound the watcher's
+// pass puts on the same listing: one that cannot finish within it cannot
+// serve the watcher either.
+var dovecotDeadline = 4 * time.Minute
+
 // dovecotFacts lists a Postfix host's mailboxes for the pass: the uids mail
 // is stored as and the users discovery skips. Only a complete snapshot
 // counts.
 func (c collector) dovecotFacts(ctx context.Context) antispam.DovecotFacts {
+	ctx, cancel := context.WithTimeout(ctx, dovecotDeadline)
+	defer cancel()
 	snap, err := c.dovecot(ctx)
 	if err == nil && !snap.Complete {
 		err = errors.New("the Dovecot mailbox listing is incomplete")

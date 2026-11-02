@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/antispam"
 	"github.com/pidginhost/csm/internal/antispam/dovecot"
@@ -375,6 +376,28 @@ func TestCollectLearningPostfixDovecot(t *testing.T) {
 	c.learningFacts(context.Background(), antispam.Settings{Learning: true}, &f)
 	if calls != 0 || f.Dovecot.UIDs != nil {
 		t.Fatalf("Exim listed Dovecot: calls %d, facts %+v", calls, f.Dovecot)
+	}
+}
+
+// The pass pauses the learner while it runs, so its Dovecot listing has a
+// time limit over all commands, not only each one's. A listing that runs
+// out is a timeout, which learning reports as temporary.
+func TestCollectLearningBoundsDovecot(t *testing.T) {
+	old := dovecotDeadline
+	t.Cleanup(func() { dovecotDeadline = old })
+	dovecotDeadline = 50 * time.Millisecond
+	c, f := postfixCollector(t, postfixPasswd)
+	c.dovecot = dovecot.Dovecot{Run: func(ctx context.Context, _ string, _ ...string) ([]byte, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}}.Snapshot
+	start := time.Now()
+	c.learningFacts(context.Background(), antispam.Settings{Learning: true}, &f)
+	if took := time.Since(start); took > 5*time.Second || !errors.Is(f.Dovecot.Err, context.DeadlineExceeded) {
+		t.Fatalf("took %v, Dovecot facts %+v", took, f.Dovecot)
+	}
+	if p := antispam.DovecotProblem(f.Dovecot.Err); p.Key != antispam.ReasonBackendUnavailable {
+		t.Fatalf("problem %+v", p)
 	}
 }
 
