@@ -116,6 +116,21 @@ func ParseActionID(s string) (ActionID, error) {
 	return ActionID(s), nil
 }
 
+// ParseVictimID accepts the name of an eviction victim: an attempt's ID or
+// an import's, the effect name the engine derives for a stamped legacy row
+// ("eff_" and 32 lowercase hex digits).
+func ParseVictimID(s string) (ActionID, error) {
+	if !validEffectName(s) {
+		return "", refuse(ReasonInvalid, "malformed victim ID")
+	}
+	return ActionID(s), nil
+}
+
+// ImportedVictim reports whether a names an import rather than an attempt.
+func ImportedVictim(a ActionID) bool {
+	return strings.HasPrefix(string(a), "eff_") && validEffectName(string(a))
+}
+
 // Attempt links one admitted attempt to its candidate and to the attempt it
 // follows. Replaying or recovering an admitted attempt keeps its ID. A later
 // separately admitted attempt gets a new sequence and never overwrites an

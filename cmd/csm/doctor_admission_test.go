@@ -408,3 +408,15 @@ func TestDoctorCapacityExplainsOccupiedGeneral(t *testing.T) {
 		t.Fatalf("full reserve promised room: %+v", got)
 	}
 }
+
+// A full set's fix says block work may still take the slot of an
+// automatic block it outranks, such as a legacy block that recorded its
+// origin.
+func TestDoctorSetFixNamesReplacement(t *testing.T) {
+	view := setView(time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC))
+	view.Owner.Set.General.Free, view.Owner.Set.Reserved.Free = 0, 0
+	row, ok := doctorCheckNamed(doctorReportForSnapshot(t, admissionSnapshot(view)), "admission set")
+	if !ok || !strings.Contains(row.Fix, "unless it outranks an automatic block it may replace") {
+		t.Fatalf("admission set fix = %q (%v)", row.Fix, ok)
+	}
+}

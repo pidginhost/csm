@@ -281,20 +281,40 @@ evidence may expire while corroboration continues to preserve the same class.
 
 Effect records use an expiry-ordered key followed by the action ID. Decoding
 requires a canonical value that reproduces the key and all recorded fields.
-Their partition tally rejects negative counts, underflow and overflow;
+Victim references accept either an admission attempt ID or an import's
+`eff_` name followed by 32 lowercase hex digits. Record keys remain attempt
+IDs; an import has no record key. Imports have the fixed tier (C2, High)
+and occupy general slots. The codecs keep their existing versions: an
+older build refuses a ledger containing import claims, so such a ledger
+must stay on a compatible build. Preview-only hosts have no such claims.
+The effect records' partition tally rejects negative counts, underflow and overflow;
 failed additions return the original tally. Combining a tally with set
 occupancy also returns an error and the original occupancy if either
 partition's total is invalid or overflows. A full-set deferral raises the
 capacity notice for any assessed tier in a live ledger. A preview ledger
 raises it only for Critical work. A pending block that evicts names its
-victim in its effect record and its intent; the victim's record names the
-block that claimed it and stops holding a slot once that block's
+victim in its effect record and its intent; an admission victim's record
+names the block that claimed it and stops holding a slot once that block's
 application is verified with the victim's removal proven. A verified
 block that never removed its victim releases the claim; an unproven
 removal is an unknown outcome, never a verified one. A definite failure
 releases the victim claim; unknown outcomes keep it through retirement
-until the victim expires. Startup drops the state row of a victim whose
-eviction the ledger verified. Startup readers report an error if the
+until the victim expires. An import, a stamped legacy block the firewall
+lists each turn, is a (C2, High) victim with no record of its own: only
+the claiming block's record and intent name it, by its `eff_` name, and
+no other block claims it while that record does. Opening rejects duplicate
+import claims and requires a general slot above the import tier. Execution
+uses the current turn's list; a missing or changed import drops the claim.
+Scheduling, reservations, observe previews and wake calculations share
+that list and count at least as many general imports as it names, while
+preserving a larger occupancy count. An overfull partition funds no
+replacement until the complete state fits. Observe previews write no
+claim or effect record; wake calculations write nothing.
+A member's sweep also ends its import claim; a delayed outcome may still
+name the import in its intent without looking for a victim record.
+Startup drops the state row of an admission-record victim whose eviction
+the ledger verified. Imports have no durable cleanup record: a restart
+before retirement restores the import only until its original expiry. Startup readers report an error if the
 effects bucket disagrees with the schema or an effect is a nested bucket;
 they do not treat damaged eviction storage as an absent record.
 Expiry can remove either record first. A late definite outcome still ends
@@ -806,8 +826,15 @@ each applied member's key and timed lifetime. Capacity is checked only at
 apply: a check before reservation never answers set_full. Victim checks require
 retained rows at the address to agree on action, expiry and verification.
 An unreadable startup ledger disqualifies all victims; members can still use
-free slots. A member whose
-victim, the admission block the ledger claimed, still has that row, action,
+free slots. The admission snapshot lists at most 256 imports, soonest
+expiry first, then name: timed, verified rows a legacy automatic block
+stamped, each alone at its kernel address with a proven element and named
+by its raw row's `eff_` name. Mapped addresses share the canonical address;
+a retained zoned alias also disqualifies an import. A lone zoned row stays
+unlisted and unclaimed. The imported occupancy count still includes
+unlisted stamped occupants, so a bounded victim list cannot free capacity.
+A member whose
+victim, the admission block or import the ledger claimed, still has that row, name,
 expiry and proven element takes the victim's slot if the resulting set fits the current limit: the same
 transaction deletes the victim's element, and only a readback of the victim's set
 proves it removed; a member whose removal is unproven is unknown, even
@@ -818,7 +845,9 @@ alone, since its expiry in the kernel would reject the whole transaction.
 A victim removed by other means before the send rejects the whole
 transaction with ENOENT, which fails its members like any rejection. The victim's row stays until the owner retires it
 after the ledger records the outcome, so a restart before then restores
-the victim. Definitive kernel rejection
+the victim. Retirement removes an evicted import's row by its `eff_` name
+only while the stamped row still matches it. An operator or unstamped row
+is never retired under an import name. Definitive kernel rejection
 restores state; uncertain exchanges retain unknown rows. Unknown rows are
 marked unverified and excluded from counts and seeding. Expiry retains them
 until the owner retires the matching attempt. A failed state
@@ -840,7 +869,10 @@ the ledger and a new engine over the same state, after a process restart or
 after a reboot that empties the kernel. Around an eviction they also stop
 before the outcome and before the victim's row is retired: until the ledger
 records the eviction a restart restores the victim and holds the block
-back, and after it the victim's row goes and only the block is restored. An unreadable ledger restores
+back. After a committed eviction an admission victim's row goes and only
+the block is restored. An import has no startup cleanup record: after a
+committed eviction, a restart before row retirement restores both blocks
+until the import's original expiry, including after a reboot. An unreadable ledger restores
 unexpired unmarked rows with degraded coverage; a readable ledger keeps a
 committed applied outcome and holds the rest. Attempts without a committed
 outcome are unknown. Their rows are held back, a new block of an address a
@@ -903,14 +935,27 @@ batch runs; the next check tries again. Each member carries the victim its
 reservation claimed, as its intent names it, and the ledger records what the
 batch did to that victim with the member's outcome. Whole-batch failures,
 short replies and delayed outcome writes keep the victim and lease clock
-information. Once a verified eviction is recorded, the owner marks the
-victim's row and retires it, as startup
+information. Once a verified eviction is recorded, the owner marks an
+admission victim's row and retires it, as startup
 does, rotating failed or held rows behind waiting rows and retrying on
 later turns, including while waiting for an absent engine during dry run.
 Cleanup follows the retirement policy, respects state-repair probe waits
 and preserves independent apply faults. Its errors remain
 visible alongside unknown-attempt retirement errors; a restart
-removes the row before the firewall restores its state. After an unknown
+removes the row before the firewall restores its state. The turn hands the
+ledger the imports the set read listed. Clearing that set also clears its
+imports, including a failed read, an idle turn or entry into dry run.
+Returning to previews reads a fresh set and import list. The dry-run
+forecast still models free slots only; it does not evict listed imports.
+An import's row is retired by its
+`eff_` name without a mark. An import-only retirement still retries a
+shared state repair after its probe wait, without marking any import or
+clearing an independent apply fault, including during dry run.
+An import still enforced at retirement (a reload or restart restored its
+row) is forgotten. An error or short retirement answer
+keeps the request for retry; no ledger record names an evicted
+import, so a restart before its retirement restores it until its own
+expiry. After an unknown
 outcome the victim's row stays until the victim expires. A proven block
 found only when the batch applies is checked again when the outcome is written.
 With a fresh proof the pick ends refused as an existing effect, linked to

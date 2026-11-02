@@ -75,7 +75,7 @@ func TestAdmissionLedgerReserveClaimsALowerVictim(t *testing.T) {
 		t.Fatalf("tally %+v, want both counted until the outcome", tally)
 	}
 	if err = f.db.bolt.View(func(tx *bolt.Tx) error {
-		pool, poolErr := victimPool(tx, f.wall)
+		pool, poolErr := victimPool(tx, f.wall, nil)
 		if poolErr == nil && len(pool) != 0 {
 			t.Fatalf("claimed records remained in the pool: %+v", pool)
 		}

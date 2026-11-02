@@ -105,6 +105,10 @@ type AdmissionLedger struct {
 	// the owner last read it (SetOccupants); nil leaves block work without
 	// a slot budget. Guarded by mu.
 	set *admission.SetOccupancy
+	// imports are the known automatic imports the owner last read from the
+	// firewall (SetImports), victims with no record of their own. Guarded
+	// by mu.
+	imports []admission.EvictionVictim
 
 	// revalidated is set once this handle has checked every queued
 	// candidate at a current reading. A reopened ledger cannot know what

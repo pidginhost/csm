@@ -193,6 +193,24 @@ type BlockAdmission struct {
 	// ShadowHeld names the forecast addresses the sets already hold as a
 	// timed or an untimed element.
 	ShadowHeld map[string]bool
+	// Imports lists the imports a member may evict, soonest expiry first,
+	// at most MaxBlockImports; none while startup could not prove
+	// admission outcomes.
+	Imports []BlockImport
+}
+
+// MaxBlockImports bounds the imports one snapshot lists: the soonest to
+// expire, which admission evicts first among imports.
+const MaxBlockImports = 256
+
+// BlockImport is a known automatic block admission may evict (spec 6): a
+// timed, verified row a legacy automatic block stamped, alone at its
+// canonical address, whose element the snapshot proves live. ID is its
+// effect name, which stays the same while the row does.
+type BlockImport struct {
+	ID        string
+	IP        string
+	ExpiresAt time.Time
 }
 
 // Full reports whether the temporary set has no slot left for any member.

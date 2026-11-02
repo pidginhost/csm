@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -236,16 +237,18 @@ func (e *Engine) checkBlockMembersLocked(members []BlockMember, verified []bool,
 }
 
 // victimsLocked reports, per member, whether its victim is still the
-// admission block the ledger claimed, so the batch may remove it (spec
-// 5.5): a well-formed action at an address no member targets, named by no
+// block the ledger claimed, so the batch may remove it (spec 5.5): a
+// well-formed action at an address no member targets, named by no
 // earlier member, whose row there carries that action and expiry and
-// whose timed element snap proves live at that canonical address. Retained
-// rows there must agree; normalization alone cannot prove ownership.
+// whose timed element snap proves live at that canonical address, or an
+// import whose row there still has that name and expiry. Retained rows
+// there must agree; normalization alone cannot prove ownership.
 func (e *Engine) victimsLocked(members []BlockMember, snap blockSnapshot) []bool {
 	out := make([]bool, len(members))
 	if e.blockActionsUnproven != nil {
 		return out
 	}
+	imports := snap.importRows()
 	conflicted := map[string]bool{}
 	rows, _ := pruneBlocked(snap.prior.Blocked, snap.at)
 	for _, row := range rows {
@@ -261,18 +264,72 @@ func (e *Engine) victimsLocked(members []BlockMember, snap blockSnapshot) []bool
 	}
 	for i, m := range members {
 		v := m.Victim
-		if !admissionAction(v.Action) || v.ExpiresAt.IsZero() {
+		if v.ExpiresAt.IsZero() {
 			continue
 		}
 		key := stateIPKey(v.IP)
-		row, held := snap.blocked[key]
+		var row BlockedEntry
+		var held bool
+		switch {
+		case admissionAction(v.Action):
+			row, held = snap.blocked[key]
+			held = held && row.ActionID == v.Action
+		case importName(v.Action):
+			row, held = imports[key]
+			held = held && blockEffectID(row) == v.Action
+		}
 		observed, live := snap.live[v.IP]
-		if targets[key] || taken[key] || conflicted[key] || !held || row.ActionID != v.Action || !row.ExpiresAt.Equal(v.ExpiresAt) || !snap.proves(row, observed, live) {
+		if targets[key] || taken[key] || conflicted[key] || !held || !row.ExpiresAt.Equal(v.ExpiresAt) || !snap.proves(row, observed, live) {
 			continue
 		}
 		out[i], taken[key] = true, true
 	}
 	return out
+}
+
+// importRows maps each canonical address to its candidate import row: a
+// row a legacy automatic block stamped, with no action and no other
+// retained row at the kernel address, including a zoned alias retirement
+// would treat as the same address. Callers still prove its timed element,
+// which also requires the row verified.
+func (snap blockSnapshot) importRows() map[string]BlockedEntry {
+	rows, _ := pruneBlocked(snap.prior.Blocked, snap.at)
+	count := make(map[string]int, len(rows))
+	for _, row := range rows {
+		count[retirementIPKey(row.IP)]++
+	}
+	out := make(map[string]BlockedEntry)
+	for _, row := range rows {
+		key := stateIPKey(row.IP)
+		if count[retirementIPKey(row.IP)] == 1 && row.Automatic && row.ActionID == "" {
+			out[key] = row
+		}
+	}
+	return out
+}
+
+// imports lists the import rows whose temporary element snap proves live,
+// soonest expiry first, then name, at most MaxBlockImports.
+func (snap blockSnapshot) imports(at, elapsed time.Time) []BlockImport {
+	rows := snap.importRows()
+	// Age proof without reclassifying occupants: an alias expiring during
+	// member checks must not promote an unclaimed occupant into the list.
+	snap.at, snap.elapsed = at, elapsed
+	var out []BlockImport
+	for key, row := range rows {
+		observed, live := snap.live[key]
+		if !live || !observed.temporary || !snap.proves(row, observed, live) {
+			continue
+		}
+		out = append(out, BlockImport{ID: blockEffectID(row), IP: key, ExpiresAt: row.ExpiresAt})
+	}
+	slices.SortFunc(out, func(a, b BlockImport) int {
+		if c := a.ExpiresAt.Compare(b.ExpiresAt); c != 0 {
+			return c
+		}
+		return strings.Compare(a.ID, b.ID)
+	})
+	return out[:min(len(out), MaxBlockImports)]
 }
 
 // ageExistingLocked proves each existing effect again at a fresh lease
@@ -412,6 +469,12 @@ func (e *Engine) BlockAdmissionSnapshot(members []BlockMember, shadow []string) 
 		out.Answers[i] = BlockAnswer{Action: m.Action, IP: m.IP, BlockCheck: BlockCheck{Refusal: refusals[i], Existing: snap.existing(m, refusals[i])}}
 	}
 	snap.occupants(&out, e.expiryNow())
+	if e.blockActionsUnproven == nil {
+		// Import proof must age the row and the kernel sample to the same
+		// instant, including time spent checking members and any wall step.
+		at := e.leaseNowLocked()
+		out.Imports = snap.imports(at, e.lease.at)
+	}
 	for _, ip := range shadow {
 		if _, present := snap.live[ip]; present {
 			out.ShadowHeld[ip] = true
@@ -502,8 +565,15 @@ func blockEffectID(row BlockedEntry) string {
 
 // admissionAction reports whether id has the form of an admission action
 // ID: "act_" and 32 lowercase hex digits.
-func admissionAction(id string) bool {
-	rest, ok := strings.CutPrefix(id, "act_")
+func admissionAction(id string) bool { return effectName(id, "act_") }
+
+// importName reports whether id has the form of an import's name, the
+// effect name of a stamped legacy row: "eff_" and 32 lowercase hex digits.
+func importName(id string) bool { return effectName(id, "eff_") }
+
+// effectName reports whether id is prefix and 32 lowercase hex digits.
+func effectName(id, prefix string) bool {
+	rest, ok := strings.CutPrefix(id, prefix)
 	if !ok || len(rest) != 32 {
 		return false
 	}

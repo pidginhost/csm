@@ -17,8 +17,7 @@ import (
 // execution when it fails too. One read-only snapshot names no member and
 // changes nothing, so a preview owner reads the set as well.
 func (o *Owner) readSet() error {
-	o.set, o.setErr = nil, nil
-	o.ledger.SetOccupants(nil)
+	o.clearSet()
 	var engine BlockEngine
 	if o.executable() {
 		engine = o.opts.Blocks()
@@ -33,14 +32,32 @@ func (o *Owner) readSet() error {
 	if o.setErr = err; err == nil {
 		o.set = &adm
 		o.ledger.SetOccupants(&admission.SetOccupancy{Limit: adm.Limit, Unclaimed: adm.Unclaimed, General: adm.Imported})
+		o.ledger.SetImports(importVictims(adm.Imports))
 	}
 	return nil
+}
+
+// importVictims is the engine's import list as the ledger takes it: known
+// automatic imports, (C2, High) victims of the general partition named by
+// their effect (spec 6).
+func importVictims(imports []firewall.BlockImport) []admission.EvictionVictim {
+	out := make([]admission.EvictionVictim, 0, len(imports))
+	for _, imp := range imports {
+		target, err := admission.CanonicalAddress(imp.IP, admission.Caps{IPv6: true})
+		if err != nil {
+			continue
+		}
+		out = append(out, admission.EvictionVictim{Action: admission.ActionID(imp.ID), Target: target, Tier: admission.ImportTier,
+			Partition: admission.PartitionGeneral, ExpiresAt: imp.ExpiresAt})
+	}
+	return out
 }
 
 // clearSet forgets the set: a forecast turn models its own.
 func (o *Owner) clearSet() {
 	o.set, o.setErr = nil, nil
 	o.ledger.SetOccupants(nil)
+	o.ledger.SetImports(nil)
 }
 
 // setStatus combines the last scheduling turn's non-admission occupants

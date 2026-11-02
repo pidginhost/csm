@@ -219,7 +219,7 @@ func (l *AdmissionLedger) execute(ids []admission.ActionID) ([]admission.Intent,
 			in := admission.Intent{Action: id, Batch: batch, Kind: c.Key.Kind, Target: c.Key.Target, ExpiresAt: a.ExpiresAt}
 			switch {
 			case a.State == admission.StateReserved:
-				victim, victimErr := claimedVictim(tx, a)
+				victim, victimErr := claimedVictim(tx, a, q.imports)
 				if victimErr != nil {
 					return victimErr
 				}

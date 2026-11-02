@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"slices"
 )
 
 // RemoveBlockActionRows removes, in one state write, the rows the named
@@ -57,11 +58,12 @@ func (e *Engine) RemoveBlockActionRows(actions []string) (int, error) {
 	return removed, nil
 }
 
-// RetireBlockActions reports, for each unknown attempt the owner would
-// retire after its expiry, whether nothing it may have applied can remain
-// in the kernel (spec 5.4): its address has no element, or the element
-// belongs to a verified row of another action. Each clear attempt's own row
-// (same action ID and address) goes in one state write, under the same
+// RetireBlockActions reports, for each expired unknown attempt or evicted
+// import, whether nothing it may have applied can remain in the kernel
+// (spec 5.4): its address has no element, or the element belongs to a
+// verified row of another action. An import stays held while its own row
+// proves the live element, even if an alias does too. Each clear row
+// (same action ID or import name and address) goes in one state write, under the same
 // engine lock as the snapshot, so no batch writes the address in between.
 // An element still there otherwise keeps the attempt held, as after a
 // forward wall step that made its expiry look past, and so does an address
@@ -103,13 +105,15 @@ func (e *Engine) RetireBlockActions(actions []BlockAction) ([]bool, error) {
 		ip := retirementIPKey(row.IP)
 		observed, live := snap.live[ip]
 		if snap.proves(row, observed, live) {
-			owners[ip] = append(owners[ip], row.ActionID)
+			owners[ip] = append(owners[ip], retireID(row))
 		}
 	}
 	out := make([]bool, len(actions))
 	gone := make(map[BlockAction]bool, len(actions))
 	for i, m := range canonical {
-		if unread[i] {
+		// Aliased imports can prove the same element under different
+		// names. They cannot retire each other while their own proof holds.
+		if unread[i] || (importName(m.Action) && slices.Contains(owners[m.IP], m.Action)) {
 			continue
 		}
 		_, live := snap.live[m.IP]
@@ -127,7 +131,7 @@ func (e *Engine) RetireBlockActions(actions []BlockAction) ([]bool, error) {
 	next := copyFirewallState(snap.prior)
 	kept := next.Blocked[:0]
 	for _, row := range next.Blocked {
-		if gone[BlockAction{Action: row.ActionID, IP: retirementIPKey(row.IP)}] {
+		if gone[BlockAction{Action: retireID(row), IP: retirementIPKey(row.IP)}] {
 			continue
 		}
 		kept = append(kept, row)
@@ -140,6 +144,17 @@ func (e *Engine) RetireBlockActions(actions []BlockAction) ([]bool, error) {
 		return nil, err
 	}
 	return out, nil
+}
+
+// retireID is the name retirement knows row by: the admission action that
+// wrote it or, for a row a legacy automatic block stamped, its effect name
+// (an evicted import). Every other row keeps its empty action, which no
+// retirement names.
+func retireID(row BlockedEntry) string {
+	if row.ActionID == "" && row.Automatic {
+		return blockEffectID(row)
+	}
+	return row.ActionID
 }
 
 // A failed rename durability check can leave no rows for the retry to

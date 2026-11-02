@@ -178,6 +178,7 @@ type queueTx struct {
 	// the handle's set occupancy (AdmissionLedger.set).
 	started bool
 	set     *admission.SetOccupancy
+	imports []admission.EvictionVictim
 }
 
 func (l *AdmissionLedger) openQueue(tx *bolt.Tx, now time.Time) (*queueTx, error) {
@@ -185,7 +186,7 @@ func (l *AdmissionLedger) openQueue(tx *bolt.Tx, now time.Time) (*queueTx, error
 	if err != nil {
 		return nil, err
 	}
-	q.held, q.heldDelta, q.started, q.set = l.held, l.heldDelta, l.live, l.set
+	q.held, q.heldDelta, q.started, q.set, q.imports = l.held, l.heldDelta, l.live, l.set, l.imports
 	return q, nil
 }
 
@@ -1263,7 +1264,7 @@ func (l *AdmissionLedger) NextWake(answers map[admission.CandidateID]admission.A
 		if err != nil {
 			return err
 		}
-		q.held, q.set = l.held, l.set
+		q.held, q.set, q.imports = l.held, l.set, l.imports
 		live, err := q.live()
 		if err != nil {
 			return err

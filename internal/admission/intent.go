@@ -84,8 +84,9 @@ type Intent struct {
 	Victim Victim
 }
 
-// Victim is an automatic block an evicting member removes: its action, its
-// address and the absolute expiry it was applied with.
+// Victim is an automatic block an evicting member removes: the attempt
+// that applied it or, for an import, its effect name, its address and the
+// absolute expiry it was applied with.
 type Victim struct {
 	Action    ActionID
 	Target    Target
@@ -151,7 +152,7 @@ func (in Intent) record() (intentRecord, error) {
 	case !ok || ends <= 0:
 		return intentRecord{}, refuse(ReasonInvalid, "intent victim has no expiry after the epoch")
 	}
-	if _, err := ParseActionID(string(v.Action)); err != nil {
+	if _, err := ParseVictimID(string(v.Action)); err != nil {
 		return intentRecord{}, err
 	}
 	rec.V, rec.Victim, rec.VictimAt, rec.VictimEnd = victimIntentVersion, v.Action, v.Target.Key(), ends
