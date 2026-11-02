@@ -111,8 +111,6 @@ type SocketFacts struct {
 	EximGID int
 }
 
-// HostFacts is everything CheckHost reads. A collector fills it; the checks
-// stay pure.
 // GroupFile is one rspamd group file as read from the host.
 type GroupFile struct {
 	Content string
@@ -120,6 +118,8 @@ type GroupFile struct {
 	Err error
 }
 
+// HostFacts is everything CheckHost reads. A collector fills it; the checks
+// stay pure.
 type HostFacts struct {
 	// Stack selects the preconditions CheckHost applies.
 	Stack MailStack
@@ -162,8 +162,8 @@ type HostFacts struct {
 	RspamdLog LogFacts
 	// IPMap is the CSM IP map file rspamd reads (feeds spec 6).
 	IPMap FileFacts
-	// GroupFiles are the operator's local.d/<group>_group.conf files for
-	// ScoreGroups, keyed by group; an absent file reads as empty.
+	// GroupFiles are the operator's local.d/*_group.conf files, keyed by
+	// group; an absent file reads as empty.
 	GroupFiles map[string]GroupFile
 	// Record is CSM's completion record as found on disk.
 	Record RecordFacts

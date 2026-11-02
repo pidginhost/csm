@@ -355,6 +355,33 @@ func TestRequestRoundTripHostScores(t *testing.T) {
 	}
 }
 
+func TestDecodeRequestRejectsInvalidHostScores(t *testing.T) {
+	for name, field := range map[string]string{
+		"unknown":                 `"host_scores":"private_input"`,
+		"duplicate unknown":       `"host_scores":"private_input,private_input"`,
+		"duplicate symbol":        `"host_scores":"HIDDEN_TEXT,HIDDEN_TEXT"`,
+		"empty name":              `"host_scores":"HIDDEN_TEXT,"`,
+		"null":                    `"host_scores":null`,
+		"boolean":                 `"host_scores":true`,
+		"number":                  `"host_scores":1`,
+		"array":                   `"host_scores":["HIDDEN_TEXT"]`,
+		"object":                  `"host_scores":{}`,
+		"duplicate field":         `"host_scores":"HIDDEN_TEXT","host_scores":"URL_VERY_LONG"`,
+		"escaped duplicate field": `"host_scores":"HIDDEN_TEXT","host_\u0073cores":"URL_VERY_LONG"`,
+		"case variant":            `"Host_Scores":"HIDDEN_TEXT"`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			for _, skip := range []string{"", `,"skip_scores":true`} {
+				body := strings.TrimSuffix(validApply, "}") + "," + field + skip + "}"
+				r, s, err := DecodeRequest([]byte(body))
+				if err == nil || strings.Contains(err.Error(), "private_input") || !reflect.DeepEqual(r, Request{}) || !reflect.DeepEqual(s, Settings{}) {
+					t.Fatalf("invalid host_scores returned a request or unsafe error: %+v, %+v, %v", r, s, err)
+				}
+			}
+		})
+	}
+}
+
 func TestRequestRoundTripSkipScores(t *testing.T) {
 	want := defaults(false)
 	want.SkipScores = true

@@ -495,6 +495,10 @@ func FuzzCheckGenerated(f *testing.F) {
 // rejected or produce a request that re-encodes to settings that validate.
 func FuzzDecodeRequest(f *testing.F) {
 	for _, seed := range []string{
+		strings.TrimSuffix(validApply, "}") + `,"host_scores":"HIDDEN_TEXT,DMARC_POLICY_REJECT"}`,
+		strings.TrimSuffix(validApply, "}") + `,"host_scores":"HIDDEN_TEXT,HIDDEN_TEXT"}`,
+		strings.TrimSuffix(validApply, "}") + `,"host_scores":"unknown"}`,
+		strings.TrimSuffix(validApply, "}") + `,"host_scores":null}`,
 		`{"operation":"apply","enabled":true,"dry_run":false,"rspamd_socket":"/run/rspamd/csm-normal.sock","reject_score":15,"tag_score":6}`,
 		strings.TrimSuffix(validApply, "}") + `,"feeds":"psbl,spamhaus_dqs","skip_maps":"whitelist","dqs_key_file":"/etc/csm/dqs.key"}`,
 		strings.TrimSuffix(validApply, "}") + `,"feeds":null}`,
@@ -542,6 +546,30 @@ func FuzzDecodeRequest(f *testing.F) {
 			}
 		default:
 			t.Fatalf("accepted operation %q", req.Operation)
+		}
+	})
+}
+
+func FuzzDefinesSymbolQuotedText(f *testing.F) {
+	for _, text := range []string{"", "#", "/*", "*/", `\"#`, "/* /* nested */ */", "DMARC_POLICY_REJECT"} {
+		f.Add(text)
+	}
+	f.Fuzz(func(t *testing.T, description string) {
+		quoted, err := json.Marshal(description)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Arbitrary quoted text before a definition must never hide it,
+		// even when it contains comment delimiters or escaped quotes.
+		for _, key := range []string{`DMARC_POLICY_REJECT`, `"DMARC_POLICY_\u0052EJECT"`} {
+			content := "description = " + string(quoted) + "; symbols { " + key + " { weight = 5; } }"
+			if !definesSymbol(content, "DMARC_POLICY_REJECT") {
+				t.Fatal("quoted description hid an operator definition")
+			}
+		}
+		comment := "# " + strings.ReplaceAll(description, "\n", " ") + "\n"
+		if definesSymbol(comment, "DMARC_POLICY_REJECT") {
+			t.Fatal("line comment treated as an operator definition")
 		}
 	})
 }

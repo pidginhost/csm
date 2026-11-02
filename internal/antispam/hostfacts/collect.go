@@ -386,10 +386,22 @@ func RunCommand(ctx context.Context, limit time.Duration, name string, args ...s
 	return antispam.CommandResult{Stdout: stdout.String(), Stderr: stderr.String(), Err: err}
 }
 
-// groupFiles reads the operator's group file for each group CSM weighs.
+// groupFiles also checks other groups: rspamd symbol names are global, so
+// an operator can define a symbol outside its stock group.
 func groupFiles(dir string) map[string]antispam.GroupFile {
 	out := make(map[string]antispam.GroupFile)
-	for _, group := range antispam.ScoreGroups() {
+	groups := antispam.ScoreGroups()
+	entries, listErr := os.ReadDir(dir)
+	for _, entry := range entries {
+		if group, ok := strings.CutSuffix(entry.Name(), "_group.conf"); ok && !slices.Contains(groups, group) {
+			groups = append(groups, group)
+		}
+	}
+	for _, group := range groups {
+		if listErr != nil && !errors.Is(listErr, fs.ErrNotExist) {
+			out[group] = antispam.GroupFile{Err: listErr}
+			continue
+		}
 		content, err := readText(filepath.Join(dir, group+"_group.conf"))
 		if errors.Is(err, fs.ErrNotExist) {
 			content, err = "", nil

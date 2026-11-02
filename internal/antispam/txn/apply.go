@@ -3,6 +3,7 @@ package txn
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 
 	"github.com/pidginhost/csm/internal/antispam"
@@ -34,6 +35,14 @@ func (h *Host) Apply(s antispam.Settings) antispam.Result {
 	// names it.
 	s.Stack = f.Stack
 	// The host can change while the resolved request waits for the worker.
+	if !s.SkipScores {
+		resolved, _ := antispam.ResolveScores(s, f)
+		for _, symbol := range resolved.HostScores {
+			if !slices.Contains(s.HostScores, symbol) {
+				return failed(StepPreconditions, errors.New("rspamd operator weights changed; retry with current host settings"))
+			}
+		}
+	}
 	if len(s.DNSFeeds()) > 0 || s.Redirects() || s.HasFeed(antispam.FeedCSMIPMap) {
 		if ok, why := antispam.FeedsSupported(f.RspamdVersion); !ok {
 			return failed(StepPreconditions, errors.New(why+"; CSM's feeds and map redirects need rspamd 4 or later"))
