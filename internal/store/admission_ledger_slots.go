@@ -74,7 +74,10 @@ func (l *AdmissionLedger) HasChargedWork() (bool, error) {
 // slots is the set budget of this transaction: nil without a set, else
 // the free slots the handle's set and the ledger's records leave, with the
 // verified records and imports strictly higher work may evict once the
-// general partition is full (no work evicts while it has a free slot).
+// general partition is full (no work evicts while it has a free slot). A
+// live ledger on a trusted clock also shares each partition among its
+// scopes, so fresh work may rotate an equal-tier record whose hold passed
+// (spec 5.6).
 func (q *queueTx) slots() (*admission.SlotLimits, error) {
 	if q.set == nil {
 		return nil, nil
@@ -93,15 +96,72 @@ func (q *queueTx) slots() (*admission.SlotLimits, error) {
 	if err != nil {
 		return nil, err
 	}
-	return occ.Limits(func() ([]admission.EvictionVictim, error) { return victimPool(q.tx, q.now, q.imports) })
+	var holding map[admission.Partition]map[string]int
+	slots, err := occ.Limits(func() ([]admission.EvictionVictim, error) {
+		rotates, holdErr := q.holdTest()
+		if holdErr != nil {
+			return nil, holdErr
+		}
+		pool, scopes, poolErr := victimPool(q.tx, q.now, rotates, q.imports)
+		if rotates != nil {
+			holding = scopes
+		}
+		return pool, poolErr
+	})
+	if err == nil && holding != nil {
+		slots.Share(holding, q.waiting, q.state.SetCursors)
+		q.shared = true
+	}
+	return slots, err
 }
 
-// victimPool is what strictly higher work may evict (spec 5.6): records
-// verified, holding their slot and claimed by no pending block, and the
-// unexpired imports no block's record names. The full-set path walks the
-// records once; free-slot admission skips it.
-func victimPool(tx *bolt.Tx, now time.Time, imports []admission.EvictionVictim) ([]admission.EvictionVictim, error) {
+// waitingScopes are the scopes of queued work that would hold a set
+// slot, by the partitions it may occupy: general, and reserved too for
+// work eligible for a reserved lane. Such work shares the set with the
+// scopes holding it (spec 5.6: active scopes include eligible waiting
+// work); a retry's wait does not end its claim.
+func waitingScopes(items []admission.ScheduleItem, byID map[admission.CandidateID]liveCandidate) map[admission.Partition][]string {
+	out := map[admission.Partition][]string{}
+	for _, it := range items {
+		if !demandOf(it, byID[it.ID]).Evicts {
+			continue
+		}
+		out[admission.PartitionGeneral] = append(out[admission.PartitionGeneral], it.Scope)
+		if reservedLane(it) != 0 {
+			out[admission.PartitionReserved] = append(out[admission.PartitionReserved], it.Scope)
+		}
+	}
+	for p := range out {
+		slices.Sort(out[p])
+		out[p] = slices.Compact(out[p])
+	}
+	return out
+}
+
+// holdTest reports whether a record's rotation hold passed: nil, so no
+// record rotates, before the live start or on a degraded reading (spec
+// 5.4: wall time alone proves nothing then).
+func (q *queueTx) holdTest() (func(admission.EffectRecord) bool, error) {
+	if !q.started || q.degraded {
+		return nil, nil
+	}
+	ceiling, err := loadCeilingState(q.tx)
+	if err != nil {
+		return nil, err
+	}
+	return func(rec admission.EffectRecord) bool { return rec.HoldPassed(q.now, ceiling.Elapsed) }, nil
+}
+
+// victimPool is what strictly higher work may evict and fresh equal-tier
+// work may rotate (spec 5.6): records verified, holding their slot and
+// claimed by no pending block, each with its scope and application and
+// rotatable when rotates passes it, and the unexpired imports no block's
+// record names. holding counts the slots each scope's unexpired,
+// unclaimed records hold in each partition, pending ones included. The
+// full-set path walks the records once; free-slot admission skips it.
+func victimPool(tx *bolt.Tx, now time.Time, rotates func(admission.EffectRecord) bool, imports []admission.EvictionVictim) ([]admission.EvictionVictim, map[admission.Partition]map[string]int, error) {
 	var pool []admission.EvictionVictim
+	holding := map[admission.Partition]map[string]int{}
 	claimed := map[admission.ActionID]bool{}
 	if b := tx.Bucket([]byte(admissionEffectsBucket)); b != nil {
 		err := b.ForEach(func(k, v []byte) error {
@@ -112,13 +172,21 @@ func victimPool(tx *bolt.Tx, now time.Time, imports []admission.EvictionVictim) 
 			if rec.Victim.Imported() {
 				claimed[rec.Victim.Action] = true
 			}
-			if rec.Verified() && rec.Holds() && rec.EvictedBy == "" && rec.ExpiresAt.After(now) {
-				pool = append(pool, admission.EvictionVictim{Action: rec.Action, Target: rec.Target, Tier: rec.Tier, Partition: rec.Partition, ExpiresAt: rec.ExpiresAt})
+			if !rec.Holds() || rec.EvictedBy != "" || !rec.ExpiresAt.After(now) {
+				return nil
+			}
+			if holding[rec.Partition] == nil {
+				holding[rec.Partition] = map[string]int{}
+			}
+			holding[rec.Partition][rec.Scope]++
+			if rec.Verified() {
+				pool = append(pool, admission.EvictionVictim{Action: rec.Action, Target: rec.Target, Tier: rec.Tier, Partition: rec.Partition, ExpiresAt: rec.ExpiresAt,
+					Scope: rec.Scope, Applied: rec.Applied, Rotatable: rotates != nil && rotates(rec)})
 			}
 			return nil
 		})
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 	for _, v := range imports {
@@ -126,7 +194,35 @@ func victimPool(tx *bolt.Tx, now time.Time, imports []admission.EvictionVictim) 
 			pool = append(pool, v)
 		}
 	}
-	return pool, nil
+	return pool, holding, nil
+}
+
+// fresh reports whether c's episode has had no verified response, the
+// only work that may rotate an equal-tier block (spec 5.2). Work whose
+// episode row is missing or names another episode is not fresh: an
+// unknown history never proves a new episode.
+func (q *queueTx) fresh(c admission.Candidate) (bool, error) {
+	if !q.started || c.Key.Kind != admission.KindBlockIP {
+		return false, nil
+	}
+	e, found, err := loadEpisode(q.tx, c.Key.Target.Key())
+	return found && e.ID == c.Key.Episode && e.Verified.IsZero(), err
+}
+
+// markFresh notes which of the live candidates byID are fresh. Only a
+// shared set needs it: nothing rotates otherwise.
+func (q *queueTx) markFresh(byID map[admission.CandidateID]liveCandidate) error {
+	if !q.shared {
+		return nil
+	}
+	for id, lc := range byID {
+		var err error
+		if lc.fresh, err = q.fresh(lc.c); err != nil {
+			return err
+		}
+		byID[id] = lc
+	}
+	return nil
 }
 
 // limitBySlots lowers lane budgets to free slots or victims under
@@ -137,10 +233,11 @@ func limitBySlots(lim admission.ScheduleLimits, slots *admission.SlotLimits) adm
 }
 
 // demandOf is what schedule item it of candidate lc asks of the set: only
-// one-unit block_ip work may evict, never the block of its own address.
+// one-unit block_ip work may evict, never the block of its own address,
+// and only fresh work may rotate.
 func demandOf(it admission.ScheduleItem, lc liveCandidate) admission.SlotDemand {
 	return admission.SlotDemand{Tier: it.Tier, Cost: it.CeilingCost, Evicts: lc.c.Key.Kind == admission.KindBlockIP && it.CeilingCost == 1,
-		Reserved: it.Direct || it.Corroborated, Target: lc.c.Key.Target}
+		Reserved: it.Direct || it.Corroborated, Target: lc.c.Key.Target, Scope: it.Scope, Fresh: lc.fresh}
 }
 
 // reservedLane is the reserved lane item it is eligible for; zero for

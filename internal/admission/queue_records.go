@@ -107,26 +107,32 @@ type QueueState struct {
 	// retry, or a reassessment. Zero when nothing waits.
 	NextSweep time.Time
 	Cursors   QueueCursors
+	// SetCursors are the remainder cursors of the temporary set's
+	// partitions, which a live ledger's schedule cycles move (spec 5.6).
+	SetCursors QueueCursors
 }
 
 type queueStateRecord struct {
-	V         uint8  `json:"v"`
-	NextSweep int64  `json:"next_sweep,omitempty"`
-	General   string `json:"general,omitempty"`
-	Reserved  string `json:"reserved,omitempty"`
+	V           uint8  `json:"v"`
+	NextSweep   int64  `json:"next_sweep,omitempty"`
+	General     string `json:"general,omitempty"`
+	Reserved    string `json:"reserved,omitempty"`
+	SetGeneral  string `json:"set_general,omitempty"`
+	SetReserved string `json:"set_reserved,omitempty"`
 }
 
 func validCursor(c string) bool { return c == "" || boundedToken(c, 128) }
 
 func (s QueueState) record() (queueStateRecord, error) {
-	rec := queueStateRecord{V: queueStateVersion, General: s.Cursors.General, Reserved: s.Cursors.Reserved}
+	rec := queueStateRecord{V: queueStateVersion, General: s.Cursors.General, Reserved: s.Cursors.Reserved,
+		SetGeneral: s.SetCursors.General, SetReserved: s.SetCursors.Reserved}
 	if !s.NextSweep.IsZero() {
 		var ok bool
 		if rec.NextSweep, ok = unixNano(s.NextSweep); !ok {
 			return queueStateRecord{}, refuse(ReasonInvalid, "queue sweep time is not representable")
 		}
 	}
-	if !validCursor(rec.General) || !validCursor(rec.Reserved) {
+	if !validCursor(rec.General) || !validCursor(rec.Reserved) || !validCursor(rec.SetGeneral) || !validCursor(rec.SetReserved) {
 		return queueStateRecord{}, refuse(ReasonInvalid, "queue cursor is malformed")
 	}
 	return rec, nil
@@ -146,7 +152,8 @@ func UnmarshalQueueState(data []byte) (QueueState, error) {
 	if err := openRecord(data, &rec); err != nil {
 		return QueueState{}, err
 	}
-	s := QueueState{NextSweep: fromNano(rec.NextSweep), Cursors: QueueCursors{General: rec.General, Reserved: rec.Reserved}}
+	s := QueueState{NextSweep: fromNano(rec.NextSweep), Cursors: QueueCursors{General: rec.General, Reserved: rec.Reserved},
+		SetCursors: QueueCursors{General: rec.SetGeneral, Reserved: rec.SetReserved}}
 	if again, err := s.record(); rec.V != queueStateVersion || err != nil || again != rec {
 		return QueueState{}, ErrCorruptRecord
 	}

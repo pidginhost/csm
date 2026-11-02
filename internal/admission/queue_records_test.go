@@ -85,6 +85,35 @@ func TestQueueStateRoundTrips(t *testing.T) {
 	}
 }
 
+// The set's share cursors persist beside the queue's; a ledger that never
+// moved them encodes exactly as before they existed.
+func TestQueueStateKeepsSetCursors(t *testing.T) {
+	s := QueueState{NextSweep: t0, Cursors: QueueCursors{General: "host/address"}, SetCursors: QueueCursors{General: "acct:alice#1/address", Reserved: "host/address"}}
+	data, err := s.MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if back, decodeErr := UnmarshalQueueState(data); decodeErr != nil || back != s {
+		t.Fatalf("round trip = %+v, %v", back, decodeErr)
+	}
+	plain, err := QueueState{NextSweep: t0, Cursors: s.Cursors}.MarshalBinary()
+	if err != nil || bytes.Contains(plain, []byte("set_")) {
+		t.Fatalf("unmoved set cursors encoded: %s %v", plain, err)
+	}
+	if _, err := (QueueState{SetCursors: QueueCursors{Reserved: "a b"}}).MarshalBinary(); err == nil {
+		t.Fatal("malformed set cursor encoded")
+	}
+	body := plain[:len(plain)-8]
+	for name, tampered := range map[string][]byte{
+		"spaced set cursor": resealForTest(bytes.Replace(body, []byte(`}`), []byte(`,"set_general":"a b"}`), 1)),
+		"empty set cursor":  resealForTest(bytes.Replace(body, []byte(`}`), []byte(`,"set_reserved":""}`), 1)),
+	} {
+		if _, err := UnmarshalQueueState(tampered); err != ErrCorruptRecord {
+			t.Errorf("%s: err = %v, want ErrCorruptRecord", name, err)
+		}
+	}
+}
+
 func TestQueueCountersCountAndRoundTrip(t *testing.T) {
 	var q QueueCounters
 	dropped := CountKey{Event: EventEnded, Reason: ReasonQueueOverflow, Class: ClassC2, Severity: SeverityHigh}

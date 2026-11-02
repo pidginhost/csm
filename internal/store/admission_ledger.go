@@ -109,6 +109,10 @@ type AdmissionLedger struct {
 	// firewall (SetImports), victims with no record of their own. Guarded
 	// by mu.
 	imports []admission.EvictionVictim
+	// waiting are the scopes with work waiting for a set slot in each
+	// partition at the last schedule cycle, which shares the set with them
+	// until the next. Guarded by mu.
+	waiting map[admission.Partition][]string
 
 	// revalidated is set once this handle has checked every queued
 	// candidate at a current reading. A reopened ledger cannot know what

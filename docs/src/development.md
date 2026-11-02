@@ -279,6 +279,10 @@ longest-lived pair determines how long corroboration remains available.
 Equal deadlines and input order do not affect the result. Direct compromise
 evidence may expire while corroboration continues to preserve the same class.
 
+`SlotLimits.Take` adds a scope holding only for one-unit `block_ip` work.
+Zero-cost and multi-unit work do not add holdings, even when marked as
+eviction-capable. Free slots still decrease by the granted cost.
+
 Effect records use an expiry-ordered key followed by the action ID. Decoding
 requires a canonical value that reproduces the key and all recorded fields.
 Victim references accept either an admission attempt ID or an import's
@@ -323,7 +327,33 @@ Expiry can remove either record first. A late definite outcome still ends
 the claim using the retained intent. A reservation that expired without
 running releases its claim. Only records still holding slots contribute
 to occupancy and expiry wakes. Scheduling retains scope turns while a
-lane has no usable slot or strictly lower victim. Saved ceiling turns
+lane has no usable slot or strictly lower victim. A live ledger on a
+trusted clock may instead rotate an equal-tier record out of a full
+partition for fresh work: work whose episode row has had no verified
+response, never work queued without one. The victim is a verified
+record of exactly the work's tier, in the partition of the work's own
+lane, whose 30-minute hold passed on both the admission clock and the
+ceiling's elapsed time since its verified application. A reboot grants
+no elapsed time and a degraded reading allows no rotation. Each
+partition is shared among its active scopes, using the queue's integer
+share rule: the scopes whose unexpired, unclaimed records hold its
+slots, the scopes of queued work that would hold one at the last
+schedule cycle, and the requester's. Each live schedule cycle that reads the
+victim pool first moves each partition's remainder cursor to the next
+active scope and stores it beside the queue cursors, so reservations
+share the set as their cycle did; a preview ledger never moves it. A
+zero-share requester waits for a later cursor turn. Work at or over a
+positive share rotates only its own scope's records;
+work below it reclaims only the scope with the greatest excess, never
+taking that scope below its share, and waits if that scope has no record
+whose hold passed. The oldest application, then the lowest action, goes
+first. Imports never rotate. The claim and its outcome are those of an
+eviction, opening accepts an equal-tier claim only inside the block's
+own lane partition, and a live rotation raises the capacity notice.
+Notice allocation preserves the new attempt's recovery hold; insufficient
+room sends the notice to its fixed overflow record.
+An older build refuses a ledger holding a rotation claim or a moved set
+cursor. Saved ceiling turns
 also keep their earned credits through slot pressure and restart;
 backoff keeps its existing release behavior. Records and intents without
 an eviction keep their version 1 encoding.

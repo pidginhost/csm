@@ -273,24 +273,9 @@ func (v *QueueView) overflow(x QueueItem, p Partition) (QueueItem, bool) {
 		keys = append(keys, x.Scope)
 	}
 	sort.Strings(keys)
-	n := len(keys)
-	start := sort.SearchStrings(keys, pq.cursor)
-	if start < n && keys[start] == pq.cursor {
-		start++
-	}
-	start %= n
-	rank := make(map[string]int, n)
-	for r := 0; r < n; r++ {
-		rank[keys[(start+r)%n]] = r
-	}
-	capacity := v.limits[p]
-	share := func(scope string) int {
-		if rank[scope] < capacity%n {
-			return capacity/n + 1
-		}
-		return capacity / n
-	}
-	pq.cursor = keys[start]
+	shares := newFairShare(keys, pq.cursor, v.limits[p])
+	share := shares.of
+	pq.cursor = shares.first()
 	count := func(scope string) int {
 		if sq := pq.scopes[scope]; sq != nil {
 			return sq.count
@@ -305,8 +290,7 @@ func (v *QueueView) overflow(x QueueItem, p Partition) (QueueItem, bool) {
 		return sq.victims[0], true
 	}
 	best, bestExcess := "", 0
-	for r := 0; r < n; r++ {
-		k := keys[(start+r)%n]
+	for _, k := range shares.keys {
 		sq := pq.scopes[k]
 		if k == x.Scope || sq == nil || len(sq.victims) == 0 {
 			continue
