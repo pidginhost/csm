@@ -38,8 +38,20 @@ func capture(t testing.TB, name string) []record {
 	return c.Commands
 }
 
-func exitError(stderr string) error {
-	return &exec.ExitError{Stderr: []byte(stderr)}
+// exitError is a real exit status: Snapshot reads the code.
+func exitError(t testing.TB, code int, stderr string) error {
+	t.Helper()
+	return shellError(t, fmt.Sprintf("exit %d", code), stderr)
+}
+
+func shellError(t testing.TB, script, stderr string) error {
+	t.Helper()
+	var exit *exec.ExitError
+	if err := exec.Command("sh", "-c", script).Run(); !errors.As(err, &exit) {
+		t.Fatalf("sh -c %q: %v", script, err)
+	}
+	exit.Stderr = []byte(stderr)
+	return exit
 }
 
 // replay serves the captured commands by exact argv, so the commands
@@ -50,7 +62,7 @@ func replay(t *testing.T, recs []record) func(context.Context, string, ...string
 		for _, r := range recs {
 			if slices.Equal(r.Argv, argv) {
 				if r.Exit != 0 {
-					return []byte(r.Stdout), exitError(r.Stderr)
+					return []byte(r.Stdout), exitError(t, r.Exit, r.Stderr)
 				}
 				return []byte(r.Stdout), nil
 			}
@@ -100,6 +112,7 @@ func TestSnapshotMatchesDovecotFolders(t *testing.T) {
 			{User: "frank@example.net", Reason: SkipLayoutFS},
 			{User: "grace@example.com", Reason: SkipPluginZlib},
 			{User: "henry@example.com", Reason: SkipLookupFailed},
+			{User: "rel@example.com", Reason: SkipLookupFailed},
 			{User: "zero@example.com", Reason: SkipLookupFailed},
 		},
 		Complete: true,
@@ -109,6 +122,21 @@ func TestSnapshotMatchesDovecotFolders(t *testing.T) {
 	}
 	if got := junk("/srv/vmail/example.com/alice/Maildir"); !slices.Equal(got, want.Mailboxes[1].Junk) {
 		t.Fatalf("Dovecot paths %q, formula %q", want.Mailboxes[1].Junk, got)
+	}
+}
+
+// Captured: a relative home makes doveadm exit EX_TEMPFAIL after printing
+// the other users of the batch.
+func TestDetailsKeepRecordsOnTempFail(t *testing.T) {
+	recs := capture(t, "maildir")
+	i := slices.IndexFunc(recs, func(r record) bool { return r.Argv[0] == "doveconf" })
+	conf, err := parseConfig([]byte(recs[i].Stdout))
+	if err != nil {
+		t.Fatal(err)
+	}
+	found, err := Dovecot{Run: replay(t, recs)}.details(context.Background(), conf, []string{"alice@example.com", "rel@example.com"})
+	if err != nil || len(found) != 1 || found["alice@example.com"].home != "/srv/vmail/example.com/alice" {
+		t.Fatalf("found %+v, err %v", found, err)
 	}
 }
 
@@ -175,6 +203,9 @@ type host struct {
 	listOut, detailOut []byte
 	listings           int
 	batches            [][]string
+	// detailExit is the status of every lookup batch; 0 means 67 when a
+	// user is unknown, as Dovecot does, and 0 otherwise.
+	detailExit int
 }
 
 func newHost(t *testing.T, users ...string) *host {
@@ -258,10 +289,21 @@ func (h *host) run(ctx context.Context, name string, args ...string) ([]byte, er
 				out.WriteString("\n")
 				continue
 			}
-			out.WriteString(f + "\t" + strings.Join(tmpl[6:], "\t") + "\n\n")
+			out.WriteString(f)
+			for _, v := range tmpl[6:] {
+				if v == "%u" {
+					v = strings.Split(f, "\t")[0]
+				}
+				out.WriteString("\t" + v)
+			}
+			out.WriteString("\n\n")
 		}
-		if missing != nil {
-			return out.Bytes(), exitError("userdb lookup: user " + missing[0] + " doesn't exist\n")
+		code := h.detailExit
+		if code == 0 && missing != nil {
+			code = 67
+		}
+		if code != 0 {
+			return out.Bytes(), exitError(h.t, code, "userdb lookup failed\n")
 		}
 		return out.Bytes(), nil
 	}
@@ -339,7 +381,7 @@ func TestSnapshotRefusesRootUID(t *testing.T) {
 }
 
 func TestSnapshotRefusesHomeOutsideAbsolutePath(t *testing.T) {
-	for _, home := range []string{"relative/home", "", "/srv/vmail/../../root", "~", "/srv/vmail/a\x01b"} {
+	for _, home := range []string{"relative/home", "", "/srv/vmail/../../root", "~"} {
 		h := newHost(t, "alice@example.com")
 		h.set("alice@example.com", 3, home)
 		snap, err := h.snapshot()
@@ -473,7 +515,7 @@ func TestSnapshotSharedNamespaceJunkIsNotWatched(t *testing.T) {
 
 func TestSnapshotListingFailures(t *testing.T) {
 	for name, mutate := range map[string]func(*host){
-		"exit 1":       func(h *host) { h.listErr = exitError("Fatal: something\n") },
+		"exit 1":       func(h *host) { h.listErr = exitError(h.t, 1, "Fatal: something\n") },
 		"start":        func(h *host) { h.listErr = exec.ErrNotFound },
 		"timeout":      func(h *host) { h.listErr = context.DeadlineExceeded },
 		"empty":        func(h *host) { h.list = "" },
@@ -502,22 +544,34 @@ func manyUsers(n int) []byte {
 
 func TestSnapshotDetailFailures(t *testing.T) {
 	line := func(f ...string) []byte { return []byte(strings.Join(f, "\t") + "\n") }
+	// rec is a well-formed record: it ends with its user again.
+	rec := func(f ...string) []byte { return line(append(f, f[0])...) }
 	for name, mutate := range map[string]func(*host){
 		"timeout":    func(h *host) { h.detailErr = context.DeadlineExceeded },
 		"start":      func(h *host) { h.detailErr = exec.ErrNotFound },
+		"exit 1":     func(h *host) { h.detailExit = 1 },
+		"exit 89":    func(h *host) { h.detailExit = 89 },
+		"exit 64":    func(h *host) { h.detailErr = exitError(h.t, 64, "doveadm user [-a <userdb socket path>]\n") },
+		"killed":     func(h *host) { h.detailErr = shellError(h.t, "kill -9 $$", "") },
 		"over bound": func(h *host) { h.detailOut = bytes.Repeat([]byte("\n"), MaxListBytes+1) },
 		"extra field": func(h *host) {
-			h.detailOut = line("alice@example.com", "1000", "1000", "/h", "", "", "maildir:~/M", "x")
+			h.detailOut = rec("alice@example.com", "1000", "1000", "/h", "", "", "maildir:~/M", "x")
 		},
 		"short line": func(h *host) { h.detailOut = line("alice@example.com", "1000", "1000") },
-		"other user": func(h *host) { h.detailOut = line("mallory@example.com", "1000", "1000", "/h", "", "", "maildir:~/M") },
-		"duplicate": func(h *host) {
-			h.detailOut = append(line("alice@example.com", "1000", "1000", "/h", "", "", "maildir:~/M"), line("alice@example.com", "1000", "1000", "/h", "", "", "maildir:~/M")...)
+		"no trailer": func(h *host) { h.detailOut = line("alice@example.com", "1000", "1000", "/h", "", "", "maildir:~/M") },
+		"wrong trailer": func(h *host) {
+			h.detailOut = line("alice@example.com", "1000", "1000", "/h", "", "", "maildir:~/M", "bob@example.com")
 		},
-		"bad uid":      func(h *host) { h.detailOut = line("alice@example.com", "vmail", "1000", "/h", "", "", "maildir:~/M") },
-		"negative uid": func(h *host) { h.detailOut = line("alice@example.com", "-1", "1000", "/h", "", "", "maildir:~/M") },
+		"other user": func(h *host) { h.detailOut = rec("mallory@example.com", "1000", "1000", "/h", "", "", "maildir:~/M") },
+		"duplicate": func(h *host) {
+			h.detailOut = append(rec("alice@example.com", "1000", "1000", "/h", "", "", "maildir:~/M"), rec("alice@example.com", "1000", "1000", "/h", "", "", "maildir:~/M")...)
+		},
+		"control byte": func(h *host) { h.detailOut = rec("alice@example.com", "1000", "1000", "/h\r", "", "", "maildir:~/M") },
+		"control home": func(h *host) { h.set("alice@example.com", 3, "/srv/vmail/a\x01b") },
+		"bad uid":      func(h *host) { h.detailOut = rec("alice@example.com", "vmail", "1000", "/h", "", "", "maildir:~/M") },
+		"negative uid": func(h *host) { h.detailOut = rec("alice@example.com", "-1", "1000", "/h", "", "", "maildir:~/M") },
 		"wide uid": func(h *host) {
-			h.detailOut = line("alice@example.com", "4294967296", "1000", "/h", "", "", "maildir:~/M")
+			h.detailOut = rec("alice@example.com", "4294967296", "1000", "/h", "", "", "maildir:~/M")
 		},
 		"missing": func(h *host) { h.detailOut = []byte("\n") },
 	} {
@@ -530,12 +584,63 @@ func TestSnapshotDetailFailures(t *testing.T) {
 	}
 }
 
+// doveadm exits EX_NOUSER or EX_TEMPFAIL when it could not look up some
+// users and printed the others.
 func TestSnapshotLookupFailureSkipsOnlyThatUser(t *testing.T) {
-	h := newHost(t, "alice@example.com", "ghost@example.com", "bob@example.com")
-	snap, err := h.snapshot()
-	if err != nil || !snap.Complete || len(snap.Mailboxes) != 2 ||
-		!reflect.DeepEqual(reasons(snap), map[string]string{"ghost@example.com": SkipLookupFailed}) {
-		t.Fatalf("snapshot %+v, err %v", snap, err)
+	for _, code := range []int{67, 75} {
+		h := newHost(t, "alice@example.com", "ghost@example.com", "bob@example.com")
+		h.detailExit = code
+		snap, err := h.snapshot()
+		if err != nil || !snap.Complete || len(snap.Mailboxes) != 2 ||
+			!reflect.DeepEqual(reasons(snap), map[string]string{"ghost@example.com": SkipLookupFailed}) {
+			t.Errorf("exit %d: snapshot %+v, err %v", code, snap, err)
+		}
+	}
+}
+
+// A newline and tabs in one user's field must not make a record for another
+// user of the batch, whatever the attacker knows about the template.
+func TestSnapshotFieldCannotForgeAnotherRecord(t *testing.T) {
+	const alice = "/srv/vmail/example.com/alice"
+	for _, home := range []string{
+		alice + "\t\t\tmaildir:" + alice + "/Maildir\nghost@example.com\t1000\t1000\t" + alice,
+		// Both fragments are whole records; only the trailer tells the
+		// second one, which ends with alice, from ghost's.
+		alice + "\t\t\tmaildir:~/Maildir\talice@example.com\nghost@example.com\t1000\t1000\t" + alice,
+		alice + "\t\t\tmaildir:~/Maildir\talice@example.com\nghost@example.com\t1000\t1000\t" + alice + "\t\t\tmaildir:~/Maildir\tghost@example.com\n" + alice,
+		alice + "\t\t\tmaildir:~/Maildir\talice@example.com\nghost@example.com\t1000\t1000\t" + alice + "\t\t\tmaildir:~/Maildir\tghost@example.com\nalice@example.com\t1000\t1000\t" + alice,
+	} {
+		h := newHost(t, "alice@example.com", "ghost@example.com")
+		h.set("alice@example.com", 3, home)
+		snap, err := h.snapshot()
+		if err == nil || snap.Complete || slices.ContainsFunc(snap.Mailboxes, func(m DovecotMailbox) bool { return m.User == "ghost@example.com" }) {
+			t.Errorf("home %q: snapshot %+v, err %v", home, snap, err)
+		}
+	}
+}
+
+// A lookup batch cut off by its deadline is an error even when the command
+// reports a plain exit, so its missing users never become skips.
+func TestSnapshotTimedOutLookupIsAnError(t *testing.T) {
+	for name, exit := range map[string]func(*host) error{
+		"killed":  func(*host) error { return &exec.ExitError{} },
+		"exit 67": func(h *host) error { return exitError(h.t, 67, "") },
+	} {
+		h := newHost(t, "alice@example.com", "bob@example.com")
+		ctx, cancel := context.WithCancel(context.Background())
+		run := func(ctx context.Context, name string, args ...string) ([]byte, error) {
+			out, err := h.run(ctx, name, args...)
+			if len(args) > 1 && args[1] == "-e" {
+				cancel()
+				return out[:bytes.IndexByte(out, '\n')+1], exit(h)
+			}
+			return out, err
+		}
+		snap, err := Dovecot{Run: run}.Snapshot(ctx)
+		if err == nil || !reflect.DeepEqual(snap, Snapshot{}) {
+			t.Errorf("%s: snapshot %+v, err %v", name, snap, err)
+		}
+		cancel()
 	}
 }
 

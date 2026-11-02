@@ -25,7 +25,7 @@
     "user",
     "*"
    ],
-   "stdout": "alice@example.com\nbob@example.com\ncarol@example.net\ndave\nerin@example.net\nfrank@example.net\ngrace@example.com\nHenry@Example.COM\n-x@example.com\nst*r@example.com\nzero@example.com\n",
+   "stdout": "alice@example.com\nbob@example.com\ncarol@example.net\ndave\nerin@example.net\nfrank@example.net\ngrace@example.com\nrel@example.com\nHenry@Example.COM\n-x@example.com\nst*r@example.com\nzero@example.com\n",
    "stderr": "",
    "exit": 0
   },
@@ -34,7 +34,7 @@
     "doveadm",
     "user",
     "-e",
-    "%u\t%{uid}\t%{gid}\t%h\t%{userdb:mail}\t%{userdb:mail_plugins}\tmaildir:~/Maildir",
+    "%u\t%{uid}\t%{gid}\t%h\t%{userdb:mail}\t%{userdb:mail_plugins}\tmaildir:~/Maildir\t%u",
     "--",
     "-x@example.com",
     "Henry@Example.COM",
@@ -45,11 +45,26 @@
     "erin@example.net",
     "frank@example.net",
     "grace@example.com",
+    "rel@example.com",
     "zero@example.com"
    ],
-   "stdout": "-x@example.com\t1000\t1000\t/srv/vmail/example.com/x\t\t\tmaildir:~/Maildir\n\n\nalice@example.com\t1000\t1000\t/srv/vmail/example.com/alice\t\t\tmaildir:~/Maildir\n\nbob@example.com\t1000\t1000\t/srv/vmail/example.com/bob\tmaildir:~/Mail\t\tmaildir:~/Maildir\n\ncarol@example.net\t1001\t1001\t/srv/vmail/example.net/carol\t\t\tmaildir:~/Maildir\n\ndave\t1002\t1002\t/home/dave\t\t\tmaildir:~/Maildir\n\nerin@example.net\t1001\t1001\t/srv/vmail/example.net/erin\tmdbox:~/mdbox\t\tmaildir:~/Maildir\n\nfrank@example.net\t1001\t1001\t/srv/vmail/example.net/frank\tmaildir:~/Maildir:LAYOUT=fs\t\tmaildir:~/Maildir\n\ngrace@example.com\t1000\t1000\t/srv/vmail/example.com/grace\t\tzlib\tmaildir:~/Maildir\n\n",
+   "stdout": "-x@example.com\t1000\t1000\t/srv/vmail/example.com/x\t\t\tmaildir:~/Maildir\t-x@example.com\n\n\nalice@example.com\t1000\t1000\t/srv/vmail/example.com/alice\t\t\tmaildir:~/Maildir\talice@example.com\n\nbob@example.com\t1000\t1000\t/srv/vmail/example.com/bob\tmaildir:~/Mail\t\tmaildir:~/Maildir\tbob@example.com\n\ncarol@example.net\t1001\t1001\t/srv/vmail/example.net/carol\t\t\tmaildir:~/Maildir\tcarol@example.net\n\ndave\t1002\t1002\t/home/dave\t\t\tmaildir:~/Maildir\tdave\n\nerin@example.net\t1001\t1001\t/srv/vmail/example.net/erin\tmdbox:~/mdbox\t\tmaildir:~/Maildir\terin@example.net\n\nfrank@example.net\t1001\t1001\t/srv/vmail/example.net/frank\tmaildir:~/Maildir:LAYOUT=fs\t\tmaildir:~/Maildir\tfrank@example.net\n\ngrace@example.com\t1000\t1000\t/srv/vmail/example.com/grace\t\tzlib\tmaildir:~/Maildir\tgrace@example.com\n\n\n",
    "stderr": "\nuserdb lookup: user Henry@Example.COM doesn't exist\n\nuserdb lookup: user zero@example.com doesn't exist\n",
    "exit": 67
+  },
+  {
+   "argv": [
+    "doveadm",
+    "user",
+    "-e",
+    "%u\t%{uid}\t%{gid}\t%h\t%{userdb:mail}\t%{userdb:mail_plugins}\tmaildir:~/Maildir\t%u",
+    "--",
+    "alice@example.com",
+    "rel@example.com"
+   ],
+   "stdout": "alice@example.com\t1000\t1000\t/srv/vmail/example.com/alice\t\t\tmaildir:~/Maildir\talice@example.com\n\n",
+   "stderr": "",
+   "exit": 75
   },
   {
    "argv": [

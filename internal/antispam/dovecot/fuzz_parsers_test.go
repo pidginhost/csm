@@ -20,6 +20,15 @@ func FuzzParseDoveadmUser(f *testing.F) {
 			}
 		}
 	}
+	// A home carrying a newline and tabs tries to pass as ghost's record.
+	const alice = "/srv/vmail/example.com/alice"
+	for _, home := range []string{
+		alice + "\t\t\tmaildir:" + alice + "/Maildir\nghost@example.com\t1000\t1000\t" + alice,
+		alice + "\t\t\tmaildir:~/Maildir\talice@example.com\nghost@example.com\t1000\t1000\t" + alice,
+		alice + "\t\t\tmaildir:~/Maildir\talice@example.com\nghost@example.com\t1000\t1000\t" + alice + "\t\t\tmaildir:~/Maildir\tghost@example.com\n" + alice,
+	} {
+		f.Add([]byte("alice@example.com\t1000\t1000\t"+home+"\t\t\tmaildir:~/Maildir\talice@example.com\n\n\n"), "alice@example.com\nghost@example.com")
+	}
 	f.Fuzz(func(t *testing.T, out []byte, users string) {
 		if names, err := parseUsers(out); err == nil {
 			if len(names) == 0 || len(names) > MaxMailboxes || !slices.IsSorted(names) {
@@ -44,7 +53,8 @@ func FuzzParseDoveadmUser(f *testing.F) {
 				continue
 			}
 			for name, d := range found {
-				if !slices.Contains(batch, name) || len(d.locs) != 1+nloc || d.uid < 0 || d.uid > math.MaxUint32 || d.gid < 0 || d.gid > math.MaxUint32 {
+				if !slices.Contains(batch, name) || len(d.locs) != 1+nloc || d.uid < 0 || d.uid > math.MaxUint32 || d.gid < 0 || d.gid > math.MaxUint32 ||
+					strings.ContainsFunc(d.home+d.mail+d.plugins+strings.Join(d.locs, ""), control) {
 					t.Fatalf("record %q: %+v", name, d)
 				}
 			}

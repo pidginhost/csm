@@ -25,10 +25,12 @@ rec() {
 	echo $? > "$f.exit"
 }
 # The detail template Snapshot builds: fixed fields, then the global
-# mail_location, then each private \Junk namespace location.
+# mail_location, then each private \Junk namespace location, then the user
+# again.
 tmpl() {
 	printf '%%u\t%%{uid}\t%%{gid}\t%%h\t%%{userdb:mail}\t%%{userdb:mail_plugins}'
 	for loc in "$@"; do printf '\t%s' "$loc"; done
+	printf '\t%%u'
 }
 if [ "${1:-}" = v24 ]; then
 	rec v24 dovecot --version
@@ -102,6 +104,7 @@ dave:{PLAIN}x:1002:1002::/home/dave::
 erin@example.net:{PLAIN}x:1001:1001::/srv/vmail/example.net/erin::userdb_mail=mdbox:~/mdbox
 frank@example.net:{PLAIN}x:1001:1001::/srv/vmail/example.net/frank::userdb_mail=maildir:~/Maildir:LAYOUT=fs
 grace@example.com:{PLAIN}x:1000:1000::/srv/vmail/example.com/grace::userdb_mail_plugins=zlib
+rel@example.com:{PLAIN}x:1000:1000::relative/home::
 Henry@Example.COM:{PLAIN}x:1000:1000::/srv/vmail/example.com/henry::
 -x@example.com:{PLAIN}x:1000:1000::/srv/vmail/example.com/x::
 st*r@example.com:{PLAIN}x:1000:1000::/srv/vmail/example.com/star::
@@ -117,7 +120,9 @@ rec maildir doveconf -n
 rec maildir doveadm user '*'
 # Snapshot looks users up in sorted order and never passes st*r, whose name
 # doveadm would read as a mask.
-rec maildir doveadm user -e "$T" -- -x@example.com Henry@Example.COM alice@example.com bob@example.com carol@example.net dave erin@example.net frank@example.net grace@example.com zero@example.com
+rec maildir doveadm user -e "$T" -- -x@example.com Henry@Example.COM alice@example.com bob@example.com carol@example.net dave erin@example.net frank@example.net grace@example.com rel@example.com zero@example.com
+# Dovecot refuses a relative home: EX_TEMPFAIL, alice still printed.
+rec maildir doveadm user -e "$T" -- alice@example.com rel@example.com
 # Ground truth for the Junk paths: where Dovecot itself puts each folder.
 for u in alice@example.com bob@example.com carol@example.net; do
 	for box in INBOX.Junk 'INBOX.Courrier indésirable' 'INBOX.Spam & Co'; do

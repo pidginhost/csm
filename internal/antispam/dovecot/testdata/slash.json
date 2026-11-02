@@ -34,12 +34,12 @@
     "doveadm",
     "user",
     "-e",
-    "%u\t%{uid}\t%{gid}\t%h\t%{userdb:mail}\t%{userdb:mail_plugins}\tmaildir:~/Maildir:UTF-8\tmaildir:/srv/archive/%d/%n",
+    "%u\t%{uid}\t%{gid}\t%h\t%{userdb:mail}\t%{userdb:mail_plugins}\tmaildir:~/Maildir:UTF-8\tmaildir:/srv/archive/%d/%n\t%u",
     "--",
     "alice@example.com",
     "bob@example.org"
    ],
-   "stdout": "alice@example.com\t1000\t1000\t/srv/vmail/example.com/alice\t\t\tmaildir:~/Maildir:UTF-8\tmaildir:/srv/archive/example.com/alice\n\nbob@example.org\t1000\t1000\t/srv/vmail/example.org/bob\t\t\tmaildir:~/Maildir:UTF-8\tmaildir:/srv/archive/example.org/bob\n",
+   "stdout": "alice@example.com\t1000\t1000\t/srv/vmail/example.com/alice\t\t\tmaildir:~/Maildir:UTF-8\tmaildir:/srv/archive/example.com/alice\talice@example.com\n\nbob@example.org\t1000\t1000\t/srv/vmail/example.org/bob\t\t\tmaildir:~/Maildir:UTF-8\tmaildir:/srv/archive/example.org/bob\tbob@example.org\n",
    "stderr": "",
    "exit": 0
   },

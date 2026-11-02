@@ -210,14 +210,21 @@ func (d Dovecot) users(ctx context.Context) ([]string, error) {
 	return parseUsers(out)
 }
 
+// doveadm user goes on past a user it cannot look up, prints no record for
+// it and exits EX_NOUSER (unknown user) or EX_TEMPFAIL (lookup failed).
+const (
+	exNoUser   = 67
+	exTempFail = 75
+)
+
 // details looks a batch of users up. Names come after "--" so none is read
-// as an option, and none contains a mask character. doveadm goes on past a
-// user it cannot look up and exits non-zero; that user has no record.
+// as an option, and none contains a mask character. Any exit but the two
+// per-user ones, a signal included, fails the batch.
 func (d Dovecot) details(ctx context.Context, conf config, batch []string) (map[string]detail, error) {
 	args := append([]string{"user", "-e", conf.template(), "--"}, batch...)
 	out, err := d.cmd(ctx, "doveadm", args...)
 	var exit *exec.ExitError
-	if err != nil && !errors.As(err, &exit) {
+	if err != nil && (!errors.As(err, &exit) || exit.ExitCode() != exNoUser && exit.ExitCode() != exTempFail) {
 		return nil, err
 	}
 	found, perr := parseDetails(out, batch, len(conf.locs))
@@ -272,10 +279,12 @@ type config struct {
 }
 
 // template has doveadm print, per user, the fixed fields and every location
-// expanded with that user's variables, tab-separated.
+// expanded with that user's variables, tab-separated, then the user again.
+// The trailer makes a record end with its own user: a newline inside a
+// field leaves a first or last fragment that is not a whole record.
 func (c config) template() string {
 	f := append([]string{"%u", "%{uid}", "%{gid}", "%h", "%{userdb:mail}", "%{userdb:mail_plugins}", c.location}, c.locs...)
-	return strings.Join(f, "\t")
+	return strings.Join(append(f, "%u"), "\t")
 }
 
 func (c config) mailbox(user, domain string, d detail) (DovecotMailbox, string) {
@@ -335,7 +344,8 @@ func parseUsers(out []byte) ([]string, error) {
 }
 
 // parseDetails maps each requested name to its record. Every non-empty line
-// must be one record of a requested user, matched case-insensitively.
+// must be one whole record of a requested user, matched case-insensitively,
+// without control bytes; anything else fails the batch.
 func parseDetails(out []byte, batch []string, nloc int) (map[string]detail, error) {
 	errFraming := errors.New("doveadm user printed a malformed record")
 	want := make(map[string]string, len(batch))
@@ -348,7 +358,7 @@ func parseDetails(out []byte, batch []string, nloc int) (map[string]detail, erro
 			continue
 		}
 		f := strings.Split(line, "\t")
-		if len(f) != 7+nloc {
+		if len(f) != 8+nloc || f[len(f)-1] != f[0] || strings.ContainsFunc(line, func(r rune) bool { return r != '\t' && control(r) }) {
 			return nil, errFraming
 		}
 		name, ok := want[strings.ToLower(f[0])]
@@ -357,7 +367,7 @@ func parseDetails(out []byte, batch []string, nloc int) (map[string]detail, erro
 		if _, dup := found[name]; !ok || dup || err1 != nil || err2 != nil {
 			return nil, errFraming
 		}
-		found[name] = detail{uid: int(uid), gid: int(gid), home: f[3], mail: f[4], plugins: f[5], locs: f[6:]}
+		found[name] = detail{uid: int(uid), gid: int(gid), home: f[3], mail: f[4], plugins: f[5], locs: f[6 : len(f)-1]}
 	}
 	return found, nil
 }
@@ -489,11 +499,13 @@ func parseLocation(loc, home string) (root string, utf8Names bool, reason string
 	return filepath.Clean(root), utf8Names, ""
 }
 
-// absClean accepts absolute paths without control bytes or ".." components.
+// absClean accepts absolute paths without ".." components. Control bytes
+// never get here: parseDetails refuses them in every field.
 func absClean(p string) bool {
-	return strings.HasPrefix(p, "/") && !slices.Contains(strings.Split(p, "/"), "..") &&
-		!strings.ContainsFunc(p, func(r rune) bool { return r < 0x20 || r == 0x7f })
+	return strings.HasPrefix(p, "/") && !slices.Contains(strings.Split(p, "/"), "..")
 }
+
+func control(r rune) bool { return r < 0x20 || r == 0x7f }
 
 // folderDir is the Maildir++ directory of a namespace-relative mailbox name:
 // a dot, then the hierarchy levels joined by dots. A level holding a dot or a
