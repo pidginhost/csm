@@ -935,14 +935,24 @@ batch runs; the next check tries again. Each member carries the victim its
 reservation claimed, as its intent names it, and the ledger records what the
 batch did to that victim with the member's outcome. Whole-batch failures,
 short replies and delayed outcome writes keep the victim and lease clock
-information. Once a verified eviction is recorded, the owner marks the
-victim's row and retires it, as startup
+information. Once a verified eviction is recorded, the owner marks an
+admission victim's row and retires it, as startup
 does, rotating failed or held rows behind waiting rows and retrying on
 later turns, including while waiting for an absent engine during dry run.
 Cleanup follows the retirement policy, respects state-repair probe waits
 and preserves independent apply faults. Its errors remain
 visible alongside unknown-attempt retirement errors; a restart
-removes the row before the firewall restores its state. After an unknown
+removes the row before the firewall restores its state. The turn hands the
+ledger the imports the set read listed. Clearing that set also clears its
+imports, including a failed read, an idle turn or entry into dry run.
+Returning to previews reads a fresh set and import list. The dry-run
+forecast still models free slots only; it does not evict listed imports.
+An import's row is retired by its
+`eff_` name without a mark, and one still enforced when retired (a reload or
+restart restored its row) is forgotten. An error or short retirement answer
+keeps the request for retry; no ledger record names an evicted
+import, so a restart before its retirement restores it until its own
+expiry. After an unknown
 outcome the victim's row stays until the victim expires. A proven block
 found only when the batch applies is checked again when the outcome is written.
 With a fresh proof the pick ends refused as an existing effect, linked to

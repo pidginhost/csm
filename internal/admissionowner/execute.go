@@ -284,9 +284,13 @@ func victimOutcome(r firewall.BlockResult) admission.VictimOutcome {
 }
 
 // retireEvicted removes the rows of victims whose eviction is committed.
-// Mark before removing so a reload between the calls cannot restore them.
-// Failed and held rows rotate behind the rest; startup is the durable
-// cleanup path. State faults use the existing execution hold and probe wait.
+// Mark an admission victim's row before removing it so a reload between
+// the calls cannot restore it; an import's row is never marked, since an
+// unverified row without an action would never expire. Failed and held
+// rows rotate behind the rest; startup is the durable cleanup path for
+// admission victims. An import still enforced (a reload or restart
+// restored its row) is a legacy block again and is forgotten. State faults
+// use the existing execution hold and probe wait.
 func (o *Owner) retireEvicted() (err error) {
 	if len(o.evicted) == 0 || !o.mayRetire() {
 		return nil
@@ -306,7 +310,7 @@ func (o *Owner) retireEvicted() (err error) {
 		// An error (including a short answer) proves no row clear.
 		rest := o.evicted[len(batch):]
 		for i, a := range batch {
-			if err != nil || !gone[i] {
+			if err != nil || (!gone[i] && !admission.ImportedVictim(admission.ActionID(a.Action))) {
 				rest = append(rest, a)
 			}
 		}
@@ -324,12 +328,16 @@ func (o *Owner) retireEvicted() (err error) {
 			o.noteRetirementRetry(monoNow().Add(defaultScheduleEvery))
 		}
 	}()
-	ids := make([]string, len(batch))
-	for i, a := range batch {
-		ids[i] = a.Action
+	var ids []string
+	for _, a := range batch {
+		if !admission.ImportedVictim(admission.ActionID(a.Action)) {
+			ids = append(ids, a.Action)
+		}
 	}
-	if _, markErr := engine.MarkBlockActionsUnverified(ids); markErr != nil {
-		return fmt.Errorf("marking evicted blocks: %w", markErr)
+	if len(ids) > 0 {
+		if _, markErr := engine.MarkBlockActionsUnverified(ids); markErr != nil {
+			return fmt.Errorf("marking evicted blocks: %w", markErr)
+		}
 	}
 	gone, err = engine.RetireBlockActions(batch)
 	if err == nil && len(gone) != len(batch) {

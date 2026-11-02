@@ -340,8 +340,10 @@ turn with the current ledger holds, divided as automatic admission divides it: `
 `unlimited`, `capacity`, `unclaimed`, `imported` and `drain_seconds` as in
 the forecast's `occupancy` below, and `general` and `reserved` with each
 partition's `size`, the legacy and admission blocks it holds (`used`) and its
-`free` slots. A schedule serves block work, previewed or run, only into free
-slots of the partition its lane occupies; other block work waits as
+`free` slots. A schedule serves block work, previewed or run, into free
+slots of the partition its lane occupies, or into the slot of a
+lower-priority automatic block it may replace, including a legacy automatic
+block that recorded its origin; other block work waits as
 `set_full` and is checked again when a held slot expires or after a minute.
 The object is absent when the last scheduling turn found no ready block
 work, in dry run and when the set could not be read. A maintenance-only

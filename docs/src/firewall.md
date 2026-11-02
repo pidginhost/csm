@@ -206,6 +206,8 @@ operator block that finds the temporary limit reached only because of them
 is added above the limit. New timed automatic blocks record their origin
 explicitly; operator blocks and operator undo do not acquire that origin
 from their reason text. Older unstamped rows keep unknown origin.
+Automatic admission may replace a block that recorded its origin with a
+higher-priority one; a block of unknown origin is never replaced.
 
 Temporary IP blocks use a firewall clock that counts elapsed time and never
 moves backward. Setting the system clock back does not add that step to their

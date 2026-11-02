@@ -55,11 +55,13 @@ type fakeBlocks struct {
 	// liveTemp and livePerm are the addresses the sets hold as a timed and
 	// an untimed element.
 	temp, limit, imported int
-	snapshots             [][]firewall.BlockMember
-	shadows               [][]string
-	setReads              int
-	admitted              int
-	liveTemp, livePerm    map[string]bool
+	// imports is the import list every snapshot reports.
+	imports            []firewall.BlockImport
+	snapshots          [][]firewall.BlockMember
+	shadows            [][]string
+	setReads           int
+	admitted           int
+	liveTemp, livePerm map[string]bool
 }
 
 // fakeExisting names a proven block unless a test names it otherwise.
@@ -109,7 +111,7 @@ func (f *fakeBlocks) BlockAdmissionSnapshot(members []firewall.BlockMember, shad
 	if f.checkErr != nil {
 		return firewall.BlockAdmission{}, f.checkErr
 	}
-	out := firewall.BlockAdmission{Answers: make([]firewall.BlockAnswer, len(members)), Temporary: f.temp, Unclaimed: f.temp - f.imported - f.admitted, Imported: f.imported, Admission: f.admitted, Limit: f.limit}
+	out := firewall.BlockAdmission{Answers: make([]firewall.BlockAnswer, len(members)), Temporary: f.temp, Unclaimed: f.temp - f.imported - f.admitted, Imported: f.imported, Admission: f.admitted, Limit: f.limit, Imports: f.imports}
 	for _, ip := range shadow {
 		if f.liveTemp[ip] || f.livePerm[ip] {
 			if out.ShadowHeld == nil {

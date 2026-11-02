@@ -38,6 +38,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - `csm validate` now warns when `signatures.yara_worker_enabled: false` makes the daemon run YARA as root.
 - A YARA rule set too large for the locked-down compile worker now raises a compile-failure finding saying so; `signatures.yara_worker_enabled: false` compiles it in the daemon instead.
 - With auto_response.dry_run off, admission previews now wait for free slots under firewall.deny_temp_ip_limit, and csm doctor warns while that set is full; blocking is unchanged.
+- With auto_response.dry_run off, higher-priority attacks now produce admission previews instead of capacity waits when older automatic blocks fill the temporary set.
 - Learned spam is now stored with its headers and text only, without images or other attachments.
 - The firewall now opens the passive FTP port range by default only on cPanel hosts and hosts with an FTP server installed.
 

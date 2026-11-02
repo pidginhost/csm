@@ -162,7 +162,7 @@ func setDoctorCheck(o *health.AdmissionOwner, closing string) DoctorCheck {
 	c.Message += note
 	if len(warnings) > 0 {
 		c.Status, c.Message = "warn", c.Message+"; "+strings.Join(warnings, "; ")
-		c.Fix = "block work waits for a free slot; inspect existing blocks and their expiries, and review firewall.deny_temp_ip_limit"
+		c.Fix = "block work waits for a free slot unless it outranks an automatic block it may replace; inspect existing blocks and their expiries, and review firewall.deny_temp_ip_limit"
 	}
 	c.Message += "; " + closing
 	return c
