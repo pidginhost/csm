@@ -800,10 +800,15 @@ differences:
 The [learning prerequisites](#prerequisites) apply, and also:
 
 1. **Dovecot 2.3.** CSM lists users with `doveadm user '*'` and reads mail
-   settings with `doveconf`. The userdb must be able to list its users: a
-   passwd-file userdb can, an SQL or LDAP userdb needs its iterate settings.
-   Without that, and on Dovecot 2.4, whose mail settings changed, CSM reports
-   `unsupported` and leaves learning off.
+   settings with `doveconf`. A userdb must be able to list its users. A
+   passwd or passwd-file userdb can, but not a passwd-file whose path holds
+   `%` variables, such as one file per domain. An SQL or LDAP userdb needs
+   its iterate settings. A static, checkpassword or prefetch userdb cannot.
+   When no userdb can list users, and on Dovecot 2.4, whose mail settings
+   changed, CSM reports `unsupported` and leaves learning off. When a userdb
+   that can list users fails, for example while its SQL database is down,
+   CSM reports `backend_unavailable`: installed learning stays and new
+   reports wait for a later check.
 2. **Junk marked as `\Junk`.** CSM finds Junk folders by
    `special_use = \Junk` in Dovecot's namespace mailbox settings, as
    Dovecot's example `15-mailboxes.conf` sets for `Junk`. A folder named
@@ -1325,7 +1330,7 @@ that failed in its last pass, until a later pass reads it.
 
 | Reason | Meaning |
 |---|---|
-| `unsupported` | An rspamd or Redis version is outside the supported versions above, a Postfix host has no `learning.redis_socket`, or Dovecot runs 2.4 or cannot list its users; learning is disabled. |
+| `unsupported` | An rspamd or Redis version is outside the supported versions above, a Postfix host has no `learning.redis_socket`, or Dovecot runs 2.4 or has no userdb that can list its users; learning is disabled. |
 | `unsafe_prerequisite` | Required isolation or Redis settings are unsafe or cannot be established; learning is disabled. |
 | `state_mismatch` | Learning keys could not be created or loaded safely, restored learning state awaits confirmation, or the learner found its state out of step with its storage; learning is disabled and nothing is adopted or deleted. |
 | `config_conflict` | Operator configuration conflicts with CSM's learning setup; learning is disabled. |

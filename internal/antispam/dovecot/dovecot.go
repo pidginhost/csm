@@ -50,10 +50,14 @@ const (
 )
 
 var (
-	// ErrCannotIterate reports a userdb that cannot list its users.
+	// ErrCannotIterate reports a configuration with no userdb that can list
+	// its users.
 	ErrCannotIterate = errors.New("the Dovecot userdb cannot list users")
 	// ErrDovecot24 reports Dovecot 2.4, whose mail settings differ.
 	ErrDovecot24 = errors.New("dovecot 2.4 mail settings are not supported yet")
+	// errListFailed is Dovecot's answer to any failed listing: a userdb that
+	// cannot iterate, or an SQL, LDAP or passwd-file backend that failed to.
+	errListFailed = errors.New("the Dovecot userdb did not list its users")
 )
 
 // DovecotMailbox is one user whose \Junk folders can be watched. User is the
@@ -105,6 +109,9 @@ func (d Dovecot) Snapshot(ctx context.Context) (Snapshot, error) {
 		return Snapshot{}, err
 	}
 	listed, err := d.users(ctx)
+	if errors.Is(err, errListFailed) && !conf.iterable() {
+		return Snapshot{}, ErrCannotIterate
+	}
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -220,7 +227,7 @@ func (d Dovecot) users(ctx context.Context) ([]string, error) {
 	out, err := d.cmd(ctx, "doveadm", "user", "*")
 	var exit *exec.ExitError
 	if errors.As(err, &exit) && bytes.Contains(exit.Stderr, []byte("User listing returned failure")) {
-		return nil, ErrCannotIterate
+		return nil, errListFailed
 	}
 	if err != nil {
 		return nil, err
@@ -325,13 +332,50 @@ type junkBox struct {
 }
 
 // config is what Snapshot reads from doveconf -n: the global mail_location,
-// mail_plugins of every protocol, and the \Junk mailboxes with the locations
-// of namespaces that set their own.
+// mail_plugins of every protocol, the \Junk mailboxes with the locations of
+// namespaces that set their own, and the userdbs.
 type config struct {
 	location string
 	plugins  []string
 	locs     []string
 	junk     []junkBox
+	userdbs  []userdb
+}
+
+type userdb struct{ driver, args string }
+
+// iterable reports whether a userdb can list its users. In Dovecot 2.3
+// static, checkpassword and prefetch cannot, nor can passwd-file with a
+// %variable in its path. Any other driver counts as able, so its failure
+// is an outage that keeps learning, not a reason to remove it.
+func (c config) iterable() bool {
+	return slices.ContainsFunc(c.userdbs, func(u userdb) bool {
+		switch u.driver {
+		case "static", "checkpassword", "prefetch":
+			return false
+		case "passwd-file":
+			// The only option a userdb passwd-file takes comes first.
+			path := u.args
+			if strings.HasPrefix(path, "username_format=") {
+				_, path, _ = strings.Cut(path, " ")
+			}
+			return !hasVariable(path)
+		}
+		return true
+	})
+}
+
+// hasVariable reports a % that starts a variable; %% is a literal %.
+func hasVariable(s string) bool {
+	for i := 0; i+1 < len(s); i++ {
+		if s[i] == '%' {
+			if s[i+1] != '%' {
+				return true
+			}
+			i++
+		}
+	}
+	return false
 }
 
 // template has doveadm print, per user, one tab-separated line: %u, uid,
@@ -478,6 +522,8 @@ func parseConfig(out []byte) (config, error) {
 				nsType, nsSep, nsLoc, boxes = "", "", "", nil
 			case len(stack) == 2 && inNS && kind == "mailbox":
 				box, junk = unquote(strings.TrimSpace(name)), false
+			case kind == "userdb":
+				c.userdbs = append(c.userdbs, userdb{})
 			}
 		default:
 			key, value, ok := strings.Cut(line, "=")
@@ -485,7 +531,12 @@ func parseConfig(out []byte) (config, error) {
 				return config{}, errSyntax
 			}
 			key, value = strings.TrimSpace(key), unquote(strings.TrimSpace(value))
+			inUserdb := len(stack) > 0 && stack[len(stack)-1] == "userdb"
 			switch {
+			case inUserdb && key == "driver":
+				c.userdbs[len(c.userdbs)-1].driver = value
+			case inUserdb && key == "args":
+				c.userdbs[len(c.userdbs)-1].args = value
 			case key == "mail_plugins":
 				c.plugins = append(c.plugins, strings.Fields(value)...)
 			case len(stack) == 0 && key == "mail_location":

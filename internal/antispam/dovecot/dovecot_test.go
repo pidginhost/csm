@@ -170,16 +170,59 @@ func TestSnapshotUserdbCannotIterate(t *testing.T) {
 	}
 }
 
+// listFailure is Dovecot 2.3's answer to any listing the auth server
+// failed: a userdb that cannot iterate, or a backend that failed to.
+const listFailure = "Error: auth-master: userdb list: User listing returned failure\nFatal: user listing failed\n"
+
+// The listing failure means "cannot list users" only when doveconf shows no
+// userdb able to iterate. Otherwise an SQL, LDAP or passwd-file backend
+// failed, which is an outage, not a configuration learning cannot use.
+func TestSnapshotListingFailureByUserdb(t *testing.T) {
+	const captured = "userdb {\n  args = /etc/dovecot/users\n  driver = passwd-file\n}\n"
+	sql := "userdb {\n  args = /etc/dovecot/dovecot-sql.conf.ext\n  driver = sql\n}\n"
+	for conf, cannot := range map[string]bool{
+		captured: false,
+		sql:      false,
+		"userdb {\n  args = /etc/dovecot/dovecot-ldap.conf.ext\n  driver = ldap\n}\n":                false,
+		"userdb {\n  driver = passwd\n}\n":                                                           false,
+		"userdb {\n  args = username_format=%n /etc/dovecot/users\n  driver = passwd-file\n}\n":      false,
+		"userdb {\n  args = /etc/dovecot/100%%users\n  driver = passwd-file\n}\n":                    false,
+		"userdb {\n  driver = prefetch\n}\n" + sql:                                                   false,
+		"userdb {\n  driver = lua\n  args = file=/etc/dovecot/auth.lua\n}\n":                         false,
+		"userdb {\n  driver = prefetch\n}\n":                                                         true,
+		"userdb {\n  args = uid=vmail gid=vmail home=/srv/vmail/%d/%n\n  driver = static\n}\n":       true,
+		"userdb {\n  args = /usr/local/bin/checkpassword\n  driver = checkpassword\n}\n":             true,
+		"userdb {\n  args = /etc/dovecot/%d/passwd\n  driver = passwd-file\n}\n":                     true,
+		"userdb {\n  args = username_format=%n /etc/dovecot/%Ld.passwd\n  driver = passwd-file\n}\n": true,
+		"userdb {\n  driver = \"static\"\n}\nuserdb {\n  driver = prefetch\n}\n":                     true,
+	} {
+		h := newHost(t, "alice@example.com")
+		h.edit(captured, conf)
+		h.listErr = exitError(t, 75, listFailure)
+		snap, err := h.snapshot()
+		if err == nil || errors.Is(err, ErrCannotIterate) != cannot || !reflect.DeepEqual(snap, Snapshot{}) {
+			t.Errorf("%q: snapshot %+v, err %v, want cannot iterate %v", conf, snap, err, cannot)
+		}
+	}
+}
+
 // Users rechecks removals: names only, as Snapshot would key them, from one
-// listing and no lookup. A failed or empty listing is an error.
+// listing and no lookup. A failed or empty listing is an error. The recheck
+// follows a complete listing and reads no configuration, so a failed
+// listing is an outage, never "cannot list users".
 func TestUsersListsIdentitiesOnly(t *testing.T) {
 	h := newHost(t, "Alice@Example.com", "bob@example.com", "bad name", "dave", "alice@example.com")
 	got, err := Dovecot{Run: h.run}.Users(context.Background())
 	if err != nil || !slices.Equal(got, []string{"alice@example.com", "bob@example.com", "dave"}) || h.listings != 1 || h.batches != nil {
 		t.Fatalf("users %q, err %v, %d listings, lookups %q", got, err, h.listings, h.batches)
 	}
-	if _, err := (Dovecot{Run: replay(t, capture(t, "static"))}).Users(context.Background()); !errors.Is(err, ErrCannotIterate) {
+	if _, err := (Dovecot{Run: replay(t, capture(t, "static"))}).Users(context.Background()); err == nil || errors.Is(err, ErrCannotIterate) {
 		t.Fatalf("static userdb: err %v", err)
+	}
+	h = newHost(t, "alice@example.com")
+	h.listErr = exitError(t, 75, listFailure)
+	if _, err := (Dovecot{Run: h.run}).Users(context.Background()); err == nil || errors.Is(err, ErrCannotIterate) {
+		t.Fatalf("failed listing: err %v", err)
 	}
 	h = newHost(t)
 	h.list = "\n"

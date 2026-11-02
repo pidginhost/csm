@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"os/exec"
 	"slices"
 	"strings"
 	"testing"
@@ -259,6 +260,46 @@ func TestResolveLearningPostfixDovecot(t *testing.T) {
 	f.Dovecot = DovecotFacts{Err: dovecot.ErrCannotIterate, UIDs: []int{testRspamdUID}}
 	if _, gate, problems := ResolveLearning(learningSettings(), f); !gate.Install || !gate.Publish || len(problems) != 0 {
 		t.Fatalf("Exim judged by Dovecot facts: gate %+v problems %+v", gate, problems)
+	}
+}
+
+// Dovecot 2.3 answers every failed listing alike. An SQL userdb whose
+// database is down is an outage: installed learning stays and waits. Only
+// a configuration with no userdb that can list users turns learning off.
+func TestResolveLearningDovecotListingFailure(t *testing.T) {
+	for userdb, reason := range map[string]string{
+		"userdb {\n  args = /etc/dovecot/dovecot-sql.conf.ext\n  driver = sql\n}\n":            ReasonBackendUnavailable,
+		"userdb {\n  args = uid=vmail gid=vmail home=/srv/vmail/%d/%n\n  driver = static\n}\n": ReasonUnsupported,
+	} {
+		run := func(_ context.Context, name string, args ...string) ([]byte, error) {
+			switch strings.Join(append([]string{name}, args...), " ") {
+			case "dovecot --version":
+				return []byte("2.3.21 (47349e2482)\n"), nil
+			case "doveconf -n":
+				return []byte("mail_location = maildir:~/Maildir\n" + userdb), nil
+			case "doveadm user *":
+				var exit *exec.ExitError
+				if err := exec.Command("sh", "-c", "exit 75").Run(); !errors.As(err, &exit) {
+					t.Fatalf("exit 75: %v", err)
+				}
+				exit.Stderr = []byte("Error: auth-master: userdb list: User listing returned failure\nFatal: user listing failed\n")
+				return nil, exit
+			}
+			t.Errorf("unexpected command %s %q", name, args)
+			return nil, errors.New("unexpected command")
+		}
+		_, err := dovecot.Dovecot{Run: run}.Snapshot(context.Background())
+		f := withLearning(t, postfixLearningFacts(), dedicatedSocket)
+		f.Dovecot = DovecotFacts{Err: err}
+		_, gate, problems := ResolveLearning(postfixLearningSettings(), f)
+		onlyLearningReason(t, problems, reason)
+		want := LearningGate{Install: true}
+		if reason == ReasonUnsupported {
+			want = LearningGate{}
+		}
+		if gate != want {
+			t.Fatalf("%q: gate %+v, want %+v", userdb, gate, want)
+		}
 	}
 }
 
