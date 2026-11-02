@@ -60,6 +60,7 @@ const (
 	CodeMilter         = "postfix_milter"
 	CodeRspamdLog      = "rspamd_log"
 	CodeDryRunRejects  = "dry_run_rejects"
+	CodeMilterRejects  = "milter_rejects"
 )
 
 const (

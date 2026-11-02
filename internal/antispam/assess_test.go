@@ -855,6 +855,52 @@ func TestAssessWarnsWhenPostfixDryRunRejects(t *testing.T) {
 	}
 }
 
+// rspamd's milter that drops or holds the mail it rejects never refuses a
+// sender. CSM does not enforce there, and removes an enforcing install; a
+// dry run, where the host's own rejects go the same way, gets a warning.
+// Exim does not use the milter.
+func TestAssessPostfixQuietRejects(t *testing.T) {
+	const held = `{"rspamd_proxy": {"bind_socket": "localhost:11332", "milter": true, "quarantine_on_reject": true}}`
+	const dropped = `{"rspamd_proxy": {"bind_socket": "localhost:11332", "milter": true, "discard_on_reject": [true, false], "quarantine_on_reject": true}}`
+	const heldDetail = "rspamd's milter puts the mail it rejects in Postfix's hold queue instead of refusing it (quarantine_on_reject); " + quietRejectsFix
+	const droppedDetail = "rspamd's milter drops the mail it rejects instead of refusing it (discard_on_reject, quarantine_on_reject); " + quietRejectsFix
+	for name, tc := range map[string]struct {
+		workers string
+		dry     bool
+		sev     Severity
+		detail  string
+		action  Action
+	}{
+		"dry run, held":    {held, true, Warning, heldDetail, Keep},
+		"dry run, dropped": {dropped, true, Warning, droppedDetail, Keep},
+		"enforce, held":    {held, false, Definite, heldDetail, Uninstall},
+		"enforce, dropped": {dropped, false, Definite, droppedDetail, Uninstall},
+	} {
+		s := postfixSettings(tc.dry)
+		f := installedPostfixFacts(t, s)
+		f.RspamdWorkers = CommandResult{Stdout: tc.workers + "\n"}
+		a := Assess(true, s, f)
+		if a.Action != tc.action || len(a.Problems) != 1 || a.Problems[0] != (Problem{Code: CodeMilterRejects, Severity: tc.sev, Detail: tc.detail}) {
+			t.Errorf("%s: %+v; want action %d with one %v %q", name, a, tc.action, tc.sev, tc.detail)
+		}
+	}
+	// Not installed yet, enforce installs nothing.
+	s := postfixSettings(false)
+	f := postfixFacts()
+	f.Record = RecordFacts{Missing: true}
+	f.RspamdWorkers = CommandResult{Stdout: held + "\n"}
+	if a := Assess(true, s, f); a.Installed || a.Action != Keep || !hasProblem(a, CodeMilterRejects, Definite) {
+		t.Fatalf("fresh enforce: %+v; want Keep with a definite problem", a)
+	}
+	// Exim never asks rspamd's milter.
+	es := enforceSettings()
+	ef := freshFacts()
+	ef.RspamdWorkers = CommandResult{Stdout: held + "\n"}
+	if a := Assess(true, es, ef); hasProblem(a, CodeMilterRejects, Definite) || hasProblem(a, CodeMilterRejects, Warning) {
+		t.Fatalf("Exim host reported milter rejects: %+v", a)
+	}
+}
+
 func TestAssessPostfixCurrent(t *testing.T) {
 	for _, dry := range []bool{false, true} {
 		s := postfixSettings(dry)

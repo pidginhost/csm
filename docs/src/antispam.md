@@ -635,11 +635,21 @@ about cPanel accounts, Exim and Roundcube do not apply.
    would be filtered as remote mail. CSM reads both settings from `main.cf`
    only; per-service `-o smtpd_milters` overrides in `master.cf` are not
    read.
-2. **rspamd 4.2 is recommended.** CSM accepts rspamd 3 or later, but its
+2. **rspamd refuses the mail it rejects.** With `discard_on_reject` on the
+   proxy worker, rspamd's milter drops a message it rejects; with
+   `quarantine_on_reject` it accepts the message into Postfix's hold queue,
+   where it stays until someone releases or deletes it. Either way the
+   sender is never refused. CSM does not enforce while either is set on a
+   proxy worker Postfix passes mail to, and removes an enforcing install,
+   with a definite `milter_rejects` precondition. In dry run, where the
+   host's own rejects go the same way, it is a warning. An option given
+   more than once counts as set unless every value is false. Set both to
+   false, once each, for example in `/etc/rspamd/local.d/worker-proxy.inc`.
+3. **rspamd 4.2 is recommended.** CSM accepts rspamd 3 or later, but its
    scope rule is tested with rspamd 4.2.3.
-3. **`/etc/rspamd/lua.local.d` exists**, owned by root and not writable by
+4. **`/etc/rspamd/lua.local.d` exists**, owned by root and not writable by
    group or others. CSM's scope rule goes there.
-4. **A scan socket for CSM.** CSM uses it to check that rspamd answers. Add
+5. **A scan socket for CSM.** CSM uses it to check that rspamd answers. Add
    a Unix socket to rspamd's normal worker in
    `/etc/rspamd/local.d/worker-normal.inc`:
 
@@ -653,15 +663,15 @@ about cPanel accounts, Exim and Roundcube do not apply.
    instead of scanning it itself. The socket and every parent directory must
    be owned by root or the rspamd user and not writable by group or others.
    Run `rspamadm configtest`, then `systemctl reload rspamd`.
-5. **rspamd logs to a file at `info` level.** CSM reads its scan records
+6. **rspamd logs to a file at `info` level.** CSM reads its scan records
    from rspamd's log file, for example `/var/log/rspamd/rspamd.log`. When
    rspamd logs to the journal or syslog, CSM warns and sees no scan records.
    `info` is rspamd's default. At `notice`, `warning` or `error` level rspamd
    does not write them, and CSM does not warn; set `level = "info";` in
    `/etc/rspamd/local.d/logging.inc`.
-6. **rspamd accepts every message Postfix accepts.** CSM warns when rspamd's
+7. **rspamd accepts every message Postfix accepts.** CSM warns when rspamd's
    `max_message` is below Postfix's `message_size_limit`.
-7. **Postfix and rspamd are running.**
+8. **Postfix and rspamd are running.**
 
 ### Which mail is filtered
 
@@ -923,8 +933,8 @@ the Junk folders of domain mailboxes start new baselines.
    with `dry_run: true`. Leave `exempt` empty unless a recipient must never
    be filtered.
 2. Check that rspamd's loaded actions are still the host's
-   (`rspamadm configdump actions`) and that no `dry_run_rejects` warning
-   appears. Review each `antispam_file_replaced` copy, and check that
+   (`rspamadm configdump actions`) and that no `dry_run_rejects` or
+   `milter_rejects` warning appears. Review each `antispam_file_replaced` copy, and check that
    greylisting and DNS block lists are as you intend. Then check that
    `CSM-ANTISPAM` lines appear in rspamd's log and that mail at the host's
    add header threshold still carries `X-Spam: Yes`.

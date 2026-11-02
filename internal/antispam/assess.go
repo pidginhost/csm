@@ -52,6 +52,7 @@ func Assess(enabled bool, s Settings, f HostFacts) Assessment {
 	a.Problems = CheckHost(f)
 	a.report(checkActionsTarget(s, f))
 	a.report(checkDryRunRejects(s, f))
+	a.report(checkQuietRejects(s, f))
 	isCurrent := a.Installed && current(s, f)
 	if isCurrent {
 		// A temporary host probe failure cannot hide a confirmed override.
@@ -170,6 +171,35 @@ func checkDryRunRejects(s Settings, f HostFacts) []Problem {
 	}
 	return []Problem{{Code: CodeDryRunRejects, Severity: Warning, Detail: fmt.Sprintf(
 		"dry run on this host still rejects: rspamd rejects at %g, at or below CSM's reject score of %d", *a.Reject, s.RejectScore)}}
+}
+
+// quietRejectsFix tells the operator how to make rspamd refuse again.
+const quietRejectsFix = "set discard_on_reject and quarantine_on_reject to false, once each, in the proxy worker settings, for example /etc/rspamd/local.d/worker-proxy.inc"
+
+// checkQuietRejects reports a Postfix host whose rspamd milter accepts the
+// mail it rejects, so the sender is never refused: discard_on_reject drops
+// it, and quarantine_on_reject leaves it in Postfix's hold queue until
+// someone releases or deletes it. CSM's rejects must be refusals, so CSM
+// does not enforce there. In a dry run the host's own rejects go the same
+// way, which is a warning. Unwired or unreadable settings are CheckHost's.
+func checkQuietRejects(s Settings, f HostFacts) []Problem {
+	if f.Stack != StackPostfix {
+		return nil
+	}
+	set, err := QuietRejects(f)
+	if err != nil || len(set) == 0 {
+		return nil
+	}
+	what := "puts the mail it rejects in Postfix's hold queue"
+	if set[0] == "discard_on_reject" {
+		what = "drops the mail it rejects"
+	}
+	sev := Definite
+	if s.DryRun {
+		sev = Warning
+	}
+	return []Problem{{Code: CodeMilterRejects, Severity: sev, Detail: fmt.Sprintf(
+		"rspamd's milter %s instead of refusing it (%s); %s", what, strings.Join(set, ", "), quietRejectsFix)}}
 }
 
 // current reports whether the host holds exactly s: CSM's files, a

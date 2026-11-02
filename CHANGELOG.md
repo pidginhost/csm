@@ -29,6 +29,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - Operators can opt in to report repeated spam senders to the central abuse database; shared mail services are never reported.
 - Antispam learning now accepts Redis 7 and can use a Redis of its own set by `learning.redis_socket`, refused while another rspamd module shares it.
 - Antispam on Postfix servers now learns from mail users move into their Junk folder, using a dedicated Redis.
+- Antispam on Postfix servers no longer enforces where rspamd would silently drop or hold rejected mail instead of refusing it, and warns about it in dry run.
 
 ### Changed
 
