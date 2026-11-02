@@ -184,6 +184,10 @@ func TestAntispamReferenceMatchesRuntimeDefaults(t *testing.T) {
 	for _, name := range as.Feeds.Enabled {
 		feeds = append(feeds, name)
 	}
+	exempt := []any{}
+	for _, e := range as.Exempt {
+		exempt = append(exempt, e)
+	}
 	want := map[string]any{
 		"enabled":       as.Enabled,
 		"dry_run":       as.DryRun,
@@ -197,6 +201,7 @@ func TestAntispamReferenceMatchesRuntimeDefaults(t *testing.T) {
 		"learning": map[string]any{
 			"enabled": as.Learning.Enabled,
 		},
+		"exempt": exempt,
 	}
 	if !reflect.DeepEqual(ref.EmailProtection.Antispam, want) {
 		t.Errorf("documented email_protection.antispam = %v, want runtime defaults %v", ref.EmailProtection.Antispam, want)

@@ -2,6 +2,7 @@ package antispam
 
 import (
 	"encoding/json"
+	"net/netip"
 	"reflect"
 	"slices"
 	"strings"
@@ -349,5 +350,103 @@ func TestRequestRoundTripSkipScores(t *testing.T) {
 	}
 	if _, _, err := DecodeRequest([]byte(`{"operation":"remove","skip_scores":true}`)); err == nil {
 		t.Error("remove accepted skip_scores")
+	}
+}
+
+// postfixScoped is a Postfix request with exemptions and infra_ips networks,
+// which only the scope Lua renders.
+func postfixScoped() Settings {
+	s := defaults(false)
+	s.Stack = StackPostfix
+	s.Exempt = []string{"abuse@example.com", "example.org"}
+	s.ScopeNets = []netip.Prefix{netip.MustParsePrefix("203.0.113.0/24"), netip.MustParsePrefix("2001:db8::/32"), netip.MustParsePrefix("198.51.100.7/32")}
+	return s
+}
+
+// The worker renders what the daemon rendered: a Postfix request carries
+// the exemptions and networks, in order, so both compute one generation.
+func TestApplyRequestCarriesPostfixScope(t *testing.T) {
+	want := postfixScoped()
+	data, err := json.Marshal(ApplyRequest(want))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(string(data), `,"exempt":"abuse@example.com,example.org","scope_nets":"203.0.113.0/24,2001:db8::/32,198.51.100.7/32"}`) {
+		t.Fatalf("wire form = %s", data)
+	}
+	_, got, err := DecodeRequest(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The worker reads the stack from its host, never from the request.
+	got.Stack = StackPostfix
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("decoded %+v, want %+v", got, want)
+	}
+	daemon, err := ManagedContent(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker, err := ManagedContent(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if Generation(worker) != Generation(daemon) {
+		t.Fatal("the worker renders a different generation from the daemon")
+	}
+}
+
+// Exim renders neither field, so its requests keep their form.
+func TestApplyRequestEximOmitsPostfixScope(t *testing.T) {
+	s := postfixScoped()
+	s.Stack = StackExim
+	data, err := json.Marshal(ApplyRequest(s))
+	if err != nil || string(data) != validApply {
+		t.Fatalf("wire form = %s, %v; want %s", data, err, validApply)
+	}
+	// A request from before the fields existed decodes as it did.
+	_, got, err := DecodeRequest([]byte(validApply))
+	if err != nil || got.Exempt != nil || got.ScopeNets != nil {
+		t.Fatalf("decoded %+v, %v", got, err)
+	}
+	// Decoded settings name no stack and re-encode to the same request.
+	s.Stack = StackPostfix
+	want, _ := json.Marshal(ApplyRequest(s))
+	_, decoded, err := DecodeRequest(want)
+	if again, _ := json.Marshal(ApplyRequest(decoded)); err != nil || string(again) != string(want) {
+		t.Fatalf("re-encoded %s, %v; want %s", again, err, want)
+	}
+}
+
+func TestDecodeRequestRejectsBadPostfixScope(t *testing.T) {
+	for _, extra := range []string{
+		`,"exempt":"Abuse@Example.com"}`,
+		`,"exempt":"a b@example.com"}`,
+		`,"exempt":"example.com,"}`,
+		`,"exempt":"*"}`,
+		`,"exempt":["example.com"]}`,
+		`,"exempt":null}`,
+		`,"scope_nets":"203.0.113.0/33"}`,
+		`,"scope_nets":"203.0.113.0"}`,
+		`,"scope_nets":"203.0.113.0/24,"}`,
+		`,"scope_nets":"fe80::1%eth0/64"}`,
+		`,"scope_nets":7}`,
+		`,"scope_nets":null}`,
+	} {
+		req, s, err := DecodeRequest([]byte(strings.TrimSuffix(validApply, "}") + extra))
+		if err == nil || !reflect.DeepEqual(req, Request{}) || !reflect.DeepEqual(s, Settings{}) {
+			t.Errorf("expected rejection without a partial request for %s", extra)
+		}
+	}
+	// Errors reach logs and findings, so they never echo the request.
+	for _, extra := range []string{`,"exempt":"csm_secret@example.com,CSM_SECRET"}`, `,"scope_nets":"csm_secret/24"}`} {
+		if _, _, err := DecodeRequest([]byte(strings.TrimSuffix(validApply, "}") + extra)); err == nil || strings.Contains(strings.ToLower(err.Error()), "csm_secret") {
+			t.Errorf("DecodeRequest(%s) = %v", extra, err)
+		}
+	}
+	for _, field := range []string{`"exempt":"example.com"`, `"scope_nets":"203.0.113.0/24"`} {
+		if _, _, err := DecodeRequest([]byte(`{"operation":"remove",` + field + `}`)); err == nil {
+			t.Errorf("remove accepted %s", field)
+		}
 	}
 }

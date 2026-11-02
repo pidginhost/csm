@@ -187,6 +187,22 @@ func readReply(r *bufio.Reader, code string) error {
 	}
 }
 
+// connectMilter opens one connection to a postfix milter address,
+// inet:host:port or unix:path, as postfix does before each message, and
+// closes it.
+func connectMilter(ctx context.Context, milter string) error {
+	network, addr := "tcp", strings.TrimPrefix(milter, "inet:")
+	if sock, ok := strings.CutPrefix(milter, "unix:"); ok {
+		network, addr = "unix", sock
+	}
+	var d net.Dialer
+	conn, err := d.DialContext(ctx, network, addr)
+	if err != nil {
+		return err
+	}
+	return conn.Close()
+}
+
 // retry calls probe until it succeeds or window ends, pausing between
 // attempts. Each attempt gets the time left.
 func retry(ctx context.Context, window time.Duration, probe func(context.Context) error) error {

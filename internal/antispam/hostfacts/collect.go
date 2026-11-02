@@ -39,7 +39,10 @@ type Layout struct {
 	GlobalEnable  string
 	Record        string
 	ResolvConf    string
-	Targets       []antispam.Target
+	// Targets are the files CSM writes on a cPanel host, PostfixTargets
+	// those on a Postfix host.
+	Targets        []antispam.Target
+	PostfixTargets []antispam.Target
 	// IPMap is the CSM IP map file rspamd reads.
 	IPMap string
 	// Learning fact sources.
@@ -53,8 +56,7 @@ type Layout struct {
 
 type collector struct {
 	layout   Layout
-	cpanel   func() bool
-	eximMTA  func() bool
+	stack    func() antispam.MailStack
 	run      func(ctx context.Context, name string, args ...string) antispam.CommandResult
 	lookPath func(string) (string, error)
 	uid      func(name string) (int, error)
@@ -81,7 +83,8 @@ func live() collector {
 			GlobalEnable:      "/etc/global_spamassassin_enable",
 			Record:            antispam.RecordPath,
 			ResolvConf:        "/etc/resolv.conf",
-			Targets:           antispam.MutationTargets(),
+			Targets:           antispam.MutationTargets(antispam.StackExim),
+			PostfixTargets:    antispam.MutationTargets(antispam.StackPostfix),
 			IPMap:             ipmap.DefaultPath,
 			ProcNetUDP:        procNetUDP,
 			ProcNetUDP6:       procNetUDP6,
@@ -92,8 +95,7 @@ func live() collector {
 		},
 		redisProbe:     RedisProbe,
 		controllerGet:  ControllerGet,
-		cpanel:         func() bool { return platform.Detect().IsCPanel() },
-		eximMTA:        func() bool { return platform.DetectMTA() == platform.MTAExim },
+		stack:          DetectStack,
 		run:            runCommand,
 		lookPath:       exec.LookPath,
 		uid:            lookupUID,
@@ -106,11 +108,40 @@ func live() collector {
 	}
 }
 
+// DetectStack reports the mail stack antispam integrates with: Exim on a
+// cPanel host, Postfix on a host without cPanel, else none.
+func DetectStack() antispam.MailStack {
+	return stackFor(platform.Detect().IsCPanel(), platform.DetectMTA())
+}
+
+func stackFor(cpanel bool, mta platform.MTAKind) antispam.MailStack {
+	switch {
+	case cpanel && mta == platform.MTAExim:
+		return antispam.StackExim
+	case !cpanel && mta == platform.MTAPostfix:
+		return antispam.StackPostfix
+	}
+	return antispam.StackNone
+}
+
 // RspamdGroup is rspamd's service group, or -1 when unknown (a root-started
 // rspamd, or systemctl failing).
 func RspamdGroup(ctx context.Context) int {
 	c := live()
 	return c.serviceGroup(c.run(ctx, "systemctl", antispam.UnitShowArgs(antispam.RspamdUnit)...))
+}
+
+// postfixService reads the unit running postfix's master: the Debian
+// instance unit where it exists, else postfix.service.
+func (c collector) postfixService(ctx context.Context) antispam.CommandResult {
+	show := func(unit string) antispam.CommandResult {
+		return c.run(ctx, "systemctl", "show", "-p", "LoadState", "-p", "ActiveState", unit)
+	}
+	r := show(antispam.PostfixInstanceUnit)
+	if r.Err == nil && antispam.ParseUnitShow(r.Stdout)["LoadState"] == "not-found" {
+		return show(antispam.PostfixUnit)
+	}
+	return r
 }
 
 // Collect reads every fact antispam.CheckHost evaluates for the scan socket.
@@ -120,12 +151,16 @@ func Collect(ctx context.Context, socket string) antispam.HostFacts {
 }
 
 func (c collector) collect(ctx context.Context, socket string) antispam.HostFacts {
-	f := antispam.HostFacts{CPanel: c.cpanel(), MTAExim: c.eximMTA(), MonitoredLog: platform.EximMainLog}
-	f.EximVersion = c.run(ctx, "exim", "-bV")
-	f.EximOptions = c.run(ctx, "exim", "-bP", "prdr_enable", "chunking_advertise_hosts")
-	f.EximSettings = c.run(ctx, "exim", append([]string{"-bP"}, antispam.EximSettingNames()...)...)
-	for _, probe := range antispam.NamedListProbes() {
-		f.NamedLists = append(f.NamedLists, c.run(ctx, "exim", "-C", c.layout.GeneratedConf, "-be", probe))
+	f := antispam.HostFacts{Stack: c.stack()}
+	exim := f.Stack == antispam.StackExim
+	if exim {
+		f.MonitoredLog = platform.EximMainLog
+		f.EximVersion = c.run(ctx, "exim", "-bV")
+		f.EximOptions = c.run(ctx, "exim", "-bP", "prdr_enable", "chunking_advertise_hosts")
+		f.EximSettings = c.run(ctx, "exim", append([]string{"-bP"}, antispam.EximSettingNames()...)...)
+		for _, probe := range antispam.NamedListProbes() {
+			f.NamedLists = append(f.NamedLists, c.run(ctx, "exim", "-C", c.layout.GeneratedConf, "-be", probe))
+		}
 	}
 	f.RspamdVersion = c.run(ctx, "rspamd", "--version")
 	f.RspamadmVersion = c.run(ctx, "rspamadm", "--version")
@@ -138,15 +173,26 @@ func (c collector) collect(ctx context.Context, socket string) antispam.HostFact
 	f.RspamdLog = rspamdLog(f.RspamdConfig)
 	f.IPMap = fileFacts(c.layout.IPMap)
 	f.RspamdService = c.run(ctx, "systemctl", antispam.UnitShowArgs(antispam.RspamdUnit)...)
-	f.EximService = c.run(ctx, "systemctl", antispam.UnitShowArgs(antispam.EximUnit)...)
+	switch f.Stack {
+	case antispam.StackExim:
+		f.EximService = c.run(ctx, "systemctl", antispam.UnitShowArgs(antispam.EximUnit)...)
+	case antispam.StackPostfix:
+		// -x expands $name references, so the values are the ones postfix uses.
+		f.Postconf = c.run(ctx, "postconf", append([]string{"-x", "-h"}, antispam.PostconfNames()...)...)
+		f.PostfixMaster = c.run(ctx, "postconf", append([]string{"-F"}, antispam.SmtpdChrootFields()...)...)
+		f.PostfixService = c.postfixService(ctx)
+		f.RspamdWorkers = c.run(ctx, "rspamadm", "configdump", "-j", "worker")
+	}
 	_, f.SystemdRunErr = c.lookPath("systemd-run")
 
-	f.GeneratedConf, f.GeneratedErr = readText(c.layout.GeneratedConf)
-	if f.LocalConf, f.LocalErr = readText(c.layout.LocalConf); errors.Is(f.LocalErr, fs.ErrNotExist) {
-		f.LocalConf, f.LocalErr = "", nil
+	if exim {
+		f.GeneratedConf, f.GeneratedErr = readText(c.layout.GeneratedConf)
+		if f.LocalConf, f.LocalErr = readText(c.layout.LocalConf); errors.Is(f.LocalErr, fs.ErrNotExist) {
+			f.LocalConf, f.LocalErr = "", nil
+		}
+		f.SpamdDisabled, f.SpamdDisabledErr = exists(c.layout.SpamdDisabled)
+		f.GlobalEnable, f.GlobalEnableErr = exists(c.layout.GlobalEnable)
 	}
-	f.SpamdDisabled, f.SpamdDisabledErr = exists(c.layout.SpamdDisabled)
-	f.GlobalEnable, f.GlobalEnableErr = exists(c.layout.GlobalEnable)
 	f.ResolvConf, f.ResolvConfErr = readText(c.layout.ResolvConf)
 	servers, err := antispam.Nameservers([]byte(f.RspamdOptions.Stdout), f.ResolvConf)
 	if f.RspamdOptions.Err == nil && err == nil && slices.ContainsFunc(servers, antispam.ResolvedStub) {
@@ -154,21 +200,23 @@ func (c collector) collect(ctx context.Context, socket string) antispam.HostFact
 	}
 
 	settings := map[string]string{}
-	if f.EximSettings.Err == nil {
-		settings = antispam.ParseEximOptions(f.EximSettings.Stdout)
+	if exim {
+		if f.EximSettings.Err == nil {
+			settings = antispam.ParseEximOptions(f.EximSettings.Stdout)
+		}
+		name, known := settings["system_filter"]
+		switch {
+		case !known && f.EximSettings.Err == nil:
+			f.SystemFilterErr = errors.New("exim -bP did not report system_filter")
+		case name != "" && (!filepath.IsAbs(name) || strings.Contains(name, "$")):
+			// The collector cannot reproduce Exim's delivery-time expansion
+			// or working directory.
+			f.SystemFilterErr = errors.New("system_filter is not a literal absolute path")
+		case name != "":
+			f.SystemFilter, f.SystemFilterErr = readText(name)
+		}
 	}
-	name, known := settings["system_filter"]
-	switch {
-	case !known && f.EximSettings.Err == nil:
-		f.SystemFilterErr = errors.New("exim -bP did not report system_filter")
-	case name != "" && (!filepath.IsAbs(name) || strings.Contains(name, "$")):
-		// The collector cannot reproduce Exim's delivery-time expansion
-		// or working directory.
-		f.SystemFilterErr = errors.New("system_filter is not a literal absolute path")
-	case name != "":
-		f.SystemFilter, f.SystemFilterErr = readText(name)
-	}
-	f.Targets = Targets(c.layout.Targets)
+	f.Targets = Targets(c.targets(f.Stack))
 	f.Record = c.record()
 
 	f.Socket = socketFacts(ctx, socket)
@@ -181,19 +229,27 @@ func (c collector) collect(ctx context.Context, socket string) antispam.HostFact
 }
 
 // CollectInstalled reads only what shows whether CSM's integration is on
-// the host: the files CSM writes, the generated Exim configuration and the
-// completion record. It leaves other facts unset, including platform facts
-// whose detection can run commands.
+// the host: its mail stack, the files CSM writes on that stack, the
+// generated Exim configuration and the completion record. Detecting the
+// stack is the only step that can run commands. Other facts stay unset.
 func CollectInstalled() antispam.HostFacts {
 	return live().installed()
 }
 
 func (c collector) installed() antispam.HostFacts {
-	var f antispam.HostFacts
+	f := antispam.HostFacts{Stack: c.stack()}
 	f.GeneratedConf, f.GeneratedErr = readText(c.layout.GeneratedConf)
-	f.Targets = Targets(c.layout.Targets)
+	f.Targets = Targets(c.targets(f.Stack))
 	f.Record = c.record()
 	return f
+}
+
+// targets are the files CSM writes on a host of stack.
+func (c collector) targets(stack antispam.MailStack) []antispam.Target {
+	if stack == antispam.StackPostfix {
+		return c.layout.PostfixTargets
+	}
+	return c.layout.Targets
 }
 
 func (c collector) record() antispam.RecordFacts {

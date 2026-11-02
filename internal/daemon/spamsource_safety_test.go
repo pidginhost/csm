@@ -106,15 +106,15 @@ func TestSpamSourceConcurrentStartup(t *testing.T) {
 			ready.Add(1)
 			go func() {
 				defer producers.Done()
-				line := rejectMarker(fmt.Sprintf("198.51.100.%d", i+1))
-				d.recordSpamSource(line, base, cfg)
+				scan := scanOf(rejectMarker(fmt.Sprintf("198.51.100.%d", i+1)))
+				d.recordSpamSource(scan, base, cfg)
 				ready.Done()
 				for {
 					select {
 					case <-stop:
 						return
 					default:
-						d.recordSpamSource(line, base, cfg)
+						d.recordSpamSource(scan, base, cfg)
 						runtime.Gosched()
 					}
 				}
@@ -131,8 +131,8 @@ func TestSpamSourceConcurrentStartup(t *testing.T) {
 		t.Cleanup(d.stopAbuseReporting)
 		for i := range 8 {
 			ip := fmt.Sprintf("198.51.100.%d", i+1)
-			d.recordSpamSource(rejectMarker(ip), base, cfg)
-			d.recordSpamSource(rejectMarker(ip), base.Add(time.Hour), cfg)
+			d.recordSpamSource(scanOf(rejectMarker(ip)), base, cfg)
+			d.recordSpamSource(scanOf(rejectMarker(ip)), base.Add(time.Hour), cfg)
 		}
 		got := spamFindings(d)
 		if len(got) != 8 {

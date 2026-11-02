@@ -88,3 +88,19 @@ func TestSettingsValidateFeedsAndSkipMaps(t *testing.T) {
 		t.Fatal("duplicate map redirect accepted")
 	}
 }
+
+// Exemptions are lower-case mailboxes or domains; the config loader lowers
+// the case before validation, so anything else here is refused.
+func TestValidateExempt(t *testing.T) {
+	if err := ValidateExempt([]string{"a@example.com", "example.com", "first.last+tag@mail.example.org", "x-y_z@example.net", "sub.example.net"}); err != nil {
+		t.Fatalf("valid entries refused: %v", err)
+	}
+	if err := ValidateExempt(nil); err != nil {
+		t.Fatalf("no entries refused: %v", err)
+	}
+	for _, bad := range []string{"", `x"`, "a b", "*", "*@example.com", "A@example.com", "Example.com", "a@b@example.com", "@example.com", "a@", "a@example.com\n", "example.com;", `a\@example.com`, "caf\u00e9.example.com"} {
+		if err := ValidateExempt([]string{"example.com", bad}); err == nil {
+			t.Errorf("ValidateExempt(%q) = nil, want error", bad)
+		}
+	}
+}

@@ -58,6 +58,16 @@ type fakeHost struct {
 	builds                 int
 	// onCall runs before a command line is answered.
 	onCall func(line string)
+	// stack is the mail stack preflight reports; its targets are the ones
+	// the host holds.
+	stack antispam.MailStack
+	// postconf and workers replace the Postfix milters and rspamd workers
+	// preflight reports when set.
+	postconf, workers string
+	// milterFail lists the 1-based milter connections that fail; milters
+	// records every address a connection was made to.
+	milterFail []int
+	milters    []string
 }
 
 // inactiveExit is how systemctl is-active reports a unit that is not active.
@@ -74,7 +84,7 @@ type call struct {
 
 func newFake(t *testing.T) *fakeHost {
 	t.Helper()
-	f := &fakeHost{t: t, root: t.TempDir(), start: time.Now(), fail: map[string][]int{}, seen: map[string]int{},
+	f := &fakeHost{t: t, root: t.TempDir(), start: time.Now(), fail: map[string][]int{}, seen: map[string]int{}, stack: antispam.StackExim,
 		key: antispam.KeyFacts{Path: "/etc/csm/k", UID: 0, Mode: 0o600, Key: antispam.NewSecret("abcdefghijklmnopqrstu23456")}}
 	for _, dir := range []string{antispam.RspamdLocalDir, antispam.RspamdOverrideDir, antispam.RspamdLuaDir, path.Dir(antispam.RoundcubeIncludePath), "/var/lib/csm"} {
 		if err := os.MkdirAll(f.root+dir, 0o755); err != nil {
@@ -91,7 +101,7 @@ func newFake(t *testing.T) *fakeHost {
 func (f *fakeHost) host() *Host {
 	snapshot := func() []antispam.TargetFacts {
 		var out []antispam.TargetFacts
-		for _, target := range antispam.MutationTargets() {
+		for _, target := range antispam.MutationTargets(f.stack) {
 			st, err := readFile(f.root + target.Path)
 			if err != nil {
 				f.t.Fatal(err)
@@ -115,13 +125,30 @@ func (f *fakeHost) host() *Host {
 		}
 		return out
 	}
+	postconf, workers := f.postconf, f.workers
+	if postconf == "" {
+		postconf = "inet:127.0.0.1:11332\naccept\n52428800\n/var/spool/postfix\n3.8.6\ni {auth_type} {auth_authen} {auth_author} {mail_addr} {mail_host} {mail_mailer}\n"
+	}
+	if workers == "" {
+		workers = `{"rspamd_proxy": {"bind_socket": "localhost:11332", "milter": true}}`
+	}
 	return &Host{
 		root:    f.root,
 		run:     f.run,
-		replace: replaceFile,
+		replace: replacementFor(f.stack),
+		stack:   func() antispam.MailStack { return f.stack },
+		milter: func(_ context.Context, addr string) error {
+			f.milters = append(f.milters, addr)
+			if contains(f.milterFail, len(f.milters)) {
+				return errors.New("connection refused")
+			}
+			return nil
+		},
 		preflight: func(context.Context, antispam.Settings) (antispam.HostFacts, []antispam.Problem) {
-			return antispam.HostFacts{Targets: snapshot(), RspamdGID: os.Getgid(), DQSKey: f.key,
-				LearningKeys: f.learning, LearningKeysErr: f.learningErr,
+			return antispam.HostFacts{Stack: f.stack, Targets: snapshot(), RspamdGID: os.Getgid(), DQSKey: f.key,
+				Postconf: antispam.CommandResult{Stdout: postconf}, RspamdWorkers: antispam.CommandResult{Stdout: workers},
+				PostfixMaster: antispam.CommandResult{Stdout: "smtp/inet/command = smtpd\nsmtp/inet/chroot = y\n"},
+				LearningKeys:  f.learning, LearningKeysErr: f.learningErr,
 				Controller: antispam.ControllerConfig{Present: true, PasswordSet: true, Listeners: []antispam.ControllerListener{
 					{Raw: fakeControllerSocket + " mode=0600", Unix: true, Path: fakeControllerSocket, Mode: 0o600}}},
 				ControllerHost: antispam.ControllerHostFacts{RspamdUID: 979, Sockets: map[string]antispam.SocketFacts{
@@ -297,7 +324,7 @@ func (f *fakeHost) file(p string) string {
 // state is every file a transaction may change.
 func (f *fakeHost) state() map[string]string {
 	out := map[string]string{}
-	for _, target := range antispam.MutationTargets() {
+	for _, target := range antispam.MutationTargets(f.stack) {
 		out[target.Path] = f.file(target.Path)
 	}
 	out[antispam.GeneratedEximConfPath] = f.file(antispam.GeneratedEximConfPath)
@@ -339,7 +366,7 @@ func TestApplyInstallsOnFreshHost(t *testing.T) {
 	if r.Generation != antispam.Generation(managed) {
 		t.Errorf("generation %s, want %s", r.Generation, antispam.Generation(managed))
 	}
-	for _, target := range antispam.MutationTargets() {
+	for _, target := range antispam.MutationTargets(antispam.StackExim) {
 		got := f.file(target.Path)
 		if target.Kind == antispam.TargetRspamd && got != managed[target.Path] ||
 			target.Kind != antispam.TargetRspamd && !strings.Contains(got, managed[target.Path]) {

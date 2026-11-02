@@ -2,7 +2,9 @@ package antispam
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
+	"path"
 	"slices"
 	"strings"
 	"testing"
@@ -119,11 +121,52 @@ func TestAssessDisabled(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := tc.facts(t)
-			a := Assess(false, s, HostFacts{Targets: f.Targets, GeneratedConf: f.GeneratedConf, Record: f.Record})
+			a := Assess(false, s, HostFacts{Stack: f.Stack, Targets: f.Targets, GeneratedConf: f.GeneratedConf, Record: f.Record})
 			if a.Action != tc.action || a.Installed != tc.installed || len(a.Problems) != 0 {
 				t.Fatalf("got %+v, want action %d installed %t", a, tc.action, tc.installed)
 			}
 		})
+	}
+}
+
+// A disabled Postfix host with only CSM's milter headers or scope Lua left,
+// as after an interrupted removal, still gets them removed.
+func TestAssessDisabledFindsPostfixLeftovers(t *testing.T) {
+	for _, p := range []string{MilterHeadersPath, PostfixScopeLuaPath} {
+		f := HostFacts{Stack: StackPostfix, Targets: stackTargets(StackPostfix), Record: RecordFacts{Missing: true}}
+		for i := range f.Targets {
+			tg := &f.Targets[i]
+			if tg.Path != p {
+				continue
+			}
+			header := ManagedHeader
+			if tg.Kind == TargetRspamdLua {
+				header = LuaManagedHeader
+			}
+			tg.Missing, tg.File, tg.Content = false, PathFacts{Path: p, Mode: 0o644}, header+"\n"
+		}
+		if a := Assess(false, enforceSettings(), f); a.Action != Uninstall || !a.Installed || len(a.Problems) != 0 {
+			t.Errorf("%s left: got %+v, want uninstall", p, a)
+		}
+	}
+}
+
+// A Postfix host whose MTA restarts, with both MTAs installed, reads as no
+// stack. Neither an enabled nor a disabled pass may remove CSM's
+// integration then: removal needs the stack's own files, and the Exim path
+// would rebuild a configuration the host does not have.
+func TestAssessKeepsInstallWhenStackUnknown(t *testing.T) {
+	f := HostFacts{
+		Stack:   StackNone,
+		Targets: stackTargets(StackNone),
+		Record:  RecordFacts{Content: string(EncodeRecord(strings.Repeat("a", 64)))},
+	}
+	for _, enabled := range []bool{true, false} {
+		a := Assess(enabled, enforceSettings(), f)
+		if a.Action != Keep || !a.Installed || len(a.Problems) != 1 ||
+			a.Problems[0].Code != CodePlatform || a.Problems[0].Severity != Temporary {
+			t.Fatalf("enabled %t: got %+v, want keep with one temporary platform problem", enabled, a)
+		}
 	}
 }
 
@@ -711,4 +754,249 @@ func blockingProblem(problems []Problem) bool {
 		}
 	}
 	return false
+}
+
+// postfixSettings are the default settings on a Postfix host.
+func postfixSettings(dryRun bool) Settings {
+	s := enforceSettings()
+	s.DryRun, s.Stack = dryRun, StackPostfix
+	return s
+}
+
+// installedPostfixFacts is a wired Postfix host holding CSM's files for s
+// and a completed record. A Postfix host has no Exim configuration facts.
+func installedPostfixFacts(t *testing.T, s Settings) HostFacts {
+	t.Helper()
+	f := postfixFacts()
+	managed, err := ManagedContent(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range f.Targets {
+		tg := &f.Targets[i]
+		if text, ok := managed[tg.Path]; ok {
+			tg.Missing, tg.File, tg.Content = false, PathFacts{Path: tg.Path, Mode: 0o644}, text
+		}
+	}
+	f.Record = RecordFacts{Content: string(EncodeRecord(Generation(managed)))}
+	f.RspamdActions = CommandResult{Stdout: loadedActions}
+	if s.DryRun {
+		// The host's own actions decide in a dry run.
+		f.RspamdActions = CommandResult{Stdout: hostActions}
+	}
+	f.RspamdModules = CommandResult{Stdout: loadedModules}
+	f.RspamdPhishing = CommandResult{Stdout: loadedPhishing}
+	return f
+}
+
+// hostActions are a Postfix host's own thresholds, rejecting well above
+// CSM's default reject score.
+const hostActions = `{"reject": 70, "add_header": 5, "greylist": null}`
+
+// A Postfix dry run leaves rspamd's actions to the host, which apply to
+// CSM's scores. A host that rejects at or below CSM's reject score, as with
+// rspamd's built-in actions when it has no actions.conf, still rejects in
+// "dry run", and CSM says so. Disabled rejects, unreadable actions, CSM's
+// own actions.conf (about to be restored or removed), enforce and Exim get
+// no warning.
+func TestAssessWarnsWhenPostfixDryRunRejects(t *testing.T) {
+	const detail = "dry run on this host still rejects: rspamd rejects at %s, at or below CSM's reject score of 15"
+	for name, tc := range map[string]struct {
+		actions string
+		mutate  func(*HostFacts)
+		s       Settings
+		want    string
+	}{
+		"host rejects at 70":     {hostActions, nil, postfixSettings(true), ""},
+		"built-in actions":       {`{"reject": 15, "add_header": 6, "greylist": 4}`, nil, postfixSettings(true), fmt.Sprintf(detail, "15")},
+		"host rejects below CSM": {`{"reject": 10.5}`, nil, postfixSettings(true), fmt.Sprintf(detail, "10.5")},
+		"reject disabled":        {`{"reject": null, "add_header": 6}`, nil, postfixSettings(true), ""},
+		"unreadable":             {"not JSON", nil, postfixSettings(true), ""},
+		"CSM's actions.conf left": {loadedActions, func(f *HostFacts) {
+			managed, err := ManagedContent(postfixSettings(false))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for i := range f.Targets {
+				if tg := &f.Targets[i]; tg.Path == ActionsPath {
+					tg.Missing, tg.File, tg.Content = false, PathFacts{Path: tg.Path, Mode: 0o644}, managed[ActionsPath]
+				}
+			}
+		}, postfixSettings(true), ""},
+		"enforce": {loadedActions, nil, postfixSettings(false), ""},
+	} {
+		f := installedPostfixFacts(t, tc.s)
+		f.RspamdActions = CommandResult{Stdout: tc.actions}
+		if tc.mutate != nil {
+			tc.mutate(&f)
+		}
+		a := Assess(true, tc.s, f)
+		var got []Problem
+		for _, p := range a.Problems {
+			if p.Code == CodeDryRunRejects {
+				got = append(got, p)
+			}
+		}
+		switch {
+		case tc.want == "" && len(got) != 0:
+			t.Errorf("%s: %+v, want no dry run warning", name, got)
+		case tc.want != "" && (len(got) != 1 || got[0].Severity != Warning || got[0].Detail != tc.want || a.Action != Keep):
+			t.Errorf("%s: %+v (action %d), want one warning %q and Keep", name, got, a.Action, tc.want)
+		}
+	}
+	// Exim scans in dry run without rspamd acting, so rspamd's actions
+	// never reject there, even before CSM's actions.conf is installed.
+	s := enforceSettings()
+	s.DryRun = true
+	f := freshFacts()
+	f.RspamdActions = CommandResult{Stdout: `{"reject": 15, "add_header": 6, "greylist": 4}`}
+	if a := Assess(true, s, f); hasProblem(a, CodeDryRunRejects, Warning) {
+		t.Fatalf("Exim dry run warned: %+v", a)
+	}
+}
+
+func TestAssessPostfixCurrent(t *testing.T) {
+	for _, dry := range []bool{false, true} {
+		s := postfixSettings(dry)
+		f := installedPostfixFacts(t, s)
+		if f.GeneratedConf != "" || f.EximSettings != (CommandResult{}) {
+			t.Fatal("the Postfix facts hold Exim configuration")
+		}
+		if a := Assess(true, s, f); a.Action != Keep || !a.Installed || len(a.Problems) != 0 {
+			t.Fatalf("dry run %t: installed Postfix host: %+v; want Keep without problems", dry, a)
+		}
+		// Content for other settings is still not current.
+		changed := s
+		changed.RejectScore = 20
+		if a := Assess(true, changed, f); a.Action != Install {
+			t.Fatalf("dry run %t: changed settings: %+v; want Install", dry, a)
+		}
+	}
+}
+
+// In a dry run the host's own actions keep enforcing, whatever their form,
+// so CSM does not compare them; it only warns when they still reject at or
+// below its reject score (TestAssessWarnsWhenPostfixDryRunRejects).
+func TestAssessPostfixDryRunIgnoresHostActions(t *testing.T) {
+	s := postfixSettings(true)
+	for name, actions := range map[string]CommandResult{
+		"own thresholds": {Stdout: `{"reject": 30, "add_header": 5, "greylist": 4}`},
+		"object form":    {Stdout: `{"reject": {"score": 30}}`},
+		"unreadable":     {Stdout: "not JSON"},
+		"failed dump":    {Err: errors.New("exit status 1")},
+	} {
+		f := installedPostfixFacts(t, s)
+		f.RspamdActions = actions
+		if a := Assess(true, s, f); a.Action != Keep || !a.Installed || len(a.Problems) != 0 {
+			t.Errorf("%s: %+v; want Keep without problems", name, a)
+		}
+	}
+	// Enforcing, CSM's actions.conf must be what rspamd loaded.
+	s = postfixSettings(false)
+	f := installedPostfixFacts(t, s)
+	f.RspamdActions = CommandResult{Stdout: `{"reject": {"score": 30}}`}
+	if a := Assess(true, s, f); a.Action != Uninstall || !hasProblem(a, CodeRspamdConfig, Definite) {
+		t.Fatalf("enforce with object-form actions: %+v", a)
+	}
+}
+
+// Enforcing on Postfix, CSM owns actions.conf like a core file: one it
+// cannot replace safely is a definite precondition problem, reported before
+// any worker runs, and one it could not check is temporary, so a passing
+// read error never removes an installation. Unsafe metadata collected before
+// such an error stays definite. A dry run leaves the file to the host and
+// never judges it.
+func TestAssessPostfixEnforceJudgesActions(t *testing.T) {
+	for name, tc := range map[string]struct {
+		mutate func(*TargetFacts)
+		sev    Severity
+	}{
+		"safe":        {func(*TargetFacts) {}, Definite},
+		"symlink":     {func(tg *TargetFacts) { tg.File.Mode = fs.ModeSymlink | 0o777 }, Definite},
+		"loose mode":  {func(tg *TargetFacts) { tg.File.Mode = 0o666 }, Definite},
+		"other owner": {func(tg *TargetFacts) { tg.File.UID = 1001 }, Definite},
+		"loose directory": {func(tg *TargetFacts) {
+			tg.Parents[len(tg.Parents)-1].Mode = fs.ModeDir | 0o777
+		}, Definite},
+		"missing directory": {func(tg *TargetFacts) {
+			tg.Missing, tg.File, tg.Content, tg.Err = false, PathFacts{}, "", fmt.Errorf("lstat: %w", fs.ErrNotExist)
+		}, Definite},
+		"unreadable":          {func(tg *TargetFacts) { tg.Content, tg.Err = "", errors.New("permission denied") }, Temporary},
+		"parents not checked": {func(tg *TargetFacts) { tg.Parents = nil }, Temporary},
+		"lookup failed": {func(tg *TargetFacts) {
+			tg.File, tg.Content, tg.Err = PathFacts{}, "", errors.New("permission denied")
+		}, Temporary},
+		// Metadata collected before a read or lookup error still counts.
+		"loose mode, unreadable": {func(tg *TargetFacts) {
+			tg.File.Mode, tg.Content, tg.Err = 0o666, "", errors.New("permission denied")
+		}, Definite},
+		"symlink, unreadable": {func(tg *TargetFacts) {
+			tg.File.Mode, tg.Content, tg.Err = fs.ModeSymlink|0o777, "", errors.New("too many levels of symbolic links")
+		}, Definite},
+		"other owner, unreadable": {func(tg *TargetFacts) {
+			tg.File.UID, tg.Content, tg.Err = 1001, "", errors.New("permission denied")
+		}, Definite},
+		"loose directory, lookup failed": {func(tg *TargetFacts) {
+			tg.Parents[len(tg.Parents)-1].Mode = fs.ModeDir | 0o777
+			tg.File, tg.Content, tg.Err = PathFacts{}, "", errors.New("permission denied")
+		}, Definite},
+	} {
+		for _, dry := range []bool{false, true} {
+			s := postfixSettings(dry)
+			f := postfixFacts()
+			f.Record = RecordFacts{Missing: true}
+			for i := range f.Targets {
+				if tg := &f.Targets[i]; tg.Path == RspamdLocalDir+"/actions.conf" {
+					tg.Missing, tg.File, tg.Content = false, PathFacts{Path: tg.Path, Mode: 0o644}, "actions { reject = 70; }\n"
+					tc.mutate(tg)
+				}
+			}
+			a := Assess(true, s, f)
+			switch {
+			case dry || name == "safe":
+				// The worker backs up a safe operator file and replaces it.
+				if a.Action != Install || len(a.Problems) != 0 {
+					t.Errorf("%s, dry run %t: %+v; want Install without problems", name, dry, a)
+				}
+			case a.Action != Keep || len(a.Problems) != 1 || !hasProblem(a, CodeTargets, tc.sev):
+				t.Errorf("%s, enforce: %+v; want Keep with one target problem of severity %d", name, a, tc.sev)
+			}
+		}
+		if name == "safe" || tc.sev != Temporary {
+			continue
+		}
+		// An installation stays when its actions.conf could not be checked.
+		s := postfixSettings(false)
+		f := installedPostfixFacts(t, s)
+		for i := range f.Targets {
+			if tg := &f.Targets[i]; tg.Path == RspamdLocalDir+"/actions.conf" {
+				tc.mutate(tg)
+			}
+		}
+		if a := Assess(true, s, f); a.Action != Keep || !a.Installed || len(a.Problems) != 1 || !hasProblem(a, CodeTargets, Temporary) {
+			t.Errorf("%s, installed: %+v; want Keep with one temporary target problem", name, a)
+		}
+	}
+	// An installation whose actions.conf CSM cannot safely own is removed.
+	s := postfixSettings(false)
+	installed := installedPostfixFacts(t, s)
+	for i := range installed.Targets {
+		if tg := &installed.Targets[i]; tg.Path == RspamdLocalDir+"/actions.conf" {
+			tg.File.Mode = 0o666
+		}
+	}
+	if a := Assess(true, s, installed); a.Action != Uninstall || !hasProblem(a, CodeTargets, Definite) {
+		t.Errorf("loose mode, installed: %+v; want Uninstall with a definite target problem", a)
+	}
+	// A directory every core file shares is reported once.
+	f := postfixFacts()
+	f.Record = RecordFacts{Missing: true}
+	for i := range f.Targets {
+		if tg := &f.Targets[i]; path.Dir(tg.Path) == RspamdLocalDir {
+			tg.Parents[len(tg.Parents)-1].Mode = fs.ModeDir | 0o777
+		}
+	}
+	if a := Assess(true, postfixSettings(false), f); a.Action != Keep || len(a.Problems) != 1 || !hasProblem(a, CodeTargets, Definite) {
+		t.Fatalf("loose local.d: %+v; want Keep with one definite target problem", a)
+	}
 }

@@ -75,19 +75,9 @@ func ParseControllerConfig(fullDump []byte) (ControllerConfig, error) {
 		return cfg, workerErr
 	}
 	cfg.Present = true
-	// rspamd looks the bind address up as bind_socket, then listen, then bind.
-	var binds []string
-	for _, key := range []string{"bind_socket", "listen", "bind"} {
-		if _, ok := fields[key]; !ok {
-			continue
-		}
-		if binds, err = stringOrList(fields, key); err != nil {
-			return ControllerConfig{}, err
-		}
-		break
-	}
-	if len(binds) == 0 {
-		return ControllerConfig{}, errors.New("configdump worker controller: bind_socket is missing")
+	binds, err := workerBinds(fields)
+	if err != nil {
+		return ControllerConfig{}, err
 	}
 	for _, b := range binds {
 		l, bindErr := parseControllerBind(b)
@@ -114,20 +104,45 @@ func ParseControllerConfig(fullDump []byte) (ControllerConfig, error) {
 	return cfg, nil
 }
 
-func disabledWorker(fields map[string]json.RawMessage) (bool, error) {
-	enabled := true
-	if raw, ok := fields["enabled"]; ok {
-		var flag *bool
-		if json.Unmarshal(raw, &flag) == nil && flag != nil {
-			enabled = *flag
-		} else {
-			// Rspamd also accepts integers in its boolean fields.
-			var value *int32
-			if json.Unmarshal(raw, &value) != nil || value == nil {
-				return false, errors.New("configdump worker controller: enabled is not a boolean or supported integer")
-			}
-			enabled = *value != 0
+// workerBinds returns a worker's bind addresses. rspamd looks them up as
+// bind_socket, then listen, then bind.
+func workerBinds(fields map[string]json.RawMessage) ([]string, error) {
+	for _, key := range []string{"bind_socket", "listen", "bind"} {
+		if _, ok := fields[key]; !ok {
+			continue
 		}
+		binds, err := stringOrList(fields, key)
+		if err != nil || len(binds) > 0 {
+			return binds, err
+		}
+		break
+	}
+	return nil, errors.New("configdump worker controller: bind_socket is missing")
+}
+
+// workerBool reads a boolean worker field, or returns value when it is
+// absent.
+func workerBool(fields map[string]json.RawMessage, name string, value bool) (bool, error) {
+	raw, ok := fields[name]
+	if !ok {
+		return value, nil
+	}
+	var flag *bool
+	if json.Unmarshal(raw, &flag) == nil && flag != nil {
+		return *flag, nil
+	}
+	// Rspamd also accepts integers in its boolean fields.
+	var n *int32
+	if json.Unmarshal(raw, &n) != nil || n == nil {
+		return false, fmt.Errorf("configdump worker controller: %s is not a boolean or supported integer", name)
+	}
+	return *n != 0, nil
+}
+
+func disabledWorker(fields map[string]json.RawMessage) (bool, error) {
+	enabled, err := workerBool(fields, "enabled", true)
+	if err != nil {
+		return false, err
 	}
 	count := 1.0
 	if raw, ok := fields["count"]; ok {
@@ -160,27 +175,12 @@ func controllerSection(section json.RawMessage) (json.RawMessage, error) {
 	}
 	var found json.RawMessage
 	for _, entry := range entries {
-		workers, err := dumpObjectAs[json.RawMessage](entry, "worker")
+		c, err := workerOfKind(entry, "controller")
 		if err != nil {
 			return nil, err
 		}
-		var c json.RawMessage
-		if raw, typed := workers["type"]; typed {
-			// A type attribute makes this the worker itself, even if it
-			// also has a field named after a worker type.
-			var kind string
-			if json.Unmarshal(raw, &kind) != nil || kind == "" || strings.ContainsRune(kind, '\x00') {
-				return nil, errors.New("configdump worker: type is not a non-empty string without NUL bytes")
-			}
-			if kind != "controller" {
-				continue
-			}
-			c = entry
-		} else {
-			var ok bool
-			if c, ok = workers["controller"]; !ok {
-				continue
-			}
+		if c == nil {
+			continue
 		}
 		if found != nil {
 			return nil, errors.New("configdump worker: more than one controller worker")
@@ -188,6 +188,30 @@ func controllerSection(section json.RawMessage) (json.RawMessage, error) {
 		found = c
 	}
 	return found, nil
+}
+
+// workerOfKind returns the settings of entry when it is a worker of the
+// given type, else nil. rspamd prints a worker with a type attribute or as
+// a single object keyed by its type.
+func workerOfKind(entry json.RawMessage, kind string) (json.RawMessage, error) {
+	workers, err := dumpObjectAs[json.RawMessage](entry, "worker")
+	if err != nil {
+		return nil, err
+	}
+	raw, typed := workers["type"]
+	if !typed {
+		return workers[kind], nil
+	}
+	// A type attribute makes this the worker itself, even if it also has a
+	// field named after a worker type.
+	var k string
+	if json.Unmarshal(raw, &k) != nil || k == "" || strings.ContainsRune(k, '\x00') {
+		return nil, errors.New("configdump worker: type is not a non-empty string without NUL bytes")
+	}
+	if k != kind {
+		return nil, nil
+	}
+	return entry, nil
 }
 
 func stringOrList(fields map[string]json.RawMessage, name string) ([]string, error) {

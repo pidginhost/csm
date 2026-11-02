@@ -19,6 +19,7 @@ import (
 	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/admissionowner"
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/antispam"
 	"github.com/pidginhost/csm/internal/antispam/reconcile"
 	"github.com/pidginhost/csm/internal/attackdb"
 	"github.com/pidginhost/csm/internal/auditd"
@@ -145,9 +146,13 @@ type Daemon struct {
 	// merges, so each outcome is logged once.
 	mailStatsLoadFailing atomic.Bool
 
-	// antispamLoop runs antispam reconcile passes on a cPanel host. It
-	// stays nil elsewhere and until startup reaches it.
-	antispamLoop atomic.Pointer[reconcile.Loop]
+	// antispamLoop runs antispam reconcile passes on a host antispam
+	// supports. It stays nil elsewhere and until startup reaches it.
+	// antispamStarted records that startup reached antispam, after which a
+	// reload may start the loop; antispamClaimed lets only one start win.
+	antispamLoop    atomic.Pointer[reconcile.Loop]
+	antispamStarted atomic.Bool
+	antispamClaimed atomic.Bool
 	// Namespace replacement must wait for passes that can still create keys
 	// or publish a learner target. Reloads can still stop learning at once.
 	antispamReconcileMu sync.Mutex
@@ -176,6 +181,9 @@ type Daemon struct {
 	antispamFeeds atomic.Pointer[reconcile.FeedState]
 	// rspamdStats is written by reconcile passes and read by web UI requests.
 	rspamdStats atomic.Pointer[rspamdStatsSource]
+	// antispamScanSource is written by reconcile passes and read by the mail
+	// log and rspamd log watchers; nil until a pass says.
+	antispamScanSource atomic.Pointer[antispam.ScanSource]
 	// spamSources is set by startAbuseReporting after the log watchers that
 	// read it have started.
 	spamSources atomic.Pointer[spamSourceRunner]
@@ -946,7 +954,8 @@ func (d *Daemon) Run() error {
 
 	// Reconcile the opt-in antispam integration and probe rspamd while it is
 	// enabled. Started after the forward guard's own reconcile, so the two
-	// startup transactions do not contend for the Exim lock. cPanel only.
+	// startup transactions do not contend for the Exim lock. cPanel and
+	// Postfix hosts only.
 	d.startAntispam()
 
 	// Snapshot the live config ONCE for the entire initial-scan tick
@@ -2464,16 +2473,26 @@ func (d *Daemon) handleEximLine(line string, obs alert.Observation, cfg *config.
 	recordEximSMTPAuthSuccess(line, cfg, d.smtpAuthTracker)
 
 	// CSM's scan hook logs one marker per scan; a failed scan raises
-	// antispam_scan_error while antispam is enabled. Some sources carry no
-	// observation time.
-	at := obs.ObservedAt
-	if at.IsZero() {
-		at = time.Now()
-	}
-	d.recordSpamEvidence(line, at, cfg)
-	d.recordSpamSource(line, at, cfg)
+	// antispam_scan_error while antispam is enabled.
+	at := lineReadAt(obs)
 	d.recordMailStatsExim(line, at)
-	return append(findings, d.recordAntispamLine(line, at)...)
+	if s, ok := antispam.ParseScan(line); ok {
+		// Exim logs the marker with the SMTP client's own address, so it is
+		// evidence about that sender.
+		d.recordSpamEvidence(s, at, cfg)
+		d.recordSpamSource(s, at, cfg)
+		findings = append(findings, d.recordScan(s, line, at)...)
+	}
+	return findings
+}
+
+// lineReadAt is when a line was read; some sources carry no observation
+// time.
+func lineReadAt(obs alert.Observation) time.Time {
+	if obs.ObservedAt.IsZero() {
+		return time.Now()
+	}
+	return obs.ObservedAt
 }
 
 // handleMailLine composes parseDovecotLogLine (preserving email_suspicious_geo)
@@ -2485,6 +2504,11 @@ func (d *Daemon) handleEximLine(line string, obs alert.Observation, cfg *config.
 func (d *Daemon) handleMailLine(line string, obs alert.Observation, cfg *config.Config) []alert.Finding {
 	d.recordMailStatsMail(line, obs.ObservedAt)
 	findings := parseDovecotLogLine(line, cfg)
+	// Mail postfix could not pass to rspamd has no scan record; the
+	// failure counts as a failed scan.
+	if src := d.antispamScanSource.Load(); src != nil && postfixMilterFailure(line, src.Milters) {
+		return append(findings, d.recordAntispamScan(antispam.Scan{}, lineReadAt(obs))...)
+	}
 	if paired, handled := d.handleSMTPAuthPairing(line, obs, cfg); handled {
 		return append(findings, paired...)
 	}

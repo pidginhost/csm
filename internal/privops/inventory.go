@@ -639,7 +639,7 @@ var operations = []Op{
 		Risk:             RiskDestructive,
 		RecoveryGap:      "Rollback cannot change existing SMTP sessions; failed rollback or an interrupted worker needs another apply or remove transaction.",
 		Subsystem:        "host integration",
-		Summary:          "install, update or remove CSM's rspamd settings, optional feeds, learning files, the webmail Junk-button include and Exim spam-filter hooks, rebuild the Exim configuration and reload Exim and rspamd",
+		Summary:          "install, update or remove CSM's rspamd settings, optional feeds, learning files, the webmail Junk-button include and Exim spam-filter hooks, rebuild the Exim configuration and reload Exim and rspamd; on Postfix hosts only CSM's rspamd files and an rspamd reload",
 		Privileges:       []Privilege{Root},
 		Trigger:          Automatic,
 		Writes:           []string{"/etc/rspamd/local.d", "/etc/rspamd/override.d", "/etc/rspamd/lua.local.d", "/usr/local/cpanel/base/3rdparty/roundcube/config/inc.d", "/usr/local/cpanel/etc/exim/acls", "/etc/exim.conf.local", "/etc/exim.conf", "/var/lib/csm", "exim:rebuild artifacts and service reload", "service:rspamd reload"},

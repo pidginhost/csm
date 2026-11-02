@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pidginhost/csm/internal/antispam"
@@ -72,7 +73,12 @@ type Host struct {
 	replace   func(p string, want, next fileState) error
 	preflight func(ctx context.Context, s antispam.Settings) (antispam.HostFacts, []antispam.Problem)
 	targets   func() []antispam.TargetFacts
-	ping      func(ctx context.Context, socket string) error
+	// stack is the host's mail stack, which picks targets' files.
+	stack func() antispam.MailStack
+	ping  func(ctx context.Context, socket string) error
+	// milter connects to a postfix milter address, inet:host:port or
+	// unix:path, as postfix would.
+	milter func(ctx context.Context, addr string) error
 	// unprivileged returns the uid and gid Roundcube's PHP runs as.
 	unprivileged func() (uid, gid int, err error)
 	// controllerGet reads one controller path over a private Unix socket.
@@ -83,11 +89,16 @@ type Host struct {
 	rspamdWait, eximWait time.Duration
 }
 
-// New returns a Host for the live cPanel paths.
+// New returns a Host for the live paths of the host's mail stack, which it
+// detects once.
 func New() *Host {
+	stack := sync.OnceValue(hostfacts.DetectStack)
 	return &Host{
-		run:     hostfacts.RunCommand,
-		replace: replaceFile,
+		run: hostfacts.RunCommand,
+		replace: func(p string, want, next fileState) error {
+			return replacementFor(stack())(p, want, next)
+		},
+		stack: stack,
 		preflight: func(ctx context.Context, s antispam.Settings) (antispam.HostFacts, []antispam.Problem) {
 			f := hostfacts.Collect(ctx, s.Socket)
 			if s.HasFeed(antispam.FeedSpamhausDQS) {
@@ -98,11 +109,12 @@ func New() *Host {
 			}
 			return f, antispam.CheckHost(f)
 		},
-		targets: func() []antispam.TargetFacts { return hostfacts.Targets(antispam.MutationTargets()) },
+		targets: func() []antispam.TargetFacts { return hostfacts.Targets(antispam.MutationTargets(stack())) },
 		ping: func(ctx context.Context, socket string) error {
 			_, err := hostfacts.Ping(ctx, socket)
 			return err
 		},
+		milter:        connectMilter,
 		greet:         smtpGreeting,
 		controllerGet: hostfacts.ControllerGet,
 		unprivileged:  nobody,
@@ -159,11 +171,20 @@ type tx struct {
 	// backups maps each copy to whether its original still needs a durable
 	// restore. A failed replacement leaves its copy eligible for cleanup.
 	backups map[string]bool
+	// restored are the copies a Postfix transaction puts back.
+	restored []*restoredCopy
 }
 
 func (h *Host) begin() *tx {
 	t := &tx{h: h, start: h.now()}
 	t.fwd, t.cancel = context.WithDeadline(context.Background(), t.start.Add(forwardBudget))
+	cancel := t.cancel
+	t.cancel = func() {
+		cancel()
+		for _, r := range t.restored {
+			r.target.Close()
+		}
+	}
 	return t
 }
 
@@ -377,12 +398,7 @@ func (t *tx) backup(target, content string) (string, error) {
 		return "", err
 	}
 	p := filepath.Join(dir, antispam.BackupName(target, t.h.now()))
-	tmp, err := stageFile(p, content)
-	if err != nil {
-		return "", err
-	}
-	defer discardTemp(tmp)
-	err = publishFile(p, tmp, 0o600, -1, -1, false)
+	err := publishCopy(p, content)
 	if err == nil || errors.Is(err, errDurability) {
 		// The target is still unchanged, so a rollback may delete this copy.
 		if t.backups == nil {
@@ -391,6 +407,16 @@ func (t *tx) backup(target, content string) (string, error) {
 		t.backups[p] = false
 	}
 	return p, err
+}
+
+// publishCopy writes a root-only copy at p, never over an existing file.
+func publishCopy(p, content string) error {
+	tmp, err := stageFile(p, content)
+	if err != nil {
+		return err
+	}
+	defer discardTemp(tmp)
+	return publishFile(p, tmp, 0o600, -1, -1, false)
 }
 
 // dropBackups deletes only copies whose originals are durably back in
@@ -678,14 +704,17 @@ func (t *tx) checkRspamd(ctx context.Context, s *antispam.Settings) error {
 	if s.Learning && !enabled["fuzzy_check"] {
 		return errors.Join(errLearningLoaded, errors.New("rspamd module fuzzy_check is disabled"))
 	}
-	acts := t.cmd(ctx, commandLimit, "rspamadm", "configdump", "-j", "actions")
-	if acts.Err != nil {
-		return cmdErr("rspamadm configdump -j actions", acts)
-	}
-	actions, err := antispam.ParseActions([]byte(acts.Stdout))
-	if err != nil {
-		// Object-form actions hide their thresholds: a conflict, not drift.
-		return errors.New("rspamadm configdump -j actions: rspamd configuration conflict")
+	var actions antispam.Actions
+	// The host's own actions keep enforcing in a Postfix dry run.
+	if !s.HostActions() {
+		acts := t.cmd(ctx, commandLimit, "rspamadm", "configdump", "-j", "actions")
+		if acts.Err != nil {
+			return cmdErr("rspamadm configdump -j actions", acts)
+		}
+		if actions, err = antispam.ParseActions([]byte(acts.Stdout)); err != nil {
+			// Object-form actions hide their thresholds: a conflict, not drift.
+			return errors.New("rspamadm configdump -j actions: rspamd configuration conflict")
+		}
 	}
 	if conflicts := antispam.CheckRspamd(enabled, actions, *s); len(conflicts) > 0 {
 		return errors.New("rspamadm configdump -j actions: rspamd configuration conflict")
@@ -828,6 +857,11 @@ func (t *tx) rollback() (state string, rollbackErr error) {
 		if err := t.replaceRecord(ctx, ""); err != nil {
 			errs = append(errs, err)
 		}
+	}
+	// Recreate consumed operator copies before overwriting their restored
+	// files. This preservation must run even after the rollback deadline.
+	if err := t.restoreConsumedCopies(); err != nil {
+		return antispam.RollbackFailed, errors.Join(append(errs, err)...)
 	}
 	for i := len(t.writes) - 1; i >= 0; i-- {
 		if err := ctx.Err(); err != nil {

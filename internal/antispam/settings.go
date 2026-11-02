@@ -6,7 +6,9 @@ package antispam
 import (
 	"errors"
 	"fmt"
+	"net/netip"
 	"path"
+	"regexp"
 	"slices"
 	"strings"
 	"unicode"
@@ -53,6 +55,17 @@ type Settings struct {
 	// LearningKeys are loaded from LearningDir by the caller, like DQSKey;
 	// they never travel in a request.
 	LearningKeys LearningKeys
+	// Stack is the host's mail stack, which picks the files CSM writes. The
+	// daemon and the worker each read it from the host; it never travels
+	// in a request.
+	Stack MailStack
+	// Exempt lists recipient mailboxes and domains, in lower case, whose
+	// mail a Postfix host scores and logs but never enforces on. Exim
+	// ignores it: each cPanel account's own toggle decides there.
+	Exempt []string
+	// ScopeNets are the infra_ips networks. A Postfix host never enforces
+	// on mail they send.
+	ScopeNets []netip.Prefix
 }
 
 // DefaultLearningDir holds learning state, inside CSM's state directory.
@@ -72,7 +85,32 @@ func (s Settings) Validate() error {
 	if err := validateLearning(s); err != nil {
 		return err
 	}
+	if err := ValidateExempt(s.Exempt); err != nil {
+		return err
+	}
+	for _, p := range s.ScopeNets {
+		if !p.IsValid() {
+			return errors.New("an infra_ips network is not valid")
+		}
+	}
 	return ValidateSkipMaps(s.SkipMaps)
+}
+
+var (
+	exemptMailbox = regexp.MustCompile(`^[a-z0-9._+-]+@[a-z0-9.-]+$`)
+	exemptDomain  = regexp.MustCompile(`^[a-z0-9.-]+$`)
+)
+
+// ValidateExempt accepts lower-case mailboxes and domains only. These are
+// the only operator strings rendered into the scope Lua, so none may hold a
+// quote, backslash, space or wildcard.
+func ValidateExempt(entries []string) error {
+	for i, e := range entries {
+		if !exemptMailbox.MatchString(e) && !exemptDomain.MatchString(e) {
+			return fmt.Errorf("entry %d is not a lower-case mailbox or domain, such as user@example.com or example.com", i+1)
+		}
+	}
+	return nil
 }
 
 func validateLearning(s Settings) error {
@@ -91,6 +129,10 @@ func validateLearning(s Settings) error {
 
 // HasFeed reports whether name is among s.Feeds.
 func (s Settings) HasFeed(name string) bool { return slices.Contains(s.Feeds, name) }
+
+// HostActions reports whether the host's own actions decide, not CSM's
+// actions.conf: a Postfix dry run, so the host keeps enforcing (spec 9.2).
+func (s Settings) HostActions() bool { return s.Stack == StackPostfix && s.DryRun }
 
 // DNSFeeds returns the catalogue entries of s's DNS feeds in catalogue
 // order, so rendering never depends on the order the operator wrote.

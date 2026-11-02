@@ -2,6 +2,9 @@ package antispam
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io/fs"
 	"slices"
 	"strings"
 )
@@ -40,13 +43,15 @@ func Assess(enabled bool, s Settings, f HostFacts) Assessment {
 		if !a.Installed {
 			return a
 		}
-		a.Problems = CheckRemoval(f.Targets)
+		a.Problems = CheckRemoval(f.Stack, f.Targets)
 		if !blocking(a.Problems) {
 			a.Action = Uninstall
 		}
 		return a
 	}
 	a.Problems = CheckHost(f)
+	a.report(checkActionsTarget(s, f))
+	a.report(checkDryRunRejects(s, f))
 	isCurrent := a.Installed && current(s, f)
 	if isCurrent {
 		// A temporary host probe failure cannot hide a confirmed override.
@@ -59,7 +64,7 @@ func Assess(enabled bool, s Settings, f HostFacts) Assessment {
 		return a
 	case !isCurrent:
 		// Replacing a shared block must be just as safe as removing it.
-		if removal := CheckRemoval(f.Targets); blocking(removal) {
+		if removal := CheckRemoval(f.Stack, f.Targets); blocking(removal) {
 			a.report(removal)
 			return a
 		}
@@ -74,7 +79,7 @@ func (a *Assessment) uninstall(f HostFacts) {
 	if !a.Installed {
 		return
 	}
-	removal := CheckRemoval(f.Targets)
+	removal := CheckRemoval(f.Stack, f.Targets)
 	if blocking(removal) {
 		a.report(removal)
 		return
@@ -82,8 +87,8 @@ func (a *Assessment) uninstall(f HostFacts) {
 	a.Action = Uninstall
 }
 
-// report adds the problems not already reported: CheckHost and
-// CheckRemoval share the path rules.
+// report adds the problems not already reported: CheckHost, CheckRemoval
+// and checkActionsTarget share the path rules.
 func (a *Assessment) report(problems []Problem) {
 	for _, p := range problems {
 		if !slices.Contains(a.Problems, p) {
@@ -110,9 +115,66 @@ func hasMarker(s string) bool {
 	return strings.Contains(s, MarkerBegin) || strings.Contains(s, MarkerEnd)
 }
 
+// checkActionsTarget judges a Postfix host's actions.conf while CSM
+// enforces: CSM then owns it like a core file, and the worker refuses one it
+// cannot replace safely. As for a core file, a check that could not run is
+// temporary, so a passing read error never removes an installation, and
+// unsafe metadata collected before it stays definite. A dry run leaves the
+// file to the host.
+func checkActionsTarget(s Settings, f HostFacts) []Problem {
+	if f.Stack != StackPostfix || s.HostActions() {
+		return nil
+	}
+	for _, t := range f.Targets {
+		if t.Path != ActionsPath {
+			continue
+		}
+		err := OptionalUsable(t)
+		if err == nil {
+			return nil
+		}
+		sev := Definite
+		if !errors.Is(t.Err, fs.ErrNotExist) && (t.Err != nil || len(t.Parents) == 0) {
+			sev = Temporary
+			// Metadata collected before the error still counts: a symlink,
+			// loose mode, foreign owner or loose parent stays definite. A
+			// file whose lstat failed has zero facts, which pass.
+			collected := t
+			collected.Err = nil
+			if unsafe := OptionalUsable(collected); unsafe != nil && len(t.Parents) > 0 {
+				err, sev = unsafe, Definite
+			}
+		}
+		return []Problem{{Code: CodeTargets, Severity: sev, Detail: err.Error()}}
+	}
+	return nil
+}
+
+// checkDryRunRejects warns that a Postfix dry run still rejects mail: the
+// host's own actions apply to CSM's scores, and a reject threshold at or
+// below CSM's turns away what CSM would. rspamd's built-in actions, loaded
+// without an actions.conf, reject at 15. CSM's own actions.conf, which this
+// pass restores or removes, says nothing about the host's.
+func checkDryRunRejects(s Settings, f HostFacts) []Problem {
+	if f.Stack != StackPostfix || !s.DryRun || f.RspamdActions.Err != nil {
+		return nil
+	}
+	for _, t := range f.Targets {
+		if t.Path == ActionsPath && !t.Missing && ManagedFor(t.Kind, t.Content) {
+			return nil
+		}
+	}
+	a, err := ParseActions([]byte(f.RspamdActions.Stdout))
+	if err != nil || a.Reject == nil || *a.Reject > float64(s.RejectScore) {
+		return nil
+	}
+	return []Problem{{Code: CodeDryRunRejects, Severity: Warning, Detail: fmt.Sprintf(
+		"dry run on this host still rejects: rspamd rejects at %g, at or below CSM's reject score of %d", *a.Reject, s.RejectScore)}}
+}
+
 // current reports whether the host holds exactly s: CSM's files, a
-// completed record for them, and the hooks active in the generated
-// configuration.
+// completed record for them, and on cPanel the hooks active in the
+// generated configuration.
 func current(s Settings, f HostFacts) bool {
 	managed, err := ManagedContent(s)
 	if err != nil {
@@ -130,6 +192,9 @@ func current(s Settings, f HostFacts) bool {
 		if !secretFileOK(f, p) {
 			return false
 		}
+	}
+	if f.Stack == StackPostfix {
+		return true
 	}
 	hooks, err := RenderExim(s)
 	if err != nil || f.GeneratedErr != nil || f.EximSettings.Err != nil {
@@ -174,12 +239,15 @@ func loadedConflicts(s Settings, f HostFacts) []Problem {
 		}
 	}
 	data := []byte(f.RspamdActions.Stdout)
-	if f.RspamdActions.Err != nil || !json.Valid(data) {
+	switch actions, err := ParseActions(data); {
+	case s.HostActions():
+		// The host's own actions keep enforcing, whatever their form.
+	case f.RspamdActions.Err != nil || !json.Valid(data):
 		unreadable = true
-	} else if actions, err := ParseActions(data); err != nil {
+	case err != nil:
 		out = append(out, Problem{Code: CodeRspamdConfig, Severity: Definite,
 			Detail: "rspamd actions use a form CSM cannot compare; set them only through CSM's local.d/actions.conf"})
-	} else {
+	default:
 		conflicts = append(conflicts, checkRspamdActions(actions, s)...)
 	}
 	data = []byte(f.RspamdPhishing.Stdout)

@@ -152,6 +152,9 @@ func checkRspamdModules(enabled map[string]bool, s Settings) []string {
 }
 
 func checkRspamdActions(a Actions, s Settings) []string {
+	if s.HostActions() {
+		return nil
+	}
 	var out []string
 	if !equals(a.Reject, s.RejectScore) {
 		out = append(out, fmt.Sprintf("rspamd reject threshold is %s, want %d", show(a.Reject), s.RejectScore))

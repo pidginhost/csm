@@ -178,7 +178,7 @@ func TestNameservers(t *testing.T) {
 // a loopback resolver and the DQS key file is valid.
 func feedFacts() HostFacts {
 	var targets []TargetFacts
-	for _, tgt := range MutationTargets() {
+	for _, tgt := range MutationTargets(StackExim) {
 		targets = append(targets, TargetFacts{Target: tgt, Missing: true, Parents: protectedParents()})
 	}
 	return HostFacts{

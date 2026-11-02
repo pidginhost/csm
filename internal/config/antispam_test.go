@@ -304,3 +304,74 @@ func TestLoadWithDirAntispamLearningFragment(t *testing.T) {
 		t.Fatalf("fragment type coercion: err = %v", err)
 	}
 }
+
+// Exemptions are recipient mailboxes or domains. Case is lowered before
+// validation, so an operator may write them as the mail shows them.
+func TestLoadBytesAntispamExempt(t *testing.T) {
+	cfg, err := loadAntispam(t, "    enabled: true\n    exempt: [Postmaster@Example.COM, example.org, a.b+c@mail.example.net]\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := cfg.EmailProtection.Antispam.Exempt, []string{"postmaster@example.com", "example.org", "a.b+c@mail.example.net"}; !slices.Equal(got, want) {
+		t.Fatalf("exempt = %q, want %q", got, want)
+	}
+	for _, body := range []string{"", "    exempt: []\n", "    exempt: null\n"} {
+		cfg, err := loadAntispam(t, "    enabled: true\n"+body)
+		if err != nil {
+			t.Fatalf("%q: %v", body, err)
+		}
+		if got := cfg.EmailProtection.Antispam.Exempt; len(got) != 0 {
+			t.Fatalf("%q: exempt = %q, want none", body, got)
+		}
+	}
+}
+
+func TestLoadBytesAntispamExemptRejectsBadEntries(t *testing.T) {
+	for name, entry := range map[string]string{
+		"quote":          `"x\""`,
+		"space":          `"a b"`,
+		"wildcard":       `"*"`,
+		"wildcard local": `"*@example.com"`,
+		"two at signs":   `"a@b@example.com"`,
+		"empty":          `""`,
+		"no local part":  `"@example.com"`,
+		"no domain":      `"a@"`,
+		"non-ascii":      `"caf\u00e9.example.com"`,
+		"newline":        `"example.com\n"`,
+		"lua escape":     `"a\\@example.com"`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := loadAntispam(t, "    enabled: true\n    exempt: [example.com, "+entry+"]\n")
+			if err == nil || !strings.Contains(err.Error(), "email_protection.antispam.exempt") {
+				t.Fatalf("err = %v, want an exempt error", err)
+			}
+		})
+	}
+	// A disabled block is not range-checked.
+	if _, err := loadAntispam(t, "    enabled: false\n    exempt: [\"*\"]\n"); err != nil {
+		t.Fatalf("dormant exempt entry blocked a disabled config: %v", err)
+	}
+}
+
+// yaml.v3 turns non-string scalars into strings and nulls into empty
+// entries, so the list is checked before decoding, enabled or not.
+func TestLoadBytesAntispamExemptTypes(t *testing.T) {
+	for _, enabled := range []string{"false", "true"} {
+		for name, body := range map[string]string{
+			"scalar":       "exempt: example.com",
+			"map":          "exempt: {example.com: true}",
+			"null entry":   "exempt: [example.com, null]",
+			"integer":      "exempt: [12]",
+			"boolean":      "exempt: [true]",
+			"null alias":   "exempt: [&unset null, *unset]",
+			"merged entry": "<<: {exempt: [example.com, 12]}",
+		} {
+			t.Run(enabled+"/"+name, func(t *testing.T) {
+				_, err := loadAntispam(t, "    enabled: "+enabled+"\n    "+body+"\n")
+				if err == nil || !strings.Contains(err.Error(), "email_protection.antispam.exempt") || !strings.Contains(err.Error(), "string") {
+					t.Fatalf("expected an exempt type error, got %v", err)
+				}
+			})
+		}
+	}
+}

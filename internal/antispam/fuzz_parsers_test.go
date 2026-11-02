@@ -504,6 +504,8 @@ func FuzzDecodeRequest(f *testing.F) {
 		strings.TrimSuffix(validApply, "}") + `,"learning_dir":"/var/lib/csm/antispam/learning"}`,
 		strings.TrimSuffix(validApply, "}") + `,"learning":false,"learning_dir":"/var/lib/csm/antispam/learning"}`,
 		strings.TrimSuffix(validApply, "}") + `,"feeds":"psbl,"}`,
+		strings.TrimSuffix(validApply, "}") + `,"exempt":"abuse@example.com,example.org","scope_nets":"203.0.113.0/24,2001:db8::/32"}`,
+		strings.TrimSuffix(validApply, "}") + `,"scope_nets":"203.0.113.7/24"}`,
 		`{"operation":"remove"}`,
 		`{"operation":"remove","operation":"apply"}`,
 		`{"Operation":"remove"}`,
@@ -759,6 +761,49 @@ func FuzzParseScan(f *testing.F) {
 	})
 }
 
+func FuzzParseRspamdScanNeverPanics(f *testing.F) {
+	const record = `CSM-ANTISPAM event=scan mode=enforce policy=on result=ok score=229 action="reject" decision=reject ip=198.51.100.7 qid=CSMSCOPE04`
+	for _, seed := range []string{
+		rspamdPrefix + record,
+		rspamdPrefix + `CSM-ANTISPAM event=scan mode=dry-run policy=off result=ok score=-15 action="no action" decision=unfiltered ip=2001:db8::25 qid=`,
+		"2026-11-01 15:19:06 #2273(normal) <9f7812>; lua; other.lua:12: subject: x; lua; csm_scope.lua:91: " + record,
+		"2026-11-01 15:19:06 #2273(normal) rspamd_url_parse: url x; lua; csm_scope.lua:91: " + record,
+		rspamdPrefix + record + " extra",
+		markerPrefix + record,
+		"", "; ", "; lua; csm_scope.lua:", ": ; lua; csm_scope.lua:1: " + record,
+	} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, line string) {
+		s, ok := ParseRspamdScan(line)
+		if !ok {
+			if s != (Scan{}) {
+				t.Fatalf("no record but %+v", s)
+			}
+			return
+		}
+		i := strings.Index(line, "; ")
+		if i < 0 || !strings.HasPrefix(line[i:], "; lua; csm_scope.lua:") || strings.Contains(line[:i], ": ") || strings.ContainsAny(line, "\r\n") {
+			t.Fatalf("accepted %q", line)
+		}
+		for _, r := range line {
+			if r < ' ' || r > '~' {
+				t.Fatalf("accepted non-printable ASCII character %U", r)
+			}
+		}
+		if !s.OK || (s.Policy == "off") != (s.Decision == "unfiltered") || int(int32(s.Score)) != s.Score {
+			t.Fatalf("inconsistent record %+v from %q", s, line)
+		}
+		rest, qid, _ := strings.Cut(line[strings.LastIndex(line, " ip="):], " qid=")
+		if qid != s.MsgID {
+			t.Fatalf("queue ID %q, want %q", s.MsgID, qid)
+		}
+		if a, err := netip.ParseAddr(strings.TrimPrefix(rest, " ip=")); (err == nil) != s.IP.IsValid() || err == nil && a.Unmap() != s.IP {
+			t.Fatalf("sender %v does not match %q", s.IP, rest)
+		}
+	})
+}
+
 func FuzzParseControllerConfig(f *testing.F) {
 	for _, seed := range []string{
 		workerDump(`{"bind_socket":"localhost:11334","count":1,"password":"q1","secure_ip":["127.0.0.1","::1"]}`),
@@ -950,6 +995,52 @@ func FuzzParseRspamdCounters(f *testing.F) {
 			if i > 0 && (rules[i-1].Hits < r.Hits || rules[i-1].Hits == r.Hits && rules[i-1].Symbol > r.Symbol) {
 				t.Fatalf("rules out of order: %+v", rules)
 			}
+		}
+	})
+}
+
+func FuzzPostfixMilterFacts(f *testing.F) {
+	for _, seed := range []struct{ postconf, master, workers string }{
+		{postconfOut("inet:127.0.0.1:11332", "52428800"), "smtp/inet/command = smtpd\nsmtp/inet/chroot = n\n", proxyWorkers},
+		{postconfOut("{inet:localhost:11332, default_action=accept}, unix:/run/x.sock", "0"),
+			"smtp/inet/command = postscreen\nsmtpd/pass/chroot = y\n",
+			`{"type": "rspamd_proxy", "bind_socket": ["*v4:11332", "/var/spool/postfix/run/x.sock mode=0666"], "milter": 1}`},
+		{postconfOut("unix:rspamd/milter.sock inet:[::1]:11332", "10240000"), "smtp/inet/command = smtpd\nsmtp/inet/chroot = -\n",
+			`{"rspamd_proxy": {"bind_socket": "[::]:11332", "milter": true, "count": 0}}`},
+		{"inet:127.0.0.1\naccept\n-1\nspool\n2\n", "", `{"rspamd_proxy": {"bind_socket": 1}}`},
+		{"\n\n\n\n\n\n", "smtp/inet/command =\n", ""},
+	} {
+		f.Add(seed.postconf, seed.master, []byte(seed.workers))
+	}
+	f.Fuzz(func(t *testing.T, postconf, master string, workers []byte) {
+		p, err := ParsePostconf(postconf)
+		if err != nil {
+			if !reflect.DeepEqual(p, Postconf{}) {
+				t.Fatal("rejected postconf output returned values")
+			}
+		} else if p.SizeLimit < 0 || !strings.HasPrefix(p.QueueDirectory, "/") {
+			t.Fatalf("accepted size %d, queue directory %q", p.SizeLimit, p.QueueDirectory)
+		}
+		for _, m := range p.Milters {
+			if m == "" || strings.ContainsAny(m, " \t\n,{}=") {
+				t.Fatalf("milter %q is not one address", m)
+			}
+		}
+		if chroot, chrootErr := SmtpdChroot(master, p.Version); chrootErr != nil && chroot {
+			t.Fatal("unreadable chroot flag reported as chrooted")
+		}
+		milters, _ := p.MilterAddrs(CommandResult{Stdout: master})
+		for _, m := range milters {
+			if !strings.HasPrefix(m, "inet:") && !strings.HasPrefix(m, "unix:/") {
+				t.Fatalf("resolved milter %q is neither inet: nor an absolute unix: path", m)
+			}
+		}
+		addrs, err := ProxyMilterAddrs(workers)
+		if err != nil && addrs != nil {
+			t.Fatal("rejected worker dump returned addresses")
+		}
+		if MilterWired(milters, addrs) && (len(milters) == 0 || len(addrs) == 0) {
+			t.Fatal("wired without a milter and a proxy address")
 		}
 	})
 }

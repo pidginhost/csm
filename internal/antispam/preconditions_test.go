@@ -21,8 +21,7 @@ const (
 // scratch host.
 func goodFacts() HostFacts {
 	return HostFacts{
-		CPanel:          true,
-		MTAExim:         true,
+		Stack:           StackExim,
 		EximVersion:     CommandResult{Stdout: eximBV},
 		EximOptions:     CommandResult{Stdout: "no_prdr_enable\nchunking_advertise_hosts = 198.51.100.1\n"},
 		EximSettings:    CommandResult{Stdout: eximSettings},
@@ -66,7 +65,7 @@ func TestCheckHostProblems(t *testing.T) {
 		code   string
 		sev    Severity
 	}{
-		{"not cpanel", func(f *HostFacts) { f.CPanel = false }, CodePlatform, Definite},
+		{"stack none", func(f *HostFacts) { f.Stack, f.Record = StackNone, RecordFacts{Missing: true} }, CodePlatform, Definite},
 		{"exim -bV failed", func(f *HostFacts) { f.EximVersion = CommandResult{Err: boom} }, CodeEximVersion, Temporary},
 		{"exim too old", func(f *HostFacts) { f.EximVersion.Stdout = strings.Replace(eximBV, "4.100.1", "4.96", 1) }, CodeEximVersion, Definite},
 		{"no content scanning", func(f *HostFacts) { f.EximVersion.Stdout = strings.Replace(eximBV, "Content_Scanning ", "", 1) }, CodeEximVersion, Definite},
@@ -501,5 +500,243 @@ func TestCheckHostNamesEachEximOptionQuery(t *testing.T) {
 	}
 	if len(details) != 2 || details[0] == details[1] {
 		t.Fatalf("exim -bP failures: %q", details)
+	}
+}
+
+// postfixFacts is a Postfix host whose milter reaches rspamd's proxy
+// worker. Its Exim facts are unset and its targets are the Postfix list, as
+// the collector leaves them there.
+func postfixFacts() HostFacts {
+	f := goodFacts()
+	f.Stack = StackPostfix
+	f.EximVersion, f.EximOptions, f.EximSettings, f.EximService = CommandResult{}, CommandResult{}, CommandResult{}, CommandResult{}
+	f.GeneratedConf, f.LocalConf, f.NamedLists, f.SpamdDisabled, f.MonitoredLog = "", "", nil, false, ""
+	f.Socket.EximUID, f.Socket.EximGID = -1, -1
+	f.Postconf = CommandResult{Stdout: postconfOut("inet:127.0.0.1:11332", "52428800")}
+	f.PostfixMaster = CommandResult{Stdout: "smtp/inet/command = smtpd\nsmtp/inet/chroot = n\n"}
+	f.PostfixService = CommandResult{Stdout: "LoadState=loaded\nActiveState=active\n"}
+	f.RspamdWorkers = CommandResult{Stdout: proxyWorkers}
+	f.Targets = stackTargets(StackPostfix)
+	return f
+}
+
+func TestCheckHostPostfix(t *testing.T) {
+	if got := CheckHost(postfixFacts()); len(got) != 0 {
+		t.Fatalf("wired Postfix host reported %+v", got)
+	}
+	// Only CSM, as root, uses the scan socket there; Exim's access is moot
+	// even when an Exim user is known.
+	private := postfixFacts()
+	private.Socket.EximUID, private.Socket.EximGID = eximUID, eximGID
+	private.Socket.Socket.Mode = fs.ModeSocket | 0o600
+	private.Socket.Parents[2].Mode = fs.ModeDir | 0o700
+	if got := CheckHost(private); len(got) != 0 {
+		t.Fatalf("Postfix host with a private scan socket reported %+v", got)
+	}
+
+	boom := errors.New("boom")
+	// Debian's layout: smtpd chrooted into the queue directory, rspamd's
+	// proxy listening inside it.
+	const unixProxy = `{"rspamd_proxy": {"bind_socket": "/var/spool/postfix/rspamd/milter.sock mode=0666", "milter": true}}`
+	for _, tc := range []struct {
+		name   string
+		mutate func(*HostFacts)
+	}{
+		{"chrooted unix milter", func(f *HostFacts) {
+			f.Postconf.Stdout = postconfOut("unix:/rspamd/milter.sock", "52428800")
+			f.PostfixMaster.Stdout = "smtp/inet/command = postscreen\nsmtp/inet/chroot = y\nsmtpd/pass/chroot = y\n"
+			f.RspamdWorkers.Stdout = unixProxy
+		}},
+		{"relative unix milter", func(f *HostFacts) {
+			f.Postconf.Stdout = postconfOut("unix:rspamd/milter.sock", "52428800")
+			f.PostfixMaster = CommandResult{Err: boom}
+			f.RspamdWorkers.Stdout = unixProxy
+		}},
+		{"inet milter, chroot unknown", func(f *HostFacts) { f.PostfixMaster = CommandResult{Err: boom} }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := postfixFacts()
+			tc.mutate(&f)
+			if got := CheckHost(f); len(got) != 0 {
+				t.Fatalf("wired Postfix host reported %+v", got)
+			}
+		})
+	}
+
+	const (
+		unwired    = "postfix does not pass mail to rspamd's proxy worker"
+		noAuthUser = "postfix does not pass the authenticated user to rspamd; add {auth_authen} to milter_mail_macros"
+	)
+	for _, tc := range []struct {
+		name   string
+		mutate func(*HostFacts)
+		code   string
+		sev    Severity
+		detail string
+	}{
+		{"milter elsewhere", func(f *HostFacts) { f.Postconf.Stdout = postconfOut("inet:127.0.0.1:8891", "52428800") }, CodeMilter, Definite, unwired},
+		{"no milters", func(f *HostFacts) { f.Postconf.Stdout = postconfOut("", "52428800") }, CodeMilter, Definite, unwired},
+		// Without the authenticated user rspamd scores customers' outbound
+		// mail as remote mail, and CSM would reject it.
+		{"auth macro missing", func(f *HostFacts) {
+			f.Postconf.Stdout = strings.Replace(f.Postconf.Stdout, postfixMailMacros, "i {auth_type} {mail_addr}", 1)
+		}, CodeMilter, Definite, noAuthUser},
+		{"auth macro without braces", func(f *HostFacts) {
+			f.Postconf.Stdout = strings.Replace(f.Postconf.Stdout, postfixMailMacros, "i auth_authen", 1)
+		}, CodeMilter, Definite, noAuthUser},
+		{"no mail macros", func(f *HostFacts) {
+			f.Postconf.Stdout = strings.Replace(f.Postconf.Stdout, postfixMailMacros, "", 1)
+		}, CodeMilter, Definite, noAuthUser},
+		// Postfix reads an absolute path as written when smtpd is not chrooted.
+		{"unix milter, smtpd not chrooted", func(f *HostFacts) {
+			f.Postconf.Stdout = postconfOut("unix:/rspamd/milter.sock", "52428800")
+			f.RspamdWorkers.Stdout = unixProxy
+		}, CodeMilter, Definite, unwired},
+		{"unix milter, chroot unknown", func(f *HostFacts) {
+			f.Postconf.Stdout = postconfOut("unix:/rspamd/milter.sock", "52428800")
+			f.PostfixMaster = CommandResult{Err: boom}
+			f.RspamdWorkers.Stdout = unixProxy
+		}, CodeMilter, Temporary, "cannot tell whether postfix smtpd runs chrooted"},
+		{"proxy is no milter", func(f *HostFacts) {
+			f.RspamdWorkers.Stdout = `{"rspamd_proxy": {"bind_socket": "localhost:11332"}}`
+		}, CodeMilter, Definite, unwired},
+		{"postconf failed", func(f *HostFacts) { f.Postconf.Err = boom }, CodeMilter, Temporary, ""},
+		{"postconf unreadable", func(f *HostFacts) { f.Postconf.Stdout = "inet:127.0.0.1:11332\n" }, CodeMilter, Temporary, ""},
+		{"queue directory unreadable", func(f *HostFacts) {
+			f.Postconf.Stdout = "unix:rspamd/milter.sock\naccept\n52428800\n\n3.7.11\n"
+		}, CodeMilter, Temporary, ""},
+		{"worker dump failed", func(f *HostFacts) { f.RspamdWorkers.Err = boom }, CodeMilter, Temporary, ""},
+		{"worker dump unreadable", func(f *HostFacts) { f.RspamdWorkers.Stdout = "Section worker NOT FOUND\n" }, CodeMilter, Temporary, ""},
+		{"postfix query failed", func(f *HostFacts) { f.PostfixService.Err = boom }, CodeSystemd, Temporary, ""},
+		{"postfix not installed", func(f *HostFacts) {
+			f.PostfixService.Stdout = "LoadState=not-found\nActiveState=inactive\n"
+		}, CodeSystemd, Temporary, ""},
+		{"postfix not active", func(f *HostFacts) {
+			f.PostfixService.Stdout = "LoadState=loaded\nActiveState=failed\n"
+		}, CodeSystemd, Temporary, ""},
+		{"postfix state unknown", func(f *HostFacts) { f.PostfixService.Stdout = "LoadState=loaded\n" }, CodeSystemd, Temporary, ""},
+		{"rspamd cannot reload", func(f *HostFacts) {
+			f.RspamdService.Stdout = "User=_rspamd\nLoadState=loaded\nCanReload=no\n"
+		}, CodeSystemd, Definite, ""},
+		{"socket missing", func(f *HostFacts) { f.Socket.Missing = true }, CodeSocket, Temporary, ""},
+		{"socket owned by tenant", func(f *HostFacts) { f.Socket.Socket.UID = 1001 }, CodeSocket, Definite, ""},
+		{"rspamd too old", func(f *HostFacts) {
+			f.RspamdVersion.Stdout, f.RspamadmVersion.Stdout = "Rspamd daemon version 2.7\n", "Rspamadm 2.7\n"
+		}, CodeRspamdVersion, Definite, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := postfixFacts()
+			tc.mutate(&f)
+			got := CheckHost(f)
+			if len(got) != 1 || got[0].Code != tc.code || got[0].Severity != tc.sev {
+				t.Fatalf("got %+v, want exactly one %s/%d problem", got, tc.code, tc.sev)
+			}
+			if tc.detail != "" && got[0].Detail != tc.detail {
+				t.Errorf("detail %q, want %q", got[0].Detail, tc.detail)
+			}
+		})
+	}
+
+	none := goodFacts()
+	none.Stack, none.Record = StackNone, RecordFacts{Missing: true}
+	got := CheckHost(none)
+	if len(got) != 1 || got[0].Code != CodePlatform || got[0].Severity != Definite ||
+		got[0].Detail != "needs a cPanel host running Exim, or a Postfix host" {
+		t.Fatalf("host without a supported stack: got %+v", got)
+	}
+}
+
+// A host without a supported mail stack is refused with one problem; the
+// collector gathered no Exim facts there, so no Exim check runs. With CSM's
+// integration installed it is a Postfix host whose MTA is down or
+// restarting (a cPanel host always runs Exim), so the problem is temporary
+// and the integration stays.
+func TestCheckHostUnknownStack(t *testing.T) {
+	bare := HostFacts{Stack: StackNone, Record: RecordFacts{Missing: true}}
+	got := CheckHost(bare)
+	if len(got) != 1 || got[0].Code != CodePlatform || got[0].Severity != Definite ||
+		got[0].Detail != "needs a cPanel host running Exim, or a Postfix host" {
+		t.Fatalf("host without a supported stack: got %+v", got)
+	}
+	installed := bare
+	installed.Record = RecordFacts{Content: string(EncodeRecord(""))}
+	got = CheckHost(installed)
+	if len(got) != 1 || got[0].Code != CodePlatform || got[0].Severity != Temporary ||
+		got[0].Detail != "CSM cannot tell which mail server this host runs, for example while Postfix restarts" {
+		t.Fatalf("installed host without a detected stack: got %+v", got)
+	}
+}
+
+// CSM reads a Postfix host's scan records from rspamd's log file. rspamd
+// logging elsewhere leaves the integration working without them, so CSM
+// warns instead of refusing.
+func TestCheckHostPostfixRspamdLog(t *testing.T) {
+	for _, tc := range []struct {
+		log    LogFacts
+		detail string
+	}{
+		{LogFacts{Type: "file", Path: "/var/log/rspamd/rspamd.log"}, ""},
+		// A log CSM could not inspect is still read; the daemon reports one
+		// it cannot open.
+		{LogFacts{Type: "file", Path: "/var/log/rspamd/rspamd.log", Err: errors.New("permission denied")}, ""},
+		{LogFacts{Type: "file", Path: "/var/log/rspamd/rspamd.log", Missing: true},
+			"rspamd's log file /var/log/rspamd/rspamd.log does not exist; CSM reads scan records from it once rspamd writes it"},
+		{LogFacts{Type: "file", Path: "rspamd.log", Err: errors.New("rspamd's log file is not an absolute path")},
+			"rspamd's log file is not an absolute path; CSM reads scan records only from one"},
+		// Unreadable logging settings are reported where they matter.
+		{LogFacts{Err: errors.New("rspamd's logging settings are not readable")}, ""},
+		{LogFacts{Type: "console"}, "rspamd logs to the journal; CSM reads scan records from a file log"},
+		{LogFacts{Type: "syslog"}, "rspamd logs to syslog; CSM reads scan records from a file log"},
+		{LogFacts{Type: "pipe"}, `rspamd's log type "pipe" is not a file; CSM reads scan records from a file log`},
+	} {
+		t.Run(tc.log.Type+" "+tc.log.Path, func(t *testing.T) {
+			f := postfixFacts()
+			f.RspamdLog = tc.log
+			got := CheckHost(f)
+			if tc.detail == "" {
+				if len(got) != 0 {
+					t.Fatalf("got %+v, want none", got)
+				}
+				return
+			}
+			if len(got) != 1 || got[0] != (Problem{Code: CodeRspamdLog, Severity: Warning, Detail: tc.detail}) {
+				t.Fatalf("got %+v, want one %s warning %q", got, CodeRspamdLog, tc.detail)
+			}
+		})
+	}
+	// The Exim backend reads its own markers from Exim's log.
+	exim := goodFacts()
+	exim.RspamdLog = LogFacts{Type: "console"}
+	if got := CheckHost(exim); len(got) != 0 {
+		t.Fatalf("Exim host reported %+v", got)
+	}
+}
+
+// rspamd passes a message over max_message unscanned; that is the host's
+// choice, so CSM warns instead of refusing.
+func TestCheckHostPostfixMessageSize(t *testing.T) {
+	for _, tc := range []struct {
+		name, limit string
+		options     CommandResult
+		sev         Severity
+		want        int
+	}{
+		{"max_message below limit", "52428800", CommandResult{Stdout: `{"max_message": 20971520}`}, Warning, 1},
+		{"postfix unlimited", "0", CommandResult{Stdout: `{"max_message": 52428800}`}, Warning, 1},
+		{"equal", "52428800", CommandResult{Stdout: `{"max_message": 52428800}`}, 0, 0},
+		{"rspamd default", "10240000", CommandResult{Stdout: `{}`}, 0, 0},
+		{"rspamd unlimited", "0", CommandResult{Stdout: `{"max_message": 0}`}, 0, 0},
+		{"options failed", "52428800", CommandResult{Err: errors.New("boom")}, Temporary, 1},
+		{"options unreadable", "52428800", CommandResult{Stdout: `{"max_message": "big"}`}, Temporary, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := postfixFacts()
+			f.Postconf.Stdout = postconfOut("inet:127.0.0.1:11332", tc.limit)
+			f.RspamdOptions = tc.options
+			got := CheckHost(f)
+			if len(got) != tc.want || tc.want == 1 && (got[0].Code != CodeMessageSize || got[0].Severity != tc.sev) {
+				t.Fatalf("got %+v, want %d %s problem of severity %d", got, tc.want, CodeMessageSize, tc.sev)
+			}
+		})
 	}
 }

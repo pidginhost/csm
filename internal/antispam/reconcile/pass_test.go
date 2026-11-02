@@ -2,6 +2,7 @@ package reconcile
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -559,5 +560,214 @@ func TestPassReportsReplacementsAfterWorker(t *testing.T) {
 				t.Fatalf("worker's replacement was not reported: checks %v, findings %+v", out.Checks, found)
 			}
 		})
+	}
+}
+
+// The host's mail stack, found by the collector, picks the files CSM
+// renders; configuration never names it.
+func TestPassRendersForTheCollectedStack(t *testing.T) {
+	h := &fakeHost{}
+	r := h.reconciler()
+	r.Collect = func(context.Context, string) antispam.HostFacts {
+		f := goodFeedFacts()
+		f.Stack = antispam.StackPostfix
+		return f
+	}
+	var got []antispam.MailStack
+	r.assess = func(_ bool, s antispam.Settings, _ antispam.HostFacts) antispam.Assessment {
+		got = append(got, s.Stack)
+		return antispam.Assessment{}
+	}
+	r.Pass(context.Background(), desired(true))
+	if !slices.Equal(got, []antispam.MailStack{antispam.StackPostfix}) {
+		t.Fatalf("assessed stacks %q, want postfix", got)
+	}
+}
+
+// The replaced-file warning says what CSM will do with the copy, and must be
+// true in every state. On Postfix, removal restores the newest copy of each
+// file over CSM's own, and returning to dry run does so for actions.conf;
+// an older copy is never restored. cPanel restores nothing (spec 5.5).
+func TestPassReplacedFileAdvice(t *testing.T) {
+	dir := antispam.ReplacedDir + "/"
+	newestActions := antispam.Replacement{Path: antispam.ActionsPath, Backup: dir + "20260102T030405Z_actions"}
+	olderActions := antispam.Replacement{Path: antispam.ActionsPath, Backup: dir + "20260101T030405Z_actions"}
+	headers := antispam.Replacement{Path: antispam.MilterHeadersPath, Backup: dir + "20260101T030405Z_headers"}
+	const (
+		disabling = "puts this copy back when antispam is disabled"
+		dryRun    = "returning antispam to dry run"
+		older     = "restores only the newest"
+		move      = "Move any settings"
+	)
+	for _, tc := range []struct {
+		name    string
+		stack   antispam.MailStack
+		enabled bool
+		rep     antispam.Replacement
+		has     []string
+		lacks   []string
+	}{
+		{"postfix actions.conf", antispam.StackPostfix, true, newestActions, []string{disabling, dryRun}, []string{older, move}},
+		{"postfix actions.conf, disabled", antispam.StackPostfix, false, newestActions, []string{disabling, dryRun}, []string{older, move}},
+		{"postfix other file", antispam.StackPostfix, true, headers, []string{disabling}, []string{dryRun, older, move}},
+		{"postfix older copy", antispam.StackPostfix, true, olderActions, []string{older}, []string{disabling, dryRun, move}},
+		{"exim", antispam.StackExim, true, newestActions, []string{move}, []string{disabling, dryRun, older}},
+		{"exim, disabled", antispam.StackExim, false, headers, []string{move}, []string{disabling, dryRun, older}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := (&fakeHost{}).reconciler()
+			facts := func() antispam.HostFacts {
+				f := goodFeedFacts()
+				f.Stack = tc.stack
+				return f
+			}
+			r.Collect = func(context.Context, string) antispam.HostFacts { return facts() }
+			r.Installed = facts
+			r.Replaced = func() ([]antispam.Replacement, error) {
+				return []antispam.Replacement{newestActions, olderActions, headers}, nil
+			}
+			out := r.Pass(context.Background(), desired(tc.enabled))
+			got := ""
+			for _, f := range out.Findings {
+				if f.Check == CheckFileReplaced && f.DedupKey == tc.rep.Backup {
+					got = f.Details
+				}
+			}
+			for _, want := range tc.has {
+				if !strings.Contains(got, want) {
+					t.Errorf("%q lacks %q", got, want)
+				}
+			}
+			for _, bad := range tc.lacks {
+				if strings.Contains(got, bad) {
+					t.Errorf("%q says %q", got, bad)
+				}
+			}
+		})
+	}
+}
+
+// A pass on a Postfix host says where its scan records come from; a pass
+// that could not read that keeps the last answer, and every other pass
+// clears it.
+func TestPassReportsPostfixScanSource(t *testing.T) {
+	postfix := func(f *antispam.HostFacts) {
+		f.Stack = antispam.StackPostfix
+		f.Postconf = antispam.CommandResult{Stdout: "inet:127.0.0.1:11332\naccept\n0\n/var/spool/postfix\n3.7.11\ni {auth_type} {auth_authen} {auth_author} {mail_addr} {mail_host} {mail_mailer}\n"}
+		f.RspamdWorkers = antispam.CommandResult{Stdout: `{"rspamd_proxy": {"bind_socket": "localhost:11332", "milter": true}}`}
+	}
+	want := &antispam.ScanSource{Stack: antispam.StackPostfix, Log: "/var/log/rspamd/rspamd.log", Milters: []string{"inet:127.0.0.1:11332"}, MilterAction: "accept"}
+	for _, tc := range []struct {
+		name    string
+		enabled bool
+		mutate  func(*antispam.HostFacts)
+		want    *antispam.ScanSource
+	}{
+		{"postfix", true, postfix, want},
+		{"postfix, logging unreadable", true, func(f *antispam.HostFacts) {
+			postfix(f)
+			f.RspamdLog = antispam.LogFacts{Err: errors.New("rspamd's logging settings are not readable")}
+		}, nil},
+		{"exim", true, func(f *antispam.HostFacts) { f.Stack = antispam.StackExim }, &antispam.ScanSource{}},
+		// A Postfix host whose MTA restarts can read as no stack for a pass.
+		{"stack unknown", true, func(f *antispam.HostFacts) { f.Stack = antispam.StackNone }, nil},
+		{"disabled", false, postfix, &antispam.ScanSource{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := &fakeHost{}
+			r := h.reconciler()
+			r.Collect = func(context.Context, string) antispam.HostFacts {
+				f := goodFeedFacts()
+				tc.mutate(&f)
+				return f
+			}
+			r.Installed = func() antispam.HostFacts { return r.Collect(context.Background(), "") }
+			out := r.Pass(context.Background(), desired(tc.enabled))
+			if !reflect.DeepEqual(out.ScanSource, tc.want) {
+				t.Fatalf("scan source %+v, want %+v", out.ScanSource, tc.want)
+			}
+		})
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if out := (&fakeHost{}).reconciler().Pass(ctx, desired(true)); out.ScanSource != nil {
+		t.Fatalf("canceled pass replaced the scan source with %+v", out.ScanSource)
+	}
+}
+
+// Exemptions come from csm.yaml in the order written; the config loader has
+// already lowered their case.
+func TestDesiredFromConfigExempt(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.EmailProtection.Antispam = config.AntispamConfig{Enabled: true, RspamdSocket: antispam.DefaultSocket, RejectScore: 15, TagScore: 6,
+		Exempt: []string{"example.org", "a@example.com"}}
+	if got := DesiredFromConfig(cfg).Settings.Exempt; !slices.Equal(got, []string{"example.org", "a@example.com"}) {
+		t.Fatalf("exempt = %q", got)
+	}
+}
+
+// Mail from infra_ips is never enforced on a Postfix host: the pass hands
+// the infra networks to rendering, disabled passes included.
+func TestPassScopesInfraNets(t *testing.T) {
+	nets := []netip.Prefix{netip.MustParsePrefix("198.51.100.0/24"), netip.MustParsePrefix("2001:db8::/32")}
+	for _, enabled := range []bool{true, false} {
+		h := &fakeHost{}
+		r := h.reconciler()
+		var got [][]netip.Prefix
+		r.assess = func(_ bool, s antispam.Settings, _ antispam.HostFacts) antispam.Assessment {
+			got = append(got, s.ScopeNets)
+			return antispam.Assessment{}
+		}
+		d := desired(enabled)
+		d.InfraNets = nets
+		r.Pass(context.Background(), d)
+		if len(got) != 1 || !slices.Equal(got[0], nets) {
+			t.Fatalf("enabled %t: assessed scope networks %v, want %v", enabled, got, nets)
+		}
+	}
+}
+
+// The worker renders from the request alone, so on Postfix it must carry
+// the exemptions and infra networks: the generation the worker installs is
+// the one the next pass expects.
+func TestPassSendsPostfixScopeToWorker(t *testing.T) {
+	h := &fakeHost{result: antispam.Result{OK: true, Generation: "g"}}
+	r := h.reconciler()
+	r.Collect = func(context.Context, string) antispam.HostFacts {
+		f := goodFeedFacts()
+		f.Stack = antispam.StackPostfix
+		return f
+	}
+	var assessed antispam.Settings
+	r.assess = func(_ bool, s antispam.Settings, _ antispam.HostFacts) antispam.Assessment {
+		assessed = s
+		return antispam.Assessment{Action: antispam.Install}
+	}
+	d := desired(true)
+	d.Settings.Exempt = []string{"example.org", "a@example.com"}
+	d.InfraNets = []netip.Prefix{netip.MustParsePrefix("198.51.100.0/24"), netip.MustParsePrefix("2001:db8::/32")}
+	r.Pass(context.Background(), d)
+	if len(h.requests) != 1 {
+		t.Fatalf("requests %+v", h.requests)
+	}
+	body, err := json.Marshal(h.requests[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, worker, err := antispam.DecodeRequest(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker.Stack = antispam.StackPostfix
+	want, err := antispam.ManagedContent(assessed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := antispam.ManagedContent(worker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(worker.Exempt, d.Settings.Exempt) || !slices.Equal(worker.ScopeNets, d.InfraNets) || antispam.Generation(got) != antispam.Generation(want) {
+		t.Fatalf("worker settings %+v render another generation than the daemon's %+v", worker, assessed)
 	}
 }

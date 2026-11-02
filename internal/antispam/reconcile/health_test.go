@@ -3,6 +3,7 @@ package reconcile
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/antispam"
 )
 
 const (
@@ -153,6 +155,85 @@ func TestHealthTracksScanErrors(t *testing.T) {
 	next, _ := h.Line(scanErrorLine, at(9))
 	assertScanErrors(t, next, 1, at(9), at(9))
 	assertScanErrors(t, h.Active(), 1, at(9), at(9))
+}
+
+// Line is ParseScan and Scan: an Exim line counts exactly as its parsed
+// scan does, and a line that is no marker counts as nothing.
+func TestHealthScanMatchesLine(t *testing.T) {
+	lines := []string{scanErrorLine, forgedLine, scanErrorLine, scanOKLine, scanOKLine, scanOKLine + " extra", scanErrorLine, ""}
+	byLine, byScan := enabledHealth(), enabledHealth()
+	for i, line := range lines {
+		lineFindings, lineRecovered := byLine.Line(line, at(i))
+		var scanFindings []alert.Finding
+		var scanRecovered bool
+		if s, ok := antispam.ParseScan(line); ok {
+			scanFindings, scanRecovered = byScan.Scan(s, at(i))
+		}
+		if !reflect.DeepEqual(lineFindings, scanFindings) || lineRecovered != scanRecovered {
+			t.Fatalf("line %d: Line = %+v, %t; Scan = %+v, %t", i, lineFindings, lineRecovered, scanFindings, scanRecovered)
+		}
+		if a, b := byLine.Active(), byScan.Active(); !reflect.DeepEqual(a, b) {
+			t.Fatalf("line %d: active %+v through Line, %+v through Scan", i, a, b)
+		}
+	}
+	assertScanErrors(t, byScan.Active(), 1, at(6), at(6))
+}
+
+// Postfix logs no scan record for mail it could not pass to rspamd: the
+// daemon reports each failure as a failed scan, and rspamd's next record
+// clears it.
+func TestHealthScanCountsPostfixFailures(t *testing.T) {
+	h := enabledHealth()
+	first, _ := h.Scan(antispam.Scan{}, at(0))
+	assertScanErrors(t, first, 1, at(0), at(0))
+	h.Scan(antispam.Scan{}, at(3))
+	assertScanErrors(t, h.Active(), 2, at(0), at(3))
+	record := antispam.Scan{OK: true, Mode: "enforce", Policy: "on", Score: 229, Decision: "reject", MsgID: "4XyZ0b1c2D"}
+	if got, recovered := h.Scan(record, at(4)); len(got) != 0 || !recovered || len(h.Active()) != 0 {
+		t.Fatalf("scan record: notices %+v, recovered %t, active %+v", got, recovered, h.Active())
+	}
+	h.SetEnabled(false, testSocket)
+	if got, _ := h.Scan(antispam.Scan{}, at(5)); len(got) != 0 || len(h.Active()) != 0 {
+		t.Fatalf("disabled health counted a failure: %+v", got)
+	}
+}
+
+// On Postfix a failed scan is a milter call postfix could not complete, and
+// what happens to the mail is milter_default_action's choice. postfix reads
+// the action without regard to case.
+func TestHealthPostfixScanErrorText(t *testing.T) {
+	for _, tc := range []struct{ action, effect string }{
+		{"accept", "Mail is delivered without spam filtering while scans fail"},
+		{"TempFail", "Mail is deferred until rspamd answers"},
+		{"tempfail", "Mail is deferred until rspamd answers"},
+		{"reject", "Mail is rejected while scans fail"},
+		{"quarantine", "Mail is held in postfix's hold queue while scans fail"},
+		{"", "Postfix's milter_default_action is unknown, so what happens to that mail is unknown"},
+		{"discard", "Postfix's milter_default_action is unknown, so what happens to that mail is unknown"},
+	} {
+		t.Run(tc.action, func(t *testing.T) {
+			h := enabledHealth()
+			h.SetStack(antispam.StackPostfix, tc.action)
+			h.Scan(antispam.Scan{}, at(0))
+			got, _ := h.Scan(antispam.Scan{}, at(4))
+			if len(got) != 0 {
+				t.Fatalf("second failure reported again: %+v", got)
+			}
+			want := fmt.Sprintf("Postfix logged 2 failed scans since %s, the last at %s. %s; check rspamd's log.",
+				at(0).UTC().Format(time.RFC3339), at(4).UTC().Format(time.RFC3339), tc.effect)
+			active := h.Active()
+			assertHealthFinding(t, active, CheckScanError, "scan", at(4))
+			if active[0].Details != want {
+				t.Fatalf("details %q, want %q", active[0].Details, want)
+			}
+		})
+	}
+	// Any other stack keeps Exim's wording.
+	h := enabledHealth()
+	h.SetStack(antispam.StackPostfix, "tempfail")
+	h.SetStack(antispam.StackExim, "")
+	first, _ := h.Scan(antispam.Scan{}, at(0))
+	assertScanErrors(t, first, 1, at(0), at(0))
 }
 
 func TestHealthIgnoresForgedMarkers(t *testing.T) {

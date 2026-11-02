@@ -20,9 +20,9 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/ipmap"
 	csmlog "github.com/pidginhost/csm/internal/log"
+	"github.com/pidginhost/csm/internal/mailstats"
 	"github.com/pidginhost/csm/internal/netutil"
 	"github.com/pidginhost/csm/internal/obs"
-	"github.com/pidginhost/csm/internal/platform"
 )
 
 // antispamProbeInterval is how often rspamd's scan socket is probed while
@@ -63,6 +63,13 @@ const (
 	antispamCanaryDelay   = 30 * time.Second
 )
 
+// antispamHostState reports the host's mail stack and whether CSM's
+// antispam integration is installed; tests replace it.
+var antispamHostState = func() (antispam.MailStack, bool) {
+	f := hostfacts.CollectInstalled()
+	return f.Stack, antispam.Assess(false, antispam.Settings{}, f).Installed
+}
+
 // antispamReconciler returns the host the antispam reconcile loop works on;
 // tests replace it.
 var antispamReconciler = func() reconcile.Reconciler {
@@ -90,14 +97,26 @@ var antispamReconciler = func() reconcile.Reconciler {
 	}
 }
 
-// startAntispam starts antispam reconciliation on a cPanel host: a pass at
-// start, after each config reload, every 15 minutes, and 20 seconds after a
-// busy lock (spec section 6.5). It also starts the rspamd probe. Shutdown
-// cancels a running pass or probe.
+// startAntispam starts antispam at daemon startup on a host it supports,
+// and otherwise says why an enabled switch does nothing.
 func (d *Daemon) startAntispam() {
-	if !platform.Detect().IsCPanel() {
-		warnAntispamWithoutCPanel(d.currentCfg())
-		return
+	d.antispamStarted.Store(true)
+	if !d.startAntispamLoop() {
+		warnAntispamUnsupported(d.currentCfg())
+	}
+}
+
+// startAntispamLoop starts antispam reconciliation once, on a host it
+// supports: a pass at start, after each config reload, every 15 minutes,
+// and 20 seconds after a busy lock (spec section 6.5). It also starts the
+// rspamd probe. Shutdown cancels a running pass or probe. It reports
+// whether the host is supported.
+func (d *Daemon) startAntispamLoop() bool {
+	if antispamUnsupported() {
+		return false
+	}
+	if d.scanContext().Err() != nil || !d.antispamClaimed.CompareAndSwap(false, true) {
+		return true
 	}
 	// Health state starts empty; findings kept from before a restart
 	// describe an outage no longer tracked.
@@ -118,7 +137,7 @@ func (d *Daemon) startAntispam() {
 	// reload during setup is either picked up here or applies itself.
 	d.syncAntispamHealth()
 	ctx := d.scanContext()
-	d.wg.Add(3)
+	d.wg.Add(4)
 	obs.Go("antispam-reconcile", func() {
 		defer d.wg.Done()
 		defer d.stopLearner()
@@ -132,6 +151,11 @@ func (d *Daemon) startAntispam() {
 		defer d.wg.Done()
 		d.antispamIPMapLoop(ctx)
 	})
+	obs.Go("antispam-rspamd-log", func() {
+		defer d.wg.Done()
+		d.rspamdLogLoop(ctx)
+	})
+	return true
 }
 
 // withIPMap gives the reconciler the IP map writer's hooks and shares its
@@ -312,18 +336,38 @@ func (d *Daemon) reconcileAntispam() {
 		loop.Trigger()
 		return
 	}
-	// A cPanel host can reload before startAntispam publishes the loop;
-	// startup then reads the new config itself.
-	if !platform.Detect().IsCPanel() {
-		warnAntispamWithoutCPanel(d.currentCfg())
+	// Only an enabled switch needs the host check, which can run commands.
+	cfg := d.currentCfg()
+	if !cfg.EmailProtection.Antispam.Enabled {
+		return
+	}
+	// Before startup reaches antispam, startup reads the new config itself.
+	// After it, a host antispam did not support then, for example one where
+	// Postfix started after CSM, gets its loop now.
+	supported := !antispamUnsupported()
+	if d.antispamStarted.Load() {
+		supported = d.startAntispamLoop()
+	}
+	if !supported {
+		warnAntispamUnsupported(cfg)
 	}
 }
 
-// warnAntispamWithoutCPanel explains an enabled switch that does nothing:
-// the integration exists only for cPanel's Exim.
-func warnAntispamWithoutCPanel(cfg *config.Config) {
+// antispamUnsupported reports a host antispam does not run on: no mail
+// stack it integrates with and nothing of CSM's installed. A Postfix host
+// can read as no stack while postfix restarts; with CSM's integration
+// installed its passes must still run, to keep the integration in place
+// and report why.
+func antispamUnsupported() bool {
+	stack, installed := antispamHostState()
+	return stack == antispam.StackNone && !installed
+}
+
+// warnAntispamUnsupported explains an enabled switch that does nothing:
+// the integration exists only for cPanel's Exim and for Postfix.
+func warnAntispamUnsupported(cfg *config.Config) {
 	if cfg.EmailProtection.Antispam.Enabled {
-		csmlog.Warn("antispam is enabled but inactive: it supports cPanel hosts only")
+		csmlog.Warn("antispam is enabled but inactive: it needs a cPanel host running Exim, or a Postfix host")
 	}
 }
 
@@ -358,11 +402,19 @@ func (d *Daemon) antispamHealthLoop(ctx context.Context) {
 	}
 }
 
-func (d *Daemon) recordAntispamLine(line string, now time.Time) []alert.Finding {
+// recordScan counts one scan record, from Exim's main log or rspamd's, for
+// the Email Security page and scan health. at is when it was read; the
+// counts use the line's own time.
+func (d *Daemon) recordScan(s antispam.Scan, line string, at time.Time) []alert.Finding {
+	d.mailStats.RecordScan(mailstats.LineTime(line, time.Local, at), s)
+	return d.recordAntispamScan(s, at)
+}
+
+func (d *Daemon) recordAntispamScan(s antispam.Scan, now time.Time) []alert.Finding {
 	h := &d.antispamHealth
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	findings, recovered := h.Line(line, now)
+	findings, recovered := h.Scan(s, now)
 	if recovered {
 		// Recovery can end before the next probe. Publish it while new log
 		// lines and probes cannot reactivate the condition being rearmed.
@@ -454,6 +506,15 @@ func (d *Daemon) reportAntispam(out reconcile.Outcome) {
 	}
 	if len(out.Checks) > 0 {
 		d.rspamdStats.Store(&rspamdStatsSource{ep: out.Stats, reason: out.StatsReason})
+	}
+	if src := out.ScanSource; src != nil {
+		// Word scan errors for this host before its milters can raise one.
+		h := &d.antispamHealth
+		h.mu.Lock()
+		h.SetStack(src.Stack, src.MilterAction)
+		d.storeAntispamHealthLocked()
+		h.mu.Unlock()
+		d.antispamScanSource.Store(src)
 	}
 	d.processScanFindings(d.currentCfg(), out.Findings, out.Checks, "antispam")
 }

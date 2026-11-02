@@ -29,20 +29,29 @@ func spamLine(ip string) string {
 	return evidencePrefix + `CSM-ANTISPAM event=scan mode=enforce policy=on result=ok score=200 action="reject" decision=reject ip=` + ip
 }
 
+// scanOf parses a line the test knows is an Exim scan marker.
+func scanOf(line string) antispam.Scan {
+	s, ok := antispam.ParseScan(line)
+	if !ok {
+		panic("not a scan marker: " + line)
+	}
+	return s
+}
+
 func TestRecorderSkipsExcludedSenders(t *testing.T) {
 	as := config.AntispamConfig{Enabled: true, RejectScore: 15, TagScore: 6}
 	none := func(netip.Addr) int { return 0 }
 	never := func(a netip.Addr) bool { return a == netip.MustParseAddr("203.0.113.70") }
-	if ip, v := spamEvidence(spamLine("198.51.100.70"), as, never, none); v != ipmap.SpamVerdict || ip != "198.51.100.70" {
+	if ip, v := spamEvidence(scanOf(spamLine("198.51.100.70")), as, never, none); v != ipmap.SpamVerdict || ip != "198.51.100.70" {
 		t.Fatalf("public sender = %q, %v", ip, v)
 	}
 	for _, ip := range []string{"203.0.113.70", "10.1.2.3", "127.0.0.1", "192.0.2.255", ""} {
-		if _, v := spamEvidence(spamLine(ip), as, never, none); v != ipmap.NoVerdict {
+		if _, v := spamEvidence(scanOf(spamLine(ip)), as, never, none); v != ipmap.NoVerdict {
 			t.Errorf("%q recorded", ip)
 		}
 	}
 	as.Enabled = false
-	if _, v := spamEvidence(spamLine("198.51.100.70"), as, never, none); v != ipmap.NoVerdict {
+	if _, v := spamEvidence(scanOf(spamLine("198.51.100.70")), as, never, none); v != ipmap.NoVerdict {
 		t.Fatal("recorded with antispam disabled")
 	}
 }
@@ -53,10 +62,10 @@ func TestRecorderSubtractsTheMapWeight(t *testing.T) {
 	as := config.AntispamConfig{Enabled: true, RejectScore: 15, TagScore: 6}
 	line := strings.Replace(spamLine("198.51.100.71"), "score=200", "score=170", 1)
 	never := func(netip.Addr) bool { return false }
-	if _, v := spamEvidence(line, as, never, func(netip.Addr) int { return ipmap.Drop.Tenths() }); v != ipmap.NoVerdict {
+	if _, v := spamEvidence(scanOf(line), as, never, func(netip.Addr) int { return ipmap.Drop.Tenths() }); v != ipmap.NoVerdict {
 		t.Fatalf("170 - 40 recorded as %v", v)
 	}
-	if _, v := spamEvidence(line, as, never, func(netip.Addr) int { return 0 }); v != ipmap.SpamVerdict {
+	if _, v := spamEvidence(scanOf(line), as, never, func(netip.Addr) int { return 0 }); v != ipmap.SpamVerdict {
 		t.Fatalf("170 without a listing = %v", v)
 	}
 }
@@ -132,9 +141,9 @@ func TestSpamEvidenceWaitsForInitialIPMap(t *testing.T) {
 	line := strings.Replace(spamLine("198.51.100.73"), "score=200", "score=170", 1)
 	// A surviving rspamd map can supply enough score to cross the reject
 	// boundary before the daemon has reconstructed its own lookup.
-	d.recordSpamEvidence(line, time.Now(), cfg)
+	d.recordSpamEvidence(scanOf(line), time.Now(), cfg)
 	r := d.withIPMap(reconcile.Reconciler{})
-	d.recordSpamEvidence(line, time.Now(), cfg)
+	d.recordSpamEvidence(scanOf(line), time.Now(), cfg)
 	if rec := adb.LookupIP("198.51.100.73"); rec != nil {
 		t.Fatalf("unknown map weight became spam evidence: %+v", rec.Mail)
 	}
@@ -143,13 +152,13 @@ func TestSpamEvidenceWaitsForInitialIPMap(t *testing.T) {
 	if err := r.IPMap.Remove(); err != nil {
 		t.Fatal(err)
 	}
-	d.recordSpamEvidence(line, time.Now(), cfg)
+	d.recordSpamEvidence(scanOf(line), time.Now(), cfg)
 	if rec := adb.LookupIP("198.51.100.73"); rec == nil || rec.Mail.Spam != 1 {
 		t.Fatalf("evidence after removal was lost: %+v", rec)
 	}
 	// Without the local feed, evidence does not depend on a map writer.
 	cfg.EmailProtection.Antispam.Feeds.Enabled = nil
-	d.recordSpamEvidence(line, time.Now(), cfg)
+	d.recordSpamEvidence(scanOf(line), time.Now(), cfg)
 	if rec := adb.LookupIP("198.51.100.73"); rec == nil || rec.Mail.Spam != 2 {
 		t.Fatalf("independent spam evidence was lost: %+v", rec)
 	}
@@ -338,7 +347,7 @@ func TestIPMapAndRecorderFollowResolvedInfraHosts(t *testing.T) {
 			if rec := adb.LookupIP(ip); rec != nil && rec.Mail != nil {
 				before = int(rec.Mail.Spam)
 			}
-			d.recordSpamEvidence(spamLine(ip), time.Now(), cfg)
+			d.recordSpamEvidence(scanOf(spamLine(ip)), time.Now(), cfg)
 			after := 0
 			if rec := adb.LookupIP(ip); rec != nil && rec.Mail != nil {
 				after = int(rec.Mail.Spam)

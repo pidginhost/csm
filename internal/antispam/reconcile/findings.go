@@ -7,6 +7,7 @@ package reconcile
 import (
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -139,29 +140,63 @@ func rspamdRecoveredFinding(socket string, now time.Time) alert.Finding {
 	}
 }
 
-func scanErrorFinding(count int, first, last time.Time) alert.Finding {
+func scanErrorFinding(count int, first, last time.Time, stack antispam.MailStack, milterAction string) alert.Finding {
 	scans := "scans"
 	if count == 1 {
 		scans = "scan"
 	}
+	details := fmt.Sprintf("Exim logged %d failed %s since %s, the last at %s. Mail is delivered without spam filtering while scans fail; check rspamd's log.",
+		count, scans, first.UTC().Format(time.RFC3339), last.UTC().Format(time.RFC3339))
+	if stack == antispam.StackPostfix {
+		details = fmt.Sprintf("Postfix logged %d failed %s since %s, the last at %s. %s; check rspamd's log.",
+			count, scans, first.UTC().Format(time.RFC3339), last.UTC().Format(time.RFC3339), milterEffect(milterAction))
+	}
 	return alert.Finding{
 		Severity: alert.Warning, Check: CheckScanError, DedupKey: "scan", Timestamp: last,
 		Message: "Antispam scans are failing",
-		Details: fmt.Sprintf("Exim logged %d failed %s since %s, the last at %s. Mail is delivered without spam filtering while scans fail; check rspamd's log.",
-			count, scans, first.UTC().Format(time.RFC3339), last.UTC().Format(time.RFC3339)),
+		Details: details,
 	}
 }
 
+// milterEffect says what postfix does with mail while rspamd's milter
+// fails, by milter_default_action, which postfix reads without regard to
+// case.
+func milterEffect(action string) string {
+	switch strings.ToLower(action) {
+	case "accept":
+		return "Mail is delivered without spam filtering while scans fail"
+	case "tempfail":
+		return "Mail is deferred until rspamd answers"
+	case "reject":
+		return "Mail is rejected while scans fail"
+	case "quarantine":
+		return "Mail is held in postfix's hold queue while scans fail"
+	}
+	return "Postfix's milter_default_action is unknown, so what happens to that mail is unknown"
+}
+
 // replacedFinding reports one operator file CSM backed up and replaced,
-// until the operator deletes the backup.
-func replacedFinding(rep antispam.Replacement, now time.Time) alert.Finding {
+// until the backup is gone. On a Postfix host removal puts the newest copy
+// of each file back over CSM's own, and so does a return to dry run for
+// actions.conf; cPanel restores nothing (spec 5.5).
+func replacedFinding(rep antispam.Replacement, postfix, newest bool, now time.Time) alert.Finding {
+	var advice string
+	switch {
+	case !postfix:
+		advice = ". Move any settings you still need into a file CSM does not manage, then delete the backup to clear this warning."
+	case !newest:
+		advice = ". CSM restores only the newest copy of a file, so this older one stays. Copy it back by hand if you need it, or delete it to clear this warning."
+	case rep.Path == antispam.ActionsPath:
+		advice = ". If CSM's own file is still there, CSM puts this copy back when antispam is disabled, and also on returning antispam to dry run, which clears this warning. Delete the backup if you do not want it back."
+	default:
+		advice = ". If CSM's own file is still there, CSM puts this copy back when antispam is disabled, which clears this warning. Delete the backup if you do not want it back."
+	}
 	return alert.Finding{
-		Severity: alert.Warning,
-		Check:    CheckFileReplaced,
-		DedupKey: rep.Backup,
-		Message:  "Antispam replaced " + clean(rep.Path),
-		Details: "CSM replaced " + clean(rep.Path) + " and kept your previous file at " + clean(rep.Backup) +
-			". Move any settings you still need into a file CSM does not manage, then delete the backup to clear this warning.",
+		Severity:  alert.Warning,
+		Check:     CheckFileReplaced,
+		DedupKey:  rep.Backup,
+		Message:   "Antispam replaced " + clean(rep.Path),
+		Details:   "CSM replaced " + clean(rep.Path) + " and kept your previous file at " + clean(rep.Backup) + advice,
 		Timestamp: now,
 	}
 }

@@ -22,6 +22,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Added
 
+- Antispam now runs on Postfix servers that pass mail to rspamd, scoring like cPanel, with a dry run that logs what CSM would reject.
 - Antispam DNS blocklists now work through your own resolvers on public addresses when they are listed in `infra_ips`.
 - Nodes can now load central abuse lists that include spam sources.
 - Operators can opt in to report repeated spam senders to the central abuse database; shared mail services are never reported.

@@ -48,19 +48,23 @@ func readFile(p string) (fileState, error) {
 		return fileState{}, err
 	}
 	defer func() { _ = f.Close() }()
+	return readOpenFile(f)
+}
+
+func readOpenFile(f *os.File) (fileState, error) {
 	info, err := f.Stat()
 	if err != nil {
 		return fileState{}, err
 	}
 	if !info.Mode().IsRegular() {
-		return fileState{}, fmt.Errorf("%s is not a regular file", p)
+		return fileState{}, fmt.Errorf("%s is not a regular file", f.Name())
 	}
 	data, err := io.ReadAll(io.LimitReader(f, maxFileBytes+1))
 	if err != nil {
 		return fileState{}, err
 	}
 	if len(data) > maxFileBytes {
-		return fileState{}, fmt.Errorf("%s is larger than %d bytes", p, maxFileBytes)
+		return fileState{}, fmt.Errorf("%s is larger than %d bytes", f.Name(), maxFileBytes)
 	}
 	st := fileState{exists: true, content: string(data), uid: -1, gid: -1, perm: fileMode(info.Mode()), metadata: true}
 	if sys, ok := info.Sys().(*syscall.Stat_t); ok {

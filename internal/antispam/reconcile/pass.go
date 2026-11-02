@@ -28,7 +28,7 @@ type Desired struct {
 	Observe  bool
 	Settings antispam.Settings
 	// InfraNets are infra_ips as prefixes; DNS feeds trust a nameserver
-	// inside them.
+	// inside them, and a Postfix host never enforces on mail they send.
 	InfraNets []netip.Prefix
 }
 
@@ -44,6 +44,7 @@ func DesiredFromConfig(cfg *config.Config) Desired {
 			RejectScore: as.RejectScore, TagScore: as.TagScore,
 			Feeds:      slices.Sorted(slices.Values(as.Feeds.Enabled)),
 			DQSKeyFile: as.Feeds.SpamhausDQSKeyFile,
+			Exempt:     as.Exempt,
 		},
 	}
 	if as.Learning.Enabled {
@@ -119,6 +120,10 @@ type Outcome struct {
 	// controller.
 	Stats       antispam.StatsEndpoint
 	StatsReason string
+	// ScanSource is where the daemon reads scan records on a Postfix host,
+	// empty elsewhere and while antispam is disabled. Nil when this pass
+	// could not tell; the last one stands.
+	ScanSource *antispam.ScanSource
 }
 
 // LearnerTarget is what a learning engine is built for. A change means a
@@ -131,8 +136,8 @@ type LearnerTarget struct {
 }
 
 // Pass brings the host towards d once (spec sections 6.1 and 6.5). A
-// disabled pass reads only CSM's own files and runs no command unless it
-// finds something to remove.
+// disabled pass reads only the host's mail stack and CSM's own files, and
+// runs no other command unless it finds something to remove.
 func (r Reconciler) Pass(ctx context.Context, d Desired) (out Outcome) {
 	if err := ctx.Err(); err != nil {
 		return Outcome{Err: err}
@@ -214,6 +219,8 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) (out Outcome) {
 	if err := ctx.Err(); err != nil {
 		return Outcome{Err: err}
 	}
+	// The host's mail stack picks the files CSM renders.
+	d.Settings.Stack, d.Settings.ScopeNets = f.Stack, d.InfraNets
 	assess := r.assess
 	if assess == nil {
 		assess = antispam.Assess
@@ -233,6 +240,17 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) (out Outcome) {
 	if d.Enabled {
 		out.Stats, out.StatsReason = antispam.StatsEndpointFor(f)
 	}
+	out.ScanSource = &antispam.ScanSource{}
+	// A pass that cannot tell the stack, as while postfix restarts, keeps the
+	// last source.
+	if d.Enabled && f.Stack != antispam.StackExim {
+		out.ScanSource = nil
+		if f.Stack == antispam.StackPostfix {
+			if src, ok := antispam.PostfixScanSource(f); ok {
+				out.ScanSource = &src
+			}
+		}
+	}
 	// List backups after the worker finishes, including failed rollbacks.
 	// An unreadable directory or an abandoned pass keeps the last findings.
 	defer func() {
@@ -241,8 +259,13 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) (out Outcome) {
 		}
 		if replaced, err := r.Replaced(); err == nil {
 			out.Checks = append(out.Checks, CheckFileReplaced)
+			// Names start with the UTC time, so the newest copy sorts last.
+			newest := map[string]string{}
 			for _, rep := range replaced {
-				out.Findings = append(out.Findings, replacedFinding(rep, now))
+				newest[rep.Path] = max(newest[rep.Path], rep.Backup)
+			}
+			for _, rep := range replaced {
+				out.Findings = append(out.Findings, replacedFinding(rep, f.Stack == antispam.StackPostfix, newest[rep.Path] == rep.Backup, now))
 			}
 		}
 	}()

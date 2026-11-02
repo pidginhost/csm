@@ -29,7 +29,7 @@ const privateController = "/run/rspamd/csm-controller.sock"
 func safeLearningFacts() HostFacts {
 	root := []PathFacts{dir("/", 0, 0, 0o755), dir("/run", 0, 0, 0o755)}
 	var targets []TargetFacts
-	for _, t := range MutationTargets() {
+	for _, t := range MutationTargets(StackExim) {
 		targets = append(targets, TargetFacts{Target: t, Missing: true, Parents: []PathFacts{dir("/", 0, 0, 0o755)}})
 	}
 	f := HostFacts{
@@ -146,6 +146,21 @@ func TestResolveLearningSafeBaseline(t *testing.T) {
 	off, gate, problems := ResolveLearning(defaults(true), safeLearningFacts())
 	if off.Learning || gate != (LearningGate{}) || len(problems) != 0 {
 		t.Fatalf("learning off: %+v %+v %+v", off, gate, problems)
+	}
+}
+
+// Learning from Junk folders on Postfix hosts comes later: until then the
+// resolver keeps learning off there and says so once, whatever the facts.
+func TestResolveLearningOffOnPostfix(t *testing.T) {
+	f := safeLearningFacts()
+	f.Stack = StackPostfix
+	s, gate, problems := ResolveLearning(learningSettings(), f)
+	if s.Learning || s.Roundcube || gate != (LearningGate{}) {
+		t.Fatalf("learning on a Postfix host: settings %+v, gate %+v", s, gate)
+	}
+	onlyLearningReason(t, problems, ReasonUnsupported)
+	if want := "learning from Junk folders on Postfix hosts is not available yet"; problems[0].Detail != want {
+		t.Fatalf("detail %q, want %q", problems[0].Detail, want)
 	}
 }
 

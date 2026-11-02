@@ -28,11 +28,11 @@ func installTestIPMap(t *testing.T, cfg *config.Config, r reconcile.Reconciler) 
 	r.Now = time.Now
 	r.Collect = func(context.Context, string) antispam.HostFacts {
 		var targets []antispam.TargetFacts
-		for _, target := range antispam.MutationTargets() {
+		for _, target := range antispam.MutationTargets(antispam.StackExim) {
 			targets = append(targets, antispam.TargetFacts{Target: target, Missing: true, Parents: parents})
 		}
 		return antispam.HostFacts{
-			CPanel: true, MTAExim: true, SpamdDisabled: true,
+			Stack: antispam.StackExim, SpamdDisabled: true,
 			EximVersion:     antispam.CommandResult{Stdout: "Exim version 4.100.1\nSupport for: Content_Scanning\n"},
 			EximOptions:     antispam.CommandResult{Stdout: "no_prdr_enable\nchunking_advertise_hosts =\n"},
 			EximSettings:    antispam.CommandResult{Stdout: "message_size_limit = 50M\nlog_file_path = /var/log/exim_%slog\n"},
@@ -257,7 +257,7 @@ func TestIPMapMonitorsRetainedMapAfterFailedRemoval(t *testing.T) {
 		t.Errorf("active retained map write failure raised %d findings, want 1", got)
 	}
 	line := strings.Replace(spamLine("203.0.113.130"), "score=200", "score=170", 1)
-	d.recordSpamEvidence(line, time.Now(), cfg)
+	d.recordSpamEvidence(scanOf(line), time.Now(), cfg)
 	if rec := adb.LookupIP("203.0.113.130"); rec != nil {
 		t.Errorf("retained map's own score became spam evidence: %+v", rec.Mail)
 	}

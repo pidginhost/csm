@@ -14,9 +14,9 @@ const (
 	pingUp   = 2
 )
 
-// Health tracks rspamd's scan socket and Exim's scan markers while antispam
-// is enabled (spec section 7). The probe loop and the Exim log watcher use
-// it concurrently.
+// Health tracks rspamd's scan socket and the scans the mail logs record
+// while antispam is enabled (spec section 7). The probe loop and the log
+// watchers use it concurrently.
 type Health struct {
 	mu      sync.Mutex
 	enabled bool
@@ -29,6 +29,9 @@ type Health struct {
 	// scanErrors counts failed scans since the last successful one.
 	scanErrors        int
 	firstErr, lastErr time.Time
+	// stack and milterAction word the scan error finding.
+	stack        antispam.MailStack
+	milterAction string
 }
 
 // SetEnabled starts or stops tracking. Stopping forgets every count and
@@ -44,6 +47,15 @@ func (h *Health) SetEnabled(enabled bool, socket string) {
 		h.fails, h.oks, h.down = 0, 0, false
 	}
 	h.enabled, h.socket = enabled, socket
+}
+
+// SetStack words failed scans for the host's mail stack: on Postfix by
+// what milterAction, postfix's milter_default_action, does with mail while
+// rspamd's milter fails.
+func (h *Health) SetStack(stack antispam.MailStack, milterAction string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.stack, h.milterAction = stack, milterAction
 }
 
 // Ping records one /ping result for socket and returns the finding to
@@ -74,20 +86,25 @@ func (h *Health) Ping(socket string, err error, now time.Time) []alert.Finding {
 	return nil
 }
 
-// Line records one Exim main-log line and returns the finding to report
-// when scans start failing, and whether a successful scan cleared a failure.
-// Only a scan marker Exim wrote counts.
+// Line records one Exim main-log line: a scan marker Exim wrote counts as
+// Scan counts it, any other line not at all.
 func (h *Health) Line(line string, now time.Time) (findings []alert.Finding, recovered bool) {
-	marker, ok := antispam.ScanMarker(line)
+	s, marker := antispam.ParseScan(line)
 	if !marker {
 		return nil, false
 	}
+	return h.Scan(s, now)
+}
+
+// Scan records one scan and returns the finding to report when scans start
+// failing, and whether a successful scan cleared a failure.
+func (h *Health) Scan(s antispam.Scan, now time.Time) (findings []alert.Finding, recovered bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	switch {
 	case !h.enabled:
 		return nil, false
-	case ok:
+	case s.OK:
 		recovered = h.scanErrors > 0
 		h.scanErrors = 0
 		return nil, recovered
@@ -98,7 +115,7 @@ func (h *Health) Line(line string, now time.Time) (findings []alert.Finding, rec
 		return nil, false
 	}
 	h.firstErr = now
-	return []alert.Finding{scanErrorFinding(1, now, now)}, false
+	return []alert.Finding{scanErrorFinding(1, now, now, h.stack, h.milterAction)}, false
 }
 
 // Active returns the health conditions true now.
@@ -110,7 +127,7 @@ func (h *Health) Active() []alert.Finding {
 		out = append(out, rspamdDownFinding(h.socket, h.downSince))
 	}
 	if h.scanErrors > 0 {
-		out = append(out, scanErrorFinding(h.scanErrors, h.firstErr, h.lastErr))
+		out = append(out, scanErrorFinding(h.scanErrors, h.firstErr, h.lastErr, h.stack, h.milterAction))
 	}
 	return out
 }

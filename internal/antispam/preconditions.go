@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"net/netip"
+	"path/filepath"
 	"slices"
 )
 
@@ -54,6 +55,9 @@ const (
 	CodeFeed           = "feed"
 	CodeScores         = "rspamd_scores"
 	CodeControllerOpen = "controller_open"
+	CodeMilter         = "postfix_milter"
+	CodeRspamdLog      = "rspamd_log"
+	CodeDryRunRejects  = "dry_run_rejects"
 )
 
 const (
@@ -107,8 +111,8 @@ type SocketFacts struct {
 // HostFacts is everything CheckHost reads. A collector fills it; the checks
 // stay pure.
 type HostFacts struct {
-	CPanel  bool
-	MTAExim bool
+	// Stack selects the preconditions CheckHost applies.
+	Stack MailStack
 	// EximVersion is `exim -bV`.
 	EximVersion CommandResult
 	// EximOptions is `exim -bP prdr_enable chunking_advertise_hosts`.
@@ -154,6 +158,15 @@ type HostFacts struct {
 	MonitoredLog string
 	// SystemdRunErr is nil when systemd-run is on PATH.
 	SystemdRunErr error
+	// Read only on Postfix: Postconf is `postconf -x -h` for PostconfNames,
+	// PostfixMaster `postconf -F` for SmtpdChrootFields, PostfixService the
+	// LoadState and ActiveState of the unit running postfix's master and
+	// RspamdWorkers `rspamadm configdump -j worker`. The worker dump holds
+	// the controller password, so it never reaches a finding or log.
+	Postconf       CommandResult
+	PostfixMaster  CommandResult
+	PostfixService CommandResult
+	RspamdWorkers  CommandResult
 	// RspamdService and EximService are `systemctl` with UnitShowArgs.
 	RspamdService CommandResult
 	EximService   CommandResult
@@ -215,16 +228,21 @@ type HostFacts struct {
 }
 
 // CheckHost evaluates the host preconditions of spec section 6.2 that hold
-// before CSM writes anything. Staged rspamd settings are checked separately
-// with CheckRspamd.
+// before CSM writes anything, for the host's mail stack. Staged rspamd
+// settings are checked separately with CheckRspamd.
 func CheckHost(f HostFacts) []Problem {
+	switch {
+	case f.Stack == StackPostfix:
+		return checkPostfixHost(f)
+	case f.Stack != StackExim && leftovers(f):
+		return []Problem{stackUnknown}
+	case f.Stack != StackExim:
+		// The collector gathers no Exim facts here.
+		return []Problem{{Code: CodePlatform, Severity: Definite, Detail: "needs a cPanel host running Exim, or a Postfix host"}}
+	}
 	var out []Problem
 	add := func(code string, sev Severity, format string, args ...any) {
 		out = append(out, Problem{Code: code, Severity: sev, Detail: fmt.Sprintf(format, args...)})
-	}
-
-	if !f.CPanel || !f.MTAExim {
-		add(CodePlatform, Definite, "antispam needs a cPanel host running Exim")
 	}
 
 	switch v, err := ParseEximVersion(f.EximVersion.Stdout); {
@@ -249,7 +267,7 @@ func CheckHost(f HostFacts) []Problem {
 		add(CodeGlobalEnable, Warning, "/etc/global_spamassassin_enable exists, so no account can opt out")
 	}
 
-	out = append(out, checkSocket(f.Socket)...)
+	out = append(out, checkSocket(f.Socket, true)...)
 	out = append(out, checkRspamdVersions(f.RspamdVersion, f.RspamadmVersion)...)
 
 	if f.EximOptions.Err != nil {
@@ -324,7 +342,7 @@ func CheckHost(f HostFacts) []Problem {
 		}
 	}
 
-	out = append(out, checkTargets(f.Targets, false)...)
+	out = append(out, checkTargets(f.Stack, f.Targets, false)...)
 
 	probes := NamedListProbes()
 	if len(f.NamedLists) != len(probes) {
@@ -345,6 +363,72 @@ func CheckHost(f HostFacts) []Problem {
 	return out
 }
 
+// checkPostfixHost applies the Postfix preconditions of spec section 5.1:
+// rspamd's side of the scan socket, rspamd itself, the milter wiring, the
+// message size limits, the services and CSM's targets. CSM only reads
+// postfix's configuration.
+func checkPostfixHost(f HostFacts) []Problem {
+	out := checkSocket(f.Socket, false)
+	out = append(out, checkRspamdVersions(f.RspamdVersion, f.RspamadmVersion)...)
+	add := func(sev Severity, detail string) {
+		out = append(out, Problem{Code: CodeMilter, Severity: sev, Detail: detail})
+	}
+	pc, err := ParsePostconf(f.Postconf.Stdout)
+	switch {
+	case f.Postconf.Err != nil:
+		add(Temporary, "postconf failed; check postfix")
+	case err != nil:
+		add(Temporary, "postconf did not report readable smtpd_milters, milter_default_action, message_size_limit, queue_directory, mail_version and milter_mail_macros")
+	default:
+		milters, complete := pc.MilterAddrs(f.PostfixMaster)
+		addrs, err := ProxyMilterAddrs([]byte(f.RspamdWorkers.Stdout))
+		switch {
+		case f.RspamdWorkers.Err != nil:
+			add(Temporary, "rspamadm configdump worker failed; check rspamd")
+		case err != nil:
+			add(Temporary, "rspamadm configdump did not report readable worker settings")
+		case MilterWired(milters, addrs):
+		case !complete:
+			add(Temporary, "cannot tell whether postfix smtpd runs chrooted")
+		default:
+			add(Definite, "postfix does not pass mail to rspamd's proxy worker")
+		}
+		// Without it rspamd scores authenticated mail as remote mail, so
+		// CSM would reject customers' outbound mail.
+		if !pc.AuthUser {
+			add(Definite, "postfix does not pass the authenticated user to rspamd; add {auth_authen} to milter_mail_macros")
+		}
+		out = append(out, checkPostfixMessageSize(pc.SizeLimit, f.RspamdOptions)...)
+	}
+	out = append(out, checkRspamdLog(f.RspamdLog)...)
+	out = append(out, checkServices(f)...)
+	return append(out, checkTargets(f.Stack, f.Targets, false)...)
+}
+
+// checkRspamdLog warns when CSM cannot read the scan records rspamd logs on
+// a Postfix host. Unreadable logging settings leave Type empty and say
+// nothing about where rspamd logs.
+func checkRspamdLog(l LogFacts) []Problem {
+	var detail string
+	switch {
+	case l.Type == "":
+		return nil
+	case l.Type == "console":
+		detail = "rspamd logs to the journal; CSM reads scan records from a file log"
+	case l.Type == "syslog":
+		detail = "rspamd logs to syslog; CSM reads scan records from a file log"
+	case l.Type != "file":
+		detail = fmt.Sprintf("rspamd's log type %q is not a file; CSM reads scan records from a file log", l.Type)
+	case !filepath.IsAbs(l.Path):
+		detail = "rspamd's log file is not an absolute path; CSM reads scan records only from one"
+	case l.Missing:
+		detail = fmt.Sprintf("rspamd's log file %s does not exist; CSM reads scan records from it once rspamd writes it", l.Path)
+	default:
+		return nil
+	}
+	return []Problem{{Code: CodeRspamdLog, Severity: Warning, Detail: detail}}
+}
+
 // firstUnverifiable returns the first error that marks an Exim file CSM
 // cannot check, so one unparseable file yields one temporary problem.
 func firstUnverifiable(errs ...error) error {
@@ -356,7 +440,10 @@ func firstUnverifiable(errs ...error) error {
 	return nil
 }
 
-func checkSocket(s SocketFacts) []Problem {
+// checkSocket checks the scan socket. eximClient is set when Exim connects
+// to it; on Postfix only CSM does, as root, and mail reaches rspamd through
+// the proxy worker instead.
+func checkSocket(s SocketFacts, eximClient bool) []Problem {
 	var out []Problem
 	add := func(sev Severity, format string, args ...any) {
 		out = append(out, Problem{Code: CodeSocket, Severity: sev, Detail: fmt.Sprintf(format, args...)})
@@ -405,6 +492,7 @@ func checkSocket(s SocketFacts) []Problem {
 			add(Temporary, "the socket's parent directories were not checked")
 		}
 		switch {
+		case !eximClient:
 		case !eximKnown:
 			add(Temporary, "Exim's runtime user is unknown")
 		case s.Socket.ExtACL:
@@ -423,7 +511,7 @@ func checkSocket(s SocketFacts) []Problem {
 			add(Definite, "%s is writable by group or others", p.Path)
 		case p.ExtACL:
 			add(Definite, "%s carries extra ACL entries", p.Path)
-		case eximKnown && !permits(p, s.EximUID, s.EximGID, 0o1):
+		case eximClient && eximKnown && !permits(p, s.EximUID, s.EximGID, 0o1):
 			add(Definite, "Exim's runtime user (uid %d) cannot search %s", s.EximUID, p.Path)
 		}
 	}

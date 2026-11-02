@@ -55,8 +55,7 @@ func testCollector(d string, run *fakeRun) collector {
 			Record:        filepath.Join(d, "installed.json"),
 			ResolvConf:    filepath.Join(d, "resolv.conf"),
 		},
-		cpanel:         func() bool { return true },
-		eximMTA:        func() bool { return true },
+		stack:          func() antispam.MailStack { return antispam.StackExim },
 		run:            run.run,
 		lookPath:       func(string) (string, error) { return "/usr/bin/systemd-run", nil },
 		uid:            lookup(map[string]int{"_rspamd": 979, "mailnull": 47}),
@@ -105,8 +104,8 @@ func TestCollectReadsEveryFact(t *testing.T) {
 
 	f := c.collect(context.Background(), sock)
 
-	if !f.CPanel || !f.MTAExim || f.MonitoredLog != platform.EximMainLog {
-		t.Errorf("platform facts %t %t %q", f.CPanel, f.MTAExim, f.MonitoredLog)
+	if f.Stack != antispam.StackExim || f.MonitoredLog != platform.EximMainLog {
+		t.Errorf("platform facts %q %q", f.Stack, f.MonitoredLog)
 	}
 	if f.EximVersion.Stdout != "Exim version 4.100.1 #2\n" || f.EximOptions.Stdout != "no_prdr_enable\n" ||
 		!strings.Contains(f.EximSettings.Stdout, "message_size_limit = 50M") || f.RspamdOptions.Stdout != `{"max_message": 62914560}` ||
@@ -154,6 +153,113 @@ func TestCollectReadsEveryFact(t *testing.T) {
 		"systemctl show -p LoadState -p User -p Group -p CanReload exim.service")
 	if !slices.Equal(run.calls, want) {
 		t.Errorf("commands\n got %q\nwant %q", run.calls, want)
+	}
+}
+
+func TestCollectPostfixFacts(t *testing.T) {
+	const (
+		postconf = "postconf -x -h smtpd_milters milter_default_action message_size_limit queue_directory mail_version milter_mail_macros"
+		master   = "postconf -F smtp/inet/command smtp/inet/chroot smtpd/pass/chroot"
+		instance = "systemctl show -p LoadState -p ActiveState postfix@-.service"
+		wrapper  = "systemctl show -p LoadState -p ActiveState postfix.service"
+		workers  = "rspamadm configdump -j worker"
+		rspamd   = "systemctl show -p LoadState -p User -p Group -p CanReload rspamd.service"
+	)
+	down := antispam.CommandResult{Stdout: "LoadState=loaded\nActiveState=failed\n"}
+	up := antispam.CommandResult{Stdout: "LoadState=loaded\nActiveState=active\n"}
+	for _, tc := range []struct {
+		name     string
+		instance antispam.CommandResult
+		want     antispam.CommandResult
+		queried  []string
+	}{
+		// Debian and Ubuntu run postfix in postfix@-.service; postfix.service
+		// is a oneshot wrapper that stays active while postfix is down.
+		{"instance unit", down, down, []string{instance}},
+		{"single unit", antispam.CommandResult{Stdout: "LoadState=not-found\nActiveState=inactive\n"}, up, []string{instance, wrapper}},
+		{"instance query failed", antispam.CommandResult{Err: errors.New("exit status 1")}, antispam.CommandResult{Err: errors.New("exit status 1")}, []string{instance}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := t.TempDir()
+			// Exim's files exist, so reading them on Postfix would show.
+			write(t, filepath.Join(d, "exim.conf"), "generated\n")
+			write(t, filepath.Join(d, "spamddisable"), "")
+			mkdir(t, filepath.Join(d, "rspamd"))
+			sock := serve(t, filepath.Join(d, "rspamd"), pong)
+			run := &fakeRun{results: map[string]antispam.CommandResult{
+				rspamd:   {Stdout: "User=_rspamd\nLoadState=loaded\nCanReload=yes\n"},
+				postconf: {Stdout: "inet:127.0.0.1:11332\naccept\n52428800\n/var/spool/postfix\n3.7.11\ni {auth_type} {auth_authen} {auth_author} {mail_addr} {mail_host} {mail_mailer}\n"},
+				master:   {Stdout: "smtp/inet/command = smtpd\nsmtp/inet/chroot = y\n"},
+				instance: tc.instance,
+				wrapper:  up,
+				workers:  {Stdout: `{"rspamd_proxy": {"bind_socket": "localhost:11332", "milter": true}}`},
+			}}
+			c := testCollector(d, run)
+			c.stack = func() antispam.MailStack { return antispam.StackPostfix }
+
+			f := c.collect(context.Background(), sock)
+
+			if f.Stack != antispam.StackPostfix || f.Postconf != run.results[postconf] || f.PostfixMaster != run.results[master] ||
+				f.RspamdWorkers != run.results[workers] {
+				t.Errorf("Postfix facts %q %+v %+v %+v", f.Stack, f.Postconf, f.PostfixMaster, f.RspamdWorkers)
+			}
+			if f.PostfixService.Stdout != tc.want.Stdout || (f.PostfixService.Err == nil) != (tc.want.Err == nil) {
+				t.Errorf("postfix service %+v, want %+v", f.PostfixService, tc.want)
+			}
+			if f.MonitoredLog != "" || f.GeneratedConf != "" || f.GeneratedErr != nil || f.SpamdDisabled || f.SystemFilterErr != nil ||
+				f.Socket.EximUID != -1 || f.Socket.EximGID != -1 {
+				t.Errorf("Exim facts collected on Postfix: log %q, config %q %v, spamd %t, filter %v, exim ids %d %d",
+					f.MonitoredLog, f.GeneratedConf, f.GeneratedErr, f.SpamdDisabled, f.SystemFilterErr, f.Socket.EximUID, f.Socket.EximGID)
+			}
+			if f.Socket.Missing || f.Socket.PingErr != nil || f.Socket.RspamdUID != 979 {
+				t.Errorf("socket %+v", f.Socket)
+			}
+			want := []string{"rspamd --version", "rspamadm --version", "rspamadm configdump -j options",
+				"rspamadm configdump -j actions", "rspamadm configdump -m", "rspamadm configdump -j phishing",
+				"rspamadm configdump -j rbl", "rspamadm configdump -j", rspamd, postconf, master}
+			want = append(append(want, tc.queried...), workers)
+			if !slices.Equal(run.calls, want) {
+				t.Errorf("commands\n got %q\nwant %q", run.calls, want)
+			}
+		})
+	}
+}
+
+// On Postfix too, failed probes are temporary: a broken probe must never
+// remove an installed integration.
+func TestCollectPostfixFailedProbesStayTemporary(t *testing.T) {
+	c := testCollector(t.TempDir(), &fakeRun{})
+	c.stack = func() antispam.MailStack { return antispam.StackPostfix }
+	c.lookPath = func(string) (string, error) { return "", errors.New("not found") }
+
+	problems := antispam.CheckHost(c.collect(context.Background(), "/csm-antispam-test-missing/s"))
+
+	if len(problems) == 0 {
+		t.Fatal("no problems on a host where every probe failed")
+	}
+	for _, p := range problems {
+		if p.Severity != antispam.Temporary {
+			t.Errorf("%s is %d (%s), want temporary", p.Code, p.Severity, p.Detail)
+		}
+	}
+}
+
+func TestStackFor(t *testing.T) {
+	for _, tc := range []struct {
+		cpanel bool
+		mta    platform.MTAKind
+		want   antispam.MailStack
+	}{
+		{true, platform.MTAExim, antispam.StackExim},
+		{true, platform.MTAPostfix, antispam.StackNone},
+		{true, platform.MTAUnknown, antispam.StackNone},
+		{false, platform.MTAPostfix, antispam.StackPostfix},
+		{false, platform.MTAExim, antispam.StackNone},
+		{false, platform.MTAUnknown, antispam.StackNone},
+	} {
+		if got := stackFor(tc.cpanel, tc.mta); got != tc.want {
+			t.Errorf("stackFor(%t, %q) = %q, want %q", tc.cpanel, tc.mta, got, tc.want)
+		}
 	}
 }
 
@@ -218,7 +324,7 @@ func TestRootServiceUserDoesNotProveWorkerIdentity(t *testing.T) {
 			if uid != -1 {
 				t.Errorf("worker uid = %d; a root-started rspamd can drop privileges with -u", uid)
 			}
-			f := antispam.HostFacts{Socket: antispam.SocketFacts{
+			f := antispam.HostFacts{Stack: antispam.StackExim, Socket: antispam.SocketFacts{
 				Socket: antispam.PathFacts{Path: antispam.DefaultSocket, UID: 979, Mode: fs.ModeSocket | 0o666},
 				Parents: []antispam.PathFacts{
 					{Path: "/", Mode: fs.ModeDir | 0o755},
@@ -464,7 +570,7 @@ func TestCollectReadsRecordAndRspamdState(t *testing.T) {
 }
 
 // Reconcile checks a disabled host for CSM leftovers every pass, so that
-// check runs no command.
+// check runs no command beyond detecting the mail stack once.
 func TestCollectInstalledRunsNoCommands(t *testing.T) {
 	d := t.TempDir()
 	commandLog := filepath.Join(d, "commands")
@@ -484,11 +590,13 @@ func TestCollectInstalledRunsNoCommands(t *testing.T) {
 	c.layout = testCollector(d, run).layout
 	c.run = run.run
 	c.layout.Targets = []antispam.Target{{Path: filepath.Join(d, "local.d", "rbl.conf"), Kind: antispam.TargetRspamd}}
+	detections := 0
+	c.stack = func() antispam.MailStack { detections++; return antispam.StackExim }
 
 	f := c.installed()
 
-	if len(run.calls) != 0 {
-		t.Errorf("commands %q", run.calls)
+	if len(run.calls) != 0 || detections != 1 {
+		t.Errorf("commands %q, stack detections %d, want none and 1", run.calls, detections)
 	}
 	if data, err := os.ReadFile(commandLog); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("platform detection ran commands: %q, error %v", data, err)
@@ -496,6 +604,40 @@ func TestCollectInstalledRunsNoCommands(t *testing.T) {
 	if f.GeneratedConf != "generated\n" || f.GeneratedErr != nil ||
 		f.Record.Content != string(antispam.EncodeRecord("")) || len(f.Targets) != 1 {
 		t.Errorf("facts %+v", f)
+	}
+}
+
+// With antispam disabled, the leftover check reads the files CSM writes on
+// the detected stack, so a Postfix host's milter headers and scope Lua are
+// found (TestAssessDisabledFindsPostfixLeftovers requests their removal).
+func TestCollectInstalledReadsTheStacksFiles(t *testing.T) {
+	d := t.TempDir()
+	mkdir(t, filepath.Join(d, "lua.local.d"))
+	scope := filepath.Join(d, "lua.local.d", "csm_scope.lua")
+	write(t, scope, antispam.LuaManagedHeader+"\n")
+	c := testCollector(d, &fakeRun{})
+	c.layout.Targets = []antispam.Target{{Path: filepath.Join(d, "local.d", "rbl.conf"), Kind: antispam.TargetRspamd}}
+	c.layout.PostfixTargets = []antispam.Target{
+		{Path: filepath.Join(d, "local.d", "milter_headers.conf"), Kind: antispam.TargetRspamd},
+		{Path: scope, Kind: antispam.TargetRspamdLua},
+	}
+	for _, stack := range []antispam.MailStack{antispam.StackExim, antispam.StackPostfix} {
+		c.stack = func() antispam.MailStack { return stack }
+		f := c.installed()
+		want := c.layout.Targets
+		if stack == antispam.StackPostfix {
+			want = c.layout.PostfixTargets
+		}
+		var got []antispam.Target
+		for _, tg := range f.Targets {
+			got = append(got, tg.Target)
+		}
+		if f.Stack != stack || !slices.Equal(got, want) {
+			t.Errorf("stack %q: facts for %q with targets %v, want %v", stack, f.Stack, got, want)
+		}
+		if read := f.Targets[len(f.Targets)-1]; stack == antispam.StackPostfix && (read.Path != scope || read.Missing || read.Err != nil) {
+			t.Errorf("scope Lua read as %+v", read)
+		}
 	}
 }
 
@@ -712,5 +854,27 @@ func TestCollectIPMapDoesNotFollowDirectorySymlink(t *testing.T) {
 	last := f.IPMap.Parents[len(f.IPMap.Parents)-1]
 	if last.Path != link || last.Mode&fs.ModeSymlink == 0 {
 		t.Fatalf("unsafe map parent was not recorded: %+v", last)
+	}
+}
+
+// The collector checks the files CSM writes for the host's mail stack.
+func TestCollectTargetsFollowStack(t *testing.T) {
+	d := t.TempDir()
+	c := testCollector(d, &fakeRun{})
+	c.layout.Targets = []antispam.Target{{Path: filepath.Join(d, "exim.target"), Kind: antispam.TargetRspamd}}
+	c.layout.PostfixTargets = []antispam.Target{{Path: filepath.Join(d, "postfix.target"), Kind: antispam.TargetRspamd}}
+	for stack, want := range map[antispam.MailStack]string{
+		antispam.StackExim: "exim.target", antispam.StackPostfix: "postfix.target", antispam.StackNone: "exim.target",
+	} {
+		c.stack = func() antispam.MailStack { return stack }
+		f := c.collect(context.Background(), "/csm-antispam-test-missing/s")
+		if len(f.Targets) != 1 || filepath.Base(f.Targets[0].Path) != want {
+			t.Errorf("stack %q collected %+v, want %s", stack, f.Targets, want)
+		}
+	}
+	l := live().layout
+	if !slices.Equal(l.Targets, antispam.MutationTargets(antispam.StackExim)) ||
+		!slices.Equal(l.PostfixTargets, antispam.MutationTargets(antispam.StackPostfix)) {
+		t.Errorf("live targets %v / %v", l.Targets, l.PostfixTargets)
 	}
 }

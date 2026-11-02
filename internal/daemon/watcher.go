@@ -65,6 +65,8 @@ type LogWatcher struct {
 	producer admission.ProducerID
 	// observed, when set, replaces handler and also gets the observation.
 	observed ObservedLineHandler
+	// open opens path for reading; nil means os.Open.
+	open func(path string) (*os.File, error)
 	// epoch separates reader lifetimes even when a reader is reattached
 	// without restarting the process.
 	epoch string
@@ -128,8 +130,14 @@ const logWatcherPollInterval = 2 * time.Second
 
 // NewLogWatcher creates a watcher for a log file.
 func NewLogWatcher(path string, cfg *config.Config, handler LogLineHandler, alertCh chan<- alert.Finding) (*LogWatcher, error) {
-	// #nosec G304 -- path is operator-configured log path from csm.yaml.
-	f, err := os.Open(path)
+	return newLogWatcher(path, cfg, handler, alertCh, nil)
+}
+
+// newLogWatcher creates a watcher that opens the log with open, or with
+// os.Open when open is nil, every time it opens it.
+func newLogWatcher(path string, cfg *config.Config, handler LogLineHandler, alertCh chan<- alert.Finding, open func(string) (*os.File, error)) (*LogWatcher, error) {
+	w := &LogWatcher{path: path, cfg: cfg, handler: handler, alertCh: alertCh, open: open, epoch: alert.NewObservationEpoch()}
+	f, err := w.openFile()
 	if err != nil {
 		return nil, err
 	}
@@ -159,17 +167,16 @@ func NewLogWatcher(path string, cfg *config.Config, handler LogLineHandler, aler
 		// position as untrusted and reads from the beginning on the next tick.
 		marker = nil
 	}
-	return &LogWatcher{
-		path:    path,
-		cfg:     cfg,
-		handler: handler,
-		alertCh: alertCh,
-		file:    f,
-		offset:  offset,
-		fileID:  fileID(info),
-		marker:  marker,
-		epoch:   alert.NewObservationEpoch(),
-	}, nil
+	w.file, w.offset, w.fileID, w.marker = f, offset, fileID(info), marker
+	return w, nil
+}
+
+func (w *LogWatcher) openFile() (*os.File, error) {
+	if w.open != nil {
+		return w.open(w.path)
+	}
+	// #nosec G304 -- path is operator-configured log path from csm.yaml.
+	return os.Open(w.path)
 }
 
 // newObservedLogWatcher watches a log as the evidence producer spec names.
@@ -391,7 +398,7 @@ func (w *LogWatcher) reopen() {
 		w.file = nil
 	}
 
-	f, err := os.Open(w.path)
+	f, err := w.openFile()
 	if err != nil {
 		return
 	}
