@@ -335,10 +335,15 @@ record of exactly the work's tier, in the partition of the work's own
 lane, whose 30-minute hold passed on both the admission clock and the
 ceiling's elapsed time since its verified application. A reboot grants
 no elapsed time and a degraded reading allows no rotation. Each
-partition is shared among the scopes whose unexpired, unclaimed records
-hold its slots and the requester's scope, using the queue's integer share
-rule. A zero-share requester waits for a later cursor turn. Work at or
-over a positive share rotates only its own scope's records;
+partition is shared among its active scopes, using the queue's integer
+share rule: the scopes whose unexpired, unclaimed records hold its
+slots, the scopes of queued work that would hold one at the last
+schedule cycle, and the requester's. Each live schedule cycle that reads the
+victim pool first moves each partition's remainder cursor to the next
+active scope and stores it beside the queue cursors, so reservations
+share the set as their cycle did; a preview ledger never moves it. A
+zero-share requester waits for a later cursor turn. Work at or over a
+positive share rotates only its own scope's records;
 work below it reclaims only the scope with the greatest excess, never
 taking that scope below its share, and waits if that scope has no record
 whose hold passed. The oldest application, then the lowest action, goes
@@ -347,7 +352,8 @@ eviction, opening accepts an equal-tier claim only inside the block's
 own lane partition, and a live rotation raises the capacity notice.
 Notice allocation preserves the new attempt's recovery hold; insufficient
 room sends the notice to its fixed overflow record.
-An older build refuses a ledger holding a rotation claim. Saved ceiling turns
+An older build refuses a ledger holding a rotation claim or a moved set
+cursor. Saved ceiling turns
 also keep their earned credits through slot pressure and restart;
 backoff keeps its existing release behavior. Records and intents without
 an eviction keep their version 1 encoding.

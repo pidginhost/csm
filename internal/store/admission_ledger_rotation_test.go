@@ -439,3 +439,130 @@ func TestEvictionsAgreeOnRotationClaims(t *testing.T) {
 		}
 	}
 }
+
+// More scopes than slots take turns at the remainder: each live schedule
+// cycle under pressure moves the persisted cursor, so a scope with no
+// share now has one on a later cycle, after a restart too, and the wake
+// sees that cycle coming.
+func TestAdmissionLedgerShareCursorRotatesTheRemainder(t *testing.T) {
+	f := liveLedgerFixture(t)
+	f.l.SetOccupants(&fullGeneral)
+	bobs := f.verifiedBy("192.0.2.20", admission.SeverityHigh, f.owner("bob"), 4*time.Hour)
+	f.begin()
+	f.tickAt(f.wall.Add(admission.RotationHold))
+	id := f.freshWith("192.0.2.11", admission.SeverityHigh, f.owner("alice"))
+	if picks, err := f.l.Schedule(allSlots, nil); err != nil || len(picks) != 0 {
+		t.Fatalf("first cycle picks %+v %v, want the remainder elsewhere", picks, err)
+	}
+	moved := f.queueState().SetCursors
+	wantMoved := admission.QueueCursors{General: f.candidateOf(id).Scope.Key()}
+	if moved != wantMoved {
+		t.Fatalf("first cycle cursors %+v, want %+v", moved, wantMoved)
+	}
+	beforeWake := f.snapshot()
+	waiting := f.l.waiting
+	if wake, ok, err := f.l.NextWake(nil); err != nil || !ok || !wake.Equal(f.wall) {
+		t.Fatalf("wake %v %v %v, want the next cycle now", wake, ok, err)
+	}
+	if !reflect.DeepEqual(beforeWake, f.snapshot()) || !reflect.DeepEqual(waiting, f.l.waiting) {
+		t.Fatal("wake probe stored a cursor or changed the cycle's waiting scopes")
+	}
+	reopened, err := OpenAdmissionLedger(f.db, f.reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.l = reopened
+	f.tickAt(f.wall.Add(time.Second))
+	f.l.SetOccupants(&fullGeneral)
+	picks, err := f.l.Schedule(allSlots, nil)
+	if err != nil || len(picks) != 1 || picks[0].ID != id {
+		t.Fatalf("second cycle picks %+v %v, want the waiting scope", picks, err)
+	}
+	bobRecord, _ := f.effectOf(bobs)
+	if again := f.queueState().SetCursors; again != (admission.QueueCursors{General: bobRecord.Scope}) {
+		t.Fatalf("second cycle cursors %+v, want bob's scope only", again)
+	}
+	_, a, _, err := f.l.Reserve(id, picks[0].Lane, f.wall.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if member, _ := f.effectOf(a); member.Victim.Action != bobs.Attempt.ID {
+		t.Fatalf("member record %+v, want the over-share block", member)
+	}
+}
+
+// Waiting work counts its scope in the shares: with a third scope
+// waiting, a requester at its smaller share rotates its own block, as the
+// schedule planned, instead of reclaiming another scope's.
+func TestAdmissionLedgerWaitingScopesShareTheSet(t *testing.T) {
+	f := liveLedgerFixture(t)
+	f.fillGeneral(3)
+	f.verifiedBy("192.0.2.10", admission.SeverityHigh, f.owner("alice"), 4*time.Hour)
+	f.verifiedBy("192.0.2.11", admission.SeverityHigh, f.owner("alice"), 4*time.Hour)
+	own := f.verifiedBy("192.0.2.12", admission.SeverityHigh, f.owner("bob"), 4*time.Hour)
+	f.begin()
+	f.tickAt(f.wall.Add(admission.RotationHold))
+	id := f.freshWith("192.0.2.13", admission.SeverityHigh, f.owner("bob"))
+	host := f.freshWith("192.0.2.14", admission.SeverityWarning, admission.Owner{})
+	picks, err := f.l.Schedule(allSlots, nil)
+	if err != nil || len(picks) != 1 || picks[0].ID != id {
+		t.Fatalf("picks %+v %v", picks, err)
+	}
+	// A later arrival belongs to the next cycle. A wake probe may use it
+	// in its simulation but must not change the current picks' shares.
+	f.freshWith("192.0.2.15", admission.SeverityHigh, f.owner("alice"))
+	wantWaiting := map[admission.Partition][]string{admission.PartitionGeneral: {f.candidateOf(id).Scope.Key(), f.candidateOf(host).Scope.Key()}}
+	beforeWake := f.snapshot()
+	if _, _, err = f.l.NextWake(nil); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(f.l.waiting, wantWaiting) || !reflect.DeepEqual(beforeWake, f.snapshot()) {
+		t.Fatalf("wake probe changed the last cycle: waiting %+v, want %+v", f.l.waiting, wantWaiting)
+	}
+	_, a, _, err := f.l.Reserve(id, picks[0].Lane, f.wall.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if member, _ := f.effectOf(a); member.Victim.Action != own.Attempt.ID {
+		t.Fatalf("member record %+v, want the requester's own block", member)
+	}
+}
+
+// A preview ledger holds no records, so nothing is shared and its cursors
+// never move: preview hosts write nothing new.
+func TestAdmissionLedgerPreviewLedgerKeepsNoShareCursor(t *testing.T) {
+	f := newLedgerFixture(t)
+	f.fillGeneral(1, f.importAt(1, "192.0.2.60", 4*time.Hour))
+	f.begin()
+	f.freshWith("192.0.2.11", admission.SeverityHigh, f.owner("alice"))
+	f.freshWith("192.0.2.12", admission.SeverityHigh, f.owner("bob"))
+	for range 2 {
+		if _, err := f.l.Schedule(allSlots, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := f.queueState().SetCursors; got != (admission.QueueCursors{}) {
+		t.Fatalf("a preview ledger moved its set cursors: %+v", got)
+	}
+}
+
+// Queued one-unit block work waits in the general partition, and in the
+// reserved one too when a reserved lane may serve it; other work, and a
+// scope's repeats, add nothing.
+func TestWaitingScopesByPartition(t *testing.T) {
+	block := liveCandidate{c: admission.Candidate{Key: admission.CandidateKey{Kind: admission.KindBlockIP}}}
+	subnet := liveCandidate{c: admission.Candidate{Key: admission.CandidateKey{Kind: admission.KindBlockSubnet}}}
+	direct := admission.Tier{Class: admission.ClassC3, Severity: admission.SeverityHigh}
+	items := []admission.ScheduleItem{
+		{ID: "a", Scope: "s1", Tier: direct, CeilingCost: 1, Direct: true},
+		{ID: "b", Scope: "s2", CeilingCost: 1},
+		{ID: "c", Scope: "s2", CeilingCost: 1, Ready: true},
+		{ID: "d", Scope: "s3"},
+		{ID: "e", Scope: "s4", CeilingCost: 1},
+	}
+	byID := map[admission.CandidateID]liveCandidate{"a": block, "b": block, "c": block, "d": block, "e": subnet}
+	want := map[admission.Partition][]string{admission.PartitionGeneral: {"s1", "s2"}, admission.PartitionReserved: {"s1"}}
+	if got := waitingScopes(items, byID); !reflect.DeepEqual(got, want) {
+		t.Fatalf("waiting %+v, want %+v", got, want)
+	}
+}

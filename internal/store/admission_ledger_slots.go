@@ -109,9 +109,33 @@ func (q *queueTx) slots() (*admission.SlotLimits, error) {
 		return pool, poolErr
 	})
 	if err == nil && holding != nil {
-		slots.Share(holding, nil, admission.QueueCursors{})
+		slots.Share(holding, q.waiting, q.state.SetCursors)
+		q.shared = true
 	}
 	return slots, err
+}
+
+// waitingScopes are the scopes of queued work that would hold a set
+// slot, by the partitions it may occupy: general, and reserved too for
+// work eligible for a reserved lane. Such work shares the set with the
+// scopes holding it (spec 5.6: active scopes include eligible waiting
+// work); a retry's wait does not end its claim.
+func waitingScopes(items []admission.ScheduleItem, byID map[admission.CandidateID]liveCandidate) map[admission.Partition][]string {
+	out := map[admission.Partition][]string{}
+	for _, it := range items {
+		if !demandOf(it, byID[it.ID]).Evicts {
+			continue
+		}
+		out[admission.PartitionGeneral] = append(out[admission.PartitionGeneral], it.Scope)
+		if reservedLane(it) != 0 {
+			out[admission.PartitionReserved] = append(out[admission.PartitionReserved], it.Scope)
+		}
+	}
+	for p := range out {
+		slices.Sort(out[p])
+		out[p] = slices.Compact(out[p])
+	}
+	return out
 }
 
 // holdTest reports whether a record's rotation hold passed: nil, so no
@@ -185,8 +209,12 @@ func (q *queueTx) fresh(c admission.Candidate) (bool, error) {
 	return found && e.ID == c.Key.Episode && e.Verified.IsZero(), err
 }
 
-// markFresh notes which of the live candidates byID are fresh.
+// markFresh notes which of the live candidates byID are fresh. Only a
+// shared set needs it: nothing rotates otherwise.
 func (q *queueTx) markFresh(byID map[admission.CandidateID]liveCandidate) error {
+	if !q.shared {
+		return nil
+	}
 	for id, lc := range byID {
 		var err error
 		if lc.fresh, err = q.fresh(lc.c); err != nil {
