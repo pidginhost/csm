@@ -503,10 +503,12 @@ those zones or of other configured resolvers.
   also counts `URL_VERY_LONG` once per message instead of once per long
   link, so newsletters full of tracking links are not tagged for that. It
   raises `DMARC_POLICY_REJECT` from 2 to 3, so forged mail from a domain
-  whose DMARC policy is reject reaches the tag score sooner. CSM
-  replaces an operator-owned `groups.conf`. One that is not safe to replace
-  is left alone: rspamd keeps its own weights and CSM reports an
-  `rspamd_scores` warning;
+  whose DMARC policy is reject reaches the tag score sooner. A symbol you
+  define in your own `html_group.conf`, `url_group.conf` or
+  `policies_group.conf` in `/etc/rspamd/local.d` keeps your weight: CSM
+  leaves it out of its file. CSM replaces an operator-owned `groups.conf`.
+  One that is not safe to replace is left alone: rspamd keeps its own
+  weights and CSM reports an `rspamd_scores` warning;
 - with learning on, the learning files listed under
   [Learning from Spam folders](#learning-from-spam-folders);
 - a completion record in `/var/lib/csm/antispam`.

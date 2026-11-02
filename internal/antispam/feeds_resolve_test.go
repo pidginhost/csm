@@ -669,6 +669,61 @@ func TestResolveScoresTakesOverForeignGroups(t *testing.T) {
 	}
 }
 
+// rspamd gives an operator's local.d group file and CSM's groups.conf the
+// same priority and lets CSM's later include win, so CSM leaves out every
+// symbol the operator's group files define.
+func TestResolveScoresLeavesHostWeights(t *testing.T) {
+	defined := []string{
+		"symbols {\n  \"DMARC_POLICY_REJECT\" {\n    weight = 5.0;\n  }\n}\n",
+		"symbols {\n  DMARC_POLICY_REJECT {\n    weight = 5.0;\n  }\n}\n",
+		"symbols {\n  \"DMARC_POLICY_REJECT\": { \"weight\": 5.0 }\n}\n",
+		"symbols {\n  DMARC_POLICY_REJECT = {\n    weight = 5.0;\n  }\n}\n",
+		"symbols {'DMARC_POLICY_REJECT' { weight = 5.0; }}\n",
+	}
+	for _, content := range defined {
+		f := feedFacts()
+		f.GroupFiles = map[string]GroupFile{"policies": {Content: content}}
+		got, problems := ResolveScores(defaults(false), f)
+		if !slices.Equal(got.HostScores, []string{"DMARC_POLICY_REJECT"}) || got.SkipScores || len(problems) != 0 {
+			t.Fatalf("%q: host scores %q, skip %v, problems %+v", content, got.HostScores, got.SkipScores, problems)
+		}
+	}
+	notDefined := []string{
+		"",
+		"# \"DMARC_POLICY_REJECT\" { weight = 5.0; }\n",
+		"/* DMARC_POLICY_REJECT {\n weight = 5.0;\n} */\nsymbols {}\n",
+		"symbols {\n  \"DMARC_POLICY_REJECT_STRICT\" {\n    weight = 5.0;\n  }\n}\n",
+		"symbols {\n  \"DMARC_POLICY_QUARANTINE\" {\n    weight = 2.0;\n  }\n}\n",
+	}
+	for _, content := range notDefined {
+		f := feedFacts()
+		f.GroupFiles = map[string]GroupFile{"policies": {Content: content}}
+		if got, _ := ResolveScores(defaults(false), f); len(got.HostScores) != 0 {
+			t.Fatalf("%q: host scores %q", content, got.HostScores)
+		}
+	}
+	// Any of the group files counts, and one CSM cannot read may hold any
+	// symbol, so CSM leaves all of them to the host.
+	f := feedFacts()
+	f.GroupFiles = map[string]GroupFile{"html": {Content: "symbols { URL_VERY_LONG { weight = 3.0; } }\n"}}
+	if got, _ := ResolveScores(defaults(false), f); !slices.Equal(got.HostScores, []string{"URL_VERY_LONG"}) {
+		t.Fatalf("symbol in another group file: %q", got.HostScores)
+	}
+	f.GroupFiles = map[string]GroupFile{"url": {Err: errors.New("permission denied")}}
+	if got, _ := ResolveScores(defaults(false), f); !slices.Equal(got.HostScores, []string{"HIDDEN_TEXT", "URL_VERY_LONG", "DMARC_POLICY_REJECT"}) {
+		t.Fatalf("unreadable group file: %q", got.HostScores)
+	}
+	// A file CSM cannot own leaves every weight to rspamd already.
+	for i := range f.Targets {
+		if f.Targets[i].Path == ScoresPath {
+			f.Targets[i].Missing, f.Targets[i].File = false, PathFacts{Path: ScoresPath, Mode: 0o664}
+		}
+	}
+	if got, _ := ResolveScores(defaults(false), f); !got.SkipScores || got.HostScores != nil {
+		t.Fatalf("skipped file: skip %v, host scores %q", got.SkipScores, got.HostScores)
+	}
+}
+
 func TestParseInfraNets(t *testing.T) {
 	got := ParseInfraNets([]string{"198.51.100.7", " 203.0.113.9/24 ", "2001:db8::1", "::ffff:192.0.2.5", "mail.example.com", "", "bogus/99"})
 	want := []netip.Prefix{

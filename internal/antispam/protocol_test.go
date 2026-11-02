@@ -329,6 +329,32 @@ func TestSettingsValidateRoundcubeNeedsLearning(t *testing.T) {
 	}
 }
 
+func TestRequestRoundTripHostScores(t *testing.T) {
+	want := defaults(false)
+	want.HostScores = []string{"HIDDEN_TEXT", "DMARC_POLICY_REJECT"}
+	data, err := json.Marshal(ApplyRequest(want))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"host_scores":"HIDDEN_TEXT,DMARC_POLICY_REJECT"`) {
+		t.Fatalf("request %s lacks host_scores", data)
+	}
+	_, got, err := DecodeRequest(data)
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("decoded %+v, %v", got, err)
+	}
+	if data, err = json.Marshal(ApplyRequest(defaults(false))); err != nil || strings.Contains(string(data), "host_scores") {
+		t.Fatalf("request without host weights %s, %v", data, err)
+	}
+	for _, bad := range [][]string{{"R_SPF_FAIL"}, {"HIDDEN_TEXT", "HIDDEN_TEXT"}, {""}} {
+		s := defaults(false)
+		s.HostScores = bad
+		if err := s.Validate(); err == nil {
+			t.Fatalf("host scores %q accepted", bad)
+		}
+	}
+}
+
 func TestRequestRoundTripSkipScores(t *testing.T) {
 	want := defaults(false)
 	want.SkipScores = true

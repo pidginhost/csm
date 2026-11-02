@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"net/netip"
 	"path"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -464,9 +465,10 @@ func (l LogFacts) exposed(uid int, trustedGroup func(int) bool) (bool, string) {
 const minFeedsRspamdMajor = 4
 
 // ResolveScores leaves out the symbol weights file when CSM cannot write it
-// safely, with a Warning: rspamd then keeps its own weights.
+// safely, with a Warning: rspamd then keeps its own weights. Otherwise it
+// leaves out each weight the host's own group files set.
 func ResolveScores(s Settings, f HostFacts) (Settings, []Problem) {
-	s.SkipScores = false
+	s.SkipScores, s.HostScores = false, nil
 	err := fmt.Errorf("%s was not checked", ScoresPath)
 	for _, t := range f.Targets {
 		if t.Path == ScoresPath {
@@ -475,11 +477,39 @@ func ResolveScores(s Settings, f HostFacts) (Settings, []Problem) {
 		}
 	}
 	if err == nil {
+		s.HostScores = hostScores(f.GroupFiles)
 		return s, nil
 	}
 	s.SkipScores = true
 	return s, []Problem{{Code: CodeScores, Severity: Warning,
 		Detail: fmt.Sprintf("%v, so rspamd keeps its full weight for hidden text, which can tag newsletters", err)}}
+}
+
+// hostScores lists the symbols CSM weighs that the host's group files
+// define. rspamd loads those files at the same priority as CSM's
+// groups.conf and lets the later include, CSM's, win; the operator's
+// weight must stay. A file CSM cannot read may define any of them.
+func hostScores(files map[string]GroupFile) []string {
+	var out []string
+	for _, w := range scoreWeights {
+		for _, f := range files {
+			if f.Err != nil || definesSymbol(f.Content, w.symbol) {
+				out = append(out, w.symbol)
+				break
+			}
+		}
+	}
+	return out
+}
+
+// uclComments are UCL's block and line comments.
+var uclComments = regexp.MustCompile(`(?s)/\*.*?\*/|#[^\n]*`)
+
+// definesSymbol reports whether UCL text opens an object for symbol, quoted
+// or not, outside comments.
+func definesSymbol(content, symbol string) bool {
+	re := regexp.MustCompile(`(^|[^A-Za-z0-9_])["']?` + regexp.QuoteMeta(symbol) + `["']?\s*[:=]?\s*\{`)
+	return re.MatchString(uclComments.ReplaceAllString(content, ""))
 }
 
 // FeedsSupported reports whether rspamd is recent enough for feed files

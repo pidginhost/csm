@@ -46,6 +46,8 @@ type Layout struct {
 	PostfixTargets []antispam.Target
 	// IPMap is the CSM IP map file rspamd reads.
 	IPMap string
+	// RspamdLocalDir holds the operator's group files.
+	RspamdLocalDir string
 	// Learning fact sources.
 	ProcNetUDP        string
 	ProcNetUDP6       string
@@ -89,6 +91,7 @@ func live() collector {
 			Targets:           antispam.MutationTargets(antispam.StackExim),
 			PostfixTargets:    antispam.MutationTargets(antispam.StackPostfix),
 			IPMap:             ipmap.DefaultPath,
+			RspamdLocalDir:    antispam.RspamdLocalDir,
 			ProcNetUDP:        procNetUDP,
 			ProcNetUDP6:       procNetUDP6,
 			CageFSSkeletonLog: cageFSSkeletonLog,
@@ -176,6 +179,7 @@ func (c collector) collect(ctx context.Context, socket string) antispam.HostFact
 	f.RspamdConfig = c.run(ctx, "rspamadm", "configdump", "-j")
 	f.RspamdLog = rspamdLog(f.RspamdConfig)
 	f.IPMap = fileFacts(c.layout.IPMap)
+	f.GroupFiles = groupFiles(c.layout.RspamdLocalDir)
 	f.RspamdService = c.run(ctx, "systemctl", antispam.UnitShowArgs(antispam.RspamdUnit)...)
 	switch f.Stack {
 	case antispam.StackExim:
@@ -380,6 +384,19 @@ func RunCommand(ctx context.Context, limit time.Duration, name string, args ...s
 		err = fmt.Errorf("%s: %w", name, ctx.Err())
 	}
 	return antispam.CommandResult{Stdout: stdout.String(), Stderr: stderr.String(), Err: err}
+}
+
+// groupFiles reads the operator's group file for each group CSM weighs.
+func groupFiles(dir string) map[string]antispam.GroupFile {
+	out := make(map[string]antispam.GroupFile)
+	for _, group := range antispam.ScoreGroups() {
+		content, err := readText(filepath.Join(dir, group+"_group.conf"))
+		if errors.Is(err, fs.ErrNotExist) {
+			content, err = "", nil
+		}
+		out[group] = antispam.GroupFile{Content: content, Err: err}
+	}
+	return out
 }
 
 func readText(p string) (string, error) {

@@ -247,6 +247,31 @@ func TestManagedContentSetsSymbolWeights(t *testing.T) {
 	}
 }
 
+// A weight the host's own group files set stays the host's: CSM leaves that
+// symbol out of its file, and keeps the rest.
+func TestManagedContentLeavesHostScores(t *testing.T) {
+	s := defaults(false)
+	s.HostScores = []string{"DMARC_POLICY_REJECT"}
+	managed, err := ManagedContent(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "# csm-managed-version: 1\ngroup \"html\" {\n  symbols {\n    \"HIDDEN_TEXT\" {\n" +
+		"      weight = 2.0;\n      one_shot = true;\n    }\n  }\n}\n" +
+		"group \"url\" {\n  symbols {\n    \"URL_VERY_LONG\" {\n" +
+		"      weight = 1.5;\n      one_shot = true;\n    }\n  }\n}\n"
+	if managed[ScoresPath] != want {
+		t.Fatalf("%s =\n%q\nwant\n%q", ScoresPath, managed[ScoresPath], want)
+	}
+	s.HostScores = []string{"HIDDEN_TEXT", "URL_VERY_LONG", "DMARC_POLICY_REJECT"}
+	if managed, err = ManagedContent(s); err != nil {
+		t.Fatal(err)
+	}
+	if got := managed[ScoresPath]; got != ManagedHeader+"\n" {
+		t.Fatalf("every weight the host's: %s = %q", ScoresPath, got)
+	}
+}
+
 // On Postfix CSM owns the rspamd files, the milter headers and the scope
 // Lua, never an Exim file or the Roundcube include. In dry run the host's
 // own actions.conf keeps enforcing, so CSM leaves that file out.

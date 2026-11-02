@@ -13,6 +13,10 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 - Forged mail that fails the sender domain's DMARC reject policy now lands in the Spam folder more often.
 
+### Fixed
+
+- Antispam no longer overrides spam weights you set yourself in rspamd.
+
 ## [4.9.0] - 2026-11-02
 
 ### Highlights

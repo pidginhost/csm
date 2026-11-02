@@ -49,12 +49,13 @@ func lookup(ids map[string]int) func(string) (int, error) {
 func testCollector(d string, run *fakeRun) collector {
 	return collector{
 		layout: Layout{
-			GeneratedConf: filepath.Join(d, "exim.conf"),
-			LocalConf:     filepath.Join(d, "exim.conf.local"),
-			SpamdDisabled: filepath.Join(d, "spamddisable"),
-			GlobalEnable:  filepath.Join(d, "global_spamassassin_enable"),
-			Record:        filepath.Join(d, "installed.json"),
-			ResolvConf:    filepath.Join(d, "resolv.conf"),
+			GeneratedConf:  filepath.Join(d, "exim.conf"),
+			LocalConf:      filepath.Join(d, "exim.conf.local"),
+			SpamdDisabled:  filepath.Join(d, "spamddisable"),
+			GlobalEnable:   filepath.Join(d, "global_spamassassin_enable"),
+			Record:         filepath.Join(d, "installed.json"),
+			ResolvConf:     filepath.Join(d, "resolv.conf"),
+			RspamdLocalDir: filepath.Join(d, "local.d"),
 		},
 		stack:          func() antispam.MailStack { return antispam.StackExim },
 		run:            run.run,
@@ -78,6 +79,8 @@ func TestCollectReadsEveryFact(t *testing.T) {
 	write(t, filepath.Join(d, "filter"), "if $spam_score_int is above 50 then\n  seen finish\nendif\n")
 	mkdir(t, filepath.Join(d, "local.d"))
 	write(t, filepath.Join(d, "local.d", "actions.conf"), antispam.ManagedHeader+"\n")
+	write(t, filepath.Join(d, "local.d", "policies_group.conf"), "symbols {}\n")
+	mkdir(t, filepath.Join(d, "local.d", "url_group.conf"))
 	mkdir(t, filepath.Join(d, "rspamd"))
 	sock := serve(t, filepath.Join(d, "rspamd"), pong)
 
@@ -127,6 +130,17 @@ func TestCollectReadsEveryFact(t *testing.T) {
 	}
 	if !f.SpamdDisabled || f.SpamdDisabledErr != nil || f.GlobalEnable || f.GlobalEnableErr != nil {
 		t.Errorf("spamd %t %v global %t %v", f.SpamdDisabled, f.SpamdDisabledErr, f.GlobalEnable, f.GlobalEnableErr)
+	}
+	// The operator's group files for the symbols CSM weighs: present, absent
+	// and unreadable.
+	if g := f.GroupFiles["policies"]; g.Content != "symbols {}\n" || g.Err != nil {
+		t.Errorf("policies group file %+v", g)
+	}
+	if g, ok := f.GroupFiles["html"]; !ok || g.Content != "" || g.Err != nil {
+		t.Errorf("absent html group file %+v, %t", g, ok)
+	}
+	if g := f.GroupFiles["url"]; g.Err == nil {
+		t.Errorf("url group file is a directory, read %+v", g)
 	}
 	if !strings.HasPrefix(f.SystemFilter, "if $spam_score_int") || f.SystemFilterErr != nil || f.SystemdRunErr != nil {
 		t.Errorf("filter %q %v systemd-run %v", f.SystemFilter, f.SystemFilterErr, f.SystemdRunErr)
