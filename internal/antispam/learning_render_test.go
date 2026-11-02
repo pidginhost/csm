@@ -260,7 +260,7 @@ func TestLearningGenerationUnchangedForExim(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := Generation(managed); got != "67efef7ece297d3ea5319543750edf10225172748522c3c245868df946e7d547" {
+	if got := Generation(managed); got != "4f56886ca9711b2be285b5d8c52aee581820733cfdbb0a3bbcddc509ab85187b" {
 		t.Errorf("install generation %s", got)
 	}
 }

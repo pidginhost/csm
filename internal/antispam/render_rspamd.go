@@ -54,11 +54,16 @@ const subjectRules = ManagedHeader + "\nCSM_INVISIBLE_CJK_SUBJECT {\n" +
 // URL_VERY_LONG adds its weight once per long link, so a newsletter full of
 // tracking links reached the tag score on that rule alone; one_shot counts
 // it once per message. A configured symbol loses rspamd's one_shot unless
-// the entry repeats it.
+// the entry repeats it. DMARC_POLICY_REJECT gains a point: personalized
+// phishing that forges a domain with a reject policy stayed just under the
+// default tag score, while mail that fails such a policy without forgery
+// scores far lower. The symbol keeps its dmarc group.
 const scoreWeights = ManagedHeader + "\ngroup \"html\" {\n  symbols {\n    \"HIDDEN_TEXT\" {\n" +
 	"      weight = 2.0;\n      one_shot = true;\n    }\n  }\n}\n" +
 	"group \"url\" {\n  symbols {\n    \"URL_VERY_LONG\" {\n" +
-	"      weight = 1.5;\n      one_shot = true;\n    }\n  }\n}\n"
+	"      weight = 1.5;\n      one_shot = true;\n    }\n  }\n}\n" +
+	"group \"policies\" {\n  symbols {\n    \"DMARC_POLICY_REJECT\" {\n" +
+	"      weight = 3.0;\n    }\n  }\n}\n"
 
 // RenderRspamd returns the content of each file in RspamdFiles, keyed by its
 // name under /etc/rspamd/local.d.

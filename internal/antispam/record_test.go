@@ -231,7 +231,9 @@ func TestManagedContentSetsSymbolWeights(t *testing.T) {
 	want := "# csm-managed-version: 1\ngroup \"html\" {\n  symbols {\n    \"HIDDEN_TEXT\" {\n" +
 		"      weight = 2.0;\n      one_shot = true;\n    }\n  }\n}\n" +
 		"group \"url\" {\n  symbols {\n    \"URL_VERY_LONG\" {\n" +
-		"      weight = 1.5;\n      one_shot = true;\n    }\n  }\n}\n"
+		"      weight = 1.5;\n      one_shot = true;\n    }\n  }\n}\n" +
+		"group \"policies\" {\n  symbols {\n    \"DMARC_POLICY_REJECT\" {\n" +
+		"      weight = 3.0;\n    }\n  }\n}\n"
 	if managed[ScoresPath] != want {
 		t.Fatalf("%s =\n%q\nwant\n%q", ScoresPath, managed[ScoresPath], want)
 	}
