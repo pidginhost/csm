@@ -97,8 +97,17 @@ func FuzzParseDoveconfNamespaces(f *testing.F) {
 				t.Fatalf("location %q: root %q", loc, root)
 			}
 		}
-		// Every Junk folder is a direct child of its Maildir++ root.
-		m, reason := c.mailbox("u@example.com", "example.com", detail{uid: 1000, gid: 1000, home: "/home/u", locs: locs})
+		_ = c.iterable()
+		d := detail{uid: 1000, gid: 1000, home: "/home/u", locs: locs}
+		paths := c.paths(d)
+		for _, p := range paths {
+			if filepath.Clean(p) != p || !filepath.IsAbs(p) {
+				t.Fatalf("mail path %q", p)
+			}
+		}
+		// Every Junk folder is a direct child of its Maildir++ root, which
+		// is one of the paths the shared-path check compares.
+		m, reason := c.mailbox("u@example.com", "example.com", d)
 		if reason != "" {
 			return
 		}
@@ -107,6 +116,9 @@ func FuzzParseDoveconfNamespaces(f *testing.F) {
 			if filepath.Clean(p) != p || !filepath.IsAbs(p) || !strings.HasPrefix(base, ".") || base == "." || base == ".." ||
 				slices.Contains(strings.Split(dir, "/"), "..") {
 				t.Fatalf("junk path %q", p)
+			}
+			if !slices.Contains(paths, filepath.Dir(p)) {
+				t.Fatalf("junk path %q outside mail paths %q", p, paths)
 			}
 		}
 	})
