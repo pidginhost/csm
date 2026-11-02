@@ -124,6 +124,7 @@ type Server struct {
 	queueFlusher       intel.QueueFlusher
 	queueAdmin         intel.QueueAdmin
 	forwardHeld        heldForwardStore
+	mcp                MCPServer
 	version            string
 	// queueReasons caches msglog reasons for the queue list by message ID.
 	queueReasonMu sync.Mutex
@@ -321,6 +322,8 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	mux.Handle("/api/v1/events", s.requireRead(http.HandlerFunc(s.apiEvents)))
 	mux.Handle("/api/v1/status", s.requireRead(http.HandlerFunc(s.apiStatus)))
 	mux.Handle("/api/v1/challenge/stats", s.requireRead(http.HandlerFunc(s.apiChallengeStats)))
+	// Read-only MCP endpoint; answers 404 until SetMCP attaches a server.
+	mux.HandleFunc(mcpPath, s.serveMCP)
 	mux.Handle("/api/v1/scan-jobs", s.requireRead(http.HandlerFunc(s.apiScanJobsList)))
 	mux.Handle("/api/v1/scan-jobs/", s.requireRead(http.HandlerFunc(s.apiScanJobsRouter)))
 	// POST /api/v1/scan-jobs — enqueue a new full-scan job (admin + CSRF).
@@ -1052,7 +1055,7 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 		// match Host so another local service cannot borrow UI cookies.
 		// Browser logout and session revocation change server state like API
 		// writes. Login stays reachable: it already requires the credential.
-		if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/logout" || strings.HasPrefix(r.URL.Path, "/sessions") {
+		if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == mcpPath || r.URL.Path == "/logout" || strings.HasPrefix(r.URL.Path, "/sessions") {
 			origin := r.Header.Get("Origin")
 			if origin != "" {
 				if !s.originAllowed(origin, r.Host) {
@@ -1081,9 +1084,9 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 			}
 		}
 
-		// API rate limiting: 600 requests per minute per IP. /metrics takes
-		// a bearer token too, so guessing it shares the same budget.
-		if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/metrics" {
+		// API rate limiting: 600 requests per minute per IP. /metrics and
+		// /mcp take bearer tokens too, so guessing them shares the budget.
+		if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/metrics" || r.URL.Path == mcpPath {
 			ip := rateLimitKey(r.RemoteAddr)
 			s.apiMu.Lock()
 			now := time.Now()

@@ -1055,6 +1055,28 @@
       "queue": "mail.delivery"
     },
     {
+      "id": "internal/mcp/server.go::*Server.runCall::done::channel::1",
+      "path": "internal/mcp/server.go",
+      "owner": "*Server.runCall",
+      "target": "done",
+      "kind": "channel",
+      "source": "make(chan answer, 1)",
+      "capacity": "1",
+      "class": "lifecycle",
+      "rationale": "Carries one tool call's result from its worker to the request; the buffer lets the worker finish and free its slot after the request has timed out."
+    },
+    {
+      "id": "internal/mcp/server.go::New::calls::channel::1",
+      "path": "internal/mcp/server.go",
+      "owner": "New",
+      "target": "calls",
+      "kind": "channel",
+      "source": "make(chan struct{}, maxConcurrentCalls)",
+      "capacity": "4",
+      "class": "lifecycle",
+      "rationale": "Bounds concurrent MCP tool calls on the request path; a caller with no free slot is answered busy within seconds, so no record is queued or retained."
+    },
+    {
       "id": "internal/processctx/enricher.go::NewEnricher::queue::channel::1",
       "path": "internal/processctx/enricher.go",
       "owner": "NewEnricher",

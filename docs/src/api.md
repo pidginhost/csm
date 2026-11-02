@@ -67,6 +67,12 @@ Unban-scope tokens are meant for hosting panels that let customers lift their ow
 
 The legacy single-token `webui.auth_token:`, with its optional `webui.auth_token_issued_at` and `webui.auth_token_expires_at`, is loaded into a `legacy-auth-token` admin entry. Read-scope tokens are intended for orchestrators and dashboards that consume status, findings, history, stats, challenge stats, blocked-IP summaries, scan jobs, health, components, capabilities, and SSE events. Admin scope is still required for write routes and for sensitive reads such as quarantine, settings, firewall internals, threat-intel detail, rules, account detail, exports, incident timelines, and audit history. (ModSecurity `stats`/`blocks`/`events` are read scope; only the ModSecurity rules and escalation routes need admin.) `metrics_token:` is a separate, read-only credential for `/metrics` only.
 
+### Read-only MCP endpoint
+
+Support agents that speak the Model Context Protocol get these reads at
+`/mcp` on the same listener, with their own credentials; see
+[MCP endpoint](mcp.md). It cannot reach any route that changes state.
+
 ## Errors
 
 Every failure answers a non-2xx status with a JSON body that has an `error`

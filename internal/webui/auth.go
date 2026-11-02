@@ -192,6 +192,16 @@ func carriesBearer(r *http.Request) bool {
 	return strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ")
 }
 
+// knownWebUIBearer recognizes UI and metrics credentials for guess
+// accounting only. Each endpoint must still enforce its own scope.
+func (s *Server) knownWebUIBearer(r *http.Request) bool {
+	_, known := s.bearerCredentialWithScope(r, "read")
+	if !known {
+		_, known = s.bearerCredentialWithScope(r, "unban")
+	}
+	return known || s.metricsBearerMatches(r)
+}
+
 // refuseSpentBearer answers a request that presents a bearer token from a
 // client with no attempts left. It runs before the token is compared, so a
 // blocked client learns nothing from the response, right token or wrong.
@@ -207,13 +217,13 @@ func (s *Server) refuseSpentBearer(w http.ResponseWriter, r *http.Request) bool 
 	recent := s.recentCredentialAttempts(ip, now)
 	spent := len(recent) >= credentialAttemptsPerMinute
 	if !spent {
-		_, known := s.bearerCredentialWithScope(r, "read")
+		known := s.knownWebUIBearer(r)
 		if !known {
-			_, known = s.bearerCredentialWithScope(r, "unban")
+			_, known = mcpTokenFor(s.cfg.MCP.Tokens, strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
 		}
 		// A valid credential outside its scope is not a guess, including
-		// the independently rotatable metrics credential on a UI route.
-		if !known && !s.metricsBearerMatches(r) {
+		// the independently rotatable metrics and MCP credentials.
+		if !known {
 			if _, tracked := s.loginAttempts[ip]; !tracked {
 				boundRateLimitMap(s.loginAttempts, now.Add(-time.Minute))
 			}

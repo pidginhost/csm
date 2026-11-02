@@ -52,6 +52,15 @@ webui:
   # besides https://<hostname>:<port>. Loopback (SSH tunnel) is always allowed.
   allowed_origins: []
 
+# Read-only MCP (Model Context Protocol) endpoint for support agents at /mcp
+# on the Web UI listener. Off by default. Its own credentials: mcp tokens open
+# only /mcp and Web UI tokens never open it. Every tool reads through an
+# allowlist of GET routes and nothing can change the host. Needs
+# webui.enabled: true.
+mcp:
+  enabled: false
+  tokens: []   # - {name: "support-agent", token: "...", issued_at: "...", expires_at: "", allowed_ips: []}
+
 # CSM challenge listener serves an interstitial PoW + redirect page for
 # IPs the daemon has flagged as suspicious. The webserver integration
 # (`csm webserver-integration install`) redirects flagged traffic to

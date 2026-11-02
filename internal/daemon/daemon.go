@@ -43,6 +43,7 @@ import (
 	"github.com/pidginhost/csm/internal/maillog"
 	"github.com/pidginhost/csm/internal/mailranges"
 	"github.com/pidginhost/csm/internal/mailstats"
+	"github.com/pidginhost/csm/internal/mcp"
 	"github.com/pidginhost/csm/internal/metrics"
 	"github.com/pidginhost/csm/internal/modsec"
 	"github.com/pidginhost/csm/internal/obs"
@@ -2676,6 +2677,9 @@ func (d *Daemon) retryLogWatcherNamed(spec logWatchSpec) {
 
 func (d *Daemon) startWebUI() {
 	if !d.cfg.WebUI.Enabled {
+		if d.cfg.MCP.Enabled {
+			csmlog.Error("mcp endpoint not served: it needs webui.enabled: true")
+		}
 		return
 	}
 	srv, err := webui.New(d.cfg, d.store)
@@ -2710,6 +2714,9 @@ func (d *Daemon) startWebUI() {
 	if d.fwEngine != nil {
 		srv.SetIPBlocker(d.fwEngine)
 	}
+	if d.cfg.MCP.Enabled {
+		d.attachMCP(srv)
+	}
 	d.wg.Add(1)
 	obs.Go("webui", func() {
 		defer d.wg.Done()
@@ -2717,6 +2724,28 @@ func (d *Daemon) startWebUI() {
 			csmlog.Error("webui server error", "err", err)
 		}
 	})
+}
+
+// attachMCP serves the read-only MCP endpoint at /mcp on the Web UI
+// listener, reading through that server's read-only dispatcher.
+func (d *Daemon) attachMCP(web *webui.Server) {
+	info := platform.Detect()
+	startCfg := d.cfg
+	srv := mcp.New(mcp.Options{
+		Dispatcher: web.ReadOnly(),
+		Version:    d.version,
+		Hostname:   d.cfg.Hostname,
+		Platform:   mcp.PlatformFacts(info),
+		ConfigSummary: func() map[string]any {
+			cfg := config.Active()
+			if cfg == nil {
+				cfg = startCfg
+			}
+			return mcp.ConfigSummary(cfg, info)
+		},
+	})
+	web.SetMCP(srv)
+	csmlog.Info("mcp endpoint enabled", "path", "/mcp", "tools", len(srv.Tools()))
 }
 
 func (d *Daemon) startPAMListener() {

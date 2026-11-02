@@ -46,6 +46,7 @@
 
 - [Web UI](webui.md)
 - [API Reference](api.md)
+- [MCP endpoint (read-only)](mcp.md)
 - [Metrics (Prometheus)](metrics.md)
 - [Audit Log (SIEM)](audit-log.md)
 - [Action Log](action-log.md)

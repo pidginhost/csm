@@ -1062,6 +1062,13 @@ type Config struct {
 		Tokens []WebUIToken `yaml:"tokens,omitempty"`
 	} `yaml:"webui" hotreload:"restart"`
 
+	// MCP is the optional read-only Model Context Protocol endpoint for
+	// support agents at /mcp on the Web UI listener. It has its own
+	// credentials, reaches only an allowlist of GET routes dispatched
+	// in-process, and can change nothing. Disabled by default; the endpoint
+	// is wired at startup, so the block requires a restart.
+	MCP MCPConfig `yaml:"mcp" hotreload:"restart"`
+
 	EmailAV EmailAVConfig `yaml:"email_av" hotreload:"restart"`
 
 	EmailProtection struct {
@@ -2285,6 +2292,9 @@ func LoadBytes(data []byte) (*Config, error) {
 		return nil, err
 	}
 	if err := validateWebUITokens(cfg); err != nil {
+		return nil, err
+	}
+	if err := validateMCPTokens(cfg); err != nil {
 		return nil, err
 	}
 	if err := validateMailLogs(cfg); err != nil {

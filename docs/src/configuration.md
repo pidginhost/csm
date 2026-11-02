@@ -586,6 +586,11 @@ webui:
   ui_dir: ""                            # path to UI files on disk (default: /opt/csm/ui)
   allowed_origins: []                   # extra browser origins ("https://host[:port]") allowed to call the API; loopback is always allowed
 
+# --- MCP (read-only endpoint for support agents) ---
+mcp:
+  enabled: false                        # serves /mcp on the Web UI listener; needs webui.enabled: true; restart required
+  tokens: []                            # name/token, optional issued_at, expires_at and allowed_ips; all read-only, never valid on the Web UI
+
 # --- Email AV ---
 email_av:
   enabled: false
