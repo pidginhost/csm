@@ -435,6 +435,10 @@ func (l *AdmissionLedger) reserveTx(q *queueTx, id admission.CandidateID, lane a
 	if err := putAttempt(tx, a); err != nil {
 		return c, a, false, err
 	}
+	// Notice allocation must see this attempt's recovery hold.
+	if err := putCandidate(tx, c); err != nil {
+		return c, a, false, err
+	}
 	if hold && q.started && c.Key.Kind == admission.KindBlockIP {
 		if err := q.holdSlot(c, a, entry, *victim); err != nil {
 			return c, a, false, err
@@ -451,7 +455,7 @@ func (l *AdmissionLedger) reserveTx(q *queueTx, id admission.CandidateID, lane a
 			}
 		}
 	}
-	return c, a, true, putCandidate(tx, c)
+	return c, a, true, nil
 }
 
 // currentAttempt proves the whole bounded predecessor chain and its link

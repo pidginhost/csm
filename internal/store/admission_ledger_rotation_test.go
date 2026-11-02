@@ -116,6 +116,55 @@ func TestAdmissionLedgerRotatesAfterTheHold(t *testing.T) {
 	}
 }
 
+// A rotation notice shares the recovery reserve with its new attempt.
+// When only the attempt fits, the notice must use the fixed overflow
+// record instead of spending the attempt's future unknown-outcome hold.
+func TestAdmissionLedgerRotationNoticeKeepsRecoveryRoom(t *testing.T) {
+	for _, room := range []uint64{0, admission.NoticeSlotBytes - 1, admission.NoticeSlotBytes} {
+		t.Run(fmt.Sprint(room), func(t *testing.T) {
+			f, victim := rotationFixture(t)
+			f.tickAt(f.wall.Add(admission.RotationHold))
+			id := f.freshWith("192.0.2.11", admission.SeverityHigh, f.owner("alice"))
+			cost := uint64(f.cost(id))
+			f.adjustStorage(func(s *admission.StorageState) {
+				leaveRecoveryRoom(s, cost+admission.AttemptRecoveryBytes+room)
+			})
+			before := f.storageState()
+			_, a, granted, err := f.l.Reserve(id, admission.LaneGeneral, f.wall.Add(time.Hour))
+			if err != nil || !granted {
+				t.Fatalf("reserve: granted %v, %v", granted, err)
+			}
+			if member, found := f.effectOf(a); !found || member.Victim.Action != victim.Attempt.ID {
+				t.Fatalf("rotation did not claim its victim: %+v", member)
+			}
+			after := f.storageState()
+			hold := cost + admission.UnknownHoldBytes
+			if after.Recovery+after.OutboxBytes()+hold > admission.RecoveryReserveBytes {
+				t.Fatal("rotation notice overbooked the recovery reserve")
+			}
+			notices := f.notices()
+			key := sshKey(admission.NoticeCapacity, admission.ReasonSetFull)
+			overflow := admission.OverflowKey(admission.NoticeCapacity)
+			if room < admission.NoticeSlotBytes {
+				if after.NoticeRecords != before.NoticeRecords || notices[key].Count != 0 || notices[overflow].Count != 1 {
+					t.Fatal("rotation notice spent its attempt's hold or lost its overflow count")
+				}
+			} else if after.NoticeRecords != before.NoticeRecords+1 || notices[key].Count != 1 || notices[overflow].Count != 0 {
+				t.Fatal("exact room did not fund exactly one rotation notice")
+			}
+			if _, _, _, err = f.l.Execute(a.Attempt.ID); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err = f.l.Finish(a.Attempt.ID, admission.DispositionUnknown); err != nil {
+				t.Fatal(err)
+			}
+			if settled := f.storageState(); settled.Recovery+settled.OutboxBytes() > admission.RecoveryReserveBytes {
+				t.Fatal("the rotation's unknown outcome exceeded the recovery reserve")
+			}
+		})
+	}
+}
+
 // Downtime and a degraded reading never complete a hold: a reboot grants
 // no elapsed time, and a degraded reading allows no rotation even once
 // both clocks passed the hold (spec 5.4).

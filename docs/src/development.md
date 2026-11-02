@@ -345,6 +345,8 @@ whose hold passed. The oldest application, then the lowest action, goes
 first. Imports never rotate. The claim and its outcome are those of an
 eviction, opening accepts an equal-tier claim only inside the block's
 own lane partition, and a live rotation raises the capacity notice.
+Notice allocation preserves the new attempt's recovery hold; insufficient
+room sends the notice to its fixed overflow record.
 An older build refuses a ledger holding a rotation claim. Saved ceiling turns
 also keep their earned credits through slot pressure and restart;
 backoff keeps its existing release behavior. Records and intents without
