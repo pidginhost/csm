@@ -11,7 +11,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Added
 
-- An optional read-only MCP (Model Context Protocol) endpoint (`mcp:` block, off by default) lets support agents read status, findings, incidents, accounts, firewall, threat, mail and WAF data through their own listener and tokens; it reaches only GET routes and cannot change anything. Advertised as `mcp.readonly.v1`.
+- Support agents can read status, findings, incidents, accounts, firewall, threat, mail and WAF data over an optional read-only MCP endpoint (`mcp:` block, off by default). It has its own listener and tokens and cannot change anything.
 
 ### Changed
 
