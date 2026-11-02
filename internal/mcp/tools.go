@@ -238,6 +238,9 @@ func (e *errRouteFailed) Error() string {
 // becomes errRouteFailed with the API's error text; a cut response is an
 // error asking the caller to narrow the query.
 func (s *Server) read(ctx context.Context, route string, args map[string]string, peer string) (json.RawMessage, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	path := route
 	query := url.Values{}
 	for name, val := range args {

@@ -35,11 +35,18 @@ exposure. Limit who reaches it with the token's `allowed_ips`.
 Tokens are bearer credentials with the same dates and source restriction as
 `webui.tokens`, without a scope: there is only one, read-only. A Web UI token
 or browser session never opens `/mcp`, and an MCP token opens nothing else.
+Valid Web UI credentials and known MCP credentials sent to the wrong
+endpoint are refused without spending the shared guess budget. MCP
+credentials outside their dates or allowed addresses are also refused
+without spending it.
 Unknown tokens draw on the same budget as Web UI login and API token
 guesses: five failed attempts per minute per client (IPv4 address or IPv6
 /64), after which the client is refused for a minute. `/mcp` also counts
 toward the API request rate limit. Up to four tool calls run at once and
-each request, a whole batch included, has 30 seconds.
+each request's tool processing, a whole batch included, has 30 seconds.
+At the deadline the client gets a tool error and no further reads start.
+A live-host read that cannot be cancelled keeps its concurrency slot until
+it finishes; repeated timeouts cannot start unbounded background reads.
 
 ## Transport
 
@@ -85,7 +92,8 @@ Every tool carries `readOnlyHint: true`. A tool answers the route's JSON as
 text content; the route's own error (`400`, `404`, `503`) is returned as a
 tool error with the API message, so the agent can read it. Lists keep the
 API shape `{items, total, truncated}`; a tool takes only the arguments its
-route reads, and a test fails if a tool declares one the route ignores.
+route reads. A source guard checks query reads, including aliases and
+helpers, without counting headers or response fields as tool arguments.
 
 Composite tools:
 
@@ -126,8 +134,8 @@ cPHulk on cPanel, `csm_accounts` walks account directories and
 Each tool call writes one daemon log line, `mcp tool call`, with the token
 name, tool, peer, HTTP status of the underlying route, outcome and duration,
 and the arguments cut to one line. Authentication failures log
-`mcp auth failed` with the peer. Reads are not written to the Web UI audit
-log, which records actions only.
+`mcp: refused token` with the credential name, when known, and peer. Reads
+are not written to the Web UI audit log, which records actions only.
 
 The capability `mcp.readonly.v1` in `GET /api/v1/capabilities` advertises
 that the build carries the endpoint; whether it is enabled is a matter of

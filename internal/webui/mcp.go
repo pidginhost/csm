@@ -72,7 +72,7 @@ func (s *Server) mcpCredential(r *http.Request) (config.MCPToken, int, string) {
 		return config.MCPToken{}, http.StatusTooManyRequests, "Too many failed token attempts"
 	}
 	tok, known := mcpTokenFor(s.cfg.MCP.Tokens, supplied)
-	if !known {
+	if !known && !s.knownWebUIBearer(r) {
 		if _, tracked := s.loginAttempts[ip]; !tracked {
 			boundRateLimitMap(s.loginAttempts, now.Add(-time.Minute))
 		}

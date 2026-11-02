@@ -4,11 +4,68 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"maps"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
 )
+
+func TestQueryKeyGuardRejectsNonQueryReads(t *testing.T) {
+	f, err := parser.ParseFile(token.NewFileSet(), "handlers.go", `package webui
+import ("net/http"; "net/url")
+func handler(w http.ResponseWriter, r *http.Request) {
+    q := r.URL.Query()
+    alias := q
+    _ = alias.Get("filter")
+    _ = alias.Has("present")
+    _ = alias["multiple"]
+    _ = r.Header.Get("limit")
+    response := map[string]string{}
+    _ = response["offset"]
+    {
+        q := r.Header
+        _ = q.Get("shadowed")
+    }
+    {
+        q := q.Get("nested")
+        _ = q
+    }
+    {
+        var q = q.Get("declared")
+        _ = q
+    }
+    helper(w, r, q)
+    queryIgnored(r, "unused")
+    _ = queryInt(r, "page", 1)
+}
+func helper(w http.ResponseWriter, r *http.Request, values url.Values) {
+    _ = w.Header().Get("total")
+    _ = values.Get("from")
+}
+func queryIgnored(r *http.Request, name string) {}
+func queryInt(r *http.Request, key string, fallback int) int {
+    _ = r.URL.Query().Get(key)
+    return fallback
+}
+`, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	funcs := map[string][]*ast.FuncDecl{}
+	for _, decl := range f.Decls {
+		if fn, ok := decl.(*ast.FuncDecl); ok {
+			funcs[fn.Name.Name] = append(funcs[fn.Name.Name], fn)
+		}
+	}
+	keys := map[string]bool{}
+	collectQueryKeys(funcs, "handler", keys, map[string]bool{})
+	want := map[string]bool{"filter": true, "present": true, "multiple": true, "from": true, "page": true, "nested": true, "declared": true}
+	if !reflect.DeepEqual(keys, want) {
+		t.Errorf("query reads = %v, want %v", keys, want)
+	}
+}
 
 // TestRouteToolParamsAreReadByTheRoute fails when a tool declares an
 // argument its route never reads. The route would ignore the filter and the
@@ -85,33 +142,101 @@ func parseWebUIHandlers(t *testing.T) (map[string][]*ast.FuncDecl, map[string]st
 	return funcs, handlers
 }
 
-// collectQueryKeys adds the string keys name reads with Get, PathValue,
-// Has, an index or a query* helper, and follows calls into package
-// functions that receive the request or the query values.
+// collectQueryKeys follows request and query aliases, excluding headers
+// and response maps: their keys do not make a tool argument effective.
 func collectQueryKeys(funcs map[string][]*ast.FuncDecl, name string, keys, seen map[string]bool) {
 	if seen[name] {
 		return
 	}
 	seen[name] = true
 	for _, fn := range funcs[name] {
-		ast.Inspect(fn.Body, func(n ast.Node) bool {
-			switch node := n.(type) {
-			case *ast.IndexExpr:
-				addStringLit(node.Index, keys)
-			case *ast.CallExpr:
-				callee := calleeName(node.Fun)
-				if callee == "Get" || callee == "PathValue" || callee == "Has" || strings.HasPrefix(callee, "query") {
-					for _, arg := range node.Args {
-						addStringLit(arg, keys)
-					}
-				}
-				if _, local := funcs[callee]; local && passesRequest(node.Args) {
-					collectQueryKeys(funcs, callee, keys, seen)
-				}
+		bindings := map[string]string{}
+		for _, field := range fn.Type.Params.List {
+			for _, id := range field.Names {
+				bindings[id.Name] = queryTypeKind(field.Type)
 			}
-			return true
-		})
+		}
+		ast.Walk(queryKeyVisitor{funcs, keys, seen, bindings}, fn.Body)
 	}
+}
+
+type queryKeyVisitor struct {
+	funcs    map[string][]*ast.FuncDecl
+	keys     map[string]bool
+	seen     map[string]bool
+	bindings map[string]string
+}
+
+func (v queryKeyVisitor) Visit(n ast.Node) ast.Visitor {
+	switch node := n.(type) {
+	case *ast.BlockStmt, *ast.IfStmt, *ast.ForStmt, *ast.SwitchStmt, *ast.TypeSwitchStmt, *ast.CaseClause:
+		v.bindings = maps.Clone(v.bindings)
+	case *ast.RangeStmt:
+		v.bindings = maps.Clone(v.bindings)
+		for _, expr := range []ast.Expr{node.Key, node.Value} {
+			if id, ok := expr.(*ast.Ident); ok {
+				v.bindings[id.Name] = ""
+			}
+		}
+	case *ast.FuncLit:
+		v.bindings = maps.Clone(v.bindings)
+		for _, field := range node.Type.Params.List {
+			for _, id := range field.Names {
+				v.bindings[id.Name] = ""
+			}
+		}
+	case *ast.AssignStmt:
+		// Initializers use the old binding, even when := shadows it.
+		for _, rhs := range node.Rhs {
+			ast.Walk(v, rhs)
+		}
+		kinds := make([]string, len(node.Lhs))
+		if len(node.Lhs) == len(node.Rhs) {
+			for i, rhs := range node.Rhs {
+				kinds[i] = queryExprKind(rhs, v.bindings)
+			}
+		}
+		for i, lhs := range node.Lhs {
+			if id, ok := lhs.(*ast.Ident); ok {
+				v.bindings[id.Name] = kinds[i]
+			}
+		}
+		return nil
+	case *ast.ValueSpec:
+		for _, rhs := range node.Values {
+			ast.Walk(v, rhs)
+		}
+		kinds := make([]string, len(node.Names))
+		if len(node.Names) == len(node.Values) {
+			for i, rhs := range node.Values {
+				kinds[i] = queryExprKind(rhs, v.bindings)
+			}
+		}
+		for i, id := range node.Names {
+			v.bindings[id.Name] = kinds[i]
+		}
+		return nil
+	case *ast.IndexExpr:
+		if queryExprKind(node.X, v.bindings) == "values" {
+			addStringLit(node.Index, v.keys)
+		}
+	case *ast.CallExpr:
+		callee := calleeName(node.Fun)
+		if sel, ok := node.Fun.(*ast.SelectorExpr); ok && len(node.Args) == 1 {
+			kind := queryExprKind(sel.X, v.bindings)
+			if (kind == "values" && (callee == "Get" || callee == "Has")) || (kind == "request" && callee == "PathValue") {
+				addStringLit(node.Args[0], v.keys)
+			}
+		}
+		// queryInt is the route helper whose key is an argument.
+		if _, local := node.Fun.(*ast.Ident); local && callee == "queryInt" && len(node.Args) == 3 && queryExprKind(node.Args[0], v.bindings) == "request" {
+			addStringLit(node.Args[1], v.keys)
+		}
+		if _, local := v.funcs[callee]; local && passesRequest(node.Args, v.bindings) {
+			collectQueryKeys(v.funcs, callee, v.keys, v.seen)
+		}
+	}
+	return v
 }
 
 func calleeName(fun ast.Expr) string {
@@ -124,22 +249,47 @@ func calleeName(fun ast.Expr) string {
 	return ""
 }
 
-// passesRequest reports whether a call hands on the request or query
-// values: an argument named r, q or query, or an X.Query() call.
-func passesRequest(args []ast.Expr) bool {
+func passesRequest(args []ast.Expr, bindings map[string]string) bool {
 	for _, arg := range args {
-		switch a := arg.(type) {
-		case *ast.Ident:
-			if a.Name == "r" || a.Name == "q" || a.Name == "query" {
-				return true
-			}
-		case *ast.CallExpr:
-			if calleeName(a.Fun) == "Query" {
-				return true
-			}
+		if kind := queryExprKind(arg, bindings); kind == "request" || kind == "values" {
+			return true
 		}
 	}
 	return false
+}
+
+// queryExprKind uses lexical bindings, so a shadowed q or a header alias
+// cannot be mistaken for URL query values. Unknown expressions fail closed.
+func queryExprKind(expr ast.Expr, bindings map[string]string) string {
+	switch e := expr.(type) {
+	case *ast.Ident:
+		return bindings[e.Name]
+	case *ast.SelectorExpr:
+		if e.Sel.Name == "URL" && queryExprKind(e.X, bindings) == "request" {
+			return "url"
+		}
+	case *ast.CallExpr:
+		if sel, ok := e.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "Query" && len(e.Args) == 0 && queryExprKind(sel.X, bindings) == "url" {
+			return "values"
+		}
+	}
+	return ""
+}
+
+func queryTypeKind(expr ast.Expr) string {
+	if ptr, ok := expr.(*ast.StarExpr); ok {
+		if sel, ok := ptr.X.(*ast.SelectorExpr); ok {
+			if pkg, ok := sel.X.(*ast.Ident); ok && pkg.Name == "http" && sel.Sel.Name == "Request" {
+				return "request"
+			}
+		}
+	}
+	if sel, ok := expr.(*ast.SelectorExpr); ok {
+		if pkg, ok := sel.X.(*ast.Ident); ok && pkg.Name == "url" && sel.Sel.Name == "Values" {
+			return "values"
+		}
+	}
+	return ""
 }
 
 func addStringLit(e ast.Expr, keys map[string]bool) {

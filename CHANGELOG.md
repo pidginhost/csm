@@ -9,6 +9,10 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ## [Unreleased]
 
+### Security
+
+- MCP requests return timeout errors promptly, and expired requests stop starting further reads.
+
 ### Added
 
 - Support agents can read status, findings, incidents, accounts, firewall, threat, mail and WAF data over an optional read-only MCP endpoint (`mcp:` block, off by default). It uses its own tokens on the Web UI port and cannot change anything.
@@ -20,6 +24,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 ### Fixed
 
 - Antispam no longer overrides spam weights you set yourself in rspamd.
+- Sending MCP or valid Web UI credentials to the wrong endpoint no longer causes temporary login lockouts.
 
 ## [4.9.0] - 2026-11-02
 

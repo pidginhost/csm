@@ -11,6 +11,7 @@ import (
 	"time"
 
 	csmlog "github.com/pidginhost/csm/internal/log"
+	"github.com/pidginhost/csm/internal/obs"
 )
 
 const (
@@ -216,6 +217,9 @@ const instructions = "Read-only view of the CSM security monitor on this server.
 // runCall runs one tool call under the concurrency cap and the request's
 // deadline, and logs it.
 func (s *Server) runCall(ctx context.Context, p toolsCallParams, tokenName, peer string) (toolResult, error) {
+	if err := ctx.Err(); err != nil {
+		return errorResult(err.Error()), nil
+	}
 	select {
 	case s.calls <- struct{}{}:
 	case <-ctx.Done():
@@ -223,7 +227,39 @@ func (s *Server) runCall(ctx context.Context, p toolsCallParams, tokenName, peer
 	case <-time.After(queueWait):
 		return errorResult("server busy; retry shortly"), nil
 	}
-	defer func() { <-s.calls }()
+	// A free slot and cancellation can become ready together. Do not start
+	// another batch member after the request has expired.
+	if err := ctx.Err(); err != nil {
+		<-s.calls
+		return errorResult(err.Error()), nil
+	}
+	type answer struct {
+		result toolResult
+		err    error
+	}
+	done := make(chan answer, 1)
+	obs.SafeGo("mcp", func() {
+		// Some live-host reads cannot observe cancellation. Keep their slot
+		// until they finish so repeated timeouts cannot spawn unlimited work.
+		out := answer{result: errorResult("tool call failed")}
+		defer func() {
+			<-s.calls
+			done <- out
+		}()
+		out.result, out.err = s.loggedCall(ctx, p, tokenName, peer)
+	})
+	select {
+	case <-ctx.Done():
+		return errorResult("request cancelled"), nil
+	case out := <-done:
+		if err := ctx.Err(); err != nil {
+			return errorResult(err.Error()), nil
+		}
+		return out.result, out.err
+	}
+}
+
+func (s *Server) loggedCall(ctx context.Context, p toolsCallParams, tokenName, peer string) (toolResult, error) {
 	start := time.Now()
 	result, status, err := s.callTool(ctx, p.Name, p.Arguments, peer)
 	outcome := "ok"

@@ -5,7 +5,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/mcp"
@@ -101,6 +103,105 @@ func TestMCPCredentialsAreSeparateFromWebUI(t *testing.T) {
 	}
 	if len(m.callers) != 0 {
 		t.Errorf("refused requests reached the MCP server: %v", m.callers)
+	}
+}
+
+func TestMCPKnownCredentialsDoNotSpendGuessBudget(t *testing.T) {
+	for _, tc := range []struct {
+		name, method, path, token string
+	}{
+		{"MCP on API", http.MethodGet, "/api/v1/status", mcpTestToken},
+		{"expired MCP on API", http.MethodGet, "/api/v1/status", mcpExpiredToken},
+		{"restricted MCP on API", http.MethodGet, "/api/v1/status", mcpOfficeToken},
+		{"Web UI on MCP", http.MethodPost, "/mcp", webTestToken},
+		{"expired MCP", http.MethodPost, "/mcp", mcpExpiredToken},
+		{"restricted MCP", http.MethodPost, "/mcp", mcpOfficeToken},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newMCPTestServer(t)
+			m := &recordingMCP{}
+			s.SetMCP(m)
+			const peer = "203.0.113.12:4000"
+			for i := 0; i <= credentialAttemptsPerMinute; i++ {
+				if w := mcpRequest(s, tc.method, tc.path, tc.token, peer, mcpPing); w.Code != http.StatusUnauthorized {
+					t.Fatalf("known but unauthorized credential: status %d", w.Code)
+				}
+			}
+			if got := len(s.loginAttempts[rateLimitKey(peer)]); got != 0 {
+				t.Errorf("known credential spent %d guesses", got)
+			}
+			if len(m.callers) != 0 {
+				t.Fatal("unauthorized credential reached MCP")
+			}
+			if w := mcpRequest(s, http.MethodPost, "/mcp", mcpTestToken, peer, mcpPing); w.Code != http.StatusOK {
+				t.Errorf("MCP login after wrong-endpoint retries: %d", w.Code)
+			}
+			if w := mcpRequest(s, http.MethodGet, "/api/v1/status", webTestToken, peer, ""); w.Code != http.StatusOK {
+				t.Errorf("API login after wrong-endpoint retries: %d", w.Code)
+			}
+		})
+	}
+}
+
+func TestMCPConcurrentGuessesShareBudget(t *testing.T) {
+	s := newMCPTestServer(t)
+	s.SetMCP(&recordingMCP{})
+	const peer = "203.0.113.13:4000"
+	const requests = 32
+	start := make(chan struct{})
+	statuses := make(chan int, requests)
+	var wg sync.WaitGroup
+	for i := range requests {
+		wg.Go(func() {
+			<-start
+			method, path := http.MethodPost, "/mcp"
+			if i%2 == 0 {
+				method, path = http.MethodGet, "/api/v1/status"
+			}
+			statuses <- mcpRequest(s, method, path, "unknown-guess", peer, mcpPing).Code
+		})
+	}
+	close(start)
+	wg.Wait()
+	close(statuses)
+	counts := map[int]int{}
+	for status := range statuses {
+		counts[status]++
+	}
+	if counts[http.StatusUnauthorized] != credentialAttemptsPerMinute || counts[http.StatusTooManyRequests] != requests-credentialAttemptsPerMinute {
+		t.Errorf("concurrent statuses: %v", counts)
+	}
+	if got := len(s.loginAttempts[rateLimitKey(peer)]); got != credentialAttemptsPerMinute {
+		t.Errorf("charged %d guesses", got)
+	}
+}
+
+func TestMCPPreflightAndRateLimit(t *testing.T) {
+	s := newMCPTestServer(t)
+	s.cfg.WebUI.AllowedOrigins = []string{"https://agent.example"}
+	m := &recordingMCP{}
+	s.SetMCP(m)
+	const peer = "203.0.113.14:4000"
+	const headers = "authorization, content-type, mcp-protocol-version"
+	w := mcpRequest(s, http.MethodOptions, "/mcp", "", peer, "",
+		"Origin", "https://agent.example", "Access-Control-Request-Method", "POST", "Access-Control-Request-Headers", headers)
+	if w.Code != http.StatusNoContent || w.Header().Get("Access-Control-Allow-Origin") != "https://agent.example" || w.Header().Get("Access-Control-Allow-Headers") != headers {
+		t.Fatalf("preflight: %d %v", w.Code, w.Header())
+	}
+	w = mcpRequest(s, http.MethodOptions, "/mcp", "", peer, "", "Origin", "https://foreign.example")
+	if w.Code != http.StatusForbidden {
+		t.Errorf("foreign preflight: %d", w.Code)
+	}
+	if len(m.callers) != 0 || len(s.loginAttempts) != 0 {
+		t.Fatal("preflight reached authentication or dispatch")
+	}
+	s.apiRequests[rateLimitKey(peer)] = make([]time.Time, 600)
+	for i := range s.apiRequests[rateLimitKey(peer)] {
+		s.apiRequests[rateLimitKey(peer)][i] = time.Now()
+	}
+	w = mcpRequest(s, http.MethodPost, "/mcp", mcpTestToken, peer, mcpPing)
+	if w.Code != http.StatusTooManyRequests || len(m.callers) != 0 {
+		t.Errorf("rate-limited MCP: status %d, callers %v", w.Code, m.callers)
 	}
 }
 

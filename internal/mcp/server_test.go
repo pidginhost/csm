@@ -375,7 +375,7 @@ func TestTransportRules(t *testing.T) {
 	}
 }
 
-func TestCallTimeoutCancelsDispatch(t *testing.T) {
+func TestCallWaitsForDispatcher(t *testing.T) {
 	fake := newFake()
 	fake.block = make(chan struct{})
 	s := newTestServer(t, fake)
