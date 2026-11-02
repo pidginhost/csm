@@ -302,12 +302,13 @@ func (l *AdmissionLedger) Reserve(id admission.CandidateID, lane admission.Lane,
 	var c admission.Candidate
 	var a admission.AttemptRecord
 	var granted bool
+	var victim admission.EvictionVictim
 	if err := l.update("reserve", func(tx *bolt.Tx) error {
 		q, txErr := l.openQueue(tx, now)
 		if txErr != nil {
 			return txErr
 		}
-		if c, a, granted, txErr = l.reserveTx(q, id, lane, expiresAt, true); txErr != nil {
+		if c, a, granted, txErr = l.reserveTx(q, id, lane, expiresAt, true, &victim); txErr != nil {
 			return txErr
 		}
 		return q.flush()
@@ -320,8 +321,10 @@ func (l *AdmissionLedger) Reserve(id admission.CandidateID, lane admission.Lane,
 
 // reserveTx reserves the next attempt of candidate id. With hold, a block
 // a live ledger reserves holds its temporary set slot from now on; only a
-// live owner executes, so no record predates the live start.
-func (l *AdmissionLedger) reserveTx(q *queueTx, id admission.CandidateID, lane admission.Lane, expiresAt time.Time, hold bool) (admission.Candidate, admission.AttemptRecord, bool, error) {
+// live owner executes, so no record predates the live start. victim
+// receives the block whose slot the reservation takes, zero for a free
+// slot; a readback finds none.
+func (l *AdmissionLedger) reserveTx(q *queueTx, id admission.CandidateID, lane admission.Lane, expiresAt time.Time, hold bool, victim *admission.EvictionVictim) (admission.Candidate, admission.AttemptRecord, bool, error) {
 	tx, now := q.tx, q.now
 	c, err := loadCandidate(tx, id)
 	if err != nil {
@@ -381,7 +384,6 @@ func (l *AdmissionLedger) reserveTx(q *queueTx, id admission.CandidateID, lane a
 	// The slots are rechecked under the lock, before anything is charged:
 	// a free slot of the lane's partition, or under pressure a victim the
 	// block strictly outranks (spec 5.6).
-	var victim admission.EvictionVictim
 	if cost := c.Key.Kind.CeilingCost(); cost > 0 {
 		slots, slotErr := q.slots()
 		if slotErr != nil {
@@ -389,7 +391,7 @@ func (l *AdmissionLedger) reserveTx(q *queueTx, id admission.CandidateID, lane a
 		}
 		d := admission.SlotDemand{Tier: entry.Tier, Cost: cost, Evicts: c.Key.Kind == admission.KindBlockIP && cost == 1, Reserved: entry.Direct || entry.Corroborated, Target: c.Key.Target}
 		var ok bool
-		if victim, ok = slots.Room(lane, d); !ok {
+		if *victim, ok = slots.Room(lane, d); !ok {
 			return c, admission.AttemptRecord{}, false, refusal(admission.ReasonSetFull, "the temporary set has no free slot for the lane")
 		}
 	}
@@ -428,7 +430,7 @@ func (l *AdmissionLedger) reserveTx(q *queueTx, id admission.CandidateID, lane a
 		return c, a, false, err
 	}
 	if hold && q.started && c.Key.Kind == admission.KindBlockIP {
-		if err := q.holdSlot(c, a, entry, victim); err != nil {
+		if err := q.holdSlot(c, a, entry, *victim); err != nil {
 			return c, a, false, err
 		}
 	}
@@ -738,21 +740,30 @@ func (l *AdmissionLedger) Settle() (failed, unknown int, err error) {
 // behind a crash. A candidate already reserved or running is a readback,
 // as with Reserve: nothing is granted or changed.
 func (l *AdmissionLedger) Observe(id admission.CandidateID, lane admission.Lane, expiresAt time.Time) (admission.Candidate, admission.AttemptRecord, bool, error) {
+	c, a, granted, _, err := l.ObserveVictim(id, lane, expiresAt)
+	return c, a, granted, err
+}
+
+// ObserveVictim is Observe that also reports the strictly lower-tier block
+// whose slot the preview took, zero for a free slot or a readback. The
+// preview claims nothing, so later previews may name the same block.
+func (l *AdmissionLedger) ObserveVictim(id admission.CandidateID, lane admission.Lane, expiresAt time.Time) (admission.Candidate, admission.AttemptRecord, bool, admission.EvictionVictim, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now, err := l.clock()
 	if err != nil {
-		return admission.Candidate{}, admission.AttemptRecord{}, false, err
+		return admission.Candidate{}, admission.AttemptRecord{}, false, admission.EvictionVictim{}, err
 	}
 	var c admission.Candidate
 	var a admission.AttemptRecord
 	var granted bool
+	var victim admission.EvictionVictim
 	if err := l.update("observe", func(tx *bolt.Tx) error {
 		q, txErr := l.openQueue(tx, now)
 		if txErr != nil {
 			return txErr
 		}
-		if c, a, granted, txErr = l.reserveTx(q, id, lane, expiresAt, false); txErr != nil || !granted {
+		if c, a, granted, txErr = l.reserveTx(q, id, lane, expiresAt, false, &victim); txErr != nil || !granted {
 			return txErr
 		}
 		from := c.State
@@ -771,9 +782,9 @@ func (l *AdmissionLedger) Observe(id admission.CandidateID, lane admission.Lane,
 		}
 		return q.flush()
 	}); err != nil {
-		return admission.Candidate{}, admission.AttemptRecord{}, false, err
+		return admission.Candidate{}, admission.AttemptRecord{}, false, admission.EvictionVictim{}, err
 	}
-	return c, a, granted, nil
+	return c, a, granted, victim, nil
 }
 
 // finishAttempt records outcome d of the candidate's current attempt a and

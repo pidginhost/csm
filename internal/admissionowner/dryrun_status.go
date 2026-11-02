@@ -60,8 +60,9 @@ func predictionMap(counts [admission.PredictionSlots]uint64) map[string]uint64 {
 }
 
 // occupancyStatus is the temporary capacity as the last snapshot saw it,
-// with the forecast blocks the real sets do not hold and the modelled
-// partitions of the automatic slots; nil without one.
+// with the forecast blocks the real sets do not hold, the listed imports
+// the forecast replaced and the modelled partitions of the automatic
+// slots; nil without one.
 func (s *shadow) occupancyStatus() *health.AdmissionDryRunOccupancy {
 	if s.adm == nil {
 		return nil
@@ -69,12 +70,14 @@ func (s *shadow) occupancyStatus() *health.AdmissionDryRunOccupancy {
 	adm := *s.adm
 	occ := s.occupancy(adm)
 	slots := occ.Slots()
-	only := occ.General + occ.Reserved - adm.Imported - adm.Admission
-	actual := adm.Unclaimed + adm.Imported + adm.Admission
+	general, reserved := s.counted(adm)
+	only, replaced := general+reserved, s.replacedListed(adm)
+	imported := max(adm.Imported, len(adm.Imports))
+	actual := adm.Unclaimed + imported + adm.Admission
 	return &health.AdmissionDryRunOccupancy{
-		Actual: actual, ShadowOnly: only, Predicted: actual + only, Limit: adm.Limit,
+		Actual: actual, ShadowOnly: only, Replaced: replaced, Predicted: actual + only - replaced, Limit: adm.Limit,
 		Unlimited: adm.Limit <= 0, Limited: s.limited(),
-		Capacity: slots.Capacity, Unclaimed: adm.Unclaimed, Imported: adm.Imported, DrainSeconds: int64(adm.Drain / time.Second),
+		Capacity: slots.Capacity, Unclaimed: adm.Unclaimed, Imported: imported, DrainSeconds: int64(adm.Drain / time.Second),
 		General:  health.AdmissionDryRunPartition{Size: slots.General, Used: occ.General, Free: slots.FreeGeneral},
 		Reserved: health.AdmissionDryRunPartition{Size: slots.Reserved, Used: occ.Reserved, Free: slots.FreeReserved},
 	}

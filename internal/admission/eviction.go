@@ -82,6 +82,31 @@ func NewSlotLimits(freeGeneral, freeReserved uint32, victims []EvictionVictim) *
 	return &SlotLimits{freeGeneral: freeGeneral, freeReserved: freeReserved, victims: pool}
 }
 
+// Limits is the slot budget of o, the one rule admission and its forecast
+// share (spec 5.6): each partition's free slots and, once the general
+// partition is full and the set is not overfull, the victims pool returns,
+// less those of an overfull partition. pool is read only then.
+func (o SetOccupancy) Limits(pool func() ([]EvictionVictim, error)) (*SlotLimits, error) {
+	s := o.Slots()
+	var victims []EvictionVictim
+	if s.FreeGeneral == 0 && o.General+o.Reserved <= s.Available {
+		var err error
+		if victims, err = pool(); err != nil {
+			return nil, err
+		}
+	}
+	victims = slices.DeleteFunc(victims, func(v EvictionVictim) bool {
+		return (v.Partition == PartitionGeneral && o.General > s.General) || (v.Partition == PartitionReserved && o.Reserved > s.Reserved)
+	})
+	return NewSlotLimits(slotUnits(s.FreeGeneral), slotUnits(s.FreeReserved), victims), nil
+}
+
+// slotUnits is n free slots as block units; no lane budget exceeds the
+// ceiling's largest.
+func slotUnits(n int) uint32 {
+	return uint32(min(max(n, 0), int(MaxCeiling))) // #nosec G115 -- clamped to the ceiling's range.
+}
+
 // Clone is an independent copy; nil stays nil.
 func (s *SlotLimits) Clone() *SlotLimits {
 	if s == nil {

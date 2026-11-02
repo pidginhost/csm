@@ -46,7 +46,7 @@ func TestShadowOverfullImportsWait(t *testing.T) {
 		s := testShadow(t, freshCeiling(t, 2000), nil)
 		adm := firewall.BlockAdmission{Limit: 10, Imported: count}
 		before := s.ceiling
-		pred, change, err := s.admit("203.0.113.90", admission.KindBlockIP, shadowExpiry, directGen, shadowT0, adm)
+		pred, change, err := s.admit("203.0.113.90", admission.KindBlockIP, shadowExpiry, directGen, shadowT0, adm, shadowRank{})
 		if err != nil || pred != admission.PredictSetFull || change != nil || s.ceiling != before {
 			t.Fatalf("overfull imports: %s %+v %v", pred, change, err)
 		}

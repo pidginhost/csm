@@ -93,18 +93,7 @@ func (q *queueTx) slots() (*admission.SlotLimits, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := occ.Slots()
-	var pool []admission.EvictionVictim
-	if s.FreeGeneral == 0 && occ.General+occ.Reserved <= s.Available {
-		if pool, err = victimPool(q.tx, q.now, q.imports); err != nil {
-			return nil, err
-		}
-	}
-	pool = slices.DeleteFunc(pool, func(v admission.EvictionVictim) bool {
-		return (v.Partition == admission.PartitionGeneral && occ.General > s.General) ||
-			(v.Partition == admission.PartitionReserved && occ.Reserved > s.Reserved)
-	})
-	return admission.NewSlotLimits(slotUnits(s.FreeGeneral), slotUnits(s.FreeReserved), pool), nil
+	return occ.Limits(func() ([]admission.EvictionVictim, error) { return victimPool(q.tx, q.now, q.imports) })
 }
 
 // victimPool is what strictly higher work may evict (spec 5.6): records
@@ -138,12 +127,6 @@ func victimPool(tx *bolt.Tx, now time.Time, imports []admission.EvictionVictim) 
 		}
 	}
 	return pool, nil
-}
-
-// slotUnits is n free slots as block units; no lane budget exceeds the
-// ceiling's largest.
-func slotUnits(n int) uint32 {
-	return uint32(min(max(n, 0), int(admission.MaxCeiling))) // #nosec G115 -- clamped to the ceiling's range.
 }
 
 // limitBySlots lowers lane budgets to free slots or victims under

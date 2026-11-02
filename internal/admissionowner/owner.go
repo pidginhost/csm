@@ -262,6 +262,11 @@ type Owner struct {
 	// whose rows the engine has yet to retire.
 	evicted    []firewall.BlockAction
 	evictedErr error
+	// replacements counts this process's previews that took the slot of a
+	// lower-priority automatic block; replacementsHour keeps the last hour
+	// of them on the monotonic clock.
+	replacements     uint64
+	replacementsHour minuteTotals
 	// Per-action monotonic waits keep held entries from monopolizing a batch.
 	retireRetry map[admission.ActionID]time.Time
 	// retireDelay is each action's current wait while the ledger refuses
@@ -1036,7 +1041,8 @@ func (o *Owner) holdForPolicy(p execPick) error {
 // cannot starve the queue; any other failure is returned.
 func (o *Owner) preview(p execPick) error {
 	c := p.c
-	if _, _, _, err := o.ledger.Observe(p.pick.ID, p.pick.Lane, o.expiryOf(c, o.now)); err != nil {
+	_, _, _, victim, err := o.ledger.ObserveVictim(p.pick.ID, p.pick.Lane, o.expiryOf(c, o.now))
+	if err != nil {
 		if reason, refused := admission.ReasonOf(err); refused {
 			switch reason.Disposition() {
 			case admission.DispositionRefused, admission.DispositionWithheld, admission.DispositionDropped:
@@ -1048,6 +1054,10 @@ func (o *Owner) preview(p execPick) error {
 			}
 		}
 		return fmt.Errorf("previewing pick %s: %w", p.pick.ID, err)
+	}
+	if victim != (admission.EvictionVictim{}) {
+		saturating(&o.replacements)
+		o.replacementsHour.add(monoNow())
 	}
 	o.compare.addAt(compareKey{entry: c.Entry, check: c.Check, kind: c.Key.Kind, decision: decisionObserve}, o.now)
 	return nil
@@ -1234,6 +1244,7 @@ func (o *Owner) refreshStatus() {
 	if o.executable() {
 		s.Owner.Verdict, s.Owner.DryRun = o.verdictStatus(), o.dryRunStatus()
 	}
+	s.Owner.PreviewReplacements, s.Owner.PreviewReplacementsLastHour = o.replacements, o.replacementsHour.total(monoNow())
 	if o.ledger != nil {
 		ls := o.ledger.Status()
 		s.Ledger = &ls

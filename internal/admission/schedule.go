@@ -131,6 +131,9 @@ type Pick struct {
 	// Reserved is the reserved lane the candidate is eligible for, direct
 	// or corroborated, whichever lane served it; zero for general-only work.
 	Reserved Lane
+	// Tier is the item's (class, severity), which decides what work it may
+	// replace in a full set (spec 5.6).
+	Tier Tier
 }
 
 // ScopeTurn is a scope's persisted place in one ring.
@@ -379,7 +382,7 @@ func Schedule(items []ScheduleItem, st ScheduleState, lim ScheduleLimits) ([]Pic
 		case it.Corroborated:
 			eligible = LaneCorroborated
 		}
-		picks = append(picks, Pick{ID: it.ID, Lane: lane, Cost: it.CeilingCost, Bytes: it.Bytes, Reserved: eligible})
+		picks = append(picks, Pick{ID: it.ID, Lane: lane, Cost: it.CeilingCost, Bytes: it.Bytes, Reserved: eligible, Tier: it.Tier})
 	}
 	for _, reserved := range []bool{true, false} {
 		budget, bytes := lim.General, lim.GeneralBytes

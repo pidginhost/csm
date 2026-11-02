@@ -320,6 +320,11 @@ It never applies them; the view is not an enforcement record.
   could not be read at the first start or when execution began; a committed
   read error survives startup retries), the last inventory read and why
   responses naming a damaged record were discarded (`damage_error`).
+  `preview_replacements` counts this process's previews that took the
+  temporary slot of a lower-priority automatic block, which live admission
+  would replace, and `preview_replacements_last_hour` those of the last
+  sixty one-minute buckets of process monotonic time. A preview claims
+  nothing, so later previews may name the same block.
 - An owner that runs on the firewall engine, with the firewall on and
   outside observe mode, adds `execution_held` with `execution_held_by`
   (`policy` for a refused execution policy, `firewall` for the firewall
@@ -364,9 +369,14 @@ run keeps the last session's identity. `modelled_kinds` and
 ceiling and the temporary block capacity. `occupancy` gives the real
 temporary occupancy (`actual`, addresses plus two elements per timed subnet),
 the forecast addresses the real sets do not hold
-(`shadow_only`), their sum (`predicted`), the `limit`, whether the set is
+(`shadow_only`), the listed legacy automatic blocks the forecast replaced
+(`replaced`), their sum minus `replaced` (`predicted`), the `limit`, whether the set is
 `unlimited` and whether the model holds as many blocks as it can (`limited`);
-it is null while no snapshot is available. `capacity` is the finite capacity
+it is null while no snapshot is available. `actual` and `imported` count at
+least the listed imports, matching the partition counts. A replaced import
+is subtracted only while listed, until its own expiry, even if its replacing
+forecast block expires or is replaced first. Unlisted imports count again;
+a renewal with a new name is a new import. `capacity` is the finite capacity
 automatic admission is modelled within: a positive limit, or 10000 for an
 unlimited set. Until validation rejects negative limits, they use the same
 fallback as zero and retain their configured value in `limit`. `unclaimed` counts the real timed entries it never evicts (operator
@@ -380,11 +390,17 @@ changes can extend that estimate; it is not an automatic removal deadline. `gene
 entries leave, a fifth rounded up reserved for direct or corroborated work,
 each with its `size`, the real and forecast automatic blocks it holds
 (`used`) and its `free` slots, also bounded by total remaining capacity.
-Existing occupants keep their partition when limits change; a full or
-overfull set admits no additional forecast block. Real coverage replaces forecast occupancy: a
+Existing occupants keep their partition when limits change. A full set
+admits an additional forecast block only in place of a strictly
+lower-priority automatic block: a forecast block of a lower class or
+severity, or a listed legacy automatic block that recorded its origin,
+which the forecast counts as gone while still listed, until the import's
+own expiry. An overfull set admits none, and entries counted in `unclaimed`
+are never replaced.
+Real coverage replaces forecast occupancy: a
 manual timed block reduces available capacity, an automatic block counts in
 general until ledger partitions are wired, and permanent coverage takes no
-temporary slot. These fields do not select eviction victims. `ceiling` is the forecast's own
+temporary slot. `ceiling` is the forecast's own
 copy of the hourly ceiling: `limit`, `general_used`, `reserved_used`,
 `general_budget` and `reserved_budget`, null while no forecast runs. `picks`
 counts the session's predictions by name and `last_hour` the last sixty
@@ -415,12 +431,18 @@ owner that forecasts (`admission dry run`, `admission dry-run
 capacity` and `admission dry-run examples`) show the forecast's session,
 real against predicted capacity and lost examples. The capacity row also
 shows the automatic slots of each partition and how long the entries
-automatic admission never evicts take to drain. A dry run alone is not a
+automatic admission never evicts take to drain, the legacy automatic
+blocks the forecast counts as replaced and the forecast blocks of the
+last hour that would have replaced a lower-priority automatic block; a
+replacement is an admission, not a wait. A dry run alone is not a
 failure; a held forecast, model limits, waits the model predicts, a set
 those entries fill, no free automatic slot, an unknown drain time and lost
 or stale examples warn. Outside a dry run, `admission set` shows the slots
-the last turn budgeted block work by and warns in the same cases and when
-the set could not be read. Rows warn when
+the last turn budgeted block work by and the previews of the last hour
+that would have replaced a lower-priority automatic block, and warns in
+the same cases and when the set could not be read. The preview count
+remains visible when the set cannot be read. Replacement notes change
+neither the row's status nor its suggested fix. Rows warn when
 the ledger owner is not running, its clock reading
 is refused, an owner turn fails (`admission turns`), retiring an uncertain
 block fails (`admission retirement`), the ledger is damaged, admission has stopped or a Critical

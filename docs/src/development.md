@@ -309,7 +309,9 @@ Scheduling, reservations, observe previews and wake calculations share
 that list and count at least as many general imports as it names, while
 preserving a larger occupancy count. An overfull partition funds no
 replacement until the complete state fits. Observe previews write no
-claim or effect record; wake calculations write nothing.
+claim or effect record; wake calculations write nothing. A preview
+reports the block whose slot it took, so the owner counts previewed
+replacements in status; a readback reports none.
 A member's sweep also ends its import claim; a delayed outcome may still
 name the import in its intent without looking for a victim record.
 Startup drops the state row of an admission-record victim whose eviction
@@ -946,7 +948,9 @@ removes the row before the firewall restores its state. The turn hands the
 ledger the imports the set read listed. Clearing that set also clears its
 imports, including a failed read, an idle turn or entry into dry run.
 Returning to previews reads a fresh set and import list. The dry-run
-forecast still models free slots only; it does not evict listed imports.
+forecast reads the list from its own snapshot and may replace a listed
+import, which it remembers by name until the import's expiry; it never
+claims one.
 An import's row is retired by its
 `eff_` name without a mark. An import-only retirement still retries a
 shared state repair after its probe wait, without marking any import or
@@ -1156,12 +1160,19 @@ that lasts as long, within the readback slack a real block is allowed,
 predicts `existing_shadow` and a shorter one `pending_recovery`, and
 neither is renewed. Other picks are checked against
 the modelled temporary capacity, the bound on forecast blocks and the
-modelled ceiling, and only `capacity_admit` adds a forecast block and a
-simulated charge. With the verdict callback on, a pick the model would
+modelled ceiling, and only `capacity_admit` and `capacity_evict` add a
+forecast block and a simulated charge. The model budgets slots with the
+ledger's rule (`SetOccupancy.Limits`): with no free slot a pick may take
+the first strictly lower-tier forecast block or listed import in eviction
+order and predicts `capacity_evict`. Forecast blocks rank by their pick's
+tier and next attempt; one without a tier is never replaced. A replaced
+forecast block leaves the model. A replaced import is remembered by name
+until its expiry and subtracted only while the engine still lists it.
+With the verdict callback on, a pick the model would
 judge is asked about first and waits for its answer with no forecast
 change; a usable allow ends it as `verdict_allow` before any modelled
-capacity is judged, and a covering forecast block or a full modelled set
-ends it without a call. Other firewall kinds end as `not_modelled`, with no
+capacity is judged, and a covering forecast block, or a full modelled set
+with nothing lower to replace, ends it without a call. Other firewall kinds end as `not_modelled`, with no
 call; a challenge keeps its comparison preview. Without an engine or
 snapshot, or with a degraded clock, picks wait as `engine_unavailable` and
 the forecast does not change. A decision is installed only once its ending
@@ -1176,7 +1187,8 @@ committed clock reading or a new limit ends too: the forecast error is
 `model_error` until the next session starts, and that session names
 `model_error` as its reset rather than a mode change.
 
-Each committed `capacity_admit` leaves one example in `dry_run_blocks`. A
+Each committed `capacity_admit` or `capacity_evict` leaves one example in
+`dry_run_blocks`. A
 turn writes its examples in one batch after its endings, also when a later
 pick stops the turn; a failed write loses them without undoing the endings
 or the forecast, and nothing retries it. An owner that runs blocks keeps the

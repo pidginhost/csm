@@ -64,21 +64,36 @@ func newSessionID(r io.Reader) (string, error) {
 	return hex.EncodeToString(b[:]), nil
 }
 
-// shadowEntry is one forecast block: its kind, absolute lease expiry and
-// the partition of the set it occupies.
+// shadowEntry is one forecast block: its kind, absolute lease expiry, the
+// partition of the set it occupies and its rank.
 type shadowEntry struct {
 	kind      admission.Kind
 	expires   time.Time
 	partition admission.Partition
+	tier      admission.Tier
+	action    admission.ActionID
+	target    admission.Target
+}
+
+// shadowRank is what ranks a forecast block as a victim (spec 5.6): the
+// pick's tier, the action of its next attempt and its address. A block
+// without a valid tier is never a victim, and a pick without one replaces
+// nothing.
+type shadowRank struct {
+	tier   admission.Tier
+	action admission.ActionID
+	target admission.Target
 }
 
 // shadowChange is a capacity admission a forecast decided and has not
-// installed: one charge and one entry.
+// installed: one charge and one entry, and the lower-tier block it
+// replaces, zero for a free slot.
 type shadowChange struct {
 	ip     string
 	entry  shadowEntry
 	charge admission.Charge
 	next   admission.CeilingState
+	victim admission.EvictionVictim
 }
 
 // shadow is one dry-run forecast session. It copies the real ceiling when
@@ -100,6 +115,9 @@ type shadow struct {
 	// adm is the occupancy of the last admission snapshot, nil while none
 	// could be read; its answers are dropped.
 	adm *firewall.BlockAdmission
+	// replaced is the imports the session replaced, by name, until their
+	// lease expiry: the real set still holds and lists them.
+	replaced map[admission.ActionID]time.Time
 }
 
 // newShadow starts session id at wall time since from the real ceiling and
@@ -114,6 +132,7 @@ func newShadow(id string, since time.Time, reset resetReason, ceiling admission.
 	return &shadow{
 		id: id, since: since.UTC(), reset: reset, ceiling: ceiling,
 		charges: append([]admission.Charge(nil), charges...), entries: map[string]shadowEntry{},
+		replaced: map[admission.ActionID]time.Time{},
 	}, nil
 }
 
@@ -151,12 +170,17 @@ func (s *shadow) setLimit(limit uint32) error {
 	return nil
 }
 
-// expire drops the forecast blocks whose lease has ended at lease, a
-// reading of the engine's lease clock.
+// expire drops the forecast blocks and replaced imports whose lease has
+// ended at lease, a reading of the engine's lease clock.
 func (s *shadow) expire(lease time.Time) {
 	for ip, e := range s.entries {
 		if !lease.Before(e.expires) {
 			delete(s.entries, ip)
+		}
+	}
+	for name, expires := range s.replaced {
+		if !lease.Before(expires) {
+			delete(s.replaced, name)
 		}
 	}
 }
@@ -181,30 +205,82 @@ func (s *shadow) covering(ip string, expires time.Time) admission.Prediction {
 }
 
 // occupancy is the modelled temporary set: the real timed occupants, with
-// real automatic blocks in the general partition, and in their own
-// partitions the forecast blocks the real sets do not already hold as a
-// timed or an untimed element. adm is this turn's snapshot, taken after
-// expire.
+// real automatic blocks in the general partition, less the listed imports
+// the session replaced, and in their own partitions the forecast blocks
+// the real sets do not already hold as a timed or an untimed element. As
+// in the ledger, every listed import counts even if the count is lower.
+// adm is this turn's snapshot, taken after expire.
 func (s *shadow) occupancy(adm firewall.BlockAdmission) admission.SetOccupancy {
-	occ := admission.SetOccupancy{Limit: adm.Limit, Unclaimed: adm.Unclaimed, General: adm.Imported + adm.Admission}
+	general, reserved := s.counted(adm)
+	imported := max(adm.Imported, len(adm.Imports)) - s.replacedListed(adm)
+	return admission.SetOccupancy{Limit: adm.Limit, Unclaimed: adm.Unclaimed, General: imported + adm.Admission + general, Reserved: reserved}
+}
+
+// counted is the forecast blocks of each partition the real sets do not
+// already hold.
+func (s *shadow) counted(adm firewall.BlockAdmission) (general, reserved int) {
 	for ip, e := range s.entries {
 		switch {
 		case adm.ShadowHeld[ip]:
 		case e.partition == admission.PartitionReserved:
-			occ.Reserved++
+			reserved++
 		default:
-			occ.General++
+			general++
 		}
 	}
-	return occ
+	return general, reserved
 }
 
-// full reports whether no partition a pick on lanes may occupy has a free
-// slot. A zero limit is the finite automatic capacity.
-func (s *shadow) full(adm firewall.BlockAdmission, lanes []admission.Lane) bool {
-	slots := s.occupancy(adm).Slots()
+// replacedListed is how many imports adm lists that the session replaced.
+// A replaced import the list no longer names counts again in Imported, as
+// the forecast cannot tell whether it went or is merely unlisted.
+func (s *shadow) replacedListed(adm firewall.BlockAdmission) int {
+	n := 0
+	for _, imp := range adm.Imports {
+		if _, ok := s.replaced[admission.ActionID(imp.ID)]; ok {
+			n++
+		}
+	}
+	return n
+}
+
+// limits is the modelled set's slot budget, by the rule admission uses:
+// its free slots and, once the general partition is full, the victims
+// strictly higher work may replace: the ranked forecast blocks the real
+// sets do not hold, and the listed imports not already replaced.
+func (s *shadow) limits(adm firewall.BlockAdmission) *admission.SlotLimits {
+	limits, _ := s.occupancy(adm).Limits(func() ([]admission.EvictionVictim, error) {
+		var pool []admission.EvictionVictim
+		for ip, e := range s.entries {
+			if !adm.ShadowHeld[ip] && e.tier.Valid() && e.partition.Valid() {
+				pool = append(pool, admission.EvictionVictim{Action: e.action, Target: e.target, Tier: e.tier, Partition: e.partition, ExpiresAt: e.expires})
+			}
+		}
+		for _, v := range importVictims(adm.Imports) {
+			if _, gone := s.replaced[v.Action]; !gone {
+				pool = append(pool, v)
+			}
+		}
+		return pool, nil
+	})
+	return limits
+}
+
+// demand is what a pick of kind ranked r on lanes asks of the set, as
+// the ledger asks it: only one-unit block_ip work may replace another.
+func demand(kind admission.Kind, lanes []admission.Lane, r shadowRank) admission.SlotDemand {
+	cost := kind.CeilingCost()
+	return admission.SlotDemand{Tier: r.tier, Cost: cost, Evicts: kind == admission.KindBlockIP && cost == 1, Target: r.target,
+		Reserved: slices.ContainsFunc(lanes, func(l admission.Lane) bool { return admission.PartitionOf(l) == admission.PartitionReserved })}
+}
+
+// full reports whether a block_ip pick ranked r on lanes finds neither a
+// free slot in a partition it may occupy nor a strictly lower-tier block
+// it may replace. A zero limit is the finite automatic capacity.
+func (s *shadow) full(adm firewall.BlockAdmission, lanes []admission.Lane, r shadowRank) bool {
+	limits, d := s.limits(adm), demand(admission.KindBlockIP, lanes, r)
 	for _, lane := range lanes {
-		if slots.Free(lane) > 0 {
+		if _, ok := limits.Room(lane, d); ok {
 			return false
 		}
 	}
@@ -214,26 +290,29 @@ func (s *shadow) full(adm firewall.BlockAdmission, lanes []admission.Lane) bool 
 // limited reports whether the forecast can model no other active block.
 func (s *shadow) limited() bool { return len(s.entries) >= forecastEntries }
 
-// admit decides a ready pick of kind for ip lasting until expires, at
-// admission time now, against this turn's snapshot: a full set first, then
-// the modelling bound, then the ceiling on each of lanes in order whose
-// partition has a free slot, the selected lane first. The block occupies
-// the partition of the lane it is charged on. Only a capacity admission
-// returns a change; nothing is installed until commit. Kinds outside the
-// address model take no capacity.
-func (s *shadow) admit(ip string, kind admission.Kind, expires time.Time, lanes []admission.Lane, now time.Time, adm firewall.BlockAdmission) (admission.Prediction, *shadowChange, error) {
+// admit decides a ready pick of kind for ip lasting until expires, ranked
+// r, at admission time now, against this turn's snapshot: a full set
+// first, then the modelling bound, then the ceiling on each of lanes in
+// order that has room, the selected lane first. Room is a free slot of the
+// lane's partition or, with none, the first strictly lower-tier block in
+// eviction order, which the block replaces in that block's partition. A
+// block on a free slot occupies the partition of the lane it is charged
+// on. Only a capacity admission returns a change; nothing is installed
+// until commit. Kinds outside the address model take no capacity.
+func (s *shadow) admit(ip string, kind admission.Kind, expires time.Time, lanes []admission.Lane, now time.Time, adm firewall.BlockAdmission, r shadowRank) (admission.Prediction, *shadowChange, error) {
 	switch {
 	case kind != admission.KindBlockIP:
 		return admission.PredictNotModelled, nil, nil
-	case s.full(adm, lanes):
+	case s.full(adm, lanes, r):
 		return admission.PredictSetFull, nil, nil
 	case s.limited():
 		return admission.PredictForecastLimited, nil, nil
 	}
-	slots := s.occupancy(adm).Slots()
+	limits, d := s.limits(adm), demand(kind, lanes, r)
 	cost := kind.CeilingCost()
 	for _, lane := range lanes {
-		if slots.Free(lane) == 0 {
+		victim, ok := limits.Room(lane, d)
+		if !ok {
 			continue
 		}
 		next, err := s.ceiling.Charge(lane, cost)
@@ -243,9 +322,13 @@ func (s *shadow) admit(ip string, kind admission.Kind, expires time.Time, lanes 
 		if err != nil {
 			return 0, nil, err
 		}
-		return admission.PredictCapacityAdmit, &shadowChange{
-			ip: ip, entry: shadowEntry{kind: kind, expires: expires, partition: admission.PartitionOf(lane)}, next: next,
-			charge: admission.Charge{At: now, Lane: lane, Cost: cost, Elapsed: s.ceiling.Elapsed},
+		pred, partition := admission.PredictCapacityAdmit, admission.PartitionOf(lane)
+		if victim != (admission.EvictionVictim{}) {
+			pred, partition = admission.PredictCapacityEvict, victim.Partition
+		}
+		return pred, &shadowChange{
+			ip: ip, entry: shadowEntry{kind: kind, expires: expires, partition: partition, tier: r.tier, action: r.action, target: r.target}, next: next,
+			charge: admission.Charge{At: now, Lane: lane, Cost: cost, Elapsed: s.ceiling.Elapsed}, victim: victim,
 		}, nil
 	}
 	return admission.PredictCeiling, nil, nil
@@ -260,6 +343,16 @@ func (s *shadow) commit(p admission.Prediction, change *shadowChange, mono time.
 		// hour. Keep earlier predictions ahead of it for window release.
 		at := sort.Search(len(s.charges), func(i int) bool { return s.charges[i].At.After(change.charge.At) })
 		s.charges = slices.Insert(s.charges, at, change.charge)
+		// A replaced forecast block leaves the model; a replaced import
+		// stays in the real set, so the session remembers it.
+		switch v := change.victim; {
+		case v == (admission.EvictionVictim{}):
+		case admission.ImportedVictim(v.Action):
+			s.replaced[v.Action] = v.ExpiresAt
+		default:
+			addr, _ := v.Target.Addr()
+			delete(s.entries, addr.String())
+		}
 		s.entries[change.ip] = change.entry
 	}
 	if s.picks[p] != ^uint64(0) {

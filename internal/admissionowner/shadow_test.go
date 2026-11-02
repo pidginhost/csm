@@ -43,7 +43,7 @@ var (
 // admitNow decides and commits one pick, returning its prediction.
 func admitNow(t *testing.T, s *shadow, ip string, lanes []admission.Lane, now time.Time, adm firewall.BlockAdmission) admission.Prediction {
 	t.Helper()
-	p, change, err := s.admit(ip, admission.KindBlockIP, now.Add(time.Hour), lanes, now, adm)
+	p, change, err := s.admit(ip, admission.KindBlockIP, now.Add(time.Hour), lanes, now, adm, shadowRank{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,15 +153,15 @@ func TestShadowFillsTheTemporarySet(t *testing.T) {
 	if p := admitNow(t, s, "203.0.113.3", generalOnly, shadowT0, adm); p != admission.PredictSetFull {
 		t.Fatalf("third = %s, want set_full", p)
 	}
-	if s.ceiling != used || !s.full(adm, generalOnly) || s.full(adm, directGen) || len(s.entries) != 2 {
+	if s.ceiling != used || !s.full(adm, generalOnly, shadowRank{}) || s.full(adm, directGen, shadowRank{}) || len(s.entries) != 2 {
 		t.Fatal("a full set charged the ceiling or took an entry, or the reserve filled")
 	}
 	// A real block of a shadow address counts once: as real occupancy.
-	if s.full(firewall.BlockAdmission{Temporary: 9, Unclaimed: 9, Limit: 12, ShadowHeld: map[string]bool{"203.0.113.1": true}}, generalOnly) {
+	if s.full(firewall.BlockAdmission{Temporary: 9, Unclaimed: 9, Limit: 12, ShadowHeld: map[string]bool{"203.0.113.1": true}}, generalOnly, shadowRank{}) {
 		t.Fatal("an address held by a real and a shadow block counted twice")
 	}
 	// A real permanent block of a shadow address takes no temporary slot.
-	if s.full(firewall.BlockAdmission{Temporary: 8, Unclaimed: 8, Limit: 11, ShadowHeld: map[string]bool{"2001:db8::1": true}}, generalOnly) {
+	if s.full(firewall.BlockAdmission{Temporary: 8, Unclaimed: 8, Limit: 11, ShadowHeld: map[string]bool{"2001:db8::1": true}}, generalOnly, shadowRank{}) {
 		t.Fatal("permanent coverage counted as temporary demand")
 	}
 }
@@ -347,16 +347,16 @@ func TestShadowForecastBound(t *testing.T) {
 // committed ones.
 func TestShadowDecisionsAreSpeculative(t *testing.T) {
 	s := testShadow(t, freshCeiling(t, 5), nil)
-	p, change, err := s.admit("203.0.113.1", admission.KindBlockIP, shadowExpiry, generalOnly, shadowT0, room)
+	p, change, err := s.admit("203.0.113.1", admission.KindBlockIP, shadowExpiry, generalOnly, shadowT0, room, shadowRank{})
 	if err != nil || p != admission.PredictCapacityAdmit || change == nil {
 		t.Fatalf("decision = %s %+v %v", p, change, err)
 	}
-	again, _, err := s.admit("203.0.113.2", admission.KindBlockIP, shadowExpiry, generalOnly, shadowT0, room)
+	again, _, err := s.admit("203.0.113.2", admission.KindBlockIP, shadowExpiry, generalOnly, shadowT0, room, shadowRank{})
 	if err != nil || again != admission.PredictCapacityAdmit || len(s.entries) != 0 || len(s.charges) != 0 || s.picks[admission.PredictCapacityAdmit] != 0 {
 		t.Fatalf("an uncommitted decision changed the shadow: %s %v", again, err)
 	}
 	s.commit(p, change, shadowT0)
-	if after, _, _ := s.admit("203.0.113.2", admission.KindBlockIP, shadowExpiry, generalOnly, shadowT0, room); after != admission.PredictCeiling {
+	if after, _, _ := s.admit("203.0.113.2", admission.KindBlockIP, shadowExpiry, generalOnly, shadowT0, room, shadowRank{}); after != admission.PredictCeiling {
 		t.Fatalf("after the commit = %s", after)
 	}
 	s.commit(admission.PredictSetFull, nil, shadowT0)
@@ -520,7 +520,7 @@ func TestShadowDoesNotModelOtherKinds(t *testing.T) {
 			for _, adm := range []firewall.BlockAdmission{room, {Temporary: 1, Limit: 1}} {
 				s := testShadow(t, freshCeiling(t, 10), nil)
 				before := s.ceiling
-				p, change, err := s.admit("203.0.113.1", kind, shadowExpiry, generalOnly, shadowT0, adm)
+				p, change, err := s.admit("203.0.113.1", kind, shadowExpiry, generalOnly, shadowT0, adm, shadowRank{})
 				if err != nil || p != admission.PredictNotModelled || change != nil {
 					t.Fatalf("prediction = %s, change %+v, error %v", p, change, err)
 				}
@@ -552,7 +552,7 @@ func TestShadowCapacityAndCeilingUseTheSameLane(t *testing.T) {
 					s.entries["203.0.113.90"] = shadowEntry{kind: admission.KindBlockIP, expires: shadowExpiry, partition: admission.PartitionReserved}
 				}
 				before := s.ceiling
-				pred, change, err := s.admit("203.0.113.91", admission.KindBlockIP, shadowExpiry, lanes, shadowT0, adm)
+				pred, change, err := s.admit("203.0.113.91", admission.KindBlockIP, shadowExpiry, lanes, shadowT0, adm, shadowRank{})
 				want := admission.PredictCeiling
 				if full {
 					want = admission.PredictSetFull
