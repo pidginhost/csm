@@ -431,12 +431,16 @@ owner that forecasts (`admission dry run`, `admission dry-run
 capacity` and `admission dry-run examples`) show the forecast's session,
 real against predicted capacity and lost examples. The capacity row also
 shows the automatic slots of each partition and how long the entries
-automatic admission never evicts take to drain. A dry run alone is not a
+automatic admission never evicts take to drain, the legacy automatic
+blocks the forecast counts as replaced and the forecast blocks of the
+last hour that would have replaced a lower-priority automatic block; a
+replacement is an admission, not a wait. A dry run alone is not a
 failure; a held forecast, model limits, waits the model predicts, a set
 those entries fill, no free automatic slot, an unknown drain time and lost
 or stale examples warn. Outside a dry run, `admission set` shows the slots
-the last turn budgeted block work by and warns in the same cases and when
-the set could not be read. Rows warn when
+the last turn budgeted block work by and the previews of the last hour
+that took a lower-priority automatic block's slot, and warns in the same
+cases and when the set could not be read. Rows warn when
 the ledger owner is not running, its clock reading
 is refused, an owner turn fails (`admission turns`), retiring an uncertain
 block fails (`admission retirement`), the ledger is damaged, admission has stopped or a Critical

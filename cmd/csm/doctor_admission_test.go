@@ -420,3 +420,30 @@ func TestDoctorSetFixNamesReplacement(t *testing.T) {
 		t.Fatalf("admission set fix = %q (%v)", row.Fix, ok)
 	}
 }
+
+// Doctor names the replacements the forecast and the previews counted in
+// the last hour, and the legacy blocks the forecast counts as replaced; a
+// replacement is an admission, never a wait, and changes no status.
+func TestDoctorNamesReplacements(t *testing.T) {
+	at := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
+	view := dryRunView(at)
+	view.Owner.DryRun.LastHour["capacity_evict"], view.Owner.DryRun.Occupancy.Replaced = 4, 1
+	row, ok := doctorCheckNamed(doctorReportForSnapshot(t, admissionSnapshot(view)), "admission dry-run capacity")
+	if !ok || row.Status != "ok" || !strings.Contains(row.Message, "in the last hour 4 forecast blocks would have replaced lower-priority automatic blocks") ||
+		!strings.Contains(row.Message, "legacy automatic blocks the forecast counts as replaced: 1") || strings.Contains(row.Message, "would have waited") {
+		t.Fatalf("admission dry-run capacity = %+v (%v)", row, ok)
+	}
+	set := setView(at)
+	set.Owner.PreviewReplacements, set.Owner.PreviewReplacementsLastHour = 9, 2
+	row, ok = doctorCheckNamed(doctorReportForSnapshot(t, admissionSnapshot(set)), "admission set")
+	if !ok || row.Status != "ok" || !strings.Contains(row.Message, "in the last hour 2 previews would have replaced lower-priority automatic blocks") {
+		t.Fatalf("admission set = %+v (%v)", row, ok)
+	}
+	for _, v := range []*health.AdmissionStatus{dryRunView(at), setView(at)} {
+		for _, c := range doctorReportForSnapshot(t, admissionSnapshot(v)).Checks {
+			if strings.Contains(c.Message, "replaced") {
+				t.Fatalf("a row without replacements names them: %+v", c)
+			}
+		}
+	}
+}

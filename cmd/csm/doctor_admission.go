@@ -142,9 +142,10 @@ func ownerDoctorChecks(a *health.AdmissionStatus) []DoctorCheck {
 }
 
 // setDoctorCheck shows the temporary set the owner's last turn budgeted
-// block work by (spec 5.6): the partitions of the automatic slots and the
-// entries admission never evicts with their drain time. It warns as the
-// forecast's model does, and when the turn could not read the set.
+// block work by (spec 5.6): the partitions of the automatic slots, the
+// entries admission never evicts with their drain time and the previews
+// of the last hour that took a lower-priority block's slot. It warns as
+// the forecast's model does, and when the turn could not read the set.
 func setDoctorCheck(o *health.AdmissionOwner, closing string) DoctorCheck {
 	if o.Set == nil {
 		return DoctorCheck{Name: "admission set", Status: "warn",
@@ -157,7 +158,8 @@ func setDoctorCheck(o *health.AdmissionOwner, closing string) DoctorCheck {
 		of = "of an unlimited set"
 	}
 	c := DoctorCheck{Name: "admission set", Status: "ok", Message: fmt.Sprintf("automatic blocks use %d of %d general and %d of %d reserved temporary slots %s",
-		s.General.Used, s.General.Size, s.Reserved.Used, s.Reserved.Size, of) + setOccupants(s.Unclaimed, s.Imported, s.DrainSeconds)}
+		s.General.Used, s.General.Size, s.Reserved.Used, s.Reserved.Size, of) + setOccupants(s.Unclaimed, s.Imported, s.DrainSeconds) +
+		replacedNote(o.PreviewReplacementsLastHour, "previews")}
 	warnings, note := setWarnings(s.Unlimited, s.Capacity, s.DrainSeconds, s.General, s.Reserved)
 	c.Message += note
 	if len(warnings) > 0 {
@@ -166,6 +168,15 @@ func setDoctorCheck(o *health.AdmissionOwner, closing string) DoctorCheck {
 	}
 	c.Message += "; " + closing
 	return c
+}
+
+// replacedNote names the replacements of lower-priority automatic blocks
+// in the last hour, which are admissions, not waits; empty without any.
+func replacedNote(n uint64, what string) string {
+	if n == 0 {
+		return ""
+	}
+	return fmt.Sprintf("; in the last hour %d %s would have replaced lower-priority automatic blocks", n, what)
 }
 
 // setOccupants describes the entries automatic admission never evicts and
@@ -256,8 +267,9 @@ func dryRunDoctorChecks(d *health.AdmissionDryRun) []DoctorCheck {
 }
 
 // dryRunCapacityCheck compares real and predicted temporary capacity, the
-// modelled partitions of the automatic slots and the modelled ceiling, and
-// warns on model limits and modelled waits.
+// modelled partitions of the automatic slots and the modelled ceiling,
+// names modelled replacements, and warns on model limits and modelled
+// waits.
 func dryRunCapacityCheck(d *health.AdmissionDryRun) DoctorCheck {
 	occ, ceil := d.Occupancy, d.Ceiling
 	limit := fmt.Sprintf("of %d", occ.Limit)
@@ -268,6 +280,10 @@ func dryRunCapacityCheck(d *health.AdmissionDryRun) DoctorCheck {
 		"%d real temporary elements, %d %s predicted with %d forecast blocks; automatic blocks use %d of %d general and %d of %d reserved slots; the modelled ceiling has %d general and %d reserved units left",
 		occ.Actual, occ.Predicted, limit, occ.ShadowOnly, occ.General.Used, occ.General.Size, occ.Reserved.Used, occ.Reserved.Size, ceil.GeneralBudget, ceil.ReservedBudget)}
 	c.Message += setOccupants(occ.Unclaimed, occ.Imported, occ.DrainSeconds)
+	if occ.Replaced > 0 {
+		c.Message += fmt.Sprintf("; legacy automatic blocks the forecast counts as replaced: %d", occ.Replaced)
+	}
+	c.Message += replacedNote(d.LastHour["capacity_evict"], "forecast blocks")
 	warnings, note := setWarnings(occ.Unlimited, occ.Capacity, occ.DrainSeconds, occ.General, occ.Reserved)
 	c.Message += note
 	if occ.Limited {
