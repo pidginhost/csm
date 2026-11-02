@@ -158,6 +158,10 @@ func (t *tx) applyPostfix(s antispam.Settings, f antispam.HostFacts, installed m
 	if err != nil {
 		return failed(StepPreconditions, err)
 	}
+	// Proxy settings can change after the daemon assesses the host.
+	if rejectErr := blocking(antispam.CheckQuietRejects(s, f)); rejectErr != nil {
+		return failed(StepPreconditions, rejectErr)
+	}
 	reachable := func(ctx context.Context) error {
 		for _, m := range milters {
 			if t.h.milter(ctx, m) != nil {

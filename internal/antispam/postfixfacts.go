@@ -150,12 +150,32 @@ func (p Postconf) MilterAddrs(master CommandResult) (addrs []string, complete bo
 // rspamd_proxy workers that speak the milter protocol. The dump also holds
 // the controller password, so errors never quote it.
 func ProxyMilterAddrs(workerDump []byte) ([]string, error) {
-	dec := json.NewDecoder(bytes.NewReader(workerDump))
+	proxies, err := milterProxies(workerDump)
+	if err != nil {
+		return nil, err
+	}
 	var addrs []string
+	for _, p := range proxies {
+		addrs = append(addrs, p.binds...)
+	}
+	return addrs, nil
+}
+
+// milterProxy is one running rspamd_proxy worker that speaks the milter
+// protocol: its settings and bind addresses.
+type milterProxy struct {
+	fields map[string]json.RawMessage
+	binds  []string
+}
+
+// milterProxies returns the milter proxy workers in a worker dump.
+func milterProxies(workerDump []byte) ([]milterProxy, error) {
+	dec := json.NewDecoder(bytes.NewReader(workerDump))
+	var out []milterProxy
 	for n := 0; ; n++ {
 		var entry json.RawMessage
 		if err := dec.Decode(&entry); errors.Is(err, io.EOF) && n > 0 {
-			return addrs, nil
+			return out, nil
 		} else if err != nil {
 			return nil, errors.New("configdump worker: invalid JSON")
 		}
@@ -166,30 +186,88 @@ func ProxyMilterAddrs(workerDump []byte) ([]string, error) {
 		if proxy == nil {
 			continue
 		}
-		binds, err := milterBinds(proxy)
+		fields, binds, err := milterBinds(proxy)
 		if err != nil {
 			return nil, errors.New("configdump worker rspamd_proxy: settings are not readable")
 		}
-		addrs = append(addrs, binds...)
+		if len(binds) > 0 {
+			out = append(out, milterProxy{fields: fields, binds: binds})
+		}
 	}
 }
 
-// milterBinds returns a proxy worker's bind addresses when rspamd runs it
-// as a milter.
-func milterBinds(proxy json.RawMessage) ([]string, error) {
+// milterBinds returns a proxy worker's settings and, when rspamd runs it as
+// a milter, its bind addresses.
+func milterBinds(proxy json.RawMessage) (map[string]json.RawMessage, []string, error) {
 	fields, err := dumpObjectAs[json.RawMessage](proxy, "worker rspamd_proxy")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	disabled, err := disabledWorker(fields)
 	if err != nil || disabled {
-		return nil, err
+		return fields, nil, err
 	}
 	milter, err := workerBool(fields, "milter", false)
 	if err != nil || !milter {
+		return fields, nil, err
+	}
+	binds, err := workerBinds(fields)
+	return fields, binds, err
+}
+
+// quietRejectOptions make rspamd's milter accept the mail it rejects:
+// discard_on_reject drops it, quarantine_on_reject puts it in Postfix's
+// hold queue. rspamd checks them in this order.
+var quietRejectOptions = []string{"discard_on_reject", "quarantine_on_reject"}
+
+// QuietRejects returns the quietRejectOptions set on an rspamd proxy worker
+// that Postfix passes mail to. An option given more than once counts as
+// set unless every value is false: CSM cannot tell which value rspamd uses.
+// A value that is not a boolean counts as set too. Errors are those of
+// RspamdMilters.
+func QuietRejects(f HostFacts) ([]string, error) {
+	milters, _, err := RspamdMilters(f)
+	if err != nil {
 		return nil, err
 	}
-	return workerBinds(fields)
+	proxies, err := milterProxies([]byte(f.RspamdWorkers.Stdout))
+	if err != nil {
+		return nil, err
+	}
+	var set []string
+	for _, name := range quietRejectOptions {
+		for _, p := range proxies {
+			if MilterWired(milters, p.binds) && optionSet(p.fields, name) {
+				set = append(set, name)
+				break
+			}
+		}
+	}
+	return set, nil
+}
+
+// optionSet reports whether a boolean worker option may be on.
+func optionSet(fields map[string]json.RawMessage, name string) bool {
+	raw, ok := fields[name]
+	if !ok {
+		return false
+	}
+	values := []json.RawMessage{raw}
+	var many []json.RawMessage
+	if json.Unmarshal(raw, &many) == nil {
+		// JSON null also decodes into a slice. Neither it nor an empty
+		// list proves that a present option is explicitly false.
+		if len(many) == 0 {
+			return true
+		}
+		values = many
+	}
+	for _, v := range values {
+		if on, err := workerBool(map[string]json.RawMessage{name: v}, name, false); err != nil || on {
+			return true
+		}
+	}
+	return false
 }
 
 var errNotWired = errors.New("postfix does not pass mail to rspamd's proxy worker")

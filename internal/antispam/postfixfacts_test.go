@@ -280,3 +280,45 @@ func TestPostfixScanSource(t *testing.T) {
 		})
 	}
 }
+
+// rspamd's milter accepts a message it rejects when the proxy worker has
+// discard_on_reject (dropped) or quarantine_on_reject (Postfix hold queue).
+// Only proxies Postfix passes mail to count. An option given more than once
+// counts as set unless every value is false: CSM cannot tell which rspamd
+// uses.
+func TestQuietRejects(t *testing.T) {
+	const other = "{\"normal\": {\"bind_socket\": \"localhost:11333\"}}\n"
+	for name, tc := range map[string]struct {
+		proxy string
+		want  []string
+	}{
+		"refuses":           {`{"rspamd_proxy": {"bind_socket": "localhost:11332", "milter": true}}`, nil},
+		"explicit false":    {`{"rspamd_proxy": {"bind_socket": "localhost:11332", "milter": true, "discard_on_reject": false, "quarantine_on_reject": 0}}`, nil},
+		"discard":           {`{"rspamd_proxy": {"bind_socket": "localhost:11332", "milter": true, "discard_on_reject": true}}`, []string{"discard_on_reject"}},
+		"quarantine as int": {`{"rspamd_proxy": {"bind_socket": "localhost:11332", "milter": true, "quarantine_on_reject": 1}}`, []string{"quarantine_on_reject"}},
+		"both":              {`{"rspamd_proxy": {"bind_socket": "localhost:11332", "milter": true, "discard_on_reject": true, "quarantine_on_reject": true}}`, []string{"discard_on_reject", "quarantine_on_reject"}},
+		"given twice":       {`{"rspamd_proxy": {"bind_socket": "localhost:11332", "milter": true, "discard_on_reject": [true, false]}}`, []string{"discard_on_reject"}},
+		"twice, all false":  {`{"rspamd_proxy": {"bind_socket": "localhost:11332", "milter": true, "discard_on_reject": [false, 0]}}`, nil},
+		"not a boolean":     {`{"rspamd_proxy": {"bind_socket": "localhost:11332", "milter": true, "quarantine_on_reject": "yes"}}`, []string{"quarantine_on_reject"}},
+		"other proxy":       {`{"rspamd_proxy": {"bind_socket": "localhost:11332", "milter": true}}` + "\n" + `{"type": "rspamd_proxy", "bind_socket": "localhost:11339", "milter": true, "discard_on_reject": true}`, nil},
+		"not a milter":      {`{"rspamd_proxy": {"bind_socket": "localhost:11332", "milter": true}}` + "\n" + `{"type": "rspamd_proxy", "bind_socket": "localhost:11338", "discard_on_reject": true}`, nil},
+	} {
+		f := HostFacts{
+			Postconf:      CommandResult{Stdout: postconfOut("inet:127.0.0.1:11332", "52428800")},
+			PostfixMaster: CommandResult{Stdout: "smtp/inet/command = smtpd\nsmtp/inet/chroot = n\n"},
+			RspamdWorkers: CommandResult{Stdout: other + tc.proxy + "\n"},
+		}
+		got, err := QuietRejects(f)
+		if err != nil || !slices.Equal(got, tc.want) {
+			t.Errorf("%s: got %v, %v; want %v", name, got, err, tc.want)
+		}
+	}
+	// Unwired or unreadable settings are CheckHost's to report.
+	f := HostFacts{
+		Postconf:      CommandResult{Stdout: postconfOut("inet:127.0.0.1:12345", "52428800")},
+		RspamdWorkers: CommandResult{Stdout: proxyWorkers},
+	}
+	if got, err := QuietRejects(f); err == nil || got != nil {
+		t.Errorf("unwired host: got %v, %v; want an error", got, err)
+	}
+}
