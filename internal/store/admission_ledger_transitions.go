@@ -383,13 +383,19 @@ func (l *AdmissionLedger) reserveTx(q *queueTx, id admission.CandidateID, lane a
 	}
 	// The slots are rechecked under the lock, before anything is charged:
 	// a free slot of the lane's partition, or under pressure a victim the
-	// block strictly outranks (spec 5.6).
+	// block strictly outranks or, for fresh work, the equal-tier block
+	// rotation gives it (spec 5.6).
 	if cost := c.Key.Kind.CeilingCost(); cost > 0 {
 		slots, slotErr := q.slots()
 		if slotErr != nil {
 			return c, admission.AttemptRecord{}, false, slotErr
 		}
-		d := admission.SlotDemand{Tier: entry.Tier, Cost: cost, Evicts: c.Key.Kind == admission.KindBlockIP && cost == 1, Reserved: entry.Direct || entry.Corroborated, Target: c.Key.Target}
+		fresh, freshErr := q.fresh(c)
+		if freshErr != nil {
+			return c, admission.AttemptRecord{}, false, freshErr
+		}
+		d := admission.SlotDemand{Tier: entry.Tier, Cost: cost, Evicts: c.Key.Kind == admission.KindBlockIP && cost == 1, Reserved: entry.Direct || entry.Corroborated, Target: c.Key.Target,
+			Scope: c.Scope.Key(), Fresh: fresh}
 		var ok bool
 		if *victim, ok = slots.Room(lane, d); !ok {
 			return c, admission.AttemptRecord{}, false, refusal(admission.ReasonSetFull, "the temporary set has no free slot for the lane")
@@ -432,6 +438,17 @@ func (l *AdmissionLedger) reserveTx(q *queueTx, id admission.CandidateID, lane a
 	if hold && q.started && c.Key.Kind == admission.KindBlockIP {
 		if err := q.holdSlot(c, a, entry, *victim); err != nil {
 			return c, a, false, err
+		}
+		// A rotation means the set is too small for the attack (spec 5.17).
+		if *victim != (admission.EvictionVictim{}) && victim.Tier == entry.Tier {
+			check, checkErr := noticeCheck(tx, c)
+			if checkErr != nil {
+				return c, a, false, checkErr
+			}
+			key := admission.NoticeKey{Kind: admission.NoticeCapacity, Reason: admission.ReasonSetFull, Check: check, Effect: c.Key.Kind.Effect()}
+			if err := q.raise(key, id, c.Transitions); err != nil {
+				return c, a, false, err
+			}
 		}
 	}
 	return c, a, true, putCandidate(tx, c)

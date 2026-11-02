@@ -175,10 +175,12 @@ type queueTx struct {
 	held, heldDelta map[string]int
 	heldTargets     map[string]bool
 	// started is the handle's live start (AdmissionLedger.live) and set
-	// the handle's set occupancy (AdmissionLedger.set).
-	started bool
-	set     *admission.SetOccupancy
-	imports []admission.EvictionVictim
+	// the handle's set occupancy (AdmissionLedger.set). degraded is the
+	// handle's last reading (AdmissionLedger.degraded): no record rotates
+	// on it.
+	started, degraded bool
+	set               *admission.SetOccupancy
+	imports           []admission.EvictionVictim
 }
 
 func (l *AdmissionLedger) openQueue(tx *bolt.Tx, now time.Time) (*queueTx, error) {
@@ -186,7 +188,7 @@ func (l *AdmissionLedger) openQueue(tx *bolt.Tx, now time.Time) (*queueTx, error
 	if err != nil {
 		return nil, err
 	}
-	q.held, q.heldDelta, q.started, q.set, q.imports = l.held, l.heldDelta, l.live, l.set, l.imports
+	q.held, q.heldDelta, q.started, q.degraded, q.set, q.imports = l.held, l.heldDelta, l.live, l.degraded, l.set, l.imports
 	return q, nil
 }
 
@@ -233,6 +235,9 @@ type liveCandidate struct {
 	id    admission.CandidateID
 	c     admission.Candidate
 	entry admission.QueueEntry
+	// fresh is set by markFresh for work whose episode had no verified
+	// response.
+	fresh bool
 }
 
 // live loads every live candidate with its entry. An entry must name a
@@ -674,6 +679,9 @@ func (l *AdmissionLedger) scheduleTx(q *queueTx, lim admission.ScheduleLimits, a
 	}
 	items, byID, err := q.scheduleItems(live, lim.RecoveryBytes, answers)
 	if err != nil {
+		return nil, err
+	}
+	if err = q.markFresh(byID); err != nil {
 		return nil, err
 	}
 	// A pick that fails revalidation ends, and the schedule is computed
@@ -1264,7 +1272,7 @@ func (l *AdmissionLedger) NextWake(answers map[admission.CandidateID]admission.A
 		if err != nil {
 			return err
 		}
-		q.held, q.set, q.imports = l.held, l.set, l.imports
+		q.held, q.started, q.degraded, q.set, q.imports = l.held, l.live, l.degraded, l.set, l.imports
 		live, err := q.live()
 		if err != nil {
 			return err
@@ -1289,6 +1297,9 @@ func (l *AdmissionLedger) NextWake(answers map[admission.CandidateID]admission.A
 		}
 		items, byID, err := q.scheduleItems(live, lim.RecoveryBytes, answers)
 		if err != nil {
+			return err
+		}
+		if err = q.markFresh(byID); err != nil {
 			return err
 		}
 		slots, err := q.slots()

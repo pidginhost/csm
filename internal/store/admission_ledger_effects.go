@@ -387,7 +387,7 @@ func evictionsAgree(tx *bolt.Tx, records map[admission.ActionID]admission.Effect
 		} else if rec.Victim.Action != "" {
 			victim, ok := records[rec.Victim.Action]
 			if ok {
-				if !victim.ExpiresAt.Equal(rec.Victim.ExpiresAt) || victim.EvictedBy != rec.Action || victim.Evicted || victim.Partition != rec.Partition || !victim.Tier.Less(rec.Tier) || victim.Target == rec.Target {
+				if !victim.ExpiresAt.Equal(rec.Victim.ExpiresAt) || victim.EvictedBy != rec.Action || victim.Evicted || victim.Partition != rec.Partition || !evicts(rec, victim) || victim.Target == rec.Target {
 					return false
 				}
 			} else if clock.Now().Before(rec.Victim.ExpiresAt) {
@@ -399,7 +399,7 @@ func evictionsAgree(tx *bolt.Tx, records map[admission.ActionID]admission.Effect
 		}
 		if block, ok := records[rec.EvictedBy]; ok {
 			claimed := block.Victim == admission.EffectRef{Action: rec.Action, ExpiresAt: rec.ExpiresAt}
-			if rec.Evicted != block.Verified() || rec.Evicted == claimed || rec.Partition != block.Partition || !rec.Tier.Less(block.Tier) || rec.Target == block.Target {
+			if rec.Evicted != block.Verified() || rec.Evicted == claimed || rec.Partition != block.Partition || !evicts(block, rec) || rec.Target == block.Target {
 				return false
 			}
 		} else if raw := tx.Bucket([]byte(admissionAttemptsBucket)).Get([]byte(rec.EvictedBy)); raw != nil {
@@ -413,6 +413,13 @@ func evictionsAgree(tx *bolt.Tx, records map[admission.ActionID]admission.Effect
 		}
 	}
 	return true
+}
+
+// evicts reports whether block may take victim's slot: a strictly lower
+// victim, or an equal-tier one rotation took in the partition of the
+// block's own lane (spec 5.6: rotation never crosses partitions).
+func evicts(block, victim admission.EffectRecord) bool {
+	return victim.Tier.Less(block.Tier) || (victim.Tier == block.Tier && admission.PartitionOf(block.Lane) == victim.Partition)
 }
 
 // effectsStatus reads the slots the records hold and the expiry of the

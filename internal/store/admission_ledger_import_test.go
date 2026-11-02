@@ -34,7 +34,7 @@ func (f *ledgerFixture) pool(imports []admission.EvictionVictim) []admission.Evi
 	var pool []admission.EvictionVictim
 	if err := f.db.bolt.View(func(tx *bolt.Tx) error {
 		var poolErr error
-		pool, poolErr = victimPool(tx, f.wall, imports)
+		pool, _, poolErr = victimPool(tx, f.wall, nil, imports)
 		return poolErr
 	}); err != nil {
 		f.t.Fatal(err)
@@ -337,7 +337,8 @@ func TestAdmissionLedgerImportClaimEveryEnding(t *testing.T) {
 					if !found || !member.Verified() || member.Victim != (admission.EffectRef{}) {
 						t.Fatalf("verified member kept its claim: %+v", member)
 					}
-					wantPool = append(wantPool, admission.EvictionVictim{Action: member.Action, Target: member.Target, Tier: member.Tier, Partition: member.Partition, ExpiresAt: member.ExpiresAt})
+					wantPool = append(wantPool, admission.EvictionVictim{Action: member.Action, Target: member.Target, Tier: member.Tier, Partition: member.Partition, ExpiresAt: member.ExpiresAt,
+						Scope: member.Scope, Applied: member.Applied})
 				}
 				if !claimed {
 					wantPool = append(wantPool, imp)

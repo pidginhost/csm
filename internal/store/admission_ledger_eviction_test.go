@@ -12,7 +12,13 @@ import (
 // queuedWith enqueues a block of target from a local root of severity.
 func (f *ledgerFixture) queuedWith(target string, severity admission.Severity) admission.CandidateID {
 	f.t.Helper()
-	root := f.published(evidenceSpec{target: target, cursor: "evict-" + target, severity: severity})
+	return f.queuedBy(target, severity, admission.Owner{})
+}
+
+// queuedBy is queuedWith in owner's scope.
+func (f *ledgerFixture) queuedBy(target string, severity admission.Severity, owner admission.Owner) admission.CandidateID {
+	f.t.Helper()
+	root := f.published(evidenceSpec{target: target, cursor: "evict-" + target, severity: severity, owner: owner})
 	_, id := f.enqueue(f.request(target, root))
 	return id
 }
@@ -21,7 +27,13 @@ func (f *ledgerFixture) queuedWith(target string, severity admission.Severity) a
 // expires after ttl: a record that strictly higher work may evict.
 func (f *ledgerFixture) verifiedWith(target string, severity admission.Severity, ttl time.Duration) admission.AttemptRecord {
 	f.t.Helper()
-	_, a, _, err := f.l.Reserve(f.queuedWith(target, severity), admission.LaneGeneral, f.wall.Add(ttl))
+	return f.verifiedBy(target, severity, admission.Owner{}, ttl)
+}
+
+// verifiedBy is verifiedWith in owner's scope.
+func (f *ledgerFixture) verifiedBy(target string, severity admission.Severity, owner admission.Owner, ttl time.Duration) admission.AttemptRecord {
+	f.t.Helper()
+	_, a, _, err := f.l.Reserve(f.queuedBy(target, severity, owner), admission.LaneGeneral, f.wall.Add(ttl))
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -74,8 +86,11 @@ func TestAdmissionLedgerReserveClaimsALowerVictim(t *testing.T) {
 	if _, tally, _ := f.effectRecords(); tally != (admission.EffectTally{General: 2}) {
 		t.Fatalf("tally %+v, want both counted until the outcome", tally)
 	}
+	if n := f.capacityNotices(admission.ReasonSetFull); n != 0 {
+		t.Fatalf("a lower-tier eviction raised %d capacity notices", n)
+	}
 	if err = f.db.bolt.View(func(tx *bolt.Tx) error {
-		pool, poolErr := victimPool(tx, f.wall, nil)
+		pool, _, poolErr := victimPool(tx, f.wall, nil, nil)
 		if poolErr == nil && len(pool) != 0 {
 			t.Fatalf("claimed records remained in the pool: %+v", pool)
 		}
