@@ -30,6 +30,22 @@ func (l *AdmissionLedger) SetOccupants(base *admission.SetOccupancy) {
 	l.set = base
 }
 
+// SetImports records the known automatic imports the firewall last listed
+// (spec 6): (C2, High) victims in the general partition with no record of
+// their own, which SetOccupants counts as General. Entries that are not
+// such an import are dropped. A block that claims one names it in its own
+// record until its outcome.
+func (l *AdmissionLedger) SetImports(imports []admission.EvictionVictim) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.imports = nil
+	for _, v := range imports {
+		if v.Imported() {
+			l.imports = append(l.imports, v)
+		}
+	}
+}
+
 // HasChargedWork reports whether a queued candidate that charges the
 // ceiling, so takes a set slot, is past its retry wait: the only work a
 // read of the set can budget.
@@ -57,8 +73,8 @@ func (l *AdmissionLedger) HasChargedWork() (bool, error) {
 
 // slots is the set budget of this transaction: nil without a set, else
 // the free slots the handle's set and the ledger's records leave, with the
-// verified records strictly higher work may evict once the general
-// partition is full (no work evicts while it has a free slot).
+// verified records and imports strictly higher work may evict once the
+// general partition is full (no work evicts while it has a free slot).
 func (q *queueTx) slots() (*admission.SlotLimits, error) {
 	if q.set == nil {
 		return nil, nil
@@ -67,14 +83,20 @@ func (q *queueTx) slots() (*admission.SlotLimits, error) {
 	if err != nil {
 		return nil, err
 	}
-	occ, err := tally.Occupy(*q.set)
+	base := *q.set
+	// The bounded list can omit imports, but every listed import still
+	// occupies a general slot. Leave invalid counts for tally validation.
+	if base.General >= 0 {
+		base.General = max(base.General, len(q.imports))
+	}
+	occ, err := tally.Occupy(base)
 	if err != nil {
 		return nil, err
 	}
 	s := occ.Slots()
 	var pool []admission.EvictionVictim
 	if s.FreeGeneral == 0 && occ.General+occ.Reserved <= s.Available {
-		if pool, err = victimPool(q.tx, q.now); err != nil {
+		if pool, err = victimPool(q.tx, q.now, q.imports); err != nil {
 			return nil, err
 		}
 	}
@@ -85,23 +107,37 @@ func (q *queueTx) slots() (*admission.SlotLimits, error) {
 	return admission.NewSlotLimits(slotUnits(s.FreeGeneral), slotUnits(s.FreeReserved), pool), nil
 }
 
-// victimPool is the records strictly higher work may evict (spec 5.6):
-// verified, holding their slot and claimed by no pending block.
-// The full-set path walks the records once; free-slot admission skips it.
-func victimPool(tx *bolt.Tx, now time.Time) ([]admission.EvictionVictim, error) {
-	b := tx.Bucket([]byte(admissionEffectsBucket))
-	if b == nil {
-		return nil, nil
-	}
+// victimPool is what strictly higher work may evict (spec 5.6): records
+// verified, holding their slot and claimed by no pending block, and the
+// unexpired imports no block's record names. The full-set path walks the
+// records once; free-slot admission skips it.
+func victimPool(tx *bolt.Tx, now time.Time, imports []admission.EvictionVictim) ([]admission.EvictionVictim, error) {
 	var pool []admission.EvictionVictim
-	err := b.ForEach(func(k, v []byte) error {
-		rec, err := admission.UnmarshalEffectRecord(k, v)
-		if err == nil && rec.Verified() && rec.Holds() && rec.EvictedBy == "" && rec.ExpiresAt.After(now) {
-			pool = append(pool, admission.EvictionVictim{Action: rec.Action, Target: rec.Target, Tier: rec.Tier, Partition: rec.Partition, ExpiresAt: rec.ExpiresAt})
+	claimed := map[admission.ActionID]bool{}
+	if b := tx.Bucket([]byte(admissionEffectsBucket)); b != nil {
+		err := b.ForEach(func(k, v []byte) error {
+			rec, err := admission.UnmarshalEffectRecord(k, v)
+			if err != nil {
+				return err
+			}
+			if rec.Victim.Imported() {
+				claimed[rec.Victim.Action] = true
+			}
+			if rec.Verified() && rec.Holds() && rec.EvictedBy == "" && rec.ExpiresAt.After(now) {
+				pool = append(pool, admission.EvictionVictim{Action: rec.Action, Target: rec.Target, Tier: rec.Tier, Partition: rec.Partition, ExpiresAt: rec.ExpiresAt})
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, err
 		}
-		return err
-	})
-	return pool, err
+	}
+	for _, v := range imports {
+		if !claimed[v.Action] && v.ExpiresAt.After(now) {
+			pool = append(pool, v)
+		}
+	}
+	return pool, nil
 }
 
 // slotUnits is n free slots as block units; no lane budget exceeds the

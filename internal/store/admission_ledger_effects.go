@@ -52,8 +52,11 @@ func (q *queueTx) holdSlot(c admission.Candidate, a admission.AttemptRecord, e a
 	}
 	if victim != (admission.EvictionVictim{}) {
 		rec.Partition, rec.Victim = victim.Partition, admission.EffectRef{Action: victim.Action, ExpiresAt: victim.ExpiresAt}
-		if err := q.claimVictim(rec.Victim, rec.Action); err != nil {
-			return err
+		// An import has no record: this record alone holds the claim.
+		if !rec.Victim.Imported() {
+			if err := q.claimVictim(rec.Victim, rec.Action); err != nil {
+				return err
+			}
 		}
 	}
 	key, err := rec.Key()
@@ -174,8 +177,12 @@ func (q *queueTx) releaseSlot(a admission.AttemptRecord) error {
 
 // endClaim ends block's claim on the record ref names: evicted, it gives
 // up its slot; otherwise it returns to the victim pool. A victim swept at
-// its own expiry needs neither.
+// its own expiry needs neither, and an import has no record: the firewall
+// stops listing it once it is gone.
 func (q *queueTx) endClaim(ref admission.EffectRef, block admission.ActionID, evicted bool) error {
+	if ref.Imported() {
+		return nil
+	}
 	key, err := ref.Key()
 	if err != nil {
 		return err
@@ -230,19 +237,29 @@ func deleteEffect(tx *bolt.Tx, key []byte, rec admission.EffectRecord) error {
 }
 
 // claimedVictim is the victim reserved attempt a's record claimed, as an
-// intent names it; zero when it claimed none or the victim's record is
-// gone at its own expiry. Execution clears a vanished claim in the same
+// intent names it; zero when it claimed none, the victim's record is gone
+// at its own expiry, or the firewall no longer lists the import it
+// claimed among imports. Execution clears a vanished claim in the same
 // transaction so a v1 intent cannot hide a still-recorded removal.
-func claimedVictim(tx *bolt.Tx, a admission.AttemptRecord) (admission.Victim, error) {
+func claimedVictim(tx *bolt.Tx, a admission.AttemptRecord, imports []admission.EvictionVictim) (admission.Victim, error) {
 	rec, ownKey, found, err := loadEffect(tx, a)
 	if err != nil || !found || rec.Victim == (admission.EffectRef{}) {
 		return admission.Victim{}, err
 	}
-	key, err := rec.Victim.Key()
-	if err != nil {
-		return admission.Victim{}, err
+	var raw []byte
+	var key []byte
+	if rec.Victim.Imported() {
+		for _, v := range imports {
+			if v.Action == rec.Victim.Action && v.ExpiresAt.Equal(rec.Victim.ExpiresAt) {
+				return admission.Victim{Action: v.Action, Target: v.Target, ExpiresAt: v.ExpiresAt}, nil
+			}
+		}
+	} else {
+		if key, err = rec.Victim.Key(); err != nil {
+			return admission.Victim{}, err
+		}
+		raw = tx.Bucket([]byte(admissionEffectsBucket)).Get(key)
 	}
-	raw := tx.Bucket([]byte(admissionEffectsBucket)).Get(key)
 	if raw == nil {
 		rec.Victim = admission.EffectRef{}
 		data, encodeErr := rec.MarshalBinary()
@@ -356,8 +373,18 @@ func evictionsAgree(tx *bolt.Tx, records map[admission.ActionID]admission.Effect
 	if err != nil {
 		return false
 	}
+	claimedImports := map[admission.ActionID]bool{}
 	for _, rec := range records {
-		if rec.Victim.Action != "" {
+		if rec.Victim.Imported() {
+			// No victim record can prove the import has only one claimant.
+			if claimedImports[rec.Victim.Action] {
+				return false
+			}
+			claimedImports[rec.Victim.Action] = true
+			if rec.Partition != admission.PartitionGeneral || !admission.ImportTier.Less(rec.Tier) {
+				return false
+			}
+		} else if rec.Victim.Action != "" {
 			victim, ok := records[rec.Victim.Action]
 			if ok {
 				if !victim.ExpiresAt.Equal(rec.Victim.ExpiresAt) || victim.EvictedBy != rec.Action || victim.Evicted || victim.Partition != rec.Partition || !victim.Tier.Less(rec.Tier) || victim.Target == rec.Target {
@@ -469,7 +496,7 @@ func proveIntentVictim(tx *bolt.Tx, a admission.AttemptRecord, in admission.Inte
 			return err
 		}
 	}
-	if ref == (admission.EffectRef{}) {
+	if ref == (admission.EffectRef{}) || ref.Imported() {
 		return nil
 	}
 	key, err := ref.Key()

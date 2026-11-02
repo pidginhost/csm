@@ -293,14 +293,28 @@ occupancy also returns an error and the original occupancy if either
 partition's total is invalid or overflows. A full-set deferral raises the
 capacity notice for any assessed tier in a live ledger. A preview ledger
 raises it only for Critical work. A pending block that evicts names its
-victim in its effect record and its intent; the victim's record names the
-block that claimed it and stops holding a slot once that block's
+victim in its effect record and its intent; an admission victim's record
+names the block that claimed it and stops holding a slot once that block's
 application is verified with the victim's removal proven. A verified
 block that never removed its victim releases the claim; an unproven
 removal is an unknown outcome, never a verified one. A definite failure
 releases the victim claim; unknown outcomes keep it through retirement
-until the victim expires. Startup drops the state row of a victim whose
-eviction the ledger verified. Startup readers report an error if the
+until the victim expires. An import, a stamped legacy block the firewall
+lists each turn, is a (C2, High) victim with no record of its own: only
+the claiming block's record and intent name it, by its `eff_` name, and
+no other block claims it while that record does. Opening rejects duplicate
+import claims and requires a general slot above the import tier. Execution
+uses the current turn's list; a missing or changed import drops the claim.
+Scheduling, reservations, observe previews and wake calculations share
+that list and count at least as many general imports as it names, while
+preserving a larger occupancy count. An overfull partition funds no
+replacement until the complete state fits. Observe previews write no
+claim or effect record; wake calculations write nothing.
+A member's sweep also ends its import claim; a delayed outcome may still
+name the import in its intent without looking for a victim record.
+Startup drops the state row of an admission-record victim whose eviction
+the ledger verified. Imports have no durable cleanup record: a restart
+before retirement restores the import only until its original expiry. Startup readers report an error if the
 effects bucket disagrees with the schema or an effect is a nested bucket;
 they do not treat damaged eviction storage as an absent record.
 Expiry can remove either record first. A late definite outcome still ends
@@ -855,7 +869,10 @@ the ledger and a new engine over the same state, after a process restart or
 after a reboot that empties the kernel. Around an eviction they also stop
 before the outcome and before the victim's row is retired: until the ledger
 records the eviction a restart restores the victim and holds the block
-back, and after it the victim's row goes and only the block is restored. An unreadable ledger restores
+back. After a committed eviction an admission victim's row goes and only
+the block is restored. An import has no startup cleanup record: after a
+committed eviction, a restart before row retirement restores both blocks
+until the import's original expiry, including after a reboot. An unreadable ledger restores
 unexpired unmarked rows with degraded coverage; a readable ledger keeps a
 committed applied outcome and holds the rest. Attempts without a committed
 outcome are unknown. Their rows are held back, a new block of an address a
