@@ -439,8 +439,10 @@ failure; a held forecast, model limits, waits the model predicts, a set
 those entries fill, no free automatic slot, an unknown drain time and lost
 or stale examples warn. Outside a dry run, `admission set` shows the slots
 the last turn budgeted block work by and the previews of the last hour
-that took a lower-priority automatic block's slot, and warns in the same
-cases and when the set could not be read. Rows warn when
+that would have replaced a lower-priority automatic block, and warns in
+the same cases and when the set could not be read. The preview count
+remains visible when the set cannot be read. Replacement notes change
+neither the row's status nor its suggested fix. Rows warn when
 the ledger owner is not running, its clock reading
 is refused, an owner turn fails (`admission turns`), retiring an uncertain
 block fails (`admission retirement`), the ledger is damaged, admission has stopped or a Critical

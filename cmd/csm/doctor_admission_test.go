@@ -447,3 +447,75 @@ func TestDoctorNamesReplacements(t *testing.T) {
 		}
 	}
 }
+
+// Recent preview counts survive a failed set read; doctor must keep the
+// replacement note alongside the read warning and its existing fix.
+func TestDoctorNamesReplacementsWhenSetReadFails(t *testing.T) {
+	view := setView(time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC))
+	view.Owner.Set, view.Owner.SetError = nil, "set dump failed"
+	before, ok := doctorCheckNamed(doctorReportForSnapshot(t, admissionSnapshot(view)), "admission set")
+	if !ok || before.Status != "warn" || before.Fix == "" {
+		t.Fatalf("unreadable set = %+v (%v)", before, ok)
+	}
+	view.Owner.PreviewReplacements, view.Owner.PreviewReplacementsLastHour = 9, 2
+	after, ok := doctorCheckNamed(doctorReportForSnapshot(t, admissionSnapshot(view)), "admission set")
+	note := "; in the last hour 2 previews would have replaced lower-priority automatic blocks"
+	if !ok || strings.Count(after.Message, note) != 1 {
+		t.Fatalf("unreadable set lost recent replacements: %+v (%v)", after, ok)
+	}
+	after.Message = strings.Replace(after.Message, note, "", 1)
+	if after != before {
+		t.Fatalf("replacement note changed the read warning: got %+v, want %+v", after, before)
+	}
+}
+
+// Replacements must not clear a full-set warning or inflate the wait
+// count, and the operator's existing fix must remain unchanged.
+func TestDoctorReplacementsPreserveCapacityWarnings(t *testing.T) {
+	at := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
+	t.Run("forecast", func(t *testing.T) {
+		d := dryRunView(at).Owner.DryRun
+		d.Occupancy.General = health.AdmissionDryRunPartition{Size: 35, Used: 35}
+		d.Occupancy.Reserved = health.AdmissionDryRunPartition{Size: 9, Used: 9}
+		d.LastHour["set_full"] = 3
+		before := dryRunCapacityCheck(d)
+		if before.Status != "warn" || before.Fix == "" || !strings.Contains(before.Message, "no free automatic slot") ||
+			!strings.Contains(before.Message, "in the last hour live admission would have waited: 3 set_full") {
+			t.Fatalf("full forecast set = %+v", before)
+		}
+		d.LastHour["capacity_evict"], d.Occupancy.Replaced = 4, 1
+		after := dryRunCapacityCheck(d)
+		for _, note := range []string{
+			"; legacy automatic blocks the forecast counts as replaced: 1",
+			"; in the last hour 4 forecast blocks would have replaced lower-priority automatic blocks",
+		} {
+			if strings.Count(after.Message, note) != 1 {
+				t.Fatalf("missing replacement note %q: %+v", note, after)
+			}
+			after.Message = strings.Replace(after.Message, note, "", 1)
+		}
+		if after != before {
+			t.Fatalf("replacements changed capacity warnings: got %+v, want %+v", after, before)
+		}
+	})
+	t.Run("preview", func(t *testing.T) {
+		o := setView(at).Owner
+		o.Set.General = health.AdmissionDryRunPartition{Size: 368, Used: 368}
+		o.Set.Reserved = health.AdmissionDryRunPartition{Size: 92, Used: 92}
+		before := setDoctorCheck(o, admission.PreviewUnaffected)
+		if before.Status != "warn" || !strings.Contains(before.Message, "no free automatic slot") ||
+			!strings.Contains(before.Fix, "unless it outranks an automatic block it may replace") {
+			t.Fatalf("full preview set = %+v", before)
+		}
+		o.PreviewReplacements, o.PreviewReplacementsLastHour = 9, 2
+		after := setDoctorCheck(o, admission.PreviewUnaffected)
+		note := "; in the last hour 2 previews would have replaced lower-priority automatic blocks"
+		if strings.Count(after.Message, note) != 1 {
+			t.Fatalf("full set lost recent replacements: %+v", after)
+		}
+		after.Message = strings.Replace(after.Message, note, "", 1)
+		if after != before {
+			t.Fatalf("replacements changed the full-set warning: got %+v, want %+v", after, before)
+		}
+	})
+}

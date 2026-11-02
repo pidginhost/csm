@@ -149,8 +149,9 @@ func ownerDoctorChecks(a *health.AdmissionStatus) []DoctorCheck {
 func setDoctorCheck(o *health.AdmissionOwner, closing string) DoctorCheck {
 	if o.Set == nil {
 		return DoctorCheck{Name: "admission set", Status: "warn",
-			Message: "the temporary set could not be read: " + o.SetError + "; block work has no slot budget until a turn reads it; " + closing,
-			Fix:     "the owner reads the set again at its next turn; check the firewall engine and the blocked sets"}
+			Message: "the temporary set could not be read: " + o.SetError + "; block work has no slot budget until a turn reads it" +
+				replacedNote(o.PreviewReplacementsLastHour, "previews") + "; " + closing,
+			Fix: "the owner reads the set again at its next turn; check the firewall engine and the blocked sets"}
 	}
 	s := o.Set
 	of := fmt.Sprintf("of %d", s.Limit)

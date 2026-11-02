@@ -40,7 +40,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - A YARA rule set too large for the locked-down compile worker now raises a compile-failure finding saying so; `signatures.yara_worker_enabled: false` compiles it in the daemon instead.
 - With auto_response.dry_run off, admission previews now wait for free slots under firewall.deny_temp_ip_limit, and csm doctor warns while that set is full; blocking is unchanged.
 - With auto_response.dry_run off, higher-priority attacks now produce admission previews instead of capacity waits when older automatic blocks fill the temporary set; blocking stays unchanged.
-- Dry-run forecasts now predict when a higher-priority attack would replace a lower-priority automatic block, and status and csm doctor count these and previewed replacements.
+- Dry-run forecasts now predict lower-priority automatic block replacements, and status and csm doctor count them and previewed replacements, including previews when the temporary set cannot be read.
 - Learned spam is now stored with its headers and text only, without images or other attachments.
 - The firewall now opens the passive FTP port range by default only on cPanel hosts and hosts with an FTP server installed.
 
