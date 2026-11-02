@@ -76,6 +76,12 @@ type AdmissionOwner struct {
 	// could not read the set.
 	Set      *AdmissionSet `json:"set,omitempty"`
 	SetError string        `json:"set_error,omitempty"`
+	// PreviewReplacements counts this process's previews that took the
+	// temporary slot of a lower-priority automatic block, which live
+	// admission would replace; PreviewReplacementsLastHour counts those of
+	// the last sixty one-minute buckets of process monotonic time.
+	PreviewReplacements         uint64 `json:"preview_replacements"`
+	PreviewReplacementsLastHour uint64 `json:"preview_replacements_last_hour"`
 }
 
 // AdmissionSet is the temporary block set as automatic admission divides

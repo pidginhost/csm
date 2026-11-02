@@ -410,7 +410,8 @@ unknown and subnet blocks leave are divided as in the forecast, legacy
 automatic blocks occupy general slots, and an unlimited set counts as 10000
 entries. A Critical local attack, or one with direct compromise or
 independently corroborated evidence, may instead take the general slot of
-a legacy automatic block that recorded its origin. With the firewall on, queued responses disabled by the current
+a legacy automatic block that recorded its origin; status counts those
+previews. With the firewall on, queued responses disabled by the current
 policy end as `disabled` without a withheld alert, including when their evidence expires before a
 restart or configuration reload. Turning a response back on requires a new
 eligible observation; ended work is not replayed. Status, `csm doctor` and findings

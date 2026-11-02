@@ -309,7 +309,9 @@ Scheduling, reservations, observe previews and wake calculations share
 that list and count at least as many general imports as it names, while
 preserving a larger occupancy count. An overfull partition funds no
 replacement until the complete state fits. Observe previews write no
-claim or effect record; wake calculations write nothing.
+claim or effect record; wake calculations write nothing. A preview
+reports the block whose slot it took, so the owner counts previewed
+replacements in status; a readback reports none.
 A member's sweep also ends its import claim; a delayed outcome may still
 name the import in its intent without looking for a victim record.
 Startup drops the state row of an admission-record victim whose eviction

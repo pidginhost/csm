@@ -376,3 +376,22 @@ func TestAPIStatusCarriesForecastReplacements(t *testing.T) {
 		}
 	}
 }
+
+// Preview counters keep their documented JSON names, including zeros.
+func TestAPIStatusCarriesPreviewReplacements(t *testing.T) {
+	for _, n := range []uint64{0, 3} {
+		view := &health.AdmissionStatus{Owner: &health.AdmissionOwner{PreviewReplacements: n, PreviewReplacementsLastHour: n / 3}}
+		s := &Server{cfg: capsTestCfg(), startTime: time.Now()}
+		s.SetHealthProvider(admissionStatusProvider{status: view})
+		rec := httptest.NewRecorder()
+		s.apiStatus(rec, httptest.NewRequest(http.MethodGet, "/api/v1/status", nil))
+		var raw map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
+			t.Fatal(err)
+		}
+		owner := raw["admission"].(map[string]any)["owner"].(map[string]any)
+		if rec.Code != http.StatusOK || owner["preview_replacements"] != float64(n) || owner["preview_replacements_last_hour"] != float64(n/3) {
+			t.Fatalf("preview replacement wire: status %d, owner %v", rec.Code, owner)
+		}
+	}
+}

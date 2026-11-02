@@ -320,6 +320,11 @@ It never applies them; the view is not an enforcement record.
   could not be read at the first start or when execution began; a committed
   read error survives startup retries), the last inventory read and why
   responses naming a damaged record were discarded (`damage_error`).
+  `preview_replacements` counts this process's previews that took the
+  temporary slot of a lower-priority automatic block, which live admission
+  would replace, and `preview_replacements_last_hour` those of the last
+  sixty one-minute buckets of process monotonic time. A preview claims
+  nothing, so later previews may name the same block.
 - An owner that runs on the firewall engine, with the firewall on and
   outside observe mode, adds `execution_held` with `execution_held_by`
   (`policy` for a refused execution policy, `firewall` for the firewall
