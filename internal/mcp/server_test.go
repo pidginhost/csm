@@ -23,6 +23,8 @@ type fakeDispatcher struct {
 	status map[string]int
 	block  chan struct{}
 	huge   bool
+	// deadlines holds the context deadline each dispatch ran under.
+	deadlines []time.Time
 }
 
 type fakeCall struct {
@@ -47,6 +49,9 @@ func (f *fakeDispatcher) Routes() []string {
 func (f *fakeDispatcher) Dispatch(ctx context.Context, path string, query url.Values, peer string) (int, string, []byte, error) {
 	f.mu.Lock()
 	f.calls = append(f.calls, fakeCall{path, query, peer})
+	if dl, ok := ctx.Deadline(); ok {
+		f.deadlines = append(f.deadlines, dl)
+	}
 	f.mu.Unlock()
 	if f.block != nil {
 		select {
@@ -385,5 +390,33 @@ func TestCallTimeoutCancelsDispatch(t *testing.T) {
 	c := <-done
 	if _, isErr := toolText(t, c); isErr {
 		t.Errorf("unblocked call failed: %s", c.body)
+	}
+}
+
+// TestBatchSharesOneDeadline bounds a whole request, a batch included, by
+// one deadline. With a timeout per call, a batch of slow calls outlived the
+// listener's write timeout: the answer was lost while the calls went on.
+func TestBatchSharesOneDeadline(t *testing.T) {
+	fake := newFake()
+	s := newTestServer(t, fake)
+	start := time.Now()
+	c := post(t, s, []any{
+		rpc(1, "tools/call", map[string]any{"name": "csm_status"}),
+		rpc(2, "tools/call", map[string]any{"name": "csm_health"}),
+		rpc(3, "tools/call", map[string]any{"name": "csm_history"}),
+	})
+	if c.status != http.StatusOK {
+		t.Fatalf("batch: %d %s", c.status, c.body)
+	}
+	if len(fake.deadlines) != 3 {
+		t.Fatalf("%d of 3 dispatches ran under a deadline", len(fake.deadlines))
+	}
+	for i, dl := range fake.deadlines {
+		if !dl.Equal(fake.deadlines[0]) {
+			t.Errorf("call %d deadline %v differs from the first call's %v", i, dl, fake.deadlines[0])
+		}
+		if dl.Sub(start) > requestTimeout+time.Second {
+			t.Errorf("call %d deadline is %v after the request started", i, dl.Sub(start))
+		}
 	}
 }

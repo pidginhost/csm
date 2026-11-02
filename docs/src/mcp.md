@@ -39,7 +39,7 @@ Unknown tokens draw on the same budget as Web UI login and API token
 guesses: five failed attempts per minute per client (IPv4 address or IPv6
 /64), after which the client is refused for a minute. `/mcp` also counts
 toward the API request rate limit. Up to four tool calls run at once and
-each call has 30 seconds.
+each request, a whole batch included, has 30 seconds.
 
 ## Transport
 

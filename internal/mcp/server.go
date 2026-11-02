@@ -19,9 +19,10 @@ const (
 	// maxConcurrentCalls bounds tool calls running at once, since several
 	// routes read the live host (queue listings, account walks).
 	maxConcurrentCalls = 4
-	// callTimeout bounds one tool call; the dispatcher gets it as a
-	// context deadline.
-	callTimeout = 30 * time.Second
+	// requestTimeout bounds one request, every call of a batch included;
+	// the dispatcher gets it as a context deadline. A deadline per call let
+	// a batch outlive the listener's write timeout.
+	requestTimeout = 30 * time.Second
 	// queueWait bounds how long a call waits for a free slot.
 	queueWait = 10 * time.Second
 	// maxBatch bounds one JSON-RPC batch.
@@ -99,9 +100,11 @@ func (s *Server) ServeMCP(w http.ResponseWriter, r *http.Request, caller string)
 		writeJSON(w, http.StatusOK, newError(nil, perr.Code, perr.Message))
 		return
 	}
+	ctx, cancel := context.WithTimeout(r.Context(), requestTimeout)
+	defer cancel()
 	var responses []rpcResponse
 	for _, req := range requests {
-		resp, ok := s.dispatch(r.Context(), req, caller, r.RemoteAddr)
+		resp, ok := s.dispatch(ctx, req, caller, r.RemoteAddr)
 		if ok {
 			responses = append(responses, resp)
 		}
@@ -210,8 +213,8 @@ const instructions = "Read-only view of the CSM security monitor on this server.
 	"Start with csm_overview, use csm_lookup_ip for an address and csm_account for a hosting account. " +
 	"Lists answer {items, total, truncated}; page with the limit, offset or page arguments a tool declares."
 
-// runCall runs one tool call under the concurrency cap and timeout and
-// logs it.
+// runCall runs one tool call under the concurrency cap and the request's
+// deadline, and logs it.
 func (s *Server) runCall(ctx context.Context, p toolsCallParams, tokenName, peer string) (toolResult, error) {
 	select {
 	case s.calls <- struct{}{}:
@@ -221,8 +224,6 @@ func (s *Server) runCall(ctx context.Context, p toolsCallParams, tokenName, peer
 		return errorResult("server busy; retry shortly"), nil
 	}
 	defer func() { <-s.calls }()
-	ctx, cancel := context.WithTimeout(ctx, callTimeout)
-	defer cancel()
 	start := time.Now()
 	result, status, err := s.callTool(ctx, p.Name, p.Arguments, peer)
 	outcome := "ok"
