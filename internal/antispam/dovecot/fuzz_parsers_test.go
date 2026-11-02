@@ -29,6 +29,10 @@ func FuzzParseDoveadmUser(f *testing.F) {
 	} {
 		f.Add([]byte("alice@example.com\t1000\t1000\t"+home+"\t\t\tmaildir:~/Maildir\talice@example.com\n\n\n"), "alice@example.com\nghost@example.com")
 	}
+	// A %u renamed to hold tabs, with a newline in another field.
+	for _, out := range []string{forged, forgedPlugins} {
+		f.Add([]byte(out+"\n\n"), attacker+"\nghost@example.com\nzed@example.com")
+	}
 	f.Fuzz(func(t *testing.T, out []byte, users string) {
 		if names, err := parseUsers(out); err == nil {
 			if len(names) == 0 || len(names) > MaxMailboxes || !slices.IsSorted(names) {
@@ -48,15 +52,21 @@ func FuzzParseDoveadmUser(f *testing.F) {
 		}
 		batch := strings.Split(users, "\n")
 		for nloc := range 3 {
-			found, err := parseDetails(out, batch, nloc)
+			recs, err := parseDetails(out, batch, nloc)
 			if err != nil {
 				continue
 			}
-			for name, d := range found {
-				if !slices.Contains(batch, name) || len(d.locs) != 1+nloc || d.uid < 0 || d.uid > math.MaxUint32 || d.gid < 0 || d.gid > math.MaxUint32 ||
-					strings.ContainsFunc(d.home+d.mail+d.plugins+strings.Join(d.locs, ""), control) {
-					t.Fatalf("record %q: %+v", name, d)
+			seen := map[string]bool{}
+			for _, r := range recs {
+				if !slices.Contains(batch, r.name) || seen[r.name] || len(r.locs) != 1+nloc || r.uid < 0 || r.uid > math.MaxUint32 || r.gid < 0 || r.gid > math.MaxUint32 ||
+					strings.ContainsFunc(r.home+r.mail+r.plugins+strings.Join(r.locs, ""), control) {
+					t.Fatalf("record %+v of %q", r, batch)
 				}
+				seen[r.name] = true
+			}
+			// Accepted as a whole lookup: one line per user, nothing else.
+			if _, err := inOrder(recs, batch); err == nil && len(slices.DeleteFunc(strings.Split(string(out), "\n"), func(l string) bool { return l == "" })) != len(batch) {
+				t.Fatalf("lookup of %q accepted from %q", batch, out)
 			}
 		}
 	})

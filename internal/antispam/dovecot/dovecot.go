@@ -217,22 +217,60 @@ const (
 	exTempFail = 75
 )
 
-// details looks a batch of users up. Names come after "--" so none is read
-// as an option, and none contains a mask character. Any exit but the two
-// per-user ones, a signal included, fails the batch.
+// details looks a batch of users up. A batch that exits 0 must print one
+// record per user in request order. A batch that exits 67 or 75 vouches for
+// none of its records, since one user's fields can carry lines that parse
+// as another's: each user it printed is looked up alone and must exit 0
+// with its one record, and the users it did not print have no record. Any
+// other exit, a signal included, fails the batch.
 func (d Dovecot) details(ctx context.Context, conf config, batch []string) (map[string]detail, error) {
-	args := append([]string{"user", "-e", conf.template(), "--"}, batch...)
-	out, err := d.cmd(ctx, "doveadm", args...)
+	out, err := d.lookup(ctx, conf, batch)
 	var exit *exec.ExitError
-	if err != nil && (!errors.As(err, &exit) || exit.ExitCode() != exNoUser && exit.ExitCode() != exTempFail) {
+	partial := errors.As(err, &exit) && (exit.ExitCode() == exNoUser || exit.ExitCode() == exTempFail)
+	if err != nil && !partial {
 		return nil, err
 	}
-	found, perr := parseDetails(out, batch, len(conf.locs))
-	switch {
-	case perr != nil:
-		return nil, perr
-	case err == nil && len(found) != len(batch):
-		return nil, errors.New("doveadm user printed no record for a user it found")
+	recs, err := parseDetails(out, batch, len(conf.locs))
+	if err != nil {
+		return nil, err
+	}
+	if !partial {
+		return inOrder(recs, batch)
+	}
+	found := make(map[string]detail, len(recs))
+	for _, r := range recs {
+		out, err := d.lookup(ctx, conf, []string{r.name})
+		if err != nil {
+			return nil, err
+		}
+		one, err := parseDetails(out, []string{r.name}, len(conf.locs))
+		if err != nil {
+			return nil, err
+		}
+		confirmed, err := inOrder(one, []string{r.name})
+		if err != nil {
+			return nil, err
+		}
+		found[r.name] = confirmed[r.name]
+	}
+	return found, nil
+}
+
+// lookup runs doveadm user for names. They come after "--" so none is read
+// as an option, and none contains a mask character.
+func (d Dovecot) lookup(ctx context.Context, conf config, names []string) ([]byte, error) {
+	return d.cmd(ctx, "doveadm", append([]string{"user", "-e", conf.template(), "--"}, names...)...)
+}
+
+// inOrder accepts the records of a lookup that exited 0: exactly one per
+// requested user, in request order.
+func inOrder(recs []named, names []string) (map[string]detail, error) {
+	if !slices.EqualFunc(recs, names, func(r named, name string) bool { return r.name == name }) {
+		return nil, errors.New("doveadm user did not print one record per user in order")
+	}
+	found := make(map[string]detail, len(recs))
+	for _, r := range recs {
+		found[r.name] = r.detail
 	}
 	return found, nil
 }
@@ -278,10 +316,16 @@ type config struct {
 	junk     []junkBox
 }
 
-// template has doveadm print, per user, the fixed fields and every location
-// expanded with that user's variables, tab-separated, then the user again.
-// The trailer makes a record end with its own user: a newline inside a
-// field leaves a first or last fragment that is not a whole record.
+// template has doveadm print, per user, one tab-separated line: %u, uid,
+// gid, home, the userdb mail and mail_plugins fields, every location
+// expanded for that user, then %u again. doveadm escapes nothing, and %u is
+// the name after lookup, which a userdb may rename. So a line counts as a
+// record only with the exact field count, no control byte, and a first and
+// last field equal to a requested name, as listed or in lower case. Even
+// then a newline inside one user's fields can make lines that pass for other
+// users' records; details trusts records only from a lookup that exited 0
+// and printed exactly one per user in request order. Any extra line or tab
+// breaks that count.
 func (c config) template() string {
 	f := append([]string{"%u", "%{uid}", "%{gid}", "%h", "%{userdb:mail}", "%{userdb:mail_plugins}", c.location}, c.locs...)
 	return strings.Join(append(f, "%u"), "\t")
@@ -343,16 +387,24 @@ func parseUsers(out []byte) ([]string, error) {
 	return slices.Compact(names), nil
 }
 
-// parseDetails maps each requested name to its record. Every non-empty line
-// must be one whole record of a requested user, matched case-insensitively,
-// without control bytes; anything else fails the batch.
-func parseDetails(out []byte, batch []string, nloc int) (map[string]detail, error) {
+// named is a record under the requested name it matched.
+type named struct {
+	name string
+	detail
+}
+
+// parseDetails returns the records in output order. Every non-empty line
+// must be a record, as template describes, of a distinct requested user;
+// anything else fails the batch.
+func parseDetails(out []byte, batch []string, nloc int) ([]named, error) {
 	errFraming := errors.New("doveadm user printed a malformed record")
-	want := make(map[string]string, len(batch))
+	want := make(map[string]string, 2*len(batch))
 	for _, name := range batch {
+		want[name] = name
 		want[strings.ToLower(name)] = name
 	}
-	found := map[string]detail{}
+	var recs []named
+	seen := map[string]bool{}
 	for line := range strings.SplitSeq(string(out), "\n") {
 		if line == "" {
 			continue
@@ -361,15 +413,16 @@ func parseDetails(out []byte, batch []string, nloc int) (map[string]detail, erro
 		if len(f) != 8+nloc || f[len(f)-1] != f[0] || strings.ContainsFunc(line, func(r rune) bool { return r != '\t' && control(r) }) {
 			return nil, errFraming
 		}
-		name, ok := want[strings.ToLower(f[0])]
+		name, ok := want[f[0]]
 		uid, err1 := strconv.ParseUint(f[1], 10, 32)
 		gid, err2 := strconv.ParseUint(f[2], 10, 32)
-		if _, dup := found[name]; !ok || dup || err1 != nil || err2 != nil {
+		if !ok || seen[name] || err1 != nil || err2 != nil {
 			return nil, errFraming
 		}
-		found[name] = detail{uid: int(uid), gid: int(gid), home: f[3], mail: f[4], plugins: f[5], locs: f[6 : len(f)-1]}
+		seen[name] = true
+		recs = append(recs, named{name, detail{uid: int(uid), gid: int(gid), home: f[3], mail: f[4], plugins: f[5], locs: f[6 : len(f)-1]}})
 	}
-	return found, nil
+	return recs, nil
 }
 
 // parseConfig reads doveconf -n output: settings as "key = value", sections

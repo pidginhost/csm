@@ -69,6 +69,110 @@
   {
    "argv": [
     "doveadm",
+    "user",
+    "-e",
+    "%u\t%{uid}\t%{gid}\t%h\t%{userdb:mail}\t%{userdb:mail_plugins}\tmaildir:~/Maildir\t%u",
+    "--",
+    "-x@example.com"
+   ],
+   "stdout": "-x@example.com\t1000\t1000\t/srv/vmail/example.com/x\t\t\tmaildir:~/Maildir\t-x@example.com\n",
+   "stderr": "",
+   "exit": 0
+  },
+  {
+   "argv": [
+    "doveadm",
+    "user",
+    "-e",
+    "%u\t%{uid}\t%{gid}\t%h\t%{userdb:mail}\t%{userdb:mail_plugins}\tmaildir:~/Maildir\t%u",
+    "--",
+    "alice@example.com"
+   ],
+   "stdout": "alice@example.com\t1000\t1000\t/srv/vmail/example.com/alice\t\t\tmaildir:~/Maildir\talice@example.com\n",
+   "stderr": "",
+   "exit": 0
+  },
+  {
+   "argv": [
+    "doveadm",
+    "user",
+    "-e",
+    "%u\t%{uid}\t%{gid}\t%h\t%{userdb:mail}\t%{userdb:mail_plugins}\tmaildir:~/Maildir\t%u",
+    "--",
+    "bob@example.com"
+   ],
+   "stdout": "bob@example.com\t1000\t1000\t/srv/vmail/example.com/bob\tmaildir:~/Mail\t\tmaildir:~/Maildir\tbob@example.com\n",
+   "stderr": "",
+   "exit": 0
+  },
+  {
+   "argv": [
+    "doveadm",
+    "user",
+    "-e",
+    "%u\t%{uid}\t%{gid}\t%h\t%{userdb:mail}\t%{userdb:mail_plugins}\tmaildir:~/Maildir\t%u",
+    "--",
+    "carol@example.net"
+   ],
+   "stdout": "carol@example.net\t1001\t1001\t/srv/vmail/example.net/carol\t\t\tmaildir:~/Maildir\tcarol@example.net\n",
+   "stderr": "",
+   "exit": 0
+  },
+  {
+   "argv": [
+    "doveadm",
+    "user",
+    "-e",
+    "%u\t%{uid}\t%{gid}\t%h\t%{userdb:mail}\t%{userdb:mail_plugins}\tmaildir:~/Maildir\t%u",
+    "--",
+    "dave"
+   ],
+   "stdout": "dave\t1002\t1002\t/home/dave\t\t\tmaildir:~/Maildir\tdave\n",
+   "stderr": "",
+   "exit": 0
+  },
+  {
+   "argv": [
+    "doveadm",
+    "user",
+    "-e",
+    "%u\t%{uid}\t%{gid}\t%h\t%{userdb:mail}\t%{userdb:mail_plugins}\tmaildir:~/Maildir\t%u",
+    "--",
+    "erin@example.net"
+   ],
+   "stdout": "erin@example.net\t1001\t1001\t/srv/vmail/example.net/erin\tmdbox:~/mdbox\t\tmaildir:~/Maildir\terin@example.net\n",
+   "stderr": "",
+   "exit": 0
+  },
+  {
+   "argv": [
+    "doveadm",
+    "user",
+    "-e",
+    "%u\t%{uid}\t%{gid}\t%h\t%{userdb:mail}\t%{userdb:mail_plugins}\tmaildir:~/Maildir\t%u",
+    "--",
+    "frank@example.net"
+   ],
+   "stdout": "frank@example.net\t1001\t1001\t/srv/vmail/example.net/frank\tmaildir:~/Maildir:LAYOUT=fs\t\tmaildir:~/Maildir\tfrank@example.net\n",
+   "stderr": "",
+   "exit": 0
+  },
+  {
+   "argv": [
+    "doveadm",
+    "user",
+    "-e",
+    "%u\t%{uid}\t%{gid}\t%h\t%{userdb:mail}\t%{userdb:mail_plugins}\tmaildir:~/Maildir\t%u",
+    "--",
+    "grace@example.com"
+   ],
+   "stdout": "grace@example.com\t1000\t1000\t/srv/vmail/example.com/grace\t\tzlib\tmaildir:~/Maildir\tgrace@example.com\n",
+   "stderr": "",
+   "exit": 0
+  },
+  {
+   "argv": [
+    "doveadm",
     "mailbox",
     "path",
     "-u",

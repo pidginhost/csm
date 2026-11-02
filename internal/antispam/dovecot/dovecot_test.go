@@ -2,6 +2,7 @@ package dovecot
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -203,9 +204,10 @@ type host struct {
 	listOut, detailOut []byte
 	listings           int
 	batches            [][]string
-	// detailExit is the status of every lookup batch; 0 means 67 when a
-	// user is unknown, as Dovecot does, and 0 otherwise.
-	detailExit int
+	// detailExit, when set, is the status of every lookup. Otherwise a
+	// lookup with an unknown user exits missingExit, 67 when unset, as
+	// Dovecot does, and 0 when every user is known.
+	detailExit, missingExit int
 }
 
 func newHost(t *testing.T, users ...string) *host {
@@ -300,7 +302,7 @@ func (h *host) run(ctx context.Context, name string, args ...string) ([]byte, er
 		}
 		code := h.detailExit
 		if code == 0 && missing != nil {
-			code = 67
+			code = cmp.Or(h.missingExit, 67)
 		}
 		if code != 0 {
 			return out.Bytes(), exitError(h.t, code, "userdb lookup failed\n")
@@ -585,15 +587,151 @@ func TestSnapshotDetailFailures(t *testing.T) {
 }
 
 // doveadm exits EX_NOUSER or EX_TEMPFAIL when it could not look up some
-// users and printed the others.
+// users and printed the others. Each printed record is then confirmed by a
+// lookup of that user alone.
 func TestSnapshotLookupFailureSkipsOnlyThatUser(t *testing.T) {
 	for _, code := range []int{67, 75} {
 		h := newHost(t, "alice@example.com", "ghost@example.com", "bob@example.com")
-		h.detailExit = code
+		h.missingExit = code
 		snap, err := h.snapshot()
 		if err != nil || !snap.Complete || len(snap.Mailboxes) != 2 ||
 			!reflect.DeepEqual(reasons(snap), map[string]string{"ghost@example.com": SkipLookupFailed}) {
 			t.Errorf("exit %d: snapshot %+v, err %v", code, snap, err)
+		}
+		want := [][]string{{"alice@example.com", "bob@example.com", "ghost@example.com"}, {"alice@example.com"}, {"bob@example.com"}}
+		if !reflect.DeepEqual(h.batches, want) {
+			t.Errorf("exit %d: lookups %q, want %q", code, h.batches, want)
+		}
+	}
+}
+
+// recLine is a well-formed lookup record: it ends with its user again.
+func recLine(f ...string) string {
+	return strings.Join(append(f, f[0]), "\t") + "\n"
+}
+
+// A lookup that exits 0 holds one record per user, in request order, each
+// naming its user exactly as requested.
+func TestSnapshotExitZeroLookupIsStrict(t *testing.T) {
+	alice := []string{"alice@example.com", "1000", "1000", "/srv/a", "", "", "maildir:~/Maildir"}
+	bob := []string{"bob@example.com", "1000", "1000", "/srv/b", "", "", "maildir:~/Maildir"}
+	upper := append([]string{"ALICE@example.com"}, alice[1:]...)
+	for name, out := range map[string]string{
+		"order":   recLine(bob...) + "\n" + recLine(alice...),
+		"case":    recLine(upper...) + "\n" + recLine(bob...),
+		"one":     recLine(alice...),
+		"blank":   "\n\n",
+		"twice":   recLine(alice...) + "\n" + recLine(alice...) + "\n" + recLine(bob...),
+		"surplus": recLine(alice...) + "\n" + recLine(bob...) + "\n" + recLine(append([]string{"carol@example.net"}, alice[1:]...)...),
+	} {
+		h := newHost(t, "alice@example.com", "bob@example.com")
+		h.detailOut = []byte(out)
+		snap, err := h.snapshot()
+		if err == nil || !reflect.DeepEqual(snap, Snapshot{}) {
+			t.Errorf("%s: snapshot %+v, err %v", name, snap, err)
+		}
+	}
+}
+
+// A record that a failed batch printed for a user whose own lookup does not
+// confirm it fails the snapshot.
+func TestSnapshotUnconfirmedRecordFailsSnapshot(t *testing.T) {
+	ghost := recLine("ghost@example.com", "1001", "1001", "/srv/vmail/example.com/victim", "", "", "maildir:~/Maildir")
+	alice := recLine("alice@example.com", "1000", "1000", "/srv/a", "", "", "maildir:~/Maildir")
+	for name, single := range map[string]func(h *host, user string) ([]byte, error){
+		"unknown alone": func(h *host, user string) ([]byte, error) {
+			if user == "ghost@example.com" {
+				return nil, exitError(h.t, 67, "")
+			}
+			return []byte(alice), nil
+		},
+		"tempfail alone": func(h *host, user string) ([]byte, error) {
+			if user == "ghost@example.com" {
+				return []byte(ghost), exitError(h.t, 75, "")
+			}
+			return []byte(alice), nil
+		},
+		"two records alone": func(h *host, user string) ([]byte, error) {
+			return []byte(alice + "\n" + ghost), nil
+		},
+		"nothing alone": func(h *host, user string) ([]byte, error) {
+			return nil, nil
+		},
+	} {
+		h := newHost(t, "alice@example.com", "ghost@example.com")
+		run := func(ctx context.Context, name string, args ...string) ([]byte, error) {
+			if len(args) > 4 && args[1] == "-e" {
+				if names := args[4:]; len(names) == 1 {
+					return single(h, names[0])
+				}
+				return []byte(alice + "\n" + ghost), exitError(h.t, 67, "")
+			}
+			return h.run(ctx, name, args...)
+		}
+		snap, err := Dovecot{Run: run}.Snapshot(context.Background())
+		if err == nil || !reflect.DeepEqual(snap, Snapshot{}) {
+			t.Errorf("%s: snapshot %+v, err %v", name, snap, err)
+		}
+	}
+}
+
+// %u is the name after lookup, which a userdb user field can rename to text
+// holding tabs. That moves both anchors of a record; with a newline in
+// another field, lines pass for records of ghost and zed, listed but
+// unknown to doveadm.
+const (
+	attacker = "attacker@example.com"
+	renamed  = attacker + "\t1\t1\tzed@example.com"
+	victim   = "/srv/vmail/example.com/victim"
+)
+
+// forged is the attacker's lookup output: a home carrying a ghost record.
+var forged = strings.Join([]string{renamed, "1000", "1000",
+	"x\t" + attacker + "\nghost@example.com\t1001\t1001\t" + victim + "\t\t\tmaildir:~/Maildir\tghost@example.com\nzed@example.com",
+	"1", "1", "maildir:~/Maildir", renamed}, "\t") + "\n"
+
+// forgedPlugins needs only the user and mail_plugins fields, with one
+// namespace location.
+var forgedPlugins = strings.Join([]string{renamed, "1000", "1000", "/srv/vmail/example.com/attacker", "",
+	attacker + "\nghost@example.com\t1001\t1001\t" + victim + "\t\t\tmaildir:~/Maildir\tmaildir:/srv/archive/x\tghost@example.com\nzed@example.com\t1\t1",
+	"maildir:~/Maildir", "maildir:/srv/archive/x", renamed}, "\t") + "\n"
+
+func TestSnapshotRenamedUserCannotForgeRecords(t *testing.T) {
+	realGhost := recLine("ghost@example.com", "1001", "1001", victim, "", "", "maildir:~/Maildir")
+	realZed := recLine("zed@example.com", "1002", "1002", "/srv/vmail/example.com/zed", "", "", "maildir:~/Maildir")
+	for _, c := range []struct {
+		name, batch, alone string
+		exit               int
+		namespaceLocation  bool
+	}{
+		{"failed batch", forged + "\n\n", forged, 67, false},
+		{"failed batch, user and plugins only", forgedPlugins + "\n\n", forgedPlugins, 67, true},
+		{"tempfail batch", forged + "\n\n", forged, 75, false},
+		{"whole batch", forged + "\n" + realGhost + "\n" + realZed, forged, 0, false},
+	} {
+		h := newHost(t, attacker, "ghost@example.com", "zed@example.com")
+		if c.namespaceLocation {
+			h.edit("  location = \n  mailbox \"Courrier", "  location = maildir:/srv/archive/x\n  mailbox \"Courrier")
+		}
+		run := func(ctx context.Context, name string, args ...string) ([]byte, error) {
+			if len(args) > 4 && args[1] == "-e" {
+				names := args[4:]
+				switch {
+				case len(names) > 1 && c.exit != 0:
+					return []byte(c.batch), exitError(h.t, c.exit, "")
+				case len(names) > 1:
+					return []byte(c.batch), nil
+				case names[0] == attacker:
+					// The attacker's own lookup succeeds with the same text.
+					return []byte(c.alone), nil
+				}
+				return nil, exitError(h.t, 67, "")
+			}
+			return h.run(ctx, name, args...)
+		}
+		snap, err := Dovecot{Run: run}.Snapshot(context.Background())
+		if err == nil || snap.Complete || slices.ContainsFunc(snap.Mailboxes, func(m DovecotMailbox) bool { return m.User != attacker }) {
+			t.Errorf("%s: snapshot %+v, err %v", c.name, snap, err)
 		}
 	}
 }

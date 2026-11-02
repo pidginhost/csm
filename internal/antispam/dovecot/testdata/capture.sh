@@ -123,6 +123,11 @@ rec maildir doveadm user '*'
 rec maildir doveadm user -e "$T" -- -x@example.com Henry@Example.COM alice@example.com bob@example.com carol@example.net dave erin@example.net frank@example.net grace@example.com rel@example.com zero@example.com
 # Dovecot refuses a relative home: EX_TEMPFAIL, alice still printed.
 rec maildir doveadm user -e "$T" -- alice@example.com rel@example.com
+# After a batch that failed for some users, Snapshot confirms each user it
+# printed with a lookup of that user alone.
+for u in -x@example.com alice@example.com bob@example.com carol@example.net dave erin@example.net frank@example.net grace@example.com; do
+	rec maildir doveadm user -e "$T" -- "$u"
+done
 # Ground truth for the Junk paths: where Dovecot itself puts each folder.
 for u in alice@example.com bob@example.com carol@example.net; do
 	for box in INBOX.Junk 'INBOX.Courrier indésirable' 'INBOX.Spam & Co'; do
