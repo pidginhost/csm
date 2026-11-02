@@ -90,7 +90,8 @@ A client configuration for an agent runtime that takes a URL and a header:
 Every tool carries `readOnlyHint: true`. A tool answers the route's JSON as
 text content; the route's own error (`400`, `404`, `503`) is returned as a
 tool error with the API message, so the agent can read it. Lists keep the
-API shape `{items, total, truncated}` and take `limit` and `offset`.
+API shape `{items, total, truncated}`; a tool takes only the arguments its
+route reads, and a test fails if a tool declares one the route ignores.
 
 Composite tools:
 

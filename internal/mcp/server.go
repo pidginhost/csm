@@ -381,7 +381,7 @@ func (s *Server) dispatch(ctx context.Context, req rpcRequest, tokenName, peer s
 const instructions = "Read-only view of the CSM security monitor on this server. " +
 	"Every tool reads; none can block, unblock, fix, scan or change settings. " +
 	"Start with csm_overview, use csm_lookup_ip for an address and csm_account for a hosting account. " +
-	"Lists answer {items, total, truncated}; use limit and offset to page."
+	"Lists answer {items, total, truncated}; page with the limit, offset or page arguments a tool declares."
 
 // runCall runs one tool call under the concurrency cap and timeout and
 // logs it.
