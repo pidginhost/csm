@@ -11,9 +11,9 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Highlights
 
-- By default, YARA scanning and PHP taint analysis run in locked-down workers without root; failed scans are reported as unexamined files.
+- By default, YARA scanning and PHP taint analysis run in locked-down workers without root; files they cannot check are reported as not scanned.
 - With the default YARA worker, rule files can no longer include other files; inline them, or set `signatures.yara_worker_enabled: false` to run YARA in the daemon as root.
-- Postfix antispam supports Junk-folder learning; its dry run changes scoring and can still reject mail under rspamd's existing policy.
+- Antispam now runs on Postfix servers that pass mail to rspamd; its dry run already changes rspamd scoring and can still reject mail at the host's own thresholds.
 - Postfix SMTP password guessing is now detected with Dovecot authentication; enable verbose auth logging, which `csm doctor` checks.
 - Enabling antispam now replaces your own rspamd files where CSM needs them, keeping a backup, instead of refusing to install.
 - The firewall now opens the passive FTP port range by default only on cPanel hosts and hosts with an FTP server installed.
@@ -40,7 +40,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - Antispam now runs on Postfix servers that pass mail to rspamd, scoring like cPanel with a dry run, and refuses to enforce where rspamd would drop or hold rejected mail.
 - Antispam on Postfix servers now learns from mail users move into their Junk folder, using a dedicated Redis.
 - Antispam learning now accepts Redis 7 and can use a Redis of its own set by `learning.redis_socket`, refused while another rspamd module shares it.
-- Antispam DNS blocklists now work through your own resolvers on public addresses when listed by address in `infra_ips`.
+- Antispam DNS blocklists now work through your own resolvers on public addresses when those addresses are listed in `infra_ips`.
 - Nodes can now load central abuse lists containing spam sources and opt in to report repeated spam senders; spam reports exclude recognized shared mail services.
 
 ### Changed
@@ -75,7 +75,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 #### Daemon log
 
-- The daemon log distinguishes deliberate worker stops from failures and explains retirement or exit before reporting a kill.
+- The daemon log now says when CSM stops a worker on purpose and why a worker retired or exited, instead of only reporting a kill.
 - Large files no longer produce spurious YARA scan-failure messages in the daemon log.
 
 ## [4.8.1] - 2026-10-30
