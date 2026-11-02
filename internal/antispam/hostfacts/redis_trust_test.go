@@ -93,7 +93,7 @@ func TestTrustedRedisOwnerRejectsAccountUIDAlias(t *testing.T) {
 	c, _ := learningCollector(t, &fakeRun{})
 	c.uid = lookup(map[string]int{"tenant": 12345, "redis": 12345})
 	f := antispam.HostFacts{AccountNames: map[string]bool{"tenant": true}}
-	if c.trustedRedisOwner(12345, f) {
+	if trusted, _ := c.trustedRedisOwner(12345, f); trusted {
 		t.Fatal("an account UID was trusted through its service-name alias")
 	}
 	c.uid = func(name string) (int, error) {
@@ -102,7 +102,7 @@ func TestTrustedRedisOwnerRejectsAccountUIDAlias(t *testing.T) {
 		}
 		return -1, errors.New("lookup unavailable")
 	}
-	if c.trustedRedisOwner(12345, f) {
+	if trusted, _ := c.trustedRedisOwner(12345, f); trusted {
 		t.Fatal("an unresolved account UID was treated as unrelated")
 	}
 }
@@ -122,10 +122,10 @@ func TestTrustedRedisOwnerIgnoresRecordWithoutUser(t *testing.T) {
 		return []byte("redis:x:12345:12345::/:/bin/false\ntenant:x:23456:23456::/:/bin/false\n"), nil
 	}
 	f := antispam.HostFacts{AccountNames: map[string]bool{"tenant": true, "system": true}}
-	if !c.trustedRedisOwner(12345, f) {
+	if trusted, _ := c.trustedRedisOwner(12345, f); !trusted {
 		t.Fatal("a registry record without a system user blocked the redis service user")
 	}
-	if c.trustedRedisOwner(23456, f) {
+	if trusted, _ := c.trustedRedisOwner(23456, f); trusted {
 		t.Fatal("an account UID was trusted")
 	}
 }
@@ -155,7 +155,7 @@ func TestTrustedRedisOwnerRejectsUnknownUserWithoutLocalProof(t *testing.T) {
 			}
 			c.readPasswd = func() ([]byte, error) { return []byte(tc.passwd), tc.err }
 			f := antispam.HostFacts{AccountNames: map[string]bool{"tenant": true}}
-			if c.trustedRedisOwner(12345, f) {
+			if trusted, _ := c.trustedRedisOwner(12345, f); trusted {
 				t.Fatal("an unresolved account was treated as absent without a readable local record set")
 			}
 		})
@@ -189,7 +189,7 @@ func TestTrustedRedisOwner(t *testing.T) {
 			}
 			f := antispam.HostFacts{AccountNames: accounts, AccountNamesErr: tc.accountErr}
 			f.Socket.RspamdUID = 979
-			if got := c.trustedRedisOwner(tc.uid, f); got != tc.want {
+			if got, _ := c.trustedRedisOwner(tc.uid, f); got != tc.want {
 				t.Fatalf("trusted=%v, want %v", got, tc.want)
 			}
 		})
@@ -290,7 +290,7 @@ func TestTrustedRedisOwnerPostfix(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			c, f := postfixCollector(t, tc.passwd)
 			c.learningRedis(context.Background(), "", &f)
-			if got := c.trustedRedisOwner(tc.uid, f); got != tc.want {
+			if got, _ := c.trustedRedisOwner(tc.uid, f); got != tc.want {
 				t.Fatalf("trusted=%v, want %v (untrusted users %v, %v)", got, tc.want, f.AccountNames, f.AccountNamesErr)
 			}
 		})

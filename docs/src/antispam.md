@@ -808,23 +808,32 @@ The [learning prerequisites](#prerequisites) apply, and also:
    changed, CSM reports `unsupported` and leaves learning off. When a userdb
    that can list users fails, for example while its SQL database is down,
    CSM reports `backend_unavailable`: installed learning stays and new
-   reports wait for a later check.
+   reports wait for a later check. A temporary failure looking up an
+   individual user also pauses discovery, without cancelling reservations
+   or pruning state. Unusable or case-colliding user names pause discovery
+   because their identities and mail owners cannot be established safely.
 2. **Junk marked as `\Junk`.** CSM finds Junk folders by
    `special_use = \Junk` in Dovecot's namespace mailbox settings, as
-   Dovecot's example `15-mailboxes.conf` sets for `Junk`. A folder named
+   Dovecot's example `15-mailboxes.conf` sets for `Junk`. A single configured
+   mailbox is supported too. A folder named
    Junk without the flag is not watched, and with no `\Junk` mailbox at all
    every mailbox is skipped.
 3. **Maildir in its default layout.** CSM skips a mailbox stored another
    way: another driver such as `mdbox` or `mbox`, `LAYOUT=fs`, or the `zlib`
    or `mail_crypt` plugin. It also skips a mailbox whose uid is 0, whose
-   name, home or mail location it cannot use, such as a location with
-   `DIRNAME`, `MAILBOXDIR` or a `%{if}` condition, or whose userdb lookup
-   fails. A `%{if}` in `mail_location` or in the location of a namespace
-   with a Junk folder skips every mailbox. Two users whose mail directories
-   are the same, or one inside the other, such as an alias that shares a
-   home, are both skipped: CSM cannot tell their moves apart. Skipped
-   mailboxes are counted by reason in one `mailboxes_skipped` warning that
-   names none of them; learning goes on for the others.
+   home or mail location it cannot use, such as a location with `DIRNAME`,
+   `MAILBOXDIR` or a `%{if}` condition, or whose lookup confirms the user
+   does not exist. A `%{if}` in `mail_location` or a private namespace
+   location skips every mailbox; CSM still reads their mail owners for
+   isolation checks. Known owners remain part of those checks even when
+   their mailboxes are skipped for another reason.
+   Two users whose mail directories are the same, including a symlink
+   alias, or one inside the other, are both skipped: CSM cannot tell their
+   moves apart. Private namespaces without Junk also count. An unresolved
+   mail location holds other mailboxes sharing its uid until discovery can
+   distinguish them. Skipped mailboxes are counted by reason in one
+   `mailboxes_skipped` warning that names none of them; learning goes on
+   for the others.
 4. **A Redis of its own.** Learning never uses rspamd's Redis on Postfix,
    because other rspamd modules share it. Run a second Redis instance and
    set `learning.redis_socket` to its socket; without it CSM reports
@@ -1163,7 +1172,9 @@ A cPanel account record with no system user, such as cPanel's own `system`
 record, does not count as an account sharing the Redis owner when
 `/etc/passwd` does not list it either. If `/etc/passwd` cannot be read in
 full, or an account lookup fails for another reason, CSM does not trust a
-non-root Redis owner.
+non-root Redis owner. On Postfix these account read failures pause learning
+and retain its installed configuration. The worker rechecks Dovecot mail
+owners before using a dedicated Redis, including owners of skipped mailboxes.
 
 Redis persistence is recommended. CSM warns only when both append-only
 persistence (`appendonly yes`) and snapshots (`save`) are disabled. While

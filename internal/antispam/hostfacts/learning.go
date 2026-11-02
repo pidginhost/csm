@@ -52,10 +52,7 @@ func (c collector) learningFacts(ctx context.Context, s antispam.Settings, f *an
 	c.logGroups(f)
 	f.FuzzyListening, f.FuzzyListenForeign, f.FuzzyListenErr = c.fuzzyListening(f.Socket.RspamdUID)
 	f.CageFS = c.cageFS(ctx)
-	if f.Stack == antispam.StackPostfix {
-		// Mail uids decide who is untrusted, so Dovecot is read first.
-		f.Dovecot = c.dovecotFacts(ctx)
-	} else {
+	if f.Stack != antispam.StackPostfix {
 		f.Roundcube = c.roundcube(*f)
 	}
 	c.learningRedis(ctx, s.LearningRedisSocket, f)
@@ -88,6 +85,11 @@ func (c collector) dovecotFacts(ctx context.Context) antispam.DovecotFacts {
 	for _, m := range snap.Mailboxes {
 		uids = append(uids, m.UID)
 	}
+	for _, sk := range snap.Skips {
+		if sk.UID > 0 {
+			uids = append(uids, sk.UID)
+		}
+	}
 	slices.Sort(uids)
 	return antispam.DovecotFacts{UIDs: slices.Compact(uids), Skips: snap.Skips}
 }
@@ -101,6 +103,8 @@ func CollectLearningRedis(ctx context.Context, socket string, f *antispam.HostFa
 
 func (c collector) learningRedis(ctx context.Context, socket string, f *antispam.HostFacts) {
 	if f.Stack == antispam.StackPostfix {
+		// Both the pass and the locked worker must use current mail UIDs.
+		f.Dovecot = c.dovecotFacts(ctx)
 		f.AccountNames, f.AccountNamesErr = c.untrustedLocalUsers(f.ControllerHost.RspamdUser, f.Dovecot.UIDs)
 	} else {
 		f.AccountNames, f.AccountNamesErr = c.accountNames()
@@ -509,10 +513,19 @@ func (c collector) redis(ctx context.Context, f antispam.HostFacts, socket strin
 		r.Err = errors.New("redis socket cannot be checked")
 		return r
 	}
+	if f.Stack == antispam.StackPostfix && f.Dovecot.Err != nil {
+		r.Err = errors.New("the Dovecot mail UIDs could not be checked")
+		return r
+	}
 	owner := r.Socket.Socket.UID
 	gid := r.Socket.Socket.GID
 	r.GroupMembers = c.groupMembers(map[int]bool{gid: true})[gid]
-	if !c.trustedRedisOwner(owner, f) || !protectedRedisPath(endpoint, owner, pathFacts) {
+	trusted, trustErr := c.trustedRedisOwner(owner, f)
+	if trustErr != nil && f.Stack == antispam.StackPostfix {
+		r.Err = errors.New("the Redis owner isolation could not be checked")
+		return r
+	}
+	if !trusted || !protectedRedisPath(endpoint, owner, pathFacts) {
 		r.Unprotected = true
 		r.Err = errors.New("redis socket is not protected; CSM sends it no password")
 		return r
@@ -683,21 +696,23 @@ var upstreamRotations = map[string]bool{"random": true, "master-slave": true, "r
 // rspamd's service user or the system user named redis, and no untrusted
 // user (f.AccountNames) shares the uid. Any other owner, including shared
 // users such as nobody that can run tenant code, gets no password.
-func (c collector) trustedRedisOwner(uid int, f antispam.HostFacts) bool {
+func (c collector) trustedRedisOwner(uid int, f antispam.HostFacts) (bool, error) {
 	if uid == 0 {
-		return true
+		return true, nil
 	}
-	// An untrusted user can carry the name redis: a cPanel account on a host
-	// without the service user, or on Postfix the redis user when mail is
-	// stored as its uid. A uid can have several names; such a uid is a tenant.
-	if shared, err := c.sharesUntrustedUID(uid, f); f.AccountNames["redis"] || shared || err != nil {
-		return false
+	// A pinned service name does not make a shared UID safe.
+	shared, err := c.sharesUntrustedUID(uid, f)
+	if f.AccountNames["redis"] || shared {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
 	}
 	if f.Socket.RspamdUID >= 0 && uid == f.Socket.RspamdUID {
-		return true
+		return true, nil
 	}
 	redisUID, err := c.uid("redis")
-	return err == nil && redisUID >= 0 && uid == redisUID
+	return err == nil && redisUID >= 0 && uid == redisUID, err
 }
 
 // sharesUntrustedUID reports whether a user in f.AccountNames, which may

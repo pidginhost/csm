@@ -1,6 +1,6 @@
 // Package dovecot lists the users of a Dovecot 2.3 host and the Maildir++
-// folders of their \Junk mailboxes. It learns everything from Dovecot's own
-// commands and imports none of the learning packages that consume it.
+// folders of their \Junk mailboxes, checking directory aliases on disk.
+// It imports none of the learning packages that consume it.
 package dovecot
 
 import (
@@ -11,6 +11,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -74,16 +75,17 @@ type DovecotMailbox struct {
 	Junk         []string
 }
 
-// Skip is a listed user that is not watched. User is empty when the name
-// itself was refused.
+// Skip is a listed user that is not watched.
 type Skip struct {
 	User, Reason string
+	// UID is retained after a successful lookup, even when mail cannot be watched.
+	UID int
 }
 
 // Snapshot is one discovery pass. Complete is set only when the listing,
-// every lookup command and a second listing that matches the first all
-// succeeded. A user doveadm could not look up is skipped: skipped users are
-// present, not removed.
+// every identity and a second listing that matches the first were checked.
+// A user confirmed absent is skipped; temporary lookup failures abort the pass.
+// Skipped users are present, not removed.
 type Snapshot struct {
 	Mailboxes []DovecotMailbox
 	Skips     []Skip
@@ -98,7 +100,7 @@ type Dovecot struct {
 
 // Snapshot lists every user and resolves its \Junk folders. Any failure that
 // leaves the listing in doubt returns an error and an empty Snapshot. A user
-// the listing names but doveadm cannot look up is skipped, not dropped.
+// the listing names but doveadm confirms absent is skipped, not dropped.
 func (d Dovecot) Snapshot(ctx context.Context) (Snapshot, error) {
 	if err := d.version(ctx); err != nil {
 		return Snapshot{}, err
@@ -124,25 +126,25 @@ func (d Dovecot) Snapshot(ctx context.Context) (Snapshot, error) {
 	for _, name := range listed {
 		user, _, ok := canonical(name)
 		switch {
-		case !ok:
-			snap.Skips = append(snap.Skips, Skip{Reason: SkipInvalidName})
-		case !seen[user]:
+		case !ok || seen[user]:
+			return Snapshot{}, errors.New("the Dovecot user list has unsupported or ambiguous identities")
+		default:
 			seen[user] = true
 			lookup = append(lookup, name)
 		}
 	}
-	if conf.conditional() {
-		// No such lookup is trusted: its users stay present, unwatched.
-		for _, name := range lookup {
-			user, _, _ := canonical(name)
-			snap.Skips = append(snap.Skips, Skip{User: user, Reason: SkipLocation})
-		}
-		lookup = nil
+	lookupConf := conf
+	conditional := conf.conditional()
+	if conditional {
+		// Read identities without expanding a conditional that could suppress
+		// a record. Skipped mailboxes still determine service UID isolation.
+		lookupConf.location, lookupConf.locs = "", nil
 	}
 	var watch []DovecotMailbox
 	paths := map[string][]string{}
+	unknownPaths := map[int]bool{}
 	for batch := range slices.Chunk(lookup, batchSize) {
-		found, derr := d.details(ctx, conf, batch)
+		found, derr := d.details(ctx, lookupConf, batch)
 		if derr != nil {
 			return Snapshot{}, derr
 		}
@@ -153,10 +155,21 @@ func (d Dovecot) Snapshot(ctx context.Context) (Snapshot, error) {
 				snap.Skips = append(snap.Skips, Skip{User: user, Reason: SkipLookupFailed})
 				continue
 			}
-			paths[user] = conf.paths(det)
+			if conditional {
+				snap.Skips = append(snap.Skips, Skip{User: user, Reason: SkipLocation, UID: det.uid})
+				continue
+			}
+			dirs, complete := conf.paths(det)
+			if !complete {
+				unknownPaths[det.uid] = true
+			}
+			paths[user], err = resolveMailPaths(dirs)
+			if err != nil {
+				return Snapshot{}, err
+			}
 			m, reason := conf.mailbox(user, domain, det)
 			if reason != "" {
-				snap.Skips = append(snap.Skips, Skip{User: user, Reason: reason})
+				snap.Skips = append(snap.Skips, Skip{User: user, Reason: reason, UID: det.uid})
 				continue
 			}
 			watch = append(watch, m)
@@ -164,8 +177,12 @@ func (d Dovecot) Snapshot(ctx context.Context) (Snapshot, error) {
 	}
 	shared := sharedPaths(paths)
 	for _, m := range watch {
+		if unknownPaths[m.UID] {
+			snap.Skips = append(snap.Skips, Skip{User: m.User, Reason: SkipLocation, UID: m.UID})
+			continue
+		}
 		if shared[m.User] {
-			snap.Skips = append(snap.Skips, Skip{User: m.User, Reason: SkipSharedPath})
+			snap.Skips = append(snap.Skips, Skip{User: m.User, Reason: SkipSharedPath, UID: m.UID})
 			continue
 		}
 		snap.Mailboxes = append(snap.Mailboxes, m)
@@ -235,10 +252,14 @@ func (d Dovecot) Users(ctx context.Context) ([]string, error) {
 		return nil, err
 	}
 	var out []string
+	seen := map[string]bool{}
 	for _, name := range listed {
-		if user, _, ok := canonical(name); ok {
-			out = append(out, user)
+		user, _, ok := canonical(name)
+		if !ok || seen[user] {
+			return nil, errors.New("the Dovecot user list has unsupported or ambiguous identities")
 		}
+		seen[user] = true
+		out = append(out, user)
 	}
 	slices.Sort(out)
 	return slices.Compact(out), nil
@@ -264,16 +285,14 @@ const (
 	exTempFail = 75
 )
 
-// details looks a batch of users up. A batch that exits 0 must print one
-// record per user in request order. A batch that exits 67 or 75 vouches for
-// none of its records, since one user's fields can carry lines that parse
-// as another's: each user it printed is looked up alone and must exit 0
-// with its one record, and the users it did not print have no record. Any
-// other exit, a signal included, fails the batch.
+// details accepts a successful batch only with one record per user in order.
+// EX_NOUSER can mask an earlier temporary failure, so every requested user
+// is rechecked alone on that exit. Unescaped userdb fields can also forge
+// another user's batch record; none is trusted without its own lookup.
 func (d Dovecot) details(ctx context.Context, conf config, batch []string) (map[string]detail, error) {
 	out, err := d.lookup(ctx, conf, batch)
 	var exit *exec.ExitError
-	partial := errors.As(err, &exit) && (exit.ExitCode() == exNoUser || exit.ExitCode() == exTempFail)
+	partial := errors.As(err, &exit) && exit.ExitCode() == exNoUser
 	if err != nil && !partial {
 		return nil, err
 	}
@@ -284,21 +303,27 @@ func (d Dovecot) details(ctx context.Context, conf config, batch []string) (map[
 	if !partial {
 		return inOrder(recs, batch)
 	}
-	found := make(map[string]detail, len(recs))
-	for _, r := range recs {
-		out, err := d.lookup(ctx, conf, []string{r.name})
+	found := make(map[string]detail, len(batch))
+	for _, name := range batch {
+		out, lookupErr := d.lookup(ctx, conf, []string{name})
+		if lookupErr != nil && (!errors.As(lookupErr, &exit) || exit.ExitCode() != exNoUser) {
+			return nil, lookupErr
+		}
+		one, err := parseDetails(out, []string{name}, len(conf.locs))
 		if err != nil {
 			return nil, err
 		}
-		one, err := parseDetails(out, []string{r.name}, len(conf.locs))
+		if lookupErr != nil {
+			if len(one) != 0 || slices.ContainsFunc(recs, func(r named) bool { return r.name == name }) {
+				return nil, lookupErr
+			}
+			continue
+		}
+		confirmed, err := inOrder(one, []string{name})
 		if err != nil {
 			return nil, err
 		}
-		confirmed, err := inOrder(one, []string{r.name})
-		if err != nil {
-			return nil, err
-		}
-		found[r.name] = confirmed[r.name]
+		found[name] = confirmed[name]
 	}
 	return found, nil
 }
@@ -355,7 +380,7 @@ type junkBox struct {
 
 // config is what Snapshot reads from doveconf -n: the global mail_location,
 // mail_plugins of every protocol, the \Junk mailboxes with the locations of
-// namespaces that set their own, and the userdbs.
+// every private namespace that sets its own location, and the userdbs.
 type config struct {
 	location string
 	plugins  []string
@@ -467,12 +492,17 @@ func (c config) mailbox(user, domain string, d detail) (DovecotMailbox, string) 
 }
 
 // paths are the directories a user's mail lives in, as far as CSM can tell:
-// the root of the location its INBOX and each Junk namespace use, and any
-// INBOX override. A path with a variable left in it is unknown and dropped.
-func (c config) paths(d detail) []string {
+// the root of the location its INBOX and each private namespace use, and any
+// INBOX override. An unresolved path prevents other users of the same mail
+// UID from borrowing it undetected.
+func (c config) paths(d detail) ([]string, bool) {
 	var out []string
+	complete := true
 	for _, loc := range append([]string{cmp.Or(d.mail, d.locs[0])}, d.locs[1:]...) {
-		_, rest, _ := strings.Cut(loc, ":")
+		_, rest, hasDriver := strings.Cut(loc, ":")
+		if !hasDriver {
+			rest = loc
+		}
 		params := strings.Split(rest, ":")
 		dirs := []string{params[0]}
 		for _, p := range params[1:] {
@@ -483,16 +513,39 @@ func (c config) paths(d detail) []string {
 		for _, dir := range dirs {
 			if dir == "~" || strings.HasPrefix(dir, "~/") {
 				if !absClean(d.home) {
+					complete = false
 					continue
 				}
 				dir = d.home + dir[1:]
 			}
 			if absClean(dir) && !strings.Contains(dir, "%") {
 				out = append(out, filepath.Clean(dir))
+			} else {
+				complete = false
 			}
 		}
 	}
-	return out
+	return out, complete
+}
+
+// Aliased directories belong to the same mailbox even when only one path
+// can be opened without following links. Nonexistent roots hold no mail;
+// other lookup errors leave the snapshot unable to prove isolation.
+func resolveMailPaths(paths []string) ([]string, error) {
+	out := slices.Clone(paths)
+	for _, path := range paths {
+		resolved, err := filepath.EvalSymlinks(path)
+		switch {
+		case err == nil:
+			if resolved != path {
+				out = append(out, resolved)
+			}
+		case errors.Is(err, fs.ErrNotExist), errors.Is(err, syscall.ENOTDIR):
+		default:
+			return nil, errors.New("a Dovecot mail path could not be checked")
+		}
+	}
+	return out, nil
 }
 
 // sharedPaths returns the users with a mail directory that is, holds or
@@ -641,6 +694,8 @@ func parseConfig(out []byte) (config, error) {
 				nsSep = value
 			case len(stack) == 1 && inNS && key == "location":
 				nsLoc = value
+			case len(stack) == 2 && inNS && stack[1] == "mailbox" && key == "name":
+				box = value
 			case len(stack) == 2 && inNS && stack[1] == "mailbox" && key == "special_use":
 				junk = slices.ContainsFunc(strings.Fields(value), func(f string) bool { return strings.EqualFold(f, `\Junk`) })
 			}
@@ -654,7 +709,7 @@ func parseConfig(out []byte) (config, error) {
 
 func (c *config) addNamespace(boxes []string, sep, location string) {
 	loc := 0
-	if location != "" && len(boxes) > 0 {
+	if location != "" {
 		c.locs = append(c.locs, location)
 		loc = len(c.locs)
 	}

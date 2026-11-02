@@ -81,6 +81,7 @@ func FuzzParseDoveconfNamespaces(f *testing.F) {
 		}
 	}
 	f.Add([]byte("namespace inbox {\n  separator = /\n  mailbox \"a/../b\" {\n    special_use = \\Junk\n  }\n}\n"))
+	f.Add([]byte(singleMailboxConfig))
 	f.Fuzz(func(t *testing.T, out []byte) {
 		c, err := parseConfig(out)
 		if err != nil {
@@ -99,7 +100,7 @@ func FuzzParseDoveconfNamespaces(f *testing.F) {
 		}
 		_ = c.iterable()
 		d := detail{uid: 1000, gid: 1000, home: "/home/u", locs: locs}
-		paths := c.paths(d)
+		paths, _ := c.paths(d)
 		for _, p := range paths {
 			if filepath.Clean(p) != p || !filepath.IsAbs(p) {
 				t.Fatalf("mail path %q", p)

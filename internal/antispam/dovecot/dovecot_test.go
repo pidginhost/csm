@@ -91,7 +91,27 @@ func dovecotPaths(t *testing.T, recs []record, user string, boxes ...string) []s
 
 func TestSnapshotMatchesDovecotFolders(t *testing.T) {
 	recs := capture(t, "maildir")
-	snap, err := Dovecot{Run: replay(t, recs)}.Snapshot(context.Background())
+	// Compose a healthy listing from the captured successful single-user
+	// lookups. The full captured batch includes a temporary failure.
+	users := []string{"-x@example.com", "alice@example.com", "bob@example.com", "carol@example.net", "dave", "erin@example.net", "frank@example.net", "grace@example.com"}
+	run := replay(t, recs)
+	snap, err := Dovecot{Run: func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		if name == "doveadm" {
+			if len(args) == 2 {
+				return []byte(strings.Join(users, "\n") + "\n"), nil
+			}
+			var out []byte
+			for _, u := range args[4:] {
+				part, err := run(ctx, name, append(slices.Clone(args[:4]), u)...)
+				if err != nil {
+					return nil, err
+				}
+				out = append(out, part...)
+			}
+			return out, nil
+		}
+		return run(ctx, name, args...)
+	}}.Snapshot(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,13 +128,9 @@ func TestSnapshotMatchesDovecotFolders(t *testing.T) {
 			{User: "dave", UID: 1002, GID: 1002, Home: "/home/dave", Junk: junk("/home/dave/Maildir")},
 		},
 		Skips: []Skip{
-			{Reason: SkipInvalidName},
-			{User: "erin@example.net", Reason: SkipDriver},
-			{User: "frank@example.net", Reason: SkipLayoutFS},
-			{User: "grace@example.com", Reason: SkipPluginZlib},
-			{User: "henry@example.com", Reason: SkipLookupFailed},
-			{User: "rel@example.com", Reason: SkipLookupFailed},
-			{User: "zero@example.com", Reason: SkipLookupFailed},
+			{User: "erin@example.net", Reason: SkipDriver, UID: 1001},
+			{User: "frank@example.net", Reason: SkipLayoutFS, UID: 1001},
+			{User: "grace@example.com", Reason: SkipPluginZlib, UID: 1000},
 		},
 		Complete: true,
 	}
@@ -128,7 +144,7 @@ func TestSnapshotMatchesDovecotFolders(t *testing.T) {
 
 // Captured: a relative home makes doveadm exit EX_TEMPFAIL after printing
 // the other users of the batch.
-func TestDetailsKeepRecordsOnTempFail(t *testing.T) {
+func TestDetailsRejectRecordsOnTempFail(t *testing.T) {
 	recs := capture(t, "maildir")
 	i := slices.IndexFunc(recs, func(r record) bool { return r.Argv[0] == "doveconf" })
 	conf, err := parseConfig([]byte(recs[i].Stdout))
@@ -136,7 +152,7 @@ func TestDetailsKeepRecordsOnTempFail(t *testing.T) {
 		t.Fatal(err)
 	}
 	found, err := Dovecot{Run: replay(t, recs)}.details(context.Background(), conf, []string{"alice@example.com", "rel@example.com"})
-	if err != nil || len(found) != 1 || found["alice@example.com"].home != "/srv/vmail/example.com/alice" {
+	if err == nil || found != nil {
 		t.Fatalf("found %+v, err %v", found, err)
 	}
 }
@@ -211,7 +227,7 @@ func TestSnapshotListingFailureByUserdb(t *testing.T) {
 // follows a complete listing and reads no configuration, so a failed
 // listing is an outage, never "cannot list users".
 func TestUsersListsIdentitiesOnly(t *testing.T) {
-	h := newHost(t, "Alice@Example.com", "bob@example.com", "bad name", "dave", "alice@example.com")
+	h := newHost(t, "Alice@Example.com", "bob@example.com", "dave", "Alice@Example.com")
 	got, err := Dovecot{Run: h.run}.Users(context.Background())
 	if err != nil || !slices.Equal(got, []string{"alice@example.com", "bob@example.com", "dave"}) || h.listings != 1 || h.batches != nil {
 		t.Fatalf("users %q, err %v, %d listings, lookups %q", got, err, h.listings, h.batches)
@@ -508,7 +524,7 @@ func TestSnapshotUnsupportedLocations(t *testing.T) {
 // doveadm prints nothing, and still exits 0, for a user whose %{if} fails
 // to expand, so a lookup whose template holds one cannot vouch for one
 // record per user. A global or namespace location with %{if} is never
-// looked up: every user is skipped as location, present but not watched.
+// expanded: identities are read alone and every user is skipped as location.
 func TestSnapshotConditionalLocationSkipsEveryMailbox(t *testing.T) {
 	for _, c := range []struct{ from, to string }{
 		{"mail_location = maildir:~/Maildir\n", "mail_location = maildir:~/Maildir:INDEX=%{if;%d;eq;example.com;/var/idx;/srv/idx}\n"},
@@ -522,7 +538,7 @@ func TestSnapshotConditionalLocationSkipsEveryMailbox(t *testing.T) {
 		if err != nil || !snap.Complete || snap.Mailboxes != nil || !reflect.DeepEqual(reasons(snap), want) {
 			t.Errorf("%s: snapshot %+v, err %v", c.to, snap, err)
 		}
-		if h.batches != nil || h.listings != 2 {
+		if len(h.batches) != 1 || len(h.batches[0]) != 3 || h.listings != 2 {
 			t.Errorf("%s: lookups %q, %d listings", c.to, h.batches, h.listings)
 		}
 	}
@@ -596,6 +612,9 @@ func TestSnapshotHarmlessLocationParameters(t *testing.T) {
 func TestSnapshotUserdbMailWithoutGlobalLocation(t *testing.T) {
 	h := newHost(t, "alice@example.com", "bob@example.com")
 	h.edit("mail_location = maildir:~/Maildir\n", "")
+	// The unresolved mailbox uses another UID, so it cannot be borrowed
+	// through Bob's supported location.
+	h.set("alice@example.com", 1, "1001")
 	snap, err := h.snapshot()
 	if err != nil || len(snap.Mailboxes) != 1 || snap.Mailboxes[0].Junk[1] != "/srv/vmail/example.com/bob/Mail/.Junk" ||
 		!reflect.DeepEqual(reasons(snap), map[string]string{"alice@example.com": SkipDriver}) {
@@ -627,6 +646,33 @@ func TestSnapshotNamespacePrefixAndSeparator(t *testing.T) {
 		}
 	}
 }
+
+// Dovecot emits a single mailbox as a nameless section with a name field,
+// after special_use, instead of putting its name in the section header.
+func TestSnapshotSingleMailboxConfig(t *testing.T) {
+	h := newHost(t, "alice@example.com")
+	h.conf = "mail_location = maildir:~/Maildir\n" + singleMailboxConfig
+	snap, err := h.snapshot()
+	want := Snapshot{Complete: true, Mailboxes: []DovecotMailbox{{
+		User: "alice@example.com", Domain: "example.com", UID: 1000, GID: 1000,
+		Home: "/srv/vmail/example.com/alice", Junk: []string{"/srv/vmail/example.com/alice/Maildir/.Junk"},
+	}}}
+	if err != nil || !reflect.DeepEqual(snap, want) {
+		t.Fatalf("snapshot %+v, err %v, want %+v", snap, err, want)
+	}
+}
+
+const singleMailboxConfig = `namespace {
+  inbox = yes
+  location =
+  mailbox {
+    special_use = \Junk
+    name = Junk
+  }
+  prefix =
+  name = inbox
+}
+`
 
 func TestSnapshotTwoJunkMailboxes(t *testing.T) {
 	h := newHost(t, "alice@example.com")
@@ -729,19 +775,24 @@ func TestSnapshotDetailFailures(t *testing.T) {
 	}
 }
 
-// doveadm exits EX_NOUSER or EX_TEMPFAIL when it could not look up some
-// users and printed the others. Each printed record is then confirmed by a
-// lookup of that user alone.
+// EX_TEMPFAIL pauses discovery. EX_NOUSER rechecks every requested user,
+// including those omitted from the batch output, before skipping the absent.
 func TestSnapshotLookupFailureSkipsOnlyThatUser(t *testing.T) {
 	for _, code := range []int{67, 75} {
 		h := newHost(t, "alice@example.com", "ghost@example.com", "bob@example.com")
 		h.missingExit = code
 		snap, err := h.snapshot()
+		if code == exTempFail {
+			if err == nil || !reflect.DeepEqual(snap, Snapshot{}) || len(h.batches) != 1 {
+				t.Fatalf("temporary failure accepted: %+v, %v, batches %q", snap, err, h.batches)
+			}
+			continue
+		}
 		if err != nil || !snap.Complete || len(snap.Mailboxes) != 2 ||
 			!reflect.DeepEqual(reasons(snap), map[string]string{"ghost@example.com": SkipLookupFailed}) {
 			t.Errorf("exit %d: snapshot %+v, err %v", code, snap, err)
 		}
-		want := [][]string{{"alice@example.com", "bob@example.com", "ghost@example.com"}, {"alice@example.com"}, {"bob@example.com"}}
+		want := [][]string{{"alice@example.com", "bob@example.com", "ghost@example.com"}, {"alice@example.com"}, {"bob@example.com"}, {"ghost@example.com"}}
 		if !reflect.DeepEqual(h.batches, want) {
 			t.Errorf("exit %d: lookups %q, want %q", code, h.batches, want)
 		}
@@ -926,20 +977,18 @@ func TestSnapshotTimedOutLookupIsAnError(t *testing.T) {
 }
 
 func TestSnapshotNamesAreValidatedBeforeLookup(t *testing.T) {
-	h := newHost(t, "alice@example.com", "a*@example.com", "b?c@example.com", "a b@example.com",
-		"x@localhost", "x@exa_mple.com", "a@b@example.com", strings.Repeat("a", 65)+"@example.com", "ALICE@EXAMPLE.COM")
+	for _, invalid := range []string{"a*@example.com", "b?c@example.com", "a b@example.com",
+		"x@localhost", "x@exa_mple.com", "a@b@example.com", strings.Repeat("a", 65) + "@example.com"} {
+		h := newHost(t, "alice@example.com", invalid)
+		if snap, err := h.snapshot(); err == nil || !reflect.DeepEqual(snap, Snapshot{}) || h.batches != nil {
+			t.Fatalf("unsupported identity %q: snapshot %+v, err %v, lookups %q", invalid, snap, err, h.batches)
+		}
+	}
+	h := newHost(t, "ALICE@EXAMPLE.COM")
 	snap, err := h.snapshot()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(h.batches) != 1 || !slices.Equal(h.batches[0], []string{"ALICE@EXAMPLE.COM"}) {
-		t.Fatalf("looked up %q", h.batches)
-	}
-	if len(snap.Skips) != 7 || slices.ContainsFunc(snap.Skips, func(s Skip) bool { return s != Skip{Reason: SkipInvalidName} }) {
-		t.Fatalf("skips %+v", snap.Skips)
-	}
-	if len(snap.Mailboxes) != 1 || snap.Mailboxes[0].User != "alice@example.com" || snap.Mailboxes[0].Domain != "example.com" {
-		t.Fatalf("mailboxes %+v", snap.Mailboxes)
+	if err != nil || len(h.batches) != 1 || !slices.Equal(h.batches[0], []string{"ALICE@EXAMPLE.COM"}) ||
+		len(snap.Mailboxes) != 1 || snap.Mailboxes[0].User != "alice@example.com" || snap.Mailboxes[0].Domain != "example.com" {
+		t.Fatalf("canonical identity: snapshot %+v, err %v, lookups %q", snap, err, h.batches)
 	}
 }
 

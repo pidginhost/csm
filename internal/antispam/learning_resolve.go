@@ -435,6 +435,7 @@ func checkLearningRedis(c *learningCheck, s Settings, f HostFacts) {
 // file never names a Redis no check has passed.
 func CheckLearningRedis(s Settings, f HostFacts) error {
 	var c learningCheck
+	checkLearningDovecot(&c, s, f)
 	checkLearningRedisVersion(&c, f.Redis)
 	checkLearningRedisEndpoint(&c, f)
 	switching := installedLearningRedis(f) != s.LearningRedisSocket
@@ -478,8 +479,12 @@ func checkLearningRedisEndpoint(c *learningCheck, f HostFacts) {
 		return
 	}
 	if why := redisExposure(r, f.ControllerHost.RspamdUser, f.AccountNames, f.AccountNamesErr); why != "" {
-		c.add(ReasonUnsafe, why)
-		return
+		if f.Stack == StackPostfix && (f.AccountNamesErr != nil || r.GroupMembers == nil) {
+			c.add(ReasonBackendUnavailable, "CSM cannot check the Redis socket's account and group membership")
+		} else {
+			c.add(ReasonUnsafe, why)
+			return
+		}
 	}
 	// Successful CONFIG reads remain evidence even when a later INFO
 	// request fails. Definite exposure takes precedence over that outage.
