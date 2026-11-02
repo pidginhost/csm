@@ -272,7 +272,7 @@ func TestToolCallArgumentValidation(t *testing.T) {
 			t.Errorf("%s %v: got %+v, want %q", tc.name, tc.args, c.resp.Error, tc.want)
 		}
 	}
-	c := post(t, s, rpc(1, "tools/call", map[string]any{"name": "csm_block_ip", "arguments": map[string]any{"ip": "1.2.3.4"}}))
+	c := post(t, s, rpc(1, "tools/call", map[string]any{"name": "csm_block_ip", "arguments": map[string]any{"ip": "203.0.113.9"}}))
 	if c.resp.Error == nil || c.resp.Error.Code != codeInvalidParams {
 		t.Errorf("unknown tool: %+v", c.resp.Error)
 	}
