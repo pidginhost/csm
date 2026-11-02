@@ -90,7 +90,7 @@ func TestResolvedDNSIncludesFallbackWhenNeeded(t *testing.T) {
 				resolvedDNSCommand: {Stdout: tc.dns},
 			}}
 			if tc.route != "" {
-				run.results["busctl --system --auto-start=no --no-pager get-property org.freedesktop.resolve1 /org/freedesktop/resolve1/link/_2 org.freedesktop.resolve1.Link DefaultRoute"] = antispam.CommandResult{Stdout: tc.route}
+				run.results["busctl --system --auto-start=no --no-pager get-property org.freedesktop.resolve1 /org/freedesktop/resolve1/link/_32 org.freedesktop.resolve1.Link DefaultRoute"] = antispam.CommandResult{Stdout: tc.route}
 			}
 			if tc.fallback != "" {
 				run.results[strings.TrimSuffix(resolvedDNSCommand, "DNS")+"FallbackDNS"] = antispam.CommandResult{Stdout: tc.fallback}
@@ -133,12 +133,22 @@ func TestResolvedDNSKnownDefaultRouteSurvivesOtherLinkError(t *testing.T) {
 		t.Run(link, func(t *testing.T) {
 			run := &fakeRun{results: map[string]antispam.CommandResult{
 				resolvedDNSCommand: {Stdout: "a(iiay) 2 2 2 4 192 0 2 53 3 2 4 198 51 100 53"},
-				"busctl --system --auto-start=no --no-pager get-property org.freedesktop.resolve1 /org/freedesktop/resolve1/link/_" + link + " org.freedesktop.resolve1.Link DefaultRoute": {Stdout: "b true"},
+				"busctl --system --auto-start=no --no-pager get-property org.freedesktop.resolve1 /org/freedesktop/resolve1/link/_3" + link + " org.freedesktop.resolve1.Link DefaultRoute": {Stdout: "b true"},
 			}}
 			got, err := testCollector(t.TempDir(), run).resolvedDNS(context.Background())
 			if err != nil || !slices.Equal(got, want) {
 				t.Fatalf("known default route was lost: got %v, %v; want %v", got, err, want)
 			}
 		})
+	}
+}
+
+// systemd escapes the leading digit of a link's bus label, so link 2 lives
+// at /link/_32; a plain /link/_2 is an unknown object.
+func TestResolvedLinkPathEscapesLeadingDigit(t *testing.T) {
+	for link, want := range map[int]string{2: "/link/_32", 9: "/link/_39", 12: "/link/_312", 123: "/link/_3123"} {
+		if got := resolvedLinkPath(link); got != want {
+			t.Errorf("resolvedLinkPath(%d) = %q, want %q", link, got, want)
+		}
 	}
 }
