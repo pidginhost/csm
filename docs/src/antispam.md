@@ -504,13 +504,10 @@ those zones or of other configured resolvers.
   link, so newsletters full of tracking links are not tagged for that. It
   raises `DMARC_POLICY_REJECT` from 2 to 3, so forged mail from a domain
   whose DMARC policy is reject reaches the tag score sooner. A symbol you
-  define in your own `*_group.conf` in `/etc/rspamd/local.d` keeps your
-  weight, even when you put it in another group: CSM leaves it out of its
-  file. If a group file cannot be read or uses includes, macros or
-  multiline strings, CSM leaves all these weights to rspamd. Files in
-  `override.d` already take precedence and are not read for this check.
-  The worker refuses a queued change if it would override a newly found
-  operator definition; the next reconciliation uses the current settings.
+  define in any `*_group.conf` in `/etc/rspamd/local.d` keeps your weight:
+  CSM leaves it out of its file. If one of those files cannot be read or
+  uses includes, macros or multiline strings, CSM leaves all three weights
+  to rspamd. Your `override.d` group files already take precedence.
   CSM replaces an operator-owned `groups.conf`.
   One that is not safe to replace is left alone: rspamd keeps its own
   weights and CSM reports an `rspamd_scores` warning;
