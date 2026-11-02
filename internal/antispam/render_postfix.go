@@ -8,9 +8,12 @@ import (
 
 // milterHeaders makes rspamd's milter add X-Spam-Status, which learning
 // reads to skip mail CSM tagged, and strip inbound copies so a sender
-// cannot forge it. X-Spam stays: the proxy worker's own X-Spam: Yes is what
-// the host's sieve rules file into Junk.
-const milterHeaders = ManagedHeader + "\nuse = [\"x-spam-status\"];\nremove = { \"X-Spam-Status\" = 0; };\n"
+// cannot forge it. It also adds the host's Authentication-Results and strips
+// inbound copies, which a sender could forge too. rspamd adds neither header
+// to authenticated or local mail, so no login name reaches outbound mail.
+// X-Spam stays: the proxy worker's own X-Spam: Yes is what the host's sieve
+// rules file into Junk.
+const milterHeaders = ManagedHeader + "\nuse = [\"x-spam-status\", \"authentication-results\"];\nremove = { \"X-Spam-Status\" = 0; };\n"
 
 // postfixScope is the scope Lua with $ placeholders for validated values.
 // Its file name is fixed: scan records are read from rspamd log lines that

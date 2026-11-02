@@ -752,6 +752,12 @@ For authenticated and local mail, which rspamd's milter headers skip, CSM's
 scope rule removes the inbound copy itself. In dry run the header follows
 the host's own add header threshold.
 
+rspamd also adds its own `Authentication-Results` header with the SPF, DKIM,
+DMARC and ARC results, and removes any copy the message arrived with, since a
+sender could forge one. Authenticated and local mail get neither header and
+keep what they carry, so no login name reaches outbound mail. Other header
+routines, such as `X-Spam-Level` or rspamd's extended headers, are off.
+
 CSM leaves the `X-Spam: Yes` header of rspamd's proxy worker alone. Filing
 tagged mail into the Junk folder stays your Sieve rule, for example one that
 files `X-Spam: Yes` into Junk. CSM does not manage Sieve.

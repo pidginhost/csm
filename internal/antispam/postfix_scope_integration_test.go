@@ -336,7 +336,8 @@ func (r *scopeRspamd) check(t *testing.T, s Settings, c scopeCase) {
 	t.Helper()
 	r.scans++
 	qid := fmt.Sprintf("CSMSCOPE%02d", r.scans)
-	msg := fmt.Sprintf("From: sender@example.net\r\nTo: user@example.com\r\nSubject: scope test\r\nX-Test-Score: %d\r\n", c.score)
+	msg := fmt.Sprintf("From: sender@example.net\r\nTo: user@example.com\r\nSubject: scope test\r\nX-Test-Score: %d\r\n"+
+		"Authentication-Results: mx.example.com; dkim=pass header.d=example.net\r\n", c.score)
 	if c.forged != "" {
 		msg += "X-Spam-Status: " + c.forged + "\r\n"
 	}
@@ -376,6 +377,24 @@ func (r *scopeRspamd) check(t *testing.T, s Settings, c scopeCase) {
 		t.Errorf("%s: milter adds X-Spam-Status %q, want %q...", c.name, status.Value, c.status)
 	case c.status == "" && c.strip && added:
 		t.Errorf("%s: milter adds X-Spam-Status %q to mail CSM does not score", c.name, status.Value)
+	}
+
+	// Mail from the internet gets the host's own Authentication-Results and
+	// loses any copy it arrived with. Authenticated and local mail keep
+	// theirs and get none, so no login name reaches an outbound header.
+	ip, user := "", false
+	for i, a := range c.args[:len(c.args)-1] {
+		switch a {
+		case "--ip":
+			ip = c.args[i+1]
+		case "--user":
+			user = true
+		}
+	}
+	_, arAdded := reply.Milter.Add["Authentication-Results"]
+	_, arRemoved := reply.Milter.Remove["Authentication-Results"]
+	if inbound := !user && ip != "127.0.0.1"; arAdded != inbound || arRemoved != inbound {
+		t.Errorf("%s: Authentication-Results added %t, inbound copy removed %t, want %t: %s", c.name, arAdded, arRemoved, inbound, out)
 	}
 
 	if c.lifted {
@@ -431,12 +450,6 @@ func (r *scopeRspamd) check(t *testing.T, s Settings, c scopeCase) {
 	mode := "enforce"
 	if s.DryRun {
 		mode = "dry-run"
-	}
-	ip := ""
-	for i, a := range c.args[:len(c.args)-1] {
-		if a == "--ip" {
-			ip = c.args[i+1]
-		}
 	}
 	policy, decision, _ := strings.Cut(c.record, " ")
 	want := fmt.Sprintf(`event=scan mode=%s policy=%s result=ok score=%d action="%s" decision=%s ip=%s qid=%s`,
