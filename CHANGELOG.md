@@ -11,7 +11,6 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Security
 
-- Antispam learning keeps tenant reports separate when mailbox identities or storage overlap, including mailboxes excluded from learning.
 - Password guessing against SMTP login on Postfix servers is now detected and blocked. It needs verbose auth logging in Dovecot, which `csm doctor` checks.
 - Crafted login names no longer pause mail brute-force protection.
 - Files are now reported as not scanned by YARA until its rules have loaded, instead of passing unchecked.
@@ -44,8 +43,6 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Fixed
 
-- Postfix antispam learning pauses during account lookup failures without removing its configuration or discarding pending reports.
-- Postfix antispam learning now discovers Junk folders on hosts with a single configured mailbox.
 - A threat-intelligence match on an address failing IMAP or POP3 logins now opens a mailbox brute force incident instead of a web attack.
 - Postfix SMTP login guessing is now detected when mail logs are read from the systemd journal.
 - On Postfix servers, an address with successful SMTP logins is no longer blocked as a slow brute force for occasional mistyped passwords.
