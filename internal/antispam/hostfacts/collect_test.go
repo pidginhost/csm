@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/antispam"
+	"github.com/pidginhost/csm/internal/antispam/dovecot"
 	"github.com/pidginhost/csm/internal/ipmap"
 	"github.com/pidginhost/csm/internal/platform"
 )
@@ -65,6 +66,7 @@ func testCollector(d string, run *fakeRun) collector {
 		interfaceAddrs: func() ([]net.Addr, error) { return nil, nil },
 		readGroup:      func() ([]byte, error) { return nil, nil },
 		readPasswd:     func() ([]byte, error) { return nil, nil },
+		dovecot:        func(context.Context) (dovecot.Snapshot, error) { return dovecot.Snapshot{Complete: true}, nil },
 	}
 }
 

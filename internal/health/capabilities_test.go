@@ -215,3 +215,10 @@ func TestCapabilitiesIncludeLearning(t *testing.T) {
 		t.Fatal("mail.antispam.learning.v1 capability missing")
 	}
 }
+
+// The panel checks this before offering learning on a Postfix host.
+func TestCapabilitiesIncludeLearningOnPostfix(t *testing.T) {
+	if !contains(Capabilities(), "mail.antispam.learning.postfix.v1") {
+		t.Fatal("mail.antispam.learning.postfix.v1 capability missing")
+	}
+}

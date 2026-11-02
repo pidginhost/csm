@@ -193,19 +193,21 @@ func FuzzLocalAccountNames(f *testing.F) {
 		c := collector{
 			readPasswd: func() ([]byte, error) { return []byte(passwd), nil },
 		}
-		names, err := c.localAccountNames()
+		names, err := c.localAccounts()
 		if err != nil && names != nil {
 			t.Fatal("unverified account database returned a trusted record set")
 		}
 		c.readPasswd = func() ([]byte, error) { return []byte(passwd + "\nmalformed\n"), nil }
-		if _, err := c.localAccountNames(); err == nil {
+		if _, err := c.localAccounts(); err == nil {
 			t.Fatal("malformed account record left a trusted record set")
 		}
 		c.readPasswd = func() ([]byte, error) {
 			return []byte(passwd + "\nprobe:x:12345:12345::/:/bin/false\n"), nil
 		}
-		if names, err := c.localAccountNames(); err == nil && !names["probe"] {
-			t.Fatal("complete account data lost a local uid alias")
+		if names, err := c.localAccounts(); err == nil {
+			if _, ok := names["probe"]; !ok {
+				t.Fatal("complete account data lost a local uid alias")
+			}
 		}
 	})
 }

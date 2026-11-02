@@ -104,11 +104,16 @@ func (st *FeedState) apply(configured, resolved antispam.Settings, problems []an
 
 // mergeByKey joins feed problems that share a key, in first-seen order.
 // Findings with one check and dedup key collapse into one alert, so each
-// key must carry every cause in its details.
+// key must carry every cause in its details, each cause once.
 func mergeByKey(problems []antispam.Problem) []antispam.Problem {
 	var out []antispam.Problem
 	index := make(map[string]int)
+	seen := make(map[[2]string]bool)
 	for _, p := range problems {
+		if seen[[2]string{p.Key, p.Detail}] {
+			continue
+		}
+		seen[[2]string{p.Key, p.Detail}] = true
 		if i, ok := index[p.Key]; ok {
 			out[i].Detail += "; " + p.Detail
 			continue

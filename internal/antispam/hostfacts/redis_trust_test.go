@@ -9,11 +9,13 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/antispam"
+	"github.com/pidginhost/csm/internal/antispam/dovecot"
 )
 
 func TestRedisPathRejectsTenantSymlink(t *testing.T) {
@@ -317,5 +319,117 @@ func TestTrustedRedisOwnerPostfix(t *testing.T) {
 		if got := fmt.Sprint(err); want == "" && err != nil || want != "" && got != want {
 			t.Errorf("group %s: %v, want %q", members, err, want)
 		}
+	}
+}
+
+// snapshotOf serves snap and err as Dovecot's answer and counts the calls.
+func snapshotOf(snap dovecot.Snapshot, err error, calls *int) func(context.Context) (dovecot.Snapshot, error) {
+	return func(context.Context) (dovecot.Snapshot, error) {
+		*calls++
+		return snap, err
+	}
+}
+
+// On Postfix the pass lists Dovecot's mailboxes before it judges Redis: the
+// uids mail is stored as, and the users it skips, reach the facts, and
+// every passwd name of a mail uid is untrusted, pinned or not (L12). A
+// failed or incomplete listing is an error and adds no names.
+func TestCollectLearningPostfixDovecot(t *testing.T) {
+	snap := dovecot.Snapshot{Complete: true,
+		Mailboxes: []dovecot.DovecotMailbox{
+			{User: "a@example.com", Domain: "example.com", UID: 5000},
+			{User: "b@example.com", Domain: "example.com", UID: 991},
+			{User: "c@example.net", Domain: "example.net", UID: 5000},
+		},
+		Skips: []dovecot.Skip{{User: "d@example.org", Reason: dovecot.SkipDriver}},
+	}
+	c, f := postfixCollector(t, postfixPasswd)
+	calls := 0
+	c.dovecot = snapshotOf(snap, nil, &calls)
+	c.learningFacts(context.Background(), antispam.Settings{Learning: true}, &f)
+	if calls != 1 || f.Dovecot.Err != nil || !slices.Equal(f.Dovecot.UIDs, []int{991, 5000}) || !slices.Equal(f.Dovecot.Skips, snap.Skips) {
+		t.Fatalf("calls %d, Dovecot facts %+v", calls, f.Dovecot)
+	}
+	if f.AccountNamesErr != nil || !f.AccountNames["vmail"] || !f.AccountNames["dovecot"] || f.AccountNames["postfix"] || f.AccountNames["redis"] {
+		t.Fatalf("untrusted users = %v (%v)", f.AccountNames, f.AccountNamesErr)
+	}
+	for name, tc := range map[string]struct {
+		snap dovecot.Snapshot
+		err  error
+	}{
+		"error":      {err: dovecot.ErrCannotIterate},
+		"incomplete": {snap: dovecot.Snapshot{Mailboxes: snap.Mailboxes}},
+	} {
+		failed, ff := postfixCollector(t, postfixPasswd)
+		failed.dovecot = snapshotOf(tc.snap, tc.err, &calls)
+		failed.learningFacts(context.Background(), antispam.Settings{Learning: true}, &ff)
+		if ff.Dovecot.Err == nil || tc.err != nil && !errors.Is(ff.Dovecot.Err, tc.err) || len(ff.Dovecot.UIDs) != 0 || ff.AccountNames["dovecot"] {
+			t.Fatalf("%s: Dovecot facts %+v, untrusted %v", name, ff.Dovecot, ff.AccountNames)
+		}
+	}
+	// cPanel reads nothing from Dovecot.
+	c, f = postfixCollector(t, postfixPasswd)
+	f.Stack = antispam.StackExim
+	calls = 0
+	c.dovecot = snapshotOf(snap, nil, &calls)
+	c.learningFacts(context.Background(), antispam.Settings{Learning: true}, &f)
+	if calls != 0 || f.Dovecot.UIDs != nil {
+		t.Fatalf("Exim listed Dovecot: calls %d, facts %+v", calls, f.Dovecot)
+	}
+}
+
+// The controller trusts rspamd's uid: a user that may run tenant code and
+// shares it, or one whose uid cannot be read, makes that trust unsafe on
+// either stack.
+func TestCollectRspamdUIDShared(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		passwd string
+		mail   []int
+		want   bool
+	}{
+		{name: "distinct", passwd: postfixPasswd},
+		{name: "alias of rspamd", passwd: postfixPasswd + "builder:x:979:979::/home/builder:/bin/sh\n", want: true},
+		{name: "mail as rspamd", passwd: postfixPasswd, mail: []int{979}, want: true},
+	} {
+		t.Run("postfix "+tc.name, func(t *testing.T) {
+			c, f := postfixCollector(t, tc.passwd)
+			f.ControllerHost.RspamdUID = 979
+			snap := dovecot.Snapshot{Complete: true}
+			for _, uid := range tc.mail {
+				snap.Mailboxes = append(snap.Mailboxes, dovecot.DovecotMailbox{User: "a@example.com", Domain: "example.com", UID: uid})
+			}
+			calls := 0
+			c.dovecot = snapshotOf(snap, nil, &calls)
+			c.learningFacts(context.Background(), antispam.Settings{Learning: true}, &f)
+			if f.RspamdUIDShared != tc.want {
+				t.Fatalf("shared=%v, want %v (untrusted %v)", f.RspamdUIDShared, tc.want, f.AccountNames)
+			}
+		})
+	}
+	for _, tc := range []struct {
+		name string
+		uids map[string]int
+		uid  int
+		want bool
+	}{
+		{name: "distinct", uids: map[string]int{"tenant": 23456}, uid: 979},
+		{name: "account shares rspamd's uid", uids: map[string]int{"tenant": 979}, uid: 979, want: true},
+		{name: "account unresolved", uids: map[string]int{}, uid: 979, want: true},
+		// rspamd's uid unknown is reported on its own; nothing to compare.
+		{name: "rspamd unknown", uids: map[string]int{}, uid: -1},
+	} {
+		t.Run("cpanel "+tc.name, func(t *testing.T) {
+			c, _ := learningCollector(t, &fakeRun{})
+			mkdir(t, c.layout.CPanelUsers)
+			write(t, filepath.Join(c.layout.CPanelUsers, "tenant"), "")
+			c.uid = lookup(tc.uids)
+			f := antispam.HostFacts{Stack: antispam.StackExim}
+			f.ControllerHost.RspamdUID = tc.uid
+			c.learningFacts(context.Background(), antispam.Settings{Learning: true}, &f)
+			if f.RspamdUIDShared != tc.want {
+				t.Fatalf("shared=%v, want %v", f.RspamdUIDShared, tc.want)
+			}
+		})
 	}
 }

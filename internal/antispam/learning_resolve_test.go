@@ -1,11 +1,16 @@
 package antispam
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"slices"
+	"strings"
 	"testing"
+
+	"github.com/pidginhost/csm/internal/antispam/dovecot"
 )
 
 const (
@@ -157,18 +162,122 @@ func TestResolveLearningSafeBaseline(t *testing.T) {
 	}
 }
 
-// Learning from Junk folders on Postfix hosts comes later: until then the
-// resolver keeps learning off there and says so once, whatever the facts.
-func TestResolveLearningOffOnPostfix(t *testing.T) {
-	f := safeLearningFacts()
-	f.Stack = StackPostfix
-	s, gate, problems := ResolveLearning(learningSettings(), f)
-	if s.Learning || s.Roundcube || gate != (LearningGate{}) {
-		t.Fatalf("learning on a Postfix host: settings %+v, gate %+v", s, gate)
+// postfixLearningFacts is a Postfix and Dovecot host where every learning
+// prerequisite holds: a dedicated Redis, no Roundcube, mail stored as vmail.
+func postfixLearningFacts() HostFacts {
+	f := dedicatedRedisFacts(StackPostfix, dedicatedSocket)
+	f.Targets, f.Roundcube = nil, RoundcubeFacts{}
+	for _, tg := range MutationTargets(StackPostfix) {
+		f.Targets = append(f.Targets, TargetFacts{Target: tg, Missing: true, Parents: []PathFacts{dir("/", 0, 0, 0o755)}})
 	}
-	onlyLearningReason(t, problems, ReasonUnsupported)
-	if want := "learning from Junk folders on Postfix hosts is not available yet"; problems[0].Detail != want {
-		t.Fatalf("detail %q, want %q", problems[0].Detail, want)
+	f.Dovecot = DovecotFacts{UIDs: []int{5000}}
+	return f
+}
+
+func postfixLearningSettings() Settings {
+	s := learningSettings()
+	s.LearningRedisSocket = dedicatedSocket
+	return s
+}
+
+// Learning runs on a Postfix host that meets its prerequisites, without the
+// webmail Junk-button include.
+func TestResolveLearningOnPostfix(t *testing.T) {
+	s, gate, problems := ResolveLearning(postfixLearningSettings(), postfixLearningFacts())
+	if !s.Learning || s.Roundcube || gate != (LearningGate{Install: true, Publish: true}) || len(problems) != 0 {
+		t.Fatalf("Postfix: settings %+v, gate %+v, problems %+v", s, gate, problems)
+	}
+}
+
+// Dovecot's answers decide learning on Postfix (L10-L12): a userdb that
+// cannot list users or Dovecot 2.4 turn learning off, a failed or slow
+// listing waits, mail stored as rspamd's or Redis's user is unsafe, and
+// skipped mailboxes are counted by reason in one warning. No detail carries
+// command output or a mailbox name.
+func TestResolveLearningPostfixDovecot(t *testing.T) {
+	const leaked = "alice@example.com"
+	for name, tc := range map[string]struct {
+		dovecot DovecotFacts
+		reason  string
+		detail  string
+	}{
+		"cannot iterate": {DovecotFacts{Err: fmt.Errorf("listing: %w", dovecot.ErrCannotIterate)}, ReasonUnsupported,
+			"Dovecot cannot list its users; learning needs a userdb that supports iteration"},
+		"dovecot 2.4": {DovecotFacts{Err: dovecot.ErrDovecot24}, ReasonUnsupported,
+			"Dovecot 2.4 mail settings are not supported yet"},
+		"timeout": {DovecotFacts{Err: fmt.Errorf("doveadm: %w", context.DeadlineExceeded)}, ReasonBackendUnavailable,
+			"listing Dovecot's mailboxes timed out; learning waits for the next check"},
+		"exit error": {DovecotFacts{Err: errors.New("doveadm: exit status 75: " + leaked)}, ReasonBackendUnavailable,
+			"CSM cannot list Dovecot's mailboxes; learning waits for the next check"},
+		"mail as rspamd": {DovecotFacts{UIDs: []int{5000, testRspamdUID}}, ReasonUnsafe,
+			"Dovecot stores mail as rspamd's or Redis's user; learning needs a separate mail user"},
+		"mail as redis": {DovecotFacts{UIDs: []int{testRedisUID}}, ReasonUnsafe,
+			"Dovecot stores mail as rspamd's or Redis's user; learning needs a separate mail user"},
+		"skipped": {DovecotFacts{UIDs: []int{5000}, Skips: []dovecot.Skip{
+			{User: leaked, Reason: dovecot.SkipDriver}, {User: "bob@example.com", Reason: dovecot.SkipLookupFailed},
+			{User: "carol@example.net", Reason: dovecot.SkipDriver}, {Reason: dovecot.SkipInvalidName},
+			{User: "dave@example.org", Reason: dovecot.SkipNoJunk}, {User: "erin@example.org", Reason: dovecot.SkipPluginZlib},
+		}}, ReasonMailboxesSkipped, "mailboxes not watched for learning: 5 (driver 2, invalid_name 1, lookup_failed 1, plugin_zlib 1)"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := postfixLearningSettings()
+			// An exempt mailbox is never watched: its skip is no problem.
+			s.Exempt = []string{"dave@example.org"}
+			f := postfixLearningFacts()
+			f.Dovecot = tc.dovecot
+			got, gate, problems := ResolveLearning(s, f)
+			onlyLearningReason(t, problems, tc.reason)
+			if problems[0].Detail != tc.detail {
+				t.Fatalf("detail %q, want %q", problems[0].Detail, tc.detail)
+			}
+			if strings.Contains(problems[0].Detail, leaked) || strings.Contains(problems[0].Detail, "exit status") {
+				t.Fatalf("detail leaks command output: %q", problems[0].Detail)
+			}
+			switch tc.reason {
+			case ReasonMailboxesSkipped:
+				if !got.Learning || gate != (LearningGate{Install: true, Publish: true}) {
+					t.Fatalf("a skipped mailbox stopped learning: %+v %+v", got, gate)
+				}
+			case ReasonBackendUnavailable:
+				if got.Learning || gate != (LearningGate{}) {
+					t.Fatalf("a failed listing installed learning: %+v %+v", got, gate)
+				}
+				// An installed learning stays and stops publishing.
+				installed := withLearning(t, f, dedicatedSocket)
+				if _, gate, _ = ResolveLearning(s, installed); gate != (LearningGate{Install: true}) {
+					t.Fatalf("installed learning on a failed listing: gate %+v", gate)
+				}
+			default:
+				if got.Learning || gate != (LearningGate{}) {
+					t.Fatalf("learning stayed on: %+v %+v", got, gate)
+				}
+			}
+		})
+	}
+	// Exim hosts read nothing from Dovecot and are not judged by it.
+	f := safeLearningFacts()
+	f.Dovecot = DovecotFacts{Err: dovecot.ErrCannotIterate, UIDs: []int{testRspamdUID}}
+	if _, gate, problems := ResolveLearning(learningSettings(), f); !gate.Install || !gate.Publish || len(problems) != 0 {
+		t.Fatalf("Exim judged by Dovecot facts: gate %+v problems %+v", gate, problems)
+	}
+}
+
+// A user that may run tenant code and shares rspamd's uid could reach the
+// controller as rspamd: learning refuses on either stack.
+func TestResolveLearningRspamdUIDShared(t *testing.T) {
+	for stack, pair := range map[MailStack]struct {
+		s Settings
+		f HostFacts
+	}{
+		StackExim:    {learningSettings(), safeLearningFacts()},
+		StackPostfix: {postfixLearningSettings(), postfixLearningFacts()},
+	} {
+		pair.f.RspamdUIDShared = true
+		got, gate, problems := ResolveLearning(pair.s, pair.f)
+		onlyLearningReason(t, problems, ReasonUnsafe)
+		if want := "rspamd's uid may be shared with a user that can run tenant code"; problems[0].Detail != want || got.Learning || gate != (LearningGate{}) {
+			t.Fatalf("%s: problems %+v gate %+v", stack, problems, gate)
+		}
 	}
 }
 
@@ -601,8 +710,6 @@ func dedicatedRedisFacts(stack MailStack, socket string) HostFacts {
 const dedicatedSocket = "/run/redis-csm/redis.sock"
 
 // Decision 7: on Postfix only a dedicated Redis named in csm.yaml qualifies.
-// ResolveLearning still keeps Postfix off, so the check is exercised
-// directly.
 func TestResolveLearningPostfixNeedsRedisSocket(t *testing.T) {
 	s := learningSettings()
 	var c learningCheck
@@ -625,8 +732,6 @@ func TestResolveLearningPostfixNeedsRedisSocket(t *testing.T) {
 
 // Roundcube is cPanel's webmail: on Postfix the collector reads nothing
 // about it and the resolver neither judges nor reports its include.
-// ResolveLearning keeps Postfix off until Junk folders are watched there,
-// so the judging step is exercised directly.
 func TestResolveLearningPostfixNoRoundcubeWarning(t *testing.T) {
 	s := learningSettings()
 	s.LearningRedisSocket = dedicatedSocket

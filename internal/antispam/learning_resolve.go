@@ -2,13 +2,18 @@ package antispam
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/pidginhost/csm/internal/antispam/dovecot"
 )
 
 // CodeLearning is the problem code of every learning finding (spec 10).
@@ -36,6 +41,9 @@ const (
 	ReasonRequestErrors     = "request_errors"
 	ReasonBackendRebuilding = "backend_rebuilding"
 	ReasonAccountCapacity   = "account_capacity"
+	// ReasonMailboxesSkipped: Dovecot mailboxes learning does not watch on
+	// a Postfix host, counted by reason.
+	ReasonMailboxesSkipped = "mailboxes_skipped"
 )
 
 // LearningGate says what learning may do this pass. Install: CSM's learning
@@ -93,16 +101,10 @@ func ResolveLearning(s Settings, f HostFacts) (Settings, LearningGate, []Problem
 		s.Roundcube = false
 		return s, LearningGate{}, nil
 	}
-	if f.Stack == StackPostfix {
-		s.Learning, s.Roundcube = false, false
-		return s, LearningGate{}, []Problem{{Code: CodeLearning, Severity: Warning, Key: ReasonUnsupported,
-			Detail: "learning from Junk folders on Postfix hosts is not available yet"}}
-	}
 	return resolveLearning(s, f)
 }
 
-// resolveLearning judges requested learning on a host whose stack supports
-// it.
+// resolveLearning judges requested learning.
 func resolveLearning(s Settings, f HostFacts) (Settings, LearningGate, []Problem) {
 	var c learningCheck
 	installed := learningInstalled(f)
@@ -112,6 +114,7 @@ func resolveLearning(s Settings, f HostFacts) (Settings, LearningGate, []Problem
 	if f.LearnerMismatch {
 		c.add(ReasonStateMismatch, "learning state does not match its storage; new reports are held and nothing is adopted or deleted")
 	}
+	checkLearningDovecot(&c, s, f)
 	checkLearningVersions(&c, f)
 	checkLearningController(&c, f)
 	checkLearningRedis(&c, s, f)
@@ -203,6 +206,62 @@ func installedLearningRedis(f HostFacts) string {
 	return ""
 }
 
+// DovecotProblem is the learning problem of a Dovecot listing that failed:
+// definite when Dovecot cannot serve learning as configured, temporary
+// otherwise. Its detail is fixed text, never command output.
+func DovecotProblem(err error) Problem {
+	p := Problem{Code: CodeLearning, Severity: Warning, Key: ReasonBackendUnavailable,
+		Detail: "CSM cannot list Dovecot's mailboxes; learning waits for the next check"}
+	switch {
+	case errors.Is(err, dovecot.ErrCannotIterate):
+		p.Key, p.Detail = ReasonUnsupported, "Dovecot cannot list its users; learning needs a userdb that supports iteration"
+	case errors.Is(err, dovecot.ErrDovecot24):
+		p.Key, p.Detail = ReasonUnsupported, "Dovecot 2.4 mail settings are not supported yet"
+	case errors.Is(err, context.DeadlineExceeded):
+		p.Detail = "listing Dovecot's mailboxes timed out; learning waits for the next check"
+	}
+	return p
+}
+
+// checkLearningDovecot judges what Dovecot told a Postfix host's pass: a
+// failed listing, mail stored as rspamd's or Redis's uid, which tenants'
+// sieve scripts and mail processes run as (L12), and the mailboxes learning
+// skips. Exempt mailboxes are not watched, so their skips are no problem.
+func checkLearningDovecot(c *learningCheck, s Settings, f HostFacts) {
+	if f.Stack != StackPostfix {
+		return
+	}
+	d := f.Dovecot
+	if d.Err != nil {
+		p := DovecotProblem(d.Err)
+		c.add(p.Key, p.Detail)
+		return
+	}
+	for _, uid := range d.UIDs {
+		// Mail uids are never 0, so an unread socket owner never matches.
+		if uid == f.ControllerHost.RspamdUID || uid == f.Redis.Socket.Socket.UID {
+			c.add(ReasonUnsafe, "Dovecot stores mail as rspamd's or Redis's user; learning needs a separate mail user")
+			break
+		}
+	}
+	skipped := map[string]int{}
+	total := 0
+	for _, sk := range d.Skips {
+		if !IsExempt(s.Exempt, sk.User) {
+			skipped[sk.Reason]++
+			total++
+		}
+	}
+	if total == 0 {
+		return
+	}
+	var parts []string
+	for _, reason := range slices.Sorted(maps.Keys(skipped)) {
+		parts = append(parts, fmt.Sprintf("%s %d", reason, skipped[reason]))
+	}
+	c.add(ReasonMailboxesSkipped, fmt.Sprintf("mailboxes not watched for learning: %d (%s)", total, strings.Join(parts, ", ")))
+}
+
 func checkLearningVersions(c *learningCheck, f HostFacts) {
 	if f.RspamdVersion.Err != nil {
 		c.add(ReasonBackendUnavailable, "rspamd's version is unknown")
@@ -264,6 +323,10 @@ func checkLearningController(c *learningCheck, f HostFacts) {
 	private := len(privateControllerSockets(f))
 	if private > 1 || private == 0 && !unknownSocket && f.ControllerErr == nil && host.RspamdUID >= 0 {
 		c.add(ReasonUnsafe, "learning needs exactly one private controller socket owned by rspamd with mode 0600")
+	}
+	// The controller trusts rspamd's uid, so no tenant may hold it.
+	if f.RspamdUIDShared {
+		c.add(ReasonUnsafe, "rspamd's uid may be shared with a user that can run tenant code")
 	}
 }
 

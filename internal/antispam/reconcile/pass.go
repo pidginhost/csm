@@ -121,6 +121,9 @@ type Outcome struct {
 	// controller.
 	Stats       antispam.StatsEndpoint
 	StatsReason string
+	// Stack is the mail stack this pass found; the daemon picks the Spam
+	// folder watcher by it.
+	Stack antispam.MailStack
 	// ScanSource is where the daemon reads scan records on a Postfix host,
 	// empty elsewhere and while antispam is disabled. Nil when this pass
 	// could not tell; the last one stands.
@@ -237,7 +240,7 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) (out Outcome) {
 	}
 	a := assess(d.Enabled, settings, f)
 	now := r.Now()
-	out = Outcome{Checks: []string{CheckPrecondition, CheckApplyFailed, CheckFeed, CheckLearning}, LearningGate: gate}
+	out = Outcome{Checks: []string{CheckPrecondition, CheckApplyFailed, CheckFeed, CheckLearning}, LearningGate: gate, Stack: f.Stack}
 	if d.Enabled {
 		out.Stats, out.StatsReason = antispam.StatsEndpointFor(f)
 	}
@@ -277,7 +280,8 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) (out Outcome) {
 	if d.Observe || a.Action == antispam.Uninstall {
 		out.LearningGate = antispam.LearningGate{}
 	}
-	if wantLearning && !d.Observe && keysErr == nil {
+	// On Postfix the learner starts only for learning that resolved on.
+	if wantLearning && !d.Observe && keysErr == nil && (f.Stack != antispam.StackPostfix || out.LearningGate.Install) {
 		if socket, uid, ok := antispam.LearnerEndpoint(f); ok {
 			out.Learner = LearnerTarget{Controller: socket, RspamdUID: uid, HashGeneration: antispam.HashGeneration(keys), Prefix: keys.Prefix}
 		}

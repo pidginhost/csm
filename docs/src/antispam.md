@@ -157,7 +157,8 @@ email_protection:
   `0 < tag_score < reject_score <= 1000`.
 - `feeds` selects optional blocklists; see [Feeds](#feeds).
 - `exempt` lists recipient domains and mailboxes that are never filtered on a
-  Postfix host, such as `example.com` or `postmaster@example.net`. Entries are
+  Postfix host, such as `example.com` or `postmaster@example.net`, and whose
+  Junk folders are never learned from. Entries are
   lower-cased, and only plain domains and mailboxes are accepted. cPanel hosts
   ignore it: there each account's Spam Filters switch decides. See
   [Which mail is filtered](#which-mail-is-filtered).
@@ -175,9 +176,10 @@ filtering.
 The capabilities API lists `mail.antispam.v1` when a build supports this
 integration, and `mail.antispam.postfix.v1` when it also supports Postfix
 hosts; neither means filtering is installed on the host.
-`mail.antispam.learning.v1` means the build can learn from Spam folders;
-while learning runs, `csm status --json` carries an `antispam_learning`
-block.
+`mail.antispam.learning.v1` means the build can learn from Spam folders,
+and `mail.antispam.learning.postfix.v1` that it can also learn from Junk
+folders on Postfix hosts; while learning runs, `csm status --json` carries
+an `antispam_learning` block.
 
 ## Feeds
 
@@ -769,15 +771,113 @@ reloads rspamd only. Disabling antispam removes these files and puts back
 the newest copy of each file CSM replaced, see
 [Replaced files](#replaced-files).
 
-Learning from Junk folders is not available on Postfix hosts yet. With
-`learning.enabled: true` CSM keeps learning off there and reports an
-`antispam_learning` warning, reason `unsupported`. It still creates the
-learning keys under `/var/lib/csm/antispam/learning`, and nothing is
-learned or published.
+Learning installs the same rspamd files as on cPanel, without the webmail
+include; see [Learning from Junk folders](#learning-from-junk-folders).
 
 If CSM cannot tell which mail server runs, for example while Postfix
 restarts on a host that also has Exim installed, it leaves an installed
 integration in place and reports a temporary `platform` precondition.
+
+### Learning from Junk folders
+
+With `learning.enabled: true` CSM learns from mail users move into their
+Dovecot Junk folder. Scores, limits, retention, stored messages, operator
+commands and findings work as described under
+[Learning from Spam folders](#learning-from-spam-folders), with these
+differences:
+
+- Every mailbox Dovecot lists takes part. There is no per-mailbox switch
+  and no opt-in file. Mailboxes and domains in `exempt` are not watched:
+  CSM does not read their Junk folders.
+- CSM reads the `new` and `cur` directories of each Junk folder. A report
+  must be owned by the uid Dovecot stores that mailbox's mail as.
+- Mail already in a Junk folder is never learned. The first pass records
+  what is there, and only messages moved in later are reports.
+- No webmail Junk-button include is installed.
+
+#### Learning requirements
+
+The [learning prerequisites](#prerequisites) apply, and also:
+
+1. **Dovecot 2.3.** CSM lists users with `doveadm user '*'` and reads mail
+   settings with `doveconf`. The userdb must be able to list its users: a
+   passwd-file userdb can, an SQL or LDAP userdb needs its iterate settings.
+   Without that, and on Dovecot 2.4, whose mail settings changed, CSM reports
+   `unsupported` and leaves learning off.
+2. **Junk marked as `\Junk`.** CSM finds Junk folders by
+   `special_use = \Junk` in Dovecot's namespace mailbox settings, as
+   Dovecot's example `15-mailboxes.conf` sets for `Junk`. A folder named
+   Junk without the flag is not watched, and with no `\Junk` mailbox at all
+   every mailbox is skipped.
+3. **Maildir in its default layout.** CSM skips a mailbox stored another
+   way: another driver such as `mdbox` or `mbox`, `LAYOUT=fs`, or the `zlib`
+   or `mail_crypt` plugin. It also skips a mailbox whose uid is 0, whose
+   name, home or mail location it cannot use, such as a location with
+   `DIRNAME` or `MAILBOXDIR`, or whose userdb lookup fails. Skipped
+   mailboxes are counted by reason in one `mailboxes_skipped` warning that
+   names none of them; learning goes on for the others.
+4. **A Redis of its own.** Learning never uses rspamd's Redis on Postfix,
+   because other rspamd modules share it. Run a second Redis instance and
+   set `learning.redis_socket` to its socket; without it CSM reports
+   `unsupported`. On Debian and Ubuntu the packaged `redis-server@.service`
+   template runs an instance from `/etc/redis/redis-<name>.conf`, for
+   example `redis-server@csm` with:
+
+   ```
+   port 0
+   unixsocket /run/redis-csm/redis.sock
+   unixsocketperm 770
+   maxmemory 256mb
+   maxmemory-policy noeviction
+   appendonly yes
+   ```
+
+   Size `maxmemory` for the hashes you expect to learn. Give rspamd's user
+   access through the socket's group, for example by adding it to the
+   `redis` group; no other user may be in that group. The Redis checks of
+   the prerequisites apply to this socket. rspamd's global `redis` settings
+   must not use sentinels, TLS or a named user, because rspamd would apply
+   them to the learning Redis too.
+5. **A private controller socket for CSM**, as on cPanel; see
+   [rspamd admin interface](#rspamd-admin-interface).
+6. **A mail user that is not a service user.** Users' Sieve scripts and
+   Dovecot's mail processes run as the uid Dovecot stores mail as, such as
+   `vmail`, so CSM treats every name of that uid as a user that can run
+   tenant code: none may be in the Redis socket's group. Mail stored as
+   rspamd's or Redis's uid is refused with `unsafe_prerequisite`.
+
+CSM checks these on every reconciliation pass while learning is requested.
+The learner and its Junk folder watcher start only once none of them fails.
+
+#### Reporters
+
+`learning.reporter` decides who casts one learning vote:
+
+- `domain`, the default: each mail domain is one reporter. Its mailboxes
+  share one vote per cluster and one learning allowance. A domain that
+  reaches its allowance pauses only its own new reports.
+- `mailbox`: each mailbox is a reporter of its own, as each cPanel account
+  is.
+
+A user without a domain, such as a system user, reports under its own uid
+in either mode.
+
+Changing the mode, or `exempt`, restarts the Junk folder watcher. Votes
+already cast stay until their cluster expires, so a cluster reported both
+before and after a mode change can count the same domain or mailbox one
+extra time. Reports the old reporters had not sent yet are dropped, and
+the Junk folders of domain mailboxes start new baselines.
+
+#### Enabling learning on Postfix
+
+1. Set up the Redis instance and the private controller socket above, then
+   run `rspamadm configtest` and reload rspamd.
+2. Set `learning.enabled: true` and `learning.redis_socket`, then run
+   `csm validate` and `systemctl reload csm`.
+3. Check `antispam_learning` findings and `csm doctor`. Once learning runs,
+   `csm status --json` carries an `antispam_learning` block.
+4. Move a test message into a Junk folder. The next pass, within five
+   minutes, picks it up.
 
 ### Rolling it out on Postfix
 
@@ -871,7 +971,8 @@ either; CSM never uses the controller password.
 mail users move to their Spam folder. When several accounts report the same
 content, later copies of it score higher. Learning is off by default and
 requires antispam to be enabled. Enabling it is refused in
-[observe mode](observe-mode.md).
+[observe mode](observe-mode.md). This section describes cPanel hosts; for
+Postfix hosts see [Learning from Junk folders](#learning-from-junk-folders).
 
 Enabling learning is consent to two things: CSM reads new messages in the
 Spam folders of participating accounts, and it keeps one full message per
@@ -1016,6 +1117,9 @@ disable core filtering; `antispam_learning` names the reason.
   global settings use sentinels, TLS or a named user, and points the fuzzy
   worker at it with no password. Learning moves to a new socket only after
   it passes these checks; until then it keeps its current Redis;
+- rspamd's uid used by rspamd alone: no cPanel account, and on Postfix no
+  user but the service users, may share it. If CSM cannot read an account's
+  uid, it refuses too;
 - rspamd's log unreadable to other users, by file permissions or by CloudLinux
   CageFS. CageFS qualifies only for a file log under `/var/log/rspamd`, with
   every account confined and that directory absent from its skeleton;
@@ -1199,16 +1303,17 @@ stay under the old prefix until they expire.
 
 Each `antispam_learning` finding names one reason. Each reconcile pass
 reports server readiness; the running learner adds the reasons from
-`anchor_drift` on.
+`anchor_drift` on. On Postfix the learner also reports a Dovecot listing
+that failed in its last pass, until a later pass reads it.
 
 | Reason | Meaning |
 |---|---|
-| `unsupported` | An rspamd or Redis version is outside the supported versions above, or the host runs Postfix; learning is disabled. |
+| `unsupported` | An rspamd or Redis version is outside the supported versions above, a Postfix host has no `learning.redis_socket`, or Dovecot runs 2.4 or cannot list its users; learning is disabled. |
 | `unsafe_prerequisite` | Required isolation or Redis settings are unsafe or cannot be established; learning is disabled. |
 | `state_mismatch` | Learning keys could not be created or loaded safely, restored learning state awaits confirmation, or the learner found its state out of step with its storage; learning is disabled and nothing is adopted or deleted. |
 | `config_conflict` | Operator configuration conflicts with CSM's learning setup; learning is disabled. |
 | `apply_failed` | A learning check failed during apply; subsequent passes hold learning off until its configuration changes or CSM restarts. |
-| `backend_unavailable` | A probe failed temporarily; existing learning configuration is retained unless a definite failure also requires removal. A first installation waits. |
+| `backend_unavailable` | A probe failed temporarily, including a Dovecot listing that failed or timed out; existing learning configuration is retained unless a definite failure also requires removal. A first installation waits. |
 | `worker_absent` | The installed fuzzy worker is not listening. Restart rspamd after fixing the cause; CSM leaves the configuration installed. |
 | `redis_capacity` | Redis has reached the capacity guard above; CSM leaves the configuration installed. |
 | `redis_persistence` | Redis has neither append-only persistence nor snapshots enabled; CSM warns without disabling learning. |
@@ -1221,6 +1326,7 @@ reports server readiness; the running learner adds the reasons from
 | `audit_overdue` | The check of every learned value has not finished a round within 24 hours. |
 | `request_errors` | Learning requests to rspamd failed three times in a row. |
 | `backend_rebuilding` | Learned values are missing from storage, for example after Redis lost its data. CSM restores them from the stored messages and holds new clusters until it is done. |
+| `mailboxes_skipped` | On Postfix, Dovecot mailboxes CSM does not watch, counted by reason; see [Learning requirements](#learning-requirements). Learning goes on for the others. |
 | `account_capacity` | An account, or the operator, reached its learning allowance, or an account's Spam folder state reached its limit of 65536 messages. Its new reports are skipped or wait; existing learning stays. Confirmed absent folders are forgotten after 90 days, which frees their share. |
 
 ## Findings

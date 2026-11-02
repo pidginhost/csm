@@ -422,7 +422,7 @@ All series are prefixed `csm_antispam_learning_`. Pass totals and state gauges u
 
 - `csm_antispam_learning_reports_admitted_total` (counter): Spam folder reports the learner accepted.
 - `csm_antispam_learning_contributions_committed_total` (counter): cluster contributions committed from those reports.
-- `csm_antispam_learning_skips_total{reason}` (counter): entries and reports skipped. `reason` is a fixed code such as `tagged`, `malformed`, `opted_out`, `oversize` or `account_capacity`.
+- `csm_antispam_learning_skips_total{reason}` (counter): entries and reports skipped. `reason` is a fixed code such as `tagged`, `malformed`, `opted_out`, `oversize` or `account_capacity`. On Postfix hosts it also counts Dovecot mailboxes not watched, such as `driver` or `no_junk`, and `cancel_unconfirmed` when a pass could not confirm that a domain or mailbox was removed and so dropped no reports.
 - `csm_antispam_learning_pending_reports` (gauge): reports waiting after the last pass. When discovery was incomplete, including unreadable folders or discovery limits, this is a lower bound.
 - `csm_antispam_learning_backlog_age_seconds` (gauge): age of the oldest waiting report at the last pass.
 - `csm_antispam_learning_last_pass_timestamp_seconds` (gauge): when the last pass completed.

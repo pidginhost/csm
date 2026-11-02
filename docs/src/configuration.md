@@ -742,10 +742,10 @@ email_protection:
       enabled: []                       # optional feeds, e.g. [mailspike, psbl]; see docs/src/antispam.md
       spamhaus_dqs_key_file: ""         # root-owned file holding the Spamhaus DQS key; needed only for spamhaus_dqs
     learning:
-      enabled: false                    # learn from mail users move to Spam and keep one message per cluster; needs antispam; see docs/src/antispam.md
+      enabled: false                    # learn from mail users move to Spam (cPanel) or Junk (Postfix) and keep one message per cluster; needs antispam; see docs/src/antispam.md
       redis_socket: ""                  # Unix socket of a Redis used only by learning, e.g. /run/redis-csm/redis.sock; Postfix needs one, cPanel uses rspamd's Redis when empty
       reporter: domain                  # Postfix only: one learning vote per mail domain (domain) or per mailbox (mailbox)
-    exempt: []                          # Postfix only: recipient domains and mailboxes never filtered, e.g. [example.com, postmaster@example.net]
+    exempt: []                          # Postfix only: recipient domains and mailboxes never filtered or learned from, e.g. [example.com, postmaster@example.net]
 
 # --- Firewall ---
 firewall:

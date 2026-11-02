@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -50,10 +51,33 @@ func (c collector) learningFacts(ctx context.Context, s antispam.Settings, f *an
 	c.logGroups(f)
 	f.FuzzyListening, f.FuzzyListenForeign, f.FuzzyListenErr = c.fuzzyListening(f.Socket.RspamdUID)
 	f.CageFS = c.cageFS(ctx)
-	if f.Stack != antispam.StackPostfix {
+	if f.Stack == antispam.StackPostfix {
+		// Mail uids decide who is untrusted, so Dovecot is read first.
+		f.Dovecot = c.dovecotFacts(ctx)
+	} else {
 		f.Roundcube = c.roundcube(*f)
 	}
 	c.learningRedis(ctx, s.LearningRedisSocket, f)
+	f.RspamdUIDShared = f.ControllerHost.RspamdUID > 0 && c.sharesUntrustedUID(f.ControllerHost.RspamdUID, *f)
+}
+
+// dovecotFacts lists a Postfix host's mailboxes for the pass: the uids mail
+// is stored as and the users discovery skips. Only a complete snapshot
+// counts.
+func (c collector) dovecotFacts(ctx context.Context) antispam.DovecotFacts {
+	snap, err := c.dovecot(ctx)
+	if err == nil && !snap.Complete {
+		err = errors.New("the Dovecot mailbox listing is incomplete")
+	}
+	if err != nil {
+		return antispam.DovecotFacts{Err: err}
+	}
+	var uids []int
+	for _, m := range snap.Mailboxes {
+		uids = append(uids, m.UID)
+	}
+	slices.Sort(uids)
+	return antispam.DovecotFacts{UIDs: slices.Compact(uids), Skips: snap.Skips}
 }
 
 // CollectLearningRedis reads learning's Redis at socket, the dedicated one
@@ -65,7 +89,7 @@ func CollectLearningRedis(ctx context.Context, socket string, f *antispam.HostFa
 
 func (c collector) learningRedis(ctx context.Context, socket string, f *antispam.HostFacts) {
 	if f.Stack == antispam.StackPostfix {
-		f.AccountNames, f.AccountNamesErr = c.untrustedLocalUsers(f.ControllerHost.RspamdUser)
+		f.AccountNames, f.AccountNamesErr = c.untrustedLocalUsers(f.ControllerHost.RspamdUser, f.Dovecot.UIDs)
 	} else {
 		f.AccountNames, f.AccountNamesErr = c.accountNames()
 	}
@@ -651,12 +675,26 @@ func (c collector) trustedRedisOwner(uid int, f antispam.HostFacts) bool {
 	if uid == 0 {
 		return true
 	}
-	// A cPanel account can carry the name redis on a host without the
-	// service user, and a uid can have several names; such a uid is a tenant.
-	if f.AccountNamesErr != nil || f.AccountNames["redis"] {
+	// An untrusted user can carry the name redis: a cPanel account on a host
+	// without the service user, or on Postfix the redis user when mail is
+	// stored as its uid. A uid can have several names; such a uid is a tenant.
+	if f.AccountNames["redis"] || c.sharesUntrustedUID(uid, f) {
 		return false
 	}
-	var localNames map[string]bool
+	if f.Socket.RspamdUID >= 0 && uid == f.Socket.RspamdUID {
+		return true
+	}
+	redisUID, err := c.uid("redis")
+	return err == nil && redisUID >= 0 && uid == redisUID
+}
+
+// sharesUntrustedUID reports whether a user in f.AccountNames, which may
+// run tenant code, has uid, or that cannot be ruled out.
+func (c collector) sharesUntrustedUID(uid int, f antispam.HostFacts) bool {
+	if f.AccountNamesErr != nil {
+		return true
+	}
+	var local map[string]int
 	for account := range f.AccountNames {
 		accountUID, err := c.uid(account)
 		// cPanel keeps registry records with no system user, such as its own
@@ -664,26 +702,21 @@ func (c collector) trustedRedisOwner(uid int, f antispam.HostFacts) bool {
 		// from /etc/passwd has no uid to share. NSS can report an unavailable
 		// backend as an unknown user, so the unknown reply alone is not proof.
 		if errors.As(err, new(user.UnknownUserError)) {
-			if localNames == nil {
-				localNames, err = c.localAccountNames()
-				if err != nil {
-					return false
+			if local == nil {
+				if local, err = c.localAccounts(); err != nil {
+					return true
 				}
 			}
-			if localNames[account] {
-				return false
+			if _, ok := local[account]; ok {
+				return true
 			}
 			continue
 		}
 		if err != nil || accountUID == uid {
-			return false
+			return true
 		}
 	}
-	if f.Socket.RspamdUID >= 0 && uid == f.Socket.RspamdUID {
-		return true
-	}
-	redisUID, err := c.uid("redis")
-	return err == nil && redisUID >= 0 && uid == redisUID
+	return false
 }
 
 // protectedRedisPath verifies each lookup, including symlinks and repeated

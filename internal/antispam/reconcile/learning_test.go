@@ -542,3 +542,52 @@ func TestPassRedisSocketChangeLiftsHold(t *testing.T) {
 		t.Fatalf("keyless generation without the key changed: %q", got)
 	}
 }
+
+// A Postfix host names a learner only when learning resolves on, so the
+// learner and its watcher never start for learning that cannot run there.
+// cPanel keeps naming it as before. The outcome carries the stack the
+// daemon picks the watcher by.
+func TestPassPostfixLearnerOnlyWhenLearningResolvesOn(t *testing.T) {
+	const socket = "/run/rspamd/controller.sock"
+	for _, stack := range []antispam.MailStack{antispam.StackExim, antispam.StackPostfix} {
+		for _, install := range []bool{false, true} {
+			h := newLearningHost(antispam.Assessment{Action: antispam.Keep, Installed: true})
+			r := h.reconciler()
+			r.Collect = func(context.Context, string) antispam.HostFacts {
+				f := goodFeedFacts()
+				f.Stack = stack
+				return f
+			}
+			r.CollectLearning = func(_ context.Context, _ antispam.Settings, f *antispam.HostFacts) {
+				f.Controller = antispam.ControllerConfig{Listeners: []antispam.ControllerListener{{Unix: true, Path: socket}}}
+				f.ControllerHost = antispam.ControllerHostFacts{RspamdUID: 979, Sockets: map[string]antispam.SocketFacts{socket: {
+					Socket: antispam.PathFacts{Path: socket, UID: 979, Mode: fs.ModeSocket | 0o600},
+					Parents: []antispam.PathFacts{
+						{Path: "/", Mode: fs.ModeDir | 0o755},
+						{Path: "/run", Mode: fs.ModeDir | 0o755},
+						{Path: "/run/rspamd", Mode: fs.ModeDir | 0o755},
+					},
+				}}}
+			}
+			h.resolve = func(s antispam.Settings, _ antispam.HostFacts) (antispam.Settings, antispam.LearningGate, []antispam.Problem) {
+				s.Learning = install
+				return s, antispam.LearningGate{Install: install, Publish: install}, nil
+			}
+			out := r.Pass(context.Background(), learningDesired())
+			named := out.Learner != (LearnerTarget{})
+			if want := install || stack == antispam.StackExim; named != want || out.Stack != stack {
+				t.Fatalf("%s install=%v: learner %+v, stack %q", stack, install, out.Learner, out.Stack)
+			}
+		}
+	}
+}
+
+// One condition reported by the pass and by the learner shows once.
+func TestMergeByKeyDropsRepeatedDetail(t *testing.T) {
+	got := mergeByKey([]antispam.Problem{
+		{Key: "unsupported", Detail: "a"}, {Key: "other", Detail: "x"}, {Key: "unsupported", Detail: "a"}, {Key: "unsupported", Detail: "b"},
+	})
+	if len(got) != 2 || got[0].Detail != "a; b" || got[1].Detail != "x" {
+		t.Fatalf("merged %+v", got)
+	}
+}
