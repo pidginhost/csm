@@ -42,15 +42,15 @@ func TestEndToEndOverUnixSocket(t *testing.T) {
 	// Socket paths have a short limit on some platforms; keep it short.
 	sock := filepath.Join(shortTempDir(t), "m.sock")
 	cfg.MCP = config.MCPConfig{Enabled: true, Listen: "unix:" + sock, Tokens: []config.MCPToken{{Name: "agent", Token: integrationToken}}}
-	srv, err := mcp.New(mcp.Options{
+	srv, newErr := mcp.New(mcp.Options{
 		Config:        cfg.MCP,
 		Dispatcher:    web.ReadOnly(),
 		Version:       "e2e",
 		Hostname:      cfg.Hostname,
 		ConfigSummary: func() map[string]any { return map[string]any{"hostname": cfg.Hostname} },
 	})
-	if err != nil {
-		t.Fatal(err)
+	if newErr != nil {
+		t.Fatal(newErr)
 	}
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.Start() }()
@@ -58,8 +58,8 @@ func TestEndToEndOverUnixSocket(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = srv.Shutdown(ctx)
-		if err := <-errCh; err != nil {
-			t.Errorf("server: %v", err)
+		if serveErr := <-errCh; serveErr != nil {
+			t.Errorf("server: %v", serveErr)
 		}
 	})
 	waitForSocket(t, sock)
@@ -75,9 +75,9 @@ func TestEndToEndOverUnixSocket(t *testing.T) {
 		if token != "" {
 			req.Header.Set("Authorization", "Bearer "+token)
 		}
-		resp, err := client.Do(req)
-		if err != nil {
-			t.Fatal(err)
+		resp, doErr := client.Do(req)
+		if doErr != nil {
+			t.Fatal(doErr)
 		}
 		defer func() { _ = resp.Body.Close() }()
 		body, _ := io.ReadAll(resp.Body)
@@ -179,7 +179,7 @@ func waitForSocket(t *testing.T, path string) {
 
 func shortTempDir(t *testing.T) string {
 	t.Helper()
-	dir, err := filepath.Abs(filepath.Join(t.TempDir()))
+	dir, err := filepath.Abs(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}

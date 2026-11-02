@@ -176,6 +176,8 @@ func (s *Server) Start() error {
 		if err != nil {
 			return fmt.Errorf("mcp: listen %s: %w", path, err)
 		}
+		// #nosec G302 -- group access is the point of the socket: a local
+		// agent in the daemon's group connects without a TCP listener.
 		if err := os.Chmod(path, 0o660); err != nil {
 			_ = l.Close()
 			return fmt.Errorf("mcp: chmod %s: %w", path, err)
