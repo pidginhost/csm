@@ -11,45 +11,47 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Highlights
 
-- YARA scanning and PHP taint analysis now run in locked-down workers without root; files they cannot check are reported as not scanned, never as clean.
+- By default, YARA scanning and PHP taint analysis run in locked-down workers without root; failed scans are reported as unexamined files.
 - With the default YARA worker, rule files can no longer include other files; inline them, or set `signatures.yara_worker_enabled: false` to run YARA in the daemon as root.
-- Antispam now runs on Postfix servers that pass mail to rspamd, with a dry run and learning from mail users move to their Junk folder.
-- Postfix SMTP login guessing is now blocked; it needs verbose auth logging in Dovecot, which `csm doctor` checks.
+- Postfix antispam supports Junk-folder learning; its dry run changes scoring and can still reject mail under rspamd's existing policy.
+- Postfix SMTP password guessing is now detected with Dovecot authentication; enable verbose auth logging, which `csm doctor` checks.
 - Enabling antispam now replaces your own rspamd files where CSM needs them, keeping a backup, instead of refusing to install.
 - The firewall now opens the passive FTP port range by default only on cPanel hosts and hosts with an FTP server installed.
 - IMAP, POP3, ManageSieve and Postfix SMTP login protection now work when mail logs are read from the systemd journal.
 
 ### Security
 
-- YARA scanning now runs in a locked-down worker without root, and no longer reopens tenant files by path or writes copies of large files to disk.
+- By default, YARA scanning runs in a locked-down worker without root, and no longer reopens tenant files by path or writes copies of large files to disk.
 - PHP taint analysis now runs in a locked-down worker with no root, network or account file access; files are reported unexamined when it cannot start.
-- Files are now reported as not scanned by YARA until its rules have loaded, instead of passing unchecked.
+- With the default YARA worker, files are now reported as unscanned while initial rule compilation is pending or has failed.
 - A real-time YARA finding on a file scanned in full now fingerprints the content it matched, not whatever the file holds when the finding is stored.
-- Password guessing against SMTP login on Postfix servers is now detected and blocked, also from systemd journal logs. It needs verbose auth logging in Dovecot, which `csm doctor` checks.
+- Postfix SMTP password guessing with Dovecot authentication is now detected and blocked from file or journal logs. Enable verbose auth logging in Dovecot; `csm doctor` checks it.
 - IMAP, POP3 and ManageSieve login protection now works when mail logs are read from the systemd journal.
 - Crafted login names no longer pause mail brute-force protection.
 - Mail provider lookups no longer risk excessive memory use.
 - The daemon log now escapes line breaks and control characters in values, so crafted file names cannot forge log lines.
 - Antispam learning is now refused when a hosting account shares rspamd's user ID, which would let that account reach rspamd's controller.
+- Learned spam is now stored with its headers and text only, so spam with a scripted PDF attachment no longer holds up the other Spam folder reports of its mailbox.
+- Spam whose plain-text and HTML versions differ is now learned from Spam folder reports and operator marks instead of being skipped.
+- A Spam folder report that learning cannot process is now set aside after a few tries instead of holding up the reports behind it.
 
 ### Added
 
 - Antispam now runs on Postfix servers that pass mail to rspamd, scoring like cPanel with a dry run, and refuses to enforce where rspamd would drop or hold rejected mail.
 - Antispam on Postfix servers now learns from mail users move into their Junk folder, using a dedicated Redis.
 - Antispam learning now accepts Redis 7 and can use a Redis of its own set by `learning.redis_socket`, refused while another rspamd module shares it.
-- Antispam DNS blocklists now work through your own resolvers on public addresses when they are listed in `infra_ips`.
-- Nodes can now load central abuse lists that include spam sources, and operators can opt in to report repeated spam senders; shared mail services are never reported.
+- Antispam DNS blocklists now work through your own resolvers on public addresses when listed by address in `infra_ips`.
+- Nodes can now load central abuse lists containing spam sources and opt in to report repeated spam senders; spam reports exclude recognized shared mail services.
 
 ### Changed
 
 - Enabling antispam now replaces your own rspamd files at the paths CSM needs, keeping a backup and warning you, instead of refusing to install.
-- Learned spam is now stored with its headers and text only, so spam with a scripted PDF attachment no longer holds up the other Spam folder reports of its mailbox.
 - With the default YARA worker enabled, rule files can no longer include other files; inline included rules instead.
 - `csm validate` now warns when `signatures.yara_worker_enabled: false` makes the daemon run YARA as root.
 - A YARA rule set too large for the locked-down compile worker now raises a compile-failure finding saying so; `signatures.yara_worker_enabled: false` compiles it in the daemon instead.
 - A file or attachment that keeps crashing the YARA worker is now temporarily reported as not scanned instead of being scanned again each time.
-- The `csm_yara_worker_restarts_total` metric now counts YARA worker failures, including failed starts, and no longer counts rule reloads.
-- Phishing-kit companion reports now say when YARA could not check a file, including on hosts without loaded rules; `disabled_checks: [yara_deep]` turns this off.
+- The `csm_yara_worker_restarts_total` metric now counts scan worker failures, including failed starts, and no longer counts rule reloads.
+- Phishing-kit companion reports now flag YARA scan failures or unloaded rules on hosts with YARA; `disabled_checks: [yara_deep]` suppresses these notes.
 - With auto_response.dry_run off, admission previews now wait for free slots under firewall.deny_temp_ip_limit, or preview replacing lower-priority automatic blocks, and csm doctor warns while the set is full; blocking is unchanged.
 - Dry-run forecasts now predict when a higher-priority attack would replace a lower-priority automatic block, and status and csm doctor count these and previewed replacements.
 - The firewall now opens the passive FTP port range by default only on cPanel hosts and hosts with an FTP server installed.
@@ -60,8 +62,6 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 - A threat-intelligence match on an address failing IMAP or POP3 logins now opens a mailbox brute force incident instead of a web attack.
 - Antispam no longer turns on DNS blocklists when systemd-resolved forwards to a public resolver the lists refuse.
-- Spam whose plain-text and HTML versions differ is now learned from Spam folder reports and operator marks instead of being skipped.
-- A Spam folder report that learning cannot process is now set aside after a few tries instead of holding up the reports behind it.
 
 #### Findings and file detection
 
@@ -70,13 +70,13 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 #### Tools and CLI
 
-- `csm validate` and `csm doctor` no longer warn about a missing rspamd token when the rspamd controller runs on the same host.
+- `csm validate` and `csm doctor` no longer warn about a missing rspamd token when its controller URL uses a loopback address or localhost.
 - `csm doctor` no longer fails on queued automatic blocks while the firewall is disabled; it says why they are not applied.
 
 #### Daemon log
 
-- The daemon log now says when a worker is stopped, retired or exits on its own, instead of reporting a kill or a memory failure.
-- The daemon log no longer reports a YARA scan failure for large files.
+- The daemon log distinguishes deliberate worker stops from failures and explains retirement or exit before reporting a kill.
+- Large files no longer produce spurious YARA scan-failure messages in the daemon log.
 
 ## [4.8.1] - 2026-10-30
 
