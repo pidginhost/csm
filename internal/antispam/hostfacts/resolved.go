@@ -47,7 +47,7 @@ func (c collector) resolvedDNS(ctx context.Context) ([]netip.Addr, error) {
 		if defaultRoute {
 			break
 		}
-		result := c.resolvedProperty(ctx, "/link/_"+strconv.Itoa(link), "DefaultRoute")
+		result := c.resolvedProperty(ctx, resolvedLinkPath(link), "DefaultRoute")
 		if result.Err != nil {
 			routeErr = errors.Join(routeErr, result.Err)
 			continue
@@ -73,6 +73,13 @@ func (c collector) resolvedDNS(ctx context.Context) ([]netip.Addr, error) {
 		}
 	}
 	return out, nil
+}
+
+// resolvedLinkPath is systemd's bus label for a link: a leading digit is
+// escaped as _ and its hex code, so link 2 is /link/_32. Link indexes here
+// are positive, so the first character is always a digit from 1 to 9.
+func resolvedLinkPath(link int) string {
+	return "/link/_3" + strconv.Itoa(link)
 }
 
 func (c collector) resolvedProperty(ctx context.Context, link, property string) antispam.CommandResult {
