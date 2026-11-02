@@ -324,9 +324,13 @@ func checkLearningController(c *learningCheck, f HostFacts) {
 	if private > 1 || private == 0 && !unknownSocket && f.ControllerErr == nil && host.RspamdUID >= 0 {
 		c.add(ReasonUnsafe, "learning needs exactly one private controller socket owned by rspamd with mode 0600")
 	}
-	// The controller trusts rspamd's uid, so no tenant may hold it.
-	if f.RspamdUIDShared {
-		c.add(ReasonUnsafe, "rspamd's uid may be shared with a user that can run tenant code")
+	// The controller trusts rspamd's uid, so no tenant may hold it. Not
+	// knowing only pauses learning: creating an alias takes root (P6).
+	switch {
+	case f.RspamdUIDShared:
+		c.add(ReasonUnsafe, "rspamd's uid is shared with a user that can run tenant code")
+	case f.RspamdUIDErr != nil:
+		c.add(ReasonBackendUnavailable, "CSM cannot rule out that another user shares rspamd's uid; learning waits for the next check")
 	}
 }
 

@@ -378,19 +378,23 @@ func TestCollectLearningPostfixDovecot(t *testing.T) {
 	}
 }
 
-// The controller trusts rspamd's uid: a user that may run tenant code and
-// shares it, or one whose uid cannot be read, makes that trust unsafe on
-// either stack.
+// The controller trusts rspamd's uid (ruling P6). A user that may run
+// tenant code and resolves to it is a proven share. When CSM cannot rule a
+// share out, because the account list, a uid lookup or /etc/passwd cannot
+// be read, that is an error, not a share. A proven share wins over another
+// account's error.
 func TestCollectRspamdUIDShared(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		passwd string
-		mail   []int
-		want   bool
+		name    string
+		passwd  string
+		mail    []int
+		shared  bool
+		wantErr bool
 	}{
 		{name: "distinct", passwd: postfixPasswd},
-		{name: "alias of rspamd", passwd: postfixPasswd + "builder:x:979:979::/home/builder:/bin/sh\n", want: true},
-		{name: "mail as rspamd", passwd: postfixPasswd, mail: []int{979}, want: true},
+		{name: "alias of rspamd", passwd: postfixPasswd + "builder:x:979:979::/home/builder:/bin/sh\n", shared: true},
+		{name: "mail as rspamd", passwd: postfixPasswd, mail: []int{979}, shared: true},
+		{name: "passwd malformed", passwd: postfixPasswd + "broken\n", wantErr: true},
 	} {
 		t.Run("postfix "+tc.name, func(t *testing.T) {
 			c, f := postfixCollector(t, tc.passwd)
@@ -402,33 +406,63 @@ func TestCollectRspamdUIDShared(t *testing.T) {
 			calls := 0
 			c.dovecot = snapshotOf(snap, nil, &calls)
 			c.learningFacts(context.Background(), antispam.Settings{Learning: true}, &f)
-			if f.RspamdUIDShared != tc.want {
-				t.Fatalf("shared=%v, want %v (untrusted %v)", f.RspamdUIDShared, tc.want, f.AccountNames)
+			if f.RspamdUIDShared != tc.shared || (f.RspamdUIDErr != nil) != tc.wantErr {
+				t.Fatalf("shared=%v err=%v, want %v/%v (untrusted %v)", f.RspamdUIDShared, f.RspamdUIDErr, tc.shared, tc.wantErr, f.AccountNames)
 			}
 		})
 	}
+	const cleanPasswd = "tenant:x:23456:23456::/home/tenant:/bin/bash\n"
 	for _, tc := range []struct {
-		name string
-		uids map[string]int
-		uid  int
-		want bool
+		name     string
+		accounts []string // files in /var/cpanel/users; nil: the directory is missing
+		uids     map[string]int
+		passwd   string
+		uid      int
+		shared   bool
+		wantErr  bool
 	}{
-		{name: "distinct", uids: map[string]int{"tenant": 23456}, uid: 979},
-		{name: "account shares rspamd's uid", uids: map[string]int{"tenant": 979}, uid: 979, want: true},
-		{name: "account unresolved", uids: map[string]int{}, uid: 979, want: true},
+		{name: "distinct", accounts: []string{"tenant"}, uids: map[string]int{"tenant": 23456}, uid: 979},
+		{name: "account shares rspamd's uid", accounts: []string{"tenant"}, uids: map[string]int{"tenant": 979}, uid: 979, shared: true},
+		{name: "account lookup fails", accounts: []string{"tenant"}, uids: map[string]int{}, uid: 979, wantErr: true},
+		// Map order varies: several failing accounts and repeated reads
+		// make an error that hides the share show up.
+		{name: "share wins over a failed lookup", accounts: []string{"other1", "other2", "other3", "other4", "other5", "other6", "other7", "tenant"}, uids: map[string]int{"tenant": 979}, uid: 979, shared: true},
+		{name: "accounts unreadable", uids: map[string]int{"tenant": 23456}, uid: 979, wantErr: true},
+		// cPanel's own system record has no user: absent from passwd it
+		// shares nothing, but a passwd CSM cannot parse cannot prove that.
+		{name: "system record", accounts: []string{"system", "tenant"}, uids: map[string]int{"tenant": 23456}, passwd: cleanPasswd, uid: 979},
+		{name: "system record, passwd malformed", accounts: []string{"system", "tenant"}, uids: map[string]int{"tenant": 23456}, passwd: cleanPasswd + "broken\n", uid: 979, wantErr: true},
+		{name: "unknown user listed in passwd as rspamd", accounts: []string{"system"}, uids: map[string]int{}, passwd: "system:x:979:979::/:/bin/false\n", uid: 979, shared: true},
+		// NSS and passwd disagree: CSM cannot tell which uid it has.
+		{name: "unknown user listed in passwd", accounts: []string{"system"}, uids: map[string]int{}, passwd: "system:x:5555:5555::/:/bin/false\n", uid: 979, wantErr: true},
 		// rspamd's uid unknown is reported on its own; nothing to compare.
-		{name: "rspamd unknown", uids: map[string]int{}, uid: -1},
+		{name: "rspamd unknown", accounts: []string{"tenant"}, uids: map[string]int{}, uid: -1},
 	} {
 		t.Run("cpanel "+tc.name, func(t *testing.T) {
 			c, _ := learningCollector(t, &fakeRun{})
-			mkdir(t, c.layout.CPanelUsers)
-			write(t, filepath.Join(c.layout.CPanelUsers, "tenant"), "")
-			c.uid = lookup(tc.uids)
-			f := antispam.HostFacts{Stack: antispam.StackExim}
-			f.ControllerHost.RspamdUID = tc.uid
-			c.learningFacts(context.Background(), antispam.Settings{Learning: true}, &f)
-			if f.RspamdUIDShared != tc.want {
-				t.Fatalf("shared=%v, want %v", f.RspamdUIDShared, tc.want)
+			if tc.accounts != nil {
+				mkdir(t, c.layout.CPanelUsers)
+			}
+			for _, a := range tc.accounts {
+				write(t, filepath.Join(c.layout.CPanelUsers, a), "")
+			}
+			c.uid = func(name string) (int, error) {
+				if id, ok := tc.uids[name]; ok {
+					return id, nil
+				}
+				if name == "system" {
+					return -1, user.UnknownUserError(name)
+				}
+				return -1, fmt.Errorf("lookup of %s failed", name)
+			}
+			c.readPasswd = func() ([]byte, error) { return []byte(tc.passwd), nil }
+			for range 8 {
+				f := antispam.HostFacts{Stack: antispam.StackExim}
+				f.ControllerHost.RspamdUID = tc.uid
+				c.learningFacts(context.Background(), antispam.Settings{Learning: true}, &f)
+				if f.RspamdUIDShared != tc.shared || (f.RspamdUIDErr != nil) != tc.wantErr {
+					t.Fatalf("shared=%v err=%v, want %v/%v", f.RspamdUIDShared, f.RspamdUIDErr, tc.shared, tc.wantErr)
+				}
 			}
 		})
 	}

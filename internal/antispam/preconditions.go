@@ -227,9 +227,10 @@ type HostFacts struct {
 	// pinned service users, and every name of a uid Dovecot stores mail as.
 	AccountNames    map[string]bool
 	AccountNamesErr error
-	// RspamdUIDShared is set when a user in AccountNames may share rspamd's
-	// uid, or that cannot be ruled out.
+	// RspamdUIDShared is set when a user in AccountNames has rspamd's uid;
+	// RspamdUIDErr when CSM cannot rule that out.
 	RspamdUIDShared bool
+	RspamdUIDErr    error
 	// Dovecot is what learning reads from Dovecot on a Postfix host.
 	Dovecot DovecotFacts
 	// RedisGuardPaused is the pass's last memory-guard state, so the guard

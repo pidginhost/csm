@@ -58,7 +58,10 @@ func (c collector) learningFacts(ctx context.Context, s antispam.Settings, f *an
 		f.Roundcube = c.roundcube(*f)
 	}
 	c.learningRedis(ctx, s.LearningRedisSocket, f)
-	f.RspamdUIDShared = f.ControllerHost.RspamdUID > 0 && c.sharesUntrustedUID(f.ControllerHost.RspamdUID, *f)
+	f.RspamdUIDShared, f.RspamdUIDErr = false, nil
+	if f.ControllerHost.RspamdUID > 0 {
+		f.RspamdUIDShared, f.RspamdUIDErr = c.sharesUntrustedUID(f.ControllerHost.RspamdUID, *f)
+	}
 }
 
 // dovecotFacts lists a Postfix host's mailboxes for the pass: the uids mail
@@ -678,7 +681,7 @@ func (c collector) trustedRedisOwner(uid int, f antispam.HostFacts) bool {
 	// An untrusted user can carry the name redis: a cPanel account on a host
 	// without the service user, or on Postfix the redis user when mail is
 	// stored as its uid. A uid can have several names; such a uid is a tenant.
-	if f.AccountNames["redis"] || c.sharesUntrustedUID(uid, f) {
+	if shared, err := c.sharesUntrustedUID(uid, f); f.AccountNames["redis"] || shared || err != nil {
 		return false
 	}
 	if f.Socket.RspamdUID >= 0 && uid == f.Socket.RspamdUID {
@@ -689,12 +692,14 @@ func (c collector) trustedRedisOwner(uid int, f antispam.HostFacts) bool {
 }
 
 // sharesUntrustedUID reports whether a user in f.AccountNames, which may
-// run tenant code, has uid, or that cannot be ruled out.
-func (c collector) sharesUntrustedUID(uid int, f antispam.HostFacts) bool {
+// run tenant code, has uid. The error says CSM cannot rule that out; a
+// proven share wins over it.
+func (c collector) sharesUntrustedUID(uid int, f antispam.HostFacts) (bool, error) {
 	if f.AccountNamesErr != nil {
-		return true
+		return false, f.AccountNamesErr
 	}
 	var local map[string]int
+	var localErr, unknown error
 	for account := range f.AccountNames {
 		accountUID, err := c.uid(account)
 		// cPanel keeps registry records with no system user, such as its own
@@ -702,21 +707,27 @@ func (c collector) sharesUntrustedUID(uid int, f antispam.HostFacts) bool {
 		// from /etc/passwd has no uid to share. NSS can report an unavailable
 		// backend as an unknown user, so the unknown reply alone is not proof.
 		if errors.As(err, new(user.UnknownUserError)) {
-			if local == nil {
-				if local, err = c.localAccounts(); err != nil {
-					return true
-				}
+			if local == nil && localErr == nil {
+				local, localErr = c.localAccounts()
 			}
-			if _, ok := local[account]; ok {
-				return true
+			switch localUID, listed := local[account]; {
+			case localErr != nil:
+				unknown = localErr
+			case listed && localUID == uid:
+				return true, nil
+			case listed:
+				unknown = errors.New("an account NSS does not know is listed in /etc/passwd")
 			}
 			continue
 		}
-		if err != nil || accountUID == uid {
-			return true
+		switch {
+		case err != nil:
+			unknown = err
+		case accountUID == uid:
+			return true, nil
 		}
 	}
-	return false
+	return false, unknown
 }
 
 // protectedRedisPath verifies each lookup, including symlinks and repeated

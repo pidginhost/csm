@@ -263,7 +263,9 @@ func TestResolveLearningPostfixDovecot(t *testing.T) {
 }
 
 // A user that may run tenant code and shares rspamd's uid could reach the
-// controller as rspamd: learning refuses on either stack.
+// controller as rspamd: learning refuses on either stack. When CSM cannot
+// rule a share out, learning waits instead (ruling P6): an installation
+// stays and publishes nothing new, a first one is not made.
 func TestResolveLearningRspamdUIDShared(t *testing.T) {
 	for stack, pair := range map[MailStack]struct {
 		s Settings
@@ -272,11 +274,28 @@ func TestResolveLearningRspamdUIDShared(t *testing.T) {
 		StackExim:    {learningSettings(), safeLearningFacts()},
 		StackPostfix: {postfixLearningSettings(), postfixLearningFacts()},
 	} {
-		pair.f.RspamdUIDShared = true
-		got, gate, problems := ResolveLearning(pair.s, pair.f)
-		onlyLearningReason(t, problems, ReasonUnsafe)
-		if want := "rspamd's uid may be shared with a user that can run tenant code"; problems[0].Detail != want || got.Learning || gate != (LearningGate{}) {
-			t.Fatalf("%s: problems %+v gate %+v", stack, problems, gate)
+		shared := pair.f
+		shared.RspamdUIDShared = true
+		for _, f := range []HostFacts{shared, withLearning(t, shared, pair.s.LearningRedisSocket)} {
+			got, gate, problems := ResolveLearning(pair.s, f)
+			onlyLearningReason(t, problems, ReasonUnsafe)
+			if want := "rspamd's uid is shared with a user that can run tenant code"; problems[0].Detail != want || got.Learning || gate != (LearningGate{}) {
+				t.Fatalf("%s: problems %+v gate %+v", stack, problems, gate)
+			}
+		}
+		unknown := pair.f
+		unknown.RspamdUIDErr = errors.New("lookup of tenant failed")
+		const want = "CSM cannot rule out that another user shares rspamd's uid; learning waits for the next check"
+		got, gate, problems := ResolveLearning(pair.s, unknown)
+		onlyLearningReason(t, problems, ReasonBackendUnavailable)
+		if problems[0].Detail != want || got.Learning || gate != (LearningGate{}) {
+			t.Fatalf("%s first install: problems %+v gate %+v", stack, problems, gate)
+		}
+		got, gate, problems = ResolveLearning(pair.s, withLearning(t, unknown, pair.s.LearningRedisSocket))
+		onlyLearningReason(t, problems, ReasonBackendUnavailable)
+		// Nothing is removed: on cPanel the Junk-button include stays too.
+		if problems[0].Detail != want || !got.Learning || !gate.Install || gate.Publish || gate.Roundcube != (stack == StackExim) {
+			t.Fatalf("%s installed: problems %+v gate %+v settings %+v", stack, problems, gate, got)
 		}
 	}
 }

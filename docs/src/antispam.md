@@ -820,22 +820,37 @@ The [learning prerequisites](#prerequisites) apply, and also:
    because other rspamd modules share it. Run a second Redis instance and
    set `learning.redis_socket` to its socket; without it CSM reports
    `unsupported`. On Debian and Ubuntu the packaged `redis-server@.service`
-   template runs an instance from `/etc/redis/redis-<name>.conf`, for
-   example `redis-server@csm` with:
+   template runs an instance from `/etc/redis/redis-<name>.conf`. For an
+   instance named `csm`, create its data directory:
+
+   ```
+   install -d -o redis -g redis -m 0750 /var/lib/redis/csm
+   ```
+
+   Then write `/etc/redis/redis-csm.conf`:
 
    ```
    port 0
    unixsocket /run/redis-csm/redis.sock
    unixsocketperm 770
+   pidfile /run/redis-csm/redis-server.pid
+   dir /var/lib/redis/csm
    maxmemory 256mb
    maxmemory-policy noeviction
    appendonly yes
    ```
 
-   Size `maxmemory` for the hashes you expect to learn. Give rspamd's user
-   access through the socket's group, for example by adding it to the
-   `redis` group; no other user may be in that group. The Redis checks of
-   the prerequisites apply to this socket. rspamd's global `redis` settings
+   and start it with `systemctl enable --now redis-server@csm`. The template
+   lets Redis write only below `/var/lib/redis`, `/var/log/redis` and its
+   run directory, so `dir` must be there for persistence to work. Do not
+   use `/var/lib/redis` itself, where the main instance keeps its files.
+   Size `maxmemory` for the hashes you expect to learn.
+
+   Give rspamd's user access through the socket's group, for example with
+   `usermod -aG redis _rspamd`; no other user may be in that group. Then
+   restart rspamd: a reload keeps the groups it started with, and its fuzzy
+   worker would be refused by the socket. The Redis checks of the
+   prerequisites apply to this socket. rspamd's global `redis` settings
    must not use sentinels, TLS or a named user, because rspamd would apply
    them to the learning Redis too.
 5. **A private controller socket for CSM**, as on cPanel; see
@@ -871,7 +886,8 @@ the Junk folders of domain mailboxes start new baselines.
 #### Enabling learning on Postfix
 
 1. Set up the Redis instance and the private controller socket above, then
-   run `rspamadm configtest` and reload rspamd.
+   run `rspamadm configtest` and restart rspamd. A reload is not enough
+   after adding rspamd's user to the socket's group.
 2. Set `learning.enabled: true` and `learning.redis_socket`, then run
    `csm validate` and `systemctl reload csm`.
 3. Check `antispam_learning` findings and `csm doctor`. Once learning runs,
@@ -1118,8 +1134,9 @@ disable core filtering; `antispam_learning` names the reason.
   worker at it with no password. Learning moves to a new socket only after
   it passes these checks; until then it keeps its current Redis;
 - rspamd's uid used by rspamd alone: no cPanel account, and on Postfix no
-  user but the service users, may share it. If CSM cannot read an account's
-  uid, it refuses too;
+  user but the service users, may share it. If CSM cannot read every
+  account's uid, learning waits: an installation stays, and nothing new is
+  published until a later pass can check;
 - rspamd's log unreadable to other users, by file permissions or by CloudLinux
   CageFS. CageFS qualifies only for a file log under `/var/log/rspamd`, with
   every account confined and that directory absent from its skeleton;
