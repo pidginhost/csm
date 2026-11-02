@@ -102,7 +102,7 @@ func TestEndToEndOverUnixSocket(t *testing.T) {
 	if len(tools) < 60 {
 		t.Fatalf("only %d tools listed", len(tools))
 	}
-	for _, name := range []string{"csm_health", "csm_status", "csm_lookup_ip", "csm_quarantine", "csm_email_queue_message"} {
+	for _, name := range []string{"csm_health", "csm_status", "csm_lookup_ip", "csm_quarantine", "csm_email_queue"} {
 		if !hasTool(tools, name) {
 			t.Errorf("tool %s missing", name)
 		}

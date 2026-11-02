@@ -75,6 +75,20 @@ func TestReadOnlyDispatcherRefusesWriteRoutes(t *testing.T) {
 	}
 }
 
+// TestReadOnlyDispatcherRefusesContentReads keeps file, message and SQL
+// content off the read-only surface: quarantined malware bytes, queued
+// customer mail and captured database object bodies.
+func TestReadOnlyDispatcherRefusesContentReads(t *testing.T) {
+	d := newTestServer(t, "").ReadOnly()
+	for _, path := range []string{
+		"/api/v1/quarantine-preview", "/api/v1/db-object-backup-preview", "/api/v1/email/queue/1a2B3c-000001-AB",
+	} {
+		if d.Serves(path) {
+			t.Errorf("%q is served by the read-only dispatcher", path)
+		}
+	}
+}
+
 func TestReadOnlyDispatcherServesStatus(t *testing.T) {
 	s := newTestServer(t, "")
 	d := s.ReadOnly()

@@ -106,26 +106,25 @@ Route tools, one per API read (the description names the route):
 | --- | --- |
 | Daemon | `csm_status`, `csm_health`, `csm_capabilities`, `csm_components`, `csm_challenge_stats`, `csm_scan_jobs`, `csm_scan_job` |
 | Findings | `csm_findings`, `csm_findings_enriched`, `csm_finding_detail`, `csm_history`, `csm_stats`, `csm_stats_trend`, `csm_stats_timeline` |
-| Response | `csm_blocked_ips`, `csm_quarantine`, `csm_quarantine_preview`, `csm_db_object_backups`, `csm_db_object_backup_preview`, `csm_audit` |
+| Response | `csm_blocked_ips`, `csm_quarantine`, `csm_db_object_backups`, `csm_audit` |
 | Accounts and incidents | `csm_accounts`, `csm_account`, `csm_incident_timeline`, `csm_incidents`, `csm_incident_groups`, `csm_incident` |
-| Mail | `csm_email_stats`, `csm_email_quarantine`, `csm_email_av_status`, `csm_email_checks`, `csm_email_groups`, `csm_email_overview`, `csm_email_rejects`, `csm_email_senders`, `csm_email_rspamd`, `csm_email_relay_abuse`, `csm_email_forwarders`, `csm_email_deferrals`, `csm_email_queue_composition`, `csm_email_queue`, `csm_email_queue_message`, `csm_email_held` |
+| Mail | `csm_email_stats`, `csm_email_quarantine`, `csm_email_av_status`, `csm_email_checks`, `csm_email_groups`, `csm_email_overview`, `csm_email_rejects`, `csm_email_senders`, `csm_email_rspamd`, `csm_email_relay_abuse`, `csm_email_forwarders`, `csm_email_deferrals`, `csm_email_queue_composition`, `csm_email_queue`, `csm_email_held` |
 | Host | `csm_performance`, `csm_hardening` |
 | Threat and rules | `csm_threat_stats`, `csm_threat_top_attackers`, `csm_threat_ip`, `csm_threat_events`, `csm_threat_db_stats`, `csm_threat_whitelist`, `csm_rules_status`, `csm_rules_list` |
 | WAF and firewall | `csm_modsec_stats`, `csm_modsec_blocks`, `csm_modsec_events`, `csm_modsec_rules`, `csm_firewall_status`, `csm_firewall_allowed`, `csm_firewall_audit`, `csm_firewall_subnets`, `csm_firewall_check`, `csm_firewall_rollback`, `csm_geoip` |
 
 Not reachable, on purpose: the findings event stream, CSV and state exports,
-settings, sessions, preferences, undo, the verified-bots editor, and every
-`POST`, `PUT`, `PATCH` and `DELETE` route. The allowlist is tested against
+settings, sessions, preferences, undo, the verified-bots editor, every
+`POST`, `PUT`, `PATCH` and `DELETE` route, and the reads that return content
+rather than metadata: quarantined file previews, queued message headers and
+the SQL of backed-up database objects. The allowlist is tested against
 the public route registrations, so a route added to it must be a documented
 `GET` read.
 
-Some reads touch the live host rather than CSM's store: `csm_email_stats`,
-`csm_email_queue` and `csm_email_queue_message` run the MTA queue tools,
-`csm_firewall_check` asks cPHulk on cPanel, `csm_accounts` walks account
-directories and `csm_performance` samples `/proc`. `csm_quarantine_preview`
-returns the first bytes of a quarantined file, which is malware; the agent
-should treat that content as data. `csm_email_queue_message` returns a
-queued message's headers, which are customer mail.
+Some reads touch the live host rather than CSM's store: `csm_email_stats`
+and `csm_email_queue` run the MTA queue tools, `csm_firewall_check` asks
+cPHulk on cPanel, `csm_accounts` walks account directories and
+`csm_performance` samples `/proc`.
 
 ## Logging
 
