@@ -364,9 +364,14 @@ run keeps the last session's identity. `modelled_kinds` and
 ceiling and the temporary block capacity. `occupancy` gives the real
 temporary occupancy (`actual`, addresses plus two elements per timed subnet),
 the forecast addresses the real sets do not hold
-(`shadow_only`), their sum (`predicted`), the `limit`, whether the set is
+(`shadow_only`), the listed legacy automatic blocks the forecast replaced
+(`replaced`), their sum minus `replaced` (`predicted`), the `limit`, whether the set is
 `unlimited` and whether the model holds as many blocks as it can (`limited`);
-it is null while no snapshot is available. `capacity` is the finite capacity
+it is null while no snapshot is available. `actual` and `imported` count at
+least the listed imports, matching the partition counts. A replaced import
+is subtracted only while listed, until its own expiry, even if its replacing
+forecast block expires or is replaced first. Unlisted imports count again;
+a renewal with a new name is a new import. `capacity` is the finite capacity
 automatic admission is modelled within: a positive limit, or 10000 for an
 unlimited set. Until validation rejects negative limits, they use the same
 fallback as zero and retain their configured value in `limit`. `unclaimed` counts the real timed entries it never evicts (operator
@@ -380,11 +385,17 @@ changes can extend that estimate; it is not an automatic removal deadline. `gene
 entries leave, a fifth rounded up reserved for direct or corroborated work,
 each with its `size`, the real and forecast automatic blocks it holds
 (`used`) and its `free` slots, also bounded by total remaining capacity.
-Existing occupants keep their partition when limits change; a full or
-overfull set admits no additional forecast block. Real coverage replaces forecast occupancy: a
+Existing occupants keep their partition when limits change. A full set
+admits an additional forecast block only in place of a strictly
+lower-priority automatic block: a forecast block of a lower class or
+severity, or a listed legacy automatic block that recorded its origin,
+which the forecast counts as gone while still listed, until the import's
+own expiry. An overfull set admits none, and entries counted in `unclaimed`
+are never replaced.
+Real coverage replaces forecast occupancy: a
 manual timed block reduces available capacity, an automatic block counts in
 general until ledger partitions are wired, and permanent coverage takes no
-temporary slot. These fields do not select eviction victims. `ceiling` is the forecast's own
+temporary slot. `ceiling` is the forecast's own
 copy of the hourly ceiling: `limit`, `general_used`, `reserved_used`,
 `general_budget` and `reserved_budget`, null while no forecast runs. `picks`
 counts the session's predictions by name and `last_hour` the last sixty

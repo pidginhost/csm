@@ -188,7 +188,7 @@ func TestOwnerForecastIgnoresAnUnchangedEnding(t *testing.T) {
 			}
 			first = execPick{pick: admission.Pick{ID: pick, Lane: admission.LaneGeneral}, c: c}
 			addr, _ := c.Key.Target.Addr()
-			_, change, err = o.shadow.admit(addr.String(), admission.KindBlockIP, f.host.now().Add(24*time.Hour), []admission.Lane{admission.LaneGeneral}, o.now, firewall.BlockAdmission{})
+			_, change, err = o.shadow.admit(addr.String(), admission.KindBlockIP, f.host.now().Add(24*time.Hour), []admission.Lane{admission.LaneGeneral}, o.now, firewall.BlockAdmission{}, shadowRank{})
 			if err != nil {
 				return admission.Candidate{}, false, err
 			}

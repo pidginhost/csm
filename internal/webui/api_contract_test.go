@@ -346,3 +346,33 @@ type learningStatusProvider struct {
 }
 
 func (p learningStatusProvider) LearningStatus() *health.LearningStatus { return p.learning }
+
+// Forecast replacement fields have stable names and survive the HTTP
+// status path, including zero counters.
+func TestAPIStatusCarriesForecastReplacements(t *testing.T) {
+	for _, n := range []int{0, 1} {
+		view := &health.AdmissionStatus{Owner: &health.AdmissionOwner{DryRun: &health.AdmissionDryRun{
+			Occupancy: &health.AdmissionDryRunOccupancy{Actual: 3, ShadowOnly: 2, Replaced: n, Predicted: 5 - n},
+			Picks:     map[string]uint64{"capacity_evict": uint64(n)}, LastHour: map[string]uint64{"capacity_evict": uint64(n)},
+		}}}
+		s := &Server{cfg: capsTestCfg(), startTime: time.Now()}
+		s.SetHealthProvider(admissionStatusProvider{status: view})
+		rec := httptest.NewRecorder()
+		s.apiStatus(rec, httptest.NewRequest(http.MethodGet, "/api/v1/status", nil))
+		var raw map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
+			t.Fatal(err)
+		}
+		owner := raw["admission"].(map[string]any)["owner"].(map[string]any)
+		dry := owner["dry_run"].(map[string]any)
+		occ := dry["occupancy"].(map[string]any)
+		if rec.Code != http.StatusOK || occ["replaced"] != float64(n) || occ["predicted"] != float64(5-n) {
+			t.Fatalf("forecast replacement wire: status %d, occupancy %v", rec.Code, occ)
+		}
+		for _, key := range []string{"picks", "last_hour"} {
+			if counts := dry[key].(map[string]any); counts["capacity_evict"] != float64(n) {
+				t.Fatalf("forecast replacement wire %s: %v", key, counts)
+			}
+		}
+	}
+}

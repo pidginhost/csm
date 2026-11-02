@@ -263,37 +263,3 @@ func TestOwnerImportRetirementRepairsState(t *testing.T) {
 		}
 	}
 }
-
-// The dry-run forecast still waits for space even when its snapshot
-// lists an evictable import. It leaves live claims and budgets alone;
-// returning to previews uses a fresh list and may observe higher work.
-func TestOwnerForecastDoesNotEvictListedImports(t *testing.T) {
-	withLiveExecution(t, false)
-	p := withTestRegistry(t)
-	f := newOwnerFixture(t)
-	blocks := newFakeBlocks()
-	blocks.limit, blocks.temp, blocks.imported = 3, 2, 1
-	blocks.imports = []firewall.BlockImport{{ID: "eff_" + strings.Repeat("ab", 16), IP: "192.0.2.60", ExpiresAt: f.host.wall.Add(time.Hour)}}
-	o, policies, _ := policyOwner(t, f, blocks, dryPolicy(1))
-	id, _ := queuedAt(t, o, p, f.host, admission.SeverityCritical, "192.0.2.11")
-	used := liveUsed(t, o)
-	turn(t, o)
-	if c := candidate(t, o, id); c.State != admission.StateDryRun || c.Attempts != 0 {
-		t.Fatalf("forecast reserved or previewed its pick: %+v", c)
-	}
-	if fc := forecastOf(t, o); fc == nil || len(fc.entries) != 0 || fc.picks[admission.PredictSetFull] != 1 || fc.picks[admission.PredictCapacityAdmit] != 0 {
-		t.Fatalf("forecast used an import as a victim: %+v", fc)
-	}
-	if liveUsed(t, o) != used {
-		t.Fatal("forecast spent the live ceiling")
-	}
-	policies.publish(validPolicy(2))
-	id, _ = queuedAt(t, o, p, f.host, admission.SeverityCritical, "192.0.2.12")
-	turn(t, o)
-	if c := candidate(t, o, id); c.State != admission.StateObserved {
-		t.Fatalf("preview failed to use the fresh import list: %+v", c)
-	}
-	if _, applies := blocks.calls(); len(applies) != 0 || len(blocks.retireCalls()) != 0 {
-		t.Fatal("forecast or preview changed the firewall")
-	}
-}

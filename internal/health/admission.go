@@ -139,12 +139,14 @@ type AdmissionDryRun struct {
 
 // AdmissionDryRunOccupancy is the temporary block capacity as the last
 // snapshot of the forecast saw it: the real timed blocks, the forecast
-// blocks the real sets do not hold, and their sum against the limit.
-// Unlimited marks a zero limit; Limited marks a model that holds as many
-// forecast blocks as it can.
+// blocks the real sets do not hold, the listed legacy automatic blocks the
+// forecast replaced, and what is left against the limit. Unlimited marks
+// a zero limit; Limited marks a model that holds as many forecast blocks
+// as it can.
 type AdmissionDryRunOccupancy struct {
 	Actual     int  `json:"actual"`
 	ShadowOnly int  `json:"shadow_only"`
+	Replaced   int  `json:"replaced"`
 	Predicted  int  `json:"predicted"`
 	Limit      int  `json:"limit"`
 	Unlimited  bool `json:"unlimited"`

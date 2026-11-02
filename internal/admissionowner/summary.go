@@ -185,9 +185,10 @@ func (o *Owner) finishSummary() {
 	saturating(&o.out.summariesLost)
 }
 
-// summaryFinding is the history record of s: the capacity admissions in
-// its message, every other prediction, its interval, its session count and
-// its examples as candidate/finding/target/check.
+// summaryFinding is the history record of s: the capacity admissions, with
+// or without a replacement, in its message, every other prediction, its
+// interval, its session count and its examples as
+// candidate/finding/target/check.
 func summaryFinding(s *dryRunSummary, now time.Time) alert.Finding {
 	var b strings.Builder
 	fmt.Fprintf(&b, "start=%s end=%s sessions=%d", s.start.Format(time.RFC3339), s.end.Format(time.RFC3339), s.sessions)
@@ -203,9 +204,11 @@ func summaryFinding(s *dryRunSummary, now time.Time) alert.Finding {
 		}
 		b.WriteString(" examples=" + strings.Join(names, ","))
 	}
+	passed := s.counts[admission.PredictCapacityAdmit]
+	passed += min(s.counts[admission.PredictCapacityEvict], ^uint64(0)-passed)
 	return alert.Finding{
 		Check: "auto_block", Severity: alert.Warning, Details: b.String(), Timestamp: now,
-		Message: fmt.Sprintf("Dry-run capacity forecast: %d responses passed modelled capacity checks", s.counts[admission.PredictCapacityAdmit]),
+		Message: fmt.Sprintf("Dry-run capacity forecast: %d responses passed modelled capacity checks", passed),
 	}
 }
 

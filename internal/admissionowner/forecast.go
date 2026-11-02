@@ -138,12 +138,13 @@ func (o *Owner) forecast() (err error) {
 // refused target ends or waits as a live check has it. A real block that
 // already covers the address ends the pick as existing_actual, and a
 // usable panel allow as verdict_allow, before any modelled capacity is
-// judged. A covering or shorter forecast block, or a modelled set with no
-// free slot in a partition the pick may occupy, ends it without a call.
+// judged. A covering or shorter forecast block, or a modelled set with
+// neither a free slot in a partition the pick may occupy nor a strictly
+// lower-tier block it may replace, ends it without a call.
 // With the callback on, any other pick is asked about first (D8) and waits
 // for its answer with no forecast change; then the forecast bound or the
 // modelled ceiling can still end it. Only a capacity
-// admission changes the model. Without an engine, snapshot or sound clock
+// admission, with or without a replacement, changes the model. Without an engine, snapshot or sound clock
 // the picks wait, with no call or forecast change.
 func (o *Owner) forecastBlocks(picks []execPick) error {
 	if len(picks) == 0 {
@@ -203,13 +204,13 @@ func (o *Owner) forecastBlocks(picks []execPick) error {
 			continue
 		case pred != 0:
 			// A forecast block holds the address: nothing to ask.
-		case o.shadow.full(adm, lanesOf(p.pick)):
+		case o.shadow.full(adm, lanesOf(p.pick), rankOf(p, m)):
 			pred = admission.PredictSetFull
 		case o.policy.VerdictEnabled && !answered:
 			o.askVerdict(p.pick.ID, p.c, m.IP, m.Reason)
 			continue
 		default:
-			if pred, change, err = o.shadow.admit(m.IP, p.c.Key.Kind, m.ExpiresAt, lanesOf(p.pick), o.now, adm); err != nil {
+			if pred, change, err = o.shadow.admit(m.IP, p.c.Key.Kind, m.ExpiresAt, lanesOf(p.pick), o.now, adm, rankOf(p, m)); err != nil {
 				o.noteForecastError(forecastModelError)
 				return fmt.Errorf("forecasting pick %s: %w", p.pick.ID, err)
 			}
@@ -219,6 +220,12 @@ func (o *Owner) forecastBlocks(picks []execPick) error {
 		}
 	}
 	return nil
+}
+
+// rankOf ranks the forecast block of pick p, block member m, as a victim:
+// the pick's tier, the action of its next attempt and its address.
+func rankOf(p execPick, m firewall.BlockMember) shadowRank {
+	return shadowRank{tier: p.pick.Tier, action: admission.ActionID(m.Action), target: p.c.Key.Target}
 }
 
 // lanesOf is the order a forecast charges p: the lane the selection served

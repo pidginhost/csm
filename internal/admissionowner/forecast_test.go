@@ -37,6 +37,8 @@ type forecastView struct {
 	entries map[string]shadowEntry
 	picks   [admission.PredictionSlots]uint64
 	ceiling admission.CeilingState
+	// replaced is the imports the session replaced, by name, until expiry.
+	replaced map[admission.ActionID]time.Time
 }
 
 // forecastOf reads the forecast session on the owner goroutine; nil when
@@ -46,7 +48,7 @@ func forecastOf(t *testing.T, o *Owner) *forecastView {
 	var v *forecastView
 	if err := o.do(func() error {
 		if s := o.shadow; s != nil {
-			v = &forecastView{id: s.id, reset: s.reset, entries: maps.Clone(s.entries), picks: s.picks, ceiling: s.ceiling}
+			v = &forecastView{id: s.id, reset: s.reset, entries: maps.Clone(s.entries), picks: s.picks, ceiling: s.ceiling, replaced: maps.Clone(s.replaced)}
 		}
 		return nil
 	}); err != nil {
@@ -648,7 +650,7 @@ func TestOwnerForecastPendingPicksTakeNoSlot(t *testing.T) {
 			close(gate)
 		}
 	})
-	waiting, _ := queuedAt(t, o, p, f.host, admission.SeverityCritical, "192.0.2.10")
+	waiting, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.10")
 	queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.11")
 	queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.12")
 	turn(t, o)
