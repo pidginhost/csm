@@ -464,9 +464,10 @@ func (l LogFacts) exposed(uid int, trustedGroup func(int) bool) (bool, string) {
 const minFeedsRspamdMajor = 4
 
 // ResolveScores leaves out the symbol weights file when CSM cannot write it
-// safely, with a Warning: rspamd then keeps its own weights.
+// safely, with a Warning: rspamd then keeps its own weights. Otherwise it
+// leaves out each weight the host's own group files set.
 func ResolveScores(s Settings, f HostFacts) (Settings, []Problem) {
-	s.SkipScores = false
+	s.SkipScores, s.HostScores = false, nil
 	err := fmt.Errorf("%s was not checked", ScoresPath)
 	for _, t := range f.Targets {
 		if t.Path == ScoresPath {
@@ -475,6 +476,7 @@ func ResolveScores(s Settings, f HostFacts) (Settings, []Problem) {
 		}
 	}
 	if err == nil {
+		s.HostScores = hostScores(f.GroupFiles)
 		return s, nil
 	}
 	s.SkipScores = true

@@ -42,6 +42,9 @@ type Settings struct {
 	// SkipScores leaves out the symbol weights file because CSM cannot own
 	// it.
 	SkipScores bool
+	// HostScores names the symbols whose weight the host's own rspamd group
+	// files set; CSM leaves them out of its weights file.
+	HostScores []string
 	// DQSKeyFile holds the Spamhaus DQS key. DQSKey is its validated
 	// content: the caller loads it, and it never travels in a request.
 	DQSKeyFile string
@@ -97,7 +100,10 @@ func (s Settings) Validate() error {
 			return errors.New("an infra_ips network is not valid")
 		}
 	}
-	return ValidateSkipMaps(s.SkipMaps)
+	if err := ValidateSkipMaps(s.SkipMaps); err != nil {
+		return err
+	}
+	return ValidateHostScores(s.HostScores)
 }
 
 var (
@@ -181,6 +187,21 @@ func ValidateSkipMaps(names []string) error {
 		}
 		if seen[name] {
 			return fmt.Errorf("map redirect %q is listed twice", name)
+		}
+		seen[name] = true
+	}
+	return nil
+}
+
+// ValidateHostScores accepts symbols CSM weighs, once each.
+func ValidateHostScores(names []string) error {
+	seen := make(map[string]bool, len(names))
+	for _, name := range names {
+		if !slices.ContainsFunc(scoreWeights, func(w scoreWeight) bool { return w.symbol == name }) {
+			return errors.New("unknown score symbol")
+		}
+		if seen[name] {
+			return fmt.Errorf("score symbol %q is listed twice", name)
 		}
 		seen[name] = true
 	}

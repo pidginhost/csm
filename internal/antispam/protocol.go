@@ -48,6 +48,8 @@ type Request struct {
 	Feeds      *string `json:"feeds,omitempty"`
 	SkipMaps   *string `json:"skip_maps,omitempty"`
 	SkipScores *bool   `json:"skip_scores,omitempty"`
+	// HostScores is comma-separated symbol names.
+	HostScores *string `json:"host_scores,omitempty"`
 	DQSKeyFile *string `json:"dqs_key_file,omitempty"`
 	// Learning fields are omitted when learning is off, so older records
 	// keep their form.
@@ -83,6 +85,10 @@ func ApplyRequest(s Settings) Request {
 	if s.SkipScores {
 		skip := true
 		r.SkipScores = &skip
+	}
+	if len(s.HostScores) > 0 {
+		v := strings.Join(s.HostScores, ",")
+		r.HostScores = &v
 	}
 	if s.DQSKeyFile != "" {
 		v := s.DQSKeyFile
@@ -123,7 +129,7 @@ func RemoveRequest() Request {
 var requestKeys = map[string]bool{
 	"operation": true, "enabled": true, "dry_run": true,
 	"rspamd_socket": true, "reject_score": true, "tag_score": true,
-	"feeds": true, "skip_maps": true, "skip_scores": true, "dqs_key_file": true,
+	"feeds": true, "skip_maps": true, "skip_scores": true, "host_scores": true, "dqs_key_file": true,
 	"learning": true, "learning_dir": true, "learning_redis_socket": true, "roundcube": true,
 	"exempt": true, "scope_nets": true,
 }
@@ -147,7 +153,7 @@ func DecodeRequest(data []byte) (Request, Settings, error) {
 	if err != nil {
 		return Request{}, Settings{}, err
 	}
-	for _, key := range []string{"feeds", "skip_maps", "skip_scores", "dqs_key_file", "learning_dir", "learning_redis_socket", "learning", "roundcube", "exempt", "scope_nets"} {
+	for _, key := range []string{"feeds", "skip_maps", "skip_scores", "host_scores", "dqs_key_file", "learning_dir", "learning_redis_socket", "learning", "roundcube", "exempt", "scope_nets"} {
 		if value, present := fields[key]; present {
 			var valid bool
 			if key == "skip_scores" || key == "learning" || key == "roundcube" {
@@ -178,6 +184,7 @@ func DecodeRequest(data []byte) (Request, Settings, error) {
 			s.DQSKeyFile = *r.DQSKeyFile
 		}
 		s.SkipScores = r.SkipScores != nil && *r.SkipScores
+		s.HostScores = splitNames(r.HostScores)
 		s.Learning = r.Learning != nil && *r.Learning
 		s.Roundcube = r.Roundcube != nil && *r.Roundcube
 		if s.Learning && r.LearningDir != nil {

@@ -111,6 +111,13 @@ type SocketFacts struct {
 	EximGID int
 }
 
+// GroupFile is one rspamd group file as read from the host.
+type GroupFile struct {
+	Content string
+	// Err is a read failure other than the file's absence.
+	Err error
+}
+
 // HostFacts is everything CheckHost reads. A collector fills it; the checks
 // stay pure.
 type HostFacts struct {
@@ -155,6 +162,9 @@ type HostFacts struct {
 	RspamdLog LogFacts
 	// IPMap is the CSM IP map file rspamd reads (feeds spec 6).
 	IPMap FileFacts
+	// GroupFiles are the operator's local.d/*_group.conf files, keyed by
+	// group; an absent file reads as empty.
+	GroupFiles map[string]GroupFile
 	// Record is CSM's completion record as found on disk.
 	Record RecordFacts
 	// MonitoredLog is the Exim main log CSM reads markers from.

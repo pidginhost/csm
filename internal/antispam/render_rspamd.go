@@ -1,6 +1,8 @@
 package antispam
 
 import (
+	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -58,12 +60,46 @@ const subjectRules = ManagedHeader + "\nCSM_INVISIBLE_CJK_SUBJECT {\n" +
 // phishing that forges a domain with a reject policy stayed just under the
 // default tag score, while mail that fails such a policy without forgery
 // scores far lower. The symbol keeps its dmarc group.
-const scoreWeights = ManagedHeader + "\ngroup \"html\" {\n  symbols {\n    \"HIDDEN_TEXT\" {\n" +
-	"      weight = 2.0;\n      one_shot = true;\n    }\n  }\n}\n" +
-	"group \"url\" {\n  symbols {\n    \"URL_VERY_LONG\" {\n" +
-	"      weight = 1.5;\n      one_shot = true;\n    }\n  }\n}\n" +
-	"group \"policies\" {\n  symbols {\n    \"DMARC_POLICY_REJECT\" {\n" +
-	"      weight = 3.0;\n    }\n  }\n}\n"
+var scoreWeights = []scoreWeight{
+	{"html", "HIDDEN_TEXT", "2.0", true},
+	{"url", "URL_VERY_LONG", "1.5", true},
+	{"policies", "DMARC_POLICY_REJECT", "3.0", false},
+}
+
+// scoreWeight is one rspamd symbol weight CSM sets.
+type scoreWeight struct {
+	group, symbol, weight string
+	oneShot               bool
+}
+
+// ScoreGroups are the rspamd groups of the symbols CSM weighs, in order.
+func ScoreGroups() []string {
+	out := make([]string, 0, len(scoreWeights))
+	for _, w := range scoreWeights {
+		if !slices.Contains(out, w.group) {
+			out = append(out, w.group)
+		}
+	}
+	return out
+}
+
+// renderScores writes CSM's weights except for the symbols in host, whose
+// weight the host's own group files set.
+func renderScores(host []string) string {
+	var b strings.Builder
+	b.WriteString(ManagedHeader + "\n")
+	for _, w := range scoreWeights {
+		if slices.Contains(host, w.symbol) {
+			continue
+		}
+		fmt.Fprintf(&b, "group %q {\n  symbols {\n    %q {\n      weight = %s;\n", w.group, w.symbol, w.weight)
+		if w.oneShot {
+			b.WriteString("      one_shot = true;\n")
+		}
+		b.WriteString("    }\n  }\n}\n")
+	}
+	return b.String()
+}
 
 // RenderRspamd returns the content of each file in RspamdFiles, keyed by its
 // name under /etc/rspamd/local.d.

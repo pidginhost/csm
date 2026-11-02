@@ -130,7 +130,7 @@ func ManagedContent(s Settings) (map[string]string, error) {
 	}
 	maps.Copy(out, feeds)
 	if !s.SkipScores {
-		out[ScoresPath] = scoreWeights
+		out[ScoresPath] = renderScores(s.HostScores)
 	}
 	learning, err := RenderLearning(s)
 	if err != nil {
