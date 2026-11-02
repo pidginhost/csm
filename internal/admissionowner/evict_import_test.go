@@ -2,6 +2,7 @@ package admissionowner
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -170,6 +171,95 @@ func TestOwnerRetriesAnImportRetirementError(t *testing.T) {
 	for _, call := range calls {
 		if len(call) != 1 || call[0] != (firewall.BlockAction{Action: imp.ID, IP: imp.IP}) {
 			t.Fatalf("retired %+v; want only the import", call)
+		}
+	}
+}
+
+// repairingImportBlocks keeps the engine's state fault latched until a
+// safe-state write succeeds, as a failed unknown-row write does after a
+// batch with both applied and unknown members.
+type repairingImportBlocks struct{ *fakeBlocks }
+
+func (b repairingImportBlocks) MarkBlockActionsUnverified(ids []string) (int, error) {
+	n, err := b.fakeBlocks.MarkBlockActionsUnverified(ids)
+	if err == nil {
+		b.set(func(f *fakeBlocks) { f.checkErr, f.retireErr = nil, nil })
+	}
+	return n, err
+}
+
+// An import-only cleanup must repair a shared state fault after its probe
+// wait, even during dry run, without marking the import or proving an
+// independent apply fault recovered.
+func TestOwnerImportRetirementRepairsState(t *testing.T) {
+	for _, dry := range []bool{false, true} {
+		for _, applyHeld := range []bool{false, true} {
+			t.Run(fmt.Sprintf("dry_run=%t/apply_held=%t", dry, applyHeld), func(t *testing.T) {
+				withTestRegistry(t)
+				f := newOwnerFixture(t)
+				blocks := newFakeBlocks()
+				policy := validPolicy(1)
+				policy.DryRun = dry
+				o, _, mono := policyOwner(t, f, blocks, policy)
+				setOwnerHook(t, o, &o.opts.Blocks, func() BlockEngine { return repairingImportBlocks{blocks} })
+				imp := firewall.BlockAction{Action: "eff_" + strings.Repeat("ab", 16), IP: "192.0.2.60"}
+				fault := errors.Join(firewall.ErrBlockBatchState, errors.New("unknown row write failed"))
+				applyFault := errors.New("earlier apply fault")
+				blocks.set(func(b *fakeBlocks) { b.checkErr, b.retireErr = fault, fault })
+				if err := o.do(func() error {
+					o.evicted = []firewall.BlockAction{imp}
+					if applyHeld {
+						o.applyHold = applyFault
+					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+				turn(t, o)
+				if got := o.Status().Owner.RetirementError; !strings.Contains(got, "unknown row write failed") {
+					t.Fatalf("state fault was not reported: %q", got)
+				}
+				mono.advance(firstProbeWait - time.Nanosecond)
+				turn(t, o)
+				if blocks.probes() != 0 || len(blocks.retireCalls()) != 1 {
+					t.Fatal("import cleanup bypassed the state probe wait")
+				}
+				mono.advance(time.Nanosecond)
+				turn(t, o)
+				if got := o.Status().Owner.RetirementError; got != "" {
+					t.Fatalf("import cleanup did not repair the state: %q", got)
+				}
+				calls := blocks.retireCalls()
+				if len(calls) != 2 || len(calls[1]) != 1 || calls[1][0] != imp {
+					t.Fatalf("retirements = %+v, want failure and successful retry", calls)
+				}
+				blocks.set(func(b *fakeBlocks) {
+					wantRepairs := 1
+					if !dry {
+						// The live execution probe also checks the repaired state.
+						wantRepairs++
+					}
+					if len(b.marked) != wantRepairs {
+						t.Errorf("repair calls = %d, want %d", len(b.marked), wantRepairs)
+					}
+					for _, ids := range b.marked {
+						if len(ids) != 0 {
+							t.Errorf("repair marked rows: %v", ids)
+						}
+					}
+				})
+				if err := o.do(func() error {
+					if len(o.evicted) != 0 {
+						t.Errorf("retired import stayed pending: %v", o.evicted)
+					}
+					if applyHeld && !errors.Is(o.applyHold, applyFault) {
+						t.Errorf("repair cleared the independent apply fault: %v", o.applyHold)
+					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+			})
 		}
 	}
 }

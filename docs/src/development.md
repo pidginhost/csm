@@ -948,8 +948,11 @@ imports, including a failed read, an idle turn or entry into dry run.
 Returning to previews reads a fresh set and import list. The dry-run
 forecast still models free slots only; it does not evict listed imports.
 An import's row is retired by its
-`eff_` name without a mark, and one still enforced when retired (a reload or
-restart restored its row) is forgotten. An error or short retirement answer
+`eff_` name without a mark. An import-only retirement still retries a
+shared state repair after its probe wait, without marking any import or
+clearing an independent apply fault, including during dry run.
+An import still enforced at retirement (a reload or restart restored its
+row) is forgotten. An error or short retirement answer
 keeps the request for retry; no ledger record names an evicted
 import, so a restart before its retirement restores it until its own
 expiry. After an unknown

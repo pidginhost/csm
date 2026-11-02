@@ -334,7 +334,9 @@ func (o *Owner) retireEvicted() (err error) {
 			ids = append(ids, a.Action)
 		}
 	}
-	if len(ids) > 0 {
+	// An import-only batch still needs the safe-state repair; otherwise
+	// each retirement failure postpones the execution probe that repairs it.
+	if len(ids) > 0 || errors.Is(o.execHold, firewall.ErrBlockBatchState) {
 		if _, markErr := engine.MarkBlockActionsUnverified(ids); markErr != nil {
 			return fmt.Errorf("marking evicted blocks: %w", markErr)
 		}
