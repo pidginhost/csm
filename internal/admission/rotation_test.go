@@ -262,6 +262,52 @@ func TestSlotLimitsTakeMovesScopeHoldings(t *testing.T) {
 	}
 }
 
+// Free capacity accepts other costs, but only one-unit block work gains
+// a scope holding for later rotation decisions.
+func TestSlotLimitsFreeSlotsCountOnlyOneUnitBlocks(t *testing.T) {
+	for _, lane := range []Lane{LaneGeneral, LaneDirect, LaneCorroborated} {
+		t.Run(lane.String(), func(t *testing.T) {
+			for name, tc := range map[string]struct {
+				cost   uint32
+				evicts bool
+				want   int
+			}{
+				"uncharged":      {0, true, 0},
+				"multi-unit":     {2, true, 0},
+				"non-block":      {1, false, 0},
+				"one-unit block": {1, true, 1},
+			} {
+				t.Run(name, func(t *testing.T) {
+					s := NewSlotLimits(2, 2, nil)
+					s.Share(nil, nil, QueueCursors{})
+					d := fresh("a", high)
+					d.Cost, d.Evicts = tc.cost, tc.evicts
+					d.Reserved = lane != LaneGeneral
+					if v, ok := s.Take(lane, d); !ok || v != (EvictionVictim{}) {
+						t.Fatalf("free slot take = %+v, %v", v, ok)
+					}
+					for _, p := range []Partition{PartitionGeneral, PartitionReserved} {
+						wantHolding, wantFree := 0, uint32(2)
+						if p == PartitionOf(lane) {
+							wantHolding, wantFree = tc.want, 2-tc.cost
+						}
+						if got := s.shares.holding[p][d.Scope]; got != wantHolding {
+							t.Errorf("%s holding = %d, want %d", p, got, wantHolding)
+						}
+						free := s.freeGeneral
+						if p == PartitionReserved {
+							free = s.freeReserved
+						}
+						if free != wantFree {
+							t.Errorf("%s free slots = %d, want %d", p, free, wantFree)
+						}
+					}
+				})
+			}
+		})
+	}
+}
+
 // A lane's budget counts the blocks rotation may take once shares are
 // known, including the highest tier, in the lane's own partition only.
 func TestSlotLimitsBudgetCountsRotatableBlocks(t *testing.T) {

@@ -195,7 +195,7 @@ func (s *SlotLimits) Take(lane Lane, d SlotDemand) (EvictionVictim, bool) {
 		s.freeGeneral -= d.Cost
 	}
 	// Only one-unit block work writes a record, which then holds the slot.
-	if d.Evicts {
+	if d.Evicts && d.Cost == 1 {
 		s.shares.move(PartitionOf(lane), d.Scope, EvictionVictim{})
 	}
 	return EvictionVictim{}, true
