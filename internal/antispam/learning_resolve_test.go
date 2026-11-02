@@ -218,7 +218,8 @@ func TestResolveLearningPostfixDovecot(t *testing.T) {
 			{User: leaked, Reason: dovecot.SkipDriver}, {User: "bob@example.com", Reason: dovecot.SkipLookupFailed},
 			{User: "carol@example.net", Reason: dovecot.SkipDriver}, {Reason: dovecot.SkipInvalidName},
 			{User: "dave@example.org", Reason: dovecot.SkipNoJunk}, {User: "erin@example.org", Reason: dovecot.SkipPluginZlib},
-		}}, ReasonMailboxesSkipped, "mailboxes not watched for learning: 5 (driver 2, invalid_name 1, lookup_failed 1, plugin_zlib 1)"},
+			{User: "frank@example.org", Reason: dovecot.SkipSharedPath},
+		}}, ReasonMailboxesSkipped, "mailboxes not watched for learning: 6 (driver 2, invalid_name 1, lookup_failed 1, plugin_zlib 1, shared_path 1)"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			s := postfixLearningSettings()

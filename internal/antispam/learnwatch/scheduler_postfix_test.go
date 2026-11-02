@@ -423,12 +423,13 @@ func TestSchedulerPostfixDomainAllowancePausesOnlyThatDomain(t *testing.T) {
 // reporter is a uid the skip does not carry, so no absent folder is pruned.
 func TestSchedulerPostfixSkippedMailboxKeepsState(t *testing.T) {
 	for name, c := range map[string]struct {
-		user string
-		held bool
+		user, reason string
+		held         bool
 	}{
-		"domain":            {"bob@example.net", true},
-		"domainless held":   {"dave", true},
-		"domainless unheld": {"dave", false},
+		"domain":             {"bob@example.net", dovecot.SkipLookupFailed, true},
+		"domain shared path": {"bob@example.net", dovecot.SkipSharedPath, true},
+		"domainless held":    {"dave", dovecot.SkipLookupFailed, true},
+		"domainless unheld":  {"dave", dovecot.SkipLookupFailed, false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newPostfixWatch(t, antispam.ReporterDomain, "alice@example.com", "bob@example.net", "dave")
@@ -436,7 +437,7 @@ func TestSchedulerPostfixSkippedMailboxKeepsState(t *testing.T) {
 			f.submit = false
 			f.junk(c.user, "cur", 1, spamBody)
 			f.pass()
-			f.skip(c.user, dovecot.SkipLookupFailed)
+			f.skip(c.user, c.reason)
 			if c.held {
 				f.engine.held = []int{f.id(c.user)}
 			}
@@ -444,7 +445,7 @@ func TestSchedulerPostfixSkippedMailboxKeepsState(t *testing.T) {
 			f.submit = true
 			f.dove.listings = 0
 			r := f.pass()
-			if len(f.engine.cancelled()) != 0 || len(f.engine.submitted()) != 0 || r.Skipped[dovecot.SkipLookupFailed] != 1 {
+			if len(f.engine.cancelled()) != 0 || len(f.engine.submitted()) != 0 || r.Skipped[c.reason] != 1 {
 				t.Fatalf("cancelled %v, submitted %v, report %+v", f.engine.cancelled(), f.engine.submitted(), r)
 			}
 			// A reporter a skip holds needs no recheck.

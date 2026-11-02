@@ -528,6 +528,61 @@ func TestSnapshotConditionalLocationSkipsEveryMailbox(t *testing.T) {
 	}
 }
 
+// On a shared mail uid two users whose mail directories are the same, or
+// one inside the other, cannot be told apart: one move would count for
+// both, or one user's mail would arrive in another's Junk folder. Each
+// such mailbox is skipped as shared_path, present but not watched; a user
+// skipped for another reason keeps it and still counts.
+func TestSnapshotSharedMailPathsAreSkipped(t *testing.T) {
+	const alice = "/srv/vmail/example.com/alice"
+	shared := map[string]string{"alice@example.com": SkipSharedPath, "carol@example.net": SkipSharedPath}
+	for name, c := range map[string]struct {
+		home, mail, plugins string
+		noHome              bool
+		// nsLoc is the location of the namespace that holds Junk.
+		nsLoc string
+		want  map[string]string
+	}{
+		"same home":            {home: alice, want: shared},
+		"home inside":          {home: alice + "/Maildir/.Junk", want: shared},
+		"root is another Junk": {mail: "maildir:" + alice + "/Maildir/.Junk", want: shared},
+		"root holds another":   {mail: "maildir:" + alice, want: shared},
+		"inbox in another":     {mail: "maildir:~/Maildir:INBOX=" + alice + "/Maildir/.Junk", want: shared},
+		"root is the root": {mail: "maildir:/", want: map[string]string{
+			"alice@example.com": SkipSharedPath, "bob@example.com": SkipSharedPath, "carol@example.net": SkipSharedPath}},
+		"skipped user": {home: alice, plugins: "zlib",
+			want: map[string]string{"alice@example.com": SkipSharedPath, "carol@example.net": SkipPluginZlib}},
+		"name prefix only": {home: alice + "2", want: map[string]string{}},
+		"own inbox":        {mail: "maildir:~/Maildir:INBOX=~/Maildir/inbox", want: map[string]string{}},
+		"junk namespace":   {home: alice, mail: "maildir:~/Other", nsLoc: "maildir:~/Maildir", want: shared},
+		// Without a home ~ means nothing, not the root directory.
+		"no home": {noHome: true, mail: "maildir:~/srv", want: map[string]string{"carol@example.net": SkipInvalidHome}},
+	} {
+		h := newHost(t, "alice@example.com", "bob@example.com", "carol@example.net")
+		if c.nsLoc != "" {
+			h.edit("  location = \n  mailbox \"Courrier", "  location = "+c.nsLoc+"\n  mailbox \"Courrier")
+		}
+		if c.home != "" || c.noHome {
+			h.set("carol@example.net", 3, c.home)
+		}
+		h.set("carol@example.net", 4, c.mail)
+		h.set("carol@example.net", 5, c.plugins)
+		snap, err := h.snapshot()
+		var watched, want []string
+		for _, m := range snap.Mailboxes {
+			watched = append(watched, m.User)
+		}
+		for _, u := range []string{"alice@example.com", "bob@example.com", "carol@example.net"} {
+			if c.want[u] == "" {
+				want = append(want, u)
+			}
+		}
+		if err != nil || !snap.Complete || !reflect.DeepEqual(reasons(snap), c.want) || !slices.Equal(watched, want) {
+			t.Errorf("%s: snapshot %+v, err %v", name, snap, err)
+		}
+	}
+}
+
 func TestSnapshotHarmlessLocationParameters(t *testing.T) {
 	h := newHost(t, "alice@example.com")
 	h.set("alice@example.com", 4, "maildir:~/Maildir:INBOX=~/Maildir:INDEX=/var/idx/%u:CONTROL=~/ctl:LAYOUT=maildir++")

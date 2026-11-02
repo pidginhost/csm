@@ -820,9 +820,11 @@ The [learning prerequisites](#prerequisites) apply, and also:
    name, home or mail location it cannot use, such as a location with
    `DIRNAME`, `MAILBOXDIR` or a `%{if}` condition, or whose userdb lookup
    fails. A `%{if}` in `mail_location` or in the location of a namespace
-   with a Junk folder skips every mailbox. Skipped mailboxes are counted by
-   reason in one `mailboxes_skipped` warning that names none of them;
-   learning goes on for the others.
+   with a Junk folder skips every mailbox. Two users whose mail directories
+   are the same, or one inside the other, such as an alias that shares a
+   home, are both skipped: CSM cannot tell their moves apart. Skipped
+   mailboxes are counted by reason in one `mailboxes_skipped` warning that
+   names none of them; learning goes on for the others.
 4. **A Redis of its own.** Learning never uses rspamd's Redis on Postfix,
    because other rspamd modules share it. Run a second Redis instance and
    set `learning.redis_socket` to its socket; without it CSM reports

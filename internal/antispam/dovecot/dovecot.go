@@ -47,6 +47,9 @@ const (
 	SkipLocation        = "location"
 	SkipInvalidHome     = "invalid_home"
 	SkipNoJunk          = "no_junk"
+	// SkipSharedPath: the mail directories are, hold or lie inside another
+	// listed user's.
+	SkipSharedPath = "shared_path"
 )
 
 var (
@@ -136,6 +139,8 @@ func (d Dovecot) Snapshot(ctx context.Context) (Snapshot, error) {
 		}
 		lookup = nil
 	}
+	var watch []DovecotMailbox
+	paths := map[string][]string{}
 	for batch := range slices.Chunk(lookup, batchSize) {
 		found, derr := d.details(ctx, conf, batch)
 		if derr != nil {
@@ -148,13 +153,22 @@ func (d Dovecot) Snapshot(ctx context.Context) (Snapshot, error) {
 				snap.Skips = append(snap.Skips, Skip{User: user, Reason: SkipLookupFailed})
 				continue
 			}
+			paths[user] = conf.paths(det)
 			m, reason := conf.mailbox(user, domain, det)
 			if reason != "" {
 				snap.Skips = append(snap.Skips, Skip{User: user, Reason: reason})
 				continue
 			}
-			snap.Mailboxes = append(snap.Mailboxes, m)
+			watch = append(watch, m)
 		}
+	}
+	shared := sharedPaths(paths)
+	for _, m := range watch {
+		if shared[m.User] {
+			snap.Skips = append(snap.Skips, Skip{User: m.User, Reason: SkipSharedPath})
+			continue
+		}
+		snap.Mailboxes = append(snap.Mailboxes, m)
 	}
 	final, err := d.users(ctx)
 	if err != nil {
@@ -450,6 +464,65 @@ func (c config) mailbox(user, domain string, d detail) (DovecotMailbox, string) 
 		home = filepath.Clean(home)
 	}
 	return DovecotMailbox{User: user, Domain: domain, UID: d.uid, GID: d.gid, Home: home, Junk: slices.Compact(junk)}, ""
+}
+
+// paths are the directories a user's mail lives in, as far as CSM can tell:
+// the root of the location its INBOX and each Junk namespace use, and any
+// INBOX override. A path with a variable left in it is unknown and dropped.
+func (c config) paths(d detail) []string {
+	var out []string
+	for _, loc := range append([]string{cmp.Or(d.mail, d.locs[0])}, d.locs[1:]...) {
+		_, rest, _ := strings.Cut(loc, ":")
+		params := strings.Split(rest, ":")
+		dirs := []string{params[0]}
+		for _, p := range params[1:] {
+			if inbox, ok := strings.CutPrefix(p, "INBOX="); ok {
+				dirs = append(dirs, inbox)
+			}
+		}
+		for _, dir := range dirs {
+			if dir == "~" || strings.HasPrefix(dir, "~/") {
+				if !absClean(d.home) {
+					continue
+				}
+				dir = d.home + dir[1:]
+			}
+			if absClean(dir) && !strings.Contains(dir, "%") {
+				out = append(out, filepath.Clean(dir))
+			}
+		}
+	}
+	return out
+}
+
+// sharedPaths returns the users with a mail directory that is, holds or
+// lies inside one of another user's. On a shared mail uid file owners
+// cannot tell such users apart.
+func sharedPaths(paths map[string][]string) map[string]bool {
+	owners := map[string][]string{}
+	for user, dirs := range paths {
+		for _, dir := range dirs {
+			if !slices.Contains(owners[dir], user) {
+				owners[dir] = append(owners[dir], user)
+			}
+		}
+	}
+	shared := map[string]bool{}
+	for user, dirs := range paths {
+		for _, dir := range dirs {
+			for up := dir; ; up = filepath.Dir(up) {
+				for _, other := range owners[up] {
+					if other != user {
+						shared[user], shared[other] = true, true
+					}
+				}
+				if up == "/" {
+					break
+				}
+			}
+		}
+	}
+	return shared
 }
 
 // parseUsers reads one name per line, at most MaxMailboxes lines.
