@@ -501,7 +501,9 @@ those zones or of other configured resolvers.
   `HIDDEN_TEXT` weight from 5 to 2. Newsletters hide their preview line, and
   at the default `tag_score` that rule plus one minor symbol tagged them. It
   also counts `URL_VERY_LONG` once per message instead of once per long
-  link, so newsletters full of tracking links are not tagged for that. CSM
+  link, so newsletters full of tracking links are not tagged for that. It
+  raises `DMARC_POLICY_REJECT` from 2 to 3, so forged mail from a domain
+  whose DMARC policy is reject reaches the tag score sooner. CSM
   replaces an operator-owned `groups.conf`. One that is not safe to replace
   is left alone: rspamd keeps its own weights and CSM reports an
   `rspamd_scores` warning;
