@@ -255,6 +255,11 @@ func optionSet(fields map[string]json.RawMessage, name string) bool {
 	values := []json.RawMessage{raw}
 	var many []json.RawMessage
 	if json.Unmarshal(raw, &many) == nil {
+		// JSON null also decodes into a slice. Neither it nor an empty
+		// list proves that a present option is explicitly false.
+		if len(many) == 0 {
+			return true
+		}
 		values = many
 	}
 	for _, v := range values {

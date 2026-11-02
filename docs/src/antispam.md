@@ -643,8 +643,10 @@ about cPanel accounts, Exim and Roundcube do not apply.
    proxy worker Postfix passes mail to, and removes an enforcing install,
    with a definite `milter_rejects` precondition. In dry run, where the
    host's own rejects go the same way, it is a warning. An option given
-   more than once counts as set unless every value is false. Set both to
-   false, once each, for example in `/etc/rspamd/local.d/worker-proxy.inc`.
+   more than once counts as set unless every value is false. Null, empty
+   lists and unreadable values also block enforcement. The apply worker
+   rechecks these settings before changing any files. Set both to false,
+   once each, for example in `/etc/rspamd/local.d/worker-proxy.inc`.
 3. **rspamd 4.2 is recommended.** CSM accepts rspamd 3 or later, but its
    scope rule is tested with rspamd 4.2.3.
 4. **`/etc/rspamd/lua.local.d` exists**, owned by root and not writable by

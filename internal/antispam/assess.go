@@ -52,7 +52,7 @@ func Assess(enabled bool, s Settings, f HostFacts) Assessment {
 	a.Problems = CheckHost(f)
 	a.report(checkActionsTarget(s, f))
 	a.report(checkDryRunRejects(s, f))
-	a.report(checkQuietRejects(s, f))
+	a.report(CheckQuietRejects(s, f))
 	isCurrent := a.Installed && current(s, f)
 	if isCurrent {
 		// A temporary host probe failure cannot hide a confirmed override.
@@ -176,13 +176,13 @@ func checkDryRunRejects(s Settings, f HostFacts) []Problem {
 // quietRejectsFix tells the operator how to make rspamd refuse again.
 const quietRejectsFix = "set discard_on_reject and quarantine_on_reject to false, once each, in the proxy worker settings, for example /etc/rspamd/local.d/worker-proxy.inc"
 
-// checkQuietRejects reports a Postfix host whose rspamd milter accepts the
+// CheckQuietRejects reports a Postfix host whose rspamd milter accepts the
 // mail it rejects, so the sender is never refused: discard_on_reject drops
 // it, and quarantine_on_reject leaves it in Postfix's hold queue until
 // someone releases or deletes it. CSM's rejects must be refusals, so CSM
 // does not enforce there. In a dry run the host's own rejects go the same
 // way, which is a warning. Unwired or unreadable settings are CheckHost's.
-func checkQuietRejects(s Settings, f HostFacts) []Problem {
+func CheckQuietRejects(s Settings, f HostFacts) []Problem {
 	if f.Stack != StackPostfix {
 		return nil
 	}

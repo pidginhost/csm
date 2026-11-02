@@ -1046,3 +1046,53 @@ func FuzzPostfixMilterFacts(f *testing.F) {
 		}
 	})
 }
+
+func FuzzQuietRejects(f *testing.F) {
+	for _, seed := range []string{`false`, `true`, `0`, `-0`, `1`, `null`, `[]`, `[false,0]`, `[true,false]`, `[false,null]`, `[[false]]`, `{}`, `"yes"`} {
+		f.Add(seed)
+	}
+	f.Add(strings.Repeat("[", 10_000) + "false" + strings.Repeat("]", 10_000))
+	f.Fuzz(func(t *testing.T, raw string) {
+		dec := json.NewDecoder(strings.NewReader(raw))
+		dec.UseNumber()
+		var value any
+		if !json.Valid([]byte(raw)) || dec.Decode(&value) != nil {
+			return
+		}
+		isFalse := func(v any) bool {
+			switch v := v.(type) {
+			case bool:
+				return !v
+			case json.Number:
+				n, err := v.Int64()
+				return err == nil && n == 0
+			}
+			return false
+		}
+		off := isFalse(value)
+		if values, ok := value.([]any); ok {
+			off = len(values) > 0
+			for _, v := range values {
+				off = off && isFalse(v)
+			}
+		}
+		facts := postfixFacts()
+		facts.RspamdWorkers.Stdout = `{"rspamd_proxy":{"bind_socket":"localhost:11332","milter":true,"discard_on_reject":` + raw + `}}`
+		got, err := QuietRejects(facts)
+		// Embedding an option can exceed JSON's nesting limit even when
+		// the option alone is valid.
+		if !json.Valid([]byte(facts.RspamdWorkers.Stdout)) {
+			if err == nil || got != nil {
+				t.Fatal("invalid worker JSON returned options or no error")
+			}
+			return
+		}
+		var want []string
+		if !off {
+			want = []string{"discard_on_reject"}
+		}
+		if err != nil || !slices.Equal(got, want) {
+			t.Fatal("quiet reject decision disagrees with explicit false values")
+		}
+	})
+}
