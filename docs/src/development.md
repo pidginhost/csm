@@ -281,7 +281,13 @@ evidence may expire while corroboration continues to preserve the same class.
 
 Effect records use an expiry-ordered key followed by the action ID. Decoding
 requires a canonical value that reproduces the key and all recorded fields.
-Their partition tally rejects negative counts, underflow and overflow;
+Victim references accept either an admission attempt ID or an import's
+`eff_` name followed by 32 lowercase hex digits. Record keys remain attempt
+IDs; an import has no record key. Imports have the fixed tier (C2, High)
+and occupy general slots. The codecs keep their existing versions: an
+older build refuses a ledger containing import claims, so such a ledger
+must stay on a compatible build. Preview-only hosts have no such claims.
+The effect records' partition tally rejects negative counts, underflow and overflow;
 failed additions return the original tally. Combining a tally with set
 occupancy also returns an error and the original occupancy if either
 partition's total is invalid or overflows. A full-set deferral raises the

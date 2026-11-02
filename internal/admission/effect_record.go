@@ -62,14 +62,18 @@ type EffectRecord struct {
 }
 
 // EffectRef names an effect record by its action and expiry, which make
-// its key.
+// its key, or an import, which has no record, by its effect name and
+// expiry.
 type EffectRef struct {
 	Action    ActionID
 	ExpiresAt time.Time
 }
 
-// Key is the storage key of the record r names.
+// Key is the storage key of the record r names; an import has none.
 func (r EffectRef) Key() ([]byte, error) { return EffectRecordKey(r.Action, r.ExpiresAt) }
+
+// Imported reports whether r names an import rather than a record.
+func (r EffectRef) Imported() bool { return ImportedVictim(r.Action) }
 
 // Verified reports whether the block's application was verified.
 func (e EffectRecord) Verified() bool { return !e.Applied.IsZero() }
@@ -135,7 +139,7 @@ func (e EffectRecord) record() ([]byte, effectRecordRecord, error) {
 		Severity: e.Tier.Severity, Scope: e.Scope, Direct: e.Direct, Corroborated: e.Corroborated, Elapsed: int64(e.Elapsed)}
 	if e.Victim != (EffectRef{}) {
 		ends, inRange := unixNano(e.Victim.ExpiresAt)
-		if _, err := e.Victim.Key(); err != nil || !inRange || ends <= 0 {
+		if _, err := ParseVictimID(string(e.Victim.Action)); err != nil || !inRange || ends <= 0 {
 			return bad("effect victim is malformed")
 		}
 		rec.Victim, rec.VictimEnds = e.Victim.Action, ends

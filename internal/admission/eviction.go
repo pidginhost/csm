@@ -6,13 +6,27 @@ import (
 )
 
 // EvictionVictim is a verified automatic block that strictly higher work
-// may evict when the set has no free slot for it (spec 5.6).
+// may evict when the set has no free slot for it (spec 5.6): an effect
+// record or an import, whose Action is its effect name.
 type EvictionVictim struct {
 	Action    ActionID
 	Target    Target
 	Tier      Tier
 	Partition Partition
 	ExpiresAt time.Time
+}
+
+// ImportTier is the tier of an import, a known automatic block an older
+// producer wrote with explicit provenance (spec 6): (C2, High).
+var ImportTier = Tier{Class: ClassC2, Severity: SeverityHigh}
+
+// Imported reports whether v is an import as the engine's list hands it
+// over: an import name, an address, the import tier, the general
+// partition it is counted in and an expiry after the epoch.
+func (v EvictionVictim) Imported() bool {
+	ends, ok := unixNano(v.ExpiresAt)
+	return ImportedVictim(v.Action) && ValidateKindTarget(KindBlockIP, v.Target) == nil && v.Tier == ImportTier &&
+		v.Partition == PartitionGeneral && ok && ends > 0
 }
 
 // victimOrder is the eviction order: the lowest tier first, then the
