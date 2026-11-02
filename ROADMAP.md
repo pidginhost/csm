@@ -517,6 +517,30 @@ quarantined and restored under the sandbox.
 
 **Size:** M.
 
+## Email AV on Postfix hosts
+
+**Problem:** Email AV scans attachments only on the Exim spool. On a Postfix
+host ClamAV runs through rspamd's antivirus module, which CSM does not watch:
+infected mail is rejected without a finding or Email page statistics, a
+stopped clamd or stale signatures raise no alert, and CSM's YARA-X rules and
+archive unpacking never see the mail. The scanner interface, either a socket
+that speaks the clamd protocol rspamd already uses or an rspamd Lua plugin,
+and the fail mode need a short design before work starts.
+
+**Acceptance:** on a Postfix host with rspamd, a message rejected as infected
+raises the same finding as Email AV on Exim and counts on the Email page; an
+unreachable clamd and signatures past the configured age each raise a finding
+that clears once fixed; CSM's YARA-X rules scan every attachment through a
+scanner rspamd calls, a match rejects the message, and a scanner timeout or
+outage follows the configured fail mode within rspamd's own timeout; an
+integration test against real Postfix and rspamd rejects an EICAR attachment
+and a YARA test sample end to end.
+
+**Depends on:** the Postfix antispam integration's scope rule and scan
+records.
+
+**Size:** M.
+
 # Priority 6 -- operability and validation
 
 ## Job model for every long-running operation
