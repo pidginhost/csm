@@ -2597,7 +2597,7 @@ func applyAntispamDefaults(as *AntispamConfig, p antispamPresence) {
 		as.TagScore = antispam.DefaultTagScore
 	}
 	if !p.reporter {
-		as.Learning.Reporter = "domain"
+		as.Learning.Reporter = antispam.ReporterDomain
 	}
 }
 
@@ -2629,7 +2629,7 @@ func validateAntispam(cfg *Config) error {
 	if !as.Learning.Enabled {
 		return nil
 	}
-	if as.Learning.Reporter != "domain" && as.Learning.Reporter != "mailbox" {
+	if as.Learning.Reporter != antispam.ReporterDomain && as.Learning.Reporter != antispam.ReporterMailbox {
 		return errors.New("email_protection.antispam.learning.reporter must be domain or mailbox")
 	}
 	if as.Learning.RedisSocket != "" {

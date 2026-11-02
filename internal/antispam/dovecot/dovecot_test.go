@@ -170,6 +170,24 @@ func TestSnapshotUserdbCannotIterate(t *testing.T) {
 	}
 }
 
+// Users rechecks removals: names only, as Snapshot would key them, from one
+// listing and no lookup. A failed or empty listing is an error.
+func TestUsersListsIdentitiesOnly(t *testing.T) {
+	h := newHost(t, "Alice@Example.com", "bob@example.com", "bad name", "dave", "alice@example.com")
+	got, err := Dovecot{Run: h.run}.Users(context.Background())
+	if err != nil || !slices.Equal(got, []string{"alice@example.com", "bob@example.com", "dave"}) || h.listings != 1 || h.batches != nil {
+		t.Fatalf("users %q, err %v, %d listings, lookups %q", got, err, h.listings, h.batches)
+	}
+	if _, err := (Dovecot{Run: replay(t, capture(t, "static"))}).Users(context.Background()); !errors.Is(err, ErrCannotIterate) {
+		t.Fatalf("static userdb: err %v", err)
+	}
+	h = newHost(t)
+	h.list = "\n"
+	if got, err := (Dovecot{Run: h.run}).Users(context.Background()); err == nil {
+		t.Fatalf("empty listing: users %q", got)
+	}
+}
+
 func TestSnapshotDovecot24ByVersion(t *testing.T) {
 	// Only the version is captured: any later command fails the test.
 	snap, err := Dovecot{Run: replay(t, capture(t, "v24"))}.Snapshot(context.Background())

@@ -105,6 +105,22 @@ var (
 	exemptDomain  = regexp.MustCompile(`^[a-z0-9.-]+$`)
 )
 
+// Reporter modes of learning on a Postfix host: one vote per mail domain or
+// one per mailbox.
+const (
+	ReporterDomain  = "domain"
+	ReporterMailbox = "mailbox"
+)
+
+// IsExempt reports whether mailbox is exempt, matched as the scope Lua
+// matches a recipient: in lower case, as the whole address or as the part
+// after its last @. A name without an @ is never exempt.
+func IsExempt(exempt []string, mailbox string) bool {
+	mailbox = strings.ToLower(mailbox)
+	at := strings.LastIndexByte(mailbox, '@')
+	return at >= 0 && (slices.Contains(exempt, mailbox) || slices.Contains(exempt, mailbox[at+1:]))
+}
+
 // ValidateExempt accepts lower-case mailboxes and domains only. These are
 // the only operator strings rendered into the scope Lua, so none may hold a
 // quote, backslash, space or wildcard.

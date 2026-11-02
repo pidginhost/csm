@@ -9,6 +9,7 @@ import (
 	"maps"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -57,6 +58,9 @@ const (
 	SkipStateUnavailable   = "state_unavailable"
 	// SkipFailed: an entry failed MaxEntryErrors submissions.
 	SkipFailed = "failed"
+	// SkipCancelUnconfirmed: a removal could not be confirmed, so the pass
+	// cancelled and pruned nothing more.
+	SkipCancelUnconfirmed = "cancel_unconfirmed"
 )
 
 type submitter interface {
@@ -86,6 +90,9 @@ type WatcherConfig struct {
 	// FolderOpens bounds folder opens per account turn; zero means
 	// FolderOpensPerTurn.
 	FolderOpens int
+	// Postfix, when set, replaces Source and GlobalPath: reporters come
+	// from Dovecot and nothing opts in or out.
+	Postfix *Postfix
 }
 
 // PassReport summarizes one pass. Skipped counts reasons, never names.
@@ -101,10 +108,14 @@ type PassReport struct {
 	Unfinished    bool
 	Busy          bool
 	OldestPending time.Time
+	// RegistryErr is why the registry could not be read: the pass then
+	// submitted, cancelled and pruned nothing.
+	RegistryErr error
 }
 
-// ownerUID is the UID an account's files must belong to. Tests map their
-// synthetic accounts to the test process's own UID.
+// ownerUID is the UID an account's files must belong to; for a Postfix
+// mailbox it gets an Account holding the mailbox's userdb uid. Tests map
+// their synthetic accounts to the test process's own UID.
 var ownerUID = func(a Account) int { return a.UID }
 
 // turnHook observes scheduling for tests: kinds turn, chunk, attempt and
@@ -207,16 +218,9 @@ func (w *Watcher) Pass(ctx context.Context) PassReport {
 // complete registry read gets here. An account CSM cannot read still holds
 // its UID, and a reused UID keeps the reservation. Failures retry next pass.
 // False stops the pass so stale account data cannot authorize later opt-outs.
-func (w *Watcher) cancelRemoved(ctx context.Context, accounts []Account, skips []Skip, r *PassReport) bool {
-	held := map[int]bool{}
-	for _, a := range accounts {
-		held[a.UID] = true
-	}
-	for _, s := range skips {
-		if s.Reason == SkipBadHome {
-			held[s.UID] = true
-		}
-	}
+// A removal the recheck cannot settle ends cancelling and pruning for the
+// pass.
+func (w *Watcher) cancelRemoved(ctx context.Context, reg *registry, r *PassReport) bool {
 	uids, err := w.cfg.Engine.ReportUIDs(ctx)
 	if err != nil {
 		r.Skipped[SkipStateUnavailable]++
@@ -230,24 +234,30 @@ func (w *Watcher) cancelRemoved(ctx context.Context, accounts []Account, skips [
 			proceed = false
 			break
 		}
-		if !held[uid] {
+		if !reg.held[uid] {
 			var registryErr error
+			unconfirmed := false
 			cancelErr := w.cfg.Engine.CancelUnsent(ctx, uid, func() (bool, error) {
 				// The owner may have been busy publishing. Do not cancel a
 				// newly created account or a reused UID from the pass snapshot.
-				var current []Account
-				var skipped []Skip
-				current, skipped, registryErr = Accounts(w.cfg.Source)
-				if registryErr != nil {
-					return false, registryErr
+				removed, recheckErr := reg.removed(ctx, uid)
+				if errors.Is(recheckErr, errUnconfirmed) {
+					unconfirmed = true
+					return false, nil
 				}
-				return !slices.ContainsFunc(current, func(a Account) bool { return a.UID == uid }) &&
-					!slices.ContainsFunc(skipped, func(s Skip) bool { return s.Reason == SkipBadHome && s.UID == uid }), nil
+				registryErr = recheckErr
+				return removed, recheckErr
 			})
 			if registryErr != nil {
 				r.Skipped[SkipRegistryUnreadable]++
 				r.Unfinished = true
+				r.RegistryErr = registryErr
 				proceed = false
+				break
+			}
+			if unconfirmed {
+				r.Skipped[SkipCancelUnconfirmed]++
+				reg.complete = false
 				break
 			}
 			err = errors.Join(err, cancelErr)
@@ -264,28 +274,31 @@ func (w *Watcher) pass(ctx context.Context) PassReport {
 	w.submitStopped, w.stoppedBy, w.answered = false, 0, false
 	r := PassReport{Skipped: map[string]int{}}
 	deadline := w.cfg.Now().Add(PassDeadline)
-	accounts, skips, err := Accounts(w.cfg.Source)
+	reg, err := w.registry(ctx)
 	if err != nil {
 		r.Skipped[SkipRegistryUnreadable]++
 		r.Unfinished = true
+		r.RegistryErr = err
 		return r
 	}
-	for _, s := range skips {
-		r.Skipped[s.Reason]++
+	for _, reason := range reg.skips {
+		r.Skipped[reason]++
 	}
 	if ctx.Err() != nil || !w.cfg.CanDiscover() {
 		r.Unfinished = true
 		return r
 	}
-	if !w.cancelRemoved(ctx, accounts, skips, &r) {
+	if !w.cancelRemoved(ctx, &reg, &r) {
 		return r
 	}
-	_, err = GlobalOptIn(w.cfg.GlobalPath)
-	if err != nil {
-		r.Skipped[SkipOptInUnreadable]++
-		r.Unfinished = true
-		return r
+	if w.cfg.Postfix == nil {
+		if _, err = GlobalOptIn(w.cfg.GlobalPath); err != nil {
+			r.Skipped[SkipOptInUnreadable]++
+			r.Unfinished = true
+			return r
+		}
 	}
+	accounts := reg.accounts
 	slices.SortFunc(accounts, func(a, b Account) int { return cmp.Compare(a.UID, b.UID) })
 	var cursor int
 	if err = w.cfg.State.View(func(tx StateTx) (e error) { cursor, e = tx.Cursor(); return e }); err != nil {
@@ -297,7 +310,7 @@ func (w *Watcher) pass(ctx context.Context) PassReport {
 	accounts = append(accounts[start:], accounts[:start]...)
 	runs := make([]*accountRun, 0, len(accounts))
 	for _, a := range accounts {
-		run := &accountRun{w: w, a: a, deadline: deadline}
+		run := &accountRun{w: w, a: a, deadline: deadline, junk: reg.junk[a.UID]}
 		if cursor != 0 && len(runs) > 0 {
 			// Rotation must govern the first attempts too: a small account
 			// must not overtake accounts still discovering their mailboxes.
@@ -335,8 +348,15 @@ func (w *Watcher) pass(ctx context.Context) PassReport {
 	}
 	w.saveCursor(nextAfter(runs, w.stoppedBy), &r)
 	w.tally(runs, &r)
-	w.prune(runs, &r, len(skips) == 0)
+	w.prune(runs, &r, reg.complete, reg.unchecked)
 	return r
+}
+
+func (w *Watcher) registry(ctx context.Context) (registry, error) {
+	if w.cfg.Postfix != nil {
+		return w.cfg.Postfix.registry(ctx)
+	}
+	return cpanelRegistry(w.cfg.Source)
 }
 
 // hostSideFailure reports failures a message cannot cause: cancellation by
@@ -382,9 +402,9 @@ func (w *Watcher) saveCursor(uid int, r *PassReport) {
 	}
 }
 
-func (w *Watcher) prune(runs []*accountRun, r *PassReport, accountsComplete bool) {
+func (w *Watcher) prune(runs []*accountRun, r *PassReport, accountsComplete bool, unchecked []int) {
 	var folders []FolderKey
-	var uncheckedAccounts []int
+	uncheckedAccounts := slices.Clone(unchecked)
 	var unreadableFolders []FolderKey
 	for _, run := range runs {
 		if !run.inventoryComplete {
@@ -410,8 +430,8 @@ func (w *Watcher) prune(runs []*accountRun, r *PassReport, accountsComplete bool
 			if _, pruneErr := tx.Prune(folders); pruneErr != nil {
 				return pruneErr
 			}
-			// A registry name without a usable UID cannot be distinguished
-			// from a deleted account by the UID-keyed persisted state.
+			// Absence is proven only when every registry name has a
+			// reporter the state can be checked against.
 			if accountsComplete {
 				if _, pruneErr := tx.PruneAbsentFolders(uncheckedAccounts, unreadableFolders); pruneErr != nil {
 					return pruneErr
@@ -459,6 +479,8 @@ type accountRun struct {
 	w        *Watcher
 	a        Account
 	deadline time.Time
+	// junk is a Postfix reporter's folders with their owners' uids.
+	junk map[FolderKey]int
 
 	home          *Home
 	started, done bool
@@ -562,6 +584,24 @@ func (r *accountRun) turn(ctx context.Context, rep *PassReport) {
 }
 
 func (r *accountRun) start(ctx context.Context, rep *PassReport) bool {
+	if r.w.cfg.Postfix != nil {
+		// A Postfix reporter's folders come from a complete snapshot; each
+		// mail root is pinned and owner-checked when opened.
+		rep.Accounts++
+		r.folders = slices.SortedFunc(maps.Keys(r.junk), func(a, b FolderKey) int {
+			return cmp.Or(strings.Compare(a.Box, b.Box), strings.Compare(a.Folder, b.Folder))
+		})
+		r.inventoryComplete = true
+	} else if !r.startHome(ctx, rep) {
+		return false
+	}
+	r.subsDone, r.subsFailed = map[FolderKey]int{}, map[FolderKey]bool{}
+	r.cappedFolders = map[FolderKey]bool{}
+	return !r.stateFailed(r.state().View(func(tx StateTx) (e error) { r.seenCount, e = tx.CountSeen(r.a.UID); return e }), rep)
+}
+
+// startHome pins a cPanel account's home and lists its mailboxes.
+func (r *accountRun) startHome(ctx context.Context, rep *PassReport) bool {
 	fsAccount := r.a
 	fsAccount.UID = ownerUID(r.a)
 	home, err := OpenHome(fsAccount)
@@ -592,15 +632,34 @@ func (r *accountRun) start(ctx context.Context, rep *PassReport) bool {
 			r.folders = append(r.folders, FolderKey{UID: r.a.UID, Domain: m.Domain, Box: m.Box, Folder: f})
 		}
 	}
-	r.subsDone, r.subsFailed = map[FolderKey]int{}, map[FolderKey]bool{}
-	r.cappedFolders = map[FolderKey]bool{}
-	return !r.stateFailed(r.state().View(func(tx StateTx) (e error) { r.seenCount, e = tx.CountSeen(r.a.UID); return e }), rep)
+	return true
+}
+
+// open opens one subdirectory of an observed folder.
+func (r *accountRun) open(k FolderKey, sub string) (*Folder, error) {
+	if r.w.cfg.Postfix != nil {
+		return OpenJunk(k.Folder, sub, r.owner(k))
+	}
+	return r.home.OpenFolder(mailboxOf(k), k.Folder, sub)
+}
+
+// owner is the UID the files of k must belong to: the account's, or the
+// userdb uid of a Postfix mailbox, never its reporter id. Every folder of
+// a Postfix run is one of r.junk's.
+func (r *accountRun) owner(k FolderKey) int {
+	if r.w.cfg.Postfix == nil {
+		return ownerUID(r.a)
+	}
+	return ownerUID(Account{UID: r.junk[k]})
 }
 
 // eligible rechecks the Spam Filters switch. An opt-out cancels the
 // account's unsent work, the learner's reservations included, and starts
 // new baselines on re-entry.
 func (r *accountRun) eligible(ctx context.Context, rep *PassReport) bool {
+	if r.w.cfg.Postfix != nil {
+		return true // Postfix has no Spam Filters switch (spec decision 4).
+	}
 	global, err := GlobalOptIn(r.w.cfg.GlobalPath)
 	if err != nil {
 		rep.Skipped[SkipOptInUnreadable]++
@@ -701,7 +760,7 @@ func (r *accountRun) openNext(rep *PassReport) {
 		k, sub := r.folders[r.fi], Subdirs[r.si]
 		r.advance()
 		turnHook(r.a.UID, "open")
-		f, err := r.home.OpenFolder(mailboxOf(k), k.Folder, sub)
+		f, err := r.open(k, sub)
 		switch {
 		case errors.Is(err, fs.ErrNotExist):
 			r.subComplete(k, rep)
@@ -952,7 +1011,7 @@ func (r *accountRun) attempt(ctx context.Context, rep *PassReport) {
 	if !allowed() {
 		return
 	}
-	f, err := r.home.OpenFolder(mailboxOf(k), k.Folder, it.Sub)
+	f, err := r.open(k, it.Sub)
 	if errors.Is(err, fs.ErrNotExist) {
 		// The folder went with the message; an unsent report is not history.
 		forget()
@@ -970,7 +1029,7 @@ func (r *accountRun) attempt(ctx context.Context, rep *PassReport) {
 		if sub == it.Sub {
 			continue
 		}
-		sibling, openErr := r.home.OpenFolder(mailboxOf(k), k.Folder, sub)
+		sibling, openErr := r.open(k, sub)
 		if errors.Is(openErr, fs.ErrNotExist) {
 			continue
 		}
@@ -1021,7 +1080,7 @@ func (r *accountRun) attempt(ctx context.Context, rep *PassReport) {
 		_ = f.Close()
 		return
 	}
-	snap, meta, st, err := f.ReadMessage(it.Name, ownerUID(r.a))
+	snap, meta, st, err := f.ReadMessage(it.Name, r.owner(k))
 	_ = f.Close()
 	if !allowed() {
 		return

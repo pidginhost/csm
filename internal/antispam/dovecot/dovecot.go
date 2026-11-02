@@ -197,6 +197,24 @@ func (d Dovecot) version(ctx context.Context) error {
 	return errors.New("dovecot before 2.3 is not supported")
 }
 
+// Users is the identity-only listing: the names Snapshot would look up, in
+// lower case, sorted and distinct. It runs one doveadm command and looks no
+// user up, so a caller can recheck a removal without another Snapshot.
+func (d Dovecot) Users(ctx context.Context) ([]string, error) {
+	listed, err := d.users(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, name := range listed {
+		if user, _, ok := canonical(name); ok {
+			out = append(out, user)
+		}
+	}
+	slices.Sort(out)
+	return slices.Compact(out), nil
+}
+
 // users returns the sorted distinct names the userdb lists.
 func (d Dovecot) users(ctx context.Context) ([]string, error) {
 	out, err := d.cmd(ctx, "doveadm", "user", "*")
