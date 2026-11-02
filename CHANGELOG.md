@@ -9,6 +9,10 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ## [Unreleased]
 
+### Added
+
+- An optional read-only MCP (Model Context Protocol) endpoint (`mcp:` block, off by default) lets support agents read status, findings, incidents, accounts, firewall, threat, mail and WAF data through their own listener and tokens; it reaches only GET routes and cannot change anything. Advertised as `mcp.readonly.v1`.
+
 ### Changed
 
 - Forged mail that fails the sender domain's DMARC reject policy now lands in the Spam folder more often.

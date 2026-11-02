@@ -157,6 +157,9 @@ func Validate(cfg *Config) []ValidationResult {
 		results = append(results, webUIExposureResults(cfg)...)
 	}
 
+	// --- MCP ---
+	results = append(results, mcpResults(cfg, time.Now())...)
+
 	// --- Trusted countries ---
 	for _, cc := range cfg.Suppressions.TrustedCountries {
 		if len(cc) != 2 {

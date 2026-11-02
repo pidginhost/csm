@@ -258,6 +258,7 @@ func TestHotReloadManifestMatchesConfiguredPolicy(t *testing.T) {
 		"php_shield",
 		"signatures",
 		"webui",
+		"mcp",
 		"email_av",
 		"firewall",
 		"geoip",

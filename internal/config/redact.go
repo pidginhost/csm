@@ -48,6 +48,14 @@ func Redact(cfg *Config) *Config {
 			}
 		}
 	}
+	if len(c.MCP.Tokens) > 0 {
+		c.MCP.Tokens = append([]MCPToken(nil), c.MCP.Tokens...)
+		for i := range c.MCP.Tokens {
+			if c.MCP.Tokens[i].Token != "" {
+				c.MCP.Tokens[i].Token = redactedValue
+			}
+		}
+	}
 	if c.Alerts.Webhook.HMACSecret != "" {
 		c.Alerts.Webhook.HMACSecret = redactedValue
 	}

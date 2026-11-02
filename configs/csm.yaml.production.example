@@ -60,6 +60,18 @@ webui:
   # besides https://<hostname>:<port>. Loopback (SSH tunnel) is always allowed.
   allowed_origins: []
 
+# Read-only MCP (Model Context Protocol) endpoint for support agents. Off by
+# default. Its own listener and credentials; every tool reads through the Web
+# UI server's allowlist of GET routes and nothing can change the host. Needs
+# webui.enabled: true. listen is host:port (TLS, the Web UI certificate unless
+# tls_cert/tls_key are set) or "unix:/absolute/path" for a socket without TLS.
+mcp:
+  enabled: false
+  listen: "127.0.0.1:9444"
+  tls_cert: ""
+  tls_key: ""
+  tokens: []   # - {name: "support-agent", token: "...", issued_at: "...", expires_at: "", allowed_ips: []}
+
 challenge:
   listen_addr: "0.0.0.0"
   listen_port: 8439

@@ -39,8 +39,10 @@ const selfSignedOrganization = "CSM Security Monitor"
 // operator installed, is left alone. Includes localhost and the server
 // hostname in the certificate SANs.
 func EnsureTLSCert(certPath, keyPath string, extraNames ...string) error {
+	tlsCertMu.Lock()
+	defer tlsCertMu.Unlock()
 	if fileExists(certPath) && fileExists(keyPath) {
-		return renewTLSCert(certPath, keyPath)
+		return renewTLSCertLocked(certPath, keyPath)
 	}
 
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -94,6 +96,16 @@ func EnsureTLSCert(certPath, keyPath string, extraNames ...string) error {
 // renewTLSCert never generates missing files: an operator may temporarily
 // remove either file while replacing their certificate.
 func renewTLSCert(certPath, keyPath string) error {
+	tlsCertMu.Lock()
+	defer tlsCertMu.Unlock()
+	return renewTLSCertLocked(certPath, keyPath)
+}
+
+// tlsCertMu serialises certificate generation and renewal: the Web UI and
+// the MCP listener share one generated pair and may start together.
+var tlsCertMu sync.Mutex
+
+func renewTLSCertLocked(certPath, keyPath string) error {
 	// Read and validate the same certificate that will be renewed, even
 	// when an operator replaces the files during this check.
 	// #nosec G304 -- paths are operator-configured TLS files.
@@ -260,4 +272,26 @@ func buildIPList(extra []string) []net.IP {
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
+}
+
+// CertificateGetter prepares the TLS material another listener shares with
+// the Web UI and returns a tls.Config.GetCertificate for it. With empty
+// paths it uses the Web UI's generated certificate under statePath, creating
+// it when missing; otherwise it renews an own expiring certificate and loads
+// the pair, reloading when the files change.
+func CertificateGetter(certPath, keyPath, statePath, hostname string) (func(*tls.ClientHelloInfo) (*tls.Certificate, error), error) {
+	if certPath == "" && keyPath == "" {
+		certPath = filepath.Join(statePath, "webui.crt")
+		keyPath = filepath.Join(statePath, "webui.key")
+		if err := EnsureTLSCert(certPath, keyPath, hostname); err != nil {
+			return nil, fmt.Errorf("TLS cert setup: %w", err)
+		}
+	} else if err := renewTLSCert(certPath, keyPath); err != nil {
+		return nil, fmt.Errorf("TLS cert renewal: %w", err)
+	}
+	certs, err := newCertReloader(certPath, keyPath)
+	if err != nil {
+		return nil, fmt.Errorf("TLS cert load: %w", err)
+	}
+	return certs.GetCertificate, nil
 }

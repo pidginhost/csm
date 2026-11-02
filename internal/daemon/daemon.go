@@ -43,6 +43,7 @@ import (
 	"github.com/pidginhost/csm/internal/maillog"
 	"github.com/pidginhost/csm/internal/mailranges"
 	"github.com/pidginhost/csm/internal/mailstats"
+	"github.com/pidginhost/csm/internal/mcp"
 	"github.com/pidginhost/csm/internal/metrics"
 	"github.com/pidginhost/csm/internal/modsec"
 	"github.com/pidginhost/csm/internal/obs"
@@ -86,6 +87,7 @@ type Daemon struct {
 	forwarderWatcher *ForwarderWatcher
 	emailQuarantine  *emailav.Quarantine
 	webServer        *webui.Server
+	mcpServer        *mcp.Server
 	challengeServer  *challenge.Server
 	ipList           *challenge.IPList
 	challengeGate    challenge.PortGate
@@ -920,6 +922,9 @@ func (d *Daemon) Run() error {
 	// Start Web UI server - available immediately, before initial scan
 	d.startWebUI()
 
+	// The read-only MCP endpoint dispatches through the Web UI server.
+	d.startMCP()
+
 	// Wire email quarantine to web server (after both start)
 	d.syncEmailAVWebState()
 
@@ -1278,6 +1283,11 @@ func (d *Daemon) Run() error {
 	// Log watchers own their files and close them when their Run loop exits on
 	// d.stopCh; d.wg.Wait below blocks until that happens. Calling Stop here
 	// would race the still-running Run on w.file.
+	if d.mcpServer != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = d.mcpServer.Shutdown(ctx)
+		cancel()
+	}
 	if d.webServer != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		_ = d.webServer.Shutdown(ctx)
@@ -2715,6 +2725,62 @@ func (d *Daemon) startWebUI() {
 		defer d.wg.Done()
 		if err := srv.Start(); err != nil {
 			csmlog.Error("webui server error", "err", err)
+		}
+	})
+}
+
+// startMCP serves the read-only MCP endpoint when mcp.enabled is set. It
+// reads through the Web UI server's read-only dispatcher, so it needs that
+// server; without one it logs why and leaves the endpoint off.
+func (d *Daemon) startMCP() {
+	if !d.cfg.MCP.Enabled {
+		return
+	}
+	if d.webServer == nil {
+		csmlog.Error("mcp endpoint not started: the Web UI server is not running (set webui.enabled: true)")
+		return
+	}
+	opts := mcp.Options{
+		Config:     d.cfg.MCP,
+		Dispatcher: d.webServer.ReadOnly(),
+		Version:    d.version,
+		Hostname:   d.cfg.Hostname,
+	}
+	info := platform.Detect()
+	opts.Platform = mcp.PlatformFacts(info)
+	startCfg := d.cfg
+	opts.ConfigSummary = func() map[string]any {
+		cfg := config.Active()
+		if cfg == nil {
+			cfg = startCfg
+		}
+		return mcp.ConfigSummary(cfg, info)
+	}
+	if config.MCPUnixSocketPath(d.cfg.MCP.Listen) == "" {
+		// Empty paths share the Web UI certificate: its configured pair, or
+		// the generated one under the state directory.
+		certPath, keyPath := d.cfg.MCP.TLSCert, d.cfg.MCP.TLSKey
+		if certPath == "" && keyPath == "" {
+			certPath, keyPath = d.cfg.WebUI.TLSCert, d.cfg.WebUI.TLSKey
+		}
+		getCert, err := webui.CertificateGetter(certPath, keyPath, d.cfg.StatePath, d.cfg.Hostname)
+		if err != nil {
+			csmlog.Error("mcp endpoint not started", "err", err)
+			return
+		}
+		opts.GetCertificate = getCert
+	}
+	srv, err := mcp.New(opts)
+	if err != nil {
+		csmlog.Error("mcp endpoint not started", "err", err)
+		return
+	}
+	d.mcpServer = srv
+	d.wg.Add(1)
+	obs.Go("mcp", func() {
+		defer d.wg.Done()
+		if err := srv.Start(); err != nil {
+			csmlog.Error("mcp server error", "err", err)
 		}
 	})
 }
