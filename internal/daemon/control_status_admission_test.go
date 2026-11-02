@@ -108,7 +108,7 @@ func TestControlStatusAdmissionMatchesTheProvider(t *testing.T) {
 		} else if *dry.SessionID != session || dry.Ceiling != nil || dry.Occupancy != nil {
 			t.Fatalf("inactive forecast was not cleared: %+v", dry)
 		}
-		predictions := []string{"capacity_admit", "existing_actual", "existing_shadow", "ceiling", "set_full", "pending_recovery", "forecast_limited", "not_modelled"}
+		predictions := []string{"capacity_admit", "existing_actual", "existing_shadow", "ceiling", "set_full", "pending_recovery", "forecast_limited", "not_modelled", "capacity_evict"}
 		for _, counts := range []map[string]uint64{dry.Picks, dry.LastHour} {
 			if len(counts) != len(predictions) {
 				t.Fatalf("prediction keys = %v", counts)

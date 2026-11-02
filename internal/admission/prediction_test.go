@@ -7,7 +7,7 @@ func TestPredictionNames(t *testing.T) {
 	want := map[Prediction]string{
 		PredictCapacityAdmit: "capacity_admit", PredictExistingActual: "existing_actual", PredictExistingShadow: "existing_shadow",
 		PredictCeiling: "ceiling", PredictSetFull: "set_full", PredictPendingRecovery: "pending_recovery",
-		PredictForecastLimited: "forecast_limited", PredictNotModelled: "not_modelled",
+		PredictForecastLimited: "forecast_limited", PredictNotModelled: "not_modelled", PredictCapacityEvict: "capacity_evict",
 	}
 	if len(want) != PredictionSlots-1 {
 		t.Fatalf("%d names for %d predictions", len(want), PredictionSlots-1)

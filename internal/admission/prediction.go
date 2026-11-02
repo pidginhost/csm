@@ -25,13 +25,17 @@ const (
 	PredictForecastLimited
 	// PredictNotModelled: the kind has no capacity model.
 	PredictNotModelled
+	// PredictCapacityEvict: the pick passes the modelled ceiling and takes
+	// the temporary slot of a strictly lower-tier automatic block, which it
+	// would replace (spec 5.6).
+	PredictCapacityEvict
 	predictionEnd
 )
 
 // PredictionSlots sizes an array indexed by Prediction; slot zero is unused.
 const PredictionSlots = int(predictionEnd)
 
-var predictionNames = [...]string{"", "capacity_admit", "existing_actual", "existing_shadow", "ceiling", "set_full", "pending_recovery", "forecast_limited", "not_modelled"}
+var predictionNames = [...]string{"", "capacity_admit", "existing_actual", "existing_shadow", "ceiling", "set_full", "pending_recovery", "forecast_limited", "not_modelled", "capacity_evict"}
 
 func (p Prediction) Valid() bool { return p >= PredictCapacityAdmit && p < predictionEnd }
 
