@@ -13,10 +13,6 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 - Forged mail that fails the sender domain's DMARC reject policy now lands in the Spam folder more often.
 
-### Fixed
-
-- Equal-priority rotation no longer charges unrelated responses against an account's block share; blocking, previews and forecasts remain unchanged.
-
 ## [4.9.0] - 2026-11-02
 
 ### Highlights

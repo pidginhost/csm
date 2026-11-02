@@ -281,9 +281,7 @@ evidence may expire while corroboration continues to preserve the same class.
 
 `SlotLimits.Take` adds a scope holding only for one-unit `block_ip` work.
 Zero-cost and multi-unit work do not add holdings, even when marked as
-eviction-capable. Free slots still decrease by the granted cost. Rotation
-sharing is a model primitive only; ledger and forecast callers do not yet
-enable it.
+eviction-capable. Free slots still decrease by the granted cost.
 
 Effect records use an expiry-ordered key followed by the action ID. Decoding
 requires a canonical value that reproduces the key and all recorded fields.
