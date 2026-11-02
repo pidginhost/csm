@@ -103,7 +103,7 @@ func (e *Engine) RetireBlockActions(actions []BlockAction) ([]bool, error) {
 		ip := retirementIPKey(row.IP)
 		observed, live := snap.live[ip]
 		if snap.proves(row, observed, live) {
-			owners[ip] = append(owners[ip], row.ActionID)
+			owners[ip] = append(owners[ip], retireID(row))
 		}
 	}
 	out := make([]bool, len(actions))
@@ -127,7 +127,7 @@ func (e *Engine) RetireBlockActions(actions []BlockAction) ([]bool, error) {
 	next := copyFirewallState(snap.prior)
 	kept := next.Blocked[:0]
 	for _, row := range next.Blocked {
-		if gone[BlockAction{Action: row.ActionID, IP: retirementIPKey(row.IP)}] {
+		if gone[BlockAction{Action: retireID(row), IP: retirementIPKey(row.IP)}] {
 			continue
 		}
 		kept = append(kept, row)
@@ -140,6 +140,17 @@ func (e *Engine) RetireBlockActions(actions []BlockAction) ([]bool, error) {
 		return nil, err
 	}
 	return out, nil
+}
+
+// retireID is the name retirement knows row by: the admission action that
+// wrote it or, for a row a legacy automatic block stamped, its effect name
+// (an evicted import). Every other row keeps its empty action, which no
+// retirement names.
+func retireID(row BlockedEntry) string {
+	if row.ActionID == "" && row.Automatic {
+		return blockEffectID(row)
+	}
+	return row.ActionID
 }
 
 // A failed rename durability check can leave no rows for the retry to

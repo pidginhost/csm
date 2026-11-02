@@ -812,8 +812,15 @@ each applied member's key and timed lifetime. Capacity is checked only at
 apply: a check before reservation never answers set_full. Victim checks require
 retained rows at the address to agree on action, expiry and verification.
 An unreadable startup ledger disqualifies all victims; members can still use
-free slots. A member whose
-victim, the admission block the ledger claimed, still has that row, action,
+free slots. The admission snapshot lists at most 256 imports, soonest
+expiry first, then name: timed, verified rows a legacy automatic block
+stamped, each alone at its kernel address with a proven element and named
+by its raw row's `eff_` name. Mapped addresses share the canonical address;
+a retained zoned alias also disqualifies an import. A lone zoned row stays
+unlisted and unclaimed. The imported occupancy count still includes
+unlisted stamped occupants, so a bounded victim list cannot free capacity.
+A member whose
+victim, the admission block or import the ledger claimed, still has that row, name,
 expiry and proven element takes the victim's slot if the resulting set fits the current limit: the same
 transaction deletes the victim's element, and only a readback of the victim's set
 proves it removed; a member whose removal is unproven is unknown, even
@@ -824,7 +831,9 @@ alone, since its expiry in the kernel would reject the whole transaction.
 A victim removed by other means before the send rejects the whole
 transaction with ENOENT, which fails its members like any rejection. The victim's row stays until the owner retires it
 after the ledger records the outcome, so a restart before then restores
-the victim. Definitive kernel rejection
+the victim. Retirement removes an evicted import's row by its `eff_` name
+only while the stamped row still matches it. An operator or unstamped row
+is never retired under an import name. Definitive kernel rejection
 restores state; uncertain exchanges retain unknown rows. Unknown rows are
 marked unverified and excluded from counts and seeding. Expiry retains them
 until the owner retires the matching attempt. A failed state
