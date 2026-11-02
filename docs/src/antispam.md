@@ -849,11 +849,14 @@ The [learning prerequisites](#prerequisites) apply, and also:
    appendonly yes
    ```
 
-   and start it with `systemctl enable --now redis-server@csm`. The template
-   lets Redis write only below `/var/lib/redis`, `/var/log/redis` and its
-   run directory, so `dir` must be there for persistence to work. Do not
-   use `/var/lib/redis` itself, where the main instance keeps its files.
-   Size `maxmemory` for the hashes you expect to learn.
+   and start it with `systemctl enable --now redis-server@csm`. The
+   template's sandbox lets Redis write below `/var/lib/redis`,
+   `/var/log/redis`, its run directory and, for cluster mode, `/etc/redis`;
+   `systemctl cat redis-server@csm` shows the exact list on your system.
+   `dir` must be in one of them for persistence to work. Use the data
+   directory created above, not `/var/lib/redis` itself, where the main
+   instance keeps its files. Size `maxmemory` for the hashes you expect to
+   learn.
 
    Give rspamd's user access through the socket's group, for example with
    `usermod -aG redis _rspamd`; no other user may be in that group. Then
