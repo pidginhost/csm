@@ -1515,8 +1515,9 @@ in `internal/yaraworker/worker.go`.
   `Rules.WriteTo` output in a sealed memfd. The daemon copies it into its
   own sealed memfd and keeps it.
 - The scan unit, `csm-yara-worker-<generation>`, is a single worker: memory
-  cap 512 MiB plus `thresholds.full_scan_max_file_mb`, no file writes, 24
-  hour lifetime. Before the supervisor may send it a scan, the launcher
+  cap 512 MiB plus the larger of `thresholds.full_scan_max_file_mb` and, with
+  mail scanning on, `email_av.max_attachment_size`, read from the live config
+  at each launch; no file writes, 24 hour lifetime. Before the supervisor may send it a scan, the launcher
   loads the kept rules into it. A restart loads them again and never
   recompiles: 55 ms for the shipped rules, about 3.4 s for Forge full.
 - Both units run with `MemoryDenyWriteExecute=no`
@@ -1560,7 +1561,18 @@ Failures and findings:
   attached again.
 - Only failed starts count toward the worker breaker (`BreakOnSpawnOnly`),
   so content that kills the worker costs one restart per scan and cannot
-  switch YARA off for other files.
+  switch YARA off for other files. The backend keeps `workerproc.Strikes`
+  by SHA-256 of exactly the bytes sent for scanning. Content with two scan
+  worker failures within a day is refused as a scan error without starting
+  another worker. The check and failure recording run under the
+  supervisor's request lock (`Supervisor.CallGuarded`), so queued copies
+  see the failures ahead of them. A failure is recorded against the rules
+  the worker actually loaded, even if a reload lands while it starts.
+  Failed starts, cancellation, breaker refusals and descriptor pressure do
+  not strike content. Hashing runs only while an unexpired strike is
+  recorded or to record a new failure. Records expire a day after the last
+  failure and a successful rule reload clears them. The list holds at most
+  1024 content hashes, evicting the oldest failure when full.
 
 `signatures.yara_worker_enabled: false` runs YARA-X inside the root daemon
 instead; `csm validate` warns about it.

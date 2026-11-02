@@ -137,7 +137,7 @@ func TestRetryYaraStartCancelsCompileOnShutdown(t *testing.T) {
 	}
 	d := &Daemon{cfg: &config.Config{}, stopCh: make(chan struct{}), alertCh: make(chan alert.Finding, 8)}
 	done := make(chan struct{})
-	go func() { defer close(done); d.retryYaraStart(b) }()
+	go func() { defer close(done); d.retryYaraStart(b, time.Second) }()
 	t.Cleanup(func() {
 		if !stopRequested(d.stopCh) {
 			close(d.stopCh)

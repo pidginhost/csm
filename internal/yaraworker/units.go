@@ -15,10 +15,10 @@ const (
 	CompileUnitPrefix = "csm-yara-compile-worker"
 )
 
-// ScanMemoryBase is the scan worker's memory cap before the largest file it
-// may be handed: the loaded rules (179 MB for Forge full) plus headroom. The
-// daemon adds the configured full-scan file cap, because the worker reads a
-// whole scan into memory.
+// ScanMemoryBase is the scan worker's memory cap before the largest content
+// it may be handed: the loaded rules (179 MB for Forge full) plus headroom.
+// The daemon adds the larger of its file and mail part size caps, because
+// the worker reads a whole scan into memory.
 const ScanMemoryBase = 512 << 20
 
 // CompileMemoryLimit caps the compile worker. Compiling Forge full peaks at

@@ -60,6 +60,11 @@ const (
 // the background retry, which has the full compile timeout.
 var yaraBootCompileTimeout = 45 * time.Second
 
+// yaraRetryMinBackoff is the first wait of the background compile retry; a
+// seam so tests reach the persistent-failure finding quickly. Init reads it
+// once: a retry left running by an earlier test must not race a change.
+var yaraRetryMinBackoff = time.Second
+
 // yaraWorkerLauncher is a seam for tests that must not start units.
 var yaraWorkerLauncher = workerproc.UnitLauncher
 
@@ -97,13 +102,10 @@ func (d *Daemon) initYaraBackend() error {
 	}
 	cancel()
 	hidden := parseWorkerHiddenPaths()
-	// #nosec G115 -- FullScanMaxFileBytes is positive and at most 4 GiB.
-	scanUnit := yaraworker.ScanUnitConfig(d.binaryPath, yaraworker.ScanMemoryBase+uint64(checks.FullScanMaxFileBytes(d.cfg)), logf)
-	scanUnit.InaccessiblePaths = hidden
 	compileUnit := yaraworker.CompileUnitConfig(d.binaryPath, logf)
 	compileUnit.InaccessiblePaths = hidden
 	b, err := yaraworker.NewBackend(yaraworker.BackendConfig{
-		ScanLaunch:      d.checkedYaraLauncher(yaraWorkerLauncher(scanUnit)),
+		ScanLaunch:      d.yaraScanLauncher(hidden, logf),
 		CompileLaunch:   d.checkedYaraLauncher(yaraWorkerLauncher(compileUnit)),
 		RulesDir:        d.cfg.Signatures.RulesDir,
 		DisabledRules:   d.cfg.Signatures.DisabledRules,
@@ -151,7 +153,8 @@ func (d *Daemon) initYaraBackend() error {
 		// does. Report it where doctor and the status API look, and keep
 		// trying in the background.
 		d.MarkWatcher(yaraWorkerWatcher, false)
-		obs.Go("yara-init-retry", func() { d.retryYaraStart(b) })
+		minBackoff := yaraRetryMinBackoff
+		obs.Go("yara-init-retry", func() { d.retryYaraStart(b, minBackoff) })
 		return fmt.Errorf("compiling yara rules (retrying in background): %w", err)
 	default:
 		d.MarkWatcher(yaraWorkerWatcher, false)
@@ -170,6 +173,39 @@ func retryableYaraCompile(err error) bool {
 	return workerproc.FailureReason(err) != "" || errors.Is(err, workerproc.ErrSpawn) ||
 		errors.Is(err, syscall.EMFILE) || errors.Is(err, syscall.ENFILE) ||
 		errors.Is(err, context.DeadlineExceeded)
+}
+
+// yaraScanLauncher starts scan workers under the live config's size caps:
+// thresholds reload without a restart, and the worker reads a whole file or
+// mail part into memory.
+func (d *Daemon) yaraScanLauncher(hidden []string, logf func(string, ...any)) workerproc.Launcher {
+	var mu sync.Mutex
+	var limit uint64
+	var launch workerproc.Launcher
+	current := func() workerproc.Launcher {
+		mu.Lock()
+		defer mu.Unlock()
+		if want := yaraScanMemoryLimit(d.activeOrStartupCfg()); launch == nil || want != limit {
+			unit := yaraworker.ScanUnitConfig(d.binaryPath, want, logf)
+			unit.InaccessiblePaths = hidden
+			limit, launch = want, d.checkedYaraLauncher(yaraWorkerLauncher(unit))
+		}
+		return launch
+	}
+	current()
+	return func(ctx context.Context) (workerproc.Process, error) { return current()(ctx) }
+}
+
+// yaraScanMemoryLimit is the scan worker's memory cap: the loaded rules plus
+// the largest content it may be handed, a file or, with mail scanning on, a
+// mail part.
+func yaraScanMemoryLimit(cfg *config.Config) uint64 {
+	largest := checks.FullScanMaxFileBytes(cfg)
+	if cfg != nil && cfg.EmailAV.Enabled && cfg.EmailAV.MaxAttachmentSize > largest {
+		largest = cfg.EmailAV.MaxAttachmentSize
+	}
+	// #nosec G115 -- both caps are positive: validation and defaults.
+	return yaraworker.ScanMemoryBase + uint64(largest)
 }
 
 // checkedYaraLauncher refuses each launch while the dynamic user cannot run
@@ -207,7 +243,7 @@ func yaraWorkerStatusLine(ruleCount int) string {
 // capped exponential backoff, until it runs or the daemon stops, raising one
 // finding once the failure is persistent. A compile that runs and finds the
 // rules broken ends the retries: recompiling would fail the same way.
-func (d *Daemon) retryYaraStart(b *yaraworker.Backend) {
+func (d *Daemon) retryYaraStart(b *yaraworker.Backend, minBackoff time.Duration) {
 	var rulesErr error
 	ok := retryStartWithStopContext(
 		func(ctx context.Context) error {
@@ -219,7 +255,7 @@ func (d *Daemon) retryYaraStart(b *yaraworker.Backend) {
 			return err
 		},
 		d.stopCh,
-		time.Second, 60*time.Second, 3,
+		minBackoff, 60*time.Second, 3,
 		func(attempt int, err error) {
 			d.emitYaraFinding(alert.Critical, "yara_backend_unavailable",
 				fmt.Sprintf("YARA-X rules could not be compiled: the compile worker failed %d times (%v). Files and mail parts are reported as not scanned while CSM keeps retrying.", attempt, err))

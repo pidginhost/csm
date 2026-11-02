@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -168,5 +169,44 @@ func TestWorkerLongRequestErrorFitsFrame(t *testing.T) {
 	}
 	if err := workerproc.WriteFrame(io.Discard, resp, yaraipc.MaxFrameBytes); err != nil {
 		t.Fatalf("request error cannot be sent: %v", err)
+	}
+}
+
+// The scan worker's memory cap allows one copy of the largest content, so a
+// scan must not grow its read buffer past the content size.
+func TestWorkerScanReadsContentOnce(t *testing.T) {
+	const size = 8 << 20
+	data := make([]byte, size)
+	copy(data[size-4:], "evil")
+	f, err := yaraipc.SealedMemfd("csm-yara-test", data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	payload, err := json.Marshal(yaraipc.ScanFDArgs{MaxBytes: size})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := &worker{eng: fakeEngine{}, rules: &fakeRules{words: []string{"evil"}}}
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	reply, _ := w.scan(workerproc.Frame{Op: yaraipc.OpScanFD, Payload: payload}, f)
+	runtime.ReadMemStats(&after)
+	if reply.Error != "" || !strings.Contains(string(reply.Payload), "evil") {
+		t.Fatalf("scan = %+v", reply)
+	}
+	if got := after.TotalAlloc - before.TotalAlloc; got > size+size/4 {
+		t.Fatalf("scanning %d bytes allocated %d", size, got)
+	}
+}
+
+func TestWorkerScanRejectsSizePastDescriptor(t *testing.T) {
+	c := loadedWorker(t, "evil")
+	if reply, _ := call(t, c, yaraipc.OpScanFD, yaraipc.ScanFDArgs{MaxBytes: 1 << 40}, memfd(t, "evil")); reply.Error == "" {
+		t.Fatal("a size far past the descriptor scanned")
+	}
+	if reply, _ := call(t, c, yaraipc.OpScanFD, yaraipc.ScanFDArgs{MaxBytes: 4}, memfd(t, "evil")); reply.Error != "" {
+		t.Fatalf("worker unusable after an oversized request: %s", reply.Error)
 	}
 }

@@ -257,13 +257,40 @@ func (s *Supervisor) Stats() Stats {
 // reuse fds after Call returns, even if a canceled send has not yet finished.
 // A reply with an Error or an Op set, or one check rejects, is a worker failure.
 func (s *Supervisor) Call(ctx context.Context, req Frame, fds []*os.File, check Check) (Frame, []*os.File, error) {
+	return s.CallGuarded(ctx, req, fds, check, nil, nil)
+}
+
+// CallGuarded runs before and after under the same lock as Call. This lets
+// callers refuse inputs based on preceding requests, and record the result
+// before the next request checks that state. A before error refuses work
+// without starting or killing a worker; after runs only if before succeeds.
+// Neither callback may call methods that take the supervisor lock.
+func (s *Supervisor) CallGuarded(ctx context.Context, req Frame, fds []*os.File, check Check, before func() error, after func(error)) (Frame, []*os.File, error) {
 	work := s.health.begin()
 	completed := false
 	defer func() { work.finishCaller(completed) }()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	work.start()
+	if s.stopped {
+		completed = true
+		return Frame{}, nil, ErrStopped
+	}
+	if err := ctx.Err(); err != nil {
+		completed = true
+		return Frame{}, nil, err
+	}
+	if before != nil {
+		if err := before(); err != nil {
+			work.fail()
+			completed = true
+			return Frame{}, nil, err
+		}
+	}
 	reply, replyFDs, err := s.callLocked(ctx, req, fds, check, work)
+	if after != nil {
+		after(err)
+	}
 	completed = true
 	return reply, replyFDs, err
 }

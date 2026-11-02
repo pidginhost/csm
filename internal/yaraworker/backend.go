@@ -3,9 +3,12 @@ package yaraworker
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -62,6 +65,12 @@ type Backend struct {
 	stopped    bool
 	// gen numbers rule sets. A worker loaded with an older one retires.
 	gen atomic.Uint64
+	// strikes remembers, by SHA-256, content that made the scan worker fail
+	// under the current rules.
+	strikes atomic.Pointer[workerproc.Strikes]
+	// loadedStrikes follows the rules actually loaded by launch, even when
+	// a reload lands during admission. Only the supervisor's lock protects it.
+	loadedStrikes *workerproc.Strikes
 
 	scanErrs scanErrLog
 }
@@ -103,6 +112,7 @@ func NewBackend(cfg BackendConfig) (*Backend, error) {
 	}
 	b.proc = proc
 	b.ctx, b.stop = context.WithCancel(context.Background())
+	b.strikes.Store(workerproc.NewStrikes())
 	return b, nil
 }
 
@@ -147,7 +157,7 @@ func (b *Backend) ReloadContext(ctx context.Context) error {
 		b.compileErr = ""
 		return nil
 	}
-	f, count, err := b.compile(ctx, sources)
+	f, count, err := b.compile(ctx, sources, true)
 	if err == nil && count == 0 && disabled == 0 {
 		_ = f.Close()
 		err = fmt.Errorf("no YARA rules compiled from %s", b.cfg.RulesDir)
@@ -168,6 +178,8 @@ func (b *Backend) ReloadContext(ctx context.Context) error {
 	old := b.rules
 	b.rules = &compiledRules{file: f, count: count, gen: b.gen.Add(1)}
 	b.compileErr = ""
+	// The new rules get a new chance at content that failed the old ones.
+	b.strikes.Store(workerproc.NewStrikes())
 	b.mu.Unlock()
 	if old != nil {
 		_ = old.file.Close()
@@ -202,20 +214,23 @@ func (b *Backend) TestCompile(source string) error {
 	if b.isStopped() {
 		return workerproc.ErrStopped
 	}
-	f, count, err := b.compile(context.Background(), []yara.Source{{Name: "source", Text: []byte(source)}})
+	_, count, err := b.compile(context.Background(), []yara.Source{{Name: "source", Text: []byte(source)}}, false)
 	if err != nil {
 		return err
 	}
-	_ = f.Close()
 	if count == 0 {
 		return errors.New("no rules compiled from source")
 	}
 	return nil
 }
 
-// compile runs one compile worker over sources and returns the compiled
-// rules copied into a memfd this process owns and sealed.
-func (b *Backend) compile(ctx context.Context, sources []yara.Source) (*os.File, int, error) {
+// copySealedMemfd is a seam for tests that count rule copies.
+var copySealedMemfd = yaraipc.CopySealedMemfd
+
+// compile runs one compile worker over sources and returns the rule count.
+// With keep it also returns the compiled rules copied into a memfd this
+// process owns and sealed.
+func (b *Backend) compile(ctx context.Context, sources []yara.Source, keep bool) (*os.File, int, error) {
 	if b.isStopped() {
 		return nil, 0, workerproc.ErrStopped
 	}
@@ -291,7 +306,10 @@ func (b *Backend) compile(ctx context.Context, sources []yara.Source) (*os.File,
 		return nil, 0, errors.New(res.CompileError)
 	}
 	defer func() { _ = fds[0].Close() }()
-	kept, err := yaraipc.CopySealedMemfd("csm-yara-rules", fds[0], size)
+	if !keep {
+		return nil, *res.RuleCount, nil
+	}
+	kept, err := copySealedMemfd("csm-yara-rules", fds[0], size)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -319,6 +337,7 @@ func compileFailure(err error) error {
 func (b *Backend) launch(ctx context.Context) (workerproc.Process, error) {
 	b.mu.Lock()
 	rules := b.rules
+	strikes := b.strikes.Load()
 	var ro *os.File
 	var err error
 	if rules != nil {
@@ -347,10 +366,11 @@ func (b *Backend) launch(ctx context.Context) (workerproc.Process, error) {
 		_ = p.Conn().Close()
 		return nil, err
 	}
+	b.loadedStrikes = strikes
 	return &rulesProcess{Process: p, gen: rules.gen, current: &b.gen}, nil
 }
 
-func (b *Backend) loadRules(ctx context.Context, p workerproc.Process, rules *os.File, count int) error {
+func (b *Backend) loadRules(ctx context.Context, p workerproc.Process, rules *os.File, count int) (retErr error) {
 	conn := p.Conn()
 	deadline := time.Now().Add(b.cfg.LoadTimeout)
 	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
@@ -359,7 +379,23 @@ func (b *Backend) loadRules(ctx context.Context, p workerproc.Process, rules *os
 	if err := conn.SetDeadline(deadline); err != nil {
 		return fmt.Errorf("load rules: %w", err)
 	}
-	defer func() { _ = conn.SetDeadline(time.Time{}) }()
+	var canceled sync.WaitGroup
+	canceled.Add(1)
+	stop := context.AfterFunc(ctx, func() {
+		defer canceled.Done()
+		_ = conn.SetDeadline(time.Now())
+	})
+	defer func() {
+		// A cancellation callback already running must finish before the
+		// deadline is cleared, or it could poison the first scan.
+		if !stop() {
+			canceled.Wait()
+		}
+		_ = conn.SetDeadline(time.Time{})
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			retErr = ctxErr
+		}
+	}()
 	if err := workerproc.SendFrame(conn, workerproc.Frame{Op: yaraipc.OpLoad}, []*os.File{rules}, yaraipc.MaxFrameBytes); err != nil {
 		return fmt.Errorf("load rules: %w", err)
 	}
@@ -481,23 +517,61 @@ func (b *Backend) ScanFDChecked(f *os.File, size int64) ([]yara.Match, error) {
 	return b.scan(ro, int(size))
 }
 
+// errStruckOut refuses content that kept making the scan worker fail: each
+// attempt would cost a worker restart, a rules load and up to a timeout.
+var errStruckOut = errors.New("yaraworker: not scanned: this content made the YARA worker fail repeatedly")
+
 func (b *Backend) scan(f *os.File, size int) ([]yara.Match, error) {
+	key := ""
+	// Both callbacks run in the supervisor's request order. Checking before
+	// joining its queue would let queued copies bypass newly recorded strikes.
+	before := func() error {
+		strikes := b.strikes.Load()
+		if strikes.Len() > 0 {
+			var err error
+			if key, err = contentKey(f, size); err != nil {
+				return fmt.Errorf("yaraworker: hash content: %w", err)
+			}
+			if strikes.Blocked(key) {
+				return errStruckOut
+			}
+		}
+		return nil
+	}
+	after := func(err error) {
+		if errors.Is(err, workerproc.ErrWorkerFailed) {
+			if key == "" {
+				key, _ = contentKey(f, size)
+			}
+			if key != "" {
+				b.loadedStrikes.Record(key)
+			}
+		}
+	}
 	payload, err := json.Marshal(yaraipc.ScanFDArgs{MaxBytes: size})
 	if err != nil {
 		return nil, err
 	}
 	var matches []yaraipc.Match
-	_, _, err = b.proc.Call(context.Background(), workerproc.Frame{Op: yaraipc.OpScanFD, Payload: payload}, []*os.File{f},
+	_, _, err = b.proc.CallGuarded(b.ctx, workerproc.Frame{Op: yaraipc.OpScanFD, Payload: payload}, []*os.File{f},
 		func(reply workerproc.Frame, _ []*os.File) (bool, error) {
 			m, decodeErr := yaraipc.DecodeScanReply(reply.Payload)
 			matches = m
 			return false, decodeErr
-		})
+		}, before, after)
 	if err != nil {
 		b.logScanErr(err)
 		return nil, err
 	}
 	return toYaraMatches(matches), nil
+}
+
+func contentKey(f *os.File, size int) (string, error) {
+	h := sha256.New()
+	if _, err := io.CopyN(h, io.NewSectionReader(f, 0, int64(size)), int64(size)); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // Warm starts the scan worker and loads the rules now, so the first scan
@@ -506,7 +580,7 @@ func (b *Backend) Warm() error {
 	if rules, _, _ := b.state(); rules == nil || rules.count == 0 {
 		return nil
 	}
-	_, _, err := b.proc.Call(context.Background(), workerproc.Frame{Op: yaraipc.OpPing}, nil,
+	_, _, err := b.proc.Call(b.ctx, workerproc.Frame{Op: yaraipc.OpPing}, nil,
 		func(reply workerproc.Frame, _ []*os.File) (bool, error) {
 			_, decodeErr := decodeRuleCount(reply.Payload)
 			return false, decodeErr
@@ -529,7 +603,8 @@ func (b *Backend) CompileError() string {
 	return compileErr
 }
 
-// Stop cancels compilation, kills the scan worker, and refuses later work.
+// Stop cancels compilation and in-flight scans, kills the scan worker, and
+// refuses later work.
 func (b *Backend) Stop() error {
 	b.mu.Lock()
 	b.stopped = true

@@ -233,15 +233,17 @@ func (w *worker) scan(req workerproc.Frame, f *os.File) (workerproc.Frame, []*os
 	if args.MaxBytes <= 0 {
 		return fail("invalid descriptor scan size: %d", args.MaxBytes)
 	}
-	if _, err := regularSize(f); err != nil {
+	size, err := regularSize(f)
+	if err != nil {
 		return fail("scan_fd: %v", err)
 	}
-	data, err := io.ReadAll(io.NewSectionReader(f, 0, int64(args.MaxBytes)))
-	if err != nil {
-		return fail("read descriptor: %v", err)
+	if int64(args.MaxBytes) > size {
+		return fail("read descriptor: %d bytes, want %d", size, args.MaxBytes)
 	}
-	if len(data) != args.MaxBytes {
-		return fail("read descriptor: got %d of %d bytes", len(data), args.MaxBytes)
+	// One buffer of the exact size: the memory cap allows one copy.
+	data := make([]byte, args.MaxBytes)
+	if _, err = io.ReadFull(io.NewSectionReader(f, 0, int64(args.MaxBytes)), data); err != nil {
+		return fail("read descriptor: %v", err)
 	}
 	matches, err := w.rules.Scan(data)
 	if err != nil {

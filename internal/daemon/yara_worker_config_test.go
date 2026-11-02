@@ -49,6 +49,10 @@ func yaraWorkerDaemon(t *testing.T, cfg *config.Config) *Daemon {
 		cfg.Signatures.RulesDir = t.TempDir()
 	}
 	d := &Daemon{cfg: cfg, binaryPath: "/opt/csm/csm", stopCh: make(chan struct{}), alertCh: make(chan alert.Finding, 16)}
+	// Another test's live config must not set this daemon's size caps.
+	prev := config.Active()
+	config.SetActive(cfg)
+	t.Cleanup(func() { config.SetActive(prev) })
 	t.Cleanup(func() {
 		close(d.stopCh)
 		d.stopYaraBackend()
@@ -100,6 +104,49 @@ func TestInitYaraBackendScanMemoryFollowsFileCap(t *testing.T) {
 	}
 }
 
+// The scan worker holds a whole file or mail part, so its cap covers the
+// larger size cap, and a reload that raises one applies to the next worker.
+func TestYaraScanUnitFollowsLiveSizeCaps(t *testing.T) {
+	_, units := stubYaraUnits(t, false, nil)
+	allowParseWorkerCommand(t)
+	cfg := &config.Config{}
+	cfg.Thresholds.FullScanMaxFileMB = 16
+	cfg.EmailAV.Enabled = true
+	cfg.EmailAV.MaxAttachmentSize = 64 << 20
+	d := yaraWorkerDaemon(t, cfg)
+	launch := d.yaraScanLauncher([]string{"/home2"}, t.Logf)
+	lastScanUnit := func() workerproc.UnitConfig {
+		t.Helper()
+		if _, err := launch(context.Background()); err == nil {
+			t.Fatal("stub launch succeeded")
+		}
+		u := (*units)[len(*units)-1]
+		if u.Prefix != yaraworker.ScanUnitPrefix || !slices.Equal(u.InaccessiblePaths, []string{"/home2"}) {
+			t.Fatalf("unit %q hides %q", u.Prefix, u.InaccessiblePaths)
+		}
+		return u
+	}
+	if got := lastScanUnit().MemoryLimit; got != 512<<20+64<<20 {
+		t.Fatalf("memory %d with 64 MiB attachments, want 576 MiB", got)
+	}
+	reloaded := *cfg
+	reloaded.Thresholds.FullScanMaxFileMB = 128
+	config.SetActive(&reloaded)
+	if got := lastScanUnit().MemoryLimit; got != 512<<20+128<<20 {
+		t.Fatalf("memory %d after raising the file cap to 128 MiB, want 640 MiB", got)
+	}
+	built := len(*units)
+	lastScanUnit()
+	if len(*units) != built {
+		t.Fatal("an unchanged config rebuilt the scan unit")
+	}
+	reloaded.EmailAV.Enabled = false
+	reloaded.Thresholds.FullScanMaxFileMB = 16
+	if got := lastScanUnit().MemoryLimit; got != 512<<20+16<<20 {
+		t.Fatalf("memory %d with mail scanning off, want 528 MiB", got)
+	}
+}
+
 // A compile unit that cannot start must not leave YARA silently off: the
 // backend is active and every scan errors, the watcher reports the outage,
 // and a background retry keeps trying.
@@ -110,6 +157,9 @@ func TestInitYaraBackendCompileUnavailableFailsClosed(t *testing.T) {
 		return nil, errors.New("systemd-run unavailable")
 	})
 	allowParseWorkerCommand(t)
+	realBackoff := yaraRetryMinBackoff
+	yaraRetryMinBackoff = 10 * time.Millisecond
+	t.Cleanup(func() { yaraRetryMinBackoff = realBackoff })
 	cfg := &config.Config{}
 	cfg.Signatures.RulesDir = filepath.Join(t.TempDir(), "rules")
 	if err := os.Mkdir(cfg.Signatures.RulesDir, 0o700); err != nil {
@@ -156,6 +206,20 @@ func TestInitYaraBackendCompileUnavailableFailsClosed(t *testing.T) {
 	}
 	if launches.Load() == first {
 		t.Fatal("no background retry of the compile")
+	}
+	timeout := time.After(5 * time.Second)
+	for {
+		select {
+		case f := <-d.alertCh:
+			if f.Check == "yara_backend_unavailable" {
+				if f.Severity != alert.Critical {
+					t.Fatalf("yara_backend_unavailable severity %v, want Critical", f.Severity)
+				}
+				return
+			}
+		case <-timeout:
+			t.Fatal("a compile worker that never starts raised no yara_backend_unavailable")
+		}
 	}
 }
 
