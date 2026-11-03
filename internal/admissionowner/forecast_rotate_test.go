@@ -115,8 +115,8 @@ func TestShadowSharesTheSetFromTheSessionCursor(t *testing.T) {
 }
 
 // A forecast block that strictly higher work replaces answers its address
-// until the block's expiry, keeping the later expiry of two; a replaced
-// import is remembered by name only (spec 5.2).
+// until the block's expiry, keeping the later expiry of two, as a rotated
+// one does; a replaced import is remembered by name only (spec 5.2).
 func TestShadowAnswersTheAddressesItRemoves(t *testing.T) {
 	s := testShadow(t, freshCeiling(t, 2000), nil)
 	imp := firewall.BlockImport{ID: "eff_" + strings.Repeat("ab", 16), IP: "192.0.2.60", ExpiresAt: shadowT0.Add(30 * time.Minute)}
@@ -132,6 +132,13 @@ func TestShadowAnswersTheAddressesItRemoves(t *testing.T) {
 	}
 	if exp := s.answered["203.0.113.1"]; !exp.Equal(shadowT0.Add(2 * time.Hour)) {
 		t.Fatalf("an earlier expiry replaced the answered one: %v", exp)
+	}
+	top := admission.Tier{Class: admission.ClassC3, Severity: admission.SeverityCritical}
+	if p, change := admitRanked(t, s, scopedRank(t, 4, "203.0.113.4", top, "a"), generalOnly, shadowT0, adm); p != admission.PredictCapacityEvict || change.victim.Tier == top {
+		t.Fatalf("strictly higher replacement = %v %+v", p, change)
+	}
+	if exp, ok := s.answered["203.0.113.2"]; !ok || !exp.Equal(shadowT0.Add(time.Hour)) || len(s.answered) != 2 {
+		t.Fatalf("a replaced forecast block left its address unanswered: %v", s.answered)
 	}
 	s.answered["203.0.113.1"] = shadowT0.Add(time.Hour)
 	s.expire(shadowT0.Add(time.Hour - time.Nanosecond))
