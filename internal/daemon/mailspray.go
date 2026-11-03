@@ -87,6 +87,11 @@ type sprayVerdict struct {
 	Networks int      // networks that tried the missing name
 }
 
+// sprayStaleSpread is how long before a login the failures on its mailbox
+// must have started for the stale password advisory (4d). A user who
+// mistypes and retries within the hour is not news.
+const sprayStaleSpread = 24 * time.Hour
+
 const (
 	maxSprayNamesPerIP         = 32
 	maxSprayTrustPerIP         = mailGoodSourceMaxAccountsPerIP
@@ -96,8 +101,9 @@ const (
 )
 
 type sprayFailure struct {
+	first time.Time // first failure since the name was last idle for a whole window
 	last  time.Time
-	count int // failures since the name was last idle for a whole window
+	count int // failures since first
 	exist mailboxExistence
 }
 
@@ -262,7 +268,7 @@ func (m *mailSpray) Success(ip, mailbox string) (clean bool, v *sprayVerdict) {
 		hadTrust := m.recordTrust(k, now)
 		// 4d fires once per trust relationship; later logins while the new
 		// trust ages are the same user.
-		if m.cfg.Mode == sprayOff || hadTrust || e == nil || e.failuresInWindow(mailbox, now, m.cfg.Window) < 2 {
+		if m.cfg.Mode == sprayOff || hadTrust || e == nil || !e.staleFailures(mailbox, now, m.cfg.Window) {
 			return true, nil
 		}
 		return true, m.verdict(e, sprayRuleSingleMailboxSuccess, false, mailbox, untrusted, now)
@@ -380,7 +386,7 @@ func (e *sprayIP) recordFailure(name string, exist mailboxExistence, now time.Ti
 		}
 	}
 	if !ok || now.Sub(f.last) > window {
-		f = sprayFailure{exist: exist}
+		f = sprayFailure{first: now, exist: exist}
 	} else {
 		f.exist = foldObservedExistence(f.exist, exist)
 	}
@@ -411,12 +417,12 @@ func (e *sprayIP) pruneFailed(cutoff time.Time) {
 	maps.DeleteFunc(e.failed, func(_ string, f sprayFailure) bool { return f.last.Before(cutoff) })
 }
 
-func (e *sprayIP) failuresInWindow(name string, now time.Time, window time.Duration) int {
+// staleFailures reports whether name failed at least twice in the window,
+// the first time at least sprayStaleSpread ago: a saved password gone
+// stale, not a typo (4d).
+func (e *sprayIP) staleFailures(name string, now time.Time, window time.Duration) bool {
 	f, ok := e.failed[name]
-	if !ok || now.Sub(f.last) > window {
-		return 0
-	}
-	return f.count
+	return ok && now.Sub(f.last) <= window && f.count >= 2 && now.Sub(f.first) >= sprayStaleSpread
 }
 
 // recordTrust records a clean login and reports whether a live trust record

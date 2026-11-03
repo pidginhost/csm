@@ -409,7 +409,7 @@ Signals:
 | `smtp_subnet_spray` | Multiple distinct attacker IPs from the same /24 subnet exceed the subnet threshold | Entire /24 subnet blocked via nftables |
 | `smtp_account_spray` | Many distinct attacker IPs targeting the same mailbox exceed the account threshold | Visibility finding only. No auto-block, because attackers span many subnets and no single-IP action helps |
 | `mail_bruteforce_suspected` | Spray detection in observe mode: the spray rules matched an SMTP source. The message names SMTP and the rule | Visibility finding only |
-| `mail_account_compromised` | A successful SMTP login after failures on other mailboxes, or after failures on the same mailbox spread over a long time | Critical only when a failed name was a missing mailbox many networks tried, in enforce mode, and then the IP is blocked; otherwise a High advisory, visibility only |
+| `mail_account_compromised` | A successful SMTP login after failures on other mailboxes, or after repeated failures on the same mailbox spread over at least a day | Critical only in enforce mode when a failed name was a missing mailbox many networks tried, and the IP is then blocked. A source trusted on two or more other mailboxes is downgraded. Every other case is a High advisory, visibility only |
 
 Tunable via the `thresholds.smtp_bruteforce_*`, `thresholds.smtp_probe_*` and `thresholds.mail_spray_*` keys in `csm.yaml`. Infrastructure IPs (from `infra_ips`) are never counted or blocked.
 
