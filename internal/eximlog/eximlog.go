@@ -237,27 +237,6 @@ func hostAndIdentClientIP(s string) string {
 	return ip
 }
 
-// AuthFailureCode returns the SMTP reply code of an Exim "authenticator
-// failed for" record: the three digits that open the failure details after
-// the connecting client. The HELO and login name are client text and are
-// never read for it. It returns "" when the record has no such code.
-func AuthFailureCode(line string) string {
-	start, marker := unprefixedClientStart(line)
-	if marker < 0 || !strings.HasPrefix(line[marker:], "authenticator failed for ") {
-		return ""
-	}
-	_, details := hostAndIdentClient(line[start:])
-	if len(details) < 4 || details[3] != ' ' {
-		return ""
-	}
-	for i := 0; i < 3; i++ {
-		if details[i] < '0' || details[i] > '9' {
-			return ""
-		}
-	}
-	return details[:3]
-}
-
 // hostAndIdentClient is hostAndIdentClientIP that also returns the failure
 // details after the peer, when they follow it.
 func hostAndIdentClient(s string) (ip, details string) {

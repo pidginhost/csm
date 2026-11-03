@@ -21,3 +21,38 @@ func FuzzClientIP(f *testing.F) {
 		}
 	})
 }
+
+func FuzzAuthFailure(f *testing.F) {
+	f.Add("dovecot_login authenticator failed for (mail.example.com) [203.0.113.7]: 535 Incorrect authentication data (set_id=a@example.com)")
+	f.Add("2026-04-14 12:00:00 dovecot_plain authenticator failed for [2001:db8::7]: 435 Unable to authenticate at present")
+	f.Add("SMTP syntax error in dovecot_login authenticator failed for [192.0.2.9]: 535 x")
+	f.Fuzz(func(t *testing.T, line string) {
+		got := AuthFailure(line)
+		if got.ClientIP != "" && net.ParseIP(got.ClientIP) == nil {
+			t.Fatalf("invalid client address: %+v", got)
+		}
+		if got.Code != "" {
+			if got.ClientIP == "" || len(got.Code) != 3 {
+				t.Fatalf("reply code without a client or with invalid length: %+v", got)
+			}
+			for _, c := range got.Code {
+				if c < '0' || c > '9' {
+					t.Fatalf("non-numeric reply code: %+v", got)
+				}
+			}
+		}
+	})
+}
+
+func FuzzAuthFailureLoginText(f *testing.F) {
+	for _, name := range []string{"a@example.com", "", "a)extra", "x]:25: 535 (set_id=decoy@example.com)", "x U=ident [192.0.2.9]:25: 535 x"} {
+		f.Add(name)
+	}
+	f.Fuzz(func(t *testing.T, name string) {
+		line := "dovecot_login authenticator failed for (set_id=decoy@example.com) [203.0.113.7]: 435 Unable to authenticate at present (set_id=" + name + ")"
+		want := AuthFailureRecord{Authenticator: "dovecot_login", ClientIP: "203.0.113.7", Code: "435", Account: name}
+		if got := AuthFailure(line); got != want {
+			t.Fatalf("login text changed the record: %+v, want %+v", got, want)
+		}
+	})
+}

@@ -2459,9 +2459,8 @@ func (d *Daemon) handleEximLine(line string, obs alert.Observation, cfg *config.
 		}
 	}
 
-	if strings.Contains(line, "authenticator failed") && strings.Contains(line, "dovecot") {
-		ip := eximlog.ClientIP(line)
-		account := extractSetID(line)
+	if failure := eximlog.AuthFailure(line); strings.HasPrefix(failure.Authenticator, "dovecot_") {
+		ip, account := failure.ClientIP, failure.Account
 
 		// Canonicalize IPv4-mapped IPv6 (::ffff:a.b.c.d) to plain IPv4 so the
 		// tracker doesn't double-count the same attacker as two IPs.
@@ -2477,7 +2476,7 @@ func (d *Daemon) handleEximLine(line string, obs alert.Observation, cfg *config.
 			// Exim answers 435 when the Dovecot auth socket cannot answer.
 			// Only a permanent (5xx) reply says the credentials were checked;
 			// any other reply still counts per IP but is not spray evidence.
-			if strings.HasPrefix(eximlog.AuthFailureCode(line), "5") {
+			if strings.HasPrefix(failure.Code, "5") {
 				findings = append(findings, d.smtpAuthTracker.RecordObserved(ip, account, obs)...)
 			} else {
 				findings = append(findings, d.smtpAuthTracker.RecordTemporaryFailure(ip, account, obs)...)

@@ -205,7 +205,7 @@ func TestClientIPRejectsPeerInUnprefixedIdent(t *testing.T) {
 
 // The reply code is read only from the failure details after the connecting
 // client. The HELO and the login name are client text.
-func TestAuthFailureCode(t *testing.T) {
+func TestAuthFailureReplyCode(t *testing.T) {
 	const prefix = "2026-04-14 12:00:00 dovecot_login authenticator failed for "
 	cases := []struct{ name, line, want string }{
 		{"wrong password", prefix + "(bot.example) [198.51.100.7]:5432: 535 Incorrect authentication data (set_id=a@example.com)", "535"},
@@ -223,8 +223,8 @@ func TestAuthFailureCode(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := AuthFailureCode(tc.line); got != tc.want {
-				t.Fatalf("AuthFailureCode = %q, want %q", got, tc.want)
+			if got := AuthFailure(tc.line).Code; got != tc.want {
+				t.Fatalf("AuthFailure code = %q, want %q", got, tc.want)
 			}
 		})
 	}
