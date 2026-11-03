@@ -25,6 +25,8 @@ func testMailSprayState() MailSprayState {
 				SuppressedUntil: at(150),
 				CompromiseUntil: at(160),
 				VerdictAt:       at(90),
+				ObservedAt:      at(91),
+				ObservedNames:   2,
 				LastSeen:        at(95),
 			},
 			"2001:db8::7": {LastSeen: at(1)},

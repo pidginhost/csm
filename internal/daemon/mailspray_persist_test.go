@@ -58,6 +58,8 @@ func TestMailSprayLoadExportKeepsEveryField(t *testing.T) {
 				SuppressedUntil: clock.Now().Add(30 * time.Minute),
 				CompromiseUntil: clock.Now().Add(45 * time.Minute),
 				VerdictAt:       at(-2),
+				ObservedAt:      at(-3),
+				ObservedNames:   2,
 				LastSeen:        at(-1),
 			},
 		},
@@ -182,6 +184,7 @@ func TestMailSprayLoadDropsExpiredAndCaps(t *testing.T) {
 				WeakAlerted: map[string]time.Time{"old@example.com": old, "new@example.com": recent},
 				Revoked:     map[string]time.Time{"old@example.com": old},
 				Untracked:   old,
+				ObservedAt:  old,
 				LastSeen:    recent,
 			},
 			"192.0.2.2": {
@@ -208,10 +211,12 @@ func TestMailSprayLoadDropsExpiredAndCaps(t *testing.T) {
 	}
 	// Over every per-IP and per-name cap.
 	full := store.MailSprayIP{
-		Failed:      map[string]store.MailSprayFailure{},
-		WeakAlerted: map[string]time.Time{},
-		Revoked:     map[string]time.Time{},
-		LastSeen:    recent,
+		Failed:        map[string]store.MailSprayFailure{},
+		WeakAlerted:   map[string]time.Time{},
+		Revoked:       map[string]time.Time{},
+		ObservedAt:    recent,
+		ObservedNames: 99,
+		LastSeen:      recent,
 	}
 	for i := range maxSprayNamesPerIP + 8 {
 		ts := recent.Add(time.Duration(i) * time.Second)
@@ -237,7 +242,7 @@ func TestMailSprayLoadDropsExpiredAndCaps(t *testing.T) {
 	loadSpraySnapshot(t, m, st)
 
 	e := m.ips["192.0.2.1"]
-	if e == nil || len(e.failed) != 1 || len(e.weakAlerted) != 1 || len(e.revoked) != 0 || !e.untracked.IsZero() {
+	if e == nil || len(e.failed) != 1 || len(e.weakAlerted) != 1 || len(e.revoked) != 0 || !e.untracked.IsZero() || !e.observedAt.IsZero() {
 		t.Fatalf("192.0.2.1 after load = %+v, want only the recent name and advisory", e)
 	}
 	if f := e.failed["new@example.com"]; !f.first.Equal(recent) || f.count != 1 || f.exist != mailboxExistenceUnknown {
@@ -264,6 +269,9 @@ func TestMailSprayLoadDropsExpiredAndCaps(t *testing.T) {
 	}
 	if len(e.revoked) != maxSprayNamesPerIP {
 		t.Fatalf("revocation records = %d, want %d", len(e.revoked), maxSprayNamesPerIP)
+	}
+	if e.observedNames != maxSprayNamesPerIP {
+		t.Fatalf("observed names = %d, want capped at %d", e.observedNames, maxSprayNamesPerIP)
 	}
 	if _, ok := e.weakAlerted[fmt.Sprintf("w%02d@example.com", maxSprayNamesPerIP+7)]; !ok {
 		t.Fatalf("the newest advisory record was not kept")
@@ -371,6 +379,7 @@ func TestMailSprayLoadDistrustsFutureTimes(t *testing.T) {
 				SuppressedUntil: later,
 				CompromiseUntil: later,
 				VerdictAt:       later,
+				ObservedAt:      later,
 				LastSeen:        later,
 			}},
 			Trust: map[string]map[string]store.GoodSourcePair{"192.0.2.1": {
@@ -396,7 +405,7 @@ func TestMailSprayLoadDistrustsFutureTimes(t *testing.T) {
 	f := e.failed["x@example.com"]
 	for name, got := range map[string]time.Time{
 		"failure first": f.first, "failure last": f.last, "untracked": e.untracked,
-		"verdict": e.verdictAt, "last seen": e.lastSeen, "advisory": e.weakAlerted["w@example.com"],
+		"verdict": e.verdictAt, "observed": e.observedAt, "last seen": e.lastSeen, "advisory": e.weakAlerted["w@example.com"],
 		"revoked": e.revoked["r@example.com"],
 	} {
 		if !got.Equal(now) {

@@ -37,6 +37,8 @@ type MailSprayIP struct {
 	SuppressedUntil time.Time                   `json:"suppressed_until,omitzero"`
 	CompromiseUntil time.Time                   `json:"compromise_until,omitzero"`
 	VerdictAt       time.Time                   `json:"verdict_at,omitzero"`
+	ObservedAt      time.Time                   `json:"observed_at,omitzero"`    // last observe mode block verdict
+	ObservedNames   int                         `json:"observed_names,omitzero"` // untrusted names it listed
 	LastSeen        time.Time                   `json:"last_seen"`
 }
 

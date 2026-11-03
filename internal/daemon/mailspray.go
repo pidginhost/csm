@@ -125,6 +125,8 @@ type sprayIP struct {
 	suppressedUntil           time.Time
 	compromiseSuppressedUntil time.Time
 	verdictAt                 time.Time
+	observedAt                time.Time // last observe mode block verdict
+	observedNames             int       // untrusted names it listed
 	lastSeen                  time.Time
 }
 
@@ -259,19 +261,22 @@ func (m *mailSpray) Failure(ip, mailbox string, exist mailboxExistence) *sprayVe
 	}
 
 	untrusted := m.untrusted(e, ip, now)
-	var v *sprayVerdict
-	switch {
-	case m.cfg.MissingNetworks > 0 && exist == mailboxMissing &&
-		networks >= m.cfg.MissingNetworks && m.agedTrustCount(ip, "", now) == 0:
-		v = m.verdict(e, sprayRuleMissingMailbox, true, mailbox, untrusted, now)
-		v.Networks = networks
-	case m.cfg.BreadthMailboxes > 0 && m.breadth(ip, mailbox, stored, untrusted, now):
-		v = m.verdict(e, sprayRuleBreadth, true, "", untrusted, now)
-	default:
+	missing := m.cfg.MissingNetworks > 0 && exist == mailboxMissing &&
+		networks >= m.cfg.MissingNetworks && m.agedTrustCount(ip, "", now) == 0
+	if !missing && (m.cfg.BreadthMailboxes <= 0 || !m.breadth(ip, mailbox, stored, untrusted, now)) {
+		return nil
+	}
+	// Observe mode blocks nothing, so an IP over the bar keeps failing.
+	if m.cfg.Mode == sprayObserve && !e.noteObserved(len(untrusted), now, m.cfg.Window) {
 		return nil
 	}
 	e.suppressedUntil = now.Add(m.cfg.Suppression)
-	return v
+	if missing {
+		v := m.verdict(e, sprayRuleMissingMailbox, true, mailbox, untrusted, now)
+		v.Networks = networks
+		return v
+	}
+	return m.verdict(e, sprayRuleBreadth, true, "", untrusted, now)
 }
 
 // breadth reports whether the IP's untrusted names reach the rule 3 bar. A
@@ -614,6 +619,8 @@ func exportSprayIP(e *sprayIP) store.MailSprayIP {
 		SuppressedUntil: e.suppressedUntil,
 		CompromiseUntil: e.compromiseSuppressedUntil,
 		VerdictAt:       e.verdictAt,
+		ObservedAt:      e.observedAt,
+		ObservedNames:   e.observedNames,
 		LastSeen:        e.lastSeen,
 	}
 	if len(e.failed) > 0 {
@@ -748,6 +755,9 @@ func (m *mailSpray) loadIP(ip string, s store.MailSprayIP, cutoff, now time.Time
 	}
 	if u := sprayNotAfter(s.Untracked, now); !u.Before(cutoff) {
 		e.untracked = u
+	}
+	if o := sprayNotAfter(s.ObservedAt, now); !o.Before(cutoff) {
+		e.observedAt, e.observedNames = o, min(max(s.ObservedNames, 0), maxSprayNamesPerIP)
 	}
 	// Revoke before choosing failures at the name cap, including revocations
 	// whose names will be represented only by the overflow marker.
@@ -1020,6 +1030,17 @@ func (e *sprayIP) noteWeakAlert(mailbox string, now time.Time, window time.Durat
 		delete(e.weakAlerted, oldest)
 	}
 	e.weakAlerted[mailbox] = now
+	return true
+}
+
+// noteObserved reports whether an observe mode block verdict naming n
+// untrusted mailboxes may fire, and records it: once per window, or sooner
+// when n grows past what the last one listed.
+func (e *sprayIP) noteObserved(n int, now time.Time, window time.Duration) bool {
+	if !e.observedAt.IsZero() && now.Sub(e.observedAt) <= window && n <= e.observedNames {
+		return false
+	}
+	e.observedAt, e.observedNames = now, n
 	return true
 }
 

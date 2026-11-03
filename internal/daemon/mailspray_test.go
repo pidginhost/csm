@@ -294,6 +294,49 @@ func TestMailSpray_SuppressionThenReblock(t *testing.T) {
 	wantRule(t, m.Failure(ip, "a@example.com", mailboxExists), sprayRuleBreadth, true)
 }
 
+// sprayCadence fails ip every 2h on names in turn, n times, and counts the
+// verdicts.
+func sprayCadence(m *mailSpray, clock *staticClock, ip string, n int, names ...string) int {
+	verdicts := 0
+	for i := range n {
+		clock.advance(2 * time.Hour)
+		if m.Failure(ip, names[i%len(names)], mailboxExists) != nil {
+			verdicts++
+		}
+	}
+	return verdicts
+}
+
+// Observe mode blocks nothing, so an IP over the bar keeps failing. Its
+// verdict repeats once per window, or when it fails on more mailboxes;
+// enforce mode still re-blocks after each suppression period.
+func TestMailSpray_ObserveVerdictOncePerWindow(t *testing.T) {
+	cfg := testSprayConfig()
+	const ip = "192.0.2.1"
+	window := int(cfg.Window / (2 * time.Hour))
+
+	cfg.Mode = sprayEnforce
+	m, clock := newTestSpray(cfg)
+	if got := sprayCadence(m, clock, ip, window, "a@example.com", "b@example.com"); got != window-1 {
+		t.Fatalf("enforce: %d verdicts in a window, want %d", got, window-1)
+	}
+
+	cfg.Mode = sprayObserve
+	m, clock = newTestSpray(cfg)
+	if got := sprayCadence(m, clock, ip, window, "a@example.com", "b@example.com"); got != 1 {
+		t.Fatalf("observe: %d verdicts in a window, want 1", got)
+	}
+	clock.advance(2 * time.Hour)
+	wantRule(t, m.Failure(ip, "c@example.com", mailboxExists), sprayRuleBreadth, true)
+	// The next verdict comes a window after the last one.
+	if got := sprayCadence(m, clock, ip, window, "a@example.com", "b@example.com", "c@example.com"); got != 0 {
+		t.Fatalf("observe: %d verdicts within the window after a new mailbox, want 0", got)
+	}
+	if got := sprayCadence(m, clock, ip, 1, "a@example.com"); got != 1 {
+		t.Fatal("observe: no verdict a window after the last one")
+	}
+}
+
 func TestMailSpray_UniqueIPFloodBounded(t *testing.T) {
 	cfg := testSprayConfig()
 	cfg.MaxIPs = 100
