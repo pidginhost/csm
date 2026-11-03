@@ -257,7 +257,7 @@ func TestMailSpray_SingleMailboxFailuresThenSuccess(t *testing.T) {
 	m, clock := newTestSpray(testSprayConfig())
 	const ip = "192.0.2.1"
 	wantNoVerdict(t, m.Failure(ip, "a@example.com", mailboxExists))
-	clock.advance(2 * 24 * time.Hour)
+	clock.advance(2 * time.Hour)
 	wantNoVerdict(t, m.Failure(ip, "a@example.com", mailboxExists))
 	clean, v := m.Success(ip, "a@example.com")
 	if !clean {
@@ -278,11 +278,11 @@ func TestMailSpray_SingleMailboxFailuresThenSuccess(t *testing.T) {
 	}
 }
 
-// 4d needs the first failure at least a day before the login. A user who
+// 4d needs the first failure at least an hour before the login. A user who
 // mistypes twice in a row and then logs in gets no advisory, and still earns
 // trust.
 func TestMailSpray_SingleMailboxQuickRetryNoAdvisory(t *testing.T) {
-	for _, gap := range []time.Duration{time.Minute, sprayStaleSpread - time.Minute} {
+	for _, gap := range []time.Duration{time.Minute, 59 * time.Minute} {
 		t.Run(gap.String(), func(t *testing.T) {
 			m, clock := newTestSpray(testSprayConfig())
 			const ip = "192.0.2.1"

@@ -95,7 +95,7 @@ type sprayVerdict struct {
 // sprayStaleSpread is how long before a login the failures on its mailbox
 // must have started for the stale password advisory (4d). A user who
 // mistypes and retries within the hour is not news.
-const sprayStaleSpread = 24 * time.Hour
+const sprayStaleSpread = time.Hour
 
 const (
 	maxSprayNamesPerIP         = 16
