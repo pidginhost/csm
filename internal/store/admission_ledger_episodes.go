@@ -280,7 +280,7 @@ func (q *queueTx) forgetLine(id admission.CandidateID, c admission.Candidate) er
 // a candidate of another episode than its target's row, change nothing. An
 // episode queues no new generation of a kind while one is in flight, so
 // the verified block is its kind's latest.
-func (q *queueTx) closeEpisode(c admission.Candidate, lead time.Duration) error {
+func (q *queueTx) closeEpisode(c admission.Candidate, lead, elapsed time.Duration) error {
 	if c.Key.Kind != admission.KindBlockIP && c.Key.Kind != admission.KindBlockSubnet {
 		return nil
 	}
@@ -289,10 +289,9 @@ func (q *queueTx) closeEpisode(c admission.Candidate, lead time.Duration) error 
 	if err != nil || !found || e.ID != c.Key.Episode {
 		return err
 	}
-	clock, err := q.episodeClock()
-	if err != nil {
-		return err
-	}
+	// Finishing uses the last committed reading, even if the ceiling is
+	// now unreadable and new work has stopped.
+	clock := admission.EpisodeClock{Now: q.now, Elapsed: elapsed}
 	if e, err = e.Close(c.ExpiresAt.Add(-max(lead, 0)), clock); err != nil {
 		return err
 	}

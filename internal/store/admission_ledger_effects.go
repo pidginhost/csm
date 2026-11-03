@@ -1,6 +1,8 @@
 package store
 
 import (
+	"time"
+
 	"github.com/pidginhost/csm/internal/admission"
 	bolt "go.etcd.io/bbolt"
 )
@@ -158,19 +160,15 @@ func loadEffect(tx *bolt.Tx, a admission.AttemptRecord) (admission.EffectRecord,
 }
 
 // markApplied records the verified application of attempt a's block at
-// admission time, with the ceiling's elapsed time as the proof a minimum
+// admission time, with its recorded elapsed time as the proof a minimum
 // hold needs, and what it did to the victim it claimed (v): a proven
 // removal evicts the victim, whose record gives up its slot and stays,
 // evicted, until its expiry; a spared victim returns to the pool. An
 // attempt without a record (a preview, or one reserved by an earlier
 // build) holds no slot.
-func (q *queueTx) markApplied(a admission.AttemptRecord, v admission.VictimOutcome) error {
+func (q *queueTx) markApplied(a admission.AttemptRecord, v admission.VictimOutcome, elapsed time.Duration) error {
 	rec, key, found, err := loadEffect(q.tx, a)
 	if err != nil || !found {
-		return err
-	}
-	ceiling, err := loadCeilingState(q.tx)
-	if err != nil {
 		return err
 	}
 	if rec.Victim != (admission.EffectRef{}) {
@@ -178,7 +176,7 @@ func (q *queueTx) markApplied(a admission.AttemptRecord, v admission.VictimOutco
 			return err
 		}
 	}
-	rec.Applied, rec.Elapsed, rec.Victim = q.now, ceiling.Elapsed, admission.EffectRef{}
+	rec.Applied, rec.Elapsed, rec.Victim = q.now, elapsed, admission.EffectRef{}
 	data, err := rec.MarshalBinary()
 	if err != nil {
 		return err

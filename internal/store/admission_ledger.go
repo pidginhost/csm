@@ -85,6 +85,9 @@ type AdmissionLedger struct {
 
 	mu  sync.Mutex
 	now time.Time
+	// elapsed belongs to the same committed reading as now. Running work
+	// can record its outcome even when damage prevents a later reading.
+	elapsed time.Duration
 	// current is set only by a reading this handle recorded. A reopened
 	// handle, or one whose last reading was refused, keeps the stored
 	// high-water mark but admits nothing new: after a restart that mark can
@@ -327,9 +330,11 @@ func OpenAdmissionLedger(db *DB, reg *admission.Registry) (*AdmissionLedger, err
 		if _, err := loadIngressState(tx); err != nil {
 			return err
 		}
-		if _, err := loadCeiling(tx); err != nil {
-			return err
+		ceiling, ceilingErr := loadCeiling(tx)
+		if ceilingErr != nil {
+			return ceilingErr
 		}
+		l.elapsed = ceiling.Elapsed
 		if _, err := loadStorage(tx); err != nil {
 			return err
 		}
@@ -478,6 +483,7 @@ func (l *AdmissionLedger) Tick(r admission.ClockReading) (admission.ClockTick, e
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	var tick admission.ClockTick
+	var elapsed time.Duration
 	err := l.update("tick", func(tx *bolt.Tx) error {
 		meta := tx.Bucket([]byte(admissionMetaBucket))
 		c, err := loadLedgerClock(meta)
@@ -493,13 +499,13 @@ func (l *AdmissionLedger) Tick(r admission.ClockReading) (admission.ClockTick, e
 			return err
 		}
 		tick = t
-		if err := meta.Delete(admissionClockPendingKey); err != nil {
+		if err = meta.Delete(admissionClockPendingKey); err != nil {
 			return err
 		}
-		if err := meta.Put(admissionClockKey, data); err != nil {
+		if err = meta.Put(admissionClockKey, data); err != nil {
 			return err
 		}
-		if err := meterCeiling(tx, t); err != nil {
+		if elapsed, err = meterCeiling(tx, t); err != nil {
 			return err
 		}
 		if err := pruneOutcomes(tx, t.Now); err != nil {
@@ -514,7 +520,7 @@ func (l *AdmissionLedger) Tick(r admission.ClockReading) (admission.ClockTick, e
 		l.current = false
 		return admission.ClockTick{}, err
 	}
-	l.now, l.current, l.degraded = tick.Now, true, tick.Degraded
+	l.now, l.elapsed, l.current, l.degraded = tick.Now, elapsed, true, tick.Degraded
 	return tick, nil
 }
 

@@ -666,7 +666,11 @@ wall clock step back leads admission time; the owner passes that lead to
 `FinishOnLease` or, with a victim, `FinishEviction`, so the episode ends when
 the kernel element expires in admission time. Its elapsed end is the time
 left until then, so a forward wall step does not end the episode while the
-kernel element remains. An isolated member's isolation
+kernel element remains. Verified outcomes use the wall and elapsed values
+of the last committed clock reading, retained together by the ledger
+handle and restored at open. An unreadable ceiling or a failed later tick
+does not prevent recording a result for work that already ran. New work
+still requires a successful reading. An isolated member's isolation
 ends the same way.
 Retirement and retry staleness stay on the lease frame: late retirement
 only holds an address longer, and the engine refuses an expired member.
