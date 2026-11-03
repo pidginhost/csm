@@ -84,9 +84,10 @@ func (d *Daemon) admissionOptions(db *store.DB) admissionowner.Options {
 			}
 			return d.store.AppendHistoryDurable([]alert.Finding{f})
 		},
-		Expiry: func(c admission.Candidate) time.Duration { return previewExpiry(d.currentCfg(), c) },
-		Caps:   func() admission.Caps { return admission.Caps{IPv6: ipv6} },
-		Policy: d.executionPolicy,
+		Expiry:      func(c admission.Candidate) time.Duration { return previewExpiry(d.currentCfg(), c) },
+		BlockExpiry: func() time.Duration { return parseBlockExpiry(d.currentCfg().AutoResponse.BlockExpiry) },
+		Caps:        func() admission.Caps { return admission.Caps{IPv6: ipv6} },
+		Policy:      d.executionPolicy,
 	}
 }
 
@@ -114,7 +115,8 @@ func (d *Daemon) executionPolicy() admissionowner.ExecutionPolicy {
 		VerdictEnabled: cfg.AutoResponse.VerdictCallback.Enabled,
 		VerdictTimeout: time.Duration(cfg.AutoResponse.VerdictCallback.TimeoutSec) * time.Second,
 		CeilingLimit:   limit, CeilingSource: source,
-		Expiry: func(c admission.Candidate) time.Duration { return previewExpiry(cfg, c) },
+		Expiry:      func(c admission.Candidate) time.Duration { return previewExpiry(cfg, c) },
+		BlockExpiry: parseBlockExpiry(cfg.AutoResponse.BlockExpiry),
 		AskVerdict: func(ctx context.Context, ip, reason string) (verdict.Response, error) {
 			return client.Ask(ctx, verdict.Request{IP: ip, Reason: reason, Severity: "auto", Source: "auto_response"})
 		},

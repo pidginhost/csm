@@ -484,3 +484,40 @@ func TestAdmissionCapsFollowTheFirewallFamily(t *testing.T) {
 		}
 	}
 }
+
+// Empty and malformed values keep the legacy parser fallback. A callback
+// made before reload must read the current config, not the startup config.
+func TestAdmissionBlockExpiryFollowsTheConfig(t *testing.T) {
+	prev := config.Active()
+	t.Cleanup(func() { config.SetActive(prev) })
+	config.SetActive(nil)
+	startup := &config.Config{}
+	startup.AutoResponse.BlockExpiry = "2h"
+	d := &Daemon{cfg: startup}
+	opts := d.admissionOptions(nil)
+	if got := opts.BlockExpiry(); got != 2*time.Hour {
+		t.Fatalf("startup expiry %v, want 2h", got)
+	}
+	for _, tc := range []struct {
+		expiry string
+		want   time.Duration
+	}{
+		{"", 24 * time.Hour},
+		{"invalid", 24 * time.Hour},
+		{"999999999999999999999h", 24 * time.Hour},
+		{"90m", 90 * time.Minute},
+		{"72h", 72 * time.Hour},
+		{"0s", 0},
+		{"-1h", -time.Hour},
+	} {
+		cfg := &config.Config{}
+		cfg.AutoResponse.BlockExpiry = tc.expiry
+		config.SetActive(cfg)
+		if got := opts.BlockExpiry(); got != tc.want {
+			t.Errorf("block_expiry %q: options %v, want %v", tc.expiry, got, tc.want)
+		}
+		if got := d.executionPolicy().BlockExpiry; got != tc.want {
+			t.Errorf("block_expiry %q: policy %v, want %v", tc.expiry, got, tc.want)
+		}
+	}
+}

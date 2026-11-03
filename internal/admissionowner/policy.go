@@ -32,6 +32,9 @@ type ExecutionPolicy struct {
 	CeilingSource  string
 	// Expiry is how long the response a candidate asks for lasts.
 	Expiry func(admission.Candidate) time.Duration
+	// BlockExpiry caps a new automatic response's lifetime (spec 5.6).
+	// Earlier attempts keep their recorded absolute expiry.
+	BlockExpiry time.Duration
 	// AskVerdict asks the callback this policy configures, with the
 	// client's own validation.
 	AskVerdict Asker
@@ -59,6 +62,8 @@ func (p ExecutionPolicy) validate() error {
 		problem = "the policy has no expiry, verdict asker or allowed responses"
 	case p.CeilingLimit == 0 || p.CeilingLimit > admission.MaxCeiling:
 		problem = "the hourly ceiling is out of range"
+	case p.BlockExpiry <= 0:
+		problem = "the block expiry is not positive"
 	case p.VerdictTimeout < minVerdictTimeout || p.VerdictTimeout > maxVerdictTimeout:
 		problem = "the verdict timeout is out of range"
 	default:
@@ -72,7 +77,7 @@ func (p ExecutionPolicy) validate() error {
 func (p ExecutionPolicy) same(q ExecutionPolicy) bool {
 	return p.Epoch == q.Epoch && p.Observe == q.Observe && p.DryRun == q.DryRun &&
 		p.VerdictEnabled == q.VerdictEnabled && p.VerdictTimeout == q.VerdictTimeout &&
-		p.CeilingLimit == q.CeilingLimit && p.CeilingSource == q.CeilingSource
+		p.CeilingLimit == q.CeilingLimit && p.CeilingSource == q.CeilingSource && p.BlockExpiry == q.BlockExpiry
 }
 
 // executable reports whether the owner runs block picks (Options.Blocks).
@@ -201,6 +206,18 @@ func (o *Owner) expiry(c admission.Candidate) time.Duration {
 		return o.policy.Expiry(c)
 	}
 	return o.opts.Expiry(c)
+}
+
+// lease is the longest a response may last under the configuration
+// (spec 5.6): its block expiry, or no bound without one.
+func (o *Owner) lease() time.Duration {
+	if o.executable() {
+		return o.policy.BlockExpiry
+	}
+	if o.opts.BlockExpiry == nil {
+		return 0
+	}
+	return o.opts.BlockExpiry()
 }
 
 // refuseDisabled runs before selection: an opt-out must not wait for the

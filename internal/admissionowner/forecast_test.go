@@ -231,6 +231,9 @@ func TestOwnerForecastsExistingAndCoveringBlocks(t *testing.T) {
 	turn(t, o)
 	longer := dryPolicy(3)
 	longer.Expiry = func(admission.Candidate) time.Duration { return 48 * time.Hour }
+	// The block expiry bounds every lifetime, so a longer response needs a
+	// longer block expiry (spec 5.6).
+	longer.BlockExpiry = 48 * time.Hour
 	r.publish(longer)
 	f.host.advance(time.Second)
 	observe(t, o, p, f, "192.0.2.10", "offset=3")
