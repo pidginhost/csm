@@ -464,14 +464,20 @@ failure; a held forecast, model limits, waits the model predicts
 (`equal_tier_wait` among them), forecast blocks of the last hour that
 would have rotated out an equal-priority block, a set
 those entries fill, no free automatic slot, an unknown drain time and lost
-or stale examples warn. Outside a dry run, `admission set` shows the slots
+or stale examples warn. Recent rotation and wait warnings remain visible
+when the forecast has no current capacity snapshot; current occupancy and
+scope shares are then unavailable. These warnings clear when they leave
+the last-hour window or the forecast session ends.
+Outside a dry run, `admission set` shows the slots
 the last turn budgeted block work by and the previews of the last hour
 that would have replaced a lower-priority automatic block, and warns in
 the same cases, when the set could not be read and when a preview of the
 last hour would have rotated out an equal-priority block. The preview
 counts remain visible when the set cannot be read. Replacement notes change
 neither the row's status nor its suggested fix; a rotation means the set
-is too small for the attack. Rows warn when
+is too small for the attack. Recent preview rotations keep this row visible
+even if a later turn has no set snapshot or read error; lifetime totals
+alone do not keep the warning active. Rows warn when
 the ledger owner is not running, its clock reading
 is refused, an owner turn fails (`admission turns`), retiring an uncertain
 block fails (`admission retirement`), the ledger is damaged, admission has stopped or a Critical

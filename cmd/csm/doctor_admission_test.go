@@ -570,3 +570,59 @@ func TestDoctorWarnsOnPreviewRotations(t *testing.T) {
 		t.Fatalf("unreadable set lost recent rotations: %+v (%v)", row, ok)
 	}
 }
+
+// An idle turn or an unavailable engine can clear the set without a read
+// error. That must not hide rotations still inside the diagnostic window.
+func TestDoctorKeepsPreviewRotationsWithoutSet(t *testing.T) {
+	view := setView(time.Now())
+	view.Owner.Set = nil
+	view.Owner.PreviewRotations, view.Owner.PreviewRotationsLastHour = 5, 2
+	row, ok := doctorCheckNamed(doctorReportForSnapshot(t, admissionSnapshot(view)), "admission set")
+	if !ok || row.Status != "warn" || row.Fix == "" ||
+		strings.Count(row.Message, "in the last hour 2 previews would have rotated out") != 1 ||
+		!strings.Contains(row.Message, "no current snapshot") || strings.Contains(row.Message, "could not be read:") {
+		t.Fatalf("rotations without a set snapshot = %+v (%v)", row, ok)
+	}
+	view.Owner.PreviewRotationsLastHour = 0
+	if row, ok = doctorCheckNamed(doctorReportForSnapshot(t, admissionSnapshot(view)), "admission set"); ok {
+		t.Fatalf("expired rotations printed a set row: %+v", row)
+	}
+}
+
+// A failed snapshot discards occupancy, not the session's recent
+// predictions. Rotation and wait warnings must each survive that failure.
+func TestDoctorKeepsForecastWarningsWithoutSnapshot(t *testing.T) {
+	for _, tc := range []struct {
+		prediction, text string
+	}{
+		{"capacity_rotate", "in the last hour 3 forecast blocks would have rotated out"},
+		{"equal_tier_wait", "in the last hour live admission would have waited: 3 equal_tier_wait"},
+	} {
+		t.Run(tc.prediction, func(t *testing.T) {
+			view := dryRunView(time.Now())
+			d := view.Owner.DryRun
+			d.Occupancy = nil
+			cause := "engine_unavailable"
+			d.ForecastError = &cause
+			d.LastHour[tc.prediction] = 3
+			report := doctorReportForSnapshot(t, admissionSnapshot(view))
+			row, ok := doctorCheckNamed(report, "admission dry-run capacity")
+			if !ok || row.Status != "warn" || row.Fix == "" || strings.Count(row.Message, tc.text) != 1 ||
+				!strings.Contains(row.Message, "no current snapshot") || strings.Contains(row.Message, "real temporary elements") ||
+				strings.Contains(row.Message, "shared by scopes") {
+				t.Fatalf("forecast warning without a snapshot = %+v (%v)", row, ok)
+			}
+			if run, ok := doctorCheckNamed(report, "admission dry run"); !ok || run.Status != "warn" || !strings.Contains(run.Message, cause) {
+				t.Fatalf("forecast warning hid the snapshot failure: %+v (%v)", run, ok)
+			}
+			d.Active = false
+			if row, ok := doctorCheckNamed(doctorReportForSnapshot(t, admissionSnapshot(view)), "admission dry-run capacity"); ok {
+				t.Fatalf("an inactive forecast printed capacity warnings: %+v", row)
+			}
+			d.Active, d.LastHour[tc.prediction] = true, 0
+			if row, ok := doctorCheckNamed(doctorReportForSnapshot(t, admissionSnapshot(view)), "admission dry-run capacity"); ok {
+				t.Fatalf("expired forecast warnings printed a capacity row: %+v", row)
+			}
+		})
+	}
+}

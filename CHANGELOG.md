@@ -21,6 +21,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 ### Fixed
 
 - Antispam no longer overrides spam weights you set yourself in rspamd.
+- Diagnostics retain recent rotation and wait warnings when the temporary block set cannot be read or no snapshot is available.
 
 ## [4.9.0] - 2026-11-02
 

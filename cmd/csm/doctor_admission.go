@@ -135,7 +135,7 @@ func ownerDoctorChecks(a *health.AdmissionStatus) []DoctorCheck {
 			Fix: "restart csm.service so opening the ledger proves every record; " + keep + ", and report the damage",
 		})
 	}
-	if o.Set != nil || o.SetError != "" {
+	if o.Set != nil || o.SetError != "" || o.PreviewRotationsLastHour > 0 {
 		rows = append(rows, setDoctorCheck(o, closing))
 	}
 	return append(rows, dryRunDoctorChecks(o.DryRun)...)
@@ -149,8 +149,12 @@ func ownerDoctorChecks(a *health.AdmissionStatus) []DoctorCheck {
 // when a preview of the last hour rotated an equal-priority block out.
 func setDoctorCheck(o *health.AdmissionOwner, closing string) DoctorCheck {
 	if o.Set == nil {
+		message := "the temporary set has no current snapshot"
+		if o.SetError != "" {
+			message = "the temporary set could not be read: " + o.SetError
+		}
 		return DoctorCheck{Name: "admission set", Status: "warn",
-			Message: "the temporary set could not be read: " + o.SetError + "; block work has no slot budget until a turn reads it" +
+			Message: message + "; block work has no slot budget until a turn reads it" +
 				replacedNote(o.PreviewReplacementsLastHour, "previews") + rotatedNote(o.PreviewRotationsLastHour, "previews") + "; " + closing,
 			Fix: "the owner reads the set again at its next turn; check the firewall engine and the blocked sets"}
 	}
@@ -281,8 +285,16 @@ func dryRunDoctorChecks(d *health.AdmissionDryRun) []DoctorCheck {
 		run.Fix = "the owner retries at its next turn; check the firewall engine, the admission clock, the state database or the configuration the code names"
 	}
 	rows := []DoctorCheck{run}
-	if d.Active && d.Occupancy != nil && d.Ceiling != nil {
-		rows = append(rows, dryRunCapacityCheck(d))
+	if d.Active {
+		if d.Occupancy != nil && d.Ceiling != nil {
+			rows = append(rows, dryRunCapacityCheck(d))
+		} else if warnings := dryRunRecentWarnings(d); len(warnings) > 0 {
+			// A snapshot failure loses current capacity, not the session's
+			// committed predictions inside the diagnostic window.
+			rows = append(rows, DoctorCheck{Name: "admission dry-run capacity", Status: "warn",
+				Message: "forecast capacity has no current snapshot" + replacedNote(d.LastHour["capacity_evict"], "forecast blocks") + "; " + strings.Join(warnings, "; "),
+				Fix:     "check the firewall engine and the blocked sets; inspect existing blocks and their expiries, then review auto_response.max_blocks_per_hour and firewall.deny_temp_ip_limit before going live"})
+		}
 	}
 	examples := DoctorCheck{Name: "admission dry-run examples", Status: "ok", Message: "no forecast examples or summaries were lost"}
 	var problems []string
@@ -328,6 +340,20 @@ func dryRunCapacityCheck(d *health.AdmissionDryRun) DoctorCheck {
 	if occ.Limited {
 		warnings = append(warnings, "the forecast models no more active blocks")
 	}
+	warnings = append(warnings, dryRunRecentWarnings(d)...)
+	if len(warnings) > 0 {
+		c.Status, c.Message = "warn", c.Message+"; "+strings.Join(warnings, "; ")
+		c.Fix = "a forecast wait is a model result, not a block; inspect existing blocks and their expiries, then review auto_response.max_blocks_per_hour and firewall.deny_temp_ip_limit before going live"
+		if occ.Unclaimed > 0 || occ.Imported > 0 {
+			c.Fix += "; the drain estimate can change with renewals or new blocks; a missing kernel expiry needs operator review"
+		}
+	}
+	return c
+}
+
+// dryRunRecentWarnings needs only committed predictions, so losing the
+// current set snapshot cannot clear recent pressure on capacity.
+func dryRunRecentWarnings(d *health.AdmissionDryRun) (warnings []string) {
 	if n := d.LastHour["capacity_rotate"]; n > 0 {
 		warnings = append(warnings, rotatedWarning(n, "forecast blocks"))
 	}
@@ -340,12 +366,5 @@ func dryRunCapacityCheck(d *health.AdmissionDryRun) DoctorCheck {
 	if len(waits) > 0 {
 		warnings = append(warnings, "in the last hour live admission would have waited: "+strings.Join(waits, ", "))
 	}
-	if len(warnings) > 0 {
-		c.Status, c.Message = "warn", c.Message+"; "+strings.Join(warnings, "; ")
-		c.Fix = "a forecast wait is a model result, not a block; inspect existing blocks and their expiries, then review auto_response.max_blocks_per_hour and firewall.deny_temp_ip_limit before going live"
-		if occ.Unclaimed > 0 || occ.Imported > 0 {
-			c.Fix += "; the drain estimate can change with renewals or new blocks; a missing kernel expiry needs operator review"
-		}
-	}
-	return c
+	return warnings
 }
