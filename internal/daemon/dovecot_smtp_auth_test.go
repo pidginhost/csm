@@ -314,3 +314,21 @@ func TestDovecotPassdbVerdictsExcludedByMailReader(t *testing.T) {
 		t.Fatalf("Exim host counted %d Dovecot SMTP failures", calls)
 	}
 }
+
+// The verdict tells whether the mailbox exists. PAM gives the same answer
+// for a missing user and a wrong password.
+func TestDovecotSessionlessRejectionExistence(t *testing.T) {
+	for _, tc := range []struct {
+		line string
+		want mailboxExistence
+	}{
+		{"dovecot: auth: sql(alice@example.com,203.0.113.5): unknown user", mailboxMissing},
+		{"dovecot: auth: sql(alice@example.com,203.0.113.5): Password mismatch", mailboxExists},
+		{"dovecot: auth-worker(4567): pam(alice@example.com,203.0.113.5): pam_authenticate() failed: Authentication failure (Password mismatch?)", mailboxExistenceUnknown},
+	} {
+		ip, account, exist, ok := dovecotSessionlessRejection(tc.line)
+		if !ok || ip != "203.0.113.5" || account != "alice@example.com" || exist != tc.want {
+			t.Errorf("%q = (%q, %q, %d, %v), want (203.0.113.5, alice@example.com, %d, true)", tc.line, ip, account, exist, ok, tc.want)
+		}
+	}
+}

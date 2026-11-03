@@ -7,11 +7,14 @@ import (
 
 // dovecotRejectionVerdicts end a Dovecot auth_verbose line in which one
 // password database rejected the credentials. The PAM form is what passdb-pam
-// logs for PAM_AUTH_ERR.
-var dovecotRejectionVerdicts = []string{
-	"): Password mismatch",
-	"): unknown user",
-	"): pam_authenticate() failed: Authentication failure (Password mismatch?)",
+// logs for PAM_AUTH_ERR, which a missing user and a wrong password share.
+var dovecotRejectionVerdicts = []struct {
+	suffix string
+	exist  mailboxExistence
+}{
+	{"): Password mismatch", mailboxExists},
+	{"): unknown user", mailboxMissing},
+	{"): pam_authenticate() failed: Authentication failure (Password mismatch?)", mailboxExistenceUnknown},
 }
 
 // dovecotSessionlessRejection parses a rejection verdict for a request with
@@ -30,33 +33,33 @@ var dovecotRejectionVerdicts = []string{
 // so lines whose fields hold a second "): " are refused: syslog may have cut
 // the line right after a verdict forged inside the password, and Dovecot's
 // default name characters never allow that sequence.
-func dovecotSessionlessRejection(line string) (ip, account string, ok bool) {
+func dovecotSessionlessRejection(line string) (ip, account string, exist mailboxExistence, ok bool) {
 	seg := dovecotAuthSegment(dovecotServiceMessage(line))
 	open := strings.IndexByte(seg, '(')
 	if open <= 0 || !isDovecotAuthRequestName(seg[:open]) || strings.Contains(seg[:open], ": ") {
-		return "", "", false
+		return "", "", mailboxExistenceUnknown, false
 	}
 	inner := seg[open+1:]
 	found := false
 	for _, verdict := range dovecotRejectionVerdicts {
-		if fields, cut := strings.CutSuffix(inner, verdict); cut {
-			inner, found = fields, true
+		if fields, cut := strings.CutSuffix(inner, verdict.suffix); cut {
+			inner, exist, found = fields, verdict.exist, true
 			break
 		}
 	}
 	if !found || strings.Contains(inner, "): ") {
-		return "", "", false
+		return "", "", mailboxExistenceUnknown, false
 	}
 	inner = strings.TrimSuffix(inner, ",master")
 	comma := strings.LastIndexByte(inner, ',')
 	if comma < 0 {
-		return "", "", false
+		return "", "", mailboxExistenceUnknown, false
 	}
 	addr := net.ParseIP(inner[comma+1:])
 	if addr == nil {
-		return "", "", false
+		return "", "", mailboxExistenceUnknown, false
 	}
-	return addr.String(), inner[:comma], true
+	return addr.String(), inner[:comma], exist, true
 }
 
 // dovecotAuthTroubleIPs returns every address named in the request fields of

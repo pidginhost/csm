@@ -2561,9 +2561,9 @@ func (d *Daemon) handleSMTPAuthPairing(line string, obs alert.Observation, cfg *
 	if t == nil || d.smtpAuthFromExim {
 		return nil, false
 	}
-	if ip, account, ok := dovecotSessionlessRejection(line); ok {
+	if ip, account, exist, ok := dovecotSessionlessRejection(line); ok {
 		if !isInfraIPDaemon(ip, cfg.InfraIPs) && !isPrivateOrLoopback(ip) {
-			t.NoteDovecotRejection(ip, account, smtpAuthLogTime(line, t.now()))
+			t.NoteDovecotRejection(ip, account, exist, smtpAuthLogTime(line, t.now()))
 		}
 		return nil, true
 	}
@@ -2599,7 +2599,7 @@ func (d *Daemon) handleSMTPAuthPairing(line string, obs alert.Observation, cfg *
 	// Claim the verdict even for a server-blamed reply so it cannot pair
 	// with a later failure. Recheck infra protection in case configuration
 	// changed between the two log lines.
-	account, ok := t.PairMTAFailure(ip, process, smtpAuthLogTime(line, t.now()))
+	account, _, ok := t.PairMTAFailure(ip, process, smtpAuthLogTime(line, t.now()))
 	if !ok || isPostfixSASLNonCredentialReply(reply) || isInfraIPDaemon(ip, cfg.InfraIPs) || isPrivateOrLoopback(ip) {
 		return nil, true
 	}

@@ -314,6 +314,9 @@ func FuzzDovecotPassdbVerdictsNeverBuildEvidence(f *testing.F) {
 			"dovecot: auth: Debug: sql(" + name + ",203.0.113.7): Performing passdb lookup",
 			"dovecot: auth-worker(12): pam(" + name,
 		} {
+			if _, _, exist, ok := dovecotSessionlessRejection(line); !ok && exist != mailboxExistenceUnknown {
+				t.Fatalf("refused line %q carried existence %d", line, exist)
+			}
 			if got := d.handleMailLine(line, alert.Observation{}, d.currentCfg()); len(got) != 0 {
 				t.Fatalf("passdb verdict raised findings: %+v", got)
 			}
