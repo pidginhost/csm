@@ -241,8 +241,9 @@ func TestMailSpray_SingleMailboxFailuresThenSuccess(t *testing.T) {
 	}
 }
 
-// 4d needs failures spread over days. A user who mistypes twice in a row
-// and then logs in gets no advisory, and still earns trust.
+// 4d needs the first failure at least a day before the login. A user who
+// mistypes twice in a row and then logs in gets no advisory, and still earns
+// trust.
 func TestMailSpray_SingleMailboxQuickRetryNoAdvisory(t *testing.T) {
 	for _, gap := range []time.Duration{time.Minute, sprayStaleSpread - time.Minute} {
 		t.Run(gap.String(), func(t *testing.T) {

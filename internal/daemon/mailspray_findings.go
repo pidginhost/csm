@@ -86,7 +86,7 @@ func sprayFinding(proto mailProto, ip string, v *sprayVerdict, mode sprayMode, n
 		details = "The address failed on other mailboxes before this login. Verify with the mailbox owner; not auto-blocked."
 	default:
 		message = fmt.Sprintf("Mail login after repeated failures: successful %s login for %s from %s after failures on the same mailbox", proto, mailbox, ip)
-		details = "Failures on this mailbox spread over at least a day, then a successful login, usually mean a saved password was fixed. Verify with the mailbox owner; not auto-blocked."
+		details = "Repeated failures on this mailbox, the first at least a day before this successful login, usually mean a saved password was fixed. Verify with the mailbox owner; not auto-blocked."
 	}
 	_, domain := alert.SplitEmail(v.Mailbox)
 	return alert.Finding{
