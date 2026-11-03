@@ -602,6 +602,20 @@ func Validate(cfg *Config) []ValidationResult {
 	if t.MailBruteForceSlowWindowMin != 0 && (t.MailBruteForceSlowWindowMin < 1 || t.MailBruteForceSlowWindowMin > SlowBruteMaxWindowMin) {
 		results = append(results, ValidationResult{"error", "thresholds.mail_bruteforce_slow_window_min", fmt.Sprintf("mail_bruteforce_slow_window_min must be between 1 and %d", SlowBruteMaxWindowMin)})
 	}
+	switch t.MailSprayMode {
+	case "", "off", "observe", "enforce":
+	default:
+		results = append(results, ValidationResult{"error", "thresholds.mail_spray_mode", fmt.Sprintf("mail_spray_mode must be off, observe or enforce, got %q", t.MailSprayMode)})
+	}
+	if t.MailSprayWindowMin != 0 && (t.MailSprayWindowMin < 60 || t.MailSprayWindowMin > SlowBruteMaxWindowMin) {
+		results = append(results, ValidationResult{"error", "thresholds.mail_spray_window_min", fmt.Sprintf("mail_spray_window_min must be between 60 and %d", SlowBruteMaxWindowMin)})
+	}
+	if t.MailSprayBreadthMailboxes != 0 && (t.MailSprayBreadthMailboxes < 2 || t.MailSprayBreadthMailboxes > 10) {
+		results = append(results, ValidationResult{"error", "thresholds.mail_spray_breadth_mailboxes", "mail_spray_breadth_mailboxes must be 0 (disabled) or between 2 and 10"})
+	}
+	if t.MailSprayMissingNetworks != 0 && (t.MailSprayMissingNetworks < 1 || t.MailSprayMissingNetworks > 50) {
+		results = append(results, ValidationResult{"error", "thresholds.mail_spray_missing_networks", "mail_spray_missing_networks must be 0 (disabled) or between 1 and 50"})
+	}
 	if field, err := validateMailBruteAccountKeyField(cfg); err != nil {
 		results = append(results, ValidationResult{"error", field, err.Error()})
 	}

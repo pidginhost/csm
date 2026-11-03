@@ -921,6 +921,45 @@ func TestConfig_SlowBruteNullKeepsDefaults(t *testing.T) {
 	}
 }
 
+func TestConfig_MailSprayDefaults(t *testing.T) {
+	cfg, err := LoadBytes([]byte("thresholds: {}\n"))
+	if err != nil {
+		t.Fatalf("LoadBytes: %v", err)
+	}
+	th := cfg.Thresholds
+	if th.MailSprayMode != "observe" || th.MailSprayWindowMin != 10080 ||
+		th.MailSprayBreadthMailboxes != 2 || th.MailSprayMissingNetworks != 3 {
+		t.Errorf("mail spray defaults = %q/%d/%d/%d, want observe/10080/2/3",
+			th.MailSprayMode, th.MailSprayWindowMin, th.MailSprayBreadthMailboxes, th.MailSprayMissingNetworks)
+	}
+}
+
+func TestConfig_MailSprayExplicitZeroDisables(t *testing.T) {
+	cfg, err := LoadBytes([]byte("thresholds:\n  mail_spray_breadth_mailboxes: 0\n  mail_spray_missing_networks: 0\n"))
+	if err != nil {
+		t.Fatalf("LoadBytes: %v", err)
+	}
+	if cfg.Thresholds.MailSprayBreadthMailboxes != 0 {
+		t.Errorf("MailSprayBreadthMailboxes = %d, want disabled (0)", cfg.Thresholds.MailSprayBreadthMailboxes)
+	}
+	if cfg.Thresholds.MailSprayMissingNetworks != 0 {
+		t.Errorf("MailSprayMissingNetworks = %d, want disabled (0)", cfg.Thresholds.MailSprayMissingNetworks)
+	}
+}
+
+func TestConfig_MailSprayNullKeepsDefaults(t *testing.T) {
+	cfg, err := LoadBytes([]byte("thresholds:\n  mail_spray_breadth_mailboxes: null\n  mail_spray_missing_networks: null\n"))
+	if err != nil {
+		t.Fatalf("LoadBytes: %v", err)
+	}
+	if cfg.Thresholds.MailSprayBreadthMailboxes != 2 {
+		t.Errorf("MailSprayBreadthMailboxes = %d, want default 2", cfg.Thresholds.MailSprayBreadthMailboxes)
+	}
+	if cfg.Thresholds.MailSprayMissingNetworks != 3 {
+		t.Errorf("MailSprayMissingNetworks = %d, want default 3", cfg.Thresholds.MailSprayMissingNetworks)
+	}
+}
+
 func TestLoadWithConfDir_Override(t *testing.T) {
 	dir := t.TempDir()
 	main := filepath.Join(dir, "csm.yaml")

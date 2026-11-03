@@ -205,6 +205,69 @@ func TestReconcileBruteThresholdsPushesConfigIntoTrackers(t *testing.T) {
 	}
 }
 
+// Switching enforce to observe through a reload changes the mode in place:
+// evidence recorded before the switch still yields a verdict after it.
+func TestReconcileBruteThresholdsUpdatesMailSpray(t *testing.T) {
+	m, _ := newTestSpray(testSprayConfig())
+	d := &Daemon{mailSpray: m}
+	wantNoVerdict(t, m.Failure("192.0.2.1", "a@example.com", mailboxExists))
+
+	cfg := hotReloadThresholdConfig()
+	cfg.Thresholds.MailSprayMode = "observe"
+	cfg.Thresholds.MailSprayWindowMin = 10080
+	cfg.Thresholds.MailSprayBreadthMailboxes = 2
+	cfg.Thresholds.MailSprayMissingNetworks = 3
+	prev := config.Active()
+	config.SetActive(cfg)
+	t.Cleanup(func() { config.SetActive(prev) })
+
+	d.reconcileBruteThresholds()
+
+	if got := m.Mode(); got != sprayObserve {
+		t.Fatalf("Mode() = %v after reload, want observe", got)
+	}
+	wantRule(t, m.Failure("192.0.2.1", "b@example.com", mailboxExists), sprayRuleBreadth, true)
+}
+
+func TestSprayConfigFromThresholds(t *testing.T) {
+	cfg := &config.Config{}
+	th := &cfg.Thresholds
+	th.MailSprayMode = "enforce"
+	th.MailSprayWindowMin = 120
+	th.MailSprayBreadthMailboxes = 4
+	th.MailSprayMissingNetworks = 5
+	th.SMTPBruteForceWindowMin = 10
+	th.MailBruteForceWindowMin = 15
+	th.SMTPBruteForceSuppressMin = 90
+	th.MailBruteForceSuppressMin = 60
+	th.SMTPBruteForceMaxTracked = 3000
+	th.MailBruteForceMaxTracked = 2000
+	want := sprayConfig{
+		Mode:             sprayEnforce,
+		Window:           120 * time.Minute,
+		BreadthMailboxes: 4,
+		MissingNetworks:  5,
+		TrustAge:         15 * time.Minute, // the longer fast window
+		Suppression:      90 * time.Minute, // the longer suppression
+		MaxIPs:           5000,             // both trackers' caps
+	}
+	if got := sprayConfigFromThresholds(cfg); got != want {
+		t.Fatalf("sprayConfigFromThresholds = %+v, want %+v", got, want)
+	}
+
+	// An unset cap falls back to the validated floor, never to 0.
+	th.SMTPBruteForceMaxTracked = 0
+	if got := sprayConfigFromThresholds(cfg).MaxIPs; got != 1000+2000 {
+		t.Fatalf("MaxIPs with an unset SMTP cap = %d, want 3000", got)
+	}
+
+	// A config that never had defaults applied leaves the component off.
+	zero := sprayConfigFromThresholds(&config.Config{})
+	if zero.Mode != sprayOff || zero.Window != 0 {
+		t.Fatalf("zero thresholds = mode %v window %v, want off and 0", zero.Mode, zero.Window)
+	}
+}
+
 func TestReloadConfigPushesBruteThresholdsIntoAllTrackers(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "csm.yaml")

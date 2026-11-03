@@ -213,6 +213,11 @@ thresholds:
   mail_bruteforce_max_tracked: 20000
   mail_bruteforce_slow_threshold: 40
   mail_bruteforce_slow_window_min: 360
+  # Mail login spray rules: observe reports findings only, enforce blocks.
+  mail_spray_mode: observe
+  mail_spray_window_min: 10080
+  mail_spray_breadth_mailboxes: 2
+  mail_spray_missing_networks: 3
   # ModSecurity escalation. Defaults of 3 hits / 10m miss low-and-slow
   # scanners that spread denies across hours. Raising the window to 4h
   # while keeping hits at 3 catches paced attackers without triggering

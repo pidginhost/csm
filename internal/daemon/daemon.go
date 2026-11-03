@@ -132,6 +132,7 @@ type Daemon struct {
 	smtpAuthTracker  *smtpAuthTracker
 	smtpProbeTracker *smtpProbeTracker
 	mailAuthTracker  *mailAuthTracker
+	mailSpray        *mailSpray
 	authBackend      *authBackendHealth
 	// smtpAuthFromExim is set before the log readers start when the Exim
 	// mainlog feeds smtpAuthTracker; Postfix pairing is then skipped so one
@@ -345,6 +346,9 @@ func New(cfg *config.Config, store *state.Store, lock *state.LockFile, binaryPat
 		cfg.Thresholds.MailBruteForceMaxTracked,
 		time.Now,
 	)
+	// time.Now is lock-free; mailSpray calls it under its own mutex while a
+	// tracker may hold its lock.
+	d.mailSpray = newMailSpray(sprayConfigFromThresholds(cfg), time.Now)
 
 	// Mail auth backend (cpdoveauthd) health: an active socket probe drives
 	// brute-force suppression for both trackers and optional self-heal restart.
@@ -411,6 +415,9 @@ func (d *Daemon) reconcileBruteThresholds() {
 			time.Duration(th.MailBruteForceSlowWindowMin)*time.Minute,
 			th.MailBruteForceMaxTracked,
 		)
+	}
+	if d.mailSpray != nil {
+		d.mailSpray.SetConfig(sprayConfigFromThresholds(cfg))
 	}
 }
 

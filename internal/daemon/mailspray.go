@@ -7,6 +7,8 @@ import (
 	"slices"
 	"sync"
 	"time"
+
+	"github.com/pidginhost/csm/internal/config"
 )
 
 // sprayMode says what the spray rules do with a verdict. Evidence and trust
@@ -38,6 +40,32 @@ type sprayConfig struct {
 	TrustAge         time.Duration // trust counts only after this age
 	Suppression      time.Duration // least gap between verdicts for one IP
 	MaxIPs           int           // tracked IP cap
+}
+
+// sprayMinTrackedPerTracker is the validated floor of each tracker's
+// max_tracked, used when a config that skipped defaults leaves one at 0.
+const sprayMinTrackedPerTracker = 1000
+
+// sprayConfigFromThresholds derives the spray settings from the thresholds
+// block. Trust ages and verdicts repeat on the slower of the two trackers,
+// and the IP cap is their combined capacity.
+func sprayConfigFromThresholds(cfg *config.Config) sprayConfig {
+	th := &cfg.Thresholds
+	maxTracked := func(n int) int {
+		if n <= 0 {
+			return sprayMinTrackedPerTracker
+		}
+		return n
+	}
+	return sprayConfig{
+		Mode:             parseSprayMode(th.MailSprayMode),
+		Window:           time.Duration(th.MailSprayWindowMin) * time.Minute,
+		BreadthMailboxes: th.MailSprayBreadthMailboxes,
+		MissingNetworks:  th.MailSprayMissingNetworks,
+		TrustAge:         time.Duration(max(th.SMTPBruteForceWindowMin, th.MailBruteForceWindowMin)) * time.Minute,
+		Suppression:      time.Duration(max(th.SMTPBruteForceSuppressMin, th.MailBruteForceSuppressMin)) * time.Minute,
+		MaxIPs:           maxTracked(th.SMTPBruteForceMaxTracked) + maxTracked(th.MailBruteForceMaxTracked),
+	}
 }
 
 type sprayRule string

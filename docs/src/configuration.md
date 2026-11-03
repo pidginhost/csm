@@ -288,6 +288,12 @@ thresholds:
   mail_bruteforce_slow_threshold: 40      # failures before block (default: 40; 3-1024; explicit 0 disables)
   mail_bruteforce_slow_window_min: 360    # slow sliding window in minutes (default: 360; 1-10080)
   mail_brute_account_key: "builtin:dovecot-user" # builtin:dovecot-user | builtin:postfix-sasl | regex:<capture>
+  # Mail login spray rules (SMTP and IMAP/POP3): long memory of failed and
+  # clean logins per IP. A clean login earns the IP trust on that mailbox.
+  mail_spray_mode: observe                # off | observe (findings only) | enforce (block) (default: observe)
+  mail_spray_window_min: 10080            # memory of failed and clean logins in minutes (default: 10080; 60-10080)
+  mail_spray_breadth_mailboxes: 2         # untrusted mailboxes one IP fails on before a finding (default: 2; 2-10; explicit 0 disables)
+  mail_spray_missing_networks: 3          # networks trying one non-existent mailbox before a finding (default: 3; 1-50; explicit 0 disables)
   modsec_escalation_hits: 3          # denies from one IP before ModSecurity escalation (default: 3)
   modsec_escalation_window_min: 10   # ModSecurity escalation window in minutes (default: 10)
   modsec_low_confidence_escalation_hits: 30 # low-confidence-only backstop (default: 30)
