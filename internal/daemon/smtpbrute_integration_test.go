@@ -2,14 +2,12 @@ package daemon
 
 import (
 	"fmt"
-	"net"
-	"strings"
+	"maps"
 	"testing"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
-	"github.com/pidginhost/csm/internal/eximlog"
 )
 
 // makeEximDovecotFailLine returns a synthetic exim mainlog line with the
@@ -23,32 +21,34 @@ func makeEximDovecotFailLine(ip, account string) string {
 	)
 }
 
-// buildEximHandler mirrors the closure the daemon installs at runtime,
-// so tests can exercise the same code path without spinning up a daemon.
+// buildEximHandler runs the daemon's Exim line handler with tr as its SMTP
+// tracker.
 func buildEximHandler(cfg *config.Config, tr *smtpAuthTracker) LogLineHandler {
+	d := New(cfg, nil, nil, "")
+	d.smtpAuthTracker = tr
 	return func(line string, c *config.Config) []alert.Finding {
-		findings := parseEximLogLine(line, c)
-		if strings.Contains(line, "authenticator failed") && strings.Contains(line, "dovecot") {
-			ip := eximlog.ClientIP(line)
-			account := extractSetID(line)
-
-			// Canonicalize IPv4-mapped IPv6 (::ffff:a.b.c.d) to plain IPv4 so the
-			// tracker doesn't double-count the same attacker as two IPs.
-			if ip != "" {
-				if parsed := net.ParseIP(ip); parsed != nil {
-					if v4 := parsed.To4(); v4 != nil {
-						ip = v4.String()
-					}
-				}
-			}
-
-			if tr != nil && ip != "" && !isInfraIPDaemon(ip, c.InfraIPs) && !isPrivateOrLoopback(ip) {
-				findings = append(findings, tr.Record(ip, account)...)
-			}
-		}
-		recordEximSMTPAuthSuccess(line, c, tr)
-		return findings
+		return d.handleEximLine(line, alert.Observation{}, c)
 	}
+}
+
+// newTestTrackerWithSpray is newTestTracker feeding a spray memory that
+// records failures and login trust but emits no spray verdicts.
+func newTestTrackerWithSpray(t *testing.T, clock *staticClock) *smtpAuthTracker {
+	t.Helper()
+	tr := newTestTracker(t, clock)
+	tr.SetSpray(newMailSpray(sprayConfig{Mode: sprayOff, Window: 7 * 24 * time.Hour, TrustAge: 10 * time.Minute, Suppression: time.Hour, MaxIPs: 20000}, clock.Now))
+	return tr
+}
+
+// trustedPairs lists the (address, mailbox) pairs holding login trust.
+func trustedPairs(tr *smtpAuthTracker) map[sprayTrustKey]bool {
+	tr.spray.mu.Lock()
+	defer tr.spray.mu.Unlock()
+	out := map[sprayTrustKey]bool{}
+	for k := range tr.spray.trust {
+		out[k] = true
+	}
+	return out
 }
 
 func makeEximDovecotSuccessLine(clientIP string) string {
@@ -167,44 +167,38 @@ func TestEximHandler_IPv4MappedIPv6Canonicalized(t *testing.T) {
 func TestEximHandler_SMTPAuthSuccessUsesHFieldClientIP(t *testing.T) {
 	cfg := &config.Config{}
 	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
-	tr := newTestTracker(t, clock)
+	tr := newTestTrackerWithSpray(t, clock)
 	h := buildEximHandler(cfg, tr)
 
 	h(makeEximDovecotSuccessLine("198.51.100.92"), cfg)
-	if _, ok := tr.ips["192.0.2.94"]; ok {
-		t.Fatal("HELO address was recorded as the authenticated client")
-	}
-	e, ok := tr.ips["198.51.100.92"]
-	if !ok || e.slowLastSuccess.IsZero() {
-		t.Fatal("H=[client] address was not recorded for authenticated delivery")
-	}
-	if _, ok := tr.ips["203.0.113.77"]; ok {
-		t.Fatal("subject/forwarded address was recorded as the authenticated client")
+	want := map[sprayTrustKey]bool{{"198.51.100.92", "sender@example.com"}: true}
+	if got := trustedPairs(tr); !maps.Equal(got, want) {
+		t.Fatalf("login trust = %v, want only the H=[client] address %v (not the HELO or subject address)", got, want)
 	}
 }
 
 func TestEximHandler_SubjectCannotSpoofSMTPAuthSuccess(t *testing.T) {
 	cfg := &config.Config{}
 	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
-	tr := newTestTracker(t, clock)
+	tr := newTestTrackerWithSpray(t, clock)
 	h := buildEximHandler(cfg, tr)
 	line := `2026-04-14 12:00:00 1abc-DEF-01 <= sender@example.net H=attacker.example [198.51.100.93]:54321 P=esmtp S=1200 T="A=dovecot_login:forged@example.net"`
 
 	h(line, cfg)
-	if e, ok := tr.ips["198.51.100.93"]; ok && !e.slowLastSuccess.IsZero() {
-		t.Fatal("attacker-controlled subject was accepted as an SMTP auth success")
+	if got := trustedPairs(tr); len(got) != 0 {
+		t.Fatalf("attacker-controlled subject was accepted as an SMTP auth success: %v", got)
 	}
 }
 
 func TestEximHandler_SMTPAuthSuccessRequiresHFieldClientIP(t *testing.T) {
 	cfg := &config.Config{}
 	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
-	tr := newTestTracker(t, clock)
+	tr := newTestTrackerWithSpray(t, clock)
 	h := buildEximHandler(cfg, tr)
 	line := `2026-04-14 12:00:00 1abc-DEF-01 <= sender@example.net P=esmtpsa A=dovecot_login:sender@example.net S=1200 T="forwarded [198.51.100.94]"`
 
 	h(line, cfg)
-	if got := tr.Size(); got != 0 {
-		t.Fatalf("authenticated line without H=[client] recorded a subject/header address: size=%d", got)
+	if got, trust := tr.Size(), trustedPairs(tr); got != 0 || len(trust) != 0 {
+		t.Fatalf("authenticated line without H=[client] recorded a subject/header address: size=%d trust=%v", got, trust)
 	}
 }

@@ -2,10 +2,13 @@ package daemon
 
 import (
 	"io/fs"
+	"maps"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
@@ -300,7 +303,7 @@ func FuzzPostfixWarningsNeverBuildEvidence(f *testing.F) {
 // Client-controlled names and password text never turn intermediate
 // database verdicts into final authentication evidence.
 func FuzzDovecotPassdbVerdictsNeverBuildEvidence(f *testing.F) {
-	for _, s := range []string{"alice@example.net", "", "x,198.51.100.9", "x,<abcdefgh>", "x,master", "a): Password mismatch", "a): b(<c>", "Temporary authentication failure"} {
+	for _, s := range []string{"alice@example.net", "", "?", "ali?ce@example.com", strings.Repeat("a", 61) + "...", "x,198.51.100.9", "x,<abcdefgh>", "x,master", "a): Password mismatch", "a): b(<c>", "Temporary authentication failure"} {
 		f.Add(s)
 	}
 	f.Fuzz(func(t *testing.T, name string) {
@@ -314,6 +317,10 @@ func FuzzDovecotPassdbVerdictsNeverBuildEvidence(f *testing.F) {
 			"dovecot: auth: Debug: sql(" + name + ",203.0.113.7): Performing passdb lookup",
 			"dovecot: auth-worker(12): pam(" + name,
 		} {
+			_, account, exist, ok := dovecotSessionlessRejection(line)
+			if (!ok || account == "") && exist != mailboxExistenceUnknown {
+				t.Fatalf("unidentified mailbox in %q carried existence %d", line, exist)
+			}
 			if got := d.handleMailLine(line, alert.Observation{}, d.currentCfg()); len(got) != 0 {
 				t.Fatalf("passdb verdict raised findings: %+v", got)
 			}
@@ -391,23 +398,67 @@ func FuzzSMTPAuthLogTime(f *testing.F) {
 
 // A client chooses its login name and the text smtpd echoes into rejects and
 // warnings. Only the address in smtpd's queue record of an authenticated
-// client is vouched for.
+// client is vouched for, and only when the record names a mailbox.
 func FuzzPostfixSASLSuccessAddress(f *testing.F) {
 	for _, s := range []string{"alice@example.net", "", "x, client=unknown[198.51.100.9], sasl_method=PLAIN", "x: client=unknown[198.51.100.9], sasl_method=PLAIN, sasl_username=y", "\npostfix/smtpd[9]: 4ABC: client=unknown[198.51.100.9], sasl_method=PLAIN, sasl_username=y"} {
 		f.Add(s)
 	}
 	f.Fuzz(func(t *testing.T, clientText string) {
-		d, clock := newPairingDaemon(t, &config.Config{})
+		d, clock := newPairingDaemon(t, sprayTestConfig("enforce"))
 		feed(d, clock,
 			"postfix/smtpd[9]: 4ABC123: client=unknown[203.0.113.7], sasl_method=PLAIN, sasl_username="+clientText,
 			"postfix/smtpd[9]: warning: Illegal address syntax from unknown[198.51.100.9] in RCPT command: <"+clientText+">",
 			"postfix/smtpd[9]: NOQUEUE: reject: RCPT from unknown[198.51.100.9]: 554 5.7.1 <"+clientText+">: Relay access denied; from=<"+clientText+"> to=<x@example.net> proto=ESMTP helo=<"+clientText+">",
 			"postfix/smtpd[9]: 4ABC123: client=unknown[198.51.100.9], orig_client="+clientText)
-		if got := smtpSuccessIPs(d); len(got) != 1 || !got["203.0.113.7"] {
-			t.Fatalf("client text %q changed successful logins to %v", clientText, got)
+		want := map[string]bool{}
+		if _, user := postfixSASLSuccess("4ABC123: client=unknown[203.0.113.7], sasl_method=PLAIN, sasl_username=" + clientText); normalizeSprayMailbox(user) != "" {
+			want["203.0.113.7"] = true
+		}
+		if got := smtpSuccessIPs(d); !maps.Equal(got, want) {
+			t.Fatalf("client text %q changed successful logins to %v, want %v", clientText, got, want)
 		}
 		if calls := smtpCalls(d); calls != 0 {
 			t.Fatalf("success lines counted %d failures", calls)
+		}
+	})
+}
+
+// The login name ends where smtpd's own trailing fields begin, whatever the
+// rest of the line holds.
+func FuzzPostfixSASLSuccessUser(f *testing.F) {
+	for _, s := range []string{
+		"4ABC123: client=unknown[203.0.113.5], sasl_method=PLAIN, sasl_username=alice@example.com",
+		"4ABC123: client=unknown[203.0.113.5], sasl_method=PLAIN, sasl_username=a, sasl_sender=b, orig_queue_id=c, orig_client=d",
+		"4ABC123: client=unknown[203.0.113.5], sasl_method=PLAIN, sasl_username=, sasl_sender=, sasl_username=x",
+		"4ABC123: client=unknown[203.0.113.5], sasl_method=, sasl_username=\xff\xfe",
+		"", ": client=", ", sasl_method=, sasl_username=",
+	} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, msg string) {
+		ip, user := postfixSASLSuccess(msg)
+		if ip == "" && user != "" {
+			t.Fatalf("refused line %q returned user %q", msg, user)
+		}
+		for _, field := range []string{", sasl_sender=", ", orig_queue_id=", ", orig_client="} {
+			if strings.Contains(user, field) {
+				t.Fatalf("user %q from %q holds %q", user, msg, field)
+			}
+		}
+	})
+}
+
+func FuzzNormalizeSprayMailbox(f *testing.F) {
+	for _, s := range []string{"", " User@Example.COM ", strings.Repeat("a", 253) + " B", strings.Repeat("\u20ac", 100), "\xff\xfe"} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, input string) {
+		got := normalizeSprayMailbox(input)
+		if len(got) > maxSprayMailboxBytes || !utf8.ValidString(got) {
+			t.Fatalf("key has %d bytes, valid UTF-8 = %v", len(got), utf8.ValidString(got))
+		}
+		if again := normalizeSprayMailbox(got); again != got {
+			t.Fatalf("normalizing twice changed %q to %q", got, again)
 		}
 	})
 }

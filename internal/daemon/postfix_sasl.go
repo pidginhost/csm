@@ -70,26 +70,41 @@ func postfixSASLFailure(msg string) (ip, reply string) {
 	return ip, strings.ToLower(strings.TrimSpace(reply))
 }
 
-// postfixSASLSuccess reports the client address of a postfix smtpd
-// "QUEUEID: client=name[addr], sasl_method=MECH, sasl_username=USER" line,
-// which smtpd logs when it accepts the first recipient from a client that
-// authenticated. It returns "" for any other line.
+// postfixSASLSuccess reports the client address and login name of a postfix
+// smtpd "QUEUEID: client=name[addr], sasl_method=MECH, sasl_username=USER"
+// line, which smtpd logs when it accepts the first recipient from a client
+// that authenticated. It returns "" for any other line, and an empty user
+// when the line has no login name.
 //
 // The queue ID must open the message and be followed directly by the client
 // field. Rejects and header warnings that echo client text put other words
-// after the queue ID, and the login name comes after the fields read here.
-func postfixSASLSuccess(msg string) string {
+// after the queue ID.
+func postfixSASLSuccess(msg string) (ip, user string) {
 	queueID, rest, ok := strings.Cut(msg, ": client=")
 	if !ok || !isASCIIAlnum(queueID) {
-		return ""
+		return "", ""
 	}
 	// postfixClientIP refuses whitespace, so the method field must follow
 	// the client field directly.
-	client, _, ok := strings.Cut(rest, ", sasl_method=")
+	client, rest, ok := strings.Cut(rest, ", sasl_method=")
 	if !ok {
-		return ""
+		return "", ""
 	}
-	return postfixClientIP(client)
+	if ip = postfixClientIP(client); ip == "" {
+		return "", ""
+	}
+	// smtpd may append the AUTH= sender and XFORWARD fields, in this order,
+	// after the login name. Only the field immediately after the method
+	// can name the authenticated user; later fields may contain client text.
+	_, rest, _ = strings.Cut(rest, ", ")
+	user, ok = strings.CutPrefix(rest, "sasl_username=")
+	if !ok {
+		return ip, ""
+	}
+	for _, field := range []string{", sasl_sender=", ", orig_queue_id=", ", orig_client="} {
+		user, _, _ = strings.Cut(user, field)
+	}
+	return ip, user
 }
 
 func isASCIIAlnum(s string) bool {

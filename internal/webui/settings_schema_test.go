@@ -507,6 +507,49 @@ func TestThresholdsSchemaIncludesSlowMailBruteFields(t *testing.T) {
 	}
 }
 
+func TestThresholdsSchemaIncludesMailSprayFields(t *testing.T) {
+	s, _ := LookupSettingsSection("thresholds")
+	mode := findSchemaField(s, "mail_spray_mode")
+	if mode == nil {
+		t.Fatal("mail_spray_mode field missing")
+	}
+	if mode.Type != "enum" || mode.FieldGroup != FieldGroupMailBruteForce {
+		t.Fatalf("mail_spray_mode type/group = %q/%q, want enum/%q", mode.Type, mode.FieldGroup, FieldGroupMailBruteForce)
+	}
+	if strings.Join(mode.Options, ",") != "off,observe,enforce" {
+		t.Fatalf("mail_spray_mode options = %v, want [off observe enforce]", mode.Options)
+	}
+
+	cases := []struct {
+		name     string
+		min, max int64
+	}{
+		{"mail_spray_window_min", 60, int64(config.SlowBruteMaxWindowMin)},
+		{"mail_spray_breadth_mailboxes", 0, 10},
+		{"mail_spray_missing_networks", 0, 50},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := findSchemaField(s, tc.name)
+			if f == nil {
+				t.Fatalf("%s field missing", tc.name)
+			}
+			if f.Type != "int" {
+				t.Fatalf("%s type = %q, want int", tc.name, f.Type)
+			}
+			if f.Min == nil || *f.Min != tc.min {
+				t.Fatalf("%s min = %v, want %d", tc.name, f.Min, tc.min)
+			}
+			if f.Max == nil || *f.Max != tc.max {
+				t.Fatalf("%s max = %v, want %d", tc.name, f.Max, tc.max)
+			}
+			if f.FieldGroup != FieldGroupMailBruteForce {
+				t.Fatalf("%s group = %q, want %q", tc.name, f.FieldGroup, FieldGroupMailBruteForce)
+			}
+		})
+	}
+}
+
 func TestAutoResponseSchemaIncludesHTTPScannerAction(t *testing.T) {
 	s, ok := LookupSettingsSection("auto_response")
 	if !ok {

@@ -17,12 +17,13 @@ const (
 type smtpPendingVerdict struct {
 	at, loggedAt time.Time
 	account      string
+	exist        mailboxExistence
 }
 
 // NoteDovecotRejection keeps a sessionless Dovecot rejection until the MTA's
 // failure line for the same client claims it. Callers filter infra, private
 // and loopback addresses first.
-func (t *smtpAuthTracker) NoteDovecotRejection(ip, account string, loggedAt time.Time) {
+func (t *smtpAuthTracker) NoteDovecotRejection(ip, account string, exist mailboxExistence, loggedAt time.Time) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	now := t.now()
@@ -40,21 +41,25 @@ func (t *smtpAuthTracker) NoteDovecotRejection(ip, account string, loggedAt time
 	for len(pending) > 0 && pending[0].at.Before(now.Add(-smtpAuthPairWindow)) {
 		pending = pending[1:]
 	}
+	// Every passdb in a chain answers for the same request, so pending
+	// answers for one mailbox share what any of them learned about it.
+	// Answers for different mailboxes say nothing about either.
 	for _, verdict := range pending {
 		if verdict.account != account {
-			account = ""
-			// Preserve ambiguity even when the queue drops an older
-			// answer or a different request finishes first.
-			for i := range pending {
-				pending[i].account = ""
-			}
+			account, exist = "", mailboxExistenceUnknown
 			break
 		}
+		exist = combineMailboxExistence(exist, verdict.exist)
+	}
+	// Preserve ambiguity even when the queue drops an older answer or a
+	// different request finishes first.
+	for i := range pending {
+		pending[i].account, pending[i].exist = account, exist
 	}
 	if len(pending) >= smtpAuthPairMaxPending {
 		pending = pending[1:]
 	}
-	t.pendingVerdicts[ip] = append(pending, smtpPendingVerdict{at: now, loggedAt: loggedAt, account: account})
+	t.pendingVerdicts[ip] = append(pending, smtpPendingVerdict{at: now, loggedAt: loggedAt, account: account, exist: exist})
 }
 
 // NoteAuthTrouble marks Dovecot client addresses or Postfix process tags.
@@ -85,7 +90,7 @@ func (t *smtpAuthTracker) NoteAuthTrouble(keys ...string) {
 // request ID in these lines, and concurrent requests can finish out of order,
 // so account attribution requires all pending answers to agree. Dovecot
 // client errors and Postfix process errors withhold evidence for the window.
-func (t *smtpAuthTracker) PairMTAFailure(ip, process string, loggedAt time.Time) (account string, ok bool) {
+func (t *smtpAuthTracker) PairMTAFailure(ip, process string, loggedAt time.Time) (account string, exist mailboxExistence, ok bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	now := t.now()
@@ -102,23 +107,23 @@ func (t *smtpAuthTracker) PairMTAFailure(ip, process string, loggedAt time.Time)
 	}
 	if len(pending) == 0 {
 		delete(t.pendingVerdicts, ip)
-		return "", false
+		return "", mailboxExistenceUnknown, false
 	}
-	account = pending[0].account
+	account, exist = pending[0].account, pending[0].exist
 	if len(pending) == 1 {
 		delete(t.pendingVerdicts, ip)
 	} else {
 		t.pendingVerdicts[ip] = pending[1:]
 	}
 	if !now.After(t.authTroubleOverflowUntil) {
-		return "", false
+		return "", mailboxExistenceUnknown, false
 	}
 	for _, key := range []string{ip, process} {
 		if at, marked := t.authTrouble[key]; marked && !at.Before(cutoff) {
-			return "", false
+			return "", mailboxExistenceUnknown, false
 		}
 	}
-	return account, true
+	return account, exist, true
 }
 
 // smtpAuthLogTime keeps buffered file input from extending the pairing

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -312,5 +313,66 @@ func TestDovecotPassdbVerdictsExcludedByMailReader(t *testing.T) {
 	}
 	if calls, _ := d.smtpAuthTracker.Stats(); calls != 0 {
 		t.Fatalf("Exim host counted %d Dovecot SMTP failures", calls)
+	}
+}
+
+// The verdict tells whether the mailbox exists. PAM gives the same answer
+// for a missing user and a wrong password.
+func TestDovecotSessionlessRejectionExistence(t *testing.T) {
+	for _, tc := range []struct {
+		line string
+		want mailboxExistence
+	}{
+		{"dovecot: auth: sql(alice@example.com,203.0.113.5): unknown user", mailboxMissing},
+		{"dovecot: auth: sql(alice@example.com,203.0.113.5): Password mismatch", mailboxExists},
+		{"dovecot: auth-worker(4567): pam(alice@example.com,203.0.113.5): pam_authenticate() failed: Authentication failure (Password mismatch?)", mailboxExistenceUnknown},
+	} {
+		ip, account, exist, ok := dovecotSessionlessRejection(tc.line)
+		if !ok || ip != "203.0.113.5" || account != "alice@example.com" || exist != tc.want {
+			t.Errorf("%q = (%q, %q, %d, %v), want (203.0.113.5, alice@example.com, %d, true)", tc.line, ip, account, exist, ok, tc.want)
+		}
+	}
+}
+
+func TestDovecotSessionlessRejectionUnidentifiedMailbox(t *testing.T) {
+	// Dovecot replaces missing or sanitized names with '?' and abbreviates
+	// long names with '...'. None identifies a mailbox whose existence is known.
+	for _, name := range []string{"", " \t ", "?", "ali?ce@example.com", strings.Repeat("a", 61) + "..."} {
+		for _, verdict := range []string{"unknown user", "Password mismatch"} {
+			line := "dovecot: auth: sql(" + name + ",203.0.113.5): " + verdict
+			ip, account, exist, ok := dovecotSessionlessRejection(line)
+			if !ok || ip != "203.0.113.5" || account != "" || exist != mailboxExistenceUnknown {
+				t.Errorf("%q = (%q, %q, %d, %v), want address-only rejection", line, ip, account, exist, ok)
+			}
+		}
+	}
+}
+
+func TestDovecotSessionlessRejectionForgedExistence(t *testing.T) {
+	for _, name := range []string{
+		"unknown user@example.com",
+		"alice,198.51.100.9",
+		"alice,198.51.100.9): unknown user",
+		"alice): unknown user,198.51.100.9",
+	} {
+		line := "dovecot: auth: sql(" + name + ",203.0.113.5): Password mismatch"
+		ip, account, exist, ok := dovecotSessionlessRejection(line)
+		if strings.Contains(name, "): ") {
+			if ok || ip != "" || account != "" || exist != mailboxExistenceUnknown {
+				t.Errorf("forged name accepted: (%q, %q, %d, %v)", ip, account, exist, ok)
+			}
+		} else if !ok || ip != "203.0.113.5" || account != name || exist != mailboxExists {
+			t.Errorf("name %q changed verdict: (%q, %q, %d, %v)", name, ip, account, exist, ok)
+		}
+	}
+	for _, line := range []string{
+		"dovecot: auth: sql(alice@example.com,203.0.113.5): unknown use",
+		"dovecot: auth: sql(alice@example.com,203.0.113.5): Password mismatch (given password: ,198.51.100.9): unknown user",
+		"dovecot: auth: sql(alice@example.com,203.0.113.5,<session>): Password mismatch (given password: ,198.51.100.9): unknown user",
+	} {
+		ip, account, exist, ok := dovecotSessionlessRejection(line)
+		if ok || ip != "" || account != "" || exist != mailboxExistenceUnknown {
+			t.Errorf("truncated line accepted: (%q, %q, %d, %v)", ip, account, exist, ok)
+		}
 	}
 }

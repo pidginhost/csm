@@ -132,6 +132,7 @@ type Daemon struct {
 	smtpAuthTracker  *smtpAuthTracker
 	smtpProbeTracker *smtpProbeTracker
 	mailAuthTracker  *mailAuthTracker
+	mailSpray        *mailSpray
 	authBackend      *authBackendHealth
 	// smtpAuthFromExim is set before the log readers start when the Exim
 	// mainlog feeds smtpAuthTracker; Postfix pairing is then skipped so one
@@ -345,6 +346,11 @@ func New(cfg *config.Config, store *state.Store, lock *state.LockFile, binaryPat
 		cfg.Thresholds.MailBruteForceMaxTracked,
 		time.Now,
 	)
+	// time.Now is lock-free; mailSpray calls it under its own mutex while a
+	// tracker may hold its lock.
+	d.mailSpray = newMailSpray(sprayConfigFromThresholds(cfg), time.Now)
+	d.smtpAuthTracker.SetSpray(d.mailSpray)
+	d.mailAuthTracker.SetSpray(d.mailSpray)
 
 	// Mail auth backend (cpdoveauthd) health: an active socket probe drives
 	// brute-force suppression for both trackers and optional self-heal restart.
@@ -411,6 +417,9 @@ func (d *Daemon) reconcileBruteThresholds() {
 			time.Duration(th.MailBruteForceSlowWindowMin)*time.Minute,
 			th.MailBruteForceMaxTracked,
 		)
+	}
+	if d.mailSpray != nil {
+		d.mailSpray.SetConfig(sprayConfigFromThresholds(cfg))
 	}
 }
 
@@ -2134,6 +2143,7 @@ func (d *Daemon) startPHPRelay() {
 
 func (d *Daemon) startLogWatchers() {
 	d.loadMailGoodSource()
+	d.loadMailSpray()
 	d.restoreEximFrozenDedup()
 	d.restoreMailStats()
 	d.startMailStatsPersistence()
@@ -2283,21 +2293,31 @@ func (d *Daemon) startLogWatchers() {
 	// Start background purge for mail (IMAP/POP3) brute-force tracker. It also
 	// persists established good-source standing every minute and on shutdown, so
 	// a daemon restart does not re-open the brute-force false-positive
-	// cold-start window.
+	// cold-start window. The login spray memory is purged on the same tick and
+	// saved every few ticks and on shutdown.
 	d.wg.Add(1)
 	obs.Go("mail-tracker-purge", func() {
 		defer d.wg.Done()
 		ticker := time.NewTicker(1 * time.Minute)
 		defer ticker.Stop()
+		tick := 0
 		for {
 			select {
 			case <-d.stopCh:
 				d.persistMailGoodSource()
+				d.persistMailSpray()
 				return
 			case <-ticker.C:
 				if d.mailAuthTracker != nil {
 					d.mailAuthTracker.Purge()
 					d.persistMailGoodSource()
+				}
+				if d.mailSpray != nil {
+					d.mailSpray.Purge()
+				}
+				tick++
+				if tick%mailSprayPersistTicks == 0 {
+					d.persistMailSpray()
 				}
 			}
 		}
@@ -2363,29 +2383,32 @@ func (d *Daemon) startLogWatchers() {
 }
 
 // recordEximSMTPAuthSuccess feeds authenticated Exim acceptance lines to the
-// slow SMTP-brute guard. extractAuthUser verifies a real top-level A= field;
-// the IP is deliberately read only from H=, whose bracketed address is the
-// connecting client rather than a HELO/subject/forwarded-header address.
-func recordEximSMTPAuthSuccess(line string, cfg *config.Config, tracker *smtpAuthTracker) {
-	if tracker == nil || extractAuthUser(line) == "" {
-		return
+// SMTP tracker as successful logins. extractAuthUser verifies a real
+// top-level A= field and names the mailbox; the IP is deliberately read only
+// from H=, whose bracketed address is the connecting client rather than a
+// HELO/subject/forwarded-header address.
+func recordEximSMTPAuthSuccess(line string, cfg *config.Config, tracker *smtpAuthTracker) []alert.Finding {
+	user := extractAuthUser(line)
+	if tracker == nil || user == "" {
+		return nil
 	}
 	hStart, hasHField := eximlog.HFieldStart(line)
 	if !hasHField {
-		return
+		return nil
 	}
 	ip := eximlog.HFieldClientIP(line[hStart:])
 	if ip == "" {
-		return
+		return nil
 	}
 	if parsed := net.ParseIP(ip); parsed != nil {
 		if v4 := parsed.To4(); v4 != nil {
 			ip = v4.String()
 		}
 	}
-	if !isInfraIPDaemon(ip, cfg.InfraIPs) && !isPrivateOrLoopback(ip) {
-		tracker.RecordSuccess(ip)
+	if isInfraIPDaemon(ip, cfg.InfraIPs) || isPrivateOrLoopback(ip) {
+		return nil
 	}
+	return tracker.RecordSuccess(ip, user)
 }
 
 func (d *Daemon) emitAuthBackendFindings() bool {
@@ -2447,9 +2470,8 @@ func (d *Daemon) handleEximLine(line string, obs alert.Observation, cfg *config.
 		}
 	}
 
-	if strings.Contains(line, "authenticator failed") && strings.Contains(line, "dovecot") {
-		ip := eximlog.ClientIP(line)
-		account := extractSetID(line)
+	if failure := eximlog.AuthFailure(line); strings.HasPrefix(failure.Authenticator, "dovecot_") {
+		ip, account := failure.ClientIP, failure.Account
 
 		// Canonicalize IPv4-mapped IPv6 (::ffff:a.b.c.d) to plain IPv4 so the
 		// tracker doesn't double-count the same attacker as two IPs.
@@ -2461,17 +2483,22 @@ func (d *Daemon) handleEximLine(line string, obs alert.Observation, cfg *config.
 			}
 		}
 
-		if ip != "" && !isInfraIPDaemon(ip, cfg.InfraIPs) && !isPrivateOrLoopback(ip) {
-			if d.smtpAuthTracker != nil {
+		if ip != "" && !isInfraIPDaemon(ip, cfg.InfraIPs) && !isPrivateOrLoopback(ip) && d.smtpAuthTracker != nil {
+			// Exim answers 435 when the Dovecot auth socket cannot answer.
+			// Only a permanent (5xx) reply says the credentials were checked;
+			// any other reply still counts per IP but is not spray evidence.
+			if strings.HasPrefix(failure.Code, "5") {
 				findings = append(findings, d.smtpAuthTracker.RecordObserved(ip, account, obs)...)
+			} else {
+				findings = append(findings, d.smtpAuthTracker.RecordTemporaryFailure(ip, account, obs)...)
 			}
 		}
 	}
 
-	// Authenticated deliveries prove the source can still log in, which
-	// disqualifies it from the slow-brute block (an office NAT with one
-	// stale device keeps working devices too; a walker never succeeds).
-	recordEximSMTPAuthSuccess(line, cfg, d.smtpAuthTracker)
+	// An authenticated delivery is a successful login on its mailbox: it
+	// earns trust for that mailbox only, or is reported as a possible
+	// compromise when it follows failures on other mailboxes.
+	findings = append(findings, recordEximSMTPAuthSuccess(line, cfg, d.smtpAuthTracker)...)
 
 	// CSM's scan hook logs one marker per scan; a failed scan raises
 	// antispam_scan_error while antispam is enabled.
@@ -2561,9 +2588,9 @@ func (d *Daemon) handleSMTPAuthPairing(line string, obs alert.Observation, cfg *
 	if t == nil || d.smtpAuthFromExim {
 		return nil, false
 	}
-	if ip, account, ok := dovecotSessionlessRejection(line); ok {
+	if ip, account, exist, ok := dovecotSessionlessRejection(line); ok {
 		if !isInfraIPDaemon(ip, cfg.InfraIPs) && !isPrivateOrLoopback(ip) {
-			t.NoteDovecotRejection(ip, account, smtpAuthLogTime(line, t.now()))
+			t.NoteDovecotRejection(ip, account, exist, smtpAuthLogTime(line, t.now()))
 		}
 		return nil, true
 	}
@@ -2572,13 +2599,12 @@ func (d *Daemon) handleSMTPAuthPairing(line string, obs alert.Observation, cfg *
 		return nil, false
 	}
 	process, msg := postfixSMTPDMessage(line)
-	// Like an authenticated Exim delivery, this keeps a source with working
-	// logins out of the slow-brute block.
-	if ip := postfixSASLSuccess(msg); ip != "" {
-		if !isInfraIPDaemon(ip, cfg.InfraIPs) && !isPrivateOrLoopback(ip) {
-			t.RecordSuccess(ip)
+	// A successful login, handled like an authenticated Exim delivery.
+	if ip, user := postfixSASLSuccess(msg); ip != "" {
+		if isInfraIPDaemon(ip, cfg.InfraIPs) || isPrivateOrLoopback(ip) {
+			return nil, true
 		}
-		return nil, true
+		return t.RecordSuccess(ip, user), true
 	}
 	if strings.HasPrefix(msg, "warning: SASL: ") {
 		// A failed backend reconnect can leave smtpd's previous reply
@@ -2599,11 +2625,11 @@ func (d *Daemon) handleSMTPAuthPairing(line string, obs alert.Observation, cfg *
 	// Claim the verdict even for a server-blamed reply so it cannot pair
 	// with a later failure. Recheck infra protection in case configuration
 	// changed between the two log lines.
-	account, ok := t.PairMTAFailure(ip, process, smtpAuthLogTime(line, t.now()))
+	account, exist, ok := t.PairMTAFailure(ip, process, smtpAuthLogTime(line, t.now()))
 	if !ok || isPostfixSASLNonCredentialReply(reply) || isInfraIPDaemon(ip, cfg.InfraIPs) || isPrivateOrLoopback(ip) {
 		return nil, true
 	}
-	return t.RecordObserved(ip, account, obs), true
+	return t.RecordFailure(ip, account, exist, obs), true
 }
 
 func (d *Daemon) dispatchMailLogLine(line maillog.Line, handler ObservedLineHandler) bool {

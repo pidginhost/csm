@@ -51,6 +51,14 @@ thresholds:
   mail_bruteforce_slow_threshold: 40
   mail_bruteforce_slow_window_min: 360
 
+  # Mail login spray rules (SMTP and IMAP/POP3) with a long memory of failed
+  # and clean logins per IP. observe reports findings only, enforce blocks,
+  # off stops the rules. Set breadth or networks to 0 to disable that rule.
+  mail_spray_mode: observe
+  mail_spray_window_min: 10080
+  mail_spray_breadth_mailboxes: 2
+  mail_spray_missing_networks: 3
+
 # Email antivirus scanning
 email_av:
   enabled: false

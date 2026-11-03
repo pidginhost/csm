@@ -233,6 +233,13 @@ func withoutLoggedPort(s string) string {
 // one plausible peer or malformed parentheses are rejected; otherwise a junk
 // HELO could make CSM block an address supplied by the peer.
 func hostAndIdentClientIP(s string) string {
+	ip, _ := hostAndIdentClient(s)
+	return ip
+}
+
+// hostAndIdentClient is hostAndIdentClientIP that also returns the failure
+// details after the peer, when they follow it.
+func hostAndIdentClient(s string) (ip, details string) {
 	// host_and_ident writes remote U= after the peer, as in an H= record.
 	identStart := strings.Index(s, " U=")
 	parenDepth := 0
@@ -254,7 +261,7 @@ func hostAndIdentClientIP(s string) string {
 			parenDepth++
 		case ')':
 			if parenDepth == 0 {
-				return ""
+				return "", ""
 			}
 			parenDepth--
 		case '"':
@@ -264,19 +271,19 @@ func hostAndIdentClientIP(s string) string {
 		case '[':
 			end := strings.IndexByte(s[i+1:], ']')
 			if end < 0 {
-				return ""
+				return "", ""
 			}
 			if parenDepth == 0 && !interfaceAddressAt(s, i) {
 				candidate := s[i+1 : i+1+end]
 				after := s[i+1+end+1:]
 				if net.ParseIP(candidate) != nil && hostAndIdentClientIPTerminated(after) {
 					if client != "" || (identStart >= 0 && identStart < i) {
-						return ""
+						return "", ""
 					}
 					// Failure details, including the attempted login name,
 					// follow the peer and are not host information.
-					if failureDetailsFollow(after) {
-						return candidate
+					if details, ok := failureDetails(after); ok {
+						return candidate, details
 					}
 					client = candidate
 				}
@@ -285,21 +292,21 @@ func hostAndIdentClientIP(s string) string {
 		}
 	}
 	if parenDepth != 0 || quoted {
-		return ""
+		return "", ""
 	}
-	return client
+	return client, ""
 }
 
-// failureDetailsFollow reports whether s, the text after a peer's closing
-// bracket, holds only the logged port, local interface and connection ID
-// before the ": " that starts failure details. Remote ident text can contain
-// that separator, so a U= field never qualifies.
-func failureDetailsFollow(s string) bool {
+// failureDetails returns the failure details when s, the text after a peer's
+// closing bracket, holds only the logged port, local interface and
+// connection ID before the ": " that starts them. Remote ident text can
+// contain that separator, so a U= field never qualifies.
+func failureDetails(s string) (string, bool) {
 	rest := withoutLoggedPort(s)
 	if strings.HasPrefix(rest, " I=[") {
 		end := strings.IndexByte(rest, ']')
 		if end < 0 || net.ParseIP(rest[len(" I=["):end]) == nil {
-			return false
+			return "", false
 		}
 		rest = withoutLoggedPort(rest[end+1:])
 	}
@@ -310,11 +317,12 @@ func failureDetailsFollow(s string) bool {
 			n++
 		}
 		if n == 0 {
-			return false
+			return "", false
 		}
 		rest = digits[n:]
 	}
-	return strings.HasPrefix(rest, ": ")
+	details, ok := strings.CutPrefix(rest, ": ")
+	return details, ok
 }
 
 func interfaceAddressAt(s string, bracket int) bool {

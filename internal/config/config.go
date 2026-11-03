@@ -408,6 +408,15 @@ type Config struct {
 		//   - regex:<pattern>                - capture group 1 is the account
 		MailBruteAccountKey string `yaml:"mail_brute_account_key,omitempty"`
 
+		// Mail login spray detection remembers SMTP and IMAP/POP3 login
+		// failures and clean logins per IP for a long window. Mode is off,
+		// observe (findings only) or enforce (block). Explicit 0 disables
+		// the breadth or the missing-mailbox rule.
+		MailSprayMode             string `yaml:"mail_spray_mode"`
+		MailSprayWindowMin        int    `yaml:"mail_spray_window_min"`
+		MailSprayBreadthMailboxes int    `yaml:"mail_spray_breadth_mailboxes"`
+		MailSprayMissingNetworks  int    `yaml:"mail_spray_missing_networks"`
+
 		// ModSecEscalationHits is the number of ModSecurity denies from a
 		// single source IP, inside ModSecEscalationWindowMin, that
 		// promote the IP from "logged" to "escalated" (Critical finding
@@ -1593,6 +1602,8 @@ type defaultPresence struct {
 	smtpProbeThreshold         bool
 	smtpBruteSlowThreshold     bool
 	mailBruteSlowThreshold     bool
+	mailSprayBreadth           bool
+	mailSprayMissingNetworks   bool
 	forwardGuard               forwardGuardPresence
 	antispam                   antispamPresence
 	phpRelay                   phpRelayPresence
@@ -1943,6 +1954,19 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 	}
 	if cfg.Thresholds.MailBruteForceSlowWindowMin == 0 {
 		cfg.Thresholds.MailBruteForceSlowWindowMin = 360
+	}
+	if cfg.Thresholds.MailSprayMode == "" {
+		cfg.Thresholds.MailSprayMode = "observe"
+	}
+	if cfg.Thresholds.MailSprayWindowMin == 0 {
+		cfg.Thresholds.MailSprayWindowMin = 7 * 24 * 60
+	}
+	// Explicit 0 disables the rule; absence gets the default.
+	if cfg.Thresholds.MailSprayBreadthMailboxes == 0 && !presence.mailSprayBreadth {
+		cfg.Thresholds.MailSprayBreadthMailboxes = 2
+	}
+	if cfg.Thresholds.MailSprayMissingNetworks == 0 && !presence.mailSprayMissingNetworks {
+		cfg.Thresholds.MailSprayMissingNetworks = 3
 	}
 	if cfg.Alerts.MaxPerHour == 0 {
 		cfg.Alerts.MaxPerHour = 30
@@ -2389,6 +2413,12 @@ func defaultPresenceFromYAML(data []byte) (defaultPresence, error) {
 	}
 	if node, ok := raw.Thresholds["mail_bruteforce_slow_threshold"]; ok && !yamlNodeIsNull(&node) {
 		presence.mailBruteSlowThreshold = true
+	}
+	if node, ok := raw.Thresholds["mail_spray_breadth_mailboxes"]; ok && !yamlNodeIsNull(&node) {
+		presence.mailSprayBreadth = true
+	}
+	if node, ok := raw.Thresholds["mail_spray_missing_networks"]; ok && !yamlNodeIsNull(&node) {
+		presence.mailSprayMissingNetworks = true
 	}
 	_, presence.thresholdsRollingCoverage = raw.Thresholds["rolling_coverage"]
 	_, presence.thresholdsDropperDetection = raw.Thresholds["dropper_detection"]

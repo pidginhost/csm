@@ -535,52 +535,65 @@ func TestSMTPAuthTracker_SlowBruteMailboxWalkFires(t *testing.T) {
 	}
 }
 
-// A successful SMTP auth from the source inside the slow window marks it as a
-// live legitimate client (e.g. an office NAT after a forced password reset
-// where some devices still work); the walk trigger must stay quiet then.
+// A source holding aged login trust on every mailbox it walks is a live
+// legitimate client (e.g. an office NAT after a forced password reset where
+// some devices still carry old passwords); the walk trigger must stay quiet
+// then.
 func TestSMTPAuthTracker_SlowBruteWalkSuppressedByRecentSuccess(t *testing.T) {
 	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
-	tr := newTestTracker(t, clock)
+	tr := newTestTrackerWithSpray(t, clock)
 
-	tr.RecordSuccess("198.51.100.32")
+	for i := 1; i <= 30; i++ {
+		tr.RecordSuccess("198.51.100.32", fmt.Sprintf("walked-%02d@example.ro", i))
+	}
+	clock.advance(11 * time.Minute) // trust ages past the failure window
 	for i := 1; i <= 30; i++ {
 		account := fmt.Sprintf("walked-%02d@example.ro", i)
 		if got, ok := findingByCheck(tr.Record("198.51.100.32", account), "smtp_bruteforce"); ok {
-			t.Fatalf("walk fired despite an in-window success at mailbox %d: %v", i, got)
+			t.Fatalf("walk fired despite in-window trust at mailbox %d: %v", i, got)
 		}
 		clock.advance(8 * time.Minute)
 	}
 }
 
-// Purge runs every minute in production. A successful source must remain
-// vouched for the full slow window, not disappear as soon as the much shorter
-// fast window plus suppression period has elapsed.
+// Purge runs every minute in production. A source's login trust must outlive
+// the much shorter fast window plus suppression period, through both the
+// tracker's purge and the spray memory's.
 func TestSMTPAuthTracker_PurgeRetainsSuccessForSlowWindow(t *testing.T) {
 	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
-	tr := newTestTracker(t, clock)
+	tr := newTestTrackerWithSpray(t, clock)
 	ip := "198.51.100.34"
 
-	tr.RecordSuccess(ip)
+	for i := 0; i < slowBruteWalkAccounts; i++ {
+		tr.RecordSuccess(ip, fmt.Sprintf("walked-%02d@example.ro", i))
+	}
 	clock.advance(2 * time.Hour) // past fast window + suppression; inside 6h slow window
 	tr.Purge()
-	if e, ok := tr.ips[ip]; !ok || e.slowLastSuccess.IsZero() {
-		t.Fatal("purge discarded an SMTP success still inside the slow window")
+	tr.spray.Purge()
+	if n := tr.spray.TrustSize(); n != slowBruteWalkAccounts {
+		t.Fatalf("purge discarded login trust still inside its window: %d records left", n)
 	}
 	for i := 0; i < slowBruteWalkAccounts; i++ {
 		if got, ok := findingByCheck(tr.Record(ip, fmt.Sprintf("walked-%02d@example.ro", i)), "smtp_bruteforce"); ok {
-			t.Fatalf("walk fired after purge discarded its success guard: %v", got)
+			t.Fatalf("walk fired after purge discarded its trust: %v", got)
 		}
 		clock.advance(8 * time.Minute)
 	}
 }
 
+// Every authenticated delivery is a success, so the tracker keeps no state
+// for one; trust lives in the bounded spray memory, which keeps none while
+// switched off.
 func TestSMTPAuthTracker_RecordSuccessNoopWhenSlowDetectorDisabled(t *testing.T) {
 	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
 	tr := newSMTPAuthTracker(5, 8, 12, 10*time.Minute, time.Hour, 0, 6*time.Hour, 20000, clock.Now)
 
-	tr.RecordSuccess("198.51.100.35")
-	if got := tr.Size(); got != 0 {
-		t.Fatalf("disabled slow detector retained success state: size=%d", got)
+	tr.RecordSuccess("198.51.100.35", "alice@example.com")
+	spray := newMailSpray(sprayConfig{Mode: sprayEnforce, MaxIPs: 20000}, clock.Now)
+	tr.SetSpray(spray)
+	tr.RecordSuccess("198.51.100.35", "alice@example.com")
+	if got, trust := tr.Size(), spray.TrustSize(); got != 0 || trust != 0 {
+		t.Fatalf("success retained state: tracker size=%d trust=%d", got, trust)
 	}
 }
 

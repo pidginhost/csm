@@ -17,6 +17,9 @@ func newPairingDaemon(t *testing.T, cfg *config.Config) (*Daemon, *staticClock) 
 	d := New(cfg, nil, nil, "")
 	d.smtpAuthTracker = newTestTracker(t, clock)
 	d.mailAuthTracker = newTestMailTracker(t, clock)
+	d.mailSpray = newMailSpray(sprayConfigFromThresholds(cfg), clock.Now)
+	d.smtpAuthTracker.SetSpray(d.mailSpray)
+	d.mailAuthTracker.SetSpray(d.mailSpray)
 	return d, clock
 }
 
@@ -630,6 +633,89 @@ func TestPostfixUsernameCannotForgeFailureReason(t *testing.T) {
 				fmt.Sprintf(postfixFailFmt, "203.0.113.73", name))
 			if calls := smtpCalls(d); calls != 1 {
 				t.Fatalf("username suppressed a credential failure: calls=%d", calls)
+			}
+		})
+	}
+}
+
+func TestCombineMailboxExistence(t *testing.T) {
+	const (
+		u = mailboxExistenceUnknown
+		e = mailboxExists
+		m = mailboxMissing
+	)
+	for _, tc := range []struct{ a, b, want mailboxExistence }{
+		{u, u, u}, {u, e, e}, {u, m, u},
+		{e, u, e}, {e, e, e}, {e, m, e},
+		{m, u, u}, {m, e, e}, {m, m, m},
+	} {
+		if got := combineMailboxExistence(tc.a, tc.b); got != tc.want {
+			t.Errorf("combine(%d, %d) = %d, want %d", tc.a, tc.b, got, tc.want)
+		}
+	}
+}
+
+// Each database in a chain logs its own verdict. One "Password mismatch"
+// proves the mailbox exists even when FIFO pairs an "unknown user" first.
+func TestPairMTAFailureExistence(t *testing.T) {
+	const ip = "203.0.113.5"
+	for _, tc := range []struct {
+		name        string
+		verdicts    []string
+		wantAccount string
+		wantExist   mailboxExistence
+	}{
+		{"unknown user", []string{"sql(alice@example.com,%s): unknown user"}, "alice@example.com", mailboxMissing},
+		{"password mismatch", []string{"sql(alice@example.com,%s): Password mismatch"}, "alice@example.com", mailboxExists},
+		{"chain unknown then mismatch", []string{
+			"sql(alice@example.com,%s): unknown user",
+			"passwd-file(alice@example.com,%s): Password mismatch",
+		}, "alice@example.com", mailboxExists},
+		{"chain mismatch then unknown", []string{
+			"sql(alice@example.com,%s): Password mismatch",
+			"passwd-file(alice@example.com,%s): unknown user",
+		}, "alice@example.com", mailboxExists},
+		{"chain unknown then pam", []string{
+			"sql(alice@example.com,%s): unknown user",
+			"pam(alice@example.com,%s): pam_authenticate() failed: Authentication failure (Password mismatch?)",
+		}, "alice@example.com", mailboxExistenceUnknown},
+		{"pam", []string{"pam(alice@example.com,%s): pam_authenticate() failed: Authentication failure (Password mismatch?)"}, "alice@example.com", mailboxExistenceUnknown},
+		{"different accounts", []string{
+			"sql(alice@example.com,%s): unknown user",
+			"sql(bob@example.com,%s): unknown user",
+		}, "", mailboxExistenceUnknown},
+		{"empty account", []string{"sql(,%s): unknown user"}, "", mailboxExistenceUnknown},
+		{"empty mismatch after disagreement", []string{
+			"sql(alice@example.com,%s): unknown user",
+			"sql(bob@example.com,%s): Password mismatch",
+			"sql(,%s): Password mismatch",
+		}, "", mailboxExistenceUnknown},
+		{"mismatch after disagreement", []string{
+			"sql(alice@example.com,%s): unknown user",
+			"sql(bob@example.com,%s): unknown user",
+			"passwd-file(alice@example.com,%s): Password mismatch",
+		}, "", mailboxExistenceUnknown},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clock := &staticClock{t: time.Date(2026, 10, 31, 20, 0, 0, 0, time.UTC)}
+			tr := newTestTracker(t, clock)
+			for _, v := range tc.verdicts {
+				clock.advance(time.Second)
+				vip, account, exist, ok := dovecotSessionlessRejection("dovecot: auth: " + fmt.Sprintf(v, ip))
+				if !ok {
+					t.Fatalf("verdict %q did not parse", v)
+				}
+				tr.NoteDovecotRejection(vip, account, exist, time.Time{})
+			}
+			for i := range tc.verdicts {
+				clock.advance(time.Second)
+				account, exist, ok := tr.PairMTAFailure(ip, "smtpd[1]", time.Time{})
+				if !ok || account != tc.wantAccount || exist != tc.wantExist {
+					t.Fatalf("pair %d = (%q, %d, %v), want (%q, %d, true)", i, account, exist, ok, tc.wantAccount, tc.wantExist)
+				}
+			}
+			if account, exist, ok := tr.PairMTAFailure(ip, "smtpd[1]", time.Time{}); ok || account != "" || exist != mailboxExistenceUnknown {
+				t.Fatalf("exhausted queue = (%q, %d, %v)", account, exist, ok)
 			}
 		})
 	}
