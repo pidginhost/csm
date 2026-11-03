@@ -181,6 +181,14 @@ func (m *mailSpray) SetConfig(cfg sprayConfig) {
 	m.evictTrust(sprayTrustKey{})
 }
 
+// Enabled reports whether the component keeps memory: with no window it
+// records nothing, so its verdicts say nothing about a login.
+func (m *mailSpray) Enabled() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.cfg.Window > 0
+}
+
 func (m *mailSpray) Mode() sprayMode {
 	m.mu.Lock()
 	defer m.mu.Unlock()

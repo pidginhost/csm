@@ -30,6 +30,15 @@ func newTestMailTracker(t *testing.T, clock *staticClock) *mailAuthTracker {
 	)
 }
 
+// newTestMailTrackerWithSpray adds a spray memory with its rules off, so only
+// its login trust matters.
+func newTestMailTrackerWithSpray(t *testing.T, clock *staticClock) *mailAuthTracker {
+	t.Helper()
+	tr := newTestMailTracker(t, clock)
+	tr.SetSpray(newMailSpray(sprayConfig{Mode: sprayOff, Window: 7 * 24 * time.Hour, TrustAge: 10 * time.Minute, Suppression: time.Hour, MaxIPs: 20000}, clock.Now))
+	return tr
+}
+
 func TestMailAuthTracker_InitialSizeIsZero(t *testing.T) {
 	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
 	tr := newTestMailTracker(t, clock)
@@ -2029,23 +2038,25 @@ func TestMailAuthTracker_SlowBruteSingleMailboxStaysQuiet(t *testing.T) {
 	}
 }
 
-// Any successful login from the source inside the slow window marks it as a
-// live legitimate client (an office NAT, a busy MUA), so the long-horizon
-// failure count must not produce a block finding.
+// A source holding aged login trust on every mailbox it fails on is a live
+// legitimate client (an office NAT, a busy MUA), so the long-horizon failure
+// count must not produce a block finding.
 func TestMailAuthTracker_SlowBruteRecentSuccessUsesAdvisory(t *testing.T) {
 	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
-	tr := newTestMailTracker(t, clock)
+	tr := newTestMailTrackerWithSpray(t, clock)
 	accounts := []string{"a@example.ro", "b@example.ro", "c@example.com", "d@example.com"}
 
-	tr.RecordSuccess("198.51.100.23", "owner@example.ro")
-	// 44 paced failures stay inside the slow window the success lives in
-	// (44 * 8m < 6h); once the success ages out the signal is armed again,
-	// which is intended -- a success only vouches while it is recent.
+	for _, acct := range accounts {
+		tr.RecordSuccess("198.51.100.23", acct)
+	}
+	// Past the good-source TTL, so only the login trust vouches. It lasts
+	// the spray memory window, far beyond these 44 paced failures.
+	clock.advance(mailGoodSourceTTL + time.Hour)
 	haveAdvisory := false
 	for i := 1; i <= 44; i++ {
 		findings := tr.Record("198.51.100.23", accounts[i%len(accounts)])
 		if got, ok := findingByCheck(findings, "mail_bruteforce"); ok {
-			t.Fatalf("slow signal fired despite an in-window success at attempt %d: %v", i, got)
+			t.Fatalf("slow signal fired despite aged login trust at attempt %d: %v", i, got)
 		}
 		if _, ok := findingByCheck(findings, "mail_bruteforce_suspected"); ok {
 			haveAdvisory = true
@@ -2053,7 +2064,7 @@ func TestMailAuthTracker_SlowBruteRecentSuccessUsesAdvisory(t *testing.T) {
 		clock.advance(8 * time.Minute)
 	}
 	if !haveAdvisory {
-		t.Fatal("recent success suppressed the block but also hid the slow attack advisory")
+		t.Fatal("login trust suppressed the block but also hid the slow attack advisory")
 	}
 }
 
@@ -2239,15 +2250,18 @@ func TestMailAuthTracker_SlowBruteMailboxWalkFires(t *testing.T) {
 
 func TestMailAuthTracker_SlowBruteMailboxWalkRecentSuccessUsesAdvisory(t *testing.T) {
 	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
-	tr := newTestMailTracker(t, clock)
+	tr := newTestMailTrackerWithSpray(t, clock)
 	ip := "198.51.100.36"
-	tr.RecordSuccess(ip, "owner@example.ro")
+	for i := 0; i < slowBruteWalkAccounts; i++ {
+		tr.RecordSuccess(ip, fmt.Sprintf("walked-%02d@example.ro", i))
+	}
+	clock.advance(mailGoodSourceTTL + time.Hour) // only the login trust vouches
 
 	var advisory bool
 	for i := 0; i < slowBruteWalkAccounts; i++ {
 		findings := tr.Record(ip, fmt.Sprintf("walked-%02d@example.ro", i))
 		if got, ok := findingByCheck(findings, "mail_bruteforce"); ok {
-			t.Fatalf("breadth walk fired despite an in-window success: %v", got)
+			t.Fatalf("breadth walk fired despite aged login trust: %v", got)
 		}
 		if _, ok := findingByCheck(findings, "mail_bruteforce_suspected"); ok {
 			advisory = true
@@ -2255,7 +2269,7 @@ func TestMailAuthTracker_SlowBruteMailboxWalkRecentSuccessUsesAdvisory(t *testin
 		clock.advance(8 * time.Minute)
 	}
 	if !advisory {
-		t.Fatal("breadth walk with a recent success emitted neither a block nor an advisory")
+		t.Fatal("breadth walk over trusted mailboxes emitted neither a block nor an advisory")
 	}
 }
 

@@ -308,7 +308,7 @@ func (t *smtpAuthTracker) recordFailure(ip, account string, exist mailboxExisten
 			if (len(e.slowTimes) >= t.slowThreshold || len(e.slowAccounts) >= slowBruteWalkAccounts) &&
 				len(e.slowAccounts) >= slowBruteMinAccounts &&
 				!now.Before(e.suppressed) &&
-				!t.slowTrusted(ip, e.slowAccounts) {
+				!slowTrusted(t.spray, ip, e.slowAccounts) {
 				e.suppressed = now.Add(t.suppression)
 				findings = append(findings, alert.Finding{
 					Severity: alert.Critical,
@@ -404,16 +404,16 @@ func (t *smtpAuthTracker) recordFailure(ip, account string, exist mailboxExisten
 
 // slowTrusted reports whether ip holds aged login trust on every mailbox its
 // slow failures name: a known client's stale saved passwords, not a walk.
-// Caller must hold t.mu.
-func (t *smtpAuthTracker) slowTrusted(ip string, accounts map[string]time.Time) bool {
-	if t.spray == nil {
+// Both trackers call it with their lock held.
+func slowTrusted(spray *mailSpray, ip string, accounts map[string]time.Time) bool {
+	if spray == nil {
 		return false
 	}
 	mailboxes := make([]string, 0, len(accounts))
 	for account := range accounts {
 		mailboxes = append(mailboxes, normalizeSprayMailbox(account))
 	}
-	return t.spray.TrustedAll(ip, mailboxes)
+	return spray.TrustedAll(ip, mailboxes)
 }
 
 // RecordSuccess notes a successful SMTP login on account from ip. A clean

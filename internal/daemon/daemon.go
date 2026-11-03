@@ -350,6 +350,7 @@ func New(cfg *config.Config, store *state.Store, lock *state.LockFile, binaryPat
 	// tracker may hold its lock.
 	d.mailSpray = newMailSpray(sprayConfigFromThresholds(cfg), time.Now)
 	d.smtpAuthTracker.SetSpray(d.mailSpray)
+	d.mailAuthTracker.SetSpray(d.mailSpray)
 
 	// Mail auth backend (cpdoveauthd) health: an active socket probe drives
 	// brute-force suppression for both trackers and optional self-heal restart.

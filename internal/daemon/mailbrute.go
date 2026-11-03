@@ -22,15 +22,13 @@ type mailIPEntry struct {
 	successAccounts map[string][]time.Time
 	failedAccounts  map[string][]time.Time
 	// Long-horizon state for the slow-brute signal: bounded failure timestamps,
-	// bounded per-mailbox last-failure times, the most recent success, and the
-	// most recent failure not represented in the mailbox map. Any in-window
-	// success marks the source as a live legitimate client and disqualifies the
-	// slow block. An unattributed or overflowed failure prevents the bounded
-	// named-mailbox set from exempting activity it cannot vouch for.
-	slowTimes       []time.Time
-	slowAccounts    map[string]time.Time
-	slowLastSuccess time.Time
-	slowUnvouched   time.Time
+	// bounded per-mailbox last-failure times, and the most recent failure not
+	// represented in the mailbox map. An unattributed or overflowed failure
+	// prevents the bounded named-mailbox set from exempting activity it cannot
+	// vouch for. Login trust lives in mailSpray.
+	slowTimes     []time.Time
+	slowAccounts  map[string]time.Time
+	slowUnvouched time.Time
 	// goodFirst/goodLast record, per mailbox, the earliest and most recent
 	// successful auth from this IP within mailGoodSourceTTL. They outlive the
 	// short failure window so an established legitimate sender (e.g. a working
@@ -616,6 +614,11 @@ type mailAuthTracker struct {
 	// sees the mail auth backend down. It augments the log-derived backendErr
 	// heuristic so suppression also triggers on the authoritative probe signal.
 	backendDownFn func() bool
+
+	// spray, when set, is the long-memory login spray detector shared with
+	// the SMTP tracker. It holds per-mailbox login trust. Set once at startup
+	// before log readers begin.
+	spray *mailSpray
 }
 
 // SetBackendDownCheck installs the active-probe callback the tracker consults to
@@ -626,6 +629,14 @@ func (t *mailAuthTracker) SetBackendDownCheck(fn func() bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.backendDownFn = fn
+}
+
+// SetSpray installs the shared spray detector. Set once at startup before log
+// readers begin.
+func (t *mailAuthTracker) SetSpray(m *mailSpray) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.spray = m
 }
 
 // newMailAuthTracker constructs a tracker. `now` is injected so tests can
@@ -767,11 +778,11 @@ func (t *mailAuthTracker) RecordObserved(ip, account string, obs alert.Observati
 	}
 
 	// --- Long-horizon slow-brute tracker ---
-	// Catches attackers pacing below the fast window. Distinct-mailbox and
-	// no-recent-success requirements separate a mailbox walk from a stale
-	// saved password or a busy NAT, and a source whose paced failures stay
-	// confined to mailboxes it holds established good standing for keeps the
-	// fast path's advisory treatment instead of escalating to a block.
+	// Catches attackers pacing below the fast window. The distinct-mailbox
+	// requirement separates a mailbox walk from a stale saved password. A
+	// source whose paced failures stay confined to mailboxes it holds
+	// established good standing or aged login trust for keeps the fast path's
+	// advisory treatment instead of escalating to a block.
 	if t.slowThreshold > 0 && t.slowWindow > 0 {
 		if degraded {
 			// Backend failures say nothing about credentials. Discard the
@@ -789,15 +800,13 @@ func (t *mailAuthTracker) RecordObserved(ip, account string, obs alert.Observati
 			if !trackedAccount {
 				e.slowUnvouched = now
 			}
-			if e.slowLastSuccess.Before(slowCutoff) {
-				e.slowLastSuccess = time.Time{}
-			}
 			if e.slowUnvouched.Before(slowCutoff) {
 				e.slowUnvouched = time.Time{}
 			}
 			if (len(e.slowTimes) >= t.slowThreshold || len(e.slowAccounts) >= slowBruteWalkAccounts) &&
 				len(e.slowAccounts) >= slowBruteMinAccounts {
-				safeSource := !e.slowLastSuccess.IsZero() || e.slowConfinedToEstablishedGood(now, t.window)
+				safeSource := e.slowConfinedToEstablishedGood(now, t.window) ||
+					(e.slowUnvouched.IsZero() && slowTrusted(t.spray, ip, e.slowAccounts))
 				switch {
 				case safeSource && !now.Before(e.suspectedSuppressed):
 					e.suspectedSuppressed = now.Add(t.suppression)
@@ -806,7 +815,7 @@ func (t *mailAuthTracker) RecordObserved(ip, account string, obs alert.Observati
 						Check:    "mail_bruteforce_suspected",
 						Message: fmt.Sprintf("Suspected mail misconfiguration from %s: %d paced auth failures across %d mailboxes in %v (not auto-blocked)",
 							ip, len(e.slowTimes), len(e.slowAccounts), t.slowWindow),
-						Details:   "Long-horizon failures came from a source with recent successful mail auth or established good standing on every named target. Visibility only - no auto-block; compromise and spray detectors remain active.",
+						Details:   "Long-horizon failures came from a source with established good standing or aged login trust on every named target. Visibility only - no auto-block; compromise and spray detectors remain active.",
 						Timestamp: now,
 						SourceIP:  ip,
 					})
@@ -822,6 +831,23 @@ func (t *mailAuthTracker) RecordObserved(ip, account string, obs alert.Observati
 						SourceIP:  ip,
 					})
 				}
+			}
+		}
+	}
+
+	// --- Long-memory login spray (shared with SMTP) ---
+	if !degraded && t.spray != nil {
+		if v := t.spray.Failure(ip, normalizeSprayMailbox(account), mailboxExistenceUnknown); v != nil {
+			f := sprayFinding(protoMail, ip, v, t.spray.Mode(), now)
+			// One block per suppression window: a Dovecot line can carry
+			// several attempts, so the spray block shares the per-IP clock
+			// with the fast and slow paths. The evidence is recorded either way.
+			switch {
+			case f.Check != "mail_bruteforce":
+				findings = append(findings, f)
+			case !now.Before(e.suppressed):
+				e.suppressed = now.Add(t.suppression)
+				findings = append(findings, f)
 			}
 		}
 	}
@@ -989,7 +1015,9 @@ func appendMailAccountTime(accounts map[string][]time.Time, account string, ts t
 // when the successful IP has repeated recent failed auths for the same account
 // and that mailbox is failure-dominant from this IP. Prior successful logins for
 // the same mailbox look like a legit client that merely mistyped, so they are
-// not flagged.
+// not flagged. A login the spray memory does not call clean, one that follows
+// failures on other mailboxes, earns no good standing and may be reported too;
+// one login raises at most one compromise finding, the stronger.
 //
 // ip and account MUST both be non-empty. Caller filters infra/private/loopback
 // IPs before invoking.
@@ -999,7 +1027,12 @@ func (t *mailAuthTracker) RecordSuccess(ip, account string) (findings []alert.Fi
 	}
 	account = normalizeMailAuthAccount(account)
 	// Registered before tracker cleanup so resolution sees no held locks.
-	defer func() { stampMailAccountOwner(findings, account) }()
+	// The one finding is stamped for the mailbox it names.
+	defer func() {
+		if len(findings) > 0 {
+			stampMailAccountOwner(findings, findings[0].Mailbox)
+		}
+	}()
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	// Successes create per-IP entries too; keep the tracker bounded on every
@@ -1022,16 +1055,32 @@ func (t *mailAuthTracker) RecordSuccess(ip, account string) (findings []alert.Fi
 	pruneMailAccountTimes(e.failedAccounts, cutoff)
 	// A guessed-password success should not train the long-lived good-source cache.
 	recordGoodSource := true
+	var sprayed *alert.Finding
+	if t.spray != nil {
+		clean, v := t.spray.Success(ip, normalizeSprayMailbox(account))
+		if !clean && t.spray.Enabled() {
+			recordGoodSource = false
+		}
+		if v != nil {
+			f := sprayFinding(protoMail, ip, v, t.spray.Mode(), now)
+			sprayed = &f
+		}
+	}
 	defer func() {
 		e.succ = append(e.succ, now)
 		e.successAccounts = appendMailAccountTime(e.successAccounts, account, now)
-		if t.slowThreshold > 0 && t.slowWindow > 0 {
-			e.slowLastSuccess = now
-		}
 		if recordGoodSource {
 			e.recordGoodAuth(account, now)
 		}
 		e.lastSeen = now
+		switch {
+		case sprayed == nil:
+		case len(findings) == 0:
+			t.findingsEmitted++
+			findings = []alert.Finding{*sprayed}
+		case sprayed.Severity > findings[0].Severity:
+			findings[0] = *sprayed
+		}
 	}()
 
 	a, ok := t.accounts[account]
@@ -1104,9 +1153,6 @@ func (t *mailAuthTracker) Purge() {
 		e.succ = pruneTimes(e.succ, windowCutoff)
 		e.slowTimes = pruneTimes(e.slowTimes, slowCutoff)
 		pruneSlowAccounts(e.slowAccounts, slowCutoff)
-		if e.slowLastSuccess.Before(slowCutoff) {
-			e.slowLastSuccess = time.Time{}
-		}
 		if e.slowUnvouched.Before(slowCutoff) {
 			e.slowUnvouched = time.Time{}
 		}
@@ -1115,7 +1161,7 @@ func (t *mailAuthTracker) Purge() {
 		e.pruneGoodSource(goodCutoff)
 		if len(e.times) == 0 && len(e.succ) == 0 && len(e.successAccounts) == 0 &&
 			len(e.failedAccounts) == 0 && len(e.goodLast) == 0 &&
-			len(e.slowTimes) == 0 && e.slowLastSuccess.IsZero() && !e.lastSeen.After(activityCutoff) {
+			len(e.slowTimes) == 0 && !e.lastSeen.After(activityCutoff) {
 			delete(t.ips, k)
 		}
 	}
@@ -1231,11 +1277,8 @@ func (e *mailIPEntry) evictionRank(now time.Time, window, slowWindow time.Durati
 			return evictionRankProtectedIP
 		}
 	}
-	if slowWindow > 0 {
-		cutoff := now.Add(-slowWindow)
-		if (!e.slowLastSuccess.IsZero() && !e.slowLastSuccess.Before(cutoff)) || countTimesAtOrAfter(e.slowTimes, cutoff) > 1 {
-			return evictionRankProtectedIP
-		}
+	if slowWindow > 0 && countTimesAtOrAfter(e.slowTimes, now.Add(-slowWindow)) > 1 {
+		return evictionRankProtectedIP
 	}
 	if hasTimeAtOrAfter(e.times, now.Add(-window)) {
 		return evictionRankActiveIP

@@ -444,19 +444,21 @@ Source addresses are never blocked for this finding: they rotate per message and
 
 Detects credential stuffing and password spray against IMAP, POP3, and ManageSieve. Runs through the `mail_logs` reader: file source uses `/var/log/mail.log` on Debian-family hosts and `/var/log/maillog` on RHEL-family and cPanel hosts, while journal source reads configured Postfix/Dovecot units. The wrapper composes with the existing geo-based login monitor, so `email_suspicious_geo` keeps firing for successful logins from novel countries.
 
-Five attack patterns:
+Signals:
 
 | Signal | What triggers it | Auto-response |
 |--------|-----------------|---------------|
-| `mail_bruteforce` | A single attacker IP exceeds the per-IP failed-auth threshold within the configured window without matching successful mailbox activity | IP blocked via nftables |
-| `mail_bruteforce_suspected` | An established good source hits the per-IP failed-auth threshold with a confined stale-password pattern | Visibility finding only. No auto-block |
+| `mail_bruteforce` | A single attacker IP exceeds the per-IP failed-auth threshold within the configured window without matching successful mailbox activity, or, with spray detection in enforce mode, fails on several mailboxes it holds no trust for | IP blocked via nftables |
+| `mail_bruteforce_suspected` | An established good source hits the per-IP failed-auth threshold with a confined stale-password pattern, or spray detection in observe mode matched an IMAP/POP source. The spray message names IMAP/POP and the rule | Visibility finding only. No auto-block |
 | `mail_subnet_spray` | Multiple distinct attacker IPs from the same /24 subnet exceed the subnet threshold | Entire /24 subnet blocked via nftables |
 | `mail_account_spray` | Many distinct attacker IPs targeting the same mailbox exceed the account threshold | Visibility finding only. No auto-block, because attackers span many subnets and no single-IP action helps |
-| `mail_account_compromised` | A successful login comes from an IP that repeatedly failed auth against the same mailbox | Critical findings block immediately. A source with established history on at least two other mailboxes emits a High advisory and is not auto-blocked |
+| `mail_account_compromised` | A successful login comes from an IP that repeatedly failed auth against the same mailbox, or follows failures on other mailboxes or repeated failures on the same mailbox spread over at least a day | Critical findings block immediately. A source with established history on at least two other mailboxes emits a High advisory and is not auto-blocked. A login after failures on other mailboxes is Critical only in enforce mode when one of them was a missing mailbox many networks tried; every other spray case is a High advisory |
 
 Tunable via the `thresholds.mail_bruteforce_*` keys in `csm.yaml`. Independent from the SMTP tracker so the Dovecot noise floor can be tuned separately. Infrastructure IPs are never counted or blocked. Established good sources with a confined stale-password pattern emit `mail_bruteforce_suspected` instead of an IP block, while wider spraying and compromise from a source without established multi-mailbox history still block. A compromise from an IP with established history on at least two other mailboxes remains visible as a High advisory but does not feed direct, incident, or spray auto-blocking. The `mail_bruteforce` and `mail_bruteforce_suspected` alerts name the mailboxes the source was hitting, with per-mailbox failure counts and a count of attempts that named no mailbox, so a real attack on a live mailbox is easy to tell apart from dictionary noise.
 
-When the mail authentication backend itself fails (for example dovecot cannot reach `cpdoveauthd`), every login fails regardless of password. CSM detects a burst of these backend errors, pauses `mail_bruteforce` and `mail_subnet_spray` auto-blocking, and raises a `mail_auth_backend_degraded` warning so the outage is visible instead of mass-blocking legitimate users. Detection resumes automatically once the backend recovers.
+IMAP and POP logins share the long-memory spray detection described for SMTP above. One memory holds the failures and login trust of both, so failed SMTP and IMAP logins from one address on two different mailboxes count together toward the several-mailboxes rule. A login that follows failures on other mailboxes earns neither login trust nor good standing. The slow brute-force block downgrades to `mail_bruteforce_suspected` only when the address holds good standing or aged login trust on every mailbox it failed on; a login to some other mailbox no longer counts. One address gets at most one `mail_bruteforce` per suppression period, and one login at most one `mail_account_compromised`.
+
+When the mail authentication backend itself fails (for example dovecot cannot reach `cpdoveauthd`), every login fails regardless of password. CSM detects a burst of these backend errors, pauses `mail_bruteforce` and `mail_subnet_spray` auto-blocking, keeps the failures out of spray evidence, and raises a `mail_auth_backend_degraded` warning so the outage is visible instead of mass-blocking legitimate users. Detection resumes automatically once the backend recovers.
 
 ## Admin-Panel Brute-Force Tracker
 

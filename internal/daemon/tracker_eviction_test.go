@@ -122,7 +122,7 @@ func TestMailEvictionRankIncludesWindowBoundary(t *testing.T) {
 	if got := (&mailIPEntry{slowTimes: []time.Time{now.Add(-slowWindow), now.Add(-slowWindow)}}).evictionRank(now, window, slowWindow); got != evictionRankProtectedIP {
 		t.Fatalf("slow evidence at window boundary rank = %d, want protected", got)
 	}
-	if got := (&mailIPEntry{slowTimes: []time.Time{now, now}, slowLastSuccess: now}).evictionRank(now, window, 0); got != evictionRankIdleIP {
+	if got := (&mailIPEntry{slowTimes: []time.Time{now, now}}).evictionRank(now, window, 0); got != evictionRankIdleIP {
 		t.Fatalf("disabled slow window rank = %d, want idle", got)
 	}
 }

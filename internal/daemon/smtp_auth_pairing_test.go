@@ -19,6 +19,7 @@ func newPairingDaemon(t *testing.T, cfg *config.Config) (*Daemon, *staticClock) 
 	d.mailAuthTracker = newTestMailTracker(t, clock)
 	d.mailSpray = newMailSpray(sprayConfigFromThresholds(cfg), clock.Now)
 	d.smtpAuthTracker.SetSpray(d.mailSpray)
+	d.mailAuthTracker.SetSpray(d.mailSpray)
 	return d, clock
 }
 

@@ -341,7 +341,7 @@ Incidents and central threat responses receive new findings, including suppresse
 | `smtp_bruteforce` | SMTP authentication flood |
 | `smtp_probe_abuse` | Raw SMTP connect-rate flood before AUTH |
 | `mail_bruteforce` | IMAP/POP3/ManageSieve authentication flood without matching successful mailbox activity |
-| `mail_account_compromised` | Successful login from an IP that repeatedly failed auth on the same mailbox, or an SMTP login after failures on other mailboxes. Only Critical findings block; High advisories are visibility only |
+| `mail_account_compromised` | Successful login from an IP that repeatedly failed auth on the same mailbox, or a mail login after failures on other mailboxes. Only Critical findings block; High advisories are visibility only |
 | `admin_panel_bruteforce` | phpMyAdmin or Joomla admin POST flood |
 | `ssh_login_unknown_ip` | SSH login from an IP with no prior history, whether the realtime watcher or the periodic scan saw it first |
 | `c2_connection` | Outbound connection to a known C2 server |
@@ -376,8 +376,8 @@ that feed the rollup still drive normal block decisions.
 `mail_bruteforce_suspected` and the High forms of `mail_account_compromised`
 are visibility only. They do not feed direct, incident, or spray
 auto-blocking. A separate blockable finding can still block the same source.
-`mail_bruteforce_suspected` also reports SMTP password sprays while spray
-detection runs in observe mode.
+`mail_bruteforce_suspected` also reports SMTP, IMAP and POP password sprays
+while spray detection runs in observe mode.
 
 Every auto-response block source - scan findings, challenge-timeout
 escalations, central-intel corroborated blocks, and incident spray
