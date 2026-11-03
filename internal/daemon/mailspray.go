@@ -95,7 +95,7 @@ type sprayVerdict struct {
 const sprayStaleSpread = 24 * time.Hour
 
 const (
-	maxSprayNamesPerIP         = 32
+	maxSprayNamesPerIP         = 16
 	maxSprayTrustPerIP         = mailGoodSourceMaxAccountsPerIP
 	maxSprayTrustIPsPerMailbox = 64
 	maxSprayCorroborationNames = 20000

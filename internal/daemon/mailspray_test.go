@@ -914,3 +914,17 @@ func TestMailSpray_RevokedLoginStillReportsCompromise(t *testing.T) {
 	}
 	wantRule(t, v, sprayRuleCompromise, true)
 }
+
+// The per-IP name cap must hold the highest breadth bar config accepts, or
+// the rule would fire below the configured bar.
+func TestMailSpray_NameCapHoldsHighestBreadthBar(t *testing.T) {
+	const highestBar = 10 // config validation maximum
+	cfg := testSprayConfig()
+	cfg.BreadthMailboxes = highestBar
+	m, _ := newTestSpray(cfg)
+	const ip = "192.0.2.70"
+	for i := range highestBar - 1 {
+		wantNoVerdict(t, m.Failure(ip, fmt.Sprintf("n%d@example.com", i), mailboxExists))
+	}
+	wantRule(t, m.Failure(ip, "last@example.com", mailboxExists), sprayRuleBreadth, true)
+}
