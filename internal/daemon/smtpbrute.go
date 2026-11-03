@@ -335,6 +335,10 @@ func (t *smtpAuthTracker) recordFailure(ip, account string, exist mailboxExisten
 	}
 
 	// --- Long-memory login spray (shared with IMAP/POP) ---
+	if degraded && t.spray != nil {
+		// The outage may have begun a while before it was detected.
+		t.spray.ForgetRecentFailures(ip, cutoff)
+	}
 	if !degraded && credential && t.spray != nil {
 		if v := t.spray.Failure(ip, normalizeSprayMailbox(account), exist); v != nil {
 			f := sprayFinding(protoSMTP, ip, v, t.spray.Mode(), now)

@@ -836,6 +836,10 @@ func (t *mailAuthTracker) RecordObserved(ip, account string, obs alert.Observati
 	}
 
 	// --- Long-memory login spray (shared with SMTP) ---
+	if degraded && t.spray != nil {
+		// The outage may have begun a while before it was detected.
+		t.spray.ForgetRecentFailures(ip, cutoff)
+	}
 	if !degraded && t.spray != nil {
 		if v := t.spray.Failure(ip, normalizeSprayMailbox(account), mailboxExistenceUnknown); v != nil {
 			f := sprayFinding(protoMail, ip, v, t.spray.Mode(), now)

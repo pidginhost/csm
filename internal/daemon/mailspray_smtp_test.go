@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"fmt"
+	"maps"
 	"reflect"
 	"slices"
 	"strings"
@@ -342,6 +343,42 @@ func TestSMTPSprayOutageNotEvidence(t *testing.T) {
 			_, blocked := findingByCheck(tc.feed(d, clock, tc.lines...), "smtp_bruteforce")
 			if n := d.mailSpray.Size(); blocked != tc.evidence || (n != 0) != tc.evidence {
 				t.Fatalf("blocked = %v, spray IPs = %d, want evidence = %v", blocked, n, tc.evidence)
+			}
+		})
+	}
+}
+
+// An outage starts before it is detected. A failure seen while degraded
+// drops the IP's spray failures from the last fast window, on either
+// tracker; older failures stay.
+func TestSprayOutageForgetsRecentFailures(t *testing.T) {
+	const ip = "203.0.113.170"
+	for _, proto := range []string{"smtp", "imap"} {
+		t.Run(proto, func(t *testing.T) {
+			clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+			var tr interface {
+				Record(ip, account string) []alert.Finding
+				SetBackendDownCheck(func() bool)
+			}
+			var spray *mailSpray
+			if proto == "smtp" {
+				smtp := newTestTrackerWithSpray(t, clock)
+				tr, spray = smtp, smtp.spray
+			} else {
+				mail := newTestMailTrackerWithSpray(t, clock)
+				tr, spray = mail, mail.spray
+			}
+			tr.Record(ip, "old@example.com")
+			clock.advance(time.Hour)
+			tr.Record(ip, "recent@example.com")
+			clock.advance(5 * time.Minute)
+			tr.SetBackendDownCheck(func() bool { return true })
+			tr.Record(ip, "outage@example.com")
+			spray.mu.Lock()
+			names := slices.Sorted(maps.Keys(spray.ips[ip].failed))
+			spray.mu.Unlock()
+			if !slices.Equal(names, []string{"old@example.com"}) {
+				t.Fatalf("spray failures after a degraded failure = %v, want only the old one", names)
 			}
 		})
 	}

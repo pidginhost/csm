@@ -388,6 +388,35 @@ func (m *mailSpray) RevokeTrust(ip, mailbox string) {
 	m.evictIPs(ip, now)
 }
 
+// ForgetRecentFailures drops the IP's failures since "since": an outage
+// starts before it is detected, and its failures are no evidence. A name
+// that also failed before keeps only its first failure. Trust, verdicts
+// and corroboration stay.
+func (m *mailSpray) ForgetRecentFailures(ip string, since time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	e := m.ips[ip]
+	if e == nil {
+		return
+	}
+	changed := false
+	for name, f := range e.failed {
+		switch {
+		case f.last.Before(since):
+			continue
+		case f.first.Before(since):
+			f.last, f.count = f.first, 1
+			e.failed[name] = f
+		default:
+			delete(e.failed, name)
+		}
+		changed = true
+	}
+	if changed {
+		m.markIP(ip)
+	}
+}
+
 // TrustedAll reports whether the IP holds aged trust on every one of the
 // normalised mailboxes. An empty list is not trusted.
 func (m *mailSpray) TrustedAll(ip string, mailboxes []string) bool {

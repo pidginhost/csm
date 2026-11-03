@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"fmt"
+	"maps"
 	"strings"
 	"sync"
 	"testing"
@@ -1044,6 +1045,38 @@ func TestMailSpray_WeakAlertRecordsBounded(t *testing.T) {
 	if n := records(); m.Size() != 1 || n != 0 {
 		t.Fatalf("after purge %d IPs, %d weak alert records, want 1, 0", m.Size(), n)
 	}
+}
+
+// Forgetting outage failures keeps what came before: a name that also
+// failed earlier keeps its first failure only. Trust and verdicts stay.
+func TestMailSpray_ForgetRecentFailures(t *testing.T) {
+	m, clock := newTestSpray(testSprayConfig())
+	const ip = "192.0.2.1"
+	ageTrust(t, m, clock, ip, "t@example.com")
+	start := clock.Now()
+	wantNoVerdict(t, m.Failure(ip, "both@example.com", mailboxExists))
+	clock.advance(time.Hour)
+	wantNoVerdict(t, m.Failure(ip, "both@example.com", mailboxExists))
+	wantRule(t, m.Failure(ip, "new@example.com", mailboxExists), sprayRuleBreadth, true)
+	m.mu.Lock()
+	verdictAt := m.ips[ip].verdictAt
+	m.mu.Unlock()
+
+	m.ForgetRecentFailures(ip, clock.Now().Add(-10*time.Minute))
+	m.mu.Lock()
+	failed, kept := maps.Clone(m.ips[ip].failed), m.ips[ip].verdictAt
+	m.mu.Unlock()
+	got, ok := failed["both@example.com"]
+	if len(failed) != 1 || !ok || !got.first.Equal(start) || !got.last.Equal(start) || got.count != 1 {
+		t.Fatalf("failures after forgetting = %+v, want both@ with its first failure only", failed)
+	}
+	if !kept.Equal(verdictAt) {
+		t.Fatal("forgetting failures dropped the verdict")
+	}
+	if !m.TrustedAll(ip, []string{"t@example.com"}) {
+		t.Fatal("forgetting failures dropped trust")
+	}
+	m.ForgetRecentFailures("192.0.2.99", clock.Now()) // no evidence held
 }
 
 // Revoking one (IP, mailbox) record leaves other trust and indexes intact.
