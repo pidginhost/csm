@@ -23,7 +23,6 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Fixed
 
-- Successful automatic blocks remain visible in admission history during accounting errors.
 - Admission previews and dry-run forecasts no longer start a new attack episode early when the system clock jumps forward.
 - Antispam no longer overrides spam weights you set yourself in rspamd.
 - Spam learning no longer stops for every report when rspamd hashes one learned message differently; only that message's learning is dropped.
