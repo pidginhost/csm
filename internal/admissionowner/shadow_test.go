@@ -153,15 +153,15 @@ func TestShadowFillsTheTemporarySet(t *testing.T) {
 	if p := admitNow(t, s, "203.0.113.3", generalOnly, shadowT0, adm); p != admission.PredictSetFull {
 		t.Fatalf("third = %s, want set_full", p)
 	}
-	if s.ceiling != used || !s.full(adm, generalOnly, shadowRank{}) || s.full(adm, directGen, shadowRank{}) || len(s.entries) != 2 {
+	if s.ceiling != used || s.wait(adm, generalOnly, shadowRank{}, shadowT0) == 0 || s.wait(adm, directGen, shadowRank{}, shadowT0) != 0 || len(s.entries) != 2 {
 		t.Fatal("a full set charged the ceiling or took an entry, or the reserve filled")
 	}
 	// A real block of a shadow address counts once: as real occupancy.
-	if s.full(firewall.BlockAdmission{Temporary: 9, Unclaimed: 9, Limit: 12, ShadowHeld: map[string]bool{"203.0.113.1": true}}, generalOnly, shadowRank{}) {
+	if s.wait(firewall.BlockAdmission{Temporary: 9, Unclaimed: 9, Limit: 12, ShadowHeld: map[string]bool{"203.0.113.1": true}}, generalOnly, shadowRank{}, shadowT0) != 0 {
 		t.Fatal("an address held by a real and a shadow block counted twice")
 	}
 	// A real permanent block of a shadow address takes no temporary slot.
-	if s.full(firewall.BlockAdmission{Temporary: 8, Unclaimed: 8, Limit: 11, ShadowHeld: map[string]bool{"2001:db8::1": true}}, generalOnly, shadowRank{}) {
+	if s.wait(firewall.BlockAdmission{Temporary: 8, Unclaimed: 8, Limit: 11, ShadowHeld: map[string]bool{"2001:db8::1": true}}, generalOnly, shadowRank{}, shadowT0) != 0 {
 		t.Fatal("permanent coverage counted as temporary demand")
 	}
 }

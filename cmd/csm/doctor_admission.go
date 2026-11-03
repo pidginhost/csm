@@ -135,7 +135,7 @@ func ownerDoctorChecks(a *health.AdmissionStatus) []DoctorCheck {
 			Fix: "restart csm.service so opening the ledger proves every record; " + keep + ", and report the damage",
 		})
 	}
-	if o.Set != nil || o.SetError != "" {
+	if o.Set != nil || o.SetError != "" || o.PreviewRotationsLastHour > 0 {
 		rows = append(rows, setDoctorCheck(o, closing))
 	}
 	return append(rows, dryRunDoctorChecks(o.DryRun)...)
@@ -145,12 +145,17 @@ func ownerDoctorChecks(a *health.AdmissionStatus) []DoctorCheck {
 // block work by (spec 5.6): the partitions of the automatic slots, the
 // entries admission never evicts with their drain time and the previews
 // of the last hour that took a lower-priority block's slot. It warns as
-// the forecast's model does, and when the turn could not read the set.
+// the forecast's model does, when the turn could not read the set and
+// when a preview of the last hour rotated an equal-priority block out.
 func setDoctorCheck(o *health.AdmissionOwner, closing string) DoctorCheck {
 	if o.Set == nil {
+		message := "the temporary set has no current snapshot"
+		if o.SetError != "" {
+			message = "the temporary set could not be read: " + o.SetError
+		}
 		return DoctorCheck{Name: "admission set", Status: "warn",
-			Message: "the temporary set could not be read: " + o.SetError + "; block work has no slot budget until a turn reads it" +
-				replacedNote(o.PreviewReplacementsLastHour, "previews") + "; " + closing,
+			Message: message + "; block work has no slot budget until a turn reads it" +
+				replacedNote(o.PreviewReplacementsLastHour, "previews") + rotatedNote(o.PreviewRotationsLastHour, "previews") + "; " + closing,
 			Fix: "the owner reads the set again at its next turn; check the firewall engine and the blocked sets"}
 	}
 	s := o.Set
@@ -163,9 +168,12 @@ func setDoctorCheck(o *health.AdmissionOwner, closing string) DoctorCheck {
 		replacedNote(o.PreviewReplacementsLastHour, "previews")}
 	warnings, note := setWarnings(s.Unlimited, s.Capacity, s.DrainSeconds, s.General, s.Reserved)
 	c.Message += note
+	if n := o.PreviewRotationsLastHour; n > 0 {
+		warnings = append(warnings, rotatedWarning(n, "previews"))
+	}
 	if len(warnings) > 0 {
 		c.Status, c.Message = "warn", c.Message+"; "+strings.Join(warnings, "; ")
-		c.Fix = "block work waits for a free slot unless it outranks an automatic block it may replace; inspect existing blocks and their expiries, and review firewall.deny_temp_ip_limit"
+		c.Fix = "block work waits for a free slot unless it outranks an automatic block it may replace or a new attack may rotate out an equal-priority block held for 30 minutes; inspect existing blocks and their expiries, and review firewall.deny_temp_ip_limit"
 	}
 	c.Message += "; " + closing
 	return c
@@ -178,6 +186,40 @@ func replacedNote(n uint64, what string) string {
 		return ""
 	}
 	return fmt.Sprintf("; in the last hour %d %s would have replaced lower-priority automatic blocks", n, what)
+}
+
+// rotatedNote names the rotations of equal-priority automatic blocks in
+// the last hour; empty without any.
+func rotatedNote(n uint64, what string) string {
+	if n == 0 {
+		return ""
+	}
+	return "; " + rotatedWarning(n, what)
+}
+
+// rotatedWarning says that n of what in the last hour would have rotated
+// an equal-priority automatic block out: the set is too small for the
+// attack (spec 5.17).
+func rotatedWarning(n uint64, what string) string {
+	return fmt.Sprintf("in the last hour %d %s would have rotated out an equal-priority automatic block held for at least 30 minutes; the set is too small for the attack", n, what)
+}
+
+// sharesNote names how many scopes share each partition and the fewest
+// slots each is due; empty without a scope.
+func sharesNote(s health.AdmissionDryRunShares) string {
+	var parts []string
+	for _, p := range []struct {
+		name  string
+		share health.AdmissionDryRunShare
+	}{{"general", s.General}, {"reserved", s.Reserved}} {
+		if p.share.Scopes > 0 {
+			parts = append(parts, fmt.Sprintf("%s slots shared by scopes: %d, at least %d each", p.name, p.share.Scopes, p.share.Share))
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "; " + strings.Join(parts, "; ")
 }
 
 // setOccupants describes the entries automatic admission never evicts and
@@ -243,8 +285,16 @@ func dryRunDoctorChecks(d *health.AdmissionDryRun) []DoctorCheck {
 		run.Fix = "the owner retries at its next turn; check the firewall engine, the admission clock, the state database or the configuration the code names"
 	}
 	rows := []DoctorCheck{run}
-	if d.Active && d.Occupancy != nil && d.Ceiling != nil {
-		rows = append(rows, dryRunCapacityCheck(d))
+	if d.Active {
+		if d.Occupancy != nil && d.Ceiling != nil {
+			rows = append(rows, dryRunCapacityCheck(d))
+		} else if warnings := dryRunRecentWarnings(d); len(warnings) > 0 {
+			// A snapshot failure loses current capacity, not the session's
+			// committed predictions inside the diagnostic window.
+			rows = append(rows, DoctorCheck{Name: "admission dry-run capacity", Status: "warn",
+				Message: "forecast capacity has no current snapshot" + replacedNote(d.LastHour["capacity_evict"], "forecast blocks") + "; " + strings.Join(warnings, "; "),
+				Fix:     "check the firewall engine and the blocked sets; inspect existing blocks and their expiries, then review auto_response.max_blocks_per_hour and firewall.deny_temp_ip_limit before going live"})
+		}
 	}
 	examples := DoctorCheck{Name: "admission dry-run examples", Status: "ok", Message: "no forecast examples or summaries were lost"}
 	var problems []string
@@ -284,21 +334,13 @@ func dryRunCapacityCheck(d *health.AdmissionDryRun) DoctorCheck {
 	if occ.Replaced > 0 {
 		c.Message += fmt.Sprintf("; legacy automatic blocks the forecast counts as replaced: %d", occ.Replaced)
 	}
-	c.Message += replacedNote(d.LastHour["capacity_evict"], "forecast blocks")
+	c.Message += replacedNote(d.LastHour["capacity_evict"], "forecast blocks") + sharesNote(occ.Shares)
 	warnings, note := setWarnings(occ.Unlimited, occ.Capacity, occ.DrainSeconds, occ.General, occ.Reserved)
 	c.Message += note
 	if occ.Limited {
 		warnings = append(warnings, "the forecast models no more active blocks")
 	}
-	var waits []string
-	for _, name := range []string{"ceiling", "set_full", "pending_recovery", "forecast_limited"} {
-		if n := d.LastHour[name]; n > 0 {
-			waits = append(waits, fmt.Sprintf("%d %s", n, name))
-		}
-	}
-	if len(waits) > 0 {
-		warnings = append(warnings, "in the last hour live admission would have waited: "+strings.Join(waits, ", "))
-	}
+	warnings = append(warnings, dryRunRecentWarnings(d)...)
 	if len(warnings) > 0 {
 		c.Status, c.Message = "warn", c.Message+"; "+strings.Join(warnings, "; ")
 		c.Fix = "a forecast wait is a model result, not a block; inspect existing blocks and their expiries, then review auto_response.max_blocks_per_hour and firewall.deny_temp_ip_limit before going live"
@@ -307,4 +349,22 @@ func dryRunCapacityCheck(d *health.AdmissionDryRun) DoctorCheck {
 		}
 	}
 	return c
+}
+
+// dryRunRecentWarnings needs only committed predictions, so losing the
+// current set snapshot cannot clear recent pressure on capacity.
+func dryRunRecentWarnings(d *health.AdmissionDryRun) (warnings []string) {
+	if n := d.LastHour["capacity_rotate"]; n > 0 {
+		warnings = append(warnings, rotatedWarning(n, "forecast blocks"))
+	}
+	var waits []string
+	for _, name := range []string{"ceiling", "set_full", "equal_tier_wait", "pending_recovery", "forecast_limited"} {
+		if n := d.LastHour[name]; n > 0 {
+			waits = append(waits, fmt.Sprintf("%d %s", n, name))
+		}
+	}
+	if len(waits) > 0 {
+		warnings = append(warnings, "in the last hour live admission would have waited: "+strings.Join(waits, ", "))
+	}
+	return warnings
 }

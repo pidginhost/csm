@@ -331,6 +331,9 @@ It never applies them; the view is not an enforcement record.
   would replace, and `preview_replacements_last_hour` those of the last
   sixty one-minute buckets of process monotonic time. A preview claims
   nothing, so later previews may name the same block.
+  `preview_rotations` and `preview_rotations_last_hour` count, in the same
+  way, the previews that took the slot of an equal-priority automatic
+  block, which live admission would rotate out.
 - An owner that runs on the firewall engine, with the firewall on and
   outside observe mode, adds `execution_held` with `execution_held_by`
   (`policy` for a refused execution policy, `firewall` for the firewall
@@ -377,7 +380,7 @@ temporary occupancy (`actual`, addresses plus two elements per timed subnet),
 the forecast addresses the real sets do not hold
 (`shadow_only`), the listed legacy automatic blocks the forecast replaced
 (`replaced`), their sum minus `replaced` (`predicted`), the `limit`, whether the set is
-`unlimited` and whether the model holds as many blocks as it can (`limited`);
+`unlimited` and whether retained forecast state fills its modelling bound (`limited`);
 it is null while no snapshot is available. `actual` and `imported` count at
 least the listed imports, matching the partition counts. A replaced import
 is subtracted only while listed, until its own expiry, even if its replacing
@@ -396,12 +399,27 @@ changes can extend that estimate; it is not an automatic removal deadline. `gene
 entries leave, a fifth rounded up reserved for direct or corroborated work,
 each with its `size`, the real and forecast automatic blocks it holds
 (`used`) and its `free` slots, also bounded by total remaining capacity.
-Existing occupants keep their partition when limits change. A full set
-admits an additional forecast block only in place of a strictly
-lower-priority automatic block: a forecast block of a lower class or
+`shares` gives, for `general` and `reserved`, the `scopes` that share the
+partition (those holding its forecast blocks the real sets do not hold and
+those the last turn's picks wait in) and the fewest slots each is due
+(`share`, the size divided among them; the remainder goes one each to the
+scopes after the session's cursor), both zero without a scope. All share
+keys remain present, including zeros; without a snapshot, `occupancy` is
+null instead of an object with missing share keys.
+Existing occupants keep their partition when limits change. In a full set,
+a forecast block may replace a strictly lower-priority automatic block: a forecast block of a lower class or
 severity, or a listed legacy automatic block that recorded its origin,
 which the forecast counts as gone while still listed, until the import's
-own expiry. An overfull set admits none, and entries counted in `unclaimed`
+own expiry. A pick of a new attack may instead rotate out a forecast block
+of exactly its class and severity in the partition of its own lane once
+that block's 30-minute hold has passed on both the admission clock and the
+session's elapsed time (`capacity_rotate`). The set's scopes share each
+partition: a pick at or over its share rotates only its own scope's
+blocks, one below it only the scope that borrows most, and one without a
+share waits. A pick that waits while such a block holds its partition
+predicts `equal_tier_wait`, not `set_full`. A rotated or replaced
+forecast block's address cannot rotate again until that block would have
+expired. An overfull set admits none, and entries counted in `unclaimed`
 are never replaced.
 Real coverage replaces forecast occupancy: a
 manual timed block reduces available capacity, an automatic block counts in
@@ -438,17 +456,28 @@ capacity` and `admission dry-run examples`) show the forecast's session,
 real against predicted capacity and lost examples. The capacity row also
 shows the automatic slots of each partition and how long the entries
 automatic admission never evicts take to drain, the legacy automatic
-blocks the forecast counts as replaced and the forecast blocks of the
-last hour that would have replaced a lower-priority automatic block; a
+blocks the forecast counts as replaced, the forecast blocks of the
+last hour that would have replaced a lower-priority automatic block and
+how many scopes share each partition; a
 replacement is an admission, not a wait. A dry run alone is not a
-failure; a held forecast, model limits, waits the model predicts, a set
+failure; a held forecast, model limits, waits the model predicts
+(`equal_tier_wait` among them), forecast blocks of the last hour that
+would have rotated out an equal-priority block, a set
 those entries fill, no free automatic slot, an unknown drain time and lost
-or stale examples warn. Outside a dry run, `admission set` shows the slots
+or stale examples warn. Recent rotation and wait warnings remain visible
+when the forecast has no current capacity snapshot; current occupancy and
+scope shares are then unavailable. These warnings clear when they leave
+the last-hour window or the forecast session ends.
+Outside a dry run, `admission set` shows the slots
 the last turn budgeted block work by and the previews of the last hour
 that would have replaced a lower-priority automatic block, and warns in
-the same cases and when the set could not be read. The preview count
-remains visible when the set cannot be read. Replacement notes change
-neither the row's status nor its suggested fix. Rows warn when
+the same cases, when the set could not be read and when a preview of the
+last hour would have rotated out an equal-priority block. The preview
+counts remain visible when the set cannot be read. Replacement notes change
+neither the row's status nor its suggested fix; a rotation means the set
+is too small for the attack. Recent preview rotations keep this row visible
+even if a later turn has no set snapshot or read error; lifetime totals
+alone do not keep the warning active. Rows warn when
 the ledger owner is not running, its clock reading
 is refused, an owner turn fails (`admission turns`), retiring an uncertain
 block fails (`admission retirement`), the ledger is damaged, admission has stopped or a Critical

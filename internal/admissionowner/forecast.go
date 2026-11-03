@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"time"
 
 	"github.com/pidginhost/csm/internal/admission"
@@ -140,11 +141,13 @@ func (o *Owner) forecast() (err error) {
 // usable panel allow as verdict_allow, before any modelled capacity is
 // judged. A covering or shorter forecast block, or a modelled set with
 // neither a free slot in a partition the pick may occupy nor a strictly
-// lower-tier block it may replace, ends it without a call.
+// lower-tier block it may replace nor an equal-tier block it may rotate
+// out, ends it without a call. The turn's picks share the modelled set
+// as a live schedule cycle's queued work does.
 // With the callback on, any other pick is asked about first (D8) and waits
 // for its answer with no forecast change; then the forecast bound or the
 // modelled ceiling can still end it. Only a capacity
-// admission, with or without a replacement, changes the model. Without an engine, snapshot or sound clock
+// admission, with or without a replacement or rotation, changes the model. Without an engine, snapshot or sound clock
 // the picks wait, with no call or forecast change.
 func (o *Owner) forecastBlocks(picks []execPick) error {
 	if len(picks) == 0 {
@@ -183,6 +186,7 @@ func (o *Owner) forecastBlocks(picks []execPick) error {
 	occupancy := adm
 	occupancy.Answers = nil
 	o.shadow.adm = &occupancy
+	o.shadow.share(adm, o.now, waitingOf(picks))
 	for i, p := range picks {
 		m, check := members[i], adm.Answers[i].BlockCheck
 		if check.Refusal != "" && check.Refusal != firewall.BlockRefusedExisting {
@@ -191,6 +195,7 @@ func (o *Owner) forecastBlocks(picks []execPick) error {
 			}
 			continue
 		}
+		rank := rankOf(p, m, false)
 		r, answered := o.readyVerdict(p.pick.ID, p.c, m.IP, m.Reason)
 		var change *shadowChange
 		pred := o.shadow.covering(m.IP, m.ExpiresAt)
@@ -202,15 +207,19 @@ func (o *Owner) forecastBlocks(picks []execPick) error {
 				return err
 			}
 			continue
-		case pred != 0:
-			// A forecast block holds the address: nothing to ask.
-		case o.shadow.full(adm, lanesOf(p.pick), rankOf(p, m)):
-			pred = admission.PredictSetFull
-		case o.policy.VerdictEnabled && !answered:
-			o.askVerdict(p.pick.ID, p.c, m.IP, m.Reason)
-			continue
-		default:
-			if pred, change, err = o.shadow.admit(m.IP, p.c.Key.Kind, m.ExpiresAt, lanesOf(p.pick), o.now, adm, rankOf(p, m)); err != nil {
+		case pred == 0:
+			// Existing coverage and a usable allow need no rotation proof.
+			if rank.fresh, err = o.freshPick(p, m.IP); err != nil {
+				return fmt.Errorf("reading the episode of pick %s: %w", p.pick.ID, err)
+			}
+			pred = o.shadow.wait(adm, lanesOf(p.pick), rank, o.now)
+		}
+		if pred == 0 {
+			if o.policy.VerdictEnabled && !answered {
+				o.askVerdict(p.pick.ID, p.c, m.IP, m.Reason)
+				continue
+			}
+			if pred, change, err = o.shadow.admit(m.IP, p.c.Key.Kind, m.ExpiresAt, lanesOf(p.pick), o.now, adm, rank); err != nil {
 				o.noteForecastError(forecastModelError)
 				return fmt.Errorf("forecasting pick %s: %w", p.pick.ID, err)
 			}
@@ -223,9 +232,39 @@ func (o *Owner) forecastBlocks(picks []execPick) error {
 }
 
 // rankOf ranks the forecast block of pick p, block member m, as a victim:
-// the pick's tier, the action of its next attempt and its address.
-func rankOf(p execPick, m firewall.BlockMember) shadowRank {
-	return shadowRank{tier: p.pick.Tier, action: admission.ActionID(m.Action), target: p.c.Key.Target}
+// the pick's tier, the action of its next attempt and its address, with
+// its scope and whether it is fresh.
+func rankOf(p execPick, m firewall.BlockMember, fresh bool) shadowRank {
+	return shadowRank{tier: p.pick.Tier, action: admission.ActionID(m.Action), target: p.c.Key.Target, scope: p.c.Scope.Key(), fresh: fresh}
+}
+
+// freshPick reports whether forecast pick p for ip may rotate an
+// equal-tier block (spec 5.2): its episode row says so, as a live
+// schedule reads it, and no forecast block of ip left the model before
+// that block's expiry, so its episode has had no forecast response.
+func (o *Owner) freshPick(p execPick, ip string) (bool, error) {
+	if _, answered := o.shadow.answered[ip]; answered {
+		return false, nil
+	}
+	return freshLedger(o.ledger, p.c)
+}
+
+// waitingOf is the scopes of a turn's block picks by the partitions they
+// may occupy, as a live schedule cycle counts its queued block work
+// (spec 5.6): general, and reserved too for work with a reserved lane.
+func waitingOf(picks []execPick) map[admission.Partition][]string {
+	out := map[admission.Partition][]string{}
+	for _, p := range picks {
+		for _, lane := range lanesOf(p.pick) {
+			part := admission.PartitionOf(lane)
+			out[part] = append(out[part], p.c.Scope.Key())
+		}
+	}
+	for part := range out {
+		slices.Sort(out[part])
+		out[part] = slices.Compact(out[part])
+	}
+	return out
 }
 
 // lanesOf is the order a forecast charges p: the lane the selection served

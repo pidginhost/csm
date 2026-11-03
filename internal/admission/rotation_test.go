@@ -55,6 +55,71 @@ func TestEffectRecordHoldPassed(t *testing.T) {
 	}
 }
 
+// The hold rule a forecast block shares with an effect record: both
+// clocks reach RotationHold from the application and its elapsed anchor.
+func TestRotationHoldPassed(t *testing.T) {
+	from := time.Hour
+	for name, tc := range map[string]struct {
+		wall, elapsed time.Duration
+		want          bool
+	}{
+		"exact boundary":          {RotationHold, RotationHold, true},
+		"one nanosecond short":    {RotationHold - 1, RotationHold, false},
+		"downtime grants nothing": {2 * RotationHold, RotationHold - time.Nanosecond, false},
+		"a slow wall clock waits": {RotationHold - time.Second, 2 * RotationHold, false},
+	} {
+		if got := RotationHoldPassed(t0, from, t0.Add(tc.wall), from+tc.elapsed); got != tc.want {
+			t.Errorf("%s: RotationHoldPassed = %v, want %v", name, got, tc.want)
+		}
+	}
+}
+
+// EqualTier names the blocks rotation could give work whatever their hold
+// or the work's freshness: scoped blocks of exactly the work's tier in the
+// lane's partition at another address. Imports, other tiers, the other
+// partition and work that cannot rotate are not equal-tier waits.
+func TestSlotLimitsEqualTierNamesBlocksRotationCouldTake(t *testing.T) {
+	young := heldBy(t, 1, high, PartitionGeneral, "x", time.Hour, false)
+	top := heldBy(t, 2, critical, PartitionGeneral, "x", 0, true)
+	imported := victimAt(t, 3, high, PartitionGeneral, t0.Add(time.Hour))
+	reserved := heldBy(t, 4, high, PartitionReserved, "x", 0, true)
+	stale := fresh("y", high)
+	stale.Fresh = false
+	multi := fresh("y", high)
+	multi.Cost = 2
+	cannot := fresh("y", high)
+	cannot.Evicts = false
+	own := fresh("y", high)
+	own.Target = young.Target
+	unscoped := fresh("", high)
+	for name, tc := range map[string]struct {
+		pool   []EvictionVictim
+		lane   Lane
+		demand SlotDemand
+		want   bool
+	}{
+		"a held equal-tier block":     {[]EvictionVictim{young}, LaneGeneral, fresh("y", high), true},
+		"a renewal waits on it too":   {[]EvictionVictim{young}, LaneGeneral, stale, true},
+		"unscoped work waits on it":   {[]EvictionVictim{young}, LaneGeneral, unscoped, true},
+		"a higher tier is not equal":  {[]EvictionVictim{top}, LaneGeneral, fresh("y", high), false},
+		"lower work is not equal":     {[]EvictionVictim{young}, LaneGeneral, fresh("y", warning), false},
+		"imports never rotate":        {[]EvictionVictim{imported}, LaneGeneral, fresh("y", high), false},
+		"another partition":           {[]EvictionVictim{reserved}, LaneGeneral, fresh("y", high), false},
+		"the lane's own partition":    {[]EvictionVictim{reserved}, LaneDirect, fresh("y", high), true},
+		"multi-unit work never waits": {[]EvictionVictim{young}, LaneGeneral, multi, false},
+		"work that cannot evict":      {[]EvictionVictim{young}, LaneGeneral, cannot, false},
+		"never its own address":       {[]EvictionVictim{young}, LaneGeneral, own, false},
+	} {
+		if got := NewSlotLimits(0, 0, tc.pool).EqualTier(tc.lane, tc.demand); got != tc.want {
+			t.Errorf("%s: EqualTier = %v, want %v", name, got, tc.want)
+		}
+	}
+	var none *SlotLimits
+	if none.EqualTier(LaneGeneral, fresh("y", high)) {
+		t.Fatal("nil limits named an equal-tier block")
+	}
+}
+
 // The share rule gives the remainder to the scopes after the cursor and
 // moves the cursor one scope on.
 func TestFairShareRemainderFollowsTheCursor(t *testing.T) {

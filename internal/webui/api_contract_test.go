@@ -395,3 +395,50 @@ func TestAPIStatusCarriesPreviewReplacements(t *testing.T) {
 		}
 	}
 }
+
+// Preview rotation counters and the forecast's shares keep their
+// documented JSON names, including zeros.
+func TestAPIStatusCarriesRotations(t *testing.T) {
+	for _, n := range []int{0, 3} {
+		view := &health.AdmissionStatus{Owner: &health.AdmissionOwner{PreviewRotations: uint64(n), PreviewRotationsLastHour: uint64(n / 3),
+			DryRun: &health.AdmissionDryRun{Occupancy: &health.AdmissionDryRunOccupancy{Shares: health.AdmissionDryRunShares{
+				General: health.AdmissionDryRunShare{Scopes: n, Share: 2 * n}, Reserved: health.AdmissionDryRunShare{Scopes: n / 3, Share: n}}}}}}
+		s := &Server{cfg: capsTestCfg(), startTime: time.Now()}
+		s.SetHealthProvider(admissionStatusProvider{status: view})
+		rec := httptest.NewRecorder()
+		s.apiStatus(rec, httptest.NewRequest(http.MethodGet, "/api/v1/status", nil))
+		var raw map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
+			t.Fatal(err)
+		}
+		object := func(parent map[string]any, key string) map[string]any {
+			t.Helper()
+			got, ok := parent[key].(map[string]any)
+			if !ok {
+				t.Fatalf("missing or non-object %s: %v", key, parent)
+			}
+			return got
+		}
+		owner := object(object(raw, "admission"), "owner")
+		if rec.Code != http.StatusOK || owner["preview_rotations"] != float64(n) || owner["preview_rotations_last_hour"] != float64(n/3) {
+			t.Fatalf("preview rotation wire: status %d, owner %v", rec.Code, owner)
+		}
+		dry := object(owner, "dry_run")
+		shares := object(object(dry, "occupancy"), "shares")
+		general, reserved := object(shares, "general"), object(shares, "reserved")
+		if general["scopes"] != float64(n) || general["share"] != float64(2*n) || reserved["scopes"] != float64(n/3) || reserved["share"] != float64(n) {
+			t.Fatalf("shares wire: %v", shares)
+		}
+		view.Owner.DryRun.Occupancy = nil
+		rec = httptest.NewRecorder()
+		s.apiStatus(rec, httptest.NewRequest(http.MethodGet, "/api/v1/status", nil))
+		raw = nil
+		if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
+			t.Fatal(err)
+		}
+		dry = object(object(object(raw, "admission"), "owner"), "dry_run")
+		if value, present := dry["occupancy"]; !present || value != nil {
+			t.Fatalf("unavailable occupancy must be present as null: %v", dry)
+		}
+	}
+}

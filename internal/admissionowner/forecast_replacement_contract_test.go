@@ -61,11 +61,11 @@ func TestShadowReplacementDemandAndLanes(t *testing.T) {
 		victim := forecastRank(t, 1, "203.0.113.1", highTier)
 		s.entries["203.0.113.1"] = shadowEntry{kind: admission.KindBlockIP, expires: shadowExpiry, partition: admission.PartitionReserved, tier: victim.tier, action: victim.action, target: victim.target}
 		adm := firewall.BlockAdmission{Limit: 3, Imported: 2}
-		if !s.full(adm, generalOnly, r) {
+		if s.wait(adm, generalOnly, r, shadowT0) == 0 {
 			t.Fatal("general-only work can take a reserved victim")
 		}
 		lanes := lanesOf(admission.Pick{Lane: admission.LaneGeneral, Reserved: lane})
-		if s.full(adm, lanes, r) {
+		if s.wait(adm, lanes, r, shadowT0) != 0 {
 			t.Fatal("a reserved victim on the second lane was missed")
 		}
 		pred, change := admitRanked(t, s, r, lanes, shadowT0, adm)

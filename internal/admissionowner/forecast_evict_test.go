@@ -61,7 +61,7 @@ func TestShadowReplacesALowerTierForecastBlock(t *testing.T) {
 	}
 	used := s.ceiling.General.Used
 	p, change := admitRanked(t, s, forecastRank(t, 4, "203.0.113.4", criticalTier), generalOnly, shadowT0, adm)
-	want := admission.EvictionVictim{Action: first.action, Target: first.target, Tier: highTier, Partition: admission.PartitionGeneral, ExpiresAt: shadowT0.Add(time.Hour)}
+	want := admission.EvictionVictim{Action: first.action, Target: first.target, Tier: highTier, Partition: admission.PartitionGeneral, ExpiresAt: shadowT0.Add(time.Hour), Applied: shadowT0}
 	if p != admission.PredictCapacityEvict || change == nil || change.victim != want {
 		t.Fatalf("critical pick = %v %+v, want capacity_evict of %+v", p, change, want)
 	}
@@ -285,12 +285,12 @@ func TestOwnerForecastPendingReplacementsRecheckCapacity(t *testing.T) {
 			close(gate)
 			readyAnswers(t, o, 2)
 			turn(t, o)
-			want := uint64(1)
+			want, wait := uint64(1), admission.PredictEqualTierWait
 			if withdrawn {
-				want = 0
+				want, wait = 0, admission.PredictSetFull
 			}
 			fc := forecastOf(t, o)
-			if fc.picks[admission.PredictCapacityEvict] != want || fc.picks[admission.PredictSetFull] != 2-want || fc.picks[admission.PredictCapacityAdmit] != 0 || len(fc.entries) != int(want) || len(fc.replaced) != int(want) || uint64(fc.ceiling.General.Used+fc.ceiling.Reserved.Used) != want {
+			if fc.picks[admission.PredictCapacityEvict] != want || fc.picks[wait] != 2-want || fc.picks[admission.PredictCapacityAdmit] != 0 || len(fc.entries) != int(want) || len(fc.replaced) != int(want) || uint64(fc.ceiling.General.Used+fc.ceiling.Reserved.Used) != want {
 				t.Fatalf("replacement replies reused stale capacity: %+v", fc)
 			}
 			for _, id := range ids {

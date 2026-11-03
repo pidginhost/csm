@@ -74,13 +74,34 @@ func (s *shadow) occupancyStatus() *health.AdmissionDryRunOccupancy {
 	only, replaced := general+reserved, s.replacedListed(adm)
 	imported := max(adm.Imported, len(adm.Imports))
 	actual := adm.Unclaimed + imported + adm.Admission
+	holding := s.holding(adm)
 	return &health.AdmissionDryRunOccupancy{
 		Actual: actual, ShadowOnly: only, Replaced: replaced, Predicted: actual + only - replaced, Limit: adm.Limit,
 		Unlimited: adm.Limit <= 0, Limited: s.limited(),
 		Capacity: slots.Capacity, Unclaimed: adm.Unclaimed, Imported: imported, DrainSeconds: int64(adm.Drain / time.Second),
 		General:  health.AdmissionDryRunPartition{Size: slots.General, Used: occ.General, Free: slots.FreeGeneral},
 		Reserved: health.AdmissionDryRunPartition{Size: slots.Reserved, Used: occ.Reserved, Free: slots.FreeReserved},
+		Shares: health.AdmissionDryRunShares{
+			General:  shareOf(slots.General, holding[admission.PartitionGeneral], s.waiting[admission.PartitionGeneral]),
+			Reserved: shareOf(slots.Reserved, holding[admission.PartitionReserved], s.waiting[admission.PartitionReserved]),
+		},
 	}
+}
+
+// shareOf is a partition of size shared among the scopes holding its
+// forecast blocks and those waiting for it.
+func shareOf(size int, holding map[string]int, waiting []string) health.AdmissionDryRunShare {
+	scopes := map[string]bool{}
+	for scope := range holding {
+		scopes[scope] = true
+	}
+	for _, scope := range waiting {
+		scopes[scope] = true
+	}
+	if len(scopes) == 0 {
+		return health.AdmissionDryRunShare{}
+	}
+	return health.AdmissionDryRunShare{Scopes: len(scopes), Share: size / len(scopes)}
 }
 
 func (s *shadow) ceilingStatus() *health.AdmissionDryRunCeiling {

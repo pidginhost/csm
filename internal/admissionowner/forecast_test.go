@@ -39,6 +39,11 @@ type forecastView struct {
 	ceiling admission.CeilingState
 	// replaced is the imports the session replaced, by name, until expiry.
 	replaced map[admission.ActionID]time.Time
+	// answered is the addresses whose forecast block left the model;
+	// waiting and cursors are how the last turn shared the set.
+	answered map[string]time.Time
+	waiting  map[admission.Partition][]string
+	cursors  admission.QueueCursors
 }
 
 // forecastOf reads the forecast session on the owner goroutine; nil when
@@ -48,7 +53,8 @@ func forecastOf(t *testing.T, o *Owner) *forecastView {
 	var v *forecastView
 	if err := o.do(func() error {
 		if s := o.shadow; s != nil {
-			v = &forecastView{id: s.id, reset: s.reset, entries: maps.Clone(s.entries), picks: s.picks, ceiling: s.ceiling, replaced: maps.Clone(s.replaced)}
+			v = &forecastView{id: s.id, reset: s.reset, entries: maps.Clone(s.entries), picks: s.picks, ceiling: s.ceiling, replaced: maps.Clone(s.replaced), answered: maps.Clone(s.answered),
+				waiting: maps.Clone(s.waiting), cursors: s.cursors}
 		}
 		return nil
 	}); err != nil {
@@ -131,7 +137,7 @@ func TestOwnerEndsDryRunPicksAsForecasts(t *testing.T) {
 		t.Fatalf("dry-run outcomes = %d", n)
 	}
 	fc := forecastOf(t, o)
-	if fc == nil || fc.reset != resetStartup || len(fc.entries) != 2 || fc.picks[admission.PredictCapacityAdmit] != 2 || fc.picks[admission.PredictSetFull] != 1 {
+	if fc == nil || fc.reset != resetStartup || len(fc.entries) != 2 || fc.picks[admission.PredictCapacityAdmit] != 2 || fc.picks[admission.PredictEqualTierWait] != 1 {
 		t.Fatalf("forecast = %+v", fc)
 	}
 	if fc.ceiling.General.Used+fc.ceiling.Reserved.Used != 2 {
@@ -486,7 +492,7 @@ func TestOwnerForecastCountsRealBlocksOfForecastAddresses(t *testing.T) {
 	blocks.set(func(b *fakeBlocks) { b.temp, b.liveTemp["192.0.2.10"] = 9, true })
 	queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.12")
 	turn(t, o)
-	if fc := forecastOf(t, o); fc.picks[admission.PredictCapacityAdmit] != 2 || fc.picks[admission.PredictSetFull] != 1 || fc.ceiling.General.Used+fc.ceiling.Reserved.Used != 2 {
+	if fc := forecastOf(t, o); fc.picks[admission.PredictCapacityAdmit] != 2 || fc.picks[admission.PredictEqualTierWait] != 1 || fc.ceiling.General.Used+fc.ceiling.Reserved.Used != 2 {
 		t.Fatalf("forecast after a manual timed block = %+v", fc)
 	}
 	blocks.set(func(b *fakeBlocks) { b.livePerm["192.0.2.11"] = true })
@@ -610,8 +616,9 @@ func TestOwnerForecastEndsPanelAllowsFirst(t *testing.T) {
 			}
 			fc := forecastOf(t, o)
 			want := [admission.PredictionSlots]uint64{}
-			want[admission.PredictCapacityAdmit], want[admission.PredictSetFull] = 1, 1
+			want[admission.PredictCapacityAdmit], want[admission.PredictEqualTierWait] = 1, 1
 			if temp == 10 {
+				want[admission.PredictEqualTierWait] = 0
 				want[admission.PredictCapacityAdmit], want[admission.PredictSetFull] = 0, 2
 			}
 			if fc.picks != want || uint64(len(fc.entries)) != want[admission.PredictCapacityAdmit] || uint64(fc.ceiling.General.Used+fc.ceiling.Reserved.Used) != want[admission.PredictCapacityAdmit] {
@@ -665,7 +672,7 @@ func TestOwnerForecastPendingPicksTakeNoSlot(t *testing.T) {
 	close(gate)
 	readyAnswers(t, o, 1)
 	turn(t, o)
-	if fc := forecastOf(t, o); fc.picks[admission.PredictSetFull] != 1 || len(queuedCandidates(t, o)) != 0 {
+	if fc := forecastOf(t, o); fc.picks[admission.PredictEqualTierWait] != 1 || len(queuedCandidates(t, o)) != 0 {
 		t.Fatalf("forecast after the answer = %+v", fc)
 	}
 }

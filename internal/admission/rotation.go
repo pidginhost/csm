@@ -12,13 +12,20 @@ import (
 // admission time (spec 5.6).
 const RotationHold = 30 * time.Minute
 
+// RotationHoldPassed reports whether a block applied at admission time
+// applied, when the ceiling's elapsed time read from, has kept its slot
+// for RotationHold on both clocks at admission time now with elapsed, as
+// a charge's window does. Downtime never counts, so a restart cannot
+// shorten a hold.
+func RotationHoldPassed(applied time.Time, from time.Duration, now time.Time, elapsed time.Duration) bool {
+	return !now.Before(applied.Add(RotationHold)) && elapsed-from >= RotationHold
+}
+
 // HoldPassed reports whether e's rotation hold has passed at admission
 // time now with the ceiling's elapsed time elapsed: its application is
-// verified and RotationHold has passed on both clocks since, as a
-// charge's window does. Downtime never counts, so a restart cannot
-// shorten a hold.
+// verified and RotationHoldPassed holds since.
 func (e EffectRecord) HoldPassed(now time.Time, elapsed time.Duration) bool {
-	return e.Verified() && !now.Before(e.Applied.Add(RotationHold)) && elapsed-e.Elapsed >= RotationHold
+	return e.Verified() && RotationHoldPassed(e.Applied, e.Elapsed, now, elapsed)
 }
 
 // fairShare is the integer share rule of spec 5.6, the same for queue
@@ -163,9 +170,7 @@ func (s *SlotLimits) rotation(lane Lane, d SlotDemand) int {
 		return -1
 	}
 	sh := s.shares
-	candidate := func(v EvictionVictim) bool {
-		return v.Partition == p && v.Tier == d.Tier && v.Target != d.Target
-	}
+	candidate := func(v EvictionVictim) bool { return rotationCandidate(p, d, v) }
 	// The scopes with a candidate, whatever its age: one pass, not one per
 	// scope.
 	listed := map[string]bool{}
@@ -205,4 +210,23 @@ func (s *SlotLimits) rotation(lane Lane, d SlotDemand) int {
 		}
 	}
 	return pick
+}
+
+// rotationCandidate reports whether v is a block of partition p that
+// rotation could give work d: a scoped block, never an import, of
+// exactly d's tier at another address.
+func rotationCandidate(p Partition, d SlotDemand, v EvictionVictim) bool {
+	return v.Partition == p && v.Tier == d.Tier && v.Target != d.Target && v.Scope != ""
+}
+
+// EqualTier reports whether lane's partition holds a block rotation could
+// give one-unit block work d once the block's hold, d's freshness and the
+// shares allow it. Work that finds no room while one does waits on an
+// equal-tier block (spec 5.17).
+func (s *SlotLimits) EqualTier(lane Lane, d SlotDemand) bool {
+	if s == nil || !d.Evicts || d.Cost != 1 {
+		return false
+	}
+	p := PartitionOf(lane)
+	return slices.ContainsFunc(s.victims, func(v EvictionVictim) bool { return rotationCandidate(p, d, v) })
 }

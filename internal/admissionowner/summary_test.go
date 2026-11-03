@@ -184,7 +184,7 @@ func TestOwnerSummarizesADryRunMinute(t *testing.T) {
 	if s.Check != "auto_block" || s.Severity != alert.Warning || s.Message != "Dry-run capacity forecast: 150 responses passed modelled capacity checks" {
 		t.Fatalf("summary = %+v", s)
 	}
-	if detail(s, "set_full") != "50" || detail(s, "ceiling") != "0" || detail(s, "not_modelled") != "0" || detail(s, "sessions") != "1" ||
+	if detail(s, "equal_tier_wait") != "50" || detail(s, "set_full") != "0" || detail(s, "ceiling") != "0" || detail(s, "not_modelled") != "0" || detail(s, "sessions") != "1" ||
 		detail(s, "start") == "" || detail(s, "end") == "" {
 		t.Fatalf("summary details = %q", s.Details)
 	}
@@ -358,5 +358,20 @@ func TestOwnerStopDiscardsAnEarlySummary(t *testing.T) {
 				t.Fatalf("an early summary at stop: %d sent, %d lost", len(got), lost)
 			}
 		})
+	}
+}
+
+// A summary counts rotations with admissions and replacements as passed
+// and names every other prediction, rotations and equal-tier waits too.
+func TestSummaryFindingCountsRotationsAsPassed(t *testing.T) {
+	s := &dryRunSummary{sessions: 1}
+	s.counts[admission.PredictCapacityAdmit], s.counts[admission.PredictCapacityEvict] = 1, 2
+	s.counts[admission.PredictCapacityRotate], s.counts[admission.PredictEqualTierWait] = 4, 8
+	got := summaryFinding(s, time.Now())
+	if got.Message != "Dry-run capacity forecast: 7 responses passed modelled capacity checks" {
+		t.Fatalf("message = %q", got.Message)
+	}
+	if detail(got, "capacity_rotate") != "4" || detail(got, "equal_tier_wait") != "8" || detail(got, "capacity_evict") != "2" {
+		t.Fatalf("details = %q", got.Details)
 	}
 }

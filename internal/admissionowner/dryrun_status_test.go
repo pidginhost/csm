@@ -94,14 +94,15 @@ func TestOwnerDryRunStatus(t *testing.T) {
 		t.Fatalf("coverage = %v %q", d.ModelledKinds, d.PredictionScope)
 	}
 	if d.Occupancy == nil || *d.Occupancy != (health.AdmissionDryRunOccupancy{Actual: 8, ShadowOnly: 2, Predicted: 10, Limit: 11, Capacity: 11, Unclaimed: 8,
-		General: health.AdmissionDryRunPartition{Size: 2, Used: 2}, Reserved: health.AdmissionDryRunPartition{Size: 1, Free: 1}}) {
+		General: health.AdmissionDryRunPartition{Size: 2, Used: 2}, Reserved: health.AdmissionDryRunPartition{Size: 1, Free: 1},
+		Shares: health.AdmissionDryRunShares{General: health.AdmissionDryRunShare{Scopes: 1, Share: 2}}}) {
 		t.Fatalf("occupancy = %+v", d.Occupancy)
 	}
 	if d.Ceiling == nil || d.Ceiling.Limit != 2000 || d.Ceiling.GeneralUsed+d.Ceiling.ReservedUsed != 2 ||
 		d.Ceiling.GeneralBudget != fc.ceiling.Budget(admission.LaneGeneral) || d.Ceiling.ReservedBudget != fc.ceiling.Budget(admission.LaneDirect) {
 		t.Fatalf("ceiling = %+v", d.Ceiling)
 	}
-	want := predictionCounts(map[admission.Prediction]uint64{admission.PredictCapacityAdmit: 2, admission.PredictSetFull: 1})
+	want := predictionCounts(map[admission.Prediction]uint64{admission.PredictCapacityAdmit: 2, admission.PredictEqualTierWait: 1})
 	if !reflect.DeepEqual(d.Picks, want) || !reflect.DeepEqual(d.LastHour, want) {
 		t.Fatalf("picks %v, last hour %v, want %v", d.Picks, d.LastHour, want)
 	}
@@ -289,7 +290,8 @@ func TestOwnerDryRunStatusAfterLeavingDryRun(t *testing.T) {
 		t.Fatalf("a new session = %+v", d)
 	}
 	if d.Occupancy == nil || *d.Occupancy != (health.AdmissionDryRunOccupancy{ShadowOnly: 1, Predicted: 1, Unlimited: true, Capacity: admission.TemporaryCapacity,
-		General: health.AdmissionDryRunPartition{Size: 8000, Used: 1, Free: 7999}, Reserved: health.AdmissionDryRunPartition{Size: 2000, Free: 2000}}) {
+		General: health.AdmissionDryRunPartition{Size: 8000, Used: 1, Free: 7999}, Reserved: health.AdmissionDryRunPartition{Size: 2000, Free: 2000},
+		Shares: health.AdmissionDryRunShares{General: health.AdmissionDryRunShare{Scopes: 1, Share: 8000}}}) {
 		t.Fatalf("occupancy of the new session = %+v, with stored examples counted?", d.Occupancy)
 	}
 }
@@ -359,5 +361,34 @@ func TestShadowOccupancyStatusFiniteFallback(t *testing.T) {
 		if !got.Unlimited || got.Limit != limit || got.Capacity != admission.TemporaryCapacity || got.General.Size != 8000 || got.Reserved.Size != 2000 {
 			t.Fatalf("limit %d: %+v", limit, got)
 		}
+	}
+}
+
+// The forecast shares each partition among the scopes holding its
+// forecast blocks the real sets do not hold and the scopes the last turn's
+// picks wait in, each due at least the partition's size divided among
+// them; blocks without a scope and blocks the real sets hold count for no
+// scope, and a partition without a scope shows zeros.
+func TestShadowOccupancyStatusSharesTheSet(t *testing.T) {
+	s := testShadow(t, freshCeiling(t, 2000), nil)
+	for ip, e := range map[string]shadowEntry{
+		"203.0.113.1": {partition: admission.PartitionGeneral, scope: "a"},
+		"203.0.113.2": {partition: admission.PartitionGeneral, scope: "a"},
+		"203.0.113.3": {partition: admission.PartitionGeneral},
+		"203.0.113.4": {partition: admission.PartitionGeneral, scope: "held"},
+		"203.0.113.5": {partition: admission.PartitionReserved, scope: "b"},
+	} {
+		e.kind, e.expires = admission.KindBlockIP, shadowExpiry
+		s.entries[ip] = e
+	}
+	s.waiting = map[admission.Partition][]string{admission.PartitionGeneral: {"a", "c"}}
+	s.adm = &firewall.BlockAdmission{Limit: 20, ShadowHeld: map[string]bool{"203.0.113.4": true}}
+	want := health.AdmissionDryRunShares{General: health.AdmissionDryRunShare{Scopes: 2, Share: 8}, Reserved: health.AdmissionDryRunShare{Scopes: 1, Share: 4}}
+	if got := s.occupancyStatus(); got == nil || got.Shares != want {
+		t.Fatalf("shares = %+v, want %+v", got, want)
+	}
+	s.entries, s.waiting = map[string]shadowEntry{}, nil
+	if got := s.occupancyStatus(); got.Shares != (health.AdmissionDryRunShares{}) {
+		t.Fatalf("shares without a scope = %+v", got.Shares)
 	}
 }

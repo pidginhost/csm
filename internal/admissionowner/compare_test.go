@@ -475,7 +475,7 @@ func TestOwnerCountsDryRunEndingsByPrediction(t *testing.T) {
 		}
 		got[r.Action+" "+r.Prediction] += r.Count
 	}
-	want := map[string]uint64{"block_ip capacity_admit": 2, "block_ip set_full": 1, "promote not_modelled": 1}
+	want := map[string]uint64{"block_ip capacity_admit": 2, "block_ip equal_tier_wait": 1, "promote not_modelled": 1}
 	if !maps.Equal(got, want) {
 		t.Fatalf("dry-run rows = %v, want %v", got, want)
 	}

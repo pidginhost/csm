@@ -186,7 +186,7 @@ func (o *Owner) finishSummary() {
 }
 
 // summaryFinding is the history record of s: the capacity admissions, with
-// or without a replacement, in its message, every other prediction, its
+// or without a replacement or rotation, in its message, every other prediction, its
 // interval, its session count and its examples as
 // candidate/finding/target/check.
 func summaryFinding(s *dryRunSummary, now time.Time) alert.Finding {
@@ -206,6 +206,7 @@ func summaryFinding(s *dryRunSummary, now time.Time) alert.Finding {
 	}
 	passed := s.counts[admission.PredictCapacityAdmit]
 	passed += min(s.counts[admission.PredictCapacityEvict], ^uint64(0)-passed)
+	passed += min(s.counts[admission.PredictCapacityRotate], ^uint64(0)-passed)
 	return alert.Finding{
 		Check: "auto_block", Severity: alert.Warning, Details: b.String(), Timestamp: now,
 		Message: fmt.Sprintf("Dry-run capacity forecast: %d responses passed modelled capacity checks", passed),

@@ -82,6 +82,11 @@ type AdmissionOwner struct {
 	// the last sixty one-minute buckets of process monotonic time.
 	PreviewReplacements         uint64 `json:"preview_replacements"`
 	PreviewReplacementsLastHour uint64 `json:"preview_replacements_last_hour"`
+	// PreviewRotations and PreviewRotationsLastHour count the previews
+	// that took the slot of an equal-priority automatic block, which live
+	// admission would rotate out, in the same way.
+	PreviewRotations         uint64 `json:"preview_rotations"`
+	PreviewRotationsLastHour uint64 `json:"preview_rotations_last_hour"`
 }
 
 // AdmissionSet is the temporary block set as automatic admission divides
@@ -171,6 +176,24 @@ type AdmissionDryRunOccupancy struct {
 	// a fifth, rounded up, is reserved for direct or corroborated work.
 	General  AdmissionDryRunPartition `json:"general"`
 	Reserved AdmissionDryRunPartition `json:"reserved"`
+	// Shares is how the forecast shares each partition among its scopes.
+	Shares AdmissionDryRunShares `json:"shares"`
+}
+
+// AdmissionDryRunShares is how the forecast shares each partition among
+// its scopes for equal-tier rotation (spec 5.6).
+type AdmissionDryRunShares struct {
+	General  AdmissionDryRunShare `json:"general"`
+	Reserved AdmissionDryRunShare `json:"reserved"`
+}
+
+// AdmissionDryRunShare is one partition's sharing: the scopes holding its
+// forecast blocks or waiting at the last turn, and the fewest slots each
+// is due, its size divided among them; the remainder goes one each to the
+// scopes after the session's cursor. Both are zero without a scope.
+type AdmissionDryRunShare struct {
+	Scopes int `json:"scopes"`
+	Share  int `json:"share"`
 }
 
 // AdmissionDryRunPartition is one modelled partition of the automatic

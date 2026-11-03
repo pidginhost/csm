@@ -29,13 +29,21 @@ const (
 	// the temporary slot of a strictly lower-tier automatic block, which it
 	// would replace (spec 5.6).
 	PredictCapacityEvict
+	// PredictCapacityRotate: the pick passes the modelled ceiling and
+	// rotates an equal-tier forecast block whose hold passed out of its
+	// full partition, as fresh work may (spec 5.6).
+	PredictCapacityRotate
+	// PredictEqualTierWait: it would wait as set_full while its partition
+	// holds an equal-tier block that rotation does not give it yet: the
+	// block's hold, the shares or an answered episode stop it (spec 5.17).
+	PredictEqualTierWait
 	predictionEnd
 )
 
 // PredictionSlots sizes an array indexed by Prediction; slot zero is unused.
 const PredictionSlots = int(predictionEnd)
 
-var predictionNames = [...]string{"", "capacity_admit", "existing_actual", "existing_shadow", "ceiling", "set_full", "pending_recovery", "forecast_limited", "not_modelled", "capacity_evict"}
+var predictionNames = [...]string{"", "capacity_admit", "existing_actual", "existing_shadow", "ceiling", "set_full", "pending_recovery", "forecast_limited", "not_modelled", "capacity_evict", "capacity_rotate", "equal_tier_wait"}
 
 func (p Prediction) Valid() bool { return p >= PredictCapacityAdmit && p < predictionEnd }
 

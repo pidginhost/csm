@@ -202,11 +202,33 @@ func victimPool(tx *bolt.Tx, now time.Time, rotates func(admission.EffectRecord)
 // episode row is missing or names another episode is not fresh: an
 // unknown history never proves a new episode.
 func (q *queueTx) fresh(c admission.Candidate) (bool, error) {
-	if !q.started || c.Key.Kind != admission.KindBlockIP {
+	if !q.started {
 		return false, nil
 	}
-	e, found, err := loadEpisode(q.tx, c.Key.Target.Key())
+	return freshEpisode(q.tx, c)
+}
+
+// freshEpisode reports whether c is block_ip work whose target's episode
+// row names its episode and records no verified response.
+func freshEpisode(tx *bolt.Tx, c admission.Candidate) (bool, error) {
+	if c.Key.Kind != admission.KindBlockIP {
+		return false, nil
+	}
+	e, found, err := loadEpisode(tx, c.Key.Target.Key())
 	return found && e.ID == c.Key.Episode && e.Verified.IsZero(), err
+}
+
+// Fresh reports whether c's episode row lets it rotate an equal-tier
+// block as a live ledger decides it (spec 5.2), on any ledger: a dry-run
+// forecast asks it for its picks.
+func (l *AdmissionLedger) Fresh(c admission.Candidate) (bool, error) {
+	var fresh bool
+	err := l.db.bolt.View(func(tx *bolt.Tx) error {
+		var err error
+		fresh, err = freshEpisode(tx, c)
+		return err
+	})
+	return fresh, err
 }
 
 // markFresh notes which of the live candidates byID are fresh. Only a
