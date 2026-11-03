@@ -732,7 +732,7 @@ func TestSettingsHelpStatesTheShippedDefaults(t *testing.T) {
 		want           []string
 	}{
 		{"auto_response", "block_expiry", []string{"Default " + config.DefaultBlockExpiry + ".", "cap new automatic lifetimes", "Retries keep their first expiry.", "Existing blocking keeps its own lifetimes."}},
-		{"auto_response", "max_blocks_per_hour", []string{fmt.Sprintf(" %d for existing blocking", config.DefaultMaxBlocksPerHour), fmt.Sprintf(" %d for the admission ledger", config.DefaultAdmissionCeiling), fmt.Sprintf("caps any value at %d", admission.MaxCeiling)}},
+		{"auto_response", "max_blocks_per_hour", []string{"scan-driven IP blocks; challenge, central and incident blocks are not limited", fmt.Sprintf(" %d for scan-driven blocks", config.DefaultMaxBlocksPerHour), fmt.Sprintf(" %d for the admission ledger", config.DefaultAdmissionCeiling), fmt.Sprintf("caps any value at %d", admission.MaxCeiling)}},
 		{"firewall", "deny_ip_limit", []string{fmt.Sprintf("Default %d.", def.DenyIPLimit)}},
 		{"firewall", "deny_temp_ip_limit", []string{fmt.Sprintf("Default %d.", def.DenyTempIPLimit), fmt.Sprintf("plans for %d slots", admission.TemporaryCapacity)}},
 	} {
