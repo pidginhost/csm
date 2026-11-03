@@ -321,7 +321,7 @@ func (e *sprayIP) recordFailure(name string, exist mailboxExistence, now time.Ti
 	if !ok || now.Sub(f.last) > window {
 		f = sprayFailure{exist: exist}
 	} else {
-		f.exist = combineMailboxExistence(f.exist, exist)
+		f.exist = foldObservedExistence(f.exist, exist)
 	}
 	f.count++
 	f.last = now
@@ -330,6 +330,20 @@ func (e *sprayIP) recordFailure(name string, exist mailboxExistence, now time.Ti
 	}
 	e.failed[name] = f
 	return true
+}
+
+// foldObservedExistence merges what separate failures say about one name
+// over time. Unlike combineMailboxExistence, the fold for one request across
+// a passdb chain, unknown here means no information (an IMAP failure carries
+// none), so a missing answer outweighs it. One exists answer outweighs all.
+func foldObservedExistence(a, b mailboxExistence) mailboxExistence {
+	switch {
+	case a == mailboxExists || b == mailboxExists:
+		return mailboxExists
+	case a == mailboxMissing || b == mailboxMissing:
+		return mailboxMissing
+	}
+	return mailboxExistenceUnknown
 }
 
 func (e *sprayIP) pruneFailed(cutoff time.Time) {

@@ -181,6 +181,28 @@ func TestMailSpray_StrongCompromiseAfterCorroboratedMissingName(t *testing.T) {
 	}
 }
 
+// Unknown carries no information across separate failures: a later missing
+// answer on the same name sticks, while one exists answer outweighs all.
+func TestMailSpray_MissingOverUnknownInMemory(t *testing.T) {
+	m, clock := newTestSpray(testSprayConfig())
+	const ip = "192.0.2.1"
+	ageTrust(t, m, clock, ip, "a@example.com")
+	corroborate(t, m, "x@example.com")
+	wantNoVerdict(t, m.Failure(ip, "x@example.com", mailboxExistenceUnknown))
+	wantNoVerdict(t, m.Failure(ip, "x@example.com", mailboxMissing))
+	_, v := m.Success(ip, "c@example.com")
+	wantRule(t, v, sprayRuleCompromise, true)
+
+	m.Failure("192.0.2.2", "y@example.com", mailboxExists)
+	m.Failure("192.0.2.2", "y@example.com", mailboxMissing)
+	m.mu.Lock()
+	got := m.ips["192.0.2.2"].failed["y@example.com"].exist
+	m.mu.Unlock()
+	if got != mailboxExists {
+		t.Fatalf("exists then missing folded to %v, want exists", got)
+	}
+}
+
 func TestMailSpray_EstablishedMultiMailboxDowngradesCompromise(t *testing.T) {
 	m, clock := newTestSpray(testSprayConfig())
 	const ip = "192.0.2.1"
