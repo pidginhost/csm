@@ -157,6 +157,12 @@ type mailSpray struct {
 	trustByIP      map[string]map[string]struct{} // ip to its trusted mailboxes
 	trustByMailbox map[string]map[string]struct{} // mailbox to the IPs it trusts
 
+	// Eviction floors of the evidence and corroboration pools, set when a
+	// full pool's batch eviction stops before entries over a bar (see
+	// sprayEvict). Ranks change with time and config, so Purge, SetConfig
+	// and Load clear them.
+	ipFloor, nameFloor int
+
 	// Persistence bookkeeping, so a save writes only what changed. full
 	// makes the next save rewrite the whole bucket instead: at start, after
 	// Load or a reset, and if the bookkeeping outgrows its bound.
@@ -196,6 +202,7 @@ func (m *mailSpray) SetConfig(cfg sprayConfig) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.cfg = cfg
+	m.ipFloor, m.nameFloor = 0, 0
 	if cfg.Window <= 0 {
 		clear(m.ips)
 		clear(m.names)
@@ -377,6 +384,7 @@ func (m *mailSpray) Purge() {
 	if m.cfg.Window <= 0 {
 		return
 	}
+	m.ipFloor, m.nameFloor = 0, 0
 	cutoff := m.now().Add(-m.cfg.Window)
 	for ip, e := range m.ips {
 		records := len(e.failed) + len(e.weakAlerted) + len(e.revoked)
@@ -648,6 +656,7 @@ func (m *mailSpray) Load(read func(func(store.MailSprayState)) error) error {
 	clear(m.trust)
 	clear(m.trustByIP)
 	clear(m.trustByMailbox)
+	m.ipFloor, m.nameFloor = 0, 0
 	// The bucket may hold entries this load dropped: rewrite it whole.
 	m.resetChanges()
 	return read(func(st store.MailSprayState) {
@@ -1244,7 +1253,7 @@ func (m *mailSpray) ipRank(e *sprayIP, now time.Time) int {
 }
 
 func (m *mailSpray) evictIPs(keep string, now time.Time) {
-	sprayEvict(m.ips, m.cfg.MaxIPs, keep,
+	sprayEvict(m.ips, m.cfg.MaxIPs, keep, &m.ipFloor,
 		func(e *sprayIP) int { return m.ipRank(e, now) },
 		func(e *sprayIP) time.Time { return e.lastSeen },
 		func(ip string) {
@@ -1256,19 +1265,19 @@ func (m *mailSpray) evictIPs(keep string, now time.Time) {
 // evictTrust drops the oldest last success first: trust is earned with a real
 // password, so recency is all that tells records apart.
 func (m *mailSpray) evictTrust(keep sprayTrustKey) {
-	sprayEvict(m.trust, m.cfg.MaxIPs, keep,
+	sprayEvict(m.trust, m.cfg.MaxIPs, keep, new(int),
 		func(sprayTrust) int { return 0 },
 		func(t sprayTrust) time.Time { return t.last },
 		m.dropTrust)
 }
 
 // evictNames keeps names already over the rule 2 bar ahead of a flood of
-// invented ones.
+// invented ones. Such a name ranks with verdict evidence.
 func (m *mailSpray) evictNames(keep string, now time.Time) {
-	sprayEvict(m.names, maxSprayCorroborationNames, keep,
+	sprayEvict(m.names, maxSprayCorroborationNames, keep, &m.nameFloor,
 		func(n *sprayName) int {
 			if m.cfg.MissingNetworks > 0 && m.networkCount(n, now) >= m.cfg.MissingNetworks {
-				return sprayRankRepeat
+				return sprayRankVerdict
 			}
 			return sprayRankOneShot
 		},
@@ -1287,9 +1296,21 @@ type sprayVictim[K comparable] struct {
 
 // sprayEvict drops the lowest rank first, then the least recently seen.
 // keep wins ties within its rank, but cannot displace a higher rank. Once
-// within limit, batch removal stops before crossing into a higher rank:
-// spare capacity must not cost stronger evidence. drop also updates indexes.
-func sprayEvict[K comparable, V any](m map[K]V, limit int, keep K, rank func(V) int, seen func(V) time.Time, drop func(K)) {
+// within limit, batch removal goes on to 95% of it, through one-shot and
+// multi-failure entries alike, but stops before entries over a bar
+// (sprayRankVerdict): spare capacity must not cost them. It then records
+// their rank in *floor, as every entry left ranks at least that high.
+// While that holds, a newcomer ranked below the floor is the one entry a
+// sort would drop, so it is dropped without sorting the pool. One admitted
+// into spare room instead ends the promise. drop also updates indexes.
+func sprayEvict[K comparable, V any](m map[K]V, limit int, keep K, floor *int, rank func(V) int, seen func(V) time.Time, drop func(K)) {
+	if v, ok := m[keep]; ok && *floor > 0 && rank(v) < *floor {
+		if len(m) <= limit {
+			*floor = 0
+			return
+		}
+		drop(keep)
+	}
 	if len(m) <= limit {
 		return
 	}
@@ -1318,7 +1339,11 @@ func sprayEvict[K comparable, V any](m map[K]V, limit int, keep K, rank func(V) 
 	}
 	lastRank := victims[0].rank
 	for _, v := range victims {
-		if len(m) <= target || (len(m) <= limit && v.rank > lastRank) {
+		if len(m) <= target {
+			break
+		}
+		if len(m) <= limit && v.rank > lastRank && v.rank >= sprayRankVerdict {
+			*floor = v.rank
 			break
 		}
 		drop(v.key)

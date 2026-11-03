@@ -535,6 +535,150 @@ func TestMailSpray_FullCorroborationPoolKeepsStrongerEntries(t *testing.T) {
 	}
 }
 
+// A pool full of multi-failure evidence must still make room: otherwise
+// each new IP evicts only itself, and one that returns on a second name
+// gets no verdict.
+func TestMailSpray_FullRepeatPoolKeepsLearning(t *testing.T) {
+	cfg := testSprayConfig()
+	cfg.MaxIPs = 100
+	m, clock := newTestSpray(cfg)
+	for i := range cfg.MaxIPs {
+		ip := fmt.Sprintf("2001:db8::%x", i+1)
+		wantNoVerdict(t, m.Failure(ip, "a@example.com", mailboxExists))
+		wantNoVerdict(t, m.Failure(ip, "a@example.com", mailboxExists))
+	}
+	held := func(ip string) bool {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		return m.ips[ip] != nil
+	}
+	const returning = "192.0.2.201"
+	for _, ip := range []string{"192.0.2.200", returning, "192.0.2.202", "192.0.2.203"} {
+		clock.advance(time.Second)
+		wantNoVerdict(t, m.Failure(ip, "a@example.com", mailboxExists))
+		if ip != "192.0.2.200" && !held(ip) {
+			t.Fatalf("new IP %s was evicted on arrival", ip)
+		}
+		if m.Size() > cfg.MaxIPs {
+			t.Fatalf("evidence pool holds %d IPs", m.Size())
+		}
+	}
+	clock.advance(time.Hour)
+	wantRule(t, m.Failure(returning, "b@example.com", mailboxExists), sprayRuleBreadth, true)
+}
+
+// Once a batch stops before entries over a bar, weaker newcomers are
+// dropped without ranking the pool again: one sort, not one per newcomer.
+func TestSprayEvict_FloorSkipsSortForWeakerNewcomers(t *testing.T) {
+	const limit, newcomers = 100, 50
+	pool := make(map[int]int) // key to rank
+	for k := range limit {
+		pool[k] = sprayRankVerdict
+	}
+	ranked, floor := 0, 0
+	insert := func(k, rank int) {
+		pool[k] = rank
+		sprayEvict(pool, limit, k, &floor,
+			func(r int) int { ranked++; return r },
+			func(int) time.Time { return time.Time{} },
+			func(k int) { delete(pool, k) })
+	}
+	for i := range newcomers {
+		insert(limit+i, i%2) // one-shot and multi-failure alike
+	}
+	if floor != sprayRankVerdict {
+		t.Fatalf("floor = %d, want %d", floor, sprayRankVerdict)
+	}
+	// One sort ranks the pool and the first newcomer; every newcomer is
+	// also ranked once against the floor.
+	if want := limit + 1 + newcomers; ranked > want {
+		t.Fatalf("ranked %d entries for %d newcomers, want at most %d (one sort)", ranked, newcomers, want)
+	}
+	for k := range limit {
+		if pool[k] != sprayRankVerdict {
+			t.Fatalf("entry %d over the bar was evicted", k)
+		}
+	}
+	if len(pool) != limit {
+		t.Fatalf("pool holds %d entries, want %d", len(pool), limit)
+	}
+}
+
+// A batch that stops before entries over a bar with spare room left sets
+// the floor, but a weaker newcomer admitted into that room ends it, so the
+// next overflow sorts again and drops every weak entry, as before.
+func TestSprayEvict_SpareRoomClearsFloor(t *testing.T) {
+	const limit = 100
+	pool := make(map[int]int) // key to rank
+	floor := 0
+	insert := func(k, rank int) {
+		pool[k] = rank
+		sprayEvict(pool, limit, k, &floor,
+			func(r int) int { return r },
+			func(int) time.Time { return time.Time{} },
+			func(k int) { delete(pool, k) })
+	}
+	for k := range limit - 2 {
+		insert(k, sprayRankVerdict)
+	}
+	insert(limit-2, sprayRankRepeat)
+	insert(limit-1, sprayRankRepeat)
+	insert(limit, sprayRankOneShot) // drops itself and both repeats
+	if floor != sprayRankVerdict || len(pool) != limit-2 {
+		t.Fatalf("floor = %d with %d entries, want %d with %d", floor, len(pool), sprayRankVerdict, limit-2)
+	}
+	insert(limit+1, sprayRankOneShot)
+	if _, ok := pool[limit+1]; floor != 0 || !ok {
+		t.Fatalf("floor = %d after admitting a newcomer into spare room, want 0", floor)
+	}
+	insert(limit+2, sprayRankOneShot)
+	insert(limit+3, sprayRankOneShot)
+	if _, ok := pool[limit+1]; ok || len(pool) != limit-2 || floor != sprayRankVerdict {
+		t.Fatalf("overflow kept a weak entry: %d entries, floor %d", len(pool), floor)
+	}
+}
+
+// Both pools record the floor when full of entries over a bar, and the
+// minute purge clears it.
+func TestMailSpray_FullPoolsSetEvictionFloor(t *testing.T) {
+	cfg := testSprayConfig()
+	cfg.MaxIPs = 100
+	ips, clock := newTestSpray(cfg)
+	for i := range cfg.MaxIPs {
+		ip := fmt.Sprintf("2001:db8::%x", i+1)
+		wantNoVerdict(t, ips.Failure(ip, "a@example.com", mailboxExists))
+		wantRule(t, ips.Failure(ip, "b@example.com", mailboxExists), sprayRuleBreadth, true)
+	}
+	clock.advance(time.Second)
+	ips.Failure("192.0.2.2", "a@example.com", mailboxExists)
+
+	names, clock := newTestSpray(testSprayConfig())
+	for i := range maxSprayCorroborationNames {
+		name := fmt.Sprintf("missing%d@example.com", i)
+		for _, ip := range []string{"192.0.2.1", "198.51.100.1", "203.0.113.1"} {
+			names.Failure(ip, name, mailboxMissing)
+		}
+	}
+	clock.advance(time.Second)
+	names.Failure("192.0.2.2", "noise@example.com", mailboxMissing)
+
+	floors := func() (int, int) {
+		ips.mu.Lock()
+		defer ips.mu.Unlock()
+		names.mu.Lock()
+		defer names.mu.Unlock()
+		return ips.ipFloor, names.nameFloor
+	}
+	if ipFloor, nameFloor := floors(); ipFloor != sprayRankVerdict || nameFloor != sprayRankVerdict {
+		t.Fatalf("floors = %d, %d, want %d for both", ipFloor, nameFloor, sprayRankVerdict)
+	}
+	ips.Purge()
+	names.Purge()
+	if ipFloor, nameFloor := floors(); ipFloor != 0 || nameFloor != 0 {
+		t.Fatalf("floors after purge = %d, %d, want 0", ipFloor, nameFloor)
+	}
+}
+
 func TestMailSpray_CapacityRanksCurrentVerdict(t *testing.T) {
 	cfg := testSprayConfig()
 	cfg.MaxIPs = 2
