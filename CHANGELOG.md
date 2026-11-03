@@ -23,7 +23,6 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Fixed
 
-- CSM now starts with a diagnostic warning instead of crashing when automatic response state is incomplete.
 - Antispam no longer overrides spam weights you set yourself in rspamd.
 - Spam learning no longer stops for every report when rspamd hashes one learned message differently; only that message's learning is dropped.
 - Mail from large shared services such as Gmail no longer crowds other senders out of spam source detection on busy hosts.
