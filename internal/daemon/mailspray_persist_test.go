@@ -621,6 +621,33 @@ func TestMailSprayDeltaSaveDeletesDroppedKeys(t *testing.T) {
 	}
 }
 
+// Forgetting outage failures can leave a saved entry with no records. Purge
+// drops it from memory and must drop its key from the bucket too.
+func TestMailSprayPurgeDeletesEmptiedEntry(t *testing.T) {
+	db := openStoreForTest(t)
+	m, clock := newTestSpray(testSprayConfig())
+	d := &Daemon{mailSpray: m}
+	const ip = "192.0.2.9"
+	m.Failure(ip, "a@example.com", mailboxExists)
+	clock.advance(time.Minute)
+	m.ForgetRecentFailures(ip, clock.Now().Add(-time.Hour))
+	d.persistMailSpray()
+	if got, err := loadSavedSpray(db); err != nil {
+		t.Fatalf("LoadMailSpray: %v", err)
+	} else if saved, ok := got.IPs[ip]; !ok || saved.Failed != nil {
+		t.Fatalf("setup: bucket = %+v; want the emptied entry saved", got)
+	}
+
+	m.Purge()
+	delta, full := m.ExportChanges()
+	if full || !slices.Equal(delta.DeleteIPs, []string{ip}) {
+		t.Fatalf("delta after purge = full %v %+v, want a delete of %s", full, delta, ip)
+	}
+	m.RetryChanges(delta, full)
+	d.persistMailSpray()
+	bucketMatches(t, db, m)
+}
+
 func TestMailSprayFailedSaveRetries(t *testing.T) {
 	db := openStoreForTest(t)
 	m, clock := newTestSpray(testSprayConfig())

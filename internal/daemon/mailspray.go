@@ -453,10 +453,11 @@ func (m *mailSpray) Purge() {
 			records++
 		}
 		changed := records != len(e.failed)+len(e.weakAlerted)+len(e.revoked)
-		// Every entry holds a record or the overflow marker, so one emptied
-		// here has changed.
+		// ForgetRecentFailures can leave an entry with no records, so an
+		// entry dropped here may not have changed in this pass.
 		if len(e.failed) == 0 && e.untracked.IsZero() && len(e.weakAlerted) == 0 && len(e.revoked) == 0 {
 			delete(m.ips, ip)
+			changed = true
 		}
 		if changed {
 			m.markIP(ip)
