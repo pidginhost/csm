@@ -121,6 +121,12 @@ blocking keeps. Preview accounting is not enforcement state. This is not a
 downgrade guard for a ledger that has executed real actions. Never delete the
 state database or replace it with an older copy to get past the format check.
 
+The first positive elapsed episode end this release records raises
+admission state to schema 13, including on hosts that only preview or
+forecast. Older binaries cannot open it and keep blocking with the legacy
+budget, as above. Roll back only to a build that supports both schema 13
+and elapsed episode records.
+
 `auto_response.dry_run` defaults to `true` when the key is absent. Automatic IP blocks are not applied. With the firewall on outside observe mode, the dry-run count holds retained forecast examples, including older entries until pruning; it is not active occupancy or a count of all attempted blocks. If your `auto_response:` block sets `enabled: true` and `block_ips: true` but does **not** set `dry_run`, **add `dry_run: false` explicitly** before relying on auto-block. Verify with:
 
 ```bash

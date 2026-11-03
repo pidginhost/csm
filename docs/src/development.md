@@ -619,7 +619,17 @@ observation made within an hour of the episode's last one, or while its
 work is queued or in flight, joins it; a later one opens the next episode,
 and one older than the previous episode's end, or already accepted by
 that episode while its work held it open, is refused as stale. A
-degraded clock reading never ends an episode. Episode placement refuses an
+degraded clock reading never ends an episode, and an episode ends only
+once the ceiling's elapsed time has passed its end as well: a forward wall
+step cannot end it early, and a reboot grants it no time. Each row records
+that elapsed end; a row written before it existed ends on wall time alone
+until its next write, including maintenance that leaves its last
+observation unchanged. Existing elapsed ends survive maintenance, and
+verified closing replaces the quiet end with the block's remaining
+lifetime. The first row with a positive elapsed end moves the ledger
+to schema 13 on every host, which older builds refuse. Schema 13 records
+nothing of the live start or the effect records, so a schema 13 ledger
+proves them from their own markers. Episode placement refuses an
 observation dated after the ledger's current reading, even within
 assessment's clock-skew tolerance. This keeps future times out of observation
 frontiers and prevents an early episode boundary. A queued candidate coalesces
@@ -654,7 +664,9 @@ queued or in flight; an unknown outcome or a response of another kind does
 not end it. The expiry is set on the engine's lease clock, which after a
 wall clock step back leads admission time; the owner passes that lead to
 `FinishOnLease` or, with a victim, `FinishEviction`, so the episode ends when
-the kernel element expires in admission time. An isolated member's isolation
+the kernel element expires in admission time. Its elapsed end is the time
+left until then, so a forward wall step does not end the episode while the
+kernel element remains. An isolated member's isolation
 ends the same way.
 Retirement and retry staleness stay on the lease frame: late retirement
 only holds an address longer, and the engine refuses an expired member.
@@ -669,7 +681,7 @@ failed on its last attempt. A historical result cannot end a later retry;
 a repeated linked ending must name the same block and expiry instant. A linked record is candidate version 2 and an
 admitted candidate's history pays for its bytes; without room the
 transaction changes nothing. A linked record requires at least schema 8,
-with the same buckets; this build opens schemas 7 to 10 without rewriting
+with the same buckets; this build opens schemas 7 to 13 without rewriting
 them, and older builds refuse an unknown schema rather than misread it.
 An unchanged schema-7 ledger stays readable by older builds until a write
 needs a newer format. A write never lowers the schema.

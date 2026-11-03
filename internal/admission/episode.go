@@ -51,6 +51,10 @@ type Episode struct {
 	// Verified is the original expiry of the episode's verified block,
 	// zero until one.
 	Verified time.Time
+	// EndElapsed is the ceiling's elapsed time at which End passes on
+	// elapsed time too. Zero for a row written before elapsed ends, which
+	// ends on wall time alone.
+	EndElapsed time.Duration
 	// Previous is when the episode before this one ended, zero for the
 	// first. An observation older than it belongs to that episode.
 	Previous time.Time
@@ -62,10 +66,11 @@ type Episode struct {
 	Lines []EpisodeLine
 }
 
-// End is when the episode ends: at a verified block's original expiry,
-// whatever other kinds have queued or in flight, otherwise an hour after the
-// last accepted observation once no work is queued or in flight. An
-// unresolved line or a degraded clock keeps it open either way.
+// End is when the episode ends on the wall: at a verified block's original
+// expiry, whatever other kinds have queued or in flight, otherwise an hour
+// after the last accepted observation once no work is queued or in flight.
+// It ends only once EndElapsed has passed as well. An unresolved line or a
+// degraded clock keeps it open either way.
 func (e Episode) End() time.Time {
 	if !e.Verified.IsZero() {
 		return e.Verified
@@ -123,6 +128,7 @@ type episodeRecord struct {
 	ID        string              `json:"id"`
 	Last      int64               `json:"last"`
 	Verified  int64               `json:"verified,omitempty"`
+	Elapsed   int64               `json:"end_elapsed,omitempty"`
 	Previous  int64               `json:"previous,omitempty"`
 	PriorLast int64               `json:"prior_last,omitempty"`
 	Lines     []episodeLineRecord `json:"lines"`
@@ -145,6 +151,10 @@ func (e Episode) record() (episodeRecord, error) {
 			return bad("episode expiry is not representable")
 		}
 	}
+	if e.EndElapsed < 0 {
+		return bad("episode elapsed end is negative")
+	}
+	rec.Elapsed = int64(e.EndElapsed)
 	if !e.Previous.IsZero() {
 		if rec.Previous, ok = unixNano(e.Previous); !ok || e.Previous.After(e.Last) {
 			return bad("previous episode ends after this one's last observation")
@@ -192,12 +202,12 @@ func UnmarshalEpisode(data []byte) (Episode, error) {
 	if err != nil {
 		return Episode{}, ErrCorruptRecord
 	}
-	e := Episode{ID: id, Last: fromNano(rec.Last), Verified: fromNano(rec.Verified), Previous: fromNano(rec.Previous), PriorLast: fromNano(rec.PriorLast)}
+	e := Episode{ID: id, Last: fromNano(rec.Last), Verified: fromNano(rec.Verified), EndElapsed: time.Duration(rec.Elapsed), Previous: fromNano(rec.Previous), PriorLast: fromNano(rec.PriorLast)}
 	for _, l := range rec.Lines {
 		e.Lines = append(e.Lines, EpisodeLine{Kind: l.Kind, Generation: l.Generation, Candidate: l.Candidate, Observed: fromNano(l.Observed), Answered: l.Answered})
 	}
 	if again, err := e.record(); rec.V != episodeVersion || err != nil || !slices.Equal(again.Lines, rec.Lines) || again.ID != rec.ID ||
-		again.Last != rec.Last || again.Verified != rec.Verified || again.Previous != rec.Previous || again.PriorLast != rec.PriorLast {
+		again.Last != rec.Last || again.Verified != rec.Verified || again.Elapsed != rec.Elapsed || again.Previous != rec.Previous || again.PriorLast != rec.PriorLast {
 		return Episode{}, ErrCorruptRecord
 	}
 	return e, nil
@@ -247,6 +257,77 @@ func LineStateOf(c Candidate, retired bool) LineState {
 	return LineEnded
 }
 
+// EpisodeClock is the reading episode boundaries are judged on.
+type EpisodeClock struct {
+	// Now is admission time.
+	Now time.Time
+	// Elapsed is the ceiling's elapsed time at Now, credited within a boot
+	// only, so neither a wall step nor downtime advances it.
+	Elapsed time.Duration
+	// Degraded is set when the reading was degraded: wall time alone
+	// proves nothing new then.
+	Degraded bool
+}
+
+func (c EpisodeClock) check() error {
+	_, ok := unixNano(c.Now)
+	switch {
+	case !ok:
+		return refuse(ReasonInvalid, "episode clock has no representable reading")
+	case c.Elapsed < 0:
+		return refuse(ReasonInvalid, "episode clock has negative elapsed time")
+	}
+	return nil
+}
+
+// elapsedEnd is the elapsed time at which end passes, read on c: the time
+// left until end added to c.Elapsed.
+func elapsedEnd(end time.Time, c EpisodeClock) (time.Duration, error) {
+	left := max(end.Sub(c.Now), 0)
+	if left > 0 && !c.Now.Add(left).Equal(end) {
+		return 0, refuse(ReasonInvalid, "episode remaining duration is not representable")
+	}
+	if left > math.MaxInt64-c.Elapsed {
+		return 0, refuse(ReasonInvalid, "episode end is not representable in elapsed time")
+	}
+	return c.Elapsed + left, nil
+}
+
+// AnchorElapsed gives a legacy row its remaining elapsed duration on
+// its next write. Existing anchors survive maintenance without moving.
+func (e Episode) AnchorElapsed(c EpisodeClock) (Episode, error) {
+	if err := c.check(); err != nil {
+		return e, err
+	}
+	if e.EndElapsed != 0 {
+		return e, nil
+	}
+	end, err := elapsedEnd(e.End(), c)
+	if err != nil {
+		return e, err
+	}
+	e.EndElapsed = end
+	return e, nil
+}
+
+// Close ends e at verified, its verified block's original expiry in
+// admission time, read on c: the elapsed end becomes the time left until
+// then, so the episode lasts as long as the block on both clocks.
+func (e Episode) Close(verified time.Time, c EpisodeClock) (Episode, error) {
+	if _, ok := unixNano(verified); !ok {
+		return e, refuse(ReasonInvalid, "episode expiry is not representable")
+	}
+	if err := c.check(); err != nil {
+		return e, err
+	}
+	at, err := elapsedEnd(verified, c)
+	if err != nil {
+		return e, err
+	}
+	e.Verified, e.EndElapsed = verified, at
+	return e, nil
+}
+
 // EpisodeChoice is where one observation belongs.
 type EpisodeChoice struct {
 	// Episode is the record after accepting the observation. A newly opened
@@ -261,18 +342,23 @@ type EpisodeChoice struct {
 
 // Place decides where an observation of kind made at observed belongs,
 // given the target's current episode (nil for none) and the state of each
-// of its lines in order (spec 5.2). The episode ends at End: at a verified
-// block's expiry even while other kinds' work is queued or in flight (I1),
-// otherwise once no line is queued or in flight. An unresolved line holds it
-// open, and a degraded clock never ends it, since wall time alone cannot
-// prove a new episode. An observation older than the previous episode's end
-// is refused. next names a newly opened episode.
-func Place(cur *Episode, states []LineState, kind Kind, observed time.Time, degraded bool, next func() (EpisodeID, error)) (EpisodeChoice, error) {
+// of its lines in order, read on clock (spec 5.2). The episode ends at End:
+// at a verified block's expiry even while other kinds' work is queued or in
+// flight (I1), otherwise once no line is queued or in flight. It ends only
+// once clock's elapsed time has passed EndElapsed too, so a forward wall
+// step cannot end it early and downtime grants it no time (I3). An
+// unresolved line holds it open, and a degraded clock never ends it, since
+// wall time alone cannot prove a new episode. An observation older than the
+// previous episode's end is refused. next names a newly opened episode.
+func Place(cur *Episode, states []LineState, kind Kind, observed time.Time, clock EpisodeClock, next func() (EpisodeID, error)) (EpisodeChoice, error) {
 	if !kind.Valid() {
 		return EpisodeChoice{}, refuse(ReasonInvalid, "unknown response kind")
 	}
 	if _, ok := unixNano(observed); !ok {
 		return EpisodeChoice{}, refuse(ReasonInvalid, "observation time is not representable")
+	}
+	if err := clock.check(); err != nil {
+		return EpisodeChoice{}, err
 	}
 	if cur != nil {
 		if len(states) != len(cur.Lines) {
@@ -293,31 +379,36 @@ func Place(cur *Episode, states []LineState, kind Kind, observed time.Time, degr
 		if observed.Before(cur.Previous) || (!cur.PriorLast.IsZero() && !observed.After(cur.PriorLast)) {
 			return EpisodeChoice{}, refuse(ReasonStale, "observation belongs to an earlier episode")
 		}
+		due := !observed.Before(cur.End()) && clock.Elapsed >= cur.EndElapsed
 		// A verified block's expiry ends the episode whatever else is
 		// queued (I1); only its own kind could hold it, and that line is
 		// the verified one.
-		if !cur.Verified.IsZero() && !observed.Before(cur.Verified) {
+		if !cur.Verified.IsZero() && due {
 			live = false
 		}
-		if live || unresolved || degraded || observed.Before(cur.End()) {
-			return join(*cur, states, kind, observed)
+		if live || unresolved || clock.Degraded || !due {
+			return join(*cur, states, kind, observed, clock)
 		}
 		if !observed.After(cur.Last) {
 			return EpisodeChoice{}, refuse(ReasonStale, "observation was already inside the ending episode")
 		}
 	}
+	end, err := elapsedEnd(observed.Add(EpisodeQuiet), clock)
+	if err != nil {
+		return EpisodeChoice{}, err
+	}
 	id, err := next()
 	if err != nil {
 		return EpisodeChoice{}, err
 	}
-	e := Episode{ID: id, Last: observed}
+	e := Episode{ID: id, Last: observed, EndElapsed: end}
 	if cur != nil {
 		e.Previous, e.PriorLast = cur.End(), cur.Last
 	}
 	return EpisodeChoice{Episode: e, Generation: 1}, nil
 }
 
-func join(e Episode, states []LineState, kind Kind, observed time.Time) (EpisodeChoice, error) {
+func join(e Episode, states []LineState, kind Kind, observed time.Time, clock EpisodeClock) (EpisodeChoice, error) {
 	e.Lines = slices.Clone(e.Lines)
 	i := slices.IndexFunc(e.Lines, func(l EpisodeLine) bool { return l.Kind == kind })
 	// An unresolved line answers without extending the episode or its own
@@ -328,6 +419,16 @@ func join(e Episode, states []LineState, kind Kind, observed time.Time) (Episode
 	}
 	if observed.After(e.Last) {
 		e.Last = observed
+		// The quiet end moves with the last observation; its elapsed end
+		// never moves earlier, so an observation delivered late after a
+		// forward step cannot shorten the episode. A verified end stays.
+		if e.Verified.IsZero() {
+			end, err := elapsedEnd(e.End(), clock)
+			if err != nil {
+				return EpisodeChoice{}, err
+			}
+			e.EndElapsed = max(e.EndElapsed, end)
+		}
 	}
 	p := EpisodeChoice{Episode: e, Generation: 1}
 	if i < 0 {

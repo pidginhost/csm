@@ -181,7 +181,7 @@ func (q *queueTx) endPreviewAnswers() error {
 		if !c.row.HasCandidates() {
 			err = episodes.Delete([]byte(c.key))
 		} else {
-			err = putEpisode(q.tx, c.key, c.row)
+			err = q.putEpisode(c.key, c.row)
 		}
 		if err != nil {
 			return err

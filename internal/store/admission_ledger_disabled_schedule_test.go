@@ -92,6 +92,9 @@ func TestAdmissionLedgerDisabledRefusalIsAtomic(t *testing.T) {
 	ids := f.criticalArrivals("192.0.2.10", "192.0.2.11", "192.0.2.12")
 	allowed := f.candidateOf(ids[2])
 	allows := func(c admission.Candidate) bool { return c.Key.Target == allowed.Key.Target }
+	// Refusal must raise schema 10 even without a prior schema-13 write.
+	// Episode rows permit a deliberately lowered schema in this fixture.
+	f.setSchema(admissionSchemaVersion)
 	before := f.snapshot()
 	f.failNext("disabled")
 	if err := f.l.RefuseDisabled(allows); err == nil || !reflect.DeepEqual(f.snapshot(), before) {
@@ -156,5 +159,21 @@ func TestAdmissionLedgerDisabledCommitsNothingWhenAllAllowed(t *testing.T) {
 	}
 	if c := f.candidateOf(id); c.State != admission.StateRefused || f.db.WriteTxID() == before {
 		t.Fatalf("a disabled candidate was not ended: %+v", c)
+	}
+}
+
+// Refusal cannot lower a schema already raised by episode placement.
+func TestAdmissionLedgerDisabledRefusalKeepsEpisodeSchema(t *testing.T) {
+	f := newLedgerFixture(t)
+	f.begin()
+	ids := f.criticalArrivals("192.0.2.10")
+	if f.schema() != admissionSchemaEpisodeElapsed {
+		t.Fatal("arrival did not raise the episode schema")
+	}
+	if err := f.l.RefuseDisabled(func(admission.Candidate) bool { return false }); err != nil {
+		t.Fatal(err)
+	}
+	if f.schema() != admissionSchemaEpisodeElapsed || f.candidateOf(ids[0]).Reason != admission.ReasonDisabled {
+		t.Fatal("refusal lost the schema or disabled reason")
 	}
 }
