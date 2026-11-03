@@ -27,28 +27,6 @@ func TestExtractEximSenderBounce(t *testing.T) {
 	}
 }
 
-// --- extractSetID -----------------------------------------------------
-
-func TestExtractSetIDStandard(t *testing.T) {
-	line := `A=dovecot_plain:alice@example.com (set_id=alice@example.com) P=esmtpsa`
-	if got := extractSetID(line); got != "alice@example.com" {
-		t.Errorf("got %q", got)
-	}
-}
-
-func TestExtractSetIDMissing(t *testing.T) {
-	if got := extractSetID("no set_id here"); got != "" {
-		t.Errorf("got %q", got)
-	}
-}
-
-func TestExtractSetIDEndOfLine(t *testing.T) {
-	line := `set_id=bob@test.com`
-	if got := extractSetID(line); got != "bob@test.com" {
-		t.Errorf("got %q", got)
-	}
-}
-
 // --- parsePurgeDaemon -------------------------------------------------
 
 func TestParsePurgeDaemonStandard(t *testing.T) {

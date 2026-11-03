@@ -881,26 +881,6 @@ func TestIsDedupExpired_ExactBoundary(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// extractSetID edge cases (supplement existing tests)
-// ---------------------------------------------------------------------------
-
-func TestExtractSetID_WithClosingParen(t *testing.T) {
-	line := "(set_id=user@domain.com)"
-	got := extractSetID(line)
-	if got != "user@domain.com" {
-		t.Errorf("got %q", got)
-	}
-}
-
-func TestExtractSetID_WithSpace(t *testing.T) {
-	line := "set_id=user@domain.com next field"
-	got := extractSetID(line)
-	if got != "user@domain.com" {
-		t.Errorf("got %q", got)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // extractEximDomain edge cases
 // ---------------------------------------------------------------------------
 

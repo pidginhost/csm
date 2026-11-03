@@ -171,17 +171,6 @@ func FuzzExtractMailHoldSender(f *testing.F) {
 	})
 }
 
-func FuzzExtractSetID(f *testing.F) {
-	f.Add("(set_id=user@domain)")
-	f.Add("(set_id=user)")
-	f.Add("(set_id=")
-	f.Add("no set_id here")
-	f.Add("")
-	f.Fuzz(func(t *testing.T, line string) {
-		_ = extractSetID(line)
-	})
-}
-
 func FuzzParseSPFDMARCRejection(f *testing.F) {
 	f.Add("2024-01-01 H=mail [203.0.113.5] F=<a@evil.com> ** <b@victim.com> : SPF check failed")
 	f.Add("R=dnslookup ** <user@example.com> : 5.7.1 DMARC alignment failure")

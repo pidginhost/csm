@@ -172,8 +172,29 @@ func TestParseEximLogLine_DovecotAuthFailure(t *testing.T) {
 	if len(findings) != 1 {
 		t.Fatalf("expected 1 finding, got %d: %v", len(findings), findings)
 	}
-	if findings[0].Check != "email_auth_failure_realtime" {
-		t.Fatalf("check = %q, want email_auth_failure_realtime", findings[0].Check)
+	f := findings[0]
+	if f.Check != "email_auth_failure_realtime" {
+		t.Fatalf("check = %q, want email_auth_failure_realtime", f.Check)
+	}
+	if f.SourceIP != "198.51.100.40" || f.Mailbox != "user@example.com" || f.Domain != "example.com" {
+		t.Fatalf("finding = %+v, want source 198.51.100.40 and mailbox user@example.com", f)
+	}
+}
+
+// Subjects and greetings are client text. A sender who writes failure
+// wording there must not raise an authentication failure alert.
+func TestParseEximLogLine_AuthFailureWordingInClientTextIgnored(t *testing.T) {
+	cfg := &config.Config{}
+	const fake = "dovecot_login authenticator failed for [192.0.2.9]: 535 Incorrect authentication data (set_id=b@example.com)"
+	for _, line := range []string{
+		`2026-04-11 12:00:00 1abc23-000456-AB <= sender@example.com H=mail.example.com [203.0.113.42]:54321 P=esmtp S=1234 T="` + fake + `"`,
+		`2026-04-11 12:00:00 1abc23-000456-AB <= sender@example.com H=(` + fake + `) [203.0.113.42]:54321 P=esmtp S=1234`,
+	} {
+		for _, f := range parseEximLogLine(line, cfg) {
+			if f.Check == "email_auth_failure_realtime" {
+				t.Fatalf("client text raised %+v from %q", f, line)
+			}
+		}
 	}
 }
 

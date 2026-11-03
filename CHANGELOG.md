@@ -15,6 +15,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - A successful SMTP, IMAP or POP login no longer shields an address from slow brute-force blocking after it tried other mailboxes.
 - Mail subjects or greetings made to look like failed logins can no longer get a sending mail server blocked.
 - Repeated logins with a cracked mail password no longer restore trust or exempt later password guessing from blocking.
+- Mail subjects or greetings made to look like failed logins no longer raise authentication failure alerts.
 
 ### Added
 
