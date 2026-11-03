@@ -156,6 +156,9 @@ func (d *Daemon) startLearning(ctx context.Context, target reconcile.LearnerTarg
 		HashGeneration: target.HashGeneration,
 		Prefix:         target.Prefix,
 		OnReportCommit: func() { learningMetricsSet().Committed.Inc() },
+		OnStateMismatch: func(detail string) {
+			csmlog.Warn("antispam learning stopped: its state does not match storage", "detail", detail)
+		},
 	})
 	runCtx, cancel := context.WithCancel(ctx)
 	r := &learnerRunner{target: target, watch: watch, engine: engine, cancel: cancel}

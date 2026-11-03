@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -255,5 +256,21 @@ func TestLearningStopsWithoutCompletedPass(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A frozen learner leaves its evidence in the log.
+func TestLearningMismatchIsLogged(t *testing.T) {
+	engines := withFakeEngines(t)
+	d := newLearningDaemon(t)
+	d.syncLearner(learnedOutcome(antispam.LearningGate{Install: true, Publish: true}, testTarget))
+	if len(*engines) != 1 || (*engines)[0].cfg.OnStateMismatch == nil {
+		t.Fatal("engine has no mismatch observer")
+	}
+	read := captureCSMLog(t)
+	(*engines)[0].cfg.OnStateMismatch("lookup named digests the ledger cannot resolve: 0123456789abcdef")
+	out := read()
+	if !strings.Contains(out, "WARN: ") || !strings.Contains(out, "antispam learning stopped") || !strings.Contains(out, "0123456789abcdef") {
+		t.Fatalf("log %q", out)
 	}
 }

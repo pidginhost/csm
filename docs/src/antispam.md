@@ -1375,7 +1375,7 @@ that failed in its last pass, until a later pass reads it.
 |---|---|
 | `unsupported` | An rspamd or Redis version is outside the supported versions above, a Postfix host has no `learning.redis_socket`, or Dovecot runs 2.4 or has no userdb that can list its users; learning is disabled. |
 | `unsafe_prerequisite` | Required isolation or Redis settings are unsafe or cannot be established; learning is disabled. |
-| `state_mismatch` | Learning keys could not be created or loaded safely, restored learning state awaits confirmation, or the learner found its state out of step with its storage; learning is disabled and nothing is adopted or deleted. |
+| `state_mismatch` | Learning keys could not be created or loaded safely, restored learning state awaits confirmation, or the learner found its state out of step with its storage; learning is disabled and nothing is adopted or deleted. The CSM log names the disagreeing fuzzy digests when the learner finds it. |
 | `config_conflict` | Operator configuration conflicts with CSM's learning setup; learning is disabled. |
 | `apply_failed` | A learning check failed during apply; subsequent passes hold learning off until its configuration changes or CSM restarts. |
 | `backend_unavailable` | A probe failed temporarily, including a Dovecot listing that failed or timed out; existing learning configuration is retained unless a definite failure also requires removal. A first installation waits. |
