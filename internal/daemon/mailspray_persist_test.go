@@ -345,6 +345,30 @@ func TestMailSprayLoadEvictsToMaxIPsByRank(t *testing.T) {
 	}
 }
 
+// Load admits entries without checking them against the eviction floors,
+// so it leaves the floors clear.
+func TestMailSprayLoadClearsEvictionFloor(t *testing.T) {
+	cfg := testSprayConfig()
+	cfg.MaxIPs = 4
+	m, clock := newTestSpray(cfg)
+	seen := clock.Now().Add(-time.Hour)
+	st := store.MailSprayState{IPs: map[string]store.MailSprayIP{}}
+	for i := range cfg.MaxIPs + 1 {
+		e := store.MailSprayIP{
+			Failed:   map[string]store.MailSprayFailure{"a@example.com": {First: seen, Last: seen, Count: 1}},
+			LastSeen: seen,
+		}
+		if i < cfg.MaxIPs {
+			e.VerdictAt = seen
+		}
+		st.IPs[fmt.Sprintf("192.0.2.%d", i+1)] = e
+	}
+	loadSpraySnapshot(t, m, st)
+	if m.Size() != cfg.MaxIPs || m.ipFloor != 0 {
+		t.Fatalf("after load %d IPs, floor %d; want %d IPs, floor 0", m.Size(), m.ipFloor, cfg.MaxIPs)
+	}
+}
+
 func TestMailSprayLoadIgnoredWhenDisabled(t *testing.T) {
 	cfg := testSprayConfig()
 	cfg.Window = 0

@@ -715,7 +715,9 @@ func (m *mailSpray) Load(read func(func(store.MailSprayState)) error) error {
 	clear(m.trust)
 	clear(m.trustByIP)
 	clear(m.trustByMailbox)
-	m.ipFloor, m.nameFloor = 0, 0
+	// Entries load with no newcomer to check against the eviction floors,
+	// so a floor a load batch sets may not hold once it is done.
+	defer func() { m.ipFloor, m.nameFloor = 0, 0 }()
 	// The bucket may hold entries this load dropped: rewrite it whole.
 	m.resetChanges()
 	return read(func(st store.MailSprayState) {
