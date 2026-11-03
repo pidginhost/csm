@@ -177,8 +177,8 @@ from each provider's published SPF records and refreshes the list in the
 background. Spam reports wait while that list cannot be loaded.
 
 CSM keeps sender history across restarts. If that history cannot be read at
-startup, spam reports stay off until the next restart and the daemon log says
-why.
+startup, spam source detection stays off for that run and the daemon log says
+why. A restart turns it back on once the state database can be read.
 
 The class needs `email_protection.antispam.enabled`. Turning either on or off
 takes a restart.
