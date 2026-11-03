@@ -293,6 +293,14 @@ func elapsedEnd(end time.Time, c EpisodeClock) (time.Duration, error) {
 	return c.Elapsed + left, nil
 }
 
+// quietElapsedEnd is the elapsed end of a quiet hour that starts at the
+// reading c. An observation's age is wall time, which a forward step
+// inflates, so the hour runs on elapsed time from the placing reading; an
+// observation processed late can lengthen its episode, never shorten it.
+func quietElapsedEnd(c EpisodeClock) (time.Duration, error) {
+	return elapsedEnd(c.Now.Add(EpisodeQuiet), c)
+}
+
 // AnchorElapsed gives a legacy row its remaining elapsed duration on
 // its next write. Existing anchors survive maintenance without moving.
 func (e Episode) AnchorElapsed(c EpisodeClock) (Episode, error) {
@@ -393,7 +401,7 @@ func Place(cur *Episode, states []LineState, kind Kind, observed time.Time, cloc
 			return EpisodeChoice{}, refuse(ReasonStale, "observation was already inside the ending episode")
 		}
 	}
-	end, err := elapsedEnd(observed.Add(EpisodeQuiet), clock)
+	end, err := quietElapsedEnd(clock)
 	if err != nil {
 		return EpisodeChoice{}, err
 	}
@@ -423,7 +431,7 @@ func join(e Episode, states []LineState, kind Kind, observed time.Time, clock Ep
 		// never moves earlier, so an observation delivered late after a
 		// forward step cannot shorten the episode. A verified end stays.
 		if e.Verified.IsZero() {
-			end, err := elapsedEnd(e.End(), clock)
+			end, err := quietElapsedEnd(clock)
 			if err != nil {
 				return EpisodeChoice{}, err
 			}

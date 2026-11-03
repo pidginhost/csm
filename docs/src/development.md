@@ -622,7 +622,9 @@ that episode while its work held it open, is refused as stale. A
 degraded clock reading never ends an episode, and an episode ends only
 once the ceiling's elapsed time has passed its end as well: a forward wall
 step cannot end it early, and a reboot grants it no time. Each row records
-that elapsed end; a row written before it existed ends on wall time alone
+that elapsed end, and its quiet hour runs on elapsed time from the reading
+that places the observation, so a report processed late after a step
+cannot end it early either; a row written before it existed ends on wall time alone
 until its next write, including maintenance that leaves its last
 observation unchanged. Existing elapsed ends survive maintenance, and
 verified closing replaces the quiet end with the block's remaining

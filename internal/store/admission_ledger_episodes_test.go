@@ -446,9 +446,10 @@ func TestAdmissionLedgerAssignsEpisodesToArrivals(t *testing.T) {
 	if c.Key.Episode.IsZero() || c.Key.Generation != 1 {
 		t.Fatalf("first candidate key = %+v", c.Key)
 	}
-	// The quiet hour runs from the observation; its elapsed end from now.
+	// The quiet hour runs from the observation on the wall and from the
+	// placing reading on elapsed time.
 	elapsed := f.ceilingState().Elapsed
-	want := admission.Episode{ID: c.Key.Episode, Last: ledgerT0.Add(-10 * time.Minute), EndElapsed: elapsed + 50*time.Minute, Lines: []admission.EpisodeLine{{Kind: admission.KindBlockIP, Generation: 1, Candidate: first.Candidate, Observed: ledgerT0.Add(-10 * time.Minute)}}}
+	want := admission.Episode{ID: c.Key.Episode, Last: ledgerT0.Add(-10 * time.Minute), EndElapsed: elapsed + admission.EpisodeQuiet, Lines: []admission.EpisodeLine{{Kind: admission.KindBlockIP, Generation: 1, Candidate: first.Candidate, Observed: ledgerT0.Add(-10 * time.Minute)}}}
 	if row, ok := f.episodeAt("192.0.2.10"); !ok || !reflect.DeepEqual(row, want) {
 		t.Fatalf("episode row = %+v %v, want %+v", row, ok, want)
 	}
@@ -1570,5 +1571,27 @@ func TestAdmissionLedgerEpisodeAnchorFailureRollsBack(t *testing.T) {
 	}
 	if !reflect.DeepEqual(before, f.snapshot()) {
 		t.Fatal("anchor failure changed evidence, candidate, episode or schema")
+	}
+}
+
+// An observation from before a forward step, placed on the stepped reading,
+// opens an episode whose quiet hour runs on elapsed time from that reading:
+// a report twenty-one minutes later still joins it.
+func TestAdmissionLedgerLateObservationAfterAForwardStepKeepsTheEpisode(t *testing.T) {
+	f := newLedgerFixture(t)
+	f.begin()
+	f.stepWall(40*time.Minute, time.Second)
+	first := f.arrive(f.arrival(evidenceSpec{cursor: "offset=1", age: 40 * time.Minute}))[0]
+	episode := f.candidateOf(first.Candidate).Key.Episode
+	if row, _ := f.episodeAt("192.0.2.10"); row.EndElapsed != f.ceilingState().Elapsed+admission.EpisodeQuiet {
+		t.Fatalf("elapsed end = %v, ceiling elapsed %v", row.EndElapsed, f.ceilingState().Elapsed)
+	}
+	if _, err := f.l.Terminate(first.Candidate, admission.ReasonPolicy); err != nil {
+		t.Fatal(err)
+	}
+	f.tickAt(f.wall.Add(21 * time.Minute))
+	next := f.arrive(f.arrival(evidenceSpec{cursor: "offset=2"}))[0]
+	if c := f.candidateOf(next.Candidate); next.Err != nil || c.Key.Episode != episode || c.Key.Generation != 2 {
+		t.Fatalf("21 minutes after a late report = %+v %+v", next, c.Key)
 	}
 }

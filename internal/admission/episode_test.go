@@ -542,7 +542,7 @@ func TestPlaceNeverPullsTheElapsedEndEarlier(t *testing.T) {
 		want     time.Duration
 	}{
 		{"a later observation", t0.Add(30 * time.Minute), EpisodeClock{Now: t0.Add(30 * time.Minute), Elapsed: start.Elapsed + 30*time.Minute}, start.Elapsed + 90*time.Minute},
-		{"a late delivery after a forward step", t0.Add(5 * time.Minute), EpisodeClock{Now: t0.Add(130 * time.Minute), Elapsed: start.Elapsed + 10*time.Minute}, start.Elapsed + EpisodeQuiet},
+		{"a late delivery after a forward step", t0.Add(5 * time.Minute), EpisodeClock{Now: t0.Add(130 * time.Minute), Elapsed: start.Elapsed + 10*time.Minute}, start.Elapsed + 10*time.Minute + EpisodeQuiet},
 		{"an older observation", t0.Add(-time.Minute), EpisodeClock{Now: t0.Add(time.Minute), Elapsed: start.Elapsed + 2*time.Hour}, start.Elapsed + EpisodeQuiet},
 	} {
 		p, err := Place(&cur, []LineState{LineQueued}, KindBlockIP, tc.observed, tc.clock, sequenceIDs(t))
@@ -687,5 +687,36 @@ func TestEpisodeElapsedRefusesInvalidEndsAndOverflow(t *testing.T) {
 	after, err := cur.MarshalBinary()
 	if err != nil || !bytes.Equal(before, after) {
 		t.Fatal("failed join changed its input")
+	}
+}
+
+// An observation dated before a forward step but placed after it takes its
+// quiet hour on elapsed time from the reading that places it: the wall
+// cannot say how much of the gap since the observation was real. Opening
+// and joining alike.
+func TestPlaceAnchorsTheQuietEndOnTheProcessingReading(t *testing.T) {
+	elapsed := 10 * time.Hour
+	// Forty minutes of wall step, none of it elapsed.
+	stepped := EpisodeClock{Now: t0.Add(40 * time.Minute), Elapsed: elapsed, Degraded: true}
+	opened, err := Place(nil, nil, KindBlockIP, t0, stepped, sequenceIDs(t))
+	if err != nil || opened.Episode.EndElapsed != elapsed+EpisodeQuiet {
+		t.Fatalf("opened after a step: %+v, %v", opened.Episode, err)
+	}
+	cur := opened.Episode.WithLine(episodeLine(t, KindBlockIP, 1, 1))
+	later := EpisodeClock{Now: t0.Add(61 * time.Minute), Elapsed: elapsed + 21*time.Minute}
+	if p, placeErr := Place(&cur, []LineState{LineEnded}, KindBlockIP, later.Now, later, sequenceIDs(t)); placeErr != nil || p.Episode.ID != cur.ID {
+		t.Fatalf("21 elapsed minutes later the episode ended: %+v, %v", p.Episode, placeErr)
+	}
+	// The last observation is half an hour old when a forty-minute step
+	// lands and an observation from just before the step is placed.
+	first, err := Place(nil, nil, KindBlockIP, t0, EpisodeClock{Now: t0, Elapsed: elapsed}, sequenceIDs(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := first.Episode.WithLine(episodeLine(t, KindBlockIP, 1, 1))
+	step := EpisodeClock{Now: t0.Add(70 * time.Minute), Elapsed: elapsed + 30*time.Minute, Degraded: true}
+	joined, err := Place(&row, []LineState{LineQueued}, KindBlockIP, t0.Add(30*time.Minute-time.Second), step, sequenceIDs(t))
+	if err != nil || joined.Episode.ID != row.ID || joined.Episode.EndElapsed != step.Elapsed+EpisodeQuiet {
+		t.Fatalf("joined after a step: %+v, %v", joined.Episode, err)
 	}
 }
