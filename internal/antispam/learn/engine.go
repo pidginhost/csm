@@ -114,6 +114,10 @@ type EngineConfig struct {
 	// OnReportCommit observes a durable Spam folder contribution, including
 	// one completed by a background retry. It must not block the owner.
 	OnReportCommit func()
+	// OnStateMismatch observes the moment learning freezes because its
+	// ledger and storage disagree, with the evidence. It must not block the
+	// owner.
+	OnStateMismatch func(detail string)
 }
 
 type request struct {
@@ -356,7 +360,7 @@ func (e *Engine) note(err error) {
 		e.stateErr = err
 	}
 	if errors.Is(err, ErrStateMismatch) {
-		e.frozen = true
+		e.freeze(err.Error())
 	}
 	if errors.Is(err, ErrBodyInvalid) {
 		e.bodyErr = true
@@ -364,6 +368,39 @@ func (e *Engine) note(err error) {
 	if errors.Is(err, ErrReadFailed) && !errors.Is(err, context.Canceled) {
 		e.requestFails++
 	}
+}
+
+// freeze holds admissions and reports why, once per engine.
+func (e *Engine) freeze(detail string) {
+	if e.frozen {
+		return
+	}
+	e.frozen = true
+	if e.cfg.OnStateMismatch != nil {
+		e.cfg.OnStateMismatch(detail)
+	}
+}
+
+// mismatchDetail names the digests the ledger could not resolve and the
+// lookup that found them, by 16-digit prefix.
+func mismatchDetail(unknown []Digest, insp Inspection) string {
+	var b strings.Builder
+	b.WriteString("lookup named digests the ledger cannot resolve:")
+	for _, d := range unknown {
+		b.WriteString(" " + shortDigest(d))
+	}
+	b.WriteString("; lookup:")
+	for _, r := range insp.Results {
+		fmt.Fprintf(&b, " queried=%s found=%t stored=%s prob=%.2f;", shortDigest(r.Queried), r.Found, shortDigest(r.Stored), r.Prob)
+	}
+	return b.String()
+}
+
+func shortDigest(d Digest) string {
+	if len(d) > 16 {
+		return string(d[:16])
+	}
+	return string(d)
 }
 
 // recoverBodies removes staged and committed bodies that no cluster or
@@ -599,7 +636,7 @@ func (e *Engine) admit(ctx context.Context, src Source, snapshot []byte, intentI
 	res := admitResult{skips: a.Skips, duplicates: a.Duplicates, digests: digests}
 	switch {
 	case len(a.Mismatch) > 0:
-		e.frozen = true
+		e.freeze(mismatchDetail(a.Mismatch, insp))
 		return admitResult{deferred: true, digests: digests}, nil
 	case len(a.DeleteZero) > 0:
 		return admitResult{deferred: true, digests: digests}, e.scheduleZero(a.DeleteZero)

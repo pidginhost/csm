@@ -3,6 +3,7 @@ package learn
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -45,11 +46,21 @@ func newTestEngine(t testing.TB, f *auditFixture, gen ...string) *Engine {
 // Benchmarks stop each engine before resetting their reusable ledger.
 func startTestEngine(t testing.TB, f *auditFixture, gen ...string) (*Engine, func()) {
 	t.Helper()
+	return startTestEngineWith(t, f, nil, gen...)
+}
+
+// startTestEngineWith is startTestEngine with edit applied to the config.
+func startTestEngineWith(t testing.TB, f *auditFixture, edit func(*EngineConfig), gen ...string) (*Engine, func()) {
+	t.Helper()
 	g := "gen1"
 	if len(gen) > 0 {
 		g = gen[0]
 	}
-	e := NewEngine(EngineConfig{Client: f.storage, Ledger: f.ledger, Bodies: f.bodies, HashGeneration: g, Prefix: "prefix1", Now: func() time.Time { return t0 }, TickEvery: time.Hour})
+	cfg := EngineConfig{Client: f.storage, Ledger: f.ledger, Bodies: f.bodies, HashGeneration: g, Prefix: "prefix1", Now: func() time.Time { return t0 }, TickEvery: time.Hour}
+	if edit != nil {
+		edit(&cfg)
+	}
+	e := NewEngine(cfg)
 	e.pub.poll, e.pub.deadline = time.Millisecond, 20*time.Millisecond
 	e.SetGate(openGate)
 	e.start()
@@ -746,5 +757,57 @@ func TestProbeMessageIsLongEnoughToHash(t *testing.T) {
 	_, text, ok := strings.Cut(probeMessage, "\r\n\r\n")
 	if words := len(strings.Fields(text)); !ok || words <= antispam.LearningMinLength {
 		t.Fatalf("probe text has %d words, rspamd hashes parts over %d", words, antispam.LearningMinLength)
+	}
+}
+
+// A report whose lookup names a digest the ledger does not know freezes
+// learning once and says which digests disagreed.
+func TestEngineMismatchReportsDigests(t *testing.T) {
+	f := newAuditFixture(t)
+	var mu sync.Mutex
+	var details []string
+	e, stop := startTestEngineWith(t, f, func(c *EngineConfig) {
+		c.OnStateMismatch = func(d string) {
+			mu.Lock()
+			details = append(details, d)
+			mu.Unlock()
+		}
+	})
+	t.Cleanup(stop)
+	snap := f.report("unknown anchor", digest('b'), digest('u'), 0.9)
+	for range 2 {
+		out, err := e.SubmitReport(context.Background(), Candidate{UID: 1001, Snapshot: snap})
+		if err != nil || !out.Deferred {
+			t.Fatalf("outcome %+v err %v", out, err)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(details) != 1 {
+		t.Fatalf("want one report, got %q", details)
+	}
+	for _, want := range []string{string(digest('u'))[:16], string(digest('b'))[:16], "0.90"} {
+		if !strings.Contains(details[0], want) {
+			t.Fatalf("detail %q lacks %q", details[0], want)
+		}
+	}
+	if strings.Contains(details[0], string(digest('u'))[:17]) {
+		t.Fatalf("detail %q carries more than a digest prefix", details[0])
+	}
+}
+
+// Any error that reveals a mismatch freezes learning once with its text;
+// other errors never report one.
+func TestEngineNoteReportsMismatchOnce(t *testing.T) {
+	var details []string
+	e := NewEngine(EngineConfig{OnStateMismatch: func(d string) { details = append(details, d) }})
+	e.note(fmt.Errorf("%w: disk", ErrStateIO))
+	if len(details) != 0 || e.frozen {
+		t.Fatalf("state error reported %q", details)
+	}
+	e.note(fmt.Errorf("%w: the anchor body no longer hashes to its digest", ErrStateMismatch))
+	e.note(fmt.Errorf("%w: no target for digest", ErrStateMismatch))
+	if !e.frozen || len(details) != 1 || !strings.Contains(details[0], "the anchor body no longer hashes") {
+		t.Fatalf("frozen %v details %q", e.frozen, details)
 	}
 }
