@@ -12,7 +12,8 @@ import (
 )
 
 // Failure to inspect the stored bytes is not proof that their digest changed,
-// even if a different representation can be inspected successfully.
+// even if a different representation can be inspected successfully. A text-only
+// form that reproduces the anchor is still published.
 func TestUnstableAnchorInspectionFailurePreservesCluster(t *testing.T) {
 	for _, failure := range []error{context.DeadlineExceeded, ErrInspectionFailed, ErrMessageRejected} {
 		for _, fallback := range []Digest{digest('a'), digest('b')} {
@@ -43,14 +44,23 @@ func TestUnstableAnchorInspectionFailurePreservesCluster(t *testing.T) {
 				}}
 				p.onUnstable = func(string) { warnings++ }
 				res, err := p.Turn(context.Background(), anchor)
-				if !errors.Is(err, ErrReadFailed) || !errors.Is(err, failure) || res.Done || res.Uncertain {
-					t.Fatalf("result %+v err %v", res, err)
-				}
-				if inspections != 1 || warnings != 0 {
+				if inspections != 2 || warnings != 0 {
 					t.Fatalf("inspections %d warnings %d", inspections, warnings)
 				}
 				if c, ok := f.cluster(t, 1); !ok || c.Retired {
 					t.Fatalf("cluster %+v present %v", c, ok)
+				}
+				if fallback == anchor {
+					if err != nil || !res.Done || res.Value != 4 {
+						t.Fatalf("result %+v err %v", res, err)
+					}
+					if adds, deletes := f.storage.counts(); !reflect.DeepEqual(adds, []int32{2}) || deletes != 0 {
+						t.Fatalf("adds %v deletes %d", adds, deletes)
+					}
+					return
+				}
+				if !errors.Is(err, ErrReadFailed) || !errors.Is(err, failure) || res.Done || res.Uncertain {
+					t.Fatalf("result %+v err %v", res, err)
 				}
 				if target, _ := f.targetOf(t, anchor); target.T != 4 || target.Revision != 1 || target.Phase != PhaseRead {
 					t.Fatalf("target %+v", target)

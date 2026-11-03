@@ -340,22 +340,26 @@ func (p *Publisher) anchorBody(ctx context.Context, t Target) ([]byte, error) {
 	// Bodies kept before text-only learning may carry an attachment that
 	// rspamd now hashes on its own; their text-only form, verified the same
 	// way, is published instead. The stored body and its ledger record stay.
+	// Bodies rspamd cannot inspect as-is (a PDF with scripts) also fall
+	// back to their text-only form.
 	err = p.yieldsAnchor(ctx, body, t.Digest)
 	if err == nil {
 		return body, nil
-	}
-	// A failed inspection says nothing about the stored body's digest.
-	if !errors.Is(err, errAnchorUnreproducible) {
-		return nil, err
 	}
 	text := textOnlyMessage(body)
 	if text == nil || bytes.Equal(text, body) {
 		return nil, err
 	}
-	if err = p.yieldsAnchor(ctx, text, t.Digest); err != nil {
+	textErr := p.yieldsAnchor(ctx, text, t.Digest)
+	if textErr == nil {
+		return text, nil
+	}
+	// Only answered inspections prove the anchor is unreproducible: a failed
+	// inspection of the stored bytes says nothing about their digest.
+	if errors.Is(textErr, errAnchorUnreproducible) && !errors.Is(err, errAnchorUnreproducible) {
 		return nil, err
 	}
-	return text, nil
+	return nil, textErr
 }
 
 // yieldsAnchor inspects body and checks it hashes to exactly d.
