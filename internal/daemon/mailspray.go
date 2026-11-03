@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"cmp"
+	"iter"
 	"maps"
 	"net/netip"
 	"slices"
@@ -153,6 +154,22 @@ type mailSpray struct {
 	trust          map[sprayTrustKey]sprayTrust   // trust pool
 	trustByIP      map[string]map[string]struct{} // ip to its trusted mailboxes
 	trustByMailbox map[string]map[string]struct{} // mailbox to the IPs it trusts
+
+	// Persistence bookkeeping, so a save writes only what changed. full
+	// makes the next save rewrite the whole bucket instead: at start, after
+	// Load or a reset, and if the bookkeeping outgrows its bound.
+	full         bool
+	ipChanges    sprayChanges // evidence IPs
+	trustChanges sprayChanges // trust IPs
+	nameChanges  sprayChanges // corroboration names
+}
+
+// sprayChanges tracks one kind of saved key: those changed since the last
+// save and those the bucket holds.
+type sprayChanges struct{ dirty, saved map[string]struct{} }
+
+func newSprayChanges() sprayChanges {
+	return sprayChanges{dirty: make(map[string]struct{}), saved: make(map[string]struct{})}
 }
 
 func newMailSpray(cfg sprayConfig, now func() time.Time) *mailSpray {
@@ -164,6 +181,10 @@ func newMailSpray(cfg sprayConfig, now func() time.Time) *mailSpray {
 		trust:          make(map[sprayTrustKey]sprayTrust),
 		trustByIP:      make(map[string]map[string]struct{}),
 		trustByMailbox: make(map[string]map[string]struct{}),
+		full:           true,
+		ipChanges:      newSprayChanges(),
+		trustChanges:   newSprayChanges(),
+		nameChanges:    newSprayChanges(),
 	}
 }
 
@@ -179,6 +200,7 @@ func (m *mailSpray) SetConfig(cfg sprayConfig) {
 		clear(m.trust)
 		clear(m.trustByIP)
 		clear(m.trustByMailbox)
+		m.resetChanges()
 		return
 	}
 	m.evictIPs("", m.now())
@@ -271,7 +293,11 @@ func (m *mailSpray) Success(ip, mailbox string) (clean bool, v *sprayVerdict) {
 		t := m.trust[k]
 		t.last = now
 		m.trust[k] = t
+		m.markTrust(ip)
 		return true, nil
+	}
+	if e != nil {
+		m.markIP(ip)
 	}
 
 	var untrusted []string
@@ -351,14 +377,22 @@ func (m *mailSpray) Purge() {
 	}
 	cutoff := m.now().Add(-m.cfg.Window)
 	for ip, e := range m.ips {
+		records := len(e.failed) + len(e.weakAlerted) + len(e.revoked)
 		e.pruneFailed(cutoff)
 		maps.DeleteFunc(e.weakAlerted, func(_ string, at time.Time) bool { return at.Before(cutoff) })
 		maps.DeleteFunc(e.revoked, func(_ string, at time.Time) bool { return at.Before(cutoff) })
-		if e.untracked.Before(cutoff) {
+		if !e.untracked.IsZero() && e.untracked.Before(cutoff) {
 			e.untracked = time.Time{}
+			records++
 		}
+		changed := records != len(e.failed)+len(e.weakAlerted)+len(e.revoked)
+		// Every entry holds a record or the overflow marker, so one emptied
+		// here has changed.
 		if len(e.failed) == 0 && e.untracked.IsZero() && len(e.weakAlerted) == 0 && len(e.revoked) == 0 {
 			delete(m.ips, ip)
+		}
+		if changed {
+			m.markIP(ip)
 		}
 	}
 	for k, t := range m.trust {
@@ -367,9 +401,13 @@ func (m *mailSpray) Purge() {
 		}
 	}
 	for name, n := range m.names {
+		networks := len(n.networks)
 		maps.DeleteFunc(n.networks, func(_ string, ts time.Time) bool { return ts.Before(cutoff) })
 		if len(n.networks) == 0 {
 			delete(m.names, name)
+		}
+		if len(n.networks) != networks {
+			m.markName(name)
 		}
 	}
 }
@@ -388,43 +426,199 @@ func (m *mailSpray) TrustSize() int {
 	return len(m.trust)
 }
 
-// Export returns a copy of the memory for persistence.
+// Export returns a copy of the whole memory.
 func (m *mailSpray) Export() store.MailSprayState {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.exportAll()
+}
+
+// ExportChanges returns what changed since the last save and starts a new
+// change set. full reports that the save must replace the whole bucket; Put
+// then holds the whole memory. Only changed entries are copied under the
+// lock otherwise. A caller whose save fails hands the delta to RetryChanges.
+func (m *mailSpray) ExportChanges() (d store.MailSprayDelta, full bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.full {
+		m.full = false
+		m.ipChanges.saveAll(maps.Keys(m.ips))
+		m.trustChanges.saveAll(maps.Keys(m.trustByIP))
+		m.nameChanges.saveAll(maps.Keys(m.names))
+		return store.MailSprayDelta{Put: m.exportAll()}, true
+	}
+	d.Put = store.MailSprayState{
+		IPs:      make(map[string]store.MailSprayIP, len(m.ipChanges.dirty)),
+		Trust:    make(map[string]map[string]store.GoodSourcePair, len(m.trustChanges.dirty)),
+		Networks: make(map[string]map[string]time.Time, len(m.nameChanges.dirty)),
+	}
+	d.DeleteIPs = m.ipChanges.export(func(ip string) bool {
+		e := m.ips[ip]
+		if e != nil {
+			d.Put.IPs[ip] = exportSprayIP(e)
+		}
+		return e != nil
+	})
+	d.DeleteTrust = m.trustChanges.export(func(ip string) bool {
+		if len(m.trustByIP[ip]) == 0 {
+			return false
+		}
+		d.Put.Trust[ip] = m.exportTrust(ip)
+		return true
+	})
+	d.DeleteNames = m.nameChanges.export(func(name string) bool {
+		n := m.names[name]
+		if n != nil {
+			d.Put.Networks[name] = maps.Clone(n.networks)
+		}
+		return n != nil
+	})
+	return d, false
+}
+
+// RetryChanges takes back the changes of a failed save, so the next save
+// writes those keys again with their values at that time.
+func (m *mailSpray) RetryChanges(d store.MailSprayDelta, full bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if full {
+		m.resetChanges()
+		return
+	}
+	for _, k := range []struct {
+		changes sprayChanges
+		puts    iter.Seq[string]
+		deletes []string
+		mark    func(string)
+	}{
+		{m.ipChanges, maps.Keys(d.Put.IPs), d.DeleteIPs, m.markIP},
+		{m.trustChanges, maps.Keys(d.Put.Trust), d.DeleteTrust, m.markTrust},
+		{m.nameChanges, maps.Keys(d.Put.Networks), d.DeleteNames, m.markName},
+	} {
+		// The deletes did not happen: the bucket still holds those keys.
+		for _, key := range k.deletes {
+			k.changes.saved[key] = struct{}{}
+			k.mark(key)
+		}
+		for key := range k.puts {
+			k.mark(key)
+		}
+	}
+}
+
+func (m *mailSpray) markIP(ip string) {
+	m.mark(m.ipChanges, ip, m.ips[ip] != nil, m.cfg.MaxIPs)
+}
+
+func (m *mailSpray) markTrust(ip string) {
+	m.mark(m.trustChanges, ip, len(m.trustByIP[ip]) > 0, m.cfg.MaxIPs)
+}
+
+func (m *mailSpray) markName(name string) {
+	m.mark(m.nameChanges, name, m.names[name] != nil, maxSprayCorroborationNames)
+}
+
+// mark records that key changed; live says whether memory still holds it.
+// A key gone from memory that the bucket never held needs no delete, so it
+// leaves the change set: attacker churn of short-lived entries cannot grow
+// the set or force a rewrite of idle entries. The sets stay within the pool
+// plus the bucket while saves succeed; saves that keep failing can grow
+// them, so past twice the pool the next save rewrites the bucket instead.
+func (m *mailSpray) mark(c sprayChanges, key string, live bool, pool int) {
+	if m.full {
+		return
+	}
+	if _, saved := c.saved[key]; live || saved {
+		c.dirty[key] = struct{}{}
+	} else {
+		delete(c.dirty, key)
+	}
+	if len(c.dirty) > 2*pool || len(c.saved) > 2*pool {
+		m.resetChanges()
+	}
+}
+
+func (m *mailSpray) resetChanges() {
+	m.full = true
+	for _, c := range []sprayChanges{m.ipChanges, m.trustChanges, m.nameChanges} {
+		clear(c.dirty)
+		clear(c.saved)
+	}
+}
+
+// saveAll records a full save of keys.
+func (c sprayChanges) saveAll(keys iter.Seq[string]) {
+	clear(c.dirty)
+	clear(c.saved)
+	for k := range keys {
+		c.saved[k] = struct{}{}
+	}
+}
+
+// export hands each changed key to put, which copies a key memory still
+// holds and reports whether it did. It returns the keys to delete and
+// records them as saved or gone, assuming the save succeeds.
+func (c sprayChanges) export(put func(string) bool) (deletes []string) {
+	for k := range c.dirty {
+		if put(k) {
+			c.saved[k] = struct{}{}
+		} else {
+			deletes = append(deletes, k)
+			delete(c.saved, k)
+		}
+	}
+	clear(c.dirty)
+	return deletes
+}
+
+func (m *mailSpray) exportAll() store.MailSprayState {
 	st := store.MailSprayState{
 		IPs:      make(map[string]store.MailSprayIP, len(m.ips)),
 		Trust:    make(map[string]map[string]store.GoodSourcePair, len(m.trustByIP)),
 		Networks: make(map[string]map[string]time.Time, len(m.names)),
 	}
 	for ip, e := range m.ips {
-		s := store.MailSprayIP{
-			WeakAlerted:     maps.Clone(e.weakAlerted),
-			Revoked:         maps.Clone(e.revoked),
-			Untracked:       e.untracked,
-			SuppressedUntil: e.suppressedUntil,
-			CompromiseUntil: e.compromiseSuppressedUntil,
-			VerdictAt:       e.verdictAt,
-			LastSeen:        e.lastSeen,
-		}
-		if len(e.failed) > 0 {
-			s.Failed = make(map[string]store.MailSprayFailure, len(e.failed))
-			for name, f := range e.failed {
-				s.Failed[name] = store.MailSprayFailure{First: f.first, Last: f.last, Count: f.count, Exist: uint8(f.exist)}
-			}
-		}
-		st.IPs[ip] = s
+		st.IPs[ip] = exportSprayIP(e)
 	}
-	for k, t := range m.trust {
-		if st.Trust[k.ip] == nil {
-			st.Trust[k.ip] = make(map[string]store.GoodSourcePair)
-		}
-		st.Trust[k.ip][k.mailbox] = store.GoodSourcePair{First: t.first, Last: t.last}
+	for ip := range m.trustByIP {
+		st.Trust[ip] = m.exportTrust(ip)
 	}
 	for name, n := range m.names {
 		st.Networks[name] = maps.Clone(n.networks)
 	}
 	return st
+}
+
+func exportSprayIP(e *sprayIP) store.MailSprayIP {
+	s := store.MailSprayIP{
+		Untracked:       e.untracked,
+		SuppressedUntil: e.suppressedUntil,
+		CompromiseUntil: e.compromiseSuppressedUntil,
+		VerdictAt:       e.verdictAt,
+		LastSeen:        e.lastSeen,
+	}
+	if len(e.failed) > 0 {
+		s.Failed = make(map[string]store.MailSprayFailure, len(e.failed))
+		for name, f := range e.failed {
+			s.Failed[name] = store.MailSprayFailure{First: f.first, Last: f.last, Count: f.count, Exist: uint8(f.exist)}
+		}
+	}
+	if len(e.weakAlerted) > 0 {
+		s.WeakAlerted = maps.Clone(e.weakAlerted)
+	}
+	if len(e.revoked) > 0 {
+		s.Revoked = maps.Clone(e.revoked)
+	}
+	return s
+}
+
+func (m *mailSpray) exportTrust(ip string) map[string]store.GoodSourcePair {
+	out := make(map[string]store.GoodSourcePair, len(m.trustByIP[ip]))
+	for mb := range m.trustByIP[ip] {
+		t := m.trust[sprayTrustKey{ip, mb}]
+		out[mb] = store.GoodSourcePair{First: t.first, Last: t.last}
+	}
+	return out
 }
 
 // Load replaces the memory with a saved state. It runs once, before the log
@@ -451,6 +645,8 @@ func (m *mailSpray) Load(st store.MailSprayState) {
 	clear(m.trust)
 	clear(m.trustByIP)
 	clear(m.trustByMailbox)
+	// The bucket may hold entries this load dropped: rewrite it whole.
+	m.resetChanges()
 
 	trust := make(map[sprayTrustKey]sprayTrust)
 	for ip, mbs := range st.Trust {
@@ -639,13 +835,23 @@ func (d *Daemon) loadMailSpray() {
 	d.mailSpray.Load(st)
 }
 
-// persistMailSpray saves the spray memory so a restart keeps it.
+// persistMailSpray saves the spray memory so a restart keeps it: the whole
+// memory the first time, then only what changed.
 func (d *Daemon) persistMailSpray() {
 	sdb := store.Global()
 	if d.mailSpray == nil || sdb == nil {
 		return
 	}
-	if err := sdb.SaveMailSpray(d.mailSpray.Export()); err != nil {
+	delta, full := d.mailSpray.ExportChanges()
+	var err error
+	switch {
+	case full:
+		err = sdb.SaveMailSpray(delta.Put)
+	case !delta.Empty():
+		err = sdb.ApplyMailSprayDelta(delta)
+	}
+	if err != nil {
+		d.mailSpray.RetryChanges(delta, full)
 		csmlog.Warn("mail spray memory persistence failed", "err", err)
 	}
 }
@@ -678,6 +884,7 @@ func (m *mailSpray) touch(ip string, now time.Time) *sprayIP {
 		m.ips[ip] = e
 	}
 	e.lastSeen = now
+	m.markIP(ip)
 	return e
 }
 
@@ -813,6 +1020,7 @@ func (m *mailSpray) recordTrust(k sprayTrustKey, now time.Time) bool {
 	t.last = now
 	if ok {
 		m.trust[k] = t
+		m.markTrust(k.ip)
 	} else {
 		m.addTrust(k, t)
 	}
@@ -832,12 +1040,17 @@ func (m *mailSpray) addTrust(k sprayTrustKey, t sprayTrust) {
 	setAdd(m.trustByIP, k.ip, k.mailbox)
 	setAdd(m.trustByMailbox, k.mailbox, k.ip)
 	m.trust[k] = t
+	m.markTrust(k.ip)
 }
 
 func (m *mailSpray) dropTrust(k sprayTrustKey) {
+	_, ok := m.trust[k]
 	delete(m.trust, k)
 	setDel(m.trustByIP, k.ip, k.mailbox)
 	setDel(m.trustByMailbox, k.mailbox, k.ip)
+	if ok {
+		m.markTrust(k.ip)
+	}
 }
 
 // oldestTrust returns the record with the oldest last success among set.
@@ -919,6 +1132,7 @@ func (m *mailSpray) corroborate(name, ip string, now time.Time) int {
 		m.names[name] = n
 	}
 	n.note(key, now)
+	m.markName(name)
 	m.evictNames(name, now)
 	return m.networkCount(n, now)
 }
@@ -998,7 +1212,10 @@ func (m *mailSpray) evictIPs(keep string, now time.Time) {
 	sprayEvict(m.ips, m.cfg.MaxIPs, keep,
 		func(e *sprayIP) int { return m.ipRank(e, now) },
 		func(e *sprayIP) time.Time { return e.lastSeen },
-		func(ip string) { delete(m.ips, ip) })
+		func(ip string) {
+			delete(m.ips, ip)
+			m.markIP(ip)
+		})
 }
 
 // evictTrust drops the oldest last success first: trust is earned with a real
@@ -1021,7 +1238,10 @@ func (m *mailSpray) evictNames(keep string, now time.Time) {
 			return sprayRankOneShot
 		},
 		func(n *sprayName) time.Time { return n.last },
-		func(name string) { delete(m.names, name) })
+		func(name string) {
+			delete(m.names, name)
+			m.markName(name)
+		})
 }
 
 type sprayVictim[K comparable] struct {

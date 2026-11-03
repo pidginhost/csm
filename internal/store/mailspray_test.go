@@ -150,3 +150,53 @@ func TestMailSprayClosedReturnsError(t *testing.T) {
 		t.Errorf("SaveMailSpray on closed store returned nil error")
 	}
 }
+
+func TestMailSprayApplyDeltaTouchesOnlyItsKeys(t *testing.T) {
+	db := openTestDB(t)
+
+	base := testMailSprayState()
+	if err := db.SaveMailSpray(base); err != nil {
+		t.Fatalf("SaveMailSpray: %v", err)
+	}
+	seen := time.Date(2026, 10, 31, 10, 0, 0, 0, time.UTC)
+	delta := MailSprayDelta{
+		Put: MailSprayState{
+			IPs:      map[string]MailSprayIP{"192.0.2.1": {LastSeen: seen}},
+			Networks: map[string]map[string]time.Time{"new@example.com": {"192.0.0.0/16": seen}},
+		},
+		DeleteIPs:   []string{"2001:db8::7", ""},
+		DeleteTrust: []string{"203.0.113.9"},
+		DeleteNames: []string{"nobody@example.com"},
+	}
+	if delta.Empty() || !(MailSprayDelta{}).Empty() {
+		t.Fatalf("Empty() wrong")
+	}
+	if err := db.ApplyMailSprayDelta(delta); err != nil {
+		t.Fatalf("ApplyMailSprayDelta: %v", err)
+	}
+
+	want := base
+	want.IPs = map[string]MailSprayIP{"198.51.100.7": base.IPs["198.51.100.7"], "192.0.2.1": {LastSeen: seen}}
+	want.Trust = map[string]map[string]GoodSourcePair{"198.51.100.7": base.Trust["198.51.100.7"]}
+	want.Networks = map[string]map[string]time.Time{"new@example.com": {"192.0.0.0/16": seen}}
+	got, err := db.LoadMailSpray()
+	if err != nil {
+		t.Fatalf("LoadMailSpray: %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("after delta:\n got %+v\nwant %+v", got, want)
+	}
+}
+
+func TestMailSprayApplyDeltaClosedReturnsError(t *testing.T) {
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err = db.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if err = db.ApplyMailSprayDelta(MailSprayDelta{DeleteIPs: []string{"192.0.2.1"}}); err == nil {
+		t.Fatalf("ApplyMailSprayDelta on closed store returned nil error")
+	}
+}

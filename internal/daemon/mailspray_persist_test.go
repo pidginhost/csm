@@ -3,6 +3,7 @@ package daemon
 import (
 	"fmt"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -488,5 +489,281 @@ func TestMailSprayRestartKeepsRevokedTrust(t *testing.T) {
 	}
 	if m.TrustSize() != 0 {
 		t.Fatalf("trust records = %d, want 0", m.TrustSize())
+	}
+}
+
+// bucketMatches fails the test unless the store holds exactly m's memory.
+func bucketMatches(t *testing.T, db *store.DB, m *mailSpray) {
+	t.Helper()
+	got, err := db.LoadMailSpray()
+	if err != nil {
+		t.Fatalf("LoadMailSpray: %v", err)
+	}
+	if want := m.Export(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("bucket differs from memory:\n got %+v\nwant %+v", got, want)
+	}
+}
+
+func TestMailSprayDeltaSaveWritesOnlyChangedKeys(t *testing.T) {
+	db := openStoreForTest(t)
+	m, clock := newTestSpray(testSprayConfig())
+	d := &Daemon{mailSpray: m}
+	for _, ip := range []string{"192.0.2.1", "192.0.2.2", "192.0.2.3"} {
+		m.Failure(ip, "a@example.com", mailboxExists)
+	}
+	ageTrust(t, m, clock, "203.0.113.1", "t@example.com")
+	if !m.full {
+		t.Fatalf("the first save is not a full snapshot")
+	}
+	d.persistMailSpray()
+	bucketMatches(t, db, m)
+
+	clock.advance(time.Minute)
+	m.Failure("192.0.2.1", "b@example.com", mailboxExists)
+	delta, full := m.ExportChanges()
+	if full || len(delta.Put.IPs) != 1 || len(delta.Put.Trust) != 0 || len(delta.Put.Networks) != 0 ||
+		len(delta.DeleteIPs)+len(delta.DeleteTrust)+len(delta.DeleteNames) != 0 {
+		t.Fatalf("delta after one failure = full %v %+v, want only 192.0.2.1", full, delta)
+	}
+	if _, ok := delta.Put.IPs["192.0.2.1"]; !ok {
+		t.Fatalf("delta misses the changed IP: %+v", delta)
+	}
+	m.RetryChanges(delta, full)
+
+	// A sentinel written behind the detector's back survives a delta save,
+	// so the save did not rewrite the bucket.
+	sentinel := clock.Now().Add(-time.Hour)
+	if err := db.ApplyMailSprayDelta(store.MailSprayDelta{Put: store.MailSprayState{
+		IPs: map[string]store.MailSprayIP{"192.0.2.2": {LastSeen: sentinel}},
+	}}); err != nil {
+		t.Fatalf("writing sentinel: %v", err)
+	}
+	d.persistMailSpray()
+	got, err := db.LoadMailSpray()
+	if err != nil {
+		t.Fatalf("LoadMailSpray: %v", err)
+	}
+	if !got.IPs["192.0.2.2"].LastSeen.Equal(sentinel) {
+		t.Fatalf("an unchanged IP was rewritten by a delta save")
+	}
+	if len(got.IPs["192.0.2.1"].Failed) != 2 {
+		t.Fatalf("changed IP not saved: %+v", got.IPs["192.0.2.1"])
+	}
+}
+
+func TestMailSprayDeltaSaveDeletesDroppedKeys(t *testing.T) {
+	db := openStoreForTest(t)
+	cfg := testSprayConfig()
+	cfg.MaxIPs = 20
+	m, clock := newTestSpray(cfg)
+	d := &Daemon{mailSpray: m}
+	for i := range cfg.MaxIPs {
+		m.Failure(fmt.Sprintf("192.0.2.%d", i), "a@example.com", mailboxExists)
+		clock.advance(time.Second)
+	}
+	corroborate(t, m, "nobody@example.com")
+	ageTrust(t, m, clock, "203.0.113.50", "t@example.com")
+	d.persistMailSpray()
+	bucketMatches(t, db, m)
+
+	// Eviction: a new IP pushes the oldest one-shots out.
+	m.Failure("192.0.2.199", "a@example.com", mailboxExists)
+	if m.ips["192.0.2.0"] != nil {
+		t.Fatalf("setup: the oldest one-shot was not evicted")
+	}
+	d.persistMailSpray()
+	bucketMatches(t, db, m)
+
+	// Purge: everything ages out, keys go from the bucket.
+	clock.advance(cfg.Window + time.Minute)
+	m.Purge()
+	d.persistMailSpray()
+	bucketMatches(t, db, m)
+	if got, err := db.LoadMailSpray(); err != nil || len(got.IPs)+len(got.Trust)+len(got.Networks) != 0 {
+		t.Fatalf("after purge the bucket holds %+v, %v; want nothing", got, err)
+	}
+}
+
+func TestMailSprayFailedSaveRetries(t *testing.T) {
+	db := openStoreForTest(t)
+	m, clock := newTestSpray(testSprayConfig())
+	d := &Daemon{mailSpray: m}
+	m.Failure("192.0.2.9", "a@example.com", mailboxExists)
+	d.persistMailSpray()
+
+	// A delete and two writes, all lost to the failed save.
+	clock.advance(testSprayConfig().Window + time.Minute)
+	m.Purge()
+	m.Failure("192.0.2.1", "b@example.com", mailboxExists)
+	ageTrust(t, m, clock, "203.0.113.1", "t@example.com")
+	closed, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	_ = closed.Close()
+	store.SetGlobal(closed)
+	d.persistMailSpray()
+	store.SetGlobal(db)
+
+	d.persistMailSpray()
+	bucketMatches(t, db, m)
+}
+
+// A full snapshot followed by deltas restores exactly the live memory. Each
+// interval changes some keys through one path only, so a path that forgets
+// to mark its key leaves the bucket behind.
+func TestMailSprayRestartFromSnapshotAndDeltas(t *testing.T) {
+	db := openStoreForTest(t)
+	m, clock := newTestSpray(testSprayConfig())
+	d := &Daemon{mailSpray: m}
+	save := func() {
+		t.Helper()
+		d.persistMailSpray()
+		bucketMatches(t, db, m)
+	}
+	start := clock.Now()
+	ageTrust(t, m, clock, "192.0.2.1", "a@example.com", "r@example.com")
+	m.Failure("192.0.2.2", "x@example.com", mailboxExists)
+	m.Failure("192.0.2.4", "old@example.com", mailboxExists)
+	m.Failure("2001:db8::1", "nobody@example.com", mailboxMissing)
+	for i := range maxSprayNamesPerIP + 1 { // the last name overflows
+		m.Failure("192.0.2.5", fmt.Sprintf("n%d@example.com", i), mailboxExists)
+	}
+	save()
+
+	clock.advance(25 * time.Hour)
+	m.RevokeTrust("192.0.2.1", "r@example.com")
+	m.Failure("192.0.2.2", "x@example.com", mailboxExists)
+	m.Failure("192.0.2.2", "y@example.com", mailboxExists)
+	m.Success("192.0.2.2", "c@example.com")
+	m.Failure("192.0.2.4", "new@example.com", mailboxExists)
+	m.Failure("198.51.100.1", "nobody@example.com", mailboxMissing)
+	for i := range maxSprayNamesPerIP {
+		m.Failure("192.0.2.5", fmt.Sprintf("n%d@example.com", i), mailboxExists)
+	}
+	save()
+
+	// Logins only: a weak advisory and an aged trust refresh.
+	clock.advance(2 * time.Hour)
+	if _, v := m.Success("192.0.2.2", "d@example.com"); v == nil {
+		t.Fatalf("setup: no advisory for d@example.com")
+	}
+	if clean, _ := m.Success("192.0.2.1", "a@example.com"); !clean {
+		t.Fatalf("setup: aged trust did not refresh")
+	}
+	save()
+
+	// Purge only: the first interval's records age out, the rest stay.
+	clock.t = start.Add(testSprayConfig().Window + 12*time.Minute)
+	m.Purge()
+	if e := m.ips["192.0.2.4"]; e == nil || len(e.failed) != 1 {
+		t.Fatalf("setup: want a partial purge of 192.0.2.4, got %+v", e)
+	}
+	if e := m.ips["192.0.2.5"]; e == nil || !e.untracked.IsZero() || len(e.failed) != maxSprayNamesPerIP {
+		t.Fatalf("setup: want only the overflow marker of 192.0.2.5 purged, got %+v", e)
+	}
+	if n := m.names["nobody@example.com"]; n == nil || len(n.networks) != 1 {
+		t.Fatalf("setup: want a partial purge of nobody@example.com, got %+v", n)
+	}
+	save()
+
+	next := newMailSpray(m.cfg, clock.Now)
+	next.ExportChanges() // a detector that already saved
+	(&Daemon{mailSpray: next}).loadMailSpray()
+	if got, want := next.Export(), m.Export(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("restart from snapshot and deltas:\n got %+v\nwant %+v", got, want)
+	}
+	if _, full := next.ExportChanges(); !full {
+		t.Fatalf("the first save after a load is not a full snapshot")
+	}
+}
+
+// Attacker churn of one-shot IPs between saves must neither grow the change
+// set nor force a rewrite of idle evidence: the delta holds only what the
+// churn actually changed.
+func TestMailSprayChurnKeepsSavesSmall(t *testing.T) {
+	cfg := testSprayConfig()
+	cfg.MaxIPs = 20
+	m, clock := newTestSpray(cfg)
+	stable := make([]string, 10)
+	for i := range stable {
+		stable[i] = fmt.Sprintf("192.0.2.%d", i)
+		m.Failure(stable[i], "a@example.com", mailboxExists)
+		wantRule(t, m.Failure(stable[i], "b@example.com", mailboxExists), sprayRuleBreadth, true)
+	}
+	m.ExportChanges()
+
+	for i := range 10 * cfg.MaxIPs {
+		clock.advance(time.Second)
+		m.Failure(fmt.Sprintf("2001:db8::%x", i), "a@example.com", mailboxExists)
+		if n := len(m.ipChanges.dirty); n > cfg.MaxIPs {
+			t.Fatalf("change set holds %d IPs, pool %d", n, cfg.MaxIPs)
+		}
+	}
+	delta, full := m.ExportChanges()
+	if full {
+		t.Fatalf("churn forced a full rewrite")
+	}
+	for _, ip := range stable {
+		if _, ok := delta.Put.IPs[ip]; ok || slices.Contains(delta.DeleteIPs, ip) {
+			t.Fatalf("idle %s was rewritten by churn", ip)
+		}
+	}
+	if len(delta.DeleteIPs) != 0 {
+		t.Fatalf("deletes for IPs never saved: %v", delta.DeleteIPs)
+	}
+}
+
+// Saves that keep failing under churn keep the bookkeeping bounded, and the
+// first save that works brings the bucket back in line.
+func TestMailSprayChangeSetBoundedWhileSavesFail(t *testing.T) {
+	db := openStoreForTest(t)
+	cfg := testSprayConfig()
+	cfg.MaxIPs = 10
+	m, clock := newTestSpray(cfg)
+	d := &Daemon{mailSpray: m}
+	for i := range cfg.MaxIPs {
+		m.Failure(fmt.Sprintf("192.0.2.%d", i), "a@example.com", mailboxExists)
+	}
+	d.persistMailSpray()
+
+	closed, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	_ = closed.Close()
+	store.SetGlobal(closed)
+	for round := range 5 {
+		for i := range 3 * cfg.MaxIPs {
+			clock.advance(time.Second)
+			m.Failure(fmt.Sprintf("2001:db8:%x::%x", round, i), "a@example.com", mailboxExists)
+		}
+		d.persistMailSpray()
+		if n, s := len(m.ipChanges.dirty), len(m.ipChanges.saved); n > 2*cfg.MaxIPs || s > 2*cfg.MaxIPs {
+			t.Fatalf("round %d: change set %d, saved set %d, bound %d", round, n, s, 2*cfg.MaxIPs)
+		}
+	}
+	store.SetGlobal(db)
+	d.persistMailSpray()
+	bucketMatches(t, db, m)
+}
+
+// Turning the detector off drops its memory, and the next save drops the
+// saved copy too, so a later restart with it on starts clean.
+func TestMailSprayDisableEmptiesBucketOnNextSave(t *testing.T) {
+	db := openStoreForTest(t)
+	m, clock := newTestSpray(testSprayConfig())
+	d := &Daemon{mailSpray: m}
+	m.Failure("192.0.2.1", "a@example.com", mailboxExists)
+	ageTrust(t, m, clock, "203.0.113.1", "t@example.com")
+	d.persistMailSpray()
+	d.persistMailSpray() // now in delta mode
+
+	off := testSprayConfig()
+	off.Window = 0
+	m.SetConfig(off)
+	d.persistMailSpray()
+	if got, err := db.LoadMailSpray(); err != nil || len(got.IPs)+len(got.Trust)+len(got.Networks) != 0 {
+		t.Fatalf("after disabling the bucket holds %+v, %v; want nothing", got, err)
 	}
 }
