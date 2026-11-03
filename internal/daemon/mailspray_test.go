@@ -279,7 +279,9 @@ func TestMailSpray_UniqueIPFloodBounded(t *testing.T) {
 	wantNoVerdict(t, m.Failure(fired, "a@example.com", mailboxExists))
 	wantRule(t, m.Failure(fired, "b@example.com", mailboxExists), sprayRuleBreadth, true)
 
+	// Every flood IP is newer than the fired one, so only rank can keep it.
 	for i := range 10000 {
+		clock.advance(time.Millisecond)
 		m.Failure(fmt.Sprintf("2001:db8::%x", i+1), "a@example.com", mailboxExists)
 		if m.Size() > 100 {
 			t.Fatalf("Size() = %d after %d IPs, want <= 100", m.Size(), i+1)
@@ -290,6 +292,87 @@ func TestMailSpray_UniqueIPFloodBounded(t *testing.T) {
 	}
 	clock.advance(61 * time.Minute)
 	wantRule(t, m.Failure(fired, "c@example.com", mailboxExists), sprayRuleBreadth, true)
+}
+
+// One owned mailbox lets anyone log in cleanly from fresh IPs. That must not
+// flush verdict evidence or other users' trust.
+func TestMailSpray_OwnedMailboxLoginFloodKeepsEvidenceAndTrust(t *testing.T) {
+	cfg := testSprayConfig()
+	cfg.MaxIPs = 100
+	m, clock := newTestSpray(cfg)
+	const real, fired, oneShot = "192.0.2.1", "192.0.2.2", "192.0.2.3"
+	ageTrust(t, m, clock, real, "a@example.com")
+	wantNoVerdict(t, m.Failure(fired, "a@example.com", mailboxExists))
+	wantRule(t, m.Failure(fired, "b@example.com", mailboxExists), sprayRuleBreadth, true)
+	wantNoVerdict(t, m.Failure(oneShot, "a@example.com", mailboxExists))
+
+	var flood []string
+	for i := range 200 {
+		clock.advance(time.Second)
+		ip := fmt.Sprintf("2001:db8::%x", i+1)
+		flood = append(flood, ip)
+		if clean, v := m.Success(ip, "owned@example.com"); !clean || v != nil {
+			t.Fatalf("flood login %d = (%v, %+v), want clean", i, clean, v)
+		}
+	}
+	clock.advance(11 * time.Minute)
+	owned := 0
+	for _, ip := range flood {
+		if m.TrustedAll(ip, []string{"owned@example.com"}) {
+			owned++
+		}
+	}
+	if owned > maxSprayTrustIPsPerMailbox {
+		t.Fatalf("owned mailbox trusted from %d IPs, want <= %d", owned, maxSprayTrustIPsPerMailbox)
+	}
+	if !m.TrustedAll(real, []string{"a@example.com"}) {
+		t.Fatal("login flood evicted a real user's trust")
+	}
+	// Logins add nothing to the evidence pool, so even one-shot evidence stays.
+	wantRule(t, m.Failure(oneShot, "b@example.com", mailboxExists), sprayRuleBreadth, true)
+	clock.advance(50 * time.Minute)
+	wantRule(t, m.Failure(fired, "c@example.com", mailboxExists), sprayRuleBreadth, true)
+}
+
+// A failure flood evicts evidence only. An IP whose own evidence is evicted
+// keeps its trust.
+func TestMailSpray_FailureFloodKeepsTrust(t *testing.T) {
+	cfg := testSprayConfig()
+	cfg.MaxIPs = 100
+	m, clock := newTestSpray(cfg)
+	const real = "192.0.2.1"
+	ageTrust(t, m, clock, real, "a@example.com")
+	wantNoVerdict(t, m.Failure(real, "a@example.com", mailboxExists))
+	for i := range 10000 {
+		clock.advance(time.Millisecond)
+		m.Failure(fmt.Sprintf("2001:db8::%x", i+1), "a@example.com", mailboxExists)
+	}
+	if !m.TrustedAll(real, []string{"a@example.com"}) {
+		t.Fatal("failure flood evicted trust")
+	}
+}
+
+func TestMailSpray_TrustPoolBounded(t *testing.T) {
+	cfg := testSprayConfig()
+	cfg.MaxIPs = 100
+	m, clock := newTestSpray(cfg)
+	for i := range 10000 {
+		clock.advance(time.Millisecond)
+		m.Success(fmt.Sprintf("2001:db8::%x", i+1), fmt.Sprintf("u%d@example.com", i))
+		if m.TrustSize() > cfg.MaxIPs {
+			t.Fatalf("TrustSize() = %d after %d logins, want <= %d", m.TrustSize(), i+1, cfg.MaxIPs)
+		}
+	}
+
+	// One IP keeps trust on at most maxSprayTrustPerIP mailboxes.
+	cfg.MaxIPs = 1000
+	m, _ = newTestSpray(cfg)
+	for i := range maxSprayTrustPerIP + 50 {
+		m.Success("192.0.2.1", fmt.Sprintf("u%d@example.com", i))
+	}
+	if m.TrustSize() != maxSprayTrustPerIP {
+		t.Fatalf("one IP holds %d trust records, want %d", m.TrustSize(), maxSprayTrustPerIP)
+	}
 }
 
 func TestMailSpray_UniqueNameFloodBounded(t *testing.T) {
@@ -349,8 +432,8 @@ func TestMailSpray_PurgeDropsExpired(t *testing.T) {
 	m.mu.Lock()
 	names := len(m.names)
 	m.mu.Unlock()
-	if m.Size() != 1 || names != 0 {
-		t.Fatalf("after purge %d IPs and %d names, want 1 and 0", m.Size(), names)
+	if m.Size() != 1 || names != 0 || m.TrustSize() != 0 {
+		t.Fatalf("after purge %d IPs, %d names, %d trust, want 1, 0, 0", m.Size(), names, m.TrustSize())
 	}
 	if m.TrustedAll("192.0.2.1", []string{"a@example.com"}) {
 		t.Fatal("trust outlived the window")
@@ -372,8 +455,8 @@ func TestMailSpray_ZeroWindowNoOp(t *testing.T) {
 		t.Fatal("zero config recorded trust")
 	}
 	m.Purge()
-	if m.Size() != 0 || m.Mode() != sprayOff {
-		t.Fatalf("Size() = %d Mode() = %v, want 0 off", m.Size(), m.Mode())
+	if m.Size() != 0 || m.TrustSize() != 0 || m.Mode() != sprayOff {
+		t.Fatalf("Size() = %d TrustSize() = %d Mode() = %v, want 0 0 off", m.Size(), m.TrustSize(), m.Mode())
 	}
 }
 
