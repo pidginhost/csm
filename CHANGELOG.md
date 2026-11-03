@@ -23,6 +23,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 - Antispam no longer overrides spam weights you set yourself in rspamd.
 - Spam learning no longer stops for every report when rspamd hashes one learned message differently; only that message's learning is dropped.
+- Mail from large shared services such as Gmail no longer crowds other senders out of spam source detection on busy hosts.
 
 ## [4.9.0] - 2026-11-02
 

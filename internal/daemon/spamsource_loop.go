@@ -202,6 +202,14 @@ func (d *Daemon) recordSpamSource(s antispam.Scan, at time.Time, cfg *config.Con
 	if (!reject && !clean) || d.spamSenderExcluded(s.IP, cfg) {
 		return
 	}
+	// A provider sender is never reported, so it holds no tracker slot. History
+	// kept from before the guard knew its prefix goes too: it would count
+	// against the sender if a later refresh drops the prefix. While the guard
+	// is not ready no sender is a provider, so every one is tracked.
+	if r.guard.ProviderPrefix(s.IP, time.Now()) {
+		r.tracker.forget(s.IP)
+		return
+	}
 	if !r.tracker.observe(s.IP, reject, clean, at) {
 		return
 	}

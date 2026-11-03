@@ -87,6 +87,14 @@ func (t *spamSourceTracker) observe(ip netip.Addr, reject, clean bool, at time.T
 	return true
 }
 
+// forget drops ip's history. A check in flight for it then ends unreported,
+// because finish finds no entry.
+func (t *spamSourceTracker) forget(ip netip.Addr) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	delete(t.entries, ip.Unmap())
+}
+
 // finish ends the check in flight. If ip still qualifies, emit runs under
 // the lock; when it returns true the throttle starts at at.
 func (t *spamSourceTracker) finish(ip netip.Addr, at time.Time, emit func() bool) bool {

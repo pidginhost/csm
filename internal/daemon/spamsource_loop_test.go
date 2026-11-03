@@ -441,6 +441,52 @@ func TestSpamSourceSkipsSharedSenders(t *testing.T) {
 	})
 }
 
+// A shared-service sender takes no tracker slot once the guard is ready.
+// While it is not ready no sender can be told apart, so every one is tracked.
+// Neither case changes what is reported.
+func TestSpamSourceTracksProviderSendersOnlyWhileGuardNotReady(t *testing.T) {
+	const provider, other = "203.0.113.9", "198.51.100.7"
+	for _, ready := range []bool{true, false} {
+		t.Run(fmt.Sprintf("guard ready %v", ready), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				useSpamStore(t)
+				cfg := spamSourceConfig(t)
+				if !ready {
+					if err := os.Remove(filepath.Join(cfg.StatePath, sharedSendersCacheFile)); err != nil {
+						t.Fatal(err)
+					}
+				}
+				dns := &spamDNS{}
+				d := startSpamDaemon(t, cfg, dns)
+				base := time.Now()
+				for _, ip := range []string{provider, other} {
+					eximAt(d, cfg, rejectMarker(ip), base)
+					eximAt(d, cfg, rejectMarker(ip), base.Add(2*time.Hour))
+				}
+				got := spamFindings(d)
+
+				tracked := d.spamSources.Load().tracker.snapshot()
+				if _, ok := tracked[provider]; ok == ready {
+					t.Errorf("provider sender tracked = %v, want %v", ok, !ready)
+				}
+				if _, ok := tracked[other]; !ok {
+					t.Errorf("other sender not tracked: %v", tracked)
+				}
+				if !ready {
+					if len(got) != 0 || len(dns.lookups()) != 0 {
+						t.Fatalf("an unready guard raised %+v after lookups %v", got, dns.lookups())
+					}
+					return
+				}
+				wantSpamFinding(t, got, other, base.Add(2*time.Hour))
+				if got, want := dns.lookups(), []string{"ptr:" + other}; !slices.Equal(got, want) {
+					t.Fatalf("lookups = %v, want %v", got, want)
+				}
+			})
+		})
+	}
+}
+
 func TestSpamSourceFailsClosed(t *testing.T) {
 	t.Run("PTR lookup fails", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {

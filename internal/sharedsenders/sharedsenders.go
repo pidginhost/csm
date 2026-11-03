@@ -193,6 +193,14 @@ func (g *Guard) Covers(ip netip.Addr, now time.Time) bool {
 	return g.current().covers(ip.Unmap(), now)
 }
 
+// ProviderPrefix reports whether a ready guard places ip in a provider
+// prefix. Readiness and membership must use one snapshot: a refresh can
+// publish a policy dated after now, which Covers would treat as covering all.
+func (g *Guard) ProviderPrefix(ip netip.Addr, now time.Time) bool {
+	s := g.current()
+	return ip.IsValid() && s.ready(now) && s.covers(ip.Unmap(), now)
+}
+
 // Shared reports whether ip belongs to a shared mail service: Covers is true,
 // or a reverse name of ip is a provider ptr domain or under one and resolves
 // back to ip. No PTR, or no matching name that resolves back, is not shared.
