@@ -16,6 +16,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 ### Changed
 
 - Forged mail that fails the sender domain's DMARC reject policy now lands in the Spam folder more often.
+- Dry-run status and summaries now list rotation forecasts and equal-priority waits separately.
 
 ### Fixed
 
