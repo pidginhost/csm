@@ -342,7 +342,7 @@ auto_response:
   max_file_actions_per_account_per_hour: 10  # per-account share of the same rolling hour
   max_file_action_failures_per_hour: 3   # pause automatic file response after repeated failures
   block_ips: false                      # block attacker IPs via firewall
-  block_expiry: "24h"                   # positive temporary block duration; omit for the 24h default
+  block_expiry: "24h"                   # positive temporary block duration; omit for the 24h default; admission previews and forecasts cap new temporary lifetimes; retries keep their first expiry
   http_asn_crawl_tempban: "24h"         # Critical ASN-crawl subnet ban duration
   # Shared scan-driven block budget; 0/omitted selects 50.
   # Also sets the admission ledger ceiling: 0/omitted selects 2000, capped at 20000.
@@ -857,7 +857,7 @@ firewall:
 
   # IP limits
   deny_ip_limit: 3000                   # max permanent blocked IPs
-  deny_temp_ip_limit: 500               # max temporary blocked IPs
+  deny_temp_ip_limit: 500               # max temporary blocked IPs; 0 = unlimited for existing blocking; admission forecasts then plan for 10000
 
   # Outbound SMTP restriction
   smtp_block: false                     # block outgoing mail except allowed users

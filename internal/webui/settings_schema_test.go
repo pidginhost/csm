@@ -2,11 +2,14 @@ package webui
 
 import (
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/firewall"
 )
 
 func TestSettingsSectionsAreStable(t *testing.T) {
@@ -716,6 +719,38 @@ func TestPerformanceSchemaIncludesErrorLogSizeTiers(t *testing.T) {
 		}
 		if f.Min == nil || *f.Min != 1 {
 			t.Errorf("%s min = %v, want 1", name, f.Min)
+		}
+	}
+}
+
+// Help that states a default or a bound names the value the code ships,
+// so the settings page cannot drift from the configuration (Q16).
+func TestSettingsHelpStatesTheShippedDefaults(t *testing.T) {
+	def := firewall.DefaultConfig()
+	for _, tc := range []struct {
+		section, field string
+		want           []string
+	}{
+		{"auto_response", "block_expiry", []string{"Default " + config.DefaultBlockExpiry + ".", "cap new automatic lifetimes", "Retries keep their first expiry.", "Existing blocking keeps its own lifetimes."}},
+		{"auto_response", "max_blocks_per_hour", []string{fmt.Sprintf(" %d for existing blocking", config.DefaultMaxBlocksPerHour), fmt.Sprintf(" %d for the admission ledger", config.DefaultAdmissionCeiling), fmt.Sprintf("caps any value at %d", admission.MaxCeiling)}},
+		{"firewall", "deny_ip_limit", []string{fmt.Sprintf("Default %d.", def.DenyIPLimit)}},
+		{"firewall", "deny_temp_ip_limit", []string{fmt.Sprintf("Default %d.", def.DenyTempIPLimit), fmt.Sprintf("plans for %d slots", admission.TemporaryCapacity)}},
+	} {
+		s, ok := LookupSettingsSection(tc.section)
+		if !ok {
+			t.Fatalf("section %s missing", tc.section)
+		}
+		f := findSchemaField(s, tc.field)
+		if f == nil {
+			t.Fatalf("%s.%s missing", tc.section, tc.field)
+		}
+		if tc.field == "block_expiry" && f.Placeholder != config.DefaultBlockExpiry {
+			t.Errorf("block_expiry placeholder = %q, want %q", f.Placeholder, config.DefaultBlockExpiry)
+		}
+		for _, want := range tc.want {
+			if !strings.Contains(f.Help, want) {
+				t.Errorf("%s.%s help = %q, want %q", tc.section, tc.field, f.Help, want)
+			}
 		}
 	}
 }

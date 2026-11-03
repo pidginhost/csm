@@ -1,6 +1,12 @@
 package webui
 
-import "github.com/pidginhost/csm/internal/config"
+import (
+	"fmt"
+
+	"github.com/pidginhost/csm/internal/admission"
+	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/firewall"
+)
 
 // OptionGroup is an ordered label + values pair used to render grouped
 // multi-select options (e.g. "Authentication & Login" → [cpanel_login, ...]).
@@ -240,8 +246,8 @@ var settingsSections = []SettingsSection{
 			{YAMLPath: "kill_processes", Type: "bool", Label: "Kill malicious processes"},
 			{YAMLPath: "quarantine_files", Type: "bool", Label: "Quarantine malicious files"},
 			{YAMLPath: "block_ips", Type: "bool", Label: "Block attacker IPs"},
-			{YAMLPath: "block_expiry", Type: "string", Label: "Block expiry", Placeholder: "24h", Help: "Positive temporary-block duration. Default 24h."},
-			{YAMLPath: "max_blocks_per_hour", Type: "int", Label: "Max IP blocks per hour", Min: int64p(0), Help: "0 uses the default 50/hour cap."},
+			{YAMLPath: "block_expiry", Type: "string", Label: "Block expiry", Placeholder: config.DefaultBlockExpiry, Help: fmt.Sprintf("Positive temporary-block duration. Default %s. Admission previews and dry-run forecasts cap new automatic lifetimes at this duration. Retries keep their first expiry. Existing blocking keeps its own lifetimes.", config.DefaultBlockExpiry)},
+			{YAMLPath: "max_blocks_per_hour", Type: "int", Label: "Max IP blocks per hour", Min: int64p(0), Help: fmt.Sprintf("Automatic IP blocks per hour. 0 uses the defaults: %d for existing blocking and %d for the admission ledger, which caps any value at %d.", config.DefaultMaxBlocksPerHour, config.DefaultAdmissionCeiling, admission.MaxCeiling)},
 			{YAMLPath: "enforce_permissions", Type: "bool", Label: "Auto-chmod 644 world/group-writable PHP"},
 			{YAMLPath: "fix_wp_cron", Type: "bool", Label: "Auto-disable WP-Cron + install system cron", Help: "On perf_wp_cron findings, edit wp-config.php and add a per-user cron. Tune interval/php under Performance."},
 			{YAMLPath: "block_cpanel_logins", Type: "bool", Label: "Block on cPanel/webmail login alerts"},
@@ -518,8 +524,8 @@ var settingsSections = []SettingsSection{
 			{YAMLPath: "udp_flood_rate", Type: "int", Label: "UDP packets/sec", Min: int64p(1), Max: int64p(100000), Help: "Per source; IPv6 metered per /64.", FieldGroup: FieldGroupFloodProtection},
 			{YAMLPath: "udp_flood_burst", Type: "int", Label: "UDP burst allowance", Min: int64p(1), Max: int64p(1000000), Help: "Per source; IPv6 metered per /64.", FieldGroup: FieldGroupFloodProtection},
 
-			{YAMLPath: "deny_ip_limit", Type: "int", Label: "Permanent block cap", Min: int64p(0), Max: int64p(1000000), Help: "0 = unlimited.", FieldGroup: FieldGroupLimits},
-			{YAMLPath: "deny_temp_ip_limit", Type: "int", Label: "Temporary block cap", Min: int64p(0), Max: int64p(1000000), FieldGroup: FieldGroupLimits},
+			{YAMLPath: "deny_ip_limit", Type: "int", Label: "Permanent block cap", Min: int64p(0), Max: int64p(1000000), Help: fmt.Sprintf("0 = unlimited. Default %d.", firewall.DefaultConfig().DenyIPLimit), FieldGroup: FieldGroupLimits},
+			{YAMLPath: "deny_temp_ip_limit", Type: "int", Label: "Temporary block cap", Min: int64p(0), Max: int64p(1000000), Help: fmt.Sprintf("0 = unlimited for existing blocking; automatic admission then plans for %d slots. Default %d.", admission.TemporaryCapacity, firewall.DefaultConfig().DenyTempIPLimit), FieldGroup: FieldGroupLimits},
 
 			{YAMLPath: "country_block", Type: "[]string", Label: "Country block (ISO-3166)", Help: "Two-letter codes, one per line.", FieldGroup: FieldGroupGeoDynDNS},
 			{YAMLPath: "country_db_path", Type: "string", Label: "Country DB path override", Placeholder: "(default: <state_path>/geoip)", FieldGroup: FieldGroupGeoDynDNS, FileOnly: true},
