@@ -14,6 +14,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - Mail login tracking no longer attributes incomplete or ambiguous log identities to a mailbox.
 - A successful SMTP, IMAP or POP login no longer shields an address from slow brute-force blocking after it tried other mailboxes.
 - Mail subjects or greetings made to look like failed logins can no longer get a sending mail server blocked.
+- Repeated logins with a cracked mail password no longer restore trust or exempt later password guessing from blocking.
 
 ### Added
 
@@ -30,6 +31,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Fixed
 
+- Mail backend outages no longer grant login trust or trigger password spray alerts from successful IMAP or POP logins.
 - Antispam no longer overrides spam weights you set yourself in rspamd.
 - Spam learning no longer stops for every report when rspamd hashes one learned message differently; only that message's learning is dropped.
 - Mail from large shared services such as Gmail no longer crowds other senders out of spam source detection on busy hosts.

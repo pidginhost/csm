@@ -1,6 +1,8 @@
 package daemon
 
 import (
+	"maps"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -233,16 +235,17 @@ func TestMailSprayOneBlockPerSource(t *testing.T) {
 		return strings.Replace(makeDovecotFailLine("imap", ip, mailbox), "1 attempts", n+" attempts", 1)
 	}
 	for _, tc := range []struct {
-		name  string
-		lines []string
+		name         string
+		lines        []string
+		wantA, wantB int
 	}{
 		// The fifth failure crosses the per-IP bar and the second
 		// mailbox the breadth bar in one call.
-		{"same failure", []string{attempts("4", "a@example.com"), attempts("1", "b@example.com")}},
+		{"same failure", []string{attempts("4", "a@example.com"), attempts("1", "b@example.com")}, 4, 1},
 		// Spray fires on the first attempt of the line, the per-IP bar
 		// on its fourth.
-		{"spray first in one line", []string{attempts("1", "a@example.com"), attempts("5", "b@example.com")}},
-		{"per-IP first, spray on a later line", []string{attempts("5", "a@example.com"), attempts("1", "b@example.com")}},
+		{"spray first in one line", []string{attempts("1", "a@example.com"), attempts("5", "b@example.com")}, 1, 5},
+		{"per-IP first, spray on a later line", []string{attempts("5", "a@example.com"), attempts("1", "b@example.com")}, 5, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			d, clock := newPairingDaemon(t, sprayTestConfig("enforce"))
@@ -250,7 +253,7 @@ func TestMailSprayOneBlockPerSource(t *testing.T) {
 			if n := countChecks(got, "mail_bruteforce"); n != 1 {
 				t.Fatalf("mail_bruteforce findings = %d, want 1: %+v", n, got)
 			}
-			if ev := sprayEvidence(d, ip); len(ev) != 2 || ev["a@example.com"].count+ev["b@example.com"].count < 5 {
+			if ev := sprayEvidence(d, ip); len(ev) != 2 || ev["a@example.com"].count != tc.wantA || ev["b@example.com"].count != tc.wantB {
 				t.Fatalf("spray evidence = %+v, want every attempt on both mailboxes", ev)
 			}
 		})
@@ -353,5 +356,144 @@ func TestMailCrackedMailboxEarnsNoTrust(t *testing.T) {
 	}
 	if !d.mailSpray.TrustedAll(clean, []string{"a@example.com"}) {
 		t.Fatal("a login with no failures earned no trust")
+	}
+}
+
+// A revoked password stays untrusted even when the attacker logs in again,
+// switches protocols, or waits out the short failure window.
+func TestMailCrackedMailboxCannotRegainTrust(t *testing.T) {
+	const ip, mailbox = "203.0.113.166", "a@example.com"
+	for _, mode := range []string{"off", "observe", "enforce"} {
+		for _, next := range []string{"imap", "pop3", "postfix", "exim", "after short window"} {
+			t.Run(mode+"/"+next, func(t *testing.T) {
+				d, clock := newPairingDaemon(t, sprayTestConfig(mode))
+				feed(d, clock, makeDovecotFailLine("imap", ip, mailbox), makeDovecotFailLine("imap", ip, mailbox))
+				if f, ok := findingByCheck(feed(d, clock, makeDovecotSuccessLine("imap", ip, mailbox)), "mail_account_compromised"); !ok || f.Severity != alert.Critical {
+					t.Fatalf("crack raised no Critical compromise: %+v", f)
+				}
+				for range 8 {
+					switch next {
+					case "postfix", "exim":
+						src := smtpLoginSources[next]
+						src.feed(d, clock, src.login(ip, mailbox)...)
+					case "after short window":
+						clock.advance(11 * time.Minute)
+						d.mailAuthTracker.Purge()
+						feed(d, clock, makeDovecotSuccessLine("imap", ip, mailbox))
+					default:
+						feed(d, clock, makeDovecotSuccessLine(next, ip, mailbox))
+					}
+				}
+				if sprayHasTrust(d, ip, mailbox) {
+					t.Error("later logins restored revoked spray trust")
+				}
+				if _, ok := d.mailAuthTracker.ExportGoodSource()[ip][mailbox]; ok {
+					t.Error("later logins gave the cracked mailbox good standing")
+				}
+				if next == "imap" || next == "pop3" {
+					got := feed(d, clock, makeDovecotFailLine(next, ip, mailbox), makeDovecotFailLine(next, ip, mailbox), makeDovecotFailLine(next, ip, mailbox))
+					if n := countChecks(got, "mail_bruteforce"); n != 1 {
+						t.Errorf("cracked logins exempted later failures: %+v", got)
+					}
+				}
+			})
+		}
+	}
+}
+
+// A first login that has not aged into good standing cannot survive a later
+// crack and become a delayed exemption.
+func TestMailCrackRevokesFreshGoodStanding(t *testing.T) {
+	const ip, mailbox = "203.0.113.168", "a@example.com"
+	d, clock := newPairingDaemon(t, sprayTestConfig("enforce"))
+	feed(d, clock, makeDovecotSuccessLine("imap", ip, mailbox))
+	feed(d, clock, makeDovecotFailLine("imap", ip, mailbox), makeDovecotFailLine("imap", ip, mailbox))
+	if f, ok := findingByCheck(feed(d, clock, makeDovecotSuccessLine("imap", ip, mailbox)), "mail_account_compromised"); !ok || f.Severity != alert.Critical {
+		t.Fatalf("crack raised no Critical compromise: %+v", f)
+	}
+	clock.advance(11 * time.Minute)
+	if _, ok := d.mailAuthTracker.ExportGoodSource()[ip][mailbox]; ok {
+		t.Error("crack retained good standing from the fresh login")
+	}
+	var got []alert.Finding
+	for range 5 {
+		got = append(got, feed(d, clock, makeDovecotFailLine("imap", ip, mailbox))...)
+	}
+	if n := countChecks(got, "mail_bruteforce"); n != 1 {
+		t.Errorf("fresh login exempted failures after the crack: %+v", got)
+	}
+}
+
+// Account-level eviction must not discard the per-IP evidence of a crack.
+func TestMailCrackAfterAccountEvictionEarnsNoTrust(t *testing.T) {
+	const ip, mailbox = "203.0.113.169", "a@example.com"
+	d, clock := newPairingDaemon(t, sprayTestConfig("enforce"))
+	d.mailAuthTracker.maxTracked = 2
+	feed(d, clock, makeDovecotFailLine("imap", ip, mailbox), makeDovecotFailLine("imap", ip, mailbox))
+	if d.mailAuthTracker.accounts[mailbox] != nil {
+		t.Fatal("setup did not evict the account")
+	}
+	got := feed(d, clock, makeDovecotSuccessLine("imap", ip, mailbox))
+	if f, ok := findingByCheck(got, "mail_account_compromised"); !ok || f.Severity != alert.Critical {
+		t.Errorf("crack raised no Critical compromise: %+v", got)
+	}
+	if sprayHasTrust(d, ip, mailbox) {
+		t.Error("account eviction let the cracked login earn trust")
+	}
+	if _, ok := d.mailAuthTracker.ExportGoodSource()[ip][mailbox]; ok {
+		t.Error("account eviction let the cracked login earn good standing")
+	}
+}
+
+// Outage traffic cannot create or refresh spray trust, change spray evidence,
+// or raise a spray finding. The existing short-window detector is independent.
+func TestMailSprayOutageSuccessNotEvidence(t *testing.T) {
+	const ip, mailbox = "203.0.113.167", "a@example.com"
+	for _, probe := range []bool{false, true} {
+		for _, history := range []string{"none", "trusted", "other mailbox", "crack"} {
+			t.Run("probe="+strconv.FormatBool(probe)+"/"+history, func(t *testing.T) {
+				d, clock := newPairingDaemon(t, sprayTestConfig("enforce"))
+				switch history {
+				case "trusted":
+					feed(d, clock, makeDovecotSuccessLine("imap", ip, mailbox))
+				case "other mailbox":
+					feed(d, clock, makeDovecotFailLine("imap", ip, "b@example.com"))
+				case "crack":
+					feed(d, clock, makeDovecotFailLine("imap", ip, mailbox), makeDovecotFailLine("imap", ip, mailbox))
+				}
+				if probe {
+					d.mailAuthTracker.SetBackendDownCheck(func() bool { return true })
+				} else {
+					for range mailBackendDegradedThreshold {
+						d.mailAuthTracker.RecordBackendFailure()
+					}
+				}
+				snapshot := func() *sprayIP {
+					d.mailSpray.mu.Lock()
+					defer d.mailSpray.mu.Unlock()
+					if e := d.mailSpray.ips[ip]; e != nil {
+						copy := *e
+						copy.failed = maps.Clone(e.failed)
+						copy.weakAlerted = maps.Clone(e.weakAlerted)
+						copy.revoked = maps.Clone(e.revoked)
+						return &copy
+					}
+					return nil
+				}
+				before := snapshot()
+				trust := d.mailSpray.trust[sprayTrustKey{ip, mailbox}]
+				got := feed(d, clock, makeDovecotSuccessLine("imap", ip, mailbox))
+				if !reflect.DeepEqual(before, snapshot()) || trust != d.mailSpray.trust[sprayTrustKey{ip, mailbox}] {
+					t.Error("outage login changed spray memory")
+				}
+				want := 0
+				if history == "crack" {
+					want = 1
+				}
+				if n := countChecks(got, "mail_account_compromised"); n != want {
+					t.Errorf("compromise findings = %d, want %d: %+v", n, want, got)
+				}
+			})
+		}
 	}
 }

@@ -117,6 +117,7 @@ type sprayTrustKey struct{ ip, mailbox string }
 type sprayIP struct {
 	failed                    map[string]sprayFailure
 	weakAlerted               map[string]time.Time // success mailbox to its last weak_compromise
+	revoked                   map[string]time.Time // known cracks cannot earn trust during the window
 	untracked                 time.Time            // latest untrusted failure refused at the name cap
 	suppressedUntil           time.Time
 	compromiseSuppressedUntil time.Time
@@ -265,6 +266,7 @@ func (m *mailSpray) Success(ip, mailbox string) (clean bool, v *sprayVerdict) {
 	}
 	now := m.now()
 	k := sprayTrustKey{ip, mailbox}
+	e := m.ips[ip]
 	if m.agedTrust(ip, mailbox, now) {
 		t := m.trust[k]
 		t.last = now
@@ -272,13 +274,17 @@ func (m *mailSpray) Success(ip, mailbox string) (clean bool, v *sprayVerdict) {
 		return true, nil
 	}
 
-	e := m.ips[ip]
 	var untrusted []string
 	if e != nil {
 		untrusted = m.untrusted(e, ip, now)
 	}
 	others := slices.DeleteFunc(slices.Clone(untrusted), func(n string) bool { return n == mailbox })
 	if len(others) == 0 && (e == nil || !e.hasUntracked(now, m.cfg.Window)) {
+		if e != nil {
+			if at, ok := e.revoked[mailbox]; ok && now.Sub(at) <= m.cfg.Window {
+				return false, nil
+			}
+		}
 		hadTrust := m.recordTrust(k, now)
 		// 4d fires once per trust relationship; later logins while the new
 		// trust ages are the same user.
@@ -305,11 +311,30 @@ func (m *mailSpray) Success(ip, mailbox string) (clean bool, v *sprayVerdict) {
 }
 
 // RevokeTrust drops the IP's trust on a normalised mailbox, for a login the
-// caller knows was a guessed password. Other records are kept.
+// caller knows was a guessed password. Remember the crack for the evidence
+// window so another login, on either protocol, cannot immediately restore it.
 func (m *mailSpray) RevokeTrust(ip, mailbox string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.dropTrust(sprayTrustKey{ip, mailbox})
+	if m.cfg.Window <= 0 {
+		return
+	}
+	now := m.now()
+	e := m.touch(ip, now)
+	maps.DeleteFunc(e.revoked, func(_ string, at time.Time) bool { return now.Sub(at) > m.cfg.Window })
+	if _, ok := e.revoked[mailbox]; ok || len(e.revoked) < maxSprayNamesPerIP {
+		if e.revoked == nil {
+			e.revoked = make(map[string]time.Time)
+		}
+		e.revoked[mailbox] = now
+	} else {
+		// Losing a cracked mailbox at the name cap must not turn its
+		// next login into clean evidence. The existing overflow marker
+		// withholds new trust without disturbing other aged trust.
+		e.untracked = now
+	}
+	m.evictIPs(ip, now)
 }
 
 // TrustedAll reports whether the IP holds aged trust on every one of the
@@ -340,10 +365,11 @@ func (m *mailSpray) Purge() {
 	for ip, e := range m.ips {
 		e.pruneFailed(cutoff)
 		maps.DeleteFunc(e.weakAlerted, func(_ string, at time.Time) bool { return at.Before(cutoff) })
+		maps.DeleteFunc(e.revoked, func(_ string, at time.Time) bool { return at.Before(cutoff) })
 		if e.untracked.Before(cutoff) {
 			e.untracked = time.Time{}
 		}
-		if len(e.failed) == 0 && e.untracked.IsZero() && len(e.weakAlerted) == 0 {
+		if len(e.failed) == 0 && e.untracked.IsZero() && len(e.weakAlerted) == 0 && len(e.revoked) == 0 {
 			delete(m.ips, ip)
 		}
 	}
@@ -860,6 +886,11 @@ const (
 func (m *mailSpray) ipRank(e *sprayIP, now time.Time) int {
 	if !e.verdictAt.IsZero() && now.Sub(e.verdictAt) <= m.cfg.Window {
 		return sprayRankVerdict
+	}
+	for _, at := range e.revoked {
+		if now.Sub(at) <= m.cfg.Window {
+			return sprayRankVerdict
+		}
 	}
 	if e.hasUntracked(now, m.cfg.Window) {
 		return sprayRankRepeat

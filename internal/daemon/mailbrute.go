@@ -1042,9 +1042,8 @@ func (t *mailAuthTracker) RecordSuccess(ip, account string) (findings []alert.Fi
 	now := t.now()
 	cutoff := now.Add(-t.window)
 
-	// Track per-IP successes unconditionally. The current success is recorded at
-	// function exit so the compromise gate can distinguish prior legit activity
-	// from a padding login that belongs to the event being classified.
+	// Classify the login before recording it: a guessed password must not
+	// become success-dominant activity that exempts later failures.
 	e, ok := t.ips[ip]
 	if !ok {
 		e = &mailIPEntry{}
@@ -1054,10 +1053,11 @@ func (t *mailAuthTracker) RecordSuccess(ip, account string) (findings []alert.Fi
 	pruneMailAccountTimes(e.successAccounts, cutoff)
 	pruneMailAccountTimes(e.failedAccounts, cutoff)
 	// A guessed-password success should not train the long-lived good-source cache.
-	recordGoodSource := true
+	degraded := t.backendDegraded(now) || (t.backendDownFn != nil && t.backendDownFn())
+	recordGoodSource := !degraded
 	var sprayed *alert.Finding
 	sprayMailbox := normalizeSprayMailbox(account)
-	if t.spray != nil {
+	if !degraded && t.spray != nil {
 		clean, v := t.spray.Success(ip, sprayMailbox)
 		if !clean && t.spray.Enabled() {
 			recordGoodSource = false
@@ -1068,9 +1068,9 @@ func (t *mailAuthTracker) RecordSuccess(ip, account string) (findings []alert.Fi
 		}
 	}
 	defer func() {
-		e.succ = append(e.succ, now)
-		e.successAccounts = appendMailAccountTime(e.successAccounts, account, now)
 		if recordGoodSource {
+			e.succ = append(e.succ, now)
+			e.successAccounts = appendMailAccountTime(e.successAccounts, account, now)
 			e.recordGoodAuth(account, now)
 		}
 		e.lastSeen = now
@@ -1084,31 +1084,26 @@ func (t *mailAuthTracker) RecordSuccess(ip, account string) (findings []alert.Fi
 		}
 	}()
 
-	a, ok := t.accounts[account]
-	if !ok {
-		return nil
-	}
-	for ipKey, ts := range a.ips {
-		if ts.Before(cutoff) {
-			delete(a.ips, ipKey)
-		}
-	}
-	if _, failedRecently := a.ips[ip]; !failedRecently {
-		return nil
-	}
 	// A mailbox that already succeeds from this IP is a legit owner who mistyped,
 	// not a takeover. Genuine password guessing is failure-dominant for the same
-	// mailbox.
+	// mailbox. Use the per-IP evidence: account entries can be evicted before it.
 	e.times = pruneTimes(e.times, cutoff)
 	targetFailures := len(e.failedAccounts[account])
 	if targetFailures < 2 || e.accountSuccessDominant(account) || e.establishedGood(account, now, t.window) {
 		return nil
 	}
 	recordGoodSource = false
+	delete(e.goodFirst, account)
+	delete(e.goodLast, account)
 	// The spray memory saw failures on this mailbox only and called the login
 	// clean; a cracked password earns no trust there either.
-	if t.spray != nil {
+	if !degraded && t.spray != nil {
 		t.spray.RevokeTrust(ip, sprayMailbox)
+	}
+	a, ok := t.accounts[account]
+	if !ok {
+		a = &mailAccountEntry{ips: make(map[string]time.Time), lastSeen: now}
+		t.accounts[account] = a
 	}
 	if now.Before(a.compromiseSuppressed) {
 		return nil
