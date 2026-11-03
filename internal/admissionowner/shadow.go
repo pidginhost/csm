@@ -280,18 +280,9 @@ func (s *shadow) limits(adm firewall.BlockAdmission, now time.Time) (limits *adm
 	var holding map[admission.Partition]map[string]int
 	limits, _ = s.occupancy(adm).Limits(func() ([]admission.EvictionVictim, error) {
 		var pool []admission.EvictionVictim
-		holding = map[admission.Partition]map[string]int{}
+		holding = s.holding(adm)
 		for ip, e := range s.entries {
-			if adm.ShadowHeld[ip] || !e.partition.Valid() {
-				continue
-			}
-			if e.scope != "" {
-				if holding[e.partition] == nil {
-					holding[e.partition] = map[string]int{}
-				}
-				holding[e.partition][e.scope]++
-			}
-			if e.tier.Valid() {
+			if !adm.ShadowHeld[ip] && e.partition.Valid() && e.tier.Valid() {
 				pool = append(pool, admission.EvictionVictim{Action: e.action, Target: e.target, Tier: e.tier, Partition: e.partition, ExpiresAt: e.expires,
 					Scope: e.scope, Applied: e.applied, Rotatable: admission.RotationHoldPassed(e.applied, e.elapsed, now, s.ceiling.Elapsed)})
 			}
@@ -308,6 +299,22 @@ func (s *shadow) limits(adm firewall.BlockAdmission, now time.Time) (limits *adm
 	}
 	limits.Share(holding, s.waiting, s.cursors)
 	return limits, true
+}
+
+// holding is the forecast blocks each scope holds in each partition,
+// those the real sets do not hold.
+func (s *shadow) holding(adm firewall.BlockAdmission) map[admission.Partition]map[string]int {
+	holding := map[admission.Partition]map[string]int{}
+	for ip, e := range s.entries {
+		if adm.ShadowHeld[ip] || !e.partition.Valid() || e.scope == "" {
+			continue
+		}
+		if holding[e.partition] == nil {
+			holding[e.partition] = map[string]int{}
+		}
+		holding[e.partition][e.scope]++
+	}
+	return holding
 }
 
 // share begins a turn's shares: the scopes of its block picks wait for

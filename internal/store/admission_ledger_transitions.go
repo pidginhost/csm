@@ -765,9 +765,10 @@ func (l *AdmissionLedger) Observe(id admission.CandidateID, lane admission.Lane,
 	return c, a, granted, err
 }
 
-// ObserveVictim is Observe that also reports the strictly lower-tier block
-// whose slot the preview took, zero for a free slot or a readback. The
-// preview claims nothing, so later previews may name the same block.
+// ObserveVictim is Observe that also reports the block whose slot the
+// preview took: a strictly lower-tier block, or on a live ledger an
+// equal-tier block rotation gives it; zero for a free slot or a readback.
+// The preview claims nothing, so later previews may name the same block.
 func (l *AdmissionLedger) ObserveVictim(id admission.CandidateID, lane admission.Lane, expiresAt time.Time) (admission.Candidate, admission.AttemptRecord, bool, admission.EvictionVictim, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()

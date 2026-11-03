@@ -77,6 +77,9 @@ var (
 	// ends a forecast pick; tests make them fail.
 	previewLedger   = (*store.AdmissionLedger).SchedulePreview
 	endDryRunLedger = (*store.AdmissionLedger).EndDryRun
+	// observeLedger previews a pick and names the block whose slot it
+	// took; tests choose that block.
+	observeLedger = (*store.AdmissionLedger).ObserveVictim
 	// freshLedger says whether a forecast pick's episode may rotate an
 	// equal-tier block; tests answer it.
 	freshLedger = (*store.AdmissionLedger).Fresh
@@ -267,9 +270,12 @@ type Owner struct {
 	evictedErr error
 	// replacements counts this process's previews that took the slot of a
 	// lower-priority automatic block; replacementsHour keeps the last hour
-	// of them on the monotonic clock.
+	// of them on the monotonic clock. rotations and rotationsHour count
+	// those that took an equal-priority block's slot.
 	replacements     uint64
 	replacementsHour minuteTotals
+	rotations        uint64
+	rotationsHour    minuteTotals
 	// Per-action monotonic waits keep held entries from monopolizing a batch.
 	retireRetry map[admission.ActionID]time.Time
 	// retireDelay is each action's current wait while the ledger refuses
@@ -1044,7 +1050,7 @@ func (o *Owner) holdForPolicy(p execPick) error {
 // cannot starve the queue; any other failure is returned.
 func (o *Owner) preview(p execPick) error {
 	c := p.c
-	_, _, _, victim, err := o.ledger.ObserveVictim(p.pick.ID, p.pick.Lane, o.expiryOf(c, o.now))
+	_, _, _, victim, err := observeLedger(o.ledger, p.pick.ID, p.pick.Lane, o.expiryOf(c, o.now))
 	if err != nil {
 		if reason, refused := admission.ReasonOf(err); refused {
 			switch reason.Disposition() {
@@ -1058,7 +1064,12 @@ func (o *Owner) preview(p execPick) error {
 		}
 		return fmt.Errorf("previewing pick %s: %w", p.pick.ID, err)
 	}
-	if victim != (admission.EvictionVictim{}) {
+	switch {
+	case victim == (admission.EvictionVictim{}):
+	case victim.Tier == p.pick.Tier:
+		saturating(&o.rotations)
+		o.rotationsHour.add(monoNow())
+	default:
 		saturating(&o.replacements)
 		o.replacementsHour.add(monoNow())
 	}
@@ -1248,6 +1259,7 @@ func (o *Owner) refreshStatus() {
 		s.Owner.Verdict, s.Owner.DryRun = o.verdictStatus(), o.dryRunStatus()
 	}
 	s.Owner.PreviewReplacements, s.Owner.PreviewReplacementsLastHour = o.replacements, o.replacementsHour.total(monoNow())
+	s.Owner.PreviewRotations, s.Owner.PreviewRotationsLastHour = o.rotations, o.rotationsHour.total(monoNow())
 	if o.ledger != nil {
 		ls := o.ledger.Status()
 		s.Ledger = &ls
