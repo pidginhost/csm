@@ -52,8 +52,8 @@ func TestMailSprayLoadExportKeepsEveryField(t *testing.T) {
 				},
 				WeakAlerted:     map[string]time.Time{"w@example.com": at(-6)},
 				Untracked:       at(-7),
-				SuppressedUntil: at(1),
-				CompromiseUntil: at(2),
+				SuppressedUntil: clock.Now().Add(30 * time.Minute),
+				CompromiseUntil: clock.Now().Add(45 * time.Minute),
 				VerdictAt:       at(-2),
 				LastSeen:        at(-1),
 			},
@@ -339,5 +339,125 @@ func TestMailSprayLoadIgnoredWhenDisabled(t *testing.T) {
 	})
 	if m.Size() != 0 || m.TrustSize() != 0 || len(m.names) != 0 {
 		t.Fatalf("disabled detector loaded evidence=%d trust=%d names=%d", m.Size(), m.TrustSize(), len(m.names))
+	}
+}
+
+// A time after now is damage, from a bad bucket or a clock stepped back
+// across the restart. It must not create trust, silence verdicts or pin
+// state past the window.
+func TestMailSprayLoadDistrustsFutureTimes(t *testing.T) {
+	cfg := testSprayConfig()
+	future := func(now time.Time) store.MailSprayState {
+		later := now.Add(365 * 24 * time.Hour)
+		return store.MailSprayState{
+			IPs: map[string]store.MailSprayIP{"192.0.2.2": {
+				Failed:          map[string]store.MailSprayFailure{"x@example.com": {First: later, Last: later, Count: 1}},
+				WeakAlerted:     map[string]time.Time{"w@example.com": later},
+				Untracked:       later,
+				SuppressedUntil: later,
+				CompromiseUntil: later,
+				VerdictAt:       later,
+				LastSeen:        later,
+			}},
+			Trust: map[string]map[string]store.GoodSourcePair{"192.0.2.1": {
+				"a@example.com": {First: now.Add(-24 * time.Hour), Last: later},
+				"b@example.com": {First: later, Last: later},
+			}},
+			Networks: map[string]map[string]time.Time{
+				"nobody@example.com": {"198.51.0.0/16": later, "203.0.0.0/16": later},
+			},
+		}
+	}
+
+	m, clock := newTestSpray(cfg)
+	now := clock.Now()
+	m.Load(future(now))
+	if m.TrustSize() != 0 || m.TrustedAll("192.0.2.1", []string{"a@example.com"}) {
+		t.Fatalf("a trust record from the future was loaded")
+	}
+	e := m.ips["192.0.2.2"]
+	if e == nil {
+		t.Fatalf("future evidence was dropped instead of clamped")
+	}
+	f := e.failed["x@example.com"]
+	for name, got := range map[string]time.Time{
+		"failure first": f.first, "failure last": f.last, "untracked": e.untracked,
+		"verdict": e.verdictAt, "last seen": e.lastSeen, "advisory": e.weakAlerted["w@example.com"],
+		"network": m.names["nobody@example.com"].networks["198.51.0.0/16"],
+	} {
+		if !got.Equal(now) {
+			t.Errorf("%s = %v, want clamped to %v", name, got, now)
+		}
+	}
+	for name, got := range map[string]time.Time{"suppression": e.suppressedUntil, "compromise suppression": e.compromiseSuppressedUntil} {
+		if want := now.Add(cfg.Suppression); !got.Equal(want) {
+			t.Errorf("%s = %v, want capped at %v", name, got, want)
+		}
+	}
+
+	// Verdicts resume once the capped suppression ends.
+	clock.advance(cfg.Suppression + time.Minute)
+	wantRule(t, m.Failure("192.0.2.2", "y@example.com", mailboxExists), sprayRuleBreadth, true)
+	_, v := m.Success("192.0.2.2", "c@example.com")
+	wantRule(t, v, sprayRuleWeakCompromise, false)
+
+	// Purge expires everything a window after the load, and the future
+	// networks no longer count toward the missing-name rule.
+	m, clock = newTestSpray(cfg)
+	m.Load(future(clock.Now()))
+	clock.advance(cfg.Window + time.Minute)
+	m.Purge()
+	if m.Size() != 0 || m.TrustSize() != 0 || len(m.names) != 0 {
+		t.Fatalf("after a window: evidence=%d trust=%d names=%d, want all expired", m.Size(), m.TrustSize(), len(m.names))
+	}
+	wantNoVerdict(t, m.Failure("192.0.2.3", "nobody@example.com", mailboxMissing))
+}
+
+func TestMailSprayLoadNormalisesKeys(t *testing.T) {
+	m, clock := newTestSpray(testSprayConfig())
+	now := clock.Now()
+	t0, t1, t2 := now.Add(-3*time.Hour), now.Add(-2*time.Hour), now.Add(-time.Hour)
+	// Untrimmed names, as a damaged bucket could hold them.
+	const failedSpaced, weakSpaced = " a@example.com", "w@example.com "
+	m.Load(store.MailSprayState{
+		IPs: map[string]store.MailSprayIP{
+			"not-an-ip": {Failed: map[string]store.MailSprayFailure{"a@example.com": {First: t1, Last: t1, Count: 1}}, LastSeen: t1},
+			"192.0.2.5": {
+				Failed: map[string]store.MailSprayFailure{
+					"A@Example.com": {First: t1, Last: t2, Count: 1, Exist: uint8(mailboxExists)},
+					failedSpaced:    {First: t0, Last: t1, Count: 3, Exist: uint8(mailboxMissing)},
+				},
+				WeakAlerted: map[string]time.Time{"W@Example.com": t0, weakSpaced: t1},
+				LastSeen:    t2,
+			},
+		},
+		Trust: map[string]map[string]store.GoodSourcePair{
+			"not-an-ip": {"a@example.com": {First: t0, Last: t1}},
+			"192.0.2.5": {
+				"T@Example.com": {First: t0, Last: t1},
+				"t@example.com": {First: t1, Last: t2},
+			},
+		},
+		Networks: map[string]map[string]time.Time{
+			"Nobody@Example.com": {"198.51.0.0/16": t1, "bogus": t1, "10.0.0.0/8": t1, "192.0.2.0/16": t1},
+			"nobody@example.com": {"203.0.0.0/16": t2},
+		},
+	})
+
+	if m.Size() != 1 || m.TrustSize() != 1 || len(m.names) != 1 {
+		t.Fatalf("loaded evidence=%d trust=%d names=%d, want 1 each", m.Size(), m.TrustSize(), len(m.names))
+	}
+	e := m.ips["192.0.2.5"]
+	if f := e.failed["a@example.com"]; len(e.failed) != 1 || !f.first.Equal(t0) || !f.last.Equal(t2) || f.count != 3 || f.exist != mailboxExists {
+		t.Fatalf("merged failures = %+v, want one name first t0, last t2, count 3, exists", e.failed)
+	}
+	if at := e.weakAlerted["w@example.com"]; len(e.weakAlerted) != 1 || !at.Equal(t1) {
+		t.Fatalf("merged advisories = %v, want w@example.com at t1", e.weakAlerted)
+	}
+	if tr := m.trust[sprayTrustKey{"192.0.2.5", "t@example.com"}]; !tr.first.Equal(t0) || !tr.last.Equal(t2) {
+		t.Fatalf("merged trust = %+v, want first t0, last t2", tr)
+	}
+	if n := m.names["nobody@example.com"]; n == nil || len(n.networks) != 2 || !n.last.Equal(t2) {
+		t.Fatalf("merged corroboration = %+v, want two networks, last t2", n)
 	}
 }
