@@ -302,6 +302,14 @@ func (m *mailSpray) Success(ip, mailbox string) (clean bool, v *sprayVerdict) {
 	return false, m.verdict(e, rule, block, mailbox, untrusted, now)
 }
 
+// RevokeTrust drops the IP's trust on a normalised mailbox, for a login the
+// caller knows was a guessed password. Other records are kept.
+func (m *mailSpray) RevokeTrust(ip, mailbox string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.dropTrust(sprayTrustKey{ip, mailbox})
+}
+
 // TrustedAll reports whether the IP holds aged trust on every one of the
 // normalised mailboxes. An empty list is not trusted.
 func (m *mailSpray) TrustedAll(ip string, mailboxes []string) bool {

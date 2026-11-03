@@ -820,3 +820,21 @@ func TestMailSpray_WeakAlertRecordsBounded(t *testing.T) {
 		t.Fatalf("after purge %d IPs, %d weak alert records, want 1, 0", m.Size(), n)
 	}
 }
+
+// RevokeTrust drops one (IP, mailbox) record and its index entries only.
+func TestMailSpray_RevokeTrustDropsOneRecord(t *testing.T) {
+	m, clock := newTestSpray(testSprayConfig())
+	ageTrust(t, m, clock, "192.0.2.1", "a@example.com", "b@example.com")
+	ageTrust(t, m, clock, "192.0.2.2", "a@example.com")
+	m.RevokeTrust("192.0.2.1", "a@example.com")
+	m.RevokeTrust("192.0.2.9", "nobody@example.com") // no record: no-op
+	if m.TrustedAll("192.0.2.1", []string{"a@example.com"}) || !m.TrustedAll("192.0.2.1", []string{"b@example.com"}) ||
+		!m.TrustedAll("192.0.2.2", []string{"a@example.com"}) || m.TrustSize() != 2 {
+		t.Fatalf("revoke dropped the wrong records: %d left", m.TrustSize())
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.trustByIP) != 2 || len(m.trustByIP["192.0.2.1"]) != 1 || len(m.trustByMailbox["a@example.com"]) != 1 {
+		t.Fatalf("indexes out of step: by IP %v, by mailbox %v", m.trustByIP, m.trustByMailbox)
+	}
+}

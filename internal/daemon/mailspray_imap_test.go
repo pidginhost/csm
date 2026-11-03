@@ -328,3 +328,30 @@ func TestMailSprayWeakCompromiseOncePerMailbox(t *testing.T) {
 		t.Fatalf("weak advisories after the window with a fresh failure = %d, want 1", n)
 	}
 }
+
+// A brute-forcer that cracks the one mailbox it hammered must not earn login
+// trust on it, whether the compromise finding fires or is suppressed. A login
+// with no failures before it still does.
+func TestMailCrackedMailboxEarnsNoTrust(t *testing.T) {
+	const ip, clean = "203.0.113.164", "203.0.113.165"
+	cfg := sprayTestConfig("enforce")
+	d, clock := newPairingDaemon(t, cfg)
+	crack := func() []alert.Finding {
+		feed(d, clock, makeDovecotFailLine("imap", ip, "a@example.com"), makeDovecotFailLine("imap", ip, "a@example.com"))
+		return feed(d, clock, makeDovecotSuccessLine("imap", ip, "a@example.com"))
+	}
+	if f, ok := findingByCheck(crack(), "mail_account_compromised"); !ok || f.Severity != alert.Critical {
+		t.Fatalf("crack raised no Critical compromise: %+v", f)
+	}
+	if f, ok := findingByCheck(crack(), "mail_account_compromised"); ok {
+		t.Fatalf("second crack inside suppression raised a finding: %+v", f)
+	}
+	feed(d, clock, makeDovecotSuccessLine("imap", clean, "a@example.com"))
+	clock.advance(time.Duration(cfg.Thresholds.SMTPBruteForceWindowMin+1) * time.Minute) // past TrustAge
+	if d.mailSpray.TrustedAll(ip, []string{"a@example.com"}) {
+		t.Fatal("cracked mailbox earned login trust")
+	}
+	if !d.mailSpray.TrustedAll(clean, []string{"a@example.com"}) {
+		t.Fatal("a login with no failures earned no trust")
+	}
+}

@@ -1056,8 +1056,9 @@ func (t *mailAuthTracker) RecordSuccess(ip, account string) (findings []alert.Fi
 	// A guessed-password success should not train the long-lived good-source cache.
 	recordGoodSource := true
 	var sprayed *alert.Finding
+	sprayMailbox := normalizeSprayMailbox(account)
 	if t.spray != nil {
-		clean, v := t.spray.Success(ip, normalizeSprayMailbox(account))
+		clean, v := t.spray.Success(ip, sprayMailbox)
 		if !clean && t.spray.Enabled() {
 			recordGoodSource = false
 		}
@@ -1104,6 +1105,11 @@ func (t *mailAuthTracker) RecordSuccess(ip, account string) (findings []alert.Fi
 		return nil
 	}
 	recordGoodSource = false
+	// The spray memory saw failures on this mailbox only and called the login
+	// clean; a cracked password earns no trust there either.
+	if t.spray != nil {
+		t.spray.RevokeTrust(ip, sprayMailbox)
+	}
 	if now.Before(a.compromiseSuppressed) {
 		return nil
 	}
