@@ -541,6 +541,12 @@ request lasts longer than the last:
 | second | 7 days |
 | third and later | permanent |
 
+Admission previews and dry-run forecasts cap new temporary lifetimes at
+`auto_response.block_expiry`; shorter requests stay short and retries keep
+an earlier attempt's absolute expiry, even after the cap is lowered.
+Admission does not turn a non-positive lifetime into a permanent block.
+The lifetimes in the table are what existing blocking applies.
+
 A permanent block is never re-requested. Closing an incident, by an operator or
 by the stale-incident sweep, resets the ladder, so a later recurrence starts at
 the bottom rather than inheriting a months-old episode. Concurrent findings

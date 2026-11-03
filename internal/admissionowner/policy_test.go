@@ -27,8 +27,9 @@ func allowAll(admission.Candidate) bool { return true }
 func validPolicy(epoch uint64) ExecutionPolicy {
 	return ExecutionPolicy{
 		Epoch: epoch, VerdictTimeout: 2 * time.Second, CeilingLimit: 2000, CeilingSource: "default",
-		Expiry:     func(admission.Candidate) time.Duration { return 24 * time.Hour },
-		AskVerdict: noVerdict, Allows: allowAll,
+		Expiry:      func(admission.Candidate) time.Duration { return 24 * time.Hour },
+		BlockExpiry: 24 * time.Hour,
+		AskVerdict:  noVerdict, Allows: allowAll,
 	}
 }
 
@@ -340,7 +341,7 @@ func TestExecutableOwnerTakesItsPolicyCeiling(t *testing.T) {
 // Losing the snapshot or a required dependency is an invalid installation
 // even without an epoch advance. Cached answers must be retired.
 func TestOwnerRejectsMissingPolicyDependencies(t *testing.T) {
-	for _, missing := range []string{"asker", "expiry", "snapshot"} {
+	for _, missing := range []string{"asker", "expiry", "block expiry", "snapshot"} {
 		t.Run(missing, func(t *testing.T) {
 			p := withTestRegistry(t)
 			f := newOwnerFixture(t)
@@ -357,6 +358,8 @@ func TestOwnerRejectsMissingPolicyDependencies(t *testing.T) {
 				invalid.AskVerdict = nil
 			case "expiry":
 				invalid.Expiry = nil
+			case "block expiry":
+				invalid.BlockExpiry = 0
 			case "snapshot":
 				invalid = ExecutionPolicy{}
 			}

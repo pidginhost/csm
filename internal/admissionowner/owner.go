@@ -129,6 +129,10 @@ type Options struct {
 	// under the current configuration. A preview records the expiry a
 	// live attempt would have. An executable owner reads its policy's.
 	Expiry func(admission.Candidate) time.Duration
+	// BlockExpiry is auto_response.block_expiry, which bounds every
+	// response's lifetime; nil or not positive bounds nothing. An
+	// executable owner reads its policy's.
+	BlockExpiry func() time.Duration
 	// Caps are the firewall's containment capabilities block targets fit.
 	Caps func() admission.Caps
 	// Blocks returns the firewall engine that runs block_ip picks, or nil
@@ -1079,7 +1083,9 @@ func (o *Owner) preview(p execPick) error {
 
 // expiryOf is the absolute expiry of a pick's next attempt: a retry keeps
 // its first attempt's; a first attempt lasts the selected legacy lifetime,
-// or the configured response's, from now.
+// or the configured response's, from now, and never longer than the block
+// expiry: a longer request, such as an incident's second block or a
+// central block, is cut to it, and a shorter one stays short (spec 5.6).
 func (o *Owner) expiryOf(c admission.Candidate, now time.Time) time.Time {
 	if c.Attempts > 0 {
 		return c.ExpiresAt
@@ -1087,6 +1093,9 @@ func (o *Owner) expiryOf(c admission.Candidate, now time.Time) time.Time {
 	duration := c.PreviewTTL
 	if duration == 0 {
 		duration = o.expiry(c)
+	}
+	if lease := o.lease(); lease > 0 {
+		duration = min(duration, lease)
 	}
 	return now.Add(duration)
 }

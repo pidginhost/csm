@@ -67,7 +67,7 @@ func TestExecutionPolicyFollowsThePublishedConfig(t *testing.T) {
 	}
 	scan := admission.Candidate{Key: admission.CandidateKey{Kind: admission.KindBlockIP}, Entry: admission.EntryScan}
 	if !p.DryRun || p.Observe || p.VerdictEnabled || p.VerdictTimeout != 2*time.Second || p.CeilingLimit != 120 ||
-		p.CeilingSource != config.CeilingConfigured || p.Expiry == nil || p.Expiry(scan) != 2*time.Hour || p.AskVerdict == nil {
+		p.CeilingSource != config.CeilingConfigured || p.Expiry == nil || p.Expiry(scan) != 2*time.Hour || p.BlockExpiry != 2*time.Hour || p.AskVerdict == nil {
 		t.Fatalf("policy from %+v = %+v", cfg.AutoResponse, p)
 	}
 	first, firstSeen := verdictServer(t, "block")
@@ -81,6 +81,17 @@ func TestExecutionPolicyFollowsThePublishedConfig(t *testing.T) {
 		t.Fatalf("live policy = %+v", live)
 	}
 	publishTestConfig(t, callback(second.URL))
+	if p.BlockExpiry != 2*time.Hour || p.Expiry(scan) != 2*time.Hour || live.BlockExpiry != 24*time.Hour {
+		t.Fatalf("earlier policies changed after publication: first=%v live=%v", p.BlockExpiry, live.BlockExpiry)
+	}
+	publishTestConfig(t, "auto_response:\n  block_expiry: 30m\n")
+	shorter := d.executionPolicy()
+	if shorter.Epoch <= live.Epoch || shorter.BlockExpiry != 30*time.Minute || shorter.Expiry(scan) != 30*time.Minute {
+		t.Fatalf("new policy did not carry the new lease: %+v", shorter)
+	}
+	if p.BlockExpiry != 2*time.Hour || live.BlockExpiry != 24*time.Hour || live.Expiry(scan) != 24*time.Hour {
+		t.Fatal("new lease changed an earlier publication")
+	}
 	resp, err := live.AskVerdict(context.Background(), "192.0.2.10", "CSM auto-block: ssh_brute")
 	if err != nil || resp.Verdict != "block" {
 		t.Fatalf("asker = %+v, %v", resp, err)
