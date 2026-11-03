@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -68,7 +69,7 @@ func TestMailSprayLoadExportKeepsEveryField(t *testing.T) {
 			"nobody@example.com": {"192.0.0.0/16": at(-3), "2001:db8::/32": at(-10)},
 		},
 	}
-	m.Load(want)
+	loadSpraySnapshot(t, m, want)
 	if got := m.Export(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("Load then Export:\n got %+v\nwant %+v", got, want)
 	}
@@ -233,7 +234,7 @@ func TestMailSprayLoadDropsExpiredAndCaps(t *testing.T) {
 		st.Networks["many@example.com"][fmt.Sprintf("10.%d.0.0/16", i)] = recent.Add(time.Duration(i) * time.Second)
 	}
 
-	m.Load(st)
+	loadSpraySnapshot(t, m, st)
 
 	e := m.ips["192.0.2.1"]
 	if e == nil || len(e.failed) != 1 || len(e.weakAlerted) != 1 || len(e.revoked) != 0 || !e.untracked.IsZero() {
@@ -318,7 +319,7 @@ func TestMailSprayLoadEvictsToMaxIPsByRank(t *testing.T) {
 		st.Networks[fmt.Sprintf("n%05d@example.com", i)] = map[string]time.Time{"192.0.0.0/16": now}
 	}
 
-	m.Load(st)
+	loadSpraySnapshot(t, m, st)
 
 	if m.Size() > cfg.MaxIPs || m.TrustSize() > cfg.MaxIPs {
 		t.Fatalf("after load evidence=%d trust=%d, cap %d", m.Size(), m.TrustSize(), cfg.MaxIPs)
@@ -341,7 +342,7 @@ func TestMailSprayLoadIgnoredWhenDisabled(t *testing.T) {
 	cfg.Window = 0
 	m, clock := newTestSpray(cfg)
 	now := clock.Now()
-	m.Load(store.MailSprayState{
+	loadSpraySnapshot(t, m, store.MailSprayState{
 		IPs: map[string]store.MailSprayIP{"192.0.2.1": {
 			Failed:   map[string]store.MailSprayFailure{"a@example.com": {First: now, Last: now, Count: 1}},
 			LastSeen: now,
@@ -384,7 +385,7 @@ func TestMailSprayLoadDistrustsFutureTimes(t *testing.T) {
 
 	m, clock := newTestSpray(cfg)
 	now := clock.Now()
-	m.Load(future(now))
+	loadSpraySnapshot(t, m, future(now))
 	if m.TrustSize() != 0 || m.TrustedAll("192.0.2.1", []string{"a@example.com"}) {
 		t.Fatalf("a trust record from the future was loaded")
 	}
@@ -397,7 +398,6 @@ func TestMailSprayLoadDistrustsFutureTimes(t *testing.T) {
 		"failure first": f.first, "failure last": f.last, "untracked": e.untracked,
 		"verdict": e.verdictAt, "last seen": e.lastSeen, "advisory": e.weakAlerted["w@example.com"],
 		"revoked": e.revoked["r@example.com"],
-		"network": m.names["nobody@example.com"].networks["198.51.0.0/16"],
 	} {
 		if !got.Equal(now) {
 			t.Errorf("%s = %v, want clamped to %v", name, got, now)
@@ -409,6 +409,10 @@ func TestMailSprayLoadDistrustsFutureTimes(t *testing.T) {
 		}
 	}
 
+	if len(m.names) != 0 {
+		t.Fatal("future networks were loaded as present corroboration")
+	}
+
 	// Verdicts resume once the capped suppression ends.
 	clock.advance(cfg.Suppression + time.Minute)
 	wantRule(t, m.Failure("192.0.2.2", "y@example.com", mailboxExists), sprayRuleBreadth, true)
@@ -418,7 +422,7 @@ func TestMailSprayLoadDistrustsFutureTimes(t *testing.T) {
 	// Purge expires everything a window after the load, and the future
 	// networks no longer count toward the missing-name rule.
 	m, clock = newTestSpray(cfg)
-	m.Load(future(clock.Now()))
+	loadSpraySnapshot(t, m, future(clock.Now()))
 	clock.advance(cfg.Window + time.Minute)
 	m.Purge()
 	if m.Size() != 0 || m.TrustSize() != 0 || len(m.names) != 0 {
@@ -433,7 +437,7 @@ func TestMailSprayLoadNormalisesKeys(t *testing.T) {
 	t0, t1, t2 := now.Add(-3*time.Hour), now.Add(-2*time.Hour), now.Add(-time.Hour)
 	// Untrimmed names, as a damaged bucket could hold them.
 	const failedSpaced, weakSpaced = " a@example.com", "w@example.com "
-	m.Load(store.MailSprayState{
+	loadSpraySnapshot(t, m, store.MailSprayState{
 		IPs: map[string]store.MailSprayIP{
 			"not-an-ip": {Failed: map[string]store.MailSprayFailure{"a@example.com": {First: t1, Last: t1, Count: 1}}, LastSeen: t1},
 			"192.0.2.5": {
@@ -495,7 +499,7 @@ func TestMailSprayRestartKeepsRevokedTrust(t *testing.T) {
 // bucketMatches fails the test unless the store holds exactly m's memory.
 func bucketMatches(t *testing.T, db *store.DB, m *mailSpray) {
 	t.Helper()
-	got, err := db.LoadMailSpray()
+	got, err := loadSavedSpray(db)
 	if err != nil {
 		t.Fatalf("LoadMailSpray: %v", err)
 	}
@@ -539,7 +543,7 @@ func TestMailSprayDeltaSaveWritesOnlyChangedKeys(t *testing.T) {
 		t.Fatalf("writing sentinel: %v", err)
 	}
 	d.persistMailSpray()
-	got, err := db.LoadMailSpray()
+	got, err := loadSavedSpray(db)
 	if err != nil {
 		t.Fatalf("LoadMailSpray: %v", err)
 	}
@@ -579,7 +583,7 @@ func TestMailSprayDeltaSaveDeletesDroppedKeys(t *testing.T) {
 	m.Purge()
 	d.persistMailSpray()
 	bucketMatches(t, db, m)
-	if got, err := db.LoadMailSpray(); err != nil || len(got.IPs)+len(got.Trust)+len(got.Networks) != 0 {
+	if got, err := loadSavedSpray(db); err != nil || len(got.IPs)+len(got.Trust)+len(got.Networks) != 0 {
 		t.Fatalf("after purge the bucket holds %+v, %v; want nothing", got, err)
 	}
 }
@@ -763,7 +767,266 @@ func TestMailSprayDisableEmptiesBucketOnNextSave(t *testing.T) {
 	off.Window = 0
 	m.SetConfig(off)
 	d.persistMailSpray()
-	if got, err := db.LoadMailSpray(); err != nil || len(got.IPs)+len(got.Trust)+len(got.Networks) != 0 {
+	if got, err := loadSavedSpray(db); err != nil || len(got.IPs)+len(got.Trust)+len(got.Networks) != 0 {
 		t.Fatalf("after disabling the bucket holds %+v, %v; want nothing", got, err)
+	}
+}
+
+func TestMailSprayFutureNetworksCannotCorroborate(t *testing.T) {
+	m, clock := newTestSpray(testSprayConfig())
+	loadSpraySnapshot(t, m, store.MailSprayState{Networks: map[string]map[string]time.Time{
+		"missing@example.com": {
+			"198.51.0.0/16": clock.Now().Add(time.Hour),
+			"203.0.0.0/16":  clock.Now().Add(time.Hour),
+		},
+	}})
+	wantNoVerdict(t, m.Failure("192.0.2.1", "missing@example.com", mailboxMissing))
+	if got := m.networkCount(m.names["missing@example.com"], clock.Now()); got != 1 {
+		t.Fatalf("network count = %d, want only the live observation", got)
+	}
+}
+
+func TestMailSprayLoadRevocationOverridesTrust(t *testing.T) {
+	m, clock := newTestSpray(testSprayConfig())
+	const ip = "192.0.2.1"
+	st := store.MailSprayState{
+		IPs:   map[string]store.MailSprayIP{ip: {Revoked: map[string]time.Time{}}},
+		Trust: map[string]map[string]store.GoodSourcePair{ip: {}},
+	}
+	// Include revocations beyond the name cap: losing a name must not keep
+	// its conflicting trust. The unrelated mailbox must remain trusted.
+	for i := range maxSprayNamesPerIP + 1 {
+		mb := fmt.Sprintf("r%d@example.com", i)
+		st.IPs[ip].Revoked[mb] = clock.Now()
+		st.Trust[ip][mb] = store.GoodSourcePair{First: clock.Now().Add(-time.Hour), Last: clock.Now()}
+	}
+	st.Trust[ip]["clean@example.com"] = store.GoodSourcePair{First: clock.Now().Add(-time.Hour), Last: clock.Now()}
+	loadSpraySnapshot(t, m, st)
+	for i := range maxSprayNamesPerIP + 1 {
+		mb := fmt.Sprintf("r%d@example.com", i)
+		if m.TrustedAll(ip, []string{mb}) {
+			t.Errorf("revoked %s retained trust", mb)
+		}
+		if clean, _ := m.Success(ip, mb); clean {
+			t.Errorf("revoked %s earned trust", mb)
+		}
+	}
+	if !m.TrustedAll(ip, []string{"clean@example.com"}) {
+		t.Fatal("unrelated aged trust was lost")
+	}
+}
+
+func TestMailSprayFailedDeltaAfterConfigShrinkStaysBounded(t *testing.T) {
+	db := openStoreForTest(t)
+	cfg := testSprayConfig()
+	m, clock := newTestSpray(cfg)
+	d := &Daemon{mailSpray: m}
+	for i := range 20 {
+		m.Failure(fmt.Sprintf("192.0.2.%d", i), "a@example.com", mailboxExists)
+	}
+	d.persistMailSpray()
+	clock.advance(cfg.Window + time.Minute)
+	m.Purge()
+	delta, full := m.ExportChanges()
+	if full || len(delta.DeleteIPs) != 20 {
+		t.Fatal("setup did not export all deletes")
+	}
+	cfg.MaxIPs = 1
+	m.SetConfig(cfg)
+	m.RetryChanges(delta, full)
+	if len(m.ipChanges.saved) > 2*cfg.MaxIPs || len(m.ipChanges.dirty) > 2*cfg.MaxIPs {
+		t.Fatalf("retry after shrink left saved=%d dirty=%d", len(m.ipChanges.saved), len(m.ipChanges.dirty))
+	}
+	d.persistMailSpray()
+	bucketMatches(t, db, m)
+}
+
+func TestMailSprayLoadedCountsCannotOverflow(t *testing.T) {
+	m, clock := newTestSpray(testSprayConfig())
+	const ip = "192.0.2.1"
+	maxInt := int(^uint(0) >> 1)
+	loadSpraySnapshot(t, m, store.MailSprayState{IPs: map[string]store.MailSprayIP{ip: {
+		Failed: map[string]store.MailSprayFailure{
+			"a@example.com": {First: clock.Now(), Last: clock.Now(), Count: maxInt},
+			"b@example.com": {First: clock.Now(), Last: clock.Now(), Count: 1},
+		},
+		LastSeen: clock.Now(),
+	}}})
+	if got := m.ipRank(m.ips[ip], clock.Now()); got != sprayRankRepeat {
+		t.Errorf("rank = %d, want repeated failures", got)
+	}
+	m.Failure(ip, "a@example.com", mailboxExists)
+	if got := m.ips[ip].failed["a@example.com"].count; got != maxInt {
+		t.Fatalf("failure counter = %d, want saturated at %d", got, maxInt)
+	}
+}
+
+func TestMailSprayLoadRejectsScopedAddresses(t *testing.T) {
+	m, clock := newTestSpray(testSprayConfig())
+	// IPv6 zones are not remote log identities and have no length bound.
+	ip := "2001:db8::1%" + strings.Repeat("z", 4096)
+	loadSpraySnapshot(t, m, store.MailSprayState{
+		IPs: map[string]store.MailSprayIP{ip: {
+			Failed: map[string]store.MailSprayFailure{"a@example.com": {First: clock.Now(), Last: clock.Now(), Count: 1}},
+		}},
+		Trust: map[string]map[string]store.GoodSourcePair{ip: {
+			"t@example.com": {First: clock.Now().Add(-time.Hour), Last: clock.Now()},
+		}},
+	})
+	if m.Size() != 0 || m.TrustSize() != 0 {
+		t.Fatalf("scoped address retained evidence=%d trust=%d", m.Size(), m.TrustSize())
+	}
+}
+
+func TestMailSprayLargestLiveEntriesSurviveRestart(t *testing.T) {
+	m, clock := newTestSpray(testSprayConfig())
+	// Control bytes occupy six JSON bytes each, so exercise the entry limit
+	// with full maps of the longest, most expensive mailbox keys.
+	mailbox := func(i int) string {
+		return fmt.Sprintf("%03d", i) + strings.Repeat("\x00", maxSprayMailboxBytes-3)
+	}
+	for i := range maxSprayTrustPerIP {
+		m.Success("192.0.2.1", mailbox(i))
+	}
+	for i := range maxSprayNamesPerIP {
+		m.Failure("192.0.2.2", mailbox(i), mailboxMissing)
+		m.Success("192.0.2.2", mailbox(maxSprayNamesPerIP+i))
+		m.RevokeTrust("192.0.2.2", mailbox(2*maxSprayNamesPerIP+i))
+		clock.advance(m.cfg.Suppression + time.Second)
+	}
+	e := m.ips["192.0.2.2"]
+	if m.TrustSize() != maxSprayTrustPerIP || len(e.failed) != maxSprayNamesPerIP ||
+		len(e.weakAlerted) != maxSprayNamesPerIP || len(e.revoked) != maxSprayNamesPerIP {
+		t.Fatal("setup did not fill every per-address map")
+	}
+	want := m.Export()
+	next := restartSpray(t, m, clock)
+	if got := next.Export(); !reflect.DeepEqual(got, want) {
+		t.Fatal("maximum-sized live entries did not survive persistence")
+	}
+}
+
+func loadSavedSpray(db *store.DB) (store.MailSprayState, error) {
+	st := store.MailSprayState{
+		IPs:      make(map[string]store.MailSprayIP),
+		Trust:    make(map[string]map[string]store.GoodSourcePair),
+		Networks: make(map[string]map[string]time.Time),
+	}
+	err := db.LoadMailSpray(maxSprayEntryBytes, func(part store.MailSprayState) {
+		for k, v := range part.IPs {
+			st.IPs[k] = v
+		}
+		for k, v := range part.Trust {
+			st.Trust[k] = v
+		}
+		for k, v := range part.Networks {
+			st.Networks[k] = v
+		}
+	})
+	return st, err
+}
+
+// Mutations made after export must survive both successful and failed writes.
+func TestMailSprayChangesDuringSave(t *testing.T) {
+	for _, snapshot := range []bool{false, true} {
+		for _, fail := range []bool{false, true} {
+			for _, remove := range []bool{false, true} {
+				t.Run(fmt.Sprintf("snapshot=%v/fail=%v/remove=%v", snapshot, fail, remove), func(t *testing.T) {
+					db := openStoreForTest(t)
+					m, clock := newTestSpray(testSprayConfig())
+					d := &Daemon{mailSpray: m}
+					m.Failure("192.0.2.1", "a@example.com", mailboxMissing)
+					m.Success("203.0.113.1", "t@example.com")
+					if !snapshot {
+						d.persistMailSpray()
+						m.Failure("192.0.2.1", "a@example.com", mailboxMissing)
+						m.Success("203.0.113.1", "t@example.com")
+					}
+					delta, full := m.ExportChanges()
+					if full != snapshot || delta.Empty() {
+						t.Fatal("setup exported the wrong save kind")
+					}
+					if remove {
+						clock.advance(m.cfg.Window + time.Minute)
+						m.Purge()
+					} else {
+						clock.advance(time.Minute)
+						m.Failure("192.0.2.1", "b@example.com", mailboxExists)
+						m.Failure("198.51.100.1", "a@example.com", mailboxMissing)
+						m.Success("203.0.113.1", "t@example.com")
+					}
+					if fail {
+						m.RetryChanges(delta, full)
+					} else if full {
+						if err := db.SaveMailSpray(delta.Put); err != nil {
+							t.Fatal(err)
+						}
+					} else if err := db.ApplyMailSprayDelta(delta); err != nil {
+						t.Fatal(err)
+					}
+					d.persistMailSpray()
+					bucketMatches(t, db, m)
+					if delta, full = m.ExportChanges(); full || !delta.Empty() {
+						t.Fatal("successful save left pending changes")
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestMailSprayStreamingLoadCapsEachPoolDuringReplay(t *testing.T) {
+	cfg := testSprayConfig()
+	cfg.MaxIPs = 4
+	m, clock := newTestSpray(cfg)
+	now := clock.Now()
+	err := m.Load(func(visit func(store.MailSprayState)) error {
+		for i := range 2 * cfg.MaxIPs {
+			ip := fmt.Sprintf("192.0.2.%d", i)
+			at := now.Add(-time.Duration(i) * time.Minute)
+			visit(store.MailSprayState{Trust: map[string]map[string]store.GoodSourcePair{
+				ip: {"t@example.com": {First: at, Last: at}},
+			}})
+			if len(m.trust) > cfg.MaxIPs || len(m.trustByIP) > cfg.MaxIPs || len(m.trustByMailbox) > cfg.MaxIPs {
+				t.Fatal("trust exceeded its cap during replay")
+			}
+		}
+		for i := range 2 * cfg.MaxIPs {
+			ip := fmt.Sprintf("192.0.2.%d", i)
+			visit(store.MailSprayState{IPs: map[string]store.MailSprayIP{ip: {
+				Failed: map[string]store.MailSprayFailure{"a@example.com": {First: now, Last: now, Count: 1}}, LastSeen: now,
+			}}})
+			if len(m.ips) > cfg.MaxIPs {
+				t.Fatal("evidence exceeded its cap during replay")
+			}
+		}
+		for i := range maxSprayCorroborationNames + 1 {
+			visit(store.MailSprayState{Networks: map[string]map[string]time.Time{
+				fmt.Sprintf("n%d@example.com", i): {"192.0.0.0/16": now},
+			}})
+			if len(m.names) > maxSprayCorroborationNames {
+				t.Fatal("corroboration exceeded its cap during replay")
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := m.trust[sprayTrustKey{"192.0.2.0", "t@example.com"}]; !ok {
+		t.Fatal("out-of-order replay discarded the newest trust")
+	}
+	if m.Size() != cfg.MaxIPs || m.TrustSize() != cfg.MaxIPs || len(m.names) != maxSprayCorroborationNames*95/100 {
+		t.Fatalf("load unexpectedly lost state: evidence=%d trust=%d names=%d", m.Size(), m.TrustSize(), len(m.names))
+	}
+}
+
+func loadSpraySnapshot(t *testing.T, m *mailSpray, st store.MailSprayState) {
+	t.Helper()
+	if err := m.Load(func(visit func(store.MailSprayState)) error {
+		visit(st)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 }

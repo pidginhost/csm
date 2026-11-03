@@ -2,6 +2,7 @@ package store
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -41,7 +42,7 @@ func testMailSprayState() MailSprayState {
 func TestMailSprayRoundTrip(t *testing.T) {
 	db := openTestDB(t)
 
-	empty, err := db.LoadMailSpray()
+	empty, err := loadTestMailSpray(db)
 	if err != nil {
 		t.Fatalf("LoadMailSpray before save: %v", err)
 	}
@@ -65,7 +66,7 @@ func TestMailSprayRoundTrip(t *testing.T) {
 		t.Errorf("stored IPv6 entry = %s, want %s", raw, wantRaw)
 	}
 
-	got, err := db.LoadMailSpray()
+	got, err := loadTestMailSpray(db)
 	if err != nil {
 		t.Fatalf("LoadMailSpray: %v", err)
 	}
@@ -85,7 +86,7 @@ func TestMailSprayReplaceDropsOld(t *testing.T) {
 	if err := db.SaveMailSpray(next); err != nil {
 		t.Fatalf("SaveMailSpray replacement: %v", err)
 	}
-	got, err := db.LoadMailSpray()
+	got, err := loadTestMailSpray(db)
 	if err != nil {
 		t.Fatalf("LoadMailSpray: %v", err)
 	}
@@ -96,7 +97,7 @@ func TestMailSprayReplaceDropsOld(t *testing.T) {
 	if err = db.SaveMailSpray(MailSprayState{}); err != nil {
 		t.Fatalf("SaveMailSpray empty: %v", err)
 	}
-	if got, err = db.LoadMailSpray(); err != nil || len(got.IPs) != 0 {
+	if got, err = loadTestMailSpray(db); err != nil || len(got.IPs) != 0 {
 		t.Fatalf("after empty save loaded %+v, %v; want nothing", got, err)
 	}
 }
@@ -126,7 +127,7 @@ func TestMailSprayCorruptEntrySkipped(t *testing.T) {
 		t.Fatalf("writing corrupt entries: %v", err)
 	}
 
-	got, err := db.LoadMailSpray()
+	got, err := loadTestMailSpray(db)
 	if err != nil {
 		t.Fatalf("LoadMailSpray: %v", err)
 	}
@@ -143,7 +144,7 @@ func TestMailSprayClosedReturnsError(t *testing.T) {
 	if err = db.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	if _, err = db.LoadMailSpray(); err == nil {
+	if _, err = loadTestMailSpray(db); err == nil {
 		t.Errorf("LoadMailSpray on closed store returned nil error")
 	}
 	if err = db.SaveMailSpray(testMailSprayState()); err == nil {
@@ -179,7 +180,7 @@ func TestMailSprayApplyDeltaTouchesOnlyItsKeys(t *testing.T) {
 	want.IPs = map[string]MailSprayIP{"198.51.100.7": base.IPs["198.51.100.7"], "192.0.2.1": {LastSeen: seen}}
 	want.Trust = map[string]map[string]GoodSourcePair{"198.51.100.7": base.Trust["198.51.100.7"]}
 	want.Networks = map[string]map[string]time.Time{"new@example.com": {"192.0.0.0/16": seen}}
-	got, err := db.LoadMailSpray()
+	got, err := loadTestMailSpray(db)
 	if err != nil {
 		t.Fatalf("LoadMailSpray: %v", err)
 	}
@@ -198,5 +199,71 @@ func TestMailSprayApplyDeltaClosedReturnsError(t *testing.T) {
 	}
 	if err = db.ApplyMailSprayDelta(MailSprayDelta{DeleteIPs: []string{"192.0.2.1"}}); err == nil {
 		t.Fatalf("ApplyMailSprayDelta on closed store returned nil error")
+	}
+}
+
+func TestMailSprayLoadRejectsOversizedEntry(t *testing.T) {
+	db := openTestDB(t)
+	good := testMailSprayState()
+	if err := db.SaveMailSpray(good); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.bolt.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket([]byte(mailSprayBucket)).Put([]byte("name:oversized@example.com"), []byte(`{"`+strings.Repeat("x", 1<<20)+`":"2026-10-30T08:15:00Z"}`))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := loadTestMailSpray(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, good) {
+		t.Fatal("oversized record was decoded into memory")
+	}
+}
+
+func loadTestMailSpray(db *DB) (MailSprayState, error) {
+	st := MailSprayState{
+		IPs:      make(map[string]MailSprayIP),
+		Trust:    make(map[string]map[string]GoodSourcePair),
+		Networks: make(map[string]map[string]time.Time),
+	}
+	err := db.LoadMailSpray(1<<20, func(part MailSprayState) {
+		for k, v := range part.IPs {
+			st.IPs[k] = v
+		}
+		for k, v := range part.Trust {
+			st.Trust[k] = v
+		}
+		for k, v := range part.Networks {
+			st.Networks[k] = v
+		}
+	})
+	return st, err
+}
+
+func TestMailSprayLoadVisitsTrustBeforeEvidence(t *testing.T) {
+	db := openTestDB(t)
+	if err := db.SaveMailSpray(testMailSprayState()); err != nil {
+		t.Fatal(err)
+	}
+	var order []string
+	if err := db.LoadMailSpray(1<<20, func(part MailSprayState) {
+		if len(part.Trust)+len(part.IPs)+len(part.Networks) != 1 {
+			t.Fatal("load buffered multiple entries")
+		}
+		switch {
+		case len(part.Trust) == 1:
+			order = append(order, "trust")
+		case len(part.IPs) == 1:
+			order = append(order, "evidence")
+		case len(part.Networks) == 1:
+			order = append(order, "corroboration")
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"trust", "trust", "evidence", "evidence", "corroboration"}; !reflect.DeepEqual(order, want) {
+		t.Fatalf("visit order = %v, want %v", order, want)
 	}
 }

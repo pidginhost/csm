@@ -1,9 +1,9 @@
 package store
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
-	"strings"
 	"time"
 
 	bolt "go.etcd.io/bbolt"
@@ -154,41 +154,42 @@ func putMailSpray(b *bolt.Bucket, encoded map[string][]byte) error {
 	return nil
 }
 
-// LoadMailSpray returns the persisted spray memory, empty when nothing has
-// been saved yet. An entry that does not decode is skipped: failing the load
-// would start the detector cold on every restart, while skipping loses only
-// that entry.
-func (db *DB) LoadMailSpray() (MailSprayState, error) {
-	st := MailSprayState{
-		IPs:      make(map[string]MailSprayIP),
-		Trust:    make(map[string]map[string]GoodSourcePair),
-		Networks: make(map[string]map[string]time.Time),
-	}
-	err := db.bolt.View(func(tx *bolt.Tx) error {
+// LoadMailSpray visits one saved entry at a time, trust before evidence.
+// maxEntryBytes bounds JSON decoding before allocation. Malformed and oversized
+// entries are skipped so one damaged entry cannot prevent the rest loading.
+// The visitor must not write to the store while the read transaction is open.
+func (db *DB) LoadMailSpray(maxEntryBytes int, visit func(MailSprayState)) error {
+	return db.bolt.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte(mailSprayBucket))
 		if b == nil {
 			return nil
 		}
-		return b.ForEach(func(k, v []byte) error {
-			key := string(k)
-			if ip, ok := strings.CutPrefix(key, mailSprayIPPrefix); ok && ip != "" {
-				var e MailSprayIP
-				if json.Unmarshal(v, &e) == nil {
-					st.IPs[ip] = e
+		for _, prefix := range []string{mailSprayTrustPrefix, mailSprayIPPrefix, mailSprayNamePrefix} {
+			c := b.Cursor()
+			for k, v := c.Seek([]byte(prefix)); k != nil && bytes.HasPrefix(k, []byte(prefix)); k, v = c.Next() {
+				if len(k) == len(prefix) || len(k) > maxEntryBytes || len(v) > maxEntryBytes {
+					continue
 				}
-			} else if ip, ok = strings.CutPrefix(key, mailSprayTrustPrefix); ok && ip != "" {
-				var t map[string]GoodSourcePair
-				if json.Unmarshal(v, &t) == nil {
-					st.Trust[ip] = t
-				}
-			} else if name, ok := strings.CutPrefix(key, mailSprayNamePrefix); ok && name != "" {
-				var n map[string]time.Time
-				if json.Unmarshal(v, &n) == nil {
-					st.Networks[name] = n
+				key := string(k[len(prefix):])
+				switch prefix {
+				case mailSprayIPPrefix:
+					var e MailSprayIP
+					if json.Unmarshal(v, &e) == nil {
+						visit(MailSprayState{IPs: map[string]MailSprayIP{key: e}})
+					}
+				case mailSprayTrustPrefix:
+					var t map[string]GoodSourcePair
+					if json.Unmarshal(v, &t) == nil {
+						visit(MailSprayState{Trust: map[string]map[string]GoodSourcePair{key: t}})
+					}
+				case mailSprayNamePrefix:
+					var n map[string]time.Time
+					if json.Unmarshal(v, &n) == nil {
+						visit(MailSprayState{Networks: map[string]map[string]time.Time{key: n}})
+					}
 				}
 			}
-			return nil
-		})
+		}
+		return nil
 	})
-	return st, err
 }
