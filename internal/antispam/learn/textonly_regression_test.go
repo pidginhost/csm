@@ -166,13 +166,15 @@ func TestPublishStoredMessageUsesVerifiedTextOnlyBody(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			// Only the safe body is recognized. Both inspection and publication
-			// must use it, even though the immutable stored body predates it.
+			// The stored MIME message has an extra digest. Only a successful
+			// inspection can justify trying its text-only representation.
 			text := textOnlyMessage(body)
 			if text != nil {
 				f.storage.bodies[string(text)] = tc.digest
+				f.storage.inspect[string(body)] = []Result{{Queried: tc.digest}, {Queried: digest('z')}}
 			}
 			if tc.asIs != "" {
+				delete(f.storage.inspect, string(body))
 				f.storage.bodies[string(body)] = tc.asIs
 			}
 			res, err := turn(t, f.publisher(), anchor)

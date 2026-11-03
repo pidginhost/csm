@@ -344,6 +344,10 @@ func (p *Publisher) anchorBody(ctx context.Context, t Target) ([]byte, error) {
 	if err == nil {
 		return body, nil
 	}
+	// A failed inspection says nothing about the stored body's digest.
+	if !errors.Is(err, errAnchorUnreproducible) {
+		return nil, err
+	}
 	text := textOnlyMessage(body)
 	if text == nil || bytes.Equal(text, body) {
 		return nil, err
