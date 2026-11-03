@@ -321,19 +321,7 @@ func (m *mailSpray) RevokeTrust(ip, mailbox string) {
 		return
 	}
 	now := m.now()
-	e := m.touch(ip, now)
-	maps.DeleteFunc(e.revoked, func(_ string, at time.Time) bool { return now.Sub(at) > m.cfg.Window })
-	if _, ok := e.revoked[mailbox]; ok || len(e.revoked) < maxSprayNamesPerIP {
-		if e.revoked == nil {
-			e.revoked = make(map[string]time.Time)
-		}
-		e.revoked[mailbox] = now
-	} else {
-		// Losing a cracked mailbox at the name cap must not turn its
-		// next login into clean evidence. The existing overflow marker
-		// withholds new trust without disturbing other aged trust.
-		e.untracked = now
-	}
+	m.touch(ip, now).noteRevoked(mailbox, now, m.cfg.Window)
 	m.evictIPs(ip, now)
 }
 
@@ -412,6 +400,7 @@ func (m *mailSpray) Export() store.MailSprayState {
 	for ip, e := range m.ips {
 		s := store.MailSprayIP{
 			WeakAlerted:     maps.Clone(e.weakAlerted),
+			Revoked:         maps.Clone(e.revoked),
 			Untracked:       e.untracked,
 			SuppressedUntil: e.suppressedUntil,
 			CompromiseUntil: e.compromiseSuppressedUntil,
@@ -572,7 +561,11 @@ func (m *mailSpray) loadIP(ip string, s store.MailSprayIP, cutoff, now time.Time
 	for _, mb := range sprayKeysByTime(weak, sprayAt) {
 		e.noteWeakAlert(mb, weak[mb], m.cfg.Window)
 	}
-	if len(e.failed) == 0 && e.untracked.IsZero() && len(e.weakAlerted) == 0 {
+	revoked := sprayLoadTimes(nil, s.Revoked, normalizeSprayMailbox, cutoff, now)
+	for _, mb := range sprayKeysByTime(revoked, sprayAt) {
+		e.noteRevoked(mb, revoked[mb], m.cfg.Window)
+	}
+	if len(e.failed) == 0 && e.untracked.IsZero() && len(e.weakAlerted) == 0 && len(e.revoked) == 0 {
 		return nil
 	}
 	return e
@@ -777,6 +770,24 @@ func (e *sprayIP) noteWeakAlert(mailbox string, now time.Time, window time.Durat
 	}
 	e.weakAlerted[mailbox] = now
 	return true
+}
+
+// noteRevoked remembers a crack on mailbox at "at" for the window. Losing a
+// cracked mailbox at the name cap must not turn its next login into clean
+// evidence, so at the cap the crack goes to the overflow marker, which
+// withholds new trust without disturbing other aged trust.
+func (e *sprayIP) noteRevoked(mailbox string, at time.Time, window time.Duration) {
+	maps.DeleteFunc(e.revoked, func(_ string, t time.Time) bool { return at.Sub(t) > window })
+	if _, ok := e.revoked[mailbox]; ok || len(e.revoked) < maxSprayNamesPerIP {
+		if e.revoked == nil {
+			e.revoked = make(map[string]time.Time)
+		}
+		e.revoked[mailbox] = at
+		return
+	}
+	if at.After(e.untracked) {
+		e.untracked = at
+	}
 }
 
 func (e *sprayIP) hasUntracked(now time.Time, window time.Duration) bool {

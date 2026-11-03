@@ -19,6 +19,7 @@ func testMailSprayState() MailSprayState {
 					"":              {First: at(5), Last: at(5), Count: 1},
 				},
 				WeakAlerted:     map[string]time.Time{"b@example.com": at(30)},
+				Revoked:         map[string]time.Time{"e@example.com": at(35)},
 				Untracked:       at(40),
 				SuppressedUntil: at(150),
 				CompromiseUntil: at(160),

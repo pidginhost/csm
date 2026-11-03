@@ -51,6 +51,7 @@ func TestMailSprayLoadExportKeepsEveryField(t *testing.T) {
 					"":                   {First: at(-5), Last: at(-4), Count: 2},
 				},
 				WeakAlerted:     map[string]time.Time{"w@example.com": at(-6)},
+				Revoked:         map[string]time.Time{"r@example.com": at(-11)},
 				Untracked:       at(-7),
 				SuppressedUntil: clock.Now().Add(30 * time.Minute),
 				CompromiseUntil: clock.Now().Add(45 * time.Minute),
@@ -177,6 +178,7 @@ func TestMailSprayLoadDropsExpiredAndCaps(t *testing.T) {
 					"new@example.com": {Last: recent, Count: 0, Exist: 9},
 				},
 				WeakAlerted: map[string]time.Time{"old@example.com": old, "new@example.com": recent},
+				Revoked:     map[string]time.Time{"old@example.com": old},
 				Untracked:   old,
 				LastSeen:    recent,
 			},
@@ -203,11 +205,17 @@ func TestMailSprayLoadDropsExpiredAndCaps(t *testing.T) {
 		},
 	}
 	// Over every per-IP and per-name cap.
-	full := store.MailSprayIP{Failed: map[string]store.MailSprayFailure{}, WeakAlerted: map[string]time.Time{}, LastSeen: recent}
+	full := store.MailSprayIP{
+		Failed:      map[string]store.MailSprayFailure{},
+		WeakAlerted: map[string]time.Time{},
+		Revoked:     map[string]time.Time{},
+		LastSeen:    recent,
+	}
 	for i := range maxSprayNamesPerIP + 8 {
 		ts := recent.Add(time.Duration(i) * time.Second)
 		full.Failed[fmt.Sprintf("n%02d@example.com", i)] = store.MailSprayFailure{First: ts, Last: ts, Count: 1}
 		full.WeakAlerted[fmt.Sprintf("w%02d@example.com", i)] = ts
+		full.Revoked[fmt.Sprintf("r%02d@example.com", i)] = ts
 	}
 	st.IPs["192.0.2.4"] = full
 	st.Trust["192.0.2.4"] = map[string]store.GoodSourcePair{}
@@ -227,7 +235,7 @@ func TestMailSprayLoadDropsExpiredAndCaps(t *testing.T) {
 	m.Load(st)
 
 	e := m.ips["192.0.2.1"]
-	if e == nil || len(e.failed) != 1 || len(e.weakAlerted) != 1 || !e.untracked.IsZero() {
+	if e == nil || len(e.failed) != 1 || len(e.weakAlerted) != 1 || len(e.revoked) != 0 || !e.untracked.IsZero() {
 		t.Fatalf("192.0.2.1 after load = %+v, want only the recent name and advisory", e)
 	}
 	if f := e.failed["new@example.com"]; !f.first.Equal(recent) || f.count != 1 || f.exist != mailboxExistenceUnknown {
@@ -251,6 +259,9 @@ func TestMailSprayLoadDropsExpiredAndCaps(t *testing.T) {
 	}
 	if len(e.weakAlerted) != maxSprayNamesPerIP {
 		t.Fatalf("advisory records = %d, want %d", len(e.weakAlerted), maxSprayNamesPerIP)
+	}
+	if len(e.revoked) != maxSprayNamesPerIP {
+		t.Fatalf("revocation records = %d, want %d", len(e.revoked), maxSprayNamesPerIP)
 	}
 	if _, ok := e.weakAlerted[fmt.Sprintf("w%02d@example.com", maxSprayNamesPerIP+7)]; !ok {
 		t.Fatalf("the newest advisory record was not kept")
@@ -353,6 +364,7 @@ func TestMailSprayLoadDistrustsFutureTimes(t *testing.T) {
 			IPs: map[string]store.MailSprayIP{"192.0.2.2": {
 				Failed:          map[string]store.MailSprayFailure{"x@example.com": {First: later, Last: later, Count: 1}},
 				WeakAlerted:     map[string]time.Time{"w@example.com": later},
+				Revoked:         map[string]time.Time{"r@example.com": later},
 				Untracked:       later,
 				SuppressedUntil: later,
 				CompromiseUntil: later,
@@ -383,6 +395,7 @@ func TestMailSprayLoadDistrustsFutureTimes(t *testing.T) {
 	for name, got := range map[string]time.Time{
 		"failure first": f.first, "failure last": f.last, "untracked": e.untracked,
 		"verdict": e.verdictAt, "last seen": e.lastSeen, "advisory": e.weakAlerted["w@example.com"],
+		"revoked": e.revoked["r@example.com"],
 		"network": m.names["nobody@example.com"].networks["198.51.0.0/16"],
 	} {
 		if !got.Equal(now) {
@@ -459,5 +472,21 @@ func TestMailSprayLoadNormalisesKeys(t *testing.T) {
 	}
 	if n := m.names["nobody@example.com"]; n == nil || len(n.networks) != 2 || !n.last.Equal(t2) {
 		t.Fatalf("merged corroboration = %+v, want two networks, last t2", n)
+	}
+}
+
+// A crack revoked before the restart still cannot earn trust after it.
+func TestMailSprayRestartKeepsRevokedTrust(t *testing.T) {
+	m, clock := newTestSpray(testSprayConfig())
+	const ip = "192.0.2.60"
+	ageTrust(t, m, clock, ip, "a@example.com")
+	m.RevokeTrust(ip, "a@example.com")
+
+	m = restartSpray(t, m, clock)
+	if clean, _ := m.Success(ip, "a@example.com"); clean {
+		t.Fatalf("a revoked mailbox earned trust again after the restart")
+	}
+	if m.TrustSize() != 0 {
+		t.Fatalf("trust records = %d, want 0", m.TrustSize())
 	}
 }

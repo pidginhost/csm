@@ -32,6 +32,7 @@ type MailSprayFailure struct {
 type MailSprayIP struct {
 	Failed          map[string]MailSprayFailure `json:"failed,omitempty"`
 	WeakAlerted     map[string]time.Time        `json:"weak_alerted,omitempty"`
+	Revoked         map[string]time.Time        `json:"revoked,omitempty"` // cracked mailboxes that cannot earn trust
 	Untracked       time.Time                   `json:"untracked,omitzero"`
 	SuppressedUntil time.Time                   `json:"suppressed_until,omitzero"`
 	CompromiseUntil time.Time                   `json:"compromise_until,omitzero"`
