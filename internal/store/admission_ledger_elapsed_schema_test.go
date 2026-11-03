@@ -213,3 +213,52 @@ func TestAdmissionLedgerEmptyEffectsNeedTheirTally(t *testing.T) {
 		})
 	}
 }
+
+// Startup can read a verified attempt before the owner checks the ledger's
+// required buckets. Missing queue state must follow the unreadable-ledger
+// error path, whether or not that attempt ever held an effect record.
+func TestReadBlockActionsRejectsMissingQueueState(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		schema byte
+		live   bool
+	}{
+		{"preview", admissionSchemaVersion, false},
+		{"live", admissionSchemaEffects, true},
+		{"elapsed preview", admissionSchemaEpisodeElapsed, false},
+		{"elapsed live", admissionSchemaEpisodeElapsed, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for name, read := range map[string]func(*DB, []string) ([]string, error){
+				"unproven": ReadUnprovenBlockActions,
+				"settled":  ReadSettledBlockActions,
+			} {
+				t.Run(name, func(t *testing.T) {
+					f := newLedgerFixture(t)
+					if tc.live {
+						if err := f.l.StartLive(admission.LegacyHandover{}); err != nil {
+							t.Fatal(err)
+						}
+					}
+					ids := []string{string(f.verifiedBlock())}
+					f.setSchema(tc.schema)
+					if got, err := read(f.db, ids); err != nil || len(got) != 0 {
+						t.Fatalf("intact ledger: %v, %v", got, err)
+					}
+					if err := f.db.bolt.Update(func(tx *bolt.Tx) error {
+						return tx.DeleteBucket([]byte(admissionQueueStateBucket))
+					}); err != nil {
+						t.Fatal(err)
+					}
+					before := f.snapshot()
+					if got, err := read(f.db, ids); !isCorrupt(err) || got != nil {
+						t.Fatalf("missing queue state: %v, %v; want no rows and a corrupt-record error", got, err)
+					}
+					if !reflect.DeepEqual(before, f.snapshot()) {
+						t.Fatal("startup read changed the damaged ledger")
+					}
+				})
+			}
+		})
+	}
+}

@@ -201,7 +201,9 @@ If the ledger cannot be read, eligible blocks are restored
 as before and existing unverified marks are kept; none of those automatic
 blocks is evicted to make room for a new one, and `csm doctor` warns until a
 restart reads the ledger. `automation.firewall_ledger_error` carries the
-reason. With a readable ledger such blocks are never evicted either: an
+reason. Missing admission queue state follows this unreadable-ledger policy
+instead of crashing startup.
+With a readable ledger such blocks are never evicted either: an
 operator block that finds the temporary limit reached only because of them
 is added above the limit. New timed automatic blocks record their origin
 explicitly; operator blocks and operator undo do not acquire that origin

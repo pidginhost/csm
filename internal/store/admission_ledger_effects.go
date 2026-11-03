@@ -25,6 +25,9 @@ var effectTallyKey = []byte("effects")
 // live start.
 func effectLayout(tx *bolt.Tx, schema byte) (bool, error) {
 	state := tx.Bucket([]byte(admissionQueueStateBucket))
+	if state == nil {
+		return false, admission.ErrCorruptRecord
+	}
 	present := tx.Bucket([]byte(admissionEffectsBucket)) != nil
 	tallied := state.Get(effectTallyKey) != nil
 	var ok bool
