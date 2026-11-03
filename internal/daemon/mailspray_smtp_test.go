@@ -384,6 +384,20 @@ func TestSprayOutageForgetsRecentFailures(t *testing.T) {
 	}
 }
 
+// As on IMAP/POP, an SMTP login during an auth outage leaves spray memory
+// alone: it would earn trust while that outage's failures were dropped.
+func TestSMTPSprayOutageSuccessEarnsNoTrust(t *testing.T) {
+	for _, down := range []bool{false, true} {
+		clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+		tr := newTestTrackerWithSpray(t, clock)
+		tr.SetBackendDownCheck(func() bool { return down })
+		tr.RecordSuccess("203.0.113.171", "a@example.com")
+		if got, want := tr.spray.TrustSize(), map[bool]int{false: 1, true: 0}[down]; got != want {
+			t.Fatalf("backend down = %v: %d trust records, want %d", down, got, want)
+		}
+	}
+}
+
 // IPv4-mapped IPv6 and plain IPv4 are one source on every SMTP path.
 func TestSMTPSprayIPv4MappedKeysAsIPv4(t *testing.T) {
 	cases := map[string]struct {

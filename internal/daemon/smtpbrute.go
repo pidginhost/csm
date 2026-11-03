@@ -445,7 +445,9 @@ func (t *smtpAuthTracker) RecordSuccess(ip, account string) (findings []alert.Fi
 	defer func() { stampMailAccountOwner(findings, mailbox) }()
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if t.spray == nil {
+	// During an auth outage the failures were kept out of spray memory, so
+	// a login then must not earn trust or raise a finding either.
+	if t.spray == nil || (t.backendDownFn != nil && t.backendDownFn()) {
 		return nil
 	}
 	_, v := t.spray.Success(ip, mailbox)
