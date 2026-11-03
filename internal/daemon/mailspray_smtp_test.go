@@ -433,3 +433,28 @@ func TestMailSprayFindingMapping(t *testing.T) {
 		t.Fatalf("unsafe target not escaped: %q", f.Details)
 	}
 }
+
+// One failure raises one smtp_bruteforce, even when it crosses the per-IP
+// bar and a spray rule at once. The spray memory still records it.
+func TestSMTPSprayOneBlockPerFailure(t *testing.T) {
+	const ip = "203.0.113.67"
+	d, clock := newPairingDaemon(t, sprayTestConfig("enforce"))
+	for i := 1; i < d.smtpAuthTracker.perIPThreshold; i++ {
+		if f, ok := findingByCheck(feedExim(d, clock, makeEximDovecotFailLine(ip, "a@example.com")), "smtp_bruteforce"); ok {
+			t.Fatalf("blocked before either bar: %+v", f)
+		}
+	}
+	got := feedExim(d, clock, makeEximDovecotFailLine(ip, "b@example.com"))
+	n := 0
+	for _, f := range got {
+		if f.Check == "smtp_bruteforce" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("smtp_bruteforce findings = %d, want 1: %+v", n, got)
+	}
+	if ev := sprayEvidence(d, ip); len(ev) != 2 {
+		t.Fatalf("spray evidence = %+v, want both mailboxes", ev)
+	}
+}

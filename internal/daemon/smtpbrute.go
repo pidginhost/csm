@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -314,7 +315,13 @@ func (t *smtpAuthTracker) RecordFailure(ip, account string, exist mailboxExisten
 	// --- Long-memory login spray (shared with IMAP/POP) ---
 	if !degraded && t.spray != nil {
 		if v := t.spray.Failure(ip, normalizeSprayMailbox(account), exist); v != nil {
-			findings = append(findings, sprayFinding(protoSMTP, ip, v, t.spray.Mode(), now))
+			f := sprayFinding(protoSMTP, ip, v, t.spray.Mode(), now)
+			// One failure raises one block: the evidence is recorded either
+			// way, and a per-IP block above already covers this address.
+			perIPBlock := slices.ContainsFunc(findings, func(p alert.Finding) bool { return p.Check == "smtp_bruteforce" })
+			if f.Check != "smtp_bruteforce" || !perIPBlock {
+				findings = append(findings, f)
+			}
 		}
 	}
 
