@@ -303,7 +303,7 @@ func (m *mailSpray) Success(ip, mailbox string) (clean bool, v *sprayVerdict) {
 	now := m.now()
 	k := sprayTrustKey{ip, mailbox}
 	e := m.ips[ip]
-	if m.agedTrust(ip, mailbox, now) {
+	if m.agedTrust(ip, mailbox, now) || m.trustPredatesFailures(e, k, now) {
 		t := m.trust[k]
 		t.last = now
 		m.trust[k] = t
@@ -348,6 +348,29 @@ func (m *mailSpray) Success(ip, mailbox string) (clean bool, v *sprayVerdict) {
 	}
 	e.compromiseSuppressedUntil = now.Add(m.cfg.Suppression)
 	return false, m.verdict(e, rule, block, mailbox, untrusted, now)
+}
+
+// trustPredatesFailures reports whether k holds live trust that began
+// before every untrusted failure on another mailbox: a clean login those
+// failures came after, so they cannot taint it.
+func (m *mailSpray) trustPredatesFailures(e *sprayIP, k sprayTrustKey, now time.Time) bool {
+	t, ok := m.trust[k]
+	if !ok || now.Sub(t.last) > m.cfg.Window {
+		return false
+	}
+	if e == nil {
+		return true
+	}
+	// A failure refused at the name cap has no first time to compare.
+	if e.hasUntracked(now, m.cfg.Window) {
+		return false
+	}
+	for name, f := range e.failed {
+		if name != k.mailbox && now.Sub(f.last) <= m.cfg.Window && !f.first.After(t.first) && !m.agedTrust(k.ip, name, now) {
+			return false
+		}
+	}
+	return true
 }
 
 // RevokeTrust drops the IP's trust on a normalised mailbox, for a login the

@@ -167,6 +167,43 @@ func TestMailSpray_LoginToTrustedMailboxNeverCompromise(t *testing.T) {
 	}
 }
 
+// A clean login that came before failures on other mailboxes stays clean
+// on its next poll, even before its trust ages.
+func TestMailSpray_TrustBeforeLaterFailuresStaysClean(t *testing.T) {
+	m, clock := newTestSpray(testSprayConfig())
+	const ip = "192.0.2.1"
+	if clean, v := m.Success(ip, "a@example.com"); !clean || v != nil {
+		t.Fatalf("first login = (%v, %+v), want clean", clean, v)
+	}
+	clock.advance(time.Minute)
+	wantNoVerdict(t, m.Failure(ip, "b@example.com", mailboxExists))
+	clock.advance(3 * time.Minute)
+	if clean, v := m.Success(ip, "a@example.com"); !clean || v != nil {
+		t.Fatalf("poll after a later failure = (%v, %+v), want (true, nil)", clean, v)
+	}
+}
+
+// The control: the failure on b@ came before the first clean login on a@
+// (b@ was trusted then and its trust is revoked later), so it still taints
+// the next poll.
+func TestMailSpray_FailureBeforeTrustStillTaints(t *testing.T) {
+	m, clock := newTestSpray(testSprayConfig())
+	const ip = "192.0.2.1"
+	ageTrust(t, m, clock, ip, "b@example.com")
+	wantNoVerdict(t, m.Failure(ip, "b@example.com", mailboxExists))
+	clock.advance(time.Minute)
+	if clean, v := m.Success(ip, "a@example.com"); !clean || v != nil {
+		t.Fatalf("first login = (%v, %+v), want clean", clean, v)
+	}
+	m.RevokeTrust(ip, "b@example.com")
+	clock.advance(3 * time.Minute)
+	clean, v := m.Success(ip, "a@example.com")
+	if clean {
+		t.Fatal("poll after an earlier failure reported clean")
+	}
+	wantRule(t, v, sprayRuleWeakCompromise, false)
+}
+
 func TestMailSpray_StrongCompromiseAfterCorroboratedMissingName(t *testing.T) {
 	m, clock := newTestSpray(testSprayConfig())
 	const ip = "192.0.2.1"
