@@ -78,6 +78,30 @@ func TestPostfixSASLSuccessLineFormats(t *testing.T) {
 	}
 }
 
+// Trust is per mailbox, so the success line must yield the login name and
+// nothing smtpd appends after it.
+func TestPostfixSASLSuccessUser(t *testing.T) {
+	const base = "4ABC123: client=unknown[203.0.113.5], sasl_method=PLAIN"
+	cases := []struct {
+		name, msg, ip, user string
+	}{
+		{"login name", base + ", sasl_username=alice@example.com", "203.0.113.5", "alice@example.com"},
+		{"sender appended", base + ", sasl_username=alice@example.com, sasl_sender=bob@example.com", "203.0.113.5", "alice@example.com"},
+		{"forwarding fields appended", base + ", sasl_username=alice@example.com, orig_queue_id=4DEF456, orig_client=unknown[198.51.100.9]", "203.0.113.5", "alice@example.com"},
+		{"all fields appended", base + ", sasl_username=alice@example.com, sasl_sender=bob@example.com, orig_queue_id=4DEF456, orig_client=unknown[198.51.100.9]", "203.0.113.5", "alice@example.com"},
+		{"no login name", base, "203.0.113.5", ""},
+		{"not a success line", "warning: unknown[203.0.113.5]: SASL PLAIN authentication failed: , sasl_username=alice@example.com", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ip, user := postfixSASLSuccess(tc.msg)
+			if ip != tc.ip || user != tc.user {
+				t.Fatalf("postfixSASLSuccess = (%q, %q), want (%q, %q)", ip, user, tc.ip, tc.user)
+			}
+		})
+	}
+}
+
 // Only smtpd's own queue record of an authenticated client is a success.
 // Client text echoed into other lines must not vouch for an address.
 func TestPostfixSASLSuccessLinesThatMustNotCount(t *testing.T) {

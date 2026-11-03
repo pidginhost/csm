@@ -2574,7 +2574,7 @@ func (d *Daemon) handleSMTPAuthPairing(line string, obs alert.Observation, cfg *
 	process, msg := postfixSMTPDMessage(line)
 	// Like an authenticated Exim delivery, this keeps a source with working
 	// logins out of the slow-brute block.
-	if ip := postfixSASLSuccess(msg); ip != "" {
+	if ip, _ := postfixSASLSuccess(msg); ip != "" {
 		if !isInfraIPDaemon(ip, cfg.InfraIPs) && !isPrivateOrLoopback(ip) {
 			t.RecordSuccess(ip)
 		}

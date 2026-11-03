@@ -4,6 +4,7 @@ import (
 	"io/fs"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -411,6 +412,31 @@ func FuzzPostfixSASLSuccessAddress(f *testing.F) {
 		}
 		if calls := smtpCalls(d); calls != 0 {
 			t.Fatalf("success lines counted %d failures", calls)
+		}
+	})
+}
+
+// The login name ends where smtpd's own trailing fields begin, whatever the
+// rest of the line holds.
+func FuzzPostfixSASLSuccessUser(f *testing.F) {
+	for _, s := range []string{
+		"4ABC123: client=unknown[203.0.113.5], sasl_method=PLAIN, sasl_username=alice@example.com",
+		"4ABC123: client=unknown[203.0.113.5], sasl_method=PLAIN, sasl_username=a, sasl_sender=b, orig_queue_id=c, orig_client=d",
+		"4ABC123: client=unknown[203.0.113.5], sasl_method=PLAIN, sasl_username=, sasl_sender=, sasl_username=x",
+		"4ABC123: client=unknown[203.0.113.5], sasl_method=, sasl_username=\xff\xfe",
+		"", ": client=", ", sasl_method=, sasl_username=",
+	} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, msg string) {
+		ip, user := postfixSASLSuccess(msg)
+		if ip == "" && user != "" {
+			t.Fatalf("refused line %q returned user %q", msg, user)
+		}
+		for _, field := range []string{", sasl_sender=", ", orig_queue_id=", ", orig_client="} {
+			if strings.Contains(user, field) {
+				t.Fatalf("user %q from %q holds %q", user, msg, field)
+			}
 		}
 	})
 }
