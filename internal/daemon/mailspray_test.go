@@ -2,6 +2,8 @@ package daemon
 
 import (
 	"fmt"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -420,6 +422,258 @@ func TestMailSpray_UniqueNameFloodBounded(t *testing.T) {
 	wantRule(t, m.Failure("2001:db8::1", "nobody@example.com", mailboxMissing), sprayRuleMissingMailbox, true)
 }
 
+// Trusted stale-password failures must not fill the name map and hide new
+// untrusted targets from either breadth detection or trust admission.
+func TestMailSpray_TrustedNamesCannotHideSpray(t *testing.T) {
+	m, clock := newTestSpray(testSprayConfig())
+	const ip = "192.0.2.1"
+	var mailboxes []string
+	for i := range maxSprayNamesPerIP {
+		mailboxes = append(mailboxes, fmt.Sprintf("trusted%d@example.com", i))
+	}
+	ageTrust(t, m, clock, ip, mailboxes...)
+	for _, mb := range mailboxes {
+		wantNoVerdict(t, m.Failure(ip, mb, mailboxExists))
+	}
+	wantNoVerdict(t, m.Failure(ip, "victim@example.com", mailboxExists))
+	if clean, v := m.Success(ip, "guessed@example.com"); clean {
+		t.Fatal("full trusted-name map hid the failure on another mailbox")
+	} else {
+		wantRule(t, v, sprayRuleWeakCompromise, false)
+	}
+	wantRule(t, m.Failure(ip, "second@example.com", mailboxExists), sprayRuleBreadth, true)
+	if !m.TrustedAll(ip, mailboxes) {
+		t.Fatal("making room for untrusted failures removed existing trust")
+	}
+}
+
+// Refusing a name at capacity must not make its later successful login clean
+// when the older, retained failures expire. Purging must keep that evidence.
+func TestMailSpray_OverflowCannotEarnTrust(t *testing.T) {
+	for _, purge := range []bool{false, true} {
+		t.Run(fmt.Sprintf("purge=%v", purge), func(t *testing.T) {
+			cfg := testSprayConfig()
+			m, clock := newTestSpray(cfg)
+			const ip = "192.0.2.1"
+			for i := range maxSprayNamesPerIP {
+				m.Failure(ip, fmt.Sprintf("old%d@example.com", i), mailboxExists)
+			}
+			clock.advance(cfg.Window - time.Minute)
+			m.Failure(ip, "recent@example.com", mailboxExists)
+			clock.advance(2 * time.Minute)
+			if purge {
+				m.Purge()
+			}
+			if clean, v := m.Success(ip, "guessed@example.com"); clean {
+				t.Fatal("discarded recent failure allowed a login to earn trust")
+			} else {
+				wantRule(t, v, sprayRuleWeakCompromise, false)
+			}
+			clock.advance(cfg.TrustAge)
+			if m.TrustedAll(ip, []string{"guessed@example.com"}) {
+				t.Fatal("overflow login earned aged trust")
+			}
+			clock.advance(cfg.Window)
+			m.Purge()
+			if m.Size() != 0 {
+				t.Fatal("expired overflow kept evidence alive")
+			}
+			if clean, v := m.Success(ip, "guessed@example.com"); !clean || v != nil {
+				t.Fatalf("login after all evidence expired = (%v, %+v)", clean, v)
+			}
+		})
+	}
+}
+
+// The pool may be almost entirely strong evidence. A batch eviction must
+// stop at the rank boundary once capacity is met, even if it misses 95%.
+func TestMailSpray_FullEvidencePoolKeepsStrongerEntries(t *testing.T) {
+	for _, strongCount := range []int{99, 100} {
+		t.Run(fmt.Sprintf("strong=%d", strongCount), func(t *testing.T) {
+			cfg := testSprayConfig()
+			cfg.MaxIPs = 100
+			m, clock := newTestSpray(cfg)
+			for i := range strongCount {
+				ip := fmt.Sprintf("2001:db8::%x", i+1)
+				wantNoVerdict(t, m.Failure(ip, "a@example.com", mailboxExists))
+				wantRule(t, m.Failure(ip, "b@example.com", mailboxExists), sprayRuleBreadth, true)
+			}
+			for i := range 20 {
+				clock.advance(time.Second)
+				m.Failure(fmt.Sprintf("192.0.2.%d", i+1), "noise@example.com", mailboxExists)
+			}
+			if m.Size() > cfg.MaxIPs {
+				t.Fatalf("evidence pool holds %d IPs", m.Size())
+			}
+			clock.advance(cfg.Suppression)
+			for i := range strongCount {
+				wantRule(t, m.Failure(fmt.Sprintf("2001:db8::%x", i+1), "a@example.com", mailboxExists), sprayRuleBreadth, true)
+			}
+		})
+	}
+}
+
+func TestMailSpray_FullCorroborationPoolKeepsStrongerEntries(t *testing.T) {
+	m, clock := newTestSpray(testSprayConfig())
+	for i := range maxSprayCorroborationNames {
+		name := fmt.Sprintf("missing%d@example.com", i)
+		for _, ip := range []string{"192.0.2.1", "198.51.100.1", "203.0.113.1"} {
+			m.Failure(ip, name, mailboxMissing)
+		}
+	}
+	clock.advance(time.Second)
+	m.Failure("192.0.2.2", "noise@example.com", mailboxMissing)
+	if len(m.names) > maxSprayCorroborationNames {
+		t.Fatalf("corroboration pool holds %d names", len(m.names))
+	}
+	for i := range maxSprayCorroborationNames {
+		name := fmt.Sprintf("missing%d@example.com", i)
+		if got := m.networkCount(m.names[name], clock.Now()); got != 3 {
+			t.Fatalf("%s has %d networks after one-shot pressure, want 3", name, got)
+		}
+	}
+}
+
+func TestMailSpray_CapacityRanksCurrentVerdict(t *testing.T) {
+	cfg := testSprayConfig()
+	cfg.MaxIPs = 2
+	cfg.MissingNetworks = 1
+	m, clock := newTestSpray(cfg)
+	for _, ip := range []string{"192.0.2.1", "192.0.2.2", "192.0.2.3"} {
+		clock.advance(time.Second)
+		wantRule(t, m.Failure(ip, "missing@example.com", mailboxMissing), sprayRuleMissingMailbox, true)
+	}
+	if clean, v := m.Success("192.0.2.3", "guessed@example.com"); clean {
+		t.Fatal("eviction lost the current verdict's evidence")
+	} else {
+		wantRule(t, v, sprayRuleCompromise, true)
+	}
+}
+
+// Refused failures on an already trusted mailbox must not taint a later
+// clean login after the untrusted evidence expires.
+func TestMailSpray_TrustedOverflowDoesNotTaint(t *testing.T) {
+	cfg := testSprayConfig()
+	m, clock := newTestSpray(cfg)
+	const ip = "192.0.2.1"
+	ageTrust(t, m, clock, ip, "trusted@example.com")
+	for i := range maxSprayNamesPerIP {
+		m.Failure(ip, fmt.Sprintf("old%d@example.com", i), mailboxExists)
+	}
+	clock.advance(cfg.Window - 2*cfg.TrustAge)
+	if clean, v := m.Success(ip, "trusted@example.com"); !clean || v != nil {
+		t.Fatalf("refresh trusted login = (%v, %+v)", clean, v)
+	}
+	m.Failure(ip, "trusted@example.com", mailboxExists)
+	clock.advance(2*cfg.TrustAge + time.Second)
+	if clean, v := m.Success(ip, "new@example.com"); !clean || v != nil {
+		t.Fatalf("trusted overflow tainted clean login = (%v, %+v)", clean, v)
+	}
+}
+
+func TestMailSpray_ReloadAndPurgeKeepTrustIndexesBounded(t *testing.T) {
+	cfg := testSprayConfig()
+	cfg.MaxIPs = 300
+	m, clock := newTestSpray(cfg)
+	for i := range 400 {
+		m.Success("192.0.2.1", fmt.Sprintf("u%d@example.com", i))
+		m.Success(fmt.Sprintf("2001:db8::%x", i+1), "shared@example.com")
+	}
+	checkIndexes := func() {
+		t.Helper()
+		if len(m.trust) > cfg.MaxIPs || len(m.trustByIP) > len(m.trust) || len(m.trustByMailbox) > len(m.trust) {
+			t.Fatal("trust or indexes exceeded the pool cap")
+		}
+		for ip, mailboxes := range m.trustByIP {
+			if len(mailboxes) == 0 || len(mailboxes) > maxSprayTrustPerIP {
+				t.Fatalf("IP index has %d mailboxes", len(mailboxes))
+			}
+			for mb := range mailboxes {
+				if _, ok := m.trust[sprayTrustKey{ip, mb}]; !ok {
+					t.Fatal("IP index points to an evicted trust record")
+				}
+			}
+		}
+		for mb, ips := range m.trustByMailbox {
+			if len(ips) == 0 || len(ips) > maxSprayTrustIPsPerMailbox {
+				t.Fatalf("mailbox index has %d IPs", len(ips))
+			}
+			for ip := range ips {
+				if _, ok := m.trust[sprayTrustKey{ip, mb}]; !ok {
+					t.Fatal("mailbox index points to an evicted trust record")
+				}
+			}
+		}
+		for k := range m.trust {
+			if _, ok := m.trustByIP[k.ip][k.mailbox]; !ok {
+				t.Fatal("trust record absent from IP index")
+			}
+			if _, ok := m.trustByMailbox[k.mailbox][k.ip]; !ok {
+				t.Fatal("trust record absent from mailbox index")
+			}
+		}
+	}
+	checkIndexes()
+	cfg.MaxIPs = 10
+	m.SetConfig(cfg)
+	checkIndexes()
+	if m.TrustSize() == 0 {
+		t.Fatal("shrinking the pool discarded all trust")
+	}
+	clock.advance(cfg.Window + time.Second)
+	m.Purge()
+	checkIndexes()
+	if m.TrustSize() != 0 {
+		t.Fatal("expired trust survived purge")
+	}
+	m.Success("192.0.2.1", "a@example.com")
+	m.Failure("192.0.2.2", "missing@example.com", mailboxMissing)
+	cfg.Window = 0
+	m.SetConfig(cfg)
+	checkIndexes()
+	if m.TrustSize() != 0 || m.Size() != 0 || len(m.names) != 0 || m.Mode() != sprayOff {
+		t.Fatal("disabling memory kept state or an active mode")
+	}
+}
+
+func TestMailSpray_ConcurrentRecordingAndReload(t *testing.T) {
+	cfg := testSprayConfig()
+	cfg.TrustAge = 0
+	m, _ := newTestSpray(cfg)
+	m.Success("192.0.2.2", "trusted@example.com")
+	var wg sync.WaitGroup
+	for _, operation := range []func(){
+		func() {
+			if v := m.Failure("192.0.2.1", "a@example.com", mailboxExists); v != nil {
+				t.Errorf("one concurrent failing mailbox produced %+v", v)
+			}
+		},
+		func() {
+			if clean, v := m.Success("192.0.2.2", "trusted@example.com"); !clean || v != nil {
+				t.Errorf("concurrent clean login = (%v, %+v)", clean, v)
+			}
+		},
+		func() {
+			if !m.TrustedAll("192.0.2.2", []string{"trusted@example.com"}) {
+				t.Error("concurrent maintenance lost trust")
+			}
+		},
+		func() { m.Purge() },
+		func() { m.SetConfig(cfg) },
+	} {
+		wg.Go(func() {
+			for range 100 {
+				operation()
+			}
+		})
+	}
+	wg.Wait()
+	if m.Size() != 1 || m.TrustSize() != 1 {
+		t.Fatalf("concurrent state holds %d IPs and %d trust records, want 1 each", m.Size(), m.TrustSize())
+	}
+	wantRule(t, m.Failure("192.0.2.1", "b@example.com", mailboxExists), sprayRuleBreadth, true)
+}
+
 func TestMailSpray_AccountlessCountsAsOneName(t *testing.T) {
 	m, _ := newTestSpray(testSprayConfig())
 	wantNoVerdict(t, m.Failure("192.0.2.1", "", mailboxExistenceUnknown))
@@ -485,8 +739,8 @@ func TestSprayNetworkKey(t *testing.T) {
 	if a, b := sprayNetworkKey("198.51.100.7"), sprayNetworkKey("::ffff:198.51.100.7"); a == "" || a != b {
 		t.Errorf("IPv4 %q vs mapped %q, want one key", a, b)
 	}
-	if a, b := sprayNetworkKey("198.51.100.7"), sprayNetworkKey("198.51.200.7"); a != b {
-		t.Errorf("same /16 gave %q and %q", a, b)
+	if a, b := sprayNetworkKey("198.51.100.7"), sprayNetworkKey("198.51.100.8"); a != b || !strings.HasSuffix(a, "/16") {
+		t.Errorf("same network gave %q and %q, want one /16 key", a, b)
 	}
 	if a, b := sprayNetworkKey("2001:db8:1::1"), sprayNetworkKey("2001:db8:2::1"); a == "" || a != b {
 		t.Errorf("same /32 gave %q and %q", a, b)

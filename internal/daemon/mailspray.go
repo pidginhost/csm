@@ -114,6 +114,7 @@ type sprayTrustKey struct{ ip, mailbox string }
 // sprayIP is one IP's failure evidence.
 type sprayIP struct {
 	failed                    map[string]sprayFailure
+	untracked                 time.Time // latest untrusted failure refused at the name cap
 	suppressedUntil           time.Time
 	compromiseSuppressedUntil time.Time
 	verdictAt                 time.Time
@@ -202,12 +203,14 @@ func (m *mailSpray) Failure(ip, mailbox string, exist mailboxExistence) *sprayVe
 	}
 	now := m.now()
 	e := m.touch(ip, now)
-	stored := e.recordFailure(mailbox, exist, now, m.cfg.Window)
+	// Rank the current IP after its verdict, including it as an eviction
+	// candidate so fresh noise cannot displace stronger evidence.
+	defer m.evictIPs(ip, now)
+	stored := m.recordFailure(e, ip, mailbox, exist, now)
 	networks := 0
 	if exist == mailboxMissing {
 		networks = m.corroborate(mailbox, ip, now)
 	}
-	m.evictIPs(ip, now)
 	if m.cfg.Mode == sprayOff || now.Before(e.suppressedUntil) {
 		return nil
 	}
@@ -264,7 +267,7 @@ func (m *mailSpray) Success(ip, mailbox string) (clean bool, v *sprayVerdict) {
 		untrusted = m.untrusted(e, ip, now)
 	}
 	others := slices.DeleteFunc(slices.Clone(untrusted), func(n string) bool { return n == mailbox })
-	if len(others) == 0 {
+	if len(others) == 0 && (e == nil || !e.hasUntracked(now, m.cfg.Window)) {
 		hadTrust := m.recordTrust(k, now)
 		// 4d fires once per trust relationship; later logins while the new
 		// trust ages are the same user.
@@ -313,7 +316,10 @@ func (m *mailSpray) Purge() {
 	cutoff := m.now().Add(-m.cfg.Window)
 	for ip, e := range m.ips {
 		e.pruneFailed(cutoff)
-		if len(e.failed) == 0 {
+		if e.untracked.Before(cutoff) {
+			e.untracked = time.Time{}
+		}
+		if len(e.failed) == 0 && e.untracked.IsZero() {
 			delete(m.ips, ip)
 		}
 	}
@@ -375,17 +381,31 @@ func (m *mailSpray) touch(ip string, now time.Time) *sprayIP {
 	return e
 }
 
-// recordFailure notes one failure on name. It returns false when the name is
-// new and the IP already holds maxSprayNamesPerIP live names.
-func (e *sprayIP) recordFailure(name string, exist mailboxExistence, now time.Time, window time.Duration) bool {
+// recordFailure keeps untrusted names ahead of stale-password noise. When
+// no name fits, retain its time so losing the name cannot earn new trust.
+func (m *mailSpray) recordFailure(e *sprayIP, ip, name string, exist mailboxExistence, now time.Time) bool {
 	f, ok := e.failed[name]
 	if !ok && len(e.failed) >= maxSprayNamesPerIP {
-		e.pruneFailed(now.Add(-window))
+		e.pruneFailed(now.Add(-m.cfg.Window))
 		if len(e.failed) >= maxSprayNamesPerIP {
+			oldest := ""
+			for mb, failure := range e.failed {
+				if m.agedTrust(ip, mb, now) && (oldest == "" || failure.last.Before(e.failed[oldest].last)) {
+					oldest = mb
+				}
+			}
+			if oldest != "" {
+				delete(e.failed, oldest)
+			}
+		}
+		if len(e.failed) >= maxSprayNamesPerIP {
+			if !m.agedTrust(ip, name, now) {
+				e.untracked = now
+			}
 			return false
 		}
 	}
-	if !ok || now.Sub(f.last) > window {
+	if !ok || now.Sub(f.last) > m.cfg.Window {
 		f = sprayFailure{first: now, exist: exist}
 	} else {
 		f.exist = foldObservedExistence(f.exist, exist)
@@ -415,6 +435,10 @@ func foldObservedExistence(a, b mailboxExistence) mailboxExistence {
 
 func (e *sprayIP) pruneFailed(cutoff time.Time) {
 	maps.DeleteFunc(e.failed, func(_ string, f sprayFailure) bool { return f.last.Before(cutoff) })
+}
+
+func (e *sprayIP) hasUntracked(now time.Time, window time.Duration) bool {
+	return !e.untracked.IsZero() && now.Sub(e.untracked) <= window
 }
 
 // staleFailures reports whether name failed at least twice in the window,
@@ -583,6 +607,9 @@ func (m *mailSpray) ipRank(e *sprayIP, now time.Time) int {
 	if !e.verdictAt.IsZero() && now.Sub(e.verdictAt) <= m.cfg.Window {
 		return sprayRankVerdict
 	}
+	if e.hasUntracked(now, m.cfg.Window) {
+		return sprayRankRepeat
+	}
 	n := 0
 	for _, f := range e.failed {
 		if now.Sub(f.last) <= m.cfg.Window {
@@ -631,32 +658,43 @@ type sprayVictim[K comparable] struct {
 	seen time.Time
 }
 
-// sprayEvict trims m to 95% of limit when it is over limit, dropping the
-// lowest rank first and the least recently seen within a rank. keep is the
-// entry the caller just wrote and is never dropped. drop removes one key from
-// m and from any index kept beside it. The 95% target spaces out the sorts
-// under a flood.
+// sprayEvict drops the lowest rank first, then the least recently seen.
+// keep wins ties within its rank, but cannot displace a higher rank. Once
+// within limit, batch removal stops before crossing into a higher rank:
+// spare capacity must not cost stronger evidence. drop also updates indexes.
 func sprayEvict[K comparable, V any](m map[K]V, limit int, keep K, rank func(V) int, seen func(V) time.Time, drop func(K)) {
 	if len(m) <= limit {
 		return
 	}
 	victims := make([]sprayVictim[K], 0, len(m))
 	for k, v := range m {
-		if k != keep {
-			victims = append(victims, sprayVictim[K]{k, rank(v), seen(v)})
-		}
+		victims = append(victims, sprayVictim[K]{k, rank(v), seen(v)})
 	}
 	slices.SortFunc(victims, func(a, b sprayVictim[K]) int {
 		if c := cmp.Compare(a.rank, b.rank); c != 0 {
 			return c
 		}
-		return a.seen.Compare(b.seen)
+		if c := a.seen.Compare(b.seen); c != 0 {
+			return c
+		}
+		if a.key == keep && b.key != keep {
+			return 1
+		}
+		if b.key == keep && a.key != keep {
+			return -1
+		}
+		return 0
 	})
 	target := limit * 95 / 100
+	if limit > 0 {
+		target = max(1, target)
+	}
+	lastRank := victims[0].rank
 	for _, v := range victims {
-		if len(m) <= target {
+		if len(m) <= target || (len(m) <= limit && v.rank > lastRank) {
 			break
 		}
 		drop(v.key)
+		lastRank = v.rank
 	}
 }
