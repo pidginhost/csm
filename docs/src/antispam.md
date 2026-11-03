@@ -1275,6 +1275,19 @@ If deleting a retained message fails, CSM still removes its retired score
 and reports the cleanup error. New reports wait until cleanup succeeds.
 Disabling learning, observe mode or unmet prerequisites can delay retirement
 and message deletion. Turning learning off keeps stored messages and state.
+rspamd can hash the same message differently from one check to the next,
+because the words it hashes depend on the language it detects. When a
+stored message no longer gives its cluster's value, CSM retires that
+cluster, removes its score and logs a warning; other clusters and new
+reports are not affected. A failed inspection leaves the cluster intact.
+CSM can still publish the message if its text-only form reproduces the
+learned digest; otherwise publication waits for a later retry.
+Reports joined to a retired cluster contribute no vote;
+operator spam requests report `skipped:superseded`.
+
+Retained messages consume their learning allowance until deletion succeeds.
+The record that prevents a retired score from returning remains charged,
+including when a new cluster retires before its first contribution completes.
 
 CSM's state archive (`csm store export`) leaves learning state out;
 `csm backup` includes it, see

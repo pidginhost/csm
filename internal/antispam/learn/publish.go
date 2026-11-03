@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -44,6 +45,9 @@ type Publisher struct {
 	deadline time.Duration
 	attempts int
 	audit    auditState
+	// onUnstable observes a cluster retired because its stored body no
+	// longer hashes to its anchor.
+	onUnstable func(detail string)
 }
 
 // NewPublisher returns a publisher with the spec's limits.
@@ -131,6 +135,9 @@ func (p *Publisher) Turn(ctx context.Context, d Digest) (TurnResult, error) {
 			// re-adds the whole target after verified absence.
 			verified, err = p.sendAdd(ctx, t, v)
 		}
+		if errors.Is(err, errAnchorRetired) {
+			continue
+		}
 		if err != nil || !verified {
 			var stateErr error
 			res, stateErr = p.result(d, res)
@@ -211,6 +218,15 @@ func (p *Publisher) setPhase(seen Target, phase Phase, edit func(*Target)) error
 
 var errTargetMoved = errors.New("target changed during the turn")
 
+// errAnchorUnreproducible: the stored body now inspects to other digests
+// than its anchor. rspamd hashes stemmed words and stems by the detected
+// language, which can differ between inspections of the same bytes.
+var errAnchorUnreproducible = errors.New("the anchor body no longer hashes to its digest")
+
+// errAnchorRetired ends a send whose cluster was retired instead; the turn
+// reads the new zero target and continues.
+var errAnchorRetired = errors.New("the anchor's cluster was retired")
+
 // markSent journals that the target's current revision has a native write.
 func markSent(t *Target) { t.SentRevision = t.Revision }
 
@@ -262,6 +278,9 @@ func (p *Publisher) sendAdd(ctx context.Context, t Target, v int64) (bool, error
 		weight = t.T - int32(v) // #nosec G115 -- 0 <= v < t.T, so v fits in int32
 	}
 	body, err := p.anchorBody(ctx, t)
+	if errors.Is(err, errAnchorUnreproducible) {
+		return false, p.retireUnstable(t, err)
+	}
 	if err != nil {
 		return false, err
 	}
@@ -321,6 +340,8 @@ func (p *Publisher) anchorBody(ctx context.Context, t Target) ([]byte, error) {
 	// Bodies kept before text-only learning may carry an attachment that
 	// rspamd now hashes on its own; their text-only form, verified the same
 	// way, is published instead. The stored body and its ledger record stay.
+	// Bodies rspamd cannot inspect as-is (a PDF with scripts) also fall
+	// back to their text-only form.
 	err = p.yieldsAnchor(ctx, body, t.Digest)
 	if err == nil {
 		return body, nil
@@ -329,10 +350,16 @@ func (p *Publisher) anchorBody(ctx context.Context, t Target) ([]byte, error) {
 	if text == nil || bytes.Equal(text, body) {
 		return nil, err
 	}
-	if err = p.yieldsAnchor(ctx, text, t.Digest); err != nil {
+	textErr := p.yieldsAnchor(ctx, text, t.Digest)
+	if textErr == nil {
+		return text, nil
+	}
+	// Only answered inspections prove the anchor is unreproducible: a failed
+	// inspection of the stored bytes says nothing about their digest.
+	if errors.Is(textErr, errAnchorUnreproducible) && !errors.Is(err, errAnchorUnreproducible) {
 		return nil, err
 	}
-	return text, nil
+	return nil, textErr
 }
 
 // yieldsAnchor inspects body and checks it hashes to exactly d.
@@ -342,9 +369,40 @@ func (p *Publisher) yieldsAnchor(ctx context.Context, body []byte, d Digest) err
 		return fmt.Errorf("%w: %w", ErrReadFailed, err)
 	}
 	if insp.Distinct != 1 || insp.Results[0].Queried != d {
-		return fmt.Errorf("%w: the anchor body no longer hashes to its digest", ErrStateMismatch)
+		got := make([]string, 0, len(insp.Results))
+		for _, r := range insp.Results {
+			got = append(got, shortDigest(r.Queried))
+		}
+		return fmt.Errorf("%w: now %s", errAnchorUnreproducible, strings.Join(got, " "))
 	}
 	return nil
+}
+
+// retireUnstable retires the cluster of a target whose stored body no
+// longer reproduces its anchor: the body can never publish or rebuild it.
+// Only that cluster stops; its reports end without a vote. It returns
+// errAnchorRetired when the turn should read the target again.
+func (p *Publisher) retireUnstable(seen Target, cause error) error {
+	retired := false
+	err := p.ledger.Update(func(tx LedgerTx) error {
+		cur, ok, err := tx.Target(seen.Digest)
+		if err != nil || !ok || cur.Revision != seen.Revision || cur.T != seen.T || cur.Phase != seen.Phase {
+			return err
+		}
+		c, ok, err := tx.Cluster(cur.ClusterID)
+		if err != nil || !ok || c.Retired || c.Anchor != cur.Digest {
+			return err
+		}
+		retired = true
+		return supersede(tx, c, p.now().UTC())
+	})
+	if err != nil {
+		return fmt.Errorf("%w: %w", ErrStateIO, err)
+	}
+	if retired && p.onUnstable != nil {
+		p.onUnstable(fmt.Sprintf("cluster %d retired: anchor %s, %v", seen.ClusterID, shortDigest(seen.Digest), cause))
+	}
+	return errAnchorRetired
 }
 
 // verify flushes and polls exact checks until done reports true or the

@@ -426,6 +426,11 @@ func supersede(tx LedgerTx, c Cluster, now time.Time) error {
 	if !ok {
 		t = Target{Digest: c.Anchor, ClusterID: c.ID}
 	}
+	if len(c.Charges) == 0 {
+		if err := retainSeedCharge(tx, &c); err != nil {
+			return err
+		}
+	}
 	c.Revision = max(c.Revision, t.Revision) + 1
 	t.T, t.Revision, t.Phase, t.ResetPending, t.RestoreT, t.Updated = 0, c.Revision, PhaseRead, false, 0, now
 	// The anchor's permanent guard still consumes the creator's allowance.
@@ -452,6 +457,35 @@ func supersede(tx LedgerTx, c Cluster, now time.Time) error {
 	}
 	c.Retired = true
 	return tx.PutCluster(c)
+}
+
+// An unpublished seed owns a body and an alias through its reservation.
+// Move that charge to retirement so cleanup refunds the body only after
+// unlinking it, and the permanent guard keeps consuming its allowance.
+func retainSeedCharge(tx LedgerTx, c *Cluster) error {
+	var seed Intent
+	err := tx.tx.ForEach(store.LearnIntentsBucket, func(_, data []byte) error {
+		var i Intent
+		if err := json.Unmarshal(data, &i); err != nil {
+			return errors.New("learning ledger intent is unreadable")
+		}
+		if i.Seed != nil && !i.Done && len(i.Clusters) > 0 && !i.Clusters[0].Done && i.Clusters[0].ClusterID == c.ID {
+			seed = i
+			return errStop
+		}
+		return nil
+	})
+	if err != nil && !errors.Is(err, errStop) {
+		return err
+	}
+	if seed.Seed == nil {
+		return nil
+	}
+	c.Charges = append(c.Charges, Charge{UID: seed.UID, Operator: seed.Kind == IntentOperator,
+		Usage: Usage{BodyBytes: seed.Seed.BodyLen, Aliases: len(seed.Clusters[0].Aliases)}})
+	// The superseded intent must not refund the transferred charge again.
+	seed.Seed, seed.Clusters[0].Aliases = nil, nil
+	return tx.PutIntent(seed)
 }
 
 // cleanup finishes retired clusters: unlink and sync the body, then credit

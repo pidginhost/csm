@@ -143,9 +143,10 @@ func TestPublishStoredMessageUsesVerifiedTextOnlyBody(t *testing.T) {
 		asIs    Digest
 		digest  Digest
 		wantErr error
+		retired bool
 	}{
 		{name: "same digest", body: pdfMessage, digest: digest('a')},
-		{name: "changed digest", body: pdfMessage, digest: digest('b'), wantErr: ErrStateMismatch},
+		{name: "changed digest", body: pdfMessage, digest: digest('b'), retired: true},
 		{name: "no inline text", body: "Content-Type: application/pdf\n\n%PDF-1.4\n", wantErr: ErrReadFailed},
 		// A body kept before text-only learning that still hashes to its
 		// anchor is published as stored, even when its text-only form,
@@ -165,24 +166,35 @@ func TestPublishStoredMessageUsesVerifiedTextOnlyBody(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			// Only the safe body is recognized. Both inspection and publication
-			// must use it, even though the immutable stored body predates it.
+			// The stored MIME message has an extra digest. Only a successful
+			// inspection can justify trying its text-only representation.
 			text := textOnlyMessage(body)
 			if text != nil {
 				f.storage.bodies[string(text)] = tc.digest
+				f.storage.inspect[string(body)] = []Result{{Queried: tc.digest}, {Queried: digest('z')}}
 			}
 			if tc.asIs != "" {
+				delete(f.storage.inspect, string(body))
 				f.storage.bodies[string(body)] = tc.asIs
 			}
 			res, err := turn(t, f.publisher(), anchor)
-			if tc.wantErr != nil {
+			switch {
+			case tc.retired:
+				// Neither form reproduces the anchor: the cluster is retired.
+				if err != nil || !res.Done || res.Value != 0 {
+					t.Fatalf("result %+v err %v", res, err)
+				}
+				if adds, _ := f.storage.counts(); len(adds) != 0 {
+					t.Fatalf("published an unverified body: %v", adds)
+				}
+			case tc.wantErr != nil:
 				if !errors.Is(err, tc.wantErr) || res.Done {
 					t.Fatalf("result %+v err %v", res, err)
 				}
 				if adds, _ := f.storage.counts(); len(adds) != 0 {
 					t.Fatalf("published an unverified body: %v", adds)
 				}
-			} else {
+			default:
 				if err != nil || !res.Done || res.Value != 2 {
 					t.Fatalf("result %+v err %v", res, err)
 				}

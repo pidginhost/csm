@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -174,14 +175,57 @@ func TestPublishBodyInvalidBlocks(t *testing.T) {
 	}
 }
 
-func TestPublishGenerationChangedBlocks(t *testing.T) {
+// A stored body that now hashes to another digest (rspamd stems by the
+// detected language, which can change for the same bytes) retires its own
+// cluster instead of freezing learning. Changed hash keys are refused
+// earlier, when the ledger binds.
+func TestPublishUnreproducibleAnchorRetiresCluster(t *testing.T) {
 	f := newPublishFixture(t, 2)
-	f.storage.bodies[string(f.body)] = digest('n') // new hash keys, new digest
-	if _, err := turn(t, f.publisher(), f.anchor); !errors.Is(err, ErrStateMismatch) {
-		t.Fatalf("err %v", err)
+	f.storage.bodies[string(f.body)] = digest('n')
+	p := f.publisher()
+	var details []string
+	p.onUnstable = func(d string) { details = append(details, d) }
+	res, err := turn(t, p, f.anchor)
+	if err != nil || !res.Done {
+		t.Fatalf("result %+v err %v", res, err)
 	}
 	if adds, _ := f.storage.counts(); len(adds) != 0 {
-		t.Fatal("published under a changed hash generation")
+		t.Fatal("published an unverified body")
+	}
+	if got := f.target(t); got.T != 0 || got.Phase != PhaseIdle || got.Revision != 2 {
+		t.Fatalf("target %+v", got)
+	}
+	var c Cluster
+	if err := f.ledger.View(func(v LedgerView) error {
+		var err error
+		c, _, err = v.Cluster(1)
+		return err
+	}); err != nil || !c.Retired {
+		t.Fatalf("cluster %+v err %v", c, err)
+	}
+	if len(details) != 1 || !strings.Contains(details[0], string(digest('n'))[:16]) || !strings.Contains(details[0], string(f.anchor)[:16]) {
+		t.Fatalf("details %q", details)
+	}
+}
+
+// A published anchor whose raise needs an unreproducible body is retired
+// and its stored digest deleted.
+func TestPublishUnreproducibleStoredAnchorIsDeleted(t *testing.T) {
+	f := newPublishFixture(t, 4)
+	f.storage.set(f.anchor, 2)
+	f.storage.bodies[string(f.body)] = digest('n')
+	res, err := turn(t, f.publisher(), f.anchor)
+	if err != nil || !res.Done {
+		t.Fatalf("result %+v err %v", res, err)
+	}
+	if adds, deletes := f.storage.counts(); len(adds) != 0 || deletes != 1 {
+		t.Fatalf("adds %v deletes %d", adds, deletes)
+	}
+	if _, ok := f.storage.value(f.anchor); ok {
+		t.Fatal("retired anchor still stored")
+	}
+	if got := f.target(t); got.T != 0 || got.Phase != PhaseIdle {
+		t.Fatalf("target %+v", got)
 	}
 }
 

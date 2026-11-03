@@ -159,6 +159,9 @@ func (d *Daemon) startLearning(ctx context.Context, target reconcile.LearnerTarg
 		OnStateMismatch: func(detail string) {
 			csmlog.Warn("antispam learning stopped: its state does not match storage", "detail", detail)
 		},
+		OnUnstableAnchor: func(detail string) {
+			csmlog.Warn("antispam learning dropped a cluster: rspamd no longer hashes its message to the learned digest", "detail", detail)
+		},
 	})
 	runCtx, cancel := context.WithCancel(ctx)
 	r := &learnerRunner{target: target, watch: watch, engine: engine, cancel: cancel}
