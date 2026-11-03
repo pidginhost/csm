@@ -805,9 +805,71 @@ func TestEngineNoteReportsMismatchOnce(t *testing.T) {
 	if len(details) != 0 || e.frozen {
 		t.Fatalf("state error reported %q", details)
 	}
-	e.note(fmt.Errorf("%w: the anchor body no longer hashes to its digest", ErrStateMismatch))
+	e.note(fmt.Errorf("%w: target has no cluster for its anchor", ErrStateMismatch))
 	e.note(fmt.Errorf("%w: no target for digest", ErrStateMismatch))
-	if !e.frozen || len(details) != 1 || !strings.Contains(details[0], "the anchor body no longer hashes") {
+	if !e.frozen || len(details) != 1 || !strings.Contains(details[0], "target has no cluster for its anchor") {
 		t.Fatalf("frozen %v details %q", e.frozen, details)
+	}
+}
+
+// A report admitted under one digest whose stored message hashes to another
+// at publication retires only its own cluster: learning keeps running and
+// later reports are learned.
+func TestEngineUnreproducibleAnchorRetiresOnlyItsCluster(t *testing.T) {
+	f := newAuditFixture(t)
+	var mu sync.Mutex
+	var unstable, mismatches []string
+	e, stop := startTestEngineWith(t, f, func(c *EngineConfig) {
+		c.OnUnstableAnchor = func(d string) {
+			mu.Lock()
+			unstable = append(unstable, d)
+			mu.Unlock()
+		}
+		c.OnStateMismatch = func(d string) {
+			mu.Lock()
+			mismatches = append(mismatches, d)
+			mu.Unlock()
+		}
+	})
+	t.Cleanup(stop)
+	flip := []byte("spam whose language flips")
+	f.storage.bodies[string(flip)] = digest('s')
+	inspections := 0
+	f.storage.onInspect = func() {
+		// Admission sees one digest; the publication check sees another.
+		inspections++
+		if inspections == 2 {
+			f.storage.mu.Lock()
+			f.storage.bodies[string(flip)] = digest('t')
+			f.storage.mu.Unlock()
+		}
+	}
+	out, err := e.SubmitReport(context.Background(), Candidate{UID: 1001, Snapshot: flip})
+	if err != nil || out.Err != nil || out.Deferred || len(out.Committed) != 0 || len(out.Pending) != 0 {
+		t.Fatalf("outcome %+v err %v", out, err)
+	}
+	if got, _ := f.targetOf(t, digest('s')); got.T != 0 {
+		t.Fatalf("unstable anchor target %+v", got)
+	}
+	f.storage.onInspect = nil
+	plain := []byte("ordinary spam")
+	f.storage.bodies[string(plain)] = digest('p')
+	out, err = e.SubmitReport(context.Background(), Candidate{UID: 1002, Snapshot: plain})
+	if err != nil || out.Err != nil || out.Deferred || len(out.Committed) != 1 {
+		t.Fatalf("later report %+v err %v", out, err)
+	}
+	if v, _ := f.storage.value(digest('p')); v != UIDWeight {
+		t.Fatalf("later anchor stored %d", v)
+	}
+	if adds, _ := f.storage.counts(); len(adds) != 1 {
+		t.Fatalf("adds %v", adds)
+	}
+	if slices.Contains(problemKeys(e), antispam.ReasonStateMismatch) {
+		t.Fatalf("problems %v", problemKeys(e))
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(mismatches) != 0 || len(unstable) != 1 || !strings.Contains(unstable[0], string(digest('s'))[:16]) {
+		t.Fatalf("unstable %q mismatches %q", unstable, mismatches)
 	}
 }

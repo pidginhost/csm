@@ -274,3 +274,19 @@ func TestLearningMismatchIsLogged(t *testing.T) {
 		t.Fatalf("log %q", out)
 	}
 }
+
+// A cluster retired for an unreproducible digest leaves a log line.
+func TestLearningUnstableAnchorIsLogged(t *testing.T) {
+	engines := withFakeEngines(t)
+	d := newLearningDaemon(t)
+	d.syncLearner(learnedOutcome(antispam.LearningGate{Install: true, Publish: true}, testTarget))
+	if len(*engines) != 1 || (*engines)[0].cfg.OnUnstableAnchor == nil {
+		t.Fatal("engine has no unstable anchor observer")
+	}
+	read := captureCSMLog(t)
+	(*engines)[0].cfg.OnUnstableAnchor("cluster 5 retired: anchor 0123456789abcdef")
+	out := read()
+	if !strings.Contains(out, "WARN: ") || !strings.Contains(out, "antispam learning dropped a cluster") || !strings.Contains(out, "0123456789abcdef") {
+		t.Fatalf("log %q", out)
+	}
+}

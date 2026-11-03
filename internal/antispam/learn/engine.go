@@ -118,6 +118,9 @@ type EngineConfig struct {
 	// ledger and storage disagree, with the evidence. It must not block the
 	// owner.
 	OnStateMismatch func(detail string)
+	// OnUnstableAnchor observes a cluster retired because rspamd no longer
+	// hashes its stored message to its anchor. It must not block the owner.
+	OnUnstableAnchor func(detail string)
 }
 
 type request struct {
@@ -171,6 +174,7 @@ func NewEngine(cfg EngineConfig) *Engine {
 	}
 	p := NewPublisher(cfg.Client, cfg.Ledger, cfg.Bodies)
 	p.now = cfg.Now
+	p.onUnstable = cfg.OnUnstableAnchor
 	return &Engine{cfg: cfg, pub: p, requests: make(chan request), done: make(chan struct{}), capacity: map[int]bool{}}
 }
 

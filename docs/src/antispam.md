@@ -1275,6 +1275,11 @@ If deleting a retained message fails, CSM still removes its retired score
 and reports the cleanup error. New reports wait until cleanup succeeds.
 Disabling learning, observe mode or unmet prerequisites can delay retirement
 and message deletion. Turning learning off keeps stored messages and state.
+rspamd can hash the same message differently from one check to the next,
+because the words it hashes depend on the language it detects. When a
+stored message no longer gives its cluster's value, CSM retires that
+cluster, removes its score and logs a warning; other clusters and new
+reports are not affected.
 
 CSM's state archive (`csm store export`) leaves learning state out;
 `csm backup` includes it, see
