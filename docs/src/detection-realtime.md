@@ -381,6 +381,10 @@ Neither line counts alone. Postfix logs a Dovecot outage the same way as a wrong
 
 Pairing is bounded by both receipt time and, when present, the timestamps in traditional syslog or RFC3339 records. Reading a backlog does not make an old timestamped rejection fresh. The mailbox for `smtp_account_spray` comes from Dovecot; when pending rejections for an address name different mailboxes, they count only toward address and subnet detection. Each credential or backend failure consumes one pending rejection, including failures withheld for backend errors. Authentication protocol refusals from Postfix or Dovecot neither count nor consume a pending rejection. Tracking capacity is bounded: new verdicts are dropped when full, and error-mark overflow withholds pairing until the affected window expires. Infrastructure protection is checked again before a paired failure counts.
 
+Dovecot mailbox existence is unknown when the logged name is empty, sanitized, abbreviated, or disagrees with another pending rejection. These attempts still count toward address and subnet detection. For one unambiguous mailbox, a password mismatch from any database takes precedence over an unknown-user answer. Forged verdicts inside names or logged passwords do not supply mailbox evidence.
+
+Postfix login names are read only from the username field immediately after the authentication method. Sender and forwarding fields cannot supply a missing login name. Mailbox keys ignore surrounding whitespace and case, and remain stable when a long name must be shortened.
+
 Dovecot writes rejections only with verbose auth logging on:
 
 ```

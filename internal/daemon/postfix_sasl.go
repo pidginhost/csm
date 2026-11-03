@@ -94,8 +94,13 @@ func postfixSASLSuccess(msg string) (ip, user string) {
 		return "", ""
 	}
 	// smtpd may append the AUTH= sender and XFORWARD fields, in this order,
-	// after the login name.
-	_, user, _ = strings.Cut(rest, ", sasl_username=")
+	// after the login name. Only the field immediately after the method
+	// can name the authenticated user; later fields may contain client text.
+	_, rest, _ = strings.Cut(rest, ", ")
+	user, ok = strings.CutPrefix(rest, "sasl_username=")
+	if !ok {
+		return ip, ""
+	}
 	for _, field := range []string{", sasl_sender=", ", orig_queue_id=", ", orig_client="} {
 		user, _, _ = strings.Cut(user, field)
 	}

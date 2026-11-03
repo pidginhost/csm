@@ -59,7 +59,13 @@ func dovecotSessionlessRejection(line string) (ip, account string, exist mailbox
 	if addr == nil {
 		return "", "", mailboxExistenceUnknown, false
 	}
-	return addr.String(), inner[:comma], exist, true
+	account = inner[:comma]
+	// Dovecot sanitizes unavailable or invalid name text to '?' and
+	// abbreviates long names with '...'. Neither identifies the mailbox.
+	if strings.TrimSpace(account) == "" || strings.Contains(account, "?") || strings.HasSuffix(account, "...") {
+		account, exist = "", mailboxExistenceUnknown
+	}
+	return addr.String(), account, exist, true
 }
 
 // dovecotAuthTroubleIPs returns every address named in the request fields of

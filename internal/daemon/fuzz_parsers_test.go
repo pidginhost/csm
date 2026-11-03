@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
@@ -301,7 +302,7 @@ func FuzzPostfixWarningsNeverBuildEvidence(f *testing.F) {
 // Client-controlled names and password text never turn intermediate
 // database verdicts into final authentication evidence.
 func FuzzDovecotPassdbVerdictsNeverBuildEvidence(f *testing.F) {
-	for _, s := range []string{"alice@example.net", "", "x,198.51.100.9", "x,<abcdefgh>", "x,master", "a): Password mismatch", "a): b(<c>", "Temporary authentication failure"} {
+	for _, s := range []string{"alice@example.net", "", "?", "ali?ce@example.com", strings.Repeat("a", 61) + "...", "x,198.51.100.9", "x,<abcdefgh>", "x,master", "a): Password mismatch", "a): b(<c>", "Temporary authentication failure"} {
 		f.Add(s)
 	}
 	f.Fuzz(func(t *testing.T, name string) {
@@ -315,8 +316,9 @@ func FuzzDovecotPassdbVerdictsNeverBuildEvidence(f *testing.F) {
 			"dovecot: auth: Debug: sql(" + name + ",203.0.113.7): Performing passdb lookup",
 			"dovecot: auth-worker(12): pam(" + name,
 		} {
-			if _, _, exist, ok := dovecotSessionlessRejection(line); !ok && exist != mailboxExistenceUnknown {
-				t.Fatalf("refused line %q carried existence %d", line, exist)
+			_, account, exist, ok := dovecotSessionlessRejection(line)
+			if (!ok || account == "") && exist != mailboxExistenceUnknown {
+				t.Fatalf("unidentified mailbox in %q carried existence %d", line, exist)
 			}
 			if got := d.handleMailLine(line, alert.Observation{}, d.currentCfg()); len(got) != 0 {
 				t.Fatalf("passdb verdict raised findings: %+v", got)
@@ -437,6 +439,21 @@ func FuzzPostfixSASLSuccessUser(f *testing.F) {
 			if strings.Contains(user, field) {
 				t.Fatalf("user %q from %q holds %q", user, msg, field)
 			}
+		}
+	})
+}
+
+func FuzzNormalizeSprayMailbox(f *testing.F) {
+	for _, s := range []string{"", " User@Example.COM ", strings.Repeat("a", 253) + " B", strings.Repeat("\u20ac", 100), "\xff\xfe"} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, input string) {
+		got := normalizeSprayMailbox(input)
+		if len(got) > maxSprayMailboxBytes || !utf8.ValidString(got) {
+			t.Fatalf("key has %d bytes, valid UTF-8 = %v", len(got), utf8.ValidString(got))
+		}
+		if again := normalizeSprayMailbox(got); again != got {
+			t.Fatalf("normalizing twice changed %q to %q", got, again)
 		}
 	})
 }

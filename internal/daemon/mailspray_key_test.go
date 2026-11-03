@@ -52,16 +52,16 @@ func TestNormalizeSprayMailboxIdempotent(t *testing.T) {
 	}
 }
 
-func FuzzNormalizeSprayMailbox(f *testing.F) {
-	f.Add(strings.Repeat("a", 253) + " " + strings.Repeat("b", 10))
-	f.Add(strings.Repeat("\u20ac", 100))
-	f.Fuzz(func(t *testing.T, s string) {
-		once := normalizeSprayMailbox(s)
-		if len(once) > maxSprayMailboxBytes {
-			t.Fatalf("kept %d bytes", len(once))
+func TestNormalizeSprayMailboxIdempotentAtTruncation(t *testing.T) {
+	for _, space := range []string{" ", "\t", "\u2003"} {
+		want := strings.Repeat("a", maxSprayMailboxBytes-len(space))
+		input := want + space + "B"
+		got := normalizeSprayMailbox(input)
+		if got != want {
+			t.Errorf("truncated key = %q, want %q", got, want)
 		}
-		if twice := normalizeSprayMailbox(once); twice != once {
-			t.Fatalf("not idempotent: %q then %q", once, twice)
+		if again := normalizeSprayMailbox(got); again != got {
+			t.Errorf("normalizing twice changed %q to %q", got, again)
 		}
-	})
+	}
 }

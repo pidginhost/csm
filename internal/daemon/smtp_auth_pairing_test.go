@@ -681,6 +681,17 @@ func TestPairMTAFailureExistence(t *testing.T) {
 			"sql(alice@example.com,%s): unknown user",
 			"sql(bob@example.com,%s): unknown user",
 		}, "", mailboxExistenceUnknown},
+		{"empty account", []string{"sql(,%s): unknown user"}, "", mailboxExistenceUnknown},
+		{"empty mismatch after disagreement", []string{
+			"sql(alice@example.com,%s): unknown user",
+			"sql(bob@example.com,%s): Password mismatch",
+			"sql(,%s): Password mismatch",
+		}, "", mailboxExistenceUnknown},
+		{"mismatch after disagreement", []string{
+			"sql(alice@example.com,%s): unknown user",
+			"sql(bob@example.com,%s): unknown user",
+			"passwd-file(alice@example.com,%s): Password mismatch",
+		}, "", mailboxExistenceUnknown},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			clock := &staticClock{t: time.Date(2026, 10, 31, 20, 0, 0, 0, time.UTC)}
@@ -693,10 +704,15 @@ func TestPairMTAFailureExistence(t *testing.T) {
 				}
 				tr.NoteDovecotRejection(vip, account, exist, time.Time{})
 			}
-			clock.advance(time.Second)
-			account, exist, ok := tr.PairMTAFailure(ip, "smtpd[1]", time.Time{})
-			if !ok || account != tc.wantAccount || exist != tc.wantExist {
-				t.Fatalf("PairMTAFailure = (%q, %d, %v), want (%q, %d, true)", account, exist, ok, tc.wantAccount, tc.wantExist)
+			for i := range tc.verdicts {
+				clock.advance(time.Second)
+				account, exist, ok := tr.PairMTAFailure(ip, "smtpd[1]", time.Time{})
+				if !ok || account != tc.wantAccount || exist != tc.wantExist {
+					t.Fatalf("pair %d = (%q, %d, %v), want (%q, %d, true)", i, account, exist, ok, tc.wantAccount, tc.wantExist)
+				}
+			}
+			if account, exist, ok := tr.PairMTAFailure(ip, "smtpd[1]", time.Time{}); ok || account != "" || exist != mailboxExistenceUnknown {
+				t.Fatalf("exhausted queue = (%q, %d, %v)", account, exist, ok)
 			}
 		})
 	}

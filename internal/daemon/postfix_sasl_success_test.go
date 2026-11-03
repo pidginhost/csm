@@ -90,6 +90,11 @@ func TestPostfixSASLSuccessUser(t *testing.T) {
 		{"forwarding fields appended", base + ", sasl_username=alice@example.com, orig_queue_id=4DEF456, orig_client=unknown[198.51.100.9]", "203.0.113.5", "alice@example.com"},
 		{"all fields appended", base + ", sasl_username=alice@example.com, sasl_sender=bob@example.com, orig_queue_id=4DEF456, orig_client=unknown[198.51.100.9]", "203.0.113.5", "alice@example.com"},
 		{"no login name", base, "203.0.113.5", ""},
+		{"forwarding client only", base + ", sasl_username=alice@example.com, orig_client=unknown[198.51.100.9]", "203.0.113.5", "alice@example.com"},
+		{"earliest field regardless of order", base + ", sasl_username=alice@example.com, orig_client=unknown[198.51.100.9], sasl_sender=bob@example.com", "203.0.113.5", "alice@example.com"},
+		{"empty login name", base + ", sasl_username=, sasl_sender=bob@example.com", "203.0.113.5", ""},
+		{"sender cannot supply missing login name", base + ", sasl_sender=bob, sasl_username=alice@example.com", "203.0.113.5", ""},
+		{"forwarding cannot supply missing login name", base + ", orig_queue_id=x, sasl_username=alice@example.com", "203.0.113.5", ""},
 		{"not a success line", "warning: unknown[203.0.113.5]: SASL PLAIN authentication failed: , sasl_username=alice@example.com", "", ""},
 	}
 	for _, tc := range cases {
