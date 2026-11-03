@@ -11,7 +11,12 @@ var liveStartKey = []byte("live_start")
 func loadLiveStart(tx *bolt.Tx) (admission.LiveStart, bool, error) {
 	raw := tx.Bucket([]byte(admissionQueueStateBucket)).Get(liveStartKey)
 	schema := tx.Bucket([]byte(admissionMetaBucket)).Get(admissionSchemaKey)
-	if len(schema) != 1 || (schema[0] >= admissionSchemaLive) != (raw != nil) {
+	if len(schema) != 1 || schema[0] < admissionSchemaVersion || schema[0] > admissionSchemaEpisodeElapsed {
+		return admission.LiveStart{}, false, ErrAdmissionSchema
+	}
+	// Schemas 11 and 12 record the live start; 13 does not, so there the
+	// marker proves itself.
+	if schema[0] < admissionSchemaEpisodeElapsed && (schema[0] >= admissionSchemaLive) != (raw != nil) {
 		return admission.LiveStart{}, false, admission.ErrCorruptRecord
 	}
 	if raw == nil {

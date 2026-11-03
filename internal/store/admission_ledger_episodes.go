@@ -9,6 +9,12 @@ import (
 	bolt "go.etcd.io/bbolt"
 )
 
+// admissionSchemaEpisodeElapsed is the schema of a ledger whose episode
+// rows may carry an elapsed end. Every host writes episode rows, live or
+// not, so unlike schemas 11 and 12 it records nothing of the live start
+// or the effect records: at 13 those prove themselves.
+const admissionSchemaEpisodeElapsed = 13
+
 // episodeStateKey holds the episode sequence in the queue state bucket.
 var episodeStateKey = []byte("episodes")
 
