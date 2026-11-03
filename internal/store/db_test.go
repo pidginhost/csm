@@ -408,6 +408,18 @@ func TestOpenCreatesSpamSourceBucket(t *testing.T) {
 	}
 }
 
+func TestOpenCreatesMailSprayBucket(t *testing.T) {
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+
+	if !db.HasBucket(mailSprayBucket) {
+		t.Fatalf("missing bucket %q", mailSprayBucket)
+	}
+}
+
 func TestTimeKeySameInstantDifferentZones(t *testing.T) {
 	instant := time.Date(2026, 8, 13, 18, 30, 0, 0, time.UTC)
 	plus3 := instant.In(time.FixedZone("UTC+3", 3*3600))

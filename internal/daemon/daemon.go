@@ -2143,6 +2143,7 @@ func (d *Daemon) startPHPRelay() {
 
 func (d *Daemon) startLogWatchers() {
 	d.loadMailGoodSource()
+	d.loadMailSpray()
 	d.restoreEximFrozenDedup()
 	d.restoreMailStats()
 	d.startMailStatsPersistence()
@@ -2292,21 +2293,31 @@ func (d *Daemon) startLogWatchers() {
 	// Start background purge for mail (IMAP/POP3) brute-force tracker. It also
 	// persists established good-source standing every minute and on shutdown, so
 	// a daemon restart does not re-open the brute-force false-positive
-	// cold-start window.
+	// cold-start window. The login spray memory is purged on the same tick and
+	// saved every few ticks and on shutdown.
 	d.wg.Add(1)
 	obs.Go("mail-tracker-purge", func() {
 		defer d.wg.Done()
 		ticker := time.NewTicker(1 * time.Minute)
 		defer ticker.Stop()
+		tick := 0
 		for {
 			select {
 			case <-d.stopCh:
 				d.persistMailGoodSource()
+				d.persistMailSpray()
 				return
 			case <-ticker.C:
 				if d.mailAuthTracker != nil {
 					d.mailAuthTracker.Purge()
 					d.persistMailGoodSource()
+				}
+				if d.mailSpray != nil {
+					d.mailSpray.Purge()
+				}
+				tick++
+				if tick%mailSprayPersistTicks == 0 {
+					d.persistMailSpray()
 				}
 			}
 		}

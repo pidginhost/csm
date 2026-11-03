@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/config"
+	csmlog "github.com/pidginhost/csm/internal/log"
+	"github.com/pidginhost/csm/internal/store"
 )
 
 // sprayMode says what the spray rules do with a verdict. Evidence and trust
@@ -372,6 +374,187 @@ func (m *mailSpray) TrustSize() int {
 	return len(m.trust)
 }
 
+// Export returns a copy of the memory for persistence.
+func (m *mailSpray) Export() store.MailSprayState {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	st := store.MailSprayState{
+		IPs:      make(map[string]store.MailSprayIP, len(m.ips)),
+		Trust:    make(map[string]map[string]store.GoodSourcePair, len(m.trustByIP)),
+		Networks: make(map[string]map[string]time.Time, len(m.names)),
+	}
+	for ip, e := range m.ips {
+		s := store.MailSprayIP{
+			WeakAlerted:     maps.Clone(e.weakAlerted),
+			Untracked:       e.untracked,
+			SuppressedUntil: e.suppressedUntil,
+			CompromiseUntil: e.compromiseSuppressedUntil,
+			VerdictAt:       e.verdictAt,
+			LastSeen:        e.lastSeen,
+		}
+		if len(e.failed) > 0 {
+			s.Failed = make(map[string]store.MailSprayFailure, len(e.failed))
+			for name, f := range e.failed {
+				s.Failed[name] = store.MailSprayFailure{First: f.first, Last: f.last, Count: f.count, Exist: uint8(f.exist)}
+			}
+		}
+		st.IPs[ip] = s
+	}
+	for k, t := range m.trust {
+		if st.Trust[k.ip] == nil {
+			st.Trust[k.ip] = make(map[string]store.GoodSourcePair)
+		}
+		st.Trust[k.ip][k.mailbox] = store.GoodSourcePair{First: t.first, Last: t.last}
+	}
+	for name, n := range m.names {
+		st.Networks[name] = maps.Clone(n.networks)
+	}
+	return st
+}
+
+// Load replaces the memory with a saved state. It runs once, before the log
+// readers start, so there is no live state to merge. Anything older than the
+// window is dropped, and records are replayed oldest first through the live
+// caps and evictions, so a state saved under other limits cannot grow
+// memory. A disabled detector ignores it.
+func (m *mailSpray) Load(st store.MailSprayState) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.cfg.Window <= 0 {
+		return
+	}
+	now := m.now()
+	cutoff := now.Add(-m.cfg.Window)
+	clear(m.ips)
+	clear(m.names)
+	clear(m.trust)
+	clear(m.trustByIP)
+	clear(m.trustByMailbox)
+
+	type trustRecord struct {
+		k sprayTrustKey
+		t sprayTrust
+	}
+	var trust []trustRecord
+	for ip, mbs := range st.Trust {
+		for mb, p := range mbs {
+			if ip != "" && mb != "" && validGoodSourceTimes(goodSourceTimes{First: p.First, Last: p.Last}, cutoff) {
+				trust = append(trust, trustRecord{sprayTrustKey{ip, mb}, sprayTrust{p.First, p.Last}})
+			}
+		}
+	}
+	slices.SortFunc(trust, func(a, b trustRecord) int {
+		return cmp.Or(a.t.last.Compare(b.t.last), cmp.Compare(a.k.ip, b.k.ip), cmp.Compare(a.k.mailbox, b.k.mailbox))
+	})
+	for _, r := range trust {
+		m.addTrust(r.k, r.t)
+	}
+	m.evictTrust(sprayTrustKey{})
+
+	// After trust: the name cap keeps untrusted names first.
+	for ip, s := range st.IPs {
+		if e := m.loadIP(ip, s, cutoff, now); e != nil {
+			m.ips[ip] = e
+		}
+	}
+	m.evictIPs("", now)
+
+	for name, nets := range st.Networks {
+		n := &sprayName{networks: make(map[string]time.Time)}
+		for _, key := range sprayKeysByTime(nets, func(at time.Time) time.Time { return at }) {
+			if at := nets[key]; key != "" && !at.Before(cutoff) {
+				n.note(key, at)
+			}
+		}
+		if name != "" && len(n.networks) > 0 {
+			m.names[name] = n
+		}
+	}
+	m.evictNames("", now)
+}
+
+// loadIP rebuilds one IP's evidence, or returns nil when nothing is left in
+// the window, as Purge would drop it. Damaged times and counts are repaired
+// toward weaker evidence.
+func (m *mailSpray) loadIP(ip string, s store.MailSprayIP, cutoff, now time.Time) *sprayIP {
+	if ip == "" {
+		return nil
+	}
+	e := &sprayIP{
+		suppressedUntil:           s.SuppressedUntil,
+		compromiseSuppressedUntil: s.CompromiseUntil,
+		verdictAt:                 s.VerdictAt,
+		lastSeen:                  s.LastSeen,
+	}
+	if !s.Untracked.Before(cutoff) {
+		e.untracked = s.Untracked
+	}
+	for _, name := range sprayKeysByTime(s.Failed, func(f store.MailSprayFailure) time.Time { return f.Last }) {
+		f := s.Failed[name]
+		if f.Last.Before(cutoff) || !m.roomForName(e, ip, name, f.Last, now) {
+			continue
+		}
+		first := f.First
+		if first.IsZero() || first.After(f.Last) {
+			first = f.Last
+		}
+		exist := mailboxExistence(f.Exist)
+		if exist > mailboxMissing {
+			exist = mailboxExistenceUnknown
+		}
+		if e.failed == nil {
+			e.failed = make(map[string]sprayFailure)
+		}
+		e.failed[name] = sprayFailure{first: first, last: f.Last, count: max(f.Count, 1), exist: exist}
+	}
+	for _, mb := range sprayKeysByTime(s.WeakAlerted, func(at time.Time) time.Time { return at }) {
+		if at := s.WeakAlerted[mb]; !at.Before(cutoff) {
+			e.noteWeakAlert(mb, at, m.cfg.Window)
+		}
+	}
+	if len(e.failed) == 0 && e.untracked.IsZero() && len(e.weakAlerted) == 0 {
+		return nil
+	}
+	return e
+}
+
+// sprayKeysByTime returns the keys of a saved map oldest first, so a load
+// replays them through the caps in the order they happened.
+func sprayKeysByTime[V any](m map[string]V, at func(V) time.Time) []string {
+	return slices.SortedFunc(maps.Keys(m), func(a, b string) int {
+		return cmp.Or(at(m[a]).Compare(at(m[b])), cmp.Compare(a, b))
+	})
+}
+
+// mailSprayPersistTicks is how many one-minute purge ticks pass between
+// saves of the spray memory, which is far larger than good-source standing.
+const mailSprayPersistTicks = 5
+
+// loadMailSpray seeds the spray memory before the log readers start.
+func (d *Daemon) loadMailSpray() {
+	sdb := store.Global()
+	if d.mailSpray == nil || sdb == nil {
+		return
+	}
+	st, err := sdb.LoadMailSpray()
+	if err != nil {
+		csmlog.Warn("mail spray memory load failed", "err", err)
+		return
+	}
+	d.mailSpray.Load(st)
+}
+
+// persistMailSpray saves the spray memory so a restart keeps it.
+func (d *Daemon) persistMailSpray() {
+	sdb := store.Global()
+	if d.mailSpray == nil || sdb == nil {
+		return
+	}
+	if err := sdb.SaveMailSpray(d.mailSpray.Export()); err != nil {
+		csmlog.Warn("mail spray memory persistence failed", "err", err)
+	}
+}
+
 // sprayNetworkKey is the network a source counts as for corroboration: the
 // IPv4 /16 (IPv4-mapped included) or the IPv6 /32. "" if ip does not parse.
 func sprayNetworkKey(ip string) string {
@@ -407,25 +590,8 @@ func (m *mailSpray) touch(ip string, now time.Time) *sprayIP {
 // no name fits, retain its time so losing the name cannot earn new trust.
 func (m *mailSpray) recordFailure(e *sprayIP, ip, name string, exist mailboxExistence, now time.Time) bool {
 	f, ok := e.failed[name]
-	if !ok && len(e.failed) >= maxSprayNamesPerIP {
-		e.pruneFailed(now.Add(-m.cfg.Window))
-		if len(e.failed) >= maxSprayNamesPerIP {
-			oldest := ""
-			for mb, failure := range e.failed {
-				if m.agedTrust(ip, mb, now) && (oldest == "" || failure.last.Before(e.failed[oldest].last)) {
-					oldest = mb
-				}
-			}
-			if oldest != "" {
-				delete(e.failed, oldest)
-			}
-		}
-		if len(e.failed) >= maxSprayNamesPerIP {
-			if !m.agedTrust(ip, name, now) {
-				e.untracked = now
-			}
-			return false
-		}
+	if !ok && !m.roomForName(e, ip, name, now, now) {
+		return false
 	}
 	if !ok || now.Sub(f.last) > m.cfg.Window {
 		f = sprayFailure{first: now, exist: exist}
@@ -439,6 +605,34 @@ func (m *mailSpray) recordFailure(e *sprayIP, ip, name string, exist mailboxExis
 	}
 	e.failed[name] = f
 	return true
+}
+
+// roomForName makes room in e.failed for a new name that failed at "at",
+// dropping aged-trust names first. With no room it reports false, and an
+// untrusted name leaves its time in untracked.
+func (m *mailSpray) roomForName(e *sprayIP, ip, name string, at, now time.Time) bool {
+	if len(e.failed) < maxSprayNamesPerIP {
+		return true
+	}
+	e.pruneFailed(now.Add(-m.cfg.Window))
+	if len(e.failed) >= maxSprayNamesPerIP {
+		oldest := ""
+		for mb, failure := range e.failed {
+			if m.agedTrust(ip, mb, now) && (oldest == "" || failure.last.Before(e.failed[oldest].last)) {
+				oldest = mb
+			}
+		}
+		if oldest != "" {
+			delete(e.failed, oldest)
+		}
+	}
+	if len(e.failed) < maxSprayNamesPerIP {
+		return true
+	}
+	if !m.agedTrust(ip, name, now) && at.After(e.untracked) {
+		e.untracked = at
+	}
+	return false
 }
 
 // foldObservedExistence merges what separate failures say about one name
@@ -504,21 +698,27 @@ func (m *mailSpray) recordTrust(k sprayTrustKey, now time.Time) bool {
 		t.first = now
 	}
 	t.last = now
-	if !ok {
-		// A new record makes room in its IP's and its mailbox's share first,
-		// so one owned mailbox cannot fill the pool from fresh IPs.
-		if mbs := m.trustByIP[k.ip]; len(mbs) >= maxSprayTrustPerIP {
-			m.dropTrust(m.oldestTrust(mbs, func(mb string) sprayTrustKey { return sprayTrustKey{k.ip, mb} }))
-		}
-		if ips := m.trustByMailbox[k.mailbox]; len(ips) >= maxSprayTrustIPsPerMailbox {
-			m.dropTrust(m.oldestTrust(ips, func(ip string) sprayTrustKey { return sprayTrustKey{ip, k.mailbox} }))
-		}
-		setAdd(m.trustByIP, k.ip, k.mailbox)
-		setAdd(m.trustByMailbox, k.mailbox, k.ip)
+	if ok {
+		m.trust[k] = t
+	} else {
+		m.addTrust(k, t)
 	}
-	m.trust[k] = t
 	m.evictTrust(k)
 	return live
+}
+
+// addTrust stores a new record. It makes room in its IP's and its mailbox's
+// share first, so one owned mailbox cannot fill the pool from fresh IPs.
+func (m *mailSpray) addTrust(k sprayTrustKey, t sprayTrust) {
+	if mbs := m.trustByIP[k.ip]; len(mbs) >= maxSprayTrustPerIP {
+		m.dropTrust(m.oldestTrust(mbs, func(mb string) sprayTrustKey { return sprayTrustKey{k.ip, mb} }))
+	}
+	if ips := m.trustByMailbox[k.mailbox]; len(ips) >= maxSprayTrustIPsPerMailbox {
+		m.dropTrust(m.oldestTrust(ips, func(ip string) sprayTrustKey { return sprayTrustKey{ip, k.mailbox} }))
+	}
+	setAdd(m.trustByIP, k.ip, k.mailbox)
+	setAdd(m.trustByMailbox, k.mailbox, k.ip)
+	m.trust[k] = t
 }
 
 func (m *mailSpray) dropTrust(k sprayTrustKey) {
@@ -605,6 +805,14 @@ func (m *mailSpray) corroborate(name, ip string, now time.Time) int {
 		n = &sprayName{networks: make(map[string]time.Time)}
 		m.names[name] = n
 	}
+	n.note(key, now)
+	m.evictNames(name, now)
+	return m.networkCount(n, now)
+}
+
+// note records that network key tried the name at "at", dropping the oldest
+// network at the cap.
+func (n *sprayName) note(key string, at time.Time) {
 	if _, ok := n.networks[key]; !ok && len(n.networks) >= maxSprayNetworksPerName {
 		oldest := ""
 		for k, ts := range n.networks {
@@ -614,10 +822,10 @@ func (m *mailSpray) corroborate(name, ip string, now time.Time) int {
 		}
 		delete(n.networks, oldest)
 	}
-	n.networks[key] = now
-	n.last = now
-	m.evictNames(name, now)
-	return m.networkCount(n, now)
+	n.networks[key] = at
+	if at.After(n.last) {
+		n.last = at
+	}
 }
 
 func (m *mailSpray) networkCount(n *sprayName, now time.Time) int {
