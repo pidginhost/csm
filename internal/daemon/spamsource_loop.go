@@ -7,10 +7,12 @@ import (
 	"net/netip"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/antispam"
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/ipmap"
 	"github.com/pidginhost/csm/internal/obs"
@@ -55,6 +57,8 @@ type spamSourceRunner struct {
 	db         *store.DB
 	cancel     context.CancelFunc
 	wg         sync.WaitGroup
+	// refreshed is set once a refresh of the guard has ended, well or not.
+	refreshed atomic.Bool
 }
 
 // newSpamSources prepares the detector when the spam class is enabled: it
@@ -168,11 +172,36 @@ func (r *spamSourceRunner) check(ctx context.Context, alertCh chan<- alert.Findi
 func (r *spamSourceRunner) refresh(ctx context.Context) time.Duration {
 	ctx, cancel := context.WithTimeout(ctx, spamSourceRefreshBudget)
 	defer cancel()
+	// Set after Refresh has published, so a reader that sees it also sees
+	// what this refresh made ready.
+	defer r.refreshed.Store(true)
 	if err := r.guard.Refresh(ctx, r.resolver, time.Now()); err != nil {
 		log.Printf("abuse-reporting: shared mail services refresh: %v", err)
 		return spamSourceRetryAfter
 	}
 	return mailRangesRefreshInterval
+}
+
+// sharedSendersHealth tells the reputation check whether spam source reports
+// wait on a shared mail service list that should be current by now. Before
+// the first refresh ends there is no answer: it runs a few minutes after
+// start, and a fresh install has no list until then.
+func (d *Daemon) sharedSendersHealth(now time.Time) checks.SharedSendersHealth {
+	r := d.spamSources.Load()
+	if r == nil {
+		return checks.SharedSendersOK
+	}
+	// Read before Ready: a refresh ending between the two is then seen as
+	// ready, never as stale.
+	refreshed := r.refreshed.Load()
+	switch {
+	case r.guard.Ready(now):
+		return checks.SharedSendersOK
+	case !refreshed:
+		return checks.SharedSendersUnknown
+	default:
+		return checks.SharedSendersStale
+	}
 }
 
 func (r *spamSourceRunner) save() {

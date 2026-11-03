@@ -364,6 +364,7 @@ var checkRegistry = []CheckInfo{
 	{Name: "phishing_php", Category: CategoryEmail, Correlation: CorrelationSecurityEvent, Response: ResponsePolicy{NeverChallenge: true}},
 	{Name: "phishing_realtime", Category: CategoryEmail, Correlation: CorrelationSecurityEvent},
 	{Name: "phishing_redirector", Category: CategoryEmail, Correlation: CorrelationSecurityEvent, Response: ResponsePolicy{NeverChallenge: true}},
+	{Name: "shared_senders_stale", Category: CategoryEmail, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
 
 	// --- Performance -----------------------------------------------------
 	{Name: "perf_error_logs", Category: CategoryPerformance, Correlation: CorrelationIgnored, CorrelationReason: reasonPerformance},

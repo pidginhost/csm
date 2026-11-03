@@ -487,6 +487,73 @@ func TestSpamSourceTracksProviderSendersOnlyWhileGuardNotReady(t *testing.T) {
 	}
 }
 
+// The detector answers the reputation check about its shared mail service
+// list: no answer before its first refresh attempt ends, stale after a failed
+// one, current once the list is ready. Stopped, it gives no answer, so a scan
+// during shutdown keeps a warning as it is.
+func TestSpamSourceSharedSendersHealth(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		useSpamStore(t)
+		cfg := spamSourceConfig(t)
+		if err := os.Remove(filepath.Join(cfg.StatePath, sharedSendersCacheFile)); err != nil {
+			t.Fatal(err)
+		}
+		dns := &spamDNS{fail: dnsServfail}
+		t.Cleanup(func() { checks.SetSharedSendersHealth(nil) })
+		d := startSpamDaemon(t, cfg, dns)
+		health := func() checks.SharedSendersHealth { return checks.SharedSendersHealthAt(time.Now()) }
+
+		if got := health(); got != checks.SharedSendersUnknown {
+			t.Fatalf("before the first refresh: health %v, want unknown", got)
+		}
+		time.Sleep(mailRangesStartupDelay)
+		synctest.Wait()
+		if got := health(); got != checks.SharedSendersStale {
+			t.Fatalf("after a failed refresh: health %v, want stale", got)
+		}
+		dns.set(func(f *spamDNS) {
+			f.fail = nil
+			f.txt = make(map[string][]string, len(sharedSenderRoots))
+			for name, root := range sharedSenderRoots {
+				f.txt[root] = []string{"v=spf1 ptr:" + name + ".example.net -all"}
+			}
+		})
+		time.Sleep(spamSourceRetryAfter)
+		synctest.Wait()
+		if got := health(); got != checks.SharedSendersOK {
+			t.Fatalf("after a good refresh: health %v, want current", got)
+		}
+		d.stopAbuseReporting()
+		if got := health(); got != checks.SharedSendersUnknown {
+			t.Fatalf("after stop: health %v, want unknown", got)
+		}
+	})
+}
+
+// A list that is ready at start, or a node without spam source detection,
+// answers current at once, so a warning left from an earlier run clears.
+func TestSpamSourceSharedSendersHealthCurrent(t *testing.T) {
+	for name, edit := range map[string]func(*config.Config){
+		"ready list":     func(*config.Config) {},
+		"spam class off": func(c *config.Config) { c.Reputation.Report.Classes = []string{"bruteforce"} },
+		"reporting off":  func(c *config.Config) { c.Reputation.Report.Enabled = false },
+		"antispam off":   func(c *config.Config) { c.EmailProtection.Antispam.Enabled = false },
+	} {
+		t.Run(name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				useSpamStore(t)
+				cfg := spamSourceConfig(t)
+				edit(cfg)
+				t.Cleanup(func() { checks.SetSharedSendersHealth(nil) })
+				startSpamDaemon(t, cfg, &spamDNS{})
+				if got := checks.SharedSendersHealthAt(time.Now()); got != checks.SharedSendersOK {
+					t.Fatalf("health %v, want current", got)
+				}
+			})
+		})
+	}
+}
+
 func TestSpamSourceFailsClosed(t *testing.T) {
 	t.Run("PTR lookup fails", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {

@@ -303,6 +303,7 @@ const (
 	logicalOwnerPHPTaintDeep        = "php_taint_deep"
 	logicalOwnerReputationQuota     = "reputation_quota_health"
 	logicalOwnerReputationFeedStale = "reputation_feed_health"
+	logicalOwnerSharedSendersStale  = "shared_senders_health"
 	logicalOwnerWPCoreVerification  = "wp_core_verification"
 )
 
@@ -316,6 +317,7 @@ var logicalOwnerFindingNames = map[string][]string{
 	logicalOwnerPHPTaintDeep:        {"php_remote_taint", "php_taint_scan_incomplete"},
 	logicalOwnerReputationQuota:     {"reputation_quota_exhausted"},
 	logicalOwnerReputationFeedStale: {"threat_feed_stale"},
+	logicalOwnerSharedSendersStale:  {"shared_senders_stale"},
 	logicalOwnerWPCoreVerification:  {"wp_core_unverified"},
 }
 
@@ -327,6 +329,7 @@ var logicalOwnerDisableAliases = map[string][]string{
 	logicalOwnerPHPTaintDeep:        {logicalOwnerPHPTaintDeep, "php_remote_taint"},
 	logicalOwnerReputationQuota:     {logicalOwnerReputationQuota, "reputation_quota_exhausted", "ip_reputation"},
 	logicalOwnerReputationFeedStale: {logicalOwnerReputationFeedStale, "threat_feed_stale", "ip_reputation"},
+	logicalOwnerSharedSendersStale:  {logicalOwnerSharedSendersStale, "shared_senders_stale", "ip_reputation"},
 	logicalOwnerWPCoreVerification:  {logicalOwnerWPCoreVerification, "wp_core_unverified", "wp_core"},
 }
 
@@ -336,7 +339,7 @@ var logicalOwnerDisableAliases = map[string][]string{
 // completion mark rather than the wrapper's.
 var physicalCheckLogicalOwners = map[string][]string{
 	"yara_deep":     {logicalOwnerJSTaintDeep, logicalOwnerPHPTaintDeep},
-	"ip_reputation": {logicalOwnerReputationQuota, logicalOwnerReputationFeedStale},
+	"ip_reputation": {logicalOwnerReputationQuota, logicalOwnerReputationFeedStale, logicalOwnerSharedSendersStale},
 	"wp_core":       {logicalOwnerWPCoreVerification},
 }
 
@@ -712,6 +715,7 @@ var perRunFindingNames = map[string][]string{
 	logicalOwnerPHPTaintDeep:        {"php_taint_scan_incomplete"},
 	logicalOwnerReputationQuota:     {},
 	logicalOwnerReputationFeedStale: {},
+	logicalOwnerSharedSendersStale:  {},
 	logicalOwnerWPCoreVerification:  {},
 	"php_config_changes":            {"php_config_scan_incomplete"},
 }

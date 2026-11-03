@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pidginhost/csm/internal/admission"
@@ -38,11 +39,52 @@ const (
 	reputationHealthReminder = 24 * time.Hour
 	reputationQuotaStateKey  = "_reputation_health:quota"
 	reputationFeedStateKey   = "_reputation_health:feed_stale"
+	sharedSendersStateKey    = "_reputation_health:shared_senders"
 )
 
 var reputationHealthStateKeys = map[string]string{
 	logicalOwnerReputationQuota:     reputationQuotaStateKey,
 	logicalOwnerReputationFeedStale: reputationFeedStateKey,
+	logicalOwnerSharedSendersStale:  sharedSendersStateKey,
+}
+
+// SharedSendersHealth is the spam source detector's answer about its list of
+// shared mail services, which spam source reports wait for.
+type SharedSendersHealth int
+
+const (
+	// SharedSendersUnknown means no answer yet: the detector is starting and
+	// has not finished a refresh. A warning already shown stays as it is.
+	SharedSendersUnknown SharedSendersHealth = iota
+	// SharedSendersOK means the list is current or the detector is off.
+	SharedSendersOK
+	// SharedSendersStale means the list is not current after a refresh.
+	SharedSendersStale
+)
+
+var sharedSendersHealth atomic.Pointer[func(time.Time) SharedSendersHealth]
+
+// SetSharedSendersHealth wires the spam source detector's answer. Passing nil
+// clears it, which reads as SharedSendersUnknown.
+func SetSharedSendersHealth(fn func(time.Time) SharedSendersHealth) {
+	if fn == nil {
+		sharedSendersHealth.Store(nil)
+		return
+	}
+	sharedSendersHealth.Store(&fn)
+}
+
+// SharedSendersHealthAt asks the wired detector, if any.
+func SharedSendersHealthAt(now time.Time) SharedSendersHealth {
+	if fn := sharedSendersHealth.Load(); fn != nil {
+		health := (*fn)(now)
+		// Shutdown can retire this callback and remove its detector while
+		// it runs. That late answer cannot establish recovery or staleness.
+		if sharedSendersHealth.Load() == fn {
+			return health
+		}
+	}
+	return SharedSendersUnknown
 }
 
 // maxDailyAbuseQueries is the store-backed daily circuit-breaker below
@@ -553,7 +595,8 @@ func intelSource(prefix, name string) string {
 // exhausted AbuseIPDB quota (tier-4 lookups paused) and threat feeds that
 // have not refreshed in over a week (stale tier-2 data). Feeds that never
 // loaded stay silent - a fresh install's first download may still be
-// pending, which is not operator-actionable.
+// pending, which is not operator-actionable. It also reports spam source
+// reports waiting on a shared mail service list that is not current.
 func reputationHealthFindings(ctx context.Context, cfg *config.Config, sdb *store.DB, scanState *state.Store, now time.Time, quotaExhausted bool) []alert.Finding {
 	var out []alert.Finding
 	disabled := disabledLogicalOwners(cfg)
@@ -597,7 +640,34 @@ func reputationHealthFindings(ctx context.Context, cfg *config.Config, sdb *stor
 	} else {
 		clearReputationHealthState(scanState, reputationFeedStateKey)
 	}
+	if _, off := disabled[logicalOwnerSharedSendersStale]; off {
+		clearReputationHealthState(scanState, sharedSendersStateKey)
+	} else {
+		sharedSendersHealthFinding(ctx, &out, scanState, now)
+	}
 	return out
+}
+
+// sharedSendersHealthFinding warns while spam source reports wait on a shared
+// mail service list that should be current by now.
+func sharedSendersHealthFinding(ctx context.Context, out *[]alert.Finding, scanState *state.Store, now time.Time) {
+	switch SharedSendersHealthAt(now) {
+	case SharedSendersStale:
+		finding := alert.Finding{
+			Severity:  alert.Warning,
+			Check:     "shared_senders_stale",
+			Message:   "Shared mail service list not current: spam source reports are paused",
+			Details:   "Spam source reports wait until CSM can read the sending hosts that Google, Microsoft and the other shared mail services publish. Refreshes retry on their own; the daemon log names the services that failed. Check this host's DNS resolver.",
+			Timestamp: now,
+		}
+		appendReputationHealthFinding(ctx, out, scanState, logicalOwnerSharedSendersStale, sharedSendersStateKey, now, finding)
+	case SharedSendersUnknown:
+		// Before the detector's first refresh, keep a warning from before a
+		// restart, and its reminder, as they are.
+		markCheckIncomplete(ctx, logicalOwnerSharedSendersStale)
+	default:
+		clearReputationHealthState(scanState, sharedSendersStateKey)
+	}
 }
 
 func appendReputationHealthFinding(ctx context.Context, out *[]alert.Finding, scanState *state.Store, owner, stateKey string, now time.Time, finding alert.Finding) {

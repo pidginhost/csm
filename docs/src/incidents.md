@@ -903,6 +903,7 @@ Attribution gaps:
 | `self_deleting_dropper_realtime` | security event |  |  |
 | `sensitive_file_modified` | ignored | host-scope |  |
 | `shadow_change` | ignored | host-scope |  |
+| `shared_senders_stale` | ignored | self-health |  |
 | `signature_match_realtime` | security event |  |  |
 | `signature_update_rescan_queued` | ignored | self-health |  |
 | `signature_update_rollback` | ignored | self-health |  |

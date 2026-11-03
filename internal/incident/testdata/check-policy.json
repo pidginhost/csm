@@ -313,6 +313,7 @@
       "challenge_route",
       "outdated_plugins",
       "reputation_quota_exhausted",
+      "shared_senders_stale",
       "threat_feed_stale",
       "wp_core_unverified",
       "wp_plugin_inventory_unverified",
