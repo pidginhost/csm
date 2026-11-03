@@ -332,3 +332,217 @@ func TestFeedStaleFindingDoesNotTriggerReputationLookups(t *testing.T) {
 		t.Fatalf("health finding triggered lookups: abuse=%d supplemental=%d", abuseCalls.Load(), supplementalCalls.Load())
 	}
 }
+
+func withSharedSendersHealth(t *testing.T, health *SharedSendersHealth, asked *time.Time) {
+	t.Helper()
+	SetSharedSendersHealth(func(now time.Time) SharedSendersHealth {
+		if asked != nil {
+			*asked = now
+		}
+		return *health
+	})
+	t.Cleanup(func() { SetSharedSendersHealth(nil) })
+}
+
+// Spam source reports wait while the shared mail service list is not current.
+// Only the stale answer, given after a refresh attempt, is a warning.
+func TestSharedSendersStaleFinding(t *testing.T) {
+	now := time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name   string
+		hook   bool
+		health SharedSendersHealth
+		want   bool
+	}{
+		{"no detector answer", false, 0, false},
+		{"unknown", true, SharedSendersUnknown, false},
+		{"current", true, SharedSendersOK, false},
+		{"stale", true, SharedSendersStale, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var asked time.Time
+			if tc.hook {
+				health := tc.health
+				withSharedSendersHealth(t, &health, &asked)
+			}
+			findings := reputationHealthFindings(context.Background(), &config.Config{}, nil, nil, now, false)
+			f, ok := findingWithCheck(findings, "shared_senders_stale")
+			if ok != tc.want {
+				t.Fatalf("findings = %+v, want shared_senders_stale %v", findings, tc.want)
+			}
+			if tc.hook && !asked.Equal(now) {
+				t.Errorf("detector asked at %v, want %v", asked, now)
+			}
+			if ok && (f.Severity != alert.Warning || !f.Timestamp.Equal(now) || f.SourceIP != "" ||
+				!strings.Contains(f.Message, "spam source reports")) {
+				t.Errorf("finding = %+v, want a Warning about paused spam source reports", f)
+			}
+		})
+	}
+}
+
+// The warning reminds once a day and stays in Findings between reminders. A
+// restart neither clears nor resends it: until the detector answers, the
+// warning and its reminder are kept as they are. A current list clears both.
+func TestSharedSendersStaleLifecycle(t *testing.T) {
+	statePath := t.TempDir()
+	st, err := state.Open(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	cfg := &config.Config{}
+	now := time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
+	health := SharedSendersStale
+	withSharedSendersHealth(t, &health, nil)
+	check := namedCheck{name: "ip_reputation", fn: func(ctx context.Context, cfg *config.Config, st *state.Store) []alert.Finding {
+		return reputationHealthFindings(ctx, cfg, nil, st, now, false)
+	}}
+	run := func() []alert.Finding {
+		findings, purge := runParallelWithContext(context.Background(), cfg, st, []namedCheck{check}, "critical", true)
+		StoreLatestScanFindings(st, purge, findings)
+		return findings
+	}
+	shown := func() bool { return containsFindingCheck(st.LatestFindings(), "shared_senders_stale") }
+
+	if _, ok := findingWithCheck(run(), "shared_senders_stale"); !ok || !shown() {
+		t.Fatalf("first stale answer did not warn: latest %+v", st.LatestFindings())
+	}
+	now = now.Add(time.Minute)
+	if got := run(); len(got) != 0 || !shown() {
+		t.Fatalf("second run raised %+v, shown %v; want the reminder throttled and the warning kept", got, shown())
+	}
+
+	if closeErr := st.Close(); closeErr != nil {
+		t.Fatal(closeErr)
+	}
+	if st, err = state.Open(statePath); err != nil {
+		t.Fatal(err)
+	}
+	health = SharedSendersUnknown
+	now = now.Add(time.Minute)
+	if got := run(); len(got) != 0 || !shown() {
+		t.Fatalf("startup run raised %+v, shown %v; want the warning kept untouched", got, shown())
+	}
+	health = SharedSendersStale
+	now = now.Add(time.Hour)
+	if got := run(); len(got) != 0 || !shown() {
+		t.Fatalf("first stale answer after restart raised %+v, shown %v; want no resend within a day", got, shown())
+	}
+	now = now.Add(24 * time.Hour)
+	if _, ok := findingWithCheck(run(), "shared_senders_stale"); !ok {
+		t.Fatal("no reminder a day later")
+	}
+
+	health = SharedSendersOK
+	now = now.Add(time.Minute)
+	if got := run(); len(got) != 0 || shown() {
+		t.Fatalf("current list raised %+v, shown %v; want the warning cleared", got, shown())
+	}
+	if _, ok := st.GetRaw(sharedSendersStateKey); ok {
+		t.Fatal("current list kept the reminder state")
+	}
+	health = SharedSendersStale
+	if _, ok := findingWithCheck(run(), "shared_senders_stale"); !ok {
+		t.Fatal("a new stale episode waited for the old reminder")
+	}
+}
+
+func TestDisablingSharedSendersStaleClearsIt(t *testing.T) {
+	for _, name := range []string{"shared_senders_stale", "ip_reputation"} {
+		t.Run(name, func(t *testing.T) {
+			st, err := state.Open(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = st.Close() })
+			cfg := &config.Config{}
+			now := time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
+			health := SharedSendersStale
+			withSharedSendersHealth(t, &health, nil)
+			check := namedCheck{name: "ip_reputation", fn: func(ctx context.Context, cfg *config.Config, st *state.Store) []alert.Finding {
+				return reputationHealthFindings(ctx, cfg, nil, st, now, false)
+			}}
+			first, firstPurge := runParallelWithContext(context.Background(), cfg, st, []namedCheck{check}, "critical", true)
+			StoreLatestScanFindings(st, firstPurge, first)
+			if _, ok := st.GetRaw(sharedSendersStateKey); !ok {
+				t.Fatal("warning did not persist its reminder claim")
+			}
+
+			cfg.DisabledChecks = []string{name}
+			off, offPurge := runParallelWithContext(context.Background(), cfg, st, []namedCheck{check}, "critical", true)
+			StoreLatestScanFindings(st, offPurge, off)
+			if _, ok := st.GetRaw(sharedSendersStateKey); ok {
+				t.Fatal("disabled warning kept its reminder claim")
+			}
+			if containsFindingCheck(st.LatestFindings(), "shared_senders_stale") {
+				t.Fatalf("disabled warning remains in latest findings: %+v", st.LatestFindings())
+			}
+		})
+	}
+}
+
+// A reader can hold the old callback when shutdown clears it and removes the
+// detector. Its late answer must neither clear the warning nor claim a reminder.
+func TestSharedSendersHealthDiscardsRetiredAnswer(t *testing.T) {
+	for _, replacement := range []bool{false, true} {
+		for _, answer := range []SharedSendersHealth{SharedSendersOK, SharedSendersStale} {
+			t.Run(fmt.Sprintf("replacement=%v/answer=%d", replacement, answer), func(t *testing.T) {
+				st, err := state.Open(t.TempDir())
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = st.Close() })
+				t.Cleanup(func() { SetSharedSendersHealth(nil) })
+				now := time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
+				cfg := &config.Config{}
+				check := namedCheck{name: "ip_reputation", fn: func(ctx context.Context, cfg *config.Config, st *state.Store) []alert.Finding {
+					return reputationHealthFindings(ctx, cfg, nil, st, now, false)
+				}}
+				run := func() []alert.Finding {
+					findings, purge := runParallelWithContext(context.Background(), cfg, st, []namedCheck{check}, "critical", true)
+					StoreLatestScanFindings(st, purge, findings)
+					return findings
+				}
+				SetSharedSendersHealth(func(time.Time) SharedSendersHealth { return SharedSendersStale })
+				if _, ok := findingWithCheck(run(), "shared_senders_stale"); !ok {
+					t.Fatal("stale list did not raise a warning")
+				}
+				claim, ok := st.GetRaw(sharedSendersStateKey)
+				if !ok {
+					t.Fatal("warning did not persist a reminder claim")
+				}
+				now = now.Add(25 * time.Hour)
+				entered, release := make(chan struct{}), make(chan struct{})
+				SetSharedSendersHealth(func(time.Time) SharedSendersHealth {
+					close(entered)
+					<-release
+					return answer
+				})
+				done := make(chan []alert.Finding, 1)
+				go func() { done <- run() }()
+				<-entered
+				SetSharedSendersHealth(nil)
+				if replacement {
+					SetSharedSendersHealth(func(time.Time) SharedSendersHealth { return SharedSendersOK })
+				}
+				close(release)
+				if got := <-done; len(got) != 0 {
+					t.Errorf("retired callback emitted findings: %+v", got)
+				}
+				if !containsFindingCheck(st.LatestFindings(), "shared_senders_stale") {
+					t.Error("retired callback cleared the warning")
+				}
+				if got, ok := st.GetRaw(sharedSendersStateKey); !ok || got != claim {
+					t.Errorf("retired callback changed reminder claim: got %q, want %q", got, claim)
+				}
+				if got := run(); len(got) != 0 {
+					t.Fatalf("next run emitted findings: %+v", got)
+				}
+				if shown := containsFindingCheck(st.LatestFindings(), "shared_senders_stale"); shown == replacement {
+					t.Errorf("next run kept warning = %v, want %v", shown, !replacement)
+				}
+			})
+		}
+	}
+}

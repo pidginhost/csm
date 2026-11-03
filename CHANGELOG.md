@@ -12,6 +12,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 ### Added
 
 - Support agents can read status, findings, incidents, accounts, firewall, threat, mail and WAF data over an optional read-only MCP endpoint (`mcp:` block, off by default). It uses its own tokens on the Web UI port and cannot change anything.
+- Findings now warn when spam source reports wait because the list of shared mail services cannot be refreshed.
 
 ### Changed
 
@@ -23,6 +24,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 - Antispam no longer overrides spam weights you set yourself in rspamd.
 - Spam learning no longer stops for every report when rspamd hashes one learned message differently; only that message's learning is dropped.
+- Mail from large shared services such as Gmail no longer crowds other senders out of spam source detection on busy hosts.
 
 ## [4.9.0] - 2026-11-02
 

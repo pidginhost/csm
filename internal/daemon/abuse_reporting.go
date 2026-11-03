@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/queuehealth"
 	"github.com/pidginhost/csm/internal/reporting"
 )
@@ -34,6 +35,9 @@ var abuseReportFirebreak = func(d *Daemon) func(string) bool { return d.centralF
 // the alert path untouched.
 func (d *Daemon) startAbuseReporting() func() {
 	alert.SetReportHook(nil)
+	// Answer the reputation check on every path, once the spam source
+	// detector, if any, is in place. Scans before this get no answer.
+	defer checks.SetSharedSendersHealth(d.sharedSendersHealth)
 
 	rc := d.cfg.Reputation.Report
 	if !rc.Enabled {
@@ -118,6 +122,9 @@ func (q abuseReportQueues) QueueStatuses(now time.Time) map[string]queuehealth.S
 }
 
 func (d *Daemon) stopAbuseReporting() {
+	// No answer from here on, so a scan during shutdown cannot read the
+	// detector's absence as a current list and clear a warning.
+	checks.SetSharedSendersHealth(nil)
 	// Run has stopped the log watchers by now, so this final save holds every
 	// spam scan they read.
 	if r := d.spamSources.Swap(nil); r != nil {

@@ -174,11 +174,14 @@ finding never blocks or challenges the sender on the reporting node.
 Shared mail services are never reported: Google, Microsoft, Amazon SES,
 SendGrid, Mailgun, Brevo, Yahoo and iCloud. CSM reads their sending hosts
 from each provider's published SPF records and refreshes the list in the
-background. Spam reports wait while that list cannot be loaded.
+background. Spam reports wait while that list cannot be loaded. When a
+refresh has failed and the list is not current, CSM raises a
+`shared_senders_stale` Warning. It stays in Findings until the list is current
+again and reminds at most once a day, including across daemon restarts.
 
 CSM keeps sender history across restarts. If that history cannot be read at
-startup, spam reports stay off until the next restart and the daemon log says
-why.
+startup, spam source detection stays off for that run and the daemon log says
+why. A restart turns it back on once the state database can be read.
 
 The class needs `email_protection.antispam.enabled`. Turning either on or off
 takes a restart.

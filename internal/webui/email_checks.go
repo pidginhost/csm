@@ -70,6 +70,7 @@ var emailChecks = []emailCheck{
 	{"mail_auth_backend_degraded", ""},
 	{"mail_log_source_unavailable", ""},
 	{"mail_spam_source", ""},
+	{"shared_senders_stale", ""},
 	{"antispam_apply_failed", ""},
 	{"antispam_controller_open", ""},
 	{"antispam_file_replaced", ""},
