@@ -2472,9 +2472,14 @@ func (d *Daemon) handleEximLine(line string, obs alert.Observation, cfg *config.
 			}
 		}
 
-		if ip != "" && !isInfraIPDaemon(ip, cfg.InfraIPs) && !isPrivateOrLoopback(ip) {
-			if d.smtpAuthTracker != nil {
+		if ip != "" && !isInfraIPDaemon(ip, cfg.InfraIPs) && !isPrivateOrLoopback(ip) && d.smtpAuthTracker != nil {
+			// Exim answers 435 when the Dovecot auth socket cannot answer.
+			// Only a permanent (5xx) reply says the credentials were checked;
+			// any other reply still counts per IP but is not spray evidence.
+			if strings.HasPrefix(eximlog.AuthFailureCode(line), "5") {
 				findings = append(findings, d.smtpAuthTracker.RecordObserved(ip, account, obs)...)
+			} else {
+				findings = append(findings, d.smtpAuthTracker.RecordTemporaryFailure(ip, account, obs)...)
 			}
 		}
 	}

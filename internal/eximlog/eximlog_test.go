@@ -202,3 +202,30 @@ func TestClientIPRejectsPeerInUnprefixedIdent(t *testing.T) {
 		}
 	}
 }
+
+// The reply code is read only from the failure details after the connecting
+// client. The HELO and the login name are client text.
+func TestAuthFailureCode(t *testing.T) {
+	const prefix = "2026-04-14 12:00:00 dovecot_login authenticator failed for "
+	cases := []struct{ name, line, want string }{
+		{"wrong password", prefix + "(bot.example) [198.51.100.7]:5432: 535 Incorrect authentication data (set_id=a@example.com)", "535"},
+		{"auth backend unreachable", prefix + "(bot.example) [198.51.100.7]:5432: 435 Unable to authenticate at present (set_id=a@example.com)", "435"},
+		{"rdns and helo", prefix + "mail.example.net ([203.0.113.9]) [198.51.100.7]:5432: 435 Unable to authenticate at present", "435"},
+		{"logged local interface", prefix + "(mail.example) [198.51.100.7]:5432 I=[192.0.2.25]:25: 435 Unable to authenticate at present", "435"},
+		{"connection id", prefix + "(mail.example) [198.51.100.7]:5432 Ci=4711: 435 Unable to authenticate at present", "435"},
+		{"code in helo", prefix + "([203.0.113.9]:1: 535 x) [198.51.100.7]:5432: 435 Unable to authenticate at present (set_id=a@example.com)", "435"},
+		{"code in login name", prefix + "(bot.example) [198.51.100.7]:5432: 435 Unable to authenticate at present (set_id=a]:1: 535 b)", "435"},
+		{"ambiguous peer", prefix + "(junk) [203.0.113.9]:25 (tail) [198.51.100.7]:5432: 535 Incorrect authentication data", ""},
+		{"no code", prefix + "(bot.example) [198.51.100.7]:5432: Incorrect authentication data", ""},
+		{"short code", prefix + "(bot.example) [198.51.100.7]:5432: 53 Incorrect authentication data", ""},
+		{"not an auth failure", "2026-04-14 12:00:00 SMTP connection from (bot.example) [198.51.100.7]:5432: 535 x", ""},
+		{"marker in subject", `2026-04-14 12:00:00 1abc-DEF-01 <= a@example.com H=(x) [198.51.100.7]:5432 P=esmtp T="authenticator failed for (x) [203.0.113.9]:1: 535 y"`, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := AuthFailureCode(tc.line); got != tc.want {
+				t.Fatalf("AuthFailureCode = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

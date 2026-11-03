@@ -458,3 +458,33 @@ func TestSMTPSprayOneBlockPerFailure(t *testing.T) {
 		t.Fatalf("spray evidence = %+v, want both mailboxes", ev)
 	}
 }
+
+// Exim logs a 4xx reply when the Dovecot auth socket cannot answer. Such a
+// failure says nothing about the password: it still counts toward the per-IP
+// signals, but never becomes spray evidence.
+func TestSMTPSprayEximTemporaryFailureNotEvidence(t *testing.T) {
+	const ip = "203.0.113.68"
+	for _, tc := range []struct {
+		reply    string
+		evidence bool
+	}{
+		{"435 Unable to authenticate at present", false},
+		{"535 Incorrect authentication data", true},
+	} {
+		t.Run(tc.reply[:3], func(t *testing.T) {
+			d, clock := newPairingDaemon(t, sprayTestConfig("enforce"))
+			var got []alert.Finding
+			for _, mailbox := range []string{"a@example.com", "b@example.com"} {
+				got = append(got, feedExim(d, clock, fmt.Sprintf(
+					"2026-04-14 12:00:00 dovecot_login authenticator failed for (bot.example) [%s]:54321: %s (set_id=%s)", ip, tc.reply, mailbox))...)
+			}
+			if calls := smtpCalls(d); calls != 2 {
+				t.Fatalf("SMTP failures = %d, want 2", calls)
+			}
+			_, blocked := findingByCheck(got, "smtp_bruteforce")
+			if n := d.mailSpray.Size(); blocked != tc.evidence || (n != 0) != tc.evidence {
+				t.Fatalf("blocked = %v, spray IPs = %d, want evidence = %v", blocked, n, tc.evidence)
+			}
+		})
+	}
+}

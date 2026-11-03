@@ -235,6 +235,17 @@ func (t *smtpAuthTracker) RecordObserved(ip, account string, obs alert.Observati
 // RecordFailure is RecordObserved for a failure whose log said whether the
 // mailbox exists.
 func (t *smtpAuthTracker) RecordFailure(ip, account string, exist mailboxExistence, obs alert.Observation) []alert.Finding {
+	return t.recordFailure(ip, account, exist, obs, true)
+}
+
+// RecordTemporaryFailure is RecordObserved for a failure the MTA answered
+// with a temporary reply: the auth backend, not the password, failed. It
+// counts as before but is never spray evidence.
+func (t *smtpAuthTracker) RecordTemporaryFailure(ip, account string, obs alert.Observation) []alert.Finding {
+	return t.recordFailure(ip, account, mailboxExistenceUnknown, obs, false)
+}
+
+func (t *smtpAuthTracker) recordFailure(ip, account string, exist mailboxExistence, obs alert.Observation, credential bool) []alert.Finding {
 	if ip == "" {
 		return nil
 	}
@@ -313,7 +324,7 @@ func (t *smtpAuthTracker) RecordFailure(ip, account string, exist mailboxExisten
 	}
 
 	// --- Long-memory login spray (shared with IMAP/POP) ---
-	if !degraded && t.spray != nil {
+	if !degraded && credential && t.spray != nil {
 		if v := t.spray.Failure(ip, normalizeSprayMailbox(account), exist); v != nil {
 			f := sprayFinding(protoSMTP, ip, v, t.spray.Mode(), now)
 			// One failure raises one block: the evidence is recorded either
