@@ -16,13 +16,16 @@ import (
 // slowTimes/slowAccounts hold the long-horizon failure history that catches
 // attackers pacing below the fast window; slowAccounts maps each targeted
 // mailbox to its most recent failure so distinct-target counting can prune.
+// slowUnvouched is the latest slow failure the mailbox map does not hold (no
+// mailbox, or the map was full), which no login trust can vouch for.
 // Successful logins leave no state here: login trust lives in mailSpray.
 type smtpIPEntry struct {
-	times        []time.Time
-	slowTimes    []time.Time
-	slowAccounts map[string]time.Time
-	suppressed   time.Time
-	lastSeen     time.Time
+	times         []time.Time
+	slowTimes     []time.Time
+	slowAccounts  map[string]time.Time
+	slowUnvouched time.Time
+	suppressed    time.Time
+	lastSeen      time.Time
 }
 
 // evictionRank keeps meaningful accumulated evidence behind disposable
@@ -300,15 +303,23 @@ func (t *smtpAuthTracker) recordFailure(ip, account string, exist mailboxExisten
 			// block as soon as the backend recovers.
 			e.slowTimes = nil
 			e.slowAccounts = nil
+			e.slowUnvouched = time.Time{}
 		} else {
 			slowCutoff := now.Add(-t.slowWindow)
 			e.slowTimes = pruneTimes(e.slowTimes, slowCutoff)
 			e.slowTimes = appendSlowFailure(e.slowTimes, now)
-			e.slowAccounts, _ = recordSlowAccount(e.slowAccounts, normalizeMailAuthAccount(account), now, slowCutoff)
+			var trackedAccount bool
+			e.slowAccounts, trackedAccount = recordSlowAccount(e.slowAccounts, normalizeMailAuthAccount(account), now, slowCutoff)
+			if !trackedAccount {
+				e.slowUnvouched = now
+			}
+			if e.slowUnvouched.Before(slowCutoff) {
+				e.slowUnvouched = time.Time{}
+			}
 			if (len(e.slowTimes) >= t.slowThreshold || len(e.slowAccounts) >= slowBruteWalkAccounts) &&
 				len(e.slowAccounts) >= slowBruteMinAccounts &&
 				!now.Before(e.suppressed) &&
-				!slowTrusted(t.spray, ip, e.slowAccounts) {
+				!slowTrusted(t.spray, ip, e.slowAccounts, e.slowUnvouched) {
 				e.suppressed = now.Add(t.suppression)
 				findings = append(findings, alert.Finding{
 					Severity: alert.Critical,
@@ -403,10 +414,11 @@ func (t *smtpAuthTracker) recordFailure(ip, account string, exist mailboxExisten
 }
 
 // slowTrusted reports whether ip holds aged login trust on every mailbox its
-// slow failures name: a known client's stale saved passwords, not a walk.
-// Both trackers call it with their lock held.
-func slowTrusted(spray *mailSpray, ip string, accounts map[string]time.Time) bool {
-	if spray == nil {
+// slow failures name: a known client's stale saved passwords, not a walk. A
+// slow failure the mailbox map does not hold (unvouched set) names nothing
+// trust could vouch for. Both trackers call it with their lock held.
+func slowTrusted(spray *mailSpray, ip string, accounts map[string]time.Time, unvouched time.Time) bool {
+	if spray == nil || !unvouched.IsZero() {
 		return false
 	}
 	mailboxes := make([]string, 0, len(accounts))
@@ -516,6 +528,9 @@ func (t *smtpAuthTracker) Purge() {
 		e.times = pruneTimes(e.times, now.Add(-t.window))
 		e.slowTimes = pruneTimes(e.slowTimes, slowCutoff)
 		pruneSlowAccounts(e.slowAccounts, slowCutoff)
+		if e.slowUnvouched.Before(slowCutoff) {
+			e.slowUnvouched = time.Time{}
+		}
 		if len(e.times) == 0 && len(e.slowTimes) == 0 && !e.lastSeen.After(activityCutoff) {
 			delete(t.ips, k)
 		}

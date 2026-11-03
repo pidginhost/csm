@@ -806,7 +806,7 @@ func (t *mailAuthTracker) RecordObserved(ip, account string, obs alert.Observati
 			if (len(e.slowTimes) >= t.slowThreshold || len(e.slowAccounts) >= slowBruteWalkAccounts) &&
 				len(e.slowAccounts) >= slowBruteMinAccounts {
 				safeSource := e.slowConfinedToEstablishedGood(now, t.window) ||
-					(e.slowUnvouched.IsZero() && slowTrusted(t.spray, ip, e.slowAccounts))
+					slowTrusted(t.spray, ip, e.slowAccounts, e.slowUnvouched)
 				switch {
 				case safeSource && !now.Before(e.suspectedSuppressed):
 					e.suspectedSuppressed = now.Add(t.suppression)

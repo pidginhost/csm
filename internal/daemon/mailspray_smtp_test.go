@@ -488,3 +488,35 @@ func TestSMTPSprayEximTemporaryFailureNotEvidence(t *testing.T) {
 		})
 	}
 }
+
+// Login trust vouches only for the mailboxes it names. A failure naming no
+// mailbox (an empty Exim set_id, or Postfix pairing that cannot tell the
+// mailbox) keeps the slow block armed.
+func TestSMTPSlowBruteTrustDoesNotHideUnnamedFailures(t *testing.T) {
+	const ip = "203.0.113.69"
+	accounts := []string{"a@example.com", "b@example.com", "c@example.com"}
+	for _, unnamed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("unnamed=%v", unnamed), func(t *testing.T) {
+			clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+			tr := newTestTrackerWithSpray(t, clock)
+			for _, account := range accounts {
+				tr.RecordSuccess(ip, account)
+			}
+			clock.advance(11 * time.Minute) // trust ages past the failure window
+			var fired bool
+			for i := 0; i < tr.slowThreshold; i++ {
+				account := accounts[i%len(accounts)]
+				if unnamed && i%10 == 0 {
+					account = ""
+				}
+				if _, ok := findingByCheck(tr.Record(ip, account), "smtp_bruteforce"); ok {
+					fired = true
+				}
+				clock.advance(8 * time.Minute)
+			}
+			if fired != unnamed {
+				t.Fatalf("smtp_bruteforce fired = %v, want %v", fired, unnamed)
+			}
+		})
+	}
+}
