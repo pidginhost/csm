@@ -77,6 +77,9 @@ var (
 	// ends a forecast pick; tests make them fail.
 	previewLedger   = (*store.AdmissionLedger).SchedulePreview
 	endDryRunLedger = (*store.AdmissionLedger).EndDryRun
+	// freshLedger says whether a forecast pick's episode may rotate an
+	// equal-tier block; tests answer it.
+	freshLedger = (*store.AdmissionLedger).Fresh
 )
 
 // previewLimits lets a schedule serve whatever the ledger's budgets allow,

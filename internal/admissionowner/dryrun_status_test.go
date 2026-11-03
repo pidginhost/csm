@@ -101,7 +101,7 @@ func TestOwnerDryRunStatus(t *testing.T) {
 		d.Ceiling.GeneralBudget != fc.ceiling.Budget(admission.LaneGeneral) || d.Ceiling.ReservedBudget != fc.ceiling.Budget(admission.LaneDirect) {
 		t.Fatalf("ceiling = %+v", d.Ceiling)
 	}
-	want := predictionCounts(map[admission.Prediction]uint64{admission.PredictCapacityAdmit: 2, admission.PredictSetFull: 1})
+	want := predictionCounts(map[admission.Prediction]uint64{admission.PredictCapacityAdmit: 2, admission.PredictEqualTierWait: 1})
 	if !reflect.DeepEqual(d.Picks, want) || !reflect.DeepEqual(d.LastHour, want) {
 		t.Fatalf("picks %v, last hour %v, want %v", d.Picks, d.LastHour, want)
 	}

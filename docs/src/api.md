@@ -377,7 +377,7 @@ temporary occupancy (`actual`, addresses plus two elements per timed subnet),
 the forecast addresses the real sets do not hold
 (`shadow_only`), the listed legacy automatic blocks the forecast replaced
 (`replaced`), their sum minus `replaced` (`predicted`), the `limit`, whether the set is
-`unlimited` and whether the model holds as many blocks as it can (`limited`);
+`unlimited` and whether retained forecast state fills its modelling bound (`limited`);
 it is null while no snapshot is available. `actual` and `imported` count at
 least the listed imports, matching the partition counts. A replaced import
 is subtracted only while listed, until its own expiry, even if its replacing
@@ -396,12 +396,20 @@ changes can extend that estimate; it is not an automatic removal deadline. `gene
 entries leave, a fifth rounded up reserved for direct or corroborated work,
 each with its `size`, the real and forecast automatic blocks it holds
 (`used`) and its `free` slots, also bounded by total remaining capacity.
-Existing occupants keep their partition when limits change. A full set
-admits an additional forecast block only in place of a strictly
-lower-priority automatic block: a forecast block of a lower class or
+Existing occupants keep their partition when limits change. In a full set,
+a forecast block may replace a strictly lower-priority automatic block: a forecast block of a lower class or
 severity, or a listed legacy automatic block that recorded its origin,
 which the forecast counts as gone while still listed, until the import's
-own expiry. An overfull set admits none, and entries counted in `unclaimed`
+own expiry. A pick of a new attack may instead rotate out a forecast block
+of exactly its class and severity in the partition of its own lane once
+that block's 30-minute hold has passed on both the admission clock and the
+session's elapsed time (`capacity_rotate`). The set's scopes share each
+partition: a pick at or over its share rotates only its own scope's
+blocks, one below it only the scope that borrows most, and one without a
+share waits. A pick that waits while such a block holds its partition
+predicts `equal_tier_wait`, not `set_full`. A rotated or replaced
+forecast block's address cannot rotate again until that block would have
+expired. An overfull set admits none, and entries counted in `unclaimed`
 are never replaced.
 Real coverage replaces forecast occupancy: a
 manual timed block reduces available capacity, an automatic block counts in

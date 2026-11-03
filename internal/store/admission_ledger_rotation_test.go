@@ -235,6 +235,53 @@ func TestAdmissionLedgerOnlyFreshWorkRotates(t *testing.T) {
 	}
 }
 
+// Fresh answers as a live schedule decides fresh work, on a ledger that
+// never started too: only block_ip work whose episode row names its
+// episode and records no verified response (spec 5.2).
+func TestAdmissionLedgerFreshReadsTheEpisodeRow(t *testing.T) {
+	f := newLedgerFixture(t)
+	f.begin()
+	fresh := f.freshWith("192.0.2.13", admission.SeverityHigh, f.owner("alice"))
+	legacy := f.queuedBy("192.0.2.11", admission.SeverityHigh, f.owner("alice"))
+	answered := f.freshWith("192.0.2.12", admission.SeverityHigh, f.owner("alice"))
+	other := f.freshWith("192.0.2.14", admission.SeverityHigh, f.owner("alice"))
+	e, found := f.episodeAt("192.0.2.12")
+	if !found {
+		t.Fatal("arrival wrote no episode row")
+	}
+	e.Verified = f.wall
+	if err := f.db.bolt.Update(func(tx *bolt.Tx) error { return putEpisodeRow(tx, f.target("192.0.2.12").Key(), e) }); err != nil {
+		t.Fatal(err)
+	}
+	if e, found = f.episodeAt("192.0.2.14"); !found {
+		t.Fatal("arrival wrote no episode row")
+	}
+	var err error
+	if e.ID, err = admission.ParseEpisodeID("00000000000000000000000000000009"); err != nil {
+		t.Fatal(err)
+	}
+	if err = f.db.bolt.Update(func(tx *bolt.Tx) error { return putEpisodeRow(tx, f.target("192.0.2.14").Key(), e) }); err != nil {
+		t.Fatal(err)
+	}
+	challenge := f.candidateOf(fresh)
+	challenge.Key.Kind = admission.KindChallenge
+	for name, tc := range map[string]struct {
+		c    admission.Candidate
+		want bool
+	}{
+		"a fresh episode":       {f.candidateOf(fresh), true},
+		"no episode row":        {f.candidateOf(legacy), false},
+		"a verified episode":    {f.candidateOf(answered), false},
+		"another episode's row": {f.candidateOf(other), false},
+		"not block_ip work":     {challenge, false},
+	} {
+		got, err := f.l.Fresh(tc.c)
+		if err != nil || got != tc.want {
+			t.Errorf("%s: Fresh = %v %v, want %v", name, got, err, tc.want)
+		}
+	}
+}
+
 // A candidate retained through schema 5 upgrade has no episode proof and
 // cannot gain rotation privilege from opening the upgraded ledger.
 func TestAdmissionLedgerOnlyFreshWorkRotatesAfterUpgrade(t *testing.T) {

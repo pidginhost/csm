@@ -338,15 +338,16 @@ no elapsed time and a degraded reading allows no rotation. Each
 partition is shared among its active scopes, using the queue's integer
 share rule: the scopes whose unexpired, unclaimed records hold its
 slots, the scopes of queued work that would hold one at the last
-schedule cycle, and the requester's. Each live schedule cycle that reads the
-victim pool first moves each partition's remainder cursor to the next
+schedule cycle, and the requester's. Each live schedule cycle on a trusted
+reading that reads the victim pool first moves each partition's remainder cursor to the next
 active scope and stores it beside the queue cursors, so reservations
 share the set as their cycle did; a preview ledger never moves it. A
 zero-share requester waits for a later cursor turn. Work at or over a
 positive share rotates only its own scope's records;
-work below it reclaims only the scope with the greatest excess, never
-taking that scope below its share, and waits if that scope has no record
-whose hold passed. The oldest application, then the lowest action, goes
+work below it reclaims only the scope with the greatest excess among those
+holding a verified record of its tier in that partition at another
+address, never taking that scope below its share, and waits if that scope
+has no record whose hold passed. The oldest application, then the lowest action, goes
 first. Imports never rotate. The claim and its outcome are those of an
 eviction, opening accepts an equal-tier claim only inside the block's
 own lane partition, and a live rotation raises the capacity notice.
@@ -1190,19 +1191,38 @@ that lasts as long, within the readback slack a real block is allowed,
 predicts `existing_shadow` and a shorter one `pending_recovery`, and
 neither is renewed. Other picks are checked against
 the modelled temporary capacity, the bound on forecast blocks and the
-modelled ceiling, and only `capacity_admit` and `capacity_evict` add a
-forecast block and a simulated charge. The model budgets slots with the
-ledger's rule (`SetOccupancy.Limits`): with no free slot a pick may take
-the first strictly lower-tier forecast block or listed import in eviction
-order and predicts `capacity_evict`. Forecast blocks rank by their pick's
-tier and next attempt; one without a tier is never replaced. A replaced
-forecast block leaves the model. A replaced import is remembered by name
-until its expiry and subtracted only while the engine still lists it.
+modelled ceiling, and only `capacity_admit`, `capacity_evict` and
+`capacity_rotate` add a forecast block and a simulated charge. The model
+budgets slots with the ledger's rule (`SetOccupancy.Limits`): with no free
+slot a pick may take the first strictly lower-tier forecast block or listed
+import in eviction order and predicts `capacity_evict`. Forecast blocks
+rank by their pick's tier and next attempt; one without a tier is never
+replaced. Each records its pick's scope and the admission time and session
+elapsed time of its decision. Once the general partition is full, the
+session shares each partition as a live ledger does: among the scopes of
+its forecast blocks the real sets do not hold, the scopes of the turn's
+block picks and the requester's, from session cursors that each such turn
+moves once before its first pick. A fresh pick may then rotate out a
+forecast block of exactly its tier by the same rule as the ledger, once
+that block's hold passed on the admission clock and the session's metered
+elapsed time, and predicts `capacity_rotate`. Fresh means the ledger's
+episode row says so (`AdmissionLedger.Fresh`, which needs no live start)
+and no forecast block of the address left the model before that block's
+expiry: a replaced or rotated forecast block leaves the model and answers
+its address until then (spec 5.2). Active forecast blocks and retained
+answers share the existing modelling bound; when it fills, an otherwise
+funded pick predicts `forecast_limited`. Answers expire only at their
+recorded boundary, never to free space for new predictions. A pick that finds no room while a
+lane's partition holds a scoped block of exactly its tier at another
+address predicts `equal_tier_wait`; other full sets predict `set_full`.
+Real admission blocks count in occupancy but in no scope. A replaced
+import is remembered by name until its expiry and subtracted only while
+the engine still lists it.
 With the verdict callback on, a pick the model would
 judge is asked about first and waits for its answer with no forecast
 change; a usable allow ends it as `verdict_allow` before any modelled
 capacity is judged, and a covering forecast block, or a full modelled set
-with nothing lower to replace, ends it without a call. Other firewall kinds end as `not_modelled`, with no
+with nothing lower to replace and nothing to rotate, ends it without a call. Other firewall kinds end as `not_modelled`, with no
 call; a challenge keeps its comparison preview. Without an engine or
 snapshot, or with a degraded clock, picks wait as `engine_unavailable` and
 the forecast does not change. A decision is installed only once its ending
@@ -1217,7 +1237,7 @@ committed clock reading or a new limit ends too: the forecast error is
 `model_error` until the next session starts, and that session names
 `model_error` as its reset rather than a mode change.
 
-Each committed `capacity_admit` or `capacity_evict` leaves one example in
+Each committed `capacity_admit`, `capacity_evict` or `capacity_rotate` leaves one example in
 `dry_run_blocks`. A
 turn writes its examples in one batch after its endings, also when a later
 pick stops the turn; a failed write loses them without undoing the endings

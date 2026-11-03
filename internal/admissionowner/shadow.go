@@ -13,8 +13,8 @@ import (
 	"github.com/pidginhost/csm/internal/firewall"
 )
 
-// forecastEntries bounds the active blocks one forecast models. It is a
-// modelling bound, never a real set limit.
+// forecastEntries bounds active blocks plus retained answers to removed
+// blocks. Both belong to one forecast; this is never a real set limit.
 const forecastEntries = firewall.MaxShadowBlocks
 
 // resetReason says why a forecast session started.
@@ -65,7 +65,9 @@ func newSessionID(r io.Reader) (string, error) {
 }
 
 // shadowEntry is one forecast block: its kind, absolute lease expiry, the
-// partition of the set it occupies and its rank.
+// partition of the set it occupies, its rank and its pick's scope, and
+// the admission time and session elapsed time it was decided at, from
+// which its rotation hold runs (spec 5.6).
 type shadowEntry struct {
 	kind      admission.Kind
 	expires   time.Time
@@ -73,6 +75,9 @@ type shadowEntry struct {
 	tier      admission.Tier
 	action    admission.ActionID
 	target    admission.Target
+	scope     string
+	applied   time.Time
+	elapsed   time.Duration
 }
 
 // shadowRank is what ranks a forecast block as a victim (spec 5.6): the
@@ -83,11 +88,15 @@ type shadowRank struct {
 	tier   admission.Tier
 	action admission.ActionID
 	target admission.Target
+	// scope is the pick's fairness scope; fresh is set when its episode
+	// may still rotate an equal-tier block (spec 5.2).
+	scope string
+	fresh bool
 }
 
 // shadowChange is a capacity admission a forecast decided and has not
 // installed: one charge and one entry, and the lower-tier block it
-// replaces, zero for a free slot.
+// replaces or the equal-tier block it rotates out, zero for a free slot.
 type shadowChange struct {
 	ip     string
 	entry  shadowEntry
@@ -118,6 +127,15 @@ type shadow struct {
 	// replaced is the imports the session replaced, by name, until their
 	// lease expiry: the real set still holds and lists them.
 	replaced map[admission.ActionID]time.Time
+	// answered is the addresses whose forecast block the session replaced
+	// or rotated out, until that block's expiry: their episode had its
+	// response, so no later generation rotates (spec 5.2).
+	answered map[string]time.Time
+	// waiting is the scopes of the turn's block picks by the partitions
+	// they may occupy, and cursors the session's remainder cursors: how
+	// the turn shares the set (spec 5.6).
+	waiting map[admission.Partition][]string
+	cursors admission.QueueCursors
 }
 
 // newShadow starts session id at wall time since from the real ceiling and
@@ -132,7 +150,7 @@ func newShadow(id string, since time.Time, reset resetReason, ceiling admission.
 	return &shadow{
 		id: id, since: since.UTC(), reset: reset, ceiling: ceiling,
 		charges: append([]admission.Charge(nil), charges...), entries: map[string]shadowEntry{},
-		replaced: map[admission.ActionID]time.Time{},
+		replaced: map[admission.ActionID]time.Time{}, answered: map[string]time.Time{},
 	}, nil
 }
 
@@ -170,8 +188,9 @@ func (s *shadow) setLimit(limit uint32) error {
 	return nil
 }
 
-// expire drops the forecast blocks and replaced imports whose lease has
-// ended at lease, a reading of the engine's lease clock.
+// expire drops the forecast blocks, replaced imports and answered
+// addresses whose lease has ended at lease, a reading of the engine's
+// lease clock.
 func (s *shadow) expire(lease time.Time) {
 	for ip, e := range s.entries {
 		if !lease.Before(e.expires) {
@@ -181,6 +200,11 @@ func (s *shadow) expire(lease time.Time) {
 	for name, expires := range s.replaced {
 		if !lease.Before(expires) {
 			delete(s.replaced, name)
+		}
+	}
+	for ip, expires := range s.answered {
+		if !lease.Before(expires) {
+			delete(s.answered, ip)
 		}
 	}
 }
@@ -244,16 +268,32 @@ func (s *shadow) replacedListed(adm firewall.BlockAdmission) int {
 	return n
 }
 
-// limits is the modelled set's slot budget, by the rule admission uses:
-// its free slots and, once the general partition is full, the victims
-// strictly higher work may replace: the ranked forecast blocks the real
-// sets do not hold, and the listed imports not already replaced.
-func (s *shadow) limits(adm firewall.BlockAdmission) *admission.SlotLimits {
-	limits, _ := s.occupancy(adm).Limits(func() ([]admission.EvictionVictim, error) {
+// limits is the modelled set's slot budget at admission time now, by the
+// rule admission uses: its free slots and, once the general partition is
+// full, the victims strictly higher work may replace: the ranked forecast
+// blocks the real sets do not hold, and the listed imports not already
+// replaced. Then the set is also shared among the scopes holding its
+// forecast blocks and the turn's waiting scopes, from the session's
+// cursors, so fresh work may rotate an equal-tier forecast block whose
+// hold passed on the session's clocks (spec 5.6); shared says so.
+func (s *shadow) limits(adm firewall.BlockAdmission, now time.Time) (limits *admission.SlotLimits, shared bool) {
+	var holding map[admission.Partition]map[string]int
+	limits, _ = s.occupancy(adm).Limits(func() ([]admission.EvictionVictim, error) {
 		var pool []admission.EvictionVictim
+		holding = map[admission.Partition]map[string]int{}
 		for ip, e := range s.entries {
-			if !adm.ShadowHeld[ip] && e.tier.Valid() && e.partition.Valid() {
-				pool = append(pool, admission.EvictionVictim{Action: e.action, Target: e.target, Tier: e.tier, Partition: e.partition, ExpiresAt: e.expires})
+			if adm.ShadowHeld[ip] || !e.partition.Valid() {
+				continue
+			}
+			if e.scope != "" {
+				if holding[e.partition] == nil {
+					holding[e.partition] = map[string]int{}
+				}
+				holding[e.partition][e.scope]++
+			}
+			if e.tier.Valid() {
+				pool = append(pool, admission.EvictionVictim{Action: e.action, Target: e.target, Tier: e.tier, Partition: e.partition, ExpiresAt: e.expires,
+					Scope: e.scope, Applied: e.applied, Rotatable: admission.RotationHoldPassed(e.applied, e.elapsed, now, s.ceiling.Elapsed)})
 			}
 		}
 		for _, v := range importVictims(adm.Imports) {
@@ -263,7 +303,22 @@ func (s *shadow) limits(adm firewall.BlockAdmission) *admission.SlotLimits {
 		}
 		return pool, nil
 	})
-	return limits
+	if holding == nil {
+		return limits, false
+	}
+	limits.Share(holding, s.waiting, s.cursors)
+	return limits, true
+}
+
+// share begins a turn's shares: the scopes of its block picks wait for
+// slots, and a turn that shares the set moves the session's remainder
+// cursors once, before any pick, as a live schedule cycle does (spec
+// 5.6).
+func (s *shadow) share(adm firewall.BlockAdmission, now time.Time, waiting map[admission.Partition][]string) {
+	s.waiting = waiting
+	if limits, shared := s.limits(adm, now); shared {
+		s.cursors = limits.Advance()
+	}
 }
 
 // demand is what a pick of kind ranked r on lanes asks of the set, as
@@ -271,44 +326,59 @@ func (s *shadow) limits(adm firewall.BlockAdmission) *admission.SlotLimits {
 func demand(kind admission.Kind, lanes []admission.Lane, r shadowRank) admission.SlotDemand {
 	cost := kind.CeilingCost()
 	return admission.SlotDemand{Tier: r.tier, Cost: cost, Evicts: kind == admission.KindBlockIP && cost == 1, Target: r.target,
-		Reserved: slices.ContainsFunc(lanes, func(l admission.Lane) bool { return admission.PartitionOf(l) == admission.PartitionReserved })}
+		Reserved: slices.ContainsFunc(lanes, func(l admission.Lane) bool { return admission.PartitionOf(l) == admission.PartitionReserved }),
+		Scope:    r.scope, Fresh: r.fresh}
 }
 
-// full reports whether a block_ip pick ranked r on lanes finds neither a
-// free slot in a partition it may occupy nor a strictly lower-tier block
-// it may replace. A zero limit is the finite automatic capacity.
-func (s *shadow) full(adm firewall.BlockAdmission, lanes []admission.Lane, r shadowRank) bool {
-	limits, d := s.limits(adm), demand(admission.KindBlockIP, lanes, r)
+// wait is why a block_ip pick ranked r on lanes waits for the set at
+// admission time now, zero when a lane has room: a free slot in a
+// partition it may occupy, a strictly lower-tier block it may replace or
+// an equal-tier block it may rotate out. It waits as equal_tier_wait
+// while a lane's partition holds an equal-tier block rotation does not
+// give it yet, else as set_full. A zero limit is the finite automatic
+// capacity.
+func (s *shadow) wait(adm firewall.BlockAdmission, lanes []admission.Lane, r shadowRank, now time.Time) admission.Prediction {
+	limits, _ := s.limits(adm, now)
+	d := demand(admission.KindBlockIP, lanes, r)
+	equal := false
 	for _, lane := range lanes {
 		if _, ok := limits.Room(lane, d); ok {
-			return false
+			return 0
 		}
+		equal = equal || limits.EqualTier(lane, d)
 	}
-	return true
+	if equal {
+		return admission.PredictEqualTierWait
+	}
+	return admission.PredictSetFull
 }
 
-// limited reports whether the forecast can model no other active block.
-func (s *shadow) limited() bool { return len(s.entries) >= forecastEntries }
+// limited counts retained answers too: forgetting one before expiry
+// would grant a returning address another rotation privilege.
+func (s *shadow) limited() bool { return len(s.entries)+len(s.answered) >= forecastEntries }
 
 // admit decides a ready pick of kind for ip lasting until expires, ranked
 // r, at admission time now, against this turn's snapshot: a full set
 // first, then the modelling bound, then the ceiling on each of lanes in
 // order that has room, the selected lane first. Room is a free slot of the
 // lane's partition or, with none, the first strictly lower-tier block in
-// eviction order, which the block replaces in that block's partition. A
+// eviction order, which the block replaces in that block's partition, or
+// else the equal-tier block rotation takes in the lane's partition. A
 // block on a free slot occupies the partition of the lane it is charged
 // on. Only a capacity admission returns a change; nothing is installed
 // until commit. Kinds outside the address model take no capacity.
 func (s *shadow) admit(ip string, kind admission.Kind, expires time.Time, lanes []admission.Lane, now time.Time, adm firewall.BlockAdmission, r shadowRank) (admission.Prediction, *shadowChange, error) {
-	switch {
-	case kind != admission.KindBlockIP:
+	if kind != admission.KindBlockIP {
 		return admission.PredictNotModelled, nil, nil
-	case s.full(adm, lanes, r):
-		return admission.PredictSetFull, nil, nil
-	case s.limited():
+	}
+	if wait := s.wait(adm, lanes, r, now); wait != 0 {
+		return wait, nil, nil
+	}
+	if s.limited() {
 		return admission.PredictForecastLimited, nil, nil
 	}
-	limits, d := s.limits(adm), demand(kind, lanes, r)
+	limits, _ := s.limits(adm, now)
+	d := demand(kind, lanes, r)
 	cost := kind.CeilingCost()
 	for _, lane := range lanes {
 		victim, ok := limits.Room(lane, d)
@@ -323,11 +393,16 @@ func (s *shadow) admit(ip string, kind admission.Kind, expires time.Time, lanes 
 			return 0, nil, err
 		}
 		pred, partition := admission.PredictCapacityAdmit, admission.PartitionOf(lane)
-		if victim != (admission.EvictionVictim{}) {
+		switch {
+		case victim == (admission.EvictionVictim{}):
+		case victim.Tier == r.tier:
+			pred, partition = admission.PredictCapacityRotate, victim.Partition
+		default:
 			pred, partition = admission.PredictCapacityEvict, victim.Partition
 		}
 		return pred, &shadowChange{
-			ip: ip, entry: shadowEntry{kind: kind, expires: expires, partition: partition, tier: r.tier, action: r.action, target: r.target}, next: next,
+			ip: ip, entry: shadowEntry{kind: kind, expires: expires, partition: partition, tier: r.tier, action: r.action, target: r.target,
+				scope: r.scope, applied: now, elapsed: s.ceiling.Elapsed}, next: next,
 			charge: admission.Charge{At: now, Lane: lane, Cost: cost, Elapsed: s.ceiling.Elapsed}, victim: victim,
 		}, nil
 	}
@@ -343,7 +418,8 @@ func (s *shadow) commit(p admission.Prediction, change *shadowChange, mono time.
 		// hour. Keep earlier predictions ahead of it for window release.
 		at := sort.Search(len(s.charges), func(i int) bool { return s.charges[i].At.After(change.charge.At) })
 		s.charges = slices.Insert(s.charges, at, change.charge)
-		// A replaced forecast block leaves the model; a replaced import
+		// A replaced or rotated forecast block leaves the model, and its
+		// address is answered until that block's expiry; a replaced import
 		// stays in the real set, so the session remembers it.
 		switch v := change.victim; {
 		case v == (admission.EvictionVictim{}):
@@ -351,6 +427,9 @@ func (s *shadow) commit(p admission.Prediction, change *shadowChange, mono time.
 			s.replaced[v.Action] = v.ExpiresAt
 		default:
 			addr, _ := v.Target.Addr()
+			if v.ExpiresAt.After(s.answered[addr.String()]) {
+				s.answered[addr.String()] = v.ExpiresAt
+			}
 			delete(s.entries, addr.String())
 		}
 		s.entries[change.ip] = change.entry
