@@ -571,3 +571,18 @@ func TestSMTPSlowBruteTrustDoesNotHideUnnamedFailures(t *testing.T) {
 		})
 	}
 }
+
+// Three addresses of one /64 that each fail on one mailbox reach the
+// breadth bar together; the block names the address that failed last.
+func TestSMTPSprayIPv6BlocksFailingAddress(t *testing.T) {
+	cfg := sprayTestConfig("enforce")
+	cfg.Thresholds.MailSprayBreadthMailboxes = 3
+	d, clock := newPairingDaemon(t, cfg)
+	for i, ip := range []string{"2001:db8:1:2::a", "2001:db8:1:2::b", "2001:db8:1:2::c"} {
+		got := feedExim(d, clock, makeEximDovecotFailLine(ip, walkedMailbox(i)))
+		f, blocked := findingByCheck(got, "smtp_bruteforce")
+		if blocked != (i == 2) || (blocked && f.SourceIP != ip) {
+			t.Fatalf("failure %d from %s: findings = %+v", i+1, ip, got)
+		}
+	}
+}

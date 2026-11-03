@@ -3,6 +3,7 @@ package daemon
 import (
 	"fmt"
 	"maps"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -387,7 +388,7 @@ func TestMailSpray_UniqueIPFloodBounded(t *testing.T) {
 	// Every flood IP is newer than the fired one, so only rank can keep it.
 	for i := range 10000 {
 		clock.advance(time.Millisecond)
-		m.Failure(fmt.Sprintf("2001:db8::%x", i+1), "a@example.com", mailboxExists)
+		m.Failure(fmt.Sprintf("2001:db8:%x::1", i+1), "a@example.com", mailboxExists)
 		if m.Size() > 100 {
 			t.Fatalf("Size() = %d after %d IPs, want <= 100", m.Size(), i+1)
 		}
@@ -450,7 +451,7 @@ func TestMailSpray_FailureFloodKeepsTrust(t *testing.T) {
 	wantNoVerdict(t, m.Failure(real, "a@example.com", mailboxExists))
 	for i := range 10000 {
 		clock.advance(time.Millisecond)
-		m.Failure(fmt.Sprintf("2001:db8::%x", i+1), "a@example.com", mailboxExists)
+		m.Failure(fmt.Sprintf("2001:db8:%x::1", i+1), "a@example.com", mailboxExists)
 	}
 	if !m.TrustedAll(real, []string{"a@example.com"}) {
 		t.Fatal("failure flood evicted trust")
@@ -576,7 +577,7 @@ func TestMailSpray_FullEvidencePoolKeepsStrongerEntries(t *testing.T) {
 			cfg.MaxIPs = 100
 			m, clock := newTestSpray(cfg)
 			for i := range strongCount {
-				ip := fmt.Sprintf("2001:db8::%x", i+1)
+				ip := fmt.Sprintf("2001:db8:%x::1", i+1)
 				wantNoVerdict(t, m.Failure(ip, "a@example.com", mailboxExists))
 				wantRule(t, m.Failure(ip, "b@example.com", mailboxExists), sprayRuleBreadth, true)
 			}
@@ -589,7 +590,7 @@ func TestMailSpray_FullEvidencePoolKeepsStrongerEntries(t *testing.T) {
 			}
 			clock.advance(cfg.Suppression)
 			for i := range strongCount {
-				wantRule(t, m.Failure(fmt.Sprintf("2001:db8::%x", i+1), "a@example.com", mailboxExists), sprayRuleBreadth, true)
+				wantRule(t, m.Failure(fmt.Sprintf("2001:db8:%x::1", i+1), "a@example.com", mailboxExists), sprayRuleBreadth, true)
 			}
 		})
 	}
@@ -624,7 +625,7 @@ func TestMailSpray_FullRepeatPoolKeepsLearning(t *testing.T) {
 	cfg.MaxIPs = 100
 	m, clock := newTestSpray(cfg)
 	for i := range cfg.MaxIPs {
-		ip := fmt.Sprintf("2001:db8::%x", i+1)
+		ip := fmt.Sprintf("2001:db8:%x::1", i+1)
 		wantNoVerdict(t, m.Failure(ip, "a@example.com", mailboxExists))
 		wantNoVerdict(t, m.Failure(ip, "a@example.com", mailboxExists))
 	}
@@ -726,7 +727,7 @@ func TestMailSpray_FullPoolsSetEvictionFloor(t *testing.T) {
 	cfg.MaxIPs = 100
 	ips, clock := newTestSpray(cfg)
 	for i := range cfg.MaxIPs {
-		ip := fmt.Sprintf("2001:db8::%x", i+1)
+		ip := fmt.Sprintf("2001:db8:%x::1", i+1)
 		wantNoVerdict(t, ips.Failure(ip, "a@example.com", mailboxExists))
 		wantRule(t, ips.Failure(ip, "b@example.com", mailboxExists), sprayRuleBreadth, true)
 	}
@@ -1138,7 +1139,7 @@ func TestMailSpray_RevocationAtCapacity(t *testing.T) {
 	}
 	for i := range 2 * cfg.MaxIPs {
 		clock.advance(time.Second)
-		m.Failure(fmt.Sprintf("2001:db8::%x", i+1), "noise@example.com", mailboxExists)
+		m.Failure(fmt.Sprintf("2001:db8:%x::1", i+1), "noise@example.com", mailboxExists)
 		if m.Size() > cfg.MaxIPs {
 			t.Fatal("revocations exceeded the evidence pool limit")
 		}
@@ -1152,7 +1153,7 @@ func TestMailSpray_RevocationAtCapacity(t *testing.T) {
 		t.Fatal("revocations created trust")
 	}
 	for i := range 2 * cfg.MaxIPs {
-		m.RevokeTrust(fmt.Sprintf("2001:db8::%x", i+1), "cracked@example.com")
+		m.RevokeTrust(fmt.Sprintf("2001:db8:%x::1", i+1), "cracked@example.com")
 		if m.Size() > cfg.MaxIPs {
 			t.Fatal("new revocations exceeded the evidence pool limit")
 		}
@@ -1184,4 +1185,82 @@ func TestMailSpray_NameCapHoldsHighestBreadthBar(t *testing.T) {
 		wantNoVerdict(t, m.Failure(ip, fmt.Sprintf("n%d@example.com", i), mailboxExists))
 	}
 	wantRule(t, m.Failure(ip, "last@example.com", mailboxExists), sprayRuleBreadth, true)
+}
+
+// An IPv6 host rotates through its /64, so its failures share one evidence
+// entry; another /64 and every IPv4 address keep their own.
+func TestMailSprayIPv6EvidencePer64(t *testing.T) {
+	cfg := testSprayConfig()
+	cfg.BreadthMailboxes = 3
+	m, _ := newTestSpray(cfg)
+	wantNoVerdict(t, m.Failure("2001:db8:1:2::a", "a@example.com", mailboxExists))
+	wantNoVerdict(t, m.Failure("2001:db8:1:2::b", "b@example.com", mailboxExists))
+	v := m.Failure("2001:db8:1:2:ffff::c", "c@example.com", mailboxExists)
+	wantRule(t, v, sprayRuleBreadth, true)
+	if want := []string{"a@example.com", "b@example.com", "c@example.com"}; !slices.Equal(v.Targets, want) {
+		t.Fatalf("targets = %v, want %v", v.Targets, want)
+	}
+	wantNoVerdict(t, m.Failure("2001:db8:1:3::a", "d@example.com", mailboxExists))
+	wantNoVerdict(t, m.Failure("192.0.2.1", "a@example.com", mailboxExists))
+	wantNoVerdict(t, m.Failure("192.0.2.2", "b@example.com", mailboxExists))
+	if m.Size() != 4 {
+		t.Fatalf("evidence entries = %d, want one /64, another /64 and two IPv4 addresses", m.Size())
+	}
+}
+
+// Blocks target addresses: once a /64 is over the bar, each new address that
+// fails draws its own verdict, and suppression holds per address.
+func TestMailSprayIPv6EachAddressDrawsItsOwnVerdict(t *testing.T) {
+	m, _ := newTestSpray(testSprayConfig())
+	const a, b = "2001:db8:1:2::a", "2001:db8:1:2::b"
+	wantNoVerdict(t, m.Failure(a, "a@example.com", mailboxExists))
+	wantRule(t, m.Failure(a, "b@example.com", mailboxExists), sprayRuleBreadth, true)
+	wantNoVerdict(t, m.Failure(a, "c@example.com", mailboxExists))
+	wantRule(t, m.Failure(b, "a@example.com", mailboxExists), sprayRuleBreadth, true)
+	wantNoVerdict(t, m.Failure(b, "d@example.com", mailboxExists))
+}
+
+// Observe mode blocks nothing: one /64 is reported once per window, and
+// again only when it fails on more mailboxes, whichever address fails.
+func TestMailSprayIPv6ObserveReportsOncePer64(t *testing.T) {
+	cfg := testSprayConfig()
+	cfg.Mode = sprayObserve
+	m, _ := newTestSpray(cfg)
+	wantNoVerdict(t, m.Failure("2001:db8:1:2::a", "a@example.com", mailboxExists))
+	wantRule(t, m.Failure("2001:db8:1:2::a", "b@example.com", mailboxExists), sprayRuleBreadth, true)
+	wantNoVerdict(t, m.Failure("2001:db8:1:2::b", "a@example.com", mailboxExists))
+	wantNoVerdict(t, m.Failure("2001:db8:1:2::c", "b@example.com", mailboxExists))
+	wantRule(t, m.Failure("2001:db8:1:2::d", "c@example.com", mailboxExists), sprayRuleBreadth, true)
+}
+
+// Login trust stays per address: trust earned by one address of a /64 does
+// not excuse the shared failures on that mailbox for another address.
+func TestMailSprayIPv6TrustStaysPerAddress(t *testing.T) {
+	m, clock := newTestSpray(testSprayConfig())
+	const a, b = "2001:db8:1:2::a", "2001:db8:1:2::b"
+	ageTrust(t, m, clock, a, "a@example.com")
+	wantNoVerdict(t, m.Failure(a, "a@example.com", mailboxExists))
+	wantRule(t, m.Failure(b, "b@example.com", mailboxExists), sprayRuleBreadth, true)
+	// For a, the shared failures on a stay excused.
+	wantNoVerdict(t, m.Failure(a, "a@example.com", mailboxExists))
+	if m.TrustedAll(b, []string{"a@example.com"}) || !m.TrustedAll(a, []string{"a@example.com"}) {
+		t.Fatal("trust moved between addresses of one /64")
+	}
+}
+
+// Addresses of one /64 that draw verdicts are capped like the other
+// per-entry records; the record that lapses first goes.
+func TestMailSprayIPv6SourcesBounded(t *testing.T) {
+	m, clock := newTestSpray(testSprayConfig())
+	addr := func(i int) string { return fmt.Sprintf("2001:db8:1:2::%x", i+1) }
+	wantNoVerdict(t, m.Failure(addr(0), "a@example.com", mailboxExists))
+	for i := range maxSprayNamesPerIP + 1 {
+		clock.advance(time.Second)
+		wantRule(t, m.Failure(addr(i), "b@example.com", mailboxExists), sprayRuleBreadth, true)
+	}
+	e := m.ips["2001:db8:1:2::/64"]
+	if _, ok := e.sources[addr(0)]; ok || len(e.sources) != maxSprayNamesPerIP {
+		t.Fatalf("sources = %d, first kept = %v; want %d without the first", len(e.sources), ok, maxSprayNamesPerIP)
+	}
+	wantNoVerdict(t, m.Failure(addr(maxSprayNamesPerIP), "c@example.com", mailboxExists))
 }

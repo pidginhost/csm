@@ -116,18 +116,29 @@ type sprayTrust struct{ first, last time.Time }
 
 type sprayTrustKey struct{ ip, mailbox string }
 
-// sprayIP is one IP's failure evidence.
+// sprayIP is the failure evidence of one evidence key (sprayEvidenceKey).
 type sprayIP struct {
-	failed                    map[string]sprayFailure
-	weakAlerted               map[string]time.Time // success mailbox to its last weak_compromise
-	revoked                   map[string]time.Time // known cracks cannot earn trust during the window
-	untracked                 time.Time            // latest untrusted failure refused at the name cap
-	suppressedUntil           time.Time
-	compromiseSuppressedUntil time.Time
-	verdictAt                 time.Time
-	observedAt                time.Time // last observe mode block verdict
-	observedNames             int       // untrusted names it listed
-	lastSeen                  time.Time
+	failed        map[string]sprayFailure
+	weakAlerted   map[string]time.Time   // success mailbox to its last weak_compromise
+	revoked       map[string]time.Time   // known cracks cannot earn trust during the window
+	sources       map[string]spraySource // verdict cadence by address
+	untracked     time.Time              // latest untrusted failure refused at the name cap
+	verdictAt     time.Time
+	observedAt    time.Time // last observe mode block verdict
+	observedNames int       // untrusted names it listed
+	lastSeen      time.Time
+}
+
+// spraySource is one address's verdict cadence. Blocks target the address,
+// so an IPv6 /64 shares evidence but each of its addresses draws and is
+// suppressed from verdicts on its own.
+type spraySource struct{ blockUntil, compromiseUntil time.Time }
+
+func (s spraySource) lapse() time.Time {
+	if s.blockUntil.After(s.compromiseUntil) {
+		return s.blockUntil
+	}
+	return s.compromiseUntil
 }
 
 // sprayName is the corroboration for one missing mailbox name: which networks
@@ -147,12 +158,13 @@ type sprayName struct {
 // Evidence and trust are two pools, each capped at MaxIPs entries and
 // evicted on its own, so a flood of failures cannot evict trust and a flood
 // of clean logins (anyone can own a mailbox on a shared host) cannot evict
-// evidence. One IP may sit in both.
+// evidence. One IP may sit in both. Evidence is kept per IPv4 address and
+// per IPv6 /64; trust is kept per address.
 type mailSpray struct {
 	mu    sync.Mutex
 	cfg   sprayConfig
 	now   func() time.Time
-	ips   map[string]*sprayIP // evidence pool
+	ips   map[string]*sprayIP // evidence pool, by sprayEvidenceKey
 	names map[string]*sprayName
 
 	trust          map[sprayTrustKey]sprayTrust   // trust pool
@@ -247,16 +259,18 @@ func (m *mailSpray) Failure(ip, mailbox string, exist mailboxExistence) *sprayVe
 		exist = mailboxExistenceUnknown
 	}
 	now := m.now()
-	e := m.touch(ip, now)
+	key := sprayEvidenceKey(ip)
+	e := m.touch(key, now)
 	// Rank the current IP after its verdict, including it as an eviction
 	// candidate so fresh noise cannot displace stronger evidence.
-	defer m.evictIPs(ip, now)
+	defer m.evictIPs(key, now)
 	stored := m.recordFailure(e, ip, mailbox, exist, now)
 	networks := 0
 	if exist == mailboxMissing {
 		networks = m.corroborate(mailbox, ip, now)
 	}
-	if m.cfg.Mode == sprayOff || now.Before(e.suppressedUntil) {
+	src := e.sources[ip]
+	if m.cfg.Mode == sprayOff || now.Before(src.blockUntil) {
 		return nil
 	}
 
@@ -270,7 +284,8 @@ func (m *mailSpray) Failure(ip, mailbox string, exist mailboxExistence) *sprayVe
 	if m.cfg.Mode == sprayObserve && !e.noteObserved(len(untrusted), now, m.cfg.Window) {
 		return nil
 	}
-	e.suppressedUntil = now.Add(m.cfg.Suppression)
+	src.blockUntil = now.Add(m.cfg.Suppression)
+	e.setSource(ip, src)
 	if missing {
 		v := m.verdict(e, sprayRuleMissingMailbox, true, mailbox, untrusted, now)
 		v.Networks = networks
@@ -302,7 +317,8 @@ func (m *mailSpray) Success(ip, mailbox string) (clean bool, v *sprayVerdict) {
 	}
 	now := m.now()
 	k := sprayTrustKey{ip, mailbox}
-	e := m.ips[ip]
+	key := sprayEvidenceKey(ip)
+	e := m.ips[key]
 	if m.agedTrust(ip, mailbox, now) || m.trustPredatesFailures(e, k, now) {
 		t := m.trust[k]
 		t.last = now
@@ -311,7 +327,7 @@ func (m *mailSpray) Success(ip, mailbox string) (clean bool, v *sprayVerdict) {
 		return true, nil
 	}
 	if e != nil {
-		m.markIP(ip)
+		m.markIP(key)
 	}
 
 	var untrusted []string
@@ -334,7 +350,8 @@ func (m *mailSpray) Success(ip, mailbox string) (clean bool, v *sprayVerdict) {
 		return true, m.verdict(e, sprayRuleSingleMailboxSuccess, false, mailbox, untrusted, now)
 	}
 
-	if m.cfg.Mode == sprayOff || now.Before(e.compromiseSuppressedUntil) {
+	src := e.sources[ip]
+	if m.cfg.Mode == sprayOff || now.Before(src.compromiseUntil) {
 		return false, nil
 	}
 	rule, block := sprayRuleWeakCompromise, false
@@ -346,7 +363,8 @@ func (m *mailSpray) Success(ip, mailbox string) (clean bool, v *sprayVerdict) {
 		// once per mailbox per window, not once per suppression period.
 		return false, nil
 	}
-	e.compromiseSuppressedUntil = now.Add(m.cfg.Suppression)
+	src.compromiseUntil = now.Add(m.cfg.Suppression)
+	e.setSource(ip, src)
 	return false, m.verdict(e, rule, block, mailbox, untrusted, now)
 }
 
@@ -384,8 +402,9 @@ func (m *mailSpray) RevokeTrust(ip, mailbox string) {
 		return
 	}
 	now := m.now()
-	m.touch(ip, now).noteRevoked(mailbox, now, m.cfg.Window)
-	m.evictIPs(ip, now)
+	key := sprayEvidenceKey(ip)
+	m.touch(key, now).noteRevoked(mailbox, now, m.cfg.Window)
+	m.evictIPs(key, now)
 }
 
 // ForgetRecentFailures drops the IP's failures since "since": an outage
@@ -395,7 +414,8 @@ func (m *mailSpray) RevokeTrust(ip, mailbox string) {
 func (m *mailSpray) ForgetRecentFailures(ip string, since time.Time) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	e := m.ips[ip]
+	key := sprayEvidenceKey(ip)
+	e := m.ips[key]
 	if e == nil {
 		return
 	}
@@ -413,7 +433,7 @@ func (m *mailSpray) ForgetRecentFailures(ip string, since time.Time) {
 		changed = true
 	}
 	if changed {
-		m.markIP(ip)
+		m.markIP(key)
 	}
 }
 
@@ -668,13 +688,11 @@ func (m *mailSpray) exportAll() store.MailSprayState {
 
 func exportSprayIP(e *sprayIP) store.MailSprayIP {
 	s := store.MailSprayIP{
-		Untracked:       e.untracked,
-		SuppressedUntil: e.suppressedUntil,
-		CompromiseUntil: e.compromiseSuppressedUntil,
-		VerdictAt:       e.verdictAt,
-		ObservedAt:      e.observedAt,
-		ObservedNames:   e.observedNames,
-		LastSeen:        e.lastSeen,
+		Untracked:     e.untracked,
+		VerdictAt:     e.verdictAt,
+		ObservedAt:    e.observedAt,
+		ObservedNames: e.observedNames,
+		LastSeen:      e.lastSeen,
 	}
 	if len(e.failed) > 0 {
 		s.Failed = make(map[string]store.MailSprayFailure, len(e.failed))
@@ -687,6 +705,12 @@ func exportSprayIP(e *sprayIP) store.MailSprayIP {
 	}
 	if len(e.revoked) > 0 {
 		s.Revoked = maps.Clone(e.revoked)
+	}
+	if len(e.sources) > 0 {
+		s.Sources = make(map[string]store.MailSpraySource, len(e.sources))
+		for ip, src := range e.sources {
+			s.Sources[ip] = store.MailSpraySource{SuppressedUntil: src.blockUntil, CompromiseUntil: src.compromiseUntil}
+		}
 	}
 	return s
 }
@@ -735,12 +759,13 @@ func (m *mailSpray) Load(read func(func(store.MailSprayState)) error) error {
 				m.loadTrust(sprayTrustKey{ip, mb}, sprayTrust{p.First, p.Last})
 			}
 		}
-		for ip, saved := range st.IPs {
-			if !sprayValidIP(ip) {
+		for saved, s := range st.IPs {
+			key, addr := sprayLoadEvidenceKey(saved)
+			if key == "" {
 				continue
 			}
-			if e := m.loadIP(ip, saved, cutoff, now); e != nil {
-				m.ips[ip] = e
+			if e := m.loadIP(m.ips[key], key, addr, s, cutoff, now); e != nil {
+				m.ips[key] = e
 				m.evictIPs("", now)
 			}
 		}
@@ -798,31 +823,46 @@ func (m *mailSpray) loadTrust(k sprayTrustKey, t sprayTrust) {
 	m.evictTrust(sprayTrustKey{})
 }
 
-// loadIP rebuilds one IP's evidence, or returns nil when nothing is left in
-// the window, as Purge would drop it. Damaged times and counts are repaired
-// toward weaker evidence.
-func (m *mailSpray) loadIP(ip string, s store.MailSprayIP, cutoff, now time.Time) *sprayIP {
-	e := &sprayIP{
-		suppressedUntil:           sprayNotAfter(s.SuppressedUntil, now.Add(m.cfg.Suppression)),
-		compromiseSuppressedUntil: sprayNotAfter(s.CompromiseUntil, now.Add(m.cfg.Suppression)),
-		verdictAt:                 sprayNotAfter(s.VerdictAt, now),
-		lastSeen:                  sprayNotAfter(s.LastSeen, now),
+// loadIP merges one saved entry into the evidence of key, e (nil when there
+// is none yet), and returns it, or nil when nothing is left in the window, as
+// Purge would drop it. addr is the address the saved key named; a /64 key
+// names none. Damaged times and counts are repaired toward weaker evidence.
+func (m *mailSpray) loadIP(e *sprayIP, key, addr string, s store.MailSprayIP, cutoff, now time.Time) *sprayIP {
+	if e == nil {
+		e = &sprayIP{}
 	}
+	e.verdictAt = sprayLatest(e.verdictAt, sprayNotAfter(s.VerdictAt, now))
+	e.lastSeen = sprayLatest(e.lastSeen, sprayNotAfter(s.LastSeen, now))
 	if u := sprayNotAfter(s.Untracked, now); !u.Before(cutoff) {
-		e.untracked = u
+		e.untracked = sprayLatest(e.untracked, u)
 	}
 	if o := sprayNotAfter(s.ObservedAt, now); !o.Before(cutoff) {
-		e.observedAt, e.observedNames = o, min(max(s.ObservedNames, 0), maxSprayNamesPerIP)
+		e.observedAt = sprayLatest(e.observedAt, o)
+		e.observedNames = max(e.observedNames, min(max(s.ObservedNames, 0), maxSprayNamesPerIP))
+	}
+	limit := now.Add(m.cfg.Suppression)
+	for ip, saved := range s.Sources {
+		if !sprayValidIP(ip) || sprayEvidenceKey(ip) != key {
+			continue
+		}
+		src := e.sources[ip]
+		src.blockUntil = sprayLatest(src.blockUntil, sprayNotAfter(saved.SuppressedUntil, limit))
+		src.compromiseUntil = sprayLatest(src.compromiseUntil, sprayNotAfter(saved.CompromiseUntil, limit))
+		e.setSource(strings.Clone(ip), src)
 	}
 	// Revoke before choosing failures at the name cap, including revocations
-	// whose names will be represented only by the overflow marker.
+	// whose names will be represented only by the overflow marker. Live
+	// revocation drops the cracking address's trust; a /64 key does not say
+	// which address that was.
 	for mb, at := range s.Revoked {
 		mb = strings.Clone(normalizeSprayMailbox(mb))
 		at = sprayNotAfter(at, now)
 		if mb == "" || at.Before(cutoff) {
 			continue
 		}
-		m.dropTrust(sprayTrustKey{ip, mb})
+		if addr != "" {
+			m.dropTrust(sprayTrustKey{addr, mb})
+		}
 		if old := e.revoked[mb]; old.After(at) {
 			at = old
 		}
@@ -851,7 +891,7 @@ func (m *mailSpray) loadIP(ip string, s store.MailSprayIP, cutoff, now time.Time
 			count = max(count, cur.count)
 			exist = foldObservedExistence(exist, cur.exist)
 		}
-		if _, ok := e.failed[name]; !ok && !m.roomForName(e, ip, name, last, now) {
+		if _, ok := e.failed[name]; !ok && !m.roomForName(e, addr, name, last, now) {
 			continue
 		}
 		if e.failed == nil {
@@ -909,6 +949,31 @@ func sprayLoadNetwork(key string) string {
 	return key
 }
 
+// sprayLoadEvidenceKey returns the evidence key a saved one belongs to and
+// the address it names, if any. Older state keyed IPv6 evidence by address,
+// which folds into the /64. A key that is neither an address nor a /64
+// sprayEvidenceKey could have made returns "".
+func sprayLoadEvidenceKey(saved string) (key, addr string) {
+	if a, err := netip.ParseAddr(saved); err == nil {
+		if a.Zone() != "" {
+			return "", ""
+		}
+		return sprayEvidenceKey(saved), saved
+	}
+	p, err := netip.ParsePrefix(saved)
+	if err != nil || sprayEvidenceKey(p.Addr().String()) != saved {
+		return "", ""
+	}
+	return saved, ""
+}
+
+func sprayLatest(a, b time.Time) time.Time {
+	if b.After(a) {
+		return b
+	}
+	return a
+}
+
 func sprayValidIP(ip string) bool {
 	a, err := netip.ParseAddr(ip)
 	return err == nil && a.Zone() == ""
@@ -961,6 +1026,22 @@ func (d *Daemon) persistMailSpray() {
 		d.mailSpray.RetryChanges(delta, full)
 		csmlog.Warn("mail spray memory persistence failed", "err", err)
 	}
+}
+
+// sprayEvidenceKey is the evidence entry a source's failures go to: the
+// address for IPv4 (IPv4-mapped included) and the /64 for IPv6, since one
+// IPv6 host can rotate through its /64. Trust and blocks stay per address.
+func sprayEvidenceKey(ip string) string {
+	a, err := netip.ParseAddr(ip)
+	if err != nil {
+		return ip
+	}
+	a = a.Unmap().WithZone("")
+	if a.Is4() {
+		return a.String()
+	}
+	p, _ := a.Prefix(64)
+	return p.String()
 }
 
 // sprayNetworkKey is the network a source counts as for corroboration: the
@@ -1115,6 +1196,25 @@ func (e *sprayIP) noteRevoked(mailbox string, at time.Time, window time.Duration
 	if at.After(e.untracked) {
 		e.untracked = at
 	}
+}
+
+// setSource records ip's verdict cadence. At the cap the record that lapses
+// first goes; losing a live one only lets an address already reported draw
+// another verdict.
+func (e *sprayIP) setSource(ip string, src spraySource) {
+	if _, ok := e.sources[ip]; !ok && len(e.sources) >= maxSprayNamesPerIP {
+		first := ""
+		for a, s := range e.sources {
+			if first == "" || s.lapse().Before(e.sources[first].lapse()) {
+				first = a
+			}
+		}
+		delete(e.sources, first)
+	}
+	if e.sources == nil {
+		e.sources = make(map[string]spraySource)
+	}
+	e.sources[ip] = src
 }
 
 func (e *sprayIP) hasUntracked(now time.Time, window time.Duration) bool {

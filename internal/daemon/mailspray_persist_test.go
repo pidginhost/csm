@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"fmt"
+	"maps"
 	"reflect"
 	"slices"
 	"strings"
@@ -52,15 +53,22 @@ func TestMailSprayLoadExportKeepsEveryField(t *testing.T) {
 					"nobody@example.com": {First: at(-3), Last: at(-3), Count: 1, Exist: uint8(mailboxMissing)},
 					"":                   {First: at(-5), Last: at(-4), Count: 2},
 				},
-				WeakAlerted:     map[string]time.Time{"w@example.com": at(-6)},
-				Revoked:         map[string]time.Time{"r@example.com": at(-11)},
-				Untracked:       at(-7),
-				SuppressedUntil: clock.Now().Add(30 * time.Minute),
-				CompromiseUntil: clock.Now().Add(45 * time.Minute),
-				VerdictAt:       at(-2),
-				ObservedAt:      at(-3),
-				ObservedNames:   2,
-				LastSeen:        at(-1),
+				WeakAlerted:   map[string]time.Time{"w@example.com": at(-6)},
+				Revoked:       map[string]time.Time{"r@example.com": at(-11)},
+				Sources:       map[string]store.MailSpraySource{"192.0.2.1": {SuppressedUntil: clock.Now().Add(30 * time.Minute), CompromiseUntil: clock.Now().Add(45 * time.Minute)}},
+				Untracked:     at(-7),
+				VerdictAt:     at(-2),
+				ObservedAt:    at(-3),
+				ObservedNames: 2,
+				LastSeen:      at(-1),
+			},
+			"2001:db8:1:2::/64": {
+				Failed: map[string]store.MailSprayFailure{"a@example.com": {First: at(-4), Last: at(-2), Count: 2}},
+				Sources: map[string]store.MailSpraySource{
+					"2001:db8:1:2::a": {SuppressedUntil: clock.Now().Add(20 * time.Minute)},
+					"2001:db8:1:2::b": {CompromiseUntil: clock.Now().Add(40 * time.Minute)},
+				},
+				LastSeen: at(-2),
 			},
 		},
 		Trust: map[string]map[string]store.GoodSourcePair{
@@ -396,15 +404,14 @@ func TestMailSprayLoadDistrustsFutureTimes(t *testing.T) {
 		later := now.Add(365 * 24 * time.Hour)
 		return store.MailSprayState{
 			IPs: map[string]store.MailSprayIP{"192.0.2.2": {
-				Failed:          map[string]store.MailSprayFailure{"x@example.com": {First: later, Last: later, Count: 1}},
-				WeakAlerted:     map[string]time.Time{"w@example.com": later},
-				Revoked:         map[string]time.Time{"r@example.com": later},
-				Untracked:       later,
-				SuppressedUntil: later,
-				CompromiseUntil: later,
-				VerdictAt:       later,
-				ObservedAt:      later,
-				LastSeen:        later,
+				Failed:      map[string]store.MailSprayFailure{"x@example.com": {First: later, Last: later, Count: 1}},
+				WeakAlerted: map[string]time.Time{"w@example.com": later},
+				Revoked:     map[string]time.Time{"r@example.com": later},
+				Sources:     map[string]store.MailSpraySource{"192.0.2.2": {SuppressedUntil: later, CompromiseUntil: later}},
+				Untracked:   later,
+				VerdictAt:   later,
+				ObservedAt:  later,
+				LastSeen:    later,
 			}},
 			Trust: map[string]map[string]store.GoodSourcePair{"192.0.2.1": {
 				"a@example.com": {First: now.Add(-24 * time.Hour), Last: later},
@@ -436,7 +443,8 @@ func TestMailSprayLoadDistrustsFutureTimes(t *testing.T) {
 			t.Errorf("%s = %v, want clamped to %v", name, got, now)
 		}
 	}
-	for name, got := range map[string]time.Time{"suppression": e.suppressedUntil, "compromise suppression": e.compromiseSuppressedUntil} {
+	src := e.sources["192.0.2.2"]
+	for name, got := range map[string]time.Time{"suppression": src.blockUntil, "compromise suppression": src.compromiseUntil} {
 		if want := now.Add(cfg.Suppression); !got.Equal(want) {
 			t.Errorf("%s = %v, want capped at %v", name, got, want)
 		}
@@ -462,6 +470,60 @@ func TestMailSprayLoadDistrustsFutureTimes(t *testing.T) {
 		t.Fatalf("after a window: evidence=%d trust=%d names=%d, want all expired", m.Size(), m.TrustSize(), len(m.names))
 	}
 	wantNoVerdict(t, m.Failure("192.0.2.3", "nobody@example.com", mailboxMissing))
+}
+
+// IPv6 evidence is saved under its /64. Each address keeps its own verdict
+// suppression across a restart.
+func TestMailSprayIPv6EvidenceSurvivesRestart(t *testing.T) {
+	m, clock := newTestSpray(testSprayConfig())
+	const a, b = "2001:db8:1:2::a", "2001:db8:1:2::b"
+	wantNoVerdict(t, m.Failure(a, "a@example.com", mailboxExists))
+	wantRule(t, m.Failure(a, "b@example.com", mailboxExists), sprayRuleBreadth, true)
+	want := m.Export()
+	if _, ok := want.IPs["2001:db8:1:2::/64"]; !ok || len(want.IPs) != 1 {
+		t.Fatalf("saved evidence keys = %v, want the /64", slices.Collect(maps.Keys(want.IPs)))
+	}
+
+	m = restartSpray(t, m, clock)
+	if got := m.Export(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("restart changed the memory:\n got %+v\nwant %+v", got, want)
+	}
+	wantNoVerdict(t, m.Failure(a, "c@example.com", mailboxExists))
+	wantRule(t, m.Failure(b, "d@example.com", mailboxExists), sprayRuleBreadth, true)
+}
+
+// Older state keyed IPv6 evidence by address; it folds into the /64. Only
+// keys the detector could have written are loaded.
+func TestMailSprayLoadEvidenceKeys(t *testing.T) {
+	m, clock := newTestSpray(testSprayConfig())
+	now := clock.Now()
+	entry := func(name string) store.MailSprayIP {
+		return store.MailSprayIP{
+			Failed:   map[string]store.MailSprayFailure{name: {First: now, Last: now, Count: 1}},
+			LastSeen: now,
+		}
+	}
+	loadSpraySnapshot(t, m, store.MailSprayState{IPs: map[string]store.MailSprayIP{
+		"2001:db8:1:2::a":    entry("a@example.com"),
+		"2001:db8:1:2::b":    entry("b@example.com"),
+		"2001:db8:1:2::/64":  entry("c@example.com"),
+		"192.0.2.1":          entry("d@example.com"),
+		"2001:db8:1:3::1/64": entry("x@example.com"),
+		"2001:db8:1:4::/48":  entry("x@example.com"),
+		"2001:DB8:1:5::/64":  entry("x@example.com"),
+		"192.0.2.0/24":       entry("x@example.com"),
+		"192.0.2.0/32":       entry("x@example.com"),
+	}})
+	if m.Size() != 2 {
+		t.Fatalf("evidence entries = %v, want the /64 and the IPv4 address", slices.Collect(maps.Keys(m.ips)))
+	}
+	e := m.ips["2001:db8:1:2::/64"]
+	if e == nil || len(e.failed) != 3 {
+		t.Fatalf("/64 evidence = %+v, want the failures of both addresses and the /64", e)
+	}
+	if f := m.ips["192.0.2.1"]; f == nil || len(f.failed) != 1 {
+		t.Fatalf("IPv4 evidence = %+v", f)
+	}
 }
 
 func TestMailSprayLoadNormalisesKeys(t *testing.T) {
@@ -759,7 +821,7 @@ func TestMailSprayChurnKeepsSavesSmall(t *testing.T) {
 
 	for i := range 10 * cfg.MaxIPs {
 		clock.advance(time.Second)
-		m.Failure(fmt.Sprintf("2001:db8::%x", i), "a@example.com", mailboxExists)
+		m.Failure(fmt.Sprintf("2001:db8:%x::1", i), "a@example.com", mailboxExists)
 		if n := len(m.ipChanges.dirty); n > cfg.MaxIPs {
 			t.Fatalf("change set holds %d IPs, pool %d", n, cfg.MaxIPs)
 		}
@@ -800,7 +862,7 @@ func TestMailSprayChangeSetBoundedWhileSavesFail(t *testing.T) {
 	for round := range 5 {
 		for i := range 3 * cfg.MaxIPs {
 			clock.advance(time.Second)
-			m.Failure(fmt.Sprintf("2001:db8:%x::%x", round, i), "a@example.com", mailboxExists)
+			m.Failure(fmt.Sprintf("2001:db8:%x:%x::1", round, i), "a@example.com", mailboxExists)
 		}
 		d.persistMailSpray()
 		if n, s := len(m.ipChanges.dirty), len(m.ipChanges.saved); n > 2*cfg.MaxIPs || s > 2*cfg.MaxIPs {

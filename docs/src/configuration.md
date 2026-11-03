@@ -292,7 +292,7 @@ thresholds:
   # clean logins per IP. A clean login earns the IP trust on that mailbox.
   mail_spray_mode: observe                # off | observe (findings only) | enforce (block) (default: observe)
   mail_spray_window_min: 10080            # memory of failed and clean logins in minutes (default: 10080; 60-10080)
-  mail_spray_breadth_mailboxes: 2         # finding once one IP has failed on this many untrusted mailboxes, the current one included (default: 2; 2-10; explicit 0 disables)
+  mail_spray_breadth_mailboxes: 2         # finding once one IP (an IPv6 /64) has failed on this many untrusted mailboxes, the current one included (default: 2; 2-10; explicit 0 disables)
   mail_spray_missing_networks: 3          # finding once this many networks have tried one non-existent mailbox, the current one included (default: 3; 1-50; explicit 0 disables)
   modsec_escalation_hits: 3          # denies from one IP before ModSecurity escalation (default: 3)
   modsec_escalation_window_min: 10   # ModSecurity escalation window in minutes (default: 10)
