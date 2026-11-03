@@ -288,3 +288,43 @@ func TestMailSprayIPv4MappedKeysAsIPv4(t *testing.T) {
 		t.Fatal("login trust not keyed by the IPv4 address")
 	}
 }
+
+// A mail client polls every few minutes. While a colleague's stale device
+// keeps one failure on another mailbox in memory, a login raises the weak
+// compromise advisory once per mailbox per memory window, not once per
+// suppression period.
+func TestMailSprayWeakCompromiseOncePerMailbox(t *testing.T) {
+	const ip = "203.0.113.163"
+	cfg := sprayTestConfig("enforce")
+	d, clock := newPairingDaemon(t, cfg)
+	logins := func(mailbox string, n int) int {
+		got := 0
+		for range n {
+			clock.advance(time.Hour)
+			for _, f := range feed(d, clock, makeDovecotSuccessLine("imap", ip, mailbox)) {
+				if f.Check == "mail_account_compromised" {
+					if !strings.HasPrefix(f.Message, "Possible mail account compromise: ") || f.Mailbox != mailbox {
+						t.Fatalf("finding = %+v", f)
+					}
+					got++
+				}
+			}
+		}
+		return got
+	}
+	feed(d, clock, makeDovecotFailLine("imap", ip, "x@example.com"))
+	if n := logins("y@example.com", 10); n != 1 {
+		t.Fatalf("weak advisories for y@example.com = %d over 10 hourly logins, want 1", n)
+	}
+	if n := logins("z@example.com", 2); n != 1 {
+		t.Fatalf("weak advisories for z@example.com = %d, want its own 1", n)
+	}
+	if d.mailSpray.TrustSize() != 0 {
+		t.Fatal("deduplicated logins earned trust")
+	}
+	clock.advance(time.Duration(cfg.Thresholds.MailSprayWindowMin) * time.Minute)
+	feed(d, clock, makeDovecotFailLine("imap", ip, "x@example.com"))
+	if n := logins("y@example.com", 1); n != 1 {
+		t.Fatalf("weak advisories after the window with a fresh failure = %d, want 1", n)
+	}
+}

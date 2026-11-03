@@ -114,7 +114,8 @@ type sprayTrustKey struct{ ip, mailbox string }
 // sprayIP is one IP's failure evidence.
 type sprayIP struct {
 	failed                    map[string]sprayFailure
-	untracked                 time.Time // latest untrusted failure refused at the name cap
+	weakAlerted               map[string]time.Time // success mailbox to its last weak_compromise
+	untracked                 time.Time            // latest untrusted failure refused at the name cap
 	suppressedUntil           time.Time
 	compromiseSuppressedUntil time.Time
 	verdictAt                 time.Time
@@ -292,6 +293,10 @@ func (m *mailSpray) Success(ip, mailbox string) (clean bool, v *sprayVerdict) {
 	if slices.ContainsFunc(others, func(n string) bool { return m.corroboratedMissing(e, n, now) }) {
 		rule = sprayRuleCompromise
 		block = m.agedTrustCount(ip, mailbox, now) < mailEstablishedSourceAccounts
+	} else if !e.noteWeakAlert(mailbox, now, m.cfg.Window) {
+		// A polling client logs in every few minutes: the advisory fires
+		// once per mailbox per window, not once per suppression period.
+		return false, nil
 	}
 	e.compromiseSuppressedUntil = now.Add(m.cfg.Suppression)
 	return false, m.verdict(e, rule, block, mailbox, untrusted, now)
@@ -324,10 +329,11 @@ func (m *mailSpray) Purge() {
 	cutoff := m.now().Add(-m.cfg.Window)
 	for ip, e := range m.ips {
 		e.pruneFailed(cutoff)
+		maps.DeleteFunc(e.weakAlerted, func(_ string, at time.Time) bool { return at.Before(cutoff) })
 		if e.untracked.Before(cutoff) {
 			e.untracked = time.Time{}
 		}
-		if len(e.failed) == 0 && e.untracked.IsZero() {
+		if len(e.failed) == 0 && e.untracked.IsZero() && len(e.weakAlerted) == 0 {
 			delete(m.ips, ip)
 		}
 	}
@@ -443,6 +449,30 @@ func foldObservedExistence(a, b mailboxExistence) mailboxExistence {
 
 func (e *sprayIP) pruneFailed(cutoff time.Time) {
 	maps.DeleteFunc(e.failed, func(_ string, f sprayFailure) bool { return f.last.Before(cutoff) })
+}
+
+// noteWeakAlert reports whether a weak compromise advisory for mailbox may
+// fire, at most once per window, and records it. The record is capped like
+// failed, oldest first, and grants no trust.
+func (e *sprayIP) noteWeakAlert(mailbox string, now time.Time, window time.Duration) bool {
+	at, ok := e.weakAlerted[mailbox]
+	if ok && now.Sub(at) <= window {
+		return false
+	}
+	if e.weakAlerted == nil {
+		e.weakAlerted = make(map[string]time.Time)
+	}
+	if !ok && len(e.weakAlerted) >= maxSprayNamesPerIP {
+		oldest := ""
+		for mb, t := range e.weakAlerted {
+			if oldest == "" || t.Before(e.weakAlerted[oldest]) {
+				oldest = mb
+			}
+		}
+		delete(e.weakAlerted, oldest)
+	}
+	e.weakAlerted[mailbox] = now
+	return true
 }
 
 func (e *sprayIP) hasUntracked(now time.Time, window time.Duration) bool {

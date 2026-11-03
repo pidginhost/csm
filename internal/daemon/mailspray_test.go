@@ -762,3 +762,61 @@ func TestParseSprayMode(t *testing.T) {
 		}
 	}
 }
+
+// Purge keeps the once-per-window record of a weak advisory even after the
+// failures behind it expire, so a fresh failure cannot re-raise it early.
+func TestMailSpray_WeakAlertOutlivesItsFailures(t *testing.T) {
+	cfg := testSprayConfig()
+	m, clock := newTestSpray(cfg)
+	const ip = "192.0.2.1"
+	m.Failure(ip, "x@example.com", mailboxExists)
+	clock.advance(time.Hour)
+	_, v := m.Success(ip, "y@example.com")
+	wantRule(t, v, sprayRuleWeakCompromise, false)
+	clock.advance(cfg.Window - 30*time.Minute) // the failure expires, the advisory does not
+	m.Purge()
+	m.Failure(ip, "x@example.com", mailboxExists)
+	if _, v := m.Success(ip, "y@example.com"); v != nil {
+		t.Fatalf("weak advisory re-raised within the window: %+v", v)
+	}
+	clock.advance(cfg.Window + time.Minute)
+	m.Purge()
+	if m.Size() != 0 {
+		t.Fatalf("expired advisory kept %d IPs alive", m.Size())
+	}
+}
+
+// The once-per-window records are capped per IP, pruned by Purge while the
+// IP stays for its evidence, and never count as trust.
+func TestMailSpray_WeakAlertRecordsBounded(t *testing.T) {
+	cfg := testSprayConfig()
+	m, clock := newTestSpray(cfg)
+	const ip = "192.0.2.1"
+	m.Failure(ip, "x@example.com", mailboxExists)
+	var mailboxes []string
+	for i := range maxSprayNamesPerIP + 8 {
+		clock.advance(cfg.Suppression)
+		mb := fmt.Sprintf("u%d@example.com", i)
+		mailboxes = append(mailboxes, mb)
+		_, v := m.Success(ip, mb)
+		wantRule(t, v, sprayRuleWeakCompromise, false)
+	}
+	records := func() int {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		return len(m.ips[ip].weakAlerted)
+	}
+	if n := records(); n != maxSprayNamesPerIP {
+		t.Fatalf("weak alert records = %d, want cap %d", n, maxSprayNamesPerIP)
+	}
+	clock.advance(cfg.TrustAge)
+	if m.TrustSize() != 0 || m.TrustedAll(ip, mailboxes[len(mailboxes)-1:]) {
+		t.Fatal("a weak alert record granted trust")
+	}
+	clock.advance(cfg.Window)
+	m.Failure(ip, "x@example.com", mailboxExists)
+	m.Purge()
+	if n := records(); m.Size() != 1 || n != 0 {
+		t.Fatalf("after purge %d IPs, %d weak alert records, want 1, 0", m.Size(), n)
+	}
+}
