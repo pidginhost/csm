@@ -42,10 +42,14 @@ func TestMailTrackerNeverEvictsTheEntryBeingWritten(t *testing.T) {
 func TestSMTPTrackerNeverEvictsTheEntryBeingWritten(t *testing.T) {
 	clock := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
 	const maxTracked = 8
-	tr := newSMTPAuthTracker(3, 50, 50, 10*time.Minute, 60*time.Minute, 0, 0, maxTracked, func() time.Time { return clock })
+	tr := newSMTPAuthTracker(3, 50, 50, 10*time.Minute, 60*time.Minute, 40, 6*time.Hour, maxTracked, func() time.Time { return clock })
 
+	// Fill the table with sources holding slow-brute evidence, each of
+	// which outranks a plain failure entry.
 	for i := 0; i < maxTracked; i++ {
-		tr.RecordSuccess(fmt.Sprintf("198.51.100.%d", i+1))
+		ip := fmt.Sprintf("198.51.100.%d", i+1)
+		tr.Record(ip, fmt.Sprintf("u%d@example.com", i))
+		tr.Record(ip, fmt.Sprintf("u%d@example.com", i))
 		clock = clock.Add(time.Millisecond)
 	}
 

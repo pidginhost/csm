@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
-	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/maillog"
 )
 
@@ -49,7 +48,9 @@ type mailAuthResult struct {
 // of receipt time apart, as a reader that fell behind would deliver them.
 func replayMailLog(t *testing.T, lines []maillog.Line) mailAuthResult {
 	t.Helper()
-	d, clock := newPairingDaemon(t, &config.Config{})
+	// Spray memory on, its rules off: logins earn trust, findings stay as
+	// the per-IP detectors make them.
+	d, clock := newPairingDaemon(t, sprayTestConfig("off"))
 	var res mailAuthResult
 	for _, line := range lines {
 		clock.advance(time.Second)

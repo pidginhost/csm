@@ -43,9 +43,9 @@ func TestSMTPTrackerFloodOfAccountNamesKeepsSlowEvidence(t *testing.T) {
 	clock := now
 	tr := newSMTPAuthTracker(50, 80, 120, 10*time.Minute, 60*time.Minute, 40, 6*time.Hour, 20, func() time.Time { return clock })
 
-	// A source with in-window slow-brute evidence and a recorded success.
+	// A source with in-window slow-brute evidence.
 	tr.Record("198.51.100.20", "walk1@example.com")
-	tr.RecordSuccess("198.51.100.20")
+	tr.Record("198.51.100.20", "walk2@example.com")
 	clock = clock.Add(time.Minute)
 
 	for i := 0; i < 200; i++ {
@@ -90,9 +90,12 @@ func TestMailTrackerFreshIPFloodKeepsIdleGoodSource(t *testing.T) {
 func TestSMTPTrackerFreshIPFloodKeepsRecentSuccess(t *testing.T) {
 	now := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
 	clock := now
-	tr := newSMTPAuthTracker(50, 80, 120, 10*time.Minute, 60*time.Minute, 40, 6*time.Hour, 20, func() time.Time { return clock })
+	clk := func() time.Time { return clock }
+	tr := newSMTPAuthTracker(50, 80, 120, 10*time.Minute, 60*time.Minute, 40, 6*time.Hour, 20, clk)
+	spray := newMailSpray(sprayConfig{Mode: sprayEnforce, Window: 7 * 24 * time.Hour, TrustAge: 10 * time.Minute, Suppression: time.Hour, MaxIPs: 20}, clk)
+	tr.SetSpray(spray)
 
-	tr.RecordSuccess("198.51.100.40")
+	tr.RecordSuccess("198.51.100.40", "alice@example.com")
 	clock = clock.Add(11 * time.Minute)
 	for i := 0; i < 200; i++ {
 		clock = clock.Add(time.Second)
@@ -100,10 +103,11 @@ func TestSMTPTrackerFreshIPFloodKeepsRecentSuccess(t *testing.T) {
 		tr.Record(ip, fmt.Sprintf("victim%d@example.com", i))
 	}
 
-	tr.mu.Lock()
-	defer tr.mu.Unlock()
-	if _, ok := tr.ips["198.51.100.40"]; !ok {
-		t.Fatal("IP entry with a recent successful auth evicted by fresh one-failure sources")
+	if !spray.TrustedAll("198.51.100.40", []string{"alice@example.com"}) {
+		t.Fatal("login trust from a recent successful auth evicted by fresh one-failure sources")
+	}
+	if n := spray.Size(); n > 20 {
+		t.Fatalf("spray memory over its cap after the flood: %d", n)
 	}
 }
 
@@ -131,10 +135,10 @@ func TestSMTPEvictionRankIncludesWindowBoundary(t *testing.T) {
 	if got := (&smtpIPEntry{times: []time.Time{now.Add(-window)}}).evictionRank(now, window, slowWindow); got != evictionRankActiveIP {
 		t.Fatalf("fast failure at window boundary rank = %d, want active", got)
 	}
-	if got := (&smtpIPEntry{slowLastSuccess: now.Add(-slowWindow)}).evictionRank(now, window, slowWindow); got != evictionRankProtectedIP {
-		t.Fatalf("success at slow-window boundary rank = %d, want protected", got)
+	if got := (&smtpIPEntry{slowTimes: []time.Time{now.Add(-slowWindow), now.Add(-slowWindow)}}).evictionRank(now, window, slowWindow); got != evictionRankProtectedIP {
+		t.Fatalf("slow evidence at window boundary rank = %d, want protected", got)
 	}
-	if got := (&smtpIPEntry{slowTimes: []time.Time{now, now}, slowLastSuccess: now}).evictionRank(now, window, 0); got != evictionRankIdleIP {
+	if got := (&smtpIPEntry{slowTimes: []time.Time{now, now}}).evictionRank(now, window, 0); got != evictionRankIdleIP {
 		t.Fatalf("disabled slow window rank = %d, want idle", got)
 	}
 }

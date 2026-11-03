@@ -392,24 +392,26 @@ Dovecot writes rejections only with verbose auth logging on:
 auth_verbose = yes
 ```
 
-Leave `auth_verbose_passwords` at `no`; lines that carry a logged password are ignored. `csm doctor` checks both settings on Postfix hosts with Dovecot. Rejections for IMAP, POP3 and ManageSieve logins carry a session id and are counted by the mail tracker below from their login summaries. A successful Postfix login, logged when the client's first recipient is accepted, keeps its address out of the slow brute-force block, as an authenticated Exim delivery does.
+Leave `auth_verbose_passwords` at `no`; lines that carry a logged password are ignored. `csm doctor` checks both settings on Postfix hosts with Dovecot. Rejections for IMAP, POP3 and ManageSieve logins carry a session id and are counted by the mail tracker below from their login summaries.
 
-The success exemption expires with the slow detection window. It does not
-clear failed attempts or exempt the address from fast brute-force or spray
-detection, matching Exim's success handling.
+A successful SMTP login is read from Postfix's record of an authenticated client, logged when its first recipient is accepted, or from an authenticated Exim delivery. It counts for the mailbox it names. A login from an address with no recent failures on other mailboxes earns trust for that mailbox only, and the trust counts once it is older than the fast detection window. The slow brute-force block skips an address only when it holds such trust for every mailbox it failed on. A login that follows failures on other mailboxes earns no trust. Trust lasts as long as the spray memory window and never exempts an address from fast brute-force or subnet detection.
+
+Long-memory spray detection remembers each address's failed SMTP logins for days, so a botnet that tries each address only now and then is still caught. It flags an address that fails on several mailboxes it holds no trust for, or that fails on a mailbox Dovecot reports as unknown after enough networks have tried the same name. For an address that holds trust on some mailbox, a missing name only counts toward the several-mailboxes rule, so one address typo does not block an office. A login after failures on other mailboxes raises `mail_account_compromised`. In observe mode, the default, the spray rules report `mail_bruteforce_suspected` and block nothing; in enforce mode they emit `smtp_bruteforce`. Failures during an authentication backend outage or withheld by pairing are never spray evidence. The `thresholds.mail_spray_*` keys control the mode, the memory window and both rules.
 
 Dovecot's informational and debug authentication messages can contain client text; they never mark the authentication backend as unavailable. Error and warning diagnostics still reach the backend-outage detector. `smtp_probe_abuse` reads Exim lines only.
 
-Four attack patterns:
+Signals:
 
 | Signal | What triggers it | Auto-response |
 |--------|-----------------|---------------|
-| `smtp_bruteforce` | A single attacker IP exceeds the per-IP failed-auth threshold within the configured window | IP blocked via nftables |
+| `smtp_bruteforce` | A single attacker IP exceeds the per-IP failed-auth threshold within the configured window, or, with spray detection in enforce mode, fails on several untrusted mailboxes or on a missing mailbox many networks tried | IP blocked via nftables |
 | `smtp_probe_abuse` | A single attacker IP exceeds the raw SMTP connect-rate threshold before AUTH | IP blocked via nftables |
 | `smtp_subnet_spray` | Multiple distinct attacker IPs from the same /24 subnet exceed the subnet threshold | Entire /24 subnet blocked via nftables |
 | `smtp_account_spray` | Many distinct attacker IPs targeting the same mailbox exceed the account threshold | Visibility finding only. No auto-block, because attackers span many subnets and no single-IP action helps |
+| `mail_bruteforce_suspected` | Spray detection in observe mode: the spray rules matched an SMTP source. The message names SMTP and the rule | Visibility finding only |
+| `mail_account_compromised` | A successful SMTP login after failures on other mailboxes, or after failures on the same mailbox spread over a long time | Critical only when a failed name was a missing mailbox many networks tried, in enforce mode, and then the IP is blocked; otherwise a High advisory, visibility only |
 
-Tunable via the `thresholds.smtp_bruteforce_*` and `thresholds.smtp_probe_*` keys in `csm.yaml`. Infrastructure IPs (from `infra_ips`) are never counted or blocked.
+Tunable via the `thresholds.smtp_bruteforce_*`, `thresholds.smtp_probe_*` and `thresholds.mail_spray_*` keys in `csm.yaml`. Infrastructure IPs (from `infra_ips`) are never counted or blocked.
 
 ## Cloud-Relay Credential Abuse
 

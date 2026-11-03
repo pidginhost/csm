@@ -332,8 +332,8 @@ func TestAddressProducersAreClassified(t *testing.T) {
 	}
 	// The database malware response reports session addresses instead of
 	// emitting an address-bearing finding (ruling R9).
-	if len(producers) != 68 {
-		t.Fatalf("scan found %d address producers; review the change from the pinned 68 producers", len(producers))
+	if len(producers) != 70 {
+		t.Fatalf("scan found %d address producers; review the change from the pinned 70 producers", len(producers))
 	}
 	for name, reason := range notAddressEvidence {
 		if strings.TrimSpace(reason) == "" {

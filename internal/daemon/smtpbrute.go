@@ -15,28 +15,22 @@ import (
 // slowTimes/slowAccounts hold the long-horizon failure history that catches
 // attackers pacing below the fast window; slowAccounts maps each targeted
 // mailbox to its most recent failure so distinct-target counting can prune.
+// Successful logins leave no state here: login trust lives in mailSpray.
 type smtpIPEntry struct {
 	times        []time.Time
 	slowTimes    []time.Time
 	slowAccounts map[string]time.Time
-	// slowLastSuccess is the most recent successful SMTP auth from this IP.
-	// A success inside the slow window marks the source as a live legitimate
-	// client (e.g. an office NAT where some devices still authenticate) and
-	// disqualifies the slow block.
-	slowLastSuccess time.Time
-	suppressed      time.Time
-	lastSeen        time.Time
+	suppressed   time.Time
+	lastSeen     time.Time
 }
 
-// evictionRank keeps recent successful clients and meaningful accumulated
-// evidence behind disposable one-shot failure entries. This prevents a fresh
-// one-failure-per-IP flood from evicting legitimate source history.
+// evictionRank keeps meaningful accumulated evidence behind disposable
+// one-shot failure entries. This prevents a fresh one-failure-per-IP flood
+// from evicting slow-brute evidence. Login trust has its own pool in
+// mailSpray, out of reach of this flood.
 func (e *smtpIPEntry) evictionRank(now time.Time, window, slowWindow time.Duration) int {
-	if slowWindow > 0 {
-		cutoff := now.Add(-slowWindow)
-		if (!e.slowLastSuccess.IsZero() && !e.slowLastSuccess.Before(cutoff)) || countTimesAtOrAfter(e.slowTimes, cutoff) > 1 {
-			return evictionRankProtectedIP
-		}
+	if slowWindow > 0 && countTimesAtOrAfter(e.slowTimes, now.Add(-slowWindow)) > 1 {
+		return evictionRankProtectedIP
 	}
 	if hasTimeAtOrAfter(e.times, now.Add(-window)) {
 		return evictionRankActiveIP
@@ -152,6 +146,11 @@ type smtpAuthTracker struct {
 	// way during a cpdoveauthd outage, so suppress brute/subnet auto-block then.
 	backendDownFn func() bool
 
+	// spray, when set, is the long-memory login spray detector shared with
+	// the IMAP/POP tracker. It holds per-mailbox login trust. Set once at
+	// startup before log readers begin.
+	spray *mailSpray
+
 	// Postfix SMTP AUTH pairing state (see smtp_auth_pairing.go), bounded by
 	// maxTracked entries each and expired after smtpAuthPairWindow.
 	pendingVerdicts          map[string][]smtpPendingVerdict
@@ -167,6 +166,14 @@ func (t *smtpAuthTracker) SetBackendDownCheck(fn func() bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.backendDownFn = fn
+}
+
+// SetSpray installs the shared spray detector. Set once at startup before log
+// readers begin.
+func (t *smtpAuthTracker) SetSpray(m *mailSpray) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.spray = m
 }
 
 // newSMTPAuthTracker constructs a tracker. `now` is injected so tests can
@@ -221,6 +228,12 @@ func (t *smtpAuthTracker) Record(ip, account string) []alert.Finding {
 // names that line, so a subnet spray names the line that last counted each
 // address.
 func (t *smtpAuthTracker) RecordObserved(ip, account string, obs alert.Observation) []alert.Finding {
+	return t.RecordFailure(ip, account, mailboxExistenceUnknown, obs)
+}
+
+// RecordFailure is RecordObserved for a failure whose log said whether the
+// mailbox exists.
+func (t *smtpAuthTracker) RecordFailure(ip, account string, exist mailboxExistence, obs alert.Observation) []alert.Finding {
 	if ip == "" {
 		return nil
 	}
@@ -280,13 +293,10 @@ func (t *smtpAuthTracker) RecordObserved(ip, account string, obs alert.Observati
 			e.slowTimes = pruneTimes(e.slowTimes, slowCutoff)
 			e.slowTimes = appendSlowFailure(e.slowTimes, now)
 			e.slowAccounts, _ = recordSlowAccount(e.slowAccounts, normalizeMailAuthAccount(account), now, slowCutoff)
-			if e.slowLastSuccess.Before(slowCutoff) {
-				e.slowLastSuccess = time.Time{}
-			}
 			if (len(e.slowTimes) >= t.slowThreshold || len(e.slowAccounts) >= slowBruteWalkAccounts) &&
 				len(e.slowAccounts) >= slowBruteMinAccounts &&
-				e.slowLastSuccess.IsZero() &&
-				!now.Before(e.suppressed) {
+				!now.Before(e.suppressed) &&
+				!t.slowTrusted(ip, e.slowAccounts) {
 				e.suppressed = now.Add(t.suppression)
 				findings = append(findings, alert.Finding{
 					Severity: alert.Critical,
@@ -298,6 +308,13 @@ func (t *smtpAuthTracker) RecordObserved(ip, account string, obs alert.Observati
 					SourceIP:  ip,
 				})
 			}
+		}
+	}
+
+	// --- Long-memory login spray (shared with IMAP/POP) ---
+	if !degraded && t.spray != nil {
+		if v := t.spray.Failure(ip, normalizeSprayMailbox(account), exist); v != nil {
+			findings = append(findings, sprayFinding(protoSMTP, ip, v, t.spray.Mode(), now))
 		}
 	}
 
@@ -367,29 +384,42 @@ func (t *smtpAuthTracker) RecordObserved(ip, account string, obs alert.Observati
 	return findings
 }
 
-// RecordSuccess notes a successful SMTP authentication from ip, disqualifying
-// the source from the slow-brute block for as long as the success stays inside
-// the slow window. Callers filter infra/private/loopback IPs first.
-func (t *smtpAuthTracker) RecordSuccess(ip string) {
-	if ip == "" {
-		return
+// slowTrusted reports whether ip holds aged login trust on every mailbox its
+// slow failures name: a known client's stale saved passwords, not a walk.
+// Caller must hold t.mu.
+func (t *smtpAuthTracker) slowTrusted(ip string, accounts map[string]time.Time) bool {
+	if t.spray == nil {
+		return false
 	}
+	mailboxes := make([]string, 0, len(accounts))
+	for account := range accounts {
+		mailboxes = append(mailboxes, normalizeSprayMailbox(account))
+	}
+	return t.spray.TrustedAll(ip, mailboxes)
+}
+
+// RecordSuccess notes a successful SMTP login on account from ip. A clean
+// login earns trust for that mailbox only; a login after failures on other
+// mailboxes earns none and may be reported as a compromise. The tracker keeps
+// no state of its own for it. Callers filter infra/private/loopback IPs first.
+func (t *smtpAuthTracker) RecordSuccess(ip, account string) (findings []alert.Finding) {
+	if ip == "" {
+		return nil
+	}
+	mailbox := normalizeSprayMailbox(account)
+	// Registered before the lock so owner resolution runs after unlock.
+	defer func() { stampMailAccountOwner(findings, mailbox) }()
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	// An explicitly disabled slow detector must not retain successful-client
-	// state for every authenticated SMTP delivery on the host.
-	if t.slowThreshold <= 0 || t.slowWindow <= 0 {
-		return
+	if t.spray == nil {
+		return nil
 	}
-	e, ok := t.ips[ip]
-	if !ok {
-		e = &smtpIPEntry{}
-		t.ips[ip] = e
+	_, v := t.spray.Success(ip, mailbox)
+	if v == nil {
+		return nil
 	}
-	now := t.now()
-	e.slowLastSuccess = now
-	e.lastSeen = now
-	t.enforceMaxTracked(ip)
+	t.findingsEmitted++
+	return []alert.Finding{sprayFinding(protoSMTP, ip, v, t.spray.Mode(), t.now())}
 }
 
 // Stats returns cumulative Record invocations and findings emitted since
@@ -468,11 +498,7 @@ func (t *smtpAuthTracker) Purge() {
 		e.times = pruneTimes(e.times, now.Add(-t.window))
 		e.slowTimes = pruneTimes(e.slowTimes, slowCutoff)
 		pruneSlowAccounts(e.slowAccounts, slowCutoff)
-		if e.slowLastSuccess.Before(slowCutoff) {
-			e.slowLastSuccess = time.Time{}
-		}
-		if len(e.times) == 0 && len(e.slowTimes) == 0 &&
-			e.slowLastSuccess.IsZero() && !e.lastSeen.After(activityCutoff) {
+		if len(e.times) == 0 && len(e.slowTimes) == 0 && !e.lastSeen.After(activityCutoff) {
 			delete(t.ips, k)
 		}
 	}

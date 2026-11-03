@@ -9,41 +9,52 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 )
 
-// smtpSuccessIPs lists the addresses the tracker holds a successful login for.
+// smtpSuccessIPs lists the addresses holding login trust from a successful
+// login.
 func smtpSuccessIPs(d *Daemon) map[string]bool {
-	d.smtpAuthTracker.mu.Lock()
-	defer d.smtpAuthTracker.mu.Unlock()
+	d.mailSpray.mu.Lock()
+	defer d.mailSpray.mu.Unlock()
 	out := map[string]bool{}
-	for ip, e := range d.smtpAuthTracker.ips {
-		if !e.slowLastSuccess.IsZero() {
-			out[ip] = true
-		}
+	for k := range d.mailSpray.trust {
+		out[k.ip] = true
 	}
 	return out
 }
 
-// An address whose users log in is a live office, not a mailbox walker, so
-// its occasional mistyped passwords must not add up to the slow block.
+// An address whose users log in to the mailboxes it fails on is a live
+// office, not a mailbox walker, so those mistyped passwords must not add up
+// to the slow block. A login to some other mailbox vouches for nothing else.
+// The spray rules are off, so only the slow path can fire.
 func TestPostfixSASLSuccessDisqualifiesSlowBrute(t *testing.T) {
-	for _, success := range []bool{false, true} {
-		t.Run(fmt.Sprintf("success=%v", success), func(t *testing.T) {
-			d, clock := newPairingDaemon(t, &config.Config{})
-			if success {
-				feed(d, clock, "postfix/submission/smtpd[77]: 4XyZ1a2B3c: client=unknown[203.0.113.110], sasl_method=PLAIN, sasl_username=carol@example.net")
+	const ip = "203.0.113.110"
+	account := func(i int) string { return fmt.Sprintf("user%02d@example.net", i) }
+	for _, tc := range []struct {
+		name   string
+		logins []string
+		fires  bool
+	}{
+		{"no login", nil, true},
+		{"login to another mailbox", []string{"carol@example.net"}, true},
+		{"login to every failing mailbox", []string{account(0), account(1), account(2), account(3), account(4), account(5), account(6), account(7), account(8), account(9)}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d, clock := newPairingDaemon(t, sprayTestConfig("off"))
+			for _, user := range tc.logins {
+				feed(d, clock, "postfix/submission/smtpd[77]: 4XyZ1a2B3c: client=unknown["+ip+"], sasl_method=PLAIN, sasl_username="+user)
 			}
+			clock.advance(11 * time.Minute) // trust ages past the failure window
 			var got []alert.Finding
 			for i := 0; i < slowBruteWalkAccounts; i++ {
 				clock.advance(8 * time.Minute)
-				account := fmt.Sprintf("user%02d@example.net", i)
 				got = append(got, feed(d, clock,
-					"dovecot: auth: sql("+account+",203.0.113.110): Password mismatch",
-					fmt.Sprintf(postfixFailFmt, "203.0.113.110", account))...)
+					"dovecot: auth: sql("+account(i)+","+ip+"): Password mismatch",
+					fmt.Sprintf(postfixFailFmt, ip, account(i)))...)
 			}
 			if calls := smtpCalls(d); calls != int64(slowBruteWalkAccounts) {
 				t.Fatalf("SMTP failures = %d, want %d", calls, slowBruteWalkAccounts)
 			}
-			if _, fired := findingByCheck(got, "smtp_bruteforce"); fired == success {
-				t.Fatalf("smtp_bruteforce fired = %v with prior success = %v: %+v", fired, success, got)
+			if _, fired := findingByCheck(got, "smtp_bruteforce"); fired != tc.fires {
+				t.Fatalf("smtp_bruteforce fired = %v, want %v: %+v", fired, tc.fires, got)
 			}
 		})
 	}
@@ -64,7 +75,7 @@ func TestPostfixSASLSuccessLineFormats(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			d, clock := newPairingDaemon(t, &config.Config{})
+			d, clock := newPairingDaemon(t, sprayTestConfig("enforce"))
 			if got := feed(d, clock, tc.line); len(got) != 0 {
 				t.Fatalf("success raised findings: %+v", got)
 			}
@@ -127,7 +138,9 @@ func TestPostfixSASLSuccessLinesThatMustNotCount(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			d, clock := newPairingDaemon(t, &config.Config{InfraIPs: []string{"192.0.2.10"}})
+			cfg := sprayTestConfig("enforce")
+			cfg.InfraIPs = []string{"192.0.2.10"}
+			d, clock := newPairingDaemon(t, cfg)
 			if got := feed(d, clock, tc.line); len(got) != 0 {
 				t.Fatalf("findings = %+v, want none", got)
 			}
@@ -140,7 +153,7 @@ func TestPostfixSASLSuccessLinesThatMustNotCount(t *testing.T) {
 
 // Exim logs its own authenticated deliveries.
 func TestPostfixSASLSuccessSkippedOnEximHosts(t *testing.T) {
-	d, clock := newPairingDaemon(t, &config.Config{})
+	d, clock := newPairingDaemon(t, sprayTestConfig("enforce"))
 	d.smtpAuthFromExim = true
 	feed(d, clock, "postfix/smtpd[99]: 4ABC123: client=unknown[203.0.113.125], sasl_method=PLAIN, sasl_username=a")
 	if got := smtpSuccessIPs(d); len(got) != 0 {
@@ -168,12 +181,15 @@ func TestPostfixSASLSuccessDoesNotSuppressFastBrute(t *testing.T) {
 	}
 }
 
-// Success grants only the same bounded slow-brute exemption as Exim.
+// Login trust, like Exim's, expires with the spray memory window.
 func TestPostfixSASLSuccessExemptionExpires(t *testing.T) {
 	const ip = "203.0.113.127"
-	d, clock := newPairingDaemon(t, &config.Config{})
-	feed(d, clock, "postfix/smtpd[99]: 4ABC123: client=unknown["+ip+"], sasl_method=PLAIN, sasl_username=owned@example.net")
-	clock.advance(d.smtpAuthTracker.slowWindow)
+	cfg := sprayTestConfig("off")
+	d, clock := newPairingDaemon(t, cfg)
+	for i := 0; i < slowBruteWalkAccounts; i++ {
+		feed(d, clock, "postfix/smtpd[99]: 4ABC123: client=unknown["+ip+"], sasl_method=PLAIN, sasl_username="+fmt.Sprintf("user%02d@example.net", i))
+	}
+	clock.advance(time.Duration(cfg.Thresholds.MailSprayWindowMin) * time.Minute)
 	var got []alert.Finding
 	for i := 0; i < slowBruteWalkAccounts; i++ {
 		clock.advance(8 * time.Minute)
