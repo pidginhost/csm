@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/alert"
@@ -35,13 +36,16 @@ type pendingFinding struct {
 	ResponseCause *alert.Cause `json:"response_cause,omitempty"`
 	// ResponseMailLoginFailure keeps mail reputation hits in mail incidents.
 	ResponseMailLoginFailure bool `json:"response_mail_login_failure,omitempty"`
+	// ResponseBlockTTL keeps a spray block's own length.
+	ResponseBlockTTL time.Duration `json:"response_block_ttl,omitempty"`
 }
 
 func toPendingRecords(findings []alert.Finding) []pendingFinding {
 	records := make([]pendingFinding, len(findings))
 	for i, f := range findings {
 		records[i] = pendingFinding{Finding: f, ResponseCIDRs: f.CIDRs, ResponseSprayTargets: f.SprayTargets, ResponseClaims: f.Claims,
-			ResponseSprayConstituents: f.SprayConstituents, ResponseCause: f.Cause, ResponseMailLoginFailure: f.MailLoginFailure}
+			ResponseSprayConstituents: f.SprayConstituents, ResponseCause: f.Cause, ResponseMailLoginFailure: f.MailLoginFailure,
+			ResponseBlockTTL: f.BlockTTL}
 		// An unencodable expiry costs only its intel, not the whole batch.
 		if f.Intel != nil {
 			if _, err := f.Intel.Expires.MarshalJSON(); err == nil {
@@ -74,6 +78,7 @@ func fromPendingRecords(records []pendingFinding) []alert.Finding {
 		findings[i].Intel = r.ResponseIntel
 		findings[i].Cause = r.ResponseCause
 		findings[i].MailLoginFailure = r.ResponseMailLoginFailure
+		findings[i].BlockTTL = r.ResponseBlockTTL
 		if r.ResponseObservation != nil {
 			findings[i].Observation = *r.ResponseObservation
 		}

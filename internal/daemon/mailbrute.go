@@ -1089,7 +1089,8 @@ func (t *mailAuthTracker) RecordSuccess(ip, account string) (findings []alert.Fi
 		case len(findings) == 0:
 			t.findingsEmitted++
 			findings = []alert.Finding{*sprayed}
-		case sprayed.Severity > findings[0].Severity:
+		// At equal severity a spray block keeps its own block length.
+		case sprayed.Severity > findings[0].Severity || (sprayed.Severity == findings[0].Severity && sprayed.BlockTTL > 0):
 			findings[0] = *sprayed
 		}
 	}()

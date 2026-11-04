@@ -25,6 +25,7 @@ func TestPendingFindingsKeepResponseFields(t *testing.T) {
 	parked := []alert.Finding{
 		{Severity: alert.Critical, Check: "http_asn_crawl", Message: "crawl", CIDRs: []string{"198.51.100.0/24", "203.0.113.0/25"}, Timestamp: now},
 		{Severity: alert.High, Check: "credential_stuffing", Message: "spray", SourceIP: "192.0.2.7", SprayTargets: []string{"alice", "bob"}, Timestamp: now},
+		{Severity: alert.Critical, Check: "smtp_bruteforce", Message: "mail spray", SourceIP: "192.0.2.8", BlockTTL: 720 * time.Hour, Timestamp: now},
 	}
 	if appendErr := st.AppendPendingFindings(parked); appendErr != nil {
 		t.Fatal(appendErr)
@@ -34,14 +35,17 @@ func TestPendingFindingsKeepResponseFields(t *testing.T) {
 	if replayErr := st.ReplayPendingFindings(func(got []alert.Finding) { replayed = got }); replayErr != nil {
 		t.Fatal(replayErr)
 	}
-	if len(replayed) != 2 {
-		t.Fatalf("replayed %d findings, want 2", len(replayed))
+	if len(replayed) != 3 {
+		t.Fatalf("replayed %d findings, want 3", len(replayed))
 	}
 	if !reflect.DeepEqual(replayed[0].CIDRs, parked[0].CIDRs) {
 		t.Errorf("CIDRs = %v, want %v", replayed[0].CIDRs, parked[0].CIDRs)
 	}
 	if !reflect.DeepEqual(replayed[1].SprayTargets, parked[1].SprayTargets) {
 		t.Errorf("SprayTargets = %v, want %v", replayed[1].SprayTargets, parked[1].SprayTargets)
+	}
+	if replayed[2].BlockTTL != parked[2].BlockTTL {
+		t.Errorf("BlockTTL = %v, want %v", replayed[2].BlockTTL, parked[2].BlockTTL)
 	}
 }
 
@@ -104,6 +108,11 @@ func TestPendingIdentityCoversResponseFields(t *testing.T) {
 	otherTargets.SprayTargets = []string{"bob"}
 	if pendingIdentity([]alert.Finding{withTargets}) == pendingIdentity([]alert.Finding{otherTargets}) {
 		t.Fatal("identity ignores SprayTargets")
+	}
+	withTTL := base
+	withTTL.BlockTTL = 720 * time.Hour
+	if pendingIdentity([]alert.Finding{withTTL}) == pendingIdentity([]alert.Finding{base}) {
+		t.Fatal("identity ignores BlockTTL")
 	}
 }
 
