@@ -928,9 +928,10 @@ func TestConfig_MailSprayDefaults(t *testing.T) {
 	}
 	th := cfg.Thresholds
 	if th.MailSprayMode != "observe" || th.MailSprayWindowMin != 10080 ||
-		th.MailSprayBreadthMailboxes != 2 || th.MailSprayMissingNetworks != 3 {
-		t.Errorf("mail spray defaults = %q/%d/%d/%d, want observe/10080/2/3",
-			th.MailSprayMode, th.MailSprayWindowMin, th.MailSprayBreadthMailboxes, th.MailSprayMissingNetworks)
+		th.MailSprayBreadthMailboxes != 2 || th.MailSprayMissingNetworks != 3 ||
+		th.MailSprayBlockExpiry != "720h" {
+		t.Errorf("mail spray defaults = %q/%d/%d/%d/%q, want observe/10080/2/3/720h",
+			th.MailSprayMode, th.MailSprayWindowMin, th.MailSprayBreadthMailboxes, th.MailSprayMissingNetworks, th.MailSprayBlockExpiry)
 	}
 }
 

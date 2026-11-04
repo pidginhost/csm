@@ -429,9 +429,12 @@ func TestSMTPSprayIPv4MappedKeysAsIPv4(t *testing.T) {
 func TestMailSprayFindingMapping(t *testing.T) {
 	now := time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)
 	const ip = "203.0.113.90"
-	breadth := &sprayVerdict{Rule: sprayRuleBreadth, Block: true, Targets: []string{"", "a@example.com"}, Extra: 2}
-	missing := &sprayVerdict{Rule: sprayRuleMissingMailbox, Block: true, Mailbox: "ghost@example.com", Targets: []string{"ghost@example.com"}, Networks: 3}
-	compromise := &sprayVerdict{Rule: sprayRuleCompromise, Block: true, Mailbox: "a@example.com", Targets: []string{"ghost@example.com"}}
+	// Every verdict here carries a length, so the mapping alone decides
+	// which findings keep it.
+	const ttl = 720 * time.Hour
+	breadth := &sprayVerdict{Rule: sprayRuleBreadth, Block: true, Targets: []string{"", "a@example.com"}, Extra: 2, BlockTTL: ttl}
+	missing := &sprayVerdict{Rule: sprayRuleMissingMailbox, Block: true, Mailbox: "ghost@example.com", Targets: []string{"ghost@example.com"}, Networks: 3, BlockTTL: ttl}
+	compromise := &sprayVerdict{Rule: sprayRuleCompromise, Block: true, Mailbox: "a@example.com", Targets: []string{"ghost@example.com"}, BlockTTL: ttl}
 	cases := []struct {
 		name          string
 		proto         mailProto
@@ -440,17 +443,18 @@ func TestMailSprayFindingMapping(t *testing.T) {
 		check, prefix string
 		sev           alert.Severity
 		mailbox       bool
+		ttl           time.Duration
 	}{
-		{"smtp breadth enforce", protoSMTP, breadth, sprayEnforce, "smtp_bruteforce", "SMTP brute force from " + ip + ": ", alert.Critical, false},
-		{"mail breadth enforce", protoMail, breadth, sprayEnforce, "mail_bruteforce", "Mail auth brute force from " + ip + ": ", alert.Critical, false},
-		{"smtp missing enforce", protoSMTP, missing, sprayEnforce, "smtp_bruteforce", "SMTP brute force from " + ip + ": ", alert.Critical, false},
-		{"smtp missing observe", protoSMTP, missing, sprayObserve, "mail_bruteforce_suspected", "Suspected SMTP password spray from " + ip, alert.High, false},
-		{"mail breadth observe", protoMail, breadth, sprayObserve, "mail_bruteforce_suspected", "Suspected IMAP/POP password spray from " + ip, alert.High, false},
-		{"compromise enforce", protoSMTP, compromise, sprayEnforce, "mail_account_compromised", "Mail account compromise: ", alert.Critical, true},
-		{"compromise observe", protoSMTP, compromise, sprayObserve, "mail_account_compromised", "Mail account compromise: ", alert.High, true},
-		{"compromise downgraded", protoMail, &sprayVerdict{Rule: sprayRuleCompromise, Mailbox: "a@example.com"}, sprayEnforce, "mail_account_compromised", "Mail account compromise: ", alert.High, true},
-		{"weak compromise", protoSMTP, &sprayVerdict{Rule: sprayRuleWeakCompromise, Mailbox: "a@example.com", Targets: []string{"b@example.com"}}, sprayEnforce, "mail_account_compromised", "Possible mail account compromise: ", alert.High, true},
-		{"single mailbox success", protoSMTP, &sprayVerdict{Rule: sprayRuleSingleMailboxSuccess, Mailbox: "a@example.com", Targets: []string{"a@example.com"}}, sprayEnforce, "mail_account_compromised", "Mail login after repeated failures: ", alert.High, true},
+		{"smtp breadth enforce", protoSMTP, breadth, sprayEnforce, "smtp_bruteforce", "SMTP brute force from " + ip + ": ", alert.Critical, false, ttl},
+		{"mail breadth enforce", protoMail, breadth, sprayEnforce, "mail_bruteforce", "Mail auth brute force from " + ip + ": ", alert.Critical, false, ttl},
+		{"smtp missing enforce", protoSMTP, missing, sprayEnforce, "smtp_bruteforce", "SMTP brute force from " + ip + ": ", alert.Critical, false, ttl},
+		{"smtp missing observe", protoSMTP, missing, sprayObserve, "mail_bruteforce_suspected", "Suspected SMTP password spray from " + ip, alert.High, false, 0},
+		{"mail breadth observe", protoMail, breadth, sprayObserve, "mail_bruteforce_suspected", "Suspected IMAP/POP password spray from " + ip, alert.High, false, 0},
+		{"compromise enforce", protoSMTP, compromise, sprayEnforce, "mail_account_compromised", "Mail account compromise: ", alert.Critical, true, ttl},
+		{"compromise observe", protoSMTP, compromise, sprayObserve, "mail_account_compromised", "Mail account compromise: ", alert.High, true, 0},
+		{"compromise downgraded", protoMail, &sprayVerdict{Rule: sprayRuleCompromise, Mailbox: "a@example.com", BlockTTL: ttl}, sprayEnforce, "mail_account_compromised", "Mail account compromise: ", alert.High, true, 0},
+		{"weak compromise", protoSMTP, &sprayVerdict{Rule: sprayRuleWeakCompromise, Mailbox: "a@example.com", Targets: []string{"b@example.com"}, BlockTTL: ttl}, sprayEnforce, "mail_account_compromised", "Possible mail account compromise: ", alert.High, true, 0},
+		{"single mailbox success", protoSMTP, &sprayVerdict{Rule: sprayRuleSingleMailboxSuccess, Mailbox: "a@example.com", Targets: []string{"a@example.com"}, BlockTTL: ttl}, sprayEnforce, "mail_account_compromised", "Mail login after repeated failures: ", alert.High, true, 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -464,7 +468,7 @@ func TestMailSprayFindingMapping(t *testing.T) {
 			if strings.Count(f.Message, " from ") != 1 {
 				t.Fatalf("message must name one source: %q", f.Message)
 			}
-			want := alert.Finding{Timestamp: now, SourceIP: ip}
+			want := alert.Finding{Timestamp: now, SourceIP: ip, BlockTTL: tc.ttl}
 			if tc.mailbox {
 				want.Mailbox, want.Domain = "a@example.com", "example.com"
 			}
@@ -504,6 +508,10 @@ func TestSMTPSprayOneBlockPerFailure(t *testing.T) {
 	}
 	if n != 1 {
 		t.Fatalf("smtp_bruteforce findings = %d, want 1: %+v", n, got)
+	}
+	// The kept block is the spray one, with the spray block length.
+	if f, _ := findingByCheck(got, "smtp_bruteforce"); f.BlockTTL != 720*time.Hour {
+		t.Fatalf("smtp_bruteforce BlockTTL = %v, want 720h", f.BlockTTL)
 	}
 	if ev := sprayEvidence(d, ip); len(ev) != 2 {
 		t.Fatalf("spray evidence = %+v, want both mailboxes", ev)

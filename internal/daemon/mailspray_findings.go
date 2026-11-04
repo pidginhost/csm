@@ -27,7 +27,8 @@ func (p mailProto) String() string {
 // check names. The missing-mailbox and breadth rules block only in enforce
 // mode; observe mode reports them as mail_bruteforce_suspected. A compromise
 // is Critical only when the verdict blocks in enforce mode. Every other
-// verdict is a High advisory.
+// verdict is a High advisory. Only the enforce mode blocks carry the
+// verdict's block length.
 func sprayFinding(proto mailProto, ip string, v *sprayVerdict, mode sprayMode, now time.Time) alert.Finding {
 	enforce := mode == sprayEnforce
 	observe := ""
@@ -45,13 +46,14 @@ func sprayFinding(proto mailProto, ip string, v *sprayVerdict, mode sprayMode, n
 		}
 		check, severity := "mail_bruteforce_suspected", alert.High
 		message := fmt.Sprintf("Suspected %s password spray from %s: %s (observe mode, not blocked)", proto, ip, reason)
+		var ttl time.Duration
 		switch {
 		case !enforce:
 		case proto == protoSMTP:
-			check, severity = "smtp_bruteforce", alert.Critical
+			check, severity, ttl = "smtp_bruteforce", alert.Critical, v.BlockTTL
 			message = fmt.Sprintf("SMTP brute force from %s: %s", ip, reason)
 		default:
-			check, severity = "mail_bruteforce", alert.Critical
+			check, severity, ttl = "mail_bruteforce", alert.Critical, v.BlockTTL
 			message = fmt.Sprintf("Mail auth brute force from %s: %s", ip, reason)
 		}
 		return alert.Finding{
@@ -61,12 +63,14 @@ func sprayFinding(proto mailProto, ip string, v *sprayVerdict, mode sprayMode, n
 			Details:   strings.TrimSpace(details + observe + " " + targets),
 			Timestamp: now,
 			SourceIP:  ip,
+			BlockTTL:  ttl,
 		}
 	}
 
 	severity := alert.High
 	mailbox := sprayMailboxText(v.Mailbox)
 	var message, details string
+	var ttl time.Duration
 	switch v.Rule {
 	case sprayRuleCompromise:
 		message = fmt.Sprintf("Mail account compromise: successful %s login for %s from %s after failed logins on other mailboxes", proto, mailbox, ip)
@@ -76,7 +80,7 @@ func sprayFinding(proto mailProto, ip string, v *sprayVerdict, mode sprayMode, n
 			message += " (established multi-mailbox source)"
 			details = "The address also holds trusted logins to several other mailboxes, so this may be a shared office device. Verify with the mailbox owner; not auto-blocked."
 		case enforce:
-			severity = alert.Critical
+			severity, ttl = alert.Critical, v.BlockTTL
 		default:
 			message += " (observe mode, not blocked)"
 			details += observe
@@ -98,6 +102,7 @@ func sprayFinding(proto mailProto, ip string, v *sprayVerdict, mode sprayMode, n
 		SourceIP:  ip,
 		Domain:    domain,
 		Mailbox:   v.Mailbox,
+		BlockTTL:  ttl,
 	}
 }
 

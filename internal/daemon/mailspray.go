@@ -45,6 +45,7 @@ type sprayConfig struct {
 	TrustAge         time.Duration // trust counts only after this age
 	Suppression      time.Duration // least gap between verdicts for one IP
 	MaxIPs           int           // tracked IP cap
+	BlockTTL         time.Duration // length of an enforce mode spray block
 }
 
 // sprayMinTrackedPerTracker is the validated floor of each tracker's
@@ -53,7 +54,8 @@ const sprayMinTrackedPerTracker = 1000
 
 // sprayConfigFromThresholds derives the spray settings from the thresholds
 // block. Trust ages and verdicts repeat on the slower of the two trackers,
-// and the IP cap is their combined capacity.
+// and the IP cap is their combined capacity. A block length that is unset
+// or does not parse takes the default.
 func sprayConfigFromThresholds(cfg *config.Config) sprayConfig {
 	th := &cfg.Thresholds
 	maxTracked := func(n int) int {
@@ -61,6 +63,10 @@ func sprayConfigFromThresholds(cfg *config.Config) sprayConfig {
 			return sprayMinTrackedPerTracker
 		}
 		return n
+	}
+	blockTTL, err := time.ParseDuration(th.MailSprayBlockExpiry)
+	if err != nil || blockTTL <= 0 {
+		blockTTL, _ = time.ParseDuration(config.DefaultMailSprayBlockExpiry)
 	}
 	return sprayConfig{
 		Mode:             parseSprayMode(th.MailSprayMode),
@@ -70,6 +76,7 @@ func sprayConfigFromThresholds(cfg *config.Config) sprayConfig {
 		TrustAge:         time.Duration(max(th.SMTPBruteForceWindowMin, th.MailBruteForceWindowMin)) * time.Minute,
 		Suppression:      time.Duration(max(th.SMTPBruteForceSuppressMin, th.MailBruteForceSuppressMin)) * time.Minute,
 		MaxIPs:           maxTracked(th.SMTPBruteForceMaxTracked) + maxTracked(th.MailBruteForceMaxTracked),
+		BlockTTL:         blockTTL,
 	}
 }
 
@@ -85,11 +92,12 @@ const (
 
 type sprayVerdict struct {
 	Rule     sprayRule
-	Block    bool     // missing_mailbox, breadth, and compromise unless downgraded
-	Mailbox  string   // the login's mailbox (success rules) or the missing one
-	Targets  []string // untrusted names in memory, sorted; "" is an accountless failure
-	Extra    int      // untrusted names beyond Targets
-	Networks int      // networks that tried the missing name
+	Block    bool          // missing_mailbox, breadth, and compromise unless downgraded
+	Mailbox  string        // the login's mailbox (success rules) or the missing one
+	Targets  []string      // untrusted names in memory, sorted; "" is an accountless failure
+	Extra    int           // untrusted names beyond Targets
+	Networks int           // networks that tried the missing name
+	BlockTTL time.Duration // block length; set only on enforce mode block verdicts
 }
 
 // sprayStaleSpread is how long before a login the failures on its mailbox
@@ -1387,6 +1395,9 @@ func (m *mailSpray) untrusted(e *sprayIP, key string, now time.Time) []string {
 
 func (m *mailSpray) verdict(e *sprayIP, rule sprayRule, block bool, mailbox string, untrusted []string, now time.Time) *sprayVerdict {
 	v := &sprayVerdict{Rule: rule, Block: block, Mailbox: mailbox, Targets: untrusted}
+	if block && m.cfg.Mode == sprayEnforce {
+		v.BlockTTL = m.cfg.BlockTTL
+	}
 	if len(untrusted) > maxMailTargetsListed {
 		v.Targets = untrusted[:maxMailTargetsListed:maxMailTargetsListed]
 		v.Extra = len(untrusted) - maxMailTargetsListed

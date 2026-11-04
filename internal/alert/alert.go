@@ -158,6 +158,8 @@ type Finding struct {
 	// reputation match. Incidents file it as mailbox brute force.
 	// Internal-only like Intel.
 	MailLoginFailure bool `json:"-"`
+	// BlockTTL is the finding's own auto-block length; set only by spray block verdicts.
+	BlockTTL time.Duration `json:"-"`
 	// Cause names the finding a derived finding was made from, such as the
 	// database finding behind a session-attacker block. Internal-only.
 	Cause *Cause `json:"-"`

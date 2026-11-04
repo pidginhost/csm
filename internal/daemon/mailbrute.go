@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -845,10 +846,15 @@ func (t *mailAuthTracker) RecordObserved(ip, account string, obs alert.Observati
 			f := sprayFinding(protoMail, ip, v, t.spray.Mode(), now)
 			// One block per suppression window: a Dovecot line can carry
 			// several attempts, so the spray block shares the per-IP clock
-			// with the fast and slow paths. The evidence is recorded either way.
+			// with the fast and slow paths. A spray block with its own length
+			// takes the place of a per-IP block from this same failure. The
+			// evidence is recorded either way.
+			perIPBlock := slices.IndexFunc(findings, func(p alert.Finding) bool { return p.Check == "mail_bruteforce" })
 			switch {
 			case f.Check != "mail_bruteforce":
 				findings = append(findings, f)
+			case f.BlockTTL > 0 && perIPBlock >= 0:
+				findings[perIPBlock] = f
 			case !now.Before(e.suppressed):
 				e.suppressed = now.Add(t.suppression)
 				findings = append(findings, f)

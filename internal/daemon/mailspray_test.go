@@ -280,6 +280,71 @@ func TestMailSpray_SingleMailboxFailuresThenSuccess(t *testing.T) {
 	}
 }
 
+// Only a block verdict in enforce mode carries the spray block length.
+func TestMailSprayVerdictBlockTTL(t *testing.T) {
+	const ip = "192.0.2.1"
+	scenarios := []struct {
+		name  string
+		rule  sprayRule
+		block bool
+		run   func(*testing.T, *mailSpray, *staticClock) *sprayVerdict
+	}{
+		{"breadth", sprayRuleBreadth, true, func(_ *testing.T, m *mailSpray, _ *staticClock) *sprayVerdict {
+			m.Failure(ip, "a@example.com", mailboxExists)
+			return m.Failure(ip, "b@example.com", mailboxExists)
+		}},
+		{"missing mailbox", sprayRuleMissingMailbox, true, func(t *testing.T, m *mailSpray, _ *staticClock) *sprayVerdict {
+			corroborate(t, m, "nobody@example.com")
+			return m.Failure(ip, "nobody@example.com", mailboxMissing)
+		}},
+		{"compromise", sprayRuleCompromise, true, func(t *testing.T, m *mailSpray, clock *staticClock) *sprayVerdict {
+			ageTrust(t, m, clock, ip, "a@example.com")
+			corroborate(t, m, "nobody@example.com")
+			m.Failure(ip, "nobody@example.com", mailboxMissing)
+			_, v := m.Success(ip, "c@example.com")
+			return v
+		}},
+		{"downgraded compromise", sprayRuleCompromise, false, func(t *testing.T, m *mailSpray, clock *staticClock) *sprayVerdict {
+			ageTrust(t, m, clock, ip, "a@example.com", "b@example.com")
+			corroborate(t, m, "nobody@example.com")
+			m.Failure(ip, "nobody@example.com", mailboxMissing)
+			_, v := m.Success(ip, "c@example.com")
+			return v
+		}},
+		{"weak compromise", sprayRuleWeakCompromise, false, func(_ *testing.T, m *mailSpray, _ *staticClock) *sprayVerdict {
+			m.Failure(ip, "b@example.com", mailboxExists)
+			_, v := m.Success(ip, "a@example.com")
+			return v
+		}},
+		{"single mailbox", sprayRuleSingleMailboxSuccess, false, func(_ *testing.T, m *mailSpray, clock *staticClock) *sprayVerdict {
+			m.Failure(ip, "a@example.com", mailboxExists)
+			clock.advance(2 * time.Hour)
+			m.Failure(ip, "a@example.com", mailboxExists)
+			_, v := m.Success(ip, "a@example.com")
+			return v
+		}},
+	}
+	for _, mode := range []string{"enforce", "observe"} {
+		for _, sc := range scenarios {
+			t.Run(mode+"/"+sc.name, func(t *testing.T) {
+				cfg := testSprayConfig()
+				cfg.Mode = parseSprayMode(mode)
+				cfg.BlockTTL = 48 * time.Hour
+				m, clock := newTestSpray(cfg)
+				v := sc.run(t, m, clock)
+				wantRule(t, v, sc.rule, sc.block)
+				var want time.Duration
+				if sc.block && mode == "enforce" {
+					want = cfg.BlockTTL
+				}
+				if v.BlockTTL != want {
+					t.Fatalf("BlockTTL = %v, want %v", v.BlockTTL, want)
+				}
+			})
+		}
+	}
+}
+
 // 4d needs the first failure at least an hour before the login. A user who
 // mistypes twice in a row and then logs in gets no advisory, and still earns
 // trust.

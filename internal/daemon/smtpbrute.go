@@ -360,10 +360,14 @@ func (t *smtpAuthTracker) recordFailure(ip, account string, exist mailboxExisten
 		if v != nil {
 			f := sprayFinding(protoSMTP, ip, v, t.spray.Mode(), now)
 			// One failure raises one block: the evidence is recorded either
-			// way, and a per-IP block above already covers this address.
-			perIPBlock := slices.ContainsFunc(findings, func(p alert.Finding) bool { return p.Check == "smtp_bruteforce" })
-			if f.Check != "smtp_bruteforce" || !perIPBlock {
+			// way. A per-IP block above already covers this address, unless
+			// the spray block carries its own length and takes its place.
+			perIPBlock := slices.IndexFunc(findings, func(p alert.Finding) bool { return p.Check == "smtp_bruteforce" })
+			switch {
+			case f.Check != "smtp_bruteforce" || perIPBlock < 0:
 				findings = append(findings, f)
+			case f.BlockTTL > 0:
+				findings[perIPBlock] = f
 			}
 		}
 	}
