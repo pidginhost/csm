@@ -2593,6 +2593,9 @@ func applyFirewallFieldDefaults(fc *firewall.FirewallConfig, present map[string]
 	if !present["conn_limit"] {
 		fc.ConnLimit = def.ConnLimit
 	}
+	if !present["drop_ipv4_options"] {
+		fc.DropIPv4Options = def.DropIPv4Options
+	}
 	if !present["port_flood"] {
 		fc.PortFlood = def.PortFlood
 	}

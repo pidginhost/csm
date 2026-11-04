@@ -534,6 +534,9 @@ func TestPackagedDefaultFirewallMatchesRuntimeDefaults(t *testing.T) {
 	if cfg.Firewall.ExemptKnownMailProviders() != want.ExemptKnownMailProviders() {
 		t.Errorf("packaged dos_exempt_known_mail_providers effective = %v, want runtime default %v", cfg.Firewall.ExemptKnownMailProviders(), want.ExemptKnownMailProviders())
 	}
+	if cfg.Firewall.DropIPv4Options != want.DropIPv4Options {
+		t.Errorf("packaged drop_ipv4_options = %v, want runtime default %v", cfg.Firewall.DropIPv4Options, want.DropIPv4Options)
+	}
 
 	// The toggle must be explicitly documented in the packaged YAML so operators
 	// can discover and disable it; absence causes silent three-source drift.
@@ -548,6 +551,9 @@ func TestPackagedDefaultFirewallMatchesRuntimeDefaults(t *testing.T) {
 	}
 	if _, ok := rawFW.Firewall["dos_exempt_ranges"]; !ok {
 		t.Error("packaged default must explicitly document firewall.dos_exempt_ranges (three-source drift)")
+	}
+	if _, ok := rawFW.Firewall["drop_ipv4_options"]; !ok {
+		t.Error("packaged default must explicitly document firewall.drop_ipv4_options (three-source drift)")
 	}
 }
 

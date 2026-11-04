@@ -6,6 +6,7 @@ CSM includes a native nftables firewall engine that replaces LFD and fail2ban. I
 
 - **Atomic ruleset** - single netlink transaction, no partial application
 - **Named IP sets** with per-element timeouts (blocked, allowed, infra, country)
+- **IPv4 options drop** - inbound IPv4 TCP packets with IP options are dropped before conntrack, NAT to containers and every accept, closing the CVE-2026-98432 trigger on unpatched kernels; set `drop_ipv4_options: false` only for workloads that need IP options, such as CIPSO labels
 - **Rate limiting** - SYN flood, UDP flood, and per-IP connection rate are dual-stack (IPv6 metered per /64); per-port flood meters are dual-stack per source address; the concurrent connection limit is IPv4-only
 - **Country blocking** via MaxMind GeoIP CIDR ranges
 - **Outbound SMTP restriction** by UID (prevent spam from compromised accounts)
@@ -364,6 +365,7 @@ firewall:
   conn_rate_limit: 200         # new connections per minute per source (IPv6 per /64; 0 = disabled; null = default)
   syn_flood_protection: true   # per-source SYN flood meter (IPv6 per /64)
   conn_limit: 400              # max concurrent connections per IPv4 source (0 = disabled)
+  drop_ipv4_options: true      # drop inbound IPv4 TCP carrying IP options (default: true)
   smtp_block: false            # restrict outbound SMTP
   log_dropped: true
   dyndns_hosts:                # resolved every 5 min and whitelisted
@@ -403,6 +405,10 @@ CIDR before applying the block.
 
 ### Allowlist precedence
 
+Inbound IPv4 TCP packets with IP options are dropped in prerouting before
+any of the rules below, infra included, while `drop_ipv4_options` is on.
+Hosts that support the key report the `firewall.drop_ipv4_options.v1`
+capability.
 The nftables input chain accepts `infra_ips` first, then drops
 `blocked_ips`, then accepts `allowed_ips`. Because the drop is evaluated
 before the `allowed_ips` accept, an allowlisted IP that lands in

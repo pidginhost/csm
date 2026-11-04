@@ -101,7 +101,8 @@ func CheckFirewall(ctx context.Context, cfg *config.Config, store *state.Store) 
 		current, applied, err = monitor.RulesetSnapshot()
 		out = []byte(current)
 	} else {
-		out, err = cmdExec.RunAllowNonZero("nft", "list", "table", "inet", "csm")
+		// The listing the engine baselines: counters are traffic, not structure.
+		out, err = cmdExec.RunAllowNonZero("nft", "-s", "-t", "list", "table", "inet", "csm")
 	}
 	if err != nil {
 		findings = append(findings, alert.Finding{
@@ -115,6 +116,16 @@ func CheckFirewall(ctx context.Context, cfg *config.Config, store *state.Store) 
 
 	output := string(out)
 	required := []string{"chain input", "chain output", "set blocked_ips", "set allowed_ips", "set infra_ips"}
+	dropIPv4Options := cfg.Firewall.DropIPv4Options
+	if applied != "" {
+		// Restart and rollback can change the engine without replacing the
+		// daemon's startup config. Use the same applied snapshot as the hash
+		// check so a concurrent re-apply cannot split the expected policy.
+		dropIPv4Options = strings.Contains(applied, "chain prerouting")
+	}
+	if dropIPv4Options {
+		required = append(required, "chain prerouting")
+	}
 	for _, component := range required {
 		if !strings.Contains(output, component) {
 			findings = append(findings, alert.Finding{

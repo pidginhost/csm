@@ -807,6 +807,7 @@ func (e *Engine) applyRulesetLocked(marker string) (resultErr error) {
 	}
 
 	// Create chains and rules
+	e.createPreroutingChain()
 	if err := e.createInputChain(); err != nil {
 		return fmt.Errorf("creating input chain: %w", err)
 	}
@@ -1135,6 +1136,38 @@ func portFloodNeedsMeter(rules []PortFloodRule) bool {
 
 func usablePortFloodRule(pf PortFloodRule) bool {
 	return pf.Hits > 0 && pf.Seconds > 0 && pf.Port > 0
+}
+
+// createPreroutingChain drops inbound IPv4 TCP packets that carry IP
+// options. Priority -310 runs it before conntrack (-200) and the DNAT that
+// hands published ports to containers (-100): forwarded traffic never reaches
+// the input chain. A drop in any base chain is final, so no accept elsewhere,
+// infra included, can let such a packet through.
+func (e *Engine) createPreroutingChain() {
+	if !e.cfg.DropIPv4Options {
+		return
+	}
+	policy := nftables.ChainPolicyAccept
+	chain := e.conn.AddChain(&nftables.Chain{
+		Name:     "prerouting",
+		Table:    e.table,
+		Type:     nftables.ChainTypeFilter,
+		Hooknum:  nftables.ChainHookPrerouting,
+		Priority: nftables.ChainPriorityRef(-310),
+		Policy:   &policy,
+	})
+	exprs := append(ipv4NFProtoGuard(),
+		&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.IPPROTO_TCP}},
+		// IHL is the low nibble of the first header byte; 5 words is a
+		// header without options.
+		&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 0, Len: 1},
+		&expr.Bitwise{SourceRegister: 1, DestRegister: 1, Len: 1, Mask: []byte{0x0f}, Xor: []byte{0}},
+		&expr.Cmp{Op: expr.CmpOpGt, Register: 1, Data: []byte{5}},
+		&expr.Counter{},
+		&expr.Verdict{Kind: expr.VerdictDrop},
+	)
+	e.conn.AddRule(&nftables.Rule{Table: e.table, Chain: chain, Exprs: exprs})
 }
 
 // createInputChain builds the input filter chain with proper rule ordering.
