@@ -254,11 +254,11 @@ func (s *Server) requireScope(want string, next http.Handler) http.Handler {
 			return
 		}
 		if tok, ok := s.cookieSessionCredential(r, want, sessionActivity(r)); ok {
-			next.ServeHTTP(w, withAuditActor(r, tok.Name, "browser"))
+			next.ServeHTTP(w, withAuditActor(r, tok.Name, "browser", tok.Scope))
 			return
 		}
 		if tok, ok := s.bearerCredentialWithScope(r, want); ok {
-			next.ServeHTTP(w, withAuditActor(r, tok.Name, "api"))
+			next.ServeHTTP(w, withAuditActor(r, tok.Name, "api", tok.Scope))
 			return
 		}
 		// API calls get 401 JSON; browser requests get redirect to login
@@ -293,10 +293,13 @@ func (s *Server) requireRead(next http.Handler) http.Handler {
 	})
 }
 
-// adminCredential reports whether the request carries an admin credential:
-// a browser session or an admin bearer token, in requireScope's order. It
-// does not extend the session.
+// adminCredential uses the scope captured at authorization so expiry while
+// reading a request body cannot change the release kind. Direct callers
+// resolve credentials without extending the session.
 func (s *Server) adminCredential(r *http.Request) bool {
+	if actor, ok := r.Context().Value(auditActorKey{}).(auditActor); ok {
+		return actor.scope == "admin"
+	}
 	if _, ok := s.cookieSessionCredential(r, "admin", false); ok {
 		return true
 	}

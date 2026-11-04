@@ -400,7 +400,9 @@ Login trust and cracked-password records stay. Pending SMTP rejections are disca
 delayed replies cannot restore old spray evidence. A self-service unban
 through the panel API with an unban-scope token lifts the block and its
 re-block but keeps the failure history and counts, so renewed spraying is
-blocked again on the usual rules. A flush clears the spray
+blocked again on the usual rules. An admin token or browser session on that
+route performs a full operator release. Failed firewall releases return an
+error without clearing threat state. A flush clears the spray
 history, per-address failure counts and pending rejections of every address.
 Authentication outage guards remain active after a release or flush.
 

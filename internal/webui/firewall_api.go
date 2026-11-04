@@ -697,12 +697,20 @@ func (s *Server) apiFirewallUnban(w http.ResponseWriter, r *http.Request) {
 	// a hosting panel's self-service unban: it lifts the block but keeps the
 	// address's mail failure history, so renewed spraying is blocked again.
 	// Only an admin credential makes this an operator release.
-	if s.adminCredential(r) {
-		if s.blocker != nil {
-			_ = s.blocker.UnblockIP(req.IP)
+	if s.blocker != nil {
+		var unblockErr error
+		if s.adminCredential(r) {
+			unblockErr = s.blocker.UnblockIP(req.IP)
+		} else if u, ok := s.blocker.(selfUnbanner); ok {
+			unblockErr = u.UnbanIP(req.IP)
+		} else {
+			writeJSONError(w, "Self-service unban is not supported", http.StatusNotImplemented)
+			return
 		}
-	} else if u, ok := s.blocker.(selfUnbanner); ok {
-		_ = u.UnbanIP(req.IP)
+		if unblockErr != nil {
+			writeJSONError(w, "Failed to unblock IP: "+unblockErr.Error(), http.StatusInternalServerError)
+			return
+		}
 	}
 	dropAutoBlockThreatRow(req.IP)
 

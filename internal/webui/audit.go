@@ -88,10 +88,10 @@ func (s *Server) auditLogAs(r *http.Request, actor, via, action, target, details
 
 type auditActorKey struct{}
 
-type auditActor struct{ name, via string }
+type auditActor struct{ name, via, scope string }
 
-func withAuditActor(r *http.Request, actor, via string) *http.Request {
-	return r.WithContext(context.WithValue(r.Context(), auditActorKey{}, auditActor{actor, via}))
+func withAuditActor(r *http.Request, actor, via, scope string) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), auditActorKey{}, auditActor{name: actor, via: via, scope: scope}))
 }
 
 // requestActor uses the identity captured at authorization so an action

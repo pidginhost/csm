@@ -104,9 +104,24 @@ func TestUnbanScopeCannotReachTheOperatorRelease(t *testing.T) {
 		unban   bool
 	}{
 		{"unban token", func(r *http.Request) { r.Header.Set("Authorization", "Bearer "+unban) }, true},
-		{"admin token", func(r *http.Request) { r.Header.Set("Authorization", "Bearer admin-secret") }, false},
+		{"unban token with raw cookie", func(r *http.Request) {
+			r.Header.Set("Authorization", "Bearer "+unban)
+			r.AddCookie(&http.Cookie{Name: "csm_auth", Value: unban})
+		}, true},
+		{"unban token with operator parameters", func(r *http.Request) {
+			r.Header.Set("Authorization", "Bearer "+unban)
+			r.Header.Set("X-CSM-Scope", "admin")
+			r.Header.Set("X-Release-Kind", "operator")
+			r.URL.RawQuery = "scope=admin&release_kind=operator"
+		}, true},
+		{"admin token", func(r *http.Request) { r.Header.Set("Authorization", "Bearer "+admin) }, false},
 		{"admin session", func(r *http.Request) {
 			r.AddCookie(cookie)
+			r.Header.Set("X-CSRF-Token", s.csrfTokenFor(r))
+		}, false},
+		{"admin session with unban token", func(r *http.Request) {
+			r.AddCookie(cookie)
+			r.Header.Set("Authorization", "Bearer "+unban)
 			r.Header.Set("X-CSRF-Token", s.csrfTokenFor(r))
 		}, false},
 	} {

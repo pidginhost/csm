@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"maps"
+	"reflect"
 	"slices"
 	"testing"
 	"time"
@@ -231,5 +232,47 @@ func TestPanelUnbanKeepsFailureHistory(t *testing.T) {
 	d.firewallReleased(ip, firewall.ReleaseOperator)
 	if e := m.ips[ip]; e == nil || len(e.failed) != 0 || len(e.sources) != 0 {
 		t.Fatalf("evidence after operator release = %+v, want none", e)
+	}
+}
+
+// Unbanning one address must not remove a sibling's marker or rewrite the
+// shared evidence. The same boundary must survive saving and restarting.
+func TestPanelUnbanPersistsOnlyAddressMarker(t *testing.T) {
+	for _, tc := range []struct{ given, ip, sibling string }{
+		{"::ffff:192.0.2.7", "192.0.2.7", "192.0.2.8"},
+		{"2001:DB8:1::A", "2001:db8:1::a", "2001:db8:1::b"},
+	} {
+		t.Run(tc.given, func(t *testing.T) {
+			db := openStoreForTest(t)
+			d, clock := releaseDaemon(t)
+			m := d.mailSpray
+			ageTrust(t, m, clock, tc.ip, "t@example.com")
+			m.RevokeTrust(tc.ip, "r@example.com")
+			sprayBlock(t, m, tc.ip)
+			if sprayEvidenceKey(tc.ip) == sprayEvidenceKey(tc.sibling) {
+				wantRule(t, m.Failure(tc.sibling, "c@example.com", mailboxExists), sprayRuleBreadth, true)
+			} else {
+				sprayBlock(t, m, tc.sibling)
+			}
+			d.persistMailSpray()
+			want := m.Export()
+			delete(want.Blocked, tc.ip)
+
+			d.firewallReleased(tc.given, firewall.ReleaseUnban)
+
+			if got := m.Export(); !reflect.DeepEqual(got, want) {
+				t.Fatal("unban changed more than the released address's marker")
+			}
+			if got := slices.Sorted(maps.Keys(m.blocksByKey[sprayEvidenceKey(tc.sibling)])); !slices.Equal(got, []string{tc.sibling}) {
+				t.Fatalf("sibling marker index = %q, want only %s", got, tc.sibling)
+			}
+			d.persistMailSpray()
+			bucketMatches(t, db, m)
+			next := newMailSpray(m.cfg, clock.Now)
+			(&Daemon{mailSpray: next}).loadMailSpray()
+			if got := next.Export(); !reflect.DeepEqual(got, want) {
+				t.Fatal("restart changed the retained evidence or markers")
+			}
+		})
 	}
 }

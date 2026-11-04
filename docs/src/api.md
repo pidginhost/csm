@@ -65,6 +65,22 @@ IPv4-mapped addresses and CIDRs within the mapped range match IPv4 peers: `::fff
 
 Unban-scope tokens are meant for hosting panels that let customers lift their own blocks. They cannot log in to the dashboard, read status or reach any other route, and they are exempt from CSRF only on those two routes.
 
+On `POST /api/v1/firewall/unban`, an unban-scope token removes the address's
+block and its mail spray re-block marker. Spray failure history and SMTP,
+IMAP and POP failure counts remain, including shared IPv6 /64 evidence and
+other addresses' markers. Renewed spraying can still trigger a block.
+An admin token or browser session on the same route performs a full operator
+release, clearing the address's mail failure history and counts as described
+in [automatic blocking](auto-response.md#findings-that-always-trigger-ip-block).
+The credential accepted at authorization selects the release mode; expiry
+while reading the request body cannot change it. A valid browser session
+takes precedence over a bearer token and still needs CSRF with an unban bearer.
+
+A failed firewall removal returns HTTP 500 without clearing threat state or
+reporting a successful unban. A firewall backend without self-service unban
+support returns HTTP 501 for an unban-scope caller; it never falls back to an
+operator release. The cPHulk flush remains best effort.
+
 The legacy single-token `webui.auth_token:`, with its optional `webui.auth_token_issued_at` and `webui.auth_token_expires_at`, is loaded into a `legacy-auth-token` admin entry. Read-scope tokens are intended for orchestrators and dashboards that consume status, findings, history, stats, challenge stats, blocked-IP summaries, scan jobs, health, components, capabilities, and SSE events. Admin scope is still required for write routes and for sensitive reads such as quarantine, settings, firewall internals, threat-intel detail, rules, account detail, exports, incident timelines, and audit history. (ModSecurity `stats`/`blocks`/`events` are read scope; only the ModSecurity rules and escalation routes need admin.) `metrics_token:` is a separate, read-only credential for `/metrics` only.
 
 ### Read-only MCP endpoint
