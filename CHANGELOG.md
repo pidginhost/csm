@@ -32,6 +32,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Fixed
 
+- Settings no longer let you turn off delivery needed by a running block digest while its shutdown awaits a restart.
 - IMAP or POP logins during a mail backend outage no longer earn the standing that keeps an address from brute-force blocking.
 - Antispam no longer overrides spam weights you set yourself in rspamd.
 - Spam learning no longer stops for every report when rspamd hashes one learned message differently; only that message's learning is dropped.
