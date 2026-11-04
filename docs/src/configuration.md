@@ -291,6 +291,8 @@ thresholds:
   mail_brute_account_key: "builtin:dovecot-user" # builtin:dovecot-user | builtin:postfix-sasl | regex:<capture>
   # Mail login spray rules (SMTP and IMAP/POP3): long memory of failed and
   # clean logins per IP. A clean login earns the IP trust on that mailbox.
+  # Enforce mode blocks last far longer than other blocks, so a busy host
+  # holds many at once: size firewall.deny_temp_ip_limit before enabling it.
   mail_spray_mode: observe                # off | observe (findings only) | enforce (block) (default: observe)
   mail_spray_window_min: 10080            # memory of failed and clean logins in minutes (default: 10080; 60-10080)
   mail_spray_breadth_mailboxes: 2         # finding once one IP (an IPv6 /64) has failed on this many untrusted mailboxes, the current one included (default: 2; 2-10; explicit 0 disables)

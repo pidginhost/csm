@@ -201,6 +201,10 @@ func (d *Daemon) prepareFirewall(effectiveFirewall *firewall.FirewallConfig, ops
 		parsed := net.ParseIP(ip)
 		return parsed != nil && threatintel.IPInAnyVerifiedBotRange(parsed)
 	})
+	// An operator unblock, allow or flush ends the mail spray history of the
+	// released addresses, so a marker or kept evidence does not block them
+	// again on their next failed login.
+	engine.SetOperatorReleaseHook(d.operatorReleased)
 
 	// Push the mail-provider ranges loaded by initMailRanges() into the engine
 	// before Apply() so the dos_exempt_nets interval sets are populated in the

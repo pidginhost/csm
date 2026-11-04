@@ -79,6 +79,12 @@ type Engine struct {
 	// internal/threatintel.
 	softAllowFn func(ip string) bool
 
+	// operatorReleaseFn, when set, is told of each successful operator
+	// release of an address (unblock, allow, temporary allow) and of a flush
+	// ("", every address), so the daemon can drop that address's mail spray
+	// history. Set by the daemon so this package does not import it.
+	operatorReleaseFn func(ip string)
+
 	// shutdownCtx, when set, scopes the lifetime of any in-flight verdict
 	// callback to daemon shutdown. Without it, BlockIPOutcome used
 	// context.Background() and a wedged panel callback kept the
@@ -523,6 +529,29 @@ func (e *Engine) SetSoftAllowChecker(fn func(ip string) bool) {
 	e.mu.Lock()
 	e.softAllowFn = fn
 	e.mu.Unlock()
+}
+
+// SetOperatorReleaseHook installs the callback told of each successful
+// release with the canonical address, or "" after a flush. It runs with the
+// engine lock released, so it may call back into the engine.
+func (e *Engine) SetOperatorReleaseHook(fn func(ip string)) {
+	e.mu.Lock()
+	e.operatorReleaseFn = fn
+	e.mu.Unlock()
+}
+
+// operatorReleased runs the release hook for ip when err is nil. Callers
+// defer it before taking e.mu, so it runs once the lock is released.
+func (e *Engine) operatorReleased(ip string, err error) {
+	if err != nil {
+		return
+	}
+	e.mu.Lock()
+	fn := e.operatorReleaseFn
+	e.mu.Unlock()
+	if fn != nil {
+		fn(ip)
+	}
 }
 
 // autoBlockSoftAllowed reports whether an automatic block of ip must be
@@ -3245,6 +3274,7 @@ func (e *Engine) UnblockIP(ip string) (resultErr error) {
 		return err
 	}
 	ip = canonical
+	defer func() { e.operatorReleased(ip, resultErr) }()
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -3604,6 +3634,7 @@ func (e *Engine) allowIP(ip string, reason string, timeout time.Duration, action
 		return err
 	}
 	ip = canonical
+	defer func() { e.operatorReleased(ip, resultErr) }()
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -3909,6 +3940,7 @@ func (e *Engine) RemoveAllowIPPort(ip string, port int, proto string) (resultErr
 // FlushBlocked removes all IPs from the blocked set and clears persisted state.
 func (e *Engine) FlushBlocked() (resultErr error) {
 	defer func() { e.legacyFirewallFailure("flush", "", "", "", 0, resultErr) }()
+	defer func() { e.operatorReleased("", resultErr) }()
 
 	e.mu.Lock()
 	defer e.mu.Unlock()

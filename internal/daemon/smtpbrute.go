@@ -479,6 +479,14 @@ func (t *smtpAuthTracker) RecordSuccess(ip, account string) (findings []alert.Fi
 	return []alert.Finding{sprayFinding(protoSMTP, ip, v, t.spray.Mode(), t.now())}
 }
 
+// Forget drops ip's failure counts after an operator release, so its next
+// failure starts a fresh count.
+func (t *smtpAuthTracker) Forget(ip string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	delete(t.ips, ip)
+}
+
 // Stats returns cumulative Record invocations and findings emitted since
 // startup. Used by the daemon's periodic diagnostic log.
 func (t *smtpAuthTracker) Stats() (calls, emits int64) {

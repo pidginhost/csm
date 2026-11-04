@@ -498,6 +498,49 @@ func (m *mailSpray) ForgetRecentFailures(ip string, since time.Time) {
 	}
 }
 
+// Forget drops what an operator release of ip ends: its block marker, its
+// verdict cadence and the failure evidence of its evidence key. For IPv6
+// that is the whole /64, since evidence kept for the /64 would block the
+// released address again on its next failure. Trust and crack records are
+// about mailboxes, not the block, and stay, as do the markers and cadence
+// of the key's other addresses. An entry left with no records goes at the
+// next Purge.
+func (m *mailSpray) Forget(ip string) {
+	ip = sprayAddr(ip)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.blocks[ip]; ok {
+		m.dropBlock(ip)
+	}
+	key := sprayEvidenceKey(ip)
+	e := m.ips[key]
+	if e == nil {
+		return
+	}
+	delete(e.sources, ip)
+	e.forgetFailures()
+	m.markIP(key)
+	// The entry may now rank below the eviction floor.
+	m.ipFloor = 0
+}
+
+// ForgetAll is Forget for every address, after a firewall flush, and also
+// drops corroboration. A flush is rare, so the next save rewrites the
+// bucket.
+func (m *mailSpray) ForgetAll() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, e := range m.ips {
+		e.sources = nil
+		e.forgetFailures()
+	}
+	clear(m.names)
+	clear(m.blocks)
+	clear(m.blocksByKey)
+	m.ipFloor, m.nameFloor = 0, 0
+	m.resetChanges()
+}
+
 // TrustedAll reports whether the IP holds aged trust on every one of the
 // normalised mailboxes. An empty list is not trusted.
 func (m *mailSpray) TrustedAll(ip string, mailboxes []string) bool {
@@ -1121,6 +1164,28 @@ func (d *Daemon) persistMailSpray() {
 	}
 }
 
+// operatorReleased is the firewall's operator release hook: ip was
+// unblocked or allowed, or every address was flushed (""). The firewall
+// calls it with its own lock released; each lock here is taken alone.
+func (d *Daemon) operatorReleased(ip string) {
+	if d.mailSpray != nil {
+		if ip == "" {
+			d.mailSpray.ForgetAll()
+		} else {
+			d.mailSpray.Forget(ip)
+		}
+	}
+	if ip == "" {
+		return
+	}
+	if d.smtpAuthTracker != nil {
+		d.smtpAuthTracker.Forget(ip)
+	}
+	if d.mailAuthTracker != nil {
+		d.mailAuthTracker.Forget(ip)
+	}
+}
+
 // sprayEvidenceKey is the evidence entry a source's failures go to: the
 // address for IPv4 (IPv4-mapped included) and the /64 for IPv6, since one
 // IPv6 host can rotate through its /64. Trust and blocks stay per address.
@@ -1248,6 +1313,14 @@ func foldObservedExistence(a, b mailboxExistence) mailboxExistence {
 
 func (e *sprayIP) pruneFailed(cutoff time.Time) {
 	maps.DeleteFunc(e.failed, func(_ string, f sprayFailure) bool { return f.last.Before(cutoff) })
+}
+
+// forgetFailures drops e's failure evidence and the record of its verdicts.
+func (e *sprayIP) forgetFailures() {
+	e.failed = nil
+	e.untracked = time.Time{}
+	e.verdictAt = time.Time{}
+	e.observedAt, e.observedNames = time.Time{}, 0
 }
 
 // noteWeakAlert reports whether a weak compromise advisory for mailbox may

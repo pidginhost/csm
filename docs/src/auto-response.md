@@ -384,6 +384,20 @@ auto-blocking. A separate blockable finding can still block the same source.
 `mail_bruteforce_suspected` also reports SMTP, IMAP and POP password sprays
 while spray detection runs in observe mode.
 
+In enforce mode a spray block lasts `thresholds.mail_spray_block_expiry` (30
+days by default) instead of `block_expiry`; an address already blocked keeps
+its current expiry. When the temporary block limit is full, the spray block
+that ends soonest is evicted first. A blocked address is remembered until one
+spray memory window after its block ends. One failed login from it in that
+time, on any mailbox, blocks it again for the spray length. That includes a
+failure logged just before an authentication outage is detected. On a shared
+IPv6 /64, an address blocked on the /64's shared evidence keeps its own
+re-block until it is released too. An operator unblock, allow or temporary
+allow clears the address's spray history: its re-block and the failure
+history of the address, or for IPv6 of its /64. Its SMTP and IMAP failure
+counts restart, while login trust and cracked-password records stay. A flush
+clears the spray history of every address.
+
 Every auto-response block source - scan findings, challenge-timeout
 escalations, central-intel corroborated blocks, and incident spray
 containment - records the same evidence: a temporary threat-DB row, a

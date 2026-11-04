@@ -44,6 +44,7 @@ func (e *Engine) UnblockIPForUndo(ip string) (before *BlockedEntry, resultErr er
 		return nil, err
 	}
 	ip = canonical
+	defer func() { e.operatorReleased(ip, resultErr) }()
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	state := e.loadStateFile()

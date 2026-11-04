@@ -99,6 +99,7 @@ func (e *Engine) SetVerdictAsker(_ func(context.Context, string, string) (string
 }
 func (e *Engine) SetShutdownContext(_ context.Context)    {}
 func (e *Engine) SetSoftAllowChecker(_ func(string) bool) {}
+func (e *Engine) SetOperatorReleaseHook(_ func(string))   {}
 func (e *Engine) UnblockIP(_ string) error                { return ErrUnsupportedPlatform }
 func (e *Engine) IsBlocked(_ string) bool                 { return false }
 func (e *Engine) StateSetAside() string                   { return "" }

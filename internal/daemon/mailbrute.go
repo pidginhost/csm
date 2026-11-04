@@ -930,6 +930,21 @@ func (t *mailAuthTracker) RecordObserved(ip, account string, obs alert.Observati
 	return findings
 }
 
+// Forget drops ip's failure history after an operator release, so its next
+// failure starts a fresh count. Its successful logins and good standing
+// stay: they describe the mailboxes it logs in to, not the block.
+func (t *mailAuthTracker) Forget(ip string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	e := t.ips[ip]
+	if e == nil {
+		return
+	}
+	e.times, e.failedAccounts = nil, nil
+	e.slowTimes, e.slowAccounts, e.slowUnvouched = nil, nil, time.Time{}
+	e.suppressed, e.suspectedSuppressed = time.Time{}, time.Time{}
+}
+
 // Stats returns cumulative Record invocations and findings emitted since
 // startup. Used by the daemon's periodic diagnostic log.
 func (t *mailAuthTracker) Stats() (calls, emits int64) {
