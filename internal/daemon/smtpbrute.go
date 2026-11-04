@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"fmt"
+	"maps"
 	"slices"
 	"sort"
 	"strings"
@@ -479,12 +480,20 @@ func (t *smtpAuthTracker) RecordSuccess(ip, account string) (findings []alert.Fi
 	return []alert.Finding{sprayFinding(protoSMTP, ip, v, t.spray.Mode(), t.now())}
 }
 
-// Forget drops ip's failure counts after an operator release, so its next
-// failure starts a fresh count.
+// Forget drops ip's failure counts and pending rejections after an operator
+// release, or every address's when ip is empty. Backend outage marks stay.
 func (t *smtpAuthTracker) Forget(ip string) {
+	ip = sprayAddr(ip)
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	delete(t.ips, ip)
+	// A canonical firewall release also covers alternate log spellings.
+	maps.DeleteFunc(t.ips, func(addr string, _ *smtpIPEntry) bool {
+		return ip == "" || sprayAddr(addr) == ip
+	})
+	// Delayed MTA replies must not restore evidence from before the release.
+	maps.DeleteFunc(t.pendingVerdicts, func(addr string, _ []smtpPendingVerdict) bool {
+		return ip == "" || sprayAddr(addr) == ip
+	})
 }
 
 // Stats returns cumulative Record invocations and findings emitted since

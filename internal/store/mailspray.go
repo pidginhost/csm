@@ -38,15 +38,16 @@ type MailSpraySource struct {
 // MailSprayIP is the persisted failure evidence of one IPv4 address or IPv6
 // /64.
 type MailSprayIP struct {
-	Failed        map[string]MailSprayFailure `json:"failed,omitempty"`
-	WeakAlerted   map[string]time.Time        `json:"weak_alerted,omitempty"`
-	Revoked       map[string]time.Time        `json:"revoked,omitempty"` // cracked mailboxes that cannot earn trust
-	Sources       map[string]MailSpraySource  `json:"sources,omitempty"` // by address
-	Untracked     time.Time                   `json:"untracked,omitzero"`
-	VerdictAt     time.Time                   `json:"verdict_at,omitzero"`
-	ObservedAt    time.Time                   `json:"observed_at,omitzero"`    // last observe mode block verdict
-	ObservedNames int                         `json:"observed_names,omitzero"` // untrusted names it listed
-	LastSeen      time.Time                   `json:"last_seen"`
+	Failed          map[string]MailSprayFailure `json:"failed,omitempty"`
+	WeakAlerted     map[string]time.Time        `json:"weak_alerted,omitempty"`
+	Revoked         map[string]time.Time        `json:"revoked,omitempty"` // cracked mailboxes that cannot earn trust
+	Sources         map[string]MailSpraySource  `json:"sources,omitempty"` // by address
+	Untracked       time.Time                   `json:"untracked,omitzero"`
+	RevokedOverflow time.Time                   `json:"revoked_overflow,omitzero"`
+	VerdictAt       time.Time                   `json:"verdict_at,omitzero"`
+	ObservedAt      time.Time                   `json:"observed_at,omitzero"`    // last observe mode block verdict
+	ObservedNames   int                         `json:"observed_names,omitzero"` // untrusted names it listed
+	LastSeen        time.Time                   `json:"last_seen"`
 }
 
 // MailSprayState is the persisted mail login spray memory. Keeping it across

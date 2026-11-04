@@ -392,11 +392,14 @@ spray memory window after its block ends. One failed login from it in that
 time, on any mailbox, blocks it again for the spray length. That includes a
 failure logged just before an authentication outage is detected. On a shared
 IPv6 /64, an address blocked on the /64's shared evidence keeps its own
-re-block until it is released too. An operator unblock, allow or temporary
-allow clears the address's spray history: its re-block and the failure
-history of the address, or for IPv6 of its /64. Its SMTP and IMAP failure
-counts restart, while login trust and cracked-password records stay. A flush
-clears the spray history of every address.
+re-block until it is released too. An operator unblock, allow, temporary
+allow or undo that removes a block clears the address's spray history: its
+re-block and the failure history of the address, or for IPv6 of its /64.
+Its SMTP and IMAP failure counts restart across all address spellings.
+Login trust and cracked-password records stay. Pending SMTP rejections are discarded so
+delayed replies cannot restore old spray evidence. A flush clears the spray
+history, per-address failure counts and pending rejections of every address.
+Authentication outage guards remain active after a release or flush.
 
 Every auto-response block source - scan findings, challenge-timeout
 escalations, central-intel corroborated blocks, and incident spray

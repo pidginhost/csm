@@ -3,6 +3,7 @@
 package firewall
 
 import (
+	"errors"
 	"slices"
 	"syscall"
 	"testing"
@@ -10,6 +11,56 @@ import (
 
 	"github.com/google/nftables"
 )
+
+// Undoing an operator block releases the address through the conditional
+// restore path. A failed undo or a restored block must keep spray history.
+func TestOperatorReleaseHookOnUndoBlock(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		prior   *BlockedEntry
+		changed bool
+		fail    bool
+		want    bool
+	}{
+		{name: "remove block", want: true},
+		{name: "expired prior", prior: &BlockedEntry{IP: "192.0.2.9", ExpiresAt: time.Unix(1, 0)}, want: true},
+		{name: "restore block", prior: &BlockedEntry{IP: "192.0.2.9", Reason: "operator"}},
+		{name: "changed block", changed: true},
+		{name: "kernel failure", fail: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			conn, _ := nftConnReturningErrsThenOK(t)
+			if tc.fail {
+				conn = nftConnReturningErr(t, syscall.EPERM)
+			}
+			e, calls := releaseHookEngine(t, conn)
+			entry := BlockedEntry{IP: "192.0.2.9", Reason: "operator", Source: SourceCLI, BlockedAt: time.Now()}
+			if err := e.saveBlockedEntry(entry); err != nil {
+				t.Fatal(err)
+			}
+			expected := entry
+			if tc.changed {
+				expected.Reason = "superseded"
+			}
+			err := e.RestoreBlockIfUnchanged("::ffff:192.0.2.9", &expected, tc.prior)
+			switch {
+			case tc.changed && !errors.Is(err, ErrBlockChanged):
+				t.Fatalf("changed block: %v, want ErrBlockChanged", err)
+			case tc.fail && !errors.Is(err, syscall.EPERM):
+				t.Fatalf("kernel failure = %v, want EPERM", err)
+			case !tc.changed && !tc.fail && err != nil:
+				t.Fatal(err)
+			}
+			var want []string
+			if tc.want {
+				want = []string{entry.IP}
+			}
+			if !slices.Equal(*calls, want) {
+				t.Fatalf("release hooks = %v, want %v", *calls, want)
+			}
+		})
+	}
+}
 
 // releaseHookEngine has IPv4 and IPv6 blocked and allowed sets on conn and
 // records every hook call.

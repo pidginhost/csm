@@ -53,14 +53,15 @@ func TestMailSprayLoadExportKeepsEveryField(t *testing.T) {
 					"nobody@example.com": {First: at(-3), Last: at(-3), Count: 1, Exist: uint8(mailboxMissing)},
 					"":                   {First: at(-5), Last: at(-4), Count: 2},
 				},
-				WeakAlerted:   map[string]time.Time{"w@example.com": at(-6)},
-				Revoked:       map[string]time.Time{"r@example.com": at(-11)},
-				Sources:       map[string]store.MailSpraySource{"192.0.2.1": {SuppressedUntil: clock.Now().Add(30 * time.Minute), CompromiseUntil: clock.Now().Add(45 * time.Minute)}},
-				Untracked:     at(-7),
-				VerdictAt:     at(-2),
-				ObservedAt:    at(-3),
-				ObservedNames: 2,
-				LastSeen:      at(-1),
+				WeakAlerted:     map[string]time.Time{"w@example.com": at(-6)},
+				Revoked:         map[string]time.Time{"r@example.com": at(-11)},
+				Sources:         map[string]store.MailSpraySource{"192.0.2.1": {SuppressedUntil: clock.Now().Add(30 * time.Minute), CompromiseUntil: clock.Now().Add(45 * time.Minute)}},
+				Untracked:       at(-7),
+				RevokedOverflow: at(-9),
+				VerdictAt:       at(-2),
+				ObservedAt:      at(-3),
+				ObservedNames:   2,
+				LastSeen:        at(-1),
 			},
 			"2001:db8:1:2::/64": {
 				Failed: map[string]store.MailSprayFailure{"a@example.com": {First: at(-4), Last: at(-2), Count: 2}},
@@ -190,18 +191,20 @@ func TestMailSprayLoadDropsExpiredAndCaps(t *testing.T) {
 					"old@example.com": {First: old, Last: old, Count: 1},
 					"new@example.com": {Last: recent, Count: 0, Exist: 9},
 				},
-				WeakAlerted: map[string]time.Time{"old@example.com": old, "new@example.com": recent},
-				Revoked:     map[string]time.Time{"old@example.com": old},
-				Untracked:   old,
-				ObservedAt:  old,
-				LastSeen:    recent,
+				WeakAlerted:     map[string]time.Time{"old@example.com": old, "new@example.com": recent},
+				Revoked:         map[string]time.Time{"old@example.com": old},
+				Untracked:       old,
+				RevokedOverflow: old,
+				ObservedAt:      old,
+				LastSeen:        recent,
 			},
 			"192.0.2.2": {
-				Failed:      map[string]store.MailSprayFailure{"a@example.com": {First: old, Last: old, Count: 3}},
-				WeakAlerted: map[string]time.Time{"a@example.com": old},
-				Untracked:   old,
-				VerdictAt:   recent,
-				LastSeen:    recent,
+				Failed:          map[string]store.MailSprayFailure{"a@example.com": {First: old, Last: old, Count: 3}},
+				WeakAlerted:     map[string]time.Time{"a@example.com": old},
+				Untracked:       old,
+				RevokedOverflow: old,
+				VerdictAt:       recent,
+				LastSeen:        recent,
 			},
 			"192.0.2.3": {Failed: map[string]store.MailSprayFailure{}, WeakAlerted: map[string]time.Time{}, LastSeen: recent},
 		},
@@ -251,7 +254,7 @@ func TestMailSprayLoadDropsExpiredAndCaps(t *testing.T) {
 	loadSpraySnapshot(t, m, st)
 
 	e := m.ips["192.0.2.1"]
-	if e == nil || len(e.failed) != 1 || len(e.weakAlerted) != 1 || len(e.revoked) != 0 || !e.untracked.IsZero() || !e.observedAt.IsZero() {
+	if e == nil || len(e.failed) != 1 || len(e.weakAlerted) != 1 || len(e.revoked) != 0 || !e.untracked.IsZero() || !e.revokedOverflow.IsZero() || !e.observedAt.IsZero() {
 		t.Fatalf("192.0.2.1 after load = %+v, want only the recent name and advisory", e)
 	}
 	if f := e.failed["new@example.com"]; !f.first.Equal(recent) || f.count != 1 || f.exist != mailboxExistenceUnknown {
@@ -405,14 +408,15 @@ func TestMailSprayLoadDistrustsFutureTimes(t *testing.T) {
 		later := now.Add(365 * 24 * time.Hour)
 		return store.MailSprayState{
 			IPs: map[string]store.MailSprayIP{"192.0.2.2": {
-				Failed:      map[string]store.MailSprayFailure{"x@example.com": {First: later, Last: later, Count: 1}},
-				WeakAlerted: map[string]time.Time{"w@example.com": later},
-				Revoked:     map[string]time.Time{"r@example.com": later},
-				Sources:     map[string]store.MailSpraySource{"192.0.2.2": {SuppressedUntil: later, CompromiseUntil: later}},
-				Untracked:   later,
-				VerdictAt:   later,
-				ObservedAt:  later,
-				LastSeen:    later,
+				Failed:          map[string]store.MailSprayFailure{"x@example.com": {First: later, Last: later, Count: 1}},
+				WeakAlerted:     map[string]time.Time{"w@example.com": later},
+				Revoked:         map[string]time.Time{"r@example.com": later},
+				Sources:         map[string]store.MailSpraySource{"192.0.2.2": {SuppressedUntil: later, CompromiseUntil: later}},
+				Untracked:       later,
+				RevokedOverflow: later,
+				VerdictAt:       later,
+				ObservedAt:      later,
+				LastSeen:        later,
 			}},
 			Trust: map[string]map[string]store.GoodSourcePair{"192.0.2.1": {
 				"a@example.com": {First: now.Add(-24 * time.Hour), Last: later},
@@ -438,7 +442,7 @@ func TestMailSprayLoadDistrustsFutureTimes(t *testing.T) {
 	for name, got := range map[string]time.Time{
 		"failure first": f.first, "failure last": f.last, "untracked": e.untracked,
 		"verdict": e.verdictAt, "observed": e.observedAt, "last seen": e.lastSeen, "advisory": e.weakAlerted["w@example.com"],
-		"revoked": e.revoked["r@example.com"],
+		"revoked": e.revoked["r@example.com"], "crack overflow": e.revokedOverflow,
 	} {
 		if !got.Equal(now) {
 			t.Errorf("%s = %v, want clamped to %v", name, got, now)

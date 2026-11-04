@@ -73,6 +73,7 @@ func (e *Engine) RestoreBlockIfUnchanged(ip string, expected, prior *BlockedEntr
 			}
 		case "unblock":
 			e.legacyFirewallFailure("unblock", ip, "", "", 0, resultErr)
+			e.operatorReleased(ip, resultErr)
 		}
 	}()
 	canonical, err := canonicalFirewallIP(ip)

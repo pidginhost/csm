@@ -128,15 +128,16 @@ type sprayTrustKey struct{ ip, mailbox string }
 
 // sprayIP is the failure evidence of one evidence key (sprayEvidenceKey).
 type sprayIP struct {
-	failed        map[string]sprayFailure
-	weakAlerted   map[string]time.Time   // success mailbox to its last weak_compromise
-	revoked       map[string]time.Time   // known cracks cannot earn trust during the window
-	sources       map[string]spraySource // verdict cadence by address
-	untracked     time.Time              // latest untrusted failure refused at the name cap
-	verdictAt     time.Time
-	observedAt    time.Time // last observe mode block verdict
-	observedNames int       // untrusted names it listed
-	lastSeen      time.Time
+	failed          map[string]sprayFailure
+	weakAlerted     map[string]time.Time   // success mailbox to its last weak_compromise
+	revoked         map[string]time.Time   // known cracks cannot earn trust during the window
+	sources         map[string]spraySource // verdict cadence by address
+	untracked       time.Time              // latest untrusted failure refused at the name cap
+	revokedOverflow time.Time              // latest crack refused at the name cap; survives release
+	verdictAt       time.Time
+	observedAt      time.Time // last observe mode block verdict
+	observedNames   int       // untrusted names it listed
+	lastSeen        time.Time
 }
 
 // spraySource is one address's verdict cadence. Blocks target the address,
@@ -578,10 +579,14 @@ func (m *mailSpray) Purge() {
 			e.untracked = time.Time{}
 			records++
 		}
+		if !e.revokedOverflow.IsZero() && e.revokedOverflow.Before(cutoff) {
+			e.revokedOverflow = time.Time{}
+			records++
+		}
 		changed := records != len(e.failed)+len(e.weakAlerted)+len(e.revoked)
 		// ForgetRecentFailures can leave an entry with no records, so an
 		// entry dropped here may not have changed in this pass.
-		if len(e.failed) == 0 && e.untracked.IsZero() && len(e.weakAlerted) == 0 && len(e.revoked) == 0 {
+		if len(e.failed) == 0 && e.untracked.IsZero() && e.revokedOverflow.IsZero() && len(e.weakAlerted) == 0 && len(e.revoked) == 0 {
 			delete(m.ips, ip)
 			changed = true
 		}
@@ -815,11 +820,12 @@ func (m *mailSpray) exportAll() store.MailSprayState {
 
 func exportSprayIP(e *sprayIP) store.MailSprayIP {
 	s := store.MailSprayIP{
-		Untracked:     e.untracked,
-		VerdictAt:     e.verdictAt,
-		ObservedAt:    e.observedAt,
-		ObservedNames: e.observedNames,
-		LastSeen:      e.lastSeen,
+		Untracked:       e.untracked,
+		RevokedOverflow: e.revokedOverflow,
+		VerdictAt:       e.verdictAt,
+		ObservedAt:      e.observedAt,
+		ObservedNames:   e.observedNames,
+		LastSeen:        e.lastSeen,
 	}
 	if len(e.failed) > 0 {
 		s.Failed = make(map[string]store.MailSprayFailure, len(e.failed))
@@ -975,6 +981,9 @@ func (m *mailSpray) loadIP(e *sprayIP, key string, s store.MailSprayIP, cutoff, 
 	if u := sprayNotAfter(s.Untracked, now); !u.Before(cutoff) {
 		e.untracked = sprayLatest(e.untracked, u)
 	}
+	if r := sprayNotAfter(s.RevokedOverflow, now); !r.Before(cutoff) {
+		e.revokedOverflow = sprayLatest(e.revokedOverflow, r)
+	}
 	if o := sprayNotAfter(s.ObservedAt, now); !o.Before(cutoff) {
 		e.observedAt = sprayLatest(e.observedAt, o)
 		e.observedNames = max(e.observedNames, min(max(s.ObservedNames, 0), maxSprayNamesPerIP))
@@ -1046,7 +1055,7 @@ func (m *mailSpray) loadIP(e *sprayIP, key string, s store.MailSprayIP, cutoff, 
 		}
 		sprayKeepLatest(e.weakAlerted, mb, at, maxSprayNamesPerIP)
 	}
-	if len(e.failed) == 0 && e.untracked.IsZero() && len(e.weakAlerted) == 0 && len(e.revoked) == 0 {
+	if len(e.failed) == 0 && e.untracked.IsZero() && e.revokedOverflow.IsZero() && len(e.weakAlerted) == 0 && len(e.revoked) == 0 {
 		return nil
 	}
 	return e
@@ -1174,9 +1183,6 @@ func (d *Daemon) operatorReleased(ip string) {
 		} else {
 			d.mailSpray.Forget(ip)
 		}
-	}
-	if ip == "" {
-		return
 	}
 	if d.smtpAuthTracker != nil {
 		d.smtpAuthTracker.Forget(ip)
@@ -1360,8 +1366,8 @@ func (e *sprayIP) noteObserved(n int, now time.Time, window time.Duration) bool 
 
 // noteRevoked remembers a crack on mailbox at "at" for the window. Losing a
 // cracked mailbox at the name cap must not turn its next login into clean
-// evidence, so at the cap the crack goes to the overflow marker, which
-// withholds new trust without disturbing other aged trust.
+// evidence. Crack overflow stays separate from failed-login overflow so
+// an operator release can clear failures without restoring cracked trust.
 func (e *sprayIP) noteRevoked(mailbox string, at time.Time, window time.Duration) {
 	maps.DeleteFunc(e.revoked, func(_ string, t time.Time) bool { return at.Sub(t) > window })
 	if _, ok := e.revoked[mailbox]; ok || len(e.revoked) < maxSprayNamesPerIP {
@@ -1371,8 +1377,8 @@ func (e *sprayIP) noteRevoked(mailbox string, at time.Time, window time.Duration
 		e.revoked[mailbox] = at
 		return
 	}
-	if at.After(e.untracked) {
-		e.untracked = at
+	if at.After(e.revokedOverflow) {
+		e.revokedOverflow = at
 	}
 }
 
@@ -1396,7 +1402,8 @@ func (e *sprayIP) setSource(ip string, src spraySource) {
 }
 
 func (e *sprayIP) hasUntracked(now time.Time, window time.Duration) bool {
-	return !e.untracked.IsZero() && now.Sub(e.untracked) <= window
+	return (!e.untracked.IsZero() && now.Sub(e.untracked) <= window) ||
+		(!e.revokedOverflow.IsZero() && now.Sub(e.revokedOverflow) <= window)
 }
 
 // staleFailures reports whether name failed at least twice in the window,

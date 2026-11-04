@@ -18,7 +18,7 @@ CSM includes a native nftables firewall engine that replaces LFD and fail2ban. I
 - **Auto-response dry-run** - safety default that forecasts eligible IP blocks and retains bounded examples without applying them
 - **Verdict callback** - optional advisory hook to the panel before each auto-block (allow / block / attach metadata)
 - **cphulk integration** - unblock flushes cphulk too
-- **Mail spray history** - unblock, allow and flush also clear the mail login spray history of the released addresses
+- **Mail spray history** - unblock, allow, undoing a block and flush also clear the released addresses' mail login spray history and failure counts
 - **Audit trail** - JSONL log with 10MB rotation
 - **State persistence** with atomic writes
 

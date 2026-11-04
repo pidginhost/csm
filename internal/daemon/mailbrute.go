@@ -930,19 +930,23 @@ func (t *mailAuthTracker) RecordObserved(ip, account string, obs alert.Observati
 	return findings
 }
 
-// Forget drops ip's failure history after an operator release, so its next
-// failure starts a fresh count. Its successful logins and good standing
-// stay: they describe the mailboxes it logs in to, not the block.
+// Forget drops ip's failure history after an operator release, or every
+// address's when ip is empty. Successful logins and good standing stay:
+// they describe the mailboxes it logs in to, not the block.
 func (t *mailAuthTracker) Forget(ip string) {
+	ip = sprayAddr(ip)
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	e := t.ips[ip]
-	if e == nil {
-		return
+	// Log readers and persisted good standing may use different spellings
+	// of one address. Release every matching entry without discarding trust.
+	for addr, e := range t.ips {
+		if ip != "" && sprayAddr(addr) != ip {
+			continue
+		}
+		e.times, e.failedAccounts = nil, nil
+		e.slowTimes, e.slowAccounts, e.slowUnvouched = nil, nil, time.Time{}
+		e.suppressed, e.suspectedSuppressed = time.Time{}, time.Time{}
 	}
-	e.times, e.failedAccounts = nil, nil
-	e.slowTimes, e.slowAccounts, e.slowUnvouched = nil, nil, time.Time{}
-	e.suppressed, e.suspectedSuppressed = time.Time{}, time.Time{}
 }
 
 // Stats returns cumulative Record invocations and findings emitted since
