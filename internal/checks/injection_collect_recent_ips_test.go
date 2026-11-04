@@ -67,7 +67,7 @@ func TestCollectRecentIPsEximSMTPAuthFailure(t *testing.T) {
 	forceCPanelPlatform(t)
 	// The connecting client is the bracketed address inside the H= field.
 	content := "2026-04-14 10:00:00 H=client [198.51.100.9]:1234 F=<spam@x> rejected RCPT <victim@host>: relay not permitted\n" +
-		"2026-04-14 10:00:01 H=client [203.0.113.50]:2222 authenticator failed for bad: 535 Auth failed\n"
+		"2026-04-14 10:00:01 dovecot_login authenticator failed for (client) [203.0.113.50]:2222: 535 Incorrect authentication data (set_id=bad)\n"
 	withMockOS(t, writeMockLog(t, "/var/log/exim_mainlog", content))
 	ips := collectRecentIPs(&config.Config{})
 	if src := ips["198.51.100.9"]; src != "SMTP auth failure" {

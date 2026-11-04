@@ -781,10 +781,14 @@ func collectRecentIPs(cfg *config.Config) map[string]string {
 
 	if shouldCollectEximMainlog(info) {
 		for _, line := range tailFile(reputationEximMainlog, 50) {
-			if strings.Contains(line, "authenticator failed") || strings.Contains(line, "rejected RCPT") {
-				if ip := eximlog.ClientIP(line); ip != "" {
-					addIfNotInfra(ips, ip, "SMTP auth failure", cfg)
-				}
+			// Only the failure record names the client: the same wording in
+			// a subject or greeting is client text.
+			ip := eximlog.AuthFailure(line).ClientIP
+			if ip == "" && strings.Contains(line, "rejected RCPT") {
+				ip = eximlog.ClientIP(line)
+			}
+			if ip != "" {
+				addIfNotInfra(ips, ip, "SMTP auth failure", cfg)
 			}
 		}
 	}
