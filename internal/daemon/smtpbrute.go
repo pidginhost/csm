@@ -243,9 +243,9 @@ func (t *smtpAuthTracker) RecordFailure(ip, account string, exist mailboxExisten
 
 // RecordAmbiguousFailure is RecordFailure for a failure whose pending
 // answers named different mailboxes. It counts with no mailbox, and the
-// spray memory gets each name in batch once, existence unknown.
-func (t *smtpAuthTracker) RecordAmbiguousFailure(ip string, batch *smtpVerdictBatch, obs alert.Observation) []alert.Finding {
-	return t.recordFailure(ip, "", mailboxExistenceUnknown, obs, true, batch)
+// spray memory gets the names claimed during pairing, existence unknown.
+func (t *smtpAuthTracker) RecordAmbiguousFailure(ip string, names []string, obs alert.Observation) []alert.Finding {
+	return t.recordFailure(ip, "", mailboxExistenceUnknown, obs, true, names)
 }
 
 // RecordTemporaryFailure is RecordObserved for a failure the MTA answered
@@ -255,7 +255,7 @@ func (t *smtpAuthTracker) RecordTemporaryFailure(ip, account string, obs alert.O
 	return t.recordFailure(ip, account, mailboxExistenceUnknown, obs, false, nil)
 }
 
-func (t *smtpAuthTracker) recordFailure(ip, account string, exist mailboxExistence, obs alert.Observation, credential bool, batch *smtpVerdictBatch) []alert.Finding {
+func (t *smtpAuthTracker) recordFailure(ip, account string, exist mailboxExistence, obs alert.Observation, credential bool, names []string) []alert.Finding {
 	if ip == "" {
 		return nil
 	}
@@ -347,9 +347,8 @@ func (t *smtpAuthTracker) recordFailure(ip, account string, exist mailboxExisten
 		t.spray.ForgetRecentFailures(ip, cutoff)
 	}
 	if !degraded && credential && t.spray != nil {
-		names := []string{normalizeSprayMailbox(account)}
-		if batch != nil {
-			names = batch.take()
+		if names == nil {
+			names = []string{normalizeSprayMailbox(account)}
 		}
 		var v *sprayVerdict
 		for _, name := range names {

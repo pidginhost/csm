@@ -798,12 +798,12 @@ func TestPairMTAFailureExistence(t *testing.T) {
 			}
 			for i := range tc.verdicts {
 				clock.advance(time.Second)
-				account, exist, _, ok := tr.PairMTAFailure(ip, "smtpd[1]", time.Time{})
+				account, exist, _, ok := tr.PairMTAFailure(ip, "smtpd[1]", time.Time{}, true)
 				if !ok || account != tc.wantAccount || exist != tc.wantExist {
 					t.Fatalf("pair %d = (%q, %d, %v), want (%q, %d, true)", i, account, exist, ok, tc.wantAccount, tc.wantExist)
 				}
 			}
-			if account, exist, _, ok := tr.PairMTAFailure(ip, "smtpd[1]", time.Time{}); ok || account != "" || exist != mailboxExistenceUnknown {
+			if account, exist, _, ok := tr.PairMTAFailure(ip, "smtpd[1]", time.Time{}, true); ok || account != "" || exist != mailboxExistenceUnknown {
 				t.Fatalf("exhausted queue = (%q, %d, %v)", account, exist, ok)
 			}
 		})
