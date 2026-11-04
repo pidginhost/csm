@@ -179,6 +179,11 @@ type pendingIP struct {
 	Reason    string         `json:"reason"`
 	Check     string         `json:"check,omitempty"`
 	Severity  alert.Severity `json:"severity,omitempty"`
+	// TTL is the block length the findings asked for; zero means
+	// block_expiry. LoginSpray marks a mail spray block, which draws on its
+	// own hourly budget.
+	TTL        time.Duration `json:"ttl,omitempty"`
+	LoginSpray bool          `json:"login_spray,omitempty"`
 	// QueuedAt is when the IP first entered the queue; it survives
 	// requeue cycles so age accumulates instead of resetting. Stamped on
 	// the first requeue for eligible entries with no timestamp.
@@ -192,7 +197,10 @@ type blockState struct {
 	Pending        []pendingIP `json:"pending,omitempty"` // IPs waiting for another block attempt
 	CleanupPending []string    `json:"cleanup_pending,omitempty"`
 	BlocksThisHour int         `json:"blocks_this_hour"`
-	HourKey        string      `json:"hour_key"`
+	// LoginSprayBlocksThisHour counts mail spray blocks against a budget of
+	// the same size, so a spray wave cannot crowd out other blocks.
+	LoginSprayBlocksThisHour int    `json:"login_spray_blocks_this_hour,omitempty"`
+	HourKey                  string `json:"hour_key"`
 	// RateLimitWarnedHour is the HourKey for which the rate-limit warning
 	// was already emitted. The warning reflects a steady-state condition,
 	// not a per-IP event, so it fires once per hour window instead of on
@@ -293,6 +301,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	if state.HourKey != currentHour {
 		state.HourKey = currentHour
 		state.BlocksThisHour = 0
+		state.LoginSprayBlocksThisHour = 0
 	}
 
 	// Collect IPs to block from findings
@@ -437,6 +446,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 
 		// A drained pending entry keeps its QueuedAt when the same IP
 		// recurs in fresh findings; the check, severity and reason are refreshed.
+		// The longest asked length and the spray flag survive the refresh.
 		findingID := alert.FindingID(f)
 		if existing, ok := ipsToBlock[ip]; ok {
 			if existing.ActionID == "" {
@@ -445,10 +455,12 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 				existing.Severity = f.Severity
 				existing.FindingID = findingID
 				existing.Cause = f.Cause
+				existing.TTL = max(existing.TTL, f.BlockTTL)
+				existing.LoginSpray = existing.LoginSpray || f.BlockTTL > 0
 			}
 			ipsToBlock[ip] = existing
 		} else {
-			p := pendingIP{IP: ip, Reason: f.Message, Check: f.Check, Severity: f.Severity, FindingID: findingID, Cause: f.Cause}
+			p := pendingIP{IP: ip, Reason: f.Message, Check: f.Check, Severity: f.Severity, FindingID: findingID, Cause: f.Cause, TTL: f.BlockTTL, LoginSpray: f.BlockTTL > 0}
 			p.queueCandidate = work.candidate(p, nil)
 			ipsToBlock[ip] = p
 		}
@@ -561,9 +573,16 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		if durable, ok := blocker.(durableActionBlocker); ok {
 			durableRetry = cand.ActionID != "" && durable.DurableActionsEnabled()
 		}
+		// Spray blocks have their own budget of the same size. The durable
+		// store counts only the scan budget, so a crash before the state save
+		// can undercount this cycle's spray blocks.
+		used := &state.BlocksThisHour
+		if cand.LoginSpray {
+			used = &state.LoginSprayBlocksThisHour
+		}
 		// Existing requests need recovery even when their admission used the
 		// last slot. The durable store still caps any identity not yet admitted.
-		if budgetUnavailable || (state.BlocksThisHour >= maxPerHour && !durableRetry) {
+		if budgetUnavailable || (*used >= maxPerHour && !durableRetry) {
 			requeue(cand)
 			rateLimited = !budgetUnavailable
 			continue
@@ -583,9 +602,12 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 			cand.ActionID = rand.Text()
 		}
 		requestTTL := expiry
+		if cand.TTL > 0 {
+			requestTTL = cand.TTL
+		}
 		if durable, ok := blocker.(durableActionBlocker); ok && durable.DurableActionsEnabled() {
 			if cand.ActionTTL == 0 {
-				cand.ActionTTL = expiry
+				cand.ActionTTL = requestTTL
 			}
 			requestTTL = cand.ActionTTL
 		}
@@ -597,6 +619,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 			TTL:          requestTTL,
 			Source:       BlockSourceScan,
 			FindingID:    cand.FindingID,
+			LoginSpray:   cand.LoginSpray,
 		}, work.progress, func(err error) { work.candidateOutcome(cand.queueCandidate, err) })
 		verifiedAuditPending := res.Outcome == firewall.BlockOutcomeLive && errors.Is(err, firewall.ErrActionAuditPending)
 		if verifiedAuditPending {
@@ -634,7 +657,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		if blocker.IsBlocked(ip) {
 			fmt.Fprintf(os.Stderr, "[%s] AUTO-BLOCK: %s blocked (expires in %s)\n", time.Now().Format("2006-01-02 15:04:05"), ip, requestTTL)
 		}
-		state.BlocksThisHour++
+		*used++
 		work.finishCandidate(cand.queueCandidate)
 	}
 	if engineUnavailableRequeued > 0 {

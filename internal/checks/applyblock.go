@@ -36,6 +36,9 @@ type ApplyBlockRequest struct {
 	Reason       string
 	TTL          time.Duration
 	Source       string
+	// LoginSpray marks a mail spray scan block. It does not charge the
+	// durable scan budget; the scan loop counts it on its own budget.
+	LoginSpray bool
 	// Root is the admission evidence the block answers again, carried by
 	// the derived path that applies it; Entry is that path's entry. The
 	// zero root means the path kept none.
@@ -125,7 +128,7 @@ func applyBlockLocked(cfg *config.Config, blocker IPBlocker, state *blockState, 
 	if durable, ok := blocker.(durableActionBlocker); ok && durable.DurableActionsEnabled() {
 		durableOutcome = true
 		var admission *firewall.ScanAdmission
-		if req.Source == BlockSourceScan {
+		if req.Source == BlockSourceScan && !req.LoginSpray {
 			limit := cfg.AutoResponse.MaxBlocksPerHour
 			if limit <= 0 {
 				limit = config.DefaultMaxBlocksPerHour
