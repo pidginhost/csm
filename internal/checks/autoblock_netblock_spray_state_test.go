@@ -32,7 +32,7 @@ func TestNetblockUsesFirewallSprayTags(t *testing.T) {
 				if mode != "absent kernel rows" {
 					b.live[ip] = struct{}{}
 				}
-				b.rows = append(b.rows, firewall.BlockedEntry{IP: ip, BlockedAt: now, ExpiresAt: now.Add(time.Hour), Automatic: true, LoginSpray: mode != "operator replacement" && mode != "absent kernel rows"})
+				b.rows = append(b.rows, firewall.BlockedEntry{IP: ip, BlockedAt: now, ExpiresAt: now.Add(time.Hour), Automatic: true, LoginSpray: mode != "operator replacement"})
 				if mode == "untagged tracker" || mode == "operator replacement" {
 					tracker.IPs = append(tracker.IPs, blockedIP{IP: ip, FindingID: "old-finding", BlockedAt: now.Add(-time.Hour), ExpiresAt: now.Add(time.Hour), LoginSpray: mode == "operator replacement"})
 				}
@@ -85,5 +85,33 @@ func TestNetblockUntrackedOperatorKeepsObservedHistory(t *testing.T) {
 	h, err := loadNetblockHistory(cfg.StatePath)
 	if err != nil || !h.IPs[ip].Equal(now) {
 		t.Fatalf("untracked operator history must start when observed: %+v, %v", h, err)
+	}
+}
+
+// Kernel membership wins over a stale cache. If that family could not be
+// read, retain the cache's answer instead of guessing that a block ended.
+func TestNetblockSprayMetadataRequiresMembership(t *testing.T) {
+	const ip = "2001:db8:1::10"
+	for _, tc := range []struct {
+		name                    string
+		listed, covered, cached bool
+		want                    int
+	}{
+		{"absent despite cache", true, true, true, 0},
+		{"uncovered with cache", true, false, true, 1},
+		{"uncovered without cache", true, false, false, 0},
+		{"unlisted with cache", false, false, true, 1},
+		{"unlisted without cache", false, false, false, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b := &taggedNetblockBlocker{netblockBlocker: newNetblockBlocker(), rows: []firewall.BlockedEntry{{IP: ip, LoginSpray: true}}}
+			if tc.cached {
+				b.live[ip] = struct{}{}
+			}
+			rows, err := netblockTrackedRows(b, nil, firewall.LiveBlockedSnapshot{HasV6: tc.covered}, tc.listed)
+			if err != nil || len(rows) != tc.want {
+				t.Fatalf("rows=%v err=%v, want %d rows", rows, err, tc.want)
+			}
+		})
 	}
 }

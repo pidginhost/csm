@@ -205,3 +205,24 @@ func TestNetblockCauseNamesIPv6SprayRows(t *testing.T) {
 		t.Fatalf("netblock IDs = %q, want the newest spray block spray-3", b.subnetIDs)
 	}
 }
+
+func TestNetblockSprayAddressFamilies(t *testing.T) {
+	for _, tc := range []struct {
+		ip   string
+		want bool
+	}{
+		{"192.0.2.10", false},
+		{"::ffff:192.0.2.10", false},
+		{"::ffff:c000:20a", false},
+		{"2001:db8:1::10", true},
+	} {
+		t.Run(tc.ip, func(t *testing.T) {
+			if got := countsTowardNetblock(blockedIP{IP: tc.ip, LoginSpray: true}); got != tc.want {
+				t.Errorf("spray counts=%t, want %t", got, tc.want)
+			}
+			if !countsTowardNetblock(blockedIP{IP: tc.ip}) {
+				t.Error("non-spray block excluded from netblock evidence")
+			}
+		})
+	}
+}

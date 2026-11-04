@@ -94,7 +94,7 @@ func netblockWindow(cfg *config.Config) time.Duration {
 // netblockTrackedRows uses committed firewall tags even if the scan tracker
 // was lost or an operator replaced a block between scans. It does not rebuild
 // the tracker or its counters: these rows are only escalation evidence.
-func netblockTrackedRows(blocker IPBlocker, tracked []blockedIP) ([]blockedIP, error) {
+func netblockTrackedRows(blocker IPBlocker, tracked []blockedIP, live firewall.LiveBlockedSnapshot, useLive bool) ([]blockedIP, error) {
 	lister, ok := blocker.(interface {
 		BlockedEntries() ([]firewall.BlockedEntry, error)
 	})
@@ -126,7 +126,8 @@ func netblockTrackedRows(blocker IPBlocker, tracked []blockedIP) ([]blockedIP, e
 	}
 	for _, entry := range entries {
 		// Untagged, untracked blocks retain their first-observed history.
-		if entry.LoginSpray && !seen[entry.IP] {
+		// Saved metadata cannot revive a block absent from the kernel.
+		if entry.LoginSpray && !seen[entry.IP] && blockedLiveOrCached(blocker, live, useLive, entry.IP) {
 			rows = append(rows, blockedIP{IP: entry.IP, BlockedAt: entry.BlockedAt, ExpiresAt: entry.ExpiresAt, LoginSpray: entry.LoginSpray})
 		}
 	}

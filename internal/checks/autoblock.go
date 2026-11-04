@@ -359,7 +359,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 			work.completePending(p)
 		}
 	}
-	state.Pending = deferredPending
+	state.Pending = nil
 
 	// Subnet fast-path: checks that represent a subnet directly.
 	// Independent of the per-IP rate limit, because a single subnet block
@@ -571,11 +571,6 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	// Spray retries hold at most half the queue, so a spray backlog over its
 	// own budget cannot push other retries out.
 	sprayPending := 0
-	for _, p := range state.Pending {
-		if p.LoginSpray {
-			sprayPending++
-		}
-	}
 	requeue := func(p pendingIP) bool {
 		if p.QueuedAt.IsZero() {
 			p.QueuedAt = autoBlockNow()
@@ -596,9 +591,36 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		droppedPending++
 		return false
 	}
-	for ip, cand := range ipsToBlock {
+	// Admit all non-spray retries before spray retries, including deferred
+	// redispatches. Otherwise map order can discard non-spray evidence even
+	// while spray occupies less than half the queue.
+	type queuedCandidate struct {
+		pending  pendingIP
+		deferred bool
+	}
+	candidates := make([]queuedCandidate, 0, len(ipsToBlock)+len(deferredPending))
+	for _, spray := range []bool{false, true} {
+		for _, p := range deferredPending {
+			if p.LoginSpray == spray {
+				p.queueCandidate = work.candidate(p, nil)
+				candidates = append(candidates, queuedCandidate{pending: p, deferred: true})
+			}
+		}
+		for _, p := range ipsToBlock {
+			if p.LoginSpray == spray {
+				candidates = append(candidates, queuedCandidate{pending: p})
+			}
+		}
+	}
+	for _, candidate := range candidates {
+		cand := candidate.pending
+		ip := cand.IP
 		work.progress()
 		work.startCandidate(cand.queueCandidate)
+		if candidate.deferred {
+			requeue(cand)
+			continue
+		}
 		durableRetry := false
 		if durable, ok := blocker.(durableActionBlocker); ok {
 			durableRetry = cand.ActionID != "" && durable.DurableActionsEnabled()
@@ -770,7 +792,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	var netblockRowsErr error
 	if cfg.AutoResponse.NetBlock && blocker != nil {
 		work.progress()
-		netblockRows, netblockRowsErr = netblockTrackedRows(blocker, state.IPs)
+		netblockRows, netblockRowsErr = netblockTrackedRows(blocker, state.IPs, liveBlocked, useLiveBlocked)
 		if netblockRowsErr != nil {
 			work.observe(netblockRowsErr)
 			fmt.Fprintf(os.Stderr, "autoblock: block provenance unavailable, deferring netblock escalation: %v\n", netblockRowsErr)

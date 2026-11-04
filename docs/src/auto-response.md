@@ -28,7 +28,8 @@ Mail login spray blocks of IPv4 addresses do not contribute to /24
 escalation. IPv6 spray blocks count toward their /64 like any other block,
 since one /64 is treated as one source. The classification comes from
 committed firewall state, so a missing or stale scan tracker does not turn
-IPv4 spray blocks into range evidence. If block metadata cannot be read,
+IPv4 spray blocks into range evidence. Saved spray blocks absent from the
+kernel do not count as active blocks. If block metadata cannot be read,
 subnet escalation waits while individual block attempts continue.
 
 ### Process termination
@@ -431,10 +432,10 @@ Mail login spray blocks use a separate hourly budget of the same size. They
 reserve credit before the firewall attempt. An uncertain result keeps that
 credit; a confirmed non-block releases it. Retries wait when the spray budget
 is full, while other scan blocks keep their own budget. Waiting spray retries
-hold at most half of the retry queue, so a spray backlog cannot push other
-retries out of it. The hourly rate limit warning names the budget that is
-full. A failed spray reservation defers spray blocks and reports a warning,
-without stopping other scan blocks.
+hold at most half of the retry queue and yield space to other retries when
+the queue fills. Deferred retries follow the same limits. The hourly rate
+limit warning names the budget that is full. A failed spray reservation
+defers spray blocks and reports a warning, without stopping other scan blocks.
 
 The same setting also sets the hourly ceiling of the admission ledger, which
 will cover every automatic source once responses are admitted through it. For

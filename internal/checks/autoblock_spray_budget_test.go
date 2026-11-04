@@ -259,6 +259,98 @@ func TestAutoBlockSprayBacklogKeepsOtherRetries(t *testing.T) {
 	}
 }
 
+// Spray retries may use spare capacity, but cannot displace any other retry
+// even when those retries need more than half of the queue.
+func TestAutoBlockSprayQueuePrioritizesOtherRetries(t *testing.T) {
+	for _, tc := range []struct {
+		name                   string
+		deferred, queuedOthers bool
+		others                 int
+	}{
+		{"fresh findings", false, false, maxPendingBlocks * 3 / 4},
+		{"queued findings", false, true, maxPendingBlocks * 3 / 4},
+		{"deferred spray", true, false, maxPendingBlocks * 3 / 4},
+		{"full non-spray queue", true, true, maxPendingBlocks},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := pendingTestConfig(t)
+			cfg.AutoResponse.MaxBlocksPerHour = 1
+			now := time.Now()
+			setAutoBlockNow(t, now)
+			state := &blockState{HourKey: now.Format("2006-01-02T15"), BlocksThisHour: 1, LoginSprayBlocksThisHour: 1}
+			var findings []alert.Finding
+			for i := range maxPendingBlocks / 2 {
+				f := loginSprayFinding(fmt.Sprintf("2001:db8:5::%x", i+1))
+				state.Pending = append(state.Pending, pendingIP{IP: f.SourceIP, Check: f.Check, Severity: f.Severity, FindingID: alert.FindingID(f), TTL: f.BlockTTL, LoginSpray: true, QueuedAt: now})
+				if tc.deferred {
+					f.AutoIPResponseEvaluated = true
+					findings = append(findings, f)
+				}
+			}
+			for i := range tc.others {
+				f := wafFinding(fmt.Sprintf("2001:db8:6::%x", i+1))
+				if tc.queuedOthers {
+					state.Pending = append(state.Pending, pendingIP{IP: f.SourceIP, Check: f.Check, Severity: f.Severity, FindingID: alert.FindingID(f), QueuedAt: now.Add(-time.Minute)})
+				} else {
+					findings = append(findings, f)
+				}
+			}
+			saveBlockState(cfg.StatePath, state)
+			b := &outcomeStubBlocker{outcome: firewall.BlockOutcomeLive}
+			applyBlockTestSetup(t, b)
+			captureStderr(t, func() { AutoBlockIPs(cfg, findings) })
+			if len(b.calls) != 0 {
+				t.Fatalf("block calls = %d, want none with both budgets spent", len(b.calls))
+			}
+			queued := make(map[string]bool)
+			spray := 0
+			pending := loadBlockState(cfg.StatePath).Pending
+			for _, p := range pending {
+				queued[p.IP] = true
+				if p.LoginSpray {
+					spray++
+				} else if tc.queuedOthers && !p.QueuedAt.Equal(now.Add(-time.Minute)) {
+					t.Errorf("retry %s lost its original queue time", p.IP)
+				}
+			}
+			if len(pending) != maxPendingBlocks || len(queued) != maxPendingBlocks || spray != maxPendingBlocks-tc.others {
+				t.Fatalf("queued=%d unique=%d spray=%d, want %d, %d and %d", len(pending), len(queued), spray, maxPendingBlocks, maxPendingBlocks, maxPendingBlocks-tc.others)
+			}
+			for i := range tc.others {
+				if ip := fmt.Sprintf("2001:db8:6::%x", i+1); !queued[ip] {
+					t.Errorf("spray backlog displaced non-spray retry %s", ip)
+				}
+			}
+		})
+	}
+}
+
+// Redispatch defers the same observation without a firewall attempt, but its
+// pending spray entries still obey the queue's spray share.
+func TestAutoBlockDeferredSprayQueueCap(t *testing.T) {
+	cfg := pendingTestConfig(t)
+	now := time.Now()
+	setAutoBlockNow(t, now)
+	state := &blockState{}
+	var findings []alert.Finding
+	for i := range maxPendingBlocks {
+		f := loginSprayFinding(fmt.Sprintf("2001:db8:5::%x", i))
+		state.Pending = append(state.Pending, pendingIP{IP: f.SourceIP, Check: f.Check, Severity: f.Severity, FindingID: alert.FindingID(f), TTL: f.BlockTTL, LoginSpray: true, QueuedAt: now})
+		f.AutoIPResponseEvaluated = true
+		findings = append(findings, f)
+	}
+	saveBlockState(cfg.StatePath, state)
+	b := &outcomeStubBlocker{outcome: firewall.BlockOutcomeLive}
+	applyBlockTestSetup(t, b)
+	captureStderr(t, func() { AutoBlockIPs(cfg, findings) })
+	if len(b.calls) != 0 {
+		t.Fatalf("redispatched observations attempted %d blocks", len(b.calls))
+	}
+	if queued := loadBlockState(cfg.StatePath).Pending; len(queued) != maxPendingBlocks/2 {
+		t.Fatalf("deferred spray retries = %d, want %d", len(queued), maxPendingBlocks/2)
+	}
+}
+
 // The hourly warning names the budget that is full, so a full spray budget
 // does not read as a limit on WAF or SSH blocks.
 func TestAutoBlockRateWarningNamesBudget(t *testing.T) {
