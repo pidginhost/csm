@@ -579,6 +579,9 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		used := &state.BlocksThisHour
 		if cand.LoginSpray {
 			used = &state.LoginSprayBlocksThisHour
+			// Nothing in the store caps a spray block: its retries wait
+			// for the spray budget like a first attempt.
+			durableRetry = false
 		}
 		// Existing requests need recovery even when their admission used the
 		// last slot. The durable store still caps any identity not yet admitted.

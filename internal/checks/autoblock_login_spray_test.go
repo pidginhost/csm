@@ -270,3 +270,52 @@ func TestAutoBlockOldRuleKeepsGlobalExpiry(t *testing.T) {
 		t.Fatalf("counters scan=%d spray=%d, want both on the scan budget", state.BlocksThisHour, state.LoginSprayBlocksThisHour)
 	}
 }
+
+// Nothing in the durable store caps a spray block, so a spray retry with an
+// identity still draws on the spray budget; a scan retry still passes the
+// full scan budget, which the store caps at admission.
+func TestAutoBlockSprayDurableRetriesUseSprayBudget(t *testing.T) {
+	cfg := pendingTestConfig(t)
+	cfg.AutoResponse.MaxBlocksPerHour = 2
+	now := time.Now()
+	priorNow := autoBlockNow
+	autoBlockNow = func() time.Time { return now }
+	t.Cleanup(func() { autoBlockNow = priorNow })
+	retry := func(ip, check, id string, ttl time.Duration) pendingIP {
+		return pendingIP{ActionID: id, ActionTTL: max(ttl, time.Hour), IP: ip, Reason: check + " from " + ip, Check: check, Severity: alert.Critical, TTL: ttl, LoginSpray: ttl > 0, QueuedAt: now}
+	}
+	saveBlockState(cfg.StatePath, &blockState{HourKey: now.Format("2006-01-02T15"), Pending: []pendingIP{
+		retry("192.0.2.83", "smtp_bruteforce", "spray-1", loginSprayTTL),
+		retry("192.0.2.84", "smtp_bruteforce", "spray-2", loginSprayTTL),
+		retry("192.0.2.85", "smtp_bruteforce", "spray-3", loginSprayTTL),
+		retry("192.0.2.86", "waf_attack_blocked", "scan-1", 0),
+	}})
+	// The scan budget is spent; the store charged the scan retry already.
+	b := &recordingAdmissionBlocker{scanAdmissionBlocker: scanAdmissionBlocker{used: 2}}
+	applyBlockTestSetup(t, b)
+
+	AutoBlockIPs(cfg, nil)
+	spray := 0
+	scanRetried := false
+	for _, r := range b.requests {
+		switch {
+		case r.ID == "scan-1":
+			scanRetried = true
+		case r.TTL == loginSprayTTL:
+			spray++
+		}
+	}
+	if spray != 2 || !scanRetried {
+		t.Fatalf("requests = %+v, want 2 spray retries and the scan retry", b.requests)
+	}
+	state := loadBlockState(cfg.StatePath)
+	if state.LoginSprayBlocksThisHour != 2 {
+		t.Fatalf("spray counter = %d, want 2", state.LoginSprayBlocksThisHour)
+	}
+	if len(state.Pending) != 1 {
+		t.Fatalf("pending = %+v, want the third spray retry", state.Pending)
+	}
+	if p := state.Pending[0]; p.ActionID == "" || p.TTL != loginSprayTTL || !p.LoginSpray {
+		t.Fatalf("queued retry = %+v, want its identity, ttl and flag", p)
+	}
+}
