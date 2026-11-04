@@ -2625,9 +2625,13 @@ func (d *Daemon) handleSMTPAuthPairing(line string, obs alert.Observation, cfg *
 	// Claim the verdict even for a server-blamed reply so it cannot pair
 	// with a later failure. Recheck infra protection in case configuration
 	// changed between the two log lines.
-	account, exist, ok := t.PairMTAFailure(ip, process, smtpAuthLogTime(line, t.now()))
-	if !ok || isPostfixSASLNonCredentialReply(reply) || isInfraIPDaemon(ip, cfg.InfraIPs) || isPrivateOrLoopback(ip) {
+	credential := !isPostfixSASLNonCredentialReply(reply) && !isInfraIPDaemon(ip, cfg.InfraIPs) && !isPrivateOrLoopback(ip)
+	account, exist, names, ok := t.PairMTAFailure(ip, process, smtpAuthLogTime(line, t.now()), credential)
+	if !ok {
 		return nil, true
+	}
+	if names != nil {
+		return t.RecordAmbiguousFailure(ip, names, obs), true
 	}
 	return t.RecordFailure(ip, account, exist, obs), true
 }

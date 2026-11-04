@@ -19,6 +19,7 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/eximlog"
+	"github.com/pidginhost/csm/internal/mailstats"
 	"github.com/pidginhost/csm/internal/metrics"
 	"github.com/pidginhost/csm/internal/netutil"
 	"github.com/pidginhost/csm/internal/platform"
@@ -781,10 +782,16 @@ func collectRecentIPs(cfg *config.Config) map[string]string {
 
 	if shouldCollectEximMainlog(info) {
 		for _, line := range tailFile(reputationEximMainlog, 50) {
-			if strings.Contains(line, "authenticator failed") || strings.Contains(line, "rejected RCPT") {
-				if ip := eximlog.ClientIP(line); ip != "" {
-					addIfNotInfra(ips, ip, "SMTP auth failure", cfg)
+			// Only the failure or rejection record names the client: the
+			// same wording in a subject or greeting is client text.
+			ip := eximlog.AuthFailure(line).ClientIP
+			if ip == "" && strings.Contains(line, " rejected RCPT ") {
+				if r, ok := mailstats.ParseReject(line, time.UTC, time.Time{}); ok && r.Command == "RCPT" {
+					ip = r.IP
 				}
+			}
+			if ip != "" {
+				addIfNotInfra(ips, ip, "SMTP auth failure", cfg)
 			}
 		}
 	}

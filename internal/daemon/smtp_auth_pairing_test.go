@@ -2,6 +2,8 @@ package daemon
 
 import (
 	"fmt"
+	"maps"
+	"strings"
 	"testing"
 	"time"
 
@@ -198,6 +200,93 @@ func TestPairingOmitsAmbiguousMailbox(t *testing.T) {
 	}
 	if len(d.smtpAuthTracker.accounts) != 0 {
 		t.Fatalf("ambiguous mailbox created account evidence: %+v", d.smtpAuthTracker.accounts)
+	}
+}
+
+// An attacker who keeps two names in flight per address leaves every Postfix
+// failure without a mailbox. Each name Dovecot rejected still counts once as
+// spray evidence, so the walk reaches the mailbox breadth bar, while the
+// per-address trackers see the same accountless failures as before.
+func TestPairingAmbiguousNamesFeedSpray(t *testing.T) {
+	const ip = "203.0.113.120"
+	d, clock := newPairingDaemon(t, sprayTestConfig("enforce"))
+	got := feed(d, clock,
+		"dovecot: auth: sql(alice@example.net,"+ip+"): Password mismatch",
+		"dovecot: auth: sql(Bob@example.net,"+ip+"): unknown user",
+		fmt.Sprintf(postfixFailFmt, ip, "decoy@example.org"),
+		fmt.Sprintf(postfixFailFmt, ip, "decoy@example.org"))
+	f, ok := findingByCheck(got, "smtp_bruteforce")
+	if !ok || f.SourceIP != ip || !strings.Contains(f.Details, "Targets: alice@example.net, bob@example.net.") {
+		t.Fatalf("findings = %+v, want a breadth block naming both mailboxes", got)
+	}
+	ev := sprayEvidence(d, ip)
+	want := map[string]sprayFailure{}
+	for _, name := range []string{"alice@example.net", "bob@example.net"} {
+		f := ev[name]
+		if f.count != 1 || f.exist != mailboxExistenceUnknown {
+			t.Fatalf("evidence for %s = %+v, want one failure of unknown existence", name, f)
+		}
+		want[name] = f
+	}
+	if !maps.Equal(ev, want) {
+		t.Fatalf("spray evidence = %+v, want only the two rejected names", ev)
+	}
+	if calls := smtpCalls(d); calls != 2 {
+		t.Fatalf("SMTP failures = %d, want 2", calls)
+	}
+	e := d.smtpAuthTracker.ips[ip]
+	if e == nil || e.slowUnvouched.IsZero() || len(e.slowAccounts) != 0 || len(d.smtpAuthTracker.accounts) != 0 {
+		t.Fatalf("per-address trackers got a mailbox: entry=%+v accounts=%+v", e, d.smtpAuthTracker.accounts)
+	}
+}
+
+// Answers that agree on one mailbox keep naming it, one failure per line.
+func TestPairingSingleNameFeedsSprayPerFailure(t *testing.T) {
+	const ip = "203.0.113.121"
+	d, clock := newPairingDaemon(t, sprayTestConfig("enforce"))
+	feed(d, clock,
+		"dovecot: auth: sql(alice@example.net,"+ip+"): Password mismatch",
+		"dovecot: auth: sql(alice@example.net,"+ip+"): Password mismatch",
+		fmt.Sprintf(postfixFailFmt, ip, "decoy@example.org"),
+		fmt.Sprintf(postfixFailFmt, ip, "decoy@example.org"))
+	ev := sprayEvidence(d, ip)
+	if f := ev["alice@example.net"]; len(ev) != 1 || f.count != 2 || f.exist != mailboxExists {
+		t.Fatalf("spray evidence = %+v, want two failures on alice@example.net", ev)
+	}
+	if a := d.smtpAuthTracker.accounts["alice@example.net"]; a == nil {
+		t.Fatalf("account tracker lost the agreed mailbox: %+v", d.smtpAuthTracker.accounts)
+	}
+}
+
+// Withheld pairing and a degraded backend feed none of the names.
+func TestPairingAmbiguousNamesNotFedDuringTrouble(t *testing.T) {
+	const ip = "203.0.113.122"
+	for _, tc := range []struct {
+		name     string
+		trouble  string
+		degraded bool
+	}{
+		{"withheld", "postfix/submission/smtpd[2245421]: warning: SASL: Connect to Dovecot auth socket 'private/auth' failed: Connection refused", false},
+		{"degraded", "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d, clock := newPairingDaemon(t, sprayTestConfig("enforce"))
+			d.smtpAuthTracker.SetBackendDownCheck(func() bool { return tc.degraded })
+			lines := []string{
+				"dovecot: auth: sql(alice@example.net," + ip + "): Password mismatch",
+				"dovecot: auth: sql(bob@example.net," + ip + "): Password mismatch",
+			}
+			if tc.trouble != "" {
+				lines = append(lines, tc.trouble)
+			}
+			lines = append(lines, fmt.Sprintf(postfixFailFmt, ip, "a"), fmt.Sprintf(postfixFailFmt, ip, "a"))
+			if got := feed(d, clock, lines...); hasCheckFinding(got, "smtp_bruteforce") {
+				t.Fatalf("blocked during trouble: %+v", got)
+			}
+			if ev := sprayEvidence(d, ip); len(ev) != 0 {
+				t.Fatalf("spray evidence = %+v during trouble", ev)
+			}
+		})
 	}
 }
 
@@ -709,12 +798,12 @@ func TestPairMTAFailureExistence(t *testing.T) {
 			}
 			for i := range tc.verdicts {
 				clock.advance(time.Second)
-				account, exist, ok := tr.PairMTAFailure(ip, "smtpd[1]", time.Time{})
+				account, exist, _, ok := tr.PairMTAFailure(ip, "smtpd[1]", time.Time{}, true)
 				if !ok || account != tc.wantAccount || exist != tc.wantExist {
 					t.Fatalf("pair %d = (%q, %d, %v), want (%q, %d, true)", i, account, exist, ok, tc.wantAccount, tc.wantExist)
 				}
 			}
-			if account, exist, ok := tr.PairMTAFailure(ip, "smtpd[1]", time.Time{}); ok || account != "" || exist != mailboxExistenceUnknown {
+			if account, exist, _, ok := tr.PairMTAFailure(ip, "smtpd[1]", time.Time{}, true); ok || account != "" || exist != mailboxExistenceUnknown {
 				t.Fatalf("exhausted queue = (%q, %d, %v)", account, exist, ok)
 			}
 		})

@@ -238,17 +238,24 @@ func (t *smtpAuthTracker) RecordObserved(ip, account string, obs alert.Observati
 // RecordFailure is RecordObserved for a failure whose log said whether the
 // mailbox exists.
 func (t *smtpAuthTracker) RecordFailure(ip, account string, exist mailboxExistence, obs alert.Observation) []alert.Finding {
-	return t.recordFailure(ip, account, exist, obs, true)
+	return t.recordFailure(ip, account, exist, obs, true, nil)
+}
+
+// RecordAmbiguousFailure is RecordFailure for a failure whose pending
+// answers named different mailboxes. It counts with no mailbox, and the
+// spray memory gets the names claimed during pairing, existence unknown.
+func (t *smtpAuthTracker) RecordAmbiguousFailure(ip string, names []string, obs alert.Observation) []alert.Finding {
+	return t.recordFailure(ip, "", mailboxExistenceUnknown, obs, true, names)
 }
 
 // RecordTemporaryFailure is RecordObserved for a failure the MTA answered
 // with a temporary reply: the auth backend, not the password, failed. It
 // counts as before but is never spray evidence.
 func (t *smtpAuthTracker) RecordTemporaryFailure(ip, account string, obs alert.Observation) []alert.Finding {
-	return t.recordFailure(ip, account, mailboxExistenceUnknown, obs, false)
+	return t.recordFailure(ip, account, mailboxExistenceUnknown, obs, false, nil)
 }
 
-func (t *smtpAuthTracker) recordFailure(ip, account string, exist mailboxExistence, obs alert.Observation, credential bool) []alert.Finding {
+func (t *smtpAuthTracker) recordFailure(ip, account string, exist mailboxExistence, obs alert.Observation, credential bool, names []string) []alert.Finding {
 	if ip == "" {
 		return nil
 	}
@@ -340,7 +347,17 @@ func (t *smtpAuthTracker) recordFailure(ip, account string, exist mailboxExisten
 		t.spray.ForgetRecentFailures(ip, cutoff)
 	}
 	if !degraded && credential && t.spray != nil {
-		if v := t.spray.Failure(ip, normalizeSprayMailbox(account), exist); v != nil {
+		if names == nil {
+			names = []string{normalizeSprayMailbox(account)}
+		}
+		var v *sprayVerdict
+		for _, name := range names {
+			// Every name is evidence; one failure still raises one verdict.
+			if nv := t.spray.Failure(ip, name, exist); v == nil {
+				v = nv
+			}
+		}
+		if v != nil {
 			f := sprayFinding(protoSMTP, ip, v, t.spray.Mode(), now)
 			// One failure raises one block: the evidence is recorded either
 			// way, and a per-IP block above already covers this address.

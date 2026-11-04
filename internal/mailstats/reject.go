@@ -45,6 +45,7 @@ type Reject struct {
 	Recipient string    `json:"recipient,omitempty"`
 	Detail    string    `json:"detail"`
 	MsgID     string    `json:"msg_id,omitempty"`
+	Command   string    `json:"-"` // SMTP command rejected, as RCPT; "" after DATA or at connect
 }
 
 // rejectVerb matches the verb Exim logs for an ACL reject: "rejected" or
@@ -134,6 +135,9 @@ func ParseReject(line string, loc *time.Location, fallback time.Time) (Reject, b
 	r := Reject{At: LineTime(line, loc, fallback), Class: ClassOther, Temporary: v[2] >= 0,
 		IP: ip, Sender: sender, MsgID: msgID}
 	after := strings.TrimPrefix(peer[v[0]:], " temporarily")[len(" rejected "):]
+	if word, _, _ := strings.Cut(after, " "); word[0] >= 'A' && word[0] <= 'Z' {
+		r.Command = word
+	}
 	cmd, addr, reason, known := wherePhrase(after)
 	if !known {
 		r.Detail = detail(after)

@@ -1675,7 +1675,7 @@ func TestCollectRecentIPs_SkipsLoopback(t *testing.T) {
 
 func TestCollectRecentIPs_EximAuthFailure(t *testing.T) {
 	forceCPanelPlatform(t)
-	eximLog := "2026-04-13 10:00:00 H=host [198.51.100.20] F=<a@b.com> authenticator failed\n"
+	eximLog := "2026-04-13 10:00:00 dovecot_login authenticator failed for (host) [198.51.100.20]:1234: 535 Incorrect authentication data (set_id=a@example.com)\n"
 	tmpDir := t.TempDir()
 	eximPath := filepath.Join(tmpDir, "exim_mainlog")
 	if err := os.WriteFile(eximPath, []byte(eximLog), 0600); err != nil {

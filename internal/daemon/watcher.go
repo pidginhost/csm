@@ -707,9 +707,8 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 
 	// 6. Dovecot auth failure - brute force indicator
 	// Format: "dovecot_login authenticator failed for (HELO) [IP]:port: 535 ... (set_id=user@domain)"
-	if strings.Contains(line, "authenticator failed") && strings.Contains(line, "dovecot") {
-		ip := eximlog.ClientIP(line)
-		account := extractSetID(line)
+	if failure := eximlog.AuthFailure(line); strings.HasPrefix(failure.Authenticator, "dovecot_") {
+		ip, account := failure.ClientIP, failure.Account
 		msg := "Email authentication failure"
 		if account != "" {
 			msg += " for " + account
@@ -1080,21 +1079,6 @@ func recentOutgoingMailHold(domain string) bool {
 	}
 	stored := db.GetMetaString("email_hold_seen:" + domain)
 	return stored != "" && !isDedupExpired(stored, recentOutgoingMailHoldWindow)
-}
-
-// extractSetID extracts the account from "(set_id=user@domain)" or "(set_id=user)" in exim logs.
-func extractSetID(line string) string {
-	const prefix = "set_id="
-	idx := strings.Index(line, prefix)
-	if idx < 0 {
-		return ""
-	}
-	rest := line[idx+len(prefix):]
-	end := strings.IndexAny(rest, ")\n ")
-	if end < 0 {
-		return rest
-	}
-	return rest[:end]
 }
 
 func truncateDaemon(s string, maxLen int) string {

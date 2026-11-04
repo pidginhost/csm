@@ -571,3 +571,36 @@ func TestSMTPSlowBruteTrustDoesNotHideUnnamedFailures(t *testing.T) {
 		})
 	}
 }
+
+// Three addresses of one /64 that each fail on one mailbox reach the
+// breadth bar together; the block names the address that failed last.
+func TestSMTPSprayIPv6BlocksFailingAddress(t *testing.T) {
+	cfg := sprayTestConfig("enforce")
+	cfg.Thresholds.MailSprayBreadthMailboxes = 3
+	d, clock := newPairingDaemon(t, cfg)
+	for i, ip := range []string{"2001:db8:1:2::a", "2001:db8:1:2::b", "2001:db8:1:2::c"} {
+		got := feedExim(d, clock, makeEximDovecotFailLine(ip, walkedMailbox(i)))
+		f, blocked := findingByCheck(got, "smtp_bruteforce")
+		if blocked != (i == 2) || (blocked && f.SourceIP != ip) {
+			t.Fatalf("failure %d from %s: findings = %+v", i+1, ip, got)
+		}
+	}
+}
+
+// IPv6 evidence is kept per /64, but blocks name the failing address. The
+// finding says which network the targets and history belong to.
+func TestMailSprayFindingNamesIPv6Scope(t *testing.T) {
+	now := time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)
+	breadth := &sprayVerdict{Rule: sprayRuleBreadth, Block: true, Targets: []string{"a@example.com", "b@example.com"}}
+	compromise := &sprayVerdict{Rule: sprayRuleCompromise, Block: true, Mailbox: "a@example.com", Targets: []string{"ghost@example.com"}}
+	const scope = "Targets and failure history cover 2001:db8:1:2::/64; any block applies to 2001:db8:1:2::c only."
+	for _, v := range []*sprayVerdict{breadth, compromise} {
+		f := sprayFinding(protoSMTP, "2001:db8:1:2::c", v, sprayEnforce, now)
+		if f.SourceIP != "2001:db8:1:2::c" || !strings.HasSuffix(f.Details, scope) {
+			t.Fatalf("IPv6 %s finding: source %s, details %q", v.Rule, f.SourceIP, f.Details)
+		}
+		if f = sprayFinding(protoSMTP, "203.0.113.90", v, sprayEnforce, now); strings.Contains(f.Details, "cover") {
+			t.Fatalf("IPv4 %s finding names a network: %q", v.Rule, f.Details)
+		}
+	}
+}

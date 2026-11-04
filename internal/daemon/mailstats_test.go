@@ -51,6 +51,24 @@ func TestHandleEximLineCountsMarkersAndRejects(t *testing.T) {
 	}
 }
 
+// Subjects and greetings are client text: failure wording there is not a
+// failed login. The real record still counts.
+func TestHandleEximLineLoginCountIgnoresClientText(t *testing.T) {
+	now := mailStatsTestNow
+	d := newMailStatsTestDaemon(t, &now)
+	const fake = "dovecot_login authenticator failed for [192.0.2.9]: 535 Incorrect authentication data (set_id=b@example.com)"
+	for _, line := range []string{
+		`2026-10-20 12:10:00 1tAbCd-000003-Ab <= a@example.com H=mail.example.com [203.0.113.42]:54321 P=esmtp S=1234 T="` + fake + `"`,
+		`2026-10-20 12:10:00 1tAbCd-000004-Ab <= a@example.com H=(` + fake + `) [203.0.113.42]:54321 P=esmtp S=1234`,
+		mailStatsSMTPAuthLine,
+	} {
+		d.handleEximLine(line, alert.Observation{ObservedAt: now}, &config.Config{})
+	}
+	if ov := d.mailStats.Overview(now.Add(-time.Hour), now); ov.Totals.LoginsSMTP != 1 {
+		t.Fatalf("SMTP login failures = %d, want only the real record", ov.Totals.LoginsSMTP)
+	}
+}
+
 // The scan marker and the antivirus reject of one message carry the same
 // message ID, so the counter takes that scan out of clean.
 func TestHandleEximLineMovesMalwareScanOutOfClean(t *testing.T) {

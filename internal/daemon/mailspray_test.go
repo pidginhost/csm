@@ -3,6 +3,7 @@ package daemon
 import (
 	"fmt"
 	"maps"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -387,7 +388,7 @@ func TestMailSpray_UniqueIPFloodBounded(t *testing.T) {
 	// Every flood IP is newer than the fired one, so only rank can keep it.
 	for i := range 10000 {
 		clock.advance(time.Millisecond)
-		m.Failure(fmt.Sprintf("2001:db8::%x", i+1), "a@example.com", mailboxExists)
+		m.Failure(fmt.Sprintf("2001:db8:%x::1", i+1), "a@example.com", mailboxExists)
 		if m.Size() > 100 {
 			t.Fatalf("Size() = %d after %d IPs, want <= 100", m.Size(), i+1)
 		}
@@ -450,7 +451,7 @@ func TestMailSpray_FailureFloodKeepsTrust(t *testing.T) {
 	wantNoVerdict(t, m.Failure(real, "a@example.com", mailboxExists))
 	for i := range 10000 {
 		clock.advance(time.Millisecond)
-		m.Failure(fmt.Sprintf("2001:db8::%x", i+1), "a@example.com", mailboxExists)
+		m.Failure(fmt.Sprintf("2001:db8:%x::1", i+1), "a@example.com", mailboxExists)
 	}
 	if !m.TrustedAll(real, []string{"a@example.com"}) {
 		t.Fatal("failure flood evicted trust")
@@ -576,7 +577,7 @@ func TestMailSpray_FullEvidencePoolKeepsStrongerEntries(t *testing.T) {
 			cfg.MaxIPs = 100
 			m, clock := newTestSpray(cfg)
 			for i := range strongCount {
-				ip := fmt.Sprintf("2001:db8::%x", i+1)
+				ip := fmt.Sprintf("2001:db8:%x::1", i+1)
 				wantNoVerdict(t, m.Failure(ip, "a@example.com", mailboxExists))
 				wantRule(t, m.Failure(ip, "b@example.com", mailboxExists), sprayRuleBreadth, true)
 			}
@@ -589,7 +590,7 @@ func TestMailSpray_FullEvidencePoolKeepsStrongerEntries(t *testing.T) {
 			}
 			clock.advance(cfg.Suppression)
 			for i := range strongCount {
-				wantRule(t, m.Failure(fmt.Sprintf("2001:db8::%x", i+1), "a@example.com", mailboxExists), sprayRuleBreadth, true)
+				wantRule(t, m.Failure(fmt.Sprintf("2001:db8:%x::1", i+1), "a@example.com", mailboxExists), sprayRuleBreadth, true)
 			}
 		})
 	}
@@ -624,7 +625,7 @@ func TestMailSpray_FullRepeatPoolKeepsLearning(t *testing.T) {
 	cfg.MaxIPs = 100
 	m, clock := newTestSpray(cfg)
 	for i := range cfg.MaxIPs {
-		ip := fmt.Sprintf("2001:db8::%x", i+1)
+		ip := fmt.Sprintf("2001:db8:%x::1", i+1)
 		wantNoVerdict(t, m.Failure(ip, "a@example.com", mailboxExists))
 		wantNoVerdict(t, m.Failure(ip, "a@example.com", mailboxExists))
 	}
@@ -726,7 +727,7 @@ func TestMailSpray_FullPoolsSetEvictionFloor(t *testing.T) {
 	cfg.MaxIPs = 100
 	ips, clock := newTestSpray(cfg)
 	for i := range cfg.MaxIPs {
-		ip := fmt.Sprintf("2001:db8::%x", i+1)
+		ip := fmt.Sprintf("2001:db8:%x::1", i+1)
 		wantNoVerdict(t, ips.Failure(ip, "a@example.com", mailboxExists))
 		wantRule(t, ips.Failure(ip, "b@example.com", mailboxExists), sprayRuleBreadth, true)
 	}
@@ -837,6 +838,18 @@ func TestMailSpray_ReloadAndPurgeKeepTrustIndexesBounded(t *testing.T) {
 			if _, ok := m.trustByMailbox[k.mailbox][k.ip]; !ok {
 				t.Fatal("trust record absent from mailbox index")
 			}
+		}
+		keyed := 0
+		for key, ips := range m.trustByKey {
+			for ip := range ips {
+				if len(m.trustByIP[ip]) == 0 || sprayEvidenceKey(ip) != key {
+					t.Fatalf("evidence key index holds %s under %s without its trust", ip, key)
+				}
+				keyed++
+			}
+		}
+		if keyed != len(m.trustByIP) {
+			t.Fatalf("evidence key index holds %d IPs, IP index %d", keyed, len(m.trustByIP))
 		}
 	}
 	checkIndexes()
@@ -1138,7 +1151,7 @@ func TestMailSpray_RevocationAtCapacity(t *testing.T) {
 	}
 	for i := range 2 * cfg.MaxIPs {
 		clock.advance(time.Second)
-		m.Failure(fmt.Sprintf("2001:db8::%x", i+1), "noise@example.com", mailboxExists)
+		m.Failure(fmt.Sprintf("2001:db8:%x::1", i+1), "noise@example.com", mailboxExists)
 		if m.Size() > cfg.MaxIPs {
 			t.Fatal("revocations exceeded the evidence pool limit")
 		}
@@ -1152,7 +1165,7 @@ func TestMailSpray_RevocationAtCapacity(t *testing.T) {
 		t.Fatal("revocations created trust")
 	}
 	for i := range 2 * cfg.MaxIPs {
-		m.RevokeTrust(fmt.Sprintf("2001:db8::%x", i+1), "cracked@example.com")
+		m.RevokeTrust(fmt.Sprintf("2001:db8:%x::1", i+1), "cracked@example.com")
 		if m.Size() > cfg.MaxIPs {
 			t.Fatal("new revocations exceeded the evidence pool limit")
 		}
@@ -1184,4 +1197,234 @@ func TestMailSpray_NameCapHoldsHighestBreadthBar(t *testing.T) {
 		wantNoVerdict(t, m.Failure(ip, fmt.Sprintf("n%d@example.com", i), mailboxExists))
 	}
 	wantRule(t, m.Failure(ip, "last@example.com", mailboxExists), sprayRuleBreadth, true)
+}
+
+// An IPv6 host rotates through its /64, so its failures share one evidence
+// entry; another /64 and every IPv4 address keep their own.
+func TestMailSprayIPv6EvidencePer64(t *testing.T) {
+	cfg := testSprayConfig()
+	cfg.BreadthMailboxes = 3
+	m, _ := newTestSpray(cfg)
+	wantNoVerdict(t, m.Failure("2001:db8:1:2::a", "a@example.com", mailboxExists))
+	wantNoVerdict(t, m.Failure("2001:db8:1:2::b", "b@example.com", mailboxExists))
+	v := m.Failure("2001:db8:1:2:ffff::c", "c@example.com", mailboxExists)
+	wantRule(t, v, sprayRuleBreadth, true)
+	if want := []string{"a@example.com", "b@example.com", "c@example.com"}; !slices.Equal(v.Targets, want) {
+		t.Fatalf("targets = %v, want %v", v.Targets, want)
+	}
+	wantNoVerdict(t, m.Failure("2001:db8:1:3::a", "d@example.com", mailboxExists))
+	wantNoVerdict(t, m.Failure("192.0.2.1", "a@example.com", mailboxExists))
+	wantNoVerdict(t, m.Failure("192.0.2.2", "b@example.com", mailboxExists))
+	if m.Size() != 4 {
+		t.Fatalf("evidence entries = %d, want one /64, another /64 and two IPv4 addresses", m.Size())
+	}
+}
+
+// Blocks target addresses: once a /64 is over the bar, each new address that
+// fails draws its own verdict, and suppression holds per address.
+func TestMailSprayIPv6EachAddressDrawsItsOwnVerdict(t *testing.T) {
+	m, _ := newTestSpray(testSprayConfig())
+	const a, b = "2001:db8:1:2::a", "2001:db8:1:2::b"
+	wantNoVerdict(t, m.Failure(a, "a@example.com", mailboxExists))
+	wantRule(t, m.Failure(a, "b@example.com", mailboxExists), sprayRuleBreadth, true)
+	wantNoVerdict(t, m.Failure(a, "c@example.com", mailboxExists))
+	wantRule(t, m.Failure(b, "a@example.com", mailboxExists), sprayRuleBreadth, true)
+	wantNoVerdict(t, m.Failure(b, "d@example.com", mailboxExists))
+}
+
+// Observe mode blocks nothing: one /64 is reported once per window, and
+// again only when it fails on more mailboxes, whichever address fails.
+func TestMailSprayIPv6ObserveReportsOncePer64(t *testing.T) {
+	cfg := testSprayConfig()
+	cfg.Mode = sprayObserve
+	m, _ := newTestSpray(cfg)
+	wantNoVerdict(t, m.Failure("2001:db8:1:2::a", "a@example.com", mailboxExists))
+	wantRule(t, m.Failure("2001:db8:1:2::a", "b@example.com", mailboxExists), sprayRuleBreadth, true)
+	wantNoVerdict(t, m.Failure("2001:db8:1:2::b", "a@example.com", mailboxExists))
+	wantNoVerdict(t, m.Failure("2001:db8:1:2::c", "b@example.com", mailboxExists))
+	wantRule(t, m.Failure("2001:db8:1:2::d", "c@example.com", mailboxExists), sprayRuleBreadth, true)
+}
+
+// A household /64: one device's saved password went stale on a mailbox that
+// device holds aged trust for. Aged trust held by any address of the /64
+// excuses failures on that mailbox, so another device's clean login earns
+// trust and its one typo blocks nothing. Trust itself is still earned and
+// held per address, and it excuses nothing for another /64.
+func TestMailSprayIPv6TrustExcusesPer64(t *testing.T) {
+	for _, trusted := range []bool{true, false} {
+		t.Run(fmt.Sprintf("trusted=%v", trusted), func(t *testing.T) {
+			m, clock := newTestSpray(testSprayConfig())
+			const a, b = "2001:db8:1:2::a", "2001:db8:1:2::b"
+			if trusted {
+				ageTrust(t, m, clock, a, "x@example.com")
+			}
+			wantNoVerdict(t, m.Failure(a, "x@example.com", mailboxExists))
+			clock.advance(time.Hour)
+			wantNoVerdict(t, m.Failure(a, "x@example.com", mailboxExists))
+
+			clean, v := m.Success(b, "z@example.com")
+			if trusted && (!clean || v != nil) {
+				t.Fatalf("clean login beside excused failures = (%v, %+v), want (true, nil)", clean, v)
+			}
+			if !trusted {
+				if clean {
+					t.Fatal("login after untrusted failures earned trust")
+				}
+				wantRule(t, v, sprayRuleWeakCompromise, false)
+			}
+			v = m.Failure(b, "y@example.com", mailboxExists)
+			if trusted {
+				wantNoVerdict(t, v)
+			} else {
+				wantRule(t, v, sprayRuleBreadth, true)
+			}
+			if m.TrustedAll(b, []string{"x@example.com"}) {
+				t.Fatal("trust moved between addresses of one /64")
+			}
+			if trusted {
+				const c = "2001:db8:1:3::c"
+				wantNoVerdict(t, m.Failure(c, "x@example.com", mailboxExists))
+				wantRule(t, m.Failure(c, "y@example.com", mailboxExists), sprayRuleBreadth, true)
+			}
+		})
+	}
+}
+
+// 4e and the established-source downgrade count aged trust held by any
+// address of the /64.
+func TestMailSprayIPv6TrustRulesCountThe64(t *testing.T) {
+	m, clock := newTestSpray(testSprayConfig())
+	const a, b = "2001:db8:1:2::a", "2001:db8:1:2::b"
+	ageTrust(t, m, clock, a, "a@example.com", "b@example.com")
+	corroborate(t, m, "nobody@example.com")
+	wantNoVerdict(t, m.Failure(b, "nobody@example.com", mailboxMissing))
+	_, v := m.Success(b, "c@example.com")
+	wantRule(t, v, sprayRuleCompromise, false)
+}
+
+// An IPv4 address is its own evidence key: another address's trust, even
+// next door, excuses nothing.
+func TestMailSprayIPv4TrustExcusesOnlyItsAddress(t *testing.T) {
+	m, clock := newTestSpray(testSprayConfig())
+	ageTrust(t, m, clock, "192.0.2.1", "x@example.com")
+	wantNoVerdict(t, m.Failure("192.0.2.2", "x@example.com", mailboxExists))
+	wantRule(t, m.Failure("192.0.2.2", "y@example.com", mailboxExists), sprayRuleBreadth, true)
+	wantNoVerdict(t, m.Failure("192.0.2.1", "x@example.com", mailboxExists))
+	wantNoVerdict(t, m.Failure("192.0.2.1", "y@example.com", mailboxExists))
+}
+
+// Addresses of one /64 that draw verdicts are capped like the other
+// per-entry records; the record that lapses first goes.
+func TestMailSprayIPv6SourcesBounded(t *testing.T) {
+	m, clock := newTestSpray(testSprayConfig())
+	addr := func(i int) string { return fmt.Sprintf("2001:db8:1:2::%x", i+1) }
+	wantNoVerdict(t, m.Failure(addr(0), "a@example.com", mailboxExists))
+	for i := range maxSprayNamesPerIP + 1 {
+		clock.advance(time.Second)
+		wantRule(t, m.Failure(addr(i), "b@example.com", mailboxExists), sprayRuleBreadth, true)
+	}
+	e := m.ips["2001:db8:1:2::/64"]
+	if _, ok := e.sources[addr(0)]; ok || len(e.sources) != maxSprayNamesPerIP {
+		t.Fatalf("sources = %d, first kept = %v; want %d without the first", len(e.sources), ok, maxSprayNamesPerIP)
+	}
+	wantNoVerdict(t, m.Failure(addr(maxSprayNamesPerIP), "c@example.com", mailboxExists))
+}
+
+// A household member's device rotates its IPv6 address. A correct login to
+// a mailbox some address of the /64 already trusts is clean: no compromise
+// from a sibling's failure, and the new address starts its own trust.
+func TestMailSprayIPv6RotatedAddressLoginIsClean(t *testing.T) {
+	m, clock := newTestSpray(testSprayConfig())
+	const yesterday, sibling, today = "2001:db8:1:2::a", "2001:db8:1:2::5", "2001:db8:1:2::b"
+	ageTrust(t, m, clock, yesterday, "l@example.com")
+	clock.advance(24 * time.Hour)
+	corroborate(t, m, "nobody@example.com")
+	wantNoVerdict(t, m.Failure(sibling, "nobody@example.com", mailboxMissing))
+	if clean, v := m.Success(today, "l@example.com"); !clean || v != nil {
+		t.Fatalf("rotated address login = (%v, %+v), want (true, nil)", clean, v)
+	}
+	m.mu.Lock()
+	tr, ok := m.trust[sprayTrustKey{today, "l@example.com"}]
+	m.mu.Unlock()
+	if !ok || !tr.first.Equal(clock.Now()) {
+		t.Fatalf("trust for the new address = %+v, %v; want started now", tr, ok)
+	}
+	if m.TrustedAll(today, []string{"l@example.com"}) {
+		t.Fatal("new address inherited aged trust")
+	}
+}
+
+// One device keeps failing on a stale password while another member logs in
+// daily from a new address. Trust passes from address to address, so the
+// logins raise nothing and, past the memory window, the member's typo still
+// does not reach the breadth bar.
+func TestMailSprayIPv6RotatingMemberKeepsTrustAcrossWindow(t *testing.T) {
+	cfg := testSprayConfig()
+	m, clock := newTestSpray(cfg)
+	const stale = "2001:db8:1:2::d"
+	ageTrust(t, m, clock, "2001:db8:1:2::100", "l@example.com")
+	days := int(cfg.Window/(24*time.Hour)) + 3
+	for day := 1; day <= days; day++ {
+		clock.advance(24 * time.Hour)
+		wantNoVerdict(t, m.Failure(stale, "x@example.com", mailboxExists))
+		addr := fmt.Sprintf("2001:db8:1:2::%x", 0x100+day)
+		if day == days {
+			wantNoVerdict(t, m.Failure(addr, "l@example.com", mailboxExists))
+		}
+		if clean, v := m.Success(addr, "l@example.com"); !clean || v != nil {
+			t.Fatalf("day %d login = (%v, %+v), want (true, nil)", day, clean, v)
+		}
+	}
+}
+
+// A login to a mailbox no address of the /64 trusts follows the usual rules,
+// and an IPv4 address gets nothing from another address's trust.
+func TestMailSprayRotatedLoginNeedsTrustOnThatMailbox(t *testing.T) {
+	m, clock := newTestSpray(testSprayConfig())
+	ageTrust(t, m, clock, "2001:db8:1:2::a", "l@example.com")
+	corroborate(t, m, "nobody@example.com")
+	wantNoVerdict(t, m.Failure("2001:db8:1:2::5", "nobody@example.com", mailboxMissing))
+	clean, v := m.Success("2001:db8:1:2::b", "m@example.com")
+	if clean {
+		t.Fatal("login to an untrusted mailbox after a corroborated missing name was clean")
+	}
+	wantRule(t, v, sprayRuleCompromise, true)
+
+	ageTrust(t, m, clock, "192.0.2.1", "l@example.com")
+	wantNoVerdict(t, m.Failure("192.0.2.2", "x@example.com", mailboxExists))
+	clean, v = m.Success("192.0.2.2", "l@example.com")
+	if clean {
+		t.Fatal("IPv4 login borrowed another address's trust")
+	}
+	wantRule(t, v, sprayRuleWeakCompromise, false)
+}
+
+// A crack revoked anywhere in the /64 keeps the mailbox from earning trust
+// through a sibling's aged trust.
+func TestMailSprayIPv6RevokedMailboxNotCleanViaSibling(t *testing.T) {
+	m, clock := newTestSpray(testSprayConfig())
+	ageTrust(t, m, clock, "2001:db8:1:2::a", "l@example.com")
+	m.RevokeTrust("2001:db8:1:2::b", "l@example.com")
+	if clean, v := m.Success("2001:db8:1:2::c", "l@example.com"); clean || v != nil {
+		t.Fatalf("login to a revoked mailbox = (%v, %+v), want (false, nil)", clean, v)
+	}
+}
+
+// A crack drops the cracked mailbox's trust for every address of the /64, so
+// a sibling's trust cannot excuse failures on it. Other mailboxes and other
+// networks keep their trust.
+func TestMailSprayIPv6RevocationDropsTrustAcross64(t *testing.T) {
+	m, clock := newTestSpray(testSprayConfig())
+	const a, b, other = "2001:db8:1:2::a", "2001:db8:1:2::b", "2001:db8:1:3::a"
+	ageTrust(t, m, clock, a, "l@example.com", "o@example.com")
+	ageTrust(t, m, clock, other, "l@example.com")
+	m.RevokeTrust(b, "l@example.com")
+	if m.TrustedAll(a, []string{"l@example.com"}) {
+		t.Fatal("a sibling kept trust on the cracked mailbox")
+	}
+	if !m.TrustedAll(a, []string{"o@example.com"}) || !m.TrustedAll(other, []string{"l@example.com"}) {
+		t.Fatal("the crack dropped unrelated trust")
+	}
+	wantNoVerdict(t, m.Failure(b, "l@example.com", mailboxExists))
+	wantRule(t, m.Failure(b, "x@example.com", mailboxExists), sprayRuleBreadth, true)
 }

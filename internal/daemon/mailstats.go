@@ -39,7 +39,7 @@ func (d *Daemon) recordMailStatsExim(line string, at time.Time) {
 			d.mailStats.RecordReject(r)
 		}
 	}
-	if strings.Contains(line, "authenticator failed") && strings.Contains(line, "dovecot") {
+	if strings.Contains(line, " authenticator failed for ") && strings.HasPrefix(eximlog.AuthFailure(line).Authenticator, "dovecot_") {
 		d.mailStats.RecordLoginFailure(mailstats.LineTime(line, time.Local, at), false, 1)
 	}
 }
