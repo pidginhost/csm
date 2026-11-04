@@ -210,3 +210,31 @@ func TestMountsContainMatchesWholeMountPoint(t *testing.T) {
 		t.Errorf("%q must not match the longer mount point in %q", phpShieldEventDir, body)
 	}
 }
+
+// CSM's own scan and parse workers run in transient systemd units as dynamic
+// users. CloudLinux in "Enable All" mode gives them CageFS-enabled uids and
+// they have private mount namespaces, but they never run PHP. Their uids are
+// resolved only by NSS, so the passwd lookup fails and they must not fall into
+// the "unknown uid is counted" rule.
+func TestSampleCageShieldMountsSkipsCSMWorkers(t *testing.T) {
+	withFakeProc(t, []bool{false, false, false})
+	cagefsAccountHomeForUID = func(uint64) (string, bool) { return "", false }
+	writeCgroup := func(pid, body string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(procPath, pid, "cgroup"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeCgroup("1000", "12:memory:/system.slice/system-csm\\x2dyara\\x2dworker.slice/csm-yara-worker-1793821384247465609.service\n11:hugetlb:/\n1:name=systemd:/system.slice/system-csm\\x2dyara\\x2dworker.slice/csm-yara-worker-1793821384247465609.service\n")
+	writeCgroup("1001", "0::/system.slice/system-csm\\x2dparse\\x2dworker.slice/csm-parse-worker-mail0-1793821384247465612.service\n")
+	// A tenant process named like a worker but outside system.slice is a cage.
+	writeCgroup("1002", "0::/user.slice/csm-yara-worker-1.service\n")
+
+	missing, sampled, err := sampleCageShieldMounts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sampled != 1 || len(missing) != 1 {
+		t.Fatalf("sampled = %d, missing = %v; want only the tenant process counted", sampled, missing)
+	}
+}

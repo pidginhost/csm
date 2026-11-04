@@ -257,6 +257,9 @@ func sampleCageShieldMounts() (missing []string, sampled int, err error) {
 		if home, known := cagefsAccountHomeForUID(uid); known && !isHostingAccountHome(home, panelRoots) {
 			continue
 		}
+		if isCSMWorkerProcess(dir) {
+			continue
+		}
 		// A process sharing init's namespace is outside every cage.
 		ns, linkErr := os.Readlink(filepath.Join(dir, "ns", "mnt"))
 		if linkErr != nil || ns == rootNS {
@@ -277,6 +280,38 @@ func sampleCageShieldMounts() (missing []string, sampled int, err error) {
 	}
 	sort.Strings(missing)
 	return missing, sampled, nil
+}
+
+// csmWorkerSlicePrefix starts the cgroup path of every transient worker
+// unit CSM launches (scan, compile and parse workers).
+const csmWorkerSlicePrefix = `/system.slice/system-csm\x2d`
+
+// isCSMWorkerProcess reports whether a process runs in one of CSM's own
+// worker units. Those run as systemd dynamic users in private namespaces, so
+// CloudLinux cages their uids, yet they never execute PHP; and a dynamic user
+// resolves only through NSS, so without this they would be counted as
+// accounts with no passwd entry. Only root can create units in system.slice,
+// so a tenant process cannot be hidden this way.
+func isCSMWorkerProcess(dir string) bool {
+	// #nosec G304 -- a /proc/<pid>/cgroup path built from a numeric directory entry.
+	f, err := os.Open(filepath.Join(dir, "cgroup"))
+	if err != nil {
+		return false
+	}
+	defer func() { _ = f.Close() }()
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		// hierarchy-ID:controllers:path, with an empty controller list on v2.
+		parts := strings.SplitN(scanner.Text(), ":", 3)
+		if len(parts) != 3 || !strings.HasPrefix(parts[2], csmWorkerSlicePrefix) {
+			continue
+		}
+		unit := filepath.Base(parts[2])
+		if strings.HasPrefix(unit, "csm-") && strings.HasSuffix(unit, ".service") {
+			return true
+		}
+	}
+	return false
 }
 
 func fileOwnerUID(info os.FileInfo) (uint64, bool) {
