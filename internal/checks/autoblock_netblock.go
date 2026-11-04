@@ -90,6 +90,48 @@ func netblockWindow(cfg *config.Config) time.Duration {
 	return parseExpiryWithDefault(cfg.AutoResponse.NetBlockWindow, config.DefaultNetBlockWindow)
 }
 
+// netblockTrackedRows uses committed firewall tags even if the scan tracker
+// was lost or an operator replaced a block between scans. It does not rebuild
+// the tracker or its counters: these rows are only escalation evidence.
+func netblockTrackedRows(blocker IPBlocker, tracked []blockedIP) ([]blockedIP, error) {
+	lister, ok := blocker.(interface {
+		BlockedEntries() ([]firewall.BlockedEntry, error)
+	})
+	if !ok {
+		return tracked, nil
+	}
+	entries, err := lister.BlockedEntries()
+	if err != nil {
+		return nil, err
+	}
+	byIP := make(map[string]firewall.BlockedEntry, len(entries))
+	for _, entry := range entries {
+		byIP[entry.IP] = entry
+	}
+	rows := make([]blockedIP, 0, len(tracked)+len(entries))
+	seen := make(map[string]bool, len(tracked))
+	for _, row := range tracked {
+		row.IP = normalizeBlockIP(row.IP)
+		if entry, found := byIP[row.IP]; found {
+			if row.LoginSpray != entry.LoginSpray {
+				// A replacement block cannot inherit the old spray finding.
+				row.FindingID = ""
+				row.BlockedAt, row.ExpiresAt = entry.BlockedAt, entry.ExpiresAt
+			}
+			row.LoginSpray = entry.LoginSpray
+		}
+		rows = append(rows, row)
+		seen[row.IP] = true
+	}
+	for _, entry := range entries {
+		// Untagged, untracked blocks retain their first-observed history.
+		if entry.LoginSpray && !seen[entry.IP] {
+			rows = append(rows, blockedIP{IP: entry.IP, BlockedAt: entry.BlockedAt, ExpiresAt: entry.ExpiresAt, LoginSpray: entry.LoginSpray})
+		}
+	}
+	return rows, nil
+}
+
 // recordNetblockHistory notes every address blocked right now: tracker
 // entries with their block times, and addresses only the live kernel set
 // knows (operator and permanent blocks), stamped when first seen. It reports

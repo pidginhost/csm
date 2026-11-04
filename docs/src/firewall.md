@@ -27,6 +27,10 @@ The durable firewall action service is implemented and tested through engine inj
 
 Firewall actions record the actor, source, linked finding or incident, and complete before and after state before changing the kernel. Pending intent is separate from committed state. Recovery verifies target identity and expiry before recording an outcome; it does not blindly replay a mutation. Repeated request IDs reuse the original action and admission accounting. Audit delivery retries use the same action ID. Typed undo checks that the affected targets still match the recorded result.
 
+Mail login spray blocks keep their eviction priority through restart, durable
+batches, and undo. Undo restores the original expiry. An operator replacement
+does not inherit the spray classification.
+
 Proven outcomes are retained for undo and review, bounded two ways. The
 retention sweep drops delivered outcomes older than the findings-history
 setting, and a hard cap on retained outcomes and on their total size applies

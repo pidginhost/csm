@@ -728,7 +728,17 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	// Subnet auto-blocking: detect per-family subnet patterns. Runs in
 	// dry-run too so escalations that would fire (from live blocks recorded
 	// before dry-run was enabled) surface as notices.
+	var netblockRows []blockedIP
+	var netblockRowsErr error
 	if cfg.AutoResponse.NetBlock && blocker != nil {
+		work.progress()
+		netblockRows, netblockRowsErr = netblockTrackedRows(blocker, state.IPs)
+		if netblockRowsErr != nil {
+			work.observe(netblockRowsErr)
+			fmt.Fprintf(os.Stderr, "autoblock: block provenance unavailable, deferring netblock escalation: %v\n", netblockRowsErr)
+		}
+	}
+	if cfg.AutoResponse.NetBlock && blocker != nil && netblockRowsErr == nil {
 		// Load fills the default and validation rejects anything lower, so
 		// this only catches a Config assembled in code.
 		threshold := cfg.AutoResponse.NetBlockThreshold
@@ -751,8 +761,8 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 			fmt.Fprintf(os.Stderr, "autoblock: netblock history unavailable, counting current blocks only: %v\n", historyErr)
 			history = &netblockHistory{IPs: map[string]time.Time{}, Subnets: map[string]time.Time{}}
 		}
-		current := currentlyBlocked(state.IPs, liveBlocked, useLiveBlocked, history, blocker)
-		historyChanged := recordNetblockHistory(history, state.IPs, current, blocker, now, window)
+		current := currentlyBlocked(netblockRows, liveBlocked, useLiveBlocked, history, blocker)
+		historyChanged := recordNetblockHistory(history, netblockRows, current, blocker, now, window)
 		// Direct mail-spray blocks answer the same prior offenders as a
 		// threshold-based block, even when the IP blocks have already ended.
 		for cidr := range answeredSubnets {
@@ -763,7 +773,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		// The cause is the newest block that counted; spray blocks never do.
 		subnetCauses := make(map[string]blockedIP)
 		subnetBlocked := make(map[string]bool)
-		for _, b := range state.IPs {
+		for _, b := range netblockRows {
 			cidr := subnetEscalationCIDR(b.IP)
 			prior := subnetCauses[cidr]
 			if cidr != "" && b.FindingID != "" && !b.LoginSpray && (prior.FindingID == "" || b.BlockedAt.After(prior.BlockedAt) || (b.BlockedAt.Equal(prior.BlockedAt) && b.FindingID > prior.FindingID)) {

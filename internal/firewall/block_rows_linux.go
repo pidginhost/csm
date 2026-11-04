@@ -4,6 +4,25 @@ package firewall
 
 import "errors"
 
+// BlockedEntries returns active, proven rows from the engine's state owner.
+// Consumers of block provenance must not infer it from kernel membership or
+// a separate scan tracker, which can lag behind a committed firewall action.
+func (e *Engine) BlockedEntries() ([]BlockedEntry, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	state := e.loadStateFile()
+	if err := errors.Join(e.stateReadErr, e.stateAsideErr); err != nil {
+		return nil, err
+	}
+	rows := state.Blocked[:0]
+	for _, row := range state.Blocked {
+		if !row.Unverified {
+			rows = append(rows, row)
+		}
+	}
+	return rows, nil
+}
+
 // errDurableBlockRows refuses batch row changes while a durable lifecycle
 // owns the state: its batch manifest is not built yet.
 var errDurableBlockRows = errors.New("firewall state is owned by the durable lifecycle")

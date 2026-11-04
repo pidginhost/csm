@@ -24,6 +24,11 @@ After resolving the credential abuse, copy the release commands from the action 
 
 Subnet history is pruned hourly and saved only when it changes. If the file cannot be read it is left untouched and escalation counts only the addresses blocked right now until it is repaired or removed; status and doctor report the failure. Clear, whitelist and flush actions report history cleanup failures so operators can retry them.
 
+Mail login spray blocks do not contribute to subnet escalation. Their
+classification comes from committed firewall state, so a missing or stale scan
+tracker does not turn them into range evidence. If block metadata cannot be
+read, subnet escalation waits while individual block attempts continue.
+
 ### Process termination
 
 CSM opens a kernel process handle before verifying ownership, executable, start
