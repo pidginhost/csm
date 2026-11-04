@@ -121,6 +121,34 @@ func TestHeldBlockActionsRefusesTheWholeCall(t *testing.T) {
 	}
 }
 
+// An unreadable state file must remain in place, so a later held check
+// cannot mistake a failed read for an empty state after recovery renamed it.
+func TestHeldBlockActionsLeavesUnreadableStateUntouched(t *testing.T) {
+	f := newBatchFixture(t, FirewallState{})
+	path := filepath.Join(f.e.statePath, "state.json")
+	bad := []byte(`{"blocked":`)
+	if err := os.WriteFile(path, bad, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writes := f.countWrites(t)
+	for range 2 {
+		held, err := f.e.HeldBlockActions([]BlockAction{{Action: "act_one", IP: "203.0.113.5"}})
+		if !errors.Is(err, ErrBlockBatchState) || held != nil {
+			t.Errorf("unreadable state answered a held check: %v, %v", held, err)
+		}
+		if data, readErr := os.ReadFile(path); readErr != nil || string(data) != string(bad) {
+			t.Errorf("held check changed unreadable state: %q, %v", data, readErr)
+		}
+	}
+	entries, err := os.ReadDir(f.e.statePath)
+	if err != nil || len(entries) != 1 || entries[0].Name() != "state.json" {
+		t.Fatalf("held check changed the state directory: %v, %v", entries, err)
+	}
+	if *writes != 0 || f.sends != 0 || f.e.stateCache != nil || f.e.StateSetAside() != "" {
+		t.Fatalf("held check entered state recovery: writes %d, sends %d, cache %+v, aside %q", *writes, f.sends, f.e.stateCache, f.e.StateSetAside())
+	}
+}
+
 // Aliased imported rows cannot prove each other gone. A different action
 // is clear only while another row actually proves the live element.
 func TestHeldBlockActionsAliasesAndProof(t *testing.T) {

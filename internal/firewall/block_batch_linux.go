@@ -108,6 +108,10 @@ func (e *Engine) blockBatchSnapshotLocked() (blockSnapshot, error) {
 }
 
 func (e *Engine) blockSnapshotLocked() (blockSnapshot, error) {
+	return e.readBlockSnapshotLocked(e.loadStateFileRawLocked)
+}
+
+func (e *Engine) readBlockSnapshotLocked(loadState func() (FirewallState, bool)) (blockSnapshot, error) {
 	if e.blockBatchStateErr != nil {
 		return blockSnapshot{}, e.blockBatchStateErr
 	}
@@ -117,7 +121,7 @@ func (e *Engine) blockSnapshotLocked() (blockSnapshot, error) {
 	if e.setBlocked == nil || (e.liveBlockedDump == nil && e.conn == nil) {
 		return blockSnapshot{}, errors.New("blocked sets unavailable")
 	}
-	prior, ok := e.loadStateFileRawLocked()
+	prior, ok := loadState()
 	if !ok {
 		return blockSnapshot{}, fmt.Errorf("%w: firewall state unavailable", ErrBlockBatchState)
 	}

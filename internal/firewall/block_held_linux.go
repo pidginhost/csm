@@ -2,7 +2,12 @@
 
 package firewall
 
-import "fmt"
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+)
 
 // HeldBlockActions reports, for each verified admission block, whether
 // what it applied may remain in the kernel: retirement's answer reversed
@@ -21,7 +26,10 @@ func (e *Engine) HeldBlockActions(actions []BlockAction) ([]bool, error) {
 	if err != nil {
 		return nil, err
 	}
-	snap, err := e.blockBatchSnapshotLocked()
+	if e.blockBatchesHeld {
+		return nil, ErrConfirmPending
+	}
+	snap, err := e.readBlockSnapshotLocked(e.readHeldStateLocked)
 	if err != nil {
 		return nil, err
 	}
@@ -30,4 +38,20 @@ func (e *Engine) HeldBlockActions(actions []BlockAction) ([]bool, error) {
 		held[i] = !held[i]
 	}
 	return held, nil
+}
+
+// The ordinary raw loader may rename unreadable state for recovery. A
+// held check must leave it untouched and keep refusing subsequent reads.
+func (e *Engine) readHeldStateLocked() (FirewallState, bool) {
+	if e.stateAsideErr != nil {
+		return FirewallState{}, false
+	}
+	// #nosec G304 -- filepath.Join under operator-configured statePath.
+	data, err := os.ReadFile(filepath.Join(e.statePath, "state.json"))
+	if err != nil {
+		return FirewallState{}, os.IsNotExist(err)
+	}
+	var state FirewallState
+	err = json.Unmarshal(data, &state)
+	return state, err == nil
 }
