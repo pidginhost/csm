@@ -559,7 +559,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		}
 	}
 
-	rateLimited := false
+	scanLimited, sprayLimited := false, false
 	sprayBudgetUnavailable := false
 	droppedPending := 0
 	engineUnavailableRequeued := 0
@@ -617,7 +617,10 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		accountingUnavailable := budgetUnavailable || (cand.LoginSpray && sprayBudgetUnavailable)
 		if accountingUnavailable || (*used >= maxPerHour && !durableRetry) {
 			requeue(cand)
-			rateLimited = rateLimited || !accountingUnavailable
+			if !accountingUnavailable {
+				sprayLimited = sprayLimited || cand.LoginSpray
+				scanLimited = scanLimited || !cand.LoginSpray
+			}
 			continue
 		}
 
@@ -723,12 +726,22 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		fmt.Fprintf(os.Stderr, "auto-block: firewall engine not available, requeued %d IPs\n", engineUnavailableRequeued)
 	}
 
+	// One warning an hour covers both budgets; a budget that fills after it
+	// is named in the next hour's warning.
+	rateLimited := scanLimited || sprayLimited
 	warnRateLimit := rateLimited && state.RateLimitWarnedHour != currentHour
 	warnPendingDrop := droppedPending > 0 && state.PendingDropWarnedHour != currentHour
 	if warnRateLimit || warnPendingDrop {
 		var msg string
 		if rateLimited {
-			msg = fmt.Sprintf("Auto-block rate limit reached (%d/hour), %d IPs queued for next cycle", maxPerHour, len(state.Pending))
+			limit := fmt.Sprintf("rate limit reached (%d/hour)", maxPerHour)
+			switch {
+			case scanLimited && sprayLimited:
+				limit = fmt.Sprintf("rate limit and mail login spray budget reached (%d/hour each)", maxPerHour)
+			case sprayLimited:
+				limit = fmt.Sprintf("mail login spray budget reached (%d/hour)", maxPerHour)
+			}
+			msg = fmt.Sprintf("Auto-block %s, %d IPs queued for next cycle", limit, len(state.Pending))
 			if droppedPending > 0 {
 				msg += fmt.Sprintf(", %d dropped (queue full)", droppedPending)
 			}

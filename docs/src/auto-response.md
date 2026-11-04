@@ -430,8 +430,9 @@ reserve credit before the firewall attempt. An uncertain result keeps that
 credit; a confirmed non-block releases it. Retries wait when the spray budget
 is full, while other scan blocks keep their own budget. Waiting spray retries
 hold at most half of the retry queue, so a spray backlog cannot push other
-retries out of it. A failed spray reservation defers spray blocks and reports
-a warning, without stopping other scan blocks.
+retries out of it. The hourly rate limit warning names the budget that is
+full. A failed spray reservation defers spray blocks and reports a warning,
+without stopping other scan blocks.
 
 The same setting also sets the hourly ceiling of the admission ledger, which
 will cover every automatic source once responses are admitted through it. For

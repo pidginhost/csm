@@ -258,3 +258,36 @@ func TestAutoBlockSprayBacklogKeepsOtherRetries(t *testing.T) {
 		t.Fatalf("queued spray=%d other=%d, want spray capped at %d and all %d other retries", spray, other, maxPendingBlocks/2, others)
 	}
 }
+
+// The hourly warning names the budget that is full, so a full spray budget
+// does not read as a limit on WAF or SSH blocks.
+func TestAutoBlockRateWarningNamesBudget(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		scanUsed, spray int
+		want            string
+	}{
+		{"spray budget full", 0, 1, "Auto-block mail login spray budget reached (1/hour), 1 IPs queued for next cycle"},
+		{"scan budget full", 1, 0, "Auto-block rate limit reached (1/hour), 1 IPs queued for next cycle"},
+		{"both full", 1, 1, "Auto-block rate limit and mail login spray budget reached (1/hour each), 2 IPs queued for next cycle"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := pendingTestConfig(t)
+			cfg.AutoResponse.MaxBlocksPerHour = 1
+			now := time.Now()
+			setAutoBlockNow(t, now)
+			saveBlockState(cfg.StatePath, &blockState{HourKey: now.Format("2006-01-02T15"), BlocksThisHour: tc.scanUsed, LoginSprayBlocksThisHour: tc.spray})
+			applyBlockTestSetup(t, &outcomeStubBlocker{outcome: firewall.BlockOutcomeLive})
+
+			var warnings []string
+			for _, f := range AutoBlockIPs(cfg, []alert.Finding{loginSprayFinding("192.0.2.88"), wafFinding("198.51.100.88")}) {
+				if f.Severity == alert.Warning {
+					warnings = append(warnings, f.Message)
+				}
+			}
+			if len(warnings) != 1 || warnings[0] != tc.want {
+				t.Fatalf("warnings = %q, want %q", warnings, tc.want)
+			}
+		})
+	}
+}
