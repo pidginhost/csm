@@ -123,7 +123,7 @@ func (l *AdmissionLedger) ObserveHeld(asked []HeldEffect, held []bool) (int, err
 					marked++
 				}
 			}
-			return raiseSchema(tx, admissionSchemaEffectGone)
+			return nil
 		})
 		if err != nil {
 			return 0, err
@@ -152,6 +152,9 @@ func markGone(tx *bolt.Tx, h HeldEffect, since time.Time) (bool, error) {
 	rec.Gone = since
 	data, err := rec.MarshalBinary()
 	if err != nil {
+		return false, err
+	}
+	if err = raiseSchema(tx, admissionSchemaEffectGone); err != nil {
 		return false, err
 	}
 	return true, tx.Bucket([]byte(admissionEffectsBucket)).Put(key, data)

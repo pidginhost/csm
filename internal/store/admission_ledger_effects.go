@@ -28,9 +28,8 @@ const (
 var effectTallyKey = []byte("effects")
 
 // effectLayout reports whether the effect records exist and refuses a
-// layout schema rules out: none below 12, bucket and tally at 12, and from
-// 13, which records nothing of them, both or neither, and only after the
-// live start.
+// layout schema rules out: none below 12, bucket and tally at 12, optional
+// at 13, and required again at 14. At 13 and 14 they need the live start.
 func effectLayout(tx *bolt.Tx, schema byte) (bool, error) {
 	state := tx.Bucket([]byte(admissionQueueStateBucket))
 	if state == nil {
@@ -44,8 +43,10 @@ func effectLayout(tx *bolt.Tx, schema byte) (bool, error) {
 		ok = !present && !tallied
 	case schema == admissionSchemaEffects:
 		ok = present && tallied
-	default:
+	case schema == admissionSchemaEpisodeElapsed:
 		ok = present == tallied && (!present || state.Get(liveStartKey) != nil)
+	default:
+		ok = present && tallied && state.Get(liveStartKey) != nil
 	}
 	if !ok {
 		return false, admission.ErrCorruptRecord

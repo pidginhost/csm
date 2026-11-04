@@ -14,9 +14,9 @@ func loadLiveStart(tx *bolt.Tx) (admission.LiveStart, bool, error) {
 	if len(schema) != 1 || schema[0] < admissionSchemaVersion || schema[0] > admissionSchemaNewest {
 		return admission.LiveStart{}, false, ErrAdmissionSchema
 	}
-	// Schemas 11 and 12 record the live start; 13 does not, so there the
-	// marker proves itself.
-	if schema[0] < admissionSchemaEpisodeElapsed && (schema[0] >= admissionSchemaLive) != (raw != nil) {
+	// Only schema 13 can precede or follow the live start. Schema 14
+	// requires it again because only live effect records can turn gone.
+	if schema[0] != admissionSchemaEpisodeElapsed && (schema[0] >= admissionSchemaLive) != (raw != nil) {
 		return admission.LiveStart{}, false, admission.ErrCorruptRecord
 	}
 	if raw == nil {

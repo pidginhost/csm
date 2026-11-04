@@ -328,9 +328,11 @@ nothing new. Bounded batches get two answered checks before advancing,
 so a larger configured capacity cannot hide later records. A record that
 changed in between is left to what changed it. A gone record holds no
 slot, so waiting work can take it, and stays until its expiry sweep.
-The first gone record moves the ledger to schema 14, which older builds
-refuse. Only a live ledger has
-effect records, so preview and forecast hosts never write it.
+The first stored gone record moves the ledger to schema 14, which older
+builds refuse. Schema 14 requires the live-start marker, effect bucket and
+tally even after all records expire. A check that marks nothing leaves
+the schema unchanged. Only a live ledger has effect records, so preview
+and forecast hosts never write it.
 Startup drops the state row of an admission-record victim whose eviction
 the ledger verified. Imports have no durable cleanup record: a restart
 before retirement restores the import only until its original expiry. Startup readers report an error if the
