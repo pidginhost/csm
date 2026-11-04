@@ -77,53 +77,23 @@ func (e *Engine) RetireBlockActions(actions []BlockAction) ([]bool, error) {
 	if e.lifecycle != nil {
 		return nil, errDurableBlockRows
 	}
-	canonical := make([]BlockAction, len(actions))
-	unread := make([]bool, len(actions))
-	for i, m := range actions {
-		addr, err := netip.ParseAddr(m.IP)
-		if err != nil {
-			return nil, fmt.Errorf("retiring %s: %w", m.Action, err)
-		}
-		addr = addr.WithZone("").Unmap()
-		// The snapshot skips a missing or disabled IPv6 set, so it cannot
-		// prove such an address absent; the rest of the batch still answers.
-		unread[i] = addr.Is6() && (!e.cfg.IPv6 || e.setBlocked6 == nil)
-		canonical[i] = BlockAction{Action: m.Action, IP: addr.String()}
+	canonical, unread, err := e.canonicalBlockActions(actions, "retiring")
+	if err != nil {
+		return nil, err
 	}
 	if e.blockBatchesHeld {
 		return nil, ErrConfirmPending
 	}
-	if err := e.checkpointBlockRemovalLocked(); err != nil {
+	if err = e.checkpointBlockRemovalLocked(); err != nil {
 		return nil, err
 	}
 	snap, err := e.blockSnapshotLocked()
 	if err != nil {
 		return nil, err
 	}
-	owners := make(map[string][]string)
-	for _, row := range snap.prior.Blocked {
-		ip := retirementIPKey(row.IP)
-		observed, live := snap.live[ip]
-		if snap.proves(row, observed, live) {
-			owners[ip] = append(owners[ip], retireID(row))
-		}
-	}
-	out := make([]bool, len(actions))
+	out := clearBlockActions(snap, canonical, unread)
 	gone := make(map[BlockAction]bool, len(actions))
 	for i, m := range canonical {
-		// Aliased imports can prove the same element under different
-		// names. They cannot retire each other while their own proof holds.
-		if unread[i] || (importName(m.Action) && slices.Contains(owners[m.IP], m.Action)) {
-			continue
-		}
-		_, live := snap.live[m.IP]
-		out[i] = !live
-		for _, owner := range owners[m.IP] {
-			if owner != m.Action {
-				out[i] = true
-				break
-			}
-		}
 		if out[i] {
 			gone[m] = true
 		}
@@ -144,6 +114,56 @@ func (e *Engine) RetireBlockActions(actions []BlockAction) ([]bool, error) {
 		return nil, err
 	}
 	return out, nil
+}
+
+// canonicalBlockActions is actions at their canonical addresses, and which
+// of them the snapshot cannot read: it skips a missing or disabled IPv6
+// set, so it cannot prove such an address absent. A malformed address
+// refuses the whole call, named with verb.
+func (e *Engine) canonicalBlockActions(actions []BlockAction, verb string) ([]BlockAction, []bool, error) {
+	canonical := make([]BlockAction, len(actions))
+	unread := make([]bool, len(actions))
+	for i, m := range actions {
+		addr, err := netip.ParseAddr(m.IP)
+		if err != nil {
+			return nil, nil, fmt.Errorf("%s %s: %w", verb, m.Action, err)
+		}
+		addr = addr.WithZone("").Unmap()
+		unread[i] = addr.Is6() && (!e.cfg.IPv6 || e.setBlocked6 == nil)
+		canonical[i] = BlockAction{Action: m.Action, IP: addr.String()}
+	}
+	return canonical, unread, nil
+}
+
+// clearBlockActions reports, for each canonical action, whether nothing it
+// may have applied can remain in the kernel: its address has no element,
+// or the element belongs to a verified row of another action. An unread
+// address is never clear. Aliased imports can prove the same element under
+// different names; neither is clear while its own proof holds.
+func clearBlockActions(snap blockSnapshot, actions []BlockAction, unread []bool) []bool {
+	owners := make(map[string][]string)
+	for _, row := range snap.prior.Blocked {
+		ip := retirementIPKey(row.IP)
+		observed, live := snap.live[ip]
+		if snap.proves(row, observed, live) {
+			owners[ip] = append(owners[ip], retireID(row))
+		}
+	}
+	out := make([]bool, len(actions))
+	for i, m := range actions {
+		if unread[i] || (importName(m.Action) && slices.Contains(owners[m.IP], m.Action)) {
+			continue
+		}
+		_, live := snap.live[m.IP]
+		out[i] = !live
+		for _, owner := range owners[m.IP] {
+			if owner != m.Action {
+				out[i] = true
+				break
+			}
+		}
+	}
+	return out
 }
 
 // retireID is the name retirement knows row by: the admission action that

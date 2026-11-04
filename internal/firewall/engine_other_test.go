@@ -142,3 +142,11 @@ func TestNonLinuxBlockAdmissionSnapshotIsUnavailable(t *testing.T) {
 		t.Fatalf("snapshot = %+v, %v; want ErrUnsupportedPlatform", got, err)
 	}
 }
+
+// A held check is unavailable, never an answer that every block left.
+func TestNonLinuxHeldBlockActionsIsUnavailable(t *testing.T) {
+	held, err := (&Engine{}).HeldBlockActions([]BlockAction{{Action: "act_one", IP: "203.0.113.5"}})
+	if !errors.Is(err, ErrUnsupportedPlatform) || held != nil {
+		t.Fatalf("held = %v, %v; want ErrUnsupportedPlatform", held, err)
+	}
+}

@@ -46,6 +46,13 @@ type fakeBlocks struct {
 	retireShort bool
 	retireStep  func([]firewall.BlockAction)
 	retires     [][]firewall.BlockAction
+	// removed names addresses an operator or a flush took out of the
+	// kernel: the held check answers false for them. heldErr fails that
+	// check and heldShort drops its last answer.
+	removed   map[string]bool
+	heldErr   error
+	heldShort bool
+	helds     [][]firewall.BlockAction
 	// temp and limit are the temporary occupancy an admission snapshot
 	// reports, every timed element unclaimed, and imported the legacy
 	// automatic blocks among them. admitted counts the admission-owned
@@ -68,7 +75,7 @@ type fakeBlocks struct {
 var fakeExisting = firewall.ExistingBlock{ID: "eff_00112233445566778899aabbccddeeff", ExpiresAt: time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)}
 
 func newFakeBlocks() *fakeBlocks {
-	return &fakeBlocks{refuse: map[string]firewall.BlockRefusal{}, existing: map[string]firewall.ExistingBlock{}, results: map[string]firewall.BlockResult{}, present: map[string]bool{}}
+	return &fakeBlocks{refuse: map[string]firewall.BlockRefusal{}, existing: map[string]firewall.ExistingBlock{}, results: map[string]firewall.BlockResult{}, present: map[string]bool{}, removed: map[string]bool{}}
 }
 
 func (f *fakeBlocks) CheckBlockBatchEffects(members []firewall.BlockMember) ([]firewall.BlockCheck, error) {
@@ -191,6 +198,29 @@ func (f *fakeBlocks) RetireBlockActions(actions []firewall.BlockAction) ([]bool,
 		return out[:len(out)-1], nil
 	}
 	return out, nil
+}
+
+func (f *fakeBlocks) HeldBlockActions(actions []firewall.BlockAction) ([]bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.helds = append(f.helds, append([]firewall.BlockAction(nil), actions...))
+	if f.heldErr != nil {
+		return nil, f.heldErr
+	}
+	out := make([]bool, len(actions))
+	for i, a := range actions {
+		out[i] = !f.removed[a.IP]
+	}
+	if f.heldShort && len(out) > 0 {
+		return out[:len(out)-1], nil
+	}
+	return out, nil
+}
+
+func (f *fakeBlocks) heldCalls() [][]firewall.BlockAction {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.helds
 }
 
 func (f *fakeBlocks) retireCalls() [][]firewall.BlockAction {

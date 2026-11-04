@@ -17,6 +17,9 @@ type BlockEngine interface {
 	// RetireBlockActions reports which unknown attempts left nothing in the
 	// kernel and removes their own rows.
 	RetireBlockActions(actions []firewall.BlockAction) ([]bool, error)
+	// HeldBlockActions reports which verified blocks the kernel may still
+	// hold, changing nothing.
+	HeldBlockActions(actions []firewall.BlockAction) ([]bool, error)
 	// BlockAdmissionSnapshot answers members' local checks and the
 	// temporary occupancy without changing anything or giving any member
 	// a slot.

@@ -272,6 +272,8 @@ type Owner struct {
 	// whose rows the engine has yet to retire.
 	evicted    []firewall.BlockAction
 	evictedErr error
+	// heldAt is the monotonic time of the next held check (observeHeld).
+	heldAt time.Time
 	// replacements counts this process's previews that took the slot of a
 	// lower-priority automatic block; replacementsHour keeps the last hour
 	// of them on the monotonic clock. rotations and rotationsHour count
@@ -963,6 +965,7 @@ func (o *Owner) runTurn(selecting bool) error {
 			return err
 		}
 	}
+	_ = o.observeHeld()
 	if err := o.publish(); err != nil {
 		return err
 	}
@@ -981,6 +984,11 @@ func (o *Owner) runTurn(selecting bool) error {
 		if o.wakeAt.IsZero() || at.Before(o.wakeAt) {
 			o.wakeAt = at
 		}
+	}
+	// Retirement may clear its retries or delay them after a fault. The
+	// held check owns a separate monotonic deadline across those turns.
+	if o.mayRetire() && !o.heldAt.IsZero() && (o.wakeAt.IsZero() || o.heldAt.Before(o.wakeAt)) {
+		o.wakeAt = o.heldAt
 	}
 	return nil
 }

@@ -332,7 +332,14 @@ The first stored gone record moves the ledger to schema 14, which older
 builds refuse. Schema 14 requires the live-start marker, effect bucket and
 tally even after all records expire. A check that marks nothing leaves
 the schema unchanged. Only a live ledger has effect records, so preview
-and forecast hosts never write it.
+and forecast hosts never write it. The owner
+asks at most once a minute, and only while the ledger counts a verified
+block. The firewall answers with the retirement rule reversed and writes
+nothing: an element still at the address that no other action's verified
+row proves counts as held, even after a forward wall step makes the
+block's own row look expired, and so does an address whose family the
+firewall cannot read. A failed or short answer marks nothing and counts
+as no miss.
 Startup drops the state row of an admission-record victim whose eviction
 the ledger verified, and of a block the ledger marked gone, so a restart
 cannot restore an element whose slot the ledger no longer counts. Imports have no durable cleanup record: a restart
