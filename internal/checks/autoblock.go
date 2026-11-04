@@ -270,6 +270,9 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	// Load block state
 	work.progress()
 	state := work.loadState(cfg.StatePath)
+	// Reservations retain the on-disk backlog until the cycle finishes.
+	// Saving the drained queue here would lose unprocessed retries on a crash.
+	sprayReservation := *state
 
 	// Prune IPs that the firewall engine no longer has blocked.
 	// The engine handles expiry natively via nftables timeouts -
@@ -550,6 +553,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	}
 
 	rateLimited := false
+	sprayBudgetUnavailable := false
 	droppedPending := 0
 	engineUnavailableRequeued := 0
 	// requeue preserves an IP that could not be blocked this cycle (rate
@@ -578,8 +582,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 			durableRetry = cand.ActionID != "" && durable.DurableActionsEnabled()
 		}
 		// Spray blocks have their own budget of the same size. The durable
-		// store counts only the scan budget, so a crash before the state save
-		// can undercount this cycle's spray blocks.
+		// store counts only the scan budget.
 		used := &state.BlocksThisHour
 		if cand.LoginSpray {
 			used = &state.LoginSprayBlocksThisHour
@@ -589,9 +592,10 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		}
 		// Existing requests need recovery even when their admission used the
 		// last slot. The durable store still caps any identity not yet admitted.
-		if budgetUnavailable || (*used >= maxPerHour && !durableRetry) {
+		accountingUnavailable := budgetUnavailable || (cand.LoginSpray && sprayBudgetUnavailable)
+		if accountingUnavailable || (*used >= maxPerHour && !durableRetry) {
 			requeue(cand)
-			rateLimited = !budgetUnavailable
+			rateLimited = rateLimited || !accountingUnavailable
 			continue
 		}
 
@@ -618,6 +622,22 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 			}
 			requestTTL = cand.ActionTTL
 		}
+		if cand.LoginSpray {
+			// Charge before the kernel call: an uncertain result or a crash
+			// after mutation must not leave the next cycle with fresh credit.
+			sprayReservation.HourKey = state.HourKey
+			sprayReservation.BlocksThisHour = state.BlocksThisHour
+			sprayReservation.LoginSprayBlocksThisHour = *used + 1
+			if err := persistAutoBlockState(cfg.StatePath, &sprayReservation); err != nil {
+				work.observe(err)
+				work.candidateOutcome(cand.queueCandidate, err)
+				sprayBudgetUnavailable = true
+				requeue(cand)
+				actions = append(actions, alert.Finding{Severity: alert.Warning, Check: "auto_block", Message: "Block accounting unavailable; mail spray blocks deferred", Details: err.Error(), Timestamp: time.Now()})
+				continue
+			}
+			*used++
+		}
 		res, err := applyBlockLocked(cfg, blocker, state, ApplyBlockRequest{
 			ActionID:     cand.ActionID,
 			IP:           ip,
@@ -628,6 +648,12 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 			FindingID:    cand.FindingID,
 			LoginSpray:   cand.LoginSpray,
 		}, work.progress, func(err error) { work.candidateOutcome(cand.queueCandidate, err) })
+		// Release only proven non-blocks. Unknown effects retain their slot
+		// even when later recovery returns a successful no-op for that ID.
+		if cand.LoginSpray && ((err == nil && res.Outcome != firewall.BlockOutcomeLive) ||
+			errors.Is(err, firewall.ErrActionFailed) || errors.Is(err, firewall.ErrIPProtected) || errors.Is(err, firewall.ErrActionDryRun)) {
+			*used--
+		}
 		verifiedAuditPending := res.Outcome == firewall.BlockOutcomeLive && errors.Is(err, firewall.ErrActionAuditPending)
 		if verifiedAuditPending {
 			fmt.Fprintf(os.Stderr, "auto-block: %s verified with audit delivery pending: %v\n", ip, err)
@@ -664,7 +690,9 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		if blocker.IsBlocked(ip) {
 			fmt.Fprintf(os.Stderr, "[%s] AUTO-BLOCK: %s blocked (expires in %s)\n", time.Now().Format("2006-01-02 15:04:05"), ip, requestTTL)
 		}
-		*used++
+		if !cand.LoginSpray {
+			*used++
+		}
 		work.finishCandidate(cand.queueCandidate)
 	}
 	if engineUnavailableRequeued > 0 {

@@ -393,6 +393,13 @@ Challenge, central, and incident blocks are not limited by
 `auto_response.max_blocks_per_hour`; that budget applies to scan-driven
 blocks only.
 
+Mail login spray blocks use a separate hourly budget of the same size. They
+reserve credit before the firewall attempt. An uncertain result keeps that
+credit; a confirmed non-block releases it. Retries wait when the spray budget
+is full, while other scan blocks keep their own budget. A failed spray
+reservation defers spray blocks and reports a warning, without stopping other
+scan blocks.
+
 The same setting also sets the hourly ceiling of the admission ledger, which
 will cover every automatic source once responses are admitted through it. For
 the ledger an omitted or zero value selects 2000 and a value above 20000 is
