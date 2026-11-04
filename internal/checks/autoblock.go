@@ -638,7 +638,8 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 			cand.ActionID = rand.Text()
 		}
 		// A block that mixes in any other finding is a normal block. The
-		// spray verdict's re-block marker still lengthens it on return.
+		// spray verdict's marker still gives the address a spray block if it
+		// fails a login again after this one ends.
 		requestTTL := expiry
 		if cand.LoginSpray && cand.TTL > 0 {
 			requestTTL = cand.TTL

@@ -212,8 +212,8 @@ func recordNetblockHistory(h *netblockHistory, tracked []blockedIP, current map[
 }
 
 // countsTowardNetblock reports whether a block is subnet escalation evidence.
-// An IPv4 mail spray block is not: a botnet's addresses share no /24. An IPv6
-// /64 is one actor, so its spray blocks count like any other block.
+// IPv4 mail spray blocks stay out of /24 escalation. An IPv6 /64 is one
+// actor, so its spray blocks count like any other block.
 func countsTowardNetblock(b blockedIP) bool {
 	return !b.LoginSpray || net.ParseIP(b.IP).To4() == nil
 }
