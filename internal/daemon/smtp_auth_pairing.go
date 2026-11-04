@@ -144,6 +144,7 @@ func (t *smtpAuthTracker) NoteDovecotRejection(ip, account string, exist mailbox
 		pending = pending[1:]
 	}
 	t.pendingVerdicts[ip] = append(pending, smtpPendingVerdict{smtpRejectionTime: at, account: account, exist: exist, name: name, batch: batch})
+	t.aliased = t.aliased || sprayAddr(ip) != ip
 }
 
 // NoteAuthTrouble marks Dovecot client addresses or Postfix process tags.

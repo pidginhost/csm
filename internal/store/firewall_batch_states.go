@@ -65,6 +65,9 @@ func validateFirewallBatchStates(a firewall.FirewallAction) error {
 		if !ok || row.IP != m.Target || row.Reason != m.Reason || row.Unverified || !row.BlockedAt.Equal(a.CreatedAt) || !row.ExpiresAt.Equal(row.BlockedAt.Add(m.TTL)) || !row.ExpiresAt.After(a.CreatedAt) {
 			return errInvalidFirewallManifest
 		}
+		if row.LoginSpray != m.LoginSpray || (row.LoginSpray && !row.Automatic) {
+			return errInvalidFirewallManifest
+		}
 		seen[row.ActionID] = true
 	}
 	if len(seen) != len(members) {

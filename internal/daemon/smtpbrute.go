@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"fmt"
+	"maps"
 	"slices"
 	"sort"
 	"strings"
@@ -160,6 +161,11 @@ type smtpAuthTracker struct {
 	pendingVerdicts          map[string][]smtpPendingVerdict
 	authTrouble              map[string]time.Time
 	authTroubleOverflowUntil time.Time
+
+	// aliased is set once ips or pendingVerdicts holds a key that is not
+	// its address's canonical spelling. Until then a release looks up the
+	// canonical key instead of scanning every entry.
+	aliased bool
 }
 
 // SetBackendDownCheck installs the active-probe callback the tracker consults to
@@ -279,6 +285,7 @@ func (t *smtpAuthTracker) recordFailure(ip, account string, exist mailboxExisten
 	if !ok {
 		e = &smtpIPEntry{}
 		t.ips[ip] = e
+		t.aliased = t.aliased || sprayAddr(ip) != ip
 	}
 	e.times = pruneTimes(e.times, cutoff)
 	e.times = append(e.times, now)
@@ -360,10 +367,14 @@ func (t *smtpAuthTracker) recordFailure(ip, account string, exist mailboxExisten
 		if v != nil {
 			f := sprayFinding(protoSMTP, ip, v, t.spray.Mode(), now)
 			// One failure raises one block: the evidence is recorded either
-			// way, and a per-IP block above already covers this address.
-			perIPBlock := slices.ContainsFunc(findings, func(p alert.Finding) bool { return p.Check == "smtp_bruteforce" })
-			if f.Check != "smtp_bruteforce" || !perIPBlock {
+			// way. A per-IP block above already covers this address, unless
+			// the spray block carries its own length and takes its place.
+			perIPBlock := slices.IndexFunc(findings, func(p alert.Finding) bool { return p.Check == "smtp_bruteforce" })
+			switch {
+			case f.Check != "smtp_bruteforce" || perIPBlock < 0:
 				findings = append(findings, f)
+			case f.BlockTTL > 0:
+				findings[perIPBlock] = f
 			}
 		}
 	}
@@ -473,6 +484,27 @@ func (t *smtpAuthTracker) RecordSuccess(ip, account string) (findings []alert.Fi
 	}
 	t.findingsEmitted++
 	return []alert.Finding{sprayFinding(protoSMTP, ip, v, t.spray.Mode(), t.now())}
+}
+
+// Forget drops ip's failure counts and pending rejections after an operator
+// release, or every address's when ip is empty. Backend outage marks stay.
+func (t *smtpAuthTracker) Forget(ip string) {
+	ip = sprayAddr(ip)
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if ip != "" && !t.aliased {
+		delete(t.ips, ip)
+		delete(t.pendingVerdicts, ip)
+		return
+	}
+	// A canonical firewall release also covers alternate log spellings.
+	maps.DeleteFunc(t.ips, func(addr string, _ *smtpIPEntry) bool {
+		return ip == "" || sprayAddr(addr) == ip
+	})
+	// Delayed MTA replies must not restore evidence from before the release.
+	maps.DeleteFunc(t.pendingVerdicts, func(addr string, _ []smtpPendingVerdict) bool {
+		return ip == "" || sprayAddr(addr) == ip
+	})
 }
 
 // Stats returns cumulative Record invocations and findings emitted since

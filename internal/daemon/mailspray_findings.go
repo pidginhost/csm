@@ -24,10 +24,11 @@ func (p mailProto) String() string {
 }
 
 // sprayFinding turns a mailSpray verdict into a finding under the existing
-// check names. The missing-mailbox and breadth rules block only in enforce
-// mode; observe mode reports them as mail_bruteforce_suspected. A compromise
-// is Critical only when the verdict blocks in enforce mode. Every other
-// verdict is a High advisory.
+// check names. The missing-mailbox, breadth and repeat rules block only in
+// enforce mode; observe mode reports them as mail_bruteforce_suspected. A
+// compromise is Critical only when the verdict blocks in enforce mode. Every
+// other verdict is a High advisory. Only the enforce mode blocks carry the
+// verdict's block length.
 func sprayFinding(proto mailProto, ip string, v *sprayVerdict, mode sprayMode, now time.Time) alert.Finding {
 	enforce := mode == sprayEnforce
 	observe := ""
@@ -39,19 +40,24 @@ func sprayFinding(proto mailProto, ip string, v *sprayVerdict, mode sprayMode, n
 	if v.Block && v.Rule != sprayRuleCompromise {
 		reason := fmt.Sprintf("failed logins on %d mailboxes it has no trusted login for", len(v.Targets)+v.Extra)
 		details := "Long-memory spray detection: failed logins on several mailboxes this address has no trusted login for."
-		if v.Rule == sprayRuleMissingMailbox {
+		switch v.Rule {
+		case sprayRuleMissingMailbox:
 			reason = fmt.Sprintf("failed login to missing mailbox %s, tried by %d networks", sprayMailboxText(v.Mailbox), v.Networks)
 			details = "Long-memory spray detection: a failed login to a mailbox that does not exist, which several networks also tried."
+		case sprayRuleRepeat:
+			reason = "failed login by an address blocked earlier for login spraying"
+			details = "Long-memory spray detection: a failed login by an address blocked earlier for login spraying, so it is blocked again."
 		}
 		check, severity := "mail_bruteforce_suspected", alert.High
 		message := fmt.Sprintf("Suspected %s password spray from %s: %s (observe mode, not blocked)", proto, ip, reason)
+		var ttl time.Duration
 		switch {
 		case !enforce:
 		case proto == protoSMTP:
-			check, severity = "smtp_bruteforce", alert.Critical
+			check, severity, ttl = "smtp_bruteforce", alert.Critical, v.BlockTTL
 			message = fmt.Sprintf("SMTP brute force from %s: %s", ip, reason)
 		default:
-			check, severity = "mail_bruteforce", alert.Critical
+			check, severity, ttl = "mail_bruteforce", alert.Critical, v.BlockTTL
 			message = fmt.Sprintf("Mail auth brute force from %s: %s", ip, reason)
 		}
 		return alert.Finding{
@@ -61,12 +67,14 @@ func sprayFinding(proto mailProto, ip string, v *sprayVerdict, mode sprayMode, n
 			Details:   strings.TrimSpace(details + observe + " " + targets),
 			Timestamp: now,
 			SourceIP:  ip,
+			BlockTTL:  ttl,
 		}
 	}
 
 	severity := alert.High
 	mailbox := sprayMailboxText(v.Mailbox)
 	var message, details string
+	var ttl time.Duration
 	switch v.Rule {
 	case sprayRuleCompromise:
 		message = fmt.Sprintf("Mail account compromise: successful %s login for %s from %s after failed logins on other mailboxes", proto, mailbox, ip)
@@ -76,7 +84,7 @@ func sprayFinding(proto mailProto, ip string, v *sprayVerdict, mode sprayMode, n
 			message += " (established multi-mailbox source)"
 			details = "The address also holds trusted logins to several other mailboxes, so this may be a shared office device. Verify with the mailbox owner; not auto-blocked."
 		case enforce:
-			severity = alert.Critical
+			severity, ttl = alert.Critical, v.BlockTTL
 		default:
 			message += " (observe mode, not blocked)"
 			details += observe
@@ -98,6 +106,7 @@ func sprayFinding(proto mailProto, ip string, v *sprayVerdict, mode sprayMode, n
 		SourceIP:  ip,
 		Domain:    domain,
 		Mailbox:   v.Mailbox,
+		BlockTTL:  ttl,
 	}
 }
 

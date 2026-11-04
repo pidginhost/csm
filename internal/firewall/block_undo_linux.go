@@ -44,6 +44,7 @@ func (e *Engine) UnblockIPForUndo(ip string) (before *BlockedEntry, resultErr er
 		return nil, err
 	}
 	ip = canonical
+	defer func() { e.released(ip, ReleaseOperator, resultErr) }()
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	state := e.loadStateFile()
@@ -72,6 +73,7 @@ func (e *Engine) RestoreBlockIfUnchanged(ip string, expected, prior *BlockedEntr
 			}
 		case "unblock":
 			e.legacyFirewallFailure("unblock", ip, "", "", 0, resultErr)
+			e.released(ip, ReleaseOperator, resultErr)
 		}
 	}()
 	canonical, err := canonicalFirewallIP(ip)
@@ -109,8 +111,12 @@ func (e *Engine) RestoreBlockIfUnchanged(ip string, expected, prior *BlockedEntr
 		}
 		if prior != nil {
 			action, reason, duration = "block", prior.Reason, ttl
+			// Spray undo keeps its eviction preference; other legacy undo
+			// continues to create an operator-owned row.
+			spray := prior.LoginSpray && prior.Automatic
 			_, err := e.blockIPRequestLocked(ip, prior.Reason, ttl, false, false,
-				ActionRequest{Operation: "block", Target: ip, Reason: prior.Reason, TTL: ttl}, nil, false, prior.ExpiresAt)
+				ActionRequest{Operation: "block", Target: ip, Reason: prior.Reason, TTL: ttl,
+					Automatic: spray, LoginSpray: spray}, nil, false, prior.ExpiresAt)
 			return err
 		}
 	}

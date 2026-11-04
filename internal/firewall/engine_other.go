@@ -20,6 +20,7 @@ type BlockedEntry struct {
 	ActionID   string    `json:"action_id,omitempty"`
 	Unverified bool      `json:"unverified,omitempty"`
 	Automatic  bool      `json:"automatic,omitempty"`
+	LoginSpray bool      `json:"login_spray,omitempty"`
 }
 
 type AllowedEntry struct {
@@ -96,14 +97,16 @@ func (e *Engine) SetDryRunRecorder(_ func(string, string, time.Duration)) {}
 func (e *Engine) SetDryRunEnabledFunc(_ func() bool)                      {}
 func (e *Engine) SetVerdictAsker(_ func(context.Context, string, string) (string, string, string, error)) {
 }
-func (e *Engine) SetShutdownContext(_ context.Context)    {}
-func (e *Engine) SetSoftAllowChecker(_ func(string) bool) {}
-func (e *Engine) UnblockIP(_ string) error                { return ErrUnsupportedPlatform }
-func (e *Engine) IsBlocked(_ string) bool                 { return false }
-func (e *Engine) StateSetAside() string                   { return "" }
-func (e *Engine) SetBlockActionsUnproven(_ error)         {}
-func (e *Engine) BlockActionsUnproven() error             { return nil }
-func (e *Engine) HoldBlockBatches(_ bool)                 {}
+func (e *Engine) SetShutdownContext(_ context.Context)               {}
+func (e *Engine) SetSoftAllowChecker(_ func(string) bool)            {}
+func (e *Engine) SetOperatorReleaseHook(_ func(string, ReleaseKind)) {}
+func (e *Engine) UnblockIP(_ string) error                           { return ErrUnsupportedPlatform }
+func (e *Engine) UnbanIP(_ string) error                             { return ErrUnsupportedPlatform }
+func (e *Engine) IsBlocked(_ string) bool                            { return false }
+func (e *Engine) StateSetAside() string                              { return "" }
+func (e *Engine) SetBlockActionsUnproven(_ error)                    {}
+func (e *Engine) BlockActionsUnproven() error                        { return nil }
+func (e *Engine) HoldBlockBatches(_ bool)                            {}
 func (e *Engine) MarkBlockActionsUnverified(_ []string) (int, error) {
 	return 0, ErrUnsupportedPlatform
 }
@@ -127,6 +130,10 @@ func (e *Engine) IsAllowed(_ string) bool              { return false }
 func (e *Engine) IsBlockedLive(_ string) (bool, error) { return false, ErrUnsupportedPlatform }
 func (e *Engine) LiveBlockedSet() (LiveBlockedSnapshot, error) {
 	return LiveBlockedSnapshot{}, ErrUnsupportedPlatform
+}
+
+func (e *Engine) BlockedEntries() ([]BlockedEntry, error) {
+	return nil, ErrUnsupportedPlatform
 }
 func (e *Engine) AllowIP(_ string, _ string) error { return ErrUnsupportedPlatform }
 func (e *Engine) RemoveAllowIP(_ string) error     { return ErrUnsupportedPlatform }

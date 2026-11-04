@@ -2,6 +2,7 @@ package checks
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -34,11 +35,15 @@ func (b *netblockBlocker) IsBlocked(ip string) bool {
 	return ok
 }
 func (b *netblockBlocker) LiveBlockedSet() (firewall.LiveBlockedSnapshot, error) {
-	v4 := make(map[string]struct{}, len(b.live))
+	snap := firewall.LiveBlockedSnapshot{V4: map[string]struct{}{}, V6: map[string]struct{}{}, HasV4: true, HasV6: true}
 	for ip := range b.live {
-		v4[ip] = struct{}{}
+		if net.ParseIP(ip).To4() != nil {
+			snap.V4[ip] = struct{}{}
+		} else {
+			snap.V6[ip] = struct{}{}
+		}
 	}
-	return firewall.LiveBlockedSnapshot{V4: v4, V6: map[string]struct{}{}, HasV4: true, HasV6: true}, nil
+	return snap, nil
 }
 func (b *netblockBlocker) BlockSubnet(cidr, _ string, _ time.Duration) error {
 	b.subnets = append(b.subnets, cidr)

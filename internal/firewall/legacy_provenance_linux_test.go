@@ -74,13 +74,18 @@ func TestBlockedEntryAutomaticIsOmittedUnlessSet(t *testing.T) {
 	}
 }
 
-// Two snapshots of a row differ when only the mark does.
+// Two snapshots of a row differ when only a mark does.
 func TestSameBlockedEntryComparesTheMark(t *testing.T) {
 	row := BlockedEntry{IP: "192.0.2.65", ExpiresAt: time.Unix(1_700_000_000, 0)}
 	marked := row
 	marked.Automatic = true
 	if SameBlockedEntry(row, marked) {
 		t.Fatal("rows that differ only in the automatic mark compare equal")
+	}
+	marked = row
+	marked.LoginSpray = true
+	if SameBlockedEntry(row, marked) {
+		t.Fatal("rows that differ only in the spray mark compare equal")
 	}
 }
 

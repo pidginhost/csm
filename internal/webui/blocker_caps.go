@@ -24,6 +24,9 @@ type (
 	undoableUnblocker interface {
 		UnblockIPForUndo(ip string) (before *firewall.BlockedEntry, err error)
 	}
+	selfUnbanner interface {
+		UnbanIP(ip string) error
+	}
 	blockRestorer interface {
 		RestoreBlockIfUnchanged(ip string, expected, prior *firewall.BlockedEntry) error
 	}
@@ -56,6 +59,7 @@ var (
 	_ lifetimeKeepingBlocker = (*firewall.Engine)(nil)
 	_ undoableBlocker        = (*firewall.Engine)(nil)
 	_ undoableUnblocker      = (*firewall.Engine)(nil)
+	_ selfUnbanner           = (*firewall.Engine)(nil)
 	_ blockRestorer          = (*firewall.Engine)(nil)
 	_ ipAllower              = (*firewall.Engine)(nil)
 	_ ipTempAllower          = (*firewall.Engine)(nil)

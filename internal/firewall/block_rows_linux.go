@@ -4,6 +4,25 @@ package firewall
 
 import "errors"
 
+// BlockedEntries returns active, proven rows from the engine's state owner.
+// Consumers of block provenance must not infer it from kernel membership or
+// a separate scan tracker, which can lag behind a committed firewall action.
+func (e *Engine) BlockedEntries() ([]BlockedEntry, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	state := e.loadStateFile()
+	if err := errors.Join(e.stateReadErr, e.stateAsideErr); err != nil {
+		return nil, err
+	}
+	rows := state.Blocked[:0]
+	for _, row := range state.Blocked {
+		if !row.Unverified {
+			rows = append(rows, row)
+		}
+	}
+	return rows, nil
+}
+
 // errDurableBlockRows refuses batch row changes while a durable lifecycle
 // owns the state: its batch manifest is not built yet.
 var errDurableBlockRows = errors.New("firewall state is owned by the durable lifecycle")
@@ -88,7 +107,9 @@ func (e *Engine) BlockActionsUnproven() error {
 // cap. It leaves out the rows admission actions wrote: no legacy block,
 // automatic or operator, removes a block admission owns (design C8, spec
 // 5.6). Under the durable lifecycle, where no admission action writes rows,
-// only an automatic block or unproven rows leave its action rows out.
+// only an automatic block or unproven rows leave its action rows out. Among
+// the rows left, a mail spray row goes first, so a spray wave replaces its
+// own blocks before any other.
 func (e *Engine) evictionVictimLocked(st FirewallState, excludeIP string, automatic bool) (string, bool) {
 	addresses := make(map[string]int)
 	if e.lifecycle != nil {
@@ -118,6 +139,15 @@ func (e *Engine) evictionVictimLocked(st FirewallState, excludeIP string, automa
 			}
 		}
 		st.Blocked = recordable
+	}
+	spray := FirewallState{}
+	for _, row := range st.Blocked {
+		if row.LoginSpray {
+			spray.Blocked = append(spray.Blocked, row)
+		}
+	}
+	if victim, ok := soonestExpiringTempIP(spray, excludeIP); ok {
+		return victim, true
 	}
 	return soonestExpiringTempIP(st, excludeIP)
 }

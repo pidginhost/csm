@@ -519,6 +519,14 @@ func TestThresholdsSchemaIncludesMailSprayFields(t *testing.T) {
 	if strings.Join(mode.Options, ",") != "off,observe,enforce" {
 		t.Fatalf("mail_spray_mode options = %v, want [off observe enforce]", mode.Options)
 	}
+	expiry := findSchemaField(s, "mail_spray_block_expiry")
+	if expiry == nil {
+		t.Fatal("mail_spray_block_expiry field missing")
+	}
+	if expiry.Type != "string" || expiry.Placeholder != config.DefaultMailSprayBlockExpiry || expiry.FieldGroup != FieldGroupMailBruteForce {
+		t.Fatalf("mail_spray_block_expiry type/placeholder/group = %q/%q/%q, want string/%q/%q",
+			expiry.Type, expiry.Placeholder, expiry.FieldGroup, config.DefaultMailSprayBlockExpiry, FieldGroupMailBruteForce)
+	}
 
 	cases := []struct {
 		name     string

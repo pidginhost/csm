@@ -63,6 +63,9 @@ const (
 	// MinBlockEscalationCount is the lowest meaningful value for either
 	// counter. Below it there is no pattern to escalate from.
 	MinBlockEscalationCount = 2
+	// DefaultMailSprayBlockExpiry is how long a mail login spray block lasts
+	// when thresholds.mail_spray_block_expiry is unset.
+	DefaultMailSprayBlockExpiry = "720h"
 )
 
 const (
@@ -416,6 +419,9 @@ type Config struct {
 		MailSprayWindowMin        int    `yaml:"mail_spray_window_min"`
 		MailSprayBreadthMailboxes int    `yaml:"mail_spray_breadth_mailboxes"`
 		MailSprayMissingNetworks  int    `yaml:"mail_spray_missing_networks"`
+		// MailSprayBlockExpiry is how long an enforce mode spray block lasts;
+		// other blocks keep auto_response.block_expiry.
+		MailSprayBlockExpiry string `yaml:"mail_spray_block_expiry"`
 
 		// ModSecEscalationHits is the number of ModSecurity denies from a
 		// single source IP, inside ModSecEscalationWindowMin, that
@@ -1967,6 +1973,9 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 	}
 	if cfg.Thresholds.MailSprayMissingNetworks == 0 && !presence.mailSprayMissingNetworks {
 		cfg.Thresholds.MailSprayMissingNetworks = 3
+	}
+	if cfg.Thresholds.MailSprayBlockExpiry == "" {
+		cfg.Thresholds.MailSprayBlockExpiry = DefaultMailSprayBlockExpiry
 	}
 	if cfg.Alerts.MaxPerHour == 0 {
 		cfg.Alerts.MaxPerHour = 30

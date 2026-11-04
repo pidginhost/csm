@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -437,6 +438,7 @@ func (t *mailAuthTracker) LoadGoodSource(snap goodSourceSnapshot, now time.Time)
 			if !ok {
 				e = &mailIPEntry{}
 				t.ips[ip] = e
+				t.aliased = t.aliased || sprayAddr(ip) != ip
 			}
 			if e.goodFirst == nil {
 				e.goodFirst = make(map[string]time.Time)
@@ -619,6 +621,11 @@ type mailAuthTracker struct {
 	// the SMTP tracker. It holds per-mailbox login trust. Set once at startup
 	// before log readers begin.
 	spray *mailSpray
+
+	// aliased is set once ips holds a key that is not its address's
+	// canonical spelling. Until then a release looks up the canonical key
+	// instead of scanning every entry.
+	aliased bool
 }
 
 // SetBackendDownCheck installs the active-probe callback the tracker consults to
@@ -717,6 +724,7 @@ func (t *mailAuthTracker) RecordObserved(ip, account string, obs alert.Observati
 	if !ok {
 		e = &mailIPEntry{}
 		t.ips[ip] = e
+		t.aliased = t.aliased || sprayAddr(ip) != ip
 	}
 	e.times = pruneTimes(e.times, cutoff)
 	pruneMailAccountTimes(e.failedAccounts, cutoff)
@@ -845,10 +853,15 @@ func (t *mailAuthTracker) RecordObserved(ip, account string, obs alert.Observati
 			f := sprayFinding(protoMail, ip, v, t.spray.Mode(), now)
 			// One block per suppression window: a Dovecot line can carry
 			// several attempts, so the spray block shares the per-IP clock
-			// with the fast and slow paths. The evidence is recorded either way.
+			// with the fast and slow paths. A spray block with its own length
+			// takes the place of a per-IP block from this same failure. The
+			// evidence is recorded either way.
+			perIPBlock := slices.IndexFunc(findings, func(p alert.Finding) bool { return p.Check == "mail_bruteforce" })
 			switch {
 			case f.Check != "mail_bruteforce":
 				findings = append(findings, f)
+			case f.BlockTTL > 0 && perIPBlock >= 0:
+				findings[perIPBlock] = f
 			case !now.Before(e.suppressed):
 				e.suppressed = now.Add(t.suppression)
 				findings = append(findings, f)
@@ -922,6 +935,33 @@ func (t *mailAuthTracker) RecordObserved(ip, account string, obs alert.Observati
 	t.enforceMaxTracked(ip)
 	t.findingsEmitted += int64(len(findings))
 	return findings
+}
+
+// Forget drops ip's failure history after an operator release, or every
+// address's when ip is empty. Successful logins and good standing stay:
+// they describe the mailboxes it logs in to, not the block.
+func (t *mailAuthTracker) Forget(ip string) {
+	ip = sprayAddr(ip)
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	forget := func(e *mailIPEntry) {
+		e.times, e.failedAccounts = nil, nil
+		e.slowTimes, e.slowAccounts, e.slowUnvouched = nil, nil, time.Time{}
+		e.suppressed, e.suspectedSuppressed = time.Time{}, time.Time{}
+	}
+	if ip != "" && !t.aliased {
+		if e := t.ips[ip]; e != nil {
+			forget(e)
+		}
+		return
+	}
+	// Log readers and persisted good standing may use different spellings
+	// of one address. Release every matching entry without discarding trust.
+	for addr, e := range t.ips {
+		if ip == "" || sprayAddr(addr) == ip {
+			forget(e)
+		}
+	}
 }
 
 // Stats returns cumulative Record invocations and findings emitted since
@@ -1052,6 +1092,7 @@ func (t *mailAuthTracker) RecordSuccess(ip, account string) (findings []alert.Fi
 	if !ok {
 		e = &mailIPEntry{}
 		t.ips[ip] = e
+		t.aliased = t.aliased || sprayAddr(ip) != ip
 	}
 	e.succ = pruneTimes(e.succ, cutoff)
 	pruneMailAccountTimes(e.successAccounts, cutoff)
@@ -1083,7 +1124,8 @@ func (t *mailAuthTracker) RecordSuccess(ip, account string) (findings []alert.Fi
 		case len(findings) == 0:
 			t.findingsEmitted++
 			findings = []alert.Finding{*sprayed}
-		case sprayed.Severity > findings[0].Severity:
+		// At equal severity a spray block keeps its own block length.
+		case sprayed.Severity > findings[0].Severity || (sprayed.Severity == findings[0].Severity && sprayed.BlockTTL > 0):
 			findings[0] = *sprayed
 		}
 	}()

@@ -168,6 +168,8 @@ type blockedIP struct {
 	Reason    string    `json:"reason"`
 	BlockedAt time.Time `json:"blocked_at"`
 	ExpiresAt time.Time `json:"expires_at"`
+	// LoginSpray marks a mail spray block; IPv4 netblock escalation skips it.
+	LoginSpray bool `json:"login_spray,omitempty"`
 }
 
 type pendingIP struct {
@@ -179,6 +181,11 @@ type pendingIP struct {
 	Reason    string         `json:"reason"`
 	Check     string         `json:"check,omitempty"`
 	Severity  alert.Severity `json:"severity,omitempty"`
+	// TTL is the longest block length the findings asked for. Only a mail
+	// spray block uses it; any other block gets block_expiry. LoginSpray
+	// marks a mail spray block, which draws on its own hourly budget.
+	TTL        time.Duration `json:"ttl,omitempty"`
+	LoginSpray bool          `json:"login_spray,omitempty"`
 	// QueuedAt is when the IP first entered the queue; it survives
 	// requeue cycles so age accumulates instead of resetting. Stamped on
 	// the first requeue for eligible entries with no timestamp.
@@ -192,7 +199,10 @@ type blockState struct {
 	Pending        []pendingIP `json:"pending,omitempty"` // IPs waiting for another block attempt
 	CleanupPending []string    `json:"cleanup_pending,omitempty"`
 	BlocksThisHour int         `json:"blocks_this_hour"`
-	HourKey        string      `json:"hour_key"`
+	// LoginSprayBlocksThisHour counts mail spray blocks against a budget of
+	// the same size, so a spray wave cannot crowd out other blocks.
+	LoginSprayBlocksThisHour int    `json:"login_spray_blocks_this_hour,omitempty"`
+	HourKey                  string `json:"hour_key"`
 	// RateLimitWarnedHour is the HourKey for which the rate-limit warning
 	// was already emitted. The warning reflects a steady-state condition,
 	// not a per-IP event, so it fires once per hour window instead of on
@@ -260,6 +270,9 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	// Load block state
 	work.progress()
 	state := work.loadState(cfg.StatePath)
+	// Reservations retain the on-disk backlog until the cycle finishes.
+	// Saving the drained queue here would lose unprocessed retries on a crash.
+	sprayReservation := *state
 
 	// Prune IPs that the firewall engine no longer has blocked.
 	// The engine handles expiry natively via nftables timeouts -
@@ -293,6 +306,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	if state.HourKey != currentHour {
 		state.HourKey = currentHour
 		state.BlocksThisHour = 0
+		state.LoginSprayBlocksThisHour = 0
 	}
 
 	// Collect IPs to block from findings
@@ -345,7 +359,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 			work.completePending(p)
 		}
 	}
-	state.Pending = deferredPending
+	state.Pending = nil
 
 	// Subnet fast-path: checks that represent a subnet directly.
 	// Independent of the per-IP rate limit, because a single subnet block
@@ -402,6 +416,12 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		})
 	}
 
+	// A durable retry must replay its stored request unchanged. Without
+	// durable actions an action ID names no stored request.
+	durableActions := false
+	if durable, ok := blocker.(durableActionBlocker); ok {
+		durableActions = durable.DurableActionsEnabled()
+	}
 	for _, f := range findings {
 		work.progress()
 		if f.AutoIPResponseEvaluated || !blockableFinding(f, cfg.AutoResponse.BlockCpanelLogins) {
@@ -437,18 +457,24 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 
 		// A drained pending entry keeps its QueuedAt when the same IP
 		// recurs in fresh findings; the check, severity and reason are refreshed.
+		// The longest asked length survives the refresh. The block stays a
+		// spray block only while every finding for the IP asks for one: any
+		// other finding gives it block_expiry, the scan budget and a place
+		// in netblock counts.
 		findingID := alert.FindingID(f)
 		if existing, ok := ipsToBlock[ip]; ok {
-			if existing.ActionID == "" {
+			if existing.ActionID == "" || !durableActions {
 				existing.Reason = f.Message
 				existing.Check = f.Check
 				existing.Severity = f.Severity
 				existing.FindingID = findingID
 				existing.Cause = f.Cause
+				existing.TTL = max(existing.TTL, f.BlockTTL)
+				existing.LoginSpray = existing.LoginSpray && f.BlockTTL > 0
 			}
 			ipsToBlock[ip] = existing
 		} else {
-			p := pendingIP{IP: ip, Reason: f.Message, Check: f.Check, Severity: f.Severity, FindingID: findingID, Cause: f.Cause}
+			p := pendingIP{IP: ip, Reason: f.Message, Check: f.Check, Severity: f.Severity, FindingID: findingID, Cause: f.Cause, TTL: f.BlockTTL, LoginSpray: f.BlockTTL > 0}
 			p.queueCandidate = work.candidate(p, nil)
 			ipsToBlock[ip] = p
 		}
@@ -533,7 +559,8 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		}
 	}
 
-	rateLimited := false
+	scanLimited, sprayLimited := false, false
+	sprayBudgetUnavailable := false
 	droppedPending := 0
 	engineUnavailableRequeued := 0
 	// requeue preserves an IP that could not be blocked this cycle (rate
@@ -541,31 +568,82 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	// stamped on first entry so the drain's age check can retire it; the
 	// bound keeps a sustained flood from growing the queue without limit,
 	// and overflow drops are named so they remain identifiable in logs.
+	// Spray retries hold at most half the queue, so a spray backlog over its
+	// own budget cannot push other retries out.
+	sprayPending, sprayShareDropped := 0, 0
 	requeue := func(p pendingIP) bool {
 		if p.QueuedAt.IsZero() {
 			p.QueuedAt = autoBlockNow()
 		}
-		if len(state.Pending) < maxPendingBlocks {
+		if len(state.Pending) < maxPendingBlocks && (!p.LoginSpray || sprayPending < maxPendingBlocks/2) {
 			state.Pending = append(state.Pending, work.requeueCandidate(p))
+			if p.LoginSpray {
+				sprayPending++
+			}
 			return true
 		}
 		work.rejectCandidate(p.queueCandidate)
-		fmt.Fprintf(os.Stderr, "auto-block: pending queue full, dropping %s\n", p.IP)
+		full := "pending queue"
+		if len(state.Pending) < maxPendingBlocks {
+			full = "mail spray share of the pending queue"
+			sprayShareDropped++
+		}
+		fmt.Fprintf(os.Stderr, "auto-block: %s full, dropping %s\n", full, p.IP)
 		droppedPending++
 		return false
 	}
-	for ip, cand := range ipsToBlock {
+	// Admit all non-spray retries before spray retries, including deferred
+	// redispatches. Otherwise map order can discard non-spray evidence even
+	// while spray occupies less than half the queue.
+	type queuedCandidate struct {
+		pending  pendingIP
+		deferred bool
+	}
+	candidates := make([]queuedCandidate, 0, len(ipsToBlock)+len(deferredPending))
+	for _, spray := range []bool{false, true} {
+		for _, p := range deferredPending {
+			if p.LoginSpray == spray {
+				p.queueCandidate = work.candidate(p, nil)
+				candidates = append(candidates, queuedCandidate{pending: p, deferred: true})
+			}
+		}
+		for _, p := range ipsToBlock {
+			if p.LoginSpray == spray {
+				candidates = append(candidates, queuedCandidate{pending: p})
+			}
+		}
+	}
+	for _, candidate := range candidates {
+		cand := candidate.pending
+		ip := cand.IP
 		work.progress()
 		work.startCandidate(cand.queueCandidate)
+		if candidate.deferred {
+			requeue(cand)
+			continue
+		}
 		durableRetry := false
 		if durable, ok := blocker.(durableActionBlocker); ok {
 			durableRetry = cand.ActionID != "" && durable.DurableActionsEnabled()
 		}
+		// Spray blocks have their own budget of the same size. The durable
+		// store counts only the scan budget.
+		used := &state.BlocksThisHour
+		if cand.LoginSpray {
+			used = &state.LoginSprayBlocksThisHour
+			// Nothing in the store caps a spray block: its retries wait
+			// for the spray budget like a first attempt.
+			durableRetry = false
+		}
 		// Existing requests need recovery even when their admission used the
 		// last slot. The durable store still caps any identity not yet admitted.
-		if budgetUnavailable || (state.BlocksThisHour >= maxPerHour && !durableRetry) {
+		accountingUnavailable := budgetUnavailable || (cand.LoginSpray && sprayBudgetUnavailable)
+		if accountingUnavailable || (*used >= maxPerHour && !durableRetry) {
 			requeue(cand)
-			rateLimited = !budgetUnavailable
+			if !accountingUnavailable {
+				sprayLimited = sprayLimited || cand.LoginSpray
+				scanLimited = scanLimited || !cand.LoginSpray
+			}
 			continue
 		}
 
@@ -582,12 +660,34 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		if cand.ActionID == "" {
 			cand.ActionID = rand.Text()
 		}
+		// A block that mixes in any other finding is a normal block. The
+		// spray verdict's marker still gives the address a spray block if it
+		// fails a login again after this one ends.
 		requestTTL := expiry
+		if cand.LoginSpray && cand.TTL > 0 {
+			requestTTL = cand.TTL
+		}
 		if durable, ok := blocker.(durableActionBlocker); ok && durable.DurableActionsEnabled() {
 			if cand.ActionTTL == 0 {
-				cand.ActionTTL = expiry
+				cand.ActionTTL = requestTTL
 			}
 			requestTTL = cand.ActionTTL
+		}
+		if cand.LoginSpray {
+			// Charge before the kernel call: an uncertain result or a crash
+			// after mutation must not leave the next cycle with fresh credit.
+			sprayReservation.HourKey = state.HourKey
+			sprayReservation.BlocksThisHour = state.BlocksThisHour
+			sprayReservation.LoginSprayBlocksThisHour = *used + 1
+			if err := persistAutoBlockState(cfg.StatePath, &sprayReservation); err != nil {
+				work.observe(err)
+				work.candidateOutcome(cand.queueCandidate, err)
+				sprayBudgetUnavailable = true
+				requeue(cand)
+				actions = append(actions, alert.Finding{Severity: alert.Warning, Check: "auto_block", Message: "Block accounting unavailable; mail spray blocks deferred", Details: err.Error(), Timestamp: time.Now()})
+				continue
+			}
+			*used++
 		}
 		res, err := applyBlockLocked(cfg, blocker, state, ApplyBlockRequest{
 			ActionID:     cand.ActionID,
@@ -597,7 +697,14 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 			TTL:          requestTTL,
 			Source:       BlockSourceScan,
 			FindingID:    cand.FindingID,
+			LoginSpray:   cand.LoginSpray,
 		}, work.progress, func(err error) { work.candidateOutcome(cand.queueCandidate, err) })
+		// Release only proven non-blocks. Unknown effects retain their slot
+		// even when later recovery returns a successful no-op for that ID.
+		if cand.LoginSpray && ((err == nil && res.Outcome != firewall.BlockOutcomeLive) ||
+			errors.Is(err, firewall.ErrActionFailed) || errors.Is(err, firewall.ErrIPProtected) || errors.Is(err, firewall.ErrActionDryRun)) {
+			*used--
+		}
 		verifiedAuditPending := res.Outcome == firewall.BlockOutcomeLive && errors.Is(err, firewall.ErrActionAuditPending)
 		if verifiedAuditPending {
 			fmt.Fprintf(os.Stderr, "auto-block: %s verified with audit delivery pending: %v\n", ip, err)
@@ -634,24 +741,47 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		if blocker.IsBlocked(ip) {
 			fmt.Fprintf(os.Stderr, "[%s] AUTO-BLOCK: %s blocked (expires in %s)\n", time.Now().Format("2006-01-02 15:04:05"), ip, requestTTL)
 		}
-		state.BlocksThisHour++
+		if !cand.LoginSpray {
+			*used++
+		}
 		work.finishCandidate(cand.queueCandidate)
 	}
 	if engineUnavailableRequeued > 0 {
 		fmt.Fprintf(os.Stderr, "auto-block: firewall engine not available, requeued %d IPs\n", engineUnavailableRequeued)
 	}
 
+	// One warning an hour covers both budgets; a budget that fills after it
+	// is named in the next hour's warning.
+	rateLimited := scanLimited || sprayLimited
 	warnRateLimit := rateLimited && state.RateLimitWarnedHour != currentHour
 	warnPendingDrop := droppedPending > 0 && state.PendingDropWarnedHour != currentHour
 	if warnRateLimit || warnPendingDrop {
+		dropped := "queue full"
+		switch {
+		case sprayShareDropped == droppedPending:
+			dropped = "mail spray share of the queue full"
+		case sprayShareDropped > 0:
+			dropped = "queue or mail spray share full"
+		}
 		var msg string
 		if rateLimited {
-			msg = fmt.Sprintf("Auto-block rate limit reached (%d/hour), %d IPs queued for next cycle", maxPerHour, len(state.Pending))
+			limit := fmt.Sprintf("rate limit reached (%d/hour)", maxPerHour)
+			switch {
+			case scanLimited && sprayLimited:
+				limit = fmt.Sprintf("rate limit and mail login spray budget reached (%d/hour each)", maxPerHour)
+			case sprayLimited:
+				limit = fmt.Sprintf("mail login spray budget reached (%d/hour)", maxPerHour)
+			}
+			msg = fmt.Sprintf("Auto-block %s, %d IPs queued for next cycle", limit, len(state.Pending))
 			if droppedPending > 0 {
-				msg += fmt.Sprintf(", %d dropped (queue full)", droppedPending)
+				msg += fmt.Sprintf(", %d dropped (%s)", droppedPending, dropped)
 			}
 		} else {
-			msg = fmt.Sprintf("Auto-block pending queue full, %d IPs queued for retry, %d dropped", len(state.Pending), droppedPending)
+			full := "pending " + dropped
+			if sprayShareDropped > 0 {
+				full = dropped
+			}
+			msg = fmt.Sprintf("Auto-block %s, %d IPs queued for retry, %d dropped", full, len(state.Pending), droppedPending)
 		}
 		actions = append(actions, alert.Finding{
 			Severity:  alert.Warning,
@@ -670,7 +800,17 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	// Subnet auto-blocking: detect per-family subnet patterns. Runs in
 	// dry-run too so escalations that would fire (from live blocks recorded
 	// before dry-run was enabled) surface as notices.
+	var netblockRows []blockedIP
+	var netblockRowsErr error
 	if cfg.AutoResponse.NetBlock && blocker != nil {
+		work.progress()
+		netblockRows, netblockRowsErr = netblockTrackedRows(blocker, state.IPs, liveBlocked, useLiveBlocked)
+		if netblockRowsErr != nil {
+			work.observe(netblockRowsErr)
+			fmt.Fprintf(os.Stderr, "autoblock: block provenance unavailable, deferring netblock escalation: %v\n", netblockRowsErr)
+		}
+	}
+	if cfg.AutoResponse.NetBlock && blocker != nil && netblockRowsErr == nil {
 		// Load fills the default and validation rejects anything lower, so
 		// this only catches a Config assembled in code.
 		threshold := cfg.AutoResponse.NetBlockThreshold
@@ -693,8 +833,8 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 			fmt.Fprintf(os.Stderr, "autoblock: netblock history unavailable, counting current blocks only: %v\n", historyErr)
 			history = &netblockHistory{IPs: map[string]time.Time{}, Subnets: map[string]time.Time{}}
 		}
-		current := currentlyBlocked(state.IPs, liveBlocked, useLiveBlocked, history, blocker)
-		historyChanged := recordNetblockHistory(history, state.IPs, current, blocker, now, window)
+		current := currentlyBlocked(netblockRows, liveBlocked, useLiveBlocked, history, blocker)
+		historyChanged := recordNetblockHistory(history, netblockRows, current, blocker, now, window)
 		// Direct mail-spray blocks answer the same prior offenders as a
 		// threshold-based block, even when the IP blocks have already ended.
 		for cidr := range answeredSubnets {
@@ -702,12 +842,13 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 			historyChanged = true
 		}
 		subnetCounts := netblockCounts(cfg, history, current, blocker, now, window)
+		// The cause is the newest block that counted; IPv4 spray blocks never do.
 		subnetCauses := make(map[string]blockedIP)
 		subnetBlocked := make(map[string]bool)
-		for _, b := range state.IPs {
+		for _, b := range netblockRows {
 			cidr := subnetEscalationCIDR(b.IP)
 			prior := subnetCauses[cidr]
-			if cidr != "" && b.FindingID != "" && (prior.FindingID == "" || b.BlockedAt.After(prior.BlockedAt) || (b.BlockedAt.Equal(prior.BlockedAt) && b.FindingID > prior.FindingID)) {
+			if cidr != "" && b.FindingID != "" && countsTowardNetblock(b) && (prior.FindingID == "" || b.BlockedAt.After(prior.BlockedAt) || (b.BlockedAt.Equal(prior.BlockedAt) && b.FindingID > prior.FindingID)) {
 				subnetCauses[cidr] = b
 			}
 		}

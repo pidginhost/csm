@@ -79,6 +79,13 @@ type Engine struct {
 	// internal/threatintel.
 	softAllowFn func(ip string) bool
 
+	// operatorReleaseFn, when set, is told of each successful release of an
+	// address (unblock, unban, allow, temporary allow, undo) and of a flush
+	// ("", every address), with its kind, so the daemon can drop that
+	// address's mail spray history. Set by the daemon so this package does
+	// not import it.
+	operatorReleaseFn func(ip string, kind ReleaseKind)
+
 	// shutdownCtx, when set, scopes the lifetime of any in-flight verdict
 	// callback to daemon shutdown. Without it, BlockIPOutcome used
 	// context.Background() and a wedged panel callback kept the
@@ -264,6 +271,9 @@ type BlockedEntry struct {
 	// provenance, where Source is read from the reason text (spec 6).
 	// Admission rows carry ActionID instead. Older builds ignore it.
 	Automatic bool `json:"automatic,omitempty"`
+	// LoginSpray marks an automatic row a mail spray block wrote. These rows
+	// are evicted first at the temporary cap. Older builds ignore it.
+	LoginSpray bool `json:"login_spray,omitempty"`
 }
 
 // AllowedEntry represents an allowed IP with metadata.
@@ -520,6 +530,29 @@ func (e *Engine) SetSoftAllowChecker(fn func(ip string) bool) {
 	e.mu.Lock()
 	e.softAllowFn = fn
 	e.mu.Unlock()
+}
+
+// SetOperatorReleaseHook installs the callback told of each successful
+// release with the canonical address, or "" after a flush, and its kind. It
+// runs with the engine lock released, so it may call back into the engine.
+func (e *Engine) SetOperatorReleaseHook(fn func(ip string, kind ReleaseKind)) {
+	e.mu.Lock()
+	e.operatorReleaseFn = fn
+	e.mu.Unlock()
+}
+
+// released runs the release hook for ip when err is nil. Callers defer it
+// before taking e.mu, so it runs once the lock is released.
+func (e *Engine) released(ip string, kind ReleaseKind, err error) {
+	if err != nil {
+		return
+	}
+	e.mu.Lock()
+	fn := e.operatorReleaseFn
+	e.mu.Unlock()
+	if fn != nil {
+		fn(ip, kind)
+	}
 }
 
 // autoBlockSoftAllowed reports whether an automatic block of ip must be
@@ -2711,6 +2744,7 @@ func (e *Engine) blockIPRequestLocked(ip string, reason string, timeout time.Dur
 	}
 	expiresAt = entry.ExpiresAt
 	entry.Automatic = req.Automatic && !expiresAt.IsZero()
+	entry.LoginSpray = req.LoginSpray && entry.Automatic
 
 	var evictSet *nftables.Set
 	var evictKey []byte
@@ -3233,7 +3267,17 @@ func blockedStatePermTempCounts(state FirewallState, excludeIP string) (perm, te
 }
 
 // UnblockIP removes an IP from the blocked set and state.
-func (e *Engine) UnblockIP(ip string) (resultErr error) {
+func (e *Engine) UnblockIP(ip string) error {
+	return e.unblockIP(ip, ReleaseOperator)
+}
+
+// UnbanIP is UnblockIP for a self-service unban: the release hook is told
+// ReleaseUnban, so the address keeps its failure history.
+func (e *Engine) UnbanIP(ip string) error {
+	return e.unblockIP(ip, ReleaseUnban)
+}
+
+func (e *Engine) unblockIP(ip string, kind ReleaseKind) (resultErr error) {
 	defer func() { e.legacyFirewallFailure("unblock", ip, "", "", 0, resultErr) }()
 
 	canonical, err := canonicalFirewallIP(ip)
@@ -3241,6 +3285,7 @@ func (e *Engine) UnblockIP(ip string) (resultErr error) {
 		return err
 	}
 	ip = canonical
+	defer func() { e.released(ip, kind, resultErr) }()
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -3600,6 +3645,7 @@ func (e *Engine) allowIP(ip string, reason string, timeout time.Duration, action
 		return err
 	}
 	ip = canonical
+	defer func() { e.released(ip, ReleaseOperator, resultErr) }()
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -3905,6 +3951,7 @@ func (e *Engine) RemoveAllowIPPort(ip string, port int, proto string) (resultErr
 // FlushBlocked removes all IPs from the blocked set and clears persisted state.
 func (e *Engine) FlushBlocked() (resultErr error) {
 	defer func() { e.legacyFirewallFailure("flush", "", "", "", 0, resultErr) }()
+	defer func() { e.released("", ReleaseOperator, resultErr) }()
 
 	e.mu.Lock()
 	defer e.mu.Unlock()

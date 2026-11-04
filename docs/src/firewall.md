@@ -18,6 +18,7 @@ CSM includes a native nftables firewall engine that replaces LFD and fail2ban. I
 - **Auto-response dry-run** - safety default that forecasts eligible IP blocks and retains bounded examples without applying them
 - **Verdict callback** - optional advisory hook to the panel before each auto-block (allow / block / attach metadata)
 - **cphulk integration** - unblock flushes cphulk too
+- **Mail spray history** - unblock, allow, undoing a block and flush also clear the released addresses' mail login spray history and failure counts
 - **Audit trail** - JSONL log with 10MB rotation
 - **State persistence** with atomic writes
 
@@ -26,6 +27,11 @@ CSM includes a native nftables firewall engine that replaces LFD and fail2ban. I
 The durable firewall action service is implemented and tested through engine injection. Production activation, reader cutover, migration, restore, downgrade and operator recovery interfaces remain open.
 
 Firewall actions record the actor, source, linked finding or incident, and complete before and after state before changing the kernel. Pending intent is separate from committed state. Recovery verifies target identity and expiry before recording an outcome; it does not blindly replay a mutation. Repeated request IDs reuse the original action and admission accounting. Audit delivery retries use the same action ID. Typed undo checks that the affected targets still match the recorded result.
+
+Mail login spray blocks keep their eviction priority through restart, durable
+batches, and undo. Undo restores the original expiry. An operator replacement
+does not inherit the spray classification. Undoing an unblock restores the
+block, not the spray history the unblock cleared.
 
 Proven outcomes are retained for undo and review, bounded two ways. The
 retention sweep drops delivered outcomes older than the findings-history

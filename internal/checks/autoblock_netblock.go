@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"time"
@@ -90,6 +91,49 @@ func netblockWindow(cfg *config.Config) time.Duration {
 	return parseExpiryWithDefault(cfg.AutoResponse.NetBlockWindow, config.DefaultNetBlockWindow)
 }
 
+// netblockTrackedRows uses committed firewall tags even if the scan tracker
+// was lost or an operator replaced a block between scans. It does not rebuild
+// the tracker or its counters: these rows are only escalation evidence.
+func netblockTrackedRows(blocker IPBlocker, tracked []blockedIP, live firewall.LiveBlockedSnapshot, useLive bool) ([]blockedIP, error) {
+	lister, ok := blocker.(interface {
+		BlockedEntries() ([]firewall.BlockedEntry, error)
+	})
+	if !ok {
+		return tracked, nil
+	}
+	entries, err := lister.BlockedEntries()
+	if err != nil {
+		return nil, err
+	}
+	byIP := make(map[string]firewall.BlockedEntry, len(entries))
+	for _, entry := range entries {
+		byIP[entry.IP] = entry
+	}
+	rows := make([]blockedIP, 0, len(tracked)+len(entries))
+	seen := make(map[string]bool, len(tracked))
+	for _, row := range tracked {
+		row.IP = normalizeBlockIP(row.IP)
+		if entry, found := byIP[row.IP]; found {
+			if row.LoginSpray != entry.LoginSpray {
+				// A replacement block cannot inherit the old spray finding.
+				row.FindingID = ""
+				row.BlockedAt, row.ExpiresAt = entry.BlockedAt, entry.ExpiresAt
+			}
+			row.LoginSpray = entry.LoginSpray
+		}
+		rows = append(rows, row)
+		seen[row.IP] = true
+	}
+	for _, entry := range entries {
+		// Untagged, untracked blocks retain their first-observed history.
+		// Saved metadata cannot revive a block absent from the kernel.
+		if entry.LoginSpray && !seen[entry.IP] && blockedLiveOrCached(blocker, live, useLive, entry.IP) {
+			rows = append(rows, blockedIP{IP: entry.IP, BlockedAt: entry.BlockedAt, ExpiresAt: entry.ExpiresAt, LoginSpray: entry.LoginSpray})
+		}
+	}
+	return rows, nil
+}
+
 // recordNetblockHistory notes every address blocked right now: tracker
 // entries with their block times, and addresses only the live kernel set
 // knows (operator and permanent blocks), stamped when first seen. It reports
@@ -168,24 +212,40 @@ func recordNetblockHistory(h *netblockHistory, tracked []blockedIP, current map[
 	return changed
 }
 
+// countsTowardNetblock reports whether a block is subnet escalation evidence.
+// IPv4 mail spray blocks stay out of /24 escalation. An IPv6 /64 is one
+// actor, so its spray blocks count like any other block.
+func countsTowardNetblock(b blockedIP) bool {
+	return !b.LoginSpray || net.ParseIP(b.IP).To4() == nil
+}
+
 // currentlyBlocked is every address blocked right now, from the tracker and
-// from the live kernel set when the engine can list it.
+// from the live kernel set when the engine can list it. An address only an
+// IPv4 mail spray block holds is left out: such blocks neither enter the
+// history nor count, while history the address earned before still counts.
 func currentlyBlocked(tracked []blockedIP, live firewall.LiveBlockedSnapshot, useLive bool, h *netblockHistory, blocker IPBlocker) map[string]bool {
 	current := make(map[string]bool, len(tracked)+len(live.V4)+len(live.V6))
+	sprayed := make(map[string]bool)
 	for _, b := range tracked {
-		current[b.IP] = true
+		if !countsTowardNetblock(b) {
+			sprayed[b.IP] = true
+		} else {
+			current[b.IP] = true
+		}
 	}
 	if useLive {
 		for _, set := range []map[string]struct{}{live.V4, live.V6} {
 			for ip := range set {
-				current[ip] = true
+				if !sprayed[ip] {
+					current[ip] = true
+				}
 			}
 		}
 	}
 	// A missing family snapshot is unknown, not evidence that an operator's
 	// permanent block ended. Use the same cached fallback as tracker reconciliation.
 	for ip := range h.IPs {
-		if current[ip] {
+		if current[ip] || sprayed[ip] {
 			continue
 		}
 		if _, known := live.Contains(ip); useLive && known {

@@ -218,6 +218,7 @@ thresholds:
   mail_spray_window_min: 10080
   mail_spray_breadth_mailboxes: 2
   mail_spray_missing_networks: 3
+  mail_spray_block_expiry: "720h"
   # ModSecurity escalation. Defaults of 3 hits / 10m miss low-and-slow
   # scanners that spread denies across hours. Raising the window to 4h
   # while keeping hits at 3 catches paced attackers without triggering

@@ -616,6 +616,11 @@ func Validate(cfg *Config) []ValidationResult {
 	if t.MailSprayMissingNetworks != 0 && (t.MailSprayMissingNetworks < 1 || t.MailSprayMissingNetworks > 50) {
 		results = append(results, ValidationResult{"error", "thresholds.mail_spray_missing_networks", "mail_spray_missing_networks must be 0 (disabled) or between 1 and 50"})
 	}
+	if t.MailSprayBlockExpiry != "" {
+		if d, err := time.ParseDuration(t.MailSprayBlockExpiry); err != nil || d < 24*time.Hour || d > 2160*time.Hour {
+			results = append(results, ValidationResult{"error", "thresholds.mail_spray_block_expiry", fmt.Sprintf("mail_spray_block_expiry must be a duration between 24h and 2160h, got %q", t.MailSprayBlockExpiry)})
+		}
+	}
 	if field, err := validateMailBruteAccountKeyField(cfg); err != nil {
 		results = append(results, ValidationResult{"error", field, err.Error()})
 	}

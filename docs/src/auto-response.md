@@ -24,6 +24,14 @@ After resolving the credential abuse, copy the release commands from the action 
 
 Subnet history is pruned hourly and saved only when it changes. If the file cannot be read it is left untouched and escalation counts only the addresses blocked right now until it is repaired or removed; status and doctor report the failure. Clear, whitelist and flush actions report history cleanup failures so operators can retry them.
 
+Mail login spray blocks of IPv4 addresses do not contribute to /24
+escalation. IPv6 spray blocks count toward their /64 like any other block,
+since one /64 is treated as one source. The classification comes from
+committed firewall state, so a missing or stale scan tracker does not turn
+IPv4 spray blocks into range evidence. Saved spray blocks absent from the
+kernel do not count as active blocks. If block metadata cannot be read,
+subnet escalation waits while individual block attempts continue.
+
 ### Process termination
 
 CSM opens a kernel process handle before verifying ownership, executable, start
@@ -379,6 +387,33 @@ auto-blocking. A separate blockable finding can still block the same source.
 `mail_bruteforce_suspected` also reports SMTP, IMAP and POP password sprays
 while spray detection runs in observe mode.
 
+In enforce mode a spray block lasts `thresholds.mail_spray_block_expiry` (30
+days by default) instead of `block_expiry`; an address already blocked keeps
+its current expiry. A block that mixes a spray finding with another finding
+for the address, such as a WAF or per-IP brute force finding, is a normal
+block: it lasts `block_expiry` and uses the scan budget. When the temporary
+block limit is full, the spray block that ends soonest is evicted first. A
+blocked address is remembered until one spray memory window after its block
+ends. One failed login from it in that time, on any mailbox, blocks it again
+for the spray length. That includes a failure logged just before an
+authentication outage is detected. On a shared IPv6 /64, an address blocked
+on the /64's shared evidence keeps its own re-block until it is released too.
+An operator unblock, or an undo that removes a block, clears the address's
+spray history: its re-block and the failure history of the address, or for
+IPv6 of its /64. An allow or temporary allow clears it even when the address
+holds no block, and so does the allow CSM adds for an address that a
+`dyndns_hosts` or `infra_ips` hostname resolves to. Its SMTP, IMAP and POP
+failure counts restart across all address spellings. Login trust and
+cracked-password records stay. Pending SMTP rejections are discarded so
+delayed replies cannot restore old spray evidence. A self-service unban
+through the panel API with an unban-scope token lifts the block and its
+re-block but keeps the failure history and counts, so renewed spraying is
+blocked again on the usual rules. An admin token or browser session on that
+route performs a full operator release. Failed firewall releases return an
+error without clearing threat state. A flush clears the spray history,
+per-address failure counts and pending rejections of every address.
+Authentication outage guards remain active after a release or flush.
+
 Every auto-response block source - scan findings, challenge-timeout
 escalations, central-intel corroborated blocks, and incident spray
 containment - records the same evidence: a temporary threat-DB row, a
@@ -392,6 +427,17 @@ these switches keep the incident visible without a failed-block warning.
 Challenge, central, and incident blocks are not limited by
 `auto_response.max_blocks_per_hour`; that budget applies to scan-driven
 blocks only.
+
+Mail login spray blocks use a separate hourly budget of the same size. They
+reserve credit before the firewall attempt. An uncertain result keeps that
+credit; a confirmed non-block releases it. Retries wait when the spray budget
+is full, while other scan blocks keep their own budget. Waiting spray retries
+hold at most half of the retry queue and yield space to other retries when
+the queue fills. Deferred retries follow the same limits. One warning an
+hour names the budgets that are full when it is sent, and says when retries
+were dropped because the spray share of the queue was full. A failed spray
+reservation defers spray blocks and reports a warning, without stopping other
+scan blocks.
 
 The same setting also sets the hourly ceiling of the admission ledger, which
 will cover every automatic source once responses are admitted through it. For

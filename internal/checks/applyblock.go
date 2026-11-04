@@ -36,6 +36,9 @@ type ApplyBlockRequest struct {
 	Reason       string
 	TTL          time.Duration
 	Source       string
+	// LoginSpray marks a mail spray scan block. It does not charge the
+	// durable scan budget; the scan loop counts it on its own budget.
+	LoginSpray bool
 	// Root is the admission evidence the block answers again, carried by
 	// the derived path that applies it; Entry is that path's entry. The
 	// zero root means the path kept none.
@@ -105,11 +108,16 @@ func ApplyBlock(cfg *config.Config, req ApplyBlockRequest) (ApplyBlockResult, er
 	return res, err
 }
 
+// requestBlocker takes a full firewall request.
+type requestBlocker interface {
+	BlockIPRequest(firewall.ActionRequest, *firewall.ScanAdmission) (firewall.BlockOutcome, error)
+}
+
 // durableActionBlocker supplies atomic admission when the engine owns durable
 // action state. The existing scan policy is passed to that transaction.
 type durableActionBlocker interface {
 	DurableActionsEnabled() bool
-	BlockIPRequest(firewall.ActionRequest, *firewall.ScanAdmission) (firewall.BlockOutcome, error)
+	requestBlocker
 }
 
 // applyBlockLocked performs one block attempt plus the evidence bookkeeping
@@ -125,7 +133,7 @@ func applyBlockLocked(cfg *config.Config, blocker IPBlocker, state *blockState, 
 	if durable, ok := blocker.(durableActionBlocker); ok && durable.DurableActionsEnabled() {
 		durableOutcome = true
 		var admission *firewall.ScanAdmission
-		if req.Source == BlockSourceScan {
+		if req.Source == BlockSourceScan && !req.LoginSpray {
 			limit := cfg.AutoResponse.MaxBlocksPerHour
 			if limit <= 0 {
 				limit = config.DefaultMaxBlocksPerHour
@@ -135,7 +143,15 @@ func applyBlockLocked(cfg *config.Config, blocker IPBlocker, state *blockState, 
 		outcome, err = durable.BlockIPRequest(firewall.ActionRequest{
 			ID: req.ActionID, Operation: "block", Target: req.IP, Reason: req.EngineReason,
 			Source: req.Source, FindingID: req.FindingID, TTL: req.TTL, Actor: "daemon", Automatic: true,
+			LoginSpray: req.LoginSpray,
 		}, admission)
+	} else if rb, ok := blocker.(requestBlocker); ok && req.LoginSpray {
+		// The request BlockIPOutcomeWithFindingID sends, plus the flag the
+		// engine needs to tag the row.
+		outcome, err = rb.BlockIPRequest(firewall.ActionRequest{
+			Operation: "block", Target: req.IP, Reason: req.EngineReason, TTL: req.TTL,
+			FindingID: req.FindingID, Automatic: true, Actor: "daemon", LoginSpray: true,
+		}, nil)
 	} else {
 		outcome, err = callBlockIP(blocker, req.IP, req.EngineReason, req.TTL, req.FindingID)
 	}
@@ -182,11 +198,12 @@ func applyBlockLocked(cfg *config.Config, blocker IPBlocker, state *blockState, 
 	}
 
 	state.IPs = append(state.IPs, blockedIP{
-		IP:        req.IP,
-		FindingID: req.FindingID,
-		Reason:    req.Reason,
-		BlockedAt: time.Now(),
-		ExpiresAt: time.Now().Add(req.TTL),
+		IP:         req.IP,
+		FindingID:  req.FindingID,
+		Reason:     req.Reason,
+		BlockedAt:  time.Now(),
+		ExpiresAt:  time.Now().Add(req.TTL),
+		LoginSpray: req.LoginSpray,
 	})
 
 	details := fmt.Sprintf("Reason: %s", req.Reason)

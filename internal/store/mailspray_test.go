@@ -1,6 +1,7 @@
 package store
 
 import (
+	"maps"
 	"reflect"
 	"strings"
 	"testing"
@@ -19,14 +20,15 @@ func testMailSprayState() MailSprayState {
 					"a@example.com": {First: at(0), Last: at(90), Count: 3, Exist: 2},
 					"":              {First: at(5), Last: at(5), Count: 1},
 				},
-				WeakAlerted:   map[string]time.Time{"b@example.com": at(30)},
-				Revoked:       map[string]time.Time{"e@example.com": at(35)},
-				Sources:       map[string]MailSpraySource{"198.51.100.7": {SuppressedUntil: at(150), CompromiseUntil: at(160)}},
-				Untracked:     at(40),
-				VerdictAt:     at(90),
-				ObservedAt:    at(91),
-				ObservedNames: 2,
-				LastSeen:      at(95),
+				WeakAlerted:     map[string]time.Time{"b@example.com": at(30)},
+				Revoked:         map[string]time.Time{"e@example.com": at(35)},
+				Sources:         map[string]MailSpraySource{"198.51.100.7": {SuppressedUntil: at(150), CompromiseUntil: at(160)}},
+				Untracked:       at(40),
+				RevokedOverflow: at(45),
+				VerdictAt:       at(90),
+				ObservedAt:      at(91),
+				ObservedNames:   2,
+				LastSeen:        at(95),
 			},
 			"2001:db8::7": {LastSeen: at(1)},
 		},
@@ -37,6 +39,7 @@ func testMailSprayState() MailSprayState {
 		Networks: map[string]map[string]time.Time{
 			"nobody@example.com": {"198.51.0.0/16": at(7), "2001:db8::/32": at(8)},
 		},
+		Blocked: map[string]time.Time{"198.51.100.7": at(43200), "2001:db8::7": at(100)},
 	}
 }
 
@@ -47,7 +50,7 @@ func TestMailSprayRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadMailSpray before save: %v", err)
 	}
-	if len(empty.IPs) != 0 || len(empty.Trust) != 0 || len(empty.Networks) != 0 {
+	if len(empty.IPs) != 0 || len(empty.Trust) != 0 || len(empty.Networks) != 0 || len(empty.Blocked) != 0 {
 		t.Fatalf("LoadMailSpray before save = %+v, want empty", empty)
 	}
 
@@ -91,7 +94,7 @@ func TestMailSprayReplaceDropsOld(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadMailSpray: %v", err)
 	}
-	if len(got.IPs) != 1 || !got.IPs["192.0.2.1"].LastSeen.Equal(seen) || len(got.Trust) != 0 || len(got.Networks) != 0 {
+	if len(got.IPs) != 1 || !got.IPs["192.0.2.1"].LastSeen.Equal(seen) || len(got.Trust) != 0 || len(got.Networks) != 0 || len(got.Blocked) != 0 {
 		t.Fatalf("after replacement loaded %+v, want only 192.0.2.1", got)
 	}
 
@@ -116,6 +119,8 @@ func TestMailSprayCorruptEntrySkipped(t *testing.T) {
 			"ip:198.51.100.9":    "{not json",
 			"trust:192.0.2.9":    `{"x@example.com":"later"}`,
 			"name:x@example.com": "[1]",
+			"blk:192.0.2.9":      "{}",
+			"blk:":               `"2026-10-30T08:15:00Z"`,
 			"other:192.0.2.9":    "{}",
 			"ip:":                "{}",
 		} {
@@ -165,12 +170,16 @@ func TestMailSprayApplyDeltaTouchesOnlyItsKeys(t *testing.T) {
 		Put: MailSprayState{
 			IPs:      map[string]MailSprayIP{"192.0.2.1": {LastSeen: seen}},
 			Networks: map[string]map[string]time.Time{"new@example.com": {"192.0.0.0/16": seen}},
+			Blocked:  map[string]time.Time{"192.0.2.1": seen},
 		},
-		DeleteIPs:   []string{"2001:db8::7", ""},
-		DeleteTrust: []string{"203.0.113.9"},
-		DeleteNames: []string{"nobody@example.com"},
+		DeleteIPs:     []string{"2001:db8::7", ""},
+		DeleteTrust:   []string{"203.0.113.9"},
+		DeleteNames:   []string{"nobody@example.com"},
+		DeleteBlocked: []string{"2001:db8::7", ""},
 	}
-	if delta.Empty() || !(MailSprayDelta{}).Empty() {
+	if delta.Empty() || !(MailSprayDelta{}).Empty() ||
+		(MailSprayDelta{DeleteBlocked: []string{"192.0.2.1"}}).Empty() ||
+		(MailSprayDelta{Put: MailSprayState{Blocked: map[string]time.Time{"192.0.2.1": seen}}}).Empty() {
 		t.Fatalf("Empty() wrong")
 	}
 	if err := db.ApplyMailSprayDelta(delta); err != nil {
@@ -181,6 +190,7 @@ func TestMailSprayApplyDeltaTouchesOnlyItsKeys(t *testing.T) {
 	want.IPs = map[string]MailSprayIP{"198.51.100.7": base.IPs["198.51.100.7"], "192.0.2.1": {LastSeen: seen}}
 	want.Trust = map[string]map[string]GoodSourcePair{"198.51.100.7": base.Trust["198.51.100.7"]}
 	want.Networks = map[string]map[string]time.Time{"new@example.com": {"192.0.0.0/16": seen}}
+	want.Blocked = map[string]time.Time{"198.51.100.7": base.Blocked["198.51.100.7"], "192.0.2.1": seen}
 	got, err := loadTestMailSpray(db)
 	if err != nil {
 		t.Fatalf("LoadMailSpray: %v", err)
@@ -228,17 +238,13 @@ func loadTestMailSpray(db *DB) (MailSprayState, error) {
 		IPs:      make(map[string]MailSprayIP),
 		Trust:    make(map[string]map[string]GoodSourcePair),
 		Networks: make(map[string]map[string]time.Time),
+		Blocked:  make(map[string]time.Time),
 	}
 	err := db.LoadMailSpray(1<<20, func(part MailSprayState) {
-		for k, v := range part.IPs {
-			st.IPs[k] = v
-		}
-		for k, v := range part.Trust {
-			st.Trust[k] = v
-		}
-		for k, v := range part.Networks {
-			st.Networks[k] = v
-		}
+		maps.Copy(st.IPs, part.IPs)
+		maps.Copy(st.Trust, part.Trust)
+		maps.Copy(st.Networks, part.Networks)
+		maps.Copy(st.Blocked, part.Blocked)
 	})
 	return st, err
 }
@@ -250,7 +256,7 @@ func TestMailSprayLoadVisitsTrustBeforeEvidence(t *testing.T) {
 	}
 	var order []string
 	if err := db.LoadMailSpray(1<<20, func(part MailSprayState) {
-		if len(part.Trust)+len(part.IPs)+len(part.Networks) != 1 {
+		if len(part.Trust)+len(part.IPs)+len(part.Networks)+len(part.Blocked) != 1 {
 			t.Fatal("load buffered multiple entries")
 		}
 		switch {
@@ -260,11 +266,13 @@ func TestMailSprayLoadVisitsTrustBeforeEvidence(t *testing.T) {
 			order = append(order, "evidence")
 		case len(part.Networks) == 1:
 			order = append(order, "corroboration")
+		case len(part.Blocked) == 1:
+			order = append(order, "marker")
 		}
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"trust", "trust", "evidence", "evidence", "corroboration"}; !reflect.DeepEqual(order, want) {
+	if want := []string{"trust", "trust", "evidence", "evidence", "corroboration", "marker", "marker"}; !reflect.DeepEqual(order, want) {
 		t.Fatalf("visit order = %v, want %v", order, want)
 	}
 }

@@ -1254,6 +1254,12 @@ func TestValidate_MailBruteForceRanges(t *testing.T) {
 		{"spray_networks=1 accepted", func(c *Config) { c.Thresholds.MailSprayMissingNetworks = 1 }, "thresholds.mail_spray_missing_networks", false},
 		{"spray_networks=50 accepted", func(c *Config) { c.Thresholds.MailSprayMissingNetworks = 50 }, "thresholds.mail_spray_missing_networks", false},
 		{"spray_networks=51 rejected", func(c *Config) { c.Thresholds.MailSprayMissingNetworks = 51 }, "thresholds.mail_spray_missing_networks", true},
+		{"spray_block_expiry=unset accepted", func(c *Config) { c.Thresholds.MailSprayBlockExpiry = "" }, "thresholds.mail_spray_block_expiry", false},
+		{"spray_block_expiry=23h rejected", func(c *Config) { c.Thresholds.MailSprayBlockExpiry = "23h" }, "thresholds.mail_spray_block_expiry", true},
+		{"spray_block_expiry=24h accepted", func(c *Config) { c.Thresholds.MailSprayBlockExpiry = "24h" }, "thresholds.mail_spray_block_expiry", false},
+		{"spray_block_expiry=2160h accepted", func(c *Config) { c.Thresholds.MailSprayBlockExpiry = "2160h" }, "thresholds.mail_spray_block_expiry", false},
+		{"spray_block_expiry=2161h rejected", func(c *Config) { c.Thresholds.MailSprayBlockExpiry = "2161h" }, "thresholds.mail_spray_block_expiry", true},
+		{"spray_block_expiry=abc rejected", func(c *Config) { c.Thresholds.MailSprayBlockExpiry = "abc" }, "thresholds.mail_spray_block_expiry", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

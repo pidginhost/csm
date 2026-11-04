@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"fmt"
 	"maps"
 	"reflect"
 	"strconv"
@@ -238,20 +239,24 @@ func TestMailSprayOneBlockPerSource(t *testing.T) {
 		name         string
 		lines        []string
 		wantA, wantB int
+		ttl          time.Duration // the kept block's length; 0 is the global one
 	}{
 		// The fifth failure crosses the per-IP bar and the second
-		// mailbox the breadth bar in one call.
-		{"same failure", []string{attempts("4", "a@example.com"), attempts("1", "b@example.com")}, 4, 1},
+		// mailbox the breadth bar in one call: the spray block wins.
+		{"same failure", []string{attempts("4", "a@example.com"), attempts("1", "b@example.com")}, 4, 1, 720 * time.Hour},
 		// Spray fires on the first attempt of the line, the per-IP bar
 		// on its fourth.
-		{"spray first in one line", []string{attempts("1", "a@example.com"), attempts("5", "b@example.com")}, 1, 5},
-		{"per-IP first, spray on a later line", []string{attempts("5", "a@example.com"), attempts("1", "b@example.com")}, 5, 1},
+		{"spray first in one line", []string{attempts("1", "a@example.com"), attempts("5", "b@example.com")}, 1, 5, 720 * time.Hour},
+		{"per-IP first, spray on a later line", []string{attempts("5", "a@example.com"), attempts("1", "b@example.com")}, 5, 1, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			d, clock := newPairingDaemon(t, sprayTestConfig("enforce"))
 			got := feed(d, clock, tc.lines...)
 			if n := countChecks(got, "mail_bruteforce"); n != 1 {
 				t.Fatalf("mail_bruteforce findings = %d, want 1: %+v", n, got)
+			}
+			if f, _ := findingByCheck(got, "mail_bruteforce"); f.BlockTTL != tc.ttl {
+				t.Fatalf("mail_bruteforce BlockTTL = %v, want %v", f.BlockTTL, tc.ttl)
 			}
 			if ev := sprayEvidence(d, ip); len(ev) != 2 || ev["a@example.com"].count != tc.wantA || ev["b@example.com"].count != tc.wantB {
 				t.Fatalf("spray evidence = %+v, want every attempt on both mailboxes", ev)
@@ -261,20 +266,41 @@ func TestMailSprayOneBlockPerSource(t *testing.T) {
 }
 
 // A login that trips both the short-window compromise rule and the spray
-// rule raises one mail_account_compromised, the stronger of the two.
+// rule raises one mail_account_compromised, the stronger of the two. At equal
+// severity the spray finding wins when it carries its own block length.
 func TestMailSprayOneCompromisePerLogin(t *testing.T) {
 	const ip = "203.0.113.159"
-	d, clock := newPairingDaemon(t, sprayTestConfig("enforce"))
-	feed(d, clock,
-		makeDovecotFailLine("imap", ip, "a@example.com"),
-		makeDovecotFailLine("imap", ip, "a@example.com"),
-		makeDovecotFailLine("imap", ip, "b@example.com"))
-	got := feed(d, clock, makeDovecotSuccessLine("imap", ip, "a@example.com"))
-	if n := countChecks(got, "mail_account_compromised"); n != 1 {
-		t.Fatalf("compromise findings = %d, want 1: %+v", n, got)
-	}
-	if f, _ := findingByCheck(got, "mail_account_compromised"); f.Severity != alert.Critical || f.Mailbox != "a@example.com" {
-		t.Fatalf("finding = %+v", f)
+	for _, tc := range []struct {
+		name string
+		ttl  time.Duration
+	}{
+		// b@ is no corroborated missing mailbox: a weak spray advisory.
+		{"weak spray", 0},
+		// ghost@ is missing and three networks tried it: a spray block.
+		{"spray block", 720 * time.Hour},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d, clock := newPairingDaemon(t, sprayTestConfig("enforce"))
+			feed(d, clock,
+				makeDovecotFailLine("imap", ip, "a@example.com"),
+				makeDovecotFailLine("imap", ip, "a@example.com"))
+			if tc.ttl > 0 {
+				for _, source := range []string{"192.0.2.159", "198.51.100.159", ip} {
+					feed(d, clock,
+						"dovecot: auth: sql(ghost@example.com,"+source+"): unknown user",
+						fmt.Sprintf(postfixFailFmt, source, "ghost@example.com"))
+				}
+			} else {
+				feed(d, clock, makeDovecotFailLine("imap", ip, "b@example.com"))
+			}
+			got := feed(d, clock, makeDovecotSuccessLine("imap", ip, "a@example.com"))
+			if n := countChecks(got, "mail_account_compromised"); n != 1 {
+				t.Fatalf("compromise findings = %d, want 1: %+v", n, got)
+			}
+			if f, _ := findingByCheck(got, "mail_account_compromised"); f.Severity != alert.Critical || f.Mailbox != "a@example.com" || f.BlockTTL != tc.ttl {
+				t.Fatalf("finding = %+v, want Critical on a@example.com with BlockTTL %v", f, tc.ttl)
+			}
+		})
 	}
 }
 

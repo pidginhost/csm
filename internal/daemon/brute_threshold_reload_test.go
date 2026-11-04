@@ -236,6 +236,7 @@ func TestSprayConfigFromThresholds(t *testing.T) {
 	th.MailSprayWindowMin = 120
 	th.MailSprayBreadthMailboxes = 4
 	th.MailSprayMissingNetworks = 5
+	th.MailSprayBlockExpiry = "48h"
 	th.SMTPBruteForceWindowMin = 10
 	th.MailBruteForceWindowMin = 15
 	th.SMTPBruteForceSuppressMin = 90
@@ -250,9 +251,18 @@ func TestSprayConfigFromThresholds(t *testing.T) {
 		TrustAge:         15 * time.Minute, // the longer fast window
 		Suppression:      90 * time.Minute, // the longer suppression
 		MaxIPs:           5000,             // both trackers' caps
+		BlockTTL:         48 * time.Hour,
 	}
 	if got := sprayConfigFromThresholds(cfg); got != want {
 		t.Fatalf("sprayConfigFromThresholds = %+v, want %+v", got, want)
+	}
+
+	// An unset or unparseable block length falls back to the default.
+	for _, expiry := range []string{"720h", "", "bad"} {
+		th.MailSprayBlockExpiry = expiry
+		if got := sprayConfigFromThresholds(cfg).BlockTTL; got != 720*time.Hour {
+			t.Fatalf("BlockTTL for %q = %v, want 720h", expiry, got)
+		}
 	}
 
 	// An unset cap falls back to the validated floor, never to 0.
