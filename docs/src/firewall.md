@@ -407,13 +407,8 @@ CIDR before applying the block.
 
 Inbound IPv4 TCP packets with IP options are dropped in prerouting before
 any of the rules below, infra included, while `drop_ipv4_options` is on.
-
-Linux builds advertise support with `firewall.drop_ipv4_options.v1` in
-`csm capabilities` and `GET /api/v1/capabilities`. This reports support,
-not whether the firewall or the protection is enabled.
-Integrity checks follow the last successfully applied ruleset, including
-firewall restarts and rollbacks.
-
+Hosts that support the key report the `firewall.drop_ipv4_options.v1`
+capability.
 The nftables input chain accepts `infra_ips` first, then drops
 `blocked_ips`, then accepts `allowed_ips`. Because the drop is evaluated
 before the `allowed_ips` accept, an allowlisted IP that lands in
