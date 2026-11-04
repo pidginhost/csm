@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -378,6 +379,55 @@ func TestAutoBlockRateWarningNamesBudget(t *testing.T) {
 				}
 			}
 			if len(warnings) != 1 || warnings[0] != tc.want {
+				t.Fatalf("warnings = %q, want %q", warnings, tc.want)
+			}
+		})
+	}
+}
+
+// Drops caused only by the spray share must not read as a full queue: the
+// queue still has room for other retries.
+func TestAutoBlockDropWarningNamesSprayShare(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		others     int
+		engineDown bool
+		want       string
+	}{
+		{"spray share full", 1, false, ", 1 dropped (mail spray share of the queue full)"},
+		{"queue full", maxPendingBlocks / 2, false, ", 1 dropped (queue full)"},
+		{"spray share full, engine down", 0, true, "Auto-block mail spray share of the queue full, 500 IPs queued for retry, 1 dropped"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := pendingTestConfig(t)
+			cfg.AutoResponse.MaxBlocksPerHour = 1
+			now := time.Now()
+			setAutoBlockNow(t, now)
+			state := &blockState{HourKey: now.Format("2006-01-02T15"), BlocksThisHour: 1, LoginSprayBlocksThisHour: 1}
+			if tc.engineDown {
+				state = &blockState{}
+				oldBlocker := getIPBlocker()
+				SetIPBlocker(nil)
+				t.Cleanup(func() { SetIPBlocker(oldBlocker) })
+			} else {
+				applyBlockTestSetup(t, &outcomeStubBlocker{outcome: firewall.BlockOutcomeLive})
+			}
+			saveBlockState(cfg.StatePath, state)
+			var findings []alert.Finding
+			for i := range maxPendingBlocks/2 + 1 {
+				findings = append(findings, loginSprayFinding(fmt.Sprintf("2001:db8:5::%x", i)))
+			}
+			for i := range tc.others {
+				findings = append(findings, wafFinding(fmt.Sprintf("2001:db8:6::%x", i)))
+			}
+
+			var warnings []string
+			for _, f := range AutoBlockIPs(cfg, findings) {
+				if f.Severity == alert.Warning && f.Check == "auto_block" {
+					warnings = append(warnings, f.Message)
+				}
+			}
+			if len(warnings) != 1 || !strings.Contains(warnings[0], tc.want) {
 				t.Fatalf("warnings = %q, want %q", warnings, tc.want)
 			}
 		})

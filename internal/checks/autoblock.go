@@ -570,7 +570,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	// and overflow drops are named so they remain identifiable in logs.
 	// Spray retries hold at most half the queue, so a spray backlog over its
 	// own budget cannot push other retries out.
-	sprayPending := 0
+	sprayPending, sprayShareDropped := 0, 0
 	requeue := func(p pendingIP) bool {
 		if p.QueuedAt.IsZero() {
 			p.QueuedAt = autoBlockNow()
@@ -586,6 +586,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		full := "pending queue"
 		if len(state.Pending) < maxPendingBlocks {
 			full = "mail spray share of the pending queue"
+			sprayShareDropped++
 		}
 		fmt.Fprintf(os.Stderr, "auto-block: %s full, dropping %s\n", full, p.IP)
 		droppedPending++
@@ -755,6 +756,13 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	warnRateLimit := rateLimited && state.RateLimitWarnedHour != currentHour
 	warnPendingDrop := droppedPending > 0 && state.PendingDropWarnedHour != currentHour
 	if warnRateLimit || warnPendingDrop {
+		dropped := "queue full"
+		switch {
+		case sprayShareDropped == droppedPending:
+			dropped = "mail spray share of the queue full"
+		case sprayShareDropped > 0:
+			dropped = "queue or mail spray share full"
+		}
 		var msg string
 		if rateLimited {
 			limit := fmt.Sprintf("rate limit reached (%d/hour)", maxPerHour)
@@ -766,10 +774,14 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 			}
 			msg = fmt.Sprintf("Auto-block %s, %d IPs queued for next cycle", limit, len(state.Pending))
 			if droppedPending > 0 {
-				msg += fmt.Sprintf(", %d dropped (queue full)", droppedPending)
+				msg += fmt.Sprintf(", %d dropped (%s)", droppedPending, dropped)
 			}
 		} else {
-			msg = fmt.Sprintf("Auto-block pending queue full, %d IPs queued for retry, %d dropped", len(state.Pending), droppedPending)
+			full := "pending " + dropped
+			if sprayShareDropped > 0 {
+				full = dropped
+			}
+			msg = fmt.Sprintf("Auto-block %s, %d IPs queued for retry, %d dropped", full, len(state.Pending), droppedPending)
 		}
 		actions = append(actions, alert.Finding{
 			Severity:  alert.Warning,
