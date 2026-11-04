@@ -1409,3 +1409,22 @@ func TestMailSprayIPv6RevokedMailboxNotCleanViaSibling(t *testing.T) {
 		t.Fatalf("login to a revoked mailbox = (%v, %+v), want (false, nil)", clean, v)
 	}
 }
+
+// A crack drops the cracked mailbox's trust for every address of the /64, so
+// a sibling's trust cannot excuse failures on it. Other mailboxes and other
+// networks keep their trust.
+func TestMailSprayIPv6RevocationDropsTrustAcross64(t *testing.T) {
+	m, clock := newTestSpray(testSprayConfig())
+	const a, b, other = "2001:db8:1:2::a", "2001:db8:1:2::b", "2001:db8:1:3::a"
+	ageTrust(t, m, clock, a, "l@example.com", "o@example.com")
+	ageTrust(t, m, clock, other, "l@example.com")
+	m.RevokeTrust(b, "l@example.com")
+	if m.TrustedAll(a, []string{"l@example.com"}) {
+		t.Fatal("a sibling kept trust on the cracked mailbox")
+	}
+	if !m.TrustedAll(a, []string{"o@example.com"}) || !m.TrustedAll(other, []string{"l@example.com"}) {
+		t.Fatal("the crack dropped unrelated trust")
+	}
+	wantNoVerdict(t, m.Failure(b, "l@example.com", mailboxExists))
+	wantRule(t, m.Failure(b, "x@example.com", mailboxExists), sprayRuleBreadth, true)
+}

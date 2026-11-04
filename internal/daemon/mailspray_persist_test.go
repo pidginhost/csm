@@ -938,6 +938,27 @@ func TestMailSprayLoadRevocationOverridesTrust(t *testing.T) {
 	}
 }
 
+// A saved revocation under a /64 key drops the mailbox's trust for every
+// address of the /64, as the live crack did.
+func TestMailSprayLoadRevocationCovers64(t *testing.T) {
+	m, clock := newTestSpray(testSprayConfig())
+	now := clock.Now()
+	aged := store.GoodSourcePair{First: now.Add(-time.Hour), Last: now}
+	loadSpraySnapshot(t, m, store.MailSprayState{
+		IPs: map[string]store.MailSprayIP{"2001:db8:1:2::/64": {Revoked: map[string]time.Time{"l@example.com": now}, LastSeen: now}},
+		Trust: map[string]map[string]store.GoodSourcePair{
+			"2001:db8:1:2::a": {"l@example.com": aged, "o@example.com": aged},
+			"2001:db8:1:3::a": {"l@example.com": aged},
+		},
+	})
+	if m.TrustedAll("2001:db8:1:2::a", []string{"l@example.com"}) {
+		t.Fatal("saved revocation left trust in the /64")
+	}
+	if !m.TrustedAll("2001:db8:1:2::a", []string{"o@example.com"}) || !m.TrustedAll("2001:db8:1:3::a", []string{"l@example.com"}) {
+		t.Fatal("saved revocation dropped unrelated trust")
+	}
+}
+
 func TestMailSprayFailedDeltaAfterConfigShrinkStaysBounded(t *testing.T) {
 	db := openStoreForTest(t)
 	cfg := testSprayConfig()

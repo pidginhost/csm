@@ -406,20 +406,34 @@ func (m *mailSpray) trustPredatesFailures(e *sprayIP, k sprayTrustKey, key strin
 	return true
 }
 
-// RevokeTrust drops the IP's trust on a normalised mailbox, for a login the
-// caller knows was a guessed password. Remember the crack for the evidence
+// RevokeTrust drops trust on a normalised mailbox for every address of the
+// IP's evidence key, for a login the caller knows was a guessed password. Remember the crack for the evidence
 // window so another login, on either protocol, cannot immediately restore it.
 func (m *mailSpray) RevokeTrust(ip, mailbox string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.dropTrust(sprayTrustKey{ip, mailbox})
+	key := sprayEvidenceKey(ip)
+	m.dropKeyTrust(key, mailbox)
 	if m.cfg.Window <= 0 {
 		return
 	}
 	now := m.now()
-	key := sprayEvidenceKey(ip)
 	m.touch(key, now).noteRevoked(mailbox, now, m.cfg.Window)
 	m.evictIPs(key, now)
+}
+
+// dropKeyTrust drops every address of evidence key's trust on mailbox: a
+// crack must not stay excused through a sibling address of the /64.
+func (m *mailSpray) dropKeyTrust(key, mailbox string) {
+	var ips []string
+	for ip := range m.trustByMailbox[mailbox] {
+		if _, ok := m.trustByKey[key][ip]; ok {
+			ips = append(ips, ip)
+		}
+	}
+	for _, ip := range ips {
+		m.dropTrust(sprayTrustKey{ip, mailbox})
+	}
 }
 
 // ForgetRecentFailures drops the IP's failures since "since": an outage
@@ -776,11 +790,11 @@ func (m *mailSpray) Load(read func(func(store.MailSprayState)) error) error {
 			}
 		}
 		for saved, s := range st.IPs {
-			key, addr := sprayLoadEvidenceKey(saved)
+			key := sprayLoadEvidenceKey(saved)
 			if key == "" {
 				continue
 			}
-			if e := m.loadIP(m.ips[key], key, addr, s, cutoff, now); e != nil {
+			if e := m.loadIP(m.ips[key], key, s, cutoff, now); e != nil {
 				m.ips[key] = e
 				m.evictIPs("", now)
 			}
@@ -841,9 +855,9 @@ func (m *mailSpray) loadTrust(k sprayTrustKey, t sprayTrust) {
 
 // loadIP merges one saved entry into the evidence of key, e (nil when there
 // is none yet), and returns it, or nil when nothing is left in the window, as
-// Purge would drop it. addr is the address the saved key named; a /64 key
-// names none. Damaged times and counts are repaired toward weaker evidence.
-func (m *mailSpray) loadIP(e *sprayIP, key, addr string, s store.MailSprayIP, cutoff, now time.Time) *sprayIP {
+// Purge would drop it. Damaged times and counts are repaired toward weaker
+// evidence.
+func (m *mailSpray) loadIP(e *sprayIP, key string, s store.MailSprayIP, cutoff, now time.Time) *sprayIP {
 	if e == nil {
 		e = &sprayIP{}
 	}
@@ -867,18 +881,14 @@ func (m *mailSpray) loadIP(e *sprayIP, key, addr string, s store.MailSprayIP, cu
 		e.setSource(strings.Clone(ip), src)
 	}
 	// Revoke before choosing failures at the name cap, including revocations
-	// whose names will be represented only by the overflow marker. Live
-	// revocation drops the cracking address's trust; a /64 key does not say
-	// which address that was.
+	// whose names will be represented only by the overflow marker.
 	for mb, at := range s.Revoked {
 		mb = strings.Clone(normalizeSprayMailbox(mb))
 		at = sprayNotAfter(at, now)
 		if mb == "" || at.Before(cutoff) {
 			continue
 		}
-		if addr != "" {
-			m.dropTrust(sprayTrustKey{addr, mb})
-		}
+		m.dropKeyTrust(key, mb)
 		if old := e.revoked[mb]; old.After(at) {
 			at = old
 		}
@@ -965,22 +975,22 @@ func sprayLoadNetwork(key string) string {
 	return key
 }
 
-// sprayLoadEvidenceKey returns the evidence key a saved one belongs to and
-// the address it names, if any. Older state keyed IPv6 evidence by address,
-// which folds into the /64. A key that is neither an address nor a /64
-// sprayEvidenceKey could have made returns "".
-func sprayLoadEvidenceKey(saved string) (key, addr string) {
+// sprayLoadEvidenceKey returns the evidence key a saved one belongs to.
+// Older state keyed IPv6 evidence by address, which folds into the /64. A
+// key that is neither an address nor a /64 sprayEvidenceKey could have made
+// returns "".
+func sprayLoadEvidenceKey(saved string) string {
 	if a, err := netip.ParseAddr(saved); err == nil {
 		if a.Zone() != "" {
-			return "", ""
+			return ""
 		}
-		return sprayEvidenceKey(saved), saved
+		return sprayEvidenceKey(saved)
 	}
 	p, err := netip.ParsePrefix(saved)
 	if err != nil || sprayEvidenceKey(p.Addr().String()) != saved {
-		return "", ""
+		return ""
 	}
-	return saved, ""
+	return saved
 }
 
 func sprayLatest(a, b time.Time) time.Time {
