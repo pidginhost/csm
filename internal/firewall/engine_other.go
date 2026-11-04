@@ -20,6 +20,7 @@ type BlockedEntry struct {
 	ActionID   string    `json:"action_id,omitempty"`
 	Unverified bool      `json:"unverified,omitempty"`
 	Automatic  bool      `json:"automatic,omitempty"`
+	LoginSpray bool      `json:"login_spray,omitempty"`
 }
 
 type AllowedEntry struct {

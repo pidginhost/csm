@@ -264,6 +264,9 @@ type BlockedEntry struct {
 	// provenance, where Source is read from the reason text (spec 6).
 	// Admission rows carry ActionID instead. Older builds ignore it.
 	Automatic bool `json:"automatic,omitempty"`
+	// LoginSpray marks an automatic row a mail spray block wrote. These rows
+	// are evicted first at the temporary cap. Older builds ignore it.
+	LoginSpray bool `json:"login_spray,omitempty"`
 }
 
 // AllowedEntry represents an allowed IP with metadata.
@@ -2711,6 +2714,7 @@ func (e *Engine) blockIPRequestLocked(ip string, reason string, timeout time.Dur
 	}
 	expiresAt = entry.ExpiresAt
 	entry.Automatic = req.Automatic && !expiresAt.IsZero()
+	entry.LoginSpray = req.LoginSpray && entry.Automatic
 
 	var evictSet *nftables.Set
 	var evictKey []byte

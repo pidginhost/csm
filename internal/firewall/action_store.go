@@ -32,6 +32,9 @@ type ActionRequest struct {
 	UndoOf      string        `json:"undo_of,omitempty"`
 	Automatic   bool          `json:"automatic,omitempty"`
 	TTL         time.Duration `json:"ttl,omitempty"`
+	// LoginSpray marks an automatic mail spray block: its row is the first
+	// eviction victim at the temporary cap.
+	LoginSpray bool `json:"login_spray,omitempty"`
 }
 
 // ScanAdmission uses the existing scan hourly policy. A nil admission is

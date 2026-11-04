@@ -168,6 +168,8 @@ type blockedIP struct {
 	Reason    string    `json:"reason"`
 	BlockedAt time.Time `json:"blocked_at"`
 	ExpiresAt time.Time `json:"expires_at"`
+	// LoginSpray marks a mail spray block; netblock escalation skips it.
+	LoginSpray bool `json:"login_spray,omitempty"`
 }
 
 type pendingIP struct {

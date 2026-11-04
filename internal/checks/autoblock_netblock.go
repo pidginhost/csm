@@ -169,23 +169,32 @@ func recordNetblockHistory(h *netblockHistory, tracked []blockedIP, current map[
 }
 
 // currentlyBlocked is every address blocked right now, from the tracker and
-// from the live kernel set when the engine can list it.
+// from the live kernel set when the engine can list it. An address only a
+// mail spray block holds is left out: spray blocks neither enter the history
+// nor count, while history the address earned before still counts.
 func currentlyBlocked(tracked []blockedIP, live firewall.LiveBlockedSnapshot, useLive bool, h *netblockHistory, blocker IPBlocker) map[string]bool {
 	current := make(map[string]bool, len(tracked)+len(live.V4)+len(live.V6))
+	sprayed := make(map[string]bool)
 	for _, b := range tracked {
-		current[b.IP] = true
+		if b.LoginSpray {
+			sprayed[b.IP] = true
+		} else {
+			current[b.IP] = true
+		}
 	}
 	if useLive {
 		for _, set := range []map[string]struct{}{live.V4, live.V6} {
 			for ip := range set {
-				current[ip] = true
+				if !sprayed[ip] {
+					current[ip] = true
+				}
 			}
 		}
 	}
 	// A missing family snapshot is unknown, not evidence that an operator's
 	// permanent block ended. Use the same cached fallback as tracker reconciliation.
 	for ip := range h.IPs {
-		if current[ip] {
+		if current[ip] || sprayed[ip] {
 			continue
 		}
 		if _, known := live.Contains(ip); useLive && known {

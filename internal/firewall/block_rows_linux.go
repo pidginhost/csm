@@ -88,7 +88,9 @@ func (e *Engine) BlockActionsUnproven() error {
 // cap. It leaves out the rows admission actions wrote: no legacy block,
 // automatic or operator, removes a block admission owns (design C8, spec
 // 5.6). Under the durable lifecycle, where no admission action writes rows,
-// only an automatic block or unproven rows leave its action rows out.
+// only an automatic block or unproven rows leave its action rows out. Among
+// the rows left, a mail spray row goes first, so a spray wave replaces its
+// own blocks before any other.
 func (e *Engine) evictionVictimLocked(st FirewallState, excludeIP string, automatic bool) (string, bool) {
 	addresses := make(map[string]int)
 	if e.lifecycle != nil {
@@ -118,6 +120,15 @@ func (e *Engine) evictionVictimLocked(st FirewallState, excludeIP string, automa
 			}
 		}
 		st.Blocked = recordable
+	}
+	spray := FirewallState{}
+	for _, row := range st.Blocked {
+		if row.LoginSpray {
+			spray.Blocked = append(spray.Blocked, row)
+		}
+	}
+	if victim, ok := soonestExpiringTempIP(spray, excludeIP); ok {
+		return victim, true
 	}
 	return soonestExpiringTempIP(st, excludeIP)
 }
