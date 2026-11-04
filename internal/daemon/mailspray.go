@@ -329,6 +329,18 @@ func (m *mailSpray) Success(ip, mailbox string) (clean bool, v *sprayVerdict) {
 		m.markTrust(ip)
 		return true, nil
 	}
+	// An IPv6 host rotates its address. A login to a mailbox another
+	// address of its /64 holds aged trust on is the same user: clean, and
+	// the new address starts trust that ages on its own.
+	if m.excused(key, mailbox, now) {
+		if e != nil {
+			if at, ok := e.revoked[mailbox]; ok && now.Sub(at) <= m.cfg.Window {
+				return false, nil
+			}
+		}
+		m.recordTrust(k, now)
+		return true, nil
+	}
 	if e != nil {
 		m.markIP(key)
 	}

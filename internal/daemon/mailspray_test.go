@@ -1329,3 +1329,83 @@ func TestMailSprayIPv6SourcesBounded(t *testing.T) {
 	}
 	wantNoVerdict(t, m.Failure(addr(maxSprayNamesPerIP), "c@example.com", mailboxExists))
 }
+
+// A household member's device rotates its IPv6 address. A correct login to
+// a mailbox some address of the /64 already trusts is clean: no compromise
+// from a sibling's failure, and the new address starts its own trust.
+func TestMailSprayIPv6RotatedAddressLoginIsClean(t *testing.T) {
+	m, clock := newTestSpray(testSprayConfig())
+	const yesterday, sibling, today = "2001:db8:1:2::a", "2001:db8:1:2::5", "2001:db8:1:2::b"
+	ageTrust(t, m, clock, yesterday, "l@example.com")
+	clock.advance(24 * time.Hour)
+	corroborate(t, m, "nobody@example.com")
+	wantNoVerdict(t, m.Failure(sibling, "nobody@example.com", mailboxMissing))
+	if clean, v := m.Success(today, "l@example.com"); !clean || v != nil {
+		t.Fatalf("rotated address login = (%v, %+v), want (true, nil)", clean, v)
+	}
+	m.mu.Lock()
+	tr, ok := m.trust[sprayTrustKey{today, "l@example.com"}]
+	m.mu.Unlock()
+	if !ok || !tr.first.Equal(clock.Now()) {
+		t.Fatalf("trust for the new address = %+v, %v; want started now", tr, ok)
+	}
+	if m.TrustedAll(today, []string{"l@example.com"}) {
+		t.Fatal("new address inherited aged trust")
+	}
+}
+
+// One device keeps failing on a stale password while another member logs in
+// daily from a new address. Trust passes from address to address, so the
+// logins raise nothing and, past the memory window, the member's typo still
+// does not reach the breadth bar.
+func TestMailSprayIPv6RotatingMemberKeepsTrustAcrossWindow(t *testing.T) {
+	cfg := testSprayConfig()
+	m, clock := newTestSpray(cfg)
+	const stale = "2001:db8:1:2::d"
+	ageTrust(t, m, clock, "2001:db8:1:2::100", "l@example.com")
+	days := int(cfg.Window/(24*time.Hour)) + 3
+	for day := 1; day <= days; day++ {
+		clock.advance(24 * time.Hour)
+		wantNoVerdict(t, m.Failure(stale, "x@example.com", mailboxExists))
+		addr := fmt.Sprintf("2001:db8:1:2::%x", 0x100+day)
+		if day == days {
+			wantNoVerdict(t, m.Failure(addr, "l@example.com", mailboxExists))
+		}
+		if clean, v := m.Success(addr, "l@example.com"); !clean || v != nil {
+			t.Fatalf("day %d login = (%v, %+v), want (true, nil)", day, clean, v)
+		}
+	}
+}
+
+// A login to a mailbox no address of the /64 trusts follows the usual rules,
+// and an IPv4 address gets nothing from another address's trust.
+func TestMailSprayRotatedLoginNeedsTrustOnThatMailbox(t *testing.T) {
+	m, clock := newTestSpray(testSprayConfig())
+	ageTrust(t, m, clock, "2001:db8:1:2::a", "l@example.com")
+	corroborate(t, m, "nobody@example.com")
+	wantNoVerdict(t, m.Failure("2001:db8:1:2::5", "nobody@example.com", mailboxMissing))
+	clean, v := m.Success("2001:db8:1:2::b", "m@example.com")
+	if clean {
+		t.Fatal("login to an untrusted mailbox after a corroborated missing name was clean")
+	}
+	wantRule(t, v, sprayRuleCompromise, true)
+
+	ageTrust(t, m, clock, "192.0.2.1", "l@example.com")
+	wantNoVerdict(t, m.Failure("192.0.2.2", "x@example.com", mailboxExists))
+	clean, v = m.Success("192.0.2.2", "l@example.com")
+	if clean {
+		t.Fatal("IPv4 login borrowed another address's trust")
+	}
+	wantRule(t, v, sprayRuleWeakCompromise, false)
+}
+
+// A crack revoked anywhere in the /64 keeps the mailbox from earning trust
+// through a sibling's aged trust.
+func TestMailSprayIPv6RevokedMailboxNotCleanViaSibling(t *testing.T) {
+	m, clock := newTestSpray(testSprayConfig())
+	ageTrust(t, m, clock, "2001:db8:1:2::a", "l@example.com")
+	m.RevokeTrust("2001:db8:1:2::b", "l@example.com")
+	if clean, v := m.Success("2001:db8:1:2::c", "l@example.com"); clean || v != nil {
+		t.Fatalf("login to a revoked mailbox = (%v, %+v), want (false, nil)", clean, v)
+	}
+}
