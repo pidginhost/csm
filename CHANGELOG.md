@@ -28,6 +28,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - Dry-run forecasts show new attacks rotating out older equal-priority blocks, and status and diagnostics show rotations, waits and scope shares.
 - When spam learning stops because its records disagree with its storage, the CSM log now says what disagreed.
 - Admission previews and dry-run forecasts cap new automatic lifetimes at the configured block expiry, and settings help states shipped limits.
+- CSM now starts with email and webhook alerts both off; findings then show only in the Web UI and API.
 
 ### Fixed
 

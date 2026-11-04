@@ -59,7 +59,7 @@ func Validate(cfg *Config) []ValidationResult {
 
 	// --- Alerts ---
 	if !cfg.Alerts.Email.Enabled && !cfg.Alerts.Webhook.Enabled {
-		results = append(results, ValidationResult{"error", "alerts", "no alert method enabled (enable email or webhook)"})
+		results = append(results, ValidationResult{"warn", "alerts", "no alert method enabled; findings only appear in the web UI and API"})
 	}
 
 	// --- Email alerts ---

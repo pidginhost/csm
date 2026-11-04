@@ -97,6 +97,7 @@ infra_ips: ["10.0.0.0/8"]
 hostname: "csm.example.com"
 
 # --- Alerts ---
+# Email and webhook may both be off; findings then show only in the web UI and API.
 alerts:
   email:
     enabled: true

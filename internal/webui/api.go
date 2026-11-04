@@ -1670,6 +1670,11 @@ func (s *Server) apiTestAlert(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	cfg := s.liveCfg()
+	if !cfg.Alerts.Email.Enabled && !cfg.Alerts.Webhook.Enabled {
+		writeJSONError(w, "No alert channel is enabled", http.StatusServiceUnavailable)
+		return
+	}
 	testFinding := []alert.Finding{{
 		Severity:  alert.Warning,
 		Check:     "test_alert",
@@ -1677,7 +1682,7 @@ func (s *Server) apiTestAlert(w http.ResponseWriter, r *http.Request) {
 		Details:   fmt.Sprintf("Sent by admin at %s", time.Now().Format("2006-01-02 15:04:05")),
 		Timestamp: time.Now(),
 	}}
-	err := alert.Dispatch(s.liveCfg(), testFinding)
+	err := alert.Dispatch(cfg, testFinding)
 	if err != nil {
 		// The request was fine; the alert channel behind the daemon failed.
 		writeJSONError(w, "Alert delivery failed: "+err.Error(), http.StatusBadGateway)

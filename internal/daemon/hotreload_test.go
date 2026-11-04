@@ -21,9 +21,8 @@ import (
 // seedConfigAtPath writes cfg to path and re-signs integrity.config_hash
 // so that a subsequent config.Load + integrity.Verify would pass. The
 // helper drives the same two-pass save that `csm rehash` runs in
-// production, and it fills in the minimum fields config.Validate
-// demands (one alert method) so reload tests exercise the reload
-// logic itself and do not trip the validator on a skeleton config.
+// production, and it fills in a hostname and an email channel so reload
+// tests exercise the reload logic itself on a realistic config.
 func seedConfigAtPath(t *testing.T, path string, cfg *config.Config) {
 	t.Helper()
 	if cfg.Hostname == "" {

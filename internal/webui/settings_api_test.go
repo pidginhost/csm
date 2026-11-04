@@ -1675,9 +1675,9 @@ func TestBuildChangeSetAcceptsBlockDigestFields(t *testing.T) {
 // enum value must survive the full POST path (CSRF + ETag + validate + persist)
 // and reload from disk, not just the buildChangeSet unit step.
 func TestSettingsPOSTAcceptsKnownEnumValues(t *testing.T) {
-	// A valid alerts section needs one reachable alert method (the validator
-	// probes email SMTP or the webhook URL). Point the webhook at a local test
-	// server so the probe succeeds hermetically and the POST reaches persist.
+	// The validator probes an enabled webhook URL. Point the webhook at a
+	// local test server so the probe succeeds hermetically and the POST
+	// reaches persist.
 	hookSrv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	t.Cleanup(hookSrv.Close)
 
