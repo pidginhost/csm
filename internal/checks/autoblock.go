@@ -732,12 +732,13 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 			historyChanged = true
 		}
 		subnetCounts := netblockCounts(cfg, history, current, blocker, now, window)
+		// The cause is the newest block that counted; spray blocks never do.
 		subnetCauses := make(map[string]blockedIP)
 		subnetBlocked := make(map[string]bool)
 		for _, b := range state.IPs {
 			cidr := subnetEscalationCIDR(b.IP)
 			prior := subnetCauses[cidr]
-			if cidr != "" && b.FindingID != "" && (prior.FindingID == "" || b.BlockedAt.After(prior.BlockedAt) || (b.BlockedAt.Equal(prior.BlockedAt) && b.FindingID > prior.FindingID)) {
+			if cidr != "" && b.FindingID != "" && !b.LoginSpray && (prior.FindingID == "" || b.BlockedAt.After(prior.BlockedAt) || (b.BlockedAt.Equal(prior.BlockedAt) && b.FindingID > prior.FindingID)) {
 				subnetCauses[cidr] = b
 			}
 		}

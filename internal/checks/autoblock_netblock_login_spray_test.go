@@ -156,3 +156,28 @@ func (u unlistedNetblockBlocker) BlockSubnet(cidr, reason string, ttl time.Durat
 }
 func (u unlistedNetblockBlocker) IsSubnetBlocked(cidr string) bool { return u.b.IsSubnetBlocked(cidr) }
 func (u unlistedNetblockBlocker) IsAllowed(ip string) bool         { return u.b.IsAllowed(ip) }
+
+// A netblock names the newest block that counted toward it, never a newer
+// spray block in the same subnet: spray blocks are not its evidence.
+func TestNetblockCauseSkipsLoginSprayRows(t *testing.T) {
+	cfg := pendingTestConfig(t)
+	cfg.AutoResponse.NetBlock = true
+	cfg.AutoResponse.NetBlockThreshold = 3
+	b := &findingIDBlocker{outcomeStubBlocker: outcomeStubBlocker{outcome: firewall.BlockOutcomeLive}, live: make(map[string]bool)}
+	applyBlockTestSetup(t, b)
+	now := time.Now()
+	seed := &blockState{}
+	for i, id := range []string{"old-rule-1", "old-rule-2", "old-rule-3"} {
+		ip := fmt.Sprintf("198.51.100.%d", 10*(i+1))
+		seed.IPs = append(seed.IPs, blockedIP{IP: ip, FindingID: id, BlockedAt: now.Add(time.Duration(i-10) * time.Minute), ExpiresAt: now.Add(time.Hour)})
+		b.live[ip] = true
+	}
+	seed.IPs = append(seed.IPs, blockedIP{IP: "198.51.100.40", FindingID: "spray", BlockedAt: now, ExpiresAt: now.Add(loginSprayTTL), LoginSpray: true})
+	b.live["198.51.100.40"] = true
+	saveBlockState(cfg.StatePath, seed)
+
+	AutoBlockIPs(cfg, nil)
+	if len(b.subnetIDs) != 1 || b.subnetIDs[0] != "old-rule-3" {
+		t.Fatalf("netblock IDs = %q, want the newest non-spray block old-rule-3", b.subnetIDs)
+	}
+}
