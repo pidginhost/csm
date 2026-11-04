@@ -4,8 +4,10 @@ import (
 	"maps"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/firewall"
 )
 
 // releaseDaemon shares one enforce mode spray memory between both trackers.
@@ -179,4 +181,55 @@ func TestOperatorFlushClearsAllSprayMarkers(t *testing.T) {
 	m.RetryChanges(delta, full)
 	d.persistMailSpray()
 	bucketMatches(t, db, m)
+}
+
+// P2-R11: a self-service unban drops only the re-block marker, so the
+// unban sticks. Failure evidence, verdict state and the per-IP counts stay,
+// so renewed spraying is blocked again on the usual rules.
+func TestPanelUnbanKeepsFailureHistory(t *testing.T) {
+	d, clock := releaseDaemon(t)
+	m := d.mailSpray
+	cfg := markerSprayConfig()
+	const ip = "192.0.2.7"
+	sprayBlock(t, m, ip)
+	// The first block's evidence has aged out; its marker re-blocks the
+	// address on one failure, which counts x@ and the IMAP failure.
+	clock.advance(cfg.Window + time.Minute)
+	if f := d.mailAuthTracker.Record(ip, "x@example.com"); !hasCheckFinding(f, "mail_bruteforce") {
+		t.Fatalf("setup: repeat failure = %+v, want a mail_bruteforce block", f)
+	}
+	for range 4 {
+		d.smtpAuthTracker.RecordTemporaryFailure(ip, "", alert.Observation{})
+	}
+
+	d.firewallReleased(ip, firewall.ReleaseUnban)
+
+	if _, ok := m.blocks[ip]; ok {
+		t.Fatal("unban kept the re-block marker")
+	}
+	e := m.ips[ip]
+	if _, ok := e.failed["x@example.com"]; !ok || e.verdictAt.IsZero() {
+		t.Fatalf("evidence after unban = %+v, want x@ and the verdict kept", e)
+	}
+	if _, ok := e.sources[ip]; !ok {
+		t.Fatal("unban dropped the verdict cadence")
+	}
+	if me := d.mailAuthTracker.ips[ip]; me == nil || len(me.times) != 1 || len(me.failedAccounts["x@example.com"]) != 1 {
+		t.Fatalf("IMAP failures after unban = %+v, want the one failure kept", me)
+	}
+	if f := d.smtpAuthTracker.RecordTemporaryFailure(ip, "", alert.Observation{}); !hasCheckFinding(f, "smtp_bruteforce") {
+		t.Fatalf("fifth SMTP failure after unban = %+v, want the kept count to block", f)
+	}
+
+	clock.advance(cfg.Suppression + time.Minute)
+	// No marker: one failure on the mailbox already counted stays below the bar.
+	wantNoVerdict(t, m.Failure(ip, "x@example.com", mailboxExists))
+	// A second untrusted mailbox reaches it with the kept evidence.
+	wantRule(t, m.Failure(ip, "y@example.com", mailboxExists), sprayRuleBreadth, true)
+
+	// An operator release through the same hook still clears everything.
+	d.firewallReleased(ip, firewall.ReleaseOperator)
+	if e := m.ips[ip]; e == nil || len(e.failed) != 0 || len(e.sources) != 0 {
+		t.Fatalf("evidence after operator release = %+v, want none", e)
+	}
 }

@@ -3,6 +3,7 @@ package webui
 import (
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -83,6 +84,51 @@ func TestUnbanScopeReachesOnlyCheckAndUnban(t *testing.T) {
 	s.handleLogin(w, login)
 	if w.Code == http.StatusFound || len(w.Result().Cookies()) != 0 {
 		t.Fatal("unban token started a browser session")
+	}
+}
+
+// P2-R11: an unban-scope token lifts the block without the operator
+// release, so the address keeps its mail failure history. An admin unban
+// on the same route, by token or browser session, is an operator release.
+func TestUnbanScopeCannotReachTheOperatorRelease(t *testing.T) {
+	s := newUIServer(t)
+	admin, unban := randomBrowserCredential(), randomBrowserCredential()
+	addPolicyToken(s, config.WebUIToken{Name: "browser-admin", Token: admin, Scope: "admin"})
+	addPolicyToken(s, config.WebUIToken{Name: "panel", Token: unban, Scope: "unban"})
+	cookie := loginBrowser(t, s, admin, nil)
+	fb := newFullBlocker()
+	s.blocker = fb
+	for _, tc := range []struct {
+		name    string
+		prepare func(*http.Request)
+		unban   bool
+	}{
+		{"unban token", func(r *http.Request) { r.Header.Set("Authorization", "Bearer "+unban) }, true},
+		{"admin token", func(r *http.Request) { r.Header.Set("Authorization", "Bearer admin-secret") }, false},
+		{"admin session", func(r *http.Request) {
+			r.AddCookie(cookie)
+			r.Header.Set("X-CSRF-Token", s.csrfTokenFor(r))
+		}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fb.unblocked, fb.unbanned = nil, nil
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/firewall/unban", strings.NewReader(`{"ip":"203.0.113.5"}`))
+			req.Header.Set("Content-Type", "application/json")
+			tc.prepare(req)
+			w := httptest.NewRecorder()
+			s.httpSrv.Handler.ServeHTTP(w, req)
+			if w.Code != http.StatusOK {
+				t.Fatalf("unban = %d %s", w.Code, w.Body.String())
+			}
+			want := []string{"203.0.113.5"}
+			unbanned, unblocked := want, []string(nil)
+			if !tc.unban {
+				unbanned, unblocked = nil, want
+			}
+			if !slices.Equal(fb.unbanned, unbanned) || !slices.Equal(fb.unblocked, unblocked) {
+				t.Fatalf("unbanned %q, unblocked %q; want %q, %q", fb.unbanned, fb.unblocked, unbanned, unblocked)
+			}
+		})
 	}
 }
 

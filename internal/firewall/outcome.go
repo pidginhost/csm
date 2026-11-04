@@ -49,6 +49,18 @@ var ErrUnsupportedPlatform = errors.New("nftables firewall not supported on this
 //     should treat the call as a no-op locally.
 type BlockOutcome string
 
+// ReleaseKind says how much a successful release forgives an address.
+type ReleaseKind uint8
+
+const (
+	// ReleaseOperator is an operator unblock, allow, undo or flush: the
+	// address's mail spray history ends with it.
+	ReleaseOperator ReleaseKind = iota
+	// ReleaseUnban is a self-service unban from a hosting panel: the block
+	// and its re-block go, the failure history stays.
+	ReleaseUnban
+)
+
 const (
 	BlockOutcomeLive        BlockOutcome = "live"
 	BlockOutcomeDryRun      BlockOutcome = "dry_run"

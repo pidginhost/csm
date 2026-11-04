@@ -293,6 +293,17 @@ func (s *Server) requireRead(next http.Handler) http.Handler {
 	})
 }
 
+// adminCredential reports whether the request carries an admin credential:
+// a browser session or an admin bearer token, in requireScope's order. It
+// does not extend the session.
+func (s *Server) adminCredential(r *http.Request) bool {
+	if _, ok := s.cookieSessionCredential(r, "admin", false); ok {
+		return true
+	}
+	_, ok := s.bearerCredentialWithScope(r, "admin")
+	return ok
+}
+
 // isAuthenticated is a thin shim used by handleLogin and metrics_api.
 // New callers should prefer tokenHasScope directly.
 func (s *Server) isAuthenticated(r *http.Request) bool {

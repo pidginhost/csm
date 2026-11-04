@@ -62,6 +62,15 @@ func TestOperatorReleaseHookOnUndoBlock(t *testing.T) {
 	}
 }
 
+// releaseCall names one hook call: the address for an operator release,
+// "unban <address>" for a self-service unban.
+func releaseCall(ip string, kind ReleaseKind) string {
+	if kind == ReleaseUnban {
+		return "unban " + ip
+	}
+	return ip
+}
+
 // releaseHookEngine has IPv4 and IPv6 blocked and allowed sets on conn and
 // records every hook call.
 func releaseHookEngine(t *testing.T, conn *nftables.Conn) (*Engine, *[]string) {
@@ -76,7 +85,7 @@ func releaseHookEngine(t *testing.T, conn *nftables.Conn) (*Engine, *[]string) {
 	e.setAllowed6 = namedIPv4Set("allowed_ips6")
 	e.setAllowed6.KeyType = nftables.TypeIP6Addr
 	calls := &[]string{}
-	e.SetOperatorReleaseHook(func(ip string) { *calls = append(*calls, ip) })
+	e.SetOperatorReleaseHook(func(ip string, kind ReleaseKind) { *calls = append(*calls, releaseCall(ip, kind)) })
 	return e, calls
 }
 
@@ -105,8 +114,8 @@ func TestOperatorReleaseHookFires(t *testing.T) {
 					t.Fatal(err)
 				}
 				blockedInHook := true
-				e.SetOperatorReleaseHook(func(ip string) {
-					*calls = append(*calls, ip)
+				e.SetOperatorReleaseHook(func(ip string, kind ReleaseKind) {
+					*calls = append(*calls, releaseCall(ip, kind))
 					blockedInHook = e.IsBlocked(ip)
 				})
 				done := make(chan error, 1)
@@ -198,4 +207,40 @@ func TestOperatorReleaseHookSkipsFailedRelease(t *testing.T) {
 			t.Fatalf("hook calls = %q, want none", *calls)
 		}
 	})
+}
+
+// A self-service unban lifts the block like UnblockIP, including one that
+// already expired, and tells the hook it was an unban so the address keeps
+// its failure history. A failed unban reports nothing.
+func TestUnbanReleaseHookReportsUnban(t *testing.T) {
+	conn, _ := nftConnReturningErrsThenOK(t)
+	e, calls := releaseHookEngine(t, conn)
+	if err := e.saveBlockedEntry(BlockedEntry{IP: "2001:db8::5", Reason: "spray", BlockedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.UnbanIP("2001:DB8::5"); err != nil {
+		t.Fatal(err)
+	}
+	if e.IsBlocked("2001:db8::5") || !slices.Equal(*calls, []string{"unban 2001:db8::5"}) {
+		t.Fatalf("after unban: blocked %v, hook calls %q", e.IsBlocked("2001:db8::5"), *calls)
+	}
+
+	e, calls = releaseHookEngine(t, nftConnReturningErr(t, syscall.ENOENT))
+	if err := e.UnbanIP("192.0.2.9"); err != nil || !slices.Equal(*calls, []string{"unban 192.0.2.9"}) {
+		t.Fatalf("unban of an expired block = %v, hook calls %q", err, *calls)
+	}
+
+	e, calls = releaseHookEngine(t, nftConnReturningErr(t, syscall.EPERM))
+	if err := e.saveBlockedEntry(BlockedEntry{IP: "192.0.2.11", Reason: "spray", BlockedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.UnbanIP("192.0.2.11"); err == nil {
+		t.Fatal("unban succeeded with a failing kernel")
+	}
+	if err := e.UnbanIP("not-an-ip"); err == nil {
+		t.Fatal("invalid address unbanned")
+	}
+	if len(*calls) != 0 {
+		t.Fatalf("hook calls after failed unbans = %q, want none", *calls)
+	}
 }

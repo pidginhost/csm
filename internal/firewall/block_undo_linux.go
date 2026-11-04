@@ -44,7 +44,7 @@ func (e *Engine) UnblockIPForUndo(ip string) (before *BlockedEntry, resultErr er
 		return nil, err
 	}
 	ip = canonical
-	defer func() { e.operatorReleased(ip, resultErr) }()
+	defer func() { e.released(ip, ReleaseOperator, resultErr) }()
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	state := e.loadStateFile()
@@ -73,7 +73,7 @@ func (e *Engine) RestoreBlockIfUnchanged(ip string, expected, prior *BlockedEntr
 			}
 		case "unblock":
 			e.legacyFirewallFailure("unblock", ip, "", "", 0, resultErr)
-			e.operatorReleased(ip, resultErr)
+			e.released(ip, ReleaseOperator, resultErr)
 		}
 	}()
 	canonical, err := canonicalFirewallIP(ip)

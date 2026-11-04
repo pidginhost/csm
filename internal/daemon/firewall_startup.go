@@ -203,8 +203,9 @@ func (d *Daemon) prepareFirewall(effectiveFirewall *firewall.FirewallConfig, ops
 	})
 	// An operator unblock, allow or flush ends the mail spray history of the
 	// released addresses, so a marker or kept evidence does not block them
-	// again on their next failed login.
-	engine.SetOperatorReleaseHook(d.operatorReleased)
+	// again on their next failed login. A self-service unban ends only the
+	// re-block.
+	engine.SetOperatorReleaseHook(d.firewallReleased)
 
 	// Push the mail-provider ranges loaded by initMailRanges() into the engine
 	// before Apply() so the dos_exempt_nets interval sets are populated in the

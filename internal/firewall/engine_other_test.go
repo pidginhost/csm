@@ -40,6 +40,7 @@ func TestNonLinuxStubMutatorsReturnErrUnsupportedPlatform(t *testing.T) {
 		{"BlockIPForce", e.BlockIPForce("203.0.113.5", "r", 0)},
 		{"PromoteToPermanentBlock", e.PromoteToPermanentBlock("203.0.113.5", "r")},
 		{"UnblockIP", e.UnblockIP("203.0.113.5")},
+		{"UnbanIP", e.UnbanIP("203.0.113.5")},
 		{"AllowIP", e.AllowIP("203.0.113.5", "r")},
 		{"RemoveAllowIP", e.RemoveAllowIP("203.0.113.5")},
 		{"RemoveAllowIPBySrc", e.RemoveAllowIPBySource("203.0.113.5", "cli")},

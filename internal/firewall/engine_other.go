@@ -97,15 +97,16 @@ func (e *Engine) SetDryRunRecorder(_ func(string, string, time.Duration)) {}
 func (e *Engine) SetDryRunEnabledFunc(_ func() bool)                      {}
 func (e *Engine) SetVerdictAsker(_ func(context.Context, string, string) (string, string, string, error)) {
 }
-func (e *Engine) SetShutdownContext(_ context.Context)    {}
-func (e *Engine) SetSoftAllowChecker(_ func(string) bool) {}
-func (e *Engine) SetOperatorReleaseHook(_ func(string))   {}
-func (e *Engine) UnblockIP(_ string) error                { return ErrUnsupportedPlatform }
-func (e *Engine) IsBlocked(_ string) bool                 { return false }
-func (e *Engine) StateSetAside() string                   { return "" }
-func (e *Engine) SetBlockActionsUnproven(_ error)         {}
-func (e *Engine) BlockActionsUnproven() error             { return nil }
-func (e *Engine) HoldBlockBatches(_ bool)                 {}
+func (e *Engine) SetShutdownContext(_ context.Context)               {}
+func (e *Engine) SetSoftAllowChecker(_ func(string) bool)            {}
+func (e *Engine) SetOperatorReleaseHook(_ func(string, ReleaseKind)) {}
+func (e *Engine) UnblockIP(_ string) error                           { return ErrUnsupportedPlatform }
+func (e *Engine) UnbanIP(_ string) error                             { return ErrUnsupportedPlatform }
+func (e *Engine) IsBlocked(_ string) bool                            { return false }
+func (e *Engine) StateSetAside() string                              { return "" }
+func (e *Engine) SetBlockActionsUnproven(_ error)                    {}
+func (e *Engine) BlockActionsUnproven() error                        { return nil }
+func (e *Engine) HoldBlockBatches(_ bool)                            {}
 func (e *Engine) MarkBlockActionsUnverified(_ []string) (int, error) {
 	return 0, ErrUnsupportedPlatform
 }

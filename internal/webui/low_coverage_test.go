@@ -26,6 +26,8 @@ type fullBlocker struct {
 	allowed        map[string]string
 	subnetsBlocked map[string]string
 	flushed        bool
+	// Addresses released by operator unblock and by self-service unban.
+	unblocked, unbanned []string
 }
 
 func newFullBlocker() *fullBlocker {
@@ -43,6 +45,13 @@ func (fb *fullBlocker) BlockIP(ip, reason string, _ time.Duration) error {
 
 func (fb *fullBlocker) UnblockIP(ip string) error {
 	delete(fb.blocked, ip)
+	fb.unblocked = append(fb.unblocked, ip)
+	return nil
+}
+
+func (fb *fullBlocker) UnbanIP(ip string) error {
+	delete(fb.blocked, ip)
+	fb.unbanned = append(fb.unbanned, ip)
 	return nil
 }
 

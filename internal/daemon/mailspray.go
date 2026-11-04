@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/firewall"
 	csmlog "github.com/pidginhost/csm/internal/log"
 	"github.com/pidginhost/csm/internal/store"
 )
@@ -496,6 +497,17 @@ func (m *mailSpray) ForgetRecentFailures(ip string, since time.Time) {
 	}
 	if changed {
 		m.markIP(key)
+	}
+}
+
+// ForgetBlock drops ip's block marker and nothing else, for a self-service
+// unban.
+func (m *mailSpray) ForgetBlock(ip string) {
+	ip = sprayAddr(ip)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.blocks[ip]; ok {
+		m.dropBlock(ip)
 	}
 }
 
@@ -1173,9 +1185,24 @@ func (d *Daemon) persistMailSpray() {
 	}
 }
 
-// operatorReleased is the firewall's operator release hook: ip was
-// unblocked or allowed, or every address was flushed (""). The firewall
-// calls it with its own lock released; each lock here is taken alone.
+// firewallReleased is the firewall's release hook. It runs with the
+// firewall lock released, and each lock here is taken alone. A self-service
+// unban drops only the address's re-block marker so the unban sticks; its
+// failure history and per-IP counts stay, so renewed spraying is blocked
+// again on the usual rules. Every other release is an operator release.
+func (d *Daemon) firewallReleased(ip string, kind firewall.ReleaseKind) {
+	if kind != firewall.ReleaseUnban {
+		d.operatorReleased(ip)
+		return
+	}
+	if d.mailSpray != nil {
+		d.mailSpray.ForgetBlock(ip)
+	}
+}
+
+// operatorReleased ends the spray history of an address an operator
+// unblocked, allowed or released by undo, or of every address after a
+// flush ("").
 func (d *Daemon) operatorReleased(ip string) {
 	if d.mailSpray != nil {
 		if ip == "" {

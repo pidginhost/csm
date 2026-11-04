@@ -395,9 +395,12 @@ IPv6 /64, an address blocked on the /64's shared evidence keeps its own
 re-block until it is released too. An operator unblock, allow, temporary
 allow or undo that removes a block clears the address's spray history: its
 re-block and the failure history of the address, or for IPv6 of its /64.
-Its SMTP and IMAP failure counts restart across all address spellings.
+Its SMTP, IMAP and POP failure counts restart across all address spellings.
 Login trust and cracked-password records stay. Pending SMTP rejections are discarded so
-delayed replies cannot restore old spray evidence. A flush clears the spray
+delayed replies cannot restore old spray evidence. A self-service unban
+through the panel API with an unban-scope token lifts the block and its
+re-block but keeps the failure history and counts, so renewed spraying is
+blocked again on the usual rules. A flush clears the spray
 history, per-address failure counts and pending rejections of every address.
 Authentication outage guards remain active after a release or flush.
 

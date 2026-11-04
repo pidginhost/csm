@@ -693,9 +693,16 @@ func (s *Server) apiFirewallUnban(w http.ResponseWriter, r *http.Request) {
 	// Audit, incident and threat records key on the canonical spelling.
 	req.IP = parsedIP.String()
 
-	// 1. Unblock from CSM firewall (individual IP)
-	if s.blocker != nil {
-		_ = s.blocker.UnblockIP(req.IP)
+	// 1. Unblock from CSM firewall (individual IP). An unban-scope token is
+	// a hosting panel's self-service unban: it lifts the block but keeps the
+	// address's mail failure history, so renewed spraying is blocked again.
+	// Only an admin credential makes this an operator release.
+	if s.adminCredential(r) {
+		if s.blocker != nil {
+			_ = s.blocker.UnblockIP(req.IP)
+		}
+	} else if u, ok := s.blocker.(selfUnbanner); ok {
+		_ = u.UnbanIP(req.IP)
 	}
 	dropAutoBlockThreatRow(req.IP)
 
