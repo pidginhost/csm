@@ -81,8 +81,11 @@ func TestValidateHostname(t *testing.T) {
 func TestValidateAlerts(t *testing.T) {
 	cfg := &Config{Hostname: "test"}
 	results := Validate(cfg)
-	if !hasResult(results, "error", "alerts") {
-		t.Errorf("expected error for no alert method; results=%v", results)
+	if hasResult(results, "error", "alerts") {
+		t.Errorf("no alert method must not block startup; results=%v", results)
+	}
+	if !hasResult(results, "warn", "alerts") {
+		t.Errorf("expected warning for no alert method; results=%v", results)
 	}
 }
 

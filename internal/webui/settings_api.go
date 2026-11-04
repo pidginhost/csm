@@ -409,6 +409,17 @@ func (s *Server) apiSettingsPost(w http.ResponseWriter, r *http.Request) {
 			candidate := cloneConfigForSettingsApply(effectiveClone)
 			liveCandidate = &candidate
 		}
+		// Pending restart settings remain active in this candidate. A valid
+		// disk config can still disable the last channel of a running digest.
+		// Check the existing invariants before changing disk or live state.
+		liveErrors, _ := splitValidationResults(config.Validate(liveCandidate))
+		if len(liveErrors) > 0 {
+			for i := range liveErrors {
+				liveErrors[i].Message += "; restart to apply pending settings first"
+			}
+			writeValidationErrors(w, liveErrors)
+			return
+		}
 	}
 
 	if err := integrity.SignAndSavePreserving(s.cfg.ConfigFile, s.cfg.ConfigDir, edited, &clone, disk.Integrity.BinaryHash); err != nil {

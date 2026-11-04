@@ -11,10 +11,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/store"
 )
 
@@ -1192,16 +1194,46 @@ func TestDedupIPReputationNoRegexMatch(t *testing.T) {
 // =========================================================================
 
 func TestAPITestAlertDispatchSuccess(t *testing.T) {
+	prev := config.Active()
+	config.SetActive(nil)
+	t.Cleanup(func() { config.SetActive(prev) })
+
+	var hits atomic.Int32
+	hook := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { hits.Add(1) }))
+	t.Cleanup(hook.Close)
+
 	s := newTestServer(t, "tok")
+	s.cfg.Alerts.Webhook.Enabled = true
+	s.cfg.Alerts.Webhook.URL = hook.URL
+	s.cfg.Alerts.Webhook.Type = "generic"
+	s.cfg.Alerts.MaxPerHour = 10
 	w := httptest.NewRecorder()
 	s.apiTestAlert(w, httptest.NewRequest("POST", "/", nil))
 	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d", w.Code)
+		t.Fatalf("status = %d; body=%s", w.Code, w.Body.String())
 	}
 	var resp map[string]interface{}
 	_ = json.Unmarshal(w.Body.Bytes(), &resp)
 	if resp["ok"] != true {
 		t.Errorf("ok = %v, want true", resp["ok"])
+	}
+	if got := hits.Load(); got != 1 {
+		t.Errorf("webhook hits = %d, want 1", got)
+	}
+}
+
+// With every alert channel off there is nowhere to send a test alert, so the
+// handler must say so instead of reporting a delivery that never happened.
+func TestAPITestAlertNoChannel(t *testing.T) {
+	prev := config.Active()
+	config.SetActive(nil)
+	t.Cleanup(func() { config.SetActive(prev) })
+
+	s := newTestServer(t, "tok")
+	w := httptest.NewRecorder()
+	s.apiTestAlert(w, httptest.NewRequest("POST", "/", nil))
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503; body=%s", w.Code, w.Body.String())
 	}
 }
 

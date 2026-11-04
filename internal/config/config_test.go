@@ -285,7 +285,7 @@ func TestValidate(t *testing.T) {
 				c.Alerts.MaxPerHour = 10
 				return c
 			}(),
-			wantError: 2, // hostname + no alert method
+			wantError: 1, // hostname; no alert method only warns
 		},
 		{
 			name: "placeholder hostname",
@@ -294,7 +294,7 @@ func TestValidate(t *testing.T) {
 				c.Alerts.MaxPerHour = 10
 				return c
 			}(),
-			wantError: 2,
+			wantError: 1,
 		},
 		{
 			name: "email enabled no recipients",

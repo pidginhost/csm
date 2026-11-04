@@ -97,6 +97,7 @@ infra_ips: ["10.0.0.0/8"]
 hostname: "csm.example.com"
 
 # --- Alerts ---
+# Email and webhook may both be off; findings then show only in the web UI and API.
 alerts:
   email:
     enabled: true
@@ -1142,6 +1143,11 @@ still follows safe reloads. Delivery uses the current email and webhook
 settings. Digest output includes by-country, by-category, and by-reason
 counts; WAF categories group ModSecurity escalations and high-volume WAF
 attacker blocks together.
+
+If you disable the digest in Settings, restart before disabling its last
+delivery channel. Until then the digest remains active, and Settings rejects
+channel changes that would leave it unable to send. With the digest disabled
+in the running configuration, email and webhook may both be off.
 
 The rest of the sub-keys in every safe-tagged section are read per-call
 (inside check functions, auto-response helpers, alert dispatchers) and
