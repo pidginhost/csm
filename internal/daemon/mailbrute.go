@@ -438,6 +438,7 @@ func (t *mailAuthTracker) LoadGoodSource(snap goodSourceSnapshot, now time.Time)
 			if !ok {
 				e = &mailIPEntry{}
 				t.ips[ip] = e
+				t.aliased = t.aliased || sprayAddr(ip) != ip
 			}
 			if e.goodFirst == nil {
 				e.goodFirst = make(map[string]time.Time)
@@ -620,6 +621,11 @@ type mailAuthTracker struct {
 	// the SMTP tracker. It holds per-mailbox login trust. Set once at startup
 	// before log readers begin.
 	spray *mailSpray
+
+	// aliased is set once ips holds a key that is not its address's
+	// canonical spelling. Until then a release looks up the canonical key
+	// instead of scanning every entry.
+	aliased bool
 }
 
 // SetBackendDownCheck installs the active-probe callback the tracker consults to
@@ -718,6 +724,7 @@ func (t *mailAuthTracker) RecordObserved(ip, account string, obs alert.Observati
 	if !ok {
 		e = &mailIPEntry{}
 		t.ips[ip] = e
+		t.aliased = t.aliased || sprayAddr(ip) != ip
 	}
 	e.times = pruneTimes(e.times, cutoff)
 	pruneMailAccountTimes(e.failedAccounts, cutoff)
@@ -937,15 +944,23 @@ func (t *mailAuthTracker) Forget(ip string) {
 	ip = sprayAddr(ip)
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	// Log readers and persisted good standing may use different spellings
-	// of one address. Release every matching entry without discarding trust.
-	for addr, e := range t.ips {
-		if ip != "" && sprayAddr(addr) != ip {
-			continue
-		}
+	forget := func(e *mailIPEntry) {
 		e.times, e.failedAccounts = nil, nil
 		e.slowTimes, e.slowAccounts, e.slowUnvouched = nil, nil, time.Time{}
 		e.suppressed, e.suspectedSuppressed = time.Time{}, time.Time{}
+	}
+	if ip != "" && !t.aliased {
+		if e := t.ips[ip]; e != nil {
+			forget(e)
+		}
+		return
+	}
+	// Log readers and persisted good standing may use different spellings
+	// of one address. Release every matching entry without discarding trust.
+	for addr, e := range t.ips {
+		if ip == "" || sprayAddr(addr) == ip {
+			forget(e)
+		}
 	}
 }
 
@@ -1077,6 +1092,7 @@ func (t *mailAuthTracker) RecordSuccess(ip, account string) (findings []alert.Fi
 	if !ok {
 		e = &mailIPEntry{}
 		t.ips[ip] = e
+		t.aliased = t.aliased || sprayAddr(ip) != ip
 	}
 	e.succ = pruneTimes(e.succ, cutoff)
 	pruneMailAccountTimes(e.successAccounts, cutoff)

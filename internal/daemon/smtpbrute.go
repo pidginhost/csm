@@ -161,6 +161,11 @@ type smtpAuthTracker struct {
 	pendingVerdicts          map[string][]smtpPendingVerdict
 	authTrouble              map[string]time.Time
 	authTroubleOverflowUntil time.Time
+
+	// aliased is set once ips or pendingVerdicts holds a key that is not
+	// its address's canonical spelling. Until then a release looks up the
+	// canonical key instead of scanning every entry.
+	aliased bool
 }
 
 // SetBackendDownCheck installs the active-probe callback the tracker consults to
@@ -280,6 +285,7 @@ func (t *smtpAuthTracker) recordFailure(ip, account string, exist mailboxExisten
 	if !ok {
 		e = &smtpIPEntry{}
 		t.ips[ip] = e
+		t.aliased = t.aliased || sprayAddr(ip) != ip
 	}
 	e.times = pruneTimes(e.times, cutoff)
 	e.times = append(e.times, now)
@@ -486,6 +492,11 @@ func (t *smtpAuthTracker) Forget(ip string) {
 	ip = sprayAddr(ip)
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if ip != "" && !t.aliased {
+		delete(t.ips, ip)
+		delete(t.pendingVerdicts, ip)
+		return
+	}
 	// A canonical firewall release also covers alternate log spellings.
 	maps.DeleteFunc(t.ips, func(addr string, _ *smtpIPEntry) bool {
 		return ip == "" || sprayAddr(addr) == ip

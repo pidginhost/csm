@@ -111,6 +111,27 @@ func TestOperatorReleaseRestartsFailureCounters(t *testing.T) {
 	}
 }
 
+// Good standing restored from disk keeps the spelling it was saved under.
+// Failures later counted under that spelling still restart on a release of
+// the canonical address.
+func TestOperatorReleaseRestartsRestoredSpellings(t *testing.T) {
+	d, clock := releaseDaemon(t)
+	const alias, release = "2001:DB8:1::A", "2001:db8:1::a"
+	seen := goodSourceTimes{First: clock.Now().Add(-time.Hour), Last: clock.Now()}
+	d.mailAuthTracker.LoadGoodSource(goodSourceSnapshot{alias: {"good@example.com": seen}}, clock.Now())
+	for range 4 {
+		if got := d.mailAuthTracker.Record(alias, "bad@example.com"); len(got) != 0 {
+			t.Fatalf("IMAP setup: %+v", got)
+		}
+	}
+
+	d.operatorReleased(release)
+
+	if e := d.mailAuthTracker.ips[alias]; len(e.times) != 0 || len(e.slowTimes) != 0 || e.goodLast["good@example.com"].IsZero() {
+		t.Fatalf("restored spelling after release = %+v, want failures cleared and good standing kept", e)
+	}
+}
+
 // A delayed MTA reply must not revive rejected mailbox names from before a
 // release. Outage marks still apply to new replies after the release.
 func TestOperatorReleaseDiscardsPendingFailures(t *testing.T) {
