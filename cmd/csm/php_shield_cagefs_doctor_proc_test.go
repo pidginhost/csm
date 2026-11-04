@@ -226,7 +226,7 @@ func TestSampleCageShieldMountsSkipsCSMWorkers(t *testing.T) {
 		}
 	}
 	writeCgroup("1000", "12:memory:/system.slice/system-csm\\x2dyara\\x2dworker.slice/csm-yara-worker-1793821384247465609.service\n11:hugetlb:/\n1:name=systemd:/system.slice/system-csm\\x2dyara\\x2dworker.slice/csm-yara-worker-1793821384247465609.service\n")
-	writeCgroup("1001", "0::/system.slice/system-csm\\x2dparse\\x2dworker.slice/csm-parse-worker-mail0-1793821384247465612.service\n")
+	writeCgroup("1001", "0::/system.slice/system-csm\\x2dparse\\x2dworker\\x2dmail0.slice/csm-parse-worker-mail0-1793821384247465612.service\n")
 	// A tenant process named like a worker but outside system.slice is a cage.
 	writeCgroup("1002", "0::/user.slice/csm-yara-worker-1.service\n")
 
@@ -236,5 +236,83 @@ func TestSampleCageShieldMountsSkipsCSMWorkers(t *testing.T) {
 	}
 	if sampled != 1 || len(missing) != 1 {
 		t.Fatalf("sampled = %d, missing = %v; want only the tenant process counted", sampled, missing)
+	}
+}
+
+// A healthy cage must not hide a blind tenant cage just because the tenant's
+// service or delegated subgroup resembles a CSM worker.
+func TestSampleCageShieldMountsKeepsNonWorkers(t *testing.T) {
+	const scan = `/system.slice/system-csm\x2dyara\x2dworker.slice/csm-yara-worker-1.service`
+	for _, tc := range []struct {
+		name, cgroup string
+	}{
+		{"unrelated service", `0::/system.slice/system-csm\x2dhosting.slice/csm-php.service`},
+		{"delegated subgroup", `0::/system.slice/system-csm\x2dhosting.slice/tenant.service/csm-yara-worker-1.service`},
+		{"nested worker lookalike", "0::" + scan + "/csm-yara-worker-2.service"},
+		{"wrong slice", `0::/system.slice/system-csm\x2dparse\x2dworker\x2dmail0.slice/csm-yara-worker-1.service`},
+		{"user unit", `0::/user.slice/user-1000.slice/csm-yara-worker-1.service`},
+		{"slice lookalike", `0::/system.slice/system-csm\x2dyara\x2dworker.slice-extra/csm-yara-worker-1.service`},
+		{"non-worker instance", `0::/system.slice/system-csm\x2dyara\x2dworker.slice/csm-yara-worker-tenant.service`},
+		{"unknown parser", `0::/system.slice/system-csm\x2dparse\x2dworker\x2dtenant.slice/csm-parse-worker-tenant-1.service`},
+		{"numeric service", `0::/system.slice/system-123.slice/123-1.service`},
+		{"empty generation", `0::/system.slice/system-csm\x2dyara\x2dworker.slice/csm-yara-worker-.service`},
+		{"wrong unit type", `0::/system.slice/system-csm\x2dyara\x2dworker.slice/csm-yara-worker-1.scope`},
+		{"empty mail slot", `0::/system.slice/system-csm\x2dparse\x2dworker\x2dmail.slice/csm-parse-worker-mail-1.service`},
+		{"empty cli pid", `0::/system.slice/system-csm\x2dparse\x2dworker\x2dcli\x2d.slice/csm-parse-worker-cli--1.service`},
+		{"malformed cgroup", "invalid"},
+		{"controller only", "7:memory:" + scan},
+		{"controller differs from systemd", "7:memory:" + scan + "\n1:name=systemd:/user.slice/tenant.service"},
+		{"hybrid differs from systemd", "0::" + scan + "\n1:name=systemd:/user.slice/tenant.service"},
+		{"systemd before hybrid", "1:name=systemd:/user.slice/tenant.service\n0::" + scan},
+		{"missing cgroup", ""},
+		{"unreadable cgroup", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			withFakeProc(t, []bool{true, false})
+			cagefsAccountHomeForUID = func(uint64) (string, bool) { return "", false }
+			path := filepath.Join(procPath, "1001", "cgroup")
+			if tc.name == "unreadable cgroup" {
+				// A directory produces a read error even when tests run as root.
+				if err := os.Mkdir(path, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			} else if tc.cgroup != "" {
+				if err := os.WriteFile(path, []byte(tc.cgroup+"\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			missing, sampled, err := sampleCageShieldMounts()
+			want := "uid:" + strconv.Itoa(os.Geteuid())
+			if err != nil || sampled != 2 || len(missing) != 1 || missing[0] != want {
+				t.Fatalf("sampled=%d missing=%v err=%v; want 2 cages, missing [%s]", sampled, missing, err, want)
+			}
+		})
+	}
+}
+
+func TestSampleCageShieldMountsSkipsEveryWorkerKind(t *testing.T) {
+	for _, path := range []string{
+		`/system.slice/system-csm\x2dyara\x2dworker.slice/csm-yara-worker-1.service`,
+		`/system.slice/system-csm\x2dyara\x2dcompile\x2dworker.slice/csm-yara-compile-worker-2.service`,
+		`/system.slice/system-csm\x2dparse\x2dworker\x2dzip0.slice/csm-parse-worker-zip0-3.service`,
+		`/system.slice/system-csm\x2dparse\x2dworker\x2dmail0.slice/csm-parse-worker-mail0-4.service`,
+		`/system.slice/system-csm\x2dparse\x2dworker\x2dmail12.slice/csm-parse-worker-mail12-5.service`,
+		`/system.slice/system-csm\x2dparse\x2dworker\x2dcli\x2d123.slice/csm-parse-worker-cli-123-6.service`,
+		`/system.slice/system-csm\x2dphptaint\x2dworker.slice/csm-phptaint-worker-7.service`,
+	} {
+		for _, hierarchy := range []string{"0::", "7:memory:/\n1:name=systemd:"} {
+			t.Run(hierarchy+path, func(t *testing.T) {
+				withFakeProc(t, []bool{false, false})
+				cagefsAccountHomeForUID = func(uint64) (string, bool) { return "", false }
+				if err := os.WriteFile(filepath.Join(procPath, "1000", "cgroup"), []byte(hierarchy+path+"\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				missing, sampled, err := sampleCageShieldMounts()
+				want := "uid:" + strconv.Itoa(os.Geteuid())
+				if err != nil || sampled != 1 || len(missing) != 1 || missing[0] != want {
+					t.Fatalf("sampled=%d missing=%v err=%v; want only the tenant cage [%s]", sampled, missing, err, want)
+				}
+			})
+		}
 	}
 }

@@ -12,6 +12,7 @@ import (
 	"syscall"
 
 	"github.com/pidginhost/csm/internal/platform"
+	"github.com/pidginhost/csm/internal/yaraworker"
 )
 
 // cagefsCageMountSample names the live cages that lack the PHP Shield event
@@ -282,16 +283,11 @@ func sampleCageShieldMounts() (missing []string, sampled int, err error) {
 	return missing, sampled, nil
 }
 
-// csmWorkerSlicePrefix starts the cgroup path of every transient worker
-// unit CSM launches (scan, compile and parse workers).
-const csmWorkerSlicePrefix = `/system.slice/system-csm\x2d`
-
 // isCSMWorkerProcess reports whether a process runs in one of CSM's own
 // worker units. Those run as systemd dynamic users in private namespaces, so
 // CloudLinux cages their uids, yet they never execute PHP; and a dynamic user
 // resolves only through NSS, so without this they would be counted as
-// accounts with no passwd entry. Only root can create units in system.slice,
-// so a tenant process cannot be hidden this way.
+// accounts with no passwd entry.
 func isCSMWorkerProcess(dir string) bool {
 	// #nosec G304 -- a /proc/<pid>/cgroup path built from a numeric directory entry.
 	f, err := os.Open(filepath.Join(dir, "cgroup"))
@@ -299,19 +295,48 @@ func isCSMWorkerProcess(dir string) bool {
 		return false
 	}
 	defer func() { _ = f.Close() }()
+	var unified string
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		// hierarchy-ID:controllers:path, with an empty controller list on v2.
 		parts := strings.SplitN(scanner.Text(), ":", 3)
-		if len(parts) != 3 || !strings.HasPrefix(parts[2], csmWorkerSlicePrefix) {
+		if len(parts) != 3 {
 			continue
 		}
-		unit := filepath.Base(parts[2])
-		if strings.HasPrefix(unit, "csm-") && strings.HasSuffix(unit, ".service") {
-			return true
+		// Resource controllers can place a process in a different group.
+		// The v1 systemd hierarchy owns unit identity, including on hybrid hosts.
+		if parts[1] == "name=systemd" {
+			return isCSMWorkerCgroup(parts[2])
+		}
+		if parts[0] == "0" && parts[1] == "" {
+			unified = parts[2]
 		}
 	}
-	return false
+	return scanner.Err() == nil && isCSMWorkerCgroup(unified)
+}
+
+func isCSMWorkerCgroup(path string) bool {
+	// Match a direct unit in its launcher's slice. Delegated descendants can
+	// have tenant-chosen names, even below system.slice.
+	parts := strings.Split(path, "/")
+	if len(parts) != 4 || parts[0] != "" || parts[1] != "system.slice" {
+		return false
+	}
+	unit, ok := strings.CutSuffix(parts[3], ".service")
+	if !ok {
+		return false
+	}
+	sep := strings.LastIndexByte(unit, '-')
+	if sep < 0 || !isAllDigits(unit[sep+1:]) {
+		return false
+	}
+	prefix := unit[:sep]
+	mailSlot, mailWorker := strings.CutPrefix(prefix, "csm-parse-worker-mail")
+	cliPID, cliWorker := strings.CutPrefix(prefix, scanCLIUnitPrefix+"-")
+	knownWorker := prefix == yaraworker.ScanUnitPrefix || prefix == yaraworker.CompileUnitPrefix ||
+		prefix == "csm-phptaint-worker" || prefix == "csm-parse-worker-zip0" ||
+		(mailWorker && isAllDigits(mailSlot)) || (cliWorker && isAllDigits(cliPID))
+	return knownWorker && parts[2] == "system-"+strings.ReplaceAll(prefix, "-", `\x2d`)+".slice"
 }
 
 func fileOwnerUID(info os.FileInfo) (uint64, bool) {

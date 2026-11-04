@@ -475,6 +475,10 @@ php_shield:
   # remounted during a maintenance window: cagefsctl --remount-all recreates
   # every LVE on the host and disrupts running cages. A conflicting mount entry
   # is left unchanged.
+  # csm doctor checks the event mount in running tenant cages. It excludes
+  # CSM workers only in their own systemd services and slices; other services
+  # and tenant-created subgroups remain eligible for the check. Missing or
+  # unreadable process-group information does not exempt a cage.
   # Rewritten command-parameter probes are quieted only when the Shield's
   # source fingerprint matches CSM's verified CMS content cache. Install the
   # updated Shield with csm install --php-shield-only; older events, unverified or

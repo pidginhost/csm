@@ -11,6 +11,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Security
 
+- Doctor keeps tenant cages visible when their process groups resemble CSM workers.
 - Mail login tracking no longer attributes incomplete or ambiguous log identities to a mailbox.
 - A successful SMTP, IMAP or POP login no longer shields an address from slow brute-force blocking after it tried other mailboxes.
 - Mail subjects or greetings made to look like failed logins or rejected recipients no longer block a sending server, raise alerts or count as failed logins.
