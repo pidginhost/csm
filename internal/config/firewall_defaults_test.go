@@ -227,6 +227,43 @@ func TestFirewallDropIPv4OptionsDefaultsOn(t *testing.T) {
 	}
 }
 
+func TestFirewallDropIPv4OptionsDropInPrecedence(t *testing.T) {
+	for _, tc := range []struct {
+		name, main, fragment string
+		want                 bool
+	}{
+		{"absent", "{}", "{}", true},
+		{"partial", "firewall: {enabled: true}", "firewall: {ipv6: true}", true},
+		{"null block", "{}", "firewall: null", true},
+		{"null key", "{}", "firewall: {drop_ipv4_options: null}", true},
+		{"main false", "firewall: {drop_ipv4_options: false}", "firewall: {enabled: true}", false},
+		{"fragment false", "firewall: {drop_ipv4_options: true}", "firewall: {drop_ipv4_options: false}", false},
+		{"fragment true", "firewall: {drop_ipv4_options: false}", "firewall: {drop_ipv4_options: true}", true},
+		{"null resets default", "firewall: {drop_ipv4_options: false}", "firewall: {drop_ipv4_options: null}", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			main := filepath.Join(dir, "csm.yaml")
+			confd := filepath.Join(dir, "conf.d")
+			if err := os.Mkdir(confd, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			for path, body := range map[string]string{main: tc.main, filepath.Join(confd, "10-firewall.yaml"): tc.fragment} {
+				if err := os.WriteFile(path, []byte(body+"\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cfg, err := LoadWithDir(main, confd)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Firewall.DropIPv4Options != tc.want {
+				t.Fatalf("drop_ipv4_options = %t, want %t", cfg.Firewall.DropIPv4Options, tc.want)
+			}
+		})
+	}
+}
+
 // withFTPServer pins the host probe. DefaultConfig describes a host with an
 // FTP server, so tests comparing against it pin installed=true.
 func withFTPServer(t *testing.T, installed bool) {

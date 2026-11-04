@@ -116,7 +116,14 @@ func CheckFirewall(ctx context.Context, cfg *config.Config, store *state.Store) 
 
 	output := string(out)
 	required := []string{"chain input", "chain output", "set blocked_ips", "set allowed_ips", "set infra_ips"}
-	if cfg.Firewall.DropIPv4Options {
+	dropIPv4Options := cfg.Firewall.DropIPv4Options
+	if applied != "" {
+		// Restart and rollback can change the engine without replacing the
+		// daemon's startup config. Use the same applied snapshot as the hash
+		// check so a concurrent re-apply cannot split the expected policy.
+		dropIPv4Options = strings.Contains(applied, "chain prerouting")
+	}
+	if dropIPv4Options {
 		required = append(required, "chain prerouting")
 	}
 	for _, component := range required {
