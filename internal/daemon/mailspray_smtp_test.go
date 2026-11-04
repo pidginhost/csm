@@ -435,6 +435,8 @@ func TestMailSprayFindingMapping(t *testing.T) {
 	breadth := &sprayVerdict{Rule: sprayRuleBreadth, Block: true, Targets: []string{"", "a@example.com"}, Extra: 2, BlockTTL: ttl}
 	missing := &sprayVerdict{Rule: sprayRuleMissingMailbox, Block: true, Mailbox: "ghost@example.com", Targets: []string{"ghost@example.com"}, Networks: 3, BlockTTL: ttl}
 	compromise := &sprayVerdict{Rule: sprayRuleCompromise, Block: true, Mailbox: "a@example.com", Targets: []string{"ghost@example.com"}, BlockTTL: ttl}
+	repeat := &sprayVerdict{Rule: sprayRuleRepeat, Block: true, Targets: []string{"b@example.com"}, BlockTTL: ttl}
+	const repeatReason = "failed login by an address blocked earlier for login spraying"
 	cases := []struct {
 		name          string
 		proto         mailProto
@@ -448,6 +450,8 @@ func TestMailSprayFindingMapping(t *testing.T) {
 		{"smtp breadth enforce", protoSMTP, breadth, sprayEnforce, "smtp_bruteforce", "SMTP brute force from " + ip + ": ", alert.Critical, false, ttl},
 		{"mail breadth enforce", protoMail, breadth, sprayEnforce, "mail_bruteforce", "Mail auth brute force from " + ip + ": ", alert.Critical, false, ttl},
 		{"smtp missing enforce", protoSMTP, missing, sprayEnforce, "smtp_bruteforce", "SMTP brute force from " + ip + ": ", alert.Critical, false, ttl},
+		{"smtp repeat enforce", protoSMTP, repeat, sprayEnforce, "smtp_bruteforce", "SMTP brute force from " + ip + ": " + repeatReason, alert.Critical, false, ttl},
+		{"mail repeat enforce", protoMail, repeat, sprayEnforce, "mail_bruteforce", "Mail auth brute force from " + ip + ": " + repeatReason, alert.Critical, false, ttl},
 		{"smtp missing observe", protoSMTP, missing, sprayObserve, "mail_bruteforce_suspected", "Suspected SMTP password spray from " + ip, alert.High, false, 0},
 		{"mail breadth observe", protoMail, breadth, sprayObserve, "mail_bruteforce_suspected", "Suspected IMAP/POP password spray from " + ip, alert.High, false, 0},
 		{"compromise enforce", protoSMTP, compromise, sprayEnforce, "mail_account_compromised", "Mail account compromise: ", alert.Critical, true, ttl},
@@ -610,5 +614,27 @@ func TestMailSprayFindingNamesIPv6Scope(t *testing.T) {
 		if f = sprayFinding(protoSMTP, "203.0.113.90", v, sprayEnforce, now); strings.Contains(f.Details, "cover") {
 			t.Fatalf("IPv4 %s finding names a network: %q", v.Rule, f.Details)
 		}
+	}
+}
+
+// Outage traffic is never evidence, and a marker does not change that: a
+// marked address failing while the auth backend is down draws no block.
+func TestSMTPSprayMarkerIgnoresOutage(t *testing.T) {
+	const ip = "203.0.113.72"
+	for _, down := range []bool{false, true} {
+		t.Run(fmt.Sprintf("down=%v", down), func(t *testing.T) {
+			d, clock := newPairingDaemon(t, sprayTestConfig("enforce"))
+			feedExim(d, clock, makeEximDovecotFailLine(ip, "a@example.com"))
+			if _, ok := findingByCheck(feedExim(d, clock, makeEximDovecotFailLine(ip, "b@example.com")), "smtp_bruteforce"); !ok {
+				t.Fatal("setup: no spray block")
+			}
+			clock.advance(8 * 24 * time.Hour)
+			d.smtpAuthTracker.SetBackendDownCheck(func() bool { return down })
+			got := feedExim(d, clock, makeEximDovecotFailLine(ip, "c@example.com"))
+			f, blocked := findingByCheck(got, "smtp_bruteforce")
+			if blocked == down || (blocked && (f.BlockTTL != 720*time.Hour || !strings.Contains(f.Message, "blocked earlier"))) {
+				t.Fatalf("backend down = %v: findings %+v", down, got)
+			}
+		})
 	}
 }

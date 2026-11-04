@@ -88,6 +88,7 @@ const (
 	sprayRuleCompromise           sprayRule = "compromise"
 	sprayRuleWeakCompromise       sprayRule = "weak_compromise"
 	sprayRuleSingleMailboxSuccess sprayRule = "single_mailbox_success"
+	sprayRuleRepeat               sprayRule = "repeat"
 )
 
 type sprayVerdict struct {
@@ -111,6 +112,7 @@ const (
 	maxSprayTrustIPsPerMailbox = 64
 	maxSprayCorroborationNames = 20000
 	maxSprayNetworksPerName    = 50
+	maxSprayMarkers            = 50000
 )
 
 type sprayFailure struct {
@@ -180,6 +182,12 @@ type mailSpray struct {
 	trustByMailbox map[string]map[string]struct{} // mailbox to the IPs it trusts
 	trustByKey     map[string]map[string]struct{} // evidence key to its IPs holding trust
 
+	// Block markers: address to the end of its spray block. A failure from
+	// the address up to a window past that end is blocked again (rule 5).
+	// Kept per address, indexed and capped per evidence key.
+	blocks      map[string]time.Time
+	blocksByKey map[string]map[string]struct{}
+
 	// Eviction floors of the evidence and corroboration pools, set when a
 	// full pool's batch eviction stops before entries over a bar (see
 	// sprayEvict). Ranks change with time and config, so Purge, SetConfig
@@ -193,6 +201,7 @@ type mailSpray struct {
 	ipChanges    sprayChanges // evidence IPs
 	trustChanges sprayChanges // trust IPs
 	nameChanges  sprayChanges // corroboration names
+	blockChanges sprayChanges // block markers
 }
 
 // sprayChanges tracks one kind of saved key: those changed since the last
@@ -213,10 +222,13 @@ func newMailSpray(cfg sprayConfig, now func() time.Time) *mailSpray {
 		trustByIP:      make(map[string]map[string]struct{}),
 		trustByMailbox: make(map[string]map[string]struct{}),
 		trustByKey:     make(map[string]map[string]struct{}),
+		blocks:         make(map[string]time.Time),
+		blocksByKey:    make(map[string]map[string]struct{}),
 		full:           true,
 		ipChanges:      newSprayChanges(),
 		trustChanges:   newSprayChanges(),
 		nameChanges:    newSprayChanges(),
+		blockChanges:   newSprayChanges(),
 	}
 }
 
@@ -234,6 +246,8 @@ func (m *mailSpray) SetConfig(cfg sprayConfig) {
 		clear(m.trustByIP)
 		clear(m.trustByMailbox)
 		clear(m.trustByKey)
+		clear(m.blocks)
+		clear(m.blocksByKey)
 		m.resetChanges()
 		return
 	}
@@ -259,7 +273,8 @@ func (m *mailSpray) Mode() sprayMode {
 }
 
 // Failure records a failed login on a normalised mailbox ("" when the log
-// names none) and returns a block verdict for rule 2 or rule 3.
+// names none) and returns a block verdict for rule 2, rule 3 or, in enforce
+// mode, rule 5 (an address blocked for spraying is back).
 func (m *mailSpray) Failure(ip, mailbox string, exist mailboxExistence) *sprayVerdict {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -286,6 +301,11 @@ func (m *mailSpray) Failure(ip, mailbox string, exist mailboxExistence) *sprayVe
 	}
 
 	untrusted := m.untrusted(e, key, now)
+	if end, ok := m.blocks[ip]; ok && m.cfg.Mode == sprayEnforce && !now.After(end.Add(m.cfg.Window)) {
+		src.blockUntil = now.Add(m.cfg.Suppression)
+		e.setSource(ip, src)
+		return m.verdict(e, ip, sprayRuleRepeat, true, "", untrusted, now)
+	}
 	missing := m.cfg.MissingNetworks > 0 && exist == mailboxMissing &&
 		networks >= m.cfg.MissingNetworks && m.keyTrustCount(key, "", 1, now) == 0
 	if !missing && (m.cfg.BreadthMailboxes <= 0 || !m.breadth(key, mailbox, stored, untrusted, now)) {
@@ -298,11 +318,11 @@ func (m *mailSpray) Failure(ip, mailbox string, exist mailboxExistence) *sprayVe
 	src.blockUntil = now.Add(m.cfg.Suppression)
 	e.setSource(ip, src)
 	if missing {
-		v := m.verdict(e, sprayRuleMissingMailbox, true, mailbox, untrusted, now)
+		v := m.verdict(e, ip, sprayRuleMissingMailbox, true, mailbox, untrusted, now)
 		v.Networks = networks
 		return v
 	}
-	return m.verdict(e, sprayRuleBreadth, true, "", untrusted, now)
+	return m.verdict(e, ip, sprayRuleBreadth, true, "", untrusted, now)
 }
 
 // breadth reports whether the key's untrusted names reach the rule 3 bar. A
@@ -370,7 +390,7 @@ func (m *mailSpray) Success(ip, mailbox string) (clean bool, v *sprayVerdict) {
 		if m.cfg.Mode == sprayOff || hadTrust || e == nil || !e.staleFailures(mailbox, now, m.cfg.Window) {
 			return true, nil
 		}
-		return true, m.verdict(e, sprayRuleSingleMailboxSuccess, false, mailbox, untrusted, now)
+		return true, m.verdict(e, ip, sprayRuleSingleMailboxSuccess, false, mailbox, untrusted, now)
 	}
 
 	src := e.sources[ip]
@@ -388,7 +408,7 @@ func (m *mailSpray) Success(ip, mailbox string) (clean bool, v *sprayVerdict) {
 	}
 	src.compromiseUntil = now.Add(m.cfg.Suppression)
 	e.setSource(ip, src)
-	return false, m.verdict(e, rule, block, mailbox, untrusted, now)
+	return false, m.verdict(e, ip, rule, block, mailbox, untrusted, now)
 }
 
 // trustPredatesFailures reports whether k holds live trust that began
@@ -491,7 +511,8 @@ func (m *mailSpray) TrustedAll(ip string, mailboxes []string) bool {
 	return true
 }
 
-// Purge drops failures, trust and corroboration older than the window.
+// Purge drops failures, trust and corroboration older than the window, and
+// block markers a window past their end.
 func (m *mailSpray) Purge() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -535,6 +556,11 @@ func (m *mailSpray) Purge() {
 			m.markName(name)
 		}
 	}
+	for ip, end := range m.blocks {
+		if end.Before(cutoff) {
+			m.dropBlock(ip)
+		}
+	}
 }
 
 // Size returns the number of IPs in the evidence pool.
@@ -570,12 +596,14 @@ func (m *mailSpray) ExportChanges() (d store.MailSprayDelta, full bool) {
 		m.ipChanges.saveAll(maps.Keys(m.ips))
 		m.trustChanges.saveAll(maps.Keys(m.trustByIP))
 		m.nameChanges.saveAll(maps.Keys(m.names))
+		m.blockChanges.saveAll(maps.Keys(m.blocks))
 		return store.MailSprayDelta{Put: m.exportAll()}, true
 	}
 	d.Put = store.MailSprayState{
 		IPs:      make(map[string]store.MailSprayIP, len(m.ipChanges.dirty)),
 		Trust:    make(map[string]map[string]store.GoodSourcePair, len(m.trustChanges.dirty)),
 		Networks: make(map[string]map[string]time.Time, len(m.nameChanges.dirty)),
+		Blocked:  make(map[string]time.Time, len(m.blockChanges.dirty)),
 	}
 	d.DeleteIPs = m.ipChanges.export(func(ip string) bool {
 		e := m.ips[ip]
@@ -597,6 +625,13 @@ func (m *mailSpray) ExportChanges() (d store.MailSprayDelta, full bool) {
 			d.Put.Networks[name] = maps.Clone(n.networks)
 		}
 		return n != nil
+	})
+	d.DeleteBlocked = m.blockChanges.export(func(ip string) bool {
+		end, ok := m.blocks[ip]
+		if ok {
+			d.Put.Blocked[ip] = end
+		}
+		return ok
 	})
 	return d, false
 }
@@ -622,6 +657,7 @@ func (m *mailSpray) RetryChanges(d store.MailSprayDelta, full bool) {
 		{m.ipChanges, maps.Keys(d.Put.IPs), d.DeleteIPs, m.markIP},
 		{m.trustChanges, maps.Keys(d.Put.Trust), d.DeleteTrust, m.markTrust},
 		{m.nameChanges, maps.Keys(d.Put.Networks), d.DeleteNames, m.markName},
+		{m.blockChanges, maps.Keys(d.Put.Blocked), d.DeleteBlocked, m.markBlock},
 	} {
 		// The deletes did not happen: the bucket still holds those keys.
 		for _, key := range k.deletes {
@@ -652,6 +688,11 @@ func (m *mailSpray) markName(name string) {
 	m.mark(m.nameChanges, name, m.names[name] != nil, maxSprayCorroborationNames)
 }
 
+func (m *mailSpray) markBlock(ip string) {
+	_, live := m.blocks[ip]
+	m.mark(m.blockChanges, ip, live, maxSprayMarkers)
+}
+
 // mark records that key changed; live says whether memory still holds it.
 // A key gone from memory that the bucket never held needs no delete, so it
 // leaves the change set: attacker churn of short-lived entries cannot grow
@@ -674,7 +715,7 @@ func (m *mailSpray) mark(c sprayChanges, key string, live bool, pool int) {
 
 func (m *mailSpray) resetChanges() {
 	m.full = true
-	for _, c := range []sprayChanges{m.ipChanges, m.trustChanges, m.nameChanges} {
+	for _, c := range []sprayChanges{m.ipChanges, m.trustChanges, m.nameChanges, m.blockChanges} {
 		clear(c.dirty)
 		clear(c.saved)
 	}
@@ -710,6 +751,7 @@ func (m *mailSpray) exportAll() store.MailSprayState {
 		IPs:      make(map[string]store.MailSprayIP, len(m.ips)),
 		Trust:    make(map[string]map[string]store.GoodSourcePair, len(m.trustByIP)),
 		Networks: make(map[string]map[string]time.Time, len(m.names)),
+		Blocked:  maps.Clone(m.blocks),
 	}
 	for ip, e := range m.ips {
 		st.IPs[ip] = exportSprayIP(e)
@@ -778,6 +820,8 @@ func (m *mailSpray) Load(read func(func(store.MailSprayState)) error) error {
 	clear(m.trustByIP)
 	clear(m.trustByMailbox)
 	clear(m.trustByKey)
+	clear(m.blocks)
+	clear(m.blocksByKey)
 	// Entries load with no newcomer to check against the eviction floors,
 	// so a floor a load batch sets may not hold once it is done.
 	defer func() { m.ipFloor, m.nameFloor = 0, 0 }()
@@ -830,6 +874,13 @@ func (m *mailSpray) Load(read func(func(store.MailSprayState)) error) error {
 				m.names[name] = n
 				m.evictNames("", now)
 			}
+		}
+		// A block cannot end later than one starting now would.
+		for ip, end := range st.Blocked {
+			if !sprayValidIP(ip) || end.Before(cutoff) {
+				continue
+			}
+			m.noteBlock(ip, sprayNotAfter(end, now.Add(m.cfg.BlockTTL)))
 		}
 	})
 }
@@ -1324,6 +1375,41 @@ func (m *mailSpray) oldestTrust(set map[string]struct{}, key func(string) sprayT
 	return oldest
 }
 
+// noteBlock records that ip is blocked for spraying until end. One evidence
+// key holds at most maxSprayNamesPerIP markers, so one IPv6 host cycling
+// its /64 cannot evict other networks' markers: past that its
+// soonest-ending marker goes, and a marker ending before all of them is not
+// kept. The pool holds at most maxSprayMarkers, soonest-ending out first.
+// Losing a marker only costs the re-block shortcut.
+func (m *mailSpray) noteBlock(ip string, end time.Time) {
+	key := sprayEvidenceKey(ip)
+	if _, ok := m.blocks[ip]; !ok && len(m.blocksByKey[key]) >= maxSprayNamesPerIP {
+		first := ""
+		for a := range m.blocksByKey[key] {
+			if first == "" || m.blocks[a].Before(m.blocks[first]) {
+				first = a
+			}
+		}
+		if end.Before(m.blocks[first]) {
+			return
+		}
+		m.dropBlock(first)
+	}
+	m.blocks[ip] = end
+	setAdd(m.blocksByKey, key, ip)
+	m.markBlock(ip)
+	sprayEvict(m.blocks, maxSprayMarkers, ip, new(int),
+		func(time.Time) int { return 0 },
+		func(end time.Time) time.Time { return end },
+		m.dropBlock)
+}
+
+func (m *mailSpray) dropBlock(ip string) {
+	delete(m.blocks, ip)
+	setDel(m.blocksByKey, sprayEvidenceKey(ip), ip)
+	m.markBlock(ip)
+}
+
 func setAdd(idx map[string]map[string]struct{}, k, v string) {
 	if idx[k] == nil {
 		idx[k] = make(map[string]struct{})
@@ -1393,10 +1479,15 @@ func (m *mailSpray) untrusted(e *sprayIP, key string, now time.Time) []string {
 	return out
 }
 
-func (m *mailSpray) verdict(e *sprayIP, rule sprayRule, block bool, mailbox string, untrusted []string, now time.Time) *sprayVerdict {
+// verdict builds ip's verdict. An enforce mode block with a length leaves
+// a marker for ip until the block ends.
+func (m *mailSpray) verdict(e *sprayIP, ip string, rule sprayRule, block bool, mailbox string, untrusted []string, now time.Time) *sprayVerdict {
 	v := &sprayVerdict{Rule: rule, Block: block, Mailbox: mailbox, Targets: untrusted}
 	if block && m.cfg.Mode == sprayEnforce {
 		v.BlockTTL = m.cfg.BlockTTL
+		if v.BlockTTL > 0 {
+			m.noteBlock(ip, now.Add(v.BlockTTL))
+		}
 	}
 	if len(untrusted) > maxMailTargetsListed {
 		v.Targets = untrusted[:maxMailTargetsListed:maxMailTargetsListed]

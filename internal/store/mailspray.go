@@ -13,11 +13,12 @@ import (
 const mailSprayBucket = "mail:spray"
 
 // Key prefixes in mailSprayBucket: one entry per evidence IP, per trusted
-// IP, and per corroborated mailbox name.
+// IP, per corroborated mailbox name, and per address blocked for spraying.
 const (
 	mailSprayIPPrefix    = "ip:"
 	mailSprayTrustPrefix = "trust:"
 	mailSprayNamePrefix  = "name:"
+	mailSprayBlockPrefix = "blk:"
 )
 
 // MailSprayFailure is one failed mailbox name of one IP.
@@ -55,21 +56,23 @@ type MailSprayState struct {
 	IPs      map[string]MailSprayIP               // failure evidence by IPv4 address or IPv6 /64
 	Trust    map[string]map[string]GoodSourcePair // clean logins by IP, then mailbox
 	Networks map[string]map[string]time.Time      // missing name to the networks that tried it
+	Blocked  map[string]time.Time                 // spray block end by address, never by /64
 }
 
 // MailSprayDelta is a change to the persisted spray memory: entries to
 // write, keyed as in MailSprayState, and keys to delete.
 type MailSprayDelta struct {
-	Put         MailSprayState
-	DeleteIPs   []string
-	DeleteTrust []string
-	DeleteNames []string
+	Put           MailSprayState
+	DeleteIPs     []string
+	DeleteTrust   []string
+	DeleteNames   []string
+	DeleteBlocked []string
 }
 
 // Empty reports whether the delta changes nothing.
 func (d MailSprayDelta) Empty() bool {
-	return len(d.Put.IPs)+len(d.Put.Trust)+len(d.Put.Networks)+
-		len(d.DeleteIPs)+len(d.DeleteTrust)+len(d.DeleteNames) == 0
+	return len(d.Put.IPs)+len(d.Put.Trust)+len(d.Put.Networks)+len(d.Put.Blocked)+
+		len(d.DeleteIPs)+len(d.DeleteTrust)+len(d.DeleteNames)+len(d.DeleteBlocked) == 0
 }
 
 // SaveMailSpray replaces the persisted spray memory with st. The bucket is
@@ -108,6 +111,7 @@ func (db *DB) ApplyMailSprayDelta(d MailSprayDelta) error {
 			mailSprayIPPrefix:    d.DeleteIPs,
 			mailSprayTrustPrefix: d.DeleteTrust,
 			mailSprayNamePrefix:  d.DeleteNames,
+			mailSprayBlockPrefix: d.DeleteBlocked,
 		} {
 			for _, k := range keys {
 				if k == "" {
@@ -123,7 +127,7 @@ func (db *DB) ApplyMailSprayDelta(d MailSprayDelta) error {
 }
 
 func encodeMailSpray(st MailSprayState) (map[string][]byte, error) {
-	encoded := make(map[string][]byte, len(st.IPs)+len(st.Trust)+len(st.Networks))
+	encoded := make(map[string][]byte, len(st.IPs)+len(st.Trust)+len(st.Networks)+len(st.Blocked))
 	put := func(prefix, key string, v any) error {
 		if key == "" {
 			return nil
@@ -150,6 +154,11 @@ func encodeMailSpray(st MailSprayState) (map[string][]byte, error) {
 			return nil, err
 		}
 	}
+	for ip, end := range st.Blocked {
+		if err := put(mailSprayBlockPrefix, ip, end); err != nil {
+			return nil, err
+		}
+	}
 	return encoded, nil
 }
 
@@ -162,7 +171,8 @@ func putMailSpray(b *bolt.Bucket, encoded map[string][]byte) error {
 	return nil
 }
 
-// LoadMailSpray visits one saved entry at a time, trust before evidence.
+// LoadMailSpray visits one saved entry at a time: trust, evidence,
+// corroboration, then block markers.
 // maxEntryBytes bounds JSON decoding before allocation. Malformed and oversized
 // entries are skipped so one damaged entry cannot prevent the rest loading.
 // The visitor must not write to the store while the read transaction is open.
@@ -172,7 +182,7 @@ func (db *DB) LoadMailSpray(maxEntryBytes int, visit func(MailSprayState)) error
 		if b == nil {
 			return nil
 		}
-		for _, prefix := range []string{mailSprayTrustPrefix, mailSprayIPPrefix, mailSprayNamePrefix} {
+		for _, prefix := range []string{mailSprayTrustPrefix, mailSprayIPPrefix, mailSprayNamePrefix, mailSprayBlockPrefix} {
 			c := b.Cursor()
 			for k, v := c.Seek([]byte(prefix)); k != nil && bytes.HasPrefix(k, []byte(prefix)); k, v = c.Next() {
 				if len(k) == len(prefix) || len(k) > maxEntryBytes || len(v) > maxEntryBytes {
@@ -194,6 +204,11 @@ func (db *DB) LoadMailSpray(maxEntryBytes int, visit func(MailSprayState)) error
 					var n map[string]time.Time
 					if json.Unmarshal(v, &n) == nil {
 						visit(MailSprayState{Networks: map[string]map[string]time.Time{key: n}})
+					}
+				case mailSprayBlockPrefix:
+					var end time.Time
+					if json.Unmarshal(v, &end) == nil {
+						visit(MailSprayState{Blocked: map[string]time.Time{key: end}})
 					}
 				}
 			}

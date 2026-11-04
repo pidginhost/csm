@@ -43,7 +43,7 @@ func TestDaemonMailSprayRestartKeepsEvidenceAndTrust(t *testing.T) {
 
 // Load and Export must carry every field of one IP unchanged.
 func TestMailSprayLoadExportKeepsEveryField(t *testing.T) {
-	m, clock := newTestSpray(testSprayConfig())
+	m, clock := newTestSpray(markerSprayConfig())
 	at := func(h int) time.Time { return clock.Now().Add(time.Duration(h) * time.Hour) }
 	want := store.MailSprayState{
 		IPs: map[string]store.MailSprayIP{
@@ -78,6 +78,7 @@ func TestMailSprayLoadExportKeepsEveryField(t *testing.T) {
 		Networks: map[string]map[string]time.Time{
 			"nobody@example.com": {"192.0.0.0/16": at(-3), "2001:db8::/32": at(-10)},
 		},
+		Blocked: map[string]time.Time{"192.0.2.1": at(20 * 24), "2001:db8:1:2::a": at(-30)},
 	}
 	loadSpraySnapshot(t, m, want)
 	if got := m.Export(); !reflect.DeepEqual(got, want) {
@@ -1054,17 +1055,13 @@ func loadSavedSpray(db *store.DB) (store.MailSprayState, error) {
 		IPs:      make(map[string]store.MailSprayIP),
 		Trust:    make(map[string]map[string]store.GoodSourcePair),
 		Networks: make(map[string]map[string]time.Time),
+		Blocked:  make(map[string]time.Time),
 	}
 	err := db.LoadMailSpray(maxSprayEntryBytes, func(part store.MailSprayState) {
-		for k, v := range part.IPs {
-			st.IPs[k] = v
-		}
-		for k, v := range part.Trust {
-			st.Trust[k] = v
-		}
-		for k, v := range part.Networks {
-			st.Networks[k] = v
-		}
+		maps.Copy(st.IPs, part.IPs)
+		maps.Copy(st.Trust, part.Trust)
+		maps.Copy(st.Networks, part.Networks)
+		maps.Copy(st.Blocked, part.Blocked)
 	})
 	return st, err
 }
@@ -1171,5 +1168,113 @@ func loadSpraySnapshot(t *testing.T, m *mailSpray, st store.MailSprayState) {
 		return nil
 	}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A new marker is saved under its own key; Purge expiry deletes it; a failed
+// save writes and deletes it again.
+func TestMailSprayMarkerDeltaSave(t *testing.T) {
+	db := openStoreForTest(t)
+	cfg := markerSprayConfig()
+	m, clock := newTestSpray(cfg)
+	d := &Daemon{mailSpray: m}
+	sprayBlock(t, m, "192.0.2.7")
+	d.persistMailSpray()
+	bucketMatches(t, db, m)
+
+	clock.advance(time.Hour)
+	const ip = "2001:db8:1::a"
+	sprayBlock(t, m, ip)
+	delta, full := m.ExportChanges()
+	if end, ok := delta.Put.Blocked[ip]; full || !ok || !end.Equal(clock.Now().Add(cfg.BlockTTL)) ||
+		len(delta.Put.Blocked) != 1 || len(delta.DeleteBlocked) != 0 {
+		t.Fatalf("delta after a new marker = full %v %+v, want only blk:%s", full, delta, ip)
+	}
+	m.RetryChanges(delta, full)
+	d.persistMailSpray()
+	bucketMatches(t, db, m)
+
+	clock.advance(cfg.BlockTTL + cfg.Window + time.Minute)
+	m.Purge()
+	delta, full = m.ExportChanges()
+	slices.Sort(delta.DeleteBlocked)
+	if full || !slices.Equal(delta.DeleteBlocked, []string{"192.0.2.7", ip}) {
+		t.Fatalf("delta after expiry = full %v %+v, want both markers deleted", full, delta)
+	}
+	m.RetryChanges(delta, full)
+	d.persistMailSpray()
+	bucketMatches(t, db, m)
+	if got, err := loadSavedSpray(db); err != nil || len(got.Blocked) != 0 {
+		t.Fatalf("after expiry the bucket holds markers %v, %v", got.Blocked, err)
+	}
+}
+
+func TestMailSprayLoadMarkers(t *testing.T) {
+	cfg := markerSprayConfig()
+	m, clock := newTestSpray(cfg)
+	now := clock.Now()
+	blocked := map[string]time.Time{
+		"not-an-ip":        now,
+		"2001:db8::1%eth0": now,
+		"192.0.2.1":        now.Add(-cfg.Window - time.Minute), // past end + window
+		"192.0.2.2":        now.Add(365 * 24 * time.Hour),
+		"192.0.2.3":        now.Add(-time.Hour),
+	}
+	for i := range maxSprayNamesPerIP + 4 {
+		blocked[fmt.Sprintf("2001:db8:1::%x", i+1)] = now.Add(time.Duration(i) * time.Minute)
+	}
+	loadSpraySnapshot(t, m, store.MailSprayState{Blocked: blocked})
+	for _, ip := range []string{"not-an-ip", "2001:db8::1%eth0", "192.0.2.1"} {
+		if _, ok := m.blocks[ip]; ok {
+			t.Errorf("marker of %s loaded", ip)
+		}
+	}
+	if got := m.blocks["192.0.2.2"]; !got.Equal(now.Add(cfg.BlockTTL)) {
+		t.Errorf("future marker end = %v, want clamped to %v", got, now.Add(cfg.BlockTTL))
+	}
+	if got := m.blocks["192.0.2.3"]; !got.Equal(now.Add(-time.Hour)) {
+		t.Errorf("ended marker in the window = %v, want kept", got)
+	}
+	if n := len(m.blocksByKey["2001:db8:1::/64"]); n != maxSprayNamesPerIP {
+		t.Errorf("/64 markers = %d, want %d", n, maxSprayNamesPerIP)
+	}
+	for i := range 4 {
+		if _, ok := m.blocks[fmt.Sprintf("2001:db8:1::%x", i+1)]; ok {
+			t.Errorf("soonest-ending marker %d of the /64 kept", i+1)
+		}
+	}
+	wantRule(t, m.Failure("192.0.2.3", "a@example.com", mailboxExists), sprayRuleRepeat, true)
+
+	// A second load replaces the first, within the global cap.
+	big := make(map[string]time.Time, maxSprayMarkers+1)
+	for i := range maxSprayMarkers + 1 {
+		big[fmt.Sprintf("2001:db8:%x:%x::1", i>>16, i&0xffff)] = now.Add(time.Duration(i) * time.Second)
+	}
+	loadSpraySnapshot(t, m, store.MailSprayState{Blocked: big})
+	if n := len(m.blocks); n > maxSprayMarkers || n != len(m.blocksByKey) {
+		t.Errorf("markers = %d, index keys = %d, cap %d", n, len(m.blocksByKey), maxSprayMarkers)
+	}
+	if _, ok := m.blocks["192.0.2.3"]; ok {
+		t.Errorf("a marker of the first load survived the second")
+	}
+}
+
+func TestMailSprayMarkerPersists(t *testing.T) {
+	m, clock := newTestSpray(markerSprayConfig())
+	ips := []string{"192.0.2.7", "2001:db8:1::a"}
+	for _, ip := range ips {
+		sprayBlock(t, m, ip)
+	}
+	want := m.Export()
+	if len(want.Blocked) != len(ips) {
+		t.Fatalf("setup: markers %v", want.Blocked)
+	}
+	m = restartSpray(t, m, clock)
+	if got := m.Export(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("restart changed the memory:\n got %+v\nwant %+v", got, want)
+	}
+	clock.advance(8 * 24 * time.Hour)
+	for _, ip := range ips {
+		wantRule(t, m.Failure(ip, "c@example.com", mailboxExists), sprayRuleRepeat, true)
 	}
 }
