@@ -34,6 +34,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Fixed
 
+- Doctor no longer reports CSM's own scan workers as CloudLinux cages missing the PHP Shield event mount.
 - IMAP or POP logins during a mail backend outage no longer earn the standing that keeps an address from brute-force blocking.
 - Admission previews and dry-run forecasts no longer start a new attack episode early when the system clock jumps forward.
 - Antispam no longer overrides spam weights you set yourself in rspamd.
