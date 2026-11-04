@@ -52,12 +52,22 @@ func TestNetblockUsesFirewallSprayTags(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if mode == "operator replacement" {
+			switch mode {
+			case "operator replacement":
 				if len(b.subnets) != 2 || !contains(b.subnets, "192.0.2.0/24") || !contains(b.subnets, "2001:db8:1::/64") || len(history.IPs) != 6 {
 					t.Fatalf("operator blocks inherited spray exemption: subnets=%v, history=%v", b.subnets, history.IPs)
 				}
-			} else if len(b.subnets) != 0 || len(history.IPs) != 0 {
-				t.Fatalf("spray blocks became range evidence: subnets=%v, history=%v", b.subnets, history.IPs)
+			case "metadata unavailable", "absent kernel rows":
+				if len(b.subnets) != 0 || len(history.IPs) != 0 {
+					t.Fatalf("unknown or absent blocks became range evidence: subnets=%v, history=%v", b.subnets, history.IPs)
+				}
+			default:
+				// IPv4 spray blocks are never range evidence; IPv6 ones count
+				// toward their /64.
+				_, v4 := history.IPs["192.0.2.10"]
+				if len(b.subnets) != 1 || b.subnets[0] != "2001:db8:1::/64" || len(history.IPs) != 3 || v4 {
+					t.Fatalf("spray tags misclassified: subnets=%v, history=%v", b.subnets, history.IPs)
+				}
 			}
 		})
 	}

@@ -78,9 +78,10 @@ func TestApplyBlockPassesLoginSpray(t *testing.T) {
 	})
 }
 
-// Spray blocks do not feed netblock escalation in either family; old-rule
-// blocks still do, and history an address earned before its spray block
-// still counts within the window.
+// IPv4 spray blocks do not feed /24 escalation. An IPv6 /64 is one actor, so
+// its spray blocks count toward it like any other block. Old-rule blocks
+// still count in both families, and history an address earned before its
+// spray block still counts within the window.
 func TestNetblockIgnoresLoginSprayBlocks(t *testing.T) {
 	addresses := []string{"198.51.100.10", "198.51.100.20", "198.51.100.30", "2001:db8:1::10", "2001:db8:1::20", "2001:db8:1::30"}
 	run := func(t *testing.T, finding func(string) alert.Finding) []string {
@@ -102,8 +103,8 @@ func TestNetblockIgnoresLoginSprayBlocks(t *testing.T) {
 	}
 
 	t.Run("spray blocks", func(t *testing.T) {
-		if subnets := run(t, loginSprayFinding); len(subnets) != 0 {
-			t.Fatalf("subnets = %v, want none from spray blocks", subnets)
+		if subnets := run(t, loginSprayFinding); len(subnets) != 1 || subnets[0] != "2001:db8:1::/64" {
+			t.Fatalf("subnets = %v, want only the /64 from spray blocks", subnets)
 		}
 	})
 	t.Run("old-rule blocks", func(t *testing.T) {
@@ -179,5 +180,28 @@ func TestNetblockCauseSkipsLoginSprayRows(t *testing.T) {
 	AutoBlockIPs(cfg, nil)
 	if len(b.subnetIDs) != 1 || b.subnetIDs[0] != "old-rule-3" {
 		t.Fatalf("netblock IDs = %q, want the newest non-spray block old-rule-3", b.subnetIDs)
+	}
+}
+
+// IPv6 spray blocks count toward their /64, so the newest of them names the
+// /64 netblock.
+func TestNetblockCauseNamesIPv6SprayRows(t *testing.T) {
+	cfg := pendingTestConfig(t)
+	cfg.AutoResponse.NetBlock = true
+	cfg.AutoResponse.NetBlockThreshold = 3
+	b := &findingIDBlocker{outcomeStubBlocker: outcomeStubBlocker{outcome: firewall.BlockOutcomeLive}, live: make(map[string]bool)}
+	applyBlockTestSetup(t, b)
+	now := time.Now()
+	seed := &blockState{}
+	for i, id := range []string{"spray-1", "spray-2", "spray-3"} {
+		ip := fmt.Sprintf("2001:db8:1::%d", 10*(i+1))
+		seed.IPs = append(seed.IPs, blockedIP{IP: ip, FindingID: id, BlockedAt: now.Add(time.Duration(i-10) * time.Minute), ExpiresAt: now.Add(loginSprayTTL), LoginSpray: true})
+		b.live[ip] = true
+	}
+	saveBlockState(cfg.StatePath, seed)
+
+	AutoBlockIPs(cfg, nil)
+	if len(b.subnetIDs) != 1 || b.subnetIDs[0] != "spray-3" {
+		t.Fatalf("netblock IDs = %q, want the newest spray block spray-3", b.subnetIDs)
 	}
 }

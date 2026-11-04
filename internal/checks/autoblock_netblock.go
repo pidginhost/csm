@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"time"
@@ -210,15 +211,22 @@ func recordNetblockHistory(h *netblockHistory, tracked []blockedIP, current map[
 	return changed
 }
 
+// countsTowardNetblock reports whether a block is subnet escalation evidence.
+// An IPv4 mail spray block is not: a botnet's addresses share no /24. An IPv6
+// /64 is one actor, so its spray blocks count like any other block.
+func countsTowardNetblock(b blockedIP) bool {
+	return !b.LoginSpray || net.ParseIP(b.IP).To4() == nil
+}
+
 // currentlyBlocked is every address blocked right now, from the tracker and
-// from the live kernel set when the engine can list it. An address only a
-// mail spray block holds is left out: spray blocks neither enter the history
-// nor count, while history the address earned before still counts.
+// from the live kernel set when the engine can list it. An address only an
+// IPv4 mail spray block holds is left out: such blocks neither enter the
+// history nor count, while history the address earned before still counts.
 func currentlyBlocked(tracked []blockedIP, live firewall.LiveBlockedSnapshot, useLive bool, h *netblockHistory, blocker IPBlocker) map[string]bool {
 	current := make(map[string]bool, len(tracked)+len(live.V4)+len(live.V6))
 	sprayed := make(map[string]bool)
 	for _, b := range tracked {
-		if b.LoginSpray {
+		if !countsTowardNetblock(b) {
 			sprayed[b.IP] = true
 		} else {
 			current[b.IP] = true

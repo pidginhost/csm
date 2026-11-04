@@ -168,7 +168,7 @@ type blockedIP struct {
 	Reason    string    `json:"reason"`
 	BlockedAt time.Time `json:"blocked_at"`
 	ExpiresAt time.Time `json:"expires_at"`
-	// LoginSpray marks a mail spray block; netblock escalation skips it.
+	// LoginSpray marks a mail spray block; IPv4 netblock escalation skips it.
 	LoginSpray bool `json:"login_spray,omitempty"`
 }
 
@@ -779,13 +779,13 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 			historyChanged = true
 		}
 		subnetCounts := netblockCounts(cfg, history, current, blocker, now, window)
-		// The cause is the newest block that counted; spray blocks never do.
+		// The cause is the newest block that counted; IPv4 spray blocks never do.
 		subnetCauses := make(map[string]blockedIP)
 		subnetBlocked := make(map[string]bool)
 		for _, b := range netblockRows {
 			cidr := subnetEscalationCIDR(b.IP)
 			prior := subnetCauses[cidr]
-			if cidr != "" && b.FindingID != "" && !b.LoginSpray && (prior.FindingID == "" || b.BlockedAt.After(prior.BlockedAt) || (b.BlockedAt.Equal(prior.BlockedAt) && b.FindingID > prior.FindingID)) {
+			if cidr != "" && b.FindingID != "" && countsTowardNetblock(b) && (prior.FindingID == "" || b.BlockedAt.After(prior.BlockedAt) || (b.BlockedAt.Equal(prior.BlockedAt) && b.FindingID > prior.FindingID)) {
 				subnetCauses[cidr] = b
 			}
 		}
