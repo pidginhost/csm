@@ -79,24 +79,42 @@ func TestAutoBlockUsesFindingTTL(t *testing.T) {
 	}
 }
 
-// Findings from two trackers can name one address in one batch: the longer
-// length and the spray flag win in either order.
+// Findings from two trackers or rules can name one address in one batch: the
+// longer length wins in either order. The block is a spray block only when
+// every finding asks for one; otherwise it stays on the scan budget, out of
+// the eviction preference and inside netblock escalation.
 func TestAutoBlockPendingKeepsLongestTTL(t *testing.T) {
 	const ip = "192.0.2.73"
-	for name, findings := range map[string][]alert.Finding{
-		"old rule first": {perIPMailFinding(ip), loginSprayFinding(ip)},
-		"spray first":    {loginSprayFinding(ip), perIPMailFinding(ip)},
+	otherSpray := loginSprayFinding(ip)
+	otherSpray.Check = "mail_bruteforce"
+	for name, tc := range map[string]struct {
+		findings []alert.Finding
+		spray    bool
+	}{
+		"old rule first": {[]alert.Finding{perIPMailFinding(ip), loginSprayFinding(ip)}, false},
+		"spray first":    {[]alert.Finding{loginSprayFinding(ip), perIPMailFinding(ip)}, false},
+		"waf first":      {[]alert.Finding{wafFinding(ip), loginSprayFinding(ip)}, false},
+		"spray then waf": {[]alert.Finding{loginSprayFinding(ip), wafFinding(ip)}, false},
+		"spray twice":    {[]alert.Finding{loginSprayFinding(ip), otherSpray}, true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			cfg := pendingTestConfig(t)
 			b := &outcomeStubBlocker{outcome: firewall.BlockOutcomeLive}
 			applyBlockTestSetup(t, b)
-			AutoBlockIPs(cfg, findings)
+			AutoBlockIPs(cfg, tc.findings)
 			if len(b.calls) != 1 || b.calls[0].timeout != loginSprayTTL {
 				t.Fatalf("block calls = %+v, want one %s block", b.calls, loginSprayTTL)
 			}
-			if state := loadBlockState(cfg.StatePath); state.LoginSprayBlocksThisHour != 1 || state.BlocksThisHour != 0 {
-				t.Fatalf("counters spray=%d scan=%d, want the block counted as a spray block", state.LoginSprayBlocksThisHour, state.BlocksThisHour)
+			state := loadBlockState(cfg.StatePath)
+			wantSpray, wantScan := 0, 1
+			if tc.spray {
+				wantSpray, wantScan = 1, 0
+			}
+			if state.LoginSprayBlocksThisHour != wantSpray || state.BlocksThisHour != wantScan {
+				t.Fatalf("counters spray=%d scan=%d, want %d and %d", state.LoginSprayBlocksThisHour, state.BlocksThisHour, wantSpray, wantScan)
+			}
+			if len(state.IPs) != 1 || state.IPs[0].LoginSpray != tc.spray {
+				t.Fatalf("tracker = %+v, want one row with spray tag %t", state.IPs, tc.spray)
 			}
 		})
 	}

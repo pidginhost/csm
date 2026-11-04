@@ -448,7 +448,9 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 
 		// A drained pending entry keeps its QueuedAt when the same IP
 		// recurs in fresh findings; the check, severity and reason are refreshed.
-		// The longest asked length and the spray flag survive the refresh.
+		// The longest asked length survives the refresh. The block stays a
+		// spray block only while every finding for the IP asks for one: any
+		// other finding keeps it on the scan budget and in netblock counts.
 		findingID := alert.FindingID(f)
 		if existing, ok := ipsToBlock[ip]; ok {
 			if existing.ActionID == "" {
@@ -458,7 +460,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 				existing.FindingID = findingID
 				existing.Cause = f.Cause
 				existing.TTL = max(existing.TTL, f.BlockTTL)
-				existing.LoginSpray = existing.LoginSpray || f.BlockTTL > 0
+				existing.LoginSpray = existing.LoginSpray && f.BlockTTL > 0
 			}
 			ipsToBlock[ip] = existing
 		} else {
