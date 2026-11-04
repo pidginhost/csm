@@ -1,10 +1,12 @@
 package checks
 
 import (
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/firewall"
 )
 
@@ -123,6 +125,53 @@ func TestAutoBlockPendingKeepsLongestTTL(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A spray retry requeued after a transient error carries an action ID. In
+// the legacy path that ID names no stored request, so a fresh WAF finding for
+// the address still merges in and the retry becomes a normal block. A durable
+// retry replays its stored request unchanged.
+func TestAutoBlockRequeuedSprayRetryMergesFreshFindings(t *testing.T) {
+	const ip = "192.0.2.87"
+	transient := errors.New("netlink receive: no buffer space available")
+	queueSprayRetry := func(t *testing.T, cfg *config.Config) {
+		t.Helper()
+		AutoBlockIPs(cfg, []alert.Finding{loginSprayFinding(ip)})
+		queued := loadBlockState(cfg.StatePath)
+		if len(queued.Pending) != 1 || queued.Pending[0].ActionID == "" || !queued.Pending[0].LoginSpray {
+			t.Fatalf("pending = %+v, want the spray retry with its action ID", queued.Pending)
+		}
+	}
+
+	t.Run("legacy", func(t *testing.T) {
+		cfg := pendingTestConfig(t)
+		b := &outcomeStubBlocker{outcome: firewall.BlockOutcomeNoop, err: transient}
+		applyBlockTestSetup(t, b)
+		queueSprayRetry(t, cfg)
+		b.outcome, b.err = firewall.BlockOutcomeLive, nil
+		AutoBlockIPs(cfg, []alert.Finding{wafFinding(ip)})
+		if len(b.calls) != 2 || b.calls[1].timeout != time.Hour {
+			t.Fatalf("block calls = %+v, want the retry at block_expiry", b.calls)
+		}
+		state := loadBlockState(cfg.StatePath)
+		if len(state.IPs) != 1 || state.IPs[0].LoginSpray || state.BlocksThisHour != 1 {
+			t.Fatalf("state = %+v, want one normal block on the scan budget", state)
+		}
+	})
+
+	t.Run("durable", func(t *testing.T) {
+		cfg := pendingTestConfig(t)
+		b := &sprayBudgetBlocker{apply: func(firewall.ActionRequest) (firewall.BlockOutcome, error) {
+			return firewall.BlockOutcomeNoop, transient
+		}}
+		applyBlockTestSetup(t, b)
+		queueSprayRetry(t, cfg)
+		b.apply = func(firewall.ActionRequest) (firewall.BlockOutcome, error) { return firewall.BlockOutcomeLive, nil }
+		AutoBlockIPs(cfg, []alert.Finding{wafFinding(ip)})
+		if len(b.requests) != 2 || b.requests[1] != b.requests[0] {
+			t.Fatalf("requests = %+v, want the stored spray request replayed unchanged", b.requests)
+		}
+	})
 }
 
 // A spray candidate over its hourly budget waits in the saved queue and

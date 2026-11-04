@@ -416,6 +416,12 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		})
 	}
 
+	// A durable retry must replay its stored request unchanged. Without
+	// durable actions an action ID names no stored request.
+	durableActions := false
+	if durable, ok := blocker.(durableActionBlocker); ok {
+		durableActions = durable.DurableActionsEnabled()
+	}
 	for _, f := range findings {
 		work.progress()
 		if f.AutoIPResponseEvaluated || !blockableFinding(f, cfg.AutoResponse.BlockCpanelLogins) {
@@ -457,7 +463,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		// in netblock counts.
 		findingID := alert.FindingID(f)
 		if existing, ok := ipsToBlock[ip]; ok {
-			if existing.ActionID == "" {
+			if existing.ActionID == "" || !durableActions {
 				existing.Reason = f.Message
 				existing.Check = f.Check
 				existing.Severity = f.Severity
