@@ -50,3 +50,29 @@ func TestCollectRecentIPsEximAuthFailureNeedsRecord(t *testing.T) {
 		t.Errorf("auth-failure client 198.51.100.7: got source %q, want SMTP auth failure (full map %v)", src, ips)
 	}
 }
+
+// Only a real Exim RCPT rejection record makes its client a candidate. The
+// same words in a subject or greeting are client text.
+func TestCollectRecentIPsEximRCPTRejectNeedsRecord(t *testing.T) {
+	forceCPanelPlatform(t)
+	const fake = "rejected RCPT <v@example.net>: relay not permitted"
+	content := `2026-04-14 10:00:00 1abc-DEF-01 <= a@example.com H=mail.example.com [203.0.113.42]:54321 P=esmtp S=1234 T="` + fake + `"` + "\n" +
+		`2026-04-14 10:00:01 1abc-DEF-02 <= a@example.com H=(` + fake + `) [203.0.113.43]:54321 P=esmtp S=1234` + "\n" +
+		"2026-04-14 10:00:02 H=mx.example.net (helo.example.net) [198.51.100.21]:2445 F=<a@example.com> rejected RCPT <b@example.net>: No Such User Here\n" +
+		"2026-04-14 10:00:03 H=(helo.example.net) [198.51.100.22]:4000 F=<a@example.com> temporarily rejected RCPT <b@example.net>: Could not complete sender verify\n" +
+		"2026-04-14 10:00:04 H=(helo.example.net) [198.51.100.23]:4001 X=TLS1.3:TLS_AES_256_GCM_SHA384:256 F=<a@example.com> A=dovecot_login:a@example.com rejected RCPT <b@example.net>: relay not permitted\n" +
+		"2026-04-14 10:00:05 H=(helo.example.net) [198.51.100.24]:4002 F=<a@example.com> rejected RCPT <b@example.net> NOTIFY=NEVER: relay not permitted\n"
+	withMockOS(t, writeMockLog(t, "/var/log/exim_mainlog", content))
+
+	ips := collectRecentIPs(&config.Config{})
+	for _, ip := range []string{"203.0.113.42", "203.0.113.43"} {
+		if src, ok := ips[ip]; ok {
+			t.Errorf("client text made %s a candidate (%q); full map %v", ip, src, ips)
+		}
+	}
+	for _, ip := range []string{"198.51.100.21", "198.51.100.22", "198.51.100.23", "198.51.100.24"} {
+		if src := ips[ip]; src != "SMTP auth failure" {
+			t.Errorf("RCPT rejection client %s: got source %q, want SMTP auth failure (full map %v)", ip, src, ips)
+		}
+	}
+}

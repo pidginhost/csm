@@ -222,3 +222,20 @@ func TestParseRejectIgnoresNonRejects(t *testing.T) {
 		}
 	}
 }
+
+// Command names the SMTP command a reject was for, whatever the reason text.
+func TestParseRejectCommand(t *testing.T) {
+	for line, want := range map[string]string{
+		"2026-10-20 12:00:00 H=(helo.example.net) [203.0.113.5]:1 F=<a@example.com> rejected RCPT <b@example.net>: No Such User Here":                            "RCPT",
+		"2026-10-20 12:00:00 H=(helo.example.net) [203.0.113.5]:1 F=<a@example.com> temporarily rejected RCPT <b@example.net>: Could not complete sender verify": "RCPT",
+		"2026-10-20 12:00:00 H=(helo.example.net) [203.0.113.5]:1 F=<a@example.com> rejected RCPT <b@example.net> NOTIFY=NEVER: relay not permitted":             "RCPT",
+		"2026-10-20 12:00:00 H=(WORKSTATION-1) [203.0.113.9]:54793 rejected MAIL <a@example.com>: Access denied - Invalid HELO name":                             "MAIL",
+		"2026-10-20 12:00:00 1tAbCd-000002-Ab H=(mx.example.net) [203.0.113.5]:52341 F=<a@example.com> rejected after DATA: Message rejected as spam":            "",
+		`2026-10-20 12:00:00 H=[203.0.113.17]:2526 rejected connection in "connect" ACL: "203.0.113.17 is listed at bl.example.net"`:                             "",
+	} {
+		r, ok := ParseReject(line, rejectLoc, rejectFallback)
+		if !ok || r.Command != want {
+			t.Errorf("ParseReject(%q) command = %q, %v; want %q", line, r.Command, ok, want)
+		}
+	}
+}
