@@ -203,3 +203,28 @@ func TestMailSprayMarkerBounded(t *testing.T) {
 		}
 	}
 }
+
+// Every spelling of one address shares its marker, verdict cadence and
+// trust, kept under the canonical form.
+func TestMailSprayCanonicalAddress(t *testing.T) {
+	m, clock := newTestSpray(markerSprayConfig())
+	sprayBlock(t, m, "2001:DB8:1::A")
+	sprayBlock(t, m, "::ffff:192.0.2.7")
+	if keys := slices.Sorted(maps.Keys(m.blocks)); !slices.Equal(keys, []string{"192.0.2.7", "2001:db8:1::a"}) {
+		t.Fatalf("marker keys = %v, want canonical addresses", keys)
+	}
+	if got := m.blocksByKey["2001:db8:1::/64"]; len(got) != 1 {
+		t.Fatalf("/64 index = %v, want the canonical address", got)
+	}
+	// The same address spelt otherwise is still suppressed.
+	wantNoVerdict(t, m.Failure("2001:db8:1:0::a", "c@example.com", mailboxExists))
+
+	ageTrust(t, m, clock, "2001:DB8:2::B", "t@example.com")
+	if _, ok := m.trust[sprayTrustKey{"2001:db8:2::b", "t@example.com"}]; !ok || !m.TrustedAll("2001:db8:2:0::b", []string{"t@example.com"}) {
+		t.Fatalf("trust not kept under the canonical address: %v", m.trustByIP)
+	}
+
+	clock.advance(8 * 24 * time.Hour)
+	wantRule(t, m.Failure("2001:db8:1::a", "c@example.com", mailboxExists), sprayRuleRepeat, true)
+	wantRule(t, m.Failure("192.0.2.7", "c@example.com", mailboxExists), sprayRuleRepeat, true)
+}

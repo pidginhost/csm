@@ -276,6 +276,7 @@ func (m *mailSpray) Mode() sprayMode {
 // names none) and returns a block verdict for rule 2, rule 3 or, in enforce
 // mode, rule 5 (an address blocked for spraying is back).
 func (m *mailSpray) Failure(ip, mailbox string, exist mailboxExistence) *sprayVerdict {
+	ip = sprayAddr(ip)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.cfg.Window <= 0 {
@@ -341,6 +342,7 @@ func (m *mailSpray) breadth(key, mailbox string, stored bool, untrusted []string
 // other untrusted mailboxes earns nothing and may be a compromise. A login
 // never adds to the evidence pool.
 func (m *mailSpray) Success(ip, mailbox string) (clean bool, v *sprayVerdict) {
+	ip = sprayAddr(ip)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.cfg.Window <= 0 || mailbox == "" {
@@ -438,6 +440,7 @@ func (m *mailSpray) trustPredatesFailures(e *sprayIP, k sprayTrustKey, key strin
 // IP's evidence key, for a login the caller knows was a guessed password. Remember the crack for the evidence
 // window so another login, on either protocol, cannot immediately restore it.
 func (m *mailSpray) RevokeTrust(ip, mailbox string) {
+	ip = sprayAddr(ip)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	key := sprayEvidenceKey(ip)
@@ -469,6 +472,7 @@ func (m *mailSpray) dropKeyTrust(key, mailbox string) {
 // that also failed before keeps only its first failure. Trust, verdicts
 // and corroboration stay.
 func (m *mailSpray) ForgetRecentFailures(ip string, since time.Time) {
+	ip = sprayAddr(ip)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	key := sprayEvidenceKey(ip)
@@ -497,6 +501,7 @@ func (m *mailSpray) ForgetRecentFailures(ip string, since time.Time) {
 // TrustedAll reports whether the IP holds aged trust on every one of the
 // normalised mailboxes. An empty list is not trusted.
 func (m *mailSpray) TrustedAll(ip string, mailboxes []string) bool {
+	ip = sprayAddr(ip)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.cfg.Window <= 0 || len(mailboxes) == 0 {
@@ -828,10 +833,11 @@ func (m *mailSpray) Load(read func(func(store.MailSprayState)) error) error {
 	// The bucket may hold entries this load dropped: rewrite it whole.
 	m.resetChanges()
 	return read(func(st store.MailSprayState) {
-		for ip, mbs := range st.Trust {
-			if !sprayValidIP(ip) {
+		for saved, mbs := range st.Trust {
+			if !sprayValidIP(saved) {
 				continue
 			}
+			ip := sprayAddr(saved)
 			for mb, p := range mbs {
 				mb = strings.Clone(normalizeSprayMailbox(mb))
 				if mb == "" || p.First.After(now) || p.Last.After(now) ||
@@ -876,11 +882,12 @@ func (m *mailSpray) Load(read func(func(store.MailSprayState)) error) error {
 			}
 		}
 		// A block cannot end later than one starting now would.
-		for ip, end := range st.Blocked {
-			if !sprayValidIP(ip) || end.Before(cutoff) {
+		for saved, end := range st.Blocked {
+			if !sprayValidIP(saved) || end.Before(cutoff) {
 				continue
 			}
-			m.noteBlock(ip, sprayNotAfter(end, now.Add(m.cfg.BlockTTL)))
+			ip := sprayAddr(saved)
+			m.noteBlock(ip, sprayLatest(m.blocks[ip], sprayNotAfter(end, now.Add(m.cfg.BlockTTL))))
 		}
 	})
 }
@@ -930,14 +937,15 @@ func (m *mailSpray) loadIP(e *sprayIP, key string, s store.MailSprayIP, cutoff, 
 		e.observedNames = max(e.observedNames, min(max(s.ObservedNames, 0), maxSprayNamesPerIP))
 	}
 	limit := now.Add(m.cfg.Suppression)
-	for ip, saved := range s.Sources {
-		if !sprayValidIP(ip) || sprayEvidenceKey(ip) != key {
+	for addr, saved := range s.Sources {
+		if !sprayValidIP(addr) || sprayEvidenceKey(addr) != key {
 			continue
 		}
+		ip := sprayAddr(addr)
 		src := e.sources[ip]
 		src.blockUntil = sprayLatest(src.blockUntil, sprayNotAfter(saved.SuppressedUntil, limit))
 		src.compromiseUntil = sprayLatest(src.compromiseUntil, sprayNotAfter(saved.CompromiseUntil, limit))
-		e.setSource(strings.Clone(ip), src)
+		e.setSource(ip, src)
 	}
 	// Revoke before choosing failures at the name cap, including revocations
 	// whose names will be represented only by the overflow marker.
@@ -1127,6 +1135,18 @@ func sprayEvidenceKey(ip string) string {
 	}
 	p, _ := a.Prefix(64)
 	return p.String()
+}
+
+// sprayAddr is the one spelling of an address that its marker, verdict
+// cadence and trust are kept under, so every spelling of it shares them:
+// IPv4-mapped IPv6 as IPv4, IPv6 lower case and compressed. An ip that
+// does not parse is kept as given.
+func sprayAddr(ip string) string {
+	a, err := netip.ParseAddr(ip)
+	if err != nil {
+		return ip
+	}
+	return a.Unmap().String()
 }
 
 // sprayNetworkKey is the network a source counts as for corroboration: the

@@ -1278,3 +1278,49 @@ func TestMailSprayMarkerPersists(t *testing.T) {
 		wantRule(t, m.Failure(ip, "c@example.com", mailboxExists), sprayRuleRepeat, true)
 	}
 }
+
+// Saved address keys load under the canonical form. Spellings of one
+// address merge, the later time winning whatever the visit order.
+func TestMailSprayLoadCanonicalisesAddresses(t *testing.T) {
+	cfg := markerSprayConfig()
+	m, clock := newTestSpray(cfg)
+	now := clock.Now()
+	early, late := now.Add(-2*time.Hour), now.Add(-time.Hour)
+	entry := func(src string, until time.Time) store.MailSprayIP {
+		return store.MailSprayIP{
+			Failed:   map[string]store.MailSprayFailure{"a@example.com": {First: early, Last: early, Count: 1}},
+			Sources:  map[string]store.MailSpraySource{src: {SuppressedUntil: until}},
+			LastSeen: early,
+		}
+	}
+	visits := []store.MailSprayState{
+		{
+			IPs:     map[string]store.MailSprayIP{"2001:db8:1::/64": entry("2001:db8:1:0::a", now.Add(20*time.Minute))},
+			Trust:   map[string]map[string]store.GoodSourcePair{"2001:db8:1:0::b": {"t@example.com": {First: early, Last: late}}},
+			Blocked: map[string]time.Time{"2001:db8:1:0::a": late},
+		},
+		{
+			IPs:     map[string]store.MailSprayIP{"2001:db8:1::/64": entry("2001:DB8:1::A", now.Add(10*time.Minute))},
+			Trust:   map[string]map[string]store.GoodSourcePair{"2001:DB8:1::B": {"t@example.com": {First: early, Last: early}}},
+			Blocked: map[string]time.Time{"2001:DB8:1::A": early},
+		},
+	}
+	if err := m.Load(func(visit func(store.MailSprayState)) error {
+		for _, st := range visits {
+			visit(st)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	const a, b = "2001:db8:1::a", "2001:db8:1::b"
+	if end, ok := m.blocks[a]; len(m.blocks) != 1 || !ok || !end.Equal(late) {
+		t.Errorf("markers = %v, want %s ending %v", m.blocks, a, late)
+	}
+	if src, ok := m.ips["2001:db8:1::/64"].sources[a]; len(m.ips["2001:db8:1::/64"].sources) != 1 || !ok || !src.blockUntil.Equal(now.Add(20*time.Minute)) {
+		t.Errorf("sources = %v, want %s suppressed until the later time", m.ips["2001:db8:1::/64"].sources, a)
+	}
+	if tr, ok := m.trust[sprayTrustKey{b, "t@example.com"}]; m.TrustSize() != 1 || !ok || !tr.last.Equal(late) {
+		t.Errorf("trust = %v, want %s last seen at the later time", m.trust, b)
+	}
+}
