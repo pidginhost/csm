@@ -74,18 +74,18 @@ func (l *AdmissionLedger) HeldEffects(limit int) ([]HeldEffect, error) {
 // operator unblock, undo or flush, or a lost element), which needs no
 // trusted clock (spec 5.2): its record is gone from the first miss's
 // reading and frees its slot. A record that changed in between is left to
-// what changed it. It reports how many records it marked; an error marks
-// none and keeps all previous misses, accepting neither new misses nor
-// held replies from the failed answer.
-func (l *AdmissionLedger) ObserveHeld(asked []HeldEffect, held []bool) (int, error) {
+// what changed it. It returns the blocks it marked, whose rows the owner
+// retires; an error marks none and keeps all previous misses, accepting
+// neither new misses nor held replies from the failed answer.
+func (l *AdmissionLedger) ObserveHeld(asked []HeldEffect, held []bool) ([]HeldEffect, error) {
 	if len(asked) != len(held) {
-		return 0, refusal(admission.ReasonInvalid, "firewall answers do not match the held blocks")
+		return nil, refusal(admission.ReasonInvalid, "firewall answers do not match the held blocks")
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now, err := l.clock()
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	missed := make(map[admission.ActionID]time.Time)
 	var gone []HeldEffect
@@ -108,25 +108,25 @@ func (l *AdmissionLedger) ObserveHeld(asked []HeldEffect, held []bool) (int, err
 		return nil
 	})
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	marked := 0
+	var marked []HeldEffect
 	if len(gone) > 0 {
 		err = l.update("gone", func(tx *bolt.Tx) error {
-			marked = 0
+			marked = nil
 			for i, h := range gone {
 				ok, txErr := markGone(tx, h, since[i])
 				if txErr != nil {
 					return txErr
 				}
 				if ok {
-					marked++
+					marked = append(marked, h)
 				}
 			}
 			return nil
 		})
 		if err != nil {
-			return 0, err
+			return nil, err
 		}
 	}
 	l.missed = missed

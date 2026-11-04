@@ -45,6 +45,13 @@ func (o *Owner) observeHeld() error {
 		return fmt.Errorf("checking held blocks: %w", err)
 	}
 	// The ledger refuses a short answer whole.
-	_, err = o.ledger.ObserveHeld(asked, held)
+	gone, err := o.ledger.ObserveHeld(asked, held)
+	for _, h := range gone {
+		// An element lost outside CSM leaves its row behind. Retire it as
+		// an evicted victim's row, so a firewall reload cannot restore what
+		// the ledger no longer counts.
+		addr, _ := h.Target.Addr()
+		o.evicted = append(o.evicted, firewall.BlockAction{Action: string(h.Action), IP: addr.String()})
+	}
 	return err
 }

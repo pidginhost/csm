@@ -32,7 +32,7 @@ func TestAdmissionLedgerGoneSchemaOnlyFollowsStoredMarks(t *testing.T) {
 	reads := f.db.bolt.Stats().TxN
 	done := make(chan error, 1)
 	go func() {
-		n, err := f.l.ObserveHeld(asked, []bool{false})
+		n, err := markedCount(f.l.ObserveHeld(asked, []bool{false}))
 		if err == nil && n != 0 {
 			err = fmt.Errorf("marked %d swept effects", n)
 		}

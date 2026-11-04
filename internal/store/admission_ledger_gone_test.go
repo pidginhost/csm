@@ -20,7 +20,7 @@ func (f *ledgerFixture) heldOf(a admission.AttemptRecord, target string) HeldEff
 func (f *ledgerFixture) observeHeld(asked []HeldEffect, held ...bool) int {
 	f.t.Helper()
 	f.tickAt(f.wall.Add(time.Minute))
-	n, err := f.l.ObserveHeld(asked, held)
+	n, err := markedCount(f.l.ObserveHeld(asked, held))
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -181,7 +181,7 @@ func TestAdmissionLedgerObserveHeldRefusesMismatchedAnswers(t *testing.T) {
 	refuse := func() {
 		t.Helper()
 		before := f.snapshot()
-		_, err := f.l.ObserveHeld(asked, []bool{false, false})
+		_, err := markedCount(f.l.ObserveHeld(asked, []bool{false, false}))
 		wantLedgerReason(t, "mismatched answers", err, admission.ReasonInvalid)
 		if !reflect.DeepEqual(before, f.snapshot()) {
 			t.Fatal("a refused answer changed the ledger")
@@ -301,7 +301,7 @@ func TestAdmissionLedgerFailedGoneWriteKeepsTheMisses(t *testing.T) {
 	f.tickAt(f.wall.Add(time.Minute))
 	before := f.snapshot()
 	f.failNext("gone")
-	if n, err := f.l.ObserveHeld(asked, []bool{false}); err == nil || n != 0 {
+	if n, err := markedCount(f.l.ObserveHeld(asked, []bool{false})); err == nil || n != 0 {
 		t.Fatalf("a failed write: %d, %v", n, err)
 	}
 	if !reflect.DeepEqual(before, f.snapshot()) {
@@ -326,7 +326,7 @@ func TestAdmissionLedgerObserveHeldNeedsTheRecordsTarget(t *testing.T) {
 	wrong := append([]HeldEffect(nil), asked...)
 	wrong[0].Target = f.target("192.0.2.99")
 	before := f.snapshot()
-	if n, err := f.l.ObserveHeld(wrong, []bool{false}); n != 0 {
+	if n, err := markedCount(f.l.ObserveHeld(wrong, []bool{false})); n != 0 {
 		t.Fatalf("mismatched target marked %d", n)
 	} else {
 		wantLedgerReason(t, "mismatched target", err, admission.ReasonInvalid)
@@ -355,7 +355,7 @@ func TestAdmissionLedgerGoneWriteFailureRejectsWholeAnswer(t *testing.T) {
 	f.tickAt(f.wall.Add(time.Minute))
 	before := f.snapshot()
 	f.failNext("gone")
-	if n, err := f.l.ObserveHeld(asked, []bool{false, true, false}); err == nil || n != 0 {
+	if n, err := markedCount(f.l.ObserveHeld(asked, []bool{false, true, false})); err == nil || n != 0 {
 		t.Fatalf("failed answer: %d %v", n, err)
 	}
 	if !reflect.DeepEqual(before, f.snapshot()) {
@@ -482,11 +482,11 @@ func TestAdmissionLedgerGoneMissesSurviveClockButNotRestart(t *testing.T) {
 	if tick, err := f.l.Tick(admission.ClockReading{Wall: f.wall.Add(2 * time.Hour), BootID: ledgerBoot, SinceBoot: f.since + time.Minute}); err != nil || !tick.Degraded {
 		t.Fatalf("forward step: %+v %v", tick, err)
 	}
-	if n, err := f.l.ObserveHeld(asked, []bool{false}); err != nil || n != 0 {
+	if n, err := markedCount(f.l.ObserveHeld(asked, []bool{false})); err != nil || n != 0 {
 		t.Fatalf("restart kept a first miss: %d %v", n, err)
 	}
 	first := f.l.now
-	if n, err := f.l.ObserveHeld(asked, []bool{false}); err != nil || n != 1 {
+	if n, err := markedCount(f.l.ObserveHeld(asked, []bool{false})); err != nil || n != 1 {
 		t.Fatalf("degraded clock prevented absence proof: %d %v", n, err)
 	}
 	if rec, _ := f.effectOf(a); !rec.Gone.Equal(first) {
@@ -516,7 +516,7 @@ func TestAdmissionLedgerGoneChecksReachEveryBatch(t *testing.T) {
 			t.Fatalf("batch %d: %+v %v, want %+v", i, asked, err, want)
 		}
 		before := f.snapshot()
-		if _, err := f.l.ObserveHeld(asked, nil); err == nil || !reflect.DeepEqual(before, f.snapshot()) {
+		if _, err := markedCount(f.l.ObserveHeld(asked, nil)); err == nil || !reflect.DeepEqual(before, f.snapshot()) {
 			t.Fatalf("refused answer changed batch %d: %v", i, err)
 		}
 		if again, err := f.l.HeldEffects(1); err != nil || !reflect.DeepEqual(again, asked) {
@@ -530,5 +530,26 @@ func TestAdmissionLedgerGoneChecksReachEveryBatch(t *testing.T) {
 		if n != wantGone {
 			t.Fatalf("batch %d marked %d, want %d", i, n, wantGone)
 		}
+	}
+}
+
+// markedCount is how many blocks an answer marked gone.
+func markedCount(gone []HeldEffect, err error) (int, error) { return len(gone), err }
+
+// An answer reports the blocks it marked gone, so the owner can retire
+// any row their elements left behind.
+func TestAdmissionLedgerObserveHeldReturnsTheMarkedBlocks(t *testing.T) {
+	f := liveLedgerFixture(t)
+	a := f.verifiedWith("192.0.2.10", admission.SeverityWarning, time.Hour)
+	b := f.verifiedWith("192.0.2.11", admission.SeverityWarning, 2*time.Hour)
+	asked, _ := f.l.HeldEffects(10)
+	f.observeHeld(asked, false, true)
+	f.tickAt(f.wall.Add(time.Minute))
+	gone, err := f.l.ObserveHeld(asked, []bool{false, true})
+	if want := []HeldEffect{f.heldOf(a, "192.0.2.10")}; err != nil || !reflect.DeepEqual(gone, want) {
+		t.Fatalf("marked %+v %v, want %+v", gone, err, want)
+	}
+	if rec, _ := f.effectOf(b); !rec.Gone.IsZero() {
+		t.Fatalf("a held block was marked: %+v", rec)
 	}
 }

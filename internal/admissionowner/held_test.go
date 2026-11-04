@@ -250,3 +250,44 @@ func TestOwnerHeldCheckMissingEngineKeepsRetry(t *testing.T) {
 		t.Fatal("missing engine lost the first miss")
 	}
 }
+
+// A block marked gone may leave its firewall row behind (an element lost
+// outside CSM). The owner retires that row as it retires an evicted
+// victim's, so a firewall reload cannot restore what the ledger no longer
+// counts; the startup readers cover a crash before it.
+func TestOwnerRetiresTheRowOfAGoneBlock(t *testing.T) {
+	o, blocks, f, mono, a := verifiedOwner(t, "192.0.2.10")
+	blocks.set(func(b *fakeBlocks) { b.removed["192.0.2.10"] = true })
+	later(t, o, f, mono)
+	later(t, o, f, mono)
+	if st := ledgerStatus(t, o); st.Effects.General != 0 {
+		t.Fatalf("effects after two misses = %+v", st.Effects)
+	}
+	turn(t, o)
+	want := firewall.BlockAction{Action: string(a.Attempt.ID), IP: "192.0.2.10"}
+	retired := false
+	for _, call := range blocks.retireCalls() {
+		for _, r := range call {
+			retired = retired || r == want
+		}
+	}
+	marked := false
+	blocks.set(func(b *fakeBlocks) {
+		for _, call := range b.marked {
+			for _, id := range call {
+				marked = marked || id == want.Action
+			}
+		}
+	})
+	if !retired || !marked {
+		t.Fatalf("gone block's row: retired %t (%+v), marked unverified %t", retired, blocks.retireCalls(), marked)
+	}
+	if err := o.do(func() error {
+		if len(o.evicted) != 0 {
+			t.Errorf("cleanup kept %+v after the row was clear", o.evicted)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -342,7 +342,9 @@ firewall cannot read. A failed or short answer marks nothing and counts
 as no miss.
 Startup drops the state row of an admission-record victim whose eviction
 the ledger verified, and of a block the ledger marked gone, so a restart
-cannot restore an element whose slot the ledger no longer counts. Imports have no durable cleanup record: a restart
+cannot restore an element whose slot the ledger no longer counts. A
+running owner retires the row of a block it marks gone as it retires an
+evicted victim's, so a firewall reload cannot restore it either. Imports have no durable cleanup record: a restart
 before retirement restores the import only until its original expiry. Startup readers report an error if the
 effects bucket disagrees with the schema or an effect is a nested bucket;
 they do not treat damaged eviction storage as an absent record.
