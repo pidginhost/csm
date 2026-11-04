@@ -586,3 +586,21 @@ func TestSMTPSprayIPv6BlocksFailingAddress(t *testing.T) {
 		}
 	}
 }
+
+// IPv6 evidence is kept per /64, but blocks name the failing address. The
+// finding says which network the targets and history belong to.
+func TestMailSprayFindingNamesIPv6Scope(t *testing.T) {
+	now := time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)
+	breadth := &sprayVerdict{Rule: sprayRuleBreadth, Block: true, Targets: []string{"a@example.com", "b@example.com"}}
+	compromise := &sprayVerdict{Rule: sprayRuleCompromise, Block: true, Mailbox: "a@example.com", Targets: []string{"ghost@example.com"}}
+	const scope = "Targets and failure history cover 2001:db8:1:2::/64; any block applies to 2001:db8:1:2::c only."
+	for _, v := range []*sprayVerdict{breadth, compromise} {
+		f := sprayFinding(protoSMTP, "2001:db8:1:2::c", v, sprayEnforce, now)
+		if f.SourceIP != "2001:db8:1:2::c" || !strings.HasSuffix(f.Details, scope) {
+			t.Fatalf("IPv6 %s finding: source %s, details %q", v.Rule, f.SourceIP, f.Details)
+		}
+		if f = sprayFinding(protoSMTP, "203.0.113.90", v, sprayEnforce, now); strings.Contains(f.Details, "cover") {
+			t.Fatalf("IPv4 %s finding names a network: %q", v.Rule, f.Details)
+		}
+	}
+}

@@ -34,7 +34,7 @@ func sprayFinding(proto mailProto, ip string, v *sprayVerdict, mode sprayMode, n
 	if !enforce {
 		observe = " Observe mode: reported only, not blocked."
 	}
-	targets := formatSprayTargets(v.Targets, v.Extra)
+	targets := strings.TrimSpace(formatSprayTargets(v.Targets, v.Extra) + " " + sprayScope(ip))
 
 	if v.Block && v.Rule != sprayRuleCompromise {
 		reason := fmt.Sprintf("failed logins on %d mailboxes it has no trusted login for", len(v.Targets)+v.Extra)
@@ -99,6 +99,16 @@ func sprayFinding(proto mailProto, ip string, v *sprayVerdict, mode sprayMode, n
 		Domain:    domain,
 		Mailbox:   v.Mailbox,
 	}
+}
+
+// sprayScope says that an IPv6 source's targets and failure history are
+// those of its /64, while a block names only the source address.
+func sprayScope(ip string) string {
+	key := sprayEvidenceKey(ip)
+	if !strings.Contains(key, "/") {
+		return ""
+	}
+	return fmt.Sprintf("Targets and failure history cover %s; any block applies to %s only.", key, ip)
 }
 
 // sprayMailboxText renders a client-chosen mailbox name for a finding.
