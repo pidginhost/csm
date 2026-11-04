@@ -94,7 +94,7 @@ const (
 
 type sprayVerdict struct {
 	Rule     sprayRule
-	Block    bool          // missing_mailbox, breadth, and compromise unless downgraded
+	Block    bool          // missing_mailbox, breadth, repeat, and compromise unless downgraded
 	Mailbox  string        // the login's mailbox (success rules) or the missing one
 	Targets  []string      // untrusted names in memory, sorted; "" is an accountless failure
 	Extra    int           // untrusted names beyond Targets
