@@ -606,7 +606,7 @@ func (l *AdmissionLedger) FinishEviction(id admission.ActionID, d admission.Disp
 		return admission.Candidate{}, admission.AttemptRecord{}, refusal(admission.ReasonInvalid, "no victim outcome")
 	}
 	cand, att, _, err := l.attemptStep("finish", id, l.recordedClock, func(q *queueTx, a *admission.AttemptRecord, c *admission.Candidate) (bool, error) {
-		return q.finishAttempt(a, c, d, v, lead)
+		return q.finishAttempt(a, c, d, v, lead, l.elapsed)
 	})
 	return cand, att, err
 }
@@ -649,7 +649,7 @@ func (l *AdmissionLedger) FinishExisting(id admission.ActionID, link admission.E
 			return loadErr
 		}
 		from := c.State
-		changed, stepErr := q.finishAttempt(&a, &c, admission.DispositionFailed, admission.VictimSpared, 0)
+		changed, stepErr := q.finishAttempt(&a, &c, admission.DispositionFailed, admission.VictimSpared, 0, l.elapsed)
 		if stepErr != nil {
 			return stepErr
 		}
@@ -735,7 +735,7 @@ func (l *AdmissionLedger) Settle() (failed, unknown int, err error) {
 			} else {
 				failed++
 			}
-			if _, txErr = q.finishAttempt(&a, &c, d, admission.VictimSpared, 0); txErr != nil {
+			if _, txErr = q.finishAttempt(&a, &c, d, admission.VictimSpared, 0, l.elapsed); txErr != nil {
 				return txErr
 			}
 			c.Transitions++
@@ -789,7 +789,7 @@ func (l *AdmissionLedger) ObserveVictim(id admission.CandidateID, lane admission
 			return txErr
 		}
 		from := c.State
-		if _, txErr = q.finishAttempt(&a, &c, admission.DispositionObserve, admission.VictimSpared, 0); txErr != nil {
+		if _, txErr = q.finishAttempt(&a, &c, admission.DispositionObserve, admission.VictimSpared, 0, l.elapsed); txErr != nil {
 			return txErr
 		}
 		if !admission.CanTransition(from, c.State) {
@@ -812,7 +812,7 @@ func (l *AdmissionLedger) ObserveVictim(id admission.CandidateID, lane admission
 // finishAttempt records outcome d of the candidate's current attempt a and
 // reports whether it changed anything. The caller counts the transition
 // and stores both records.
-func (q *queueTx) finishAttempt(a *admission.AttemptRecord, c *admission.Candidate, d admission.Disposition, v admission.VictimOutcome, lead time.Duration) (bool, error) {
+func (q *queueTx) finishAttempt(a *admission.AttemptRecord, c *admission.Candidate, d admission.Disposition, v admission.VictimOutcome, lead, elapsed time.Duration) (bool, error) {
 	var state admission.State
 	switch d {
 	case admission.DispositionApplied, admission.DispositionNarrowed:
@@ -863,7 +863,7 @@ func (q *queueTx) finishAttempt(a *admission.AttemptRecord, c *admission.Candida
 	// unknown one, which may hold it; any other outcome gives it back.
 	switch state {
 	case admission.StateVerified:
-		err = q.markApplied(*a, v)
+		err = q.markApplied(*a, v, elapsed)
 	case admission.StateUnknown:
 	default:
 		err = q.releaseSlot(*a)
@@ -911,7 +911,7 @@ func (q *queueTx) finishAttempt(a *admission.AttemptRecord, c *admission.Candida
 		return false, err
 	}
 	if c.State == admission.StateVerified {
-		if err = q.closeEpisode(*c, lead); err != nil {
+		if err = q.closeEpisode(*c, lead, elapsed); err != nil {
 			return false, err
 		}
 		err = q.raise(admission.NoticeKey{Kind: admission.NoticeAppliedSummary}, a.Attempt.Candidate, c.Transitions+1)

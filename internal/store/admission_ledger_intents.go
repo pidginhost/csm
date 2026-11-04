@@ -350,7 +350,7 @@ func currentLedger(tx *bolt.Tx) (bool, error) {
 			return false, admission.ErrCorruptRecord
 		}
 		return false, nil
-	case len(schema) != 1 || schema[0] < admissionSchemaVersion || schema[0] > admissionSchemaEffects:
+	case len(schema) != 1 || schema[0] < admissionSchemaVersion || schema[0] > admissionSchemaEpisodeElapsed:
 		return false, ErrAdmissionSchema
 	case intents == nil:
 		return false, admission.ErrCorruptRecord
@@ -395,8 +395,11 @@ func evictedBlock(tx *bolt.Tx, a admission.AttemptRecord) (bool, error) {
 	// must not masquerade as a ledger without effect records.
 	b := tx.Bucket([]byte(admissionEffectsBucket))
 	schema := tx.Bucket([]byte(admissionMetaBucket)).Get(admissionSchemaKey)
-	if (b != nil) != (schema[0] == admissionSchemaEffects) {
-		return false, admission.ErrCorruptRecord
+	if len(schema) != 1 || schema[0] < admissionSchemaVersion || schema[0] > admissionSchemaEpisodeElapsed {
+		return false, ErrAdmissionSchema
+	}
+	if _, err := effectLayout(tx, schema[0]); err != nil {
+		return false, err
 	}
 	rec, key, found, err := loadEffect(tx, a)
 	if err == nil && !found && b != nil && b.Bucket(key) != nil {

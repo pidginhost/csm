@@ -446,7 +446,10 @@ func TestAdmissionLedgerAssignsEpisodesToArrivals(t *testing.T) {
 	if c.Key.Episode.IsZero() || c.Key.Generation != 1 {
 		t.Fatalf("first candidate key = %+v", c.Key)
 	}
-	want := admission.Episode{ID: c.Key.Episode, Last: ledgerT0.Add(-10 * time.Minute), Lines: []admission.EpisodeLine{{Kind: admission.KindBlockIP, Generation: 1, Candidate: first.Candidate, Observed: ledgerT0.Add(-10 * time.Minute)}}}
+	// The quiet hour runs from the observation on the wall and from the
+	// placing reading on elapsed time.
+	elapsed := f.ceilingState().Elapsed
+	want := admission.Episode{ID: c.Key.Episode, Last: ledgerT0.Add(-10 * time.Minute), EndElapsed: elapsed + admission.EpisodeQuiet, Lines: []admission.EpisodeLine{{Kind: admission.KindBlockIP, Generation: 1, Candidate: first.Candidate, Observed: ledgerT0.Add(-10 * time.Minute)}}}
 	if row, ok := f.episodeAt("192.0.2.10"); !ok || !reflect.DeepEqual(row, want) {
 		t.Fatalf("episode row = %+v %v, want %+v", row, ok, want)
 	}
@@ -454,7 +457,7 @@ func TestAdmissionLedgerAssignsEpisodesToArrivals(t *testing.T) {
 	if again.Err != nil || again.Created || again.Candidate != first.Candidate {
 		t.Fatalf("a later observation must coalesce: %+v", again)
 	}
-	want.Last, want.Lines[0].Observed = ledgerT0, ledgerT0
+	want.Last, want.Lines[0].Observed, want.EndElapsed = ledgerT0, ledgerT0, elapsed+admission.EpisodeQuiet
 	if row, _ := f.episodeAt("192.0.2.10"); !reflect.DeepEqual(row, want) {
 		t.Fatalf("after the later observation = %+v", row)
 	}
@@ -1207,8 +1210,9 @@ func TestAdmissionLedgerVerifiedEpisodeEndsInAdmissionTime(t *testing.T) {
 				t.Fatalf("reopen with converted episode: %v", err)
 			}
 			end := ledgerT0.Add(tc.end)
-			if row, _ := f.episodeAt("192.0.2.10"); !row.Verified.Equal(end) {
-				t.Fatalf("verified end = %v, want %v", row.Verified, end)
+			wantElapsed := f.ceilingState().Elapsed + max(end.Sub(f.wall), 0)
+			if row, _ := f.episodeAt("192.0.2.10"); !row.Verified.Equal(end) || row.EndElapsed != wantElapsed {
+				t.Fatalf("verified end = %v elapsed %v, want %v elapsed %v", row.Verified, row.EndElapsed, end, wantElapsed)
 			}
 			if c := f.candidateOf(first); !c.ExpiresAt.Equal(expires) {
 				t.Fatalf("the block's expiry moved to %v", c.ExpiresAt)
@@ -1246,5 +1250,348 @@ func TestAdmissionLedgerLeaseRetirementProofSurvivesConversion(t *testing.T) {
 	}
 	if _, err := OpenAdmissionLedger(f.db, f.reg); err != nil {
 		t.Fatalf("reopen after lease retirement: %v", err)
+	}
+}
+
+// ledgerRebootID is the fixture host's next boot.
+const ledgerRebootID = "1f5e3c2a-1b4d-4e6f-8a9b-0c1d2e3f4a5b"
+
+// stepWall moves the wall by step while only elapsed passes: one degraded
+// reading.
+func (f *ledgerFixture) stepWall(step, elapsed time.Duration) {
+	f.t.Helper()
+	f.wall, f.since = f.wall.Add(step), f.since+elapsed
+	if tick, err := f.l.Tick(admission.ClockReading{Wall: f.wall, BootID: ledgerBoot, SinceBoot: f.since}); err != nil || !tick.Degraded {
+		f.t.Fatalf("step tick = %+v, %v", tick, err)
+	}
+}
+
+// I3: a forward wall step is degraded for one reading and the next trusted
+// reading carries admission time ahead. The episode holds until its quiet
+// hour has elapsed too, then ends on both clocks.
+func TestAdmissionLedgerForwardClockStepKeepsTheEpisode(t *testing.T) {
+	f := newLedgerFixture(t)
+	f.begin()
+	first := f.arrive(f.arrival(evidenceSpec{cursor: "offset=1"}))[0]
+	episode := f.candidateOf(first.Candidate).Key.Episode
+	if _, err := f.l.Terminate(first.Candidate, admission.ReasonPolicy); err != nil {
+		t.Fatal(err)
+	}
+	f.stepWall(2*time.Hour, time.Minute)
+	if tick := f.tickAt(f.wall.Add(time.Minute)); tick.Degraded {
+		t.Fatal("the reading after the step is degraded")
+	}
+	held := f.arrive(f.arrival(evidenceSpec{cursor: "offset=2"}))[0]
+	if c := f.candidateOf(held.Candidate); held.Err != nil || c.Key.Episode != episode || c.Key.Generation != 2 {
+		t.Fatalf("after a forward step = %+v %+v", held, c.Key)
+	}
+	if row, _ := f.episodeAt("192.0.2.10"); row.EndElapsed != f.ceilingState().Elapsed+admission.EpisodeQuiet {
+		t.Fatalf("elapsed end = %v, ceiling elapsed %v", row.EndElapsed, f.ceilingState().Elapsed)
+	}
+	if _, err := f.l.Terminate(held.Candidate, admission.ReasonPolicy); err != nil {
+		t.Fatal(err)
+	}
+	f.tickAt(f.wall.Add(admission.EpisodeQuiet))
+	next := f.arrive(f.arrival(evidenceSpec{cursor: "offset=3"}))[0]
+	if c := f.candidateOf(next.Candidate); next.Err != nil || !next.Created || c.Key.Episode == episode {
+		t.Fatalf("after the quiet hour on both clocks = %+v %+v", next, c.Key)
+	}
+}
+
+// A verified block's episode lasts as long as the block on elapsed time:
+// a forward step leaves an observation answered by the block until its
+// lifetime has elapsed.
+func TestAdmissionLedgerVerifiedEpisodeOutlastsAForwardStep(t *testing.T) {
+	f := newLedgerFixture(t)
+	f.begin()
+	// Some elapsed time first, so the verified row's elapsed end shows it.
+	f.tickAt(f.wall.Add(time.Minute))
+	first := f.arrive(f.arrival(evidenceSpec{cursor: "offset=1"}))[0].Candidate
+	expiry := f.wall.Add(20 * time.Minute)
+	f.finishArrival(first, expiry, admission.DispositionApplied)
+	if row, _ := f.episodeAt("192.0.2.10"); !row.Verified.Equal(expiry) || row.EndElapsed != f.ceilingState().Elapsed+20*time.Minute {
+		t.Fatalf("verified row = %+v, ceiling elapsed %v", row, f.ceilingState().Elapsed)
+	}
+	f.stepWall(3*time.Hour, time.Minute)
+	f.tickAt(f.wall.Add(time.Minute))
+	wantLedgerReason(t, "after a forward step", f.arrive(f.arrival(evidenceSpec{cursor: "offset=2"}))[0].Err, admission.ReasonExistingEffect)
+	f.tickAt(f.wall.Add(18 * time.Minute))
+	next := f.arrive(f.arrival(evidenceSpec{cursor: "offset=3"}))[0]
+	if c := f.candidateOf(next.Candidate); next.Err != nil || !next.Created || c.Key.Episode == f.candidateOf(first).Key.Episode {
+		t.Fatalf("after the block on both clocks = %+v %+v", next, c.Key)
+	}
+}
+
+// A reboot grants no elapsed time: an episode whose quiet hour passed on
+// the wall during downtime holds until the hour has elapsed on the new
+// boot.
+func TestAdmissionLedgerRebootGrantsNoEpisodeTime(t *testing.T) {
+	f := newLedgerFixture(t)
+	f.begin()
+	first := f.arrive(f.arrival(evidenceSpec{cursor: "offset=1"}))[0]
+	episode := f.candidateOf(first.Candidate).Key.Episode
+	if _, err := f.l.Terminate(first.Candidate, admission.ReasonPolicy); err != nil {
+		t.Fatal(err)
+	}
+	boot := func(wall time.Time, since time.Duration) {
+		f.wall, f.since = wall, since
+		if tick, err := f.l.Tick(admission.ClockReading{Wall: wall, BootID: ledgerRebootID, SinceBoot: since}); err != nil || tick.Degraded {
+			t.Fatalf("tick = %+v, %v", tick, err)
+		}
+	}
+	before := f.ceilingState().Elapsed
+	row, _ := f.episodeAt("192.0.2.10")
+	var err error
+	if f.l, err = OpenAdmissionLedger(f.db, f.reg); err != nil {
+		t.Fatal(err)
+	}
+	boot(f.wall.Add(2*time.Hour), time.Minute)
+	f.begin()
+	if got, _ := f.episodeAt("192.0.2.10"); f.ceilingState().Elapsed != before || got.EndElapsed != row.EndElapsed {
+		t.Fatal("reboot credited downtime or moved the saved end")
+	}
+	held := f.arrive(f.arrival(evidenceSpec{cursor: "offset=2"}))[0]
+	if c := f.candidateOf(held.Candidate); held.Err != nil || c.Key.Episode != episode || c.Key.Generation != 2 {
+		t.Fatalf("after downtime = %+v %+v", held, c.Key)
+	}
+	if _, err := f.l.Terminate(held.Candidate, admission.ReasonPolicy); err != nil {
+		t.Fatal(err)
+	}
+	boot(f.wall.Add(admission.EpisodeQuiet), time.Minute+admission.EpisodeQuiet)
+	next := f.arrive(f.arrival(evidenceSpec{cursor: "offset=3"}))[0]
+	if c := f.candidateOf(next.Candidate); next.Err != nil || !next.Created || c.Key.Episode == episode {
+		t.Fatalf("after the hour on the new boot = %+v %+v", next, c.Key)
+	}
+}
+
+// The first row with an elapsed end moves the ledger to schema 13, which
+// older builds refuse; a row without one leaves the schema as it was.
+func TestAdmissionLedgerElapsedEndRaisesTheSchema(t *testing.T) {
+	f := newLedgerFixture(t)
+	f.begin()
+	if got := f.schema(); got != admissionSchemaVersion {
+		t.Fatalf("new ledger schema = %d", got)
+	}
+	f.arrive(f.arrival(evidenceSpec{cursor: "offset=1"}))
+	row, _ := f.episodeAt("192.0.2.10")
+	if got := f.schema(); got != admissionSchemaEpisodeElapsed || row.EndElapsed != f.ceilingState().Elapsed+admission.EpisodeQuiet {
+		t.Fatalf("schema %d, elapsed end %v", got, row.EndElapsed)
+	}
+	row.EndElapsed = 0
+	f.setSchema(admissionSchemaVersion)
+	if err := f.db.bolt.Update(func(tx *bolt.Tx) error { return putEpisode(tx, f.target("192.0.2.10").Key(), row) }); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.schema(); got != admissionSchemaVersion {
+		t.Fatalf("a row without an elapsed end raised the schema to %d", got)
+	}
+	if _, err := OpenAdmissionLedger(f.db, f.reg); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A daemon restart on the same boot keeps the elapsed time that passed
+// meanwhile, so the episode ends after its quiet hour as before.
+func TestAdmissionLedgerSameBootRestartKeepsEpisodeTime(t *testing.T) {
+	f := newLedgerFixture(t)
+	f.begin()
+	first := f.arrive(f.arrival(evidenceSpec{cursor: "offset=1"}))[0]
+	episode := f.candidateOf(first.Candidate).Key.Episode
+	if _, err := f.l.Terminate(first.Candidate, admission.ReasonPolicy); err != nil {
+		t.Fatal(err)
+	}
+	var err error
+	if f.l, err = OpenAdmissionLedger(f.db, f.reg); err != nil {
+		t.Fatal(err)
+	}
+	f.tickAt(f.wall.Add(admission.EpisodeQuiet))
+	f.begin()
+	next := f.arrive(f.arrival(evidenceSpec{cursor: "offset=2"}))[0]
+	if c := f.candidateOf(next.Candidate); next.Err != nil || !next.Created || c.Key.Episode == episode {
+		t.Fatalf("after the hour across a restart = %+v %+v", next, c.Key)
+	}
+}
+
+// A backward step keeps the existing answer: an observation dated before
+// the episode's last one belongs to it, the readings stay degraded until
+// the wall catches up with admission time, and the episode ends only once
+// its quiet hour has passed on both clocks.
+func TestAdmissionLedgerBackwardClockStepKeepsTheEpisode(t *testing.T) {
+	f := newLedgerFixture(t)
+	f.begin()
+	first := f.arrive(f.arrival(evidenceSpec{cursor: "offset=1"}))[0]
+	episode := f.candidateOf(first.Candidate).Key.Episode
+	if _, err := f.l.Terminate(first.Candidate, admission.ReasonPolicy); err != nil {
+		t.Fatal(err)
+	}
+	start := f.wall
+	f.stepWall(-30*time.Minute, time.Minute)
+	wantLedgerReason(t, "after a backward step", f.arrive(f.arrival(evidenceSpec{cursor: "offset=2"}))[0].Err, admission.ReasonStale)
+	if row, _ := f.episodeAt("192.0.2.10"); row.ID != episode || !row.Last.Equal(start) {
+		t.Fatalf("a backward step changed the episode: %+v", row)
+	}
+	if tick := f.tickAt(start.Add(admission.EpisodeQuiet)); tick.Degraded {
+		t.Fatal("the wall caught up but the reading is degraded")
+	}
+	next := f.arrive(f.arrival(evidenceSpec{cursor: "offset=3"}))[0]
+	if c := f.candidateOf(next.Candidate); next.Err != nil || !next.Created || c.Key.Episode == episode {
+		t.Fatalf("after the hour on both clocks = %+v %+v", next, c.Key)
+	}
+}
+
+// Every runtime writer anchors a legacy row, even when Last does not
+// move. Rewriting a row that already has an anchor must preserve it.
+func TestAdmissionLedgerEpisodeWritesAnchorLegacyRows(t *testing.T) {
+	for _, path := range []string{"coalesced", "answered", "unresolved", "verified", "forget", "live start"} {
+		for _, anchored := range []bool{false, true} {
+			t.Run(path+map[bool]string{false: "/legacy", true: "/anchored"}[anchored], func(t *testing.T) {
+				f := newLedgerFixture(t)
+				f.begin()
+				first := f.arrive(f.arrival(evidenceSpec{cursor: "first"}))[0].Candidate
+				other := f.arrival(evidenceSpec{cursor: "other"})
+				other.Request.Kind = admission.KindPromote
+				kept := f.arrive(other)[0].Candidate
+				switch path {
+				case "answered", "live start":
+					if _, _, _, err := f.l.Observe(first, admission.LaneGeneral, f.wall.Add(time.Hour)); err != nil {
+						t.Fatal(err)
+					}
+				case "unresolved":
+					f.finishArrival(first, f.wall.Add(time.Hour), admission.DispositionUnknown)
+				case "verified":
+					f.finishArrival(first, f.wall.Add(20*time.Minute), admission.DispositionApplied)
+				}
+				row, found := f.episodeAt("192.0.2.10")
+				if !found {
+					t.Fatal("missing fixture episode")
+				}
+				if anchored {
+					row.EndElapsed += time.Hour
+				} else {
+					row.EndElapsed = 0
+				}
+				if err := f.db.bolt.Update(func(tx *bolt.Tx) error {
+					return putEpisode(tx, f.target("192.0.2.10").Key(), row)
+				}); err != nil {
+					t.Fatal(err)
+				}
+				if !anchored {
+					f.setSchema(admissionSchemaVersion)
+				}
+				before := f.snapshot()
+				if _, err := OpenAdmissionLedger(f.db, f.reg); err != nil || !reflect.DeepEqual(before, f.snapshot()) {
+					t.Fatalf("open rewrote a legacy row: %v", err)
+				}
+				want := row.EndElapsed
+				if !anchored {
+					want = f.ceilingState().Elapsed + row.End().Sub(f.wall)
+				}
+				switch path {
+				case "forget":
+					candidate := f.candidateOf(first)
+					if err := f.db.bolt.Update(func(tx *bolt.Tx) error {
+						q, err := f.l.openQueue(tx, f.wall)
+						if err != nil {
+							return err
+						}
+						return q.forgetLine(first, candidate)
+					}); err != nil {
+						t.Fatal(err)
+					}
+				case "live start":
+					if err := f.l.StartLive(admission.LegacyHandover{}); err != nil {
+						t.Fatal(err)
+					}
+				default:
+					result := f.arrive(f.arrival(evidenceSpec{cursor: "same-time-new-root"}))[0]
+					if path == "coalesced" {
+						if result.Err != nil || result.Created || result.Candidate != first {
+							t.Fatalf("coalesced: %+v", result)
+						}
+					} else {
+						wantLedgerReason(t, path, result.Err, admission.ReasonExistingEffect)
+					}
+				}
+				got, found := f.episodeAt("192.0.2.10")
+				if !found || got.ID != row.ID || !got.Last.Equal(row.Last) || !got.Verified.Equal(row.Verified) || got.EndElapsed != want || f.schema() != admissionSchemaEpisodeElapsed {
+					t.Fatalf("writer lost the boundary: %+v, want elapsed %v, schema %d", got, want, f.schema())
+				}
+				line, found := got.Line(admission.KindPromote)
+				if !found || line.Candidate != kept {
+					t.Fatal("writer lost the retained line")
+				}
+				if _, err := OpenAdmissionLedger(f.db, f.reg); err != nil {
+					t.Fatalf("reopen after write: %v", err)
+				}
+			})
+		}
+	}
+}
+
+// A missing boot identity is a rejected reading, never downtime credit.
+func TestAdmissionLedgerMissingBootKeepsEpisodeTime(t *testing.T) {
+	f := newLedgerFixture(t)
+	f.begin()
+	f.arrive(f.arrival(evidenceSpec{cursor: "first"}))
+	before := f.snapshot()
+	_, err := f.l.Tick(admission.ClockReading{Wall: f.wall.Add(2 * time.Hour), SinceBoot: f.since + 2*time.Hour})
+	wantLedgerReason(t, "missing boot", err, admission.ReasonInvalid)
+	if !reflect.DeepEqual(before, f.snapshot()) {
+		t.Fatal("missing boot changed persisted clock or episode time")
+	}
+}
+
+// An unrepresentable legacy anchor is a transaction failure, not an
+// arrival refusal that could commit candidate changes without its row.
+func TestAdmissionLedgerEpisodeAnchorFailureRollsBack(t *testing.T) {
+	f := newLedgerFixture(t)
+	f.begin()
+	f.arrive(f.arrival(evidenceSpec{cursor: "first"}))
+	row, _ := f.episodeAt("192.0.2.10")
+	row.EndElapsed = 0
+	if err := f.db.bolt.Update(func(tx *bolt.Tx) error {
+		s, err := loadCeilingState(tx)
+		if err != nil {
+			return err
+		}
+		s.Elapsed = time.Duration(1<<63-1) - time.Minute
+		if err = putCeilingState(tx, s); err != nil {
+			return err
+		}
+		return putEpisode(tx, f.target("192.0.2.10").Key(), row)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f.setSchema(admissionSchemaVersion)
+	before := f.snapshot()
+	arrivals := []admission.Arrival{f.arrival(evidenceSpec{cursor: "coalesced-root"})}
+	got, revision, err := f.l.EnqueueGroup(arrivals, nil)
+	if !isCorrupt(err) || got != nil || revision != 0 {
+		t.Fatalf("anchor failure committed as a refusal: %+v %d %v", got, revision, err)
+	}
+	if !reflect.DeepEqual(before, f.snapshot()) {
+		t.Fatal("anchor failure changed evidence, candidate, episode or schema")
+	}
+}
+
+// An observation from before a forward step, placed on the stepped reading,
+// opens an episode whose quiet hour runs on elapsed time from that reading:
+// a report twenty-one minutes later still joins it.
+func TestAdmissionLedgerLateObservationAfterAForwardStepKeepsTheEpisode(t *testing.T) {
+	f := newLedgerFixture(t)
+	f.begin()
+	f.stepWall(40*time.Minute, time.Second)
+	first := f.arrive(f.arrival(evidenceSpec{cursor: "offset=1", age: 40 * time.Minute}))[0]
+	episode := f.candidateOf(first.Candidate).Key.Episode
+	if row, _ := f.episodeAt("192.0.2.10"); row.EndElapsed != f.ceilingState().Elapsed+admission.EpisodeQuiet {
+		t.Fatalf("elapsed end = %v, ceiling elapsed %v", row.EndElapsed, f.ceilingState().Elapsed)
+	}
+	if _, err := f.l.Terminate(first.Candidate, admission.ReasonPolicy); err != nil {
+		t.Fatal(err)
+	}
+	f.tickAt(f.wall.Add(21 * time.Minute))
+	next := f.arrive(f.arrival(evidenceSpec{cursor: "offset=2"}))[0]
+	if c := f.candidateOf(next.Candidate); next.Err != nil || c.Key.Episode != episode || c.Key.Generation != 2 {
+		t.Fatalf("21 minutes after a late report = %+v %+v", next, c.Key)
 	}
 }

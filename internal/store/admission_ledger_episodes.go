@@ -9,6 +9,12 @@ import (
 	bolt "go.etcd.io/bbolt"
 )
 
+// admissionSchemaEpisodeElapsed is the schema of a ledger whose episode
+// rows may carry an elapsed end. Every host writes episode rows, live or
+// not, so unlike schemas 11 and 12 it records nothing of the live start
+// or the effect records: at 13 those prove themselves.
+const admissionSchemaEpisodeElapsed = 13
+
 // episodeStateKey holds the episode sequence in the queue state bucket.
 var episodeStateKey = []byte("episodes")
 
@@ -66,7 +72,35 @@ func putEpisode(tx *bolt.Tx, key string, e admission.Episode) error {
 		// refused arrival that would keep a candidate without its row.
 		return corruptRecord(err)
 	}
+	if e.EndElapsed > 0 {
+		if err = raiseSchema(tx, admissionSchemaEpisodeElapsed); err != nil {
+			return err
+		}
+	}
 	return tx.Bucket([]byte(admissionEpisodesBucket)).Put([]byte(key), data)
+}
+
+// episodeClock is admission time and the ceiling's elapsed time at this
+// transaction's reading.
+func (q *queueTx) episodeClock() (admission.EpisodeClock, error) {
+	s, err := loadCeilingState(q.tx)
+	return admission.EpisodeClock{Now: q.now, Elapsed: s.Elapsed}, err
+}
+
+// putEpisode anchors legacy rows even when a write changes only their
+// lines. The raw encoder remains available for old-format fixtures.
+func (q *queueTx) putEpisode(key string, e admission.Episode) error {
+	clock, err := q.episodeClock()
+	if err != nil {
+		return err
+	}
+	e, err = e.AnchorElapsed(clock)
+	if err != nil {
+		// A per-arrival refusal could commit candidate writes already
+		// made by placement without the matching episode boundary.
+		return corruptRecord(err)
+	}
+	return putEpisode(q.tx, key, e)
 }
 
 // proveEpisodes checks every episode row at open: it decodes under its
@@ -177,7 +211,12 @@ func (l *AdmissionLedger) placeTx(q *queueTx, req admission.CandidateRequest, e 
 			states = append(states, state)
 		}
 	}
-	choice, err := admission.Place(at, states, req.Kind, e.ObservedAt(), l.degraded, q.takeEpisode)
+	clock, err := q.episodeClock()
+	if err != nil {
+		return "", false, err
+	}
+	clock.Degraded = l.degraded
+	choice, err := admission.Place(at, states, req.Kind, e.ObservedAt(), clock, q.takeEpisode)
 	if err != nil {
 		return "", false, err
 	}
@@ -196,7 +235,7 @@ func (l *AdmissionLedger) placeTx(q *queueTx, req admission.CandidateRequest, e 
 		return "", false, err
 	}
 	if choice.Answered {
-		if err = putEpisode(q.tx, rowKey, choice.Episode); err != nil {
+		if err = q.putEpisode(rowKey, choice.Episode); err != nil {
 			return "", false, err
 		}
 		return id, false, refusal(admission.ReasonExistingEffect, "the episode's response already has an attempt")
@@ -211,7 +250,7 @@ func (l *AdmissionLedger) placeTx(q *queueTx, req admission.CandidateRequest, e 
 		observed = line.Observed
 	}
 	row := choice.Episode.WithLine(admission.EpisodeLine{Kind: req.Kind, Generation: key.Generation, Candidate: id, Observed: observed})
-	return id, created, putEpisode(q.tx, rowKey, row)
+	return id, created, q.putEpisode(rowKey, row)
 }
 
 // forgetLine clears a deleted candidate reference but retains the kind's
@@ -231,16 +270,17 @@ func (q *queueTx) forgetLine(id admission.CandidateID, c admission.Candidate) er
 	case !rest.HasCandidates():
 		return q.tx.Bucket([]byte(admissionEpisodesBucket)).Delete([]byte(key))
 	}
-	return putEpisode(q.tx, key, rest)
+	return q.putEpisode(key, rest)
 }
 
 // closeEpisode ends the episode of a verified block when its kernel element
 // expires (spec 5.2): its original expiry, less the lead of the engine's
-// lease clock over admission time when it ran (design C6). Other kinds, and
+// lease clock over admission time when it ran (design C6), on both admission
+// and the ceiling's elapsed time. Other kinds, and
 // a candidate of another episode than its target's row, change nothing. An
 // episode queues no new generation of a kind while one is in flight, so
 // the verified block is its kind's latest.
-func (q *queueTx) closeEpisode(c admission.Candidate, lead time.Duration) error {
+func (q *queueTx) closeEpisode(c admission.Candidate, lead, elapsed time.Duration) error {
 	if c.Key.Kind != admission.KindBlockIP && c.Key.Kind != admission.KindBlockSubnet {
 		return nil
 	}
@@ -249,6 +289,11 @@ func (q *queueTx) closeEpisode(c admission.Candidate, lead time.Duration) error 
 	if err != nil || !found || e.ID != c.Key.Episode {
 		return err
 	}
-	e.Verified = c.ExpiresAt.Add(-max(lead, 0))
+	// Finishing uses the last committed reading, even if the ceiling is
+	// now unreadable and new work has stopped.
+	clock := admission.EpisodeClock{Now: q.now, Elapsed: elapsed}
+	if e, err = e.Close(c.ExpiresAt.Add(-max(lead, 0)), clock); err != nil {
+		return err
+	}
 	return putEpisode(q.tx, key, e)
 }
