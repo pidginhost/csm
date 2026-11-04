@@ -361,7 +361,7 @@ func currentLedger(tx *bolt.Tx) (bool, error) {
 // ReadUnprovenBlockActions returns, in order, the actions among ids whose
 // attempt the ledger records with anything but a verified outcome (it
 // runs, ended unknown, retired or not, or failed) or whose verified block
-// a proven removal evicted. Startup marks their firewall rows unverified
+// a proven removal evicted or the ledger marked gone. Startup marks their firewall rows unverified
 // before the firewall restores its state, whether or not the ledger owner
 // started. A name the ledger never recorded is not returned: no attempt
 // claims its row. An error means the ledger cannot be read.
@@ -377,7 +377,8 @@ func ReadUnprovenBlockActions(db *DB, ids []string) ([]string, error) {
 // ReadSettledBlockActions returns, in order, the actions among ids whose
 // attempt can have left nothing in the kernel: it failed, ended unknown
 // and was retired after its expiry found nothing of it, or was verified
-// and then evicted by a removal the applier proved. Startup removes their
+// and then evicted by a removal the applier proved or marked gone after
+// two firewall answers found nothing of it. Startup removes their
 // firewall rows; the other unproven ones stay held. A name the ledger
 // never recorded is not returned. An error means the ledger cannot be read.
 func ReadSettledBlockActions(db *DB, ids []string) ([]string, error) {
@@ -389,7 +390,9 @@ func ReadSettledBlockActions(db *DB, ids []string) ([]string, error) {
 	})
 }
 
-// evictedBlock reports whether verified attempt a's block was evicted.
+// evictedBlock reports whether verified attempt a's block was evicted or
+// marked gone: either way nothing it applied remains, and a restored row
+// would hold an element whose slot the ledger no longer counts.
 func evictedBlock(tx *bolt.Tx, a admission.AttemptRecord) (bool, error) {
 	// Startup reads before the owner proves the ledger. A damaged layout
 	// must not masquerade as a ledger without effect records.
@@ -408,7 +411,7 @@ func evictedBlock(tx *bolt.Tx, a admission.AttemptRecord) (bool, error) {
 	if err == nil && found && !rec.Gone.IsZero() && schema[0] < admissionSchemaEffectGone {
 		return false, admission.ErrCorruptRecord
 	}
-	return found && rec.Evicted, err
+	return found && (rec.Evicted || !rec.Gone.IsZero()), err
 }
 
 // readBlockActions returns, in order, the recorded actions among ids whose

@@ -334,7 +334,8 @@ tally even after all records expire. A check that marks nothing leaves
 the schema unchanged. Only a live ledger has effect records, so preview
 and forecast hosts never write it.
 Startup drops the state row of an admission-record victim whose eviction
-the ledger verified. Imports have no durable cleanup record: a restart
+the ledger verified, and of a block the ledger marked gone, so a restart
+cannot restore an element whose slot the ledger no longer counts. Imports have no durable cleanup record: a restart
 before retirement restores the import only until its original expiry. Startup readers report an error if the
 effects bucket disagrees with the schema or an effect is a nested bucket;
 they do not treat damaged eviction storage as an absent record.
