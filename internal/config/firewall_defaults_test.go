@@ -51,6 +51,7 @@ func TestPartialFirewallBlockKeepsExplicitValues(t *testing.T) {
   smtp_ports: []
   log_dropped: false
   log_rate: 0
+  drop_ipv4_options: false
 `
 	cfg, err := LoadBytes([]byte(yaml))
 	if err != nil {
@@ -186,7 +187,7 @@ func TestFirewallPresenceIncludesEveryDropInKey(t *testing.T) {
 	if err := os.WriteFile(main, []byte("hostname: host.example\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	fragment := `firewall: {enabled: true, tcp_in: [], tcp_out: [], udp_in: [], udp_out: [], restricted_tcp: [], passive_ftp_start: 0, passive_ftp_end: 0, conn_rate_limit: 0, syn_flood_protection: false, conn_limit: 0, port_flood: [], udp_flood: false, udp_flood_rate: 0, udp_flood_burst: 0, drop_nolog: [], deny_ip_limit: 0, deny_temp_ip_limit: 0, smtp_ports: [], log_dropped: false, log_rate: 0}
+	fragment := `firewall: {enabled: true, tcp_in: [], tcp_out: [], udp_in: [], udp_out: [], restricted_tcp: [], passive_ftp_start: 0, passive_ftp_end: 0, conn_rate_limit: 0, syn_flood_protection: false, conn_limit: 0, port_flood: [], udp_flood: false, udp_flood_rate: 0, udp_flood_burst: 0, drop_nolog: [], deny_ip_limit: 0, deny_temp_ip_limit: 0, smtp_ports: [], log_dropped: false, log_rate: 0, drop_ipv4_options: false}
 `
 	if err := os.WriteFile(filepath.Join(confd, "10-firewall.yaml"), []byte(fragment), 0o600); err != nil {
 		t.Fatal(err)
@@ -209,6 +210,20 @@ func TestFirewallPresenceIncludesEveryDropInKey(t *testing.T) {
 	}
 	if !reflect.DeepEqual(cfg.Firewall, want) {
 		t.Errorf("firewall = %#v, want %#v", cfg.Firewall, want)
+	}
+}
+
+// The IPv4 options drop is a security default: an absent key, a partial
+// block and a missing block all keep it on.
+func TestFirewallDropIPv4OptionsDefaultsOn(t *testing.T) {
+	for _, body := range []string{"hostname: x\n", "firewall:\n  enabled: true\n", "firewall:\n  drop_ipv4_options: null\n"} {
+		cfg, err := LoadBytes([]byte(body))
+		if err != nil {
+			t.Fatalf("LoadBytes(%q): %v", body, err)
+		}
+		if !cfg.Firewall.DropIPv4Options {
+			t.Errorf("LoadBytes(%q) drop_ipv4_options = false, want true", body)
+		}
 	}
 }
 

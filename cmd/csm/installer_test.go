@@ -1166,6 +1166,9 @@ func TestDeployDefaultConfigDOSExemptFirewallDefaults(t *testing.T) {
 	if !cfg.Firewall.ExemptKnownMailProviders() {
 		t.Error("installer default dos_exempt_known_mail_providers effective = false, want true")
 	}
+	if !cfg.Firewall.DropIPv4Options {
+		t.Error("installer default drop_ipv4_options = false, want true")
+	}
 
 	// The toggle must be explicitly present so operators can discover and
 	// disable it; omitting it causes silent three-source drift.
@@ -1180,6 +1183,9 @@ func TestDeployDefaultConfigDOSExemptFirewallDefaults(t *testing.T) {
 	}
 	if _, ok := raw.Firewall["dos_exempt_ranges"]; !ok {
 		t.Error("installer default must explicitly document firewall.dos_exempt_ranges")
+	}
+	if _, ok := raw.Firewall["drop_ipv4_options"]; !ok {
+		t.Error("installer default must explicitly document firewall.drop_ipv4_options")
 	}
 }
 

@@ -829,6 +829,7 @@ firewall:
   conn_rate_limit: 200                  # new connections/min per source (CGNAT-tolerant; IPv6 per /64; 0 = disabled; null = default)
   syn_flood_protection: true            # per-source SYN flood meter (IPv6 per /64)
   conn_limit: 400                       # max concurrent connections per IPv4 source, IPv4 only (0 = disabled)
+  drop_ipv4_options: true               # drop inbound IPv4 TCP carrying IP options, ahead of every accept (CVE-2026-98432 trigger)
 
   # Per-port flood protection: rate-limit new connections per source IP and IP family.
   # Defaults are sized for a busy mail host: 600/300s = 120 new conns/min/IP,

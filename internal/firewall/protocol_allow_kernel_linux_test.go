@@ -27,19 +27,7 @@ func kernelChainRuleCount(t *testing.T, e *Engine, chain *nftables.Chain) int {
 // no exception for TCP, UDP, ICMP or another portless protocol.
 func TestKernelProtocolAllowBlockedPeerTraffic(t *testing.T) {
 	isolatedFirewallNamespace(t)
-	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = unix.Close(fd) })
-	ifr, err := unix.NewIfreq("lo")
-	if err != nil {
-		t.Fatal(err)
-	}
-	ifr.SetUint16(unix.IFF_UP)
-	if err = unix.IoctlIfreq(fd, unix.SIOCSIFFLAGS, ifr); err != nil {
-		t.Fatal(err)
-	}
+	kernelLoopbackUp(t)
 
 	cfg := &FirewallConfig{Enabled: true, IPv6: true, TCPIn: []int{443}, UDPIn: []int{53}, TCPOut: []int{443},
 		ProtocolAllow: vrrpPeers("192.0.2.11", "2001:db8::11")}
@@ -97,6 +85,25 @@ func TestKernelProtocolAllowBlockedPeerTraffic(t *testing.T) {
 				t.Fatalf("restart=%t: unlisted source %s was not dropped", restart, stranger)
 			}
 		}
+	}
+}
+
+// kernelLoopbackUp brings lo up in the isolated namespace; a fresh namespace
+// starts with it down.
+func kernelLoopbackUp(t *testing.T) {
+	t.Helper()
+	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = unix.Close(fd) }()
+	ifr, err := unix.NewIfreq("lo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ifr.SetUint16(unix.IFF_UP)
+	if err = unix.IoctlIfreq(fd, unix.SIOCSIFFLAGS, ifr); err != nil {
+		t.Fatal(err)
 	}
 }
 

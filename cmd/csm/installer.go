@@ -1055,6 +1055,7 @@ firewall:
   conn_rate_limit: 200          # new connections per minute per IP (CGNAT-tolerant)
   syn_flood_protection: true
   conn_limit: 400               # max concurrent connections per IP (0 = disabled)
+  drop_ipv4_options: true       # drop inbound IPv4 TCP carrying IP options (CVE-2026-98432 trigger)
   port_flood:                   # per-port, per-source-IP new-connection rate limit
     - port: 25                  # 600/300s = 120/min per IP, tolerates MUA bursts
       proto: tcp

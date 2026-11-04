@@ -61,6 +61,13 @@ type FirewallConfig struct {
 	SYNFloodProtection bool `yaml:"syn_flood_protection"`
 	ConnLimit          int  `yaml:"conn_limit"` // max concurrent connections per IPv4 source, IPv4 only (0 = disabled)
 
+	// DropIPv4Options drops inbound IPv4 TCP packets that carry IP options
+	// before conntrack, NAT and every accept. Ordinary TCP never sets them,
+	// and options on a connection request are what CVE-2026-98432 needs on
+	// an unpatched kernel. Off only for workloads that rely on IP options,
+	// such as CIPSO labels.
+	DropIPv4Options bool `yaml:"drop_ipv4_options"`
+
 	// Per-port flood protection - per-source rate limit per port and IP family.
 	PortFlood []PortFloodRule `yaml:"port_flood"`
 
@@ -282,7 +289,8 @@ func DefaultConfig() *FirewallConfig {
 		// parallel send + HTTPS browsing) plus headroom for shared CGNAT
 		// egress IPs. Operators with very heavy IDLE-style workloads can
 		// raise it further.
-		ConnLimit: 400,
+		ConnLimit:       400,
+		DropIPv4Options: true,
 		// 600 hits / 300 s = 120 new connections per minute per source IP.
 		// Sized to tolerate normal MUA bursts (Thunderbird/iPhone/Outlook each
 		// open 5-15 parallel sessions when sending one email or syncing IMAP
