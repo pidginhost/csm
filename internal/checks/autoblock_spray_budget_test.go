@@ -2,6 +2,7 @@ package checks
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -219,5 +220,41 @@ func TestAutoBlockUnreadableStateKeepsBlocking(t *testing.T) {
 	}
 	if state.LoginSprayBlocksThisHour != 1 || state.BlocksThisHour != 1 || len(state.IPs) != 2 {
 		t.Fatalf("state = %+v, want fresh counters and both blocks", state)
+	}
+}
+
+// A spray backlog over its budget holds at most half the retry queue, so it
+// cannot push other retries out of it.
+func TestAutoBlockSprayBacklogKeepsOtherRetries(t *testing.T) {
+	cfg := pendingTestConfig(t)
+	cfg.AutoResponse.MaxBlocksPerHour = 1
+	now := time.Now()
+	setAutoBlockNow(t, now)
+	saveBlockState(cfg.StatePath, &blockState{HourKey: now.Format("2006-01-02T15"), BlocksThisHour: 1, LoginSprayBlocksThisHour: 1})
+	b := &outcomeStubBlocker{outcome: firewall.BlockOutcomeLive}
+	applyBlockTestSetup(t, b)
+	var findings []alert.Finding
+	for i := range maxPendingBlocks {
+		findings = append(findings, loginSprayFinding(fmt.Sprintf("2001:db8:5::%x", i)))
+	}
+	const others = maxPendingBlocks / 2
+	for i := range others {
+		findings = append(findings, wafFinding(fmt.Sprintf("2001:db8:6::%x", i)))
+	}
+
+	AutoBlockIPs(cfg, findings)
+	if len(b.calls) != 0 {
+		t.Fatalf("block calls = %d, want none with both budgets spent", len(b.calls))
+	}
+	spray, other := 0, 0
+	for _, p := range loadBlockState(cfg.StatePath).Pending {
+		if p.LoginSpray {
+			spray++
+		} else {
+			other++
+		}
+	}
+	if spray != maxPendingBlocks/2 || other != others {
+		t.Fatalf("queued spray=%d other=%d, want spray capped at %d and all %d other retries", spray, other, maxPendingBlocks/2, others)
 	}
 }

@@ -568,16 +568,31 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	// stamped on first entry so the drain's age check can retire it; the
 	// bound keeps a sustained flood from growing the queue without limit,
 	// and overflow drops are named so they remain identifiable in logs.
+	// Spray retries hold at most half the queue, so a spray backlog over its
+	// own budget cannot push other retries out.
+	sprayPending := 0
+	for _, p := range state.Pending {
+		if p.LoginSpray {
+			sprayPending++
+		}
+	}
 	requeue := func(p pendingIP) bool {
 		if p.QueuedAt.IsZero() {
 			p.QueuedAt = autoBlockNow()
 		}
-		if len(state.Pending) < maxPendingBlocks {
+		if len(state.Pending) < maxPendingBlocks && (!p.LoginSpray || sprayPending < maxPendingBlocks/2) {
 			state.Pending = append(state.Pending, work.requeueCandidate(p))
+			if p.LoginSpray {
+				sprayPending++
+			}
 			return true
 		}
 		work.rejectCandidate(p.queueCandidate)
-		fmt.Fprintf(os.Stderr, "auto-block: pending queue full, dropping %s\n", p.IP)
+		full := "pending queue"
+		if len(state.Pending) < maxPendingBlocks {
+			full = "mail spray share of the pending queue"
+		}
+		fmt.Fprintf(os.Stderr, "auto-block: %s full, dropping %s\n", full, p.IP)
 		droppedPending++
 		return false
 	}
