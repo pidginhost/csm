@@ -104,7 +104,9 @@ func TestAdmissionLedgerRotatesAfterTheHold(t *testing.T) {
 	if _, _, err = f.l.FinishEviction(a.Attempt.ID, admission.DispositionApplied, admission.VictimRemoved, 0); err != nil {
 		t.Fatal(err)
 	}
-	wantVictim.Evicted = true
+	// The victim's record notes when the ledger learned it left: the
+	// rotation's verified outcome.
+	wantVictim.Evicted, wantVictim.Gone = true, f.wall
 	if evicted, _ = f.effectOf(victim); evicted != wantVictim {
 		t.Fatalf("rotated victim %+v, want unchanged hold and expiry %+v", evicted, wantVictim)
 	}

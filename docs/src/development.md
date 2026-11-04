@@ -318,6 +318,19 @@ reports the block whose slot it took, so the owner counts previewed
 replacements in status; a readback reports none.
 A member's sweep also ends its import claim; a delayed outcome may still
 name the import in its intent without looking for a victim record.
+A verified eviction marks its victim's record gone at the evicting block's
+outcome. A verified block that two consecutive firewall answers no longer
+hold is gone from the first of them, whatever removed it: an operator
+unblock, undo or flush, or a lost kernel element. A held answer in
+between starts the count again; the count lives in memory, so a restart
+only delays the mark. Failed answers keep all previous misses and count
+nothing new. Bounded batches get two answered checks before advancing,
+so a larger configured capacity cannot hide later records. A record that
+changed in between is left to what changed it. A gone record holds no
+slot, so waiting work can take it, and stays until its expiry sweep.
+The first gone record moves the ledger to schema 14, which older builds
+refuse. Only a live ledger has
+effect records, so preview and forecast hosts never write it.
 Startup drops the state row of an admission-record victim whose eviction
 the ledger verified. Imports have no durable cleanup record: a restart
 before retirement restores the import only until its original expiry. Startup readers report an error if the
@@ -687,7 +700,7 @@ failed on its last attempt. A historical result cannot end a later retry;
 a repeated linked ending must name the same block and expiry instant. A linked record is candidate version 2 and an
 admitted candidate's history pays for its bytes; without room the
 transaction changes nothing. A linked record requires at least schema 8,
-with the same buckets; this build opens schemas 7 to 13 without rewriting
+with the same buckets; this build opens schemas 7 to 14 without rewriting
 them, and older builds refuse an unknown schema rather than misread it.
 An unchanged schema-7 ledger stays readable by older builds until a write
 needs a newer format. A write never lowers the schema.

@@ -116,6 +116,13 @@ type AdmissionLedger struct {
 	// partition at the last schedule cycle, which shares the set with them
 	// until the next. Guarded by mu.
 	waiting map[admission.Partition][]string
+	// missed holds the blocks the last firewall answer no longer held,
+	// with the reading of that answer (ObserveHeld). Guarded by mu.
+	missed map[admission.ActionID]time.Time
+	// Two answered checks per batch let the tail progress even when
+	// the configured capacity exceeds one engine call. Guarded by mu.
+	heldAfter []byte
+	heldPass  bool
 
 	// revalidated is set once this handle has checked every queued
 	// candidate at a current reading. A reopened ledger cannot know what
@@ -302,7 +309,7 @@ func OpenAdmissionLedger(db *DB, reg *admission.Registry) (*AdmissionLedger, err
 				if err := upgradeLedgerToSchemaSeven(tx); err != nil {
 					return err
 				}
-			case len(schema) == 1 && schema[0] >= admissionSchemaVersion && schema[0] <= admissionSchemaEpisodeElapsed:
+			case len(schema) == 1 && schema[0] >= admissionSchemaVersion && schema[0] <= admissionSchemaNewest:
 				if existing != len(admissionBuckets) {
 					return admission.ErrCorruptRecord
 				}

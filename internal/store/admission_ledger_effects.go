@@ -16,13 +16,19 @@ const (
 	// older builds refuse the ledger rather than forget the slots its
 	// blocks hold.
 	admissionSchemaEffects = 12
+	// admissionSchemaEffectGone is the schema of a ledger whose effect
+	// records may be gone: older builds would read a gone record as one
+	// that still holds its slot.
+	admissionSchemaEffectGone = 14
+	// admissionSchemaNewest is the newest schema this build reads.
+	admissionSchemaNewest = admissionSchemaEffectGone
 )
 
 // effectTallyKey holds the effect records' tally in the queue state bucket.
 var effectTallyKey = []byte("effects")
 
 // effectLayout reports whether the effect records exist and refuses a
-// layout schema rules out: none below 12, bucket and tally at 12, and at
+// layout schema rules out: none below 12, bucket and tally at 12, and from
 // 13, which records nothing of them, both or neither, and only after the
 // live start.
 func effectLayout(tx *bolt.Tx, schema byte) (bool, error) {
@@ -227,7 +233,10 @@ func (q *queueTx) endClaim(ref admission.EffectRef, block admission.ActionID, ev
 		if err = addEffectTally(q.tx, rec.Partition, -1); err != nil {
 			return err
 		}
-		rec.Evicted = true
+		if err = raiseSchema(q.tx, admissionSchemaEffectGone); err != nil {
+			return err
+		}
+		rec.Evicted, rec.Gone = true, q.now
 	} else {
 		rec.EvictedBy = ""
 	}
@@ -345,7 +354,7 @@ func sweepEffects(tx *bolt.Tx, tick admission.ClockTick) error {
 func proveEffects(tx *bolt.Tx) error {
 	b := tx.Bucket([]byte(admissionEffectsBucket))
 	schema := tx.Bucket([]byte(admissionMetaBucket)).Get(admissionSchemaKey)
-	if len(schema) != 1 || schema[0] < admissionSchemaVersion || schema[0] > admissionSchemaEpisodeElapsed {
+	if len(schema) != 1 || schema[0] < admissionSchemaVersion || schema[0] > admissionSchemaNewest {
 		return ErrAdmissionSchema
 	}
 	if present, err := effectLayout(tx, schema[0]); err != nil || !present {
@@ -362,6 +371,9 @@ func proveEffects(tx *bolt.Tx) error {
 			return admission.ErrCorruptRecord
 		}
 		records[rec.Action] = rec
+		if !rec.Gone.IsZero() && schema[0] < admissionSchemaEffectGone {
+			return admission.ErrCorruptRecord
+		}
 		if rec.Holds() {
 			counted, err = counted.Add(rec.Partition, 1)
 		}

@@ -744,6 +744,12 @@ func TestAdmissionLedgerEvictionEveryEnding(t *testing.T) {
 				if !found || victim.Evicted != verified || (victim.EvictedBy != "") != (verified || unknown) {
 					t.Fatalf("claim not ended correctly: %+v", victim)
 				}
+				if verified && !victim.Gone.Equal(f.wall) || !verified && !victim.Gone.IsZero() {
+					t.Fatalf("gone does not match the verified outcome: %+v", victim)
+				}
+				if _, _, schema := f.effectRecords(); (schema == admissionSchemaEffectGone) != verified {
+					t.Fatalf("schema %d after %s", schema, ending)
+				}
 				want := 1
 				if unknown && !swept {
 					want = 2
