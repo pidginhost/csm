@@ -53,5 +53,10 @@ func (o *Owner) observeHeld() error {
 		addr, _ := h.Target.Addr()
 		o.evicted = append(o.evicted, firewall.BlockAction{Action: string(h.Action), IP: addr.String()})
 	}
+	if len(gone) > 0 {
+		// Do not leave restorable rows waiting for the next held check.
+		// Cleanup retains failures and schedules its own retry.
+		_ = o.retireEvicted()
+	}
 	return err
 }

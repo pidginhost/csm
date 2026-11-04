@@ -253,8 +253,8 @@ func TestOwnerHeldCheckMissingEngineKeepsRetry(t *testing.T) {
 
 // A block marked gone may leave its firewall row behind (an element lost
 // outside CSM). The owner retires that row as it retires an evicted
-// victim's, so a firewall reload cannot restore what the ledger no longer
-// counts; the startup readers cover a crash before it.
+// victim's, before the turn ends, so a firewall reload cannot restore what
+// the ledger no longer counts while the idle owner waits for its next check.
 func TestOwnerRetiresTheRowOfAGoneBlock(t *testing.T) {
 	o, blocks, f, mono, a := verifiedOwner(t, "192.0.2.10")
 	blocks.set(func(b *fakeBlocks) { b.removed["192.0.2.10"] = true })
@@ -263,25 +263,15 @@ func TestOwnerRetiresTheRowOfAGoneBlock(t *testing.T) {
 	if st := ledgerStatus(t, o); st.Effects.General != 0 {
 		t.Fatalf("effects after two misses = %+v", st.Effects)
 	}
-	turn(t, o)
 	want := firewall.BlockAction{Action: string(a.Attempt.ID), IP: "192.0.2.10"}
-	retired := false
-	for _, call := range blocks.retireCalls() {
-		for _, r := range call {
-			retired = retired || r == want
-		}
+	if calls := blocks.retireCalls(); !reflect.DeepEqual(calls, [][]firewall.BlockAction{{want}}) {
+		t.Fatalf("gone block's row was not retired in the marking turn: %+v", calls)
 	}
-	marked := false
 	blocks.set(func(b *fakeBlocks) {
-		for _, call := range b.marked {
-			for _, id := range call {
-				marked = marked || id == want.Action
-			}
+		if !reflect.DeepEqual(b.marked, [][]string{{want.Action}}) {
+			t.Errorf("gone block's row was not marked unverified: %+v", b.marked)
 		}
 	})
-	if !retired || !marked {
-		t.Fatalf("gone block's row: retired %t (%+v), marked unverified %t", retired, blocks.retireCalls(), marked)
-	}
 	if err := o.do(func() error {
 		if len(o.evicted) != 0 {
 			t.Errorf("cleanup kept %+v after the row was clear", o.evicted)
@@ -289,5 +279,84 @@ func TestOwnerRetiresTheRowOfAGoneBlock(t *testing.T) {
 		return nil
 	}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// Cleanup failure must neither fail the marking turn nor leave the row
+// waiting for the next held check. An idle schedule retries the same row.
+func TestOwnerGoneCleanupRetriesWithoutAnotherHeldCheck(t *testing.T) {
+	for _, mode := range []string{"mark", "retire", "short", "present"} {
+		t.Run(mode, func(t *testing.T) {
+			o, blocks, f, mono, a := verifiedOwner(t, "192.0.2.10")
+			blocks.set(func(b *fakeBlocks) { b.removed["192.0.2.10"] = true })
+			later(t, o, f, mono)
+			fault := errors.New("cleanup unavailable")
+			blocks.set(func(b *fakeBlocks) {
+				switch mode {
+				case "mark":
+					b.markErr = errors.Join(firewall.ErrBlockBatchState, fault)
+				case "retire":
+					b.retireErr = fault
+				case "short":
+					b.retireShort = true
+				case "present":
+					b.present["192.0.2.10"] = true
+				}
+			})
+			mono.advance(heldEvery)
+			f.host.advance(heldEvery)
+			if err := o.do(func() error { o.schedule(); return o.scheduleErr }); err != nil {
+				t.Fatal(err)
+			}
+			want := firewall.BlockAction{Action: string(a.Attempt.ID), IP: "192.0.2.10"}
+			blocks.set(func(b *fakeBlocks) {
+				if !reflect.DeepEqual(b.marked, [][]string{{want.Action}}) {
+					t.Errorf("marking turn did not attempt cleanup: %+v", b.marked)
+				}
+			})
+			wantRetires := 1
+			if mode == "mark" {
+				wantRetires = 0
+			}
+			if calls := blocks.retireCalls(); len(calls) != wantRetires {
+				t.Errorf("cleanup attempted %d retirements, want %d", len(calls), wantRetires)
+			}
+			if st := ledgerStatus(t, o); st.Effects.General != 0 {
+				t.Fatalf("cleanup fault prevented the gone mark: %+v", st.Effects)
+			}
+			if err := o.do(func() error {
+				if !reflect.DeepEqual(o.evicted, []firewall.BlockAction{want}) {
+					t.Errorf("cleanup fault lost the row: %+v", o.evicted)
+				}
+				if by := mono.read().Add(defaultScheduleEvery); o.wakeAt.IsZero() || o.wakeAt.After(by) {
+					t.Errorf("cleanup wake = %v, want by %v", o.wakeAt, by)
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			blocks.set(func(b *fakeBlocks) {
+				b.markErr, b.retireErr, b.retireShort = nil, nil, false
+				b.present["192.0.2.10"] = false
+			})
+			mono.advance(defaultScheduleEvery)
+			f.host.advance(defaultScheduleEvery)
+			if err := o.do(func() error {
+				o.schedule()
+				if len(o.evicted) != 0 || o.scheduleErr != nil || o.evictedErr != nil {
+					t.Errorf("idle cleanup failed: rows %+v, turn %v, cleanup %v", o.evicted, o.scheduleErr, o.evictedErr)
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			calls := blocks.retireCalls()
+			if len(calls) == 0 || !reflect.DeepEqual(calls[len(calls)-1], []firewall.BlockAction{want}) {
+				t.Fatalf("idle schedule did not retire the gone row: %+v", calls)
+			}
+			if calls := blocks.heldCalls(); len(calls) != 3 {
+				t.Fatalf("cleanup bypassed the held cadence: %+v", calls)
+			}
+		})
 	}
 }
