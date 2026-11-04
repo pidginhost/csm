@@ -839,6 +839,18 @@ func TestMailSpray_ReloadAndPurgeKeepTrustIndexesBounded(t *testing.T) {
 				t.Fatal("trust record absent from mailbox index")
 			}
 		}
+		keyed := 0
+		for key, ips := range m.trustByKey {
+			for ip := range ips {
+				if len(m.trustByIP[ip]) == 0 || sprayEvidenceKey(ip) != key {
+					t.Fatalf("evidence key index holds %s under %s without its trust", ip, key)
+				}
+				keyed++
+			}
+		}
+		if keyed != len(m.trustByIP) {
+			t.Fatalf("evidence key index holds %d IPs, IP index %d", keyed, len(m.trustByIP))
+		}
 	}
 	checkIndexes()
 	cfg.MaxIPs = 10
@@ -1233,19 +1245,72 @@ func TestMailSprayIPv6ObserveReportsOncePer64(t *testing.T) {
 	wantRule(t, m.Failure("2001:db8:1:2::d", "c@example.com", mailboxExists), sprayRuleBreadth, true)
 }
 
-// Login trust stays per address: trust earned by one address of a /64 does
-// not excuse the shared failures on that mailbox for another address.
-func TestMailSprayIPv6TrustStaysPerAddress(t *testing.T) {
+// A household /64: one device's saved password went stale on a mailbox that
+// device holds aged trust for. Aged trust held by any address of the /64
+// excuses failures on that mailbox, so another device's clean login earns
+// trust and its one typo blocks nothing. Trust itself is still earned and
+// held per address, and it excuses nothing for another /64.
+func TestMailSprayIPv6TrustExcusesPer64(t *testing.T) {
+	for _, trusted := range []bool{true, false} {
+		t.Run(fmt.Sprintf("trusted=%v", trusted), func(t *testing.T) {
+			m, clock := newTestSpray(testSprayConfig())
+			const a, b = "2001:db8:1:2::a", "2001:db8:1:2::b"
+			if trusted {
+				ageTrust(t, m, clock, a, "x@example.com")
+			}
+			wantNoVerdict(t, m.Failure(a, "x@example.com", mailboxExists))
+			clock.advance(time.Hour)
+			wantNoVerdict(t, m.Failure(a, "x@example.com", mailboxExists))
+
+			clean, v := m.Success(b, "z@example.com")
+			if trusted && (!clean || v != nil) {
+				t.Fatalf("clean login beside excused failures = (%v, %+v), want (true, nil)", clean, v)
+			}
+			if !trusted {
+				if clean {
+					t.Fatal("login after untrusted failures earned trust")
+				}
+				wantRule(t, v, sprayRuleWeakCompromise, false)
+			}
+			v = m.Failure(b, "y@example.com", mailboxExists)
+			if trusted {
+				wantNoVerdict(t, v)
+			} else {
+				wantRule(t, v, sprayRuleBreadth, true)
+			}
+			if m.TrustedAll(b, []string{"x@example.com"}) {
+				t.Fatal("trust moved between addresses of one /64")
+			}
+			if trusted {
+				const c = "2001:db8:1:3::c"
+				wantNoVerdict(t, m.Failure(c, "x@example.com", mailboxExists))
+				wantRule(t, m.Failure(c, "y@example.com", mailboxExists), sprayRuleBreadth, true)
+			}
+		})
+	}
+}
+
+// 4e and the established-source downgrade count aged trust held by any
+// address of the /64.
+func TestMailSprayIPv6TrustRulesCountThe64(t *testing.T) {
 	m, clock := newTestSpray(testSprayConfig())
 	const a, b = "2001:db8:1:2::a", "2001:db8:1:2::b"
-	ageTrust(t, m, clock, a, "a@example.com")
-	wantNoVerdict(t, m.Failure(a, "a@example.com", mailboxExists))
-	wantRule(t, m.Failure(b, "b@example.com", mailboxExists), sprayRuleBreadth, true)
-	// For a, the shared failures on a stay excused.
-	wantNoVerdict(t, m.Failure(a, "a@example.com", mailboxExists))
-	if m.TrustedAll(b, []string{"a@example.com"}) || !m.TrustedAll(a, []string{"a@example.com"}) {
-		t.Fatal("trust moved between addresses of one /64")
-	}
+	ageTrust(t, m, clock, a, "a@example.com", "b@example.com")
+	corroborate(t, m, "nobody@example.com")
+	wantNoVerdict(t, m.Failure(b, "nobody@example.com", mailboxMissing))
+	_, v := m.Success(b, "c@example.com")
+	wantRule(t, v, sprayRuleCompromise, false)
+}
+
+// An IPv4 address is its own evidence key: another address's trust, even
+// next door, excuses nothing.
+func TestMailSprayIPv4TrustExcusesOnlyItsAddress(t *testing.T) {
+	m, clock := newTestSpray(testSprayConfig())
+	ageTrust(t, m, clock, "192.0.2.1", "x@example.com")
+	wantNoVerdict(t, m.Failure("192.0.2.2", "x@example.com", mailboxExists))
+	wantRule(t, m.Failure("192.0.2.2", "y@example.com", mailboxExists), sprayRuleBreadth, true)
+	wantNoVerdict(t, m.Failure("192.0.2.1", "x@example.com", mailboxExists))
+	wantNoVerdict(t, m.Failure("192.0.2.1", "y@example.com", mailboxExists))
 }
 
 // Addresses of one /64 that draw verdicts are capped like the other
