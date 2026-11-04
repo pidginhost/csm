@@ -79,10 +79,11 @@ func TestAutoBlockUsesFindingTTL(t *testing.T) {
 	}
 }
 
-// Findings from two trackers or rules can name one address in one batch: the
-// longer length wins in either order. The block is a spray block only when
-// every finding asks for one; otherwise it stays on the scan budget, out of
-// the eviction preference and inside netblock escalation.
+// Findings from two trackers or rules can name one address in one batch. The
+// block is a spray block only when every finding asks for one: it then takes
+// the longest asked length in either order. Any other finding gives a normal
+// block: block_expiry, the scan budget, no eviction preference and a place in
+// netblock escalation.
 func TestAutoBlockPendingKeepsLongestTTL(t *testing.T) {
 	const ip = "192.0.2.73"
 	otherSpray := loginSprayFinding(ip)
@@ -102,8 +103,12 @@ func TestAutoBlockPendingKeepsLongestTTL(t *testing.T) {
 			b := &outcomeStubBlocker{outcome: firewall.BlockOutcomeLive}
 			applyBlockTestSetup(t, b)
 			AutoBlockIPs(cfg, tc.findings)
-			if len(b.calls) != 1 || b.calls[0].timeout != loginSprayTTL {
-				t.Fatalf("block calls = %+v, want one %s block", b.calls, loginSprayTTL)
+			wantTTL := time.Hour
+			if tc.spray {
+				wantTTL = loginSprayTTL
+			}
+			if len(b.calls) != 1 || b.calls[0].timeout != wantTTL {
+				t.Fatalf("block calls = %+v, want one %s block", b.calls, wantTTL)
 			}
 			state := loadBlockState(cfg.StatePath)
 			wantSpray, wantScan := 0, 1

@@ -181,9 +181,9 @@ type pendingIP struct {
 	Reason    string         `json:"reason"`
 	Check     string         `json:"check,omitempty"`
 	Severity  alert.Severity `json:"severity,omitempty"`
-	// TTL is the block length the findings asked for; zero means
-	// block_expiry. LoginSpray marks a mail spray block, which draws on its
-	// own hourly budget.
+	// TTL is the longest block length the findings asked for. Only a mail
+	// spray block uses it; any other block gets block_expiry. LoginSpray
+	// marks a mail spray block, which draws on its own hourly budget.
 	TTL        time.Duration `json:"ttl,omitempty"`
 	LoginSpray bool          `json:"login_spray,omitempty"`
 	// QueuedAt is when the IP first entered the queue; it survives
@@ -453,7 +453,8 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		// recurs in fresh findings; the check, severity and reason are refreshed.
 		// The longest asked length survives the refresh. The block stays a
 		// spray block only while every finding for the IP asks for one: any
-		// other finding keeps it on the scan budget and in netblock counts.
+		// other finding gives it block_expiry, the scan budget and a place
+		// in netblock counts.
 		findingID := alert.FindingID(f)
 		if existing, ok := ipsToBlock[ip]; ok {
 			if existing.ActionID == "" {
@@ -612,8 +613,10 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		if cand.ActionID == "" {
 			cand.ActionID = rand.Text()
 		}
+		// A block that mixes in any other finding is a normal block. The
+		// spray verdict's re-block marker still lengthens it on return.
 		requestTTL := expiry
-		if cand.TTL > 0 {
+		if cand.LoginSpray && cand.TTL > 0 {
 			requestTTL = cand.TTL
 		}
 		if durable, ok := blocker.(durableActionBlocker); ok && durable.DurableActionsEnabled() {

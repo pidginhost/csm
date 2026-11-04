@@ -386,11 +386,14 @@ while spray detection runs in observe mode.
 
 In enforce mode a spray block lasts `thresholds.mail_spray_block_expiry` (30
 days by default) instead of `block_expiry`; an address already blocked keeps
-its current expiry. When the temporary block limit is full, the spray block
-that ends soonest is evicted first. A blocked address is remembered until one
-spray memory window after its block ends. One failed login from it in that
-time, on any mailbox, blocks it again for the spray length. That includes a
-failure logged just before an authentication outage is detected. On a shared
+its current expiry. A block that mixes a spray finding with another finding
+for the address, such as a WAF or per-IP brute force finding, is a normal
+block: it lasts `block_expiry` and uses the scan budget. When the temporary
+block limit is full, the spray block that ends soonest is evicted first. A
+blocked address is remembered until one spray memory window after its block
+ends. One failed login from it in that time, on any mailbox, blocks it again
+for the spray length. That includes a failure logged just before an
+authentication outage is detected. On a shared
 IPv6 /64, an address blocked on the /64's shared evidence keeps its own
 re-block until it is released too. An operator unblock, allow, temporary
 allow or undo that removes a block clears the address's spray history: its
