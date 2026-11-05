@@ -5,7 +5,14 @@ import "github.com/pidginhost/csm/internal/alert"
 // BeginDelivery reserves eligible findings until finish is called with the
 // successfully delivered subset. No store lock stays held during delivery.
 // Receipts belong to the selected entry, so a scan clearing it while a send
-// is in flight cannot be undone by that send's late completion.
+// is in flight cannot be undone by that send's late completion. A finding
+// with no entry, such as an action or a correlation-derived finding, gets
+// one here.
+//
+// ponytail: action and correlation-derived findings exist only while
+// produced. When the history reminder re-raises their source after more than
+// 24h, they may be emailed once more. The upgrade path would be clearing
+// derived rows through the latest merge.
 func (s *Store) BeginDelivery(findings []alert.Finding) ([]alert.Finding, func([]alert.Finding)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

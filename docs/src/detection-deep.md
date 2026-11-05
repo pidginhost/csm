@@ -29,9 +29,11 @@ apply. The signed phpanel stream keeps its separate delivery policy.
 An undismissed finding can alert again after 24 hours without an observation,
 even when no other batch arrived to clean up old state. A finding that stays
 on the findings page counts as observed, also while its check skips runs
-between reports, so a check that reports once a day does not email daily. A completed scan that
-covered the finding and no longer reports it also permits a later return to
-alert. Scan coverage warnings follow the policy below.
+between reports, so a check that reports once a day does not email daily.
+After more than 24 hours of downtime, an open finding alerts once on its next
+report. A completed scan that covered the finding and no longer reports it also
+permits a later return to alert. Scan coverage warnings follow the policy
+below.
 
 ## Scan coverage alerts
 

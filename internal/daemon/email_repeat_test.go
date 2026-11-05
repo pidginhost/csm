@@ -511,13 +511,19 @@ func TestSkippedOwnerFindingEmailsOnce(t *testing.T) {
 	}
 
 	scan([]alert.Finding{weak}, []string{weak.Check})
-	// A day and a minute pass; the runs in between skipped the audit.
+	// The runs that follow skip the audit and keep the row listed.
+	scan(nil, []string{"other_check"})
+	// The last report is now a day and a minute old; the last skipped run
+	// just happened.
 	rewriteState(t, d, func(entries map[string]map[string]any) {
+		if entries[weak.Key()]["kept_at"] == nil {
+			t.Fatal("skipped run did not keep the row alive")
+		}
 		old := time.Now().Add(-24*time.Hour - time.Minute)
 		entries[weak.Key()]["last_seen"] = old
 		entries[weak.Key()]["alert_sent"] = old
 	})
-	scan(nil, []string{"other_check"})
+	d.dispatchBatch([]alert.Finding{repeatFinding("unrelated batch sweeps stale entries")})
 	scan([]alert.Finding{weak}, []string{weak.Check})
 
 	if got := hook.count(weak.Message); got != 1 {
@@ -534,5 +540,34 @@ func TestDeliveryCandidatesAllSuppressedStayNonNil(t *testing.T) {
 	got := d.deliveryCandidates([]alert.Finding{f}, nil, checkWideSuppression(f.Check))
 	if got == nil || len(got) != 0 {
 		t.Fatalf("all-suppressed candidates = %#v, want an empty non-nil slice", got)
+	}
+}
+
+// After more than 24h of downtime every open finding emails once on its next
+// report, whether or not a merge, such as the antispam health refresh, keeps
+// its row before the initial scan.
+func TestDowntimeEmailsOpenFindingOnce(t *testing.T) {
+	for _, mergeFirst := range []bool{false, true} {
+		t.Run(fmt.Sprintf("merge_first=%t", mergeFirst), func(t *testing.T) {
+			cfg, hook := emailRepeatSetup(t)
+			d := openRepeatDaemon(t, cfg)
+			f := repeatFinding("open across downtime")
+			checks.StoreLatestScanFindings(d.store, []string{f.Check}, []alert.Finding{f})
+			d.dispatchBatch([]alert.Finding{f})
+			rewriteState(t, d, func(entries map[string]map[string]any) {
+				old := time.Now().Add(-25 * time.Hour)
+				for _, field := range []string{"last_seen", "alert_sent", "kept_at"} {
+					entries[f.Key()][field] = old
+				}
+			})
+			if mergeFirst {
+				checks.StoreLatestScanFindings(d.store, []string{"antispam_feed"}, nil)
+			}
+			d.respondToInitialScan(cfg, []alert.Finding{f})
+			d.dispatchBatch([]alert.Finding{f})
+			if got := hook.count(f.Message); got != 2 {
+				t.Fatalf("open finding after downtime: %d webhooks, want 2 (one before, one after)", got)
+			}
+		})
 	}
 }

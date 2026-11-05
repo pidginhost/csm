@@ -804,7 +804,7 @@ func StoreLatestScanFindingsWithCoverage(st *state.Store, purgeChecks []string, 
 		},
 	)
 	st.ForgetCleared(clearedFindings(retired))
-	st.RefreshSeen(kept)
+	st.MarkKept(kept)
 	// Adding derived findings can evict source rows at the active-set cap.
 	// Count the final set, not the intermediate input to derivation.
 	unattributed := defaultCorrelator.Correlate(st.LatestFindings(), now).Unattributed

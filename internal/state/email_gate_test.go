@@ -240,14 +240,17 @@ func TestPurgeAndMergeReturnsRetired(t *testing.T) {
 		}
 	}
 	// Every other current row is kept, still present.
-	gotKept := retiredKeys(kept)
+	gotKept := make(map[string]bool, len(kept))
+	for _, key := range kept {
+		gotKept[key] = true
+	}
 	wantKept := []alert.Finding{gap, demoted, reported, other, derivedKept, crossPass}
 	if len(kept) != len(wantKept) {
-		t.Fatalf("kept = %v, want %d rows", gotKept, len(wantKept))
+		t.Fatalf("kept = %v, want %d rows", kept, len(wantKept))
 	}
 	for _, f := range wantKept {
 		if !gotKept[f.Key()] {
-			t.Fatalf("kept = %v, missing %s", gotKept, f.Key())
+			t.Fatalf("kept = %v, missing %s", kept, f.Key())
 		}
 	}
 
@@ -263,8 +266,8 @@ func TestPurgeAndMergeReturnsRetired(t *testing.T) {
 	if len(retired) != 0 {
 		t.Fatalf("cap eviction reported as retired: %v", gateKeys(retired))
 	}
-	if len(kept) != 1 || kept[0].Key() != evicted.Key() {
-		t.Fatalf("cap-evicted row not kept as present: %v", gateKeys(kept))
+	if len(kept) != 1 || kept[0] != evicted.Key() {
+		t.Fatalf("cap-evicted row not kept as present: %v", kept)
 	}
 	for _, f := range capped.LatestFindings() {
 		if f.Key() == evicted.Key() {
@@ -366,5 +369,55 @@ func TestUpdateExpiresReceiptBeforeObservingReturn(t *testing.T) {
 	s.Update([]alert.Finding{f})
 	if got := offered(s, f); len(got) != 1 {
 		t.Fatal("observing a return restored its expired delivery receipt")
+	}
+}
+
+// The findings page shows LastSeen as the last report. Merges that keep a
+// listed row alive must not move it, while the gate and the Update sweep
+// still treat the condition as present.
+func TestKeptRowKeepsReportedLastSeen(t *testing.T) {
+	s := openTestStore(t)
+	reported := time.Now().Add(-40 * time.Hour)
+	now := reported
+	s.now = func() time.Time { return now }
+	f := alert.Finding{Check: "email_weak_password", Message: "weak password for user@example.com"}
+	s.PurgeAndMergeFindings([]string{f.Check}, []alert.Finding{f})
+	s.Update([]alert.Finding{f})
+	deliver(s, f)
+
+	for i := 0; i < 2; i++ {
+		now = now.Add(20 * time.Hour)
+		_, kept := s.PurgeAndMergeFindingsDerivedWithCoverage([]string{"other_check"}, nil, nil, nil, nil)
+		s.MarkKept(kept)
+	}
+	entry, ok := s.EntryForKey(f.Key())
+	if !ok || !entry.LastSeen.Equal(reported) {
+		t.Fatalf("merges moved the reported LastSeen: %+v, present=%t", entry, ok)
+	}
+	s.Update(nil)
+	if _, ok := s.EntryForKey(f.Key()); !ok {
+		t.Fatal("Update swept a row the merge keeps listed")
+	}
+	if got := offered(s, f); len(got) != 0 {
+		t.Fatalf("kept row offered for delivery again: %v", gateKeys(got))
+	}
+}
+
+// After more than 24h without any merge or report, as after downtime, a
+// merge does not revive the receipt: the next report emails once.
+func TestMarkKeptDoesNotReviveStaleEntry(t *testing.T) {
+	s := openTestStore(t)
+	now := time.Now().Add(-25 * time.Hour)
+	s.now = func() time.Time { return now }
+	f := alert.Finding{Check: "email_weak_password", Message: "weak password for user@example.com"}
+	s.PurgeAndMergeFindings([]string{f.Check}, []alert.Finding{f})
+	s.Update([]alert.Finding{f})
+	deliver(s, f)
+
+	now = now.Add(25 * time.Hour)
+	_, kept := s.PurgeAndMergeFindingsDerivedWithCoverage([]string{"other_check"}, nil, nil, nil, nil)
+	s.MarkKept(kept)
+	if got := offered(s, f); len(got) != 1 {
+		t.Fatalf("merge revived a receipt stale for 25h: %v", gateKeys(got))
 	}
 }

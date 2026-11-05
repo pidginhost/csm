@@ -91,6 +91,19 @@ type Entry struct {
 	// delivered under this key. Hash follows every observation; Emailed
 	// changes only on delivery.
 	Emailed string `json:"emailed,omitempty"`
+	// KeptAt is when the latest-findings merge last kept the condition
+	// listed without a new report, as for a check that skipped its run.
+	// LastSeen stays the last report, which the findings page shows.
+	KeptAt time.Time `json:"kept_at,omitzero"`
+}
+
+// aliveAt is the last time the condition was reported or kept listed. An
+// entry older than 24h by this measure has cleared.
+func (e *Entry) aliveAt() time.Time {
+	if e.KeptAt.After(e.LastSeen) {
+		return e.KeptAt
+	}
+	return e.LastSeen
 }
 
 func Open(path string) (*Store, error) {
@@ -303,17 +316,18 @@ func (s *Store) migrateEmailGate() {
 // filterUnemailedLocked returns the findings alert email and the generic
 // webhook have not delivered with their current content. Unlike FilterNew it
 // has no daily reminder: a finding is offered again when its content changes,
-// when a covering scan cleared it, or when it went unseen for 24h. An entry
-// that old is deleted here, so a return needs no Update sweep first. Held
-// findings refresh LastSeen, so an action or derived finding that never
-// reaches Update keeps its receipt while it is still produced.
+// when a covering scan cleared it, or when it was neither reported nor kept
+// listed for 24h. An entry that old is deleted here, so a return needs no
+// Update sweep first. Held findings refresh LastSeen, so an action or derived
+// finding that never reaches Update keeps its receipt while it is still
+// produced.
 func (s *Store) filterUnemailedLocked(findings []alert.Finding, now time.Time) []alert.Finding {
 	var out []alert.Finding
 	for _, f := range findings {
 		hash := findingHash(f)
 		key := findingKey(f)
 		entry, ok := s.entries[key]
-		if ok && !entry.IsBaseline && now.Sub(entry.LastSeen) >= 24*time.Hour {
+		if ok && !entry.IsBaseline && now.Sub(entry.aliveAt()) >= 24*time.Hour {
 			delete(s.entries, key)
 			s.dirty = true
 			ok = false
@@ -329,22 +343,25 @@ func (s *Store) filterUnemailedLocked(findings []alert.Finding, now time.Time) [
 	return out
 }
 
-// RefreshSeen records that rows the latest-findings merge kept are still
-// present. An owner that skips or does not finish a run keeps its rows without
-// reporting them, and a row that stays listed must not count as unseen for
-// 24h, neither for the email gate nor for the Update sweep.
-func (s *Store) RefreshSeen(findings []alert.Finding) {
-	if len(findings) == 0 {
+// MarkKept records that the latest-findings merge kept these keys listed. An
+// owner that skips or does not finish a run keeps its rows without reporting
+// them, and a listed condition must not count as cleared after 24h, neither
+// for the email gate nor for the Update sweep. An entry already 24h stale is
+// not revived: after downtime the next report emails once.
+func (s *Store) MarkKept(keys []string) {
+	if len(keys) == 0 {
 		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := s.clock()
-	for _, f := range findings {
-		if entry, ok := s.entries[findingKey(f)]; ok {
-			entry.LastSeen = now
-			s.dirty = true
+	for _, key := range keys {
+		entry, ok := s.entries[key]
+		if !ok || (!entry.IsBaseline && now.Sub(entry.aliveAt()) >= 24*time.Hour) {
+			continue
 		}
+		entry.KeptAt = now
+		s.dirty = true
 	}
 }
 
@@ -381,7 +398,7 @@ func (s *Store) Update(findings []alert.Finding) {
 		seen[key] = true
 
 		entry, exists := s.entries[key]
-		if exists && !entry.IsBaseline && now.Sub(entry.LastSeen) >= 24*time.Hour {
+		if exists && !entry.IsBaseline && now.Sub(entry.aliveAt()) >= 24*time.Hour {
 			exists = false
 		}
 		if !exists {
@@ -410,7 +427,7 @@ func (s *Store) Update(findings []alert.Finding) {
 			continue
 		}
 		if !seen[key] && !entry.IsBaseline {
-			if time.Since(entry.LastSeen) > 24*time.Hour {
+			if now.Sub(entry.aliveAt()) > 24*time.Hour {
 				delete(s.entries, key)
 			}
 		}
@@ -1135,8 +1152,9 @@ func (s *Store) PurgeAndMergeFindingsDerivedWithGaps(purgeChecks []string, findi
 // It returns the current rows a purged check or a completed scope removed:
 // rows that were preserved, automatically demoted or reported again in either
 // pass are not retired, and neither are rows the active-set cap dropped.
-// Every other current row is kept: its condition is still present.
-func (s *Store) PurgeAndMergeFindingsDerivedWithCoverage(purgeChecks []string, findings []alert.Finding, coverage *ScanCoverage, derivedChecks []string, derive func([]alert.Finding) []alert.Finding) (retired, kept []alert.Finding) {
+// The keys of every other current row are returned as kept: those
+// conditions are still present.
+func (s *Store) PurgeAndMergeFindingsDerivedWithCoverage(purgeChecks []string, findings []alert.Finding, coverage *ScanCoverage, derivedChecks []string, derive func([]alert.Finding) []alert.Finding) (retired []alert.Finding, kept []string) {
 	s.latestMu.Lock()
 	defer s.latestMu.Unlock()
 
@@ -1157,9 +1175,11 @@ func (s *Store) PurgeAndMergeFindingsDerivedWithCoverage(purgeChecks []string, f
 		retired = append(retired[:n], derivedRetired...)
 	}
 	gone := findingsByKey(retired)
+	kept = make([]string, 0, len(current))
 	for _, f := range current {
-		if _, ok := gone[f.Key()]; !ok {
-			kept = append(kept, f)
+		key := f.Key()
+		if _, ok := gone[key]; !ok {
+			kept = append(kept, key)
 		}
 	}
 	s.latestFindings = merged

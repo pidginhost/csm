@@ -96,8 +96,14 @@ func TestReputationReminderKeepsDeliveryReceipt(t *testing.T) {
 		t.Fatalf("setup: %d findings eligible for delivery, want 1", len(eligible))
 	}
 
-	// The receipt is a day and a minute old when the next throttled run keeps
-	// the row.
+	// A throttled run keeps the row listed.
+	now = now.Add(time.Minute)
+	if got := run(); len(got) != 0 || !containsFindingCheck(st.LatestFindings(), "shared_senders_stale") {
+		t.Fatalf("throttled run raised %+v or dropped the warning", got)
+	}
+
+	// The last report is now a day and a minute old; the throttled run just
+	// happened.
 	if err = st.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -110,6 +116,9 @@ func TestReputationReminderKeepsDeliveryReceipt(t *testing.T) {
 	if err = json.Unmarshal(data, &entries); err != nil {
 		t.Fatal(err)
 	}
+	if entries[first[0].Key()]["kept_at"] == nil {
+		t.Fatal("throttled run did not keep the row alive")
+	}
 	entries[first[0].Key()]["last_seen"] = time.Now().Add(-24*time.Hour - time.Minute)
 	if data, err = json.Marshal(entries); err != nil {
 		t.Fatal(err)
@@ -120,10 +129,7 @@ func TestReputationReminderKeepsDeliveryReceipt(t *testing.T) {
 	if st, err = state.Open(statePath); err != nil {
 		t.Fatal(err)
 	}
-	now = now.Add(time.Minute)
-	if got := run(); len(got) != 0 || !containsFindingCheck(st.LatestFindings(), "shared_senders_stale") {
-		t.Fatalf("throttled run raised %+v or dropped the warning", got)
-	}
+	st.Update(nil)
 
 	now = now.Add(24 * time.Hour)
 	reminder := run()
