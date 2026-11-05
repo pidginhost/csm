@@ -447,6 +447,12 @@ func Validate(cfg *Config) []ValidationResult {
 	if pr.FanoutWindowMin != 0 && (pr.FanoutWindowMin < 1 || pr.FanoutWindowMin > 60) {
 		results = append(results, ValidationResult{"error", "email_protection.php_relay.fanout_window_min", fmt.Sprintf("fanout_window_min must be between 1 and 60, got %d", pr.FanoutWindowMin)})
 	}
+	if pr.IPRecipientSpread != 0 && (pr.IPRecipientSpread < 1 || pr.IPRecipientSpread > 100) {
+		results = append(results, ValidationResult{"error", "email_protection.php_relay.ip_recipient_spread", fmt.Sprintf("ip_recipient_spread must be between 1 and 100, got %d", pr.IPRecipientSpread)})
+	}
+	if pr.IPRecipientWindowHours != 0 && (pr.IPRecipientWindowHours < 1 || pr.IPRecipientWindowHours > 168) {
+		results = append(results, ValidationResult{"error", "email_protection.php_relay.ip_recipient_window_hours", fmt.Sprintf("ip_recipient_window_hours must be between 1 and 168, got %d", pr.IPRecipientWindowHours)})
+	}
 
 	// --- AutoResponse.PHPRelay bounds ---
 	if cfg.AutoResponse.PHPRelay.MaxActionsPerMinute != 0 && (cfg.AutoResponse.PHPRelay.MaxActionsPerMinute < 1 || cfg.AutoResponse.PHPRelay.MaxActionsPerMinute > 600) {

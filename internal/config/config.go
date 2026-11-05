@@ -1097,8 +1097,9 @@ type Config struct {
 		// PHPRelay is the operator-tunable knob block for the email
 		// PHP-relay protection feature (Stage 1). Thresholds default to
 		// the values set in applyDefaults(), except documented zero
-		// sentinels such as AccountVolumePerHour auto-derive and
-		// FanoutDistinctRecipients disabling only that gate.
+		// sentinels such as AccountVolumePerHour auto-derive,
+		// FanoutDistinctRecipients disabling only that gate and
+		// IPRecipientSpread disabling the per-IP recipient check.
 		PHPRelay struct {
 			// The relay pipeline is wired once at startup; a reload can retune
 			// it but cannot start or stop it, so toggling it needs a restart.
@@ -1110,6 +1111,8 @@ type Config struct {
 			FanoutDistinctScripts    int    `yaml:"fanout_distinct_scripts"`
 			FanoutDistinctRecipients int    `yaml:"fanout_distinct_recipients"`
 			FanoutWindowMin          int    `yaml:"fanout_window_min"`
+			IPRecipientSpread        int    `yaml:"ip_recipient_spread"`
+			IPRecipientWindowHours   int    `yaml:"ip_recipient_window_hours"`
 			PoliciesDir              string `yaml:"policies_dir"`
 		} `yaml:"php_relay"`
 
@@ -1672,6 +1675,7 @@ type antispamPresence struct {
 // meaning and must not be overwritten by defaults.
 type phpRelayPresence struct {
 	fanoutDistinctRecipients bool
+	ipRecipientSpread        bool
 }
 
 // retentionPresence records fields where a literal zero has runtime meaning and
@@ -2045,6 +2049,12 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 	}
 	if cfg.EmailProtection.PHPRelay.FanoutWindowMin == 0 {
 		cfg.EmailProtection.PHPRelay.FanoutWindowMin = 5
+	}
+	if cfg.EmailProtection.PHPRelay.IPRecipientSpread == 0 && !presence.phpRelay.ipRecipientSpread {
+		cfg.EmailProtection.PHPRelay.IPRecipientSpread = 5
+	}
+	if cfg.EmailProtection.PHPRelay.IPRecipientWindowHours == 0 {
+		cfg.EmailProtection.PHPRelay.IPRecipientWindowHours = 24
 	}
 	if cfg.EmailProtection.PHPRelay.PoliciesDir == "" {
 		cfg.EmailProtection.PHPRelay.PoliciesDir = "/opt/csm/policies/php_relay"
@@ -2441,6 +2451,7 @@ func defaultPresenceFromYAML(data []byte) (defaultPresence, error) {
 	_, presence.httpASNCrawlReverseProxy = raw.Thresholds["http_asn_crawl_reverse_proxy_asns"]
 	_, presence.xmlrpcThreshold = raw.Thresholds["xmlrpc_threshold"]
 	_, presence.phpRelay.fanoutDistinctRecipients = raw.EmailProtection.PHPRelay["fanout_distinct_recipients"]
+	_, presence.phpRelay.ipRecipientSpread = raw.EmailProtection.PHPRelay["ip_recipient_spread"]
 	if node, ok := raw.Alerts.BlockDigest["min_block"]; ok && node.Tag != "!!null" {
 		presence.blockDigestMinBlock = true
 	}

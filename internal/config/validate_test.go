@@ -1819,6 +1819,42 @@ func TestValidate_PHPRelayBounds(t *testing.T) {
 	}
 }
 
+func TestValidate_PHPRelayIPRecipientSpreadRange(t *testing.T) {
+	const field = "email_protection.php_relay.ip_recipient_spread"
+	for _, v := range []int{0, 1, 5, 100} {
+		cfg := &Config{}
+		cfg.EmailProtection.PHPRelay.IPRecipientSpread = v
+		if hasErrorOnField(Validate(cfg), field) {
+			t.Errorf("ip_recipient_spread=%d must be valid", v)
+		}
+	}
+	for _, v := range []int{-1, 101} {
+		cfg := &Config{}
+		cfg.EmailProtection.PHPRelay.IPRecipientSpread = v
+		if !hasErrorOnField(Validate(cfg), field) {
+			t.Errorf("ip_recipient_spread=%d must be invalid", v)
+		}
+	}
+}
+
+func TestValidate_PHPRelayIPRecipientWindowRange(t *testing.T) {
+	const field = "email_protection.php_relay.ip_recipient_window_hours"
+	for _, v := range []int{1, 24, 168} {
+		cfg := &Config{}
+		cfg.EmailProtection.PHPRelay.IPRecipientWindowHours = v
+		if hasErrorOnField(Validate(cfg), field) {
+			t.Errorf("ip_recipient_window_hours=%d must be valid", v)
+		}
+	}
+	for _, v := range []int{-1, 169} {
+		cfg := &Config{}
+		cfg.EmailProtection.PHPRelay.IPRecipientWindowHours = v
+		if !hasErrorOnField(Validate(cfg), field) {
+			t.Errorf("ip_recipient_window_hours=%d must be invalid", v)
+		}
+	}
+}
+
 // ValidationResult exposes a Field, not a Key. Match the existing struct
 // shape in internal/config/validate.go.
 func hasErrorOnField(rs []ValidationResult, field string) bool {
