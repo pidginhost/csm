@@ -98,6 +98,7 @@ type Collector struct {
 	summaryMu sync.Mutex
 	pending   *pendingSummary
 	lastSent  time.Time
+	retries   map[string]summaryRetry // by channel, for pending only
 }
 
 const maxBuffered = 5000
@@ -457,50 +458,37 @@ func (c *Collector) Run(stop <-chan struct{}, tick <-chan time.Time) {
 	}
 }
 
+// deliveryOutcome hears each destination of a delivery: attempted reports
+// whether its sink ran, err how it failed. A caller with an outcome reports
+// failures itself.
+type deliveryOutcome func(channel string, attempted bool, err error)
+
 // deliver sends one notification through whichever sinks are configured.
 // Alert delivery is best-effort and must never block the collector or the
 // auto-block path beyond the sink's own timeout; failures are reported
 // through OnError.
-func (c *Collector) deliver(plan *digestDeliveryPlan, subject, body string, payload WebhookPayload, completed func(string)) {
-	complete := func(channel string) {
-		if completed != nil {
-			completed(channel)
-		}
-	}
-	if job := plan.email; job != nil {
-		if job.start() {
-			job.offered = true
-			err := c.opts.EmailSink(subject, body)
-			job.result(err)
-			if err != nil {
-				c.reportSinkError("email", err)
-			} else {
-				complete("email")
-			}
-		} else {
-			complete("email")
+func (c *Collector) deliver(plan *digestDeliveryPlan, subject, body string, payload WebhookPayload, outcome deliveryOutcome) {
+	c.deliverTo(plan.email, "email", func() error { return c.opts.EmailSink(subject, body) }, outcome)
+	c.deliverTo(plan.webhook, "webhook", func() error { return c.opts.WebhookSink(payload) }, outcome)
+}
+
+func (c *Collector) deliverTo(job *digestDelivery, channel string, send func() error, outcome deliveryOutcome) {
+	if job == nil || !job.start() {
+		if outcome != nil {
+			outcome(channel, false, nil)
 		}
 		job.finish()
-	} else {
-		complete("email")
+		return
 	}
-	if job := plan.webhook; job != nil {
-		if job.start() {
-			job.offered = true
-			err := c.opts.WebhookSink(payload)
-			job.result(err)
-			if err != nil {
-				c.reportSinkError("webhook", err)
-			} else {
-				complete("webhook")
-			}
-		} else {
-			complete("webhook")
-		}
-		job.finish()
-	} else {
-		complete("webhook")
+	job.offered = true
+	err := send()
+	job.result(err)
+	if outcome != nil {
+		outcome(channel, true, err)
+	} else if err != nil {
+		c.reportSinkError(channel, err)
 	}
+	job.finish()
 }
 
 func (c *Collector) reportSinkError(channel string, err error) {

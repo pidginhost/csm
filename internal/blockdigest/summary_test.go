@@ -704,3 +704,90 @@ func TestDeliveryPolicySeesEvent(t *testing.T) {
 		t.Fatalf("ineligible webhook row = %+v", row)
 	}
 }
+
+// A destination that keeps failing backs off from one minute, doubling up to
+// one hour (P3-R19). Its loss counts once for the pending summary, and it
+// warns on the first failure and when the backoff reaches the hour only.
+func TestSummaryRetryBacksOffToHourly(t *testing.T) {
+	failing := true
+	emails, webhooks := 0, 0
+	var warnings []string
+	c := summaryCollector(Options{
+		EmailSink: func(string, string) error {
+			emails++
+			if failing {
+				return errors.New("fixture smtp down")
+			}
+			return nil
+		},
+		WebhookSink: func(WebhookPayload) error { webhooks++; return nil },
+		OnError:     func(channel string, err error) { warnings = append(warnings, channel) },
+	})
+	c.NoteHandled([]Handled{{Check: "challenge_route", Severity: "WARNING", IP: "198.51.100.1"}})
+	due := summaryDueOf(c)
+	at := func(minute int) time.Time { return due.Add(time.Duration(minute) * time.Minute) }
+
+	// Three hours of one-minute polls while the mail server is down.
+	for minute := 0; minute <= 180; minute++ {
+		c.SendDue(at(minute))
+	}
+	// Attempts at 0, 1, 3, 7, 15, 31, 63, then hourly at 123.
+	if emails != 8 || webhooks != 1 {
+		t.Fatalf("attempts email=%d webhook=%d, want 8 backed-off email attempts and one webhook", emails, webhooks)
+	}
+	if got := strings.Join(warnings, ","); got != "email,email" {
+		t.Fatalf("warnings = %q, want the first failure and the hourly cap only", got)
+	}
+	if row := digestQueueStatuses(t, c, time.Now())["email"]; row.DroppedTotal != 1 || row.Depth != 0 || row.InFlight != 0 {
+		t.Fatalf("email row = %+v, want one loss for the pending summary", row)
+	}
+
+	failing = false
+	for minute := 181; minute <= 300; minute++ {
+		c.SendDue(at(minute))
+	}
+	if emails != 9 || webhooks != 1 {
+		t.Fatalf("after recovery email=%d webhook=%d, want one more email at the next hourly retry", emails, webhooks)
+	}
+	if len(warnings) != 2 {
+		t.Fatalf("recovery warned again: %q", warnings)
+	}
+	if row := digestQueueStatuses(t, c, time.Now())["email"]; row.DroppedTotal != 1 {
+		t.Fatalf("email row after recovery = %+v, want the one counted loss", row)
+	}
+	c.summaryMu.Lock()
+	pending := c.pending
+	c.summaryMu.Unlock()
+	if pending != nil {
+		t.Fatalf("summary still pending after delivery: %+v", pending)
+	}
+}
+
+// A crash after the last destination succeeded but before the rollover was
+// saved leaves a finished pending window; the next start clears it without
+// sending it again.
+func TestSummaryLoadedFinishedPendingClears(t *testing.T) {
+	st := &summaryStore{}
+	saved := summaryState{
+		Summary: newSummary(summaryNow, nextSummaryDue(summaryNow, time.UTC)),
+		Pending: &pendingSummary{Summary: newSummary(summaryNow.Add(-24*time.Hour), summaryNow.Add(-90*time.Minute)), Until: summaryNow.Add(-90 * time.Minute), EmailDone: true, WebhookDone: true},
+	}
+	b, err := json.Marshal(saved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.data = b
+	cap := &summaryCapture{}
+	c := summaryCollector(Options{LoadSummary: st.load, SaveSummary: st.save, EmailSink: cap.email, WebhookSink: cap.webhook})
+	runStopped(t, c)
+	if len(cap.sent()) != 0 || len(cap.webhooks) != 0 {
+		t.Fatalf("finished summary sent again: emails=%d webhooks=%d", len(cap.sent()), len(cap.webhooks))
+	}
+	var after summaryState
+	if err := json.Unmarshal(st.data, &after); err != nil {
+		t.Fatal(err)
+	}
+	if after.Pending != nil {
+		t.Fatalf("finished pending window kept: %+v", after.Pending)
+	}
+}

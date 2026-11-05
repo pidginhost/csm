@@ -66,6 +66,33 @@ type pendingSummary struct {
 	WebhookDone bool      `json:"webhook_done"`
 }
 
+func (p *pendingSummary) done(channel string) bool {
+	if channel == "email" {
+		return p.EmailDone
+	}
+	return p.WebhookDone
+}
+
+func (p *pendingSummary) markDone(channel string) {
+	if channel == "email" {
+		p.EmailDone = true
+	} else {
+		p.WebhookDone = true
+	}
+}
+
+// summaryRetry is the backoff of one failing destination of the pending
+// window. It lives in memory: a restart retries at once.
+type summaryRetry struct {
+	delay time.Duration
+	next  time.Time
+}
+
+const (
+	summaryRetryFirst = time.Minute
+	summaryRetryMax   = time.Hour
+)
+
 type summaryState struct {
 	Summary
 	Pending  *pendingSummary `json:"pending,omitempty"`
@@ -316,10 +343,11 @@ func (c *Collector) untilDue() time.Duration {
 }
 
 // SendDue checkpoints a due window before offering it to either sink. Failed
-// destinations retain that window; completed destinations are checkpointed
-// separately. A crash after remote acceptance but before its checkpoint can
-// still repeat that destination, since notification sinks are not transactional.
-// The return value reports a delivery attempt, not whether its sinks succeeded.
+// destinations retain that window and retry with backoff; completed
+// destinations are checkpointed separately. A crash after remote acceptance
+// but before its checkpoint can still repeat that destination, since
+// notification sinks are not transactional. The return value reports a
+// delivery attempt, not whether its sinks succeeded.
 func (c *Collector) SendDue(now time.Time) bool {
 	c.summaryMu.Lock()
 	defer c.summaryMu.Unlock()
@@ -341,36 +369,76 @@ func (c *Collector) SendDue(now time.Time) bool {
 		c.pending = &pendingSummary{Summary: c.sum, Until: now}
 		c.sum = newSummary(now, nextSummaryDue(now, c.opts.Location))
 		c.mu.Unlock()
+		c.retries = nil
+	} else if !c.retryDue(now) {
+		return false
 	}
 	if !c.save() {
 		return false
 	}
 
 	pending := c.pending
+	waiting := func(channel string) bool { return now.Before(c.retries[channel].next) }
 	plan := c.beginDelivery(func(channel string) bool {
-		if channel == "email" && pending.EmailDone || channel == "webhook" && pending.WebhookDone {
+		if pending.done(channel) || waiting(channel) {
 			return false
 		}
 		return c.opts.DeliveryEnabled == nil || c.opts.DeliveryEnabled("daily_summary", channel)
 	})
 	defer plan.finish()
+	for channel, r := range c.retries {
+		if job := plan.job(channel); job != nil && r.delay > 0 {
+			job.repeat = true
+		}
+	}
 	view := c.summaryView(pending.Summary)
 	body := c.summaryBody(view, pending.Until)
-	c.deliver(plan, c.summarySubject(view), body, c.summaryPayload(view, body), func(channel string) {
-		if channel == "email" {
-			pending.EmailDone = true
-		} else {
-			pending.WebhookDone = true
+	c.deliver(plan, c.summarySubject(view), body, c.summaryPayload(view, body), func(channel string, attempted bool, err error) {
+		switch {
+		case pending.done(channel), !attempted && waiting(channel):
+		case err == nil:
+			pending.markDone(channel)
+			c.save()
+		default:
+			c.retryLater(channel, now, err)
 		}
-		c.save()
 	})
 	if !pending.EmailDone || !pending.WebhookDone {
 		return true
 	}
 	c.lastSent = now
 	c.pending = nil
+	c.retries = nil
 	c.save()
 	return true
+}
+
+// retryDue reports whether the pending window has a destination to try now,
+// or none left, as after a crash between the last success and the rollover.
+func (c *Collector) retryDue(now time.Time) bool {
+	for _, channel := range []string{"email", "webhook"} {
+		if !c.pending.done(channel) && !now.Before(c.retries[channel].next) {
+			return true
+		}
+	}
+	return c.pending.EmailDone && c.pending.WebhookDone
+}
+
+// retryLater doubles a failing destination's wait from one minute up to one
+// hour. Only the first failure and reaching the hourly cap are reported, so
+// an outage of hours logs twice, not every minute.
+func (c *Collector) retryLater(channel string, now time.Time, err error) {
+	r := c.retries[channel]
+	previous := r.delay
+	r.delay = min(max(summaryRetryFirst, 2*previous), summaryRetryMax)
+	r.next = now.Add(r.delay)
+	if c.retries == nil {
+		c.retries = make(map[string]summaryRetry, 2)
+	}
+	c.retries[channel] = r
+	if previous == 0 || previous < summaryRetryMax && r.delay == summaryRetryMax {
+		c.reportSinkError(channel, err)
+	}
 }
 
 // summaryView is the sent form of s: its top sources, with country.

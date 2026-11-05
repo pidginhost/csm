@@ -36,11 +36,20 @@ type digestDelivery struct {
 	ticket                      queuehealth.Ticket
 	offered, returned, finished bool
 	tracked                     bool
-	channel                     string
-	deliveryEnabled             func(string) bool
+	// repeat marks a retry of a destination whose loss is already counted.
+	repeat          bool
+	channel         string
+	deliveryEnabled func(string) bool
 }
 
 type digestDeliveryPlan struct{ email, webhook *digestDelivery }
+
+func (p *digestDeliveryPlan) job(channel string) *digestDelivery {
+	if channel == "email" {
+		return p.email
+	}
+	return p.webhook
+}
 
 func newDigestQueues(opts Options) *digestQueues {
 	q := &digestQueues{batches: make(map[*digestBatch]struct{}), losses: queuehealth.New(maxBuffered, time.Minute), maxLag: max(time.Minute, opts.Interval+time.Minute), sinks: make(map[string]*digestSinkQueue)}
@@ -146,7 +155,7 @@ func (d *digestDelivery) start() bool {
 
 func (d *digestDelivery) result(err error) {
 	d.returned = true
-	if err != nil {
+	if err != nil && !d.repeat {
 		d.queue.tracker.Lose(time.Now(), 1)
 	}
 }
@@ -161,7 +170,7 @@ func (d *digestDelivery) finish() {
 			d.queue.uncertain = true
 			d.queue.uncertainAt = time.Now()
 			d.queue.mu.Unlock()
-		} else if d.enabled() {
+		} else if d.enabled() && !d.repeat {
 			d.queue.tracker.Lose(time.Now(), 1)
 		}
 	}

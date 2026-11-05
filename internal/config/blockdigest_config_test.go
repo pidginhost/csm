@@ -147,13 +147,32 @@ func TestSummaryValidationIgnoresUnusedLiveChannel(t *testing.T) {
 }
 
 // The interval drives a summary store write on every fold, even with
-// block_digest off, so it has a floor.
+// block_digest off, so it has a 1m floor. A lower value from an older config
+// must not fail startup after an upgrade: it loads, runs at 1m and warns.
 func TestBlockDigestIntervalFloor(t *testing.T) {
-	for interval, wantErr := range map[string]bool{"1s": true, "59s": true, "1m": false, "1h": false} {
-		cfg := baseValidationConfig()
-		cfg.Alerts.BlockDigest.Interval = interval
-		if got := hasResult(Validate(cfg), "error", "alerts.block_digest.interval"); got != wantErr {
-			t.Errorf("interval %s: error = %v, want %v", interval, got, wantErr)
+	cases := []struct {
+		interval string
+		want     time.Duration
+		warn     bool
+	}{
+		{"1s", time.Minute, true},
+		{"59s", time.Minute, true},
+		{"1m", time.Minute, false},
+		{"1h", time.Hour, false},
+	}
+	for _, tc := range cases {
+		cfg := loadBD(t, "alerts:\n  block_digest:\n    enabled: true\n    interval: \""+tc.interval+"\"\n")
+		if got := cfg.BlockDigestInterval(); got != tc.want {
+			t.Errorf("interval %s runs as %v, want %v", tc.interval, got, tc.want)
+		}
+		cfg.Alerts.Email = baseValidationConfig().Alerts.Email
+		cfg.Alerts.MaxPerHour = 10
+		results := Validate(cfg)
+		if hasResult(results, "error", "alerts.block_digest.interval") {
+			t.Errorf("interval %s fails validation: %v", tc.interval, results)
+		}
+		if got := hasResult(results, "warn", "alerts.block_digest.interval"); got != tc.warn {
+			t.Errorf("interval %s: warning = %v, want %v", tc.interval, got, tc.warn)
 		}
 	}
 }

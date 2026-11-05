@@ -270,12 +270,15 @@ func TestBlockDigestQueueCountsFailedHeartbeatDeliveries(t *testing.T) {
 			return nil
 		},
 	})
-	for range 3 {
-		c.SendDue(summaryDueOf(c))
+	// Three failed attempts at one pending summary are one lost
+	// notification per destination, however often it is retried.
+	due := summaryDueOf(c)
+	for i := range 3 {
+		c.SendDue(due.Add(time.Duration(i) * time.Hour))
 	}
 	rows := digestQueueStatuses(t, c, time.Now())
 	for _, name := range []string{"email", "webhook"} {
-		if row := rows[name]; row.Depth != 0 || row.InFlight != 0 || row.DroppedTotal != 3 || row.RecentDrops != 3 || row.DroppedLowerBound || row.Reason != "dropped_work" {
+		if row := rows[name]; row.Depth != 0 || row.InFlight != 0 || row.DroppedTotal != 1 || row.RecentDrops != 1 || row.DroppedLowerBound {
 			t.Fatalf("%s failed notifications: %+v", name, row)
 		}
 	}
@@ -283,10 +286,10 @@ func TestBlockDigestQueueCountsFailedHeartbeatDeliveries(t *testing.T) {
 		t.Fatalf("heartbeat invented record loss: %+v", row)
 	}
 	fail = false
-	c.SendDue(summaryDueOf(c))
+	c.SendDue(due.Add(3 * time.Hour))
 	rows = digestQueueStatuses(t, c, time.Now().Add(2*time.Minute))
 	for _, name := range []string{"email", "webhook"} {
-		if row := rows[name]; row.Status != "ok" || row.DroppedTotal != 3 || row.RecentDrops != 0 || row.Depth != 0 || row.InFlight != 0 {
+		if row := rows[name]; row.Status != "ok" || row.DroppedTotal != 1 || row.RecentDrops != 0 || row.Depth != 0 || row.InFlight != 0 {
 			t.Fatalf("%s recovery: %+v", name, row)
 		}
 	}

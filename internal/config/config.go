@@ -1397,9 +1397,14 @@ func (c *Config) UpdatesInterval() time.Duration {
 	return d
 }
 
+// minBlockDigestInterval floors BlockDigestInterval: each interval saves the
+// daily summary, even with the digest off. A lower configured value runs at
+// the floor with a validation warning, so an upgrade never fails startup.
+const minBlockDigestInterval = time.Minute
+
 // BlockDigestInterval is how often watched blocks fold into the daily summary
 // and the live alert dedup window. Empty, invalid, or non-positive values fall
-// back to one hour.
+// back to one hour; values below the floor run at the floor.
 func (c *Config) BlockDigestInterval() time.Duration {
 	if c.Alerts.BlockDigest.Interval == "" {
 		return time.Hour
@@ -1408,7 +1413,7 @@ func (c *Config) BlockDigestInterval() time.Duration {
 	if err != nil || d <= 0 {
 		return time.Hour
 	}
-	return d
+	return max(d, minBlockDigestInterval)
 }
 
 // UpdatesPackageName returns the apt/dnf package name to query.

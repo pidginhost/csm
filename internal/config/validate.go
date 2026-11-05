@@ -202,9 +202,8 @@ func Validate(cfg *Config) []ValidationResult {
 	if cfg.Alerts.BlockDigest.Interval != "" {
 		if d, err := time.ParseDuration(cfg.Alerts.BlockDigest.Interval); err != nil {
 			results = append(results, ValidationResult{"error", "alerts.block_digest.interval", fmt.Sprintf("unparseable duration: %s", cfg.Alerts.BlockDigest.Interval)})
-		} else if d < time.Minute {
-			// Each interval saves the daily summary, even with the digest off.
-			results = append(results, ValidationResult{"error", "alerts.block_digest.interval", "interval must be at least 1m"})
+		} else if d <= 0 {
+			results = append(results, ValidationResult{"error", "alerts.block_digest.interval", "interval must be > 0"})
 		}
 	}
 	for _, cc := range cfg.Alerts.BlockDigest.Countries {
@@ -857,6 +856,9 @@ func validateWarnings(cfg *Config) []ValidationResult {
 
 	for _, key := range cfg.RemovedKeys {
 		results = append(results, ValidationResult{"warn", key, "this setting was removed and is ignored; delete it from the config"})
+	}
+	if d, err := time.ParseDuration(cfg.Alerts.BlockDigest.Interval); err == nil && d > 0 && d < minBlockDigestInterval {
+		results = append(results, ValidationResult{"warn", "alerts.block_digest.interval", fmt.Sprintf("%s is below the 1m minimum and runs as 1m; raise it in the config", cfg.Alerts.BlockDigest.Interval)})
 	}
 
 	// GeoIP credentials set but auto_update explicitly false
