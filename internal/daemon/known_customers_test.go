@@ -10,6 +10,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/blockdigest"
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/store"
 )
@@ -84,6 +85,22 @@ func mustLookup(t *testing.T, k *knownCustomers, ip string) blockdigest.Customer
 	return hit
 }
 
+// customerFromSyslog reports whether ip's entry came from syslog.
+func customerFromSyslog(t *testing.T, k *knownCustomers, ip string) bool {
+	t.Helper()
+	key, ok := customerKey(ip)
+	if !ok {
+		t.Fatalf("customerKey(%q) failed", ip)
+	}
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	c, ok := k.entries[key]
+	if !ok {
+		t.Fatalf("no entry for %q", ip)
+	}
+	return c.Syslog
+}
+
 func sameHit(a, b blockdigest.CustomerHit) bool {
 	return a.IP == b.IP && a.Kind == b.Kind && a.Account == b.Account && a.At.Equal(b.At)
 }
@@ -92,23 +109,26 @@ func TestKnownCustomersNoteLookup(t *testing.T) {
 	now := time.Date(2026, 11, 5, 9, 0, 0, 0, time.UTC)
 	k, clock := knownCustomersAt(now)
 
-	for i, kind := range []string{knownCustomerCpanel, knownCustomerWebmail, knownCustomerSMTP, knownCustomerIMAP, knownCustomerFTP} {
+	for i, kind := range []string{knownCustomerCpanel, knownCustomerWebmail, knownCustomerSMTP, knownCustomerIMAP, knownCustomerPOP, knownCustomerFTP} {
 		ip := fmt.Sprintf("203.0.113.%d", 10+i)
-		k.Note(ip, kind, " Alice@Example.COM ", now.Add(-time.Hour))
+		k.Note(ip, kind, " Alice@Example.COM ", now.Add(-time.Hour), serviceLog)
 		want := blockdigest.CustomerHit{IP: ip, Kind: kind, Account: "alice@example.com", At: now.Add(-time.Hour)}
 		if got := mustLookup(t, k, ip); !sameHit(got, want) {
 			t.Errorf("%s: Lookup = %+v, want %+v", kind, got, want)
 		}
 	}
 
-	// One spelling per address, whichever form the log used.
-	k.Note("2001:DB8::5", knownCustomerIMAP, "bob@example.com", now)
-	for _, spelling := range []string{"2001:db8::5", "2001:DB8::5", "2001:db8:0::5"} {
-		if got := mustLookup(t, k, spelling); got.IP != "2001:db8::5" {
-			t.Errorf("Lookup(%q).IP = %q, want 2001:db8::5", spelling, got.IP)
+	// An IPv6 host is its /64, whichever address and spelling it used.
+	k.Note("2001:DB8::5", knownCustomerIMAP, "bob@example.com", now, serviceLog)
+	for _, spelling := range []string{"2001:db8::5", "2001:DB8::5", "2001:db8:0::5", "2001:db8::ffff:1"} {
+		if got := mustLookup(t, k, spelling); got.IP != "2001:db8::/64" {
+			t.Errorf("Lookup(%q).IP = %q, want 2001:db8::/64", spelling, got.IP)
 		}
 	}
-	k.Note("::ffff:198.51.100.7", knownCustomerSMTP, "carol@example.com", now)
+	if _, ok := k.Lookup("2001:db8:0:1::5"); ok {
+		t.Error("another /64 matched")
+	}
+	k.Note("::ffff:198.51.100.7", knownCustomerSMTP, "carol@example.com", now, serviceLog)
 	for _, spelling := range []string{"198.51.100.7", "::ffff:198.51.100.7"} {
 		if got := mustLookup(t, k, spelling); got.IP != "198.51.100.7" {
 			t.Errorf("Lookup(%q).IP = %q, want 198.51.100.7", spelling, got.IP)
@@ -128,13 +148,23 @@ func TestKnownCustomersNoteLookup(t *testing.T) {
 		netip.AddrFrom16([16]byte{0xfd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5}).String(),
 		"::ffff:" + netip.AddrFrom4([4]byte{10, 1, 2, 3}).String(),
 		"198.51.100.200",
+		netip.IPv4Unspecified().String(),
+		netip.IPv6Unspecified().String(),
+		netip.AddrFrom4([4]byte{224, 0, 0, 1}).String(),
+		netip.AddrFrom4([4]byte{255, 255, 255, 255}).String(),
+		netip.AddrFrom16([16]byte{0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}).String(),
+		netip.AddrFrom16([16]byte{0xff, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}).String(),
 	}
 	before := len(k.entries)
 	for _, ip := range ignored {
-		k.Note(ip, knownCustomerFTP, "dave", now)
+		k.Note(ip, knownCustomerFTP, "dave", now, serviceLog)
 		if _, ok := k.Lookup(ip); ok {
 			t.Errorf("Note stored %q", ip)
 		}
+	}
+	k.Note("203.0.113.40", "telnet", "dave", now, serviceLog)
+	if _, ok := k.Lookup("203.0.113.40"); ok {
+		t.Error("Note stored an unknown kind")
 	}
 	if len(k.entries) != before {
 		t.Fatalf("ignored addresses grew the set from %d to %d", before, len(k.entries))
@@ -142,22 +172,22 @@ func TestKnownCustomersNoteLookup(t *testing.T) {
 
 	// A login stamped in the future counts as now; one older than the TTL is
 	// not a customer login any more.
-	k.Note("203.0.113.30", knownCustomerFTP, "", now.Add(48*time.Hour))
+	k.Note("203.0.113.30", knownCustomerFTP, "", now.Add(48*time.Hour), serviceLog)
 	if got := mustLookup(t, k, "203.0.113.30"); !got.At.Equal(now) {
 		t.Errorf("future login At = %v, want clamped to %v", got.At, now)
 	}
-	k.Note("203.0.113.31", knownCustomerFTP, "", now.Add(-knownCustomerTTL))
+	k.Note("203.0.113.31", knownCustomerFTP, "", now.Add(-knownCustomerTTL), serviceLog)
 	if _, ok := k.Lookup("203.0.113.31"); ok {
 		t.Error("a login exactly one TTL old was stored")
 	}
 
 	// A late, older report does not replace the newer login.
-	k.Note("203.0.113.10", knownCustomerSMTP, "mallory@example.com", now.Add(-2*time.Hour))
+	k.Note("203.0.113.10", knownCustomerSMTP, "mallory@example.com", now.Add(-2*time.Hour), serviceLog)
 	if got := mustLookup(t, k, "203.0.113.10"); got.Kind != knownCustomerCpanel || got.Account != "alice@example.com" {
 		t.Errorf("older login replaced the newer one: %+v", got)
 	}
 	// A newer one does.
-	k.Note("203.0.113.10", knownCustomerWebmail, "erin@example.com", now)
+	k.Note("203.0.113.10", knownCustomerWebmail, "erin@example.com", now, serviceLog)
 	if got := mustLookup(t, k, "203.0.113.10"); got.Kind != knownCustomerWebmail || got.Account != "erin@example.com" || !got.At.Equal(now) {
 		t.Errorf("newer login did not replace the entry: %+v", got)
 	}
@@ -183,15 +213,15 @@ func TestKnownCustomersPerAccountCap(t *testing.T) {
 	k, _ := knownCustomersAt(now)
 	start := now.Add(-time.Hour)
 
-	k.Note("198.51.100.1", knownCustomerIMAP, "bob@example.com", start)
-	k.Note("198.51.100.2", knownCustomerSMTP, "bob@example.com", start)
+	k.Note("198.51.100.1", knownCustomerIMAP, "bob@example.com", start, serviceLog)
+	k.Note("198.51.100.2", knownCustomerSMTP, "bob@example.com", start, serviceLog)
 	for i := 1; i <= maxKnownCustomerIPsPerAccount+1; i++ {
 		// One mailbox, however the log spelled it.
 		account := "alice@example.com"
 		if i%2 == 0 {
 			account = "ALICE@example.com"
 		}
-		k.Note(fmt.Sprintf("203.0.113.%d", i), knownCustomerIMAP, account, start.Add(time.Duration(i)*time.Second))
+		k.Note(fmt.Sprintf("203.0.113.%d", i), knownCustomerIMAP, account, start.Add(time.Duration(i)*time.Second), serviceLog)
 	}
 	if _, ok := k.Lookup("203.0.113.1"); ok {
 		t.Error("the oldest address of the account was kept")
@@ -211,17 +241,17 @@ func TestKnownCustomersPerAccountCap(t *testing.T) {
 	}
 
 	// An address that moves to another account frees its old slot.
-	k.Note("203.0.113.2", knownCustomerIMAP, "bob@example.com", now)
-	k.Note("203.0.113.200", knownCustomerIMAP, "alice@example.com", now)
+	k.Note("203.0.113.2", knownCustomerIMAP, "bob@example.com", now, serviceLog)
+	k.Note("203.0.113.200", knownCustomerIMAP, "alice@example.com", now, serviceLog)
 	if _, ok := k.Lookup("203.0.113.3"); !ok {
 		t.Error("a moved address still counted against its old account")
 	}
 
 	// Unnamed logins share a budget instead of bypassing the account cap.
 	for i := 1; i <= maxKnownCustomerIPsPerAccount+10; i++ {
-		k.Note(fmt.Sprintf("2001:db8:2::%x", i), knownCustomerFTP, "", start)
+		k.Note(fmt.Sprintf("2001:db8:2:%x::1", i), knownCustomerFTP, "", start, serviceLog)
 	}
-	if n, _ := k.Within(netip.MustParsePrefix("2001:db8:2::/64"), 0); n != maxKnownCustomerIPsPerAccount {
+	if n, _ := k.Within(netip.MustParsePrefix("2001:db8:2::/48"), 0); n != maxKnownCustomerIPsPerAccount {
 		t.Errorf("unnamed logins kept %d addresses, want %d", n, maxKnownCustomerIPsPerAccount)
 	}
 }
@@ -236,18 +266,18 @@ func TestKnownCustomersGlobalCapEvictsOldest(t *testing.T) {
 	now := time.Date(2026, 11, 5, 9, 0, 0, 0, time.UTC)
 	k, _ := knownCustomersAt(now)
 	for i := 0; i < maxKnownCustomers; i++ {
-		k.Note(knownCustomerTestAddr(i), knownCustomerFTP, fmt.Sprintf("user%d", i), now.Add(-time.Duration(maxKnownCustomers-i)*time.Second))
+		k.Note(knownCustomerTestAddr(i), knownCustomerCpanel, fmt.Sprintf("user%d", i), now.Add(-time.Duration(maxKnownCustomers-i)*time.Second), serviceLog)
 	}
 	if len(k.entries) != maxKnownCustomers {
 		t.Fatalf("set holds %d, want %d before the cap", len(k.entries), maxKnownCustomers)
 	}
 	// Re-noting a held address is no insert and evicts nothing.
-	k.Note(knownCustomerTestAddr(0), knownCustomerFTP, "user0", now.Add(-time.Duration(maxKnownCustomers)*time.Second))
+	k.Note(knownCustomerTestAddr(0), knownCustomerCpanel, "user0", now.Add(-time.Duration(maxKnownCustomers)*time.Second), serviceLog)
 	if len(k.entries) != maxKnownCustomers {
 		t.Fatalf("an update evicted: %d entries", len(k.entries))
 	}
 
-	k.Note(knownCustomerTestAddr(maxKnownCustomers), knownCustomerFTP, "new-user", now)
+	k.Note(knownCustomerTestAddr(maxKnownCustomers), knownCustomerCpanel, "new-user", now, serviceLog)
 	keep := maxKnownCustomers * 95 / 100
 	if len(k.entries) != keep+1 {
 		t.Fatalf("set holds %d after the cap, want %d", len(k.entries), keep+1)
@@ -263,8 +293,8 @@ func TestKnownCustomersGlobalCapEvictsOldest(t *testing.T) {
 			t.Errorf("recent entry %d evicted", i)
 		}
 	}
-	if len(k.accounts) != keep+1 {
-		t.Errorf("eviction left %d account indexes, want %d", len(k.accounts), keep+1)
+	if len(k.groups) != keep+1 {
+		t.Errorf("eviction left %d account indexes, want %d", len(k.groups), keep+1)
 	}
 }
 
@@ -272,14 +302,15 @@ func TestKnownCustomersWithin(t *testing.T) {
 	now := time.Date(2026, 11, 5, 9, 0, 0, 0, time.UTC)
 	k, clock := knownCustomersAt(now)
 	for i := 1; i <= 10; i++ {
-		k.Note(fmt.Sprintf("203.0.113.%d", i), knownCustomerCpanel, fmt.Sprintf("user%d", i), now.Add(time.Duration(i-20)*time.Minute))
+		k.Note(fmt.Sprintf("203.0.113.%d", i), knownCustomerCpanel, fmt.Sprintf("user%d", i), now.Add(time.Duration(i-20)*time.Minute), serviceLog)
 	}
-	k.Note("203.0.113.100", knownCustomerFTP, "", now.Add(-knownCustomerTTL+time.Hour))
-	k.Note("198.51.100.1", knownCustomerCpanel, "other", now)
+	k.Note("203.0.113.100", knownCustomerFTP, "", now.Add(-knownCustomerTTL+time.Hour), serviceLog)
+	k.Note("198.51.100.1", knownCustomerCpanel, "other", now, serviceLog)
 	for i := 1; i <= 6; i++ {
-		k.Note(fmt.Sprintf("2001:db8:1::%d", i), knownCustomerIMAP, "office@example.com", now.Add(time.Duration(i-20)*time.Minute))
+		k.Note(fmt.Sprintf("2001:db8:1:%x::1", i), knownCustomerIMAP, "office@example.com", now.Add(time.Duration(i-20)*time.Minute), serviceLog)
 	}
-	k.Note("2001:db8:1:1::1", knownCustomerIMAP, "office@example.com", now)
+	k.Note("2001:db8:1:1::2", knownCustomerIMAP, "office@example.com", now.Add(-30*time.Minute), serviceLog) // same /64 as 2001:db8:1:1::1
+	k.Note("2001:db8:2::1", knownCustomerIMAP, "office@example.com", now, serviceLog)
 	clock.advance(2 * time.Hour) // 203.0.113.100 is now past the TTL
 
 	n, sample := k.Within(netip.MustParsePrefix("203.0.113.77/24"), 3)
@@ -297,12 +328,19 @@ func TestKnownCustomersWithin(t *testing.T) {
 		t.Errorf("sample[0] = %+v, want %+v", sample, want)
 	}
 
-	n, sample = k.Within(netip.MustParsePrefix("2001:db8:1::/64"), 5)
-	if n != 6 || len(sample) != 5 {
-		t.Errorf("/64 = %d with %d samples, want 6 with 5", n, len(sample))
+	n, sample = k.Within(netip.MustParsePrefix("2001:db8:1::/48"), 5)
+	if n != 6 || len(sample) != 5 || sample[0].IP != "2001:db8:1:6::/64" {
+		t.Errorf("/48 = %d with samples %+v, want 6 with 5, newest 2001:db8:1:6::/64", n, sample)
 	}
-	if n, sample = k.Within(netip.MustParsePrefix("2001:db8:1::/64"), 0); n != 6 || sample != nil {
-		t.Errorf("limit 0 = %d, %v; want 6 and no sample", n, sample)
+	for _, p := range []string{"2001:db8:1:1::/64", "2001:db8:1:1::abcd/128", "2001:db8:1:1:8000::/65"} {
+		if n, sample = k.Within(netip.MustParsePrefix(p), 5); n != 1 || len(sample) != 1 || sample[0].IP != "2001:db8:1:1::/64" {
+			t.Errorf("%s = %d, %+v; want the one /64 it overlaps", p, n, sample)
+		}
+	}
+	for _, limit := range []int{0, -1} {
+		if n, sample = k.Within(netip.MustParsePrefix("2001:db8:1::/48"), limit); n != 6 || sample != nil {
+			t.Errorf("limit %d = %d, %v; want 6 and no sample", limit, n, sample)
+		}
 	}
 	if n, sample = k.Within(netip.MustParsePrefix("192.0.2.0/24"), 5); n != 0 || len(sample) != 0 {
 		t.Errorf("empty prefix = %d, %v", n, sample)
@@ -316,13 +354,13 @@ func TestKnownCustomersWithin(t *testing.T) {
 func TestKnownCustomersRequeueAfterFailedSave(t *testing.T) {
 	now := time.Date(2026, 11, 5, 9, 0, 0, 0, time.UTC)
 	k, clock := knownCustomersAt(now)
-	k.Note("203.0.113.1", knownCustomerFTP, "", now.Add(-knownCustomerTTL+time.Minute))
-	k.Note("203.0.113.2", knownCustomerFTP, "", now)
+	k.Note("203.0.113.1", knownCustomerFTP, "", now.Add(-knownCustomerTTL+time.Minute), serviceLog)
+	k.Note("203.0.113.2", knownCustomerFTP, "", now, serviceLog)
 	k.Changes()
 
 	clock.advance(time.Minute)
 	k.Purge() // 203.0.113.1 expires
-	k.Note("203.0.113.2", knownCustomerSMTP, "alice@example.com", clock.t)
+	k.Note("203.0.113.2", knownCustomerSMTP, "alice@example.com", clock.t, serviceLog)
 	upserts, deletes := k.Changes()
 	if len(upserts) != 1 || len(deletes) != 1 {
 		t.Fatalf("Changes = %v, %v; want one upsert and one delete", upserts, deletes)
@@ -346,18 +384,19 @@ func TestKnownCustomersPersistRoundTrip(t *testing.T) {
 	t.Cleanup(func() { _ = db.Close() })
 
 	k, _ := knownCustomersAt(now)
-	k.Note("203.0.113.10", knownCustomerCpanel, "alice", now.Add(-time.Hour))
-	k.Note("2001:db8::10", knownCustomerWebmail, "office@example.com", now.Add(-2*time.Hour))
+	k.Note("203.0.113.10", knownCustomerCpanel, "alice", now.Add(-time.Hour), serviceLog)
+	k.Note("2001:db8:1::10", knownCustomerWebmail, "office@example.com", now.Add(-2*time.Hour), serviceLog)
 	if err = db.SaveKnownCustomers(k.Changes()); err != nil {
 		t.Fatal(err)
 	}
 	loopback := netip.AddrFrom4([4]byte{127, 0, 0, 1}).String()
 	if err = db.SaveKnownCustomers(map[string]store.KnownCustomer{
-		"not-an-ip":    {Kind: knownCustomerFTP, At: now},
-		loopback:       {Kind: knownCustomerFTP, At: now},
-		"203.0.113.20": {Kind: knownCustomerSMTP, Account: "old@example.com", At: now.Add(-knownCustomerTTL - time.Hour)},
-		"203.0.113.30": {Kind: knownCustomerIMAP, Account: "f@example.com", At: now.Add(24 * time.Hour)},
-		"2001:DB8::40": {Kind: knownCustomerIMAP, Account: "C@Example.com", At: now.Add(-time.Minute)},
+		"not-an-ip":      {Kind: knownCustomerFTP, At: now},
+		loopback:         {Kind: knownCustomerFTP, At: now},
+		"203.0.113.20":   {Kind: knownCustomerSMTP, Account: "old@example.com", At: now.Add(-knownCustomerTTL - time.Hour)},
+		"203.0.113.30":   {Kind: knownCustomerIMAP, Account: "f@example.com", At: now.Add(24 * time.Hour)},
+		"2001:DB8:2::40": {Kind: knownCustomerIMAP, Account: "C@Example.com", At: now.Add(-time.Minute)},
+		"203.0.113.50":   {Kind: "telnet", Account: "e@example.com", At: now},
 	}, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -369,20 +408,24 @@ func TestKnownCustomersPersistRoundTrip(t *testing.T) {
 	k2, _ := knownCustomersAt(now)
 	k2.Load(saved)
 
-	for _, want := range []blockdigest.CustomerHit{
-		{IP: "203.0.113.10", Kind: knownCustomerCpanel, Account: "alice", At: now.Add(-time.Hour)},
-		{IP: "2001:db8::10", Kind: knownCustomerWebmail, Account: "office@example.com", At: now.Add(-2 * time.Hour)},
-		{IP: "203.0.113.30", Kind: knownCustomerIMAP, Account: "f@example.com", At: now},
-		{IP: "2001:db8::40", Kind: knownCustomerIMAP, Account: "c@example.com", At: now.Add(-time.Minute)},
+	for ip, want := range map[string]blockdigest.CustomerHit{
+		"203.0.113.10":   {IP: "203.0.113.10", Kind: knownCustomerCpanel, Account: "alice", At: now.Add(-time.Hour)},
+		"2001:db8:1::10": {IP: "2001:db8:1::/64", Kind: knownCustomerWebmail, Account: "office@example.com", At: now.Add(-2 * time.Hour)},
+		"203.0.113.30":   {IP: "203.0.113.30", Kind: knownCustomerIMAP, Account: "f@example.com", At: now},
+		"2001:db8:2::40": {IP: "2001:db8:2::/64", Kind: knownCustomerIMAP, Account: "c@example.com", At: now.Add(-time.Minute)},
 	} {
-		if got := mustLookup(t, k2, want.IP); !sameHit(got, want) {
+		if got := mustLookup(t, k2, ip); !sameHit(got, want) {
 			t.Errorf("loaded %+v, want %+v", got, want)
 		}
 	}
-	for _, ip := range []string{loopback, "203.0.113.20"} {
+	for _, ip := range []string{loopback, "203.0.113.20", "203.0.113.50"} {
 		if _, ok := k2.Lookup(ip); ok {
 			t.Errorf("load kept %s", ip)
 		}
+	}
+	// IMAP comes over syslog; webmail from session_log.
+	if !k2.entries[netip.MustParseAddr("203.0.113.30")].Syslog || k2.entries[netip.MustParseAddr("2001:db8:1::")].Syslog {
+		t.Errorf("login sources after load: %+v", k2.entries)
 	}
 	if len(k2.entries) != 4 {
 		t.Fatalf("loaded %d entries, want 4", len(k2.entries))
@@ -395,11 +438,11 @@ func TestKnownCustomersPersistRoundTrip(t *testing.T) {
 		up = append(up, ip)
 	}
 	slices.Sort(up)
-	if want := []string{"2001:db8::40", "203.0.113.30"}; !slices.Equal(up, want) {
+	if want := []string{"2001:db8:2::", "203.0.113.30"}; !slices.Equal(up, want) {
 		t.Errorf("upserts after load = %v, want %v", up, want)
 	}
 	slices.Sort(deletes)
-	wantDeletes := []string{loopback, "2001:DB8::40", "203.0.113.20", "not-an-ip"}
+	wantDeletes := []string{loopback, "2001:DB8:2::40", "203.0.113.20", "203.0.113.50", "not-an-ip"}
 	slices.Sort(wantDeletes)
 	if want := wantDeletes; !slices.Equal(deletes, want) {
 		t.Errorf("deletes after load = %v, want %v", deletes, want)
@@ -433,8 +476,11 @@ func TestSessionLogRecordsCustomers(t *testing.T) {
 
 	for ip, want := range map[string]blockdigest.CustomerHit{
 		"203.0.113.21": {IP: "203.0.113.21", Kind: knownCustomerCpanel, Account: "alice"},
-		"2001:db8::21": {IP: "2001:db8::21", Kind: knownCustomerWebmail, Account: "office@example.com"},
+		"2001:db8::21": {IP: "2001:db8::/64", Kind: knownCustomerWebmail, Account: "office@example.com"},
 	} {
+		if customerFromSyslog(t, d.knownCustomers, ip) {
+			t.Errorf("%s counted as a syslog login", ip)
+		}
 		got := mustLookup(t, d.knownCustomers, ip)
 		if got.IP != want.IP || got.Kind != want.Kind || got.Account != want.Account || !got.At.Equal(at) {
 			t.Errorf("Lookup(%s) = %+v, want %+v at the time of the line", ip, got, want)
@@ -463,11 +509,16 @@ func TestMailSuccessRecordsCustomer(t *testing.T) {
 	d.handleMailLine(fmt.Sprintf(postfixFailFmt, "203.0.113.42", "bob@example.com"), obs, cfg)
 	d.handleMailLine("Nov  5 09:00:00 host dovecot: imap-login: Login aborted: Logged out (auth failed, 1 attempts in 2 secs): user=<carol@example.com>, method=PLAIN, rip=203.0.113.43, lip=192.0.2.1, TLS", obs, cfg)
 
+	for ip, syslog := range map[string]bool{"203.0.113.31": false, "203.0.113.32": true, "2001:db8::33": true, "203.0.113.34": true} {
+		if got := customerFromSyslog(t, d.knownCustomers, ip); got != syslog {
+			t.Errorf("%s syslog source = %v, want %v", ip, got, syslog)
+		}
+	}
 	for ip, want := range map[string]blockdigest.CustomerHit{
 		"203.0.113.31": {IP: "203.0.113.31", Kind: knownCustomerSMTP, Account: "alice@example.com"},
 		"203.0.113.32": {IP: "203.0.113.32", Kind: knownCustomerSMTP, Account: "bob@example.com"},
-		"2001:db8::33": {IP: "2001:db8::33", Kind: knownCustomerIMAP, Account: "carol@example.com"},
-		"203.0.113.34": {IP: "203.0.113.34", Kind: knownCustomerIMAP, Account: "dave@example.com"},
+		"2001:db8::33": {IP: "2001:db8::/64", Kind: knownCustomerIMAP, Account: "carol@example.com"},
+		"203.0.113.34": {IP: "203.0.113.34", Kind: knownCustomerPOP, Account: "dave@example.com"},
 	} {
 		if got := mustLookup(t, d.knownCustomers, ip); got.IP != want.IP || got.Kind != want.Kind || got.Account != want.Account {
 			t.Errorf("Lookup(%s) = %+v, want %+v", ip, got, want)
@@ -490,11 +541,11 @@ func TestFTPLoginFindingRecordsCustomer(t *testing.T) {
 		{Severity: alert.Critical, Check: "ftp_login_after_bruteforce", SourceIP: "2001:db8::52", TenantID: "Alice", Message: "FTP login succeeded from brute-force source 2001:db8::52 after 9 failed attempts", Timestamp: at},
 		{Severity: alert.High, Check: "ftp_auth_failure_realtime", SourceIP: "203.0.113.53", Message: "FTP authentication failed from 203.0.113.53", Timestamp: at},
 	})
-	for _, want := range []blockdigest.CustomerHit{
-		{IP: "203.0.113.51", Kind: knownCustomerFTP, At: at},
-		{IP: "2001:db8::52", Kind: knownCustomerFTP, Account: "alice", At: at},
+	for ip, want := range map[string]blockdigest.CustomerHit{
+		"203.0.113.51": {IP: "203.0.113.51", Kind: knownCustomerFTP, At: at},
+		"2001:db8::52": {IP: "2001:db8::/64", Kind: knownCustomerFTP, Account: "alice", At: at},
 	} {
-		if got := mustLookup(t, d.knownCustomers, want.IP); !sameHit(got, want) {
+		if got := mustLookup(t, d.knownCustomers, ip); !sameHit(got, want) {
 			t.Errorf("Lookup = %+v, want %+v", got, want)
 		}
 	}
@@ -515,8 +566,15 @@ func TestFTPLoginFindingRecordsCustomer(t *testing.T) {
 	// whose attempted name carries the success text does not.
 	login := time.Now().Format(time.Stamp) + " host pure-ftpd: (?@203.0.113.55) [INFO] alice is now logged in"
 	d.dispatchBatch(parseFTPLogLine(login, cfg))
-	if _, ok := d.knownCustomers.Lookup("203.0.113.55"); !ok {
-		t.Error("a realtime FTP login was not recorded")
+	if hit, ok := d.knownCustomers.Lookup("203.0.113.55"); !ok || hit.Account != "alice" || !customerFromSyslog(t, d.knownCustomers, "203.0.113.55") {
+		t.Errorf("a realtime FTP login = %+v, %v; want account alice from syslog", hit, ok)
+	}
+	// A virtual FTP account counts against the hosting account that owns it.
+	defer checks.SetAccountOwnerLookupForTest(func(domain string) (string, bool) { return "shopowner", domain == "example.com" })()
+	virtual := time.Now().Format(time.Stamp) + " host pure-ftpd: (bob@example.com@203.0.113.57) [INFO] bob@example.com is now logged in"
+	d.dispatchBatch(parseFTPLogLine(virtual, cfg))
+	if hit, ok := d.knownCustomers.Lookup("203.0.113.57"); !ok || hit.Account != "shopowner" {
+		t.Errorf("virtual FTP login = %+v, %v; want the owning account", hit, ok)
 	}
 	forged := "Nov  5 09:00:00 host pure-ftpd: (?@203.0.113.54) [WARNING] Authentication failed for user [x is now logged in]"
 	d.dispatchBatch(parseFTPLogLine(forged, cfg))

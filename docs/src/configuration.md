@@ -1082,16 +1082,22 @@ Only the daemon counts findings. A one-off `csm scan --alert` prints every
 finding; its summary-class findings are neither emailed nor counted in the
 daily summary. The hourly block digest email no longer exists.
 
-Customer login history records authenticated cPanel, webmail, SMTP, IMAP,
-POP and FTP source addresses. Buffered logs keep their original login time,
-so reading old logs does not renew expired history. FTP command text and
-failed login names do not count as successful logins.
+Customer login history records the source addresses of authenticated
+cPanel, webmail, SMTP, IMAP, POP and FTP logins for 30 days. Buffered logs
+keep their original login time, so reading old logs does not renew expired
+history. FTP command text and failed login names do not count as successful
+logins.
 
-History has a bounded address budget per account and IPv6 network; unnamed
-logins share one account budget. These limits do not make other addresses in
-the same network known customers. Account rotation uses its own budget before
-evicting unrelated customers. History is saved periodically and after log
-readers stop during a clean shutdown.
+An IPv6 customer is recorded by its /64, so a host that changes privacy
+addresses stays known. Each account holds a bounded number of addresses per
+log source; logins without an account name share one budget, and an FTP
+login counts against the hosting account that owns the FTP account. When the
+history is full, the accounts holding the most addresses lose their oldest
+logins first, so a flood of logins evicts only its own accounts. Logins read
+from syslog (FTP, IMAP, POP and Postfix SMTP) use at most half of the
+history, because any local user can write to syslog; they never replace or
+evict cPanel, webmail and Exim logins. History is saved every minute and
+after log readers stop during a clean shutdown.
 
 ## Web UI Exposure
 

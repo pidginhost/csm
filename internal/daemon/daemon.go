@@ -2468,7 +2468,7 @@ func recordEximSMTPAuthSuccess(line string, cfg *config.Config, tracker *smtpAut
 	if isInfraIPDaemon(ip, cfg.InfraIPs) || isPrivateOrLoopback(ip) {
 		return nil
 	}
-	return tracker.recordSuccessAt(ip, user, customerLoginTime(line, tracker.now()))
+	return tracker.recordSuccessAt(ip, user, customerLoginTime(line, tracker.now()), serviceLog)
 }
 
 func (d *Daemon) emitAuthBackendFindings() bool {
@@ -2632,7 +2632,11 @@ func (d *Daemon) handleMailLine(line string, obs alert.Observation, cfg *config.
 		return findings
 	}
 	if success {
-		findings = append(findings, d.mailAuthTracker.recordSuccessAt(ip, account, customerLoginTime(line, d.mailAuthTracker.now()))...)
+		kind := knownCustomerIMAP
+		if strings.HasPrefix(dovecotServiceMessage(line), "pop3-login:") {
+			kind = knownCustomerPOP
+		}
+		findings = append(findings, d.mailAuthTracker.recordSuccessAt(ip, account, customerLoginTime(line, d.mailAuthTracker.now()), kind)...)
 	} else {
 		findings = append(findings, recordDovecotFailure(d.mailAuthTracker, ip, account, line, obs)...)
 	}
@@ -2664,7 +2668,7 @@ func (d *Daemon) handleSMTPAuthPairing(line string, obs alert.Observation, cfg *
 		if isInfraIPDaemon(ip, cfg.InfraIPs) || isPrivateOrLoopback(ip) {
 			return nil, true
 		}
-		return t.recordSuccessAt(ip, user, customerLoginTime(line, t.now())), true
+		return t.recordSuccessAt(ip, user, customerLoginTime(line, t.now()), syslogFed), true
 	}
 	if strings.HasPrefix(msg, "warning: SASL: ") {
 		// A failed backend reconnect can leave smtpd's previous reply

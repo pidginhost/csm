@@ -764,12 +764,15 @@ func FTPLoginFinding(line string, cfg *config.Config) (alert.Finding, bool) {
 // detector ("logins are audit trail, not paging-level").
 func ftpLoginFinding(ip, line string, recentFails int) alert.Finding {
 	at, _ := syslogLineTime(line, time.Now())
+	account := parseFTPLoginAccount(line)
+	owner := ""
+	if account != "" {
+		owner = ftpAccountOwner(account)
+	}
 	if recentFails >= ftpFailThreshold {
 		msg := fmt.Sprintf("FTP login succeeded from brute-force source %s after %d failed attempts", ip, recentFails)
-		owner := ""
-		if account := parseFTPLoginAccount(line); account != "" {
+		if account != "" {
 			msg = fmt.Sprintf("FTP login succeeded for account %s from brute-force source %s after %d failed attempts", account, ip, recentFails)
-			owner = ftpAccountOwner(account)
 		}
 		return alert.Finding{
 			Severity:  alert.Critical,
@@ -789,13 +792,14 @@ func ftpLoginFinding(ip, line string, recentFails int) alert.Finding {
 		SourceIP:  ip,
 		Message:   fmt.Sprintf("FTP login from non-infra IP: %s", ip),
 		Details:   line,
+		TenantID:  owner,
 		Timestamp: at,
 	}
 }
 
 // FTPLoginAccount returns the authenticated account only from a complete
-// pure-ftpd success record. Findings retain this record for customer tracking;
-// the tenant owner is not the identity of an individual FTP account.
+// pure-ftpd success record. Findings keep the record, so customer tracking
+// can fall back to this login name when no hosting account owns it.
 func FTPLoginAccount(line string) string {
 	_, account := ftpLoginFields(line)
 	return account

@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"container/heap"
 	"net/netip"
 	"slices"
 	"strings"
@@ -17,13 +18,18 @@ import (
 // knownCustomerTTL is how long one successful login keeps an address known.
 const knownCustomerTTL = 30 * 24 * time.Hour
 
-// maxKnownCustomers bounds the set. A full set drops its oldest logins in one
-// batch, down to 95%, so each new address does not pay for a scan.
+// maxKnownCustomers bounds the set. A full set trims in one batch, down to
+// 95%, so each new address does not pay for a scan.
 const maxKnownCustomers = 50000
 
-// maxKnownCustomerIPsPerAccount bounds one account, unnamed logins together,
-// and one IPv6 /64. Rotating credentials or IPv6 hosts must not let one
-// source consume the host budget. Lookups still require an exact address.
+// maxSyslogCustomers bounds the logins read from syslog. Any local user can
+// write syslog with logger, so forged logins stay within this half and cannot
+// push out the logins read from session_log or the Exim mainlog.
+const maxSyslogCustomers = maxKnownCustomers / 2
+
+// maxKnownCustomerIPsPerAccount bounds the addresses one account holds from
+// one login source; logins without an account name form one group. Rotating
+// credentials or addresses cannot take over the set.
 const maxKnownCustomerIPsPerAccount = 64
 
 // Kinds of successful customer login.
@@ -32,37 +38,70 @@ const (
 	knownCustomerWebmail = "webmail"
 	knownCustomerSMTP    = "smtp"
 	knownCustomerIMAP    = "imap"
+	knownCustomerPOP     = "pop"
 	knownCustomerFTP     = "ftp"
 )
 
+// loginSource is the log a login was read from.
+type loginSource bool
+
+const (
+	serviceLog loginSource = false // written only by the service: session_log, the Exim mainlog
+	syslogFed  loginSource = true  // syslog, which any local user can write with logger
+)
+
+// loginFromSyslog reports whether a login of kind was read from syslog.
+// cPanel and webmail logins come only from session_log, FTP, IMAP and POP
+// only from syslog; SMTP comes from the Exim mainlog or from Postfix over
+// syslog, as src says. ok is false for an unknown kind.
+func loginFromSyslog(kind string, src loginSource) (syslog, ok bool) {
+	switch kind {
+	case knownCustomerCpanel, knownCustomerWebmail:
+		return false, true
+	case knownCustomerFTP, knownCustomerIMAP, knownCustomerPOP:
+		return true, true
+	case knownCustomerSMTP:
+		return bool(src), true
+	}
+	return false, false
+}
+
+// customerGroup is what one account holds from one login source. A full set
+// trims its largest groups first, so a flood loses its own entries before
+// anyone else's.
+type customerGroup struct {
+	syslog  bool
+	account string
+}
+
 // knownCustomers remembers addresses that logged in successfully as a
 // customer, with the last such login. Only real successes are noted, so an
-// attacker who can only fail logins never enters the set. Its mutex is a
-// leaf: the infra lookup and store I/O run outside it.
+// attacker who can only fail logins never enters the set. An IPv6 host is
+// its /64: privacy addresses rotate inside it. Its mutex is a leaf: the
+// infra lookup and store I/O run outside it.
 type knownCustomers struct {
 	now func() time.Time
 	// isInfra reports addresses that are never stored. Set once before log
 	// readers start.
 	isInfra func(ip string) bool
 
-	mu       sync.Mutex
-	entries  map[netip.Addr]store.KnownCustomer
-	accounts map[string]map[netip.Addr]struct{} // addresses whose last login named the account
-	networks map[netip.Prefix]map[netip.Addr]struct{}
-	stored   map[netip.Addr]struct{} // addresses loaded or handed to the writer
-	dirty    map[netip.Addr]struct{} // to write at the next save
-	deleted  map[string]struct{}     // stored keys to remove at the next save
+	mu          sync.Mutex
+	entries     map[netip.Addr]store.KnownCustomer
+	groups      map[customerGroup]map[netip.Addr]struct{}
+	syslogCount int                     // entries read from syslog
+	stored      map[netip.Addr]struct{} // addresses loaded or handed to the writer
+	dirty       map[netip.Addr]struct{} // to write at the next save
+	deleted     map[string]struct{}     // stored keys to remove at the next save
 }
 
 func newKnownCustomers(now func() time.Time) *knownCustomers {
 	return &knownCustomers{
-		now:      now,
-		entries:  make(map[netip.Addr]store.KnownCustomer),
-		accounts: make(map[string]map[netip.Addr]struct{}),
-		networks: make(map[netip.Prefix]map[netip.Addr]struct{}),
-		stored:   make(map[netip.Addr]struct{}),
-		dirty:    make(map[netip.Addr]struct{}),
-		deleted:  make(map[string]struct{}),
+		now:     now,
+		entries: make(map[netip.Addr]store.KnownCustomer),
+		groups:  make(map[customerGroup]map[netip.Addr]struct{}),
+		stored:  make(map[netip.Addr]struct{}),
+		dirty:   make(map[netip.Addr]struct{}),
+		deleted: make(map[string]struct{}),
 	}
 }
 
@@ -70,24 +109,52 @@ func knownCustomerExpired(at, now time.Time) bool {
 	return now.Sub(at) >= knownCustomerTTL
 }
 
-// customerAddr is the canonical address ip is stored under, or false when it
-// can never be a customer entry.
+// customerKey is the key ip is stored under: the address, or for IPv6 its
+// /64.
+func customerKey(ip string) (netip.Addr, bool) {
+	addr, err := netip.ParseAddr(ip)
+	if err != nil || addr.Zone() != "" {
+		return netip.Addr{}, false
+	}
+	return networkKey(addr.Unmap()), true
+}
+
+func networkKey(addr netip.Addr) netip.Addr {
+	if addr.Is6() {
+		return netip.PrefixFrom(addr, 64).Masked().Addr()
+	}
+	return addr
+}
+
+// storedKey reports whether raw is a key as Changes writes it.
+func storedKey(raw string) (netip.Addr, bool) {
+	key, ok := customerKey(raw)
+	return key, ok && key.String() == raw
+}
+
+// customerAddr is the key a login from ip is stored under, or false when ip
+// can never be a customer address.
 func (k *knownCustomers) customerAddr(ip string) (netip.Addr, bool) {
 	addr, err := netip.ParseAddr(ip)
 	if err != nil || addr.Zone() != "" {
 		return netip.Addr{}, false
 	}
 	addr = addr.Unmap()
-	if addr.IsLoopback() || addr.IsPrivate() || (k.isInfra != nil && k.isInfra(addr.String())) {
+	if !addr.IsGlobalUnicast() || addr.IsPrivate() || (k.isInfra != nil && k.isInfra(addr.String())) {
 		return netip.Addr{}, false
 	}
-	return addr, true
+	return networkKey(addr), true
 }
 
-// Note records a successful login of kind from ip at at. A login older than
-// the TTL is ignored and one stamped in the future counts as now.
-func (k *knownCustomers) Note(ip, kind, account string, at time.Time) {
+// Note records a successful login of kind from ip at at, read from src. A
+// login older than the TTL is ignored and one stamped in the future counts
+// as now.
+func (k *knownCustomers) Note(ip, kind, account string, at time.Time, src loginSource) {
 	if k == nil {
+		return
+	}
+	syslog, ok := loginFromSyslog(kind, src)
+	if !ok {
 		return
 	}
 	addr, ok := k.customerAddr(ip)
@@ -101,48 +168,65 @@ func (k *knownCustomers) Note(ip, kind, account string, at time.Time) {
 	if knownCustomerExpired(at, now) {
 		return
 	}
-	c := store.KnownCustomer{Kind: kind, Account: strings.Clone(normalizeSprayMailbox(account)), At: at}
+	c := store.KnownCustomer{Kind: kind, Account: strings.Clone(normalizeSprayMailbox(account)), At: at, Syslog: syslog}
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	k.putLocked(addr, c)
 }
 
-// putLocked stores c for addr unless addr already holds a newer login.
+// putLocked stores c for addr, then applies the caps.
 func (k *knownCustomers) putLocked(addr netip.Addr, c store.KnownCustomer) {
-	old, exists := k.entries[addr]
-	if exists && old.At.After(c.At) {
-		return
-	}
-	if exists && old.Account != c.Account {
-		k.unindexLocked(addr, old.Account)
+	if old, exists := k.entries[addr]; exists {
+		// Neither a late report of an older login nor a syslog login over one
+		// a service log recorded: a forged line would relabel the entry and
+		// expose it to a syslog flood.
+		if old.At.After(c.At) || (!old.Syslog && c.Syslog) {
+			return
+		}
+		k.unlinkLocked(addr, old)
 	}
 	k.entries[addr] = c
+	k.linkLocked(addr, c)
 	k.dirty[addr] = struct{}{}
 	delete(k.deleted, addr.String())
-	held := k.accounts[c.Account]
-	if held == nil {
-		held = make(map[netip.Addr]struct{})
-		k.accounts[c.Account] = held
+	k.trimGroupLocked(customerGroup{c.Syslog, c.Account})
+	if k.syslogCount > maxSyslogCustomers {
+		k.evictLocked(true, k.syslogCount-(maxSyslogCustomers*95/100+1))
 	}
-	held[addr] = struct{}{}
-	if addr.Is6() {
-		p := netip.PrefixFrom(addr, 64).Masked()
-		if k.networks[p] == nil {
-			k.networks[p] = make(map[netip.Addr]struct{})
-		}
-		k.networks[p][addr] = struct{}{}
-	}
-	k.trimGroupLocked(held)
-	if addr.Is6() {
-		k.trimGroupLocked(k.networks[netip.PrefixFrom(addr, 64).Masked()])
-	}
-	// A local rotation must free its slot before considering host eviction.
+	// A syslog login never evicts one a service log recorded.
 	if len(k.entries) > maxKnownCustomers {
-		k.evictOldestLocked()
+		k.evictLocked(c.Syslog, len(k.entries)-(maxKnownCustomers*95/100+1))
 	}
 }
 
-func (k *knownCustomers) trimGroupLocked(held map[netip.Addr]struct{}) {
+func (k *knownCustomers) linkLocked(addr netip.Addr, c store.KnownCustomer) {
+	g := customerGroup{c.Syslog, c.Account}
+	held := k.groups[g]
+	if held == nil {
+		held = make(map[netip.Addr]struct{})
+		k.groups[g] = held
+	}
+	held[addr] = struct{}{}
+	if c.Syslog {
+		k.syslogCount++
+	}
+}
+
+func (k *knownCustomers) unlinkLocked(addr netip.Addr, c store.KnownCustomer) {
+	g := customerGroup{c.Syslog, c.Account}
+	delete(k.groups[g], addr)
+	if len(k.groups[g]) == 0 {
+		delete(k.groups, g)
+	}
+	if c.Syslog {
+		k.syslogCount--
+	}
+}
+
+// trimGroupLocked drops the oldest entry of a group over its cap, which may
+// be the one just noted.
+func (k *knownCustomers) trimGroupLocked(g customerGroup) {
+	held := k.groups[g]
 	if len(held) <= maxKnownCustomerIPsPerAccount {
 		return
 	}
@@ -169,25 +253,52 @@ func compareCustomerEntries(a, b customerEntry) int {
 	return a.addr.Compare(b.addr)
 }
 
-// evictOldestLocked drops the oldest entries until the set is at 95% of its
-// cap.
-func (k *knownCustomers) evictOldestLocked() {
-	all := make([]customerEntry, 0, len(k.entries))
+// evictLocked removes n entries, each the oldest of the largest remaining
+// group. With syslogOnly it removes only logins read from syslog.
+func (k *knownCustomers) evictLocked(syslogOnly bool, n int) {
+	byGroup := make(map[customerGroup][]customerEntry)
 	for a, c := range k.entries {
-		all = append(all, customerEntry{a, c})
+		if !syslogOnly || c.Syslog {
+			g := customerGroup{c.Syslog, c.Account}
+			byGroup[g] = append(byGroup[g], customerEntry{a, c})
+		}
 	}
-	slices.SortFunc(all, compareCustomerEntries)
-	for _, e := range all[:len(all)-(maxKnownCustomers*95/100+1)] {
-		k.removeLocked(e.addr)
+	h := make(evictionHeap, 0, len(byGroup))
+	for _, members := range byGroup {
+		slices.SortFunc(members, compareCustomerEntries)
+		h = append(h, members)
+	}
+	heap.Init(&h)
+	for ; n > 0 && h.Len() > 0; n-- {
+		members := h[0]
+		k.removeLocked(members[0].addr)
+		if len(members) == 1 {
+			heap.Pop(&h)
+			continue
+		}
+		h[0] = members[1:]
+		heap.Fix(&h, 0)
 	}
 }
 
-func (k *knownCustomers) unindexLocked(addr netip.Addr, account string) {
-	held := k.accounts[account]
-	delete(held, addr)
-	if len(held) == 0 {
-		delete(k.accounts, account)
+// evictionHeap holds groups, oldest entry first within each, ordered largest
+// group first and then by oldest entry.
+type evictionHeap [][]customerEntry
+
+func (h evictionHeap) Len() int { return len(h) }
+func (h evictionHeap) Less(i, j int) bool {
+	if len(h[i]) != len(h[j]) {
+		return len(h[i]) > len(h[j])
 	}
+	return compareCustomerEntries(h[i][0], h[j][0]) < 0
+}
+func (h evictionHeap) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
+func (h *evictionHeap) Push(x any)   { *h = append(*h, x.([]customerEntry)) }
+func (h *evictionHeap) Pop() any {
+	old := *h
+	last := old[len(old)-1]
+	*h = old[:len(old)-1]
+	return last
 }
 
 func (k *knownCustomers) removeLocked(addr netip.Addr) {
@@ -196,46 +307,63 @@ func (k *knownCustomers) removeLocked(addr netip.Addr) {
 		return
 	}
 	delete(k.entries, addr)
-	k.unindexLocked(addr, c.Account)
-	if addr.Is6() {
-		p := netip.PrefixFrom(addr, 64).Masked()
-		delete(k.networks[p], addr)
-		if len(k.networks[p]) == 0 {
-			delete(k.networks, p)
-		}
-	}
+	k.unlinkLocked(addr, c)
 	delete(k.dirty, addr)
-	if _, stored := k.stored[addr]; stored {
-		k.deleted[addr.String()] = struct{}{}
+	if _, stored := k.stored[addr]; stored && !k.queueDeleteLocked(addr.String()) {
+		delete(k.stored, addr)
 	}
 }
 
-func customerHit(addr netip.Addr, c store.KnownCustomer) blockdigest.CustomerHit {
-	return blockdigest.CustomerHit{IP: addr.String(), Kind: c.Kind, Account: c.Account, At: c.At}
+// queueDeleteLocked marks a stored key for deletion at the next save and
+// reports whether it did. Pending deletes stay bounded; a key past the bound
+// stays on disk until a later load drops it again.
+func (k *knownCustomers) queueDeleteLocked(raw string) bool {
+	if _, pending := k.deleted[raw]; !pending && len(k.deleted) >= maxKnownCustomers {
+		return false
+	}
+	k.deleted[raw] = struct{}{}
+	return true
 }
 
-// Lookup returns the last customer login from ip within the TTL.
+// customerHit names an IPv6 entry by its /64.
+func customerHit(addr netip.Addr, c store.KnownCustomer) blockdigest.CustomerHit {
+	ip := addr.String()
+	if addr.Is6() {
+		ip = netip.PrefixFrom(addr, 64).String()
+	}
+	return blockdigest.CustomerHit{IP: ip, Kind: c.Kind, Account: c.Account, At: c.At}
+}
+
+// entryPrefix is the network one entry covers.
+func entryPrefix(addr netip.Addr) netip.Prefix {
+	if addr.Is6() {
+		return netip.PrefixFrom(addr, 64)
+	}
+	return netip.PrefixFrom(addr, 32)
+}
+
+// Lookup returns the last customer login from ip, or from its IPv6 /64,
+// within the TTL.
 func (k *knownCustomers) Lookup(ip string) (blockdigest.CustomerHit, bool) {
 	if k == nil {
 		return blockdigest.CustomerHit{}, false
 	}
-	addr, err := netip.ParseAddr(ip)
-	if err != nil || addr.Zone() != "" {
+	key, ok := customerKey(ip)
+	if !ok {
 		return blockdigest.CustomerHit{}, false
 	}
-	addr = addr.Unmap()
 	now := k.now()
 	k.mu.Lock()
-	c, ok := k.entries[addr]
+	c, ok := k.entries[key]
 	k.mu.Unlock()
 	if !ok || knownCustomerExpired(c.At, now) {
 		return blockdigest.CustomerHit{}, false
 	}
-	return customerHit(addr, c), true
+	return customerHit(key, c), true
 }
 
-// Within counts the known customers inside p and returns up to limit of
-// them, the most recent first.
+// Within counts the known customers that p covers or overlaps and returns up
+// to limit of them, the most recent first.
 func (k *knownCustomers) Within(p netip.Prefix, limit int) (n int, sample []blockdigest.CustomerHit) {
 	if k == nil || !p.IsValid() {
 		return 0, nil
@@ -247,7 +375,7 @@ func (k *knownCustomers) Within(p netip.Prefix, limit int) (n int, sample []bloc
 	// A linear scan of at most maxKnownCustomers entries per call; index by
 	// network if subnet blocks ever become frequent.
 	for addr, c := range k.entries {
-		if !p.Contains(addr) || knownCustomerExpired(c.At, now) {
+		if !p.Overlaps(entryPrefix(addr)) || knownCustomerExpired(c.At, now) {
 			continue
 		}
 		n++
@@ -256,6 +384,9 @@ func (k *knownCustomers) Within(p netip.Prefix, limit int) (n int, sample []bloc
 		}
 	}
 	k.mu.Unlock()
+	if limit <= 0 {
+		return n, nil
+	}
 	slices.SortFunc(matches, func(a, b customerEntry) int { return compareCustomerEntries(b, a) })
 	for _, m := range matches[:min(limit, len(matches))] {
 		sample = append(sample, customerHit(m.addr, m.c))
@@ -275,9 +406,10 @@ func (k *knownCustomers) Purge() {
 	}
 }
 
-// Load merges saved entries, keeping the newer login per address. Saved keys
-// it cannot use (unparsable, not a customer address, past the TTL) or that
-// are not canonical are queued for deletion, so the bucket sheds them.
+// Load merges saved entries, keeping the newer login per key. Saved keys it
+// cannot use (unparsable, not a customer address, an unknown kind, past the
+// TTL) or that are not keys as Changes writes them are queued for deletion,
+// so the bucket sheds them.
 func (k *knownCustomers) Load(saved map[string]store.KnownCustomer) {
 	type entry struct {
 		raw  string
@@ -288,8 +420,9 @@ func (k *knownCustomers) Load(saved map[string]store.KnownCustomer) {
 	valid := make([]entry, 0, len(saved))
 	var dropped []string
 	for raw, c := range saved {
+		syslog, kindOK := loginFromSyslog(c.Kind, loginSource(c.Syslog))
 		addr, ok := k.customerAddr(raw)
-		if !ok || knownCustomerExpired(c.At, now) {
+		if !kindOK || !ok || knownCustomerExpired(c.At, now) {
 			dropped = append(dropped, raw)
 			continue
 		}
@@ -297,12 +430,13 @@ func (k *knownCustomers) Load(saved map[string]store.KnownCustomer) {
 			c.At = now
 		}
 		c.Account = strings.Clone(normalizeSprayMailbox(c.Account))
+		c.Syslog = syslog
 		valid = append(valid, entry{raw, addr, c})
 	}
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	for _, raw := range dropped {
-		k.deleted[raw] = struct{}{}
+		k.queueDeleteLocked(raw)
 	}
 	// Index all stored keys before admission: a later record may evict an
 	// earlier one, and both still need deletion from the saved set.
@@ -317,7 +451,7 @@ func (k *knownCustomers) Load(saved map[string]store.KnownCustomer) {
 	for _, e := range valid {
 		canonical := e.raw == e.addr.String()
 		if !canonical {
-			k.deleted[e.raw] = struct{}{}
+			k.queueDeleteLocked(e.raw)
 		}
 		k.putLocked(e.addr, e.c)
 		// The store already holds an entry loaded unchanged.
@@ -328,7 +462,7 @@ func (k *knownCustomers) Load(saved map[string]store.KnownCustomer) {
 }
 
 func sameKnownCustomer(a, b store.KnownCustomer) bool {
-	return a.Kind == b.Kind && a.Account == b.Account && a.At.Equal(b.At)
+	return a.Kind == b.Kind && a.Account == b.Account && a.At.Equal(b.At) && a.Syslog == b.Syslog
 }
 
 // Changes returns what changed since the last call: entries to write and
@@ -344,7 +478,7 @@ func (k *knownCustomers) Changes() (upserts map[string]store.KnownCustomer, dele
 	deletes = make([]string, 0, len(k.deleted))
 	for raw := range k.deleted {
 		deletes = append(deletes, raw)
-		if addr, err := netip.ParseAddr(raw); err == nil && addr.String() == raw {
+		if addr, ok := storedKey(raw); ok {
 			delete(k.stored, addr)
 		}
 	}
@@ -355,31 +489,28 @@ func (k *knownCustomers) Changes() (upserts map[string]store.KnownCustomer, dele
 }
 
 // requeue marks the keys of a failed save for the next one: a key still held
-// is written with its current value, any other is deleted. Pending deletes
-// stay bounded; one dropped here leaves a stale record that the next load
-// skips or caps and queues for deletion again.
+// is written with its current value, any other is deleted.
 func (k *knownCustomers) requeue(upserts map[string]store.KnownCustomer, deletes []string) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	mark := func(raw string) {
-		addr, err := netip.ParseAddr(raw)
-		canonical := err == nil && addr.String() == raw
-		if canonical {
+		addr, isKey := storedKey(raw)
+		if isKey {
 			if _, ok := k.entries[addr]; ok {
 				k.stored[addr] = struct{}{}
 				k.dirty[addr] = struct{}{}
 				return
 			}
 		}
-		_, pending := k.deleted[raw]
-		if pending || len(k.deleted) < maxKnownCustomers {
-			k.deleted[raw] = struct{}{}
-			if canonical {
-				// A failed delete may still be on disk even if a new login
-				// temporarily cancels this pending deletion.
-				k.stored[addr] = struct{}{}
-			}
-		} else if canonical {
+		queued := k.queueDeleteLocked(raw)
+		if !isKey {
+			return
+		}
+		if queued {
+			// A failed delete may still be on disk even if a new login
+			// temporarily cancels this pending deletion.
+			k.stored[addr] = struct{}{}
+		} else {
 			delete(k.stored, addr)
 		}
 	}
@@ -412,21 +543,24 @@ func customerLoginTime(line string, now time.Time) time.Time {
 	return now
 }
 
-// noteFTPCustomers remembers the addresses of successful FTP logins.
+// noteFTPCustomers remembers the addresses of successful FTP logins under the
+// hosting account that owns the FTP account, or the login name when no
+// account owns it.
 func (d *Daemon) noteFTPCustomers(findings []alert.Finding) {
 	for _, f := range findings {
 		switch f.Check {
 		case "ftp_login", "ftp_login_after_bruteforce":
-			account := checks.FTPLoginAccount(f.Details)
+			account := f.TenantID
 			if account == "" {
-				account = f.TenantID
+				account = checks.FTPLoginAccount(f.Details)
 			}
-			d.knownCustomers.Note(f.SourceIP, knownCustomerFTP, account, f.Timestamp)
+			d.knownCustomers.Note(f.SourceIP, knownCustomerFTP, account, f.Timestamp, syslogFed)
 		}
 	}
 }
 
-// loadKnownCustomers seeds the set from the last run.
+// loadKnownCustomers seeds the set from the last run. The store still
+// returns the records when it could not delete the unusable ones.
 func (d *Daemon) loadKnownCustomers() {
 	sdb := store.Global()
 	if sdb == nil {
@@ -435,7 +569,6 @@ func (d *Daemon) loadKnownCustomers() {
 	saved, err := sdb.LoadKnownCustomers()
 	if err != nil {
 		csmlog.Warn("known customer load failed", "err", err)
-		return
 	}
 	d.knownCustomers.Load(saved)
 }
@@ -457,7 +590,8 @@ func (d *Daemon) persistKnownCustomers() {
 	}
 }
 
-// runKnownCustomers saves the set every minute and on stop.
+// runKnownCustomers saves the set every minute. The last save runs in the
+// shutdown flush, once log readers and dispatch have stopped noting logins.
 func (d *Daemon) runKnownCustomers() {
 	defer d.wg.Done()
 	t := time.NewTicker(time.Minute)
@@ -465,7 +599,6 @@ func (d *Daemon) runKnownCustomers() {
 	for {
 		select {
 		case <-d.stopCh:
-			d.persistKnownCustomers()
 			return
 		case <-t.C:
 			d.persistKnownCustomers()

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -81,5 +82,60 @@ func TestKnownCustomersBucketBounded(t *testing.T) {
 		if c, ok := got[k]; ok {
 			t.Errorf("loaded %s: %+v", k, c)
 		}
+	}
+	// Records that cannot be read are deleted, so they do not stay on disk.
+	if n := knownCustomerRecords(t, db); n != 55 {
+		t.Errorf("bucket holds %d records after load, want 55", n)
+	}
+}
+
+func knownCustomerRecords(t *testing.T, db *DB) (n int) {
+	t.Helper()
+	if err := db.bolt.View(func(tx *bolt.Tx) error {
+		n = tx.Bucket([]byte(knownCustomersBucket)).Stats().KeyN
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// A load past the bound keeps the newest records and deletes the rest.
+func TestKnownCustomersLoadKeepsNewest(t *testing.T) {
+	db := openTestDB(t)
+	at := time.Date(2026, 11, 5, 9, 0, 0, 0, time.UTC)
+	ip := func(i int) string { return fmt.Sprintf("2001:db8:%x:%x::", i>>16, i&0xffff) }
+	if err := db.bolt.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte(knownCustomersBucket))
+		for i := 0; i < maxKnownCustomerRecords+5; i++ {
+			val, err := json.Marshal(KnownCustomer{Kind: "imap", At: at.Add(time.Duration(i) * time.Second)})
+			if err != nil {
+				return err
+			}
+			if err := b.Put([]byte(ip(i)), val); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := db.LoadKnownCustomers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != maxKnownCustomerRecords {
+		t.Fatalf("loaded %d records, want %d", len(got), maxKnownCustomerRecords)
+	}
+	for i := 0; i < 5; i++ {
+		if _, ok := got[ip(i)]; ok {
+			t.Errorf("oldest record %d kept", i)
+		}
+	}
+	if _, ok := got[ip(maxKnownCustomerRecords+4)]; !ok {
+		t.Error("newest record dropped")
+	}
+	if n := knownCustomerRecords(t, db); n != maxKnownCustomerRecords {
+		t.Errorf("bucket holds %d records after load, want %d", n, maxKnownCustomerRecords)
 	}
 }

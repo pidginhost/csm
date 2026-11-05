@@ -236,7 +236,7 @@ func (d *Daemon) cpanelSessionLogHandler(line string, cfg *config.Config) []aler
 		if app == "webmaild" {
 			kind = knownCustomerWebmail
 		}
-		d.knownCustomers.Note(ip, kind, account, customerLoginTime(line, time.Now()))
+		d.knownCustomers.Note(ip, kind, account, customerLoginTime(line, time.Now()), serviceLog)
 	}
 	return parseSessionLogLine(line, cfg)
 }

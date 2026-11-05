@@ -68,6 +68,26 @@ func TestFTPLoginTextOutsideSuccessRecordIsNoLogin(t *testing.T) {
 	}
 }
 
+// A plain FTP login names the hosting account that owns the FTP account,
+// as the brute-force escalation does, without changing its identity.
+func TestFTPLoginCarriesOwnerWithSameKey(t *testing.T) {
+	line := `Nov  5 09:00:00 host pure-ftpd[1]: (bob@example.com@203.0.113.9) [INFO] bob@example.com is now logged in`
+	restore := checks.SetAccountOwnerLookupForTest(func(string) (string, bool) { return "", false })
+	bare, ok := checks.FTPLoginFinding(line, &config.Config{})
+	restore()
+	if !ok || bare.TenantID != "" {
+		t.Fatalf("unowned login = %+v, %v", bare, ok)
+	}
+	defer checks.SetAccountOwnerLookupForTest(func(domain string) (string, bool) { return "shopowner", domain == "example.com" })()
+	owned, ok := checks.FTPLoginFinding(line, &config.Config{})
+	if !ok || owned.Check != "ftp_login" || owned.TenantID != "shopowner" {
+		t.Fatalf("owned login = %+v, %v; want TenantID shopowner", owned, ok)
+	}
+	if owned.Key() != bare.Key() || owned.Fingerprint() != bare.Fingerprint() {
+		t.Fatalf("the owner changed the identity: %q vs %q", owned.Key(), bare.Key())
+	}
+}
+
 func TestFTPVirtualAccountKeepsPeerAddress(t *testing.T) {
 	for _, ip := range []string{"203.0.113.9", "2001:db8::9"} {
 		line := fmt.Sprintf("Nov  5 09:00:00 host pure-ftpd[1]: (ftpuser@example.com@%s) [INFO] ftpuser@example.com is now logged in", ip)

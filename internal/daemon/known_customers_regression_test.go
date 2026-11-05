@@ -23,9 +23,9 @@ func TestKnownCustomersAccountRotationAtGlobalCap(t *testing.T) {
 		if i < maxKnownCustomerIPsPerAccount {
 			account = "rotating"
 		}
-		k.Note(ip, knownCustomerIMAP, account, now.Add(-time.Hour))
+		k.Note(ip, knownCustomerCpanel, account, now.Add(-time.Hour), serviceLog)
 	}
-	k.Note("2001:db8:ffff::1", knownCustomerIMAP, "rotating", now)
+	k.Note("2001:db8:ffff::1", knownCustomerCpanel, "rotating", now, serviceLog)
 	if len(k.entries) != maxKnownCustomers {
 		t.Fatalf("one account rotation evicted unrelated customers: %d remain", len(k.entries))
 	}
@@ -38,24 +38,29 @@ func TestKnownCustomersAccountlessLoginsAreBounded(t *testing.T) {
 	now := time.Now()
 	k, _ := knownCustomersAt(now)
 	for i := 0; i < 2*maxKnownCustomerIPsPerAccount; i++ {
-		k.Note(fmt.Sprintf("2001:db8:%x::1", i), knownCustomerFTP, "", now)
+		k.Note(fmt.Sprintf("2001:db8:%x::1", i), knownCustomerFTP, "", now, serviceLog)
 	}
 	if len(k.entries) != maxKnownCustomerIPsPerAccount {
 		t.Fatalf("unnamed logins bypassed the account budget: %d", len(k.entries))
 	}
 }
 
-func TestKnownCustomersIPv6RotationAcrossAccountsIsBounded(t *testing.T) {
+// One IPv6 /64 is one host: rotating privacy addresses and accounts give one
+// entry, and any address in the /64 is that customer.
+func TestKnownCustomersIPv6NetworkIsOneEntry(t *testing.T) {
 	now := time.Now()
 	k, _ := knownCustomersAt(now)
 	for i := 0; i < 2*maxKnownCustomerIPsPerAccount; i++ {
-		k.Note(fmt.Sprintf("2001:db8:1::%x", i), knownCustomerIMAP, fmt.Sprintf("user%d", i), now)
+		k.Note(fmt.Sprintf("2001:db8:1::%x", i), knownCustomerIMAP, fmt.Sprintf("user%d", i), now.Add(time.Duration(i)*time.Millisecond), serviceLog)
 	}
-	if len(k.entries) != maxKnownCustomerIPsPerAccount {
-		t.Fatalf("one network bypassed the address budget with multiple accounts: %d", len(k.entries))
+	if len(k.entries) != 1 {
+		t.Fatalf("one /64 holds %d entries, want 1", len(k.entries))
 	}
-	if _, ok := k.Lookup("2001:db8:1::ffff"); ok {
-		t.Fatal("network budget treated an address without a login as a customer")
+	if hit := mustLookup(t, k, "2001:db8:1::ffff"); hit.IP != "2001:db8:1::/64" || hit.Account != fmt.Sprintf("user%d", 2*maxKnownCustomerIPsPerAccount-1) {
+		t.Fatalf("Lookup = %+v, want the /64 with its newest login", hit)
+	}
+	if _, ok := k.Lookup("2001:db8:1:1::1"); ok {
+		t.Fatal("a neighbouring /64 matched")
 	}
 }
 
@@ -63,7 +68,7 @@ func TestKnownCustomersUnsavedChurnNeedsNoDeletes(t *testing.T) {
 	now := time.Now()
 	k, _ := knownCustomersAt(now)
 	for i := 0; i < 4*maxKnownCustomerIPsPerAccount; i++ {
-		k.Note(fmt.Sprintf("2001:db8::%x", i), knownCustomerIMAP, "alice", now)
+		k.Note(fmt.Sprintf("2001:db8:%x::1", i), knownCustomerIMAP, "alice", now, serviceLog)
 	}
 	upserts, deletes := k.Changes()
 	if len(upserts) != maxKnownCustomerIPsPerAccount || len(deletes) != 0 {
@@ -76,7 +81,7 @@ func TestKnownCustomersShutdownSavesLateLogin(t *testing.T) {
 	db, restore := openTestBoltStore(t, t.TempDir())
 	t.Cleanup(restore)
 	d.persistKnownCustomers() // The periodic writer can finish before log readers.
-	d.knownCustomers.Note("203.0.113.8", knownCustomerIMAP, "alice", time.Now())
+	d.knownCustomers.Note("203.0.113.8", knownCustomerIMAP, "alice", time.Now(), serviceLog)
 	d.flushPendingAlertsOnShutdown()
 	saved, err := db.LoadKnownCustomers()
 	if err != nil {
@@ -113,7 +118,7 @@ func TestKnownCustomersRequeueRetainsStoredDeletion(t *testing.T) {
 	now := time.Now()
 	k, _ := knownCustomersAt(now)
 	k.Load(map[string]store.KnownCustomer{"203.0.113.1": {Kind: knownCustomerIMAP, Account: "alice", At: now.Add(-time.Hour)}})
-	k.Note("203.0.113.1", knownCustomerIMAP, "alice", now)
+	k.Note("203.0.113.1", knownCustomerIMAP, "alice", now, serviceLog)
 	upserts, deletes := k.Changes()
 	k.mu.Lock()
 	k.removeLocked(netip.MustParseAddr("203.0.113.1"))
@@ -134,7 +139,7 @@ func TestKnownCustomersFailedDeletionSurvivesReadmission(t *testing.T) {
 	k.removeLocked(addr)
 	upserts, deletes := k.Changes()
 	k.requeue(upserts, deletes)
-	k.Note(ip, knownCustomerIMAP, "alice", now)
+	k.Note(ip, knownCustomerIMAP, "alice", now, serviceLog)
 	k.removeLocked(addr)
 	upserts, deletes = k.Changes()
 	if len(upserts) != 0 || len(deletes) != 1 || deletes[0] != ip {
@@ -186,9 +191,9 @@ func TestKnownCustomersLoadPersistsGroupEvictions(t *testing.T) {
 	k, _ := knownCustomersAt(now)
 	saved := make(map[string]store.KnownCustomer)
 	for i := 0; i < 2*maxKnownCustomerIPsPerAccount; i++ {
-		ip := netip.MustParseAddr(fmt.Sprintf("2001:db8::%x", i)).String()
+		ip := netip.MustParseAddr(fmt.Sprintf("2001:db8:%x::", i)).String()
 		saved[ip] = store.KnownCustomer{
-			Kind: knownCustomerIMAP, Account: fmt.Sprintf("user%d", i),
+			Kind: knownCustomerIMAP, Account: "alice", Syslog: true,
 			At: now.Add(-time.Duration(i) * time.Minute),
 		}
 	}
@@ -203,7 +208,7 @@ func TestKnownCustomersLoadPersistsGroupEvictions(t *testing.T) {
 	restarted, _ := knownCustomersAt(now)
 	restarted.Load(saved)
 	for i := 0; i < 2*maxKnownCustomerIPsPerAccount; i++ {
-		_, ok := restarted.Lookup(fmt.Sprintf("2001:db8::%x", i))
+		_, ok := restarted.Lookup(fmt.Sprintf("2001:db8:%x::1", i))
 		if ok != (i < maxKnownCustomerIPsPerAccount) {
 			t.Errorf("restart kept wrong login %d: %v", i, ok)
 		}
@@ -217,8 +222,8 @@ func TestKnownCustomersConcurrentSaveAndLogin(t *testing.T) {
 	for worker := 0; worker < 4; worker++ {
 		wg.Go(func() {
 			for i := 0; i < 100; i++ {
-				ip := fmt.Sprintf("2001:db8:%x::%x", worker, i)
-				k.Note(ip, knownCustomerSMTP, fmt.Sprintf("user%d", worker), now)
+				ip := fmt.Sprintf("2001:db8:%x:%x::1", worker, i)
+				k.Note(ip, knownCustomerSMTP, fmt.Sprintf("user%d", worker), now, serviceLog)
 				k.Lookup(ip)
 				k.Within(netip.MustParsePrefix("2001:db8::/32"), 2)
 				if worker == 0 {
