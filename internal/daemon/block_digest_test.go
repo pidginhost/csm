@@ -292,6 +292,8 @@ func TestBuildBlockDigestAlwaysBuilds(t *testing.T) {
 	}
 }
 
+// block_digest.channel selects live alerts only (P3-R16): the summary follows
+// the enabled alert channels, with or without block_digest.
 func TestDailySummaryIgnoresLiveChannelSelection(t *testing.T) {
 	previousActive := config.Active()
 	config.SetActive(nil)
@@ -300,19 +302,36 @@ func TestDailySummaryIgnoresLiveChannelSelection(t *testing.T) {
 		config.SetActive(previousActive)
 		blockDigestSendEmail, blockDigestSendWebhookJSON = previousEmail, previousWebhook
 	})
-	for _, channel := range []string{"email", "webhook"} {
-		t.Run(channel, func(t *testing.T) {
+	cases := []struct {
+		name                   string
+		channel                string
+		emailOn, webhookOn     bool
+		wantEmail, wantWebhook int
+	}{
+		{"email channel, both on", "email", true, true, 1, 1},
+		{"webhook channel, both on", "webhook", true, true, 1, 1},
+		{"webhook channel, only email on", "webhook", true, false, 1, 0},
+		{"email channel, both off", "email", false, false, 0, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
 			emails, webhooks := 0, 0
 			blockDigestSendEmail = func(*config.Config, string, string) error { emails++; return nil }
 			blockDigestSendWebhookJSON = func(*config.Config, any) error { webhooks++; return nil }
 			cfg := &config.Config{}
-			cfg.Alerts.BlockDigest.Channel = channel
-			cfg.Alerts.Email.Enabled, cfg.Alerts.Webhook.Enabled = true, true
+			cfg.Alerts.BlockDigest.Channel = tc.channel
+			cfg.Alerts.Email.Enabled, cfg.Alerts.Webhook.Enabled = tc.emailOn, tc.webhookOn
 			d := New(cfg, nil, nil, "")
 			c := d.buildBlockDigest(cfg)
 			c.SendDue(time.Now().Add(25 * time.Hour))
-			if emails != 1 || webhooks != 1 {
-				t.Fatalf("daily summary delivered email=%d webhook=%d, want both", emails, webhooks)
+			if emails != tc.wantEmail || webhooks != tc.wantWebhook {
+				t.Fatalf("daily summary delivered email=%d webhook=%d, want %d/%d", emails, webhooks, tc.wantEmail, tc.wantWebhook)
+			}
+			// A sink error is what logs a delivery failure and counts a loss.
+			for name, row := range d.QueueStatuses() {
+				if strings.HasPrefix(name, "block_digest.") && (row.DroppedTotal != 0 || row.Depth != 0 || row.InFlight != 0) {
+					t.Fatalf("%s after the summary: %+v, want no loss or pending work", name, row)
+				}
 			}
 		})
 	}
@@ -372,14 +391,16 @@ func TestNoteSummaryMapsFindings(t *testing.T) {
 		WebhookSink: func(p blockdigest.WebhookPayload) error { got = append(got, p); return nil },
 	})
 	cfg := &config.Config{}
-	cfg.Alerts.Email.DisabledChecks = []string{" challenge_route "}
+	cfg.Alerts.Email.DisabledChecks = []string{" challenge_route ", "ftp_login"}
 	d.noteSummary(cfg, []alert.Finding{
 		{Check: "auto_block", Severity: alert.Critical, Message: "AUTO-BLOCK: 203.0.113.20 blocked (expires in 24h)",
 			Details: "Reason: ModSecurity escalation: 5+ denies (warning: " + firewall.CloudflareCoverageWarning + ")"},
-		{Check: "auto_block", Severity: alert.Critical, Message: "AUTO-PERMBLOCK: 203.0.113.20 promoted to permanent block (4 temp blocks)"},
+		{Check: "auto_block", Severity: alert.Critical, Message: "AUTO-PERMBLOCK: 203.0.113.20 promoted to permanent block (4 temp blocks)", SourceIP: "203.0.113.20"},
+		{Check: "auto_block", Severity: alert.Critical, Message: "AUTO-NETBLOCK: 198.51.100.0/24 blocked (5 IPs from same subnet)"},
 		{Check: "auto_block", Severity: alert.Warning, Message: "AUTO-BLOCK-SUBNET [dry-run]: 198.51.100.0/24 would be blocked", Details: "Reason: mail auth brute force"},
 		{Check: "challenge_route", Severity: alert.Warning, Message: "CHALLENGE: 198.51.100.7 sent to PoW challenge (expires in 30m0s)"},
 		{Check: "wp_login_bruteforce", Severity: alert.Critical, Message: "WordPress login brute force from 203.0.113.20", SourceIP: "203.0.113.20"},
+		{Check: "ftp_login_realtime", Severity: alert.High, Message: "FTP login", SourceIP: "192.0.2.30"},
 	})
 	d.noteSummary(cfg, nil)
 	if !d.blockDigest.SendDue(time.Now().Add(25*time.Hour)) || len(got) != 1 {
@@ -389,19 +410,30 @@ func TestNoteSummaryMapsFindings(t *testing.T) {
 	if s == nil {
 		t.Fatal("no csm.summary")
 	}
-	if c := s.Checks["auto_block"]; c["CRITICAL"] != 2 || c["WARNING"] != 1 {
-		t.Fatalf("auto_block = %v, want CRITICAL=2 WARNING=1", c)
+	if c := s.Checks["auto_block"]; c["CRITICAL"] != 3 || c["WARNING"] != 1 {
+		t.Fatalf("auto_block = %v, want CRITICAL=3 WARNING=1", c)
 	}
 	if s.Checks["challenge_route"]["WARNING"] != 1 || s.Checks["wp_login_bruteforce"]["CRITICAL"] != 1 {
 		t.Fatalf("checks = %v", s.Checks)
 	}
-	if s.Blocks != 1 || s.BlockKinds["modsec"] != 1 || len(s.BlockKinds) != 1 {
-		t.Fatalf("blocks = %d %v, want only the applied block, without the coverage annotation", s.Blocks, s.BlockKinds)
+	if s.Checks["ftp_login"]["HIGH"] != 1 || s.Checks["ftp_login_realtime"] != nil {
+		t.Fatalf("checks = %v, want the legacy name counted under its current name", s.Checks)
 	}
-	if s.Muted != 1 {
-		t.Fatalf("muted = %d, want 1 (challenge_route is in disabled_checks)", s.Muted)
+	// Netblock and permanent-block notices carry no reason; their message
+	// names the kind. The dry-run verdict is not an applied block.
+	wantKinds := map[string]int{"modsec": 1, "permanent": 1, "netblock": 1}
+	if s.Blocks != 3 || len(s.BlockKinds) != len(wantKinds) {
+		t.Fatalf("blocks = %d %v, want %v without the coverage annotation", s.Blocks, s.BlockKinds, wantKinds)
 	}
-	want := map[string]int{"203.0.113.20": 3, "198.51.100.7": 1}
+	for kind, n := range wantKinds {
+		if s.BlockKinds[kind] != n {
+			t.Fatalf("block kinds = %v, want %v", s.BlockKinds, wantKinds)
+		}
+	}
+	if s.Muted != 2 {
+		t.Fatalf("muted = %d, want 2 (challenge_route and ftp_login are in disabled_checks)", s.Muted)
+	}
+	want := map[string]int{"203.0.113.20": 3, "198.51.100.7": 1, "192.0.2.30": 1}
 	if len(s.Sources) != len(want) {
 		t.Fatalf("sources = %+v, want %v", s.Sources, want)
 	}
@@ -419,38 +451,66 @@ func TestNoteSummaryNeverPanics(t *testing.T) {
 	(&Daemon{}).noteSummary(&config.Config{}, []alert.Finding{{Check: "challenge_route"}})
 }
 
+// A phpanel webhook takes signed findings only. The daily summary must not
+// create a webhook job there, so health counts no delivery for it; live
+// block alerts keep reaching that URL as before.
 func TestSummaryWebhookSkipsPhpanel(t *testing.T) {
 	prevActive := config.Active()
 	config.SetActive(nil)
 	t.Cleanup(func() { config.SetActive(prevActive) })
-	prevWebhook := blockDigestSendWebhookJSON
-	t.Cleanup(func() { blockDigestSendWebhookJSON = prevWebhook })
-	var events []string
-	blockDigestSendWebhookJSON = func(_ *config.Config, payload any) error {
-		events = append(events, payload.(blockdigest.WebhookPayload).CSM.Event)
-		return nil
-	}
+	prevEmail, prevWebhook := blockDigestSendEmail, blockDigestSendWebhookJSON
+	t.Cleanup(func() { blockDigestSendEmail, blockDigestSendWebhookJSON = prevEmail, prevWebhook })
 	for _, hook := range []string{"phpanel", "generic"} {
-		events = nil
-		cfg := &config.Config{}
-		cfg.Alerts.Webhook.Enabled = true
-		cfg.Alerts.Webhook.Type = hook
-		d := &Daemon{cfg: cfg}
-		_, webhook := d.blockDigestSinks(cfg)
-		for _, event := range []string{"daily_summary", "block_live"} {
-			p := blockdigest.WebhookPayload{}
-			p.CSM.Event = event
-			if err := webhook(p); err != nil {
-				t.Fatalf("%s %s: %v", hook, event, err)
+		t.Run(hook, func(t *testing.T) {
+			var events []string
+			blockDigestSendWebhookJSON = func(_ *config.Config, payload any) error {
+				events = append(events, payload.(blockdigest.WebhookPayload).CSM.Event)
+				return nil
 			}
-		}
-		want := "daily_summary,block_live"
-		if hook == "phpanel" {
-			want = "block_live"
-		}
-		if got := strings.Join(events, ","); got != want {
-			t.Fatalf("%s webhook sent %q, want %q", hook, got, want)
-		}
+			cfg := &config.Config{}
+			cfg.Alerts.Email.Enabled = true
+			cfg.Alerts.Webhook.Enabled = true
+			cfg.Alerts.Webhook.Type = hook
+			cfg.Alerts.BlockDigest.Enabled, cfg.Alerts.BlockDigest.Live = true, true
+			d := New(cfg, nil, nil, "")
+			c := d.buildBlockDigest(cfg)
+
+			// Hold the summary email so the webhook row shows whether a
+			// webhook job was created for the same summary.
+			entered, release := make(chan struct{}), make(chan struct{})
+			blockDigestSendEmail = func(*config.Config, string, string) error {
+				close(entered)
+				<-release
+				return nil
+			}
+			done := make(chan struct{})
+			go func() { defer close(done); c.SendDue(time.Now().Add(25 * time.Hour)) }()
+			<-entered
+			wantDepth := 1
+			if hook == "phpanel" {
+				wantDepth = 0
+			}
+			if row := d.QueueStatuses()["block_digest.webhook"]; row.Depth != wantDepth {
+				close(release)
+				<-done
+				t.Fatalf("%s summary webhook jobs waiting = %d, want %d: %+v", hook, row.Depth, wantDepth, row)
+			}
+			close(release)
+			<-done
+
+			blockDigestSendEmail = func(*config.Config, string, string) error { return nil }
+			c.Observe("192.0.2.1", "fixture block", time.Now())
+			want := "daily_summary,block_live"
+			if hook == "phpanel" {
+				want = "block_live"
+			}
+			if got := strings.Join(events, ","); got != want {
+				t.Fatalf("%s webhook sent %q, want %q", hook, got, want)
+			}
+			if row := d.QueueStatuses()["block_digest.webhook"]; row.DroppedTotal != 0 || row.Depth != 0 || row.InFlight != 0 {
+				t.Fatalf("%s webhook row = %+v", hook, row)
+			}
+		})
 	}
 }
 

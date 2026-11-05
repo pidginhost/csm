@@ -3,6 +3,7 @@ package blockdigest
 import (
 	"cmp"
 	"encoding/json"
+	"errors"
 	"slices"
 	"time"
 )
@@ -280,6 +281,9 @@ func (c *Collector) load() {
 	if err == nil {
 		err = json.Unmarshal(b, &s)
 	}
+	if err == nil && (s.Since.IsZero() || s.Due.IsZero() || s.Pending != nil && (s.Pending.Since.IsZero() || s.Pending.Until.IsZero())) {
+		err = errors.New("saved daily summary has no window start or send time")
+	}
 	if err != nil {
 		c.reportSinkError("summary", err)
 		return
@@ -347,7 +351,7 @@ func (c *Collector) SendDue(now time.Time) bool {
 		if channel == "email" && pending.EmailDone || channel == "webhook" && pending.WebhookDone {
 			return false
 		}
-		return c.opts.DeliveryEnabled == nil || c.opts.DeliveryEnabled(channel)
+		return c.opts.DeliveryEnabled == nil || c.opts.DeliveryEnabled("daily_summary", channel)
 	})
 	defer plan.finish()
 	view := c.summaryView(pending.Summary)

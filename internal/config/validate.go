@@ -202,8 +202,9 @@ func Validate(cfg *Config) []ValidationResult {
 	if cfg.Alerts.BlockDigest.Interval != "" {
 		if d, err := time.ParseDuration(cfg.Alerts.BlockDigest.Interval); err != nil {
 			results = append(results, ValidationResult{"error", "alerts.block_digest.interval", fmt.Sprintf("unparseable duration: %s", cfg.Alerts.BlockDigest.Interval)})
-		} else if d <= 0 {
-			results = append(results, ValidationResult{"error", "alerts.block_digest.interval", "interval must be > 0"})
+		} else if d < time.Minute {
+			// Each interval saves the daily summary, even with the digest off.
+			results = append(results, ValidationResult{"error", "alerts.block_digest.interval", "interval must be at least 1m"})
 		}
 	}
 	for _, cc := range cfg.Alerts.BlockDigest.Countries {

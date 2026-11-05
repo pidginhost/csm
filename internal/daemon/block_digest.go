@@ -74,7 +74,7 @@ func (d *Daemon) buildBlockDigest(cfg *config.Config) *blockdigest.Collector {
 			}
 			csmlog.Warn("block_digest delivery failed", "channel", channel, "err", err)
 		},
-		DeliveryEnabled: func(channel string) bool {
+		DeliveryEnabled: func(event, channel string) bool {
 			live := d.currentCfg()
 			if live == nil {
 				live = cfg
@@ -82,7 +82,7 @@ func (d *Daemon) buildBlockDigest(cfg *config.Config) *blockdigest.Collector {
 			if channel == "email" {
 				return live.Alerts.Email.Enabled
 			}
-			return live.Alerts.Webhook.Enabled
+			return live.Alerts.Webhook.Enabled && !phpanelSkips(live, event)
 		},
 	})
 	d.registerQueueSource("block_digest", collector)
@@ -121,9 +121,9 @@ func (d *Daemon) blockDigestSinks(cfg *config.Config) (func(subject, body string
 				}
 				return nil
 			}
-			// The phpanel endpoint takes signed findings, not CSM's own
-			// summary notifications.
-			if live.Alerts.Webhook.Type == "phpanel" && p.CSM.Event == "daily_summary" {
+			// Delivery policy already skips these; a reload to phpanel
+			// between that check and this send must not post one either.
+			if phpanelSkips(live, p.CSM.Event) {
 				return nil
 			}
 			return blockDigestSendWebhookJSON(live, p)
@@ -131,6 +131,19 @@ func (d *Daemon) blockDigestSinks(cfg *config.Config) (func(subject, body string
 	}
 
 	return emailSink(ch == "email"), webhookSink(ch == "webhook")
+}
+
+// phpanelSkips reports a collector event a phpanel webhook must not receive:
+// that endpoint takes signed findings, not CSM's own summary notifications.
+func phpanelSkips(cfg *config.Config, event string) bool {
+	if cfg.Alerts.Webhook.Type != "phpanel" {
+		return false
+	}
+	switch event {
+	case "daily_summary", "customer_block":
+		return true
+	}
+	return false
 }
 
 // countryOf resolves an IP to its ISO country via the loaded GeoIP mmdb. It
@@ -151,6 +164,19 @@ func appliedBlockReason(f alert.Finding) string {
 	}
 	reason := strings.TrimPrefix(f.Details, "Reason: ")
 	return strings.TrimSuffix(reason, " (warning: "+firewall.CloudflareCoverageWarning+")")
+}
+
+// summaryBlockReason is what the daily summary groups an applied block by.
+// Netblock and permanent-block notices carry no reason; their message names
+// the kind.
+func summaryBlockReason(f alert.Finding) string {
+	if reason := appliedBlockReason(f); reason != "" {
+		return reason
+	}
+	if f.Check == "auto_block" && f.Severity == alert.Critical {
+		return f.Message
+	}
+	return ""
 }
 
 // observeBlocks feeds real auto-block findings to the digest collector.
@@ -192,12 +218,13 @@ func (d *Daemon) noteSummary(cfg *config.Config, summary []alert.Finding) {
 	}
 	batch := make([]blockdigest.Handled, 0, len(summary))
 	for _, f := range summary {
+		check := config.CanonicalCheckName(f.Check)
 		batch = append(batch, blockdigest.Handled{
-			Check:       f.Check,
+			Check:       check,
 			Severity:    f.Severity.String(),
 			IP:          checks.ExtractIPFromFinding(f),
-			BlockReason: appliedBlockReason(f),
-			Muted:       muted[config.CanonicalCheckName(f.Check)],
+			BlockReason: summaryBlockReason(f),
+			Muted:       muted[check],
 		})
 	}
 	collector.NoteHandled(batch)

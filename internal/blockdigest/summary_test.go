@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -605,5 +606,101 @@ func TestSummaryEmailAndWebhook(t *testing.T) {
 		if !strings.Contains(string(raw), key) {
 			t.Errorf("webhook JSON missing %s: %s", key, raw)
 		}
+	}
+}
+
+// A saved window without a start or send time is not a window: it would send
+// at once under a 0001-01-01 subject.
+func TestSummaryLoadRejectsEmptyWindow(t *testing.T) {
+	for _, saved := range []string{"null", "{}", `{"since":"2026-06-10T08:00:00Z"}`, `{"since":"2026-06-10T08:00:00Z","due":"2026-06-11T08:00:00Z","pending":{}}`} {
+		t.Run(saved, func(t *testing.T) {
+			var errs []string
+			cap := &summaryCapture{}
+			c := summaryCollector(Options{
+				LoadSummary: func() ([]byte, error) { return []byte(saved), nil },
+				EmailSink:   cap.email,
+				OnError:     func(channel string, err error) { errs = append(errs, channel) },
+			})
+			c.NoteHandled([]Handled{{Check: "challenge_route", Severity: "WARNING", IP: "198.51.100.1"}})
+			runStopped(t, c)
+			if len(errs) != 1 || errs[0] != "summary" {
+				t.Fatalf("OnError channels = %v, want [summary]", errs)
+			}
+			if n := len(cap.sent()); n != 0 {
+				t.Fatalf("empty saved window sent %d emails", n)
+			}
+			s := summaryOf(c)
+			if !s.Since.Equal(summaryNow) || !s.Due.Equal(nextSummaryDue(summaryNow, time.UTC)) || s.Checks["challenge_route"]["WARNING"] != 1 {
+				t.Fatalf("window after an empty saved one = %+v, want a fresh window keeping new counts", s)
+			}
+		})
+	}
+}
+
+// The daily_summary webhook carries only its own fields; block_live keeps
+// the block digest shape.
+func TestSummaryWebhookPayloadShape(t *testing.T) {
+	cap := &summaryCapture{}
+	c := summaryCollector(Options{Watch: true, Live: true, MinBlock: 1, Version: "9.9.9", WebhookSink: cap.webhook})
+	c.SendDue(summaryDueOf(c))
+	c.Observe("203.0.113.5", "rule escalation: x", summaryNow)
+	if len(cap.webhooks) != 2 {
+		t.Fatalf("webhooks = %d, want summary and live alert", len(cap.webhooks))
+	}
+	keys := func(p WebhookPayload) []string {
+		t.Helper()
+		raw, err := json.Marshal(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var top map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &top); err != nil {
+			t.Fatal(err)
+		}
+		var csm map[string]json.RawMessage
+		if err := json.Unmarshal(top["csm"], &csm); err != nil {
+			t.Fatal(err)
+		}
+		out := make([]string, 0, len(csm))
+		for k := range csm {
+			out = append(out, k)
+		}
+		slices.Sort(out)
+		if _, ok := top["text"]; !ok || len(top) != 2 {
+			t.Fatalf("payload top level = %s", raw)
+		}
+		return out
+	}
+	if got := strings.Join(keys(cap.webhooks[0]), ","); got != "event,host,summary,version" {
+		t.Fatalf("daily_summary csm keys = %s", got)
+	}
+	if got := strings.Join(keys(cap.webhooks[1]), ","); got != "blocks,countries,counts,event,host,version,window" {
+		t.Fatalf("block_live csm keys = %s", got)
+	}
+}
+
+// The delivery policy learns which event it decides for, so the daemon can
+// keep CSM's own summaries off a phpanel endpoint.
+func TestDeliveryPolicySeesEvent(t *testing.T) {
+	var seen []string
+	c := summaryCollector(Options{
+		Watch: true, Live: true, MinBlock: 1,
+		EmailSink:   func(string, string) error { return nil },
+		WebhookSink: func(WebhookPayload) error { return nil },
+		DeliveryEnabled: func(event, channel string) bool {
+			seen = append(seen, event+"/"+channel)
+			return channel == "email"
+		},
+	})
+	c.SendDue(summaryDueOf(c))
+	c.Observe("203.0.113.5", "rule escalation: x", summaryNow)
+	for _, want := range []string{"daily_summary/email", "daily_summary/webhook", "block_live/email", "block_live/webhook"} {
+		if !slices.Contains(seen, want) {
+			t.Fatalf("policy calls = %v, missing %s", seen, want)
+		}
+	}
+	rows := digestQueueStatuses(t, c, time.Now())
+	if row := rows["webhook"]; row.DroppedTotal != 0 || row.Depth != 0 || row.InFlight != 0 {
+		t.Fatalf("ineligible webhook row = %+v", row)
 	}
 }

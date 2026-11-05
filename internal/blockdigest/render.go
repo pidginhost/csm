@@ -1,6 +1,7 @@
 package blockdigest
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -22,8 +23,29 @@ type WebhookCSM struct {
 	Countries []string       `json:"countries"`
 	Counts    WebhookCounts  `json:"counts"`
 	Blocks    []WebhookBlock `json:"blocks"`
-	// Summary carries the counts of a daily_summary event.
+	// Summary carries the counts of a daily_summary event, which is written
+	// with summaryCSM instead of the block digest fields.
 	Summary *Summary `json:"summary,omitempty"`
+}
+
+type summaryCSM struct {
+	Event   string   `json:"event"`
+	Host    string   `json:"host"`
+	Version string   `json:"version"`
+	Summary *Summary `json:"summary"`
+}
+
+// MarshalJSON writes a daily summary with only its own csm fields. Block
+// events keep the block digest shape.
+func (p WebhookPayload) MarshalJSON() ([]byte, error) {
+	if p.CSM.Summary == nil {
+		type blockPayload WebhookPayload
+		return json.Marshal(blockPayload(p))
+	}
+	return json.Marshal(struct {
+		Text string     `json:"text"`
+		CSM  summaryCSM `json:"csm"`
+	}{p.Text, summaryCSM{Event: p.CSM.Event, Host: p.CSM.Host, Version: p.CSM.Version, Summary: p.CSM.Summary}})
 }
 
 type WebhookCounts struct {

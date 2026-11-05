@@ -77,9 +77,10 @@ type Options struct {
 	EmailSink    func(subject, body string) error
 	WebhookSink  func(p WebhookPayload) error
 	OnError      func(channel string, err error)
-	// DeliveryEnabled only reads current policy; unfinished delivery also
-	// consults it during cleanup. Nil means every configured sink is eligible.
-	DeliveryEnabled func(channel string) bool
+	// DeliveryEnabled only reads current policy for one event (block_live or
+	// daily_summary) and channel; unfinished delivery also consults it during
+	// cleanup. Nil means every configured sink is eligible.
+	DeliveryEnabled func(event, channel string) bool
 }
 
 // Collector accumulates observations and drains them into digests.
@@ -176,6 +177,12 @@ func classifyBucket(reason string) Bucket {
 func categoryOf(reason string) string {
 	r := strings.ToLower(reason)
 	switch {
+	// Netblock and permanent-block notices have no reason; the daily summary
+	// passes their message.
+	case strings.HasPrefix(r, "auto-netblock:"):
+		return "netblock"
+	case strings.HasPrefix(r, "auto-permblock:"):
+		return "permanent"
 	case strings.Contains(r, "modsecurity escalation"),
 		strings.Contains(r, "rule escalation"),
 		strings.Contains(r, "waf blocking high-volume attacker"):
@@ -399,7 +406,7 @@ func (c *Collector) liveDeliveryEnabled(channel string) bool {
 	if c.opts.LiveChannel != "" {
 		return channel == c.opts.LiveChannel
 	}
-	return c.opts.DeliveryEnabled == nil || c.opts.DeliveryEnabled(channel)
+	return c.opts.DeliveryEnabled == nil || c.opts.DeliveryEnabled("block_live", channel)
 }
 
 func (c *Collector) pruneLastLiveLocked(now time.Time) {

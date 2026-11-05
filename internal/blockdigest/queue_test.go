@@ -137,7 +137,7 @@ func TestLiveAlertConsultsDeliveryPolicyWithoutTheCollectorLock(t *testing.T) {
 	c = New(Options{Watch: true,
 		Interval: time.Hour, SendOn: "any", MinBlock: 1, Live: true,
 		EmailSink: func(string, string) error { return nil },
-		DeliveryEnabled: func(string) bool {
+		DeliveryEnabled: func(string, string) bool {
 			if c.mu.TryLock() {
 				c.mu.Unlock()
 			} else {

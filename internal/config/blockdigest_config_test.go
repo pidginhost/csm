@@ -145,3 +145,15 @@ func TestSummaryValidationIgnoresUnusedLiveChannel(t *testing.T) {
 		})
 	}
 }
+
+// The interval drives a summary store write on every fold, even with
+// block_digest off, so it has a floor.
+func TestBlockDigestIntervalFloor(t *testing.T) {
+	for interval, wantErr := range map[string]bool{"1s": true, "59s": true, "1m": false, "1h": false} {
+		cfg := baseValidationConfig()
+		cfg.Alerts.BlockDigest.Interval = interval
+		if got := hasResult(Validate(cfg), "error", "alerts.block_digest.interval"); got != wantErr {
+			t.Errorf("interval %s: error = %v, want %v", interval, got, wantErr)
+		}
+	}
+}

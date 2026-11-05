@@ -118,7 +118,7 @@ alerts:
   block_digest:
     enabled: false                      # add per-country counts of auto-blocked IPs to the daily summary
     countries: []                       # empty = trusted countries, then all countries
-    interval: "1h"                      # how often counts fold into the summary; live alert dedup window
+    interval: "1h"                      # at least 1m; how often counts fold into the summary; live alert dedup window
     live: false                         # also send one alert per qualifying block
     send_on: "any"                      # live alerts: any | customer
     channel: ""                         # live alerts only: email | webhook; empty = enabled alert channels
@@ -1050,7 +1050,7 @@ report.
 It covers the window since the previous summary:
 
 - summary-class findings by check and severity, and how many of them come from checks muted by `alerts.email.disabled_checks`;
-- blocks applied, by kind;
+- blocks applied, by kind, including netblocks and promotions to a permanent block;
 - challenges, and mail login advisories that never block, such as spray observe mode;
 - the 10 addresses with the most summary findings, with their country when GeoIP knows it;
 - with `alerts.block_digest.enabled`, watched-country blocks by country and category, once they reach `min_block`.
@@ -1062,9 +1062,9 @@ and a count can be overstated, never understated.
 Counts are saved at each `block_digest.interval` (one hour by default), after
 the final shutdown drain and before delivery. A crash can lose counts since
 the last save. If the host was down at 08:00, the missed summary goes out at
-the next start. Failed deliveries retry on timer or interval ticks and
-survive restarts; destinations already saved as successful are not retried.
-While a delivery is pending, new findings accumulate in the next window.
+the next start. A failed destination is retried every minute, also after a
+restart; destinations already saved as successful are not retried. While a
+delivery is pending, new findings accumulate in the next window.
 
 A crash after a destination accepts a summary but before CSM saves that
 success can repeat it. Clock corrections are checked every minute; moving
