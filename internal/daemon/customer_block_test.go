@@ -1,0 +1,538 @@
+package daemon
+
+import (
+	"fmt"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/pidginhost/csm/internal/admission"
+	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/blockdigest"
+	"github.com/pidginhost/csm/internal/challenge"
+	"github.com/pidginhost/csm/internal/checks"
+	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/firewall"
+	"github.com/pidginhost/csm/internal/incident"
+	"github.com/pidginhost/csm/internal/reporting"
+	"github.com/pidginhost/csm/internal/state"
+	"github.com/pidginhost/csm/internal/store"
+)
+
+// customerTestBlocker keeps a live view of its blocks and records each
+// block's length. outcome, when set, replaces the live outcome.
+type customerTestBlocker struct {
+	mu      sync.Mutex
+	blocked map[string]bool
+	calls   []customerBlockCall
+	outcome firewall.BlockOutcome
+}
+
+type customerBlockCall struct {
+	ip  string
+	ttl time.Duration
+}
+
+func (b *customerTestBlocker) BlockIP(ip, reason string, ttl time.Duration) error {
+	_, err := b.BlockIPOutcome(ip, reason, ttl)
+	return err
+}
+
+func (b *customerTestBlocker) BlockIPOutcome(ip, _ string, ttl time.Duration) (firewall.BlockOutcome, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.calls = append(b.calls, customerBlockCall{ip, ttl})
+	if b.outcome != "" {
+		return b.outcome, nil
+	}
+	b.blocked[ip] = true
+	return firewall.BlockOutcomeLive, nil
+}
+
+func (b *customerTestBlocker) UnblockIP(ip string) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	delete(b.blocked, ip)
+	return nil
+}
+
+func (b *customerTestBlocker) IsBlocked(ip string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.blocked[ip]
+}
+
+type customerMail struct{ subject, body string }
+
+// customerCapture records what the collector's sinks send.
+type customerCapture struct {
+	mu       sync.Mutex
+	emails   []customerMail
+	payloads []blockdigest.WebhookPayload
+}
+
+func (c *customerCapture) reset() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.emails, c.payloads = nil, nil
+}
+
+func (c *customerCapture) customerEmails() []customerMail {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var out []customerMail
+	for _, m := range c.emails {
+		if strings.Contains(m.subject, "known customer") {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+func (c *customerCapture) events(event string) []blockdigest.WebhookPayload {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var out []blockdigest.WebhookPayload
+	for _, p := range c.payloads {
+		if p.CSM.Event == event {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func customerBlockSetup(t *testing.T) (*Daemon, *config.Config, *customerTestBlocker, *customerCapture) {
+	t.Helper()
+	prevActive := config.Active()
+	config.SetActive(nil)
+	t.Cleanup(func() { config.SetActive(prevActive) })
+	prevEmail, prevWebhook := blockDigestSendEmail, blockDigestSendWebhookJSON
+	t.Cleanup(func() { blockDigestSendEmail, blockDigestSendWebhookJSON = prevEmail, prevWebhook })
+	capture := &customerCapture{}
+	blockDigestSendEmail = func(_ *config.Config, subject, body string) error {
+		capture.mu.Lock()
+		defer capture.mu.Unlock()
+		capture.emails = append(capture.emails, customerMail{subject, body})
+		return nil
+	}
+	blockDigestSendWebhookJSON = func(_ *config.Config, payload any) error {
+		capture.mu.Lock()
+		defer capture.mu.Unlock()
+		capture.payloads = append(capture.payloads, payload.(blockdigest.WebhookPayload))
+		return nil
+	}
+
+	sdb, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	prevStore := store.Global()
+	store.SetGlobal(sdb)
+	t.Cleanup(func() {
+		store.SetGlobal(prevStore)
+		_ = sdb.Close()
+	})
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	t.Cleanup(checks.SetGlobalThreatDBForTest(t.TempDir()))
+	blocker := &customerTestBlocker{blocked: map[string]bool{}}
+	checks.SetIPBlocker(blocker)
+	t.Cleanup(func() { checks.SetIPBlocker(nil) })
+
+	cfg := &config.Config{StatePath: t.TempDir(), Hostname: "host.example.com"}
+	cfg.AutoResponse.Enabled, cfg.AutoResponse.BlockIPs = true, true
+	cfg.AutoResponse.BlockExpiry = "6h"
+	cfg.AutoResponse.MaxBlocksPerHour = 100
+	cfg.Alerts.Email.Enabled, cfg.Alerts.Webhook.Enabled = true, true
+	d := New(cfg, st, nil, "")
+	d.blockDigest = d.buildBlockDigest(cfg)
+	return d, cfg, blocker, capture
+}
+
+func smtpBruteFrom(ip string) alert.Finding {
+	return alert.Finding{Severity: alert.Critical, Check: "smtp_bruteforce", Message: "SMTP brute force from " + ip,
+		SourceIP: ip, Timestamp: time.Now()}
+}
+
+// customerLogin notes a cPanel login by alice from ip two hours ago and
+// returns its rendered time.
+func customerLogin(d *Daemon, ip string) string {
+	at := time.Now().Add(-2 * time.Hour).Truncate(time.Minute)
+	d.knownCustomers.Note(ip, knownCustomerCpanel, "alice", at, serviceLog)
+	return at.In(time.Local).Format("2006-01-02 15:04 MST")
+}
+
+// Every automatic block path reports a block of a known customer at once:
+// one email naming the address, the login kind, account and time, and one
+// webhook event.
+func TestCustomerBlockAlertEveryBlockPath(t *testing.T) {
+	const ip = "203.0.113.10"
+	cases := []struct {
+		name      string
+		prepare   func(*Daemon, *config.Config, *customerTestBlocker)
+		block     func(*testing.T, *Daemon, *config.Config)
+		wantCheck string
+		wantText  string
+	}{
+		{name: "scan block in dispatch", wantCheck: "smtp_bruteforce",
+			block: func(_ *testing.T, d *Daemon, _ *config.Config) { d.dispatchBatch([]alert.Finding{smtpBruteFrom(ip)}) }},
+		{name: "permanent promotion in the same batch", wantCheck: "smtp_bruteforce", wantText: "promoted to permanent block",
+			prepare: func(d *Daemon, cfg *config.Config, b *customerTestBlocker) {
+				cfg.AutoResponse.PermBlock = true
+				cfg.AutoResponse.PermBlockCount = config.MinBlockEscalationCount
+				d.dispatchBatch([]alert.Finding{smtpBruteFrom(ip)})
+				_ = b.UnblockIP(ip)
+			},
+			block: func(_ *testing.T, d *Daemon, _ *config.Config) { d.dispatchBatch([]alert.Finding{smtpBruteFrom(ip)}) }},
+		{name: "periodic scan block arriving as a finding", wantCheck: "smtp_bruteforce",
+			block: func(_ *testing.T, d *Daemon, cfg *config.Config) {
+				// A scan runs its own auto-response and hands its blocks
+				// to dispatch with the findings that caused them.
+				scanned := []alert.Finding{smtpBruteFrom(ip)}
+				_, blocks := checks.ChallengeThenBlock(cfg, scanned)
+				d.dispatchBatch(append(scanned, blocks...))
+			}},
+		{name: "initial scan", wantCheck: "smtp_bruteforce",
+			block: func(_ *testing.T, d *Daemon, cfg *config.Config) {
+				scanned := []alert.Finding{smtpBruteFrom(ip)}
+				_, blocks := checks.ChallengeThenBlock(cfg, scanned)
+				d.respondToInitialScan(cfg, append(scanned, blocks...))
+			}},
+		{name: "challenge timeout",
+			block: func(t *testing.T, d *Daemon, _ *config.Config) {
+				d.ipList = challenge.NewIPList(filepath.Join(t.TempDir(), "challenge_ips.txt"))
+				d.ipList.Add(ip, "wp brute", -time.Minute)
+				d.escalateExpiredChallenges(time.Hour)
+			}},
+		{name: "central intelligence",
+			block: func(t *testing.T, d *Daemon, _ *config.Config) {
+				if err := d.performCentralAction(centralQueuedAction{decision: reporting.DecisionBlock, ip: ip}); err != nil {
+					t.Fatal(err)
+				}
+			}},
+		{name: "incident", wantCheck: "mail_bruteforce",
+			block: func(t *testing.T, d *Daemon, _ *config.Config) {
+				root := incident.PreparedRoot{Finding: alert.Finding{Severity: alert.Critical, Check: "mail_bruteforce",
+					Message: "Mail auth brute force from " + ip, SourceIP: ip, Timestamp: time.Now()}}
+				if _, err := d.applyIncidentBlock(ip, "incident: account spray", time.Hour, "", root, admission.EntryIncidentSpray); err != nil {
+					t.Fatal(err)
+				}
+			}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d, cfg, blocker, capture := customerBlockSetup(t)
+			when := customerLogin(d, ip)
+			if tc.prepare != nil {
+				tc.prepare(d, cfg, blocker)
+			}
+			capture.reset()
+			tc.block(t, d, cfg)
+
+			if !blocker.IsBlocked(ip) {
+				t.Fatalf("%s did not block %s", tc.name, ip)
+			}
+			mails := capture.customerEmails()
+			if len(mails) != 1 {
+				t.Fatalf("customer emails = %d, want 1: %+v", len(mails), mails)
+			}
+			body := mails[0].body
+			if !strings.Contains(mails[0].subject, ip) {
+				t.Fatalf("subject %q does not name %s", mails[0].subject, ip)
+			}
+			if want := "Known customer: " + ip + " cpanel login as alice at " + when; !strings.Contains(body, want) {
+				t.Fatalf("body has no %q:\n%s", want, body)
+			}
+			if n := strings.Count(body, "Block: "); n != 1 {
+				t.Fatalf("blocks listed = %d, want 1:\n%s", n, body)
+			}
+			if tc.wantCheck != "" && !strings.Contains(body, "Check: "+tc.wantCheck+"\n") {
+				t.Fatalf("body does not name check %s:\n%s", tc.wantCheck, body)
+			}
+			if tc.wantText != "" && !strings.Contains(body, tc.wantText) {
+				t.Fatalf("body has no %q:\n%s", tc.wantText, body)
+			}
+			hooks := capture.events("customer_block")
+			if len(hooks) != 1 || len(hooks[0].CSM.CustomerBlocks) != 1 || hooks[0].CSM.CustomerBlocks[0].Target != ip {
+				t.Fatalf("customer_block webhooks = %+v, want one naming %s", hooks, ip)
+			}
+		})
+	}
+}
+
+// A netblock over many known customers is one message with their count and
+// a few examples, not one message per customer.
+func TestCustomerBlockAlertSubnetCount(t *testing.T) {
+	for _, tc := range []struct{ name, message, target string }{
+		{"netblock", "AUTO-NETBLOCK: 198.51.100.0/24 blocked (5 IPs from same subnet)", "198.51.100.0/24"},
+		{"subnet", "AUTO-BLOCK-SUBNET: 198.51.100.0/24 blocked", "198.51.100.0/24"},
+		{"mapped subnet", "AUTO-BLOCK-SUBNET: ::ffff:198.51.100.0/120 blocked", "198.51.100.0/24"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d, _, _, capture := customerBlockSetup(t)
+			at := time.Now().Add(-time.Hour)
+			for i := range 200 {
+				d.knownCustomers.Note(fmt.Sprintf("198.51.100.%d", i+1), knownCustomerWebmail, fmt.Sprintf("user%d@example.com", i+1), at.Add(time.Duration(i)*time.Second), serviceLog)
+			}
+			d.knownCustomers.Note("203.0.113.99", knownCustomerWebmail, "outside@example.com", at, serviceLog)
+			d.recordAppliedBlocks([]alert.Finding{{Severity: alert.Critical, Check: "auto_block", Message: tc.message,
+				Details: "Reason: mail auth spray", Timestamp: time.Now()}})
+
+			mails := capture.customerEmails()
+			if len(mails) != 1 {
+				t.Fatalf("customer emails = %d, want 1", len(mails))
+			}
+			body := mails[0].body
+			if !strings.Contains(body, "200 known customers") {
+				t.Fatalf("body does not count 200 known customers:\n%s", body)
+			}
+			if n := strings.Count(body, " webmail login as "); n != 5 {
+				t.Fatalf("examples = %d, want 5:\n%s", n, body)
+			}
+			if strings.Contains(body, "outside@example.com") {
+				t.Fatalf("a customer outside the subnet is listed:\n%s", body)
+			}
+			hooks := capture.events("customer_block")
+			if len(hooks) != 1 || len(hooks[0].CSM.CustomerBlocks) != 1 {
+				t.Fatalf("webhooks = %+v", hooks)
+			}
+			b := hooks[0].CSM.CustomerBlocks[0]
+			if b.Target != tc.target || len(b.Hits) != 5 || b.More != 195 {
+				t.Fatalf("block = target %q, %d hits, %d more; want %s, 5, 195", b.Target, len(b.Hits), b.More, tc.target)
+			}
+			if b.Hits[0].IP != "198.51.100.200" {
+				t.Fatalf("first example = %s, want the most recent login", b.Hits[0].IP)
+			}
+		})
+	}
+}
+
+// One block is one message; the address staying blocked sends nothing more,
+// and a new block after the first ended sends another.
+func TestCustomerBlockAlertOncePerBlock(t *testing.T) {
+	const ip = "203.0.113.11"
+	d, _, blocker, capture := customerBlockSetup(t)
+	customerLogin(d, ip)
+
+	d.dispatchBatch([]alert.Finding{smtpBruteFrom(ip)})
+	if n := len(capture.customerEmails()); n != 1 {
+		t.Fatalf("customer emails after the block = %d, want 1", n)
+	}
+	d.dispatchBatch([]alert.Finding{smtpBruteFrom(ip)})
+	if n := len(capture.customerEmails()); n != 1 {
+		t.Fatalf("customer emails while still blocked = %d, want 1", n)
+	}
+	_ = blocker.UnblockIP(ip)
+	d.dispatchBatch([]alert.Finding{smtpBruteFrom(ip)})
+	if n := len(capture.customerEmails()); n != 2 {
+		t.Fatalf("customer emails after a new block = %d, want 2", n)
+	}
+	if n := len(capture.events("customer_block")); n != 2 {
+		t.Fatalf("customer_block webhooks = %d, want 2", n)
+	}
+}
+
+// A scan that blocks the same address again after its block ended reports
+// the same notice text, which the repeat filter has seen; the new block is
+// still alerted.
+func TestCustomerBlockAlertRepeatedScanBlock(t *testing.T) {
+	const ip = "203.0.113.17"
+	d, cfg, blocker, capture := customerBlockSetup(t)
+	customerLogin(d, ip)
+	scan := func() {
+		scanned := []alert.Finding{smtpBruteFrom(ip)}
+		_, blocks := checks.ChallengeThenBlock(cfg, scanned)
+		d.dispatchBatch(append(scanned, blocks...))
+	}
+	scan()
+	_ = blocker.UnblockIP(ip)
+	scan()
+	if n := len(capture.customerEmails()); n != 2 {
+		t.Fatalf("customer emails = %d, want one per block", n)
+	}
+}
+
+// The alert never exempts a customer: the block lands with its configured
+// length and its notice stays a Critical auto_block.
+func TestCustomerBlockNoExemption(t *testing.T) {
+	const ip = "203.0.113.12"
+	d, cfg, blocker, capture := customerBlockSetup(t)
+	customerLogin(d, ip)
+
+	d.dispatchBatch([]alert.Finding{smtpBruteFrom(ip)})
+
+	if len(capture.customerEmails()) != 1 {
+		t.Fatal("no customer alert for the block")
+	}
+	want := parseBlockExpiry(cfg.AutoResponse.BlockExpiry)
+	if len(blocker.calls) != 1 || blocker.calls[0].ip != ip || blocker.calls[0].ttl != want {
+		t.Fatalf("engine calls = %+v, want one block of %s for %s", blocker.calls, ip, want)
+	}
+	if !blocker.IsBlocked(ip) {
+		t.Fatal("customer address not blocked")
+	}
+	if ips := blockedTrackerIPs(t, cfg.StatePath); len(ips) != 1 || ips[0] != ip {
+		t.Fatalf("tracker = %v, want %s", ips, ip)
+	}
+	history, _ := d.store.ReadHistory(50, 0)
+	found := false
+	for _, f := range history {
+		if f.Check == "auto_block" && f.Severity == alert.Critical && f.Message == fmt.Sprintf("AUTO-BLOCK: %s blocked (expires in %s)", ip, want) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("history has no Critical auto_block for %s: %+v", ip, history)
+	}
+}
+
+func TestCustomerBlockIgnoresUnknownAndDryRun(t *testing.T) {
+	t.Run("unknown address", func(t *testing.T) {
+		d, _, blocker, capture := customerBlockSetup(t)
+		customerLogin(d, "203.0.113.13")
+		d.dispatchBatch([]alert.Finding{smtpBruteFrom("203.0.113.14")})
+		if !blocker.IsBlocked("203.0.113.14") {
+			t.Fatal("unknown address not blocked")
+		}
+		if mails := capture.customerEmails(); len(mails) != 0 {
+			t.Fatalf("customer emails = %+v, want none", mails)
+		}
+	})
+	t.Run("dry run", func(t *testing.T) {
+		d, _, blocker, capture := customerBlockSetup(t)
+		blocker.outcome = firewall.BlockOutcomeDryRun
+		customerLogin(d, "203.0.113.15")
+		d.dispatchBatch([]alert.Finding{smtpBruteFrom("203.0.113.15")})
+		if len(blocker.calls) != 1 || blocker.IsBlocked("203.0.113.15") {
+			t.Fatalf("dry run calls = %+v, want one call and no block", blocker.calls)
+		}
+		if mails := capture.customerEmails(); len(mails) != 0 {
+			t.Fatalf("customer emails = %+v, want none for a dry-run verdict", mails)
+		}
+		if hooks := capture.events("customer_block"); len(hooks) != 0 {
+			t.Fatalf("customer_block webhooks = %+v, want none", hooks)
+		}
+	})
+}
+
+// Observe-mode and dry-run verdicts on known customers are listed in the
+// daily summary; the established-source advisory of the same check is not a
+// verdict.
+func TestWouldBlockCustomerInSummary(t *testing.T) {
+	d, cfg, blocker, capture := customerBlockSetup(t)
+	alert.SetSummaryHook(d.noteSummary)
+	t.Cleanup(func() { alert.SetSummaryHook(nil) })
+	blocker.outcome = firewall.BlockOutcomeDryRun
+	at := time.Now().Add(-time.Hour)
+	for _, ip := range []string{"203.0.113.30", "203.0.113.31", "203.0.113.32", "198.51.100.40"} {
+		d.knownCustomers.Note(ip, knownCustomerIMAP, "office@example.com", at, syslogFed)
+	}
+
+	d.dispatchBatch([]alert.Finding{smtpBruteFrom("203.0.113.30")})
+	d.noteSummary(cfg, []alert.Finding{
+		{Severity: alert.High, Check: "mail_bruteforce_suspected", SourceIP: "203.0.113.31",
+			Message: "Suspected IMAP/POP password spray from 203.0.113.31: failed logins on 3 mailboxes it has no trusted login for (observe mode, not blocked)"},
+		{Severity: alert.High, Check: "mail_bruteforce_suspected", SourceIP: "203.0.113.32",
+			Message: "Suspected mail misconfiguration from 203.0.113.32: 5 failed auths in 10m0s from an established good source (not auto-blocked)"},
+		{Severity: alert.Warning, Check: "auto_block", Message: "AUTO-BLOCK-SUBNET [dry-run]: 198.51.100.0/24 would be blocked",
+			Details: "Reason: mail auth spray"},
+		{Severity: alert.Warning, Check: "auto_block", Message: "AUTO-BLOCK [dry-run]: 203.0.113.33 would be blocked (expires in 6h0m0s)",
+			Details: "Reason: fixture", SourceIP: "203.0.113.33"},
+	})
+	if mails := capture.customerEmails(); len(mails) != 0 {
+		t.Fatalf("would-block verdicts emailed at once: %+v", mails)
+	}
+	s := sendSummary(t, d, capture, time.Now().Add(25*time.Hour))
+	var targets []string
+	for _, b := range s.WouldBlock {
+		targets = append(targets, b.Target)
+	}
+	if got, want := strings.Join(targets, ","), "203.0.113.30,203.0.113.31,198.51.100.0/24"; got != want {
+		t.Fatalf("would-block targets = %s, want %s", got, want)
+	}
+	if b := s.WouldBlock[0]; b.Check != "smtp_bruteforce" || b.Reason != "SMTP brute force from 203.0.113.30" || len(b.Hits) != 1 || b.Hits[0].Kind != knownCustomerIMAP {
+		t.Fatalf("dry-run verdict = %+v", b)
+	}
+	if b := s.WouldBlock[1]; b.Check != "mail_bruteforce_suspected" || !strings.Contains(b.Reason, "observe mode") {
+		t.Fatalf("observe verdict = %+v", b)
+	}
+
+	for i := range 55 {
+		ip := fmt.Sprintf("192.0.2.%d", i+1)
+		d.knownCustomers.Note(ip, knownCustomerPOP, "", at, syslogFed)
+		d.noteSummary(cfg, []alert.Finding{{Severity: alert.Warning, Check: "auto_block", SourceIP: ip,
+			Message: "AUTO-BLOCK [dry-run]: " + ip + " would be blocked (expires in 6h0m0s)", Details: "Reason: fixture"}})
+	}
+	capture.reset()
+	s = sendSummary(t, d, capture, time.Now().Add(49*time.Hour))
+	if len(s.WouldBlock) != 50 || s.WouldBlockMore != 5 {
+		t.Fatalf("would-block = %d listed + %d more, want 50 + 5", len(s.WouldBlock), s.WouldBlockMore)
+	}
+}
+
+func sendSummary(t *testing.T, d *Daemon, capture *customerCapture, at time.Time) blockdigest.Summary {
+	t.Helper()
+	d.blockDigest.SendDue(at)
+	hooks := capture.events("daily_summary")
+	if len(hooks) != 1 || hooks[0].CSM.Summary == nil {
+		t.Fatalf("daily summary webhooks = %+v", hooks)
+	}
+	return *hooks[0].CSM.Summary
+}
+
+// A phpanel webhook takes signed findings only: the customer alert creates
+// no job there and counts no delivery, while email still goes out.
+func TestCustomerBlockWebhookSkipsPhpanel(t *testing.T) {
+	for _, hook := range []string{"phpanel", "generic"} {
+		t.Run(hook, func(t *testing.T) {
+			d, cfg, _, capture := customerBlockSetup(t)
+			// The delivery policy reads the live config.
+			cfg.Alerts.Webhook.Type = hook
+
+			entered, release := make(chan struct{}), make(chan struct{})
+			blockDigestSendEmail = func(*config.Config, string, string) error {
+				close(entered)
+				<-release
+				return nil
+			}
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				d.blockDigest.AlertCustomerBlocks([]blockdigest.CustomerBlock{{Target: "203.0.113.16", Reason: "fixture",
+					Hits: []blockdigest.CustomerHit{{IP: "203.0.113.16", Kind: knownCustomerCpanel, Account: "alice", At: time.Now()}}}})
+			}()
+			select {
+			case <-entered:
+			case <-done:
+				t.Fatal("customer alert sent no email")
+			case <-time.After(5 * time.Second):
+				t.Fatal("customer alert email never started")
+			}
+			wantDepth := 1
+			if hook == "phpanel" {
+				wantDepth = 0
+			}
+			row := d.QueueStatuses()["block_digest.webhook"]
+			close(release)
+			<-done
+			if row.Depth != wantDepth {
+				t.Fatalf("%s customer webhook jobs waiting = %d, want %d: %+v", hook, row.Depth, wantDepth, row)
+			}
+			wantHooks := 1
+			if hook == "phpanel" {
+				wantHooks = 0
+			}
+			if n := len(capture.events("customer_block")); n != wantHooks {
+				t.Fatalf("%s customer_block webhooks = %d, want %d", hook, n, wantHooks)
+			}
+			if row := d.QueueStatuses()["block_digest.webhook"]; row.DroppedTotal != 0 || row.Depth != 0 || row.InFlight != 0 {
+				t.Fatalf("%s webhook row = %+v", hook, row)
+			}
+		})
+	}
+}

@@ -59,6 +59,10 @@ type Summary struct {
 	Muted      int                       `json:"muted"`
 	Sources    []SourceCount             `json:"sources"`
 	Watched    WatchedBlocks             `json:"watched"`
+	// WouldBlock lists dry-run and observe-mode verdicts on known
+	// customers, at most maxWouldBlock; WouldBlockMore counts the rest.
+	WouldBlock     []CustomerBlock `json:"would_block,omitempty"`
+	WouldBlockMore int             `json:"would_block_more,omitempty"`
 }
 
 // One pending window bounds retry state during a prolonged outage. Findings
@@ -229,6 +233,10 @@ func (s *Summary) merge(o Summary) {
 		s.addSource(src.IP, src.Count)
 	}
 	s.Watched.add(o.Watched.Total, o.Watched.ByCountry, o.Watched.ByCategory)
+	for _, b := range o.WouldBlock {
+		s.noteWouldBlock(b)
+	}
+	s.WouldBlockMore += o.WouldBlockMore
 }
 
 func (s *Summary) total() int {

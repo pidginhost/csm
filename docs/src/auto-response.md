@@ -479,10 +479,35 @@ a mail-sending script do not count, even when another finding raised the
 incident's severity. A listed command-and-control server is the exception:
 blocking it is the reviewed response to a local process connecting to it.
 
+### Known-customer block alert
+
+When an automatic block applies to an address that logged in successfully as
+a customer in the last 30 days (cPanel, webmail, SMTP, IMAP, POP or FTP), CSM
+sends an alert at once: one email, and the generic alert webhook as event
+`customer_block`. It names the address, the block reason and the check that
+caused it, and the customer's login kind, account or mailbox and last login
+time. An IPv6 customer is named by its /64. A subnet block or netblock that
+covers known customers sends one message with their count and the five most
+recent. Every applied block counts: scan blocks, permanent promotions,
+challenge timeouts, central intelligence and incident blocks.
+
+The alert is the false-positive check of automatic blocking, never an
+exemption. The block stands with its configured length, and its notice still
+goes to the daily summary. A login with stolen credentials also makes an
+address known, so the alert can show the block of an attacker holding a
+customer's password, which is worth seeing too. Each applied block sends at
+most one message; a later new block of the same address sends another. The
+alert does not spend the hourly alert budget, goes out with
+`alerts.block_digest` off and ignores `alerts.block_digest.channel`. A
+phpanel webhook does not receive it. Dry-run and observe-mode verdicts that
+would have blocked a known customer are listed in the
+[daily summary](configuration.md#daily-summary) instead.
+
 ## Safety Guards
 
 - Never kills root processes, system daemons, or cPanel services
 - Infrastructure IPs (`infra_ips` in config) are never blocked
+- A block of an address that recently logged in as a customer is alerted at once and never exempted
 - Subnet blocks refuse the default route and any range that covers infrastructure, local host, allowed, or port-specific allowed IPs
 - Quarantined files preserve full metadata for restoration
 - Every regular file is copied from its verified open descriptor into a private quarantine inode before the detected name is removed. Other hard links are reported after removal; a file swapped into the detected path is reported as a refused remediation, with the captured copy kept as evidence and the replacement left untouched

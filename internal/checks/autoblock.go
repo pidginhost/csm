@@ -389,7 +389,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 			}
 			// Dry-run: same visibility contract as per-IP blocks - emit a
 			// Warning notice instead of skipping silently.
-			actions = append(actions, dryRunSubnetNotice(cidr, "", f.Message))
+			actions = append(actions, dryRunSubnetNotice(cidr, "", f))
 			continue
 		}
 		if blocker == nil {
@@ -407,12 +407,14 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		}
 		answeredSubnets[cidr] = true
 		fmt.Fprintf(os.Stderr, "[%s] AUTO-BLOCK-SUBNET: %s blocked\n", time.Now().Format("2006-01-02 15:04:05"), cidr)
+		cause := alert.CauseOf(f)
 		actions = append(actions, alert.Finding{
 			Severity:  alert.Critical,
 			Check:     "auto_block",
 			Message:   fmt.Sprintf("AUTO-BLOCK-SUBNET: %s blocked", cidr),
 			Details:   fmt.Sprintf("Reason: %s", f.Message),
 			Timestamp: time.Now(),
+			Cause:     &cause,
 		})
 	}
 
@@ -528,7 +530,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 					if !canDryRunBlockSubnet(blocker, cidr) {
 						continue
 					}
-					actions = append(actions, dryRunSubnetNotice(cidr, " (asn-crawl)", f.Message))
+					actions = append(actions, dryRunSubnetNotice(cidr, " (asn-crawl)", f))
 					continue
 				}
 				if budgetUnavailable || state.BlocksThisHour >= maxPerHour {
@@ -548,12 +550,14 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 					continue
 				}
 				state.BlocksThisHour++
+				cause := alert.CauseOf(f)
 				actions = append(actions, alert.Finding{
 					Severity:  alert.Critical,
 					Check:     "auto_block",
 					Message:   fmt.Sprintf("AUTO-BLOCK-SUBNET: %s blocked (asn-crawl)", cidr),
 					Details:   fmt.Sprintf("Reason: %s", f.Message),
 					Timestamp: time.Now(),
+					Cause:     &cause,
 				})
 			}
 		}
@@ -733,6 +737,11 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 			}
 			continue
 		}
+		// Each notice names the finding behind the block, so the known-
+		// customer alert and the summary can say which check blocked.
+		for i := range res.Findings {
+			res.Findings[i].Cause = &alert.Cause{FindingID: cand.FindingID, Check: cand.Check}
+		}
 		actions = append(actions, res.Findings...)
 		if res.Outcome != firewall.BlockOutcomeLive {
 			work.finishCandidate(cand.queueCandidate)
@@ -883,6 +892,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 							Check:     "auto_block",
 							Message:   fmt.Sprintf("AUTO-NETBLOCK [dry-run]: %s would be blocked (%d IPs from same subnet)", cidr, count),
 							Timestamp: time.Now(),
+							Cause:     netblockCause(subnetCauses[cidr]),
 						})
 						continue
 					}
@@ -897,6 +907,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 							Check:     "auto_block",
 							Message:   fmt.Sprintf("AUTO-NETBLOCK: %s blocked (%d IPs from same subnet)", cidr, count),
 							Timestamp: time.Now(),
+							Cause:     netblockCause(subnetCauses[cidr]),
 						})
 					}
 				}
@@ -1364,18 +1375,29 @@ func FlushAutoBlockState(statePath string, flush func() error) (AutoBlockFlushRe
 	return result, cleanupErr
 }
 
+// netblockCause names the newest counted block behind a netblock. Tracker
+// rows keep the finding, not its check.
+func netblockCause(b blockedIP) *alert.Cause {
+	if b.FindingID == "" {
+		return nil
+	}
+	return &alert.Cause{FindingID: b.FindingID}
+}
+
 // dryRunSubnetNotice mirrors the per-IP dry-run notice for the subnet block
 // paths so operators evaluating dry-run see subnet decisions instead of
 // silence. The message deliberately differs from the live
 // "AUTO-BLOCK-SUBNET:" token so alert-filter suppression never treats a
 // notice as a real block.
-func dryRunSubnetNotice(cidr, kind, reason string) alert.Finding {
+func dryRunSubnetNotice(cidr, kind string, source alert.Finding) alert.Finding {
+	cause := alert.CauseOf(source)
 	return alert.Finding{
 		Severity:  alert.Warning,
 		Check:     "auto_block",
 		Message:   fmt.Sprintf("AUTO-BLOCK-SUBNET [dry-run]: %s would be blocked%s", cidr, kind),
-		Details:   fmt.Sprintf("Reason: %s", reason),
+		Details:   fmt.Sprintf("Reason: %s", source.Message),
 		Timestamp: time.Now(),
+		Cause:     &cause,
 	}
 }
 

@@ -1053,6 +1053,7 @@ It covers the window since the previous summary:
 - blocks applied, by kind, including netblocks and promotions to a permanent block;
 - challenges, and mail login advisories that never block, such as spray observe mode;
 - the 10 addresses with the most summary findings, with their country when GeoIP knows it;
+- dry-run block verdicts and spray observe-mode verdicts that would have blocked a known customer, each with the customers it covers: up to 50 blocked addresses or networks a day, each listed once, then a count of further verdicts;
 - with `alerts.block_digest.enabled`, watched-country blocks by country and category, once they reach `min_block`.
 
 CSM tracks up to 1,000 source addresses a day. Past that, a new address takes
@@ -1088,7 +1089,8 @@ Customer login history records the source addresses of authenticated
 cPanel, webmail, SMTP, IMAP, POP and FTP logins for 30 days. Buffered logs
 keep their original login time, so reading old logs does not renew expired
 history. FTP command text and failed login names do not count as successful
-logins.
+logins. An applied automatic block of a known customer is alerted at once;
+see [the known-customer block alert](auto-response.md#known-customer-block-alert).
 
 An IPv6 customer is recorded by its /64, so a host that changes privacy
 addresses stays known. Each account holds a bounded number of addresses per

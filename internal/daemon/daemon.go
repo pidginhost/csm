@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1697,6 +1698,9 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 	}
 
 	if len(responseFindings) == 0 {
+		// A scan applies its own blocks and hands them over as findings,
+		// which the repeat filter may have judged seen.
+		d.observeBlocks(findings)
 		if err := alert.DispatchWithNotificationFilter(cfg, nil, auditSources, nil, d.deliveryCandidates(remediableFindings, nil, suppressions), operatorAlertableFindings, d.store); err != nil {
 			fmt.Fprintf(os.Stderr, "[%s] Alert dispatch error: %v\n", ts(), err)
 		}
@@ -1707,7 +1711,9 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 	// Copy: with no rules the filter returns its input, and both slices grow.
 	newFindings := append([]alert.Finding(nil), filterUnsuppressedFindings(d.store, responseFindings, suppressions)...)
 	d.store.AppendHistory(newFindings)
-	d.observeBlocks(blockActions)
+	// Periodic scans run their own auto-response, so their blocks arrive in
+	// findings; nothing else hands this dispatcher a Critical auto_block.
+	d.observeBlocks(slices.Concat(findings, blockActions))
 
 	// Kill and quarantine only run on new, unsuppressed findings. The
 	// companion sweep is queued first so a file quarantined below is
@@ -1780,13 +1786,12 @@ func (d *Daemon) respondToInitialScan(cfg *config.Config, initialFindings []aler
 	// Other auto-response only on new findings. As in dispatchBatch,
 	// responseFindings keeps suppressed observations for incidents and
 	// central enforcement while newFindings carries what may notify.
-	var responseFindings []alert.Finding
+	var responseFindings, blockActions []alert.Finding
 	if len(unfilteredNew) > 0 {
 		killActions := checks.AutoKillProcesses(d.scanContext(), cfg, newFindings)
 		queueCompanionSweeps(newFindings)
 		quarantineActions := checks.AutoQuarantineFiles(cfg, newFindings)
-		blockActions := checks.AutoBlockIPs(cfg, initialFindings)
-		d.observeBlocks(blockActions)
+		blockActions = checks.AutoBlockIPs(cfg, initialFindings)
 		responseFindings = append(responseFindings, unfilteredNew...)
 		for _, actions := range [][]alert.Finding{killActions, quarantineActions, permActions, challengeActions, blockActions} {
 			responseFindings = append(responseFindings, actions...)
@@ -1803,6 +1808,8 @@ func (d *Daemon) respondToInitialScan(cfg *config.Config, initialFindings []aler
 			_, _, _ = co.OnFinding(f)
 		}
 	}
+	// The baseline scan applied its own blocks; they are in initialFindings.
+	d.observeBlocks(slices.Concat(initialFindings, blockActions))
 	newFindings = filterUnsuppressedFindings(d.store, newFindings, suppressions)
 	initialAuditSources := append(append([]alert.Finding(nil), initialFindings...), responseFindings...)
 	candidates := d.deliveryCandidates(filterUnsuppressedFindings(d.store, initialFindings, suppressions), newFindings, suppressions)
@@ -3313,6 +3320,12 @@ func (d *Daemon) applyIncidentBlock(ip, reason string, timeout time.Duration, fi
 		RootFinding:  root.Finding,
 		RootErr:      root.Err,
 	})
+	if root.Finding.Check != "" {
+		cause := alert.CauseOf(root.Finding)
+		for i := range res.Findings {
+			res.Findings[i].Cause = &cause
+		}
+	}
 	d.recordAppliedBlocks(res.Findings)
 	live := res.Outcome == firewall.BlockOutcomeLive && (err == nil || errors.Is(err, firewall.ErrActionAuditPending))
 	return live, err

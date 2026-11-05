@@ -26,6 +26,9 @@ type WebhookCSM struct {
 	// Summary carries the counts of a daily_summary event, which is written
 	// with summaryCSM instead of the block digest fields.
 	Summary *Summary `json:"summary,omitempty"`
+	// CustomerBlocks carries a customer_block event, written with
+	// customerCSM.
+	CustomerBlocks []CustomerBlock `json:"-"`
 }
 
 type summaryCSM struct {
@@ -35,17 +38,30 @@ type summaryCSM struct {
 	Summary *Summary `json:"summary"`
 }
 
-// MarshalJSON writes a daily summary with only its own csm fields. Block
-// events keep the block digest shape.
+type customerCSM struct {
+	Event   string          `json:"event"`
+	Host    string          `json:"host"`
+	Version string          `json:"version"`
+	Blocks  []CustomerBlock `json:"blocks"`
+}
+
+// MarshalJSON writes a daily summary or a customer block alert with only its
+// own csm fields. Block events keep the block digest shape.
 func (p WebhookPayload) MarshalJSON() ([]byte, error) {
-	if p.CSM.Summary == nil {
-		type blockPayload WebhookPayload
-		return json.Marshal(blockPayload(p))
+	switch {
+	case p.CSM.Summary != nil:
+		return json.Marshal(struct {
+			Text string     `json:"text"`
+			CSM  summaryCSM `json:"csm"`
+		}{p.Text, summaryCSM{Event: p.CSM.Event, Host: p.CSM.Host, Version: p.CSM.Version, Summary: p.CSM.Summary}})
+	case p.CSM.CustomerBlocks != nil:
+		return json.Marshal(struct {
+			Text string      `json:"text"`
+			CSM  customerCSM `json:"csm"`
+		}{p.Text, customerCSM{Event: p.CSM.Event, Host: p.CSM.Host, Version: p.CSM.Version, Blocks: p.CSM.CustomerBlocks}})
 	}
-	return json.Marshal(struct {
-		Text string     `json:"text"`
-		CSM  summaryCSM `json:"csm"`
-	}{p.Text, summaryCSM{Event: p.CSM.Event, Host: p.CSM.Host, Version: p.CSM.Version, Summary: p.CSM.Summary}})
+	type blockPayload WebhookPayload
+	return json.Marshal(blockPayload(p))
 }
 
 type WebhookCounts struct {
@@ -234,6 +250,17 @@ func (c *Collector) summaryBody(s Summary, until time.Time) string {
 	}
 	if len(s.Sources) == 0 {
 		fmt.Fprintln(&b, "  (none)")
+	}
+	fmt.Fprintln(&b)
+	fmt.Fprintln(&b, "Known customers a dry-run or observe-mode verdict would have blocked:")
+	for _, w := range s.WouldBlock {
+		c.writeCustomerBlock(&b, "  ", w)
+	}
+	switch {
+	case len(s.WouldBlock) == 0:
+		fmt.Fprintln(&b, "  (none)")
+	case s.WouldBlockMore > 0:
+		fmt.Fprintf(&b, "  and %d more verdicts\n", s.WouldBlockMore)
 	}
 	if c.shouldSend(s.Watched) {
 		fmt.Fprintln(&b)

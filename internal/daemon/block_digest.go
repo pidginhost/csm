@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"fmt"
+	"net/netip"
 	"strings"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -162,6 +163,12 @@ func appliedBlockReason(f alert.Finding) string {
 	if f.Check != "auto_block" || f.Severity != alert.Critical {
 		return ""
 	}
+	return detailsReason(f)
+}
+
+// detailsReason is the reason an auto_block notice's details give, without
+// the Cloudflare coverage warning.
+func detailsReason(f alert.Finding) string {
 	reason := strings.TrimPrefix(f.Details, "Reason: ")
 	return strings.TrimSuffix(reason, " (warning: "+firewall.CloudflareCoverageWarning+")")
 }
@@ -179,9 +186,11 @@ func summaryBlockReason(f alert.Finding) string {
 	return ""
 }
 
-// observeBlocks feeds real auto-block findings to the digest collector.
-// PERMBLOCK promotions (no reason details) and non-auto_block findings are
-// skipped; dedup-by-IP in the collector makes multiple call sites safe.
+// observeBlocks feeds real auto-block findings to the digest collector,
+// then sends one alert naming those that hit known customers. PERMBLOCK
+// promotions (no reason details) and non-auto_block findings are skipped by
+// the digest; dedup-by-IP in the collector makes multiple call sites safe.
+// Each applied block reaches it once, so it alerts once per block.
 func (d *Daemon) observeBlocks(actions []alert.Finding) {
 	if d.blockDigest == nil {
 		return
@@ -197,11 +206,116 @@ func (d *Daemon) observeBlocks(actions []alert.Finding) {
 		}
 		d.blockDigest.Observe(ip, reason, f.Timestamp)
 	}
+	d.blockDigest.AlertCustomerBlocks(d.customerBlocks(actions))
+}
+
+// maxCustomerExamples is how many known customers one subnet block names.
+const maxCustomerExamples = 5
+
+// blockTarget returns the kind of an auto_block notice (AUTO-BLOCK,
+// AUTO-PERMBLOCK, AUTO-BLOCK-SUBNET or AUTO-NETBLOCK), the address or
+// network it names, and whether it is a dry-run verdict, which puts
+// "[dry-run]" after the kind.
+func blockTarget(f alert.Finding) (kind, target string, dryRun bool) {
+	fields := strings.Fields(f.Message)
+	switch {
+	case len(fields) >= 3 && fields[1] == "[dry-run]:":
+		kind, target, dryRun = fields[0], fields[2], true
+	case len(fields) >= 2 && strings.HasSuffix(fields[0], ":"):
+		kind, target = strings.TrimSuffix(fields[0], ":"), fields[1]
+	default:
+		return "", "", false
+	}
+	switch kind {
+	case "AUTO-BLOCK", "AUTO-PERMBLOCK":
+		return kind, checks.ExtractIPFromFinding(f), dryRun
+	case "AUTO-BLOCK-SUBNET", "AUTO-NETBLOCK":
+		return kind, target, dryRun
+	}
+	return "", "", false
+}
+
+// customersAt returns the known customers target covers: an address's own
+// last login, or the count and the most recent few inside a network.
+func (d *Daemon) customersAt(target string) (blockdigest.CustomerBlock, bool) {
+	if p, err := netip.ParsePrefix(target); err == nil {
+		// The set keys IPv4 customers unmapped.
+		if p.Addr().Is4In6() && p.Bits() >= 96 {
+			p = netip.PrefixFrom(p.Addr().Unmap(), p.Bits()-96)
+		}
+		p = p.Masked()
+		n, sample := d.knownCustomers.Within(p, maxCustomerExamples)
+		return blockdigest.CustomerBlock{Target: p.String(), Hits: sample, More: n - len(sample)}, n > 0
+	}
+	hit, ok := d.knownCustomers.Lookup(target)
+	return blockdigest.CustomerBlock{Target: target, Hits: []blockdigest.CustomerHit{hit}}, ok
+}
+
+// customerBlock fills in the reason and check of a block notice that hit
+// known customers. Netblock and permanent-block notices carry no reason;
+// their message says what happened.
+func (d *Daemon) customerBlock(f alert.Finding, target string) (blockdigest.CustomerBlock, bool) {
+	b, ok := d.customersAt(target)
+	if !ok {
+		return b, false
+	}
+	b.Reason = detailsReason(f)
+	if b.Reason == "" {
+		b.Reason = f.Message
+	}
+	if f.Cause != nil {
+		b.Check = f.Cause.Check
+	}
+	return b, true
+}
+
+// customerBlocks returns the applied automatic blocks in actions that hit
+// known customers. A permanent promotion joins the block of its address from
+// the same batch, which the chokepoint emits first.
+func (d *Daemon) customerBlocks(actions []alert.Finding) []blockdigest.CustomerBlock {
+	var blocks []blockdigest.CustomerBlock
+	byTarget := make(map[string]int)
+	for _, f := range actions {
+		if f.Check != "auto_block" || f.Severity != alert.Critical {
+			continue
+		}
+		kind, target, _ := blockTarget(f)
+		if i, ok := byTarget[target]; ok && kind == "AUTO-PERMBLOCK" {
+			blocks[i].Reason += " (promoted to permanent block)"
+			continue
+		}
+		b, ok := d.customerBlock(f, target)
+		if !ok {
+			continue
+		}
+		byTarget[target] = len(blocks)
+		blocks = append(blocks, b)
+	}
+	return blocks
+}
+
+// wouldBlock returns the verdict in a summary finding that would have
+// blocked known customers: a dry-run auto_block notice, or a spray verdict
+// in observe mode. The established-source advisory of the same check is
+// not a verdict.
+func (d *Daemon) wouldBlock(check string, f alert.Finding) (blockdigest.CustomerBlock, bool) {
+	switch {
+	case check == "auto_block":
+		if _, target, dryRun := blockTarget(f); dryRun {
+			return d.customerBlock(f, target)
+		}
+	case check == "mail_bruteforce_suspected" && strings.Contains(f.Message, "(observe mode, not blocked)"):
+		b, ok := d.customersAt(f.SourceIP)
+		b.Reason, b.Check = f.Message, check
+		return b, ok
+	}
+	return blockdigest.CustomerBlock{}, false
 }
 
 // noteSummary is the alert summary hook: it counts the summary-class findings
-// of one dispatch for the daily summary. It runs inside dispatch, so it never
-// panics into it.
+// of one dispatch for the daily summary and lists the verdicts that would
+// have blocked known customers. It runs inside dispatch, so it never panics
+// into it.
 func (d *Daemon) noteSummary(cfg *config.Config, summary []alert.Finding) {
 	collector := d.blockDigest
 	if collector == nil || len(summary) == 0 {
@@ -226,6 +340,9 @@ func (d *Daemon) noteSummary(cfg *config.Config, summary []alert.Finding) {
 			BlockReason: summaryBlockReason(f),
 			Muted:       muted[check],
 		})
+		if b, ok := d.wouldBlock(check, f); ok {
+			collector.NoteWouldBlock(b)
+		}
 	}
 	collector.NoteHandled(batch)
 }
