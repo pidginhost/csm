@@ -1,9 +1,14 @@
 package emailspool
 
 import (
+	"net"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 func writeFile(t *testing.T, path, content string) {
@@ -88,5 +93,111 @@ cidrs:
 	}
 	if !pol.IsProxyIP("192.0.2.10") {
 		t.Error("valid CIDR should still be loaded despite invalid sibling")
+	}
+}
+
+// firstBuiltInHost returns the first host of the first CIDR in the embedded
+// proxy list, so the tests never carry a literal provider address.
+func firstBuiltInHost(t *testing.T) string {
+	t.Helper()
+	var raw httpProxyRangesYAML
+	if err := yaml.Unmarshal(defaultProxyRanges, &raw); err != nil {
+		t.Fatalf("parse embedded proxy ranges: %v", err)
+	}
+	if len(raw.CIDRs) == 0 {
+		t.Fatal("embedded proxy ranges are empty")
+	}
+	_, n, err := net.ParseCIDR(raw.CIDRs[0])
+	if err != nil {
+		t.Fatalf("first embedded CIDR %q: %v", raw.CIDRs[0], err)
+	}
+	ip := slices.Clone(n.IP)
+	if ones, bits := n.Mask.Size(); ones < bits {
+		ip[len(ip)-1]++
+	}
+	return ip.String()
+}
+
+func TestLoadPolicies_MissingProxyFileUsesBuiltIn(t *testing.T) {
+	pol, err := LoadPolicies(t.TempDir())
+	if err != nil {
+		t.Fatalf("LoadPolicies: %v", err)
+	}
+	if host := firstBuiltInHost(t); !pol.IsProxyIP(host) {
+		t.Errorf("built-in range host %s must be a proxy IP when no policy file exists", host)
+	}
+}
+
+func TestLoadPolicies_OperatorProxyFileReplacesBuiltIn(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "http_proxy_ranges.yaml"), "version: 1\ncidrs: [198.51.100.0/24]\n")
+	pol, err := LoadPolicies(dir)
+	if err != nil {
+		t.Fatalf("LoadPolicies: %v", err)
+	}
+	if !pol.IsProxyIP("198.51.100.7") {
+		t.Error("operator range must be a proxy IP")
+	}
+	if host := firstBuiltInHost(t); pol.IsProxyIP(host) {
+		t.Errorf("operator file must replace the built-in list, but %s still matches", host)
+	}
+}
+
+func TestLoadPolicies_CorruptProxyFileKeepsBuiltIn(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "http_proxy_ranges.yaml"), "cidrs: [\n")
+	pol, err := LoadPolicies(dir)
+	if err == nil || !strings.Contains(err.Error(), "parse http_proxy_ranges.yaml") {
+		t.Fatalf("LoadPolicies error = %v, want the proxy file parse error", err)
+	}
+	if host := firstBuiltInHost(t); !pol.IsProxyIP(host) {
+		t.Errorf("corrupt operator file must leave the built-in list in force, but %s does not match", host)
+	}
+}
+
+func TestBuiltInProxyRanges_AllValid(t *testing.T) {
+	var raw httpProxyRangesYAML
+	if err := yaml.Unmarshal(defaultProxyRanges, &raw); err != nil {
+		t.Fatalf("parse embedded proxy ranges: %v", err)
+	}
+	if raw.Version != 1 {
+		t.Errorf("version = %d, want 1", raw.Version)
+	}
+	if len(raw.CIDRs) == 0 {
+		t.Fatal("embedded proxy ranges are empty")
+	}
+	for _, c := range raw.CIDRs {
+		ip, n, err := net.ParseCIDR(c)
+		if err != nil {
+			t.Errorf("invalid CIDR %q: %v", c, err)
+			continue
+		}
+		if !ip.Equal(n.IP) {
+			t.Errorf("CIDR %q has host bits set; want %s", c, n)
+		}
+	}
+
+	// Every entry sits in a provider block whose heading is followed by
+	// its official source URL.
+	lines := strings.Split(string(defaultProxyRanges), "\n")
+	providers, sources := 0, 0
+	sourced := false
+	for i, l := range lines {
+		l = strings.TrimSpace(l)
+		switch {
+		case strings.HasPrefix(l, "# Provider:"):
+			providers++
+			sourced = i+1 < len(lines) && strings.HasPrefix(strings.TrimSpace(lines[i+1]), "# source: https://")
+			if !sourced {
+				t.Errorf("line %d: %q is not followed by a '# source: https://' line", i+1, l)
+			}
+		case strings.HasPrefix(l, "# source:"):
+			sources++
+		case strings.HasPrefix(l, "- ") && !sourced:
+			t.Fatalf("line %d: entry %q is outside a sourced provider block", i+1, l)
+		}
+	}
+	if providers == 0 || providers != sources {
+		t.Errorf("%d provider headings, %d source lines; want one source per provider", providers, sources)
 	}
 }

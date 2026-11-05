@@ -1,6 +1,7 @@
 package emailspool
 
 import (
+	_ "embed"
 	"fmt"
 	"net"
 	"os"
@@ -11,8 +12,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Policies is the loaded contents of policies/email/*.yaml. Used by Stage 1
-// (mailer classes, http_proxy_ranges) and Stage 2 (policy_blocks). Each
+// Policies is the loaded contents of the php_relay policies_dir. Used by
+// Stage 1 (mailer classes, http_proxy_ranges) and Stage 2 (policy_blocks). Each
 // data file has its own schema; failing to parse one file does not abort
 // the whole load -- each category degrades independently.
 type Policies struct {
@@ -80,9 +81,28 @@ type httpProxyRangesYAML struct {
 	CIDRs   []string `yaml:"cidrs"`
 }
 
-// LoadPolicies reads all known policy files in dir. Missing files are
-// treated as "no entries"; corrupt files return an error per file but do
-// not abort the load. The returned Policies is safe for concurrent use.
+// defaultProxyRanges is the built-in http_proxy_ranges.yaml. Packages
+// create policies_dir empty, so without it every per-IP path would see
+// CDN edges and payment webhooks as visitors.
+//
+//go:embed embed/http_proxy_ranges.yaml
+var defaultProxyRanges []byte
+
+var builtInProxyRanges = mustProxyRanges(defaultProxyRanges)
+
+func mustProxyRanges(data []byte) httpProxyRangesYAML {
+	var raw httpProxyRangesYAML
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		panic("embedded http_proxy_ranges.yaml: " + err.Error())
+	}
+	return raw
+}
+
+// LoadPolicies reads all known policy files in dir. A missing
+// mailer_classes.yaml means no entries; a missing, unreadable or corrupt
+// http_proxy_ranges.yaml means the built-in list. Corrupt files return an
+// error per file but do not abort the load. The returned Policies is safe
+// for concurrent use.
 func LoadPolicies(dir string) (*Policies, error) {
 	p := &Policies{}
 	if err := p.load(dir); err != nil {
@@ -119,33 +139,38 @@ func (p *Policies) load(dir string) error {
 		setErr(fmt.Errorf("read mailer_classes.yaml: %w", err))
 	}
 
-	// http_proxy_ranges.yaml
+	// http_proxy_ranges.yaml: an operator file replaces the built-in list.
+	// A missing, unreadable or unparsable file falls back to it, so a
+	// broken file never empties the exemption list.
+	raw := builtInProxyRanges
 	// #nosec G304 -- dir is the operator-supplied policy directory; filename is a fixed literal under it.
 	if data, err := os.ReadFile(filepath.Join(dir, "http_proxy_ranges.yaml")); err == nil {
-		var raw httpProxyRangesYAML
-		if uerr := yaml.Unmarshal(data, &raw); uerr != nil {
+		var op httpProxyRangesYAML
+		if uerr := yaml.Unmarshal(data, &op); uerr != nil {
 			setErr(fmt.Errorf("parse http_proxy_ranges.yaml: %w", uerr))
 		} else {
-			nets := make([]*net.IPNet, 0, len(raw.CIDRs))
-			for _, c := range raw.CIDRs {
-				_, n, perr := net.ParseCIDR(strings.TrimSpace(c))
-				if perr != nil {
-					setErr(fmt.Errorf("invalid CIDR %q in http_proxy_ranges.yaml: %w", c, perr))
-					continue
-				}
-				nets = append(nets, n)
-			}
-			p.proxyNets = nets
+			raw = op
 		}
 	} else if !os.IsNotExist(err) {
 		setErr(fmt.Errorf("read http_proxy_ranges.yaml: %w", err))
 	}
+	nets := make([]*net.IPNet, 0, len(raw.CIDRs))
+	for _, c := range raw.CIDRs {
+		_, n, perr := net.ParseCIDR(strings.TrimSpace(c))
+		if perr != nil {
+			setErr(fmt.Errorf("invalid CIDR %q in http_proxy_ranges.yaml: %w", c, perr))
+			continue
+		}
+		nets = append(nets, n)
+	}
+	p.proxyNets = nets
 
 	return firstErr
 }
 
-// Reload refreshes from dir while keeping previous values for any category
-// whose new file is corrupt (existing reload-error contract). Used by SIGHUP.
+// Reload refreshes from dir. A corrupt mailer_classes.yaml keeps the
+// previous values; a corrupt http_proxy_ranges.yaml falls back to the
+// built-in list. Used by SIGHUP.
 //
 //nolint:unused // consumed by E3
 func (p *Policies) Reload(dir string) error {
