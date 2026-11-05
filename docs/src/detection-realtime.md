@@ -513,11 +513,11 @@ Path 5 (behavioural baseline) is deferred to Stage 2.
 
 Per-IP paths skip addresses whose requests are not a browser visitor: CDN and website firewall edges (Cloudflare, QUIC.cloud, Fastly, BunnyCDN, Amazon CloudFront, Sucuri) and payment gateway webhooks (Stripe, PayPal, Braintree, PayU, Revolut, Mollie). CSM ships this list built in, taken from each provider's published list.
 
-Uptime monitors and cron services are not on the list. Anyone with an account there can schedule POSTs with any form body to any URL, so exempting their addresses would let a bot relay form spam through them unseen. If you trust a specific cron service, you can add its ranges yourself, knowing that anyone with an account at that service can use them.
+Uptime monitors and cron services are not on the list. Anyone with an account there can schedule POSTs with any form body to any URL, so exempting their addresses would let a bot relay form spam through them, and the per-IP paths would miss it. If you trust a specific cron service, you can add its ranges yourself, knowing that anyone with an account at that service can use them.
 
 An `http_proxy_ranges.yaml` in `policies_dir` (`version: 1` plus a `cidrs:` list; a bare IP counts as /32 or /128) replaces the built-in list whole and reloads on SIGHUP. Without the file the built-in list applies. A file that cannot be read or parsed, has no `cidrs:` list, or has no valid entry keeps the last good list, which is the built-in one at startup. Invalid entries, including blank or null list items, are reported and skipped; valid siblings still apply. Only an explicitly empty list (`cidrs: []`) clears the proxy ranges. Load errors at startup or on SIGHUP raise `email_php_relay_policies_reload` (Warning). To extend the list, start from the built-in file in the CSM source, `internal/emailspool/embed/http_proxy_ranges.yaml`. Your file replaces the whole list, so later CSM updates to the built-in entries do not reach you until you copy them in again.
 
-Netopia, EuPlatesc, Twispay, JCC and Adyen publish no source address list, and Viva's list could not be fetched when the built-in list was made. If your shops use them, add their ranges yourself.
+Netopia, EuPlatesc, Twispay, JCC and Adyen publish no source address list. If your shops use them, add their ranges yourself. Viva publishes a webhook address list; it is not built in yet, add it yourself.
 
 Path 6 does not count a client on the proxy and payment list, a Cloudflare edge the firewall knows, a loopback or host address, or an `infra_ips` entry. It also skips mail sent from `wp-cron.php`, which mails whatever its trigger request queued, and staff: a client that sent mail through a WordPress admin page of the same account in the last 7 days. Every `.php` page directly in a `wp-admin/` directory counts as an admin page except `admin-ajax.php`, `admin-post.php`, `profile.php` and `index.php`, which logged-out visitors or subscribers can reach. The staff exemption covers only that account. Becoming staff, or an `ignore-script` for a script, also drops the recipients counted earlier in the window through that account or script.
 
@@ -531,6 +531,8 @@ Path 6 has known limits:
 - Only WordPress admin pages count as staff evidence. Staff of other back offices, such as PrestaShop, OpenCart or Joomla, who send many order or account mails can be challenged and then blocked. Put a fixed office address in `infra_ips`.
 - Counts live in memory and are lost when the daemon restarts. The startup walk sees only mail still in the queue, and form replies usually leave it within seconds.
 - A bot that rotates addresses and keeps each one below the threshold is never challenged, and its form is not named.
+- An IPv6 client is counted per /64 but challenged or blocked only at the one address that crossed the threshold.
+- A script finding names the client that triggered it. Later clients through the same form in the window get their own client findings but are not added to the script finding.
 - One stranger mailed many times counts once.
 
 When a client crosses the threshold, CSM raises `email_php_form_relay` (High) for it, once per window. The client is sent to the [challenge page](challenge.md); a client that does not solve it within 30 minutes is blocked while `auto_response.enabled` and `auto_response.block_ips` are on. With the challenge off, the client is blocked directly under the usual `auto_response` settings. `auto_response.php_relay.dry_run` applies only to the mail freeze and does not hold this response.

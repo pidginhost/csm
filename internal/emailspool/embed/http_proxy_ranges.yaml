@@ -6,7 +6,8 @@
 #
 # Uptime monitors and cron services are left out on purpose: anyone with an
 # account there can schedule POSTs with any form body to any URL, so
-# exempting them would let a bot relay form spam through them unseen.
+# exempting them would let a bot relay form spam through them where the
+# per-IP paths would miss it.
 #
 # CSM ships this list in its binary. A file with this name in the
 # php_relay policies_dir replaces it whole (same schema; a bare IP counts
