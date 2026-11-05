@@ -495,7 +495,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		used, budgetErr := durable.FirewallScanBudget(currentHour)
 		if budgetErr != nil {
 			budgetUnavailable = true
-			actions = append(actions, alert.Finding{Severity: alert.Warning, Check: "auto_block", Message: "Firewall action accounting unavailable; scan blocks deferred", Details: budgetErr.Error(), Timestamp: time.Now()})
+			actions = append(actions, alert.Finding{Severity: alert.Warning, Check: "auto_block", Message: "Firewall action accounting unavailable; scan blocks deferred", Details: budgetErr.Error(), DedupKey: "accounting", Timestamp: time.Now()})
 		} else {
 			state.BlocksThisHour = used
 		}
@@ -684,7 +684,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 				work.candidateOutcome(cand.queueCandidate, err)
 				sprayBudgetUnavailable = true
 				requeue(cand)
-				actions = append(actions, alert.Finding{Severity: alert.Warning, Check: "auto_block", Message: "Block accounting unavailable; mail spray blocks deferred", Details: err.Error(), Timestamp: time.Now()})
+				actions = append(actions, alert.Finding{Severity: alert.Warning, Check: "auto_block", Message: "Block accounting unavailable; mail spray blocks deferred", Details: err.Error(), DedupKey: "spray_accounting", Timestamp: time.Now()})
 				continue
 			}
 			*used++
@@ -764,7 +764,9 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 			dropped = "queue or mail spray share full"
 		}
 		var msg string
+		kind := "pending_dropped"
 		if rateLimited {
+			kind = "rate_limit"
 			limit := fmt.Sprintf("rate limit reached (%d/hour)", maxPerHour)
 			switch {
 			case scanLimited && sprayLimited:
@@ -783,10 +785,12 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 			}
 			msg = fmt.Sprintf("Auto-block %s, %d IPs queued for retry, %d dropped", full, len(state.Pending), droppedPending)
 		}
+		// The identity is the kind: the counts change every hour it lasts.
 		actions = append(actions, alert.Finding{
 			Severity:  alert.Warning,
 			Check:     "auto_block",
 			Message:   msg,
+			DedupKey:  kind,
 			Timestamp: time.Now(),
 		})
 		if rateLimited {

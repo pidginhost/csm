@@ -136,7 +136,12 @@ func EvaluateSensitiveFileWriteSnapshot(path string, uid, pid uint32, comm strin
 		FilePath:  path,
 		Timestamp: now,
 	}
-	return rescoreSensitive(f, kind, content, pid, false, now), true
+	f = rescoreSensitive(f, kind, content, pid, false, now)
+	// PID and comm differ on every write; the file, its writer and the
+	// severity do not. Severity stays in the identity so a write demoted by
+	// provenance cannot hide a later undemoted one.
+	f.DedupKey = fmt.Sprintf("path=%q class=%s uid=%d severity=%s", path, kind, uid, f.Severity)
+	return f, true
 }
 
 // EvaluateSensitiveFileAppearance returns a finding when a path no previous

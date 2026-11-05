@@ -1100,8 +1100,10 @@ const (
 )
 
 // dropperAlertParams renders one flush decision into alert parameters:
-// severity, message, details and the finding path.
-func dropperAlertParams(f dropperFinding) (alert.Severity, string, string, string) {
+// severity, message, details, the finding path and its dedup key. Counts,
+// sizes, write ages and writers change between reports of one dropper, so
+// the key is only what was removed and the severity.
+func dropperAlertParams(f dropperFinding) (alert.Severity, string, string, string, string) {
 	if f.RemovedDir != "" {
 		var b strings.Builder
 		b.WriteString("Files created and removed within the tracking TTL together with the directory holding them; each was demoted for that reason:\n")
@@ -1115,7 +1117,7 @@ func dropperAlertParams(f dropperFinding) (alert.Severity, string, string, strin
 		}
 		msg := fmt.Sprintf("%d short-lived PHP/executable files removed with their directory %s",
 			len(f.Items), dropperPrintable([]byte(f.RemovedDir), dropperPathExcerptMax))
-		return alert.Warning, msg, strings.TrimRight(b.String(), "\n"), f.RemovedDir
+		return alert.Warning, msg, strings.TrimRight(b.String(), "\n"), f.RemovedDir, dropperDedupKey("removed", f.RemovedDir, alert.Warning)
 	}
 	if f.Aggregate {
 		severity := alert.Warning
@@ -1140,7 +1142,7 @@ func dropperAlertParams(f dropperFinding) (alert.Severity, string, string, strin
 		}
 		displayDocroot := dropperPrintable([]byte(f.Docroot), dropperPathExcerptMax)
 		msg := fmt.Sprintf("%d short-lived PHP/executable files created and removed under %s", len(f.Items), displayDocroot)
-		return severity, msg, strings.TrimRight(b.String(), "\n"), f.Docroot
+		return severity, msg, strings.TrimRight(b.String(), "\n"), f.Docroot, dropperDedupKey("docroot", f.Docroot, severity)
 	}
 
 	g := f.Items[0]
@@ -1187,7 +1189,11 @@ func dropperAlertParams(f dropperFinding) (alert.Severity, string, string, strin
 	}
 	msg := fmt.Sprintf("Self-deleting file under web root: %s",
 		dropperPrintable([]byte(c.Path), dropperPathExcerptMax))
-	return sev, msg, details, c.Path
+	return sev, msg, details, c.Path, dropperDedupKey("file", c.Path, sev)
+}
+
+func dropperDedupKey(scope, path string, sev alert.Severity) string {
+	return fmt.Sprintf("%s:%q:%s", scope, path, sev)
 }
 
 // dropperPrintable renders up to max bytes of b with control and non-ASCII

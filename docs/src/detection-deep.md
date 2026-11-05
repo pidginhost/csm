@@ -26,6 +26,11 @@ without waiting for the daily history reminder. This includes findings derived
 from current observations. Baselines, dismissals and suppression rules still
 apply. The signed phpanel stream keeps its separate delivery policy.
 
+SMTP probe, self-deleting dropper, sensitive file write, email AV degraded,
+cross-account correlation and auto-block notice findings keep one alert
+identity while their counts, process or message IDs, ages, sizes or error text
+change. A re-report that differs only in those is not sent again.
+
 An undismissed finding can alert again after 24 hours without an observation,
 even when no other batch arrived to clean up old state. A finding that stays
 on the findings page counts as observed, also while its check skips runs

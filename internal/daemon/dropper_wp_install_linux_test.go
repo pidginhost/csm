@@ -34,7 +34,7 @@ func newWPInstallRun(t *testing.T, docroot string) *wpInstallRun {
 	const ttl = time.Minute
 	fm := newDropperWiringTestMonitor(docroot, ttl)
 	var got []capturedAlert
-	fm.dropper.emit = func(sev alert.Severity, check, msg, details, path string) {
+	fm.dropper.emit = func(sev alert.Severity, check, msg, details, path, _ string) {
 		got = append(got, capturedAlert{sev: sev, check: check, msg: msg, details: details, path: path})
 	}
 	return &wpInstallRun{fm: fm, alerts: &got, ttl: ttl}

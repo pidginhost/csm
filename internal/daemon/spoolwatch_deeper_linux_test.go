@@ -82,9 +82,9 @@ func TestSpoolWatcherEmitDegradedWarningMultipleRapidCalls(t *testing.T) {
 	sw := &SpoolWatcher{alertCh: ch}
 
 	// Three rapid calls — only the first should emit.
-	sw.emitDegradedWarning("one")
-	sw.emitDegradedWarning("two")
-	sw.emitDegradedWarning("three")
+	sw.emitDegradedWarning("engines_down_unscanned", "one")
+	sw.emitDegradedWarning("engines_down_unscanned", "two")
+	sw.emitDegradedWarning("engines_down_unscanned", "three")
 
 	count := 0
 drain:
@@ -112,7 +112,7 @@ func TestSpoolWatcherEmitDegradedWarningNilChannelSafe(t *testing.T) {
 	}()
 	// Pretend enough time has passed to bypass the rate-limit.
 	sw.lastDegradedAt = time.Now().Add(-2 * time.Minute)
-	sw.emitDegradedWarning("test")
+	sw.emitDegradedWarning("engines_down_unscanned", "test")
 }
 
 // --- PermissionMode default is false on zero-value struct ----------------

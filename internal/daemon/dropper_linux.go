@@ -76,8 +76,8 @@ func (fm *FileMonitor) initDropperDetector(cfg *config.Config) {
 			return checks.PathMatchesIgnore(p, fm.currentCfg().Suppressions.IgnorePaths)
 		},
 	})
-	e.emit = func(sev alert.Severity, check, msg, details, path string) {
-		fm.sendAlertWithPath(sev, check, msg, details, path, "")
+	e.emit = func(sev alert.Severity, check, msg, details, path, dedupKey string) {
+		fm.sendFileFinding(alert.Finding{Severity: sev, Check: check, Message: msg, Details: details, FilePath: path, DedupKey: dedupKey})
 	}
 	fm.dropper = e
 	fm.dropperQuarantines = newDropperQuarantineLedger(

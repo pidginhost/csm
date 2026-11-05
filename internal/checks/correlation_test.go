@@ -68,7 +68,7 @@ func TestCoordinatedAttackNeedsThreeAttributedAccounts(t *testing.T) {
 	got := res.Derived[0]
 	want := alert.Finding{Severity: alert.Critical, Check: "coordinated_attack",
 		Message: "Possible coordinated attack: 3 accounts have critical security events",
-		Details: "Affected accounts: alice, bob, carol"}
+		Details: "Affected accounts: alice, bob, carol", DedupKey: "host"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("coordinated finding %+v, want %+v", got, want)
 	}
@@ -145,7 +145,7 @@ func TestMalwareArtifactAggregateAtAnySeverity(t *testing.T) {
 			in := []alert.Finding{{Severity: sev, Check: check, TenantID: "alice"}, {Severity: sev, Check: check, TenantID: "bob"}}
 			res := CorrelateFindings(in)
 			want := []alert.Finding{{Severity: alert.Critical, Check: "cross_account_malware",
-				Message: "Same malware type (" + check + ") found in 2 accounts", Details: "Accounts: alice, bob"}}
+				Message: "Same malware type (" + check + ") found in 2 accounts", Details: "Accounts: alice, bob", DedupKey: check}}
 			if !reflect.DeepEqual(res.Derived, want) {
 				t.Fatalf("%s at %v: %+v", check, sev, res.Derived)
 			}
@@ -184,9 +184,9 @@ func TestDerivedOutputIsDeterministicAndInputUntouched(t *testing.T) {
 	shuffled := []alert.Finding{in[4], in[3], in[2], in[1], in[0]}
 	second := CorrelateFindings(shuffled)
 	want := []alert.Finding{
-		{Severity: alert.Critical, Check: "coordinated_attack", Message: "Possible coordinated attack: 3 accounts have critical security events", Details: "Affected accounts: alice, bob, carol"},
-		{Severity: alert.Critical, Check: "cross_account_malware", Message: "Same malware type (backdoor_binary) found in 2 accounts", Details: "Accounts: alice, bob"},
-		{Severity: alert.Critical, Check: "cross_account_malware", Message: "Same malware type (webshell) found in 2 accounts", Details: "Accounts: alice, carol"},
+		{Severity: alert.Critical, Check: "coordinated_attack", Message: "Possible coordinated attack: 3 accounts have critical security events", Details: "Affected accounts: alice, bob, carol", DedupKey: "host"},
+		{Severity: alert.Critical, Check: "cross_account_malware", Message: "Same malware type (backdoor_binary) found in 2 accounts", Details: "Accounts: alice, bob", DedupKey: "backdoor_binary"},
+		{Severity: alert.Critical, Check: "cross_account_malware", Message: "Same malware type (webshell) found in 2 accounts", Details: "Accounts: alice, carol", DedupKey: "webshell"},
 	}
 	for i, res := range []CorrelationResult{first, second} {
 		if !reflect.DeepEqual(res.Derived, want) {
