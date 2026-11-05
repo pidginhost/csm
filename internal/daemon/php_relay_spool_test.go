@@ -587,3 +587,32 @@ func TestOnFileAt_Path4_OwnNoticesCannotHideParseGap(t *testing.T) {
 		}
 	}
 }
+
+// Varying only a forwarding header must neither invent fanout nor split the
+// per-script volume that drives queue freezes.
+func TestPHPRelay_ForwardedTextKeepsOneScript(t *testing.T) {
+	p, findings := fanoutPipeline(t, "a")
+	now := time.Unix(1_700_000_000, 0).UTC()
+	count := p.eng.config().EmailProtection.PHPRelay.AbsoluteVolumePerHour
+	const source = "203.0.113.9"
+	const key = "site-a.example:/wp-comments-post.php"
+	for i := 0; i < count; i++ {
+		id := fmt.Sprintf("1abc23-000456-%02d", i)
+		forwarded := fmt.Sprintf("request-%d for 192.0.2.1, %s", i, source)
+		feedSiteMail(t, p, id, "a", forwarded, now, fmt.Sprintf("recipient%d@outside.example", i))
+	}
+	if got := p.eng.ips.distinctScriptsSince(source, now); got != 1 {
+		t.Errorf("one script counted as %d scripts", got)
+	}
+	if len(*findings) != 1 {
+		t.Fatalf("findings = %+v, want one volume finding", *findings)
+	}
+	f := (*findings)[0]
+	if f.Path != "volume" || f.ScriptKey != key || f.SourceIP != source || f.RelayTotal != count {
+		t.Fatalf("unexpected volume finding: %+v", f)
+	}
+	ids, capped := p.eng.scripts.getOrCreate(key).snapshotActiveMsgs()
+	if len(ids) != count || capped {
+		t.Fatalf("freeze candidates = %d, capped=%v, want %d", len(ids), capped, count)
+	}
+}
