@@ -1097,9 +1097,10 @@ type Config struct {
 		// PHPRelay is the operator-tunable knob block for the email
 		// PHP-relay protection feature (Stage 1). Thresholds default to
 		// the values set in applyDefaults(), except documented zero
-		// sentinels such as AccountVolumePerHour auto-derive,
-		// FanoutDistinctRecipients disabling only that gate and
-		// IPRecipientSpread disabling the per-IP recipient check.
+		// sentinels such as AccountVolumePerHour auto-derive and
+		// FanoutDistinctRecipients disabling only that gate.
+		// IPRecipientSpread and IPRecipientWindowHours are reserved;
+		// neither affects detection yet.
 		PHPRelay struct {
 			// The relay pipeline is wired once at startup; a reload can retune
 			// it but cannot start or stop it, so toggling it needs a restart.
@@ -2451,6 +2452,13 @@ func defaultPresenceFromYAML(data []byte) (defaultPresence, error) {
 	_, presence.httpASNCrawlReverseProxy = raw.Thresholds["http_asn_crawl_reverse_proxy_asns"]
 	_, presence.xmlrpcThreshold = raw.Thresholds["xmlrpc_threshold"]
 	_, presence.phpRelay.fanoutDistinctRecipients = raw.EmailProtection.PHPRelay["fanout_distinct_recipients"]
+	// yaml.v3 truncates fractions into ints, including zero sentinels, so
+	// reject non-integer recipient settings before the typed decode.
+	for _, key := range []string{"ip_recipient_spread", "ip_recipient_window_hours"} {
+		if node, ok := raw.EmailProtection.PHPRelay[key]; ok && !yamlNodeIsNull(&node) && yamlResolvedTag(&node) != "!!int" {
+			return presence, fmt.Errorf("email_protection.php_relay.%s must be a whole number", key)
+		}
+	}
 	if node, ok := raw.EmailProtection.PHPRelay["ip_recipient_spread"]; ok && !yamlNodeIsNull(&node) {
 		presence.phpRelay.ipRecipientSpread = true
 	}
