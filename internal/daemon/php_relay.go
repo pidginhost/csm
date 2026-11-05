@@ -975,9 +975,16 @@ func isStaffAdminRequest(rec checks.CrawlLogRecord) bool {
 
 // isOrderListQuery reports admin.php's WooCommerce HPOS order list, which
 // WooCommerce opens only to order managers; every other admin.php page may
-// serve subscribers. PHP drops leading spaces from parameter names and the
-// last duplicate wins, so any second name PHP would read as page voids it.
+// serve subscribers. PHP drops leading spaces and truncates names at NUL;
+// the last duplicate wins, so any second name PHP would read as page voids it.
 func isOrderListQuery(query string) bool {
+	// A later page parameter may be discarded by PHP's site-specific input
+	// limit, leaving a subscriber-accessible admin.php request instead.
+	first, _, _ := strings.Cut(query, "&")
+	firstName, _, _ := strings.Cut(first, "=")
+	if name, err := url.QueryUnescape(firstName); err != nil || name != "page" {
+		return false
+	}
 	q, err := url.ParseQuery(query)
 	if err != nil {
 		return false
@@ -985,7 +992,7 @@ func isOrderListQuery(query string) bool {
 	pages := 0
 	for name, values := range q {
 		base := strings.TrimLeft(name, " ")
-		if i := strings.IndexByte(base, '['); i >= 0 {
+		if i := strings.IndexAny(base, "[\x00"); i >= 0 {
 			base = base[:i]
 		}
 		if base == "page" {
