@@ -681,7 +681,23 @@ type rateLimitReservation struct {
 var (
 	rateLimitMu      sync.Mutex
 	rateLimitPending = make(map[rateLimitKey]int)
+	// rateLimitNow is the hourly budget's clock, read under rateLimitMu.
+	rateLimitNow = time.Now
 )
+
+// SetRateLimitClockForTest pins the clock that picks the hourly budget, so a
+// test cannot straddle an hour boundary.
+func SetRateLimitClockForTest(now func() time.Time) (restore func()) {
+	rateLimitMu.Lock()
+	defer rateLimitMu.Unlock()
+	previous := rateLimitNow
+	rateLimitNow = now
+	return func() {
+		rateLimitMu.Lock()
+		defer rateLimitMu.Unlock()
+		rateLimitNow = previous
+	}
+}
 
 // reserveRateLimit reports whether the per-hour alert budget can absorb
 // another send without committing the slot. The in-memory reservation
@@ -695,7 +711,7 @@ func reserveRateLimit(statePath string, maxPerHour int) (*rateLimitReservation, 
 		return nil, false
 	}
 
-	currentHour := time.Now().Format("2006-01-02T15")
+	currentHour := rateLimitNow().Format("2006-01-02T15")
 	rlPath := filepath.Join(statePath, "ratelimit.json")
 
 	var rl rateLimitState
@@ -750,7 +766,7 @@ func commitRateLimit(statePath string, reservation *rateLimitReservation) {
 
 	releaseRateLimitLocked(reservation)
 
-	currentHour := time.Now().Format("2006-01-02T15")
+	currentHour := rateLimitNow().Format("2006-01-02T15")
 	rlPath := filepath.Join(statePath, "ratelimit.json")
 
 	var rl rateLimitState
@@ -783,7 +799,7 @@ func checkRateLimit(statePath string, maxPerHour int) bool {
 
 	rlPath := filepath.Join(statePath, "ratelimit.json")
 
-	currentHour := time.Now().Format("2006-01-02T15")
+	currentHour := rateLimitNow().Format("2006-01-02T15")
 
 	var rl rateLimitState
 	// #nosec G304 -- filepath.Join(statePath, "ratelimit.json"); statePath from operator config.

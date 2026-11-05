@@ -167,7 +167,9 @@ func TestRepeatGateMarksOnlyDelivered(t *testing.T) {
 	}{
 		{"cap spent", false, func(t *testing.T, cfg *config.Config) {
 			cfg.Alerts.MaxPerHour = 1
-			spent, _ := json.Marshal(rateLimitState{Hour: time.Now().Format("2006-01-02T15"), Count: 1})
+			hour := time.Date(2026, 1, 2, 10, 30, 0, 0, time.UTC)
+			t.Cleanup(SetRateLimitClockForTest(func() time.Time { return hour }))
+			spent, _ := json.Marshal(rateLimitState{Hour: hour.Format("2006-01-02T15"), Count: 1})
 			if err := os.WriteFile(filepath.Join(cfg.StatePath, "ratelimit.json"), spent, 0o600); err != nil {
 				t.Fatal(err)
 			}

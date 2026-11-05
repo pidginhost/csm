@@ -158,45 +158,25 @@ func TestOpenMarksAlertedEntriesEmailed(t *testing.T) {
 		}
 	}
 
+	// Leave an alerted entry without a delivery and no delivered entry, so
+	// only the persisted marker keeps the reopened store from migrating it.
+	s.ForgetCleared([]alert.Finding{a})
 	c := alert.Finding{Check: "webshell", Message: "alerted after upgrade"}
 	s.Update([]alert.Finding{c})
 	if err = s.Close(); err != nil {
 		t.Fatal(err)
+	}
+	if !onDiskKeys(t, dir)[emailGateMetaKey] {
+		t.Fatal("upgrade marker not persisted")
 	}
 	reopened, err := Open(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = reopened.Close() })
-	got = reopened.FilterUnemailed([]alert.Finding{a, b, c})
+	got = reopened.FilterUnemailed([]alert.Finding{b, c})
 	if len(got) != 2 || got[0].Key() != b.Key() || got[1].Key() != c.Key() {
 		t.Fatalf("after reopening got %v, want %s and %s", gateKeys(got), b.Key(), c.Key())
-	}
-}
-
-// A store that already records deliveries was written by a gated build. Only
-// the marker is missing (a fresh install that has not restarted yet), so a
-// finding the cap held back must keep its retry.
-func TestOpenSkipsMigrationOfGatedState(t *testing.T) {
-	dir := t.TempDir()
-	now := time.Now()
-	delivered := alert.Finding{Check: "webshell", Message: "delivered"}
-	capped := alert.Finding{Check: "webshell", Message: "held back by the cap"}
-	writeStateFile(t, dir, map[string]*Entry{
-		delivered.Key(): {Hash: delivered.Fingerprint(), FirstSeen: now, LastSeen: now, AlertSent: now, Emailed: delivered.Fingerprint()},
-		capped.Key():    {Hash: capped.Fingerprint(), FirstSeen: now, LastSeen: now, AlertSent: now},
-	})
-	s, err := Open(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = s.Close() })
-	got := s.FilterUnemailed([]alert.Finding{delivered, capped})
-	if len(got) != 1 || got[0].Key() != capped.Key() {
-		t.Fatalf("got %v, want only %s", gateKeys(got), capped.Key())
-	}
-	if _, ok := s.GetRaw(emailGateMetaKey); !ok {
-		t.Fatal("marker not set")
 	}
 }
 
@@ -301,6 +281,9 @@ func TestEmailGateFreshStateKeepsUndeliveredOnRestart(t *testing.T) {
 			s.MarkAlerted([]alert.Finding{f})
 			if err := s.Close(); err != nil {
 				t.Fatal(err)
+			}
+			if !onDiskKeys(t, s.path)[emailGateMetaKey] {
+				t.Fatal("marker not persisted")
 			}
 			reopened, err := Open(s.path)
 			if err != nil {

@@ -281,23 +281,16 @@ func (s *Store) FilterNew(findings []alert.Finding) []alert.Finding {
 const emailGateMetaKey = "__email_gate"
 
 // migrateEmailGate treats every condition alerted before the email gate
-// existed as delivered. Without it an upgrade would email every known
-// condition at once. A store that already records a delivery was written by
-// a gated build that had not saved the marker yet: its undelivered entries,
-// such as findings the hourly cap held back, keep their retry. A fresh store
-// has nothing to migrate and records the marker on its first save.
+// existed as delivered, muted and cap-held ones included. Without it an
+// upgrade would email every known condition at once. Every save writes the
+// marker, so state from a gated build never migrates, and a fresh store has
+// nothing to migrate.
 func (s *Store) migrateEmailGate() {
 	if len(s.entries) == 0 {
 		return
 	}
 	if _, ok := s.entries[emailGateMetaKey]; ok {
 		return
-	}
-	for _, entry := range s.entries {
-		if entry.Emailed != "" {
-			s.setRawLocked(emailGateMetaKey, "1")
-			return
-		}
 	}
 	for key, entry := range s.entries {
 		if !entry.AlertSent.IsZero() && !entry.IsBaseline && !strings.HasPrefix(key, "_") {

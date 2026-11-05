@@ -73,6 +73,9 @@ func emailRepeatSetup(t *testing.T) (*config.Config, *repeatWebhook) {
 	t.Cleanup(func() { store.SetGlobal(previousStore) })
 	hook := &repeatWebhook{}
 	t.Cleanup(alert.SetWebhookTransportForTest(hook))
+	// One fixed budget hour: a run across an hour boundary would reset the cap.
+	budgetHour := time.Date(2026, 1, 2, 10, 30, 0, 0, time.UTC)
+	t.Cleanup(alert.SetRateLimitClockForTest(func() time.Time { return budgetHour }))
 	cfg := &config.Config{StatePath: t.TempDir(), Hostname: "host.example.com"}
 	cfg.Alerts.MaxPerHour = 100
 	cfg.Alerts.Webhook.Enabled = true
@@ -252,6 +255,8 @@ func TestDispatchBatchEmailsChangeAndReturn(t *testing.T) {
 func TestCapDroppedFindingRetriesOnReminder(t *testing.T) {
 	cfg, hook := emailRepeatSetup(t)
 	cfg.Alerts.MaxPerHour = 1
+	budgetHour := time.Date(2026, 1, 2, 10, 30, 0, 0, time.UTC)
+	t.Cleanup(alert.SetRateLimitClockForTest(func() time.Time { return budgetHour }))
 	d := openRepeatDaemon(t, cfg)
 	first := repeatFinding("first core change")
 	second := repeatFinding("second core change")
@@ -271,9 +276,7 @@ func TestCapDroppedFindingRetriesOnReminder(t *testing.T) {
 			entries[f.Key()]["alert_sent"] = old
 		}
 	})
-	if err := os.Remove(filepath.Join(cfg.StatePath, "ratelimit.json")); err != nil {
-		t.Fatal(err)
-	}
+	budgetHour = budgetHour.Add(time.Hour)
 	d.dispatchBatch([]alert.Finding{first, second})
 
 	last := hook.last()

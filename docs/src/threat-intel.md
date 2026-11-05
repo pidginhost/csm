@@ -70,7 +70,7 @@ Threat-intel sources implement a small `Source` interface (lookup-by-IP returnin
 
 Currently shipped:
 
-- **AbuseIPDB** (`reputation.abuseipdb_key`) - external IP reputation feed. CSM caps uncached lookups per cycle and reserves store-backed daily quota before sending requests. While the quota is exhausted (daily budget or an API 429/402 backoff) CSM emits a `reputation_quota_exhausted` Warning so the degraded coverage is visible; a `threat_feed_stale` Warning fires when previously downloaded free threat feeds have not refreshed in over 7 days. Persistent conditions remain visible in Findings but send at most one reminder per day, including across daemon restarts; these coverage warnings never trigger reputation scoring or blocks.
+- **AbuseIPDB** (`reputation.abuseipdb_key`) - external IP reputation feed. CSM caps uncached lookups per cycle and reserves store-backed daily quota before sending requests. While the quota is exhausted (daily budget or an API 429/402 backoff) CSM emits a `reputation_quota_exhausted` Warning so the degraded coverage is visible; a `threat_feed_stale` Warning fires when previously downloaded free threat feeds have not refreshed in over 7 days. Persistent conditions remain visible in Findings; alert email and the webhook send each one once, and history records a reminder at most once a day, including across daemon restarts; these coverage warnings never trigger reputation scoring or blocks.
 - **Rspamd** (`reputation.rspamd.*`) - per-IP rolling-history signals from the local rspamd controller. Delivered ham dilutes the score, temporary deferrals are neutral, and definitive spam actions count against the sender. Token resolution reads `token_env` from the process environment at query time. Changing the external environment requires a daemon restart; see [credential rotation](credential-rotation.md).
 - **Upstream HTTP cache** (`reputation.upstream.*`) - shared panel-side cache of AbuseIPDB or proprietary scores. Useful in fleets: agents pay a bounded local cache hit (`cache_ttl_min`, default 15 m) instead of hammering the upstream once per agent. CSM temporarily opens a fail-open circuit breaker after repeated upstream failures and lets only one cooldown probe through at a time. Use HTTPS for remote panels; plain HTTP is accepted only for loopback. Wire contract: [Upstream threat-intel contract](upstream-threat-intel-contract.md).
 
@@ -177,7 +177,8 @@ from each provider's published SPF records and refreshes the list in the
 background. Spam reports wait while that list cannot be loaded. When a
 refresh has failed and the list is not current, CSM raises a
 `shared_senders_stale` Warning. It stays in Findings until the list is current
-again and reminds at most once a day, including across daemon restarts.
+again. Alert email and the webhook send it once; history records a reminder at
+most once a day, including across daemon restarts.
 
 CSM keeps sender history across restarts. If that history cannot be read at
 startup, spam source detection stays off for that run and the daemon log says
