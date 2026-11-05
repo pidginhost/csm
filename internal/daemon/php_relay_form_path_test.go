@@ -3,6 +3,7 @@
 package daemon
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,7 +12,9 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/firewall"
 )
 
 const (
@@ -208,9 +211,47 @@ func TestPath6_ProxyRangeIPNotCounted(t *testing.T) {
 
 func TestPath6_CloudflareCoveredIPNotCounted(t *testing.T) {
 	p, findings := path6Pipeline(t, "a")
-	p.eng.SetCloudflareCover(func(ip string) bool { return ip == path6IP })
+	checks.SetCloudflareNets([]string{path6IP + "/32"})
+	t.Cleanup(func() { checks.SetCloudflareNets(nil) })
 	feedVictims(t, p, "a", path6Form, path6IP, 0, 6, path6T0)
 	requireNoPath6(t, *findings)
+}
+
+// The daemon's Cloudflare refresh, fresh or from its cached state, feeds the
+// set checks.IsInfraIP reads, so Path 6 skips edges with no hook of its own.
+// An operator proxy file without Cloudflare cannot change that.
+func TestPath6_CloudflareEdgeSkippedThroughDaemonRefresh(t *testing.T) {
+	orig := fetchCloudflareIPs
+	t.Cleanup(func() {
+		fetchCloudflareIPs = orig
+		checks.SetCloudflareNets(nil)
+	})
+	for name, fetchErr := range map[string]error{"fresh": nil, "cached": os.ErrDeadlineExceeded} {
+		t.Run(name, func(t *testing.T) {
+			checks.SetCloudflareNets(nil)
+			state := t.TempDir()
+			if err := firewall.SaveCFState(state, []string{"203.0.113.0/24"}, []string{"2001:db8:cf::/48"}, path6T0); err != nil {
+				t.Fatal(err)
+			}
+			fetchCloudflareIPs = func(context.Context) ([]string, []string, error) {
+				if fetchErr != nil {
+					return nil, nil, fetchErr
+				}
+				return []string{"203.0.113.0/24"}, []string{"2001:db8:cf::/48"}, nil
+			}
+			(&Daemon{cfg: &config.Config{StatePath: state}}).refreshCloudflareIPs(context.Background())
+			for _, ip := range []string{path6IP, "2001:db8:cf::7"} {
+				p, findings := path6Pipeline(t, "a")
+				p.policies = newTestPoliciesWithProxy(t, "192.0.2.0/24")
+				p.eng.SetPolicies(p.policies)
+				feedVictims(t, p, "a", path6Form, ip, 0, 6, path6T0)
+				requireNoPath6(t, *findings)
+				if len(p.eng.form.ips) != 0 {
+					t.Fatalf("Cloudflare edge %s was counted", ip)
+				}
+			}
+		})
+	}
 }
 
 func TestPath6_InfraIPNotCounted(t *testing.T) {

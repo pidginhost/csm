@@ -117,7 +117,8 @@ func TestPath6_SkippedMessageCannotTriggerFinding(t *testing.T) {
 			case "infra":
 				p.eng.config().InfraIPs = []string{path6IP}
 			case "cloudflare":
-				p.eng.SetCloudflareCover(func(string) bool { return true })
+				checks.SetCloudflareNets([]string{path6IP + "/32"})
+				t.Cleanup(func() { checks.SetCloudflareNets(nil) })
 			case "unknown-account":
 				site = "b"
 			}

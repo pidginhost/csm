@@ -329,7 +329,7 @@ func (p *spoolPipeline) recordFormRelay(h emailspool.Headers, sig signals, auth 
 	if relayCfg.IPRecipientSpread <= 0 || ip == "" || domainErr != nil || len(auth) == 0 ||
 		isWPCronScript(sig.ScriptKey) ||
 		p.policies != nil && p.policies.IsProxyIP(ip) ||
-		checks.IsInfraIP(ip, cfg.InfraIPs) || p.eng.cloudflareCovers(ip) {
+		checks.IsInfraIP(ip, cfg.InfraIPs) { // also the Cloudflare ranges the daemon refreshes
 		return false
 	}
 	key := formRelayKey(ip)

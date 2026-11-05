@@ -781,8 +781,7 @@ type evaluator struct {
 	msgIndex              *msgIDIndex // optional; nil in unit tests
 	effectiveAccountLimit int
 	accountLimitFn        func(*config.Config) int
-	form                  *formRelayWindow     // Path 6 state
-	cfCover               func(ip string) bool // optional; reports Cloudflare edges
+	form                  *formRelayWindow // Path 6 state
 }
 
 func newEvaluator(s *perScriptWindow, i *perIPWindow, a *perAccountWindow, cfg *config.Config, m *phpRelayMetrics) *evaluator {
@@ -792,12 +791,6 @@ func newEvaluator(s *perScriptWindow, i *perIPWindow, a *perAccountWindow, cfg *
 	}
 	return &evaluator{scripts: s, ips: i, accounts: a, cfgFn: liveConfigFn(cfg), metrics: m, form: form}
 }
-
-// SetCloudflareCover is called by daemon wiring before the first message;
-// nil means no address is a Cloudflare edge.
-func (e *evaluator) SetCloudflareCover(fn func(ip string) bool) { e.cfCover = fn }
-
-func (e *evaluator) cloudflareCovers(ip string) bool { return e.cfCover != nil && e.cfCover(ip) }
 
 // scriptPHPPath returns k's path lowercased and cut after its first PHP component,
 // so PATH_INFO cannot change which script the key names.

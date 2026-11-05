@@ -74,9 +74,6 @@ func startPHPRelayLinuxAt(d *Daemon, paths phpRelayPaths) {
 	prMetrics := newPHPRelayMetrics()
 	eng := newEvaluator(psw, pip, pacct, d.cfg, prMetrics)
 	eng.SetPolicies(pol)
-	if d.fwEngine != nil {
-		eng.SetCloudflareCover(d.fwEngine.CloudflareCovers)
-	}
 	_, enabled, capped := deriveEffectiveAccountLimit(d.cfg, limit, status)
 	if !enabled {
 		emitPHPRelayFinding(d, alert.Warning, "email_php_relay_path2b_disabled",
