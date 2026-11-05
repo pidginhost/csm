@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/mail"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -946,7 +947,7 @@ func isStaffAdminRequest(rec checks.CrawlLogRecord) bool {
 	if rec.Method != "GET" || rec.Status != 200 || rec.Target == "" || rec.TargetInvalid || rec.TargetOverflow {
 		return false
 	}
-	path, _, ok := crawlid.SplitTarget(rec.Target)
+	path, query, ok := crawlid.SplitTarget(rec.Target)
 	if !ok || strings.ContainsAny(path, "%\\#") || scriptPHPPath(path) != strings.ToLower(path) {
 		return false
 	}
@@ -966,8 +967,33 @@ func isStaffAdminRequest(rec checks.CrawlLogRecord) bool {
 		"options-permalink.php", "options-privacy.php", "plugins.php", "themes.php",
 		"edit-tags.php", "nav-menus.php", "tools.php", "import.php", "export.php", "site-health.php":
 		return true
+	case "admin.php":
+		return isOrderListQuery(query)
 	}
 	return false
+}
+
+// isOrderListQuery reports admin.php's WooCommerce HPOS order list, which
+// WooCommerce opens only to order managers; every other admin.php page may
+// serve subscribers. PHP drops leading spaces from parameter names and the
+// last duplicate wins, so any second name PHP would read as page voids it.
+func isOrderListQuery(query string) bool {
+	q, err := url.ParseQuery(query)
+	if err != nil {
+		return false
+	}
+	pages := 0
+	for name, values := range q {
+		base := strings.TrimLeft(name, " ")
+		if i := strings.IndexByte(base, '['); i >= 0 {
+			base = base[:i]
+		}
+		if base == "page" {
+			pages += len(values)
+		}
+	}
+	page := q.Get("page")
+	return pages == 1 && len(q["page"]) == 1 && (page == "wc-orders" || strings.HasPrefix(page, "wc-orders--"))
 }
 
 // config returns the live config so a reload that retunes or disables the

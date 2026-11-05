@@ -699,6 +699,12 @@ func TestPath6_AccessLogWithoutAdminPageIsNoEvidence(t *testing.T) {
 		"case variant":        {path6IP, []string{domlogLine(path6IP, "GET", "/WP-ADMIN/EDIT.PHP", 200)}},
 		"admin bootstrap":     {path6IP, []string{domlogLine(path6IP, "GET", "/wp-admin/admin.php", 200)}},
 		"plugin page":         {path6IP, []string{domlogLine(path6IP, "GET", "/wp-admin/admin.php?page=subscriber-dashboard", 200)}},
+		"shop settings":       {path6IP, []string{domlogLine(path6IP, "GET", "/wp-admin/admin.php?page=wc-settings", 200)}},
+		"orders prefix":       {path6IP, []string{domlogLine(path6IP, "GET", "/wp-admin/admin.php?page=wc-orders-x", 200)}},
+		"duplicate page":      {path6IP, []string{domlogLine(path6IP, "GET", "/wp-admin/admin.php?page=x&page=wc-orders", 200)}},
+		"mangled page":        {path6IP, []string{domlogLine(path6IP, "GET", "/wp-admin/admin.php?page=wc-orders&%20page=x", 200)}},
+		"array page":          {path6IP, []string{domlogLine(path6IP, "GET", "/wp-admin/admin.php?page=wc-orders&page[]=x", 200)}},
+		"orders after PHP":    {path6IP, []string{domlogLine(path6IP, "GET", "/wp-admin/admin.php/x?page=wc-orders", 200)}},
 		"login redirect":      {path6IP, []string{domlogLine(path6IP, "GET", "/wp-admin/edit.php", 302), domlogLine(path6IP, "GET", "/wp-login.php?redirect_to=x", 200)}},
 		"admin-ajax":          {path6IP, []string{domlogLine(path6IP, "GET", "/wp-admin/admin-ajax.php?action=x", 200)}},
 		"profile":             {path6IP, []string{domlogLine(path6IP, "GET", "/wp-admin/profile.php", 200)}},
@@ -902,6 +908,7 @@ func TestPath6_AccessLogsReadOncePerCrossing(t *testing.T) {
 }
 
 func TestPath6_AccessLogStaffPages(t *testing.T) {
+	var pages []string
 	for _, page := range []string{
 		"edit.php", "post.php", "post-new.php", "upload.php",
 		"edit-comments.php", "users.php", "options-general.php", "options-writing.php",
@@ -909,9 +916,15 @@ func TestPath6_AccessLogStaffPages(t *testing.T) {
 		"options-permalink.php", "options-privacy.php", "plugins.php", "themes.php",
 		"edit-tags.php", "nav-menus.php", "tools.php", "import.php", "export.php", "site-health.php",
 	} {
+		pages = append(pages, page+"?return=%2Fshop")
+	}
+	// WooCommerce's HPOS order list, the default for new stores.
+	pages = append(pages, "admin.php?page=wc-orders", "admin.php?page=wc-orders&action=edit&id=5",
+		"admin.php?page=wc-orders--shop_subscription")
+	for _, page := range pages {
 		t.Run(page, func(t *testing.T) {
 			p, findings := path6Pipeline(t, "a")
-			writeDomlog(t, "usera", "site-a.example", domlogLine(path6IP, "GET", "/Shop/wp-admin/"+page+"?return=%2Fshop", 200))
+			writeDomlog(t, "usera", "site-a.example", domlogLine(path6IP, "GET", "/Shop/wp-admin/"+page, 200))
 			feedVictims(t, p, "a", path6Ajax, path6IP, 0, 5, path6T0)
 			requireNoPath6(t, *findings)
 			if !p.eng.form.isStaff("usera", formRelayKey(path6IP), path6T0.Add(2*time.Hour)) {
