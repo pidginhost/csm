@@ -209,7 +209,7 @@ var catalogue = []Feed{
 		Zones: []Zone{{Rule: "csm_uribl", Zone: "multi.uribl.com", Domain: true,
 			Codes: exclusiveBits(
 				bit{2, "CSM_URIBL_BLACK", 5.0, "URIBL: black list"},
-				bit{4, "CSM_URIBL_GREY", 2.5, "URIBL: grey list"},
+				bit{4, "CSM_URIBL_GREY", 0.5, "URIBL: grey list"},
 				bit{8, "CSM_URIBL_RED", 0.5, "URIBL: red list"},
 			),
 			TestName: "test.uribl.com", TestAnswers: []string{"127.0.0.14"}}},
