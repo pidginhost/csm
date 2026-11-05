@@ -1066,7 +1066,12 @@ the next start. A failed destination is retried after one minute, then with
 the wait doubling up to one hour; a restart retries it at once. CSM logs its
 first failure and again when the wait reaches an hour, and destinations
 already saved as successful are not retried. While a delivery is pending, new
-findings accumulate in the next window.
+findings accumulate in the next window. When the next summary is due and a
+destination still has not taken the previous one, CSM drops the previous one
+for that destination, logs it once and counts it as one lost notification,
+then sends the new summary to every destination. A summary whose state cannot
+be saved is still sent; the save warning backs off the same way as a failing
+destination.
 
 A crash after a destination accepts a summary but before CSM saves that
 success can repeat it. Clock corrections are checked every minute; moving

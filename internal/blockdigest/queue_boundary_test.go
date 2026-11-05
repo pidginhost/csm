@@ -52,13 +52,14 @@ func TestBlockDigestQueueInterruptedDelivery(t *testing.T) {
 					},
 				})
 				c.Observe("192.0.2.31", "fixture customer block", time.Now())
+				due := summaryDueOf(c)
 				done := make(chan struct{})
 				var recovered any
 				returned := false
 				go func() {
 					defer close(done)
 					defer func() { recovered = recover() }()
-					c.SendDue(summaryDueOf(c))
+					c.SendDue(due)
 					returned = true
 				}()
 				select {
@@ -89,7 +90,9 @@ func TestBlockDigestQueueInterruptedDelivery(t *testing.T) {
 				}
 				fail = false
 				c.Observe("192.0.2.32", "fixture later block", time.Now())
-				c.SendDue(summaryDueOf(c))
+				// Retry the interrupted summary a minute later, before the
+				// next one is due.
+				c.SendDue(due.Add(time.Minute))
 				rows = digestQueueStatuses(t, c, time.Now().Add(2*time.Minute))
 				if emailCalls != 2 || webhookCalls != 1 {
 					t.Fatalf("retry policy changed: email=%d webhook=%d", emailCalls, webhookCalls)
@@ -271,14 +274,15 @@ func TestBlockDigestQueueCountsFailedHeartbeatDeliveries(t *testing.T) {
 		},
 	})
 	// Three failed attempts at one pending summary are one lost
-	// notification per destination, however often it is retried.
+	// notification per destination, however often it is retried, and the
+	// unfinished destination stays one waiting notification.
 	due := summaryDueOf(c)
 	for i := range 3 {
 		c.SendDue(due.Add(time.Duration(i) * time.Hour))
 	}
 	rows := digestQueueStatuses(t, c, time.Now())
 	for _, name := range []string{"email", "webhook"} {
-		if row := rows[name]; row.Depth != 0 || row.InFlight != 0 || row.DroppedTotal != 1 || row.RecentDrops != 1 || row.DroppedLowerBound {
+		if row := rows[name]; row.Depth != 1 || row.InFlight != 0 || row.DroppedTotal != 1 || row.RecentDrops != 1 || row.DroppedLowerBound {
 			t.Fatalf("%s failed notifications: %+v", name, row)
 		}
 	}

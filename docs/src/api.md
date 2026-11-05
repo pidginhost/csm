@@ -924,12 +924,15 @@ Live delivery remains best effort. Daily summaries save their window before
 delivery and retry failed destinations; successful destinations are saved
 separately. A failed destination retries after one minute, doubling up to one
 hour, and counts one lost notification for that summary however often it is
-retried. A crash between remote acceptance and saving success can repeat a
-delivery. Records retained after the collector stops report `consumer_stopped`.
-Health reads metadata independently of collector state locks, country lookups
-and delivery callbacks. The rows are always present: every daemon runs the
-collector for the daily summary, and without `alerts.block_digest.enabled` the
-records buffer stays empty.
+retried. Between attempts that destination keeps one waiting notification, so
+its row reports `backlog_lag` while the outage lasts. When the next summary is
+due, a still unfinished one is dropped, logged once and counted once, and the
+new one goes to every destination. A crash between remote acceptance and saving
+success can repeat a delivery. Records retained after the collector stops
+report `consumer_stopped`. Health reads metadata independently of collector
+state locks, country lookups and delivery callbacks. The rows are always
+present: every daemon runs the collector for the daily summary, and without
+`alerts.block_digest.enabled` the records buffer stays empty.
 
 `state.pending` reports findings parked for the next startup, bounded to the
 newest 10,000 findings. The store observes existing parked work when opened.

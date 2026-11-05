@@ -61,7 +61,7 @@ func TestBlockDigestDisabledDestinationIsNotLost(t *testing.T) {
 				go func() {
 					defer close(done)
 					defer func() { gotPanic = recover() }()
-					d.blockDigest.SendDue(time.Now().Add(25 * time.Hour))
+					d.blockDigest.SendDue(summaryTestNoon())
 					returned = true
 				}()
 				select {
@@ -90,7 +90,8 @@ func TestBlockDigestDisabledDestinationIsNotLost(t *testing.T) {
 				}
 				fail = false
 				observe()
-				d.blockDigest.SendDue(time.Now().Add(50 * time.Hour))
+				// A retry of the same summary, well before the next one is due.
+				d.blockDigest.SendDue(summaryTestNoon().Add(time.Minute))
 				// A returned webhook success was checkpointed even though
 				// email failed. Abnormal exits never reached the webhook.
 				if enabled && outcome != "returned_error" {
@@ -147,4 +148,12 @@ func TestBlockDigestDefaultPolicySelectsEachDestination(t *testing.T) {
 			}
 		}
 	}
+}
+
+// summaryTestNoon is a send time past a new collector's first daily summary
+// and 20 hours before the next one, so a retry a minute later stays within
+// the same pending summary.
+func summaryTestNoon() time.Time {
+	n := time.Now()
+	return time.Date(n.Year(), n.Month(), n.Day()+2, 12, 0, 0, 0, time.Local)
 }

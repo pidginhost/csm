@@ -4,8 +4,12 @@ import (
 	"cmp"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
+	"strings"
 	"time"
+
+	"github.com/pidginhost/csm/internal/queuehealth"
 )
 
 const (
@@ -82,11 +86,29 @@ func (p *pendingSummary) markDone(channel string) {
 }
 
 // summaryRetry is the backoff of one failing destination of the pending
-// window. It lives in memory: a restart retries at once.
+// window, or of failing saves. It lives in memory: a restart retries at once.
+// ticket keeps a failed destination one waiting notification between
+// attempts, so health shows the outage.
 type summaryRetry struct {
-	delay time.Duration
-	next  time.Time
+	delay  time.Duration
+	next   time.Time
+	ticket queuehealth.Ticket
+	// tried means an attempt in this process already accounted for the
+	// destination, as a loss or an uncertain delivery, so later failures and
+	// a drop of the window do not count it again.
+	tried bool
 }
+
+// fail doubles the wait from one minute up to one hour and reports whether
+// to warn: on the first failure and when the wait reaches the hour.
+func (r *summaryRetry) fail(now time.Time) bool {
+	previous := r.delay
+	r.delay = min(max(summaryRetryFirst, 2*previous), summaryRetryMax)
+	r.next = now.Add(r.delay)
+	return previous == 0 || previous < summaryRetryMax && r.delay == summaryRetryMax
+}
+
+var summaryChannels = [...]string{"email", "webhook"}
 
 const (
 	summaryRetryFirst = time.Minute
@@ -264,9 +286,11 @@ func (c *Collector) Flush() {
 }
 
 // save is called with summaryMu held; no injected callback runs under mu.
-func (c *Collector) save() bool {
+// A failure warns like a failing destination: on the first one, then when
+// the wait between warnings reaches an hour.
+func (c *Collector) save() {
 	if c.opts.SaveSummary == nil {
-		return true
+		return
 	}
 	c.mu.Lock()
 	b, err := json.Marshal(summaryState{Summary: c.sum, Pending: c.pending, LastSent: c.lastSent})
@@ -274,10 +298,13 @@ func (c *Collector) save() bool {
 	if err == nil {
 		err = c.opts.SaveSummary(b)
 	}
-	if err != nil {
+	if err == nil {
+		c.saveRetry = summaryRetry{}
+		return
+	}
+	if now := c.opts.Now(); !now.Before(c.saveRetry.next) && c.saveRetry.fail(now) {
 		c.reportSinkError("summary", err)
 	}
-	return err == nil
 }
 
 // clamp pulls a send time past the next one, or a start in the future, back
@@ -352,7 +379,7 @@ func (c *Collector) SendDue(now time.Time) bool {
 	c.summaryMu.Lock()
 	defer c.summaryMu.Unlock()
 	c.mu.Lock()
-	if c.pending == nil && now.Before(c.sum.Due) {
+	if now.Before(c.sum.Due) {
 		c.sum.clamp(now, c.opts.Location)
 		// A correction back across this morning's send must not send the
 		// same local date twice, including after a restart.
@@ -360,35 +387,50 @@ func (c *Collector) SendDue(now time.Time) bool {
 			c.sum.Due = nextSummaryDue(c.lastSent, c.opts.Location)
 		}
 		c.mu.Unlock()
-		return false
-	}
-	c.mu.Unlock()
-	if c.pending == nil {
+		if c.pending == nil || !c.retryDue(now) {
+			return false
+		}
+	} else {
+		c.mu.Unlock()
+		// One pending window bounds retries: the next one replaces it, so a
+		// failing destination never holds back the others.
+		c.dropPending()
 		c.fold()
 		c.mu.Lock()
 		c.pending = &pendingSummary{Summary: c.sum, Until: now}
 		c.sum = newSummary(now, nextSummaryDue(now, c.opts.Location))
 		c.mu.Unlock()
-		c.retries = nil
-	} else if !c.retryDue(now) {
-		return false
 	}
-	if !c.save() {
-		return false
-	}
+	// A failed save does not hold the summary back; a crash repeats it.
+	c.save()
 
 	pending := c.pending
 	waiting := func(channel string) bool { return now.Before(c.retries[channel].next) }
+	// A destination that failed before keeps its waiting notification.
+	held := make(map[string]queuehealth.Ticket, len(summaryChannels))
+	for channel, r := range c.retries {
+		if r.ticket != (queuehealth.Ticket{}) && !waiting(channel) {
+			held[channel] = r.ticket
+			r.ticket = queuehealth.Ticket{}
+			c.retries[channel] = r
+		}
+	}
 	plan := c.beginDelivery(func(channel string) bool {
 		if pending.done(channel) || waiting(channel) {
 			return false
 		}
 		return c.opts.DeliveryEnabled == nil || c.opts.DeliveryEnabled("daily_summary", channel)
-	})
+	}, held)
 	defer plan.finish()
-	for channel, r := range c.retries {
-		if job := plan.job(channel); job != nil && r.delay > 0 {
-			job.repeat = true
+	if c.retries == nil {
+		c.retries = make(map[string]summaryRetry, len(summaryChannels))
+	}
+	for _, channel := range summaryChannels {
+		if job := plan.job(channel); job != nil && job.tracked {
+			r := c.retries[channel]
+			job.repeat = r.tried
+			r.tried = true
+			c.retries[channel] = r
 		}
 	}
 	view := c.summaryView(pending.Summary)
@@ -401,6 +443,14 @@ func (c *Collector) SendDue(now time.Time) bool {
 			c.save()
 		default:
 			c.retryLater(channel, now, err)
+			// Hold the failed notification as waiting for the next attempt.
+			// A logger that does not return leaves it to plan.finish.
+			job := plan.job(channel)
+			job.ticket.Requeue(time.Now())
+			job.tracked = false
+			r := c.retries[channel]
+			r.ticket = job.ticket
+			c.retries[channel] = r
 		}
 	})
 	if !pending.EmailDone || !pending.WebhookDone {
@@ -416,7 +466,7 @@ func (c *Collector) SendDue(now time.Time) bool {
 // retryDue reports whether the pending window has a destination to try now,
 // or none left, as after a crash between the last success and the rollover.
 func (c *Collector) retryDue(now time.Time) bool {
-	for _, channel := range []string{"email", "webhook"} {
+	for _, channel := range summaryChannels {
 		if !c.pending.done(channel) && !now.Before(c.retries[channel].next) {
 			return true
 		}
@@ -424,20 +474,42 @@ func (c *Collector) retryDue(now time.Time) bool {
 	return c.pending.EmailDone && c.pending.WebhookDone
 }
 
-// retryLater doubles a failing destination's wait from one minute up to one
-// hour. Only the first failure and reaching the hourly cap are reported, so
-// an outage of hours logs twice, not every minute.
+// retryLater schedules a failing destination's next attempt. Only the first
+// failure and reaching the hourly cap are reported, so an outage of hours
+// logs twice, not every minute.
 func (c *Collector) retryLater(channel string, now time.Time, err error) {
 	r := c.retries[channel]
-	previous := r.delay
-	r.delay = min(max(summaryRetryFirst, 2*previous), summaryRetryMax)
-	r.next = now.Add(r.delay)
-	if c.retries == nil {
-		c.retries = make(map[string]summaryRetry, 2)
-	}
+	warn := r.fail(now)
 	c.retries[channel] = r
-	if previous == 0 || previous < summaryRetryMax && r.delay == summaryRetryMax {
+	if warn {
 		c.reportSinkError(channel, err)
+	}
+}
+
+// dropPending gives up the pending window when the next one is due. Its
+// unfinished destinations were accounted for on their first attempt; one not
+// attempted in this process, as after a restart, counts its loss here.
+func (c *Collector) dropPending() {
+	p := c.pending
+	if p == nil {
+		return
+	}
+	var unfinished []string
+	for _, channel := range summaryChannels {
+		if p.done(channel) {
+			continue
+		}
+		unfinished = append(unfinished, channel)
+		r := c.retries[channel]
+		r.ticket.Finish(time.Now())
+		if q := c.queues.sinks[channel]; q != nil && !r.tried && (c.opts.DeliveryEnabled == nil || c.opts.DeliveryEnabled("daily_summary", channel)) {
+			q.tracker.Lose(time.Now(), 1)
+		}
+	}
+	c.pending = nil
+	c.retries = nil
+	if len(unfinished) > 0 {
+		c.reportSinkError(strings.Join(unfinished, ","), fmt.Errorf("daily summary from %s not delivered before the next one was due; dropped", p.Since.In(c.opts.Location).Format(time.DateOnly)))
 	}
 }
 

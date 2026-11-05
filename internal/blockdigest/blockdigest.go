@@ -99,6 +99,7 @@ type Collector struct {
 	pending   *pendingSummary
 	lastSent  time.Time
 	retries   map[string]summaryRetry // by channel, for pending only
+	saveRetry summaryRetry
 }
 
 const maxBuffered = 5000
@@ -385,7 +386,7 @@ func (c *Collector) maybeLive(rec Record) {
 	c.mu.Unlock()
 	// The delivery policy is injected by the caller, so it is consulted
 	// outside this lock. The dedup decision above already stands.
-	plan := c.beginDelivery(c.liveDeliveryEnabled)
+	plan := c.beginDelivery(c.liveDeliveryEnabled, nil)
 	defer plan.finish()
 
 	d := Digest{

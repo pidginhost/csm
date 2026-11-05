@@ -113,21 +113,26 @@ func (q *digestQueues) setStopped(stopped bool) {
 	q.mu.Unlock()
 }
 
-func (q *digestSinkQueue) begin(channel string, enabled func(string) bool) *digestDelivery {
+// begin starts one destination's delivery. A held ticket is a notification
+// already waiting from an earlier failed attempt; it is reused, not queued
+// again.
+func (q *digestSinkQueue) begin(channel string, enabled func(string) bool, held queuehealth.Ticket) *digestDelivery {
 	if q == nil {
 		return nil
 	}
 	d := &digestDelivery{queue: q, channel: channel, deliveryEnabled: enabled}
-	if d.enabled() {
+	if held != (queuehealth.Ticket{}) {
+		d.ticket, d.tracked = held, true
+	} else if d.enabled() {
 		d.enqueue()
 	}
 	return d
 }
 
-func (c *Collector) beginDelivery(enabled func(string) bool) *digestDeliveryPlan {
+func (c *Collector) beginDelivery(enabled func(string) bool, held map[string]queuehealth.Ticket) *digestDeliveryPlan {
 	return &digestDeliveryPlan{
-		email:   c.queues.sinks["email"].begin("email", enabled),
-		webhook: c.queues.sinks["webhook"].begin("webhook", enabled),
+		email:   c.queues.sinks["email"].begin("email", enabled, held["email"]),
+		webhook: c.queues.sinks["webhook"].begin("webhook", enabled, held["webhook"]),
 	}
 }
 

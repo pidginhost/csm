@@ -738,8 +738,10 @@ func TestSummaryRetryBacksOffToHourly(t *testing.T) {
 	if got := strings.Join(warnings, ","); got != "email,email" {
 		t.Fatalf("warnings = %q, want the first failure and the hourly cap only", got)
 	}
-	if row := digestQueueStatuses(t, c, time.Now())["email"]; row.DroppedTotal != 1 || row.Depth != 0 || row.InFlight != 0 {
-		t.Fatalf("email row = %+v, want one loss for the pending summary", row)
+	// The unfinished destination stays one waiting notification, so the
+	// lag rule marks a long outage.
+	if row := digestQueueStatuses(t, c, time.Now().Add(2*time.Minute))["email"]; row.DroppedTotal != 1 || row.Depth != 1 || row.InFlight != 0 || row.Reason != "backlog_lag" {
+		t.Fatalf("email row = %+v, want one loss and one lagging pending notification", row)
 	}
 
 	failing = false
@@ -752,8 +754,8 @@ func TestSummaryRetryBacksOffToHourly(t *testing.T) {
 	if len(warnings) != 2 {
 		t.Fatalf("recovery warned again: %q", warnings)
 	}
-	if row := digestQueueStatuses(t, c, time.Now())["email"]; row.DroppedTotal != 1 {
-		t.Fatalf("email row after recovery = %+v, want the one counted loss", row)
+	if row := digestQueueStatuses(t, c, time.Now())["email"]; row.DroppedTotal != 1 || row.Depth != 0 || row.InFlight != 0 || row.Status != "ok" {
+		t.Fatalf("email row after recovery = %+v, want the one counted loss and nothing pending", row)
 	}
 	c.summaryMu.Lock()
 	pending := c.pending

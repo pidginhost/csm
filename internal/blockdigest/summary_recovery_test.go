@@ -1,6 +1,7 @@
 package blockdigest
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync/atomic"
@@ -54,24 +55,99 @@ func TestSummaryPersistsWholeWindowBeforeCallingSink(t *testing.T) {
 	}
 }
 
-func TestSummaryDoesNotDeliverUntilStateIsDurable(t *testing.T) {
+// A failed save does not hold the summary back: it is sent anyway, since a
+// repeat after a crash is accepted, and the save warning backs off like a
+// failing destination (first failure, then when the wait reaches an hour).
+func TestSummaryDeliversWhenStateCannotBeSaved(t *testing.T) {
+	var clock atomic.Int64
+	clock.Store(summaryNow.UnixNano())
+	now := func() time.Time { return time.Unix(0, clock.Load()) }
 	cap := &summaryCapture{}
 	fail := true
-	c := summaryCollector(Options{EmailSink: cap.email, SaveSummary: func([]byte) error {
-		if fail {
-			return errors.New("disk unavailable")
-		}
-		return nil
-	}})
+	warnings := 0
+	c := summaryCollector(Options{Now: now, EmailSink: cap.email,
+		SaveSummary: func([]byte) error {
+			if fail {
+				return errors.New("disk unavailable")
+			}
+			return nil
+		},
+		OnError: func(channel string, err error) {
+			if channel != "summary" {
+				t.Errorf("unexpected %s error: %v", channel, err)
+			}
+			warnings++
+		},
+	})
 	c.NoteHandled([]Handled{{Check: "challenge_route", Severity: "WARNING"}})
 	due := summaryDueOf(c)
-	c.SendDue(due)
-	if len(cap.sent()) != 0 {
-		t.Fatal("delivered a window that could not be saved")
+	clock.Store(due.UnixNano())
+	if !c.SendDue(due) || len(cap.sent()) != 1 || !strings.Contains(cap.sent()[0].body, "Challenges: 1") {
+		t.Fatalf("summary held back by a failed save: %+v", cap.sent())
+	}
+	// Three hours of one-minute fold ticks with the store still failing.
+	for minute := 1; minute <= 180; minute++ {
+		clock.Store(due.Add(time.Duration(minute) * time.Minute).UnixNano())
+		c.Flush()
+		c.SendDue(now())
+	}
+	if warnings != 2 {
+		t.Fatalf("save warnings = %d, want the first failure and the hourly cap", warnings)
+	}
+	if len(cap.sent()) != 1 {
+		t.Fatalf("summary sent %d times, want once", len(cap.sent()))
 	}
 	fail = false
-	if !c.SendDue(due.Add(time.Minute)) || len(cap.sent()) != 1 || !strings.Contains(cap.sent()[0].body, "Challenges: 1") {
-		t.Fatalf("recovered save did not deliver the retained window: %+v", cap.sent())
+	c.Flush()
+	fail = true
+	c.Flush()
+	if warnings != 3 {
+		t.Fatalf("a failure after a successful save warned %d times in total, want a fresh first warning", warnings)
+	}
+}
+
+// One failing destination must not stop the daily summary on the others
+// (P3-R20): at the next send time the stale pending summary is dropped,
+// logged once, and the new window goes out as normal.
+func TestSummaryDropsStalePendingAtNextSend(t *testing.T) {
+	var subjects []string
+	drops, failures := 0, 0
+	c := summaryCollector(Options{
+		EmailSink:   func(subject, _ string) error { subjects = append(subjects, subject); return nil },
+		WebhookSink: func(WebhookPayload) error { return errors.New("fixture hook down") },
+		OnError: func(channel string, err error) {
+			if channel != "webhook" {
+				t.Errorf("unexpected %s error: %v", channel, err)
+			}
+			if strings.Contains(err.Error(), "dropped") {
+				drops++
+			} else {
+				failures++
+			}
+		},
+	})
+	due := summaryDueOf(c)
+	for minute := 0; minute < 3*24*60; minute++ {
+		c.SendDue(due.Add(time.Duration(minute) * time.Minute))
+	}
+	want := []string{"2026-06-10", "2026-06-11", "2026-06-12"}
+	if len(subjects) != len(want) {
+		t.Fatalf("summary emails = %q, want one a day for 3 days", subjects)
+	}
+	for i, day := range want {
+		if !strings.HasSuffix(subjects[i], " "+day) {
+			t.Fatalf("summary emails = %q, want windows starting %v", subjects, want)
+		}
+	}
+	if drops != 2 || failures != 6 {
+		t.Fatalf("webhook logs: drops=%d failures=%d, want one per dropped summary and first failure plus hourly cap for each of 3", drops, failures)
+	}
+	rows := digestQueueStatuses(t, c, time.Now())
+	if row := rows["webhook"]; row.DroppedTotal != 3 || row.Depth != 1 || row.InFlight != 0 {
+		t.Fatalf("webhook row = %+v, want one loss per summary and today's still pending", row)
+	}
+	if row := rows["email"]; row.DroppedTotal != 0 || row.Depth != 0 || row.InFlight != 0 {
+		t.Fatalf("email row = %+v", row)
 	}
 }
 
@@ -162,5 +238,35 @@ func TestSummaryClockPollDoesNotChangeWatchedDedupWindow(t *testing.T) {
 	c.Flush()
 	if got := summaryOf(c).Watched.Total; got != 1 {
 		t.Fatalf("clock polling split a watched-country dedup window: %d blocks", got)
+	}
+}
+
+// After downtime across a send time, a saved pending summary is dropped
+// before any attempt in this process, so its unfinished destination counts
+// its loss there; nothing is dropped without a count.
+func TestSummaryDropAfterRestartCountsUntriedLoss(t *testing.T) {
+	st := &summaryStore{}
+	saved := summaryState{
+		Summary: newSummary(summaryNow.Add(-26*time.Hour), summaryNow.Add(-90*time.Minute)),
+		Pending: &pendingSummary{Summary: newSummary(summaryNow.Add(-50*time.Hour), summaryNow.Add(-26*time.Hour)), Until: summaryNow.Add(-26 * time.Hour), EmailDone: true},
+	}
+	b, err := json.Marshal(saved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.data = b
+	cap := &summaryCapture{}
+	var logs []string
+	c := summaryCollector(Options{LoadSummary: st.load, SaveSummary: st.save, EmailSink: cap.email, WebhookSink: cap.webhook,
+		OnError: func(channel string, err error) { logs = append(logs, channel+": "+err.Error()) }})
+	runStopped(t, c)
+	if len(logs) != 1 || !strings.HasPrefix(logs[0], "webhook: ") || !strings.Contains(logs[0], "dropped") {
+		t.Fatalf("logs = %q, want one drop line for the webhook", logs)
+	}
+	if len(cap.sent()) != 1 || len(cap.webhooks) != 1 {
+		t.Fatalf("new window email=%d webhook=%d, want 1/1", len(cap.sent()), len(cap.webhooks))
+	}
+	if row := digestQueueStatuses(t, c, time.Now())["webhook"]; row.DroppedTotal != 1 || row.Depth != 0 || row.InFlight != 0 {
+		t.Fatalf("webhook row = %+v, want the dropped summary counted once", row)
 	}
 }
