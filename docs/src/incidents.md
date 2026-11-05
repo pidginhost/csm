@@ -741,6 +741,9 @@ Attribution gaps:
 | `email_malware` | ignored | attacker-side |  |
 | `email_password_audit_incomplete` | ignored | self-health |  |
 | `email_phishing_content` | ignored | attacker-side |  |
+| `email_php_form_relay` | ignored | attacker-side |  |
+| `email_php_form_relay_script` | security event |  |  |
+| `email_php_form_relay_table_full` | ignored | self-health |  |
 | `email_php_relay_abuse` | security event |  |  |
 | `email_php_relay_account_volume_capped` | ignored | self-health |  |
 | `email_php_relay_action_dry_run` | ignored | response |  |

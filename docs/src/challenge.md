@@ -34,7 +34,8 @@ When `challenge.enabled: true`, CSM routes eligible IPs to the challenge page in
 
 Pre-auth, browser-visible attack signals only: `wp_login_bruteforce`,
 `xmlrpc_abuse`, `wp_user_enumeration`, `webmail_bruteforce`,
-`http_scanner_profile`, `http_claimed_bot_unverified`, `ip_reputation`.
+`http_scanner_profile`, `http_claimed_bot_unverified`, `ip_reputation`,
+`email_php_form_relay`.
 Post-auth audit events (cPanel, webmail, file upload, WHM
 logins), WAF high-volume attacker findings, and non-browser protocols (SSH,
 FTP, DNS recursion, outbound traffic, API auth) are excluded - their IPs have

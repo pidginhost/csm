@@ -212,6 +212,15 @@ func TestClassifyKindAttributedInboundAttackIsWebAttack(t *testing.T) {
 	}
 }
 
+// A form relay client finding carries the account whose form it used, but
+// the client is the attacker, so it groups by the client address.
+func TestClassifyKindFormRelayIsWebAttack(t *testing.T) {
+	f := alert.Finding{Check: "email_php_form_relay", SourceIP: "203.0.113.9", CPUser: "alice", TenantID: "alice"}
+	if got := ClassifyKind(f); got != KindWebAttack {
+		t.Errorf("got %v, want web_attack", got)
+	}
+}
+
 // Signals that are not inbound web attacks stay out of web_attack even with a
 // source IP: reputation/threat-score with account attribution is no longer
 // remote-IP-keyed, and on-disk evidence (a webshell under the account home)

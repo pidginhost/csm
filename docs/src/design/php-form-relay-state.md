@@ -1,9 +1,9 @@
 # PHP form-relay state
 
-The form-relay store prepares per-client recipient history for a future detector
-path. It is not yet connected to the evaluator. The existing
-`ip_recipient_spread` and `ip_recipient_window_hours` settings supply the recipient
-limit and observation window; this store adds no settings.
+The form-relay store keeps the per-client recipient history behind php_relay
+Path 6, described in [PHP-Relay](../detection-realtime.md#php-relay-mail-abuse-cpanel-only).
+The `ip_recipient_spread` and `ip_recipient_window_hours` settings supply the
+recipient limit and observation window; the store adds no settings.
 
 Counts saturate at the recipient limit. At capacity the store retains the most
 recent distinct outside recipients, including one entry per unparsed message.
@@ -24,5 +24,7 @@ record cannot replace a newer one merely because it arrived later. Staff history
 remains separate from recipient history and expires on its existing schedule.
 
 All state transitions and reads hold the store mutex. Returned script shares and
-recipient domains are copies. Separate calls are not an atomic snapshot, so a
-future evaluator must account for changes between recording and reading evidence.
+recipient domains are copies. Separate calls are not an atomic snapshot: the
+evaluator reads the count, script shares and recipient domains one call at a
+time, so a sweep running between those calls can leave a finding's details
+slightly different from its count.

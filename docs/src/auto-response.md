@@ -341,6 +341,7 @@ Incidents and central threat responses receive new findings, including suppresse
 |---------|-------------|
 | `wp_login_bruteforce` | WordPress login flood via wp-login.php |
 | `xmlrpc_abuse` | XML-RPC endpoint flood |
+| `email_php_form_relay` | Client that made hosted sites mail many outside addresses through their forms (routed to the PoW challenge first when challenge is enabled) |
 | `http_request_flood` | Per-IP HTTP request volume exceeds threshold (disabled by default; enable by setting `thresholds.http_flood_threshold > 0`) |
 | `http_scanner_profile` | Random-URL probe pattern from one source IP (disabled by default; enable by setting `thresholds.http_scanner_min_requests > 0`; routed to the PoW challenge first unless `auto_response.http_scanner_action: "block"`) |
 | `http_claimed_bot_unverified` | High-volume claimed crawler traffic while reverse-DNS verification is pending (routed to the PoW challenge first when challenge is enabled) |

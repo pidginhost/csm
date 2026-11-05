@@ -25,6 +25,7 @@ import (
 // FamilyNone. Change it only with a reviewed policy decision.
 var evidencePolicy = map[string]admission.Policy{
 	"admin_panel_bruteforce":      {Family: admission.FamilyHTTP, Basis: admission.BasisLocal},
+	"email_php_form_relay":        {Family: admission.FamilyHTTP, Basis: admission.BasisLocal},
 	"http_asn_crawl":              {Family: admission.FamilyHTTP, Basis: admission.BasisLocal},
 	"http_claimed_bot_unverified": {Family: admission.FamilyHTTP, Basis: admission.BasisLocal},
 	"http_request_flood":          {Family: admission.FamilyHTTP, Basis: admission.BasisLocal},
@@ -334,8 +335,8 @@ func TestAddressProducersAreClassified(t *testing.T) {
 	}
 	// The database malware response reports session addresses instead of
 	// emitting an address-bearing finding (ruling R9).
-	if len(producers) != 70 {
-		t.Fatalf("scan found %d address producers; review the change from the pinned 70 producers", len(producers))
+	if len(producers) != 71 {
+		t.Fatalf("scan found %d address producers; review the change from the pinned 71 producers", len(producers))
 	}
 	for name, reason := range notAddressEvidence {
 		if strings.TrimSpace(reason) == "" {

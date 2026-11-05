@@ -154,6 +154,7 @@ func isInboundWebAttackCheck(check string) bool {
 	}
 	switch check {
 	case "admin_panel_bruteforce",
+		"email_php_form_relay",
 		"wp_login_bruteforce",
 		"wp_user_enumeration",
 		"xmlrpc_abuse",

@@ -31,6 +31,7 @@ const (
 	ProducerCpanelScan      admission.ProducerID = "cpanel_access_scan"
 	ProducerReputationScan  admission.ProducerID = "reputation_scan"
 	ProducerConnectionScan  admission.ProducerID = "connection_scan"
+	ProducerPHPRelaySpool   admission.ProducerID = "php_relay_spool"
 )
 
 // producerTable lists every producer of address evidence. Realtime and
@@ -92,6 +93,9 @@ var producerTable = []ProducerEntry{
 	{admission.ProducerSpec{ID: ProducerConnectionScan, Entry: admission.EntryScan, Observation: admission.ObservationScanPass,
 		Checks: []string{"c2_connection"}},
 		admission.ParserRef{Name: "proc_net_tcp", Version: 1}},
+	{admission.ProducerSpec{ID: ProducerPHPRelaySpool, Entry: admission.EntryScan, Observation: admission.ObservationEventSeq,
+		Checks: []string{"email_php_form_relay"}},
+		admission.ParserRef{Name: "exim_spool", Version: 1}},
 }
 
 // ProducerTable returns a copy of the producer table.

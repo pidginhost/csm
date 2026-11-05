@@ -98,6 +98,7 @@ func TestJSKeyloggerChecksHaveExpectedRegistryVisibility(t *testing.T) {
 //     emitFinding("name", ...)            // first arg
 //     emitLimited("name", ...)            // first arg
 //     emitReloadFinding(sev, "name", ...)
+//     emitPHPRelayFinding(d, sev, "name", ...)
 //   - Multi-return classifiers: `return alert.Warning, "name", ...`
 //
 // Add a new pattern here if a new emission helper is introduced — the
@@ -121,6 +122,7 @@ func TestCheckRegistryCoversProductionCode(t *testing.T) {
 		regexp.MustCompile(`\bemitFinding\(\s*"([A-Za-z_][A-Za-z0-9_]*)"`),
 		regexp.MustCompile(`\bemitLimited\(\s*"([A-Za-z_][A-Za-z0-9_]*)"`),
 		regexp.MustCompile(`\bemitReloadFinding\(\s*[^,]+?,\s*"([A-Za-z_][A-Za-z0-9_]*)"`),
+		regexp.MustCompile(`\bemitPHPRelayFinding\(\s*[^,]+?,\s*[^,]+?,\s*"([A-Za-z_][A-Za-z0-9_]*)"`),
 		regexp.MustCompile(`\breturn\s+alert\.(?:Warning|High|Critical)\s*,\s*"([A-Za-z_][A-Za-z0-9_]*)"`),
 	}
 

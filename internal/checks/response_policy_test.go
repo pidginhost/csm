@@ -1,11 +1,14 @@
 package checks
 
 import (
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/admission"
+	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/config"
 )
 
 func TestResponsePolicyRegistryIsValid(t *testing.T) {
@@ -194,5 +197,112 @@ func TestResponsePolicyLookupConcurrent(t *testing.T) {
 	close(errs)
 	for name := range errs {
 		t.Errorf("concurrent ResponsePolicyFor(%q) returned %+v, want %+v", name, ResponsePolicyFor(name), want[name])
+	}
+}
+
+// The form relay client finding names a browser client that submitted a
+// web form: it is challenged first and blocked when the challenge is off.
+// The script and table findings name no client and must never aim a
+// response.
+func TestFormRelayResponsePolicy(t *testing.T) {
+	for _, name := range []string{"email_php_form_relay", "email_php_form_relay_script", "email_php_form_relay_table_full"} {
+		if _, ok := LookupCheck(name); !ok {
+			t.Fatalf("%s is not registered", name)
+		}
+	}
+	if !isChallengeableCheck("email_php_form_relay") {
+		t.Error("email_php_form_relay is not challenge-first")
+	}
+	if !blockableCheck("email_php_form_relay", false) {
+		t.Error("email_php_form_relay cannot block")
+	}
+	cfg := &config.Config{}
+	cfg.Challenge.Enabled = true
+	if got := responseActionForCheck(cfg, "email_php_form_relay"); got != responseChallenge {
+		t.Errorf("challenge on: action = %q, want %q", got, responseChallenge)
+	}
+	cfg.Challenge.Enabled = false
+	if got := responseActionForCheck(cfg, "email_php_form_relay"); got != responseBlock {
+		t.Errorf("challenge off: action = %q, want %q", got, responseBlock)
+	}
+	for _, name := range []string{"email_php_form_relay_script", "email_php_form_relay_table_full"} {
+		if p := ResponsePolicyFor(name); p != (ResponsePolicy{}) {
+			t.Errorf("%s policy = %+v, want the zero policy", name, p)
+		}
+		if isChallengeableCheck(name) || blockableCheck(name, true) {
+			t.Errorf("%s can challenge or block", name)
+		}
+	}
+}
+
+func TestChallengeRouteIPs_FormRelayFinding(t *testing.T) {
+	list := &mockIPList{ips: make(map[string]bool)}
+	old := GetChallengeIPList()
+	SetChallengeIPList(list)
+	t.Cleanup(func() { SetChallengeIPList(old) })
+
+	cfg := &config.Config{}
+	cfg.Challenge.Enabled = true
+	actions := ChallengeRouteIPs(cfg, []alert.Finding{{
+		Check: "email_php_form_relay", Severity: alert.High, SourceIP: "203.0.113.9", CPUser: "alice",
+		Message: "Path 6: client 203.0.113.9 made hosted sites mail 5 different outside addresses in 24h0m0s",
+	}})
+	if len(actions) != 1 || actions[0].Check != "challenge_route" {
+		t.Fatalf("actions = %+v, want one challenge_route", actions)
+	}
+	if len(list.ips) != 1 || !list.ips["203.0.113.9"] {
+		t.Fatalf("challenge list = %v, want only 203.0.113.9", list.ips)
+	}
+}
+
+// The script finding's message embeds the request path, which the client
+// controls through PATH_INFO, and address extraction falls back to message
+// text when a finding has no SourceIP. Its zero policy is what keeps a
+// crafted path from aiming a challenge or block at a third party.
+func TestFormRelayScriptFindingAimsNoResponse(t *testing.T) {
+	const victim = "198.51.100.7"
+	oldList, oldBlocker := GetChallengeIPList(), getIPBlocker()
+	t.Cleanup(func() {
+		SetChallengeIPList(oldList)
+		SetIPBlocker(oldBlocker)
+	})
+	for _, challenge := range []bool{true, false} {
+		cfg := &config.Config{}
+		cfg.StatePath = t.TempDir()
+		cfg.AutoResponse.Enabled = true
+		cfg.AutoResponse.BlockIPs = true
+		setAutoResponseLive(cfg)
+		cfg.Challenge.Enabled = challenge
+
+		list := &mockIPList{ips: make(map[string]bool)}
+		SetChallengeIPList(list)
+		blocker := &recordingIPBlocker{}
+		SetIPBlocker(blocker)
+
+		challenged, blocked := ChallengeThenBlock(cfg, []alert.Finding{
+			{Check: "email_php_form_relay_script", Severity: alert.High, CPUser: "alice",
+				Message: "Bots use shop.example/contact.php/x: " + victim},
+			{Check: "email_php_form_relay_script", Severity: alert.High, CPUser: "alice",
+				Message: "Bots use shop.example/contact.php/ from " + victim + " to mail outside addresses"},
+			{Check: "email_php_form_relay_table_full", Severity: alert.Warning, Message: "table full: " + victim},
+			// The client finding in the same batch proves the harness responds.
+			{Check: "email_php_form_relay", Severity: alert.High, SourceIP: "203.0.113.9", CPUser: "alice",
+				Message: "Path 6: client 203.0.113.9 made hosted sites mail 5 different outside addresses in 24h0m0s"},
+		})
+
+		if list.ips[victim] || slices.Contains(blocker.blocked, victim) {
+			t.Errorf("challenge=%v: %s reached a response: challenged %v, blocked %v", challenge, victim, list.ips, blocker.blocked)
+		}
+		for _, a := range append(challenged, blocked...) {
+			if strings.Contains(a.Message, victim) {
+				t.Errorf("challenge=%v: action names %s: %s", challenge, victim, a.Message)
+			}
+		}
+		if challenge && (len(list.ips) != 1 || !list.ips["203.0.113.9"] || len(blocker.blocked) != 0) {
+			t.Errorf("challenge on: challenged %v, blocked %v, want only 203.0.113.9 challenged", list.ips, blocker.blocked)
+		}
+		if !challenge && !slices.Equal(blocker.blocked, []string{"203.0.113.9"}) {
+			t.Errorf("challenge off: blocked %v, want [203.0.113.9]", blocker.blocked)
+		}
 	}
 }
