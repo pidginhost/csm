@@ -341,11 +341,14 @@ func (k *knownCustomers) queueDeleteLocked(raw string) bool {
 
 // customerHit names an IPv6 entry by its /64.
 func customerHit(addr netip.Addr, c store.KnownCustomer) blockdigest.CustomerHit {
-	ip := addr.String()
+	return blockdigest.CustomerHit{IP: customerHitIP(addr), Kind: c.Kind, Account: c.Account, At: c.At}
+}
+
+func customerHitIP(addr netip.Addr) string {
 	if addr.Is6() {
-		ip = netip.PrefixFrom(addr, 64).String()
+		return netip.PrefixFrom(addr, 64).String()
 	}
-	return blockdigest.CustomerHit{IP: ip, Kind: c.Kind, Account: c.Account, At: c.At}
+	return addr.String()
 }
 
 // entryPrefix is the network one entry covers.
@@ -557,23 +560,27 @@ func customerLoginTime(line string, now time.Time) time.Time {
 	return now
 }
 
-// noteFTPCustomers remembers the addresses of successful FTP logins under the
-// hosting account that owns the FTP account, or the login name when no
-// account owns it.
+// noteFTPCustomers remembers the addresses of successful FTP logins.
 func (d *Daemon) noteFTPCustomers(findings []alert.Finding) {
 	for _, f := range findings {
 		switch f.Check {
 		case "ftp_login", "ftp_login_after_bruteforce":
-			account := f.TenantID
-			if account == "" {
-				account = f.LoginAccount
-			}
-			if account == "" {
-				account = checks.FTPLoginAccount(f.Details)
-			}
-			d.knownCustomers.Note(f.SourceIP, knownCustomerFTP, account, f.Timestamp, syslogFed)
+			d.knownCustomers.Note(f.SourceIP, knownCustomerFTP, ftpCustomerAccount(f), f.Timestamp, syslogFed)
 		}
 	}
+}
+
+// ftpCustomerAccount is the account an FTP login is known under: the hosting
+// account that owns the FTP account, or the login name when no account owns
+// it.
+func ftpCustomerAccount(f alert.Finding) string {
+	if f.TenantID != "" {
+		return f.TenantID
+	}
+	if f.LoginAccount != "" {
+		return f.LoginAccount
+	}
+	return checks.FTPLoginAccount(f.Details)
 }
 
 // loadKnownCustomers seeds the set from the last run. The store still

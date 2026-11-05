@@ -498,6 +498,65 @@ func TestWouldBlockCustomerInSummary(t *testing.T) {
 	}
 }
 
+// A block caused by the customer login itself, a mail account compromise or
+// an FTP login after brute force from the same address (or IPv6 /64) and
+// account, sends no customer alert: the Critical finding already names that
+// login. A block of the address for another check, or a compromise of
+// another mailbox or through another login kind, still alerts (P3-R33).
+func TestCustomerBlockSkipsItsOwnCauseLogin(t *testing.T) {
+	compromise := func(ip, mailbox string) alert.Finding {
+		return alert.Finding{Severity: alert.Critical, Check: "mail_account_compromised", SourceIP: ip, Mailbox: mailbox, Timestamp: time.Now(),
+			Message: "Mail account compromise: successful login for " + mailbox + " from " + ip + " after recent auth failures"}
+	}
+	ftpCause := func(ip string) []alert.Finding {
+		// A scan hands its blocks to dispatch with the findings that caused them.
+		f := alert.Finding{Severity: alert.Critical, Check: "ftp_login_after_bruteforce", SourceIP: ip, TenantID: "Alice", Timestamp: time.Now(),
+			Message: "FTP login succeeded for account alice from brute-force source " + ip + " after 9 failed attempts"}
+		cause := alert.CauseOf(f)
+		return []alert.Finding{f, {Severity: alert.Critical, Check: "auto_block", SourceIP: ip, Timestamp: time.Now(), Cause: &cause,
+			Message: "AUTO-BLOCK: " + ip + " blocked (expires in 6h0m0s)", Details: "Reason: " + f.Message}}
+	}
+	imapLogin := func(mailbox string) func(*Daemon, string) {
+		return func(d *Daemon, ip string) {
+			d.knownCustomers.Note(ip, knownCustomerIMAP, mailbox, time.Now().Add(-time.Minute), syslogFed)
+		}
+	}
+	for _, tc := range []struct {
+		name   string
+		ip     string
+		login  func(*Daemon, string)
+		batch  []alert.Finding
+		alerts int
+	}{
+		{"compromise of the login", "203.0.113.20", imapLogin("office@example.com"), []alert.Finding{compromise("203.0.113.20", "Office@example.com")}, 0},
+		{"compromise inside the login /64", "2001:db8:2::5", func(d *Daemon, _ string) { imapLogin("office@example.com")(d, "2001:db8:2::1") },
+			[]alert.Finding{compromise("2001:db8:2::5", "office@example.com")}, 0},
+		{"FTP login after brute force", "203.0.113.21", nil, ftpCause("203.0.113.21"), 0},
+		{"unrelated check", "203.0.113.22", imapLogin("office@example.com"), []alert.Finding{smtpBruteFrom("203.0.113.22")}, 1},
+		{"compromise of another mailbox", "203.0.113.23", imapLogin("alice@example.com"), []alert.Finding{compromise("203.0.113.23", "office@example.com")}, 1},
+		{"compromise beside a webmail login", "203.0.113.24", func(d *Daemon, ip string) {
+			d.knownCustomers.Note(ip, knownCustomerWebmail, "office@example.com", time.Now().Add(-time.Minute), serviceLog)
+		}, []alert.Finding{compromise("203.0.113.24", "office@example.com")}, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d, _, blocker, capture := customerBlockSetup(t)
+			if tc.login != nil {
+				tc.login(d, tc.ip)
+			}
+			d.dispatchBatch(tc.batch)
+			if _, ok := d.knownCustomers.Lookup(tc.ip); !ok {
+				t.Fatalf("%s is not a known customer", tc.ip)
+			}
+			if tc.batch[0].Check != "ftp_login_after_bruteforce" && !blocker.IsBlocked(tc.ip) {
+				t.Fatalf("%s not blocked", tc.ip)
+			}
+			if n, hooks := len(capture.customerEmails()), len(capture.events("customer_block")); n != tc.alerts || hooks != tc.alerts {
+				t.Fatalf("customer emails = %d, webhooks = %d, want %d each", n, hooks, tc.alerts)
+			}
+		})
+	}
+}
+
 // A customer alert whose email fails still reaches the operator: the next
 // daily summary lists the block (P3-R32).
 func TestCustomerBlockListedInSummaryWhenAlertFails(t *testing.T) {

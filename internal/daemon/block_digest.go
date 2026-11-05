@@ -3,6 +3,7 @@ package daemon
 import (
 	"fmt"
 	"net/netip"
+	"slices"
 	"strings"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -280,10 +281,21 @@ func (d *Daemon) customerBlock(f alert.Finding, target string) (blockdigest.Cust
 
 // customerBlocks returns the applied automatic blocks in actions that hit
 // known customers. A permanent promotion joins the block of its address from
-// the same batch, which the chokepoint emits first.
+// the same batch, which the chokepoint emits first. A customer whose login is
+// the block's own cause in this batch is left out (ownLogin); a cause outside
+// the batch, as for a queued retry, central or incident block, leaves it in.
 func (d *Daemon) customerBlocks(actions []alert.Finding) []blockdigest.CustomerBlock {
 	var blocks []blockdigest.CustomerBlock
 	byTarget := make(map[string]int)
+	var causes map[string]alert.Finding
+	for _, f := range actions {
+		if f.Check == "mail_account_compromised" || f.Check == "ftp_login_after_bruteforce" {
+			if causes == nil {
+				causes = make(map[string]alert.Finding)
+			}
+			causes[alert.FindingID(f)] = f
+		}
+	}
 	for _, f := range actions {
 		if f.Check != "auto_block" || f.Severity != alert.Critical {
 			continue
@@ -294,6 +306,10 @@ func (d *Daemon) customerBlocks(actions []alert.Finding) []blockdigest.CustomerB
 			continue
 		}
 		b, ok := d.customerBlock(f, target)
+		if cause, found := causes[causeID(f)]; ok && found && cause.Check == f.Cause.Check {
+			b.Hits = slices.DeleteFunc(b.Hits, func(h blockdigest.CustomerHit) bool { return ownLogin(cause, h) })
+			ok = len(b.Hits)+b.More > 0
+		}
 		if !ok {
 			continue
 		}
@@ -301,6 +317,34 @@ func (d *Daemon) customerBlocks(actions []alert.Finding) []blockdigest.CustomerB
 		blocks = append(blocks, b)
 	}
 	return blocks
+}
+
+func causeID(f alert.Finding) string {
+	if f.Cause == nil {
+		return ""
+	}
+	return f.Cause.FindingID
+}
+
+// ownLogin reports whether hit is the login cause reports: a mail account
+// compromise or an FTP login after brute force from the same address or IPv6
+// /64, through the same kind of login, as the same mailbox or FTP account.
+// The cause's Critical finding already names that login.
+func ownLogin(cause alert.Finding, hit blockdigest.CustomerHit) bool {
+	key, ok := customerKey(cause.SourceIP)
+	if !ok || customerHitIP(key) != hit.IP {
+		return false
+	}
+	switch cause.Check {
+	case "mail_account_compromised":
+		switch hit.Kind {
+		case knownCustomerSMTP, knownCustomerIMAP, knownCustomerPOP:
+			return hit.Account == normalizeSprayMailbox(cause.Mailbox)
+		}
+	case "ftp_login_after_bruteforce":
+		return hit.Kind == knownCustomerFTP && hit.Account == normalizeSprayMailbox(ftpCustomerAccount(cause))
+	}
+	return false
 }
 
 // wouldBlock returns the verdict in a summary finding that would have
