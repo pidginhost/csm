@@ -4,6 +4,8 @@ package daemon
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -32,6 +34,9 @@ func path6Cfg() *config.Config {
 
 func path6Pipeline(t *testing.T, sites ...string) (*spoolPipeline, *[]alert.Finding) {
 	t.Helper()
+	prevRoot := formRelayDomlogRoot
+	formRelayDomlogRoot = t.TempDir()
+	t.Cleanup(func() { formRelayDomlogRoot = prevRoot })
 	p, findings := fanoutPipeline(t, sites...)
 	relay := &p.eng.config().EmailProtection.PHPRelay
 	relay.IPRecipientSpread = 5
@@ -572,5 +577,140 @@ func TestShellQuote(t *testing.T) {
 		if got := shellQuote(in); got != want {
 			t.Errorf("shellQuote(%q) = %s, want %s", in, got, want)
 		}
+	}
+}
+
+// writeDomlog writes a cPanel access log for user under the test domlog root.
+func writeDomlog(t *testing.T, user, file string, lines ...string) {
+	t.Helper()
+	dir := filepath.Join(formRelayDomlogRoot, user)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, file), []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func domlogLine(ip, method, target string, status int) string {
+	return fmt.Sprintf(`%s - - [05/Nov/2026:10:00:00 +0000] "%s %s HTTP/1.1" %d 512 "-" "Mozilla/5.0"`, ip, method, target, status)
+}
+
+// A shop owner completing orders from the order list mails each buyer
+// through admin-ajax.php, never through an admin page. Loading an admin page
+// that needs a login shows in the site's access log and makes the owner
+// staff, so the quick actions do not challenge or block them.
+func TestPath6_AdminPageInAccessLogMakesStaff(t *testing.T) {
+	for _, tc := range []struct{ host, file, ip, logIP string }{
+		{"site-a.example", "site-a.example-ssl_log", path6IP, path6IP},
+		{"www.site-a.example", "site-a.example", path6IP, path6IP},
+		{"site-a.example", "site-a.example-ssl_log", "2001:db8::1", "2001:db8::2"},
+	} {
+		t.Run(tc.host+"/"+tc.logIP, func(t *testing.T) {
+			p, findings := path6Pipeline(t, "a")
+			writeDomlog(t, "usera", tc.file,
+				domlogLine("198.51.100.30", "GET", "/", 200),
+				domlogLine(tc.logIP, "GET", "/wp-admin/edit.php?post_type=shop_order", 200))
+			for i := 0; i < 6; i++ {
+				feedHostMail(t, p, fmt.Sprintf("m%d", i), "usera", tc.host, path6Ajax, tc.ip, path6T0.Add(time.Duration(i)*time.Minute),
+					fmt.Sprintf("buyer%d@mail%d.example", i, i))
+			}
+			requireNoPath6(t, *findings)
+			if !p.eng.form.isStaff("usera", formRelayKey(tc.ip), path6T0.Add(time.Hour)) {
+				t.Fatal("access log evidence did not make the client staff")
+			}
+		})
+	}
+}
+
+func TestPath6_AccessLogWithoutAdminPageIsNoEvidence(t *testing.T) {
+	for name, tc := range map[string]struct {
+		client string
+		lines  []string
+	}{
+		"login redirect":  {path6IP, []string{domlogLine(path6IP, "GET", "/wp-admin/edit.php", 302), domlogLine(path6IP, "GET", "/wp-login.php?redirect_to=x", 200)}},
+		"admin-ajax":      {path6IP, []string{domlogLine(path6IP, "GET", "/wp-admin/admin-ajax.php?action=x", 200)}},
+		"profile":         {path6IP, []string{domlogLine(path6IP, "GET", "/wp-admin/profile.php", 200)}},
+		"dashboard":       {path6IP, []string{domlogLine(path6IP, "GET", "/wp-admin/index.php", 200), domlogLine(path6IP, "GET", "/wp-admin/", 200)}},
+		"post":            {path6IP, []string{domlogLine(path6IP, "POST", "/wp-admin/edit.php", 200)}},
+		"path info":       {path6IP, []string{domlogLine(path6IP, "GET", "/wp-admin/admin-ajax.php/edit.php", 200)}},
+		"other client":    {path6IP, []string{domlogLine("198.51.100.20", "GET", "/wp-admin/edit.php", 200)}},
+		"other /64":       {"2001:db8::1", []string{domlogLine("2001:db8:0:1::1", "GET", "/wp-admin/edit.php", 200)}},
+		"forged fragment": {path6IP, []string{"junk " + domlogLine(path6IP, "GET", "/wp-admin/edit.php", 200)}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			p, findings := path6Pipeline(t, "a")
+			writeDomlog(t, "usera", "site-a.example-ssl_log", tc.lines...)
+			feedVictims(t, p, "a", path6Ajax, tc.client, 0, 5, path6T0)
+			if got := path6Of(*findings, path6Check); len(got) != 1 {
+				t.Fatalf("client findings = %d, want 1", len(got))
+			}
+		})
+	}
+}
+
+func TestPath6_MissingOrUnreadableAccessLogFires(t *testing.T) {
+	for name, setup := range map[string]func(t *testing.T){
+		"no account dir": func(*testing.T) {},
+		"no log": func(t *testing.T) {
+			writeDomlog(t, "usera", "other.example", domlogLine(path6IP, "GET", "/wp-admin/edit.php", 200))
+		},
+		"unreadable": func(t *testing.T) {
+			if err := os.MkdirAll(filepath.Join(formRelayDomlogRoot, "usera", "site-a.example-ssl_log"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			p, findings := path6Pipeline(t, "a")
+			setup(t)
+			feedVictims(t, p, "a", path6Ajax, path6IP, 0, 5, path6T0)
+			if got := path6Of(*findings, path6Check); len(got) != 1 {
+				t.Fatalf("client findings = %d, want 1", len(got))
+			}
+		})
+	}
+}
+
+// Only the tail of a log is read, and the line the tail starts inside does
+// not count: its visible part may be client text that looks like a line.
+func TestPath6_AccessLogReadIsBounded(t *testing.T) {
+	staff := domlogLine(path6IP, "GET", "/wp-admin/edit.php", 200)
+	filler := strings.Repeat("x", formRelayDomlogTail)
+	for name, lines := range map[string][]string{
+		"before the tail": {staff, filler},
+		"cut first line":  {"198.51.100.9 " + staff, filler[:formRelayDomlogTail-len(staff)-2]},
+		"overlong line":   {filler[:formRelayDomlogLine] + staff},
+	} {
+		t.Run(name, func(t *testing.T) {
+			p, findings := path6Pipeline(t, "a")
+			writeDomlog(t, "usera", "site-a.example-ssl_log", lines...)
+			feedVictims(t, p, "a", path6Ajax, path6IP, 0, 5, path6T0)
+			if got := path6Of(*findings, path6Check); len(got) != 1 {
+				t.Fatalf("client findings = %d, want 1", len(got))
+			}
+		})
+	}
+	p, findings := path6Pipeline(t, "a")
+	writeDomlog(t, "usera", "site-a.example-ssl_log", filler, staff)
+	feedVictims(t, p, "a", path6Ajax, path6IP, 0, 5, path6T0)
+	requireNoPath6(t, *findings)
+}
+
+// Staff evidence on one account removes only that account's mail; the
+// client is still judged on the rest, like any other client.
+func TestPath6_AccessLogStaffLeavesOtherAccounts(t *testing.T) {
+	p, findings := path6Pipeline(t, "a", "b")
+	writeDomlog(t, "usera", "site-a.example-ssl_log", domlogLine(path6IP, "GET", "/wp-admin/post.php?post=7&action=edit", 200))
+	feedVictims(t, p, "a", path6Ajax, path6IP, 0, 3, path6T0)
+	feedVictims(t, p, "b", path6Form, path6IP, 3, 4, path6T0)
+	requireNoPath6(t, *findings)
+	feedVictims(t, p, "b", path6Form, path6IP, 7, 1, path6T0)
+	clients, scripts := path6Of(*findings, path6Check), path6Of(*findings, path6Script)
+	if len(clients) != 1 || clients[0].CPUser != "userb" || strings.Contains(clients[0].Details, "site-a.example") {
+		t.Fatalf("client findings = %+v, want one on userb only", clients)
+	}
+	if len(scripts) != 1 || scripts[0].ScriptKey != "site-b.example:"+path6Form {
+		t.Fatalf("script findings = %+v, want site-b's form only", scripts)
 	}
 }

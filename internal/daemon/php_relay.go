@@ -5,9 +5,11 @@ import (
 	"bytes"
 	"encoding/gob"
 	"fmt"
+	"io"
 	"net"
 	"net/mail"
 	"os"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strconv"
@@ -20,6 +22,7 @@ import (
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/contenttype"
+	"github.com/pidginhost/csm/internal/crawlid"
 	"github.com/pidginhost/csm/internal/emailspool"
 	"github.com/pidginhost/csm/internal/store"
 )
@@ -848,6 +851,101 @@ func isWPCronScript(k scriptKey) bool {
 	return strings.HasSuffix(scriptPHPPath(k), "/wp-cron.php")
 }
 
+// formRelayDomlogRoot holds cPanel's per-account access logs, one file per
+// vhost and scheme. A var so tests can point it at a temporary directory.
+var formRelayDomlogRoot = "/usr/local/apache/domlogs"
+
+// formRelayDomlogTail bounds how much of each access log a crossing reads,
+// formRelayDomlogLine each line it parses.
+const (
+	formRelayDomlogTail = 4 << 20
+	formRelayDomlogLine = 64 << 10
+)
+
+// formRelayStaffAccounts returns the accounts among shares whose current
+// access logs show client key loading a WordPress admin page that needs a
+// login: a GET answered 200. Order-list quick actions and other ajax admin
+// work mail without passing such a page, so only this evidence spares the
+// staff using them. A missing or unreadable log is no evidence.
+func formRelayStaffAccounts(key string, shares map[scriptKey]formRelayShare) []string {
+	found := make(map[string]bool)
+	var out []string
+	for id, share := range shares {
+		user := share.CPUser
+		host, _, _ := strings.Cut(id, ":/")
+		if found[user] || !domlogName(user) || !domlogName(host) {
+			continue
+		}
+		names := []string{host, host + "-ssl_log"}
+		if bare, ok := strings.CutPrefix(host, "www."); ok && domlogName(bare) {
+			names = append(names, bare, bare+"-ssl_log")
+		}
+		for _, name := range names {
+			if domlogShowsStaff(filepath.Join(formRelayDomlogRoot, user, name), key) {
+				found[user] = true
+				out = append(out, user)
+				break
+			}
+		}
+	}
+	return out
+}
+
+// domlogName reports a single path element. The host comes from the
+// client's Host header.
+func domlogName(s string) bool {
+	return s != "" && s != "." && s != ".." && !strings.ContainsAny(s, "/\x00")
+}
+
+// domlogShowsStaff scans the last formRelayDomlogTail bytes of path. The
+// line the tail starts inside is skipped, and so is any line longer than
+// formRelayDomlogLine: a piece of either may be client text shaped like a
+// log line.
+func domlogShowsStaff(path, key string) bool {
+	fi, err := os.Stat(path)
+	if err != nil || !fi.Mode().IsRegular() {
+		return false // also keeps a FIFO from blocking the open
+	}
+	// #nosec G304 -- fixed cPanel log root; both names are checked by domlogName.
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = f.Close() }()
+	off := max(fi.Size()-formRelayDomlogTail, 0)
+	r := bufio.NewReaderSize(io.NewSectionReader(f, off, fi.Size()-off), formRelayDomlogLine)
+	skip := off > 0
+	for {
+		line, more, err := r.ReadLine()
+		for more && err == nil {
+			skip = true
+			_, more, err = r.ReadLine()
+		}
+		if err != nil {
+			return false
+		}
+		if !skip && isStaffAdminRequest(string(line), key) {
+			return true
+		}
+		skip = false
+	}
+}
+
+// isStaffAdminRequest reports an access log line in which client key got a
+// login-gated WordPress admin page.
+func isStaffAdminRequest(line, key string) bool {
+	ip, _, _ := strings.Cut(line, " ")
+	if formRelayKey(ip) != key {
+		return false
+	}
+	rec, ok := checks.ParseCrawlLogLine(line, nil)
+	if !ok || rec.Method != "GET" || rec.Status != 200 || rec.Target == "" {
+		return false
+	}
+	path, _, ok := crawlid.SplitTarget(rec.Target)
+	return ok && isAuthenticatedAdminScript(path)
+}
+
 // config returns the live config so a reload that retunes or disables the
 // relay detector reaches every evaluation; cfg was a startup snapshot before.
 func (e *evaluator) config() *config.Config { return e.cfgFn() }
@@ -935,7 +1033,15 @@ func (e *evaluator) formRelayFindings(k scriptKey, ip, cpuser string, spread int
 	key := formRelayKey(ip)
 	since := now.Add(-window)
 	hours := fmt.Sprintf("%dh", window/time.Hour)
-	snapshot := e.form.evaluate(key, now, window, spread, ignored)
+	snapshot := e.form.evaluate(key, now, window, spread, ignored, false)
+	if snapshot.FireClient {
+		// The logs are read outside the store lock; the claim comes after,
+		// on what is left once staff accounts drop out.
+		for _, user := range formRelayStaffAccounts(key, snapshot.Shares) {
+			e.form.markStaff(user, key, now)
+		}
+		snapshot = e.form.evaluate(key, now, window, spread, ignored, true)
+	}
 	if snapshot.Count < spread {
 		return nil
 	}

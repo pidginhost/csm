@@ -68,10 +68,12 @@ type formRelaySnapshot struct {
 	FireClient bool
 }
 
-// evaluate captures one qualifying window and claims its client cooldown
-// under the same lock. Expiry must not remove evidence between counting it
-// and building the finding. Current exemptions also apply to older mail.
-func (w *formRelayWindow) evaluate(key string, at time.Time, window time.Duration, spread int, ignored func(scriptKey) bool) formRelaySnapshot {
+// evaluate captures one qualifying window and, with claim, claims its
+// client cooldown under the same lock. Expiry must not remove evidence
+// between counting it and building the finding. Current exemptions also
+// apply to older mail. Without claim, FireClient reports whether a claim
+// would succeed.
+func (w *formRelayWindow) evaluate(key string, at time.Time, window time.Duration, spread int, ignored func(scriptKey) bool, claim bool) formRelaySnapshot {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	cutoff := w.advanceLocked(at).Add(-window)
@@ -109,7 +111,9 @@ func (w *formRelayWindow) evaluate(key string, at time.Time, window time.Duratio
 	}
 	sort.Strings(out.Domains)
 	if !seenAtOrAfter(c.firedAt, at.Add(-window)) {
-		c.firedAt = at
+		if claim {
+			c.firedAt = at
+		}
 		out.FireClient = true
 	}
 	return out

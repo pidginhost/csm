@@ -33,6 +33,11 @@ current exemption also covers mail recorded before it applied. Script shares
 are grouped by the script's normalized name, the one findings print. Returned
 script shares and recipient domains are copies.
 
+When that call shows the client would fire, the evaluator first reads the
+sites' access logs for staff evidence, outside the lock and without claiming.
+It marks any account with evidence as staff, then repeats the call, which
+claims the cooldown only if the remaining accounts still cross the threshold.
+
 The store also records when each normalized script name was last reported, so
 a script finding repeats neither for a later client nor after the routine sweep
 of per-script state within the window.
