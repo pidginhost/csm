@@ -60,7 +60,8 @@ func Capabilities() []string {
 		"confd.rehash.fragment.v1", // csm rehash --fragment re-signs one integration's conf.d files
 		"admission.action_show.v1",
 		"mail.forwarders.delete.v1",
-		"mcp.readonly.v1", // optional read-only MCP endpoint for support agents (mcp: block)
+		"mcp.readonly.v1",         // optional read-only MCP endpoint for support agents (mcp: block)
+		"alerts.daily_summary.v1", // handled attacks reach operators in one daily summary at 08:00
 	}
 	if firewall.Supported() {
 		caps = append(caps,

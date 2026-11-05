@@ -234,10 +234,11 @@ type Config struct {
 			} `yaml:"syslog"`
 		} `yaml:"audit_log"`
 
-		// BlockDigest emits a per-country roll-up of auto-blocked IPs so
-		// operators see when their customers' countries get blocked. The
-		// hotreload:"restart" tag overrides the safe Alerts parent: the
-		// collector and its ticker are built once at startup.
+		// BlockDigest adds a per-country roll-up of auto-blocked IPs to the
+		// daily alert summary so operators see when their customers'
+		// countries get blocked. The hotreload:"restart" tag overrides the
+		// safe Alerts parent: the collector and its ticker are built once at
+		// startup.
 		BlockDigest struct {
 			Enabled   bool     `yaml:"enabled"`
 			Countries []string `yaml:"countries"`
@@ -1396,8 +1397,9 @@ func (c *Config) UpdatesInterval() time.Duration {
 	return d
 }
 
-// BlockDigestInterval is the digest cadence. Empty, invalid, or non-positive
-// values fall back to one hour.
+// BlockDigestInterval is how often watched blocks fold into the daily summary
+// and the live alert dedup window. Empty, invalid, or non-positive values fall
+// back to one hour.
 func (c *Config) BlockDigestInterval() time.Duration {
 	if c.Alerts.BlockDigest.Interval == "" {
 		return time.Hour

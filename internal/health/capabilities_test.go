@@ -86,6 +86,12 @@ func TestForwarderDeleteCapabilityAlwaysPresent(t *testing.T) {
 	}
 }
 
+func TestDailySummaryCapabilityAlwaysPresent(t *testing.T) {
+	if !contains(Capabilities(), "alerts.daily_summary.v1") {
+		t.Error("alerts.daily_summary.v1 capability missing")
+	}
+}
+
 func TestHTTPScannerProfileCapabilityAlwaysPresent(t *testing.T) {
 	if !contains(Capabilities(), "detect.http_scanner_profile.v1") {
 		t.Error("detect.http_scanner_profile.v1 capability missing")

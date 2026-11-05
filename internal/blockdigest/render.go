@@ -22,6 +22,8 @@ type WebhookCSM struct {
 	Countries []string       `json:"countries"`
 	Counts    WebhookCounts  `json:"counts"`
 	Blocks    []WebhookBlock `json:"blocks"`
+	// Summary carries the counts of a daily_summary event.
+	Summary *Summary `json:"summary,omitempty"`
 }
 
 type WebhookCounts struct {
@@ -160,11 +162,69 @@ func (c *Collector) buildPayload(event string, d Digest) WebhookPayload {
 	}
 }
 
-// shouldSend gates a digest: send_on=any sends when total meets MinBlock;
-// send_on=customer sends only when customer-risk blocks meet MinBlock.
-func (c *Collector) shouldSend(d Digest) bool {
-	if c.opts.SendOn == "customer" {
-		return d.CustomerCount >= c.opts.MinBlock
+// shouldSend gates the watched-country section of the daily summary: it is
+// shown when watching and the folded blocks reach MinBlock.
+func (c *Collector) shouldSend(w WatchedBlocks) bool {
+	return c.opts.Watch && w.Total >= c.opts.MinBlock
+}
+
+func (c *Collector) summarySubject(s Summary) string {
+	return fmt.Sprintf("[CSM] %s - daily summary %s", c.opts.Host, s.Since.In(c.opts.Location).Format("2006-01-02"))
+}
+
+func (c *Collector) summaryBody(s Summary, until time.Time) string {
+	const stamp = "2006-01-02 15:04 MST"
+	var b strings.Builder
+	fmt.Fprintln(&b, c.summarySubject(s))
+	fmt.Fprintf(&b, "Window: %s to %s\n", s.Since.In(c.opts.Location).Format(stamp), until.In(c.opts.Location).Format(stamp))
+	fmt.Fprintln(&b, "Attacks CSM handled on its own. They are not alerted one by one; the findings page and history keep every one.")
+	fmt.Fprintln(&b)
+	fmt.Fprintf(&b, "Handled findings: %d\n", s.total())
+	fmt.Fprintf(&b, "Muted in alert email: %d\n", s.Muted)
+	if s.Blocks > 0 {
+		fmt.Fprintf(&b, "Blocks applied: %d (%s)\n", s.Blocks, sortedCounts(s.BlockKinds))
+	} else {
+		fmt.Fprintln(&b, "Blocks applied: 0")
 	}
-	return d.Total >= c.opts.MinBlock
+	fmt.Fprintf(&b, "Challenges: %d\n", s.checkTotal("challenge_route"))
+	fmt.Fprintf(&b, "Mail login advisories, observe only: %d\n", s.checkTotal("mail_bruteforce_suspected"))
+	fmt.Fprintln(&b)
+	fmt.Fprintln(&b, "By check and severity:")
+	checks := make([]string, 0, len(s.Checks))
+	for check := range s.Checks {
+		checks = append(checks, check)
+	}
+	sort.Strings(checks)
+	for _, check := range checks {
+		fmt.Fprintf(&b, "  %s: %s\n", check, sortedCounts(s.Checks[check]))
+	}
+	if len(checks) == 0 {
+		fmt.Fprintln(&b, "  (none)")
+	}
+	fmt.Fprintln(&b)
+	fmt.Fprintln(&b, "Top sources:")
+	for _, src := range s.Sources {
+		if src.Country != "" {
+			fmt.Fprintf(&b, "  %s (%s): %d\n", src.IP, src.Country, src.Count)
+		} else {
+			fmt.Fprintf(&b, "  %s: %d\n", src.IP, src.Count)
+		}
+	}
+	if len(s.Sources) == 0 {
+		fmt.Fprintln(&b, "  (none)")
+	}
+	if c.shouldSend(s.Watched) {
+		fmt.Fprintln(&b)
+		fmt.Fprintf(&b, "Watched-country blocks: %d (countries: %s)\n", s.Watched.Total, countriesLabel(c.countriesSnapshot()))
+		fmt.Fprintf(&b, "  By country: %s\n", sortedCounts(s.Watched.ByCountry))
+		fmt.Fprintf(&b, "  By category: %s\n", sortedCounts(s.Watched.ByCategory))
+	}
+	return b.String()
+}
+
+func (c *Collector) summaryPayload(s Summary, body string) WebhookPayload {
+	return WebhookPayload{
+		Text: body,
+		CSM:  WebhookCSM{Event: "daily_summary", Host: c.opts.Host, Version: c.opts.Version, Summary: &s},
+	}
 }

@@ -8,7 +8,7 @@ import (
 
 func TestObserveEnrichesModSecRecord(t *testing.T) {
 	var gotIP string
-	c := New(Options{
+	c := New(Options{Watch: true,
 		SendOn: "any", Interval: time.Hour, MinBlock: 1,
 		Now:       func() time.Time { return time.Unix(0, 0) },
 		CountryOf: func(string) string { return "RO" },
@@ -38,7 +38,7 @@ func TestObserveEnrichesModSecRecord(t *testing.T) {
 
 func TestObserveSkipsEnrichForNonModSec(t *testing.T) {
 	called := false
-	c := New(Options{
+	c := New(Options{Watch: true,
 		SendOn: "any", Interval: time.Hour, MinBlock: 1,
 		Now:          func() time.Time { return time.Unix(0, 0) },
 		CountryOf:    func(string) string { return "RO" },
@@ -51,7 +51,7 @@ func TestObserveSkipsEnrichForNonModSec(t *testing.T) {
 }
 
 func TestObserveWithoutEnricherLeavesContextEmpty(t *testing.T) {
-	c := New(Options{
+	c := New(Options{Watch: true,
 		SendOn: "any", Interval: time.Hour, MinBlock: 1,
 		Now:       func() time.Time { return time.Unix(0, 0) },
 		CountryOf: func(string) string { return "RO" },

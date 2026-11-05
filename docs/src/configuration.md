@@ -116,13 +116,13 @@ alerts:
     url: ""                             # healthchecks.io, cronitor, dead man's switch
   max_per_hour: 10                      # alert emails/hour; CRITICAL always bypasses and is not counted. Code default 30; the shipped csm.yaml template sets 10
   block_digest:
-    enabled: false                      # send per-country rollups for auto-blocked IPs
+    enabled: false                      # add per-country counts of auto-blocked IPs to the daily summary
     countries: []                       # empty = trusted countries, then all countries
-    interval: "1h"                      # digest cadence
+    interval: "1h"                      # how often counts fold into the summary; live alert dedup window
     live: false                         # also send one alert per qualifying block
-    send_on: "any"                      # any | customer
-    channel: ""                         # empty = enabled alert channels; requires email or webhook enabled
-    min_block: 1                        # 0 sends empty heartbeat digests
+    send_on: "any"                      # live alerts: any | customer
+    channel: ""                         # empty = enabled alert channels; a set channel also carries the daily summary
+    min_block: 1                        # watched blocks needed to show the summary section; 0 always shows it
   audit_log:                            # SIEM-friendly per-finding stream
     file:
       enabled: false
@@ -1037,6 +1037,38 @@ There is no setting for this policy, and the same classes decide what
 is ignored; a config that still sets it loads, and `csm validate` warns so the
 key can be deleted.
 
+## Daily summary
+
+CSM sends one summary of the findings it handled each day at 08:00 server
+local time. It goes by alert email when email alerts are on, and to the
+generic alert webhook when that is on, as event `daily_summary` with the
+counts under `csm.summary`. A phpanel webhook does not receive it. When
+`alerts.block_digest.channel` names one channel, the summary uses only that
+channel. The summary goes out every day, also with nothing to report.
+
+It covers the window since the previous summary:
+
+- summary-class findings by check and severity, and how many of them come from checks muted by `alerts.email.disabled_checks`;
+- blocks applied, by kind;
+- challenges, and mail login advisories that never block, such as spray observe mode;
+- the 10 addresses with the most summary findings, with their country when GeoIP knows it;
+- with `alerts.block_digest.enabled`, watched-country blocks by country and category, once they reach `min_block`.
+
+CSM tracks up to 1,000 source addresses a day. Past that, a new address takes
+the place of the one with the fewest findings, so heavy sources stay listed
+and a count can be overstated, never understated.
+
+Counts are saved at each `block_digest.interval` (one hour by default), at
+shutdown and after each send, so a restart keeps the day; a crash loses at
+most the counts since the last save. If the host was down at 08:00, the missed
+summary goes out once at the next start. A crash during a send can repeat that
+summary at the next start. If the clock goes back, the next summary still goes
+out at the next 08:00.
+
+Only the daemon counts findings. A one-off `csm scan --alert` prints every
+finding; its summary-class findings are neither emailed nor counted in the
+daily summary. The hourly block digest email no longer exists.
+
 ## Web UI Exposure
 
 An admin token can change firewall rules, files under account homes and most
@@ -1173,9 +1205,9 @@ reload that changes the digest settings emits
 `config_reload_restart_required` and leaves the live config unchanged.
 When `countries` is empty, the fallback to `suppressions.trusted_countries`
 still follows safe reloads. Delivery uses the current email and webhook
-settings. Digest output includes by-country, by-category, and by-reason
-counts; WAF categories group ModSecurity escalations and high-volume WAF
-attacker blocks together.
+settings. The daily summary section gives by-country and by-category
+counts, and live alerts add by-reason counts; WAF categories group
+ModSecurity escalations and high-volume WAF attacker blocks together.
 
 If you disable the digest in Settings, restart before disabling its last
 delivery channel. Until then the digest remains active, and Settings rejects

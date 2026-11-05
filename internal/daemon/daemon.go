@@ -975,19 +975,20 @@ func (d *Daemon) Run() error {
 	// across old detection policy and new response policy.
 	initialCfg := d.currentCfg()
 
-	// Build the block-digest collector before the baseline auto-response so
-	// startup blocks are captured too. GeoIP is already initialised above.
+	// Build the daily summary and block-digest collector before the baseline
+	// auto-response so startup blocks and handled findings are captured too.
+	// GeoIP is already initialised above.
 	d.blockDigest = d.buildBlockDigest(initialCfg)
-	if d.blockDigest != nil {
-		bdInterval := initialCfg.BlockDigestInterval()
-		d.wg.Add(1)
-		obs.Go("block-digest", func() {
-			defer d.wg.Done()
-			t := time.NewTicker(bdInterval)
-			defer t.Stop()
-			d.blockDigest.Run(d.stopCh, t.C)
-		})
-	}
+	alert.SetSummaryHook(d.noteSummary)
+	bdInterval := initialCfg.BlockDigestInterval()
+	d.wg.Add(1)
+	obs.Go("block-digest", func() {
+		defer d.wg.Done()
+		defer alert.SetSummaryHook(nil)
+		t := time.NewTicker(bdInterval)
+		defer t.Stop()
+		d.blockDigest.Run(d.stopCh, t.C)
+	})
 
 	// Run the initial scan synchronously while alert dispatch is held.
 	fmt.Fprintf(os.Stderr, "[%s] Running initial baseline scan...\n", ts())

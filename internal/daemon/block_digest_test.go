@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -8,6 +9,7 @@ import (
 	"github.com/pidginhost/csm/internal/blockdigest"
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/state"
 	"github.com/pidginhost/csm/internal/store"
 )
@@ -33,7 +35,7 @@ func (b *blockDigestTestBlocker) IsBlocked(ip string) bool {
 func TestObserveBlocksFeedsCollector(t *testing.T) {
 	d := &Daemon{}
 	d.blockDigest = blockdigest.New(blockdigest.Options{
-		Countries: nil, SendOn: "any", Interval: time.Hour, MinBlock: 1,
+		Watch: true, SendOn: "any", Interval: time.Hour, MinBlock: 1,
 		Now:       func() time.Time { return time.Unix(0, 0) },
 		CountryOf: func(string) string { return "RO" },
 	})
@@ -64,7 +66,7 @@ func TestObserveBlocksFeedsCollector(t *testing.T) {
 func TestObserveBlocksCategorizesWAFAttackerBlock(t *testing.T) {
 	d := &Daemon{}
 	d.blockDigest = blockdigest.New(blockdigest.Options{
-		Countries: nil, SendOn: "any", Interval: time.Hour, MinBlock: 1,
+		Watch: true, SendOn: "any", Interval: time.Hour, MinBlock: 1,
 		Now:       func() time.Time { return time.Unix(0, 0) },
 		CountryOf: func(string) string { return "RO" },
 	})
@@ -91,7 +93,7 @@ func TestObserveBlocksCategorizesWAFAttackerBlock(t *testing.T) {
 func TestObserveBlocksIgnoresCloudflareWarningWhenClassifying(t *testing.T) {
 	d := &Daemon{}
 	d.blockDigest = blockdigest.New(blockdigest.Options{
-		Countries: nil, SendOn: "any", Interval: time.Hour, MinBlock: 1,
+		Watch: true, SendOn: "any", Interval: time.Hour, MinBlock: 1,
 		Now:       func() time.Time { return time.Unix(0, 0) },
 		CountryOf: func(string) string { return "RO" },
 	})
@@ -115,7 +117,7 @@ func TestObserveBlocksIgnoresCloudflareWarningWhenClassifying(t *testing.T) {
 func TestObserveBlocksCloudflareWarningDoesNotReplaceMissingReason(t *testing.T) {
 	d := &Daemon{}
 	d.blockDigest = blockdigest.New(blockdigest.Options{
-		Countries: nil, SendOn: "any", Interval: time.Hour, MinBlock: 1,
+		Watch: true, SendOn: "any", Interval: time.Hour, MinBlock: 1,
 		Now:       func() time.Time { return time.Unix(0, 0) },
 		CountryOf: func(string) string { return "RO" },
 	})
@@ -142,7 +144,7 @@ func TestObserveBlocksNilCollectorIsNoop(t *testing.T) {
 func TestObserveBlocksSkipsDryRunSubnetNotices(t *testing.T) {
 	d := &Daemon{}
 	d.blockDigest = blockdigest.New(blockdigest.Options{
-		Countries: nil, SendOn: "any", Interval: time.Hour, MinBlock: 1,
+		Watch: true, SendOn: "any", Interval: time.Hour, MinBlock: 1,
 		Now:       func() time.Time { return time.Unix(0, 0) },
 		CountryOf: func(string) string { return "RO" },
 	})
@@ -242,12 +244,131 @@ func TestBlockDigestSinksUseLiveAlertConfig(t *testing.T) {
 	}
 }
 
-func TestBuildBlockDigestDisabledReturnsNil(t *testing.T) {
-	d := &Daemon{}
-	cfg := &config.Config{}
+// The collector sends the daily summary on every daemon. With block_digest
+// off it only stops watching blocks by country.
+func TestBuildBlockDigestAlwaysBuilds(t *testing.T) {
+	prevActive := config.Active()
+	config.SetActive(nil)
+	t.Cleanup(func() { config.SetActive(prevActive) })
+	prevEmail := blockDigestSendEmail
+	t.Cleanup(func() { blockDigestSendEmail = prevEmail })
+	var subjects []string
+	blockDigestSendEmail = func(_ *config.Config, subject, _ string) error {
+		subjects = append(subjects, subject)
+		return nil
+	}
+
+	cfg := &config.Config{Hostname: "host.example.com"}
 	cfg.Alerts.BlockDigest.Enabled = false
-	if c := d.buildBlockDigest(cfg); c != nil {
-		t.Error("disabled block_digest should build no collector")
+	cfg.Alerts.Email.Enabled = true
+	d := New(cfg, nil, nil, "")
+	d.blockDigest = d.buildBlockDigest(cfg)
+	if d.blockDigest == nil {
+		t.Fatal("disabled block_digest built no collector; the daily summary needs one")
+	}
+	if _, ok := d.QueueStatuses()["block_digest.records"]; !ok {
+		t.Fatal("collector queue rows missing with block_digest off")
+	}
+	d.observeBlocks([]alert.Finding{{Check: "auto_block", Severity: alert.Critical,
+		Message: "AUTO-BLOCK: 192.0.2.61 blocked (expires in 24h)", Details: "Reason: fixture customer block", Timestamp: time.Now()}})
+	if row := d.QueueStatuses()["block_digest.records"]; row.Depth != 0 {
+		t.Fatalf("block_digest off still buffers watched blocks: %+v", row)
+	}
+	if !d.blockDigest.SendDue(time.Now().Add(25 * time.Hour)) {
+		t.Fatal("daily summary not due a day later")
+	}
+	if len(subjects) != 1 || !strings.HasPrefix(subjects[0], "[CSM] host.example.com - daily summary ") {
+		t.Fatalf("summary emails = %q", subjects)
+	}
+}
+
+func TestNoteSummaryMapsFindings(t *testing.T) {
+	var got []blockdigest.WebhookPayload
+	d := &Daemon{}
+	d.blockDigest = blockdigest.New(blockdigest.Options{
+		Interval: time.Hour, SendOn: "any", MinBlock: 1, Location: time.UTC,
+		WebhookSink: func(p blockdigest.WebhookPayload) error { got = append(got, p); return nil },
+	})
+	cfg := &config.Config{}
+	cfg.Alerts.Email.DisabledChecks = []string{" challenge_route "}
+	d.noteSummary(cfg, []alert.Finding{
+		{Check: "auto_block", Severity: alert.Critical, Message: "AUTO-BLOCK: 203.0.113.20 blocked (expires in 24h)",
+			Details: "Reason: ModSecurity escalation: 5+ denies (warning: " + firewall.CloudflareCoverageWarning + ")"},
+		{Check: "auto_block", Severity: alert.Critical, Message: "AUTO-PERMBLOCK: 203.0.113.20 promoted to permanent block (4 temp blocks)"},
+		{Check: "auto_block", Severity: alert.Warning, Message: "AUTO-BLOCK-SUBNET [dry-run]: 198.51.100.0/24 would be blocked", Details: "Reason: mail auth brute force"},
+		{Check: "challenge_route", Severity: alert.Warning, Message: "CHALLENGE: 198.51.100.7 sent to PoW challenge (expires in 30m0s)"},
+		{Check: "wp_login_bruteforce", Severity: alert.Critical, Message: "WordPress login brute force from 203.0.113.20", SourceIP: "203.0.113.20"},
+	})
+	d.noteSummary(cfg, nil)
+	if !d.blockDigest.SendDue(time.Now().Add(25*time.Hour)) || len(got) != 1 {
+		t.Fatalf("summary webhooks = %d, want 1", len(got))
+	}
+	s := got[0].CSM.Summary
+	if s == nil {
+		t.Fatal("no csm.summary")
+	}
+	if c := s.Checks["auto_block"]; c["CRITICAL"] != 2 || c["WARNING"] != 1 {
+		t.Fatalf("auto_block = %v, want CRITICAL=2 WARNING=1", c)
+	}
+	if s.Checks["challenge_route"]["WARNING"] != 1 || s.Checks["wp_login_bruteforce"]["CRITICAL"] != 1 {
+		t.Fatalf("checks = %v", s.Checks)
+	}
+	if s.Blocks != 1 || s.BlockKinds["modsec"] != 1 || len(s.BlockKinds) != 1 {
+		t.Fatalf("blocks = %d %v, want only the applied block, without the coverage annotation", s.Blocks, s.BlockKinds)
+	}
+	if s.Muted != 1 {
+		t.Fatalf("muted = %d, want 1 (challenge_route is in disabled_checks)", s.Muted)
+	}
+	want := map[string]int{"203.0.113.20": 3, "198.51.100.7": 1}
+	if len(s.Sources) != len(want) {
+		t.Fatalf("sources = %+v, want %v", s.Sources, want)
+	}
+	for _, src := range s.Sources {
+		if want[src.IP] != src.Count {
+			t.Fatalf("sources = %+v, want %v", s.Sources, want)
+		}
+	}
+}
+
+// A noteSummary panic must not reach dispatch.
+func TestNoteSummaryNeverPanics(t *testing.T) {
+	d := &Daemon{blockDigest: blockdigest.New(blockdigest.Options{Interval: time.Hour})}
+	d.noteSummary(nil, []alert.Finding{{Check: "challenge_route", Severity: alert.Warning}})
+	(&Daemon{}).noteSummary(&config.Config{}, []alert.Finding{{Check: "challenge_route"}})
+}
+
+func TestSummaryWebhookSkipsPhpanel(t *testing.T) {
+	prevActive := config.Active()
+	config.SetActive(nil)
+	t.Cleanup(func() { config.SetActive(prevActive) })
+	prevWebhook := blockDigestSendWebhookJSON
+	t.Cleanup(func() { blockDigestSendWebhookJSON = prevWebhook })
+	var events []string
+	blockDigestSendWebhookJSON = func(_ *config.Config, payload any) error {
+		events = append(events, payload.(blockdigest.WebhookPayload).CSM.Event)
+		return nil
+	}
+	for _, hook := range []string{"phpanel", "generic"} {
+		events = nil
+		cfg := &config.Config{}
+		cfg.Alerts.Webhook.Enabled = true
+		cfg.Alerts.Webhook.Type = hook
+		d := &Daemon{cfg: cfg}
+		_, webhook := d.blockDigestSinks(cfg)
+		for _, event := range []string{"daily_summary", "block_live"} {
+			p := blockdigest.WebhookPayload{}
+			p.CSM.Event = event
+			if err := webhook(p); err != nil {
+				t.Fatalf("%s %s: %v", hook, event, err)
+			}
+		}
+		want := "daily_summary,block_live"
+		if hook == "phpanel" {
+			want = "block_live"
+		}
+		if got := strings.Join(events, ","); got != want {
+			t.Fatalf("%s webhook sent %q, want %q", hook, got, want)
+		}
 	}
 }
 
@@ -286,6 +407,7 @@ func TestDispatchBatchEnrichesBlockDigestAfterHistoryAppend(t *testing.T) {
 
 	d := New(cfg, st, nil, "")
 	d.blockDigest = blockdigest.New(blockdigest.Options{
+		Watch:        true,
 		SendOn:       "any",
 		Interval:     time.Hour,
 		MinBlock:     1,

@@ -894,22 +894,24 @@ the existing persistence, retry and shutdown behavior; they do not make retained
 in-memory retry state durable across process exit.
 
 `block_digest.records` reports the actual buffer of watched-country block
-records, bounded to 5,000 with drop-oldest overflow. Age starts when a record
-enters the buffer, independently of the block timestamp. Normal batching and a
-full buffer alone do not report a stall: waiting becomes overdue one minute
-after the configured interval. Detached digest preparation remains in flight;
-one minute without progress reports `processing_lag`. The row uses
-`lag_basis: operation_progress`. Records arriving during preparation belong to
-the next window. Expected per-IP coalescing and delivery filtering are successful
-completion, while abandoned preparation counts its discarded records as losses.
+records, bounded to 5,000 with drop-oldest overflow. The buffer folds into the
+daily summary at each configured interval, before each summary send and at
+shutdown. Age starts when a record enters the buffer, independently of the
+block timestamp. Normal batching and a full buffer alone do not report a stall:
+waiting becomes overdue one minute after the configured interval. A detached
+fold remains in flight; one minute without progress reports `processing_lag`.
+The row uses `lag_basis: operation_progress`. Records arriving during a fold
+belong to the next one. Expected per-IP coalescing is successful completion,
+while an abandoned fold counts its discarded records as losses.
 
 `block_digest.email` and `block_digest.webhook` report configured destinations
 in notifications, with `capacity_unavailable`. Each eligible destination owns
-one notification before delivery starts, including live alerts and configured
-empty heartbeats. Default delivery follows current alert settings at admission,
-attempt and interrupted cleanup. Disabled destinations add no new waiting work
-or loss; destinations enabled during an earlier send are still handled. Explicit
-destination selection keeps its error when that alert channel is disabled.
+one notification before delivery starts, including live alerts and the daily
+summary, which is sent even when empty. Default delivery follows current alert
+settings at admission, attempt and interrupted cleanup. Disabled destinations
+add no new waiting work or loss; destinations enabled during an earlier send
+are still handled. Explicit destination selection keeps its error when that
+alert channel is disabled.
 One minute waiting or active reports lag. A returned sink error
 counts one lost notification and stays in flight through error logging. If an
 operation exits without returning, its attempted delivery reports
@@ -917,11 +919,13 @@ operation exits without returning, its attempted delivery reports
 destination that was never attempted counts one confirmed loss. Known losses
 use the common warning threshold and survive recovery in lifetime totals.
 
-These observations preserve the existing digest schedule, live deduplication,
-best-effort delivery and shutdown policy. Records retained after the ticker
-stops report `consumer_stopped` and can still be explicitly flushed; no retry or
-durability is added. Health reads metadata independently of collector state
-locks, country lookups and delivery callbacks. Disabled collectors have no rows.
+These observations preserve the existing live deduplication and best-effort
+delivery policy; a failed summary send is not retried. Records retained after
+the collector stops report `consumer_stopped`. Health reads metadata
+independently of collector state locks, country lookups and delivery callbacks.
+The rows are always present: every daemon runs the collector for the daily
+summary, and without `alerts.block_digest.enabled` the records buffer stays
+empty.
 
 `state.pending` reports findings parked for the next startup, bounded to the
 newest 10,000 findings. The store observes existing parked work when opened.

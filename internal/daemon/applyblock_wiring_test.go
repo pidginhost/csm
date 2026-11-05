@@ -232,7 +232,7 @@ func TestRecordAppliedBlocksDeduplicatesBeforeFanout(t *testing.T) {
 	}
 	d := New(cfg, stateStore, nil, "")
 	d.blockDigest = blockdigest.New(blockdigest.Options{
-		SendOn: "any", Interval: time.Hour, MinBlock: 1,
+		Watch: true, SendOn: "any", Interval: time.Hour, MinBlock: 1,
 		Now: func() time.Time { return time.Unix(0, 0) },
 	})
 	previousHook := alert.CentralHook

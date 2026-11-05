@@ -61,7 +61,7 @@ func TestBlockDigestDisabledDestinationIsNotLost(t *testing.T) {
 				go func() {
 					defer close(done)
 					defer func() { gotPanic = recover() }()
-					d.blockDigest.Flush()
+					d.blockDigest.SendDue(time.Now().Add(25 * time.Hour))
 					returned = true
 				}()
 				select {
@@ -90,7 +90,7 @@ func TestBlockDigestDisabledDestinationIsNotLost(t *testing.T) {
 				}
 				fail = false
 				observe()
-				d.blockDigest.Flush()
+				d.blockDigest.SendDue(time.Now().Add(50 * time.Hour))
 				if enabled {
 					wantCalls++
 				}
@@ -126,7 +126,7 @@ func TestBlockDigestDefaultPolicySelectsEachDestination(t *testing.T) {
 			cfg.Alerts.Webhook.Enabled = webhookEnabled
 			d := New(cfg, nil, nil, "")
 			collector := d.buildBlockDigest(cfg)
-			collector.Flush()
+			collector.SendDue(time.Now().Add(25 * time.Hour))
 			expectedEmail, expectedWebhook := 0, 0
 			if emailEnabled {
 				expectedEmail = 1

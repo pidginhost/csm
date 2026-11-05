@@ -43,7 +43,7 @@ func TestCategoryOf(t *testing.T) {
 }
 
 func TestDrainByCategory(t *testing.T) {
-	c := New(Options{
+	c := New(Options{Watch: true,
 		Countries: nil, SendOn: "any", Interval: time.Hour, MinBlock: 1,
 		Now:       func() time.Time { return time.Unix(0, 0) },
 		CountryOf: func(string) string { return "RO" },

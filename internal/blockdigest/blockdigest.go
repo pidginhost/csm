@@ -1,8 +1,9 @@
-// Package blockdigest batches CSM auto-block events into a per-country
-// roll-up so operators learn when IPs from their customers' countries get
-// blocked. It is deliberately free of config/geoip/alert/daemon imports:
-// the daemon injects a country lookup and email/webhook sinks, which keeps
-// the logic unit-testable without the linux build tag.
+// Package blockdigest sends the daily alert summary of attacks CSM handled,
+// and batches auto-block events into a per-country roll-up for it so
+// operators learn when IPs from their customers' countries get blocked. It is
+// deliberately free of config/geoip/alert/daemon imports: the daemon injects
+// a country lookup, persistence and email/webhook sinks, which keeps the
+// logic unit-testable without the linux build tag.
 package blockdigest
 
 import (
@@ -49,15 +50,24 @@ type Digest struct {
 // Options is the fully-resolved collector configuration. The daemon resolves
 // countries, interval, channel sinks, and lookups before constructing.
 type Options struct {
+	// Watch turns on the per-country block roll-up and live alerts. Without
+	// it Observe is a no-op and only the daily summary is sent.
+	Watch       bool
 	Countries   []string // effective watch set, upper-cased; empty means all
-	SendOn      string   // any | customer
+	SendOn      string   // any | customer; live alerts only
 	Interval    time.Duration
 	Live        bool
-	MinBlock    int
+	MinBlock    int // watched blocks needed to show the summary section
 	Host        string
 	Version     string
 	CountriesOf func() []string
 	CountryOf   func(ip string) string
+	// LoadSummary and SaveSummary persist the daily summary window so a
+	// restart keeps the day's counts. Either may be nil.
+	LoadSummary func() ([]byte, error)
+	SaveSummary func([]byte) error
+	// Location is the zone of the daily send time. Nil means time.Local.
+	Location *time.Location
 	// EnrichModSec, when set, returns the customer domains and top request
 	// URIs a modsec-category blocked IP was hitting. The daemon injects a
 	// lookup over already-parsed findings so the package stays store-free.
@@ -80,6 +90,7 @@ type Collector struct {
 	records        []Record
 	lastLive       map[string]time.Time
 	lastLivePruned time.Time
+	sum            Summary
 }
 
 const maxBuffered = 5000
@@ -91,8 +102,15 @@ func New(opts Options) *Collector {
 	if opts.CountryOf == nil {
 		opts.CountryOf = func(string) string { return "" }
 	}
+	if opts.Location == nil {
+		opts.Location = time.Local
+	}
 	opts.Countries = append([]string(nil), opts.Countries...)
-	return &Collector{opts: opts, lastLive: make(map[string]time.Time), queues: newDigestQueues(opts)}
+	now := opts.Now()
+	return &Collector{
+		opts: opts, lastLive: make(map[string]time.Time), queues: newDigestQueues(opts),
+		sum: newSummary(now, nextSummaryDue(now, opts.Location)),
+	}
 }
 
 func (c *Collector) countriesSnapshot() []string {
@@ -233,6 +251,9 @@ func (c *Collector) watched(country string) bool {
 // Observe records one auto-block. It geo-classifies, filters to the watch set,
 // buckets the reason, and (when Live) may fire an immediate alert.
 func (c *Collector) Observe(ip, reason string, ts time.Time) {
+	if !c.opts.Watch {
+		return
+	}
 	country := c.opts.CountryOf(ip)
 	if !c.watched(country) {
 		return
@@ -365,7 +386,7 @@ func (c *Collector) maybeLive(rec Record) {
 	} else {
 		d.AttackerCount = 1
 	}
-	c.deliver(plan, "block_live", d)
+	c.deliver(plan, c.renderSubject(d), c.renderBody(d), c.buildPayload("block_live", d))
 }
 
 func (c *Collector) pruneLastLiveLocked(now time.Time) {
@@ -387,55 +408,42 @@ func (c *Collector) pruneLastLiveLocked(now time.Time) {
 	c.lastLivePruned = now
 }
 
-// tick drains the window and sends a digest when gating allows.
-func (c *Collector) tick() {
-	d, batch := c.drain()
-	defer batch.finish(false)
-	if !c.shouldSend(d) {
-		batch.finish(true)
-		return
-	}
-	c.dispatch("block_digest", d, batch)
-}
-
-// Flush sends one final digest regardless of cadence (shutdown path).
-func (c *Collector) Flush() { c.tick() }
-
-// Run loops draining on each tick and drains a final digest on stop.
+// Run loads the saved summary window, sends it if its time has passed, then
+// folds watched blocks into it on each tick and sends it at each daily send
+// time. On stop it folds and saves without sending.
 func (c *Collector) Run(stop <-chan struct{}, tick <-chan time.Time) {
 	c.queues.setStopped(false)
 	defer c.queues.setStopped(true)
+	c.load()
+	c.SendDue(c.opts.Now())
+	timer := time.NewTimer(c.untilDue())
+	defer timer.Stop()
 	for {
 		select {
 		case <-stop:
-			c.Flush()
+			c.fold()
+			c.save()
 			return
 		case _, ok := <-tick:
+			c.fold()
+			c.save()
 			if !ok {
-				c.Flush()
 				return
 			}
-			c.tick()
+		case <-timer.C:
+			c.SendDue(c.opts.Now())
+			timer.Reset(c.untilDue())
 		}
 	}
 }
 
-// dispatch delivers a digest through whichever sinks are configured. Alert
-// delivery is best-effort and must never block the collector or the auto-block
-// path beyond the sink's own timeout; failures are reported through OnError.
-func (c *Collector) dispatch(event string, d Digest, batch *digestBatch) {
-	plan := c.beginDelivery()
-	defer plan.finish()
-	// Eligible destinations own notifications before the buffer releases
-	// the coalesced records. A failing first sink cannot hide the second.
-	batch.finish(true)
-	c.deliver(plan, event, d)
-}
-
-func (c *Collector) deliver(plan *digestDeliveryPlan, event string, d Digest) {
+// deliver sends one notification through whichever sinks are configured.
+// Alert delivery is best-effort and must never block the collector or the
+// auto-block path beyond the sink's own timeout; failures are reported
+// through OnError.
+func (c *Collector) deliver(plan *digestDeliveryPlan, subject, body string, payload WebhookPayload) {
 	if job := plan.email; job != nil {
 		if job.start() {
-			subject, body := c.renderSubject(d), c.renderBody(d)
 			job.offered = true
 			err := c.opts.EmailSink(subject, body)
 			job.result(err)
@@ -447,7 +455,6 @@ func (c *Collector) deliver(plan *digestDeliveryPlan, event string, d Digest) {
 	}
 	if job := plan.webhook; job != nil {
 		if job.start() {
-			payload := c.buildPayload(event, d)
 			job.offered = true
 			err := c.opts.WebhookSink(payload)
 			job.result(err)

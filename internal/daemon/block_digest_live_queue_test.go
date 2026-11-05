@@ -57,7 +57,7 @@ func TestBlockDigestAbandonUsesLiveDestinationPolicy(t *testing.T) {
 				go func() {
 					defer close(done)
 					defer func() { gotPanic = recover() }()
-					d.blockDigest.Flush()
+					d.blockDigest.SendDue(time.Now().Add(25 * time.Hour))
 					returned = true
 				}()
 				t.Cleanup(func() {

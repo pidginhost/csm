@@ -32,7 +32,7 @@ func TestBlockDigestQueueInterruptedDelivery(t *testing.T) {
 					}
 					panic(sentinel)
 				}
-				c := New(Options{Interval: time.Hour, SendOn: "any", MinBlock: 1,
+				c := New(Options{Watch: true, Interval: time.Hour, SendOn: "any", MinBlock: 1,
 					EmailSink: func(string, string) error {
 						emailCalls++
 						if fail {
@@ -58,7 +58,7 @@ func TestBlockDigestQueueInterruptedDelivery(t *testing.T) {
 				go func() {
 					defer close(done)
 					defer func() { recovered = recover() }()
-					c.Flush()
+					c.SendDue(summaryDueOf(c))
 					returned = true
 				}()
 				select {
@@ -89,7 +89,7 @@ func TestBlockDigestQueueInterruptedDelivery(t *testing.T) {
 				}
 				fail = false
 				c.Observe("192.0.2.32", "fixture later block", time.Now())
-				c.Flush()
+				c.SendDue(summaryDueOf(c))
 				rows = digestQueueStatuses(t, c, time.Now().Add(2*time.Minute))
 				if emailCalls != 2 || webhookCalls != 1 {
 					t.Fatalf("retry policy changed: email=%d webhook=%d", emailCalls, webhookCalls)
@@ -123,7 +123,7 @@ func TestBlockDigestQueueOwnsPreparation(t *testing.T) {
 				}
 				calls := 0
 				sentinel := errors.New("fixture interrupted preparation")
-				c := New(Options{Interval: time.Hour, Live: live, SendOn: "any", MinBlock: 1,
+				c := New(Options{Watch: true, Interval: time.Hour, Live: live, SendOn: "any", MinBlock: 1,
 					CountriesOf: func() []string {
 						if lookups.Add(1) == target {
 							close(entered)
@@ -161,7 +161,7 @@ func TestBlockDigestQueueOwnsPreparation(t *testing.T) {
 					if live {
 						c.Observe("192.0.2.41", "fixture customer block", time.Now())
 					} else {
-						c.Flush()
+						c.SendDue(summaryDueOf(c))
 					}
 					returned = true
 				}()
@@ -229,7 +229,7 @@ func TestBlockDigestQueueOwnsPreparation(t *testing.T) {
 }
 
 func TestBlockDigestQueueSnapshotAvoidsCollectorLock(t *testing.T) {
-	c := New(Options{Interval: time.Hour})
+	c := New(Options{Watch: true, Interval: time.Hour})
 	c.Observe("192.0.2.51", "fixture block", time.Now())
 	c.mu.Lock()
 	done := make(chan map[string]queuehealth.Status, 1)
@@ -251,7 +251,7 @@ func TestBlockDigestQueueCountsFailedHeartbeatDeliveries(t *testing.T) {
 	emailCalls, webhookCalls := 0, 0
 	fail := true
 	sentinel := errors.New("fixture unavailable destination")
-	c := New(Options{Interval: time.Hour, SendOn: "any", MinBlock: 0,
+	c := New(Options{Watch: true, Interval: time.Hour, SendOn: "any", MinBlock: 0,
 		EmailSink: func(string, string) error {
 			emailCalls++
 			if fail {
@@ -261,8 +261,8 @@ func TestBlockDigestQueueCountsFailedHeartbeatDeliveries(t *testing.T) {
 		},
 		WebhookSink: func(p WebhookPayload) error {
 			webhookCalls++
-			if p.CSM.Event != "block_digest" || p.CSM.Counts.Total != 0 || len(p.CSM.Blocks) != 0 {
-				t.Error("empty heartbeat policy changed")
+			if p.CSM.Event != "daily_summary" || p.CSM.Summary == nil || p.CSM.Summary.Watched.Total != 0 || len(p.CSM.Summary.Checks) != 0 {
+				t.Error("empty daily summary policy changed")
 			}
 			if fail {
 				return sentinel
@@ -271,7 +271,7 @@ func TestBlockDigestQueueCountsFailedHeartbeatDeliveries(t *testing.T) {
 		},
 	})
 	for range 3 {
-		c.Flush()
+		c.SendDue(summaryDueOf(c))
 	}
 	rows := digestQueueStatuses(t, c, time.Now())
 	for _, name := range []string{"email", "webhook"} {
@@ -283,7 +283,7 @@ func TestBlockDigestQueueCountsFailedHeartbeatDeliveries(t *testing.T) {
 		t.Fatalf("heartbeat invented record loss: %+v", row)
 	}
 	fail = false
-	c.Flush()
+	c.SendDue(summaryDueOf(c))
 	rows = digestQueueStatuses(t, c, time.Now().Add(2*time.Minute))
 	for _, name := range []string{"email", "webhook"} {
 		if row := rows[name]; row.Status != "ok" || row.DroppedTotal != 3 || row.RecentDrops != 0 || row.Depth != 0 || row.InFlight != 0 {
