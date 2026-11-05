@@ -380,3 +380,32 @@ func TestSummaryMultiDayRollbackKeepsSentDates(t *testing.T) {
 		t.Fatal("first unsent morning did not deliver")
 	}
 }
+
+// A send stamped far ahead by a clock fault must not hold back the mornings
+// up to it once the clock is corrected: it is logged once and ignored.
+func TestSummaryFarFutureLastSentIsIgnored(t *testing.T) {
+	st := &summaryStore{}
+	cap := &summaryCapture{}
+	c := summaryCollector(Options{EmailSink: cap.email, SaveSummary: st.save})
+	first := summaryDueOf(c)
+	c.SendDue(first.Add(30 * 24 * time.Hour))
+	if len(cap.sent()) != 1 {
+		t.Fatalf("send during the clock fault: %d emails", len(cap.sent()))
+	}
+	var logs []string
+	restarted := summaryCollector(Options{
+		Now:         func() time.Time { return first.Add(-time.Hour) },
+		LoadSummary: st.load, SaveSummary: st.save, EmailSink: cap.email,
+		OnError: func(channel string, err error) { logs = append(logs, channel+": "+err.Error()) },
+	})
+	runStopped(t, restarted)
+	for minute := 0; minute < 3*24*60; minute++ {
+		restarted.SendDue(first.Add(time.Duration(minute) * time.Minute))
+	}
+	if got := len(cap.sent()) - 1; got != 3 {
+		t.Fatalf("after the correction: %d summaries in three mornings, want 3", got)
+	}
+	if len(logs) != 1 || !strings.Contains(logs[0], "ahead") {
+		t.Fatalf("logs = %q, want one note about the clock", logs)
+	}
+}

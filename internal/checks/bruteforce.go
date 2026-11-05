@@ -519,7 +519,7 @@ func CheckFTPLogins(ctx context.Context, cfg *config.Config, store *state.Store)
 			// The newest new failure is the observation the report names.
 			freshFailures[ip] = alert.Observation{Producer: string(ProducerFTPScan), Stream: syslogStream(next), Cursor: strconv.FormatInt(rec.offset, 10), ObservedAt: at.UTC()}
 		case account != "":
-			findings = append(findings, ftpLoginFinding(ip, line, tracker.count(ip)))
+			findings = append(findings, ftpLoginFinding(ip, account, line, tracker.count(ip)))
 		}
 	}
 
@@ -601,7 +601,7 @@ func checkFTPLoginsLegacy(cfg *config.Config) []alert.Finding {
 			// failedFTP holds failures seen earlier in this batch; pure-ftpd logs
 			// chronologically so a brute-then-success appears as fails before the
 			// "logged in" line, letting the shared builder escalate.
-			findings = append(findings, ftpLoginFinding(ip, line, failedFTP[ip]))
+			findings = append(findings, ftpLoginFinding(ip, account, line, failedFTP[ip]))
 		}
 	}
 
@@ -754,7 +754,7 @@ func FTPLoginFinding(line string, cfg *config.Config) (alert.Finding, bool) {
 	if ignoredFTPClientIP(ip, cfg.InfraIPs) {
 		return alert.Finding{}, false
 	}
-	return ftpLoginFinding(ip, line, 0), true
+	return ftpLoginFinding(ip, account, line, 0), true
 }
 
 // ftpLoginFinding builds the finding for a successful FTP login from a
@@ -762,13 +762,18 @@ func FTPLoginFinding(line string, cfg *config.Config) (alert.Finding, bool) {
 // the brute-force threshold is a likely cracked credential and pages as
 // Critical; any other login is audit-level (Warning), matching the cPanel-login
 // detector ("logins are audit trail, not paging-level").
-func ftpLoginFinding(ip, line string, recentFails int) alert.Finding {
-	at, _ := syslogLineTime(line, time.Now())
-	account := parseFTPLoginAccount(line)
+// account is the user token ftpLoginFields validated.
+func ftpLoginFinding(ip, account, line string, recentFails int) alert.Finding {
+	now := time.Now()
+	at, _ := syslogLineTime(line, now)
+	if at.After(now) {
+		at = now
+	}
 	owner := ""
 	if account != "" {
 		owner = ftpAccountOwner(account)
 	}
+	details := truncate(line, ftpLoginDetailsBytes)
 	if recentFails >= ftpFailThreshold {
 		msg := fmt.Sprintf("FTP login succeeded from brute-force source %s after %d failed attempts", ip, recentFails)
 		if account != "" {
@@ -780,7 +785,7 @@ func ftpLoginFinding(ip, line string, recentFails int) alert.Finding {
 			DedupKey:  loginRecordKey(line),
 			SourceIP:  ip,
 			Message:   msg,
-			Details:   line,
+			Details:   details,
 			TenantID:  owner,
 			Timestamp: at,
 		}
@@ -791,11 +796,15 @@ func ftpLoginFinding(ip, line string, recentFails int) alert.Finding {
 		DedupKey:  loginRecordKey(line),
 		SourceIP:  ip,
 		Message:   fmt.Sprintf("FTP login from non-infra IP: %s", ip),
-		Details:   line,
+		Details:   details,
 		TenantID:  owner,
 		Timestamp: at,
 	}
 }
+
+// ftpLoginDetailsBytes bounds the record a login finding keeps. Every real
+// success record fits, so customer tracking can still read its account.
+const ftpLoginDetailsBytes = 512
 
 // FTPLoginAccount returns the authenticated account only from a complete
 // pure-ftpd success record. Findings keep the record, so customer tracking
@@ -830,23 +839,6 @@ func ftpLoginFields(line string) (ip, account string) {
 		return "", ""
 	}
 	return ip, msg[2]
-}
-
-// parseFTPLoginAccount extracts the account name from a pure-ftpd
-// "<user> is now logged in" line. The username is attacker-influenced (the
-// login name appears verbatim in the log), so this only splits on delimiters
-// and never interprets the value.
-func parseFTPLoginAccount(line string) string {
-	const marker = " is now logged in"
-	i := strings.Index(line, marker)
-	if i < 0 {
-		return ""
-	}
-	pre := strings.TrimRight(line[:i], " ")
-	if j := strings.LastIndexByte(pre, ' '); j >= 0 {
-		return pre[j+1:]
-	}
-	return pre
 }
 
 func ignoredFTPClientIP(ip string, infraIPs []string) bool {

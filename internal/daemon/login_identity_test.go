@@ -2,7 +2,9 @@ package daemon
 
 import (
 	"fmt"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/checks"
@@ -85,6 +87,24 @@ func TestFTPLoginCarriesOwnerWithSameKey(t *testing.T) {
 	}
 	if owned.Key() != bare.Key() || owned.Fingerprint() != bare.Fingerprint() {
 		t.Fatalf("the owner changed the identity: %q vs %q", owned.Key(), bare.Key())
+	}
+}
+
+// A login stamped in the future is reported now, and a long record is cut
+// while every real success line stays whole.
+func TestFTPLoginFindingClampsTimeAndBoundsDetails(t *testing.T) {
+	future := time.Now().Add(48*time.Hour).UTC().Format(time.RFC3339) + " host pure-ftpd[1]: (?@203.0.113.9) [INFO] alice@example.com is now logged in"
+	before := time.Now()
+	f, ok := checks.FTPLoginFinding(future, &config.Config{})
+	if !ok || f.Timestamp.Before(before) || f.Timestamp.After(time.Now()) {
+		t.Fatalf("future login = %v at %v; want clamped to now", ok, f.Timestamp)
+	}
+	if f.Details != future {
+		t.Fatalf("a real success line was cut: %q", f.Details)
+	}
+	long := "Nov  5 09:00:00 host pure-ftpd[1]: (?@203.0.113.9) [INFO] " + strings.Repeat("a", 600) + " is now logged in"
+	if f, ok = checks.FTPLoginFinding(long, &config.Config{}); !ok || len(f.Details) > 512+len("...") {
+		t.Fatalf("long record = %v with %d bytes of details", ok, len(f.Details))
 	}
 }
 

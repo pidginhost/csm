@@ -369,6 +369,10 @@ func (c *Collector) untilDue() time.Duration {
 	return min(time.Minute, max(time.Second, due.Sub(c.opts.Now())))
 }
 
+// maxSummaryLastSentLead is how far ahead of the clock a recorded send may
+// be and still hold back the dates it covers.
+const maxSummaryLastSentLead = 48 * time.Hour
+
 // SendDue checkpoints a due window before offering it to either sink. Failed
 // destinations retain that window and retry with backoff; completed
 // destinations are checkpointed separately. A crash after remote acceptance
@@ -381,6 +385,15 @@ func (c *Collector) SendDue(now time.Time) bool {
 	c.mu.Lock()
 	if now.Before(c.sum.Due) {
 		c.sum.clamp(now, c.opts.Location)
+		// A send stamped more than maxSummaryLastSentLead ahead came from a
+		// clock fault; honouring it would hold back every morning up to it.
+		if c.lastSent.After(now.Add(maxSummaryLastSentLead)) {
+			faulty := c.lastSent
+			c.lastSent = time.Time{}
+			c.mu.Unlock()
+			c.reportSinkError("summary", fmt.Errorf("last summary send at %s is ahead of the clock; resuming daily summaries", faulty.Format(time.RFC3339)))
+			c.mu.Lock()
+		}
 		// A correction back across this morning's send must not send the
 		// same local date twice, including after a restart.
 		if !c.lastSent.IsZero() && c.sum.Due.In(c.opts.Location).Format(time.DateOnly) <= c.lastSent.In(c.opts.Location).Format(time.DateOnly) {

@@ -18,14 +18,19 @@ import (
 // knownCustomerTTL is how long one successful login keeps an address known.
 const knownCustomerTTL = 30 * 24 * time.Hour
 
-// maxKnownCustomers bounds the set. A full set trims in one batch, down to
-// 95%, so each new address does not pay for a scan.
+// maxKnownCustomers bounds the set, split in two fixed halves by login
+// source. Any local user can write syslog with logger, so each half trims
+// only itself: a flood read from one source never evicts the other. A full
+// half trims in one batch, down to 95%, so each new address does not pay for
+// a scan.
 const maxKnownCustomers = 50000
 
-// maxSyslogCustomers bounds the logins read from syslog. Any local user can
-// write syslog with logger, so forged logins stay within this half and cannot
-// push out the logins read from session_log or the Exim mainlog.
+// maxSyslogCustomers bounds the logins read from syslog.
 const maxSyslogCustomers = maxKnownCustomers / 2
+
+// maxServiceCustomers bounds the logins read from session_log and the Exim
+// mainlog.
+const maxServiceCustomers = maxKnownCustomers - maxSyslogCustomers
 
 // maxKnownCustomerIPsPerAccount bounds the addresses one account holds from
 // one login source; logins without an account name form one group. Rotating
@@ -171,17 +176,27 @@ func (k *knownCustomers) Note(ip, kind, account string, at time.Time, src loginS
 	c := store.KnownCustomer{Kind: kind, Account: strings.Clone(normalizeSprayMailbox(account)), At: at, Syslog: syslog}
 	k.mu.Lock()
 	defer k.mu.Unlock()
-	k.putLocked(addr, c)
+	k.putLocked(addr, c, now)
 }
 
-// putLocked stores c for addr, then applies the caps.
-func (k *knownCustomers) putLocked(addr netip.Addr, c store.KnownCustomer) {
+// putLocked stores c for addr, then trims the half c belongs to. An expired
+// entry counts as absent.
+func (k *knownCustomers) putLocked(addr netip.Addr, c store.KnownCustomer, now time.Time) {
 	if old, exists := k.entries[addr]; exists {
-		// Neither a late report of an older login nor a syslog login over one
-		// a service log recorded: a forged line would relabel the entry and
-		// expose it to a syslog flood.
-		if old.At.After(c.At) || (!old.Syslog && c.Syslog) {
-			return
+		if !knownCustomerExpired(old.At, now) {
+			switch {
+			case !old.Syslog && c.Syslog:
+				// A forged syslog line would relabel the entry into the
+				// half a syslog flood can trim.
+				return
+			case old.Syslog && !c.Syslog:
+				// A service log is the stronger record; keep the later time.
+				if old.At.After(c.At) {
+					c.At = old.At
+				}
+			case old.At.After(c.At):
+				return
+			}
 		}
 		k.unlinkLocked(addr, old)
 	}
@@ -190,12 +205,11 @@ func (k *knownCustomers) putLocked(addr netip.Addr, c store.KnownCustomer) {
 	k.dirty[addr] = struct{}{}
 	delete(k.deleted, addr.String())
 	k.trimGroupLocked(customerGroup{c.Syslog, c.Account})
-	if k.syslogCount > maxSyslogCustomers {
+	if c.Syslog && k.syslogCount > maxSyslogCustomers {
 		k.evictLocked(true, k.syslogCount-(maxSyslogCustomers*95/100+1))
 	}
-	// A syslog login never evicts one a service log recorded.
-	if len(k.entries) > maxKnownCustomers {
-		k.evictLocked(c.Syslog, len(k.entries)-(maxKnownCustomers*95/100+1))
+	if service := len(k.entries) - k.syslogCount; !c.Syslog && service > maxServiceCustomers {
+		k.evictLocked(false, service-(maxServiceCustomers*95/100+1))
 	}
 }
 
@@ -253,12 +267,12 @@ func compareCustomerEntries(a, b customerEntry) int {
 	return a.addr.Compare(b.addr)
 }
 
-// evictLocked removes n entries, each the oldest of the largest remaining
-// group. With syslogOnly it removes only logins read from syslog.
-func (k *knownCustomers) evictLocked(syslogOnly bool, n int) {
+// evictLocked removes n entries of one half, each the oldest of the largest
+// remaining group.
+func (k *knownCustomers) evictLocked(syslog bool, n int) {
 	byGroup := make(map[customerGroup][]customerEntry)
 	for a, c := range k.entries {
-		if !syslogOnly || c.Syslog {
+		if c.Syslog == syslog {
 			g := customerGroup{c.Syslog, c.Account}
 			byGroup[g] = append(byGroup[g], customerEntry{a, c})
 		}
@@ -453,7 +467,7 @@ func (k *knownCustomers) Load(saved map[string]store.KnownCustomer) {
 		if !canonical {
 			k.queueDeleteLocked(e.raw)
 		}
-		k.putLocked(e.addr, e.c)
+		k.putLocked(e.addr, e.c, now)
 		// The store already holds an entry loaded unchanged.
 		if cur, ok := k.entries[e.addr]; ok && canonical && sameKnownCustomer(cur, saved[e.raw]) {
 			delete(k.dirty, e.addr)
@@ -575,11 +589,14 @@ func (d *Daemon) loadKnownCustomers() {
 
 // persistKnownCustomers purges expired entries and saves what changed.
 func (d *Daemon) persistKnownCustomers() {
-	sdb := store.Global()
-	if d.knownCustomers == nil || sdb == nil {
+	if d.knownCustomers == nil {
 		return
 	}
 	d.knownCustomers.Purge()
+	sdb := store.Global()
+	if sdb == nil {
+		return
+	}
 	upserts, deletes := d.knownCustomers.Changes()
 	if len(upserts)+len(deletes) == 0 {
 		return

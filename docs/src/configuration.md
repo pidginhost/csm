@@ -1076,7 +1076,9 @@ destination.
 A crash after a destination accepts a summary but before CSM saves that
 success can repeat it. Clock corrections are checked every minute. Moving
 back across one or more morning sends does not resend dates already covered,
-including after a restart. Sending resumes on the first unsent local date.
+including after a restart. Sending resumes on the first unsent local date. A
+send recorded more than two days ahead of the clock comes from a clock fault:
+CSM logs it once, ignores it and sends the next morning.
 
 Only the daemon counts findings. A one-off `csm scan --alert` prints every
 finding; its summary-class findings are neither emailed nor counted in the
@@ -1091,13 +1093,16 @@ logins.
 An IPv6 customer is recorded by its /64, so a host that changes privacy
 addresses stays known. Each account holds a bounded number of addresses per
 log source; logins without an account name share one budget, and an FTP
-login counts against the hosting account that owns the FTP account. When the
-history is full, the accounts holding the most addresses lose their oldest
-logins first, so a flood of logins evicts only its own accounts. Logins read
-from syslog (FTP, IMAP, POP and Postfix SMTP) use at most half of the
-history, because any local user can write to syslog; they never replace or
-evict cPanel, webmail and Exim logins. History is saved every minute and
-after log readers stop during a clean shutdown.
+login counts against the hosting account that owns the FTP account.
+
+History has two fixed halves: logins read from syslog (FTP, IMAP, POP and
+Postfix SMTP) and logins read from cPanel's session log and the Exim mainlog.
+Any local user can write to syslog, so each half trims only itself, and a
+syslog login never replaces a session log or Exim login for the same
+address. When a half is full, the accounts holding the most addresses lose
+their oldest logins first, so a flood of logins evicts only its own accounts.
+History is saved every minute and after log readers stop during a clean
+shutdown.
 
 ## Web UI Exposure
 

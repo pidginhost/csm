@@ -158,7 +158,7 @@ func TestFTPLoginAfterBruteforceStampsOwner(t *testing.T) {
 		"ftpuser@example.org": "",
 	}
 	for account, want := range cases {
-		f := ftpLoginFinding("203.0.113.9", "[08/Sep/2026 10:00:00] 203.0.113.9 "+account+" is now logged in", ftpFailThreshold)
+		f := ftpLoginFinding("203.0.113.9", account, "[08/Sep/2026 10:00:00] 203.0.113.9 "+account+" is now logged in", ftpFailThreshold)
 		if f.Check != "ftp_login_after_bruteforce" || f.TenantID != want {
 			t.Errorf("%s: %+v (want owner %q)", account, f, want)
 		}

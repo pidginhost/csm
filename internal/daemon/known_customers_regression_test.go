@@ -17,7 +17,7 @@ func TestKnownCustomersAccountRotationAtGlobalCap(t *testing.T) {
 	now := time.Now()
 	k, _ := knownCustomersAt(now)
 	// Separate accounts and networks fill the host budget legitimately.
-	for i := 0; i < maxKnownCustomers; i++ {
+	for i := 0; i < maxServiceCustomers; i++ {
 		ip := fmt.Sprintf("2001:db8:%x::1", i)
 		account := fmt.Sprintf("user%d", i)
 		if i < maxKnownCustomerIPsPerAccount {
@@ -26,7 +26,7 @@ func TestKnownCustomersAccountRotationAtGlobalCap(t *testing.T) {
 		k.Note(ip, knownCustomerCpanel, account, now.Add(-time.Hour), serviceLog)
 	}
 	k.Note("2001:db8:ffff::1", knownCustomerCpanel, "rotating", now, serviceLog)
-	if len(k.entries) != maxKnownCustomers {
+	if len(k.entries) != maxServiceCustomers {
 		t.Fatalf("one account rotation evicted unrelated customers: %d remain", len(k.entries))
 	}
 	if _, ok := k.Lookup("2001:db8:64::1"); !ok {

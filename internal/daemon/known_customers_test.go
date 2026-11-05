@@ -265,30 +265,30 @@ func knownCustomerTestAddr(i int) string {
 func TestKnownCustomersGlobalCapEvictsOldest(t *testing.T) {
 	now := time.Date(2026, 11, 5, 9, 0, 0, 0, time.UTC)
 	k, _ := knownCustomersAt(now)
-	for i := 0; i < maxKnownCustomers; i++ {
-		k.Note(knownCustomerTestAddr(i), knownCustomerCpanel, fmt.Sprintf("user%d", i), now.Add(-time.Duration(maxKnownCustomers-i)*time.Second), serviceLog)
+	for i := 0; i < maxServiceCustomers; i++ {
+		k.Note(knownCustomerTestAddr(i), knownCustomerCpanel, fmt.Sprintf("user%d", i), now.Add(-time.Duration(maxServiceCustomers-i)*time.Second), serviceLog)
 	}
-	if len(k.entries) != maxKnownCustomers {
-		t.Fatalf("set holds %d, want %d before the cap", len(k.entries), maxKnownCustomers)
+	if len(k.entries) != maxServiceCustomers {
+		t.Fatalf("set holds %d, want %d before the cap", len(k.entries), maxServiceCustomers)
 	}
 	// Re-noting a held address is no insert and evicts nothing.
-	k.Note(knownCustomerTestAddr(0), knownCustomerCpanel, "user0", now.Add(-time.Duration(maxKnownCustomers)*time.Second), serviceLog)
-	if len(k.entries) != maxKnownCustomers {
+	k.Note(knownCustomerTestAddr(0), knownCustomerCpanel, "user0", now.Add(-time.Duration(maxServiceCustomers)*time.Second), serviceLog)
+	if len(k.entries) != maxServiceCustomers {
 		t.Fatalf("an update evicted: %d entries", len(k.entries))
 	}
 
-	k.Note(knownCustomerTestAddr(maxKnownCustomers), knownCustomerCpanel, "new-user", now, serviceLog)
-	keep := maxKnownCustomers * 95 / 100
+	k.Note(knownCustomerTestAddr(maxServiceCustomers), knownCustomerCpanel, "new-user", now, serviceLog)
+	keep := maxServiceCustomers * 95 / 100
 	if len(k.entries) != keep+1 {
 		t.Fatalf("set holds %d after the cap, want %d", len(k.entries), keep+1)
 	}
-	evicted := maxKnownCustomers - keep
+	evicted := maxServiceCustomers - keep
 	for _, i := range []int{0, 1, evicted - 1} {
 		if _, ok := k.Lookup(knownCustomerTestAddr(i)); ok {
 			t.Errorf("old entry %d kept", i)
 		}
 	}
-	for _, i := range []int{evicted, evicted + 1, maxKnownCustomers - 1, maxKnownCustomers} {
+	for _, i := range []int{evicted, evicted + 1, maxServiceCustomers - 1, maxServiceCustomers} {
 		if _, ok := k.Lookup(knownCustomerTestAddr(i)); !ok {
 			t.Errorf("recent entry %d evicted", i)
 		}

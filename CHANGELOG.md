@@ -11,7 +11,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Security
 
-- A failed FTP login with a crafted user name no longer shows up as a successful FTP login.
+- FTP log text crafted to look like a successful login no longer counts as one.
 - The firewall now drops incoming IPv4 TCP packets that carry IP options, which blocks the CVE-2026-98432 attack on unpatched kernels.
 - Mail login tracking no longer attributes incomplete or ambiguous log identities to a mailbox.
 - A successful SMTP, IMAP or POP login no longer shields an address from slow brute-force blocking after it tried other mailboxes.
