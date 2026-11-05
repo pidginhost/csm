@@ -2,6 +2,7 @@ package emailspool
 
 import (
 	_ "embed"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -139,38 +140,52 @@ func (p *Policies) load(dir string) error {
 		setErr(fmt.Errorf("read mailer_classes.yaml: %w", err))
 	}
 
-	// http_proxy_ranges.yaml: an operator file replaces the built-in list.
-	// A missing, unreadable or unparsable file falls back to it, so a
-	// broken file never empties the exemption list.
-	raw := builtInProxyRanges
+	// http_proxy_ranges.yaml: an operator file replaces the built-in list,
+	// and a missing one means the built-in list. An unreadable or unparsable
+	// file keeps the last good list (the built-in one on first load), so a
+	// broken file never empties the exemption list. A file without a cidrs
+	// key (empty, truncated) is unparsable; "cidrs: []" is a deliberate
+	// empty list.
+	var cidrs []string
 	// #nosec G304 -- dir is the operator-supplied policy directory; filename is a fixed literal under it.
-	if data, err := os.ReadFile(filepath.Join(dir, "http_proxy_ranges.yaml")); err == nil {
+	data, err := os.ReadFile(filepath.Join(dir, "http_proxy_ranges.yaml"))
+	switch {
+	case os.IsNotExist(err):
+		cidrs = builtInProxyRanges.CIDRs
+	case err != nil:
+		setErr(fmt.Errorf("read http_proxy_ranges.yaml: %w", err))
+	default:
 		var op httpProxyRangesYAML
 		if uerr := yaml.Unmarshal(data, &op); uerr != nil {
 			setErr(fmt.Errorf("parse http_proxy_ranges.yaml: %w", uerr))
+		} else if op.CIDRs == nil {
+			setErr(errors.New("parse http_proxy_ranges.yaml: no cidrs list"))
 		} else {
-			raw = op
+			cidrs = op.CIDRs
 		}
-	} else if !os.IsNotExist(err) {
-		setErr(fmt.Errorf("read http_proxy_ranges.yaml: %w", err))
 	}
-	nets := make([]*net.IPNet, 0, len(raw.CIDRs))
-	for _, c := range raw.CIDRs {
-		_, n, perr := net.ParseCIDR(strings.TrimSpace(c))
-		if perr != nil {
-			setErr(fmt.Errorf("invalid CIDR %q in http_proxy_ranges.yaml: %w", c, perr))
-			continue
+	// proxyNets is nil only before the first load.
+	if cidrs == nil && p.proxyNets == nil {
+		cidrs = builtInProxyRanges.CIDRs
+	}
+	if cidrs != nil {
+		nets := make([]*net.IPNet, 0, len(cidrs))
+		for _, c := range cidrs {
+			_, n, perr := net.ParseCIDR(strings.TrimSpace(c))
+			if perr != nil {
+				setErr(fmt.Errorf("invalid CIDR %q in http_proxy_ranges.yaml: %w", c, perr))
+				continue
+			}
+			nets = append(nets, n)
 		}
-		nets = append(nets, n)
+		p.proxyNets = nets
 	}
-	p.proxyNets = nets
 
 	return firstErr
 }
 
-// Reload refreshes from dir. A corrupt mailer_classes.yaml keeps the
-// previous values; a corrupt http_proxy_ranges.yaml falls back to the
-// built-in list. Used by SIGHUP.
+// Reload refreshes from dir while keeping previous values for any category
+// whose new file is corrupt (existing reload-error contract). Used by SIGHUP.
 //
 //nolint:unused // consumed by E3
 func (p *Policies) Reload(dir string) error {

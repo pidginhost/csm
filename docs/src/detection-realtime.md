@@ -499,7 +499,7 @@ The detector runs four paths and only fires `email_php_relay_abuse` (Critical) w
 
 Path 5 (behavioural baseline) is deferred to Stage 2.
 
-Per-IP paths skip addresses whose requests are not a browser visitor: Cloudflare edges, payment gateway webhooks (Stripe, PayPal, Braintree, PayU, Revolut, Mollie) and uptime or cron services (UptimeRobot, Pingdom, StatusCake, Better Stack, HetrixTools, cron-job.org). CSM ships this list built in, taken from each provider's published list. An `http_proxy_ranges.yaml` in `policies_dir` (`version: 1` plus a `cidrs:` list) replaces it whole and reloads on SIGHUP; a missing, unreadable or corrupt file leaves the built-in list in force. To extend it, start from the built-in file in the CSM source, `internal/emailspool/embed/http_proxy_ranges.yaml`.
+Per-IP paths skip addresses whose requests are not a browser visitor: Cloudflare edges, payment gateway webhooks (Stripe, PayPal, Braintree, PayU, Revolut, Mollie) and uptime or cron services (UptimeRobot, Pingdom, StatusCake, Better Stack, HetrixTools, cron-job.org). CSM ships this list built in, taken from each provider's published list. An `http_proxy_ranges.yaml` in `policies_dir` (`version: 1` plus a `cidrs:` list) replaces it whole and reloads on SIGHUP. Without the file the built-in list applies. A file that cannot be read or parsed, or has no `cidrs:` list, keeps the last good list, which is the built-in one at startup; `cidrs: []` is a deliberate empty list. To extend it, start from the built-in file in the CSM source, `internal/emailspool/embed/http_proxy_ranges.yaml`.
 
 Some payment providers publish no source address list CSM could ship: Viva, Netopia, EuPlatesc, Twispay, JCC and Adyen. If your shops use them, add their ranges yourself.
 

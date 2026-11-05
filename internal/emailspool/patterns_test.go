@@ -155,6 +155,94 @@ func TestLoadPolicies_CorruptProxyFileKeepsBuiltIn(t *testing.T) {
 	}
 }
 
+func TestLoadPolicies_UnusableProxyFileKeepsBuiltIn(t *testing.T) {
+	cases := map[string]func(t *testing.T, path string){
+		"zero bytes":     func(t *testing.T, path string) { writeFile(t, path, "") },
+		"empty document": func(t *testing.T, path string) { writeFile(t, path, "---\n") },
+		"no cidrs key":   func(t *testing.T, path string) { writeFile(t, path, "version: 1\n") },
+		"null cidrs":     func(t *testing.T, path string) { writeFile(t, path, "version: 1\ncidrs:\n") },
+		"unreadable": func(t *testing.T, path string) {
+			if err := os.Mkdir(path, 0o755); err != nil {
+				t.Fatal(err)
+			}
+		},
+	}
+	for name, setup := range cases {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			setup(t, filepath.Join(dir, "http_proxy_ranges.yaml"))
+			pol, err := LoadPolicies(dir)
+			if err == nil || !strings.Contains(err.Error(), "http_proxy_ranges.yaml") {
+				t.Fatalf("LoadPolicies error = %v, want a http_proxy_ranges.yaml error", err)
+			}
+			if host := firstBuiltInHost(t); !pol.IsProxyIP(host) {
+				t.Errorf("unusable operator file must leave the built-in list in force, but %s does not match", host)
+			}
+		})
+	}
+}
+
+func TestLoadPolicies_ExplicitEmptyProxyListIsHonoured(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "http_proxy_ranges.yaml"), "version: 1\ncidrs: []\n")
+	pol, err := LoadPolicies(dir)
+	if err != nil {
+		t.Fatalf("LoadPolicies: %v", err)
+	}
+	if host := firstBuiltInHost(t); pol.IsProxyIP(host) {
+		t.Errorf("explicit empty list must replace the built-in list, but %s still matches", host)
+	}
+}
+
+func TestReload_CorruptProxyFileKeepsPreviousOperatorList(t *testing.T) {
+	for name, corrupt := range map[string]string{
+		"unparsable": "cidrs: [\n",
+		"zero bytes": "",
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "http_proxy_ranges.yaml")
+			writeFile(t, path, "version: 1\ncidrs: [198.51.100.0/24]\n")
+			pol, err := LoadPolicies(dir)
+			if err != nil {
+				t.Fatalf("LoadPolicies: %v", err)
+			}
+			writeFile(t, path, corrupt)
+			if err := pol.Reload(dir); err == nil || !strings.Contains(err.Error(), "parse http_proxy_ranges.yaml") {
+				t.Fatalf("Reload error = %v, want the proxy file parse error", err)
+			}
+			if !pol.IsProxyIP("198.51.100.7") {
+				t.Error("corrupt reload must keep the previously loaded operator list")
+			}
+			if host := firstBuiltInHost(t); pol.IsProxyIP(host) {
+				t.Errorf("corrupt reload must not swap in the built-in list, but %s matches", host)
+			}
+		})
+	}
+}
+
+func TestReload_MissingProxyFileRestoresBuiltIn(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "http_proxy_ranges.yaml")
+	writeFile(t, path, "version: 1\ncidrs: [198.51.100.0/24]\n")
+	pol, err := LoadPolicies(dir)
+	if err != nil {
+		t.Fatalf("LoadPolicies: %v", err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := pol.Reload(dir); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	if pol.IsProxyIP("198.51.100.7") {
+		t.Error("removed operator file must stop applying after reload")
+	}
+	if host := firstBuiltInHost(t); !pol.IsProxyIP(host) {
+		t.Errorf("removed operator file must restore the built-in list, but %s does not match", host)
+	}
+}
+
 func TestBuiltInProxyRanges_AllValid(t *testing.T) {
 	var raw httpProxyRangesYAML
 	if err := yaml.Unmarshal(defaultProxyRanges, &raw); err != nil {
