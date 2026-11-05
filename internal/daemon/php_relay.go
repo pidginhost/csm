@@ -923,6 +923,7 @@ func (e *evaluator) evaluatePaths(k scriptKey, sourceIP, cpuser string, now time
 func (e *evaluator) formRelayFindings(k scriptKey, ip, cpuser string, spread int, window time.Duration, now time.Time, ignored func(scriptKey) bool) []alert.Finding {
 	key := formRelayKey(ip)
 	since := now.Add(-window)
+	hours := fmt.Sprintf("%dh", window/time.Hour)
 	snapshot := e.form.evaluate(key, now, window, spread, ignored)
 	if snapshot.Count < spread {
 		return nil
@@ -966,7 +967,7 @@ func (e *evaluator) formRelayFindings(k scriptKey, ip, cpuser string, spread int
 			Severity:  alert.High,
 			Check:     "email_php_form_relay",
 			Path:      "form_relay",
-			Message:   fmt.Sprintf("Path 6: client %s made hosted sites mail %d different outside addresses in %s", ip, snapshot.Count, window),
+			Message:   fmt.Sprintf("Path 6: client %s made hosted sites mail %d different outside addresses in %s", ip, snapshot.Count, hours),
 			Details:   details.String(),
 			ScriptKey: string(k),
 			SourceIP:  ip,
@@ -991,7 +992,7 @@ func (e *evaluator) formRelayFindings(k scriptKey, ip, cpuser string, spread int
 			Message:  fmt.Sprintf("Bots use %s to mail outside addresses", sk),
 			Details: fmt.Sprintf("Client %s reached %d outside addresses through this script in %s.\n"+
 				"Add a captcha to the form or turn off its automatic reply to the submitter. "+
-				"If this is a legitimate bulk sender: csm phprelay ignore-script %s", ip, share.Count, window, sk),
+				"If this is a legitimate bulk sender: csm phprelay ignore-script %s", ip, share.Count, hours, sk),
 			// The details name the latest client; the script is the identity,
 			// so later clients update this finding instead of adding one.
 			DedupKey:  string(sk),

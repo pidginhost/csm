@@ -78,7 +78,7 @@ func TestPath6_FiresWhenClientMailsFiveOutsideAddresses(t *testing.T) {
 		t.Fatalf("IP findings = %d, want 1: %+v", len(ipF), *findings)
 	}
 	f := ipF[0]
-	wantMsg := "Path 6: client 203.0.113.10 made hosted sites mail 5 different outside addresses in 24h0m0s"
+	wantMsg := "Path 6: client 203.0.113.10 made hosted sites mail 5 different outside addresses in 24h"
 	if f.Severity != alert.High || f.Path != "form_relay" || f.SourceIP != path6IP || f.Message != wantMsg {
 		t.Fatalf("IP finding = %+v", f)
 	}
@@ -104,7 +104,7 @@ func TestPath6_FiresWhenClientMailsFiveOutsideAddresses(t *testing.T) {
 		s.CPUser != "usera" || s.Message != "Bots use "+k+" to mail outside addresses" {
 		t.Fatalf("script finding = %+v", s)
 	}
-	for _, want := range []string{path6IP, "5 outside addresses", "captcha", "csm phprelay ignore-script " + k} {
+	for _, want := range []string{path6IP, "5 outside addresses through this script in 24h.", "captcha", "csm phprelay ignore-script " + k} {
 		if !strings.Contains(s.Details, want) {
 			t.Errorf("script finding details miss %q:\n%s", want, s.Details)
 		}
