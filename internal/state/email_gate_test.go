@@ -465,20 +465,27 @@ func TestEmailExpiryBoundary(t *testing.T) {
 	}
 }
 
-// An acknowledgment of an explicit identity covers an ongoing condition while
-// it is reported or kept listed, and lapses once it is unseen for 24h. Other
-// baselines, as `csm baseline` writes them, never lapse.
+// An acknowledgment of a ruled event condition covers it while it is reported
+// or kept listed, and lapses once it is unseen for 24h. Other baselines, as
+// `csm baseline` writes them, and explicit identities of scan findings, whose
+// producer may report less than daily, never lapse.
 func TestExplicitIdentityAcknowledgmentLapsesWithCondition(t *testing.T) {
+	identities := []struct {
+		name   string
+		f      alert.Finding
+		lapses bool
+	}{
+		{"ruled event", alert.Finding{Check: "smtp_probe_abuse", Severity: alert.High, Message: "SMTP probe abuse from 203.0.113.5", DedupKey: "203.0.113.5"}, true},
+		{"ordinary", alert.Finding{Check: "smtp_probe_abuse", Severity: alert.High, Message: "SMTP probe abuse from 203.0.113.5"}, false},
+		{"scan identity", alert.Finding{Check: "db_post_injection", Severity: alert.High, Message: "Injected script in posts", DedupKey: "db=\"alice_wp\" prefix=\"wp_\""}, false},
+	}
 	for _, ack := range []string{"dismissal", "baseline"} {
 		for _, refresh := range []string{"report", "kept"} {
-			for _, explicit := range []bool{true, false} {
-				t.Run(fmt.Sprintf("%s/%s/explicit=%t", ack, refresh, explicit), func(t *testing.T) {
+			for _, id := range identities {
+				t.Run(fmt.Sprintf("%s/%s/%s", ack, refresh, id.name), func(t *testing.T) {
 					now := time.Now()
 					s := debounceStore(t, &now)
-					f := alert.Finding{Check: "smtp_probe_abuse", Severity: alert.High, Message: "SMTP probe abuse from 203.0.113.5"}
-					if explicit {
-						f.DedupKey = "203.0.113.5"
-					}
+					f := id.f
 					s.Update([]alert.Finding{f})
 					deliver(s, f)
 					if ack == "dismissal" {
@@ -504,17 +511,20 @@ func TestExplicitIdentityAcknowledgmentLapsesWithCondition(t *testing.T) {
 					if s.Update(nil); !s.Acknowledged(f) {
 						t.Fatalf("sweep dropped a condition refreshed by %s", refresh)
 					}
-					now = now.Add(time.Hour + time.Minute)
-					lapsed := explicit
+					now = now.Add(2 * time.Hour)
+					lapsed := id.lapses
 					if got := s.FilterNew([]alert.Finding{f}); (len(got) == 1) != lapsed {
-						t.Fatalf("history after 24h unseen: new=%d, want lapsed=%t", len(got), lapsed)
+						t.Fatalf("history after 25h unseen: new=%d, want lapsed=%t", len(got), lapsed)
 					}
 					s.Update(nil)
 					if _, present := s.EntryForKey(f.Key()); present == lapsed {
-						t.Fatalf("sweep after 24h unseen: present=%t, want lapsed=%t", present, lapsed)
+						t.Fatalf("sweep after 25h unseen: present=%t, want lapsed=%t", present, lapsed)
 					}
 					if got := offered(s, f); (len(got) == 1) != lapsed {
-						t.Fatalf("email after 24h unseen: offered=%d, want lapsed=%t", len(got), lapsed)
+						t.Fatalf("email after 25h unseen: offered=%d, want lapsed=%t", len(got), lapsed)
+					}
+					if s.Update([]alert.Finding{f}); s.Acknowledged(f) == lapsed {
+						t.Fatalf("re-report after 25h unseen: acknowledged=%t, want lapsed=%t", s.Acknowledged(f), lapsed)
 					}
 				})
 			}

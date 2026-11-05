@@ -30,14 +30,16 @@ stream keeps its separate delivery policy.
 SMTP probe, self-deleting dropper, sensitive file write, email AV degraded
 and auto-block notice findings keep one alert identity per condition and
 severity: the source address, the removed file, directory or document root,
-the written file with its writer and, when readable, its content, the scanner
-condition, or the kind of notice. Counts, process or message IDs, ages, sizes,
-error text and the files sampled in a burst can change without a new alert.
-Dismissing one of these findings, or another finding that keeps one identity
-while its counts change, covers its later reports until it goes unseen for 24
-hours. A return after that alerts again. Cross-account summaries alert again
-when the affected accounts change, including after a dismissal. More reports
-for the same accounts do not repeat the summary.
+the written file with its writer and, when the write can be tied to the file's
+content, that content, the scanner condition, or the kind of notice. Counts,
+process or message IDs, ages, sizes, error text and the files sampled in a
+burst can change without a new alert. Dismissing one of these findings covers
+its later reports until it goes unseen for 24 hours. A return after that
+alerts again. Cross-account summaries alert again when the affected accounts
+change, including after a dismissal. More reports for the same accounts do
+not repeat the summary. Summaries are derived per dispatch batch, so different
+scan tiers or realtime batches can report different subsets of the affected
+accounts, and each subset is emailed once.
 
 An undismissed finding can alert again after 24 hours without an observation,
 even when no other batch arrived to clean up old state. A finding that stays

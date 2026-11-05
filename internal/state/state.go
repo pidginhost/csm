@@ -106,12 +106,27 @@ func (e *Entry) aliveAt() time.Time {
 	return e.LastSeen
 }
 
-// permanent reports a baseline or dismissal that never lapses. One on an
-// explicit identity names an ongoing condition, so it covers later reports
-// only until the condition clears. Other baselines keep the meaning of
-// `csm baseline`, also for findings whose producer reports less than daily.
+// lapsingAcknowledgments names the checks whose explicit identity is an event
+// condition, reported for as long as it lasts. An acknowledgment of one
+// covers later reports only until the condition clears. Scan findings keep
+// permanent acknowledgments: a producer that reports once a day or less would
+// otherwise lose the dismissal on every cycle.
+var lapsingAcknowledgments = map[string]bool{
+	"auto_block":                     true,
+	"email_av_degraded":              true,
+	"self_deleting_dropper_realtime": true,
+	"sensitive_file_modified":        true,
+	"smtp_probe_abuse":               true,
+}
+
+// permanent reports a baseline or dismissal that never lapses.
 func (e *Entry) permanent(key string) bool {
-	return e.IsBaseline && !strings.HasPrefix(key, "dedup:")
+	if !e.IsBaseline {
+		return false
+	}
+	identity, explicit := strings.CutPrefix(key, "dedup:")
+	check, _, _ := strings.Cut(identity, ":")
+	return !explicit || !lapsingAcknowledgments[check]
 }
 
 // cleared reports whether the condition behind an entry that can lapse has
@@ -819,7 +834,6 @@ func (s *Store) Entries() map[string]*Entry {
 	return copy
 }
 
-// EntryForKey returns the dedup entry for a finding key (check:message).
 // Acknowledged reports whether a baseline or dismissal still covers f.
 func (s *Store) Acknowledged(f alert.Finding) bool {
 	s.mu.RLock()
@@ -829,6 +843,7 @@ func (s *Store) Acknowledged(f alert.Finding) bool {
 	return ok && e.IsBaseline && e.Hash == findingHash(f) && !e.cleared(key, s.clock())
 }
 
+// EntryForKey returns the dedup entry for a finding key (check:message).
 func (s *Store) EntryForKey(key string) (Entry, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
