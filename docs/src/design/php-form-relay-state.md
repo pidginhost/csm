@@ -21,10 +21,13 @@ does not report capacity loss.
 
 Each account retains its most recently observed staff clients. A delayed staff
 record cannot replace a newer one merely because it arrived later. Staff history
-remains separate from recipient history and expires on its existing schedule.
+is stored apart from recipient history and expires on its existing schedule.
 
-All state transitions and reads hold the store mutex. Returned script shares and
-recipient domains are copies. Separate calls are not an atomic snapshot: the
-evaluator reads the count, script shares and recipient domains one call at a
-time, so a sweep running between those calls can leave a finding's details
-slightly different from its count.
+All state transitions and reads hold the store mutex. The evaluator runs only
+for a message the store counted. It reads the client's count, script shares and
+recipient domains and claims the client cooldown in one call under that lock, so
+expiry cannot remove evidence between counting it and building the finding.
+Before counting, that call drops recipients the client reached through an
+account where it is now staff, or through a script that is now ignored, so a
+current exemption also covers mail recorded before it applied. Returned script
+shares and recipient domains are copies.
