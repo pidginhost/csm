@@ -46,7 +46,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - Spam learning no longer stops for every report when rspamd hashes one learned message differently; only that message's learning is dropped.
 - Mail from large shared services such as Gmail no longer crowds other senders out of spam source detection on busy hosts.
 - PHP relay detection now attributes mail to the server-observed address when the mail header lists more than one address.
-- PHP relay detection now skips visitors arriving through Cloudflare and known payment or monitoring services even when no policy file is installed.
+- PHP relay detection now skips visitors arriving through Cloudflare and known payment services even when no policy file is installed.
 
 ## [4.9.0] - 2026-11-02
 

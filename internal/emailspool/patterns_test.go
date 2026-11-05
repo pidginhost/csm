@@ -4,9 +4,11 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -96,6 +98,30 @@ cidrs:
 	}
 }
 
+func TestLoadHTTPProxyRanges_BareIPs(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "http_proxy_ranges.yaml"), `
+version: 1
+cidrs:
+  - 192.0.2.10
+  - "2001:db8::5"
+`)
+	pol, err := LoadPolicies(dir)
+	if err != nil {
+		t.Fatalf("LoadPolicies: %v", err)
+	}
+	for ip, want := range map[string]bool{
+		"192.0.2.10":  true,
+		"192.0.2.11":  false,
+		"2001:db8::5": true,
+		"2001:db8::6": false,
+	} {
+		if got := pol.IsProxyIP(ip); got != want {
+			t.Errorf("IsProxyIP(%s) = %v, want %v (bare IPs are /32 or /128)", ip, got, want)
+		}
+	}
+}
+
 // firstBuiltInHost returns the first host of the first CIDR in the embedded
 // proxy list, so the tests never carry a literal provider address.
 func firstBuiltInHost(t *testing.T) string {
@@ -161,6 +187,7 @@ func TestLoadPolicies_UnusableProxyFileKeepsBuiltIn(t *testing.T) {
 		"empty document": func(t *testing.T, path string) { writeFile(t, path, "---\n") },
 		"no cidrs key":   func(t *testing.T, path string) { writeFile(t, path, "version: 1\n") },
 		"null cidrs":     func(t *testing.T, path string) { writeFile(t, path, "version: 1\ncidrs:\n") },
+		"no valid cidrs": func(t *testing.T, path string) { writeFile(t, path, "version: 1\ncidrs: [not-a-cidr, 300.1.2.3/24]\n") },
 		"unreadable": func(t *testing.T, path string) {
 			if err := os.Mkdir(path, 0o755); err != nil {
 				t.Fatal(err)
@@ -195,9 +222,10 @@ func TestLoadPolicies_ExplicitEmptyProxyListIsHonoured(t *testing.T) {
 }
 
 func TestReload_CorruptProxyFileKeepsPreviousOperatorList(t *testing.T) {
-	for name, corrupt := range map[string]string{
-		"unparsable": "cidrs: [\n",
-		"zero bytes": "",
+	for name, tc := range map[string]struct{ corrupt, wantErr string }{
+		"unparsable":     {"cidrs: [\n", "parse http_proxy_ranges.yaml"},
+		"zero bytes":     {"", "parse http_proxy_ranges.yaml"},
+		"no valid cidrs": {"cidrs: [not-a-cidr]\n", `invalid CIDR "not-a-cidr"`},
 	} {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -207,9 +235,9 @@ func TestReload_CorruptProxyFileKeepsPreviousOperatorList(t *testing.T) {
 			if err != nil {
 				t.Fatalf("LoadPolicies: %v", err)
 			}
-			writeFile(t, path, corrupt)
-			if err := pol.Reload(dir); err == nil || !strings.Contains(err.Error(), "parse http_proxy_ranges.yaml") {
-				t.Fatalf("Reload error = %v, want the proxy file parse error", err)
+			writeFile(t, path, tc.corrupt)
+			if err := pol.Reload(dir); err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("Reload error = %v, want %q", err, tc.wantErr)
 			}
 			if !pol.IsProxyIP("198.51.100.7") {
 				t.Error("corrupt reload must keep the previously loaded operator list")
@@ -266,7 +294,8 @@ func TestBuiltInProxyRanges_AllValid(t *testing.T) {
 	}
 
 	// Every entry sits in a provider block whose heading is followed by
-	// its official source URL.
+	// its official source URL and retrieval date.
+	sourceLine := regexp.MustCompile(`^# source: https://\S+ \(retrieved (\d{4}-\d{2}-\d{2})\)$`)
 	lines := strings.Split(string(defaultProxyRanges), "\n")
 	providers, sources := 0, 0
 	sourced := false
@@ -281,6 +310,12 @@ func TestBuiltInProxyRanges_AllValid(t *testing.T) {
 			}
 		case strings.HasPrefix(l, "# source:"):
 			sources++
+			m := sourceLine.FindStringSubmatch(l)
+			if m == nil {
+				t.Errorf("line %d: %q is not '# source: https://<url> (retrieved YYYY-MM-DD)'", i+1, l)
+			} else if _, err := time.Parse(time.DateOnly, m[1]); err != nil {
+				t.Errorf("line %d: retrieval date %q: %v", i+1, m[1], err)
+			}
 		case strings.HasPrefix(l, "- ") && !sourced:
 			t.Fatalf("line %d: entry %q is outside a sourced provider block", i+1, l)
 		}

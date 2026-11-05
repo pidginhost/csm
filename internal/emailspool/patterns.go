@@ -99,6 +99,32 @@ func mustProxyRanges(data []byte) httpProxyRangesYAML {
 	return raw
 }
 
+// parseProxyCIDRs parses http_proxy_ranges.yaml entries; a bare IP counts
+// as /32 or /128. Invalid entries are reported and skipped. The result is
+// never nil, so an explicit empty list stays distinguishable from a failed
+// load.
+func parseProxyCIDRs(cidrs []string, setErr func(error)) []*net.IPNet {
+	nets := make([]*net.IPNet, 0, len(cidrs))
+	for _, c := range cidrs {
+		s := strings.TrimSpace(c)
+		if ip := net.ParseIP(s); ip != nil {
+			bits := 128
+			if v4 := ip.To4(); v4 != nil {
+				ip, bits = v4, 32
+			}
+			nets = append(nets, &net.IPNet{IP: ip, Mask: net.CIDRMask(bits, bits)})
+			continue
+		}
+		_, n, err := net.ParseCIDR(s)
+		if err != nil {
+			setErr(fmt.Errorf("invalid CIDR %q in http_proxy_ranges.yaml: %w", c, err))
+			continue
+		}
+		nets = append(nets, n)
+	}
+	return nets
+}
+
 // LoadPolicies reads all known policy files in dir. A missing
 // mailer_classes.yaml means no entries; a missing, unreadable or corrupt
 // http_proxy_ranges.yaml means the built-in list. Corrupt files return an
@@ -144,14 +170,14 @@ func (p *Policies) load(dir string) error {
 	// and a missing one means the built-in list. An unreadable or unparsable
 	// file keeps the last good list (the built-in one on first load), so a
 	// broken file never empties the exemption list. A file without a cidrs
-	// key (empty, truncated) is unparsable; "cidrs: []" is a deliberate
-	// empty list.
-	var cidrs []string
+	// key (empty, truncated) or without one valid entry is unparsable;
+	// "cidrs: []" is a deliberate empty list.
+	var nets []*net.IPNet
 	// #nosec G304 -- dir is the operator-supplied policy directory; filename is a fixed literal under it.
 	data, err := os.ReadFile(filepath.Join(dir, "http_proxy_ranges.yaml"))
 	switch {
 	case os.IsNotExist(err):
-		cidrs = builtInProxyRanges.CIDRs
+		nets = parseProxyCIDRs(builtInProxyRanges.CIDRs, setErr)
 	case err != nil:
 		setErr(fmt.Errorf("read http_proxy_ranges.yaml: %w", err))
 	default:
@@ -161,23 +187,18 @@ func (p *Policies) load(dir string) error {
 		} else if op.CIDRs == nil {
 			setErr(errors.New("parse http_proxy_ranges.yaml: no cidrs list"))
 		} else {
-			cidrs = op.CIDRs
+			nets = parseProxyCIDRs(op.CIDRs, setErr)
+			if len(nets) == 0 && len(op.CIDRs) > 0 {
+				setErr(errors.New("parse http_proxy_ranges.yaml: no valid cidrs"))
+				nets = nil
+			}
 		}
 	}
 	// proxyNets is nil only before the first load.
-	if cidrs == nil && p.proxyNets == nil {
-		cidrs = builtInProxyRanges.CIDRs
+	if nets == nil && p.proxyNets == nil {
+		nets = parseProxyCIDRs(builtInProxyRanges.CIDRs, setErr)
 	}
-	if cidrs != nil {
-		nets := make([]*net.IPNet, 0, len(cidrs))
-		for _, c := range cidrs {
-			_, n, perr := net.ParseCIDR(strings.TrimSpace(c))
-			if perr != nil {
-				setErr(fmt.Errorf("invalid CIDR %q in http_proxy_ranges.yaml: %w", c, perr))
-				continue
-			}
-			nets = append(nets, n)
-		}
+	if nets != nil {
 		p.proxyNets = nets
 	}
 

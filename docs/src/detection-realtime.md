@@ -510,9 +510,13 @@ from the header's end.
 
 Path 5 (behavioural baseline) is deferred to Stage 2.
 
-Per-IP paths skip addresses whose requests are not a browser visitor: Cloudflare edges, payment gateway webhooks (Stripe, PayPal, Braintree, PayU, Revolut, Mollie) and uptime or cron services (UptimeRobot, Pingdom, StatusCake, Better Stack, HetrixTools, cron-job.org). CSM ships this list built in, taken from each provider's published list. An `http_proxy_ranges.yaml` in `policies_dir` (`version: 1` plus a `cidrs:` list) replaces it whole and reloads on SIGHUP. Without the file the built-in list applies. A file that cannot be read or parsed, or has no `cidrs:` list, keeps the last good list, which is the built-in one at startup; `cidrs: []` is a deliberate empty list. To extend it, start from the built-in file in the CSM source, `internal/emailspool/embed/http_proxy_ranges.yaml`.
+Per-IP paths skip addresses whose requests are not a browser visitor: Cloudflare edges and payment gateway webhooks (Stripe, PayPal, Braintree, PayU, Revolut, Mollie). CSM ships this list built in, taken from each provider's published list.
 
-Some payment providers publish no source address list CSM could ship: Viva, Netopia, EuPlatesc, Twispay, JCC and Adyen. If your shops use them, add their ranges yourself.
+Uptime monitors and cron services are not on the list. Anyone with an account there can schedule POSTs with any form body to any URL, so exempting their addresses would let a bot relay form spam through them unseen. If you trust a specific cron service, you can add its ranges yourself, knowing that anyone with an account at that service can use them.
+
+An `http_proxy_ranges.yaml` in `policies_dir` (`version: 1` plus a `cidrs:` list; a bare IP counts as /32 or /128) replaces the built-in list whole and reloads on SIGHUP. Without the file the built-in list applies. A file that cannot be read or parsed, has no `cidrs:` list, or has no valid entry keeps the last good list, which is the built-in one at startup; `cidrs: []` is a deliberate empty list. To extend the list, start from the built-in file in the CSM source, `internal/emailspool/embed/http_proxy_ranges.yaml`. Your file replaces the whole list, so later CSM updates to the built-in entries do not reach you until you copy them in again.
+
+Netopia, EuPlatesc, Twispay, JCC and Adyen publish no source address list, and Viva's list could not be fetched when the built-in list was made. If your shops use them, add their ranges yourself.
 
 The detector starts a one-shot retrospective scan of `exim_mainlog` at daemon startup so Path 2b can fire on history already on disk. `IN_Q_OVERFLOW` triggers a bounded recovery walk of the spool (capped at 1000 files; if more were skipped, a `email_php_relay_overflow_scan_truncated` Critical fires too -- Path 2b backstops the missed messages).
 
