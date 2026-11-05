@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -494,6 +495,36 @@ func TestWouldBlockCustomerInSummary(t *testing.T) {
 	s = sendSummary(t, d, capture, time.Now().Add(49*time.Hour))
 	if len(s.WouldBlock) != 50 || s.WouldBlockMore != 5 {
 		t.Fatalf("would-block = %d listed + %d more, want 50 + 5", len(s.WouldBlock), s.WouldBlockMore)
+	}
+}
+
+// A customer alert whose email fails still reaches the operator: the next
+// daily summary lists the block (P3-R32).
+func TestCustomerBlockListedInSummaryWhenAlertFails(t *testing.T) {
+	const ip = "203.0.113.19"
+	d, _, blocker, capture := customerBlockSetup(t)
+	when := customerLogin(d, ip)
+	blockDigestSendEmail = func(_ *config.Config, subject, body string) error {
+		if strings.Contains(subject, "known customer") {
+			return errors.New("fixture smtp down")
+		}
+		capture.mu.Lock()
+		defer capture.mu.Unlock()
+		capture.emails = append(capture.emails, customerMail{subject, body})
+		return nil
+	}
+	d.dispatchBatch([]alert.Finding{smtpBruteFrom(ip)})
+	if !blocker.IsBlocked(ip) || len(capture.customerEmails()) != 0 {
+		t.Fatalf("blocked=%v customer emails=%+v, want a block whose alert email failed", blocker.IsBlocked(ip), capture.customerEmails())
+	}
+	s := sendSummary(t, d, capture, time.Now().Add(25*time.Hour))
+	if len(s.CustomerBlocks) != 1 || s.CustomerBlocks[0].Target != ip || s.CustomerBlocks[0].Check != "smtp_bruteforce" {
+		t.Fatalf("summary customer blocks = %+v, want the block of %s", s.CustomerBlocks, ip)
+	}
+	capture.mu.Lock()
+	defer capture.mu.Unlock()
+	if len(capture.emails) != 1 || !strings.Contains(capture.emails[0].body, "Known customer: "+ip+" cpanel login as alice at "+when) {
+		t.Fatalf("summary emails = %+v, want one naming the customer", capture.emails)
 	}
 }
 

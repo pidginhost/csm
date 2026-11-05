@@ -1340,7 +1340,8 @@ email body, for chat tools, and `csm` holds the data.
 - `summary.muted` counts summary findings of checks in `alerts.email.disabled_checks`.
 - `summary.sources` lists the 10 addresses with the most summary findings: `ip`, `count`, and `country` when GeoIP knows it.
 - `summary.watched` counts watched-country blocks: `total`, `by_country` and `by_category`. It stays empty without `alerts.block_digest.enabled`.
-- `summary.would_block` lists dry-run and observe-mode verdicts that would have blocked known customers, as customer block objects (below), at most 50; `summary.would_block_more` counts further verdicts. Both are left out when empty.
+- `summary.customer_blocks` lists the applied blocks that hit known customers, as customer block objects (below), at most 50; `summary.customer_blocks_more` counts further blocks. Both are left out when empty.
+- `summary.would_block` lists dry-run and observe-mode verdicts that would have blocked known customers, as customer block objects, at most 50; `summary.would_block_more` counts further verdicts. Both are left out when empty.
 
 Each count map holds at most 512 keys; later keys count under `other`.
 

@@ -494,7 +494,8 @@ challenge timeouts, central intelligence and incident blocks.
 
 The alert is the false-positive check of automatic blocking, never an
 exemption. The block stands with its configured length, and its notice still
-goes to the daily summary. A login with stolen credentials also makes an
+goes to the daily summary, which also lists the block with its customers, so
+a failed alert still reaches you. A login with stolen credentials also makes an
 address known, so the alert can show the block of an attacker holding a
 customer's password, which is worth seeing too. Each applied block sends at
 most one message; a later new block of the same address sends another. A

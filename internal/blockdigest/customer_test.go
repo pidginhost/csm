@@ -2,6 +2,7 @@ package blockdigest
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -208,5 +209,85 @@ func TestWouldBlockSectionEmptyByDefault(t *testing.T) {
 	_, section, ok := strings.Cut(body, "Known customers a dry-run or observe-mode verdict would have blocked:\n")
 	if !ok || !strings.HasPrefix(section, "  (none)\n") {
 		t.Fatalf("summary has no empty would-block section:\n%s", body)
+	}
+}
+
+// Applied blocks that hit known customers are listed in the next daily
+// summary, so a failed customer alert still reaches the operator. The list is
+// capped like the would-block list, survives a restart and rolls over with
+// the summary.
+func TestAppliedCustomerBlocksListedInDailySummary(t *testing.T) {
+	var capture summaryCapture
+	saved := &summaryStore{}
+	opts := Options{
+		EmailSink: func(subject, body string) error {
+			if strings.Contains(subject, "known customer") {
+				return errors.New("fixture smtp down")
+			}
+			return capture.email(subject, body)
+		},
+		WebhookSink: capture.webhook, LoadSummary: saved.load, SaveSummary: saved.save,
+	}
+	c := summaryCollector(opts)
+	c.AlertCustomerBlocks([]CustomerBlock{{Target: "203.0.113.5", Reason: "SMTP brute force from 203.0.113.5", Check: "smtp_bruteforce",
+		Hits: []CustomerHit{{IP: "203.0.113.5", Kind: "cpanel", Account: "alice", At: customerLoginAt}}}})
+	if len(capture.sent()) != 0 {
+		t.Fatalf("customer alert email delivered: %+v", capture.sent())
+	}
+	for i := range maxWouldBlock + 1 {
+		ip := fmt.Sprintf("192.0.2.%d", i+1)
+		c.AlertCustomerBlocks([]CustomerBlock{{Target: ip, Reason: "fixture", Hits: []CustomerHit{{IP: ip, Kind: "pop", At: customerLoginAt}}}})
+	}
+	c.Flush()
+
+	c = summaryCollector(opts)
+	c.load()
+	c.AlertCustomerBlocks([]CustomerBlock{{Target: "198.51.100.0/24", Reason: "AUTO-NETBLOCK: 198.51.100.0/24 blocked (5 IPs from same subnet)",
+		Hits: subnetCustomerHits(5), More: 195}})
+	due := summaryDueOf(c)
+	c.SendDue(due)
+
+	summaries := func() []*Summary {
+		var out []*Summary
+		for _, p := range capture.webhooks {
+			if p.CSM.Event == "daily_summary" {
+				out = append(out, p.CSM.Summary)
+			}
+		}
+		return out
+	}
+	sent := summaries()
+	if len(sent) != 1 {
+		t.Fatalf("daily summary webhooks = %d, want 1", len(sent))
+	}
+	s := sent[0]
+	if len(s.CustomerBlocks) != maxWouldBlock || s.CustomerBlocksMore != 3 {
+		t.Fatalf("customer blocks = %d listed + %d more, want %d + 3", len(s.CustomerBlocks), s.CustomerBlocksMore, maxWouldBlock)
+	}
+	if b := s.CustomerBlocks[0]; b.Target != "203.0.113.5" || b.Check != "smtp_bruteforce" || b.Reason != "SMTP brute force from 203.0.113.5" || len(b.Hits) != 1 || b.Hits[0].Account != "alice" {
+		t.Fatalf("first customer block = %+v", b)
+	}
+	mails := capture.sent()
+	if len(mails) != 1 || !strings.Contains(mails[0].subject, "daily summary") {
+		t.Fatalf("emails = %+v, want the daily summary only", mails)
+	}
+	body := mails[0].body
+	for _, want := range []string{
+		"Automatic blocks that hit known customers:\n  Block: 203.0.113.5\n",
+		"    Check: smtp_bruteforce\n",
+		"    Known customer: 203.0.113.5 cpanel login as alice at 2026-06-10 08:15 UTC\n",
+		"  and 3 more blocks\n",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("summary body has no %q:\n%s", want, body)
+		}
+	}
+
+	c.SendDue(nextSummaryDue(due, time.UTC))
+	if sent = summaries(); len(sent) != 2 || len(sent[1].CustomerBlocks) != 0 || sent[1].CustomerBlocksMore != 0 {
+		t.Fatalf("next summary keeps the sent customer blocks: %+v", sent)
+	}
+	if _, section, _ := strings.Cut(capture.sent()[1].body, "Automatic blocks that hit known customers:\n"); !strings.HasPrefix(section, "  (none)\n") {
+		t.Fatalf("next summary has no empty customer block section:\n%s", capture.sent()[1].body)
 	}
 }

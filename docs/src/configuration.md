@@ -1055,6 +1055,7 @@ It covers the window since the previous summary:
 - blocks applied, by kind, including netblocks and promotions to a permanent block;
 - challenges, and mail login advisories that never block, such as spray observe mode;
 - the 10 addresses with the most summary findings, with their country when GeoIP knows it;
+- automatic blocks that hit a known customer, as their immediate alert named them, so a failed alert still reaches you: up to 50 a day, then a count of further blocks;
 - dry-run block verdicts and spray observe-mode verdicts that would have blocked a known customer, listed alongside their finding counts: up to 50 blocked addresses or networks a day, each listed once, then a count of further verdicts;
 - with `alerts.block_digest.enabled`, watched-country blocks by country and category, once they reach `min_block`.
 

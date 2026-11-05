@@ -28,17 +28,24 @@ type CustomerBlock struct {
 	More   int           `json:"more,omitempty"`
 }
 
-// maxWouldBlock caps the would-block verdicts one daily summary lists.
+// maxWouldBlock caps each customer block list of one daily summary: the
+// would-block verdicts and the applied blocks.
 const maxWouldBlock = 50
 
 // AlertCustomerBlocks sends one email and one webhook event naming every
 // block in blocks. It is the false-positive signal of automatic blocking, so
 // it goes out without Watch, ignores LiveChannel, and has no cap of its own:
-// a cap an attacker could fill would hide it.
+// a cap an attacker could fill would hide it. The daily summary lists the
+// blocks too, so a failed send still reaches the operator.
 func (c *Collector) AlertCustomerBlocks(blocks []CustomerBlock) {
 	if len(blocks) == 0 {
 		return
 	}
+	c.mu.Lock()
+	for _, b := range blocks {
+		c.sum.noteCustomerBlock(b)
+	}
+	c.mu.Unlock()
 	plan := c.beginDelivery(func(channel string) bool {
 		return c.opts.DeliveryEnabled == nil || c.opts.DeliveryEnabled("customer_block", channel)
 	}, nil)
@@ -73,6 +80,16 @@ func (s *Summary) noteWouldBlock(b CustomerBlock) {
 		return
 	}
 	s.WouldBlockMore++
+}
+
+// noteCustomerBlock lists each applied block, since each is a block of its
+// own, up to maxWouldBlock, then counts the rest.
+func (s *Summary) noteCustomerBlock(b CustomerBlock) {
+	if len(s.CustomerBlocks) < maxWouldBlock {
+		s.CustomerBlocks = append(s.CustomerBlocks, b)
+		return
+	}
+	s.CustomerBlocksMore++
 }
 
 func (c *Collector) writeCustomerBlock(b *strings.Builder, indent string, blk CustomerBlock) {

@@ -65,6 +65,11 @@ type Summary struct {
 	// customers, at most maxWouldBlock; WouldBlockMore counts the rest.
 	WouldBlock     []CustomerBlock `json:"would_block,omitempty"`
 	WouldBlockMore int             `json:"would_block_more,omitempty"`
+	// CustomerBlocks lists the applied blocks that hit known customers, at
+	// most maxWouldBlock; CustomerBlocksMore counts the rest. Each was
+	// alerted at once; the summary still names it when that send failed.
+	CustomerBlocks     []CustomerBlock `json:"customer_blocks,omitempty"`
+	CustomerBlocksMore int             `json:"customer_blocks_more,omitempty"`
 }
 
 // One pending window bounds retry state during a prolonged outage. Findings
@@ -242,6 +247,10 @@ func (s *Summary) merge(o Summary) {
 		s.noteWouldBlock(b)
 	}
 	s.WouldBlockMore += o.WouldBlockMore
+	for _, b := range o.CustomerBlocks {
+		s.noteCustomerBlock(b)
+	}
+	s.CustomerBlocksMore += o.CustomerBlocksMore
 }
 
 func (s *Summary) total() int {

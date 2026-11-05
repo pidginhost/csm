@@ -254,6 +254,17 @@ func (c *Collector) summaryBody(s Summary, until time.Time) string {
 		fmt.Fprintln(&b, "  (none)")
 	}
 	fmt.Fprintln(&b)
+	fmt.Fprintln(&b, "Automatic blocks that hit known customers:")
+	for _, blk := range s.CustomerBlocks {
+		c.writeCustomerBlock(&b, "  ", blk)
+	}
+	switch {
+	case len(s.CustomerBlocks) == 0:
+		fmt.Fprintln(&b, "  (none)")
+	case s.CustomerBlocksMore > 0:
+		fmt.Fprintf(&b, "  and %d more blocks\n", s.CustomerBlocksMore)
+	}
+	fmt.Fprintln(&b)
 	fmt.Fprintln(&b, "Known customers a dry-run or observe-mode verdict would have blocked:")
 	for _, w := range s.WouldBlock {
 		c.writeCustomerBlock(&b, "  ", w)
