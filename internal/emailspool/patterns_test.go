@@ -383,3 +383,26 @@ func TestBuiltInProxyRanges_IncludesCDNs(t *testing.T) {
 		}
 	}
 }
+
+// An entry error alone reads as "that entry was skipped". When no entry is
+// valid the whole file is rejected, and the error must say so.
+func TestLoadPolicies_NoValidCIDRsErrorNamesRejectedFile(t *testing.T) {
+	for name, tc := range map[string]struct{ body, want string }{
+		"invalid": {"version: 1\ncidrs: [not-a-cidr, 300.1.2.3/24]\n", `http_proxy_ranges.yaml rejected: no valid cidrs (first error: invalid CIDR "not-a-cidr"`},
+		"null":    {"version: 1\ncidrs: [null]\n", "http_proxy_ranges.yaml rejected: no valid cidrs (first error: null CIDR"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeFile(t, filepath.Join(dir, "http_proxy_ranges.yaml"), tc.body)
+			_, err := LoadPolicies(dir)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("LoadPolicies error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "http_proxy_ranges.yaml"), "version: 1\ncidrs: [not-a-cidr, 192.0.2.0/24]\n")
+	if _, err := LoadPolicies(dir); err == nil || strings.Contains(err.Error(), "rejected") {
+		t.Fatalf("a file with a valid entry reported as rejected: %v", err)
+	}
+}

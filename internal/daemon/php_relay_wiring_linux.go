@@ -57,7 +57,11 @@ func startPHPRelayLinuxAt(d *Daemon, paths phpRelayPaths) {
 	// 2. Policies (suspicious mailers, HTTP-proxy ranges). LoadPolicies
 	// returns a usable Policies even on partial-failure so we always
 	// have something to install on the daemon for SIGHUP reloads.
-	pol, _ := emailspool.LoadPolicies(d.cfg.EmailProtection.PHPRelay.PoliciesDir)
+	pol, err := emailspool.LoadPolicies(d.cfg.EmailProtection.PHPRelay.PoliciesDir)
+	if err != nil {
+		emitPHPRelayFinding(d, alert.Warning, "email_php_relay_policies_reload",
+			fmt.Sprintf("policies/email load encountered errors at startup: %v", err))
+	}
 	d.policies = pol
 
 	// 3. Window state (per-script, per-IP, per-account).

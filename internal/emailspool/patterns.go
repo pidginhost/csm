@@ -193,10 +193,19 @@ func (p *Policies) load(dir string) error {
 		} else if op.CIDRs == nil {
 			setErr(errors.New("parse http_proxy_ranges.yaml: no cidrs list"))
 		} else {
-			nets = parseProxyCIDRs(op.CIDRs, setErr)
+			var entryErr error
+			nets = parseProxyCIDRs(op.CIDRs, func(err error) {
+				if entryErr == nil {
+					entryErr = err
+				}
+			})
+			// An entry error alone would read as one skipped entry.
 			if len(nets) == 0 && len(op.CIDRs) > 0 {
-				setErr(errors.New("parse http_proxy_ranges.yaml: no valid cidrs"))
+				entryErr = fmt.Errorf("http_proxy_ranges.yaml rejected: no valid cidrs (first error: %w)", entryErr)
 				nets = nil
+			}
+			if entryErr != nil {
+				setErr(entryErr)
 			}
 		}
 	}
