@@ -257,6 +257,7 @@ func (c *Collector) summaryBody(s Summary, until time.Time) string {
 	fmt.Fprintln(&b, "Automatic blocks that hit known customers:")
 	for _, blk := range s.CustomerBlocks {
 		c.writeCustomerBlock(&b, "  ", blk)
+		writeUnblockHint(&b, "  ", blk.Target)
 	}
 	switch {
 	case len(s.CustomerBlocks) == 0:

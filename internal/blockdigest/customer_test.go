@@ -291,3 +291,45 @@ func TestAppliedCustomerBlocksListedInDailySummary(t *testing.T) {
 		t.Fatalf("next summary has no empty customer block section:\n%s", capture.sent()[1].body)
 	}
 }
+
+// Each block names how to lift it: csm firewall remove for an address and
+// remove-subnet for a network. An allow rule does not pass a blocked network
+// but keeps later range blocks off the address, so it is offered as that.
+// The daily summary repeats the hints for applied blocks only.
+func TestCustomerBlockUnblockHintPerTargetKind(t *testing.T) {
+	var capture summaryCapture
+	c := summaryCollector(Options{EmailSink: capture.email})
+	c.AlertCustomerBlocks([]CustomerBlock{
+		{Target: "203.0.113.5", Reason: "fixture", Hits: []CustomerHit{{IP: "203.0.113.5", Kind: "cpanel", Account: "alice", At: customerLoginAt}}},
+		{Target: "2001:db8:1::5", Reason: "fixture", Hits: []CustomerHit{{IP: "2001:db8:1::/64", Kind: "imap", At: customerLoginAt}}},
+		{Target: "198.51.100.0/24", Reason: "AUTO-NETBLOCK: 198.51.100.0/24 blocked (5 IPs from same subnet)", Hits: subnetCustomerHits(2)},
+	})
+	c.NoteHandled([]Handled{{Check: "auto_block", Severity: "WARNING", WouldBlock: &CustomerBlock{Target: "192.0.2.9", Reason: "fixture",
+		Hits: []CustomerHit{{IP: "192.0.2.9", Kind: "pop", At: customerLoginAt}}}}})
+	c.SendDue(summaryDueOf(c))
+
+	mails := capture.sent()
+	if len(mails) != 2 {
+		t.Fatalf("emails = %d, want the customer alert and the summary", len(mails))
+	}
+	address := "  Unblock: csm firewall remove 203.0.113.5\n"
+	address6 := "  Unblock: csm firewall remove 2001:db8:1::5\n"
+	network := "  Unblock: csm firewall remove-subnet 198.51.100.0/24\n  Keep a customer address out of later range blocks: csm firewall allow <ip>\n"
+	for i, m := range mails {
+		indent := ""
+		if i == 1 {
+			indent = "  "
+		}
+		for _, want := range []string{address, address6, network} {
+			want = strings.ReplaceAll(want, "  ", "  "+indent)
+			if strings.Count(m.body, want) != 1 {
+				t.Fatalf("%s has %q %d times, want once:\n%s", m.subject, want, strings.Count(m.body, want), m.body)
+			}
+		}
+		for _, wrong := range []string{"csm firewall remove 198.51.100.0/24", "csm firewall remove <ip>", "csm firewall remove 192.0.2.9"} {
+			if strings.Contains(m.body, wrong) {
+				t.Fatalf("%s has %q:\n%s", m.subject, wrong, m.body)
+			}
+		}
+	}
+}

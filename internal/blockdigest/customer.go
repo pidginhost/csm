@@ -2,6 +2,7 @@ package blockdigest
 
 import (
 	"fmt"
+	"net/netip"
 	"strings"
 	"time"
 )
@@ -57,10 +58,11 @@ func (c *Collector) AlertCustomerBlocks(blocks []CustomerBlock) {
 	}
 	var b strings.Builder
 	fmt.Fprintln(&b, subject)
-	fmt.Fprintln(&b, "These blocks hit addresses that recently logged in successfully as a customer. The blocks stand: a customer address is never exempt. Check each for a false positive; unblock an address with: csm firewall remove <ip>")
+	fmt.Fprintln(&b, "These blocks hit addresses that recently logged in successfully as a customer. The blocks stand: a customer address is never exempt. Check each for a false positive.")
 	for _, blk := range blocks {
 		fmt.Fprintln(&b)
 		c.writeCustomerBlock(&b, "", blk)
+		writeUnblockHint(&b, "", blk.Target)
 	}
 	body := b.String()
 	payload := WebhookPayload{Text: body, CSM: WebhookCSM{Event: "customer_block", Host: c.opts.Host, Version: c.opts.Version, CustomerBlocks: blocks}}
@@ -109,6 +111,18 @@ func (c *Collector) writeCustomerBlock(b *strings.Builder, indent string, blk Cu
 	if blk.More > 0 {
 		fmt.Fprintf(b, "%s    and %d more\n", indent, blk.More)
 	}
+}
+
+// writeUnblockHint names the command that lifts a block of target. An allow
+// rule does not pass a blocked network, whose drop comes first, but CSM never
+// blocks a range over an allowed address, so it is offered for later blocks.
+func writeUnblockHint(b *strings.Builder, indent, target string) {
+	if _, err := netip.ParsePrefix(target); err != nil {
+		fmt.Fprintf(b, "%s  Unblock: csm firewall remove %s\n", indent, target)
+		return
+	}
+	fmt.Fprintf(b, "%s  Unblock: csm firewall remove-subnet %s\n", indent, target)
+	fmt.Fprintf(b, "%s  Keep a customer address out of later range blocks: csm firewall allow <ip>\n", indent)
 }
 
 func (c *Collector) customerLogin(h CustomerHit) string {
