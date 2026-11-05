@@ -1803,11 +1803,9 @@ func (d *Daemon) deliveryCandidates(observed, newFindings []alert.Finding, suppr
 	candidates = alert.Deduplicate(candidates)
 	var correlationSources []alert.Finding
 	for _, f := range candidates {
-		entry, ok := d.store.EntryForKey(f.Key())
-		if ok && entry.IsBaseline && entry.Hash == f.Fingerprint() {
-			continue
+		if !d.store.Acknowledged(f) {
+			correlationSources = append(correlationSources, f)
 		}
-		correlationSources = append(correlationSources, f)
 	}
 	derived := checks.CorrelateBatchFindings(correlationSources).Derived
 	candidates = append(candidates, derived...)

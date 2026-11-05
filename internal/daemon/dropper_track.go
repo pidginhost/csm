@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"fmt"
 	"path/filepath"
 	"regexp"
@@ -1192,8 +1193,11 @@ func dropperAlertParams(f dropperFinding) (alert.Severity, string, string, strin
 	return sev, msg, details, c.Path, dropperDedupKey("file", c.Path, sev)
 }
 
+// dropperDedupKey hashes the path: an attacker names it, and alert state
+// keeps one key per condition.
 func dropperDedupKey(scope, path string, sev alert.Severity) string {
-	return fmt.Sprintf("%s:%q:%s", scope, path, sev)
+	digest := sha256.Sum256([]byte(path))
+	return fmt.Sprintf("%s:%x:%s", scope, digest[:16], sev)
 }
 
 // dropperPrintable renders up to max bytes of b with control and non-ASCII

@@ -16,10 +16,13 @@ import (
 // identityCase builds two findings through a real producer. A re-report
 // differs from the first only in volatile text and must keep its email
 // identity; a distinct case names another condition and must not share it.
+// For a sourceNoise case the volatile part is in the producer's input, which
+// its own text leaves out.
 type identityCase struct {
-	name     string
-	build    func(t *testing.T) (alert.Finding, alert.Finding)
-	distinct bool
+	name        string
+	build       func(t *testing.T) (alert.Finding, alert.Finding)
+	distinct    bool
+	sourceNoise bool
 }
 
 // Alert email and the webhook send a finding again only when Key or
@@ -29,15 +32,26 @@ func TestReReportKeepsEmailIdentity(t *testing.T) {
 	cases := []identityCase{
 		{name: "sensitive_file_modified write", build: func(t *testing.T) (alert.Finding, alert.Finding) {
 			disableSensitiveProvenanceForTest(t)
-			return sensitiveWrite(t, "/etc/passwd", 0, 4242, "useradd"), sensitiveWrite(t, "/etc/passwd", 0, 5353, "vipw")
+			return sensitiveWrite(t, "/etc/passwd", 0, 4242, "useradd", nil), sensitiveWrite(t, "/etc/passwd", 0, 5353, "vipw", nil)
+		}},
+		{name: "sensitive_file_modified write same content", build: func(t *testing.T) (alert.Finding, alert.Finding) {
+			disableSensitiveProvenanceForTest(t)
+			content := []byte("alice:x:1001:1001::/home/alice:/bin/bash\n")
+			return sensitiveWrite(t, "/etc/passwd", 0, 4242, "useradd", content), sensitiveWrite(t, "/etc/passwd", 0, 5353, "vipw", content)
+		}},
+		{name: "sensitive_file_modified another content", distinct: true, build: func(t *testing.T) (alert.Finding, alert.Finding) {
+			disableSensitiveProvenanceForTest(t)
+			return sensitiveWrite(t, "/etc/passwd", 0, 4242, "useradd", []byte("alice:x:1001:1001::/home/alice:/bin/bash\n")),
+				sensitiveWrite(t, "/etc/passwd", 0, 4242, "useradd", []byte("alice:x:0:0::/home/alice:/bin/bash\n"))
 		}},
 		{name: "sensitive_file_modified another path", distinct: true, build: func(t *testing.T) (alert.Finding, alert.Finding) {
 			disableSensitiveProvenanceForTest(t)
-			return sensitiveWrite(t, "/etc/passwd", 0, 4242, "useradd"), sensitiveWrite(t, "/etc/shadow", 0, 4242, "useradd")
+			return sensitiveWrite(t, "/etc/passwd", 0, 4242, "useradd", nil), sensitiveWrite(t, "/etc/shadow", 0, 4242, "useradd", nil)
 		}},
+		// Both writers are unprivileged, so the severity is the same.
 		{name: "sensitive_file_modified another writer", distinct: true, build: func(t *testing.T) (alert.Finding, alert.Finding) {
 			disableSensitiveProvenanceForTest(t)
-			return sensitiveWrite(t, "/etc/passwd", 0, 4242, "useradd"), sensitiveWrite(t, "/etc/passwd", 1000, 4242, "useradd")
+			return sensitiveWrite(t, "/etc/passwd", 1000, 4242, "useradd", nil), sensitiveWrite(t, "/etc/passwd", 1001, 4242, "useradd", nil)
 		}},
 		// A demoted write must not hide a later full-severity write to the
 		// same file while the first is still remembered.
@@ -49,15 +63,28 @@ func TestReReportKeepsEmailIdentity(t *testing.T) {
 				}
 				return ""
 			}
-			demoted, full := sensitiveWrite(t, "/etc/passwd", 0, 4242, "useradd"), sensitiveWrite(t, "/etc/passwd", 0, 5353, "useradd")
+			demoted, full := sensitiveWrite(t, "/etc/passwd", 0, 4242, "useradd", nil), sensitiveWrite(t, "/etc/passwd", 0, 5353, "useradd", nil)
 			if demoted.Severity != alert.Warning || full.Severity != alert.High {
 				t.Fatalf("severities = %v, %v; want WARNING then HIGH", demoted.Severity, full.Severity)
 			}
 			return demoted, full
 		}},
+		// The affected accounts are the condition: more evidence in the same
+		// accounts is not news, spread to another account is.
+		{name: "coordinated_attack same accounts", sourceNoise: true, build: func(t *testing.T) (alert.Finding, alert.Finding) {
+			more := append(criticalWebshells("webshell", "carol", "bob", "alice"), criticalWebshells("backdoor_binary", "alice")...)
+			return derivedFinding(t, "coordinated_attack", criticalWebshells("webshell", "alice", "bob", "carol")),
+				derivedFinding(t, "coordinated_attack", more)
+		}},
 		{name: "coordinated_attack spread", distinct: true, build: func(t *testing.T) (alert.Finding, alert.Finding) {
 			return derivedFinding(t, "coordinated_attack", criticalWebshells("webshell", "alice", "bob", "carol")),
 				derivedFinding(t, "coordinated_attack", criticalWebshells("webshell", "alice", "bob", "carol", "dave"))
+		}},
+		{name: "cross_account_malware same accounts", sourceNoise: true, build: func(t *testing.T) (alert.Finding, alert.Finding) {
+			more := criticalWebshells("webshell", "bob", "alice", "alice")
+			more[2].FilePath, more[2].Message = "/home/alice/public_html/y.php", "malware in /home/alice/public_html/y.php"
+			return derivedFinding(t, "cross_account_malware", criticalWebshells("webshell", "alice", "bob")),
+				derivedFinding(t, "cross_account_malware", more)
 		}},
 		{name: "cross_account_malware spread", distinct: true, build: func(t *testing.T) (alert.Finding, alert.Finding) {
 			return derivedFinding(t, "cross_account_malware", criticalWebshells("webshell", "alice", "bob")),
@@ -81,6 +108,14 @@ func TestReReportKeepsEmailIdentity(t *testing.T) {
 		}},
 		{name: "auto_block rate limit and pending dropped", distinct: true, build: func(t *testing.T) (alert.Finding, alert.Finding) {
 			return rateLimitNotice(t, 1), pendingDroppedNotice(t, 1)
+		}},
+		{name: "auto_block rate limit with drops", build: func(t *testing.T) (alert.Finding, alert.Finding) {
+			return sprayBudgetNotice(t, maxPendingBlocks/2+1), sprayBudgetNotice(t, maxPendingBlocks/2+2)
+		}},
+		// IPs dropped from the queue are never blocked. Drops starting during
+		// a rate limit already reported are news.
+		{name: "auto_block rate limit without and with drops", distinct: true, build: func(t *testing.T) (alert.Finding, alert.Finding) {
+			return sprayBudgetNotice(t, 1), sprayBudgetNotice(t, maxPendingBlocks/2+1)
 		}},
 
 		// Already stable: pins only.
@@ -143,7 +178,7 @@ func TestReReportKeepsEmailIdentity(t *testing.T) {
 				}
 				return
 			}
-			if first.Message == second.Message && first.Details == second.Details {
+			if !tc.sourceNoise && first.Message == second.Message && first.Details == second.Details {
 				t.Fatalf("fixture does not vary between reports: %+v", first)
 			}
 			if first.Key() != second.Key() {
@@ -164,9 +199,10 @@ func onlyFinding(t *testing.T, findings []alert.Finding) alert.Finding {
 	return findings[0]
 }
 
-func sensitiveWrite(t *testing.T, path string, uid, pid uint32, comm string) alert.Finding {
+// sensitiveWrite evaluates a live write; nil content means it was unreadable.
+func sensitiveWrite(t *testing.T, path string, uid, pid uint32, comm string, content []byte) alert.Finding {
 	t.Helper()
-	f, ok := EvaluateSensitiveFileWriteSnapshot(path, uid, pid, comm, nil, false)
+	f, ok := EvaluateSensitiveFileWriteSnapshot(path, uid, pid, comm, content, content != nil)
 	if !ok {
 		t.Fatalf("no finding for a write to %s", path)
 	}
@@ -244,6 +280,25 @@ func rateLimitNotice(t *testing.T, queued int) alert.Finding {
 		findings = append(findings, wafFinding(fmt.Sprintf("198.51.100.%d", 80+i)))
 	}
 	return autoBlockNotice(t, AutoBlockIPs(cfg, findings), "Auto-block rate limit reached")
+}
+
+// sprayBudgetNotice queues spray findings while the spray budget is spent.
+// More than half the queue overflows the spray share.
+func sprayBudgetNotice(t *testing.T, spray int) alert.Finding {
+	t.Helper()
+	cfg := pendingTestConfig(t)
+	cfg.AutoResponse.MaxBlocksPerHour = 1
+	now := time.Now()
+	setAutoBlockNow(t, now)
+	saveBlockState(cfg.StatePath, &blockState{HourKey: now.Format("2006-01-02T15"), LoginSprayBlocksThisHour: 1})
+	applyBlockTestSetup(t, &outcomeStubBlocker{outcome: firewall.BlockOutcomeLive})
+	var findings []alert.Finding
+	for i := range spray {
+		findings = append(findings, loginSprayFinding(fmt.Sprintf("2001:db8:8::%x", i)))
+	}
+	var actions []alert.Finding
+	captureStderr(t, func() { actions = AutoBlockIPs(cfg, findings) })
+	return autoBlockNotice(t, actions, "Auto-block mail login spray budget reached")
 }
 
 // pendingDroppedNotice overflows the spray share of the retry queue while

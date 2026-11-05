@@ -106,6 +106,20 @@ func (e *Entry) aliveAt() time.Time {
 	return e.LastSeen
 }
 
+// permanent reports a baseline or dismissal that never lapses. One on an
+// explicit identity names an ongoing condition, so it covers later reports
+// only until the condition clears. Other baselines keep the meaning of
+// `csm baseline`, also for findings whose producer reports less than daily.
+func (e *Entry) permanent(key string) bool {
+	return e.IsBaseline && !strings.HasPrefix(key, "dedup:")
+}
+
+// cleared reports whether the condition behind an entry that can lapse has
+// gone unseen for 24h.
+func (e *Entry) cleared(key string, now time.Time) bool {
+	return !e.permanent(key) && now.Sub(e.aliveAt()) >= 24*time.Hour
+}
+
 func Open(path string) (*Store, error) {
 	if err := os.MkdirAll(path, 0700); err != nil {
 		return nil, fmt.Errorf("creating state dir: %w", err)
@@ -261,13 +275,14 @@ func (s *Store) FilterNew(findings []alert.Finding) []alert.Finding {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	var newFindings []alert.Finding
+	now := s.clock()
 
 	for _, f := range findings {
 		key := findingKey(f)
 		hash := findingHash(f)
 
 		entry, exists := s.entries[key]
-		if !exists {
+		if !exists || entry.cleared(key, now) {
 			newFindings = append(newFindings, f)
 			continue
 		}
@@ -327,7 +342,7 @@ func (s *Store) filterUnemailedLocked(findings []alert.Finding, now time.Time) [
 		hash := findingHash(f)
 		key := findingKey(f)
 		entry, ok := s.entries[key]
-		if ok && !entry.IsBaseline && now.Sub(entry.aliveAt()) >= 24*time.Hour {
+		if ok && entry.cleared(key, now) {
 			delete(s.entries, key)
 			s.dirty = true
 			ok = false
@@ -357,8 +372,8 @@ func (s *Store) MarkKept(keys []string) {
 	now := s.clock()
 	for _, key := range keys {
 		entry, ok := s.entries[key]
-		// Baselines never expire, so retaining them needs no state write.
-		if !ok || entry.IsBaseline || now.Sub(entry.aliveAt()) >= 24*time.Hour {
+		// Permanent baselines need no liveness, so retaining them writes nothing.
+		if !ok || entry.permanent(key) || entry.cleared(key, now) {
 			continue
 		}
 		entry.KeptAt = now
@@ -399,7 +414,7 @@ func (s *Store) Update(findings []alert.Finding) {
 		seen[key] = true
 
 		entry, exists := s.entries[key]
-		if exists && !entry.IsBaseline && now.Sub(entry.aliveAt()) >= 24*time.Hour {
+		if exists && entry.cleared(key, now) {
 			exists = false
 		}
 		if !exists {
@@ -427,10 +442,8 @@ func (s *Store) Update(findings []alert.Finding) {
 		if strings.HasPrefix(key, "_") {
 			continue
 		}
-		if !seen[key] && !entry.IsBaseline {
-			if now.Sub(entry.aliveAt()) >= 24*time.Hour {
-				delete(s.entries, key)
-			}
+		if !seen[key] && entry.cleared(key, now) {
+			delete(s.entries, key)
 		}
 	}
 }
@@ -807,6 +820,15 @@ func (s *Store) Entries() map[string]*Entry {
 }
 
 // EntryForKey returns the dedup entry for a finding key (check:message).
+// Acknowledged reports whether a baseline or dismissal still covers f.
+func (s *Store) Acknowledged(f alert.Finding) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	key := findingKey(f)
+	e, ok := s.entries[key]
+	return ok && e.IsBaseline && e.Hash == findingHash(f) && !e.cleared(key, s.clock())
+}
+
 func (s *Store) EntryForKey(key string) (Entry, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

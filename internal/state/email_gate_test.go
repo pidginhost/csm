@@ -464,3 +464,60 @@ func TestEmailExpiryBoundary(t *testing.T) {
 		}
 	}
 }
+
+// An acknowledgment of an explicit identity covers an ongoing condition while
+// it is reported or kept listed, and lapses once it is unseen for 24h. Other
+// baselines, as `csm baseline` writes them, never lapse.
+func TestExplicitIdentityAcknowledgmentLapsesWithCondition(t *testing.T) {
+	for _, ack := range []string{"dismissal", "baseline"} {
+		for _, refresh := range []string{"report", "kept"} {
+			for _, explicit := range []bool{true, false} {
+				t.Run(fmt.Sprintf("%s/%s/explicit=%t", ack, refresh, explicit), func(t *testing.T) {
+					now := time.Now()
+					s := debounceStore(t, &now)
+					f := alert.Finding{Check: "smtp_probe_abuse", Severity: alert.High, Message: "SMTP probe abuse from 203.0.113.5"}
+					if explicit {
+						f.DedupKey = "203.0.113.5"
+					}
+					s.Update([]alert.Finding{f})
+					deliver(s, f)
+					if ack == "dismissal" {
+						s.DismissFinding(f.Key())
+					} else {
+						s.SetBaseline([]alert.Finding{f})
+					}
+					if got := offered(s, f); len(got) != 0 {
+						t.Fatalf("acknowledged condition offered for email")
+					}
+					now = now.Add(23 * time.Hour)
+					if refresh == "report" {
+						s.Update([]alert.Finding{f})
+					} else {
+						s.MarkKept([]string{f.Key()})
+					}
+					// FilterNew and the sweep only read liveness; a delivery
+					// attempt would count as another report.
+					now = now.Add(23 * time.Hour)
+					if got := s.FilterNew([]alert.Finding{f}); len(got) != 0 {
+						t.Fatalf("condition refreshed by %s lost its %s", refresh, ack)
+					}
+					if s.Update(nil); !s.Acknowledged(f) {
+						t.Fatalf("sweep dropped a condition refreshed by %s", refresh)
+					}
+					now = now.Add(time.Hour + time.Minute)
+					lapsed := explicit
+					if got := s.FilterNew([]alert.Finding{f}); (len(got) == 1) != lapsed {
+						t.Fatalf("history after 24h unseen: new=%d, want lapsed=%t", len(got), lapsed)
+					}
+					s.Update(nil)
+					if _, present := s.EntryForKey(f.Key()); present == lapsed {
+						t.Fatalf("sweep after 24h unseen: present=%t, want lapsed=%t", present, lapsed)
+					}
+					if got := offered(s, f); (len(got) == 1) != lapsed {
+						t.Fatalf("email after 24h unseen: offered=%d, want lapsed=%t", len(got), lapsed)
+					}
+				})
+			}
+		}
+	}
+}

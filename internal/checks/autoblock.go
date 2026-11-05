@@ -776,6 +776,9 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 			}
 			msg = fmt.Sprintf("Auto-block %s, %d IPs queued for next cycle", limit, len(state.Pending))
 			if droppedPending > 0 {
+				// Drops are IPs that will never be blocked. They must not
+				// hide behind a rate limit that was already reported.
+				kind = "rate_limit_dropped"
 				msg += fmt.Sprintf(", %d dropped (%s)", droppedPending, dropped)
 			}
 		} else {

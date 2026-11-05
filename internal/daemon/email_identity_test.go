@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/queuehealth"
 )
 
@@ -118,6 +119,58 @@ func TestDispatchBatchVolatileReReportNotReEmailed(t *testing.T) {
 
 	if got := hook.count("SMTP probe abuse from 203.0.113.5"); got != 1 {
 		t.Errorf("webhooks = %d, want 1", got)
+	}
+}
+
+// A dismissal covers an ongoing condition. Once it has gone unseen for a
+// day, its return is news again, and is emailed once.
+func TestDismissedVolatileConditionAlertsAfterQuietDay(t *testing.T) {
+	cfg, hook := emailRepeatSetup(t)
+	d := openRepeatDaemon(t, cfg)
+	const marker = "SMTP probe abuse from 203.0.113.5"
+	first := smtpProbeAbuse(t, "203.0.113.5", 3)
+	d.dispatchBatch([]alert.Finding{first})
+	d.store.DismissFinding(first.Key())
+	d.dispatchBatch([]alert.Finding{smtpProbeAbuse(t, "203.0.113.5", 4)})
+	if got := hook.count(marker); got != 1 {
+		t.Fatalf("dismissed ongoing condition: webhooks = %d, want 1", got)
+	}
+	rewriteState(t, d, func(entries map[string]map[string]any) {
+		entries[first.Key()]["last_seen"] = time.Now().Add(-24*time.Hour - time.Minute)
+	})
+	d.dispatchBatch([]alert.Finding{smtpProbeAbuse(t, "203.0.113.5", 5)})
+	d.dispatchBatch([]alert.Finding{smtpProbeAbuse(t, "203.0.113.5", 6)})
+	if got := hook.count(marker); got != 2 {
+		t.Errorf("return after a quiet day: webhooks = %d, want 2", got)
+	}
+}
+
+// A second change to the same file is a new alert; the same bytes written
+// again by another process are not.
+func TestDispatchBatchSensitiveWriteEmailsEachContent(t *testing.T) {
+	cfg, hook := emailRepeatSetup(t)
+	d := openRepeatDaemon(t, cfg)
+	write := func(pid uint32, content string) alert.Finding {
+		f, ok := checks.EvaluateSensitiveFileWriteSnapshot("/etc/passwd", 0, pid, "vipw", []byte(content), true)
+		if !ok {
+			t.Fatal("no finding for a write to /etc/passwd")
+		}
+		return f
+	}
+	first := write(4242, "alice:x:1001:1001::/home/alice:/bin/bash\n")
+	same := write(5353, "alice:x:1001:1001::/home/alice:/bin/bash\n")
+	changed := write(6464, "alice:x:0:0::/home/alice:/bin/bash\n")
+	if first.Severity != same.Severity || first.Severity != changed.Severity {
+		t.Fatalf("setup: severities differ: %v %v %v", first.Severity, same.Severity, changed.Severity)
+	}
+	d.dispatchBatch([]alert.Finding{first})
+	d.dispatchBatch([]alert.Finding{same})
+	if got := hook.count("/etc/passwd"); got != 1 {
+		t.Fatalf("same content written again: webhooks = %d, want 1", got)
+	}
+	d.dispatchBatch([]alert.Finding{changed})
+	if got := hook.count("/etc/passwd"); got != 2 {
+		t.Errorf("another change to the file: webhooks = %d, want 2", got)
 	}
 }
 

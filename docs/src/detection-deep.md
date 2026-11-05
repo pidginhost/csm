@@ -28,11 +28,16 @@ apply, including to the sources of cross-account summaries. The signed phpanel
 stream keeps its separate delivery policy.
 
 SMTP probe, self-deleting dropper, sensitive file write, email AV degraded
-and auto-block notice findings keep one alert
-identity while their counts, process or message IDs, ages, sizes or error text
-change. A re-report that differs only in those is not sent again.
-Cross-account summaries alert again when the affected accounts change, including
-after a dismissal. More reports for the same accounts do not repeat the summary.
+and auto-block notice findings keep one alert identity per condition and
+severity: the source address, the removed file, directory or document root,
+the written file with its writer and, when readable, its content, the scanner
+condition, or the kind of notice. Counts, process or message IDs, ages, sizes,
+error text and the files sampled in a burst can change without a new alert.
+Dismissing one of these findings, or another finding that keeps one identity
+while its counts change, covers its later reports until it goes unseen for 24
+hours. A return after that alerts again. Cross-account summaries alert again
+when the affected accounts change, including after a dismissal. More reports
+for the same accounts do not repeat the summary.
 
 An undismissed finding can alert again after 24 hours without an observation,
 even when no other batch arrived to clean up old state. A finding that stays
@@ -43,7 +48,8 @@ report. A completed scan that covered the finding and no longer reports it also
 permits a later return to alert. Scan coverage warnings follow the policy
 below.
 
-Keeping acknowledged findings listed does not rewrite alert state. Other
+Keeping acknowledged findings listed does not rewrite alert state, except for
+an acknowledgment that lapses with its condition as described above. Other
 retained findings use the existing periodic save, keeping their delivery state
 across restarts without changing the displayed last-report time.
 
