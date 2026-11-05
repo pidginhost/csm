@@ -46,6 +46,7 @@ func (d *Daemon) buildBlockDigest(cfg *config.Config) *blockdigest.Collector {
 		SendOn:       cfg.Alerts.BlockDigest.SendOn,
 		Interval:     cfg.BlockDigestInterval(),
 		Live:         cfg.Alerts.BlockDigest.Live,
+		LiveChannel:  cfg.Alerts.BlockDigest.Channel,
 		MinBlock:     cfg.Alerts.BlockDigest.MinBlock,
 		Host:         cfg.Hostname,
 		Version:      d.version,
@@ -74,11 +75,6 @@ func (d *Daemon) buildBlockDigest(cfg *config.Config) *blockdigest.Collector {
 			csmlog.Warn("block_digest delivery failed", "channel", channel, "err", err)
 		},
 		DeliveryEnabled: func(channel string) bool {
-			// Explicit destinations still attempt delivery and report disabled
-			// channels as errors. Default delivery follows current alert policy.
-			if cfg.Alerts.BlockDigest.Channel != "" {
-				return true
-			}
 			live := d.currentCfg()
 			if live == nil {
 				live = cfg
@@ -93,8 +89,8 @@ func (d *Daemon) buildBlockDigest(cfg *config.Config) *blockdigest.Collector {
 	return collector
 }
 
-// blockDigestSinks selects delivery: an empty channel follows whichever alerts
-// channels are enabled; an explicit channel forces just that one.
+// blockDigestSinks builds both destinations for the daily summary. The
+// collector applies block_digest.channel only to live block alerts.
 func (d *Daemon) blockDigestSinks(cfg *config.Config) (func(subject, body string) error, func(blockdigest.WebhookPayload) error) {
 	ch := cfg.Alerts.BlockDigest.Channel
 	currentCfg := func() *config.Config {
@@ -134,16 +130,7 @@ func (d *Daemon) blockDigestSinks(cfg *config.Config) (func(subject, body string
 		}
 	}
 
-	switch ch {
-	case "":
-		return emailSink(false), webhookSink(false)
-	case "email":
-		return emailSink(true), nil
-	case "webhook":
-		return nil, webhookSink(true)
-	default:
-		return nil, nil
-	}
+	return emailSink(ch == "email"), webhookSink(ch == "webhook")
 }
 
 // countryOf resolves an IP to its ISO country via the loaded GeoIP mmdb. It

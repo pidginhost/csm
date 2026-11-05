@@ -56,6 +56,21 @@ type Summary struct {
 	Watched    WatchedBlocks             `json:"watched"`
 }
 
+// One pending window bounds retry state during a prolonged outage. Findings
+// arriving during delivery belong to the active window, not its retries.
+type pendingSummary struct {
+	Summary
+	Until       time.Time `json:"until"`
+	EmailDone   bool      `json:"email_done"`
+	WebhookDone bool      `json:"webhook_done"`
+}
+
+type summaryState struct {
+	Summary
+	Pending  *pendingSummary `json:"pending,omitempty"`
+	LastSent time.Time       `json:"last_sent,omitempty"`
+}
+
 func newSummary(since, due time.Time) Summary {
 	s := Summary{Since: since, Due: due}
 	s.init()
@@ -211,12 +226,22 @@ func (c *Collector) fold() {
 	batch.finish(true)
 }
 
-func (c *Collector) save() {
+// Flush checkpoints the active and pending windows without delivering. The
+// daemon calls it again after its final alert drain, once all producers stop.
+func (c *Collector) Flush() {
+	c.summaryMu.Lock()
+	defer c.summaryMu.Unlock()
+	c.fold()
+	c.save()
+}
+
+// save is called with summaryMu held; no injected callback runs under mu.
+func (c *Collector) save() bool {
 	if c.opts.SaveSummary == nil {
-		return
+		return true
 	}
 	c.mu.Lock()
-	b, err := json.Marshal(c.sum)
+	b, err := json.Marshal(summaryState{Summary: c.sum, Pending: c.pending, LastSent: c.lastSent})
 	c.mu.Unlock()
 	if err == nil {
 		err = c.opts.SaveSummary(b)
@@ -224,6 +249,7 @@ func (c *Collector) save() {
 	if err != nil {
 		c.reportSinkError("summary", err)
 	}
+	return err == nil
 }
 
 // clamp pulls a send time past the next one, or a start in the future, back
@@ -241,6 +267,8 @@ func (s *Summary) clamp(now time.Time, loc *time.Location) {
 // load replaces the fresh window with the saved one and adds what was noted
 // since New. Run's first SendDue then clamps a send time the clock left behind.
 func (c *Collector) load() {
+	c.summaryMu.Lock()
+	defer c.summaryMu.Unlock()
 	if c.opts.LoadSummary == nil {
 		return
 	}
@@ -248,7 +276,7 @@ func (c *Collector) load() {
 	if err == nil && len(b) == 0 {
 		return
 	}
-	var s Summary
+	var s summaryState
 	if err == nil {
 		err = json.Unmarshal(b, &s)
 	}
@@ -263,37 +291,80 @@ func (c *Collector) load() {
 	}
 	c.mu.Lock()
 	s.merge(c.sum)
-	c.sum = s
+	c.sum = s.Summary
+	c.pending = s.Pending
+	c.lastSent = s.LastSent
 	c.mu.Unlock()
 }
 
 func (c *Collector) untilDue() time.Duration {
+	c.summaryMu.Lock()
+	defer c.summaryMu.Unlock()
+	if c.pending != nil {
+		return time.Minute
+	}
 	c.mu.Lock()
 	due := c.sum.Due
 	c.mu.Unlock()
-	return due.Sub(c.opts.Now())
+	// Go timers use elapsed time. Recheck the wall clock and any pending
+	// delivery every minute, even when the configured fold interval is long.
+	return min(time.Minute, max(time.Second, due.Sub(c.opts.Now())))
 }
 
-// SendDue sends the summary when now has reached its send time, then starts
-// the next window. The new window is saved only after the sinks return, so a
-// crash during delivery sends that summary again at the next start.
+// SendDue checkpoints a due window before offering it to either sink. Failed
+// destinations retain that window; completed destinations are checkpointed
+// separately. A crash after remote acceptance but before its checkpoint can
+// still repeat that destination, since notification sinks are not transactional.
+// The return value reports a delivery attempt, not whether its sinks succeeded.
 func (c *Collector) SendDue(now time.Time) bool {
-	c.fold()
+	c.summaryMu.Lock()
+	defer c.summaryMu.Unlock()
 	c.mu.Lock()
-	if now.Before(c.sum.Due) {
+	if c.pending == nil && now.Before(c.sum.Due) {
 		c.sum.clamp(now, c.opts.Location)
+		// A correction back across this morning's send must not send the
+		// same local date twice, including after a restart.
+		if !c.lastSent.IsZero() && c.sum.Due.In(c.opts.Location).Format(time.DateOnly) == c.lastSent.In(c.opts.Location).Format(time.DateOnly) {
+			c.sum.Due = nextSummaryDue(c.lastSent, c.opts.Location)
+		}
 		c.mu.Unlock()
 		return false
 	}
-	sent := c.sum
-	c.sum = newSummary(now, nextSummaryDue(now, c.opts.Location))
 	c.mu.Unlock()
+	if c.pending == nil {
+		c.fold()
+		c.mu.Lock()
+		c.pending = &pendingSummary{Summary: c.sum, Until: now}
+		c.sum = newSummary(now, nextSummaryDue(now, c.opts.Location))
+		c.mu.Unlock()
+	}
+	if !c.save() {
+		return false
+	}
 
-	plan := c.beginDelivery()
+	pending := c.pending
+	plan := c.beginDelivery(func(channel string) bool {
+		if channel == "email" && pending.EmailDone || channel == "webhook" && pending.WebhookDone {
+			return false
+		}
+		return c.opts.DeliveryEnabled == nil || c.opts.DeliveryEnabled(channel)
+	})
 	defer plan.finish()
-	view := c.summaryView(sent)
-	body := c.summaryBody(view, now)
-	c.deliver(plan, c.summarySubject(view), body, c.summaryPayload(view, body))
+	view := c.summaryView(pending.Summary)
+	body := c.summaryBody(view, pending.Until)
+	c.deliver(plan, c.summarySubject(view), body, c.summaryPayload(view, body), func(channel string) {
+		if channel == "email" {
+			pending.EmailDone = true
+		} else {
+			pending.WebhookDone = true
+		}
+		c.save()
+	})
+	if !pending.EmailDone || !pending.WebhookDone {
+		return true
+	}
+	c.lastSent = now
+	c.pending = nil
 	c.save()
 	return true
 }

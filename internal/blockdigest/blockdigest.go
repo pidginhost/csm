@@ -57,7 +57,8 @@ type Options struct {
 	SendOn      string   // any | customer; live alerts only
 	Interval    time.Duration
 	Live        bool
-	MinBlock    int // watched blocks needed to show the summary section
+	LiveChannel string // empty follows enabled alert channels; summary always does
+	MinBlock    int    // watched blocks needed to show the summary section
 	Host        string
 	Version     string
 	CountriesOf func() []string
@@ -91,6 +92,11 @@ type Collector struct {
 	lastLive       map[string]time.Time
 	lastLivePruned time.Time
 	sum            Summary
+	// summaryMu serializes rollover, persistence and delivery. NoteHandled
+	// only takes mu, so dispatch never waits for a store or notification sink.
+	summaryMu sync.Mutex
+	pending   *pendingSummary
+	lastSent  time.Time
 }
 
 const maxBuffered = 5000
@@ -371,7 +377,7 @@ func (c *Collector) maybeLive(rec Record) {
 	c.mu.Unlock()
 	// The delivery policy is injected by the caller, so it is consulted
 	// outside this lock. The dedup decision above already stands.
-	plan := c.beginDelivery()
+	plan := c.beginDelivery(c.liveDeliveryEnabled)
 	defer plan.finish()
 
 	d := Digest{
@@ -386,7 +392,14 @@ func (c *Collector) maybeLive(rec Record) {
 	} else {
 		d.AttackerCount = 1
 	}
-	c.deliver(plan, c.renderSubject(d), c.renderBody(d), c.buildPayload("block_live", d))
+	c.deliver(plan, c.renderSubject(d), c.renderBody(d), c.buildPayload("block_live", d), nil)
+}
+
+func (c *Collector) liveDeliveryEnabled(channel string) bool {
+	if c.opts.LiveChannel != "" {
+		return channel == c.opts.LiveChannel
+	}
+	return c.opts.DeliveryEnabled == nil || c.opts.DeliveryEnabled(channel)
 }
 
 func (c *Collector) pruneLastLiveLocked(now time.Time) {
@@ -421,15 +434,15 @@ func (c *Collector) Run(stop <-chan struct{}, tick <-chan time.Time) {
 	for {
 		select {
 		case <-stop:
-			c.fold()
-			c.save()
+			c.Flush()
 			return
 		case _, ok := <-tick:
-			c.fold()
-			c.save()
+			c.SendDue(c.opts.Now())
+			c.Flush()
 			if !ok {
 				return
 			}
+			timer.Reset(c.untilDue())
 		case <-timer.C:
 			c.SendDue(c.opts.Now())
 			timer.Reset(c.untilDue())
@@ -441,7 +454,12 @@ func (c *Collector) Run(stop <-chan struct{}, tick <-chan time.Time) {
 // Alert delivery is best-effort and must never block the collector or the
 // auto-block path beyond the sink's own timeout; failures are reported
 // through OnError.
-func (c *Collector) deliver(plan *digestDeliveryPlan, subject, body string, payload WebhookPayload) {
+func (c *Collector) deliver(plan *digestDeliveryPlan, subject, body string, payload WebhookPayload, completed func(string)) {
+	complete := func(channel string) {
+		if completed != nil {
+			completed(channel)
+		}
+	}
 	if job := plan.email; job != nil {
 		if job.start() {
 			job.offered = true
@@ -449,9 +467,15 @@ func (c *Collector) deliver(plan *digestDeliveryPlan, subject, body string, payl
 			job.result(err)
 			if err != nil {
 				c.reportSinkError("email", err)
+			} else {
+				complete("email")
 			}
+		} else {
+			complete("email")
 		}
 		job.finish()
+	} else {
+		complete("email")
 	}
 	if job := plan.webhook; job != nil {
 		if job.start() {
@@ -460,9 +484,15 @@ func (c *Collector) deliver(plan *digestDeliveryPlan, subject, body string, payl
 			job.result(err)
 			if err != nil {
 				c.reportSinkError("webhook", err)
+			} else {
+				complete("webhook")
 			}
+		} else {
+			complete("webhook")
 		}
 		job.finish()
+	} else {
+		complete("webhook")
 	}
 }
 

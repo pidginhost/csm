@@ -115,10 +115,10 @@ func (q *digestSinkQueue) begin(channel string, enabled func(string) bool) *dige
 	return d
 }
 
-func (c *Collector) beginDelivery() *digestDeliveryPlan {
+func (c *Collector) beginDelivery(enabled func(string) bool) *digestDeliveryPlan {
 	return &digestDeliveryPlan{
-		email:   c.queues.sinks["email"].begin("email", c.opts.DeliveryEnabled),
-		webhook: c.queues.sinks["webhook"].begin("webhook", c.opts.DeliveryEnabled),
+		email:   c.queues.sinks["email"].begin("email", enabled),
+		webhook: c.queues.sinks["webhook"].begin("webhook", enabled),
 	}
 }
 

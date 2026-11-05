@@ -15,6 +15,7 @@ func TestDaemonReportsActualBlockDigestQueue(t *testing.T) {
 	cfg.Alerts.BlockDigest.SendOn = "any"
 	cfg.Alerts.BlockDigest.MinBlock = 1
 	cfg.Alerts.BlockDigest.Channel = "email"
+	cfg.Alerts.BlockDigest.Live = true
 	d := New(cfg, nil, nil, "")
 	collector := d.buildBlockDigest(cfg)
 	if collector == nil {
@@ -29,14 +30,15 @@ func TestDaemonReportsActualBlockDigestQueue(t *testing.T) {
 	if row := d.QueueStatuses()["block_digest.records"]; row.Depth != 1 || row.DroppedTotal != 0 {
 		t.Fatalf("real auto-block observation missing: %+v", row)
 	}
-	// Explicit delivery to a disabled email channel fails without network I/O.
+	// The explicit live destination failed above without network I/O. The
+	// daily summary follows enabled alert channels and attempts neither.
 	collector.SendDue(time.Now().Add(25 * time.Hour))
 	rows := d.QueueStatuses()
 	if row := rows["block_digest.email"]; row.Depth != 0 || row.InFlight != 0 || row.DroppedTotal != 1 || row.DroppedLowerBound || !row.CapacityUnavailable || row.DepthUnit != "notifications" {
 		t.Fatalf("actual daemon sink failure missing: %+v", row)
 	}
-	if _, ok := rows["block_digest.webhook"]; ok {
-		t.Fatal("unconfigured webhook owner invented")
+	if row, ok := rows["block_digest.webhook"]; !ok || row.DroppedTotal != 0 || row.Depth != 0 || row.InFlight != 0 {
+		t.Fatalf("disabled summary destination should remain idle: found=%v row=%+v", ok, row)
 	}
 	if row := rows["block_digest.records"]; row.Depth != 0 || row.InFlight != 0 || row.DroppedTotal != 0 {
 		t.Fatalf("delivered buffer ownership remains: %+v", row)

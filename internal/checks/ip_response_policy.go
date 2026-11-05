@@ -58,6 +58,12 @@ func IPResponseAnswersFinding(cfg *config.Config, f alert.Finding, blocked bool)
 // HTTP-family check, or a reputation sighting below Critical, which is
 // browser-facing traffic.
 func webTrafficFinding(f alert.Finding) bool {
+	// Raw WAF observations never authorize a response, so their response
+	// policy has no evidence family. They still describe HTTP traffic.
+	switch f.Check {
+	case "modsec_block_realtime", "modsec_warning_realtime", "modsec_low_confidence_burst":
+		return true
+	}
 	return ResponsePolicyFor(f.Check).Evidence == admission.FamilyHTTP ||
 		(f.Check == "ip_reputation" && f.Severity != alert.Critical)
 }

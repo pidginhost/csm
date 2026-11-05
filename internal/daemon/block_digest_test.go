@@ -1,6 +1,8 @@
 package daemon
 
 import (
+	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -167,28 +169,36 @@ func TestObserveBlocksSkipsDryRunSubnetNotices(t *testing.T) {
 }
 
 func TestBlockDigestSinksChannelSelection(t *testing.T) {
-	d := &Daemon{}
-	mk := func(channel string, email, webhook bool) *config.Config {
-		c := &config.Config{}
-		c.Alerts.Email.Enabled = email
-		c.Alerts.Webhook.Enabled = webhook
-		c.Alerts.BlockDigest.Channel = channel
-		return c
-	}
-	// Default channel follows the live alert channel state at delivery time.
-	e, w := d.blockDigestSinks(mk("", true, false))
-	if e == nil || w == nil {
-		t.Error("default channel should build dynamic email and webhook sinks")
-	}
-	// Explicit webhook overrides default channel following.
-	e, w = d.blockDigestSinks(mk("webhook", true, false))
-	if e != nil || w == nil {
-		t.Error("explicit webhook should give webhook sink only")
-	}
-	// Explicit email overrides default channel following.
-	e, w = d.blockDigestSinks(mk("email", true, true))
-	if e == nil || w != nil {
-		t.Error("explicit email should give email sink only")
+	previousActive := config.Active()
+	config.SetActive(nil)
+	previousEmail, previousWebhook := blockDigestSendEmail, blockDigestSendWebhookJSON
+	t.Cleanup(func() {
+		config.SetActive(previousActive)
+		blockDigestSendEmail, blockDigestSendWebhookJSON = previousEmail, previousWebhook
+	})
+	for _, channel := range []string{"", "email", "webhook"} {
+		t.Run(channel, func(t *testing.T) {
+			emails, webhooks := 0, 0
+			blockDigestSendEmail = func(*config.Config, string, string) error { emails++; return nil }
+			blockDigestSendWebhookJSON = func(*config.Config, any) error { webhooks++; return nil }
+			cfg := &config.Config{}
+			cfg.Alerts.Email.Enabled, cfg.Alerts.Webhook.Enabled = true, true
+			cfg.Alerts.BlockDigest.Enabled, cfg.Alerts.BlockDigest.Live = true, true
+			cfg.Alerts.BlockDigest.Channel = channel
+			d := New(cfg, nil, nil, "")
+			c := d.buildBlockDigest(cfg)
+			c.Observe("192.0.2.1", "fixture block", time.Now())
+			wantEmail, wantWebhook := 1, 1
+			if channel == "email" {
+				wantWebhook = 0
+			}
+			if channel == "webhook" {
+				wantEmail = 0
+			}
+			if emails != wantEmail || webhooks != wantWebhook {
+				t.Fatalf("live alert email=%d webhook=%d, want %d/%d", emails, webhooks, wantEmail, wantWebhook)
+			}
+		})
 	}
 }
 
@@ -279,6 +289,78 @@ func TestBuildBlockDigestAlwaysBuilds(t *testing.T) {
 	}
 	if len(subjects) != 1 || !strings.HasPrefix(subjects[0], "[CSM] host.example.com - daily summary ") {
 		t.Fatalf("summary emails = %q", subjects)
+	}
+}
+
+func TestDailySummaryIgnoresLiveChannelSelection(t *testing.T) {
+	previousActive := config.Active()
+	config.SetActive(nil)
+	previousEmail, previousWebhook := blockDigestSendEmail, blockDigestSendWebhookJSON
+	t.Cleanup(func() {
+		config.SetActive(previousActive)
+		blockDigestSendEmail, blockDigestSendWebhookJSON = previousEmail, previousWebhook
+	})
+	for _, channel := range []string{"email", "webhook"} {
+		t.Run(channel, func(t *testing.T) {
+			emails, webhooks := 0, 0
+			blockDigestSendEmail = func(*config.Config, string, string) error { emails++; return nil }
+			blockDigestSendWebhookJSON = func(*config.Config, any) error { webhooks++; return nil }
+			cfg := &config.Config{}
+			cfg.Alerts.BlockDigest.Channel = channel
+			cfg.Alerts.Email.Enabled, cfg.Alerts.Webhook.Enabled = true, true
+			d := New(cfg, nil, nil, "")
+			c := d.buildBlockDigest(cfg)
+			c.SendDue(time.Now().Add(25 * time.Hour))
+			if emails != 1 || webhooks != 1 {
+				t.Fatalf("daily summary delivered email=%d webhook=%d, want both", emails, webhooks)
+			}
+		})
+	}
+}
+
+func TestShutdownDrainSavesLateSummaryFindings(t *testing.T) {
+	var saved []byte
+	d := &Daemon{}
+	d.blockDigest = blockdigest.New(blockdigest.Options{
+		SaveSummary: func(b []byte) error { saved = append([]byte(nil), b...); return nil },
+	})
+	stop := make(chan struct{})
+	close(stop)
+	d.blockDigest.Run(stop, nil)
+	// A producer already dispatching when stopCh closes can finish after
+	// the summary loop has checkpointed its window.
+	d.noteSummary(&config.Config{}, []alert.Finding{{Check: "challenge_route", Severity: alert.Warning}})
+	d.flushPendingAlertsOnShutdown()
+	var summary blockdigest.Summary
+	if err := json.Unmarshal(saved, &summary); err != nil {
+		t.Fatal(err)
+	}
+	if got := summary.Checks["challenge_route"]["WARNING"]; got != 1 {
+		t.Fatalf("final shutdown checkpoint lost a late finding: %d", got)
+	}
+}
+
+func TestSummaryLifetimeEnclosesAdmission(t *testing.T) {
+	// Admission can publish a recovered response immediately on startup
+	// and a final response while stopping. Its summary receiver must exist
+	// for that entire lifetime, with its last checkpoint after the drain.
+	source, err := os.ReadFile("daemon.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+	at := func(call string) int {
+		i := strings.Index(text, call)
+		if i < 0 {
+			t.Fatalf("missing lifecycle call %q", call)
+		}
+		return i
+	}
+	if at("d.blockDigest = d.buildBlockDigest(") > at("d.startAdmission()") || at("alert.SetSummaryHook(d.noteSummary)") > at("d.startAdmission()") {
+		t.Fatal("admission can dispatch before the summary receiver exists")
+	}
+	if at("alert.SetSummaryHook(nil)") < at("d.stopAdmission()") || at("alert.SetSummaryHook(nil)") < at("d.flushPendingAlertsOnShutdown()") {
+		t.Fatal("summary receiver stops before the final producer drain")
 	}
 }
 

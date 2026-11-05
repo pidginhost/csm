@@ -377,8 +377,8 @@ func TestSummarySavedAfterDelivery(t *testing.T) {
 	mu.Lock()
 	got := strings.Join(order, ",")
 	mu.Unlock()
-	if got != "email,webhook,save" {
-		t.Fatalf("delivery order = %s, want email,webhook,save", got)
+	if got != "save,email,save,webhook,save,save" {
+		t.Fatalf("delivery order = %s, want a checkpoint before delivery, after each destination and after rollover", got)
 	}
 	saved := st.saved(t)
 	if !saved.Since.Equal(due) || !saved.Due.Equal(nextSummaryDue(due, time.UTC)) || len(saved.Checks) != 0 {
@@ -458,13 +458,22 @@ func TestSummaryLoadFailureStartsFreshWindow(t *testing.T) {
 func TestTickFoldsWatchedBlocksIntoSummary(t *testing.T) {
 	cap := &summaryCapture{}
 	st := &summaryStore{}
-	saved := make(chan struct{}, 4)
+	saved := make(chan struct{}, 1)
 	c := summaryCollector(Options{
 		Watch: true, MinBlock: 3, Countries: []string{"RO"},
 		CountryOf:   func(string) string { return "RO" },
 		EmailSink:   cap.email,
 		WebhookSink: cap.webhook,
-		SaveSummary: func(b []byte) error { _ = st.save(b); saved <- struct{}{}; return nil },
+		SaveSummary: func(b []byte) error {
+			if err := st.save(b); err != nil {
+				return err
+			}
+			select {
+			case saved <- struct{}{}:
+			default:
+			}
+			return nil
+		},
 	})
 	c.Observe("203.0.113.5", "ModSecurity escalation: 5+ denies", summaryNow)
 	c.Observe("203.0.113.6", "Mail auth brute force from 203.0.113.6", summaryNow)

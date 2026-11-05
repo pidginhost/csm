@@ -910,8 +910,9 @@ one notification before delivery starts, including live alerts and the daily
 summary, which is sent even when empty. Default delivery follows current alert
 settings at admission, attempt and interrupted cleanup. Disabled destinations
 add no new waiting work or loss; destinations enabled during an earlier send
-are still handled. Explicit destination selection keeps its error when that
-alert channel is disabled.
+are still handled. Explicit destination selection applies only to live alerts
+and keeps its error when that alert channel is disabled. Daily summaries use
+all enabled alert channels except phpanel.
 One minute waiting or active reports lag. A returned sink error
 counts one lost notification and stays in flight through error logging. If an
 operation exits without returning, its attempted delivery reports
@@ -919,9 +920,12 @@ operation exits without returning, its attempted delivery reports
 destination that was never attempted counts one confirmed loss. Known losses
 use the common warning threshold and survive recovery in lifetime totals.
 
-These observations preserve the existing live deduplication and best-effort
-delivery policy; a failed summary send is not retried. Records retained after
-the collector stops report `consumer_stopped`. Health reads metadata
+Live delivery remains best effort. Daily summaries save their window before
+delivery and retry failed destinations; successful destinations are saved
+separately. The notification rows count delivery attempts, so a failed attempt
+is counted even when its summary remains pending for retry. A crash between
+remote acceptance and saving success can repeat a delivery. Records retained
+after the collector stops report `consumer_stopped`. Health reads metadata
 independently of collector state locks, country lookups and delivery callbacks.
 The rows are always present: every daemon runs the collector for the daily
 summary, and without `alerts.block_digest.enabled` the records buffer stays

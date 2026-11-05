@@ -185,20 +185,19 @@ func Validate(cfg *Config) []ValidationResult {
 		results = append(results, ValidationResult{"error", "alerts.block_digest.send_on", fmt.Sprintf("unknown send_on %q (want any|customer)", cfg.Alerts.BlockDigest.SendOn)})
 	}
 	switch cfg.Alerts.BlockDigest.Channel {
-	case "":
-		if cfg.Alerts.BlockDigest.Enabled && !cfg.Alerts.Email.Enabled && !cfg.Alerts.Webhook.Enabled {
-			results = append(results, ValidationResult{"error", "alerts.block_digest.channel", "empty channel requires email or webhook alerts to be enabled"})
-		}
-	case "email":
-		if cfg.Alerts.BlockDigest.Enabled && !cfg.Alerts.Email.Enabled {
-			results = append(results, ValidationResult{"error", "alerts.block_digest.channel", "channel email requires email alerts to be enabled"})
-		}
-	case "webhook":
-		if cfg.Alerts.BlockDigest.Enabled && !cfg.Alerts.Webhook.Enabled {
-			results = append(results, ValidationResult{"error", "alerts.block_digest.channel", "channel webhook requires webhook alerts to be enabled"})
-		}
+	case "", "email", "webhook":
 	default:
 		results = append(results, ValidationResult{"error", "alerts.block_digest.channel", fmt.Sprintf("unknown channel %q (want email|webhook)", cfg.Alerts.BlockDigest.Channel)})
+	}
+	if cfg.Alerts.BlockDigest.Enabled {
+		switch {
+		case !cfg.Alerts.Email.Enabled && !cfg.Alerts.Webhook.Enabled:
+			results = append(results, ValidationResult{"error", "alerts.block_digest.channel", "watched-country summaries require email or webhook alerts to be enabled"})
+		case cfg.Alerts.BlockDigest.Live && cfg.Alerts.BlockDigest.Channel == "email" && !cfg.Alerts.Email.Enabled:
+			results = append(results, ValidationResult{"error", "alerts.block_digest.channel", "channel email requires email alerts to be enabled"})
+		case cfg.Alerts.BlockDigest.Live && cfg.Alerts.BlockDigest.Channel == "webhook" && !cfg.Alerts.Webhook.Enabled:
+			results = append(results, ValidationResult{"error", "alerts.block_digest.channel", "channel webhook requires webhook alerts to be enabled"})
+		}
 	}
 	if cfg.Alerts.BlockDigest.Interval != "" {
 		if d, err := time.ParseDuration(cfg.Alerts.BlockDigest.Interval); err != nil {

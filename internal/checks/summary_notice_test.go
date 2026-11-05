@@ -156,3 +156,22 @@ func classKeys(findings []alert.Finding) []string {
 	}
 	return keys
 }
+
+func TestCloudflareCoveredRawWAFObservationsStayImmediate(t *testing.T) {
+	cfg := &config.Config{StatePath: t.TempDir()}
+	writeCloudflareRanges(t, cfg.StatePath)
+	for _, check := range []string{"modsec_warning_realtime", "modsec_block_realtime", "modsec_low_confidence_burst"} {
+		t.Run(check, func(t *testing.T) {
+			finding := alert.Finding{Check: check, Severity: alert.High, SourceIP: "203.0.113.60"}
+			block := alert.Finding{Check: "auto_block", Severity: alert.Critical, Message: "AUTO-BLOCK: 203.0.113.60 blocked"}
+			immediate, summary := alert.SplitByClass(cfg, []alert.Finding{finding, block})
+			if !slices.Equal(classKeys(immediate), classKeys([]alert.Finding{finding})) || !slices.Equal(classKeys(summary), classKeys([]alert.Finding{block})) {
+				t.Fatalf("immediate=%v summary=%v; a firewall block leaves this HTTP source reachable", immediate, summary)
+			}
+			finding.SourceIP = "198.51.100.60"
+			if !IPResponseAnswersFinding(cfg, finding, true) {
+				t.Fatal("a block outside Cloudflare coverage must still handle the observation")
+			}
+		})
+	}
+}

@@ -105,6 +105,7 @@ func TestBlockDigestValidationRejectsDisabledDeliveryChannel(t *testing.T) {
 		cfg.Alerts.Webhook.URL = "https://alerts.example.test/hook"
 		cfg.Alerts.BlockDigest.Enabled = true
 		cfg.Alerts.BlockDigest.Channel = "email"
+		cfg.Alerts.BlockDigest.Live = true
 
 		results := Validate(cfg)
 		if !hasResult(results, "error", "alerts.block_digest.channel") {
@@ -116,10 +117,31 @@ func TestBlockDigestValidationRejectsDisabledDeliveryChannel(t *testing.T) {
 		cfg := baseValidationConfig()
 		cfg.Alerts.BlockDigest.Enabled = true
 		cfg.Alerts.BlockDigest.Channel = "webhook"
+		cfg.Alerts.BlockDigest.Live = true
 
 		results := Validate(cfg)
 		if !hasResult(results, "error", "alerts.block_digest.channel") {
 			t.Fatalf("expected channel error for disabled webhook alerts; results=%v", results)
 		}
 	})
+}
+
+func TestSummaryValidationIgnoresUnusedLiveChannel(t *testing.T) {
+	for _, channel := range []string{"email", "webhook"} {
+		t.Run(channel, func(t *testing.T) {
+			cfg := baseValidationConfig()
+			cfg.Alerts.BlockDigest.Enabled = true
+			cfg.Alerts.BlockDigest.Channel = channel
+			cfg.Alerts.Email.Enabled = channel == "webhook"
+			cfg.Alerts.Webhook.Enabled = channel == "email"
+			cfg.Alerts.Webhook.URL = "https://alerts.example.test/hook"
+			if results := Validate(cfg); hasResult(results, "error", "alerts.block_digest.channel") {
+				t.Fatalf("unused live destination blocked daily summary on the enabled channel: %v", results)
+			}
+			cfg.Alerts.BlockDigest.Live = true
+			if results := Validate(cfg); !hasResult(results, "error", "alerts.block_digest.channel") {
+				t.Fatal("live delivery accepted a disabled selected channel")
+			}
+		})
+	}
 }

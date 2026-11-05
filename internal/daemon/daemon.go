@@ -806,6 +806,11 @@ func (d *Daemon) Run() error {
 		d.prepareAttackDatabase(adb)
 	}
 
+	// Recovered admission notices can dispatch as soon as the owner starts.
+	// Publish the collector before any producer can read it or call its hook.
+	d.blockDigest = d.buildBlockDigest(d.currentCfg())
+	alert.SetSummaryHook(d.noteSummary)
+
 	// Own the admission ledger before anything can respond automatically.
 	d.startAdmission()
 
@@ -975,16 +980,12 @@ func (d *Daemon) Run() error {
 	// across old detection policy and new response policy.
 	initialCfg := d.currentCfg()
 
-	// Build the daily summary and block-digest collector before the baseline
-	// auto-response so startup blocks and handled findings are captured too.
-	// GeoIP is already initialised above.
-	d.blockDigest = d.buildBlockDigest(initialCfg)
-	alert.SetSummaryHook(d.noteSummary)
+	// Start delivery once GeoIP is ready. Findings counted since the collector
+	// was published are merged with its saved window before catch-up delivery.
 	bdInterval := initialCfg.BlockDigestInterval()
 	d.wg.Add(1)
 	obs.Go("block-digest", func() {
 		defer d.wg.Done()
-		defer alert.SetSummaryHook(nil)
 		t := time.NewTicker(bdInterval)
 		defer t.Stop()
 		d.blockDigest.Run(d.stopCh, t.C)
@@ -1339,6 +1340,7 @@ func (d *Daemon) Run() error {
 	// Some producers can finish a tick after alertDispatcher observes stopCh.
 	// Drain again once tracked workers are gone and before state is closed.
 	d.flushPendingAlertsOnShutdown()
+	alert.SetSummaryHook(nil)
 	alert.ClosePhpanelQueues()
 	d.stopAbuseReporting()
 	d.closeFindingBus()
@@ -1547,6 +1549,9 @@ func (d *Daemon) drainAlertChannel(batch []alert.Finding) []alert.Finding {
 
 func (d *Daemon) flushPendingAlertsOnShutdown() {
 	d.persistPendingFindingsOnShutdown(d.drainAlertChannel(nil))
+	if d.blockDigest != nil {
+		d.blockDigest.Flush()
+	}
 }
 
 // persistPendingFindingsOnShutdown records findings still queued at shutdown to

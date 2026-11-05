@@ -121,7 +121,7 @@ alerts:
     interval: "1h"                      # how often counts fold into the summary; live alert dedup window
     live: false                         # also send one alert per qualifying block
     send_on: "any"                      # live alerts: any | customer
-    channel: ""                         # empty = enabled alert channels; a set channel also carries the daily summary
+    channel: ""                         # live alerts only: email | webhook; empty = enabled alert channels
     min_block: 1                        # watched blocks needed to show the summary section; 0 always shows it
   audit_log:                            # SIEM-friendly per-finding stream
     file:
@@ -1042,9 +1042,10 @@ key can be deleted.
 CSM sends one summary of the findings it handled each day at 08:00 server
 local time. It goes by alert email when email alerts are on, and to the
 generic alert webhook when that is on, as event `daily_summary` with the
-counts under `csm.summary`. A phpanel webhook does not receive it. When
-`alerts.block_digest.channel` names one channel, the summary uses only that
-channel. The summary goes out every day, also with nothing to report.
+counts under `csm.summary`. A phpanel webhook does not receive it.
+`alerts.block_digest.channel` selects live block alerts only; the daily
+summary uses every enabled alert channel. It goes out even with nothing to
+report.
 
 It covers the window since the previous summary:
 
@@ -1058,12 +1059,16 @@ CSM tracks up to 1,000 source addresses a day. Past that, a new address takes
 the place of the one with the fewest findings, so heavy sources stay listed
 and a count can be overstated, never understated.
 
-Counts are saved at each `block_digest.interval` (one hour by default), at
-shutdown and after each send, so a restart keeps the day; a crash loses at
-most the counts since the last save. If the host was down at 08:00, the missed
-summary goes out once at the next start. A crash during a send can repeat that
-summary at the next start. If the clock goes back, the next summary still goes
-out at the next 08:00.
+Counts are saved at each `block_digest.interval` (one hour by default), after
+the final shutdown drain and before delivery. A crash can lose counts since
+the last save. If the host was down at 08:00, the missed summary goes out at
+the next start. Failed deliveries retry on timer or interval ticks and
+survive restarts; destinations already saved as successful are not retried.
+While a delivery is pending, new findings accumulate in the next window.
+
+A crash after a destination accepts a summary but before CSM saves that
+success can repeat it. Clock corrections are checked every minute; moving
+back across the morning send does not send that local date again.
 
 Only the daemon counts findings. A one-off `csm scan --alert` prints every
 finding; its summary-class findings are neither emailed nor counted in the

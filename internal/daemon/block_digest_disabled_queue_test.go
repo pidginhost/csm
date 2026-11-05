@@ -91,11 +91,13 @@ func TestBlockDigestDisabledDestinationIsNotLost(t *testing.T) {
 				fail = false
 				observe()
 				d.blockDigest.SendDue(time.Now().Add(50 * time.Hour))
-				if enabled {
+				// A returned webhook success was checkpointed even though
+				// email failed. Abnormal exits never reached the webhook.
+				if enabled && outcome != "returned_error" {
 					wantCalls++
 				}
 				if emailCalls != 2 || webhookCalls != wantCalls {
-					t.Fatalf("recovery called disabled sink or retried abandoned work: email=%d webhook=%d", emailCalls, webhookCalls)
+					t.Fatalf("recovery did not retry only unfinished destinations: email=%d webhook=%d", emailCalls, webhookCalls)
 				}
 				row = d.QueueStatuses()["block_digest.webhook"]
 				if row.DroppedTotal != wantLoss {
