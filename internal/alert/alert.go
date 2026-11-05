@@ -3,6 +3,7 @@ package alert
 import (
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -678,27 +679,34 @@ var (
 
 // SetSummaryHook installs or clears the receiver of summary-class findings.
 // Each dispatch calls it once, with no alert lock held, with the
-// summary-class findings among all its observations deduplicated by Key,
-// including checks muted by alerts.email.disabled_checks. It must not block.
+// summary-class part of the findings it would otherwise notify, deduplicated
+// by Key. That includes checks muted by alerts.email.disabled_checks, but not
+// audit-only sources or findings the notification filter removed. It must
+// not block. A dispatch with no hook installed, as in a CLI scan, leaves
+// summary-class findings to audit, history and the data streams.
 func SetSummaryHook(h func(cfg *config.Config, summary []Finding)) {
 	summaryHookMu.Lock()
 	summaryHook = h
 	summaryHookMu.Unlock()
 }
 
-func callSummaryHook(cfg *config.Config, summary []Finding) {
+// callSummaryHook reports a panicking hook as a delivery failure: the
+// summary lost those findings, and some callers only log dispatch errors.
+func callSummaryHook(cfg *config.Config, summary []Finding) (err error) {
 	summaryHookMu.RLock()
 	h := summaryHook
 	summaryHookMu.RUnlock()
 	if h == nil {
-		return
+		return nil
 	}
 	defer func() {
 		if r := recover(); r != nil {
 			fmt.Fprintln(os.Stderr, "alert: summary hook panic")
+			err = errors.New("summary: hook panicked")
 		}
 	}()
 	h(cfg, summary)
+	return nil
 }
 
 type rateLimitKey struct {
@@ -956,21 +964,9 @@ func dispatchWithSources(cfg *config.Config, findings, sources, enforcement, can
 	// when email/webhook are throttled or a handled attack goes to the
 	// summary instead of the operator-facing channels.
 	emitAuditWithSources(cfg, notifications, sources)
-	// Classify every observation once. Summary-class findings report
-	// attacks CSM already handled: they leave email and the generic webhook
-	// and go to the summary, muted checks included, so muting never hides
-	// activity. Candidates are classified too, so a handled finding never
-	// reaches the repeat gate through them.
-	observed := Deduplicate(slices.Concat(sources, findings, candidates))
-	FillTimestamps(observed, now)
-	_, summary := SplitByClass(cfg, observed)
-	summaryKeys := make(map[string]bool, len(summary))
-	for _, f := range summary {
-		summaryKeys[f.Key()] = true
-	}
-	if len(summary) > 0 {
-		callSummaryHook(cfg, summary)
-	}
+	// Every observation, audit sources included, may prove a response
+	// applied. Only the delivery set below is classified and summarized.
+	evidence := slices.Concat(sources, findings, candidates)
 	// The central-intel consumer escalates findings whose IP is in the
 	// verified central scored-set.
 	enforcement = Deduplicate(enforcement)
@@ -1018,9 +1014,18 @@ func dispatchWithSources(cfg *config.Config, findings, sources, enforcement, can
 		}
 	}
 
-	// Summary-class findings leave before disabled_checks, the repeat gate
-	// and the hourly cap. What remains is the immediate set.
-	findings = findingsWithoutKeys(findings, summaryKeys)
+	// Summary-class findings report attacks CSM already handled. They leave
+	// before disabled_checks, the repeat gate and the hourly cap and go to
+	// the summary, muted checks included, so muting never hides activity.
+	// Each delivery finding is classified on its own fields: an older audit
+	// copy of the same key must not decide the class of an escalated one.
+	var summary []Finding
+	findings, summary = splitByClass(cfg, findings, evidence)
+	if len(summary) > 0 {
+		if err := callSummaryHook(cfg, summary); err != nil {
+			addDispatchError(&errs, err)
+		}
+	}
 
 	if len(findings) == 0 {
 		return formatDispatchErrors(errs)
@@ -1115,16 +1120,6 @@ func findingsWithKeys(findings []Finding, keys map[string]bool) []Finding {
 	var out []Finding
 	for _, f := range findings {
 		if keys[f.Key()] {
-			out = append(out, f)
-		}
-	}
-	return out
-}
-
-func findingsWithoutKeys(findings []Finding, keys map[string]bool) []Finding {
-	var out []Finding
-	for _, f := range findings {
-		if !keys[f.Key()] {
 			out = append(out, f)
 		}
 	}

@@ -190,6 +190,7 @@ func TestDispatchPhpanelWebhookBypassesOperatorRateLimit(t *testing.T) {
 func TestDispatchPhpanelWebhookCarriesSummaryClassFindings(t *testing.T) {
 	t.Cleanup(closePhpanelQueuesForTest)
 	withSummaryNoticePolicy(t, summaryNoticeForTest)
+	summary := installSummaryHook(t)
 	var requests int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		atomic.AddInt32(&requests, 1)
@@ -225,6 +226,9 @@ func TestDispatchPhpanelWebhookCarriesSummaryClassFindings(t *testing.T) {
 	assertSplit(t, cfg, batch, nil, batch)
 	if err := Dispatch(cfg, batch); err != nil {
 		t.Fatal(err)
+	}
+	if calls := summary.snapshot(); len(calls) != 1 || !slices.Equal(findingKeys(calls[0]), findingKeys(batch)) {
+		t.Fatalf("summary calls = %v, want both handled findings", calls)
 	}
 	waitForWebhookRequests(t, &requests, 2)
 }

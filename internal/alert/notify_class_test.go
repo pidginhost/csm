@@ -30,13 +30,14 @@ func summaryNoticeForTest(f Finding) bool {
 
 // classIPPolicy mirrors the checks policy for the checks used here: a block
 // answers attacker-side findings, a challenge answers the browser-facing
-// ones, and Critical reputation waits for a block.
+// ones, Critical reputation waits for a block, and nothing answers the WHM
+// exploit indicator.
 func classIPPolicy(_ *config.Config, f Finding, blocked bool) bool {
 	switch f.Check {
 	case "wp_login_bruteforce", "http_scanner_profile":
 		return true
 	case "whm_unauth_scripts_realtime":
-		return blocked
+		return false
 	case "ip_reputation":
 		return blocked || f.Severity != Critical
 	}
@@ -194,7 +195,12 @@ var (
 	classTestAlert     = Finding{Check: "test_alert", Severity: Warning, Message: "Test alert from CSM"}
 )
 
-func TestSummaryHookSeesRawObservations(t *testing.T) {
+// The summary receives the handled part of what the dispatch would
+// otherwise notify: findings, or the delivery candidates that replace them,
+// once by Key and muted checks included. Audit-only sources and findings
+// the notification filter removed (suppression rules in the daemon) are
+// evidence of a response at most, never summary entries themselves.
+func TestSummaryHookSeesEligibleObservations(t *testing.T) {
 	cfg := classConfig(t)
 	cfg.Alerts.MaxPerHour = 10
 	cfg.Alerts.Email.Enabled = true
@@ -205,6 +211,7 @@ func TestSummaryHookSeesRawObservations(t *testing.T) {
 	installFakeMailer(t)
 	route := Finding{Check: "challenge_route", Severity: Warning, Message: "CHALLENGE: 203.0.113.41 sent to PoW challenge (expires in 30m0s)"}
 	scanner := Finding{Check: "http_scanner_profile", Severity: High, Message: "URL scanner profile from 203.0.113.41: 498 of 500 requests", SourceIP: "203.0.113.41"}
+	keepAll := func(fs []Finding) []Finding { return fs }
 	dropAll := func([]Finding) []Finding { return nil }
 
 	for _, tc := range []struct {
@@ -212,15 +219,21 @@ func TestSummaryHookSeesRawObservations(t *testing.T) {
 		dispatch func() error
 		want     []Finding
 	}{
-		{"sources and findings deduplicated", func() error {
-			return DispatchWithSources(cfg, []Finding{classTestAlert, appliedBlockNotice}, []Finding{route, scanner, appliedBlockNotice})
-		}, []Finding{route, scanner, appliedBlockNotice}},
-		{"no findings, only sources", func() error {
-			return DispatchWithSources(cfg, nil, []Finding{appliedBlockNotice, classTestAlert})
+		{"findings deduplicated, muted check included", func() error {
+			return Dispatch(cfg, []Finding{classTestAlert, appliedBlockNotice, route, scanner, appliedBlockNotice})
+		}, []Finding{appliedBlockNotice, route, scanner}},
+		{"audit-only route answers a finding but is not summarized", func() error {
+			return DispatchWithSources(cfg, []Finding{classTestAlert, scanner}, []Finding{route})
+		}, []Finding{scanner}},
+		{"no findings, candidates carry the observations", func() error {
+			return DispatchWithNotificationFilter(cfg, nil, []Finding{appliedBlockNotice}, nil, []Finding{appliedBlockNotice, classTestAlert}, keepAll, nil)
 		}, []Finding{appliedBlockNotice}},
-		{"notification filter mutes everything", func() error {
-			return DispatchWithNotificationFilter(cfg, []Finding{route, appliedBlockNotice}, nil, nil, []Finding{}, dropAll, nil)
-		}, []Finding{route, appliedBlockNotice}},
+		{"audit-only sources", func() error {
+			return DispatchWithSources(cfg, nil, []Finding{appliedBlockNotice, classTestAlert})
+		}, nil},
+		{"notification filter removes everything", func() error {
+			return DispatchWithNotificationFilter(cfg, []Finding{route, appliedBlockNotice}, nil, nil, nil, dropAll, nil)
+		}, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			hook := installSummaryHook(t)
@@ -228,6 +241,12 @@ func TestSummaryHookSeesRawObservations(t *testing.T) {
 				t.Fatal(err)
 			}
 			calls := hook.snapshot()
+			if tc.want == nil {
+				if len(calls) != 0 {
+					t.Fatalf("summary hook saw %v, want no call", calls)
+				}
+				return
+			}
 			if len(calls) != 1 {
 				t.Fatalf("summary hook calls = %d, want 1", len(calls))
 			}
@@ -269,6 +288,73 @@ func TestSummaryHookSeesRawObservations(t *testing.T) {
 			t.Fatal("summary hook ran with an alert lock held")
 		}
 	})
+}
+
+// A delivery candidate is classified on its own fields. An older audit copy
+// with the same Key, here a High reputation sighting a challenge answers,
+// must not move the escalated Critical copy to the summary; an audit-only
+// block notice still answers the attack from its address.
+func TestSummaryUsesDeliverySeverityAndAuditDispositions(t *testing.T) {
+	cfg := classConfig(t)
+	cfg.Alerts.MaxPerHour = 10
+	var hooks webhookBodies
+	cfg.Alerts.Webhook.Enabled = true
+	cfg.Alerts.Webhook.URL = hooks.server(t).URL
+	summary := installSummaryHook(t)
+	ChallengedIPFunc = func(ip string) bool { return ip == "203.0.113.42" }
+	observed := Finding{Check: "ip_reputation", Severity: High, SourceIP: "203.0.113.42", Message: "Known malicious IP accessing server: 203.0.113.42"}
+	escalated := observed
+	escalated.Severity = Critical
+	attack := Finding{Check: "http_scanner_profile", Severity: High, SourceIP: appliedBlockNotice.SourceIP, Message: "URL scanner profile from 203.0.113.40"}
+
+	if err := DispatchWithNotificationFilter(cfg, nil, []Finding{observed, appliedBlockNotice}, nil, []Finding{escalated, attack}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if bodies := hooks.snapshot(); len(bodies) != 1 || !strings.Contains(bodies[0], "ip_reputation") || strings.Contains(bodies[0], "http_scanner_profile") {
+		t.Errorf("webhook bodies = %q, want only the unhandled Critical reputation", bodies)
+	}
+	if calls := summary.snapshot(); len(calls) != 1 || !slices.Equal(findingKeys(calls[0]), findingKeys([]Finding{attack})) {
+		t.Errorf("summary = %v, want only the attack the audit block notice answers", calls)
+	}
+}
+
+// A panicking summary hook lost those findings: the dispatch reports it,
+// and the immediate findings still go out.
+func TestSummaryHookPanicIsReported(t *testing.T) {
+	cfg := classConfig(t)
+	cfg.Alerts.MaxPerHour = 10
+	var hooks webhookBodies
+	cfg.Alerts.Webhook.Enabled = true
+	cfg.Alerts.Webhook.URL = hooks.server(t).URL
+	SetSummaryHook(func(*config.Config, []Finding) { panic("summary fixture failure") })
+	t.Cleanup(func() { SetSummaryHook(nil) })
+
+	err := Dispatch(cfg, []Finding{appliedBlockNotice, classTestAlert})
+	if err == nil || !strings.Contains(err.Error(), "summary: hook panicked") {
+		t.Errorf("dispatch error = %v, want the summary failure", err)
+	}
+	if bodies := hooks.snapshot(); len(bodies) != 1 || !strings.Contains(bodies[0], "test_alert") || strings.Contains(bodies[0], "AUTO-BLOCK") {
+		t.Errorf("webhook bodies = %q, want only the immediate finding", bodies)
+	}
+}
+
+// CLI scans and the web UI never install a summary hook. Their dispatch
+// must still succeed: the handled findings stay in audit and the data
+// streams, and the immediate ones are delivered.
+func TestDispatchWithoutSummaryHookSucceeds(t *testing.T) {
+	cfg := classConfig(t)
+	cfg.Alerts.MaxPerHour = 10
+	var hooks webhookBodies
+	cfg.Alerts.Webhook.Enabled = true
+	cfg.Alerts.Webhook.URL = hooks.server(t).URL
+	SetSummaryHook(nil)
+
+	if err := Dispatch(cfg, []Finding{appliedBlockNotice, classTestAlert}); err != nil {
+		t.Fatalf("dispatch without a summary hook failed: %v", err)
+	}
+	if bodies := hooks.snapshot(); len(bodies) != 1 || !strings.Contains(bodies[0], "test_alert") || strings.Contains(bodies[0], "AUTO-BLOCK") {
+		t.Errorf("webhook bodies = %q, want only the immediate finding", bodies)
+	}
 }
 
 // panelChecks records the check of every signed phpanel delivery.
@@ -349,9 +435,13 @@ func TestEveryDispatchEntryAppliesClassSplit(t *testing.T) {
 			cfg.Alerts.Webhook.Enabled = true
 			cfg.Alerts.Webhook.URL = hooks.server(t).URL
 			gate := newMapGate()
+			summary := installSummaryHook(t)
 
 			if err := entry.dispatch(cfg, append([]Finding(nil), batch...), gate); err != nil {
 				t.Fatal(err)
+			}
+			if calls := summary.snapshot(); len(calls) != 1 || !slices.Equal(findingKeys(calls[0]), findingKeys([]Finding{appliedBlockNotice})) {
+				t.Errorf("summary calls = %v, want exactly the applied block", calls)
 			}
 			for channel, bodies := range map[string][]string{"email": mailer.messages(), "webhook": hooks.snapshot()} {
 				if len(bodies) != 1 || !strings.Contains(bodies[0], "test_alert") || strings.Contains(bodies[0], "AUTO-BLOCK") {

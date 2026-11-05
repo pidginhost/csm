@@ -23,7 +23,7 @@ var noticeMessages = map[admission.NoticeKind]string{
 	admission.NoticeWithheldWarning: "Compromise response withheld",
 	admission.NoticeCapacity:        "Automatic response capacity exhausted",
 	admission.NoticeCriticalSummary: "Critical automatic response gaps summary",
-	admission.NoticeAppliedSummary:  "Automatic responses applied summary",
+	admission.NoticeAppliedSummary:  admission.AppliedSummaryMessage,
 }
 
 // sender delivers the ledger's due notices, and the notice of a stopped

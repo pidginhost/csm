@@ -27,12 +27,20 @@ import (
 // the same batch. Pending, unverified and dry-run blocks keep the finding
 // immediate. Both halves keep their input order.
 func SplitByClass(cfg *config.Config, findings []Finding) (immediate, summary []Finding) {
+	return splitByClass(cfg, findings, findings)
+}
+
+// splitByClass classifies each of findings on its own fields, while every
+// observation in evidence may prove a block or challenge applied. Dispatch
+// passes its audit sources as evidence only: a suppressed block notice still
+// blocked its address, but it is not delivered to the summary itself.
+func splitByClass(cfg *config.Config, findings, evidence []Finding) (immediate, summary []Finding) {
 	if len(findings) == 0 {
 		return nil, nil
 	}
 	notice := currentSummaryNoticePolicy()
 	policy := currentIPResponsePolicy()
-	handled := handledSources(cfg.StatePath, findings)
+	handled := handledSources(cfg.StatePath, evidence)
 	for _, f := range findings {
 		if (notice != nil && notice(f)) || handled.answers(policy, cfg, f) {
 			summary = append(summary, f)
@@ -123,7 +131,7 @@ func (h handledSet) answers(policy IPResponsePolicy, cfg *config.Config, f Findi
 	// compared canonically: substring matching used to let a blocked
 	// 192.0.2.1 answer a finding about the unrelated 192.0.2.10. A finding
 	// with no parseable IP is never handled (fail open to alerting).
-	ip := suppressionIPFromFinding(f)
+	ip := ClassSourceIP(f)
 	if ip == nil {
 		return false
 	}
@@ -178,7 +186,10 @@ func challengeHandlesFinding(f Finding) bool {
 	return f.Check == "ip_reputation" && f.Severity != Critical
 }
 
-func suppressionIPFromFinding(f Finding) net.IP {
+// ClassSourceIP is the address SplitByClass checks against block and
+// challenge state: the structured SourceIP, or for an older finding the
+// first address in its message. nil means the finding has none.
+func ClassSourceIP(f Finding) net.IP {
 	if strings.TrimSpace(f.SourceIP) != "" {
 		if normalized := normalizeFindingIP(f.SourceIP); normalized != "" {
 			return net.ParseIP(normalized)
@@ -280,8 +291,8 @@ var BlockedIPsFunc func() map[string]bool
 
 // ChallengedIPFunc reports whether an IP is currently on the challenge
 // list. Set by the daemon from the live challenge IP list, mirroring
-// BlockedIPsFunc; nil means challenge membership is unknown and no
-// challenge-based suppression happens (fail open to alerting).
+// BlockedIPsFunc; nil means challenge membership is unknown and no listed
+// challenge makes a finding summary class (fail open to alerting).
 var ChallengedIPFunc func(ip string) bool
 
 // loadBlockedIPs reads blocked IPs from both the firewall engine state
@@ -309,7 +320,7 @@ func loadFirewallStateFile(statePath string, now time.Time, ips map[string]bool,
 		} `json:"blocked"`
 	}
 	if err := json.Unmarshal(fwData, &fwState); err != nil {
-		csmlog.Warn("alert filter: firewall state.json unparseable, suppression degraded",
+		csmlog.Warn("alert class split: firewall state.json unparseable, its blocks count as unhandled",
 			"path", fwPath, "err", err)
 		return
 	}
@@ -382,7 +393,7 @@ func loadBlockFile(statePath string, sections blockFileSection) (blockFile, bool
 		Pending json.RawMessage `json:"pending"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
-		csmlog.Warn("alert filter: blocked_ips.json unparseable, suppression degraded",
+		csmlog.Warn("alert class split: blocked_ips.json unparseable, its blocks count as unhandled",
 			"path", blockedPath, "err", err)
 		return blockFile{}, false
 	}
@@ -390,13 +401,13 @@ func loadBlockFile(statePath string, sections blockFileSection) (blockFile, bool
 	var bf blockFile
 	if sections&blockFileIPsSection != 0 && len(raw.IPs) > 0 && string(raw.IPs) != "null" {
 		if err := json.Unmarshal(raw.IPs, &bf.IPs); err != nil {
-			csmlog.Warn("alert filter: blocked_ips.json blocked entries unparseable, suppression degraded",
+			csmlog.Warn("alert class split: blocked_ips.json blocked entries unparseable, they count as unhandled",
 				"path", blockedPath, "err", err)
 		}
 	}
 	if sections&blockFilePendingSection != 0 && len(raw.Pending) > 0 && string(raw.Pending) != "null" {
 		if err := json.Unmarshal(raw.Pending, &bf.Pending); err != nil {
-			csmlog.Warn("alert filter: blocked_ips.json pending entries unparseable, suppression degraded",
+			csmlog.Warn("alert class split: blocked_ips.json pending entries unparseable, they count as unhandled",
 				"path", blockedPath, "err", err)
 		}
 	}

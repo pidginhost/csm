@@ -1,8 +1,10 @@
 package checks
 
 import (
+	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/firewall"
 )
 
 func init() {
@@ -29,6 +31,10 @@ func IPResponseAnswersFinding(cfg *config.Config, f alert.Finding, blocked bool)
 		return false
 	}
 	switch f.Check {
+	case "whm_unauth_scripts_realtime":
+		// An exploit indicator: a later block cannot tell whether the
+		// tokenless request already succeeded, so a person must check.
+		return false
 	case "email_phishing_content", "email_malware", "email_av_parse_worker_source":
 		// Mail content may be evidence of a compromised local sender, and
 		// an IP in the message may come from a mail header or an account
@@ -41,7 +47,28 @@ func IPResponseAnswersFinding(cfg *config.Config, f alert.Finding, blocked bool)
 		return false
 	}
 	if blocked {
-		return true
+		// The Cloudflare accept on TCP 80/443 precedes the blocked drop, so
+		// a block of a covered address leaves its web traffic flowing.
+		return !webTrafficFinding(f) || !cloudflareCoversSource(cfg, f)
 	}
 	return challengeRoutesFinding(cfg, f)
+}
+
+// webTrafficFinding reports whether f is about requests on the web ports: an
+// HTTP-family check, or a reputation sighting below Critical, which is
+// browser-facing traffic.
+func webTrafficFinding(f alert.Finding) bool {
+	return ResponsePolicyFor(f.Check).Evidence == admission.FamilyHTTP ||
+		(f.Check == "ip_reputation" && f.Severity != alert.Critical)
+}
+
+// cloudflareCoversSource reads the Cloudflare ranges the firewall accepts on
+// its web ports, the list a block notice's coverage warning comes from.
+func cloudflareCoversSource(cfg *config.Config, f alert.Finding) bool {
+	ip := alert.ClassSourceIP(f)
+	if cfg == nil || ip == nil {
+		return false
+	}
+	v4, v6 := firewall.LoadCFState(cfg.StatePath)
+	return firewall.CloudflareRangesCover(v4, v6, ip.String())
 }

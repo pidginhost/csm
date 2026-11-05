@@ -86,6 +86,10 @@ func (k NoticeKind) Check() string {
 	return "auto_response_withheld"
 }
 
+// AppliedSummaryMessage is the message a live NoticeAppliedSummary is
+// delivered with. Alert classification names it a summary notice by it.
+const AppliedSummaryMessage = "Automatic responses applied summary"
+
 // Severity is the severity a notice of k is delivered with.
 func (k NoticeKind) Severity() Severity {
 	if k == NoticeWithheldWarning || k == NoticeAppliedSummary {

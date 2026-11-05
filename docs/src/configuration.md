@@ -1004,22 +1004,29 @@ what CSM already handled on its own:
 
 - an attack from an address CSM blocked, before or in the same batch, including by a subnet block or netblock;
 - an attack a challenge answers, while the address is on the challenge list or was routed there in the same batch. A challenge does not answer FTP or mail authentication failures, critical reputation sightings, or checks configured to require a hard block;
-- applied block and challenge notices, including permanent, subnet and netblock blocks, and dry-run block verdicts;
+- applied block and challenge notices, including permanent, subnet and netblock blocks, dry-run block verdicts, and the periodic count of applied automatic responses;
 - mail login advisories that never block, such as spray observe mode;
 - finished automatic actions that need no follow-up: database spam cleanup, and PHP relay freeze dry runs and rate-limit deferrals.
 
 Summary-class findings are left out of alert email and the generic alert
 webhook and are counted for the daily summary instead. They never spend the
 hourly alert budget. The findings page, history, incidents, the audit log, the
-event stream and the phpanel webhook still receive them.
+event stream and the phpanel webhook still receive them. Only findings that
+would otherwise notify are counted: a suppression rule, or a check that never
+notifies, keeps its findings out of the summary too. Such a finding can still
+show that CSM blocked or challenged an address. If the summary fails to take
+its findings, the alert run reports an error and immediate alerts still go out.
 
 Everything else is immediate. That includes attacks whose source CSM did not
 block: auto-response off or in dry run, a block that failed, was refused or is
 still queued, and checks that never block. Compromise evidence, successful
-logins, suspicious mail content and findings that summarize several sources
-stay immediate even when the address is blocked, because blocking one address
-does not resolve them. Failed, paused or skipped automatic actions and
-auto-block queue and accounting notices are immediate too.
+logins, unauthenticated WHM script requests, suspicious mail content and
+findings that summarize several sources stay immediate even when the address
+is blocked, because blocking one address does not resolve them. A block of an
+address inside a Cloudflare allow range leaves ports 80 and 443 open, so its
+notice and the web attacks from that address stay immediate. Failed, paused or
+skipped automatic actions and auto-block queue and accounting notices are
+immediate too.
 
 The generic webhook follows the same classes as email. `alerts.email.disabled_checks`
 mutes email only: a muted immediate finding still goes to the webhook, and a

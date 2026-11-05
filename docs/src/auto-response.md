@@ -489,7 +489,7 @@ blocking it is the reviewed response to a local process connecting to it.
 - Realtime signature auto-quarantine requires high confidence: category `webshell` or `dropper`, file size at least 512 bytes, and either Shannon entropy >= 5.5 or hex density > 20% with an obfuscated-execution signal. This prevents legitimate WordPress plugins from being quarantined.
 - IP block rate limited by `auto_response.max_blocks_per_hour` (default 50/hour) to prevent runaway blocking
 - CRITICAL alerts and threat-intel reputation sightings always bypass the operator email/webhook rate limit (default 30/hour); lower-severity findings batched with them still count against it
-- Attacks CSM blocked or challenged, and its applied block and challenge notices, go to the daily summary instead of alert email and the generic webhook; an attack whose block failed, is still queued or ran in dry run is alerted immediately
+- Attacks CSM blocked or challenged, and its applied block and challenge notices, go to the daily summary instead of alert email and the generic webhook; an attack whose block failed, is still queued or ran in dry run is alerted immediately, as are a block of a Cloudflare-covered address and the web attacks from it
 - Trusted countries (`trusted_countries`) suppress login alerts from expected geolocations
 
 ## What CSM Detects in Real-Time

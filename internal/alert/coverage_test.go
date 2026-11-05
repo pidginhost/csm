@@ -1079,7 +1079,7 @@ func TestSplitByClassMalformedBlockedFileWarnsOnceAndKeepsFindingImmediate(t *te
 		assertSplit(t, cfg, findings, findings, nil)
 	})
 
-	if count := strings.Count(logs, "suppression degraded"); count != 1 {
+	if count := strings.Count(logs, "count as unhandled"); count != 1 {
 		t.Fatalf("degraded-state warning count = %d, want 1; logs: %q", count, logs)
 	}
 }

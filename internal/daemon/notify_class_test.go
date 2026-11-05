@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -11,7 +12,9 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/antispam/reconcile"
 	"github.com/pidginhost/csm/internal/challenge"
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/incident"
 	"github.com/pidginhost/csm/internal/queuehealth"
 	"github.com/pidginhost/csm/internal/reporting"
@@ -119,6 +122,99 @@ func TestDispatchBatchHandledAttackNotEmailed(t *testing.T) {
 	}
 }
 
+// The admission owner's count of applied responses reports blocks that
+// already landed, so it goes to the summary, not to the operator now.
+func TestAdmissionAppliedSummaryNoticeGoesToSummary(t *testing.T) {
+	cfg, _, rec := suppressionResponseSetup(t)
+	useActiveConfig(t, cfg)
+	seen := recordSummaryHook(t)
+	d := suppressionTestDaemon(t, cfg, nil)
+	notice := alert.Finding{Check: "auto_block", Severity: alert.Warning, Message: admission.AppliedSummaryMessage,
+		Details: "events=3 first=2026-01-02T10:00:00Z last=2026-01-02T10:05:00Z", Timestamp: time.Now()}
+
+	if err := d.deliverAdmissionNotices([]alert.Finding{notice}, false); err != nil {
+		t.Fatal(err)
+	}
+	if n := rec.count(); n != 0 {
+		t.Fatalf("webhook calls = %d, want 0 for the applied-responses summary", n)
+	}
+	if !seen.has("auto_block", admission.AppliedSummaryMessage) || !historyHas(t, d.store, "auto_block", admission.AppliedSummaryMessage) {
+		t.Fatalf("applied-responses summary missing from the summary hook %v or history", seen.all())
+	}
+}
+
+// Suppression rules mute the summary too: a suppressed finding never
+// notified, so it is not counted as a handled one either.
+func TestSummaryHonorsSuppressionRules(t *testing.T) {
+	for _, path := range []string{"dispatch", "startup", "applied block"} {
+		t.Run(path, func(t *testing.T) {
+			cfg, blocker, rec := suppressionResponseSetup(t)
+			seen := recordSummaryHook(t)
+			rules := append(checkWideSuppression("http_scanner_profile"), checkWideSuppression("auto_block")...)
+			d := suppressionTestDaemon(t, cfg, rules)
+			if path == "applied block" {
+				d.recordAppliedBlocks([]alert.Finding{{Check: "auto_block", Severity: alert.Critical,
+					Message: "AUTO-BLOCK: 203.0.113.7 blocked (expires in 24h0m0s)", SourceIP: "203.0.113.7", Timestamp: time.Now()}})
+			} else {
+				runSuppressionBatch(t, d, path, []alert.Finding{{Check: "http_scanner_profile", Severity: alert.High,
+					Message: "URL scanner profile from 203.0.113.7: 498 of 500 requests", SourceIP: "203.0.113.7", Timestamp: time.Now()}})
+				if got := blockedIPs(blocker); len(got) != 1 || got[0] != "203.0.113.7" {
+					t.Fatalf("suppressed scanner was not blocked: %v", got)
+				}
+			}
+			if got := seen.all(); len(got) != 0 {
+				t.Errorf("suppressed findings reached the summary: %v", got)
+			}
+			if n := rec.count(); n != 0 {
+				t.Errorf("suppressed findings reached the webhook: %d calls", n)
+			}
+		})
+	}
+}
+
+// cloudflareBlocker lands every block and reports every address inside the
+// Cloudflare ranges, as the engine does for a covered address.
+type cloudflareBlocker struct{ applyWiringBlocker }
+
+func (*cloudflareBlocker) CloudflareCovers(string) bool { return true }
+
+// A live block of a Cloudflare-covered address leaves its web ports open:
+// the block notice and the web attack both still reach the operator.
+func TestDispatchBatchCloudflareCoveredBlockStaysImmediate(t *testing.T) {
+	cfg, _, rec := suppressionResponseSetup(t)
+	seen := recordSummaryHook(t)
+	blocker := &cloudflareBlocker{}
+	checks.SetIPBlocker(blocker)
+	dir := filepath.Join(cfg.StatePath, "firewall")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "cf_whitelist.txt"), []byte("# ipv4\n203.0.113.0/24\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	d := suppressionTestDaemon(t, cfg, nil)
+
+	d.dispatchBatch([]alert.Finding{{
+		Severity:  alert.High,
+		Check:     "http_scanner_profile",
+		Message:   "URL scanner profile from 203.0.113.9: 498 of 500 requests",
+		SourceIP:  "203.0.113.9",
+		Timestamp: time.Now(),
+	}})
+
+	if got := blockedIPs(&blocker.applyWiringBlocker); len(got) != 1 || got[0] != "203.0.113.9" {
+		t.Fatalf("block calls = %v, want the scanner source", got)
+	}
+	for _, marker := range []string{"AUTO-BLOCK: 203.0.113.9", "URL scanner profile from 203.0.113.9", firewall.CloudflareCoverageWarning} {
+		if !rec.delivered(marker) {
+			t.Errorf("webhook never carried %q", marker)
+		}
+	}
+	if got := seen.all(); len(got) != 0 {
+		t.Errorf("a block that leaves web ports open went to the summary: %v", got)
+	}
+}
+
 // Blocks applied outside the scan batch follow the same class rules.
 func TestRecordAppliedBlocksFollowClassRules(t *testing.T) {
 	for _, tc := range []struct {
@@ -182,8 +278,8 @@ func TestDirectNoticesStillEmailed(t *testing.T) {
 			var reporter queuehealth.Reporter
 			d.reportQueueHealth(now, &reporter)
 		}},
-		{"admission notice", "Automatic responses applied summary", func(t *testing.T, d *Daemon, _ *config.Config) {
-			notice := alert.Finding{Check: "auto_block", Severity: alert.Warning, Message: "Automatic responses applied summary", Details: "applied=3", Timestamp: time.Now()}
+		{"admission notice", "Critical automatic response withheld", func(t *testing.T, d *Daemon, _ *config.Config) {
+			notice := alert.Finding{Check: "auto_response_withheld", Severity: alert.Critical, Message: "Critical automatic response withheld", Details: "events=1 reason=capacity", Timestamp: time.Now()}
 			if err := d.deliverAdmissionNotices([]alert.Finding{notice}, false); err != nil {
 				t.Fatal(err)
 			}

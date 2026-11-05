@@ -40,6 +40,8 @@ func TestIPResponseAnswersFinding(t *testing.T) {
 		{"blocked cpanel login", cfg, alert.Finding{Check: "cpanel_login", Severity: alert.Warning}, true, false},
 		{"blocked ftp login", cfg, alert.Finding{Check: "ftp_login", Severity: alert.Warning}, true, false},
 		{"blocked unknown check", cfg, alert.Finding{Check: "not_a_registered_check", Severity: alert.High}, true, false},
+		// A WHM exploit indicator may already have succeeded.
+		{"blocked WHM exploit indicator", cfg, alert.Finding{Check: "whm_unauth_scripts_realtime", Severity: alert.Critical, SourceIP: "203.0.113.40"}, true, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -67,6 +69,7 @@ func TestIPResponsePolicyKeepsMailAndDistributedEvidence(t *testing.T) {
 		{Check: "smtp_subnet_spray", Severity: alert.Critical, SourceIP: "203.0.113.0/24", Message: "SMTP password spray from 203.0.113.0/24: 10 unique IPs in 5m0s"},
 		{Check: "http_distributed_flood", Severity: alert.High, Message: "Distributed HTTP attack on 203.0.113.40: 10 distinct abusive source IPs"},
 		{Check: "http_asn_crawl", Severity: alert.High, Message: "Distributed crawl from AS64500 (test network) against 203.0.113.40"},
+		{Check: "whm_unauth_scripts_realtime", Severity: alert.Critical, SourceIP: "203.0.113.40", Message: "Tokenless WHM scripts request from 203.0.113.40 (CVE-2026-41940 IOC)"},
 	}
 	cfg := &config.Config{StatePath: t.TempDir()}
 	for _, finding := range findings {
