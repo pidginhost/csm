@@ -475,8 +475,14 @@ func slowTrusted(spray *mailSpray, ip string, accounts map[string]time.Time, unv
 // mailboxes earns none and may be reported as a compromise. The tracker keeps
 // no state of its own for it. Callers filter infra/private/loopback IPs first.
 func (t *smtpAuthTracker) RecordSuccess(ip, account string) (findings []alert.Finding) {
+	return t.recordSuccessAt(ip, account, t.now())
+}
+
+// recordSuccessAt retains the source time for customer history while the
+// brute-force tracker continues to process the event at receipt time.
+func (t *smtpAuthTracker) recordSuccessAt(ip, account string, at time.Time) (findings []alert.Finding) {
 	// Before t.mu: the customer set takes its own lock.
-	t.knownCustomers.Note(ip, knownCustomerSMTP, account, t.now())
+	t.knownCustomers.Note(ip, knownCustomerSMTP, account, at)
 	if ip == "" {
 		return nil
 	}

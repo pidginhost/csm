@@ -233,6 +233,28 @@ func FuzzParseSessionNew(f *testing.F) {
 	})
 }
 
+func FuzzCustomerLoginTime(f *testing.F) {
+	f.Add("[2026-11-05 09:00:00 +0000] info [cpaneld]")
+	f.Add("2026-11-05T09:00:00Z host dovecot:")
+	f.Add("Nov  5 09:00:00 host dovecot:")
+	f.Add("2026-11-05 09:00:00 1abc23-000456-AB <=")
+	f.Add("")
+	f.Fuzz(func(t *testing.T, line string) {
+		now := time.Date(2026, 11, 5, 10, 0, 0, 0, time.UTC)
+		want := now.Add(-time.Hour)
+		for _, prefix := range []string{
+			"[2026-11-05 09:00:00 +0000]",
+			"2026-11-05T09:00:00Z",
+			"Nov  5 09:00:00",
+			"2026-11-05 09:00:00",
+		} {
+			if got := customerLoginTime(prefix+" host "+line, now); !got.Equal(want) {
+				t.Fatalf("message text replaced the source time: %v, want %v", got, want)
+			}
+		}
+	})
+}
+
 func FuzzIsPrivateOrLoopback(f *testing.F) {
 	f.Add("127.0.0.1")
 	f.Add("10.0.0.5")

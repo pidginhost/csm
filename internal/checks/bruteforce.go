@@ -492,7 +492,10 @@ func CheckFTPLogins(ctx context.Context, cfg *config.Config, store *state.Store)
 		if !isPureFTPDLogFields(strings.Fields(line)) {
 			continue
 		}
-		ip := extractIPFromLog(line)
+		ip, account := ftpLoginFields(line)
+		if account == "" {
+			ip = extractIPFromLog(line)
+		}
 		if ignoredFTPClientIP(ip, cfg.InfraIPs) {
 			continue
 		}
@@ -515,7 +518,7 @@ func CheckFTPLogins(ctx context.Context, cfg *config.Config, store *state.Store)
 			tracker.record(ip, at)
 			// The newest new failure is the observation the report names.
 			freshFailures[ip] = alert.Observation{Producer: string(ProducerFTPScan), Stream: syslogStream(next), Cursor: strconv.FormatInt(rec.offset, 10), ObservedAt: at.UTC()}
-		case strings.Contains(line, "is now logged in"):
+		case account != "":
 			findings = append(findings, ftpLoginFinding(ip, line, tracker.count(ip)))
 		}
 	}
@@ -583,7 +586,10 @@ func checkFTPLoginsLegacy(cfg *config.Config) []alert.Finding {
 			continue
 		}
 
-		ip := extractIPFromLog(line)
+		ip, account := ftpLoginFields(line)
+		if account == "" {
+			ip = extractIPFromLog(line)
+		}
 		if ignoredFTPClientIP(ip, cfg.InfraIPs) {
 			continue
 		}
@@ -591,7 +597,7 @@ func checkFTPLoginsLegacy(cfg *config.Config) []alert.Finding {
 		switch {
 		case strings.Contains(line, "Authentication failed"), strings.Contains(line, "auth failed"):
 			failedFTP[ip]++
-		case strings.Contains(line, "is now logged in"):
+		case account != "":
 			// failedFTP holds failures seen earlier in this batch; pure-ftpd logs
 			// chronologically so a brute-then-success appears as fails before the
 			// "logged in" line, letting the shared builder escalate.
@@ -741,13 +747,10 @@ func FTPLoginFinding(line string, cfg *config.Config) (alert.Finding, bool) {
 	if cfg == nil {
 		cfg = &config.Config{}
 	}
-	// A failure line names the attempted user, so a chosen name can carry the
-	// login text. CheckFTPLogins counts such a line as a failure first.
-	if !strings.Contains(line, "is now logged in") ||
-		strings.Contains(line, "Authentication failed") || strings.Contains(line, "auth failed") {
+	ip, account := ftpLoginFields(line)
+	if account == "" {
 		return alert.Finding{}, false
 	}
-	ip := extractIPFromLog(line)
 	if ignoredFTPClientIP(ip, cfg.InfraIPs) {
 		return alert.Finding{}, false
 	}
@@ -760,6 +763,7 @@ func FTPLoginFinding(line string, cfg *config.Config) (alert.Finding, bool) {
 // Critical; any other login is audit-level (Warning), matching the cPanel-login
 // detector ("logins are audit trail, not paging-level").
 func ftpLoginFinding(ip, line string, recentFails int) alert.Finding {
+	at, _ := syslogLineTime(line, time.Now())
 	if recentFails >= ftpFailThreshold {
 		msg := fmt.Sprintf("FTP login succeeded from brute-force source %s after %d failed attempts", ip, recentFails)
 		owner := ""
@@ -768,23 +772,60 @@ func ftpLoginFinding(ip, line string, recentFails int) alert.Finding {
 			owner = ftpAccountOwner(account)
 		}
 		return alert.Finding{
-			Severity: alert.Critical,
-			Check:    "ftp_login_after_bruteforce",
-			DedupKey: loginRecordKey(line),
-			SourceIP: ip,
-			Message:  msg,
-			Details:  truncate(line, 200),
-			TenantID: owner,
+			Severity:  alert.Critical,
+			Check:     "ftp_login_after_bruteforce",
+			DedupKey:  loginRecordKey(line),
+			SourceIP:  ip,
+			Message:   msg,
+			Details:   line,
+			TenantID:  owner,
+			Timestamp: at,
 		}
 	}
 	return alert.Finding{
-		Severity: alert.Warning,
-		Check:    "ftp_login",
-		DedupKey: loginRecordKey(line),
-		SourceIP: ip,
-		Message:  fmt.Sprintf("FTP login from non-infra IP: %s", ip),
-		Details:  truncate(line, 200),
+		Severity:  alert.Warning,
+		Check:     "ftp_login",
+		DedupKey:  loginRecordKey(line),
+		SourceIP:  ip,
+		Message:   fmt.Sprintf("FTP login from non-infra IP: %s", ip),
+		Details:   line,
+		Timestamp: at,
 	}
+}
+
+// FTPLoginAccount returns the authenticated account only from a complete
+// pure-ftpd success record. Findings retain this record for customer tracking;
+// the tenant owner is not the identity of an individual FTP account.
+func FTPLoginAccount(line string) string {
+	_, account := ftpLoginFields(line)
+	return account
+}
+
+func ftpLoginFields(line string) (ip, account string) {
+	fields := strings.Fields(line)
+	if !isPureFTPDLogFields(fields) {
+		return "", ""
+	}
+	program := 0
+	if !isPureFTPDProgramToken(fields[0]) {
+		program = 2 // RFC 3339 timestamp and hostname
+		if len(fields) >= 5 && isSyslogTimestampPrefix(fields) {
+			program = 4
+		}
+	}
+	msg := fields[program+1:]
+	// Match server-owned structure before interpreting any client text.
+	if len(msg) != 7 || msg[1] != "[INFO]" || msg[3] != "is" || msg[4] != "now" || msg[5] != "logged" || msg[6] != "in" {
+		return "", ""
+	}
+	ip = ipFromParenPeer(msg[0])
+	if ip == "" && net.ParseIP(msg[0]) != nil {
+		ip = msg[0]
+	}
+	if ip == "" {
+		return "", ""
+	}
+	return ip, msg[2]
 }
 
 // parseFTPLoginAccount extracts the account name from a pure-ftpd

@@ -1074,12 +1074,24 @@ be saved is still sent; the save warning backs off the same way as a failing
 destination.
 
 A crash after a destination accepts a summary but before CSM saves that
-success can repeat it. Clock corrections are checked every minute; moving
-back across the morning send does not send that local date again.
+success can repeat it. Clock corrections are checked every minute. Moving
+back across one or more morning sends does not resend dates already covered,
+including after a restart. Sending resumes on the first unsent local date.
 
 Only the daemon counts findings. A one-off `csm scan --alert` prints every
 finding; its summary-class findings are neither emailed nor counted in the
 daily summary. The hourly block digest email no longer exists.
+
+Customer login history records authenticated cPanel, webmail, SMTP, IMAP,
+POP and FTP source addresses. Buffered logs keep their original login time,
+so reading old logs does not renew expired history. FTP command text and
+failed login names do not count as successful logins.
+
+History has a bounded address budget per account and IPv6 network; unnamed
+logins share one account budget. These limits do not make other addresses in
+the same network known customers. Account rotation uses its own budget before
+evicting unrelated customers. History is saved periodically and after log
+readers stop during a clean shutdown.
 
 ## Web UI Exposure
 

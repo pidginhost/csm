@@ -357,3 +357,26 @@ func TestSummarySwitchedOffDestinationSettles(t *testing.T) {
 		t.Fatalf("switched-off destination retried or dropped: attempts %d -> %d, logs %q", attempts, webhooks, logs)
 	}
 }
+
+func TestSummaryMultiDayRollbackKeepsSentDates(t *testing.T) {
+	st := &summaryStore{}
+	cap := &summaryCapture{}
+	c := summaryCollector(Options{EmailSink: cap.email, SaveSummary: st.save})
+	first := summaryDueOf(c)
+	c.SendDue(first)
+	c.SendDue(first.Add(24 * time.Hour))
+	restarted := summaryCollector(Options{
+		Now:         func() time.Time { return first.Add(-time.Hour) },
+		LoadSummary: st.load, SaveSummary: st.save, EmailSink: cap.email,
+	})
+	runStopped(t, restarted)
+	for minute := 0; minute < 48*60; minute++ {
+		restarted.SendDue(first.Add(time.Duration(minute) * time.Minute))
+	}
+	if got := len(cap.sent()); got != 2 {
+		t.Fatalf("rollback repeated a sent date: got %d emails, want 2", got)
+	}
+	if !restarted.SendDue(first.Add(48*time.Hour)) || len(cap.sent()) != 3 {
+		t.Fatal("first unsent morning did not deliver")
+	}
+}

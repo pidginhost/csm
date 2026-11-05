@@ -3,11 +3,13 @@ package daemon
 import (
 	"net/netip"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/blockdigest"
+	"github.com/pidginhost/csm/internal/checks"
 	csmlog "github.com/pidginhost/csm/internal/log"
 	"github.com/pidginhost/csm/internal/store"
 )
@@ -19,8 +21,9 @@ const knownCustomerTTL = 30 * 24 * time.Hour
 // batch, down to 95%, so each new address does not pay for a scan.
 const maxKnownCustomers = 50000
 
-// maxKnownCustomerIPsPerAccount bounds the addresses one account may hold, so
-// one stolen credential cannot push every other customer out of the set.
+// maxKnownCustomerIPsPerAccount bounds one account, unnamed logins together,
+// and one IPv6 /64. Rotating credentials or IPv6 hosts must not let one
+// source consume the host budget. Lookups still require an exact address.
 const maxKnownCustomerIPsPerAccount = 64
 
 // Kinds of successful customer login.
@@ -45,8 +48,10 @@ type knownCustomers struct {
 	mu       sync.Mutex
 	entries  map[netip.Addr]store.KnownCustomer
 	accounts map[string]map[netip.Addr]struct{} // addresses whose last login named the account
-	dirty    map[netip.Addr]struct{}            // to write at the next save
-	deleted  map[string]struct{}                // stored keys to remove at the next save
+	networks map[netip.Prefix]map[netip.Addr]struct{}
+	stored   map[netip.Addr]struct{} // addresses loaded or handed to the writer
+	dirty    map[netip.Addr]struct{} // to write at the next save
+	deleted  map[string]struct{}     // stored keys to remove at the next save
 }
 
 func newKnownCustomers(now func() time.Time) *knownCustomers {
@@ -54,6 +59,8 @@ func newKnownCustomers(now func() time.Time) *knownCustomers {
 		now:      now,
 		entries:  make(map[netip.Addr]store.KnownCustomer),
 		accounts: make(map[string]map[netip.Addr]struct{}),
+		networks: make(map[netip.Prefix]map[netip.Addr]struct{}),
+		stored:   make(map[netip.Addr]struct{}),
 		dirty:    make(map[netip.Addr]struct{}),
 		deleted:  make(map[string]struct{}),
 	}
@@ -94,7 +101,7 @@ func (k *knownCustomers) Note(ip, kind, account string, at time.Time) {
 	if knownCustomerExpired(at, now) {
 		return
 	}
-	c := store.KnownCustomer{Kind: kind, Account: normalizeSprayMailbox(account), At: at}
+	c := store.KnownCustomer{Kind: kind, Account: strings.Clone(normalizeSprayMailbox(account)), At: at}
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	k.putLocked(addr, c)
@@ -106,28 +113,39 @@ func (k *knownCustomers) putLocked(addr netip.Addr, c store.KnownCustomer) {
 	if exists && old.At.After(c.At) {
 		return
 	}
-	if !exists && len(k.entries) >= maxKnownCustomers {
-		k.evictOldestLocked()
-	}
 	if exists && old.Account != c.Account {
 		k.unindexLocked(addr, old.Account)
 	}
 	k.entries[addr] = c
 	k.dirty[addr] = struct{}{}
 	delete(k.deleted, addr.String())
-	if c.Account == "" {
-		return
-	}
 	held := k.accounts[c.Account]
 	if held == nil {
 		held = make(map[netip.Addr]struct{})
 		k.accounts[c.Account] = held
 	}
 	held[addr] = struct{}{}
+	if addr.Is6() {
+		p := netip.PrefixFrom(addr, 64).Masked()
+		if k.networks[p] == nil {
+			k.networks[p] = make(map[netip.Addr]struct{})
+		}
+		k.networks[p][addr] = struct{}{}
+	}
+	k.trimGroupLocked(held)
+	if addr.Is6() {
+		k.trimGroupLocked(k.networks[netip.PrefixFrom(addr, 64).Masked()])
+	}
+	// A local rotation must free its slot before considering host eviction.
+	if len(k.entries) > maxKnownCustomers {
+		k.evictOldestLocked()
+	}
+}
+
+func (k *knownCustomers) trimGroupLocked(held map[netip.Addr]struct{}) {
 	if len(held) <= maxKnownCustomerIPsPerAccount {
 		return
 	}
-	// The account's oldest address goes, which may be the one just noted.
 	var oldest customerEntry
 	for a := range held {
 		if e := (customerEntry{a, k.entries[a]}); !oldest.addr.IsValid() || compareCustomerEntries(e, oldest) < 0 {
@@ -159,7 +177,7 @@ func (k *knownCustomers) evictOldestLocked() {
 		all = append(all, customerEntry{a, c})
 	}
 	slices.SortFunc(all, compareCustomerEntries)
-	for _, e := range all[:len(all)-maxKnownCustomers*95/100] {
+	for _, e := range all[:len(all)-(maxKnownCustomers*95/100+1)] {
 		k.removeLocked(e.addr)
 	}
 }
@@ -178,11 +196,18 @@ func (k *knownCustomers) removeLocked(addr netip.Addr) {
 		return
 	}
 	delete(k.entries, addr)
-	if c.Account != "" {
-		k.unindexLocked(addr, c.Account)
+	k.unindexLocked(addr, c.Account)
+	if addr.Is6() {
+		p := netip.PrefixFrom(addr, 64).Masked()
+		delete(k.networks[p], addr)
+		if len(k.networks[p]) == 0 {
+			delete(k.networks, p)
+		}
 	}
 	delete(k.dirty, addr)
-	k.deleted[addr.String()] = struct{}{}
+	if _, stored := k.stored[addr]; stored {
+		k.deleted[addr.String()] = struct{}{}
+	}
 }
 
 func customerHit(addr netip.Addr, c store.KnownCustomer) blockdigest.CustomerHit {
@@ -271,7 +296,7 @@ func (k *knownCustomers) Load(saved map[string]store.KnownCustomer) {
 		if c.At.After(now) {
 			c.At = now
 		}
-		c.Account = normalizeSprayMailbox(c.Account)
+		c.Account = strings.Clone(normalizeSprayMailbox(c.Account))
 		valid = append(valid, entry{raw, addr, c})
 	}
 	k.mu.Lock()
@@ -279,6 +304,16 @@ func (k *knownCustomers) Load(saved map[string]store.KnownCustomer) {
 	for _, raw := range dropped {
 		k.deleted[raw] = struct{}{}
 	}
+	// Index all stored keys before admission: a later record may evict an
+	// earlier one, and both still need deletion from the saved set.
+	for _, e := range valid {
+		if e.raw == e.addr.String() {
+			k.stored[e.addr] = struct{}{}
+		}
+	}
+	slices.SortFunc(valid, func(a, b entry) int {
+		return compareCustomerEntries(customerEntry{a.addr, a.c}, customerEntry{b.addr, b.c})
+	})
 	for _, e := range valid {
 		canonical := e.raw == e.addr.String()
 		if !canonical {
@@ -304,10 +339,14 @@ func (k *knownCustomers) Changes() (upserts map[string]store.KnownCustomer, dele
 	upserts = make(map[string]store.KnownCustomer, len(k.dirty))
 	for addr := range k.dirty {
 		upserts[addr.String()] = k.entries[addr]
+		k.stored[addr] = struct{}{}
 	}
 	deletes = make([]string, 0, len(k.deleted))
 	for raw := range k.deleted {
 		deletes = append(deletes, raw)
+		if addr, err := netip.ParseAddr(raw); err == nil && addr.String() == raw {
+			delete(k.stored, addr)
+		}
 	}
 	slices.Sort(deletes)
 	clear(k.dirty)
@@ -323,14 +362,25 @@ func (k *knownCustomers) requeue(upserts map[string]store.KnownCustomer, deletes
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	mark := func(raw string) {
-		if addr, err := netip.ParseAddr(raw); err == nil && addr.String() == raw {
+		addr, err := netip.ParseAddr(raw)
+		canonical := err == nil && addr.String() == raw
+		if canonical {
 			if _, ok := k.entries[addr]; ok {
+				k.stored[addr] = struct{}{}
 				k.dirty[addr] = struct{}{}
 				return
 			}
 		}
-		if len(k.deleted) < maxKnownCustomers {
+		_, pending := k.deleted[raw]
+		if pending || len(k.deleted) < maxKnownCustomers {
 			k.deleted[raw] = struct{}{}
+			if canonical {
+				// A failed delete may still be on disk even if a new login
+				// temporarily cancels this pending deletion.
+				k.stored[addr] = struct{}{}
+			}
+		} else if canonical {
+			delete(k.stored, addr)
 		}
 	}
 	for raw := range upserts {
@@ -341,12 +391,37 @@ func (k *knownCustomers) requeue(upserts map[string]store.KnownCustomer, deletes
 	}
 }
 
+// customerLoginTime keeps buffered records from renewing an old login.
+// Timestamp-free journal messages use the receipt time.
+func customerLoginTime(line string, now time.Time) time.Time {
+	if strings.HasPrefix(line, "[") {
+		if end := strings.IndexByte(line, ']'); end > 0 {
+			if at, err := time.Parse("2006-01-02 15:04:05 -0700", line[1:end]); err == nil {
+				return at
+			}
+		}
+	}
+	if at := smtpAuthLogTime(line, now); !at.IsZero() {
+		return at
+	}
+	if len(line) >= len("2006-01-02 15:04:05") {
+		if at, err := time.ParseInLocation("2006-01-02 15:04:05", line[:len("2006-01-02 15:04:05")], now.Location()); err == nil {
+			return at
+		}
+	}
+	return now
+}
+
 // noteFTPCustomers remembers the addresses of successful FTP logins.
 func (d *Daemon) noteFTPCustomers(findings []alert.Finding) {
 	for _, f := range findings {
 		switch f.Check {
 		case "ftp_login", "ftp_login_after_bruteforce":
-			d.knownCustomers.Note(f.SourceIP, knownCustomerFTP, f.TenantID, f.Timestamp)
+			account := checks.FTPLoginAccount(f.Details)
+			if account == "" {
+				account = f.TenantID
+			}
+			d.knownCustomers.Note(f.SourceIP, knownCustomerFTP, account, f.Timestamp)
 		}
 	}
 }
@@ -367,10 +442,13 @@ func (d *Daemon) loadKnownCustomers() {
 
 // persistKnownCustomers purges expired entries and saves what changed.
 func (d *Daemon) persistKnownCustomers() {
+	sdb := store.Global()
+	if d.knownCustomers == nil || sdb == nil {
+		return
+	}
 	d.knownCustomers.Purge()
 	upserts, deletes := d.knownCustomers.Changes()
-	sdb := store.Global()
-	if sdb == nil || len(upserts)+len(deletes) == 0 {
+	if len(upserts)+len(deletes) == 0 {
 		return
 	}
 	if err := sdb.SaveKnownCustomers(upserts, deletes); err != nil {

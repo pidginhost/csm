@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -46,6 +47,34 @@ func TestFailedFTPLoginNamingLoginTextIsNoLogin(t *testing.T) {
 	got := parseFTPLogLine(forged, cfg)
 	if len(got) != 1 || got[0].Check != "ftp_auth_failure_realtime" {
 		t.Fatalf("findings = %+v, want only the auth failure", got)
+	}
+}
+
+func TestFTPLoginTextOutsideSuccessRecordIsNoLogin(t *testing.T) {
+	for _, line := range []string{
+		`Apr 12 10:00:00 host pure-ftpd[1234]: (?@198.51.100.7) [DEBUG] Command [USER] [x is now logged in]`,
+		`Apr 12 10:00:00 host pure-ftpd[1234]: (?@198.51.100.7) [WARNING] Can't change directory to x is now logged in`,
+		`Apr 12 10:00:00 host sshd[1234]: pure-ftpd (?@198.51.100.7) [INFO] alice is now logged in`,
+		`Apr 12 10:00:00 host pure-ftpd[1234]: (?@host.example.com) [INFO] 203.0.113.8 is now logged in`,
+	} {
+		if finding, ok := checks.FTPLoginFinding(line, &config.Config{}); ok {
+			t.Errorf("non-login produced a successful login: %+v", finding)
+		}
+		for _, finding := range parseFTPLogLine(line, &config.Config{}) {
+			if finding.Check == "ftp_login" {
+				t.Errorf("watcher accepted non-login: %+v", finding)
+			}
+		}
+	}
+}
+
+func TestFTPVirtualAccountKeepsPeerAddress(t *testing.T) {
+	for _, ip := range []string{"203.0.113.9", "2001:db8::9"} {
+		line := fmt.Sprintf("Nov  5 09:00:00 host pure-ftpd[1]: (ftpuser@example.com@%s) [INFO] ftpuser@example.com is now logged in", ip)
+		findings := parseFTPLogLine(line, &config.Config{})
+		if len(findings) != 1 || findings[0].Check != "ftp_login" || findings[0].SourceIP != ip {
+			t.Errorf("virtual FTP account lost its peer %s: %+v", ip, findings)
+		}
 	}
 }
 

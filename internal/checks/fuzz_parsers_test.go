@@ -245,6 +245,25 @@ func FuzzParseFTPLoginAccount(f *testing.F) {
 	})
 }
 
+func FuzzFTPLoginFinding(f *testing.F) {
+	f.Add("Nov  5 09:00:00 host pure-ftpd[1]: (?@203.0.113.5) [INFO] alice is now logged in")
+	f.Add("pure-ftpd: (?@2001:db8::1) [WARNING] Authentication failed for user [x is now logged in]")
+	f.Add("pure-ftpd: (?@203.0.113.5) [DEBUG] Command [USER] [x is now logged in]")
+	f.Add("")
+	f.Fuzz(func(t *testing.T, line string) {
+		finding, ok := FTPLoginFinding(line, nil)
+		if !ok {
+			return
+		}
+		if FTPLoginAccount(line) == "" || finding.SourceIP == "" || finding.Check != "ftp_login" {
+			t.Fatalf("accepted incomplete login: %+v", finding)
+		}
+		if finding.Details != line {
+			t.Fatal("lost the authenticated account record")
+		}
+	})
+}
+
 func FuzzSplitValiasDests(f *testing.F) {
 	for _, seed := range []string{
 		`local@example.test,"|/usr/bin/handler --arg=a,b"`,

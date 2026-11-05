@@ -383,7 +383,7 @@ func (c *Collector) SendDue(now time.Time) bool {
 		c.sum.clamp(now, c.opts.Location)
 		// A correction back across this morning's send must not send the
 		// same local date twice, including after a restart.
-		if !c.lastSent.IsZero() && c.sum.Due.In(c.opts.Location).Format(time.DateOnly) == c.lastSent.In(c.opts.Location).Format(time.DateOnly) {
+		if !c.lastSent.IsZero() && c.sum.Due.In(c.opts.Location).Format(time.DateOnly) <= c.lastSent.In(c.opts.Location).Format(time.DateOnly) {
 			c.sum.Due = nextSummaryDue(c.lastSent, c.opts.Location)
 		}
 		c.mu.Unlock()

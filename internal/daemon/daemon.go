@@ -1560,6 +1560,9 @@ func (d *Daemon) drainAlertChannel(batch []alert.Finding) []alert.Finding {
 
 func (d *Daemon) flushPendingAlertsOnShutdown() {
 	d.persistPendingFindingsOnShutdown(d.drainAlertChannel(nil))
+	// Log readers and dispatch can note successes after the periodic saver
+	// observes stopCh. This final save runs once those producers have stopped.
+	d.persistKnownCustomers()
 	if d.blockDigest != nil {
 		d.blockDigest.Flush()
 	}
@@ -2465,7 +2468,7 @@ func recordEximSMTPAuthSuccess(line string, cfg *config.Config, tracker *smtpAut
 	if isInfraIPDaemon(ip, cfg.InfraIPs) || isPrivateOrLoopback(ip) {
 		return nil
 	}
-	return tracker.RecordSuccess(ip, user)
+	return tracker.recordSuccessAt(ip, user, customerLoginTime(line, tracker.now()))
 }
 
 func (d *Daemon) emitAuthBackendFindings() bool {
@@ -2629,7 +2632,7 @@ func (d *Daemon) handleMailLine(line string, obs alert.Observation, cfg *config.
 		return findings
 	}
 	if success {
-		findings = append(findings, d.mailAuthTracker.RecordSuccess(ip, account)...)
+		findings = append(findings, d.mailAuthTracker.recordSuccessAt(ip, account, customerLoginTime(line, d.mailAuthTracker.now()))...)
 	} else {
 		findings = append(findings, recordDovecotFailure(d.mailAuthTracker, ip, account, line, obs)...)
 	}
@@ -2661,7 +2664,7 @@ func (d *Daemon) handleSMTPAuthPairing(line string, obs alert.Observation, cfg *
 		if isInfraIPDaemon(ip, cfg.InfraIPs) || isPrivateOrLoopback(ip) {
 			return nil, true
 		}
-		return t.RecordSuccess(ip, user), true
+		return t.recordSuccessAt(ip, user, customerLoginTime(line, t.now())), true
 	}
 	if strings.HasPrefix(msg, "warning: SASL: ") {
 		// A failed backend reconnect can leave smtpd's previous reply

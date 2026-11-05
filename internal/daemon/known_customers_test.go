@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/netip"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -216,38 +217,37 @@ func TestKnownCustomersPerAccountCap(t *testing.T) {
 		t.Error("a moved address still counted against its old account")
 	}
 
-	// Logins without an account name have no per-account cap.
+	// Unnamed logins share a budget instead of bypassing the account cap.
 	for i := 1; i <= maxKnownCustomerIPsPerAccount+10; i++ {
 		k.Note(fmt.Sprintf("2001:db8:2::%x", i), knownCustomerFTP, "", start)
 	}
-	if n, _ := k.Within(netip.MustParsePrefix("2001:db8:2::/64"), 0); n != maxKnownCustomerIPsPerAccount+10 {
-		t.Errorf("unnamed logins kept %d addresses, want %d", n, maxKnownCustomerIPsPerAccount+10)
+	if n, _ := k.Within(netip.MustParsePrefix("2001:db8:2::/64"), 0); n != maxKnownCustomerIPsPerAccount {
+		t.Errorf("unnamed logins kept %d addresses, want %d", n, maxKnownCustomerIPsPerAccount)
 	}
 }
 
-// knownCustomerTestAddr is the i-th address of a documentation /96.
+// knownCustomerTestAddr uses distinct networks so a group cap cannot mask
+// the global eviction behavior under test.
 func knownCustomerTestAddr(i int) string {
-	a := netip.MustParseAddr("2001:db8:100::").As16()
-	a[12], a[13], a[14], a[15] = byte(i>>24), byte(i>>16), byte(i>>8), byte(i)
-	return netip.AddrFrom16(a).String()
+	return fmt.Sprintf("2001:db8:%x::1", i)
 }
 
 func TestKnownCustomersGlobalCapEvictsOldest(t *testing.T) {
 	now := time.Date(2026, 11, 5, 9, 0, 0, 0, time.UTC)
 	k, _ := knownCustomersAt(now)
 	for i := 0; i < maxKnownCustomers; i++ {
-		k.Note(knownCustomerTestAddr(i), knownCustomerFTP, "", now.Add(-time.Duration(maxKnownCustomers-i)*time.Second))
+		k.Note(knownCustomerTestAddr(i), knownCustomerFTP, fmt.Sprintf("user%d", i), now.Add(-time.Duration(maxKnownCustomers-i)*time.Second))
 	}
 	if len(k.entries) != maxKnownCustomers {
 		t.Fatalf("set holds %d, want %d before the cap", len(k.entries), maxKnownCustomers)
 	}
 	// Re-noting a held address is no insert and evicts nothing.
-	k.Note(knownCustomerTestAddr(0), knownCustomerFTP, "", now.Add(-time.Duration(maxKnownCustomers)*time.Second))
+	k.Note(knownCustomerTestAddr(0), knownCustomerFTP, "user0", now.Add(-time.Duration(maxKnownCustomers)*time.Second))
 	if len(k.entries) != maxKnownCustomers {
 		t.Fatalf("an update evicted: %d entries", len(k.entries))
 	}
 
-	k.Note(knownCustomerTestAddr(maxKnownCustomers), knownCustomerFTP, "", now)
+	k.Note(knownCustomerTestAddr(maxKnownCustomers), knownCustomerFTP, "new-user", now)
 	keep := maxKnownCustomers * 95 / 100
 	if len(k.entries) != keep+1 {
 		t.Fatalf("set holds %d after the cap, want %d", len(k.entries), keep+1)
@@ -263,8 +263,8 @@ func TestKnownCustomersGlobalCapEvictsOldest(t *testing.T) {
 			t.Errorf("recent entry %d evicted", i)
 		}
 	}
-	if len(k.accounts) != 0 {
-		t.Errorf("unnamed logins indexed %d accounts", len(k.accounts))
+	if len(k.accounts) != keep+1 {
+		t.Errorf("eviction left %d account indexes, want %d", len(k.accounts), keep+1)
 	}
 }
 
@@ -418,8 +418,9 @@ func TestSessionLogRecordsCustomers(t *testing.T) {
 	d := New(cfg, nil, nil, "")
 	d.hijackDetector = NewPasswordHijackDetector(cfg, d.alertCh, d.stopCh)
 	d.staleSession401 = newStaleSession401s()
+	at := time.Date(2026, 11, 5, 9, 0, 0, 0, time.UTC)
+	d.knownCustomers.now = func() time.Time { return at.Add(time.Hour) }
 
-	before := time.Now()
 	for _, line := range []string{
 		sessionNewLine("cpaneld", "203.0.113.21", "alice"),
 		sessionNewLine("webmaild", "2001:db8::21", "Office@Example.com"),
@@ -429,14 +430,13 @@ func TestSessionLogRecordsCustomers(t *testing.T) {
 	} {
 		d.cpanelSessionLogHandler(line, cfg)
 	}
-	after := time.Now()
 
 	for ip, want := range map[string]blockdigest.CustomerHit{
 		"203.0.113.21": {IP: "203.0.113.21", Kind: knownCustomerCpanel, Account: "alice"},
 		"2001:db8::21": {IP: "2001:db8::21", Kind: knownCustomerWebmail, Account: "office@example.com"},
 	} {
 		got := mustLookup(t, d.knownCustomers, ip)
-		if got.IP != want.IP || got.Kind != want.Kind || got.Account != want.Account || got.At.Before(before) || got.At.After(after) {
+		if got.IP != want.IP || got.Kind != want.Kind || got.Account != want.Account || !got.At.Equal(at) {
 			t.Errorf("Lookup(%s) = %+v, want %+v at the time of the line", ip, got, want)
 		}
 	}
@@ -451,11 +451,12 @@ func TestMailSuccessRecordsCustomer(t *testing.T) {
 	cfg := &config.Config{}
 	d := New(cfg, nil, nil, "")
 	obs := alert.Observation{}
+	now := time.Now()
 
-	d.handleEximLine(eximLoginLine("203.0.113.31", "alice@example.com"), obs, cfg)
+	d.handleEximLine(strings.Replace(eximLoginLine("203.0.113.31", "alice@example.com"), "2026-04-14 12:00:00", now.Format("2006-01-02 15:04:05"), 1), obs, cfg)
 	d.handleMailLine(postfixLoginLine("203.0.113.32", "bob@example.com"), obs, cfg)
-	d.handleMailLine("Nov  5 09:00:00 host dovecot: imap-login: Logged in: user=<carol@example.com>, method=PLAIN, rip=2001:db8::33, lip=192.0.2.1, mpid=1, TLS", obs, cfg)
-	d.handleMailLine("Nov  5 09:00:00 host dovecot[42]: pop3-login: Login: user=<dave@example.com>, method=PLAIN, rip=203.0.113.34, lip=192.0.2.1, mpid=2, TLS", obs, cfg)
+	d.handleMailLine(now.Format(time.Stamp)+" host dovecot: imap-login: Logged in: user=<carol@example.com>, method=PLAIN, rip=2001:db8::33, lip=192.0.2.1, mpid=1, TLS", obs, cfg)
+	d.handleMailLine(now.Format(time.Stamp)+" host dovecot[42]: pop3-login: Login: user=<dave@example.com>, method=PLAIN, rip=203.0.113.34, lip=192.0.2.1, mpid=2, TLS", obs, cfg)
 
 	// Failed logins never make a customer.
 	d.handleEximLine(makeEximDovecotFailLine("203.0.113.41", "alice@example.com"), obs, cfg)
@@ -512,7 +513,7 @@ func TestFTPLoginFindingRecordsCustomer(t *testing.T) {
 
 	// The realtime watcher's own lines: a login counts, and a failed login
 	// whose attempted name carries the success text does not.
-	login := "Nov  5 09:00:00 host pure-ftpd: (?@203.0.113.55) [INFO] alice is now logged in"
+	login := time.Now().Format(time.Stamp) + " host pure-ftpd: (?@203.0.113.55) [INFO] alice is now logged in"
 	d.dispatchBatch(parseFTPLogLine(login, cfg))
 	if _, ok := d.knownCustomers.Lookup("203.0.113.55"); !ok {
 		t.Error("a realtime FTP login was not recorded")

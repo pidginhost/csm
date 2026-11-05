@@ -1076,8 +1076,14 @@ func appendMailAccountTime(accounts map[string][]time.Time, account string, ts t
 // ip and account MUST both be non-empty. Caller filters infra/private/loopback
 // IPs before invoking.
 func (t *mailAuthTracker) RecordSuccess(ip, account string) (findings []alert.Finding) {
+	return t.recordSuccessAt(ip, account, t.now())
+}
+
+// recordSuccessAt retains the source time for customer history while the
+// brute-force tracker continues to process the event at receipt time.
+func (t *mailAuthTracker) recordSuccessAt(ip, account string, at time.Time) (findings []alert.Finding) {
 	// Before t.mu: the customer set takes its own lock.
-	t.knownCustomers.Note(ip, knownCustomerIMAP, account, t.now())
+	t.knownCustomers.Note(ip, knownCustomerIMAP, account, at)
 	if ip == "" || account == "" {
 		return nil
 	}
