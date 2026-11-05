@@ -357,7 +357,8 @@ func (s *Store) MarkKept(keys []string) {
 	now := s.clock()
 	for _, key := range keys {
 		entry, ok := s.entries[key]
-		if !ok || (!entry.IsBaseline && now.Sub(entry.aliveAt()) >= 24*time.Hour) {
+		// Baselines never expire, so retaining them needs no state write.
+		if !ok || entry.IsBaseline || now.Sub(entry.aliveAt()) >= 24*time.Hour {
 			continue
 		}
 		entry.KeptAt = now
@@ -427,7 +428,7 @@ func (s *Store) Update(findings []alert.Finding) {
 			continue
 		}
 		if !seen[key] && !entry.IsBaseline {
-			if now.Sub(entry.aliveAt()) > 24*time.Hour {
+			if now.Sub(entry.aliveAt()) >= 24*time.Hour {
 				delete(s.entries, key)
 			}
 		}

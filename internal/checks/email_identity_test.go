@@ -55,11 +55,11 @@ func TestReReportKeepsEmailIdentity(t *testing.T) {
 			}
 			return demoted, full
 		}},
-		{name: "coordinated_attack", build: func(t *testing.T) (alert.Finding, alert.Finding) {
+		{name: "coordinated_attack spread", distinct: true, build: func(t *testing.T) (alert.Finding, alert.Finding) {
 			return derivedFinding(t, "coordinated_attack", criticalWebshells("webshell", "alice", "bob", "carol")),
 				derivedFinding(t, "coordinated_attack", criticalWebshells("webshell", "alice", "bob", "carol", "dave"))
 		}},
-		{name: "cross_account_malware", build: func(t *testing.T) (alert.Finding, alert.Finding) {
+		{name: "cross_account_malware spread", distinct: true, build: func(t *testing.T) (alert.Finding, alert.Finding) {
 			return derivedFinding(t, "cross_account_malware", criticalWebshells("webshell", "alice", "bob")),
 				derivedFinding(t, "cross_account_malware", criticalWebshells("webshell", "alice", "bob", "carol"))
 		}},

@@ -421,3 +421,46 @@ func TestMarkKeptDoesNotReviveStaleEntry(t *testing.T) {
 		t.Fatalf("merge revived a receipt stale for 25h: %v", gateKeys(got))
 	}
 }
+
+func TestEmailExpiryBoundary(t *testing.T) {
+	for _, kept := range []bool{false, true} {
+		for _, age := range []time.Duration{24*time.Hour - time.Nanosecond, 24 * time.Hour, 24*time.Hour + time.Nanosecond} {
+			for _, operation := range []string{"sweep", "delivery", "merge"} {
+				t.Run(fmt.Sprintf("kept=%t/age=%s/%s", kept, age, operation), func(t *testing.T) {
+					now := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+					s := debounceStore(t, &now)
+					f := alert.Finding{Check: "webshell", Message: "expiry boundary"}
+					deliver(s, f)
+					if kept {
+						now = now.Add(time.Hour)
+						s.MarkKept([]string{f.Key()})
+					}
+					lastAlive := now
+					now = now.Add(age)
+					expired := age >= 24*time.Hour
+					switch operation {
+					case "sweep":
+						s.Update(nil)
+						if _, present := s.EntryForKey(f.Key()); present == expired {
+							t.Fatalf("entry present=%t, expired=%t", present, expired)
+						}
+					case "delivery":
+						if got := offered(s, f); (len(got) == 1) != expired {
+							t.Fatalf("offered %d findings, expired=%t", len(got), expired)
+						}
+					case "merge":
+						s.MarkKept([]string{f.Key()})
+						entry, present := s.EntryForKey(f.Key())
+						wantAlive := now
+						if expired {
+							wantAlive = lastAlive
+						}
+						if !present || !entry.aliveAt().Equal(wantAlive) {
+							t.Fatalf("last alive=%v, present=%t, want %v", entry.aliveAt(), present, wantAlive)
+						}
+					}
+				})
+			}
+		}
+	}
+}

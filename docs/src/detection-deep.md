@@ -24,21 +24,28 @@ send through either channel counts as delivered. Findings held by the hourly
 cap, failed sends, or disabled notifications remain eligible on later reports,
 without waiting for the daily history reminder. This includes findings derived
 from current observations. Baselines, dismissals and suppression rules still
-apply. The signed phpanel stream keeps its separate delivery policy.
+apply, including to the sources of cross-account summaries. The signed phpanel
+stream keeps its separate delivery policy.
 
-SMTP probe, self-deleting dropper, sensitive file write, email AV degraded,
-cross-account correlation and auto-block notice findings keep one alert
+SMTP probe, self-deleting dropper, sensitive file write, email AV degraded
+and auto-block notice findings keep one alert
 identity while their counts, process or message IDs, ages, sizes or error text
 change. A re-report that differs only in those is not sent again.
+Cross-account summaries alert again when the affected accounts change, including
+after a dismissal. More reports for the same accounts do not repeat the summary.
 
 An undismissed finding can alert again after 24 hours without an observation,
 even when no other batch arrived to clean up old state. A finding that stays
 on the findings page counts as observed, also while its check skips runs
 between reports, so a check that reports once a day does not email daily.
-After more than 24 hours of downtime, an open finding alerts once on its next
+After at least 24 hours of downtime, an open finding alerts once on its next
 report. A completed scan that covered the finding and no longer reports it also
 permits a later return to alert. Scan coverage warnings follow the policy
 below.
+
+Keeping acknowledged findings listed does not rewrite alert state. Other
+retained findings use the existing periodic save, keeping their delivery state
+across restarts without changing the displayed last-report time.
 
 ## Scan coverage alerts
 

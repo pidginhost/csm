@@ -112,6 +112,8 @@ func (c Correlator) Correlate(findings []alert.Finding, at time.Time) Correlatio
 		}
 	}
 	res.CriticalAccounts = len(accounts)
+	// The sorted account sets are part of the condition: acknowledging one
+	// group must not hide spread to another account. Source text is omitted.
 	if len(accounts) >= 3 {
 		names := sortedKeys(accounts)
 		res.Derived = append(res.Derived, alert.Finding{
@@ -119,9 +121,6 @@ func (c Correlator) Correlate(findings []alert.Finding, at time.Time) Correlatio
 			Check:    "coordinated_attack",
 			Message:  fmt.Sprintf("Possible coordinated attack: %d accounts have critical security events", len(names)),
 			Details:  fmt.Sprintf("Affected accounts: %s", strings.Join(names, ", ")),
-			// One host-wide condition: the account count grows and a batch
-			// sees only a subset of the accounts.
-			DedupKey: "host",
 		})
 	}
 	for _, check := range sortedKeys(malwareByCheck) {
@@ -134,7 +133,6 @@ func (c Correlator) Correlate(findings []alert.Finding, at time.Time) Correlatio
 			Check:    "cross_account_malware",
 			Message:  fmt.Sprintf("Same malware type (%s) found in %d accounts", check, len(names)),
 			Details:  fmt.Sprintf("Accounts: %s", strings.Join(names, ", ")),
-			DedupKey: check,
 		})
 	}
 	return res

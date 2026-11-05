@@ -418,6 +418,105 @@ func TestDerivedDeliveryRetriesWithObservedSources(t *testing.T) {
 	}
 }
 
+// A dismissal acknowledges the affected accounts, not every future group
+// on the host. Source counts and ordering alone do not change that group.
+func TestCorrelationDeliveryTracksAffectedAccounts(t *testing.T) {
+	for _, dismissed := range []bool{false, true} {
+		for _, change := range []string{"spread", "replacement"} {
+			t.Run(fmt.Sprintf("dismissed=%t/%s", dismissed, change), func(t *testing.T) {
+				cfg, hook := emailRepeatSetup(t)
+				d := openRepeatDaemon(t, cfg)
+				batch := func(accounts ...string) []alert.Finding {
+					var out []alert.Finding
+					for _, account := range accounts {
+						out = append(out, alert.Finding{
+							Check: "webshell", Severity: alert.Critical, TenantID: account,
+							Message: "webshell on " + account, Timestamp: time.Now(),
+						})
+					}
+					return out
+				}
+				first := batch("alice", "bob", "carol")
+				d.dispatchBatch(first)
+				derived := checks.CorrelateBatchFindings(first).Derived
+				if len(derived) != 2 {
+					t.Fatalf("setup: derived %d findings, want 2", len(derived))
+				}
+				for _, f := range derived {
+					if got := hook.count(f.Check); got != 1 {
+						t.Fatalf("first %s: %d deliveries, want 1", f.Check, got)
+					}
+					if dismissed {
+						d.store.DismissFinding(f.Key())
+					}
+				}
+				// Another artifact in an existing account is not wider spread.
+				repeated := batch("carol", "alice", "bob", "alice")
+				repeated[3].Message = "another webshell on alice"
+				d.dispatchBatch(repeated)
+				for _, f := range derived {
+					if got := hook.count(f.Check); got != 1 {
+						t.Fatalf("unchanged accounts for %s: %d deliveries, want 1", f.Check, got)
+					}
+				}
+				changed := batch("alice", "bob", "carol", "dave")
+				if change == "replacement" {
+					changed = batch("alice", "bob", "dave")
+				}
+				d.dispatchBatch(changed)
+				d.dispatchBatch(changed)
+				changedDerived := checks.CorrelateBatchFindings(changed).Derived
+				if len(changedDerived) != 2 {
+					t.Fatalf("changed accounts produced %d summaries, want 2", len(changedDerived))
+				}
+				for _, f := range changedDerived {
+					if got := hook.count(f.Check); got != 2 {
+						t.Errorf("changed accounts for %s: %d deliveries, want 2", f.Check, got)
+					}
+					if !strings.Contains(hook.last(), f.Details) {
+						t.Errorf("delivery omitted current accounts for %s", f.Check)
+					}
+				}
+			})
+		}
+	}
+}
+
+// The runner includes summaries before notification policy is applied.
+// Reusing them would bypass policy on their source findings.
+func TestDeliveryRebuildsScanCorrelationAfterSourcePolicy(t *testing.T) {
+	for _, initialScan := range []bool{false, true} {
+		for _, policy := range []string{"baseline", "suppression"} {
+			t.Run(fmt.Sprintf("initial=%t/%s", initialScan, policy), func(t *testing.T) {
+				cfg, hook := emailRepeatSetup(t)
+				d := openRepeatDaemon(t, cfg)
+				var sources []alert.Finding
+				for _, account := range []string{"alice", "bob", "carol"} {
+					sources = append(sources, alert.Finding{
+						Check: "webshell", Severity: alert.Critical, TenantID: account,
+						Message: "webshell on " + account, Timestamp: time.Now(),
+					})
+				}
+				if policy == "baseline" {
+					d.store.SetBaseline(sources)
+				} else if err := d.store.SaveSuppressions(checkWideSuppression("webshell")); err != nil {
+					t.Fatal(err)
+				}
+				batch := append([]alert.Finding(nil), sources...)
+				batch = append(batch, checks.CorrelateBatchFindings(sources).Derived...)
+				if initialScan {
+					d.respondToInitialScan(cfg, batch)
+				} else {
+					d.dispatchBatch(batch)
+				}
+				if got := hook.count(""); got != 0 {
+					t.Fatalf("scan correlation bypassed source %s: %d deliveries, want 0", policy, got)
+				}
+			})
+		}
+	}
+}
+
 func TestDeliveryCandidatesRespectAcknowledgedSources(t *testing.T) {
 	for _, initialScan := range []bool{false, true} {
 		t.Run(fmt.Sprintf("initial=%t", initialScan), func(t *testing.T) {

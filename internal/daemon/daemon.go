@@ -1790,12 +1790,14 @@ func (d *Daemon) respondToInitialScan(cfg *config.Config, initialFindings []aler
 // Rebuild derived candidates too, so a missed delivery can retry and a live
 // correlation does not expire while its source findings are still reported.
 func (d *Daemon) deliveryCandidates(observed, newFindings []alert.Finding, suppressions []state.SuppressionRule) []alert.Finding {
-	candidates := append([]alert.Finding(nil), observed...)
-	for _, f := range newFindings {
-		// The history subset can describe a smaller correlation than the
-		// current observations. Rebuild that summary from the full batch.
-		if !checks.IsDerivedCorrelationCheck(f.Check) {
-			candidates = append(candidates, f)
+	candidates := make([]alert.Finding, 0, len(observed)+len(newFindings))
+	for _, batch := range [][]alert.Finding{observed, newFindings} {
+		for _, f := range batch {
+			// Scan summaries precede source policy; history summaries may
+			// cover only a subset. Rebuild both from eligible observations.
+			if !checks.IsDerivedCorrelationCheck(f.Check) {
+				candidates = append(candidates, f)
+			}
 		}
 	}
 	candidates = alert.Deduplicate(candidates)
