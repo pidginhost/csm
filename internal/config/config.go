@@ -2451,7 +2451,9 @@ func defaultPresenceFromYAML(data []byte) (defaultPresence, error) {
 	_, presence.httpASNCrawlReverseProxy = raw.Thresholds["http_asn_crawl_reverse_proxy_asns"]
 	_, presence.xmlrpcThreshold = raw.Thresholds["xmlrpc_threshold"]
 	_, presence.phpRelay.fanoutDistinctRecipients = raw.EmailProtection.PHPRelay["fanout_distinct_recipients"]
-	_, presence.phpRelay.ipRecipientSpread = raw.EmailProtection.PHPRelay["ip_recipient_spread"]
+	if node, ok := raw.EmailProtection.PHPRelay["ip_recipient_spread"]; ok && !yamlNodeIsNull(&node) {
+		presence.phpRelay.ipRecipientSpread = true
+	}
 	if node, ok := raw.Alerts.BlockDigest["min_block"]; ok && node.Tag != "!!null" {
 		presence.blockDigestMinBlock = true
 	}

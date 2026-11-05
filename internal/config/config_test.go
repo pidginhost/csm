@@ -178,6 +178,22 @@ email_protection:
 	}
 }
 
+func TestApplyDefaults_PHPRelayIPRecipientSpreadBlankUsesDefault(t *testing.T) {
+	for name, value := range map[string]string{
+		"empty": "",
+		"tilde": " ~",
+		"null":  " null",
+	} {
+		cfg, err := LoadBytes([]byte("email_protection:\n  php_relay:\n    ip_recipient_spread:" + value + "\n"))
+		if err != nil {
+			t.Fatalf("%s: LoadBytes: %v", name, err)
+		}
+		if got := cfg.EmailProtection.PHPRelay.IPRecipientSpread; got != 5 {
+			t.Errorf("%s: blank ip_recipient_spread = %d, want default 5", name, got)
+		}
+	}
+}
+
 func TestApplyDefaults_PHPRelayIPRecipientWindowHours(t *testing.T) {
 	for name, data := range map[string]string{
 		"unset": "",
