@@ -235,7 +235,6 @@ var settingsSections = []SettingsSection{
 			{YAMLPath: "ignore_paths", Type: "[]string", Label: "Ignore paths"},
 			{YAMLPath: "suppress_webmail_alerts", Type: "bool", Label: "Suppress webmail login alerts"},
 			{YAMLPath: "suppress_cpanel_login_alerts", Type: "bool", Label: "Suppress cPanel login alerts"},
-			{YAMLPath: "suppress_blocked_alerts", Type: "bool", Label: "Suppress alerts on auto-blocked IPs"},
 			{YAMLPath: "trusted_countries", Type: "[]string", Label: "Trusted countries (ISO 3166-1 alpha-2)"},
 		},
 	},

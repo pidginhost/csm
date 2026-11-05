@@ -28,6 +28,9 @@ email_protection:
   forward_guard:
     quarantine_retention_days: 21
     skip_forwarders: ["a@example.com"]
+suppressions:
+  suppress_webmail_alerts: true
+  suppress_blocked_alerts: true
 `
 
 var wantRemovedKeys = []string{
@@ -40,6 +43,7 @@ var wantRemovedKeys = []string{
 	"email_protection.php_relay.baseline_sigma",
 	"email_protection.php_relay.baseline_observation_days",
 	"email_protection.forward_guard.skip_forwarders",
+	"suppressions.suppress_blocked_alerts",
 }
 
 // A host upgraded with one of the removed settings still in csm.yaml must
@@ -61,6 +65,9 @@ func TestLoadBytesDropsRemovedKeysAndRecordsThem(t *testing.T) {
 	}
 	if cfg.EmailProtection.ForwardGuard.QuarantineRetentionDays != 21 {
 		t.Errorf("quarantine_retention_days = %d, want 21", cfg.EmailProtection.ForwardGuard.QuarantineRetentionDays)
+	}
+	if !cfg.Suppressions.SuppressWebmail {
+		t.Error("suppress_webmail_alerts lost beside a removed key")
 	}
 }
 

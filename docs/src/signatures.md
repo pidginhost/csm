@@ -457,6 +457,8 @@ Default: 30 operator alert dispatches/hour (configurable via `max_per_hour`). **
 
 A dispatch uses one slot only when email or a generic webhook successfully delivers routine findings. If only urgent findings reach a channel and routine delivery fails, the slot remains available for a later dispatch. Email-disabled findings do not reserve a slot unless a generic webhook will carry them. The phpanel webhook stream bypasses this budget.
 
+Summary-class findings never reach the cap: attacks CSM already blocked or challenged, its applied block and challenge notices, and the other findings listed under Alert classes in the configuration reference go to the daily summary instead of email or the generic webhook.
+
 ## Suppressions
 
 Create suppression rules to silence known false positives:

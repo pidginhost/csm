@@ -340,7 +340,6 @@ suppressions:
   ignore_paths: []                      # glob patterns to skip in file scans; keep empty, an exempt directory is where an attacker hides
   suppress_webmail_alerts: true         # don't alert on webmail logins
   suppress_cpanel_login_alerts: false   # don't alert on cPanel direct logins
-  suppress_blocked_alerts: true         # don't alert on attacks from IPs already blocked or challenged
   trusted_countries: ["RO"]             # requires a loaded GeoLite2-City database; download credentials alone do not supply country data
 
 # --- Auto-Response ---
@@ -998,17 +997,38 @@ sentry:
   debug: false                          # SDK debug logs to stderr
 ```
 
-## Blocked-source alert suppression
+## Alert classes
 
-`suppressions.suppress_blocked_alerts` mutes single-source attack notifications
-when that address is already blocked or was blocked in the same batch. An active
-challenge also mutes checks eligible for challenge routing; it does not cover
-FTP or mail authentication failures, or checks configured to require a hard block.
-The same policy applies to daemon alerts and `csm scan --alert`.
+Every finding CSM reports is immediate or summary class. Summary class covers
+what CSM already handled on its own:
 
-Compromise evidence, successful logins, suspicious mail content and findings
-that summarize multiple sources remain visible. Blocking one address does not
-resolve those findings. This setting does not remove findings from the audit log.
+- an attack from an address CSM blocked, before or in the same batch, including by a subnet block or netblock;
+- an attack a challenge answers, while the address is on the challenge list or was routed there in the same batch. A challenge does not answer FTP or mail authentication failures, critical reputation sightings, or checks configured to require a hard block;
+- applied block and challenge notices, including permanent, subnet and netblock blocks, and dry-run block verdicts;
+- mail login advisories that never block, such as spray observe mode;
+- finished automatic actions that need no follow-up: database spam cleanup, and PHP relay freeze dry runs and rate-limit deferrals.
+
+Summary-class findings are left out of alert email and the generic alert
+webhook and are counted for the daily summary instead. They never spend the
+hourly alert budget. The findings page, history, incidents, the audit log, the
+event stream and the phpanel webhook still receive them.
+
+Everything else is immediate. That includes attacks whose source CSM did not
+block: auto-response off or in dry run, a block that failed, was refused or is
+still queued, and checks that never block. Compromise evidence, successful
+logins, suspicious mail content and findings that summarize several sources
+stay immediate even when the address is blocked, because blocking one address
+does not resolve them. Failed, paused or skipped automatic actions and
+auto-block queue and accounting notices are immediate too.
+
+The generic webhook follows the same classes as email. `alerts.email.disabled_checks`
+mutes email only: a muted immediate finding still goes to the webhook, and a
+muted summary finding is still counted in the summary.
+
+There is no setting for this policy, and the same classes decide what
+`csm scan --alert` sends. The former `suppressions.suppress_blocked_alerts` key
+is ignored; a config that still sets it loads, and `csm validate` warns so the
+key can be deleted.
 
 ## Web UI Exposure
 

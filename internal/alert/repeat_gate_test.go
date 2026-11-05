@@ -57,10 +57,11 @@ func (g *mapGate) marked(f Finding) bool {
 	return g.emailed[f.Key()] == f.Fingerprint()
 }
 
-// fakeMailer answers SMTP on an in-memory pipe and counts delivered messages.
+// fakeMailer answers SMTP on an in-memory pipe and records delivered messages.
 type fakeMailer struct {
-	mu   sync.Mutex
-	sent int
+	mu     sync.Mutex
+	sent   int
+	bodies []string
 }
 
 func installFakeMailer(t *testing.T) *fakeMailer {
@@ -89,6 +90,7 @@ func (m *fakeMailer) serve(conn net.Conn) {
 		switch strings.ToUpper(strings.TrimSpace(line)) {
 		case "DATA":
 			reply("354 go ahead\r\n")
+			var message strings.Builder
 			for {
 				body, err := r.ReadString('\n')
 				if err != nil {
@@ -97,9 +99,11 @@ func (m *fakeMailer) serve(conn net.Conn) {
 				if body == ".\r\n" {
 					break
 				}
+				message.WriteString(body)
 			}
 			m.mu.Lock()
 			m.sent++
+			m.bodies = append(m.bodies, message.String())
 			m.mu.Unlock()
 			reply("250 queued\r\n")
 		case "QUIT":
@@ -115,6 +119,12 @@ func (m *fakeMailer) count() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.sent
+}
+
+func (m *fakeMailer) messages() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]string(nil), m.bodies...)
 }
 
 func repeatGateConfig(t *testing.T, webhookURL string) *config.Config {

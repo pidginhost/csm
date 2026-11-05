@@ -6,18 +6,20 @@ import (
 )
 
 func init() {
-	// CLI scans and standalone web UI dispatches also need this policy,
-	// before any daemon is constructed. It depends only on check metadata
+	// CLI scans and standalone web UI dispatches also need these policies,
+	// before any daemon is constructed. They depend only on check metadata
 	// and the config passed to each call, not on a daemon's lifetime.
 	alert.SetIPResponsePolicy(IPResponseAnswersFinding)
+	alert.SetSummaryNoticePolicy(IsSummaryNotice)
 }
 
-// IPResponseAnswersFinding is the alert.IPResponsePolicy for
-// suppress_blocked_alerts. A block or challenge on the source address answers
-// only attacker-side findings: attacker activity or attempted access that is
-// not evidence of compromise. Once the source is stopped the operator has
-// nothing left to do. Compromise evidence, successful logins and audit events
-// stay visible even when their source address is already blocked.
+// IPResponseAnswersFinding is the alert.IPResponsePolicy that decides which
+// findings about a handled source go to the summary. A block or challenge on
+// the source address answers only attacker-side findings: attacker activity
+// or attempted access that is not evidence of compromise. Once the source is
+// stopped the operator has nothing left to do. Compromise evidence,
+// successful logins and audit events stay immediate even when their source
+// address is already blocked.
 //
 // A challenge answers only the findings challenge routing would send to the
 // gate. The address being on the challenge list is itself proof the gate is

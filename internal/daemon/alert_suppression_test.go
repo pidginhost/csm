@@ -42,18 +42,16 @@ func TestNewDoesNotReplaceIPResponsePolicy(t *testing.T) {
 	})
 	t.Cleanup(func() { alert.SetIPResponsePolicy(previous) })
 	cfg := &config.Config{StatePath: t.TempDir()}
-	cfg.Suppressions.SuppressBlockedAlerts = true
 	_ = New(cfg, nil, nil, "")
-	got := alert.FilterBlockedAlerts(cfg, []alert.Finding{
-		{Check: "ftp_auth_failure_realtime", SourceIP: "203.0.113.40"},
-		{Check: "auto_block", Message: "AUTO-BLOCK: 203.0.113.40 (expires in 24h0m0s)"},
-	})
-	if len(got) != 1 || calls == 0 {
-		t.Fatalf("New replaced the process policy: calls=%d findings=%+v", calls, got)
+	attack := alert.Finding{Check: "ftp_auth_failure_realtime", SourceIP: "203.0.113.40"}
+	block := alert.Finding{Check: "auto_block", Severity: alert.Critical, Message: "AUTO-BLOCK: 203.0.113.40 (expires in 24h0m0s)"}
+	immediate, summary := alert.SplitByClass(cfg, []alert.Finding{attack, block})
+	if calls == 0 || len(immediate) != 1 || immediate[0].Check != attack.Check || len(summary) != 1 || summary[0].Check != block.Check {
+		t.Fatalf("New replaced the process policy: calls=%d immediate=%+v summary=%+v", calls, immediate, summary)
 	}
 }
 
-func TestDispatchBatchSuppressesReputationAfterSameBatchBlock(t *testing.T) {
+func TestDispatchBatchSummarizesReputationAfterSameBatchBlock(t *testing.T) {
 	previousActive := config.Active()
 	config.SetActive(nil)
 	t.Cleanup(func() { config.SetActive(previousActive) })
@@ -79,13 +77,12 @@ func TestDispatchBatchSuppressesReputationAfterSameBatchBlock(t *testing.T) {
 	stateDir := t.TempDir()
 	// Prevent blocked_ips.json from persisting so this test proves the action
 	// finding is present in the slice passed to alert.Dispatch, rather than
-	// passing because FilterBlockedAlerts reloads the just-written state file.
+	// passing because SplitByClass reloads the just-written state file.
 	if err := os.Mkdir(filepath.Join(stateDir, "blocked_ips.json"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 
 	cfg := &config.Config{StatePath: stateDir}
-	cfg.Suppressions.SuppressBlockedAlerts = true
 	cfg.AutoResponse.Enabled = true
 	cfg.AutoResponse.BlockIPs = true
 	cfg.AutoResponse.BlockExpiry = "24h"
@@ -114,6 +111,7 @@ func TestDispatchBatchSuppressesReputationAfterSameBatchBlock(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = findingState.Close() })
 
+	seen := recordSummaryHook(t)
 	d := New(cfg, findingState, nil, "")
 	d.dispatchBatch([]alert.Finding{{
 		Severity:  alert.High,
@@ -129,9 +127,12 @@ func TestDispatchBatchSuppressesReputationAfterSameBatchBlock(t *testing.T) {
 	if got := webhookCalls.Load(); got != 0 {
 		t.Fatalf("webhook calls = %d, want 0 after same-batch live block", got)
 	}
+	if !seen.has("ip_reputation", "203.0.113.40") || !seen.has("auto_block", "AUTO-BLOCK: 203.0.113.40") {
+		t.Fatalf("summary hook saw %v, want the reputation finding and its block", seen.all())
+	}
 }
 
-func TestDispatchBatchSuppressesAttackerFindingAfterSameBatchBlock(t *testing.T) {
+func TestDispatchBatchSummarizesAttackerFindingAfterSameBatchBlock(t *testing.T) {
 	previousActive := config.Active()
 	config.SetActive(nil)
 	t.Cleanup(func() { config.SetActive(previousActive) })
@@ -160,7 +161,6 @@ func TestDispatchBatchSuppressesAttackerFindingAfterSameBatchBlock(t *testing.T)
 	stateDir := t.TempDir()
 
 	cfg := &config.Config{StatePath: stateDir}
-	cfg.Suppressions.SuppressBlockedAlerts = true
 	cfg.AutoResponse.Enabled = true
 	cfg.AutoResponse.BlockIPs = true
 	cfg.AutoResponse.BlockCpanelLogins = true
@@ -190,6 +190,7 @@ func TestDispatchBatchSuppressesAttackerFindingAfterSameBatchBlock(t *testing.T)
 	}
 	t.Cleanup(func() { _ = findingState.Close() })
 
+	seen := recordSummaryHook(t)
 	d := New(cfg, findingState, nil, "")
 	d.dispatchBatch([]alert.Finding{{
 		Severity:  alert.High,
@@ -204,5 +205,8 @@ func TestDispatchBatchSuppressesAttackerFindingAfterSameBatchBlock(t *testing.T)
 	}
 	if got := webhookCalls.Load(); got != 0 {
 		t.Fatalf("webhook calls = %d, want 0 after same-batch live block", got)
+	}
+	if !seen.has("ftp_auth_failure_realtime", "203.0.113.41") || !seen.has("auto_block", "AUTO-BLOCK: 203.0.113.41") {
+		t.Fatalf("summary hook saw %v, want the FTP failure and its block", seen.all())
 	}
 }

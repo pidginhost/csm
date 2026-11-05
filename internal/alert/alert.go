@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -668,6 +669,38 @@ func callCentralHook(f Finding) {
 	h(f)
 }
 
+// summaryHook receives the summary-class findings of every dispatch. Install
+// or clear it with SetSummaryHook.
+var (
+	summaryHookMu sync.RWMutex
+	summaryHook   func(cfg *config.Config, summary []Finding)
+)
+
+// SetSummaryHook installs or clears the receiver of summary-class findings.
+// Each dispatch calls it once, with no alert lock held, with the
+// summary-class findings among all its observations deduplicated by Key,
+// including checks muted by alerts.email.disabled_checks. It must not block.
+func SetSummaryHook(h func(cfg *config.Config, summary []Finding)) {
+	summaryHookMu.Lock()
+	summaryHook = h
+	summaryHookMu.Unlock()
+}
+
+func callSummaryHook(cfg *config.Config, summary []Finding) {
+	summaryHookMu.RLock()
+	h := summaryHook
+	summaryHookMu.RUnlock()
+	if h == nil {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Fprintln(os.Stderr, "alert: summary hook panic")
+		}
+	}()
+	h(cfg, summary)
+}
+
 type rateLimitKey struct {
 	StatePath string
 	Hour      string
@@ -918,12 +951,26 @@ func dispatchWithSources(cfg *config.Config, findings, sources, enforcement, can
 		sources = append(sources, findings...)
 	}
 
-	// Audit log captures every (deduplicated) finding before
-	// FilterBlockedAlerts and the rate limiter, so SIEMs see the
-	// complete picture even when email/webhook are throttled or
-	// when "this IP is already blocked" suppression hides a finding
-	// from the operator-facing channels.
+	// Audit log captures every (deduplicated) finding before the class
+	// split and the rate limiter, so SIEMs see the complete picture even
+	// when email/webhook are throttled or a handled attack goes to the
+	// summary instead of the operator-facing channels.
 	emitAuditWithSources(cfg, notifications, sources)
+	// Classify every observation once. Summary-class findings report
+	// attacks CSM already handled: they leave email and the generic webhook
+	// and go to the summary, muted checks included, so muting never hides
+	// activity. Candidates are classified too, so a handled finding never
+	// reaches the repeat gate through them.
+	observed := Deduplicate(slices.Concat(sources, findings, candidates))
+	FillTimestamps(observed, now)
+	_, summary := SplitByClass(cfg, observed)
+	summaryKeys := make(map[string]bool, len(summary))
+	for _, f := range summary {
+		summaryKeys[f.Key()] = true
+	}
+	if len(summary) > 0 {
+		callSummaryHook(cfg, summary)
+	}
 	// The central-intel consumer escalates findings whose IP is in the
 	// verified central scored-set.
 	enforcement = Deduplicate(enforcement)
@@ -971,8 +1018,9 @@ func dispatchWithSources(cfg *config.Config, findings, sources, enforcement, can
 		}
 	}
 
-	// Filter out blocked IP alerts if configured
-	findings = FilterBlockedAlerts(cfg, findings)
+	// Summary-class findings leave before disabled_checks, the repeat gate
+	// and the hourly cap. What remains is the immediate set.
+	findings = findingsWithoutKeys(findings, summaryKeys)
 
 	if len(findings) == 0 {
 		return formatDispatchErrors(errs)
@@ -1067,6 +1115,16 @@ func findingsWithKeys(findings []Finding, keys map[string]bool) []Finding {
 	var out []Finding
 	for _, f := range findings {
 		if keys[f.Key()] {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+func findingsWithoutKeys(findings []Finding, keys map[string]bool) []Finding {
+	var out []Finding
+	for _, f := range findings {
+		if !keys[f.Key()] {
 			out = append(out, f)
 		}
 	}
