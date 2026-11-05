@@ -3,6 +3,8 @@ package daemon
 import (
 	"fmt"
 	"reflect"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -74,6 +76,113 @@ func TestFormRelayWindow_StopsGrowingAtLimit(t *testing.T) {
 	}
 	if got := w.exactIP(formRelayKey(formTestIP)); got != formTestIP {
 		t.Fatalf("last-seen not updated past the limit: exactIP = %q", got)
+	}
+}
+
+func TestFormRelayWindow_RetainsRecentRecipientsAtLimit(t *testing.T) {
+	for _, unparsed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("unparsed=%t", unparsed), func(t *testing.T) {
+			w := newFormRelayWindow(100)
+			key := formRelayKey(formTestIP)
+			for i := 0; i < 2*formTestLimit; i++ {
+				at := formTestT0
+				k, user := formTestA, "usera"
+				if i >= formTestLimit {
+					at = at.Add(23 * time.Hour)
+					k, user = formTestB, "userb"
+				}
+				var outside []string
+				if !unparsed {
+					outside = []string{fmt.Sprintf("v%d@victim.example", i)}
+				}
+				formRecord(w, formTestIP, k, user, fmt.Sprintf("m%d", i), at, unparsed, outside...)
+			}
+			now := formTestT0.Add(25 * time.Hour)
+			w.sweep(now, formTestWindow)
+			if got := formRecord(w, formTestIP, formTestB, "userb", "own-domain", now, false); got != formTestLimit {
+				t.Fatalf("count after expiry = %d, want %d recent recipients", got, formTestLimit)
+			}
+			want := map[scriptKey]formRelayShare{formTestB: {Count: formTestLimit, CPUser: "userb"}}
+			if got := w.scriptShares(key, now.Add(-formTestWindow)); !reflect.DeepEqual(got, want) {
+				t.Fatalf("recent script shares = %v, want %v", got, want)
+			}
+		})
+	}
+}
+
+func TestFormRelayWindow_LateRecipientsDoNotReplaceNewer(t *testing.T) {
+	w := newFormRelayWindow(100)
+	for i := 0; i < formTestLimit; i++ {
+		formRecord(w, formTestIP, formTestB, "userb", fmt.Sprintf("m%d", i), formTestT0.Add(time.Hour), false, fmt.Sprintf("v%d@recent.example", i))
+	}
+	formRecord(w, formTestIP, formTestA, "usera", "late", formTestT0, false, "late@old.example")
+	want := map[scriptKey]formRelayShare{formTestB: {Count: formTestLimit, CPUser: "userb"}}
+	if got := w.scriptShares(formRelayKey(formTestIP), formTestT0); !reflect.DeepEqual(got, want) {
+		t.Fatalf("late recipient displaced newer evidence: %v", got)
+	}
+}
+
+func TestFormRelayWindow_RejectsExpiredReplay(t *testing.T) {
+	for _, sweep := range []bool{false, true} {
+		t.Run(fmt.Sprintf("sweep=%t", sweep), func(t *testing.T) {
+			w := newFormRelayWindow(100)
+			formRecord(w, formTestIP, formTestA, "usera", "old", formTestT0, false, "old@victim.example")
+			now := formTestT0.Add(25 * time.Hour)
+			want := 1
+			if sweep {
+				w.sweep(now, formTestWindow)
+				want = 0
+			} else {
+				formRecord(w, formTestIP, formTestB, "userb", "current", now, false, "current@victim.example")
+			}
+			if got := formRecord(w, formTestIP, formTestA, "usera", "old", formTestT0, false, "old@victim.example"); got != want {
+				t.Fatalf("expired replay changed current count: got %d, want %d", got, want)
+			}
+			if w.markFired(formRelayKey(formTestIP), formTestT0, formTestWindow) {
+				t.Fatal("expired replay started a new cooldown")
+			}
+		})
+	}
+}
+
+func TestFormRelayWindow_LowerLimitKeepsNewestRecipients(t *testing.T) {
+	w := newFormRelayWindow(100)
+	for i := 0; i < formTestLimit; i++ {
+		formRecord(w, formTestIP, formTestA, "usera", fmt.Sprintf("m%d", i), formTestT0.Add(time.Duration(i)*time.Minute), false, fmt.Sprintf("v@d%d.example", i))
+	}
+	key := formRelayKey(formTestIP)
+	if got := w.record(key, formTestIP, "usera", formTestA, "own-domain", formTestT0.Add(time.Hour), nil, false, formTestWindow, 2); got != 2 {
+		t.Fatalf("count after lowering limit = %d, want 2", got)
+	}
+	if got := w.recipientDomains(key, formTestT0); !reflect.DeepEqual(got, []string{"d3.example", "d4.example"}) {
+		t.Fatalf("retained domains = %v, want newest domains", got)
+	}
+}
+
+func TestFormRelayWindow_ExpiresBeforeCapacityEviction(t *testing.T) {
+	for _, fired := range []bool{false, true} {
+		t.Run(fmt.Sprintf("fired=%t", fired), func(t *testing.T) {
+			w := newFormRelayWindow(2)
+			for i := 0; i < formTestLimit; i++ {
+				formRecord(w, "192.0.2.1", formTestA, "usera", fmt.Sprintf("m%d", i), formTestT0, false, fmt.Sprintf("v%d@victim.example", i))
+			}
+			if fired && !w.markFired(formRelayKey("192.0.2.1"), formTestT0, formTestWindow) {
+				t.Fatal("initial crossing did not fire")
+			}
+			formRecord(w, "192.0.2.2", formTestB, "userb", "recent", formTestT0.Add(23*time.Hour), false, "v@victim.example")
+			formRecord(w, "192.0.2.3", formTestB, "userb", "new", formTestT0.Add(25*time.Hour), false, "v@victim.example")
+			if got := w.exactIP(formRelayKey("192.0.2.1")); got != "" {
+				t.Fatalf("expired client retained: %q", got)
+			}
+			for _, ip := range []string{"192.0.2.2", "192.0.2.3"} {
+				if got := w.exactIP(formRelayKey(ip)); got != ip {
+					t.Fatalf("active client %s lost: %q", ip, got)
+				}
+			}
+			if w.full() {
+				t.Fatal("expiry reported as capacity loss")
+			}
+		})
 	}
 }
 
@@ -174,6 +283,24 @@ func TestFormRelayWindow_StaffCapPerAccount(t *testing.T) {
 	}
 }
 
+func TestFormRelayWindow_LateStaffDoesNotEvictNewer(t *testing.T) {
+	w := newFormRelayWindow(100)
+	for i := 1; i <= formRelayStaffPerAccount; i++ {
+		w.markStaff("usera", formRelayKey(fmt.Sprintf("198.51.100.%d", i)), formTestT0.Add(time.Duration(i)*time.Minute))
+	}
+	lateKey := formRelayKey("192.0.2.1")
+	w.markStaff("usera", lateKey, formTestT0)
+	now := formTestT0.Add(2 * time.Hour)
+	if w.isStaff("usera", lateKey, now) {
+		t.Fatal("late staff record retained over newer records")
+	}
+	for i := 1; i <= formRelayStaffPerAccount; i++ {
+		if !w.isStaff("usera", formRelayKey(fmt.Sprintf("198.51.100.%d", i)), now) {
+			t.Fatalf("newer staff IP %d evicted by late record", i)
+		}
+	}
+}
+
 func TestFormRelayWindow_FiresOncePerWindow(t *testing.T) {
 	w := newFormRelayWindow(100)
 	key := formRelayKey(formTestIP)
@@ -210,6 +337,52 @@ func TestFormRelayWindow_ScriptShares(t *testing.T) {
 	}
 }
 
+func TestFormRelayWindow_ConcurrentUpdatesAndSweep(t *testing.T) {
+	w := newFormRelayWindow(100)
+	key := formRelayKey(formTestIP)
+	var fired atomic.Int32
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < 32; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			formRecord(w, formTestIP, formTestA, "usera", fmt.Sprintf("m%d", i), formTestT0, false, fmt.Sprintf("v%d@victim.example", i%formTestLimit))
+			if w.markFired(key, formTestT0, formTestWindow) {
+				fired.Add(1)
+			}
+			w.markStaff("usera", key, formTestT0)
+			if !w.isStaff("usera", key, formTestT0) {
+				t.Error("concurrent sweep lost staff")
+			}
+			if w.sweep(formTestT0, formTestWindow) || w.full() {
+				t.Error("one client exceeded capacity")
+			}
+			if got := w.exactIP(key); got != formTestIP {
+				t.Errorf("concurrent sweep lost source address: %q", got)
+			}
+			wantDomains := []string{"victim.example"}
+			if got := w.recipientDomains(key, formTestT0); !reflect.DeepEqual(got, wantDomains) {
+				t.Errorf("concurrent sweep lost recipient domains: %v", got)
+			}
+			shares := w.scriptShares(key, formTestT0)
+			if len(shares) != 1 || shares[formTestA].Count < 1 || shares[formTestA].Count > formTestLimit || shares[formTestA].CPUser != "usera" {
+				t.Errorf("invalid concurrent script shares: %v", shares)
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	if got := fired.Load(); got != 1 {
+		t.Fatalf("concurrent crossings fired %d times, want 1", got)
+	}
+	want := map[scriptKey]formRelayShare{formTestA: {Count: formTestLimit, CPUser: "usera"}}
+	if got := w.scriptShares(key, formTestT0); !reflect.DeepEqual(got, want) {
+		t.Fatalf("final script shares = %v, want %v", got, want)
+	}
+}
+
 func TestFormRelayKey_IPv6Slash64(t *testing.T) {
 	a, b, c := formRelayKey("2001:db8::1"), formRelayKey("2001:db8::2"), formRelayKey("2001:db8:0:1::1")
 	if a != b {
@@ -228,12 +401,12 @@ func TestClassifyFormRelayRecipients(t *testing.T) {
 	outside, unparsed := classifyFormRelayRecipients([]string{
 		"admin@site-a.example",
 		"info@news.site-a.example",
-		"Victim@Example.COM",
+		"Victim@Outside.EXAMPLE",
 	}, own)
 	if unparsed {
 		t.Fatal("unparsed set for valid addresses")
 	}
-	if want := []string{"info@news.site-a.example", "victim@example.com"}; !reflect.DeepEqual(outside, want) {
+	if want := []string{"info@news.site-a.example", "victim@outside.example"}; !reflect.DeepEqual(outside, want) {
 		t.Fatalf("outside = %v, want %v", outside, want)
 	}
 

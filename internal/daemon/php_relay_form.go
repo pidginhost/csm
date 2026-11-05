@@ -29,6 +29,7 @@ type formRelayWindow struct {
 	ips    map[string]*formRelayClient
 	staff  map[string]map[string]time.Time // cpuser -> client key -> last admin mail
 	hitCap bool                            // evicted a client since the last sweep
+	now    time.Time                       // latest observation or sweep; replay cannot rewind expiry
 }
 
 type formRelayClient struct {
@@ -94,24 +95,30 @@ func classifyFormRelayRecipients(rcpts []string, own map[string]struct{}) (outsi
 	return outside, unparsed
 }
 
-// record adds one message's outside recipients for key and returns the
-// distinct outside recipients within window ending at at. An unparsed
-// message adds one entry keyed by msgID. Past limit (the current threshold)
-// no new recipient is stored: crossing is all that matters then.
+// record adds one message's outside recipients for key and returns their
+// distinct count, capped at limit, in the latest observed window. Delayed
+// messages cannot rewind that window. An unparsed message adds one entry
+// keyed by msgID. Retaining the newest recipients preserves later crossings
+// when older evidence expires.
 func (w *formRelayWindow) record(key, exactIP, cpuser string, k scriptKey, msgID string, at time.Time, outside []string, unparsed bool, window time.Duration, limit int) int {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	cutoff := w.advanceLocked(at).Add(-window)
 	c := w.ips[key]
 	if c == nil {
-		if len(outside) == 0 && !unparsed {
+		if at.Before(cutoff) || len(outside) == 0 && !unparsed {
 			return 0
 		}
-		c = w.addLocked(key)
+		c = w.addLocked(key, cutoff)
+	}
+	c.expire(cutoff)
+	c.trim(limit)
+	if at.Before(cutoff) {
+		return len(c.rcpts)
 	}
 	if !at.Before(c.lastSeen) {
 		c.lastSeen, c.exactIP = at, exactIP
 	}
-	c.expire(at.Add(-window))
 	for _, r := range outside {
 		c.put(r, formRelayRcpt{at: at, script: k, cpuser: cpuser, domain: r[strings.LastIndexByte(r, '@')+1:]}, limit)
 	}
@@ -129,8 +136,20 @@ func (c *formRelayClient) put(r string, v formRelayRcpt, limit int) {
 		}
 		return
 	}
-	if len(c.rcpts) < limit {
-		c.rcpts[r] = v
+	c.rcpts[r] = v
+	c.trim(limit)
+}
+
+func (c *formRelayClient) trim(limit int) {
+	for len(c.rcpts) > limit {
+		var oldest string
+		var at time.Time
+		for r, v := range c.rcpts {
+			if oldest == "" || v.at.Before(at) {
+				oldest, at = r, v.at
+			}
+		}
+		delete(c.rcpts, oldest)
 	}
 }
 
@@ -142,7 +161,26 @@ func (c *formRelayClient) expire(cutoff time.Time) {
 	}
 }
 
-func (w *formRelayWindow) addLocked(key string) *formRelayClient {
+func (w *formRelayWindow) advanceLocked(at time.Time) time.Time {
+	if at.After(w.now) {
+		w.now = at
+	}
+	return w.now
+}
+
+func (w *formRelayWindow) expireClientsLocked(cutoff time.Time) {
+	for key, c := range w.ips {
+		c.expire(cutoff)
+		if len(c.rcpts) == 0 && !seenAtOrAfter(c.firedAt, cutoff) {
+			delete(w.ips, key)
+		}
+	}
+}
+
+func (w *formRelayWindow) addLocked(key string, cutoff time.Time) *formRelayClient {
+	if len(w.ips) >= w.maxIPs {
+		w.expireClientsLocked(cutoff)
+	}
 	if len(w.ips) >= w.maxIPs {
 		w.evictLocked()
 	}
@@ -230,9 +268,13 @@ func (w *formRelayWindow) recipientDomains(key string, since time.Time) []string
 func (w *formRelayWindow) markFired(key string, at time.Time, window time.Duration) bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	cutoff := w.advanceLocked(at).Add(-window)
+	if at.Before(cutoff) {
+		return false
+	}
 	c := w.ips[key]
 	if c == nil {
-		c = w.addLocked(key)
+		c = w.addLocked(key, cutoff)
 	}
 	if seenAtOrAfter(c.firedAt, at.Add(-window)) {
 		return false
@@ -251,11 +293,11 @@ func (w *formRelayWindow) markStaff(cpuser, key string, at time.Time) {
 		keys = make(map[string]time.Time, 1)
 		w.staff[cpuser] = keys
 	}
-	if _, ok := keys[key]; !ok && len(keys) >= formRelayStaffPerAccount {
-		evictOldestRecipient(keys)
-	}
 	if at.After(keys[key]) {
 		keys[key] = at
+	}
+	if len(keys) > formRelayStaffPerAccount {
+		evictOldestRecipient(keys)
 	}
 }
 
@@ -271,13 +313,8 @@ func (w *formRelayWindow) isStaff(cpuser, key string, at time.Time) bool {
 func (w *formRelayWindow) sweep(now time.Time, window time.Duration) (evictedFull bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	cutoff := now.Add(-window)
-	for key, c := range w.ips {
-		c.expire(cutoff)
-		if len(c.rcpts) == 0 && !seenAtOrAfter(c.firedAt, cutoff) {
-			delete(w.ips, key)
-		}
-	}
+	now = w.advanceLocked(now)
+	w.expireClientsLocked(now.Add(-window))
 	staffCutoff := now.Add(-formRelayStaffTTL)
 	for user, keys := range w.staff {
 		for key, at := range keys {
