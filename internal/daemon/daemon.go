@@ -105,6 +105,7 @@ type Daemon struct {
 	geoipMu        sync.Mutex // protects geoipDB for publishGeoIP
 	version        string
 	blockDigest    *blockdigest.Collector
+	knownCustomers *knownCustomers
 	alertCh        chan alert.Finding
 	alertQueue     *queuehealth.Tracker
 	queueSourcesMu sync.RWMutex
@@ -351,6 +352,10 @@ func New(cfg *config.Config, store *state.Store, lock *state.LockFile, binaryPat
 	d.mailSpray = newMailSpray(sprayConfigFromThresholds(cfg), time.Now)
 	d.smtpAuthTracker.SetSpray(d.mailSpray)
 	d.mailAuthTracker.SetSpray(d.mailSpray)
+	d.knownCustomers = newKnownCustomers(time.Now)
+	d.knownCustomers.isInfra = func(ip string) bool { return isInfraIPDaemon(ip, d.currentCfg().InfraIPs) }
+	d.smtpAuthTracker.SetKnownCustomers(d.knownCustomers)
+	d.mailAuthTracker.SetKnownCustomers(d.knownCustomers)
 
 	// Mail auth backend (cpdoveauthd) health: an active socket probe drives
 	// brute-force suppression for both trackers and optional self-heal restart.
@@ -806,6 +811,10 @@ func (d *Daemon) Run() error {
 		d.prepareAttackDatabase(adb)
 	}
 
+	// Restore the customer logins of the last run before any block can be
+	// checked against them.
+	d.loadKnownCustomers()
+
 	// Recovered admission notices can dispatch as soon as the owner starts.
 	// Publish the collector before any producer can read it or call its hook.
 	d.blockDigest = d.buildBlockDigest(d.currentCfg())
@@ -990,6 +999,8 @@ func (d *Daemon) Run() error {
 		defer t.Stop()
 		d.blockDigest.Run(d.stopCh, t.C)
 	})
+	d.wg.Add(1)
+	obs.Go("known-customers", d.runKnownCustomers)
 
 	// Run the initial scan synchronously while alert dispatch is held.
 	fmt.Fprintf(os.Stderr, "[%s] Running initial baseline scan...\n", ts())
@@ -1626,6 +1637,7 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 	cfg := d.currentCfg()
 
 	findings = alert.Deduplicate(findings)
+	d.noteFTPCustomers(findings)
 	suppressions := d.store.LoadSuppressions()
 	remediableFindings := filterUnsuppressedFindings(d.store, findings, suppressions)
 
@@ -1741,6 +1753,9 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 // dispatches the resulting alerts. It returns the alerted findings and the keys
 // of findings the permission auto-fix repaired.
 func (d *Daemon) respondToInitialScan(cfg *config.Config, initialFindings []alert.Finding) ([]alert.Finding, []string) {
+	// The realtime watcher starts at the end of the log, so FTP logins made
+	// while the daemon was down reach the set only through this scan.
+	d.noteFTPCustomers(initialFindings)
 	d.store.AppendHistory(initialFindings)
 	unfilteredNew := d.store.FilterNew(initialFindings)
 	suppressions := d.store.LoadSuppressions()

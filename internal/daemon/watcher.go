@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/netip"
 	"os"
 	"os/exec"
 	"strconv"
@@ -875,6 +876,38 @@ func parseCpanelSessionLogin(line string) (ip, account string) {
 		}
 	}
 	return ip, account
+}
+
+// parseSessionNew reads a new cPanel or webmail session from session_log:
+// "[<time>] <level> [cpaneld|webmaild] <ip> NEW <account>:<session> ...".
+// cpsrvd writes it only for an authenticated session. Every field is matched by
+// position, so text a client controls later in the line (a login name, the
+// address= field) cannot supply the tag, the address or the verb.
+func parseSessionNew(line string) (app, ip, account string, ok bool) {
+	if !strings.HasPrefix(line, "[") {
+		return "", "", "", false
+	}
+	end := strings.IndexByte(line, ']')
+	if end < 0 {
+		return "", "", "", false
+	}
+	fields := strings.Fields(line[end+1:])
+	if len(fields) < 5 || fields[3] != "NEW" {
+		return "", "", "", false
+	}
+	switch fields[1] {
+	case "[cpaneld]", "[webmaild]":
+	default:
+		return "", "", "", false
+	}
+	if _, err := netip.ParseAddr(fields[2]); err != nil {
+		return "", "", "", false
+	}
+	account, session, found := strings.Cut(fields[4], ":")
+	if !found || account == "" || session == "" {
+		return "", "", "", false
+	}
+	return strings.Trim(fields[1], "[]"), fields[2], account, true
 }
 
 func parsePurgeDaemon(line string) string {

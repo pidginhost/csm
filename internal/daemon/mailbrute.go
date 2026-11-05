@@ -622,6 +622,10 @@ type mailAuthTracker struct {
 	// before log readers begin.
 	spray *mailSpray
 
+	// knownCustomers, when set, remembers each successful login's address.
+	// Set once at startup before log readers begin; read without mu.
+	knownCustomers *knownCustomers
+
 	// aliased is set once ips holds a key that is not its address's
 	// canonical spelling. Until then a release looks up the canonical key
 	// instead of scanning every entry.
@@ -644,6 +648,12 @@ func (t *mailAuthTracker) SetSpray(m *mailSpray) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.spray = m
+}
+
+// SetKnownCustomers installs the known-customer set. Set once at startup
+// before log readers begin.
+func (t *mailAuthTracker) SetKnownCustomers(k *knownCustomers) {
+	t.knownCustomers = k
 }
 
 // newMailAuthTracker constructs a tracker. `now` is injected so tests can
@@ -1066,6 +1076,8 @@ func appendMailAccountTime(accounts map[string][]time.Time, account string, ts t
 // ip and account MUST both be non-empty. Caller filters infra/private/loopback
 // IPs before invoking.
 func (t *mailAuthTracker) RecordSuccess(ip, account string) (findings []alert.Finding) {
+	// Before t.mu: the customer set takes its own lock.
+	t.knownCustomers.Note(ip, knownCustomerIMAP, account, t.now())
 	if ip == "" || account == "" {
 		return nil
 	}

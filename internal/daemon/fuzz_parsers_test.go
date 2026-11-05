@@ -3,6 +3,7 @@ package daemon
 import (
 	"io/fs"
 	"maps"
+	"net/netip"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -199,6 +200,36 @@ func FuzzExtractPureFTPDClientIP(f *testing.F) {
 	f.Add("")
 	f.Fuzz(func(t *testing.T, line string) {
 		_ = extractPureFTPDClientIP(line)
+	})
+}
+
+func FuzzParseSessionNew(f *testing.F) {
+	for _, line := range []string{
+		sessionNewLine("cpaneld", "203.0.113.5", "alice"),
+		sessionNewLine("webmaild", "2001:db8::5", "office@example.com"),
+		"[2026-11-05 09:00:00 +0000] info [whostmgrd] 203.0.113.5 NEW x[cpaneld]:tok address=[webmaild] 203.0.113.6 NEW bob:tok",
+		"[2026-11-05 09:00:00 +0000] info [cpaneld] 203.0.113.5 PURGE alice:tok logout",
+		"[2026-11-05 09:00:00 +0000] info [cpaneld] 203.0.113.5 NEW :tok",
+		"[cpaneld] 203.0.113.5 NEW alice:tok",
+		"[]",
+		"",
+	} {
+		f.Add(line)
+	}
+	f.Fuzz(func(t *testing.T, line string) {
+		app, ip, account, ok := parseSessionNew(line)
+		if !ok {
+			return
+		}
+		if _, err := netip.ParseAddr(ip); err != nil {
+			t.Fatalf("accepted address %q: %v", ip, err)
+		}
+		if account == "" || strings.ContainsAny(account, ": \t\r\n") {
+			t.Fatalf("accepted account %q", account)
+		}
+		if app != "cpaneld" && app != "webmaild" {
+			t.Fatalf("accepted app %q", app)
+		}
 	})
 }
 
