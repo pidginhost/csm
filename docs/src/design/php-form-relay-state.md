@@ -29,8 +29,13 @@ recipient domains and claims the client cooldown in one call under that lock, so
 expiry cannot remove evidence between counting it and building the finding.
 Before counting, that call drops recipients the client reached through an
 account where it is now staff, or through a script that is now ignored, so a
-current exemption also covers mail recorded before it applied. Returned script
-shares and recipient domains are copies.
+current exemption also covers mail recorded before it applied. Script shares
+are grouped by the script's normalized name, the one findings print. Returned
+script shares and recipient domains are copies.
+
+The store also records when each normalized script name was last reported, so
+a script finding repeats neither for a later client nor after the routine sweep
+of per-script state within the window.
 
 Client findings carry the triggering Exim message ID as their observation in
 the spool stream. Admission previews and forecasts can trace direct responses

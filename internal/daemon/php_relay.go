@@ -812,6 +812,17 @@ func scriptPHPPath(k scriptKey) string {
 	return p
 }
 
+// scriptID names k's script for Path 6 findings and ignores: the host
+// lowercased plus scriptPHPPath. Host case and PATH_INFO come from the
+// client, so they must neither split one form nor reach an operator hint.
+func scriptID(k scriptKey) scriptKey {
+	slash := strings.IndexByte(k, '/')
+	if slash < 0 {
+		return strings.ToLower(k)
+	}
+	return strings.ToLower(k[:slash]) + scriptPHPPath(k)
+}
+
 // isAuthenticatedAdminScript reports a WordPress admin page that needs a
 // login, in any install directory. admin-ajax.php, admin-post.php,
 // profile.php and index.php are left out: logged-out visitors or
@@ -947,7 +958,7 @@ func (e *evaluator) formRelayFindings(k scriptKey, ip, cpuser string, spread int
 		var subjects []string
 		for _, sk := range scripts {
 			fmt.Fprintf(&details, "\n  %s (account %s): %d", sk, shares[sk].CPUser, shares[sk].Count)
-			if s := e.formRelaySubject(sk, key, since); s != "" && len(subjects) < 3 && !slices.Contains(subjects, s) {
+			if s := e.formRelaySubject(shares[sk].Raw, key, since); s != "" && len(subjects) < 3 && !slices.Contains(subjects, s) {
 				subjects = append(subjects, s)
 			}
 		}
@@ -969,7 +980,7 @@ func (e *evaluator) formRelayFindings(k scriptKey, ip, cpuser string, spread int
 			Path:      "form_relay",
 			Message:   fmt.Sprintf("Path 6: client %s made hosted sites mail %d different outside addresses in %s", ip, snapshot.Count, hours),
 			Details:   details.String(),
-			ScriptKey: string(k),
+			ScriptKey: scriptID(k),
 			SourceIP:  ip,
 			CPUser:    cpuser,
 			TenantID:  checks.HostingAccountForUser(cpuser),
@@ -979,7 +990,7 @@ func (e *evaluator) formRelayFindings(k scriptKey, ip, cpuser string, spread int
 
 	for _, sk := range scripts {
 		share := shares[sk]
-		if share.Count < 2 || !e.scripts.getOrCreate(sk).shouldFire("form_relay_script", now, window) {
+		if share.Count < 2 || !e.form.claimScript(sk, now, window) {
 			continue
 		}
 		if e.metrics != nil {
@@ -1435,6 +1446,10 @@ func (il *ignoreList) Has(k scriptKey) bool {
 	}
 	return true
 }
+
+// Covers reports whether k is ignored under its own key or its scriptID,
+// so one ignore on the name a Path 6 finding prints covers every variant.
+func (il *ignoreList) Covers(k scriptKey) bool { return il.Has(k) || il.Has(scriptID(k)) }
 
 func (il *ignoreList) List() []ignoreEntry {
 	il.mu.Lock()

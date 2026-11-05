@@ -477,7 +477,13 @@ func feedSiteMail(t *testing.T, p *spoolPipeline, msgID, site, ip string, at tim
 // writes a header without " for ", as cron and CLI mail carry.
 func feedScriptMail(t *testing.T, p *spoolPipeline, msgID, site, script, ip string, at time.Time, rcpts ...string) {
 	t.Helper()
-	body := fmt.Sprintf("id-H\nuser%s 1 1\n<user%s@host.example.test>\n0 0\n-local\n%d\n", site, site, len(rcpts))
+	feedHostMail(t, p, msgID, "user"+site, "site-"+site+".example", script, ip, at, rcpts...)
+}
+
+// feedHostMail is feedScriptMail for a chosen account and request host.
+func feedHostMail(t *testing.T, p *spoolPipeline, msgID, user, host, script, ip string, at time.Time, rcpts ...string) {
+	t.Helper()
+	body := fmt.Sprintf("id-H\n%s 1 1\n<%s@host.example.test>\n0 0\n-local\n%d\n", user, user, len(rcpts))
 	for _, r := range rcpts {
 		body += r + "\n"
 	}
@@ -486,8 +492,8 @@ func feedScriptMail(t *testing.T, p *spoolPipeline, msgID, site, script, ip stri
 		client = " for " + ip
 	}
 	body += fmt.Sprintf("\n040  Subject: [Site] Please moderate a comment\n"+
-		"070  X-PHP-Script: site-%s.example%s%s\n"+
-		"045F From: WordPress <wordpress@site-%s.example>\n", site, script, client, site)
+		"070  X-PHP-Script: %s%s%s\n"+
+		"045F From: WordPress <wordpress@%s>\n", host, script, client, host)
 	f := filepath.Join(t.TempDir(), msgID+"-H")
 	if err := os.WriteFile(f, []byte(body), 0o644); err != nil {
 		t.Fatal(err)

@@ -21,17 +21,20 @@ const (
 const formRelayUnparsed = "\x00"
 
 // formRelayWindow is Path 6 state: the distinct outside recipients each
-// client reached over the detection window, and the clients seen on an
-// authenticated admin page per account. It is kept apart from perIPWindow,
-// which Flow E sweeps after one idle hour, because bots post about hourly
-// and the window is a day. All methods are safe for concurrent use.
+// client reached over the detection window, the clients seen on an
+// authenticated admin page per account, and when each script was last
+// reported. It is kept apart from perIPWindow, which Flow E sweeps after
+// one idle hour, because bots post about hourly and the window is a day.
+// All methods are safe for concurrent use.
 type formRelayWindow struct {
 	mu     sync.Mutex
 	maxIPs int
 	ips    map[string]*formRelayClient
 	staff  map[string]map[string]time.Time // cpuser -> client key -> last admin mail
-	hitCap bool                            // evicted a client since the last sweep
-	now    time.Time                       // latest observation or sweep; replay cannot rewind expiry
+	// scriptFired is keyed by scriptID, which may name no script window.
+	scriptFired map[scriptKey]time.Time
+	hitCap      bool      // evicted a client since the last sweep
+	now         time.Time // latest observation or sweep; replay cannot rewind expiry
 
 	evictions *metrics.Counter // optional
 }
@@ -51,9 +54,11 @@ type formRelayRcpt struct {
 }
 
 // formRelayShare is one script's part of a client's outside recipients.
+// Raw is the newest recipient's script key, whose window holds its subjects.
 type formRelayShare struct {
 	Count  int
 	CPUser string
+	Raw    scriptKey
 }
 
 type formRelaySnapshot struct {
@@ -85,11 +90,16 @@ func (w *formRelayWindow) evaluate(key string, at time.Time, window time.Duratio
 	}
 	out := formRelaySnapshot{Count: len(c.rcpts), Shares: make(map[scriptKey]formRelayShare)}
 	domains := make(map[string]struct{})
+	newest := make(map[scriptKey]time.Time)
 	for _, v := range c.rcpts {
-		share := out.Shares[v.script]
+		id := scriptID(v.script)
+		share := out.Shares[id]
 		share.Count++
 		share.CPUser = v.cpuser
-		out.Shares[v.script] = share
+		if last := newest[id]; share.Raw == "" || v.at.After(last) || v.at.Equal(last) && v.script < share.Raw {
+			newest[id], share.Raw = v.at, v.script
+		}
+		out.Shares[id] = share
 		if v.domain != "" {
 			domains[v.domain] = struct{}{}
 		}
@@ -107,9 +117,10 @@ func (w *formRelayWindow) evaluate(key string, at time.Time, window time.Duratio
 
 func newFormRelayWindow(maxIPs int) *formRelayWindow {
 	return &formRelayWindow{
-		maxIPs: maxIPs,
-		ips:    make(map[string]*formRelayClient),
-		staff:  make(map[string]map[string]time.Time),
+		maxIPs:      maxIPs,
+		ips:         make(map[string]*formRelayClient),
+		staff:       make(map[string]map[string]time.Time),
+		scriptFired: make(map[scriptKey]time.Time),
 	}
 }
 
@@ -361,6 +372,17 @@ func (w *formRelayWindow) markFired(key string, at time.Time, window time.Durati
 	return true
 }
 
+// claimScript reports true once per script id per window.
+func (w *formRelayWindow) claimScript(id scriptKey, at time.Time, window time.Duration) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if seenAtOrAfter(w.scriptFired[id], at.Add(-window)) {
+		return false
+	}
+	w.scriptFired[id] = at
+	return true
+}
+
 // markStaff records that key sent mail through an authenticated admin page
 // of cpuser. Each account keeps its newest formRelayStaffPerAccount keys.
 func (w *formRelayWindow) markStaff(cpuser, key string, at time.Time) {
@@ -391,14 +413,19 @@ func (w *formRelayWindow) isStaff(cpuser, key string, at time.Time) bool {
 	return seenAtOrAfter(w.staff[cpuser][key], at.Add(-formRelayStaffTTL))
 }
 
-// sweep drops expired recipients, clients with nothing left in the window
-// and expired staff, and reports whether the table hit its cap since the
-// last sweep.
+// sweep drops expired recipients, clients with nothing left in the window,
+// script reports older than the window and expired staff, and reports
+// whether the table hit its cap since the last sweep.
 func (w *formRelayWindow) sweep(now time.Time, window time.Duration) (evictedFull bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	now = w.advanceLocked(now)
 	w.expireClientsLocked(now.Add(-window))
+	for id, at := range w.scriptFired {
+		if !seenAtOrAfter(at, now.Add(-window)) {
+			delete(w.scriptFired, id)
+		}
+	}
 	staffCutoff := now.Add(-formRelayStaffTTL)
 	for user, keys := range w.staff {
 		for key, at := range keys {

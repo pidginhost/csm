@@ -454,3 +454,87 @@ func TestSweepFormRelay_ReportsFullTableOncePerDay(t *testing.T) {
 		t.Fatalf("eviction metric grew by %v, want 3", got)
 	}
 }
+
+// PHP_SELF carries PATH_INFO and SERVER_NAME follows the Host header, so one
+// form reaches the spool under many names. Path 6 must see one script.
+func TestPath6_ScriptVariantsAreOneScript(t *testing.T) {
+	const id = "site-a.example:" + path6Ajax
+	for name, variant := range map[string]func(i int) (host, script string){
+		"path info": func(i int) (string, string) { return "site-a.example", fmt.Sprintf("%s/%d", path6Ajax, i) },
+		"host case": func(i int) (string, string) {
+			return []string{"Site-A.example", "SITE-A.EXAMPLE", "site-a.Example", "sItE-a.example", "site-A.example"}[i], path6Ajax
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			p, findings := path6Pipeline(t, "a")
+			feed := func(ip string, first int, at time.Time) {
+				for i := 0; i < 5; i++ {
+					host, script := variant(i)
+					n := first + i
+					feedHostMail(t, p, fmt.Sprintf("m%d", n), "usera", host, script, ip, at.Add(time.Duration(i)*time.Minute),
+						fmt.Sprintf("victim%d@mail%d.example", n, n))
+				}
+			}
+			feed(path6IP, 0, path6T0)
+			clients, scripts := path6Of(*findings, path6Check), path6Of(*findings, path6Script)
+			if len(clients) != 1 || clients[0].ScriptKey != id || !strings.Contains(clients[0].Details, id+" (account usera): 5") {
+				t.Fatalf("client findings = %+v, want one naming %s", clients, id)
+			}
+			if len(scripts) != 1 || scripts[0].ScriptKey != id || scripts[0].DedupKey != id {
+				t.Fatalf("script findings = %+v, want one for %s", scripts, id)
+			}
+			// Flow E's routine script sweep must not reset the script cooldown.
+			p.eng.scripts.SweepIdle(path6T0.Add(time.Hour - 25*time.Hour))
+			feed("198.51.100.20", 5, path6T0.Add(2*time.Hour))
+			if got := path6Of(*findings, path6Check); len(got) != 2 {
+				t.Fatalf("client findings = %d, want 2", len(got))
+			}
+			if got := path6Of(*findings, path6Script); len(got) != 1 {
+				t.Fatalf("script findings = %+v, want still one per window", got)
+			}
+		})
+	}
+}
+
+// One ignore-script on the name a finding prints covers every variant of
+// that form, before and after it was added; ignores on a raw name still work.
+func TestPath6_IgnoreCoversScriptVariants(t *testing.T) {
+	variants := []struct{ host, script string }{
+		{"site-a.example", path6Ajax + "/0"}, {"Site-A.example", path6Ajax}, {"SITE-A.EXAMPLE", path6Ajax + "/x"},
+		{"site-a.example", "/WP-ADMIN/admin-ajax.php"}, {"site-a.example", path6Ajax + "/post.php"}, {"site-a.example", path6Ajax},
+	}
+	t.Run("new mail", func(t *testing.T) {
+		p, findings := path6Pipeline(t, "a")
+		p.ignores = newIgnoreList()
+		p.ignores.Add("site-a.example:"+path6Ajax, time.Time{}, "test", "bulk sender")
+		for i, v := range variants {
+			feedHostMail(t, p, fmt.Sprintf("m%d", i), "usera", v.host, v.script, path6IP, path6T0.Add(time.Duration(i)*time.Minute),
+				fmt.Sprintf("victim%d@mail%d.example", i, i))
+		}
+		requireNoPath6(t, *findings)
+		if len(p.eng.form.ips) != 0 {
+			t.Fatalf("ignored variants were counted: %d clients", len(p.eng.form.ips))
+		}
+	})
+	t.Run("earlier mail", func(t *testing.T) {
+		p, findings := path6Pipeline(t, "a", "b")
+		for i, v := range variants[:4] {
+			feedHostMail(t, p, fmt.Sprintf("m%d", i), "usera", v.host, v.script, path6IP, path6T0.Add(time.Duration(i)*time.Minute),
+				fmt.Sprintf("victim%d@mail%d.example", i, i))
+		}
+		p.ignores = newIgnoreList()
+		p.ignores.Add("site-a.example:"+path6Ajax, time.Time{}, "test", "bulk sender")
+		feedVictims(t, p, "b", path6Form, path6IP, 4, 1, path6T0)
+		requireNoPath6(t, *findings)
+	})
+	t.Run("raw name", func(t *testing.T) {
+		p, findings := path6Pipeline(t, "a")
+		p.ignores = newIgnoreList()
+		p.ignores.Add("Site-A.example:"+path6Ajax+"/0", time.Time{}, "test", "bulk sender")
+		for i := 0; i < 6; i++ {
+			feedHostMail(t, p, fmt.Sprintf("m%d", i), "usera", "Site-A.example", path6Ajax+"/0", path6IP, path6T0.Add(time.Duration(i)*time.Minute),
+				fmt.Sprintf("victim%d@mail%d.example", i, i))
+		}
+		requireNoPath6(t, *findings)
+	})
+}

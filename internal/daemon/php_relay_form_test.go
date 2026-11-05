@@ -518,3 +518,23 @@ func TestFormRelayWindow_ConcurrentMixedOperations(t *testing.T) {
 		t.Fatalf("table holds %d clients, cap is 8", len(w.ips))
 	}
 }
+
+func TestFormRelayWindow_ScriptClaimOncePerWindow(t *testing.T) {
+	w := newFormRelayWindow(100)
+	if !w.claimScript(formTestA, formTestT0, formTestWindow) {
+		t.Fatal("first script report not claimed")
+	}
+	if w.claimScript(formTestA, formTestT0.Add(23*time.Hour), formTestWindow) {
+		t.Fatal("script reported twice in one window")
+	}
+	if !w.claimScript(formTestB, formTestT0.Add(time.Hour), formTestWindow) {
+		t.Fatal("one script's report blocked another")
+	}
+	w.sweep(formTestT0.Add(formTestWindow+2*time.Hour), formTestWindow)
+	if len(w.scriptFired) != 0 {
+		t.Fatalf("sweep kept expired script reports: %v", w.scriptFired)
+	}
+	if !w.claimScript(formTestA, formTestT0.Add(formTestWindow+2*time.Hour), formTestWindow) {
+		t.Fatal("script not reported again in the next window")
+	}
+}

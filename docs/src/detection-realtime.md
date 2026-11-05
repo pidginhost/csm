@@ -525,7 +525,7 @@ Path 6 has known limits:
 
 - A plugin that handles POST requests in its `init` or `wp_loaded` hook without checking for a login, or for `DOING_CRON`, lets a visitor who is not logged in make it send mail by posting to an admin page or to `wp-cron.php`. That mail is not counted, and a post to an admin page also earns the client the staff exemption on that account.
 - Behind a proxy or CDN that does not pass the client address to PHP, CSM sees only the proxy's address. A proxy on the list is skipped, so its visitors are never counted. A proxy missing from the list is counted as one client for all its visitors, so add its ranges to `http_proxy_ranges.yaml`.
-- The script name comes from the request's Host header and path, including any extra path after the script name, so one form can appear under several names. Each name gets its own script finding and needs its own `ignore-script`. The client finding counts all of them together.
+- Path 6 names a form by its host in lowercase and its path up to the PHP file, so extra path after the file or a change of case does not split it, and one `ignore-script` with that name covers every such variant. Other names for the same site, such as with and without `www.`, still count as separate forms.
 - Counts live in memory and are lost when the daemon restarts. The startup walk sees only mail still in the queue, and form replies usually leave it within seconds.
 - A bot that rotates addresses and keeps each one below the threshold is never challenged, and its form is not named.
 - One stranger mailed many times counts once.
@@ -536,7 +536,7 @@ CSM also raises `email_php_form_relay_script` (High) for each script that sent a
 
 The detector starts a one-shot retrospective scan of `exim_mainlog` at daemon startup so Path 2b can fire on history already on disk. `IN_Q_OVERFLOW` triggers a bounded recovery walk of the spool (capped at 1000 files; if more were skipped, a `email_php_relay_overflow_scan_truncated` Critical fires too -- Path 2b backstops the missed messages).
 
-Operator suppressions (`csm phprelay ignore-script <host:/path>`) short-circuit the pipeline before any path scoring runs, so a known-noisy contact form can be opted out individually without disabling the detector. See [PHP-relay CLI](cli.md#php-relay-mail-abuse-cpanel-only) for the full operator surface.
+Operator suppressions (`csm phprelay ignore-script <host:/path>`) short-circuit the pipeline before any path scoring runs, so a known-noisy contact form can be opted out individually without disabling the detector. An ignore on a lowercase `host:/path` ending at the PHP file also covers that file reached with extra path after it or a different host case. See [PHP-relay CLI](cli.md#php-relay-mail-abuse-cpanel-only) for the full operator surface.
 
 ## PAM Brute-Force Listener
 

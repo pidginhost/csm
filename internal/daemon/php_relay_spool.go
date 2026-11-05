@@ -251,7 +251,7 @@ func (p *spoolPipeline) onFileAt(path string, at time.Time) {
 	if sig.ScriptKey == "" {
 		return
 	}
-	if p.ignores != nil && p.ignores.Has(sig.ScriptKey) {
+	if p.ignores != nil && p.ignores.Covers(sig.ScriptKey) {
 		return
 	}
 
@@ -298,7 +298,7 @@ func (p *spoolPipeline) onFileAt(path string, at time.Time) {
 		window := time.Duration(relayCfg.IPRecipientWindowHours) * time.Hour
 		var ignored func(scriptKey) bool
 		if p.ignores != nil {
-			ignored = p.ignores.Has
+			ignored = p.ignores.Covers
 		}
 		findings = append(findings, p.eng.formRelayFindings(sig.ScriptKey, sig.SourceIP, h.EnvelopeUser, relayCfg.IPRecipientSpread, window, now, ignored)...)
 	}
