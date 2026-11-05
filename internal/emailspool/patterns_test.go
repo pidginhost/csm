@@ -122,6 +122,21 @@ cidrs:
 	}
 }
 
+func TestLoadHTTPProxyRanges_NullEntryWithValidSibling(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "http_proxy_ranges.yaml"), "version: 1\ncidrs: [null, 192.0.2.10]\n")
+	pol, err := LoadPolicies(dir)
+	if err == nil || !strings.Contains(err.Error(), "http_proxy_ranges.yaml") {
+		t.Fatalf("LoadPolicies error = %v, want a proxy entry error", err)
+	}
+	if !pol.IsProxyIP("192.0.2.10") || pol.IsProxyIP("192.0.2.11") {
+		t.Error("valid sibling must retain its exact address despite the null entry")
+	}
+	if host := firstBuiltInHost(t); pol.IsProxyIP(host) {
+		t.Error("a valid operator entry must replace the built-in list")
+	}
+}
+
 // firstBuiltInHost returns the first host of the first CIDR in the embedded
 // proxy list, so the tests never carry a literal provider address.
 func firstBuiltInHost(t *testing.T) string {
@@ -133,9 +148,12 @@ func firstBuiltInHost(t *testing.T) string {
 	if len(raw.CIDRs) == 0 {
 		t.Fatal("embedded proxy ranges are empty")
 	}
-	_, n, err := net.ParseCIDR(raw.CIDRs[0])
+	if raw.CIDRs[0] == nil {
+		t.Fatal("first embedded CIDR is null")
+	}
+	_, n, err := net.ParseCIDR(*raw.CIDRs[0])
 	if err != nil {
-		t.Fatalf("first embedded CIDR %q: %v", raw.CIDRs[0], err)
+		t.Fatalf("first embedded CIDR %q: %v", *raw.CIDRs[0], err)
 	}
 	ip := slices.Clone(n.IP)
 	if ones, bits := n.Mask.Size(); ones < bits {
@@ -188,6 +206,9 @@ func TestLoadPolicies_UnusableProxyFileKeepsBuiltIn(t *testing.T) {
 		"no cidrs key":   func(t *testing.T, path string) { writeFile(t, path, "version: 1\n") },
 		"null cidrs":     func(t *testing.T, path string) { writeFile(t, path, "version: 1\ncidrs:\n") },
 		"no valid cidrs": func(t *testing.T, path string) { writeFile(t, path, "version: 1\ncidrs: [not-a-cidr, 300.1.2.3/24]\n") },
+		"null entry":     func(t *testing.T, path string) { writeFile(t, path, "version: 1\ncidrs: [null]\n") },
+		"blank entry":    func(t *testing.T, path string) { writeFile(t, path, "version: 1\ncidrs:\n  -\n") },
+		"null alias":     func(t *testing.T, path string) { writeFile(t, path, "empty: &empty null\ncidrs: [*empty]\n") },
 		"unreadable": func(t *testing.T, path string) {
 			if err := os.Mkdir(path, 0o755); err != nil {
 				t.Fatal(err)
@@ -226,6 +247,9 @@ func TestReload_CorruptProxyFileKeepsPreviousOperatorList(t *testing.T) {
 		"unparsable":     {"cidrs: [\n", "parse http_proxy_ranges.yaml"},
 		"zero bytes":     {"", "parse http_proxy_ranges.yaml"},
 		"no valid cidrs": {"cidrs: [not-a-cidr]\n", `invalid CIDR "not-a-cidr"`},
+		"null entry":     {"cidrs: [null]\n", "http_proxy_ranges.yaml"},
+		"blank entry":    {"cidrs:\n  -\n", "http_proxy_ranges.yaml"},
+		"null alias":     {"empty: &empty null\ncidrs: [*empty]\n", "http_proxy_ranges.yaml"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -271,6 +295,27 @@ func TestReload_MissingProxyFileRestoresBuiltIn(t *testing.T) {
 	}
 }
 
+func TestReload_NullEntriesKeepExplicitEmptyProxyList(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "http_proxy_ranges.yaml")
+	writeFile(t, path, "version: 1\ncidrs: [198.51.100.0/24]\n")
+	pol, err := LoadPolicies(dir)
+	if err != nil {
+		t.Fatalf("LoadPolicies: %v", err)
+	}
+	writeFile(t, path, "version: 1\ncidrs: []\n")
+	if err := pol.Reload(dir); err != nil {
+		t.Fatalf("Reload empty list: %v", err)
+	}
+	writeFile(t, path, "version: 1\ncidrs: [null, Null, NULL, ~]\n")
+	if err := pol.Reload(dir); err == nil || !strings.Contains(err.Error(), "http_proxy_ranges.yaml") {
+		t.Fatalf("Reload error = %v, want a proxy entry error", err)
+	}
+	if pol.IsProxyIP("198.51.100.7") || pol.IsProxyIP(firstBuiltInHost(t)) {
+		t.Error("invalid reload must retain the last good empty list")
+	}
+}
+
 func TestBuiltInProxyRanges_AllValid(t *testing.T) {
 	var raw httpProxyRangesYAML
 	if err := yaml.Unmarshal(defaultProxyRanges, &raw); err != nil {
@@ -283,13 +328,17 @@ func TestBuiltInProxyRanges_AllValid(t *testing.T) {
 		t.Fatal("embedded proxy ranges are empty")
 	}
 	for _, c := range raw.CIDRs {
-		ip, n, err := net.ParseCIDR(c)
+		if c == nil {
+			t.Error("embedded CIDR is null")
+			continue
+		}
+		ip, n, err := net.ParseCIDR(*c)
 		if err != nil {
-			t.Errorf("invalid CIDR %q: %v", c, err)
+			t.Errorf("invalid CIDR %q: %v", *c, err)
 			continue
 		}
 		if !ip.Equal(n.IP) {
-			t.Errorf("CIDR %q has host bits set; want %s", c, n)
+			t.Errorf("CIDR %q has host bits set; want %s", *c, n)
 		}
 	}
 

@@ -78,8 +78,10 @@ type mailerClassesYAML struct {
 
 //nolint:unused // consumed by E2/E3
 type httpProxyRangesYAML struct {
-	Version int      `yaml:"version"`
-	CIDRs   []string `yaml:"cidrs"`
+	Version int `yaml:"version"`
+	// yaml.v3 drops nulls from []string. Keep them so an unfinished list
+	// cannot be mistaken for an explicitly empty one.
+	CIDRs []*string `yaml:"cidrs"`
 }
 
 // defaultProxyRanges is the built-in http_proxy_ranges.yaml. Packages
@@ -103,10 +105,14 @@ func mustProxyRanges(data []byte) httpProxyRangesYAML {
 // as /32 or /128. Invalid entries are reported and skipped. The result is
 // never nil, so an explicit empty list stays distinguishable from a failed
 // load.
-func parseProxyCIDRs(cidrs []string, setErr func(error)) []*net.IPNet {
+func parseProxyCIDRs(cidrs []*string, setErr func(error)) []*net.IPNet {
 	nets := make([]*net.IPNet, 0, len(cidrs))
 	for _, c := range cidrs {
-		s := strings.TrimSpace(c)
+		if c == nil {
+			setErr(errors.New("null CIDR in http_proxy_ranges.yaml"))
+			continue
+		}
+		s := strings.TrimSpace(*c)
 		if ip := net.ParseIP(s); ip != nil {
 			bits := 128
 			if v4 := ip.To4(); v4 != nil {
@@ -117,7 +123,7 @@ func parseProxyCIDRs(cidrs []string, setErr func(error)) []*net.IPNet {
 		}
 		_, n, err := net.ParseCIDR(s)
 		if err != nil {
-			setErr(fmt.Errorf("invalid CIDR %q in http_proxy_ranges.yaml: %w", c, err))
+			setErr(fmt.Errorf("invalid CIDR %q in http_proxy_ranges.yaml: %w", *c, err))
 			continue
 		}
 		nets = append(nets, n)
