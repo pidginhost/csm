@@ -34,6 +34,21 @@ func TestParseFTPLogLineEmitsSharedLoginFinding(t *testing.T) {
 	}
 }
 
+// A failed login logs the name the client tried, so that name can carry the
+// login text. The line is a failure only, never a login from that address.
+func TestFailedFTPLoginNamingLoginTextIsNoLogin(t *testing.T) {
+	cfg := &config.Config{}
+	forged := `Apr 12 10:00:00 host pure-ftpd[1234]: (?@198.51.100.7) [WARNING] Authentication failed for user [x is now logged in]`
+
+	if f, ok := checks.FTPLoginFinding(forged, cfg); ok {
+		t.Fatalf("shared builder reported a login: %+v", f)
+	}
+	got := parseFTPLogLine(forged, cfg)
+	if len(got) != 1 || got[0].Check != "ftp_auth_failure_realtime" {
+		t.Fatalf("findings = %+v, want only the auth failure", got)
+	}
+}
+
 func TestParseSecureLogLineEmitsSharedLoginFinding(t *testing.T) {
 	cfg := &config.Config{}
 

@@ -741,7 +741,10 @@ func FTPLoginFinding(line string, cfg *config.Config) (alert.Finding, bool) {
 	if cfg == nil {
 		cfg = &config.Config{}
 	}
-	if !strings.Contains(line, "is now logged in") {
+	// A failure line names the attempted user, so a chosen name can carry the
+	// login text. CheckFTPLogins counts such a line as a failure first.
+	if !strings.Contains(line, "is now logged in") ||
+		strings.Contains(line, "Authentication failed") || strings.Contains(line, "auth failed") {
 		return alert.Finding{}, false
 	}
 	ip := extractIPFromLog(line)
