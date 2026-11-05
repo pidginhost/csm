@@ -6,6 +6,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/pidginhost/csm/internal/metrics"
 )
 
 const (
@@ -30,6 +32,8 @@ type formRelayWindow struct {
 	staff  map[string]map[string]time.Time // cpuser -> client key -> last admin mail
 	hitCap bool                            // evicted a client since the last sweep
 	now    time.Time                       // latest observation or sweep; replay cannot rewind expiry
+
+	evictions *metrics.Counter // optional
 }
 
 type formRelayClient struct {
@@ -99,8 +103,11 @@ func classifyFormRelayRecipients(rcpts []string, own map[string]struct{}) (outsi
 // distinct count, capped at limit, in the latest observed window. Delayed
 // messages cannot rewind that window. An unparsed message adds one entry
 // keyed by msgID. Retaining the newest recipients preserves later crossings
-// when older evidence expires.
+// when older evidence expires. An empty key is never stored.
 func (w *formRelayWindow) record(key, exactIP, cpuser string, k scriptKey, msgID string, at time.Time, outside []string, unparsed bool, window time.Duration, limit int) int {
+	if key == "" {
+		return 0
+	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	cutoff := w.advanceLocked(at).Add(-window)
@@ -207,7 +214,26 @@ func (w *formRelayWindow) evictLocked() {
 	if low != nil {
 		delete(w.ips, victim)
 		w.hitCap = true
+		if w.evictions != nil {
+			w.evictions.Inc()
+		}
 	}
+}
+
+// count returns the distinct outside recipients key reached since since.
+// It only reads: no expiry, no clock advance.
+func (w *formRelayWindow) count(key string, since time.Time) int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	n := 0
+	if c := w.ips[key]; c != nil {
+		for _, v := range c.rcpts {
+			if !v.at.Before(since) {
+				n++
+			}
+		}
+	}
+	return n
 }
 
 // exactIP returns the last exact address seen for key.
@@ -264,8 +290,11 @@ func (w *formRelayWindow) recipientDomains(key string, since time.Time) []string
 	return out
 }
 
-// markFired reports true once per key per window.
+// markFired reports true once per key per window, never for an empty key.
 func (w *formRelayWindow) markFired(key string, at time.Time, window time.Duration) bool {
+	if key == "" {
+		return false
+	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	cutoff := w.advanceLocked(at).Add(-window)
@@ -286,6 +315,9 @@ func (w *formRelayWindow) markFired(key string, at time.Time, window time.Durati
 // markStaff records that key sent mail through an authenticated admin page
 // of cpuser. Each account keeps its newest formRelayStaffPerAccount keys.
 func (w *formRelayWindow) markStaff(cpuser, key string, at time.Time) {
+	if key == "" {
+		return
+	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	keys := w.staff[cpuser]
@@ -302,6 +334,9 @@ func (w *formRelayWindow) markStaff(cpuser, key string, at time.Time) {
 }
 
 func (w *formRelayWindow) isStaff(cpuser, key string, at time.Time) bool {
+	if key == "" {
+		return false
+	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return seenAtOrAfter(w.staff[cpuser][key], at.Add(-formRelayStaffTTL))

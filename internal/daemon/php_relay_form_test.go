@@ -424,3 +424,97 @@ func TestClassifyFormRelayRecipients(t *testing.T) {
 		t.Fatal("empty recipient list not counted as unparsed")
 	}
 }
+
+func TestFormRelayWindow_CountReadsWithoutChangingState(t *testing.T) {
+	w := newFormRelayWindow(100)
+	key := formRelayKey(formTestIP)
+	formRecord(w, formTestIP, formTestA, "usera", "m1", formTestT0, false, "v1@victim.example")
+	formRecord(w, formTestIP, formTestA, "usera", "m2", formTestT0.Add(time.Hour), false, "v2@victim.example")
+	if got := w.count(key, formTestT0); got != 2 {
+		t.Fatalf("count since t0 = %d, want 2", got)
+	}
+	if got := w.count(key, formTestT0.Add(time.Hour)); got != 1 {
+		t.Fatalf("count since t0+1h = %d, want 1", got)
+	}
+	// A read far past the window must neither expire nor advance the clock.
+	if got := w.count(key, formTestT0.Add(48*time.Hour)); got != 0 {
+		t.Fatalf("count since t0+48h = %d, want 0", got)
+	}
+	if got := formRecord(w, formTestIP, formTestA, "usera", "m3", formTestT0.Add(2*time.Hour), false, "v3@victim.example"); got != 3 {
+		t.Fatalf("record after reads = %d, want 3 (count must not move the window)", got)
+	}
+	if got := w.count(formRelayKey("192.0.2.1"), formTestT0); got != 0 {
+		t.Fatalf("count of an unknown client = %d, want 0", got)
+	}
+	if got := w.exactIP(formRelayKey("192.0.2.1")); got != "" {
+		t.Fatalf("count created a client: %q", got)
+	}
+}
+
+func TestFormRelayWindow_EmptyKeyIsNeverStored(t *testing.T) {
+	w := newFormRelayWindow(100)
+	if got := w.record("", "", "usera", formTestA, "m1", formTestT0, []string{"v@victim.example"}, true, formTestWindow, formTestLimit); got != 0 {
+		t.Fatalf("record with empty key = %d, want 0", got)
+	}
+	if w.markFired("", formTestT0, formTestWindow) {
+		t.Fatal("empty key fired")
+	}
+	w.markStaff("usera", "", formTestT0)
+	if w.isStaff("usera", "", formTestT0) {
+		t.Fatal("empty key recorded as staff")
+	}
+	if len(w.ips) != 0 || len(w.staff) != 0 {
+		t.Fatalf("empty key stored state: ips=%v staff=%v", w.ips, w.staff)
+	}
+}
+
+// Smoke test for the race detector: each goroutine drives a different
+// operation against shared keys.
+func TestFormRelayWindow_ConcurrentMixedOperations(t *testing.T) {
+	w := newFormRelayWindow(8)
+	ips := []string{"192.0.2.1", "192.0.2.2", "198.51.100.1", "2001:db8::1", "2001:db8:0:1::1"}
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	run := func(f func(i int)) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			for i := 0; i < 200; i++ {
+				f(i)
+			}
+		}()
+	}
+	for g := 0; g < 3; g++ {
+		run(func(i int) {
+			ip := ips[(i+g)%len(ips)]
+			formRecord(w, ip, formTestA, "usera", fmt.Sprintf("g%d-m%d", g, i), formTestT0.Add(time.Duration(i)*time.Minute), i%7 == 0, fmt.Sprintf("v%d@victim.example", i))
+		})
+	}
+	run(func(i int) { w.sweep(formTestT0.Add(time.Duration(i)*time.Minute), formTestWindow) })
+	run(func(i int) {
+		key := formRelayKey(ips[i%len(ips)])
+		w.markStaff("userb", key, formTestT0.Add(time.Duration(i)*time.Minute))
+		w.isStaff("userb", key, formTestT0)
+	})
+	run(func(i int) {
+		key := formRelayKey(ips[i%len(ips)])
+		since := formTestT0.Add(-formTestWindow)
+		if n := w.count(key, since); n > formTestLimit {
+			t.Errorf("count = %d, above the limit %d", n, formTestLimit)
+		}
+		total := 0
+		for _, s := range w.scriptShares(key, since) {
+			total += s.Count
+		}
+		if total > formTestLimit {
+			t.Errorf("script shares total %d, above the limit %d", total, formTestLimit)
+		}
+		w.markFired(key, formTestT0.Add(time.Duration(i)*time.Minute), formTestWindow)
+	})
+	close(start)
+	wg.Wait()
+	if len(w.ips) > 8 {
+		t.Fatalf("table holds %d clients, cap is 8", len(w.ips))
+	}
+}

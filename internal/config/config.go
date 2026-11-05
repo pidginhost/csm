@@ -1099,8 +1099,8 @@ type Config struct {
 		// the values set in applyDefaults(), except documented zero
 		// sentinels such as AccountVolumePerHour auto-derive and
 		// FanoutDistinctRecipients disabling only that gate.
-		// IPRecipientSpread and IPRecipientWindowHours are reserved;
-		// neither affects detection yet.
+		// IPRecipientSpread and IPRecipientWindowHours tune Path 6 (outside
+		// recipients per client IP); an explicit zero spread disables it.
 		PHPRelay struct {
 			// The relay pipeline is wired once at startup; a reload can retune
 			// it but cannot start or stop it, so toggling it needs a restart.

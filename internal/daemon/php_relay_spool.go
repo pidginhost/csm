@@ -19,6 +19,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/emailspool"
 )
 
@@ -286,6 +287,7 @@ func (p *spoolPipeline) onFileAt(path string, at time.Time) {
 		}
 		p.eng.ips.appendMessage(sig.SourceIP, sig.ScriptKey, now, h.Subject, fanoutRecipients, auth)
 	}
+	p.recordFormRelay(h, sig, auth, domainErr, msgID, now)
 
 	if p.rebuilding.Load() {
 		return
@@ -294,6 +296,34 @@ func (p *spoolPipeline) onFileAt(path string, at time.Time) {
 	for _, f := range findings {
 		p.alerter(f)
 	}
+}
+
+// recordFormRelay feeds Path 6 the message's outside recipients for its
+// client. Every skip comes before classifying: classification counts an
+// empty recipient list as one unparsed recipient, and a failed domain
+// lookup leaves nothing to tell outside recipients from the account's own.
+// Runs during the startup rebuild too; only emission waits.
+func (p *spoolPipeline) recordFormRelay(h emailspool.Headers, sig signals, auth map[string]struct{}, domainErr error, msgID string, at time.Time) {
+	cfg := p.eng.config()
+	relayCfg := cfg.EmailProtection.PHPRelay
+	ip := sig.SourceIP
+	if relayCfg.IPRecipientSpread <= 0 || ip == "" || domainErr != nil || len(auth) == 0 ||
+		isWPCronScript(sig.ScriptKey) ||
+		p.policies != nil && p.policies.IsProxyIP(ip) ||
+		checks.IsInfraIP(ip, cfg.InfraIPs) || p.eng.cloudflareCovers(ip) {
+		return
+	}
+	key := formRelayKey(ip)
+	if isAuthenticatedAdminScript(sig.ScriptKey) {
+		p.eng.form.markStaff(h.EnvelopeUser, key, at)
+		return
+	}
+	if p.eng.form.isStaff(h.EnvelopeUser, key, at) {
+		return
+	}
+	outside, unparsed := classifyFormRelayRecipients(h.Recipients, auth)
+	p.eng.form.record(key, ip, h.EnvelopeUser, sig.ScriptKey, msgID, at, outside, unparsed,
+		time.Duration(relayCfg.IPRecipientWindowHours)*time.Hour, relayCfg.IPRecipientSpread)
 }
 
 // msgIDFromPath returns the msgID portion of a /path/<msgID>-H file.

@@ -470,13 +470,24 @@ func fanoutPipeline(t *testing.T, sites ...string) (*spoolPipeline, *[]alert.Fin
 // from ip and runs it through the pipeline at the given time.
 func feedSiteMail(t *testing.T, p *spoolPipeline, msgID, site, ip string, at time.Time, rcpts ...string) {
 	t.Helper()
+	feedScriptMail(t, p, msgID, site, "/wp-comments-post.php", ip, at, rcpts...)
+}
+
+// feedScriptMail is feedSiteMail for a chosen script path. An empty ip
+// writes a header without " for ", as cron and CLI mail carry.
+func feedScriptMail(t *testing.T, p *spoolPipeline, msgID, site, script, ip string, at time.Time, rcpts ...string) {
+	t.Helper()
 	body := fmt.Sprintf("id-H\nuser%s 1 1\n<user%s@host.example.test>\n0 0\n-local\n%d\n", site, site, len(rcpts))
 	for _, r := range rcpts {
 		body += r + "\n"
 	}
+	client := ""
+	if ip != "" {
+		client = " for " + ip
+	}
 	body += fmt.Sprintf("\n040  Subject: [Site] Please moderate a comment\n"+
-		"070  X-PHP-Script: site-%s.example/wp-comments-post.php for %s\n"+
-		"045F From: WordPress <wordpress@site-%s.example>\n", site, ip, site)
+		"070  X-PHP-Script: site-%s.example%s%s\n"+
+		"045F From: WordPress <wordpress@site-%s.example>\n", site, script, client, site)
 	f := filepath.Join(t.TempDir(), msgID+"-H")
 	if err := os.WriteFile(f, []byte(body), 0o644); err != nil {
 		t.Fatal(err)

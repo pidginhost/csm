@@ -1,0 +1,456 @@
+//go:build linux
+
+package daemon
+
+import (
+	"fmt"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/config"
+)
+
+const (
+	path6IP     = "203.0.113.10"
+	path6Ajax   = "/wp-admin/admin-ajax.php"
+	path6Form   = "/index.php"
+	path6Check  = "email_php_form_relay"
+	path6Script = "email_php_form_relay_script"
+)
+
+var path6T0 = time.Unix(1_700_000_000, 0).UTC()
+
+// path6Cfg is defaultPHPRelayCfg with Path 6 at its shipped defaults.
+func path6Cfg() *config.Config {
+	cfg := defaultPHPRelayCfg()
+	cfg.EmailProtection.PHPRelay.IPRecipientSpread = 5
+	cfg.EmailProtection.PHPRelay.IPRecipientWindowHours = 24
+	return cfg
+}
+
+func path6Pipeline(t *testing.T, sites ...string) (*spoolPipeline, *[]alert.Finding) {
+	t.Helper()
+	p, findings := fanoutPipeline(t, sites...)
+	relay := &p.eng.config().EmailProtection.PHPRelay
+	relay.IPRecipientSpread = 5
+	relay.IPRecipientWindowHours = 24
+	return p, findings
+}
+
+func path6Of(findings []alert.Finding, check string) []alert.Finding {
+	var out []alert.Finding
+	for _, f := range findings {
+		if f.Check == check {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// feedVictims sends n form mails through script, one new outside victim each,
+// spaced over the window. first numbers the first victim.
+func feedVictims(t *testing.T, p *spoolPipeline, site, script, ip string, first, n int, start time.Time) {
+	t.Helper()
+	for i := first; i < first+n; i++ {
+		feedScriptMail(t, p, fmt.Sprintf("v%d-%s", i, site), site, script, ip, start.Add(time.Duration(i)*30*time.Minute),
+			fmt.Sprintf("victim%d@mail%d.example", i, i))
+	}
+}
+
+func requireNoPath6(t *testing.T, findings []alert.Finding) {
+	t.Helper()
+	if got := append(path6Of(findings, path6Check), path6Of(findings, path6Script)...); len(got) != 0 {
+		t.Fatalf("Path 6 fired: %+v", got)
+	}
+}
+
+func TestPath6_FiresWhenClientMailsFiveOutsideAddresses(t *testing.T) {
+	p, findings := path6Pipeline(t, "a")
+	for i := 0; i < 5; i++ {
+		feedScriptMail(t, p, fmt.Sprintf("m%d", i), "a", path6Ajax, path6IP, path6T0.Add(time.Duration(i)*45*time.Minute),
+			fmt.Sprintf("victim%d@mail%d.example", i, i), "admin@site-a.example")
+	}
+
+	ipF := path6Of(*findings, path6Check)
+	if len(ipF) != 1 {
+		t.Fatalf("IP findings = %d, want 1: %+v", len(ipF), *findings)
+	}
+	f := ipF[0]
+	wantMsg := "Path 6: client 203.0.113.10 made hosted sites mail 5 different outside addresses in 24h0m0s"
+	if f.Severity != alert.High || f.Path != "form_relay" || f.SourceIP != path6IP || f.Message != wantMsg {
+		t.Fatalf("IP finding = %+v", f)
+	}
+	if f.CPUser != "usera" || f.ScriptKey != "site-a.example:"+path6Ajax {
+		t.Fatalf("IP finding account/script = %q %q", f.CPUser, f.ScriptKey)
+	}
+	for _, want := range []string{"site-a.example:" + path6Ajax, "usera", ": 5", "[Site] Please moderate a comment", "mail0.example", "mail4.example"} {
+		if !strings.Contains(f.Details, want) {
+			t.Errorf("IP finding details miss %q:\n%s", want, f.Details)
+		}
+	}
+	if strings.Contains(f.Details, "@") {
+		t.Errorf("IP finding details carry a full address:\n%s", f.Details)
+	}
+
+	sf := path6Of(*findings, path6Script)
+	if len(sf) != 1 {
+		t.Fatalf("script findings = %d, want 1: %+v", len(sf), *findings)
+	}
+	s := sf[0]
+	k := "site-a.example:" + path6Ajax
+	if s.Severity != alert.High || s.Path != "form_relay_script" || s.SourceIP != "" || s.ScriptKey != k ||
+		s.CPUser != "usera" || s.Message != "Bots use "+k+" to mail outside addresses" {
+		t.Fatalf("script finding = %+v", s)
+	}
+	for _, want := range []string{path6IP, "5 outside addresses", "captcha", "csm phprelay ignore-script " + k} {
+		if !strings.Contains(s.Details, want) {
+			t.Errorf("script finding details miss %q:\n%s", want, s.Details)
+		}
+	}
+}
+
+// Later clients abusing the same form update the operator's script finding
+// instead of minting a new one.
+func TestPath6_ScriptFindingKeyStableAcrossClients(t *testing.T) {
+	p, findings := path6Pipeline(t, "a")
+	feedVictims(t, p, "a", path6Form, path6IP, 0, 5, path6T0)
+	feedVictims(t, p, "a", path6Form, "198.51.100.20", 5, 5, path6T0.Add(25*time.Hour))
+	got := path6Of(*findings, path6Script)
+	if len(got) != 2 {
+		t.Fatalf("script findings = %d, want 2 (one per window): %+v", len(got), got)
+	}
+	if got[0].Details == got[1].Details {
+		t.Fatalf("details should name each client: %q", got[0].Details)
+	}
+	if got[0].Key() != got[1].Key() || got[0].Fingerprint() != got[1].Fingerprint() {
+		t.Fatalf("script finding identity changed with the client: %q vs %q", got[0].Key(), got[1].Key())
+	}
+}
+
+// Bots rotate addresses: each crossing client gets its own finding, the
+// abused script only one per window.
+func TestPath6_ScriptFindingOncePerWindowAcrossClients(t *testing.T) {
+	p, findings := path6Pipeline(t, "a")
+	feedVictims(t, p, "a", path6Form, path6IP, 0, 5, path6T0)
+	feedVictims(t, p, "a", path6Form, "198.51.100.20", 5, 5, path6T0)
+	if got := path6Of(*findings, path6Check); len(got) != 2 {
+		t.Fatalf("IP findings = %d, want 2: %+v", len(got), got)
+	}
+	if got := path6Of(*findings, path6Script); len(got) != 1 {
+		t.Fatalf("script findings = %d, want 1: %+v", len(got), got)
+	}
+}
+
+func TestPath6_FourAddressesDoNotFire(t *testing.T) {
+	p, findings := path6Pipeline(t, "a")
+	feedVictims(t, p, "a", path6Form, path6IP, 0, 4, path6T0)
+	requireNoPath6(t, *findings)
+}
+
+func TestPath6_OwnDomainRecipientsNotCounted(t *testing.T) {
+	p, findings := path6Pipeline(t, "a")
+	for i := 0; i < 6; i++ {
+		feedScriptMail(t, p, fmt.Sprintf("m%d", i), "a", path6Form, path6IP, path6T0.Add(time.Duration(i)*time.Minute),
+			fmt.Sprintf("staff%d@site-a.example", i))
+	}
+	requireNoPath6(t, *findings)
+}
+
+func TestPath6_StaffAdminScriptExemptsIP(t *testing.T) {
+	p, findings := path6Pipeline(t, "a")
+	feedScriptMail(t, p, "admin", "a", "/wp-admin/post.php", path6IP, path6T0, "buyer@mail.example")
+	feedVictims(t, p, "a", path6Form, path6IP, 1, 6, path6T0)
+	requireNoPath6(t, *findings)
+}
+
+func TestPath6_StaffExemptionIsPerAccount(t *testing.T) {
+	p, findings := path6Pipeline(t, "a", "b")
+	feedScriptMail(t, p, "admin", "a", "/wp-admin/post.php", path6IP, path6T0, "buyer@mail.example")
+	feedVictims(t, p, "b", path6Form, path6IP, 1, 5, path6T0)
+	if got := path6Of(*findings, path6Check); len(got) != 1 || got[0].CPUser != "userb" {
+		t.Fatalf("staff on another account must not exempt the client: %+v", *findings)
+	}
+}
+
+func TestPath6_AdminAjaxDoesNotGrantStaff(t *testing.T) {
+	p, findings := path6Pipeline(t, "a")
+	feedScriptMail(t, p, "ajax", "a", path6Ajax, path6IP, path6T0, "admin@site-a.example")
+	feedVictims(t, p, "a", path6Form, path6IP, 1, 5, path6T0)
+	if got := path6Of(*findings, path6Check); len(got) != 1 {
+		t.Fatalf("admin-ajax.php mail must not exempt the client: %+v", *findings)
+	}
+}
+
+func TestPath6_PathInfoCannotFakeStaff(t *testing.T) {
+	p, findings := path6Pipeline(t, "a")
+	feedScriptMail(t, p, "fake", "a", "/wp-admin/admin-ajax.php/post.php", path6IP, path6T0, "admin@site-a.example")
+	feedVictims(t, p, "a", path6Form, path6IP, 1, 5, path6T0)
+	if got := path6Of(*findings, path6Check); len(got) != 1 {
+		t.Fatalf("PATH_INFO naming an admin page must not exempt the client: %+v", *findings)
+	}
+}
+
+func TestPath6_ProxyRangeIPNotCounted(t *testing.T) {
+	p, findings := path6Pipeline(t, "a")
+	pol := newTestPoliciesWithProxy(t, "203.0.113.0/24")
+	p.policies = pol
+	p.eng.SetPolicies(pol)
+	feedVictims(t, p, "a", path6Form, path6IP, 0, 6, path6T0)
+	requireNoPath6(t, *findings)
+}
+
+func TestPath6_CloudflareCoveredIPNotCounted(t *testing.T) {
+	p, findings := path6Pipeline(t, "a")
+	p.eng.SetCloudflareCover(func(ip string) bool { return ip == path6IP })
+	feedVictims(t, p, "a", path6Form, path6IP, 0, 6, path6T0)
+	requireNoPath6(t, *findings)
+}
+
+func TestPath6_InfraIPNotCounted(t *testing.T) {
+	p, findings := path6Pipeline(t, "a")
+	p.eng.config().InfraIPs = []string{"203.0.113.0/28"}
+	feedVictims(t, p, "a", path6Form, path6IP, 0, 6, path6T0)
+	requireNoPath6(t, *findings)
+}
+
+func TestPath6_DomainLookupFailureNotCounted(t *testing.T) {
+	p, findings := path6Pipeline(t, "b") // usera has no userdata file
+	feedVictims(t, p, "a", path6Form, path6IP, 0, 6, path6T0)
+	requireNoPath6(t, *findings)
+	if got := p.eng.form.count(formRelayKey(path6IP), path6T0); got != 0 {
+		t.Fatalf("mail without ownership data was counted: %d", got)
+	}
+}
+
+func TestPath6_UnparsableRecipientCounts(t *testing.T) {
+	p, findings := path6Pipeline(t, "a")
+	feedVictims(t, p, "a", path6Form, path6IP, 0, 4, path6T0)
+	feedScriptMail(t, p, "broken", "a", path6Form, path6IP, path6T0.Add(3*time.Hour), `"broken@mail.example`)
+	if got := path6Of(*findings, path6Check); len(got) != 1 {
+		t.Fatalf("an unparsable recipient must count as a new one: %+v", *findings)
+	}
+}
+
+func TestPath6_UnparsableMessagesCountSeparately(t *testing.T) {
+	p, findings := path6Pipeline(t, "a")
+	feedVictims(t, p, "a", path6Form, path6IP, 0, 3, path6T0)
+	feedScriptMail(t, p, "broken1", "a", path6Form, path6IP, path6T0.Add(3*time.Hour), `"broken@mail.example`)
+	feedScriptMail(t, p, "broken2", "a", path6Form, path6IP, path6T0.Add(4*time.Hour), `"broken@mail.example`)
+	if got := path6Of(*findings, path6Check); len(got) != 1 {
+		t.Fatalf("each unparsable message must count once: %+v", *findings)
+	}
+}
+
+func TestPath6_FiresOncePerWindow(t *testing.T) {
+	p, findings := path6Pipeline(t, "a")
+	feedVictims(t, p, "a", path6Form, path6IP, 0, 7, path6T0)
+	if got := path6Of(*findings, path6Check); len(got) != 1 {
+		t.Fatalf("IP findings = %d, want 1: %+v", len(got), got)
+	}
+	if got := path6Of(*findings, path6Script); len(got) != 1 {
+		t.Fatalf("script findings = %d, want 1: %+v", len(got), got)
+	}
+}
+
+func TestPath6_DisabledWhenSpreadZero(t *testing.T) {
+	p, findings := path6Pipeline(t, "a")
+	p.eng.config().EmailProtection.PHPRelay.IPRecipientSpread = 0
+	feedVictims(t, p, "a", path6Form, path6IP, 0, 6, path6T0)
+	requireNoPath6(t, *findings)
+}
+
+func TestPath6_IgnoredScriptSuppressed(t *testing.T) {
+	p, findings := path6Pipeline(t, "a")
+	p.ignores = newIgnoreList()
+	p.ignores.Add("site-a.example:"+path6Form, time.Time{}, "test", "bulk sender")
+	feedVictims(t, p, "a", path6Form, path6IP, 0, 6, path6T0)
+	requireNoPath6(t, *findings)
+}
+
+func TestPath6_IPv6CountsPerSlash64(t *testing.T) {
+	p, findings := path6Pipeline(t, "a")
+	for i := 0; i < 6; i++ {
+		ip := "2001:db8::1"
+		if i%2 == 1 {
+			ip = "2001:db8::2"
+		}
+		feedScriptMail(t, p, fmt.Sprintf("m%d", i), "a", path6Form, ip, path6T0.Add(time.Duration(i)*time.Minute),
+			fmt.Sprintf("victim%d@mail%d.example", i, i))
+	}
+	got := path6Of(*findings, path6Check)
+	if len(got) != 1 {
+		t.Fatalf("IP findings = %d, want 1: %+v", len(got), *findings)
+	}
+	// The fifth message crossed, from ::1.
+	if got[0].SourceIP != "2001:db8::1" || !strings.Contains(got[0].Message, "client 2001:db8::1 ") {
+		t.Fatalf("finding must name the exact address that crossed: %+v", got[0])
+	}
+}
+
+func TestPath6_ScriptFindingOnlyForScriptsWithTwoRecipients(t *testing.T) {
+	p, findings := path6Pipeline(t, "a", "b")
+	feedVictims(t, p, "a", path6Form, path6IP, 0, 4, path6T0)
+	feedVictims(t, p, "b", "/contact.php", path6IP, 4, 1, path6T0)
+	if got := path6Of(*findings, path6Check); len(got) != 1 || got[0].ScriptKey != "site-b.example:/contact.php" {
+		t.Fatalf("IP finding = %+v, want one from the crossing script", got)
+	}
+	got := path6Of(*findings, path6Script)
+	if len(got) != 1 || got[0].ScriptKey != "site-a.example:"+path6Form || got[0].CPUser != "usera" {
+		t.Fatalf("script findings = %+v, want only site-a's form", got)
+	}
+}
+
+func TestPath6_RebuildEmitsNothing(t *testing.T) {
+	p, findings := path6Pipeline(t, "a")
+	p.SetRebuilding(true)
+	feedVictims(t, p, "a", path6Form, path6IP, 0, 5, path6T0)
+	p.SetRebuilding(false)
+	if len(*findings) != 0 {
+		t.Fatalf("rebuild emitted findings: %+v", *findings)
+	}
+	if got := p.eng.form.count(formRelayKey(path6IP), path6T0); got != 5 {
+		t.Fatalf("rebuild recorded %d recipients, want 5", got)
+	}
+	feedVictims(t, p, "a", path6Form, path6IP, 5, 1, path6T0)
+	if got := path6Of(*findings, path6Check); len(got) != 1 {
+		t.Fatalf("first live mail after rebuild must fire: %+v", *findings)
+	}
+}
+
+func TestPath6_RecipientCaseFolded(t *testing.T) {
+	p, findings := path6Pipeline(t, "a")
+	feedVictims(t, p, "a", path6Form, path6IP, 0, 4, path6T0)
+	feedScriptMail(t, p, "dup", "a", path6Form, path6IP, path6T0.Add(3*time.Hour), "Victim0@MAIL0.Example")
+	requireNoPath6(t, *findings)
+}
+
+func TestPath6_ThresholdChangeAppliesWithoutRestart(t *testing.T) {
+	prev := config.Active()
+	t.Cleanup(func() { config.SetActive(prev) })
+	p, findings := path6Pipeline(t, "a")
+	config.SetActive(path6Cfg())
+	feedVictims(t, p, "a", path6Form, path6IP, 0, 3, path6T0)
+	requireNoPath6(t, *findings)
+
+	lowered := path6Cfg()
+	lowered.EmailProtection.PHPRelay.IPRecipientSpread = 3
+	config.SetActive(lowered)
+	feedVictims(t, p, "a", path6Form, path6IP, 3, 1, path6T0)
+	got := path6Of(*findings, path6Check)
+	if len(got) != 1 || !strings.Contains(got[0].Message, " mail 3 different ") {
+		t.Fatalf("lowered spread must fire on the next mail: %+v", *findings)
+	}
+}
+
+func TestPath6_NoClientIPNotCounted(t *testing.T) {
+	p, findings := path6Pipeline(t, "a")
+	feedVictims(t, p, "a", path6Form, "", 0, 6, path6T0)
+	requireNoPath6(t, *findings)
+}
+
+// Scheduled jobs mail whatever their trigger request queued; the recipients
+// are not that request's input, so wp-cron.php never counts.
+func TestPath6_WpCronNotCounted(t *testing.T) {
+	for _, script := range []string{"/wp-cron.php", "/blog/wp-cron.php"} {
+		t.Run(script, func(t *testing.T) {
+			p, findings := path6Pipeline(t, "a")
+			feedVictims(t, p, "a", script, path6IP, 0, 6, path6T0)
+			requireNoPath6(t, *findings)
+		})
+	}
+}
+
+func TestIsAuthenticatedAdminScript(t *testing.T) {
+	for k, want := range map[scriptKey]bool{
+		"site-a.example:/wp-admin/post.php":                  true,
+		"site-a.example:/wp-admin/edit.php":                  true,
+		"site-a.example:/shop/wp-admin/edit.php":             true,
+		"site-a.example:/WP-ADMIN/Post.php":                  true,
+		"site-a.example:/wp-admin/post.php/extra":            true,
+		"site-a.example:/wp-admin/admin-ajax.php":            false,
+		"site-a.example:/wp-admin/admin-post.php":            false,
+		"site-a.example:/wp-admin/profile.php":               false,
+		"site-a.example:/wp-admin/index.php":                 false,
+		"site-a.example:/wp-admin/admin-ajax.php/post.php":   false,
+		"site-a.example:/index.php/wp-admin/post.php":        false,
+		"site-a.example:/wp-admin/network/users.php":         false,
+		"site-a.example:/xwp-admin/post.php":                 false,
+		"site-a.example:/wp-adminx/post.php":                 false,
+		"site-a.example:/wp-admin/.php":                      false,
+		"site-a.example:/wp-admin/":                          false,
+		"site-a.example:/":                                   false,
+		"wp-admin:/post.php":                                 false,
+		"site-a.example:/wp-content/plugins/x/wp-admin/a.js": false,
+	} {
+		if got := isAuthenticatedAdminScript(k); got != want {
+			t.Errorf("isAuthenticatedAdminScript(%q) = %v, want %v", k, got, want)
+		}
+	}
+}
+
+func TestIsWPCronScript(t *testing.T) {
+	for k, want := range map[scriptKey]bool{
+		"site-a.example:/wp-cron.php":             true,
+		"site-a.example:/blog/wp-cron.php":        true,
+		"site-a.example:/wp-cron.php/extra":       true,
+		"site-a.example:/my-wp-cron.php":          false,
+		"site-a.example:/contact.php/wp-cron.php": false,
+		"site-a.example:/WP-CRON.PHP":             true,
+		"wp-cron.php:/index.php":                  false,
+	} {
+		if got := isWPCronScript(k); got != want {
+			t.Errorf("isWPCronScript(%q) = %v, want %v", k, got, want)
+		}
+	}
+}
+
+func TestSweepFormRelay_ReportsFullTableOncePerDay(t *testing.T) {
+	m := newPHPRelayMetrics()
+	eng := newEvaluator(newPerScriptWindow(), newPerIPWindow(64), newPerAccountWindow(5000), path6Cfg(), m)
+	d := &Daemon{alertCh: make(chan alert.Finding, 4)}
+	before := m.FormRelayEvictions.Value()
+	n := 0
+	add := func(at time.Time) {
+		ip := fmt.Sprintf("2001:db8:%x:%x::1", n/0x10000, n%0x10000)
+		n++
+		eng.form.record(formRelayKey(ip), ip, "usera", formTestA, "m", at, []string{"v@victim.example"}, false, 24*time.Hour, 5)
+	}
+	reports := func() int {
+		got := 0
+		for {
+			select {
+			case f := <-d.alertCh:
+				if f.Check != "email_php_form_relay_table_full" || f.Severity != alert.Warning {
+					t.Fatalf("unexpected finding %+v", f)
+				}
+				got++
+			default:
+				return got
+			}
+		}
+	}
+
+	for n <= formRelayMaxIPs {
+		add(formTestT0)
+	}
+	last := sweepFormRelay(d, eng, formTestT0, time.Time{})
+	if got := reports(); got != 1 || !last.Equal(formTestT0) {
+		t.Fatalf("first full sweep: reports=%d last=%v", got, last)
+	}
+	add(formTestT0)
+	if last = sweepFormRelay(d, eng, formTestT0.Add(5*time.Minute), last); reports() != 0 {
+		t.Fatal("full table reported twice in one day")
+	}
+	add(formTestT0.Add(5 * time.Minute))
+	if last = sweepFormRelay(d, eng, formTestT0.Add(24*time.Hour), last); reports() != 1 {
+		t.Fatal("full table not reported again after a day")
+	}
+	if sweepFormRelay(d, eng, formTestT0.Add(49*time.Hour), last); reports() != 0 {
+		t.Fatal("reported a full table without a new eviction")
+	}
+	if got := m.FormRelayEvictions.Value() - before; got != 3 {
+		t.Fatalf("eviction metric grew by %v, want 3", got)
+	}
+}

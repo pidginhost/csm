@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/mail"
 	"os"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -776,10 +777,61 @@ type evaluator struct {
 	msgIndex              *msgIDIndex // optional; nil in unit tests
 	effectiveAccountLimit int
 	accountLimitFn        func(*config.Config) int
+	form                  *formRelayWindow     // Path 6 state
+	cfCover               func(ip string) bool // optional; reports Cloudflare edges
 }
 
 func newEvaluator(s *perScriptWindow, i *perIPWindow, a *perAccountWindow, cfg *config.Config, m *phpRelayMetrics) *evaluator {
-	return &evaluator{scripts: s, ips: i, accounts: a, cfgFn: liveConfigFn(cfg), metrics: m}
+	form := newFormRelayWindow(formRelayMaxIPs)
+	if m != nil {
+		form.evictions = m.FormRelayEvictions
+	}
+	return &evaluator{scripts: s, ips: i, accounts: a, cfgFn: liveConfigFn(cfg), metrics: m, form: form}
+}
+
+// SetCloudflareCover is called by daemon wiring before the first message;
+// nil means no address is a Cloudflare edge.
+func (e *evaluator) SetCloudflareCover(fn func(ip string) bool) { e.cfCover = fn }
+
+func (e *evaluator) cloudflareCovers(ip string) bool { return e.cfCover != nil && e.cfCover(ip) }
+
+// scriptPHPPath returns k's path lowercased and cut after its first ".php",
+// so PATH_INFO cannot change which script the key names.
+func scriptPHPPath(k scriptKey) string {
+	slash := strings.IndexByte(k, '/')
+	if slash < 0 {
+		return ""
+	}
+	p := strings.ToLower(k[slash:])
+	if i := strings.Index(p, ".php"); i >= 0 {
+		p = p[:i+len(".php")]
+	}
+	return p
+}
+
+// isAuthenticatedAdminScript reports a WordPress admin page that needs a
+// login, in any install directory. admin-ajax.php, admin-post.php,
+// profile.php and index.php are left out: logged-out visitors or
+// subscribers reach them.
+func isAuthenticatedAdminScript(k scriptKey) bool {
+	p := scriptPHPPath(k)
+	slash := strings.LastIndexByte(p, '/')
+	if !strings.HasSuffix(p[:slash+1], "/wp-admin/") {
+		return false
+	}
+	file := p[slash+1:]
+	switch name := strings.TrimSuffix(file, ".php"); name {
+	case "", file, "admin-ajax", "admin-post", "profile", "index":
+		return false
+	}
+	return true
+}
+
+// isWPCronScript reports WordPress's scheduled-job runner, which mails
+// whatever its trigger request queued: the recipients are not that
+// request's input. Cron services stay countable, so they cannot relay.
+func isWPCronScript(k scriptKey) bool {
+	return strings.HasSuffix(scriptPHPPath(k), "/wp-cron.php")
 }
 
 // config returns the live config so a reload that retunes or disables the
@@ -859,7 +911,109 @@ func (e *evaluator) evaluatePaths(k scriptKey, sourceIP, cpuser string, now time
 		}
 	}
 
+	// Path 6: one client made hosted sites mail many outside addresses.
+	if spread := relayCfg.IPRecipientSpread; spread > 0 && sourceIP != "" {
+		window := time.Duration(relayCfg.IPRecipientWindowHours) * time.Hour
+		findings = append(findings, e.formRelayFindings(k, sourceIP, cpuser, spread, window, now)...)
+	}
+
 	return findings
+}
+
+// formRelayFindings emits the client finding once per window when ip's
+// outside-recipient count reaches spread, plus one finding per script that
+// reached at least two of them, for the operator to fix.
+func (e *evaluator) formRelayFindings(k scriptKey, ip, cpuser string, spread int, window time.Duration, now time.Time) []alert.Finding {
+	key := formRelayKey(ip)
+	since := now.Add(-window)
+	n := e.form.count(key, since)
+	if n < spread || !e.form.markFired(key, now, window) {
+		return nil
+	}
+	shares := e.form.scriptShares(key, since)
+	scripts := make([]scriptKey, 0, len(shares))
+	for sk := range shares {
+		scripts = append(scripts, sk)
+	}
+	sort.Slice(scripts, func(i, j int) bool {
+		if a, b := shares[scripts[i]].Count, shares[scripts[j]].Count; a != b {
+			return a > b
+		}
+		return scripts[i] < scripts[j]
+	})
+
+	var details strings.Builder
+	details.WriteString("Outside recipients per script:")
+	var subjects []string
+	for _, sk := range scripts {
+		fmt.Fprintf(&details, "\n  %s (account %s): %d", sk, shares[sk].CPUser, shares[sk].Count)
+		if s := e.formRelaySubject(sk, key, since); s != "" && len(subjects) < 3 && !slices.Contains(subjects, s) {
+			subjects = append(subjects, s)
+		}
+	}
+	if len(subjects) > 0 {
+		details.WriteString("\nSample subjects:")
+		for _, s := range subjects {
+			fmt.Fprintf(&details, "\n  %s", s)
+		}
+	}
+	if domains := e.form.recipientDomains(key, since); len(domains) > 0 {
+		fmt.Fprintf(&details, "\nRecipient domains: %s", strings.Join(domains, ", "))
+	}
+	if e.metrics != nil {
+		e.metrics.Findings.With("form_relay").Inc()
+	}
+	out := []alert.Finding{{
+		Severity:  alert.High,
+		Check:     "email_php_form_relay",
+		Path:      "form_relay",
+		Message:   fmt.Sprintf("Path 6: client %s made hosted sites mail %d different outside addresses in %s", ip, n, window),
+		Details:   details.String(),
+		ScriptKey: string(k),
+		SourceIP:  ip,
+		CPUser:    cpuser,
+		TenantID:  checks.HostingAccountForUser(cpuser),
+		Timestamp: now,
+	}}
+
+	for _, sk := range scripts {
+		share := shares[sk]
+		if share.Count < 2 || !e.scripts.getOrCreate(sk).shouldFire("form_relay_script", now, window) {
+			continue
+		}
+		if e.metrics != nil {
+			e.metrics.Findings.With("form_relay_script").Inc()
+		}
+		out = append(out, alert.Finding{
+			Severity: alert.High,
+			Check:    "email_php_form_relay_script",
+			Path:     "form_relay_script",
+			Message:  fmt.Sprintf("Bots use %s to mail outside addresses", sk),
+			Details: fmt.Sprintf("Client %s reached %d outside addresses through this script in %s.\n"+
+				"Add a captcha to the form or turn off its automatic reply to the submitter. "+
+				"If this is a legitimate bulk sender: csm phprelay ignore-script %s", ip, share.Count, window, sk),
+			// The details name the latest client; the script is the identity,
+			// so later clients update this finding instead of adding one.
+			DedupKey:  string(sk),
+			ScriptKey: string(sk),
+			CPUser:    share.CPUser,
+			TenantID:  checks.HostingAccountForUser(share.CPUser),
+			Timestamp: now,
+		})
+	}
+	return out
+}
+
+// formRelaySubject returns the latest subject script k sent for client key.
+func (e *evaluator) formRelaySubject(k scriptKey, key string, since time.Time) string {
+	v, ok := e.scripts.states.Load(k)
+	if !ok {
+		return ""
+	}
+	hit, _ := v.(*scriptState).relayHit(k, since, func(ev scriptEvent) bool {
+		return formRelayKey(ev.SourceIP) == key
+	})
+	return hit.SampleSubject
 }
 
 // scriptIsLowDiversityNotification reports whether a script's hourly volume is
