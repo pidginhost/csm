@@ -30,7 +30,10 @@ const DefaultNginxMapPath = "/var/cache/csm/challenge_ips.nginx.map"
 
 // challengeEntry stores the challenge metadata for a single IP.
 type challengeEntry struct {
-	FindingID     string
+	FindingID string
+	// Check routed the address here; a timeout block names it when there
+	// is no root.
+	Check         string
 	ExpiresAt     time.Time
 	Reason        string
 	NonEscalating bool
@@ -44,6 +47,7 @@ type challengeEntry struct {
 // again.
 type ExpiredEntry struct {
 	FindingID string
+	Check     string
 	IP        string
 	Reason    string
 	Root      admission.Evidence
@@ -97,34 +101,35 @@ func (l *IPList) SetNginxMap(path string, reload func() error) {
 
 // Add marks an IP for challenge with the given reason.
 func (l *IPList) Add(ip string, reason string, duration time.Duration) {
-	l.add(ip, reason, duration, false, "", admission.Evidence{})
+	l.add(ip, reason, duration, false, "", "", admission.Evidence{})
 }
 
 // AddNonEscalating marks an IP for challenge without timeout-to-block escalation.
 func (l *IPList) AddNonEscalating(ip string, reason string, duration time.Duration) {
-	l.add(ip, reason, duration, true, "", admission.Evidence{})
+	l.add(ip, reason, duration, true, "", "", admission.Evidence{})
 }
 
 // AddWithFindingID preserves the originating audit identity for timeout
 // escalation. It does not change challenge duration or escalation policy.
 func (l *IPList) AddWithFindingID(ip, reason string, duration time.Duration, findingID string) {
-	l.add(ip, reason, duration, false, findingID, admission.Evidence{})
+	l.add(ip, reason, duration, false, findingID, "", admission.Evidence{})
 }
 
-// AddWithRoot also keeps the admission evidence the challenge answered, so
-// a timeout escalation answers the same observation again rather than a
-// new one.
-func (l *IPList) AddWithRoot(ip, reason string, duration time.Duration, findingID string, root admission.Evidence) {
-	l.add(ip, reason, duration, false, findingID, root)
+// AddWithRoot also keeps the check that routed the address and the
+// admission evidence the challenge answered, so a timeout escalation answers
+// the same observation again rather than a new one. root may be zero.
+func (l *IPList) AddWithRoot(ip, reason string, duration time.Duration, findingID, check string, root admission.Evidence) {
+	l.add(ip, reason, duration, false, findingID, check, root)
 }
 
-func (l *IPList) add(ip string, reason string, duration time.Duration, nonEscalating bool, findingID string, root admission.Evidence) {
+func (l *IPList) add(ip string, reason string, duration time.Duration, nonEscalating bool, findingID, check string, root admission.Evidence) {
 	l.mu.Lock()
 	l.ips[ip] = challengeEntry{
 		ExpiresAt:     time.Now().Add(duration),
 		Reason:        reason,
 		NonEscalating: nonEscalating,
 		FindingID:     findingID,
+		Check:         check,
 		Root:          root,
 	}
 	changed := l.flush()
@@ -191,7 +196,7 @@ func (l *IPList) ExpiredEntries() []ExpiredEntry {
 	for ip, entry := range l.ips {
 		if now.After(entry.ExpiresAt) {
 			if !entry.NonEscalating {
-				expired = append(expired, ExpiredEntry{IP: ip, Reason: entry.Reason, FindingID: entry.FindingID, Root: entry.Root})
+				expired = append(expired, ExpiredEntry{IP: ip, Reason: entry.Reason, FindingID: entry.FindingID, Check: entry.Check, Root: entry.Root})
 			}
 			delete(l.ips, ip)
 			removed = true

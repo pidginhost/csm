@@ -203,15 +203,23 @@ func TestCustomerBlockAlertEveryBlockPath(t *testing.T) {
 				_, blocks := checks.ChallengeThenBlock(cfg, scanned)
 				d.respondToInitialScan(cfg, append(scanned, blocks...))
 			}},
-		{name: "challenge timeout",
+		{name: "challenge timeout", wantCheck: "wp_login_bruteforce",
 			block: func(t *testing.T, d *Daemon, _ *config.Config) {
+				// Routed while admission was not wired: no root, only the
+				// finding's identity and check.
+				f := alert.Finding{Severity: alert.High, Check: "wp_login_bruteforce", Message: "WordPress brute force from " + ip, SourceIP: ip, Timestamp: time.Now()}
 				d.ipList = challenge.NewIPList(filepath.Join(t.TempDir(), "challenge_ips.txt"))
-				d.ipList.Add(ip, "wp brute", -time.Minute)
+				d.ipList.AddWithRoot(ip, f.Message, -time.Minute, alert.FindingID(f), f.Check, admission.Evidence{})
 				d.escalateExpiredChallenges(time.Hour)
 			}},
-		{name: "central intelligence",
+		{name: "central intelligence", wantCheck: "smtp_bruteforce",
 			block: func(t *testing.T, d *Daemon, _ *config.Config) {
-				if err := d.performCentralAction(centralQueuedAction{decision: reporting.DecisionBlock, ip: ip}); err != nil {
+				store := centralStoreWith(t, []reporting.ScoredEntry{{IP: ip, Score: 95, Classes: []reporting.Class{reporting.ClassBruteforce}, LastSeen: time.Now().UTC()}})
+				action, ok := d.planCentralAction(store, reporting.ActionBlockIfLocalCorroborated, 80, func(string) bool { return false }, smtpBruteFrom(ip))
+				if !ok || action.decision != reporting.DecisionBlock {
+					t.Fatalf("central plan = %+v (%v), want a block", action, ok)
+				}
+				if err := d.performCentralAction(action); err != nil {
 					t.Fatal(err)
 				}
 			}},
@@ -354,6 +362,20 @@ func TestCustomerBlockAlertRepeatedScanBlock(t *testing.T) {
 	scan()
 	if n := len(capture.customerEmails()); n != 2 {
 		t.Fatalf("customer emails = %d, want one per block", n)
+	}
+}
+
+// A promotion that reaches CSM apart from its block sends its own message
+// (P3-R29), naming the promotion.
+func TestCustomerBlockAlertPromotionApart(t *testing.T) {
+	const ip = "203.0.113.18"
+	d, _, _, capture := customerBlockSetup(t)
+	customerLogin(d, ip)
+	d.recordAppliedBlocks([]alert.Finding{{Severity: alert.Critical, Check: "auto_block", SourceIP: ip, Timestamp: time.Now(),
+		Message: "AUTO-PERMBLOCK: " + ip + " promoted to permanent block (4 temp blocks)"}})
+	mails := capture.customerEmails()
+	if len(mails) != 1 || !strings.Contains(mails[0].body, "Reason: AUTO-PERMBLOCK: "+ip+" promoted to permanent block") {
+		t.Fatalf("customer emails = %+v, want one naming the promotion", mails)
 	}
 }
 
@@ -595,7 +617,7 @@ func TestCustomerBlockDerivedCause(t *testing.T) {
 				}
 			case "challenge root":
 				d.ipList = challenge.NewIPList(filepath.Join(t.TempDir(), "challenge_ips.txt"))
-				d.ipList.AddWithRoot(ip, "wp brute", -time.Minute, root.FindingID(), root)
+				d.ipList.AddWithRoot(ip, "wp brute", -time.Minute, root.FindingID(), root.Check(), root)
 				d.escalateExpiredChallenges(time.Hour)
 			}
 			if !blocker.IsBlocked(ip) {

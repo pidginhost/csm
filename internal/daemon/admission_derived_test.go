@@ -128,7 +128,7 @@ func TestChallengeEscalationAnswersItsRoot(t *testing.T) {
 	d := New(cfg, nil, nil, "")
 	d.ipList = challenge.NewIPList(filepath.Join(t.TempDir(), "challenge_ips.txt"))
 	root := mintedRoot(t, observedBruteForce("203.0.113.70"), "203.0.113.70")
-	d.ipList.AddWithRoot("203.0.113.70", "wp brute", -time.Minute, root.FindingID(), root)
+	d.ipList.AddWithRoot("203.0.113.70", "wp brute", -time.Minute, root.FindingID(), root.Check(), root)
 	d.escalateExpiredChallenges(parseBlockExpiry(cfg.AutoResponse.BlockExpiry))
 	got := a.got()
 	if len(got) != 1 || got[0].kind != admission.KindBlockIP || got[0].via != admission.EntryChallengeTimeout || !got[0].root.Equal(root) || got[0].ttl != parseBlockExpiry(cfg.AutoResponse.BlockExpiry) {

@@ -1,7 +1,6 @@
 package daemon
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -10,6 +9,7 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/state"
 )
 
 const ftpRealtimeSuccessLine = `Apr 12 10:00:00 host pure-ftpd[1234]: (alice@198.51.100.7) [INFO] alice is now logged in`
@@ -132,12 +132,16 @@ func TestFTPLoginAccountSurvivesBoundedDetails(t *testing.T) {
 		t.Fatalf("expected one bounded login finding, got %+v", findings)
 	}
 	// Queued findings can cross a restart before customer tracking sees them.
-	raw, err := json.Marshal(findings)
+	st, err := state.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	var restored []alert.Finding
-	if err := json.Unmarshal(raw, &restored); err != nil {
+	t.Cleanup(func() { _ = st.Close() })
+	if err = st.AppendPendingFindings(findings); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := st.TakePendingFindings()
+	if err != nil {
 		t.Fatal(err)
 	}
 	k, _ := knownCustomersAt(now)

@@ -37,20 +37,25 @@ func testRoot(t *testing.T) admission.Evidence {
 
 // A challenge keeps the admission root it was routed with, and its timeout
 // returns it for the escalation to answer; one routed without a root
-// returns none.
+// returns none. The check that routed it is kept either way, so a timeout
+// block can name it without a root.
 func TestExpiredEntriesReturnTheirRoots(t *testing.T) {
 	l := NewIPList(filepath.Join(t.TempDir(), "challenge_ips.txt"))
 	root := testRoot(t)
-	l.AddWithRoot("203.0.113.70", "brute force", -time.Second, "0123456789abcdef", root)
+	l.AddWithRoot("203.0.113.70", "brute force", -time.Second, "0123456789abcdef", "http_brute", root)
 	l.AddWithFindingID("203.0.113.71", "brute force", -time.Second, "fedcba9876543210")
+	l.AddWithRoot("203.0.113.72", "brute force", -time.Second, "00112233445566ff", "http_brute", admission.Evidence{})
 	got := map[string]ExpiredEntry{}
 	for _, e := range l.ExpiredEntries() {
 		got[e.IP] = e
 	}
-	if e := got["203.0.113.70"]; e.FindingID != "0123456789abcdef" || !e.Root.Equal(root) {
+	if e := got["203.0.113.70"]; e.FindingID != "0123456789abcdef" || e.Check != "http_brute" || !e.Root.Equal(root) {
 		t.Fatalf("rooted entry = %+v", e)
 	}
 	if e := got["203.0.113.71"]; e.FindingID != "fedcba9876543210" || !e.Root.Equal(admission.Evidence{}) {
 		t.Fatalf("an entry without a root = %+v", e)
+	}
+	if e := got["203.0.113.72"]; e.FindingID != "00112233445566ff" || e.Check != "http_brute" || !e.Root.Equal(admission.Evidence{}) {
+		t.Fatalf("a rootless routed entry = %+v, want its check", e)
 	}
 }

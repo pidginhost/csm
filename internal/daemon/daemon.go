@@ -3237,6 +3237,7 @@ func (d *Daemon) escalateExpiredChallenges(expiry time.Duration) {
 			FindingID:    e.FindingID,
 			Root:         e.Root,
 			Entry:        admission.EntryChallengeTimeout,
+			Check:        e.Check,
 		})
 		recorded = append(recorded, res.Findings...)
 		if err != nil {
@@ -3320,12 +3321,6 @@ func (d *Daemon) applyIncidentBlock(ip, reason string, timeout time.Duration, fi
 		RootFinding:  root.Finding,
 		RootErr:      root.Err,
 	})
-	if root.Finding.Check != "" {
-		cause := alert.CauseOf(root.Finding)
-		for i := range res.Findings {
-			res.Findings[i].Cause = &cause
-		}
-	}
 	d.recordAppliedBlocks(res.Findings)
 	live := res.Outcome == firewall.BlockOutcomeLive && (err == nil || errors.Is(err, firewall.ErrActionAuditPending))
 	return live, err

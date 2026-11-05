@@ -230,9 +230,9 @@ func addChallengeIP(check, ip, reason string, duration time.Duration, findingID 
 		return
 	}
 	if list, ok := challengeIPList.(interface {
-		AddWithRoot(string, string, time.Duration, string, admission.Evidence)
+		AddWithRoot(string, string, time.Duration, string, string, admission.Evidence)
 	}); ok {
-		list.AddWithRoot(ip, reason, duration, findingID, root)
+		list.AddWithRoot(ip, reason, duration, findingID, check, root)
 		return
 	}
 	if list, ok := challengeIPList.(interface {

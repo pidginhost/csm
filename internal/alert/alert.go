@@ -143,7 +143,9 @@ type Finding struct {
 	Mailbox  string `json:"mailbox,omitempty"`
 	// LoginAccount retains the authenticated login name independently of
 	// truncated log details and the hosting tenant that owns the account.
-	LoginAccount string `json:"login_account,omitempty"`
+	// Internal-only: customer history reads it, the public Finding JSON
+	// does not carry it.
+	LoginAccount string `json:"-"`
 	// SprayTargets carries the per-account targets for aggregate auth
 	// findings. It is internal-only so API payloads keep the public Finding
 	// contract while the incident correlator can count distinct targets.
