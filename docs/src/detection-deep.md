@@ -21,10 +21,13 @@ spare CPU on an idle host; it is not a CPU quota.
 
 PHP, JavaScript, YARA, host-wide WordPress database coverage, and unfinished email
 password verification warnings keep one alert identity while their counts change.
-They follow the daily reminder window unless acknowledged. When the owning scan
-returns without that condition, its acknowledgment clears, so a later recurrence
-can alert again. An unrelated scan, throttled check, timeout, or cancellation does
-not prove recovery. Disabling a scanner clears its current coverage condition.
+Alert email and the alert webhook send them once; history records them again
+once a day unless acknowledged. When the owning scan returns without that
+condition, its acknowledgment clears, so a later recurrence can alert again. An
+unacknowledged condition that returns is emailed again only if it went
+unreported for 24 hours, so a gap that is missing from one complete scan and back
+in the next sends no new email. An unrelated scan, throttled check, timeout, or
+cancellation does not prove recovery. Disabling a scanner clears its current coverage condition.
 Existing per-install database limit acknowledgments are kept
 when a partial scan cannot inspect those installations.
 

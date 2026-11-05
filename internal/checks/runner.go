@@ -788,7 +788,7 @@ func StoreLatestScanFindingsWithCoverage(st *state.Store, purgeChecks []string, 
 	}
 	st.RearmAbsentDedupFindings(healthChecks, findings)
 	now := time.Now()
-	st.PurgeAndMergeFindingsDerivedWithCoverage(
+	retired := st.PurgeAndMergeFindingsDerivedWithCoverage(
 		latestPurgeWithVolatile(purgeChecks),
 		latestPersistentFindings(findings),
 		coverage,
@@ -803,6 +803,7 @@ func StoreLatestScanFindingsWithCoverage(st *state.Store, purgeChecks []string, 
 			return res.Derived
 		},
 	)
+	st.ForgetCleared(clearedFindings(retired))
 	// Adding derived findings can evict source rows at the active-set cap.
 	// Count the final set, not the intermediate input to derivation.
 	unattributed := defaultCorrelator.Correlate(st.LatestFindings(), now).Unattributed
@@ -810,6 +811,19 @@ func StoreLatestScanFindingsWithCoverage(st *state.Store, purgeChecks []string, 
 	warnings := reporter.record(unattributed, true)
 	latestScanMergeMu.Unlock()
 	reporter.warnCounts(warnings)
+}
+
+// clearedFindings keeps the retired rows whose return should alert again.
+// Scan coverage gaps flap between runs: one run that completes does not
+// prove the next will, so they clear only after 24h unseen.
+func clearedFindings(retired []alert.Finding) []alert.Finding {
+	var cleared []alert.Finding
+	for _, f := range retired {
+		if correlationReasonOf(f.Check) != reasonSelfHealth {
+			cleared = append(cleared, f)
+		}
+	}
+	return cleared
 }
 
 func latestPurgeWithVolatile(purgeChecks []string) []string {

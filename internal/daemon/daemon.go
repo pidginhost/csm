@@ -1720,7 +1720,7 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 	// Apply notification policy after the phpanel stream and passive
 	// observers receive the findings, so muting email does not lose evidence.
 	auditSources = append(auditSources, responseFindings...)
-	if err := alert.DispatchWithNotificationFilter(cfg, newFindings, auditSources, responseFindings, operatorAlertableFindings); err != nil {
+	if err := alert.DispatchWithNotificationFilter(cfg, newFindings, auditSources, responseFindings, operatorAlertableFindings, d.store); err != nil {
 		fmt.Fprintf(os.Stderr, "[%s] Alert dispatch error: %v\n", ts(), err)
 	}
 
@@ -1778,7 +1778,7 @@ func (d *Daemon) respondToInitialScan(cfg *config.Config, initialFindings []aler
 	}
 	newFindings = filterUnsuppressedFindings(d.store, newFindings, suppressions)
 	initialAuditSources := append(append([]alert.Finding(nil), initialFindings...), responseFindings...)
-	_ = alert.DispatchWithNotificationFilter(cfg, newFindings, initialAuditSources, responseFindings, operatorAlertableFindings)
+	_ = alert.DispatchWithNotificationFilter(cfg, newFindings, initialAuditSources, responseFindings, operatorAlertableFindings, d.store)
 	return newFindings, permFixedKeys
 }
 

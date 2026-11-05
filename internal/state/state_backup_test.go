@@ -21,8 +21,9 @@ func TestOpenKeepsBackupAndFallsBackWhenStateCorrupt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(s.entries) != 1 {
-		t.Fatalf("entries after good open = %d, want 1", len(s.entries))
+	// Entries leaves out internal keys such as the email gate upgrade marker.
+	if len(s.Entries()) != 1 {
+		t.Fatalf("entries after good open = %d, want 1", len(s.Entries()))
 	}
 	_ = s.Close()
 	bak, err := os.ReadFile(filepath.Join(dir, "state.json.bak"))
@@ -38,7 +39,7 @@ func TestOpenKeepsBackupAndFallsBackWhenStateCorrupt(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = s.Close() }()
-	if len(s.entries) != 1 || s.entries["k1"] == nil || s.entries["k1"].Hash != "h1" {
+	if len(s.Entries()) != 1 || s.entries["k1"] == nil || s.entries["k1"].Hash != "h1" {
 		t.Fatalf("corrupt state did not fall back to the backup: entries=%v", s.entries)
 	}
 	bak, err = os.ReadFile(filepath.Join(dir, "state.json.bak"))

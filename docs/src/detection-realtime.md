@@ -102,7 +102,8 @@ checksums do not arrive within 60 seconds raise one warning per staging
 directory. WordPress picks a new staging directory for every upload. Once the
 package type and version are known, these warnings are identified by site,
 package type, name, version and reason. Uploading the same declared release to
-the same site again is a repeat and follows the normal 24-hour reminder. This
+the same site again is a repeat. It is emailed again only after 24 hours without
+a report, and history follows the normal 24-hour reminder. This
 groups checksum-availability warnings; it does not establish that the package
 contents are unchanged or safe. Incomplete headers keep an upload-specific
 warning, and a later change of type, version or reason can raise a new warning
@@ -296,7 +297,7 @@ the account or source address.
 
 The identity uses the complete log record, including its timestamp and session
 fields, even when the displayed details are shortened. A later session from the
-same address is a new finding within the 24-hour reminder window.
+same address is a new finding, even within the 24-hour history reminder window.
 
 A successful FTP login and a cPanel File Manager write are not emailed. On
 shared hosting every customer connects from an address that is not
