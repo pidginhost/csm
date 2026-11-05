@@ -127,19 +127,111 @@ func TestMailSpray_SuccessAfterSprayEarnsNoTrust(t *testing.T) {
 	m, clock := newTestSpray(testSprayConfig())
 	const ip = "192.0.2.1"
 	wantNoVerdict(t, m.Failure(ip, "b@example.com", mailboxExists))
+	wantRule(t, m.Failure(ip, "d@example.com", mailboxExists), sprayRuleBreadth, true)
 	clean, v := m.Success(ip, "a@example.com")
 	if clean {
-		t.Fatal("success after a failure on another mailbox reported clean")
+		t.Fatal("success after failures on other mailboxes reported clean")
 	}
 	wantRule(t, v, sprayRuleWeakCompromise, false)
 	if v.Mailbox != "a@example.com" {
 		t.Fatalf("verdict mailbox = %q, want a@example.com", v.Mailbox)
 	}
-	clock.advance(11 * time.Minute)
+	clock.advance(61 * time.Minute) // past TrustAge and the breadth suppression
 	if m.TrustedAll(ip, []string{"a@example.com"}) {
 		t.Fatal("success after spray earned trust")
 	}
 	wantRule(t, m.Failure(ip, "c@example.com", mailboxExists), sprayRuleBreadth, true)
+}
+
+// An office device with a stale saved password fails on one mailbox for days
+// while colleagues log in to theirs. Failures on that one mailbox, existing
+// or of unknown existence as on cPanel, taint no other login: each is clean
+// and earns trust.
+func TestMailSprayOneStaleMailboxKeepsTrust(t *testing.T) {
+	mailboxes := []string{"a@example.com", "b@example.com", "c@example.com", "d@example.com", "e@example.com"}
+	for name, exist := range map[string]mailboxExistence{"exists": mailboxExists, "unknown": mailboxExistenceUnknown} {
+		t.Run(name, func(t *testing.T) {
+			m, clock := newTestSpray(testSprayConfig())
+			const ip = "192.0.2.10"
+			for hour := range 3 * 24 {
+				clock.advance(time.Hour)
+				wantNoVerdict(t, m.Failure(ip, "f@example.com", exist))
+				wantNoVerdict(t, m.Failure(ip, "f@example.com", exist))
+				for _, mb := range mailboxes {
+					if clean, v := m.Success(ip, mb); !clean || v != nil {
+						t.Fatalf("hour %d login to %s = (%v, %+v), want (true, nil)", hour, mb, clean, v)
+					}
+				}
+			}
+			if !m.TrustedAll(ip, mailboxes) {
+				t.Fatal("logins beside one stale mailbox earned no trust")
+			}
+		})
+	}
+}
+
+// Failures on two mailboxes the address holds no trust for still make a
+// login to a third the weak advisory, and it earns no trust.
+func TestMailSprayTwoFailingMailboxesStillAdvise(t *testing.T) {
+	for name, exist := range map[string]mailboxExistence{"exists": mailboxExists, "unknown": mailboxExistenceUnknown} {
+		t.Run(name, func(t *testing.T) {
+			m, clock := newTestSpray(testSprayConfig())
+			const ip = "192.0.2.11"
+			wantNoVerdict(t, m.Failure(ip, "f1@example.com", exist))
+			wantRule(t, m.Failure(ip, "f2@example.com", exist), sprayRuleBreadth, true)
+			clean, v := m.Success(ip, "a@example.com")
+			if clean {
+				t.Fatal("login after failures on two other mailboxes reported clean")
+			}
+			wantRule(t, v, sprayRuleWeakCompromise, false)
+			if want := []string{"f1@example.com", "f2@example.com"}; v.Mailbox != "a@example.com" || !slices.Equal(v.Targets, want) {
+				t.Fatalf("verdict mailbox %q targets %v, want a@example.com %v", v.Mailbox, v.Targets, want)
+			}
+			clock.advance(11 * time.Minute)
+			if m.TrustedAll(ip, []string{"a@example.com"}) {
+				t.Fatal("login after failures on two other mailboxes earned trust")
+			}
+		})
+	}
+}
+
+// One other mailbox that does not exist still makes a login the weak
+// advisory, and the strong compromise once enough networks tried the name.
+func TestMailSprayOneMissingMailboxStillAdvises(t *testing.T) {
+	const ip = "192.0.2.12"
+	m, clock := newTestSpray(testSprayConfig())
+	wantNoVerdict(t, m.Failure(ip, "nobody@example.com", mailboxMissing))
+	clean, v := m.Success(ip, "a@example.com")
+	if clean {
+		t.Fatal("login after a failure on a missing mailbox reported clean")
+	}
+	wantRule(t, v, sprayRuleWeakCompromise, false)
+	clock.advance(11 * time.Minute)
+	if m.TrustedAll(ip, []string{"a@example.com"}) {
+		t.Fatal("login after a failure on a missing mailbox earned trust")
+	}
+
+	m, _ = newTestSpray(testSprayConfig())
+	corroborate(t, m, "nobody@example.com")
+	wantRule(t, m.Failure(ip, "nobody@example.com", mailboxMissing), sprayRuleMissingMailbox, true)
+	clean, v = m.Success(ip, "a@example.com")
+	if clean {
+		t.Fatal("login after a corroborated missing mailbox reported clean")
+	}
+	wantRule(t, v, sprayRuleCompromise, true)
+}
+
+// A failure that names no mailbox could be on any of them, so it is not one
+// stale device: a login after it is still the weak advisory.
+func TestMailSprayOneAccountlessFailureStillAdvises(t *testing.T) {
+	m, _ := newTestSpray(testSprayConfig())
+	const ip = "192.0.2.13"
+	wantNoVerdict(t, m.Failure(ip, "", mailboxExistenceUnknown))
+	clean, v := m.Success(ip, "a@example.com")
+	if clean {
+		t.Fatal("login after an accountless failure reported clean")
+	}
+	wantRule(t, v, sprayRuleWeakCompromise, false)
 }
 
 // 4b: trust only counts once it has aged past TrustAge.
@@ -185,19 +277,21 @@ func TestMailSpray_TrustBeforeLaterFailuresStaysClean(t *testing.T) {
 	}
 }
 
-// The control: the failure on b@ came before the first clean login on a@
-// (b@ was trusted then and its trust is revoked later), so it still taints
-// the next poll.
+// The control: the failures on b@ and c@ came before the first clean login
+// on a@ (both were trusted then and their trust is revoked later), so they
+// still taint the next poll.
 func TestMailSpray_FailureBeforeTrustStillTaints(t *testing.T) {
 	m, clock := newTestSpray(testSprayConfig())
 	const ip = "192.0.2.1"
-	ageTrust(t, m, clock, ip, "b@example.com")
+	ageTrust(t, m, clock, ip, "b@example.com", "c@example.com")
 	wantNoVerdict(t, m.Failure(ip, "b@example.com", mailboxExists))
+	wantNoVerdict(t, m.Failure(ip, "c@example.com", mailboxExists))
 	clock.advance(time.Minute)
 	if clean, v := m.Success(ip, "a@example.com"); !clean || v != nil {
 		t.Fatalf("first login = (%v, %+v), want clean", clean, v)
 	}
 	m.RevokeTrust(ip, "b@example.com")
+	m.RevokeTrust(ip, "c@example.com")
 	clock.advance(3 * time.Minute)
 	clean, v := m.Success(ip, "a@example.com")
 	if clean {
@@ -313,6 +407,7 @@ func TestMailSprayVerdictBlockTTL(t *testing.T) {
 		}},
 		{"weak compromise", sprayRuleWeakCompromise, false, func(_ *testing.T, m *mailSpray, _ *staticClock) *sprayVerdict {
 			m.Failure(ip, "b@example.com", mailboxExists)
+			m.Failure(ip, "c@example.com", mailboxExists)
 			_, v := m.Success(ip, "a@example.com")
 			return v
 		}},
@@ -584,12 +679,12 @@ func TestMailSpray_TrustedNamesCannotHideSpray(t *testing.T) {
 		wantNoVerdict(t, m.Failure(ip, mb, mailboxExists))
 	}
 	wantNoVerdict(t, m.Failure(ip, "victim@example.com", mailboxExists))
+	wantRule(t, m.Failure(ip, "second@example.com", mailboxExists), sprayRuleBreadth, true)
 	if clean, v := m.Success(ip, "guessed@example.com"); clean {
-		t.Fatal("full trusted-name map hid the failure on another mailbox")
+		t.Fatal("full trusted-name map hid the failures on other mailboxes")
 	} else {
 		wantRule(t, v, sprayRuleWeakCompromise, false)
 	}
-	wantRule(t, m.Failure(ip, "second@example.com", mailboxExists), sprayRuleBreadth, true)
 	if !m.TrustedAll(ip, mailboxes) {
 		t.Fatal("making room for untrusted failures removed existing trust")
 	}
@@ -1074,12 +1169,14 @@ func TestMailSpray_WeakAlertOutlivesItsFailures(t *testing.T) {
 	m, clock := newTestSpray(cfg)
 	const ip = "192.0.2.1"
 	m.Failure(ip, "x@example.com", mailboxExists)
+	m.Failure(ip, "w@example.com", mailboxExists)
 	clock.advance(time.Hour)
 	_, v := m.Success(ip, "y@example.com")
 	wantRule(t, v, sprayRuleWeakCompromise, false)
-	clock.advance(cfg.Window - 30*time.Minute) // the failure expires, the advisory does not
+	clock.advance(cfg.Window - 30*time.Minute) // the failures expire, the advisory does not
 	m.Purge()
 	m.Failure(ip, "x@example.com", mailboxExists)
+	m.Failure(ip, "w@example.com", mailboxExists)
 	if _, v := m.Success(ip, "y@example.com"); v != nil {
 		t.Fatalf("weak advisory re-raised within the window: %+v", v)
 	}
@@ -1097,6 +1194,7 @@ func TestMailSpray_WeakAlertRecordsBounded(t *testing.T) {
 	m, clock := newTestSpray(cfg)
 	const ip = "192.0.2.1"
 	m.Failure(ip, "x@example.com", mailboxExists)
+	m.Failure(ip, "w@example.com", mailboxExists)
 	var mailboxes []string
 	for i := range maxSprayNamesPerIP + 8 {
 		clock.advance(cfg.Suppression)
@@ -1310,22 +1408,27 @@ func TestMailSprayIPv6ObserveReportsOncePer64(t *testing.T) {
 	wantRule(t, m.Failure("2001:db8:1:2::d", "c@example.com", mailboxExists), sprayRuleBreadth, true)
 }
 
-// A household /64: one device's saved password went stale on a mailbox that
-// device holds aged trust for. Aged trust held by any address of the /64
-// excuses failures on that mailbox, so another device's clean login earns
-// trust and its one typo blocks nothing. Trust itself is still earned and
-// held per address, and it excuses nothing for another /64.
+// A household /64: one device's saved passwords went stale on two mailboxes
+// that device holds aged trust for. Aged trust held by any address of the
+// /64 excuses failures on those mailboxes, so another device's clean login
+// earns trust and its one typo blocks nothing. Trust itself is still earned
+// and held per address, and it excuses nothing for another /64.
 func TestMailSprayIPv6TrustExcusesPer64(t *testing.T) {
 	for _, trusted := range []bool{true, false} {
 		t.Run(fmt.Sprintf("trusted=%v", trusted), func(t *testing.T) {
 			m, clock := newTestSpray(testSprayConfig())
 			const a, b = "2001:db8:1:2::a", "2001:db8:1:2::b"
 			if trusted {
-				ageTrust(t, m, clock, a, "x@example.com")
+				ageTrust(t, m, clock, a, "x@example.com", "x2@example.com")
 			}
 			wantNoVerdict(t, m.Failure(a, "x@example.com", mailboxExists))
 			clock.advance(time.Hour)
 			wantNoVerdict(t, m.Failure(a, "x@example.com", mailboxExists))
+			if v := m.Failure(a, "x2@example.com", mailboxExists); trusted {
+				wantNoVerdict(t, v)
+			} else {
+				wantRule(t, v, sprayRuleBreadth, true)
+			}
 
 			clean, v := m.Success(b, "z@example.com")
 			if trusted && (!clean || v != nil) {
@@ -1457,6 +1560,7 @@ func TestMailSprayRotatedLoginNeedsTrustOnThatMailbox(t *testing.T) {
 
 	ageTrust(t, m, clock, "192.0.2.1", "l@example.com")
 	wantNoVerdict(t, m.Failure("192.0.2.2", "x@example.com", mailboxExists))
+	wantRule(t, m.Failure("192.0.2.2", "x2@example.com", mailboxExists), sprayRuleBreadth, true)
 	clean, v = m.Success("192.0.2.2", "l@example.com")
 	if clean {
 		t.Fatal("IPv4 login borrowed another address's trust")

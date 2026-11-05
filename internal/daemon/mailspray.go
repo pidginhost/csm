@@ -341,8 +341,9 @@ func (m *mailSpray) breadth(key, mailbox string, stored bool, untrusted []string
 
 // Success records a successful login on a normalised mailbox. clean is true
 // when the login earned or refreshed trust. A login that follows failures on
-// other untrusted mailboxes earns nothing and may be a compromise. A login
-// never adds to the evidence pool.
+// other untrusted mailboxes earns nothing and may be a compromise, unless
+// they all name one mailbox not known to be missing (one stale device). A
+// login never adds to the evidence pool.
 func (m *mailSpray) Success(ip, mailbox string) (clean bool, v *sprayVerdict) {
 	ip = sprayAddr(ip)
 	m.mu.Lock()
@@ -382,7 +383,11 @@ func (m *mailSpray) Success(ip, mailbox string) (clean bool, v *sprayVerdict) {
 		untrusted = m.untrusted(e, key, now)
 	}
 	others := slices.DeleteFunc(slices.Clone(untrusted), func(n string) bool { return n == mailbox })
-	if len(others) == 0 && (e == nil || !e.hasUntracked(now, m.cfg.Window)) {
+	// One office device with a stale saved password can fail all day on one
+	// other mailbox; that alone taints no login. A missing name, a failure
+	// that names no mailbox, or a second mailbox still does.
+	stale := len(others) == 1 && others[0] != "" && e.failed[others[0]].exist != mailboxMissing
+	if (len(others) == 0 || stale) && (e == nil || !e.hasUntracked(now, m.cfg.Window)) {
 		if e != nil {
 			if at, ok := e.revoked[mailbox]; ok && now.Sub(at) <= m.cfg.Window {
 				return false, nil

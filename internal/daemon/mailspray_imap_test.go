@@ -86,14 +86,14 @@ func TestMailSlowBruteTrustDoesNotHideUnnamedFailures(t *testing.T) {
 	}
 }
 
-// A login after a failure on another mailbox earns no 24h good standing
+// A login after failures on two other mailboxes earns no 24h good standing
 // either, in every spray mode; a clean login still does.
 func TestMailSuccessAfterSprayEarnsNoGoodSource(t *testing.T) {
 	const ip, clean = "203.0.113.151", "203.0.113.152"
 	for _, mode := range []string{"off", "observe", "enforce"} {
 		t.Run(mode, func(t *testing.T) {
 			d, clock := newPairingDaemon(t, sprayTestConfig(mode))
-			feed(d, clock, makeDovecotFailLine("imap", ip, "b@example.com"))
+			feed(d, clock, makeDovecotFailLine("imap", ip, "b@example.com"), makeDovecotFailLine("imap", ip, "c@example.com"))
 			got := feed(d, clock, makeDovecotSuccessLine("imap", ip, "a@example.com"))
 			feed(d, clock, makeDovecotSuccessLine("imap", clean, "a@example.com"))
 
@@ -274,7 +274,7 @@ func TestMailSprayOneCompromisePerLogin(t *testing.T) {
 		name string
 		ttl  time.Duration
 	}{
-		// b@ is no corroborated missing mailbox: a weak spray advisory.
+		// b@ and c@ are no corroborated missing mailbox: a weak spray advisory.
 		{"weak spray", 0},
 		// ghost@ is missing and three networks tried it: a spray block.
 		{"spray block", 720 * time.Hour},
@@ -291,7 +291,7 @@ func TestMailSprayOneCompromisePerLogin(t *testing.T) {
 						fmt.Sprintf(postfixFailFmt, source, "ghost@example.com"))
 				}
 			} else {
-				feed(d, clock, makeDovecotFailLine("imap", ip, "b@example.com"))
+				feed(d, clock, makeDovecotFailLine("imap", ip, "b@example.com"), makeDovecotFailLine("imap", ip, "c@example.com"))
 			}
 			got := feed(d, clock, makeDovecotSuccessLine("imap", ip, "a@example.com"))
 			if n := countChecks(got, "mail_account_compromised"); n != 1 {
@@ -318,10 +318,9 @@ func TestMailSprayIPv4MappedKeysAsIPv4(t *testing.T) {
 	}
 }
 
-// A mail client polls every few minutes. While a colleague's stale device
-// keeps one failure on another mailbox in memory, a login raises the weak
-// compromise advisory once per mailbox per memory window, not once per
-// suppression period.
+// A mail client polls every few minutes. While failures on two other
+// mailboxes stay in memory, a login raises the weak compromise advisory once
+// per mailbox per memory window, not once per suppression period.
 func TestMailSprayWeakCompromiseOncePerMailbox(t *testing.T) {
 	const ip = "203.0.113.163"
 	cfg := sprayTestConfig("enforce")
@@ -341,7 +340,7 @@ func TestMailSprayWeakCompromiseOncePerMailbox(t *testing.T) {
 		}
 		return got
 	}
-	feed(d, clock, makeDovecotFailLine("imap", ip, "x@example.com"))
+	feed(d, clock, makeDovecotFailLine("imap", ip, "x@example.com"), makeDovecotFailLine("imap", ip, "w@example.com"))
 	if n := logins("y@example.com", 10); n != 1 {
 		t.Fatalf("weak advisories for y@example.com = %d over 10 hourly logins, want 1", n)
 	}
@@ -352,9 +351,41 @@ func TestMailSprayWeakCompromiseOncePerMailbox(t *testing.T) {
 		t.Fatal("deduplicated logins earned trust")
 	}
 	clock.advance(time.Duration(cfg.Thresholds.MailSprayWindowMin) * time.Minute)
-	feed(d, clock, makeDovecotFailLine("imap", ip, "x@example.com"))
+	feed(d, clock, makeDovecotFailLine("imap", ip, "x@example.com"), makeDovecotFailLine("imap", ip, "w@example.com"))
 	if n := logins("y@example.com", 1); n != 1 {
-		t.Fatalf("weak advisories after the window with a fresh failure = %d, want 1", n)
+		t.Fatalf("weak advisories after the window with fresh failures = %d, want 1", n)
+	}
+}
+
+// An office device with a stale saved password fails on one mailbox for days
+// while colleagues read theirs: no compromise advisory, and each reader earns
+// trust.
+func TestIMAPStaleMailboxNoAdvisory(t *testing.T) {
+	const ip = "203.0.113.172"
+	mailboxes := []string{"a@example.com", "b@example.com", "c@example.com"}
+	for _, proto := range []string{"imap", "pop3"} {
+		t.Run(proto, func(t *testing.T) {
+			d, clock := newPairingDaemon(t, sprayTestConfig("enforce"))
+			var got []alert.Finding
+			for range 2 * 24 {
+				clock.advance(time.Hour)
+				got = append(got, feed(d, clock, makeDovecotFailLine(proto, ip, "f@example.com"))...)
+				for _, mb := range mailboxes {
+					got = append(got, feed(d, clock, makeDovecotSuccessLine(proto, ip, mb))...)
+				}
+			}
+			if f, ok := findingByCheck(got, "mail_account_compromised"); ok {
+				t.Fatalf("one stale mailbox raised a compromise advisory: %+v", f)
+			}
+			if ev := sprayEvidence(d, ip); ev["f@example.com"].count == 0 {
+				t.Fatalf("evidence = %+v, want the stale mailbox's failures", ev)
+			}
+			for _, mb := range mailboxes {
+				if !sprayHasTrust(d, ip, mb) {
+					t.Fatalf("login to %s beside one stale mailbox earned no trust", mb)
+				}
+			}
+		})
 	}
 }
 

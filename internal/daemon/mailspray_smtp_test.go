@@ -226,11 +226,11 @@ func TestSMTPSprayEximBreadth(t *testing.T) {
 func TestSMTPSprayEximSuccessAfterSprayAdvisory(t *testing.T) {
 	const ip = "203.0.113.63"
 	d, clock := newPairingDaemon(t, sprayTestConfig("enforce"))
-	feedExim(d, clock, makeEximDovecotFailLine(ip, "b@example.com"))
+	feedExim(d, clock, makeEximDovecotFailLine(ip, "b@example.com"), makeEximDovecotFailLine(ip, "c@example.com"))
 	got := feedExim(d, clock, eximLoginLine(ip, "a@example.com"))
 	f, ok := findingByCheck(got, "mail_account_compromised")
 	if !ok {
-		t.Fatalf("login after a failure on another mailbox raised nothing: %+v", got)
+		t.Fatalf("login after failures on two other mailboxes raised nothing: %+v", got)
 	}
 	if f.Severity != alert.High || f.SourceIP != ip || f.Mailbox != "a@example.com" || f.Domain != "example.com" {
 		t.Fatalf("finding = %+v", f)
@@ -240,6 +240,38 @@ func TestSMTPSprayEximSuccessAfterSprayAdvisory(t *testing.T) {
 	}
 	if sprayHasTrust(d, ip, "a@example.com") {
 		t.Fatal("a login after spraying earned trust")
+	}
+}
+
+// An office device with a stale saved password fails on one mailbox for days
+// while colleagues send from theirs: no compromise advisory, and each sender
+// earns trust.
+func TestSMTPStaleMailboxNoAdvisory(t *testing.T) {
+	const ip = "203.0.113.73"
+	mailboxes := []string{"a@example.com", "b@example.com", "c@example.com"}
+	for name, src := range smtpLoginSources {
+		t.Run(name, func(t *testing.T) {
+			d, clock := newPairingDaemon(t, sprayTestConfig("enforce"))
+			var got []alert.Finding
+			for range 2 * 24 {
+				clock.advance(time.Hour)
+				got = append(got, src.feed(d, clock, src.failure(ip, "f@example.com")...)...)
+				for _, mb := range mailboxes {
+					got = append(got, src.feed(d, clock, src.login(ip, mb)...)...)
+				}
+			}
+			if f, ok := findingByCheck(got, "mail_account_compromised"); ok {
+				t.Fatalf("one stale mailbox raised a compromise advisory: %+v", f)
+			}
+			if ev := sprayEvidence(d, ip); ev["f@example.com"].count == 0 {
+				t.Fatalf("evidence = %+v, want the stale mailbox's failures", ev)
+			}
+			for _, mb := range mailboxes {
+				if !sprayHasTrust(d, ip, mb) {
+					t.Fatalf("login to %s beside one stale mailbox earned no trust", mb)
+				}
+			}
+		})
 	}
 }
 

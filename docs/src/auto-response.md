@@ -349,7 +349,7 @@ Incidents and central threat responses receive new findings, including suppresse
 | `smtp_bruteforce` | SMTP authentication flood |
 | `smtp_probe_abuse` | Raw SMTP connect-rate flood before AUTH |
 | `mail_bruteforce` | IMAP/POP3/ManageSieve authentication flood without matching successful mailbox activity |
-| `mail_account_compromised` | Successful login from an IP that repeatedly failed auth on the same mailbox, or a mail login after failures on other mailboxes. Only Critical findings block; High advisories are visibility only |
+| `mail_account_compromised` | Successful login from an IP that repeatedly failed auth on the same mailbox, or a mail login after failures on two or more other mailboxes or on a missing one. Only Critical findings block; High advisories are visibility only |
 | `admin_panel_bruteforce` | phpMyAdmin or Joomla admin POST flood |
 | `ssh_login_unknown_ip` | SSH login from an IP with no prior history, whether the realtime watcher or the periodic scan saw it first |
 | `c2_connection` | Outbound connection to a known C2 server |
