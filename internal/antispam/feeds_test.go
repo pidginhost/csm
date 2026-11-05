@@ -117,13 +117,45 @@ func TestBitListsFireOneSymbolPerAnswer(t *testing.T) {
 }
 
 // URIBL's grey and red lists also hold domains that legitimate bulk senders
-// use. At 2.5, grey alone sent marketplace order notifications to spam.
+// use, so they should contribute only a weak signal.
 func TestURIBLGreyAndRedScoreLightly(t *testing.T) {
-	uribl, _ := FeedByName(FeedURIBL)
-	for _, c := range uribl.Zones[0].Codes {
-		if (c.Symbol == "CSM_URIBL_GREY" || c.Symbol == "CSM_URIBL_RED") && c.Weight > 0.5 {
-			t.Errorf("%s weighs %v; a grey or red listing must not move a newsletter toward the tag score", c.Symbol, c.Weight)
+	uribl, ok := FeedByName(FeedURIBL)
+	if !ok {
+		t.Fatal("missing URIBL feed")
+	}
+	got := make(map[string]float64)
+	for _, z := range uribl.Zones {
+		for _, c := range z.Codes {
+			got[c.Symbol] = c.Weight
 		}
+	}
+	want := map[string]float64{"CSM_URIBL_BLACK": 5, "CSM_URIBL_GREY": 0.5, "CSM_URIBL_RED": 0.5}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("URIBL weights = %v, want %v", got, want)
+	}
+}
+
+func TestURIBLWeightChangeUpdatesInstalledConfig(t *testing.T) {
+	s := defaults(false)
+	s.Feeds = []string{FeedURIBL}
+	f := installedFacts(t, s)
+	f.RspamdModules.Stdout = "Modules enabled: dkim, spf, dmarc, arc, rbl\n"
+	f.RspamdRBL.Stdout = `{"rbls":{"csm_uribl":{}}}`
+	const grey = "\"CSM_URIBL_GREY\" {\n    weight = 0.5;"
+	group := slices.IndexFunc(f.Targets, func(t TargetFacts) bool { return t.Path == FeedRBLGroupPath })
+	if group < 0 || strings.Count(f.Targets[group].Content, grey) != 1 {
+		t.Fatal("managed URIBL group must render the grey weight once")
+	}
+	updated := f.Targets[group].Content
+	f.Targets[group].Content = strings.Replace(updated, grey, "\"CSM_URIBL_GREY\" {\n    weight = 2.5;", 1)
+	f.Record.Content = string(EncodeRecord(Generation(InstalledContent(f.Targets))))
+	if a := Assess(true, s, f); a.Action != Install || !a.Installed || len(a.Problems) != 0 {
+		t.Fatalf("previous URIBL weight must trigger an update: %+v", a)
+	}
+	f.Targets[group].Content = updated
+	f.Record.Content = string(EncodeRecord(Generation(InstalledContent(f.Targets))))
+	if a := Assess(true, s, f); a.Action != Keep || !a.Installed || len(a.Problems) != 0 {
+		t.Fatalf("updated URIBL weight must be current: %+v", a)
 	}
 }
 
