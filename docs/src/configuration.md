@@ -1240,7 +1240,7 @@ mail auth backend probe at startup, so a reload that changes it emits
 
 `alerts.block_digest` is restart-required under the otherwise safe
 `alerts` section. The collector and ticker are built at startup, so a
-reload that changes the digest settings emits
+reload that changes these settings emits
 `config_reload_restart_required` and leaves the live config unchanged.
 When `countries` is empty, the fallback to `suppressions.trusted_countries`
 still follows safe reloads. Delivery uses the current email and webhook
@@ -1248,10 +1248,12 @@ settings. The daily summary section gives by-country and by-category
 counts, and live alerts add by-reason counts; WAF categories group
 ModSecurity escalations and high-volume WAF attacker blocks together.
 
-If you disable the digest in Settings, restart before disabling its last
-delivery channel. Until then the digest remains active, and Settings rejects
-channel changes that would leave it unable to send. With the digest disabled
-in the running configuration, email and webhook may both be off.
+If you turn off `alerts.block_digest.enabled` in Settings, restart before
+turning off the last alert channel. Until the restart the watched-country
+section and live alerts stay on, and Settings rejects a channel change that
+would leave them with no channel. Once the running configuration has the
+watch off, email and webhook may both be off, and then no daily summary is
+sent.
 
 The rest of the sub-keys in every safe-tagged section are read per-call
 (inside check functions, auto-response helpers, alert dispatchers) and

@@ -1785,8 +1785,8 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 		if bd.SendOn == "" {
 			bd.SendOn = "any"
 		}
-		// A literal min_block: 0 means "send empty heartbeat digests" and must
-		// survive; only an absent key falls back to 1.
+		// A literal min_block: 0 means "always show the summary section" and
+		// must survive; only an absent key falls back to 1.
 		if bd.MinBlock == 0 && !presence.blockDigestMinBlock {
 			bd.MinBlock = 1
 		}
