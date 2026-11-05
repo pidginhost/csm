@@ -173,7 +173,7 @@ func TestPHPFormRelayScriptStampsOwner(t *testing.T) {
 		for _, victim := range []string{"a@one.example", "b@two.example", "c@three.example", "d@four.example", "e@five.example"} {
 			eng.form.record(formRelayKey(ip), ip, user, k, victim, now, []string{victim}, false, 24*time.Hour, 5)
 		}
-		requireOwner(t, eng.formRelayFindings(k, ip, user, 5, 24*time.Hour, now), "email_php_form_relay_script", owner)
+		requireOwner(t, eng.formRelayFindings(k, ip, user, 5, 24*time.Hour, now, nil), "email_php_form_relay_script", owner)
 	}
 }
 
