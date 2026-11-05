@@ -26,6 +26,10 @@ type mapGate struct {
 
 func newMapGate() *mapGate { return &mapGate{emailed: make(map[string]string)} }
 
+func (g *mapGate) BeginDelivery(findings []Finding) ([]Finding, func([]Finding)) {
+	return g.FilterUnemailed(findings), g.MarkEmailed
+}
+
 func (g *mapGate) FilterUnemailed(findings []Finding) []Finding {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -139,7 +143,7 @@ func TestRepeatGateDeliversOnce(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		f := repeatGateFinding
 		f.Timestamp = time.Unix(int64(100+i), 0)
-		if err := DispatchWithNotificationFilter(cfg, []Finding{f}, nil, nil, nil, gate); err != nil {
+		if err := DispatchWithNotificationFilter(cfg, []Finding{f}, nil, nil, []Finding{f}, nil, gate); err != nil {
 			t.Fatalf("dispatch %d: %v", i, err)
 		}
 	}
@@ -187,7 +191,7 @@ func TestRepeatGateMarksOnlyDelivered(t *testing.T) {
 			cfg := repeatGateConfig(t, hooks.server(t).URL)
 			tc.set(t, cfg)
 			gate := newMapGate()
-			_ = DispatchWithNotificationFilter(cfg, []Finding{repeatGateFinding}, nil, nil, nil, gate)
+			_ = DispatchWithNotificationFilter(cfg, []Finding{repeatGateFinding}, nil, nil, []Finding{repeatGateFinding}, nil, gate)
 			if got := gate.marked(repeatGateFinding); got != tc.mark {
 				t.Fatalf("marked = %t, want %t", got, tc.mark)
 			}
@@ -203,7 +207,7 @@ func TestRepeatGateRunsBeforeBudget(t *testing.T) {
 	gate := newMapGate()
 	gate.MarkEmailed([]Finding{repeatGateFinding})
 
-	if err := DispatchWithNotificationFilter(cfg, []Finding{repeatGateFinding}, nil, nil, nil, gate); err != nil {
+	if err := DispatchWithNotificationFilter(cfg, []Finding{repeatGateFinding}, nil, nil, []Finding{repeatGateFinding}, nil, gate); err != nil {
 		t.Fatal(err)
 	}
 	if n := readRateLimitCount(t, cfg.StatePath); n != 0 {
@@ -215,7 +219,7 @@ func TestRepeatGateRunsBeforeBudget(t *testing.T) {
 
 	// The slot it did not spend is still there for a new finding.
 	fresh := Finding{Check: "webshell", Severity: High, Message: "another shell"}
-	if err := DispatchWithNotificationFilter(cfg, []Finding{fresh}, nil, nil, nil, gate); err != nil {
+	if err := DispatchWithNotificationFilter(cfg, []Finding{fresh}, nil, nil, []Finding{fresh}, nil, gate); err != nil {
 		t.Fatal(err)
 	}
 	if got := len(hooks.snapshot()); got != 1 {
@@ -234,5 +238,34 @@ func TestNilRepeatGateKeepsDirectNotices(t *testing.T) {
 	}
 	if got := mailer.count(); got != 2 {
 		t.Fatalf("emails = %d, want 2", got)
+	}
+}
+
+func TestNoticeNotificationFilterRunsOnce(t *testing.T) {
+	mailer := installFakeMailer(t)
+	cfg := repeatGateConfig(t, "")
+	calls := 0
+	if err := DispatchNoticesWithNotificationFilter(cfg, []Finding{repeatGateFinding}, func(findings []Finding) []Finding {
+		calls++
+		return findings
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 || mailer.count() != 1 {
+		t.Fatalf("filter calls=%d emails=%d, want one each", calls, mailer.count())
+	}
+}
+
+func TestRepeatCandidatesDoNotRepeatObservers(t *testing.T) {
+	mailer := installFakeMailer(t)
+	cfg := repeatGateConfig(t, "")
+	gate := newMapGate()
+	observed := 0
+	t.Cleanup(RegisterFindingObserver(func(Finding) { observed++ }))
+	if err := DispatchWithNotificationFilter(cfg, nil, nil, nil, []Finding{repeatGateFinding}, nil, gate); err != nil {
+		t.Fatal(err)
+	}
+	if mailer.count() != 1 || observed != 0 || !gate.marked(repeatGateFinding) {
+		t.Fatalf("retry: emails=%d observations=%d marked=%t", mailer.count(), observed, gate.marked(repeatGateFinding))
 	}
 }

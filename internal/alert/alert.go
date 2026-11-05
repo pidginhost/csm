@@ -842,7 +842,7 @@ func Dispatch(cfg *config.Config, findings []Finding) error {
 // Both inputs remain caller-owned and must already carry the times used by
 // actions that reference them. Missing times are filled on copies for ad-hoc use.
 func DispatchWithSources(cfg *config.Config, findings, sources []Finding) error {
-	return dispatchWithSources(cfg, findings, sources, findings, nil, true, nil)
+	return dispatchWithSources(cfg, findings, sources, findings, nil, nil, true, nil)
 }
 
 // DispatchNotices delivers notices whose producer already bounds their rate.
@@ -856,33 +856,37 @@ func DispatchNotices(cfg *config.Config, findings []Finding) error {
 // without hiding notices from audit, phpanel or SSE, or spending the routine
 // alert budget.
 func DispatchNoticesWithNotificationFilter(cfg *config.Config, findings []Finding, filter func([]Finding) []Finding) error {
-	return dispatchWithSources(cfg, findings, nil, findings, filter, false, nil)
+	return dispatchWithSources(cfg, findings, nil, findings, nil, filter, false, nil)
 }
 
 // DispatchWithEnforcement offers central IP enforcement its own finding set
 // instead of the notification set. Suppression rules mute notifications but
 // must not exempt an attacker from central challenges and blocks.
 func DispatchWithEnforcement(cfg *config.Config, findings, sources, enforcement []Finding) error {
-	return dispatchWithSources(cfg, findings, sources, enforcement, nil, true, nil)
+	return dispatchWithSources(cfg, findings, sources, enforcement, nil, nil, true, nil)
 }
 
 // RepeatGate holds back findings alert email and the generic webhook already
 // delivered with the same content. *state.Store implements it; alert cannot
 // import state.
 type RepeatGate interface {
-	FilterUnemailed([]Finding) []Finding
-	MarkEmailed([]Finding)
+	// The returned callback must be called once, including on failed or
+	// capped sends, with only the successfully delivered findings.
+	BeginDelivery([]Finding) ([]Finding, func([]Finding))
 }
 
 // DispatchWithNotificationFilter keeps operator policy separate from the
 // phpanel and SSE data streams. Notification observers, audit sources and
-// central enforcement retain their independent policy boundaries. A non-nil
-// gate sends each finding to email and the generic webhook once per content.
-func DispatchWithNotificationFilter(cfg *config.Config, findings, sources, enforcement []Finding, filter func([]Finding) []Finding, gate RepeatGate) error {
-	return dispatchWithSources(cfg, findings, sources, enforcement, filter, true, gate)
+// central enforcement retain their independent policy boundaries. Delivery
+// candidates may include reobserved findings whose history reminder is not due.
+// A non-nil gate sends each candidate once per content to email and the generic
+// webhook; candidates alone do not repeat observers or enforcement.
+// Nil candidates reuse the findings and their filtered notification set.
+func DispatchWithNotificationFilter(cfg *config.Config, findings, sources, enforcement, candidates []Finding, filter func([]Finding) []Finding, gate RepeatGate) error {
+	return dispatchWithSources(cfg, findings, sources, enforcement, candidates, filter, true, gate)
 }
 
-func dispatchWithSources(cfg *config.Config, findings, sources, enforcement []Finding, notificationFilter func([]Finding) []Finding, routineBudget bool, gate RepeatGate) error {
+func dispatchWithSources(cfg *config.Config, findings, sources, enforcement, candidates []Finding, notificationFilter func([]Finding) []Finding, routineBudget bool, gate RepeatGate) error {
 	// Deduplicate owns a copy, so stamping cannot race with callers sharing
 	// the input or pin a reused unstamped finding to its first dispatch time.
 	findings = Deduplicate(findings)
@@ -911,7 +915,7 @@ func dispatchWithSources(cfg *config.Config, findings, sources, enforcement []Fi
 	for _, f := range enforcement {
 		callCentralHook(f)
 	}
-	if len(findings) == 0 {
+	if len(findings) == 0 && len(candidates) == 0 {
 		return nil
 	}
 
@@ -943,6 +947,13 @@ func dispatchWithSources(cfg *config.Config, findings, sources, enforcement []Fi
 	}
 
 	findings = notifications
+	if candidates != nil {
+		findings = Deduplicate(candidates)
+		FillTimestamps(findings, now)
+		if notificationFilter != nil {
+			findings = notificationFilter(findings)
+		}
+	}
 
 	// Filter out blocked IP alerts if configured
 	findings = FilterBlockedAlerts(cfg, findings)
@@ -963,9 +974,12 @@ func dispatchWithSources(cfg *config.Config, findings, sources, enforcement []Fi
 
 	// The gate runs before the budget so a delivered finding neither spends
 	// nor waits on the hourly cap.
+	var delivered []Finding
 	if gate != nil && (len(emailFindings) > 0 || len(webhookFindings) > 0) {
+		eligible, finish := gate.BeginDelivery(Deduplicate(append(append([]Finding(nil), emailFindings...), webhookFindings...)))
+		defer func() { finish(Deduplicate(delivered)) }()
 		undelivered := make(map[string]bool)
-		for _, f := range gate.FilterUnemailed(Deduplicate(append(append([]Finding(nil), emailFindings...), webhookFindings...))) {
+		for _, f := range eligible {
 			undelivered[f.Key()] = true
 		}
 		emailFindings = findingsWithKeys(emailFindings, undelivered)
@@ -993,7 +1007,6 @@ func dispatchWithSources(cfg *config.Config, findings, sources, enforcement []Fi
 	}
 
 	routineDispatched := false
-	var delivered []Finding
 
 	if len(emailFindings) > 0 {
 		subject := buildSubject(cfg.Hostname, emailFindings)
@@ -1015,10 +1028,6 @@ func dispatchWithSources(cfg *config.Config, findings, sources, enforcement []Fi
 			delivered = append(delivered, webhookFindings...)
 			routineDispatched = routineDispatched || hasRoutineFinding(webhookFindings)
 		}
-	}
-
-	if gate != nil && len(delivered) > 0 {
-		gate.MarkEmailed(Deduplicate(delivered))
 	}
 
 	// An urgent-only email can succeed while the webhook carrying the routine

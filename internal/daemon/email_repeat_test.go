@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -22,14 +23,24 @@ import (
 type repeatWebhook struct {
 	mu     sync.Mutex
 	bodies []string
+	status int
+	onSend func()
 }
 
 func (w *repeatWebhook) RoundTrip(req *http.Request) (*http.Response, error) {
 	body, _ := io.ReadAll(req.Body)
 	w.mu.Lock()
 	w.bodies = append(w.bodies, string(body))
+	status := w.status
+	if status == 0 {
+		status = http.StatusOK
+	}
+	onSend := w.onSend
 	w.mu.Unlock()
-	return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("")), Header: make(http.Header), Request: req}, nil
+	if onSend != nil {
+		onSend()
+	}
+	return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader("")), Header: make(http.Header), Request: req}, nil
 }
 
 func (w *repeatWebhook) count(marker string) int {
@@ -294,5 +305,186 @@ func TestCoverageGapFlapEmailsOnce(t *testing.T) {
 	}
 	if got := hook.count(gap.Message); got != 1 {
 		t.Fatalf("flapping coverage gap: %d webhooks, want 1", got)
+	}
+}
+
+func TestDispatchBatchReturnWithoutSweep(t *testing.T) {
+	cfg, hook := emailRepeatSetup(t)
+	d := openRepeatDaemon(t, cfg)
+	f := repeatFinding("returned without another batch")
+	d.dispatchBatch([]alert.Finding{f})
+	rewriteState(t, d, func(entries map[string]map[string]any) {
+		old := time.Now().Add(-25 * time.Hour)
+		entries[f.Key()]["last_seen"] = old
+		entries[f.Key()]["alert_sent"] = old
+	})
+	d.dispatchBatch([]alert.Finding{f})
+	d.dispatchBatch([]alert.Finding{f})
+	if got := hook.count(f.Message); got != 2 {
+		t.Fatalf("return after 25h: webhooks = %d, want 2", got)
+	}
+}
+
+func TestDispatchRetriesBeforeHistoryReminder(t *testing.T) {
+	for _, initialScan := range []bool{false, true} {
+		for _, mode := range []string{"cap", "webhook error", "disabled"} {
+			t.Run(fmt.Sprintf("initial=%t/%s", initialScan, mode), func(t *testing.T) {
+				cfg, hook := emailRepeatSetup(t)
+				d := openRepeatDaemon(t, cfg)
+				f := repeatFinding("waiting for delivery")
+				switch mode {
+				case "cap":
+					cfg.Alerts.MaxPerHour = 1
+					d.dispatchBatch([]alert.Finding{repeatFinding("spend budget")})
+				case "webhook error":
+					hook.status = http.StatusServiceUnavailable
+				case "disabled":
+					cfg.Alerts.Webhook.Enabled = false
+				}
+				d.dispatchBatch([]alert.Finding{f})
+				entry, ok := d.store.EntryForKey(f.Key())
+				if !ok || entry.Emailed != "" {
+					t.Fatalf("undelivered receipt: %+v, present=%t", entry, ok)
+				}
+				before := hook.count(f.Message)
+				history := historyCount(d)
+				cfg.Alerts.MaxPerHour = 100
+				cfg.Alerts.Webhook.Enabled = true
+				hook.status = http.StatusOK
+				if initialScan {
+					d.respondToInitialScan(cfg, []alert.Finding{f})
+				} else {
+					d.dispatchBatch([]alert.Finding{f})
+				}
+				if got := hook.count(f.Message) - before; got != 1 {
+					t.Errorf("retry before daily history reminder: webhooks = %d, want 1", got)
+				}
+				if !initialScan && historyCount(d) != history {
+					t.Errorf("delivery retry added history: got %d, want %d", historyCount(d), history)
+				}
+				d.dispatchBatch([]alert.Finding{f})
+				if got := hook.count(f.Message) - before; got != 1 {
+					t.Errorf("delivered retry repeated: webhooks = %d, want 1", got)
+				}
+			})
+		}
+	}
+}
+
+func TestDerivedDeliveryRetriesWithObservedSources(t *testing.T) {
+	cfg, hook := emailRepeatSetup(t)
+	d := openRepeatDaemon(t, cfg)
+	var findings []alert.Finding
+	for _, account := range []string{"one", "two", "three"} {
+		findings = append(findings, alert.Finding{
+			Check: "webshell", Severity: alert.Critical, TenantID: account,
+			Message: "webshell on " + account, Timestamp: time.Now(),
+		})
+	}
+	derived := checks.CorrelateBatchFindings(findings).Derived
+	if len(derived) != 2 {
+		t.Fatalf("setup: got %d derived findings, want 2", len(derived))
+	}
+	cfg.Alerts.Webhook.Enabled = false
+	d.dispatchBatch(findings)
+	cfg.Alerts.Webhook.Enabled = true
+	d.dispatchBatch(findings)
+	for _, f := range derived {
+		if got := hook.count(f.Message); got != 1 {
+			t.Errorf("derived retry %s: got %d webhooks, want 1", f.Check, got)
+		}
+	}
+	// Continued observations must keep derived delivery receipts alive even
+	// while the sources are inside their history reminder window.
+	rewriteState(t, d, func(entries map[string]map[string]any) {
+		for _, f := range derived {
+			if entry := entries[f.Key()]; entry != nil {
+				entry["last_seen"] = time.Now().Add(-23 * time.Hour)
+			}
+		}
+	})
+	d.dispatchBatch(findings)
+	for _, f := range derived {
+		entry, ok := d.store.EntryForKey(f.Key())
+		if !ok || time.Since(entry.LastSeen) > time.Minute {
+			t.Errorf("derived observation did not refresh %s: %+v present=%t", f.Check, entry, ok)
+		}
+		if got := hook.count(f.Message); got != 1 {
+			t.Errorf("derived repeat %s: got %d webhooks, want 1", f.Check, got)
+		}
+	}
+}
+
+func TestDeliveryCandidatesRespectAcknowledgedSources(t *testing.T) {
+	for _, initialScan := range []bool{false, true} {
+		t.Run(fmt.Sprintf("initial=%t", initialScan), func(t *testing.T) {
+			cfg, hook := emailRepeatSetup(t)
+			d := openRepeatDaemon(t, cfg)
+			var findings []alert.Finding
+			for _, account := range []string{"one", "two", "three"} {
+				findings = append(findings, alert.Finding{
+					Check: "webshell", Severity: alert.Critical, TenantID: account,
+					Message: "acknowledged on " + account, Timestamp: time.Now(),
+				})
+			}
+			d.store.SetBaseline(findings)
+			if initialScan {
+				d.respondToInitialScan(cfg, findings)
+			} else {
+				d.dispatchBatch(findings)
+			}
+			if got := hook.count(""); got != 0 {
+				t.Fatalf("acknowledged sources generated %d notifications", got)
+			}
+		})
+	}
+}
+
+func TestDeliveryCandidatesUseCurrentCorrelation(t *testing.T) {
+	cfg, _ := emailRepeatSetup(t)
+	d := openRepeatDaemon(t, cfg)
+	var findings []alert.Finding
+	for _, account := range []string{"one", "two", "three", "four"} {
+		findings = append(findings, alert.Finding{
+			Check: "webshell", Severity: alert.Critical, TenantID: account,
+			Message: "webshell on " + account, Timestamp: time.Now(),
+		})
+	}
+	// Only the latter pair is new to history. Its summary is narrower than
+	// the condition still present across all four accounts.
+	newFindings := expandWithCorrelation(append([]alert.Finding(nil), findings[2:]...), time.Now())
+	want := checks.CorrelateBatchFindings(findings).Derived
+	got := d.deliveryCandidates(findings, newFindings, nil)
+	keys := make(map[string]bool)
+	for _, f := range got {
+		if checks.IsDerivedCorrelationCheck(f.Check) {
+			keys[f.Key()] = true
+		}
+	}
+	if len(want) != 2 || len(keys) != len(want) {
+		t.Fatalf("current correlation has %d summaries, want 2", len(keys))
+	}
+	for _, f := range want {
+		if !keys[f.Key()] {
+			t.Errorf("missing current correlation %s", f.Check)
+		}
+	}
+}
+
+func TestDeliveryFinishingAfterClearDoesNotMuteReturn(t *testing.T) {
+	cfg, hook := emailRepeatSetup(t)
+	d := openRepeatDaemon(t, cfg)
+	f := repeatFinding("returned while delivery completes")
+	checks.StoreLatestScanFindings(d.store, []string{f.Check}, []alert.Finding{f})
+	hook.onSend = func() {
+		checks.StoreLatestScanFindings(d.store, []string{f.Check}, nil)
+	}
+	d.dispatchBatch([]alert.Finding{f})
+	hook.onSend = nil
+	checks.StoreLatestScanFindings(d.store, []string{f.Check}, []alert.Finding{f})
+	d.dispatchBatch([]alert.Finding{f})
+	d.dispatchBatch([]alert.Finding{f})
+	if got := hook.count(f.Message); got != 2 {
+		t.Fatalf("return after in-flight clear: webhooks=%d, want 2", got)
 	}
 }

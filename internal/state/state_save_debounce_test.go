@@ -116,7 +116,7 @@ func TestUpdateAndMarkAlertedOnlyMarkDirty(t *testing.T) {
 		t.Fatalf("FlushDue wrote state.json %d times, want 1", len(*writes))
 	}
 	keys := onDiskKeys(t, st.path)
-	if len(keys) != 2 || !keys[debounceA.Key()] || !keys[debounceB.Key()] {
+	if len(keys) != 3 || !keys[emailGateMetaKey] || !keys[debounceA.Key()] || !keys[debounceB.Key()] {
 		t.Fatalf("flush did not carry all pending changes: %v", keys)
 	}
 }
@@ -249,7 +249,7 @@ func TestFailedSaveRetriesAtNextInterval(t *testing.T) {
 		t.Fatal(err)
 	}
 	keys := onDiskKeys(t, st.path)
-	if len(keys) != 2 || !keys[debounceA.Key()] || !keys[debounceB.Key()] {
+	if len(keys) != 3 || !keys[emailGateMetaKey] || !keys[debounceA.Key()] || !keys[debounceB.Key()] {
 		t.Fatalf("retry lost pending changes: %v", keys)
 	}
 }

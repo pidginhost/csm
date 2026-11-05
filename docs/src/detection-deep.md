@@ -17,6 +17,20 @@ service units give CSM a lower CPU weight than the default. Under contention,
 this favors sibling services with default weights while allowing scans to use
 spare CPU on an idle host; it is not a CPU quota.
 
+## Alert delivery
+
+Alert email and the generic alert webhook share repeat state. A successful
+send through either channel counts as delivered. Findings held by the hourly
+cap, failed sends, or disabled notifications remain eligible on later reports,
+without waiting for the daily history reminder. This includes findings derived
+from current observations. Baselines, dismissals and suppression rules still
+apply. The signed phpanel stream keeps its separate delivery policy.
+
+An undismissed finding can alert again after 24 hours without an observation,
+even when no other batch arrived to clean up old state. A completed scan that
+covered the finding and no longer reports it also permits a later return to
+alert. Scan coverage warnings follow the policy below.
+
 ## Scan coverage alerts
 
 PHP, JavaScript, YARA, host-wide WordPress database coverage, and unfinished email

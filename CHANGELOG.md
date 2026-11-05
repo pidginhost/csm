@@ -26,7 +26,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Changed
 
-- Alert email and the alert webhook now send each finding once, and again only when it changes or returns.
+- Alert email and the alert webhook send each finding once, retry missed deliveries, and alert again when it changes or returns.
 - Forged mail that fails the sender domain's DMARC reject policy now lands in the Spam folder more often.
 - Dry-run forecasts show new attacks rotating out older equal-priority blocks, and status and diagnostics show rotations, waits and scope shares.
 - When spam learning stops because its records disagree with its storage, the CSM log now says what disagreed.

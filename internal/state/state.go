@@ -59,6 +59,7 @@ type Store struct {
 	lastSave             time.Time        // start of the last save attempt
 	now                  func() time.Time // save clock; nil means time.Now
 	throttleReservations map[string]struct{}
+	emailPending         map[string]*Entry
 
 	pendingHealthOnce sync.Once
 	pendingQueue      *pendingQueue
@@ -198,6 +199,9 @@ func (s *Store) Close() error {
 }
 
 func (s *Store) save() error {
+	// Even a fresh or reset store can persist observations before its first
+	// successful delivery. They must never be mistaken for pre-gate state.
+	s.setRawLocked(emailGateMetaKey, "1")
 	// A failed write counts too: a full disk is retried once per
 	// saveInterval, not on every alert batch.
 	s.lastSave = s.clock()
@@ -281,7 +285,7 @@ const emailGateMetaKey = "__email_gate"
 // condition at once. A store that already records a delivery was written by
 // a gated build that had not saved the marker yet: its undelivered entries,
 // such as findings the hourly cap held back, keep their retry. A fresh store
-// has nothing to migrate and gets no marker until it does.
+// has nothing to migrate and records the marker on its first save.
 func (s *Store) migrateEmailGate() {
 	if len(s.entries) == 0 {
 		return
@@ -312,11 +316,20 @@ func (s *Store) migrateEmailGate() {
 func (s *Store) FilterUnemailed(findings []alert.Finding) []alert.Finding {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	now := s.clock()
+	return s.filterUnemailedLocked(findings, s.clock())
+}
+
+func (s *Store) filterUnemailedLocked(findings []alert.Finding, now time.Time) []alert.Finding {
 	var out []alert.Finding
 	for _, f := range findings {
 		hash := findingHash(f)
-		entry, ok := s.entries[findingKey(f)]
+		key := findingKey(f)
+		entry, ok := s.entries[key]
+		if ok && !entry.IsBaseline && now.Sub(entry.LastSeen) >= 24*time.Hour {
+			delete(s.entries, key)
+			s.dirty = true
+			ok = false
+		}
 		held := ok && (entry.Emailed == hash || (entry.IsBaseline && entry.Hash == hash))
 		if !held {
 			out = append(out, f)
@@ -330,11 +343,6 @@ func (s *Store) FilterUnemailed(findings []alert.Finding) []alert.Finding {
 
 // MarkEmailed records findings alert email or the generic webhook delivered.
 // Action and correlation-derived findings have no entry, so one is created.
-//
-// ponytail: action and derived findings exist only while produced. When the
-// history reminder re-raises their source after more than 24h, they may be
-// emailed once more. The upgrade path would be clearing derived rows through
-// the latest merge.
 func (s *Store) MarkEmailed(findings []alert.Finding) {
 	if len(findings) == 0 {
 		return
@@ -389,6 +397,9 @@ func (s *Store) Update(findings []alert.Finding) {
 		seen[key] = true
 
 		entry, exists := s.entries[key]
+		if exists && !entry.IsBaseline && now.Sub(entry.LastSeen) >= 24*time.Hour {
+			exists = false
+		}
 		if !exists {
 			s.entries[key] = &Entry{
 				Hash:      hash,

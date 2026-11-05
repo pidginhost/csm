@@ -1676,7 +1676,9 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 	}
 
 	if len(responseFindings) == 0 {
-		_ = alert.DispatchWithSources(cfg, nil, auditSources)
+		if err := alert.DispatchWithNotificationFilter(cfg, nil, auditSources, nil, d.deliveryCandidates(remediableFindings, nil, suppressions), operatorAlertableFindings, d.store); err != nil {
+			fmt.Fprintf(os.Stderr, "[%s] Alert dispatch error: %v\n", ts(), err)
+		}
 		d.store.Update(findings)
 		return
 	}
@@ -1720,7 +1722,8 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 	// Apply notification policy after the phpanel stream and passive
 	// observers receive the findings, so muting email does not lose evidence.
 	auditSources = append(auditSources, responseFindings...)
-	if err := alert.DispatchWithNotificationFilter(cfg, newFindings, auditSources, responseFindings, operatorAlertableFindings, d.store); err != nil {
+	candidates := d.deliveryCandidates(remediableFindings, newFindings, suppressions)
+	if err := alert.DispatchWithNotificationFilter(cfg, newFindings, auditSources, responseFindings, candidates, operatorAlertableFindings, d.store); err != nil {
 		fmt.Fprintf(os.Stderr, "[%s] Alert dispatch error: %v\n", ts(), err)
 	}
 
@@ -1778,8 +1781,35 @@ func (d *Daemon) respondToInitialScan(cfg *config.Config, initialFindings []aler
 	}
 	newFindings = filterUnsuppressedFindings(d.store, newFindings, suppressions)
 	initialAuditSources := append(append([]alert.Finding(nil), initialFindings...), responseFindings...)
-	_ = alert.DispatchWithNotificationFilter(cfg, newFindings, initialAuditSources, responseFindings, operatorAlertableFindings, d.store)
+	candidates := d.deliveryCandidates(filterUnsuppressedFindings(d.store, initialFindings, suppressions), newFindings, suppressions)
+	_ = alert.DispatchWithNotificationFilter(cfg, newFindings, initialAuditSources, responseFindings, candidates, operatorAlertableFindings, d.store)
 	return newFindings, permFixedKeys
+}
+
+// Delivery follows current observations independently of the history reminder.
+// Rebuild derived candidates too, so a missed delivery can retry and a live
+// correlation does not expire while its source findings are still reported.
+func (d *Daemon) deliveryCandidates(observed, newFindings []alert.Finding, suppressions []state.SuppressionRule) []alert.Finding {
+	candidates := append([]alert.Finding(nil), observed...)
+	for _, f := range newFindings {
+		// The history subset can describe a smaller correlation than the
+		// current observations. Rebuild that summary from the full batch.
+		if !checks.IsDerivedCorrelationCheck(f.Check) {
+			candidates = append(candidates, f)
+		}
+	}
+	candidates = alert.Deduplicate(candidates)
+	var correlationSources []alert.Finding
+	for _, f := range candidates {
+		entry, ok := d.store.EntryForKey(f.Key())
+		if ok && entry.IsBaseline && entry.Hash == f.Fingerprint() {
+			continue
+		}
+		correlationSources = append(correlationSources, f)
+	}
+	derived := checks.CorrelateBatchFindings(correlationSources).Derived
+	candidates = append(candidates, derived...)
+	return filterUnsuppressedFindings(d.store, candidates, suppressions)
 }
 
 // withoutFixedFindings drops findings whose Key is in fixedKeys.

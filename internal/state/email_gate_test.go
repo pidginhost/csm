@@ -288,3 +288,70 @@ func TestForgetClearedKeepsBaseline(t *testing.T) {
 		t.Fatalf("cleared finding held back on return: %v", gateKeys(got))
 	}
 }
+
+func TestEmailGateFreshStateKeepsUndeliveredOnRestart(t *testing.T) {
+	for _, baseline := range []bool{false, true} {
+		t.Run(fmt.Sprintf("baseline=%t", baseline), func(t *testing.T) {
+			s := openTestStore(t)
+			if baseline {
+				s.SetBaseline([]alert.Finding{{Check: "baseline", Message: "accepted"}})
+			}
+			f := alert.Finding{Check: "webshell", Message: "delivery failed"}
+			s.Update([]alert.Finding{f})
+			s.MarkAlerted([]alert.Finding{f})
+			if err := s.Close(); err != nil {
+				t.Fatal(err)
+			}
+			reopened, err := Open(s.path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = reopened.Close() })
+			if got := reopened.FilterUnemailed([]alert.Finding{f}); len(got) != 1 {
+				t.Fatalf("undelivered finding lost across restart: %v", gateKeys(got))
+			}
+		})
+	}
+}
+
+func TestFilterUnemailedExpiresWithoutSweep(t *testing.T) {
+	for _, baseline := range []bool{false, true} {
+		t.Run(fmt.Sprintf("baseline=%t", baseline), func(t *testing.T) {
+			s := openTestStore(t)
+			now := time.Now().Add(-25 * time.Hour)
+			s.now = func() time.Time { return now }
+			f := alert.Finding{Check: "webshell", Message: "returned"}
+			s.MarkEmailed([]alert.Finding{f})
+			if baseline {
+				s.DismissFinding(f.Key())
+			}
+			now = now.Add(25 * time.Hour)
+			want := 1
+			if baseline {
+				want = 0
+			}
+			if got := s.FilterUnemailed([]alert.Finding{f}); len(got) != want {
+				t.Fatalf("after 25h without a sweep: got %v, want %d findings", gateKeys(got), want)
+			}
+			// Observing the returned finding before delivery must not restore
+			// the receipt from its previous occurrence.
+			s.Update([]alert.Finding{f})
+			if got := s.FilterUnemailed([]alert.Finding{f}); len(got) != want {
+				t.Fatalf("pending recurrence lost after Update: %v", gateKeys(got))
+			}
+		})
+	}
+}
+
+func TestUpdateExpiresReceiptBeforeObservingReturn(t *testing.T) {
+	s := openTestStore(t)
+	now := time.Now().Add(-24 * time.Hour)
+	s.now = func() time.Time { return now }
+	f := alert.Finding{Check: "webshell", Message: "returned with notifications disabled"}
+	s.MarkEmailed([]alert.Finding{f})
+	now = now.Add(24 * time.Hour)
+	s.Update([]alert.Finding{f})
+	if got := s.FilterUnemailed([]alert.Finding{f}); len(got) != 1 {
+		t.Fatal("observing a return restored its expired delivery receipt")
+	}
+}
