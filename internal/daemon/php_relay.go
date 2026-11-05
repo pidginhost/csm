@@ -1003,7 +1003,7 @@ func (e *evaluator) formRelayFindings(k scriptKey, ip, cpuser string, spread int
 			Message:  fmt.Sprintf("Bots use %s to mail outside addresses", sk),
 			Details: fmt.Sprintf("Client %s reached %d outside addresses through this script in %s.\n"+
 				"Add a captcha to the form or turn off its automatic reply to the submitter. "+
-				"If this is a legitimate bulk sender: csm phprelay ignore-script %s", ip, share.Count, hours, sk),
+				"If this is a legitimate bulk sender: csm phprelay ignore-script %s", ip, share.Count, hours, shellQuote(sk)),
 			// The details name the latest client; the script is the identity,
 			// so later clients update this finding instead of adding one.
 			DedupKey:  string(sk),
@@ -1015,6 +1015,10 @@ func (e *evaluator) formRelayFindings(k scriptKey, ip, cpuser string, spread int
 	}
 	return out
 }
+
+// shellQuote single-quotes s for a POSIX shell, so a pasted hint runs no
+// part of s.
+func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
 
 // formRelaySubject returns the latest subject script k sent for client key.
 func (e *evaluator) formRelaySubject(k scriptKey, key string, since time.Time) string {
