@@ -387,19 +387,29 @@ func (c *Collector) SendDue(now time.Time) bool {
 			c.sum.Due = nextSummaryDue(c.lastSent, c.opts.Location)
 		}
 		c.mu.Unlock()
-		if c.pending == nil || !c.retryDue(now) {
+		if c.pending == nil {
+			return false
+		}
+		c.settleDisabled()
+		if !c.retryDue(now) {
 			return false
 		}
 	} else {
 		c.mu.Unlock()
 		// One pending window bounds retries: the next one replaces it, so a
 		// failing destination never holds back the others.
+		if c.pending != nil {
+			c.settleDisabled()
+		}
 		c.dropPending()
 		c.fold()
 		c.mu.Lock()
 		c.pending = &pendingSummary{Summary: c.sum, Until: now}
 		c.sum = newSummary(now, nextSummaryDue(now, c.opts.Location))
 		c.mu.Unlock()
+		// Sent for this date from now on, even while a destination still
+		// retries, so a clock stepped back cannot send the date again.
+		c.lastSent = now
 	}
 	// A failed save does not hold the summary back; a crash repeats it.
 	c.save()
@@ -450,13 +460,15 @@ func (c *Collector) SendDue(now time.Time) bool {
 			job.tracked = false
 			r := c.retries[channel]
 			r.ticket = job.ticket
+			// A destination enabled after the attempt began was not marked
+			// tried with the others; its loss is counted now.
+			r.tried = true
 			c.retries[channel] = r
 		}
 	})
 	if !pending.EmailDone || !pending.WebhookDone {
 		return true
 	}
-	c.lastSent = now
 	c.pending = nil
 	c.retries = nil
 	c.save()
@@ -483,6 +495,28 @@ func (c *Collector) retryLater(channel string, now time.Time, err error) {
 	c.retries[channel] = r
 	if warn {
 		c.reportSinkError(channel, err)
+	}
+}
+
+// settleDisabled marks done the unfinished destinations the delivery policy
+// now switches off, as an attempt would, without waiting out their backoff,
+// and releases their waiting notification.
+func (c *Collector) settleDisabled() {
+	settled := false
+	for _, channel := range summaryChannels {
+		if c.pending.done(channel) {
+			continue
+		}
+		if c.queues.sinks[channel] != nil && (c.opts.DeliveryEnabled == nil || c.opts.DeliveryEnabled("daily_summary", channel)) {
+			continue
+		}
+		c.retries[channel].ticket.Finish(time.Now())
+		delete(c.retries, channel)
+		c.pending.markDone(channel)
+		settled = true
+	}
+	if settled {
+		c.save()
 	}
 }
 

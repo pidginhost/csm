@@ -925,13 +925,14 @@ delivery and retry failed destinations; successful destinations are saved
 separately. A failed destination retries after one minute, doubling up to one
 hour, and counts one lost notification for that summary however often it is
 retried. Between attempts that destination keeps one waiting notification, so
-its row reports `backlog_lag` while the outage lasts. When the next summary is
-due, a still unfinished one is dropped, logged once and counted once, and the
-new one goes to every destination. A crash between remote acceptance and saving
-success can repeat a delivery. Records retained after the collector stops
-report `consumer_stopped`. Health reads metadata independently of collector
-state locks, country lookups and delivery callbacks. The rows are always
-present: every daemon runs the collector for the daily summary, and without
+its row reports `backlog_lag` while the outage lasts; switching that
+destination off releases it within a minute. When the next summary is due, a
+still unfinished one is dropped, logged once and counted once, and the new one
+goes to every destination. A crash between remote acceptance and saving success
+can repeat a delivery. Records retained after the collector stops report
+`consumer_stopped`. Health reads metadata independently of collector state
+locks, country lookups and delivery callbacks. The rows are always present:
+every daemon runs the collector for the daily summary, and without
 `alerts.block_digest.enabled` the records buffer stays empty.
 
 `state.pending` reports findings parked for the next startup, bounded to the

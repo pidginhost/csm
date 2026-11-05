@@ -270,3 +270,90 @@ func TestSummaryDropAfterRestartCountsUntriedLoss(t *testing.T) {
 		t.Fatalf("webhook row = %+v, want the dropped summary counted once", row)
 	}
 }
+
+// A backward clock step after a send must not send that date again while
+// the summary is still pending on a failing destination.
+func TestSummaryBackwardStepWhilePendingSendsOnce(t *testing.T) {
+	var subjects []string
+	c := summaryCollector(Options{
+		EmailSink:   func(subject, _ string) error { subjects = append(subjects, subject); return nil },
+		WebhookSink: func(WebhookPayload) error { return errors.New("fixture hook down") },
+		OnError:     func(string, error) {},
+	})
+	due := summaryDueOf(c)
+	c.SendDue(due)
+	day2 := due.Add(24 * time.Hour)
+	c.SendDue(day2)
+	// The clock steps back 30 minutes and runs past 08:00 again.
+	for minute := -30; minute <= 10; minute++ {
+		c.SendDue(day2.Add(time.Duration(minute) * time.Minute))
+	}
+	if len(subjects) != 2 || subjects[0] == subjects[1] {
+		t.Fatalf("summary emails = %q, want one for each of two windows", subjects)
+	}
+}
+
+// A destination switched on while the summary is being sent, failing on
+// that late attempt, counts one loss for the summary, not again on its
+// retry or when the summary is dropped.
+func TestSummaryLateEnabledDestinationCountsOneLoss(t *testing.T) {
+	var hookOn atomic.Bool
+	webhooks := 0
+	c := summaryCollector(Options{
+		EmailSink:   func(string, string) error { hookOn.Store(true); return nil },
+		WebhookSink: func(WebhookPayload) error { webhooks++; return errors.New("fixture hook down") },
+		OnError:     func(string, error) {},
+		DeliveryEnabled: func(_, channel string) bool {
+			return channel == "email" || hookOn.Load()
+		},
+	})
+	due := summaryDueOf(c)
+	c.SendDue(due)
+	c.SendDue(due.Add(time.Minute))
+	c.SendDue(due.Add(24 * time.Hour)) // drops the pending summary
+	hookOn.Store(false)
+	if webhooks != 3 {
+		t.Fatalf("webhook attempts = %d, want the late first one, its retry and the next summary's", webhooks)
+	}
+	if row := digestQueueStatuses(t, c, time.Now())["webhook"]; row.DroppedTotal != 2 {
+		t.Fatalf("webhook row = %+v, want one loss for each of the two summaries", row)
+	}
+}
+
+// A failing destination the policy switches off is settled at the next
+// poll, as an attempt would settle it, instead of waiting out its backoff.
+func TestSummarySwitchedOffDestinationSettles(t *testing.T) {
+	var hookOn atomic.Bool
+	hookOn.Store(true)
+	webhooks := 0
+	var logs []string
+	c := summaryCollector(Options{
+		EmailSink:   func(string, string) error { return nil },
+		WebhookSink: func(WebhookPayload) error { webhooks++; return errors.New("fixture hook down") },
+		OnError:     func(channel string, err error) { logs = append(logs, channel+": "+err.Error()) },
+		DeliveryEnabled: func(_, channel string) bool {
+			return channel == "email" || hookOn.Load()
+		},
+	})
+	due := summaryDueOf(c)
+	for minute := 0; minute <= 70; minute++ {
+		c.SendDue(due.Add(time.Duration(minute) * time.Minute))
+	}
+	attempts := webhooks
+	hookOn.Store(false)
+	c.SendDue(due.Add(71 * time.Minute))
+	if row := digestQueueStatuses(t, c, time.Now())["webhook"]; row.Depth != 0 || row.InFlight != 0 || row.DroppedTotal != 1 {
+		t.Fatalf("webhook row after switch-off = %+v, want settled with its one loss", row)
+	}
+	c.summaryMu.Lock()
+	pending := c.pending
+	c.summaryMu.Unlock()
+	if pending != nil {
+		t.Fatalf("summary still pending after its failing destination was switched off: %+v", pending)
+	}
+	logged := len(logs)
+	c.SendDue(due.Add(24 * time.Hour))
+	if webhooks != attempts || len(logs) != logged {
+		t.Fatalf("switched-off destination retried or dropped: attempts %d -> %d, logs %q", attempts, webhooks, logs)
+	}
+}
