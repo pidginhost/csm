@@ -373,3 +373,13 @@ func TestBuiltInProxyRanges_AllValid(t *testing.T) {
 		t.Errorf("%d provider headings, %d source lines; want one source per provider", providers, sources)
 	}
 }
+
+// CDN edges serve every visitor of the sites behind them, so the built-in
+// list must carry each CDN that publishes its ranges.
+func TestBuiltInProxyRanges_IncludesCDNs(t *testing.T) {
+	for _, provider := range []string{"Cloudflare", "QUIC.cloud", "Fastly", "BunnyCDN", "Amazon CloudFront", "Sucuri"} {
+		if !strings.Contains(string(defaultProxyRanges), "# Provider: "+provider) {
+			t.Errorf("built-in proxy ranges have no %s block", provider)
+		}
+	}
+}

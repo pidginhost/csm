@@ -511,7 +511,7 @@ from the header's end.
 
 Path 5 (behavioural baseline) is deferred to Stage 2.
 
-Per-IP paths skip addresses whose requests are not a browser visitor: Cloudflare edges and payment gateway webhooks (Stripe, PayPal, Braintree, PayU, Revolut, Mollie). CSM ships this list built in, taken from each provider's published list.
+Per-IP paths skip addresses whose requests are not a browser visitor: CDN and website firewall edges (Cloudflare, QUIC.cloud, Fastly, BunnyCDN, Amazon CloudFront, Sucuri) and payment gateway webhooks (Stripe, PayPal, Braintree, PayU, Revolut, Mollie). CSM ships this list built in, taken from each provider's published list.
 
 Uptime monitors and cron services are not on the list. Anyone with an account there can schedule POSTs with any form body to any URL, so exempting their addresses would let a bot relay form spam through them unseen. If you trust a specific cron service, you can add its ranges yourself, knowing that anyone with an account at that service can use them.
 
@@ -524,7 +524,7 @@ Path 6 does not count a client on the proxy and payment list, a Cloudflare edge 
 Path 6 has known limits:
 
 - A plugin that handles POST requests in its `init` or `wp_loaded` hook without checking for a login, or for `DOING_CRON`, lets a visitor who is not logged in make it send mail by posting to an admin page or to `wp-cron.php`. That mail is not counted, and a post to an admin page also earns the client the staff exemption on that account.
-- Behind a proxy or CDN that does not pass the client address to PHP, CSM sees only the proxy's address. A proxy on the list is skipped, so its visitors are never counted. A proxy missing from the list is counted as one client for all its visitors, so add its ranges to `http_proxy_ranges.yaml`.
+- Behind a proxy or CDN that does not pass the client address to PHP, CSM sees only the proxy's address. A proxy on the list is skipped, so its visitors are never counted; that includes a bot that sends its requests through a CDN account of its own. A proxy missing from the list is counted as one client for all its visitors, so add its ranges to `http_proxy_ranges.yaml`.
 - Path 6 names a form by its host in lowercase and its path up to the PHP file, so extra path after the file or a change of case does not split it, and one `ignore-script` with that name covers every such variant. Other names for the same site, such as with and without `www.`, still count as separate forms.
 - Counts live in memory and are lost when the daemon restarts. The startup walk sees only mail still in the queue, and form replies usually leave it within seconds.
 - A bot that rotates addresses and keeps each one below the threshold is never challenged, and its form is not named.
