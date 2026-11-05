@@ -1042,7 +1042,9 @@ key can be deleted.
 CSM sends one summary of the findings it handled each day at 08:00 server
 local time. It goes by alert email when email alerts are on, and to the
 generic alert webhook when that is on, as event `daily_summary` with the
-counts under `csm.summary`. A phpanel webhook does not receive it.
+counts under `csm.summary` (see the
+[API reference](api.md#summary-and-customer-block-webhooks)). A phpanel
+webhook does not receive it.
 `alerts.block_digest.channel` selects live block alerts only; the daily
 summary uses every enabled alert channel. It goes out even with nothing to
 report.

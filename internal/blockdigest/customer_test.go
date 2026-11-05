@@ -74,17 +74,19 @@ func TestCustomerBlockAlertSendsOneNotification(t *testing.T) {
 	if err := json.Unmarshal(raw, &decoded); err != nil {
 		t.Fatal(err)
 	}
-	for _, field := range []string{"window", "counts", "countries", "summary"} {
+	// csm.blocks is block_live's list of blocked addresses; customer blocks
+	// have a shape of their own under their own key.
+	for _, field := range []string{"window", "counts", "countries", "summary", "blocks"} {
 		if _, ok := decoded.CSM[field]; ok {
 			t.Fatalf("customer_block payload carries %q: %s", field, raw)
 		}
 	}
 	var blocks []CustomerBlock
-	if err := json.Unmarshal(decoded.CSM["blocks"], &blocks); err != nil {
-		t.Fatalf("csm.blocks does not decode: %v (%s)", err, raw)
+	if err := json.Unmarshal(decoded.CSM["customer_blocks"], &blocks); err != nil {
+		t.Fatalf("csm.customer_blocks does not decode: %v (%s)", err, raw)
 	}
 	if len(blocks) != 2 || blocks[0].Target != "203.0.113.5" || blocks[0].Hits[0].Account != "alice" || blocks[1].More != 195 || len(blocks[1].Hits) != 5 {
-		t.Fatalf("csm.blocks = %+v", blocks)
+		t.Fatalf("csm.customer_blocks = %+v", blocks)
 	}
 }
 

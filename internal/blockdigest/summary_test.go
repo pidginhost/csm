@@ -637,45 +637,68 @@ func TestSummaryLoadRejectsEmptyWindow(t *testing.T) {
 	}
 }
 
-// The daily_summary webhook carries only its own fields; block_live keeps
-// the block digest shape.
+// The daily_summary and customer_block webhooks carry only their own fields,
+// and customer blocks have a key of their own; block_live keeps the block
+// digest shape, where csm.blocks lists blocked addresses.
 func TestSummaryWebhookPayloadShape(t *testing.T) {
 	cap := &summaryCapture{}
 	c := summaryCollector(Options{Watch: true, Live: true, MinBlock: 1, Version: "9.9.9", WebhookSink: cap.webhook})
 	c.SendDue(summaryDueOf(c))
 	c.Observe("203.0.113.5", "rule escalation: x", summaryNow)
-	if len(cap.webhooks) != 2 {
-		t.Fatalf("webhooks = %d, want summary and live alert", len(cap.webhooks))
+	c.AlertCustomerBlocks([]CustomerBlock{{Target: "203.0.113.6", Reason: "fixture", Check: "smtp_bruteforce",
+		Hits: []CustomerHit{{IP: "203.0.113.6", Kind: "cpanel", Account: "alice", At: customerLoginAt}}}})
+	if len(cap.webhooks) != 3 {
+		t.Fatalf("webhooks = %d, want summary, live alert and customer alert", len(cap.webhooks))
 	}
-	keys := func(p WebhookPayload) []string {
+	object := func(raw []byte) map[string]json.RawMessage {
 		t.Helper()
+		var m map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &m); err != nil {
+			t.Fatalf("%v: %s", err, raw)
+		}
+		return m
+	}
+	first := func(raw []byte) map[string]json.RawMessage {
+		t.Helper()
+		var list []json.RawMessage
+		if err := json.Unmarshal(raw, &list); err != nil || len(list) == 0 {
+			t.Fatalf("not a non-empty list (%v): %s", err, raw)
+		}
+		return object(list[0])
+	}
+	keys := func(m map[string]json.RawMessage) string {
+		out := make([]string, 0, len(m))
+		for k := range m {
+			out = append(out, k)
+		}
+		slices.Sort(out)
+		return strings.Join(out, ",")
+	}
+	csm := make([]map[string]json.RawMessage, 0, len(cap.webhooks))
+	for _, p := range cap.webhooks {
 		raw, err := json.Marshal(p)
 		if err != nil {
 			t.Fatal(err)
 		}
-		var top map[string]json.RawMessage
-		if err := json.Unmarshal(raw, &top); err != nil {
-			t.Fatal(err)
-		}
-		var csm map[string]json.RawMessage
-		if err := json.Unmarshal(top["csm"], &csm); err != nil {
-			t.Fatal(err)
-		}
-		out := make([]string, 0, len(csm))
-		for k := range csm {
-			out = append(out, k)
-		}
-		slices.Sort(out)
+		top := object(raw)
 		if _, ok := top["text"]; !ok || len(top) != 2 {
 			t.Fatalf("payload top level = %s", raw)
 		}
-		return out
+		csm = append(csm, object(top["csm"]))
 	}
-	if got := strings.Join(keys(cap.webhooks[0]), ","); got != "event,host,summary,version" {
-		t.Fatalf("daily_summary csm keys = %s", got)
-	}
-	if got := strings.Join(keys(cap.webhooks[1]), ","); got != "blocks,countries,counts,event,host,version,window" {
-		t.Fatalf("block_live csm keys = %s", got)
+	summary, live, customer := csm[0], csm[1], csm[2]
+	for _, tc := range []struct{ name, got, want string }{
+		{"daily_summary csm", keys(summary), "event,host,summary,version"},
+		{"daily_summary csm.summary", keys(object(summary["summary"])), "block_kinds,blocks,checks,due,muted,since,sources,watched"},
+		{"block_live csm", keys(live), "blocks,countries,counts,event,host,version,window"},
+		{"block_live csm.blocks entry", keys(first(live["blocks"])), "bucket,category,country,ip,reason,ts"},
+		{"customer_block csm", keys(customer), "customer_blocks,event,host,version"},
+		{"customer_block csm.customer_blocks entry", keys(first(customer["customer_blocks"])), "check,customers,reason,target"},
+		{"customer_block customer", keys(first(first(customer["customer_blocks"])["customers"])), "account,at,ip,kind"},
+	} {
+		if tc.got != tc.want {
+			t.Errorf("%s keys = %s, want %s", tc.name, tc.got, tc.want)
+		}
 	}
 }
 

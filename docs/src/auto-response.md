@@ -484,7 +484,8 @@ blocking it is the reviewed response to a local process connecting to it.
 When an automatic block applies to an address that logged in successfully as
 a customer in the last 30 days (cPanel, webmail, SMTP, IMAP, POP or FTP), CSM
 sends an alert at once: one email, and the generic alert webhook as event
-`customer_block`. It names the address, the block reason and the check that
+`customer_block` with the blocks under `csm.customer_blocks` (see the
+[API reference](api.md#summary-and-customer-block-webhooks)). It names the address, the block reason and the check that
 caused it, and the customer's login kind, account or mailbox and last login
 time. An IPv6 customer is named by its /64. A subnet block or netblock that
 covers known customers sends one message with their count and the five most

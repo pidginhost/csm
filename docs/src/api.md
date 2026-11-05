@@ -933,7 +933,9 @@ can repeat a delivery. Records retained after the collector stops report
 `consumer_stopped`. Health reads metadata independently of collector state
 locks, country lookups and delivery callbacks. The rows are always present:
 every daemon runs the collector for the daily summary, and without
-`alerts.block_digest.enabled` the records buffer stays empty.
+`alerts.block_digest.enabled` the records buffer stays empty. The summary and
+customer block payloads are described under
+[Summary and customer block webhooks](#summary-and-customer-block-webhooks).
 
 `state.pending` reports findings parked for the next startup, bounded to the
 newest 10,000 findings. The store observes existing parked work when opened.
@@ -1299,6 +1301,74 @@ readers and scanners, recovery scans, staged package verification, dropper
 processing, BPF queues, process context enrichment and deadline reads, mail-log
 delivery, forwarder and PHP relay notification queues, and PHP relay index
 persistence; other bounded queues remain in the roadmap.
+
+### Summary and customer block webhooks
+
+The generic alert webhook gets two events of CSM's own: the
+[daily summary](configuration.md#daily-summary) and the
+[known-customer block alert](auto-response.md#known-customer-block-alert).
+A phpanel webhook gets neither. Each is one JSON object: `text` holds the
+email body, for chat tools, and `csm` holds the data.
+
+```json
+{
+  "text": "[CSM] host.example.com - daily summary 2026-06-10\n...",
+  "csm": {
+    "event": "daily_summary",
+    "host": "host.example.com",
+    "version": "X.Y.Z",
+    "summary": {
+      "since": "2026-06-10T08:00:00Z",
+      "due": "2026-06-11T08:00:00Z",
+      "checks": {"wp_login_bruteforce": {"CRITICAL": 12}},
+      "blocks": 3,
+      "block_kinds": {"wp-bruteforce": 2, "netblock": 1},
+      "muted": 4,
+      "sources": [{"ip": "203.0.113.5", "count": 9, "country": "NL"}],
+      "watched": {"total": 0, "by_country": {}, "by_category": {}}
+    }
+  }
+}
+```
+
+`daily_summary` fields:
+
+- `csm.event` is `daily_summary`; `csm.host` and `csm.version` name the host and the CSM version.
+- `summary.since` is the start of the window and `summary.due` its scheduled send time, both RFC 3339.
+- `summary.checks` counts summary findings per check, then per severity (`CRITICAL`, `HIGH`, `WARNING`).
+- `summary.blocks` counts applied blocks; `summary.block_kinds` counts them by kind, such as `wp-bruteforce`, `mail-bruteforce`, `netblock`, `permanent` or `other`.
+- `summary.muted` counts summary findings of checks in `alerts.email.disabled_checks`.
+- `summary.sources` lists the 10 addresses with the most summary findings: `ip`, `count`, and `country` when GeoIP knows it.
+- `summary.watched` counts watched-country blocks: `total`, `by_country` and `by_category`. It stays empty without `alerts.block_digest.enabled`.
+- `summary.would_block` lists dry-run and observe-mode verdicts that would have blocked known customers, as customer block objects (below), at most 50; `summary.would_block_more` counts further verdicts. Both are left out when empty.
+
+Each count map holds at most 512 keys; later keys count under `other`.
+
+```json
+{
+  "text": "[CSM] host.example.com - automatic block hit a known customer: 203.0.113.5\n...",
+  "csm": {
+    "event": "customer_block",
+    "host": "host.example.com",
+    "version": "X.Y.Z",
+    "customer_blocks": [{
+      "target": "203.0.113.5",
+      "reason": "SMTP brute force from 203.0.113.5",
+      "check": "smtp_bruteforce",
+      "customers": [{"ip": "203.0.113.5", "kind": "cpanel", "account": "alice", "at": "2026-06-10T08:15:00Z"}]
+    }]
+  }
+}
+```
+
+`customer_block` fields:
+
+- `csm.event` is `customer_block`; `csm.host` and `csm.version` as above.
+- `csm.customer_blocks` lists the blocks of the alert. Each has `target`, the blocked address or network; `reason`, the block reason or, for a notice without one, its message; `check`, the check that caused the block, left out when unknown; `customers`; and `more`, the covered customers not listed, left out when 0.
+- Each `customers` entry is one known customer, the most recent first: `ip` (an IPv6 customer as its /64), `kind` (`cpanel`, `webmail`, `smtp`, `imap`, `pop` or `ftp`), `account` (left out when the login named none) and `at`, the last successful login in RFC 3339.
+
+The watched-country live alert, event `block_live`, keeps its own shape:
+there `csm.blocks` lists blocked addresses.
 
 ## GeoIP
 

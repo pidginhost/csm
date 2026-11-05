@@ -38,11 +38,13 @@ type summaryCSM struct {
 	Summary *Summary `json:"summary"`
 }
 
+// customerCSM keeps customer blocks off csm.blocks, which block_live uses
+// for blocked addresses.
 type customerCSM struct {
-	Event   string          `json:"event"`
-	Host    string          `json:"host"`
-	Version string          `json:"version"`
-	Blocks  []CustomerBlock `json:"blocks"`
+	Event          string          `json:"event"`
+	Host           string          `json:"host"`
+	Version        string          `json:"version"`
+	CustomerBlocks []CustomerBlock `json:"customer_blocks"`
 }
 
 // MarshalJSON writes a daily summary or a customer block alert with only its
@@ -58,7 +60,7 @@ func (p WebhookPayload) MarshalJSON() ([]byte, error) {
 		return json.Marshal(struct {
 			Text string      `json:"text"`
 			CSM  customerCSM `json:"csm"`
-		}{p.Text, customerCSM{Event: p.CSM.Event, Host: p.CSM.Host, Version: p.CSM.Version, Blocks: p.CSM.CustomerBlocks}})
+		}{p.Text, customerCSM{Event: p.CSM.Event, Host: p.CSM.Host, Version: p.CSM.Version, CustomerBlocks: p.CSM.CustomerBlocks}})
 	}
 	type blockPayload WebhookPayload
 	return json.Marshal(blockPayload(p))
