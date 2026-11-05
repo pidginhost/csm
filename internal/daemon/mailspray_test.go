@@ -234,6 +234,53 @@ func TestMailSprayOneAccountlessFailureStillAdvises(t *testing.T) {
 	wantRule(t, v, sprayRuleWeakCompromise, false)
 }
 
+// The one-mailbox exception covers logins to mailboxes that did not fail. A
+// source that failed on v@ and w@ and then logs in to v@ is a guessed
+// password beside a spray, not an office: the weak advisory, and no trust.
+// With v@'s failures in the stale-password shape it is still the weak
+// advisory, not the 4d one.
+func TestMailSprayLoginToFailingMailboxBesideOneOtherStillAdvises(t *testing.T) {
+	for name, spread := range map[string]time.Duration{"retry": 0, "stale": 2 * time.Hour} {
+		t.Run(name, func(t *testing.T) {
+			m, clock := newTestSpray(testSprayConfig())
+			const ip = "192.0.2.14"
+			wantNoVerdict(t, m.Failure(ip, "v@example.com", mailboxExists))
+			clock.advance(spread)
+			wantNoVerdict(t, m.Failure(ip, "v@example.com", mailboxExists))
+			wantRule(t, m.Failure(ip, "w@example.com", mailboxExists), sprayRuleBreadth, true)
+			clean, v := m.Success(ip, "v@example.com")
+			if clean {
+				t.Fatal("login to a failing mailbox beside another reported clean")
+			}
+			wantRule(t, v, sprayRuleWeakCompromise, false)
+			clock.advance(11 * time.Minute)
+			if m.TrustedAll(ip, []string{"v@example.com"}) {
+				t.Fatal("login to a failing mailbox beside another earned trust")
+			}
+		})
+	}
+}
+
+// A crack on a mailbox stays revoked beside one stale mailbox: the login
+// earns no trust and raises nothing new.
+func TestMailSprayStaleMailboxKeepsRevocation(t *testing.T) {
+	m, clock := newTestSpray(testSprayConfig())
+	const ip = "192.0.2.15"
+	m.RevokeTrust(ip, "a@example.com")
+	wantNoVerdict(t, m.Failure(ip, "f@example.com", mailboxExists))
+	if clean, v := m.Success(ip, "a@example.com"); clean || v != nil {
+		t.Fatalf("revoked login beside one stale mailbox = (%v, %+v), want (false, nil)", clean, v)
+	}
+	clock.advance(11 * time.Minute)
+	if m.TrustedAll(ip, []string{"a@example.com"}) || m.TrustSize() != 0 {
+		t.Fatal("revoked mailbox earned trust beside one stale mailbox")
+	}
+	// Another mailbox beside the same stale one is still clean.
+	if clean, v := m.Success(ip, "b@example.com"); !clean || v != nil {
+		t.Fatalf("login beside one stale mailbox = (%v, %+v), want (true, nil)", clean, v)
+	}
+}
+
 // 4b: trust only counts once it has aged past TrustAge.
 func TestMailSpray_TrustAgesBeforeCounting(t *testing.T) {
 	m, clock := newTestSpray(testSprayConfig())
@@ -360,8 +407,8 @@ func TestMailSpray_SingleMailboxFailuresThenSuccess(t *testing.T) {
 		t.Fatal("success after single-mailbox failures not clean")
 	}
 	wantRule(t, v, sprayRuleSingleMailboxSuccess, false)
-	if v.Mailbox != "a@example.com" {
-		t.Fatalf("verdict mailbox = %q, want a@example.com", v.Mailbox)
+	if v.Mailbox != "a@example.com" || !slices.Equal(v.Targets, []string{"a@example.com"}) {
+		t.Fatalf("verdict mailbox = %q targets %v, want a@example.com alone", v.Mailbox, v.Targets)
 	}
 	// The next login while that trust ages is the same user: no repeat.
 	clock.advance(time.Minute)

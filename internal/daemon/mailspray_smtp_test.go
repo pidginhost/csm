@@ -232,7 +232,8 @@ func TestSMTPSprayEximSuccessAfterSprayAdvisory(t *testing.T) {
 	if !ok {
 		t.Fatalf("login after failures on two other mailboxes raised nothing: %+v", got)
 	}
-	if f.Severity != alert.High || f.SourceIP != ip || f.Mailbox != "a@example.com" || f.Domain != "example.com" {
+	if f.Severity != alert.High || f.SourceIP != ip || f.Mailbox != "a@example.com" || f.Domain != "example.com" ||
+		!strings.HasSuffix(f.Message, " after failed logins on other mailboxes") {
 		t.Fatalf("finding = %+v", f)
 	}
 	if !slices.Contains(f.Claims, admission.Claim{Kind: admission.ClaimMailbox, Value: "a@example.com"}) {

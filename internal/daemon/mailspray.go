@@ -342,8 +342,9 @@ func (m *mailSpray) breadth(key, mailbox string, stored bool, untrusted []string
 // Success records a successful login on a normalised mailbox. clean is true
 // when the login earned or refreshed trust. A login that follows failures on
 // other untrusted mailboxes earns nothing and may be a compromise, unless
-// they all name one mailbox not known to be missing (one stale device). A
-// login never adds to the evidence pool.
+// they all name one mailbox not known to be missing (one stale device) and
+// the login's own mailbox did not fail. A login never adds to the evidence
+// pool.
 func (m *mailSpray) Success(ip, mailbox string) (clean bool, v *sprayVerdict) {
 	ip = sprayAddr(ip)
 	m.mu.Lock()
@@ -384,9 +385,10 @@ func (m *mailSpray) Success(ip, mailbox string) (clean bool, v *sprayVerdict) {
 	}
 	others := slices.DeleteFunc(slices.Clone(untrusted), func(n string) bool { return n == mailbox })
 	// One office device with a stale saved password can fail all day on one
-	// other mailbox; that alone taints no login. A missing name, a failure
-	// that names no mailbox, or a second mailbox still does.
-	stale := len(others) == 1 && others[0] != "" && e.failed[others[0]].exist != mailboxMissing
+	// other mailbox; that alone taints no login to a mailbox that did not
+	// fail. A missing name, a failure that names no mailbox, a second
+	// mailbox, or failures on the login's own mailbox still do.
+	stale := len(untrusted) == 1 && len(others) == 1 && others[0] != "" && e.failed[others[0]].exist != mailboxMissing
 	if (len(others) == 0 || stale) && (e == nil || !e.hasUntracked(now, m.cfg.Window)) {
 		if e != nil {
 			if at, ok := e.revoked[mailbox]; ok && now.Sub(at) <= m.cfg.Window {
@@ -399,7 +401,7 @@ func (m *mailSpray) Success(ip, mailbox string) (clean bool, v *sprayVerdict) {
 		if m.cfg.Mode == sprayOff || hadTrust || e == nil || !e.staleFailures(mailbox, now, m.cfg.Window) {
 			return true, nil
 		}
-		return true, m.verdict(e, ip, sprayRuleSingleMailboxSuccess, false, mailbox, untrusted, now)
+		return true, m.verdict(e, ip, sprayRuleSingleMailboxSuccess, false, mailbox, []string{mailbox}, now)
 	}
 
 	src := e.sources[ip]

@@ -380,9 +380,13 @@ func TestIMAPStaleMailboxNoAdvisory(t *testing.T) {
 			if ev := sprayEvidence(d, ip); ev["f@example.com"].count == 0 {
 				t.Fatalf("evidence = %+v, want the stale mailbox's failures", ev)
 			}
+			good := d.mailAuthTracker.ExportGoodSource()[ip]
 			for _, mb := range mailboxes {
 				if !sprayHasTrust(d, ip, mb) {
 					t.Fatalf("login to %s beside one stale mailbox earned no trust", mb)
+				}
+				if _, ok := good[mb]; !ok {
+					t.Fatalf("login to %s beside one stale mailbox earned no good standing: %+v", mb, good)
 				}
 			}
 		})
