@@ -1762,6 +1762,9 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 // dispatches the resulting alerts. It returns the alerted findings and the keys
 // of findings the permission auto-fix repaired.
 func (d *Daemon) respondToInitialScan(cfg *config.Config, initialFindings []alert.Finding) ([]alert.Finding, []string) {
+	// As in dispatchBatch: a record with no parseable time takes its receipt
+	// time, or the customer set would drop its login as expired.
+	alert.FillTimestamps(initialFindings, time.Now())
 	// The realtime watcher starts at the end of the log, so FTP logins made
 	// while the daemon was down reach the set only through this scan.
 	d.noteFTPCustomers(initialFindings)

@@ -582,3 +582,21 @@ func TestFTPLoginFindingRecordsCustomer(t *testing.T) {
 		t.Errorf("a failed FTP login naming the success text was recorded: %+v", hit)
 	}
 }
+
+// An FTP success record with no parseable time, as a journal message gives,
+// leaves its finding without a timestamp. The startup scan counts the login
+// at its receipt time, as dispatch does, instead of dropping it as expired.
+func TestInitialScanFTPLoginWithoutTimestamp(t *testing.T) {
+	d := newTestDaemon(t)
+	cfg := d.currentCfg()
+	f, ok := checks.FTPLoginFinding("pure-ftpd: (?@203.0.113.58) [INFO] alice is now logged in", cfg)
+	if !ok || !f.Timestamp.IsZero() {
+		t.Fatalf("FTPLoginFinding = %+v, %v; want a login with no timestamp", f, ok)
+	}
+	before := time.Now()
+	d.respondToInitialScan(cfg, []alert.Finding{f})
+	hit, ok := d.knownCustomers.Lookup("203.0.113.58")
+	if !ok || hit.Account != "alice" || hit.At.Before(before) || hit.At.After(time.Now()) {
+		t.Fatalf("initial scan login = %+v, %v; want alice at its receipt time", hit, ok)
+	}
+}
