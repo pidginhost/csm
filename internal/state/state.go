@@ -300,18 +300,13 @@ func (s *Store) migrateEmailGate() {
 	s.setRawLocked(emailGateMetaKey, "1")
 }
 
-// FilterUnemailed returns the findings alert email and the generic webhook
-// have not delivered with their current content. Unlike FilterNew it has no
-// daily reminder: a condition is delivered again only when its content
-// changes or its entry is gone, because it cleared. Dropped findings refresh
-// LastSeen, so an action or derived finding that is never passed to Update
-// keeps its entry while it is still produced.
-func (s *Store) FilterUnemailed(findings []alert.Finding) []alert.Finding {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.filterUnemailedLocked(findings, s.clock())
-}
-
+// filterUnemailedLocked returns the findings alert email and the generic
+// webhook have not delivered with their current content. Unlike FilterNew it
+// has no daily reminder: a finding is offered again when its content changes,
+// when a covering scan cleared it, or when it went unseen for 24h. An entry
+// that old is deleted here, so a return needs no Update sweep first. Held
+// findings refresh LastSeen, so an action or derived finding that never
+// reaches Update keeps its receipt while it is still produced.
 func (s *Store) filterUnemailedLocked(findings []alert.Finding, now time.Time) []alert.Finding {
 	var out []alert.Finding
 	for _, f := range findings {
@@ -334,9 +329,11 @@ func (s *Store) filterUnemailedLocked(findings []alert.Finding, now time.Time) [
 	return out
 }
 
-// MarkEmailed records findings alert email or the generic webhook delivered.
-// Action and correlation-derived findings have no entry, so one is created.
-func (s *Store) MarkEmailed(findings []alert.Finding) {
+// RefreshSeen records that rows the latest-findings merge kept are still
+// present. An owner that skips or does not finish a run keeps its rows without
+// reporting them, and a row that stays listed must not count as unseen for
+// 24h, neither for the email gate nor for the Update sweep.
+func (s *Store) RefreshSeen(findings []alert.Finding) {
 	if len(findings) == 0 {
 		return
 	}
@@ -344,17 +341,11 @@ func (s *Store) MarkEmailed(findings []alert.Finding) {
 	defer s.mu.Unlock()
 	now := s.clock()
 	for _, f := range findings {
-		key := findingKey(f)
-		hash := findingHash(f)
-		entry, ok := s.entries[key]
-		if !ok {
-			entry = &Entry{Hash: hash, FirstSeen: now, AlertSent: now}
-			s.entries[key] = entry
+		if entry, ok := s.entries[findingKey(f)]; ok {
+			entry.LastSeen = now
+			s.dirty = true
 		}
-		entry.Emailed = hash
-		entry.LastSeen = now
 	}
-	s.dirty = true
 }
 
 // ForgetCleared deletes the alert state of findings a covering scan no longer
@@ -1144,11 +1135,13 @@ func (s *Store) PurgeAndMergeFindingsDerivedWithGaps(purgeChecks []string, findi
 // It returns the current rows a purged check or a completed scope removed:
 // rows that were preserved, automatically demoted or reported again in either
 // pass are not retired, and neither are rows the active-set cap dropped.
-func (s *Store) PurgeAndMergeFindingsDerivedWithCoverage(purgeChecks []string, findings []alert.Finding, coverage *ScanCoverage, derivedChecks []string, derive func([]alert.Finding) []alert.Finding) (retired []alert.Finding) {
+// Every other current row is kept: its condition is still present.
+func (s *Store) PurgeAndMergeFindingsDerivedWithCoverage(purgeChecks []string, findings []alert.Finding, coverage *ScanCoverage, derivedChecks []string, derive func([]alert.Finding) []alert.Finding) (retired, kept []alert.Finding) {
 	s.latestMu.Lock()
 	defer s.latestMu.Unlock()
 
-	merged, retired := purgeAndMergeLatestWithCoverage(s.latestFindings, purgeChecks, findings, coverage, true)
+	current := s.latestFindings
+	merged, retired := purgeAndMergeLatestWithCoverage(current, purgeChecks, findings, coverage, true)
 	if derive != nil {
 		derived := derive(append([]alert.Finding(nil), merged...))
 		var derivedRetired []alert.Finding
@@ -1163,10 +1156,16 @@ func (s *Store) PurgeAndMergeFindingsDerivedWithCoverage(purgeChecks []string, f
 		}
 		retired = append(retired[:n], derivedRetired...)
 	}
+	gone := findingsByKey(retired)
+	for _, f := range current {
+		if _, ok := gone[f.Key()]; !ok {
+			kept = append(kept, f)
+		}
+	}
 	s.latestFindings = merged
 	s.latestScanTime = time.Now()
 	s.persistLatestLocked()
-	return retired
+	return retired, kept
 }
 
 // earliestObservation resolves the first-seen time a re-reported finding

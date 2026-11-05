@@ -27,7 +27,9 @@ from current observations. Baselines, dismissals and suppression rules still
 apply. The signed phpanel stream keeps its separate delivery policy.
 
 An undismissed finding can alert again after 24 hours without an observation,
-even when no other batch arrived to clean up old state. A completed scan that
+even when no other batch arrived to clean up old state. A finding that stays
+on the findings page counts as observed, also while its check skips runs
+between reports, so a check that reports once a day does not email daily. A completed scan that
 covered the finding and no longer reports it also permits a later return to
 alert. Scan coverage warnings follow the policy below.
 

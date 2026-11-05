@@ -491,3 +491,48 @@ func TestDeliveryFinishingAfterClearDoesNotMuteReturn(t *testing.T) {
 		t.Fatalf("return after in-flight clear: webhooks=%d, want 2", got)
 	}
 }
+
+// An owner that skips its audit between reports keeps its row in the latest
+// set. The row is still seen, so the report a day later sends nothing new.
+func TestSkippedOwnerFindingEmailsOnce(t *testing.T) {
+	cfg, hook := emailRepeatSetup(t)
+	d := openRepeatDaemon(t, cfg)
+	weak := alert.Finding{
+		Check:     "email_weak_password",
+		Severity:  alert.High,
+		Message:   "Weak password for mailbox user@example.com",
+		Timestamp: time.Now(),
+	}
+	scan := func(findings []alert.Finding, purge []string) {
+		d.processScanFindingsWithCoverage(cfg, findings, purge, nil, "deep")
+		if batch := drainAlertCh(d); len(batch) > 0 {
+			d.dispatchBatch(batch)
+		}
+	}
+
+	scan([]alert.Finding{weak}, []string{weak.Check})
+	// A day and a minute pass; the runs in between skipped the audit.
+	rewriteState(t, d, func(entries map[string]map[string]any) {
+		old := time.Now().Add(-24*time.Hour - time.Minute)
+		entries[weak.Key()]["last_seen"] = old
+		entries[weak.Key()]["alert_sent"] = old
+	})
+	scan(nil, []string{"other_check"})
+	scan([]alert.Finding{weak}, []string{weak.Check})
+
+	if got := hook.count(weak.Message); got != 1 {
+		t.Fatalf("skipped-owner finding reported again after a day: %d webhooks, want 1", got)
+	}
+}
+
+// Nil candidates tell the dispatcher to reuse its findings, so a set emptied
+// by suppression rules must stay an empty, non-nil slice.
+func TestDeliveryCandidatesAllSuppressedStayNonNil(t *testing.T) {
+	cfg, _ := emailRepeatSetup(t)
+	d := openRepeatDaemon(t, cfg)
+	f := repeatFinding("muted by a rule")
+	got := d.deliveryCandidates([]alert.Finding{f}, nil, checkWideSuppression(f.Check))
+	if got == nil || len(got) != 0 {
+		t.Fatalf("all-suppressed candidates = %#v, want an empty non-nil slice", got)
+	}
+}

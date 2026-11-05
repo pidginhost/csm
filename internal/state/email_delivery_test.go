@@ -43,7 +43,7 @@ func TestDeliveryReservationReleaseAndClear(t *testing.T) {
 		t.Fatal("old completion released the returned condition's reservation")
 	}
 	finishReturned(returned)
-	if got := s.FilterUnemailed(batch); len(got) != 0 {
+	if got := offered(s, batch...); len(got) != 0 {
 		t.Fatal("successful current delivery was not recorded")
 	}
 	if len(s.emailPending) != 0 {

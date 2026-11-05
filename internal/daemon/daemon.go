@@ -1809,7 +1809,13 @@ func (d *Daemon) deliveryCandidates(observed, newFindings []alert.Finding, suppr
 	}
 	derived := checks.CorrelateBatchFindings(correlationSources).Derived
 	candidates = append(candidates, derived...)
-	return filterUnsuppressedFindings(d.store, candidates, suppressions)
+	candidates = filterUnsuppressedFindings(d.store, candidates, suppressions)
+	if candidates == nil {
+		// The dispatcher reads nil candidates as "reuse the findings", and
+		// suppression rules can empty the set.
+		candidates = []alert.Finding{}
+	}
+	return candidates
 }
 
 // withoutFixedFindings drops findings whose Key is in fixedKeys.

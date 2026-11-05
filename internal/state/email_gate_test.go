@@ -11,6 +11,21 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 )
 
+// deliver runs one delivery through the reservation API in which every
+// eligible finding is sent, and returns what was sent.
+func deliver(s *Store, findings ...alert.Finding) []alert.Finding {
+	eligible, finish := s.BeginDelivery(findings)
+	finish(eligible)
+	return eligible
+}
+
+// offered returns what a delivery would send now, then sends nothing.
+func offered(s *Store, findings ...alert.Finding) []alert.Finding {
+	eligible, finish := s.BeginDelivery(findings)
+	finish(nil)
+	return eligible
+}
+
 func gateKeys(findings []alert.Finding) []string {
 	keys := make([]string, 0, len(findings))
 	for _, f := range findings {
@@ -23,14 +38,14 @@ func TestFilterUnemailedSkipsDeliveredContent(t *testing.T) {
 	s := openTestStore(t)
 	f := alert.Finding{Check: "webshell", Severity: alert.Critical, Message: "shell in upload", Details: "first"}
 	s.Update([]alert.Finding{f})
-	s.MarkEmailed([]alert.Finding{f})
-	if got := s.FilterUnemailed([]alert.Finding{f}); len(got) != 0 {
+	deliver(s, f)
+	if got := offered(s, f); len(got) != 0 {
 		t.Fatalf("delivered content offered again: %v", gateKeys(got))
 	}
 
 	changed := f
 	changed.Details = "second"
-	if got := s.FilterUnemailed([]alert.Finding{changed}); len(got) != 1 || got[0].Key() != changed.Key() {
+	if got := offered(s, changed); len(got) != 1 || got[0].Key() != changed.Key() {
 		t.Fatalf("changed content held back: %v", gateKeys(got))
 	}
 
@@ -38,7 +53,7 @@ func TestFilterUnemailedSkipsDeliveredContent(t *testing.T) {
 	s.mu.Lock()
 	s.entries[f.Key()].Emailed = "older content"
 	s.mu.Unlock()
-	if got := s.FilterUnemailed([]alert.Finding{f}); len(got) != 1 {
+	if got := offered(s, f); len(got) != 1 {
 		t.Fatalf("content delivered under an older fingerprint held back: %v", gateKeys(got))
 	}
 }
@@ -47,7 +62,7 @@ func TestFilterUnemailedKeepsUndelivered(t *testing.T) {
 	s := openTestStore(t)
 	f := alert.Finding{Check: "webshell", Severity: alert.Critical, Message: "shell in upload"}
 	s.Update([]alert.Finding{f})
-	if got := s.FilterUnemailed([]alert.Finding{f}); len(got) != 1 {
+	if got := offered(s, f); len(got) != 1 {
 		t.Fatalf("alerted but undelivered finding held back: %v", gateKeys(got))
 	}
 }
@@ -61,7 +76,7 @@ func TestFilterUnemailedBaselineAndDismissal(t *testing.T) {
 	s.Update([]alert.Finding{dismissed})
 	s.DismissFinding(dismissed.Key())
 
-	if got := s.FilterUnemailed([]alert.Finding{baseline, dismissed}); len(got) != 0 {
+	if got := offered(s, baseline, dismissed); len(got) != 0 {
 		t.Fatalf("baseline or dismissed finding offered for email: %v", gateKeys(got))
 	}
 }
@@ -69,14 +84,14 @@ func TestFilterUnemailedBaselineAndDismissal(t *testing.T) {
 func TestFilterUnemailedRefreshesLastSeen(t *testing.T) {
 	s := openTestStore(t)
 	f := alert.Finding{Check: "auto_block", Message: "AUTO-BLOCK: 203.0.113.7"}
-	s.MarkEmailed([]alert.Finding{f})
+	deliver(s, f)
 	old := time.Now().Add(-20 * time.Hour)
 	s.mu.Lock()
 	s.entries[f.Key()].LastSeen = old
 	s.dirty = false
 	s.mu.Unlock()
 
-	if got := s.FilterUnemailed([]alert.Finding{f}); len(got) != 0 {
+	if got := offered(s, f); len(got) != 0 {
 		t.Fatalf("delivered finding offered again: %v", gateKeys(got))
 	}
 	entry, ok := s.EntryForKey(f.Key())
@@ -91,20 +106,21 @@ func TestFilterUnemailedRefreshesLastSeen(t *testing.T) {
 	}
 }
 
-func TestMarkEmailedCreatesEntry(t *testing.T) {
+func TestDeliveryCreatesEntry(t *testing.T) {
 	s := openTestStore(t)
 	action := alert.Finding{Check: "auto_block", Severity: alert.High, Message: "AUTO-BLOCK: 203.0.113.9"}
-	if got := s.FilterUnemailed([]alert.Finding{action}); len(got) != 1 {
+	if _, ok := s.EntryForKey(action.Key()); ok {
+		t.Fatal("setup: action already has an entry")
+	}
+	if got := deliver(s, action); len(got) != 1 {
 		t.Fatalf("action with no entry held back: %v", gateKeys(got))
 	}
-
-	s.MarkEmailed([]alert.Finding{action})
 	entry, ok := s.EntryForKey(action.Key())
 	if !ok || entry.Hash != action.Fingerprint() || entry.Emailed != action.Fingerprint() ||
 		entry.FirstSeen.IsZero() || entry.LastSeen.IsZero() || entry.AlertSent.IsZero() {
-		t.Fatalf("MarkEmailed entry = %+v, ok=%t", entry, ok)
+		t.Fatalf("delivered entry = %+v, ok=%t", entry, ok)
 	}
-	if got := s.FilterUnemailed([]alert.Finding{action}); len(got) != 0 {
+	if got := offered(s, action); len(got) != 0 {
 		t.Fatalf("delivered action offered again: %v", gateKeys(got))
 	}
 
@@ -112,7 +128,7 @@ func TestMarkEmailedCreatesEntry(t *testing.T) {
 	s.entries[action.Key()].LastSeen = time.Now().Add(-25 * time.Hour)
 	s.mu.Unlock()
 	s.Update(nil)
-	if got := s.FilterUnemailed([]alert.Finding{action}); len(got) != 1 {
+	if got := offered(s, action); len(got) != 1 {
 		t.Fatalf("action unseen for 25h still held back: %v", gateKeys(got))
 	}
 }
@@ -145,7 +161,7 @@ func TestOpenMarksAlertedEntriesEmailed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := s.FilterUnemailed([]alert.Finding{a, b})
+	got := offered(s, a, b)
 	if len(got) != 1 || got[0].Key() != b.Key() {
 		t.Fatalf("after upgrade got %v, want only %s", gateKeys(got), b.Key())
 	}
@@ -174,7 +190,7 @@ func TestOpenMarksAlertedEntriesEmailed(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = reopened.Close() })
-	got = reopened.FilterUnemailed([]alert.Finding{b, c})
+	got = offered(reopened, b, c)
 	if len(got) != 2 || got[0].Key() != b.Key() || got[1].Key() != c.Key() {
 		t.Fatalf("after reopening got %v, want %s and %s", gateKeys(got), b.Key(), c.Key())
 	}
@@ -203,7 +219,7 @@ func TestPurgeAndMergeReturnsRetired(t *testing.T) {
 
 	s := openTestStore(t)
 	s.SetLatestFindings([]alert.Finding{cleared, gap, demoted, reported, other, scoped, derivedGone, derivedKept, crossPass})
-	retired := s.PurgeAndMergeFindingsDerivedWithCoverage(
+	retired, kept := s.PurgeAndMergeFindingsDerivedWithCoverage(
 		[]string{"webshell", "derived_purged"},
 		[]alert.Finding{reported},
 		&ScanCoverage{
@@ -223,6 +239,17 @@ func TestPurgeAndMergeReturnsRetired(t *testing.T) {
 			t.Fatalf("retired = %v, missing %s", got, key)
 		}
 	}
+	// Every other current row is kept, still present.
+	gotKept := retiredKeys(kept)
+	wantKept := []alert.Finding{gap, demoted, reported, other, derivedKept, crossPass}
+	if len(kept) != len(wantKept) {
+		t.Fatalf("kept = %v, want %d rows", gotKept, len(wantKept))
+	}
+	for _, f := range wantKept {
+		if !gotKept[f.Key()] {
+			t.Fatalf("kept = %v, missing %s", gotKept, f.Key())
+		}
+	}
 
 	// A row the cap evicts was not cleared by any scan.
 	evicted := alert.Finding{Check: "other_check", Severity: alert.Warning, Message: "evicted", Timestamp: time.Unix(1, 0)}
@@ -232,9 +259,12 @@ func TestPurgeAndMergeReturnsRetired(t *testing.T) {
 	for i := range flood {
 		flood[i] = alert.Finding{Check: "flood", Severity: alert.High, Message: fmt.Sprintf("row %d", i), Timestamp: time.Unix(1000, 0)}
 	}
-	retired = capped.PurgeAndMergeFindingsDerivedWithCoverage([]string{"flood"}, flood, nil, nil, nil)
+	retired, kept = capped.PurgeAndMergeFindingsDerivedWithCoverage([]string{"flood"}, flood, nil, nil, nil)
 	if len(retired) != 0 {
 		t.Fatalf("cap eviction reported as retired: %v", gateKeys(retired))
+	}
+	if len(kept) != 1 || kept[0].Key() != evicted.Key() {
+		t.Fatalf("cap-evicted row not kept as present: %v", gateKeys(kept))
 	}
 	for _, f := range capped.LatestFindings() {
 		if f.Key() == evicted.Key() {
@@ -250,7 +280,7 @@ func TestForgetClearedKeepsBaseline(t *testing.T) {
 	internal := alert.Finding{Check: "_throttle", Message: "probe"}
 	s.SetBaseline([]alert.Finding{baseline})
 	s.Update([]alert.Finding{active})
-	s.MarkEmailed([]alert.Finding{active})
+	deliver(s, active)
 	s.SetRaw(internal.Key(), "raw")
 
 	s.ForgetCleared([]alert.Finding{baseline, active, internal})
@@ -264,7 +294,7 @@ func TestForgetClearedKeepsBaseline(t *testing.T) {
 	if _, ok := s.GetRaw(internal.Key()); !ok {
 		t.Fatal("internal entry forgotten")
 	}
-	if got := s.FilterUnemailed([]alert.Finding{active}); len(got) != 1 {
+	if got := offered(s, active); len(got) != 1 {
 		t.Fatalf("cleared finding held back on return: %v", gateKeys(got))
 	}
 }
@@ -290,7 +320,7 @@ func TestEmailGateFreshStateKeepsUndeliveredOnRestart(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { _ = reopened.Close() })
-			if got := reopened.FilterUnemailed([]alert.Finding{f}); len(got) != 1 {
+			if got := offered(reopened, f); len(got) != 1 {
 				t.Fatalf("undelivered finding lost across restart: %v", gateKeys(got))
 			}
 		})
@@ -304,7 +334,7 @@ func TestFilterUnemailedExpiresWithoutSweep(t *testing.T) {
 			now := time.Now().Add(-25 * time.Hour)
 			s.now = func() time.Time { return now }
 			f := alert.Finding{Check: "webshell", Message: "returned"}
-			s.MarkEmailed([]alert.Finding{f})
+			deliver(s, f)
 			if baseline {
 				s.DismissFinding(f.Key())
 			}
@@ -313,13 +343,13 @@ func TestFilterUnemailedExpiresWithoutSweep(t *testing.T) {
 			if baseline {
 				want = 0
 			}
-			if got := s.FilterUnemailed([]alert.Finding{f}); len(got) != want {
+			if got := offered(s, f); len(got) != want {
 				t.Fatalf("after 25h without a sweep: got %v, want %d findings", gateKeys(got), want)
 			}
 			// Observing the returned finding before delivery must not restore
 			// the receipt from its previous occurrence.
 			s.Update([]alert.Finding{f})
-			if got := s.FilterUnemailed([]alert.Finding{f}); len(got) != want {
+			if got := offered(s, f); len(got) != want {
 				t.Fatalf("pending recurrence lost after Update: %v", gateKeys(got))
 			}
 		})
@@ -331,10 +361,10 @@ func TestUpdateExpiresReceiptBeforeObservingReturn(t *testing.T) {
 	now := time.Now().Add(-24 * time.Hour)
 	s.now = func() time.Time { return now }
 	f := alert.Finding{Check: "webshell", Message: "returned with notifications disabled"}
-	s.MarkEmailed([]alert.Finding{f})
+	deliver(s, f)
 	now = now.Add(24 * time.Hour)
 	s.Update([]alert.Finding{f})
-	if got := s.FilterUnemailed([]alert.Finding{f}); len(got) != 1 {
+	if got := offered(s, f); len(got) != 1 {
 		t.Fatal("observing a return restored its expired delivery receipt")
 	}
 }
