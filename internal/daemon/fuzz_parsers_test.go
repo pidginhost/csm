@@ -15,6 +15,23 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 )
 
+func FuzzPHPRelayScriptPath(f *testing.F) {
+	for _, suffix := range []string{"", "5", "mailer.php", "/wp-cron.php", "/wp-admin/post.php", "/ for 192.0.2.1"} {
+		f.Add(suffix)
+	}
+	f.Fuzz(func(t *testing.T, suffix string) {
+		for _, ext := range []string{".php", ".php5", ".php8", ".phtml", ".pht"} {
+			key := "site.example:/contact" + ext + "/" + suffix
+			if isWPCronScript(key) || isAuthenticatedAdminScript(key) {
+				t.Fatalf("PATH_INFO granted an exemption: %q", key)
+			}
+		}
+		if suffix != "" && !strings.Contains(suffix, "/") && isWPCronScript("site.example:/wp-cron.php"+suffix) {
+			t.Fatalf("a filename prefix granted the cron exemption: %q", suffix)
+		}
+	})
+}
+
 func FuzzXPHPScriptForwardedAttribution(f *testing.F) {
 	for _, forwarded := range []string{"", "192.0.2.1", "192.0.2.1, 198.51.100.1", "text for 192.0.2.1", ", for , for ", "\t for /other.php?x=1"} {
 		f.Add(forwarded, "/extra,info for 192.0.2.2")

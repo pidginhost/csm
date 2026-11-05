@@ -287,12 +287,21 @@ func (p *spoolPipeline) onFileAt(path string, at time.Time) {
 		}
 		p.eng.ips.appendMessage(sig.SourceIP, sig.ScriptKey, now, h.Subject, fanoutRecipients, auth)
 	}
-	p.recordFormRelay(h, sig, auth, domainErr, msgID, now)
+	formEligible := p.recordFormRelay(h, sig, auth, domainErr, msgID, now)
 
 	if p.rebuilding.Load() {
 		return
 	}
 	findings := p.eng.evaluatePaths(sig.ScriptKey, sig.SourceIP, h.EnvelopeUser, now)
+	relayCfg := p.eng.config().EmailProtection.PHPRelay
+	if formEligible && relayCfg.Enabled && relayCfg.IPRecipientSpread > 0 {
+		window := time.Duration(relayCfg.IPRecipientWindowHours) * time.Hour
+		var ignored func(scriptKey) bool
+		if p.ignores != nil {
+			ignored = p.ignores.Has
+		}
+		findings = append(findings, p.eng.formRelayFindings(sig.ScriptKey, sig.SourceIP, h.EnvelopeUser, relayCfg.IPRecipientSpread, window, now, ignored)...)
+	}
 	for _, f := range findings {
 		p.alerter(f)
 	}
@@ -302,8 +311,9 @@ func (p *spoolPipeline) onFileAt(path string, at time.Time) {
 // client. Every skip comes before classifying: classification counts an
 // empty recipient list as one unparsed recipient, and a failed domain
 // lookup leaves nothing to tell outside recipients from the account's own.
-// Runs during the startup rebuild too; only emission waits.
-func (p *spoolPipeline) recordFormRelay(h emailspool.Headers, sig signals, auth map[string]struct{}, domainErr error, msgID string, at time.Time) {
+// Runs during the startup rebuild too; only emission waits. The result
+// permits evaluation only for messages eligible to contribute evidence.
+func (p *spoolPipeline) recordFormRelay(h emailspool.Headers, sig signals, auth map[string]struct{}, domainErr error, msgID string, at time.Time) bool {
 	cfg := p.eng.config()
 	relayCfg := cfg.EmailProtection.PHPRelay
 	ip := sig.SourceIP
@@ -311,19 +321,20 @@ func (p *spoolPipeline) recordFormRelay(h emailspool.Headers, sig signals, auth 
 		isWPCronScript(sig.ScriptKey) ||
 		p.policies != nil && p.policies.IsProxyIP(ip) ||
 		checks.IsInfraIP(ip, cfg.InfraIPs) || p.eng.cloudflareCovers(ip) {
-		return
+		return false
 	}
 	key := formRelayKey(ip)
 	if isAuthenticatedAdminScript(sig.ScriptKey) {
 		p.eng.form.markStaff(h.EnvelopeUser, key, at)
-		return
+		return false
 	}
 	if p.eng.form.isStaff(h.EnvelopeUser, key, at) {
-		return
+		return false
 	}
 	outside, unparsed := classifyFormRelayRecipients(h.Recipients, auth)
 	p.eng.form.record(key, ip, h.EnvelopeUser, sig.ScriptKey, msgID, at, outside, unparsed,
 		time.Duration(relayCfg.IPRecipientWindowHours)*time.Hour, relayCfg.IPRecipientSpread)
+	return len(outside) > 0 || unparsed
 }
 
 // msgIDFromPath returns the msgID portion of a /path/<msgID>-H file.
@@ -399,6 +410,9 @@ func (e *evaluator) maxDetectionWindow() time.Duration {
 		maxMin = v
 	}
 	if v := relayCfg.FanoutWindowMin; v > maxMin {
+		maxMin = v
+	}
+	if v := relayCfg.IPRecipientWindowHours * 60; relayCfg.IPRecipientSpread > 0 && v > maxMin {
 		maxMin = v
 	}
 	return time.Duration(maxMin) * time.Minute

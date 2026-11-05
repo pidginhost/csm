@@ -19,6 +19,7 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/contenttype"
 	"github.com/pidginhost/csm/internal/emailspool"
 	"github.com/pidginhost/csm/internal/store"
 )
@@ -795,7 +796,7 @@ func (e *evaluator) SetCloudflareCover(fn func(ip string) bool) { e.cfCover = fn
 
 func (e *evaluator) cloudflareCovers(ip string) bool { return e.cfCover != nil && e.cfCover(ip) }
 
-// scriptPHPPath returns k's path lowercased and cut after its first ".php",
+// scriptPHPPath returns k's path lowercased and cut after its first PHP component,
 // so PATH_INFO cannot change which script the key names.
 func scriptPHPPath(k scriptKey) string {
 	slash := strings.IndexByte(k, '/')
@@ -803,8 +804,10 @@ func scriptPHPPath(k scriptKey) string {
 		return ""
 	}
 	p := strings.ToLower(k[slash:])
-	if i := strings.Index(p, ".php"); i >= 0 {
-		p = p[:i+len(".php")]
+	for i := 1; i < len(p); i++ {
+		if p[i] == '/' && contenttype.IsExecutablePHPName(p[:i]) {
+			return p[:i]
+		}
 	}
 	return p
 }
@@ -911,26 +914,20 @@ func (e *evaluator) evaluatePaths(k scriptKey, sourceIP, cpuser string, now time
 		}
 	}
 
-	// Path 6: one client made hosted sites mail many outside addresses.
-	if spread := relayCfg.IPRecipientSpread; spread > 0 && sourceIP != "" {
-		window := time.Duration(relayCfg.IPRecipientWindowHours) * time.Hour
-		findings = append(findings, e.formRelayFindings(k, sourceIP, cpuser, spread, window, now)...)
-	}
-
 	return findings
 }
 
 // formRelayFindings emits the client finding once per window when ip's
 // outside-recipient count reaches spread, plus one finding per script that
 // reached at least two of them, for the operator to fix.
-func (e *evaluator) formRelayFindings(k scriptKey, ip, cpuser string, spread int, window time.Duration, now time.Time) []alert.Finding {
+func (e *evaluator) formRelayFindings(k scriptKey, ip, cpuser string, spread int, window time.Duration, now time.Time, ignored func(scriptKey) bool) []alert.Finding {
 	key := formRelayKey(ip)
 	since := now.Add(-window)
-	n := e.form.count(key, since)
-	if n < spread || !e.form.markFired(key, now, window) {
+	snapshot := e.form.evaluate(key, now, window, spread, ignored)
+	if snapshot.Count < spread {
 		return nil
 	}
-	shares := e.form.scriptShares(key, since)
+	shares := snapshot.Shares
 	scripts := make([]scriptKey, 0, len(shares))
 	for sk := range shares {
 		scripts = append(scripts, sk)
@@ -942,39 +939,42 @@ func (e *evaluator) formRelayFindings(k scriptKey, ip, cpuser string, spread int
 		return scripts[i] < scripts[j]
 	})
 
-	var details strings.Builder
-	details.WriteString("Outside recipients per script:")
-	var subjects []string
-	for _, sk := range scripts {
-		fmt.Fprintf(&details, "\n  %s (account %s): %d", sk, shares[sk].CPUser, shares[sk].Count)
-		if s := e.formRelaySubject(sk, key, since); s != "" && len(subjects) < 3 && !slices.Contains(subjects, s) {
-			subjects = append(subjects, s)
+	var out []alert.Finding
+	if snapshot.FireClient {
+		var details strings.Builder
+		details.WriteString("Outside recipients per script:")
+		var subjects []string
+		for _, sk := range scripts {
+			fmt.Fprintf(&details, "\n  %s (account %s): %d", sk, shares[sk].CPUser, shares[sk].Count)
+			if s := e.formRelaySubject(sk, key, since); s != "" && len(subjects) < 3 && !slices.Contains(subjects, s) {
+				subjects = append(subjects, s)
+			}
 		}
-	}
-	if len(subjects) > 0 {
-		details.WriteString("\nSample subjects:")
-		for _, s := range subjects {
-			fmt.Fprintf(&details, "\n  %s", s)
+		if len(subjects) > 0 {
+			details.WriteString("\nSample subjects:")
+			for _, s := range subjects {
+				fmt.Fprintf(&details, "\n  %s", s)
+			}
 		}
+		if domains := snapshot.Domains; len(domains) > 0 {
+			fmt.Fprintf(&details, "\nRecipient domains: %s", strings.Join(domains, ", "))
+		}
+		if e.metrics != nil {
+			e.metrics.Findings.With("form_relay").Inc()
+		}
+		out = append(out, alert.Finding{
+			Severity:  alert.High,
+			Check:     "email_php_form_relay",
+			Path:      "form_relay",
+			Message:   fmt.Sprintf("Path 6: client %s made hosted sites mail %d different outside addresses in %s", ip, snapshot.Count, window),
+			Details:   details.String(),
+			ScriptKey: string(k),
+			SourceIP:  ip,
+			CPUser:    cpuser,
+			TenantID:  checks.HostingAccountForUser(cpuser),
+			Timestamp: now,
+		})
 	}
-	if domains := e.form.recipientDomains(key, since); len(domains) > 0 {
-		fmt.Fprintf(&details, "\nRecipient domains: %s", strings.Join(domains, ", "))
-	}
-	if e.metrics != nil {
-		e.metrics.Findings.With("form_relay").Inc()
-	}
-	out := []alert.Finding{{
-		Severity:  alert.High,
-		Check:     "email_php_form_relay",
-		Path:      "form_relay",
-		Message:   fmt.Sprintf("Path 6: client %s made hosted sites mail %d different outside addresses in %s", ip, n, window),
-		Details:   details.String(),
-		ScriptKey: string(k),
-		SourceIP:  ip,
-		CPUser:    cpuser,
-		TenantID:  checks.HostingAccountForUser(cpuser),
-		Timestamp: now,
-	}}
 
 	for _, sk := range scripts {
 		share := shares[sk]

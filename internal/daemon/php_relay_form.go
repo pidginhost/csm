@@ -56,6 +56,55 @@ type formRelayShare struct {
 	CPUser string
 }
 
+type formRelaySnapshot struct {
+	Count      int
+	Shares     map[scriptKey]formRelayShare
+	Domains    []string
+	FireClient bool
+}
+
+// evaluate captures one qualifying window and claims its client cooldown
+// under the same lock. Expiry must not remove evidence between counting it
+// and building the finding. Current exemptions also apply to older mail.
+func (w *formRelayWindow) evaluate(key string, at time.Time, window time.Duration, spread int, ignored func(scriptKey) bool) formRelaySnapshot {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	cutoff := w.advanceLocked(at).Add(-window)
+	c := w.ips[key]
+	if c == nil || at.Before(cutoff) {
+		return formRelaySnapshot{}
+	}
+	c.expire(cutoff)
+	for r, v := range c.rcpts {
+		if seenAtOrAfter(w.staff[v.cpuser][key], at.Add(-formRelayStaffTTL)) || ignored != nil && ignored(v.script) {
+			delete(c.rcpts, r)
+		}
+	}
+	if len(c.rcpts) < spread {
+		return formRelaySnapshot{}
+	}
+	out := formRelaySnapshot{Count: len(c.rcpts), Shares: make(map[scriptKey]formRelayShare)}
+	domains := make(map[string]struct{})
+	for _, v := range c.rcpts {
+		share := out.Shares[v.script]
+		share.Count++
+		share.CPUser = v.cpuser
+		out.Shares[v.script] = share
+		if v.domain != "" {
+			domains[v.domain] = struct{}{}
+		}
+	}
+	for domain := range domains {
+		out.Domains = append(out.Domains, domain)
+	}
+	sort.Strings(out.Domains)
+	if !seenAtOrAfter(c.firedAt, at.Add(-window)) {
+		c.firedAt = at
+		out.FireClient = true
+	}
+	return out
+}
+
 func newFormRelayWindow(maxIPs int) *formRelayWindow {
 	return &formRelayWindow{
 		maxIPs: maxIPs,
