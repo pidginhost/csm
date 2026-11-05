@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/firewall"
 	csmlog "github.com/pidginhost/csm/internal/log"
 )
 
@@ -40,9 +41,21 @@ func splitByClass(cfg *config.Config, findings, evidence []Finding) (immediate, 
 	}
 	notice := currentSummaryNoticePolicy()
 	policy := currentIPResponsePolicy()
-	handled := handledSources(cfg.StatePath, evidence)
+	web := currentWebTrafficPolicy()
+	// The split runs on every dispatch: block state is read once, and only
+	// for a batch where a block could answer a finding.
+	var handled *handledSet
 	for _, f := range findings {
-		if (notice != nil && notice(f)) || handled.answers(policy, cfg, f) {
+		answered := notice != nil && notice(f)
+		if !answered {
+			if ip := ClassSourceIP(f); ip != nil {
+				if handled == nil {
+					handled = handledSources(cfg.StatePath, evidence)
+				}
+				answered = handled.answers(policy, web, cfg, f, ip)
+			}
+		}
+		if answered {
 			summary = append(summary, f)
 		} else {
 			immediate = append(immediate, f)
@@ -57,9 +70,17 @@ type handledSet struct {
 	blocked    map[string]bool
 	subnets    []*net.IPNet
 	challenged map[string]bool
+	// The Cloudflare ranges the firewall accepts on its web ports, read at
+	// the first blocked web finding.
+	statePath  string
+	cfLoaded   bool
+	cfV4, cfV6 []string
 }
 
-func handledSources(statePath string, findings []Finding) handledSet {
+// loadCloudflareRanges reads the firewall's cached Cloudflare ranges.
+var loadCloudflareRanges = firewall.LoadCFState
+
+func handledSources(statePath string, findings []Finding) *handledSet {
 	// Load only IPs with actual block state. Pending entries have not reached
 	// the firewall and must remain visible to the operator.
 	blockedIPs := loadBlockedIPs(statePath)
@@ -103,10 +124,11 @@ func handledSources(statePath string, findings []Finding) handledSet {
 	// notation differences (2001:db8::1 vs 2001:db8:0:0:0:0:0:1,
 	// IPv4-mapped IPv6). Keys that do not parse as an IP cannot
 	// exact-match a finding's IP and are dropped.
-	h := handledSet{
+	h := &handledSet{
 		blocked:    make(map[string]bool, len(blockedIPs)),
 		subnets:    blockedSubnets,
 		challenged: make(map[string]bool, len(challengedIPs)),
+		statePath:  statePath,
 	}
 	for ip := range blockedIPs {
 		if parsed := net.ParseIP(ip); parsed != nil {
@@ -121,8 +143,8 @@ func handledSources(statePath string, findings []Finding) handledSet {
 	return h
 }
 
-// answers reports whether a block or challenge on f's source answers f.
-func (h handledSet) answers(policy IPResponsePolicy, cfg *config.Config, f Finding) bool {
+// answers reports whether a block or challenge on ip, f's source, answers f.
+func (h *handledSet) answers(policy IPResponsePolicy, web func(Finding) bool, cfg *config.Config, f Finding, ip net.IP) bool {
 	// The class keys on the actual block state, never on auto-response
 	// intent: an enabled block_ips used to hide every reputation finding,
 	// including the IPs auto-block did NOT handle (dry-run, rate-limited
@@ -131,11 +153,10 @@ func (h handledSet) answers(policy IPResponsePolicy, cfg *config.Config, f Findi
 	// compared canonically: substring matching used to let a blocked
 	// 192.0.2.1 answer a finding about the unrelated 192.0.2.10. A finding
 	// with no parseable IP is never handled (fail open to alerting).
-	ip := ClassSourceIP(f)
-	if ip == nil {
-		return false
-	}
-	if ipBlocked(ip, h.blocked, h.subnets) && ipResponseAnswers(policy, cfg, f, true) {
+	// The Cloudflare accept on TCP 80/443 precedes the blocked drop, so a
+	// block of a covered address leaves its web traffic flowing.
+	if ipBlocked(ip, h.blocked, h.subnets) && ipResponseAnswers(policy, cfg, f, true) &&
+		(web == nil || !web(f) || !h.cloudflareCovers(ip)) {
 		return true
 	}
 	// A challenge counts only for findings a challenge answers. Critical
@@ -143,6 +164,14 @@ func (h handledSet) answers(policy IPResponsePolicy, cfg *config.Config, f Findi
 	// immediate until a hard block lands; otherwise an old challenge entry
 	// hides the exact finding that is supposed to escalate it.
 	return ipResponseAnswers(policy, cfg, f, false) && ipChallenged(ip, h.challenged)
+}
+
+func (h *handledSet) cloudflareCovers(ip net.IP) bool {
+	if !h.cfLoaded {
+		h.cfV4, h.cfV6 = loadCloudflareRanges(h.statePath)
+		h.cfLoaded = true
+	}
+	return firewall.CloudflareRangesCover(h.cfV4, h.cfV6, ip.String())
 }
 
 func ipBlocked(ip net.IP, blocked map[string]bool, subnets []*net.IPNet) bool {
@@ -426,6 +455,9 @@ var (
 
 	summaryNoticeMu     sync.RWMutex
 	summaryNoticePolicy func(Finding) bool
+
+	webTrafficMu     sync.RWMutex
+	webTrafficPolicy func(Finding) bool
 )
 
 // SetIPResponsePolicy installs or clears the policy SplitByClass consults
@@ -464,5 +496,24 @@ func currentSummaryNoticePolicy() func(Finding) bool {
 	summaryNoticeMu.RLock()
 	p := summaryNoticePolicy
 	summaryNoticeMu.RUnlock()
+	return p
+}
+
+// SetWebTrafficPolicy installs or clears the policy that names findings about
+// requests on the web ports, and returns the previous one. A block of a
+// Cloudflare-covered address does not answer them. The checks package
+// registers it at package initialization, like SetIPResponsePolicy.
+func SetWebTrafficPolicy(p func(Finding) bool) func(Finding) bool {
+	webTrafficMu.Lock()
+	defer webTrafficMu.Unlock()
+	previous := webTrafficPolicy
+	webTrafficPolicy = p
+	return previous
+}
+
+func currentWebTrafficPolicy() func(Finding) bool {
+	webTrafficMu.RLock()
+	p := webTrafficPolicy
+	webTrafficMu.RUnlock()
 	return p
 }

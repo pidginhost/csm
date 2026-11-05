@@ -4,7 +4,6 @@ import (
 	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
-	"github.com/pidginhost/csm/internal/firewall"
 )
 
 func init() {
@@ -13,6 +12,7 @@ func init() {
 	// and the config passed to each call, not on a daemon's lifetime.
 	alert.SetIPResponsePolicy(IPResponseAnswersFinding)
 	alert.SetSummaryNoticePolicy(IsSummaryNotice)
+	alert.SetWebTrafficPolicy(webTrafficFinding)
 }
 
 // IPResponseAnswersFinding is the alert.IPResponsePolicy that decides which
@@ -25,7 +25,9 @@ func init() {
 //
 // A challenge answers only the findings challenge routing would send to the
 // gate. The address being on the challenge list is itself proof the gate is
-// in use, so the policy does not consult challenge.enabled.
+// in use, so the policy does not consult challenge.enabled. A block of a
+// Cloudflare-covered address does not answer web traffic; the class split
+// applies that with the firewall's ranges, read once per batch.
 func IPResponseAnswersFinding(cfg *config.Config, f alert.Finding, blocked bool) bool {
 	if correlationReasonOf(f.Check) != reasonAttackerSide {
 		return false
@@ -46,12 +48,7 @@ func IPResponseAnswersFinding(cfg *config.Config, f alert.Finding, blocked bool)
 		// or a subnet; blocking one address does not answer the finding.
 		return false
 	}
-	if blocked {
-		// The Cloudflare accept on TCP 80/443 precedes the blocked drop, so
-		// a block of a covered address leaves its web traffic flowing.
-		return !webTrafficFinding(f) || !cloudflareCoversSource(cfg, f)
-	}
-	return challengeRoutesFinding(cfg, f)
+	return blocked || challengeRoutesFinding(cfg, f)
 }
 
 // webTrafficFinding reports whether f is about requests on the web ports: an
@@ -66,15 +63,4 @@ func webTrafficFinding(f alert.Finding) bool {
 	}
 	return ResponsePolicyFor(f.Check).Evidence == admission.FamilyHTTP ||
 		(f.Check == "ip_reputation" && f.Severity != alert.Critical)
-}
-
-// cloudflareCoversSource reads the Cloudflare ranges the firewall accepts on
-// its web ports, the list a block notice's coverage warning comes from.
-func cloudflareCoversSource(cfg *config.Config, f alert.Finding) bool {
-	ip := alert.ClassSourceIP(f)
-	if cfg == nil || ip == nil {
-		return false
-	}
-	v4, v6 := firewall.LoadCFState(cfg.StatePath)
-	return firewall.CloudflareRangesCover(v4, v6, ip.String())
 }
