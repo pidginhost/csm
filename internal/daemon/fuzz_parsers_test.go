@@ -15,6 +15,27 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 )
 
+func FuzzXPHPScriptForwardedAttribution(f *testing.F) {
+	for _, forwarded := range []string{"", "192.0.2.1", "192.0.2.1, 198.51.100.1", "text for 192.0.2.1", ", for , for ", "\t for /other.php?x=1"} {
+		f.Add(forwarded, "/extra,info for 192.0.2.2")
+	}
+	f.Fuzz(func(t *testing.T, forwarded, pathInfo string) {
+		for _, remote := range []string{"203.0.113.9", "2001:db8::9"} {
+			key, ip := parseXPHPScript("site-a.example/index.php for " + forwarded + ", " + remote)
+			if key != "site-a.example:/index.php" || ip != remote {
+				t.Fatalf("forwarded text changed attribution: key=%q ip=%q", key, ip)
+			}
+			// PHP_SELF contains PATH_INFO, which can also hold delimiters.
+			prefix := "site-a.example/index.php/" + pathInfo + " for "
+			baseline, baselineIP := parseXPHPScript(prefix + remote)
+			got, gotIP := parseXPHPScript(prefix + forwarded + ", " + remote)
+			if baselineIP != remote || gotIP != remote || got != baseline {
+				t.Fatalf("PATH_INFO or forwarding text changed attribution: baseline=(%q, %q), forwarded=(%q, %q)", baseline, baselineIP, got, gotIP)
+			}
+		}
+	})
+}
+
 func FuzzRelayRecipientDomain(f *testing.F) {
 	for _, local := range []string{"victim", "victim<admin@site.example>", "admin@site.example ", `escaped\"@site.example`, ""} {
 		f.Add(local)

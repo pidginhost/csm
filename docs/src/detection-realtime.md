@@ -490,6 +490,17 @@ Real-time inotify watcher on `/var/spool/exim/input` catches WordPress contact-f
 
 The detector runs four paths and only fires `email_php_relay_abuse` (Critical) when one of them crosses threshold. Paths 1 and 2 are scoped per-script, using the `host:/path` from the `X-PHP-Script` Exim header. Path 2b is per cPanel user. Path 4 is per HTTP source IP across distinct scripts. Paths 2 and 4 use a recipient-diversity gate that suppresses only known low-recipient notification mail.
 
+The source address is the final, server-observed address in `X-PHP-Script`.
+Client-supplied forwarding text cannot replace it. Behind a proxy this is the
+proxy's address; CSM does not recover a visitor address from untrusted forwarding
+text. A missing or invalid final address leaves IP attribution empty.
+
+The script label ends at the first ` for ` separator, keeping forwarding text
+out of per-script counts and queue actions. PHP includes `PATH_INFO` in this
+header without escaping separators. Paths containing a literal ` for ` therefore
+share the label before that separator; the source address is parsed separately
+from the header's end.
+
 | Path | What triggers it | Why it exists |
 |------|------------------|---------------|
 | **Path 1: header score** | Per-script: `From` domain not in the account's authorised domains AND additional signal (PHPMailer / suspicious Reply-To / suspicious User-Agent), evaluated over a rolling 5-min window once the script has emitted at least `header_score_volume_min` messages | The shape that matched the original incident: spoofed sender, contact-form-style. `FromMismatch` is a HARD precondition -- the score never accumulates without it |

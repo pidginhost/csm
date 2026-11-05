@@ -718,7 +718,7 @@ func computeSignals(h emailspool.Headers, authDomains map[string]struct{}, pol *
 // parseXPHPScript splits an X-PHP-Script header value into (scriptKey, sourceIP).
 // cPanel's EA-PHP header is `<SERVER_NAME><PHP_SELF> for <REMOTE_ADDR>`, or
 // `... for <X-Forwarded-For>, <REMOTE_ADDR>` when the client sent
-// X-Forwarded-For (verified with php-cgi 2026-11-05). Only the last element
+// X-Forwarded-For. Only the last element
 // is server-observed; earlier ones are client-supplied. sourceIP is that
 // element in canonical form, or "" when it is missing or not an IP.
 // Returns ("", "") on an empty header.
@@ -727,11 +727,16 @@ func parseXPHPScript(v string) (scriptKey, string) {
 	if v == "" {
 		return "", ""
 	}
-	forIdx := strings.LastIndex(v, " for ")
+	forIdx := strings.Index(v, " for ")
 	var url, ip string
 	if forIdx > 0 {
+		// Forwarding text must never become part of the script key. The
+		// header does not escape delimiters in PHP_SELF, so an ambiguous
+		// path is grouped under its prefix before the first delimiter.
 		url = strings.TrimSpace(v[:forIdx])
-		list := v[forIdx+5:]
+		// Parse the peer independently: PHP_SELF can contain PATH_INFO
+		// with commas and " for ", even when there is no forwarding list.
+		list := v[strings.LastIndex(v, " for ")+5:]
 		last := strings.TrimSpace(list[strings.LastIndexByte(list, ',')+1:])
 		if parsed := net.ParseIP(last); parsed != nil {
 			ip = parsed.String()
