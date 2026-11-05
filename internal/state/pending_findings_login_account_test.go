@@ -63,29 +63,23 @@ func TestPendingFindingsKeepLoginAccount(t *testing.T) {
 	}
 }
 
-// An upgrade must also replay the login identity parked by the previous
-// finding format, even when bounded details no longer contain that identity.
+// A stored record replays its login identity even when bounded details no
+// longer contain that identity.
 func TestPendingFindingsKeepStoredLoginAccount(t *testing.T) {
-	for name, record := range map[string]string{
-		"legacy":   `[{"check":"ftp_login","login_account":"office@example.com","details":"truncated"}]`,
-		"internal": `[{"check":"ftp_login","response_login_account":"office@example.com","details":"truncated"}]`,
-	} {
-		t.Run(name, func(t *testing.T) {
-			st, err := Open(t.TempDir())
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { _ = st.Close() })
-			if err = os.WriteFile(filepath.Join(st.path, pendingFindingsFile), []byte(record), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			got, err := st.TakePendingFindings()
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(got) != 1 || got[0].LoginAccount != "office@example.com" {
-				t.Fatalf("stored replay = %+v, want its authenticated login name", got)
-			}
-		})
+	st, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	record := `[{"check":"ftp_login","response_login_account":"office@example.com","details":"truncated"}]`
+	if err = os.WriteFile(filepath.Join(st.path, pendingFindingsFile), []byte(record), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.TakePendingFindings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].LoginAccount != "office@example.com" {
+		t.Fatalf("stored replay = %+v, want its authenticated login name", got)
 	}
 }

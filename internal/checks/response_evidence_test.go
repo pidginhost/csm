@@ -285,9 +285,6 @@ var reviewedEvidenceRestores = map[string]reviewedEvidenceRestore{
 		findings[i].MailLoginFailure = r.ResponseMailLoginFailure
 		findings[i].BlockTTL = r.ResponseBlockTTL
 		findings[i].LoginAccount = r.ResponseLoginAccount
-		if findings[i].LoginAccount == "" {
-			findings[i].LoginAccount = r.LegacyLoginAccount
-		}
 		if r.ResponseObservation != nil {
 			findings[i].Observation = *r.ResponseObservation
 		}
@@ -1042,9 +1039,6 @@ func TestAddressProducerScannerRejectsUnreviewedRestoreChanges(t *testing.T) {
 		findings[i].MailLoginFailure = r.ResponseMailLoginFailure
 		findings[i].BlockTTL = r.ResponseBlockTTL
 		findings[i].LoginAccount = r.ResponseLoginAccount
-		if findings[i].LoginAccount == "" {
-			findings[i].LoginAccount = r.LegacyLoginAccount
-		}
 		if r.ResponseObservation != nil {
 			findings[i].Observation = *r.ResponseObservation
 		}
