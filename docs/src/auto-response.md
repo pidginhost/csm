@@ -491,6 +491,9 @@ covers known customers sends one message with their count and the five most
 recent. Every applied block counts: scan blocks, permanent promotions,
 challenge timeouts, central intelligence and incident blocks.
 
+Queued FTP login identities survive restarts and upgrades. The internal
+identity field is omitted from public finding JSON.
+
 The alert is the false-positive check of automatic blocking, never an
 exemption. The block stands with its configured length, and its notice still
 goes to the daily summary. A login with stolen credentials also makes an

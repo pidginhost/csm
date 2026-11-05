@@ -577,6 +577,15 @@ func (m *mailSpray) TrustedAll(ip string, mailboxes []string) bool {
 	return true
 }
 
+// FirstUntrustedFailure returns the start of the address's active untrusted
+// failures. Trust earned beside one stale mailbox vouches for its own login,
+// but cannot establish the source as legitimate for an attack already underway.
+func (m *mailSpray) FirstUntrustedFailure(ip string) time.Time {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.firstUntrustedFailure(sprayEvidenceKey(sprayAddr(ip)), m.now())
+}
+
 // Purge drops failures, trust and corroboration older than the window, and
 // block markers a window past their end.
 func (m *mailSpray) Purge() {
@@ -1579,14 +1588,30 @@ func (m *mailSpray) excused(key, mailbox string, now time.Time) bool {
 	return false
 }
 
+func (m *mailSpray) firstUntrustedFailure(key string, now time.Time) time.Time {
+	var first time.Time
+	if e := m.ips[key]; e != nil {
+		for name, f := range e.failed {
+			if now.Sub(f.last) <= m.cfg.Window && !m.excused(key, name, now) && (first.IsZero() || f.first.Before(first)) {
+				first = f.first
+			}
+		}
+	}
+	return first
+}
+
 // keyTrustCount counts, up to limit, the mailboxes other than except that
-// addresses of evidence key hold aged trust on. The scan is bounded by the
-// trust pool and stops at limit.
+// addresses of evidence key hold aged trust on from before its active
+// untrusted failures. The scan is bounded by the trust pool and stops at limit.
 func (m *mailSpray) keyTrustCount(key, except string, limit int, now time.Time) int {
+	first := m.firstUntrustedFailure(key, now)
 	seen := make(map[string]struct{}, limit)
 	for ip := range m.trustByKey[key] {
 		for mb := range m.trustByIP[ip] {
 			if mb == except || !m.agedTrust(ip, mb, now) {
+				continue
+			}
+			if !first.IsZero() && !m.trust[sprayTrustKey{ip, mb}].first.Before(first) {
 				continue
 			}
 			seen[mb] = struct{}{}

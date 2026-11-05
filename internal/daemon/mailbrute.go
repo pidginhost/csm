@@ -104,16 +104,16 @@ func (e *mailIPEntry) establishedGood(account string, now time.Time, window time
 }
 
 // establishedOtherGoodAccounts counts mailboxes other than account for which
-// this IP holds established good standing. Same-window successes are not
-// established, so a stuffing run that already landed other mailboxes earns
-// nothing here. Caller must hold t.mu.
-func (e *mailIPEntry) establishedOtherGoodAccounts(account string, now time.Time, window time.Duration) int {
+// this IP holds established good standing from before the active attack.
+// Standing learned alongside its failures cannot vouch for that attack even
+// after it ages. Caller must hold t.mu.
+func (e *mailIPEntry) establishedOtherGoodAccounts(account string, now time.Time, window time.Duration, failuresSince time.Time) int {
 	n := 0
 	for acct := range e.goodLast {
 		if acct == account {
 			continue
 		}
-		if e.establishedGood(acct, now, window) {
+		if e.establishedGood(acct, now, window) && (failuresSince.IsZero() || e.goodFirst[acct].Before(failuresSince)) {
 			n++
 		}
 	}
@@ -1185,7 +1185,11 @@ func (t *mailAuthTracker) recordSuccessAt(ip, account string, at time.Time, kind
 	// than a takeover: real credential attacks come from sources with no
 	// legitimate multi-mailbox history on this host. Keep the finding for
 	// visibility but downgrade it below the auto-block bar.
-	if n := e.establishedOtherGoodAccounts(account, now, t.window); n >= mailEstablishedSourceAccounts {
+	var failuresSince time.Time
+	if t.spray != nil {
+		failuresSince = t.spray.FirstUntrustedFailure(ip)
+	}
+	if n := e.establishedOtherGoodAccounts(account, now, t.window, failuresSince); n >= mailEstablishedSourceAccounts {
 		severity = alert.High
 		message += " (established multi-mailbox source)"
 		details = fmt.Sprintf("Source IP holds established successful logins to %d other mailboxes on this host, so this is more likely a shared office or agency device with a stale credential than a takeover. Verify with the customer before acting; not auto-blocked.", n)

@@ -41,6 +41,9 @@ type pendingFinding struct {
 	// ResponseLoginAccount keeps an FTP login's authenticated name for
 	// customer history.
 	ResponseLoginAccount string `json:"response_login_account,omitempty"`
+	// Older pending records used the public finding key. Decode it only
+	// here so an upgrade preserves queued identities without exposing them.
+	LegacyLoginAccount string `json:"login_account,omitempty"`
 }
 
 func toPendingRecords(findings []alert.Finding) []pendingFinding {
@@ -83,6 +86,9 @@ func fromPendingRecords(records []pendingFinding) []alert.Finding {
 		findings[i].MailLoginFailure = r.ResponseMailLoginFailure
 		findings[i].BlockTTL = r.ResponseBlockTTL
 		findings[i].LoginAccount = r.ResponseLoginAccount
+		if findings[i].LoginAccount == "" {
+			findings[i].LoginAccount = r.LegacyLoginAccount
+		}
 		if r.ResponseObservation != nil {
 			findings[i].Observation = *r.ResponseObservation
 		}
