@@ -478,9 +478,7 @@ func (c *Collector) SendDue(now time.Time) bool {
 			c.retries[channel] = r
 		}
 	}
-	view := c.summaryView(pending.Summary)
-	body := c.summaryBody(view, pending.Until)
-	c.deliver(plan, c.summarySubject(view), body, c.summaryPayload(view, body), func(channel string, attempted bool, err error) {
+	c.deliverSummary(plan, pending, func(channel string, attempted bool, err error) {
 		switch {
 		case pending.done(channel), !attempted && waiting(channel):
 		case err == nil:
@@ -508,6 +506,50 @@ func (c *Collector) SendDue(now time.Time) bool {
 	c.retries = nil
 	c.save()
 	return true
+}
+
+// deliverSummary offers p to each destination of plan. A renderer, an
+// injected lookup or a sink that panics fails its destinations as a returned
+// error would, with the same backoff and loss accounting: a panic that
+// repeats at every start must not take the daemon down each time.
+func (c *Collector) deliverSummary(plan *digestDeliveryPlan, p *pendingSummary, outcome deliveryOutcome) {
+	subject, body, payload, err := c.renderSummary(p)
+	sinks := map[string]func() error{
+		"email":   func() error { return c.opts.EmailSink(subject, body) },
+		"webhook": func() error { return c.opts.WebhookSink(payload) },
+	}
+	for _, channel := range summaryChannels {
+		c.deliverTo(plan.job(channel), channel, func() (sendErr error) {
+			if err != nil {
+				return err
+			}
+			defer func() {
+				if r := recover(); r != nil {
+					sendErr = panicError(channel+" sink", r)
+				}
+			}()
+			return sinks[channel]()
+		}, outcome)
+	}
+}
+
+func (c *Collector) renderSummary(p *pendingSummary) (subject, body string, payload WebhookPayload, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = panicError("daily summary render", r)
+		}
+	}()
+	view := c.summaryView(p.Summary)
+	body = c.summaryBody(view, p.Until)
+	return c.summarySubject(view), body, c.summaryPayload(view, body), nil
+}
+
+// panicError keeps an error panic value matchable with errors.Is.
+func panicError(what string, r any) error {
+	if e, ok := r.(error); ok {
+		return fmt.Errorf("%s panicked: %w", what, e)
+	}
+	return fmt.Errorf("%s panicked: %v", what, r)
 }
 
 // retryDue reports whether the pending window has a destination to try now,

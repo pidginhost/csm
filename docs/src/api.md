@@ -914,7 +914,9 @@ are still handled. Explicit destination selection applies only to live alerts
 and keeps its error when that alert channel is disabled. Daily summaries use
 all enabled alert channels except phpanel.
 One minute waiting or active reports lag. A returned sink error
-counts one lost notification and stays in flight through error logging. If an
+counts one lost notification and stays in flight through error logging. A
+daily summary sink, or the summary rendering, that panics fails the same way
+and is logged with the panic, so it cannot stop the daemon. If an
 operation exits without returning, its attempted delivery reports
 `delivery_uncertain` for one minute and retains `dropped_lower_bound`; a remaining
 destination that was never attempted counts one confirmed loss. Known losses

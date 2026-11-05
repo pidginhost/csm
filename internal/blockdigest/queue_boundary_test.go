@@ -24,6 +24,9 @@ func TestBlockDigestQueueInterruptedDelivery(t *testing.T) {
 			}
 			t.Run(phase+"/"+kind, func(t *testing.T) {
 				sentinel := errors.New("fixture interrupted delivery")
+				// A summary sink that panics fails like one returning the
+				// error; only an exit without return leaves it unreturned.
+				sinkReturned := inLogger || !goexit
 				fail := true
 				emailCalls, webhookCalls := 0, 0
 				interrupt := func() {
@@ -45,7 +48,7 @@ func TestBlockDigestQueueInterruptedDelivery(t *testing.T) {
 					},
 					WebhookSink: func(WebhookPayload) error { webhookCalls++; return nil },
 					OnError: func(channel string, err error) {
-						if channel != "email" || err != sentinel {
+						if channel != "email" || !errors.Is(err, sentinel) {
 							t.Error("returned sink error changed")
 						}
 						interrupt()
@@ -73,13 +76,13 @@ func TestBlockDigestQueueInterruptedDelivery(t *testing.T) {
 				rows := digestQueueStatuses(t, c, time.Now())
 				email, webhook, records := rows["email"], rows["webhook"], rows["records"]
 				wantLoss := uint64(0)
-				if inLogger {
+				if sinkReturned {
 					wantLoss = 1
 				}
-				if email.Depth != 0 || email.InFlight != 0 || email.DroppedTotal != wantLoss || email.DroppedLowerBound == inLogger {
+				if email.Depth != 0 || email.InFlight != 0 || email.DroppedTotal != wantLoss || email.DroppedLowerBound == sinkReturned {
 					t.Fatalf("first sink outcome: %+v", email)
 				}
-				if !inLogger && email.Reason != "delivery_uncertain" {
+				if !sinkReturned && email.Reason != "delivery_uncertain" {
 					t.Fatalf("unreturned sink hidden: %+v", email)
 				}
 				if webhook.Depth != 0 || webhook.InFlight != 0 || webhook.DroppedTotal != 1 || webhook.DroppedLowerBound || webhookCalls != 0 {
@@ -97,7 +100,7 @@ func TestBlockDigestQueueInterruptedDelivery(t *testing.T) {
 				if emailCalls != 2 || webhookCalls != 1 {
 					t.Fatalf("retry policy changed: email=%d webhook=%d", emailCalls, webhookCalls)
 				}
-				if row := rows["email"]; row.Status != "ok" || row.DroppedTotal != wantLoss || row.DroppedLowerBound == inLogger || row.Depth != 0 || row.InFlight != 0 {
+				if row := rows["email"]; row.Status != "ok" || row.DroppedTotal != wantLoss || row.DroppedLowerBound == sinkReturned || row.Depth != 0 || row.InFlight != 0 {
 					t.Fatalf("recovery erased prior outcome: %+v", row)
 				}
 				if row := rows["webhook"]; row.Status != "ok" || row.DroppedTotal != 1 || row.Depth != 0 || row.InFlight != 0 {

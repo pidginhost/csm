@@ -3,6 +3,7 @@ package blockdigest
 import (
 	"encoding/json"
 	"errors"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -35,18 +36,22 @@ func TestSummaryFailureRetriesOnlyFailedDestinationAfterRestart(t *testing.T) {
 
 func TestSummaryPersistsWholeWindowBeforeCallingSink(t *testing.T) {
 	st := &summaryStore{}
+	// The sink never returns, as when the process dies during the send.
 	c := summaryCollector(Options{SaveSummary: st.save,
-		EmailSink: func(string, string) error { panic("simulated process death") }})
+		EmailSink: func(string, string) error { runtime.Goexit(); return nil }})
 	c.NoteHandled([]Handled{{Check: "challenge_route", Severity: "WARNING"}})
 	due := summaryDueOf(c)
-	func() {
-		defer func() {
-			if recover() == nil {
-				t.Error("sink did not simulate a crash")
-			}
-		}()
+	done := make(chan struct{})
+	returned := false
+	go func() {
+		defer close(done)
 		c.SendDue(due)
+		returned = true
 	}()
+	<-done
+	if returned {
+		t.Error("sink did not simulate a crash")
+	}
 	cap := &summaryCapture{}
 	restarted := summaryCollector(Options{Now: func() time.Time { return due.Add(time.Minute) }, LoadSummary: st.load, SaveSummary: st.save, EmailSink: cap.email})
 	runStopped(t, restarted)
@@ -408,4 +413,82 @@ func TestSummaryFarFutureLastSentIsIgnored(t *testing.T) {
 	if len(logs) != 1 || !strings.Contains(logs[0], "ahead") {
 		t.Fatalf("logs = %q, want one note about the clock", logs)
 	}
+}
+
+// A summary sink or renderer that panics fails its destinations like a
+// returned error, so a deterministic panic cannot crash the daemon at every
+// start: SendDue returns, OnError names the panic, and the failed
+// destination keeps its backoff and counts its loss once.
+func TestSummaryPanicFailsDelivery(t *testing.T) {
+	t.Run("sink", func(t *testing.T) {
+		cap := &summaryCapture{}
+		var warnings []string
+		panicking := true
+		c := summaryCollector(Options{
+			EmailSink: func(subject, body string) error {
+				if panicking {
+					panic("fixture email sink")
+				}
+				return cap.email(subject, body)
+			},
+			WebhookSink: cap.webhook,
+			OnError:     func(channel string, err error) { warnings = append(warnings, channel+": "+err.Error()) },
+		})
+		due := summaryDueOf(c)
+		if !c.SendDue(due) {
+			t.Fatal("due summary not attempted")
+		}
+		if len(cap.webhooks) != 1 || len(warnings) != 1 || !strings.HasPrefix(warnings[0], "email: ") || !strings.Contains(warnings[0], "fixture email sink") {
+			t.Fatalf("webhooks = %d, warnings = %q; want the webhook delivered and the email panic reported", len(cap.webhooks), warnings)
+		}
+		if row := digestQueueStatuses(t, c, time.Now())["email"]; row.DroppedTotal != 1 || row.DroppedLowerBound || row.Depth != 1 {
+			t.Fatalf("email row = %+v, want one counted loss and one waiting retry", row)
+		}
+		c.SendDue(due.Add(30 * time.Second))
+		panicking = false
+		c.SendDue(due.Add(time.Minute))
+		if len(cap.sent()) != 1 || len(cap.webhooks) != 1 {
+			t.Fatalf("emails = %d, webhooks = %d; want the email retried once after its backoff", len(cap.sent()), len(cap.webhooks))
+		}
+		if row := digestQueueStatuses(t, c, time.Now())["email"]; row.DroppedTotal != 1 || row.Depth != 0 || row.Status != "ok" {
+			t.Fatalf("email row after the retry = %+v", row)
+		}
+	})
+
+	t.Run("renderer at start", func(t *testing.T) {
+		st := &summaryStore{}
+		cap := &summaryCapture{}
+		var warnings []string
+		panicking := true
+		first := summaryCollector(Options{SaveSummary: st.save})
+		first.NoteHandled([]Handled{{Check: "challenge_route", Severity: "WARNING", IP: "198.51.100.7"}})
+		first.Flush()
+		due := summaryDueOf(first)
+		// The host was down at the send time: the next start sends the
+		// saved window, and its country lookup panics every time.
+		restarted := summaryCollector(Options{Now: func() time.Time { return due.Add(time.Hour) }, LoadSummary: st.load, SaveSummary: st.save,
+			CountryOf: func(string) string {
+				if panicking {
+					panic("fixture country lookup")
+				}
+				return "NL"
+			},
+			EmailSink: cap.email, WebhookSink: cap.webhook,
+			OnError: func(channel string, err error) { warnings = append(warnings, channel+": "+err.Error()) },
+		})
+		runStopped(t, restarted)
+		if len(cap.sent()) != 0 || len(cap.webhooks) != 0 || len(warnings) != 2 {
+			t.Fatalf("emails = %d, webhooks = %d, warnings = %q; want both destinations failed", len(cap.sent()), len(cap.webhooks), warnings)
+		}
+		for _, w := range warnings {
+			if !strings.Contains(w, "fixture country lookup") {
+				t.Fatalf("warning %q does not name the panic", w)
+			}
+		}
+		panicking = false
+		restarted.SendDue(due.Add(time.Hour + time.Minute))
+		if len(cap.sent()) != 1 || len(cap.webhooks) != 1 || !strings.Contains(cap.sent()[0].body, "198.51.100.7 (NL): 1") {
+			t.Fatalf("emails = %+v, webhooks = %d; want the saved window delivered once the lookup works", cap.sent(), len(cap.webhooks))
+		}
+	})
 }

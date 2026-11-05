@@ -69,12 +69,15 @@ func TestBlockDigestDisabledDestinationIsNotLost(t *testing.T) {
 				case <-time.After(5 * time.Second):
 					t.Fatal("flush did not join")
 				}
-				if returned != (outcome == "returned_error") || (outcome == "panic" && gotPanic != sentinel) || (outcome != "panic" && gotPanic != nil) {
+				// A summary sink that panics fails like one returning an
+				// error; only an exit without return interrupts the send.
+				interrupted := outcome == "goexit"
+				if returned == interrupted || gotPanic != nil {
 					t.Fatal("original abnormal-exit policy changed")
 				}
 				rows := d.QueueStatuses()
 				wantLoss := uint64(0)
-				if enabled && outcome != "returned_error" {
+				if enabled && interrupted {
 					wantLoss = 1
 				}
 				row := rows["block_digest.webhook"]
@@ -82,7 +85,7 @@ func TestBlockDigestDisabledDestinationIsNotLost(t *testing.T) {
 					t.Errorf("notification loss must reflect actual configured destination: enabled=%v got=%+v want_lost=%d", enabled, row, wantLoss)
 				}
 				wantCalls := 0
-				if enabled && outcome == "returned_error" {
+				if enabled && !interrupted {
 					wantCalls = 1
 				}
 				if emailCalls != 1 || webhookCalls != wantCalls {
@@ -93,8 +96,8 @@ func TestBlockDigestDisabledDestinationIsNotLost(t *testing.T) {
 				// A retry of the same summary, well before the next one is due.
 				d.blockDigest.SendDue(summaryTestNoon().Add(time.Minute))
 				// A returned webhook success was checkpointed even though
-				// email failed. Abnormal exits never reached the webhook.
-				if enabled && outcome != "returned_error" {
+				// email failed. An interrupted send never reached the webhook.
+				if enabled && interrupted {
 					wantCalls++
 				}
 				if emailCalls != 2 || webhookCalls != wantCalls {
