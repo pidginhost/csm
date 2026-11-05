@@ -35,6 +35,11 @@ script shares and recipient domains are copies.
 
 When that call shows the client would fire, the evaluator first reads the
 sites' access logs for staff evidence, outside the lock and without claiming.
+Each distinct log is read once per crossing, even when several scripts share it.
+Only successful GET requests to recognized staff pages qualify; public or
+subscriber pages and ambiguous request paths do not. The latest qualifying
+request time across those logs sets the staff expiry, so rereading an old log
+cannot renew an exemption. Invalid, future and expired timestamps do not qualify.
 It marks any account with evidence as staff, then repeats the call, which
 claims the cooldown only if the remaining accounts still cross the threshold.
 

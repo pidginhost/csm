@@ -860,13 +860,13 @@ const (
 // login: a GET answered 200. Order-list quick actions and other ajax admin
 // work mail without passing such a page, so only this evidence spares the
 // staff using them. A missing or unreadable log is no evidence.
-func formRelayStaffAccounts(key string, shares map[scriptKey]formRelayShare) []string {
-	found := make(map[string]bool)
-	var out []string
+func formRelayStaffAccounts(key string, shares map[scriptKey]formRelayShare, now time.Time) map[string]time.Time {
+	found := make(map[string]time.Time)
+	read := make(map[string]bool)
 	for id, share := range shares {
 		user := share.CPUser
 		host, _, _ := strings.Cut(id, ":/")
-		if found[user] || !domlogName(user) || !domlogName(host) {
+		if !domlogName(user) || !domlogName(host) {
 			continue
 		}
 		names := []string{host, host + "-ssl_log"}
@@ -874,14 +874,17 @@ func formRelayStaffAccounts(key string, shares map[scriptKey]formRelayShare) []s
 			names = append(names, bare, bare+"-ssl_log")
 		}
 		for _, name := range names {
-			if domlogShowsStaff(filepath.Join(formRelayDomlogRoot, user, name), key) {
-				found[user] = true
-				out = append(out, user)
-				break
+			path := filepath.Join(formRelayDomlogRoot, user, name)
+			if read[path] {
+				continue
+			}
+			read[path] = true
+			if at := domlogStaffSeenAt(path, key, now); at.After(found[user]) {
+				found[user] = at
 			}
 		}
 	}
-	return out
+	return found
 }
 
 // domlogName reports a single path element. The host comes from the
@@ -890,53 +893,81 @@ func domlogName(s string) bool {
 	return s != "" && s != "." && s != ".." && !strings.ContainsAny(s, "/\x00")
 }
 
-// domlogShowsStaff scans the last formRelayDomlogTail bytes of path. The
+// domlogStaffSeenAt scans the last formRelayDomlogTail bytes of path. The
 // line the tail starts inside is skipped, and so is any line longer than
 // formRelayDomlogLine: a piece of either may be client text shaped like a
 // log line.
-func domlogShowsStaff(path, key string) bool {
+func domlogStaffSeenAt(path, key string, now time.Time) time.Time {
 	fi, err := os.Stat(path)
 	if err != nil || !fi.Mode().IsRegular() {
-		return false // also keeps a FIFO from blocking the open
+		return time.Time{} // also keeps a FIFO from blocking the open
 	}
 	// #nosec G304 -- fixed cPanel log root; both names are checked by domlogName.
 	f, err := os.Open(path)
 	if err != nil {
-		return false
+		return time.Time{}
 	}
 	defer func() { _ = f.Close() }()
 	off := max(fi.Size()-formRelayDomlogTail, 0)
 	r := bufio.NewReaderSize(io.NewSectionReader(f, off, fi.Size()-off), formRelayDomlogLine)
 	skip := off > 0
+	var latest time.Time
+	cutoff := now.Add(-formRelayStaffTTL)
 	for {
 		line, more, err := r.ReadLine()
 		for more && err == nil {
 			skip = true
 			_, more, err = r.ReadLine()
 		}
-		if err != nil {
-			return false
+		if err == io.EOF {
+			return latest
 		}
-		if !skip && isStaffAdminRequest(string(line), key) {
-			return true
+		if err != nil {
+			return time.Time{}
+		}
+		if !skip {
+			ip, _, _ := strings.Cut(string(line), " ")
+			if formRelayKey(ip) == key {
+				rec, ok := checks.ParseCrawlLogLine(string(line), nil)
+				if ok && rec.TimeOK && !rec.Time.Before(cutoff) && !rec.Time.After(now) &&
+					rec.Time.After(latest) && isStaffAdminRequest(rec) {
+					latest = rec.Time
+				}
+			}
 		}
 		skip = false
 	}
 }
 
-// isStaffAdminRequest reports an access log line in which client key got a
-// login-gated WordPress admin page.
-func isStaffAdminRequest(line, key string) bool {
-	ip, _, _ := strings.Cut(line, " ")
-	if formRelayKey(ip) != key {
-		return false
-	}
-	rec, ok := checks.ParseCrawlLogLine(line, nil)
-	if !ok || rec.Method != "GET" || rec.Status != 200 || rec.Target == "" {
+// Log evidence needs a known staff page, not just an apparent admin script:
+// public endpoints return 200 too, and servers may normalize the raw path.
+// admin.php also serves subscribers; plugin capabilities are not in the log.
+func isStaffAdminRequest(rec checks.CrawlLogRecord) bool {
+	if rec.Method != "GET" || rec.Status != 200 || rec.Target == "" || rec.TargetInvalid || rec.TargetOverflow {
 		return false
 	}
 	path, _, ok := crawlid.SplitTarget(rec.Target)
-	return ok && isAuthenticatedAdminScript(path)
+	if !ok || strings.ContainsAny(path, "%\\#") || scriptPHPPath(path) != strings.ToLower(path) {
+		return false
+	}
+	for segment := range strings.SplitSeq(path, "/") {
+		if segment == "." || segment == ".." {
+			return false
+		}
+	}
+	slash := strings.LastIndexByte(path, '/')
+	if !strings.HasSuffix(path[:slash+1], "/wp-admin/") {
+		return false
+	}
+	switch path[slash+1:] {
+	case "edit.php", "post.php", "post-new.php", "upload.php",
+		"edit-comments.php", "users.php", "options-general.php", "options-writing.php",
+		"options-reading.php", "options-discussion.php", "options-media.php",
+		"options-permalink.php", "options-privacy.php", "plugins.php", "themes.php",
+		"edit-tags.php", "nav-menus.php", "tools.php", "import.php", "export.php", "site-health.php":
+		return true
+	}
+	return false
 }
 
 // config returns the live config so a reload that retunes or disables the
@@ -1030,8 +1061,8 @@ func (e *evaluator) formRelayFindings(k scriptKey, ip, cpuser string, spread int
 	if snapshot.FireClient {
 		// The logs are read outside the store lock; the claim comes after,
 		// on what is left once staff accounts drop out.
-		for _, user := range formRelayStaffAccounts(key, snapshot.Shares) {
-			e.form.markStaff(user, key, now)
+		for user, at := range formRelayStaffAccounts(key, snapshot.Shares, now) {
+			e.form.markStaff(user, key, at)
 		}
 		snapshot = e.form.evaluate(key, now, window, spread, ignored, true)
 	}

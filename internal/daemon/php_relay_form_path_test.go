@@ -4,12 +4,15 @@ package daemon
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/checks"
@@ -634,7 +637,11 @@ func writeDomlog(t *testing.T, user, file string, lines ...string) {
 }
 
 func domlogLine(ip, method, target string, status int) string {
-	return fmt.Sprintf(`%s - - [05/Nov/2026:10:00:00 +0000] "%s %s HTTP/1.1" %d 512 "-" "Mozilla/5.0"`, ip, method, target, status)
+	return domlogLineAt(ip, method, target, status, path6T0)
+}
+
+func domlogLineAt(ip, method, target string, status int, at time.Time) string {
+	return fmt.Sprintf(`%s - - [%s] "%s %s HTTP/1.1" %d 512 "-" "Mozilla/5.0"`, ip, at.Format("02/Jan/2006:15:04:05 -0700"), method, target, status)
 }
 
 // A shop owner completing orders from the order list mails each buyer
@@ -669,15 +676,38 @@ func TestPath6_AccessLogWithoutAdminPageIsNoEvidence(t *testing.T) {
 		client string
 		lines  []string
 	}{
-		"login redirect":  {path6IP, []string{domlogLine(path6IP, "GET", "/wp-admin/edit.php", 302), domlogLine(path6IP, "GET", "/wp-login.php?redirect_to=x", 200)}},
-		"admin-ajax":      {path6IP, []string{domlogLine(path6IP, "GET", "/wp-admin/admin-ajax.php?action=x", 200)}},
-		"profile":         {path6IP, []string{domlogLine(path6IP, "GET", "/wp-admin/profile.php", 200)}},
-		"dashboard":       {path6IP, []string{domlogLine(path6IP, "GET", "/wp-admin/index.php", 200), domlogLine(path6IP, "GET", "/wp-admin/", 200)}},
-		"post":            {path6IP, []string{domlogLine(path6IP, "POST", "/wp-admin/edit.php", 200)}},
-		"path info":       {path6IP, []string{domlogLine(path6IP, "GET", "/wp-admin/admin-ajax.php/edit.php", 200)}},
-		"other client":    {path6IP, []string{domlogLine("198.51.100.20", "GET", "/wp-admin/edit.php", 200)}},
-		"other /64":       {"2001:db8::1", []string{domlogLine("2001:db8:0:1::1", "GET", "/wp-admin/edit.php", 200)}},
-		"forged fragment": {path6IP, []string{"junk " + domlogLine(path6IP, "GET", "/wp-admin/edit.php", 200)}},
+		"public styles":       {path6IP, []string{domlogLine(path6IP, "GET", "/wp-admin/load-styles.php?c=1", 200)}},
+		"public scripts":      {path6IP, []string{domlogLine(path6IP, "GET", "/wp-admin/load-scripts.php?c=1", 200)}},
+		"installer":           {path6IP, []string{domlogLine(path6IP, "GET", "/wp-admin/install.php", 200)}},
+		"upgrade":             {path6IP, []string{domlogLine(path6IP, "GET", "/wp-admin/upgrade.php", 200)}},
+		"setup":               {path6IP, []string{domlogLine(path6IP, "GET", "/wp-admin/setup-config.php", 200)}},
+		"about":               {path6IP, []string{domlogLine(path6IP, "GET", "/wp-admin/about.php", 200)}},
+		"credits":             {path6IP, []string{domlogLine(path6IP, "GET", "/wp-admin/credits.php", 200)}},
+		"freedoms":            {path6IP, []string{domlogLine(path6IP, "GET", "/wp-admin/freedoms.php", 200)}},
+		"privacy":             {path6IP, []string{domlogLine(path6IP, "GET", "/wp-admin/privacy.php", 200)}},
+		"traversal after PHP": {path6IP, []string{domlogLine(path6IP, "GET", "/wp-admin/edit.php/../../wp-login.php", 200)}},
+		"encoded ajax":        {path6IP, []string{domlogLine(path6IP, "GET", "/wp-admin/admin%2Dajax.php?action=heartbeat", 200)}},
+		"encoded path":        {path6IP, []string{domlogLine(path6IP, "GET", "/shop%2fwp-admin/edit.php", 200)}},
+		"dot segment":         {path6IP, []string{domlogLine(path6IP, "GET", "/shop/./wp-admin/edit.php", 200)}},
+		"parent segment":      {path6IP, []string{domlogLine(path6IP, "GET", "/shop/../wp-admin/edit.php", 200)}},
+		"trailing info":       {path6IP, []string{domlogLine(path6IP, "GET", "/wp-admin/edit.php/extra", 200)}},
+		"trailing slash":      {path6IP, []string{domlogLine(path6IP, "GET", "/wp-admin/edit.php/", 200)}},
+		"unknown page":        {path6IP, []string{domlogLine(path6IP, "GET", "/wp-admin/custom.php", 200)}},
+		"unknown options":     {path6IP, []string{domlogLine(path6IP, "GET", "/wp-admin/options-public.php", 200)}},
+		"admin post":          {path6IP, []string{domlogLine(path6IP, "GET", "/wp-admin/admin-post.php", 200)}},
+		"earlier PHP":         {path6IP, []string{domlogLine(path6IP, "GET", "/index.php/wp-admin/edit.php", 200)}},
+		"case variant":        {path6IP, []string{domlogLine(path6IP, "GET", "/WP-ADMIN/EDIT.PHP", 200)}},
+		"admin bootstrap":     {path6IP, []string{domlogLine(path6IP, "GET", "/wp-admin/admin.php", 200)}},
+		"plugin page":         {path6IP, []string{domlogLine(path6IP, "GET", "/wp-admin/admin.php?page=subscriber-dashboard", 200)}},
+		"login redirect":      {path6IP, []string{domlogLine(path6IP, "GET", "/wp-admin/edit.php", 302), domlogLine(path6IP, "GET", "/wp-login.php?redirect_to=x", 200)}},
+		"admin-ajax":          {path6IP, []string{domlogLine(path6IP, "GET", "/wp-admin/admin-ajax.php?action=x", 200)}},
+		"profile":             {path6IP, []string{domlogLine(path6IP, "GET", "/wp-admin/profile.php", 200)}},
+		"dashboard":           {path6IP, []string{domlogLine(path6IP, "GET", "/wp-admin/index.php", 200), domlogLine(path6IP, "GET", "/wp-admin/", 200)}},
+		"post":                {path6IP, []string{domlogLine(path6IP, "POST", "/wp-admin/edit.php", 200)}},
+		"path info":           {path6IP, []string{domlogLine(path6IP, "GET", "/wp-admin/admin-ajax.php/edit.php", 200)}},
+		"other client":        {path6IP, []string{domlogLine("198.51.100.20", "GET", "/wp-admin/edit.php", 200)}},
+		"other /64":           {"2001:db8::1", []string{domlogLine("2001:db8:0:1::1", "GET", "/wp-admin/edit.php", 200)}},
+		"forged fragment":     {path6IP, []string{"junk " + domlogLine(path6IP, "GET", "/wp-admin/edit.php", 200)}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			p, findings := path6Pipeline(t, "a")
@@ -685,6 +715,9 @@ func TestPath6_AccessLogWithoutAdminPageIsNoEvidence(t *testing.T) {
 			feedVictims(t, p, "a", path6Ajax, tc.client, 0, 5, path6T0)
 			if got := path6Of(*findings, path6Check); len(got) != 1 {
 				t.Fatalf("client findings = %d, want 1", len(got))
+			}
+			if p.eng.form.isStaff("usera", formRelayKey(tc.client), path6T0.Add(2*time.Hour)) {
+				t.Fatal("untrusted log evidence granted staff exemption")
 			}
 		})
 	}
@@ -753,5 +786,137 @@ func TestPath6_AccessLogStaffLeavesOtherAccounts(t *testing.T) {
 	}
 	if len(scripts) != 1 || scripts[0].ScriptKey != "site-b.example:"+path6Form {
 		t.Fatalf("script findings = %+v, want site-b's form only", scripts)
+	}
+}
+
+// Public requests cannot fill the staff set and evict real staff.
+func TestPath6_PublicRequestsCannotEvictStaff(t *testing.T) {
+	p, findings := path6Pipeline(t, "a")
+	for i := 1; i <= formRelayStaffPerAccount; i++ {
+		p.eng.form.markStaff("usera", formRelayKey(fmt.Sprintf("192.0.2.%d", i)), path6T0)
+	}
+	var lines []string
+	for i := 1; i <= formRelayStaffPerAccount+1; i++ {
+		lines = append(lines, domlogLine(fmt.Sprintf("198.51.100.%d", i), "GET", "/wp-admin/load-styles.php?c=1", 200))
+	}
+	writeDomlog(t, "usera", "site-a.example", lines...)
+	for i := 1; i <= formRelayStaffPerAccount+1; i++ {
+		feedVictims(t, p, "a", path6Ajax, fmt.Sprintf("198.51.100.%d", i), i*5, 5, path6T0)
+	}
+	if got := len(path6Of(*findings, path6Check)); got != formRelayStaffPerAccount+1 {
+		t.Errorf("bot findings = %d, want %d", got, formRelayStaffPerAccount+1)
+	}
+	for i := 1; i <= formRelayStaffPerAccount; i++ {
+		if !p.eng.form.isStaff("usera", formRelayKey(fmt.Sprintf("192.0.2.%d", i)), path6T0.Add(time.Hour)) {
+			t.Fatalf("bot requests evicted staff client %d", i)
+		}
+	}
+}
+
+func TestPath6_AccessLogStaffEvidenceExpires(t *testing.T) {
+	for name, line := range map[string]string{
+		"expired":      domlogLineAt(path6IP, "GET", "/wp-admin/edit.php", 200, path6T0.Add(-formRelayStaffTTL-time.Second)),
+		"future":       domlogLineAt(path6IP, "GET", "/wp-admin/edit.php", 200, path6T0.Add(24*time.Hour)),
+		"invalid time": strings.Replace(domlogLine(path6IP, "GET", "/wp-admin/edit.php", 200), path6T0.Format("02/Jan/2006:15:04:05 -0700"), "not-a-time", 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			p, findings := path6Pipeline(t, "a")
+			writeDomlog(t, "usera", "site-a.example", line)
+			feedVictims(t, p, "a", path6Ajax, path6IP, 0, 5, path6T0)
+			if got := len(path6Of(*findings, path6Check)); got != 1 {
+				t.Fatalf("invalid evidence suppressed crossing: %d client findings", got)
+			}
+		})
+	}
+	t.Run("latest request time survives rereads", func(t *testing.T) {
+		p, findings := path6Pipeline(t, "a")
+		older := path6T0.Add(-48 * time.Hour)
+		latest := path6T0.Add(-24 * time.Hour)
+		writeDomlog(t, "usera", "site-a.example", domlogLineAt(path6IP, "GET", "/wp-admin/edit.php", 200, older))
+		writeDomlog(t, "usera", "site-a.example-ssl_log",
+			domlogLineAt(path6IP, "GET", "/wp-admin/edit.php", 200, older),
+			domlogLineAt(path6IP, "GET", "/wp-admin/post.php", 200, latest))
+		feedVictims(t, p, "a", path6Ajax, path6IP, 0, 5, path6T0)
+		requireNoPath6(t, *findings)
+		key := formRelayKey(path6IP)
+		if got := p.eng.form.staff["usera"][key]; !got.Equal(latest) {
+			t.Fatalf("staff timestamp = %v, want latest request %v", got, latest)
+		}
+		afterExpiry := latest.Add(formRelayStaffTTL + time.Second)
+		p.eng.form.sweep(afterExpiry, 24*time.Hour)
+		feedVictims(t, p, "a", path6Ajax, path6IP, 5, 5, afterExpiry)
+		if got := len(path6Of(*findings, path6Check)); got != 1 {
+			t.Fatalf("rereading stale evidence renewed staff: %d client findings", got)
+		}
+	})
+}
+
+// inotify counts real opens, including repeated reads of a log with no evidence.
+func TestPath6_AccessLogsReadOncePerCrossing(t *testing.T) {
+	p, findings := path6Pipeline(t, "a")
+	fd, err := unix.InotifyInit1(unix.IN_NONBLOCK | unix.IN_CLOEXEC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = unix.Close(fd) })
+	watches := make(map[uint32]string)
+	for _, name := range []string{"site-a.example", "site-a.example-ssl_log", "www.site-a.example", "www.site-a.example-ssl_log"} {
+		writeDomlog(t, "usera", name, domlogLine(path6IP, "GET", "/", 200))
+		wd, watchErr := unix.InotifyAddWatch(fd, filepath.Join(formRelayDomlogRoot, "usera", name), unix.IN_OPEN|unix.IN_CLOSE_NOWRITE)
+		if watchErr != nil {
+			t.Fatal(watchErr)
+		}
+		watches[uint32(wd)] = name
+	}
+	for i := 0; i < 5; i++ {
+		host := "site-a.example"
+		if i%2 == 0 {
+			host = "www." + host
+		}
+		feedHostMail(t, p, fmt.Sprintf("m%d", i), "usera", host, fmt.Sprintf("/form%d.php", i), path6IP, path6T0,
+			fmt.Sprintf("buyer%d@outside.example", i))
+	}
+	if got := len(path6Of(*findings, path6Check)); got != 1 {
+		t.Fatalf("client findings = %d, want 1", got)
+	}
+	buf := make([]byte, 4096)
+	n, err := unix.Read(fd, buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opens := make(map[uint32]int)
+	for off := 0; off+unix.SizeofInotifyEvent <= n; {
+		wd := binary.NativeEndian.Uint32(buf[off:])
+		mask := binary.NativeEndian.Uint32(buf[off+4:])
+		length := binary.NativeEndian.Uint32(buf[off+12:])
+		if mask&unix.IN_OPEN != 0 {
+			opens[wd]++
+		}
+		off += unix.SizeofInotifyEvent + int(length)
+	}
+	for wd, name := range watches {
+		if opens[wd] != 1 {
+			t.Errorf("log %s opened %d times, want once", name, opens[wd])
+		}
+	}
+}
+
+func TestPath6_AccessLogStaffPages(t *testing.T) {
+	for _, page := range []string{
+		"edit.php", "post.php", "post-new.php", "upload.php",
+		"edit-comments.php", "users.php", "options-general.php", "options-writing.php",
+		"options-reading.php", "options-discussion.php", "options-media.php",
+		"options-permalink.php", "options-privacy.php", "plugins.php", "themes.php",
+		"edit-tags.php", "nav-menus.php", "tools.php", "import.php", "export.php", "site-health.php",
+	} {
+		t.Run(page, func(t *testing.T) {
+			p, findings := path6Pipeline(t, "a")
+			writeDomlog(t, "usera", "site-a.example", domlogLine(path6IP, "GET", "/Shop/wp-admin/"+page+"?return=%2Fshop", 200))
+			feedVictims(t, p, "a", path6Ajax, path6IP, 0, 5, path6T0)
+			requireNoPath6(t, *findings)
+			if !p.eng.form.isStaff("usera", formRelayKey(path6IP), path6T0.Add(2*time.Hour)) {
+				t.Fatal("staff page did not grant exemption")
+			}
+		})
 	}
 }
