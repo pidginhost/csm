@@ -39,6 +39,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Fixed
 
+- Form relay responses now carry traceable evidence in admission previews and forecasts, including later responses to unanswered challenges.
 - PHP relay detection keeps its proxy exemptions when a policy file update is invalid.
 - Legitimate bulk and transactional mail is less likely to be marked as spam when listed on URIBL's grey list.
 - Doctor no longer reports CSM's own scan workers as CloudLinux cages missing the PHP Shield event mount.

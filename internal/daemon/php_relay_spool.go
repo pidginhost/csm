@@ -303,6 +303,15 @@ func (p *spoolPipeline) onFileAt(path string, at time.Time) {
 		findings = append(findings, p.eng.formRelayFindings(sig.ScriptKey, sig.SourceIP, h.EnvelopeUser, relayCfg.IPRecipientSpread, window, now, ignored)...)
 	}
 	for _, f := range findings {
+		if f.Check == "email_php_form_relay" {
+			// Exim's message ID keeps retries tied to the same observation.
+			f.Observation = alert.Observation{
+				Producer:   string(checks.ProducerPHPRelaySpool),
+				Stream:     "exim_spool",
+				Cursor:     msgID,
+				ObservedAt: now,
+			}
+		}
 		p.alerter(f)
 	}
 }

@@ -31,3 +31,8 @@ Before counting, that call drops recipients the client reached through an
 account where it is now staff, or through a script that is now ignored, so a
 current exemption also covers mail recorded before it applied. Returned script
 shares and recipient domains are copies.
+
+Client findings carry the triggering Exim message ID as their observation in
+the spool stream. Admission previews and forecasts can trace direct responses
+and later challenge timeouts to that same mail. Script findings remain advisory
+and carry no address evidence.

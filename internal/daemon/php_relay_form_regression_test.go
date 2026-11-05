@@ -9,8 +9,59 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
+
+	"github.com/pidginhost/csm/internal/admission"
+	"github.com/pidginhost/csm/internal/challenge"
+	"github.com/pidginhost/csm/internal/checks"
 )
+
+func TestPath6_ResponseRetainsSpoolEvidence(t *testing.T) {
+	for _, challengeEnabled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("challenge=%v", challengeEnabled), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				cfg, _ := applyWiringSetup(t)
+				cfg.Challenge.Enabled = challengeEnabled
+				a := withRecordingAdmission(t)
+				d := New(cfg, nil, nil, "")
+				d.ipList = challenge.NewIPList(filepath.Join(t.TempDir(), "challenge_ips.txt"))
+				previous := checks.GetChallengeIPList()
+				checks.SetChallengeIPList(d.ipList)
+				t.Cleanup(func() { checks.SetChallengeIPList(previous) })
+
+				p, findings := path6Pipeline(t, "a")
+				now := time.Now()
+				feedVictims(t, p, "a", path6Form, path6IP, 0, 4, now.Add(-2*time.Hour))
+				feedScriptMail(t, p, "crossing", "a", path6Form, "text for 192.0.2.1, "+path6IP, now, "last@outside.example")
+				checks.ChallengeThenBlock(cfg, *findings)
+				got := a.got()
+				kind := admission.KindBlockIP
+				if challengeEnabled {
+					kind = admission.KindChallenge
+				}
+				if len(got) != 1 || got[0].kind != kind || len(a.refusals) != 0 {
+					t.Fatalf("responses = %+v, refusals = %+v, want one %s", got, a.refusals, kind)
+				}
+				root := got[0].root
+				if root.Producer() != checks.ProducerPHPRelaySpool || root.Check() != path6Check ||
+					root.Observation().Stream != "exim_spool" || root.Observation().Cursor != "crossing" ||
+					!root.ObservedAt().Equal(now) || root.Target().Key() != "ip:"+path6IP {
+					t.Fatalf("response lost the triggering mail or peer: %+v", root)
+				}
+				if challengeEnabled {
+					time.Sleep(31 * time.Minute)
+					d.escalateExpiredChallenges(time.Hour)
+					got = a.got()
+					if len(got) != 2 || got[1].kind != admission.KindBlockIP ||
+						got[1].via != admission.EntryChallengeTimeout || !got[1].root.Equal(root) {
+						t.Fatalf("challenge timeout lost the spool evidence: %+v", got)
+					}
+				}
+			})
+		})
+	}
+}
 
 func TestPath6_StartupRestoresFullWindow(t *testing.T) {
 	p, findings := path6Pipeline(t, "a")
