@@ -397,7 +397,8 @@ No feed symbol weighs more than 5, and the symbols of one feed add up to at
 most 14, so no feed alone reaches the default reject score of 15. Each symbol
 counts once per message. SURBL's four scoring categories weigh 3.5 each;
 Spamhaus DQS gives 5 for ZEN, 3 and 2 for the DBL categories and 3 and 1 for
-newly seen domains.
+newly seen domains. URIBL's grey and red lists weigh 0.5 because they also
+list domains that legitimate bulk senders use.
 
 ### Files
 

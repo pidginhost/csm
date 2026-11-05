@@ -116,6 +116,17 @@ func TestBitListsFireOneSymbolPerAnswer(t *testing.T) {
 	}
 }
 
+// URIBL's grey and red lists also hold domains that legitimate bulk senders
+// use. At 2.5, grey alone sent marketplace order notifications to spam.
+func TestURIBLGreyAndRedScoreLightly(t *testing.T) {
+	uribl, _ := FeedByName(FeedURIBL)
+	for _, c := range uribl.Zones[0].Codes {
+		if (c.Symbol == "CSM_URIBL_GREY" || c.Symbol == "CSM_URIBL_RED") && c.Weight > 0.5 {
+			t.Errorf("%s weighs %v; a grey or red listing must not move a newsletter toward the tag score", c.Symbol, c.Weight)
+		}
+	}
+}
+
 func TestDNSWLLeavesTestCategoryUnscored(t *testing.T) {
 	dnswl, _ := FeedByName(FeedDNSWL)
 	z := dnswl.Zones[0]
