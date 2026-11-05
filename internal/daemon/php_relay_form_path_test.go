@@ -265,8 +265,8 @@ func TestPath6_DomainLookupFailureNotCounted(t *testing.T) {
 	p, findings := path6Pipeline(t, "b") // usera has no userdata file
 	feedVictims(t, p, "a", path6Form, path6IP, 0, 6, path6T0)
 	requireNoPath6(t, *findings)
-	if got := p.eng.form.count(formRelayKey(path6IP), path6T0); got != 0 {
-		t.Fatalf("mail without ownership data was counted: %d", got)
+	if len(p.eng.form.ips) != 0 {
+		t.Fatalf("mail without ownership data was counted: %d clients", len(p.eng.form.ips))
 	}
 }
 
@@ -356,7 +356,7 @@ func TestPath6_RebuildEmitsNothing(t *testing.T) {
 	if len(*findings) != 0 {
 		t.Fatalf("rebuild emitted findings: %+v", *findings)
 	}
-	if got := p.eng.form.count(formRelayKey(path6IP), path6T0); got != 5 {
+	if got := p.eng.form.evaluate(formRelayKey(path6IP), path6T0.Add(2*time.Hour), 24*time.Hour, 1, nil, false).Count; got != 5 {
 		t.Fatalf("rebuild recorded %d recipients, want 5", got)
 	}
 	feedVictims(t, p, "a", path6Form, path6IP, 5, 1, path6T0)
@@ -461,7 +461,7 @@ func TestSweepFormRelay_ReportsFullTableOncePerDay(t *testing.T) {
 	add := func(at time.Time) {
 		ip := fmt.Sprintf("2001:db8:%x:%x::1", n/0x10000, n%0x10000)
 		n++
-		eng.form.record(formRelayKey(ip), ip, "usera", formTestA, "m", at, []string{"v@victim.example"}, false, 24*time.Hour, 5)
+		eng.form.record(formRelayKey(ip), "usera", formTestA, "m", at, []string{"v@victim.example"}, false, 24*time.Hour, 5)
 	}
 	reports := func() int {
 		got := 0

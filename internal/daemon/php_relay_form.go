@@ -40,7 +40,6 @@ type formRelayWindow struct {
 }
 
 type formRelayClient struct {
-	exactIP  string
 	lastSeen time.Time
 	firedAt  time.Time
 	rcpts    map[string]formRelayRcpt
@@ -64,7 +63,7 @@ type formRelayShare struct {
 type formRelaySnapshot struct {
 	Count      int
 	Shares     map[scriptKey]formRelayShare
-	Domains    []string
+	Domains    []string // sorted; full addresses belong to third parties
 	FireClient bool
 }
 
@@ -168,7 +167,7 @@ func classifyFormRelayRecipients(rcpts []string, own map[string]struct{}) (outsi
 // messages cannot rewind that window. An unparsed message adds one entry
 // keyed by msgID. Retaining the newest recipients preserves later crossings
 // when older evidence expires. An empty key is never stored.
-func (w *formRelayWindow) record(key, exactIP, cpuser string, k scriptKey, msgID string, at time.Time, outside []string, unparsed bool, window time.Duration, limit int) int {
+func (w *formRelayWindow) record(key, cpuser string, k scriptKey, msgID string, at time.Time, outside []string, unparsed bool, window time.Duration, limit int) int {
 	if key == "" {
 		return 0
 	}
@@ -188,7 +187,7 @@ func (w *formRelayWindow) record(key, exactIP, cpuser string, k scriptKey, msgID
 		return len(c.rcpts)
 	}
 	if !at.Before(c.lastSeen) {
-		c.lastSeen, c.exactIP = at, exactIP
+		c.lastSeen = at
 	}
 	for _, r := range outside {
 		c.put(r, formRelayRcpt{at: at, script: k, cpuser: cpuser, domain: r[strings.LastIndexByte(r, '@')+1:]}, limit)
@@ -284,98 +283,6 @@ func (w *formRelayWindow) evictLocked() {
 	}
 }
 
-// count returns the distinct outside recipients key reached since since.
-// It only reads: no expiry, no clock advance.
-func (w *formRelayWindow) count(key string, since time.Time) int {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	n := 0
-	if c := w.ips[key]; c != nil {
-		for _, v := range c.rcpts {
-			if !v.at.Before(since) {
-				n++
-			}
-		}
-	}
-	return n
-}
-
-// exactIP returns the last exact address seen for key.
-func (w *formRelayWindow) exactIP(key string) string {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if c := w.ips[key]; c != nil {
-		return c.exactIP
-	}
-	return ""
-}
-
-// scriptShares returns the distinct outside recipients each script reached
-// for key since since, with that script's account.
-func (w *formRelayWindow) scriptShares(key string, since time.Time) map[scriptKey]formRelayShare {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	out := make(map[scriptKey]formRelayShare)
-	if c := w.ips[key]; c != nil {
-		for _, v := range c.rcpts {
-			if v.at.Before(since) {
-				continue
-			}
-			s := out[v.script]
-			s.Count++
-			s.CPUser = v.cpuser
-			out[v.script] = s
-		}
-	}
-	return out
-}
-
-// recipientDomains returns the sorted outside domains key reached since
-// since. Full addresses stay out of findings: they belong to third parties.
-func (w *formRelayWindow) recipientDomains(key string, since time.Time) []string {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	c := w.ips[key]
-	if c == nil {
-		return nil
-	}
-	seen := make(map[string]struct{}, len(c.rcpts))
-	out := make([]string, 0, len(c.rcpts))
-	for _, v := range c.rcpts {
-		if v.domain == "" || v.at.Before(since) {
-			continue
-		}
-		if _, dup := seen[v.domain]; !dup {
-			seen[v.domain] = struct{}{}
-			out = append(out, v.domain)
-		}
-	}
-	sort.Strings(out)
-	return out
-}
-
-// markFired reports true once per key per window, never for an empty key.
-func (w *formRelayWindow) markFired(key string, at time.Time, window time.Duration) bool {
-	if key == "" {
-		return false
-	}
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	cutoff := w.advanceLocked(at).Add(-window)
-	if at.Before(cutoff) {
-		return false
-	}
-	c := w.ips[key]
-	if c == nil {
-		c = w.addLocked(key, cutoff)
-	}
-	if seenAtOrAfter(c.firedAt, at.Add(-window)) {
-		return false
-	}
-	c.firedAt = at
-	return true
-}
-
 // claimScript reports true once per script id per window.
 func (w *formRelayWindow) claimScript(id scriptKey, at time.Time, window time.Duration) bool {
 	w.mu.Lock()
@@ -443,11 +350,4 @@ func (w *formRelayWindow) sweep(now time.Time, window time.Duration) (evictedFul
 	}
 	evictedFull, w.hitCap = w.hitCap, false
 	return evictedFull
-}
-
-// full reports whether the table hit its cap since the last sweep.
-func (w *formRelayWindow) full() bool {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return w.hitCap
 }

@@ -87,7 +87,7 @@ func TestPath6_StartupRestoresFullWindow(t *testing.T) {
 	}
 	runStartupSpoolWalker(root, p)
 	requireNoPath6(t, *findings)
-	if got := p.eng.form.count(formRelayKey(path6IP), now.Add(-24*time.Hour)); got != 4 {
+	if got := p.eng.form.evaluate(formRelayKey(path6IP), now, 24*time.Hour, 1, nil, false).Count; got != 4 {
 		t.Fatalf("restored %d outside recipients, want 4 within the window", got)
 	}
 	feedScriptMail(t, p, "live", "a", path6Form, path6IP, now, "new@outside.example")
@@ -186,7 +186,7 @@ func TestPath6_FindingsKeepEvidenceDuringSweep(t *testing.T) {
 	emitted := 0
 	for i := 0; i < 20000; i++ {
 		eng := newEvaluator(newPerScriptWindow(), newPerIPWindow(64), nil, path6Cfg(), nil)
-		eng.form.record(formRelayKey(path6IP), path6IP, "usera", "site-a.example:/index.php", "m", path6T0.Add(-24*time.Hour),
+		eng.form.record(formRelayKey(path6IP), "usera", "site-a.example:/index.php", "m", path6T0.Add(-24*time.Hour),
 			[]string{"a@outside.example", "b@outside.example", "c@outside.example", "d@outside.example", "e@outside.example"}, false, 24*time.Hour, 5)
 		var wg sync.WaitGroup
 		startSweep := make(chan struct{})

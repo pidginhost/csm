@@ -341,7 +341,7 @@ func (p *spoolPipeline) recordFormRelay(h emailspool.Headers, sig signals, auth 
 		return false
 	}
 	outside, unparsed := classifyFormRelayRecipients(h.Recipients, auth)
-	p.eng.form.record(key, ip, h.EnvelopeUser, sig.ScriptKey, msgID, at, outside, unparsed,
+	p.eng.form.record(key, h.EnvelopeUser, sig.ScriptKey, msgID, at, outside, unparsed,
 		time.Duration(relayCfg.IPRecipientWindowHours)*time.Hour, relayCfg.IPRecipientSpread)
 	return len(outside) > 0 || unparsed
 }
