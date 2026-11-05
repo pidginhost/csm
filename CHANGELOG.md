@@ -12,7 +12,6 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 ### Security
 
 - FTP log text crafted to look like a successful login no longer counts as one.
-- Form relay protection no longer mistakes ordinary visitors for shop staff, keeping their abusive mail activity visible and subject to blocking.
 - PHP relay detection no longer lets forged forwarding headers split one script's mail history or trigger false multi-script abuse alerts.
 - The firewall now drops incoming IPv4 TCP packets that carry IP options, which blocks the CVE-2026-98432 attack on unpatched kernels.
 - Mail login tracking no longer attributes incomplete or ambiguous log identities to a mailbox.
