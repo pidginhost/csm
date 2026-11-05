@@ -536,3 +536,120 @@ func TestCustomerBlockWebhookSkipsPhpanel(t *testing.T) {
 		})
 	}
 }
+
+// The customer alert replaces the live digest notification, while watched
+// blocks still reach the daily roll-up and unknown addresses still alert.
+func TestCustomerBlockReplacesLiveDigest(t *testing.T) {
+	for _, channel := range []string{"", "email", "webhook"} {
+		t.Run(channel, func(t *testing.T) {
+			d, cfg, blocker, capture := customerBlockSetup(t)
+			cfg.Alerts.BlockDigest.Enabled, cfg.Alerts.BlockDigest.Live = true, true
+			cfg.Alerts.BlockDigest.Channel = channel
+			d.blockDigest = d.buildBlockDigest(cfg)
+			const customer, unknown = "2001:db8:1::9", "203.0.113.92"
+			customerLogin(d, "2001:db8:1::1")
+			d.dispatchBatch([]alert.Finding{smtpBruteFrom(customer)})
+			if !blocker.IsBlocked(customer) {
+				t.Fatal("customer block did not apply")
+			}
+			if len(capture.emails) != 1 || len(capture.payloads) != 1 || capture.payloads[0].CSM.Event != "customer_block" {
+				t.Fatalf("one block sent %d emails and %d webhooks, want one customer alert per channel", len(capture.emails), len(capture.payloads))
+			}
+			capture.reset()
+			d.dispatchBatch([]alert.Finding{smtpBruteFrom(unknown)})
+			wantEmails, wantHooks := 1, 1
+			if channel == "email" {
+				wantHooks = 0
+			}
+			if channel == "webhook" {
+				wantEmails = 0
+			}
+			if len(capture.emails) != wantEmails || len(capture.events("block_live")) != wantHooks {
+				t.Fatalf("unknown block sent %d emails and %d live webhooks, want %d/%d", len(capture.emails), len(capture.events("block_live")), wantEmails, wantHooks)
+			}
+			if dg := d.blockDigest.Drain(); dg.Total != 2 {
+				t.Fatalf("watched blocks = %d, want both blocks", dg.Total)
+			}
+		})
+	}
+}
+
+// Derived block sources already retain the originating check. Its identity
+// must survive the chokepoint into the customer alert.
+func TestCustomerBlockDerivedCause(t *testing.T) {
+	for _, path := range []string{"central root", "central finding", "challenge root"} {
+		t.Run(path, func(t *testing.T) {
+			d, _, blocker, capture := customerBlockSetup(t)
+			const ip = "203.0.113.93"
+			customerLogin(d, ip)
+			f := observedBruteForce(ip)
+			root := mintedRoot(t, f, ip)
+			switch path {
+			case "central root":
+				if err := d.performCentralAction(centralQueuedAction{decision: reporting.DecisionBlock, ip: ip, findingID: alert.FindingID(f), root: root}); err != nil {
+					t.Fatal(err)
+				}
+			case "central finding":
+				if err := d.performCentralAction(centralQueuedAction{decision: reporting.DecisionBlock, ip: ip, rootFinding: f}); err != nil {
+					t.Fatal(err)
+				}
+			case "challenge root":
+				d.ipList = challenge.NewIPList(filepath.Join(t.TempDir(), "challenge_ips.txt"))
+				d.ipList.AddWithRoot(ip, "wp brute", -time.Minute, root.FindingID(), root)
+				d.escalateExpiredChallenges(time.Hour)
+			}
+			if !blocker.IsBlocked(ip) {
+				t.Fatal("derived block did not apply")
+			}
+			hooks := capture.events("customer_block")
+			if len(hooks) != 1 || len(hooks[0].CSM.CustomerBlocks) != 1 || hooks[0].CSM.CustomerBlocks[0].Check != f.Check {
+				t.Fatalf("customer alerts = %+v, want one naming %s", hooks, f.Check)
+			}
+		})
+	}
+}
+
+// A rollover during customer lookup must not separate a dispatch's verdict
+// list from its finding counts, or split the list across two summaries.
+func TestWouldBlockSummaryRolloverKeepsBatchTogether(t *testing.T) {
+	d, cfg, _, capture := customerBlockSetup(t)
+	for _, ip := range []string{"203.0.113.95", "203.0.113.96"} {
+		customerLogin(d, ip)
+	}
+	entered, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	t.Cleanup(func() { unblock(); <-done })
+	lookups := 0
+	d.knownCustomers.now = func() time.Time {
+		lookups++
+		if lookups == 2 {
+			close(entered)
+			<-release
+		}
+		return time.Now()
+	}
+	go func() {
+		defer close(done)
+		d.noteSummary(cfg, []alert.Finding{
+			{Severity: alert.Warning, Check: "auto_block", SourceIP: "203.0.113.95", Message: "AUTO-BLOCK [dry-run]: 203.0.113.95 would be blocked"},
+			{Severity: alert.Warning, Check: "auto_block", SourceIP: "203.0.113.96", Message: "AUTO-BLOCK [dry-run]: 203.0.113.96 would be blocked"},
+		})
+	}()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("second customer lookup did not start")
+	}
+	first := sendSummary(t, d, capture, time.Now().Add(25*time.Hour))
+	unblock()
+	<-done
+	capture.reset()
+	second := sendSummary(t, d, capture, time.Now().Add(49*time.Hour))
+	if len(first.WouldBlock) != 0 || first.Checks["auto_block"]["WARNING"] != 0 {
+		t.Fatalf("rollover sent a partial batch: %d verdicts, %d findings", len(first.WouldBlock), first.Checks["auto_block"]["WARNING"])
+	}
+	if len(second.WouldBlock) != 2 || second.Checks["auto_block"]["WARNING"] != 2 {
+		t.Fatalf("next summary = %d verdicts, %d findings; want 2/2", len(second.WouldBlock), second.Checks["auto_block"]["WARNING"])
+	}
+}

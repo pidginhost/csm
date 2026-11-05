@@ -266,6 +266,16 @@ func (c *Collector) watched(country string) bool {
 // Observe records one auto-block. It geo-classifies, filters to the watch set,
 // buckets the reason, and (when Live) may fire an immediate alert.
 func (c *Collector) Observe(ip, reason string, ts time.Time) {
+	c.observe(ip, reason, ts, true)
+}
+
+// ObserveKnownCustomer retains a watched block for the summary. Its
+// customer alert replaces the live digest notification.
+func (c *Collector) ObserveKnownCustomer(ip, reason string, ts time.Time) {
+	c.observe(ip, reason, ts, false)
+}
+
+func (c *Collector) observe(ip, reason string, ts time.Time, notify bool) {
 	if !c.opts.Watch {
 		return
 	}
@@ -289,7 +299,7 @@ func (c *Collector) Observe(ip, reason string, ts time.Time) {
 	c.queues.admit()
 	c.mu.Unlock()
 
-	if c.opts.Live {
+	if notify && c.opts.Live {
 		c.maybeLive(rec)
 	}
 }

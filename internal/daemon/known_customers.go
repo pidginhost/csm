@@ -566,6 +566,9 @@ func (d *Daemon) noteFTPCustomers(findings []alert.Finding) {
 		case "ftp_login", "ftp_login_after_bruteforce":
 			account := f.TenantID
 			if account == "" {
+				account = f.LoginAccount
+			}
+			if account == "" {
 				account = checks.FTPLoginAccount(f.Details)
 			}
 			d.knownCustomers.Note(f.SourceIP, knownCustomerFTP, account, f.Timestamp, syslogFed)

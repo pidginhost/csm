@@ -264,6 +264,12 @@ func FuzzFTPLoginFinding(f *testing.F) {
 		if len(finding.Details) > ftpLoginDetailsBytes+len("...") {
 			t.Fatalf("details hold %d bytes", len(finding.Details))
 		}
+		if account := FTPLoginAccount(line); len(account) <= ftpLoginDetailsBytes && finding.LoginAccount != account {
+			t.Fatal("lost the authenticated login name")
+		}
+		if len(finding.LoginAccount) > ftpLoginDetailsBytes+len("...") {
+			t.Fatalf("login name holds %d bytes", len(finding.LoginAccount))
+		}
 	})
 }
 

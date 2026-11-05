@@ -151,25 +151,31 @@ func TestWouldBlockListedInDailySummary(t *testing.T) {
 	saved := &summaryStore{}
 	opts := Options{EmailSink: capture.email, WebhookSink: capture.webhook, LoadSummary: saved.load, SaveSummary: saved.save}
 	c := summaryCollector(opts)
+	note := func(b CustomerBlock) {
+		c.NoteHandled([]Handled{{Check: "auto_block", Severity: "WARNING", WouldBlock: &b}})
+	}
 	first := CustomerBlock{Target: "203.0.113.5", Reason: "SMTP brute force from 203.0.113.5", Check: "smtp_bruteforce",
 		Hits: []CustomerHit{{IP: "203.0.113.5", Kind: "smtp", Account: "office@example.com", At: customerLoginAt}}}
-	c.NoteWouldBlock(first)
-	c.NoteWouldBlock(first)
+	note(first)
+	note(first)
 	for i := range maxWouldBlock + 3 {
 		ip := fmt.Sprintf("192.0.2.%d", i+1)
-		c.NoteWouldBlock(CustomerBlock{Target: ip, Reason: "fixture", Hits: []CustomerHit{{IP: ip, Kind: "pop", At: customerLoginAt}}})
+		note(CustomerBlock{Target: ip, Reason: "fixture", Hits: []CustomerHit{{IP: ip, Kind: "pop", At: customerLoginAt}}})
 	}
 	c.Flush()
 
 	c = summaryCollector(opts)
 	c.load()
-	c.NoteWouldBlock(CustomerBlock{Target: "198.51.100.9", Reason: "fixture", Hits: []CustomerHit{{IP: "198.51.100.9", Kind: "pop", At: customerLoginAt}}})
+	note(CustomerBlock{Target: "198.51.100.9", Reason: "fixture", Hits: []CustomerHit{{IP: "198.51.100.9", Kind: "pop", At: customerLoginAt}}})
 	c.SendDue(summaryDueOf(c))
 
 	if len(capture.webhooks) != 1 || capture.webhooks[0].CSM.Summary == nil {
 		t.Fatalf("summary webhooks = %+v", capture.webhooks)
 	}
 	s := capture.webhooks[0].CSM.Summary
+	if got := s.Checks["auto_block"]["WARNING"]; got != maxWouldBlock+6 {
+		t.Fatalf("would-block findings = %d, want %d including repeats and overflow", got, maxWouldBlock+6)
+	}
 	if len(s.WouldBlock) != maxWouldBlock || s.WouldBlockMore != 5 {
 		t.Fatalf("would-block = %d listed + %d more, want %d + 5", len(s.WouldBlock), s.WouldBlockMore, maxWouldBlock)
 	}

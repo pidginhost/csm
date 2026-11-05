@@ -60,14 +60,6 @@ func (c *Collector) AlertCustomerBlocks(blocks []CustomerBlock) {
 	c.deliver(plan, subject, body, payload, nil)
 }
 
-// NoteWouldBlock lists in the daily summary a dry-run or observe-mode
-// verdict that would have blocked known customers.
-func (c *Collector) NoteWouldBlock(b CustomerBlock) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.sum.noteWouldBlock(b)
-}
-
 // noteWouldBlock lists each target once. Past maxWouldBlock targets it only
 // counts verdicts, so a repeat of an unlisted target counts again.
 func (s *Summary) noteWouldBlock(b CustomerBlock) {

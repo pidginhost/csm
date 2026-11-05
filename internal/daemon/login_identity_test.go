@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -115,6 +116,35 @@ func TestFTPVirtualAccountKeepsPeerAddress(t *testing.T) {
 		if len(findings) != 1 || findings[0].Check != "ftp_login" || findings[0].SourceIP != ip {
 			t.Errorf("virtual FTP account lost its peer %s: %+v", ip, findings)
 		}
+	}
+}
+
+// A valid hostname and virtual account can make a success line longer than
+// the display limit. Customer history must retain the authenticated account.
+func TestFTPLoginAccountSurvivesBoundedDetails(t *testing.T) {
+	defer checks.SetAccountOwnerLookupForTest(func(string) (string, bool) { return "", false })()
+	account := strings.Repeat("a", 64) + "@" + strings.Repeat("b", 40) + ".example.com"
+	host := strings.Repeat("h", 63) + "." + strings.Repeat("h", 63) + "." + strings.Repeat("h", 63) + ".example.com"
+	now := time.Now().UTC().Truncate(time.Second)
+	line := fmt.Sprintf("%s %s pure-ftpd[1234]: (%s@203.0.113.94) [INFO] %s is now logged in", now.Format(time.RFC3339), host, account, account)
+	findings := parseFTPLogLine(line, &config.Config{})
+	if len(findings) != 1 || len(findings[0].Details) > 515 || findings[0].Details == line {
+		t.Fatalf("expected one bounded login finding, got %+v", findings)
+	}
+	// Queued findings can cross a restart before customer tracking sees them.
+	raw, err := json.Marshal(findings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restored []alert.Finding
+	if err := json.Unmarshal(raw, &restored); err != nil {
+		t.Fatal(err)
+	}
+	k, _ := knownCustomersAt(now)
+	(&Daemon{knownCustomers: k}).noteFTPCustomers(restored)
+	hit, ok := k.Lookup("203.0.113.94")
+	if !ok || hit.Account != account {
+		t.Fatalf("customer login = %+v, %v; want the authenticated virtual account", hit, ok)
 	}
 }
 

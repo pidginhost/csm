@@ -195,6 +195,11 @@ func (d *Daemon) observeBlocks(actions []alert.Finding) {
 	if d.blockDigest == nil {
 		return
 	}
+	blocks := d.customerBlocks(actions)
+	customers := make(map[string]bool, len(blocks))
+	for _, b := range blocks {
+		customers[b.Target] = true
+	}
 	for _, f := range actions {
 		reason := appliedBlockReason(f)
 		if reason == "" {
@@ -204,9 +209,13 @@ func (d *Daemon) observeBlocks(actions []alert.Finding) {
 		if ip == "" {
 			continue
 		}
-		d.blockDigest.Observe(ip, reason, f.Timestamp)
+		if customers[ip] {
+			d.blockDigest.ObserveKnownCustomer(ip, reason, f.Timestamp)
+		} else {
+			d.blockDigest.Observe(ip, reason, f.Timestamp)
+		}
 	}
-	d.blockDigest.AlertCustomerBlocks(d.customerBlocks(actions))
+	d.blockDigest.AlertCustomerBlocks(blocks)
 }
 
 // maxCustomerExamples is how many known customers one subnet block names.
@@ -333,16 +342,17 @@ func (d *Daemon) noteSummary(cfg *config.Config, summary []alert.Finding) {
 	batch := make([]blockdigest.Handled, 0, len(summary))
 	for _, f := range summary {
 		check := config.CanonicalCheckName(f.Check)
-		batch = append(batch, blockdigest.Handled{
+		h := blockdigest.Handled{
 			Check:       check,
 			Severity:    f.Severity.String(),
 			IP:          checks.ExtractIPFromFinding(f),
 			BlockReason: summaryBlockReason(f),
 			Muted:       muted[check],
-		})
-		if b, ok := d.wouldBlock(check, f); ok {
-			collector.NoteWouldBlock(b)
 		}
+		if b, ok := d.wouldBlock(check, f); ok {
+			h.WouldBlock = &b
+		}
+		batch = append(batch, h)
 	}
 	collector.NoteHandled(batch)
 }

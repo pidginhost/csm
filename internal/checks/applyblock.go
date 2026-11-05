@@ -99,6 +99,20 @@ func ApplyBlock(cfg *config.Config, req ApplyBlockRequest) (ApplyBlockResult, er
 	state := work.loadState(cfg.StatePath)
 	attemptAt := autoBlockNow()
 	res, err := applyBlockLocked(cfg, blocker, state, req, work.progress, func(err error) { work.directOutcome(req.IP, attemptAt, err) })
+	// Derived paths retain either the admitted root or the source finding.
+	// Keep that attribution on their notices as the scan path does.
+	cause := alert.Cause{FindingID: req.Root.FindingID(), Check: req.Root.Check()}
+	if cause.Check == "" && req.RootFinding.Check != "" {
+		cause = alert.CauseOf(req.RootFinding)
+	}
+	if req.FindingID != "" {
+		cause.FindingID = req.FindingID
+	}
+	if cause != (alert.Cause{}) {
+		for i := range res.Findings {
+			res.Findings[i].Cause = &cause
+		}
+	}
 	if !errors.Is(err, firewall.ErrIPProtected) {
 		work.observe(err)
 	}

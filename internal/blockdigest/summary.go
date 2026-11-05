@@ -28,10 +28,12 @@ const (
 )
 
 // Handled is one summary-class finding as the daemon maps it. BlockReason is
-// set for an applied auto_block only.
+// set for an applied auto_block only. WouldBlock keeps a customer verdict
+// in the same window as its finding count.
 type Handled struct {
 	Check, Severity, IP, BlockReason string
 	Muted                            bool
+	WouldBlock                       *CustomerBlock
 }
 
 // SourceCount is one source address and its summary findings. Country is
@@ -186,6 +188,9 @@ func (s *Summary) note(h Handled) {
 	}
 	if h.IP != "" {
 		s.addSource(h.IP, 1)
+	}
+	if h.WouldBlock != nil {
+		s.noteWouldBlock(*h.WouldBlock)
 	}
 }
 

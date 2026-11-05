@@ -497,9 +497,10 @@ goes to the daily summary. A login with stolen credentials also makes an
 address known, so the alert can show the block of an attacker holding a
 customer's password, which is worth seeing too. Each applied block sends at
 most one message; a later new block of the same address sends another. The
-alert does not spend the hourly alert budget, goes out with
-`alerts.block_digest` off and ignores `alerts.block_digest.channel`. A
-phpanel webhook does not receive it. Dry-run and observe-mode verdicts that
+alert replaces the live block digest notification for the same block, which
+still counts in the daily roll-up. It does not spend the hourly alert budget,
+goes out with `alerts.block_digest` off and ignores `alerts.block_digest.channel`.
+A phpanel webhook does not receive it. Dry-run and observe-mode verdicts that
 would have blocked a known customer are listed in the
 [daily summary](configuration.md#daily-summary) instead.
 

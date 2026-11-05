@@ -774,36 +774,39 @@ func ftpLoginFinding(ip, account, line string, recentFails int) alert.Finding {
 		owner = ftpAccountOwner(account)
 	}
 	details := truncate(line, ftpLoginDetailsBytes)
+	loginAccount := strings.Clone(truncate(account, ftpLoginDetailsBytes))
 	if recentFails >= ftpFailThreshold {
 		msg := fmt.Sprintf("FTP login succeeded from brute-force source %s after %d failed attempts", ip, recentFails)
 		if account != "" {
 			msg = fmt.Sprintf("FTP login succeeded for account %s from brute-force source %s after %d failed attempts", account, ip, recentFails)
 		}
 		return alert.Finding{
-			Severity:  alert.Critical,
-			Check:     "ftp_login_after_bruteforce",
-			DedupKey:  loginRecordKey(line),
-			SourceIP:  ip,
-			Message:   msg,
-			Details:   details,
-			TenantID:  owner,
-			Timestamp: at,
+			Severity:     alert.Critical,
+			Check:        "ftp_login_after_bruteforce",
+			DedupKey:     loginRecordKey(line),
+			SourceIP:     ip,
+			Message:      msg,
+			Details:      details,
+			TenantID:     owner,
+			LoginAccount: loginAccount,
+			Timestamp:    at,
 		}
 	}
 	return alert.Finding{
-		Severity:  alert.Warning,
-		Check:     "ftp_login",
-		DedupKey:  loginRecordKey(line),
-		SourceIP:  ip,
-		Message:   fmt.Sprintf("FTP login from non-infra IP: %s", ip),
-		Details:   details,
-		TenantID:  owner,
-		Timestamp: at,
+		Severity:     alert.Warning,
+		Check:        "ftp_login",
+		DedupKey:     loginRecordKey(line),
+		SourceIP:     ip,
+		Message:      fmt.Sprintf("FTP login from non-infra IP: %s", ip),
+		Details:      details,
+		TenantID:     owner,
+		LoginAccount: loginAccount,
+		Timestamp:    at,
 	}
 }
 
-// ftpLoginDetailsBytes bounds the record a login finding keeps. Every real
-// success record fits, so customer tracking can still read its account.
+// ftpLoginDetailsBytes bounds the displayed record and login name. Customer
+// tracking reads the authenticated name separately from the cut record.
 const ftpLoginDetailsBytes = 512
 
 // FTPLoginAccount returns the authenticated account only from a complete
