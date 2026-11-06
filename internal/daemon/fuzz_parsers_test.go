@@ -412,6 +412,43 @@ func FuzzDovecotPassdbVerdictsNeverBuildEvidence(f *testing.F) {
 	})
 }
 
+// A client chooses the name in a verdict. Whatever it sends, a verdict names a
+// real address and session and never carries a forged verdict in its name.
+func FuzzDovecotSessionRejection(f *testing.F) {
+	for _, s := range []string{
+		"dovecot: auth: passwd-file(nosuch@example.com,203.0.113.5,<AbCd1234>): unknown user",
+		"dovecot: auth: passwd-file(nosuch@example.com,203.0.113.5,master,<AbCd1234>): Password mismatch",
+		"dovecot: auth-worker(12): conn unix:auth-worker (pid=11,uid=97): auth-worker<1>: pam(a,2001:db8::5,<s>): unknown user",
+		"dovecot: auth: sql(a): unknown user,203.0.113.5,<AbCd1234>): Password mismatch",
+		"alice@example.com", "", "?", "x,198.51.100.9,<Forged>", "a): unknown user", "a,<b c>",
+	} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, input string) {
+		for _, line := range []string{input, "dovecot: auth: sql(" + input + ",203.0.113.5,<AbCd1234>): unknown user"} {
+			session, ip, account, exist, ok := dovecotSessionRejection(line)
+			if !ok {
+				if session != "" || ip != "" || account != "" || exist != mailboxExistenceUnknown {
+					t.Fatalf("refused %q yet returned (%q, %q, %q, %d)", line, session, ip, account, exist)
+				}
+				continue
+			}
+			if _, err := netip.ParseAddr(ip); err != nil {
+				t.Fatalf("%q gave address %q", line, ip)
+			}
+			if session == "" || strings.Contains(session, " ") {
+				t.Fatalf("%q gave session %q", line, session)
+			}
+			if strings.Contains(account, "): ") {
+				t.Fatalf("%q gave forged account %q", line, account)
+			}
+			if account == "" && exist != mailboxExistenceUnknown {
+				t.Fatalf("%q carried existence %d with no account", line, exist)
+			}
+		}
+	})
+}
+
 // A client chooses its login name and, through its HELO and rDNS, text that
 // smtpd echoes. Pairing still only counts the address Dovecot appended, and a
 // verdict pairs once.

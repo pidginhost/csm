@@ -34,32 +34,73 @@ var dovecotRejectionVerdicts = []struct {
 // the line right after a verdict forged inside the password, and Dovecot's
 // default name characters never allow that sequence.
 func dovecotSessionlessRejection(line string) (ip, account string, exist mailboxExistence, ok bool) {
+	fields, exist, ok := dovecotRejectionFields(line)
+	if !ok {
+		return "", "", mailboxExistenceUnknown, false
+	}
+	return dovecotRejectionClient(fields, exist)
+}
+
+// dovecotSessionRejection parses a rejection verdict for a request with a
+// login session, which is how the IMAP, POP3 and ManageSieve login processes
+// ask Dovecot to check a login:
+//
+//	auth: passwd-file(alice@example.net,203.0.113.5,<AbCd1234>): unknown user
+//
+// Dovecot's fields are user,ip[,master][,<session>]. Like the sessionless
+// form, one verdict is one database's answer; callers pair it with the login
+// summary of the same session, so the same fields are read from the right
+// and the same forged verdicts refused.
+func dovecotSessionRejection(line string) (session, ip, account string, exist mailboxExistence, ok bool) {
+	fields, exist, ok := dovecotRejectionFields(line)
+	if !ok {
+		return "", "", "", mailboxExistenceUnknown, false
+	}
+	comma := strings.LastIndexByte(fields, ',')
+	if comma < 0 {
+		return "", "", "", mailboxExistenceUnknown, false
+	}
+	session, opened := strings.CutPrefix(fields[comma+1:], "<")
+	session, closed := strings.CutSuffix(session, ">")
+	if !opened || !closed || session == "" || strings.Contains(session, " ") {
+		return "", "", "", mailboxExistenceUnknown, false
+	}
+	ip, account, exist, ok = dovecotRejectionClient(fields[:comma], exist)
+	if !ok {
+		return "", "", "", mailboxExistenceUnknown, false
+	}
+	return session, ip, account, exist, true
+}
+
+// dovecotRejectionFields returns the request fields of a rejection verdict,
+// which end at the driver's closing parenthesis, and what the verdict says.
+func dovecotRejectionFields(line string) (fields string, exist mailboxExistence, ok bool) {
 	seg := dovecotAuthSegment(dovecotServiceMessage(line))
 	open := strings.IndexByte(seg, '(')
 	if open <= 0 || !isDovecotAuthRequestName(seg[:open]) || strings.Contains(seg[:open], ": ") {
-		return "", "", mailboxExistenceUnknown, false
+		return "", mailboxExistenceUnknown, false
 	}
 	inner := seg[open+1:]
-	found := false
 	for _, verdict := range dovecotRejectionVerdicts {
-		if fields, cut := strings.CutSuffix(inner, verdict.suffix); cut {
-			inner, exist, found = fields, verdict.exist, true
-			break
+		if rest, cut := strings.CutSuffix(inner, verdict.suffix); cut && !strings.Contains(rest, "): ") {
+			return rest, verdict.exist, true
 		}
 	}
-	if !found || strings.Contains(inner, "): ") {
-		return "", "", mailboxExistenceUnknown, false
-	}
-	inner = strings.TrimSuffix(inner, ",master")
-	comma := strings.LastIndexByte(inner, ',')
+	return "", mailboxExistenceUnknown, false
+}
+
+// dovecotRejectionClient reads user,ip[,master] from the right.
+func dovecotRejectionClient(fields string, verdict mailboxExistence) (ip, account string, exist mailboxExistence, ok bool) {
+	fields = strings.TrimSuffix(fields, ",master")
+	comma := strings.LastIndexByte(fields, ',')
 	if comma < 0 {
 		return "", "", mailboxExistenceUnknown, false
 	}
-	addr := net.ParseIP(inner[comma+1:])
+	addr := net.ParseIP(fields[comma+1:])
 	if addr == nil {
 		return "", "", mailboxExistenceUnknown, false
 	}
-	account = inner[:comma]
+	account, exist = fields[:comma], verdict
 	// Dovecot sanitizes unavailable or invalid name text to '?' and
 	// abbreviates long names with '...'. Neither identifies the mailbox.
 	if strings.TrimSpace(account) == "" || strings.Contains(account, "?") || strings.HasSuffix(account, "...") {

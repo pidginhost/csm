@@ -27,7 +27,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - Findings now warn when spam source reports wait because the list of shared mail services cannot be refreshed.
 - CSM now alerts at once when an automatic block hits an address with a recent customer login, and one stale mail password no longer raises compromise alerts.
 - CSM now reports bots that abuse website forms to mail strangers and names the form to fix; once switched on, it also challenges them.
-- On cPanel servers, mail login spray detection now recognises logins to mailboxes that do not exist, and forgives a customer's mistyped address.
+- Mail login spray detection now recognises logins to mailboxes that do not exist on cPanel servers and in IMAP and POP logins, and forgives a customer's mistyped address.
 
 ### Changed
 
