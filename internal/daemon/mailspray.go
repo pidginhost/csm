@@ -130,7 +130,7 @@ type sprayTrustKey struct{ ip, mailbox string }
 // sprayIP is the failure evidence of one evidence key (sprayEvidenceKey).
 type sprayIP struct {
 	failed          map[string]sprayFailure
-	weakAlerted     map[string]time.Time   // success mailbox to its last weak_compromise
+	weakAlerted     map[string]time.Time   // success mailbox to its last compromise advisory
 	revoked         map[string]time.Time   // known cracks cannot earn trust during the window
 	sources         map[string]spraySource // verdict cadence by address
 	untracked       time.Time              // latest untrusted failure refused at the name cap
@@ -412,9 +412,10 @@ func (m *mailSpray) Success(ip, mailbox string) (clean bool, v *sprayVerdict) {
 	if slices.ContainsFunc(others, func(n string) bool { return m.corroboratedMissing(e, n, now) }) {
 		rule = sprayRuleCompromise
 		block = m.keyTrustCount(key, mailbox, mailEstablishedSourceAccounts, now) < mailEstablishedSourceAccounts
-	} else if !e.noteWeakAlert(mailbox, now, m.cfg.Window) {
-		// A polling client logs in every few minutes: the advisory fires
-		// once per mailbox per window, not once per suppression period.
+	}
+	// A polling client logs in every few minutes: an advisory fires once per
+	// mailbox per window, not once per suppression period.
+	if (rule == sprayRuleWeakCompromise || m.cfg.Mode != sprayEnforce) && !e.noteWeakAlert(mailbox, now, m.cfg.Window) {
 		return false, nil
 	}
 	src.compromiseUntil = now.Add(m.cfg.Suppression)
@@ -1372,9 +1373,9 @@ func (e *sprayIP) forgetFailures() {
 	e.observedAt, e.observedNames = time.Time{}, 0
 }
 
-// noteWeakAlert reports whether a weak compromise advisory for mailbox may
-// fire, at most once per window, and records it. The record is capped like
-// failed, oldest first, and grants no trust.
+// noteWeakAlert reports whether a compromise advisory for mailbox may fire, at
+// most once per window, and records it. The record is capped like failed,
+// oldest first, and grants no trust.
 func (e *sprayIP) noteWeakAlert(mailbox string, now time.Time, window time.Duration) bool {
 	at, ok := e.weakAlerted[mailbox]
 	if ok && now.Sub(at) <= window {

@@ -363,6 +363,55 @@ func TestMailSpray_StrongCompromiseAfterCorroboratedMissingName(t *testing.T) {
 	}
 }
 
+// pollAfterMissingName logs one address in to one mailbox polls times, with a
+// corroborated missing name kept fresh, and counts the compromise verdicts.
+func pollAfterMissingName(t *testing.T, m *mailSpray, clock *staticClock, every time.Duration, polls int) int {
+	t.Helper()
+	const ip, missing = "192.0.2.1", "nobody@example.com"
+	verdicts := 0
+	for range polls {
+		clock.advance(every)
+		for _, from := range []string{"198.51.100.1", "203.0.113.1", ip} {
+			m.Failure(from, missing, mailboxMissing)
+		}
+		if _, v := m.Success(ip, "c@example.com"); v != nil {
+			wantRule(t, v, sprayRuleCompromise, true)
+			verdicts++
+		}
+	}
+	return verdicts
+}
+
+// A polling client logs in every few minutes. Observe mode leaves it in place,
+// so each suppression period would raise another finding.
+func TestMailSpray_ObserveCompromiseOncePerWindow(t *testing.T) {
+	cfg := testSprayConfig()
+	cfg.Mode = sprayObserve
+	m, clock := newTestSpray(cfg)
+	ageTrust(t, m, clock, "192.0.2.1", "a@example.com")
+	every := cfg.Suppression + time.Minute
+	polls := 1 + int(cfg.Window/every)
+	if n := pollAfterMissingName(t, m, clock, every, polls); n != 1 {
+		t.Fatalf("%d polling logins inside the window raised %d findings, want 1", polls, n)
+	}
+	if n := pollAfterMissingName(t, m, clock, every, 1); n != 1 {
+		t.Fatalf("the login past the window raised %d findings, want 1", n)
+	}
+	if n := pollAfterMissingName(t, m, clock, every, 3); n != 0 {
+		t.Fatalf("the new window raised %d more findings", n)
+	}
+}
+
+// In enforce mode each verdict is a block, so only suppression spaces them.
+func TestMailSpray_EnforceCompromiseEachSuppressionPeriod(t *testing.T) {
+	cfg := testSprayConfig()
+	m, clock := newTestSpray(cfg)
+	ageTrust(t, m, clock, "192.0.2.1", "a@example.com")
+	if n := pollAfterMissingName(t, m, clock, cfg.Suppression+time.Minute, 3); n != 3 {
+		t.Fatalf("got %d verdicts over 3 suppression periods, want 3", n)
+	}
+}
+
 // Unknown carries no information across separate failures: a later missing
 // answer on the same name sticks, while one exists answer outweighs all.
 func TestMailSpray_MissingOverUnknownInMemory(t *testing.T) {
