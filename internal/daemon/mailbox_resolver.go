@@ -55,6 +55,7 @@ type cpanelMailboxResolver struct {
 	snapshot       checks.HostingSnapshot
 	snapshotUsable bool
 	snapshotAt     time.Time
+	typoIndex      mailboxTypoIndex
 	accounts       map[string]accountMailboxes
 }
 
@@ -64,8 +65,8 @@ func newCPanelMailboxResolver(src cpanelMailboxSource, now func() time.Time) *cp
 
 // Resolve answers for name, the output of normalizeSprayMailbox. An answer it
 // cannot give is Unknown. The name comes back as given, except that a mailbox
-// found by dropping the domain's trailing dot takes its real spelling, so one
-// mailbox is one key.
+// found by dropping the domain's trailing dot or by a typo match takes its
+// real spelling, so one mailbox is one key.
 func (r *cpanelMailboxResolver) Resolve(name string) sprayMailbox {
 	if name == "" {
 		return sprayMailbox{}
@@ -88,7 +89,7 @@ func (r *cpanelMailboxResolver) Resolve(name string) sprayMailbox {
 	}
 	owner, hosted := r.snapshot.Domains[domain]
 	if !hosted {
-		return sprayMailbox{name: name, exist: mailboxMissing}
+		return r.resolveUnhosted(name, local, domain, now)
 	}
 	lists, usable := r.accountLists(owner, now)
 	if !usable {
@@ -100,7 +101,9 @@ func (r *cpanelMailboxResolver) Resolve(name string) sprayMailbox {
 	if hasAddressExtension(local) {
 		return sprayMailbox{name: name, exist: mailboxExistenceUnknown}
 	}
-	return sprayMailbox{name: name, exist: mailboxMissing}
+	var nearest typoMatch
+	nearest.scan(local, domain, owner, lists[domain], 0)
+	return nearest.answer(sprayMailbox{name: name, exist: mailboxMissing})
 }
 
 // accountNameExistence answers for a login with no domain.
@@ -130,6 +133,7 @@ func (r *cpanelMailboxResolver) refreshSnapshot(now time.Time) {
 	// nothing about the names asked, and outage traffic is never evidence.
 	r.snapshot = snapshot
 	r.snapshotUsable = err == nil && len(snapshot.Accounts) > 0 && len(snapshot.Domains) > 0
+	r.typoIndex = newMailboxTypoIndex(snapshot)
 }
 
 func (r *cpanelMailboxResolver) accountLists(account string, now time.Time) (map[string][]string, bool) {

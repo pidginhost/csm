@@ -5,6 +5,7 @@ import (
 	"maps"
 	"net/netip"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -539,6 +540,41 @@ func FuzzNormalizeSprayMailbox(f *testing.F) {
 		}
 		if again := normalizeSprayMailbox(got); again != got {
 			t.Fatalf("normalizing twice changed %q to %q", got, again)
+		}
+	})
+}
+
+func FuzzMailboxResolverResolve(f *testing.F) {
+	for _, s := range []string{
+		"", "@", "a@", "@example.com", "a/b", "exampleco", "__cpanel__service__auth__x",
+		"info@example.com", "info@example.com.", "exampleco@example.com.",
+		"inof@example.com", "exampelco@example.com", "in+fo@example.com",
+		"info@exmaple.com", "inf@exampel.com.", "in+fo@exmaple.com", "exampelco@exmaple.com",
+		"otherco@example.or", "nosuch@example.nt", "x@../../etc", "x@example.com\x00", "\xff@example.com",
+		strings.Repeat("a", 300) + "@example.com",
+	} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, input string) {
+		src := newTypoMailboxSource()
+		owners := map[string]bool{}
+		for _, owner := range src.snapshot.Domains {
+			owners[owner] = true
+		}
+		name := normalizeSprayMailbox(input)
+		got := newCPanelMailboxResolver(src, time.Now).Resolve(name)
+		if got.name != name {
+			local, domain, _ := strings.Cut(got.name, "@")
+			owner := src.snapshot.Domains[domain]
+			listed := owner != "" && (local == owner || slices.Contains(src.lists[owner][domain], local))
+			if got.exist != mailboxExists || !listed {
+				t.Fatalf("Resolve(%q) = %+v, not a listed mailbox", name, got)
+			}
+		}
+		for _, account := range src.mailboxCalls {
+			if !owners[account] {
+				t.Fatalf("Resolve(%q) read %q, not an owner", name, account)
+			}
 		}
 	})
 }

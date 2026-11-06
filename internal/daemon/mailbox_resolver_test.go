@@ -20,6 +20,7 @@ type fakeMailboxSource struct {
 	inventoryErr   error
 	mailboxesErr   error
 	incomplete     bool
+	unreadable     map[string]bool
 	inventoryCalls int
 	mailboxCalls   []string
 }
@@ -31,6 +32,9 @@ func (f *fakeMailboxSource) Inventory() (checks.HostingSnapshot, error) {
 
 func (f *fakeMailboxSource) Mailboxes(account string) (map[string][]string, bool, error) {
 	f.mailboxCalls = append(f.mailboxCalls, account)
+	if f.unreadable[account] {
+		return nil, false, errors.New("read failed")
+	}
 	return f.lists[account], !f.incomplete, f.mailboxesErr
 }
 
