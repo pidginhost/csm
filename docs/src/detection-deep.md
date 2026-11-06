@@ -17,14 +17,55 @@ service units give CSM a lower CPU weight than the default. Under contention,
 this favors sibling services with default weights while allowing scans to use
 spare CPU on an idle host; it is not a CPU quota.
 
+## Alert delivery
+
+Alert email and the generic alert webhook share repeat state. A successful
+send through either channel counts as delivered. Findings held by the hourly
+cap, failed sends, or disabled notifications remain eligible on later reports,
+without waiting for the daily history reminder. This includes findings derived
+from current observations. Baselines, dismissals and suppression rules still
+apply, including to the sources of cross-account summaries. The signed phpanel
+stream keeps its separate delivery policy.
+
+SMTP probe, self-deleting dropper, sensitive file write, email AV degraded
+and auto-block notice findings keep one alert identity per condition and
+severity: the source address, the removed file, directory or document root,
+the written file with its writer and, when the write can be tied to the file's
+content, that content, the scanner condition, or the kind of notice. Counts,
+process or message IDs, ages, sizes, error text and the files sampled in a
+burst can change without a new alert. Dismissing one of these findings covers
+its later reports until it goes unseen for 24 hours. A return after that
+alerts again. Cross-account summaries alert again when the affected accounts
+change, including after a dismissal. More reports for the same accounts do
+not repeat the summary. Summaries are derived per dispatch batch, so different
+scan tiers or realtime batches can report different subsets of the affected
+accounts, and each subset is emailed once.
+
+An undismissed finding can alert again after 24 hours without an observation,
+even when no other batch arrived to clean up old state. A finding that stays
+on the findings page counts as observed, also while its check skips runs
+between reports, so a check that reports once a day does not email daily.
+After at least 24 hours of downtime, an open finding alerts once on its next
+report. A completed scan that covered the finding and no longer reports it also
+permits a later return to alert. Scan coverage warnings follow the policy
+below.
+
+Keeping acknowledged findings listed does not rewrite alert state, except for
+an acknowledgment that lapses with its condition as described above. Other
+retained findings use the existing periodic save, keeping their delivery state
+across restarts without changing the displayed last-report time.
+
 ## Scan coverage alerts
 
 PHP, JavaScript, YARA, host-wide WordPress database coverage, and unfinished email
 password verification warnings keep one alert identity while their counts change.
-They follow the daily reminder window unless acknowledged. When the owning scan
-returns without that condition, its acknowledgment clears, so a later recurrence
-can alert again. An unrelated scan, throttled check, timeout, or cancellation does
-not prove recovery. Disabling a scanner clears its current coverage condition.
+Alert email and the alert webhook send them once; history records them again
+once a day unless acknowledged. When the owning scan returns without that
+condition, its acknowledgment clears, so a later recurrence can alert again. An
+unacknowledged condition that returns is emailed again only if it went
+unreported for 24 hours, so a gap that is missing from one complete scan and back
+in the next sends no new email. An unrelated scan, throttled check, timeout, or
+cancellation does not prove recovery. Disabling a scanner clears its current coverage condition.
 Existing per-install database limit acknowledgments are kept
 when a partial scan cannot inspect those installations.
 

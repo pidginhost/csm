@@ -156,6 +156,10 @@ type smtpAuthTracker struct {
 	// startup before log readers begin.
 	spray *mailSpray
 
+	// knownCustomers, when set, remembers each successful login's address.
+	// Set once at startup before log readers begin; read without mu.
+	knownCustomers *knownCustomers
+
 	// Postfix SMTP AUTH pairing state (see smtp_auth_pairing.go), bounded by
 	// maxTracked entries each and expired after smtpAuthPairWindow.
 	pendingVerdicts          map[string][]smtpPendingVerdict
@@ -184,6 +188,12 @@ func (t *smtpAuthTracker) SetSpray(m *mailSpray) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.spray = m
+}
+
+// SetKnownCustomers installs the known-customer set. Set once at startup
+// before log readers begin.
+func (t *smtpAuthTracker) SetKnownCustomers(k *knownCustomers) {
+	t.knownCustomers = k
 }
 
 // newSMTPAuthTracker constructs a tracker. `now` is injected so tests can
@@ -465,6 +475,15 @@ func slowTrusted(spray *mailSpray, ip string, accounts map[string]time.Time, unv
 // mailboxes earns none and may be reported as a compromise. The tracker keeps
 // no state of its own for it. Callers filter infra/private/loopback IPs first.
 func (t *smtpAuthTracker) RecordSuccess(ip, account string) (findings []alert.Finding) {
+	return t.recordSuccessAt(ip, account, t.now(), syslogFed)
+}
+
+// recordSuccessAt retains the source time for customer history while the
+// brute-force tracker continues to process the event at receipt time. src
+// names the log the login came from: the Exim mainlog or Postfix over syslog.
+func (t *smtpAuthTracker) recordSuccessAt(ip, account string, at time.Time, src loginSource) (findings []alert.Finding) {
+	// Before t.mu: the customer set takes its own lock.
+	t.knownCustomers.Note(ip, knownCustomerSMTP, account, at, src)
 	if ip == "" {
 		return nil
 	}

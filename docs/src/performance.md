@@ -45,8 +45,9 @@ is replaced by a new file, as on truncation or rotation, starts a new
 baseline. A cancelled scan changes nothing; a scan that could not read part
 of the tree keeps the logs it did not reach and updates the ones it did.
 
-The finding keeps the same identity while the log grows, so it alerts at most
-once a day and a dismissal sticks until the log crosses into the higher tier.
+The finding keeps the same identity while the log grows, so alert email and the
+webhook send it once, history records it at most once a day, and a dismissal
+sticks until the log crosses into the higher tier.
 When more than 20 logs are bloated, the largest are reported.
 
 ### WordPress loopback requests

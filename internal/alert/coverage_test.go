@@ -923,103 +923,71 @@ func TestSendHeartbeatHTTPErrorIsSwallowed(t *testing.T) {
 	SendHeartbeat(cfg)
 }
 
-// --- FilterBlockedAlerts / loadBlockedIPs -----------------------------
+// --- SplitByClass / loadBlockedIPs ------------------------------------
 
-func TestFilterBlockedAlertsDisabledPassesThrough(t *testing.T) {
+func TestSplitByClassKeepsUnblockedFindingImmediate(t *testing.T) {
 	cfg := &config.Config{StatePath: t.TempDir()}
-	cfg.Suppressions.SuppressBlockedAlerts = false
-	findings := []Finding{{Check: "ip_reputation", Message: "1.2.3.4 flagged"}}
-	if got := FilterBlockedAlerts(cfg, findings); len(got) != 1 {
-		t.Errorf("disabled filter should pass through, got %d", len(got))
-	}
+	finding := Finding{Check: "ip_reputation", Message: "203.0.113.4 flagged"}
+	assertSplit(t, cfg, []Finding{finding}, []Finding{finding}, nil)
 }
 
-// Suppression must key on the actual block state, not on auto-response
+// The class must key on the actual block state, not on auto-response
 // intent: with block_ips enabled, a reputation finding for an IP that was
 // never blocked (dry-run, rate-limited, verdict-allowed) still needs the
 // operator's attention.
-func TestFilterBlockedAlertsAutoResponseKeepsUnblockedReputationFindings(t *testing.T) {
+func TestSplitByClassAutoResponseKeepsUnblockedReputationImmediate(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(
 		filepath.Join(dir, "blocked_ips.json"),
-		[]byte(`{"ips":[{"ip":"99.99.99.99","expires_at":"2099-01-01T00:00:00Z"}]}`),
+		[]byte(`{"ips":[{"ip":"198.51.100.99","expires_at":"2099-01-01T00:00:00Z"}]}`),
 		0600,
 	); err != nil {
 		t.Fatal(err)
 	}
 
 	cfg := &config.Config{StatePath: dir}
-	cfg.Suppressions.SuppressBlockedAlerts = true
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.BlockIPs = true
+	unblocked := Finding{Check: "ip_reputation", Message: "203.0.113.4 flagged", Severity: Warning}
+	blocked := Finding{Check: "ip_reputation", Message: "198.51.100.99 flagged", Severity: Warning}
+	malware := Finding{Check: "malware", Message: "shell.php", Severity: Critical}
+	assertSplit(t, cfg, []Finding{unblocked, blocked, malware}, []Finding{unblocked, malware}, []Finding{blocked})
+}
+
+// A same-batch applied block answers the matching reputation finding: the
+// block landed this cycle.
+func TestSplitByClassSameBatchBlockMovesReputationToSummary(t *testing.T) {
+	withSummaryNoticePolicy(t, summaryNoticeForTest)
+	cfg := &config.Config{StatePath: t.TempDir()}
 	cfg.AutoResponse.Enabled = true
 	cfg.AutoResponse.BlockIPs = true
 	findings := []Finding{
-		{Check: "ip_reputation", Message: "1.2.3.4 flagged", Severity: Warning},
-		{Check: "ip_reputation", Message: "99.99.99.99 flagged", Severity: Warning},
-		{Check: "malware", Message: "shell.php", Severity: Critical},
+		{Check: "auto_block", Message: "AUTO-BLOCK: 203.0.113.7 blocked (expires in 24h)", Severity: Critical},
+		{Check: "ip_reputation", Message: "203.0.113.7 flagged", Severity: Warning},
 	}
-	got := FilterBlockedAlerts(cfg, findings)
-	if len(got) != 2 {
-		t.Fatalf("got %d findings %+v, want 2 (unblocked reputation + malware)", len(got), got)
-	}
-	if got[0].Check != "ip_reputation" || !strings.Contains(got[0].Message, "1.2.3.4") {
-		t.Errorf("kept wrong finding first: %+v", got[0])
-	}
-	if got[1].Check != "malware" {
-		t.Errorf("malware finding dropped: %+v", got)
-	}
+	assertSplit(t, cfg, findings, nil, findings)
 }
 
-// Same-batch AUTO-BLOCK findings still suppress the matching reputation
-// alert when auto-response is live: the block landed this cycle.
-func TestFilterBlockedAlertsAutoResponseSuppressesSameBatchBlock(t *testing.T) {
+func TestSplitByClassAppliedBlockNoticeIsSummary(t *testing.T) {
+	withSummaryNoticePolicy(t, summaryNoticeForTest)
 	cfg := &config.Config{StatePath: t.TempDir()}
-	cfg.Suppressions.SuppressBlockedAlerts = true
-	cfg.AutoResponse.Enabled = true
-	cfg.AutoResponse.BlockIPs = true
-	findings := []Finding{
-		{Check: "auto_block", Message: "AUTO-BLOCK: 7.7.7.7 blocked (expires in 24h)"},
-		{Check: "ip_reputation", Message: "7.7.7.7 flagged", Severity: Warning},
-	}
-	got := FilterBlockedAlerts(cfg, findings)
-	if len(got) != 0 {
-		t.Errorf("got %+v, want both suppressed (auto_block dropped, reputation covered by same-batch block)", got)
-	}
+	notice := Finding{Check: "auto_block", Message: "AUTO-BLOCK: 203.0.113.4", Severity: Critical}
+	other := Finding{Check: "other", Message: "keep me"}
+	assertSplit(t, cfg, []Finding{notice, other}, []Finding{other}, []Finding{notice})
 }
 
-func TestFilterBlockedAlertsSkipsAutoBlockCheck(t *testing.T) {
-	cfg := &config.Config{StatePath: t.TempDir()}
-	cfg.Suppressions.SuppressBlockedAlerts = true
-	findings := []Finding{
-		{Check: "auto_block", Message: "AUTO-BLOCK: 1.2.3.4"},
-		{Check: "other", Message: "keep me"},
-	}
-	got := FilterBlockedAlerts(cfg, findings)
-	if len(got) != 1 || got[0].Check != "other" {
-		t.Errorf("got %+v, want only [other]", got)
-	}
-}
-
-func TestFilterBlockedAlertsWithKnownBlockedIP(t *testing.T) {
+func TestSplitByClassWithKnownBlockedIP(t *testing.T) {
 	dir := t.TempDir()
 	// Seed blocked_ips.json.
-	body := `{"ips":[{"ip":"5.5.5.5","expires_at":"2099-01-01T00:00:00Z"}]}`
+	body := `{"ips":[{"ip":"203.0.113.5","expires_at":"2099-01-01T00:00:00Z"}]}`
 	if err := os.WriteFile(filepath.Join(dir, "blocked_ips.json"), []byte(body), 0600); err != nil {
 		t.Fatal(err)
 	}
 
 	cfg := &config.Config{StatePath: dir}
-	cfg.Suppressions.SuppressBlockedAlerts = true
-	findings := []Finding{
-		{Check: "ip_reputation", Message: "ip=5.5.5.5 flagged"},
-		{Check: "ip_reputation", Message: "ip=6.6.6.6 flagged"}, // not blocked
-	}
-	got := FilterBlockedAlerts(cfg, findings)
-	if len(got) != 1 {
-		t.Fatalf("got %d, want 1", len(got))
-	}
-	if !strings.Contains(got[0].Message, "6.6.6.6") {
-		t.Errorf("wrong finding kept: %+v", got[0])
-	}
+	blocked := Finding{Check: "ip_reputation", Message: "ip=203.0.113.5 flagged"}
+	unblocked := Finding{Check: "ip_reputation", Message: "ip=203.0.113.6 flagged"}
+	assertSplit(t, cfg, []Finding{blocked, unblocked}, []Finding{unblocked}, []Finding{blocked})
 }
 
 func TestLoadBlockedIPsSkipsExpired(t *testing.T) {
@@ -1094,7 +1062,7 @@ func TestLoadBlockedIPsMalformed(t *testing.T) {
 	}
 }
 
-func TestFilterBlockedAlertsMalformedBlockedFileWarnsOnceAndKeepsFinding(t *testing.T) {
+func TestSplitByClassMalformedBlockedFileWarnsOnceAndKeepsFindingImmediate(t *testing.T) {
 	orig := BlockedIPsFunc
 	BlockedIPsFunc = nil
 	t.Cleanup(func() { BlockedIPsFunc = orig })
@@ -1105,22 +1073,14 @@ func TestFilterBlockedAlertsMalformedBlockedFileWarnsOnceAndKeepsFinding(t *test
 	}
 
 	cfg := &config.Config{StatePath: dir}
-	cfg.Suppressions.SuppressBlockedAlerts = true
-	findings := []Finding{{Check: "ip_reputation", Message: "5.5.5.5 flagged"}}
+	findings := []Finding{{Check: "ip_reputation", Message: "203.0.113.5 flagged"}}
 
-	var got []Finding
 	logs := captureAlertLogs(t, func() {
-		got = FilterBlockedAlerts(cfg, findings)
+		assertSplit(t, cfg, findings, findings, nil)
 	})
 
-	if len(got) != 1 || got[0].Message != findings[0].Message {
-		t.Fatalf("malformed state must keep finding visible, got %+v", got)
-	}
-	if count := strings.Count(logs, "suppression degraded"); count != 1 {
-		t.Fatalf("degraded-suppression warning count = %d, want 1; logs: %q", count, logs)
-	}
-	if !strings.Contains(logs, "suppression degraded") {
-		t.Fatalf("warning did not explain degraded suppression: %q", logs)
+	if count := strings.Count(logs, "count as unhandled"); count != 1 {
+		t.Fatalf("degraded-state warning count = %d, want 1; logs: %q", count, logs)
 	}
 }
 
@@ -1151,185 +1111,131 @@ func TestLoadBlockedIPsMalformedFirewallStateWarns(t *testing.T) {
 	}
 }
 
-func TestFilterBlockedAlertsMalformedBlockedEntriesKeepsPendingFinding(t *testing.T) {
+func TestSplitByClassMalformedBlockedEntriesKeepsPendingFindingImmediate(t *testing.T) {
 	orig := BlockedIPsFunc
 	BlockedIPsFunc = nil
 	t.Cleanup(func() { BlockedIPsFunc = orig })
 
 	dir := t.TempDir()
-	body := `{"ips":[{"ip":"5.5.5.5","expires_at":"not-a-time"}],"pending":[{"ip":"8.8.8.8"}]}`
+	body := `{"ips":[{"ip":"203.0.113.5","expires_at":"not-a-time"}],"pending":[{"ip":"203.0.113.8"}]}`
 	if err := os.WriteFile(filepath.Join(dir, "blocked_ips.json"), []byte(body), 0600); err != nil {
 		t.Fatal(err)
 	}
 
 	cfg := &config.Config{StatePath: dir}
-	cfg.Suppressions.SuppressBlockedAlerts = true
-	findings := []Finding{{Check: "ip_reputation", Message: "8.8.8.8 queued for block"}}
+	findings := []Finding{{Check: "ip_reputation", Message: "203.0.113.8 queued for block"}}
 
-	var got []Finding
 	logs := captureAlertLogs(t, func() {
-		got = FilterBlockedAlerts(cfg, findings)
+		assertSplit(t, cfg, findings, findings, nil)
 	})
 
-	if len(got) != 1 || got[0].Message != findings[0].Message {
-		t.Fatalf("pending block is not actual block state and must stay visible, got %+v", got)
-	}
 	if !strings.Contains(logs, "blocked entries unparseable") {
 		t.Fatalf("missing blocked-entry warning: %q", logs)
 	}
 }
 
-func TestFilterBlockedAlertsPendingIPsRemainVisible(t *testing.T) {
+func TestSplitByClassPendingIPsStayImmediate(t *testing.T) {
 	orig := BlockedIPsFunc
 	BlockedIPsFunc = nil
 	t.Cleanup(func() { BlockedIPsFunc = orig })
 
 	dir := t.TempDir()
-	body := `{"ips":[{"ip":"9.9.9.9","expires_at":"2099-01-01T00:00:00Z"}],"pending":[{"ip":"8.8.8.8"}]}`
+	body := `{"ips":[{"ip":"203.0.113.9","expires_at":"2099-01-01T00:00:00Z"}],"pending":[{"ip":"203.0.113.8"}]}`
 	if err := os.WriteFile(filepath.Join(dir, "blocked_ips.json"), []byte(body), 0600); err != nil {
 		t.Fatal(err)
 	}
 
 	cfg := &config.Config{StatePath: dir}
-	cfg.Suppressions.SuppressBlockedAlerts = true
-	findings := []Finding{{Check: "ip_reputation", Message: "8.8.8.8 scanning"}}
-	got := FilterBlockedAlerts(cfg, findings)
-	if len(got) != 1 || got[0].Message != findings[0].Message {
-		t.Errorf("pending IP is not blocked and must stay visible, got %v", got)
-	}
+	findings := []Finding{{Check: "ip_reputation", Message: "203.0.113.8 scanning"}}
+	assertSplit(t, cfg, findings, findings, nil)
 }
 
-func TestFilterBlockedAlertsLearnsFromAutoBlockBatch(t *testing.T) {
+func TestSplitByClassLearnsFromAutoBlockBatch(t *testing.T) {
+	withSummaryNoticePolicy(t, summaryNoticeForTest)
 	cfg := &config.Config{StatePath: t.TempDir()}
-	cfg.Suppressions.SuppressBlockedAlerts = true
 
+	// The notice is summary by its own class and the reputation finding by
+	// the block learned from it.
 	findings := []Finding{
-		{Check: "auto_block", Message: "AUTO-BLOCK: 9.9.9.9 brute force"},
-		{Check: "ip_reputation", Message: "9.9.9.9 was flagged"},
+		{Check: "auto_block", Message: "AUTO-BLOCK: 203.0.113.9 brute force", Severity: Critical},
+		{Check: "ip_reputation", Message: "203.0.113.9 was flagged"},
 	}
-	got := FilterBlockedAlerts(cfg, findings)
-	// Both should be dropped: auto_block by check name, reputation by
-	// the learned-in-batch blocked set.
-	if len(got) != 0 {
-		t.Errorf("got %v, want empty (auto-block learned)", got)
-	}
+	assertSplit(t, cfg, findings, nil, findings)
 }
 
-func TestFilter_SubnetBlockSuppressesReputationInSameBatch(t *testing.T) {
+func TestSplitByClassSubnetBlockMovesReputationInSameBatch(t *testing.T) {
+	withSummaryNoticePolicy(t, summaryNoticeForTest)
 	cfg := &config.Config{StatePath: t.TempDir()}
-	cfg.Suppressions.SuppressBlockedAlerts = true
 
-	findings := []Finding{
-		{
-			Severity: Critical,
-			Check:    "auto_block",
-			Message:  "AUTO-BLOCK-SUBNET: 203.0.113.0/24 blocked",
-		},
-		{
-			Severity: Warning,
-			Check:    "ip_reputation",
-			Message:  "Known malicious IP accessing server: 203.0.113.42 (from abuseipdb)",
-		},
-		{
-			Severity: Warning,
-			Check:    "ip_reputation",
-			Message:  "Known malicious IP accessing server: 10.20.30.40 (from abuseipdb)",
-		},
+	subnet := Finding{
+		Severity: Critical,
+		Check:    "auto_block",
+		Message:  "AUTO-BLOCK-SUBNET: 203.0.113.0/24 blocked",
 	}
-
-	got := FilterBlockedAlerts(cfg, findings)
-
-	// The ip_reputation finding for 203.0.113.42 must be suppressed because
-	// it is inside the just-blocked /24. The finding for 10.20.30.40 must
-	// pass through (different subnet).
-	for _, f := range got {
-		if f.Check == "ip_reputation" && strings.Contains(f.Message, "203.0.113.42") {
-			t.Errorf("ip_reputation for 203.0.113.42 should be suppressed by subnet block; got %v", f)
-		}
+	inside := Finding{
+		Severity: Warning,
+		Check:    "ip_reputation",
+		Message:  "Known malicious IP accessing server: 203.0.113.42 (from abuseipdb)",
 	}
-	var kept bool
-	for _, f := range got {
-		if f.Check == "ip_reputation" && strings.Contains(f.Message, "10.20.30.40") {
-			kept = true
-		}
+	outside := Finding{
+		Severity: Warning,
+		Check:    "ip_reputation",
+		Message:  "Known malicious IP accessing server: 198.51.100.40 (from abuseipdb)",
 	}
-	if !kept {
-		t.Errorf("ip_reputation for 10.20.30.40 must not be suppressed (outside blocked /24)")
-	}
+	// The address inside the just-blocked /24 is handled; the other
+	// subnet's finding stays immediate.
+	assertSplit(t, cfg, []Finding{subnet, inside, outside}, []Finding{outside}, []Finding{subnet, inside})
 }
 
-func TestFilterDryRunSubnetNoticeDoesNotSuppressReputation(t *testing.T) {
+func TestSplitByClassDryRunSubnetNoticeKeepsReputationImmediate(t *testing.T) {
+	withSummaryNoticePolicy(t, summaryNoticeForTest)
 	cfg := &config.Config{StatePath: t.TempDir()}
-	cfg.Suppressions.SuppressBlockedAlerts = true
 
-	findings := []Finding{
-		{
-			Severity: Warning,
-			Check:    "auto_block",
-			Message:  "AUTO-BLOCK-SUBNET [dry-run]: 203.0.113.0/24 would be blocked",
-		},
-		{
-			Severity: Warning,
-			Check:    "ip_reputation",
-			Message:  "Known malicious IP accessing server: 203.0.113.42 (from abuseipdb)",
-		},
+	notice := Finding{
+		Severity: Warning,
+		Check:    "auto_block",
+		Message:  "AUTO-BLOCK-SUBNET [dry-run]: 203.0.113.0/24 would be blocked",
 	}
-
-	got := FilterBlockedAlerts(cfg, findings)
-	if len(got) != 2 || got[1].Check != "ip_reputation" {
-		t.Fatalf("got %+v, want dry-run notice and reputation finding retained", got)
+	reputation := Finding{
+		Severity: Warning,
+		Check:    "ip_reputation",
+		Message:  "Known malicious IP accessing server: 203.0.113.42 (from abuseipdb)",
 	}
+	assertSplit(t, cfg, []Finding{notice, reputation}, []Finding{reputation}, []Finding{notice})
 }
 
-func TestFilterBlockedAlertsExactIPMatchOnly(t *testing.T) {
-	// Blocked 1.2.3.4 must not suppress a finding about the unrelated
-	// 1.2.3.45; substring matching used to swallow such alerts.
+func TestSplitByClassExactIPMatchOnly(t *testing.T) {
+	// Blocked 192.0.2.1 must not answer a finding about the unrelated
+	// 192.0.2.10; substring matching used to swallow such alerts.
 	orig := BlockedIPsFunc
 	BlockedIPsFunc = func() map[string]bool {
-		return map[string]bool{"1.2.3.4": true}
+		return map[string]bool{"192.0.2.1": true}
 	}
 	t.Cleanup(func() { BlockedIPsFunc = orig })
 
 	cfg := &config.Config{StatePath: t.TempDir()}
-	cfg.Suppressions.SuppressBlockedAlerts = true
-	findings := []Finding{
-		{Check: "ip_reputation", Message: "Known malicious IP accessing server: 1.2.3.45 (source: abuseipdb)"},
-		{Check: "ip_reputation", Message: "Known malicious IP accessing server: 1.2.3.4 (source: abuseipdb)"},
-	}
-
-	got := FilterBlockedAlerts(cfg, findings)
-
-	if len(got) != 1 {
-		t.Fatalf("got %d findings, want 1 (only the 1.2.3.45 alert): %+v", len(got), got)
-	}
-	if !strings.Contains(got[0].Message, "1.2.3.45") {
-		t.Errorf("kept the wrong finding: %+v", got[0])
-	}
+	unrelated := Finding{Check: "ip_reputation", Message: "Known malicious IP accessing server: 192.0.2.10 (source: abuseipdb)"}
+	blocked := Finding{Check: "ip_reputation", Message: "Known malicious IP accessing server: 192.0.2.1 (source: abuseipdb)"}
+	assertSplit(t, cfg, []Finding{unrelated, blocked}, []Finding{unrelated}, []Finding{blocked})
 }
 
-func TestFilterBlockedAlertsNoParseableIPFailsOpen(t *testing.T) {
-	// A reputation finding whose message has no parseable IP must never
-	// be suppressed: fail open to alerting.
+func TestSplitByClassNoParseableIPFailsOpen(t *testing.T) {
+	// A reputation finding whose message has no parseable IP is never
+	// handled: fail open to alerting.
 	orig := BlockedIPsFunc
 	BlockedIPsFunc = func() map[string]bool {
-		return map[string]bool{"1.2.3.4": true}
+		return map[string]bool{"192.0.2.1": true}
 	}
 	t.Cleanup(func() { BlockedIPsFunc = orig })
 
 	cfg := &config.Config{StatePath: t.TempDir()}
-	cfg.Suppressions.SuppressBlockedAlerts = true
 	findings := []Finding{
 		{Check: "ip_reputation", Message: "reputation source degraded, no address available"},
 	}
-
-	got := FilterBlockedAlerts(cfg, findings)
-
-	if len(got) != 1 {
-		t.Fatalf("finding without parseable IP must be kept, got %+v", got)
-	}
+	assertSplit(t, cfg, findings, findings, nil)
 }
 
-func TestFilterBlockedAlertsUsesStructuredSourceIP(t *testing.T) {
+func TestSplitByClassUsesStructuredSourceIP(t *testing.T) {
 	orig := BlockedIPsFunc
 	BlockedIPsFunc = func() map[string]bool {
 		return map[string]bool{"2001:db8::": true}
@@ -1337,7 +1243,6 @@ func TestFilterBlockedAlertsUsesStructuredSourceIP(t *testing.T) {
 	t.Cleanup(func() { BlockedIPsFunc = orig })
 
 	cfg := &config.Config{StatePath: t.TempDir()}
-	cfg.Suppressions.SuppressBlockedAlerts = true
 	findings := []Finding{
 		{
 			Check:    "ip_reputation",
@@ -1345,15 +1250,10 @@ func TestFilterBlockedAlertsUsesStructuredSourceIP(t *testing.T) {
 			SourceIP: "2001:db8::",
 		},
 	}
-
-	got := FilterBlockedAlerts(cfg, findings)
-
-	if len(got) != 0 {
-		t.Fatalf("structured SourceIP should suppress blocked source, got %+v", got)
-	}
+	assertSplit(t, cfg, findings, nil, findings)
 }
 
-func TestFilterBlockedAlertsStructuredSourceIPIsAuthoritative(t *testing.T) {
+func TestSplitByClassStructuredSourceIPIsAuthoritative(t *testing.T) {
 	orig := BlockedIPsFunc
 	BlockedIPsFunc = func() map[string]bool {
 		return map[string]bool{"198.51.100.1": true}
@@ -1361,7 +1261,6 @@ func TestFilterBlockedAlertsStructuredSourceIPIsAuthoritative(t *testing.T) {
 	t.Cleanup(func() { BlockedIPsFunc = orig })
 
 	cfg := &config.Config{StatePath: t.TempDir()}
-	cfg.Suppressions.SuppressBlockedAlerts = true
 	findings := []Finding{
 		{
 			Check:    "ip_reputation",
@@ -1369,18 +1268,14 @@ func TestFilterBlockedAlertsStructuredSourceIPIsAuthoritative(t *testing.T) {
 			SourceIP: "203.0.113.8",
 		},
 	}
-
-	got := FilterBlockedAlerts(cfg, findings)
-
-	if len(got) != 1 {
-		t.Fatalf("unblocked structured SourceIP must keep finding visible, got %+v", got)
-	}
+	assertSplit(t, cfg, findings, findings, nil)
 }
 
-func TestFilterBlockedAlertsIPv6CanonicalMatch(t *testing.T) {
+func TestSplitByClassIPv6CanonicalMatch(t *testing.T) {
 	// IPv6 comparison must be canonical: a long-form blocked entry
-	// suppresses the short-form finding, while a distinct address that
-	// merely shares a textual prefix (2001:db8::12 vs 2001:db8::1) is kept.
+	// answers the short-form finding, while a distinct address that
+	// merely shares a textual prefix (2001:db8::12 vs 2001:db8::1) stays
+	// immediate.
 	orig := BlockedIPsFunc
 	BlockedIPsFunc = func() map[string]bool {
 		return map[string]bool{
@@ -1390,23 +1285,12 @@ func TestFilterBlockedAlertsIPv6CanonicalMatch(t *testing.T) {
 	t.Cleanup(func() { BlockedIPsFunc = orig })
 
 	cfg := &config.Config{StatePath: t.TempDir()}
-	cfg.Suppressions.SuppressBlockedAlerts = true
-	findings := []Finding{
-		{Check: "ip_reputation", Message: "Known malicious IP accessing server: 2001:db8::1 (source: abuseipdb)"},
-		{Check: "ip_reputation", Message: "Known malicious IP accessing server: 2001:db8::12 (source: abuseipdb)"},
-	}
-
-	got := FilterBlockedAlerts(cfg, findings)
-
-	if len(got) != 1 {
-		t.Fatalf("got %d findings, want 1 (only the 2001:db8::12 alert): %+v", len(got), got)
-	}
-	if !strings.Contains(got[0].Message, "2001:db8::12") {
-		t.Errorf("kept the wrong finding: %+v", got[0])
-	}
+	blocked := Finding{Check: "ip_reputation", Message: "Known malicious IP accessing server: 2001:db8::1 (source: abuseipdb)"}
+	other := Finding{Check: "ip_reputation", Message: "Known malicious IP accessing server: 2001:db8::12 (source: abuseipdb)"}
+	assertSplit(t, cfg, []Finding{blocked, other}, []Finding{other}, []Finding{blocked})
 }
 
-func TestFilterBlockedAlertsIPv6TrailingCompression(t *testing.T) {
+func TestSplitByClassIPv6TrailingCompression(t *testing.T) {
 	orig := BlockedIPsFunc
 	BlockedIPsFunc = func() map[string]bool {
 		return map[string]bool{"2001:db8::": true}
@@ -1414,16 +1298,10 @@ func TestFilterBlockedAlertsIPv6TrailingCompression(t *testing.T) {
 	t.Cleanup(func() { BlockedIPsFunc = orig })
 
 	cfg := &config.Config{StatePath: t.TempDir()}
-	cfg.Suppressions.SuppressBlockedAlerts = true
 	findings := []Finding{
 		{Check: "ip_reputation", Message: "Known malicious IP accessing server: 2001:db8:: (source: abuseipdb)"},
 	}
-
-	got := FilterBlockedAlerts(cfg, findings)
-
-	if len(got) != 0 {
-		t.Fatalf("IPv6 address ending in :: should parse and suppress, got %+v", got)
-	}
+	assertSplit(t, cfg, findings, nil, findings)
 }
 
 func captureAlertLogs(t *testing.T, fn func()) string {

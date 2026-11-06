@@ -241,7 +241,7 @@ func extractPureFTPDClientIP(line string) string {
 		return ""
 	}
 	inner := rest[:close]
-	at := strings.IndexByte(inner, '@')
+	at := strings.LastIndexByte(inner, '@')
 	if at < 0 {
 		return ""
 	}

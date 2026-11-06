@@ -116,7 +116,7 @@ func TestUpdateAndMarkAlertedOnlyMarkDirty(t *testing.T) {
 		t.Fatalf("FlushDue wrote state.json %d times, want 1", len(*writes))
 	}
 	keys := onDiskKeys(t, st.path)
-	if len(keys) != 2 || !keys[debounceA.Key()] || !keys[debounceB.Key()] {
+	if len(keys) != 3 || !keys[emailGateMetaKey] || !keys[debounceA.Key()] || !keys[debounceB.Key()] {
 		t.Fatalf("flush did not carry all pending changes: %v", keys)
 	}
 }
@@ -249,7 +249,72 @@ func TestFailedSaveRetriesAtNextInterval(t *testing.T) {
 		t.Fatal(err)
 	}
 	keys := onDiskKeys(t, st.path)
-	if len(keys) != 2 || !keys[debounceA.Key()] || !keys[debounceB.Key()] {
+	if len(keys) != 3 || !keys[emailGateMetaKey] || !keys[debounceA.Key()] || !keys[debounceB.Key()] {
 		t.Fatalf("retry lost pending changes: %v", keys)
+	}
+}
+
+func TestKeptBaselineDoesNotRewriteState(t *testing.T) {
+	now := time.Now()
+	st := debounceStore(t, &now)
+	st.SetBaseline([]alert.Finding{debounceA})
+	st.SetLatestFindings([]alert.Finding{debounceA})
+	before, ok := st.EntryForKey(debounceA.Key())
+	if !ok || !before.IsBaseline {
+		t.Fatal("setup: finding is not baselined")
+	}
+	writes := captureStateWrites(t)
+
+	for range 3 {
+		now = now.Add(saveInterval)
+		_, kept := st.PurgeAndMergeFindingsDerivedWithCoverage([]string{"other_check"}, nil, nil, nil, nil)
+		if len(kept) != 1 || kept[0] != debounceA.Key() {
+			t.Fatalf("merge did not retain the baseline: %v", kept)
+		}
+		st.MarkKept(kept)
+		if err := st.FlushDue(now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	after, _ := st.EntryForKey(debounceA.Key())
+	if after != before || len(*writes) != 0 {
+		t.Fatalf("retaining a baseline changed its state: before=%+v after=%+v writes=%d", before, after, len(*writes))
+	}
+}
+
+func TestKeptRowsUseSaveDebounce(t *testing.T) {
+	now := time.Now()
+	st := debounceStore(t, &now)
+	st.Update([]alert.Finding{debounceA})
+	if err := st.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	writes := captureStateWrites(t)
+	start := now
+	for i := 1; i <= 3; i++ {
+		now = start.Add(time.Duration(i) * saveInterval / 4)
+		st.MarkKept([]string{debounceA.Key()})
+		if err := st.FlushDue(now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(*writes) != 0 {
+		t.Fatalf("kept rows bypassed save debounce: %d writes", len(*writes))
+	}
+	now = start.Add(saveInterval)
+	if err := st.FlushDue(now); err != nil {
+		t.Fatal(err)
+	}
+	if len(*writes) != 1 {
+		t.Fatalf("kept rows were not persisted: %d writes, want 1", len(*writes))
+	}
+	reopened, err := Open(st.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	entry, ok := reopened.EntryForKey(debounceA.Key())
+	if !ok || !entry.KeptAt.Equal(start.Add(3*saveInterval/4)) || !entry.LastSeen.Equal(start) {
+		t.Fatalf("restarted entry lost liveness or changed its last report: %+v present=%t", entry, ok)
 	}
 }

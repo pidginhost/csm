@@ -105,6 +105,7 @@ func TestBlockDigestValidationRejectsDisabledDeliveryChannel(t *testing.T) {
 		cfg.Alerts.Webhook.URL = "https://alerts.example.test/hook"
 		cfg.Alerts.BlockDigest.Enabled = true
 		cfg.Alerts.BlockDigest.Channel = "email"
+		cfg.Alerts.BlockDigest.Live = true
 
 		results := Validate(cfg)
 		if !hasResult(results, "error", "alerts.block_digest.channel") {
@@ -116,10 +117,62 @@ func TestBlockDigestValidationRejectsDisabledDeliveryChannel(t *testing.T) {
 		cfg := baseValidationConfig()
 		cfg.Alerts.BlockDigest.Enabled = true
 		cfg.Alerts.BlockDigest.Channel = "webhook"
+		cfg.Alerts.BlockDigest.Live = true
 
 		results := Validate(cfg)
 		if !hasResult(results, "error", "alerts.block_digest.channel") {
 			t.Fatalf("expected channel error for disabled webhook alerts; results=%v", results)
 		}
 	})
+}
+
+func TestSummaryValidationIgnoresUnusedLiveChannel(t *testing.T) {
+	for _, channel := range []string{"email", "webhook"} {
+		t.Run(channel, func(t *testing.T) {
+			cfg := baseValidationConfig()
+			cfg.Alerts.BlockDigest.Enabled = true
+			cfg.Alerts.BlockDigest.Channel = channel
+			cfg.Alerts.Email.Enabled = channel == "webhook"
+			cfg.Alerts.Webhook.Enabled = channel == "email"
+			cfg.Alerts.Webhook.URL = "https://alerts.example.test/hook"
+			if results := Validate(cfg); hasResult(results, "error", "alerts.block_digest.channel") {
+				t.Fatalf("unused live destination blocked daily summary on the enabled channel: %v", results)
+			}
+			cfg.Alerts.BlockDigest.Live = true
+			if results := Validate(cfg); !hasResult(results, "error", "alerts.block_digest.channel") {
+				t.Fatal("live delivery accepted a disabled selected channel")
+			}
+		})
+	}
+}
+
+// The interval drives a summary store write on every fold, even with
+// block_digest off, so it has a 1m floor. A lower value from an older config
+// must not fail startup after an upgrade: it loads, runs at 1m and warns.
+func TestBlockDigestIntervalFloor(t *testing.T) {
+	cases := []struct {
+		interval string
+		want     time.Duration
+		warn     bool
+	}{
+		{"1s", time.Minute, true},
+		{"59s", time.Minute, true},
+		{"1m", time.Minute, false},
+		{"1h", time.Hour, false},
+	}
+	for _, tc := range cases {
+		cfg := loadBD(t, "alerts:\n  block_digest:\n    enabled: true\n    interval: \""+tc.interval+"\"\n")
+		if got := cfg.BlockDigestInterval(); got != tc.want {
+			t.Errorf("interval %s runs as %v, want %v", tc.interval, got, tc.want)
+		}
+		cfg.Alerts.Email = baseValidationConfig().Alerts.Email
+		cfg.Alerts.MaxPerHour = 10
+		results := Validate(cfg)
+		if hasResult(results, "error", "alerts.block_digest.interval") {
+			t.Errorf("interval %s fails validation: %v", tc.interval, results)
+		}
+		if got := hasResult(results, "warn", "alerts.block_digest.interval"); got != tc.warn {
+			t.Errorf("interval %s: warning = %v, want %v", tc.interval, got, tc.warn)
+		}
+	}
 }

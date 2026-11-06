@@ -129,7 +129,7 @@ func TestDropperFlushGroupsFilesOfOneRemovedDirectory(t *testing.T) {
 		t.Fatalf("singles = %v, want the lone file and the suspect reported on their own", singles)
 	}
 
-	sev, msg, details, path := dropperAlertParams(*grouped)
+	sev, msg, details, path, _ := dropperAlertParams(*grouped)
 	if sev != alert.Warning || path != pack {
 		t.Errorf("severity, path = %v, %q; want Warning on %s", sev, path, pack)
 	}

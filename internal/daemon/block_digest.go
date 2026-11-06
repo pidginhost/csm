@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"fmt"
+	"net/netip"
 	"strings"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -10,6 +11,7 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/firewall"
 	csmlog "github.com/pidginhost/csm/internal/log"
+	"github.com/pidginhost/csm/internal/store"
 )
 
 var (
@@ -17,16 +19,15 @@ var (
 	blockDigestSendWebhookJSON = alert.SendWebhookJSON
 )
 
-// buildBlockDigest constructs the collector from config, or returns nil when
-// the feature is disabled. Built once at startup; block_digest is
-// hotreload:"restart" so its settings do not change under a live daemon.
+// buildBlockDigest constructs the collector that sends the daily alert
+// summary; with block_digest enabled it also watches blocks by country. Built
+// once at startup; block_digest is hotreload:"restart" so its settings do not
+// change under a live daemon.
 func (d *Daemon) buildBlockDigest(cfg *config.Config) *blockdigest.Collector {
-	if !cfg.Alerts.BlockDigest.Enabled {
-		return nil
-	}
+	watch := cfg.Alerts.BlockDigest.Enabled
 	configuredCountries := blockdigest.ResolveCountries(cfg.Alerts.BlockDigest.Countries, nil)
 	countries := blockdigest.ResolveCountries(cfg.Alerts.BlockDigest.Countries, cfg.Suppressions.TrustedCountries)
-	if len(countries) == 0 {
+	if watch && len(countries) == 0 {
 		csmlog.Warn("block_digest enabled with no countries; watching ALL countries (set alerts.block_digest.countries or suppressions.trusted_countries)")
 	}
 	var countriesOf func() []string
@@ -41,10 +42,12 @@ func (d *Daemon) buildBlockDigest(cfg *config.Config) *blockdigest.Collector {
 	}
 	email, webhook := d.blockDigestSinks(cfg)
 	collector := blockdigest.New(blockdigest.Options{
+		Watch:        watch,
 		Countries:    countries,
 		SendOn:       cfg.Alerts.BlockDigest.SendOn,
 		Interval:     cfg.BlockDigestInterval(),
 		Live:         cfg.Alerts.BlockDigest.Live,
+		LiveChannel:  cfg.Alerts.BlockDigest.Channel,
 		MinBlock:     cfg.Alerts.BlockDigest.MinBlock,
 		Host:         cfg.Hostname,
 		Version:      d.version,
@@ -53,15 +56,26 @@ func (d *Daemon) buildBlockDigest(cfg *config.Config) *blockdigest.Collector {
 		EnrichModSec: d.modsecEnricher(cfg),
 		EmailSink:    email,
 		WebhookSink:  webhook,
+		LoadSummary: func() ([]byte, error) {
+			if db := store.Global(); db != nil {
+				return db.LoadDailySummary()
+			}
+			return nil, nil
+		},
+		SaveSummary: func(b []byte) error {
+			if db := store.Global(); db != nil {
+				return db.SaveDailySummary(b)
+			}
+			return nil
+		},
 		OnError: func(channel string, err error) {
+			if channel == "summary" {
+				csmlog.Warn("daily summary state not loaded or saved", "err", err)
+				return
+			}
 			csmlog.Warn("block_digest delivery failed", "channel", channel, "err", err)
 		},
-		DeliveryEnabled: func(channel string) bool {
-			// Explicit destinations still attempt delivery and report disabled
-			// channels as errors. Default delivery follows current alert policy.
-			if cfg.Alerts.BlockDigest.Channel != "" {
-				return true
-			}
+		DeliveryEnabled: func(event, channel string) bool {
 			live := d.currentCfg()
 			if live == nil {
 				live = cfg
@@ -69,15 +83,15 @@ func (d *Daemon) buildBlockDigest(cfg *config.Config) *blockdigest.Collector {
 			if channel == "email" {
 				return live.Alerts.Email.Enabled
 			}
-			return live.Alerts.Webhook.Enabled
+			return live.Alerts.Webhook.Enabled && !phpanelSkips(live, event)
 		},
 	})
 	d.registerQueueSource("block_digest", collector)
 	return collector
 }
 
-// blockDigestSinks selects delivery: an empty channel follows whichever alerts
-// channels are enabled; an explicit channel forces just that one.
+// blockDigestSinks builds both destinations for the daily summary. The
+// collector applies block_digest.channel only to live block alerts.
 func (d *Daemon) blockDigestSinks(cfg *config.Config) (func(subject, body string) error, func(blockdigest.WebhookPayload) error) {
 	ch := cfg.Alerts.BlockDigest.Channel
 	currentCfg := func() *config.Config {
@@ -108,20 +122,29 @@ func (d *Daemon) blockDigestSinks(cfg *config.Config) (func(subject, body string
 				}
 				return nil
 			}
+			// Delivery policy already skips these; a reload to phpanel
+			// between that check and this send must not post one either.
+			if phpanelSkips(live, p.CSM.Event) {
+				return nil
+			}
 			return blockDigestSendWebhookJSON(live, p)
 		}
 	}
 
-	switch ch {
-	case "":
-		return emailSink(false), webhookSink(false)
-	case "email":
-		return emailSink(true), nil
-	case "webhook":
-		return nil, webhookSink(true)
-	default:
-		return nil, nil
+	return emailSink(ch == "email"), webhookSink(ch == "webhook")
+}
+
+// phpanelSkips reports a collector event a phpanel webhook must not receive:
+// that endpoint takes signed findings, not CSM's own summary notifications.
+func phpanelSkips(cfg *config.Config, event string) bool {
+	if cfg.Alerts.Webhook.Type != "phpanel" {
+		return false
 	}
+	switch event {
+	case "daily_summary", "customer_block":
+		return true
+	}
+	return false
 }
 
 // countryOf resolves an IP to its ISO country via the loaded GeoIP mmdb. It
@@ -134,19 +157,51 @@ func (d *Daemon) countryOf(ip string) string {
 	return db.Lookup(ip).Country
 }
 
-// observeBlocks feeds real auto-block findings to the digest collector.
-// PERMBLOCK promotions (no reason details) and non-auto_block findings are
-// skipped; dedup-by-IP in the collector makes multiple call sites safe.
+// appliedBlockReason returns the reason of an applied auto-block finding, or
+// "" for any other finding. PERMBLOCK promotions carry no reason.
+func appliedBlockReason(f alert.Finding) string {
+	if f.Check != "auto_block" || f.Severity != alert.Critical {
+		return ""
+	}
+	return detailsReason(f)
+}
+
+// detailsReason is the reason an auto_block notice's details give, without
+// the Cloudflare coverage warning.
+func detailsReason(f alert.Finding) string {
+	reason := strings.TrimPrefix(f.Details, "Reason: ")
+	return strings.TrimSuffix(reason, " (warning: "+firewall.CloudflareCoverageWarning+")")
+}
+
+// summaryBlockReason is what the daily summary groups an applied block by.
+// Netblock and permanent-block notices carry no reason; their message names
+// the kind.
+func summaryBlockReason(f alert.Finding) string {
+	if reason := appliedBlockReason(f); reason != "" {
+		return reason
+	}
+	if f.Check == "auto_block" && f.Severity == alert.Critical {
+		return f.Message
+	}
+	return ""
+}
+
+// observeBlocks feeds real auto-block findings to the digest collector,
+// then sends one alert naming those that hit known customers. PERMBLOCK
+// promotions (no reason details) and non-auto_block findings are skipped by
+// the digest; dedup-by-IP in the collector makes multiple call sites safe.
+// Each applied block reaches it once, so it alerts once per block.
 func (d *Daemon) observeBlocks(actions []alert.Finding) {
 	if d.blockDigest == nil {
 		return
 	}
+	blocks := d.customerBlocks(actions)
+	customers := make(map[string]bool, len(blocks))
+	for _, b := range blocks {
+		customers[b.Target] = true
+	}
 	for _, f := range actions {
-		if f.Check != "auto_block" || f.Severity != alert.Critical {
-			continue
-		}
-		reason := strings.TrimPrefix(f.Details, "Reason: ")
-		reason = strings.TrimSuffix(reason, " (warning: "+firewall.CloudflareCoverageWarning+")")
+		reason := appliedBlockReason(f)
 		if reason == "" {
 			continue
 		}
@@ -154,6 +209,196 @@ func (d *Daemon) observeBlocks(actions []alert.Finding) {
 		if ip == "" {
 			continue
 		}
-		d.blockDigest.Observe(ip, reason, f.Timestamp)
+		if customers[ip] {
+			d.blockDigest.ObserveKnownCustomer(ip, reason, f.Timestamp)
+		} else {
+			d.blockDigest.Observe(ip, reason, f.Timestamp)
+		}
 	}
+	d.blockDigest.AlertCustomerBlocks(blocks)
+}
+
+// maxCustomerExamples is how many known customers one subnet block names.
+const maxCustomerExamples = 5
+
+// blockTarget returns the kind of an auto_block notice (AUTO-BLOCK,
+// AUTO-PERMBLOCK, AUTO-BLOCK-SUBNET or AUTO-NETBLOCK), the address or
+// network it names, and whether it is a dry-run verdict, which puts
+// "[dry-run]" after the kind.
+func blockTarget(f alert.Finding) (kind, target string, dryRun bool) {
+	fields := strings.Fields(f.Message)
+	switch {
+	case len(fields) >= 3 && fields[1] == "[dry-run]:":
+		kind, target, dryRun = fields[0], fields[2], true
+	case len(fields) >= 2 && strings.HasSuffix(fields[0], ":"):
+		kind, target = strings.TrimSuffix(fields[0], ":"), fields[1]
+	default:
+		return "", "", false
+	}
+	switch kind {
+	case "AUTO-BLOCK", "AUTO-PERMBLOCK":
+		return kind, checks.ExtractIPFromFinding(f), dryRun
+	case "AUTO-BLOCK-SUBNET", "AUTO-NETBLOCK":
+		return kind, target, dryRun
+	}
+	return "", "", false
+}
+
+// customersAt returns the known customers target covers: an address's own
+// last login, or the count and the most recent few inside a network.
+func (d *Daemon) customersAt(target string, omit func(blockdigest.CustomerHit) bool) (blockdigest.CustomerBlock, bool) {
+	if p, err := netip.ParsePrefix(target); err == nil {
+		// The set keys IPv4 customers unmapped.
+		if p.Addr().Is4In6() && p.Bits() >= 96 {
+			p = netip.PrefixFrom(p.Addr().Unmap(), p.Bits()-96)
+		}
+		p = p.Masked()
+		n, sample := d.knownCustomers.Within(p, maxCustomerExamples, omit)
+		return blockdigest.CustomerBlock{Target: p.String(), Hits: sample, More: n - len(sample)}, n > 0
+	}
+	hit, ok := d.knownCustomers.Lookup(target)
+	if ok && omit != nil && omit(hit) {
+		ok = false
+	}
+	return blockdigest.CustomerBlock{Target: target, Hits: []blockdigest.CustomerHit{hit}}, ok
+}
+
+// customerBlock fills in the reason and check of a block notice that hit
+// known customers. Netblock and permanent-block notices carry no reason;
+// their message says what happened.
+func (d *Daemon) customerBlock(f alert.Finding, target string, omit func(blockdigest.CustomerHit) bool) (blockdigest.CustomerBlock, bool) {
+	b, ok := d.customersAt(target, omit)
+	if !ok {
+		return b, false
+	}
+	b.Reason = detailsReason(f)
+	if b.Reason == "" {
+		b.Reason = f.Message
+	}
+	if f.Cause != nil {
+		b.Check = f.Cause.Check
+	}
+	return b, true
+}
+
+// customerBlocks returns the applied automatic blocks in actions that hit
+// known customers. A permanent promotion joins the block of its address from
+// the same batch, which the chokepoint emits first. A customer whose login is
+// the block's own cause in this batch is left out (ownLogin); a cause outside
+// the batch, as for a queued retry, central or incident block, leaves it in.
+func (d *Daemon) customerBlocks(actions []alert.Finding) []blockdigest.CustomerBlock {
+	var blocks []blockdigest.CustomerBlock
+	byTarget := make(map[string]int)
+	var causes map[string]alert.Finding
+	for _, f := range actions {
+		if f.Check == "mail_account_compromised" || f.Check == "ftp_login_after_bruteforce" {
+			if causes == nil {
+				causes = make(map[string]alert.Finding)
+			}
+			causes[alert.FindingID(f)] = f
+		}
+	}
+	for _, f := range actions {
+		if f.Check != "auto_block" || f.Severity != alert.Critical {
+			continue
+		}
+		kind, target, _ := blockTarget(f)
+		if i, ok := byTarget[target]; ok && kind == "AUTO-PERMBLOCK" {
+			blocks[i].Reason += " (promoted to permanent block)"
+			continue
+		}
+		var omit func(blockdigest.CustomerHit) bool
+		if cause, found := causes[causeID(f)]; found && cause.Check == f.Cause.Check {
+			omit = func(h blockdigest.CustomerHit) bool { return ownLogin(cause, h) }
+		}
+		b, ok := d.customerBlock(f, target, omit)
+		if !ok {
+			continue
+		}
+		byTarget[target] = len(blocks)
+		blocks = append(blocks, b)
+	}
+	return blocks
+}
+
+func causeID(f alert.Finding) string {
+	if f.Cause == nil {
+		return ""
+	}
+	return f.Cause.FindingID
+}
+
+// ownLogin reports whether hit is the login cause reports: a mail account
+// compromise or an FTP login after brute force from the same address or IPv6
+// /64, through the same kind of login, as the same mailbox or FTP account.
+// The cause's Critical finding already names that login.
+func ownLogin(cause alert.Finding, hit blockdigest.CustomerHit) bool {
+	key, ok := customerKey(cause.SourceIP)
+	if !ok || customerHitIP(key) != hit.IP {
+		return false
+	}
+	switch cause.Check {
+	case "mail_account_compromised":
+		switch hit.Kind {
+		case knownCustomerSMTP, knownCustomerIMAP, knownCustomerPOP:
+			return hit.Account == normalizeSprayMailbox(cause.Mailbox)
+		}
+	case "ftp_login_after_bruteforce":
+		return hit.Kind == knownCustomerFTP && hit.Account == normalizeSprayMailbox(ftpCustomerAccount(cause))
+	}
+	return false
+}
+
+// wouldBlock returns the verdict in a summary finding that would have
+// blocked known customers: a dry-run auto_block notice, or a spray verdict
+// in observe mode. The established-source advisory of the same check is
+// not a verdict.
+func (d *Daemon) wouldBlock(check string, f alert.Finding) (blockdigest.CustomerBlock, bool) {
+	switch {
+	case check == "auto_block":
+		if _, target, dryRun := blockTarget(f); dryRun {
+			return d.customerBlock(f, target, nil)
+		}
+	case check == "mail_bruteforce_suspected" && strings.Contains(f.Message, "(observe mode, not blocked)"):
+		b, ok := d.customersAt(f.SourceIP, nil)
+		b.Reason, b.Check = f.Message, check
+		return b, ok
+	}
+	return blockdigest.CustomerBlock{}, false
+}
+
+// noteSummary is the alert summary hook: it counts the summary-class findings
+// of one dispatch for the daily summary and lists the verdicts that would
+// have blocked known customers. It runs inside dispatch, so it never panics
+// into it.
+func (d *Daemon) noteSummary(cfg *config.Config, summary []alert.Finding) {
+	collector := d.blockDigest
+	if collector == nil || len(summary) == 0 {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			csmlog.Warn("daily summary dropped findings", "panic", r)
+		}
+	}()
+	muted := make(map[string]bool, len(cfg.Alerts.Email.DisabledChecks))
+	for _, name := range cfg.Alerts.Email.DisabledChecks {
+		muted[config.CanonicalCheckName(strings.TrimSpace(name))] = true
+	}
+	batch := make([]blockdigest.Handled, 0, len(summary))
+	for _, f := range summary {
+		check := config.CanonicalCheckName(f.Check)
+		h := blockdigest.Handled{
+			Check:       check,
+			Severity:    f.Severity.String(),
+			IP:          checks.ExtractIPFromFinding(f),
+			BlockReason: summaryBlockReason(f),
+			Muted:       muted[check],
+		}
+		if b, ok := d.wouldBlock(check, f); ok {
+			h.WouldBlock = &b
+		}
+		batch = append(batch, h)
+	}
+	collector.NoteHandled(batch)
 }

@@ -131,7 +131,7 @@ func TestDropperBackWPupJobStateAlertIsWarning(t *testing.T) {
 	now := time.Unix(1_770_000_000, 0)
 	c := freshDropperCandidate(now)
 	c.Path, c.Head = backwpupDir+"backwpup-working.php", []byte(backwpupWorking)
-	sev, _, details, _ := dropperAlertParams(dropperFinding{Items: []dropperGone{{Cand: c, Verdict: dropperDemotedBackupState}}})
+	sev, _, details, _, _ := dropperAlertParams(dropperFinding{Items: []dropperGone{{Cand: c, Verdict: dropperDemotedBackupState}}})
 	if sev != alert.Warning {
 		t.Errorf("severity = %v, want Warning", sev)
 	}

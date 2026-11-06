@@ -38,31 +38,99 @@ func (c *capture) webhookCount() int {
 	return len(c.webhooks)
 }
 
-func TestTickSendsThroughBothSinks(t *testing.T) {
+func TestSendDueSendsThroughBothSinks(t *testing.T) {
 	cap := &capture{}
 	c := New(Options{
-		Countries: nil, SendOn: "any", Interval: time.Hour, MinBlock: 1,
+		Watch: true, SendOn: "any", Interval: time.Hour, MinBlock: 1,
 		Now: func() time.Time { return time.Unix(0, 0) }, CountryOf: func(string) string { return "RO" },
 		EmailSink: cap.email, WebhookSink: cap.webhook,
 	})
 	c.Observe("203.0.113.5", "rule escalation: x", time.Unix(0, 0))
-	c.tick()
+	if !c.SendDue(summaryDueOf(c)) {
+		t.Fatal("due summary not sent")
+	}
 	if cap.emailCount() != 1 || cap.webhookCount() != 1 {
 		t.Fatalf("emails=%d webhooks=%d, want 1/1", cap.emailCount(), cap.webhookCount())
 	}
-	if cap.webhooks[0].CSM.Event != "block_digest" {
-		t.Errorf("event = %q", cap.webhooks[0].CSM.Event)
+	if p := cap.webhooks[0]; p.CSM.Event != "daily_summary" || p.CSM.Summary == nil || p.CSM.Summary.Watched.Total != 1 {
+		t.Errorf("payload = %+v, want daily_summary with the folded watched block", p.CSM)
 	}
 }
 
-func TestTickSuppressesEmptyDigest(t *testing.T) {
+// Ticks only fold watched blocks into the summary; nothing is sent before the
+// daily send time, and an empty summary still goes out then.
+func TestTickNeverSends(t *testing.T) {
 	cap := &capture{}
-	c := New(Options{SendOn: "any", Interval: time.Hour, MinBlock: 1,
+	c := New(Options{Watch: true, SendOn: "any", Interval: time.Hour, MinBlock: 1,
 		Now: func() time.Time { return time.Unix(0, 0) }, CountryOf: func(string) string { return "RO" },
 		EmailSink: cap.email})
-	c.tick()
+	stop := make(chan struct{})
+	tick := make(chan time.Time)
+	done := make(chan struct{})
+	go func() { c.Run(stop, tick); close(done) }()
+	tick <- time.Unix(0, 0)
+	c.Observe("203.0.113.5", "rule escalation: x", time.Unix(0, 0))
+	tick <- time.Unix(0, 0)
+	close(stop)
+	<-done
 	if cap.emailCount() != 0 {
-		t.Errorf("empty digest sent %d emails", cap.emailCount())
+		t.Fatalf("ticks sent %d emails", cap.emailCount())
+	}
+	if c.SendDue(summaryDueOf(c).Add(-time.Second)) || cap.emailCount() != 0 {
+		t.Fatal("summary sent before its send time")
+	}
+
+	empty := New(Options{SendOn: "any", Interval: time.Hour, MinBlock: 1,
+		Now: func() time.Time { return time.Unix(0, 0) }, EmailSink: cap.email})
+	if !empty.SendDue(summaryDueOf(empty)) || cap.emailCount() != 1 {
+		t.Fatalf("empty summary emails = %d, want 1", cap.emailCount())
+	}
+}
+
+func TestRunFoldsAndSavesOnStop(t *testing.T) {
+	cap := &capture{}
+	st := &summaryStore{}
+	c := New(Options{Watch: true, SendOn: "any", Interval: time.Hour, MinBlock: 1,
+		Now: func() time.Time { return time.Unix(0, 0) }, CountryOf: func(string) string { return "RO" },
+		EmailSink: cap.email, SaveSummary: st.save})
+	c.Observe("203.0.113.7", "rule escalation: x", time.Unix(0, 0))
+	stop := make(chan struct{})
+	tick := make(chan time.Time)
+	done := make(chan struct{})
+	go func() { c.Run(stop, tick); close(done) }()
+	close(stop)
+	<-done
+	if cap.emailCount() != 0 {
+		t.Errorf("shutdown sent %d emails, want 0", cap.emailCount())
+	}
+	if w := st.saved(t).Watched; w.Total != 1 || w.ByCountry["RO"] != 1 {
+		t.Errorf("shutdown saved watched = %+v, want the folded block", w)
+	}
+}
+
+func TestRunFoldsAndExitsWhenTickChannelCloses(t *testing.T) {
+	cap := &capture{}
+	st := &summaryStore{}
+	c := New(Options{Watch: true, SendOn: "any", Interval: time.Hour, MinBlock: 1,
+		Now: func() time.Time { return time.Unix(0, 0) }, CountryOf: func(string) string { return "RO" },
+		EmailSink: cap.email, SaveSummary: st.save})
+	c.Observe("203.0.113.8", "rule escalation: x", time.Unix(0, 0))
+	stop := make(chan struct{})
+	tick := make(chan time.Time)
+	close(tick)
+	done := make(chan struct{})
+	go func() { c.Run(stop, tick); close(done) }()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Run did not exit after tick channel closed")
+	}
+	if cap.emailCount() != 0 {
+		t.Errorf("closed tick sent %d emails, want 0", cap.emailCount())
+	}
+	if w := st.saved(t).Watched; w.Total != 1 {
+		t.Errorf("closed tick saved watched = %+v, want the folded block", w)
 	}
 }
 
@@ -70,7 +138,7 @@ func TestLiveAlertDedupsPerIPWithinWindow(t *testing.T) {
 	cap := &capture{}
 	now := time.Unix(0, 0)
 	c := New(Options{
-		Countries: nil, SendOn: "any", Interval: time.Hour, MinBlock: 1, Live: true,
+		Watch: true, SendOn: "any", Interval: time.Hour, MinBlock: 1, Live: true,
 		Now:         func() time.Time { return now },
 		CountryOf:   func(string) string { return "RO" },
 		WebhookSink: cap.webhook,
@@ -94,7 +162,7 @@ func TestLiveAlertPrunesExpiredDedupEntries(t *testing.T) {
 	cap := &capture{}
 	now := time.Unix(0, 0)
 	c := New(Options{
-		Countries: nil, SendOn: "any", Interval: time.Hour, MinBlock: 1, Live: true,
+		Watch: true, SendOn: "any", Interval: time.Hour, MinBlock: 1, Live: true,
 		Now:         func() time.Time { return now },
 		CountryOf:   func(string) string { return "RO" },
 		WebhookSink: cap.webhook,
@@ -117,7 +185,7 @@ func TestLivePayloadCountriesCannotMutateCollectorOptions(t *testing.T) {
 	calls := 0
 	now := time.Unix(0, 0)
 	c := New(Options{
-		Countries: []string{"RO"}, SendOn: "any", Interval: time.Hour, MinBlock: 1, Live: true,
+		Watch: true, Countries: []string{"RO"}, SendOn: "any", Interval: time.Hour, MinBlock: 1, Live: true,
 		Now:       func() time.Time { return now },
 		CountryOf: func(string) string { return "RO" },
 		WebhookSink: func(p WebhookPayload) error {
@@ -139,7 +207,7 @@ func TestLiveCustomerModeOnlyFiresOnCustomer(t *testing.T) {
 	cap := &capture{}
 	now := time.Unix(0, 0)
 	c := New(Options{
-		SendOn: "customer", Interval: time.Hour, MinBlock: 1, Live: true,
+		Watch: true, SendOn: "customer", Interval: time.Hour, MinBlock: 1, Live: true,
 		Now:         func() time.Time { return now },
 		CountryOf:   func(string) string { return "RO" },
 		WebhookSink: cap.webhook,
@@ -151,44 +219,5 @@ func TestLiveCustomerModeOnlyFiresOnCustomer(t *testing.T) {
 	c.Observe("203.0.113.6", "unrecognized customer block", now) // customer -> live
 	if cap.webhookCount() != 1 {
 		t.Errorf("customer live webhooks = %d, want 1", cap.webhookCount())
-	}
-}
-
-func TestRunDrainsFinalDigestOnStop(t *testing.T) {
-	cap := &capture{}
-	c := New(Options{SendOn: "any", Interval: time.Hour, MinBlock: 1,
-		Now: func() time.Time { return time.Unix(0, 0) }, CountryOf: func(string) string { return "RO" },
-		EmailSink: cap.email})
-	c.Observe("203.0.113.7", "rule escalation: x", time.Unix(0, 0))
-	stop := make(chan struct{})
-	tick := make(chan time.Time)
-	done := make(chan struct{})
-	go func() { c.Run(stop, tick); close(done) }()
-	close(stop)
-	<-done
-	if cap.emailCount() != 1 {
-		t.Errorf("shutdown drain emails = %d, want 1", cap.emailCount())
-	}
-}
-
-func TestRunDrainsAndExitsWhenTickChannelCloses(t *testing.T) {
-	cap := &capture{}
-	c := New(Options{SendOn: "any", Interval: time.Hour, MinBlock: 1,
-		Now: func() time.Time { return time.Unix(0, 0) }, CountryOf: func(string) string { return "RO" },
-		EmailSink: cap.email})
-	c.Observe("203.0.113.8", "rule escalation: x", time.Unix(0, 0))
-	stop := make(chan struct{})
-	tick := make(chan time.Time)
-	close(tick)
-	done := make(chan struct{})
-	go func() { c.Run(stop, tick); close(done) }()
-
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("Run did not exit after tick channel closed")
-	}
-	if cap.emailCount() != 1 {
-		t.Errorf("closed tick drain emails = %d, want 1", cap.emailCount())
 	}
 }

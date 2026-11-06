@@ -388,19 +388,33 @@ func TestDispatchBatchBlocksSuppressedBruteForceSource(t *testing.T) {
 	}
 }
 
-// Control for the webhook assertion above: without a rule the same finding is
-// delivered, so a missing marker proves suppression and not a dead sink.
-func TestDispatchBatchDeliversUnsuppressedBruteForceFinding(t *testing.T) {
+// Control for the webhook assertion above. The sink is live, and without a
+// rule the same finding is blocked and goes to the summary as a handled
+// attack, so a missing marker there is not a dead sink.
+func TestDispatchBatchSummarizesUnsuppressedBruteForceFinding(t *testing.T) {
 	cfg, blocker, rec := suppressionResponseSetup(t)
+	seen := recordSummaryHook(t)
 	d := suppressionTestDaemon(t, cfg, nil)
+	if err := alert.Dispatch(cfg, []alert.Finding{{
+		Severity: alert.Critical, Check: "test_control", Message: "prove webhook delivery is active",
+		Details: "control-delivery-marker", Timestamp: time.Now(),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if !rec.delivered("control-delivery-marker") {
+		t.Fatal("control finding never reached the webhook")
+	}
 
 	d.dispatchBatch([]alert.Finding{smtpBruteForceFinding("192.0.2.24")})
 
 	if got := blockedIPs(blocker); len(got) != 1 || got[0] != "192.0.2.24" {
 		t.Fatalf("unsuppressed brute-force source was not blocked: block calls %v", got)
 	}
-	if !rec.delivered(suppressedDetailsMarker) {
-		t.Fatal("unsuppressed finding never reached the webhook")
+	if rec.delivered(suppressedDetailsMarker) {
+		t.Fatal("a handled brute-force finding reached the webhook")
+	}
+	if !seen.has("smtp_bruteforce", "192.0.2.24") || !seen.has("auto_block", "AUTO-BLOCK: 192.0.2.24") {
+		t.Fatalf("summary hook saw %v, want the brute-force finding and its block", seen.all())
 	}
 }
 

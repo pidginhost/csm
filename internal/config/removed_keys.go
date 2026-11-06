@@ -21,6 +21,7 @@ var removedKeys = []string{
 	"email_protection.php_relay.baseline_sigma",
 	"email_protection.php_relay.baseline_observation_days",
 	"email_protection.forward_guard.skip_forwarders",
+	"suppressions.suppress_blocked_alerts",
 }
 
 // stripRemovedKeys returns data without any removed key and the dotted paths

@@ -349,7 +349,7 @@ Incidents and central threat responses receive new findings, including suppresse
 | `smtp_bruteforce` | SMTP authentication flood |
 | `smtp_probe_abuse` | Raw SMTP connect-rate flood before AUTH |
 | `mail_bruteforce` | IMAP/POP3/ManageSieve authentication flood without matching successful mailbox activity |
-| `mail_account_compromised` | Successful login from an IP that repeatedly failed auth on the same mailbox, or a mail login after failures on other mailboxes. Only Critical findings block; High advisories are visibility only |
+| `mail_account_compromised` | Successful login from an IP that repeatedly failed auth on the same mailbox, or a mail login after failures on two or more mailboxes including another one, or on a missing one. Only Critical findings block; High advisories are visibility only |
 | `admin_panel_bruteforce` | phpMyAdmin or Joomla admin POST flood |
 | `ssh_login_unknown_ip` | SSH login from an IP with no prior history, whether the realtime watcher or the periodic scan saw it first |
 | `c2_connection` | Outbound connection to a known C2 server |
@@ -479,16 +479,56 @@ a mail-sending script do not count, even when another finding raised the
 incident's severity. A listed command-and-control server is the exception:
 blocking it is the reviewed response to a local process connecting to it.
 
+### Known-customer block alert
+
+When an automatic block applies to an address that logged in successfully as
+a customer in the last 30 days (cPanel, webmail, SMTP, IMAP, POP or FTP), CSM
+sends an alert at once: one email, and the generic alert webhook as event
+`customer_block` with the blocks under `csm.customer_blocks` (see the
+[API reference](api.md#summary-and-customer-block-webhooks)). It names the
+address, the block reason and the check that caused it, and the customer's
+login kind, account or mailbox and last login time. An IPv6 customer is named
+by its /64. A subnet block or netblock that covers known customers sends one
+message with their count and the five most recent. Every applied block
+counts: scan blocks, permanent promotions, challenge timeouts, central
+intelligence and incident blocks. A customer whose own login caused the block
+is left out: a mail account compromise or an FTP login after brute force
+names that address and account in its own Critical alert. For a range block,
+the count and examples include only the remaining customers. Each block names
+the command that lifts it: `csm firewall remove <ip>` for an address,
+`csm firewall remove-subnet <cidr>` for a range. An allow rule
+(`csm firewall allow <ip>`) does not pass a blocked range, but CSM never
+blocks a range over an allowed address.
+
+The alert is the false-positive check of automatic blocking, never an
+exemption. The block stands with its configured length, and its notice still
+goes to the daily summary, which also lists the block with its customers, so
+a failed alert still reaches you. A login with stolen credentials also makes an
+address known, so the alert can show the block of an attacker holding a
+customer's password, which is worth seeing too. Each applied block sends at
+most one message; a later new block of the same address sends another. A
+promotion to a permanent block is named in its block's message when both
+reach CSM together; a promotion that reaches CSM apart from its block sends
+a message of its own. The alert replaces the live watched-country alert for
+the same block, and the block still counts in the watched-country section of
+the daily summary. It does not spend the hourly alert budget, goes out with
+`alerts.block_digest` off and ignores `alerts.block_digest.channel`. A phpanel
+webhook does not receive it. Dry-run and observe-mode verdicts that would have
+blocked a known customer are listed in the
+[daily summary](configuration.md#daily-summary) instead.
+
 ## Safety Guards
 
 - Never kills root processes, system daemons, or cPanel services
 - Infrastructure IPs (`infra_ips` in config) are never blocked
+- A block of an address that recently logged in as a customer is alerted at once and never exempted
 - Subnet blocks refuse the default route and any range that covers infrastructure, local host, allowed, or port-specific allowed IPs
 - Quarantined files preserve full metadata for restoration
 - Every regular file is copied from its verified open descriptor into a private quarantine inode before the detected name is removed. Other hard links are reported after removal; a file swapped into the detected path is reported as a refused remediation, with the captured copy kept as evidence and the replacement left untouched
 - Realtime signature auto-quarantine requires high confidence: category `webshell` or `dropper`, file size at least 512 bytes, and either Shannon entropy >= 5.5 or hex density > 20% with an obfuscated-execution signal. This prevents legitimate WordPress plugins from being quarantined.
 - IP block rate limited by `auto_response.max_blocks_per_hour` (default 50/hour) to prevent runaway blocking
 - CRITICAL alerts and threat-intel reputation sightings always bypass the operator email/webhook rate limit (default 30/hour); lower-severity findings batched with them still count against it
+- Attacks CSM blocked or challenged, and its applied block and challenge notices, go to the daily summary instead of alert email and the generic webhook; an attack whose block failed, is still queued or ran in dry run is alerted immediately, as are a block of a Cloudflare-covered address and the web attacks from it
 - Trusted countries (`trusted_countries`) suppress login alerts from expected geolocations
 
 ## What CSM Detects in Real-Time

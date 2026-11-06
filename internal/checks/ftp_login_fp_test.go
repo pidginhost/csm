@@ -237,20 +237,24 @@ func TestCheckFTPLoginsLegacySuccessAfterBruteForceEscalates(t *testing.T) {
 	}
 }
 
-func TestParseFTPLoginAccount(t *testing.T) {
+// The account comes only from the user token of a complete success record.
+func TestFTPLoginAccount(t *testing.T) {
 	cases := []struct {
 		line string
 		want string
 	}{
 		{"Jun 21 20:00:25 srv01 pure-ftpd[1]: (?@203.0.113.64) [INFO] backup is now logged in", "backup"},
-		{"x pure-ftpd[1]: (mallory@203.0.113.5) [INFO] mallory is now logged in", "mallory"},
-		{"x pure-ftpd[1]: (?@127.0.0.1) [INFO] user@domain.tld is now logged in", "user@domain.tld"},
+		{"pure-ftpd[1]: (mallory@203.0.113.5) [INFO] mallory is now logged in", "mallory"},
+		{"2026-06-21T20:00:25Z srv01 pure-ftpd[1]: (?@203.0.113.6) [INFO] user@domain.tld is now logged in", "user@domain.tld"},
+		{"x pure-ftpd[1]: (mallory@203.0.113.5) [INFO] mallory is now logged in", ""},
+		{"Jun 21 20:00:25 srv01 pure-ftpd[1]: (?@203.0.113.5) [WARNING] Authentication failed for user [x is now logged in]", ""},
+		{"Jun 21 20:00:25 srv01 pure-ftpd[1]: (?@203.0.113.5) [DEBUG] Command [USER] [x is now logged in]", ""},
 		{"no login marker here", ""},
 		{"", ""},
 	}
 	for _, c := range cases {
-		if got := parseFTPLoginAccount(c.line); got != c.want {
-			t.Errorf("parseFTPLoginAccount(%q) = %q, want %q", c.line, got, c.want)
+		if got := FTPLoginAccount(c.line); got != c.want {
+			t.Errorf("FTPLoginAccount(%q) = %q, want %q", c.line, got, c.want)
 		}
 	}
 }

@@ -38,6 +38,9 @@ type pendingFinding struct {
 	ResponseMailLoginFailure bool `json:"response_mail_login_failure,omitempty"`
 	// ResponseBlockTTL keeps a spray block's own length.
 	ResponseBlockTTL time.Duration `json:"response_block_ttl,omitempty"`
+	// ResponseLoginAccount keeps an FTP login's authenticated name for
+	// customer history.
+	ResponseLoginAccount string `json:"response_login_account,omitempty"`
 }
 
 func toPendingRecords(findings []alert.Finding) []pendingFinding {
@@ -45,7 +48,7 @@ func toPendingRecords(findings []alert.Finding) []pendingFinding {
 	for i, f := range findings {
 		records[i] = pendingFinding{Finding: f, ResponseCIDRs: f.CIDRs, ResponseSprayTargets: f.SprayTargets, ResponseClaims: f.Claims,
 			ResponseSprayConstituents: f.SprayConstituents, ResponseCause: f.Cause, ResponseMailLoginFailure: f.MailLoginFailure,
-			ResponseBlockTTL: f.BlockTTL}
+			ResponseBlockTTL: f.BlockTTL, ResponseLoginAccount: f.LoginAccount}
 		// An unencodable expiry costs only its intel, not the whole batch.
 		if f.Intel != nil {
 			if _, err := f.Intel.Expires.MarshalJSON(); err == nil {
@@ -79,6 +82,7 @@ func fromPendingRecords(records []pendingFinding) []alert.Finding {
 		findings[i].Cause = r.ResponseCause
 		findings[i].MailLoginFailure = r.ResponseMailLoginFailure
 		findings[i].BlockTTL = r.ResponseBlockTTL
+		findings[i].LoginAccount = r.ResponseLoginAccount
 		if r.ResponseObservation != nil {
 			findings[i].Observation = *r.ResponseObservation
 		}

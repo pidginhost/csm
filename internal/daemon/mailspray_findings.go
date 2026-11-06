@@ -90,7 +90,7 @@ func sprayFinding(proto mailProto, ip string, v *sprayVerdict, mode sprayMode, n
 			details += observe
 		}
 	case sprayRuleWeakCompromise:
-		message = fmt.Sprintf("Possible mail account compromise: successful %s login for %s from %s after failed logins on another mailbox", proto, mailbox, ip)
+		message = fmt.Sprintf("Possible mail account compromise: successful %s login for %s from %s after failed logins on other mailboxes", proto, mailbox, ip)
 		details = "The address failed on other mailboxes before this login. Verify with the mailbox owner; not auto-blocked."
 	default:
 		message = fmt.Sprintf("Mail login after repeated failures: successful %s login for %s from %s after failures on the same mailbox", proto, mailbox, ip)

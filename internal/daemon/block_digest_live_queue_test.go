@@ -57,7 +57,7 @@ func TestBlockDigestAbandonUsesLiveDestinationPolicy(t *testing.T) {
 				go func() {
 					defer close(done)
 					defer func() { gotPanic = recover() }()
-					d.blockDigest.Flush()
+					d.blockDigest.SendDue(time.Now().Add(25 * time.Hour))
 					returned = true
 				}()
 				t.Cleanup(func() {
@@ -88,11 +88,14 @@ func TestBlockDigestAbandonUsesLiveDestinationPolicy(t *testing.T) {
 				case <-time.After(5 * time.Second):
 					t.Fatal("flush did not join")
 				}
-				if returned != (outcome == "returned_error") || (outcome == "panic" && gotPanic != sentinel) || (outcome != "panic" && gotPanic != nil) {
+				// A summary sink that panics fails like one returning an
+				// error; only an exit without return interrupts the send.
+				interrupted := outcome == "goexit"
+				if returned == interrupted || gotPanic != nil {
 					t.Fatal("original abnormal-exit policy changed")
 				}
 				wantLoss := uint64(0)
-				if enabledAfter && outcome != "returned_error" {
+				if enabledAfter && interrupted {
 					wantLoss = 1
 				}
 				row := d.QueueStatuses()["block_digest.webhook"]
@@ -100,7 +103,7 @@ func TestBlockDigestAbandonUsesLiveDestinationPolicy(t *testing.T) {
 					t.Errorf("unattempted target must follow existing live policy: enabled_now=%v got=%+v want_lost=%d", enabledAfter, row, wantLoss)
 				}
 				wantCalls := 0
-				if enabledAfter && outcome == "returned_error" {
+				if enabledAfter && !interrupted {
 					wantCalls = 1
 				}
 				if emailCalls != 1 || webhookCalls != wantCalls {

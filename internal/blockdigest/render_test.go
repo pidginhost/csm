@@ -76,26 +76,22 @@ func TestBuildPayloadStructured(t *testing.T) {
 	}
 }
 
+// shouldSend gates the watched-country section of the daily summary.
 func TestShouldSendGating(t *testing.T) {
-	any := New(Options{SendOn: "any", MinBlock: 1})
-	cust := New(Options{SendOn: "customer", MinBlock: 1})
-	withCust := Digest{Total: 3, CustomerCount: 1}
-	noCust := Digest{Total: 3, CustomerCount: 0}
-	empty := Digest{Total: 0}
-	if !any.shouldSend(withCust) || !any.shouldSend(noCust) {
-		t.Error("any should send when total>=min")
+	watch := New(Options{Watch: true, SendOn: "any", MinBlock: 2})
+	if !watch.shouldSend(WatchedBlocks{Total: 2}) || !watch.shouldSend(WatchedBlocks{Total: 3}) {
+		t.Error("section should show when watched blocks reach min_block")
 	}
-	if any.shouldSend(empty) {
-		t.Error("any should not send empty when min=1")
+	if watch.shouldSend(WatchedBlocks{Total: 1}) {
+		t.Error("section should not show below min_block")
 	}
-	if !cust.shouldSend(withCust) {
-		t.Error("customer should send when customer>=min")
+	if New(Options{Watch: false, SendOn: "any", MinBlock: 0}).shouldSend(WatchedBlocks{Total: 5}) {
+		t.Error("section should not show without watch")
 	}
-	if cust.shouldSend(noCust) {
-		t.Error("customer should NOT send when no customer blocks")
+	if !New(Options{Watch: true, SendOn: "any", MinBlock: 0}).shouldSend(WatchedBlocks{}) {
+		t.Error("min_block 0 should show an empty section")
 	}
-	heartbeat := New(Options{SendOn: "any", MinBlock: 0})
-	if !heartbeat.shouldSend(empty) {
-		t.Error("min_block 0 should send empty heartbeat")
+	if !New(Options{Watch: true, SendOn: "customer", MinBlock: 1}).shouldSend(WatchedBlocks{Total: 1}) {
+		t.Error("send_on gates live alerts only, not the summary section")
 	}
 }

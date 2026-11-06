@@ -26,7 +26,7 @@ func digestQueueStatuses(t *testing.T, c *Collector, now time.Time) map[string]q
 }
 
 func TestBlockDigestQueueOverflowAndExpectedCadence(t *testing.T) {
-	c := New(Options{Interval: time.Hour, SendOn: "any", MinBlock: 1})
+	c := New(Options{Watch: true, Interval: time.Hour, SendOn: "any", MinBlock: 1})
 	for range maxBuffered + 3 {
 		c.Observe("198.51.100.23", "fixture customer block", time.Unix(0, 0))
 	}
@@ -57,7 +57,7 @@ func TestBlockDigestQueueFailedSinkRemainsOwnedThroughLogging(t *testing.T) {
 	var once sync.Once
 	unblock := func() { once.Do(func() { close(release) }) }
 	sent := 0
-	c := New(Options{Interval: time.Hour, SendOn: "any", MinBlock: 1,
+	c := New(Options{Watch: true, Interval: time.Hour, SendOn: "any", MinBlock: 1,
 		EmailSink:   func(string, string) error { return errors.New("fixture email failed") },
 		WebhookSink: func(p WebhookPayload) error { sent++; return nil },
 		OnError: func(channel string, err error) {
@@ -77,7 +77,7 @@ func TestBlockDigestQueueFailedSinkRemainsOwnedThroughLogging(t *testing.T) {
 			t.Error("digest flush did not join")
 		}
 	})
-	go func() { defer close(done); c.Flush() }()
+	go func() { defer close(done); c.SendDue(summaryDueOf(c)) }()
 	select {
 	case <-entered:
 	case <-time.After(5 * time.Second):
@@ -108,7 +108,7 @@ func TestBlockDigestQueueFailedSinkRemainsOwnedThroughLogging(t *testing.T) {
 
 func TestBlockDigestQueueGatingAndShutdown(t *testing.T) {
 	calls := 0
-	c := New(Options{Interval: time.Hour, SendOn: "customer", MinBlock: 1, EmailSink: func(string, string) error { calls++; return nil }})
+	c := New(Options{Watch: true, Interval: time.Hour, SendOn: "customer", MinBlock: 1, EmailSink: func(string, string) error { calls++; return nil }})
 	c.Observe("198.51.100.23", "smtp brute force", time.Now())
 	stop := make(chan struct{})
 	close(stop)
@@ -122,7 +122,7 @@ func TestBlockDigestQueueGatingAndShutdown(t *testing.T) {
 	if row.Depth != 1 || row.DroppedTotal != 0 || row.Reason != "consumer_stopped" {
 		t.Fatalf("work retained after ticker shutdown hidden: %+v", row)
 	}
-	c.Flush()
+	c.SendDue(summaryDueOf(c))
 	row = digestQueueStatuses(t, c, time.Now())["records"]
 	if calls != 1 || row.Depth != 0 || row.InFlight != 0 || row.DroppedTotal != 0 || row.Status != "ok" {
 		t.Fatalf("explicit final flush changed existing recovery: calls=%d row=%+v", calls, row)
@@ -134,10 +134,10 @@ func TestBlockDigestQueueGatingAndShutdown(t *testing.T) {
 func TestLiveAlertConsultsDeliveryPolicyWithoutTheCollectorLock(t *testing.T) {
 	var c *Collector
 	held := false
-	c = New(Options{
+	c = New(Options{Watch: true,
 		Interval: time.Hour, SendOn: "any", MinBlock: 1, Live: true,
 		EmailSink: func(string, string) error { return nil },
-		DeliveryEnabled: func(string) bool {
+		DeliveryEnabled: func(string, string) bool {
 			if c.mu.TryLock() {
 				c.mu.Unlock()
 			} else {

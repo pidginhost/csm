@@ -23,8 +23,8 @@ type dropperFSProber interface {
 }
 
 // dropperEmitFn delivers a finding. In production it is bound to
-// FileMonitor.sendAlertWithPath; tests capture the arguments.
-type dropperEmitFn func(sev alert.Severity, check, msg, details, path string)
+// FileMonitor.sendFileFinding; tests capture the arguments.
+type dropperEmitFn func(sev alert.Severity, check, msg, details, path, dedupKey string)
 
 const dropperCheckName = "self_deleting_dropper_realtime"
 
@@ -141,7 +141,7 @@ func (e *dropperEngine) flushFinding(f dropperFinding) {
 
 func (e *dropperEngine) emitFinding(f dropperFinding) {
 	if e.emit != nil {
-		sev, msg, details, path := dropperAlertParams(f)
-		e.emit(sev, dropperCheckName, msg, details, path)
+		sev, msg, details, path, dedupKey := dropperAlertParams(f)
+		e.emit(sev, dropperCheckName, msg, details, path, dedupKey)
 	}
 }

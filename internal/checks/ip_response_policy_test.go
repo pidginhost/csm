@@ -40,6 +40,8 @@ func TestIPResponseAnswersFinding(t *testing.T) {
 		{"blocked cpanel login", cfg, alert.Finding{Check: "cpanel_login", Severity: alert.Warning}, true, false},
 		{"blocked ftp login", cfg, alert.Finding{Check: "ftp_login", Severity: alert.Warning}, true, false},
 		{"blocked unknown check", cfg, alert.Finding{Check: "not_a_registered_check", Severity: alert.High}, true, false},
+		// A WHM exploit indicator may already have succeeded.
+		{"blocked WHM exploit indicator", cfg, alert.Finding{Check: "whm_unauth_scripts_realtime", Severity: alert.Critical, SourceIP: "203.0.113.40"}, true, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -67,9 +69,9 @@ func TestIPResponsePolicyKeepsMailAndDistributedEvidence(t *testing.T) {
 		{Check: "smtp_subnet_spray", Severity: alert.Critical, SourceIP: "203.0.113.0/24", Message: "SMTP password spray from 203.0.113.0/24: 10 unique IPs in 5m0s"},
 		{Check: "http_distributed_flood", Severity: alert.High, Message: "Distributed HTTP attack on 203.0.113.40: 10 distinct abusive source IPs"},
 		{Check: "http_asn_crawl", Severity: alert.High, Message: "Distributed crawl from AS64500 (test network) against 203.0.113.40"},
+		{Check: "whm_unauth_scripts_realtime", Severity: alert.Critical, SourceIP: "203.0.113.40", Message: "Tokenless WHM scripts request from 203.0.113.40 (CVE-2026-41940 IOC)"},
 	}
 	cfg := &config.Config{StatePath: t.TempDir()}
-	cfg.Suppressions.SuppressBlockedAlerts = true
 	for _, finding := range findings {
 		t.Run(finding.Check, func(t *testing.T) {
 			for _, blocked := range []bool{true, false} {
@@ -77,11 +79,12 @@ func TestIPResponsePolicyKeepsMailAndDistributedEvidence(t *testing.T) {
 					t.Errorf("finding incorrectly answered by IP disposition (blocked=%v)", blocked)
 				}
 			}
-			batch := []alert.Finding{finding, {
-				Check: "auto_block", Message: "AUTO-BLOCK: 203.0.113.40 (expires in 24h0m0s)",
-			}}
-			if got := alert.FilterBlockedAlerts(cfg, batch); !reflect.DeepEqual(got, []alert.Finding{finding}) {
-				t.Fatalf("got %+v, want evidence preserved", got)
+			block := alert.Finding{
+				Check: "auto_block", Severity: alert.Critical, Message: "AUTO-BLOCK: 203.0.113.40 (expires in 24h0m0s)",
+			}
+			immediate, summary := alert.SplitByClass(cfg, []alert.Finding{finding, block})
+			if !reflect.DeepEqual(immediate, []alert.Finding{finding}) || !reflect.DeepEqual(summary, []alert.Finding{block}) {
+				t.Fatalf("immediate %+v, summary %+v; want evidence immediate and only the block summary", immediate, summary)
 			}
 		})
 	}
@@ -97,7 +100,6 @@ func TestIPResponsePolicyFiltersLiveDispositions(t *testing.T) {
 		alert.BlockedIPsFunc, alert.ChallengedIPFunc = previousBlocked, previousChallenged
 	})
 	cfg := &config.Config{StatePath: t.TempDir()}
-	cfg.Suppressions.SuppressBlockedAlerts = true
 	kept := []alert.Finding{
 		{Check: "ftp_auth_failure_realtime", Severity: alert.High, SourceIP: "203.0.113.41"},
 		{Check: "http_ua_spoof", Severity: alert.Critical, SourceIP: "203.0.113.41"},
@@ -109,20 +111,20 @@ func TestIPResponsePolicyFiltersLiveDispositions(t *testing.T) {
 		{Check: "email_phishing_content", Severity: alert.Critical, SourceIP: "203.0.113.40"},
 		{Check: "smtp_account_spray", Severity: alert.High, SourceIP: "203.0.113.40"},
 	}
-	findings := append([]alert.Finding{
+	handled := []alert.Finding{
 		{Check: "ftp_auth_failure_realtime", Severity: alert.High, SourceIP: "203.0.113.40"},
 		{Check: "http_ua_spoof", Severity: alert.Critical, SourceIP: "203.0.113.40"},
 		{Check: "waf_attack_blocked", Severity: alert.High, SourceIP: "203.0.113.40"},
 		{Check: "http_scanner_profile", Severity: alert.High, SourceIP: "203.0.113.41"},
 		{Check: "wp_login_bruteforce", Severity: alert.Critical, Message: "WordPress login brute force from 203.0.113.41: 100 attempts"},
 		{Check: "ftp_bruteforce", Severity: alert.High, SourceIP: "[2001:db8:0:0::40]:21"},
-	}, kept...)
-	if got := alert.FilterBlockedAlerts(cfg, findings); !reflect.DeepEqual(got, kept) {
-		t.Fatalf("got %+v, want only handled single-source attacks suppressed", got)
 	}
-	cfg.Suppressions.SuppressBlockedAlerts = false
-	if got := alert.FilterBlockedAlerts(cfg, findings); !reflect.DeepEqual(got, findings) {
-		t.Fatal("suppression disabled but findings were removed")
+	immediate, summary := alert.SplitByClass(cfg, append(append([]alert.Finding(nil), handled...), kept...))
+	if !reflect.DeepEqual(immediate, kept) {
+		t.Fatalf("immediate %+v, want every finding a disposition does not answer", immediate)
+	}
+	if !reflect.DeepEqual(summary, handled) {
+		t.Fatalf("summary %+v, want only handled single-source attacks", summary)
 	}
 }
 
@@ -135,11 +137,10 @@ func TestAlertDispatchUsesIPResponsePolicyWithoutDaemon(t *testing.T) {
 	}))
 	t.Cleanup(webhook.Close)
 	cfg := &config.Config{StatePath: t.TempDir()}
-	cfg.Suppressions.SuppressBlockedAlerts = true
 	cfg.Alerts.MaxPerHour = 10
 	cfg.Alerts.Webhook.Enabled = true
 	cfg.Alerts.Webhook.URL = webhook.URL
-	block := alert.Finding{Check: "auto_block", Message: "AUTO-BLOCK: 203.0.113.40 (expires in 24h0m0s)"}
+	block := alert.Finding{Check: "auto_block", Severity: alert.Critical, Message: "AUTO-BLOCK: 203.0.113.40 (expires in 24h0m0s)"}
 	for _, check := range []string{"test_alert", "cpanel_login"} {
 		if err := alert.Dispatch(cfg, []alert.Finding{{Check: check, Severity: alert.Warning, SourceIP: "203.0.113.40"}, block}); err != nil {
 			t.Fatal(err)
@@ -148,12 +149,16 @@ func TestAlertDispatchUsesIPResponsePolicyWithoutDaemon(t *testing.T) {
 	if got := calls.Load(); got != 2 {
 		t.Fatalf("control dispatches = %d, want test alert and successful login delivered", got)
 	}
-	if err := alert.Dispatch(cfg, []alert.Finding{{
+	attack := []alert.Finding{{
 		Check: "ftp_auth_failure_realtime", Severity: alert.High, SourceIP: "203.0.113.40",
-	}, block}); err != nil {
+	}, block}
+	if immediate, summary := alert.SplitByClass(cfg, attack); len(immediate) != 0 || !reflect.DeepEqual(summary, attack) {
+		t.Fatalf("immediate %+v, summary %+v; want the blocked attack and its block in the summary", immediate, summary)
+	}
+	if err := alert.Dispatch(cfg, attack); err != nil {
 		t.Fatal(err)
 	}
 	if got := calls.Load(); got != 2 {
-		t.Fatalf("webhook calls = %d, want blocked attack suppressed without daemon startup", got)
+		t.Fatalf("webhook calls = %d, want blocked attack kept out of the webhook without daemon startup", got)
 	}
 }

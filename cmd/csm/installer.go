@@ -801,17 +801,17 @@ alerts:
   heartbeat:
     enabled: false
     url: ""  # healthchecks.io, cronitor, or similar dead man's switch URL
-  # block_digest emails/posts a per-country roll-up of auto-blocked IPs so you
-  # learn when visitors from your customers' countries get blocked. Off by
-  # default. Changing this block needs a daemon restart.
+  # block_digest adds per-country counts of auto-blocked IPs to the daily
+  # summary so you learn when visitors from your customers' countries get
+  # blocked. Off by default. Changing this block needs a daemon restart.
   block_digest:
     enabled: false
     countries: []          # ISO 3166-1 alpha-2; empty falls back to suppressions.trusted_countries, then all
-    interval: "1h"
+    interval: "1h"         # how often counts fold into the summary; live alert dedup window
     live: false            # also send an immediate alert per qualifying block
-    send_on: "any"         # any | customer (customer = only likely-false-positive blocks)
-    channel: ""            # "" uses enabled alert channel(s); at least one of email/webhook must be enabled
-    min_block: 1           # suppress digests below this count (0 = send empty heartbeat digests)
+    send_on: "any"         # live alerts: any | customer (customer = only likely-false-positive blocks)
+    channel: ""            # live alerts only: "" uses enabled alert channel(s); enabled needs email or webhook on
+    min_block: 1           # watched blocks needed to show the summary section (0 = always show it)
 
 webui:
   enabled: true

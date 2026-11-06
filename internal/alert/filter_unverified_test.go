@@ -73,20 +73,13 @@ func TestUnverifiedFirewallRowsOverrideLegacyBlocks(t *testing.T) {
 				t.Fatalf("blocks = %v; legacy rows must not override unverified state", ips)
 			}
 			cfg := &config.Config{StatePath: dir}
-			cfg.Suppressions.SuppressBlockedAlerts = true
 			var findings []Finding
 			for _, ip := range []string{"203.0.113.1", "203.0.113.2", "203.0.113.3", "203.0.113.4", "203.0.113.5", "2001:db8::3"} {
-				findings = append(findings, Finding{Check: "ip_reputation", SourceIP: ip, Severity: Critical})
+				findings = append(findings, Finding{Check: "ip_reputation", Message: "Known malicious IP " + ip, SourceIP: ip, Severity: Critical})
 			}
-			got := FilterBlockedAlerts(cfg, findings)
-			if len(got) != 4 {
-				t.Fatalf("kept %d alerts; want every unverified address visible", len(got))
-			}
-			for i, finding := range got {
-				if finding.SourceIP != findings[i+2].SourceIP {
-					t.Fatalf("kept alert %d for %s, want %s", i, finding.SourceIP, findings[i+2].SourceIP)
-				}
-			}
+			// Every unverified address stays immediate; only the two
+			// verified blocks are handled.
+			assertSplit(t, cfg, findings, findings[2:], findings[:2])
 		})
 	}
 }

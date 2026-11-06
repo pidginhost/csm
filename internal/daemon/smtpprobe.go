@@ -144,6 +144,8 @@ func (t *smtpProbeTracker) Record(ip string) []alert.Finding {
 			Details:   details,
 			Timestamp: now,
 			SourceIP:  ip,
+			// The connection count grows while one scanner keeps probing.
+			DedupKey: ip,
 		})
 	}
 

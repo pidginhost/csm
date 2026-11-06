@@ -26,6 +26,10 @@ type CheckInfo struct {
 	// Response is the check's automatic IP response policy. The zero value
 	// neither blocks nor challenges; see response_policy.go.
 	Response ResponsePolicy
+	// Summary marks a check whose findings report an applied automatic
+	// response or an observation that never acts, so they go to the daily
+	// summary instead of an immediate alert. See IsSummaryNotice.
+	Summary bool
 }
 
 // Category labels are the groupings shown in the multi-select UI. Keep the
@@ -126,7 +130,7 @@ var checkRegistry = []CheckInfo{
 	{Name: "mail_account_compromised", Category: CategoryBruteForce, Correlation: CorrelationSecurityEvent, Response: ResponsePolicy{Block: BlockAlways, CriticalOnly: true, NeverChallenge: true, Evidence: admission.FamilyMail, Basis: admission.BasisCompromise}},
 	{Name: "mail_account_spray", Category: CategoryBruteForce, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide},
 	{Name: "mail_bruteforce", Category: CategoryBruteForce, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide, Response: ResponsePolicy{Block: BlockAlways, NeverChallenge: true, Evidence: admission.FamilyMail, Basis: admission.BasisLocal}},
-	{Name: "mail_bruteforce_suspected", Category: CategoryBruteForce, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide},
+	{Name: "mail_bruteforce_suspected", Category: CategoryBruteForce, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide, Summary: true},
 	// A subnet summary does not authorize a single-IP block; the subnet-spray
 	// path blocks the subnet itself.
 	{Name: "mail_subnet_spray", Category: CategoryBruteForce, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide, Response: ResponsePolicy{NeverChallenge: true, Evidence: admission.FamilyMail, Basis: admission.BasisLocal, Subnet: admission.EntryMailSubnet}},
@@ -277,7 +281,7 @@ var checkRegistry = []CheckInfo{
 	{Name: "db_siteurl_hijack", Category: CategoryDatabase, Correlation: CorrelationSecurityEvent, Response: ResponsePolicy{NeverChallenge: true}},
 	{Name: "db_siteurl_foreign_host", Category: CategoryDatabase, Correlation: CorrelationSecurityEvent},
 	{Name: "db_siteurl_invalid", Category: CategoryDatabase, Correlation: CorrelationIgnored, CorrelationReason: reasonPosture},
-	{Name: "db_spam_cleaned", Category: CategoryDatabase, Correlation: CorrelationIgnored, CorrelationReason: reasonResponse},
+	{Name: "db_spam_cleaned", Category: CategoryDatabase, Correlation: CorrelationIgnored, CorrelationReason: reasonResponse, Summary: true},
 	{Name: "db_spam_found", Category: CategoryDatabase, Correlation: CorrelationSecurityEvent},
 	{Name: "db_spam_injection", Category: CategoryDatabase, Correlation: CorrelationSecurityEvent, Response: ResponsePolicy{NeverChallenge: true}},
 	{Name: "db_suspicious_admin_email", Category: CategoryDatabase, Correlation: CorrelationSecurityEvent},
@@ -324,7 +328,7 @@ var checkRegistry = []CheckInfo{
 	{Name: "email_phishing_content", Category: CategoryEmail, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide},
 	{Name: "email_php_relay_abuse", Category: CategoryEmail, Correlation: CorrelationSecurityEvent},
 	{Name: "email_php_relay_account_volume_capped", Category: CategoryEmail, Internal: true, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
-	{Name: "email_php_relay_action_dry_run", Category: CategoryEmail, Internal: true, Correlation: CorrelationIgnored, CorrelationReason: reasonResponse},
+	{Name: "email_php_relay_action_dry_run", Category: CategoryEmail, Internal: true, Correlation: CorrelationIgnored, CorrelationReason: reasonResponse, Summary: true},
 	{Name: "email_php_relay_action_failed", Category: CategoryEmail, Internal: true, Correlation: CorrelationIgnored, CorrelationReason: reasonResponse},
 	{Name: "email_php_relay_action_skipped", Category: CategoryEmail, Internal: true, Correlation: CorrelationIgnored, CorrelationReason: reasonResponse},
 	{Name: "email_php_relay_cpanel_limit_unreadable", Category: CategoryEmail, Internal: true, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
@@ -336,7 +340,7 @@ var checkRegistry = []CheckInfo{
 	{Name: "email_php_relay_overflow_scan_truncated", Category: CategoryEmail, Internal: true, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
 	{Name: "email_php_relay_path2b_disabled", Category: CategoryEmail, Internal: true, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
 	{Name: "email_php_relay_policies_reload", Category: CategoryEmail, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
-	{Name: "email_php_relay_rate_limit_hit", Category: CategoryEmail, Internal: true, Correlation: CorrelationIgnored, CorrelationReason: reasonResponse},
+	{Name: "email_php_relay_rate_limit_hit", Category: CategoryEmail, Internal: true, Correlation: CorrelationIgnored, CorrelationReason: reasonResponse, Summary: true},
 	{Name: "email_php_relay_sweep_failed", Category: CategoryEmail, Internal: true, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
 	{Name: "email_php_relay_watcher_failed", Category: CategoryEmail, Internal: true, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
 	{Name: "email_defer_fail_governor", Category: CategoryEmail, Correlation: CorrelationIgnored, CorrelationReason: reasonInformational},
@@ -442,10 +446,10 @@ var checkRegistry = []CheckInfo{
 
 	// --- Correlation & Health -------------------------------------------
 	{Name: "account_scan", Category: CategoryCorrelation, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
-	{Name: "auto_block", Category: CategoryCorrelation, Correlation: CorrelationIgnored, CorrelationReason: reasonResponse},
+	{Name: "auto_block", Category: CategoryCorrelation, Correlation: CorrelationIgnored, CorrelationReason: reasonResponse, Summary: true},
 	{Name: "auto_response", Category: CategoryCorrelation, Correlation: CorrelationIgnored, CorrelationReason: reasonResponse},
 	{Name: "auto_response_paused", Category: CategoryCorrelation, Correlation: CorrelationIgnored, CorrelationReason: reasonResponse},
-	{Name: "challenge_route", Category: CategoryCorrelation, Correlation: CorrelationIgnored, CorrelationReason: reasonResponse},
+	{Name: "challenge_route", Category: CategoryCorrelation, Correlation: CorrelationIgnored, CorrelationReason: reasonResponse, Summary: true},
 	{Name: "check_timeout", Category: CategoryCorrelation, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
 	{Name: "config_reload_error", Category: CategoryCorrelation, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
 	{Name: "config_reload_restart_required", Category: CategoryCorrelation, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},

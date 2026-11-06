@@ -866,7 +866,7 @@ func TestDropperFlushDoesNotHideSuspectInDemotedChurn(t *testing.T) {
 		}
 		if f.Items[0].Verdict == dropperSuspect {
 			foundSuspect = true
-			if sev, _, _, _ := dropperAlertParams(f); sev != alert.Critical {
+			if sev, _, _, _, _ := dropperAlertParams(f); sev != alert.Critical {
 				t.Fatalf("suspect mixed with churn has severity %v, want Critical", sev)
 			}
 		}
@@ -915,7 +915,7 @@ func TestDropperAlertParams(t *testing.T) {
 		c.ProcInfo = "pid=4242 cmd=lsphp uid=1004"
 		f := dropperFinding{Docroot: c.Docroot, Items: []dropperGone{{Cand: c, Verdict: dropperSuspect}}}
 
-		sev, msg, details, path := dropperAlertParams(f)
+		sev, msg, details, path, _ := dropperAlertParams(f)
 		if sev != alert.Critical {
 			t.Errorf("severity = %v, want Critical", sev)
 		}
@@ -936,7 +936,7 @@ func TestDropperAlertParams(t *testing.T) {
 		c := freshDropperCandidate(now)
 		c.Head = []byte("<?php class __TwigTemplate_ab12 extends Template {")
 		f := dropperFinding{Docroot: c.Docroot, Items: []dropperGone{{Cand: c, Verdict: dropperDemotedTemplate}}}
-		sev, _, details, _ := dropperAlertParams(f)
+		sev, _, details, _, _ := dropperAlertParams(f)
 		if sev != alert.Warning {
 			t.Errorf("severity = %v, want Warning", sev)
 		}
@@ -953,7 +953,7 @@ func TestDropperAlertParams(t *testing.T) {
 		} {
 			c := freshDropperCandidate(now)
 			f := dropperFinding{Docroot: c.Docroot, Items: []dropperGone{{Cand: c, Verdict: verdict}}}
-			sev, _, details, _ := dropperAlertParams(f)
+			sev, _, details, _, _ := dropperAlertParams(f)
 			if sev != alert.Warning || !strings.Contains(details, "Demoted:") {
 				t.Errorf("verdict %v rendered severity=%v details=%q, want explained Warning", verdict, sev, details)
 			}
@@ -968,7 +968,7 @@ func TestDropperAlertParams(t *testing.T) {
 			items = append(items, dropperGone{Cand: c, Verdict: dropperSuspect})
 		}
 		f := dropperFinding{Aggregate: true, Docroot: "/home/alice/public_html", Items: items}
-		sev, msg, details, path := dropperAlertParams(f)
+		sev, msg, details, path, _ := dropperAlertParams(f)
 		if sev != alert.High {
 			t.Errorf("severity = %v, want High", sev)
 		}
@@ -991,7 +991,7 @@ func TestDropperAlertParams(t *testing.T) {
 			items = append(items, dropperGone{Cand: c, Verdict: dropperDemotedTemplate})
 		}
 		f := dropperFinding{Aggregate: true, Docroot: "/home/alice/public_html", Items: items}
-		sev, _, _, _ := dropperAlertParams(f)
+		sev, _, _, _, _ := dropperAlertParams(f)
 		if sev != alert.Warning {
 			t.Errorf("severity = %v, want Warning", sev)
 		}
@@ -1003,7 +1003,7 @@ func TestDropperAlertParams(t *testing.T) {
 		c.Mode = 0o100755
 		c.Head = []byte("\x7fELF\x02\x01\x01\x00payload")
 		f := dropperFinding{Docroot: c.Docroot, Items: []dropperGone{{Cand: c, Verdict: dropperSuspect}}}
-		_, _, details, _ := dropperAlertParams(f)
+		_, _, details, _, _ := dropperAlertParams(f)
 		for _, r := range details {
 			if r < 0x20 && r != '\n' && r != '\t' {
 				t.Fatalf("details contain raw control byte %q", r)
@@ -1018,7 +1018,7 @@ func TestDropperAlertParams(t *testing.T) {
 		c := freshDropperCandidate(now)
 		c.ProcInfo = "pid=4242 cmd=worker\nCRITICAL fake"
 		f := dropperFinding{Docroot: c.Docroot, Items: []dropperGone{{Cand: c, Verdict: dropperSuspect}}}
-		_, _, details, _ := dropperAlertParams(f)
+		_, _, details, _, _ := dropperAlertParams(f)
 		if strings.Contains(details, "\nCRITICAL fake") {
 			t.Fatalf("process info injected a details line: %q", details)
 		}

@@ -73,16 +73,25 @@ func TestChallengeRouteKeepsItsRootForTheTimeout(t *testing.T) {
 	if root, ok := list.roots["203.0.113.61"]; !ok || !root.Equal(admission.Evidence{}) {
 		t.Fatalf("an unminted finding kept a root: %+v", list.roots)
 	}
+	// Without a root the timeout block still names the routing check.
+	if list.checks["203.0.113.60"] != g.Check || list.checks["203.0.113.61"] != g.Check {
+		t.Fatalf("routed checks = %+v, want %s for both", list.checks, g.Check)
+	}
 }
 
 type rootedIPList struct {
 	mockIPList
-	roots map[string]admission.Evidence
+	roots  map[string]admission.Evidence
+	checks map[string]string
 }
 
-func (l *rootedIPList) AddWithRoot(ip, reason string, d time.Duration, findingID string, root admission.Evidence) {
+func (l *rootedIPList) AddWithRoot(ip, reason string, d time.Duration, findingID, check string, root admission.Evidence) {
 	l.Add(ip, reason, d)
 	l.roots[ip] = root
+	if l.checks == nil {
+		l.checks = map[string]string{}
+	}
+	l.checks[ip] = check
 }
 
 // Each derived entry wraps the roots its path answers: a challenge timeout

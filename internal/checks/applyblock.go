@@ -47,6 +47,9 @@ type ApplyBlockRequest struct {
 	// RootFinding and RootErr preserve a planned local mint refusal.
 	RootFinding alert.Finding
 	RootErr     error
+	// Check names the check behind the block for a path that kept neither
+	// a root nor its finding, as a challenge routed without admission.
+	Check string
 }
 
 // ApplyBlockResult carries the engine outcome plus the auto_block findings
@@ -99,6 +102,23 @@ func ApplyBlock(cfg *config.Config, req ApplyBlockRequest) (ApplyBlockResult, er
 	state := work.loadState(cfg.StatePath)
 	attemptAt := autoBlockNow()
 	res, err := applyBlockLocked(cfg, blocker, state, req, work.progress, func(err error) { work.directOutcome(req.IP, attemptAt, err) })
+	// Derived paths retain the admitted root, the source finding or at least
+	// its check. Keep that attribution on their notices as the scan path does.
+	cause := alert.Cause{FindingID: req.Root.FindingID(), Check: req.Root.Check()}
+	if cause.Check == "" && req.RootFinding.Check != "" {
+		cause = alert.CauseOf(req.RootFinding)
+	}
+	if cause.Check == "" {
+		cause.Check = req.Check
+	}
+	if req.FindingID != "" {
+		cause.FindingID = req.FindingID
+	}
+	if cause != (alert.Cause{}) {
+		for i := range res.Findings {
+			res.Findings[i].Cause = &cause
+		}
+	}
 	if !errors.Is(err, firewall.ErrIPProtected) {
 		work.observe(err)
 	}

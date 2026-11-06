@@ -224,7 +224,7 @@ func FuzzExtractIPAfterKeyword(f *testing.F) {
 	})
 }
 
-func FuzzParseFTPLoginAccount(f *testing.F) {
+func FuzzFTPLoginAccount(f *testing.F) {
 	// The username is attacker-chosen and appears verbatim in pure-ftpd logs.
 	f.Add("Jun 21 20:00:25 host pure-ftpd[1]: (?@203.0.113.5) [INFO] backup is now logged in")
 	f.Add("host pure-ftpd[1]: (?@127.0.0.1) [INFO] __cpanel__service__auth__ftpd__X is now logged in")
@@ -234,13 +234,41 @@ func FuzzParseFTPLoginAccount(f *testing.F) {
 	f.Add("no marker")
 	f.Add("")
 	f.Fuzz(func(t *testing.T, line string) {
-		got := parseFTPLoginAccount(line)
+		got := FTPLoginAccount(line)
 		// The account must be a substring of the input and never contain the marker.
 		if got != "" && !strings.Contains(line, got) {
 			t.Fatalf("account %q not present in input %q", got, line)
 		}
 		if strings.Contains(got, " is now logged in") {
 			t.Fatalf("account %q leaked the marker", got)
+		}
+	})
+}
+
+func FuzzFTPLoginFinding(f *testing.F) {
+	f.Add("Nov  5 09:00:00 host pure-ftpd[1]: (?@203.0.113.5) [INFO] alice is now logged in")
+	f.Add("pure-ftpd: (?@2001:db8::1) [WARNING] Authentication failed for user [x is now logged in]")
+	f.Add("pure-ftpd: (?@203.0.113.5) [DEBUG] Command [USER] [x is now logged in]")
+	f.Add("")
+	f.Fuzz(func(t *testing.T, line string) {
+		finding, ok := FTPLoginFinding(line, nil)
+		if !ok {
+			return
+		}
+		if FTPLoginAccount(line) == "" || finding.SourceIP == "" || finding.Check != "ftp_login" {
+			t.Fatalf("accepted incomplete login: %+v", finding)
+		}
+		if len(line) <= ftpLoginDetailsBytes && finding.Details != line {
+			t.Fatal("lost the authenticated account record")
+		}
+		if len(finding.Details) > ftpLoginDetailsBytes+len("...") {
+			t.Fatalf("details hold %d bytes", len(finding.Details))
+		}
+		if account := FTPLoginAccount(line); len(account) <= ftpLoginDetailsBytes && finding.LoginAccount != account {
+			t.Fatal("lost the authenticated login name")
+		}
+		if len(finding.LoginAccount) > ftpLoginDetailsBytes+len("...") {
+			t.Fatalf("login name holds %d bytes", len(finding.LoginAccount))
 		}
 	})
 }

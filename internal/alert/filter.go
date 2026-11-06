@@ -10,31 +10,87 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/firewall"
 	csmlog "github.com/pidginhost/csm/internal/log"
 )
 
-// State files drive suppression of handled attacks and auto-block alerts.
-// Parse failures must degrade open so corrupt state never hides
-// operator-facing findings; warning logs keep the corruption visible.
-// Missing state files stay silent because they are normal before the
-// first block.
+// State files tell SplitByClass which sources CSM already blocked. Parse
+// failures must degrade open so corrupt state never moves an operator-facing
+// finding to the summary; warning logs keep the corruption visible. Missing
+// state files stay silent because they are normal before the first block.
 
-// FilterBlockedAlerts removes attack alerts answered by a source IP's block
-// or challenge, along with the corresponding automatic action alerts.
-func FilterBlockedAlerts(cfg *config.Config, findings []Finding) []Finding {
-	if !cfg.Suppressions.SuppressBlockedAlerts {
-		return findings
+// SplitByClass separates the findings an operator must see now from the
+// ones that report an attack CSM already handled, which belong in the daily
+// summary. A finding is summary class when the summary-notice policy names
+// it (an applied response or an observation that never acts), or when a
+// block or challenge on its source address answers it. A block counts only
+// once it is in effect: blocked state on disk, or an applied block notice in
+// the same batch. Pending, unverified and dry-run blocks keep the finding
+// immediate. Both halves keep their input order.
+func SplitByClass(cfg *config.Config, findings []Finding) (immediate, summary []Finding) {
+	return splitByClass(cfg, findings, findings)
+}
+
+// splitByClass classifies each of findings on its own fields, while every
+// observation in evidence may prove a block or challenge applied. Dispatch
+// passes its audit sources as evidence only: a suppressed block notice still
+// blocked its address, but it is not delivered to the summary itself.
+func splitByClass(cfg *config.Config, findings, evidence []Finding) (immediate, summary []Finding) {
+	if len(findings) == 0 {
+		return nil, nil
 	}
+	notice := currentSummaryNoticePolicy()
+	policy := currentIPResponsePolicy()
+	web := currentWebTrafficPolicy()
+	// The split runs on every dispatch: block state is read once, and only
+	// for a batch where a block could answer a finding.
+	var handled *handledSet
+	for _, f := range findings {
+		answered := notice != nil && notice(f)
+		if !answered {
+			if ip := ClassSourceIP(f); ip != nil {
+				if handled == nil {
+					handled = handledSources(cfg.StatePath, evidence)
+				}
+				answered = handled.answers(policy, web, cfg, f, ip)
+			}
+		}
+		if answered {
+			summary = append(summary, f)
+		} else {
+			immediate = append(immediate, f)
+		}
+	}
+	return immediate, summary
+}
 
+// handledSet holds the canonical addresses and subnets CSM blocked, and the
+// addresses it routed to the challenge.
+type handledSet struct {
+	blocked    map[string]bool
+	subnets    []*net.IPNet
+	challenged map[string]bool
+	// The Cloudflare ranges the firewall accepts on its web ports, read at
+	// the first blocked web finding.
+	statePath  string
+	cfLoaded   bool
+	cfV4, cfV6 []string
+}
+
+// loadCloudflareRanges reads the firewall's cached Cloudflare ranges.
+var loadCloudflareRanges = firewall.LoadCFState
+
+func handledSources(statePath string, findings []Finding) *handledSet {
 	// Load only IPs with actual block state. Pending entries have not reached
 	// the firewall and must remain visible to the operator.
-	blockedIPs := loadBlockedIPs(cfg.StatePath)
+	blockedIPs := loadBlockedIPs(statePath)
 
 	// Also collect IPs and subnets blocked in this batch, and IPs routed
 	// to the challenge in this batch. A challenge-routed IP is handled
 	// automatically the same way a blocked one is: it either solves the
 	// PoW (legitimate) or gets escalated to a block by the port gate, so
-	// the operator needs no notification either way.
+	// the operator needs no notification either way. Dry-run notices put
+	// "[dry-run]" after the action word, so they never match these tokens.
 	var blockedSubnets []*net.IPNet
 	challengedIPs := make(map[string]bool)
 	for _, f := range findings {
@@ -46,7 +102,7 @@ func FilterBlockedAlerts(cfg *config.Config, findings []Finding) []Finding {
 					blockedIPs[parts[i+1]] = true
 					break
 				}
-				if p == "AUTO-BLOCK-SUBNET:" && i+1 < len(parts) {
+				if (p == "AUTO-BLOCK-SUBNET:" || p == "AUTO-NETBLOCK:") && i+1 < len(parts) {
 					if _, ipnet, err := net.ParseCIDR(parts[i+1]); err == nil {
 						blockedSubnets = append(blockedSubnets, ipnet)
 					}
@@ -64,75 +120,66 @@ func FilterBlockedAlerts(cfg *config.Config, findings []Finding) []Finding {
 		}
 	}
 
-	if len(blockedIPs) == 0 && len(blockedSubnets) == 0 && len(challengedIPs) == 0 && ChallengedIPFunc == nil {
-		return findings
-	}
-
 	// Canonicalize blocked-IP keys via net.ParseIP so equality survives
 	// notation differences (2001:db8::1 vs 2001:db8:0:0:0:0:0:1,
 	// IPv4-mapped IPv6). Keys that do not parse as an IP cannot
 	// exact-match a finding's IP and are dropped.
-	canonicalBlocked := make(map[string]bool, len(blockedIPs))
+	h := &handledSet{
+		blocked:    make(map[string]bool, len(blockedIPs)),
+		subnets:    blockedSubnets,
+		challenged: make(map[string]bool, len(challengedIPs)),
+		statePath:  statePath,
+	}
 	for ip := range blockedIPs {
 		if parsed := net.ParseIP(ip); parsed != nil {
-			canonicalBlocked[parsed.String()] = true
+			h.blocked[parsed.String()] = true
 		}
 	}
-	canonicalChallenged := make(map[string]bool, len(challengedIPs))
 	for ip := range challengedIPs {
 		if parsed := net.ParseIP(ip); parsed != nil {
-			canonicalChallenged[parsed.String()] = true
+			h.challenged[parsed.String()] = true
 		}
 	}
+	return h
+}
 
-	// Filter out alerts for IPs that are handled automatically.
-	// When suppress_blocked_alerts is on, the operator doesn't want to be
-	// notified about IPs that are already dealt with - they only want alerts
-	// that require human action.
-	policy := currentIPResponsePolicy()
-	var filtered []Finding
-	for _, f := range findings {
-		if f.Check == "auto_block" || f.Check == "challenge_route" {
-			continue
-		}
-		// Suppression keys on the actual block state, never on
-		// auto-response intent: an enabled block_ips used to drop every
-		// reputation finding here, which hid exactly the IPs auto-block
-		// did NOT handle (dry-run, rate-limited queue drops,
-		// verdict-allowed). Same-batch AUTO-BLOCK findings already feed
-		// blockedIPs above, so an IP blocked this cycle stays suppressed.
-		// Structured SourceIP wins when present; older findings fall
-		// back to the message token. The address is compared
-		// canonically: substring matching used to let a blocked 1.2.3.4
-		// suppress a finding about the unrelated 1.2.3.45. A finding
-		// with no parseable IP is never suppressed (fail open to
-		// alerting).
-		findingIP := suppressionIPFromFinding(f)
-		if findingIP != nil && ipBlocked(findingIP, canonicalBlocked, blockedSubnets) &&
-			ipResponseAnswers(policy, cfg, f, true) {
-			continue
-		}
-		// A challenge counts only for findings a challenge answers.
-		// Critical ip_reputation is a browserless mail/SSH/FTP sighting
-		// and must stay visible until a hard block lands; otherwise an
-		// old challenge entry hides the exact finding that is supposed
-		// to escalate it.
-		if findingIP != nil && ipResponseAnswers(policy, cfg, f, false) &&
-			ipChallenged(findingIP, canonicalChallenged) {
-			continue
-		}
-		filtered = append(filtered, f)
+// answers reports whether a block or challenge on ip, f's source, answers f.
+func (h *handledSet) answers(policy IPResponsePolicy, web func(Finding) bool, cfg *config.Config, f Finding, ip net.IP) bool {
+	// The class keys on the actual block state, never on auto-response
+	// intent: an enabled block_ips used to hide every reputation finding,
+	// including the IPs auto-block did NOT handle (dry-run, rate-limited
+	// queue drops, verdict-allowed). Structured SourceIP wins when present;
+	// older findings fall back to the message token. The address is
+	// compared canonically: substring matching used to let a blocked
+	// 192.0.2.1 answer a finding about the unrelated 192.0.2.10. A finding
+	// with no parseable IP is never handled (fail open to alerting).
+	// The Cloudflare accept on TCP 80/443 precedes the blocked drop, so a
+	// block of a covered address leaves its web traffic flowing.
+	if ipBlocked(ip, h.blocked, h.subnets) && ipResponseAnswers(policy, cfg, f, true) &&
+		(web == nil || !web(f) || !h.cloudflareCovers(ip)) {
+		return true
 	}
+	// A challenge counts only for findings a challenge answers. Critical
+	// ip_reputation is a browserless mail/SSH/FTP sighting and must stay
+	// immediate until a hard block lands; otherwise an old challenge entry
+	// hides the exact finding that is supposed to escalate it.
+	return ipResponseAnswers(policy, cfg, f, false) && ipChallenged(ip, h.challenged)
+}
 
-	return filtered
+func (h *handledSet) cloudflareCovers(ip net.IP) bool {
+	if !h.cfLoaded {
+		h.cfV4, h.cfV6 = loadCloudflareRanges(h.statePath)
+		h.cfLoaded = true
+	}
+	return firewall.CloudflareRangesCover(h.cfV4, h.cfV6, ip.String())
 }
 
 func ipBlocked(ip net.IP, blocked map[string]bool, subnets []*net.IPNet) bool {
 	if blocked[ip.String()] {
 		return true
 	}
-	// AUTO-BLOCK-SUBNET: findings from the same batch silence per-IP
-	// findings for addresses inside that /24.
+	// Same-batch subnet and netblock blocks answer per-IP findings for
+	// addresses inside them.
 	for _, subnet := range subnets {
 		if subnet.Contains(ip) {
 			return true
@@ -168,7 +215,10 @@ func challengeHandlesFinding(f Finding) bool {
 	return f.Check == "ip_reputation" && f.Severity != Critical
 }
 
-func suppressionIPFromFinding(f Finding) net.IP {
+// ClassSourceIP is the address SplitByClass checks against block and
+// challenge state: the structured SourceIP, or for an older finding the
+// first address in its message. nil means the finding has none.
+func ClassSourceIP(f Finding) net.IP {
 	if strings.TrimSpace(f.SourceIP) != "" {
 		if normalized := normalizeFindingIP(f.SourceIP); normalized != "" {
 			return net.ParseIP(normalized)
@@ -270,8 +320,8 @@ var BlockedIPsFunc func() map[string]bool
 
 // ChallengedIPFunc reports whether an IP is currently on the challenge
 // list. Set by the daemon from the live challenge IP list, mirroring
-// BlockedIPsFunc; nil means challenge membership is unknown and no
-// challenge-based suppression happens (fail open to alerting).
+// BlockedIPsFunc; nil means challenge membership is unknown and no listed
+// challenge makes a finding summary class (fail open to alerting).
 var ChallengedIPFunc func(ip string) bool
 
 // loadBlockedIPs reads blocked IPs from both the firewall engine state
@@ -299,7 +349,7 @@ func loadFirewallStateFile(statePath string, now time.Time, ips map[string]bool,
 		} `json:"blocked"`
 	}
 	if err := json.Unmarshal(fwData, &fwState); err != nil {
-		csmlog.Warn("alert filter: firewall state.json unparseable, suppression degraded",
+		csmlog.Warn("alert class split: firewall state.json unparseable, its blocks count as unhandled",
 			"path", fwPath, "err", err)
 		return
 	}
@@ -372,7 +422,7 @@ func loadBlockFile(statePath string, sections blockFileSection) (blockFile, bool
 		Pending json.RawMessage `json:"pending"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
-		csmlog.Warn("alert filter: blocked_ips.json unparseable, suppression degraded",
+		csmlog.Warn("alert class split: blocked_ips.json unparseable, its blocks count as unhandled",
 			"path", blockedPath, "err", err)
 		return blockFile{}, false
 	}
@@ -380,13 +430,13 @@ func loadBlockFile(statePath string, sections blockFileSection) (blockFile, bool
 	var bf blockFile
 	if sections&blockFileIPsSection != 0 && len(raw.IPs) > 0 && string(raw.IPs) != "null" {
 		if err := json.Unmarshal(raw.IPs, &bf.IPs); err != nil {
-			csmlog.Warn("alert filter: blocked_ips.json blocked entries unparseable, suppression degraded",
+			csmlog.Warn("alert class split: blocked_ips.json blocked entries unparseable, they count as unhandled",
 				"path", blockedPath, "err", err)
 		}
 	}
 	if sections&blockFilePendingSection != 0 && len(raw.Pending) > 0 && string(raw.Pending) != "null" {
 		if err := json.Unmarshal(raw.Pending, &bf.Pending); err != nil {
-			csmlog.Warn("alert filter: blocked_ips.json pending entries unparseable, suppression degraded",
+			csmlog.Warn("alert class split: blocked_ips.json pending entries unparseable, they count as unhandled",
 				"path", blockedPath, "err", err)
 		}
 	}
@@ -395,18 +445,24 @@ func loadBlockFile(statePath string, sections blockFileSection) (blockFile, bool
 }
 
 // IPResponsePolicy reports whether an IP disposition on a finding's source
-// fully answers the finding, so suppress_blocked_alerts may drop it. blocked
+// fully answers the finding, so SplitByClass moves it to the summary. blocked
 // is true for a firewall block and false for a challenge.
 type IPResponsePolicy func(cfg *config.Config, f Finding, blocked bool) bool
 
 var (
 	ipResponsePolicyMu sync.RWMutex
 	ipResponsePolicy   IPResponsePolicy
+
+	summaryNoticeMu     sync.RWMutex
+	summaryNoticePolicy func(Finding) bool
+
+	webTrafficMu     sync.RWMutex
+	webTrafficPolicy func(Finding) bool
 )
 
-// SetIPResponsePolicy installs or clears the policy FilterBlockedAlerts
-// consults and returns the previous one. The check classification lives in
-// the checks package, which imports this one and registers it at package
+// SetIPResponsePolicy installs or clears the policy SplitByClass consults
+// and returns the previous one. The check classification lives in the
+// checks package, which imports this one and registers it at package
 // initialization so every dispatch path uses the same policy.
 func SetIPResponsePolicy(p IPResponsePolicy) IPResponsePolicy {
 	ipResponsePolicyMu.Lock()
@@ -420,5 +476,44 @@ func currentIPResponsePolicy() IPResponsePolicy {
 	ipResponsePolicyMu.RLock()
 	p := ipResponsePolicy
 	ipResponsePolicyMu.RUnlock()
+	return p
+}
+
+// SetSummaryNoticePolicy installs or clears the policy that names summary
+// notices by their own content, and returns the previous one. The checks
+// package registers it at package initialization, like SetIPResponsePolicy.
+// With no policy no finding is a summary notice, so every one stays
+// immediate unless its source is handled.
+func SetSummaryNoticePolicy(p func(Finding) bool) func(Finding) bool {
+	summaryNoticeMu.Lock()
+	defer summaryNoticeMu.Unlock()
+	previous := summaryNoticePolicy
+	summaryNoticePolicy = p
+	return previous
+}
+
+func currentSummaryNoticePolicy() func(Finding) bool {
+	summaryNoticeMu.RLock()
+	p := summaryNoticePolicy
+	summaryNoticeMu.RUnlock()
+	return p
+}
+
+// SetWebTrafficPolicy installs or clears the policy that names findings about
+// requests on the web ports, and returns the previous one. A block of a
+// Cloudflare-covered address does not answer them. The checks package
+// registers it at package initialization, like SetIPResponsePolicy.
+func SetWebTrafficPolicy(p func(Finding) bool) func(Finding) bool {
+	webTrafficMu.Lock()
+	defer webTrafficMu.Unlock()
+	previous := webTrafficPolicy
+	webTrafficPolicy = p
+	return previous
+}
+
+func currentWebTrafficPolicy() func(Finding) bool {
+	webTrafficMu.RLock()
+	p := webTrafficPolicy
+	webTrafficMu.RUnlock()
 	return p
 }

@@ -1,6 +1,7 @@
 package blockdigest
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -22,6 +23,47 @@ type WebhookCSM struct {
 	Countries []string       `json:"countries"`
 	Counts    WebhookCounts  `json:"counts"`
 	Blocks    []WebhookBlock `json:"blocks"`
+	// Summary carries the counts of a daily_summary event, which is written
+	// with summaryCSM instead of the block digest fields.
+	Summary *Summary `json:"summary,omitempty"`
+	// CustomerBlocks carries a customer_block event, written with
+	// customerCSM.
+	CustomerBlocks []CustomerBlock `json:"-"`
+}
+
+type summaryCSM struct {
+	Event   string   `json:"event"`
+	Host    string   `json:"host"`
+	Version string   `json:"version"`
+	Summary *Summary `json:"summary"`
+}
+
+// customerCSM keeps customer blocks off csm.blocks, which block_live uses
+// for blocked addresses.
+type customerCSM struct {
+	Event          string          `json:"event"`
+	Host           string          `json:"host"`
+	Version        string          `json:"version"`
+	CustomerBlocks []CustomerBlock `json:"customer_blocks"`
+}
+
+// MarshalJSON writes a daily summary or a customer block alert with only its
+// own csm fields. Block events keep the block digest shape.
+func (p WebhookPayload) MarshalJSON() ([]byte, error) {
+	switch {
+	case p.CSM.Summary != nil:
+		return json.Marshal(struct {
+			Text string     `json:"text"`
+			CSM  summaryCSM `json:"csm"`
+		}{p.Text, summaryCSM{Event: p.CSM.Event, Host: p.CSM.Host, Version: p.CSM.Version, Summary: p.CSM.Summary}})
+	case p.CSM.CustomerBlocks != nil:
+		return json.Marshal(struct {
+			Text string      `json:"text"`
+			CSM  customerCSM `json:"csm"`
+		}{p.Text, customerCSM{Event: p.CSM.Event, Host: p.CSM.Host, Version: p.CSM.Version, CustomerBlocks: p.CSM.CustomerBlocks}})
+	}
+	type blockPayload WebhookPayload
+	return json.Marshal(blockPayload(p))
 }
 
 type WebhookCounts struct {
@@ -160,11 +202,92 @@ func (c *Collector) buildPayload(event string, d Digest) WebhookPayload {
 	}
 }
 
-// shouldSend gates a digest: send_on=any sends when total meets MinBlock;
-// send_on=customer sends only when customer-risk blocks meet MinBlock.
-func (c *Collector) shouldSend(d Digest) bool {
-	if c.opts.SendOn == "customer" {
-		return d.CustomerCount >= c.opts.MinBlock
+// shouldSend gates the watched-country section of the daily summary: it is
+// shown when watching and the folded blocks reach MinBlock.
+func (c *Collector) shouldSend(w WatchedBlocks) bool {
+	return c.opts.Watch && w.Total >= c.opts.MinBlock
+}
+
+func (c *Collector) summarySubject(s Summary) string {
+	return fmt.Sprintf("[CSM] %s - daily summary %s", c.opts.Host, s.Since.In(c.opts.Location).Format("2006-01-02"))
+}
+
+func (c *Collector) summaryBody(s Summary, until time.Time) string {
+	const stamp = "2006-01-02 15:04 MST"
+	var b strings.Builder
+	fmt.Fprintln(&b, c.summarySubject(s))
+	fmt.Fprintf(&b, "Window: %s to %s\n", s.Since.In(c.opts.Location).Format(stamp), until.In(c.opts.Location).Format(stamp))
+	fmt.Fprintln(&b, "Attacks CSM handled on its own. They are not alerted one by one; the findings page and history keep every one.")
+	fmt.Fprintln(&b)
+	fmt.Fprintf(&b, "Handled findings: %d\n", s.total())
+	fmt.Fprintf(&b, "Muted in alert email: %d\n", s.Muted)
+	if s.Blocks > 0 {
+		fmt.Fprintf(&b, "Blocks applied: %d (%s)\n", s.Blocks, sortedCounts(s.BlockKinds))
+	} else {
+		fmt.Fprintln(&b, "Blocks applied: 0")
 	}
-	return d.Total >= c.opts.MinBlock
+	fmt.Fprintf(&b, "Challenges: %d\n", s.checkTotal("challenge_route"))
+	fmt.Fprintf(&b, "Mail login advisories, observe only: %d\n", s.checkTotal("mail_bruteforce_suspected"))
+	fmt.Fprintln(&b)
+	fmt.Fprintln(&b, "By check and severity:")
+	checks := make([]string, 0, len(s.Checks))
+	for check := range s.Checks {
+		checks = append(checks, check)
+	}
+	sort.Strings(checks)
+	for _, check := range checks {
+		fmt.Fprintf(&b, "  %s: %s\n", check, sortedCounts(s.Checks[check]))
+	}
+	if len(checks) == 0 {
+		fmt.Fprintln(&b, "  (none)")
+	}
+	fmt.Fprintln(&b)
+	fmt.Fprintln(&b, "Top sources:")
+	for _, src := range s.Sources {
+		if src.Country != "" {
+			fmt.Fprintf(&b, "  %s (%s): %d\n", src.IP, src.Country, src.Count)
+		} else {
+			fmt.Fprintf(&b, "  %s: %d\n", src.IP, src.Count)
+		}
+	}
+	if len(s.Sources) == 0 {
+		fmt.Fprintln(&b, "  (none)")
+	}
+	fmt.Fprintln(&b)
+	fmt.Fprintln(&b, "Automatic blocks that hit known customers:")
+	for _, blk := range s.CustomerBlocks {
+		c.writeCustomerBlock(&b, "  ", blk)
+		writeUnblockHint(&b, "  ", blk.Target)
+	}
+	switch {
+	case len(s.CustomerBlocks) == 0:
+		fmt.Fprintln(&b, "  (none)")
+	case s.CustomerBlocksMore > 0:
+		fmt.Fprintf(&b, "  and %d more blocks\n", s.CustomerBlocksMore)
+	}
+	fmt.Fprintln(&b)
+	fmt.Fprintln(&b, "Known customers a dry-run or observe-mode verdict would have blocked:")
+	for _, w := range s.WouldBlock {
+		c.writeCustomerBlock(&b, "  ", w)
+	}
+	switch {
+	case len(s.WouldBlock) == 0:
+		fmt.Fprintln(&b, "  (none)")
+	case s.WouldBlockMore > 0:
+		fmt.Fprintf(&b, "  and %d more verdicts\n", s.WouldBlockMore)
+	}
+	if c.shouldSend(s.Watched) {
+		fmt.Fprintln(&b)
+		fmt.Fprintf(&b, "Watched-country blocks: %d (countries: %s)\n", s.Watched.Total, countriesLabel(c.countriesSnapshot()))
+		fmt.Fprintf(&b, "  By country: %s\n", sortedCounts(s.Watched.ByCountry))
+		fmt.Fprintf(&b, "  By category: %s\n", sortedCounts(s.Watched.ByCategory))
+	}
+	return b.String()
+}
+
+func (c *Collector) summaryPayload(s Summary, body string) WebhookPayload {
+	return WebhookPayload{
+		Text: body,
+		CSM:  WebhookCSM{Event: "daily_summary", Host: c.opts.Host, Version: c.opts.Version, Summary: &s},
+	}
 }

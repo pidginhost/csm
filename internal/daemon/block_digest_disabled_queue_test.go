@@ -61,7 +61,7 @@ func TestBlockDigestDisabledDestinationIsNotLost(t *testing.T) {
 				go func() {
 					defer close(done)
 					defer func() { gotPanic = recover() }()
-					d.blockDigest.Flush()
+					d.blockDigest.SendDue(summaryTestNoon())
 					returned = true
 				}()
 				select {
@@ -69,12 +69,15 @@ func TestBlockDigestDisabledDestinationIsNotLost(t *testing.T) {
 				case <-time.After(5 * time.Second):
 					t.Fatal("flush did not join")
 				}
-				if returned != (outcome == "returned_error") || (outcome == "panic" && gotPanic != sentinel) || (outcome != "panic" && gotPanic != nil) {
+				// A summary sink that panics fails like one returning an
+				// error; only an exit without return interrupts the send.
+				interrupted := outcome == "goexit"
+				if returned == interrupted || gotPanic != nil {
 					t.Fatal("original abnormal-exit policy changed")
 				}
 				rows := d.QueueStatuses()
 				wantLoss := uint64(0)
-				if enabled && outcome != "returned_error" {
+				if enabled && interrupted {
 					wantLoss = 1
 				}
 				row := rows["block_digest.webhook"]
@@ -82,7 +85,7 @@ func TestBlockDigestDisabledDestinationIsNotLost(t *testing.T) {
 					t.Errorf("notification loss must reflect actual configured destination: enabled=%v got=%+v want_lost=%d", enabled, row, wantLoss)
 				}
 				wantCalls := 0
-				if enabled && outcome == "returned_error" {
+				if enabled && !interrupted {
 					wantCalls = 1
 				}
 				if emailCalls != 1 || webhookCalls != wantCalls {
@@ -90,12 +93,15 @@ func TestBlockDigestDisabledDestinationIsNotLost(t *testing.T) {
 				}
 				fail = false
 				observe()
-				d.blockDigest.Flush()
-				if enabled {
+				// A retry of the same summary, well before the next one is due.
+				d.blockDigest.SendDue(summaryTestNoon().Add(time.Minute))
+				// A returned webhook success was checkpointed even though
+				// email failed. An interrupted send never reached the webhook.
+				if enabled && interrupted {
 					wantCalls++
 				}
 				if emailCalls != 2 || webhookCalls != wantCalls {
-					t.Fatalf("recovery called disabled sink or retried abandoned work: email=%d webhook=%d", emailCalls, webhookCalls)
+					t.Fatalf("recovery did not retry only unfinished destinations: email=%d webhook=%d", emailCalls, webhookCalls)
 				}
 				row = d.QueueStatuses()["block_digest.webhook"]
 				if row.DroppedTotal != wantLoss {
@@ -126,7 +132,7 @@ func TestBlockDigestDefaultPolicySelectsEachDestination(t *testing.T) {
 			cfg.Alerts.Webhook.Enabled = webhookEnabled
 			d := New(cfg, nil, nil, "")
 			collector := d.buildBlockDigest(cfg)
-			collector.Flush()
+			collector.SendDue(time.Now().Add(25 * time.Hour))
 			expectedEmail, expectedWebhook := 0, 0
 			if emailEnabled {
 				expectedEmail = 1
@@ -145,4 +151,12 @@ func TestBlockDigestDefaultPolicySelectsEachDestination(t *testing.T) {
 			}
 		}
 	}
+}
+
+// summaryTestNoon is a send time past a new collector's first daily summary
+// and 20 hours before the next one, so a retry a minute later stays within
+// the same pending summary.
+func summaryTestNoon() time.Time {
+	n := time.Now()
+	return time.Date(n.Year(), n.Month(), n.Day()+2, 12, 0, 0, 0, time.Local)
 }

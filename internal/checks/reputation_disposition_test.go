@@ -72,7 +72,6 @@ func TestAutoBlockIPs_MailVectorReputationBlocksDespiteChallengeListing(t *testi
 	cfg.AutoResponse.Enabled = true
 	cfg.AutoResponse.BlockIPs = true
 	cfg.Challenge.Enabled = true
-	cfg.Suppressions.SuppressBlockedAlerts = true
 	setAutoResponseLive(cfg)
 
 	blocker := &recordingIPBlocker{}
@@ -99,10 +98,10 @@ func TestAutoBlockIPs_MailVectorReputationBlocksDespiteChallengeListing(t *testi
 		},
 	}
 
-	// Dispatch filtering must not treat the old challenge as sufficient for
+	// The class split must not treat the old challenge as sufficient for
 	// this browserless finding before the hard-block stage has run.
-	if got := alert.FilterBlockedAlerts(cfg, findings); len(got) != 1 {
-		t.Fatalf("pre-block filtered findings = %+v, want Critical reputation retained", got)
+	if immediate, summary := alert.SplitByClass(cfg, findings); len(immediate) != 1 || len(summary) != 0 {
+		t.Fatalf("pre-block immediate = %+v, summary = %+v; want Critical reputation immediate", immediate, summary)
 	}
 
 	challengeActions, actions := ChallengeThenBlock(cfg, findings)
@@ -116,8 +115,9 @@ func TestAutoBlockIPs_MailVectorReputationBlocksDespiteChallengeListing(t *testi
 	if len(actions) == 0 {
 		t.Fatal("expected an auto_block action finding")
 	}
-	if got := alert.FilterBlockedAlerts(cfg, append(findings, actions...)); len(got) != 0 {
-		t.Fatalf("post-block filtered findings = %+v, want hard-blocked reputation suppressed", got)
+	batch := append(append([]alert.Finding(nil), findings...), actions...)
+	if immediate, summary := alert.SplitByClass(cfg, batch); len(immediate) != 0 || len(summary) != len(batch) {
+		t.Fatalf("post-block immediate = %+v, summary = %+v; want the hard-blocked reputation and its block in the summary", immediate, summary)
 	}
 }
 

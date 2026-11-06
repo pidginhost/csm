@@ -46,7 +46,7 @@ func TestLoginUpgradeNotificationFilterKeepsObservers(t *testing.T) {
 	cfg.Alerts.Webhook.Enabled = true
 	cfg.Alerts.Webhook.URL = srv.URL
 	findings := []Finding{{Check: "ftp_login", Severity: Warning}}
-	err := DispatchWithNotificationFilter(cfg, findings, findings, nil, func([]Finding) []Finding { return nil })
+	err := DispatchWithNotificationFilter(cfg, findings, findings, nil, findings, func([]Finding) []Finding { return nil }, nil)
 	if err != nil || smtpCalls != 0 || len(webhook.snapshot()) != 0 || notified != 0 {
 		t.Fatalf("muted finding notified operator: err=%v smtp=%d webhook=%v observers=%d", err, smtpCalls, webhook.snapshot(), notified)
 	}

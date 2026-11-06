@@ -252,13 +252,13 @@ func TestDropperQueueHealthTracksPartlySuppressedEmission(t *testing.T) {
 	}
 	entered, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	oldEmit, calls := e.emit, 0
-	e.emit = func(sev alert.Severity, check, msg, details, path string) {
+	e.emit = func(sev alert.Severity, check, msg, details, path, dedupKey string) {
 		calls++
 		if calls == 1 {
 			close(entered)
 			<-release
 		}
-		oldEmit(sev, check, msg, details, path)
+		oldEmit(sev, check, msg, details, path, dedupKey)
 	}
 	flush := now.Add(dropperGraceWindow)
 	e.tr.now = func() time.Time { return flush }
@@ -310,7 +310,7 @@ func TestDropperQueueHealthEmissionStartsAtActualTime(t *testing.T) {
 	held.Path = "/home/alice/public_html/already-held.php"
 	e.tr.HoldGone(held, dropperSuspect, base.Add(-dropperGraceWindow))
 	calls := 0
-	e.emit = func(_ alert.Severity, _, _, _, _ string) {
+	e.emit = func(_ alert.Severity, _, _, _, _, _ string) {
 		calls++
 		_, got := e.tr.queueStatuses(now)
 		if got.Depth != 0 || got.InFlight != 1 || got.ProcessingSeconds != 0 || got.Status != "ok" {

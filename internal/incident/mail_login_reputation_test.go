@@ -44,7 +44,7 @@ func TestMailLoginReputationReportingAndDigest(t *testing.T) {
 	if cap.len() != 1 {
 		t.Fatalf("incident block calls = %d, want 1", cap.len())
 	}
-	digest := blockdigest.New(blockdigest.Options{SendOn: "any"})
+	digest := blockdigest.New(blockdigest.Options{Watch: true, SendOn: "any"})
 	digest.Observe(cap.calls[0].IP, cap.calls[0].Reason, now)
 	if got := digest.Drain(); got.Total != 1 || got.AttackerCount != 1 || got.CustomerCount != 0 {
 		t.Fatalf("mail incident block digest = %+v", got)

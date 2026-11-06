@@ -3,10 +3,12 @@ package alert
 import (
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -139,6 +141,11 @@ type Finding struct {
 	TenantID string `json:"tenant_id,omitempty"`
 	Domain   string `json:"domain,omitempty"`
 	Mailbox  string `json:"mailbox,omitempty"`
+	// LoginAccount retains the authenticated login name independently of
+	// truncated log details and the hosting tenant that owns the account.
+	// Internal-only: customer history reads it, the public Finding JSON
+	// does not carry it.
+	LoginAccount string `json:"-"`
 	// SprayTargets carries the per-account targets for aggregate auth
 	// findings. It is internal-only so API payloads keep the public Finding
 	// contract while the incident correlator can count distinct targets.
@@ -668,6 +675,45 @@ func callCentralHook(f Finding) {
 	h(f)
 }
 
+// summaryHook receives the summary-class findings of every dispatch. Install
+// or clear it with SetSummaryHook.
+var (
+	summaryHookMu sync.RWMutex
+	summaryHook   func(cfg *config.Config, summary []Finding)
+)
+
+// SetSummaryHook installs or clears the receiver of summary-class findings.
+// Each dispatch calls it once, with no alert lock held, with the
+// summary-class part of the findings it would otherwise notify, deduplicated
+// by Key. That includes checks muted by alerts.email.disabled_checks, but not
+// audit-only sources or findings the notification filter removed. It must
+// not block. A dispatch with no hook installed, as in a CLI scan, leaves
+// summary-class findings to audit, history and the data streams.
+func SetSummaryHook(h func(cfg *config.Config, summary []Finding)) {
+	summaryHookMu.Lock()
+	summaryHook = h
+	summaryHookMu.Unlock()
+}
+
+// callSummaryHook reports a panicking hook as a delivery failure: the
+// summary lost those findings, and some callers only log dispatch errors.
+func callSummaryHook(cfg *config.Config, summary []Finding) (err error) {
+	summaryHookMu.RLock()
+	h := summaryHook
+	summaryHookMu.RUnlock()
+	if h == nil {
+		return nil
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Fprintln(os.Stderr, "alert: summary hook panic")
+			err = errors.New("summary: hook panicked")
+		}
+	}()
+	h(cfg, summary)
+	return nil
+}
+
 type rateLimitKey struct {
 	StatePath string
 	Hour      string
@@ -681,7 +727,23 @@ type rateLimitReservation struct {
 var (
 	rateLimitMu      sync.Mutex
 	rateLimitPending = make(map[rateLimitKey]int)
+	// rateLimitNow is the hourly budget's clock, read under rateLimitMu.
+	rateLimitNow = time.Now
 )
+
+// SetRateLimitClockForTest pins the clock that picks the hourly budget, so a
+// test cannot straddle an hour boundary.
+func SetRateLimitClockForTest(now func() time.Time) (restore func()) {
+	rateLimitMu.Lock()
+	defer rateLimitMu.Unlock()
+	previous := rateLimitNow
+	rateLimitNow = now
+	return func() {
+		rateLimitMu.Lock()
+		defer rateLimitMu.Unlock()
+		rateLimitNow = previous
+	}
+}
 
 // reserveRateLimit reports whether the per-hour alert budget can absorb
 // another send without committing the slot. The in-memory reservation
@@ -695,7 +757,7 @@ func reserveRateLimit(statePath string, maxPerHour int) (*rateLimitReservation, 
 		return nil, false
 	}
 
-	currentHour := time.Now().Format("2006-01-02T15")
+	currentHour := rateLimitNow().Format("2006-01-02T15")
 	rlPath := filepath.Join(statePath, "ratelimit.json")
 
 	var rl rateLimitState
@@ -750,7 +812,7 @@ func commitRateLimit(statePath string, reservation *rateLimitReservation) {
 
 	releaseRateLimitLocked(reservation)
 
-	currentHour := time.Now().Format("2006-01-02T15")
+	currentHour := rateLimitNow().Format("2006-01-02T15")
 	rlPath := filepath.Join(statePath, "ratelimit.json")
 
 	var rl rateLimitState
@@ -783,7 +845,7 @@ func checkRateLimit(statePath string, maxPerHour int) bool {
 
 	rlPath := filepath.Join(statePath, "ratelimit.json")
 
-	currentHour := time.Now().Format("2006-01-02T15")
+	currentHour := rateLimitNow().Format("2006-01-02T15")
 
 	var rl rateLimitState
 	// #nosec G304 -- filepath.Join(statePath, "ratelimit.json"); statePath from operator config.
@@ -842,7 +904,7 @@ func Dispatch(cfg *config.Config, findings []Finding) error {
 // Both inputs remain caller-owned and must already carry the times used by
 // actions that reference them. Missing times are filled on copies for ad-hoc use.
 func DispatchWithSources(cfg *config.Config, findings, sources []Finding) error {
-	return dispatchWithSources(cfg, findings, sources, findings, nil, true)
+	return dispatchWithSources(cfg, findings, sources, findings, nil, nil, true, nil)
 }
 
 // DispatchNotices delivers notices whose producer already bounds their rate.
@@ -856,24 +918,37 @@ func DispatchNotices(cfg *config.Config, findings []Finding) error {
 // without hiding notices from audit, phpanel or SSE, or spending the routine
 // alert budget.
 func DispatchNoticesWithNotificationFilter(cfg *config.Config, findings []Finding, filter func([]Finding) []Finding) error {
-	return dispatchWithSources(cfg, findings, nil, findings, filter, false)
+	return dispatchWithSources(cfg, findings, nil, findings, nil, filter, false, nil)
 }
 
 // DispatchWithEnforcement offers central IP enforcement its own finding set
 // instead of the notification set. Suppression rules mute notifications but
 // must not exempt an attacker from central challenges and blocks.
 func DispatchWithEnforcement(cfg *config.Config, findings, sources, enforcement []Finding) error {
-	return dispatchWithSources(cfg, findings, sources, enforcement, nil, true)
+	return dispatchWithSources(cfg, findings, sources, enforcement, nil, nil, true, nil)
+}
+
+// RepeatGate holds back findings alert email and the generic webhook already
+// delivered with the same content. *state.Store implements it; alert cannot
+// import state.
+type RepeatGate interface {
+	// The returned callback must be called once, including on failed or
+	// capped sends, with only the successfully delivered findings.
+	BeginDelivery([]Finding) ([]Finding, func([]Finding))
 }
 
 // DispatchWithNotificationFilter keeps operator policy separate from the
 // phpanel and SSE data streams. Notification observers, audit sources and
-// central enforcement retain their independent policy boundaries.
-func DispatchWithNotificationFilter(cfg *config.Config, findings, sources, enforcement []Finding, filter func([]Finding) []Finding) error {
-	return dispatchWithSources(cfg, findings, sources, enforcement, filter, true)
+// central enforcement retain their independent policy boundaries. Delivery
+// candidates may include reobserved findings whose history reminder is not due.
+// A non-nil gate sends each candidate once per content to email and the generic
+// webhook; candidates alone do not repeat observers or enforcement.
+// Nil candidates reuse the findings and their filtered notification set.
+func DispatchWithNotificationFilter(cfg *config.Config, findings, sources, enforcement, candidates []Finding, filter func([]Finding) []Finding, gate RepeatGate) error {
+	return dispatchWithSources(cfg, findings, sources, enforcement, candidates, filter, true, gate)
 }
 
-func dispatchWithSources(cfg *config.Config, findings, sources, enforcement []Finding, notificationFilter func([]Finding) []Finding, routineBudget bool) error {
+func dispatchWithSources(cfg *config.Config, findings, sources, enforcement, candidates []Finding, notificationFilter func([]Finding) []Finding, routineBudget bool, gate RepeatGate) error {
 	// Deduplicate owns a copy, so stamping cannot race with callers sharing
 	// the input or pin a reused unstamped finding to its first dispatch time.
 	findings = Deduplicate(findings)
@@ -889,12 +964,14 @@ func dispatchWithSources(cfg *config.Config, findings, sources, enforcement []Fi
 		sources = append(sources, findings...)
 	}
 
-	// Audit log captures every (deduplicated) finding before
-	// FilterBlockedAlerts and the rate limiter, so SIEMs see the
-	// complete picture even when email/webhook are throttled or
-	// when "this IP is already blocked" suppression hides a finding
-	// from the operator-facing channels.
+	// Audit log captures every (deduplicated) finding before the class
+	// split and the rate limiter, so SIEMs see the complete picture even
+	// when email/webhook are throttled or a handled attack goes to the
+	// summary instead of the operator-facing channels.
 	emitAuditWithSources(cfg, notifications, sources)
+	// Every observation, audit sources included, may prove a response
+	// applied. Only the delivery set below is classified and summarized.
+	evidence := slices.Concat(sources, findings, candidates)
 	// The central-intel consumer escalates findings whose IP is in the
 	// verified central scored-set.
 	enforcement = Deduplicate(enforcement)
@@ -902,7 +979,7 @@ func dispatchWithSources(cfg *config.Config, findings, sources, enforcement []Fi
 	for _, f := range enforcement {
 		callCentralHook(f)
 	}
-	if len(findings) == 0 {
+	if len(findings) == 0 && len(candidates) == 0 {
 		return nil
 	}
 
@@ -934,9 +1011,26 @@ func dispatchWithSources(cfg *config.Config, findings, sources, enforcement []Fi
 	}
 
 	findings = notifications
+	if candidates != nil {
+		findings = Deduplicate(candidates)
+		FillTimestamps(findings, now)
+		if notificationFilter != nil {
+			findings = notificationFilter(findings)
+		}
+	}
 
-	// Filter out blocked IP alerts if configured
-	findings = FilterBlockedAlerts(cfg, findings)
+	// Summary-class findings report attacks CSM already handled. They leave
+	// before disabled_checks, the repeat gate and the hourly cap and go to
+	// the summary, muted checks included, so muting never hides activity.
+	// Each delivery finding is classified on its own fields: an older audit
+	// copy of the same key must not decide the class of an escalated one.
+	var summary []Finding
+	findings, summary = splitByClass(cfg, findings, evidence)
+	if len(summary) > 0 {
+		if err := callSummaryHook(cfg, summary); err != nil {
+			addDispatchError(&errs, err)
+		}
+	}
 
 	if len(findings) == 0 {
 		return formatDispatchErrors(errs)
@@ -950,6 +1044,20 @@ func dispatchWithSources(cfg *config.Config, findings, sources, enforcement []Fi
 	webhookFindings := []Finding(nil)
 	if cfg.Alerts.Webhook.Enabled && !phpanelWebhook {
 		webhookFindings = findings
+	}
+
+	// The gate runs before the budget so a delivered finding neither spends
+	// nor waits on the hourly cap.
+	var delivered []Finding
+	if gate != nil && (len(emailFindings) > 0 || len(webhookFindings) > 0) {
+		eligible, finish := gate.BeginDelivery(Deduplicate(append(append([]Finding(nil), emailFindings...), webhookFindings...)))
+		defer func() { finish(Deduplicate(delivered)) }()
+		undelivered := make(map[string]bool)
+		for _, f := range eligible {
+			undelivered[f.Key()] = true
+		}
+		emailFindings = findingsWithKeys(emailFindings, undelivered)
+		webhookFindings = findingsWithKeys(webhookFindings, undelivered)
 	}
 
 	// Only routine findings spend the hourly budget. Urgent ones always go
@@ -979,8 +1087,9 @@ func dispatchWithSources(cfg *config.Config, findings, sources, enforcement []Fi
 		body := FormatAlert(cfg.Hostname, emailFindings)
 		if err := SendEmail(cfg, subject, body); err != nil {
 			addDispatchError(&errs, fmt.Errorf("email: %w", err))
-		} else if hasRoutineFinding(emailFindings) {
-			routineDispatched = true
+		} else {
+			delivered = append(delivered, emailFindings...)
+			routineDispatched = routineDispatched || hasRoutineFinding(emailFindings)
 		}
 	}
 
@@ -989,8 +1098,9 @@ func dispatchWithSources(cfg *config.Config, findings, sources, enforcement []Fi
 		body := FormatAlert(cfg.Hostname, webhookFindings)
 		if err := SendWebhook(cfg, subject, body); err != nil {
 			addDispatchError(&errs, fmt.Errorf("webhook: %w", err))
-		} else if hasRoutineFinding(webhookFindings) {
-			routineDispatched = true
+		} else {
+			delivered = append(delivered, webhookFindings...)
+			routineDispatched = routineDispatched || hasRoutineFinding(webhookFindings)
 		}
 	}
 
@@ -1009,6 +1119,16 @@ func dispatchWithSources(cfg *config.Config, findings, sources, enforcement []Fi
 // bypassed the budget disappear.
 func bypassesRateLimit(f Finding) bool {
 	return f.Severity == Critical || f.Check == "ip_reputation"
+}
+
+func findingsWithKeys(findings []Finding, keys map[string]bool) []Finding {
+	var out []Finding
+	for _, f := range findings {
+		if keys[f.Key()] {
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 func hasRoutineFinding(findings []Finding) bool {

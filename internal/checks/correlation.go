@@ -112,6 +112,8 @@ func (c Correlator) Correlate(findings []alert.Finding, at time.Time) Correlatio
 		}
 	}
 	res.CriticalAccounts = len(accounts)
+	// The sorted account sets are part of the condition: acknowledging one
+	// group must not hide spread to another account. Source text is omitted.
 	if len(accounts) >= 3 {
 		names := sortedKeys(accounts)
 		res.Derived = append(res.Derived, alert.Finding{

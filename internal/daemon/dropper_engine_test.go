@@ -33,7 +33,7 @@ func newTestEngine(ttl time.Duration) (*dropperEngine, *[]capturedAlert) {
 		ttl:     ttl,
 		selfPID: 999,
 	})
-	e.emit = func(sev alert.Severity, check, msg, details, path string) {
+	e.emit = func(sev alert.Severity, check, msg, details, path, _ string) {
 		got = append(got, capturedAlert{sev: sev, check: check, msg: msg, details: details, path: path})
 	}
 	return e, &got

@@ -64,6 +64,10 @@ spoof is hard-blocked by the later `http_ua_spoof` finding after it reaches the
 UA threshold, while a real crawler is removed from the challenge list once
 verification succeeds.
 
+A timeout block of an address that recently logged in as a customer sends
+the [known-customer block alert](auto-response.md#known-customer-block-alert)
+at once. The block still applies.
+
 ### Bind address
 
 The listener binds to `127.0.0.1` by default, so enabling the challenge

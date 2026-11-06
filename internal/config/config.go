@@ -234,10 +234,11 @@ type Config struct {
 			} `yaml:"syslog"`
 		} `yaml:"audit_log"`
 
-		// BlockDigest emits a per-country roll-up of auto-blocked IPs so
-		// operators see when their customers' countries get blocked. The
-		// hotreload:"restart" tag overrides the safe Alerts parent: the
-		// collector and its ticker are built once at startup.
+		// BlockDigest adds a per-country roll-up of auto-blocked IPs to the
+		// daily alert summary so operators see when their customers'
+		// countries get blocked. The hotreload:"restart" tag overrides the
+		// safe Alerts parent: the collector and its ticker are built once at
+		// startup.
 		BlockDigest struct {
 			Enabled   bool     `yaml:"enabled"`
 			Countries []string `yaml:"countries"`
@@ -716,14 +717,13 @@ type Config struct {
 	} `yaml:"detection" hotreload:"safe"`
 
 	Suppressions struct {
-		UPCPWindowStart       string   `yaml:"upcp_window_start"`
-		UPCPWindowEnd         string   `yaml:"upcp_window_end"`
-		KnownAPITokens        []string `yaml:"known_api_tokens"`
-		IgnorePaths           []string `yaml:"ignore_paths"`
-		SuppressWebmail       bool     `yaml:"suppress_webmail_alerts"`      // don't alert on webmail logins
-		SuppressCpanelLogin   bool     `yaml:"suppress_cpanel_login_alerts"` // don't alert on cPanel direct logins
-		SuppressBlockedAlerts bool     `yaml:"suppress_blocked_alerts"`      // don't alert on IPs that were auto-blocked
-		TrustedCountries      []string `yaml:"trusted_countries"`            // ISO 3166-1 alpha-2 codes - suppress cPanel login alerts from these countries
+		UPCPWindowStart     string   `yaml:"upcp_window_start"`
+		UPCPWindowEnd       string   `yaml:"upcp_window_end"`
+		KnownAPITokens      []string `yaml:"known_api_tokens"`
+		IgnorePaths         []string `yaml:"ignore_paths"`
+		SuppressWebmail     bool     `yaml:"suppress_webmail_alerts"`      // don't alert on webmail logins
+		SuppressCpanelLogin bool     `yaml:"suppress_cpanel_login_alerts"` // don't alert on cPanel direct logins
+		TrustedCountries    []string `yaml:"trusted_countries"`            // ISO 3166-1 alpha-2 codes - suppress cPanel login alerts from these countries
 	} `yaml:"suppressions" hotreload:"safe"`
 
 	AutoResponse struct {
@@ -1397,8 +1397,14 @@ func (c *Config) UpdatesInterval() time.Duration {
 	return d
 }
 
-// BlockDigestInterval is the digest cadence. Empty, invalid, or non-positive
-// values fall back to one hour.
+// minBlockDigestInterval floors BlockDigestInterval: each interval saves the
+// daily summary, even with the digest off. A lower configured value runs at
+// the floor with a validation warning, so an upgrade never fails startup.
+const minBlockDigestInterval = time.Minute
+
+// BlockDigestInterval is how often watched blocks fold into the daily summary
+// and the live alert dedup window. Empty, invalid, or non-positive values fall
+// back to one hour; values below the floor run at the floor.
 func (c *Config) BlockDigestInterval() time.Duration {
 	if c.Alerts.BlockDigest.Interval == "" {
 		return time.Hour
@@ -1407,7 +1413,7 @@ func (c *Config) BlockDigestInterval() time.Duration {
 	if err != nil || d <= 0 {
 		return time.Hour
 	}
-	return d
+	return max(d, minBlockDigestInterval)
 }
 
 // UpdatesPackageName returns the apt/dnf package name to query.
@@ -1779,8 +1785,8 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 		if bd.SendOn == "" {
 			bd.SendOn = "any"
 		}
-		// A literal min_block: 0 means "send empty heartbeat digests" and must
-		// survive; only an absent key falls back to 1.
+		// A literal min_block: 0 means "always show the summary section" and
+		// must survive; only an absent key falls back to 1.
 		if bd.MinBlock == 0 && !presence.blockDigestMinBlock {
 			bd.MinBlock = 1
 		}

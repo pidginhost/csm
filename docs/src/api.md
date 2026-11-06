@@ -894,34 +894,50 @@ the existing persistence, retry and shutdown behavior; they do not make retained
 in-memory retry state durable across process exit.
 
 `block_digest.records` reports the actual buffer of watched-country block
-records, bounded to 5,000 with drop-oldest overflow. Age starts when a record
-enters the buffer, independently of the block timestamp. Normal batching and a
-full buffer alone do not report a stall: waiting becomes overdue one minute
-after the configured interval. Detached digest preparation remains in flight;
-one minute without progress reports `processing_lag`. The row uses
-`lag_basis: operation_progress`. Records arriving during preparation belong to
-the next window. Expected per-IP coalescing and delivery filtering are successful
-completion, while abandoned preparation counts its discarded records as losses.
+records, bounded to 5,000 with drop-oldest overflow. The buffer folds into the
+daily summary at each configured interval, before each summary send and at
+shutdown. Age starts when a record enters the buffer, independently of the
+block timestamp. Normal batching and a full buffer alone do not report a stall:
+waiting becomes overdue one minute after the configured interval. A detached
+fold remains in flight; one minute without progress reports `processing_lag`.
+The row uses `lag_basis: operation_progress`. Records arriving during a fold
+belong to the next one. Expected per-IP coalescing is successful completion,
+while an abandoned fold counts its discarded records as losses.
 
 `block_digest.email` and `block_digest.webhook` report configured destinations
 in notifications, with `capacity_unavailable`. Each eligible destination owns
-one notification before delivery starts, including live alerts and configured
-empty heartbeats. Default delivery follows current alert settings at admission,
-attempt and interrupted cleanup. Disabled destinations add no new waiting work
-or loss; destinations enabled during an earlier send are still handled. Explicit
-destination selection keeps its error when that alert channel is disabled.
+one notification before delivery starts, including live alerts and the daily
+summary, which is sent even when empty. Default delivery follows current alert
+settings at admission, attempt and interrupted cleanup. Disabled destinations
+add no new waiting work or loss; destinations enabled during an earlier send
+are still handled. Explicit destination selection applies only to live alerts
+and keeps its error when that alert channel is disabled. Daily summaries use
+all enabled alert channels except phpanel.
 One minute waiting or active reports lag. A returned sink error
-counts one lost notification and stays in flight through error logging. If an
+counts one lost notification and stays in flight through error logging. A
+daily summary sink, or the summary rendering, that panics fails the same way
+and is logged with the panic, so it cannot stop the daemon. If an
 operation exits without returning, its attempted delivery reports
 `delivery_uncertain` for one minute and retains `dropped_lower_bound`; a remaining
 destination that was never attempted counts one confirmed loss. Known losses
 use the common warning threshold and survive recovery in lifetime totals.
 
-These observations preserve the existing digest schedule, live deduplication,
-best-effort delivery and shutdown policy. Records retained after the ticker
-stops report `consumer_stopped` and can still be explicitly flushed; no retry or
-durability is added. Health reads metadata independently of collector state
-locks, country lookups and delivery callbacks. Disabled collectors have no rows.
+Live delivery remains best effort. Daily summaries save their window before
+delivery and retry failed destinations; successful destinations are saved
+separately. A failed destination retries after one minute, doubling up to one
+hour, and counts one lost notification for that summary however often it is
+retried. Between attempts that destination keeps one waiting notification, so
+its row reports `backlog_lag` while the outage lasts; switching that
+destination off releases it within a minute. When the next summary is due, a
+still unfinished one is dropped, logged once and counted once, and the new one
+goes to every destination. A crash between remote acceptance and saving success
+can repeat a delivery. Records retained after the collector stops report
+`consumer_stopped`. Health reads metadata independently of collector state
+locks, country lookups and delivery callbacks. The rows are always present:
+every daemon runs the collector for the daily summary, and without
+`alerts.block_digest.enabled` the records buffer stays empty. The summary and
+customer block payloads are described under
+[Summary and customer block webhooks](#summary-and-customer-block-webhooks).
 
 `state.pending` reports findings parked for the next startup, bounded to the
 newest 10,000 findings. The store observes existing parked work when opened.
@@ -1287,6 +1303,75 @@ readers and scanners, recovery scans, staged package verification, dropper
 processing, BPF queues, process context enrichment and deadline reads, mail-log
 delivery, forwarder and PHP relay notification queues, and PHP relay index
 persistence; other bounded queues remain in the roadmap.
+
+### Summary and customer block webhooks
+
+The generic alert webhook gets two events of CSM's own: the
+[daily summary](configuration.md#daily-summary) and the
+[known-customer block alert](auto-response.md#known-customer-block-alert).
+A phpanel webhook gets neither. Each is one JSON object: `text` holds the
+email body, for chat tools, and `csm` holds the data.
+
+```json
+{
+  "text": "[CSM] host.example.com - daily summary 2026-06-10\n...",
+  "csm": {
+    "event": "daily_summary",
+    "host": "host.example.com",
+    "version": "X.Y.Z",
+    "summary": {
+      "since": "2026-06-10T08:00:00Z",
+      "due": "2026-06-11T08:00:00Z",
+      "checks": {"wp_login_bruteforce": {"CRITICAL": 12}},
+      "blocks": 3,
+      "block_kinds": {"wp-bruteforce": 2, "netblock": 1},
+      "muted": 4,
+      "sources": [{"ip": "203.0.113.5", "count": 9, "country": "NL"}],
+      "watched": {"total": 0, "by_country": {}, "by_category": {}}
+    }
+  }
+}
+```
+
+`daily_summary` fields:
+
+- `csm.event` is `daily_summary`; `csm.host` and `csm.version` name the host and the CSM version.
+- `summary.since` is the start of the window and `summary.due` its scheduled send time, both RFC 3339.
+- `summary.checks` counts summary findings per check, then per severity (`CRITICAL`, `HIGH`, `WARNING`).
+- `summary.blocks` counts applied blocks; `summary.block_kinds` counts them by kind, such as `wp-bruteforce`, `mail-bruteforce`, `netblock`, `permanent` or `other`.
+- `summary.muted` counts summary findings of checks in `alerts.email.disabled_checks`.
+- `summary.sources` lists the 10 addresses with the most summary findings: `ip`, `count`, and `country` when GeoIP knows it.
+- `summary.watched` counts watched-country blocks: `total`, `by_country` and `by_category`. It stays empty without `alerts.block_digest.enabled`.
+- `summary.customer_blocks` lists the applied blocks that hit known customers, as customer block objects (below), at most 50; `summary.customer_blocks_more` counts further blocks. Both are left out when empty.
+- `summary.would_block` lists dry-run and observe-mode verdicts that would have blocked known customers, as customer block objects, at most 50; `summary.would_block_more` counts further verdicts. Both are left out when empty.
+
+Each count map holds at most 512 keys; later keys count under `other`.
+
+```json
+{
+  "text": "[CSM] host.example.com - automatic block hit a known customer: 203.0.113.5\n...",
+  "csm": {
+    "event": "customer_block",
+    "host": "host.example.com",
+    "version": "X.Y.Z",
+    "customer_blocks": [{
+      "target": "203.0.113.5",
+      "reason": "SMTP brute force from 203.0.113.5",
+      "check": "smtp_bruteforce",
+      "customers": [{"ip": "203.0.113.5", "kind": "cpanel", "account": "alice", "at": "2026-06-10T08:15:00Z"}]
+    }]
+  }
+}
+```
+
+`customer_block` fields:
+
+- `csm.event` is `customer_block`; `csm.host` and `csm.version` as above.
+- `csm.customer_blocks` lists the blocks of the alert. Each has `target`, the blocked address or network; `reason`, the block reason or, for a notice without one, its message; `check`, the check that caused the block, left out when unknown; `customers`; and `more`, the covered customers not listed, left out when 0.
+- Each `customers` entry is one known customer, the most recent first: `ip` (an IPv6 customer as its /64), `kind` (`cpanel`, `webmail`, `smtp`, `imap`, `pop` or `ftp`), `account` (left out when the login named none) and `at`, the last successful login in RFC 3339.
+
+The watched-country live alert, event `block_live`, keeps its own shape:
+there `csm.blocks` lists blocked addresses.
 
 ## GeoIP
 

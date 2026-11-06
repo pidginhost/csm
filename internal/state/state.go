@@ -59,6 +59,7 @@ type Store struct {
 	lastSave             time.Time        // start of the last save attempt
 	now                  func() time.Time // save clock; nil means time.Now
 	throttleReservations map[string]struct{}
+	emailPending         map[string]*Entry
 
 	pendingHealthOnce sync.Once
 	pendingQueue      *pendingQueue
@@ -86,6 +87,52 @@ type Entry struct {
 	AlertSent   time.Time `json:"alert_sent"`
 	IsBaseline  bool      `json:"is_baseline"`
 	DismissalID string    `json:"dismissal_id,omitempty"`
+	// Emailed is the fingerprint alert email or the generic webhook last
+	// delivered under this key. Hash follows every observation; Emailed
+	// changes only on delivery.
+	Emailed string `json:"emailed,omitempty"`
+	// KeptAt is when the latest-findings merge last kept the condition
+	// listed without a new report, as for a check that skipped its run.
+	// LastSeen stays the last report, which the findings page shows.
+	KeptAt time.Time `json:"kept_at,omitzero"`
+}
+
+// aliveAt is the last time the condition was reported or kept listed. An
+// entry older than 24h by this measure has cleared.
+func (e *Entry) aliveAt() time.Time {
+	if e.KeptAt.After(e.LastSeen) {
+		return e.KeptAt
+	}
+	return e.LastSeen
+}
+
+// lapsingAcknowledgments names the checks whose explicit identity is an event
+// condition, reported for as long as it lasts. An acknowledgment of one
+// covers later reports only until the condition clears. Scan findings keep
+// permanent acknowledgments: a producer that reports once a day or less would
+// otherwise lose the dismissal on every cycle.
+var lapsingAcknowledgments = map[string]bool{
+	"auto_block":                     true,
+	"email_av_degraded":              true,
+	"self_deleting_dropper_realtime": true,
+	"sensitive_file_modified":        true,
+	"smtp_probe_abuse":               true,
+}
+
+// permanent reports a baseline or dismissal that never lapses.
+func (e *Entry) permanent(key string) bool {
+	if !e.IsBaseline {
+		return false
+	}
+	identity, explicit := strings.CutPrefix(key, "dedup:")
+	check, _, _ := strings.Cut(identity, ":")
+	return !explicit || !lapsingAcknowledgments[check]
+}
+
+// cleared reports whether the condition behind an entry that can lapse has
+// gone unseen for 24h.
+func (e *Entry) cleared(key string, now time.Time) bool {
+	return !e.permanent(key) && now.Sub(e.aliveAt()) >= 24*time.Hour
 }
 
 func Open(path string) (*Store, error) {
@@ -104,6 +151,7 @@ func Open(path string) (*Store, error) {
 	if s.entries == nil {
 		s.entries = make(map[string]*Entry)
 	}
+	s.migrateEmailGate()
 
 	// Load latest findings from disk (survives restart)
 	latestFile := filepath.Join(path, "latest_findings.json")
@@ -193,6 +241,9 @@ func (s *Store) Close() error {
 }
 
 func (s *Store) save() error {
+	// Even a fresh or reset store can persist observations before its first
+	// successful delivery. They must never be mistaken for pre-gate state.
+	s.setRawLocked(emailGateMetaKey, "1")
 	// A failed write counts too: a full disk is retried once per
 	// saveInterval, not on every alert batch.
 	s.lastSave = s.clock()
@@ -239,13 +290,14 @@ func (s *Store) FilterNew(findings []alert.Finding) []alert.Finding {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	var newFindings []alert.Finding
+	now := s.clock()
 
 	for _, f := range findings {
 		key := findingKey(f)
 		hash := findingHash(f)
 
 		entry, exists := s.entries[key]
-		if !exists {
+		if !exists || entry.cleared(key, now) {
 			newFindings = append(newFindings, f)
 			continue
 		}
@@ -268,6 +320,102 @@ func (s *Store) FilterNew(findings []alert.Finding) []alert.Finding {
 	return newFindings
 }
 
+// emailGateMetaKey marks alert state whose entries record email delivery.
+const emailGateMetaKey = "__email_gate"
+
+// migrateEmailGate treats every condition alerted before the email gate
+// existed as delivered, muted and cap-held ones included. Without it an
+// upgrade would email every known condition at once. Every save writes the
+// marker, so state from a gated build never migrates, and a fresh store has
+// nothing to migrate.
+func (s *Store) migrateEmailGate() {
+	if len(s.entries) == 0 {
+		return
+	}
+	if _, ok := s.entries[emailGateMetaKey]; ok {
+		return
+	}
+	for key, entry := range s.entries {
+		if !entry.AlertSent.IsZero() && !entry.IsBaseline && !strings.HasPrefix(key, "_") {
+			entry.Emailed = entry.Hash
+		}
+	}
+	s.setRawLocked(emailGateMetaKey, "1")
+}
+
+// filterUnemailedLocked returns the findings alert email and the generic
+// webhook have not delivered with their current content. Unlike FilterNew it
+// has no daily reminder: a finding is offered again when its content changes,
+// when a covering scan cleared it, or when it was neither reported nor kept
+// listed for 24h. An entry that old is deleted here, so a return needs no
+// Update sweep first. Held findings refresh LastSeen, so an action or derived
+// finding that never reaches Update keeps its receipt while it is still
+// produced.
+func (s *Store) filterUnemailedLocked(findings []alert.Finding, now time.Time) []alert.Finding {
+	var out []alert.Finding
+	for _, f := range findings {
+		hash := findingHash(f)
+		key := findingKey(f)
+		entry, ok := s.entries[key]
+		if ok && entry.cleared(key, now) {
+			delete(s.entries, key)
+			s.dirty = true
+			ok = false
+		}
+		held := ok && (entry.Emailed == hash || (entry.IsBaseline && entry.Hash == hash))
+		if !held {
+			out = append(out, f)
+			continue
+		}
+		entry.LastSeen = now
+		s.dirty = true
+	}
+	return out
+}
+
+// MarkKept records that the latest-findings merge kept these keys listed. An
+// owner that skips or does not finish a run keeps its rows without reporting
+// them, and a listed condition must not count as cleared after 24h, neither
+// for the email gate nor for the Update sweep. An entry already 24h stale is
+// not revived: after downtime the next report emails once.
+func (s *Store) MarkKept(keys []string) {
+	if len(keys) == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := s.clock()
+	for _, key := range keys {
+		entry, ok := s.entries[key]
+		// Permanent baselines need no liveness, so retaining them writes nothing.
+		if !ok || entry.permanent(key) || entry.cleared(key, now) {
+			continue
+		}
+		entry.KeptAt = now
+		s.dirty = true
+	}
+}
+
+// ForgetCleared deletes the alert state of findings a covering scan no longer
+// reports, so a return is new again. Dismissals and internal keys stay.
+func (s *Store) ForgetCleared(findings []alert.Finding) {
+	if len(findings) == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, f := range findings {
+		key := findingKey(f)
+		if strings.HasPrefix(key, "_") {
+			continue
+		}
+		if entry, ok := s.entries[key]; ok && !entry.IsBaseline {
+			delete(s.entries, key)
+			s.dirty = true
+		}
+	}
+}
+
 func (s *Store) Update(findings []alert.Finding) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -281,6 +429,9 @@ func (s *Store) Update(findings []alert.Finding) {
 		seen[key] = true
 
 		entry, exists := s.entries[key]
+		if exists && entry.cleared(key, now) {
+			exists = false
+		}
 		if !exists {
 			s.entries[key] = &Entry{
 				Hash:      hash,
@@ -306,10 +457,8 @@ func (s *Store) Update(findings []alert.Finding) {
 		if strings.HasPrefix(key, "_") {
 			continue
 		}
-		if !seen[key] && !entry.IsBaseline {
-			if time.Since(entry.LastSeen) > 24*time.Hour {
-				delete(s.entries, key)
-			}
+		if !seen[key] && entry.cleared(key, now) {
+			delete(s.entries, key)
 		}
 	}
 }
@@ -685,6 +834,15 @@ func (s *Store) Entries() map[string]*Entry {
 	return copy
 }
 
+// Acknowledged reports whether a baseline or dismissal still covers f.
+func (s *Store) Acknowledged(f alert.Finding) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	key := findingKey(f)
+	e, ok := s.entries[key]
+	return ok && e.IsBaseline && e.Hash == findingHash(f) && !e.cleared(key, s.clock())
+}
+
 // EntryForKey returns the dedup entry for a finding key (check:message).
 func (s *Store) EntryForKey(key string) (Entry, bool) {
 	s.mu.RLock()
@@ -1029,17 +1187,43 @@ func (s *Store) PurgeAndMergeFindingsDerivedWithGaps(purgeChecks []string, findi
 
 // PurgeAndMergeFindingsDerivedWithCoverage applies file gaps and completed
 // scanner scopes against current state in the same transaction as correlation.
-func (s *Store) PurgeAndMergeFindingsDerivedWithCoverage(purgeChecks []string, findings []alert.Finding, coverage *ScanCoverage, derivedChecks []string, derive func([]alert.Finding) []alert.Finding) {
+// It returns the current rows a purged check or a completed scope removed:
+// rows that were preserved, automatically demoted or reported again in either
+// pass are not retired, and neither are rows the active-set cap dropped.
+// The keys of every other current row are returned as kept: those
+// conditions are still present.
+func (s *Store) PurgeAndMergeFindingsDerivedWithCoverage(purgeChecks []string, findings []alert.Finding, coverage *ScanCoverage, derivedChecks []string, derive func([]alert.Finding) []alert.Finding) (retired []alert.Finding, kept []string) {
 	s.latestMu.Lock()
 	defer s.latestMu.Unlock()
 
-	merged := purgeAndMergeLatestWithCoverage(s.latestFindings, purgeChecks, findings, coverage, true)
+	current := s.latestFindings
+	merged, retired := purgeAndMergeLatestWithCoverage(current, purgeChecks, findings, coverage, true)
 	if derive != nil {
-		merged = purgeAndMergeLatestWithCoverage(merged, derivedChecks, derive(append([]alert.Finding(nil), merged...)), coverage, false)
+		derived := derive(append([]alert.Finding(nil), merged...))
+		var derivedRetired []alert.Finding
+		merged, derivedRetired = purgeAndMergeLatestWithCoverage(merged, derivedChecks, derived, coverage, false)
+		rederived := findingsByKey(derived)
+		n := 0
+		for _, f := range retired {
+			if _, ok := rederived[f.Key()]; !ok {
+				retired[n] = f
+				n++
+			}
+		}
+		retired = append(retired[:n], derivedRetired...)
+	}
+	gone := findingsByKey(retired)
+	kept = make([]string, 0, len(current))
+	for _, f := range current {
+		key := f.Key()
+		if _, ok := gone[key]; !ok {
+			kept = append(kept, key)
+		}
 	}
 	s.latestFindings = merged
 	s.latestScanTime = time.Now()
 	s.persistLatestLocked()
+	return retired, kept
 }
 
 // earliestObservation resolves the first-seen time a re-reported finding
@@ -1065,10 +1249,13 @@ func earliestObservation(stored, reported alert.Finding) time.Time {
 // findings those runners produced), merges findings by key, and returns the
 // ordered, capped result.
 func purgeAndMergeLatest(current []alert.Finding, purgeChecks []string, findings []alert.Finding, preservePathsByCheck map[string]map[string]bool) []alert.Finding {
-	return purgeAndMergeLatestWithCoverage(current, purgeChecks, findings, &ScanCoverage{PreservePaths: preservePathsByCheck}, true)
+	merged, _ := purgeAndMergeLatestWithCoverage(current, purgeChecks, findings, &ScanCoverage{PreservePaths: preservePathsByCheck}, true)
+	return merged
 }
 
-func purgeAndMergeLatestWithCoverage(current []alert.Finding, purgeChecks []string, findings []alert.Finding, coverage *ScanCoverage, retireScopes bool) []alert.Finding {
+// purgeAndMergeLatestWithCoverage also returns the current rows it retired:
+// those neither kept nor reported again, measured before the cap.
+func purgeAndMergeLatestWithCoverage(current []alert.Finding, purgeChecks []string, findings []alert.Finding, coverage *ScanCoverage, retireScopes bool) ([]alert.Finding, []alert.Finding) {
 	if coverage == nil {
 		coverage = &ScanCoverage{}
 	}
@@ -1156,7 +1343,13 @@ func purgeAndMergeLatestWithCoverage(current []alert.Finding, purgeChecks []stri
 	for key := range scopeProtectedKeys {
 		protectedKeys[key] = struct{}{}
 	}
-	return orderAndCapLatestPreserving(existing, protectedKeys)
+	var retired []alert.Finding
+	for _, f := range current {
+		if _, ok := existing[f.Key()]; !ok {
+			retired = append(retired, f)
+		}
+	}
+	return orderAndCapLatestPreserving(existing, protectedKeys), retired
 }
 
 func normalizedPreservePathAliases(pathsByCheck map[string]map[string]bool) map[string]map[string]struct{} {

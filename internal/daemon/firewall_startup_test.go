@@ -27,7 +27,7 @@ func TestFirewallStartupStateAlertBypassesFullFindingQueue(t *testing.T) {
 	cfg.Alerts.Webhook.Enabled = true
 	cfg.Alerts.Webhook.URL = webhook.URL
 	cfg.Alerts.MaxPerHour = 1
-	cfg.Suppressions.SuppressBlockedAlerts = true
+	seen := recordSummaryHook(t)
 	st, err := state.Open(cfg.StatePath)
 	if err != nil {
 		t.Fatal(err)
@@ -47,6 +47,9 @@ func TestFirewallStartupStateAlertBypassesFullFindingQueue(t *testing.T) {
 	})
 	if calls := delivered.Load(); calls != 1 {
 		t.Fatalf("startup health alert reached the webhook %d times, want once despite the full queue", calls)
+	}
+	if len(seen.all()) != 0 {
+		t.Fatalf("startup health alert went to the summary: %v", seen.all())
 	}
 	history, total := st.ReadHistory(10, 0)
 	if total != 1 || len(history) != 1 || history[0].Check != "firewall_state_unreadable" || history[0].Severity != alert.Critical {

@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -105,6 +106,7 @@ type Daemon struct {
 	geoipMu        sync.Mutex // protects geoipDB for publishGeoIP
 	version        string
 	blockDigest    *blockdigest.Collector
+	knownCustomers *knownCustomers
 	alertCh        chan alert.Finding
 	alertQueue     *queuehealth.Tracker
 	queueSourcesMu sync.RWMutex
@@ -351,6 +353,10 @@ func New(cfg *config.Config, store *state.Store, lock *state.LockFile, binaryPat
 	d.mailSpray = newMailSpray(sprayConfigFromThresholds(cfg), time.Now)
 	d.smtpAuthTracker.SetSpray(d.mailSpray)
 	d.mailAuthTracker.SetSpray(d.mailSpray)
+	d.knownCustomers = newKnownCustomers(time.Now)
+	d.knownCustomers.isInfra = func(ip string) bool { return isInfraIPDaemon(ip, d.currentCfg().InfraIPs) }
+	d.smtpAuthTracker.SetKnownCustomers(d.knownCustomers)
+	d.mailAuthTracker.SetKnownCustomers(d.knownCustomers)
 
 	// Mail auth backend (cpdoveauthd) health: an active socket probe drives
 	// brute-force suppression for both trackers and optional self-heal restart.
@@ -806,6 +812,15 @@ func (d *Daemon) Run() error {
 		d.prepareAttackDatabase(adb)
 	}
 
+	// Restore the customer logins of the last run before any block can be
+	// checked against them.
+	d.loadKnownCustomers()
+
+	// Recovered admission notices can dispatch as soon as the owner starts.
+	// Publish the collector before any producer can read it or call its hook.
+	d.blockDigest = d.buildBlockDigest(d.currentCfg())
+	alert.SetSummaryHook(d.noteSummary)
+
 	// Own the admission ledger before anything can respond automatically.
 	d.startAdmission()
 
@@ -975,19 +990,18 @@ func (d *Daemon) Run() error {
 	// across old detection policy and new response policy.
 	initialCfg := d.currentCfg()
 
-	// Build the block-digest collector before the baseline auto-response so
-	// startup blocks are captured too. GeoIP is already initialised above.
-	d.blockDigest = d.buildBlockDigest(initialCfg)
-	if d.blockDigest != nil {
-		bdInterval := initialCfg.BlockDigestInterval()
-		d.wg.Add(1)
-		obs.Go("block-digest", func() {
-			defer d.wg.Done()
-			t := time.NewTicker(bdInterval)
-			defer t.Stop()
-			d.blockDigest.Run(d.stopCh, t.C)
-		})
-	}
+	// Start delivery once GeoIP is ready. Findings counted since the collector
+	// was published are merged with its saved window before catch-up delivery.
+	bdInterval := initialCfg.BlockDigestInterval()
+	d.wg.Add(1)
+	obs.Go("block-digest", func() {
+		defer d.wg.Done()
+		t := time.NewTicker(bdInterval)
+		defer t.Stop()
+		d.blockDigest.Run(d.stopCh, t.C)
+	})
+	d.wg.Add(1)
+	obs.Go("known-customers", d.runKnownCustomers)
 
 	// Run the initial scan synchronously while alert dispatch is held.
 	fmt.Fprintf(os.Stderr, "[%s] Running initial baseline scan...\n", ts())
@@ -1338,6 +1352,7 @@ func (d *Daemon) Run() error {
 	// Some producers can finish a tick after alertDispatcher observes stopCh.
 	// Drain again once tracked workers are gone and before state is closed.
 	d.flushPendingAlertsOnShutdown()
+	alert.SetSummaryHook(nil)
 	alert.ClosePhpanelQueues()
 	d.stopAbuseReporting()
 	d.closeFindingBus()
@@ -1546,6 +1561,12 @@ func (d *Daemon) drainAlertChannel(batch []alert.Finding) []alert.Finding {
 
 func (d *Daemon) flushPendingAlertsOnShutdown() {
 	d.persistPendingFindingsOnShutdown(d.drainAlertChannel(nil))
+	// Log readers and dispatch can note successes after the periodic saver
+	// observes stopCh. This final save runs once those producers have stopped.
+	d.persistKnownCustomers()
+	if d.blockDigest != nil {
+		d.blockDigest.Flush()
+	}
 }
 
 // persistPendingFindingsOnShutdown records findings still queued at shutdown to
@@ -1620,6 +1641,7 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 	cfg := d.currentCfg()
 
 	findings = alert.Deduplicate(findings)
+	d.noteFTPCustomers(findings)
 	suppressions := d.store.LoadSuppressions()
 	remediableFindings := filterUnsuppressedFindings(d.store, findings, suppressions)
 
@@ -1676,7 +1698,12 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 	}
 
 	if len(responseFindings) == 0 {
-		_ = alert.DispatchWithSources(cfg, nil, auditSources)
+		// A scan applies its own blocks and hands them over as findings,
+		// which the repeat filter may have judged seen.
+		d.observeBlocks(findings)
+		if err := alert.DispatchWithNotificationFilter(cfg, nil, auditSources, nil, d.deliveryCandidates(remediableFindings, nil, suppressions), operatorAlertableFindings, d.store); err != nil {
+			fmt.Fprintf(os.Stderr, "[%s] Alert dispatch error: %v\n", ts(), err)
+		}
 		d.store.Update(findings)
 		return
 	}
@@ -1684,7 +1711,9 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 	// Copy: with no rules the filter returns its input, and both slices grow.
 	newFindings := append([]alert.Finding(nil), filterUnsuppressedFindings(d.store, responseFindings, suppressions)...)
 	d.store.AppendHistory(newFindings)
-	d.observeBlocks(blockActions)
+	// Periodic scans run their own auto-response, so their blocks arrive in
+	// findings; nothing else hands this dispatcher a Critical auto_block.
+	d.observeBlocks(slices.Concat(findings, blockActions))
 
 	// Kill and quarantine only run on new, unsuppressed findings. The
 	// companion sweep is queued first so a file quarantined below is
@@ -1720,7 +1749,8 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 	// Apply notification policy after the phpanel stream and passive
 	// observers receive the findings, so muting email does not lose evidence.
 	auditSources = append(auditSources, responseFindings...)
-	if err := alert.DispatchWithNotificationFilter(cfg, newFindings, auditSources, responseFindings, operatorAlertableFindings); err != nil {
+	candidates := d.deliveryCandidates(remediableFindings, newFindings, suppressions)
+	if err := alert.DispatchWithNotificationFilter(cfg, newFindings, auditSources, responseFindings, candidates, operatorAlertableFindings, d.store); err != nil {
 		fmt.Fprintf(os.Stderr, "[%s] Alert dispatch error: %v\n", ts(), err)
 	}
 
@@ -1732,6 +1762,12 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 // dispatches the resulting alerts. It returns the alerted findings and the keys
 // of findings the permission auto-fix repaired.
 func (d *Daemon) respondToInitialScan(cfg *config.Config, initialFindings []alert.Finding) ([]alert.Finding, []string) {
+	// As in dispatchBatch: a record with no parseable time takes its receipt
+	// time, or the customer set would drop its login as expired.
+	alert.FillTimestamps(initialFindings, time.Now())
+	// The realtime watcher starts at the end of the log, so FTP logins made
+	// while the daemon was down reach the set only through this scan.
+	d.noteFTPCustomers(initialFindings)
 	d.store.AppendHistory(initialFindings)
 	unfilteredNew := d.store.FilterNew(initialFindings)
 	suppressions := d.store.LoadSuppressions()
@@ -1753,13 +1789,12 @@ func (d *Daemon) respondToInitialScan(cfg *config.Config, initialFindings []aler
 	// Other auto-response only on new findings. As in dispatchBatch,
 	// responseFindings keeps suppressed observations for incidents and
 	// central enforcement while newFindings carries what may notify.
-	var responseFindings []alert.Finding
+	var responseFindings, blockActions []alert.Finding
 	if len(unfilteredNew) > 0 {
 		killActions := checks.AutoKillProcesses(d.scanContext(), cfg, newFindings)
 		queueCompanionSweeps(newFindings)
 		quarantineActions := checks.AutoQuarantineFiles(cfg, newFindings)
-		blockActions := checks.AutoBlockIPs(cfg, initialFindings)
-		d.observeBlocks(blockActions)
+		blockActions = checks.AutoBlockIPs(cfg, initialFindings)
 		responseFindings = append(responseFindings, unfilteredNew...)
 		for _, actions := range [][]alert.Finding{killActions, quarantineActions, permActions, challengeActions, blockActions} {
 			responseFindings = append(responseFindings, actions...)
@@ -1776,10 +1811,45 @@ func (d *Daemon) respondToInitialScan(cfg *config.Config, initialFindings []aler
 			_, _, _ = co.OnFinding(f)
 		}
 	}
+	// The baseline scan applied its own blocks; they are in initialFindings.
+	d.observeBlocks(slices.Concat(initialFindings, blockActions))
 	newFindings = filterUnsuppressedFindings(d.store, newFindings, suppressions)
 	initialAuditSources := append(append([]alert.Finding(nil), initialFindings...), responseFindings...)
-	_ = alert.DispatchWithNotificationFilter(cfg, newFindings, initialAuditSources, responseFindings, operatorAlertableFindings)
+	candidates := d.deliveryCandidates(filterUnsuppressedFindings(d.store, initialFindings, suppressions), newFindings, suppressions)
+	_ = alert.DispatchWithNotificationFilter(cfg, newFindings, initialAuditSources, responseFindings, candidates, operatorAlertableFindings, d.store)
 	return newFindings, permFixedKeys
+}
+
+// Delivery follows current observations independently of the history reminder.
+// Rebuild derived candidates too, so a missed delivery can retry and a live
+// correlation does not expire while its source findings are still reported.
+func (d *Daemon) deliveryCandidates(observed, newFindings []alert.Finding, suppressions []state.SuppressionRule) []alert.Finding {
+	candidates := make([]alert.Finding, 0, len(observed)+len(newFindings))
+	for _, batch := range [][]alert.Finding{observed, newFindings} {
+		for _, f := range batch {
+			// Scan summaries precede source policy; history summaries may
+			// cover only a subset. Rebuild both from eligible observations.
+			if !checks.IsDerivedCorrelationCheck(f.Check) {
+				candidates = append(candidates, f)
+			}
+		}
+	}
+	candidates = alert.Deduplicate(candidates)
+	var correlationSources []alert.Finding
+	for _, f := range candidates {
+		if !d.store.Acknowledged(f) {
+			correlationSources = append(correlationSources, f)
+		}
+	}
+	derived := checks.CorrelateBatchFindings(correlationSources).Derived
+	candidates = append(candidates, derived...)
+	candidates = filterUnsuppressedFindings(d.store, candidates, suppressions)
+	if candidates == nil {
+		// The dispatcher reads nil candidates as "reuse the findings", and
+		// suppression rules can empty the set.
+		candidates = []alert.Finding{}
+	}
+	return candidates
 }
 
 // withoutFixedFindings drops findings whose Key is in fixedKeys.
@@ -2408,7 +2478,7 @@ func recordEximSMTPAuthSuccess(line string, cfg *config.Config, tracker *smtpAut
 	if isInfraIPDaemon(ip, cfg.InfraIPs) || isPrivateOrLoopback(ip) {
 		return nil
 	}
-	return tracker.RecordSuccess(ip, user)
+	return tracker.recordSuccessAt(ip, user, customerLoginTime(line, tracker.now()), serviceLog)
 }
 
 func (d *Daemon) emitAuthBackendFindings() bool {
@@ -2572,7 +2642,11 @@ func (d *Daemon) handleMailLine(line string, obs alert.Observation, cfg *config.
 		return findings
 	}
 	if success {
-		findings = append(findings, d.mailAuthTracker.RecordSuccess(ip, account)...)
+		kind := knownCustomerIMAP
+		if strings.HasPrefix(dovecotServiceMessage(line), "pop3-login:") {
+			kind = knownCustomerPOP
+		}
+		findings = append(findings, d.mailAuthTracker.recordSuccessAt(ip, account, customerLoginTime(line, d.mailAuthTracker.now()), kind)...)
 	} else {
 		findings = append(findings, recordDovecotFailure(d.mailAuthTracker, ip, account, line, obs)...)
 	}
@@ -2604,7 +2678,7 @@ func (d *Daemon) handleSMTPAuthPairing(line string, obs alert.Observation, cfg *
 		if isInfraIPDaemon(ip, cfg.InfraIPs) || isPrivateOrLoopback(ip) {
 			return nil, true
 		}
-		return t.RecordSuccess(ip, user), true
+		return t.recordSuccessAt(ip, user, customerLoginTime(line, t.now()), syslogFed), true
 	}
 	if strings.HasPrefix(msg, "warning: SASL: ") {
 		// A failed backend reconnect can leave smtpd's previous reply
@@ -3166,6 +3240,7 @@ func (d *Daemon) escalateExpiredChallenges(expiry time.Duration) {
 			FindingID:    e.FindingID,
 			Root:         e.Root,
 			Entry:        admission.EntryChallengeTimeout,
+			Check:        e.Check,
 		})
 		recorded = append(recorded, res.Findings...)
 		if err != nil {

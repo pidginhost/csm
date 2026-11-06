@@ -77,7 +77,7 @@ func TestSpoolWatcherEmitFindingDropsWhenFull(t *testing.T) {
 func TestSpoolWatcherEmitDegradedWarningFirstEmits(t *testing.T) {
 	ch := make(chan alert.Finding, 4)
 	sw := &SpoolWatcher{alertCh: ch}
-	sw.emitDegradedWarning("engines down")
+	sw.emitDegradedWarning("engines_down_unscanned", "engines down")
 
 	select {
 	case f := <-ch:
@@ -94,12 +94,12 @@ func TestSpoolWatcherEmitDegradedWarningRateLimited(t *testing.T) {
 	sw := &SpoolWatcher{alertCh: ch}
 
 	// First call: emits.
-	sw.emitDegradedWarning("first")
+	sw.emitDegradedWarning("engines_down_unscanned", "first")
 	// Drain
 	<-ch
 
 	// Second call within <1 minute: should be suppressed.
-	sw.emitDegradedWarning("second")
+	sw.emitDegradedWarning("engines_down_unscanned", "second")
 	select {
 	case f := <-ch:
 		t.Fatalf("rate-limited call should not have emitted: %+v", f)
@@ -114,7 +114,7 @@ func TestSpoolWatcherEmitDegradedWarningResetAfterMinute(t *testing.T) {
 
 	// Pretend last emission was long ago.
 	sw.lastDegradedAt = time.Now().Add(-2 * time.Minute)
-	sw.emitDegradedWarning("should emit")
+	sw.emitDegradedWarning("engines_down_unscanned", "should emit")
 
 	select {
 	case <-ch:

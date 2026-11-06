@@ -36,11 +36,20 @@ type digestDelivery struct {
 	ticket                      queuehealth.Ticket
 	offered, returned, finished bool
 	tracked                     bool
-	channel                     string
-	deliveryEnabled             func(string) bool
+	// repeat marks a retry of a destination whose loss is already counted.
+	repeat          bool
+	channel         string
+	deliveryEnabled func(string) bool
 }
 
 type digestDeliveryPlan struct{ email, webhook *digestDelivery }
+
+func (p *digestDeliveryPlan) job(channel string) *digestDelivery {
+	if channel == "email" {
+		return p.email
+	}
+	return p.webhook
+}
 
 func newDigestQueues(opts Options) *digestQueues {
 	q := &digestQueues{batches: make(map[*digestBatch]struct{}), losses: queuehealth.New(maxBuffered, time.Minute), maxLag: max(time.Minute, opts.Interval+time.Minute), sinks: make(map[string]*digestSinkQueue)}
@@ -104,21 +113,26 @@ func (q *digestQueues) setStopped(stopped bool) {
 	q.mu.Unlock()
 }
 
-func (q *digestSinkQueue) begin(channel string, enabled func(string) bool) *digestDelivery {
+// begin starts one destination's delivery. A held ticket is a notification
+// already waiting from an earlier failed attempt; it is reused, not queued
+// again.
+func (q *digestSinkQueue) begin(channel string, enabled func(string) bool, held queuehealth.Ticket) *digestDelivery {
 	if q == nil {
 		return nil
 	}
 	d := &digestDelivery{queue: q, channel: channel, deliveryEnabled: enabled}
-	if d.enabled() {
+	if held != (queuehealth.Ticket{}) {
+		d.ticket, d.tracked = held, true
+	} else if d.enabled() {
 		d.enqueue()
 	}
 	return d
 }
 
-func (c *Collector) beginDelivery() *digestDeliveryPlan {
+func (c *Collector) beginDelivery(enabled func(string) bool, held map[string]queuehealth.Ticket) *digestDeliveryPlan {
 	return &digestDeliveryPlan{
-		email:   c.queues.sinks["email"].begin("email", c.opts.DeliveryEnabled),
-		webhook: c.queues.sinks["webhook"].begin("webhook", c.opts.DeliveryEnabled),
+		email:   c.queues.sinks["email"].begin("email", enabled, held["email"]),
+		webhook: c.queues.sinks["webhook"].begin("webhook", enabled, held["webhook"]),
 	}
 }
 
@@ -146,7 +160,7 @@ func (d *digestDelivery) start() bool {
 
 func (d *digestDelivery) result(err error) {
 	d.returned = true
-	if err != nil {
+	if err != nil && !d.repeat {
 		d.queue.tracker.Lose(time.Now(), 1)
 	}
 }
@@ -161,7 +175,7 @@ func (d *digestDelivery) finish() {
 			d.queue.uncertain = true
 			d.queue.uncertainAt = time.Now()
 			d.queue.mu.Unlock()
-		} else if d.enabled() {
+		} else if d.enabled() && !d.repeat {
 			d.queue.tracker.Lose(time.Now(), 1)
 		}
 	}

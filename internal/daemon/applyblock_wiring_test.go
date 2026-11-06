@@ -232,7 +232,7 @@ func TestRecordAppliedBlocksDeduplicatesBeforeFanout(t *testing.T) {
 	}
 	d := New(cfg, stateStore, nil, "")
 	d.blockDigest = blockdigest.New(blockdigest.Options{
-		SendOn: "any", Interval: time.Hour, MinBlock: 1,
+		Watch: true, SendOn: "any", Interval: time.Hour, MinBlock: 1,
 		Now: func() time.Time { return time.Unix(0, 0) },
 	})
 	previousHook := alert.CentralHook
@@ -318,10 +318,19 @@ func captureAppliedBlockStderr(t *testing.T, fn func()) string {
 	return string(data)
 }
 
+// An applied block is summary class, so of the alert channels only the
+// phpanel stream still receives it. That queue is the delivery that fails
+// here: a directory holds its database path.
 func TestRecordAppliedBlocksPersistsBeforeDispatchFailure(t *testing.T) {
 	cfg := &config.Config{StatePath: t.TempDir()}
 	cfg.Alerts.Webhook.Enabled = true
-	cfg.Alerts.Webhook.URL = "://invalid"
+	cfg.Alerts.Webhook.Type = "phpanel"
+	cfg.Alerts.Webhook.URL = "https://panel.example.com/csm"
+	cfg.Alerts.Webhook.HMACSecret = "secret"
+	if err := os.Mkdir(filepath.Join(cfg.StatePath, "phpanel-webhook.db"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(alert.ClosePhpanelQueues)
 	db, err := store.Open(cfg.StatePath)
 	if err != nil {
 		t.Fatal(err)

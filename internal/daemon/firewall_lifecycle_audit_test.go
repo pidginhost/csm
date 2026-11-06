@@ -48,7 +48,7 @@ func lifecycleAuditDaemon(t *testing.T, outcome firewall.BlockOutcome, resultErr
 		t.Fatal(err)
 	}
 	d := New(cfg, history, nil, "")
-	d.blockDigest = blockdigest.New(blockdigest.Options{SendOn: "any", Interval: time.Hour, MinBlock: 1})
+	d.blockDigest = blockdigest.New(blockdigest.Options{Watch: true, SendOn: "any", Interval: time.Hour, MinBlock: 1})
 	dispatched := new(int)
 	previousHook := alert.CentralHook
 	alert.SetCentralHook(func(alert.Finding) { *dispatched++ })

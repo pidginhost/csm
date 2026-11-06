@@ -11,9 +11,10 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Security
 
+- FTP log text crafted to look like a successful login no longer counts as one.
 - The firewall now drops incoming IPv4 TCP packets that carry IP options, which blocks the CVE-2026-98432 attack on unpatched kernels.
 - Mail login tracking no longer attributes incomplete or ambiguous log identities to a mailbox.
-- A successful SMTP, IMAP or POP login no longer shields an address from slow brute-force blocking after it tried other mailboxes.
+- Successful mail logins no longer excuse earlier attacks against other mailboxes or downgrade their compromise alerts.
 - Mail subjects or greetings made to look like failed logins or rejected recipients no longer block a sending server, raise alerts or count as failed logins.
 - Repeated logins with a cracked mail password no longer restore trust or exempt later password guessing from blocking.
 
@@ -23,9 +24,11 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - Mail login sprayers stay blocked longer and are blocked again on return; customer unbans keep failure history, while operator releases and flushes clear it.
 - Support agents can read status, findings, incidents, accounts, firewall, threat, mail and WAF data over an optional read-only MCP endpoint (`mcp:` block, off by default). It uses its own tokens on the Web UI port and cannot change anything.
 - Findings now warn when spam source reports wait because the list of shared mail services cannot be refreshed.
+- CSM now alerts at once when an automatic block hits an address with a recent customer login, and one stale mail password no longer raises compromise alerts.
 
 ### Changed
 
+- Alert email and the alert webhook now send each finding once, and attacks CSM already handled arrive in one daily summary that also replaces the hourly block digest email.
 - Forged mail that fails the sender domain's DMARC reject policy now lands in the Spam folder more often.
 - Dry-run forecasts show new attacks rotating out older equal-priority blocks, and status and diagnostics show rotations, waits and scope shares.
 - When spam learning stops because its records disagree with its storage, the CSM log now says what disagreed.

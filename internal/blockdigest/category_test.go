@@ -33,6 +33,8 @@ func TestCategoryOf(t *testing.T) {
 		{"Known malicious IP accessing server: 1.2.3.4 (Abuseipdb score: 90/100)", "threat-intel"},
 		{"known command-and-control server", "threat-intel"},
 		{"Connection to known C2 IP: 1.2.3.4:443", "threat-intel"},
+		{"AUTO-NETBLOCK: 203.0.113.0/24 blocked (5 IPs from same subnet)", "netblock"},
+		{"AUTO-PERMBLOCK: 203.0.113.20 promoted to permanent block (4 temp blocks)", "permanent"},
 		{"something totally unrecognized", "other"},
 	}
 	for _, tc := range cases {
@@ -43,7 +45,7 @@ func TestCategoryOf(t *testing.T) {
 }
 
 func TestDrainByCategory(t *testing.T) {
-	c := New(Options{
+	c := New(Options{Watch: true,
 		Countries: nil, SendOn: "any", Interval: time.Hour, MinBlock: 1,
 		Now:       func() time.Time { return time.Unix(0, 0) },
 		CountryOf: func(string) string { return "RO" },

@@ -134,7 +134,7 @@ func TestDropperPluginCopyHistory(t *testing.T) {
 
 func TestDropperPluginCopyAlertNamesInstalledFile(t *testing.T) {
 	c := safeModeCandidate(time.Unix(1_770_000_000, 0))
-	sev, _, details, path := dropperAlertParams(dropperFinding{Items: []dropperGone{{Cand: c, Verdict: dropperDemotedPluginCopy}}})
+	sev, _, details, path, _ := dropperAlertParams(dropperFinding{Items: []dropperGone{{Cand: c, Verdict: dropperDemotedPluginCopy}}})
 	want := c.Docroot + "/wp-content/plugins/elementor/modules/safe-mode/mu-plugin/elementor-safe-mode.php"
 	if sev != alert.Warning || path != c.Path || !strings.Contains(details, want) {
 		t.Fatalf("got sev=%v path=%q details=%q, want Warning naming %s", sev, path, details, want)

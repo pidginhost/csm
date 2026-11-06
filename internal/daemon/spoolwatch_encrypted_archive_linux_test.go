@@ -90,7 +90,7 @@ func TestEncryptedArchiveWarningDoesNotSuppressDegraded(t *testing.T) {
 	sw := &SpoolWatcher{alertCh: ch}
 
 	sw.emitEncryptedArchiveWarning("msg-1", []emime.EncryptedArchiveEntry{{ArchiveName: "a.zip", Filename: "b.pdf"}}, 0)
-	sw.emitDegradedWarning("all AV engines unavailable")
+	sw.emitDegradedWarning("engines_down_unscanned", "all AV engines unavailable")
 
 	if len(ch) != 2 {
 		t.Fatalf("emitted %d findings, want 2: the two conditions share no rate limiter", len(ch))

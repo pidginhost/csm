@@ -61,7 +61,7 @@ func TestObserveFiltersByCountryAndDedups(t *testing.T) {
 		"8.8.8.8":  "US",
 		"9.9.9.9":  "",
 	}
-	c := New(Options{
+	c := New(Options{Watch: true,
 		Countries: []string{"RO"},
 		SendOn:    "any",
 		Interval:  time.Hour,
@@ -92,7 +92,7 @@ func TestObserveUsesDynamicCountries(t *testing.T) {
 		"5.13.0.1": "RO",
 		"8.8.8.8":  "US",
 	}
-	c := New(Options{
+	c := New(Options{Watch: true,
 		CountriesOf: func() []string { return countries },
 		SendOn:      "any",
 		Interval:    time.Hour,
@@ -124,7 +124,7 @@ func TestObserveUsesDynamicCountries(t *testing.T) {
 }
 
 func TestObserveAllCountriesWhenSetEmpty(t *testing.T) {
-	c := New(Options{
+	c := New(Options{Watch: true,
 		Countries: nil, // all
 		SendOn:    "any",
 		Interval:  time.Hour,
@@ -139,7 +139,7 @@ func TestObserveAllCountriesWhenSetEmpty(t *testing.T) {
 }
 
 func TestDrainResetsBuffer(t *testing.T) {
-	c := New(Options{Countries: nil, SendOn: "any", Interval: time.Hour, MinBlock: 1,
+	c := New(Options{Watch: true, Countries: nil, SendOn: "any", Interval: time.Hour, MinBlock: 1,
 		Now: func() time.Time { return time.Unix(0, 0) }, CountryOf: func(string) string { return "RO" }})
 	c.Observe("1.1.1.1", "x", time.Unix(0, 0))
 	c.Drain()
@@ -149,7 +149,7 @@ func TestDrainResetsBuffer(t *testing.T) {
 }
 
 func TestDrainDedupPrefersCustomerRiskRecord(t *testing.T) {
-	c := New(Options{Countries: nil, SendOn: "any", Interval: time.Hour, MinBlock: 1,
+	c := New(Options{Watch: true, Countries: nil, SendOn: "any", Interval: time.Hour, MinBlock: 1,
 		Now: func() time.Time { return time.Unix(0, 0) }, CountryOf: func(string) string { return "RO" }})
 	ts := time.Unix(0, 0)
 	c.Observe("203.0.113.9", "rule escalation: x", ts)
@@ -171,7 +171,7 @@ func TestDrainDedupPrefersCustomerRiskRecord(t *testing.T) {
 }
 
 func TestDrainCountriesCannotMutateCollectorOptions(t *testing.T) {
-	c := New(Options{Countries: []string{"RO"}, SendOn: "any", Interval: time.Hour, MinBlock: 1,
+	c := New(Options{Watch: true, Countries: []string{"RO"}, SendOn: "any", Interval: time.Hour, MinBlock: 1,
 		Now: func() time.Time { return time.Unix(0, 0) }, CountryOf: func(string) string { return "RO" }})
 	c.Observe("203.0.113.7", "rule escalation: x", time.Unix(0, 0))
 	d := c.Drain()
@@ -184,14 +184,14 @@ func TestDrainCountriesCannotMutateCollectorOptions(t *testing.T) {
 }
 
 func TestObserveWithoutCountryLookupDoesNotPanic(t *testing.T) {
-	c := New(Options{Countries: nil, SendOn: "any", Interval: time.Hour, MinBlock: 1})
+	c := New(Options{Watch: true, Countries: nil, SendOn: "any", Interval: time.Hour, MinBlock: 1})
 	c.Observe("203.0.113.7", "rule escalation: x", time.Unix(0, 0))
 	if d := c.Drain(); d.Total != 1 {
 		t.Fatalf("Total = %d, want 1", d.Total)
 	}
 }
 
-func TestDispatchReportsSinkErrors(t *testing.T) {
+func TestSendDueReportsSinkErrors(t *testing.T) {
 	emailErr := errors.New("email down")
 	webhookErr := errors.New("webhook down")
 	var got []string
@@ -208,23 +208,11 @@ func TestDispatchReportsSinkErrors(t *testing.T) {
 			got = append(got, channel+":"+err.Error())
 		},
 	})
+	c.NoteHandled([]Handled{{Check: "challenge_route", Severity: "WARNING", IP: "203.0.113.7"}})
 
-	c.dispatch("block_digest", Digest{
-		Total: 1,
-		ByCountry: map[string]int{
-			"RO": 1,
-		},
-		ByReason: map[string]int{
-			"rule escalation": 1,
-		},
-		Records: []Record{{
-			IP:      "203.0.113.7",
-			Country: "RO",
-			Reason:  "rule escalation: x",
-			Bucket:  BucketAttacker,
-			TS:      time.Unix(0, 0),
-		}},
-	}, nil)
+	if !c.SendDue(summaryDueOf(c)) {
+		t.Fatal("due summary not sent")
+	}
 
 	if !eq(got, []string{"email:email down", "webhook:webhook down"}) {
 		t.Fatalf("OnError calls = %v", got)

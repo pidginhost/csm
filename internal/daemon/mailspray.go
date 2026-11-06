@@ -341,8 +341,10 @@ func (m *mailSpray) breadth(key, mailbox string, stored bool, untrusted []string
 
 // Success records a successful login on a normalised mailbox. clean is true
 // when the login earned or refreshed trust. A login that follows failures on
-// other untrusted mailboxes earns nothing and may be a compromise. A login
-// never adds to the evidence pool.
+// other untrusted mailboxes earns nothing and may be a compromise, unless
+// they all name one mailbox not known to be missing (one stale device) and
+// the login's own mailbox did not fail. A login never adds to the evidence
+// pool.
 func (m *mailSpray) Success(ip, mailbox string) (clean bool, v *sprayVerdict) {
 	ip = sprayAddr(ip)
 	m.mu.Lock()
@@ -382,7 +384,12 @@ func (m *mailSpray) Success(ip, mailbox string) (clean bool, v *sprayVerdict) {
 		untrusted = m.untrusted(e, key, now)
 	}
 	others := slices.DeleteFunc(slices.Clone(untrusted), func(n string) bool { return n == mailbox })
-	if len(others) == 0 && (e == nil || !e.hasUntracked(now, m.cfg.Window)) {
+	// One office device with a stale saved password can fail all day on one
+	// other mailbox; that alone taints no login to a mailbox that did not
+	// fail. A missing name, a failure that names no mailbox, a second
+	// mailbox, or failures on the login's own mailbox still do.
+	stale := len(untrusted) == 1 && len(others) == 1 && others[0] != "" && e.failed[others[0]].exist != mailboxMissing
+	if (len(others) == 0 || stale) && (e == nil || !e.hasUntracked(now, m.cfg.Window)) {
 		if e != nil {
 			if at, ok := e.revoked[mailbox]; ok && now.Sub(at) <= m.cfg.Window {
 				return false, nil
@@ -394,7 +401,7 @@ func (m *mailSpray) Success(ip, mailbox string) (clean bool, v *sprayVerdict) {
 		if m.cfg.Mode == sprayOff || hadTrust || e == nil || !e.staleFailures(mailbox, now, m.cfg.Window) {
 			return true, nil
 		}
-		return true, m.verdict(e, ip, sprayRuleSingleMailboxSuccess, false, mailbox, untrusted, now)
+		return true, m.verdict(e, ip, sprayRuleSingleMailboxSuccess, false, mailbox, []string{mailbox}, now)
 	}
 
 	src := e.sources[ip]
@@ -570,6 +577,15 @@ func (m *mailSpray) TrustedAll(ip string, mailboxes []string) bool {
 		}
 	}
 	return true
+}
+
+// FirstUntrustedFailure returns the start of the address's active untrusted
+// failures. Trust earned beside one stale mailbox vouches for its own login,
+// but cannot establish the source as legitimate for an attack already underway.
+func (m *mailSpray) FirstUntrustedFailure(ip string) time.Time {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.firstUntrustedFailure(sprayEvidenceKey(sprayAddr(ip)), m.now())
 }
 
 // Purge drops failures, trust and corroboration older than the window, and
@@ -1574,14 +1590,30 @@ func (m *mailSpray) excused(key, mailbox string, now time.Time) bool {
 	return false
 }
 
+func (m *mailSpray) firstUntrustedFailure(key string, now time.Time) time.Time {
+	var first time.Time
+	if e := m.ips[key]; e != nil {
+		for name, f := range e.failed {
+			if now.Sub(f.last) <= m.cfg.Window && !m.excused(key, name, now) && (first.IsZero() || f.first.Before(first)) {
+				first = f.first
+			}
+		}
+	}
+	return first
+}
+
 // keyTrustCount counts, up to limit, the mailboxes other than except that
-// addresses of evidence key hold aged trust on. The scan is bounded by the
-// trust pool and stops at limit.
+// addresses of evidence key hold aged trust on from before its active
+// untrusted failures. The scan is bounded by the trust pool and stops at limit.
 func (m *mailSpray) keyTrustCount(key, except string, limit int, now time.Time) int {
+	first := m.firstUntrustedFailure(key, now)
 	seen := make(map[string]struct{}, limit)
 	for ip := range m.trustByKey[key] {
 		for mb := range m.trustByIP[ip] {
 			if mb == except || !m.agedTrust(ip, mb, now) {
+				continue
+			}
+			if !first.IsZero() && !m.trust[sprayTrustKey{ip, mb}].first.Before(first) {
 				continue
 			}
 			seen[mb] = struct{}{}

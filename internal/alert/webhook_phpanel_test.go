@@ -185,8 +185,12 @@ func TestDispatchPhpanelWebhookBypassesOperatorRateLimit(t *testing.T) {
 	}
 }
 
-func TestDispatchPhpanelWebhookBypassesBlockedAlertSuppression(t *testing.T) {
+// The phpanel stream is a data plane: summary-class findings, which leave
+// operator email, still reach it.
+func TestDispatchPhpanelWebhookCarriesSummaryClassFindings(t *testing.T) {
 	t.Cleanup(closePhpanelQueuesForTest)
+	withSummaryNoticePolicy(t, summaryNoticeForTest)
+	summary := installSummaryHook(t)
 	var requests int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		atomic.AddInt32(&requests, 1)
@@ -200,21 +204,33 @@ func TestDispatchPhpanelWebhookBypassesBlockedAlertSuppression(t *testing.T) {
 	cfg.Alerts.Webhook.Type = "phpanel"
 	cfg.Alerts.Webhook.URL = srv.URL
 	cfg.Alerts.Webhook.HMACSecret = "secret"
-	cfg.Suppressions.SuppressBlockedAlerts = true
 	cfg.AutoResponse.Enabled = true
 	cfg.AutoResponse.BlockIPs = true
 
-	finding := Finding{
-		Check:     "ip_reputation",
-		Message:   "Known malicious IP detected: 203.0.113.10",
-		Severity:  Warning,
-		SourceIP:  "203.0.113.10",
-		Timestamp: time.Now(),
+	batch := []Finding{
+		{
+			Check:     "ip_reputation",
+			Message:   "Known malicious IP detected: 203.0.113.10",
+			Severity:  Warning,
+			SourceIP:  "203.0.113.10",
+			Timestamp: time.Now(),
+		},
+		{
+			Check:     "auto_block",
+			Message:   "AUTO-BLOCK: 203.0.113.10 blocked (expires in 24h0m0s)",
+			Severity:  Critical,
+			SourceIP:  "203.0.113.10",
+			Timestamp: time.Now(),
+		},
 	}
-	if err := Dispatch(cfg, []Finding{finding}); err != nil {
+	assertSplit(t, cfg, batch, nil, batch)
+	if err := Dispatch(cfg, batch); err != nil {
 		t.Fatal(err)
 	}
-	waitForWebhookRequests(t, &requests, 1)
+	if calls := summary.snapshot(); len(calls) != 1 || !slices.Equal(findingKeys(calls[0]), findingKeys(batch)) {
+		t.Fatalf("summary calls = %v, want both handled findings", calls)
+	}
+	waitForWebhookRequests(t, &requests, 2)
 }
 
 func TestDispatchPhpanelWebhookErrorRemainsQueuedForRetry(t *testing.T) {

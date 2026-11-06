@@ -680,10 +680,10 @@ func (sw *SpoolWatcher) handleSpoolEvent(evt spoolEvent) {
 		partialResult := &emailav.ScanResult{PartialExtraction: true}
 		if shouldTempfailEmailDelivery(tempfail, partialResult, nil) {
 			response = FAN_DENY
-			sw.emitDegradedWarning(fmt.Sprintf("Incomplete email attachment extraction for message %s (%q) - delivery deferred (tempfail mode)", msgID, partialExtractionReason(extraction)))
+			sw.emitDegradedWarning("partial_extraction_deferred", fmt.Sprintf("Incomplete email attachment extraction for message %s (%q) - delivery deferred (tempfail mode)", msgID, partialExtractionReason(extraction)))
 			return
 		}
-		sw.emitDegradedWarning(fmt.Sprintf("Incomplete email attachment extraction for message %s (%q) - delivery allowed (fail-open mode)", msgID, partialExtractionReason(extraction)))
+		sw.emitDegradedWarning("partial_extraction_allowed", fmt.Sprintf("Incomplete email attachment extraction for message %s (%q) - delivery allowed (fail-open mode)", msgID, partialExtractionReason(extraction)))
 	}
 
 	if len(extraction.Parts) == 0 {
@@ -697,16 +697,16 @@ func (sw *SpoolWatcher) handleSpoolEvent(evt spoolEvent) {
 	if result.AllEnginesDown {
 		if shouldTempfailEmailDelivery(tempfail, result, nil) {
 			response = FAN_DENY // tempfail: defer delivery until engines recover
-			sw.emitDegradedWarning(fmt.Sprintf("All AV engines unavailable - message %s deferred (tempfail mode)", msgID))
+			sw.emitDegradedWarning("engines_down_deferred", fmt.Sprintf("All AV engines unavailable - message %s deferred (tempfail mode)", msgID))
 			return
 		}
-		sw.emitDegradedWarning(fmt.Sprintf("All AV engines unavailable - message %s delivered unscanned", msgID))
+		sw.emitDegradedWarning("engines_down_unscanned", fmt.Sprintf("All AV engines unavailable - message %s delivered unscanned", msgID))
 	}
 	if len(result.TimedOutEngines) > 0 {
 		sw.emitFinding("email_av_timeout", alert.Warning,
 			fmt.Sprintf("Scan timeout for message %s on engine(s): %s", msgID, strings.Join(result.TimedOutEngines, ", ")))
 		if shouldTempfailEmailDelivery(tempfail, result, nil) {
-			sw.emitDegradedWarning(fmt.Sprintf("Incomplete AV scan - message %s deferred after engine timeout", msgID))
+			sw.emitDegradedWarning("scan_timeout_deferred", fmt.Sprintf("Incomplete AV scan - message %s deferred after engine timeout", msgID))
 			response = FAN_DENY
 			return
 		}
@@ -715,7 +715,7 @@ func (sw *SpoolWatcher) handleSpoolEvent(evt spoolEvent) {
 		sw.emitFinding("email_av_scan_error", alert.Warning,
 			fmt.Sprintf("Scan error for message %s on engine(s): %s", msgID, strings.Join(result.ErroredEngines, ", ")))
 		if shouldTempfailEmailDelivery(tempfail, result, nil) {
-			sw.emitDegradedWarning(fmt.Sprintf("Incomplete AV scan - message %s deferred after engine error", msgID))
+			sw.emitDegradedWarning("scan_error_deferred", fmt.Sprintf("Incomplete AV scan - message %s deferred after engine error", msgID))
 			response = FAN_DENY
 			return
 		}
@@ -739,7 +739,7 @@ func (sw *SpoolWatcher) handleSpoolEvent(evt spoolEvent) {
 			sw.emitFinding("email_av_quarantine_error", alert.Warning,
 				fmt.Sprintf("Quarantine failed for infected message %s: %v", msgID, err))
 			if shouldTempfailEmailDelivery(tempfail, result, err) {
-				sw.emitDegradedWarning(fmt.Sprintf("Quarantine failed for infected message %s - delivery deferred (tempfail mode)", msgID))
+				sw.emitDegradedWarning("quarantine_failed_deferred", fmt.Sprintf("Quarantine failed for infected message %s - delivery deferred (tempfail mode)", msgID))
 				response = FAN_DENY
 			}
 		} else {
@@ -850,7 +850,9 @@ func (sw *SpoolWatcher) emitEncryptedArchiveWarning(msgID string, entries []emim
 
 // emitDegradedWarning emits an email_av_degraded finding, rate-limited to
 // once per minute to avoid flooding the alert channel when clamd is down.
-func (sw *SpoolWatcher) emitDegradedWarning(message string) {
+// kind names the condition and its outcome; the message names the message
+// that hit it, which differs on every report of the same condition.
+func (sw *SpoolWatcher) emitDegradedWarning(kind, message string) {
 	sw.degradedMu.Lock()
 	if time.Since(sw.lastDegradedAt) < time.Minute {
 		sw.degradedMu.Unlock()
@@ -858,7 +860,13 @@ func (sw *SpoolWatcher) emitDegradedWarning(message string) {
 	}
 	sw.lastDegradedAt = time.Now()
 	sw.degradedMu.Unlock()
-	sw.emitFinding("email_av_degraded", alert.Warning, message)
+	alert.TryEnqueue(sw.alertCh, alert.Finding{
+		Severity:  alert.Warning,
+		Check:     "email_av_degraded",
+		Message:   message,
+		DedupKey:  kind,
+		Timestamp: time.Now(),
+	})
 }
 
 func (sw *SpoolWatcher) drainAndClose() {

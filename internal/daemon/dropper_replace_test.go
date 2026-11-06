@@ -163,7 +163,7 @@ func TestDropperAlertParamsExplainsNewDemotions(t *testing.T) {
 			Docroot: "/home/alice/public_html",
 			Items:   []dropperGone{{Cand: freshDropperCandidate(now), Verdict: tc.verdict}},
 		}
-		sev, _, details, _ := dropperAlertParams(f)
+		sev, _, details, _, _ := dropperAlertParams(f)
 		if sev != alert.Warning {
 			t.Errorf("severity for %v = %v, want Warning", tc.verdict, sev)
 		}

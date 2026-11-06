@@ -225,11 +225,19 @@ func pruneExplanations[K comparable](entries map[K]observedExplanation, now time
 	}
 }
 
-// cpanelSessionLogHandler feeds session_log to the password hijack detector
-// and the stale-session correlation before the regular session handling.
+// cpanelSessionLogHandler feeds session_log to the password hijack detector,
+// the stale-session correlation and the known-customer set before the
+// regular session handling.
 func (d *Daemon) cpanelSessionLogHandler(line string, cfg *config.Config) []alert.Finding {
 	ParseSessionLineForHijack(line, d.hijackDetector)
 	d.staleSession401.observeSessionLine(line, time.Now())
+	if app, ip, account, ok := parseSessionNew(line); ok {
+		kind := knownCustomerCpanel
+		if app == "webmaild" {
+			kind = knownCustomerWebmail
+		}
+		d.knownCustomers.Note(ip, kind, account, customerLoginTime(line, time.Now()), serviceLog)
+	}
 	return parseSessionLogLine(line, cfg)
 }
 

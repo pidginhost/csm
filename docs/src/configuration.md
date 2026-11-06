@@ -116,13 +116,13 @@ alerts:
     url: ""                             # healthchecks.io, cronitor, dead man's switch
   max_per_hour: 10                      # alert emails/hour; CRITICAL always bypasses and is not counted. Code default 30; the shipped csm.yaml template sets 10
   block_digest:
-    enabled: false                      # send per-country rollups for auto-blocked IPs
+    enabled: false                      # add per-country counts of auto-blocked IPs to the daily summary
     countries: []                       # empty = trusted countries, then all countries
-    interval: "1h"                      # digest cadence
+    interval: "1h"                      # how often counts fold into the summary; live alert dedup window; below 1m runs as 1m and warns
     live: false                         # also send one alert per qualifying block
-    send_on: "any"                      # any | customer
-    channel: ""                         # empty = enabled alert channels; requires email or webhook enabled
-    min_block: 1                        # 0 sends empty heartbeat digests
+    send_on: "any"                      # live alerts: any | customer
+    channel: ""                         # live alerts only: email | webhook; empty = enabled alert channels
+    min_block: 1                        # watched blocks needed to show the summary section; 0 always shows it
   audit_log:                            # SIEM-friendly per-finding stream
     file:
       enabled: false
@@ -340,7 +340,6 @@ suppressions:
   ignore_paths: []                      # glob patterns to skip in file scans; keep empty, an exempt directory is where an attacker hides
   suppress_webmail_alerts: true         # don't alert on webmail logins
   suppress_cpanel_login_alerts: false   # don't alert on cPanel direct logins
-  suppress_blocked_alerts: true         # don't alert on attacks from IPs already blocked or challenged
   trusted_countries: ["RO"]             # requires a loaded GeoLite2-City database; download credentials alone do not supply country data
 
 # --- Auto-Response ---
@@ -998,17 +997,119 @@ sentry:
   debug: false                          # SDK debug logs to stderr
 ```
 
-## Blocked-source alert suppression
+## Alert classes
 
-`suppressions.suppress_blocked_alerts` mutes single-source attack notifications
-when that address is already blocked or was blocked in the same batch. An active
-challenge also mutes checks eligible for challenge routing; it does not cover
-FTP or mail authentication failures, or checks configured to require a hard block.
-The same policy applies to daemon alerts and `csm scan --alert`.
+Every finding CSM reports is immediate or summary class. Summary class covers
+what CSM already handled on its own:
 
-Compromise evidence, successful logins, suspicious mail content and findings
-that summarize multiple sources remain visible. Blocking one address does not
-resolve those findings. This setting does not remove findings from the audit log.
+- an attack from an address CSM blocked, before or in the same batch, including by a subnet block or netblock;
+- an attack a challenge answers, while the address is on the challenge list or was routed there in the same batch. A challenge does not answer FTP or mail authentication failures, critical reputation sightings, or checks configured to require a hard block;
+- applied block and challenge notices, including permanent, subnet and netblock blocks, dry-run block verdicts, and the periodic count of applied automatic responses;
+- mail login advisories that never block, such as spray observe mode;
+- finished automatic actions that need no follow-up: database spam cleanup, and PHP relay freeze dry runs and rate-limit deferrals.
+
+Summary-class findings are left out of alert email and the generic alert
+webhook and are counted for the daily summary instead. They never spend the
+hourly alert budget. The findings page, history, incidents, the audit log, the
+event stream and the phpanel webhook still receive them. Only findings that
+would otherwise notify are counted: a suppression rule, or a check that never
+notifies, keeps its findings out of the summary too. Such a finding can still
+show that CSM blocked or challenged an address. If the summary fails to take
+its findings, the alert run reports an error and immediate alerts still go out.
+
+Everything else is immediate. That includes attacks whose source CSM did not
+block: auto-response off or in dry run, a block that failed, was refused or is
+still queued, and checks that never block. Compromise evidence, successful
+logins, unauthenticated WHM script requests, suspicious mail content and
+findings that summarize several sources stay immediate even when the address
+is blocked, because blocking one address does not resolve them. A block of an
+address inside a Cloudflare allow range leaves ports 80 and 443 open, so its
+notice and the web attacks from that address stay immediate. Failed, paused or
+skipped automatic actions and auto-block queue and accounting notices are
+immediate too.
+
+The generic webhook follows the same classes as email. `alerts.email.disabled_checks`
+mutes email only: a muted immediate finding still goes to the webhook, and a
+muted summary finding is still counted in the summary.
+
+There is no setting for this policy, and the same classes decide what
+`csm scan --alert` sends. The former `suppressions.suppress_blocked_alerts` key
+is ignored; a config that still sets it loads, and `csm validate` warns so the
+key can be deleted.
+
+## Daily summary
+
+CSM sends one summary of the findings it handled each day at 08:00 server
+local time. It goes by alert email when email alerts are on, and to the
+generic alert webhook when that is on, as event `daily_summary` with the
+counts under `csm.summary` (see the
+[API reference](api.md#summary-and-customer-block-webhooks)). A phpanel
+webhook does not receive it.
+`alerts.block_digest.channel` selects live block alerts only; the daily
+summary uses every enabled alert channel. It goes out even with nothing to
+report.
+
+It covers the window since the previous summary:
+
+- summary-class findings by check and severity, and how many of them come from checks muted by `alerts.email.disabled_checks`;
+- blocks applied, by kind, including netblocks and promotions to a permanent block;
+- challenges, and mail login advisories that never block, such as spray observe mode;
+- the 10 addresses with the most summary findings, with their country when GeoIP knows it;
+- automatic blocks that hit a known customer, as their immediate alert named them, so a failed alert still reaches you: up to 50 a day, then a count of further blocks;
+- dry-run block verdicts and spray observe-mode verdicts that would have blocked a known customer, listed alongside their finding counts: up to 50 blocked addresses or networks a day, each listed once, then a count of further verdicts;
+- with `alerts.block_digest.enabled`, watched-country blocks by country and category, once they reach `min_block`.
+
+CSM tracks up to 1,000 source addresses a day. Past that, a new address takes
+the place of the one with the fewest findings, so heavy sources stay listed
+and a count can be overstated, never understated.
+
+Counts are saved at each `block_digest.interval` (one hour by default), after
+the final shutdown drain and before delivery. A crash can lose counts since
+the last save. If the host was down at 08:00, the missed summary goes out at
+the next start. A failed destination is retried after one minute, then with
+the wait doubling up to one hour; a restart retries it at once. CSM logs its
+first failure and again when the wait reaches an hour, and destinations
+already saved as successful are not retried. While a delivery is pending, new
+findings accumulate in the next window. When the next summary is due and a
+destination still has not taken the previous one, CSM drops the previous one
+for that destination, logs it once and counts it as one lost notification,
+then sends the new summary to every destination. A summary whose state cannot
+be saved is still sent; the save warning backs off the same way as a failing
+destination.
+
+A crash after a destination accepts a summary but before CSM saves that
+success can repeat it. Clock corrections are checked every minute. Moving
+back across one or more morning sends does not resend dates already covered,
+including after a restart. Sending resumes on the first unsent local date. A
+send recorded more than two days ahead of the clock comes from a clock fault:
+CSM logs it once, ignores it and sends the next morning.
+
+Only the daemon counts findings. A one-off `csm scan --alert` prints every
+finding; its summary-class findings are neither emailed nor counted in the
+daily summary. The hourly block digest email no longer exists.
+
+Customer login history records the source addresses of authenticated
+cPanel, webmail, SMTP, IMAP, POP and FTP logins for 30 days. Buffered logs
+keep their original login time, so reading old logs does not renew expired
+history. FTP logins retain their authenticated account even when the displayed
+log record is shortened. FTP command text and failed login names do not count
+as successful logins. An applied automatic block of a known customer is
+alerted at once;
+see [the known-customer block alert](auto-response.md#known-customer-block-alert).
+
+An IPv6 customer is recorded by its /64, so a host that changes privacy
+addresses stays known. Each account holds a bounded number of addresses per
+log source; logins without an account name share one budget, and an FTP
+login counts against the hosting account that owns the FTP account.
+
+History has two fixed halves: logins read from syslog (FTP, IMAP, POP and
+Postfix SMTP) and logins read from cPanel's session log and the Exim mainlog.
+Any local user can write to syslog, so each half trims only itself, and a
+syslog login never replaces a session log or Exim login for the same
+address. When a half is full, the accounts holding the most addresses lose
+their oldest logins first, so a flood of logins evicts only its own accounts.
+History is saved every minute and after log readers stop during a clean
+shutdown.
 
 ## Web UI Exposure
 
@@ -1142,18 +1243,20 @@ mail auth backend probe at startup, so a reload that changes it emits
 
 `alerts.block_digest` is restart-required under the otherwise safe
 `alerts` section. The collector and ticker are built at startup, so a
-reload that changes the digest settings emits
+reload that changes these settings emits
 `config_reload_restart_required` and leaves the live config unchanged.
 When `countries` is empty, the fallback to `suppressions.trusted_countries`
 still follows safe reloads. Delivery uses the current email and webhook
-settings. Digest output includes by-country, by-category, and by-reason
-counts; WAF categories group ModSecurity escalations and high-volume WAF
-attacker blocks together.
+settings. The daily summary section gives by-country and by-category
+counts, and live alerts add by-reason counts; WAF categories group
+ModSecurity escalations and high-volume WAF attacker blocks together.
 
-If you disable the digest in Settings, restart before disabling its last
-delivery channel. Until then the digest remains active, and Settings rejects
-channel changes that would leave it unable to send. With the digest disabled
-in the running configuration, email and webhook may both be off.
+If you turn off `alerts.block_digest.enabled` in Settings, restart before
+turning off the last alert channel. Until the restart the watched-country
+section and live alerts stay on, and Settings rejects a channel change that
+would leave them with no channel. Once the running configuration has the
+watch off, email and webhook may both be off, and then no daily summary is
+sent.
 
 The rest of the sub-keys in every safe-tagged section are read per-call
 (inside check functions, auto-response helpers, alert dispatchers) and
