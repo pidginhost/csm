@@ -380,8 +380,9 @@ func (k *knownCustomers) Lookup(ip string) (blockdigest.CustomerHit, bool) {
 }
 
 // Within counts the known customers that p covers or overlaps and returns up
-// to limit of them, the most recent first.
-func (k *knownCustomers) Within(p netip.Prefix, limit int) (n int, sample []blockdigest.CustomerHit) {
+// to limit of them, the most recent first. An omitted customer counts toward
+// neither the total nor the sample. omit must not take locks or perform I/O.
+func (k *knownCustomers) Within(p netip.Prefix, limit int, omit func(blockdigest.CustomerHit) bool) (n int, sample []blockdigest.CustomerHit) {
 	if k == nil || !p.IsValid() {
 		return 0, nil
 	}
@@ -393,6 +394,9 @@ func (k *knownCustomers) Within(p netip.Prefix, limit int) (n int, sample []bloc
 	// network if subnet blocks ever become frequent.
 	for addr, c := range k.entries {
 		if !p.Overlaps(entryPrefix(addr)) || knownCustomerExpired(c.At, now) {
+			continue
+		}
+		if omit != nil && omit(customerHit(addr, c)) {
 			continue
 		}
 		n++

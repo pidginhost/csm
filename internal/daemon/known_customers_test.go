@@ -231,7 +231,7 @@ func TestKnownCustomersPerAccountCap(t *testing.T) {
 			t.Errorf("203.0.113.%d dropped; only the oldest should go", i)
 		}
 	}
-	if n, _ := k.Within(netip.MustParsePrefix("203.0.113.0/24"), 0); n != maxKnownCustomerIPsPerAccount {
+	if n, _ := k.Within(netip.MustParsePrefix("203.0.113.0/24"), 0, nil); n != maxKnownCustomerIPsPerAccount {
 		t.Errorf("account holds %d addresses, want %d", n, maxKnownCustomerIPsPerAccount)
 	}
 	for _, ip := range []string{"198.51.100.1", "198.51.100.2"} {
@@ -251,7 +251,7 @@ func TestKnownCustomersPerAccountCap(t *testing.T) {
 	for i := 1; i <= maxKnownCustomerIPsPerAccount+10; i++ {
 		k.Note(fmt.Sprintf("2001:db8:2:%x::1", i), knownCustomerFTP, "", start, serviceLog)
 	}
-	if n, _ := k.Within(netip.MustParsePrefix("2001:db8:2::/48"), 0); n != maxKnownCustomerIPsPerAccount {
+	if n, _ := k.Within(netip.MustParsePrefix("2001:db8:2::/48"), 0, nil); n != maxKnownCustomerIPsPerAccount {
 		t.Errorf("unnamed logins kept %d addresses, want %d", n, maxKnownCustomerIPsPerAccount)
 	}
 }
@@ -313,7 +313,7 @@ func TestKnownCustomersWithin(t *testing.T) {
 	k.Note("2001:db8:2::1", knownCustomerIMAP, "office@example.com", now, serviceLog)
 	clock.advance(2 * time.Hour) // 203.0.113.100 is now past the TTL
 
-	n, sample := k.Within(netip.MustParsePrefix("203.0.113.77/24"), 3)
+	n, sample := k.Within(netip.MustParsePrefix("203.0.113.77/24"), 3, nil)
 	if n != 10 {
 		t.Errorf("/24 count = %d, want 10", n)
 	}
@@ -328,24 +328,24 @@ func TestKnownCustomersWithin(t *testing.T) {
 		t.Errorf("sample[0] = %+v, want %+v", sample, want)
 	}
 
-	n, sample = k.Within(netip.MustParsePrefix("2001:db8:1::/48"), 5)
+	n, sample = k.Within(netip.MustParsePrefix("2001:db8:1::/48"), 5, nil)
 	if n != 6 || len(sample) != 5 || sample[0].IP != "2001:db8:1:6::/64" {
 		t.Errorf("/48 = %d with samples %+v, want 6 with 5, newest 2001:db8:1:6::/64", n, sample)
 	}
 	for _, p := range []string{"2001:db8:1:1::/64", "2001:db8:1:1::abcd/128", "2001:db8:1:1:8000::/65"} {
-		if n, sample = k.Within(netip.MustParsePrefix(p), 5); n != 1 || len(sample) != 1 || sample[0].IP != "2001:db8:1:1::/64" {
+		if n, sample = k.Within(netip.MustParsePrefix(p), 5, nil); n != 1 || len(sample) != 1 || sample[0].IP != "2001:db8:1:1::/64" {
 			t.Errorf("%s = %d, %+v; want the one /64 it overlaps", p, n, sample)
 		}
 	}
 	for _, limit := range []int{0, -1} {
-		if n, sample = k.Within(netip.MustParsePrefix("2001:db8:1::/48"), limit); n != 6 || sample != nil {
+		if n, sample = k.Within(netip.MustParsePrefix("2001:db8:1::/48"), limit, nil); n != 6 || sample != nil {
 			t.Errorf("limit %d = %d, %v; want 6 and no sample", limit, n, sample)
 		}
 	}
-	if n, sample = k.Within(netip.MustParsePrefix("192.0.2.0/24"), 5); n != 0 || len(sample) != 0 {
+	if n, sample = k.Within(netip.MustParsePrefix("192.0.2.0/24"), 5, nil); n != 0 || len(sample) != 0 {
 		t.Errorf("empty prefix = %d, %v", n, sample)
 	}
-	if n, _ = k.Within(netip.Prefix{}, 5); n != 0 {
+	if n, _ = k.Within(netip.Prefix{}, 5, nil); n != 0 {
 		t.Errorf("invalid prefix counted %d", n)
 	}
 }

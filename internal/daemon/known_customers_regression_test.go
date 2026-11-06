@@ -104,7 +104,7 @@ func TestKnownCustomersFTPUsesAccountAndLogTime(t *testing.T) {
 	if hit.Account != "alice" || !hit.At.Equal(now.Add(-time.Hour)) {
 		t.Fatalf("FTP lost its logged identity or time: %+v", hit)
 	}
-	if n, _ := k.Within(netip.MustParsePrefix("203.0.113.0/24"), 0); n != maxKnownCustomerIPsPerAccount {
+	if n, _ := k.Within(netip.MustParsePrefix("203.0.113.0/24"), 0, nil); n != maxKnownCustomerIPsPerAccount {
 		t.Fatalf("FTP account holds %d addresses", n)
 	}
 	old := fmt.Sprintf("%s host pure-ftpd[1]: (?@198.51.100.1) [INFO] bob is now logged in", now.Add(-knownCustomerTTL-time.Hour).Format(time.RFC3339))
@@ -225,7 +225,7 @@ func TestKnownCustomersConcurrentSaveAndLogin(t *testing.T) {
 				ip := fmt.Sprintf("2001:db8:%x:%x::1", worker, i)
 				k.Note(ip, knownCustomerSMTP, fmt.Sprintf("user%d", worker), now, serviceLog)
 				k.Lookup(ip)
-				k.Within(netip.MustParsePrefix("2001:db8::/32"), 2)
+				k.Within(netip.MustParsePrefix("2001:db8::/32"), 2, nil)
 				if worker == 0 {
 					upserts, deletes := k.Changes()
 					k.requeue(upserts, deletes)

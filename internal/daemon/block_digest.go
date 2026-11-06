@@ -3,7 +3,6 @@ package daemon
 import (
 	"fmt"
 	"net/netip"
-	"slices"
 	"strings"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -247,25 +246,28 @@ func blockTarget(f alert.Finding) (kind, target string, dryRun bool) {
 
 // customersAt returns the known customers target covers: an address's own
 // last login, or the count and the most recent few inside a network.
-func (d *Daemon) customersAt(target string) (blockdigest.CustomerBlock, bool) {
+func (d *Daemon) customersAt(target string, omit func(blockdigest.CustomerHit) bool) (blockdigest.CustomerBlock, bool) {
 	if p, err := netip.ParsePrefix(target); err == nil {
 		// The set keys IPv4 customers unmapped.
 		if p.Addr().Is4In6() && p.Bits() >= 96 {
 			p = netip.PrefixFrom(p.Addr().Unmap(), p.Bits()-96)
 		}
 		p = p.Masked()
-		n, sample := d.knownCustomers.Within(p, maxCustomerExamples)
+		n, sample := d.knownCustomers.Within(p, maxCustomerExamples, omit)
 		return blockdigest.CustomerBlock{Target: p.String(), Hits: sample, More: n - len(sample)}, n > 0
 	}
 	hit, ok := d.knownCustomers.Lookup(target)
+	if ok && omit != nil && omit(hit) {
+		ok = false
+	}
 	return blockdigest.CustomerBlock{Target: target, Hits: []blockdigest.CustomerHit{hit}}, ok
 }
 
 // customerBlock fills in the reason and check of a block notice that hit
 // known customers. Netblock and permanent-block notices carry no reason;
 // their message says what happened.
-func (d *Daemon) customerBlock(f alert.Finding, target string) (blockdigest.CustomerBlock, bool) {
-	b, ok := d.customersAt(target)
+func (d *Daemon) customerBlock(f alert.Finding, target string, omit func(blockdigest.CustomerHit) bool) (blockdigest.CustomerBlock, bool) {
+	b, ok := d.customersAt(target, omit)
 	if !ok {
 		return b, false
 	}
@@ -305,11 +307,11 @@ func (d *Daemon) customerBlocks(actions []alert.Finding) []blockdigest.CustomerB
 			blocks[i].Reason += " (promoted to permanent block)"
 			continue
 		}
-		b, ok := d.customerBlock(f, target)
-		if cause, found := causes[causeID(f)]; ok && found && cause.Check == f.Cause.Check {
-			b.Hits = slices.DeleteFunc(b.Hits, func(h blockdigest.CustomerHit) bool { return ownLogin(cause, h) })
-			ok = len(b.Hits)+b.More > 0
+		var omit func(blockdigest.CustomerHit) bool
+		if cause, found := causes[causeID(f)]; found && cause.Check == f.Cause.Check {
+			omit = func(h blockdigest.CustomerHit) bool { return ownLogin(cause, h) }
 		}
+		b, ok := d.customerBlock(f, target, omit)
 		if !ok {
 			continue
 		}
@@ -355,10 +357,10 @@ func (d *Daemon) wouldBlock(check string, f alert.Finding) (blockdigest.Customer
 	switch {
 	case check == "auto_block":
 		if _, target, dryRun := blockTarget(f); dryRun {
-			return d.customerBlock(f, target)
+			return d.customerBlock(f, target, nil)
 		}
 	case check == "mail_bruteforce_suspected" && strings.Contains(f.Message, "(observe mode, not blocked)"):
-		b, ok := d.customersAt(f.SourceIP)
+		b, ok := d.customersAt(f.SourceIP, nil)
 		b.Reason, b.Check = f.Message, check
 		return b, ok
 	}
