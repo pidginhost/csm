@@ -318,8 +318,33 @@ reports the block whose slot it took, so the owner counts previewed
 replacements in status; a readback reports none.
 A member's sweep also ends its import claim; a delayed outcome may still
 name the import in its intent without looking for a victim record.
+A verified eviction marks its victim's record gone at the evicting block's
+outcome. A verified block that two consecutive firewall answers no longer
+hold is gone from the first of them, whatever removed it: an operator
+unblock, undo or flush, or a lost kernel element. A held answer in
+between starts the count again; the count lives in memory, so a restart
+only delays the mark. Failed answers keep all previous misses and count
+nothing new. Bounded batches get two answered checks before advancing,
+so a larger configured capacity cannot hide later records. A record that
+changed in between is left to what changed it. A gone record holds no
+slot, so waiting work can take it, and stays until its expiry sweep.
+The first stored gone record moves the ledger to schema 14, which older
+builds refuse. Schema 14 requires the live-start marker, effect bucket and
+tally even after all records expire. A check that marks nothing leaves
+the schema unchanged. Only a live ledger has effect records, so preview
+and forecast hosts never write it. The owner
+asks at most once a minute, and only while the ledger counts a verified
+block. The firewall answers with the retirement rule reversed and writes
+nothing: an element still at the address that no other action's verified
+row proves counts as held, even after a forward wall step makes the
+block's own row look expired, and so does an address whose family the
+firewall cannot read. A failed or short answer marks nothing and counts
+as no miss.
 Startup drops the state row of an admission-record victim whose eviction
-the ledger verified. Imports have no durable cleanup record: a restart
+the ledger verified, and of a block the ledger marked gone, so a restart
+cannot restore an element whose slot the ledger no longer counts. A
+running owner retires the row of a block it marks gone as it retires an
+evicted victim's, so a firewall reload cannot restore it either. Imports have no durable cleanup record: a restart
 before retirement restores the import only until its original expiry. Startup readers report an error if the
 effects bucket disagrees with the schema or an effect is a nested bucket;
 they do not treat damaged eviction storage as an absent record.
@@ -628,9 +653,49 @@ cannot end it early either; a row written before it existed ends on wall time al
 until its next write, including maintenance that leaves its last
 observation unchanged. Existing elapsed ends survive maintenance, and
 verified closing replaces the quiet end with the block's remaining
-lifetime. The first row with a positive elapsed end moves the ledger
-to schema 13 on every host, which older builds refuse. Schema 13 records
-nothing of the live start or the effect records, so a schema 13 ledger
+lifetime, read at the reading the block was executed at, so a wall step
+between execution and its outcome cannot shorten it. Execution readings
+are released when an outcome commits, including startup settlement.
+A verified episode keeps that boundary: a later verified block of the
+same episode moves neither end. A legacy verified row gains its missing elapsed end from
+the original expiry when closed again. An answered block frontier without
+candidate references retains that verified boundary on both clocks, using
+schema 15; earlier readers refuse it. Its verified predecessor's retirement collects it
+after both ends pass. Address and subnet block histories remain charged
+while their episode boundary is still active on either clock. Scheduling
+and wake times count that retained history as unavailable. Bounded
+cleanup continues past retained histories across ticks, so they cannot
+hide later expired history. On a live ledger, a verified block whose record
+is gone stops answering its kind before the episode's original verified
+end: a later observation of that kind, made after the removal and with
+every root observed after it, queues a charged new generation in the same
+episode. On a live ledger the block line records the generation of its
+latest verified block, whose history outlives later generations, so
+queued, ended and forgotten returns keep that evidence gate against the
+latest removal; such lines also need schema 15. Older lines recover that
+generation from an unbroken chain of retained predecessors on their next
+arrival and persist it with the next episode write. A gap leaves the line
+answered. Opening a ledger does not rewrite older lines, but rejects a
+reference to an unverified candidate or a block older than another retained
+verified block of the same kind and episode. Forgetting a refused
+return keeps the verified boundary until both ends pass. The
+episode earns no equal-tier rotation. An observation or root at or before the removal
+is answered or stale. Past the original end, as when
+a reboot keeps the episode open on elapsed time, the block keeps
+answering until the episode ends on both clocks. The owner caps a
+re-admission's first attempt at the episode's original verified end, the
+time left in admission time added to the lease clock; a retry keeps its
+first expiry. A re-admission with no time left, or whose episode row
+has been replaced or lost, is refused as expired.
+A forecast caps a block returning to an address whose forecast block the
+session replaced at that block's expiry. It applies the cap before the
+firewall snapshot and again before deciding each pick, since an earlier
+pick can replace that address in the same turn. A shortened expiry must
+still leave the firewall's minimum timeout; otherwise the return ends
+uncharged without changing forecast occupancy or retaining an example.
+The first row with a positive elapsed end moves
+the ledger to schema 13 on every host, which older builds refuse. Schema 13
+records nothing of the live start or the effect records, so a schema 13 ledger
 proves them from their own markers. Episode placement refuses an
 observation dated after the ledger's current reading, even within
 assessment's clock-skew tolerance. This keeps future times out of observation
@@ -687,7 +752,7 @@ failed on its last attempt. A historical result cannot end a later retry;
 a repeated linked ending must name the same block and expiry instant. A linked record is candidate version 2 and an
 admitted candidate's history pays for its bytes; without room the
 transaction changes nothing. A linked record requires at least schema 8,
-with the same buckets; this build opens schemas 7 to 13 without rewriting
+with the same buckets; this build opens schemas 7 to 14 without rewriting
 them, and older builds refuse an unknown schema rather than misread it.
 An unchanged schema-7 ledger stays readable by older builds until a write
 needs a newer format. A write never lowers the schema.

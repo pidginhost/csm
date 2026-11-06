@@ -290,6 +290,14 @@ func (l *AdmissionLedger) execute(ids []admission.ActionID) ([]admission.Intent,
 	if err != nil {
 		return nil, nil, nil, false, err
 	}
+	if running == 0 {
+		if l.executed == nil {
+			l.executed = map[admission.ActionID]admission.EpisodeClock{}
+		}
+		for _, a := range attempts {
+			l.executed[a.Attempt.ID] = admission.EpisodeClock{Now: now, Elapsed: l.elapsed}
+		}
+	}
 	return intents, attempts, candidates, running == 0, nil
 }
 
@@ -350,7 +358,7 @@ func currentLedger(tx *bolt.Tx) (bool, error) {
 			return false, admission.ErrCorruptRecord
 		}
 		return false, nil
-	case len(schema) != 1 || schema[0] < admissionSchemaVersion || schema[0] > admissionSchemaEpisodeElapsed:
+	case len(schema) != 1 || schema[0] < admissionSchemaVersion || schema[0] > admissionSchemaNewest:
 		return false, ErrAdmissionSchema
 	case intents == nil:
 		return false, admission.ErrCorruptRecord
@@ -361,7 +369,7 @@ func currentLedger(tx *bolt.Tx) (bool, error) {
 // ReadUnprovenBlockActions returns, in order, the actions among ids whose
 // attempt the ledger records with anything but a verified outcome (it
 // runs, ended unknown, retired or not, or failed) or whose verified block
-// a proven removal evicted. Startup marks their firewall rows unverified
+// a proven removal evicted or the ledger marked gone. Startup marks their firewall rows unverified
 // before the firewall restores its state, whether or not the ledger owner
 // started. A name the ledger never recorded is not returned: no attempt
 // claims its row. An error means the ledger cannot be read.
@@ -377,7 +385,8 @@ func ReadUnprovenBlockActions(db *DB, ids []string) ([]string, error) {
 // ReadSettledBlockActions returns, in order, the actions among ids whose
 // attempt can have left nothing in the kernel: it failed, ended unknown
 // and was retired after its expiry found nothing of it, or was verified
-// and then evicted by a removal the applier proved. Startup removes their
+// and then evicted by a removal the applier proved or marked gone after
+// two firewall answers found nothing of it. Startup removes their
 // firewall rows; the other unproven ones stay held. A name the ledger
 // never recorded is not returned. An error means the ledger cannot be read.
 func ReadSettledBlockActions(db *DB, ids []string) ([]string, error) {
@@ -389,13 +398,15 @@ func ReadSettledBlockActions(db *DB, ids []string) ([]string, error) {
 	})
 }
 
-// evictedBlock reports whether verified attempt a's block was evicted.
+// evictedBlock reports whether verified attempt a's block was evicted or
+// marked gone: either way nothing it applied remains, and a restored row
+// would hold an element whose slot the ledger no longer counts.
 func evictedBlock(tx *bolt.Tx, a admission.AttemptRecord) (bool, error) {
 	// Startup reads before the owner proves the ledger. A damaged layout
 	// must not masquerade as a ledger without effect records.
 	b := tx.Bucket([]byte(admissionEffectsBucket))
 	schema := tx.Bucket([]byte(admissionMetaBucket)).Get(admissionSchemaKey)
-	if len(schema) != 1 || schema[0] < admissionSchemaVersion || schema[0] > admissionSchemaEpisodeElapsed {
+	if len(schema) != 1 || schema[0] < admissionSchemaVersion || schema[0] > admissionSchemaNewest {
 		return false, ErrAdmissionSchema
 	}
 	if _, err := effectLayout(tx, schema[0]); err != nil {
@@ -405,7 +416,10 @@ func evictedBlock(tx *bolt.Tx, a admission.AttemptRecord) (bool, error) {
 	if err == nil && !found && b != nil && b.Bucket(key) != nil {
 		return false, admission.ErrCorruptRecord
 	}
-	return found && rec.Evicted, err
+	if err == nil && found && !rec.Gone.IsZero() && schema[0] < admissionSchemaEffectGone {
+		return false, admission.ErrCorruptRecord
+	}
+	return found && (rec.Evicted || !rec.Gone.IsZero()), err
 }
 
 // readBlockActions returns, in order, the recorded actions among ids whose

@@ -38,6 +38,11 @@ type EpisodeLine struct {
 	// effect or observe preview answers the kind for the rest of the
 	// episode.
 	Answered bool
+	// VerifiedGeneration is the generation of this block kind's latest
+	// verified block in the episode, zero before one verifies. Its history
+	// outlives later generations, so the evidence gate can always read the
+	// latest removal (spec 5.13).
+	VerifiedGeneration uint32
 }
 
 // Episode is the engine's record of the current offense episode at one
@@ -121,6 +126,8 @@ type episodeLineRecord struct {
 	Candidate  CandidateID `json:"candidate,omitempty"`
 	Observed   int64       `json:"observed"`
 	Answered   bool        `json:"answered,omitempty"`
+	// VerifiedGeneration needs schema 15.
+	VerifiedGeneration uint32 `json:"verified_generation,omitempty"`
 }
 
 type episodeRecord struct {
@@ -166,7 +173,10 @@ func (e Episode) record() (episodeRecord, error) {
 		}
 	}
 	if !e.HasCandidates() {
-		return bad("episode has no line")
+		line, found := e.Line(KindBlockIP)
+		if e.Verified.IsZero() || e.EndElapsed <= 0 || !found || !line.Answered {
+			return bad("episode has no retained candidate or verified block frontier")
+		}
 	}
 	for i, l := range e.Lines {
 		switch _, err := ParseCandidateID(string(l.Candidate)); {
@@ -174,12 +184,15 @@ func (e Episode) record() (episodeRecord, error) {
 			return bad("episode line is malformed")
 		case i > 0 && l.Kind <= e.Lines[i-1].Kind:
 			return bad("episode lines are not one per kind in kind order")
+		case l.VerifiedGeneration > l.Generation ||
+			(l.VerifiedGeneration > 0 && (e.Verified.IsZero() || (l.Kind != KindBlockIP && l.Kind != KindBlockSubnet))):
+			return bad("episode line names a verified block it cannot have")
 		}
 		observed, ok := unixNano(l.Observed)
 		if !ok || l.Observed.After(e.Last) {
 			return bad("episode line has no valid observation frontier")
 		}
-		rec.Lines = append(rec.Lines, episodeLineRecord{Kind: l.Kind, Generation: l.Generation, Candidate: l.Candidate, Observed: observed, Answered: l.Answered})
+		rec.Lines = append(rec.Lines, episodeLineRecord{Kind: l.Kind, Generation: l.Generation, Candidate: l.Candidate, Observed: observed, Answered: l.Answered, VerifiedGeneration: l.VerifiedGeneration})
 	}
 	return rec, nil
 }
@@ -204,7 +217,7 @@ func UnmarshalEpisode(data []byte) (Episode, error) {
 	}
 	e := Episode{ID: id, Last: fromNano(rec.Last), Verified: fromNano(rec.Verified), EndElapsed: time.Duration(rec.Elapsed), Previous: fromNano(rec.Previous), PriorLast: fromNano(rec.PriorLast)}
 	for _, l := range rec.Lines {
-		e.Lines = append(e.Lines, EpisodeLine{Kind: l.Kind, Generation: l.Generation, Candidate: l.Candidate, Observed: fromNano(l.Observed), Answered: l.Answered})
+		e.Lines = append(e.Lines, EpisodeLine{Kind: l.Kind, Generation: l.Generation, Candidate: l.Candidate, Observed: fromNano(l.Observed), Answered: l.Answered, VerifiedGeneration: l.VerifiedGeneration})
 	}
 	if again, err := e.record(); rec.V != episodeVersion || err != nil || !slices.Equal(again.Lines, rec.Lines) || again.ID != rec.ID ||
 		again.Last != rec.Last || again.Verified != rec.Verified || again.Elapsed != rec.Elapsed || again.Previous != rec.Previous || again.PriorLast != rec.PriorLast {
@@ -320,13 +333,18 @@ func (e Episode) AnchorElapsed(c EpisodeClock) (Episode, error) {
 
 // Close ends e at verified, its verified block's original expiry in
 // admission time, read on c: the elapsed end becomes the time left until
-// then, so the episode lasts as long as the block on both clocks.
+// then, so the episode lasts as long as the block on both clocks. An
+// episode already verified keeps its scheduled boundary (spec 5.2): a
+// same-episode re-admission's block never moves it.
 func (e Episode) Close(verified time.Time, c EpisodeClock) (Episode, error) {
 	if _, ok := unixNano(verified); !ok {
 		return e, refuse(ReasonInvalid, "episode expiry is not representable")
 	}
 	if err := c.check(); err != nil {
 		return e, err
+	}
+	if !e.Verified.IsZero() {
+		return e.AnchorElapsed(c)
 	}
 	at, err := elapsedEnd(verified, c)
 	if err != nil {

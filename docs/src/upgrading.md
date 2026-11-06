@@ -127,6 +127,20 @@ forecast. Older binaries cannot open it and keep blocking with the legacy
 budget, as above. Roll back only to a build that supports both schema 13
 and elapsed episode records.
 
+A live admission ledger records each episode's latest verified block and
+retains a verified episode's boundary even after an unattempted return is
+forgotten. The first verified block raises the ledger to schema 15. Roll
+back only to a build that reads schema 15, understands the recorded
+verified generation, and retains and cleans up these rows; older builds
+refuse this ledger. This
+writer remains behind live execution and does not run on preview-only
+hosts. Keep the database when changing binaries.
+
+After live re-admissions, roll back only to a build that also keeps the
+original verified boundary and caps queued returns at it. A build that
+only reads the format can give an old queued return a full lifetime.
+Stop the daemon before replacing the binary and keep the database.
+
 `auto_response.dry_run` defaults to `true` when the key is absent. Automatic IP blocks are not applied. With the firewall on outside observe mode, the dry-run count holds retained forecast examples, including older entries until pruning; it is not active occupancy or a count of all attempted blocks. If your `auto_response:` block sets `enabled: true` and `block_ips: true` but does **not** set `dry_run`, **add `dry_run: false` explicitly** before relying on auto-block. Verify with:
 
 ```bash

@@ -120,6 +120,9 @@ func (e *Engine) RemoveBlockActionRows(_ []string) (int, error) { return 0, ErrU
 func (e *Engine) RetireBlockActions(_ []BlockAction) ([]bool, error) {
 	return nil, ErrUnsupportedPlatform
 }
+func (e *Engine) HeldBlockActions(_ []BlockAction) ([]bool, error) {
+	return nil, ErrUnsupportedPlatform
+}
 func (e *Engine) ApplyBlockBatch(_ []BlockMember) ([]BlockResult, error) {
 	return nil, ErrUnsupportedPlatform
 }

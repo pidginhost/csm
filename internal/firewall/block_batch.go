@@ -161,6 +161,10 @@ func CoversExpiry(held, wanted time.Time) bool {
 // counts: a dry-run forecast models at most this many active blocks.
 const MaxShadowBlocks = 20000
 
+// MaxHeldBlockActions bounds the blocks one held check names: as many as
+// a forecast's shadow list. Larger ledgers rotate through bounded batches.
+const MaxHeldBlockActions = MaxShadowBlocks
+
 // BlockAnswer is an admission snapshot's answer for one member, naming
 // the member it answers.
 type BlockAnswer struct {

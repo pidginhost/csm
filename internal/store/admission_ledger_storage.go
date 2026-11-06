@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"slices"
 	"sort"
 	"time"
@@ -694,8 +693,8 @@ func (q *queueTx) retireForRoom(lane admission.Lane, need uint64) error {
 	}
 	kind := retireKind(lane)
 	cur := q.tx.Bucket([]byte(admissionRetireBucket)).Cursor()
+	k, _ := cur.Seek([]byte{kind})
 	for s.HistoryRoom(lane) < need {
-		k, _ := cur.Seek([]byte{kind})
 		if k == nil || k[0] != kind {
 			return nil
 		}
@@ -706,8 +705,15 @@ func (q *queueTx) retireForRoom(lane admission.Lane, need uint64) error {
 		if at.After(q.now) {
 			return nil
 		}
-		if err = q.retire(id, k); err != nil {
+		key := bytes.Clone(k)
+		if err = q.retire(id, key); err != nil {
 			return err
+		}
+		// A live episode can keep this history. Advance past it; a
+		// deletion instead leaves Seek at the next remaining entry.
+		k, _ = cur.Seek(key)
+		if bytes.Equal(k, key) {
+			k, _ = cur.Next()
 		}
 	}
 	return nil
@@ -718,51 +724,88 @@ func (q *queueTx) retireForRoom(lane admission.Lane, need uint64) error {
 // transaction. Pressure retires what it needs at once.
 const retirementsPerTick = 64
 
-// retireAtTarget retires ended history whose target has passed, oldest
-// target first, at most retirementsPerTick of them.
-func (q *queueTx) retireAtTarget() error {
+// retireAtTarget examines at most retirementsPerTick entries after the
+// previous batch. A retained episode must not hide later eligible history.
+// A nil continuation starts the next pass at the oldest target.
+func (q *queueTx) retireAtTarget(after []byte) ([]byte, error) {
 	cur := q.tx.Bucket([]byte(admissionRetireBucket)).Cursor()
+	k, _ := cur.Seek([]byte{admission.RetireTarget})
+	if len(after) != 0 {
+		k, _ = cur.Seek(after)
+		if bytes.Equal(k, after) {
+			k, _ = cur.Next()
+		}
+	}
 	for n := 0; n < retirementsPerTick; n++ {
-		k, _ := cur.Seek([]byte{admission.RetireTarget})
 		if k == nil || k[0] != admission.RetireTarget {
-			return nil
+			return nil, nil
 		}
 		_, at, id, err := admission.ParseRetireKey(k)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if at.After(q.now) {
-			return nil
+			return nil, nil
 		}
-		if err = q.retire(id, k); err != nil {
-			return err
+		key := bytes.Clone(k)
+		if err = q.retire(id, key); err != nil {
+			return nil, err
+		}
+		after = key
+		// A live episode can keep this history. Advance past it; a
+		// deletion instead leaves Seek at the next remaining entry.
+		k, _ = cur.Seek(key)
+		if bytes.Equal(k, key) {
+			k, _ = cur.Next()
 		}
 	}
-	return nil
+	return after, nil
 }
 
 // meterStorage credits a tick's elapsed time to the history allowances and
 // retires the history whose target has passed, in the clock's transaction.
-func (l *AdmissionLedger) meterStorage(tx *bolt.Tx, tick admission.ClockTick) error {
+func (l *AdmissionLedger) meterStorage(tx *bolt.Tx, tick admission.ClockTick) ([]byte, error) {
 	q, err := openQueueWith(tx, l.reg, l.Inventory(), tick.Now)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	s, err := q.storageState()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if *s, err = s.Advance(tick.Elapsed); err != nil {
-		return err
+		return nil, err
 	}
 	q.storageDirty = true
-	if err = q.retireAtTarget(); err != nil {
-		return err
+	after, err := q.retireAtTarget(l.retireAfter)
+	if err != nil {
+		return nil, err
 	}
 	if err = q.removeQuietNotices(); err != nil {
-		return err
+		return nil, err
 	}
-	return q.flushStorage()
+	return after, q.flushStorage()
+}
+
+// retirementTime keeps history that pays for a verified episode until
+// both boundaries pass. Scheduling and deletion must use the same gate.
+func (q *queueTx) retirementTime(c admission.Candidate, at time.Time) (time.Time, error) {
+	if c.State != admission.StateVerified || (c.Key.Kind != admission.KindBlockIP && c.Key.Kind != admission.KindBlockSubnet) {
+		return at, nil
+	}
+	e, found, err := loadEpisode(q.tx, c.Key.Target.Key())
+	if err != nil || !found || e.ID != c.Key.Episode || e.Verified.IsZero() {
+		return at, err
+	}
+	clock, err := q.episodeClock()
+	if err != nil {
+		return time.Time{}, err
+	}
+	left := max(e.Verified.Sub(clock.Now), e.EndElapsed-clock.Elapsed)
+	if left > 0 && clock.Now.Add(left).After(at) {
+		at = clock.Now.Add(left)
+	}
+	return at, nil
 }
 
 // retire removes an ended candidate's details: its record, its attempts,
@@ -796,6 +839,10 @@ func (q *queueTx) retire(id admission.CandidateID, key []byte) error {
 	}
 	// Deletion must not conceal missing or inconsistent attempt history.
 	if _, err = currentAttempt(q.tx, c); err != nil {
+		return err
+	}
+	at, err := q.retirementTime(c, q.now)
+	if err != nil || at.After(q.now) {
 		return err
 	}
 	retireIndex := q.tx.Bucket([]byte(admissionRetireBucket))
@@ -891,6 +938,17 @@ func (q *queueTx) retirable(lane admission.Lane, limit uint64) (uint64, error) {
 		if !found {
 			return 0, admission.ErrCorruptRecord
 		}
+		c, err := loadCandidate(q.tx, id)
+		if err != nil {
+			return 0, corruptRecord(err)
+		}
+		at, err = q.retirementTime(c, at)
+		if err != nil {
+			return 0, err
+		}
+		if at.After(q.now) {
+			continue
+		}
 		if lane == admission.LaneGeneral {
 			sum += uint64(h.General)
 		} else {
@@ -927,19 +985,33 @@ func (q *queueTx) historyBudgets() (general, reserved uint64, err error) {
 	return general, reserved, err
 }
 
-// nextRetirable is when the oldest history of lane's allowance that may not
-// be retired yet becomes retirable.
+// nextRetirable is the earliest future retirement of lane's history,
+// including entries whose wall eligibility precedes their episode's end.
 func (q *queueTx) nextRetirable(lane admission.Lane) (time.Time, bool, error) {
 	kind := retireKind(lane)
-	// Sort after every candidate at now without incrementing the timestamp,
-	// which may already be the largest representable nanosecond.
-	after := append(fmt.Appendf(nil, "%c%019d", kind, q.now.UnixNano()), 0xff)
-	k, _ := q.tx.Bucket([]byte(admissionRetireBucket)).Cursor().Seek(after)
-	if k == nil || k[0] != kind {
-		return time.Time{}, false, nil
+	var next time.Time
+	cur := q.tx.Bucket([]byte(admissionRetireBucket)).Cursor()
+	for k, _ := cur.Seek([]byte{kind}); k != nil && k[0] == kind; k, _ = cur.Next() {
+		_, at, id, err := admission.ParseRetireKey(k)
+		if err != nil {
+			return time.Time{}, false, err
+		}
+		if !next.IsZero() && !at.Before(next) {
+			break
+		}
+		c, err := loadCandidate(q.tx, id)
+		if err != nil {
+			return time.Time{}, false, corruptRecord(err)
+		}
+		at, err = q.retirementTime(c, at)
+		if err != nil {
+			return time.Time{}, false, err
+		}
+		if at.After(q.now) && (next.IsZero() || at.Before(next)) {
+			next = at
+		}
 	}
-	_, at, _, err := admission.ParseRetireKey(k)
-	return at, err == nil, err
+	return next, !next.IsZero(), nil
 }
 
 // validateUnownedRows checks rows that candidate and evidence walks do not

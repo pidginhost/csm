@@ -272,6 +272,8 @@ type Owner struct {
 	// whose rows the engine has yet to retire.
 	evicted    []firewall.BlockAction
 	evictedErr error
+	// heldAt is the monotonic time of the next held check (observeHeld).
+	heldAt time.Time
 	// replacements counts this process's previews that took the slot of a
 	// lower-priority automatic block; replacementsHour keeps the last hour
 	// of them on the monotonic clock. rotations and rotationsHour count
@@ -963,6 +965,7 @@ func (o *Owner) runTurn(selecting bool) error {
 			return err
 		}
 	}
+	_ = o.observeHeld()
 	if err := o.publish(); err != nil {
 		return err
 	}
@@ -981,6 +984,11 @@ func (o *Owner) runTurn(selecting bool) error {
 		if o.wakeAt.IsZero() || at.Before(o.wakeAt) {
 			o.wakeAt = at
 		}
+	}
+	// Retirement may clear its retries or delay them after a fault. The
+	// held check owns a separate monotonic deadline across those turns.
+	if o.mayRetire() && !o.heldAt.IsZero() && (o.wakeAt.IsZero() || o.heldAt.Before(o.wakeAt)) {
+		o.wakeAt = o.heldAt
 	}
 	return nil
 }
@@ -1054,7 +1062,11 @@ func (o *Owner) holdForPolicy(p execPick) error {
 // cannot starve the queue; any other failure is returned.
 func (o *Owner) preview(p execPick) error {
 	c := p.c
-	_, _, _, victim, err := observeLedger(o.ledger, p.pick.ID, p.pick.Lane, o.expiryOf(c, o.now))
+	expires, err := o.cappedExpiry(c, o.now)
+	if err != nil {
+		return fmt.Errorf("reading the episode of pick %s: %w", p.pick.ID, err)
+	}
+	_, _, _, victim, err := observeLedger(o.ledger, p.pick.ID, p.pick.Lane, expires)
 	if err != nil {
 		if reason, refused := admission.ReasonOf(err); refused {
 			switch reason.Disposition() {
@@ -1098,6 +1110,31 @@ func (o *Owner) expiryOf(c admission.Candidate, now time.Time) time.Time {
 		duration = min(duration, lease)
 	}
 	return now.Add(duration)
+}
+
+// cappedExpiry is expiryOf for a pick, capped for a same-episode
+// re-admission of a block at its episode's original verified end (spec
+// 5.2, 5.4): a block that returns after the first one left early lasts no
+// longer than the first would have. The time left is admission time, so on
+// the lease clock now the cap ends the lead later, as the first block's
+// expiry did. A retry keeps its first attempt's expiry. A lost or
+// replaced episode cannot grant an older queued return a new lease.
+func (o *Owner) cappedExpiry(c admission.Candidate, now time.Time) (time.Time, error) {
+	expires := o.expiryOf(c, now)
+	if c.Attempts > 0 || c.Key.Kind != admission.KindBlockIP || c.Key.Generation < 2 {
+		return expires, nil
+	}
+	end, current, err := o.ledger.VerifiedEnd(c)
+	if err != nil || !current {
+		return now, err
+	}
+	if end.IsZero() {
+		return expires, nil
+	}
+	if capped := now.Add(max(end.Sub(o.now), 0)); capped.Before(expires) {
+		return capped, nil
+	}
+	return expires, nil
 }
 
 // countArrival counts the ledger's decision on one drained arrival.

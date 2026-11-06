@@ -78,7 +78,7 @@ func TestAdmissionLedgerReleasedHistoryMutationPathsRefuse(t *testing.T) {
 					if mode == "pressure" {
 						retireErr = q.retireForRoom(admission.LaneGeneral, math.MaxUint64)
 					} else {
-						retireErr = q.retireAtTarget()
+						_, retireErr = q.retireAtTarget(nil)
 					}
 					if retireErr != nil {
 						return retireErr

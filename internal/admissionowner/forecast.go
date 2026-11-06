@@ -171,7 +171,7 @@ func (o *Owner) forecastBlocks(picks []execPick) error {
 		if err != nil {
 			return err
 		}
-		members[i] = m
+		members[i] = o.forecastMember(p.c, m)
 	}
 	adm, err := engine.BlockAdmissionSnapshot(members, o.shadow.ips())
 	if err != nil || !answersMatch(adm.Answers, members) {
@@ -191,6 +191,17 @@ func (o *Owner) forecastBlocks(picks []execPick) error {
 		m, check := members[i], adm.Answers[i].BlockCheck
 		if check.Refusal != "" && check.Refusal != firewall.BlockRefusedExisting {
 			if _, err = o.endRefused(p, check); err != nil {
+				return err
+			}
+			continue
+		}
+		// An earlier pick can replace this address in the same turn.
+		// Its committed boundary must also constrain this return.
+		m = o.forecastMember(p.c, m)
+		// The snapshot checked a longer lifetime. Shortening it can
+		// leave less than the engine's minimum encodable timeout.
+		if m.ExpiresAt.Sub(lease) < time.Millisecond {
+			if err = o.endPick(p, admission.ReasonStale); err != nil {
 				return err
 			}
 			continue
@@ -229,6 +240,15 @@ func (o *Owner) forecastBlocks(picks []execPick) error {
 		}
 	}
 	return nil
+}
+
+// forecastMember caps a first attempt at the end of the forecast block
+// it returns to. Retries keep their already reserved absolute expiry.
+func (o *Owner) forecastMember(c admission.Candidate, m firewall.BlockMember) firewall.BlockMember {
+	if until, ok := o.shadow.answered[m.IP]; ok && c.Attempts == 0 && until.Before(m.ExpiresAt) {
+		m.ExpiresAt = until
+	}
+	return m
 }
 
 // rankOf ranks the forecast block of pick p, block member m, as a victim:

@@ -116,6 +116,22 @@ type AdmissionLedger struct {
 	// partition at the last schedule cycle, which shares the set with them
 	// until the next. Guarded by mu.
 	waiting map[admission.Partition][]string
+	// executed holds the reading each attempt this handle ran was executed
+	// at, until its outcome: a verified block's episode ends from it, not
+	// from a later reading a wall step moved. A restart turns a running
+	// attempt unknown, so no verified outcome needs one it lost. Guarded
+	// by mu.
+	executed map[admission.ActionID]admission.EpisodeClock
+	// missed holds the blocks the last firewall answer no longer held,
+	// with the reading of that answer (ObserveHeld). Guarded by mu.
+	missed map[admission.ActionID]time.Time
+	// Two answered checks per batch let the tail progress even when
+	// the configured capacity exceeds one engine call. Guarded by mu.
+	heldAfter []byte
+	heldPass  bool
+	// retireAfter continues bounded history sweeps past retained episodes.
+	// Published only after a successful tick; guarded by mu.
+	retireAfter []byte
 
 	// revalidated is set once this handle has checked every queued
 	// candidate at a current reading. A reopened ledger cannot know what
@@ -302,7 +318,7 @@ func OpenAdmissionLedger(db *DB, reg *admission.Registry) (*AdmissionLedger, err
 				if err := upgradeLedgerToSchemaSeven(tx); err != nil {
 					return err
 				}
-			case len(schema) == 1 && schema[0] >= admissionSchemaVersion && schema[0] <= admissionSchemaEpisodeElapsed:
+			case len(schema) == 1 && schema[0] >= admissionSchemaVersion && schema[0] <= admissionSchemaNewest:
 				if existing != len(admissionBuckets) {
 					return admission.ErrCorruptRecord
 				}
@@ -484,6 +500,7 @@ func (l *AdmissionLedger) Tick(r admission.ClockReading) (admission.ClockTick, e
 	defer l.mu.Unlock()
 	var tick admission.ClockTick
 	var elapsed time.Duration
+	var retireAfter []byte
 	err := l.update("tick", func(tx *bolt.Tx) error {
 		meta := tx.Bucket([]byte(admissionMetaBucket))
 		c, err := loadLedgerClock(meta)
@@ -508,19 +525,21 @@ func (l *AdmissionLedger) Tick(r admission.ClockReading) (admission.ClockTick, e
 		if elapsed, err = meterCeiling(tx, t); err != nil {
 			return err
 		}
-		if err := pruneOutcomes(tx, t.Now); err != nil {
+		if err = pruneOutcomes(tx, t.Now); err != nil {
 			return err
 		}
-		if err := sweepEffects(tx, t); err != nil {
+		if err = sweepEffects(tx, t); err != nil {
 			return err
 		}
-		return l.meterStorage(tx, t)
+		retireAfter, err = l.meterStorage(tx, t)
+		return err
 	})
 	if err != nil {
 		l.current = false
 		return admission.ClockTick{}, err
 	}
 	l.now, l.elapsed, l.current, l.degraded = tick.Now, elapsed, true, tick.Degraded
+	l.retireAfter = retireAfter
 	return tick, nil
 }
 

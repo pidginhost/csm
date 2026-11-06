@@ -38,7 +38,7 @@ func TestAdmissionLedgerEffectsStatusRejectsDamage(t *testing.T) {
 			return tx.Bucket([]byte(admissionMetaBucket)).Put(admissionSchemaKey, []byte{admissionSchemaEffects, 0})
 		},
 		"future schema": func(tx *bolt.Tx) error {
-			return tx.Bucket([]byte(admissionMetaBucket)).Put(admissionSchemaKey, []byte{admissionSchemaEpisodeElapsed + 1})
+			return tx.Bucket([]byte(admissionMetaBucket)).Put(admissionSchemaKey, []byte{admissionSchemaNewest + 1})
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
