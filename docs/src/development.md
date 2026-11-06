@@ -665,7 +665,17 @@ after both ends pass. Address and subnet block histories remain charged
 while their episode boundary is still active on either clock. Scheduling
 and wake times count that retained history as unavailable. Bounded
 cleanup continues past retained histories across ticks, so they cannot
-hide later expired history. The first row with a positive elapsed end moves
+hide later expired history. On a live ledger, a verified block whose record
+is gone stops answering its kind before the episode's original verified
+end: a later observation of that kind, made after the removal and with
+every root observed after it, queues a charged new generation in the same
+episode. Queued and ended returns keep that evidence gate through retained
+predecessors; missing history keeps the line answered, and forgetting a
+refused return keeps the verified boundary until both ends pass. The
+episode earns no equal-tier rotation. An observation or root at or before the removal
+is answered or stale. Past the original end, as when
+a reboot keeps the episode open on elapsed time, the block keeps
+answering until the episode ends on both clocks. The first row with a positive elapsed end moves
 the ledger to schema 13 on every host, which older builds refuse. Schema 13
 records nothing of the live start or the effect records, so a schema 13 ledger
 proves them from their own markers. Episode placement refuses an

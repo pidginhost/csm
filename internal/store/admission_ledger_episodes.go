@@ -190,6 +190,9 @@ func (l *AdmissionLedger) placeTx(q *queueTx, req admission.CandidateRequest, e 
 	}
 	var at *admission.Episode
 	var states []admission.LineState
+	// gone is when the ledger learned the arriving kind's verified block
+	// left early; zero unless this arrival may re-admit it.
+	var gone time.Time
 	if found {
 		at = &cur
 		for _, line := range cur.Lines {
@@ -223,6 +226,28 @@ func (l *AdmissionLedger) placeTx(q *queueTx, req admission.CandidateRequest, e 
 			if ignore && c.State == admission.StateObserved {
 				state = admission.LineEnded
 			}
+			// A verified block that left before its episode's original end
+			// no longer answers a later attack of its kind: the attack is a
+			// charged re-admission of the same episode (spec 5.2), never
+			// past that end (spec 5.4) and only on evidence observed after
+			// the removal (spec 5.13).
+			// Only a live ledger has effect records, so nothing changes on
+			// a host that previews or forecasts.
+			if q.started && !cur.Verified.IsZero() && line.Kind == req.Kind && req.Kind == admission.KindBlockIP &&
+				(state == admission.LineQueued || state == admission.LineEnded || c.State == admission.StateVerified) {
+				left, goneErr := q.goneSince(c)
+				if goneErr != nil {
+					return "", false, goneErr
+				}
+				if q.now.Before(cur.Verified) && !left.IsZero() && e.ObservedAt().After(left) {
+					gone = left
+					if c.State == admission.StateVerified {
+						state = admission.LineEnded
+					}
+				} else {
+					state = admission.LineAnswered
+				}
+			}
 			states = append(states, state)
 		}
 	}
@@ -242,6 +267,9 @@ func (l *AdmissionLedger) placeTx(q *queueTx, req admission.CandidateRequest, e 
 		}
 		if proof.ObservedAt().Before(choice.Episode.Previous) || (!choice.Episode.PriorLast.IsZero() && !proof.ObservedAt().After(choice.Episode.PriorLast)) {
 			return "", false, refusal(admission.ReasonStale, "support belongs to an earlier episode")
+		}
+		if !gone.IsZero() && choice.Episode.ID == cur.ID && !proof.ObservedAt().After(gone) {
+			return "", false, refusal(admission.ReasonStale, "support predates the block's removal")
 		}
 	}
 	key := admission.CandidateKey{Kind: req.Kind, Target: req.Target, Episode: choice.Episode.ID, Generation: choice.Generation}
@@ -266,6 +294,43 @@ func (l *AdmissionLedger) placeTx(q *queueTx, req admission.CandidateRequest, e 
 	}
 	row := choice.Episode.WithLine(admission.EpisodeLine{Kind: req.Kind, Generation: key.Generation, Candidate: id, Observed: observed})
 	return id, created, q.putEpisode(rowKey, row)
+}
+
+// goneSince is when the ledger learned the verified block of candidate c
+// left the kernel before its expiry, from its current attempt's effect
+// record, following retained predecessors for queued or ended returns;
+// zero while it holds, or when no retained proof says.
+func (q *queueTx) goneSince(c admission.Candidate) (time.Time, error) {
+	// A queued or ended re-admission still owes the last verified
+	// generation's evidence gate. Walk only retained predecessors;
+	// a missing one leaves no proof and the line keeps answering.
+	for c.State != admission.StateVerified {
+		if c.Key.Generation <= 1 {
+			return time.Time{}, nil
+		}
+		key := c.Key
+		key.Generation--
+		id, err := key.ID()
+		if err != nil {
+			return time.Time{}, err
+		}
+		c, err = loadCandidate(q.tx, id)
+		if err == errCandidateMissing {
+			return time.Time{}, nil
+		}
+		if err != nil {
+			return time.Time{}, err
+		}
+	}
+	a, err := currentAttempt(q.tx, c)
+	if err != nil {
+		return time.Time{}, err
+	}
+	rec, _, found, err := loadEffect(q.tx, a)
+	if err != nil || !found {
+		return time.Time{}, err
+	}
+	return rec.Gone, nil
 }
 
 // forgetLine clears a deleted candidate reference but retains the kind's
