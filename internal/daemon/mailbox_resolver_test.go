@@ -132,6 +132,67 @@ func TestMailboxResolverFailsUnknown(t *testing.T) {
 	}
 }
 
+// A failed lookup answers Unknown, which looks like a quiet host, so each change
+// is logged once. A first good read is no change.
+func TestMailboxResolverLogsUsabilityChanges(t *testing.T) {
+	const (
+		typed     = "nosuch@example.com"
+		lookup    = "mailbox lookup"
+		down      = `WARN: mailbox lookup unavailable, failed logins stay unknown  err="userdomains read failed"`
+		downEmpty = `WARN: mailbox lookup unavailable, failed logins stay unknown  err="no accounts or domains listed"`
+		up        = "] mailbox lookup available again"
+	)
+	type read = func(*fakeMailboxSource)
+	good := func(f *fakeMailboxSource) { f.snapshot, f.inventoryErr = newFakeMailboxSource().snapshot, nil }
+	failed := func(f *fakeMailboxSource) { f.inventoryErr = errors.New("userdomains read failed") }
+	empty := func(f *fakeMailboxSource) { f.snapshot, f.inventoryErr = checks.HostingSnapshot{}, nil }
+	for _, tc := range []struct {
+		name  string
+		reads []read
+		want  []string
+	}{
+		{"first read good", []read{good, good}, nil},
+		{"first read failed", []read{failed, failed, failed}, []string{down}},
+		{"first read empty", []read{empty, empty}, []string{downEmpty}},
+		{"lost and regained", []read{good, failed, failed, good, good}, []string{down, up}},
+		{"one outage changing shape", []read{failed, empty, failed, good}, []string{down, up}},
+		{"each outage", []read{failed, good, empty, good}, []string{down, up, downEmpty, up}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			finishLog := captureCSMLog(t)
+			src := newFakeMailboxSource()
+			clock := time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC)
+			r := newCPanelMailboxResolver(src, func() time.Time { return clock })
+			for _, apply := range tc.reads {
+				apply(src)
+				clock = clock.Add(mailboxResolverTTL + time.Second)
+				r.Resolve(typed)
+				r.Resolve(typed) // inside the TTL
+			}
+			if src.inventoryCalls != len(tc.reads) {
+				t.Fatalf("%d refreshes, want %d", src.inventoryCalls, len(tc.reads))
+			}
+			var got []string
+			for line := range strings.Lines(finishLog()) {
+				if strings.Contains(line, typed) {
+					t.Errorf("log names what the client typed: %q", line)
+				}
+				if strings.Contains(line, lookup) {
+					got = append(got, line)
+				}
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("logged %q, want %q", got, tc.want)
+			}
+			for i, want := range tc.want {
+				if !strings.Contains(got[i], want) {
+					t.Errorf("line %d = %q, want %q", i, got[i], want)
+				}
+			}
+		})
+	}
+}
+
 // A host taking logins has accounts and domains. An inventory without them is
 // a read gone wrong, not proof that every name is missing.
 func TestMailboxResolverEmptySnapshotIsUnknown(t *testing.T) {

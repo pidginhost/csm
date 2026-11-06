@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"errors"
 	"slices"
 	"strings"
 	"sync"
@@ -10,6 +11,7 @@ import (
 	"github.com/pidginhost/csm/internal/antispam/dovecot"
 	"github.com/pidginhost/csm/internal/antispam/learnwatch"
 	"github.com/pidginhost/csm/internal/checks"
+	csmlog "github.com/pidginhost/csm/internal/log"
 	"github.com/pidginhost/csm/internal/platform"
 )
 
@@ -166,6 +168,9 @@ func (r *cpanelMailboxResolver) refreshSnapshot(now time.Time) {
 	if !r.snapshotAt.IsZero() && now.Sub(r.snapshotAt) <= mailboxResolverTTL {
 		return
 	}
+	// Before its first read the lookup counts as up, so a first failure is news
+	// and a first good read is not.
+	wasDown := !r.snapshotAt.IsZero() && !r.snapshotUsable
 	r.snapshotAt = now
 	snapshot, err := r.src.Inventory()
 	// A host taking logins has accounts and domains. A read without them says
@@ -176,6 +181,15 @@ func (r *cpanelMailboxResolver) refreshSnapshot(now time.Time) {
 	// Lists were read for the previous ownership and account identities. Even
 	// a younger list cannot answer for domains introduced by this snapshot.
 	clear(r.accounts)
+	switch {
+	case wasDown && r.snapshotUsable:
+		csmlog.Info("mailbox lookup available again")
+	case !wasDown && !r.snapshotUsable:
+		if err == nil {
+			err = errors.New("no accounts or domains listed")
+		}
+		csmlog.Warn("mailbox lookup unavailable, failed logins stay unknown", "err", err)
+	}
 }
 
 func (r *cpanelMailboxResolver) accountLists(account string) (map[string][]string, bool) {
