@@ -128,6 +128,48 @@ func TestMailboxResolverFailsUnknown(t *testing.T) {
 	}
 }
 
+// A host taking logins has accounts and domains. An inventory without them is
+// a read gone wrong, not proof that every name is missing.
+func TestMailboxResolverEmptySnapshotIsUnknown(t *testing.T) {
+	for name, empty := range map[string]checks.HostingSnapshot{
+		"accounts, no domains": {Accounts: []string{"exampleco"}, Domains: map[string]string{}},
+		"nil domains":          {Accounts: []string{"exampleco"}},
+		"no accounts":          {Accounts: []string{}, Domains: map[string]string{"example.com": "exampleco"}},
+		"nothing":              {Accounts: []string{}, Domains: map[string]string{}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			src := newFakeMailboxSource()
+			populated := src.snapshot
+			src.snapshot = empty
+			clock := time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC)
+			r := newCPanelMailboxResolver(src, func() time.Time { return clock })
+			names := []string{"a@example.org", "admin"}
+			for _, row := range mailboxResolverRows {
+				names = append(names, normalizeSprayMailbox(row.input))
+			}
+			for _, input := range names {
+				if got, want := r.Resolve(input), (sprayMailbox{name: input}); got != want {
+					t.Errorf("Resolve(%q) = %+v, want %+v", input, got, want)
+				}
+			}
+			if src.inventoryCalls != 1 || len(src.mailboxCalls) != 0 {
+				t.Errorf("%d Inventory and %d Mailboxes calls, want 1 and 0", src.inventoryCalls, len(src.mailboxCalls))
+			}
+
+			// Cached like a failed refresh: a good read waits for the TTL.
+			src.snapshot = populated
+			clock = clock.Add(mailboxResolverTTL)
+			if got := r.Resolve("info@example.com"); got.exist != mailboxExistenceUnknown {
+				t.Errorf("inside the TTL exist = %v, want Unknown", got.exist)
+			}
+			clock = clock.Add(time.Second)
+			if got := r.Resolve("info@example.com"); got.exist != mailboxExists {
+				t.Errorf("after the TTL exist = %v, want Exists", got.exist)
+			}
+		})
+	}
+}
+
 func TestMailboxResolverNeverReadsTypedNames(t *testing.T) {
 	src := newFakeMailboxSource()
 	r := newCPanelMailboxResolver(src, time.Now)
@@ -217,6 +259,7 @@ func TestMailboxResolverAccountCacheBounded(t *testing.T) {
 	domain := func(i int) string { return fmt.Sprintf("d%05d.example.com", i) }
 	for i := range total {
 		owner := fmt.Sprintf("owner%05d", i)
+		src.snapshot.Accounts = append(src.snapshot.Accounts, owner)
 		src.snapshot.Domains[domain(i)] = owner
 		src.lists[owner] = map[string][]string{domain(i): {"info"}}
 	}

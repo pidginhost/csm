@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"fmt"
+	"slices"
 
 	"github.com/pidginhost/csm/internal/antispam/learnwatch"
 	"github.com/pidginhost/csm/internal/checks"
@@ -51,8 +52,14 @@ func (s *liveMailboxSource) Mailboxes(account string) (map[string][]string, bool
 	for _, b := range boxes {
 		// The main mailbox has no address to list.
 		if b.Domain != "" {
-			lists[b.Domain] = append(lists[b.Domain], b.Box)
+			domain := normalizeSprayMailbox(b.Domain)
+			lists[domain] = append(lists[domain], normalizeSprayMailbox(b.Box))
 		}
+	}
+	// Folding can reorder a list and merge entries.
+	for domain, list := range lists {
+		slices.Sort(list)
+		lists[domain] = slices.Compact(list)
 	}
 	return lists, len(skips) == 0, nil
 }

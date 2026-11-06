@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/antispam/learnwatch"
 	"github.com/pidginhost/csm/internal/checks"
@@ -69,6 +70,37 @@ func TestLiveMailboxSourceReadsPasswdLists(t *testing.T) {
 	lists, complete, err = src.Mailboxes("exampleco")
 	if err != nil || complete || !reflect.DeepEqual(lists, want) {
 		t.Fatalf("with an unsupported entry Mailboxes = %v, %v, %v, want %v, incomplete", lists, complete, err, want)
+	}
+}
+
+// Login names are compared in lower case, so a mixed-case record or domain
+// directory must still answer for the real mailbox. Folding can reorder a list
+// and merge entries; lookups need it sorted and distinct.
+func TestLiveMailboxSourceFoldsCase(t *testing.T) {
+	home, accounts := mailboxHome(t, "exampleco")
+	writeMailboxList(t, home, "example.com", "Zed:x:1001:1001::/m:/bin/false\nalpha:x:1001:1001::/m:/bin/false\nInfo:x:1001:1001::/m:/bin/false\ninfo:x:1001:1001::/m:/bin/false\n")
+	writeMailboxList(t, home, "Example.COM", "SALES:x:1001:1001::/m:/bin/false\nINFO:x:1001:1001::/m:/bin/false\n")
+	writeMailboxList(t, home, "Shop.Example.ORG", "Orders:x:1001:1001::/m:/bin/false\n")
+	src := liveMailboxSourceOver(accounts)
+	src.inventory = func() (checks.HostingSnapshot, error) {
+		return checks.HostingSnapshot{
+			Accounts: []string{"exampleco"},
+			Domains:  map[string]string{"example.com": "exampleco", "shop.example.org": "exampleco"},
+		}, nil
+	}
+	r := newCPanelMailboxResolver(src, time.Now)
+	for _, name := range []string{"alpha@example.com", "info@example.com", "sales@example.com", "zed@example.com", "orders@shop.example.org"} {
+		if got, want := r.Resolve(name), (sprayMailbox{name: name, exist: mailboxExists}); got != want {
+			t.Errorf("Resolve(%q) = %+v, want %+v", name, got, want)
+		}
+	}
+	if got := r.Resolve("nosuch@example.com"); got.exist != mailboxMissing {
+		t.Errorf("nosuch@example.com exist = %v, want Missing", got.exist)
+	}
+	want := map[string][]string{"example.com": {"alpha", "info", "sales", "zed"}, "shop.example.org": {"orders"}}
+	lists, complete, err := src.Mailboxes("exampleco")
+	if err != nil || !complete || !reflect.DeepEqual(lists, want) {
+		t.Fatalf("Mailboxes = %v, %v, %v, want %v, complete", lists, complete, err, want)
 	}
 }
 
