@@ -65,7 +65,7 @@ type ApplyBlockResult struct {
 var ErrNoIPBlocker = errors.New("firewall engine not available")
 
 // ErrAutoBlockDisabled is returned when auto_response.enabled or block_ips is
-// off: the operator turned automatic blocking off, so no source may block.
+// off, or the originating detector is in observe mode.
 // Like ErrNoIPBlocker it means the block did not happen.
 var ErrAutoBlockDisabled = errors.New("automatic IP blocking is disabled")
 
@@ -85,9 +85,16 @@ var ErrAutoBlockDisabled = errors.New("automatic IP blocking is disabled")
 // are already gated upstream, and letting them starve or be starved by the
 // scan budget would change containment behavior.
 func ApplyBlock(cfg *config.Config, req ApplyBlockRequest) (ApplyBlockResult, error) {
+	check := req.Root.Check()
+	if check == "" {
+		check = req.RootFinding.Check
+	}
+	if check == "" {
+		check = req.Check
+	}
 	// The switches gate every automatic block, not only scan blocks. The
 	// engine's dry-run gate still applies below them.
-	if !cfg.AutoResponse.Enabled || !cfg.AutoResponse.BlockIPs {
+	if !cfg.AutoResponse.Enabled || !cfg.AutoResponse.BlockIPs || !CheckResponseEnabled(cfg, check) {
 		return ApplyBlockResult{Outcome: firewall.BlockOutcomeNoop}, ErrAutoBlockDisabled
 	}
 	respondDerived(req)

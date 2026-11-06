@@ -389,7 +389,7 @@ func TestPath6_RebuildEmitsNothing(t *testing.T) {
 	if len(*findings) != 0 {
 		t.Fatalf("rebuild emitted findings: %+v", *findings)
 	}
-	if got := p.eng.form.evaluate(formRelayKey(path6IP), path6T0.Add(2*time.Hour), 24*time.Hour, 1, nil, false).Count; got != 5 {
+	if got := p.eng.form.evaluate(formRelayKey(path6IP), path6T0.Add(2*time.Hour), 24*time.Hour, 1, nil, "enforce", false).Count; got != 5 {
 		t.Fatalf("rebuild recorded %d recipients, want 5", got)
 	}
 	feedVictims(t, p, "a", path6Form, path6IP, 5, 1, path6T0)

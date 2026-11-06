@@ -8,14 +8,135 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
 
 	"github.com/pidginhost/csm/internal/admission"
+	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/challenge"
 	"github.com/pidginhost/csm/internal/checks"
+	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/incident"
+	"github.com/pidginhost/csm/internal/reporting"
 )
+
+func TestPath6_ReloadFromObserveToEnforce(t *testing.T) {
+	p, findings := path6Pipeline(t, "a")
+	cfg := *p.eng.config()
+	cfg.EmailProtection.PHPRelay.IPRecipientMode = "observe"
+	var live atomic.Pointer[config.Config]
+	live.Store(&cfg)
+	p.eng.cfgFn = live.Load
+	feedVictims(t, p, "a", path6Form, path6IP, 0, 5, path6T0)
+	if got := path6Of(*findings, path6Observed); len(got) != 1 {
+		t.Fatalf("observed findings = %+v, want one", got)
+	}
+
+	enforce := cfg
+	enforce.EmailProtection.PHPRelay.IPRecipientMode = "enforce"
+	live.Store(&enforce)
+	feedScriptMail(t, p, "after-reload", "a", path6Form, path6IP, path6T0.Add(3*time.Hour), "new@outside.example")
+	got := path6Of(*findings, path6Check)
+	if len(got) != 1 || got[0].Observation.Cursor != "after-reload" {
+		t.Fatalf("enforcement did not use the next eligible mail: %+v", got)
+	}
+	// Toggling back and forth must not renew either mode's cooldown.
+	live.Store(&cfg)
+	feedScriptMail(t, p, "observe-again", "a", path6Form, path6IP, path6T0.Add(4*time.Hour), "other@outside.example")
+	live.Store(&enforce)
+	feedScriptMail(t, p, "enforce-again", "a", path6Form, path6IP, path6T0.Add(5*time.Hour), "third@outside.example")
+	for _, check := range []string{path6Observed, path6Check, path6Script} {
+		if got := path6Of(*findings, check); len(got) != 1 {
+			t.Fatalf("%s emitted %d findings, want one", check, len(got))
+		}
+	}
+}
+
+func TestPath6_CentralResponseRespectsModeReload(t *testing.T) {
+	for _, decision := range []reporting.Decision{reporting.DecisionChallenge, reporting.DecisionBlock} {
+		t.Run(fmt.Sprint(decision), func(t *testing.T) {
+			cfg, blocker := applyWiringSetup(t)
+			cfg.EmailProtection.PHPRelay.IPRecipientMode = "enforce"
+			a := withRecordingAdmission(t)
+			d := New(cfg, nil, nil, "")
+			d.ipList = challenge.NewIPList(filepath.Join(t.TempDir(), "challenge_ips.txt"))
+			p, findings := path6Pipeline(t, "a")
+			feedVictims(t, p, "a", path6Form, path6IP, 0, 5, time.Now().Add(-2*time.Hour))
+			store := centralStoreWith(t, []reporting.ScoredEntry{{IP: path6IP, Score: 95, Classes: []reporting.Class{reporting.ClassBruteforce}, LastSeen: time.Now()}})
+			f := path6Of(*findings, path6Check)[0]
+			planned, ok := d.planCentralAction(store, reporting.ActionBlockIfLocalCorroborated, 80, func(string) bool { return false }, f)
+			if !ok {
+				t.Fatal("enforce finding did not corroborate central response")
+			}
+			planned.decision = decision
+			cfg.EmailProtection.PHPRelay.IPRecipientMode = "observe"
+			if _, ok := d.planCentralAction(store, reporting.ActionBlockIfLocalCorroborated, 80, func(string) bool { return false }, f); ok {
+				t.Error("observe mode planned a central response from enforce history")
+			}
+			if err := d.performCentralAction(planned); err != nil {
+				t.Fatal(err)
+			}
+			if d.ipList.Contains(path6IP) || len(blocker.calls) != 0 || len(a.got()) != 0 {
+				t.Fatalf("queued central response survived observe reload: responses %+v, blocked %v", a.got(), blocker.calls)
+			}
+		})
+	}
+}
+
+func TestPath6_ObservedFindingCannotReachResponses(t *testing.T) {
+	for _, challengeEnabled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("challenge=%v", challengeEnabled), func(t *testing.T) {
+			cfg, blocker := applyWiringSetup(t)
+			cfg.Challenge.Enabled = challengeEnabled
+			cfg.EmailProtection.PHPRelay.IPRecipientMode = "observe"
+			a := withRecordingAdmission(t)
+			d := New(cfg, nil, nil, "")
+			d.ipList = challenge.NewIPList(filepath.Join(t.TempDir(), "challenge_ips.txt"))
+			previous := checks.GetChallengeIPList()
+			checks.SetChallengeIPList(d.ipList)
+			t.Cleanup(func() { checks.SetChallengeIPList(previous) })
+			p, findings := path6Pipeline(t, "a")
+			p.eng.config().EmailProtection.PHPRelay.IPRecipientMode = "observe"
+			feedVictims(t, p, "a", path6Form, path6IP, 0, 5, time.Now().Add(-2*time.Hour))
+			if got := path6Of(*findings, path6Observed); len(got) != 1 || got[0].Observation != (alert.Observation{}) {
+				t.Fatalf("observed finding = %+v, want one without admission provenance", got)
+			}
+			checks.ChallengeThenBlock(cfg, *findings)
+			if d.ipList.Contains(path6IP) || len(blocker.calls) != 0 || len(a.got()) != 0 || len(a.refusals) != 0 {
+				t.Fatalf("observe mode attempted response: %+v, refusals %+v, blocked %v", a.got(), a.refusals, blocker.calls)
+			}
+		})
+	}
+}
+
+func TestPath6_ObservedFindingCannotEscalateIncident(t *testing.T) {
+	resetIncidentForTest()
+	t.Cleanup(resetIncidentForTest)
+	p, findings := path6Pipeline(t, "a")
+	cfg := p.eng.config()
+	cfg.EmailProtection.PHPRelay.IPRecipientMode = "observe"
+	cfg.AutoResponse.Enabled, cfg.AutoResponse.BlockIPs = true, true
+	cfg.Incidents.AutoBlock.Enabled = true
+	cfg.Incidents.AutoBlock.BlockAtSeverity = "high"
+	SetIncidentConfigSource(func() *config.Config { return cfg })
+	var blocked []string
+	SetIncidentSprayBlocker(func(ip, _ string, _ time.Duration, _ string, _ incident.PreparedRoot, _ admission.Entry) (bool, error) {
+		blocked = append(blocked, ip)
+		return true, nil
+	})
+	feedVictims(t, p, "a", path6Form, path6IP, 0, 5, time.Now().Add(-2*time.Hour))
+	c := IncidentCorrelator()
+	for _, f := range append(*findings, alert.Finding{Check: "xmlrpc_abuse", Severity: alert.Critical, SourceIP: "198.51.100.1", Timestamp: time.Now()}) {
+		if _, _, err := c.OnFinding(f); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(blocked) != 1 || blocked[0] != "198.51.100.1" {
+		t.Fatalf("incident blocks = %v, want only the unrelated attacker", blocked)
+	}
+}
 
 func TestPath6_ResponseRetainsSpoolEvidence(t *testing.T) {
 	for _, challengeEnabled := range []bool{false, true} {
@@ -23,6 +144,7 @@ func TestPath6_ResponseRetainsSpoolEvidence(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				cfg, _ := applyWiringSetup(t)
 				cfg.Challenge.Enabled = challengeEnabled
+				cfg.EmailProtection.PHPRelay.IPRecipientMode = "enforce"
 				a := withRecordingAdmission(t)
 				d := New(cfg, nil, nil, "")
 				d.ipList = challenge.NewIPList(filepath.Join(t.TempDir(), "challenge_ips.txt"))
@@ -87,7 +209,7 @@ func TestPath6_StartupRestoresFullWindow(t *testing.T) {
 	}
 	runStartupSpoolWalker(root, p)
 	requireNoPath6(t, *findings)
-	if got := p.eng.form.evaluate(formRelayKey(path6IP), now, 24*time.Hour, 1, nil, false).Count; got != 4 {
+	if got := p.eng.form.evaluate(formRelayKey(path6IP), now, 24*time.Hour, 1, nil, "enforce", false).Count; got != 4 {
 		t.Fatalf("restored %d outside recipients, want 4 within the window", got)
 	}
 	feedScriptMail(t, p, "live", "a", path6Form, path6IP, now, "new@outside.example")

@@ -199,6 +199,7 @@ func TestChallengeRouteIPsMatchesGoldenPolicy(t *testing.T) {
 						SetChallengeIPList(mock)
 						cfg := &config.Config{}
 						cfg.Challenge.Enabled = enabled
+						cfg.EmailProtection.PHPRelay.IPRecipientMode = "enforce"
 						cfg.AutoResponse.BlockCpanelLogins = cpanel
 						cfg.AutoResponse.HTTPScannerAction = action
 						f := alert.Finding{Check: name, Severity: sev, SourceIP: "203.0.113.10", Message: "probe"}

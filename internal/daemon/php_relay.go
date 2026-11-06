@@ -1083,22 +1083,23 @@ func (e *evaluator) evaluatePaths(k scriptKey, sourceIP, cpuser string, now time
 	return findings
 }
 
-// formRelayFindings emits the client finding once per window when ip's
+// formRelayFindings emits the client finding once per mode per window when ip's
 // outside-recipient count reaches spread, plus one finding per script that
 // reached at least two of them, for the operator to fix. Outside enforce
 // mode the client finding uses a check that aims no response.
 func (e *evaluator) formRelayFindings(k scriptKey, ip, cpuser string, spread int, window time.Duration, now time.Time, ignored func(scriptKey) bool) []alert.Finding {
+	mode := e.config().EmailProtection.PHPRelay.IPRecipientMode
 	key := formRelayKey(ip)
 	since := now.Add(-window)
 	hours := fmt.Sprintf("%dh", window/time.Hour)
-	snapshot := e.form.evaluate(key, now, window, spread, ignored, false)
+	snapshot := e.form.evaluate(key, now, window, spread, ignored, mode, false)
 	if snapshot.FireClient {
 		// The logs are read outside the store lock; the claim comes after,
 		// on what is left once staff accounts drop out.
 		for user, at := range formRelayStaffAccounts(key, snapshot.Shares, now) {
 			e.form.markStaff(user, key, at)
 		}
-		snapshot = e.form.evaluate(key, now, window, spread, ignored, true)
+		snapshot = e.form.evaluate(key, now, window, spread, ignored, mode, true)
 	}
 	if snapshot.Count < spread {
 		return nil
@@ -1140,7 +1141,7 @@ func (e *evaluator) formRelayFindings(k scriptKey, ip, cpuser string, spread int
 		}
 		check := "email_php_form_relay"
 		message := fmt.Sprintf("Path 6: client %s made hosted sites mail %d different outside addresses in %s", ip, snapshot.Count, hours)
-		if e.config().EmailProtection.PHPRelay.IPRecipientMode != "enforce" {
+		if mode != "enforce" {
 			check = "email_php_form_relay_observed"
 			message += " (observe mode, not challenged)"
 		}

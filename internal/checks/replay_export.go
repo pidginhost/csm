@@ -9,15 +9,15 @@ import (
 
 // BlockableFinding reports whether the scan admission path may block the
 // address in f. The offline replay tool builds its model from this, so the
-// model applies the registry exactly as the live path does.
-func BlockableFinding(f alert.Finding, blockCpanelLogins bool) bool {
-	return blockableFinding(f, blockCpanelLogins)
+// model applies the registry and detector modes exactly as the live path does.
+func BlockableFinding(cfg *config.Config, f alert.Finding) bool {
+	return CheckResponseEnabled(cfg, f.Check) && blockableFinding(f, cfg.AutoResponse.BlockCpanelLogins)
 }
 
 // ChallengeRoutesFinding reports whether the live path sends f to the
 // challenge instead of blocking it.
 func ChallengeRoutesFinding(cfg *config.Config, f alert.Finding) bool {
-	return responseActionForFinding(cfg, f) == responseChallenge
+	return CheckResponseEnabled(cfg, f.Check) && responseActionForFinding(cfg, f) == responseChallenge
 }
 
 // ReputationMessageSourceIP recovers the address an ip_reputation finding

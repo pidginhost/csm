@@ -244,6 +244,7 @@ func TestChallengeRouteIPs_FormRelayFinding(t *testing.T) {
 
 	cfg := &config.Config{}
 	cfg.Challenge.Enabled = true
+	cfg.EmailProtection.PHPRelay.IPRecipientMode = "enforce"
 	actions := ChallengeRouteIPs(cfg, []alert.Finding{{
 		Check: "email_php_form_relay", Severity: alert.High, SourceIP: "203.0.113.9", CPUser: "alice",
 		Message: "Path 6: client 203.0.113.9 made hosted sites mail 5 different outside addresses in 24h0m0s",
@@ -274,6 +275,7 @@ func TestFormRelayScriptFindingAimsNoResponse(t *testing.T) {
 		cfg.AutoResponse.BlockIPs = true
 		setAutoResponseLive(cfg)
 		cfg.Challenge.Enabled = challenge
+		cfg.EmailProtection.PHPRelay.IPRecipientMode = "enforce"
 
 		list := &mockIPList{ips: make(map[string]bool)}
 		SetChallengeIPList(list)

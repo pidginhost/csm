@@ -40,9 +40,10 @@ type formRelayWindow struct {
 }
 
 type formRelayClient struct {
-	lastSeen time.Time
-	firedAt  time.Time
-	rcpts    map[string]formRelayRcpt
+	lastSeen   time.Time
+	firedAt    time.Time
+	observedAt time.Time
+	rcpts      map[string]formRelayRcpt
 }
 
 type formRelayRcpt struct {
@@ -68,11 +69,11 @@ type formRelaySnapshot struct {
 }
 
 // evaluate captures one qualifying window and, with claim, claims its
-// client cooldown under the same lock. Expiry must not remove evidence
+// client cooldown for mode under the same lock. Expiry must not remove evidence
 // between counting it and building the finding. Current exemptions also
 // apply to older mail. Without claim, FireClient reports whether a claim
 // would succeed.
-func (w *formRelayWindow) evaluate(key string, at time.Time, window time.Duration, spread int, ignored func(scriptKey) bool, claim bool) formRelaySnapshot {
+func (w *formRelayWindow) evaluate(key string, at time.Time, window time.Duration, spread int, ignored func(scriptKey) bool, mode string, claim bool) formRelaySnapshot {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	cutoff := w.advanceLocked(at).Add(-window)
@@ -109,9 +110,15 @@ func (w *formRelayWindow) evaluate(key string, at time.Time, window time.Duratio
 		out.Domains = append(out.Domains, domain)
 	}
 	sort.Strings(out.Domains)
-	if !seenAtOrAfter(c.firedAt, at.Add(-window)) {
+	// An observe report must not consume the first enforce response after
+	// reload. Keep both cooldowns so toggling cannot repeatedly re-arm one.
+	firedAt := &c.observedAt
+	if mode == "enforce" {
+		firedAt = &c.firedAt
+	}
+	if !seenAtOrAfter(*firedAt, at.Add(-window)) {
 		if claim {
-			c.firedAt = at
+			*firedAt = at
 		}
 		out.FireClient = true
 	}
@@ -241,7 +248,7 @@ func (w *formRelayWindow) advanceLocked(at time.Time) time.Time {
 func (w *formRelayWindow) expireClientsLocked(cutoff time.Time) {
 	for key, c := range w.ips {
 		c.expire(cutoff)
-		if len(c.rcpts) == 0 && !seenAtOrAfter(c.firedAt, cutoff) {
+		if len(c.rcpts) == 0 && !seenAtOrAfter(c.firedAt, cutoff) && !seenAtOrAfter(c.observedAt, cutoff) {
 			delete(w.ips, key)
 		}
 	}

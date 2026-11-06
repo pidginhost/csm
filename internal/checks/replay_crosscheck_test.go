@@ -31,10 +31,11 @@ func TestExportedClassifiersMatchInternalPolicy(t *testing.T) {
 					for _, scanner := range []string{"", responseChallenge, responseBlock} {
 						cfg := &config.Config{}
 						cfg.Challenge.Enabled = challenge
+						cfg.EmailProtection.PHPRelay.IPRecipientMode = "enforce"
 						cfg.AutoResponse.BlockCpanelLogins = cpanel
 						cfg.AutoResponse.HTTPScannerAction = scanner
 						f := alert.Finding{Check: name, Severity: sev}
-						if BlockableFinding(f, cpanel) != blockableFinding(f, cpanel) {
+						if BlockableFinding(cfg, f) != blockableFinding(f, cpanel) {
 							t.Errorf("BlockableFinding(%s, %v, cpanel=%v) disagrees", name, sev, cpanel)
 						}
 						if ChallengeRoutesFinding(cfg, f) != (responseActionForFinding(cfg, f) == responseChallenge) {
@@ -75,7 +76,8 @@ func TestExportedClassifiersMatchInternalPolicy(t *testing.T) {
 		{on, alert.Finding{Check: "cpanel_multi_ip_login", Severity: alert.High}, true, true, false},
 		{on, alert.Finding{Check: "unregistered_check", Severity: alert.Critical}, false, false, false},
 	} {
-		if got := BlockableFinding(tc.f, tc.cpanel); got != tc.blockable {
+		tc.cfg.AutoResponse.BlockCpanelLogins = tc.cpanel
+		if got := BlockableFinding(tc.cfg, tc.f); got != tc.blockable {
 			t.Errorf("BlockableFinding(%s %v cpanel=%v) = %v", tc.f.Check, tc.f.Severity, tc.cpanel, got)
 		}
 		if got := ChallengeRoutesFinding(tc.cfg, tc.f); got != tc.challenge {
@@ -214,7 +216,7 @@ func newReplayHarness(t *testing.T, capacity int, start time.Time, initial block
 	}
 	classes := responsereplay.Classifier{
 		Blockable: func(f responsereplay.Finding) bool {
-			return BlockableFinding(fromReplay(f), cfg.AutoResponse.BlockCpanelLogins)
+			return BlockableFinding(cfg, fromReplay(f))
 		},
 		ChallengeFirst: func(f responsereplay.Finding) bool { return ChallengeRoutesFinding(cfg, fromReplay(f)) },
 		SourceIP:       func(f responsereplay.Finding) string { return ExtractIPFromFinding(fromReplay(f)) },
@@ -345,7 +347,7 @@ func TestLegacyModelMatchesRealPathUnderCap(t *testing.T) {
 	}
 	hardCount, challengeCount := 0, 0
 	for _, f := range findings {
-		if BlockableFinding(f, false) && !ChallengeRoutesFinding(h.cfg, f) {
+		if BlockableFinding(h.cfg, f) && !ChallengeRoutesFinding(h.cfg, f) {
 			hardCount++
 		}
 		if ChallengeRoutesFinding(h.cfg, f) {
@@ -461,7 +463,7 @@ func TestLegacyModelMatchesRealPathAgeBoundary(t *testing.T) {
 	evaluation := replayT0.Add(2 * time.Hour)
 	queued := pendingIP{IP: "203.0.113.20", Check: "smtp_bruteforce", Severity: alert.Critical, Reason: "SMTP brute force from 203.0.113.20", QueuedAt: replayT0}
 	h := newReplayHarness(t, 10, evaluation, blockState{HourKey: evaluation.Format("2006-01-02T15"), BlocksThisHour: 10, Pending: []pendingIP{queued}}, nil)
-	if !BlockableFinding(alert.Finding{Check: queued.Check, Severity: queued.Severity}, false) || evaluation.Sub(queued.QueuedAt) != maxPendingAge {
+	if !BlockableFinding(h.cfg, alert.Finding{Check: queued.Check, Severity: queued.Severity}) || evaluation.Sub(queued.QueuedAt) != maxPendingAge {
 		t.Fatal("fixture is not an eligible entry exactly at the age limit")
 	}
 	s := h.run(evaluation)
@@ -481,7 +483,7 @@ func TestLegacyModelMatchesRealPathRequeueRefresh(t *testing.T) {
 	at := replayT0.Add(30 * time.Minute)
 	h := newReplayHarness(t, 10, at, blockState{HourKey: at.Format("2006-01-02T15"), BlocksThisHour: 10, Pending: []pendingIP{queued}}, nil)
 	fresh := alert.Finding{Check: "ftp_bruteforce", Severity: alert.Critical, Message: "FTP brute force from 203.0.113.30"}
-	if !BlockableFinding(fresh, false) || ChallengeRoutesFinding(h.cfg, fresh) {
+	if !BlockableFinding(h.cfg, fresh) || ChallengeRoutesFinding(h.cfg, fresh) {
 		t.Fatal("refresh fixture is not a hard-block finding")
 	}
 	s := h.run(at, fresh)

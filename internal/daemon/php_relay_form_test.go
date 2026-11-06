@@ -26,12 +26,12 @@ func formRecord(w *formRelayWindow, ip string, k scriptKey, cpuser, msgID string
 // formPeek reads ip's window at at with a threshold of one, as the
 // evaluator does, without claiming the client cooldown.
 func formPeek(w *formRelayWindow, ip string, at time.Time) formRelaySnapshot {
-	return w.evaluate(formRelayKey(ip), at, formTestWindow, 1, nil, false)
+	return w.evaluate(formRelayKey(ip), at, formTestWindow, 1, nil, "enforce", false)
 }
 
 // formClaim is formPeek that claims the client cooldown.
 func formClaim(w *formRelayWindow, ip string, at time.Time) bool {
-	return w.evaluate(formRelayKey(ip), at, formTestWindow, 1, nil, true).FireClient
+	return w.evaluate(formRelayKey(ip), at, formTestWindow, 1, nil, "enforce", true).FireClient
 }
 
 func TestFormRelayWindow_CountsDistinctOutsideRecipients(t *testing.T) {
@@ -464,7 +464,7 @@ func TestFormRelayWindow_EvaluateBelowSpreadOrUnknownChangesNothing(t *testing.T
 	key := formRelayKey(formTestIP)
 	formRecord(w, formTestIP, formTestA, "usera", "m1", formTestT0, false, "v1@victim.example")
 	formRecord(w, formTestIP, formTestA, "usera", "m2", formTestT0.Add(time.Hour), false, "v2@victim.example")
-	if snap := w.evaluate(key, formTestT0.Add(time.Hour), formTestWindow, 3, nil, true); snap.Count != 0 || snap.FireClient {
+	if snap := w.evaluate(key, formTestT0.Add(time.Hour), formTestWindow, 3, nil, "enforce", true); snap.Count != 0 || snap.FireClient {
 		t.Fatalf("below spread = %+v, want an empty snapshot", snap)
 	}
 	if !formClaim(w, formTestIP, formTestT0.Add(time.Hour)) {
@@ -483,7 +483,7 @@ func TestFormRelayWindow_EmptyKeyIsNeverStored(t *testing.T) {
 	if got := w.record("", "usera", formTestA, "m1", formTestT0, []string{"v@victim.example"}, true, formTestWindow, formTestLimit); got != 0 {
 		t.Fatalf("record with empty key = %d, want 0", got)
 	}
-	if w.evaluate("", formTestT0, formTestWindow, 1, nil, true).FireClient {
+	if w.evaluate("", formTestT0, formTestWindow, 1, nil, "enforce", true).FireClient {
 		t.Fatal("empty key fired")
 	}
 	w.markStaff("usera", "", formTestT0)
@@ -492,6 +492,59 @@ func TestFormRelayWindow_EmptyKeyIsNeverStored(t *testing.T) {
 	}
 	if len(w.ips) != 0 || len(w.staff) != 0 {
 		t.Fatalf("empty key stored state: ips=%v staff=%v", w.ips, w.staff)
+	}
+}
+
+func TestFormRelayWindow_ModeClaimsAreAtomic(t *testing.T) {
+	w := newFormRelayWindow(100)
+	key := formRelayKey(formTestIP)
+	formRecord(w, formTestIP, formTestA, "usera", "m1", formTestT0, false, "v@outside.example")
+	var wg sync.WaitGroup
+	claims := make(chan string, 40)
+	for i := 0; i < cap(claims); i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			mode := "observe"
+			if i%2 == 0 {
+				mode = "enforce"
+			}
+			if w.evaluate(key, formTestT0.Add(time.Hour), formTestWindow, 1, nil, mode, true).FireClient {
+				claims <- mode
+			}
+		}()
+	}
+	wg.Wait()
+	close(claims)
+	counts := map[string]int{}
+	for mode := range claims {
+		counts[mode]++
+	}
+	if counts["observe"] != 1 || counts["enforce"] != 1 {
+		t.Fatalf("claims = %v, want one per mode", counts)
+	}
+}
+
+func TestFormRelayWindow_ModeCooldownSurvivesRecipientExpiry(t *testing.T) {
+	for _, mode := range []string{"observe", "enforce"} {
+		t.Run(mode, func(t *testing.T) {
+			w := newFormRelayWindow(100)
+			key := formRelayKey(formTestIP)
+			formRecord(w, formTestIP, formTestA, "usera", "m1", formTestT0, false, "v@outside.example")
+			if !w.evaluate(key, formTestT0.Add(time.Hour), formTestWindow, 1, nil, mode, true).FireClient {
+				t.Fatal("first claim did not fire")
+			}
+			// Recipients can expire before the cooldown; a sweep must keep it.
+			now := formTestT0.Add(formTestWindow + time.Minute)
+			w.sweep(now, formTestWindow)
+			formRecord(w, formTestIP, formTestA, "usera", "m2", now, false, "new@outside.example")
+			if w.evaluate(key, now, formTestWindow, 1, nil, mode, true).FireClient {
+				t.Fatal("cooldown lost on sweep")
+			}
+			if !w.evaluate(key, now.Add(time.Hour), formTestWindow, 1, nil, mode, true).FireClient {
+				t.Fatal("cooldown did not expire")
+			}
+		})
 	}
 }
 
@@ -526,7 +579,7 @@ func TestFormRelayWindow_ConcurrentMixedOperations(t *testing.T) {
 	})
 	run(func(i int) {
 		key := formRelayKey(ips[i%len(ips)])
-		snap := w.evaluate(key, formTestT0.Add(time.Duration(i)*time.Minute), formTestWindow, 1, nil, i%2 == 0)
+		snap := w.evaluate(key, formTestT0.Add(time.Duration(i)*time.Minute), formTestWindow, 1, nil, "enforce", i%2 == 0)
 		if snap.Count > formTestLimit {
 			t.Errorf("count = %d, above the limit %d", snap.Count, formTestLimit)
 		}

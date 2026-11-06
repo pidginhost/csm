@@ -160,7 +160,7 @@ func ChallengeRouteIPs(cfg *config.Config, findings []alert.Finding) []alert.Fin
 	routed := make(map[string]bool)
 
 	for _, f := range findings {
-		if f.AutoIPResponseEvaluated {
+		if f.AutoIPResponseEvaluated || !CheckResponseEnabled(cfg, f.Check) {
 			continue
 		}
 		// Challenge timeouts can hard-block too, so gated authentication

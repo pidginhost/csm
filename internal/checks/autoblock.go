@@ -317,7 +317,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	for _, f := range findings {
 		if f.AutoIPResponseEvaluated {
 			evaluated[evaluatedBlock{alert.FindingID(f), extractIPFromFinding(f)}] = true
-		} else if blockableFinding(f, cfg.AutoResponse.BlockCpanelLogins) {
+		} else if BlockableFinding(cfg, f) {
 			freshIPs[extractIPFromFinding(f)] = true
 		}
 	}
@@ -336,7 +336,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		p.IP = ip
 		// Retry only evidence still eligible under the current policy. Older
 		// queues lack check identity; a free-text reason cannot establish it.
-		if !blockableFinding(alert.Finding{Check: p.Check, Severity: p.Severity, Cause: p.Cause}, cfg.AutoResponse.BlockCpanelLogins) {
+		if !BlockableFinding(cfg, alert.Finding{Check: p.Check, Severity: p.Severity, Cause: p.Cause}) {
 			work.completePending(p)
 			fmt.Fprintf(os.Stderr, "auto-block: dropping ineligible pending %s (check %q)\n", p.IP, p.Check)
 			continue
@@ -426,7 +426,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	}
 	for _, f := range findings {
 		work.progress()
-		if f.AutoIPResponseEvaluated || !blockableFinding(f, cfg.AutoResponse.BlockCpanelLogins) {
+		if f.AutoIPResponseEvaluated || !BlockableFinding(cfg, f) {
 			continue
 		}
 

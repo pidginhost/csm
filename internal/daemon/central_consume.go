@@ -172,7 +172,7 @@ func (d *Daemon) planCentralAction(store *reporting.CentralStore, action reporti
 	// as an attacker. A response record, a health finding, the remote end
 	// of an outbound connection, a customer login or an advisory does not.
 	ip := f.SourceIP
-	if ip == "" || !checks.AddressEvidence(f.Check, f.Severity) {
+	if ip == "" || !checks.CheckResponseEnabled(d.currentCfg(), f.Check) || !checks.AddressEvidence(f.Check, f.Severity) {
 		return centralQueuedAction{}, false
 	}
 	entry, found := store.Lookup(ip)
@@ -191,6 +191,13 @@ func (d *Daemon) planCentralAction(store *reporting.CentralStore, action reporti
 }
 
 func (d *Daemon) performCentralAction(a centralQueuedAction) error {
+	check := a.root.Check()
+	if check == "" {
+		check = a.rootFinding.Check
+	}
+	if !checks.CheckResponseEnabled(d.currentCfg(), check) {
+		return nil
+	}
 	switch a.decision {
 	case reporting.DecisionChallenge:
 		if d.ipList != nil {

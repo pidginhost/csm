@@ -165,7 +165,7 @@ func TestReplayReportsTheHandCalculatedFixture(t *testing.T) {
 	for key, want := range map[string]any{"max_blocks_per_hour": 2.0, "max_blocks_per_hour_defaulted": false, "deny_temp_ip_limit": 1.0,
 		"block_expiry_ns": float64(time.Hour), "block_expiry_defaulted": false, "pending_bound": 1000.0,
 		"pending_max_age_ns": float64(2 * time.Hour), "hour_zone": "UTC", "challenge_enabled": true,
-		"http_scanner_action": "challenge", "block_cpanel_logins": false} {
+		"http_scanner_action": "challenge", "block_cpanel_logins": false, "php_relay_ip_recipient_mode": "observe"} {
 		if policy[key] != want {
 			t.Errorf("policy %s = %v, want %v", key, policy[key], want)
 		}
@@ -223,7 +223,7 @@ func assertNoInput(t *testing.T, where, text string) {
 var (
 	hexDigest   = regexp.MustCompile(`^[0-9a-f]{40}$|^[0-9a-f]{64}$`)
 	goVersion   = regexp.MustCompile(`^go[0-9.]+$`)
-	fixedValues = map[string]bool{"legacy_scan_admission": true, "sorted_keys_math_rand_shuffle": true, "UTC": true, "challenge": true, "block": true}
+	fixedValues = map[string]bool{"legacy_scan_admission": true, "sorted_keys_math_rand_shuffle": true, "UTC": true, "challenge": true, "block": true, "observe": true, "enforce": true}
 )
 
 // assertReportVocabulary walks every value: strings are fixed vocabulary,
