@@ -132,12 +132,7 @@ retains a verified episode's boundary even after an unattempted return is
 forgotten. The first verified block raises the ledger to schema 15. Roll
 back only to a build that reads schema 15, understands the recorded
 verified generation, and retains and cleans up these rows; older builds
-refuse this ledger. Older rows keep re-admitting from retained block
-history. A block arrival records the reference when it next writes the
-episode. Missing predecessor history still leaves the block answered until
-its episode ends.
-Opening a ledger rejects inconsistent verified references without changing
-the database. This
+refuse this ledger. This
 writer remains behind live execution and does not run on preview-only
 hosts. Keep the database when changing binaries.
 
