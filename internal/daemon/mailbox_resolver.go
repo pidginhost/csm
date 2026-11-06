@@ -149,7 +149,7 @@ func (r *cpanelMailboxResolver) Resolve(input string) sprayMailbox {
 
 // accountNameExistence answers for a login with no domain.
 func (r *cpanelMailboxResolver) accountNameExistence(name string) mailboxExistence {
-	if !admission.ValidAccountName(name) || hasAddressExtension(name) {
+	if !admission.ValidAccountName(name) {
 		return mailboxExistenceUnknown
 	}
 	if _, found := slices.BinarySearch(r.snapshot.Accounts, name); found {

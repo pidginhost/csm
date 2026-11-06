@@ -598,6 +598,15 @@ func TestDovecotSessionVerdictsSpoil(t *testing.T) {
 			t.Fatalf("got %d, want missing", got)
 		}
 	})
+	t.Run("withholds up to the ttl with no verdict after it", func(t *testing.T) {
+		for gap, want := range map[time.Duration]bool{dovecotSessionVerdictTTL: true, dovecotSessionVerdictTTL + time.Second: false} {
+			v := newDovecotSessionVerdicts()
+			v.Spoil(session, at)
+			if got, withheld := v.Take(session, ip, name, at.Add(gap)); got != mailboxExistenceUnknown || withheld != want {
+				t.Fatalf("after %v got %d, withheld %v, want unknown, %v", gap, got, withheld, want)
+			}
+		}
+	})
 	t.Run("an expired session starts over", func(t *testing.T) {
 		v := newDovecotSessionVerdicts()
 		v.Note(session, ip, name, mailboxMissing, at)

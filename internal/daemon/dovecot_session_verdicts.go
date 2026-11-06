@@ -68,7 +68,6 @@ func (v *dovecotSessionVerdicts) Note(session, ip, account string, exist mailbox
 	}
 	if elem == nil {
 		elem = v.add(session, ip)
-		elem.Value.(*dovecotSession).at = at
 	}
 	s := elem.Value.(*dovecotSession)
 	// A session belongs to one client, and a spoiled one stays spoiled.
