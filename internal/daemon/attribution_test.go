@@ -161,6 +161,22 @@ func TestPHPRelayAbuseStampsOwner(t *testing.T) {
 	requireOwner(t, volume.parsePHPRelayAccountVolumeAt(system, now, now), "email_php_relay_abuse", "")
 }
 
+// The form relay script finding names the account whose form bots abused;
+// a script sent from a system user carries no hosting owner.
+func TestPHPFormRelayScriptStampsOwner(t *testing.T) {
+	withOwnerTable(t)
+	now := time.Now()
+	const ip = "203.0.113.7"
+	for user, owner := range map[string]string{"alice": "alice", "root": ""} {
+		eng := newEvaluator(newPerScriptWindow(), newPerIPWindow(64), nil, defaultPHPRelayCfg(), nil)
+		k := "shop.example:/contact.php"
+		for _, victim := range []string{"a@one.example", "b@two.example", "c@three.example", "d@four.example", "e@five.example"} {
+			eng.form.record(formRelayKey(ip), user, k, victim, now, []string{victim}, false, 24*time.Hour, 5)
+		}
+		requireOwner(t, eng.formRelayFindings(k, ip, user, 5, 24*time.Hour, now, nil), "email_php_form_relay_script", owner)
+	}
+}
+
 func TestPHPShieldFindingsStampOwner(t *testing.T) {
 	for _, tc := range []struct{ line, check string }{
 		{`[2026-04-12 10:00:00] BLOCK_PATH ip=203.0.113.5 script=/home/alice/public_html/evil.php details=blocked dangerous path`, "php_shield_block"},

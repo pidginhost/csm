@@ -5,6 +5,7 @@ package daemon
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -142,5 +143,36 @@ func TestPHPRelayStartupFailureKeepsPersistenceHealth(t *testing.T) {
 	}
 	if active, exists := d.WatcherStatuses()["phprelay"]; !exists || active {
 		t.Fatalf("failed watcher startup was not recorded: active=%v exists=%v", active, exists)
+	}
+}
+
+// SIGHUP reports a broken policy file; startup must too, or the operator
+// never learns that the built-in proxy list is in force instead of theirs.
+func TestPHPRelayStartupReportsPolicyLoadErrors(t *testing.T) {
+	d, paths, _ := phpRelayStartupQueueFixture(t)
+	if err := os.Mkdir(paths.spool, 0700); err != nil {
+		t.Fatal(err)
+	}
+	policy := filepath.Join(d.cfg.EmailProtection.PHPRelay.PoliciesDir, "http_proxy_ranges.yaml")
+	if err := os.WriteFile(policy, []byte("version: 1\ncidrs: [not-a-cidr]\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	startPHPRelayLinuxAt(d, paths)
+	if d.policies == nil {
+		t.Fatal("startup installed no policies")
+	}
+	for {
+		select {
+		case f := <-d.alertCh:
+			if f.Check != "email_php_relay_policies_reload" {
+				continue
+			}
+			if f.Severity != alert.Warning || !strings.Contains(f.Message, "http_proxy_ranges.yaml rejected") {
+				t.Fatalf("startup policy warning = %+v", f)
+			}
+			return
+		default:
+			t.Fatal("startup policy load error was not reported")
+		}
 	}
 }

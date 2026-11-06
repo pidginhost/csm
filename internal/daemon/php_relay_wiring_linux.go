@@ -57,7 +57,11 @@ func startPHPRelayLinuxAt(d *Daemon, paths phpRelayPaths) {
 	// 2. Policies (suspicious mailers, HTTP-proxy ranges). LoadPolicies
 	// returns a usable Policies even on partial-failure so we always
 	// have something to install on the daemon for SIGHUP reloads.
-	pol, _ := emailspool.LoadPolicies(d.cfg.EmailProtection.PHPRelay.PoliciesDir)
+	pol, err := emailspool.LoadPolicies(d.cfg.EmailProtection.PHPRelay.PoliciesDir)
+	if err != nil {
+		emitPHPRelayFinding(d, alert.Warning, "email_php_relay_policies_reload",
+			fmt.Sprintf("policies/email load encountered errors at startup: %v", err))
+	}
 	d.policies = pol
 
 	// 3. Window state (per-script, per-IP, per-account).
@@ -197,7 +201,7 @@ func startPHPRelayLinuxAt(d *Daemon, paths phpRelayPaths) {
 	d.wg.Add(1)
 	obs.Go("php-relay-flow-e", func() {
 		defer d.wg.Done()
-		runPHPRelayFlowE(d, ctx, psw, pip, pacct, idx, persister, ignores, prMetrics)
+		runPHPRelayFlowE(d, ctx, eng, psw, pip, pacct, idx, persister, ignores, prMetrics)
 	})
 }
 
@@ -207,6 +211,7 @@ func startPHPRelayLinuxAt(d *Daemon, paths phpRelayPaths) {
 func runPHPRelayFlowE(
 	d *Daemon,
 	ctx context.Context,
+	eng *evaluator,
 	psw *perScriptWindow,
 	pip *perIPWindow,
 	pacct *perAccountWindow,
@@ -219,6 +224,7 @@ func runPHPRelayFlowE(
 	fiveMinTicker := time.NewTicker(5 * time.Minute)
 	defer minTicker.Stop()
 	defer fiveMinTicker.Stop()
+	var formFullReported time.Time
 	for {
 		select {
 		case <-ctx.Done():
@@ -243,8 +249,22 @@ func runPHPRelayFlowE(
 			psw.SweepIdle(cutoff25h)
 			pip.SweepIdle(now.Add(-1 * time.Hour))
 			pacct.SweepIdle(now.Add(-24 * time.Hour))
+			formFullReported = sweepFormRelay(d, eng, now, formFullReported)
 		}
 	}
+}
+
+// sweepFormRelay expires Path 6 state and, when the client table hit its
+// cap since the last sweep, reports it at most once a day. It returns when
+// the table was last reported full.
+func sweepFormRelay(d *Daemon, eng *evaluator, now, lastFull time.Time) time.Time {
+	window := time.Duration(eng.config().EmailProtection.PHPRelay.IPRecipientWindowHours) * time.Hour
+	if !eng.form.sweep(now, window) || !lastFull.IsZero() && now.Sub(lastFull) < 24*time.Hour {
+		return lastFull
+	}
+	emitPHPRelayFinding(d, alert.Warning, "email_php_form_relay_table_full",
+		fmt.Sprintf("Form relay client table reached its cap of %d; clients with the fewest outside recipients were dropped", eng.form.maxIPs))
+	return now
 }
 
 // Nonblocking delivery keeps a full findings channel from stopping mail

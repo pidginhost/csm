@@ -1099,6 +1099,10 @@ type Config struct {
 		// the values set in applyDefaults(), except documented zero
 		// sentinels such as AccountVolumePerHour auto-derive and
 		// FanoutDistinctRecipients disabling only that gate.
+		// IPRecipientSpread and IPRecipientWindowHours tune Path 6 (outside
+		// recipients per client IP); an explicit zero spread disables it.
+		// IPRecipientMode is observe (findings only, the default) or
+		// enforce (challenge, then block).
 		PHPRelay struct {
 			// The relay pipeline is wired once at startup; a reload can retune
 			// it but cannot start or stop it, so toggling it needs a restart.
@@ -1110,6 +1114,9 @@ type Config struct {
 			FanoutDistinctScripts    int    `yaml:"fanout_distinct_scripts"`
 			FanoutDistinctRecipients int    `yaml:"fanout_distinct_recipients"`
 			FanoutWindowMin          int    `yaml:"fanout_window_min"`
+			IPRecipientSpread        int    `yaml:"ip_recipient_spread"`
+			IPRecipientWindowHours   int    `yaml:"ip_recipient_window_hours"`
+			IPRecipientMode          string `yaml:"ip_recipient_mode"`
 			PoliciesDir              string `yaml:"policies_dir"`
 		} `yaml:"php_relay"`
 
@@ -1672,6 +1679,7 @@ type antispamPresence struct {
 // meaning and must not be overwritten by defaults.
 type phpRelayPresence struct {
 	fanoutDistinctRecipients bool
+	ipRecipientSpread        bool
 }
 
 // retentionPresence records fields where a literal zero has runtime meaning and
@@ -2045,6 +2053,15 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 	}
 	if cfg.EmailProtection.PHPRelay.FanoutWindowMin == 0 {
 		cfg.EmailProtection.PHPRelay.FanoutWindowMin = 5
+	}
+	if cfg.EmailProtection.PHPRelay.IPRecipientSpread == 0 && !presence.phpRelay.ipRecipientSpread {
+		cfg.EmailProtection.PHPRelay.IPRecipientSpread = 5
+	}
+	if cfg.EmailProtection.PHPRelay.IPRecipientWindowHours == 0 {
+		cfg.EmailProtection.PHPRelay.IPRecipientWindowHours = 24
+	}
+	if cfg.EmailProtection.PHPRelay.IPRecipientMode == "" {
+		cfg.EmailProtection.PHPRelay.IPRecipientMode = "observe"
 	}
 	if cfg.EmailProtection.PHPRelay.PoliciesDir == "" {
 		cfg.EmailProtection.PHPRelay.PoliciesDir = "/opt/csm/policies/php_relay"
@@ -2441,6 +2458,16 @@ func defaultPresenceFromYAML(data []byte) (defaultPresence, error) {
 	_, presence.httpASNCrawlReverseProxy = raw.Thresholds["http_asn_crawl_reverse_proxy_asns"]
 	_, presence.xmlrpcThreshold = raw.Thresholds["xmlrpc_threshold"]
 	_, presence.phpRelay.fanoutDistinctRecipients = raw.EmailProtection.PHPRelay["fanout_distinct_recipients"]
+	// yaml.v3 truncates fractions into ints, including zero sentinels, so
+	// reject non-integer recipient settings before the typed decode.
+	for _, key := range []string{"ip_recipient_spread", "ip_recipient_window_hours"} {
+		if node, ok := raw.EmailProtection.PHPRelay[key]; ok && !yamlNodeIsNull(&node) && yamlResolvedTag(&node) != "!!int" {
+			return presence, fmt.Errorf("email_protection.php_relay.%s must be a whole number", key)
+		}
+	}
+	if node, ok := raw.EmailProtection.PHPRelay["ip_recipient_spread"]; ok && !yamlNodeIsNull(&node) {
+		presence.phpRelay.ipRecipientSpread = true
+	}
 	if node, ok := raw.Alerts.BlockDigest["min_block"]; ok && node.Tag != "!!null" {
 		presence.blockDigestMinBlock = true
 	}

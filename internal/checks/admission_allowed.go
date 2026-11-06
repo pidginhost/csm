@@ -14,7 +14,7 @@ import (
 // later and tests them again. The check registry's own response policy
 // was enforced when the work was minted. An unknown entry is not allowed.
 func AutomaticResponseAllowed(cfg *config.Config, kind admission.Kind, entry admission.Entry, check string) bool {
-	if cfg == nil {
+	if cfg == nil || !CheckResponseEnabled(cfg, check) {
 		return false
 	}
 	central := cfg.Reputation.Central.Enabled

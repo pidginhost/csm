@@ -6,6 +6,7 @@
 //	    --max-blocks-per-hour 200 --deny-temp-ip-limit 500 --seed 1 --hour-zone UTC \
 //	    [--block-expiry 24h] [--manifest manifest.json] \
 //	    [--challenge-enabled=true] [--http-scanner-action challenge] [--block-cpanel-logins]
+//	    [--php-relay-ip-recipient-mode observe|enforce]
 //
 // The report holds counts, distributions, the policy and assumptions it was
 // computed under and the mechanisms it does not model; never an address, id,
@@ -49,7 +50,7 @@ type cliError string
 func (e cliError) Error() string { return string(e) }
 
 const (
-	errUsage            cliError = "usage: response-replay --findings FILE --out FILE --max-blocks-per-hour N --deny-temp-ip-limit N --seed N --hour-zone ZONE [--block-expiry D] [--manifest FILE] [--challenge-enabled=BOOL] [--http-scanner-action challenge|block] [--block-cpanel-logins]"
+	errUsage            cliError = "usage: response-replay --findings FILE --out FILE --max-blocks-per-hour N --deny-temp-ip-limit N --seed N --hour-zone ZONE [--block-expiry D] [--manifest FILE] [--challenge-enabled=BOOL] [--http-scanner-action challenge|block] [--block-cpanel-logins] [--php-relay-ip-recipient-mode observe|enforce]"
 	errPolicy           cliError = "invalid policy value"
 	errRevision         cliError = "a report needs a build of a known source revision without local changes"
 	errOutputAlias      cliError = "the report must not replace the recording or the manifest"
@@ -128,6 +129,7 @@ func newRun() *replayRun {
 
 type options struct {
 	findings, out, manifest, hourZone, blockExpiry, scannerAction string
+	phpRelayMode                                                  string
 	maxPerHour, denyTempLimit                                     int
 	seed                                                          int64
 	challengeEnabled, blockCpanelLogins, reconstructReputation    bool
@@ -144,6 +146,7 @@ func parseOptions(args []string) (options, error) {
 	fs.StringVar(&o.hourZone, "hour-zone", "", "zone the live clock formats its hour key in")
 	fs.StringVar(&o.blockExpiry, "block-expiry", "", "scan block lease (default: the live default)")
 	fs.StringVar(&o.scannerAction, "http-scanner-action", "challenge", "challenge or block")
+	fs.StringVar(&o.phpRelayMode, "php-relay-ip-recipient-mode", "observe", "email_protection.php_relay.ip_recipient_mode: observe or enforce")
 	fs.IntVar(&o.maxPerHour, "max-blocks-per-hour", 0, "live cap; 0 or less means the live default")
 	fs.IntVar(&o.denyTempLimit, "deny-temp-ip-limit", 0, "temporary deny limit; 0 means unlimited")
 	fs.Int64Var(&o.seed, "seed", 0, "seed of the reproducible drain order")
@@ -181,6 +184,7 @@ type policyInfo struct {
 	ChallengeEnabled          bool   `json:"challenge_enabled"`
 	HTTPScannerAction         string `json:"http_scanner_action"`
 	BlockCpanelLogins         bool   `json:"block_cpanel_logins"`
+	PHPRelayIPRecipientMode   string `json:"php_relay_ip_recipient_mode"`
 	// The audit log does not record a finding's structured source address.
 	// When set, ip_reputation addresses are recovered from the producer's
 	// message form; the report counts and states it.
@@ -193,6 +197,7 @@ func resolvePolicy(o options) (policyInfo, *time.Location, error) {
 		PendingMaxAgeNS: int64(pendingMaxAge), HourZone: o.hourZone, ChallengeEnabled: o.challengeEnabled,
 		HTTPScannerAction: o.scannerAction, BlockCpanelLogins: o.blockCpanelLogins,
 		ReconstructReputationSource: o.reconstructReputation,
+		PHPRelayIPRecipientMode:     o.phpRelayMode,
 	}
 	// The live path treats a cap of zero or less as the default, never as
 	// "block nothing".
@@ -205,6 +210,9 @@ func resolvePolicy(o options) (policyInfo, *time.Location, error) {
 	}
 	d, err := time.ParseDuration(expiry)
 	if err != nil || d <= 0 || p.DenyTempIPLimit < 0 || (p.HTTPScannerAction != "challenge" && p.HTTPScannerAction != "block") {
+		return policyInfo{}, nil, errPolicy
+	}
+	if p.PHPRelayIPRecipientMode != "observe" && p.PHPRelayIPRecipientMode != "enforce" {
 		return policyInfo{}, nil, errPolicy
 	}
 	p.BlockExpiryNS = int64(d)
@@ -240,8 +248,9 @@ func newClassifier(o options) (responsereplay.Classifier, *int) {
 	cfg.Challenge.Enabled = o.challengeEnabled
 	cfg.AutoResponse.HTTPScannerAction = o.scannerAction
 	cfg.AutoResponse.BlockCpanelLogins = o.blockCpanelLogins
+	cfg.EmailProtection.PHPRelay.IPRecipientMode = o.phpRelayMode
 	return responsereplay.Classifier{
-		Blockable:      func(f responsereplay.Finding) bool { return checks.BlockableFinding(toAlert(f), o.blockCpanelLogins) },
+		Blockable:      func(f responsereplay.Finding) bool { return checks.BlockableFinding(cfg, toAlert(f)) },
 		ChallengeFirst: func(f responsereplay.Finding) bool { return checks.ChallengeRoutesFinding(cfg, toAlert(f)) },
 		SourceIP: func(f responsereplay.Finding) string {
 			if ip := checks.ExtractIPFromFinding(toAlert(f)); ip != "" || !o.reconstructReputation {

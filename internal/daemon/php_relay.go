@@ -5,8 +5,13 @@ import (
 	"bytes"
 	"encoding/gob"
 	"fmt"
+	"io"
+	"net"
 	"net/mail"
+	"net/url"
 	"os"
+	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -17,6 +22,8 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/contenttype"
+	"github.com/pidginhost/csm/internal/crawlid"
 	"github.com/pidginhost/csm/internal/emailspool"
 	"github.com/pidginhost/csm/internal/store"
 )
@@ -715,17 +722,31 @@ func computeSignals(h emailspool.Headers, authDomains map[string]struct{}, pol *
 }
 
 // parseXPHPScript splits an X-PHP-Script header value into (scriptKey, sourceIP).
-// Format: "<host>/<path> for <ip>". Returns ("", "") on parse failure.
+// cPanel's EA-PHP header is `<SERVER_NAME><PHP_SELF> for <REMOTE_ADDR>`, or
+// `... for <X-Forwarded-For>, <REMOTE_ADDR>` when the client sent
+// X-Forwarded-For. Only the last element
+// is server-observed; earlier ones are client-supplied. sourceIP is that
+// element in canonical form, or "" when it is missing or not an IP.
+// Returns ("", "") on an empty header.
 func parseXPHPScript(v string) (scriptKey, string) {
 	v = strings.TrimSpace(v)
 	if v == "" {
 		return "", ""
 	}
-	forIdx := strings.LastIndex(v, " for ")
+	forIdx := strings.Index(v, " for ")
 	var url, ip string
 	if forIdx > 0 {
+		// Forwarding text must never become part of the script key. The
+		// header does not escape delimiters in PHP_SELF, so an ambiguous
+		// path is grouped under its prefix before the first delimiter.
 		url = strings.TrimSpace(v[:forIdx])
-		ip = strings.TrimSpace(v[forIdx+5:])
+		// Parse the peer independently: PHP_SELF can contain PATH_INFO
+		// with commas and " for ", even when there is no forwarding list.
+		list := v[strings.LastIndex(v, " for ")+5:]
+		last := strings.TrimSpace(list[strings.LastIndexByte(list, ',')+1:])
+		if parsed := net.ParseIP(last); parsed != nil {
+			ip = parsed.String()
+		}
 	} else {
 		url = v
 	}
@@ -761,10 +782,225 @@ type evaluator struct {
 	msgIndex              *msgIDIndex // optional; nil in unit tests
 	effectiveAccountLimit int
 	accountLimitFn        func(*config.Config) int
+	form                  *formRelayWindow // Path 6 state
 }
 
 func newEvaluator(s *perScriptWindow, i *perIPWindow, a *perAccountWindow, cfg *config.Config, m *phpRelayMetrics) *evaluator {
-	return &evaluator{scripts: s, ips: i, accounts: a, cfgFn: liveConfigFn(cfg), metrics: m}
+	form := newFormRelayWindow(formRelayMaxIPs)
+	if m != nil {
+		form.evictions = m.FormRelayEvictions
+	}
+	return &evaluator{scripts: s, ips: i, accounts: a, cfgFn: liveConfigFn(cfg), metrics: m, form: form}
+}
+
+// scriptPHPPath returns k's path lowercased and cut after its first PHP component,
+// so PATH_INFO cannot change which script the key names.
+func scriptPHPPath(k scriptKey) string {
+	slash := strings.IndexByte(k, '/')
+	if slash < 0 {
+		return ""
+	}
+	p := strings.ToLower(k[slash:])
+	for i := 1; i < len(p); i++ {
+		if p[i] == '/' && contenttype.IsExecutablePHPName(p[:i]) {
+			return p[:i]
+		}
+	}
+	return p
+}
+
+// scriptID names k's script for Path 6 findings and ignores: the host
+// lowercased plus scriptPHPPath. Host case and PATH_INFO come from the
+// client, so they must neither split one form nor reach an operator hint.
+func scriptID(k scriptKey) scriptKey {
+	slash := strings.IndexByte(k, '/')
+	if slash < 0 {
+		return strings.ToLower(k)
+	}
+	return strings.ToLower(k[:slash]) + scriptPHPPath(k)
+}
+
+// isAuthenticatedAdminScript reports a WordPress admin page that needs a
+// login, in any install directory. admin-ajax.php, admin-post.php,
+// profile.php and index.php are left out: logged-out visitors or
+// subscribers reach them.
+func isAuthenticatedAdminScript(k scriptKey) bool {
+	p := scriptPHPPath(k)
+	slash := strings.LastIndexByte(p, '/')
+	if !strings.HasSuffix(p[:slash+1], "/wp-admin/") {
+		return false
+	}
+	file := p[slash+1:]
+	switch name := strings.TrimSuffix(file, ".php"); name {
+	case "", file, "admin-ajax", "admin-post", "profile", "index":
+		return false
+	}
+	return true
+}
+
+// isWPCronScript reports WordPress's scheduled-job runner, which mails
+// whatever its trigger request queued: the recipients are not that
+// request's input. Cron services stay countable, so they cannot relay.
+func isWPCronScript(k scriptKey) bool {
+	return strings.HasSuffix(scriptPHPPath(k), "/wp-cron.php")
+}
+
+// formRelayDomlogRoot holds cPanel's per-account access logs, one file per
+// vhost and scheme. A var so tests can point it at a temporary directory.
+var formRelayDomlogRoot = "/usr/local/apache/domlogs"
+
+// formRelayDomlogTail bounds how much of each access log a crossing reads,
+// formRelayDomlogLine each line it parses.
+const (
+	formRelayDomlogTail = 4 << 20
+	formRelayDomlogLine = 64 << 10
+)
+
+// formRelayStaffAccounts returns the accounts among shares whose current
+// access logs show client key loading a WordPress admin page that needs a
+// login: a GET answered 200. Order-list quick actions and other ajax admin
+// work mail without passing such a page, so only this evidence spares the
+// staff using them. A missing or unreadable log is no evidence.
+func formRelayStaffAccounts(key string, shares map[scriptKey]formRelayShare, now time.Time) map[string]time.Time {
+	found := make(map[string]time.Time)
+	read := make(map[string]bool)
+	for id, share := range shares {
+		user := share.CPUser
+		host, _, _ := strings.Cut(id, ":/")
+		if !domlogName(user) || !domlogName(host) {
+			continue
+		}
+		names := []string{host, host + "-ssl_log"}
+		if bare, ok := strings.CutPrefix(host, "www."); ok && domlogName(bare) {
+			names = append(names, bare, bare+"-ssl_log")
+		}
+		for _, name := range names {
+			path := filepath.Join(formRelayDomlogRoot, user, name)
+			if read[path] {
+				continue
+			}
+			read[path] = true
+			if at := domlogStaffSeenAt(path, key, now); at.After(found[user]) {
+				found[user] = at
+			}
+		}
+	}
+	return found
+}
+
+// domlogName reports a single path element. The host comes from the
+// client's Host header.
+func domlogName(s string) bool {
+	return s != "" && s != "." && s != ".." && !strings.ContainsAny(s, "/\x00")
+}
+
+// domlogStaffSeenAt scans the last formRelayDomlogTail bytes of path. The
+// line the tail starts inside is skipped, and so is any line longer than
+// formRelayDomlogLine: a piece of either may be client text shaped like a
+// log line.
+func domlogStaffSeenAt(path, key string, now time.Time) time.Time {
+	fi, err := os.Stat(path)
+	if err != nil || !fi.Mode().IsRegular() {
+		return time.Time{} // also keeps a FIFO from blocking the open
+	}
+	// #nosec G304 -- fixed cPanel log root; both names are checked by domlogName.
+	f, err := os.Open(path)
+	if err != nil {
+		return time.Time{}
+	}
+	defer func() { _ = f.Close() }()
+	off := max(fi.Size()-formRelayDomlogTail, 0)
+	r := bufio.NewReaderSize(io.NewSectionReader(f, off, fi.Size()-off), formRelayDomlogLine)
+	skip := off > 0
+	var latest time.Time
+	cutoff := now.Add(-formRelayStaffTTL)
+	for {
+		line, more, err := r.ReadLine()
+		for more && err == nil {
+			skip = true
+			_, more, err = r.ReadLine()
+		}
+		if err == io.EOF {
+			return latest
+		}
+		if err != nil {
+			return time.Time{}
+		}
+		if !skip {
+			ip, _, _ := strings.Cut(string(line), " ")
+			if formRelayKey(ip) == key {
+				rec, ok := checks.ParseCrawlLogLine(string(line), nil)
+				if ok && rec.TimeOK && !rec.Time.Before(cutoff) && !rec.Time.After(now) &&
+					rec.Time.After(latest) && isStaffAdminRequest(rec) {
+					latest = rec.Time
+				}
+			}
+		}
+		skip = false
+	}
+}
+
+// Log evidence needs a known staff page, not just an apparent admin script:
+// public endpoints return 200 too, and servers may normalize the raw path.
+// admin.php also serves subscribers; plugin capabilities are not in the log.
+func isStaffAdminRequest(rec checks.CrawlLogRecord) bool {
+	if rec.Method != "GET" || rec.Status != 200 || rec.Target == "" || rec.TargetInvalid || rec.TargetOverflow {
+		return false
+	}
+	path, query, ok := crawlid.SplitTarget(rec.Target)
+	if !ok || strings.ContainsAny(path, "%\\#") || scriptPHPPath(path) != strings.ToLower(path) {
+		return false
+	}
+	for segment := range strings.SplitSeq(path, "/") {
+		if segment == "." || segment == ".." {
+			return false
+		}
+	}
+	slash := strings.LastIndexByte(path, '/')
+	if !strings.HasSuffix(path[:slash+1], "/wp-admin/") {
+		return false
+	}
+	switch path[slash+1:] {
+	case "edit.php", "post.php", "post-new.php", "upload.php",
+		"edit-comments.php", "users.php", "options-general.php", "options-writing.php",
+		"options-reading.php", "options-discussion.php", "options-media.php",
+		"options-permalink.php", "options-privacy.php", "plugins.php", "themes.php",
+		"edit-tags.php", "nav-menus.php", "tools.php", "import.php", "export.php", "site-health.php":
+		return true
+	case "admin.php":
+		return isOrderListQuery(query)
+	}
+	return false
+}
+
+// isOrderListQuery reports admin.php's WooCommerce HPOS order list, which
+// WooCommerce opens only to order managers; every other admin.php page may
+// serve subscribers. PHP drops leading spaces and truncates names at NUL;
+// the last duplicate wins, so any second name PHP would read as page voids it.
+func isOrderListQuery(query string) bool {
+	// A later page parameter may be discarded by PHP's site-specific input
+	// limit, leaving a subscriber-accessible admin.php request instead.
+	first, _, _ := strings.Cut(query, "&")
+	firstName, _, _ := strings.Cut(first, "=")
+	if name, err := url.QueryUnescape(firstName); err != nil || name != "page" {
+		return false
+	}
+	q, err := url.ParseQuery(query)
+	if err != nil {
+		return false
+	}
+	pages := 0
+	for name, values := range q {
+		base := strings.TrimLeft(name, " ")
+		if i := strings.IndexAny(base, "[\x00"); i >= 0 {
+			base = base[:i]
+		}
+		if base == "page" {
+			pages += len(values)
+		}
+	}
+	page := q.Get("page")
+	return pages == 1 && len(q["page"]) == 1 && (page == "wc-orders" || strings.HasPrefix(page, "wc-orders--"))
 }
 
 // config returns the live config so a reload that retunes or disables the
@@ -845,6 +1081,126 @@ func (e *evaluator) evaluatePaths(k scriptKey, sourceIP, cpuser string, now time
 	}
 
 	return findings
+}
+
+// formRelayFindings emits the client finding once per mode per window when ip's
+// outside-recipient count reaches spread, plus one finding per script that
+// reached at least two of them, for the operator to fix. Outside enforce
+// mode the client finding uses a check that aims no response.
+func (e *evaluator) formRelayFindings(k scriptKey, ip, cpuser string, spread int, window time.Duration, now time.Time, ignored func(scriptKey) bool) []alert.Finding {
+	mode := e.config().EmailProtection.PHPRelay.IPRecipientMode
+	key := formRelayKey(ip)
+	since := now.Add(-window)
+	hours := fmt.Sprintf("%dh", window/time.Hour)
+	snapshot := e.form.evaluate(key, now, window, spread, ignored, mode, false)
+	if snapshot.FireClient {
+		// The logs are read outside the store lock; the claim comes after,
+		// on what is left once staff accounts drop out.
+		for user, at := range formRelayStaffAccounts(key, snapshot.Shares, now) {
+			e.form.markStaff(user, key, at)
+		}
+		snapshot = e.form.evaluate(key, now, window, spread, ignored, mode, true)
+	}
+	if snapshot.Count < spread {
+		return nil
+	}
+	shares := snapshot.Shares
+	scripts := make([]scriptKey, 0, len(shares))
+	for sk := range shares {
+		scripts = append(scripts, sk)
+	}
+	sort.Slice(scripts, func(i, j int) bool {
+		if a, b := shares[scripts[i]].Count, shares[scripts[j]].Count; a != b {
+			return a > b
+		}
+		return scripts[i] < scripts[j]
+	})
+
+	var out []alert.Finding
+	if snapshot.FireClient {
+		var details strings.Builder
+		details.WriteString("Outside recipients per script:")
+		var subjects []string
+		for _, sk := range scripts {
+			fmt.Fprintf(&details, "\n  %s (account %s): %d", sk, shares[sk].CPUser, shares[sk].Count)
+			if s := e.formRelaySubject(shares[sk].Raw, key, since); s != "" && len(subjects) < 3 && !slices.Contains(subjects, s) {
+				subjects = append(subjects, s)
+			}
+		}
+		if len(subjects) > 0 {
+			details.WriteString("\nSample subjects:")
+			for _, s := range subjects {
+				fmt.Fprintf(&details, "\n  %s", s)
+			}
+		}
+		if domains := snapshot.Domains; len(domains) > 0 {
+			fmt.Fprintf(&details, "\nRecipient domains: %s", strings.Join(domains, ", "))
+		}
+		if e.metrics != nil {
+			e.metrics.Findings.With("form_relay").Inc()
+		}
+		check := "email_php_form_relay"
+		message := fmt.Sprintf("Path 6: client %s made hosted sites mail %d different outside addresses in %s", ip, snapshot.Count, hours)
+		if mode != "enforce" {
+			check = "email_php_form_relay_observed"
+			message += " (observe mode, not challenged)"
+		}
+		out = append(out, alert.Finding{
+			Severity:  alert.High,
+			Check:     check,
+			Path:      "form_relay",
+			Message:   message,
+			Details:   details.String(),
+			ScriptKey: scriptID(k),
+			SourceIP:  ip,
+			CPUser:    cpuser,
+			TenantID:  checks.HostingAccountForUser(cpuser),
+			Timestamp: now,
+		})
+	}
+
+	for _, sk := range scripts {
+		share := shares[sk]
+		if share.Count < 2 || !e.form.claimScript(sk, now, window) {
+			continue
+		}
+		if e.metrics != nil {
+			e.metrics.Findings.With("form_relay_script").Inc()
+		}
+		out = append(out, alert.Finding{
+			Severity: alert.High,
+			Check:    "email_php_form_relay_script",
+			Path:     "form_relay_script",
+			Message:  fmt.Sprintf("Bots use %s to mail outside addresses", sk),
+			Details: fmt.Sprintf("Client %s reached %d outside addresses through this script in %s.\n"+
+				"Add a captcha to the form or turn off its automatic reply to the submitter. "+
+				"If this is a legitimate bulk sender: csm phprelay ignore-script %s", ip, share.Count, hours, shellQuote(sk)),
+			// The details name the latest client; the script is the identity,
+			// so later clients update this finding instead of adding one.
+			DedupKey:  string(sk),
+			ScriptKey: string(sk),
+			CPUser:    share.CPUser,
+			TenantID:  checks.HostingAccountForUser(share.CPUser),
+			Timestamp: now,
+		})
+	}
+	return out
+}
+
+// shellQuote single-quotes s for a POSIX shell, so a pasted hint runs no
+// part of s.
+func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
+
+// formRelaySubject returns the latest subject script k sent for client key.
+func (e *evaluator) formRelaySubject(k scriptKey, key string, since time.Time) string {
+	v, ok := e.scripts.states.Load(k)
+	if !ok {
+		return ""
+	}
+	hit, _ := v.(*scriptState).relayHit(k, since, func(ev scriptEvent) bool {
+		return formRelayKey(ev.SourceIP) == key
+	})
+	return hit.SampleSubject
 }
 
 // scriptIsLowDiversityNotification reports whether a script's hourly volume is
@@ -1265,6 +1621,10 @@ func (il *ignoreList) Has(k scriptKey) bool {
 	}
 	return true
 }
+
+// Covers reports whether k is ignored under its own key or its scriptID,
+// so one ignore on the name a Path 6 finding prints covers every variant.
+func (il *ignoreList) Covers(k scriptKey) bool { return il.Has(k) || il.Has(scriptID(k)) }
 
 func (il *ignoreList) List() []ignoreEntry {
 	il.mu.Lock()

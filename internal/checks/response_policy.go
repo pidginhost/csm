@@ -186,6 +186,20 @@ func ResponsePolicyFor(check string) ResponsePolicy {
 	return loadResponseIndex()[config.CanonicalCheckName(check)]
 }
 
+// CheckResponseEnabled applies detector response modes to retained findings
+// as well as new ones. Passing this gate does not grant response authority;
+// callers must still apply the registry policy and their action switches.
+func CheckResponseEnabled(cfg *config.Config, check string) bool {
+	switch config.CanonicalCheckName(check) {
+	case "email_php_form_relay_observed":
+		return false
+	case "email_php_form_relay":
+		return cfg != nil && cfg.EmailProtection.PHPRelay.IPRecipientMode == "enforce"
+	default:
+		return true
+	}
+}
+
 // AdmissionPolicy is the registry projection automatic response admission
 // reads. It maps a renamed producer to its current name first; ok is false
 // for an unregistered check. A Critical-only check admits only Critical

@@ -18,7 +18,7 @@ import (
 func TestSummaryRegistryChecks(t *testing.T) {
 	want := []string{
 		"auto_block", "challenge_route", "db_spam_cleaned",
-		"email_php_relay_action_dry_run", "email_php_relay_rate_limit_hit",
+		"email_php_form_relay_observed", "email_php_relay_action_dry_run", "email_php_relay_rate_limit_hit",
 		"mail_bruteforce_suspected",
 	}
 	var got []string

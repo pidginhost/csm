@@ -26,6 +26,7 @@ type phpRelayMetrics struct {
 	ActiveMsgsCapped       *metrics.Counter
 	SpoolScanFallbacks     *metrics.CounterVec // labels: reason
 	ActionGone             *metrics.Counter
+	FormRelayEvictions     *metrics.Counter
 }
 
 var (
@@ -53,6 +54,7 @@ func newPHPRelayMetrics() *phpRelayMetrics {
 			ActiveMsgsCapped:       metrics.NewCounter("csm_php_relay_active_msgs_capped_total", "scriptState.activeMsgs cap-hit events."),
 			SpoolScanFallbacks:     metrics.NewCounterVec("csm_php_relay_spool_scan_fallbacks_total", "AutoFreeze spool-scan fallback invocations.", []string{"reason"}),
 			ActionGone:             metrics.NewCounter("csm_php_relay_action_gone_total", "Messages already absent at exim -Mf time."),
+			FormRelayEvictions:     metrics.NewCounter("csm_php_relay_form_evictions_total", "Path 6 clients dropped because the client table was full."),
 		}
 		metrics.MustRegister("csm_php_relay_findings_total", m.Findings)
 		metrics.MustRegister("csm_php_relay_actions_total", m.Actions)
@@ -67,6 +69,7 @@ func newPHPRelayMetrics() *phpRelayMetrics {
 		metrics.MustRegister("csm_php_relay_active_msgs_capped_total", m.ActiveMsgsCapped)
 		metrics.MustRegister("csm_php_relay_spool_scan_fallbacks_total", m.SpoolScanFallbacks)
 		metrics.MustRegister("csm_php_relay_action_gone_total", m.ActionGone)
+		metrics.MustRegister("csm_php_relay_form_evictions_total", m.FormRelayEvictions)
 		phpRelayMetricsInstance = m
 	})
 	return phpRelayMetricsInstance

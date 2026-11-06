@@ -470,13 +470,30 @@ func fanoutPipeline(t *testing.T, sites ...string) (*spoolPipeline, *[]alert.Fin
 // from ip and runs it through the pipeline at the given time.
 func feedSiteMail(t *testing.T, p *spoolPipeline, msgID, site, ip string, at time.Time, rcpts ...string) {
 	t.Helper()
-	body := fmt.Sprintf("id-H\nuser%s 1 1\n<user%s@host.example.test>\n0 0\n-local\n%d\n", site, site, len(rcpts))
+	feedScriptMail(t, p, msgID, site, "/wp-comments-post.php", ip, at, rcpts...)
+}
+
+// feedScriptMail is feedSiteMail for a chosen script path. An empty ip
+// writes a header without " for ", as cron and CLI mail carry.
+func feedScriptMail(t *testing.T, p *spoolPipeline, msgID, site, script, ip string, at time.Time, rcpts ...string) {
+	t.Helper()
+	feedHostMail(t, p, msgID, "user"+site, "site-"+site+".example", script, ip, at, rcpts...)
+}
+
+// feedHostMail is feedScriptMail for a chosen account and request host.
+func feedHostMail(t *testing.T, p *spoolPipeline, msgID, user, host, script, ip string, at time.Time, rcpts ...string) {
+	t.Helper()
+	body := fmt.Sprintf("id-H\n%s 1 1\n<%s@host.example.test>\n0 0\n-local\n%d\n", user, user, len(rcpts))
 	for _, r := range rcpts {
 		body += r + "\n"
 	}
+	client := ""
+	if ip != "" {
+		client = " for " + ip
+	}
 	body += fmt.Sprintf("\n040  Subject: [Site] Please moderate a comment\n"+
-		"070  X-PHP-Script: site-%s.example/wp-comments-post.php for %s\n"+
-		"045F From: WordPress <wordpress@site-%s.example>\n", site, ip, site)
+		"070  X-PHP-Script: %s%s%s\n"+
+		"045F From: WordPress <wordpress@%s>\n", host, script, client, host)
 	f := filepath.Join(t.TempDir(), msgID+"-H")
 	if err := os.WriteFile(f, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
@@ -574,5 +591,34 @@ func TestOnFileAt_Path4_OwnNoticesCannotHideParseGap(t *testing.T) {
 		if !fanoutFired(*findings) {
 			t.Fatalf("recipient parse gap must leave Path 4 firing, got %+v", *findings)
 		}
+	}
+}
+
+// Varying only a forwarding header must neither invent fanout nor split the
+// per-script volume that drives queue freezes.
+func TestPHPRelay_ForwardedTextKeepsOneScript(t *testing.T) {
+	p, findings := fanoutPipeline(t, "a")
+	now := time.Unix(1_700_000_000, 0).UTC()
+	count := p.eng.config().EmailProtection.PHPRelay.AbsoluteVolumePerHour
+	const source = "203.0.113.9"
+	const key = "site-a.example:/wp-comments-post.php"
+	for i := 0; i < count; i++ {
+		id := fmt.Sprintf("1abc23-000456-%02d", i)
+		forwarded := fmt.Sprintf("request-%d for 192.0.2.1, %s", i, source)
+		feedSiteMail(t, p, id, "a", forwarded, now, fmt.Sprintf("recipient%d@outside.example", i))
+	}
+	if got := p.eng.ips.distinctScriptsSince(source, now); got != 1 {
+		t.Errorf("one script counted as %d scripts", got)
+	}
+	if len(*findings) != 1 {
+		t.Fatalf("findings = %+v, want one volume finding", *findings)
+	}
+	f := (*findings)[0]
+	if f.Path != "volume" || f.ScriptKey != key || f.SourceIP != source || f.RelayTotal != count {
+		t.Fatalf("unexpected volume finding: %+v", f)
+	}
+	ids, capped := p.eng.scripts.getOrCreate(key).snapshotActiveMsgs()
+	if len(ids) != count || capped {
+		t.Fatalf("freeze candidates = %d, capped=%v, want %d", len(ids), capped, count)
 	}
 }

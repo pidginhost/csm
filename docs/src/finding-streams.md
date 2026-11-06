@@ -322,6 +322,10 @@ go build -o /tmp/response-replay ./scripts/response-replay
 - `--hour-zone` is the zone the host's clock runs in: the hourly limit resets
   when that zone's hour changes. `Local` is refused because it would depend
   on the machine running the replay.
+- `--php-relay-ip-recipient-mode` mirrors `email_protection.php_relay.ip_recipient_mode`
+  and defaults to `observe`. Use `enforce` to model form-relay client responses.
+  Observed findings never drive a response in either mode. The report records
+  the selected mode.
 - A recorded block from a challenge timeout, central intel, a credential
   spray or an incident is applied as recorded: it takes a firewall slot but
   not the hourly budget. Only a single IP address is accepted as the block

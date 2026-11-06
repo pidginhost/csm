@@ -715,7 +715,10 @@ email_protection:
     fanout_distinct_scripts: 3          # Path 4 threshold
     fanout_distinct_recipients: 5       # Path 2 + Path 4 recipient-diversity gate; 0 disables only this gate
     fanout_window_min: 5                # Path 4 window
-    policies_dir: "/opt/csm/policies/php_relay"  # mailer_classes.yaml + http_proxy_ranges.yaml; SIGHUP-reloadable
+    ip_recipient_spread: 5              # Path 6 threshold: distinct outside recipients per client IP (1-100); whole number; 0 disables Path 6
+    ip_recipient_window_hours: 24       # Path 6 window in hours (1-168); whole number; 0 uses the default (24)
+    ip_recipient_mode: observe          # Path 6 response: observe (findings only, default) or enforce (challenge, then block)
+    policies_dir: "/opt/csm/policies/php_relay"  # optional mailer_classes.yaml + http_proxy_ranges.yaml (replaces the built-in proxy list); SIGHUP-reloadable
   cloud_relay:
     allow_users: []                     # full mailbox opt-outs for cloud-relay detection
     allow_domains: []                   # domain-wide opt-outs for cloud-relay detection

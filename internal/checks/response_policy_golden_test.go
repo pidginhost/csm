@@ -16,7 +16,7 @@ import (
 var (
 	goldenAlwaysBlock = setOf(
 		"admin_panel_bruteforce", "c2_connection", "credential_stuffing",
-		"email_cloud_relay_abuse", "email_compromised_account", "ftp_bruteforce",
+		"email_cloud_relay_abuse", "email_compromised_account", "email_php_form_relay", "ftp_bruteforce",
 		"http_claimed_bot_unverified", "http_request_flood", "http_scanner_profile",
 		"http_ua_spoof", "ip_reputation",
 		"mail_account_compromised", "mail_bruteforce", "modsec_block_escalation",
@@ -29,7 +29,7 @@ var (
 		"ftp_auth_failure_realtime", "webmail_bruteforce",
 	)
 	goldenChallengeable = setOf(
-		"http_claimed_bot_unverified", "http_scanner_profile", "ip_reputation",
+		"email_php_form_relay", "http_claimed_bot_unverified", "http_scanner_profile", "ip_reputation",
 		"webmail_bruteforce", "wp_login_bruteforce",
 		"wp_user_enumeration", "xmlrpc_abuse",
 	)
@@ -199,6 +199,7 @@ func TestChallengeRouteIPsMatchesGoldenPolicy(t *testing.T) {
 						SetChallengeIPList(mock)
 						cfg := &config.Config{}
 						cfg.Challenge.Enabled = enabled
+						cfg.EmailProtection.PHPRelay.IPRecipientMode = "enforce"
 						cfg.AutoResponse.BlockCpanelLogins = cpanel
 						cfg.AutoResponse.HTTPScannerAction = action
 						f := alert.Finding{Check: name, Severity: sev, SourceIP: "203.0.113.10", Message: "probe"}

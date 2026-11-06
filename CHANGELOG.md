@@ -12,6 +12,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 ### Security
 
 - FTP log text crafted to look like a successful login no longer counts as one.
+- PHP relay detection no longer lets forged forwarding headers split one script's mail history or trigger false multi-script abuse alerts.
 - The firewall now drops incoming IPv4 TCP packets that carry IP options, which blocks the CVE-2026-98432 attack on unpatched kernels.
 - Mail login tracking no longer attributes incomplete or ambiguous log identities to a mailbox.
 - Successful mail logins no longer excuse earlier attacks against other mailboxes or downgrade their compromise alerts.
@@ -25,6 +26,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - Support agents can read status, findings, incidents, accounts, firewall, threat, mail and WAF data over an optional read-only MCP endpoint (`mcp:` block, off by default). It uses its own tokens on the Web UI port and cannot change anything.
 - Findings now warn when spam source reports wait because the list of shared mail services cannot be refreshed.
 - CSM now alerts at once when an automatic block hits an address with a recent customer login, and one stale mail password no longer raises compromise alerts.
+- CSM now reports bots that abuse website forms to mail strangers and names the form to fix; once switched on, it also challenges them.
 
 ### Changed
 
@@ -37,6 +39,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Fixed
 
+- PHP relay detection keeps its proxy exemptions when a policy file update is invalid.
 - Legitimate bulk and transactional mail is less likely to be marked as spam when listed on URIBL's grey list.
 - Doctor no longer reports CSM's own scan workers as CloudLinux cages missing the PHP Shield event mount.
 - IMAP or POP logins during a mail backend outage no longer earn the standing that keeps an address from brute-force blocking.
@@ -44,6 +47,8 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - Antispam no longer overrides spam weights you set yourself in rspamd.
 - Spam learning no longer stops for every report when rspamd hashes one learned message differently; only that message's learning is dropped.
 - Mail from large shared services such as Gmail no longer crowds other senders out of spam source detection on busy hosts.
+- PHP relay detection now attributes mail to the server-observed address when the mail header lists more than one address.
+- PHP relay detection now skips visitors arriving through Cloudflare and known payment services even when no policy file is installed.
 
 ## [4.9.0] - 2026-11-02
 

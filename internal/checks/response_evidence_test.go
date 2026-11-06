@@ -25,6 +25,7 @@ import (
 // FamilyNone. Change it only with a reviewed policy decision.
 var evidencePolicy = map[string]admission.Policy{
 	"admin_panel_bruteforce":      {Family: admission.FamilyHTTP, Basis: admission.BasisLocal},
+	"email_php_form_relay":        {Family: admission.FamilyHTTP, Basis: admission.BasisLocal},
 	"http_asn_crawl":              {Family: admission.FamilyHTTP, Basis: admission.BasisLocal},
 	"http_claimed_bot_unverified": {Family: admission.FamilyHTTP, Basis: admission.BasisLocal},
 	"http_request_flood":          {Family: admission.FamilyHTTP, Basis: admission.BasisLocal},
@@ -69,36 +70,37 @@ var reviewedCompromise = map[string]string{
 // never admissible attacker evidence, with the reason. Every other check
 // with a structured address producer must be in evidencePolicy.
 var notAddressEvidence = map[string]string{
-	"auto_block":                   "record of a response already taken",
-	"backdoor_port":                "peer of a local backdoor listener; contained by the process response, no address policy",
-	"backdoor_port_outbound":       "destination address of an outbound connection",
-	"bad_asn_outbound":             "destination address of an outbound connection",
-	"cpanel_file_upload_realtime":  "authenticated customer activity",
-	"cpanel_login":                 "authenticated customer login",
-	"cpanel_login_realtime":        "authenticated customer login",
-	"email_auth_failure_realtime":  "one raw mailbox failure; thresholded checks carry the evidence",
-	"email_php_relay_abuse":        "visitor of a sending script, not necessarily the abuser",
-	"email_suspicious_geo":         "mailbox owner login from a new country",
-	"ftp_login":                    "authenticated customer login",
-	"ftp_login_after_bruteforce":   "no response policy; candidate for a reviewed compromise decision",
-	"mail_account_spray":           "most recent of many sources of a per-mailbox summary",
-	"mail_bruteforce_suspected":    "advisory for an established source",
-	"mail_spam_source":             "report only; no local response by design",
-	"modsec_block_realtime":        "ModSecurity already denied the request",
-	"modsec_classifier_gap":        "record of CSM's own rule classification coverage",
-	"modsec_low_confidence_burst":  "low-confidence advisory",
-	"modsec_warning_realtime":      "warning-level WAF event",
-	"pam_login":                    "authenticated login",
-	"pam_auth_failures":            "visibility only; the service's own log carries the evidence",
-	"password_hijack_confirmed":    "no response policy; candidate for a reviewed compromise decision",
-	"php_shield_block":             "HTTP client of a shielded script; may be an ordinary visitor",
-	"php_shield_eval":              "HTTP client of a shielded script; may be an ordinary visitor",
-	"php_shield_webshell":          "HTTP client of a shielded script; may be an ordinary visitor",
-	"smtp_account_spray":           "most recent of many sources of a per-mailbox summary",
-	"webmail_login_realtime":       "authenticated customer login",
-	"whm_login_realtime":           "authenticated login",
-	"whm_password_change_noninfra": "no response policy; candidate for a reviewed compromise decision",
-	"whm_unauth_scripts_realtime":  "unauthenticated WHM script probe; visibility only",
+	"auto_block":                    "record of a response already taken",
+	"backdoor_port":                 "peer of a local backdoor listener; contained by the process response, no address policy",
+	"backdoor_port_outbound":        "destination address of an outbound connection",
+	"bad_asn_outbound":              "destination address of an outbound connection",
+	"cpanel_file_upload_realtime":   "authenticated customer activity",
+	"cpanel_login":                  "authenticated customer login",
+	"cpanel_login_realtime":         "authenticated customer login",
+	"email_auth_failure_realtime":   "one raw mailbox failure; thresholded checks carry the evidence",
+	"email_php_form_relay_observed": "observe mode report; aims no response",
+	"email_php_relay_abuse":         "visitor of a sending script, not necessarily the abuser",
+	"email_suspicious_geo":          "mailbox owner login from a new country",
+	"ftp_login":                     "authenticated customer login",
+	"ftp_login_after_bruteforce":    "no response policy; candidate for a reviewed compromise decision",
+	"mail_account_spray":            "most recent of many sources of a per-mailbox summary",
+	"mail_bruteforce_suspected":     "advisory for an established source",
+	"mail_spam_source":              "report only; no local response by design",
+	"modsec_block_realtime":         "ModSecurity already denied the request",
+	"modsec_classifier_gap":         "record of CSM's own rule classification coverage",
+	"modsec_low_confidence_burst":   "low-confidence advisory",
+	"modsec_warning_realtime":       "warning-level WAF event",
+	"pam_login":                     "authenticated login",
+	"pam_auth_failures":             "visibility only; the service's own log carries the evidence",
+	"password_hijack_confirmed":     "no response policy; candidate for a reviewed compromise decision",
+	"php_shield_block":              "HTTP client of a shielded script; may be an ordinary visitor",
+	"php_shield_eval":               "HTTP client of a shielded script; may be an ordinary visitor",
+	"php_shield_webshell":           "HTTP client of a shielded script; may be an ordinary visitor",
+	"smtp_account_spray":            "most recent of many sources of a per-mailbox summary",
+	"webmail_login_realtime":        "authenticated customer login",
+	"whm_login_realtime":            "authenticated login",
+	"whm_password_change_noninfra":  "no response policy; candidate for a reviewed compromise decision",
+	"whm_unauth_scripts_realtime":   "unauthenticated WHM script probe; visibility only",
 }
 
 // respondingWithoutAddress are checks with a response policy whose
@@ -334,8 +336,8 @@ func TestAddressProducersAreClassified(t *testing.T) {
 	}
 	// The database malware response reports session addresses instead of
 	// emitting an address-bearing finding (ruling R9).
-	if len(producers) != 70 {
-		t.Fatalf("scan found %d address producers; review the change from the pinned 70 producers", len(producers))
+	if len(producers) != 71 {
+		t.Fatalf("scan found %d address producers; review the change from the pinned 71 producers", len(producers))
 	}
 	for name, reason := range notAddressEvidence {
 		if strings.TrimSpace(reason) == "" {

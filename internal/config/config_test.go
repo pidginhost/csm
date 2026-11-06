@@ -156,6 +156,76 @@ email_protection:
 	}
 }
 
+func TestApplyDefaults_PHPRelayIPRecipientSpread(t *testing.T) {
+	cfg, err := LoadBytes([]byte(""))
+	if err != nil {
+		t.Fatalf("LoadBytes default: %v", err)
+	}
+	if got := cfg.EmailProtection.PHPRelay.IPRecipientSpread; got != 5 {
+		t.Fatalf("default ip_recipient_spread = %d, want 5", got)
+	}
+
+	cfg, err = LoadBytes([]byte(`
+email_protection:
+  php_relay:
+    ip_recipient_spread: 0
+`))
+	if err != nil {
+		t.Fatalf("LoadBytes explicit zero: %v", err)
+	}
+	if got := cfg.EmailProtection.PHPRelay.IPRecipientSpread; got != 0 {
+		t.Fatalf("explicit ip_recipient_spread = %d, want 0", got)
+	}
+}
+
+func TestApplyDefaults_PHPRelayIPRecipientMode(t *testing.T) {
+	cfg, err := LoadBytes([]byte(""))
+	if err != nil {
+		t.Fatalf("LoadBytes default: %v", err)
+	}
+	if got := cfg.EmailProtection.PHPRelay.IPRecipientMode; got != "observe" {
+		t.Fatalf("default ip_recipient_mode = %q, want observe", got)
+	}
+	cfg, err = LoadBytes([]byte("email_protection:\n  php_relay:\n    ip_recipient_mode: enforce\n"))
+	if err != nil {
+		t.Fatalf("LoadBytes enforce: %v", err)
+	}
+	if got := cfg.EmailProtection.PHPRelay.IPRecipientMode; got != "enforce" {
+		t.Fatalf("explicit ip_recipient_mode = %q, want enforce", got)
+	}
+}
+
+func TestApplyDefaults_PHPRelayIPRecipientSpreadBlankUsesDefault(t *testing.T) {
+	for name, value := range map[string]string{
+		"empty": "",
+		"tilde": " ~",
+		"null":  " null",
+	} {
+		cfg, err := LoadBytes([]byte("email_protection:\n  php_relay:\n    ip_recipient_spread:" + value + "\n"))
+		if err != nil {
+			t.Fatalf("%s: LoadBytes: %v", name, err)
+		}
+		if got := cfg.EmailProtection.PHPRelay.IPRecipientSpread; got != 5 {
+			t.Errorf("%s: blank ip_recipient_spread = %d, want default 5", name, got)
+		}
+	}
+}
+
+func TestApplyDefaults_PHPRelayIPRecipientWindowHours(t *testing.T) {
+	for name, data := range map[string]string{
+		"unset": "",
+		"zero":  "email_protection:\n  php_relay:\n    ip_recipient_window_hours: 0\n",
+	} {
+		cfg, err := LoadBytes([]byte(data))
+		if err != nil {
+			t.Fatalf("%s: LoadBytes: %v", name, err)
+		}
+		if got := cfg.EmailProtection.PHPRelay.IPRecipientWindowHours; got != 24 {
+			t.Errorf("%s: ip_recipient_window_hours = %d, want 24", name, got)
+		}
+	}
+}
+
 func TestChallengeListenAddrHonorsOperatorOverride(t *testing.T) {
 	tmpFile, err := os.CreateTemp("", "csm-config-*.yaml")
 	if err != nil {
