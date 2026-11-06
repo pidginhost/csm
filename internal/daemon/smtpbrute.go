@@ -257,6 +257,12 @@ func (t *smtpAuthTracker) RecordFailure(ip, account string, exist mailboxExisten
 	return t.recordFailure(ip, account, exist, obs, true, nil)
 }
 
+// RecordResolvedFailure is RecordFailure with the mailbox the failure resolved
+// to: spray memory counts it against mb, the tracker against the typed account.
+func (t *smtpAuthTracker) RecordResolvedFailure(ip, account string, mb sprayMailbox, obs alert.Observation) []alert.Finding {
+	return t.recordFailure(ip, account, mb.exist, obs, true, []string{mb.name})
+}
+
 // RecordAmbiguousFailure is RecordFailure for a failure whose pending
 // answers named different mailboxes. It counts with no mailbox, and the
 // spray memory gets the names claimed during pairing, existence unknown.

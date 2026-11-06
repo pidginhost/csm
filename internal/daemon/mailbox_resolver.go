@@ -24,6 +24,31 @@ type mailboxResolver interface {
 	Resolve(name string) sprayMailbox
 }
 
+// resolveSprayMailbox gives the mailbox a failed login on name counts against.
+// A verdict from the log is about this login while the resolver can be a TTL
+// behind, so the resolver cannot overturn it, except that a Missing name near
+// a real mailbox is a typo of that mailbox.
+func resolveSprayMailbox(r mailboxResolver, name string, verdict mailboxExistence) sprayMailbox {
+	key := normalizeSprayMailbox(name)
+	if r == nil || verdict == mailboxExists {
+		return sprayMailbox{name: key, exist: verdict}
+	}
+	mb := r.Resolve(name)
+	if verdict == mailboxExistenceUnknown || (mb.exist == mailboxExists && mb.name != key) {
+		return mb
+	}
+	return sprayMailbox{name: key, exist: mailboxMissing}
+}
+
+// sprayMailboxFor is resolveSprayMailbox with the daemon's resolver. Callers
+// hold no tracker lock. The lookup runs only while the spray rules are on.
+func (d *Daemon) sprayMailboxFor(name string, verdict mailboxExistence) sprayMailbox {
+	if d.mailSpray == nil || d.mailSpray.Mode() == sprayOff {
+		return resolveSprayMailbox(nil, name, verdict)
+	}
+	return resolveSprayMailbox(d.mailboxes, name, verdict)
+}
+
 // cpanelMailboxSource reads cPanel's accounts, domains and mailboxes.
 type cpanelMailboxSource interface {
 	Inventory() (checks.HostingSnapshot, error)

@@ -708,6 +708,13 @@ func (t *mailAuthTracker) Record(ip, account string) []alert.Finding {
 // names that line, so a subnet spray names the line that last counted each
 // address.
 func (t *mailAuthTracker) RecordObserved(ip, account string, obs alert.Observation) []alert.Finding {
+	return t.RecordResolvedObserved(ip, account, sprayMailbox{name: normalizeSprayMailbox(account), exist: mailboxExistenceUnknown}, obs)
+}
+
+// RecordResolvedObserved is RecordObserved with the mailbox the failure
+// resolved to: spray memory counts it against mb, the tracker against the
+// typed account.
+func (t *mailAuthTracker) RecordResolvedObserved(ip, account string, mb sprayMailbox, obs alert.Observation) []alert.Finding {
 	if ip == "" {
 		return nil
 	}
@@ -859,7 +866,7 @@ func (t *mailAuthTracker) RecordObserved(ip, account string, obs alert.Observati
 		t.spray.ForgetRecentFailures(ip, cutoff)
 	}
 	if !degraded && t.spray != nil {
-		if v := t.spray.Failure(ip, normalizeSprayMailbox(account), mailboxExistenceUnknown); v != nil {
+		if v := t.spray.Failure(ip, mb.name, mb.exist); v != nil {
 			f := sprayFinding(protoMail, ip, v, t.spray.Mode(), now)
 			// One block per suppression window: a Dovecot line can carry
 			// several attempts, so the spray block shares the per-IP clock
@@ -1573,10 +1580,10 @@ func dovecotFailedAttempts(line string) int {
 
 // recordDovecotFailure records one failure per attempt the Dovecot line
 // reports and returns every finding those records produced.
-func recordDovecotFailure(t *mailAuthTracker, ip, account, line string, obs alert.Observation) []alert.Finding {
+func recordDovecotFailure(t *mailAuthTracker, ip, account, line string, mb sprayMailbox, obs alert.Observation) []alert.Finding {
 	var findings []alert.Finding
 	for i := dovecotFailedAttempts(line); i > 0; i-- {
-		findings = append(findings, t.RecordObserved(ip, account, obs)...)
+		findings = append(findings, t.RecordResolvedObserved(ip, account, mb, obs)...)
 	}
 	return findings
 }

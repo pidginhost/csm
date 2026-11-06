@@ -21,6 +21,7 @@ import (
 	"github.com/pidginhost/csm/internal/admissionowner"
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/antispam"
+	"github.com/pidginhost/csm/internal/antispam/learnwatch"
 	"github.com/pidginhost/csm/internal/antispam/reconcile"
 	"github.com/pidginhost/csm/internal/attackdb"
 	"github.com/pidginhost/csm/internal/auditd"
@@ -135,6 +136,7 @@ type Daemon struct {
 	smtpProbeTracker *smtpProbeTracker
 	mailAuthTracker  *mailAuthTracker
 	mailSpray        *mailSpray
+	mailboxes        mailboxResolver // nil off cPanel
 	authBackend      *authBackendHealth
 	// smtpAuthFromExim is set before the log readers start when the Exim
 	// mainlog feeds smtpAuthTracker; Postfix pairing is then skipped so one
@@ -353,6 +355,9 @@ func New(cfg *config.Config, store *state.Store, lock *state.LockFile, binaryPat
 	d.mailSpray = newMailSpray(sprayConfigFromThresholds(cfg), time.Now)
 	d.smtpAuthTracker.SetSpray(d.mailSpray)
 	d.mailAuthTracker.SetSpray(d.mailSpray)
+	if platform.Detect().IsCPanel() {
+		d.mailboxes = newCPanelMailboxResolver(newLiveMailboxSource(learnwatch.DefaultSource), time.Now)
+	}
 	d.knownCustomers = newKnownCustomers(time.Now)
 	d.knownCustomers.isInfra = func(ip string) bool { return isInfraIPDaemon(ip, d.currentCfg().InfraIPs) }
 	d.smtpAuthTracker.SetKnownCustomers(d.knownCustomers)
@@ -2558,7 +2563,8 @@ func (d *Daemon) handleEximLine(line string, obs alert.Observation, cfg *config.
 			// Only a permanent (5xx) reply says the credentials were checked;
 			// any other reply still counts per IP but is not spray evidence.
 			if strings.HasPrefix(failure.Code, "5") {
-				findings = append(findings, d.smtpAuthTracker.RecordObserved(ip, account, obs)...)
+				mb := d.sprayMailboxFor(account, mailboxExistenceUnknown)
+				findings = append(findings, d.smtpAuthTracker.RecordResolvedFailure(ip, account, mb, obs)...)
 			} else {
 				findings = append(findings, d.smtpAuthTracker.RecordTemporaryFailure(ip, account, obs)...)
 			}
@@ -2648,7 +2654,7 @@ func (d *Daemon) handleMailLine(line string, obs alert.Observation, cfg *config.
 		}
 		findings = append(findings, d.mailAuthTracker.recordSuccessAt(ip, account, customerLoginTime(line, d.mailAuthTracker.now()), kind)...)
 	} else {
-		findings = append(findings, recordDovecotFailure(d.mailAuthTracker, ip, account, line, obs)...)
+		findings = append(findings, recordDovecotFailure(d.mailAuthTracker, ip, account, line, d.sprayMailboxFor(account, mailboxExistenceUnknown), obs)...)
 	}
 	return findings
 }

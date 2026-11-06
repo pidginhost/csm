@@ -13,7 +13,7 @@ import (
 func TestRecordDovecotFailureCountsEveryAttempt(t *testing.T) {
 	tr := newMailAuthTracker(50, 80, 120, 10*time.Minute, 60*time.Minute, 0, 0, 100, time.Now)
 	line := "imap-login: Login aborted: Connection closed (auth failed, 3 attempts in 2 secs): user=<user@example.com>, method=PLAIN, rip=203.0.113.5"
-	recordDovecotFailure(tr, "203.0.113.5", "user@example.com", line, alert.Observation{})
+	recordDovecotFailure(tr, "203.0.113.5", "user@example.com", line, sprayMailbox{name: "user@example.com"}, alert.Observation{})
 	if tr.recordCalls != 3 {
 		t.Fatalf("recorded %d failures for a 3-attempt connection, want 3", tr.recordCalls)
 	}
@@ -28,7 +28,7 @@ func TestRecordDovecotFailureKeepsEstablishedSourceAdvisory(t *testing.T) {
 	line := "imap-login: Login aborted: Connection closed (auth failed, 20 attempts in 9 secs): user=<customer@example.com>, rip=203.0.113.5"
 
 	var suspected bool
-	for _, finding := range recordDovecotFailure(tr, ip, account, line, alert.Observation{}) {
+	for _, finding := range recordDovecotFailure(tr, ip, account, line, sprayMailbox{name: account}, alert.Observation{}) {
 		if finding.Check == "mail_bruteforce" {
 			t.Fatalf("one established user's typo storm triggered an auto-block finding: %+v", finding)
 		}
@@ -51,7 +51,7 @@ func TestRecordDovecotFailureConsultsBackendGatePerAttempt(t *testing.T) {
 	})
 	line := "imap-login: Login aborted: Connection closed (auth failed, 3 attempts in 2 secs): user=<user@example.com>, rip=203.0.113.5"
 
-	for _, finding := range recordDovecotFailure(tr, "203.0.113.5", "user@example.com", line, alert.Observation{}) {
+	for _, finding := range recordDovecotFailure(tr, "203.0.113.5", "user@example.com", line, sprayMailbox{name: "user@example.com"}, alert.Observation{}) {
 		if finding.Check == "mail_bruteforce" {
 			t.Fatalf("backend outage produced a brute-force finding: %+v", finding)
 		}
