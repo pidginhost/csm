@@ -80,3 +80,35 @@ func TestEpisodeRetainedBoundaryRecord(t *testing.T) {
 		}
 	}
 }
+
+// A block line records the generation of its kind's latest verified block,
+// so the episode can find that block after later generations are retired.
+// The record round-trips and refuses a generation the line has not
+// reached, an unverified episode and a kind that is not a block.
+func TestEpisodeLineRecordsItsLatestVerifiedGeneration(t *testing.T) {
+	row := testEpisodeRecord(t)
+	row.Verified, row.EndElapsed = t0.Add(time.Hour), time.Hour
+	line, _ := row.Line(KindBlockIP)
+	line.VerifiedGeneration = line.Generation
+	row = row.WithLine(line)
+	data, err := row.MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := UnmarshalEpisode(data)
+	if err != nil || !reflect.DeepEqual(got, row) {
+		t.Fatalf("verified generation did not round trip: %+v %v", got, err)
+	}
+	for _, change := range []func(*Episode){
+		func(e *Episode) { e.Lines[0].VerifiedGeneration = e.Lines[0].Generation + 1 },
+		func(e *Episode) { e.Verified, e.EndElapsed = time.Time{}, 0 },
+		func(e *Episode) { e.Lines[1].VerifiedGeneration = 1 },
+	} {
+		bad := row
+		bad.Lines = append([]EpisodeLine(nil), row.Lines...)
+		change(&bad)
+		if _, err := bad.MarshalBinary(); !isReason(err, ReasonInvalid) {
+			t.Fatalf("unproven verified generation encoded: %+v %v", bad, err)
+		}
+	}
+}

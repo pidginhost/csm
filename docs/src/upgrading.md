@@ -127,10 +127,11 @@ forecast. Older binaries cannot open it and keep blocking with the legacy
 budget, as above. Roll back only to a build that supports both schema 13
 and elapsed episode records.
 
-A live admission ledger retains a verified episode's boundary even after
-an unattempted return is forgotten. The first such retained row raises
-state to schema 15. Roll back only to a build that reads schema 15 and
-retains and cleans up these rows; older builds refuse this ledger. This
+A live admission ledger records each episode's latest verified block and
+retains a verified episode's boundary even after an unattempted return is
+forgotten. The first verified block raises the ledger to schema 15. Roll
+back only to a build that reads schema 15 and retains and cleans up these
+rows; older builds refuse this ledger. This
 writer remains behind live execution and does not run on preview-only
 hosts. Keep the database when changing binaries.
 

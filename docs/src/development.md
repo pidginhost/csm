@@ -669,9 +669,11 @@ hide later expired history. On a live ledger, a verified block whose record
 is gone stops answering its kind before the episode's original verified
 end: a later observation of that kind, made after the removal and with
 every root observed after it, queues a charged new generation in the same
-episode. Queued and ended returns keep that evidence gate through retained
-predecessors; missing history keeps the line answered, and forgetting a
-refused return keeps the verified boundary until both ends pass. The
+episode. On a live ledger the block line records the generation of its
+latest verified block, whose history outlives later generations, so
+queued, ended and forgotten returns keep that evidence gate against the
+latest removal; such lines also need schema 15. Forgetting a refused
+return keeps the verified boundary until both ends pass. The
 episode earns no equal-tier rotation. An observation or root at or before the removal
 is answered or stale. Past the original end, as when
 a reboot keeps the episode open on elapsed time, the block keeps

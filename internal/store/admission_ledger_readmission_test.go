@@ -251,8 +251,9 @@ func TestAdmissionLedgerReadmissionStrictBoundaries(t *testing.T) {
 }
 
 // Retiring a refused, unattempted return must not erase the verified
-// episode or turn its missing line into permission for another block.
-// Once both ends pass, the predecessor's retirement collects the row.
+// episode or its evidence gate: a fresh return is still re-admitted in the
+// same episode. Once both ends pass, the predecessor's retirement collects
+// the row.
 func TestAdmissionLedgerReadmissionRetirementKeepsTheBoundary(t *testing.T) {
 	f, first, _ := goneArrival(t)
 	original := f.candidateOf(first.Attempt.Candidate)
@@ -284,7 +285,14 @@ func TestAdmissionLedgerReadmissionRetirementKeepsTheBoundary(t *testing.T) {
 		t.Fatalf("forgetting the return lost its boundary: %+v, found %v", row, found)
 	}
 	f.tickAt(f.wall.Add(time.Second))
-	wantLedgerReason(t, "missing return history", f.arrive(f.arrival(evidenceSpec{cursor: "after-forget"}))[0].Err, admission.ReasonExistingEffect)
+	again := f.arrive(f.arrival(evidenceSpec{cursor: "after-forget"}))[0]
+	if again.Err != nil || !again.Created || f.candidateOf(again.Candidate).Key != (admission.CandidateKey{Kind: admission.KindBlockIP, Target: f.target("192.0.2.10"), Episode: before.ID, Generation: 3}) {
+		t.Fatalf("a forgotten return ended re-admission: %+v", again)
+	}
+	if _, err := f.l.Terminate(again.Candidate, admission.ReasonStale); err != nil {
+		t.Fatal(err)
+	}
+	forget(again.Candidate, f.candidateOf(again.Candidate))
 	var err error
 	if f.l, err = OpenAdmissionLedger(f.db, f.reg); err != nil {
 		t.Fatal(err)
@@ -307,5 +315,106 @@ func TestAdmissionLedgerReadmissionRetirementKeepsTheBoundary(t *testing.T) {
 	}
 	if row, found = f.episodeAt("192.0.2.10"); found {
 		t.Fatalf("expired unreferenced episode was retained: %+v", row)
+	}
+}
+
+// A re-admitted block answers its episode while it holds; once it is gone
+// too, the gate is its own removal, not the first block's: evidence between
+// the two removals is answered or stale, and only evidence after the
+// latest one queues the next generation.
+func TestAdmissionLedgerReadmissionGatesOnTheLatestRemoval(t *testing.T) {
+	f, _, _ := goneArrival(t)
+	f.tickAt(f.wall.Add(time.Minute))
+	res := f.arrive(f.arrival(evidenceSpec{cursor: "return"}))[0]
+	if res.Err != nil || !res.Created {
+		t.Fatalf("return: %+v", res)
+	}
+	before, _ := f.episodeAt("192.0.2.10")
+	_, a, granted, err := f.l.Reserve(res.Candidate, admission.LaneGeneral, before.Verified.Add(-time.Minute))
+	if err != nil || !granted {
+		t.Fatalf("reserve: %v %v", granted, err)
+	}
+	if _, _, _, err = f.l.Execute(a.Attempt.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = f.l.Finish(a.Attempt.ID, admission.DispositionApplied); err != nil {
+		t.Fatal(err)
+	}
+	row, _ := f.episodeAt("192.0.2.10")
+	if line, _ := row.Line(admission.KindBlockIP); line.VerifiedGeneration != 2 || line.Generation != 2 {
+		t.Fatalf("the return's verified block is not the line's latest: %+v", line)
+	}
+	f.tickAt(f.wall.Add(time.Second))
+	wantLedgerReason(t, "while the return holds", f.arrive(f.arrival(evidenceSpec{cursor: "holding"}))[0].Err, admission.ReasonExistingEffect)
+	asked, err := f.l.HeldEffects(10)
+	if err != nil || len(asked) != 1 || asked[0].Action != a.Attempt.ID {
+		t.Fatalf("held %+v %v", asked, err)
+	}
+	f.tickAt(f.wall.Add(time.Minute))
+	f.observeHeld(asked, false)
+	second := f.wall
+	if n := f.observeHeld(asked, false); n != 1 {
+		t.Fatalf("two misses marked %d", n)
+	}
+	f.tickAt(f.wall.Add(time.Minute))
+	between := f.wall.Sub(second.Add(-time.Second))
+	wantLedgerReason(t, "between the removals", f.arrive(f.arrival(evidenceSpec{cursor: "between", age: between}))[0].Err, admission.ReasonExistingEffect)
+	old := f.published(evidenceSpec{cursor: "old-root", age: between})
+	fresh := f.published(evidenceSpec{cursor: "fresh-root"})
+	e := f.mint(evidenceSpec{cursor: "after"})
+	req := f.request("192.0.2.10", e.ID(), fresh, old)
+	req.Episode, req.Generation = admission.EpisodeID{}, 0
+	wantLedgerReason(t, "a root between the removals", f.arrive(admission.Arrival{Request: req, Evidence: e})[0].Err, admission.ReasonStale)
+	res = f.arrive(f.arrival(evidenceSpec{cursor: "third"}))[0]
+	if c := f.candidateOf(res.Candidate); res.Err != nil || !res.Created || c.Key.Episode != before.ID || c.Key.Generation != 3 {
+		t.Fatalf("return after the latest removal: %+v %+v", res, c.Key)
+	}
+}
+
+// Churn in the bounded ended ring forgets an unattempted return. The
+// episode still finds its verified block, so the evidence gate keeps
+// working: old support is stale and a fresh return is re-admitted.
+func TestAdmissionLedgerReadmissionSurvivesEndedRingChurn(t *testing.T) {
+	f, _, gone := goneArrival(t)
+	f.tickAt(f.wall.Add(time.Minute))
+	res := f.arrive(f.arrival(evidenceSpec{cursor: "return"}))[0]
+	if res.Err != nil || !res.Created {
+		t.Fatalf("return: %+v", res)
+	}
+	if _, err := f.l.Terminate(res.Candidate, admission.ReasonStale); err != nil {
+		t.Fatal(err)
+	}
+	f.endMany(admission.MaxEndedCandidates)
+	row, _ := f.episodeAt("192.0.2.10")
+	if line, _ := row.Line(admission.KindBlockIP); line.Candidate != "" || !line.Answered || line.Generation != 2 {
+		t.Fatalf("churn did not forget the return: %+v", line)
+	}
+	f.tickAt(f.wall.Add(time.Second))
+	old := f.published(evidenceSpec{cursor: "old-support", age: f.wall.Sub(gone)})
+	fresh := f.published(evidenceSpec{cursor: "fresh-support"})
+	e := f.mint(evidenceSpec{cursor: "fresh-1"})
+	req := f.request("192.0.2.10", e.ID(), fresh, old)
+	req.Episode, req.Generation = admission.EpisodeID{}, 0
+	wantLedgerReason(t, "old support after churn", f.arrive(admission.Arrival{Request: req, Evidence: e})[0].Err, admission.ReasonStale)
+	got := f.arrive(f.arrival(evidenceSpec{cursor: "fresh-2"}))[0]
+	if c := f.candidateOf(got.Candidate); got.Err != nil || !got.Created || c.Key.Episode != row.ID || c.Key.Generation != 3 {
+		t.Fatalf("return after churn: %+v %+v", got, c.Key)
+	}
+}
+
+// Recording the verified generation is a schema 15 shape: the first
+// verified block raises the ledger, and a line that names one below that
+// schema is refused at open.
+func TestAdmissionLedgerVerifiedGenerationSchema(t *testing.T) {
+	f := liveLedgerFixture(t)
+	f.begin()
+	f.verifiedArrival("192.0.2.10", "offset=1", admission.SeverityHigh, time.Hour)
+	row, _ := f.episodeAt("192.0.2.10")
+	if line, _ := row.Line(admission.KindBlockIP); line.VerifiedGeneration != 1 || f.schema() != 15 {
+		t.Fatalf("verified line %+v at schema %d", line, f.schema())
+	}
+	f.setSchema(14)
+	if _, err := OpenAdmissionLedger(f.db, f.reg); !isCorrupt(err) {
+		t.Fatalf("verified generation below its schema was accepted: %v", err)
 	}
 }

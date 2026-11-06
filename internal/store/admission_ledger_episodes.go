@@ -3,6 +3,7 @@ package store
 import (
 	"crypto/rand"
 	"io"
+	"slices"
 	"time"
 
 	"github.com/pidginhost/csm/internal/admission"
@@ -16,8 +17,14 @@ import (
 const admissionSchemaEpisodeElapsed = 13
 
 // admissionSchemaEpisodeRetained permits a verified episode whose
-// candidate references are gone but whose boundary still answers.
+// candidate references are gone but whose boundary still answers, and a
+// block line that names its latest verified generation.
 const admissionSchemaEpisodeRetained = 15
+
+// retainedShape reports whether e needs schema 15 to be read.
+func retainedShape(e admission.Episode) bool {
+	return !e.HasCandidates() || slices.ContainsFunc(e.Lines, func(l admission.EpisodeLine) bool { return l.VerifiedGeneration > 0 })
+}
 
 // episodeStateKey holds the episode sequence in the queue state bucket.
 var episodeStateKey = []byte("episodes")
@@ -76,7 +83,7 @@ func putEpisode(tx *bolt.Tx, key string, e admission.Episode) error {
 		// refused arrival that would keep a candidate without its row.
 		return corruptRecord(err)
 	}
-	if !e.HasCandidates() {
+	if retainedShape(e) {
 		if err = raiseSchema(tx, admissionSchemaEpisodeRetained); err != nil {
 			return err
 		}
@@ -129,7 +136,7 @@ func proveEpisodes(tx *bolt.Tx) error {
 		if err != nil {
 			return err
 		}
-		if !e.HasCandidates() {
+		if retainedShape(e) {
 			schema := tx.Bucket([]byte(admissionMetaBucket)).Get(admissionSchemaKey)
 			if len(schema) != 1 || schema[0] < admissionSchemaEpisodeRetained {
 				return admission.ErrCorruptRecord
@@ -204,6 +211,14 @@ func (l *AdmissionLedger) placeTx(q *queueTx, req admission.CandidateRequest, e 
 				if line.Answered && (!ignore || !cur.Verified.IsZero()) {
 					state = admission.LineAnswered
 				}
+				// A forgotten return still owes the verified block's gate.
+				var left time.Time
+				if state, left, err = q.readmit(cur, line, req, e, state, state == admission.LineAnswered); err != nil {
+					return "", false, err
+				}
+				if !left.IsZero() {
+					gone = left
+				}
 				states = append(states, state)
 				continue
 			}
@@ -226,27 +241,12 @@ func (l *AdmissionLedger) placeTx(q *queueTx, req admission.CandidateRequest, e 
 			if ignore && c.State == admission.StateObserved {
 				state = admission.LineEnded
 			}
-			// A verified block that left before its episode's original end
-			// no longer answers a later attack of its kind: the attack is a
-			// charged re-admission of the same episode (spec 5.2), never
-			// past that end (spec 5.4) and only on evidence observed after
-			// the removal (spec 5.13).
-			// Only a live ledger has effect records, so nothing changes on
-			// a host that previews or forecasts.
-			if q.started && !cur.Verified.IsZero() && line.Kind == req.Kind && req.Kind == admission.KindBlockIP &&
-				(state == admission.LineQueued || state == admission.LineEnded || c.State == admission.StateVerified) {
-				left, goneErr := q.goneSince(c)
-				if goneErr != nil {
-					return "", false, goneErr
-				}
-				if q.now.Before(cur.Verified) && !left.IsZero() && e.ObservedAt().After(left) {
-					gone = left
-					if c.State == admission.StateVerified {
-						state = admission.LineEnded
-					}
-				} else {
-					state = admission.LineAnswered
-				}
+			var left time.Time
+			if state, left, err = q.readmit(cur, line, req, e, state, c.State == admission.StateVerified); err != nil {
+				return "", false, err
+			}
+			if !left.IsZero() {
+				gone = left
 			}
 			states = append(states, state)
 		}
@@ -288,11 +288,15 @@ func (l *AdmissionLedger) placeTx(q *queueTx, req admission.CandidateRequest, e 
 	if err != nil {
 		return id, false, err
 	}
-	observed := e.ObservedAt()
-	if line, ok := choice.Episode.Line(req.Kind); ok && line.Observed.After(observed) {
-		observed = line.Observed
+	next := admission.EpisodeLine{Kind: req.Kind, Generation: key.Generation, Candidate: id, Observed: e.ObservedAt()}
+	if line, ok := choice.Episode.Line(req.Kind); ok {
+		if line.Observed.After(next.Observed) {
+			next.Observed = line.Observed
+		}
+		// A later generation keeps the episode's latest verified block.
+		next.VerifiedGeneration = line.VerifiedGeneration
 	}
-	row := choice.Episode.WithLine(admission.EpisodeLine{Kind: req.Kind, Generation: key.Generation, Candidate: id, Observed: observed})
+	row := choice.Episode.WithLine(next)
 	return id, created, q.putEpisode(rowKey, row)
 }
 
@@ -313,31 +317,54 @@ func (l *AdmissionLedger) VerifiedEnd(c admission.Candidate) (end time.Time, cur
 	return end, current, err
 }
 
-// goneSince is when the ledger learned the verified block of candidate c
-// left the kernel before its expiry, from its current attempt's effect
-// record, following retained predecessors for queued or ended returns;
-// zero while it holds, or when no retained proof says.
-func (q *queueTx) goneSince(c admission.Candidate) (time.Time, error) {
-	// A queued or ended re-admission still owes the last verified
-	// generation's evidence gate. Walk only retained predecessors;
-	// a missing one leaves no proof and the line keeps answering.
-	for c.State != admission.StateVerified {
-		if c.Key.Generation <= 1 {
-			return time.Time{}, nil
-		}
-		key := c.Key
-		key.Generation--
-		id, err := key.ID()
-		if err != nil {
-			return time.Time{}, err
-		}
-		c, err = loadCandidate(q.tx, id)
-		if err == errCandidateMissing {
-			return time.Time{}, nil
-		}
-		if err != nil {
-			return time.Time{}, err
-		}
+// readmit applies the evidence gate to the line of the arriving kind. A
+// verified block that left before its episode's original end no longer
+// answers a later attack of its kind: the attack is a charged re-admission
+// of the same episode (spec 5.2), never past that end (spec 5.4) and only
+// on evidence observed after the latest removal (spec 5.13), which gone
+// returns. verified says the line answers through a verified block, its
+// own or a forgotten return's. Queued and ended returns keep the gate; a
+// line without proof keeps answering. Only a live ledger has effect
+// records, so nothing changes on a host that previews or forecasts.
+func (q *queueTx) readmit(cur admission.Episode, line admission.EpisodeLine, req admission.CandidateRequest, e admission.Evidence, state admission.LineState, verified bool) (admission.LineState, time.Time, error) {
+	if !q.started || cur.Verified.IsZero() || line.Kind != req.Kind || req.Kind != admission.KindBlockIP ||
+		(state != admission.LineQueued && state != admission.LineEnded && !verified) {
+		return state, time.Time{}, nil
+	}
+	left, err := q.verifiedGone(cur, line, req.Target)
+	if err != nil {
+		return state, time.Time{}, err
+	}
+	if !q.now.Before(cur.Verified) || left.IsZero() || !e.ObservedAt().After(left) {
+		return admission.LineAnswered, time.Time{}, nil
+	}
+	if verified {
+		state = admission.LineEnded
+	}
+	return state, left, nil
+}
+
+// verifiedGone is when the ledger learned the latest verified block of
+// line's kind in episode cur left the kernel before its expiry, from that
+// block's effect record; zero while it holds, or when no retained record
+// says. History keeps that block until both episode ends pass.
+func (q *queueTx) verifiedGone(cur admission.Episode, line admission.EpisodeLine, target admission.Target) (time.Time, error) {
+	if line.VerifiedGeneration == 0 {
+		return time.Time{}, nil
+	}
+	id, err := admission.CandidateKey{Kind: line.Kind, Target: target, Episode: cur.ID, Generation: line.VerifiedGeneration}.ID()
+	if err != nil {
+		return time.Time{}, err
+	}
+	c, err := loadCandidate(q.tx, id)
+	if err == errCandidateMissing {
+		return time.Time{}, nil
+	}
+	if err != nil {
+		return time.Time{}, err
+	}
+	if c.State != admission.StateVerified {
+		return time.Time{}, admission.ErrCorruptRecord
 	}
 	a, err := currentAttempt(q.tx, c)
 	if err != nil {
@@ -400,6 +427,13 @@ func (q *queueTx) closeEpisode(c admission.Candidate, lead time.Duration, clock 
 	}
 	if e, err = e.Close(c.ExpiresAt.Add(-max(lead, 0)), clock); err != nil {
 		return err
+	}
+	// The verified block is its kind's latest generation; the gate reads
+	// it even after later generations are retired. Only a live ledger
+	// gates re-admissions, so only it records one.
+	if line, ok := e.Line(c.Key.Kind); ok && q.started && line.Generation == c.Key.Generation {
+		line.VerifiedGeneration = c.Key.Generation
+		e = e.WithLine(line)
 	}
 	return putEpisode(q.tx, key, e)
 }
