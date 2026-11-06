@@ -740,7 +740,6 @@ func (d *Daemon) Run() error {
 	// comes out as "[ts] platform detected  os=X  panel=Y  ..."; in
 	// JSON mode as {"msg":"platform detected","os":"X","panel":"Y",...}.
 	pi := platform.Detect()
-	d.mailboxes = newMailboxResolver(pi)
 	csmlog.Info("platform detected",
 		"os", orUnknown(string(pi.OS)),
 		"os_version", orUnknown(pi.OSVersion),
@@ -2226,6 +2225,7 @@ func (d *Daemon) startLogWatchers() {
 
 	watchExim := shouldWatchEximMainlog(hostInfo, os.Stat)
 	d.smtpAuthFromExim = watchExim
+	d.mailboxes = newMailboxResolver(hostInfo)
 	logFiles := d.fixedLogSpecs(hostInfo, d.handleEximLine, watchExim)
 	if hostInfo.IsCPanel() {
 		d.wg.Add(1)

@@ -1,6 +1,8 @@
 package daemon
 
 import (
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -8,6 +10,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/store"
 )
@@ -285,6 +288,37 @@ func TestSprayLookupOwnedOnCPanelOnly(t *testing.T) {
 	for panel, want := range map[platform.Panel]bool{platform.PanelCPanel: true, platform.PanelNone: false} {
 		t.Run("panel="+string(panel), func(t *testing.T) {
 			if got := newMailboxResolver(platform.Info{Panel: panel}) != nil; got != want {
+				t.Fatalf("resolver present = %v, want %v", got, want)
+			}
+		})
+	}
+}
+
+// The log readers are what ask, so they start with the resolver set.
+func TestSprayLookupWiredWithLogReaders(t *testing.T) {
+	for panel, want := range map[platform.Panel]bool{platform.PanelCPanel: true, platform.PanelNone: false} {
+		t.Run("panel="+string(panel), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "mail.log")
+			if err := os.WriteFile(path, nil, 0600); err != nil {
+				t.Fatal(err)
+			}
+			server := platform.WSNone
+			platform.ResetForTest()
+			platform.SetOverrides(platform.Overrides{Panel: &panel, WebServer: &server})
+			t.Cleanup(platform.ResetForTest)
+			cfg := sprayTestConfig("observe")
+			cfg.MailLogs = config.MailLogsConfig{Source: "file", File: path}
+			previous := config.Active()
+			config.SetActive(cfg)
+			t.Cleanup(func() { config.SetActive(previous) })
+			d := New(cfg, nil, nil, "")
+			d.staleSession401 = newStaleSession401s()
+			d.startLogWatchers()
+			t.Cleanup(func() {
+				close(d.stopCh)
+				d.wg.Wait()
+			})
+			if got := d.mailboxes != nil; got != want {
 				t.Fatalf("resolver present = %v, want %v", got, want)
 			}
 		})
