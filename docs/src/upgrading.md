@@ -134,6 +134,11 @@ retains and cleans up these rows; older builds refuse this ledger. This
 writer remains behind live execution and does not run on preview-only
 hosts. Keep the database when changing binaries.
 
+After live re-admissions, roll back only to a build that also keeps the
+original verified boundary and caps queued returns at it. A build that
+only reads the format can give an old queued return a full lifetime.
+Stop the daemon before replacing the binary and keep the database.
+
 `auto_response.dry_run` defaults to `true` when the key is absent. Automatic IP blocks are not applied. With the firewall on outside observe mode, the dry-run count holds retained forecast examples, including older entries until pruning; it is not active occupancy or a count of all attempted blocks. If your `auto_response:` block sets `enabled: true` and `block_ips: true` but does **not** set `dry_run`, **add `dry_run: false` explicitly** before relying on auto-block. Verify with:
 
 ```bash

@@ -296,6 +296,23 @@ func (l *AdmissionLedger) placeTx(q *queueTx, req admission.CandidateRequest, e 
 	return id, created, q.putEpisode(rowKey, row)
 }
 
+// VerifiedEnd is the original verified end, in admission time, of the
+// episode candidate c belongs to when that episode is its target's
+// current row and a verified block closed it: what a same-episode
+// re-admission may last until (spec 5.2, 5.4). current distinguishes an
+// unverified current row from a lost or replaced row, which cannot grant
+// an older queued return a new lifetime.
+func (l *AdmissionLedger) VerifiedEnd(c admission.Candidate) (end time.Time, current bool, err error) {
+	err = l.db.bolt.View(func(tx *bolt.Tx) error {
+		e, found, loadErr := loadEpisode(tx, c.Key.Target.Key())
+		if loadErr == nil && found && e.ID == c.Key.Episode {
+			end, current = e.Verified, true
+		}
+		return loadErr
+	})
+	return end, current, err
+}
+
 // goneSince is when the ledger learned the verified block of candidate c
 // left the kernel before its expiry, from its current attempt's effect
 // record, following retained predecessors for queued or ended returns;

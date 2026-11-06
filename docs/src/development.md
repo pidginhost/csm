@@ -675,7 +675,13 @@ refused return keeps the verified boundary until both ends pass. The
 episode earns no equal-tier rotation. An observation or root at or before the removal
 is answered or stale. Past the original end, as when
 a reboot keeps the episode open on elapsed time, the block keeps
-answering until the episode ends on both clocks. The first row with a positive elapsed end moves
+answering until the episode ends on both clocks. The owner caps a
+re-admission's first attempt at the episode's original verified end, the
+time left in admission time added to the lease clock; a retry keeps its
+first expiry. A re-admission with no time left, or whose episode row
+has been replaced or lost, is refused as expired.
+A forecast caps a block returning to an address whose forecast block the
+session replaced at that block's expiry. The first row with a positive elapsed end moves
 the ledger to schema 13 on every host, which older builds refuse. Schema 13
 records nothing of the live start or the effect records, so a schema 13 ledger
 proves them from their own markers. Episode placement refuses an

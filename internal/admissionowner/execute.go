@@ -360,8 +360,12 @@ func (o *Owner) memberOf(p execPick, lease time.Time) (firewall.BlockMember, err
 	if err != nil {
 		return firewall.BlockMember{}, fmt.Errorf("naming the attempt of pick %s: %w", p.pick.ID, err)
 	}
+	expires, err := o.cappedExpiry(p.c, lease)
+	if err != nil {
+		return firewall.BlockMember{}, fmt.Errorf("reading the episode of pick %s: %w", p.pick.ID, err)
+	}
 	addr, _ := p.c.Key.Target.Addr()
-	return firewall.BlockMember{Action: string(next.ID), IP: addr.String(), Reason: "CSM auto-block: " + p.c.Check, ExpiresAt: o.expiryOf(p.c, lease)}, nil
+	return firewall.BlockMember{Action: string(next.ID), IP: addr.String(), Reason: "CSM auto-block: " + p.c.Check, ExpiresAt: expires}, nil
 }
 
 // endRefused ends or defers a pick the engine refused before anything was

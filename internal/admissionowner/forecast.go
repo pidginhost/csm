@@ -171,6 +171,12 @@ func (o *Owner) forecastBlocks(picks []execPick) error {
 		if err != nil {
 			return err
 		}
+		// The session's own same-episode re-admission: a block returning
+		// to an address whose forecast block it replaced lasts no longer
+		// than that block would have.
+		if until, ok := o.shadow.answered[m.IP]; ok && p.c.Attempts == 0 && until.Before(m.ExpiresAt) {
+			m.ExpiresAt = until
+		}
 		members[i] = m
 	}
 	adm, err := engine.BlockAdmissionSnapshot(members, o.shadow.ips())
