@@ -129,13 +129,98 @@ func TestMailboxResolverTypo(t *testing.T) {
 		// On a hosted domain an extension is decided before any typo step.
 		{"in+f@example.com", sprayMailbox{"in+f@example.com", mailboxExistenceUnknown}},
 		{"in%f@example.com", sprayMailbox{"in%f@example.com", mailboxExistenceUnknown}},
-		// On a mistyped domain it only ever matches by edits.
+		// On a mistyped domain it matches by edits, and with no match it may
+		// still be a mailbox of the near domain spelled another way.
 		{"in+fo@exmaple.com", sprayMailbox{"info@example.com", mailboxExists}},
-		{"in+foo@exmaple.com", sprayMailbox{"in+foo@exmaple.com", mailboxMissing}},
+		{"in+foo@exmaple.com", sprayMailbox{"in+foo@exmaple.com", mailboxExistenceUnknown}},
+		{"in%foo@exmaple.com", sprayMailbox{"in%foo@exmaple.com", mailboxExistenceUnknown}},
+		{"info+tag@exmaple.com", sprayMailbox{"info+tag@exmaple.com", mailboxExistenceUnknown}},
+		{"info+tag@exmaple.com.", sprayMailbox{"info+tag@exmaple.com.", mailboxExistenceUnknown}},
+		// With no near domain there is nothing it could be a spelling of.
+		{"info+tag@mail.example.org", sprayMailbox{"info+tag@mail.example.org", mailboxMissing}},
 	} {
 		r := newCPanelMailboxResolver(newTypoMailboxSource(), time.Now)
 		if got := r.Resolve(row.input); got != row.want {
 			t.Errorf("Resolve(%q) = %+v, want %+v", row.input, got, row.want)
+		}
+	}
+}
+
+// newSiblingMailboxSource adds hosted domains 1 edit apart. Each group is more
+// than 2 edits from the others.
+func newSiblingMailboxSource() *fakeMailboxSource {
+	src := newTypoMailboxSource()
+	src.snapshot.Accounts = append(src.snapshot.Accounts, "broken", "siblings")
+	slices.Sort(src.snapshot.Accounts)
+	for domain, owner := range map[string]string{
+		"shop1.example.org": "siblings", "shop2.example.org": "siblings",
+		"mail1.example.org": "siblings", "mail2.example.org": "siblings",
+		"web1.example.org": "siblings", "web2.example.org": "siblings",
+		"app1.example.org": "siblings", "app2.example.org": "siblings",
+		"dead1.example.org": "siblings", "dead2.example.org": "broken",
+		"crm1.example.org": "siblings",
+	} {
+		src.snapshot.Domains[domain] = owner
+	}
+	src.snapshot.Unresolved["crm2.example.org"] = true
+	src.unreadable = map[string]bool{"broken": true}
+	src.lists["siblings"] = map[string][]string{
+		"shop1.example.org": {"sales"}, "shop2.example.org": {"info"},
+		"mail1.example.org": {"sales"}, "mail2.example.org": {"salea"},
+		"web1.example.org": {"infoxx"}, "web2.example.org": {"info"},
+		"app1.example.org": {"bop"}, "app2.example.org": {"bob"},
+		"dead1.example.org": {"info"},
+		"crm1.example.org":  {"info"},
+	}
+	return src
+}
+
+func TestMailboxResolverTypoSiblingDomain(t *testing.T) {
+	for _, row := range []struct {
+		why, input string
+		want       sprayMailbox
+	}{
+		{"real on the sibling", "info@shop1.example.org", sprayMailbox{"info@shop2.example.org", mailboxExists}},
+		{"real on the sibling, other way", "sales@shop2.example.org", sprayMailbox{"sales@shop1.example.org", mailboxExists}},
+		{"typo on the sibling", "infoo@shop1.example.org", sprayMailbox{"info@shop2.example.org", mailboxExists}},
+		{"trailing dot", "info@shop1.example.org.", sprayMailbox{"info@shop2.example.org", mailboxExists}},
+		{"nowhere near", "nosuch@shop1.example.org", sprayMailbox{"nosuch@shop1.example.org", mailboxMissing}},
+		{"over the budget with the domain's edit", "infoxx@shop1.example.org", sprayMailbox{"infoxx@shop1.example.org", mailboxMissing}},
+		{"exact needs no scan", "sales@shop1.example.org", sprayMailbox{"sales@shop1.example.org", mailboxExists}},
+		{"an extension is decided first", "in+fo@shop1.example.org", sprayMailbox{"in+fo@shop1.example.org", mailboxExistenceUnknown}},
+
+		{"the typed domain wins by total", "salez@mail1.example.org", sprayMailbox{"sales@mail1.example.org", mailboxExists}},
+		{"so does a sibling", "info@web1.example.org", sprayMailbox{"info@web2.example.org", mailboxExists}},
+		{"a tie goes to the smaller address", "bob@app1.example.org", sprayMailbox{"bob@app2.example.org", mailboxExists}},
+
+		{"a sibling's list failed", "nosuch@dead1.example.org", sprayMailbox{"nosuch@dead1.example.org", mailboxExistenceUnknown}},
+		{"a match beats a failed list", "inof@dead1.example.org", sprayMailbox{"info@dead1.example.org", mailboxExists}},
+		{"a sibling has no account", "nosuch@crm1.example.org", sprayMailbox{"nosuch@crm1.example.org", mailboxExistenceUnknown}},
+		{"a match beats no account", "inof@crm1.example.org", sprayMailbox{"info@crm1.example.org", mailboxExists}},
+	} {
+		r := newCPanelMailboxResolver(newSiblingMailboxSource(), time.Now)
+		if got := r.Resolve(row.input); got != row.want {
+			t.Errorf("%s: Resolve(%q) = %+v, want %+v", row.why, row.input, got, row.want)
+		}
+	}
+}
+
+// example.org and example.net differ by 3 edits, so neither is near the other.
+func TestMailboxResolverTypoSiblingOverBudget(t *testing.T) {
+	src := &fakeMailboxSource{
+		snapshot: checks.HostingSnapshot{
+			Accounts: []string{"netco", "orgco"},
+			Domains:  map[string]string{"example.net": "netco", "example.org": "orgco"},
+		},
+		lists: map[string]map[string][]string{
+			"netco": {"example.net": {"info"}},
+			"orgco": {"example.org": {"sales"}},
+		},
+	}
+	r := newCPanelMailboxResolver(src, time.Now)
+	for _, name := range []string{"info@example.org", "nosuch@example.org", "sales@example.net"} {
+		if got, want := r.Resolve(name), (sprayMailbox{name, mailboxMissing}); got != want {
+			t.Errorf("Resolve(%q) = %+v, want %+v", name, got, want)
 		}
 	}
 }
@@ -315,15 +400,30 @@ func TestMailboxTypoIndexDoesNotGrow(t *testing.T) {
 	}
 }
 
-func BenchmarkMailboxResolverUnhostedTypo(b *testing.B) {
+func benchmarkMailboxResolverMissing(b *testing.B, name func(i int) string) {
 	r := newCPanelMailboxResolver(manyDomainSource(20000), time.Now)
+	r.Resolve("seed@example.org")
 	b.ReportAllocs()
 	i := 0
 	for b.Loop() {
 		i++
-		name := fmt.Sprintf("nosuch%d@u%05d.example.org", i, i)
-		if got := r.Resolve(name); got.exist != mailboxMissing {
-			b.Fatalf("Resolve(%q) = %+v, want Missing", name, got)
+		if got := r.Resolve(name(i)); got.exist != mailboxMissing {
+			b.Fatalf("Resolve(%q) = %+v, want Missing", name(i), got)
 		}
 	}
+}
+
+func BenchmarkMailboxResolverUnhostedTypo(b *testing.B) {
+	benchmarkMailboxResolverMissing(b, func(i int) string {
+		return fmt.Sprintf("nosuch%d@u%05d.example.org", i, i)
+	})
+}
+
+// A name on a hosted domain scans the same lengths and also weighs each near
+// sibling's mailboxes.
+func BenchmarkMailboxResolverHostedMissing(b *testing.B) {
+	domain := hostedDomain(1)
+	benchmarkMailboxResolverMissing(b, func(i int) string {
+		return fmt.Sprintf("nosuch%d@%s", i, domain)
+	})
 }

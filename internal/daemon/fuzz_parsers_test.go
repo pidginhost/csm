@@ -551,12 +551,13 @@ func FuzzMailboxResolverResolve(f *testing.F) {
 		"inof@example.com", "exampelco@example.com", "in+fo@example.com",
 		"info@exmaple.com", "inf@exampel.com.", "in+fo@exmaple.com", "exampelco@exmaple.com",
 		"otherco@example.or", "nosuch@example.nt", "x@../../etc", "x@example.com\x00", "\xff@example.com",
+		"info@shop1.example.org", "nosuch@shop1.example.org", "nosuch@dead1.example.org", "in+foo@shop.example.org",
 		strings.Repeat("a", 300) + "@example.com",
 	} {
 		f.Add(s)
 	}
 	f.Fuzz(func(t *testing.T, input string) {
-		src := newTypoMailboxSource()
+		src := newSiblingMailboxSource()
 		owners := map[string]bool{}
 		for _, owner := range src.snapshot.Domains {
 			owners[owner] = true

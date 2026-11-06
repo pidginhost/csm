@@ -98,20 +98,25 @@ func (m *typoMatch) answer(otherwise sprayMailbox) sprayMailbox {
 	return sprayMailbox{name: m.address, exist: mailboxExists}
 }
 
-// resolveUnhosted answers for a domain cPanel does not list. A near domain
-// whose mailboxes cannot be read might hold the mailbox meant, so it turns an
-// answer of Missing into Unknown, but cannot outweigh a match.
-func (r *cpanelMailboxResolver) resolveUnhosted(name, local, domain string, now time.Time) sprayMailbox {
+// resolveTypo answers for a name no hosted domain lists as typed. The nearest
+// mailbox within maxTypoEdits wins, whether on the typed domain, which is a
+// candidate at no cost when hosted, or on a near hosted domain. A near domain
+// cannot outweigh a match, but without one it turns Missing into Unknown when
+// its mailboxes cannot be read, or when an extension might spell one of them.
+func (r *cpanelMailboxResolver) resolveTypo(name, local, domain string, now time.Time) sprayMailbox {
 	var nearest typoMatch
 	otherwise := sprayMailbox{name: name, exist: mailboxMissing}
-	// ponytail: linear in hosted domains of similar length on every unhosted
-	// name, under the mutex; a deletion-neighbourhood index if a host with far
-	// more domains feels it.
+	// ponytail: linear in hosted domains of similar length for every name that
+	// is not an exact match, under the mutex; a deletion-neighbourhood index if
+	// a host with far more domains feels it.
 	for size := len(domain) - maxTypoEdits; size <= len(domain)+maxTypoEdits; size++ {
 		for _, candidate := range r.typoIndex[size] {
 			domainEdits, near := editsWithin(domain, candidate, maxTypoEdits)
 			if !near {
 				continue
+			}
+			if hasAddressExtension(local) {
+				otherwise.exist = mailboxExistenceUnknown
 			}
 			owner, resolved := r.snapshot.Domains[candidate]
 			if !resolved {

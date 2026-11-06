@@ -87,23 +87,19 @@ func (r *cpanelMailboxResolver) Resolve(name string) sprayMailbox {
 	if !dovecot.ValidMailbox(local) || !dovecot.ValidDomain(domain) || r.snapshot.Unresolved[domain] {
 		return sprayMailbox{name: name, exist: mailboxExistenceUnknown}
 	}
-	owner, hosted := r.snapshot.Domains[domain]
-	if !hosted {
-		return r.resolveUnhosted(name, local, domain, now)
+	if owner, hosted := r.snapshot.Domains[domain]; hosted {
+		lists, usable := r.accountLists(owner, now)
+		if !usable {
+			return sprayMailbox{name: name, exist: mailboxExistenceUnknown}
+		}
+		if _, listed := slices.BinarySearch(lists[domain], local); listed || local == owner {
+			return sprayMailbox{name: address, exist: mailboxExists}
+		}
+		if hasAddressExtension(local) {
+			return sprayMailbox{name: name, exist: mailboxExistenceUnknown}
+		}
 	}
-	lists, usable := r.accountLists(owner, now)
-	if !usable {
-		return sprayMailbox{name: name, exist: mailboxExistenceUnknown}
-	}
-	if _, listed := slices.BinarySearch(lists[domain], local); listed || local == owner {
-		return sprayMailbox{name: address, exist: mailboxExists}
-	}
-	if hasAddressExtension(local) {
-		return sprayMailbox{name: name, exist: mailboxExistenceUnknown}
-	}
-	var nearest typoMatch
-	nearest.scan(local, domain, owner, lists[domain], 0)
-	return nearest.answer(sprayMailbox{name: name, exist: mailboxMissing})
+	return r.resolveTypo(name, local, domain, now)
 }
 
 // accountNameExistence answers for a login with no domain.
