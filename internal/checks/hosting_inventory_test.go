@@ -245,6 +245,25 @@ func TestHostingInventoryExcludesAmbiguousDomains(t *testing.T) {
 	}
 }
 
+// A domain with no usable owner is still hosted here. Only the domains that
+// cannot be placed are listed: wildcard and malformed rows name no domain.
+func TestHostingInventoryListsUnresolvedDomains(t *testing.T) {
+	withInventoryPanel(t, platform.PanelCPanel)
+	withAccountRoots(t, "/home")
+	withMockOS(t, inventoryFS([]os.DirEntry{dirEntry("alice", false), dirEntry("bob", false)}, nil, nil, nil,
+		"alice.example: alice\nshared.example: alice\nshared.example: bob\nghost.example: ghost\n*: nobody\nbroken line\n", nil))
+	snap, err := HostingInventory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := map[string]bool{"shared.example": true, "ghost.example": true}; !reflect.DeepEqual(snap.Unresolved, want) {
+		t.Errorf("unresolved = %v, want %v", snap.Unresolved, want)
+	}
+	if want := map[string]string{"alice.example": "alice"}; !reflect.DeepEqual(snap.Domains, want) {
+		t.Errorf("domains = %v, want %v", snap.Domains, want)
+	}
+}
+
 func TestHostingInventoryAcceptsRepeatedDomainOwner(t *testing.T) {
 	withInventoryPanel(t, platform.PanelCPanel)
 	withAccountRoots(t, "/home")
@@ -270,7 +289,7 @@ func TestHostingInventoryEmptyReadableHost(t *testing.T) {
 			withAccountRoots(t, "/home")
 			withMockOS(t, inventoryFS(nil, nil, nil, nil, "", nil))
 			snap, err := HostingInventory()
-			want := HostingSnapshot{Accounts: []string{}, Domains: map[string]string{}, Incarnations: map[string]string{}}
+			want := HostingSnapshot{Accounts: []string{}, Domains: map[string]string{}, Unresolved: map[string]bool{}, Incarnations: map[string]string{}}
 			if err != nil || !reflect.DeepEqual(snap, want) {
 				t.Fatalf("empty complete inventory: %+v %v, want %+v", snap, err, want)
 			}
@@ -383,7 +402,7 @@ func TestHostingInventoryMultipleRootsAreComplete(t *testing.T) {
 		}
 	}})
 	snap, err := HostingInventory()
-	want := HostingSnapshot{Accounts: []string{"alice", "bob", "carol"}, Domains: map[string]string{},
+	want := HostingSnapshot{Accounts: []string{"alice", "bob", "carol"}, Domains: map[string]string{}, Unresolved: map[string]bool{},
 		Incarnations: map[string]string{"alice": "dir:/home/alice", "bob": "dir:/home/bob", "carol": "dir:/home2/carol"}}
 	if err != nil || !reflect.DeepEqual(snap, want) {
 		t.Fatalf("HostingInventory = %+v %v, want %+v", snap, err, want)
@@ -405,7 +424,7 @@ func TestHostingInventoryEmptyRootPreservesOtherAccounts(t *testing.T) {
 			}
 		}})
 		snap, err := HostingInventory()
-		want := HostingSnapshot{Accounts: []string{"alice"}, Domains: map[string]string{}, Incarnations: map[string]string{"alice": "dir:/home2/alice"}}
+		want := HostingSnapshot{Accounts: []string{"alice"}, Domains: map[string]string{}, Unresolved: map[string]bool{}, Incarnations: map[string]string{"alice": "dir:/home2/alice"}}
 		if err != nil || !reflect.DeepEqual(snap, want) {
 			t.Fatalf("roots %v: inventory = %+v %v, want %+v", roots, snap, err, want)
 		}
@@ -468,6 +487,7 @@ func TestHostingInventoryAcceptsAZeroCreationDate(t *testing.T) {
 			want := HostingSnapshot{
 				Accounts:     []string{"alice", "freedns", "system", "zfreedns"},
 				Domains:      map[string]string{"alice.example": "alice"},
+				Unresolved:   map[string]bool{},
 				Incarnations: map[string]string{"alice": "startdate:1600000000", "freedns": tc.token, "system": tc.token, "zfreedns": tc.token},
 			}
 			if err != nil || !reflect.DeepEqual(snap, want) {

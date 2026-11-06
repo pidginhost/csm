@@ -20,6 +20,10 @@ type HostingSnapshot struct {
 	// Domains maps canonical domains to listed accounts. Ambiguous and
 	// malformed rows are excluded.
 	Domains map[string]string
+	// Unresolved holds every domain /etc/userdomains lists but Domains leaves
+	// out: its rows conflict, or its owner is not an account. Such a domain is
+	// hosted here even though no account can be named for it.
+	Unresolved map[string]bool
 	// AmbiguousDomains counts domains listed for more than one owner. They
 	// are left out of Domains, so evidence about them stays host-scoped.
 	AmbiguousDomains int
@@ -45,7 +49,7 @@ func HostingInventory() (HostingSnapshot, error) {
 	if err != nil {
 		return HostingSnapshot{}, err
 	}
-	snap := HostingSnapshot{Accounts: []string{}, Domains: map[string]string{}, Incarnations: map[string]string{}}
+	snap := HostingSnapshot{Accounts: []string{}, Domains: map[string]string{}, Unresolved: map[string]bool{}, Incarnations: map[string]string{}}
 	known := map[string]bool{}
 	for _, e := range registry {
 		name := e.Name()
@@ -82,6 +86,8 @@ func HostingInventory() (HostingSnapshot, error) {
 	for domain, owner := range owners {
 		if !ambiguous[domain] && known[owner] {
 			snap.Domains[domain] = owner
+		} else {
+			snap.Unresolved[domain] = true
 		}
 	}
 	snap.AmbiguousDomains = len(ambiguous)
@@ -91,7 +97,7 @@ func HostingInventory() (HostingSnapshot, error) {
 // homeRootInventory lists the account directories under every account root.
 // An account listed under several roots is the one in the first.
 func homeRootInventory() (HostingSnapshot, error) {
-	snap := HostingSnapshot{Accounts: []string{}, Domains: map[string]string{}, Incarnations: map[string]string{}}
+	snap := HostingSnapshot{Accounts: []string{}, Domains: map[string]string{}, Unresolved: map[string]bool{}, Incarnations: map[string]string{}}
 	for _, root := range accountHomeRoots() {
 		entries, err := osFS.ReadDir(root)
 		if err != nil {
