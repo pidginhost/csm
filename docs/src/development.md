@@ -672,7 +672,12 @@ every root observed after it, queues a charged new generation in the same
 episode. On a live ledger the block line records the generation of its
 latest verified block, whose history outlives later generations, so
 queued, ended and forgotten returns keep that evidence gate against the
-latest removal; such lines also need schema 15. Forgetting a refused
+latest removal; such lines also need schema 15. Older lines recover that
+generation from an unbroken chain of retained predecessors on their next
+arrival and persist it with the next episode write. A gap leaves the line
+answered. Opening a ledger does not rewrite older lines, but rejects a
+reference to an unverified candidate or a block older than another retained
+verified block of the same kind and episode. Forgetting a refused
 return keeps the verified boundary until both ends pass. The
 episode earns no equal-tier rotation. An observation or root at or before the removal
 is answered or stale. Past the original end, as when

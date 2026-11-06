@@ -449,7 +449,11 @@ func TestEpisodeRowFitsItsBound(t *testing.T) {
 	for _, nano := range []int64{math.MaxInt64, math.MinInt64 + 1} {
 		e := Episode{ID: testEpisode(t, episodeA), Last: time.Unix(0, nano).UTC(), Verified: time.Unix(0, nano).UTC(), EndElapsed: math.MaxInt64, Previous: time.Unix(0, nano).UTC(), PriorLast: time.Unix(0, nano-1).UTC()}
 		for k := KindBlockIP; k < kindEnd; k++ {
-			e = e.WithLine(EpisodeLine{Kind: k, Generation: math.MaxUint32, Candidate: testCandidateID(t, 15), Observed: e.Last})
+			line := EpisodeLine{Kind: k, Generation: math.MaxUint32, Candidate: testCandidateID(t, 15), Observed: e.Last}
+			if k == KindBlockIP || k == KindBlockSubnet {
+				line.VerifiedGeneration = math.MaxUint32
+			}
+			e = e.WithLine(line)
 		}
 		data, err := e.MarshalBinary()
 		widest := len("svc:ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff/udp/65535")

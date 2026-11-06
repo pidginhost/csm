@@ -1,6 +1,7 @@
 package store
 
 import (
+	"reflect"
 	"testing"
 	"time"
 
@@ -440,4 +441,67 @@ func TestAdmissionLedgerReadmissionGateSurvivesOtherKinds(t *testing.T) {
 	req := f.request("192.0.2.10", e.ID(), fresh, old)
 	req.Episode, req.Generation = admission.EpisodeID{}, 0
 	wantLedgerReason(t, "old support beside another kind", f.arrive(admission.Arrival{Request: req, Evidence: e})[0].Err, admission.ReasonStale)
+}
+
+// Startup must reject a verified-generation reference to an unverified
+// candidate or to an older block, including behind a later queued return.
+// Otherwise the first return either discovers damage late or uses the
+// earlier removal while the latest block still holds.
+func TestAdmissionLedgerOpenProvesVerifiedGeneration(t *testing.T) {
+	for _, state := range []string{"unverified candidate", "older verified block", "older retained block"} {
+		t.Run(state, func(t *testing.T) {
+			f, _, _ := goneArrival(t)
+			f.tickAt(f.wall.Add(time.Minute))
+			res := f.arrive(f.arrival(evidenceSpec{cursor: "return"}))[0]
+			if res.Err != nil || !res.Created {
+				t.Fatalf("return: %+v", res)
+			}
+			if state != "unverified candidate" {
+				_, a, granted, err := f.l.Reserve(res.Candidate, admission.LaneGeneral, f.wall.Add(10*time.Minute))
+				if err != nil || !granted {
+					t.Fatalf("reserve: %v %v", granted, err)
+				}
+				if _, _, _, err = f.l.Execute(a.Attempt.ID); err != nil {
+					t.Fatal(err)
+				}
+				if _, _, err = f.l.Finish(a.Attempt.ID, admission.DispositionApplied); err != nil {
+					t.Fatal(err)
+				}
+				if state == "older retained block" {
+					asked, err := f.l.HeldEffects(10)
+					if err != nil || len(asked) != 1 {
+						t.Fatalf("held effects: %+v %v", asked, err)
+					}
+					f.observeHeld(asked, false)
+					if n := f.observeHeld(asked, false); n != 1 {
+						t.Fatalf("two misses marked %d", n)
+					}
+					f.tickAt(f.wall.Add(time.Second))
+					res = f.arrive(f.arrival(evidenceSpec{cursor: "third"}))[0]
+					if res.Err != nil || !res.Created {
+						t.Fatalf("third generation: %+v", res)
+					}
+				}
+			}
+			row, _ := f.episodeAt("192.0.2.10")
+			line, _ := row.Line(admission.KindBlockIP)
+			line.VerifiedGeneration = 2
+			if state != "unverified candidate" {
+				line.VerifiedGeneration = 1
+			}
+			row = row.WithLine(line)
+			if err := f.db.bolt.Update(func(tx *bolt.Tx) error {
+				return putEpisode(tx, f.target("192.0.2.10").Key(), row)
+			}); err != nil {
+				t.Fatal(err)
+			}
+			before := f.snapshot()
+			if _, err := OpenAdmissionLedger(f.db, f.reg); !isCorrupt(err) {
+				t.Fatalf("opened an inconsistent verified reference: %v", err)
+			}
+			if !reflect.DeepEqual(before, f.snapshot()) {
+				t.Fatal("a refused open rewrote the ledger")
+			}
+		})
+	}
 }

@@ -127,7 +127,8 @@ func proveEpisodes(tx *bolt.Tx) error {
 	if _, err := loadEpisodeSequence(tx); err != nil {
 		return err
 	}
-	return tx.Bucket([]byte(admissionEpisodesBucket)).ForEach(func(k, v []byte) error {
+	var hasVerifiedReference bool
+	if err := tx.Bucket([]byte(admissionEpisodesBucket)).ForEach(func(k, v []byte) error {
 		target, err := admission.ParseTargetKey(string(k), admission.Caps{IPv6: true})
 		if err != nil {
 			return admission.ErrCorruptRecord
@@ -143,6 +144,10 @@ func proveEpisodes(tx *bolt.Tx) error {
 			}
 		}
 		for _, line := range e.Lines {
+			hasVerifiedReference = hasVerifiedReference || line.VerifiedGeneration != 0
+			if _, _, err := loadVerifiedBlock(tx, e.ID, line, target); err != nil {
+				return err
+			}
 			if line.Candidate == "" {
 				continue
 			}
@@ -153,6 +158,31 @@ func proveEpisodes(tx *bolt.Tx) error {
 			if c.Key != (admission.CandidateKey{Kind: line.Kind, Target: target, Episode: e.ID, Generation: line.Generation}) {
 				return admission.ErrCorruptRecord
 			}
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	if !hasVerifiedReference {
+		return nil
+	}
+	// Forgotten returns can leave gaps between the current line and its
+	// latest verified block. Check retained history without assuming an
+	// unbroken generation chain or trusting the reference being proved.
+	return tx.Bucket([]byte(admissionCandidatesBucket)).ForEach(func(k, _ []byte) error {
+		c, err := loadCandidate(tx, admission.CandidateID(k))
+		if err != nil {
+			return corruptRecord(err)
+		}
+		if c.State != admission.StateVerified || (c.Key.Kind != admission.KindBlockIP && c.Key.Kind != admission.KindBlockSubnet) {
+			return nil
+		}
+		e, found, err := loadEpisode(tx, c.Key.Target.Key())
+		if err != nil || !found || e.ID != c.Key.Episode {
+			return err
+		}
+		if line, ok := e.Line(c.Key.Kind); ok && line.VerifiedGeneration != 0 && c.Key.Generation > line.VerifiedGeneration {
+			return admission.ErrCorruptRecord
 		}
 		return nil
 	})
@@ -201,6 +231,14 @@ func (l *AdmissionLedger) placeTx(q *queueTx, req admission.CandidateRequest, e 
 	// left early; zero unless this arrival may re-admit it.
 	var gone time.Time
 	if found {
+		if q.started && !cur.Verified.IsZero() && req.Kind == admission.KindBlockIP {
+			if line, ok := cur.Line(req.Kind); ok && line.VerifiedGeneration == 0 {
+				if line.VerifiedGeneration, err = retainedVerifiedGeneration(q.tx, cur.ID, line, req.Target); err != nil {
+					return "", false, err
+				}
+				cur = cur.WithLine(line)
+			}
+		}
 		at = &cur
 		for _, line := range cur.Lines {
 			// Without previews answering, a remembered answer of a block
@@ -300,6 +338,30 @@ func (l *AdmissionLedger) placeTx(q *queueTx, req admission.CandidateRequest, e 
 	return id, created, q.putEpisode(rowKey, row)
 }
 
+// retainedVerifiedGeneration anchors an older line on its next write.
+// Only an unbroken chain proves which verified block was latest; a gap
+// leaves the line answered, as it did before generations were recorded.
+func retainedVerifiedGeneration(tx *bolt.Tx, episode admission.EpisodeID, line admission.EpisodeLine, target admission.Target) (uint32, error) {
+	key := admission.CandidateKey{Kind: line.Kind, Target: target, Episode: episode, Generation: line.Generation}
+	for ; key.Generation > 0; key.Generation-- {
+		id, err := key.ID()
+		if err != nil {
+			return 0, err
+		}
+		c, err := loadCandidate(tx, id)
+		if err == errCandidateMissing {
+			return 0, nil
+		}
+		if err != nil {
+			return 0, err
+		}
+		if c.State == admission.StateVerified {
+			return key.Generation, nil
+		}
+	}
+	return 0, nil
+}
+
 // VerifiedEnd is the original verified end, in admission time, of the
 // episode candidate c belongs to when that episode is its target's
 // current row and a verified block closed it: what a same-episode
@@ -349,22 +411,9 @@ func (q *queueTx) readmit(cur admission.Episode, line admission.EpisodeLine, req
 // block's effect record; zero while it holds, or when no retained record
 // says. History keeps that block until both episode ends pass.
 func (q *queueTx) verifiedGone(cur admission.Episode, line admission.EpisodeLine, target admission.Target) (time.Time, error) {
-	if line.VerifiedGeneration == 0 {
-		return time.Time{}, nil
-	}
-	id, err := admission.CandidateKey{Kind: line.Kind, Target: target, Episode: cur.ID, Generation: line.VerifiedGeneration}.ID()
-	if err != nil {
+	c, found, err := loadVerifiedBlock(q.tx, cur.ID, line, target)
+	if err != nil || !found {
 		return time.Time{}, err
-	}
-	c, err := loadCandidate(q.tx, id)
-	if err == errCandidateMissing {
-		return time.Time{}, nil
-	}
-	if err != nil {
-		return time.Time{}, err
-	}
-	if c.State != admission.StateVerified {
-		return time.Time{}, admission.ErrCorruptRecord
 	}
 	a, err := currentAttempt(q.tx, c)
 	if err != nil {
@@ -375,6 +424,29 @@ func (q *queueTx) verifiedGone(cur admission.Episode, line admission.EpisodeLine
 		return time.Time{}, err
 	}
 	return rec.Gone, nil
+}
+
+// A verified reference may outlive its history after both episode ends
+// pass, but retained history must prove the reference's claimed outcome.
+func loadVerifiedBlock(tx *bolt.Tx, episode admission.EpisodeID, line admission.EpisodeLine, target admission.Target) (admission.Candidate, bool, error) {
+	if line.VerifiedGeneration == 0 {
+		return admission.Candidate{}, false, nil
+	}
+	id, err := admission.CandidateKey{Kind: line.Kind, Target: target, Episode: episode, Generation: line.VerifiedGeneration}.ID()
+	if err != nil {
+		return admission.Candidate{}, false, err
+	}
+	c, err := loadCandidate(tx, id)
+	if err == errCandidateMissing {
+		return admission.Candidate{}, false, nil
+	}
+	if err != nil {
+		return admission.Candidate{}, false, err
+	}
+	if c.State != admission.StateVerified {
+		return admission.Candidate{}, false, admission.ErrCorruptRecord
+	}
+	return c, true, nil
 }
 
 // forgetLine clears a deleted candidate reference but retains the kind's
