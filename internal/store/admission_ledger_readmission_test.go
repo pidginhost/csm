@@ -418,3 +418,26 @@ func TestAdmissionLedgerVerifiedGenerationSchema(t *testing.T) {
 		t.Fatalf("verified generation below its schema was accepted: %v", err)
 	}
 }
+
+// Another kind's line in the same episode, which sorts after the block's,
+// cannot clear the block's evidence gate: old support stays stale.
+func TestAdmissionLedgerReadmissionGateSurvivesOtherKinds(t *testing.T) {
+	f, _, gone := goneArrival(t)
+	f.tickAt(f.wall.Add(time.Minute))
+	promote := f.arrival(evidenceSpec{cursor: "promote"})
+	promote.Request.Kind = admission.KindPromote
+	if res := f.arrive(promote)[0]; res.Err != nil || !res.Created {
+		t.Fatalf("promote: %+v", res)
+	}
+	row, _ := f.episodeAt("192.0.2.10")
+	if len(row.Lines) != 2 || row.Lines[1].Kind != admission.KindPromote {
+		t.Fatalf("lines: %+v", row.Lines)
+	}
+	f.tickAt(f.wall.Add(time.Second))
+	old := f.published(evidenceSpec{cursor: "old-support", age: f.wall.Sub(gone)})
+	fresh := f.published(evidenceSpec{cursor: "fresh-support"})
+	e := f.mint(evidenceSpec{cursor: "fresh-1"})
+	req := f.request("192.0.2.10", e.ID(), fresh, old)
+	req.Episode, req.Generation = admission.EpisodeID{}, 0
+	wantLedgerReason(t, "old support beside another kind", f.arrive(admission.Arrival{Request: req, Evidence: e})[0].Err, admission.ReasonStale)
+}
