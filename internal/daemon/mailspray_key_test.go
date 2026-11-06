@@ -10,10 +10,15 @@ import (
 // padding the client or the log used.
 func TestNormalizeSprayMailbox(t *testing.T) {
 	for in, want := range map[string]string{
-		" User@Example.COM ": "user@example.com",
-		"CPUSER":             "cpuser",
-		"":                   "",
-		" \t ":               "",
+		" User@Example.COM ":  "user@example.com",
+		" User@Example.COM. ": "user@example.com",
+		"user@example.com..":  "user@example.com..",
+		"user@example..com.":  "user@example..com.",
+		"user@.":              "user@.",
+		"user.":               "user.",
+		"CPUSER":              "cpuser",
+		"":                    "",
+		" \t ":                "",
 	} {
 		if got := normalizeSprayMailbox(in); got != want {
 			t.Errorf("normalizeSprayMailbox(%q) = %q, want %q", in, got, want)
@@ -44,7 +49,7 @@ func TestNormalizeSprayMailboxIdempotent(t *testing.T) {
 	if got := normalizeSprayMailbox(strings.Repeat("a", 255)); len(got) != 254 {
 		t.Errorf("255-byte name kept %d bytes, want 254", len(got))
 	}
-	for _, in := range []string{spaced, strings.Repeat("A", 300), " Mixed@Example.COM ", strings.Repeat("\xff", 300)} {
+	for _, in := range []string{spaced, strings.Repeat("A", 300), " Mixed@Example.COM ", "user@example.com.", "user@example.com..", strings.Repeat("\xff", 300)} {
 		once := normalizeSprayMailbox(in)
 		if twice := normalizeSprayMailbox(once); twice != once {
 			t.Errorf("normalize(normalize(%.20q...)) = %.20q, want %.20q", in, twice, once)

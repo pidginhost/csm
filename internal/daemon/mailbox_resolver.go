@@ -8,7 +8,9 @@ import (
 
 	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/antispam/dovecot"
+	"github.com/pidginhost/csm/internal/antispam/learnwatch"
 	"github.com/pidginhost/csm/internal/checks"
+	"github.com/pidginhost/csm/internal/platform"
 )
 
 const (
@@ -22,6 +24,15 @@ const (
 // mailboxResolver answers whether a failed login name is a real mailbox.
 type mailboxResolver interface {
 	Resolve(name string) sprayMailbox
+}
+
+// Platform detection must follow startup's config overrides, so construction
+// takes the already detected host instead of probing in New.
+func newMailboxResolver(host platform.Info) mailboxResolver {
+	if !host.IsCPanel() {
+		return nil
+	}
+	return newCPanelMailboxResolver(newLiveMailboxSource(learnwatch.DefaultSource), time.Now)
 }
 
 // resolveSprayMailbox gives the mailbox a failed login on name counts against.
@@ -89,8 +100,8 @@ func newCPanelMailboxResolver(src cpanelMailboxSource, now func() time.Time) *cp
 
 // Resolve takes the original login name: normalizing before lookup would lose
 // evidence of truncation. An answer it cannot give is Unknown. It returns the
-// normalized key, except that a mailbox found by dropping the domain's trailing
-// dot or by a typo match takes its real spelling, so one mailbox is one key.
+// normalized key, except that a typo match takes the real mailbox's spelling,
+// so one mailbox is one key.
 func (r *cpanelMailboxResolver) Resolve(input string) sprayMailbox {
 	name := normalizeSprayMailbox(input)
 	if name == "" {

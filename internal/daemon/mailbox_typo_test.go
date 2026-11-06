@@ -112,7 +112,7 @@ func TestMailboxResolverTypo(t *testing.T) {
 		{"info@example.cm.", sprayMailbox{"info@example.com", mailboxExists}},
 		{"info@example.comxx", sprayMailbox{"info@example.com", mailboxExists}},
 		{"zzzzz@exmaple.com", sprayMailbox{"zzzzz@exmaple.com", mailboxMissing}},
-		{"zzzzz@exmaple.com.", sprayMailbox{"zzzzz@exmaple.com.", mailboxMissing}},
+		{"zzzzz@exmaple.com.", sprayMailbox{"zzzzz@exmaple.com", mailboxMissing}},
 
 		// The owner name is a mailbox, so it can be mistyped like one.
 		{"exampelco@example.com", sprayMailbox{"exampleco@example.com", mailboxExists}},
@@ -123,7 +123,7 @@ func TestMailboxResolverTypo(t *testing.T) {
 
 		// A near domain with no account to read cannot prove a name missing.
 		{"nosuch@example.nt", sprayMailbox{"nosuch@example.nt", mailboxExistenceUnknown}},
-		{"nosuch@example.nt.", sprayMailbox{"nosuch@example.nt.", mailboxExistenceUnknown}},
+		{"nosuch@example.nt.", sprayMailbox{"nosuch@example.nt", mailboxExistenceUnknown}},
 		{"info@example.nt", sprayMailbox{"info@example.nt", mailboxExistenceUnknown}},
 
 		// On a hosted domain an extension is decided before any typo step.
@@ -135,7 +135,7 @@ func TestMailboxResolverTypo(t *testing.T) {
 		{"in+foo@exmaple.com", sprayMailbox{"in+foo@exmaple.com", mailboxExistenceUnknown}},
 		{"in%foo@exmaple.com", sprayMailbox{"in%foo@exmaple.com", mailboxExistenceUnknown}},
 		{"info+tag@exmaple.com", sprayMailbox{"info+tag@exmaple.com", mailboxExistenceUnknown}},
-		{"info+tag@exmaple.com.", sprayMailbox{"info+tag@exmaple.com.", mailboxExistenceUnknown}},
+		{"info+tag@exmaple.com.", sprayMailbox{"info+tag@exmaple.com", mailboxExistenceUnknown}},
 		{"info+tag@mail.example.org", sprayMailbox{"info+tag@mail.example.org", mailboxExistenceUnknown}},
 	} {
 		r := newCPanelMailboxResolver(newTypoMailboxSource(), time.Now)

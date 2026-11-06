@@ -21,7 +21,6 @@ import (
 	"github.com/pidginhost/csm/internal/admissionowner"
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/antispam"
-	"github.com/pidginhost/csm/internal/antispam/learnwatch"
 	"github.com/pidginhost/csm/internal/antispam/reconcile"
 	"github.com/pidginhost/csm/internal/attackdb"
 	"github.com/pidginhost/csm/internal/auditd"
@@ -357,9 +356,6 @@ func New(cfg *config.Config, store *state.Store, lock *state.LockFile, binaryPat
 	d.smtpAuthTracker.SetSpray(d.mailSpray)
 	d.mailAuthTracker.SetSpray(d.mailSpray)
 	d.dovecotSessions = newDovecotSessionVerdicts()
-	if platform.Detect().IsCPanel() {
-		d.mailboxes = newCPanelMailboxResolver(newLiveMailboxSource(learnwatch.DefaultSource), time.Now)
-	}
 	d.knownCustomers = newKnownCustomers(time.Now)
 	d.knownCustomers.isInfra = func(ip string) bool { return isInfraIPDaemon(ip, d.currentCfg().InfraIPs) }
 	d.smtpAuthTracker.SetKnownCustomers(d.knownCustomers)
@@ -744,6 +740,7 @@ func (d *Daemon) Run() error {
 	// comes out as "[ts] platform detected  os=X  panel=Y  ..."; in
 	// JSON mode as {"msg":"platform detected","os":"X","panel":"Y",...}.
 	pi := platform.Detect()
+	d.mailboxes = newMailboxResolver(pi)
 	csmlog.Info("platform detected",
 		"os", orUnknown(string(pi.OS)),
 		"os_version", orUnknown(pi.OSVersion),

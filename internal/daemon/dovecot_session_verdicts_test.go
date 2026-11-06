@@ -122,6 +122,11 @@ func TestDovecotSessionVerdictsPairing(t *testing.T) {
 			t.Fatalf("second Take = %d, want unknown", got)
 		}
 	})
+	t.Run("a final domain dot is the same name", func(t *testing.T) {
+		if got := noted(mailboxMissing).Take(session, ip, name+".", at); got != mailboxMissing {
+			t.Fatalf("got %d, want missing", got)
+		}
+	})
 	t.Run("answers combine", func(t *testing.T) {
 		for _, tc := range []struct {
 			notes []mailboxExistence

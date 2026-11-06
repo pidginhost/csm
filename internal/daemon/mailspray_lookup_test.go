@@ -9,6 +9,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/platform"
+	"github.com/pidginhost/csm/internal/store"
 )
 
 // recordingMailboxResolver notes every name it is asked about.
@@ -283,10 +284,72 @@ func TestSprayLookupHoldsNoTrackerLock(t *testing.T) {
 func TestSprayLookupOwnedOnCPanelOnly(t *testing.T) {
 	for panel, want := range map[platform.Panel]bool{platform.PanelCPanel: true, platform.PanelNone: false} {
 		t.Run("panel="+string(panel), func(t *testing.T) {
-			usePanel(t, panel)
-			if got := New(sprayTestConfig("observe"), nil, nil, "").mailboxes != nil; got != want {
+			if got := newMailboxResolver(platform.Info{Panel: panel}) != nil; got != want {
 				t.Fatalf("resolver present = %v, want %v", got, want)
 			}
 		})
+	}
+}
+
+func TestSprayLookupPreservesPlatformStartupOrder(t *testing.T) {
+	platform.ResetForTest()
+	t.Cleanup(platform.ResetForTest)
+	cfg := sprayTestConfig("observe")
+	cfg.WebServer.Type = "nginx"
+	cfg.WebServer.AccessLogs = []string{"/var/log/example/access.log"}
+	New(cfg, nil, nil, "")
+	if !platform.SetOverrides(PlatformOverridesFrom(cfg)) {
+		t.Fatal("constructing the daemon cached detection before startup could install overrides")
+	}
+	if got := platform.Detect(); got.WebServer != platform.WSNginx || !slices.Equal(got.AccessLogPaths, cfg.WebServer.AccessLogs) {
+		t.Fatalf("startup lost configured web server or log paths: %+v", got)
+	}
+}
+
+func TestSprayLookupKeepsTrustForTrailingDomainDot(t *testing.T) {
+	const ip = "203.0.113.79"
+	for proto, src := range sprayFailureFeeds {
+		t.Run(proto, func(t *testing.T) {
+			d, clock, _ := newLookupDaemon(t, "enforce")
+			for _, mailbox := range []string{"info@example.com.", "sales@example.com."} {
+				feedExim(d, clock, eximLoginLine(ip, mailbox))
+			}
+			clock.advance(11 * time.Minute)
+			var got []alert.Finding
+			for _, mailbox := range []string{"info@example.com.", "sales@example.com."} {
+				got = append(got, src.fail(d, clock, ip, mailbox)...)
+			}
+			if n := countChecks(got, src.check, "mail_bruteforce_suspected"); n != 0 {
+				t.Fatalf("failures on the same trusted names drew a spray verdict: %+v", got)
+			}
+		})
+	}
+}
+
+func TestSprayLookupRestoresTrailingDomainDotTrust(t *testing.T) {
+	const ip = "203.0.113.79"
+	d, clock, _ := newLookupDaemon(t, "enforce")
+	first, last := clock.Now().Add(-time.Hour), clock.Now()
+	loadSpraySnapshot(t, d.mailSpray, store.MailSprayState{
+		Trust: map[string]map[string]store.GoodSourcePair{ip: {
+			"info@example.com.": {First: first, Last: last},
+		}},
+		IPs: map[string]store.MailSprayIP{ip: {
+			Failed: map[string]store.MailSprayFailure{
+				"info@example.com.": {First: last, Last: last, Count: 1, Exist: uint8(mailboxExists)},
+			},
+			LastSeen: last,
+		}},
+	})
+	if !d.mailSpray.TrustedAll(ip, []string{"info@example.com"}) {
+		t.Fatal("saved login trust did not follow the canonical mailbox")
+	}
+	got := feedExim(d, clock, makeEximDovecotFailLine(ip, "info@example.com."))
+	if n := countChecks(got, "smtp_bruteforce", "mail_bruteforce_suspected"); n != 0 {
+		t.Fatalf("a repeated failure on the restored mailbox drew a spray verdict: %+v", got)
+	}
+	evidence := sprayEvidence(d, ip)
+	if f, ok := evidence["info@example.com"]; !ok || len(evidence) != 1 || f.count != 2 || f.exist != mailboxExists {
+		t.Fatalf("evidence = %+v, want one mailbox with both failures", evidence)
 	}
 }
