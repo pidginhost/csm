@@ -107,6 +107,11 @@ func dovecotRejectionClient(fields string, verdict mailboxExistence) (ip, accoun
 		return "", "", mailboxExistenceUnknown, false
 	}
 	account, exist = fields[:comma], verdict
+	// The spray key folds a final dot, but Dovecot's unknown user is about the
+	// dotted string. It says nothing about the mailbox the key names.
+	if exist == mailboxMissing && strings.HasSuffix(account, ".") {
+		exist = mailboxExistenceUnknown
+	}
 	// Dovecot sanitizes unavailable or invalid name text to '?' and
 	// abbreviates long names with '...'. Neither identifies the mailbox.
 	if strings.TrimSpace(account) == "" || strings.Contains(account, "?") || strings.HasSuffix(account, "...") {

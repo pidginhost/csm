@@ -121,8 +121,7 @@ func (r *cpanelMailboxResolver) Resolve(input string) sprayMailbox {
 	if at < 0 {
 		return sprayMailbox{name: name, exist: r.accountNameExistence(name)}
 	}
-	address := strings.TrimSuffix(name, ".")
-	local, domain := address[:at], address[at+1:]
+	local, domain := name[:at], name[at+1:]
 	if !dovecot.ValidMailbox(local) || !dovecot.ValidDomain(domain) || r.snapshot.Unresolved[domain] {
 		return sprayMailbox{name: name, exist: mailboxExistenceUnknown}
 	}
@@ -132,7 +131,7 @@ func (r *cpanelMailboxResolver) Resolve(input string) sprayMailbox {
 			return sprayMailbox{name: name, exist: mailboxExistenceUnknown}
 		}
 		if _, listed := slices.BinarySearch(lists[domain], local); listed || local == owner {
-			return sprayMailbox{name: address, exist: mailboxExists}
+			return sprayMailbox{name: name, exist: mailboxExists}
 		}
 		if hasAddressExtension(local) {
 			return sprayMailbox{name: name, exist: mailboxExistenceUnknown}

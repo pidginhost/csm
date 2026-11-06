@@ -645,3 +645,70 @@ func TestDovecotSessionVerdictsSpoil(t *testing.T) {
 		}
 	})
 }
+
+// Dovecot's unknown user for a dotted name is about the dotted string. The key
+// folds that dot, so the answer must not land on the real mailbox.
+func TestDovecotDottedNameIsNotMissing(t *testing.T) {
+	const dotted, real = "info@example.com.", "info@example.com"
+	t.Run("parsers", func(t *testing.T) {
+		for _, tc := range []struct {
+			name, verdict string
+			want          mailboxExistence
+		}{
+			{dotted, "unknown user", mailboxExistenceUnknown},
+			{dotted, "Password mismatch", mailboxExists},
+			{"alice.", "unknown user", mailboxExistenceUnknown},
+			{real, "unknown user", mailboxMissing},
+		} {
+			sessionless := "dovecot: auth: sql(" + tc.name + ",203.0.113.5): " + tc.verdict
+			if _, account, exist, ok := dovecotSessionlessRejection(sessionless); !ok || account != tc.name || exist != tc.want {
+				t.Errorf("%q = (%q, %d, %v), want existence %d", sessionless, account, exist, ok, tc.want)
+			}
+			session := "dovecot: auth: sql(" + tc.name + ",203.0.113.5,<AbCd1234>): " + tc.verdict
+			if _, _, account, exist, ok := dovecotSessionRejection(session); !ok || account != tc.name || exist != tc.want {
+				t.Errorf("%q = (%q, %d, %v), want existence %d", session, account, exist, ok, tc.want)
+			}
+		}
+	})
+	t.Run("session verdict draws no first strike", func(t *testing.T) {
+		d, clock, _ := newLookupDaemon(t, "enforce")
+		for i, ip := range sprayLookupIPs {
+			s := fmt.Sprintf("S%d", i)
+			got := feed(d, clock, "dovecot: auth: passwd-file("+dotted+","+ip+",<"+s+">): unknown user",
+				fmt.Sprintf(dovecotSessionSummaryFmt, "imap", dotted, ip, s))
+			if f, ok := findingByCheck(got, "mail_bruteforce"); ok {
+				t.Fatalf("attempt %d struck a real mailbox: %+v", i+1, f)
+			}
+			if exist := sprayEvidence(d, ip)[real].exist; exist != mailboxExists {
+				t.Fatalf("attempt %d stored existence %d, want the lookup's exists", i+1, exist)
+			}
+		}
+	})
+	t.Run("sessionless verdict draws no first strike", func(t *testing.T) {
+		d, clock, _ := newLookupDaemon(t, "enforce")
+		for i, ip := range sprayLookupIPs {
+			got := feed(d, clock, "dovecot: auth: passwd-file("+dotted+","+ip+"): unknown user", fmt.Sprintf(postfixFailFmt, ip, dotted))
+			if f, ok := findingByCheck(got, "smtp_bruteforce"); ok {
+				t.Fatalf("attempt %d struck a real mailbox: %+v", i+1, f)
+			}
+			evidence, ok := sprayEvidence(d, ip)[real]
+			if !ok || evidence.exist != mailboxExistenceUnknown {
+				t.Fatalf("attempt %d stored %+v, %v, want an unknown failure", i+1, evidence, ok)
+			}
+		}
+	})
+	t.Run("office failure is not a compromise", func(t *testing.T) {
+		const ip = "203.0.113.75"
+		d, clock, _ := newLookupDaemon(t, "enforce")
+		feedExim(d, clock, eximLoginLine(ip, "sales@example.com"))
+		clock.advance(11 * time.Minute)
+		feed(d, clock, "dovecot: auth: passwd-file("+dotted+","+ip+",<S>): unknown user",
+			fmt.Sprintf(dovecotSessionSummaryFmt, "imap", dotted, ip, "S"))
+		login := "dovecot: imap-login: Logged in: user=<exampleco@example.com>, method=PLAIN, rip=" + ip + ", lip=192.0.2.1"
+		for _, f := range feed(d, clock, login) {
+			if f.Severity == alert.Critical {
+				t.Fatalf("a typed dot on a real mailbox drew a Critical: %+v", f)
+			}
+		}
+	})
+}
