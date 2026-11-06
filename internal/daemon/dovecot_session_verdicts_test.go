@@ -115,15 +115,15 @@ func TestDovecotSessionVerdictsPairing(t *testing.T) {
 	}
 	t.Run("same session, address and name", func(t *testing.T) {
 		v := noted(mailboxMissing)
-		if got := v.Take(session, ip, "NoSuch@Example.COM", at.Add(time.Second)); got != mailboxMissing {
+		if got, _ := v.Take(session, ip, "NoSuch@Example.COM", at.Add(time.Second)); got != mailboxMissing {
 			t.Fatalf("got %d, want missing", got)
 		}
-		if got := v.Take(session, ip, name, at.Add(time.Second)); got != mailboxExistenceUnknown {
+		if got, _ := v.Take(session, ip, name, at.Add(time.Second)); got != mailboxExistenceUnknown {
 			t.Fatalf("second Take = %d, want unknown", got)
 		}
 	})
 	t.Run("a final domain dot is the same name", func(t *testing.T) {
-		if got := noted(mailboxMissing).Take(session, ip, name+".", at); got != mailboxMissing {
+		if got, _ := noted(mailboxMissing).Take(session, ip, name+".", at); got != mailboxMissing {
 			t.Fatalf("got %d, want missing", got)
 		}
 	})
@@ -140,14 +140,14 @@ func TestDovecotSessionVerdictsPairing(t *testing.T) {
 			{[]mailboxExistence{mailboxMissing, mailboxExistenceUnknown}, mailboxExistenceUnknown},
 			{[]mailboxExistence{mailboxMissing, mailboxMissing}, mailboxMissing},
 		} {
-			if got := noted(tc.notes...).Take(session, ip, name, at); got != tc.want {
+			if got, _ := noted(tc.notes...).Take(session, ip, name, at); got != tc.want {
 				t.Fatalf("%v gave %d, want %d", tc.notes, got, tc.want)
 			}
 		}
 	})
 	t.Run("another address", func(t *testing.T) {
 		v := noted(mailboxMissing)
-		if got := v.Take(session, "198.51.100.9", name, at); got != mailboxExistenceUnknown {
+		if got, _ := v.Take(session, "198.51.100.9", name, at); got != mailboxExistenceUnknown {
 			t.Fatalf("got %d, want unknown", got)
 		}
 		if len(v.sessions) != 0 {
@@ -157,13 +157,13 @@ func TestDovecotSessionVerdictsPairing(t *testing.T) {
 	t.Run("verdict for another address", func(t *testing.T) {
 		v := noted(mailboxMissing)
 		v.Note(session, "198.51.100.9", "other@example.com", mailboxExists, at)
-		if got := v.Take(session, ip, "other@example.com", at); got != mailboxExistenceUnknown {
+		if got, _ := v.Take(session, ip, "other@example.com", at); got != mailboxExistenceUnknown {
 			t.Fatalf("got %d, want unknown", got)
 		}
 	})
 	t.Run("another name", func(t *testing.T) {
 		v := noted(mailboxMissing)
-		if got := v.Take(session, ip, "other@example.com", at); got != mailboxExistenceUnknown {
+		if got, _ := v.Take(session, ip, "other@example.com", at); got != mailboxExistenceUnknown {
 			t.Fatalf("got %d, want unknown", got)
 		}
 		if len(v.sessions) != 0 {
@@ -171,11 +171,11 @@ func TestDovecotSessionVerdictsPairing(t *testing.T) {
 		}
 	})
 	t.Run("ttl", func(t *testing.T) {
-		if got := noted(mailboxMissing).Take(session, ip, name, at.Add(dovecotSessionVerdictTTL)); got != mailboxMissing {
+		if got, _ := noted(mailboxMissing).Take(session, ip, name, at.Add(dovecotSessionVerdictTTL)); got != mailboxMissing {
 			t.Fatalf("at the TTL: got %d, want missing", got)
 		}
 		v := noted(mailboxMissing)
-		if got := v.Take(session, ip, name, at.Add(dovecotSessionVerdictTTL+time.Second)); got != mailboxExistenceUnknown {
+		if got, _ := v.Take(session, ip, name, at.Add(dovecotSessionVerdictTTL+time.Second)); got != mailboxExistenceUnknown {
 			t.Fatalf("after the TTL: got %d, want unknown", got)
 		}
 		if len(v.sessions) != 0 {
@@ -185,12 +185,12 @@ func TestDovecotSessionVerdictsPairing(t *testing.T) {
 	t.Run("a later verdict restarts the ttl", func(t *testing.T) {
 		v := noted(mailboxMissing)
 		v.Note(session, ip, name, mailboxMissing, at.Add(dovecotSessionVerdictTTL))
-		if got := v.Take(session, ip, name, at.Add(dovecotSessionVerdictTTL+time.Second)); got != mailboxMissing {
+		if got, _ := v.Take(session, ip, name, at.Add(dovecotSessionVerdictTTL+time.Second)); got != mailboxMissing {
 			t.Fatalf("got %d, want missing", got)
 		}
 	})
 	t.Run("no session", func(t *testing.T) {
-		if got := noted(mailboxMissing).Take("", ip, name, at); got != mailboxExistenceUnknown {
+		if got, _ := noted(mailboxMissing).Take("", ip, name, at); got != mailboxExistenceUnknown {
 			t.Fatalf("got %d, want unknown", got)
 		}
 	})
@@ -265,12 +265,12 @@ func TestDovecotSessionVerdictsBounded(t *testing.T) {
 			t.Fatalf("held %d sessions, %d in order, want %d", len(v.sessions), v.order.Len(), maxDovecotSessionVerdicts)
 		}
 		for i := 0; i < 100; i++ {
-			if got := v.Take(id(i), ip, name, at); got != mailboxExistenceUnknown {
+			if got, _ := v.Take(id(i), ip, name, at); got != mailboxExistenceUnknown {
 				t.Fatalf("evicted session %d answered %d", i, got)
 			}
 		}
 		for _, i := range []int{100, maxDovecotSessionVerdicts + 99} {
-			if got := v.Take(id(i), ip, name, at); got != mailboxMissing {
+			if got, _ := v.Take(id(i), ip, name, at); got != mailboxMissing {
 				t.Fatalf("session %d answered %d, want missing", i, got)
 			}
 		}
@@ -282,10 +282,10 @@ func TestDovecotSessionVerdictsBounded(t *testing.T) {
 		}
 		v.Note(id(0), ip, name, mailboxMissing, at)
 		v.Note("new", ip, name, mailboxMissing, at)
-		if got := v.Take(id(0), ip, name, at); got != mailboxMissing {
+		if got, _ := v.Take(id(0), ip, name, at); got != mailboxMissing {
 			t.Fatalf("session noted again answered %d, want missing", got)
 		}
-		if got := v.Take(id(1), ip, name, at); got != mailboxExistenceUnknown {
+		if got, _ := v.Take(id(1), ip, name, at); got != mailboxExistenceUnknown {
 			t.Fatalf("oldest session answered %d, want unknown", got)
 		}
 	})
@@ -299,14 +299,14 @@ func TestDovecotSessionVerdictsBounded(t *testing.T) {
 			t.Fatalf("held %d names, want %d", got, maxDovecotSessionNames)
 		}
 		// The login summary names the last attempt.
-		if got := v.Take("s", ip, mailbox(999), at); got != mailboxMissing {
+		if got, _ := v.Take("s", ip, mailbox(999), at); got != mailboxMissing {
 			t.Fatalf("newest name answered %d, want missing", got)
 		}
 		v.Note("s", ip, mailbox(0), mailboxMissing, at)
 		for i := 1; i <= maxDovecotSessionNames; i++ {
 			v.Note("s", ip, mailbox(i), mailboxMissing, at)
 		}
-		if got := v.Take("s", ip, mailbox(0), at); got != mailboxExistenceUnknown {
+		if got, _ := v.Take("s", ip, mailbox(0), at); got != mailboxExistenceUnknown {
 			t.Fatalf("oldest name answered %d, want unknown", got)
 		}
 	})
@@ -553,7 +553,7 @@ func TestDovecotSessionVerdictsSpoil(t *testing.T) {
 		v := newDovecotSessionVerdicts()
 		v.Note(session, ip, name, mailboxMissing, at)
 		v.Spoil(session, at)
-		if got := v.Take(session, ip, name, at); got != mailboxExistenceUnknown {
+		if got, _ := v.Take(session, ip, name, at); got != mailboxExistenceUnknown {
 			t.Fatalf("got %d, want unknown", got)
 		}
 		if len(v.sessions) != 0 || v.order.Len() != 0 {
@@ -565,7 +565,7 @@ func TestDovecotSessionVerdictsSpoil(t *testing.T) {
 		v.Note(session, ip, name, mailboxMissing, at)
 		v.Spoil(session, at)
 		v.Note(session, ip, name, mailboxMissing, at)
-		if got := v.Take(session, ip, name, at); got != mailboxExistenceUnknown {
+		if got, _ := v.Take(session, ip, name, at); got != mailboxExistenceUnknown {
 			t.Fatalf("got %d, want unknown", got)
 		}
 	})
@@ -575,7 +575,7 @@ func TestDovecotSessionVerdictsSpoil(t *testing.T) {
 		for _, exist := range []mailboxExistence{mailboxMissing, mailboxExists} {
 			v.Note(session, ip, name, exist, at.Add(time.Second))
 		}
-		if got := v.Take(session, ip, name, at.Add(2*time.Second)); got != mailboxExistenceUnknown {
+		if got, _ := v.Take(session, ip, name, at.Add(2*time.Second)); got != mailboxExistenceUnknown {
 			t.Fatalf("got %d, want unknown", got)
 		}
 	})
@@ -584,7 +584,7 @@ func TestDovecotSessionVerdictsSpoil(t *testing.T) {
 		v.Spoil(session, at)
 		v.Note(session, ip, name, mailboxMissing, at.Add(dovecotSessionVerdictTTL))
 		v.Note(session, ip, name, mailboxMissing, at.Add(dovecotSessionVerdictTTL+time.Second))
-		if got := v.Take(session, ip, name, at.Add(dovecotSessionVerdictTTL+time.Second)); got != mailboxMissing {
+		if got, _ := v.Take(session, ip, name, at.Add(dovecotSessionVerdictTTL+time.Second)); got != mailboxMissing {
 			t.Fatalf("got %d, want missing", got)
 		}
 	})
@@ -592,7 +592,7 @@ func TestDovecotSessionVerdictsSpoil(t *testing.T) {
 		v := newDovecotSessionVerdicts()
 		v.Spoil(session, at)
 		v.Note(session, ip, name, mailboxMissing, at.Add(dovecotSessionVerdictTTL+time.Second))
-		if got := v.Take(session, ip, name, at.Add(dovecotSessionVerdictTTL+time.Second)); got != mailboxMissing {
+		if got, _ := v.Take(session, ip, name, at.Add(dovecotSessionVerdictTTL+time.Second)); got != mailboxMissing {
 			t.Fatalf("got %d, want missing", got)
 		}
 	})
@@ -601,7 +601,7 @@ func TestDovecotSessionVerdictsSpoil(t *testing.T) {
 		v.Note(session, ip, name, mailboxMissing, at)
 		later := at.Add(dovecotSessionVerdictTTL + time.Second)
 		v.Note(session, ip, "other@example.com", mailboxExists, later)
-		if got := v.Take(session, ip, name, later); got != mailboxExistenceUnknown {
+		if got, _ := v.Take(session, ip, name, later); got != mailboxExistenceUnknown {
 			t.Fatalf("expired verdict answered %d, want unknown", got)
 		}
 	})
@@ -640,7 +640,7 @@ func TestDovecotSessionVerdictsSpoil(t *testing.T) {
 		later := at.Add(dovecotSessionVerdictTTL)
 		v.Spoil(session, later)
 		v.Note(session, ip, name, mailboxMissing, later.Add(time.Second))
-		if got := v.Take(session, ip, name, later.Add(time.Second)); got != mailboxExistenceUnknown {
+		if got, _ := v.Take(session, ip, name, later.Add(time.Second)); got != mailboxExistenceUnknown {
 			t.Fatalf("got %d, want unknown", got)
 		}
 	})
@@ -715,4 +715,16 @@ func TestDovecotDottedNameIsNotMissing(t *testing.T) {
 			}
 		}
 	})
+}
+
+// An error that names no session says nothing about any one request, so one
+// such line cannot pause rule 2 for the whole host.
+func TestDovecotSessionlessAuthErrorKeepsFirstStrike(t *testing.T) {
+	const mailbox, ip = "nosuch@example.com", "203.0.113.5"
+	d, clock := corroboratedSprayDaemon(t, "imap", mailbox)
+	d.mailboxes = fixedMailboxResolver{name: mailbox, exist: mailboxMissing}
+	got := feed(d, clock, "dovecot: auth: Error: something", fmt.Sprintf(dovecotSessionSummaryFmt, "imap", mailbox, ip, "AbCd1234"))
+	if _, ok := findingByCheck(got, "mail_bruteforce"); !ok {
+		t.Fatalf("a sessionless auth error paused rule 2: %+v", got)
+	}
 }

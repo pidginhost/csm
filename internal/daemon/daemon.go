@@ -2652,6 +2652,7 @@ func (d *Daemon) handleMailLine(line string, obs alert.Observation, cfg *config.
 	if d.mailAuthTracker == nil {
 		return findings
 	}
+	verdict, withheld := d.dovecotSessions.Take(dovecotLoginSession(line), ip, account, customerLoginTime(line, d.mailAuthTracker.now()))
 	if success {
 		kind := knownCustomerIMAP
 		if strings.HasPrefix(dovecotServiceMessage(line), "pop3-login:") {
@@ -2659,8 +2660,11 @@ func (d *Daemon) handleMailLine(line string, obs alert.Observation, cfg *config.
 		}
 		findings = append(findings, d.mailAuthTracker.recordSuccessAt(ip, account, customerLoginTime(line, d.mailAuthTracker.now()), kind)...)
 	} else {
-		verdict := d.dovecotSessions.Take(dovecotLoginSession(line), ip, account, customerLoginTime(line, d.mailAuthTracker.now()))
-		findings = append(findings, recordDovecotFailure(d.mailAuthTracker, ip, account, line, d.sprayMailboxFor(account, verdict), obs)...)
+		mb := sprayMailbox{name: normalizeSprayMailbox(account), exist: mailboxExistenceUnknown}
+		if !withheld {
+			mb = d.sprayMailboxFor(account, verdict)
+		}
+		findings = append(findings, recordDovecotFailure(d.mailAuthTracker, ip, account, line, mb, obs)...)
 	}
 	return findings
 }
@@ -2680,13 +2684,19 @@ func (d *Daemon) noteDovecotSessionVerdict(line string, cfg *config.Config) bool
 	return true
 }
 
-// spoilDovecotSessions withholds the verdicts of the sessions an auth error
-// line names. The line carries on to the outage detector.
+// Unparsed request messages cannot confirm a missing mailbox. They may report
+// a different passdb answer, a backend error or a cut verdict. Diagnostics
+// still carry on to the outage detector.
 func (d *Daemon) spoilDovecotSessions(line string) {
 	if d.mailAuthTracker == nil {
 		return
 	}
-	for _, session := range dovecotAuthTroubleSessions(line) {
+	sessions := dovecotAuthTroubleSessions(line)
+	seg := dovecotAuthSegment(dovecotServiceMessage(line))
+	if isDovecotAuthRequestInfo(line) && !strings.HasPrefix(seg, "Debug: ") {
+		sessions = dovecotSessionsInFields(seg)
+	}
+	for _, session := range sessions {
 		d.dovecotSessions.Spoil(session, customerLoginTime(line, d.mailAuthTracker.now()))
 	}
 }

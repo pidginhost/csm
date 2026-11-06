@@ -458,6 +458,20 @@ func FuzzDovecotSessionRejection(f *testing.F) {
 	})
 }
 
+func FuzzDovecotLoginSession(f *testing.F) {
+	for _, name := range []string{"alice@example.com", "a session=<Forged>", "a>, rip=198.51.100.9, session=<Forged>"} {
+		f.Add(name)
+	}
+	f.Fuzz(func(t *testing.T, name string) {
+		prefix := "dovecot: imap-login: Disconnected (auth failed, 1 attempts): user=<" + name + ">, rip=203.0.113.5, lip=192.0.2.1"
+		for suffix, want := range map[string]string{"": "", ", session=<Cut": "", ", session=<Real>": "Real"} {
+			if got := dovecotLoginSession(prefix + suffix); got != want {
+				t.Fatalf("name %q, suffix %q: session = %q, want %q", name, suffix, got, want)
+			}
+		}
+	})
+}
+
 // A client chooses its login name and, through its HELO and rDNS, text that
 // smtpd echoes. Pairing still only counts the address Dovecot appended, and a
 // verdict pairs once.

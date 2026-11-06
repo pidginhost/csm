@@ -75,7 +75,16 @@ func dovecotSessionRejection(line string) (session, ip, account string, exist ma
 func dovecotSessionField(field string) (session string, ok bool) {
 	session, opened := strings.CutPrefix(field, "<")
 	session, closed := strings.CutSuffix(session, ">")
-	return session, opened && closed && session != "" && !strings.Contains(session, " ")
+	// Dovecot's LOGIN_MAX_SESSION_ID_LEN also bounds forwarded identifiers.
+	if !opened || !closed || session == "" || len(session) > 64 {
+		return "", false
+	}
+	for _, c := range session {
+		if c <= ' ' || c >= 0x7f || strings.ContainsRune("<>,()", c) {
+			return "", false
+		}
+	}
+	return session, true
 }
 
 // dovecotRejectionFields returns the request fields of a rejection verdict,
@@ -138,13 +147,38 @@ func dovecotAuthTroubleIPs(line string) []string {
 // can hold fields too and the session Dovecot appended must not be missed. A
 // client name can add sessions, which only withholds evidence for them.
 func dovecotAuthTroubleSessions(line string) []string {
+	seg := dovecotAuthSegment(dovecotServiceMessage(line))
+	if !isDovecotAuthDiagnostic(seg) {
+		return nil
+	}
+	return dovecotSessionsInFields(seg)
+}
+
+// Only withholding uses these fields: client text may add a session but must
+// never hide a complete one, including a field at the end of a cut log line.
+func dovecotSessionsInFields(seg string) []string {
 	var sessions []string
-	for _, field := range dovecotAuthTroubleFields(line) {
-		if session, ok := dovecotSessionField(field); ok {
+	for i := strings.IndexByte(seg, ','); i >= 0; {
+		seg = seg[i+1:]
+		end := strings.IndexAny(seg, ",)")
+		if end < 0 {
+			end = len(seg)
+		}
+		if session, ok := dovecotSessionField(seg[:end]); ok {
 			sessions = append(sessions, session)
 		}
+		i = strings.IndexByte(seg, ',')
 	}
 	return sessions
+}
+
+func isDovecotAuthDiagnostic(seg string) bool {
+	for _, severity := range []string{"Error: ", "Warning: ", "Fatal: ", "Panic: "} {
+		if strings.HasPrefix(seg, severity) {
+			return true
+		}
+	}
+	return false
 }
 
 // dovecotAuthTroubleFields returns the fields after each comma of an auth
