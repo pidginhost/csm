@@ -702,8 +702,12 @@ func TestDovecotDottedNameIsNotMissing(t *testing.T) {
 		d, clock, _ := newLookupDaemon(t, "enforce")
 		feedExim(d, clock, eximLoginLine(ip, "sales@example.com"))
 		clock.advance(11 * time.Minute)
-		feed(d, clock, "dovecot: auth: passwd-file("+dotted+","+ip+",<S>): unknown user",
-			fmt.Sprintf(dovecotSessionSummaryFmt, "imap", dotted, ip, "S"))
+		// Only a corroborated missing name makes a login a blocking compromise.
+		for i, failing := range []string{sprayLookupIPs[0], sprayLookupIPs[1], ip} {
+			s := fmt.Sprintf("S%d", i)
+			feed(d, clock, "dovecot: auth: passwd-file("+dotted+","+failing+",<"+s+">): unknown user",
+				fmt.Sprintf(dovecotSessionSummaryFmt, "imap", dotted, failing, s))
+		}
 		login := "dovecot: imap-login: Logged in: user=<exampleco@example.com>, method=PLAIN, rip=" + ip + ", lip=192.0.2.1"
 		for _, f := range feed(d, clock, login) {
 			if f.Severity == alert.Critical {
