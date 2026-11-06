@@ -1101,6 +1101,8 @@ type Config struct {
 		// FanoutDistinctRecipients disabling only that gate.
 		// IPRecipientSpread and IPRecipientWindowHours tune Path 6 (outside
 		// recipients per client IP); an explicit zero spread disables it.
+		// IPRecipientMode is observe (findings only, the default) or
+		// enforce (challenge, then block).
 		PHPRelay struct {
 			// The relay pipeline is wired once at startup; a reload can retune
 			// it but cannot start or stop it, so toggling it needs a restart.
@@ -1114,6 +1116,7 @@ type Config struct {
 			FanoutWindowMin          int    `yaml:"fanout_window_min"`
 			IPRecipientSpread        int    `yaml:"ip_recipient_spread"`
 			IPRecipientWindowHours   int    `yaml:"ip_recipient_window_hours"`
+			IPRecipientMode          string `yaml:"ip_recipient_mode"`
 			PoliciesDir              string `yaml:"policies_dir"`
 		} `yaml:"php_relay"`
 
@@ -2056,6 +2059,9 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 	}
 	if cfg.EmailProtection.PHPRelay.IPRecipientWindowHours == 0 {
 		cfg.EmailProtection.PHPRelay.IPRecipientWindowHours = 24
+	}
+	if cfg.EmailProtection.PHPRelay.IPRecipientMode == "" {
+		cfg.EmailProtection.PHPRelay.IPRecipientMode = "observe"
 	}
 	if cfg.EmailProtection.PHPRelay.PoliciesDir == "" {
 		cfg.EmailProtection.PHPRelay.PoliciesDir = "/opt/csm/policies/php_relay"

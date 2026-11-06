@@ -1837,6 +1837,24 @@ func TestValidate_PHPRelayIPRecipientSpreadRange(t *testing.T) {
 	}
 }
 
+func TestValidate_PHPRelayIPRecipientMode(t *testing.T) {
+	const field = "email_protection.php_relay.ip_recipient_mode"
+	for _, v := range []string{"observe", "enforce"} {
+		cfg := &Config{}
+		cfg.EmailProtection.PHPRelay.IPRecipientMode = v
+		if hasErrorOnField(Validate(cfg), field) {
+			t.Errorf("ip_recipient_mode=%q must be valid", v)
+		}
+	}
+	for _, v := range []string{"off", "block", "Enforce"} {
+		cfg := &Config{}
+		cfg.EmailProtection.PHPRelay.IPRecipientMode = v
+		if !hasErrorOnField(Validate(cfg), field) {
+			t.Errorf("ip_recipient_mode=%q must be invalid", v)
+		}
+	}
+}
+
 func TestValidate_PHPRelayIPRecipientWindowRange(t *testing.T) {
 	const field = "email_protection.php_relay.ip_recipient_window_hours"
 	for _, v := range []int{1, 24, 168} {

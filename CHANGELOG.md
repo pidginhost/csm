@@ -26,7 +26,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - Support agents can read status, findings, incidents, accounts, firewall, threat, mail and WAF data over an optional read-only MCP endpoint (`mcp:` block, off by default). It uses its own tokens on the Web UI port and cannot change anything.
 - Findings now warn when spam source reports wait because the list of shared mail services cannot be refreshed.
 - CSM now alerts at once when an automatic block hits an address with a recent customer login, and one stale mail password no longer raises compromise alerts.
-- CSM now catches bots that abuse website forms to mail strangers, challenges them, blocks those that fail and names the form to fix.
+- CSM now catches bots that abuse website forms to mail strangers and names the form to fix; it reports them first, and challenges them once switched on.
 
 ### Changed
 

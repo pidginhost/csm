@@ -178,6 +178,23 @@ email_protection:
 	}
 }
 
+func TestApplyDefaults_PHPRelayIPRecipientMode(t *testing.T) {
+	cfg, err := LoadBytes([]byte(""))
+	if err != nil {
+		t.Fatalf("LoadBytes default: %v", err)
+	}
+	if got := cfg.EmailProtection.PHPRelay.IPRecipientMode; got != "observe" {
+		t.Fatalf("default ip_recipient_mode = %q, want observe", got)
+	}
+	cfg, err = LoadBytes([]byte("email_protection:\n  php_relay:\n    ip_recipient_mode: enforce\n"))
+	if err != nil {
+		t.Fatalf("LoadBytes enforce: %v", err)
+	}
+	if got := cfg.EmailProtection.PHPRelay.IPRecipientMode; got != "enforce" {
+		t.Fatalf("explicit ip_recipient_mode = %q, want enforce", got)
+	}
+}
+
 func TestApplyDefaults_PHPRelayIPRecipientSpreadBlankUsesDefault(t *testing.T) {
 	for name, value := range map[string]string{
 		"empty": "",

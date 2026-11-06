@@ -21,20 +21,23 @@ import (
 )
 
 const (
-	path6IP     = "203.0.113.10"
-	path6Ajax   = "/wp-admin/admin-ajax.php"
-	path6Form   = "/index.php"
-	path6Check  = "email_php_form_relay"
-	path6Script = "email_php_form_relay_script"
+	path6IP       = "203.0.113.10"
+	path6Ajax     = "/wp-admin/admin-ajax.php"
+	path6Form     = "/index.php"
+	path6Check    = "email_php_form_relay"
+	path6Observed = "email_php_form_relay_observed"
+	path6Script   = "email_php_form_relay_script"
 )
 
 var path6T0 = time.Unix(1_700_000_000, 0).UTC()
 
-// path6Cfg is defaultPHPRelayCfg with Path 6 at its shipped defaults.
+// path6Cfg is defaultPHPRelayCfg with Path 6 at its shipped thresholds, in
+// enforce mode.
 func path6Cfg() *config.Config {
 	cfg := defaultPHPRelayCfg()
 	cfg.EmailProtection.PHPRelay.IPRecipientSpread = 5
 	cfg.EmailProtection.PHPRelay.IPRecipientWindowHours = 24
+	cfg.EmailProtection.PHPRelay.IPRecipientMode = "enforce"
 	return cfg
 }
 
@@ -47,6 +50,7 @@ func path6Pipeline(t *testing.T, sites ...string) (*spoolPipeline, *[]alert.Find
 	relay := &p.eng.config().EmailProtection.PHPRelay
 	relay.IPRecipientSpread = 5
 	relay.IPRecipientWindowHours = 24
+	relay.IPRecipientMode = "enforce"
 	return p, findings
 }
 
@@ -119,6 +123,32 @@ func TestPath6_FiresWhenClientMailsFiveOutsideAddresses(t *testing.T) {
 		if !strings.Contains(s.Details, want) {
 			t.Errorf("script finding details miss %q:\n%s", want, s.Details)
 		}
+	}
+}
+
+// Observe mode reports the client under a check that aims no response, and
+// still names the form to fix.
+func TestPath6_ObserveModeReportsWithoutResponse(t *testing.T) {
+	p, findings := path6Pipeline(t, "a")
+	p.eng.config().EmailProtection.PHPRelay.IPRecipientMode = "observe"
+	feedVictims(t, p, "a", path6Form, path6IP, 0, 5, path6T0)
+
+	if got := path6Of(*findings, path6Check); len(got) != 0 {
+		t.Fatalf("observe mode raised the responding check: %+v", got)
+	}
+	obs := path6Of(*findings, path6Observed)
+	if len(obs) != 1 {
+		t.Fatalf("observed findings = %d, want 1: %+v", len(obs), *findings)
+	}
+	want := "Path 6: client 203.0.113.10 made hosted sites mail 5 different outside addresses in 24h (observe mode, not challenged)"
+	if f := obs[0]; f.Severity != alert.High || f.SourceIP != path6IP || f.Message != want {
+		t.Fatalf("observed finding = %+v", f)
+	}
+	if p := checks.ResponsePolicyFor(path6Observed); p != (checks.ResponsePolicy{}) {
+		t.Fatalf("observed check aims a response: %+v", p)
+	}
+	if got := path6Of(*findings, path6Script); len(got) != 1 {
+		t.Fatalf("script findings = %d, want 1: %+v", len(got), *findings)
 	}
 }
 

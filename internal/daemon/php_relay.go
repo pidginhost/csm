@@ -1085,7 +1085,8 @@ func (e *evaluator) evaluatePaths(k scriptKey, sourceIP, cpuser string, now time
 
 // formRelayFindings emits the client finding once per window when ip's
 // outside-recipient count reaches spread, plus one finding per script that
-// reached at least two of them, for the operator to fix.
+// reached at least two of them, for the operator to fix. Outside enforce
+// mode the client finding uses a check that aims no response.
 func (e *evaluator) formRelayFindings(k scriptKey, ip, cpuser string, spread int, window time.Duration, now time.Time, ignored func(scriptKey) bool) []alert.Finding {
 	key := formRelayKey(ip)
 	since := now.Add(-window)
@@ -1137,11 +1138,17 @@ func (e *evaluator) formRelayFindings(k scriptKey, ip, cpuser string, spread int
 		if e.metrics != nil {
 			e.metrics.Findings.With("form_relay").Inc()
 		}
+		check := "email_php_form_relay"
+		message := fmt.Sprintf("Path 6: client %s made hosted sites mail %d different outside addresses in %s", ip, snapshot.Count, hours)
+		if e.config().EmailProtection.PHPRelay.IPRecipientMode != "enforce" {
+			check = "email_php_form_relay_observed"
+			message += " (observe mode, not challenged)"
+		}
 		out = append(out, alert.Finding{
 			Severity:  alert.High,
-			Check:     "email_php_form_relay",
+			Check:     check,
 			Path:      "form_relay",
-			Message:   fmt.Sprintf("Path 6: client %s made hosted sites mail %d different outside addresses in %s", ip, snapshot.Count, hours),
+			Message:   message,
 			Details:   details.String(),
 			ScriptKey: scriptID(k),
 			SourceIP:  ip,

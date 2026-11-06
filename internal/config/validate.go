@@ -453,6 +453,11 @@ func Validate(cfg *Config) []ValidationResult {
 	if pr.IPRecipientWindowHours != 0 && (pr.IPRecipientWindowHours < 1 || pr.IPRecipientWindowHours > 168) {
 		results = append(results, ValidationResult{"error", "email_protection.php_relay.ip_recipient_window_hours", fmt.Sprintf("ip_recipient_window_hours must be between 1 and 168, got %d", pr.IPRecipientWindowHours)})
 	}
+	switch pr.IPRecipientMode {
+	case "", "observe", "enforce":
+	default:
+		results = append(results, ValidationResult{"error", "email_protection.php_relay.ip_recipient_mode", fmt.Sprintf("ip_recipient_mode must be observe or enforce, got %q", pr.IPRecipientMode)})
+	}
 
 	// --- AutoResponse.PHPRelay bounds ---
 	if cfg.AutoResponse.PHPRelay.MaxActionsPerMinute != 0 && (cfg.AutoResponse.PHPRelay.MaxActionsPerMinute < 1 || cfg.AutoResponse.PHPRelay.MaxActionsPerMinute > 600) {

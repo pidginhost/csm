@@ -26,6 +26,7 @@ var emailChecks = []emailCheck{
 	{"email_rate_warning", "spam_outbreak"},
 	{"email_php_relay_abuse", "spam_outbreak"},
 	{"email_php_form_relay", "spam_outbreak"},
+	{"email_php_form_relay_observed", "spam_outbreak"},
 	{"email_php_form_relay_script", "spam_outbreak"},
 	{"email_php_relay_action_failed", "spam_outbreak"},
 	{"email_php_relay_rate_limit_hit", "spam_outbreak"},

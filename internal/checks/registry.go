@@ -328,6 +328,8 @@ var checkRegistry = []CheckInfo{
 	{Name: "email_phishing_content", Category: CategoryEmail, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide},
 	// A client that submitted web forms; a browser can answer the challenge.
 	{Name: "email_php_form_relay", Category: CategoryEmail, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide, Response: ResponsePolicy{Block: BlockAlways, ChallengeFirst: true, Evidence: admission.FamilyHTTP, Basis: admission.BasisLocal}},
+	// Observe mode reports the same client and never aims a response.
+	{Name: "email_php_form_relay_observed", Category: CategoryEmail, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide, Summary: true},
 	// Names the abused script, not a client. Its message carries the
 	// client-controlled request path, so it must never aim a response.
 	{Name: "email_php_form_relay_script", Category: CategoryEmail, Correlation: CorrelationSecurityEvent},

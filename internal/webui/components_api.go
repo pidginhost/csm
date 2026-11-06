@@ -84,6 +84,7 @@ var componentCheckOrigin = map[string]string{
 	"email_dkim_failure":                         "maillog",
 	"email_malware":                              "email_av_spool",
 	"email_php_form_relay":                       "phprelay",
+	"email_php_form_relay_observed":              "phprelay",
 	"email_php_form_relay_script":                "phprelay",
 	"email_php_form_relay_table_full":            "phprelay",
 	"email_php_relay_action_dry_run":             "phprelay",

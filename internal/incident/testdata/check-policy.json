@@ -443,6 +443,7 @@
       "api_auth_failure",
       "api_auth_failure_realtime",
       "email_php_form_relay",
+      "email_php_form_relay_observed",
       "http_asn_crawl",
       "http_claimed_bot_unverified",
       "http_distributed_flood",
