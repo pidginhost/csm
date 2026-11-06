@@ -129,6 +129,9 @@ type AdmissionLedger struct {
 	// the configured capacity exceeds one engine call. Guarded by mu.
 	heldAfter []byte
 	heldPass  bool
+	// retireAfter continues bounded history sweeps past retained episodes.
+	// Published only after a successful tick; guarded by mu.
+	retireAfter []byte
 
 	// revalidated is set once this handle has checked every queued
 	// candidate at a current reading. A reopened ledger cannot know what
@@ -497,6 +500,7 @@ func (l *AdmissionLedger) Tick(r admission.ClockReading) (admission.ClockTick, e
 	defer l.mu.Unlock()
 	var tick admission.ClockTick
 	var elapsed time.Duration
+	var retireAfter []byte
 	err := l.update("tick", func(tx *bolt.Tx) error {
 		meta := tx.Bucket([]byte(admissionMetaBucket))
 		c, err := loadLedgerClock(meta)
@@ -521,19 +525,21 @@ func (l *AdmissionLedger) Tick(r admission.ClockReading) (admission.ClockTick, e
 		if elapsed, err = meterCeiling(tx, t); err != nil {
 			return err
 		}
-		if err := pruneOutcomes(tx, t.Now); err != nil {
+		if err = pruneOutcomes(tx, t.Now); err != nil {
 			return err
 		}
-		if err := sweepEffects(tx, t); err != nil {
+		if err = sweepEffects(tx, t); err != nil {
 			return err
 		}
-		return l.meterStorage(tx, t)
+		retireAfter, err = l.meterStorage(tx, t)
+		return err
 	})
 	if err != nil {
 		l.current = false
 		return admission.ClockTick{}, err
 	}
 	l.now, l.elapsed, l.current, l.degraded = tick.Now, elapsed, true, tick.Degraded
+	l.retireAfter = retireAfter
 	return tick, nil
 }
 

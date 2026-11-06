@@ -144,3 +144,31 @@ func TestAdmissionLedgerExecuteReadingFallback(t *testing.T) {
 		t.Fatalf("fallback boundary %+v, want elapsed %v and no reading", row, want)
 	}
 }
+
+// A reopened handle can execute an inherited reservation before settling
+// it. Settlement records its unknown outcome and releases its reading.
+func TestAdmissionLedgerSettlementDropsExecuteReadings(t *testing.T) {
+	f := newLedgerFixture(t)
+	_, a := f.admitted(time.Hour)
+	var err error
+	if f.l, err = OpenAdmissionLedger(f.db, f.reg); err != nil {
+		t.Fatal(err)
+	}
+	f.tickAt(f.wall.Add(time.Second))
+	if _, _, granted, err := f.l.Execute(a.Attempt.ID); err != nil || !granted {
+		t.Fatalf("inherited execution: %v %v", granted, err)
+	}
+	if len(f.l.executed) != 1 {
+		t.Fatal("execution did not retain its reading")
+	}
+	f.failNext("settle")
+	if _, _, err := f.l.Settle(); err == nil || len(f.l.executed) != 1 {
+		t.Fatalf("failed settlement lost its reading: %v", err)
+	}
+	if failed, unknown, err := f.l.Settle(); err != nil || failed != 0 || unknown != 1 {
+		t.Fatalf("settlement: %d failed, %d unknown, %v", failed, unknown, err)
+	}
+	if len(f.l.executed) != 0 {
+		t.Fatal("settlement kept a completed attempt's execute reading")
+	}
+}

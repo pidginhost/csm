@@ -36,6 +36,20 @@ func TestEpisodeCloseKeepsAnExistingBoundary(t *testing.T) {
 	}
 }
 
+// Rewriting a legacy verified episode must add its missing elapsed end
+// from the original boundary, even when the new block expires later.
+func TestEpisodeCloseAnchorsALegacyVerifiedBoundary(t *testing.T) {
+	row := testEpisodeRecord(t)
+	row.Verified, row.EndElapsed = t0.Add(time.Hour), 0
+	clock := EpisodeClock{Now: t0.Add(10 * time.Minute), Elapsed: 2 * time.Hour}
+	got, err := row.Close(t0.Add(2*time.Hour), clock)
+	want := row
+	want.EndElapsed = clock.Elapsed + row.Verified.Sub(clock.Now)
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("legacy close: %+v %v, want %+v", got, err, want)
+	}
+}
+
 // An answered block frontier without candidate references is retained
 // proof only with a verified boundary on both clocks. It round-trips
 // without resetting the generation or making the episode fresh.

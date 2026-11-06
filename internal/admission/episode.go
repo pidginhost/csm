@@ -334,7 +334,7 @@ func (e Episode) Close(verified time.Time, c EpisodeClock) (Episode, error) {
 		return e, err
 	}
 	if !e.Verified.IsZero() {
-		return e, nil
+		return e.AnchorElapsed(c)
 	}
 	at, err := elapsedEnd(verified, c)
 	if err != nil {

@@ -755,6 +755,7 @@ func (l *AdmissionLedger) Settle() (failed, unknown int, err error) {
 	if err != nil {
 		return 0, 0, err
 	}
+	clear(l.executed)
 	return failed, unknown, nil
 }
 
