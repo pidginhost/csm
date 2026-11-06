@@ -374,11 +374,9 @@ func TestBuiltInProxyRanges_AllValid(t *testing.T) {
 	}
 }
 
-// CDN and firewall edges serve every visitor of the sites behind them, so
-// the built-in list carries the fronts a site must choose through its own
-// domain. Self-service pull-zone CDNs stay off: anyone can point one at any
-// site and relay form posts from its edges, as with uptime monitors.
-func TestBuiltInProxyRanges_ListsOnlyFrontsTheSiteChose(t *testing.T) {
+// Keep the selected shared-provider exemptions, but do not reintroduce
+// pull-zone CDNs. Provider membership is not proof of site ownership.
+func TestBuiltInProxyRanges_ExcludesPullZoneCDNs(t *testing.T) {
 	for _, provider := range []string{"Cloudflare", "QUIC.cloud", "Sucuri"} {
 		if !strings.Contains(string(defaultProxyRanges), "# Provider: "+provider) {
 			t.Errorf("built-in proxy ranges have no %s block", provider)

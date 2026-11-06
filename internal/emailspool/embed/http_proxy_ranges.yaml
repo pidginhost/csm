@@ -1,8 +1,11 @@
-# Callers whose requests are not a browser visitor: CDN and website
-# firewall front ends a site chooses through its own domain (Cloudflare,
+# Shared callers: CDN and website firewall front ends (Cloudflare,
 # QUIC.cloud, Sucuri) and payment gateway webhook senders. Every per-IP PHP
 # relay path skips these addresses, so a CDN edge or a payment gateway
 # reaching many sites is not read as one visitor.
+# An address in this list does not prove that the target site chose the
+# service: Cloudflare Workers can fetch third-party sites, and Sucuri can
+# proxy requests before a site's DNS changes. These exemptions also hide
+# abusive traffic relayed through the retained providers.
 #
 # Uptime monitors and cron services are left out on purpose: anyone with an
 # account there can schedule POSTs with any form body to any URL, so
