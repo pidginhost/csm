@@ -46,17 +46,23 @@ func writeMailboxList(t *testing.T, home, domain, records string) {
 }
 
 // liveMailboxSourceOver stubs the host inventory, which reads the host's own
-// registry and home roots.
-func liveMailboxSourceOver(accounts learnwatch.Source) *liveMailboxSource {
+// registry and home roots. exampleco hosts domains.
+func liveMailboxSourceOver(accounts learnwatch.Source, domains ...string) *liveMailboxSource {
+	hosted := map[string]string{}
+	for _, domain := range domains {
+		hosted[domain] = "exampleco"
+	}
 	src := newLiveMailboxSource(accounts).(*liveMailboxSource)
-	src.inventory = func() (checks.HostingSnapshot, error) { return checks.HostingSnapshot{}, nil }
+	src.inventory = func() (checks.HostingSnapshot, error) {
+		return checks.HostingSnapshot{Accounts: []string{"exampleco"}, Domains: hosted}, nil
+	}
 	return src
 }
 
 func TestLiveMailboxSourceReadsPasswdLists(t *testing.T) {
 	home, accounts := mailboxHome(t, "exampleco")
 	writeMailboxList(t, home, "example.com", "sales:x:1001:1001::/mail/sales:/bin/false\ninfo:x:1001:1001::/mail/info:/bin/false\n")
-	src := liveMailboxSourceOver(accounts)
+	src := liveMailboxSourceOver(accounts, "example.com", "example.net")
 	if _, err := src.Inventory(); err != nil {
 		t.Fatal(err)
 	}
@@ -73,23 +79,16 @@ func TestLiveMailboxSourceReadsPasswdLists(t *testing.T) {
 	}
 }
 
-// Login names are compared in lower case, so a mixed-case record or domain
-// directory must still answer for the real mailbox. Folding can reorder a list
-// and merge entries; lookups need it sorted and distinct.
+// Login names are compared in lower case, so a mixed-case record must still
+// answer for the real mailbox. Folding can reorder a list and merge entries;
+// lookups need it sorted and distinct.
 func TestLiveMailboxSourceFoldsCase(t *testing.T) {
 	home, accounts := mailboxHome(t, "exampleco")
-	writeMailboxList(t, home, "example.com", "Zed:x:1001:1001::/m:/bin/false\nalpha:x:1001:1001::/m:/bin/false\nInfo:x:1001:1001::/m:/bin/false\ninfo:x:1001:1001::/m:/bin/false\n")
-	writeMailboxList(t, home, "Example.COM", "SALES:x:1001:1001::/m:/bin/false\nINFO:x:1001:1001::/m:/bin/false\n")
+	writeMailboxList(t, home, "example.com", "Zed:x:1001:1001::/m:/bin/false\nalpha:x:1001:1001::/m:/bin/false\nInfo:x:1001:1001::/m:/bin/false\ninfo:x:1001:1001::/m:/bin/false\nSALES:x:1001:1001::/m:/bin/false\nINFO:x:1001:1001::/m:/bin/false\n")
 	writeMailboxList(t, home, "Shop.Example.ORG", "Orders:x:1001:1001::/m:/bin/false\n")
-	src := liveMailboxSourceOver(accounts)
-	src.inventory = func() (checks.HostingSnapshot, error) {
-		return checks.HostingSnapshot{
-			Accounts: []string{"exampleco"},
-			Domains:  map[string]string{"example.com": "exampleco", "shop.example.org": "exampleco"},
-		}, nil
-	}
+	src := liveMailboxSourceOver(accounts, "example.com", "shop.example.org")
 	r := newCPanelMailboxResolver(src, time.Now)
-	for _, name := range []string{"alpha@example.com", "info@example.com", "sales@example.com", "zed@example.com", "orders@shop.example.org"} {
+	for _, name := range []string{"alpha@example.com", "info@example.com", "sales@example.com", "zed@example.com"} {
 		if got, want := r.Resolve(name), (sprayMailbox{name: name, exist: mailboxExists}); got != want {
 			t.Errorf("Resolve(%q) = %+v, want %+v", name, got, want)
 		}
@@ -97,7 +96,96 @@ func TestLiveMailboxSourceFoldsCase(t *testing.T) {
 	if got := r.Resolve("nosuch@example.com"); got.exist != mailboxMissing {
 		t.Errorf("nosuch@example.com exist = %v, want Missing", got.exist)
 	}
-	want := map[string][]string{"example.com": {"alpha", "info", "sales", "zed"}, "shop.example.org": {"orders"}}
+	// Known limit: only the hosted domain's own spelling is read and ~/etc is
+	// not listed, so a directory spelled another way is not seen.
+	if got := r.Resolve("orders@shop.example.org"); got.exist != mailboxMissing {
+		t.Errorf("orders@shop.example.org exist = %v, want Missing", got.exist)
+	}
+	want := map[string][]string{"example.com": {"alpha", "info", "sales", "zed"}}
+	lists, complete, err := src.Mailboxes("exampleco")
+	if err != nil || !complete || !reflect.DeepEqual(lists, want) {
+		t.Fatalf("Mailboxes = %v, %v, %v, want %v, complete", lists, complete, err, want)
+	}
+}
+
+// A hosted domain that is a link is a layout CSM cannot read. Answering from
+// an empty list would call its real mailboxes missing.
+func TestLiveMailboxSourceLinkedDomainIsUnknown(t *testing.T) {
+	home, accounts := mailboxHome(t, "exampleco")
+	writeMailboxList(t, home, "example.com", "info:x:1001:1001::/m:/bin/false\n")
+	target := t.TempDir()
+	if err := os.WriteFile(filepath.Join(target, "passwd"), []byte("victim:x:1001:1001::/m:/bin/false\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(home, "etc", "example.org")); err != nil {
+		t.Fatal(err)
+	}
+	src := liveMailboxSourceOver(accounts, "example.com", "example.org")
+	if _, err := src.Inventory(); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string][]string{"example.com": {"info"}}
+	lists, complete, err := src.Mailboxes("exampleco")
+	if err != nil || complete || !reflect.DeepEqual(lists, want) {
+		t.Fatalf("Mailboxes = %v, %v, %v, want %v, incomplete", lists, complete, err, want)
+	}
+	r := newCPanelMailboxResolver(src, time.Now)
+	for _, name := range []string{"victim@example.org", "nosuch@example.org"} {
+		if got, want := r.Resolve(name), (sprayMailbox{name: name}); got != want {
+			t.Errorf("Resolve(%q) = %+v, want %+v", name, got, want)
+		}
+	}
+}
+
+// Stock cPanel directories under ~/etc are not domains and must not switch the
+// lookup off for the account.
+func TestLiveMailboxSourceIgnoresDirsThatAreNotHosted(t *testing.T) {
+	home, accounts := mailboxHome(t, "exampleco")
+	writeMailboxList(t, home, "example.com", "info:x:1001:1001::/m:/bin/false\n")
+	writeMailboxList(t, home, "unhosted.example.net", "../x:x:1001:1001::/m:/bin/false\n")
+	if err := os.Mkdir(filepath.Join(home, "etc", "webdav"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	src := liveMailboxSourceOver(accounts, "example.com")
+	if _, err := src.Inventory(); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string][]string{"example.com": {"info"}}
+	lists, complete, err := src.Mailboxes("exampleco")
+	if err != nil || !complete || !reflect.DeepEqual(lists, want) {
+		t.Fatalf("Mailboxes = %v, %v, %v, want %v, complete", lists, complete, err, want)
+	}
+	r := newCPanelMailboxResolver(src, time.Now)
+	if got := r.Resolve("nosuch@example.com"); got.exist != mailboxMissing {
+		t.Errorf("nosuch@example.com exist = %v, want Missing", got.exist)
+	}
+	if got := r.Resolve("info@example.com"); got.exist != mailboxExists {
+		t.Errorf("info@example.com exist = %v, want Exists", got.exist)
+	}
+}
+
+// Domain names reach the reader only from the snapshot, only for their owner,
+// and only when they are valid.
+func TestLiveMailboxSourceReadsOnlyOwnValidDomains(t *testing.T) {
+	home, accounts := mailboxHome(t, "exampleco")
+	writeMailboxList(t, home, "example.com", "info:x:1001:1001::/m:/bin/false\n")
+	writeMailboxList(t, home, "other.example.org", "foreign:x:1001:1001::/m:/bin/false\n")
+	writeMailboxList(t, home, "a/b.example.com", "nested:x:1001:1001::/m:/bin/false\n")
+	src := liveMailboxSourceOver(accounts)
+	src.inventory = func() (checks.HostingSnapshot, error) {
+		return checks.HostingSnapshot{
+			Accounts: []string{"exampleco", "otherco"},
+			Domains: map[string]string{
+				"example.com":       "exampleco",
+				"other.example.org": "otherco",
+				"a/b.example.com":   "exampleco",
+			},
+		}, nil
+	}
+	if _, err := src.Inventory(); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string][]string{"example.com": {"info"}}
 	lists, complete, err := src.Mailboxes("exampleco")
 	if err != nil || !complete || !reflect.DeepEqual(lists, want) {
 		t.Fatalf("Mailboxes = %v, %v, %v, want %v, complete", lists, complete, err, want)
@@ -106,7 +194,7 @@ func TestLiveMailboxSourceFoldsCase(t *testing.T) {
 
 func TestLiveMailboxSourceHomeWithoutLists(t *testing.T) {
 	_, accounts := mailboxHome(t, "exampleco")
-	src := liveMailboxSourceOver(accounts)
+	src := liveMailboxSourceOver(accounts, "example.com")
 	if _, err := src.Inventory(); err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +207,7 @@ func TestLiveMailboxSourceHomeWithoutLists(t *testing.T) {
 func TestLiveMailboxSourceReadsOnlyInventoriedAccounts(t *testing.T) {
 	home, accounts := mailboxHome(t, "exampleco")
 	writeMailboxList(t, home, "example.com", "info:x:1001:1001::/mail/info:/bin/false\n")
-	src := liveMailboxSourceOver(accounts)
+	src := liveMailboxSourceOver(accounts, "example.com")
 	if _, _, err := src.Mailboxes("exampleco"); err == nil {
 		t.Error("read an account before any Inventory")
 	}

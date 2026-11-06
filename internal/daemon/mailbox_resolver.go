@@ -26,9 +26,10 @@ type mailboxResolver interface {
 // cpanelMailboxSource reads cPanel's accounts, domains and mailboxes.
 type cpanelMailboxSource interface {
 	Inventory() (checks.HostingSnapshot, error)
-	// Mailboxes returns the local parts of each of account's domains, sorted,
-	// distinct and in the spelling of normalizeSprayMailbox, as are the domain
-	// keys. complete is false when the read skipped anything.
+	// Mailboxes returns the local parts of each domain the last Inventory
+	// lists for account, sorted, distinct and in the spelling of
+	// normalizeSprayMailbox, as are the domain keys. complete is false when
+	// the read skipped anything.
 	Mailboxes(account string) (lists map[string][]string, complete bool, err error)
 }
 

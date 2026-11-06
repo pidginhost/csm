@@ -283,6 +283,136 @@ func TestMailboxesIgnoresEtcSymlinks(t *testing.T) {
 	}
 }
 
+// Only the named domains are read, so a stock directory under ~/etc whose name
+// is no domain costs nothing and cannot mark the read incomplete.
+func TestDomainMailboxesReadsOnlyTheGivenDomains(t *testing.T) {
+	a, h := openTenant(t)
+	writeFile(t, filepath.Join(a.Home, "etc/example.com/passwd"), []byte("user:x\n"))
+	writeFile(t, filepath.Join(a.Home, "etc/example.net/passwd"), []byte("other:x\n"))
+	if err := os.MkdirAll(filepath.Join(a.Home, "etc/webdav"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	got, skips, err := h.DomainMailboxes([]string{"example.com"})
+	want := []Mailbox{{Domain: "example.com", Box: "user"}}
+	if err != nil || !slices.Equal(got, want) || len(skips) != 0 {
+		t.Fatalf("mailboxes %+v, skips %+v, error %v", got, skips, err)
+	}
+}
+
+// A name the caller knows is a domain is an unknown layout when it is not a
+// directory, unlike the same entry met while listing ~/etc.
+func TestDomainMailboxesRefusesWhatIsNotADirectory(t *testing.T) {
+	for name, plant := range map[string]func(*testing.T, string){
+		"link": func(t *testing.T, path string) {
+			other := t.TempDir()
+			writeFile(t, filepath.Join(other, "passwd"), []byte("victim:x\n"))
+			if err := os.Symlink(other, path); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"file": func(t *testing.T, path string) { writeMsg(t, path, []byte("victim:x\n")) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			a, h := openTenant(t)
+			writeFile(t, filepath.Join(a.Home, "etc/example.com/passwd"), []byte("user:x\n"))
+			plant(t, filepath.Join(a.Home, "etc/example.org"))
+			got, skips, err := h.DomainMailboxes([]string{"example.com", "example.org"})
+			want := []Mailbox{{Domain: "example.com", Box: "user"}}
+			if err != nil || !slices.Equal(got, want) || !slices.Equal(skips, []Skip{{Reason: SkipUnsafePath}}) {
+				t.Fatalf("mailboxes %+v, skips %+v, error %v", got, skips, err)
+			}
+		})
+	}
+}
+
+func TestDomainMailboxesMissingDomainIsEmpty(t *testing.T) {
+	a, h := openTenant(t)
+	if err := os.MkdirAll(filepath.Join(a.Home, "etc/nolist.example.com"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	got, skips, err := h.DomainMailboxes([]string{"absent.example.com", "nolist.example.com"})
+	if err != nil || len(got) != 0 || len(skips) != 0 {
+		t.Fatalf("mailboxes %+v, skips %+v, error %v", got, skips, err)
+	}
+}
+
+func TestDomainMailboxesEtcLayouts(t *testing.T) {
+	t.Run("missing", func(t *testing.T) {
+		_, h := openTenant(t)
+		got, skips, err := h.DomainMailboxes([]string{"example.com"})
+		if err != nil || len(got) != 0 || len(skips) != 0 {
+			t.Fatalf("mailboxes %+v, skips %+v, error %v", got, skips, err)
+		}
+	})
+	t.Run("link", func(t *testing.T) {
+		a, h := openTenant(t)
+		other := t.TempDir()
+		writeFile(t, filepath.Join(other, "example.com/passwd"), []byte("victim:x\n"))
+		if err := os.Symlink(other, filepath.Join(a.Home, "etc")); err != nil {
+			t.Fatal(err)
+		}
+		got, skips, err := h.DomainMailboxes([]string{"example.com"})
+		if err != nil || len(got) != 0 || !slices.Equal(skips, []Skip{{Reason: SkipUnsafePath}}) {
+			t.Fatalf("mailboxes %+v, skips %+v, error %v", got, skips, err)
+		}
+	})
+}
+
+func TestDomainMailboxesReportsReadFailures(t *testing.T) {
+	t.Run("etc", func(t *testing.T) {
+		_, h := openTenant(t)
+		_ = h.Close()
+		if _, _, err := h.DomainMailboxes([]string{"example.com"}); err == nil {
+			t.Fatal("read on a closed home reported no error")
+		}
+	})
+	t.Run("domain", func(t *testing.T) {
+		a, h := openTenant(t)
+		writeFile(t, filepath.Join(a.Home, "etc/example.com/passwd"), []byte("user:x\n"))
+		got, _, err := h.DomainMailboxes([]string{"example.com", ".."})
+		want := []Mailbox{{Domain: "example.com", Box: "user"}}
+		if err == nil || !slices.Equal(got, want) {
+			t.Fatalf("mailboxes %+v, error %v", got, err)
+		}
+	})
+}
+
+func TestDomainMailboxesRecordBudget(t *testing.T) {
+	a, h := openTenant(t)
+	var data bytes.Buffer
+	for i := range MaxMailboxes {
+		fmt.Fprintf(&data, "box%05d:x\n", i)
+	}
+	writeFile(t, filepath.Join(a.Home, "etc/a.example.com/passwd"), data.Bytes())
+	writeFile(t, filepath.Join(a.Home, "etc/b.example.com/passwd"), []byte("other:x\n"))
+	got, skips, err := h.DomainMailboxes([]string{"a.example.com", "b.example.com"})
+	if err != nil || len(got) != MaxMailboxes || !slices.Equal(skips, []Skip{{Reason: SkipMailboxLimit}}) {
+		t.Fatalf("%d mailboxes, skips %+v, error %v", len(got), skips, err)
+	}
+	if slices.ContainsFunc(got, func(m Mailbox) bool { return m.Domain != "a.example.com" }) {
+		t.Fatal("read a domain past the budget")
+	}
+}
+
+func TestDomainMailboxesByteBudget(t *testing.T) {
+	a, h := openTenant(t)
+	file := append(bytes.Repeat([]byte("#"), MaxMailboxListBytes-101), '\n')
+	file = append([]byte("user:x\n"), file[7:]...)
+	var domains []string
+	for i := range MaxAccountMailboxListBytes/MaxMailboxListBytes + 2 {
+		domain := fmt.Sprintf("d%d.example.com", i)
+		domains = append(domains, domain)
+		writeFile(t, filepath.Join(a.Home, "etc", domain, "passwd"), file)
+	}
+	got, skips, err := h.DomainMailboxes(domains)
+	if err != nil || !slices.Contains(skips, Skip{Reason: SkipMailboxLimit}) {
+		t.Fatalf("skips %+v, error %v", skips, err)
+	}
+	if len(got) == 0 || len(got) >= len(domains) {
+		t.Fatalf("%d of %d domains served", len(got), len(domains))
+	}
+}
+
 func TestMailboxesWithoutEtc(t *testing.T) {
 	_, h := openTenant(t)
 	got, skips, err := h.Mailboxes()
