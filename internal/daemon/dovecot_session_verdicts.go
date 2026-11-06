@@ -49,12 +49,12 @@ func newDovecotSessionVerdicts() *dovecotSessionVerdicts {
 	return &dovecotSessionVerdicts{sessions: make(map[string]*list.Element), order: list.New()}
 }
 
-// Note keeps one verdict. A verdict that names no mailbox or cannot tell
-// whether it exists adds nothing, so a flood of them costs nothing. Callers
+// Note keeps one verdict. A verdict that names no mailbox can pair with no
+// login summary and adds nothing, so a flood of them costs nothing. Callers
 // filter infra, private and loopback addresses first.
 func (v *dovecotSessionVerdicts) Note(session, ip, account string, exist mailboxExistence, at time.Time) {
 	name := normalizeSprayMailbox(account)
-	if name == "" || exist == mailboxExistenceUnknown {
+	if name == "" {
 		return
 	}
 	v.mu.Lock()
@@ -96,7 +96,7 @@ func (v *dovecotSessionVerdicts) Spoil(session string, at time.Time) {
 
 // Take claims the session and returns what its verdicts said about account:
 // Unknown when none named it, when ip is not the client that got them, or
-// when they expired.
+// when they expired or were spoiled.
 func (v *dovecotSessionVerdicts) Take(session, ip, account string, at time.Time) mailboxExistence {
 	v.mu.Lock()
 	defer v.mu.Unlock()

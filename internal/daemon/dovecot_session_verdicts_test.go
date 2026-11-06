@@ -123,9 +123,20 @@ func TestDovecotSessionVerdictsPairing(t *testing.T) {
 		}
 	})
 	t.Run("answers combine", func(t *testing.T) {
-		for _, notes := range [][]mailboxExistence{{mailboxMissing, mailboxExists}, {mailboxExists, mailboxMissing}} {
-			if got := noted(notes...).Take(session, ip, name, at); got != mailboxExists {
-				t.Fatalf("%v gave %d, want exists", notes, got)
+		for _, tc := range []struct {
+			notes []mailboxExistence
+			want  mailboxExistence
+		}{
+			{[]mailboxExistence{mailboxMissing, mailboxExists}, mailboxExists},
+			{[]mailboxExistence{mailboxExists, mailboxMissing}, mailboxExists},
+			{[]mailboxExistence{mailboxExistenceUnknown, mailboxExists}, mailboxExists},
+			{[]mailboxExistence{mailboxExists, mailboxExistenceUnknown}, mailboxExists},
+			{[]mailboxExistence{mailboxExistenceUnknown, mailboxMissing}, mailboxExistenceUnknown},
+			{[]mailboxExistence{mailboxMissing, mailboxExistenceUnknown}, mailboxExistenceUnknown},
+			{[]mailboxExistence{mailboxMissing, mailboxMissing}, mailboxMissing},
+		} {
+			if got := noted(tc.notes...).Take(session, ip, name, at); got != tc.want {
+				t.Fatalf("%v gave %d, want %d", tc.notes, got, tc.want)
 			}
 		}
 	})
@@ -180,14 +191,59 @@ func TestDovecotSessionVerdictsPairing(t *testing.T) {
 	})
 }
 
-// A flood of verdicts that say nothing costs nothing.
-func TestDovecotSessionVerdictsSkipEmptyAnswers(t *testing.T) {
+// A verdict with no name cannot pair with a login summary, so a flood of them
+// costs nothing. An Unknown verdict with a name is an answer for that name.
+func TestDovecotSessionVerdictsKeepNamedAnswers(t *testing.T) {
 	at := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
 	v := newDovecotSessionVerdicts()
-	v.Note("a", "203.0.113.5", "", mailboxMissing, at)
-	v.Note("b", "203.0.113.5", "alice@example.com", mailboxExistenceUnknown, at)
+	for _, exist := range []mailboxExistence{mailboxExistenceUnknown, mailboxExists, mailboxMissing} {
+		v.Note("a", "203.0.113.5", "", exist, at)
+	}
 	if len(v.sessions) != 0 || v.order.Len() != 0 {
 		t.Fatalf("held %d sessions, %d in order, want none", len(v.sessions), v.order.Len())
+	}
+	v.Note("b", "203.0.113.5", "alice@example.com", mailboxExistenceUnknown, at)
+	if len(v.sessions) != 1 || v.order.Len() != 1 {
+		t.Fatalf("held %d sessions, %d in order, want one", len(v.sessions), v.order.Len())
+	}
+}
+
+// One request's answers mean the same on either path, in either order.
+func TestDovecotSessionVerdictsCombineLikeSMTPPairing(t *testing.T) {
+	const mailbox, ip, session = "nosuch@example.com", "203.0.113.5", "AbCd1234"
+	const pam = "pam_authenticate() failed: Authentication failure (Password mismatch?)"
+	for _, tc := range []struct {
+		verdicts []string
+		want     mailboxExistence
+	}{
+		{[]string{pam, "unknown user"}, mailboxExistenceUnknown},
+		{[]string{"unknown user", pam}, mailboxExistenceUnknown},
+		{[]string{pam, "Password mismatch"}, mailboxExists},
+		{[]string{"Password mismatch", pam}, mailboxExists},
+		{[]string{"unknown user", "Password mismatch"}, mailboxExists},
+		{[]string{"unknown user", "unknown user"}, mailboxMissing},
+	} {
+		t.Run(strings.Join(tc.verdicts, " then "), func(t *testing.T) {
+			run := func(fields, final string) mailboxExistence {
+				d, clock := newPairingDaemon(t, sprayTestConfig("observe"))
+				d.mailboxes = nil
+				for _, verdict := range tc.verdicts {
+					feed(d, clock, "dovecot: auth: passwd-file("+mailbox+","+fields+"): "+verdict)
+				}
+				feed(d, clock, final)
+				evidence, ok := sprayEvidence(d, ip)[mailbox]
+				if !ok {
+					t.Fatalf("%q recorded no failure", final)
+				}
+				return evidence.exist
+			}
+			if got := run(ip+",<"+session+">", fmt.Sprintf(dovecotSessionSummaryFmt, "imap", mailbox, ip, session)); got != tc.want {
+				t.Fatalf("session path stored %d, want %d", got, tc.want)
+			}
+			if got := run(ip, fmt.Sprintf(postfixFailFmt, ip, mailbox)); got != tc.want {
+				t.Fatalf("SMTP path stored %d, want %d", got, tc.want)
+			}
+		})
 	}
 }
 
