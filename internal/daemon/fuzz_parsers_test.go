@@ -553,6 +553,7 @@ func FuzzMailboxResolverResolve(f *testing.F) {
 		"otherco@example.or", "nosuch@example.nt", "x@../../etc", "x@example.com\x00", "\xff@example.com",
 		"info@shop1.example.org", "nosuch@shop1.example.org", "nosuch@dead1.example.org", "in+foo@shop.example.org",
 		strings.Repeat("a", 300) + "@example.com",
+		"nosuch@example.com" + strings.Repeat(" ", maxSprayMailboxBytes) + "suffix",
 	} {
 		f.Add(s)
 	}
@@ -563,7 +564,10 @@ func FuzzMailboxResolverResolve(f *testing.F) {
 			owners[owner] = true
 		}
 		name := normalizeSprayMailbox(input)
-		got := newCPanelMailboxResolver(src, time.Now).Resolve(name)
+		got := newCPanelMailboxResolver(src, time.Now).Resolve(input)
+		if got.name != normalizeSprayMailbox(got.name) {
+			t.Fatalf("Resolve(%q) returned an invalid key %q", input, got.name)
+		}
 		if got.name != name {
 			local, domain, _ := strings.Cut(got.name, "@")
 			owner := src.snapshot.Domains[domain]

@@ -264,6 +264,23 @@ func TestHostingInventoryListsUnresolvedDomains(t *testing.T) {
 	}
 }
 
+func TestHostingInventoryPreservesDomainsWithoutOwners(t *testing.T) {
+	withInventoryPanel(t, platform.PanelCPanel)
+	withMockOS(t, inventoryFS([]os.DirEntry{dirEntry("alice", false)}, nil, nil, nil,
+		"example.com: alice\nempty.example.com: \nblank.example.com:\t\n", nil))
+	snap, err := HostingInventory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{"empty.example.com": true, "blank.example.com": true}
+	if !reflect.DeepEqual(snap.Unresolved, want) {
+		t.Errorf("unresolved = %v, want %v", snap.Unresolved, want)
+	}
+	if want := map[string]string{"example.com": "alice"}; !reflect.DeepEqual(snap.Domains, want) {
+		t.Errorf("domains = %v, want %v", snap.Domains, want)
+	}
+}
+
 func TestHostingInventoryAcceptsRepeatedDomainOwner(t *testing.T) {
 	withInventoryPanel(t, platform.PanelCPanel)
 	withAccountRoots(t, "/home")
@@ -275,7 +292,7 @@ func TestHostingInventoryAcceptsRepeatedDomainOwner(t *testing.T) {
 }
 
 func TestUserDomainParserPreservesLegacyLastOwner(t *testing.T) {
-	withMockOS(t, inventoryFS(nil, nil, nil, nil, "# ignored\nshop.example: alice\nShop.Example: bob\nshop.example.: alice\nshop.example: nobody\nunowned.example: nobody\n*: nobody\nbroken line\n", nil))
+	withMockOS(t, inventoryFS(nil, nil, nil, nil, "# ignored\nshop.example: alice\nShop.Example: bob\nshop.example.: alice\nshop.example: nobody\nunowned.example: nobody\n*: nobody\nbroken line\nshop.example:\nempty.example.com:\n", nil))
 	want := map[string]string{"shop.example": "bob", "shop.example.": "alice"}
 	if got := loadDomainOwners(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("legacy domain parsing changed: %v, want %v", got, want)

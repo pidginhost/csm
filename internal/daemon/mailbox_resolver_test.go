@@ -88,7 +88,7 @@ func TestMailboxResolverExistence(t *testing.T) {
 		if row.resolved != "" {
 			want.name = row.resolved
 		}
-		if got := r.Resolve(name); got != want {
+		if got := r.Resolve(row.input); got != want {
 			t.Errorf("Resolve(%q) = %+v, want %+v", name, got, want)
 		}
 	}
@@ -273,8 +273,12 @@ func TestMailboxResolverAccountCacheBounded(t *testing.T) {
 		return clock
 	})
 	for i := range total {
-		if got := r.Resolve("info@" + domain(i)); got.exist != mailboxExists {
-			t.Fatalf("%s: exist = %v, want Exists", domain(i), got.exist)
+		want := mailboxExists
+		if i >= maxResolverAccounts {
+			want = mailboxExistenceUnknown
+		}
+		if got := r.Resolve("info@" + domain(i)); got.exist != want {
+			t.Fatalf("%s: exist = %v, want %v", domain(i), got.exist, want)
 		}
 		if len(r.accounts) > maxResolverAccounts {
 			t.Fatalf("after %d owners the cache holds %d entries", i+1, len(r.accounts))
@@ -284,13 +288,13 @@ func TestMailboxResolverAccountCacheBounded(t *testing.T) {
 		t.Fatalf("cache holds %d entries, want %d", len(r.accounts), maxResolverAccounts)
 	}
 	calls := len(src.mailboxCalls)
-	r.Resolve("info@" + domain(10))
+	r.Resolve("info@" + domain(0))
 	if len(src.mailboxCalls) != calls {
 		t.Error("the oldest kept entry was read again")
 	}
-	r.Resolve("info@" + domain(0))
-	if len(src.mailboxCalls) != calls+1 {
-		t.Error("the oldest entry was not evicted")
+	r.Resolve("info@" + domain(maxResolverAccounts))
+	if len(src.mailboxCalls) != calls || calls != maxResolverAccounts {
+		t.Errorf("%d reads, want %d: capacity must bound reads as well as memory", len(src.mailboxCalls), maxResolverAccounts)
 	}
 }
 

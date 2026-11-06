@@ -1,10 +1,6 @@
 package daemon
 
-import (
-	"time"
-
-	"github.com/pidginhost/csm/internal/checks"
-)
+import "github.com/pidginhost/csm/internal/checks"
 
 // maxTypoEdits is how far a login name can be from a real mailbox and still
 // be that mailbox, counting local part and domain edits together.
@@ -95,17 +91,25 @@ func (m *typoMatch) answer(otherwise sprayMailbox) sprayMailbox {
 	if m.address == "" {
 		return otherwise
 	}
+	// Truncating the real address would create a different mailbox key.
+	if len(m.address) > maxSprayMailboxBytes {
+		return sprayMailbox{name: otherwise.name, exist: mailboxExistenceUnknown}
+	}
 	return sprayMailbox{name: m.address, exist: mailboxExists}
 }
 
 // resolveTypo answers for a name no hosted domain lists as typed. The nearest
 // mailbox within maxTypoEdits wins, whether on the typed domain, which is a
 // candidate at no cost when hosted, or on a near hosted domain. A near domain
-// cannot outweigh a match, but without one it turns Missing into Unknown when
-// its mailboxes cannot be read, or when an extension might spell one of them.
-func (r *cpanelMailboxResolver) resolveTypo(name, local, domain string, now time.Time) sprayMailbox {
+// whose mailboxes cannot be read might hold the mailbox meant, so it turns an
+// answer of Missing into Unknown, but cannot outweigh a match. An extension
+// name only reaches this on an unhosted domain, where it proves no absence.
+func (r *cpanelMailboxResolver) resolveTypo(name, local, domain string) sprayMailbox {
 	var nearest typoMatch
 	otherwise := sprayMailbox{name: name, exist: mailboxMissing}
+	if hasAddressExtension(local) {
+		otherwise.exist = mailboxExistenceUnknown
+	}
 	// ponytail: linear in hosted domains of similar length for every name that
 	// is not an exact match, under the mutex; a deletion-neighbourhood index if
 	// a host with far more domains feels it.
@@ -115,15 +119,12 @@ func (r *cpanelMailboxResolver) resolveTypo(name, local, domain string, now time
 			if !near {
 				continue
 			}
-			if hasAddressExtension(local) {
-				otherwise.exist = mailboxExistenceUnknown
-			}
 			owner, resolved := r.snapshot.Domains[candidate]
 			if !resolved {
 				otherwise.exist = mailboxExistenceUnknown
 				continue
 			}
-			lists, usable := r.accountLists(owner, now)
+			lists, usable := r.accountLists(owner)
 			if !usable {
 				otherwise.exist = mailboxExistenceUnknown
 				continue

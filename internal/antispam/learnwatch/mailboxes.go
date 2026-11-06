@@ -120,8 +120,9 @@ func (h *Home) listMailboxes(find func(*safepath.Dir) ([]string, []Skip, error))
 		return out, skips, err
 	}
 	remaining, bytesLeft := MaxMailboxes, int64(MaxAccountMailboxListBytes)
-	for _, d := range domains {
-		if remaining == 0 {
+	for i, d := range domains {
+		// Empty and absent domains cost opens even when they have no records.
+		if i >= MaxMailboxes || remaining == 0 {
 			skips = append(skips, Skip{Reason: SkipMailboxLimit})
 			break
 		}

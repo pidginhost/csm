@@ -394,6 +394,23 @@ func TestDomainMailboxesRecordBudget(t *testing.T) {
 	}
 }
 
+func TestDomainMailboxesBoundsEmptyDomains(t *testing.T) {
+	a, h := openTenant(t)
+	writeFile(t, filepath.Join(a.Home, "etc/example.com/passwd"), []byte("user:x\n"))
+	writeFile(t, filepath.Join(a.Home, "etc/overflow.example.com/passwd"), []byte("other:x\n"))
+	domains := make([]string, MaxMailboxes+1)
+	for i := range MaxMailboxes - 1 {
+		domains[i] = fmt.Sprintf("d%d.example.com", i)
+	}
+	domains[MaxMailboxes-1] = "example.com"
+	domains[MaxMailboxes] = "overflow.example.com"
+	got, skips, err := h.DomainMailboxes(domains)
+	want := []Mailbox{{Domain: "example.com", Box: "user"}}
+	if err != nil || !slices.Equal(got, want) || !slices.Equal(skips, []Skip{{Reason: SkipMailboxLimit}}) {
+		t.Fatalf("mailboxes %+v, skips %+v, error %v", got, skips, err)
+	}
+}
+
 func TestDomainMailboxesByteBudget(t *testing.T) {
 	a, h := openTenant(t)
 	file := append(bytes.Repeat([]byte("#"), MaxMailboxListBytes-101), '\n')

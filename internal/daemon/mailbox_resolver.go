@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/antispam/dovecot"
 	"github.com/pidginhost/csm/internal/checks"
 )
@@ -33,13 +34,11 @@ type cpanelMailboxSource interface {
 	Mailboxes(account string) (lists map[string][]string, complete bool, err error)
 }
 
-// accountMailboxes is one read of an account's lists. A failed or partial
-// read is kept too: it holds no lists, and it costs one read per TTL however
-// many logins ask.
+// accountMailboxes belongs to one inventory snapshot. Failed and partial reads
+// are kept too, so each account costs at most one read before the next snapshot.
 type accountMailboxes struct {
 	lists  map[string][]string
 	usable bool
-	at     time.Time
 }
 
 // cpanelMailboxResolver answers from cached cPanel state. A typed name is
@@ -63,18 +62,22 @@ func newCPanelMailboxResolver(src cpanelMailboxSource, now func() time.Time) *cp
 	return &cpanelMailboxResolver{src: src, now: now, accounts: map[string]accountMailboxes{}}
 }
 
-// Resolve answers for name, the output of normalizeSprayMailbox. An answer it
-// cannot give is Unknown. The name comes back as given, except that a mailbox
-// found by dropping the domain's trailing dot or by a typo match takes its
-// real spelling, so one mailbox is one key.
-func (r *cpanelMailboxResolver) Resolve(name string) sprayMailbox {
+// Resolve takes the original login name: normalizing before lookup would lose
+// evidence of truncation. An answer it cannot give is Unknown. It returns the
+// normalized key, except that a mailbox found by dropping the domain's trailing
+// dot or by a typo match takes its real spelling, so one mailbox is one key.
+func (r *cpanelMailboxResolver) Resolve(input string) sprayMailbox {
+	name := normalizeSprayMailbox(input)
 	if name == "" {
 		return sprayMailbox{}
 	}
+	// A cut after whitespace can leave a valid key shorter than the limit.
+	if len(strings.TrimSpace(input)) >= maxSprayMailboxBytes || strings.HasPrefix(name, "__cpanel__") {
+		return sprayMailbox{name: name, exist: mailboxExistenceUnknown}
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	now := r.now()
-	r.refreshSnapshot(now)
+	r.refreshSnapshot(r.now())
 	if !r.snapshotUsable {
 		return sprayMailbox{name: name, exist: mailboxExistenceUnknown}
 	}
@@ -88,7 +91,7 @@ func (r *cpanelMailboxResolver) Resolve(name string) sprayMailbox {
 		return sprayMailbox{name: name, exist: mailboxExistenceUnknown}
 	}
 	if owner, hosted := r.snapshot.Domains[domain]; hosted {
-		lists, usable := r.accountLists(owner, now)
+		lists, usable := r.accountLists(owner)
 		if !usable {
 			return sprayMailbox{name: name, exist: mailboxExistenceUnknown}
 		}
@@ -99,12 +102,12 @@ func (r *cpanelMailboxResolver) Resolve(name string) sprayMailbox {
 			return sprayMailbox{name: name, exist: mailboxExistenceUnknown}
 		}
 	}
-	return r.resolveTypo(name, local, domain, now)
+	return r.resolveTypo(name, local, domain)
 }
 
 // accountNameExistence answers for a login with no domain.
 func (r *cpanelMailboxResolver) accountNameExistence(name string) mailboxExistence {
-	if strings.HasPrefix(name, "__cpanel__") || hasAddressExtension(name) {
+	if !admission.ValidAccountName(name) || hasAddressExtension(name) {
 		return mailboxExistenceUnknown
 	}
 	if _, found := slices.BinarySearch(r.snapshot.Accounts, name); found {
@@ -130,32 +133,24 @@ func (r *cpanelMailboxResolver) refreshSnapshot(now time.Time) {
 	r.snapshot = snapshot
 	r.snapshotUsable = err == nil && len(snapshot.Accounts) > 0 && len(snapshot.Domains) > 0
 	r.typoIndex = newMailboxTypoIndex(snapshot)
+	// Lists were read for the previous ownership and account identities. Even
+	// a younger list cannot answer for domains introduced by this snapshot.
+	clear(r.accounts)
 }
 
-func (r *cpanelMailboxResolver) accountLists(account string, now time.Time) (map[string][]string, bool) {
-	cached, ok := r.accounts[account]
-	if ok && now.Sub(cached.at) <= mailboxResolverTTL {
+func (r *cpanelMailboxResolver) accountLists(account string) (map[string][]string, bool) {
+	if cached, ok := r.accounts[account]; ok {
 		return cached.lists, cached.usable
 	}
-	if !ok && len(r.accounts) >= maxResolverAccounts {
-		r.evictOldestAccount()
+	// Evicting live entries lets rotating login names force repeated reads.
+	// Capacity is available again when the inventory expires.
+	if len(r.accounts) >= maxResolverAccounts {
+		return nil, false
 	}
-	entry := accountMailboxes{at: now}
+	entry := accountMailboxes{}
 	if lists, complete, err := r.src.Mailboxes(account); err == nil && complete {
 		entry.lists, entry.usable = lists, true
 	}
 	r.accounts[account] = entry
 	return entry.lists, entry.usable
-}
-
-// ponytail: linear scan of the capped map; a heap if lookups past the cap get hot.
-func (r *cpanelMailboxResolver) evictOldestAccount() {
-	var oldest string
-	var oldestAt time.Time
-	for account, entry := range r.accounts {
-		if oldest == "" || entry.at.Before(oldestAt) {
-			oldest, oldestAt = account, entry.at
-		}
-	}
-	delete(r.accounts, oldest)
 }

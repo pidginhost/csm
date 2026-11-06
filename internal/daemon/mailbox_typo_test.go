@@ -129,15 +129,14 @@ func TestMailboxResolverTypo(t *testing.T) {
 		// On a hosted domain an extension is decided before any typo step.
 		{"in+f@example.com", sprayMailbox{"in+f@example.com", mailboxExistenceUnknown}},
 		{"in%f@example.com", sprayMailbox{"in%f@example.com", mailboxExistenceUnknown}},
-		// On a mistyped domain it matches by edits, and with no match it may
-		// still be a mailbox of the near domain spelled another way.
+		// On a mistyped domain a match is safe, but an extension is not evidence
+		// of absence when no real mailbox is near.
 		{"in+fo@exmaple.com", sprayMailbox{"info@example.com", mailboxExists}},
 		{"in+foo@exmaple.com", sprayMailbox{"in+foo@exmaple.com", mailboxExistenceUnknown}},
 		{"in%foo@exmaple.com", sprayMailbox{"in%foo@exmaple.com", mailboxExistenceUnknown}},
 		{"info+tag@exmaple.com", sprayMailbox{"info+tag@exmaple.com", mailboxExistenceUnknown}},
 		{"info+tag@exmaple.com.", sprayMailbox{"info+tag@exmaple.com.", mailboxExistenceUnknown}},
-		// With no near domain there is nothing it could be a spelling of.
-		{"info+tag@mail.example.org", sprayMailbox{"info+tag@mail.example.org", mailboxMissing}},
+		{"info+tag@mail.example.org", sprayMailbox{"info+tag@mail.example.org", mailboxExistenceUnknown}},
 	} {
 		r := newCPanelMailboxResolver(newTypoMailboxSource(), time.Now)
 		if got := r.Resolve(row.input); got != row.want {
