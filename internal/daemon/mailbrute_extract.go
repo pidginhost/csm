@@ -56,6 +56,12 @@ func (e *AccountExtractor) Extract(line string) string {
 	return ""
 }
 
+// readsWholeLogin reports whether Extract gives the login name as typed. A
+// regex can capture part of it, and a part says nothing about the mailbox.
+func (e *AccountExtractor) readsWholeLogin() bool {
+	return e.mode == "dovecot-user"
+}
+
 // extractAngleBracket matches `key<value>` with balanced angle brackets.
 func extractAngleBracket(line, key string) string {
 	idx := strings.Index(line, key+"<")

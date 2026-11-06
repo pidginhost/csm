@@ -5,6 +5,7 @@ import (
 	"maps"
 	"net/netip"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -411,6 +412,66 @@ func FuzzDovecotPassdbVerdictsNeverBuildEvidence(f *testing.F) {
 	})
 }
 
+// A client chooses the name in a verdict. Whatever it sends, a verdict names a
+// real address and session and never carries a forged verdict in its name.
+func FuzzDovecotSessionRejection(f *testing.F) {
+	for _, s := range []string{
+		"dovecot: auth: passwd-file(nosuch@example.com,203.0.113.5,<AbCd1234>): unknown user",
+		"dovecot: auth: passwd-file(nosuch@example.com,203.0.113.5,master,<AbCd1234>): Password mismatch",
+		"dovecot: auth-worker(12): conn unix:auth-worker (pid=11,uid=97): auth-worker<1>: pam(a,2001:db8::5,<s>): unknown user",
+		"dovecot: auth: sql(a): unknown user,203.0.113.5,<AbCd1234>): Password mismatch",
+		"alice@example.com", "", "?", "x,198.51.100.9,<Forged>", "a): unknown user", "a,<b c>",
+	} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, input string) {
+		for _, line := range []string{input, "dovecot: auth: sql(" + input + ",203.0.113.5,<AbCd1234>): unknown user"} {
+			session, ip, account, exist, ok := dovecotSessionRejection(line)
+			if !ok {
+				if session != "" || ip != "" || account != "" || exist != mailboxExistenceUnknown {
+					t.Fatalf("refused %q yet returned (%q, %q, %q, %d)", line, session, ip, account, exist)
+				}
+				continue
+			}
+			if _, err := netip.ParseAddr(ip); err != nil {
+				t.Fatalf("%q gave address %q", line, ip)
+			}
+			if session == "" || strings.Contains(session, " ") {
+				t.Fatalf("%q gave session %q", line, session)
+			}
+			if strings.Contains(account, "): ") {
+				t.Fatalf("%q gave forged account %q", line, account)
+			}
+			if account == "" && exist != mailboxExistenceUnknown {
+				t.Fatalf("%q carried existence %d with no account", line, exist)
+			}
+		}
+		for _, session := range dovecotAuthTroubleSessions(input) {
+			if session == "" || strings.Contains(session, " ") {
+				t.Fatalf("%q gave trouble session %q", input, session)
+			}
+		}
+		line := "dovecot: auth: Error: sql(" + input + ",203.0.113.5,<AbCd1234>): Password query failed"
+		if !slices.Contains(dovecotAuthTroubleSessions(line), "AbCd1234") {
+			t.Fatalf("name %q hid the session of an auth error", input)
+		}
+	})
+}
+
+func FuzzDovecotLoginSession(f *testing.F) {
+	for _, name := range []string{"alice@example.com", "a session=<Forged>", "a>, rip=198.51.100.9, session=<Forged>"} {
+		f.Add(name)
+	}
+	f.Fuzz(func(t *testing.T, name string) {
+		prefix := "dovecot: imap-login: Disconnected (auth failed, 1 attempts): user=<" + name + ">, rip=203.0.113.5, lip=192.0.2.1"
+		for suffix, want := range map[string]string{"": "", ", session=<Cut": "", ", session=<Real>": "Real"} {
+			if got := dovecotLoginSession(prefix + suffix); got != want {
+				t.Fatalf("name %q, suffix %q: session = %q, want %q", name, suffix, got, want)
+			}
+		}
+	})
+}
+
 // A client chooses its login name and, through its HELO and rDNS, text that
 // smtpd echoes. Pairing still only counts the address Dovecot appended, and a
 // verdict pairs once.
@@ -539,6 +600,46 @@ func FuzzNormalizeSprayMailbox(f *testing.F) {
 		}
 		if again := normalizeSprayMailbox(got); again != got {
 			t.Fatalf("normalizing twice changed %q to %q", got, again)
+		}
+	})
+}
+
+func FuzzMailboxResolverResolve(f *testing.F) {
+	for _, s := range []string{
+		"", "@", "a@", "@example.com", "a/b", "exampleco", "__cpanel__service__auth__x",
+		"info@example.com", "info@example.com.", "exampleco@example.com.",
+		"inof@example.com", "exampelco@example.com", "in+fo@example.com",
+		"info@exmaple.com", "inf@exampel.com.", "in+fo@exmaple.com", "exampelco@exmaple.com",
+		"otherco@example.or", "nosuch@example.nt", "x@../../etc", "x@example.com\x00", "\xff@example.com",
+		"info@shop1.example.org", "nosuch@shop1.example.org", "nosuch@dead1.example.org", "in+foo@shop.example.org",
+		strings.Repeat("a", 300) + "@example.com",
+		"nosuch@example.com" + strings.Repeat(" ", maxSprayMailboxBytes) + "suffix",
+	} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, input string) {
+		src := newSiblingMailboxSource()
+		owners := map[string]bool{}
+		for _, owner := range src.snapshot.Domains {
+			owners[owner] = true
+		}
+		name := normalizeSprayMailbox(input)
+		got := newCPanelMailboxResolver(src, time.Now).Resolve(input)
+		if got.name != normalizeSprayMailbox(got.name) {
+			t.Fatalf("Resolve(%q) returned an invalid key %q", input, got.name)
+		}
+		if got.name != name {
+			local, domain, _ := strings.Cut(got.name, "@")
+			owner := src.snapshot.Domains[domain]
+			listed := owner != "" && (local == owner || slices.Contains(src.lists[owner][domain], local))
+			if got.exist != mailboxExists || !listed {
+				t.Fatalf("Resolve(%q) = %+v, not a listed mailbox", name, got)
+			}
+		}
+		for _, account := range src.mailboxCalls {
+			if !owners[account] {
+				t.Fatalf("Resolve(%q) read %q, not an owner", name, account)
+			}
 		}
 	})
 }

@@ -41,7 +41,7 @@ func buildMailHandler(cfg *config.Config, tr *mailAuthTracker) LogLineHandler {
 		if !authLine {
 			return findings
 		}
-		ip, account, success := extractMailLoginEvent(line)
+		ip, account, success := currentAccountExtractor().extractMailLoginEvent(line)
 		if ip == "" {
 			return findings
 		}

@@ -135,6 +135,8 @@ type Daemon struct {
 	smtpProbeTracker *smtpProbeTracker
 	mailAuthTracker  *mailAuthTracker
 	mailSpray        *mailSpray
+	mailboxes        mailboxResolver // nil off cPanel
+	dovecotSessions  *dovecotSessionVerdicts
 	authBackend      *authBackendHealth
 	// smtpAuthFromExim is set before the log readers start when the Exim
 	// mainlog feeds smtpAuthTracker; Postfix pairing is then skipped so one
@@ -353,6 +355,7 @@ func New(cfg *config.Config, store *state.Store, lock *state.LockFile, binaryPat
 	d.mailSpray = newMailSpray(sprayConfigFromThresholds(cfg), time.Now)
 	d.smtpAuthTracker.SetSpray(d.mailSpray)
 	d.mailAuthTracker.SetSpray(d.mailSpray)
+	d.dovecotSessions = newDovecotSessionVerdicts()
 	d.knownCustomers = newKnownCustomers(time.Now)
 	d.knownCustomers.isInfra = func(ip string) bool { return isInfraIPDaemon(ip, d.currentCfg().InfraIPs) }
 	d.smtpAuthTracker.SetKnownCustomers(d.knownCustomers)
@@ -2222,6 +2225,7 @@ func (d *Daemon) startLogWatchers() {
 
 	watchExim := shouldWatchEximMainlog(hostInfo, os.Stat)
 	d.smtpAuthFromExim = watchExim
+	d.mailboxes = newMailboxResolver(hostInfo)
 	logFiles := d.fixedLogSpecs(hostInfo, d.handleEximLine, watchExim)
 	if hostInfo.IsCPanel() {
 		d.wg.Add(1)
@@ -2558,7 +2562,8 @@ func (d *Daemon) handleEximLine(line string, obs alert.Observation, cfg *config.
 			// Only a permanent (5xx) reply says the credentials were checked;
 			// any other reply still counts per IP but is not spray evidence.
 			if strings.HasPrefix(failure.Code, "5") {
-				findings = append(findings, d.smtpAuthTracker.RecordObserved(ip, account, obs)...)
+				mb := d.sprayMailboxFor(account, mailboxExistenceUnknown)
+				findings = append(findings, d.smtpAuthTracker.RecordResolvedFailure(ip, account, mb, obs)...)
 			} else {
 				findings = append(findings, d.smtpAuthTracker.RecordTemporaryFailure(ip, account, obs)...)
 			}
@@ -2598,7 +2603,9 @@ func lineReadAt(obs alert.Observation) time.Time {
 // subnet spray, account spray, and compromise detection. obs names the line.
 // Neither a Postfix SASL warning (it omits the auth status and can reuse a
 // stale reason) nor a Dovecot passdb verdict (one database's answer) is SMTP
-// credential evidence alone; handleSMTPAuthPairing counts them together.
+// credential evidence alone; handleSMTPAuthPairing counts them together. A
+// verdict for a login session only tells that session's login summary whether
+// its mailbox exists.
 func (d *Daemon) handleMailLine(line string, obs alert.Observation, cfg *config.Config) []alert.Finding {
 	d.recordMailStatsMail(line, obs.ObservedAt)
 	findings := parseDovecotLogLine(line, cfg)
@@ -2610,6 +2617,10 @@ func (d *Daemon) handleMailLine(line string, obs alert.Observation, cfg *config.
 	if paired, handled := d.handleSMTPAuthPairing(line, obs, cfg); handled {
 		return append(findings, paired...)
 	}
+	if d.noteDovecotSessionVerdict(line, cfg) {
+		return findings
+	}
+	d.spoilDovecotSessions(line)
 	// Intermediate auth results are not login failures, and their client
 	// text must not reach the outage detector even without a full verdict.
 	if isDovecotAuthRequestInfo(line) {
@@ -2626,7 +2637,8 @@ func (d *Daemon) handleMailLine(line string, obs alert.Observation, cfg *config.
 	if !authLine {
 		return findings
 	}
-	ip, account, success := extractMailLoginEvent(line)
+	extractor := currentAccountExtractor()
+	ip, account, success := extractor.extractMailLoginEvent(line)
 	if ip == "" {
 		return findings
 	}
@@ -2641,6 +2653,7 @@ func (d *Daemon) handleMailLine(line string, obs alert.Observation, cfg *config.
 	if d.mailAuthTracker == nil {
 		return findings
 	}
+	verdict, withheld := d.dovecotSessions.Take(dovecotLoginSession(line), ip, account, customerLoginTime(line, d.mailAuthTracker.now()))
 	if success {
 		kind := knownCustomerIMAP
 		if strings.HasPrefix(dovecotServiceMessage(line), "pop3-login:") {
@@ -2648,9 +2661,45 @@ func (d *Daemon) handleMailLine(line string, obs alert.Observation, cfg *config.
 		}
 		findings = append(findings, d.mailAuthTracker.recordSuccessAt(ip, account, customerLoginTime(line, d.mailAuthTracker.now()), kind)...)
 	} else {
-		findings = append(findings, recordDovecotFailure(d.mailAuthTracker, ip, account, line, obs)...)
+		mb := sprayMailbox{name: normalizeSprayMailbox(account), exist: mailboxExistenceUnknown}
+		if !withheld && extractor.readsWholeLogin() {
+			mb = d.sprayMailboxFor(account, verdict)
+		}
+		findings = append(findings, recordDovecotFailure(d.mailAuthTracker, ip, account, line, mb, obs)...)
 	}
 	return findings
+}
+
+// noteDovecotSessionVerdict keeps a login session's Dovecot verdict for that
+// session's login summary. It reports whether the line was such a verdict,
+// which needs no further handling. Log time, as for a login, keeps reading a
+// backlog from making an old verdict fresh.
+func (d *Daemon) noteDovecotSessionVerdict(line string, cfg *config.Config) bool {
+	session, ip, account, exist, ok := dovecotSessionRejection(line)
+	if !ok {
+		return false
+	}
+	if d.mailAuthTracker != nil && d.sprayRulesOn() && !isInfraIPDaemon(ip, cfg.InfraIPs) && !isPrivateOrLoopback(ip) {
+		d.dovecotSessions.Note(session, ip, account, exist, customerLoginTime(line, d.mailAuthTracker.now()))
+	}
+	return true
+}
+
+// Unparsed request messages cannot confirm a missing mailbox. They may report
+// a different passdb answer, a backend error or a cut verdict. Diagnostics
+// still carry on to the outage detector.
+func (d *Daemon) spoilDovecotSessions(line string) {
+	if d.mailAuthTracker == nil || !d.sprayRulesOn() {
+		return
+	}
+	sessions := dovecotAuthTroubleSessions(line)
+	seg := dovecotAuthSegment(dovecotServiceMessage(line))
+	if isDovecotAuthRequestInfo(line) && !strings.HasPrefix(seg, "Debug: ") {
+		sessions = dovecotSessionsInFields(seg)
+	}
+	for _, session := range sessions {
+		d.dovecotSessions.Spoil(session, customerLoginTime(line, d.mailAuthTracker.now()))
+	}
 }
 
 // handleSMTPAuthPairing feeds Postfix SMTP AUTH evidence on hosts whose

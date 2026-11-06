@@ -54,15 +54,16 @@ func parseUserDomains(data []byte) map[string]string {
 	out := make(map[string]string)
 	for _, line := range strings.Split(string(data), "\n") {
 		domain, owner := parseUserDomain(line)
-		if domain != "" && owner != "nobody" {
+		if domain != "" && owner != "" && owner != "nobody" {
 			out[domain] = owner
 		}
 	}
 	return out
 }
 
-// parseUserDomain preserves unlisted owners so strict readers can detect
-// conflicting rows before filtering owners. Empty and wildcard rows are ignored.
+// parseUserDomain preserves empty and unlisted owners so strict readers can
+// distinguish an unresolved domain from an absent one. Empty and wildcard rows
+// are ignored.
 func parseUserDomain(line string) (string, string) {
 	line = strings.TrimSpace(line)
 	if line == "" || strings.HasPrefix(line, "#") {
@@ -74,7 +75,7 @@ func parseUserDomain(line string) (string, string) {
 	}
 	domain := strings.ToLower(strings.TrimSpace(line[:idx]))
 	owner := strings.TrimSpace(line[idx+1:])
-	if domain == "" || domain == "*" || owner == "" {
+	if domain == "" || domain == "*" {
 		return "", ""
 	}
 	return domain, owner

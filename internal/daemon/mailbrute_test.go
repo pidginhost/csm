@@ -1754,7 +1754,7 @@ func TestMailAuthTracker_StatsCountCompromiseEmits(t *testing.T) {
 
 func TestExtractMailLoginEvent_IMAPFailure(t *testing.T) {
 	line := `Apr 14 12:00:00 host dovecot: imap-login: Aborted login (auth failed, 1 attempts in 2 secs): user=<alice@x.ro>, method=PLAIN, rip=1.2.3.4, lip=1.1.1.1, TLS`
-	ip, account, success := extractMailLoginEvent(line)
+	ip, account, success := currentAccountExtractor().extractMailLoginEvent(line)
 	if ip != "1.2.3.4" || account != "alice@x.ro" || success {
 		t.Errorf("got (%q, %q, %v), want (1.2.3.4, alice@x.ro, false)", ip, account, success)
 	}
@@ -1762,7 +1762,7 @@ func TestExtractMailLoginEvent_IMAPFailure(t *testing.T) {
 
 func TestExtractMailLoginEvent_POP3Failure(t *testing.T) {
 	line := `Apr 14 12:00:00 host dovecot: pop3-login: Aborted login (auth failed, 1 attempts): user=<bob@x.ro>, method=PLAIN, rip=5.6.7.8`
-	ip, account, success := extractMailLoginEvent(line)
+	ip, account, success := currentAccountExtractor().extractMailLoginEvent(line)
 	if ip != "5.6.7.8" || account != "bob@x.ro" || success {
 		t.Errorf("got (%q, %q, %v), want (5.6.7.8, bob@x.ro, false)", ip, account, success)
 	}
@@ -1770,7 +1770,7 @@ func TestExtractMailLoginEvent_POP3Failure(t *testing.T) {
 
 func TestExtractMailLoginEvent_ManageSieveFailure(t *testing.T) {
 	line := `Apr 14 12:00:00 host dovecot: managesieve-login: Aborted login (auth failed): user=<c@x.ro>, method=PLAIN, rip=9.9.9.9`
-	ip, account, success := extractMailLoginEvent(line)
+	ip, account, success := currentAccountExtractor().extractMailLoginEvent(line)
 	if ip != "9.9.9.9" || account != "c@x.ro" || success {
 		t.Errorf("got (%q, %q, %v), want (9.9.9.9, c@x.ro, false)", ip, account, success)
 	}
@@ -1778,7 +1778,7 @@ func TestExtractMailLoginEvent_ManageSieveFailure(t *testing.T) {
 
 func TestExtractMailLoginEvent_IMAPSuccess(t *testing.T) {
 	line := `Apr 14 12:00:05 host dovecot: imap-login: Logged in: user=<alice@x.ro>, method=PLAIN, rip=1.2.3.4, lip=..., TLS`
-	ip, account, success := extractMailLoginEvent(line)
+	ip, account, success := currentAccountExtractor().extractMailLoginEvent(line)
 	if ip != "1.2.3.4" || account != "alice@x.ro" || !success {
 		t.Errorf("got (%q, %q, %v), want (1.2.3.4, alice@x.ro, true)", ip, account, success)
 	}
@@ -1790,7 +1790,7 @@ func TestExtractMailLoginEvent_Garbage(t *testing.T) {
 		"totally unrelated log line",
 		"Apr 14 12:00:00 dovecot: imap-login: STARTTLS", // no login event
 	} {
-		ip, account, success := extractMailLoginEvent(line)
+		ip, account, success := currentAccountExtractor().extractMailLoginEvent(line)
 		if ip != "" || account != "" || success {
 			t.Errorf("line %q: got (%q, %q, %v), want empty", line, ip, account, success)
 		}
@@ -1879,7 +1879,7 @@ func TestExtractMailLoginEvent_RealDovecotFormat(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			ip, account, success := extractMailLoginEvent(tc.line)
+			ip, account, success := currentAccountExtractor().extractMailLoginEvent(tc.line)
 			if ip != tc.wantIP || account != tc.wantAccount || success != tc.wantSuccess {
 				t.Errorf("got (%q, %q, %v), want (%q, %q, %v)",
 					ip, account, success, tc.wantIP, tc.wantAccount, tc.wantSuccess)

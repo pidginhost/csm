@@ -87,7 +87,24 @@ func unsafeErr(err error) bool {
 // are not directories, links included, are not domains. Unsafe or
 // unsupported entries are skipped; a transient failure is an error.
 func (h *Home) Mailboxes() ([]Mailbox, []Skip, error) {
-	out := []Mailbox{{}}
+	boxes, skips, err := h.listMailboxes(domainDirs)
+	return append([]Mailbox{{}}, boxes...), skips, err
+}
+
+// DomainMailboxes lists the valid mailboxes of exactly the given domains,
+// within the discovery bounds. It does not list ~/etc, so an entry there that
+// is not one of them costs nothing. The caller names real domains, so a link
+// or a file at one is an unsafe path, not an entry to ignore. A domain with no
+// directory has no mailboxes. Names come from cPanel's files, validated by the
+// caller, and the main mailbox is not listed.
+func (h *Home) DomainMailboxes(domains []string) ([]Mailbox, []Skip, error) {
+	return h.listMailboxes(func(*safepath.Dir) ([]string, []Skip, error) { return domains, nil, nil })
+}
+
+// listMailboxes reads the lists of the domains that find names under ~/etc,
+// charging every list to one account budget.
+func (h *Home) listMailboxes(find func(*safepath.Dir) ([]string, []Skip, error)) ([]Mailbox, []Skip, error) {
+	var out []Mailbox
 	etc, err := h.dir.Walk("etc")
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
@@ -98,13 +115,14 @@ func (h *Home) Mailboxes() ([]Mailbox, []Skip, error) {
 		return out, nil, err
 	}
 	defer func() { _ = etc.Close() }()
-	domains, skips, err := domainDirs(etc)
+	domains, skips, err := find(etc)
 	if err != nil {
 		return out, skips, err
 	}
 	remaining, bytesLeft := MaxMailboxes, int64(MaxAccountMailboxListBytes)
-	for _, d := range domains {
-		if remaining == 0 {
+	for i, d := range domains {
+		// Empty and absent domains cost opens even when they have no records.
+		if i >= MaxMailboxes || remaining == 0 {
 			skips = append(skips, Skip{Reason: SkipMailboxLimit})
 			break
 		}

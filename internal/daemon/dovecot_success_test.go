@@ -72,7 +72,7 @@ func TestDovecotLoginSucceeded_AcceptsBothFormats(t *testing.T) {
 
 func TestExtractMailLoginEvent_UserCannotSpoofSuccessMarker(t *testing.T) {
 	line := `Apr 14 12:00:08 host dovecot: imap-login: Aborted login (auth failed, 1 attempts): user=<dave-login: Logged in@example.com>, method=PLAIN, rip=203.0.113.7, lip=192.0.2.1`
-	ip, account, success := extractMailLoginEvent(line)
+	ip, account, success := currentAccountExtractor().extractMailLoginEvent(line)
 	if ip != "203.0.113.7" || account != "dave-login: Logged in@example.com" || success {
 		t.Errorf("got (%q, %q, %v), want (203.0.113.7, dave-login: Logged in@example.com, false)", ip, account, success)
 	}
@@ -84,7 +84,7 @@ func TestExtractMailLoginEvent_UserCannotSpoofSuccessMarker(t *testing.T) {
 // only off "Logged in" and returned success=false for this line.
 func TestExtractMailLoginEvent_ClassicLoginSuccess(t *testing.T) {
 	line := `Apr 14 12:00:05 host dovecot: imap-login: Login: user=<alice@example.com>, method=PLAIN, rip=203.0.113.5, lip=192.0.2.1, TLS`
-	ip, account, success := extractMailLoginEvent(line)
+	ip, account, success := currentAccountExtractor().extractMailLoginEvent(line)
 	if ip != "203.0.113.5" || account != "alice@example.com" || !success {
 		t.Errorf("got (%q, %q, %v), want (203.0.113.5, alice@example.com, true)", ip, account, success)
 	}
