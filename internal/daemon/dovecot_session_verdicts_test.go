@@ -429,7 +429,9 @@ func TestDovecotSessionVerdictPairsOnEximHost(t *testing.T) {
 
 func TestDovecotSessionVerdictSkipsProtectedAddresses(t *testing.T) {
 	for _, ip := range []string{"192.0.2.10", "10.0.0.7", "127.0.0.1"} {
-		d, clock := newPairingDaemon(t, &config.Config{InfraIPs: []string{"192.0.2.10"}})
+		cfg := sprayTestConfig("observe")
+		cfg.InfraIPs = []string{"192.0.2.10"}
+		d, clock := newPairingDaemon(t, cfg)
 		feed(d, clock, "dovecot: auth: sql(a@example.com,"+ip+",<AbCd1234>): unknown user")
 		if len(d.dovecotSessions.sessions) != 0 {
 			t.Fatalf("%s: verdict kept for a protected address", ip)
@@ -498,7 +500,7 @@ func TestDovecotSessionAuthErrorWithholdsVerdict(t *testing.T) {
 func TestDovecotSessionAuthErrorReachesOutageDetector(t *testing.T) {
 	const ip, session = "203.0.113.90", "AbCd1234"
 	line := "dovecot: auth: Error: sql(a," + ip + ",<" + session + ">): Temporary authentication failure"
-	d, clock := newPairingDaemon(t, &config.Config{})
+	d, clock := newPairingDaemon(t, sprayTestConfig("observe"))
 	var got []alert.Finding
 	for i := 0; i < mailBackendDegradedThreshold; i++ {
 		got = append(got, feed(d, clock, line)...)
@@ -726,5 +728,46 @@ func TestDovecotSessionlessAuthErrorKeepsFirstStrike(t *testing.T) {
 	got := feed(d, clock, "dovecot: auth: Error: something", fmt.Sprintf(dovecotSessionSummaryFmt, "imap", mailbox, ip, "AbCd1234"))
 	if _, ok := findingByCheck(got, "mail_bruteforce"); !ok {
 		t.Fatalf("a sessionless auth error paused rule 2: %+v", got)
+	}
+}
+
+// With the spray rules off nothing reads these answers. The lines still end
+// where they do with the rules on.
+func TestDovecotSessionVerdictsIdleWhenSprayOff(t *testing.T) {
+	const ip, session = "203.0.113.90", "AbCd1234"
+	verdict := "dovecot: auth: sql(a@example.com," + ip + ",<" + session + ">): unknown user"
+	authError := "dovecot: auth: Error: sql(a@example.com," + ip + ",<" + session + ">): Temporary authentication failure"
+	for desc, setup := range map[string]func(t *testing.T) (*Daemon, *staticClock){
+		"mode off": func(t *testing.T) (*Daemon, *staticClock) {
+			return newPairingDaemon(t, sprayTestConfig("off"))
+		},
+		"zero config": func(t *testing.T) (*Daemon, *staticClock) {
+			return newPairingDaemon(t, &config.Config{})
+		},
+		"no spray": func(t *testing.T) (*Daemon, *staticClock) {
+			d, clock := newPairingDaemon(t, sprayTestConfig("observe"))
+			d.mailSpray = nil
+			return d, clock
+		},
+	} {
+		t.Run(desc, func(t *testing.T) {
+			d, clock := setup(t)
+			if got := feed(d, clock, verdict); len(got) != 0 {
+				t.Fatalf("verdict raised findings: %+v", got)
+			}
+			if calls, _ := d.mailAuthTracker.Stats(); calls != 0 || len(d.mailAuthTracker.backendErr) != 0 {
+				t.Fatal("verdict reached the mail tracker or the outage detector")
+			}
+			var got []alert.Finding
+			for i := 0; i < mailBackendDegradedThreshold; i++ {
+				got = append(got, feed(d, clock, authError)...)
+			}
+			if len(got) != 1 || got[0].Check != "mail_auth_backend_degraded" {
+				t.Fatalf("got %+v, want one outage warning", got)
+			}
+			if len(d.dovecotSessions.sessions) != 0 || d.dovecotSessions.order.Len() != 0 {
+				t.Fatalf("held %d sessions with the spray rules off", len(d.dovecotSessions.sessions))
+			}
+		})
 	}
 }

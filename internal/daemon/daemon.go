@@ -2678,7 +2678,7 @@ func (d *Daemon) noteDovecotSessionVerdict(line string, cfg *config.Config) bool
 	if !ok {
 		return false
 	}
-	if d.mailAuthTracker != nil && !isInfraIPDaemon(ip, cfg.InfraIPs) && !isPrivateOrLoopback(ip) {
+	if d.mailAuthTracker != nil && d.sprayRulesOn() && !isInfraIPDaemon(ip, cfg.InfraIPs) && !isPrivateOrLoopback(ip) {
 		d.dovecotSessions.Note(session, ip, account, exist, customerLoginTime(line, d.mailAuthTracker.now()))
 	}
 	return true
@@ -2688,7 +2688,7 @@ func (d *Daemon) noteDovecotSessionVerdict(line string, cfg *config.Config) bool
 // a different passdb answer, a backend error or a cut verdict. Diagnostics
 // still carry on to the outage detector.
 func (d *Daemon) spoilDovecotSessions(line string) {
-	if d.mailAuthTracker == nil {
+	if d.mailAuthTracker == nil || !d.sprayRulesOn() {
 		return
 	}
 	sessions := dovecotAuthTroubleSessions(line)

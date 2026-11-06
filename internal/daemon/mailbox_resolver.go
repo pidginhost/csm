@@ -54,10 +54,15 @@ func resolveSprayMailbox(r mailboxResolver, name string, verdict mailboxExistenc
 // sprayMailboxFor is resolveSprayMailbox with the daemon's resolver. Callers
 // hold no tracker lock. The lookup runs only while the spray rules are on.
 func (d *Daemon) sprayMailboxFor(name string, verdict mailboxExistence) sprayMailbox {
-	if d.mailSpray == nil || d.mailSpray.Mode() == sprayOff {
+	if !d.sprayRulesOn() {
 		return resolveSprayMailbox(nil, name, verdict)
 	}
 	return resolveSprayMailbox(d.mailboxes, name, verdict)
+}
+
+// sprayRulesOn reports whether anything reads mailbox existence.
+func (d *Daemon) sprayRulesOn() bool {
+	return d.mailSpray != nil && d.mailSpray.Mode() != sprayOff
 }
 
 // cpanelMailboxSource reads cPanel's accounts, domains and mailboxes.
