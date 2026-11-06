@@ -470,7 +470,10 @@ func (q *queueTx) forgetLine(id admission.CandidateID, c admission.Candidate) er
 		if clockErr != nil {
 			return clockErr
 		}
-		if rest.Verified.IsZero() || (!clock.Now.Before(rest.Verified) && clock.Elapsed >= rest.EndElapsed) {
+		// Only an answered address block line can hold the row (its codec
+		// refuses any other unreferenced shape); anything else goes as before.
+		line, ok := rest.Line(admission.KindBlockIP)
+		if rest.Verified.IsZero() || !ok || !line.Answered || (!clock.Now.Before(rest.Verified) && clock.Elapsed >= rest.EndElapsed) {
 			return q.tx.Bucket([]byte(admissionEpisodesBucket)).Delete([]byte(key))
 		}
 	}
