@@ -231,6 +231,59 @@ func TestSprayLookupOffWhenModeOff(t *testing.T) {
 	}
 }
 
+// useAccountKey installs a mail_brute_account_key for one test.
+func useAccountKey(t *testing.T, spec string) {
+	t.Helper()
+	ex, err := NewAccountExtractor(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	SetAccountExtractor(ex)
+	t.Cleanup(func() { SetAccountExtractor(nil) })
+}
+
+// Only the default key reads the whole login. A regex can capture part of it,
+// and bare info is a missing account though info@example.com is real, so the
+// failure must count as unknown and never reach the first strike.
+func TestSprayLookupNeedsWholeLoginName(t *testing.T) {
+	for _, tc := range []struct{ key, stored string }{
+		{"regex:user=<([^@>]+)", "info"},
+		{"regex:user=<([^>]+)>", "info@example.com"},
+		{"builtin:postfix-sasl", ""}, // a Dovecot login line has no such field
+	} {
+		t.Run(tc.key, func(t *testing.T) {
+			useAccountKey(t, tc.key)
+			d, clock, r := newLookupDaemon(t, "enforce")
+			for i, ip := range sprayLookupIPs {
+				got := feed(d, clock, makeDovecotFailLine("imap", ip, "info@example.com"))
+				if n := countChecks(got, "mail_bruteforce", "mail_bruteforce_suspected"); n != 0 {
+					t.Fatalf("attempt %d was a first strike: %+v", i+1, got)
+				}
+			}
+			for _, ip := range sprayLookupIPs {
+				if f, ok := sprayEvidence(d, ip)[tc.stored]; tc.stored != "" && (!ok || f.count != 1 || f.exist != mailboxExistenceUnknown) {
+					t.Fatalf("evidence of %s = %+v, want one unknown failure on %q", ip, sprayEvidence(d, ip), tc.stored)
+				}
+			}
+			if calls, _ := d.mailAuthTracker.Stats(); calls != int64(len(sprayLookupIPs)) {
+				t.Fatalf("mail tracker recorded %d attempts, want %d", calls, len(sprayLookupIPs))
+			}
+			if len(r.asked) != 0 {
+				t.Fatalf("resolver asked about %q", r.asked)
+			}
+		})
+	}
+}
+
+func TestSprayLookupStrikesOnDefaultAccountKey(t *testing.T) {
+	for _, key := range []string{"", "builtin:dovecot-user"} {
+		t.Run("key="+key, func(t *testing.T) {
+			useAccountKey(t, key)
+			checkSprayFirstStrike(t, "imap")
+		})
+	}
+}
+
 // A line costs one lookup however many attempts it reports, and asks about the
 // name as typed. A temporary reply says nothing about the mailbox and costs none.
 func TestSprayLookupOncePerLine(t *testing.T) {
