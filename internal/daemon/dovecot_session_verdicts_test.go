@@ -28,7 +28,7 @@ func TestDovecotSessionRejectionParses(t *testing.T) {
 		// Dovecot's identifier order is user,ip[,master][,<session>].
 		{"master login", "dovecot: auth: passwd-file(nosuch@example.com,203.0.113.5,master,<AbCd1234>): unknown user", ip, name, mailboxMissing},
 		{"name with comma and paren", "dovecot: auth: sql(a,b)c@example.com,203.0.113.5,<AbCd1234>): unknown user", ip, "a,b)c@example.com", mailboxMissing},
-		{"name embeds an address and a session", "dovecot: auth: sql(x,198.51.100.9,<Forged>,203.0.113.5,<AbCd1234>): unknown user", ip, "x,198.51.100.9,<Forged>", mailboxMissing},
+		{"name embeds an address and a session", "dovecot: auth: sql(x,198.51.100.9,<forged>,203.0.113.5,<AbCd1234>): unknown user", ip, "x,198.51.100.9,<forged>", mailboxMissing},
 		{"IPv6", "dovecot: auth: sql(nosuch@example.com,2001:db8::5,<AbCd1234>): unknown user", "2001:db8::5", name, mailboxMissing},
 		{"mapped IPv4", "dovecot: auth: sql(nosuch@example.com,::ffff:203.0.113.5,<AbCd1234>): unknown user", ip, name, mailboxMissing},
 	} {
@@ -659,7 +659,7 @@ func TestDovecotDottedNameIsNotMissing(t *testing.T) {
 		}{
 			{dotted, "unknown user", mailboxExistenceUnknown},
 			{dotted, "Password mismatch", mailboxExists},
-			{"alice.", "unknown user", mailboxExistenceUnknown},
+			{"alice.", "unknown user", mailboxMissing}, // the key keeps this dot
 			{real, "unknown user", mailboxMissing},
 		} {
 			sessionless := "dovecot: auth: sql(" + tc.name + ",203.0.113.5): " + tc.verdict
@@ -767,6 +767,75 @@ func TestDovecotSessionVerdictsIdleWhenSprayOff(t *testing.T) {
 			}
 			if len(d.dovecotSessions.sessions) != 0 || d.dovecotSessions.order.Len() != 0 {
 				t.Fatalf("held %d sessions with the spray rules off", len(d.dovecotSessions.sessions))
+			}
+		})
+	}
+}
+
+// Dovecot's unknown user is about the exact name it was asked. A name the key
+// respells can still be a real mailbox.
+func TestDovecotMissingNeedsExactName(t *testing.T) {
+	const typed, key = "Info@example.com", "info@example.com"
+	long := strings.Repeat("a", maxSprayMailboxBytes+10)
+	t.Run("parsers", func(t *testing.T) {
+		for _, tc := range []struct {
+			name, verdict string
+			want          mailboxExistence
+		}{
+			{"nosuch@example.com", "unknown user", mailboxMissing},
+			{"nosuch", "unknown user", mailboxMissing},
+			{typed, "unknown user", mailboxExistenceUnknown},
+			{"Alice", "unknown user", mailboxExistenceUnknown},
+			{"info@EXAMPLE.com", "unknown user", mailboxExistenceUnknown},
+			{"info@example.com.", "unknown user", mailboxExistenceUnknown},
+			{" info@example.com", "unknown user", mailboxExistenceUnknown},
+			{long, "unknown user", mailboxExistenceUnknown},
+			{typed, "Password mismatch", mailboxExists},
+		} {
+			sessionless := "dovecot: auth: sql(" + tc.name + ",203.0.113.5): " + tc.verdict
+			if _, account, exist, ok := dovecotSessionlessRejection(sessionless); !ok || account != tc.name || exist != tc.want {
+				t.Errorf("sessionless %.40q = (%.40q, %d, %v), want existence %d", tc.name, account, exist, ok, tc.want)
+			}
+			session := "dovecot: auth: sql(" + tc.name + ",203.0.113.5,<AbCd1234>): " + tc.verdict
+			if _, _, account, exist, ok := dovecotSessionRejection(session); !ok || account != tc.name || exist != tc.want {
+				t.Errorf("session %.40q = (%.40q, %d, %v), want existence %d", tc.name, account, exist, ok, tc.want)
+			}
+		}
+	})
+	sessionLines := func(ip, s string) []string {
+		return []string{"dovecot: auth: passwd-file(" + typed + "," + ip + ",<" + s + ">): unknown user",
+			fmt.Sprintf(dovecotSessionSummaryFmt, "imap", typed, ip, s)}
+	}
+	sessionlessLines := func(ip, _ string) []string {
+		return []string{"dovecot: auth: passwd-file(" + typed + "," + ip + "): unknown user", fmt.Sprintf(postfixFailFmt, ip, typed)}
+	}
+	for _, tc := range []struct {
+		desc     string
+		resolver bool
+		lines    func(ip, s string) []string
+		check    string
+		want     mailboxExistence
+	}{
+		{"session verdict, lookup", true, sessionLines, "mail_bruteforce", mailboxExists},
+		{"session verdict, no lookup", false, sessionLines, "mail_bruteforce", mailboxExistenceUnknown},
+		// SMTP pairing records the verdict and never asks the lookup.
+		{"sessionless verdict, lookup", true, sessionlessLines, "smtp_bruteforce", mailboxExistenceUnknown},
+		{"sessionless verdict, no lookup", false, sessionlessLines, "smtp_bruteforce", mailboxExistenceUnknown},
+	} {
+		t.Run(tc.desc, func(t *testing.T) {
+			d, clock, _ := newLookupDaemon(t, "enforce")
+			if !tc.resolver {
+				d.mailboxes = nil
+			}
+			for i, ip := range sprayLookupIPs {
+				got := feed(d, clock, tc.lines(ip, fmt.Sprintf("S%d", i))...)
+				if f, ok := findingByCheck(got, tc.check); ok {
+					t.Fatalf("attempt %d struck on a respelled name: %+v", i+1, f)
+				}
+				evidence, ok := sprayEvidence(d, ip)[key]
+				if !ok || evidence.exist != tc.want {
+					t.Fatalf("attempt %d stored %+v, %v, want existence %d", i+1, evidence, ok, tc.want)
+				}
 			}
 		})
 	}
