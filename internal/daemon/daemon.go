@@ -2623,6 +2623,7 @@ func (d *Daemon) handleMailLine(line string, obs alert.Observation, cfg *config.
 	if d.noteDovecotSessionVerdict(line, cfg) {
 		return findings
 	}
+	d.spoilDovecotSessions(line)
 	// Intermediate auth results are not login failures, and their client
 	// text must not reach the outage detector even without a full verdict.
 	if isDovecotAuthRequestInfo(line) {
@@ -2680,6 +2681,17 @@ func (d *Daemon) noteDovecotSessionVerdict(line string, cfg *config.Config) bool
 		d.dovecotSessions.Note(session, ip, account, exist, customerLoginTime(line, d.mailAuthTracker.now()))
 	}
 	return true
+}
+
+// spoilDovecotSessions withholds the verdicts of the sessions an auth error
+// line names. The line carries on to the outage detector.
+func (d *Daemon) spoilDovecotSessions(line string) {
+	if d.mailAuthTracker == nil {
+		return
+	}
+	for _, session := range dovecotAuthTroubleSessions(line) {
+		d.dovecotSessions.Spoil(session, customerLoginTime(line, d.mailAuthTracker.now()))
+	}
 }
 
 // handleSMTPAuthPairing feeds Postfix SMTP AUTH evidence on hosts whose

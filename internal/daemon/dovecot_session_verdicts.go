@@ -25,10 +25,11 @@ type dovecotSessionName struct {
 }
 
 type dovecotSession struct {
-	id    string
-	ip    string
-	at    time.Time
-	names []dovecotSessionName
+	id      string
+	ip      string
+	at      time.Time
+	spoiled bool
+	names   []dovecotSessionName
 }
 
 // dovecotSessionVerdicts keeps what Dovecot's passdb verdicts said about the
@@ -58,23 +59,39 @@ func (v *dovecotSessionVerdicts) Note(session, ip, account string, exist mailbox
 	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	elem, tracked := v.sessions[session]
-	if !tracked {
-		if v.order.Len() >= maxDovecotSessionVerdicts {
-			v.remove(v.order.Front())
-		}
-		session = strings.Clone(session)
-		elem = v.order.PushBack(&dovecotSession{id: session, ip: ip})
-		v.sessions[session] = elem
+	elem := v.sessions[session]
+	if elem != nil && at.Sub(elem.Value.(*dovecotSession).at) > dovecotSessionVerdictTTL {
+		v.remove(elem)
+		elem = nil
+	}
+	if elem == nil {
+		elem = v.add(session, ip)
 	}
 	s := elem.Value.(*dovecotSession)
-	// A session belongs to one client.
-	if s.ip != ip {
+	// A session belongs to one client, and a spoiled one stays spoiled.
+	if s.spoiled || s.ip != ip {
 		return
 	}
 	s.at = at
 	v.order.MoveToBack(elem)
 	s.note(name, exist)
+}
+
+// Spoil withholds a session whose request hit an auth error: a later database
+// failed, so a rejection before or after it is not the request's answer. The
+// tombstone stands in for the session under the same cap and TTL, so a later
+// verdict cannot restore it. Client text can name other sessions here, which
+// only withholds their verdicts.
+func (v *dovecotSessionVerdicts) Spoil(session string, at time.Time) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	elem := v.sessions[session]
+	if elem == nil {
+		elem = v.add(session, "")
+	}
+	s := elem.Value.(*dovecotSession)
+	s.at, s.spoiled, s.names = at, true, nil
+	v.order.MoveToBack(elem)
 }
 
 // Take claims the session and returns what its verdicts said about account:
@@ -98,6 +115,18 @@ func (v *dovecotSessionVerdicts) Take(session, ip, account string, at time.Time)
 		}
 	}
 	return mailboxExistenceUnknown
+}
+
+// add starts an entry, evicting the least recently noted at the cap. Caller
+// holds v.mu.
+func (v *dovecotSessionVerdicts) add(session, ip string) *list.Element {
+	if v.order.Len() >= maxDovecotSessionVerdicts {
+		v.remove(v.order.Front())
+	}
+	session = strings.Clone(session)
+	elem := v.order.PushBack(&dovecotSession{id: session, ip: ip})
+	v.sessions[session] = elem
+	return elem
 }
 
 // remove drops one session. Caller holds v.mu.

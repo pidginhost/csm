@@ -60,9 +60,8 @@ func dovecotSessionRejection(line string) (session, ip, account string, exist ma
 	if comma < 0 {
 		return "", "", "", mailboxExistenceUnknown, false
 	}
-	session, opened := strings.CutPrefix(fields[comma+1:], "<")
-	session, closed := strings.CutSuffix(session, ">")
-	if !opened || !closed || session == "" || strings.Contains(session, " ") {
+	session, ok = dovecotSessionField(fields[comma+1:])
+	if !ok {
 		return "", "", "", mailboxExistenceUnknown, false
 	}
 	ip, account, exist, ok = dovecotRejectionClient(fields[:comma], exist)
@@ -70,6 +69,13 @@ func dovecotSessionRejection(line string) (session, ip, account string, exist ma
 		return "", "", "", mailboxExistenceUnknown, false
 	}
 	return session, ip, account, exist, true
+}
+
+// dovecotSessionField reads a <session> request field.
+func dovecotSessionField(field string) (session string, ok bool) {
+	session, opened := strings.CutPrefix(field, "<")
+	session, closed := strings.CutSuffix(session, ">")
+	return session, opened && closed && session != "" && !strings.Contains(session, " ")
 }
 
 // dovecotRejectionFields returns the request fields of a rejection verdict,
@@ -113,6 +119,32 @@ func dovecotRejectionClient(fields string, verdict mailboxExistence) (ip, accoun
 // a Dovecot auth Error, Warning, Fatal or Panic line. A client name can add
 // addresses here, which only withholds evidence for them.
 func dovecotAuthTroubleIPs(line string) []string {
+	var ips []string
+	for _, field := range dovecotAuthTroubleFields(line) {
+		if addr := net.ParseIP(field); addr != nil {
+			ips = append(ips, addr.String())
+		}
+	}
+	return ips
+}
+
+// dovecotAuthTroubleSessions returns every session named in the same fields.
+// Every one is read, not just the rightmost, because the line's detail text
+// can hold fields too and the session Dovecot appended must not be missed. A
+// client name can add sessions, which only withholds evidence for them.
+func dovecotAuthTroubleSessions(line string) []string {
+	var sessions []string
+	for _, field := range dovecotAuthTroubleFields(line) {
+		if session, ok := dovecotSessionField(field); ok {
+			sessions = append(sessions, session)
+		}
+	}
+	return sessions
+}
+
+// dovecotAuthTroubleFields returns the fields after each comma of an auth
+// Error, Warning, Fatal or Panic line, up to the next comma or parenthesis.
+func dovecotAuthTroubleFields(line string) []string {
 	seg := dovecotAuthSegment(dovecotServiceMessage(line))
 	rest := ""
 	for _, severity := range []string{"Error: ", "Warning: ", "Fatal: ", "Panic: "} {
@@ -121,19 +153,17 @@ func dovecotAuthTroubleIPs(line string) []string {
 			break
 		}
 	}
-	var ips []string
+	var fields []string
 	for i := strings.IndexByte(rest, ','); i >= 0; {
 		rest = rest[i+1:]
 		end := strings.IndexAny(rest, ",)")
 		if end < 0 {
 			break
 		}
-		if addr := net.ParseIP(rest[:end]); addr != nil {
-			ips = append(ips, addr.String())
-		}
+		fields = append(fields, rest[:end])
 		i = strings.IndexByte(rest, ',')
 	}
-	return ips
+	return fields
 }
 
 // Informational auth messages can contain arbitrary client names and logged

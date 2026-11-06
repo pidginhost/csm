@@ -446,6 +446,15 @@ func FuzzDovecotSessionRejection(f *testing.F) {
 				t.Fatalf("%q carried existence %d with no account", line, exist)
 			}
 		}
+		for _, session := range dovecotAuthTroubleSessions(input) {
+			if session == "" || strings.Contains(session, " ") {
+				t.Fatalf("%q gave trouble session %q", input, session)
+			}
+		}
+		line := "dovecot: auth: Error: sql(" + input + ",203.0.113.5,<AbCd1234>): Password query failed"
+		if !slices.Contains(dovecotAuthTroubleSessions(line), "AbCd1234") {
+			t.Fatalf("name %q hid the session of an auth error", input)
+		}
 	})
 }
 

@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -250,8 +251,27 @@ func TestDovecotSessionVerdictsBounded(t *testing.T) {
 	})
 }
 
-// Two networks corroborate the name through their own verdicts; the third
-// reaches the rule 2 bar only if its own verdict pairs with its summary.
+// corroboratedSprayDaemon has two networks fail on mailbox with their own
+// verdicts. A third reaches the rule 2 bar only if its own verdict pairs with
+// its summary.
+func corroboratedSprayDaemon(t *testing.T, proto, mailbox string) (*Daemon, *staticClock) {
+	t.Helper()
+	d, clock := newPairingDaemon(t, sprayTestConfig("enforce"))
+	d.mailboxes = nil
+	for i, other := range []string{"192.0.2.71", "198.51.100.71"} {
+		s := fmt.Sprintf("Other%d", i)
+		got := feed(d, clock, "dovecot: auth: passwd-file("+mailbox+","+other+",<"+s+">): unknown user",
+			fmt.Sprintf(dovecotSessionSummaryFmt, proto, mailbox, other, s))
+		if n := countChecks(got, "mail_bruteforce", "mail_bruteforce_suspected"); n != 0 {
+			t.Fatalf("flagged before enough networks tried the name: %+v", got)
+		}
+		if exist := sprayEvidence(d, other)[mailbox].exist; exist != mailboxMissing {
+			t.Fatalf("%s stored existence %d, want missing", other, exist)
+		}
+	}
+	return d, clock
+}
+
 func TestIMAPSprayMissingFromSessionVerdict(t *testing.T) {
 	const mailbox, ip, session = "nosuch@example.com", "203.0.113.5", "AbCd1234"
 	verdict := func(rejection, verdictIP string) string {
@@ -261,20 +281,7 @@ func TestIMAPSprayMissingFromSessionVerdict(t *testing.T) {
 		summary := fmt.Sprintf(dovecotSessionSummaryFmt, proto, mailbox, ip, session)
 		start := func(t *testing.T) (*Daemon, *staticClock) {
 			t.Helper()
-			d, clock := newPairingDaemon(t, sprayTestConfig("enforce"))
-			d.mailboxes = nil
-			for i, other := range []string{"192.0.2.71", "198.51.100.71"} {
-				s := fmt.Sprintf("Other%d", i)
-				got := feed(d, clock, "dovecot: auth: passwd-file("+mailbox+","+other+",<"+s+">): unknown user",
-					fmt.Sprintf(dovecotSessionSummaryFmt, proto, mailbox, other, s))
-				if n := countChecks(got, "mail_bruteforce", "mail_bruteforce_suspected"); n != 0 {
-					t.Fatalf("flagged before enough networks tried the name: %+v", got)
-				}
-				if exist := sprayEvidence(d, other)[mailbox].exist; exist != mailboxMissing {
-					t.Fatalf("%s stored existence %d, want missing", other, exist)
-				}
-			}
-			return d, clock
+			return corroboratedSprayDaemon(t, proto, mailbox)
 		}
 		// noStrike asserts the third network failed on the name without a
 		// first strike and stored the given existence.
@@ -385,4 +392,195 @@ func TestDovecotSessionVerdictTouchesNoTracker(t *testing.T) {
 	if smtpCalls(d) != 0 || d.smtpAuthTracker.Size() != 0 || d.mailAuthTracker.Size() != 0 || len(sprayEvidence(d, ip)) != 0 {
 		t.Fatal("session verdict reached a tracker or spray memory")
 	}
+}
+
+// A later database failing means the session's rejection was not the request's
+// answer, so a real mailbox can look missing. Dovecot logs the error before
+// the login summary, on either side of the verdict.
+func TestDovecotSessionAuthErrorWithholdsVerdict(t *testing.T) {
+	const mailbox, ip, session = "nosuch@example.com", "203.0.113.5", "AbCd1234"
+	verdict := "dovecot: auth: passwd-file(" + mailbox + "," + ip + ",<" + session + ">): unknown user"
+	authError := "dovecot: auth: Error: sql(" + mailbox + "," + ip + ",<" + session + ">): Password query failed: connection lost"
+	summary := fmt.Sprintf(dovecotSessionSummaryFmt, "imap", mailbox, ip, session)
+	for _, tc := range []struct {
+		desc  string
+		exim  bool
+		lines []string
+	}{
+		{"verdict then error", false, []string{verdict, authError}},
+		{"error then verdict", false, []string{authError, verdict}},
+		{"verdict then error on an Exim host", true, []string{verdict, authError}},
+		{"error then verdict on an Exim host", true, []string{authError, verdict}},
+	} {
+		t.Run(tc.desc, func(t *testing.T) {
+			d, clock := corroboratedSprayDaemon(t, "imap", mailbox)
+			d.smtpAuthFromExim = tc.exim
+			feed(d, clock, tc.lines...)
+			calls, _ := d.mailAuthTracker.Stats()
+			got := feed(d, clock, summary)
+			if f, ok := findingByCheck(got, "mail_bruteforce"); ok {
+				t.Fatalf("first strike on a withheld verdict: %+v", f)
+			}
+			if after, _ := d.mailAuthTracker.Stats(); after != calls+1 {
+				t.Fatalf("mail failures = %d, want %d", after, calls+1)
+			}
+			evidence, ok := sprayEvidence(d, ip)[mailbox]
+			if !ok || evidence.exist != mailboxExistenceUnknown {
+				t.Fatalf("stored %+v, %v, want an unknown failure", evidence, ok)
+			}
+		})
+	}
+}
+
+// The verdict is what is withheld: the line still marks the client and feeds
+// the outage detector.
+func TestDovecotSessionAuthErrorReachesOutageDetector(t *testing.T) {
+	const ip, session = "203.0.113.90", "AbCd1234"
+	line := "dovecot: auth: Error: sql(a," + ip + ",<" + session + ">): Temporary authentication failure"
+	d, clock := newPairingDaemon(t, &config.Config{})
+	var got []alert.Finding
+	for i := 0; i < mailBackendDegradedThreshold; i++ {
+		got = append(got, feed(d, clock, line)...)
+	}
+	if len(got) != 1 || got[0].Check != "mail_auth_backend_degraded" {
+		t.Fatalf("got %+v, want one outage warning", got)
+	}
+	if _, marked := d.smtpAuthTracker.authTrouble[ip]; !marked {
+		t.Fatal("auth error no longer marks the client for SMTP pairing")
+	}
+	if !d.dovecotSessions.sessions[session].Value.(*dovecotSession).spoiled {
+		t.Fatal("auth error did not spoil the session")
+	}
+}
+
+func TestDovecotSessionAuthTroubleSessions(t *testing.T) {
+	for _, tc := range []struct {
+		desc, line string
+		want       []string
+	}{
+		{"error", "dovecot: auth: Error: sql(a,203.0.113.5,<AbCd1234>): Password query failed: connection lost", []string{"AbCd1234"}},
+		{"warning", "dovecot: auth: Warning: sql(a,203.0.113.5,<AbCd1234>): connection refused", []string{"AbCd1234"}},
+		{"fatal", "dovecot: auth: Fatal: sql(a,203.0.113.5,<AbCd1234>): out of memory", []string{"AbCd1234"}},
+		{"panic", "dovecot: auth: Panic: sql(a,203.0.113.5,<AbCd1234>): assertion failed", []string{"AbCd1234"}},
+		{"master", "dovecot: auth: Error: sql(a,203.0.113.5,master,<AbCd1234>): connection lost", []string{"AbCd1234"}},
+		{"auth worker", "dovecot: auth-worker(12): Error: pam(a,203.0.113.5,<AbCd1234>): internal error", []string{"AbCd1234"}},
+		{"2.3 auth worker", "dovecot: auth-worker(12): Error: conn unix:auth-worker (pid=11,uid=97): auth-worker<1>: pam(a,203.0.113.5,<AbCd1234>): internal error", []string{"AbCd1234"}},
+		// A client name can add fields. That only withholds evidence, and it
+		// cannot hide the session Dovecot appended.
+		{"name adds a session", "dovecot: auth: Error: sql(a,<Forged>,203.0.113.5,<AbCd1234>): connection lost", []string{"Forged", "AbCd1234"}},
+		{"name ends the request early", "dovecot: auth: Error: sql(a),203.0.113.5,<AbCd1234>): connection lost", []string{"AbCd1234"}},
+		{"no session", "dovecot: auth: Error: sql(a,203.0.113.5): connection lost", nil},
+		{"empty session", "dovecot: auth: Error: sql(a,203.0.113.5,<>): connection lost", nil},
+		{"spaced session", "dovecot: auth: Error: sql(a,203.0.113.5,<Ab Cd>): connection lost", nil},
+		{"verdict line", "dovecot: auth: sql(a,203.0.113.5,<AbCd1234>): unknown user", nil},
+		{"debug line", "dovecot: auth: Debug: sql(a,203.0.113.5,<AbCd1234>): Performing passdb lookup", nil},
+		{"login summary", fmt.Sprintf(dovecotSessionSummaryFmt, "imap", "a", "203.0.113.5", "AbCd1234"), nil},
+		{"other program", "postfix/smtpd[99]: auth: Error: sql(a,203.0.113.5,<AbCd1234>): connection lost", nil},
+	} {
+		t.Run(tc.desc, func(t *testing.T) {
+			if got := dovecotAuthTroubleSessions(tc.line); !slices.Equal(got, tc.want) {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDovecotSessionVerdictsSpoil(t *testing.T) {
+	const session, ip, name = "AbCd1234", "203.0.113.5", "nosuch@example.com"
+	at := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
+	t.Run("drops what the session held", func(t *testing.T) {
+		v := newDovecotSessionVerdicts()
+		v.Note(session, ip, name, mailboxMissing, at)
+		v.Spoil(session, at)
+		if got := v.Take(session, ip, name, at); got != mailboxExistenceUnknown {
+			t.Fatalf("got %d, want unknown", got)
+		}
+		if len(v.sessions) != 0 || v.order.Len() != 0 {
+			t.Fatal("Take left the tombstone behind")
+		}
+	})
+	t.Run("a verdict after a spoiled verdict cannot restore it", func(t *testing.T) {
+		v := newDovecotSessionVerdicts()
+		v.Note(session, ip, name, mailboxMissing, at)
+		v.Spoil(session, at)
+		v.Note(session, ip, name, mailboxMissing, at)
+		if got := v.Take(session, ip, name, at); got != mailboxExistenceUnknown {
+			t.Fatalf("got %d, want unknown", got)
+		}
+	})
+	t.Run("a later verdict cannot restore it", func(t *testing.T) {
+		v := newDovecotSessionVerdicts()
+		v.Spoil(session, at)
+		for _, exist := range []mailboxExistence{mailboxMissing, mailboxExists} {
+			v.Note(session, ip, name, exist, at.Add(time.Second))
+		}
+		if got := v.Take(session, ip, name, at.Add(2*time.Second)); got != mailboxExistenceUnknown {
+			t.Fatalf("got %d, want unknown", got)
+		}
+	})
+	t.Run("a later verdict does not extend it", func(t *testing.T) {
+		v := newDovecotSessionVerdicts()
+		v.Spoil(session, at)
+		v.Note(session, ip, name, mailboxMissing, at.Add(dovecotSessionVerdictTTL))
+		v.Note(session, ip, name, mailboxMissing, at.Add(dovecotSessionVerdictTTL+time.Second))
+		if got := v.Take(session, ip, name, at.Add(dovecotSessionVerdictTTL+time.Second)); got != mailboxMissing {
+			t.Fatalf("got %d, want missing", got)
+		}
+	})
+	t.Run("expires with the ttl", func(t *testing.T) {
+		v := newDovecotSessionVerdicts()
+		v.Spoil(session, at)
+		v.Note(session, ip, name, mailboxMissing, at.Add(dovecotSessionVerdictTTL+time.Second))
+		if got := v.Take(session, ip, name, at.Add(dovecotSessionVerdictTTL+time.Second)); got != mailboxMissing {
+			t.Fatalf("got %d, want missing", got)
+		}
+	})
+	t.Run("an expired session starts over", func(t *testing.T) {
+		v := newDovecotSessionVerdicts()
+		v.Note(session, ip, name, mailboxMissing, at)
+		later := at.Add(dovecotSessionVerdictTTL + time.Second)
+		v.Note(session, ip, "other@example.com", mailboxExists, later)
+		if got := v.Take(session, ip, name, later); got != mailboxExistenceUnknown {
+			t.Fatalf("expired verdict answered %d, want unknown", got)
+		}
+	})
+	t.Run("counts toward the cap", func(t *testing.T) {
+		v := newDovecotSessionVerdicts()
+		for i := 0; i < maxDovecotSessionVerdicts+100; i++ {
+			v.Spoil(fmt.Sprintf("s%d", i), at)
+		}
+		if len(v.sessions) != maxDovecotSessionVerdicts || v.order.Len() != maxDovecotSessionVerdicts {
+			t.Fatalf("held %d sessions, %d in order, want %d", len(v.sessions), v.order.Len(), maxDovecotSessionVerdicts)
+		}
+		if _, held := v.sessions["s99"]; held {
+			t.Fatal("oldest tombstone survived the cap")
+		}
+		if _, held := v.sessions["s100"]; !held {
+			t.Fatal("cap evicted a newer tombstone")
+		}
+	})
+	t.Run("spoiling makes a session the newest", func(t *testing.T) {
+		v := newDovecotSessionVerdicts()
+		for i := 0; i < maxDovecotSessionVerdicts; i++ {
+			v.Note(fmt.Sprintf("s%d", i), ip, name, mailboxMissing, at)
+		}
+		v.Spoil("s0", at)
+		v.Spoil("new", at)
+		if _, held := v.sessions["s0"]; !held {
+			t.Fatal("cap evicted the tombstone just written")
+		}
+		if _, held := v.sessions["s1"]; held {
+			t.Fatal("oldest session survived the cap")
+		}
+	})
+	t.Run("spoiling again restarts the ttl", func(t *testing.T) {
+		v := newDovecotSessionVerdicts()
+		v.Spoil(session, at)
+		later := at.Add(dovecotSessionVerdictTTL)
+		v.Spoil(session, later)
+		v.Note(session, ip, name, mailboxMissing, later.Add(time.Second))
+		if got := v.Take(session, ip, name, later.Add(time.Second)); got != mailboxExistenceUnknown {
+			t.Fatalf("got %d, want unknown", got)
+		}
+	})
 }
