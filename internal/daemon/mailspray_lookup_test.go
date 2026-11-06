@@ -304,6 +304,42 @@ func TestSprayLookupStrikesOnDefaultAccountKey(t *testing.T) {
 	}
 }
 
+// Reloading after extraction cannot turn a partial key into a whole login or
+// discard a whole login that was read before the reload.
+func TestSprayLookupPinsAccountExtractorAcrossReload(t *testing.T) {
+	for _, tc := range []struct {
+		name, before, after, stored string
+		want                        mailboxExistence
+		lookups                     int
+	}{
+		{"partial to whole", "regex:user=<([^@>]+)", "builtin:dovecot-user", "info", mailboxExistenceUnknown, 0},
+		{"whole to partial", "builtin:dovecot-user", "regex:user=<([^@>]+)", "info@example.com", mailboxExists, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			useAccountKey(t, tc.before)
+			next, err := NewAccountExtractor(tc.after)
+			if err != nil {
+				t.Fatal(err)
+			}
+			d, clock, r := newLookupDaemon(t, "enforce")
+			// Session pairing reads the clock after extracting the account.
+			d.mailAuthTracker.now = func() time.Time {
+				SetAccountExtractor(next)
+				return clock.Now()
+			}
+			const ip = "203.0.113.80"
+			feed(d, clock, makeDovecotFailLine("imap", ip, "info@example.com"))
+			if len(r.asked) != tc.lookups {
+				t.Errorf("lookup asked about %q, want %d calls", r.asked, tc.lookups)
+			}
+			evidence := sprayEvidence(d, ip)
+			if f, ok := evidence[tc.stored]; !ok || len(evidence) != 1 || f.count != 1 || f.exist != tc.want {
+				t.Fatalf("evidence = %+v, want one %d failure on %q", evidence, tc.want, tc.stored)
+			}
+		})
+	}
+}
+
 // A line costs one lookup however many attempts it reports, and asks about the
 // name as typed. A temporary reply says nothing about the mailbox and costs none.
 func TestSprayLookupOncePerLine(t *testing.T) {

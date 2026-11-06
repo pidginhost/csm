@@ -1522,7 +1522,7 @@ func dovecotLoginSucceeded(line string) bool {
 // The failure marker is "(auth failed" with the opening paren, which
 // distinguishes real auth failures from Login-aborted reasons like
 // "no auth attempts" or TLS handshake errors.
-func extractMailLoginEvent(line string) (ip, account string, success bool) {
+func (e *AccountExtractor) extractMailLoginEvent(line string) (ip, account string, success bool) {
 	switch {
 	case dovecotLoginSucceeded(line):
 		success = true
@@ -1532,8 +1532,8 @@ func extractMailLoginEvent(line string) (ip, account string, success bool) {
 		return "", "", false
 	}
 
-	// Extract account key via the configured (or default) extractor.
-	account = currentAccountExtractor().Extract(line)
+	// Keep the key and its whole-login guarantee on the same config snapshot.
+	account = e.Extract(line)
 
 	// Extract rip=... field. Delimited by comma or whitespace.
 	if i := strings.Index(line, "rip="); i >= 0 {

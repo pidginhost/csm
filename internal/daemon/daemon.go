@@ -2637,7 +2637,8 @@ func (d *Daemon) handleMailLine(line string, obs alert.Observation, cfg *config.
 	if !authLine {
 		return findings
 	}
-	ip, account, success := extractMailLoginEvent(line)
+	extractor := currentAccountExtractor()
+	ip, account, success := extractor.extractMailLoginEvent(line)
 	if ip == "" {
 		return findings
 	}
@@ -2661,7 +2662,7 @@ func (d *Daemon) handleMailLine(line string, obs alert.Observation, cfg *config.
 		findings = append(findings, d.mailAuthTracker.recordSuccessAt(ip, account, customerLoginTime(line, d.mailAuthTracker.now()), kind)...)
 	} else {
 		mb := sprayMailbox{name: normalizeSprayMailbox(account), exist: mailboxExistenceUnknown}
-		if !withheld && currentAccountExtractor().readsWholeLogin() {
+		if !withheld && extractor.readsWholeLogin() {
 			mb = d.sprayMailboxFor(account, verdict)
 		}
 		findings = append(findings, recordDovecotFailure(d.mailAuthTracker, ip, account, line, mb, obs)...)
