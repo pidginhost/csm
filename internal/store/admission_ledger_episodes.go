@@ -15,6 +15,10 @@ import (
 // or the effect records: at 13 those prove themselves.
 const admissionSchemaEpisodeElapsed = 13
 
+// admissionSchemaEpisodeRetained permits a verified episode whose
+// candidate references are gone but whose boundary still answers.
+const admissionSchemaEpisodeRetained = 15
+
 // episodeStateKey holds the episode sequence in the queue state bucket.
 var episodeStateKey = []byte("episodes")
 
@@ -72,6 +76,11 @@ func putEpisode(tx *bolt.Tx, key string, e admission.Episode) error {
 		// refused arrival that would keep a candidate without its row.
 		return corruptRecord(err)
 	}
+	if !e.HasCandidates() {
+		if err = raiseSchema(tx, admissionSchemaEpisodeRetained); err != nil {
+			return err
+		}
+	}
 	if e.EndElapsed > 0 {
 		if err = raiseSchema(tx, admissionSchemaEpisodeElapsed); err != nil {
 			return err
@@ -119,6 +128,12 @@ func proveEpisodes(tx *bolt.Tx) error {
 		e, err := admission.UnmarshalEpisode(v)
 		if err != nil {
 			return err
+		}
+		if !e.HasCandidates() {
+			schema := tx.Bucket([]byte(admissionMetaBucket)).Get(admissionSchemaKey)
+			if len(schema) != 1 || schema[0] < admissionSchemaEpisodeRetained {
+				return admission.ErrCorruptRecord
+			}
 		}
 		for _, line := range e.Lines {
 			if line.Candidate == "" {
@@ -254,21 +269,32 @@ func (l *AdmissionLedger) placeTx(q *queueTx, req admission.CandidateRequest, e 
 }
 
 // forgetLine clears a deleted candidate reference but retains the kind's
-// generation and whether its effect answers the kind. The last retained
-// candidate takes the row, so counters never reset within a surviving
-// episode.
+// generation and answer. A verified boundary survives the last reference;
+// a retained predecessor's retirement collects it after both clocks pass.
 func (q *queueTx) forgetLine(id admission.CandidateID, c admission.Candidate) error {
 	key := c.Key.Target.Key()
 	e, found, err := loadEpisode(q.tx, key)
 	if err != nil || !found {
 		return err
 	}
-	rest, had := e.WithoutCandidate(id, c.State == admission.StateVerified || c.State == admission.StateObserved)
-	switch {
-	case !had:
+	// Forgetting an unattempted return must not discard the earlier
+	// verified boundary. Its verified predecessor already pays to keep
+	// this row until expiry; that predecessor's retirement also collects
+	// an unreferenced row once both ends have passed.
+	answered := c.State == admission.StateVerified || c.State == admission.StateObserved ||
+		(c.Key.Kind == admission.KindBlockIP && !e.Verified.IsZero())
+	rest, had := e.WithoutCandidate(id, answered)
+	if !rest.HasCandidates() {
+		clock, clockErr := q.episodeClock()
+		if clockErr != nil {
+			return clockErr
+		}
+		if rest.Verified.IsZero() || (!clock.Now.Before(rest.Verified) && clock.Elapsed >= rest.EndElapsed) {
+			return q.tx.Bucket([]byte(admissionEpisodesBucket)).Delete([]byte(key))
+		}
+	}
+	if !had {
 		return nil
-	case !rest.HasCandidates():
-		return q.tx.Bucket([]byte(admissionEpisodesBucket)).Delete([]byte(key))
 	}
 	return q.putEpisode(key, rest)
 }
@@ -276,11 +302,12 @@ func (q *queueTx) forgetLine(id admission.CandidateID, c admission.Candidate) er
 // closeEpisode ends the episode of a verified block when its kernel element
 // expires (spec 5.2): its original expiry, less the lead of the engine's
 // lease clock over admission time when it ran (design C6), on both admission
-// and the ceiling's elapsed time. Other kinds, and
+// and the ceiling's elapsed time, read on clock: the reading the block ran
+// at. Other kinds, and
 // a candidate of another episode than its target's row, change nothing. An
 // episode queues no new generation of a kind while one is in flight, so
 // the verified block is its kind's latest.
-func (q *queueTx) closeEpisode(c admission.Candidate, lead, elapsed time.Duration) error {
+func (q *queueTx) closeEpisode(c admission.Candidate, lead time.Duration, clock admission.EpisodeClock) error {
 	if c.Key.Kind != admission.KindBlockIP && c.Key.Kind != admission.KindBlockSubnet {
 		return nil
 	}
@@ -289,9 +316,6 @@ func (q *queueTx) closeEpisode(c admission.Candidate, lead, elapsed time.Duratio
 	if err != nil || !found || e.ID != c.Key.Episode {
 		return err
 	}
-	// Finishing uses the last committed reading, even if the ceiling is
-	// now unreadable and new work has stopped.
-	clock := admission.EpisodeClock{Now: q.now, Elapsed: elapsed}
 	if e, err = e.Close(c.ExpiresAt.Add(-max(lead, 0)), clock); err != nil {
 		return err
 	}

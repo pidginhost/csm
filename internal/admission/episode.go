@@ -166,7 +166,10 @@ func (e Episode) record() (episodeRecord, error) {
 		}
 	}
 	if !e.HasCandidates() {
-		return bad("episode has no line")
+		line, found := e.Line(KindBlockIP)
+		if e.Verified.IsZero() || e.EndElapsed <= 0 || !found || !line.Answered {
+			return bad("episode has no retained candidate or verified block frontier")
+		}
 	}
 	for i, l := range e.Lines {
 		switch _, err := ParseCandidateID(string(l.Candidate)); {
@@ -320,13 +323,18 @@ func (e Episode) AnchorElapsed(c EpisodeClock) (Episode, error) {
 
 // Close ends e at verified, its verified block's original expiry in
 // admission time, read on c: the elapsed end becomes the time left until
-// then, so the episode lasts as long as the block on both clocks.
+// then, so the episode lasts as long as the block on both clocks. An
+// episode already verified keeps its scheduled boundary (spec 5.2): a
+// same-episode re-admission's block never moves it.
 func (e Episode) Close(verified time.Time, c EpisodeClock) (Episode, error) {
 	if _, ok := unixNano(verified); !ok {
 		return e, refuse(ReasonInvalid, "episode expiry is not representable")
 	}
 	if err := c.check(); err != nil {
 		return e, err
+	}
+	if !e.Verified.IsZero() {
+		return e, nil
 	}
 	at, err := elapsedEnd(verified, c)
 	if err != nil {

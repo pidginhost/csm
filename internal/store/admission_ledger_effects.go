@@ -21,7 +21,7 @@ const (
 	// that still holds its slot.
 	admissionSchemaEffectGone = 14
 	// admissionSchemaNewest is the newest schema this build reads.
-	admissionSchemaNewest = admissionSchemaEffectGone
+	admissionSchemaNewest = admissionSchemaEpisodeRetained
 )
 
 // effectTallyKey holds the effect records' tally in the queue state bucket.

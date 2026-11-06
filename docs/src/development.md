@@ -653,7 +653,13 @@ cannot end it early either; a row written before it existed ends on wall time al
 until its next write, including maintenance that leaves its last
 observation unchanged. Existing elapsed ends survive maintenance, and
 verified closing replaces the quiet end with the block's remaining
-lifetime. The first row with a positive elapsed end moves the ledger
+lifetime, read at the reading the block was executed at, so a wall step
+between execution and its outcome cannot shorten it. A verified episode
+keeps that boundary: a later verified block of the same episode moves
+neither end. An answered block frontier without candidate references
+retains that verified boundary on both clocks, using schema 15; earlier
+readers refuse it. Its verified predecessor's retirement collects it
+after both ends pass. The first row with a positive elapsed end moves the ledger
 to schema 13 on every host, which older builds refuse. Schema 13 records
 nothing of the live start or the effect records, so a schema 13 ledger
 proves them from their own markers. Episode placement refuses an

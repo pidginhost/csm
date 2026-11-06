@@ -290,6 +290,14 @@ func (l *AdmissionLedger) execute(ids []admission.ActionID) ([]admission.Intent,
 	if err != nil {
 		return nil, nil, nil, false, err
 	}
+	if running == 0 {
+		if l.executed == nil {
+			l.executed = map[admission.ActionID]admission.EpisodeClock{}
+		}
+		for _, a := range attempts {
+			l.executed[a.Attempt.ID] = admission.EpisodeClock{Now: now, Elapsed: l.elapsed}
+		}
+	}
 	return intents, attempts, candidates, running == 0, nil
 }
 

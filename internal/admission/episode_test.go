@@ -276,8 +276,10 @@ func TestPlaceEndsAVerifiedEpisodeAtItsExpiry(t *testing.T) {
 	if p.Answered || p.Episode.ID == cur.ID || p.Generation != 1 || !p.Episode.Previous.Equal(cur.Verified) {
 		t.Fatalf("at the expiry the next episode must open: %+v", p)
 	}
-	cur = verifiedAt(t, cur, t0.Add(5*time.Hour))
-	if p = place(t, &cur, []LineState{LineAnswered}, KindBlockIP, t0.Add(2*time.Hour), false); !p.Answered || p.Episode.ID != cur.ID {
+	// A verified episode keeps its boundary, so a long block is a fresh
+	// episode of its own.
+	long := verifiedAt(t, place(t, nil, nil, KindBlockIP, t0, false).Episode.WithLine(episodeLine(t, KindBlockIP, 1, 1)), t0.Add(5*time.Hour))
+	if p = place(t, &long, []LineState{LineAnswered}, KindBlockIP, t0.Add(2*time.Hour), false); !p.Answered || p.Episode.ID != long.ID {
 		t.Fatalf("a long block keeps its episode past the quiet hour: %+v", p)
 	}
 }

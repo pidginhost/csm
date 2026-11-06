@@ -562,6 +562,9 @@ func (l *AdmissionLedger) attemptStep(op string, id admission.ActionID, now func
 	if err != nil {
 		return admission.Candidate{}, admission.AttemptRecord{}, false, err
 	}
+	if outA.State != admission.StateExecuting {
+		delete(l.executed, id)
+	}
 	return outC, outA, changed, nil
 }
 
@@ -682,6 +685,7 @@ func (l *AdmissionLedger) FinishExisting(id admission.ActionID, link admission.E
 	if err != nil {
 		return admission.Candidate{}, admission.AttemptRecord{}, err
 	}
+	delete(l.executed, id)
 	return outC, outA, nil
 }
 
@@ -911,7 +915,14 @@ func (q *queueTx) finishAttempt(a *admission.AttemptRecord, c *admission.Candida
 		return false, err
 	}
 	if c.State == admission.StateVerified {
-		if err = q.closeEpisode(*c, lead, elapsed); err != nil {
+		// The block ran at its Execute reading. Without one, finishing
+		// uses the last committed reading, even if the ceiling is now
+		// unreadable and new work has stopped.
+		clock := admission.EpisodeClock{Now: q.now, Elapsed: elapsed}
+		if ran, ok := q.executed[a.Attempt.ID]; ok {
+			clock = ran
+		}
+		if err = q.closeEpisode(*c, lead, clock); err != nil {
 			return false, err
 		}
 		err = q.raise(admission.NoticeKey{Kind: admission.NoticeAppliedSummary}, a.Attempt.Candidate, c.Transitions+1)

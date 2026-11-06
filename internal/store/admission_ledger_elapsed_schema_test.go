@@ -145,7 +145,7 @@ func TestAdmissionLedgerSchemaThirteenRefusesInconsistentLayouts(t *testing.T) {
 // Each reader checks its own format boundary, including internal readers
 // normally reached through another reader's guard.
 func TestAdmissionLedgerSchemaThirteenReaderBounds(t *testing.T) {
-	for _, schema := range []byte{13, 14, 15} {
+	for _, schema := range []byte{13, 14, 15, 16} {
 		t.Run(fmt.Sprint(schema), func(t *testing.T) {
 			f := liveLedgerFixture(t)
 			id := f.verifiedBlock()
@@ -157,7 +157,7 @@ func TestAdmissionLedgerSchemaThirteenReaderBounds(t *testing.T) {
 			before := f.snapshot()
 			check := func(name string, err error) {
 				t.Helper()
-				if schema < 15 && err != nil || schema == 15 && err != ErrAdmissionSchema {
+				if schema <= 15 && err != nil || schema == 16 && err != ErrAdmissionSchema {
 					t.Errorf("%s schema %d: %v", name, schema, err)
 				}
 			}

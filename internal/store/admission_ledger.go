@@ -116,6 +116,12 @@ type AdmissionLedger struct {
 	// partition at the last schedule cycle, which shares the set with them
 	// until the next. Guarded by mu.
 	waiting map[admission.Partition][]string
+	// executed holds the reading each attempt this handle ran was executed
+	// at, until its outcome: a verified block's episode ends from it, not
+	// from a later reading a wall step moved. A restart turns a running
+	// attempt unknown, so no verified outcome needs one it lost. Guarded
+	// by mu.
+	executed map[admission.ActionID]admission.EpisodeClock
 	// missed holds the blocks the last firewall answer no longer held,
 	// with the reading of that answer (ObserveHeld). Guarded by mu.
 	missed map[admission.ActionID]time.Time

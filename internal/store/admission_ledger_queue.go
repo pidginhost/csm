@@ -185,6 +185,8 @@ type queueTx struct {
 	// schedule cycle's own; shared is set once slots shared the set.
 	waiting map[admission.Partition][]string
 	shared  bool
+	// executed is the handle's execute readings (AdmissionLedger.executed).
+	executed map[admission.ActionID]admission.EpisodeClock
 }
 
 func (l *AdmissionLedger) openQueue(tx *bolt.Tx, now time.Time) (*queueTx, error) {
@@ -193,6 +195,7 @@ func (l *AdmissionLedger) openQueue(tx *bolt.Tx, now time.Time) (*queueTx, error
 		return nil, err
 	}
 	q.held, q.heldDelta, q.started, q.degraded, q.set, q.imports, q.waiting = l.held, l.heldDelta, l.live, l.degraded, l.set, l.imports, l.waiting
+	q.executed = l.executed
 	return q, nil
 }
 

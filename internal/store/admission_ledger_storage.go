@@ -694,8 +694,8 @@ func (q *queueTx) retireForRoom(lane admission.Lane, need uint64) error {
 	}
 	kind := retireKind(lane)
 	cur := q.tx.Bucket([]byte(admissionRetireBucket)).Cursor()
+	k, _ := cur.Seek([]byte{kind})
 	for s.HistoryRoom(lane) < need {
-		k, _ := cur.Seek([]byte{kind})
 		if k == nil || k[0] != kind {
 			return nil
 		}
@@ -706,8 +706,15 @@ func (q *queueTx) retireForRoom(lane admission.Lane, need uint64) error {
 		if at.After(q.now) {
 			return nil
 		}
-		if err = q.retire(id, k); err != nil {
+		key := bytes.Clone(k)
+		if err = q.retire(id, key); err != nil {
 			return err
+		}
+		// A live episode can keep this history. Advance past it; a
+		// deletion instead leaves Seek at the next remaining entry.
+		k, _ = cur.Seek(key)
+		if bytes.Equal(k, key) {
+			k, _ = cur.Next()
 		}
 	}
 	return nil
@@ -722,8 +729,8 @@ const retirementsPerTick = 64
 // target first, at most retirementsPerTick of them.
 func (q *queueTx) retireAtTarget() error {
 	cur := q.tx.Bucket([]byte(admissionRetireBucket)).Cursor()
+	k, _ := cur.Seek([]byte{admission.RetireTarget})
 	for n := 0; n < retirementsPerTick; n++ {
-		k, _ := cur.Seek([]byte{admission.RetireTarget})
 		if k == nil || k[0] != admission.RetireTarget {
 			return nil
 		}
@@ -734,8 +741,15 @@ func (q *queueTx) retireAtTarget() error {
 		if at.After(q.now) {
 			return nil
 		}
-		if err = q.retire(id, k); err != nil {
+		key := bytes.Clone(k)
+		if err = q.retire(id, key); err != nil {
 			return err
+		}
+		// A live episode can keep this history. Advance past it; a
+		// deletion instead leaves Seek at the next remaining entry.
+		k, _ = cur.Seek(key)
+		if bytes.Equal(k, key) {
+			k, _ = cur.Next()
 		}
 	}
 	return nil
@@ -797,6 +811,24 @@ func (q *queueTx) retire(id admission.CandidateID, key []byte) error {
 	// Deletion must not conceal missing or inconsistent attempt history.
 	if _, err = currentAttempt(q.tx, c); err != nil {
 		return err
+	}
+	// A forward wall step can reach the history target before an
+	// episode's elapsed boundary. Keep its verified payer until both
+	// ends pass, so an unreferenced episode still has a cleanup owner.
+	if c.State == admission.StateVerified && c.Key.Kind == admission.KindBlockIP {
+		e, found, loadErr := loadEpisode(q.tx, c.Key.Target.Key())
+		if loadErr != nil {
+			return loadErr
+		}
+		if found && e.ID == c.Key.Episode && !e.Verified.IsZero() {
+			clock, clockErr := q.episodeClock()
+			if clockErr != nil {
+				return clockErr
+			}
+			if clock.Now.Before(e.Verified) || clock.Elapsed < e.EndElapsed {
+				return nil
+			}
+		}
 	}
 	retireIndex := q.tx.Bucket([]byte(admissionRetireBucket))
 	for _, k := range keys {
