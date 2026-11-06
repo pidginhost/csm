@@ -681,7 +681,12 @@ time left in admission time added to the lease clock; a retry keeps its
 first expiry. A re-admission with no time left, or whose episode row
 has been replaced or lost, is refused as expired.
 A forecast caps a block returning to an address whose forecast block the
-session replaced at that block's expiry. The first row with a positive elapsed end moves
+session replaced at that block's expiry. It applies the cap before the
+firewall snapshot and again before deciding each pick, since an earlier
+pick can replace that address in the same turn. A shortened expiry must
+still leave the firewall's minimum timeout; otherwise the return ends
+uncharged without changing forecast occupancy or retaining an example.
+The first row with a positive elapsed end moves
 the ledger to schema 13 on every host, which older builds refuse. Schema 13
 records nothing of the live start or the effect records, so a schema 13 ledger
 proves them from their own markers. Episode placement refuses an

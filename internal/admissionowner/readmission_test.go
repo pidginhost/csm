@@ -77,6 +77,91 @@ func TestOwnerForecastCapsAReturnAtItsReplacedBlock(t *testing.T) {
 	}
 }
 
+// The first pick can replace the second pick's address in the same turn.
+// The return must use that newly committed boundary, including in examples.
+func TestOwnerForecastCapsAReturnReplacedEarlierInTheTurn(t *testing.T) {
+	for _, expiring := range []bool{false, true} {
+		t.Run(fmt.Sprintf("expiring=%t", expiring), func(t *testing.T) {
+			o, p, f := rotationOwner(t)
+			before := forecastOf(t, o)
+			gone := "192.0.2.11"
+			if before.entries["192.0.2.12"].action < before.entries[gone].action {
+				gone = "192.0.2.12"
+			}
+			until := before.entries[gone].expires
+			if expiring {
+				f.host.advance(until.Sub(f.host.now()) - time.Millisecond/2)
+				turn(t, o)
+			}
+			var picks []execPick
+			for _, ip := range []string{"192.0.2.14", gone} {
+				target, err := admission.CanonicalAddress(ip, admission.Caps{IPv6: true})
+				if err != nil {
+					t.Fatal(err)
+				}
+				e, err := p.Mint(admission.EvidenceInput{
+					Check: "ssh_brute", FindingID: "0123456789abcdef", Severity: admission.SeverityCritical,
+					Observation: admission.ObservationRef{Stream: "log:sshd_log", Cursor: "return-" + ip, Version: 1},
+					ObservedAt:  f.host.now(), Parser: admission.ParserRef{Name: "sshd", Version: 1}, Target: target,
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err = o.ingress.Submit(admission.Submission{Kind: admission.KindBlockIP, Target: target, Evidence: e}); err != nil {
+					t.Fatal(err)
+				}
+				if err = o.do(o.drain); err != nil {
+					t.Fatal(err)
+				}
+				for _, c := range queuedCandidates(t, o) {
+					if c.Key.Target == target {
+						id, err := c.ID()
+						if err != nil {
+							t.Fatal(err)
+						}
+						picks = append(picks, execPick{pick: admission.Pick{ID: id, Lane: admission.LaneGeneral, Tier: criticalTier}, c: c})
+					}
+				}
+			}
+			if len(picks) != 2 || (!expiring && picks[1].c.Key.Generation != 2) {
+				t.Fatalf("want a new pick followed by a returning address: %+v", picks)
+			}
+			used := forecastOf(t, o).ceiling.General.Used
+			written := watchExamples(t, o)
+			if err := o.do(func() error {
+				defer o.flushExamples()
+				return o.forecastBlocks(picks)
+			}); err != nil {
+				t.Fatal(err)
+			}
+			after := forecastOf(t, o)
+			if expiring {
+				c := candidate(t, o, picks[1].pick.ID)
+				if !c.State.Terminal() || c.Reason != admission.ReasonStale || c.Attempts != 0 {
+					t.Errorf("unencodable return was not refused uncharged: %+v", c)
+				}
+				if _, held := after.entries[gone]; held || after.picks[admission.PredictCapacityEvict] != 1 || len(after.entries) != 2 || after.ceiling.General.Used != used+1 {
+					t.Errorf("unencodable return changed the model: %+v", after)
+				}
+				if batches := written.written(); len(batches) != 1 || len(batches[0]) != 1 || batches[0][0].IP != "192.0.2.14" {
+					t.Fatalf("unencodable return wrote an example: %+v", batches)
+				}
+				return
+			}
+			if after.picks[admission.PredictCapacityEvict] != 2 || len(after.entries) != 2 || !after.answered[gone].Equal(until) || after.ceiling.General.Used != used+2 {
+				t.Fatalf("want two replacements including the returning address: %+v", after)
+			}
+			if got := after.entries[gone].expires; !got.Equal(until) {
+				t.Errorf("return expiry = %v, want original expiry %v", got, until)
+			}
+			batches := written.written()
+			if len(batches) != 1 || len(batches[0]) != 2 || batches[0][1].IP != gone || !batches[0][1].ExpiresAt.Equal(until) {
+				t.Fatalf("return example did not keep the original expiry: %+v", batches)
+			}
+		})
+	}
+}
+
 // readmissionPick returns a real queued return after a verified block was
 // removed. The lease clock leads admission time, including for previews.
 func readmissionPick(t *testing.T) (*Owner, *fakeBlocks, *ownerFixture, *fakeMono, execPick, time.Time, *admission.Producer) {

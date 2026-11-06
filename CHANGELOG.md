@@ -29,7 +29,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - When spam learning stops because its records disagree with its storage, the CSM log now says what disagreed.
 - Admission previews and dry-run forecasts cap new automatic lifetimes at the configured block expiry, and settings help states shipped limits.
 - CSM now starts with email and webhook alerts both off; findings then show only in the Web UI and API.
-- Dry-run forecasts block an address that returns after its forecast block was replaced only until that block would have ended.
+- Dry-run forecasts and retained examples keep returning blocks within their original expiry and exclude blocks that cannot take effect.
 
 ### Fixed
 
