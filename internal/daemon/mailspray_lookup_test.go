@@ -194,6 +194,26 @@ func TestSprayTypoNeverFirstStrikes(t *testing.T) {
 	}
 }
 
+// An address with no trust that mistypes a mailbox and then gets it right tried
+// one mailbox, so it stays under a breadth bar of two.
+func TestSprayTypoThenRealNameIsOneMailbox(t *testing.T) {
+	const ip = "203.0.113.73"
+	for proto, src := range sprayFailureFeeds {
+		t.Run(proto, func(t *testing.T) {
+			d, clock, _ := newLookupDaemon(t, "enforce")
+			got := src.fail(d, clock, ip, "inof@example.com")
+			got = append(got, src.fail(d, clock, ip, "info@example.com")...)
+			if n := countChecks(got, src.check, "mail_bruteforce_suspected"); n != 0 {
+				t.Fatalf("one mailbox drew a verdict: %+v", got)
+			}
+			evidence := sprayEvidence(d, ip)
+			if f, ok := evidence["info@example.com"]; !ok || len(evidence) != 1 || f.count != 2 || f.exist != mailboxExists {
+				t.Fatalf("evidence = %+v, want both failures on info@example.com", evidence)
+			}
+		})
+	}
+}
+
 // Only spray memory follows a typo to the real mailbox: the rate trackers and
 // their alerts name what the client sent.
 func TestSprayTypoKeepsTypedNameInTrackers(t *testing.T) {
