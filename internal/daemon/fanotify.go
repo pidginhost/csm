@@ -579,9 +579,10 @@ func NewFileMonitor(cfg *config.Config, alertCh chan<- alert.Finding) (*FileMoni
 		return nil, fmt.Errorf("fanotify_init: %w (kernel may not support fanotify)", err)
 	}
 
+	fm := newFileMonitorCore(cfg, alertCh)
+
 	// Mark mount points; M2 - track successful mounts
-	webRootPatterns := checks.PHPConfigRealtimeRootPatterns(cfg)
-	mountPaths := fanotifyMountPaths(webRootPatterns)
+	mountPaths := fanotifyMountPaths(fm.webRootPatterns)
 	marks, markErr := markWatchRoots(fd, mountPaths, unix.FanotifyMark, statDevice)
 	if len(marks) == 0 {
 		_ = unix.Close(fd)
@@ -629,17 +630,26 @@ func NewFileMonitor(cfg *config.Config, alertCh chan<- alert.Finding) (*FileMoni
 		return nil, fmt.Errorf("pipe2: %w", err)
 	}
 
+	fm.fd = fd
+	fm.watchRoots = marks
+	fm.pipeFds = pipeFds
+	return fm, nil
+}
+
+// newFileMonitorCore builds the monitor state the analyzer needs, without the
+// fanotify descriptor, its watch roots or the stop pipe.
+func newFileMonitorCore(cfg *config.Config, alertCh chan<- alert.Finding) *FileMonitor {
 	fm := &FileMonitor{
-		fd:                  fd,
-		watchRoots:          marks,
+		// -1, not 0: a monitor built without fanotify must never close fd 0.
+		fd:                  -1,
+		pipeFds:             [2]int{-1, -1},
 		cfg:                 cfg,
 		alertCh:             alertCh,
 		analyzerCh:          make(chan fileEvent, analyzerChBufferSize),
-		pipeFds:             pipeFds,
 		stopCh:              make(chan struct{}),
 		reconcileDirs:       make(map[string]reconcileDirectory),
 		reconcileSig:        make(chan struct{}, 1),
-		webRootPatterns:     webRootPatterns,
+		webRootPatterns:     checks.PHPConfigRealtimeRootPatterns(cfg),
 		accountRootPatterns: checks.AccountHomePatterns(),
 		docRootPatterns:     checks.RealtimeDocumentRootPatterns(cfg),
 	}
@@ -651,7 +661,7 @@ func NewFileMonitor(cfg *config.Config, alertCh chan<- alert.Finding) (*FileMoni
 
 	fm.initDropperDetector(cfg)
 
-	return fm, nil
+	return fm
 }
 
 func fanotifyMountPaths(webRootPatterns []string) []string {
@@ -973,24 +983,8 @@ func (fm *FileMonitor) handleEvent(fd int, pid int32, mask uint64) {
 	}
 	path = normalizeFanotifyEventPath(path)
 
-	// M5 - skip directory events
-	if strings.HasSuffix(path, "/") {
-		_ = unix.Close(fd)
-		return
-	}
-
-	// The dropper tracker also needs arbitrary executable names that have
-	// no path-only content signal.
-	fm.invalidateDropperPHPHandlerCache(path)
-	contentInteresting := fm.isInteresting(path)
-	// Filtering must not reroute writes retained for dropper tracking: the
-	// dropper-only path bypasses normal suppressions and checksum verification.
-	contentNeedsAnalysis := contentInteresting
-	if contentInteresting && underTempRoot(path) {
-		contentNeedsAnalysis = fm.tempRootEventNeedsAnalysis(path, fd)
-	}
-	dropperInteresting, phpExecutable := fm.isDropperInteresting(path, fd)
-	if !contentNeedsAnalysis && !dropperInteresting {
+	event, admit := fm.classifyEvent(path, fd)
+	if !admit {
 		_ = unix.Close(fd)
 		return
 	}
@@ -998,12 +992,9 @@ func (fm *FileMonitor) handleEvent(fd int, pid int32, mask uint64) {
 	// Send to analyzer pool (with backpressure)
 	fm.initQueueHealth()
 	ticket := fm.analyzerHealth.Begin(time.Now())
+	event.queueTicket, event.pid, event.mask = ticket, pid, mask
 	select {
-	case fm.analyzerCh <- fileEvent{
-		queueTicket: ticket,
-		path:        path, fd: fd, pid: pid, mask: mask,
-		dropperOnly: !contentInteresting, phpExecutable: phpExecutable,
-	}:
+	case fm.analyzerCh <- event:
 		admitted = true
 	default:
 		// Queue full - drop event, count, and record the parent dir so the
@@ -1020,6 +1011,34 @@ func (fm *FileMonitor) handleEvent(fd int, pid int32, mask uint64) {
 		fm.maybeTriggerEagerReconcile(n)
 		_ = unix.Close(fd)
 	}
+}
+
+// classifyEvent decides whether a write at path is queued for analysis and
+// builds the event the analyzer receives. The caller keeps ownership of fd.
+func (fm *FileMonitor) classifyEvent(path string, fd int) (ev fileEvent, admit bool) {
+	// M5 - skip directory events
+	if strings.HasSuffix(path, "/") {
+		return fileEvent{}, false
+	}
+
+	// The dropper tracker also needs arbitrary executable names that have
+	// no path-only content signal.
+	fm.invalidateDropperPHPHandlerCache(path)
+	contentInteresting := fm.isInteresting(path)
+	// Filtering must not reroute writes retained for dropper tracking: the
+	// dropper-only path bypasses normal suppressions and checksum verification.
+	contentNeedsAnalysis := contentInteresting
+	if contentInteresting && underTempRoot(path) {
+		contentNeedsAnalysis = fm.tempRootEventNeedsAnalysis(path, fd)
+	}
+	dropperInteresting, phpExecutable := fm.isDropperInteresting(path, fd)
+	if !contentNeedsAnalysis && !dropperInteresting {
+		return fileEvent{}, false
+	}
+	return fileEvent{
+		path: path, fd: fd,
+		dropperOnly: !contentInteresting, phpExecutable: phpExecutable,
+	}, true
 }
 
 // normalizeFanotifyEventPath removes procfs's synthetic " (deleted)" suffix
