@@ -27,9 +27,11 @@ chmod -R go-w configs
 CGO_LDFLAGS=$(pkg-config --libs --static yara_x_capi)
 export CGO_LDFLAGS
 start=$(date +%s)
+record_run_time() { echo "run time: $(($(date +%s) - start)) s" | tee -a "$output/engines.txt"; }
+# A failing run records its run time too; the trap keeps the exit status.
+trap record_run_time EXIT
 go test -json -count=1 -timeout=30m -tags yara ./internal/attackcorpus ./internal/daemon ./internal/checks \
     -run '^TestAttackCorpus' | tee "$output/tests.jsonl"
-echo "run time: $(($(date +%s) - start)) s" | tee -a "$output/engines.txt"
 for path in realtime tier fullscan; do
     test -s "$output/$path.json"
 done
