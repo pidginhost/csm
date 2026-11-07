@@ -2,10 +2,12 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"sync/atomic"
 	"time"
 
@@ -252,10 +254,20 @@ func (d *Daemon) firewallStateSetAside() string {
 func gateFirewallRows(statePath string, engine *firewall.Engine, ops firewallStartupOps) {
 	state, stateErr := firewall.LoadState(statePath)
 	var ids []string
+	seen := make(map[string]bool)
 	if stateErr == nil {
 		for _, row := range state.Blocked {
-			if row.ActionID != "" {
+			if row.ActionID != "" && !seen[row.ActionID] {
+				seen[row.ActionID] = true
 				ids = append(ids, row.ActionID)
+			}
+		}
+		var marked []string
+		marked, stateErr = markedActionIDs(statePath)
+		for _, id := range marked {
+			if !seen[id] {
+				seen[id] = true
+				ids = append(ids, id)
 			}
 		}
 	}
@@ -296,6 +308,31 @@ func gateFirewallRows(statePath string, engine *firewall.Engine, ops firewallSta
 	if _, err := remove(engine, settled); err != nil {
 		csmlog.Warn("firewall keeps settled blocks held back until their rows can be removed", "err", err)
 	}
+}
+
+// markedActionIDs reads the action IDs of the rows an earlier start held
+// back as unverified. LoadState leaves those rows out, but their attempts
+// may have settled since, and only the startup gate removes them.
+func markedActionIDs(statePath string) ([]string, error) {
+	// #nosec G304 -- filepath.Join under operator-configured statePath.
+	data, err := os.ReadFile(filepath.Join(statePath, "firewall", "state.json"))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var state firewall.FirewallState
+	if err = json.Unmarshal(data, &state); err != nil {
+		return nil, err
+	}
+	var ids []string
+	for _, row := range state.Blocked {
+		if row.Unverified && row.ActionID != "" {
+			ids = append(ids, row.ActionID)
+		}
+	}
+	return ids, nil
 }
 
 // seedFirewallLease gives the engine, before Apply restores timed blocks,

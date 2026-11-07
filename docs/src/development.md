@@ -982,7 +982,8 @@ settled (failed, retired after expiry, or evicted with proven removal).
 An error reports no completed removal, including a durability failure after
 rename. Startup calls it after marking every unproven row, with the settled subset
 `store.ReadSettledBlockActions` returns, so a start that stops between the two
-leaves the rows held back and the next start removes them.
+leaves the rows held back and the next start removes them: it asks the ledger
+about rows an earlier start held back as well as the rows it restores.
 The engine's kill-point tests stop a batch around its intent write, kernel
 batch, readback, unknown marking and rejected-state restoration, then start
 the ledger and a new engine over the same state, after a process restart or
