@@ -1,0 +1,19 @@
+{
+  "name": "remote_rates_cache",
+  "category": "dropper",
+  "kind": "control",
+  "source": "synthetic",
+  "description": "Fetches exchange rates over HTTPS with curl and caches the decoded JSON to a file.",
+  "provenance": "written for the corpus",
+  "files": [
+    {
+      "path": "public_html/includes/rates.php",
+      "b64": "rates.php.b64"
+    }
+  ],
+  "expect": {
+    "realtime": {},
+    "tier": {},
+    "fullscan": {}
+  }
+}

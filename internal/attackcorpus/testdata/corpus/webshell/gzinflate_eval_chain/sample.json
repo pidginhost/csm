@@ -1,0 +1,52 @@
+{
+  "name": "gzinflate_eval_chain",
+  "category": "webshell",
+  "kind": "malicious",
+  "source": "fixture",
+  "description": "eval of gzinflate of base64 whose payload runs a request parameter through system, in uploads. Scans leave it in place: yara_match_scheduled is on neither scan quarantine list and suspicious_php_content is only High.",
+  "provenance": "internal/checks/injection_push_further_test.go TestAnalyzePHPContent_NestedEvalGzinflate, with a real compressed payload",
+  "files": [
+    {
+      "path": "public_html/wp-content/uploads/2026/11/index.php",
+      "b64": "index.php.b64"
+    }
+  ],
+  "expect": {
+    "realtime": {
+      "findings": [
+        {
+          "check": "obfuscated_php_realtime",
+          "file": "public_html/wp-content/uploads/2026/11/index.php",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/wp-content/uploads/2026/11/index.php": "quarantined"
+      }
+    },
+    "tier": {
+      "findings": [
+        {
+          "check": "yara_match_scheduled",
+          "file": "public_html/wp-content/uploads/2026/11/index.php",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/wp-content/uploads/2026/11/index.php": "untouched"
+      }
+    },
+    "fullscan": {
+      "findings": [
+        {
+          "check": "yara_match_scheduled",
+          "file": "public_html/wp-content/uploads/2026/11/index.php",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/wp-content/uploads/2026/11/index.php": "untouched"
+      }
+    }
+  }
+}

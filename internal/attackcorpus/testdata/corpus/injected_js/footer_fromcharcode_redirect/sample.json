@@ -1,0 +1,25 @@
+{
+  "name": "footer_fromcharcode_redirect",
+  "category": "injected_js",
+  "kind": "malicious",
+  "source": "synthetic",
+  "description": "A site footer template with an injected eval(String.fromCharCode) mobile-only redirect.",
+  "provenance": "written for the corpus",
+  "files": [
+    {
+      "path": "public_html/includes/footer.php",
+      "b64": "footer.php.b64"
+    }
+  ],
+  "expect": {
+    "realtime": {
+      "gap": "no rule flags an eval(String.fromCharCode) script injected into a PHP template"
+    },
+    "tier": {
+      "gap": "no rule flags an eval(String.fromCharCode) script injected into a PHP template"
+    },
+    "fullscan": {
+      "gap": "no rule flags an eval(String.fromCharCode) script injected into a PHP template"
+    }
+  }
+}

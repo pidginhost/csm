@@ -1,0 +1,52 @@
+{
+  "name": "token_gated_passthru",
+  "category": "webshell",
+  "kind": "malicious",
+  "source": "fixture",
+  "description": "A 404.php shell running a plain or base64 request command through passthru behind a hardcoded token. Scans leave it in place: yara_match_scheduled is on neither scan quarantine list.",
+  "provenance": "internal/signatures/fp_request_exec_test.go TestWebshellAuthTokenGateDetectsPxShell",
+  "files": [
+    {
+      "path": "public_html/404.php",
+      "b64": "404.php.b64"
+    }
+  ],
+  "expect": {
+    "realtime": {
+      "findings": [
+        {
+          "check": "webshell_content_realtime",
+          "file": "public_html/404.php",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/404.php": "quarantined"
+      }
+    },
+    "tier": {
+      "findings": [
+        {
+          "check": "yara_match_scheduled",
+          "file": "public_html/404.php",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/404.php": "untouched"
+      }
+    },
+    "fullscan": {
+      "findings": [
+        {
+          "check": "yara_match_scheduled",
+          "file": "public_html/404.php",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/404.php": "untouched"
+      }
+    }
+  }
+}

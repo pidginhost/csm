@@ -339,6 +339,18 @@ func TestPublicDir(t *testing.T) {
 	}
 }
 
+// The corpus gate runs only in its own CI job, so a broken manifest must
+// fail the normal suite first.
+func TestPublicCorpusLoads(t *testing.T) {
+	samples, err := Load(PublicDir(), "public")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(samples) == 0 {
+		t.Fatal("public corpus has no samples")
+	}
+}
+
 func findings() []ExpectedFinding {
 	return []ExpectedFinding{{Check: "test_check", File: "public_html/a.php", MinSeverity: "high"}}
 }

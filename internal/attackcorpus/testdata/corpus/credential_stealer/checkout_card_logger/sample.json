@@ -1,0 +1,25 @@
+{
+  "name": "checkout_card_logger",
+  "category": "credential_stealer",
+  "kind": "malicious",
+  "source": "synthetic",
+  "description": "A must-use plugin hooking WooCommerce checkout to append posted card fields to a hidden log.",
+  "provenance": "written for the corpus",
+  "files": [
+    {
+      "path": "public_html/wp-content/mu-plugins/wc-trace.php",
+      "b64": "wc-trace.php.b64"
+    }
+  ],
+  "expect": {
+    "realtime": {
+      "gap": "no rule flags a checkout hook appending posted card fields to a file; the skimmer rules look for script exfiltration"
+    },
+    "tier": {
+      "gap": "no rule flags a checkout hook appending posted card fields to a file; the skimmer rules look for script exfiltration"
+    },
+    "fullscan": {
+      "gap": "no rule flags a checkout hook appending posted card fields to a file; the skimmer rules look for script exfiltration"
+    }
+  }
+}

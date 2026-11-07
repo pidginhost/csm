@@ -1,0 +1,25 @@
+{
+  "name": "base64_script_loader_html",
+  "category": "injected_js",
+  "kind": "malicious",
+  "source": "synthetic",
+  "description": "A static page with an injected loader that adds a script whose external URL is hidden in base64.",
+  "provenance": "written for the corpus",
+  "files": [
+    {
+      "path": "public_html/index.html",
+      "b64": "index.html.b64"
+    }
+  ],
+  "expect": {
+    "realtime": {
+      "gap": "no realtime check flags a script loader hiding its URL in atob"
+    },
+    "tier": {
+      "gap": "no tier check flags a script loader hiding its URL in atob"
+    },
+    "fullscan": {
+      "gap": "no full scan check flags a script loader hiding its URL in atob"
+    }
+  }
+}

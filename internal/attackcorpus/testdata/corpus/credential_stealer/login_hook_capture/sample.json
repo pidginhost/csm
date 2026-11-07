@@ -1,0 +1,25 @@
+{
+  "name": "login_hook_capture",
+  "category": "credential_stealer",
+  "kind": "malicious",
+  "source": "synthetic",
+  "description": "A must-use plugin hooking authenticate to append every username and password to a hidden file in uploads.",
+  "provenance": "written for the corpus",
+  "files": [
+    {
+      "path": "public_html/wp-content/mu-plugins/session-tokens.php",
+      "b64": "session-tokens.php.b64"
+    }
+  ],
+  "expect": {
+    "realtime": {
+      "gap": "rules miss an authenticate hook appending passwords to a file; credential_logger keys on fwrite and a posted email field"
+    },
+    "tier": {
+      "gap": "no tier check flags an authenticate hook appending passwords to a file"
+    },
+    "fullscan": {
+      "gap": "no full scan check flags an authenticate hook appending passwords to a file"
+    }
+  }
+}

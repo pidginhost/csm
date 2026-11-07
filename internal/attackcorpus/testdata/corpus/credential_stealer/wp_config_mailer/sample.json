@@ -1,0 +1,57 @@
+{
+  "name": "wp_config_mailer",
+  "category": "credential_stealer",
+  "kind": "malicious",
+  "source": "fixture",
+  "description": "Reads wp-config.php, extracts the database password and mails it out. Left in place on every path: realtime moves only webshell or dropper signature matches on high-entropy files of 512 bytes or more and never moves on a YARA match, and yara_match_scheduled is on neither scan quarantine list.",
+  "provenance": "internal/signatures/fp_flood_dualuse_test.go TestFPFlood_YML_WpConfigStealer_CorrelatesExfiltration",
+  "files": [
+    {
+      "path": "public_html/wp-content/dbg.php",
+      "b64": "dbg.php.b64"
+    }
+  ],
+  "expect": {
+    "realtime": {
+      "findings": [
+        {
+          "check": "signature_match_realtime",
+          "file": "public_html/wp-content/dbg.php",
+          "min_severity": "critical"
+        },
+        {
+          "check": "yara_match_realtime",
+          "file": "public_html/wp-content/dbg.php",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/wp-content/dbg.php": "untouched"
+      }
+    },
+    "tier": {
+      "findings": [
+        {
+          "check": "yara_match_scheduled",
+          "file": "public_html/wp-content/dbg.php",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/wp-content/dbg.php": "untouched"
+      }
+    },
+    "fullscan": {
+      "findings": [
+        {
+          "check": "yara_match_scheduled",
+          "file": "public_html/wp-content/dbg.php",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/wp-content/dbg.php": "untouched"
+      }
+    }
+  }
+}

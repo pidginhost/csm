@@ -1,0 +1,52 @@
+{
+  "name": "chr_callable_builder",
+  "category": "dropper",
+  "kind": "malicious",
+  "source": "fixture",
+  "description": "A request command passed to a function whose name is assembled with chr(), in uploads. Every path reports only the Warning for PHP in uploads, so it stays in place.",
+  "provenance": "self-test bundle sample obfuscated_chr_builder",
+  "files": [
+    {
+      "path": "public_html/wp-content/uploads/2026/10/thumbs.php",
+      "selftest": "obfuscated_chr_builder"
+    }
+  ],
+  "expect": {
+    "realtime": {
+      "findings": [
+        {
+          "check": "php_in_uploads_realtime",
+          "file": "public_html/wp-content/uploads/2026/10/thumbs.php",
+          "min_severity": "warning"
+        }
+      ],
+      "remediation": {
+        "public_html/wp-content/uploads/2026/10/thumbs.php": "untouched"
+      }
+    },
+    "tier": {
+      "findings": [
+        {
+          "check": "new_php_in_uploads_clean",
+          "file": "public_html/wp-content/uploads/2026/10/thumbs.php",
+          "min_severity": "warning"
+        }
+      ],
+      "remediation": {
+        "public_html/wp-content/uploads/2026/10/thumbs.php": "untouched"
+      }
+    },
+    "fullscan": {
+      "findings": [
+        {
+          "check": "new_php_in_uploads_clean",
+          "file": "public_html/wp-content/uploads/2026/10/thumbs.php",
+          "min_severity": "warning"
+        }
+      ],
+      "remediation": {
+        "public_html/wp-content/uploads/2026/10/thumbs.php": "untouched"
+      }
+    }
+  }
+}

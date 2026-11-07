@@ -1,0 +1,25 @@
+{
+  "name": "checkout_card_skimmer",
+  "category": "injected_js",
+  "kind": "malicious",
+  "source": "synthetic",
+  "description": "A checkout skimmer in a child theme script that posts billing and card fields to an external host.",
+  "provenance": "written for the corpus",
+  "files": [
+    {
+      "path": "public_html/wp-content/themes/example-child/assets/js/checkout.js",
+      "b64": "checkout.js.b64"
+    }
+  ],
+  "expect": {
+    "realtime": {
+      "gap": "not admitted by realtime: .js"
+    },
+    "tier": {
+      "gap": "the YARA skimmer rule needs card data inside the exfiltration call and this one posts a serialized object; JS taint covers keystroke flows only"
+    },
+    "fullscan": {
+      "gap": "the YARA skimmer rule needs card data inside the exfiltration call and this one posts a serialized object"
+    }
+  }
+}

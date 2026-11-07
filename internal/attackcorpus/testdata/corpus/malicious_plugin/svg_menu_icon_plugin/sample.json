@@ -1,0 +1,19 @@
+{
+  "name": "svg_menu_icon_plugin",
+  "category": "malicious_plugin",
+  "kind": "control",
+  "source": "synthetic",
+  "description": "An admin notes plugin using a base64 SVG menu icon and a base64 data URI export link.",
+  "provenance": "written for the corpus",
+  "files": [
+    {
+      "path": "public_html/wp-content/plugins/site-notes/site-notes.php",
+      "b64": "site-notes.php.b64"
+    }
+  ],
+  "expect": {
+    "realtime": {},
+    "tier": {},
+    "fullscan": {}
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "name": "inline_base64_pixel",
+  "category": "webshell",
+  "kind": "control",
+  "source": "fixture",
+  "description": "A script that serves an inline base64 PNG through base64_decode, the classic obfuscation false positive.",
+  "provenance": "self-test bundle sample benign_base64_asset",
+  "files": [
+    {
+      "path": "public_html/pixel.php",
+      "selftest": "benign_base64_asset"
+    }
+  ],
+  "expect": {
+    "realtime": {},
+    "tier": {},
+    "fullscan": {}
+  }
+}

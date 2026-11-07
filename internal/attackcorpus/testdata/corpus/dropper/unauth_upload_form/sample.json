@@ -1,0 +1,52 @@
+{
+  "name": "unauth_upload_form",
+  "category": "dropper",
+  "kind": "malicious",
+  "source": "fixture",
+  "description": "An unauthenticated upload form that writes the file to a caller-supplied path. Left in place on every path: realtime never moves on a YARA match and yara_match_scheduled is on neither scan quarantine list.",
+  "provenance": "self-test bundle sample uploader_form",
+  "files": [
+    {
+      "path": "public_html/upload.php",
+      "selftest": "uploader_form"
+    }
+  ],
+  "expect": {
+    "realtime": {
+      "findings": [
+        {
+          "check": "yara_match_realtime",
+          "file": "public_html/upload.php",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/upload.php": "untouched"
+      }
+    },
+    "tier": {
+      "findings": [
+        {
+          "check": "yara_match_scheduled",
+          "file": "public_html/upload.php",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/upload.php": "untouched"
+      }
+    },
+    "fullscan": {
+      "findings": [
+        {
+          "check": "yara_match_scheduled",
+          "file": "public_html/upload.php",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/upload.php": "untouched"
+      }
+    }
+  }
+}

@@ -1,0 +1,52 @@
+{
+  "name": "request_eval_uploads",
+  "category": "webshell",
+  "kind": "malicious",
+  "source": "fixture",
+  "description": "A one-line PHP shell that evaluates a POST parameter, dropped in WordPress uploads. Scans leave it in place: yara_match_scheduled is on neither scan quarantine list and suspicious_php_content is only High.",
+  "provenance": "self-test bundle sample webshell_request_eval",
+  "files": [
+    {
+      "path": "public_html/wp-content/uploads/2026/11/cache.php",
+      "selftest": "webshell_request_eval"
+    }
+  ],
+  "expect": {
+    "realtime": {
+      "findings": [
+        {
+          "check": "php_in_uploads_realtime",
+          "file": "public_html/wp-content/uploads/2026/11/cache.php",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/wp-content/uploads/2026/11/cache.php": "quarantined"
+      }
+    },
+    "tier": {
+      "findings": [
+        {
+          "check": "yara_match_scheduled",
+          "file": "public_html/wp-content/uploads/2026/11/cache.php",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/wp-content/uploads/2026/11/cache.php": "untouched"
+      }
+    },
+    "fullscan": {
+      "findings": [
+        {
+          "check": "yara_match_scheduled",
+          "file": "public_html/wp-content/uploads/2026/11/cache.php",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/wp-content/uploads/2026/11/cache.php": "untouched"
+      }
+    }
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "name": "validated_avatar_upload",
+  "category": "dropper",
+  "kind": "control",
+  "source": "synthetic",
+  "description": "A logged-in avatar upload handler that checks size, MIME type and image headers and stores under a random name.",
+  "provenance": "written for the corpus",
+  "files": [
+    {
+      "path": "public_html/account/avatar-upload.php",
+      "b64": "avatar-upload.php.b64"
+    }
+  ],
+  "expect": {
+    "realtime": {},
+    "tier": {},
+    "fullscan": {}
+  }
+}
