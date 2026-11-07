@@ -285,3 +285,83 @@ func TestFirewallStartupMarkedRowsDeduplicateActions(t *testing.T) {
 		t.Fatalf("startup duplicated an action ID: %v", asked)
 	}
 }
+
+// Removing a settled hold must not expose an unchecked action at the same
+// address, or erase the other action when marking unrelated rows.
+func TestFirewallStartupSettledHoldPreservesOtherActions(t *testing.T) {
+	for _, alias := range []string{"192.0.2.60", "::ffff:192.0.2.60"} {
+		for _, mode := range []string{"unknown", "settled", "verified", "never-recorded", "operator"} {
+			for _, unrelated := range []bool{false, true} {
+				name := alias + "/" + mode
+				if unrelated {
+					name += "/other-mark"
+				}
+				t.Run(name, func(t *testing.T) {
+					cfg := &firewall.FirewallConfig{Enabled: true}
+					dir := t.TempDir()
+					path := filepath.Join(dir, "firewall", "state.json")
+					expires := time.Now().Add(time.Hour).UTC()
+					hold := firewall.BlockedEntry{IP: "192.0.2.60", ActionID: "act_" + strings.Repeat("3", 32), ExpiresAt: expires, Unverified: true}
+					other := firewall.BlockedEntry{IP: alias, ActionID: "act_" + strings.Repeat("4", 32), ExpiresAt: expires}
+					if mode == "operator" {
+						other.ActionID = ""
+						other.Reason = "operator"
+					}
+					operator := firewall.BlockedEntry{IP: "198.51.100.50", Reason: "operator"}
+					pending := firewall.BlockedEntry{IP: "192.0.2.61", ActionID: "act_" + strings.Repeat("5", 32), ExpiresAt: expires}
+					rows := []firewall.BlockedEntry{hold, other, operator}
+					if unrelated {
+						rows = append(rows, pending)
+					}
+					writeStartupRows(t, path, rows)
+					e, err := firewall.NewEngine(cfg, dir)
+					if err != nil {
+						t.Fatal(err)
+					}
+					gateFirewallRows(dir, e, firewallStartupOps{
+						unproven: func(ids []string) ([]string, error) {
+							return slices.DeleteFunc(slices.Clone(ids), func(id string) bool {
+								switch id {
+								case hold.ActionID, pending.ActionID:
+									return false
+								case other.ActionID:
+									return mode != "unknown" && mode != "settled"
+								default:
+									return true
+								}
+							}), nil
+						},
+						settled: func(ids []string) ([]string, error) {
+							return slices.DeleteFunc(slices.Clone(ids), func(id string) bool {
+								return id != hold.ActionID && (id != other.ActionID || mode != "settled")
+							}), nil
+						},
+					})
+					wantBlocked := mode == "verified" || mode == "never-recorded" || mode == "operator"
+					if got := e.IsBlocked(hold.IP); got != wantBlocked {
+						t.Errorf("restored shared address = %t, want %t", got, wantBlocked)
+					}
+					want := []firewall.BlockedEntry{operator}
+					if mode != "settled" {
+						other.Unverified = mode == "unknown"
+						want = append([]firewall.BlockedEntry{other}, want...)
+					}
+					if unrelated {
+						pending.Unverified = true
+						want = append(want, pending)
+					}
+					if got := readStartupRows(t, path); !reflect.DeepEqual(got, want) {
+						t.Errorf("rows after cleanup = %+v, want %+v", got, want)
+					}
+					fresh, err := firewall.NewEngine(cfg, dir)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if fresh.IsBlocked(hold.IP) != wantBlocked || !fresh.IsBlocked(operator.IP) || fresh.IsBlocked(pending.IP) {
+						t.Fatal("cleanup did not preserve the recovery boundary after restart")
+					}
+				})
+			}
+		}
+	}
+}

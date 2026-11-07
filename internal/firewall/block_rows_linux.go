@@ -79,7 +79,10 @@ func (e *Engine) MarkBlockActionsUnverified(actions []string) (int, error) {
 		return 0, nil
 	}
 	e.rememberUnverifiedBlockActionsLocked(state)
-	if err := e.saveState(&state); err != nil {
+	// Recovery owns action identities, not the normalized address view.
+	// Merging aliases here could erase a different action before retirement.
+	e.overlayUnverifiedBlockActionsLocked(&state)
+	if err := e.writeStateLocked(state); err != nil {
 		e.blockBatchStateErr = errors.Join(ErrBlockBatchState, err)
 		return marked, e.blockBatchStateErr
 	}

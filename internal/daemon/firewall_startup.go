@@ -252,25 +252,7 @@ func (d *Daemon) firewallStateSetAside() string {
 // nothing is proven: the rows are restored as before, the engine never
 // evicts them, and status reports why until the next start.
 func gateFirewallRows(statePath string, engine *firewall.Engine, ops firewallStartupOps) {
-	state, stateErr := firewall.LoadState(statePath)
-	var ids []string
-	seen := make(map[string]bool)
-	if stateErr == nil {
-		for _, row := range state.Blocked {
-			if row.ActionID != "" && !seen[row.ActionID] {
-				seen[row.ActionID] = true
-				ids = append(ids, row.ActionID)
-			}
-		}
-		var marked []string
-		marked, stateErr = markedActionIDs(statePath)
-		for _, id := range marked {
-			if !seen[id] {
-				seen[id] = true
-				ids = append(ids, id)
-			}
-		}
-	}
+	ids, stateErr := firewallRowActionIDs(statePath)
 	read := ops.unproven
 	if read == nil {
 		read = readUnprovenBlockActions
@@ -310,10 +292,10 @@ func gateFirewallRows(statePath string, engine *firewall.Engine, ops firewallSta
 	}
 }
 
-// markedActionIDs reads the action IDs of the rows an earlier start held
-// back as unverified. LoadState leaves those rows out, but their attempts
-// may have settled since, and only the startup gate removes them.
-func markedActionIDs(statePath string) ([]string, error) {
+// firewallRowActionIDs includes every saved row: LoadState hides unverified
+// rows and their address aliases, but removing a settled hold can expose
+// another action at that address. All must be checked before any row goes.
+func firewallRowActionIDs(statePath string) ([]string, error) {
 	// #nosec G304 -- filepath.Join under operator-configured statePath.
 	data, err := os.ReadFile(filepath.Join(statePath, "firewall", "state.json"))
 	if errors.Is(err, os.ErrNotExist) {
@@ -327,8 +309,10 @@ func markedActionIDs(statePath string) ([]string, error) {
 		return nil, err
 	}
 	var ids []string
+	seen := make(map[string]bool)
 	for _, row := range state.Blocked {
-		if row.Unverified && row.ActionID != "" {
+		if row.ActionID != "" && !seen[row.ActionID] {
+			seen[row.ActionID] = true
 			ids = append(ids, row.ActionID)
 		}
 	}

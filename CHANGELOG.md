@@ -9,6 +9,10 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ## [Unreleased]
 
+### Security
+
+- Firewall recovery preserves existing blocks at shared addresses and prevents unresolved or failed blocks from being restored.
+
 ### Fixed
 
 - Admission status lifetime counts now include detections dropped because the response queue was full.
