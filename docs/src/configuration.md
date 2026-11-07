@@ -1193,6 +1193,14 @@ the previous backup. Backups have mode `0600`.
 Retired settings are ignored with validation warnings, including settings
 in YAML merges and conf.d fragments. Removing them does not require a restart.
 
+A reload after a comment edit or retired-setting removal updates the live
+integrity hashes even when no setting changes. This includes edits to conf.d
+fragments. If `csm rehash` already signed the edit, reload adopts the verified
+hashes without rewriting the main config. A reload with no edits neither
+rewrites the config nor republishes it, so it leaves dry-run history alone.
+Signing failures emit a Critical `config_reload_error` finding and count as
+reload errors.
+
 `systemctl reload` sends SIGHUP (wired via `ExecReload=` in the unit
 file). The daemon re-reads the file, validates it, diffs it against
 the running config, and if every change is on a field tagged
@@ -1200,6 +1208,11 @@ the running config, and if every change is on a field tagged
 the live config and re-records the integrity hashes on disk. The
 next check tick sees the new thresholds; fanotify marks are not
 dropped.
+
+Reloads and Web UI saves share one config-write lock. If a reload signs the
+config but cannot open the phpanel delivery queue, it reports a reload error
+and keeps the previous settings and mail account parser active. The live
+integrity hashes still follow the signed config, so scheduled checks continue.
 
 The tagged-safe top-level fields are `alerts`, `thresholds`,
 `detection`, `suppressions`, `auto_response`, `bpf_enforcement`,

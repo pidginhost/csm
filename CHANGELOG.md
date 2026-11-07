@@ -12,6 +12,9 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 ### Fixed
 
 - Reloading CSM after a config edit that changes no setting, such as deleting a retired key, no longer causes a false tamper alert.
+- Reloading already signed settings avoids unnecessary writes, and reloads report signing errors.
+- Failed delivery-queue changes leave active settings intact without false tamper alerts.
+- Reloads and Web UI saves no longer overwrite each other's live settings.
 
 ## [4.10.1] - 2026-11-07
 

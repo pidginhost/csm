@@ -35,7 +35,7 @@ func recordReloadResult(result string) {
 	reloadMetricOnce.Do(func() {
 		reloadMetric = metrics.NewCounterVec(
 			"csm_config_reloads_total",
-			"SIGHUP config reload attempts, by outcome. result=success when safe fields were swapped in place; restart_required when the edit touched a field that needs a full restart (live config unchanged); error on YAML parse, validation, or re-hash failure (live config unchanged); noop when the edit was semantically identical to the running config.",
+			"SIGHUP config reload attempts, by outcome. result=success when safe fields were swapped in place; restart_required when the edit touched a field that needs a full restart (live settings unchanged); error on YAML parse, validation, re-hash, or apply failure (live settings unchanged); noop when the edit was semantically identical to the running config.",
 			[]string{"result"},
 		)
 		metrics.MustRegister("csm_config_reloads_total", reloadMetric)
@@ -49,7 +49,8 @@ func recordReloadResult(result string) {
 // config.SetActive. Only the main config file is re-signed; drop-ins are
 // never written back into csm.yaml.
 //
-// Failure modes all leave the live config untouched:
+// Failure modes leave the live settings untouched. If signing succeeds but
+// applying settings fails, the live integrity metadata follows the signed file.
 //
 //   - YAML parse error: Critical `config_reload_error` finding.
 //   - Validation error: Critical `config_reload_error` finding.
@@ -60,6 +61,12 @@ func recordReloadResult(result string) {
 //
 // ROADMAP item 7.
 func (d *Daemon) reloadConfig() {
+	// Settings saves use the same lock through signing and publication. A
+	// reload must not sign their bytes or overwrite their newer live snapshot.
+	configMu := integrity.ConfigWriteMutex()
+	configMu.Lock()
+	defer configMu.Unlock()
+
 	oldCfg := d.activeOrStartupCfg()
 	cfgPath := oldCfg.ConfigFile
 	fmt.Fprintf(os.Stderr, "[%s] SIGHUP: reloading config from %s\n", ts(), cfgPath)
@@ -84,17 +91,20 @@ func (d *Daemon) reloadConfig() {
 
 	changes := config.Diff(oldCfg, newCfg)
 	if len(changes) == 0 {
-		recordReloadResult(reloadResultNoop)
-		fmt.Fprintf(os.Stderr, "[%s] SIGHUP: no config changes detected\n", ts())
 		// An edit that changes no setting (a comment, a retired key) still
 		// moves the stored hash. Adopt it, or the periodic integrity check
 		// reports a tamper.
 		if err := d.signAndSaveReloadedConfig(oldCfg, newCfg); err != nil {
-			fmt.Fprintf(os.Stderr, "[%s] SIGHUP: re-hash failed (%v); file and live hash remain mismatched until operator runs `csm rehash`\n",
-				ts(), err)
-		} else if newCfg.Integrity != oldCfg.Integrity {
+			recordReloadResult(reloadResultError)
+			d.emitReloadFinding(alert.Critical, "config_reload_error",
+				fmt.Sprintf("SIGHUP reload: re-hashing config failed: %v; live config unchanged", err))
+			return
+		}
+		if newCfg.Integrity != oldCfg.Integrity {
 			publishResyncedIntegrity(oldCfg, newCfg, cfgPath)
 		}
+		recordReloadResult(reloadResultNoop)
+		fmt.Fprintf(os.Stderr, "[%s] SIGHUP: no config changes detected\n", ts())
 		// An operator who fixed a host condition that blocked antispam, or
 		// started Postfix after CSM, reloads to have it checked again; do
 		// not wait for the interval.
@@ -136,6 +146,13 @@ func (d *Daemon) reloadConfig() {
 		return
 	}
 
+	accountExtractor, extractorErr := NewAccountExtractor(newCfg.Thresholds.MailBruteAccountKey)
+	if extractorErr != nil {
+		recordReloadResult(reloadResultError)
+		d.emitReloadFinding(alert.Critical, "config_reload_error",
+			fmt.Sprintf("SIGHUP reload: account extractor update failed: %v; live config unchanged", extractorErr))
+		return
+	}
 	if err := d.signAndSaveReloadedConfig(oldCfg, newCfg); err != nil {
 		recordReloadResult(reloadResultError)
 		d.emitReloadFinding(alert.Critical, "config_reload_error",
@@ -145,21 +162,17 @@ func (d *Daemon) reloadConfig() {
 
 	newCfg.ConfigFile = cfgPath
 	newCfg.ConfigDir = oldCfg.ConfigDir
-	if err := installAccountExtractorFromConfig(newCfg); err != nil {
-		recordReloadResult(reloadResultError)
-		d.emitReloadFinding(alert.Critical, "config_reload_error",
-			fmt.Sprintf("SIGHUP reload: account extractor update failed: %v; live config unchanged", err))
-		return
-	}
 	phpanelEnabled := newCfg.Alerts.Webhook.Enabled && newCfg.Alerts.Webhook.Type == "phpanel"
 	if phpanelEnabled {
 		if err := alert.ConfigurePhpanelQueue(newCfg); err != nil {
+			publishResyncedIntegrity(oldCfg, newCfg, cfgPath)
 			recordReloadResult(reloadResultError)
 			d.emitReloadFinding(alert.Critical, "config_reload_error",
 				fmt.Sprintf("SIGHUP reload: phpanel queue update failed: %v; live config unchanged", err))
 			return
 		}
 	}
+	SetAccountExtractor(accountExtractor)
 	publishActiveConfig(newCfg, "SIGHUP")
 	if !phpanelEnabled {
 		_ = alert.ConfigurePhpanelQueue(newCfg)
@@ -261,12 +274,6 @@ func purgeDryRunBlocksIfAutoResponseLive(cfg *config.Config, source string) {
 	}
 }
 
-// signAndSaveReloadedConfig re-computes integrity.config_hash for the main
-// config file (and integrity.confd_hash for the conf.d fragments) when either
-// changed across a SIGHUP. Drop-in fragment CONTENT is intentionally not
-// written back into csm.yaml; only their digest is folded into confd_hash so
-// a later Verify still passes. The binary hash is preserved from the prior
-// live config; a SIGHUP reload cannot upgrade the binary, so it must not drift.
 // publishResyncedIntegrity publishes the live config unchanged except for
 // the integrity hashes the reload signed, for a reload that applies no
 // setting.
@@ -281,17 +288,28 @@ func publishResyncedIntegrity(oldCfg, newCfg *config.Config, cfgPath string) {
 	publishActiveConfig(&resynced, "SIGHUP")
 }
 
+// signAndSaveReloadedConfig re-computes integrity.config_hash for the main
+// config file (and integrity.confd_hash for the conf.d fragments) when either
+// changed across a SIGHUP. Drop-in fragment CONTENT is intentionally not
+// written back into csm.yaml; only their digest is folded into confd_hash so
+// a later Verify still passes. The binary hash is preserved from the prior
+// live config; a SIGHUP reload cannot upgrade the binary, so it must not drift.
 func (d *Daemon) signAndSaveReloadedConfig(oldCfg, newCfg *config.Config) error {
 	currentHash, err := integrity.HashConfigStable(oldCfg.ConfigFile)
 	if err != nil {
 		return err
 	}
-	currentConfd, err := integrity.HashConfDir(oldCfg.ConfigDir, oldCfg.ConfD.IntegrityExempt)
+	currentConfd, err := integrity.HashConfDir(oldCfg.ConfigDir, newCfg.ConfD.IntegrityExempt)
 	if err != nil {
 		return err
 	}
 	if currentHash == oldCfg.Integrity.ConfigHash && currentConfd == oldCfg.Integrity.ConfdHash {
 		newCfg.Integrity = oldCfg.Integrity
+		return nil
+	}
+	// An operator may already have run rehash. Adopt verified hashes without
+	// requiring another write, while retaining the running binary's identity.
+	if currentHash == newCfg.Integrity.ConfigHash && currentConfd == newCfg.Integrity.ConfdHash && newCfg.Integrity.BinaryHash == oldCfg.Integrity.BinaryHash {
 		return nil
 	}
 	configHash, confdHash, err := integrity.SignConfigFilePreserving(oldCfg.ConfigFile, oldCfg.ConfigDir, oldCfg.Integrity.BinaryHash)
