@@ -4,7 +4,7 @@
   "kind": "malicious",
   "source": "fixture",
   "description": "The curl_fetch_eval loader staged as .phps, which a stock handler only displays until it is renamed. Left in place on every path: realtime moves only webshell or dropper signature matches on high-entropy files of 512 bytes or more and never moves on a YARA match, and yara_match_scheduled is on neither scan quarantine list.",
-  "provenance": "internal/signatures/backdoor_htmlmode_eval_test.go TestScannerTreatsPhpsAsPHPSource",
+  "provenance": "content from internal/signatures/backdoor_htmlmode_eval_test.go TestScannerTreatsPhpsAsPHPSource, completed into a working loader, planted as .phps",
   "files": [
     {
       "path": "public_html/old/admin/update.phps",
