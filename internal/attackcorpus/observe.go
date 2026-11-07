@@ -26,6 +26,16 @@ type Observed struct {
 	Text string `json:"-"`
 }
 
+// MarshalJSON writes the severity by name: alert.Severity has no JSON form of
+// its own and would appear in reports as 0, 1 or 2.
+func (o Observed) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		Check    string `json:"check"`
+		Severity string `json:"severity"`
+		File     string `json:"file"`
+	}{o.Check, o.Severity.String(), o.File})
+}
+
 // ObservedFrom converts a finding, so every driver builds Text the same way.
 func ObservedFrom(f alert.Finding, file string) Observed {
 	return Observed{Check: f.Check, Severity: f.Severity, File: file, Text: f.Message + "\n" + f.Details}

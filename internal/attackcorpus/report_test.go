@@ -40,13 +40,7 @@ func TestWriteReportHasNoContent(t *testing.T) {
 	const textMarker = "finding-text-marker-91c2"
 	encoded := base64.StdEncoding.EncodeToString([]byte(sampleMarker + "\n"))
 
-	sampleDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(sampleDir, "m.b64"), []byte(encoded), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	s := judgeControl()
-	s.Dir = sampleDir
-	s.Files = []File{{Path: fileA, B64: "m.b64"}}
+	s := loaded(t, controlWith(File{Path: fileA, B64: "m.b64"}), map[string]string{"m.b64": encoded})
 	root := t.TempDir()
 	planted, err := s.Plant(root, filepath.Join(root, "cron"), "acct")
 	if err != nil {
@@ -61,7 +55,11 @@ func TestWriteReportHasNoContent(t *testing.T) {
 	// The finding's text names the planted file, so Judge reads it and fails
 	// the control; neither the text nor the content may reach the report.
 	o := Outcome{
-		Findings:    []Observed{{Check: "named_check", Severity: alert.High, Text: textMarker + " " + planted[fileA] + "\n" + sampleMarker}},
+		Findings: []Observed{
+			{Check: "named_check", Severity: alert.High, Text: textMarker + " " + planted[fileA] + "\n" + sampleMarker},
+			{Check: "host_check", Severity: alert.Warning, Text: "unrelated"},
+			{Check: "other_check", Severity: alert.Critical, Text: "unrelated"},
+		},
 		Remediation: map[string]Remediation{fileA: Untouched},
 	}
 	r := Judge(s, Realtime, o)
@@ -82,17 +80,29 @@ func TestWriteReportHasNoContent(t *testing.T) {
 		}
 	}
 
+	type finding struct{ Check, Severity, File string }
 	var report struct {
 		Path    Path
-		Results []Result
+		Results []struct {
+			Result
+			// Severities are written by name, so they decode as strings.
+			Findings []finding `json:"findings"`
+		}
 		Summary map[Category]Counts
 	}
 	if err := json.Unmarshal(data, &report); err != nil {
-		t.Fatalf("report is not JSON: %v", err)
+		t.Fatalf("report is not JSON with named severities: %v", err)
 	}
-	r.Findings[0].Text = ""
-	if report.Path != Realtime || len(report.Results) != 1 || !reflect.DeepEqual(report.Results[0], r) {
-		t.Errorf("report = %+v\nwant path realtime and result %+v", report, r)
+	if report.Path != Realtime || len(report.Results) != 1 {
+		t.Fatalf("report = %+v, want path realtime and one result", report)
+	}
+	got := report.Results[0]
+	if want := []finding{{"named_check", "HIGH", ""}, {"host_check", "WARNING", ""}, {"other_check", "CRITICAL", ""}}; !reflect.DeepEqual(got.Findings, want) {
+		t.Errorf("report findings = %+v, want %+v", got.Findings, want)
+	}
+	r.Findings = nil
+	if !reflect.DeepEqual(got.Result, r) {
+		t.Errorf("report result = %+v\nwant %+v", got.Result, r)
 	}
 	if want := (Counts{Samples: 1, FalsePositives: 1}); report.Summary[Webshell] != want || len(report.Summary) != 1 {
 		t.Errorf("summary = %+v, want webshell %+v", report.Summary, want)

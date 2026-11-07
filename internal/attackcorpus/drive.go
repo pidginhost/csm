@@ -2,9 +2,11 @@ package attackcorpus
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/config"
@@ -43,12 +45,41 @@ func gate(getenv func(string) string) (reportDir, skipReason string, err error) 
 	return "", "CSM_ATTACK_CORPUS_REPORT_DIR is not set", nil
 }
 
+// prepare makes every check that must stop a run before its first sample and
+// returns the report dir and samples, or a reason to skip. The private half is
+// checked first, so its errors surface even when the public half is unusable.
+func prepare(p Path, getenv func(string) string) (reportDir, skip string, samples []Sample, err error) {
+	if !slices.Contains(Paths, p) {
+		return "", "", nil, fmt.Errorf("unknown path %q", p)
+	}
+	if reportDir, skip, err = gate(getenv); err != nil || skip != "" {
+		return "", skip, nil, err
+	}
+	if dir := getenv("CSM_ATTACK_CORPUS_PRIVATE"); dir != "" {
+		if samples, err = Load(dir, "private"); err != nil {
+			return "", "", nil, fmt.Errorf("private corpus: %w", err)
+		}
+		// A checkout that came up empty must not pass as a private run.
+		if len(samples) == 0 {
+			return "", "", nil, fmt.Errorf("private corpus %s has no samples", dir)
+		}
+	}
+	public, err := Load(PublicDir(), "public")
+	if err != nil {
+		return "", "", nil, fmt.Errorf("public corpus: %w", err)
+	}
+	if err = ValidateCoverage(public, true); err != nil {
+		return "", "", nil, fmt.Errorf("public corpus: %w", err)
+	}
+	return reportDir, "", append(public, samples...), nil
+}
+
 // Drive replays every corpus sample through path p, one subtest per sample,
 // and writes the report even when samples fail. run must not call t.Parallel:
 // drivers swap package globals, and the report is written after the loop.
 func Drive(t *testing.T, p Path, run func(t *testing.T, s Sample) Outcome) {
 	t.Helper()
-	reportDir, skip, err := gate(os.Getenv)
+	reportDir, skip, samples, err := prepare(p, os.Getenv)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,21 +87,6 @@ func Drive(t *testing.T, p Path, run func(t *testing.T, s Sample) Outcome) {
 		t.Skip(skip)
 	}
 	attempts := Offline(t)
-
-	samples, err := Load(PublicDir(), "public")
-	if err != nil {
-		t.Fatalf("public corpus: %v", err)
-	}
-	if err := ValidateCoverage(samples, true); err != nil {
-		t.Fatalf("public corpus: %v", err)
-	}
-	if dir := os.Getenv("CSM_ATTACK_CORPUS_PRIVATE"); dir != "" {
-		private, err := Load(dir, "private")
-		if err != nil {
-			t.Fatalf("private corpus: %v", err)
-		}
-		samples = append(samples, private...)
-	}
 
 	results := make([]Result, 0, len(samples))
 	for _, s := range samples {

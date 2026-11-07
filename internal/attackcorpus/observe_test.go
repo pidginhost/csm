@@ -33,17 +33,14 @@ func quarantine(t *testing.T, dir, abs string) {
 
 func plantAll(t *testing.T, paths ...string) (map[string]string, map[string][]byte, string) {
 	t.Helper()
-	sampleDir := t.TempDir()
-	writeManifest(t, sampleDir, []byte("{}"))
-	var s Sample
-	s.Dir = sampleDir
+	var files []File
 	original := map[string][]byte{}
 	for _, p := range paths {
-		s.Files = append(s.Files, File{Path: p, B64: "a.b64"})
+		files = append(files, File{Path: p, B64: "a.b64"})
 		original[p] = []byte("harmless test text\n")
 	}
 	root := t.TempDir()
-	planted, err := s.Plant(root, filepath.Join(root, "cron"), "acct")
+	planted, err := loaded(t, controlWith(files...), nil).Plant(root, filepath.Join(root, "cron"), "acct")
 	if err != nil {
 		t.Fatal(err)
 	}

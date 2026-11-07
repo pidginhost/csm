@@ -5,19 +5,48 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
 
+// loaded writes s as a one-sample corpus, plus any extra files beside its
+// manifest, and returns it as Load reads it: only loaded samples have content.
+func loaded(t *testing.T, s Sample, extra map[string]string) Sample {
+	t.Helper()
+	root := t.TempDir()
+	dir := filepath.Join(root, s.Category, s.Name)
+	writeSample(t, dir, s)
+	for name, content := range extra {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	samples, err := Load(root, "public")
+	if err != nil || len(samples) != 1 {
+		t.Fatalf("Load returned %d samples, error %v", len(samples), err)
+	}
+	return samples[0]
+}
+
+// controlWith is a loadable control sample with the given files.
+func controlWith(files ...File) Sample {
+	s := controlSample()
+	s.Files = files
+	return s
+}
+
 func TestPlantWritesUnderAccount(t *testing.T) {
-	sampleDir := t.TempDir()
-	writeManifest(t, sampleDir, []byte("{}"))
-	s := Sample{Dir: sampleDir, Files: []File{
-		{Path: "public_html/a.php", B64: "a.b64"},
-		{Path: "public_html/wp-content/uploads/b.php", B64: "a.b64", Mode: 0o666},
-		{Path: ".cache/c", B64: "a.b64", Mode: 0o600},
-		{Path: "@crontab", B64: "a.b64"},
-	}}
+	s := loaded(t, controlWith(
+		File{Path: "public_html/a.php", B64: "a.b64"},
+		File{Path: "public_html/wp-content/uploads/b.php", B64: "a.b64", Mode: 0o666},
+		File{Path: ".cache/c", B64: "a.b64", Mode: 0o600},
+		File{Path: "@crontab", B64: "a.b64"},
+	), nil)
 	root := t.TempDir()
 	cronDir := filepath.Join(t.TempDir(), "spool", "cron")
+	// A umask this strict would narrow every mode Plant does not set itself.
+	old := unix.Umask(0o077)
+	t.Cleanup(func() { unix.Umask(old) })
 
 	planted, err := s.Plant(root, cronDir, "acct")
 	if err != nil {
@@ -52,10 +81,13 @@ func TestPlantWritesUnderAccount(t *testing.T) {
 			t.Errorf("Attribute(%s) = %q, want %q", abs, got, p)
 		}
 	}
-	for _, dir := range []string{home, filepath.Join(home, "public_html"), filepath.Join(home, "public_html", "wp-content", "uploads"), filepath.Join(home, ".cache"), cronDir} {
+	for _, dir := range []string{home, filepath.Join(home, "public_html"), filepath.Join(home, "public_html", "wp-content"), filepath.Join(home, "public_html", "wp-content", "uploads"), filepath.Join(home, ".cache")} {
 		info, err := os.Stat(dir)
-		if err != nil || info.Mode().Perm() != 0o755 {
-			t.Errorf("dir %s: %v, %v; want mode 0755", dir, info, err)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != 0o755 {
+			t.Errorf("dir %s: mode %v, want 0755", dir, info.Mode().Perm())
 		}
 	}
 
@@ -77,9 +109,12 @@ func TestPlantWritesUnderAccount(t *testing.T) {
 }
 
 func TestPlantRefusesSymlinks(t *testing.T) {
-	sampleDir := t.TempDir()
-	writeManifest(t, sampleDir, []byte("{}"))
-	s := Sample{Dir: sampleDir, Files: []File{{Path: "public_html/a.php", B64: "a.b64"}}}
+	s := loaded(t, controlSample(), nil)
+	// The same sample plants into a clean tree, so the refusals below come
+	// from the symlinks and not from the sample.
+	if _, err := s.Plant(t.TempDir(), t.TempDir(), "acct"); err != nil {
+		t.Fatalf("Plant into a clean tree: %v", err)
+	}
 
 	t.Run("file", func(t *testing.T) {
 		root := t.TempDir()

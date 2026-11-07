@@ -7,8 +7,9 @@ import (
 )
 
 // Plant writes the sample's files into an account tree: root/account/<path>,
-// and the @crontab file to cronDir/account. It returns each sample path's
-// absolute path. It never writes onto an existing file or symlink, nor through
+// and the @crontab file to cronDir/account. Directories in the account tree
+// are set to 0755; root and cronDir are the caller's and are only created
+// when missing. It returns each sample path's absolute path. It never writes onto an existing file or symlink, nor through
 // a symlink that leads out of either tree, because a private corpus is input
 // this harness does not control.
 func (s Sample) Plant(root, cronDir, account string) (map[string]string, error) {
@@ -45,8 +46,15 @@ func writeNew(base, rel string, data []byte, mode os.FileMode) error {
 		return err
 	}
 	defer func() { _ = r.Close() }()
-	if err = r.MkdirAll(filepath.Dir(rel), 0o755); err != nil {
+	dir := filepath.Dir(rel)
+	if err = r.MkdirAll(dir, 0o755); err != nil {
 		return err
+	}
+	// The umask narrows MkdirAll's mode, so set it on each account directory.
+	for d := dir; d != "."; d = filepath.Dir(d) {
+		if err = r.Chmod(d, 0o755); err != nil {
+			return err
+		}
 	}
 	f, err := r.OpenFile(rel, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
 	if err != nil {
