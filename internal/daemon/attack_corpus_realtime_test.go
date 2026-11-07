@@ -172,8 +172,16 @@ func runRealtimeSample(t *testing.T, s attackcorpus.Sample) attackcorpus.Outcome
 		return fail(err)
 	}
 
+	// The cPanel domain map lists the account, so the monitor's document roots
+	// come from this tree and never from the host's map.
+	domains := filepath.Join(base, "userdatadomains")
+	if err = os.WriteFile(domains, []byte("example.com: "+corpusAccount+"==root==main==example.com=="+docroot+"\n"), 0o600); err != nil {
+		return fail(err)
+	}
+
 	t.Cleanup(checks.SetAccountHomeRootsForTest([]string{root}))
 	t.Cleanup(checks.SetQuarantineDirForTest(quarantineDir))
+	t.Cleanup(checks.SetUserdataDomainsPathForTest(domains))
 	previousCron, previousTemp, previousCfg := cronSpoolWatchDir, tempRootPrefixes, config.Active()
 	// t.TempDir() is under /tmp, a shared temp tree to the analyzer; account homes never are.
 	cronSpoolWatchDir, tempRootPrefixes = cronDir, nil
@@ -207,6 +215,12 @@ func runRealtimeSample(t *testing.T, s attackcorpus.Sample) attackcorpus.Outcome
 	// pass without it.
 	if cfg.Thresholds.DropperDetection && (fm.dropper == nil || fm.dropperDocrootFor(filepath.Join(docroot, "index.php")) != docroot) {
 		return fail(fmt.Errorf("dropper detector does not cover %s", docroot))
+	}
+	// A root outside the sample's tree would let host state decide admission.
+	for _, pattern := range slices.Concat(fm.webRootPatterns, fm.accountRootPatterns, fm.docRootPatterns) {
+		if !strings.HasPrefix(pattern, root+string(filepath.Separator)) {
+			return fail(fmt.Errorf("monitor root %s is outside the sample tree", pattern))
+		}
 	}
 	// Offline, a checksum fetch fails and the verdict stays pending. A stopped
 	// fetcher gives the same verdict without a retry goroutine outliving the test.
@@ -335,6 +349,36 @@ func TestAttackCorpusRealtimeDriver(t *testing.T) {
 	}
 	if n := attempts.Load(); n != 0 {
 		t.Errorf("%d network attempts, want none", n)
+	}
+}
+
+// The host's cPanel domain map must not reach a replay: with the panel pinned
+// to cPanel, the monitor reads its document roots from that map.
+func TestAttackCorpusRealtimeIgnoresHostDomainMap(t *testing.T) {
+	useShippedRealtimeEngines(t)
+	attackcorpus.Offline(t)
+	host := filepath.Join(t.TempDir(), "userdatadomains")
+	if err := os.WriteFile(host, []byte("example.net: other==root==main==example.net==/srv/other/public_html\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(checks.SetUserdataDomainsPathForTest(host))
+	const plugin = "public_html/wp-content/plugins/example-widget/example-widget.php"
+	dir := t.TempDir()
+	writeCorpusManifest(t, dir, "plugin_control", fmt.Sprintf(`{
+		"name": "plugin_control", "category": "webshell", "kind": "control", "source": "fixture",
+		"description": "an ordinary plugin file", "provenance": "self-test bundle",
+		"files": [{"path": %q, "selftest": "benign_wordpress_plugin"}],
+		"expect": {"realtime": {}, "tier": {}, "fullscan": {}}}`, plugin))
+	samples, err := attackcorpus.Load(dir, "private")
+	if err != nil || len(samples) != 1 {
+		t.Fatalf("Load = %d samples, %v; want 1", len(samples), err)
+	}
+	o := runRealtimeSample(t, samples[0])
+	if o.Err != nil {
+		t.Fatalf("driver error: %s", attackcorpus.DriverErrorText(o.Err))
+	}
+	if r := attackcorpus.Judge(samples[0], attackcorpus.Realtime, o); !r.Pass {
+		t.Errorf("judge: %v", r.Failures)
 	}
 }
 

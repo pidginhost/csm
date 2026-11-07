@@ -18,12 +18,13 @@ incidents are later stages.
 
 ## The three paths
 
-Every sample runs alone, with its own account tree, state store, quarantine
-directory and monitor. The platform is pinned to cPanel, the layout the
-samples use. The config is the shipped `configs/csm.yaml` template with
-auto-response and file quarantine turned on and observe mode off, and nothing
-else changed. Both signature engines load the shipped rules from `configs/`.
-A partial rule load, an empty rule set or a scan error fails the gate.
+Every sample runs alone, with its own account tree, cPanel domain map, state
+store, quarantine directory and monitor. The platform is pinned to cPanel, the
+layout the samples use. The config is the shipped `configs/csm.yaml` template
+with auto-response and file quarantine turned on and observe mode off, and
+nothing else changed. Both signature engines load the shipped rules from
+`configs/`. A partial rule load, an empty rule set or a scan error fails the
+gate.
 
 - **Realtime.** The driver builds the file monitor without fanotify, opens
   each planted file and derives its event path the way the event loop does.
