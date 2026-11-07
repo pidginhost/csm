@@ -191,7 +191,7 @@ GitLab CI (`.gitlab-ci.yml`) is the internal build pipeline. It runs lint/test/p
 | **.pre** | Manual CI tools and builder image builds (amd64 and arm64) block dependent jobs when their definitions change on a branch. |
 | **preflight** | Release preflight rejects version tags without a usable cPanel image, after required images are built. |
 | **lint** | Pinned golangci-lint and formatter, vet, blocking gosec/govulncheck, fixture privacy, and Prometheus config validation. |
-| **test** | Full default-tag race/coverage suite (30-minute package timeout), shipped-tag lint/security/race gate, required kernel/service gate, and four pinned clean-application gates. |
+| **test** | Full default-tag race/coverage suite (30-minute package timeout), shipped-tag lint/security/race gate, required kernel/service gate, four pinned clean-application gates, and the attack replay corpus. |
 | **build** | amd64 and arm64 release binaries with YARA-X CGO and the `yara journal bpf` build tags. arm64 builds run under QEMU in rootless BuildKit. |
 | **package** | RPM + DEB via nFPM |
 | **integration** | Spin up cloudv-1 AlmaLinux and Ubuntu hosts plus the configured clean cPanel image via phctl, install the pipeline-built amd64 packages, run the integration test binary, collect coverage, and confirm every test server was really deleted. `main` integration is manual and can omit cPanel; version tags require the cPanel image, baseline-to-candidate package upgrade, installer, WHM, mail watcher and forward guard checks. |
@@ -1777,6 +1777,8 @@ CGO_LDFLAGS="$(pkg-config --libs --static yara_x_capi)" go test -count=1 -v -tag
 ```
 
 Every pipeline runs the required [clean-corpus gate](clean-corpus.md) in the production YARA-X builder image. Package publication and GitHub releases depend on its success.
+
+The [attack replay corpus](attack-corpus.md) gate runs the same way and gates the same jobs.
 
 See [cPanel release tests](cpanel-release-tests.md) for the required image, upgrade baseline, release dependencies and retained evidence.
 
