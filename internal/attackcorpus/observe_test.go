@@ -31,6 +31,66 @@ func quarantine(t *testing.T, dir, abs string) {
 	}
 }
 
+func TestObserveRemediationRequiresRetainedContent(t *testing.T) {
+	for _, damage := range []string{"missing file", "changed file", "missing directory member", "symlink"} {
+		t.Run(damage, func(t *testing.T) {
+			planted, original, home := plantAll(t, fileA)
+			qdir := t.TempDir()
+			target := planted[fileA]
+			if damage == "missing directory member" {
+				target = filepath.Join(home, "public_html")
+			}
+			quarantine(t, qdir, target)
+			entries, err := os.ReadDir(qdir)
+			if err != nil || len(entries) != 2 {
+				t.Fatal("expected an archive and its metadata")
+			}
+			var archived string
+			for _, e := range entries {
+				if !strings.HasSuffix(e.Name(), ".meta") {
+					archived = filepath.Join(qdir, e.Name())
+				}
+			}
+			if damage == "missing directory member" {
+				archived = filepath.Join(archived, "a.php")
+			}
+			if damage == "changed file" {
+				err = os.WriteFile(archived, []byte("different content"), 0o600)
+			} else {
+				err = os.Remove(archived)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if damage == "symlink" {
+				outside := filepath.Join(t.TempDir(), "outside")
+				if err = os.WriteFile(outside, original[fileA], 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err = os.Symlink(outside, archived); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, sums, err := ObserveRemediation(planted, original, qdir)
+			if err == nil || got != nil || sums != nil {
+				t.Fatal("damaged quarantine did not fail observation without partial results")
+			}
+		})
+	}
+}
+
+func TestObserveRemediationRequiresOriginalBytes(t *testing.T) {
+	planted, _, _ := plantAll(t, fileA)
+	if err := os.WriteFile(planted[fileA], nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, original := range []map[string][]byte{nil, {fileA: nil}, {fileA: {}}} {
+		if _, _, err := ObserveRemediation(planted, original, t.TempDir()); err == nil {
+			t.Error("a missing or empty baseline certified a truncated file as untouched")
+		}
+	}
+}
+
 func plantAll(t *testing.T, paths ...string) (map[string]string, map[string][]byte, string) {
 	t.Helper()
 	var files []File

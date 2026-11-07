@@ -2,6 +2,7 @@ package attackcorpus
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -64,6 +65,9 @@ func Summarize(results []Result) map[Category]Counts {
 // Nothing in a Result carries sample content; finding text stays out through
 // its JSON tag.
 func WriteReport(dir string, p Path, results []Result) error {
+	if len(results) == 0 {
+		return errors.New("cannot report an empty corpus run")
+	}
 	data, err := json.MarshalIndent(struct {
 		Path    Path                `json:"path"`
 		Results []Result            `json:"results"`

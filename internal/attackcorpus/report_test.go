@@ -3,6 +3,7 @@ package attackcorpus
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -35,6 +36,40 @@ func TestSummarizeCounts(t *testing.T) {
 	}
 }
 
+func TestReportDoesNotQuoteDriverErrors(t *testing.T) {
+	const marker = "sample-content-from-parser-error"
+	o := realtimeOK()
+	o.Err = errors.New("parser rejected " + marker)
+	r := Judge(judgeSample(), Realtime, o)
+	if r.Pass || len(r.Failures) != 1 || !strings.HasPrefix(r.Failures[0], "error:") {
+		t.Fatal("a driver error must produce an error verdict")
+	}
+	if strings.Contains(strings.Join(r.Failures, "\n"), marker) {
+		t.Error("the verdict exposes driver error text")
+	}
+	dir := t.TempDir()
+	if err := WriteReport(dir, Realtime, []Result{r}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "realtime.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), marker) {
+		t.Error("the report exposes driver error text")
+	}
+}
+
+func TestReportRejectsEmptyResults(t *testing.T) {
+	dir := t.TempDir()
+	if err := WriteReport(dir, Realtime, nil); err == nil {
+		t.Fatal("an empty run produced a success report")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "realtime.json")); !os.IsNotExist(err) {
+		t.Fatal("an empty run wrote a report")
+	}
+}
+
 func TestWriteReportHasNoContent(t *testing.T) {
 	const sampleMarker = "planted-content-marker-7f3a"
 	const textMarker = "finding-text-marker-91c2"
@@ -63,7 +98,9 @@ func TestWriteReportHasNoContent(t *testing.T) {
 		Remediation: map[string]Remediation{fileA: Untouched},
 	}
 	r := Judge(s, Realtime, o)
-	wantFailures(t, r, "false positive: named_check names "+fileA)
+	wantFailures(t, r, "false positive: named_check names "+fileA,
+		"error: unattributed finding host_check on control",
+		"error: unattributed finding other_check on control")
 
 	dir := filepath.Join(t.TempDir(), "reports")
 	if err = WriteReport(dir, Realtime, []Result{r}); err != nil {
@@ -104,7 +141,7 @@ func TestWriteReportHasNoContent(t *testing.T) {
 	if !reflect.DeepEqual(got.Result, r) {
 		t.Errorf("report result = %+v\nwant %+v", got.Result, r)
 	}
-	if want := (Counts{Samples: 1, FalsePositives: 1}); report.Summary[Webshell] != want || len(report.Summary) != 1 {
+	if want := (Counts{Samples: 1, FalsePositives: 1, Errors: 1}); report.Summary[Webshell] != want || len(report.Summary) != 1 {
 		t.Errorf("summary = %+v, want webshell %+v", report.Summary, want)
 	}
 }

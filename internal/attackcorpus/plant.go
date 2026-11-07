@@ -9,9 +9,9 @@ import (
 // Plant writes the sample's files into an account tree: root/account/<path>,
 // and the @crontab file to cronDir/account. Directories in the account tree
 // are set to 0755; root and cronDir are the caller's and are only created
-// when missing. It returns each sample path's absolute path. It never writes onto an existing file or symlink, nor through
-// a symlink that leads out of either tree, because a private corpus is input
-// this harness does not control.
+// when missing. It returns each sample path's absolute path. It never writes
+// onto an existing file or symlink, nor through a symlink that leads out of
+// either tree, because a private corpus is input this harness does not control.
 func (s Sample) Plant(root, cronDir, account string) (map[string]string, error) {
 	planted := make(map[string]string, len(s.Files))
 	for _, f := range s.Files {
@@ -22,6 +22,10 @@ func (s Sample) Plant(root, cronDir, account string) (map[string]string, error) 
 		base, rel := root, filepath.Join(account, f.Path)
 		if f.Path == "@crontab" {
 			base, rel = cronDir, account
+		}
+		base, err = filepath.Abs(base)
+		if err != nil {
+			return nil, fmt.Errorf("plant %s: %w", f.Path, err)
 		}
 		if err := writeNew(base, rel, data, os.FileMode(f.Mode)); err != nil {
 			return nil, fmt.Errorf("plant %s: %w", f.Path, err)
@@ -75,10 +79,18 @@ func writeNew(base, rel string, data []byte, mode os.FileMode) error {
 // account's crontab, the path relative to the account home for anything
 // inside it, and "" for everything else.
 func Attribute(abs, root, cronDir, account string) string {
-	if abs == filepath.Join(cronDir, account) {
+	cron, err := filepath.Abs(filepath.Join(cronDir, account))
+	if err != nil {
+		return ""
+	}
+	if abs == cron {
 		return "@crontab"
 	}
-	rel, err := filepath.Rel(filepath.Join(root, account), abs)
+	home, err := filepath.Abs(filepath.Join(root, account))
+	if err != nil {
+		return ""
+	}
+	rel, err := filepath.Rel(home, abs)
 	if err != nil || rel == "." || !filepath.IsLocal(rel) {
 		return ""
 	}

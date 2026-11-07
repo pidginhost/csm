@@ -86,26 +86,43 @@ func Drive(t *testing.T, p Path, run func(t *testing.T, s Sample) Outcome) {
 	if skip != "" {
 		t.Skip(skip)
 	}
+	results := replay(t, p, samples, run)
+	if err := WriteReport(reportDir, p, results); err != nil {
+		t.Errorf("report: %v", err)
+	}
+}
+
+func replay(t *testing.T, p Path, samples []Sample, run func(t *testing.T, s Sample) Outcome) []Result {
+	t.Helper()
 	attempts := Offline(t)
 
 	results := make([]Result, 0, len(samples))
 	for _, s := range samples {
+		ran := false
 		t.Run(s.Half+"/"+s.Category+"/"+s.Name, func(t *testing.T) {
+			ran = true
 			// A driver that stops the subtest still leaves an error result.
 			o := Outcome{Err: errors.New("driver stopped before returning an outcome")}
 			before := attempts.Load()
-			defer func() {
+			// Register first so driver cleanups finish before the verdict is recorded.
+			t.Cleanup(func() {
+				if o.Err == nil && (t.Failed() || t.Skipped()) {
+					o.Err = errors.New("driver subtest did not pass")
+				}
 				o.NetworkAttempts = attempts.Load() - before
 				r := Judge(s, p, o)
 				for _, f := range r.Failures {
 					t.Error(f)
 				}
 				results = append(results, r)
-			}()
+			})
 			o = run(t, s)
 		})
+		if !ran {
+			r := Judge(s, p, Outcome{Err: errors.New("sample excluded by test filter")})
+			results = append(results, r)
+			t.Errorf("sample %s/%s/%s excluded by test filter", s.Half, s.Category, s.Name)
+		}
 	}
-	if err := WriteReport(reportDir, p, results); err != nil {
-		t.Errorf("report: %v", err)
-	}
+	return results
 }

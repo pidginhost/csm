@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/safepath"
 )
 
 // Observed is one finding a path reported, as the judge sees it.
@@ -54,30 +55,57 @@ type Outcome struct {
 
 // ObserveRemediation reports what happened to each planted file. A missing
 // file is quarantined when a quarantine entry records its path or a parent
-// directory's, and removed otherwise. A file with changed bytes is cleaned,
-// with the SHA-256 of what is left. quarantineDir must be the sample's own, so
-// every entry in it is new.
+// directory's and retains the original bytes, and removed otherwise. A file
+// with changed bytes is cleaned, with the SHA-256 of what is left. Missing
+// baselines or damaged quarantine entries are errors. quarantineDir must be
+// the sample's own, so every entry in it is new.
 func ObserveRemediation(planted map[string]string, original map[string][]byte, quarantineDir string) (map[string]Remediation, map[string]string, error) {
-	moved, err := quarantinedPaths(quarantineDir)
+	quarantine, err := safepath.OpenDir(quarantineDir)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, nil, err
+	}
+	if quarantine != nil {
+		defer func() { _ = quarantine.Close() }()
+	}
+	moved, err := quarantinedPaths(quarantine)
 	if err != nil {
 		return nil, nil, err
 	}
 	remediation := make(map[string]Remediation, len(planted))
 	sums := map[string]string{}
 	for p, abs := range planted {
+		before := original[p]
+		if len(before) == 0 {
+			return nil, nil, fmt.Errorf("%s: missing original content", p)
+		}
 		// #nosec G304 -- abs is a file Plant wrote under the test's temp tree.
 		data, err := os.ReadFile(abs)
 		switch {
 		case errors.Is(err, fs.ErrNotExist):
 			remediation[p] = Removed
-			for _, orig := range moved {
-				if abs == orig || strings.HasPrefix(abs, orig+string(filepath.Separator)) {
-					remediation[p] = Quarantined
+			for _, entry := range moved {
+				rel, relErr := filepath.Rel(entry.original, abs)
+				if relErr != nil || (rel != "." && !filepath.IsLocal(rel)) {
+					continue
 				}
+				retained := filepath.Join(entry.archived, rel)
+				dir, openErr := quarantine.Walk(filepath.Dir(retained))
+				if openErr != nil {
+					return nil, nil, fmt.Errorf("%s: open retained quarantine: %w", p, openErr)
+				}
+				retainedData, readErr := readRegularFile(dir, filepath.Base(retained))
+				_ = dir.Close()
+				if readErr != nil {
+					return nil, nil, fmt.Errorf("%s: read retained quarantine: %w", p, readErr)
+				}
+				if !bytes.Equal(retainedData, before) {
+					return nil, nil, fmt.Errorf("%s: quarantined content differs from original", p)
+				}
+				remediation[p] = Quarantined
 			}
 		case err != nil:
 			return nil, nil, fmt.Errorf("%s: %w", p, err)
-		case bytes.Equal(data, original[p]):
+		case bytes.Equal(data, before):
 			remediation[p] = Untouched
 		default:
 			remediation[p] = Cleaned
@@ -88,24 +116,25 @@ func ObserveRemediation(planted map[string]string, original map[string][]byte, q
 	return remediation, sums, nil
 }
 
+type quarantineEntry struct{ original, archived string }
+
 // quarantinedPaths reads the original path from each quarantine entry's .meta
 // sidecar. Only top-level entries count: pre_clean below it holds the backups
 // a cleaning takes, not quarantined files.
-func quarantinedPaths(dir string) ([]string, error) {
-	entries, err := os.ReadDir(dir)
-	if errors.Is(err, fs.ErrNotExist) {
+func quarantinedPaths(dir *safepath.Dir) ([]quarantineEntry, error) {
+	if dir == nil {
 		return nil, nil
 	}
+	entries, err := dir.ReadDir()
 	if err != nil {
 		return nil, err
 	}
-	var paths []string
+	var paths []quarantineEntry
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".meta") {
 			continue
 		}
-		// #nosec G304 -- a sidecar inside the sample's own quarantine dir.
-		data, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		data, err := readRegularFile(dir, e.Name())
 		if err != nil {
 			return nil, err
 		}
@@ -113,13 +142,12 @@ func quarantinedPaths(dir string) ([]string, error) {
 			OriginalPath string `json:"original_path"`
 		}
 		if err := json.Unmarshal(data, &meta); err != nil {
-			return nil, fmt.Errorf("quarantine sidecar %s: %w", e.Name(), err)
+			return nil, fmt.Errorf("quarantine sidecar %s: invalid metadata JSON", e.Name())
 		}
-		// An empty path would prefix-match every planted file.
-		if meta.OriginalPath == "" {
-			return nil, fmt.Errorf("quarantine sidecar %s has no original path", e.Name())
+		if !filepath.IsAbs(meta.OriginalPath) || filepath.Clean(meta.OriginalPath) != meta.OriginalPath {
+			return nil, fmt.Errorf("quarantine sidecar %s has no absolute clean original path", e.Name())
 		}
-		paths = append(paths, meta.OriginalPath)
+		paths = append(paths, quarantineEntry{original: meta.OriginalPath, archived: strings.TrimSuffix(e.Name(), ".meta")})
 	}
 	return paths, nil
 }

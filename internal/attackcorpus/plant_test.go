@@ -154,3 +154,27 @@ func TestPlantRefusesSymlinks(t *testing.T) {
 		}
 	})
 }
+
+func TestPlantReturnsAbsolutePaths(t *testing.T) {
+	s := loaded(t, controlWith(
+		File{Path: fileA, B64: "a.b64"},
+		File{Path: "@crontab", B64: "a.b64"},
+	), nil)
+	t.Chdir(t.TempDir())
+	planted, err := s.Plant("homes", "cron", "acct")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for path, relative := range map[string]string{fileA: "homes/acct/" + fileA, "@crontab": "cron/acct"} {
+		want, err := filepath.Abs(relative)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if planted[path] != want {
+			t.Errorf("planted %s at %q, want absolute path %q", path, planted[path], want)
+		}
+		if got := Attribute(planted[path], "homes", "cron", "acct"); got != path {
+			t.Errorf("attributed %s as %q with relative roots", path, got)
+		}
+	}
+}

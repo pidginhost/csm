@@ -29,14 +29,15 @@ type Result struct {
 // Each failure starts with its kind: "missed:", "severity:", "false
 // positive:", "remediation:", "gap closed:" or "error:". An outcome with an
 // error is not judged further. Extra findings on a malicious sample are kept
-// in Findings and never fail it. Findings on a file the admission filter
-// dropped are discarded, so that file counts as not detected.
+// in Findings and never fail it. For malicious samples, findings on a file the
+// admission filter dropped are discarded, so that file counts as not detected.
+// A control's findings are always retained: admission cannot excuse a false positive.
 //
-// A control also fails on a finding that names no file when its text contains
-// one of the control's sample paths: a path relative to the account home is
-// part of any absolute path a finding prints. @crontab is not matched in text,
-// because its real name is the account, which Judge is not given; the crontab
-// checks set the file path, so their findings arrive attributed.
+// An unattributed control finding is a false positive when its text names a
+// sample path, and an attribution error otherwise. @crontab is not matched
+// in text because its real name is the account, which Judge is not given.
+// Drivers must attribute crontab findings and exclude proven unrelated host
+// findings before returning an outcome.
 func Judge(s Sample, p Path, o Outcome) Result {
 	e := s.Expect[p]
 	r := Result{
@@ -44,7 +45,7 @@ func Judge(s Sample, p Path, o Outcome) Result {
 		Remediation: o.Remediation, Gap: e.Gap, NotAdmitted: o.NotAdmitted, NetworkAttempts: o.NetworkAttempts,
 	}
 	for _, f := range o.Findings {
-		if !slices.Contains(o.NotAdmitted, f.File) {
+		if s.Kind == "control" || !slices.Contains(o.NotAdmitted, f.File) {
 			r.Findings = append(r.Findings, f)
 		}
 	}
@@ -55,7 +56,8 @@ func Judge(s Sample, p Path, o Outcome) Result {
 
 func failures(s Sample, e PathExpect, findings []Observed, o Outcome) []string {
 	if o.Err != nil {
-		return []string{"error: " + o.Err.Error()}
+		// Parser and scanner errors can quote decoded content, just like findings.
+		return []string{"error: driver did not complete"}
 	}
 	var out []string
 	add := func(format string, args ...any) { out = append(out, fmt.Sprintf(format, args...)) }
@@ -79,11 +81,13 @@ func failures(s Sample, e PathExpect, findings []Observed, o Outcome) []string {
 	for _, f := range findings {
 		switch {
 		case f.File == "" && s.Kind == "control":
-			for _, sf := range s.Files {
-				if sf.Path != "@crontab" && strings.Contains(f.Text, sf.Path) {
-					add("false positive: %s names %s", f.Check, sf.Path)
-					break
-				}
+			named := slices.IndexFunc(s.Files, func(sf File) bool {
+				return sf.Path != "@crontab" && strings.Contains(f.Text, sf.Path)
+			})
+			if named >= 0 {
+				add("false positive: %s names %s", f.Check, s.Files[named].Path)
+			} else {
+				add("error: unattributed finding %s on control", f.Check)
 			}
 		case f.File == "":
 			// An unattributed extra finding on a malicious sample.

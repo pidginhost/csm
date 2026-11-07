@@ -125,7 +125,9 @@ func TestJudgeUnattributedFindingOnControlIsReported(t *testing.T) {
 		},
 		Remediation: untouched(),
 	}
-	wantFailures(t, Judge(judgeControl(), Realtime, o), "false positive: named_check names "+fileA)
+	wantFailures(t, Judge(judgeControl(), Realtime, o),
+		"false positive: named_check names "+fileA,
+		"error: unattributed finding host_check on control")
 
 	// The same unattributed finding on a malicious sample is an extra finding.
 	o.Remediation = realtimeOK().Remediation
@@ -176,10 +178,10 @@ func TestJudgeGapClosed(t *testing.T) {
 func TestJudgeError(t *testing.T) {
 	o := realtimeOK()
 	o.Err = errors.New("analyzer not loaded")
-	wantFailures(t, Judge(judgeSample(), Realtime, o), "error: analyzer not loaded")
+	wantFailures(t, Judge(judgeSample(), Realtime, o), "error: driver did not complete")
 
 	// A failed run is not judged further: missing remediation is not reported.
-	wantFailures(t, Judge(judgeSample(), Realtime, Outcome{Err: errors.New("decode")}), "error: decode")
+	wantFailures(t, Judge(judgeSample(), Realtime, Outcome{Err: errors.New("decode")}), "error: driver did not complete")
 }
 
 func TestJudgeExtraFindingsPass(t *testing.T) {
@@ -211,4 +213,29 @@ func TestJudgeNotAdmittedIsNotDetected(t *testing.T) {
 
 	// A not-admitted file's finding does not close a gap either.
 	wantFailures(t, Judge(judgeSample(), Tier, Outcome{Findings: o.Findings[:1], Remediation: untouched(), NotAdmitted: []string{fileA}}))
+}
+
+func TestJudgeKeepsControlFindingsAfterAdmissionRejection(t *testing.T) {
+	o := Outcome{
+		Findings:    []Observed{{Check: "test_check", Severity: alert.High, File: fileA}},
+		Remediation: untouched(),
+		NotAdmitted: []string{fileA},
+	}
+	r := Judge(judgeControl(), Realtime, o)
+	wantFailures(t, r, "false positive: test_check on "+fileA)
+	if len(r.Findings) != 1 {
+		t.Fatal("the control's observed finding was discarded")
+	}
+}
+
+func TestJudgeRejectsUnattributedControlFindings(t *testing.T) {
+	for _, text := range []string{"unattributed scan result", "suspicious crontab for acct"} {
+		s := judgeControl()
+		s.Files = []File{{Path: "@crontab"}}
+		o := Outcome{
+			Findings:    []Observed{{Check: "test_check", Severity: alert.High, Text: text}},
+			Remediation: map[string]Remediation{"@crontab": Untouched},
+		}
+		wantFailures(t, Judge(s, Tier, o), "error: unattributed finding test_check on control")
+	}
 }

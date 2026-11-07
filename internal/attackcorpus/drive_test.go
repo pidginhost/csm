@@ -1,7 +1,9 @@
 package attackcorpus
 
 import (
+	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -38,6 +40,90 @@ func TestDriveGate(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestReplayLifecycle(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range []string{"success", "filtered", "partial", "skip", "fatal", "error", "cleanup"} {
+		t.Run(mode, func(t *testing.T) {
+			dir := t.TempDir()
+			t.Setenv("CSM_ATTACK_CORPUS_TEST_MODE", mode)
+			t.Setenv("CSM_ATTACK_CORPUS_TEST_REPORT", dir)
+			pattern := "^TestReplayHelper$"
+			switch mode {
+			case "filtered":
+				pattern += "/does-not-match$"
+			case "partial":
+				pattern += "/public/webshell/judge_control$"
+			}
+			// #nosec G204 -- re-exec this test binary with a fixed helper test.
+			cmd := exec.Command(exe, "-test.run="+pattern, "-test.timeout=30s")
+			output, runErr := cmd.CombinedOutput()
+			wantPass := mode == "success"
+			if (runErr == nil) != wantPass {
+				t.Errorf("helper success = %v, want %v; output: %s", runErr == nil, wantPass, output)
+			}
+			data, err := os.ReadFile(filepath.Join(dir, "realtime.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var report struct {
+				Results []Result
+				Summary map[Category]Counts
+			}
+			if err := json.Unmarshal(data, &report); err != nil {
+				t.Fatal(err)
+			}
+			wantResults := 1
+			if mode == "partial" {
+				wantResults = 2
+			}
+			if len(report.Results) != wantResults {
+				t.Fatalf("report has %d results, want %d", len(report.Results), wantResults)
+			}
+			for _, r := range report.Results {
+				wantResultPass := wantPass || (mode == "partial" && r.Sample == "judge_control")
+				if r.Pass != wantResultPass || (len(r.Failures) == 0) != wantResultPass {
+					t.Errorf("report verdict disagrees with the subtest: pass=%v, failures=%v", r.Pass, r.Failures)
+				}
+			}
+			if !wantPass && report.Summary[Webshell].Errors != 1 {
+				t.Error("the incomplete run was not counted as an error")
+			}
+		})
+	}
+}
+
+func TestReplayHelper(t *testing.T) {
+	mode := os.Getenv("CSM_ATTACK_CORPUS_TEST_MODE")
+	if mode == "" {
+		return
+	}
+	samples := []Sample{judgeControl()}
+	if mode == "partial" {
+		other := judgeControl()
+		other.Name = "other_control"
+		samples = append(samples, other)
+	}
+	results := replay(t, Realtime, samples, func(t *testing.T, _ Sample) Outcome {
+		switch mode {
+		case "skip":
+			t.Skip("engine unavailable")
+		case "fatal":
+			t.Fatal("driver setup failed")
+		case "error":
+			t.Error("driver setup failed")
+		case "cleanup":
+			t.Cleanup(func() { t.Error("driver cleanup failed") })
+		}
+		return Outcome{Remediation: untouched()}
+	})
+	if err := WriteReport(os.Getenv("CSM_ATTACK_CORPUS_TEST_REPORT"), Realtime, results); err != nil {
+		t.Fatal(err)
 	}
 }
 
