@@ -93,7 +93,11 @@ from a checkout.
   - `gap`: why this path misses the sample. Exclusive with `findings`.
   - `remediation`: per planted file, `quarantined`, `cleaned` or `untouched`.
     A file left out is expected untouched. `cleaned` needs the SHA-256 of the
-    cleaned bytes in `cleaned_sha256`.
+    cleaned bytes in `cleaned_sha256`. The deep tier and the full scan clean a
+    WordPress core, plugin or theme file in place, instead of moving it, when
+    a Critical quarantine-eligible finding names it. Such a sample expects
+    `cleaned` on those paths, or `untouched` when the cleaner finds nothing
+    to remove.
 
 A missing file counts as quarantined only when a quarantine entry names its
 path, or a parent directory's, and the retained copy matches the original
@@ -134,7 +138,8 @@ the corpus cannot drift apart.
 
 Judge each expectation from what the sample does. A run may draft the
 findings, but every expected finding and severity must match what the attack
-deserves, not what the detector happens to report today.
+deserves, not what the detector happens to report today, except a recorded
+severity floor (below).
 
 - **Gaps.** A malicious sample that a path misses records a gap with the
   specific reason: which check misses which shape. A gap is a measurement, not
@@ -182,7 +187,7 @@ Each failure in the report and the test log starts with its kind:
 | `false positive:` | A control drew a finding. |
 | `remediation:` | A planted file ended quarantined, cleaned, untouched or removed other than expected. |
 | `gap closed:` | A path caught a sample recorded as a gap on it. |
-| `error:` | The driver did not complete for this sample. |
+| `error:` | The driver did not complete for this sample, or a control drew a finding that names no planted file. |
 
 A run also fails before its first sample when a corpus cannot load, a category
 lacks a malicious sample or a control, a self-test sample is not referenced
@@ -209,9 +214,10 @@ What the corpus does not measure yet:
 - `supply_chain` cannot fire: a fresh install has no advisory file.
   `group_writable_php` cannot fire: planted files belong to the test user's
   group, not a web server group.
-- `cleaned` is not exercised under the shipped config: the `.htaccess`
-  cleaner is off by default, the full scan never cleans, and the crontab fix
-  is operator-only.
+- `cleaned` is not exercised: the `.htaccess` cleaner is off by default, the
+  full scan skips `.htaccess` and crontab findings, the crontab fix is
+  operator-only, and no sample draws a Critical quarantine-eligible finding on
+  a WordPress core, plugin or theme file, which both scan paths clean in place.
 - The throttled performance file checks run once per sample, in the second
   tier run only. A tier run that skips any check fails the sample.
 - The full scan quarantine step is a copy of the scan job's loop. A change to
