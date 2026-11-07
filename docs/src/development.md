@@ -210,15 +210,12 @@ The default suite executes on every pipeline even when compiled packages
 are cached. Release build and package jobs stay on separate runners and do
 not consume these caches.
 
-Preflight, lint, portable test, build and package jobs retry temporary runner,
-registry, scheduler and API failures up to twice. Script failures are not
-retried. Cloud integration, kernel tests and publishing jobs do not retry
-or opt into interruption by newer pushes.
-
-Ubuntu integration setup retries package index updates before repairing the
-cloud image and installing CSM. Transient fetch warnings fail the update too,
-so stale indexes cannot bypass the retry loop. Repair and package installation
-stay separate and run once; dependency failures still stop the job.
+Preflight, lint, test, build and package jobs retry up to twice when the
+runner, registry, scheduler or API fails; a failing script is not retried. A
+newer push to the same ref cancels the older pipeline's lint and test jobs.
+Integration, kernel tests and publishing jobs neither retry nor get cancelled.
+Integration retries the Ubuntu package index update while the mirror syncs;
+the image repair and the CSM install run once.
 
 The test job uses `gocover-cobertura -strict` so unresolved package information
 fails coverage conversion. A successful test job must include every covered
@@ -253,11 +250,12 @@ defaults to `cloudv-2`. A release taken without cPanel coverage records
 `cpanel_coverage: "absent"` in `dist/cpanel-release.json`; see
 [cPanel release tests](cpanel-release-tests.md).
 
-Tag-specific `publish` dependencies require preflight, unit tests, fixtures,
-corpus, production tags, kernel tests, signed artifacts and integration. Repository
-publication and the GitLab release depend on `publish`; the GitHub release
-also directly requires integration and the test gates. A missing `csm-kernel`
-runner leaves publication pending. A missing cPanel image fails tag preflight.
+Tag-specific `publish` dependencies require preflight, unit tests,
+fixtures, corpus, production tags, kernel tests, signed artifacts and
+integration. Repository publication and the GitLab release depend on
+`publish`; the GitHub release also directly requires integration and the
+test gates. A missing `csm-kernel` runner leaves publication pending. A
+missing cPanel image fails tag preflight.
 See [cPanel release tests](cpanel-release-tests.md) for image acceptance and
 [the roadmap](https://github.com/pidginhost/csm/blob/main/ROADMAP.md#release-readiness-gates)
 for remaining operational readiness work. These configured dependencies are

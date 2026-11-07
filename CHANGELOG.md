@@ -16,7 +16,6 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Fixed
 
-- Release checks recover from temporary runner and package mirror outages and stop when package indexes cannot be refreshed.
 - Known-customer block emails no longer list a compromised mail or FTP login that caused the block, even when the block comes later.
 - The known-customer block email now says that allowing an address trusts it on every port.
 - The Performance page shows n/a for Redis when CSM cannot read it, and the API and MCP tool return null instead of zero.
