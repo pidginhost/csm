@@ -117,6 +117,11 @@ func replay(t *testing.T, p Path, samples []Sample, run func(t *testing.T, s Sam
 				results = append(results, r)
 			})
 			o = run(t, s)
+			// The reason stays in the test log: it can quote sample content,
+			// so the report carries only that the driver did not complete.
+			if o.Err != nil {
+				t.Logf("driver error: %v", o.Err)
+			}
 		})
 		if !ran {
 			r := Judge(s, p, Outcome{Err: errors.New("sample excluded by test filter")})

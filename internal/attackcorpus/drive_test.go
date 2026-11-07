@@ -2,6 +2,7 @@ package attackcorpus
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -48,7 +49,7 @@ func TestReplayLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, mode := range []string{"success", "filtered", "partial", "skip", "fatal", "error", "cleanup"} {
+	for _, mode := range []string{"success", "filtered", "partial", "skip", "fatal", "error", "cleanup", "returned"} {
 		t.Run(mode, func(t *testing.T) {
 			dir := t.TempDir()
 			t.Setenv("CSM_ATTACK_CORPUS_TEST_MODE", mode)
@@ -94,9 +95,20 @@ func TestReplayLifecycle(t *testing.T) {
 			if !wantPass && report.Summary[Webshell].Errors != 1 {
 				t.Error("the incomplete run was not counted as an error")
 			}
+			if mode == "returned" {
+				if !strings.Contains(string(output), helperDriverError) {
+					t.Errorf("the driver's error reason is missing from the test log: %s", output)
+				}
+				if strings.Contains(string(data), helperDriverError) {
+					t.Error("the driver's error reason reached the report")
+				}
+			}
 		})
 	}
 }
+
+// helperDriverError stands in for a driver error that quotes sample bytes.
+const helperDriverError = "parse error near sample bytes"
 
 func TestReplayHelper(t *testing.T) {
 	mode := os.Getenv("CSM_ATTACK_CORPUS_TEST_MODE")
@@ -119,6 +131,8 @@ func TestReplayHelper(t *testing.T) {
 			t.Error("driver setup failed")
 		case "cleanup":
 			t.Cleanup(func() { t.Error("driver cleanup failed") })
+		case "returned":
+			return Outcome{Err: errors.New(helperDriverError)}
 		}
 		return Outcome{Remediation: untouched()}
 	})
