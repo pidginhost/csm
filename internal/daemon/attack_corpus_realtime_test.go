@@ -68,15 +68,30 @@ func useShippedRealtimeEngines(t *testing.T) {
 // admitted, the analyzer worker with a read-only descriptor.
 func runRealtimeSample(t *testing.T, s attackcorpus.Sample) attackcorpus.Outcome {
 	fail := func(err error) attackcorpus.Outcome { return attackcorpus.Outcome{Err: err} }
-	// Event paths come from /proc/self/fd, so the tree must sit on a canonical path.
+	// Event paths are read back from /proc/self/fd, which resolves symlinks.
+	// A canonical base keeps them inside the roots findings are attributed to.
 	base, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		return fail(err)
 	}
 	root, cronDir := filepath.Join(base, "home"), filepath.Join(base, "cron")
 	quarantineDir, stateDir := filepath.Join(base, "quarantine"), filepath.Join(base, "state")
-	if err = os.Mkdir(stateDir, 0o700); err != nil {
-		return fail(err)
+	docroot := filepath.Join(root, corpusAccount, "public_html")
+	// A live account has its home and document root before any write. Modes
+	// are set after creation so the umask cannot narrow them.
+	for _, d := range []struct {
+		path string
+		mode os.FileMode
+	}{
+		{stateDir, 0o700}, {cronDir, 0o700},
+		{root, 0o755}, {filepath.Join(root, corpusAccount), 0o755}, {docroot, 0o755},
+	} {
+		if err = os.Mkdir(d.path, d.mode); err == nil {
+			err = os.Chmod(d.path, d.mode)
+		}
+		if err != nil {
+			return fail(err)
+		}
 	}
 	cfg, err := attackcorpus.Config(stateDir)
 	if err != nil {
@@ -111,10 +126,14 @@ func runRealtimeSample(t *testing.T, s attackcorpus.Sample) attackcorpus.Outcome
 		}
 	}
 
-	// Built after planting: on a live host the account's document root exists
-	// before any write, and the dropper detector indexes document roots here.
+	// The dropper detector indexes document roots when the monitor is built.
 	alerts := make(chan alert.Finding, 4096)
 	fm := newFileMonitorCore(cfg, alerts)
+	// A detector the config enables must cover the account, or the run would
+	// pass without it.
+	if cfg.Thresholds.DropperDetection && (fm.dropper == nil || fm.dropperDocrootFor(filepath.Join(docroot, "index.php")) != docroot) {
+		return fail(fmt.Errorf("dropper detector does not cover %s", docroot))
+	}
 	// Offline, a checksum fetch fails and the verdict stays pending. A stopped
 	// fetcher gives the same verdict without a retry goroutine outliving the test.
 	stopped := make(chan struct{})
@@ -123,12 +142,17 @@ func runRealtimeSample(t *testing.T, s attackcorpus.Sample) attackcorpus.Outcome
 
 	var notAdmitted []string
 	for _, f := range s.Files {
-		path := planted[f.Path]
-		fd, openErr := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC, 0)
+		fd, openErr := unix.Open(planted[f.Path], unix.O_RDONLY|unix.O_CLOEXEC, 0)
 		if openErr != nil {
 			return fail(openErr)
 		}
-		if ev, admit := fm.classifyEvent(path, fd); admit {
+		// The event path comes from the descriptor, as in handleEvent.
+		link, linkErr := os.Readlink(fmt.Sprintf("/proc/self/fd/%d", fd))
+		if linkErr != nil {
+			_ = unix.Close(fd)
+			return fail(linkErr)
+		}
+		if ev, admit := fm.classifyEvent(normalizeFanotifyEventPath(link), fd); admit {
 			fm.analyzeFileSafe(ev)
 		} else {
 			notAdmitted = append(notAdmitted, f.Path)
