@@ -4,7 +4,7 @@
   "kind": "malicious",
   "source": "synthetic",
   "description": "A ZipCrypto-encrypted OneDrive kit with a login page, capture script, anti-bot gate and results file. Encryption hides the contents but not the member names, so every path still rates it High, which fits an archive that serves nothing until extracted. Left in place: realtime has no responder for a kit archive and phishing_kit_archive is on neither scan quarantine list.",
-  "provenance": "written for the corpus",
+  "provenance": "written for the corpus; throwaway ZipCrypto password kit2026",
   "files": [
     {
       "path": "public_html/wp-content/uploads/2026/11/onedrive-verify.zip",

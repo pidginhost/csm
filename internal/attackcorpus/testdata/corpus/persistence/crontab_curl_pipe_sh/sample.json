@@ -16,7 +16,7 @@
       "gap": "crontab patterns have no download-and-run shape; curl piped to sh matches none of them"
     },
     "tier": {
-      "gap": "the deep tier runs no crontab check; only the critical tier's crontabs check reads the spool"
+      "gap": "no driver replays the critical tier, where the crontabs check runs, and the crontab patterns have no download-piped-to-shell shape either"
     },
     "fullscan": {
       "gap": "crontab patterns have no download-and-run shape; curl piped to sh matches none of them"

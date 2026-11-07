@@ -3,7 +3,7 @@
   "category": "binary",
   "kind": "malicious",
   "source": "synthetic",
-  "description": "A static x86-64 ELF program holding its miner strings only compressed behind UPX markers, as packed miners ship, in a hidden directory. No path flags it.",
+  "description": "A static x86-64 ELF program holding its miner strings only compressed behind UPX markers, as packed miners ship, in a hidden directory. No replayed path flags it, and at start YARA finds nothing either: docroot_binary_exec reports it only as a Warning when a PHP interpreter starts it.",
   "provenance": "written for the corpus with the buildTestELF layout of internal/yara/elf_web_dropper_test.go",
   "files": [
     {
@@ -14,7 +14,7 @@
   ],
   "expect": {
     "realtime": {
-      "gap": "realtime does not read a program's content; an executable written to a doc root is only tracked in case it deletes itself"
+      "gap": "the write path only tracks an executable for self-deletion; realtime reads a program when it starts (docroot_binary_exec), which no driver replays, and YARA finds nothing in this packed one"
     },
     "tier": {
       "gap": "YARA matches miner strings in clear text only and no rule or check flags a packed ELF program"

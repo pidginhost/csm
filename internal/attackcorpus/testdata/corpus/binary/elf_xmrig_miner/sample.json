@@ -3,7 +3,7 @@
   "category": "binary",
   "kind": "malicious",
   "source": "fixture",
-  "description": "A static x86-64 ELF program named like a kernel thread, carrying XMRig's name, algorithm alias and pool options, dropped executable in uploads. Realtime does not read program files; the scans catch it with YARA and leave it in place because yara_match_scheduled is on neither scan quarantine list.",
+  "description": "A static x86-64 ELF program named like a kernel thread, carrying XMRig's name, algorithm alias and pool options, dropped executable in uploads. Realtime YARA-scans a program only when it starts (docroot_binary_exec at the rule's severity), which no driver replays; the scans catch it with YARA and leave it in place because yara_match_scheduled is on neither scan quarantine list.",
   "provenance": "content from internal/signatures/fp_xmrig_test.go TestMinerXmrigBinaryRefDetectsMinerContext (xmrig algorithm alias) in the buildTestELF image of internal/yara/elf_web_dropper_test.go",
   "files": [
     {
@@ -14,7 +14,7 @@
   ],
   "expect": {
     "realtime": {
-      "gap": "realtime does not read a program's content; an executable written to a doc root is only tracked in case it deletes itself"
+      "gap": "the write path only tracks an executable for self-deletion; realtime reads a program when it starts (docroot_binary_exec), which no driver replays"
     },
     "tier": {
       "findings": [
