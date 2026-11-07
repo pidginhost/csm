@@ -2,18 +2,27 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# Private corpus metadata must keep the report writer's owner-only access.
+umask 077
 output="${CSM_ATTACK_CORPUS_REPORT_DIR:-$PWD/attack-corpus-results}"
 mkdir -p "$output"
 output=$(cd "$output" && pwd)
 # Old local reports must never satisfy the current run after a missing test.
 for report in realtime.json tier.json fullscan.json engines.txt tests.jsonl; do
     : > "$output/$report"
+    chmod 600 "$output/$report"
 done
 
 expected=$(go list -m -f '{{.Version}}' github.com/VirusTotal/yara-x/go)
 actual=$(pkg-config --modversion yara_x_capi)
 [ "v$actual" = "$expected" ] || { echo "YARA-X C library $actual differs from Go module $expected" >&2; exit 1; }
-grep -Fq -- "--branch $expected" build/Dockerfile.builder || { echo "YARA-X builder pin differs" >&2; exit 1; }
+builder_version=$(awk '
+    $1 == "RUN" && $2 == "git" && $3 == "clone" {
+        for (i = 4; i < NF; i++)
+            if ($i == "--branch") print $(i + 1)
+    }
+' build/Dockerfile.builder)
+[ "$builder_version" = "$expected" ] || { echo "YARA-X builder pin differs" >&2; exit 1; }
 {
     go version
     echo "YARA-X C library: $actual"

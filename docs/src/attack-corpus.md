@@ -236,15 +236,19 @@ GO_LINUX_RUNTIME=docker GO_LINUX_IMAGE=<release-builder-image> \
 ```
 
 The script checks that the YARA-X C library matches the Go module and the
-builder pin, then runs every `TestAttackCorpus` test in the harness, daemon
-and checks packages with `-tags yara`. It writes to `attack-corpus-results/`,
-which the job keeps for one year, including on failure:
+active builder pin exactly, then runs every `TestAttackCorpus` test in the
+harness, daemon and checks packages with `-tags yara`. It writes to
+`attack-corpus-results/`, which the job keeps for one year, including on failure:
 
 - `realtime.json`, `tier.json`, `fullscan.json`: per sample results and a
   per-category summary (detected, gaps, missed, false positives, closed gaps,
   remediation mismatches, errors). The script fails if any is empty.
 - `engines.txt`: Go version, YARA-X version, commit and run time.
 - `tests.jsonl`: the `go test -json` event stream.
+
+Local report files are readable and writable only by their owner, including
+when the script reuses an existing output directory. CI artifact access still
+follows the project's artifact permissions.
 
 Environment:
 
