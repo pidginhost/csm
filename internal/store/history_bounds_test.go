@@ -73,7 +73,8 @@ func TestReadHistoryFilteredByInstants(t *testing.T) {
 func TestParseHistoryBoundMidnightTransitions(t *testing.T) {
 	for _, tc := range []struct{ zone, day, from, to string }{
 		{"America/Santiago", "2026-09-06", "2026-09-06T04:00:00Z", "2026-09-07T03:00:00Z"},
-		{"America/Havana", "2026-11-01", "2026-11-01T04:00:00Z", "2026-11-02T05:00:00Z"},
+		// A past transition: tzdata 2026f dropped Cuba's November 2026 fall-back.
+		{"America/Havana", "2025-11-02", "2025-11-02T04:00:00Z", "2025-11-03T05:00:00Z"},
 		{"America/Sao_Paulo", "2018-11-04", "2018-11-04T03:00:00Z", "2018-11-05T02:00:00Z"},
 		{"Pacific/Apia", "2011-12-30", "2011-12-30T10:00:00Z", "2011-12-30T10:00:00Z"},
 		{"Europe/Bucharest", "2026-03-29", "2026-03-28T22:00:00Z", "2026-03-29T21:00:00Z"},
