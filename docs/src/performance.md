@@ -239,6 +239,9 @@ The Redis panel connects to local Redis at `127.0.0.1:6379`. If Redis
 requires a password, set `REDISCLI_AUTH` in the csm daemon environment.
 The dashboard uses that password for its in-process Redis client.
 
+If csm cannot read Redis, the REDIS card renders `n/a` instead of an empty
+Redis.
+
 ## API
 
 ```

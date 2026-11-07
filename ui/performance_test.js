@@ -98,3 +98,15 @@ test('bulk and individual fixes cannot submit the same target concurrently', asy
         assert.equal(fixButtons(page)[0].disabled, false, 'failure must release the target');
     }
 });
+
+test('the Redis card says n/a when Redis could not be read, not an empty Redis', async () => {
+    const card = async metrics => {
+        const page = perfPage();
+        page.respond('/api/v1/performance', 200, { metrics: { cpu_cores: 2, load_avg: [0.1, 0.1, 0.1], ...metrics }, findings: [] });
+        await settle();
+        return page.document.getElementById('stat-redis').textContent;
+    };
+    assert.equal(await card({ redis_mem_mb: null, redis_maxmem_mb: null, redis_keys: null }), 'n/a');
+    assert.equal(await card({ redis_mem_mb: 0, redis_maxmem_mb: 0, redis_keys: 0 }), '0 MB / no limit');
+    assert.equal(await card({ redis_mem_mb: 300, redis_maxmem_mb: 512, redis_keys: 9 }), '300 / 512 MB');
+});
