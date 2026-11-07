@@ -579,10 +579,9 @@ func NewFileMonitor(cfg *config.Config, alertCh chan<- alert.Finding) (*FileMoni
 		return nil, fmt.Errorf("fanotify_init: %w (kernel may not support fanotify)", err)
 	}
 
-	fm := newFileMonitorCore(cfg, alertCh)
-
 	// Mark mount points; M2 - track successful mounts
-	mountPaths := fanotifyMountPaths(fm.webRootPatterns)
+	webRootPatterns := checks.PHPConfigRealtimeRootPatterns(cfg)
+	mountPaths := fanotifyMountPaths(webRootPatterns)
 	marks, markErr := markWatchRoots(fd, mountPaths, unix.FanotifyMark, statDevice)
 	if len(marks) == 0 {
 		_ = unix.Close(fd)
@@ -630,9 +629,12 @@ func NewFileMonitor(cfg *config.Config, alertCh chan<- alert.Finding) (*FileMoni
 		return nil, fmt.Errorf("pipe2: %w", err)
 	}
 
+	fm := newFileMonitorCore(cfg, alertCh)
 	fm.fd = fd
 	fm.watchRoots = marks
 	fm.pipeFds = pipeFds
+	// Admission must match the roots the marks were placed from.
+	fm.webRootPatterns = webRootPatterns
 	return fm, nil
 }
 
