@@ -3,7 +3,7 @@
   "category": "dropper",
   "kind": "malicious",
   "source": "fixture",
-  "description": "Runs the raw request body as a shell command, in a .well-known validation directory. Realtime leaves it in place: it moves a content finding only when its execution check confirms the flow, which this shape does not pass.",
+  "description": "Runs the raw request body as a shell command, in a .well-known validation directory. Realtime leaves it in place through a detector shortfall: its execution confirmation blanks string literals, so it never sees the php://input source the content check matched.",
   "provenance": "internal/signatures/loader_test.go TestRepoDropperPHPInputRuleRequiresPHPInputPattern",
   "files": [
     {

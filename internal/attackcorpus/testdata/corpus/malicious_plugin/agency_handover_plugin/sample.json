@@ -1,0 +1,19 @@
+{
+  "name": "agency_handover_plugin",
+  "category": "malicious_plugin",
+  "kind": "control",
+  "source": "synthetic",
+  "description": "A white-label plugin that hides itself and a companion from client admins, serves a public status route and promotes an existing user to administrator behind promote_users.",
+  "provenance": "written for the corpus",
+  "files": [
+    {
+      "path": "public_html/wp-content/plugins/agency-handover/agency-handover.php",
+      "b64": "agency-handover.php.b64"
+    }
+  ],
+  "expect": {
+    "realtime": {},
+    "tier": {},
+    "fullscan": {}
+  }
+}

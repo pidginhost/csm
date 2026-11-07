@@ -3,7 +3,7 @@
   "category": "malicious_plugin",
   "kind": "malicious",
   "source": "fixture",
-  "description": "A plugin that hides administrator accounts from the user list and counts and hides itself from the plugin list. Left in place on every path: realtime moves only webshell or dropper signature matches on high-entropy files of 512 bytes or more and never moves on a YARA match, and yara_match_scheduled is on neither scan quarantine list.",
+  "description": "The hook-registration shape of an admin cloaker: user-list, user-count and plugin-list hooks in a class never instantiated, so inert as planted. Left in place on every path: realtime moves only webshell or dropper signature matches on high-entropy files of 512 bytes or more and never moves on a YARA match, and yara_match_scheduled is on neither scan quarantine list.",
   "provenance": "internal/signatures/detect_blockchain_injector_test.go TestAdminCloakerDetectsPlainVariant",
   "files": [
     {

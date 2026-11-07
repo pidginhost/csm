@@ -3,7 +3,7 @@
   "category": "dropper",
   "kind": "malicious",
   "source": "fixture",
-  "description": "A request command passed to a function whose name is assembled with chr(), in uploads. Every path reports only the Warning for PHP in uploads, so it stays in place.",
+  "description": "A request command passed to a function whose name is assembled with chr(), in uploads. A content miss on every path: the only finding is the uploads location notice (no webshell markers, content clean), so it stays in place.",
   "provenance": "self-test bundle sample obfuscated_chr_builder",
   "files": [
     {

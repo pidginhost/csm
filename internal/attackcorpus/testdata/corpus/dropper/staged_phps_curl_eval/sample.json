@@ -1,0 +1,57 @@
+{
+  "name": "staged_phps_curl_eval",
+  "category": "dropper",
+  "kind": "malicious",
+  "source": "fixture",
+  "description": "The curl_fetch_eval loader staged as .phps, which a stock handler only displays until it is renamed. Left in place on every path: realtime moves only webshell or dropper signature matches on high-entropy files of 512 bytes or more and never moves on a YARA match, and yara_match_scheduled is on neither scan quarantine list.",
+  "provenance": "internal/signatures/backdoor_htmlmode_eval_test.go TestScannerTreatsPhpsAsPHPSource",
+  "files": [
+    {
+      "path": "public_html/old/admin/update.phps",
+      "b64": "update.phps.b64"
+    }
+  ],
+  "expect": {
+    "realtime": {
+      "findings": [
+        {
+          "check": "signature_match_realtime",
+          "file": "public_html/old/admin/update.phps",
+          "min_severity": "critical"
+        },
+        {
+          "check": "yara_match_realtime",
+          "file": "public_html/old/admin/update.phps",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/old/admin/update.phps": "untouched"
+      }
+    },
+    "tier": {
+      "findings": [
+        {
+          "check": "yara_match_scheduled",
+          "file": "public_html/old/admin/update.phps",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/old/admin/update.phps": "untouched"
+      }
+    },
+    "fullscan": {
+      "findings": [
+        {
+          "check": "yara_match_scheduled",
+          "file": "public_html/old/admin/update.phps",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/old/admin/update.phps": "untouched"
+      }
+    }
+  }
+}

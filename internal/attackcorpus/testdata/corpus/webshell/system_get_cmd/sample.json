@@ -4,7 +4,7 @@
   "kind": "malicious",
   "source": "fixture",
   "description": "A one-line command shell passing a GET parameter to system, in a Joomla tmp directory. Scans leave it in place: yara_match_scheduled is on neither scan quarantine list and suspicious_php_content is only High.",
-  "provenance": "internal/daemon/image_payload_linux_test.go TestCheckImagePayloadFlagsPHPWearingAnImageName",
+  "provenance": "content from internal/daemon/image_payload_linux_test.go TestCheckImagePayloadFlagsPHPWearingAnImageName, planted as .php",
   "files": [
     {
       "path": "public_html/tmp/thumb.php",
