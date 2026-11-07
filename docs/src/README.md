@@ -1,6 +1,6 @@
 # CSM Documentation
 
-CSM is a local security monitoring and response daemon for Linux web servers. cPanel/WHM shared hosting is the primary target; platform detection also selects applicable paths and checks for Plesk, DirectAdmin, and panel-free hosts running Apache, Nginx, LiteSpeed, or no web server.
+CSM is a local security monitoring and response daemon for Linux web servers, with or without a control panel. Platform detection picks the paths and checks for cPanel/WHM, Plesk, DirectAdmin, or no panel, on Apache, Nginx, LiteSpeed, or no web server. cPanel hosts get the deepest account and CMS integration; see [supported platforms](installation.md#supported-platforms).
 
 ## Start here
 
