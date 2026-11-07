@@ -45,6 +45,12 @@ are checked separately. Atomic replacement fixtures require newer birth times
 only when testing WAF log replacement; plugin-copy tests also work without
 filesystem birth-time support.
 
+Admission retry tests repeat evidence with its original observation timestamp
+and check the refusal reason. Changing that timestamp creates conflicting
+evidence and bypasses episode placement. Forged-account flood tests keep the
+host and real account backlogged in each evidence class and check repeated
+alternating turns. A single account pick can pass through sort order alone.
+
 The default CI job runs every package with the race detector, no extra build
 tags, and a 30-minute per-package timeout. Run its exact test command on Linux:
 

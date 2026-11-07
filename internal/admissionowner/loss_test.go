@@ -1,6 +1,7 @@
 package admissionowner
 
 import (
+	"maps"
 	"testing"
 	"time"
 
@@ -20,6 +21,7 @@ func TestOwnerSustainedEpisodeAfterExhaustion(t *testing.T) {
 	blocks.results["192.0.2.10"] = firewall.BlockResult{Effect: firewall.BlockFailed, Refusal: firewall.BlockRefusedFull}
 	o := f.start(executeOptions(f, blocks))
 	mono := heldMono(t, o)
+	observed := f.host.now()
 	id := observe(t, o, p, f, "192.0.2.10", "offset=1")
 	first := candidate(t, o, id)
 	for seq := uint32(1); seq <= admission.MaxAttempts; seq++ {
@@ -28,9 +30,29 @@ func TestOwnerSustainedEpisodeAfterExhaustion(t *testing.T) {
 		if a := attemptOf(t, o, before); a.State != admission.StateFailed || a.Disposition != admission.DispositionFailed {
 			t.Fatalf("failed attempt %d = %+v", seq, a)
 		}
-		submitObservation(t, o, p, "192.0.2.10", "offset=1", f.host.now())
+		// A repeated report keeps the observation's original timestamp.
+		// Changing it would test an evidence conflict instead of placement.
+		submitObservation(t, o, p, "192.0.2.10", "offset=1", observed)
 		if err := o.do(o.drain); err != nil {
 			t.Fatal(err)
+		}
+		counts := ledgerStatus(t, o).Counters
+		if counts.Error != "" {
+			t.Fatal(counts.Error)
+		}
+		refused := map[string]uint64{}
+		for _, row := range counts.Rows {
+			if row.Event == admission.EventRefused.String() {
+				refused[row.Reason] += row.N
+			}
+		}
+		want := map[string]uint64{admission.ReasonExistingEffect.String(): uint64(seq)}
+		if seq == admission.MaxAttempts {
+			want[admission.ReasonExistingEffect.String()]--
+			want[admission.ReasonStale.String()] = 1
+		}
+		if !maps.Equal(refused, want) {
+			t.Fatalf("repeated report %d refusals = %v, want %v", seq, refused, want)
 		}
 		after := candidate(t, o, id)
 		if after.Attempts != seq || after.NotBefore != before.NotBefore || after.AgeOut != first.AgeOut || after.FirstQueued != first.FirstQueued {

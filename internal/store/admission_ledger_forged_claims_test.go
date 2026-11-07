@@ -2,6 +2,7 @@ package store
 
 import (
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 
@@ -53,27 +54,37 @@ func TestAdmissionLedgerForgedClaimsShareOneScope(t *testing.T) {
 	if len(scopes) != 1 {
 		t.Fatalf("forged claims made %d scopes: %v", len(scopes), scopes)
 	}
-	// zoe's scope sorts after any forged account would, so only one shared
-	// forged scope leaves her a turn within two picks.
-	zoe := f.fill(1, evidenceSpec{owner: f.owner("zoe"), severity: admission.SeverityCritical})[0]
-	served := false
-	for range 2 {
+	// Keep both scopes backlogged in each class. The account scope sorts
+	// first, so its first pick alone cannot prove rotation past the flood.
+	owner := f.owner("zoe")
+	zoe := f.fill(3, evidenceSpec{owner: owner, severity: admission.SeverityCritical})
+	zoe = append(zoe, f.fill(3, evidenceSpec{producer: f.rep, check: "reputation", owner: owner, severity: admission.SeverityCritical})...)
+	turns := map[admission.Class][]string{}
+	for range 12 {
 		picks := f.schedule(oneEach)
 		if len(picks) != 1 {
 			t.Fatalf("picks = %+v", picks)
 		}
-		served = served || picks[0].ID == zoe
+		pick := picks[0]
+		turns[pick.Tier.Class] = append(turns[pick.Tier.Class], f.scopeOf(pick.ID))
 		if _, _, _, err := f.l.Reserve(picks[0].ID, picks[0].Lane, f.wall.Add(time.Hour)); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if !served {
-		t.Fatal("a real account's work waited behind the forged flood's second turn")
+	accountScope := (admission.Scope{Owner: owner, Effect: admission.KindBlockIP.Effect()}).Key()
+	hostScope := (admission.Scope{Owner: admission.HostOwner(), Effect: admission.KindBlockIP.Effect()}).Key()
+	want := []string{accountScope, hostScope, accountScope, hostScope, accountScope, hostScope}
+	for _, class := range []admission.Class{admission.ClassC1, admission.ClassC2} {
+		if !slices.Equal(turns[class], want) {
+			t.Fatalf("%s scope turns = %v, want %v", class, turns[class], want)
+		}
 	}
-	if c := f.candidateOf(zoe); c.State != admission.StateReserved || c.Attempts != 1 {
-		t.Fatalf("real account was not admitted: %+v", c)
+	for _, id := range zoe {
+		if c := f.candidateOf(id); c.State != admission.StateReserved || c.Attempts != 1 {
+			t.Fatalf("real account was not admitted: %+v", c)
+		}
 	}
-	if used := f.ceilingState().General.Used; used != 2 || f.attemptRows() != 2 {
-		t.Fatalf("forged flood charges=%d attempts=%d, want 2 each", used, f.attemptRows())
+	if used := f.ceilingState().General.Used; used != 12 || f.attemptRows() != 12 {
+		t.Fatalf("forged flood charges=%d attempts=%d, want 12 each", used, f.attemptRows())
 	}
 }
