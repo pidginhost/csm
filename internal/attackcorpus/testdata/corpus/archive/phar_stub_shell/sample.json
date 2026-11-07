@@ -1,0 +1,43 @@
+{
+  "name": "phar_stub_shell",
+  "category": "archive",
+  "kind": "malicious",
+  "source": "synthetic",
+  "description": "A phar in uploads whose stub runs a posted command, which a PHP-FPM handler that maps .phar executes. Realtime does not admit .phar; the scans catch it with YARA and leave it in place because yara_match_scheduled is on neither scan quarantine list.",
+  "provenance": "written for the corpus",
+  "files": [
+    {
+      "path": "public_html/wp-content/uploads/2026/11/img.phar",
+      "b64": "img.phar.b64"
+    }
+  ],
+  "expect": {
+    "realtime": {
+      "gap": "not admitted by realtime: .phar"
+    },
+    "tier": {
+      "findings": [
+        {
+          "check": "yara_match_scheduled",
+          "file": "public_html/wp-content/uploads/2026/11/img.phar",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/wp-content/uploads/2026/11/img.phar": "untouched"
+      }
+    },
+    "fullscan": {
+      "findings": [
+        {
+          "check": "yara_match_scheduled",
+          "file": "public_html/wp-content/uploads/2026/11/img.phar",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/wp-content/uploads/2026/11/img.phar": "untouched"
+      }
+    }
+  }
+}

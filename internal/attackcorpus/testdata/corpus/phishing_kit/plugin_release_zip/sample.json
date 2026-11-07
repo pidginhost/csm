@@ -1,0 +1,19 @@
+{
+  "name": "plugin_release_zip",
+  "category": "phishing_kit",
+  "kind": "control",
+  "source": "fixture",
+  "description": "A plugin release zip named after a social media brand, so the kit check lists its members and must find no kit evidence in them.",
+  "provenance": "content from internal/checks/phishing_fp_batch_test.go TestZipLooksLikeKitLegitPluginFalse",
+  "files": [
+    {
+      "path": "public_html/wp-content/uploads/2026/11/Instagram-Feed-4.3.1.zip",
+      "b64": "Instagram-Feed-4.3.1.zip.b64"
+    }
+  ],
+  "expect": {
+    "realtime": {},
+    "tier": {},
+    "fullscan": {}
+  }
+}

@@ -1,0 +1,52 @@
+{
+  "name": "gif_phar_polyglot",
+  "category": "archive",
+  "kind": "malicious",
+  "source": "synthetic",
+  "description": "A GIF-headed phar whose metadata holds a Guzzle FileCookieJar gadget that writes a PHP shell once a phar:// path reaches a file function. Every path flags the shell text the gadget carries, not the gadget itself. Left in place: realtime has no responder for php_in_image_realtime and yara_match_scheduled is on neither scan quarantine list.",
+  "provenance": "written for the corpus",
+  "files": [
+    {
+      "path": "public_html/wp-content/uploads/2026/11/avatar.gif",
+      "b64": "avatar.gif.b64"
+    }
+  ],
+  "expect": {
+    "realtime": {
+      "findings": [
+        {
+          "check": "php_in_image_realtime",
+          "file": "public_html/wp-content/uploads/2026/11/avatar.gif",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/wp-content/uploads/2026/11/avatar.gif": "untouched"
+      }
+    },
+    "tier": {
+      "findings": [
+        {
+          "check": "yara_match_scheduled",
+          "file": "public_html/wp-content/uploads/2026/11/avatar.gif",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/wp-content/uploads/2026/11/avatar.gif": "untouched"
+      }
+    },
+    "fullscan": {
+      "findings": [
+        {
+          "check": "yara_match_scheduled",
+          "file": "public_html/wp-content/uploads/2026/11/avatar.gif",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/wp-content/uploads/2026/11/avatar.gif": "untouched"
+      }
+    }
+  }
+}

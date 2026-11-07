@@ -351,6 +351,9 @@ func TestPublicCorpusLoads(t *testing.T) {
 	if len(samples) == 0 {
 		t.Fatal("public corpus has no samples")
 	}
+	if err := ValidateCoverage(samples, true); err != nil {
+		t.Fatalf("coverage: %v", err)
+	}
 }
 
 func findings() []ExpectedFinding {

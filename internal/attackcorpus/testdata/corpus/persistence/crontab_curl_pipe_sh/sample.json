@@ -1,0 +1,25 @@
+{
+  "name": "crontab_curl_pipe_sh",
+  "category": "persistence",
+  "kind": "malicious",
+  "source": "fixture",
+  "description": "A crontab job that downloads a script every ten minutes and pipes it to sh: the command a base64 crontab fixture wraps, written in clear.",
+  "provenance": "content from internal/checks/crontabs_debian_spool_test.go TestCheckCrontabsReadsDebianSpool (decoded command)",
+  "files": [
+    {
+      "path": "@crontab",
+      "b64": "crontab.b64"
+    }
+  ],
+  "expect": {
+    "realtime": {
+      "gap": "crontab patterns have no download-and-run shape; curl piped to sh matches none of them"
+    },
+    "tier": {
+      "gap": "the deep tier runs no crontab check; only the critical tier's crontabs check reads the spool"
+    },
+    "fullscan": {
+      "gap": "crontab patterns have no download-and-run shape; curl piped to sh matches none of them"
+    }
+  }
+}

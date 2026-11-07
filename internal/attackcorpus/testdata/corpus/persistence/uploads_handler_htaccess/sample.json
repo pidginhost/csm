@@ -1,0 +1,72 @@
+{
+  "name": "uploads_handler_htaccess",
+  "category": "persistence",
+  "kind": "malicious",
+  "source": "fixture",
+  "description": "An .htaccess in uploads that maps .jpg and .png to the PHP handler, so an uploaded image runs as code. Left in place on every path: realtime has no .htaccess responder and its signature quarantine takes only webshell or dropper rules on files of 512 bytes or more, the tier's .htaccess cleaning is off in the shipped config (auto_response.clean_htaccess), the full scan keeps .htaccess findings off its quarantine list, and yara_match_scheduled is on neither list.",
+  "provenance": "self-test bundle sample htaccess_php_in_uploads",
+  "files": [
+    {
+      "path": "public_html/wp-content/uploads/.htaccess",
+      "selftest": "htaccess_php_in_uploads"
+    }
+  ],
+  "expect": {
+    "realtime": {
+      "findings": [
+        {
+          "check": "htaccess_php_in_uploads",
+          "file": "public_html/wp-content/uploads/.htaccess",
+          "min_severity": "critical"
+        },
+        {
+          "check": "signature_match_realtime",
+          "file": "public_html/wp-content/uploads/.htaccess",
+          "min_severity": "critical"
+        },
+        {
+          "check": "yara_match_realtime",
+          "file": "public_html/wp-content/uploads/.htaccess",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/wp-content/uploads/.htaccess": "untouched"
+      }
+    },
+    "tier": {
+      "findings": [
+        {
+          "check": "htaccess_php_in_uploads",
+          "file": "public_html/wp-content/uploads/.htaccess",
+          "min_severity": "critical"
+        },
+        {
+          "check": "yara_match_scheduled",
+          "file": "public_html/wp-content/uploads/.htaccess",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/wp-content/uploads/.htaccess": "untouched"
+      }
+    },
+    "fullscan": {
+      "findings": [
+        {
+          "check": "htaccess_php_in_uploads",
+          "file": "public_html/wp-content/uploads/.htaccess",
+          "min_severity": "critical"
+        },
+        {
+          "check": "yara_match_scheduled",
+          "file": "public_html/wp-content/uploads/.htaccess",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/wp-content/uploads/.htaccess": "untouched"
+      }
+    }
+  }
+}

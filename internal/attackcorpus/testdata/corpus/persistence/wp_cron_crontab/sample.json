@@ -1,0 +1,19 @@
+{
+  "name": "wp_cron_crontab",
+  "category": "persistence",
+  "kind": "control",
+  "source": "synthetic",
+  "description": "An account crontab that fetches wp-cron.php with wget every 15 minutes, the usual replacement for the WordPress page-load cron.",
+  "provenance": "written for the corpus",
+  "files": [
+    {
+      "path": "@crontab",
+      "b64": "crontab.b64"
+    }
+  ],
+  "expect": {
+    "realtime": {},
+    "tier": {},
+    "fullscan": {}
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "name": "node_addon_library",
+  "category": "binary",
+  "kind": "control",
+  "source": "fixture",
+  "description": "A Node.js native addon: an ELF shared library with a vendor update URL and a download template, which the ELF dropper rule must pass because a library is not a program.",
+  "provenance": "content from internal/yara/elf_web_dropper_test.go TestELFWebPayloadDropperRule (buildTestELF shared object, with addon symbols and vendor strings)",
+  "files": [
+    {
+      "path": "public_html/app/node_modules/image-tools/build/Release/image_tools.node",
+      "b64": "image_tools.node.b64",
+      "mode": 493
+    }
+  ],
+  "expect": {
+    "realtime": {},
+    "tier": {},
+    "fullscan": {}
+  }
+}

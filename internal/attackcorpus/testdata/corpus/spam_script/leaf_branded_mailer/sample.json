@@ -1,0 +1,57 @@
+{
+  "name": "leaf_branded_mailer",
+  "category": "spam_script",
+  "kind": "malicious",
+  "source": "synthetic",
+  "description": "The Leaf PHPMailer panel shape: a form that mails a posted letter to each line of a posted list under a sender of the caller's choice. Left in place on every path: realtime moves only webshell or dropper signature matches on high-entropy files of 512 bytes or more and never moves on a YARA match, and yara_match_scheduled is on neither scan quarantine list.",
+  "provenance": "written for the corpus",
+  "files": [
+    {
+      "path": "public_html/inc/lf.php",
+      "b64": "lf.php.b64"
+    }
+  ],
+  "expect": {
+    "realtime": {
+      "findings": [
+        {
+          "check": "signature_match_realtime",
+          "file": "public_html/inc/lf.php",
+          "min_severity": "critical"
+        },
+        {
+          "check": "yara_match_realtime",
+          "file": "public_html/inc/lf.php",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/inc/lf.php": "untouched"
+      }
+    },
+    "tier": {
+      "findings": [
+        {
+          "check": "yara_match_scheduled",
+          "file": "public_html/inc/lf.php",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/inc/lf.php": "untouched"
+      }
+    },
+    "fullscan": {
+      "findings": [
+        {
+          "check": "yara_match_scheduled",
+          "file": "public_html/inc/lf.php",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/inc/lf.php": "untouched"
+      }
+    }
+  }
+}

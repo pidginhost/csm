@@ -1,0 +1,19 @@
+{
+  "name": "updraft_plugins_backup_zip",
+  "category": "archive",
+  "kind": "control",
+  "source": "synthetic",
+  "description": "An UpdraftPlus plugins backup zip in wp-content/updraft holding ordinary plugin PHP.",
+  "provenance": "written for the corpus",
+  "files": [
+    {
+      "path": "public_html/wp-content/updraft/backup_2026-11-01-0300_Example_Site_5f2c9a1b7d3e-plugins.zip",
+      "b64": "backup_2026-11-01-0300_Example_Site_5f2c9a1b7d3e-plugins.zip.b64"
+    }
+  ],
+  "expect": {
+    "realtime": {},
+    "tier": {},
+    "fullscan": {}
+  }
+}

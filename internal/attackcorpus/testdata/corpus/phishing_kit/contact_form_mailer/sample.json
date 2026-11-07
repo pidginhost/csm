@@ -1,0 +1,19 @@
+{
+  "name": "contact_form_mailer",
+  "category": "phishing_kit",
+  "kind": "control",
+  "source": "fixture",
+  "description": "A site contact form that validates the posted email and mails the message to the owner, the shape the PHP phishing check and the credential mailer rules must pass.",
+  "provenance": "content from internal/checks/phishing_test.go TestAnalyzePHPForPhishingNoBrandRejected",
+  "files": [
+    {
+      "path": "public_html/contact.php",
+      "b64": "contact.php.b64"
+    }
+  ],
+  "expect": {
+    "realtime": {},
+    "tier": {},
+    "fullscan": {}
+  }
+}

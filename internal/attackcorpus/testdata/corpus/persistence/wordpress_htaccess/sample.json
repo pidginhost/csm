@@ -1,0 +1,19 @@
+{
+  "name": "wordpress_htaccess",
+  "category": "persistence",
+  "kind": "control",
+  "source": "fixture",
+  "description": "The .htaccess WordPress writes on install.",
+  "provenance": "self-test bundle sample benign_htaccess",
+  "files": [
+    {
+      "path": "public_html/.htaccess",
+      "selftest": "benign_htaccess"
+    }
+  ],
+  "expect": {
+    "realtime": {},
+    "tier": {},
+    "fullscan": {}
+  }
+}
