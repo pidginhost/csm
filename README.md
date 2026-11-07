@@ -8,7 +8,7 @@
 [![Release](https://img.shields.io/github/v/release/pidginhost/csm?display_name=tag)](https://github.com/pidginhost/csm/releases)
 [![License: AGPL-3.0-or-later](https://img.shields.io/github/license/pidginhost/csm?color=blue)](LICENSE)
 
-> **Local security monitoring and automated response for Linux web servers.** First-class coverage for cPanel/WHM shared hosting, with platform-aware checks for Plesk, DirectAdmin, and panel-free hosts.
+> **Local security monitoring and automated response for Linux web servers.** Runs on AlmaLinux, Rocky, RHEL, CloudLinux, Ubuntu, and Debian, with or without a control panel. cPanel/WHM hosts get the deepest account and CMS integration.
 
 CSM combines real-time file, authentication, web, mail, and network watchers with scheduled integrity, account, content, and database scans. Content scanning pairs YAML and YARA-X signatures with data-flow analyzers for PHP and JavaScript, and an optional PHP Shield blocks webshell execution at runtime. State stays on the host. CSM exposes a Web UI and API, and can respond through nftables, quarantine, reversible virtual patches, mail controls, and targeted remediation.
 
@@ -32,12 +32,18 @@ Detailed coverage is documented under [Real-time detection](docs/src/detection-r
 
 ## Platform support
 
-| Platform | Coverage |
+CSM detects the OS, control panel, and web server at startup and runs the checks that apply. A host without a panel is a supported target, not a fallback.
+
+| Host | Coverage |
 |---|---|
-| cPanel/WHM on CloudLinux, AlmaLinux, or Rocky with Apache/LiteSpeed | Primary target. Full account, WordPress, Exim, WHM plugin, firewall, PHP Shield (CageFS-aware on CloudLinux), and remediation coverage. |
-| Plesk or DirectAdmin on a supported Linux distribution | Panel and web-server paths are detected. Generic host/web checks run; cPanel-only integrations skip. |
-| AlmaLinux, Rocky, RHEL, or CentOS Stream 8+ | Generic checks with RPM integrity on Apache, Nginx, LiteSpeed, or hosts without a web server. |
-| Ubuntu 20.04+ or Debian 11+ | Generic checks with dpkg/debsums integrity on Apache, Nginx, LiteSpeed, or hosts without a web server. |
+| Any supported distribution, with or without a panel | Real-time file and webshell scanning, web login attacks from access logs, SSH and PAM logins, ModSecurity on Apache, Nginx, and LiteSpeed, nftables firewall and auto-response, RPM or dpkg/debsums package integrity, host drift, BPF telemetry, hardening audit, Web UI, API, and alerts. |
+| Postfix and Dovecot mail | SMTP AUTH, IMAP, and POP brute-force detection from log files or journald, rspamd antispam with Junk-folder learning, Postfix hardening checks. |
+| cPanel/WHM on CloudLinux, AlmaLinux, Rocky, or Ubuntu | Adds the cPanel account registry, WHM and cPanel login monitoring, Exim mail controls and antispam, PHP relay detection, Email AV on the Exim spool, the WHM plugin, and PHP Shield (CageFS-aware on CloudLinux). |
+| Plesk or DirectAdmin | Account homes and web-server paths are detected. Host, web, and mail checks run; cPanel integrations skip. |
+
+Supported distributions are AlmaLinux, Rocky, RHEL, CloudLinux, and CentOS Stream 8+, Ubuntu 20.04+, and Debian 11+, with Apache, Nginx, LiteSpeed, or no web server.
+
+Site content and CMS scans find sites through the cPanel account layout. On other hosts, set `account_roots` to the web roots; some account and CMS checks still expect `/home/<user>/public_html`. See [Deep checks](docs/src/detection-deep.md#platform-support).
 
 Packages are published for x86_64 and ARM64; cPanel itself is x86_64-only. Release binaries link YARA-X statically, include journald and BPF support, and need glibc 2.28 or newer.
 
