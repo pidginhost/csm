@@ -36,14 +36,16 @@ CSM detects the OS, control panel, and web server at startup and runs the checks
 
 | Host | Coverage |
 |---|---|
-| Any supported distribution, with or without a panel | Real-time file and webshell scanning, web login attacks from access logs, SSH and PAM logins, ModSecurity on Apache, Nginx, and LiteSpeed, nftables firewall and auto-response, RPM or dpkg/debsums package integrity, host drift, BPF telemetry, hardening audit, Web UI, API, and alerts. |
-| Postfix and Dovecot mail | SMTP AUTH, IMAP, and POP brute-force detection from log files or journald, rspamd antispam with Junk-folder learning, Postfix hardening checks. |
-| cPanel/WHM on CloudLinux, AlmaLinux, Rocky, or Ubuntu | Adds the cPanel account registry, WHM and cPanel login monitoring, Exim mail controls and antispam, PHP relay detection, Email AV on the Exim spool, the WHM plugin, and PHP Shield (CageFS-aware on CloudLinux). |
-| Plesk or DirectAdmin | Account homes and web-server paths are detected. Host, web, and mail checks run; cPanel integrations skip. |
+| Any supported distribution, with or without a panel | Real-time file and webshell scanning, web login attacks from access logs, SSH and PAM logins, ModSecurity monitoring on Apache, Nginx, and LiteSpeed, nftables firewall and auto-response, RPM or dpkg/debsums package integrity, host drift, BPF telemetry where the kernel supports it, hardening audit, Web UI, API, and alerts. |
+| Postfix with Dovecot | SMTP AUTH and IMAP/POP3/ManageSieve brute-force and compromise detection from files or journald. SMTP requires [Dovecot rejection logging](docs/src/detection-realtime.md#smtp--dovecot-brute-force-tracker). Postfix hardening checks and optional [rspamd antispam](docs/src/antispam.md#postfix-hosts), with Junk-folder learning on supported Dovecot 2.3 Maildir setups. |
+| cPanel/WHM on CloudLinux, AlmaLinux, Rocky, or Ubuntu | Adds the cPanel account registry, WHM and cPanel login monitoring, Exim mail controls and antispam, PHP relay detection, Email AV on the Exim spool, and the WHM plugin. |
+| Plesk or DirectAdmin | Account-home roots and web log paths are detected. Generic host/web checks and supported mail-stack features run; cPanel integrations skip. |
 
-Supported distributions are AlmaLinux, Rocky, RHEL, CloudLinux, and CentOS Stream 8+, Ubuntu 20.04+, and Debian 11+, with Apache, Nginx, LiteSpeed, or no web server.
+Supported distributions are AlmaLinux 8+, Rocky 8+, RHEL 8+, CloudLinux 8+, CentOS Stream 8+, Ubuntu 20.04+, and Debian 11+, with Apache, Nginx, LiteSpeed, or no web server.
 
-Site content and CMS scans find sites through the cPanel account layout. On other hosts, set `account_roots` to the web roots; some account and CMS checks still expect `/home/<user>/public_html`. See [Deep checks](docs/src/detection-deep.md#platform-support).
+Optional PHP Shield setup detects EA-PHP, alt-PHP, and lsphp, with CageFS support on CloudLinux. Other PHP layouts need manual `auto_prepend_file` configuration.
+
+On hosts without cPanel, set `account_roots` for scheduled YARA sweeps and web-root performance checks. It does not adapt every account or CMS scan to arbitrary layouts; many still expect `public_html` beneath account homes. See [Deep checks](docs/src/detection-deep.md#platform-support).
 
 Packages are published for x86_64 and ARM64; cPanel itself is x86_64-only. Release binaries link YARA-X statically, include journald and BPF support, and need glibc 2.28 or newer.
 
