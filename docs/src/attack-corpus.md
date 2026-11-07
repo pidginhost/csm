@@ -249,9 +249,11 @@ harness, daemon and checks packages with `-tags yara`. It writes to
 - `engines.txt`: Go version, YARA-X version, commit and run time.
 - `tests.jsonl`: the `go test -json` event stream.
 
-Local report files are readable and writable only by their owner, including
-when the script reuses an existing output directory. CI artifact access still
-follows the project's artifact permissions.
+The output directory and its report files are open only to their owner,
+including when the script reuses an existing directory. The script does not
+change the umask, so under the usual 022 the drivers create files with the
+modes the daemon gives them. CI artifact access still follows the project's
+artifact permissions.
 
 Environment:
 

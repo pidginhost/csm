@@ -2,10 +2,11 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-# Private corpus metadata must keep the report writer's owner-only access.
-umask 077
 output="${CSM_ATTACK_CORPUS_REPORT_DIR:-$PWD/attack-corpus-results}"
-mkdir -p "$output"
+# Reports name private samples, so only the owner may open them. The umask
+# stays the default: the drivers must create files as the daemon does.
+mkdir -p -m 700 "$output"
+chmod 700 "$output"
 output=$(cd "$output" && pwd)
 # Old local reports must never satisfy the current run after a missing test.
 for report in realtime.json tier.json fullscan.json engines.txt tests.jsonl; do
