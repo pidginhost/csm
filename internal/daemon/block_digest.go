@@ -345,7 +345,8 @@ func (d *Daemon) customerBlocks(actions []alert.Finding) []blockdigest.CustomerB
 			continue
 		}
 		var omit func(blockdigest.CustomerHit) bool
-		if cause, found := d.blockCauses.lookup(causeID(f), now); found && cause.Check == f.Cause.Check {
+		// Range escalations retain the original finding ID without its check.
+		if cause, found := d.blockCauses.lookup(causeID(f), now); found && (f.Cause.Check == "" || cause.Check == f.Cause.Check) {
 			omit = func(h blockdigest.CustomerHit) bool { return ownLogin(cause, h) }
 		}
 		b, ok := d.customerBlock(f, target, omit)

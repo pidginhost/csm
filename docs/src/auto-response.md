@@ -495,8 +495,9 @@ counts: scan blocks, permanent promotions, challenge timeouts, central
 intelligence and incident blocks. A customer whose own login caused the block
 is left out, also when the block comes later than its cause: a mail account
 compromise or an FTP login after brute force names that address and account
-in its own Critical alert. For a range block,
-the count and examples include only the remaining customers. Each block names
+in its own Critical alert. This also applies when earlier address blocks
+escalate to a range block: its count and examples include only the remaining
+customers. Each block names
 the command that lifts it: `csm firewall remove <ip>` for an address,
 `csm firewall remove-subnet <cidr>` for a range. An allow rule
 (`csm firewall allow <ip>`) trusts the address on every port. It does not

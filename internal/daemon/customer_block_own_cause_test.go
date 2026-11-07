@@ -2,12 +2,15 @@ package daemon
 
 import (
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/blockdigest"
+	"github.com/pidginhost/csm/internal/checks"
+	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/incident"
 	"github.com/pidginhost/csm/internal/reporting"
 )
@@ -137,5 +140,110 @@ func TestBlockCausesKeepByDispatchTime(t *testing.T) {
 	c.note(alert.Finding{Check: "ftp_login_after_bruteforce", SourceIP: "203.0.113.42", Timestamp: later}, later)
 	if n := len(c.byID); n != 1 {
 		t.Fatalf("kept causes = %d, want the expired one pruned", n)
+	}
+}
+
+type customerNetblockTestBlocker struct {
+	*customerTestBlocker
+}
+
+func (b *customerNetblockTestBlocker) BlockSubnet(cidr, reason string, ttl time.Duration) error {
+	return b.BlockIP(cidr, reason, ttl)
+}
+
+func (b *customerNetblockTestBlocker) IsSubnetBlocked(cidr string) bool {
+	return b.IsBlocked(cidr)
+}
+
+// A range escalation can answer an earlier compromise using only its
+// finding ID. The compromised login is omitted, but other customers in
+// the range must still receive the false-positive alert.
+func TestCustomerNetblockSkipsOwnCauseFromLaterBatch(t *testing.T) {
+	d, cfg, blocker, capture := customerBlockSetup(t)
+	checks.SetIPBlocker(&customerNetblockTestBlocker{blocker})
+	live := false
+	cfg.AutoResponse.DryRun = &live
+	const ownIP, otherIP, subnet = "198.51.100.30", "198.51.100.40", "198.51.100.0/24"
+	const ownAccount, otherAccount = "compromised@example.com", "customer@example.com"
+	at := time.Now().Add(-time.Minute)
+	d.knownCustomers.Note(ownIP, knownCustomerIMAP, ownAccount, at, syslogFed)
+	d.knownCustomers.Note(otherIP, knownCustomerIMAP, otherAccount, at, syslogFed)
+	compromise := alert.Finding{Severity: alert.Critical, Check: "mail_account_compromised", SourceIP: ownIP,
+		Mailbox: ownAccount, Timestamp: time.Now(), Message: "Mail account compromise: " + ownAccount + " from " + ownIP}
+	for _, f := range []alert.Finding{smtpBruteFrom("198.51.100.10"), smtpBruteFrom("198.51.100.20"), compromise} {
+		d.dispatchBatch([]alert.Finding{f})
+		if !blocker.IsBlocked(f.SourceIP) {
+			t.Fatalf("address block did not apply: %s", f.SourceIP)
+		}
+	}
+	capture.reset()
+	cfg.AutoResponse.NetBlock = true
+	cfg.AutoResponse.NetBlockThreshold = config.DefaultNetBlockThreshold
+	actions := checks.AutoBlockIPs(cfg, []alert.Finding{smtpBruteFrom("203.0.113.9")})
+	if !blocker.IsBlocked(subnet) {
+		t.Fatal("range block did not apply")
+	}
+	var found bool
+	for _, f := range actions {
+		kind, target, _ := blockTarget(f)
+		if kind == "AUTO-NETBLOCK" && target == subnet {
+			found = true
+			if f.Cause == nil || f.Cause.FindingID != alert.FindingID(compromise) || f.Cause.Check != "" {
+				t.Fatalf("range block cause = %+v, want only the earlier compromise ID", f.Cause)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("range block notice missing from actions")
+	}
+	d.dispatchBatch(actions)
+	hooks := capture.events("customer_block")
+	if len(capture.customerEmails()) != 1 || len(hooks) != 1 || len(hooks[0].CSM.CustomerBlocks) != 1 {
+		t.Fatalf("customer emails = %d, webhooks = %+v, want one range alert", len(capture.customerEmails()), hooks)
+	}
+	b := hooks[0].CSM.CustomerBlocks[0]
+	if b.Target != subnet || b.More != 0 || len(b.Hits) != 1 || b.Hits[0].IP != otherIP || b.Hits[0].Account != otherAccount {
+		t.Fatalf("customer block = %+v, want only the other customer", b)
+	}
+}
+
+// Concurrent observers retain each cause without mixing up accounts or
+// suppressing blocks whose check disagrees with the remembered cause.
+func TestCustomerBlockConcurrentCauseObservers(t *testing.T) {
+	d, _, _, capture := customerBlockSetup(t)
+	const workers = 20
+	var wg sync.WaitGroup
+	for i := range workers {
+		ip := fmt.Sprintf("192.0.2.%d", i+1)
+		account := fmt.Sprintf("customer%d@example.com", i+1)
+		d.knownCustomers.Note(ip, knownCustomerIMAP, account, time.Now(), syslogFed)
+		wg.Go(func() {
+			cause := alert.Finding{Check: "mail_account_compromised", Severity: alert.Critical,
+				SourceIP: ip, Mailbox: account, Timestamp: time.Now(), Message: "Mail account compromise: " + account + " from " + ip}
+			d.observeBlocks([]alert.Finding{cause})
+			id := alert.FindingID(cause)
+			notice := alert.Finding{Check: "auto_block", Severity: alert.Critical,
+				Message: "AUTO-BLOCK: " + ip + " blocked", Cause: &alert.Cause{FindingID: id}}
+			other := notice
+			other.Cause = &alert.Cause{FindingID: id, Check: "smtp_bruteforce"}
+			d.observeBlocks([]alert.Finding{notice, other})
+		})
+	}
+	wg.Wait()
+	hooks := capture.events("customer_block")
+	if len(hooks) != workers || len(capture.customerEmails()) != workers {
+		t.Fatalf("emails = %d, webhooks = %d, want %d each", len(capture.customerEmails()), len(hooks), workers)
+	}
+	seen := make(map[string]bool)
+	for _, p := range hooks {
+		blocks := p.CSM.CustomerBlocks
+		if len(blocks) != 1 || blocks[0].Check != "smtp_bruteforce" || len(blocks[0].Hits) != 1 {
+			t.Fatalf("customer blocks = %+v, want only the unrelated block", blocks)
+		}
+		b := blocks[0]
+		if b.Hits[0].IP != b.Target || seen[b.Target] {
+			t.Fatalf("customer block = %+v, duplicate or wrong address", b)
+		}
+		seen[b.Target] = true
 	}
 }
