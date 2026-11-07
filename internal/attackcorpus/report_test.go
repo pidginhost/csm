@@ -98,8 +98,8 @@ func TestWriteReportHasNoContent(t *testing.T) {
 		Remediation: map[string]Remediation{fileA: Untouched},
 	}
 	r := Judge(s, Realtime, o)
-	wantFailures(t, r, "false positive: named_check names "+fileA,
-		"error: unattributed finding host_check on control",
+	wantFailures(t, r, "error: unattributed finding host_check on control",
+		"false positive: named_check names "+fileA,
 		"error: unattributed finding other_check on control")
 
 	dir := filepath.Join(t.TempDir(), "reports")
@@ -134,7 +134,7 @@ func TestWriteReportHasNoContent(t *testing.T) {
 		t.Fatalf("report = %+v, want path realtime and one result", report)
 	}
 	got := report.Results[0]
-	if want := []finding{{"named_check", "HIGH", ""}, {"host_check", "WARNING", ""}, {"other_check", "CRITICAL", ""}}; !reflect.DeepEqual(got.Findings, want) {
+	if want := []finding{{"host_check", "WARNING", ""}, {"named_check", "HIGH", ""}, {"other_check", "CRITICAL", ""}}; !reflect.DeepEqual(got.Findings, want) {
 		t.Errorf("report findings = %+v, want %+v", got.Findings, want)
 	}
 	r.Findings = nil

@@ -1,6 +1,7 @@
 package attackcorpus
 
 import (
+	"cmp"
 	"fmt"
 	"slices"
 	"strings"
@@ -34,10 +35,14 @@ type Result struct {
 // A control's findings are always retained: admission cannot excuse a false positive.
 //
 // An unattributed control finding is a false positive when its text names a
-// sample path, and an attribution error otherwise. @crontab is not matched
-// in text because its real name is the account, which Judge is not given.
-// Drivers must attribute crontab findings and exclude proven unrelated host
-// findings before returning an outcome.
+// sample path, and an attribution error otherwise. On a path with a gap, an
+// unattributed finding whose text names a sample path closes the gap. @crontab
+// is not matched in text because its real name is the account, which Judge is
+// not given. Drivers must attribute crontab findings and exclude proven
+// unrelated host findings before returning an outcome.
+//
+// Findings are sorted by file, check, severity and text, so reports and
+// failures do not depend on the order scanners report in.
 func Judge(s Sample, p Path, o Outcome) Result {
 	e := s.Expect[p]
 	r := Result{
@@ -49,6 +54,9 @@ func Judge(s Sample, p Path, o Outcome) Result {
 			r.Findings = append(r.Findings, f)
 		}
 	}
+	slices.SortFunc(r.Findings, func(a, b Observed) int {
+		return cmp.Or(cmp.Compare(a.File, b.File), cmp.Compare(a.Check, b.Check), cmp.Compare(a.Severity, b.Severity), cmp.Compare(a.Text, b.Text))
+	})
 	r.Failures = failures(s, e, r.Findings, o)
 	r.Pass = len(r.Failures) == 0
 	return r
@@ -79,16 +87,19 @@ func failures(s Sample, e PathExpect, findings []Observed, o Outcome) []string {
 	}
 
 	for _, f := range findings {
-		switch {
-		case f.File == "" && s.Kind == "control":
-			named := slices.IndexFunc(s.Files, func(sf File) bool {
+		named := -1
+		if f.File == "" {
+			named = slices.IndexFunc(s.Files, func(sf File) bool {
 				return sf.Path != "@crontab" && strings.Contains(f.Text, sf.Path)
 			})
-			if named >= 0 {
-				add("false positive: %s names %s", f.Check, s.Files[named].Path)
-			} else {
-				add("error: unattributed finding %s on control", f.Check)
-			}
+		}
+		switch {
+		case f.File == "" && s.Kind == "control" && named >= 0:
+			add("false positive: %s names %s", f.Check, s.Files[named].Path)
+		case f.File == "" && s.Kind == "control":
+			add("error: unattributed finding %s on control", f.Check)
+		case f.File == "" && e.Gap != "" && named >= 0:
+			add("gap closed: %s names %s", f.Check, s.Files[named].Path)
 		case f.File == "":
 			// An unattributed extra finding on a malicious sample.
 		case s.Kind == "control":

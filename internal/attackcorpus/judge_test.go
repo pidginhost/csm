@@ -82,7 +82,7 @@ func TestJudgeMissed(t *testing.T) {
 
 	want := Result{
 		Sample: "judge_case", Category: string(Webshell), Kind: "malicious", Half: "public", Path: Realtime,
-		Failures: r.Failures, Findings: o.Findings, Remediation: o.Remediation,
+		Failures: r.Failures, Findings: []Observed{o.Findings[1], o.Findings[0]}, Remediation: o.Remediation,
 	}
 	if !reflect.DeepEqual(r, want) {
 		t.Errorf("result = %+v\nwant %+v", r, want)
@@ -111,8 +111,8 @@ func TestJudgeControlFinding(t *testing.T) {
 		Remediation: untouched(),
 	}
 	wantFailures(t, Judge(judgeControl(), FullScan, o),
-		"false positive: test_check on "+fileB,
-		"false positive: dir_check on public_html")
+		"false positive: dir_check on public_html",
+		"false positive: test_check on "+fileB)
 
 	wantFailures(t, Judge(judgeControl(), FullScan, Outcome{Remediation: untouched()}))
 }
@@ -126,8 +126,8 @@ func TestJudgeUnattributedFindingOnControlIsReported(t *testing.T) {
 		Remediation: untouched(),
 	}
 	wantFailures(t, Judge(judgeControl(), Realtime, o),
-		"false positive: named_check names "+fileA,
-		"error: unattributed finding host_check on control")
+		"error: unattributed finding host_check on control",
+		"false positive: named_check names "+fileA)
 
 	// The same unattributed finding on a malicious sample is an extra finding.
 	o.Remediation = realtimeOK().Remediation
@@ -170,8 +170,13 @@ func TestJudgeGapClosed(t *testing.T) {
 		t.Errorf("Gap = %q, want %q", r.Gap, gapText)
 	}
 
-	// An unattributed finding does not close the gap.
-	o.Findings = []Observed{{Check: "host_check", Severity: alert.Critical, Text: fileA}}
+	// An unattributed finding closes the gap when its text names a planted
+	// file, as a detector that names the file only in its details would.
+	o.Findings = []Observed{{Check: "host_check", Severity: alert.Critical, Text: "Suspicious file: /tmp/x/acct/" + fileA}}
+	wantFailures(t, Judge(judgeSample(), Tier, o), "gap closed: host_check names "+fileA)
+
+	// One that names no planted file does not.
+	o.Findings = []Observed{{Check: "host_check", Severity: alert.Critical, Text: "nothing about the planted files"}}
 	wantFailures(t, Judge(judgeSample(), Tier, o))
 }
 
@@ -191,8 +196,41 @@ func TestJudgeExtraFindingsPass(t *testing.T) {
 		Observed{Check: "host_check", Severity: alert.Critical, Text: fileB})
 	r := Judge(judgeSample(), Realtime, o)
 	wantFailures(t, r)
-	if !reflect.DeepEqual(r.Findings, o.Findings) {
+	if want := []Observed{o.Findings[2], o.Findings[0], o.Findings[1]}; !reflect.DeepEqual(r.Findings, want) {
 		t.Errorf("findings = %+v, want every observed finding kept", r.Findings)
+	}
+}
+
+// Scanners report in no fixed order, so the report and the failures sort by
+// file, check, severity and text.
+func TestJudgeSortsFindings(t *testing.T) {
+	sorted := []Observed{
+		{Check: "host_check", Severity: alert.Warning, Text: fileB},
+		{Check: "host_check", Severity: alert.Warning, Text: "unrelated"},
+		{Check: "other_check", Severity: alert.Warning, File: fileA},
+		{Check: "test_check", Severity: alert.Warning, File: fileA},
+		{Check: "test_check", Severity: alert.High, File: fileA},
+		{Check: "other_check", Severity: alert.Critical, File: fileB},
+	}
+	var controlFailures []string
+	for i, order := range [][]int{{0, 1, 2, 3, 4, 5}, {5, 4, 3, 2, 1, 0}, {2, 5, 1, 4, 0, 3}} {
+		o := Outcome{Remediation: realtimeOK().Remediation}
+		for _, j := range order {
+			o.Findings = append(o.Findings, sorted[j])
+		}
+		if r := Judge(judgeSample(), Realtime, o); !reflect.DeepEqual(r.Findings, sorted) {
+			t.Errorf("order %v: findings = %+v\nwant %+v", order, r.Findings, sorted)
+		}
+		o.Remediation = untouched()
+		r := Judge(judgeControl(), Realtime, o)
+		if i == 0 {
+			controlFailures = r.Failures
+		} else if !reflect.DeepEqual(r.Failures, controlFailures) {
+			t.Errorf("order %v: failures = %q\nwant %q", order, r.Failures, controlFailures)
+		}
+	}
+	if len(controlFailures) != len(sorted) {
+		t.Errorf("control failures = %q, want one per finding", controlFailures)
 	}
 }
 
