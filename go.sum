@@ -47,8 +47,8 @@ github.com/mdlayher/netlink v1.11.2 h1:HKh2jqe+omdSWcQ88nrT7INE61B0NXfiSPFdgL4Yb
 github.com/mdlayher/netlink v1.11.2/go.mod h1:uT2Yc/QLaZubzDpZIBi9d4GoeLwtp3x1AMeqSRrK2sA=
 github.com/mdlayher/socket v0.8.0 h1:1lIVvHAs3sT623kPkPDa+I0nLVusskwnpWzp6ZUcNyc=
 github.com/mdlayher/socket v0.8.0/go.mod h1:EhNb63aXqexVoTJDblxvDOSuIGIJinC4H5ZktnaJ6Rk=
-github.com/oschwald/maxminddb-golang/v2 v2.8.0 h1:enP6KMn9sCV4bRAg3LfHMaU2qjOP2xqY8LjatJMwufU=
-github.com/oschwald/maxminddb-golang/v2 v2.8.0/go.mod h1:kvJXAdsCahFxSWHiigYomcbP0qnEtsL929Mv98Hz8dM=
+github.com/oschwald/maxminddb-golang/v2 v2.9.0 h1:YpIl3WoA9oIuNvqNaO/aD1N/7Ci2wOqoKH5GWo53H5Y=
+github.com/oschwald/maxminddb-golang/v2 v2.9.0/go.mod h1:3TxexMBcR0ss3SbyYvnqfsDzDjN4o1KCg/nTsaMAivU=
 github.com/pingcap/errors v0.11.4 h1:lFuQV/oaUMGcD2tqt+01ROSmJs75VG1ToEOkZIZ4nE4=
 github.com/pingcap/errors v0.11.4/go.mod h1:Oi8TUi2kEtXXLMJk9l1cGmz20kV3TaQ0usTwv5KuLY8=
 github.com/pkg/errors v0.9.1 h1:FEBLx1zS214owpjy7qsBeixbURkuhQAwrK5UwLGTwt4=

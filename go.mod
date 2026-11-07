@@ -14,7 +14,7 @@ require (
 	github.com/google/nftables v0.3.0
 	github.com/klauspost/compress v1.20.3
 	github.com/mdlayher/netlink v1.11.2
-	github.com/oschwald/maxminddb-golang/v2 v2.8.0
+	github.com/oschwald/maxminddb-golang/v2 v2.9.0
 	github.com/redis/go-redis/v9 v9.23.0
 	github.com/tdewolff/parse/v2 v2.8.20
 	go.etcd.io/bbolt v1.5.0
