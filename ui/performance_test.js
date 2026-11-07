@@ -110,3 +110,28 @@ test('the Redis card says n/a when Redis could not be read, not an empty Redis',
     assert.equal(await card({ redis_mem_mb: 0, redis_maxmem_mb: 0, redis_keys: 0 }), '0 MB / no limit');
     assert.equal(await card({ redis_mem_mb: 300, redis_maxmem_mb: 512, redis_keys: 9 }), '300 / 512 MB');
 });
+
+test('the Redis card clears stale colors during failure and recovery', async () => {
+    const page = perfPage();
+    const states = [
+        { mem: 500, max: 512, keys: 9, text: '500 / 512 MB', color: 'text-danger' },
+        { mem: null, max: null, keys: 9, text: 'n/a', color: '' },
+        { mem: 3, max: 0, keys: null, text: '3 MB / no limit', color: '' },
+        { mem: 300, max: 512, keys: 9, text: '300 / 512 MB', color: 'text-success' },
+        { mem: 0, max: 0, keys: 0, text: '0 MB / no limit', color: '' }
+    ];
+    for (const [index, state] of states.entries()) {
+        if (index > 0) refresh(page);
+        page.respond('/api/v1/performance', 200, {
+            metrics: {
+                cpu_cores: 2, load_avg: [0.1, 0.1, 0.1],
+                redis_mem_mb: state.mem, redis_maxmem_mb: state.max, redis_keys: state.keys
+            },
+            findings: []
+        });
+        await settle();
+        const card = page.document.getElementById('stat-redis');
+        assert.equal(card.textContent, state.text);
+        assert.equal(card.className, 'h1 mb-0' + (state.color ? ' ' + state.color : ''));
+    }
+});

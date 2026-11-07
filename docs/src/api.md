@@ -249,6 +249,17 @@ POST /api/v1/perf/fix-wp-cron    Disable WP-Cron and install a system cron for a
 GET  /api/v1/hardening           Last stored hardening audit report (admin scope)
 ```
 
+### Performance telemetry
+
+`GET /api/v1/performance` returns `metrics` and `findings`. Within `metrics`,
+`redis_mem_mb`, `redis_maxmem_mb`, and `redis_keys` are nullable numbers.
+The memory fields are both `null` when the memory probe fails; `redis_keys`
+is `null` when the separate keyspace probe fails. Zero means a measured
+zero, with `redis_maxmem_mb: 0` indicating no configured memory limit.
+Clients must preserve the distinction between zero and unavailable data.
+The `csm_performance` MCP tool returns the same response. See
+[Performance Monitor](performance.md#api) for details.
+
 ### Accounts at risk
 
 `accounts_at_risk` in `GET /api/v1/stats` lists accounts with a current high or
