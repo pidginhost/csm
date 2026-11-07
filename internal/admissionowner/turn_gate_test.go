@@ -3,6 +3,7 @@ package admissionowner
 import (
 	"errors"
 	"reflect"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -394,5 +395,83 @@ func TestOwnerBatchGatePreservesPendingAndAllowedVerdicts(t *testing.T) {
 				t.Fatalf("resumed verdict ending: %+v", c)
 			}
 		})
+	}
+}
+
+// The turn deadline runs from the turn's start: a slow durable clock write
+// must not push the next selection past the schedule ticker, which fires
+// every turnEvery, or every selecting turn would wait two ticks.
+func TestOwnerTurnDeadlineExcludesTheTick(t *testing.T) {
+	withTestRegistry(t)
+	f := newOwnerFixture(t)
+	blocks := newFakeBlocks()
+	opts := executeOptions(f, blocks)
+	var slow atomic.Pointer[fakeMono]
+	opts.Clock = func() (admission.ClockReading, error) {
+		if m := slow.Load(); m != nil {
+			m.advance(5 * time.Millisecond)
+		}
+		return f.host.clock()
+	}
+	o := f.start(opts)
+	mono := heldMono(t, o)
+	slow.Store(mono)
+	selections := 0
+	setOwnerHook(t, o, &scheduleLedger, func(l *store.AdmissionLedger, lim admission.ScheduleLimits, answers map[admission.CandidateID]admission.Answer) ([]admission.Pick, error) {
+		selections++
+		return l.Schedule(lim, answers)
+	})
+	ticker := func() {
+		t.Helper()
+		if err := o.do(func() error {
+			o.scheduleDue = true
+			o.schedule()
+			return o.scheduleErr
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	start := mono.read()
+	ticker()
+	mono.advance(start.Add(turnEvery).Sub(mono.read()))
+	ticker()
+	if selections != 2 {
+		t.Fatalf("a turn one period after the last one's start selected %d times in all, want 2", selections)
+	}
+}
+
+// An outage inside the batch gate defers waiting work that nothing else
+// holds back, but leaves a capacity deferral as it is: relabelling it would
+// cost a write per candidate and the next served turn would write it back.
+func TestOwnerBatchGateKeepsCapacityDeferrals(t *testing.T) {
+	p := withTestRegistry(t)
+	f := newOwnerFixture(t)
+	blocks := newFakeBlocks()
+	o := f.start(executeOptions(f, blocks))
+	mono := heldMono(t, o)
+	first, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.10")
+	turn(t, o)
+	if c := candidate(t, o, first); c.State != admission.StateVerified {
+		t.Fatalf("first block = %+v", c)
+	}
+	full, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.11")
+	fresh, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.12")
+	if err := o.do(func() error {
+		_, err := o.ledger.Defer(full, admission.ReasonSetFull)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	before := candidate(t, o, full)
+	if err := o.do(func() error { o.hold(errors.New("apply unavailable"), true); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	mono.advance(batchEvery / 2)
+	turn(t, o)
+	if c := candidate(t, o, full); c.Reason != admission.ReasonSetFull || c.Transitions != before.Transitions {
+		t.Fatalf("a capacity deferral was relabelled: %+v, before %+v", c, before)
+	}
+	if c := candidate(t, o, fresh); c.State != admission.StateQueued || c.Reason != admission.ReasonEngineUnavailable {
+		t.Fatalf("waiting work lost its outage deferral: %+v", c)
 	}
 }

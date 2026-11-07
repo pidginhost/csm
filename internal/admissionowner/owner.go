@@ -924,6 +924,9 @@ func (o *Owner) turn() error { return o.runTurn(true) }
 // runTurn is a turn that selects work only when selecting is set; otherwise
 // the queue stays due for a later turn.
 func (o *Owner) runTurn(selecting bool) error {
+	// The next selection's deadline runs from the turn's start, so the
+	// turn's own durable writes cannot push it past the schedule ticker.
+	turnStart := monoNow()
 	// Recording an outcome needs only the saved ledger clock. A failed
 	// current reading must not abandon work that already ran.
 	if err := o.finishPending(); err != nil {
@@ -962,7 +965,7 @@ func (o *Owner) runTurn(selecting bool) error {
 		// Only a selection under the newly installed policy spends the
 		// turn. A live batch gate must not delay a new dry-run policy.
 		if o.executable() {
-			o.nextTurn = monoNow().Add(turnEvery)
+			o.nextTurn = turnStart.Add(turnEvery)
 		}
 		if o.forecasting() {
 			if err := o.forecast(); err != nil {
@@ -1044,7 +1047,9 @@ func (o *Owner) deferBatchGate(selecting bool) error {
 		if err != nil {
 			return fmt.Errorf("reading gated candidate %s: %w", id, err)
 		}
-		if c.State != admission.StateQueued || c.Key.Kind != admission.KindBlockIP ||
+		// A deferral already names why the work waits; relabelling it costs a
+		// write the next served turn undoes.
+		if c.State != admission.StateQueued || c.Key.Kind != admission.KindBlockIP || c.Reason != 0 ||
 			o.now.Before(c.NotBefore) || answers[id] == admission.AnswerPending || answers[id] == admission.AnswerAllow {
 			continue
 		}
