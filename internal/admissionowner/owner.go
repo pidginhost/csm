@@ -898,7 +898,7 @@ func (o *Owner) schedule() {
 	// An executable owner selects, checks and forecasts once a second at
 	// most, whatever made the turn due (spec 3.2). Retirement of earlier
 	// work keeps its own waits.
-	selecting := !o.executable() || !monoNow().Before(o.nextTurn)
+	selecting := (!o.executable() || !monoNow().Before(o.nextTurn)) && !o.batchGated()
 	if selecting && o.executable() {
 		o.nextTurn = monoNow().Add(turnEvery)
 	}
@@ -954,6 +954,11 @@ func (o *Owner) runTurn(selecting bool) error {
 		nextWake = (*store.AdmissionLedger).PreviewWake
 	}
 	switch {
+	case o.batchGated():
+		o.scheduleDue = true
+		if err := o.deferBatchGate(selecting); err != nil {
+			return err
+		}
 	case !selecting:
 		o.scheduleDue = true
 	case o.forecasting():
@@ -989,6 +994,54 @@ func (o *Owner) runTurn(selecting bool) error {
 	// held check owns a separate monotonic deadline across those turns.
 	if o.mayRetire() && !o.heldAt.IsZero() && (o.wakeAt.IsZero() || o.heldAt.Before(o.wakeAt)) {
 		o.wakeAt = o.heldAt
+	}
+	return nil
+}
+
+// batchGated keeps a turn that cannot start a batch from spending fair
+// turns or postponing the next selection. Forecasts and observe previews
+// do not dispatch batches and retain their own cadence.
+func (o *Owner) batchGated() bool {
+	return o.mayExecute() && monoNow().Before(o.nextBatch)
+}
+
+// deferBatchGate reports an execution outage without selecting work or
+// running a probe that cannot be followed by a batch yet. Pending verdicts
+// and allows need no execution; their state stays with the verdict stage.
+func (o *Owner) deferBatchGate(selecting bool) error {
+	// Maintenance turns keep the last scheduling snapshot.
+	if selecting {
+		if err := o.refuseDisabled(); err != nil {
+			return err
+		}
+		if err := o.readSet(); err != nil {
+			return fmt.Errorf("reading gated set: %w", err)
+		}
+	}
+	if o.opts.Blocks() == nil {
+		o.ready(nil, false)
+	}
+	if !o.degraded && o.execHold == nil {
+		return nil
+	}
+	snap, err := o.ledger.QueueSnapshot()
+	if err != nil {
+		return fmt.Errorf("reading gated work: %w", err)
+	}
+	answers := o.answers()
+	for _, item := range snap.Items {
+		id := admission.CandidateID(item.Key)
+		c, err := o.ledger.Candidate(id)
+		if err != nil {
+			return fmt.Errorf("reading gated candidate %s: %w", id, err)
+		}
+		if c.State != admission.StateQueued || c.Key.Kind != admission.KindBlockIP ||
+			o.now.Before(c.NotBefore) || answers[id] == admission.AnswerPending || answers[id] == admission.AnswerAllow {
+			continue
+		}
+		if err := o.endPick(execPick{pick: admission.Pick{ID: id}, c: c}, admission.ReasonEngineUnavailable); err != nil {
+			return err
+		}
 	}
 	return nil
 }

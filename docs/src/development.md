@@ -1178,7 +1178,10 @@ waiting for its timer. An owner with an engine also selects, checks or
 forecasts work once a second at most, including turns that dispatch
 nothing: work that falls due sooner, from a drain or a panel answer, stays
 due for the next second, while retirement of earlier attempts keeps its own
-waits.
+waits. Before the next live batch may start, a turn selects nothing and
+leaves the next selection due. Clock or engine outages still defer waiting
+blocks without spending fair turns or running early probes. Dry-run
+forecasts and previews without an engine keep their own cadence.
 
 The first time an owner executes (only in tests while `liveExecution` is
 false), its live start runs once per ledger, in one transaction, before
