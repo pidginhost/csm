@@ -87,7 +87,7 @@ Open `https://<server>:9443/login`. The package writes an initial admin token to
 - BPF enforcement and PHP relay freezing have their own dry-run controls.
 - Infrastructure, local, allowed, and verified-bot addresses are never blocked automatically. Process termination skips root and recognized system services.
 - Quarantine keeps the original path, owner, mode, and mtime for restore. Firewall changes can apply on a confirmation timer with automatic rollback.
-- By default, YARA-X, PHP taint analysis, zip listings, and mail attachments run in separate workers with no capabilities, no IPv4 or IPv6 sockets, and a memory cap. Unix sockets remain available. See [Service confinement](docs/src/service-confinement.md#parse-worker-units).
+- By default, YARA-X, PHP taint analysis, zip listings, and mail attachments run in separate workers with no capabilities, no IP network access, and a memory cap. See [Service confinement](docs/src/service-confinement.md#parse-worker-units).
 
 Review [Auto-response](docs/src/auto-response.md) before enabling actions on a production host.
 
