@@ -178,6 +178,8 @@ func TestLoadRejectsBadManifests(t *testing.T) {
 			s.Files[0] = File{Path: s.Files[0].Path, Selftest: "no_such_sample"}
 		}, want: "unknown selftest sample"},
 		{name: "b64 outside the sample directory", mutate: func(s *Sample) { s.Files[0].B64 = "../a.b64" }, want: "beside the manifest"},
+		// fixturecheck decodes only .b64 names before its address and term scans.
+		{name: "b64 without the .b64 suffix", mutate: func(s *Sample) { s.Files[0].B64 = "a.txt" }, want: `must end in ".b64"`},
 		{name: "missing b64 file", mutate: func(s *Sample) { s.Files[0].B64 = "missing.b64" }, want: "missing.b64"},
 		{name: "undecodable base64", mutate: func(s *Sample) { s.Files[0].B64 = "bad.b64" }, want: "illegal base64"},
 		{name: "empty base64", mutate: func(s *Sample) { s.Files[0].B64 = "empty.b64" }, want: "empty content"},
@@ -412,6 +414,7 @@ func writeManifest(t *testing.T, dir string, manifest []byte) {
 	files := map[string]string{
 		"sample.json": string(manifest),
 		"a.b64":       "aGFybWxlc3MgdGVzdCB0ZXh0Cg==\n",
+		"a.txt":       "aGFybWxlc3MgdGVzdCB0ZXh0Cg==\n",
 		"bad.b64":     "not base64 at all!\n",
 		"empty.b64":   "",
 	}

@@ -167,6 +167,10 @@ func (s Sample) validate(dir *safepath.Dir) error {
 		if f.B64 != "" && (filepath.Base(f.B64) != f.B64 || !filepath.IsLocal(f.B64)) {
 			return fmt.Errorf("file %q: b64 %q must be a file name beside the manifest", f.Path, f.B64)
 		}
+		// fixturecheck scans sample data decoded; a .b64 name keeps the two in step.
+		if f.B64 != "" && !strings.HasSuffix(f.B64, ".b64") {
+			return fmt.Errorf("file %q: b64 %q must end in \".b64\"", f.Path, f.B64)
+		}
 		if f.Mode&^0o777 != 0 {
 			return fmt.Errorf("file %q: mode %#o has bits beyond the permission bits", f.Path, f.Mode)
 		}

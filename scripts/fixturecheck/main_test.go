@@ -289,42 +289,55 @@ func TestTermsSourceRequiresAFileWhenAsked(t *testing.T) {
 }
 
 // Corpus samples are stored base64-encoded, so an address or private term in
-// a sample is invisible to a scan of the stored text.
+// a sample is invisible to a scan of the stored text. Every data file in the
+// corpus tree is decoded, whatever its name, because the loader decodes any
+// file a manifest names.
 func TestFixturecheckScansDecodedCorpus(t *testing.T) {
-	const name = "internal/attackcorpus/testdata/corpus/webshell/probe/a.php.b64"
 	encode := func(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
 	terms, err := loadTerms(writeTerms(t, "hostseven\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, tc := range []struct {
-		decoded, want string
-		terms         []*regexp.Regexp
-	}{
-		{"<?php\n// peer 8.8.8.8\n", name + ":2: non-documentation IPv4 literal", nil},
-		{"<?php\n// first seen on HostSeven\n", name + ":2: private term", terms},
+	for _, name := range []string{
+		"internal/attackcorpus/testdata/corpus/webshell/probe/a.php.b64",
+		"internal/attackcorpus/testdata/corpus/webshell/probe/a.php.txt",
 	} {
+		for _, tc := range []struct {
+			decoded, want string
+			terms         []*regexp.Regexp
+		}{
+			{"<?php\n// peer 8.8.8.8\n", name + ":2: non-documentation IPv4 literal", nil},
+			{"<?php\n// first seen on HostSeven\n", name + ":2: private term", terms},
+		} {
+			root := fixtureRepo(t)
+			writeFixture(t, root, name, encode(tc.decoded))
+			var output bytes.Buffer
+			if err := check(root, tc.terms, &output); err == nil {
+				t.Errorf("%q: decoded sample was accepted", tc.want)
+			}
+			if !strings.Contains(output.String(), tc.want) || strings.Contains(output.String(), "8.8.8.8") || strings.Contains(strings.ToLower(output.String()), "hostseven") {
+				t.Errorf("missing location or leaked text: %s", &output)
+			}
+		}
+
 		root := fixtureRepo(t)
-		writeFixture(t, root, name, encode(tc.decoded))
+		writeFixture(t, root, name, encode("<?php\n// peer 192.0.2.10\n"))
 		var output bytes.Buffer
-		if err := check(root, tc.terms, &output); err == nil {
-			t.Errorf("%q: decoded sample was accepted", tc.want)
+		if err := check(root, nil, &output); err != nil {
+			t.Fatalf("%s: documentation address rejected: %v\n%s", name, err, &output)
 		}
-		if !strings.Contains(output.String(), tc.want) || strings.Contains(output.String(), "8.8.8.8") || strings.Contains(strings.ToLower(output.String()), "hostseven") {
-			t.Errorf("missing location or leaked text: %s", &output)
+
+		root = fixtureRepo(t)
+		writeFixture(t, root, name, "not base64!\n")
+		if err := check(root, nil, new(bytes.Buffer)); err == nil {
+			t.Fatalf("%s: undecodable corpus sample was accepted", name)
 		}
 	}
 
+	// The manifest is plain JSON and is scanned as stored.
 	root := fixtureRepo(t)
-	writeFixture(t, root, name, encode("<?php\n// peer 192.0.2.10\n"))
-	var output bytes.Buffer
-	if err := check(root, nil, &output); err != nil {
-		t.Fatalf("documentation address rejected: %v\n%s", err, &output)
-	}
-
-	root = fixtureRepo(t)
-	writeFixture(t, root, name, "not base64!\n")
-	if err := check(root, nil, new(bytes.Buffer)); err == nil {
-		t.Fatal("undecodable corpus sample was accepted")
+	writeFixture(t, root, "internal/attackcorpus/testdata/corpus/webshell/probe/sample.json", `{"description": "peer 192.0.2.10"}`+"\n")
+	if err := check(root, nil, new(bytes.Buffer)); err != nil {
+		t.Fatalf("plain manifest rejected: %v", err)
 	}
 }
