@@ -4,14 +4,18 @@ package checks
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -99,6 +103,7 @@ var corpusScanErrors = map[string]bool{
 	"check_timeout":                     true,
 	"account_scan":                      true,
 	"account_scan_truncated":            true,
+	"db_content_scan_incomplete":        true,
 	"yara_scan_incomplete":              true,
 	"js_taint_scan_incomplete":          true,
 	"php_taint_scan_incomplete":         true,
@@ -121,6 +126,48 @@ type corpusSample struct {
 	root, cronDir, quarantine string
 	cfg                       *config.Config
 	state                     *state.Store
+	// queries and wpCLI count the database queries and wp-cli runs the
+	// offline seams answered instead of the network.
+	queries, wpCLI atomic.Int64
+}
+
+// networkAttempts is what the sample's seams kept off the network; Drive
+// adds the requests that reached http.DefaultTransport.
+func (c *corpusSample) networkAttempts() int64 { return c.queries.Load() + c.wpCLI.Load() }
+
+// offlineCmd fails every command the way a missing binary does, so no host
+// tool runs during a replay. Only wp-cli reaches the network (core checksum
+// verification); the other command on these paths, cagefsctl in
+// open_basedir, is a local query.
+type offlineCmd struct{ wpCLI *atomic.Int64 }
+
+func (o offlineCmd) refuse(name string) ([]byte, error) {
+	if filepath.Base(name) == "wp" {
+		o.wpCLI.Add(1)
+	}
+	return nil, &exec.Error{Name: name, Err: exec.ErrNotFound}
+}
+
+func (o offlineCmd) Run(name string, _ ...string) ([]byte, error) { return o.refuse(name) }
+
+func (o offlineCmd) RunAllowNonZero(name string, _ ...string) ([]byte, error) {
+	return o.refuse(name)
+}
+
+func (o offlineCmd) RunContext(_ context.Context, name string, _ ...string) ([]byte, error) {
+	return o.refuse(name)
+}
+
+func (o offlineCmd) RunContextStdout(_ context.Context, name string, _ ...string) ([]byte, error) {
+	return o.refuse(name)
+}
+
+func (o offlineCmd) RunWithEnv(name string, _ []string, _ ...string) ([]byte, error) {
+	return o.refuse(name)
+}
+
+func (offlineCmd) LookPath(file string) (string, error) {
+	return "", &exec.Error{Name: file, Err: exec.ErrNotFound}
 }
 
 func newCorpusSample(t *testing.T) (*corpusSample, error) {
@@ -164,18 +211,38 @@ func newCorpusSample(t *testing.T) (*corpusSample, error) {
 		return nil, err
 	}
 
+	// The cPanel domain map lists the account, so map readers walk this tree
+	// and never the host's real document roots.
+	domains := filepath.Join(base, "userdatadomains")
+	docroot := filepath.Join(c.root, corpusAccount, "public_html")
+	if err = os.WriteFile(domains, []byte("example.com: "+corpusAccount+"==root==main==example.com=="+docroot+"\n"), 0o600); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+
 	withAccountHomeRoots(t, c.root)
 	t.Cleanup(SetQuarantineDirForTest(c.quarantine))
+	t.Cleanup(SetUserdataDomainsPathForTest(domains))
 	withCompanionQueue(t)
 	previousCron, previousCfg, previousDB := cronSpoolDir, config.Active(), store.Global()
+	previousQuery, previousCmd := runMySQLQuery, cmdExec
 	cronSpoolDir = func() string { return c.cronDir }
 	// Remediation reads its allowed roots from the active config.
 	config.SetActive(c.cfg)
 	store.SetGlobal(db)
+	// A query that ran and matched no rows: the database scans see an empty
+	// site instead of dialing the host a sample's wp-config.php names.
+	runMySQLQuery = func(wpDBCreds, string) []string {
+		c.queries.Add(1)
+		return nil
+	}
+	SetCmdRunner(offlineCmd{wpCLI: &c.wpCLI})
 	t.Cleanup(func() {
 		cronSpoolDir = previousCron
 		config.SetActive(previousCfg)
 		store.SetGlobal(previousDB)
+		runMySQLQuery = previousQuery
+		SetCmdRunner(previousCmd)
 		_ = db.Close()
 	})
 	// The panel decides the web roots several checks walk. Pin the primary
@@ -212,28 +279,37 @@ func (c *corpusSample) observe(f alert.Finding) attackcorpus.Observed {
 
 // runTierSample replays one sample through the scheduled deep tier: the file
 // checks of deepChecks() through the production runner and its responders,
-// as the daemon's deep scanner runs them. A baseline run on the empty account
-// with the same state comes first, so the planted files are new to the second
-// run as they are to a periodic tier, and a host finding both runs raise is
-// not taken for the sample's.
+// as the daemon's deep scanner runs them.
 func runTierSample(t *testing.T, s attackcorpus.Sample) attackcorpus.Outcome {
-	fail := func(err error) attackcorpus.Outcome { return attackcorpus.Outcome{Err: err} }
 	c, err := newCorpusSample(t)
 	if err != nil {
-		return fail(err)
+		return attackcorpus.Outcome{Err: err}
 	}
+	return c.replayTier(s)
+}
+
+// replayTier runs a baseline on the empty account with the same state first,
+// so the planted files are new to the second run as they are to a periodic
+// tier, and a host finding both runs raise is not taken for the sample's.
+func (c *corpusSample) replayTier(s attackcorpus.Sample) attackcorpus.Outcome {
+	fail := func(err error) attackcorpus.Outcome { return attackcorpus.Outcome{Err: err} }
 	// The first file-index scan of a process walks everything and later ones
 	// read changed directories. Restart the count so every sample gets the
 	// same pair: a full baseline, then an incremental scan.
 	previousScans := atomic.SwapInt32(&fileIndexScanCount, 0)
-	t.Cleanup(func() { atomic.StoreInt32(&fileIndexScanCount, previousScans) })
-	tier := func() []alert.Finding {
-		findings, _ := runParallelWithContext(context.Background(), c.cfg, c.state, attackCorpusTierChecks(), string(TierDeep), false)
-		return findings
-	}
+	defer atomic.StoreInt32(&fileIndexScanCount, previousScans)
 
-	baseline := tier()
-	if err = scanError(baseline); err != nil {
+	// A throttled check that ran in the baseline would be skipped by the
+	// second run. Those checks only read document roots, which are empty
+	// here, so the baseline has nothing of theirs to subtract.
+	var unthrottled []namedCheck
+	for _, nc := range attackCorpusTierChecks() {
+		if _, throttled := checkThrottleMin[nc.name]; !throttled {
+			unthrottled = append(unthrottled, nc)
+		}
+	}
+	baseline, err := c.tier(unthrottled)
+	if err != nil {
 		return fail(fmt.Errorf("baseline: %w", err))
 	}
 	if entries, readErr := os.ReadDir(c.quarantine); len(entries) != 0 || (readErr != nil && !errors.Is(readErr, fs.ErrNotExist)) {
@@ -243,8 +319,8 @@ func runTierSample(t *testing.T, s attackcorpus.Sample) attackcorpus.Outcome {
 	if err != nil {
 		return fail(err)
 	}
-	after := tier()
-	if err = scanError(after); err != nil {
+	after, err := c.tier(attackCorpusTierChecks())
+	if err != nil {
 		return fail(err)
 	}
 
@@ -252,7 +328,23 @@ func runTierSample(t *testing.T, s attackcorpus.Sample) attackcorpus.Outcome {
 	if err != nil {
 		return fail(err)
 	}
-	return attackcorpus.Outcome{Findings: c.sinceBaseline(baseline, after), Remediation: remediation, CleanedSHA256: cleaned}
+	return attackcorpus.Outcome{
+		Findings: c.sinceBaseline(baseline, after), Remediation: remediation, CleanedSHA256: cleaned,
+		NetworkAttempts: c.networkAttempts(),
+	}
+}
+
+// tier runs the given deep checks once through the production runner. A
+// check the run lists incomplete (throttled, timed out, panicked or short of
+// its tree) did not examine the sample, and neither did a run with a scan
+// error finding.
+func (c *corpusSample) tier(checks []namedCheck) ([]alert.Finding, error) {
+	ctx, gaps := WithCoverageGaps(context.Background())
+	findings, _ := runParallelWithContext(ctx, c.cfg, c.state, checks, string(TierDeep), false)
+	if incomplete := gaps.Snapshot().IncompleteChecks; len(incomplete) != 0 {
+		return nil, fmt.Errorf("incomplete: %v", slices.Sorted(maps.Keys(incomplete)))
+	}
+	return findings, scanError(findings)
 }
 
 // sinceBaseline drops from after only the unattributed findings the baseline
@@ -274,11 +366,18 @@ func (c *corpusSample) sinceBaseline(baseline, after []alert.Finding) []attackco
 // runFullScanSample replays one sample through the operator full account
 // scan with quarantine on: the scan job's runner, then its quarantine step.
 func runFullScanSample(t *testing.T, s attackcorpus.Sample) attackcorpus.Outcome {
-	fail := func(err error) attackcorpus.Outcome { return attackcorpus.Outcome{Err: err} }
 	c, err := newCorpusSample(t)
 	if err != nil {
-		return fail(err)
+		return attackcorpus.Outcome{Err: err}
 	}
+	return c.replayFullScan(t, s)
+}
+
+// replayFullScan reports a scan cut short through check_panic and
+// check_timeout findings only: the account runner keeps no completion record,
+// so there is no coverage handle to read as the tier has.
+func (c *corpusSample) replayFullScan(t *testing.T, s attackcorpus.Sample) attackcorpus.Outcome {
+	fail := func(err error) attackcorpus.Outcome { return attackcorpus.Outcome{Err: err} }
 	planted, original, err := c.plant(s)
 	if err != nil {
 		return fail(err)
@@ -298,7 +397,7 @@ func runFullScanSample(t *testing.T, s attackcorpus.Sample) attackcorpus.Outcome
 	if err != nil {
 		return fail(err)
 	}
-	return attackcorpus.Outcome{Findings: findings, Remediation: remediation, CleanedSHA256: cleaned}
+	return attackcorpus.Outcome{Findings: findings, Remediation: remediation, CleanedSHA256: cleaned, NetworkAttempts: c.networkAttempts()}
 }
 
 // quarantineAsScanJob is the loop ScanJobManager.annotateQuarantine
@@ -407,12 +506,17 @@ func testScanDriver(t *testing.T, p attackcorpus.Path, run func(*testing.T, atta
 			if o.Remediation[w.file] != w.remediation {
 				t.Errorf("%s is %s, want %s", w.file, o.Remediation[w.file], w.remediation)
 			}
+			if o.NetworkAttempts != 0 {
+				t.Errorf("%d database or wp-cli attempts, want none", o.NetworkAttempts)
+			}
 			if r := attackcorpus.Judge(s, p, o); !r.Pass {
 				t.Errorf("judge: %v", r.Failures)
 			}
 		})
-		for i := 0; i < 50 && runtime.NumGoroutine() > goroutines; i++ {
-			time.Sleep(100 * time.Millisecond)
+		// The runner returns once its workers signal done, a moment before
+		// those goroutines exit, so wait a bounded time for them to finish.
+		for deadline := time.Now().Add(5 * time.Second); runtime.NumGoroutine() > goroutines && time.Now().Before(deadline); {
+			time.Sleep(20 * time.Millisecond)
 		}
 		if n := runtime.NumGoroutine() - goroutines; n > 0 {
 			t.Errorf("%s left %d goroutines running", s.Name, n)
@@ -420,6 +524,106 @@ func testScanDriver(t *testing.T, p attackcorpus.Path, run func(*testing.T, atta
 	}
 	if n := attempts.Load(); n != 0 {
 		t.Errorf("%d network attempts, want none", n)
+	}
+}
+
+// A throttled check skipped by the run is reported, not taken for a clean
+// result: the first run stamps every throttled check, so a second run at once
+// skips them.
+func TestAttackCorpusTierThrottledCheckFails(t *testing.T) {
+	useShippedScanEngines(t)
+	c, err := newCorpusSample(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = c.tier(attackCorpusTierChecks()); err != nil {
+		t.Fatalf("first run: %v", err)
+	}
+	_, err = c.tier(attackCorpusTierChecks())
+	if err == nil {
+		t.Fatal("a run that skipped throttled checks passed")
+	}
+	for _, name := range []string{"perf_error_logs", "perf_wp_config", "perf_wp_cron"} {
+		if !strings.Contains(err.Error(), name) {
+			t.Errorf("error %q does not name throttled %s", err, name)
+		}
+	}
+	if strings.Contains(err.Error(), "yara_deep") {
+		t.Errorf("error %q names a check that ran", err)
+	}
+}
+
+// corpusWPConfig names a database host and harmless credentials.
+const corpusWPConfig = `<?php
+define( 'DB_NAME', 'corpus_wp' );
+define( 'DB_USER', 'corpus_wp' );
+define( 'DB_PASSWORD', 'not-a-real-password' );
+define( 'DB_HOST', '192.0.2.1' );
+define( 'DB_CHARSET', 'utf8mb4' );
+$table_prefix = 'wp_';
+if ( ! defined( 'ABSPATH' ) ) {
+	define( 'ABSPATH', __DIR__ . '/' );
+}
+require_once ABSPATH . 'wp-settings.php';
+`
+
+// A WordPress config is ordinary site content, so it is a control. Its
+// database host and the WordPress checksum service must never be reached:
+// the full scan's database scan and core verification ask through seams that
+// answer offline, and the tier runs neither.
+func TestAttackCorpusScansServeHostLookupsOffline(t *testing.T) {
+	useShippedScanEngines(t)
+	attempts := attackcorpus.Offline(t)
+	dir := t.TempDir()
+	writeCorpusManifest(t, dir, "wp_config_control", `{
+		"name": "wp_config_control", "category": "webshell", "kind": "control", "source": "synthetic",
+		"description": "a WordPress config naming a database host", "provenance": "written for the driver test",
+		"files": [{"path": "public_html/wp-config.php", "b64": "wp-config.php.b64"}],
+		"expect": {"realtime": {}, "tier": {}, "fullscan": {}}}`)
+	encoded := base64.StdEncoding.EncodeToString([]byte(corpusWPConfig))
+	if err := os.WriteFile(filepath.Join(dir, "webshell", "wp_config_control", "wp-config.php.b64"), []byte(encoded), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	samples, err := attackcorpus.Load(dir, "private")
+	if err != nil || len(samples) != 1 {
+		t.Fatalf("Load = %d samples, %v; want 1", len(samples), err)
+	}
+
+	for _, d := range []struct {
+		path      attackcorpus.Path
+		run       func(*testing.T, *corpusSample, attackcorpus.Sample) attackcorpus.Outcome
+		reachesDB bool
+	}{
+		{attackcorpus.Tier, func(_ *testing.T, c *corpusSample, s attackcorpus.Sample) attackcorpus.Outcome {
+			return c.replayTier(s)
+		}, false},
+		{attackcorpus.FullScan, func(t *testing.T, c *corpusSample, s attackcorpus.Sample) attackcorpus.Outcome {
+			return c.replayFullScan(t, s)
+		}, true},
+	} {
+		t.Run(string(d.path), func(t *testing.T) {
+			c, err := newCorpusSample(t)
+			if err != nil {
+				t.Fatal(err)
+			}
+			o := d.run(t, c, samples[0])
+			observed, _ := json.Marshal(o.Findings)
+			if o.Err != nil {
+				t.Fatalf("driver error: %v", o.Err)
+			}
+			if q, w := c.queries.Load(), c.wpCLI.Load(); (q > 0) != d.reachesDB || (w > 0) != d.reachesDB {
+				t.Errorf("%d queries and %d wp-cli runs answered offline, want both nonzero: %v", q, w, d.reachesDB)
+			}
+			if o.NetworkAttempts != c.networkAttempts() {
+				t.Errorf("outcome reports %d attempts, seams counted %d", o.NetworkAttempts, c.networkAttempts())
+			}
+			if r := attackcorpus.Judge(samples[0], d.path, o); !r.Pass {
+				t.Errorf("judge: %v; findings %s", r.Failures, observed)
+			}
+		})
+	}
+	if n := attempts.Load(); n != 0 {
+		t.Errorf("%d requests reached http.DefaultTransport, want none", n)
 	}
 }
 

@@ -3,6 +3,7 @@ package attackcorpus
 import (
 	"encoding/json"
 	"errors"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -149,6 +150,25 @@ func TestReplayHelper(t *testing.T) {
 	})
 	if err := WriteReport(os.Getenv("CSM_ATTACK_CORPUS_TEST_REPORT"), Realtime, results); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// The report counts both the requests Offline refused and the lookups a
+// driver's own seams answered.
+func TestReplayAddsDriverNetworkAttempts(t *testing.T) {
+	results := replay(t, Realtime, []Sample{judgeControl()}, func(t *testing.T, _ Sample) Outcome {
+		req, err := http.NewRequest(http.MethodGet, "http://192.0.2.1/", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp, err := http.DefaultTransport.RoundTrip(req); err == nil {
+			_ = resp.Body.Close()
+			t.Error("a request left the offline transport")
+		}
+		return Outcome{Remediation: untouched(), NetworkAttempts: 2}
+	})
+	if len(results) != 1 || results[0].NetworkAttempts != 3 {
+		t.Fatalf("results %+v, want one with 3 network attempts", results)
 	}
 }
 

@@ -48,7 +48,9 @@ type Outcome struct {
 	Remediation   map[string]Remediation
 	CleanedSHA256 map[string]string
 	// NotAdmitted lists sample paths the realtime admission filter dropped.
-	NotAdmitted     []string
+	NotAdmitted []string
+	// NetworkAttempts counts lookups a driver's own seams answered instead of
+	// the network. Drive adds the requests that reached http.DefaultTransport.
 	NetworkAttempts int64
 	Err             error
 }

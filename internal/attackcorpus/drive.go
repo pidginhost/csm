@@ -109,7 +109,7 @@ func replay(t *testing.T, p Path, samples []Sample, run func(t *testing.T, s Sam
 				if o.Err == nil && (t.Failed() || t.Skipped()) {
 					o.Err = errors.New("driver subtest did not pass")
 				}
-				o.NetworkAttempts = attempts.Load() - before
+				o.NetworkAttempts += attempts.Load() - before
 				r := Judge(s, p, o)
 				for _, f := range r.Failures {
 					t.Error(f)

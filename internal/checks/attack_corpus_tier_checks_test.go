@@ -25,7 +25,7 @@ var attackCorpusDeepCheckKind = map[string]string{
 	"group_writable_php":    "file", // PHP file modes in public_html; the web server group comes from /etc/group
 	"open_basedir":          "host", // CageFS state, cPanel user records and EA-PHP config
 	"symlink_attacks":       "file", // symlinks in public_html that leave the account
-	"php_config_changes":    "file", // .user.ini and php.ini in account doc roots, hashes in the state store
+	"php_config_changes":    "file", // .user.ini and php.ini in account doc roots, including those /etc/userdatadomains maps; hashes in the state store
 	"dns_zones":             "host", // zone files in /var/named
 	"ssl_certs":             "host", // AutoSSL logs under /var/cpanel
 	"waf_status":            "host", // ModSecurity install and web server config, which it may also manage
