@@ -500,6 +500,9 @@ returned. Regression tests reopen the ledger during unfinished scope and
 reserved sub-lane rotations, then check service order across the restart.
 Overload recovery uses elapsed-time refill and verifies each reservation's
 charge, so a fresh cursor or an uncharged pick cannot satisfy the test.
+Free-slot rotation tests require a granted reservation, its stored effect,
+and the expected occupancy and charge, including after a limit increase.
+A missing effect must fail rather than count as proof that no victim was taken.
 A schedule passes over candidates the caller names as pending,
 such as one waiting for the panel's verdict: they are never picked or
 deferred, their scopes keep their turns, and the next wake waits only for

@@ -49,15 +49,22 @@ func TestAdmissionLedgerFreeSlotKeepsAnOldBlock(t *testing.T) {
 	f.fillGeneral(2)
 	old := f.verifiedBy("192.0.2.10", admission.SeverityHigh, f.owner("alice"), 4*time.Hour)
 	f.tickAt(f.wall.Add(admission.RotationHold + time.Minute))
-	original, _ := f.effectOf(old)
+	original, found := f.effectOf(old)
+	if !found || !original.Verified() || !original.Holds() {
+		t.Fatalf("the old block holds no verified effect: %+v", original)
+	}
 	f.begin()
 	id := f.freshWith("192.0.2.11", admission.SeverityHigh, f.owner("alice"))
-	_, a, _, err := f.l.Reserve(id, admission.LaneGeneral, f.wall.Add(time.Hour))
-	if err != nil {
-		t.Fatal(err)
+	charged := f.ceilingState()
+	_, a, granted, err := f.l.Reserve(id, admission.LaneGeneral, f.wall.Add(time.Hour))
+	if err != nil || !granted {
+		t.Fatalf("free-slot reservation: granted %v, error %v", granted, err)
 	}
-	if member, _ := f.effectOf(a); member.Victim != (admission.EffectRef{}) {
-		t.Fatalf("a free slot claimed a victim: %+v", member)
+	if member, found := f.effectOf(a); !found || !member.Holds() || member.Partition != admission.PartitionGeneral || member.Victim != (admission.EffectRef{}) {
+		t.Fatalf("free-slot reservation did not hold a general slot without a victim: %+v", member)
+	}
+	if _, tally, _ := f.effectRecords(); tally != (admission.EffectTally{General: 2}) || f.ceilingState().General.Used != charged.General.Used+1 || f.ceilingState().Reserved != charged.Reserved {
+		t.Fatalf("free-slot reservation: tally %+v, ceiling %+v, before %+v", tally, f.ceilingState(), charged)
 	}
 	if kept, _ := f.effectOf(old); kept != original || f.capacityNotices(admission.ReasonSetFull) != 0 {
 		t.Fatalf("old block %+v, want %+v unchanged and no notice", kept, original)
@@ -205,7 +212,11 @@ func TestAdmissionLedgerOverfullPartitionNeverRotates(t *testing.T) {
 	f.tickAt(f.wall.Add(admission.RotationHold))
 	kept := map[admission.ActionID]admission.EffectRecord{}
 	for _, a := range []admission.AttemptRecord{first, second} {
-		kept[a.Attempt.ID], _ = f.effectOf(a)
+		r, found := f.effectOf(a)
+		if !found || !r.Verified() || !r.Holds() {
+			t.Fatalf("the old block holds no verified effect: %+v", r)
+		}
+		kept[a.Attempt.ID] = r
 	}
 	f.begin()
 	id := f.freshWith("192.0.2.12", admission.SeverityHigh, f.owner("alice"))
@@ -218,12 +229,15 @@ func TestAdmissionLedgerOverfullPartitionNeverRotates(t *testing.T) {
 		t.Fatal("a refused reservation changed the ledger")
 	}
 	f.l.SetOccupants(&admission.SetOccupancy{Limit: 7, Unclaimed: 3})
-	_, a, _, err := f.l.Reserve(id, admission.LaneGeneral, f.wall.Add(time.Hour))
-	if err != nil {
-		t.Fatal(err)
+	_, a, granted, err := f.l.Reserve(id, admission.LaneGeneral, f.wall.Add(time.Hour))
+	if err != nil || !granted {
+		t.Fatalf("raised-limit reservation: granted %v, error %v", granted, err)
 	}
-	if member, _ := f.effectOf(a); member.Victim != (admission.EffectRef{}) {
-		t.Fatalf("a raised limit rotated instead of using the free slot: %+v", member)
+	if member, found := f.effectOf(a); !found || !member.Holds() || member.Partition != admission.PartitionGeneral || member.Victim != (admission.EffectRef{}) {
+		t.Fatalf("raised-limit reservation did not hold a general slot without a victim: %+v", member)
+	}
+	if _, tally, _ := f.effectRecords(); tally != (admission.EffectTally{General: 3}) || f.ceilingState().General.Used != charged.General.Used+1 || f.ceilingState().Reserved != charged.Reserved {
+		t.Fatalf("raised-limit reservation: tally %+v, ceiling %+v, before %+v", tally, f.ceilingState(), charged)
 	}
 	for _, old := range []admission.AttemptRecord{first, second} {
 		if r, _ := f.effectOf(old); r != kept[old.Attempt.ID] {
