@@ -8,38 +8,51 @@
 [![Release](https://img.shields.io/github/v/release/pidginhost/csm?display_name=tag)](https://github.com/pidginhost/csm/releases)
 [![License: AGPL-3.0-or-later](https://img.shields.io/github/license/pidginhost/csm?color=blue)](LICENSE)
 
-> **Local security monitoring and automated response for Linux web servers.** First-class coverage for cPanel/WHM shared hosting, with platform-aware checks for Plesk, DirectAdmin, and panel-free hosts.
+> **Local security monitoring and automated response for Linux web servers.** Runs on AlmaLinux, Rocky, RHEL, CloudLinux, Ubuntu, and Debian, with or without a control panel. cPanel/WHM hosts get the deepest account and CMS integration.
 
-CSM combines real-time file, authentication, web, mail, and network watchers with scheduled integrity, account, content, and database scans. Content scanning pairs YAML and YARA-X signatures with data-flow analyzers for PHP and JavaScript, and an optional PHP Shield blocks webshell execution at runtime. State stays on the host. CSM exposes a Web UI and API, and can respond through nftables, quarantine, reversible virtual patches, mail controls, and targeted remediation.
+CSM is one Go daemon. It watches files, logins, web traffic, mail, processes, and network connections in real time, and runs scheduled integrity, account, content, and database scans. Content scanning pairs YAML and YARA-X signatures with PHP and JavaScript data-flow analysis. CSM responds through nftables, quarantine, reversible virtual patches, mail controls, and targeted cleanup. State stays on the host, and the Web UI and API are built in.
 
 [Documentation](https://pidginhost.github.io/csm/) | [Installation](docs/src/installation.md) | [Configuration](docs/src/configuration.md) | [CLI](docs/src/cli.md) | [Web UI](docs/src/webui.md) | [Releases](https://github.com/pidginhost/csm/releases)
 
 ## What CSM covers
 
-| Problem | Detection and response |
+| Threat | Detection and response |
 |---|---|
-| Mailbox takeover and outbound spam | Mail log correlation, account attribution, filter and forwarder audit, PHP relay guard, blocking, mail freeze |
+| Mailbox takeover and outbound spam | SMTP, IMAP, and POP brute-force and slow password spray detection, mail log correlation, account attribution, bots abusing website forms, filter and forwarder audit, PHP relay detection, blocking, mail freeze |
+| Inbound spam and mail malware | rspamd spam filtering with learning from users' spam folders and optional feeds such as Spamhaus DQS; attachment scanning with ClamAV and YARA-X; Email page statistics |
 | WordPress and admin login attacks | Login flood, XML-RPC, and credential-stuffing detection; bundled ModSecurity rules for exploited CVEs |
 | Webshells, phishing, and injected code | YAML and YARA-X signatures, PHP and JavaScript data-flow analysis, PHP Shield runtime blocking, quarantine |
 | Exposed files and vulnerable software | Probe-confirmed exposed dumps, backups, and repositories; known-vulnerable plugin inventory; reversible virtual patches |
-| Vulnerability and URL scanners | Per-source probe profiling, claimed-bot verification, ASN crawl detection, challenge routing, firewall response |
+| Scanners and crawlers | Per-source probe profiling, claimed-bot verification, ASN crawl detection, challenge routing, firewall response |
 | Compromised CMS databases | WordPress, Joomla, Drupal, Magento, OpenCart: stored code, hidden links, spam, doorways, rogue admins; reversible cleanup for supported rows and objects |
-| WAF and firewall operations | ModSecurity event correlation and per-domain coverage gaps, nftables, GeoIP, subnet escalation, rollback-confirmed changes |
-| Host compromise indicators | Process, account, SSH, cron, and package drift, C2 connections, BPF telemetry, hardening audit, CVE mitigations |
+| WAF and firewall | ModSecurity event correlation and per-domain coverage gaps, nftables, GeoIP, subnet escalation, rollback-confirmed changes |
+| Host compromise | Process, account, SSH, cron, and package drift, C2 connections, BPF telemetry, hardening audit, CVE mitigations |
 | Fleet observability | HTTPS API, SSE findings, incidents, forensic snapshots, Prometheus, audit log, syslog, webhooks, SIEM backfill, optional read-only MCP endpoint for support agents |
 
 Detailed coverage is documented under [Real-time detection](docs/src/detection-realtime.md), [Critical checks](docs/src/detection-critical.md), [Deep checks](docs/src/detection-deep.md), and [Incidents](docs/src/incidents.md).
 
 ## Platform support
 
-| Platform | Coverage |
-|---|---|
-| cPanel/WHM on CloudLinux, AlmaLinux, or Rocky with Apache/LiteSpeed | Primary target. Full account, WordPress, Exim, WHM plugin, firewall, PHP Shield (CageFS-aware on CloudLinux), and remediation coverage. |
-| Plesk or DirectAdmin on a supported Linux distribution | Panel and web-server paths are detected. Generic host/web checks run; cPanel-only integrations skip. |
-| AlmaLinux, Rocky, RHEL, or CentOS Stream 8+ | Generic checks with RPM integrity on Apache, Nginx, LiteSpeed, or hosts without a web server. |
-| Ubuntu 20.04+ or Debian 11+ | Generic checks with dpkg/debsums integrity on Apache, Nginx, LiteSpeed, or hosts without a web server. |
+CSM detects the OS, control panel, and web server at startup and runs the checks that apply. A host without a panel is a supported target, not a fallback.
 
-Packages are published for x86_64 and ARM64; cPanel itself is x86_64-only. Release binaries link YARA-X statically, include journald and BPF support, and need glibc 2.28 or newer.
+| Host | Coverage |
+|---|---|
+| Every supported host | Real-time file and webshell scanning, web login attacks from access logs, SSH and PAM logins, ModSecurity monitoring, nftables firewall and auto-response, RPM or dpkg/debsums package integrity, host drift, BPF telemetry where the kernel supports it, hardening audit, Web UI, API, and alerts |
+| Postfix with Dovecot | SMTP AUTH, IMAP, POP3, and ManageSieve brute-force and compromise detection from log files or journald, Postfix hardening checks, optional rspamd spam filtering |
+| cPanel/WHM | Adds the account registry, WHM and cPanel login monitoring, Exim mail controls, rspamd spam filtering with the webmail Junk button, PHP relay detection, Email AV on the Exim spool, and the WHM plugin |
+| Plesk or DirectAdmin | Account homes and web log paths are detected; cPanel integrations skip |
+
+Requirements:
+
+- AlmaLinux, Rocky, RHEL, CloudLinux, or CentOS Stream 8+, Ubuntu 20.04+, or Debian 11+. cPanel hosts run CloudLinux, AlmaLinux, Rocky, or Ubuntu.
+- Apache, Nginx, LiteSpeed, or no web server.
+- x86_64 or ARM64; cPanel itself is x86_64-only. Release binaries link YARA-X statically, include journald and BPF support, and need glibc 2.28 or newer.
+
+On hosts without cPanel:
+
+- Set `account_roots` to the web roots. Real-time document-root rules, scheduled YARA sweeps, web-root performance checks, and remediation then cover them. Many account and CMS scans still expect `public_html` beneath account homes; see [Deep checks](docs/src/detection-deep.md#platform-support).
+- SMTP brute-force detection on Postfix needs [Dovecot rejection logging](docs/src/detection-realtime.md#smtp--dovecot-brute-force-tracker). Learning from Junk folders needs Dovecot 2.3 and Maildir; see [Postfix hosts](docs/src/antispam.md#postfix-hosts).
+- PHP Shield setup finds EA-PHP, alt-PHP, and lsphp builds and handles CageFS on CloudLinux. Other PHP builds need a manual `auto_prepend_file` line.
 
 ## Quick start
 
@@ -53,31 +66,28 @@ sudo csm baseline
 sudo csm doctor
 ```
 
-Open `https://<server>:9443/login`. The package generates an initial admin token in `/etc/csm/csm.yaml` and a self-signed certificate under the state directory unless explicit TLS paths are configured.
+Open `https://<server>:9443/login`. The package writes an initial admin token to `/etc/csm/csm.yaml` and creates a self-signed certificate unless TLS paths are configured.
 
-The baseline records the hashes of the binary, `csm.yaml`, and every non-exempt conf.d drop-in. After a later hand edit, run `sudo csm rehash` before restarting: the daemon refuses a config whose hash it did not record, and `csm doctor` reports the mismatch while the old daemon is still running. The check catches edits that were never recorded, but it does not stop anyone who can write `/etc/csm`, because they can record new hashes too. Automation-owned overrides go in `/etc/csm/conf.d/*.yaml`; see [Configuration](docs/src/configuration.md#confd-drop-ins) for merge order, trust, and integrity rules.
+`csm baseline` records hashes of the binary and its configuration. After a hand edit, run `sudo csm rehash` before restarting: the daemon refuses a config it did not record, and `csm doctor` reports the mismatch before you restart. This catches unrecorded edits; it does not stop anyone who can write `/etc/csm`. Put automation-owned overrides in `/etc/csm/conf.d/*.yaml`; see [Configuration](docs/src/configuration.md#confd-drop-ins).
 
 ## How it runs
 
-- Real-time watchers process filesystem, authentication, access-log, mail, PAM, BPF, and ModSecurity events.
-- Critical checks run every 10 minutes; deeper account, CMS, package, content, and database checks run every 60 minutes by default.
-- Eligible content and exposed-file findings are re-verified every deep-scan cycle. They clear only when the condition is confirmed gone. If flagged content is gone but its file changed, only a replacement proven inert is downgraded; uncertain cases stay open. See [Re-verifying findings](docs/src/detection-deep.md#re-verifying-findings).
-- Signatures ship with the package: YAML rules cover real-time scanning and finding re-checks; optional YARA-X rules also cover scheduled and email attachment scanning. Remote YAML and optional [YARA Forge](docs/src/signatures.md#yara-forge-integration) updates are signature-verified.
-- Platform detection picks the OS, control panel, web server, paths, logs, and applicable checks. Panel-specific checks skip where their panel is absent.
-- State is stored in bbolt with optional retention sweeps, automatic compaction, backup/restore, and audit export.
-- CSM has no required SaaS dependency. External reputation, GeoIP, reporting, and panel integrations are optional.
+- Real-time watchers handle filesystem, authentication, access-log, mail, PAM, BPF, and ModSecurity events.
+- Critical checks run every 10 minutes and deep checks every 60 minutes by default.
+- Eligible content and exposed-file findings are re-checked every deep scan and clear only when the problem is confirmed gone. See [Re-verifying findings](docs/src/detection-deep.md#re-verifying-findings).
+- Rules ship with the package. YAML rules cover real-time scanning and finding re-checks; optional YARA-X rules also cover scheduled and attachment scanning. Remote YAML and optional [YARA Forge](docs/src/signatures.md#yara-forge-integration) updates are signature-verified.
+- State lives in bbolt, with optional retention sweeps, automatic compaction, backup and restore, and audit export.
+- No SaaS dependency. Reputation, GeoIP, reporting, and panel integrations are optional.
 
 ## Safety defaults
 
-- `mode: observe` runs detection and alerting without automatic host remediation or integration updates, and refuses a config that still enables a state-changing subsystem. See [Observe mode](docs/src/observe-mode.md).
-- Auto-response is disabled until explicitly enabled.
-- Automatic IP and subnet blocking starts in dry-run unless `auto_response.dry_run: false` is explicit. This is a network-response guard, not a universal simulation mode for file cleanup or process actions.
-- Exposed-file virtual patches are off by default. Set manual mode to preview or apply them by hand. Automatic mode also requires auto-response and honors its dry-run setting.
-- BPF enforcement and PHP-relay freezing have their own dry-run controls.
-- Infrastructure, local, allowed, and verified-bot addresses are protected from automatic blocking.
-- Process termination excludes root and recognized system services.
-- Quarantine preserves the original path, ownership, permissions, and mtime for restoration.
-- Firewall configuration can be applied with a confirmation timer and automatic rollback.
+- `mode: observe` detects and alerts without automatic remediation or integration updates, and refuses a config that still enables a state-changing subsystem. See [Observe mode](docs/src/observe-mode.md).
+- Auto-response is off until enabled. Automatic IP and subnet blocking then starts in dry run until `auto_response.dry_run: false` is set. Dry run guards network responses only, not file cleanup or process actions.
+- Virtual patches for exposed files are off by default. Manual mode previews or applies them by hand; automatic mode also needs auto-response and honors dry run.
+- BPF enforcement and PHP relay freezing have their own dry-run controls.
+- Infrastructure, local, allowed, and verified-bot addresses are never blocked automatically. Process termination skips root and recognized system services.
+- Quarantine keeps the original path, owner, mode, and mtime for restore. Firewall changes can apply on a confirmation timer with automatic rollback.
+- By default, YARA-X, PHP taint analysis, zip listings, and mail attachments run in separate workers with no capabilities, no IP network access, and a memory cap. See [Service confinement](docs/src/service-confinement.md#parse-worker-units).
 
 Review [Auto-response](docs/src/auto-response.md) before enabling actions on a production host.
 
