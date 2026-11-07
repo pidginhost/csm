@@ -8,7 +8,7 @@
 | Ubuntu 20.04+ / Debian 11+ | Apache (`apache2`), Nginx, LiteSpeed, or none | .deb | Same, with `debsums`/`dpkg --verify` in place of `rpm -V`. |
 | cPanel/WHM on CloudLinux / AlmaLinux / Rocky / Ubuntu | Apache (EA4) or LiteSpeed, with or without ea-nginx | .rpm or .deb | Adds cPanel account, WordPress, Exim, and WHM plugin coverage. |
 
-Postfix hosts with Dovecot also get mail login detection and optional [rspamd spam filtering](antispam.md#postfix-hosts). On hosts without cPanel, set `account_roots` so site scans find the web roots; see [deep check platform support](detection-deep.md#platform-support).
+Postfix hosts with Dovecot also get mail login detection and optional [rspamd spam filtering](antispam.md#postfix-hosts). On hosts without cPanel, set `account_roots` for real-time document-root rules, scheduled YARA sweeps and web-root performance checks. Other account and CMS scans still depend on account layouts; see [deep check platform support](detection-deep.md#platform-support).
 
 The daemon auto-detects the OS, control panel (cPanel/Plesk/DirectAdmin/none), and web server (Apache/Nginx/LiteSpeed) at startup. The detected platform is logged at startup as:
 

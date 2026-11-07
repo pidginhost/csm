@@ -74,7 +74,7 @@ Open `https://<server>:9443/login`. The package writes an initial admin token to
 
 - Real-time watchers handle filesystem, authentication, access-log, mail, PAM, BPF, and ModSecurity events.
 - Critical checks run every 10 minutes and deep checks every 60 minutes by default.
-- Content and exposed-file findings are re-checked every deep scan and clear only when the problem is confirmed gone. See [Re-verifying findings](docs/src/detection-deep.md#re-verifying-findings).
+- Eligible content and exposed-file findings are re-checked every deep scan and clear only when the problem is confirmed gone. See [Re-verifying findings](docs/src/detection-deep.md#re-verifying-findings).
 - Rules ship with the package. YAML rules cover real-time scanning and finding re-checks; optional YARA-X rules also cover scheduled and attachment scanning. Remote YAML and optional [YARA Forge](docs/src/signatures.md#yara-forge-integration) updates are signature-verified.
 - State lives in bbolt, with optional retention sweeps, automatic compaction, backup and restore, and audit export.
 - No SaaS dependency. Reputation, GeoIP, reporting, and panel integrations are optional.
@@ -87,7 +87,7 @@ Open `https://<server>:9443/login`. The package writes an initial admin token to
 - BPF enforcement and PHP relay freezing have their own dry-run controls.
 - Infrastructure, local, allowed, and verified-bot addresses are never blocked automatically. Process termination skips root and recognized system services.
 - Quarantine keeps the original path, owner, mode, and mtime for restore. Firewall changes can apply on a confirmation timer with automatic rollback.
-- By default, YARA-X, PHP analysis, zip listings, and mail attachments are parsed in separate workers with no capabilities, no network, and a memory cap. See [Service confinement](docs/src/service-confinement.md#parse-worker-units).
+- By default, YARA-X, PHP taint analysis, zip listings, and mail attachments run in separate workers with no capabilities, no IPv4 or IPv6 sockets, and a memory cap. Unix sockets remain available. See [Service confinement](docs/src/service-confinement.md#parse-worker-units).
 
 Review [Auto-response](docs/src/auto-response.md) before enabling actions on a production host.
 

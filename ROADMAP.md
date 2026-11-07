@@ -85,12 +85,12 @@ Design: [auto-response safety model](docs/src/design/auto-response-safety-model.
 **Problem:** file responses share persistent budgets, failure pauses and
 identity revalidation, and the risk tier table in `internal/privops` has a
 completeness test. Automatic IP responses also pass through the admission
-ledger, which forecasts each block against the hourly ceiling and the
-temporary block set, with priority eviction, equal-priority rotation and
-per-scope shares, but executes none, so the existing blocking paths still
-decide every block. Other response families have no shared limits or failure
-pause, not every action has a rollback and identity proof, and the reputation
-escalation loop has no feedback-lifecycle guard.
+ledger, which previews capacity without applying blocks. With the firewall
+enabled outside observe mode, dry run also forecasts occupancy, priority
+eviction, equal-priority rotation and per-scope shares. Existing blocking
+paths still decide every block. Other response families have no shared limits
+or failure pause, not every action has a rollback and identity proof, and the
+reputation escalation loop has no feedback-lifecycle guard.
 
 **Acceptance:** every reversible tier 2 to 4 action has a rollback test; a
 broken detector cannot exceed its breaker; PID reuse, symlink swap, CageFS
@@ -494,13 +494,12 @@ modified copy still does.
 
 ### Account and CMS scans on hosts without cPanel
 
-**Problem:** host, web, mail and real-time checks run on every supported
-host, and `account_roots` points real-time document-root rules, scheduled
-YARA sweeps, performance checks and remediation at custom web roots. The
-account and CMS scans listed as cPanel-only under
-[deep check platform support](docs/src/detection-deep.md#platform-support)
-still build `/home/<user>/public_html` paths themselves, so on a host with
-sites under `/var/www` or Plesk vhosts they find nothing and say nothing.
+**Problem:** `account_roots` reaches real-time document-root rules, scheduled
+YARA sweeps, web-root performance checks and remediation. Other account and
+CMS scans use platform account homes but still depend on `public_html`,
+addon-directory patterns or cPanel metadata. Plesk account homes are detected,
+yet site coverage remains uneven; custom roots under `/var/www` can be missed.
+See [deep check platform support](docs/src/detection-deep.md#platform-support).
 
 **Acceptance:** every account and CMS scan finds sites through one resolver
 that honours `account_roots` and the detected panel layout; the same planted

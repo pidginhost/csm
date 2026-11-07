@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3.40 to 3.43](docs/changelog/3.40-3.43.md), [3.30 to 3.39](docs/changelog/3.30-3.39.md), [3.20 to 3.29](docs/changelog/3.20-3.29.md), [3.10 to 3.19](docs/changelog/3.10-3.19.md), [3.0 to 3.9](docs/changelog/3.0-3.9.md), [2.x](docs/changelog/2.x.md).
 
+## [Unreleased]
+
+### Fixed
+
+- Installation guidance now distinguishes custom web-root coverage from account and CMS scans that still depend on account layouts.
+
 ## [4.10.1] - 2026-11-07
 
 ### Security
@@ -77,5 +83,6 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 - Doctor no longer reports CSM's own scan workers as CloudLinux cages missing the PHP Shield event mount.
 
+[Unreleased]: https://github.com/pidginhost/csm/compare/v4.10.1...HEAD
 [4.10.1]: https://github.com/pidginhost/csm/compare/v4.10.0...v4.10.1
 [4.10.0]: https://github.com/pidginhost/csm/compare/v4.9.0...v4.10.0
