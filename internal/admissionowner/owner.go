@@ -898,10 +898,7 @@ func (o *Owner) schedule() {
 	// An executable owner selects, checks and forecasts once a second at
 	// most, whatever made the turn due (spec 3.2). Retirement of earlier
 	// work keeps its own waits.
-	selecting := (!o.executable() || !monoNow().Before(o.nextTurn)) && !o.batchGated()
-	if selecting && o.executable() {
-		o.nextTurn = monoNow().Add(turnEvery)
-	}
+	selecting := !o.executable() || !monoNow().Before(o.nextTurn)
 	err := o.runTurn(selecting)
 	if err != nil {
 		o.scheduleDue = true
@@ -961,12 +958,17 @@ func (o *Owner) runTurn(selecting bool) error {
 		}
 	case !selecting:
 		o.scheduleDue = true
-	case o.forecasting():
-		if err := o.forecast(); err != nil {
-			return err
-		}
 	default:
-		if err := o.serve(); err != nil {
+		// Only a selection under the newly installed policy spends the
+		// turn. A live batch gate must not delay a new dry-run policy.
+		if o.executable() {
+			o.nextTurn = monoNow().Add(turnEvery)
+		}
+		if o.forecasting() {
+			if err := o.forecast(); err != nil {
+				return err
+			}
+		} else if err := o.serve(); err != nil {
 			return err
 		}
 	}
@@ -1009,11 +1011,13 @@ func (o *Owner) batchGated() bool {
 // running a probe that cannot be followed by a batch yet. Pending verdicts
 // and allows need no execution; their state stays with the verdict stage.
 func (o *Owner) deferBatchGate(selecting bool) error {
+	// Opt-outs are terminal even on maintenance turns, before an outage
+	// can report them as waiting for execution.
+	if err := o.refuseDisabled(); err != nil {
+		return err
+	}
 	// Maintenance turns keep the last scheduling snapshot.
 	if selecting {
-		if err := o.refuseDisabled(); err != nil {
-			return err
-		}
 		if err := o.readSet(); err != nil {
 			return fmt.Errorf("reading gated set: %w", err)
 		}
@@ -1023,6 +1027,11 @@ func (o *Owner) deferBatchGate(selecting bool) error {
 	}
 	if !o.degraded && o.execHold == nil {
 		return nil
+	}
+	// Deferrals bypass selection, so they need its eligibility check:
+	// stale evidence and changed ownership must keep their own endings.
+	if err := o.ledger.Revalidate(); err != nil {
+		return fmt.Errorf("revalidating gated work: %w", err)
 	}
 	snap, err := o.ledger.QueueSnapshot()
 	if err != nil {

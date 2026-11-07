@@ -1182,6 +1182,11 @@ waits. Before the next live batch may start, a turn selects nothing and
 leaves the next selection due. Clock or engine outages still defer waiting
 blocks without spending fair turns or running early probes. Dry-run
 forecasts and previews without an engine keep their own cadence.
+The policy installed at the turn boundary decides whether the batch wait
+applies; changing between live execution and dry run does not spend a turn
+that cannot select work. During a batch wait, opt-outs end silently before
+any outage is reported. Outage deferrals revalidate waiting work first, so
+expired evidence and changed ownership keep their own terminal reasons.
 
 The first time an owner executes (only in tests while `liveExecution` is
 false), its live start runs once per ledger, in one transaction, before
