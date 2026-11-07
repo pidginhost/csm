@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"runtime"
 	"sync"
 
 	yara_x "github.com/VirusTotal/yara-x/go"
@@ -131,9 +130,6 @@ func LoadRules(r io.Reader) (*Rules, error) {
 	if err != nil {
 		return nil, fmt.Errorf("loading compiled YARA rules: %w", err)
 	}
-	// ReadFrom omits the finalizer that the binding's compiler installs.
-	// Attach it to the native wrapper so every scanner reference keeps it alive.
-	runtime.SetFinalizer(rules, (*yara_x.Rules).Destroy)
 	return &Rules{rules: rules}, nil
 }
 

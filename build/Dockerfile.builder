@@ -1,4 +1,4 @@
-# CSM Builder Image -- Go 1.26 + glibc + pre-compiled YARA-X static
+# CSM Builder Image -- Go + glibc + pre-compiled YARA-X static
 # library + clang/libbpf for bpf2go-generated kernel programs.
 # ARM64 is phase 2 of ROADMAP.md item 1.
 #
@@ -54,7 +54,7 @@ RUN dnf -y install dnf-plugins-core epel-release \
     && dnf -y install php-cli \
     && dnf clean all
 
-# Go 1.26.2 from the official tarball. Alma 8's repos track older
+# Go (GO_VERSION below) from the official tarball. Alma 8's repos track older
 # Go; we want the exact version csm is developed against.
 #
 # We derive GOARCH from `uname -m` at build time rather than relying
@@ -104,7 +104,7 @@ RUN curl -fsSL https://sh.rustup.rs | \
 # cargo-c: builds Rust libraries as C-compatible .a + .h + .pc.
 RUN cargo install cargo-c@0.10.26 --locked
 
-# Compile YARA-X v1.22.0 static library, install to /usr/local. The
+# Compile YARA-X v1.23.0 static library, install to /usr/local. The
 # --library-type=staticlib flag ensures cargo-c emits only the .a
 # (not a .so) — we link YARA-X statically into the csm binary so
 # there is no external YARA-X dependency at deploy time. The csm
@@ -114,7 +114,7 @@ RUN cargo install cargo-c@0.10.26 --locked
 # go.mod — the Go bindings reference C symbols (e.g.
 # yrx_scanner_fast_scan added in 1.17) that must exist in the
 # linked static lib.
-RUN git clone --depth 1 --branch v1.22.0 \
+RUN git clone --depth 1 --branch v1.23.0 \
         https://github.com/VirusTotal/yara-x.git /tmp/yara-x \
     && cd /tmp/yara-x \
     && cargo cinstall -p yara-x-capi --release \
