@@ -3,7 +3,7 @@
   "category": "webshell",
   "kind": "malicious",
   "source": "fixture",
-  "description": "A legacy preg_replace /e shell that evaluates a POST parameter as the replacement. Left in place on every path: realtime moves only webshell or dropper signature matches on high-entropy files of 512 bytes or more and never moves on a YARA match, and yara_match_scheduled is on neither scan quarantine list.",
+  "description": "A legacy preg_replace /e shell that evaluates a POST parameter as the replacement. Left in place on every path: realtime moves only webshell or dropper signature matches on high-entropy files of 512 bytes or more and never moves on a YARA match, yara_match_scheduled is on neither scan quarantine list and the tier rates suspicious_php_content only High.",
   "provenance": "internal/checks/injection_rce_gaps_test.go TestAnalyzePHPContentPregReplaceEvalReplacementRequestFlagged",
   "files": [
     {

@@ -298,6 +298,9 @@ func (c *corpusSample) replayTier(s attackcorpus.Sample) attackcorpus.Outcome {
 	// same pair: a full baseline, then an incremental scan.
 	previousScans := atomic.SwapInt32(&fileIndexScanCount, 0)
 	defer atomic.StoreInt32(&fileIndexScanCount, previousScans)
+	// php_content likewise skips rolling coverage every sixth host scan.
+	previousContentScans := atomic.SwapInt32(&phpContentHostScanCount, 0)
+	defer atomic.StoreInt32(&phpContentHostScanCount, previousContentScans)
 
 	// A throttled check that ran in the baseline would be skipped by the
 	// second run. Those checks only read document roots, which are empty
@@ -524,6 +527,42 @@ func testScanDriver(t *testing.T, p attackcorpus.Path, run func(*testing.T, atta
 	}
 	if n := attempts.Load(); n != 0 {
 		t.Errorf("%d network attempts, want none", n)
+	}
+}
+
+// Every sixth host scan in a process, php_content rereads its fixed
+// directories and skips rolling coverage, which is the only tier pass that
+// reaches PHP elsewhere in a doc root. A replay must not depend on how many
+// scans ran before it. YARA misses this loader (the self-test bundle records
+// the gap), so only rolling coverage can report it.
+func TestAttackCorpusTierPinsPHPContentCadence(t *testing.T) {
+	useShippedScanEngines(t)
+	attackcorpus.Offline(t)
+	const loader = "public_html/wp-content/cache/object/loader.php"
+	dir := t.TempDir()
+	writeCorpusManifest(t, dir, "rolling_only", fmt.Sprintf(`{
+		"name": "rolling_only", "category": "webshell", "kind": "malicious", "source": "fixture",
+		"description": "a loader outside the fixed php_content directories", "provenance": "self-test bundle",
+		"files": [{"path": %q, "selftest": "obfuscated_base64_loader"}],
+		"expect": {"realtime": {"gap": "not driven by this test"}, "tier": {"gap": "not driven by this test"}, "fullscan": {"gap": "not driven by this test"}}}`, loader))
+	samples, err := attackcorpus.Load(dir, "private")
+	if err != nil || len(samples) != 1 {
+		t.Fatalf("Load = %d samples, %v; want 1", len(samples), err)
+	}
+	// Left alone, the baseline and the planted run are the fifth and sixth.
+	previous := atomic.SwapInt32(&phpContentHostScanCount, 4)
+	t.Cleanup(func() { atomic.StoreInt32(&phpContentHostScanCount, previous) })
+
+	o := runTierSample(t, samples[0])
+	observed, _ := json.Marshal(o.Findings)
+	if o.Err != nil {
+		t.Fatalf("driver error: %v", o.Err)
+	}
+	if !slices.ContainsFunc(o.Findings, func(f attackcorpus.Observed) bool { return f.File == loader }) {
+		t.Errorf("rolling coverage did not reach %s: %s", loader, observed)
+	}
+	if got := atomic.LoadInt32(&phpContentHostScanCount); got != 4 {
+		t.Errorf("php_content scan count = %d after the replay, want 4 restored", got)
 	}
 }
 
