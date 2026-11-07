@@ -58,11 +58,16 @@ func matchesTerm(line []byte, terms []*regexp.Regexp) bool {
 	return false
 }
 
-// isCorpusSample reports whether path is attack corpus sample data: any file
-// in the corpus tree except a manifest. Samples are stored base64-encoded, so
-// only their decoded text shows what they contain.
+// isCorpusSample distinguishes encoded payloads from corpus notes and Go fuzz
+// seeds, which are scanned as text. Sample data lives under
+// <corpus>/<category>/<sample>/; .b64 files are decoded at any depth.
 func isCorpusSample(path string) bool {
-	return strings.HasPrefix(path, "internal/attackcorpus/testdata/") && !strings.HasSuffix(path, "/sample.json")
+	relative, ok := strings.CutPrefix(path, "internal/attackcorpus/testdata/")
+	if !ok {
+		return false
+	}
+	return strings.HasSuffix(relative, ".b64") ||
+		(strings.Count(relative, "/") >= 3 && !strings.HasSuffix(relative, "/sample.json"))
 }
 
 func isFixture(path string) bool {

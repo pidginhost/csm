@@ -289,9 +289,8 @@ func TestTermsSourceRequiresAFileWhenAsked(t *testing.T) {
 }
 
 // Corpus samples are stored base64-encoded, so an address or private term in
-// a sample is invisible to a scan of the stored text. Every data file in the
-// corpus tree is decoded, whatever its name, because the loader decodes any
-// file a manifest names.
+// a sample is invisible to a scan of the stored text. Every data file beside
+// a sample manifest is decoded, even if it has the wrong suffix.
 func TestFixturecheckScansDecodedCorpus(t *testing.T) {
 	encode := func(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
 	terms, err := loadTerms(writeTerms(t, "hostseven\n"))
@@ -301,6 +300,9 @@ func TestFixturecheckScansDecodedCorpus(t *testing.T) {
 	for _, name := range []string{
 		"internal/attackcorpus/testdata/corpus/webshell/probe/a.php.b64",
 		"internal/attackcorpus/testdata/corpus/webshell/probe/a.php.txt",
+		"internal/attackcorpus/testdata/corpus/webshell/probe/payload",
+		"internal/attackcorpus/testdata/unit/webshell/probe/a.php.txt",
+		"internal/attackcorpus/testdata/standalone.b64",
 	} {
 		for _, tc := range []struct {
 			decoded, want string
@@ -339,5 +341,43 @@ func TestFixturecheckScansDecodedCorpus(t *testing.T) {
 	writeFixture(t, root, "internal/attackcorpus/testdata/corpus/webshell/probe/sample.json", `{"description": "peer 192.0.2.10"}`+"\n")
 	if err := check(root, nil, new(bytes.Buffer)); err != nil {
 		t.Fatalf("plain manifest rejected: %v", err)
+	}
+}
+
+func TestCheckScansCorpusMetadataAsText(t *testing.T) {
+	for _, name := range []string{
+		"internal/attackcorpus/testdata/README.md",
+		"internal/attackcorpus/testdata/corpus/README.md",
+		"internal/attackcorpus/testdata/unit/README.md",
+		"internal/attackcorpus/testdata/fuzz/FuzzLoadManifest/0123456789abcdef",
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := fixtureRepo(t)
+			content := "Corpus notes: manifest input; peer 192.0.2.10\n"
+			if strings.Contains(name, "/fuzz/") {
+				content = "go test fuzz v1\n[]byte(\"manifest input\")\n"
+			}
+			terms := []*regexp.Regexp{regexp.MustCompile("withheld-marker")}
+			writeFixture(t, root, name, content)
+			var output bytes.Buffer
+			if err := check(root, terms, &output); err != nil {
+				t.Fatalf("plain metadata rejected: %v", err)
+			}
+			if !strings.Contains(output.String(), "1 fixture file(s) checked") ||
+				!strings.Contains(output.String(), "1 file(s) scanned for private terms") {
+				t.Fatalf("metadata was not scanned: %s", &output)
+			}
+
+			writeFixture(t, root, name, strings.ReplaceAll(content, "manifest input", "withheld-marker"))
+			output.Reset()
+			if err := check(root, terms, &output); err == nil {
+				t.Fatal("private term in metadata was accepted")
+			}
+			if !strings.Contains(output.String(), name+":") ||
+				!strings.Contains(output.String(), "private term") ||
+				strings.Contains(output.String(), "withheld-marker") {
+				t.Fatal("metadata violation was not reported safely")
+			}
+		})
 	}
 }

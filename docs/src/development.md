@@ -1796,6 +1796,12 @@ a matching filename is reported with its path redacted. The
 [fixture sanitisation rules](https://github.com/pidginhost/csm/blob/main/internal/daemon/testdata/php_relay/SANITISE.md)
 describe the additional manual privacy review.
 
+Attack replay payloads are decoded in memory before checking. Every data
+file in a sample directory is decoded regardless of its suffix; `.b64`
+files are decoded elsewhere in the attack corpus test data too. Manifests,
+corpus-root notes and saved Go fuzz seeds are checked as plain text.
+Invalid base64 fails the check, and diagnostics never print decoded content.
+
 ### Admission preview ledger
 
 Admission previews reserve, charge history and capacity, and end observed in one transaction. They write both audit steps, never execute a response, never count as applied, and do not end the evidence episode or raise a notice. Repeated evidence is answered until its quiet window closes.
