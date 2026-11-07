@@ -493,13 +493,15 @@ by its /64. A subnet block or netblock that covers known customers sends one
 message with their count and the five most recent. Every applied block
 counts: scan blocks, permanent promotions, challenge timeouts, central
 intelligence and incident blocks. A customer whose own login caused the block
-is left out: a mail account compromise or an FTP login after brute force
-names that address and account in its own Critical alert. For a range block,
-the count and examples include only the remaining customers. Each block names
-the command that lifts it: `csm firewall remove <ip>` for an address,
+is left out, also when the block comes later than its cause: a mail account
+compromise or an FTP login after brute force names that address and account
+in its own Critical alert. This also applies when earlier address blocks
+escalate to a range block: its count and examples include only the remaining
+customers. Each block names the command that lifts it:
+`csm firewall remove <ip>` for an address,
 `csm firewall remove-subnet <cidr>` for a range. An allow rule
-(`csm firewall allow <ip>`) does not pass a blocked range, but CSM never
-blocks a range over an allowed address.
+(`csm firewall allow <ip>`) trusts the address on every port. It does not
+pass a blocked range, but CSM never blocks a range over an allowed address.
 
 The alert is the false-positive check of automatic blocking, never an
 exemption. The block stands with its configured length, and its notice still
