@@ -29,6 +29,7 @@ type customerTestBlocker struct {
 	blocked map[string]bool
 	calls   []customerBlockCall
 	outcome firewall.BlockOutcome
+	fail    int // calls left that fail with an engine error
 }
 
 type customerBlockCall struct {
@@ -45,6 +46,10 @@ func (b *customerTestBlocker) BlockIPOutcome(ip, _ string, ttl time.Duration) (f
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.calls = append(b.calls, customerBlockCall{ip, ttl})
+	if b.fail > 0 {
+		b.fail--
+		return firewall.BlockOutcomeNoop, errors.New("fixture engine busy")
+	}
 	if b.outcome != "" {
 		return b.outcome, nil
 	}

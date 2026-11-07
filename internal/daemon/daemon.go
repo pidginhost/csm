@@ -107,6 +107,7 @@ type Daemon struct {
 	version        string
 	blockDigest    *blockdigest.Collector
 	knownCustomers *knownCustomers
+	blockCauses    blockCauses
 	alertCh        chan alert.Finding
 	alertQueue     *queuehealth.Tracker
 	queueSourcesMu sync.RWMutex

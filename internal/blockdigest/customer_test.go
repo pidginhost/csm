@@ -294,7 +294,8 @@ func TestAppliedCustomerBlocksListedInDailySummary(t *testing.T) {
 
 // Each block names how to lift it: csm firewall remove for an address and
 // remove-subnet for a network. An allow rule does not pass a blocked network
-// but keeps later range blocks off the address, so it is offered as that.
+// but keeps later range blocks off the address, so it is offered as that,
+// saying it trusts the address on every port.
 // The daily summary repeats the hints for applied blocks only.
 func TestCustomerBlockUnblockHintPerTargetKind(t *testing.T) {
 	var capture summaryCapture
@@ -314,7 +315,7 @@ func TestCustomerBlockUnblockHintPerTargetKind(t *testing.T) {
 	}
 	address := "  Unblock: csm firewall remove 203.0.113.5\n"
 	address6 := "  Unblock: csm firewall remove 2001:db8:1::5\n"
-	network := "  Unblock: csm firewall remove-subnet 198.51.100.0/24\n  Keep a customer address out of later range blocks: csm firewall allow <ip>\n"
+	network := "  Unblock: csm firewall remove-subnet 198.51.100.0/24\n  Allow a customer address on every port, which keeps later range blocks off it: csm firewall allow <ip>\n"
 	for i, m := range mails {
 		indent := ""
 		if i == 1 {

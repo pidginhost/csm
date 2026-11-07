@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"net/netip"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/blockdigest"
@@ -281,21 +283,56 @@ func (d *Daemon) customerBlock(f alert.Finding, target string, omit func(blockdi
 	return b, true
 }
 
+// blockCauses keeps the login-cause findings dispatch has seen, by finding
+// ID, while the login they name can still be a known customer, so a block
+// that answers one in a later batch (a queued retry, an incident or a
+// central block) leaves that login out as a same-batch block does.
+// ponytail: memory only; after a restart a block of an earlier cause alerts.
+type blockCauses struct {
+	mu   sync.Mutex
+	byID map[string]blockCause
+}
+
+// blockCause is a cause and when dispatch saw it: a finding may carry no
+// timestamp of its own.
+type blockCause struct {
+	f    alert.Finding
+	seen time.Time
+}
+
+func (c *blockCauses) note(f alert.Finding, now time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for id, old := range c.byID {
+		if knownCustomerExpired(old.seen, now) {
+			delete(c.byID, id)
+		}
+	}
+	if c.byID == nil {
+		c.byID = make(map[string]blockCause)
+	}
+	c.byID[alert.FindingID(f)] = blockCause{f, now}
+}
+
+func (c *blockCauses) lookup(id string, now time.Time) (alert.Finding, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	cause, ok := c.byID[id]
+	return cause.f, ok && !knownCustomerExpired(cause.seen, now)
+}
+
 // customerBlocks returns the applied automatic blocks in actions that hit
 // known customers. A permanent promotion joins the block of its address from
 // the same batch, which the chokepoint emits first. A customer whose login is
-// the block's own cause in this batch is left out (ownLogin); a cause outside
-// the batch, as for a queued retry, central or incident block, leaves it in.
+// the block's own cause, from this batch or an earlier one, is left out
+// (ownLogin).
 func (d *Daemon) customerBlocks(actions []alert.Finding) []blockdigest.CustomerBlock {
 	var blocks []blockdigest.CustomerBlock
 	byTarget := make(map[string]int)
-	var causes map[string]alert.Finding
+	now := time.Now()
 	for _, f := range actions {
 		if f.Check == "mail_account_compromised" || f.Check == "ftp_login_after_bruteforce" {
-			if causes == nil {
-				causes = make(map[string]alert.Finding)
-			}
-			causes[alert.FindingID(f)] = f
+			d.blockCauses.note(f, now)
 		}
 	}
 	for _, f := range actions {
@@ -308,7 +345,8 @@ func (d *Daemon) customerBlocks(actions []alert.Finding) []blockdigest.CustomerB
 			continue
 		}
 		var omit func(blockdigest.CustomerHit) bool
-		if cause, found := causes[causeID(f)]; found && cause.Check == f.Cause.Check {
+		// Range escalations retain the original finding ID without its check.
+		if cause, found := d.blockCauses.lookup(causeID(f), now); found && (f.Cause.Check == "" || cause.Check == f.Cause.Check) {
 			omit = func(h blockdigest.CustomerHit) bool { return ownLogin(cause, h) }
 		}
 		b, ok := d.customerBlock(f, target, omit)

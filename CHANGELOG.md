@@ -11,6 +11,8 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Fixed
 
+- Known-customer block emails no longer list a compromised mail or FTP login that caused the block, even when the block comes later.
+- The known-customer block email now says that allowing an address trusts it on every port.
 - Reloading CSM no longer causes a false tamper alert after a config edit that changes no setting, or after a reload that fails partway.
 - A config reload during a Web UI settings save no longer overwrites the saved settings.
 
