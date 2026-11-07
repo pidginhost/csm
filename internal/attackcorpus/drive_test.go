@@ -96,15 +96,12 @@ func TestReplayLifecycle(t *testing.T) {
 			if !wantPass && report.Summary[Webshell].Errors != 1 {
 				t.Error("the incomplete run was not counted as an error")
 			}
-			if mode == "returned" && !strings.Contains(string(output), "driver error: "+helperDriverError) {
-				t.Error("a public sample's driver error reason is missing from the test log")
-			}
-			if mode == "returned_private" {
+			if mode == "returned" || mode == "returned_private" {
 				if strings.Contains(string(output), helperDriverError) {
-					t.Error("a private sample's driver error text reached the test log")
+					t.Error("a sample's driver error text reached the test log")
 				}
 				if !strings.Contains(string(output), "driver error type: *errors.errorString") {
-					t.Error("a private sample's driver error type is missing from the test log")
+					t.Error("a sample's driver error type is missing from the test log")
 				}
 			}
 			if mode == "returned" || mode == "returned_private" {

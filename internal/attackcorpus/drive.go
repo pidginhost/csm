@@ -117,13 +117,9 @@ func replay(t *testing.T, p Path, samples []Sample, run func(t *testing.T, s Sam
 				results = append(results, r)
 			})
 			o = run(t, s)
-			// Test logs become CI artifacts and error text can quote decoded
-			// bytes. Public samples are already in the repository; private
-			// ones keep only the error type.
-			switch {
-			case o.Err != nil && s.Half == "public":
-				t.Logf("driver error: %v", o.Err)
-			case o.Err != nil:
+			// Test logs become CI artifacts. Even public samples must stay
+			// encoded at rest, so errors cannot quote their decoded bytes.
+			if o.Err != nil {
 				t.Logf("driver error type: %T (details withheld)", o.Err)
 			}
 		})

@@ -230,10 +230,17 @@ func newCorpusSample(t *testing.T) (*corpusSample, error) {
 	// Remediation reads its allowed roots from the active config.
 	config.SetActive(c.cfg)
 	store.SetGlobal(db)
-	// A query that ran and matched no rows: the database scans see an empty
-	// site instead of dialing the host a sample's wp-config.php names.
-	runMySQLQuery = func(wpDBCreds, string) []string {
+	// Serve a site identity with no content, rather than dialing the host a
+	// sample's wp-config.php names. Missing identity would skip hidden links.
+	runMySQLQuery = func(_ wpDBCreds, query string) []string {
 		c.queries.Add(1)
+		const siteURL = "https://example.com"
+		switch {
+		case strings.HasPrefix(query, "(SELECT 'site' AS kind, option_name,"):
+			return []string{fmt.Sprintf("site\tsiteurl\t%s\t\t%d\tsite", siteURL, len(siteURL))}
+		case strings.HasPrefix(query, "SELECT option_name, option_value FROM ") && strings.Contains(query, "WHERE option_name IN ('siteurl', 'home', 'admin_email')"):
+			return []string{"siteurl\t" + siteURL, "home\t" + siteURL}
+		}
 		return nil
 	}
 	SetCmdRunner(offlineCmd{wpCLI: &c.wpCLI})
@@ -291,7 +298,8 @@ func runTierSample(t *testing.T, s attackcorpus.Sample) attackcorpus.Outcome {
 // replayTier runs a baseline on the empty account with the same state first,
 // so the planted files are new to the second run as they are to a periodic
 // tier, and a host finding both runs raise is not taken for the sample's.
-func (c *corpusSample) replayTier(s attackcorpus.Sample) attackcorpus.Outcome {
+func (c *corpusSample) replayTier(s attackcorpus.Sample) (out attackcorpus.Outcome) {
+	defer func() { out.NetworkAttempts = c.networkAttempts() }()
 	fail := func(err error) attackcorpus.Outcome { return attackcorpus.Outcome{Err: err} }
 	// The first file-index scan of a process walks everything and later ones
 	// read changed directories. Restart the count so every sample gets the
@@ -333,7 +341,6 @@ func (c *corpusSample) replayTier(s attackcorpus.Sample) attackcorpus.Outcome {
 	}
 	return attackcorpus.Outcome{
 		Findings: c.sinceBaseline(baseline, after), Remediation: remediation, CleanedSHA256: cleaned,
-		NetworkAttempts: c.networkAttempts(),
 	}
 }
 
@@ -344,8 +351,12 @@ func (c *corpusSample) replayTier(s attackcorpus.Sample) attackcorpus.Outcome {
 func (c *corpusSample) tier(checks []namedCheck) ([]alert.Finding, error) {
 	ctx, gaps := WithCoverageGaps(context.Background())
 	findings, _ := runParallelWithContext(ctx, c.cfg, c.state, checks, string(TierDeep), false)
-	if incomplete := gaps.Snapshot().IncompleteChecks; len(incomplete) != 0 {
+	coverage := gaps.Snapshot()
+	if incomplete := coverage.IncompleteChecks; len(incomplete) != 0 {
 		return nil, fmt.Errorf("incomplete: %v", slices.Sorted(maps.Keys(incomplete)))
+	}
+	if len(coverage.PreservePaths) != 0 {
+		return nil, fmt.Errorf("incomplete file coverage: %v", slices.Sorted(maps.Keys(coverage.PreservePaths)))
 	}
 	return findings, scanError(findings)
 }
@@ -376,21 +387,37 @@ func runFullScanSample(t *testing.T, s attackcorpus.Sample) attackcorpus.Outcome
 	return c.replayFullScan(t, s)
 }
 
-// replayFullScan reports a scan cut short through check_panic and
-// check_timeout findings only: the account runner keeps no completion record,
-// so there is no coverage handle to read as the tier has.
-func (c *corpusSample) replayFullScan(t *testing.T, s attackcorpus.Sample) attackcorpus.Outcome {
+// The account runner does not publish a CoverageGaps snapshot, so attach the
+// scanners' collectors directly to retain failures without diagnostic findings.
+func (c *corpusSample) replayFullScan(t *testing.T, s attackcorpus.Sample) (out attackcorpus.Outcome) {
+	defer func() { out.NetworkAttempts = c.networkAttempts() }()
 	fail := func(err error) attackcorpus.Outcome { return attackcorpus.Outcome{Err: err} }
 	planted, original, err := c.plant(s)
 	if err != nil {
 		return fail(err)
 	}
 	// The job passes the daemon's state store (defaultScanRunner, scanjob.go).
-	scanned := RunAccountScanWithOptions(context.Background(), c.cfg, c.state, corpusAccount, FullScanOptions(c.cfg, false))
+	ctx, incomplete := withIncompleteCheckCollector(context.Background())
+	ctx, paths := withCoveragePathCollector(ctx)
+	scanned := RunAccountScanWithOptions(ctx, c.cfg, c.state, corpusAccount, FullScanOptions(c.cfg, false))
 	if err = scanError(scanned); err != nil {
 		return fail(err)
 	}
-	quarantineAsScanJob(t, scanned)
+	incomplete.mu.Lock()
+	names := slices.Sorted(maps.Keys(incomplete.names))
+	incomplete.mu.Unlock()
+	if len(names) != 0 {
+		return fail(fmt.Errorf("incomplete: %v", names))
+	}
+	paths.mu.Lock()
+	names = slices.Sorted(maps.Keys(paths.pathsByOwner))
+	paths.mu.Unlock()
+	if len(names) != 0 {
+		return fail(fmt.Errorf("incomplete file coverage: %v", names))
+	}
+	if err = quarantineAsScanJob(t, scanned); err != nil {
+		return fail(err)
+	}
 
 	findings := make([]attackcorpus.Observed, 0, len(scanned))
 	for _, f := range scanned {
@@ -400,7 +427,7 @@ func (c *corpusSample) replayFullScan(t *testing.T, s attackcorpus.Sample) attac
 	if err != nil {
 		return fail(err)
 	}
-	return attackcorpus.Outcome{Findings: findings, Remediation: remediation, CleanedSHA256: cleaned, NetworkAttempts: c.networkAttempts()}
+	return attackcorpus.Outcome{Findings: findings, Remediation: remediation, CleanedSHA256: cleaned}
 }
 
 // quarantineAsScanJob is the loop ScanJobManager.annotateQuarantine
@@ -410,8 +437,10 @@ func (c *corpusSample) replayFullScan(t *testing.T, s attackcorpus.Sample) attac
 // and a failure is recorded but does not stop the job. Keep the two in step.
 // The job acts only on findings under its stored-findings cap of 10000, which
 // one account tree stays far below.
-func quarantineAsScanJob(t *testing.T, findings []alert.Finding) {
+func quarantineAsScanJob(t *testing.T, findings []alert.Finding) error {
+	t.Helper()
 	remediated := map[string]bool{}
+	failed := 0
 	for _, f := range findings {
 		if remediated[f.FilePath] && f.FilePath != "" {
 			continue
@@ -422,9 +451,14 @@ func quarantineAsScanJob(t *testing.T, findings []alert.Finding) {
 		case result.Success:
 			remediated[f.FilePath] = true
 		default:
-			t.Logf("quarantine of %s failed: %s", f.FilePath, result.Error)
+			failed++
 		}
 	}
+	if failed != 0 {
+		// Cleaner errors can quote sample content, so do not log their text.
+		return fmt.Errorf("quarantine failed for %d findings", failed)
+	}
+	return nil
 }
 
 const (
