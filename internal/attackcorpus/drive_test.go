@@ -49,7 +49,7 @@ func TestReplayLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, mode := range []string{"success", "filtered", "partial", "skip", "fatal", "error", "cleanup", "returned"} {
+	for _, mode := range []string{"success", "filtered", "partial", "skip", "fatal", "error", "cleanup", "returned", "returned_private"} {
 		t.Run(mode, func(t *testing.T) {
 			dir := t.TempDir()
 			t.Setenv("CSM_ATTACK_CORPUS_TEST_MODE", mode)
@@ -95,10 +95,18 @@ func TestReplayLifecycle(t *testing.T) {
 			if !wantPass && report.Summary[Webshell].Errors != 1 {
 				t.Error("the incomplete run was not counted as an error")
 			}
-			if mode == "returned" {
-				if !strings.Contains(string(output), helperDriverError) {
-					t.Errorf("the driver's error reason is missing from the test log: %s", output)
+			if mode == "returned" && !strings.Contains(string(output), "driver error: "+helperDriverError) {
+				t.Error("a public sample's driver error reason is missing from the test log")
+			}
+			if mode == "returned_private" {
+				if strings.Contains(string(output), helperDriverError) {
+					t.Error("a private sample's driver error text reached the test log")
 				}
+				if !strings.Contains(string(output), "driver error type: *errors.errorString") {
+					t.Error("a private sample's driver error type is missing from the test log")
+				}
+			}
+			if mode == "returned" || mode == "returned_private" {
 				if strings.Contains(string(data), helperDriverError) {
 					t.Error("the driver's error reason reached the report")
 				}
@@ -116,6 +124,9 @@ func TestReplayHelper(t *testing.T) {
 		return
 	}
 	samples := []Sample{judgeControl()}
+	if mode == "returned_private" {
+		samples[0].Half = "private"
+	}
 	if mode == "partial" {
 		other := judgeControl()
 		other.Name = "other_control"
@@ -131,7 +142,7 @@ func TestReplayHelper(t *testing.T) {
 			t.Error("driver setup failed")
 		case "cleanup":
 			t.Cleanup(func() { t.Error("driver cleanup failed") })
-		case "returned":
+		case "returned", "returned_private":
 			return Outcome{Err: errors.New(helperDriverError)}
 		}
 		return Outcome{Remediation: untouched()}

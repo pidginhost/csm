@@ -4,11 +4,13 @@ package daemon
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -40,26 +42,98 @@ func useShippedRealtimeEngines(t *testing.T) {
 	t.Helper()
 	_, file, _, _ := runtime.Caller(0)
 	configs := filepath.Join(filepath.Dir(file), "..", "..", "configs")
-
-	sigs := signatures.NewScanner(configs)
-	if sigs.RuleCount() == 0 {
-		t.Fatalf("no signature rules loaded from %s: %v", configs, sigs.LoadError())
+	sigs, rules, err := loadRealtimeEngines(configs)
+	if err != nil {
+		t.Fatal(err)
 	}
 	previousSigs := signatures.SetGlobal(sigs)
 	t.Cleanup(func() { signatures.SetGlobal(previousSigs) })
-
-	rules, err := yara.NewScanner(configs)
-	if err != nil {
-		t.Fatalf("YARA-X rules from %s: %v", configs, err)
-	}
-	if rules.RuleCount() == 0 {
-		t.Fatalf("no YARA-X rules compiled from %s", configs)
-	}
 	previousYARA := yara.Active()
 	yara.SetActive(rules)
 	t.Cleanup(func() { yara.SetActive(previousYARA) })
 	if yara.Active() != yara.Backend(rules) {
 		t.Fatal("the realtime analyzer does not scan with the shipped YARA-X rules")
+	}
+}
+
+func loadRealtimeEngines(configs string) (*signatures.Scanner, *yara.Scanner, error) {
+	sigs := signatures.NewScanner(configs)
+	if err := sigs.LoadError(); err != nil {
+		return nil, nil, fmt.Errorf("signature rules from %s: %w", configs, err)
+	}
+	if sigs.RuleCount() == 0 {
+		return nil, nil, fmt.Errorf("no signature rules loaded from %s", configs)
+	}
+
+	rules, err := yara.NewScanner(configs)
+	if err != nil {
+		return nil, nil, fmt.Errorf("YARA-X rules from %s: %w", configs, err)
+	}
+	if rules.RuleCount() == 0 {
+		return nil, nil, fmt.Errorf("no YARA-X rules compiled from %s", configs)
+	}
+	return sigs, rules, nil
+}
+
+func TestAttackCorpusRealtimeRejectsPartialRules(t *testing.T) {
+	dir := t.TempDir()
+	for name, text := range map[string]string{
+		"good.yml": "version: 1\nrules:\n  - name: harmless_fixture\n    severity: high\n    category: webshell\n    file_types: [\".php\"]\n    patterns: [\"harmless marker\"]\n",
+		"bad.yml":  "version: [\nrules:\n",
+		"test.yar": "rule harmless_fixture { condition: false }",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(text), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sigs := signatures.NewScanner(dir)
+	if sigs.RuleCount() != 1 || sigs.LoadError() == nil {
+		t.Fatal("fixture must retain one usable rule and a load error")
+	}
+	if _, _, err := loadRealtimeEngines(dir); err == nil || !strings.Contains(err.Error(), "bad.yml") {
+		t.Fatalf("engine load error = %v; want the broken signature file", err)
+	}
+}
+
+func TestAttackCorpusRealtimeRejectsScannerFailures(t *testing.T) {
+	for _, failure := range []string{"panic", "yara"} {
+		t.Run(failure, func(t *testing.T) {
+			dir := t.TempDir()
+			writeCorpusManifest(t, dir, "scanner_failure", `{
+				"name": "scanner_failure", "category": "webshell", "kind": "malicious", "source": "fixture",
+				"description": "scanner failure after a finding", "provenance": "driver regression",
+				"files": [{"path": "public_html/test.php", "selftest": "benign_wordpress_plugin"}],
+				"expect": {
+					"realtime": {"findings": [{"check": "expected_realtime", "file": "public_html/test.php", "min_severity": "high"}]},
+					"tier": {"gap": "not driven by this test"}, "fullscan": {"gap": "not driven by this test"}
+				}}`)
+			samples, err := attackcorpus.Load(dir, "private")
+			if err != nil || len(samples) != 1 {
+				t.Fatalf("Load = %d samples, %v; want 1", len(samples), err)
+			}
+			previous := fileAnalyzer
+			t.Cleanup(func() { fileAnalyzer = previous })
+			fileAnalyzer = func(fm *FileMonitor, ev fileEvent) {
+				fm.sendAlertWithPath(alert.High, "expected_realtime", "fixture finding", "", ev.path, "")
+				if failure == "panic" {
+					panic("fixture scanner panic")
+				}
+				fm.reportYARAScanError(ev.path, errors.New("fixture scanner error"))
+			}
+			o := runRealtimeSample(t, samples[0])
+			if len(o.Findings) != 2 || o.Findings[0].Check != "expected_realtime" || o.Findings[0].File != "public_html/test.php" {
+				t.Fatal("replay did not retain the expected finding followed by the scanner failure")
+			}
+			if o.Remediation["public_html/test.php"] != attackcorpus.Untouched || len(o.NotAdmitted) != 0 {
+				t.Fatal("scanner failure sample was not admitted and left untouched")
+			}
+			if o.Err == nil {
+				t.Error("scanner failure did not fail the driver")
+			}
+			if r := attackcorpus.Judge(samples[0], attackcorpus.Realtime, o); r.Pass || !slices.Contains(r.Failures, "error: driver did not complete") {
+				t.Errorf("scanner failure verdict = pass %v, failures %v; want a driver error", r.Pass, r.Failures)
+			}
+		})
 	}
 }
 
@@ -177,14 +251,21 @@ func runRealtimeSample(t *testing.T, s attackcorpus.Sample) attackcorpus.Outcome
 
 	close(alerts)
 	var findings []attackcorpus.Observed
+	var scannerErr error
 	for f := range alerts {
+		// Extra detections may be harmless on malicious samples, but an
+		// interrupted scan must never count as completed coverage.
+		switch f.Check {
+		case "realtime_scanner_panic", "yara_realtime_scan_error":
+			scannerErr = fmt.Errorf("scanner failure: %s", f.Check)
+		}
 		findings = append(findings, attackcorpus.ObservedFrom(f, attackcorpus.Attribute(f.FilePath, root, cronDir, corpusAccount)))
 	}
 	remediation, cleaned, err := attackcorpus.ObserveRemediation(planted, original, quarantineDir)
 	if err != nil {
 		return fail(err)
 	}
-	return attackcorpus.Outcome{Findings: findings, Remediation: remediation, CleanedSHA256: cleaned, NotAdmitted: notAdmitted}
+	return attackcorpus.Outcome{Findings: findings, Remediation: remediation, CleanedSHA256: cleaned, NotAdmitted: notAdmitted, Err: scannerErr}
 }
 
 // The driver itself must work before any corpus relies on it: a web shell

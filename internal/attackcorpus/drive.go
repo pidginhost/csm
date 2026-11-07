@@ -117,10 +117,14 @@ func replay(t *testing.T, p Path, samples []Sample, run func(t *testing.T, s Sam
 				results = append(results, r)
 			})
 			o = run(t, s)
-			// The reason stays in the test log: it can quote sample content,
-			// so the report carries only that the driver did not complete.
-			if o.Err != nil {
+			// Test logs become CI artifacts and error text can quote decoded
+			// bytes. Public samples are already in the repository; private
+			// ones keep only the error type.
+			switch {
+			case o.Err != nil && s.Half == "public":
 				t.Logf("driver error: %v", o.Err)
+			case o.Err != nil:
+				t.Logf("driver error type: %T (details withheld)", o.Err)
 			}
 		})
 		if !ran {
