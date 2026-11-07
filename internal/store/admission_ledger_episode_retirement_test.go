@@ -144,3 +144,51 @@ func TestAdmissionLedgerRetainsSubnetHistoryUntilBothClocksPass(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// Only an answered address block line can keep a verified episode row
+// without candidate references. Forgetting the last candidate of any other
+// verified episode, such as a subnet's, before both ends pass removes the
+// row as before instead of failing every later write that reaches it.
+func TestAdmissionLedgerForgetLineDropsAnUnretainableRow(t *testing.T) {
+	f := newLedgerFixture(t)
+	f.begin()
+	prefix, err := admission.CanonicalPrefix("192.0.2.0/24", admission.Caps{IPv6: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e, err := f.ssh.Mint(admission.EvidenceInput{
+		Check: "ssh_brute", FindingID: "0123456789abcdef", Severity: admission.SeverityHigh,
+		Observation: admission.ObservationRef{Stream: "log:sshd_log", Cursor: "subnet", Version: 1},
+		ObservedAt:  f.wall, Parser: admission.ParserRef{Name: "fixture", Version: 1}, Target: prefix,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	arrival := f.arrive(admission.Arrival{Request: admission.CandidateRequest{Kind: admission.KindBlockSubnet, Target: prefix, Primary: e.ID()}, Evidence: e})[0]
+	if arrival.Err != nil || !arrival.Created {
+		t.Fatalf("subnet arrival: %+v", arrival)
+	}
+	f.finishArrival(arrival.Candidate, f.wall.Add(time.Hour), admission.DispositionApplied)
+	verified := f.candidateOf(arrival.Candidate)
+	if err = f.db.bolt.Update(func(tx *bolt.Tx) error {
+		q, openErr := f.l.openQueue(tx, f.wall)
+		if openErr != nil {
+			return openErr
+		}
+		return q.forgetLine(arrival.Candidate, verified)
+	}); err != nil {
+		t.Fatalf("forgetting the verified subnet block: %v", err)
+	}
+	if err = f.db.bolt.View(func(tx *bolt.Tx) error {
+		_, found, loadErr := loadEpisode(tx, prefix.Key())
+		if found {
+			t.Error("an unretainable verified row was kept")
+		}
+		return loadErr
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = OpenAdmissionLedger(f.db, f.reg); err != nil {
+		t.Fatal(err)
+	}
+}

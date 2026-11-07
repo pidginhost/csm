@@ -332,14 +332,16 @@ The first stored gone record moves the ledger to schema 14, which older
 builds refuse. Schema 14 requires the live-start marker, effect bucket and
 tally even after all records expire. A check that marks nothing leaves
 the schema unchanged. Only a live ledger has effect records, so preview
-and forecast hosts never write it. The owner
-asks at most once a minute, and only while the ledger counts a verified
+and forecast hosts never write schema 14.
+
+The owner asks at most once a minute, and only while the ledger counts a verified
 block. The firewall answers with the retirement rule reversed and writes
 nothing: an element still at the address that no other action's verified
 row proves counts as held, even after a forward wall step makes the
 block's own row look expired, and so does an address whose family the
 firewall cannot read. A failed or short answer marks nothing and counts
 as no miss.
+
 Startup drops the state row of an admission-record victim whose eviction
 the ledger verified, and of a block the ledger marked gone, so a restart
 cannot restore an element whose slot the ledger no longer counts. A
@@ -653,7 +655,7 @@ cannot end it early either; a row written before it existed ends on wall time al
 until its next write, including maintenance that leaves its last
 observation unchanged. Existing elapsed ends survive maintenance, and
 verified closing replaces the quiet end with the block's remaining
-lifetime, read at the reading the block was executed at, so a wall step
+lifetime, read at the block's execute reading, so a wall step
 between execution and its outcome cannot shorten it. Execution readings
 are released when an outcome commits, including startup settlement.
 A verified episode keeps that boundary: a later verified block of the
@@ -665,35 +667,7 @@ after both ends pass. Address and subnet block histories remain charged
 while their episode boundary is still active on either clock. Scheduling
 and wake times count that retained history as unavailable. Bounded
 cleanup continues past retained histories across ticks, so they cannot
-hide later expired history. On a live ledger, a verified block whose record
-is gone stops answering its kind before the episode's original verified
-end: a later observation of that kind, made after the removal and with
-every root observed after it, queues a charged new generation in the same
-episode. On a live ledger the block line records the generation of its
-latest verified block, whose history outlives later generations, so
-queued, ended and forgotten returns keep that evidence gate against the
-latest removal; such lines also need schema 15. Older lines recover that
-generation from an unbroken chain of retained predecessors on their next
-arrival and persist it with the next episode write. A gap leaves the line
-answered. Opening a ledger does not rewrite older lines, but rejects a
-reference to an unverified candidate or a block older than another retained
-verified block of the same kind and episode. Forgetting a refused
-return keeps the verified boundary until both ends pass. The
-episode earns no equal-tier rotation. An observation or root at or before the removal
-is answered or stale. Past the original end, as when
-a reboot keeps the episode open on elapsed time, the block keeps
-answering until the episode ends on both clocks. The owner caps a
-re-admission's first attempt at the episode's original verified end, the
-time left in admission time added to the lease clock; a retry keeps its
-first expiry. A re-admission with no time left, or whose episode row
-has been replaced or lost, is refused as expired.
-A forecast caps a block returning to an address whose forecast block the
-session replaced at that block's expiry. It applies the cap before the
-firewall snapshot and again before deciding each pick, since an earlier
-pick can replace that address in the same turn. A shortened expiry must
-still leave the firewall's minimum timeout; otherwise the return ends
-uncharged without changing forecast occupancy or retaining an example.
-The first row with a positive elapsed end moves
+hide later expired history. The first row with a positive elapsed end moves
 the ledger to schema 13 on every host, which older builds refuse. Schema 13
 records nothing of the live start or the effect records, so a schema 13 ledger
 proves them from their own markers. Episode placement refuses an
@@ -741,6 +715,36 @@ still requires a successful reading. An isolated member's isolation
 ends the same way.
 Retirement and retry staleness stay on the lease frame: late retirement
 only holds an address longer, and the engine refuses an expired member.
+
+On a live ledger, a verified block whose record
+is gone stops answering its kind before the episode's original verified
+end: a later observation of that kind, made after the removal and with
+every root observed after it, queues a charged new generation in the same
+episode. On a live ledger the block line records the generation of its
+latest verified block, whose history outlives later generations, so
+queued, ended and forgotten returns keep that evidence gate against the
+latest removal; such lines also need schema 15. Older lines recover that
+generation from an unbroken chain of retained predecessors on their next
+arrival and persist it with the next episode write. A gap leaves the line
+answered. Opening a ledger does not rewrite older lines, but rejects a
+reference to an unverified candidate or a block older than another retained
+verified block of the same kind and episode. Forgetting a refused
+return keeps the verified boundary until both ends pass. The
+episode earns no equal-tier rotation. An observation or root at or before the removal
+is answered or stale. Past the original end, as when
+a reboot keeps the episode open on elapsed time, the block keeps
+answering until the episode ends on both clocks. The owner caps a
+re-admission's first attempt at the episode's original verified end, the
+time left in admission time added to the lease clock; a retry keeps its
+first expiry. A re-admission with no time left, or whose episode row
+has been replaced or lost, is refused as expired, or as invalid in a
+preview.
+A forecast caps a block returning to an address whose forecast block the
+session replaced at that block's expiry. It applies the cap before the
+firewall snapshot and again before deciding each pick, since an earlier
+pick can replace that address in the same turn. A shortened expiry must
+still leave the firewall's minimum timeout; otherwise the return ends
+uncharged without changing forecast occupancy or retaining an example.
 
 A candidate refused as an existing effect can name the block that enforces
 it: the admission action that wrote it, or the firewall's `eff_` name of an
