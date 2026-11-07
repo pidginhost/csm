@@ -1,0 +1,26 @@
+{
+  "name": "loader_fixture",
+  "category": "webshell",
+  "kind": "malicious",
+  "source": "synthetic",
+  "description": "Harmless text standing in for a sample in the loader test.",
+  "provenance": "internal/attackcorpus/load_test.go",
+  "files": [
+    {"path": "public_html/note.php", "b64": "note.b64", "mode": 420},
+    {"path": "public_html/.htaccess", "selftest": "benign_htaccess"}
+  ],
+  "expect": {
+    "realtime": {
+      "findings": [{"check": "test_check", "file": "public_html/note.php", "min_severity": "High"}],
+      "remediation": {"public_html/note.php": "quarantined"}
+    },
+    "tier": {
+      "gap": "fixture records a gap on this path"
+    },
+    "fullscan": {
+      "findings": [{"check": "test_check", "file": "public_html/note.php", "min_severity": "critical"}],
+      "remediation": {"public_html/note.php": "cleaned", "public_html/.htaccess": "untouched"},
+      "cleaned_sha256": {"public_html/note.php": "37c3dee866bc87fc3d52b6b053805dfbe5df3d394fdad9ec535f162a4e695941"}
+    }
+  }
+}
