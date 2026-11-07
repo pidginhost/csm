@@ -496,7 +496,11 @@ Inside a class, verified scopes rotate, a scope serves Critical:High:Warning
 4:2:1 and a severity serves its oldest candidate; deficit accounting lets a
 candidate that costs several block units wait its turn without starving. The
 scheduler's position persists, and every pick is revalidated before it is
-returned. A schedule passes over candidates the caller names as pending,
+returned. Regression tests reopen the ledger during unfinished scope and
+reserved sub-lane rotations, then check service order across the restart.
+Overload recovery uses elapsed-time refill and verifies each reservation's
+charge, so a fresh cursor or an uncharged pick cannot satisfy the test.
+A schedule passes over candidates the caller names as pending,
 such as one waiting for the panel's verdict: they are never picked or
 deferred, their scopes keep their turns, and the next wake waits only for
 their deadlines. A candidate the caller names as allowed ends without a

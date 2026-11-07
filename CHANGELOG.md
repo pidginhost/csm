@@ -11,6 +11,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Fixed
 
+- Regression checks now catch lost account turns and skipped reserved work after a restart during overload recovery.
 - Known-customer block emails no longer list a compromised mail or FTP login that caused the block, even when the block comes later.
 - The known-customer block email now says that allowing an address trusts it on every port.
 

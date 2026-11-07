@@ -128,7 +128,9 @@ func TestAdmissionLedgerReserveSaturationKeepsEveryScopeTurn(t *testing.T) {
 		if turn > 0 {
 			f.tickAt(f.wall.Add(3 * time.Minute))
 		}
-		if turn == 2*len(accounts) {
+		// Restart mid-rotation with corroborated work due next. A restart
+		// at a cycle boundary would hide reset scope and sub-lane cursors.
+		if turn == len(accounts) {
 			state := f.snapshot()["adm:qstate:schedule"]
 			f.reopen()
 			if after := f.snapshot()["adm:qstate:schedule"]; state == "" || after != state {

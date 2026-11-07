@@ -22,37 +22,64 @@ func (f *ledgerFixture) reopen() {
 }
 
 // After an overload that deferred every scope's work and a restart, each
-// refilled unit serves the next scope: every surviving scope is served once
-// before any is served twice (spec 7.1, recovery after overload).
+// refilled unit serves the next scope, continuing the unfinished rotation:
+// every surviving scope is served once before any is served twice (spec 7.1,
+// recovery after overload).
 func TestAdmissionLedgerRecoveryAfterOverloadServesEveryScope(t *testing.T) {
 	f := newLedgerFixture(t)
+	if err := f.l.SetCeiling(100); err != nil {
+		t.Fatal(err)
+	}
 	var accounts []string
 	for i := 0; i < 10; i++ {
 		accounts = append(accounts, fmt.Sprintf("acct%02d", i))
 	}
 	f.refresh(accounts, nil)
+	var ids []admission.CandidateID
 	for _, a := range accounts {
-		f.fill(5, evidenceSpec{owner: f.owner(a)})
+		ids = append(ids, f.fill(5, evidenceSpec{owner: f.owner(a)})...)
 	}
-	f.leaveCeilingCredit(0, 0)
-	if picks := f.schedule(fullSchedule); len(picks) != 0 {
-		t.Fatalf("an empty ceiling served %+v", picks)
-	}
-	f.reopen()
-	seen := map[string]bool{}
-	for step := range accounts {
-		f.leaveCeilingCredit(1, 0)
+	f.leaveCeilingCredit(1, 0)
+	var order []string
+	// Spend part of a rotation before the outage so losing its cursor
+	// cannot look like a valid fresh start after recovery.
+	const beforeOverload = 3
+	for step := 0; step < beforeOverload+len(accounts); step++ {
+		if step == beforeOverload {
+			if picks := f.schedule(fullSchedule); len(picks) != 0 {
+				t.Fatalf("an empty ceiling served %+v", picks)
+			}
+			for _, id := range ids {
+				if c := f.candidateOf(id); c.State == admission.StateQueued && c.Reason != admission.ReasonCeiling {
+					t.Fatalf("queued work was not deferred for overload: %+v", c)
+				}
+			}
+			f.reopen()
+		}
+		if step > 0 {
+			// The general lane earns one unit at this limit. Recovery
+			// must use elapsed refill, not a test-written credit balance.
+			f.tickAt(f.wall.Add(45 * time.Second))
+		}
 		picks := f.schedule(oneEach)
-		if len(picks) != 1 {
+		if len(picks) != 1 || picks[0].Lane != admission.LaneGeneral || picks[0].Cost != 1 {
 			t.Fatalf("step %d: picks = %+v", step, picks)
 		}
-		scope := f.scopeOf(picks[0].ID)
-		if seen[scope] {
-			t.Fatalf("step %d served %s again before every scope had a turn", step, scope)
+		order = append(order, f.scopeOf(picks[0].ID))
+		if _, _, granted, err := f.l.Reserve(picks[0].ID, picks[0].Lane, f.wall.Add(time.Hour)); err != nil || !granted {
+			t.Fatalf("step %d: reservation granted = %v, error = %v", step, granted, err)
 		}
-		seen[scope] = true
-		if _, _, _, err := f.l.Reserve(picks[0].ID, picks[0].Lane, f.wall.Add(time.Hour)); err != nil {
-			t.Fatal(err)
+		if c := f.ceilingState(); c.General.Used != uint32(step+1) || c.Reserved.Used != 0 || c.General.Units() != 0 {
+			t.Fatalf("step %d: service charges = %+v", step, c)
+		}
+	}
+	for start := 0; start+len(accounts) <= len(order); start++ {
+		seen := map[string]bool{}
+		for _, scope := range order[start : start+len(accounts)] {
+			if seen[scope] {
+				t.Fatalf("scope %s served twice in one rotation across overload: %v", scope, order)
+			}
+			seen[scope] = true
 		}
 	}
 }
