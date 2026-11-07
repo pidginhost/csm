@@ -1,0 +1,110 @@
+package attackcorpus
+
+import (
+	"fmt"
+	"slices"
+	"strings"
+
+	"github.com/pidginhost/csm/internal/alert"
+)
+
+// Result is the verdict for one sample on one path. It goes into the report,
+// so it holds names, paths and verdicts, never sample content.
+type Result struct {
+	Sample          string                 `json:"sample"`
+	Category        string                 `json:"category"`
+	Kind            string                 `json:"kind"`
+	Half            string                 `json:"half"`
+	Path            Path                   `json:"path"`
+	Pass            bool                   `json:"pass"`
+	Failures        []string               `json:"failures,omitempty"`
+	Findings        []Observed             `json:"findings,omitempty"`
+	Remediation     map[string]Remediation `json:"remediation"`
+	Gap             string                 `json:"gap,omitempty"`
+	NotAdmitted     []string               `json:"not_admitted,omitempty"`
+	NetworkAttempts int64                  `json:"network_attempts"`
+}
+
+// Judge compares what a path did with a sample against the sample's manifest.
+// Each failure starts with its kind: "missed:", "severity:", "false
+// positive:", "remediation:", "gap closed:" or "error:". An outcome with an
+// error is not judged further. Extra findings on a malicious sample are kept
+// in Findings and never fail it. Findings on a file the admission filter
+// dropped are discarded, so that file counts as not detected.
+//
+// A control also fails on a finding that names no file when its text contains
+// one of the control's sample paths: a path relative to the account home is
+// part of any absolute path a finding prints. @crontab is not matched in text,
+// because its real name is the account, which Judge is not given; the crontab
+// checks set the file path, so their findings arrive attributed.
+func Judge(s Sample, p Path, o Outcome) Result {
+	e := s.Expect[p]
+	r := Result{
+		Sample: s.Name, Category: s.Category, Kind: s.Kind, Half: s.Half, Path: p,
+		Remediation: o.Remediation, Gap: e.Gap, NotAdmitted: o.NotAdmitted, NetworkAttempts: o.NetworkAttempts,
+	}
+	for _, f := range o.Findings {
+		if !slices.Contains(o.NotAdmitted, f.File) {
+			r.Findings = append(r.Findings, f)
+		}
+	}
+	r.Failures = failures(s, e, r.Findings, o)
+	r.Pass = len(r.Failures) == 0
+	return r
+}
+
+func failures(s Sample, e PathExpect, findings []Observed, o Outcome) []string {
+	if o.Err != nil {
+		return []string{"error: " + o.Err.Error()}
+	}
+	var out []string
+	add := func(format string, args ...any) { out = append(out, fmt.Sprintf(format, args...)) }
+
+	for _, want := range e.Findings {
+		best := alert.Severity(-1)
+		for _, f := range findings {
+			if f.Check == want.Check && f.File == want.File && f.Severity > best {
+				best = f.Severity
+			}
+		}
+		floor, _ := severityLevel(want.MinSeverity)
+		switch {
+		case best < 0:
+			add("missed: %s on %s", want.Check, want.File)
+		case best < floor:
+			add("severity: %s on %s is %s, want %s or above", want.Check, want.File, best, floor)
+		}
+	}
+
+	for _, f := range findings {
+		switch {
+		case f.File == "" && s.Kind == "control":
+			for _, sf := range s.Files {
+				if sf.Path != "@crontab" && strings.Contains(f.Text, sf.Path) {
+					add("false positive: %s names %s", f.Check, sf.Path)
+					break
+				}
+			}
+		case f.File == "":
+			// An unattributed extra finding on a malicious sample.
+		case s.Kind == "control":
+			add("false positive: %s on %s", f.Check, f.File)
+		case e.Gap != "":
+			add("gap closed: %s on %s", f.Check, f.File)
+		}
+	}
+
+	for _, f := range s.Files {
+		want, got := e.Remediation[f.Path], o.Remediation[f.Path]
+		if want == "" {
+			want = Untouched
+		}
+		switch {
+		case got != want:
+			add("remediation: %s is %s, want %s", f.Path, got, want)
+		case want == Cleaned && o.CleanedSHA256[f.Path] != e.CleanedSHA256[f.Path]:
+			add("remediation: %s cleaned to sha256 %s, want %s", f.Path, o.CleanedSHA256[f.Path], e.CleanedSHA256[f.Path])
+		}
+	}
+	return out
+}
