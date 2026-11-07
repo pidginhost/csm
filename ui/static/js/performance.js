@@ -346,11 +346,16 @@
                 }
 
                 // --- Redis ---
+                // Memory is null when csm could not read Redis; "n/a" keeps
+                // that apart from an empty Redis.
                 var redisEl = document.getElementById('stat-redis');
                 if (redisEl) {
-                    var redisMem = m.redis_mem_mb || 0;
+                    var redisMem = m.redis_mem_mb;
                     var redisMax = m.redis_maxmem_mb || 0;
-                    if (redisMax === 0) {
+                    if (typeof redisMem !== 'number') {
+                        redisEl.textContent = 'n/a';
+                        redisEl.className = 'h1 mb-0';
+                    } else if (redisMax === 0) {
                         // No maxmemory is the normal default; the perf_redis_config
                         // check flags it as a finding when it matters, so the card
                         // stays neutral rather than painting healthy usage red.

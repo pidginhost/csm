@@ -41,11 +41,13 @@ type perfMetrics struct {
 	// not read the server's process status or the mysql client failed (no /root/.my.cnf,
 	// no socket auth, mysqld absent). The webui renders "n/a" in that case
 	// so operators can tell "MySQL is idle" from "we couldn't ask".
+	// Redis follows the same rule: the memory fields are nil when INFO
+	// memory failed, RedisKeys when INFO keyspace failed.
 	MySQLMemMB    *uint64 `json:"mysql_mem_mb"`
 	MySQLConns    *int    `json:"mysql_conns"`
-	RedisMemMB    uint64  `json:"redis_mem_mb"`
-	RedisMaxMB    uint64  `json:"redis_maxmem_mb"`
-	RedisKeys     int64   `json:"redis_keys"`
+	RedisMemMB    *uint64 `json:"redis_mem_mb"`
+	RedisMaxMB    *uint64 `json:"redis_maxmem_mb"`
+	RedisKeys     *int64  `json:"redis_keys"`
 	UptimeSeconds int64   `json:"uptime_seconds"`
 }
 
@@ -357,11 +359,11 @@ func sampleMetrics() *perfMetrics {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if used, max, err := redisinfo.MemoryUsage(ctx); err == nil {
-			m.RedisMemMB = used / (1024 * 1024)
-			m.RedisMaxMB = max / (1024 * 1024)
+			usedMB, maxMB := used/(1024*1024), max/(1024*1024)
+			m.RedisMemMB, m.RedisMaxMB = &usedMB, &maxMB
 		}
 		if total, err := redisinfo.Keyspace(ctx); err == nil {
-			m.RedisKeys = total
+			m.RedisKeys = &total
 		}
 	}
 

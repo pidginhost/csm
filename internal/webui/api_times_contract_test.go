@@ -300,11 +300,12 @@ func severityProblems(body []byte) []string {
 }
 
 // unknownValue lists the values that are null when they are not known: the
-// firewall check block reasons phclient reads, and MySQL figures the host
-// could not read. Every other null is a list or map sent as null.
+// firewall check block reasons phclient reads, and MySQL and Redis figures
+// the host could not read. Every other null is a list or map sent as null.
 var unknownValue = map[string]bool{
 	".permanent": true, ".temporary": true,
 	".metrics.mysql_conns": true, ".metrics.mysql_mem_mb": true,
+	".metrics.redis_mem_mb": true, ".metrics.redis_maxmem_mb": true, ".metrics.redis_keys": true,
 }
 
 // nullPaths lists the paths of the null values in a JSON body.
