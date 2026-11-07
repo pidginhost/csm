@@ -45,7 +45,7 @@ Supported distributions are AlmaLinux 8+, Rocky 8+, RHEL 8+, CloudLinux 8+, Cent
 
 Optional PHP Shield setup detects EA-PHP, alt-PHP, and lsphp, with CageFS support on CloudLinux. Other PHP layouts need manual `auto_prepend_file` configuration.
 
-On hosts without cPanel, set `account_roots` for scheduled YARA sweeps and web-root performance checks. It does not adapt every account or CMS scan to arbitrary layouts; many still expect `public_html` beneath account homes. See [Deep checks](docs/src/detection-deep.md#platform-support).
+On hosts without cPanel, set `account_roots` to the web roots. Real-time document-root rules, scheduled YARA sweeps, web-root performance checks, and remediation then cover them; many account and CMS scans still expect `public_html` beneath account homes. See [Deep checks](docs/src/detection-deep.md#platform-support).
 
 Packages are published for x86_64 and ARM64; cPanel itself is x86_64-only. Release binaries link YARA-X statically, include journald and BPF support, and need glibc 2.28 or newer.
 
