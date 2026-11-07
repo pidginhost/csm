@@ -2,9 +2,11 @@ package main
 
 import (
 	"bytes"
+	"encoding/base64"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -283,5 +285,46 @@ func TestTermsSourceRequiresAFileWhenAsked(t *testing.T) {
 	terms, err := termsSource("", false)
 	if err != nil || terms != nil {
 		t.Fatalf("optional missing terms = %v, %v", terms, err)
+	}
+}
+
+// Corpus samples are stored base64-encoded, so an address or private term in
+// a sample is invisible to a scan of the stored text.
+func TestFixturecheckScansDecodedCorpus(t *testing.T) {
+	const name = "internal/attackcorpus/testdata/corpus/webshell/probe/a.php.b64"
+	encode := func(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
+	terms, err := loadTerms(writeTerms(t, "hostseven\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		decoded, want string
+		terms         []*regexp.Regexp
+	}{
+		{"<?php\n// peer 8.8.8.8\n", name + ":2: non-documentation IPv4 literal", nil},
+		{"<?php\n// first seen on HostSeven\n", name + ":2: private term", terms},
+	} {
+		root := fixtureRepo(t)
+		writeFixture(t, root, name, encode(tc.decoded))
+		var output bytes.Buffer
+		if err := check(root, tc.terms, &output); err == nil {
+			t.Errorf("%q: decoded sample was accepted", tc.want)
+		}
+		if !strings.Contains(output.String(), tc.want) || strings.Contains(output.String(), "8.8.8.8") || strings.Contains(strings.ToLower(output.String()), "hostseven") {
+			t.Errorf("missing location or leaked text: %s", &output)
+		}
+	}
+
+	root := fixtureRepo(t)
+	writeFixture(t, root, name, encode("<?php\n// peer 192.0.2.10\n"))
+	var output bytes.Buffer
+	if err := check(root, nil, &output); err != nil {
+		t.Fatalf("documentation address rejected: %v\n%s", err, &output)
+	}
+
+	root = fixtureRepo(t)
+	writeFixture(t, root, name, "not base64!\n")
+	if err := check(root, nil, new(bytes.Buffer)); err == nil {
+		t.Fatal("undecodable corpus sample was accepted")
 	}
 }

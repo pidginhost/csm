@@ -6,6 +6,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"encoding/base64"
 	"errors"
 	"flag"
 	"fmt"
@@ -55,6 +56,12 @@ func matchesTerm(line []byte, terms []*regexp.Regexp) bool {
 		}
 	}
 	return false
+}
+
+// isCorpusSample reports whether path is an attack corpus sample. Samples are
+// stored base64-encoded, so only their decoded text shows what they contain.
+func isCorpusSample(path string) bool {
+	return strings.HasPrefix(path, "internal/attackcorpus/testdata/") && strings.HasSuffix(path, ".b64")
 }
 
 func isFixture(path string) bool {
@@ -107,7 +114,8 @@ func termsSource(path string, required bool) ([]*regexp.Regexp, error) {
 }
 
 // scanFile reports the violating lines of one file: non-documentation IPv4
-// literals in fixtures, private terms everywhere. Fixtures must be regular
+// literals in fixtures, private terms everywhere. Corpus samples are scanned
+// decoded, with line numbers of the decoded text. Fixtures must be regular
 // files; elsewhere a symlink is skipped because its target is scanned under
 // its own path.
 func scanFile(root *os.Root, name string, fixture bool, terms []*regexp.Regexp, output io.Writer) (violations int, scanned bool, err error) {
@@ -126,7 +134,19 @@ func scanFile(root *os.Root, name string, fixture bool, terms []*regexp.Regexp, 
 		return 0, false, err
 	}
 	defer file.Close()
-	scanner := bufio.NewScanner(file)
+	var content io.Reader = file
+	if isCorpusSample(name) {
+		encoded, err := io.ReadAll(file)
+		if err != nil {
+			return 0, false, fmt.Errorf("%s: read: %w", name, err)
+		}
+		decoded, err := base64.StdEncoding.DecodeString(string(encoded))
+		if err != nil {
+			return 0, false, fmt.Errorf("%s: decode corpus sample: %w", name, err)
+		}
+		content = bytes.NewReader(decoded)
+	}
+	scanner := bufio.NewScanner(content)
 	scanner.Buffer(make([]byte, 64<<10), 1<<20)
 	line := 0
 	for scanner.Scan() {
