@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/safepath"
 )
 
 // Category groups samples by attack type.
@@ -107,6 +108,10 @@ type Sample struct {
 	Dir string `json:"-"`
 	// Half is public or private.
 	Half string `json:"-"`
+
+	// Keep later reads anchored to the original corpus even if Dir or cwd changes.
+	corpusDir   string
+	relativeDir string
 }
 
 var sha256Hex = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -129,13 +134,13 @@ func checkPath(p string) error {
 	if p == "@crontab" {
 		return nil
 	}
-	if !filepath.IsLocal(p) || filepath.Clean(p) != p || p == "." || strings.HasPrefix(p, "@") {
+	if !filepath.IsLocal(p) || filepath.Clean(p) != p || p == "." || strings.HasPrefix(p, "@") || strings.ContainsRune(p, '\x00') {
 		return fmt.Errorf("unsafe path %q", p)
 	}
 	return nil
 }
 
-func (s Sample) validate() error {
+func (s Sample) validate(dir *safepath.Dir) error {
 	switch {
 	case !slices.Contains(Categories, Category(s.Category)):
 		return fmt.Errorf("unknown category %q", s.Category)
@@ -165,8 +170,15 @@ func (s Sample) validate() error {
 		if f.Mode&^0o777 != 0 {
 			return fmt.Errorf("file %q: mode %#o has bits beyond the permission bits", f.Path, f.Mode)
 		}
-		if _, err := s.Content(f); err != nil {
+		if _, err := content(dir, f); err != nil {
 			return fmt.Errorf("file %q: %w", f.Path, err)
+		}
+	}
+	for file := range files {
+		for parent := filepath.Dir(file); parent != "."; parent = filepath.Dir(parent) {
+			if files[parent] {
+				return fmt.Errorf("conflicting paths %q and %q", parent, file)
+			}
 		}
 	}
 
@@ -193,7 +205,7 @@ func (s Sample) validateExpect(e PathExpect, files map[string]bool) error {
 		return errors.New("gap and findings are exclusive")
 	case s.Kind == "control" && (e.Gap != "" || len(e.Findings) > 0):
 		return errors.New("a control expects no gap or findings")
-	case s.Kind == "malicious" && e.Gap == "" && len(e.Findings) == 0:
+	case s.Kind == "malicious" && strings.TrimSpace(e.Gap) == "" && len(e.Findings) == 0:
 		return errors.New("a malicious sample needs findings or a gap")
 	}
 	for _, f := range e.Findings {

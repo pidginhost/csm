@@ -24,6 +24,10 @@ func TestLoadParsesSample(t *testing.T) {
 		t.Fatalf("loaded %d samples, want 1", len(samples))
 	}
 	got := samples[0]
+	corpusDir, err := filepath.Abs(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	note := File{Path: "public_html/note.php", B64: "note.b64", Mode: 0o644}
 	htaccess := File{Path: "public_html/.htaccess", Selftest: "benign_htaccess"}
@@ -47,8 +51,10 @@ func TestLoadParsesSample(t *testing.T) {
 				CleanedSHA256: map[string]string{note.Path: "37c3dee866bc87fc3d52b6b053805dfbe5df3d394fdad9ec535f162a4e695941"},
 			},
 		},
-		Dir:  filepath.Join(dir, "webshell", "loader_fixture"),
-		Half: "public",
+		Dir:         filepath.Join(dir, "webshell", "loader_fixture"),
+		Half:        "public",
+		corpusDir:   corpusDir,
+		relativeDir: "webshell/loader_fixture",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("parsed sample:\n got %+v\nwant %+v", got, want)
@@ -59,7 +65,7 @@ func TestLoadParsesSample(t *testing.T) {
 		t.Fatalf("Content(b64): %v", err)
 	}
 	if string(content) != "harmless loader fixture text\n" {
-		t.Errorf("Content(b64) = %q", content)
+		t.Error("Content(b64) differs from the fixture")
 	}
 
 	content, err = got.Content(htaccess)
@@ -75,7 +81,7 @@ func TestLoadParsesSample(t *testing.T) {
 		}
 	}
 	if len(bundle) == 0 || !bytes.Equal(content, bundle) {
-		t.Errorf("Content(selftest) = %q, want the bundle bytes %q", content, bundle)
+		t.Error("Content(selftest) differs from the bundle")
 	}
 }
 
