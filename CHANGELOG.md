@@ -9,6 +9,11 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ## [Unreleased]
 
+### Changed
+
+- The malware scanning engine moves to YARA-X 1.23.0, which fixes crashes on some third-party rules; shipped rules compile and match as before.
+- Go dependencies are updated to their current releases.
+
 ### Fixed
 
 - Known-customer block emails no longer list a compromised mail or FTP login that caused the block, even when the block comes later.

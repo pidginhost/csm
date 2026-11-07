@@ -4,9 +4,9 @@
 # instead of fetching a newer one), the Go analysers, node for the Web UI
 # JavaScript tests, and the apt packages the test and integration jobs use.
 #
-# Tag: registry.pidginhost.cloud/csm/ci-tools:go-1.27.3-r3
+# Tag: registry.pidginhost.cloud/csm/ci-tools:go-1.27.3-r4
 # Build: docker build -f build/Dockerfile.ci-tools \
-#          -t registry.pidginhost.cloud/csm/ci-tools:go-1.27.3-r3 .
+#          -t registry.pidginhost.cloud/csm/ci-tools:go-1.27.3-r4 .
 # Push: triggered manually by build-ci-tools-image job in .gitlab-ci.yml
 #
 # Bump the tag suffix whenever a pinned tool version changes or a new
@@ -27,7 +27,7 @@ ARG GOCOVER_COBERTURA_VERSION=v1.5.0
 ARG GOCOVMERGE_VERSION=v0.0.0-20160331181800-b5bfa59ec0ad
 # gosec: keep the module loader fix until it ships in a tagged release.
 ARG GOSEC_VERSION=v2.30.1-0.20261026162949-ff25931a2edd
-ARG PHCTL_VERSION=v0.20.1
+ARG PHCTL_VERSION=v0.20.3
 
 # openssh-client + jq + ca-certificates for integration:, php-cli for
 # the PHP Shield runtime tests and python3-cryptography for the EL8
