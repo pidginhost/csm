@@ -305,7 +305,7 @@ func TestAttackCorpusRealtimeDriver(t *testing.T) {
 			// The JSON form leaves out finding text, which can quote sample bytes.
 			observed, _ := json.Marshal(o.Findings)
 			if o.Err != nil {
-				t.Fatalf("driver error: %v", o.Err)
+				t.Fatalf("driver error: %s", attackcorpus.DriverErrorText(o.Err))
 			}
 			if len(o.NotAdmitted) != 0 {
 				t.Errorf("not admitted: %v", o.NotAdmitted)

@@ -3,6 +3,7 @@ package attackcorpus
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
@@ -50,11 +51,16 @@ func TestReplayLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, mode := range []string{"success", "filtered", "partial", "skip", "fatal", "error", "cleanup", "returned", "returned_private"} {
+	for _, mode := range []string{"success", "filtered", "partial", "skip", "fatal", "error", "cleanup", "returned", "returned_private", "returned_shown"} {
 		t.Run(mode, func(t *testing.T) {
 			dir := t.TempDir()
 			t.Setenv("CSM_ATTACK_CORPUS_TEST_MODE", mode)
 			t.Setenv("CSM_ATTACK_CORPUS_TEST_REPORT", dir)
+			show := ""
+			if mode == "returned_shown" {
+				show = "1"
+			}
+			t.Setenv("CSM_ATTACK_CORPUS_SHOW_ERRORS", show)
 			pattern := "^TestReplayHelper$"
 			switch mode {
 			case "filtered":
@@ -100,14 +106,15 @@ func TestReplayLifecycle(t *testing.T) {
 				if strings.Contains(string(output), helperDriverError) {
 					t.Error("a sample's driver error text reached the test log")
 				}
-				if !strings.Contains(string(output), "driver error type: *errors.errorString") {
+				if !strings.Contains(string(output), "driver error: *errors.errorString (details withheld; set CSM_ATTACK_CORPUS_SHOW_ERRORS=1 locally)") {
 					t.Error("a sample's driver error type is missing from the test log")
 				}
 			}
-			if mode == "returned" || mode == "returned_private" {
-				if strings.Contains(string(data), helperDriverError) {
-					t.Error("the driver's error reason reached the report")
-				}
+			if mode == "returned_shown" && !strings.Contains(string(output), "driver error: "+helperDriverError) {
+				t.Error("CSM_ATTACK_CORPUS_SHOW_ERRORS=1 did not put the driver error reason in the test log")
+			}
+			if strings.HasPrefix(mode, "returned") && strings.Contains(string(data), helperDriverError) {
+				t.Error("the driver's error reason reached the report")
 			}
 		})
 	}
@@ -140,13 +147,24 @@ func TestReplayHelper(t *testing.T) {
 			t.Error("driver setup failed")
 		case "cleanup":
 			t.Cleanup(func() { t.Error("driver cleanup failed") })
-		case "returned", "returned_private":
+		case "returned", "returned_private", "returned_shown":
 			return Outcome{Err: errors.New(helperDriverError)}
 		}
 		return Outcome{Remediation: untouched()}
 	})
 	if err := WriteReport(os.Getenv("CSM_ATTACK_CORPUS_TEST_REPORT"), Realtime, results); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestDriverErrorText(t *testing.T) {
+	err := fmt.Errorf("scan: %w", errors.New(helperDriverError))
+	const withheld = "*fmt.wrapError (details withheld; set CSM_ATTACK_CORPUS_SHOW_ERRORS=1 locally)"
+	for value, want := range map[string]string{"": withheld, "true": withheld, "0": withheld, "1": err.Error()} {
+		t.Setenv("CSM_ATTACK_CORPUS_SHOW_ERRORS", value)
+		if got := DriverErrorText(err); got != want {
+			t.Errorf("CSM_ATTACK_CORPUS_SHOW_ERRORS=%q: DriverErrorText = %q, want %q", value, got, want)
+		}
 	}
 }
 

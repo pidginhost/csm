@@ -525,7 +525,7 @@ func testScanDriver(t *testing.T, p attackcorpus.Path, run func(*testing.T, atta
 			// The JSON form leaves out finding text, which can quote sample bytes.
 			observed, _ := json.Marshal(o.Findings)
 			if o.Err != nil {
-				t.Fatalf("driver error: %v", o.Err)
+				t.Fatalf("driver error: %s", attackcorpus.DriverErrorText(o.Err))
 			}
 			for _, f := range o.Findings {
 				if f.File != w.file {
@@ -590,7 +590,7 @@ func TestAttackCorpusTierPinsPHPContentCadence(t *testing.T) {
 	o := runTierSample(t, samples[0])
 	observed, _ := json.Marshal(o.Findings)
 	if o.Err != nil {
-		t.Fatalf("driver error: %v", o.Err)
+		t.Fatalf("driver error: %s", attackcorpus.DriverErrorText(o.Err))
 	}
 	if !slices.ContainsFunc(o.Findings, func(f attackcorpus.Observed) bool { return f.File == loader }) {
 		t.Errorf("rolling coverage did not reach %s: %s", loader, observed)
@@ -682,7 +682,7 @@ func TestAttackCorpusScansServeHostLookupsOffline(t *testing.T) {
 			o := d.run(t, c, samples[0])
 			observed, _ := json.Marshal(o.Findings)
 			if o.Err != nil {
-				t.Fatalf("driver error: %v", o.Err)
+				t.Fatalf("driver error: %s", attackcorpus.DriverErrorText(o.Err))
 			}
 			if q, w := c.queries.Load(), c.wpCLI.Load(); (q > 0) != d.reachesDB || (w > 0) != d.reachesDB {
 				t.Errorf("%d queries and %d wp-cli runs answered offline, want both nonzero: %v", q, w, d.reachesDB)

@@ -195,9 +195,10 @@ exactly once, or an engine did not load. A test filter that excludes a sample,
 a driver that stops early, a check that panics, times out or reports partial
 coverage, and a failed quarantine all fail the sample.
 
-Driver errors appear in the test log by type only. Reports carry check names,
-severities, planted paths and verdicts, never sample content or finding text,
-because either can quote decoded bytes.
+Driver errors appear in the test log by type only, unless
+`CSM_ATTACK_CORPUS_SHOW_ERRORS=1` is set (see below). Reports carry check
+names, severities, planted paths and verdicts, never sample content or finding
+text, because either can quote decoded bytes.
 
 ## Measurement limits
 
@@ -258,6 +259,9 @@ Environment:
   sets both.
 - `CSM_ATTACK_CORPUS_PRIVATE` adds a second corpus in the same format. It must
   load and hold at least one sample.
+- `CSM_ATTACK_CORPUS_SHOW_ERRORS=1` logs the full reason of a driver error
+  instead of its type. Local runs only: a reason can quote decoded sample
+  bytes, and CI keeps test logs as artifacts. The script never sets it.
 
 The other `TestAttackCorpus` tests check the drivers themselves, on their own
 samples, and need no report directory.

@@ -92,6 +92,16 @@ func Drive(t *testing.T, p Path, run func(t *testing.T, s Sample) Outcome) {
 	}
 }
 
+// DriverErrorText describes a driver error for a test log. Test logs become CI
+// artifacts and an error can quote decoded sample bytes, so only its type is
+// shown unless CSM_ATTACK_CORPUS_SHOW_ERRORS=1 asks for the reason locally.
+func DriverErrorText(err error) string {
+	if os.Getenv("CSM_ATTACK_CORPUS_SHOW_ERRORS") == "1" {
+		return err.Error()
+	}
+	return fmt.Sprintf("%T (details withheld; set CSM_ATTACK_CORPUS_SHOW_ERRORS=1 locally)", err)
+}
+
 func replay(t *testing.T, p Path, samples []Sample, run func(t *testing.T, s Sample) Outcome) []Result {
 	t.Helper()
 	attempts := Offline(t)
@@ -117,10 +127,8 @@ func replay(t *testing.T, p Path, samples []Sample, run func(t *testing.T, s Sam
 				results = append(results, r)
 			})
 			o = run(t, s)
-			// Test logs become CI artifacts. Even public samples must stay
-			// encoded at rest, so errors cannot quote their decoded bytes.
 			if o.Err != nil {
-				t.Logf("driver error type: %T (details withheld)", o.Err)
+				t.Logf("driver error: %s", DriverErrorText(o.Err))
 			}
 		})
 		if !ran {
