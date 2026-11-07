@@ -96,7 +96,8 @@ from a checkout.
     A file left out is expected untouched. `cleaned` needs the SHA-256 of the
     cleaned bytes in `cleaned_sha256`. The deep tier and the full scan clean a
     WordPress core, plugin or theme file in place, instead of moving it, when
-    a Critical quarantine-eligible finding names it. Such a sample expects
+    a Critical quarantine-eligible finding names it. A plugin or theme file
+    with a known web shell name is quarantined instead. Such a sample expects
     `cleaned` on those paths, or `untouched` when the cleaner finds nothing
     to remove.
 
@@ -213,14 +214,18 @@ What the corpus does not measure yet:
 - The daemon's batch responders (permission fix, database malware response,
   companion sweep queueing, WP-Cron fix) are not driven. Realtime remediation
   is the inline quarantine only, and the tier stops at the runner's
-  responders.
+  responders. In production, realtime findings also reach the batch process
+  kill and file quarantine. Verdicts agree today because the only realtime
+  check on the batch quarantine list, `signature_match_realtime`, passes the
+  same high-confidence gate there as inline. A realtime check added to that
+  list would change production remediation without the gate seeing it.
 - `supply_chain` cannot fire: a fresh install has no advisory file.
   `group_writable_php` cannot fire: planted files belong to the test user's
   group, not a web server group.
 - `cleaned` is not exercised: the `.htaccess` cleaner is off by default, the
   full scan skips `.htaccess` and crontab findings, the crontab fix is
   operator-only, and no sample draws a Critical quarantine-eligible finding on
-  a WordPress core, plugin or theme file, which both scan paths clean in place.
+  a file both scan paths clean in place (see `remediation` above).
 - The throttled performance file checks run once per sample, in the second
   tier run only. A tier run that skips any check fails the sample.
 - The full scan quarantine step is a copy of the scan job's loop. A change to
