@@ -86,6 +86,15 @@ func (d *Daemon) reloadConfig() {
 	if len(changes) == 0 {
 		recordReloadResult(reloadResultNoop)
 		fmt.Fprintf(os.Stderr, "[%s] SIGHUP: no config changes detected\n", ts())
+		// An edit that changes no setting (a comment, a retired key) still
+		// moves the stored hash. Adopt it, or the periodic integrity check
+		// reports a tamper.
+		if err := d.signAndSaveReloadedConfig(oldCfg, newCfg); err != nil {
+			fmt.Fprintf(os.Stderr, "[%s] SIGHUP: re-hash failed (%v); file and live hash remain mismatched until operator runs `csm rehash`\n",
+				ts(), err)
+		} else if newCfg.Integrity != oldCfg.Integrity {
+			publishResyncedIntegrity(oldCfg, newCfg, cfgPath)
+		}
 		// An operator who fixed a host condition that blocked antispam, or
 		// started Postfix after CSM, reloads to have it checked again; do
 		// not wait for the interval.
@@ -114,14 +123,7 @@ func (d *Daemon) reloadConfig() {
 		// file unchanged, operator must rehash manually"; we still
 		// emit the warning so they know to act.
 		if err := d.signAndSaveReloadedConfig(oldCfg, newCfg); err == nil {
-			resynced := *oldCfg
-			resynced.Integrity = newCfg.Integrity
-			// confd_hash was computed under the edited exemption list, so
-			// the live copy must verify under that same list.
-			resynced.ConfD = newCfg.ConfD
-			resynced.ConfigFile = cfgPath
-			resynced.ConfigDir = oldCfg.ConfigDir
-			publishActiveConfig(&resynced, "SIGHUP")
+			publishResyncedIntegrity(oldCfg, newCfg, cfgPath)
 		} else {
 			fmt.Fprintf(os.Stderr, "[%s] config_reload_restart_required: re-hash failed (%v); file and live hash remain mismatched until operator runs `csm rehash`\n",
 				ts(), err)
@@ -265,6 +267,20 @@ func purgeDryRunBlocksIfAutoResponseLive(cfg *config.Config, source string) {
 // written back into csm.yaml; only their digest is folded into confd_hash so
 // a later Verify still passes. The binary hash is preserved from the prior
 // live config; a SIGHUP reload cannot upgrade the binary, so it must not drift.
+// publishResyncedIntegrity publishes the live config unchanged except for
+// the integrity hashes the reload signed, for a reload that applies no
+// setting.
+func publishResyncedIntegrity(oldCfg, newCfg *config.Config, cfgPath string) {
+	resynced := *oldCfg
+	resynced.Integrity = newCfg.Integrity
+	// confd_hash was computed under the edited exemption list, so
+	// the live copy must verify under that same list.
+	resynced.ConfD = newCfg.ConfD
+	resynced.ConfigFile = cfgPath
+	resynced.ConfigDir = oldCfg.ConfigDir
+	publishActiveConfig(&resynced, "SIGHUP")
+}
+
 func (d *Daemon) signAndSaveReloadedConfig(oldCfg, newCfg *config.Config) error {
 	currentHash, err := integrity.HashConfigStable(oldCfg.ConfigFile)
 	if err != nil {
