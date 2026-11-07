@@ -9,6 +9,10 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ## [Unreleased]
 
+### Security
+
+- Firewall recovery keeps expired automatic blocks inactive through clock corrections and preserves operator blocks at the same address.
+
 ### Fixed
 
 - Admission status lifetime counts now include responses refused or dropped before they reached the queue.

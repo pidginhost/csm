@@ -107,6 +107,7 @@ func (e *Engine) StateSetAside() string                              { return ""
 func (e *Engine) SetBlockActionsUnproven(_ error)                    {}
 func (e *Engine) BlockActionsUnproven() error                        { return nil }
 func (e *Engine) HoldBlockBatches(_ bool)                            {}
+func (e *Engine) BlockActionIDsForStartup() ([]string, error)        { return nil, ErrUnsupportedPlatform }
 func (e *Engine) MarkBlockActionsUnverified(_ []string) (int, error) {
 	return 0, ErrUnsupportedPlatform
 }

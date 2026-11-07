@@ -2,12 +2,10 @@ package daemon
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
 	"os"
-	"path/filepath"
 	"sync/atomic"
 	"time"
 
@@ -220,7 +218,7 @@ func (d *Daemon) prepareFirewall(effectiveFirewall *firewall.FirewallConfig, ops
 	d.fwActions, _ = any(engine).(firewallActionBoundary)
 	recoverFirewallActions(d.fwActions)
 	seedFirewallLease(engine, ops)
-	gateFirewallRows(d.cfg.StatePath, engine, ops)
+	gateFirewallRows(engine, ops)
 
 	err = ops.apply(engine)
 	// Report a kept file even when this attempt fails: the next attempt
@@ -251,8 +249,8 @@ func (d *Daemon) firewallStateSetAside() string {
 // attempts the ledger has not proven applied. Without a readable ledger
 // nothing is proven: the rows are restored as before, the engine never
 // evicts them, and status reports why until the next start.
-func gateFirewallRows(statePath string, engine *firewall.Engine, ops firewallStartupOps) {
-	ids, stateErr := firewallRowActionIDs(statePath)
+func gateFirewallRows(engine *firewall.Engine, ops firewallStartupOps) {
+	ids, stateErr := engine.BlockActionIDsForStartup()
 	read := ops.unproven
 	if read == nil {
 		read = readUnprovenBlockActions
@@ -290,37 +288,6 @@ func gateFirewallRows(statePath string, engine *firewall.Engine, ops firewallSta
 	if _, err := remove(engine, settled); err != nil {
 		csmlog.Warn("firewall keeps settled blocks held back until their rows can be removed", "err", err)
 	}
-}
-
-// firewallRowActionIDs includes every saved row that can hold an address:
-// LoadState hides unverified rows and their address aliases, but removing a
-// settled hold can expose another action at that address. An expired row
-// no earlier start marked is never restored and is left to expiry, so it
-// cannot hold back another block at its address.
-func firewallRowActionIDs(statePath string) ([]string, error) {
-	// #nosec G304 -- filepath.Join under operator-configured statePath.
-	data, err := os.ReadFile(filepath.Join(statePath, "firewall", "state.json"))
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	var state firewall.FirewallState
-	if err = json.Unmarshal(data, &state); err != nil {
-		return nil, err
-	}
-	var ids []string
-	seen := make(map[string]bool)
-	now := time.Now()
-	for _, row := range state.Blocked {
-		expired := !row.ExpiresAt.IsZero() && !row.ExpiresAt.After(now)
-		if row.ActionID != "" && !seen[row.ActionID] && (row.Unverified || !expired) {
-			seen[row.ActionID] = true
-			ids = append(ids, row.ActionID)
-		}
-	}
-	return ids, nil
 }
 
 // seedFirewallLease gives the engine, before Apply restores timed blocks,

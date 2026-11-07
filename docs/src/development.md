@@ -992,9 +992,11 @@ leaves the rows held back and the next start removes them: it asks the ledger
 about every saved action, including rows an earlier start held back and
 other actions sharing their addresses. An expired row no start marked is never
 restored and is left to expiry, so it holds back no other block at its
-address. Marking preserves those separate rows until cleanup can remove only
-the settled actions. Removing a hold therefore cannot restore an unchecked
-action or erase another block.
+address. The engine selects those rows on its lease clock, retaining that
+reading through Apply so a backward wall-clock step cannot restore an
+unchecked action. Marking preserves those separate rows until cleanup can
+remove only the settled actions. Removing a hold therefore cannot restore
+an unchecked action or erase another block.
 The engine's kill-point tests stop a batch around its intent write, kernel
 batch, readback, unknown marking and rejected-state restoration, then start
 the ledger and a new engine over the same state, after a process restart or

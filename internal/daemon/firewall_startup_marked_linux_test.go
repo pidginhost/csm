@@ -274,7 +274,7 @@ func TestFirewallStartupMarkedRowsDeduplicateActions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	gateFirewallRows(cfg.StatePath, e, firewallStartupOps{
+	gateFirewallRows(e, firewallStartupOps{
 		unproven: func(ids []string) ([]string, error) { asked = slices.Clone(ids); return ids, nil },
 		settled:  func(ids []string) ([]string, error) { return ids, nil },
 	})
@@ -318,7 +318,7 @@ func TestFirewallStartupSettledHoldPreservesOtherActions(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					gateFirewallRows(dir, e, firewallStartupOps{
+					gateFirewallRows(e, firewallStartupOps{
 						unproven: func(ids []string) ([]string, error) {
 							return slices.DeleteFunc(slices.Clone(ids), func(id string) bool {
 								switch id {
@@ -382,12 +382,49 @@ func TestFirewallStartupExpiredRowKeepsTheOperatorBlock(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			gateFirewallRows(dir, e, firewallStartupOps{
+			gateFirewallRows(e, firewallStartupOps{
 				unproven: func(ids []string) ([]string, error) { return ids, nil },
 				settled:  func([]string) ([]string, error) { return nil, nil },
 			})
 			if !e.IsBlocked("192.0.2.60") {
 				t.Fatalf("the operator block is hidden after the gate: rows %+v", readStartupRows(t, path))
+			}
+		})
+	}
+}
+
+// The admission clock can prove expiry while the wall clock is behind it.
+// Such a row cannot be restored and must not hold back an operator block.
+func TestFirewallStartupExpiredRowUsesLeaseFloor(t *testing.T) {
+	for _, alias := range []string{"192.0.2.60", "::ffff:192.0.2.60"} {
+		t.Run(alias, func(t *testing.T) {
+			cfg := &firewall.FirewallConfig{Enabled: true}
+			dir := t.TempDir()
+			path := filepath.Join(dir, "firewall", "state.json")
+			now := time.Now()
+			expired := firewall.BlockedEntry{IP: "192.0.2.60", ActionID: "act_" + strings.Repeat("4", 32), ExpiresAt: now.Add(time.Hour).UTC()}
+			operator := firewall.BlockedEntry{IP: alias, Reason: "operator"}
+			rows := []firewall.BlockedEntry{expired, operator}
+			writeStartupRows(t, path, rows)
+			e, err := firewall.NewEngine(cfg, dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			e.SetLeaseFloor(now.Add(2 * time.Hour))
+			gateFirewallRows(e, firewallStartupOps{
+				unproven: func(ids []string) ([]string, error) {
+					if len(ids) != 0 {
+						t.Errorf("startup asked about expired actions: %v", ids)
+					}
+					return ids, nil
+				},
+				settled: func([]string) ([]string, error) { return nil, nil },
+			})
+			if !e.IsBlocked(expired.IP) {
+				t.Error("a row expired on the lease clock hid the operator block")
+			}
+			if got := readStartupRows(t, path); !reflect.DeepEqual(got, rows) {
+				t.Fatalf("startup changed expired rows: %+v, want %+v", got, rows)
 			}
 		})
 	}
