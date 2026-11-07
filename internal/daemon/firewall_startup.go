@@ -292,9 +292,11 @@ func gateFirewallRows(statePath string, engine *firewall.Engine, ops firewallSta
 	}
 }
 
-// firewallRowActionIDs includes every saved row: LoadState hides unverified
-// rows and their address aliases, but removing a settled hold can expose
-// another action at that address. All must be checked before any row goes.
+// firewallRowActionIDs includes every saved row that can hold an address:
+// LoadState hides unverified rows and their address aliases, but removing a
+// settled hold can expose another action at that address. An expired row
+// no earlier start marked is never restored and is left to expiry, so it
+// cannot hold back another block at its address.
 func firewallRowActionIDs(statePath string) ([]string, error) {
 	// #nosec G304 -- filepath.Join under operator-configured statePath.
 	data, err := os.ReadFile(filepath.Join(statePath, "firewall", "state.json"))
@@ -310,8 +312,10 @@ func firewallRowActionIDs(statePath string) ([]string, error) {
 	}
 	var ids []string
 	seen := make(map[string]bool)
+	now := time.Now()
 	for _, row := range state.Blocked {
-		if row.ActionID != "" && !seen[row.ActionID] {
+		expired := !row.ExpiresAt.IsZero() && !row.ExpiresAt.After(now)
+		if row.ActionID != "" && !seen[row.ActionID] && (row.Unverified || !expired) {
 			seen[row.ActionID] = true
 			ids = append(ids, row.ActionID)
 		}

@@ -365,3 +365,30 @@ func TestFirewallStartupSettledHoldPreservesOtherActions(t *testing.T) {
 		}
 	}
 }
+
+// An expired row is never restored, so startup leaves it to expiry as it
+// always has: marking it would hold its address, and an operator block at
+// that address, under the same text or an alias, would not be installed.
+func TestFirewallStartupExpiredRowKeepsTheOperatorBlock(t *testing.T) {
+	for _, alias := range []string{"192.0.2.60", "::ffff:192.0.2.60"} {
+		t.Run(alias, func(t *testing.T) {
+			cfg := &firewall.FirewallConfig{Enabled: true}
+			dir := t.TempDir()
+			path := filepath.Join(dir, "firewall", "state.json")
+			expired := firewall.BlockedEntry{IP: "192.0.2.60", ActionID: "act_" + strings.Repeat("4", 32), ExpiresAt: time.Now().Add(-time.Hour).UTC()}
+			operator := firewall.BlockedEntry{IP: alias, Reason: "operator"}
+			writeStartupRows(t, path, []firewall.BlockedEntry{expired, operator})
+			e, err := firewall.NewEngine(cfg, dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			gateFirewallRows(dir, e, firewallStartupOps{
+				unproven: func(ids []string) ([]string, error) { return ids, nil },
+				settled:  func([]string) ([]string, error) { return nil, nil },
+			})
+			if !e.IsBlocked("192.0.2.60") {
+				t.Fatalf("the operator block is hidden after the gate: rows %+v", readStartupRows(t, path))
+			}
+		})
+	}
+}
