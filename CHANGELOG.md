@@ -12,6 +12,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 ### Fixed
 
 - Blocking the source of a mail or FTP account compromise no longer also sends a known-customer block email when the block comes later.
+- The known-customer block email now says that allowing an address trusts it on every port.
 
 ## [4.10.1] - 2026-11-07
 

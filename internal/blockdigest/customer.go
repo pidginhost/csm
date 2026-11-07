@@ -115,14 +115,15 @@ func (c *Collector) writeCustomerBlock(b *strings.Builder, indent string, blk Cu
 
 // writeUnblockHint names the command that lifts a block of target. An allow
 // rule does not pass a blocked network, whose drop comes first, but CSM never
-// blocks a range over an allowed address, so it is offered for later blocks.
+// blocks a range over an allowed address, so it is offered for later blocks,
+// with what it grants: the address on every port.
 func writeUnblockHint(b *strings.Builder, indent, target string) {
 	if _, err := netip.ParsePrefix(target); err != nil {
 		fmt.Fprintf(b, "%s  Unblock: csm firewall remove %s\n", indent, target)
 		return
 	}
 	fmt.Fprintf(b, "%s  Unblock: csm firewall remove-subnet %s\n", indent, target)
-	fmt.Fprintf(b, "%s  Keep a customer address out of later range blocks: csm firewall allow <ip>\n", indent)
+	fmt.Fprintf(b, "%s  Allow a customer address on every port, which keeps later range blocks off it: csm firewall allow <ip>\n", indent)
 }
 
 func (c *Collector) customerLogin(h CustomerHit) string {

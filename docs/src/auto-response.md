@@ -499,8 +499,8 @@ in its own Critical alert. For a range block,
 the count and examples include only the remaining customers. Each block names
 the command that lifts it: `csm firewall remove <ip>` for an address,
 `csm firewall remove-subnet <cidr>` for a range. An allow rule
-(`csm firewall allow <ip>`) does not pass a blocked range, but CSM never
-blocks a range over an allowed address.
+(`csm firewall allow <ip>`) trusts the address on every port. It does not
+pass a blocked range, but CSM never blocks a range over an allowed address.
 
 The alert is the false-positive check of automatic blocking, never an
 exemption. The block stands with its configured length, and its notice still
