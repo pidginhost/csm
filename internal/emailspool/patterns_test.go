@@ -374,12 +374,17 @@ func TestBuiltInProxyRanges_AllValid(t *testing.T) {
 	}
 }
 
-// CDN edges serve every visitor of the sites behind them, so the built-in
-// list must carry each CDN that publishes its ranges.
-func TestBuiltInProxyRanges_IncludesCDNs(t *testing.T) {
-	for _, provider := range []string{"Cloudflare", "QUIC.cloud", "Fastly", "BunnyCDN", "Amazon CloudFront", "Sucuri"} {
+// Keep the selected shared-provider exemptions, but do not reintroduce
+// pull-zone CDNs. Provider membership is not proof of site ownership.
+func TestBuiltInProxyRanges_ExcludesPullZoneCDNs(t *testing.T) {
+	for _, provider := range []string{"Cloudflare", "QUIC.cloud", "Sucuri"} {
 		if !strings.Contains(string(defaultProxyRanges), "# Provider: "+provider) {
 			t.Errorf("built-in proxy ranges have no %s block", provider)
+		}
+	}
+	for _, provider := range []string{"Fastly", "BunnyCDN", "Amazon CloudFront"} {
+		if strings.Contains(string(defaultProxyRanges), "# Provider: "+provider) {
+			t.Errorf("built-in proxy ranges exempt %s, whose pull zones anyone can aim at a site", provider)
 		}
 	}
 }
