@@ -453,6 +453,53 @@ func TestReloadConfigIntegrityVerifyPassesAfterReload(t *testing.T) {
 	}
 }
 
+// An edit that changes no setting, such as deleting a retired key or a
+// comment, still moves the stored hash once the operator runs csm rehash.
+// A reload must adopt it, or the next periodic integrity check reports
+// a tamper and skips its scan tier.
+func TestReloadConfigNoChangeAdoptsRehash(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "csm.yaml")
+	binPath := filepath.Join(dir, "bin")
+	if err := os.WriteFile(binPath, []byte("stand-in"), 0o600); err != nil {
+		t.Fatalf("write bin: %v", err)
+	}
+	bh, err := integrity.HashFile(binPath)
+	if err != nil {
+		t.Fatalf("hash bin: %v", err)
+	}
+	orig := &config.Config{}
+	orig.Integrity.BinaryHash = bh
+	seedConfigAtPath(t, cfgPath, orig)
+	loaded, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	d := newDaemonForReloadTest(t, loaded)
+	d.binaryPath = binPath
+
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfgPath, append(data, []byte("# operator note\n")...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := integrity.SignConfigFilePreserving(cfgPath, loaded.ConfigDir, bh); err != nil {
+		t.Fatalf("rehash: %v", err)
+	}
+	d.reloadConfig()
+
+	if err := integrity.Verify(d.binaryPath, d.currentCfg()); err != nil {
+		t.Fatalf("periodic Verify after a no-change reload: %v", err)
+	}
+	select {
+	case f := <-d.alertCh:
+		t.Errorf("no-change reload should produce no finding: %+v", f)
+	default:
+	}
+}
+
 func TestPeriodicIntegrityVerifyRetriesReloadedConfig(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "csm.yaml")
