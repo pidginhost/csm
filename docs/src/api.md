@@ -251,14 +251,12 @@ GET  /api/v1/hardening           Last stored hardening audit report (admin scope
 
 ### Performance telemetry
 
-`GET /api/v1/performance` returns `metrics` and `findings`. Within `metrics`,
-`redis_mem_mb`, `redis_maxmem_mb`, and `redis_keys` are nullable numbers.
-The memory fields are both `null` when the memory probe fails; `redis_keys`
-is `null` when the separate keyspace probe fails. Zero means a measured
-zero, with `redis_maxmem_mb: 0` indicating no configured memory limit.
-Clients must preserve the distinction between zero and unavailable data.
-The `csm_performance` MCP tool returns the same response. See
-[Performance Monitor](performance.md#api) for details.
+`GET /api/v1/performance` returns `metrics` and `findings`. In `metrics`,
+`mysql_mem_mb`, `mysql_conns`, `redis_mem_mb`, `redis_maxmem_mb` and
+`redis_keys` are `null` when csm could not read them; zero is a measured zero.
+The two Redis memory fields are read together, `redis_keys` separately. A
+`redis_maxmem_mb` of 0 means Redis has no memory limit. The `csm_performance`
+MCP tool returns the same response.
 
 ### Accounts at risk
 

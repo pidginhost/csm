@@ -240,9 +240,7 @@ requires a password, set `REDISCLI_AUTH` in the csm daemon environment.
 The dashboard uses that password for its in-process Redis client.
 
 If csm cannot read Redis, the REDIS card renders `n/a` instead of an empty
-Redis. When memory can be read but no memory limit is configured, the card
-shows `no limit` with neutral styling. An unreadable key count does not hide
-available memory measurements.
+Redis. A Redis with no memory limit shows `no limit` with neutral styling.
 
 ## API
 
@@ -253,12 +251,5 @@ POST /api/v1/perf/fix-display-errors
 POST /api/v1/perf/fix-wp-cron
 ```
 
-In the performance response's `metrics` object, `redis_mem_mb`,
-`redis_maxmem_mb`, and `redis_keys` are numbers when known and JSON `null`
-when unavailable. The two memory fields become `null` together if the
-memory probe fails; the key count has a separate probe and may be unavailable
-independently. Zero is a valid measurement. A zero `redis_maxmem_mb` means
-no configured memory limit.
-
-API clients must accept nullable numbers and check for `null` before doing
-arithmetic. The `csm_performance` MCP tool returns the same fields and nulls.
+See the [API reference](api.md#performance-telemetry) for which `metrics`
+fields can be `null`.
