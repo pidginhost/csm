@@ -212,6 +212,21 @@ func (q *QueueCounters) Add(k CountKey) error {
 	return nil
 }
 
+// AddCount counts n events of k at once, saturating as Add does.
+func (q *QueueCounters) AddCount(k CountKey, n uint64) error {
+	if !k.valid() {
+		return refuse(ReasonInvalid, "queue counter key is invalid")
+	}
+	if n == 0 {
+		return nil
+	}
+	if q.counts == nil {
+		q.counts = map[CountKey]uint64{}
+	}
+	q.counts[k] += min(n, ^uint64(0)-q.counts[k])
+	return nil
+}
+
 // Count returns the count for k.
 func (q QueueCounters) Count(k CountKey) uint64 { return q.counts[k] }
 

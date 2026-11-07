@@ -157,7 +157,8 @@ func (l *AdmissionLedger) EnqueueGroup(arrivals []admission.Arrival, checkpoint 
 }
 
 // countCheckpoint counts what the ingress decided since the previous
-// checkpoint into the outcome windows and raises the notices of the
+// checkpoint into the lifetime counters and the outcome windows and
+// raises the notices of the
 // Critical losses among it. They name no candidate: none was stored.
 func (q *queueTx) countCheckpoint(previous, next *admission.IngressCheckpoint) error {
 	var old admission.QueueCounters
@@ -184,6 +185,11 @@ func (q *queueTx) countCheckpoint(previous, next *admission.IngressCheckpoint) e
 				return err
 			}
 		}
+		// The lifetime counters count every queue drop, as the windows do.
+		if err = q.counters.AddCount(k, n); err != nil {
+			return err
+		}
+		q.countsDirty = true
 		if err = q.outcomes.AddCount(admission.QueueOutcome(k.Event, k.Reason, tier), n); err != nil {
 			return err
 		}

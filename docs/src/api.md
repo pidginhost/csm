@@ -327,7 +327,8 @@ block. Every automatic response they select is also handed to the ledger,
 which previews or forecasts eligible work and refuses disabled responses.
 It never applies them; the view is not an enforcement record.
 
-- `ledger` holds the stored admission time, queue, counters, hourly and daily
+- `ledger` holds the stored admission time, queue, lifetime queue counters
+  (every drop, arrivals the ingress refused included), hourly and daily
   outcomes, ingress generations, the hourly ceiling with its general and
   reserved lanes, storage, the outbox, notice records and `unresolved`
   outcomes (`running` and `unknown` counts and when the next unknown one can
