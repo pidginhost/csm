@@ -12,7 +12,12 @@ import (
 )
 
 func TestModSecMalformedIndexCannotFallBackToHostClient(t *testing.T) {
-	for _, host := range []string{"[client 198.51.100.7]", "[client [2001:db8::7]:443]"} {
+	for _, host := range []string{
+		"[client 198.51.100.7]",
+		"[client [2001:db8::7]:443]",
+		"[client 198.51.100.7] ModSecurity: Access denied with code 403",
+		"[client [2001:db8::7]:443] ModSecurity: Access denied with code 403",
+	} {
 		line := modsecIndexLine(host, "203.0.113.50", "GET / HTTP/1.1", "probe", 403)
 		if got := countModSecDenials([]string{line}); len(got) != 0 {
 			t.Errorf("malformed Host selected a client: %v", got)
@@ -120,7 +125,7 @@ func TestModSecErrorLogUsesActionAndClientPrefix(t *testing.T) {
 	for _, client := range []string{"203.0.113.50:5555", "[2001:db8::50]:5555"} {
 		for _, action := range []string{"Warning. Matched Access denied with code 403", "Access denied with code 403"} {
 			line := fmt.Sprintf(`[Sun Nov 08 08:40:00.000000 2026] [security2:error] [pid 123] [client %s] ModSecurity: %s [data "[client 198.51.100.7]"]`, client, action)
-			got := countModSecDenials([]string{line})
+			got := countModSecErrorDenials([]string{line})
 			want := map[string]int{}
 			if strings.HasPrefix(action, "Access denied") {
 				ip := "203.0.113.50"
@@ -153,7 +158,7 @@ func writeAuditReaderFile(t *testing.T, path, content string) {
 
 func assertAuditReaderCounts(t *testing.T, path string, want map[string]int) {
 	t.Helper()
-	got, nonempty := readModSecDenials(context.Background(), path)
+	got, nonempty := readModSecDenials(context.Background(), path, false)
 	if !nonempty || !maps.Equal(got, want) {
 		t.Fatalf("denials = %v, nonempty = %v; want %v", got, nonempty, want)
 	}
@@ -175,7 +180,7 @@ func TestModSecAuditReaderPartialWritesAndConcurrentScans(t *testing.T) {
 	results := make(chan map[string]int, 4)
 	for range 4 {
 		wg.Go(func() {
-			counts, _ := readModSecDenials(context.Background(), path)
+			counts, _ := readModSecDenials(context.Background(), path, false)
 			results <- counts
 		})
 	}
@@ -186,7 +191,7 @@ func TestModSecAuditReaderPartialWritesAndConcurrentScans(t *testing.T) {
 			t.Fatalf("concurrent scan counts %v, want %v", got, want)
 		}
 	}
-	got, _ := readModSecDenials(context.Background(), path)
+	got, _ := readModSecDenials(context.Background(), path, false)
 	clear(got)
 	assertAuditReaderCounts(t, path, want)
 }
@@ -217,13 +222,13 @@ func TestModSecEmptyCandidatePreservesActiveReader(t *testing.T) {
 	assertAuditReaderCounts(t, path, want)
 	empty := path + ".empty"
 	writeAuditReaderFile(t, empty, "")
-	if got, nonempty := readModSecDenials(context.Background(), empty); nonempty || len(got) != 0 {
+	if got, nonempty := readModSecDenials(context.Background(), empty, false); nonempty || len(got) != 0 {
 		t.Fatalf("empty candidate selected: %v", got)
 	}
 	// An empty earlier candidate must not force the active log to replay on
 	// every scan. An unchanged log can finish within one cancellation check.
 	ctx := &auditCancelContext{Context: context.Background(), remaining: 2}
-	if got, _ := readModSecDenials(ctx, path); !maps.Equal(got, want) {
+	if got, _ := readModSecDenials(ctx, path, false); !maps.Equal(got, want) {
 		t.Fatalf("empty candidate discarded the active cursor: %v", got)
 	}
 }
@@ -248,7 +253,7 @@ func TestModSecAuditReaderCancelledScanKeepsFramedProgress(t *testing.T) {
 	content += serialTransaction("new", "203.0.113.50", 403)
 	writeAuditReaderFile(t, path, content)
 	ctx := &auditCancelContext{Context: context.Background(), remaining: 4}
-	if counts, _ := readModSecDenials(ctx, path); len(counts) != 0 {
+	if counts, _ := readModSecDenials(ctx, path, false); len(counts) != 0 {
 		t.Fatalf("cancelled scan returned %v", counts)
 	}
 	modsecAuditReader.Lock()
@@ -289,8 +294,16 @@ func countModSecDenials(lines []string) map[string]int {
 }
 
 func TestModSecErrorLogIPv6ClientDropsPort(t *testing.T) {
-	ip, denied := modsecLineDenial("[Tue Apr 14 10:00:00 2026] [security2:error] [client 2001:db8::5:5555] ModSecurity: Access denied with code 403")
+	ip, denied := modsecErrorLogDenial("[Tue Apr 14 10:00:00 2026] [security2:error] [client 2001:db8::5:5555] ModSecurity: Access denied with code 403")
 	if ip != "2001:db8::5" || !denied {
-		t.Fatalf("modsecLineDenial = %q, %v; want 2001:db8::5, true", ip, denied)
+		t.Fatalf("modsecErrorLogDenial = %q, %v; want 2001:db8::5, true", ip, denied)
 	}
+}
+
+func countModSecErrorDenials(lines []string) map[string]int {
+	p := modsecAuditParser{errorLog: true}
+	for _, line := range lines {
+		p.feed(line, false)
+	}
+	return p.blocked
 }

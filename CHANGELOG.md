@@ -16,6 +16,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 - An attacker can no longer get an unrelated address blocked through crafted FTP login attempts.
 - Visitors behind trusted proxies can no longer obtain challenge passes for unrelated addresses or shared proxies.
 - ModSecurity detections and blocks now keep the correct IPv6 client on Nginx and older Apache hosts.
+- Crafted web requests can no longer hide ModSecurity denials from scheduled scans of configured error logs. List custom sources in the existing error-log settings.
 
 ### Changed
 

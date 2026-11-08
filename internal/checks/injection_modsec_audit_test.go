@@ -27,6 +27,7 @@ func withModSecAuditLog(t *testing.T, content string) {
 	t.Cleanup(platform.ResetForTest)
 	platform.SetOverrides(platform.Overrides{
 		ModSecAuditLogPaths: []string{"/var/log/modsec/audit.log"},
+		ErrorLogPaths:       []string{"/var/log/modsec/audit.log"},
 	})
 	tmp := t.TempDir() + "/modsec.log"
 	if err := os.WriteFile(tmp, []byte(content), 0644); err != nil {

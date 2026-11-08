@@ -68,6 +68,15 @@ the recorded client address and denial action or response status. Request and
 response content cannot select another client or cancel another client's counts.
 The existing `web_server.modsec_audit_logs` setting selects the candidate logs.
 
+To scan error-log records instead, include the source in that candidate list
+and identify it with `modsec_error_log` or `web_server.error_logs`. Detected
+platform error logs are also recognized. These sources count only messages
+starting with `Access denied with code` after the module marker. Request text
+cannot switch their interpretation to an audit index or suppress a denial.
+Other audit candidates accept native audit records only. Custom error-log
+candidates must be identified this way when upgrading. Changing a source's
+type restarts its scan so previous counts cannot carry across formats.
+
 Only complete transactions within the recent line window contribute to these
 counts. The first scan and scans after log rotation read from the file's start
 to establish transaction boundaries. Later scans resume from the saved position.

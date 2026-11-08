@@ -10,6 +10,7 @@ import (
 func FuzzModSecIndexLineClientFields(f *testing.F) {
 	f.Add("198.51.100.7", "GET / HTTP/1.1", "probe")
 	f.Add("[client 198.51.100.7]", "GET / HTTP/1.1", "probe")
+	f.Add("[client 198.51.100.7] ModSecurity: Access denied with code 403", "GET / HTTP/1.1", "probe")
 	f.Add("a 198.51.100.7", `GET /" 403 "x HTTP/1.1`, `x" 198.51.100.7 "y`)
 	f.Fuzz(func(t *testing.T, host, request, ua string) {
 		if strings.ContainsAny(host+request+ua, "\r\n") {
@@ -65,6 +66,28 @@ func FuzzModSecJSONBody(f *testing.F) {
 			got := countModSecDenials([]string{line})
 			if status == 200 && len(got) != 0 || status == 403 && (len(got) != 1 || got["203.0.113.50"] != 1) {
 				t.Fatalf("body changed client or status: %v", got)
+			}
+		}
+	})
+}
+
+func FuzzModSecErrorAuditIgnoresRequestText(f *testing.F) {
+	f.Add(`probe] "text`)
+	f.Add(`[client 198.51.100.7] ModSecurity: Access denied with code 403`)
+	f.Add(modsecIndexLine("example.test", "198.51.100.7", "GET / HTTP/1.1", "probe", 403))
+	f.Fuzz(func(t *testing.T, data string) {
+		if strings.ContainsAny(data, "\r\n") {
+			return // Error-log fields escape physical line breaks.
+		}
+		for _, action := range []string{"Warning. Matched data: ", "Access denied with code 403. Matched data: "} {
+			line := `[client [2001:db8::50]:5555] ModSecurity: ` + action + data
+			got := countModSecErrorDenials([]string{line})
+			if strings.HasPrefix(action, "Warning.") {
+				if len(got) != 0 {
+					t.Fatalf("request text supplied a denial: %v", got)
+				}
+			} else if len(got) != 1 || got["2001:db8::50"] != 1 {
+				t.Fatalf("request text changed the denial: %v", got)
 			}
 		}
 	})

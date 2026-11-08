@@ -1154,7 +1154,7 @@ func CheckModSecAuditLog(ctx context.Context, cfg *config.Config, store *state.S
 	var blocked map[string]int
 	for _, path := range logPaths {
 		var nonempty bool
-		blocked, nonempty = readModSecDenials(ctx, path)
+		blocked, nonempty = readModSecDenials(ctx, path, modsecAuditIsErrorLog(path, cfg))
 		if nonempty {
 			break
 		}

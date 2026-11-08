@@ -8,11 +8,14 @@ import (
 	"maps"
 	"net"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
 
+	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/modsec"
+	"github.com/pidginhost/csm/internal/platform"
 )
 
 // A tail can consist entirely of client-controlled body text, including valid
@@ -26,7 +29,22 @@ var modsecAuditReader struct {
 	parser modsecAuditParser
 }
 
-func readModSecDenials(ctx context.Context, path string) (map[string]int, bool) {
+// The same text can be an error-log prefix or a client-controlled audit Host.
+// Select the interpretation from the configured source, never from that text.
+func modsecAuditIsErrorLog(path string, cfg *config.Config) bool {
+	path = filepath.Clean(path)
+	if cfg.ModSecErrorLog != "" && filepath.Clean(cfg.ModSecErrorLog) == path {
+		return true
+	}
+	for _, candidate := range platform.Detect().ErrorLogPaths {
+		if filepath.Clean(candidate) == path {
+			return true
+		}
+	}
+	return false
+}
+
+func readModSecDenials(ctx context.Context, path string, errorLog bool) (map[string]int, bool) {
 	f, err := osFS.Open(path)
 	if err != nil {
 		return nil, false
@@ -41,7 +59,7 @@ func readModSecDenials(ctx context.Context, path string) (map[string]int, bool) 
 	defer modsecAuditReader.Unlock()
 	r := &modsecAuditReader
 	start := int64(0)
-	if r.path == path && r.info != nil && os.SameFile(r.info, info) && r.follow.Offset > 0 {
+	if r.path == path && r.parser.errorLog == errorLog && r.info != nil && os.SameFile(r.info, info) && r.follow.Offset > 0 {
 		start, _, err = chooseStart(f, r.follow, info.Size())
 		if err != nil {
 			r.info = nil
@@ -49,7 +67,7 @@ func readModSecDenials(ctx context.Context, path string) (map[string]int, bool) 
 		}
 	}
 	if start == 0 {
-		r.parser = modsecAuditParser{}
+		r.parser = modsecAuditParser{errorLog: errorLog}
 	}
 	// A partially advanced parser must never be paired with the old cursor.
 	r.info = nil
@@ -103,6 +121,7 @@ func readModSecDenials(ctx context.Context, path string) (map[string]int, bool) 
 }
 
 type modsecAuditParser struct {
+	errorLog    bool
 	line, start int64
 	txID, txIP  string
 	section     byte
@@ -130,6 +149,12 @@ func (p *modsecAuditParser) feed(line string, truncated bool) {
 	}
 	if truncated {
 		p.wantFirst = false
+		return
+	}
+	if p.errorLog {
+		if ip, denied := modsecErrorLogDenial(line); denied {
+			p.record(ip, p.line)
+		}
 		return
 	}
 	id, section, boundary := modsecSectionBoundary(line)
@@ -236,9 +261,10 @@ func modsecLineDenial(line string) (string, bool) {
 			return ip.String(), fields[2] == "403"
 		}
 	}
-	if strings.Contains(line, `] "`) {
-		return "", false
-	}
+	return "", false
+}
+
+func modsecErrorLogDenial(line string) (string, bool) {
 	// An error-log line: the action opens the message after the module
 	// marker, and the client comes only from the server-written prefix.
 	if msg, _ := modsec.ErrorLogMessage(line); strings.HasPrefix(msg, "Access denied with code ") {
