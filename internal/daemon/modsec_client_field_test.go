@@ -83,3 +83,20 @@ func TestModSecUnsupportedClientCannotSelectLaterField(t *testing.T) {
 		})
 	}
 }
+
+func TestModSecPortlessIPv6Escalation(t *testing.T) {
+	resetModSecState()
+	t.Cleanup(resetModSecState)
+	line := `2026/11/08 08:40:00 [error] 123#123: *1 [client 2001:db8::5:1234] ModSecurity: Access denied with code 403 [id "900115"] [uri "/.env"]`
+	got := escalationTargets(t, line)
+	if len(got) != 2 || len(got["modsec_block_realtime"]) != 1 || len(got["modsec_csm_block_escalation"]) != 1 {
+		t.Fatalf("want one base finding and one escalation: %v", got)
+	}
+	for check, ips := range got {
+		for _, ip := range ips {
+			if ip != "2001:db8::5:1234" {
+				t.Errorf("%s names %q, want the complete IPv6 client", check, ip)
+			}
+		}
+	}
+}

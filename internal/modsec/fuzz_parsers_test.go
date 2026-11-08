@@ -39,7 +39,8 @@ func FuzzModSecClientIPIgnoresTextAfterMarker(f *testing.F) {
 	f.Fuzz(func(t *testing.T, apacheTail, liteSpeedTail string) {
 		for _, tc := range []struct{ prefix, want, tail string }{
 			{`[client 203.0.113.50:5555] ModSecurity: `, "203.0.113.50", apacheTail},
-			{`[client 2001:db8::5:5555] ModSecurity: `, "2001:db8::5", apacheTail},
+			{`[security2:error] [client 2001:db8::5:5555] ModSecurity: `, "2001:db8::5", apacheTail},
+			{`[client 2001:db8::5:5555] ModSecurity: `, "2001:db8::5:5555", apacheTail},
 			{`[security2:error] ModSecurity: `, "", apacheTail},
 			{`[client invalid] ModSecurity: `, "", apacheTail},
 			{`[client 203.0.113.50 ModSecurity: `, "", apacheTail},

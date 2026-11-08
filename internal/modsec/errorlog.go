@@ -48,8 +48,7 @@ func ErrorLogClientIP(line string) string {
 	if isLiteSpeed {
 		return liteSpeedClientIP(prefix)
 	}
-	// Apache 2.4 writes [client IP:port], also for IPv6 ("2001:db8::5:5555").
-	_, rest, ok := strings.Cut(prefix, "[client ")
+	beforeClient, rest, ok := strings.Cut(prefix, "[client ")
 	if !ok {
 		return ""
 	}
@@ -75,14 +74,22 @@ func ErrorLogClientIP(line string) string {
 	if !ok {
 		return ""
 	}
+	// Apache 2.4's module-qualified prefix identifies its unbracketed
+	// IP:port format. Legacy Apache and libmodsecurity log a bare IP;
+	// stripping a numeric IPv6 tail there would name a different host.
+	ip := net.ParseIP(raw)
+	apachePort := strings.Contains(beforeClient, "[security2:") || strings.Contains(beforeClient, "[security3:")
+	if ip != nil && (!apachePort || ip.To4() != nil) {
+		return ip.String()
+	}
 	if i := strings.LastIndexByte(raw, ':'); i > 0 {
 		if _, err := strconv.ParseUint(raw[i+1:], 10, 16); err == nil {
-			if ip := net.ParseIP(raw[:i]); ip != nil {
-				return ip.String()
+			if hostIP := net.ParseIP(raw[:i]); hostIP != nil {
+				return hostIP.String()
 			}
 		}
 	}
-	if ip := net.ParseIP(raw); ip != nil {
+	if ip != nil {
 		return ip.String()
 	}
 	return ""

@@ -2,6 +2,21 @@ package modsec
 
 import "testing"
 
+func TestErrorLogClientIPPortlessIPv6(t *testing.T) {
+	for _, prefix := range []string{
+		"",
+		"[Sun Nov 08 08:40:00 2026] [error] ",
+		"2026/11/08 08:40:00 [error] 123#123: *1 ",
+	} {
+		for _, client := range []string{"2001:db8::5:1234", "2001:db8::5:0", "2001:db8:1:2:3:4:5:1234"} {
+			line := prefix + "[client " + client + "] ModSecurity: Access denied with code 403"
+			if got := ErrorLogClientIP(line); got != client {
+				t.Errorf("client of %q = %q, want %q", line, got, client)
+			}
+		}
+	}
+}
+
 func TestExtractLiteSpeedIP_Standard(t *testing.T) {
 	line := `2026-04-01 [NOTICE] [203.0.113.57:41920-13#APVH_*_server.example.com] [MODSEC] triggered!`
 	got := liteSpeedClientIP(line)
@@ -41,7 +56,8 @@ func TestErrorLogClientIP(t *testing.T) {
 	for _, tt := range []struct{ name, line, want string }{
 		{"apache_legacy", `[client 203.0.113.5] ModSecurity: Access denied`, "203.0.113.5"},
 		{"apache_port", `[client 203.0.113.5:65535] ModSecurity: Access denied`, "203.0.113.5"},
-		{"apache_ipv6", `[client 2001:db8::5:5555] ModSecurity: Access denied`, "2001:db8::5"},
+		{"apache_ipv6", `[security2:error] [client 2001:db8::5:5555] ModSecurity: Access denied`, "2001:db8::5"},
+		{"apache_v3_ipv6", `[security3:error] [client 2001:db8::5:5555] ModSecurity: Access denied`, "2001:db8::5"},
 		{"apache_ipv6_full", `[client 2001:db8:1:2:3:4:5:6:65535] ModSecurity: Access denied`, "2001:db8:1:2:3:4:5:6"},
 		{"apache_ipv6_compressed_tail", `[client 2001:db8:::5555] ModSecurity: Access denied`, "2001:db8::"},
 		{"apache_mapped", `[client ::ffff:192.0.2.5:5555] ModSecurity: Access denied`, "192.0.2.5"},
