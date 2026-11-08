@@ -440,6 +440,76 @@ func TestDropperProbeMatchesExactQuarantineRecord(t *testing.T) {
 	}
 }
 
+func TestDropperQuarantineRejectsReusedInode(t *testing.T) {
+	now := time.Now()
+	state := dropperFileState{Device: 1, Inode: 2, Birth: now, BirthKnown: true}
+	c := dropperCandidate{Path: "/payload.php", Device: 1, Inode: 2, Birth: now, BirthKnown: true}
+	ledger := newDropperQuarantineLedger(time.Minute)
+	ledger.record(c.Path, state, now)
+	reused := c
+	reused.Birth = now.Add(time.Second)
+	if ledger.matched(reused, now) {
+		t.Fatal("a different inode generation consumed the quarantine record")
+	}
+	reused.BirthKnown = false
+	if ledger.matched(reused, now) {
+		t.Fatal("an unknown inode generation consumed the quarantine record")
+	}
+	if !ledger.matched(c, now) || ledger.matched(c, now) {
+		t.Fatal("original identity must consume the quarantine record exactly once")
+	}
+}
+
+func TestDropperProbeMatchesQuarantineWithReplantedPath(t *testing.T) {
+	docroot := t.TempDir()
+	path := filepath.Join(docroot, "payload.php")
+	body := []byte("<?php system($_POST['command']);")
+	if err := os.WriteFile(path, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fd := openRawFd(t, path)
+	fm := newDropperWiringTestMonitor(docroot, time.Minute)
+	original := fm.observeDropperCandidate(fileEvent{
+		path: path, fd: fd, pid: 4242, mask: FAN_CREATE | FAN_CLOSE_WRITE,
+	}, "")
+	if original == nil {
+		t.Fatal("original payload was not tracked")
+	}
+	original.ContentSuspicious = true
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	fm.recordDropperQuarantine(path, fd)
+	if err := os.WriteFile(path, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	replanted := fm.observeDropperCandidate(fileEvent{
+		path: path, fd: openRawFd(t, path), pid: 4242, mask: FAN_CREATE | FAN_CLOSE_WRITE,
+	}, "")
+	if replanted == nil || replanted.Inode == original.Inode {
+		t.Fatal("replacement payload must be tracked as a new inode")
+	}
+	replanted.ContentSuspicious = true
+	prober := fm.newDropperFSProbe()
+	if probe := prober.probe(*replanted); probe.QuarantineMatched {
+		t.Fatal("replacement consumed the original's quarantine record")
+	}
+	probe := prober.probe(*original)
+	if !probe.QuarantineMatched || assessDropper(*original, probe) != dropperBenign {
+		t.Fatalf("quarantined original with replacement = %+v, want benign quarantine match", probe)
+	}
+	if fm.dropperQuarantines.matched(*original, time.Now()) {
+		t.Fatal("quarantine record was not consumed")
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	probe = prober.probe(*replanted)
+	if probe.QuarantineMatched || assessDropper(*replanted, probe) != dropperSuspect {
+		t.Fatalf("self-deleted replacement = %+v, want suspect without quarantine match", probe)
+	}
+}
+
 func TestDropperOverflowReportsOnlyNewLoss(t *testing.T) {
 	fm := newDropperWiringTestMonitor(t.TempDir(), time.Minute)
 	fm.dropper.tr.maxTracked = 0
@@ -487,9 +557,10 @@ func TestDropperProbeLoopStopsAndBalancesWaitGroup(t *testing.T) {
 // reporting it as a self-deleting dropper.
 func TestDropperProbeMatchesInlineQuarantine(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		body string
-		scan func(fm *FileMonitor, fd int, path string, body []byte) bool
+		name         string
+		body         string
+		unidentified bool
+		scan         func(fm *FileMonitor, fd int, path string, body []byte) bool
 	}{
 		{
 			name: "signature rule",
@@ -503,6 +574,14 @@ func TestDropperProbeMatchesInlineQuarantine(t *testing.T) {
 			body: `<?php system($_POST['command']);`,
 			scan: func(fm *FileMonitor, fd int, path string, _ []byte) bool {
 				return fm.checkPHPContent(fd, path, "pid=1 cmd=php")
+			},
+		},
+		{
+			name:         "signature rule without event descriptor",
+			body:         "<?php /* EVIL_MARKER_A " + strings.Repeat("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+-", 32) + " */",
+			unidentified: true,
+			scan: func(fm *FileMonitor, _ int, path string, body []byte) bool {
+				return fm.runSignatureScan(body, path, ".php", "")
 			},
 		},
 	} {
@@ -539,6 +618,12 @@ func TestDropperProbeMatchesInlineQuarantine(t *testing.T) {
 			}
 			if _, err := os.Lstat(path); !os.IsNotExist(err) {
 				t.Fatalf("payload still at its path: %v", err)
+			}
+			if tc.unidentified {
+				if fm.dropperQuarantines.count != 0 {
+					t.Fatal("scan without an event descriptor recorded a quarantine identity")
+				}
+				return
 			}
 			replay := c
 			replay.Inode++
