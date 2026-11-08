@@ -234,36 +234,44 @@ func TestDropperHandleEventAdmitsArbitraryExecutableUnderDocroot(t *testing.T) {
 }
 
 func TestDropperHandleEventAdmitsInheritedPHPHandler(t *testing.T) {
-	docroot := dropperWebrootFixture(t)
-	path := filepath.Join(docroot, "payload.jpg")
-	if err := os.WriteFile(filepath.Join(docroot, ".htaccess"),
-		[]byte("AddHandler application/x-httpd-php .jpg\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, []byte("<?php system($_GET['x']);"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = f.Close() }()
-	dupFD, err := unix.Dup(int(f.Fd()))
-	if err != nil {
-		t.Fatal(err)
-	}
+	for _, tc := range []struct {
+		extension   string
+		dropperOnly bool
+	}{{".jpg", false}, {".custom", true}} {
+		t.Run(tc.extension, func(t *testing.T) {
+			docroot := dropperWebrootFixture(t)
+			path := filepath.Join(docroot, "payload"+tc.extension)
+			if err := os.WriteFile(filepath.Join(docroot, ".htaccess"),
+				[]byte("AddHandler application/x-httpd-php "+tc.extension+"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte("<?php system($_GET['x']);"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			f, err := os.Open(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = f.Close() }()
+			dupFD, err := unix.Dup(int(f.Fd()))
+			if err != nil {
+				t.Fatal(err)
+			}
 
-	fm := newDropperWiringTestMonitor(docroot, time.Minute)
-	fm.analyzerCh = make(chan fileEvent, 1)
-	fm.handleEvent(dupFD, 4242, FAN_CREATE|FAN_CLOSE_WRITE)
-	event := <-fm.analyzerCh
-	defer func() { _ = unix.Close(event.fd) }()
-	if !event.dropperOnly || !event.phpExecutable {
-		t.Fatalf("handler-mapped event = %+v, want dropper-only PHP executable", event)
-	}
-	c := fm.observeDropperCandidate(event, "")
-	if c == nil || !c.PHPExecutable {
-		t.Fatalf("handler-mapped candidate = %+v", c)
+			fm := newDropperWiringTestMonitor(docroot, time.Minute)
+			fm.docRootPatterns = []string{docroot}
+			fm.analyzerCh = make(chan fileEvent, 1)
+			fm.handleEvent(dupFD, 4242, FAN_CREATE|FAN_CLOSE_WRITE)
+			event := <-fm.analyzerCh
+			defer func() { _ = unix.Close(event.fd) }()
+			if event.dropperOnly != tc.dropperOnly || !event.phpExecutable {
+				t.Fatalf("handler-mapped event = %+v, want dropperOnly=%v and PHP tracking", event, tc.dropperOnly)
+			}
+			c := fm.observeDropperCandidate(event, "")
+			if c == nil || !c.PHPExecutable {
+				t.Fatalf("handler-mapped candidate = %+v", c)
+			}
+		})
 	}
 }
 
