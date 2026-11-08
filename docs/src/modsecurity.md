@@ -49,6 +49,62 @@ Request text cannot turn a warning into a deny. Disabling a rule's firewall
 escalation excludes both new events and retained evidence from later blocking
 decisions. Existing firewall bans keep their configured expiry.
 
+ModSecurity error-log detections take the client address only from the
+structured prefix before `ModSecurity:` or `[MODSEC]`. Fields later in the same
+record cannot supply a client address. Live monitoring, scheduled WAF checks,
+and the Web UI use the same parser. The module marker must follow the server's
+structured header directly. Markers inside ordinary file errors, PHP errors, or other
+message text do not create WAF detections. Standard Apache, Nginx and LiteSpeed
+headers are accepted; custom headers outside those formats are ignored.
+Apache's module-qualified error prefix, including `[:error]`, identifies its
+unbracketed IPv6 connection port. Legacy Apache and libmodsecurity client fields
+keep the complete IPv6 address. Bracketed addresses with a port are also accepted.
+Custom Apache logs must retain the module field to distinguish unbracketed IPv6
+addresses with ports from bare addresses.
+LiteSpeed IPv6 connection formats are unsupported: events keep an unknown
+client and cannot trigger an IP escalation. The Web UI uses the finding's
+recorded source address, with a prefix-only raw-log fallback for older findings;
+it leaves the client unknown when neither is available.
+On Apache 2.4 a line must carry ModSecurity's own module tag (`security2` or
+`security3`). Lines that another module tags, such as PHP or CGI output, and
+LiteSpeed PHP stderr lines are never ModSecurity events, even when their text
+holds a ModSecurity message. A LiteSpeed line must have its standard header,
+with the connection field directly before `[MODSEC]`.
+
+Apache 2.2-style headers without a module tag remain accepted for compatibility.
+They cannot distinguish ModSecurity output from a hosted site's message that
+starts with the same marker, so false alerts and visitor escalation remain
+possible with that format. Use module-tagged Apache logs to separate writers.
+
+Header validation does not authenticate file-based records. Nginx can write
+literal line breaks from decoded filenames into its error log, allowing request
+text to create an entire apparent record on a new line. File-based real-time
+escalation and scheduled error-log scans remain exposed to that case. Native
+ModSecurity audit logs provide transaction framing for scheduled scans; fixing
+real-time ingestion requires a source that preserves authenticated record
+boundaries rather than splitting arbitrary log bytes into lines.
+
+Scheduled audit scans read native serial logs and concurrent indexes from
+ModSecurity 2 and libmodsecurity 3, plus libmodsecurity 3 JSON logs. Counts use
+the recorded client address and denial action or response status. Request and
+response content cannot select another client or cancel another client's counts.
+The existing `web_server.modsec_audit_logs` setting selects the candidate logs.
+
+To scan error-log records instead, include the source in that candidate list
+and identify it with `modsec_error_log` or `web_server.error_logs`. Detected
+platform error logs are also recognized. These sources count only messages
+starting with `Access denied with code` after the module marker. Request text
+cannot switch their interpretation to an audit index or suppress a denial.
+Other audit candidates accept native audit records only. Custom error-log
+candidates must be identified this way when upgrading. Changing a source's
+type restarts its scan so previous counts cannot carry across formats.
+
+Only complete transactions within the recent line window contribute to these
+counts. The first scan and scans after log rotation read from the file's start
+to establish transaction boundaries. Later scans resume from the saved position.
+Large existing logs can take longer on the first scan. Memory use stays bounded,
+and incomplete writes wait for the next scan.
+
 CSM adds the default escalation exclusion for browser-marked upload progress
 requests once, including on upgrade, and keeps later operator changes. If the
 saved exclusions cannot be read, CSM keeps running and blocking requests but

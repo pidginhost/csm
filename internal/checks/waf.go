@@ -1151,19 +1151,17 @@ func CheckModSecAuditLog(ctx context.Context, cfg *config.Config, store *state.S
 		return nil
 	}
 
-	var lines []string
+	var blocked map[string]int
 	for _, path := range logPaths {
-		lines = tailFile(path, modsecAuditTailLines)
-		if len(lines) > 0 {
+		var nonempty bool
+		blocked, nonempty = readModSecDenials(ctx, path, modsecAuditIsErrorLog(path, cfg))
+		if nonempty {
 			break
 		}
 	}
-	if len(lines) == 0 {
+	if len(blocked) == 0 {
 		return nil
 	}
-
-	// Count blocked attacks per IP
-	blocked := countModSecDenials(lines)
 	for ip := range blocked {
 		if isInfraIP(ip, cfg.InfraIPs) || !wafAttackerIsReportable(ip) {
 			delete(blocked, ip)
@@ -1223,74 +1221,10 @@ func wafBlockAdvice(ip string, count int) string {
 // modsecAuditLogPaths yields the audit log candidates; a seam for tests.
 var modsecAuditLogPaths = func() []string { return platform.Detect().ModSecAuditLogPaths }
 
-// modsecAuditTailLines is how much of the audit log one cycle inspects.
+// modsecAuditTailLines bounds the recent window used for denial counts.
 // The serial format spends ten or more lines per transaction, so 200 lines
 // could never hold the 20 denials the threshold asks for.
 const modsecAuditTailLines = 4000
-
-// countModSecDenials counts denied transactions per client address.
-//
-// In the serial audit format one transaction spans lettered sections
-// between "--<id>-A--" and "--<id>-Z--"; the client address is on the A
-// header and the denial message in H, so the address is carried across the
-// transaction and each denied transaction counts once. Lines outside a
-// transaction (concurrent format summaries, error-log style lines) keep
-// the per-line rule: a denial marker plus an address on the same line.
-func countModSecDenials(lines []string) map[string]int {
-	blocked := make(map[string]int)
-	var (
-		txID     string
-		txIP     string
-		txDenied bool
-		wantA    bool
-	)
-	flush := func() {
-		if txID != "" && txIP != "" && txDenied {
-			blocked[txIP]++
-		}
-		txID, txIP, txDenied, wantA = "", "", false, false
-	}
-	for _, line := range lines {
-		if id, section, ok := modsecSectionBoundary(line); ok {
-			switch section {
-			case 'A':
-				flush()
-				txID, wantA = id, true
-			case 'Z':
-				if id == txID {
-					flush()
-				}
-			}
-			continue
-		}
-		if wantA {
-			if strings.TrimSpace(line) == "" {
-				continue
-			}
-			wantA = false
-			txIP = modsecAuditClientIP(line)
-			continue
-		}
-		if txID != "" {
-			if modsecDenialLine(line) {
-				txDenied = true
-			}
-			continue
-		}
-		if modsecDenialLine(line) {
-			if ip := extractIPFromLog(line); ip != "" {
-				blocked[ip]++
-			}
-		}
-	}
-	flush()
-	return blocked
-}
-
-func modsecDenialLine(line string) bool {
-	return strings.Contains(line, "403") || strings.Contains(line, "Access denied") ||
-		strings.Contains(line, "MODSEC") || strings.Contains(line, "mod_security")
-}
 
 // modsecSectionBoundary parses a serial-format "--<id>-<letter>--" line.
 func modsecSectionBoundary(line string) (id string, section byte, ok bool) {

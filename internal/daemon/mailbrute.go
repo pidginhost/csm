@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/checks"
 	csmlog "github.com/pidginhost/csm/internal/log"
 	"github.com/pidginhost/csm/internal/store"
 )
@@ -1415,39 +1416,7 @@ func isMailAuthBackendError(line string) bool {
 }
 
 func dovecotServiceMessage(line string) string {
-	tagEnd := strings.Index(line, ": ")
-	if tagEnd < 0 {
-		return ""
-	}
-	prefix := line[:tagEnd]
-	tagStart := strings.LastIndexAny(prefix, " \t")
-	if tagStart >= 0 {
-		prefix = prefix[tagStart+1:]
-	}
-	if !isDovecotProgramTag(prefix) {
-		return ""
-	}
-	return strings.TrimSpace(line[tagEnd+2:])
-}
-
-func isDovecotProgramTag(tag string) bool {
-	if tag == "dovecot" {
-		return true
-	}
-	const prefix = "dovecot["
-	if !strings.HasPrefix(tag, prefix) || !strings.HasSuffix(tag, "]") {
-		return false
-	}
-	pid := tag[len(prefix) : len(tag)-1]
-	if pid == "" {
-		return false
-	}
-	for i := 0; i < len(pid); i++ {
-		if pid[i] < '0' || pid[i] > '9' {
-			return false
-		}
-	}
-	return true
+	return checks.DovecotServiceMessage(line)
 }
 
 func authWorkerDetail(msg string) string {
@@ -1482,10 +1451,7 @@ func authWorkerDetail(msg string) string {
 
 // isMailAuthLine returns true for dovecot imap/pop3/managesieve login events.
 func isMailAuthLine(line string) bool {
-	msg := dovecotServiceMessage(line)
-	return strings.HasPrefix(msg, "imap-login:") ||
-		strings.HasPrefix(msg, "pop3-login:") ||
-		strings.HasPrefix(msg, "managesieve-login:")
+	return checks.DovecotLoginMessage(line) != ""
 }
 
 // dovecotLoginSucceeded reports whether a dovecot imap/pop3/managesieve line
@@ -1499,13 +1465,7 @@ func isMailAuthLine(line string) bool {
 // accept BOTH; keying each consumer off a different single marker left one of
 // them silently dead on whichever format the deployment happened to use.
 func dovecotLoginSucceeded(line string) bool {
-	msg := dovecotServiceMessage(line)
-	return strings.HasPrefix(msg, "imap-login: Logged in: user=<") ||
-		strings.HasPrefix(msg, "imap-login: Login: user=<") ||
-		strings.HasPrefix(msg, "pop3-login: Logged in: user=<") ||
-		strings.HasPrefix(msg, "pop3-login: Login: user=<") ||
-		strings.HasPrefix(msg, "managesieve-login: Logged in: user=<") ||
-		strings.HasPrefix(msg, "managesieve-login: Login: user=<")
+	return checks.DovecotLoginSucceeded(line)
 }
 
 // extractMailLoginEvent parses a dovecot login line and returns
@@ -1535,15 +1495,7 @@ func (e *AccountExtractor) extractMailLoginEvent(line string) (ip, account strin
 	// Keep the key and its whole-login guarantee on the same config snapshot.
 	account = e.Extract(line)
 
-	// Extract rip=... field. Delimited by comma or whitespace.
-	if i := strings.Index(line, "rip="); i >= 0 {
-		rest := line[i+len("rip="):]
-		end := strings.IndexAny(rest, ", \n")
-		if end < 0 {
-			end = len(rest)
-		}
-		ip = rest[:end]
-	}
+	ip = checks.DovecotRemoteIP(line)
 
 	return ip, account, success
 }

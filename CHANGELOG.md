@@ -9,6 +9,15 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ## [Unreleased]
 
+### Security
+
+- An attacker can no longer get an unrelated address blocked, or exempt its own address from reputation blocks, through crafted mail login attempts.
+- An attacker can no longer get an unrelated address blocked, or shown as the attacker in the Web UI, through crafted web requests that ModSecurity denies.
+- An attacker can no longer get an unrelated address blocked through crafted FTP login attempts.
+- Visitors behind trusted proxies can no longer obtain challenge passes for unrelated addresses or shared proxies.
+- Crafted web requests can no longer hide ModSecurity denials from scheduled error-log scans; list custom error logs in `modsec_error_log` or `web_server.error_logs`.
+- A hosted site can no longer get its visitors blocked by writing fake ModSecurity messages to the server logs.
+
 ### Changed
 
 - The malware scanning engine moves to YARA-X 1.23.0, which fixes crashes on some third-party rules; shipped rules compile and match as before.
@@ -16,6 +25,9 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Fixed
 
+- `challenge.trusted_proxies` now accepts CIDR ranges, as documented.
+- ModSecurity detections now name an IPv6 client by its own address on Apache and Nginx hosts.
+- Ordinary server errors no longer appear as ModSecurity attacks or trigger false blocks.
 - Admission status lifetime counts now include responses refused or dropped before they reached the queue.
 - Known-customer block emails no longer list a compromised mail or FTP login that caused the block, even when the block comes later.
 - The known-customer block email now says that allowing an address trusts it on every port.

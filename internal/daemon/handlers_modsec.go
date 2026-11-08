@@ -138,35 +138,16 @@ func modsecEscalationRearmInterval(cfg *config.Config) time.Duration {
 // error logs and returns findings for blocked requests or warnings.
 func parseModSecLogLine(line string, cfg *config.Config) []alert.Finding {
 	// Fast reject: not a ModSecurity line.
-	logMessage, isLiteSpeed := modsecLogMessage(line)
+	logMessage, isLiteSpeed := modsec.ErrorLogMessage(line)
 	if logMessage == "" {
 		return nil
 	}
 
-	var ip, ruleID, msg, hostname, uri string
-
-	if isLiteSpeed {
-		ip = extractLiteSpeedIP(line)
-		ruleID = extractModSecField(line, `[id "`, `"]`)
-		msg = extractModSecField(line, `[msg "`, `"]`)
-		hostname = extractModSecField(line, `[hostname "`, `"]`)
-		uri = extractModSecField(line, `[uri "`, `"]`)
-	} else {
-		// Apache format: [client IP] or [client IP:port]
-		raw := extractModSecField(line, "[client ", "]")
-		// Strip port if present (Apache 2.4 uses "IP:port").
-		if idx := strings.LastIndex(raw, ":"); idx > 0 {
-			// Make sure it's not an IPv6 address (contains multiple colons).
-			if strings.Count(raw, ":") == 1 {
-				raw = raw[:idx]
-			}
-		}
-		ip = raw
-		ruleID = extractModSecField(line, `[id "`, `"]`)
-		msg = extractModSecField(line, `[msg "`, `"]`)
-		hostname = extractModSecField(line, `[hostname "`, `"]`)
-		uri = extractModSecField(line, `[uri "`, `"]`)
-	}
+	ip := modsec.ErrorLogClientIP(line)
+	ruleID := extractModSecField(line, `[id "`, `"]`)
+	msg := extractModSecField(line, `[msg "`, `"]`)
+	hostname := extractModSecField(line, `[hostname "`, `"]`)
+	uri := extractModSecField(line, `[uri "`, `"]`)
 
 	// Skip infra and loopback IPs - consistent with other realtime handlers
 	// (handlers.go:22, autoblock.go:149). Prevents noisy findings and
@@ -245,23 +226,6 @@ func parseModSecLogLine(line string, cfg *config.Config) []alert.Finding {
 		SourceIP: ip,
 		Domain:   domainOrEmpty(hostname),
 	}}
-}
-
-// modsecLogMessage uses the first module marker so request text cannot change
-// the server format or supply an action by embedding another marker later.
-func modsecLogMessage(line string) (string, bool) {
-	const apache = "ModSecurity:"
-	const liteSpeed = "[MODSEC]"
-	a := strings.Index(line, apache)
-	l := strings.Index(line, liteSpeed)
-	if l >= 0 && (a < 0 || l < a) {
-		message := strings.TrimSpace(line[l+len(liteSpeed):])
-		return strings.TrimSpace(strings.TrimPrefix(message, apache)), true
-	}
-	if a >= 0 {
-		return strings.TrimSpace(line[a+len(apache):]), false
-	}
-	return "", false
 }
 
 // domainOrEmpty returns hostname unless it parses as a bare IP address
@@ -373,42 +337,6 @@ func extractAllModSecFields(line, start, end string) string {
 	return strings.Join(vals, " ")
 }
 
-// extractLiteSpeedIP extracts the client IP from a LiteSpeed log line.
-// Format: [IP:PORT-CONN#VHOST] e.g. [122.9.114.57:41920-13#APVH_*_server.example.com]
-func extractLiteSpeedIP(line string) string {
-	// Find the field that looks like [IP:PORT-CONN#VHOST]
-	// It appears as a bracketed field containing # and a port separator.
-	start := 0
-	for {
-		openBracket := strings.Index(line[start:], "[")
-		if openBracket < 0 {
-			return ""
-		}
-		openBracket += start
-		closeBracket := strings.Index(line[openBracket:], "]")
-		if closeBracket < 0 {
-			return ""
-		}
-		closeBracket += openBracket
-
-		field := line[openBracket+1 : closeBracket]
-
-		// LiteSpeed connection field has # (for VHOST) and contains IP:PORT-CONN#
-		if strings.Contains(field, "#") && strings.Contains(field, ":") && strings.Contains(field, "-") {
-			// Extract IP part: everything before the first ':'
-			colonIdx := strings.Index(field, ":")
-			if colonIdx > 0 {
-				ip := field[:colonIdx]
-				// Validate it looks like an IP (has dots).
-				if strings.Count(ip, ".") == 3 {
-					return ip
-				}
-			}
-		}
-		start = closeBracket + 1
-	}
-}
-
 // parseModSecLogLineDeduped wraps parseModSecLogLine with dedup and block
 // threshold escalation. It is the handler registered with the log watcher.
 //
@@ -430,16 +358,7 @@ func parseModSecLogLineDeduped(line string, cfg *config.Config) []alert.Finding 
 	// --- Step 1: block escalation (before dedup) ---
 	// Extract IP and rule ID directly from the raw log line - NOT from the
 	// finding message, which could be manipulated via log injection.
-	ip := extractModSecField(line, "[client ", "]")
-	if ip == "" {
-		ip = extractLiteSpeedIP(line)
-	}
-	// Strip port from Apache 2.4 format (IP:port)
-	if strings.Count(ip, ":") == 1 {
-		if idx := strings.LastIndex(ip, ":"); idx > 0 {
-			ip = ip[:idx]
-		}
-	}
+	ip := modsec.ErrorLogClientIP(line)
 	ruleID := extractModSecField(line, `[id "`, `"]`)
 	ruleNum, _ := strconv.Atoi(ruleID)
 	isBlock := f.Check == "modsec_block_realtime"

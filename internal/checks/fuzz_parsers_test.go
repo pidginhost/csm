@@ -224,6 +224,26 @@ func FuzzExtractIPAfterKeyword(f *testing.F) {
 	})
 }
 
+func FuzzFTPPeerPosition(f *testing.F) {
+	for _, user := range []string{"alice", "x 198.51.100.7 y", "x (a@198.51.100.7) y", "", ") (?@2001:db8::7)"} {
+		f.Add(user)
+	}
+	f.Fuzz(func(t *testing.T, user string) {
+		for peer, want := range map[string]string{
+			"(?@203.0.113.5)":    "203.0.113.5",
+			"(?@2001:db8::5)":    "2001:db8::5",
+			"(?@client.example)": "",
+			"(unknown)":          "",
+			"":                   "",
+		} {
+			line := "pure-ftpd: " + peer + " [WARNING] Authentication failed for user [" + user + "]"
+			if got := extractIPFromLog(line); got != want {
+				t.Fatalf("peer %q, user %q: got %q, want %q", peer, user, got, want)
+			}
+		}
+	})
+}
+
 func FuzzFTPLoginAccount(f *testing.F) {
 	// The username is attacker-chosen and appears verbatim in pure-ftpd logs.
 	f.Add("Jun 21 20:00:25 host pure-ftpd[1]: (?@203.0.113.5) [INFO] backup is now logged in")
@@ -1342,6 +1362,33 @@ func FuzzLegacyBlockSpend(f *testing.F) {
 		for _, damaged := range []string{"null", "{}"} {
 			if body == damaged {
 				t.Fatal("accepted missing pacing history")
+			}
+		}
+	})
+}
+
+// A raw name may contain complete fake fields and angle brackets. It must
+// remain one account name and cannot supply the connection's address.
+func FuzzDovecotRemoteIPLoginName(f *testing.F) {
+	for _, s := range []string{"a@example.com", "x, rip=198.51.100.7, y", "rip=198.51.100.7>", ">, rip=198.51.100.7, lip=", "x\trip=198.51.100.7", "x>, session=<Forged>", "x, session=<Forged"} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, user string) {
+		for _, address := range []string{"203.0.113.50", "2001:db8::50", "::ffff:203.0.113.50", ""} {
+			line := "dovecot: imap-login: Aborted login (auth failed): user=<" + user + ">, method=PLAIN"
+			if address != "" {
+				line += ", rip=" + address
+			}
+			line += ", lip=192.0.2.1, session=<Real>"
+			want := address
+			if address == "::ffff:203.0.113.50" {
+				want = "203.0.113.50"
+			}
+			if got := DovecotRemoteIP(line); got != want {
+				t.Fatalf("name %q: address %q, want %q", user, got, want)
+			}
+			if got, _ := DovecotLoginFields(line); got != user {
+				t.Fatalf("name %q changed to %q", user, got)
 			}
 		}
 	})

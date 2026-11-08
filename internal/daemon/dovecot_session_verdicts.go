@@ -6,6 +6,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/pidginhost/csm/internal/checks"
 )
 
 const (
@@ -177,12 +179,12 @@ func (s *dovecotSession) note(name string, exist mailboxExistence, at time.Time)
 // first and is client text. A session must be a complete field after the
 // server's address fields, not a substring of the user or another field.
 func dovecotLoginSession(line string) string {
-	idx := strings.LastIndex(line, ", session=<")
-	rip := strings.LastIndex(line, ", rip=")
-	if idx < 0 || rip < 0 || idx <= rip {
+	_, fields := checks.DovecotLoginFields(line)
+	idx := strings.LastIndex(fields, ", session=<")
+	if idx < 0 || checks.DovecotRemoteIP(fields[:idx]) == "" {
 		return ""
 	}
-	field, _, _ := strings.Cut(line[idx+len(", session="):], ", ")
+	field, _, _ := strings.Cut(fields[idx+len(", session="):], ", ")
 	session, ok := dovecotSessionField(field)
 	if !ok {
 		return ""

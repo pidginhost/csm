@@ -274,6 +274,12 @@ timestamps ahead of the current clock. These corrections are saved even if
 no new mail event arrives, so another restart does not extend the corrected
 retention period.
 
+FTP findings use only the peer field directly after the pure-ftpd program tag,
+in both realtime monitoring and scheduled scans. Missing or malformed peers and
+hostname peers produce no finding. To record numeric peers, use pure-ftpd's
+existing `DontResolve yes` setting. Addresses in usernames or later message
+fields never identify the client.
+
 Successful FTP logins over loopback do not raise an unfamiliar-address warning.
 Failed authentication remains reportable over loopback, including through local
 relays.
@@ -474,6 +480,12 @@ IMAP and POP logins share the long-memory spray detection described for SMTP abo
 A login identified as a short-window password crack revokes trust for that address and mailbox for the spray memory window, even when the compromise alert is suppressed; for an IPv6 address it revokes that mailbox's trust for every address of its /64. Account cache pressure does not hide a crack while its per-address failure history remains. Further SMTP, IMAP or POP logins cannot restore that trust during the window. Suspect logins do not count toward successful activity that exempts later failures. A crack also removes any good standing from a recent login that had not yet aged into established standing.
 
 When the mail authentication backend itself fails (for example dovecot cannot reach `cpdoveauthd`), every login fails regardless of password. CSM detects a burst of these backend errors, pauses `mail_bruteforce` and `mail_subnet_spray` auto-blocking, keeps the failures out of spray evidence, and raises a `mail_auth_backend_degraded` warning so the outage is visible instead of mass-blocking legitimate users. IMAP and POP successes during this degraded period do not update spray memory, raise spray alerts, or earn good standing. The short-window compromise detector still uses recorded failures. Detection resumes automatically once the backend recovers.
+
+Mail login attribution uses the connection fields outside the raw login name.
+Names containing field-like text or angle brackets remain one account name.
+Records without a usable remote address do not count toward IP blocking or
+login trust. Reputation exemptions require a successful Dovecot login summary;
+success wording in a failed login name does not qualify.
 
 ## Admin-Panel Brute-Force Tracker
 

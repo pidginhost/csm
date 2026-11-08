@@ -763,8 +763,9 @@ func collectRecentIPs(cfg *config.Config) map[string]string {
 	// Dovecot - IMAP/POP3 auth failures.
 	if mailLog := reputationMailLogPath(cfg, info); mailLog != "" {
 		for _, line := range tailFile(mailLog, 50) {
-			if strings.Contains(line, "auth failed") || strings.Contains(line, "Aborted login") {
-				if ip := extractIPAfterKeyword(line, "rip="); ip != "" {
+			msg, _, _ := strings.Cut(DovecotLoginMessage(line), "user=<")
+			if strings.Contains(msg, "auth failed") || strings.Contains(msg, "Aborted login") {
+				if ip := DovecotRemoteIP(line); ip != "" {
 					addIfNotInfra(ips, ip, reputationViaMailLogin, cfg)
 				}
 			}
@@ -825,10 +826,10 @@ func collectAuthenticatedIPs(cfg *config.Config) map[string]bool {
 		return authed
 	}
 	for _, line := range tailFile(mailLog, 200) {
-		if !strings.Contains(line, "-login: Logged in") {
+		if !DovecotLoginSucceeded(line) {
 			continue
 		}
-		if ip := extractIPAfterKeyword(line, "rip="); ip != "" {
+		if ip := DovecotRemoteIP(line); ip != "" {
 			authed[ip] = true
 		}
 	}

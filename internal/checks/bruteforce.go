@@ -818,26 +818,12 @@ func FTPLoginAccount(line string) string {
 }
 
 func ftpLoginFields(line string) (ip, account string) {
-	fields := strings.Fields(line)
-	if !isPureFTPDLogFields(fields) {
-		return "", ""
-	}
-	program := 0
-	if !isPureFTPDProgramToken(fields[0]) {
-		program = 2 // RFC 3339 timestamp and hostname
-		if len(fields) >= 5 && isSyslogTimestampPrefix(fields) {
-			program = 4
-		}
-	}
-	msg := fields[program+1:]
+	msg := pureFTPDMessageFields(strings.Fields(line))
 	// Match server-owned structure before interpreting any client text.
 	if len(msg) != 7 || msg[1] != "[INFO]" || msg[3] != "is" || msg[4] != "now" || msg[5] != "logged" || msg[6] != "in" {
 		return "", ""
 	}
-	ip = ipFromParenPeer(msg[0])
-	if ip == "" && net.ParseIP(msg[0]) != nil {
-		ip = msg[0]
-	}
+	ip = ftpPeerIP(msg[0])
 	if ip == "" {
 		return "", ""
 	}
@@ -857,14 +843,7 @@ func extractIPFromLog(line string) string {
 	fields := strings.Fields(line)
 
 	if isPureFTPDLogFields(fields) {
-		// pure-ftpd logs the peer as a parenthesised "(user@ip)" token -- or
-		// "(?@ip)" when the username is unknown -- so the address (IPv4 or
-		// IPv6) is glued inside the parens, never a standalone field.
-		for _, f := range fields {
-			if ip := ipFromParenPeer(f); ip != "" {
-				return ip
-			}
-		}
+		return PureFTPDClientIP(line)
 	}
 
 	// Fallback: a bare space-delimited IPv4 field (web access logs,
@@ -881,21 +860,47 @@ func extractIPFromLog(line string) string {
 }
 
 func isPureFTPDLogFields(fields []string) bool {
+	return pureFTPDMessageFields(fields) != nil
+}
+
+// PureFTPDClientIP returns only the peer immediately after a validated
+// pure-ftpd program tag. Missing, malformed and hostname peers must not
+// fall through to client-controlled text later in the message.
+func PureFTPDClientIP(line string) string {
+	msg := pureFTPDMessageFields(strings.Fields(line))
+	if len(msg) == 0 {
+		return ""
+	}
+	return ftpPeerIP(msg[0])
+}
+
+func ftpPeerIP(peer string) string {
+	if ip := ipFromParenPeer(peer); ip != "" {
+		return ip
+	}
+	// Retain the bare-address format only in the same server-owned slot.
+	if net.ParseIP(peer) != nil {
+		return peer
+	}
+	return ""
+}
+
+func pureFTPDMessageFields(fields []string) []string {
 	if len(fields) == 0 {
-		return false
+		return nil
 	}
 	if isPureFTPDProgramToken(fields[0]) {
-		return true
+		return fields[1:]
 	}
 	if len(fields) >= 5 && isSyslogTimestampPrefix(fields) && isPureFTPDProgramToken(fields[4]) {
-		return true
+		return fields[5:]
 	}
-	if len(fields) >= 3 {
+	if len(fields) >= 3 && isPureFTPDProgramToken(fields[2]) {
 		if _, err := time.Parse(time.RFC3339Nano, fields[0]); err == nil {
-			return isPureFTPDProgramToken(fields[2])
+			return fields[3:]
 		}
 	}
-	return false
+	return nil
 }
 
 func isPureFTPDProgramToken(field string) bool {
