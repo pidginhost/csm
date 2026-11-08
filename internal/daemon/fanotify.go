@@ -2466,7 +2466,7 @@ func (fm *FileMonitor) checkPHPContent(fd int, path, procInfo string) bool {
 	// External signature + YARA scanning. The YAML engine sees the complete
 	// event-file size even though realtime analysis scans a bounded prefix, so
 	// per-rule file-size limits cannot be defeated by prefix truncation.
-	return fm.runSignatureScanWithSize(data, contentSize, path, filepath.Ext(path), procInfo, scannedIdentity(fd))
+	return fm.runSignatureScanWithSize(data, contentSize, path, filepath.Ext(path), procInfo, fd, scannedIdentity(fd))
 }
 
 // Images fitting the combined read budget are scanned in one piece so a
@@ -2780,14 +2780,14 @@ func scannedIdentity(fd int) os.FileInfo {
 }
 
 func (fm *FileMonitor) runSignatureScan(data []byte, path, ext, procInfo string) bool {
-	return fm.runSignatureScanWithSize(data, int64(len(data)), path, ext, procInfo, nil)
+	return fm.runSignatureScanWithSize(data, int64(len(data)), path, ext, procInfo, -1, nil)
 }
 
 func (fm *FileMonitor) runEventSignatureScan(fd int, data []byte, path, ext, procInfo string) bool {
-	return fm.runSignatureScanWithSize(data, int64(len(data)), path, ext, procInfo, scannedIdentity(fd))
+	return fm.runSignatureScanWithSize(data, int64(len(data)), path, ext, procInfo, fd, scannedIdentity(fd))
 }
 
-func (fm *FileMonitor) runSignatureScanWithSize(data []byte, contentSize int64, path, ext, procInfo string, scanned os.FileInfo) bool {
+func (fm *FileMonitor) runSignatureScanWithSize(data []byte, contentSize int64, path, ext, procInfo string, fd int, scanned os.FileInfo) bool {
 	// Both engines see every file. A .yml hit used to end the scan here, so
 	// a file matching a High .yml rule never met the Critical YARA rule and
 	// the inline quarantine that only a Critical match triggers. Only a file
@@ -2837,7 +2837,7 @@ func (fm *FileMonitor) runSignatureScanWithSize(data []byte, contentSize int64, 
 					atomic.AddInt64(&fm.droppedAlerts, 1)
 				}
 				if quarantined {
-					fm.recordDropperQuarantine(path, qPath)
+					fm.recordDropperQuarantine(path, fd)
 					fm.sendAlert(alert.Critical, "auto_response",
 						fmt.Sprintf("AUTO-QUARANTINE (inline): %s moved to quarantine", path),
 						fmt.Sprintf("Quarantined to: %s\nRule: %s", qPath, m.RuleName))
@@ -2985,7 +2985,7 @@ func (fm *FileMonitor) sendConfirmedPHPFinding(fd int, data []byte, scanned os.F
 	if !quarantined {
 		return
 	}
-	fm.recordDropperQuarantine(filePath, qPath)
+	fm.recordDropperQuarantine(filePath, fd)
 	fm.sendAlert(alert.Critical, "auto_response",
 		fmt.Sprintf("AUTO-QUARANTINE (inline): %s moved to quarantine", filePath),
 		fmt.Sprintf("Quarantined to: %s\nDetection: %s", qPath, check))

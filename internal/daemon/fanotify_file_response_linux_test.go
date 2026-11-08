@@ -53,7 +53,7 @@ func TestRealtimeFileResponsePauseKeepsBothDetections(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !fm.runSignatureScanWithSize(payload, int64(len(payload)), path, ".php", "", info) {
+		if !fm.runSignatureScanWithSize(payload, int64(len(payload)), path, ".php", "", -1, info) {
 			t.Fatal("detection lost during pause")
 		}
 		got := drainChecks(alerts)
@@ -105,7 +105,7 @@ func TestRealtimeFileResponsePauseDoesNotRetryOnDelivery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !fm.runSignatureScanWithSize(payload, int64(len(payload)), path, ".php", "", info) {
+	if !fm.runSignatureScanWithSize(payload, int64(len(payload)), path, ".php", "", -1, info) {
 		t.Fatal("inline refusal lost the original detection")
 	}
 	if err := unix.Flock(int(lock.Fd()), unix.LOCK_UN); err != nil {
@@ -150,7 +150,7 @@ func TestRealtimeFileResponseWindowAllowsFullFileEvaluation(t *testing.T) {
 	}
 	alerts := make(chan alert.Finding, 32)
 	fm := &FileMonitor{cfg: cfg, alertCh: alerts}
-	if !fm.runSignatureScanWithSize(window, info.Size(), path, ".php", "", info) {
+	if !fm.runSignatureScanWithSize(window, info.Size(), path, ".php", "", -1, info) {
 		t.Fatal("window detection lost")
 	}
 	close(alerts)

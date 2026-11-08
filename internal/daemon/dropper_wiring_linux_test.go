@@ -7,12 +7,14 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"golang.org/x/sys/unix"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 )
 
@@ -477,5 +479,75 @@ func TestDropperProbeLoopStopsAndBalancesWaitGroup(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("dropper probe loop did not stop")
+	}
+}
+
+// Inline quarantine copies the file out and unlinks the original. The probe
+// that later finds the path empty must recognise CSM's own removal instead of
+// reporting it as a self-deleting dropper.
+func TestDropperProbeMatchesInlineQuarantine(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+		scan func(fm *FileMonitor, fd int, path string, body []byte) bool
+	}{
+		{
+			name: "signature rule",
+			body: "<?php /* EVIL_MARKER_A " + strings.Repeat("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+-", 32) + " */",
+			scan: func(fm *FileMonitor, fd int, path string, body []byte) bool {
+				return fm.runEventSignatureScan(fd, body, path, ".php", "")
+			},
+		},
+		{
+			name: "confirmed php execution",
+			body: `<?php system($_POST['command']);`,
+			scan: func(fm *FileMonitor, fd int, path string, _ []byte) bool {
+				return fm.checkPHPContent(fd, path, "pid=1 cmd=php")
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			useRealtimeRules(t, strings.NewReplacer("severity: high", "severity: critical", "category: obfuscation", "category: dropper").Replace(realtimeHighRule))
+			root := t.TempDir()
+			t.Cleanup(checks.SetQuarantineDirForTest(filepath.Join(root, "quarantine")))
+			cfg := &config.Config{StatePath: root}
+			cfg.AutoResponse.Enabled = true
+			cfg.AutoResponse.QuarantineFiles = true
+			docroot := dropperWebrootFixture(t)
+			path := filepath.Join(docroot, "payload.php")
+			if err := os.WriteFile(path, []byte(tc.body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			state, err := statPathToFileState(path, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			c := dropperCandidate{
+				Path: path, Docroot: docroot, Device: state.file.Device, Inode: state.file.Inode,
+				Birth: state.file.Birth, BirthKnown: state.file.BirthKnown, Size: state.file.Size,
+			}
+			fd := openRawFd(t, path)
+			alerts := make(chan alert.Finding, 8)
+			fm := newDropperWiringTestMonitor(docroot, time.Minute)
+			fm.cfg, fm.alertCh = cfg, alerts
+
+			if !tc.scan(fm, fd, path, []byte(tc.body)) {
+				t.Fatal("payload was not detected")
+			}
+			if got := drainChecks(alerts); got["auto_response"] != alert.Critical {
+				t.Fatalf("inline quarantine did not run: %v", got)
+			}
+			if _, err := os.Lstat(path); !os.IsNotExist(err) {
+				t.Fatalf("payload still at its path: %v", err)
+			}
+			replay := c
+			replay.Inode++
+			if (dropperFSProbe{quarantines: fm.dropperQuarantines}).probe(replay).QuarantineMatched {
+				t.Fatal("another inode at the same path consumed the quarantine record")
+			}
+			if probe := (dropperFSProbe{quarantines: fm.dropperQuarantines}).probe(c); !probe.QuarantineMatched {
+				t.Fatalf("probe = %+v, want CSM's quarantine recognised", probe)
+			}
+		})
 	}
 }
