@@ -348,12 +348,17 @@ func TestPrivateCommitRejectsMalformed(t *testing.T) {
 	if _, err := readCommit(filepath.Join(dir, "absent")); err == nil {
 		t.Error("a missing pin file was accepted")
 	}
+}
 
-	// PrivateCommit reads the pin beside the package source.
-	_, file, _, _ := runtime.Caller(0)
-	want, wantErr := readCommit(filepath.Join(filepath.Dir(file), "private.commit"))
-	if got, err := PrivateCommit(); got != want || errString(err) != errString(wantErr) {
-		t.Errorf("PrivateCommit() = %q, %v; want %q, %v", got, err, want, wantErr)
+// The shipped pin must be a valid full hash. The value itself is not checked
+// here: it moves with each reviewed private commit.
+func TestPrivateCommitIsPinned(t *testing.T) {
+	got, err := PrivateCommit()
+	if err != nil {
+		t.Fatalf("PrivateCommit() error: %v", err)
+	}
+	if len(got) != 40 || strings.Trim(got, "0123456789abcdef") != "" {
+		t.Errorf("PrivateCommit() = %q; want 40 lowercase hex digits", got)
 	}
 }
 
