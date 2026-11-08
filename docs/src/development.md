@@ -45,6 +45,12 @@ are checked separately. Atomic replacement fixtures require newer birth times
 only when testing WAF log replacement; plugin-copy tests also work without
 filesystem birth-time support.
 
+Admission retry tests repeat evidence with its original observation timestamp
+and check the refusal reason. Changing that timestamp creates conflicting
+evidence and bypasses episode placement. Forged-account flood tests keep the
+host and real account backlogged in each evidence class and check repeated
+alternating turns. A single account pick can pass through sort order alone.
+
 The default CI job runs every package with the race detector, no extra build
 tags, and a 30-minute per-package timeout. Run its exact test command on Linux:
 
@@ -997,7 +1003,15 @@ settled (failed, retired after expiry, or evicted with proven removal).
 An error reports no completed removal, including a durability failure after
 rename. Startup calls it after marking every unproven row, with the settled subset
 `store.ReadSettledBlockActions` returns, so a start that stops between the two
-leaves the rows held back and the next start removes them.
+leaves the rows held back and the next start removes them: it asks the ledger
+about every saved action, including rows an earlier start held back and
+other actions sharing their addresses. An expired row no start marked is never
+restored and is left to expiry, so it holds back no other block at its
+address. The engine selects those rows on its lease clock, retaining that
+reading through Apply so a backward wall-clock step cannot restore an
+unchecked action. Marking preserves those separate rows until cleanup can
+remove only the settled actions. Removing a hold therefore cannot restore
+an unchecked action or erase another block.
 The engine's kill-point tests stop a batch around its intent write, kernel
 batch, readback, unknown marking and rejected-state restoration, then start
 the ledger and a new engine over the same state, after a process restart or

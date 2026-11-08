@@ -327,7 +327,8 @@ block. Every automatic response they select is also handed to the ledger,
 which previews or forecasts eligible work and refuses disabled responses.
 It never applies them; the view is not an enforcement record.
 
-- `ledger` holds the stored admission time, queue, counters, hourly and daily
+- `ledger` holds the stored admission time, queue, lifetime queue counters
+  (including newly checkpointed ingress drops), hourly and daily
   outcomes, ingress generations, the hourly ceiling with its general and
   reserved lanes, storage, the outbox, notice records and `unresolved`
   outcomes (`running` and `unknown` counts and when the next unknown one can
@@ -337,6 +338,10 @@ It never applies them; the view is not an enforcement record.
   if its records, tally or schema disagree, including damage beyond the first
   expiry. Each section carries its own `error`, so one damaged record does
   not hide the rest.
+  Ingress drops checkpointed before this accounting change are not added
+  retroactively to lifetime counters. On an upgraded host, retained outcome
+  windows can therefore exceed the corresponding lifetime totals. A restart
+  does not fill that historical gap.
 - `ingress` says whether automatic responses are admitted and, while they are
   not, since when and how many Critical arrivals were refused.
 - `owner` says whether admission runs automatic blocks (`executing`) and

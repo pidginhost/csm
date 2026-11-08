@@ -273,3 +273,35 @@ func TestQueueCountersRows(t *testing.T) {
 		t.Fatalf("rows = %+v\nwant %+v", rows, want)
 	}
 }
+
+// AddCount adds n at once and saturates as Add does; an invalid key is
+// refused and counts nothing.
+func TestQueueCountersAddCountSaturates(t *testing.T) {
+	k := CountKey{Event: EventRefused, Reason: ReasonQueueOverflow, Class: ClassC2, Severity: SeverityHigh}
+	var q QueueCounters
+	if err := q.AddCount(k, 0); err != nil || len(q.Rows()) != 0 {
+		t.Fatalf("zero count created a row: %v, %v", q.Rows(), err)
+	}
+	if _, err := q.MarshalBinary(); err != nil {
+		t.Fatalf("zero count broke persistence: %v", err)
+	}
+	if err := q.AddCount(k, 3); err != nil || q.Count(k) != 3 {
+		t.Fatalf("count = %d, %v", q.Count(k), err)
+	}
+	if err := q.AddCount(k, ^uint64(0)); err != nil || q.Count(k) != ^uint64(0) {
+		t.Fatalf("saturated count = %d, %v", q.Count(k), err)
+	}
+	if err := q.Add(k); err != nil || q.Count(k) != ^uint64(0) {
+		t.Fatalf("single count after saturation = %d, %v", q.Count(k), err)
+	}
+	if err := q.AddCount(CountKey{}, 1); err == nil || len(q.Rows()) != 1 {
+		t.Fatalf("invalid key: rows %v, %v", q.Rows(), err)
+	}
+	data, err := q.MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if back, err := UnmarshalQueueCounters(data); err != nil || back.Count(k) != ^uint64(0) {
+		t.Fatalf("persisted saturation = %d, %v", back.Count(k), err)
+	}
+}

@@ -218,7 +218,7 @@ func (d *Daemon) prepareFirewall(effectiveFirewall *firewall.FirewallConfig, ops
 	d.fwActions, _ = any(engine).(firewallActionBoundary)
 	recoverFirewallActions(d.fwActions)
 	seedFirewallLease(engine, ops)
-	gateFirewallRows(d.cfg.StatePath, engine, ops)
+	gateFirewallRows(engine, ops)
 
 	err = ops.apply(engine)
 	// Report a kept file even when this attempt fails: the next attempt
@@ -249,16 +249,8 @@ func (d *Daemon) firewallStateSetAside() string {
 // attempts the ledger has not proven applied. Without a readable ledger
 // nothing is proven: the rows are restored as before, the engine never
 // evicts them, and status reports why until the next start.
-func gateFirewallRows(statePath string, engine *firewall.Engine, ops firewallStartupOps) {
-	state, stateErr := firewall.LoadState(statePath)
-	var ids []string
-	if stateErr == nil {
-		for _, row := range state.Blocked {
-			if row.ActionID != "" {
-				ids = append(ids, row.ActionID)
-			}
-		}
-	}
+func gateFirewallRows(engine *firewall.Engine, ops firewallStartupOps) {
+	ids, stateErr := engine.BlockActionIDsForStartup()
 	read := ops.unproven
 	if read == nil {
 		read = readUnprovenBlockActions

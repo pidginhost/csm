@@ -179,8 +179,24 @@ func TestMarkUnverifiedBeforeDuplicateNormalization(t *testing.T) {
 				t.Fatalf("Mark = %d, %v; want the named raw row marked", marked, err)
 			}
 			stored, ok := e.loadStateFileRawLocked()
-			if !ok || len(stored.Blocked) != 1 || !stored.Blocked[0].Unverified || stored.Blocked[0].ActionID != "act_unknown" {
+			if !ok || len(stored.Blocked) != len(rows) {
 				t.Fatalf("stored rows = %+v, readable = %t", stored.Blocked, ok)
+			}
+			for i, want := range rows {
+				want.Unverified = want.ActionID == "act_unknown"
+				if !SameBlockedEntry(stored.Blocked[i], want) {
+					t.Fatalf("stored row = %+v, want %+v", stored.Blocked[i], want)
+				}
+			}
+			visible := e.loadStateFile()
+			if len(visible.Blocked) != 1 || !visible.Blocked[0].Unverified || visible.Blocked[0].ActionID != "act_unknown" || e.IsBlocked(rows[0].IP) {
+				t.Fatalf("normalized view exposed a held address: %+v", visible.Blocked)
+			}
+			e.mu.Lock()
+			initial := e.computeInitialBlockStateLocked()
+			e.mu.Unlock()
+			if len(initial.blocked4) != 0 || len(initial.blocked6) != 0 {
+				t.Fatal("marking seeded a held address")
 			}
 		})
 	}
