@@ -64,8 +64,8 @@ func gate(getenv func(string) string) (reportDir, skipReason string, err error) 
 	if dir := getenv("CSM_ATTACK_CORPUS_REPORT_DIR"); dir != "" {
 		return dir, "", nil
 	}
-	if getenv("CSM_ATTACK_CORPUS_REQUIRED") == "1" {
-		return "", "", errors.New("CSM_ATTACK_CORPUS_REQUIRED=1 but CSM_ATTACK_CORPUS_REPORT_DIR is not set")
+	if getenv("CSM_ATTACK_CORPUS_REQUIRED") == "1" || getenv("CSM_ATTACK_CORPUS_PRIVATE_REQUIRED") == "1" {
+		return "", "", errors.New("a corpus run is required but CSM_ATTACK_CORPUS_REPORT_DIR is not set")
 	}
 	return "", "CSM_ATTACK_CORPUS_REPORT_DIR is not set", nil
 }

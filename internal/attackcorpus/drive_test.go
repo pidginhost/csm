@@ -270,6 +270,22 @@ func TestDrivePrivateRequiredEmpty(t *testing.T) {
 	}
 }
 
+func TestDrivePrivateRequiredCannotSkip(t *testing.T) {
+	root := t.TempDir()
+	s := maliciousSample()
+	writeSample(t, filepath.Join(root, s.Category, s.Name), s)
+	for _, private := range []string{root, filepath.Join(root, "missing")} {
+		env := map[string]string{
+			"CSM_ATTACK_CORPUS_PRIVATE":          private,
+			"CSM_ATTACK_CORPUS_PRIVATE_REQUIRED": "1",
+		}
+		_, skip, samples, err := prepare(Realtime, func(k string) string { return env[k] })
+		if err == nil || !strings.Contains(err.Error(), "CSM_ATTACK_CORPUS_REPORT_DIR") || skip != "" || samples != nil {
+			t.Fatalf("required private run without reports: skip %q, %d samples, error %v; want a report directory error", skip, len(samples), err)
+		}
+	}
+}
+
 // Reports and subtests identify a sample by name, so a private sample must
 // not reuse a public name, even in another category.
 func TestLoadRejectsCrossHalfNameCollision(t *testing.T) {

@@ -253,12 +253,16 @@ In CI the script does the following before any test runs. Any failure stops
 the job.
 
 1. It fails when `CSM_ATTACK_CORPUS_PROJECT` is unset or the pin file is
-   missing.
+   missing or malformed. The pin accepts one full lowercase hash, with or
+   without a single final newline, before any clone or checkout runs.
 2. It clones the project with the CI job token into a new temporary
    directory, open only to its owner and outside the checkout and its
    artifacts. A credential helper reads the token from the environment, so
    the token never appears in a command line, a URL or the clone's git
-   config, and no configured helper can store it.
+   config, and no configured helper can store it. The helper serves only the
+   exact project on the CI server over HTTPS, and Git refuses redirects.
+   A temporary directory inside the checkout or reports is rejected. The
+   temporary clone is removed on success or failure, including a failed clone.
 3. It checks out the pinned commit and fails unless `HEAD` is exactly that
    commit, so a short hash or a ref name fails.
 4. It runs `scripts/fixturecheck -corpus -require-terms` over the checkout.
@@ -319,8 +323,8 @@ Environment:
 - `CSM_ATTACK_CORPUS_PRIVATE` adds the private half, a corpus checkout in the
   same format. It must load and hold at least one sample.
 - `CSM_ATTACK_CORPUS_PRIVATE_REQUIRED=1` fails the run when
-  `CSM_ATTACK_CORPUS_PRIVATE` is not set, also where the tests would
-  otherwise skip. The script sets it in CI.
+  `CSM_ATTACK_CORPUS_PRIVATE` or `CSM_ATTACK_CORPUS_REPORT_DIR` is not set,
+  instead of skipping. The script sets it in CI.
 - `CSM_ATTACK_CORPUS_SHOW_ERRORS=1` logs the full reason of a driver error
   instead of its type. Local runs only: a reason can quote decoded sample
   bytes, and CI keeps test logs as artifacts. The report script unsets it,
