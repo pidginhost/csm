@@ -335,6 +335,19 @@ func TestKernelUnitLauncherMemoryCap(t *testing.T) {
 					}
 				})
 			}
+			// A race-built worker can thrash at its cap instead of being
+			// OOM-killed; its counters show what the cgroup keeps freeing.
+			tick := time.NewTicker(time.Second)
+			sampler := startMemorySampler(up.cg.dir, fmt.Sprintf("/proc/%d", up.PID()), tick.C)
+			t.Cleanup(func() {
+				lines := sampler.Stop()
+				tick.Stop()
+				if t.Failed() {
+					for _, line := range lines {
+						t.Logf("worker memory %s", line)
+					}
+				}
+			})
 		}
 		return p, err
 	}})
