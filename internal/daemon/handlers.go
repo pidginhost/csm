@@ -185,15 +185,13 @@ func parseFTPLogLine(line string, cfg *config.Config) []alert.Finding {
 
 	// Extract the client address. Pure-ftpd's standard syslog format
 	// prefixes the client as (user@addr), where addr is either an IP
-	// (DontResolve=yes) or a reverse-resolved hostname (cPanel's
-	// default with DontResolve=no). We try the pure-ftpd prefix first
-	// and fall back to the generic "whitespace field starting with a
-	// digit" scanner. If the pure-ftpd prefix contains a hostname
-	// rather than an IP, no finding is emitted — we can't hold an
-	// attacker accountable by hostname, and reverse-DNS lookups in the
-	// log hot path are not acceptable.
+	// (DontResolve=yes) or a reverse-resolved hostname (DontResolve=no).
+	// When that prefix is present it is the only server-written address:
+	// the rest of the line can hold the client's username, so a hostname
+	// prefix emits no finding. Only a line without the prefix falls back
+	// to the generic "whitespace field starting with a digit" scanner.
 	ip := extractPureFTPDClientIP(line)
-	if ip == "" {
+	if ip == "" && !hasPureFTPDPeer(line) {
 		ip = extractIPFromLogDaemon(line)
 	}
 	if ip == "" || isInfraIPDaemon(ip, cfg.InfraIPs) {
@@ -222,6 +220,17 @@ func parseFTPLogLine(line string, cfg *config.Config) []alert.Finding {
 	}
 
 	return findings
+}
+
+// hasPureFTPDPeer reports whether the line carries pure-ftpd's
+// "(user@addr)" prefix, whatever addr is.
+func hasPureFTPDPeer(line string) bool {
+	open := strings.Index(line, "(")
+	if open < 0 {
+		return false
+	}
+	inner, _, ok := strings.Cut(line[open+1:], ")")
+	return ok && strings.Contains(inner, "@")
 }
 
 // extractPureFTPDClientIP parses the "(user@addr)" prefix that pure-ftpd

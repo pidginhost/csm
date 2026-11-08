@@ -859,10 +859,12 @@ func extractIPFromLog(line string) string {
 	if isPureFTPDLogFields(fields) {
 		// pure-ftpd logs the peer as a parenthesised "(user@ip)" token -- or
 		// "(?@ip)" when the username is unknown -- so the address (IPv4 or
-		// IPv6) is glued inside the parens, never a standalone field.
+		// IPv6) is glued inside the parens, never a standalone field. That
+		// token is the only server-written address: the rest of the line can
+		// hold the client's username, so a hostname peer names no address.
 		for _, f := range fields {
-			if ip := ipFromParenPeer(f); ip != "" {
-				return ip
+			if strings.HasPrefix(f, "(") && strings.Contains(f, "@") {
+				return ipFromParenPeer(f)
 			}
 		}
 	}
