@@ -1232,59 +1232,109 @@ const modsecAuditTailLines = 4000
 //
 // In the serial audit format one transaction spans lettered sections
 // between "--<id>-A--" and "--<id>-Z--"; the client address is on the A
-// header and the denial message in H, so the address is carried across the
-// transaction and each denied transaction counts once. Lines outside a
-// transaction (concurrent format summaries, error-log style lines) keep
-// the per-line rule: a denial marker plus an address on the same line.
+// header and the denial in the F status line or the H trailer. Request and
+// response bodies are client text and can hold whole forged transactions,
+// so inside a transaction only its own id's markers count. A tail window can
+// also start inside a body: a marker seen between transactions, or a
+// transaction left open after swallowing other markers, shows that, and the
+// counts made so far are dropped. A client cannot cause either in step: it
+// cannot guess the id of its own transaction.
+//
+// Logs without serial markers hold one line per transaction: concurrent
+// index lines or error-log style lines with a [client] field. Any other
+// line names no client.
 func countModSecDenials(lines []string) map[string]int {
 	blocked := make(map[string]int)
-	var (
-		txID     string
-		txIP     string
-		txDenied bool
-		wantA    bool
-	)
-	flush := func() {
-		if txID != "" && txIP != "" && txDenied {
-			blocked[txIP]++
-		}
-		txID, txIP, txDenied, wantA = "", "", false, false
-	}
+	serial := false
 	for _, line := range lines {
-		if id, section, ok := modsecSectionBoundary(line); ok {
-			switch section {
-			case 'A':
-				flush()
-				txID, wantA = id, true
-			case 'Z':
-				if id == txID {
-					flush()
-				}
-			}
-			continue
+		if _, _, ok := modsecSectionBoundary(line); ok {
+			serial = true
+			break
 		}
-		if wantA {
-			if strings.TrimSpace(line) == "" {
-				continue
-			}
-			wantA = false
-			txIP = modsecAuditClientIP(line)
-			continue
-		}
-		if txID != "" {
-			if modsecDenialLine(line) {
-				txDenied = true
-			}
-			continue
-		}
-		if modsecDenialLine(line) {
-			if ip := extractIPFromLog(line); ip != "" {
+	}
+	if !serial {
+		for _, line := range lines {
+			if ip, denied := modsecLineDenial(line); denied {
 				blocked[ip]++
 			}
 		}
+		return blocked
 	}
-	flush()
+	var (
+		txID, txIP             string
+		section                byte
+		wantA, denied, foreign bool
+	)
+	for _, line := range lines {
+		id, sec, isBoundary := modsecSectionBoundary(line)
+		switch {
+		case txID == "" && isBoundary && sec == 'A':
+			txID, txIP, section, wantA, denied, foreign = id, "", 'A', true, false, false
+		case txID == "" && isBoundary:
+			// Another transaction's section outside any transaction: the
+			// window began inside a body.
+			clear(blocked)
+		case txID == "":
+		case isBoundary && id != txID:
+			foreign = true
+		case isBoundary && sec == 'Z':
+			if denied && !foreign && txIP != "" {
+				blocked[txIP]++
+			}
+			txID = ""
+		case isBoundary:
+			section, wantA = sec, false
+		case wantA:
+			if strings.TrimSpace(line) != "" {
+				txIP, wantA = modsecAuditClientIP(line), false
+			}
+		case (section == 'F' || section == 'H') && modsecDenialLine(line):
+			denied = true
+		}
+	}
+	if txID != "" && foreign {
+		// An open transaction that swallowed other markers began inside a body.
+		clear(blocked)
+	}
 	return blocked
+}
+
+// modsecLineDenial reads a one-line audit record. A concurrent index line
+// is: hostname, client, remote user, local user, [time], "request",
+// status, ...; the hostname comes from the request's Host header, so only
+// the second field names the client, and only the status says denied. An
+// error-log style line names the client in its first [client] field.
+func modsecLineDenial(line string) (string, bool) {
+	if date := strings.Index(line, "] \""); date >= 0 {
+		head := strings.Fields(line[:date])
+		if len(head) == 6 && strings.HasPrefix(head[4], "[") {
+			ip := net.ParseIP(head[1])
+			if ip == nil {
+				return "", false
+			}
+			rest := line[date+3:]
+			for i := 0; i < len(rest); i++ {
+				switch rest[i] {
+				case '\\':
+					i++
+				case '"':
+					status := strings.Fields(rest[i+1:])
+					return ip.String(), len(status) > 0 && status[0] == "403"
+				}
+			}
+			return "", false
+		}
+	}
+	i := strings.Index(line, "[client ")
+	if i < 0 || !modsecDenialLine(line) {
+		return "", false
+	}
+	field, _, ok := strings.Cut(line[i+len("[client "):], "]")
+	if !ok {
+		return "", false
+	}
+	ip, ok := netutil.ParseIPToken(field)
+	return ip, ok
 }
 
 func modsecDenialLine(line string) bool {

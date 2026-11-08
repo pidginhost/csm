@@ -12,6 +12,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 ### Security
 
 - An attacker can no longer get an unrelated address blocked through crafted mail login attempts.
+- An attacker can no longer get an unrelated address blocked through crafted web requests that ModSecurity denies.
 
 ### Changed
 
