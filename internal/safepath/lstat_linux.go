@@ -11,6 +11,24 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// Stat pins metadata without requesting read access. Restoring the original
+// mode can remove all read permissions before the final identity check.
+func (d *Dir) Stat(name string) (os.FileInfo, error) {
+	f, err := d.OpenFile(name, unix.O_PATH, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, &os.PathError{Op: "fstatat", Path: name, Err: syscall.ELOOP}
+	}
+	return info, nil
+}
+
 type descriptorFileInfo struct {
 	name string
 	stat syscall.Stat_t
