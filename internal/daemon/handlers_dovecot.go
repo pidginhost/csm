@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/geoip"
 	"github.com/pidginhost/csm/internal/store"
@@ -168,19 +169,7 @@ func parseDovecotLoginFields(line string) (user, ip string) {
 	}
 	user = rest[:endIdx]
 
-	// Extract remote IP from rip=...
-	ripIdx := strings.Index(line, "rip=")
-	if ripIdx < 0 {
-		return "", ""
-	}
-	rest = line[ripIdx+4:]
-	endIdx = strings.IndexAny(rest, ", \t\n")
-	if endIdx < 0 {
-		ip = rest
-	} else {
-		ip = rest[:endIdx]
-	}
-
+	ip = checks.DovecotRemoteIP(line)
 	if user == "" || ip == "" {
 		return "", ""
 	}

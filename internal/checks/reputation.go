@@ -764,7 +764,7 @@ func collectRecentIPs(cfg *config.Config) map[string]string {
 	if mailLog := reputationMailLogPath(cfg, info); mailLog != "" {
 		for _, line := range tailFile(mailLog, 50) {
 			if strings.Contains(line, "auth failed") || strings.Contains(line, "Aborted login") {
-				if ip := extractIPAfterKeyword(line, "rip="); ip != "" {
+				if ip := DovecotRemoteIP(line); ip != "" {
 					addIfNotInfra(ips, ip, reputationViaMailLogin, cfg)
 				}
 			}
@@ -828,7 +828,7 @@ func collectAuthenticatedIPs(cfg *config.Config) map[string]bool {
 		if !strings.Contains(line, "-login: Logged in") {
 			continue
 		}
-		if ip := extractIPAfterKeyword(line, "rip="); ip != "" {
+		if ip := DovecotRemoteIP(line); ip != "" {
 			authed[ip] = true
 		}
 	}

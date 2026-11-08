@@ -9,6 +9,10 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ## [Unreleased]
 
+### Security
+
+- An attacker can no longer get an unrelated address blocked through crafted mail login attempts.
+
 ### Changed
 
 - The malware scanning engine moves to YARA-X 1.23.0, which fixes crashes on some third-party rules; shipped rules compile and match as before.

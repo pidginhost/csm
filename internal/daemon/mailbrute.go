@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/checks"
 	csmlog "github.com/pidginhost/csm/internal/log"
 	"github.com/pidginhost/csm/internal/store"
 )
@@ -1535,15 +1536,7 @@ func (e *AccountExtractor) extractMailLoginEvent(line string) (ip, account strin
 	// Keep the key and its whole-login guarantee on the same config snapshot.
 	account = e.Extract(line)
 
-	// Extract rip=... field. Delimited by comma or whitespace.
-	if i := strings.Index(line, "rip="); i >= 0 {
-		rest := line[i+len("rip="):]
-		end := strings.IndexAny(rest, ", \n")
-		if end < 0 {
-			end = len(rest)
-		}
-		ip = rest[:end]
-	}
+	ip = checks.DovecotRemoteIP(line)
 
 	return ip, account, success
 }
