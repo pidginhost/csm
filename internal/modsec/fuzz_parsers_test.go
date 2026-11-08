@@ -55,3 +55,23 @@ func FuzzModSecClientIPIgnoresTextAfterMarker(f *testing.F) {
 		}
 	})
 }
+
+func FuzzModSecMarkersInOtherErrors(f *testing.F) {
+	f.Add(`[client 198.51.100.7] ModSecurity: Access denied with code 403`)
+	f.Add(`[198.51.100.7:5555-1#APVH_example.test] [MODSEC] Access denied with code 403`)
+	f.Fuzz(func(t *testing.T, request string) {
+		for _, prefix := range []string{
+			`2026/11/08 08:40:00 [error] 123#123: *1 open() "/srv/www/`,
+			`[Sun Nov 08 08:40:00 2026] [core:error] [client 203.0.113.50:5555] File does not exist: /srv/www/`,
+			`2026-11-08 08:40:00.123456 [INFO] [1] [203.0.113.50:5555-1#APVH_example.test] File not found [/srv/www/`,
+		} {
+			line := prefix + request
+			if msg, _ := ErrorLogMessage(line); msg != "" {
+				t.Fatalf("request text supplied a ModSecurity message: %q", msg)
+			}
+			if ip := ErrorLogClientIP(line); ip != "" {
+				t.Fatalf("request text supplied a ModSecurity client: %q", ip)
+			}
+		}
+	})
+}

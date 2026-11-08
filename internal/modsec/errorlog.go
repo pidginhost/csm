@@ -2,12 +2,13 @@ package modsec
 
 import (
 	"net"
+	"regexp"
 	"strconv"
 	"strings"
 )
 
-// ErrorLogMessage uses the first module marker so request text cannot change
-// the server format or supply an action by embedding another marker later.
+// ErrorLogMessage requires the module marker directly after the server header.
+// Other modules can log request text containing a complete ModSecurity message.
 func ErrorLogMessage(line string) (string, bool) {
 	at, marker, isLiteSpeed := errorLogMarker(line)
 	if at < 0 {
@@ -25,15 +26,28 @@ const (
 	modsecLiteSpeedMarker = "[MODSEC]"
 )
 
+// Apache uses bracketed header fields. Nginx adds a timestamp and process /
+// connection identifiers; LiteSpeed adds a timestamp. Anything else before
+// the marker is message text, such as a missing filename or a PHP error.
+var errorLogPrefix = regexp.MustCompile(`^(?:` +
+	`[0-9]{4}/[0-9]{2}/[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2} \[[a-z]+\] [0-9]+#[0-9]+: (?:\*[0-9]+ )?|` +
+	`[0-9]{4}-[0-9]{2}-[0-9]{2}(?: [0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?)? ` +
+	`)?(?:\[(?:[^\[\]\r\n]|\[[^\[\]\r\n]*\])*\][ \t]*)*$`)
+
 // errorLogMarker finds the module marker that ends the server-written prefix
 // of a ModSecurity log line, or -1.
 func errorLogMarker(line string) (at int, marker string, isLiteSpeed bool) {
 	a := strings.Index(line, modsecApacheMarker)
 	l := strings.Index(line, modsecLiteSpeedMarker)
 	if l >= 0 && (a < 0 || l < a) {
-		return l, modsecLiteSpeedMarker, true
+		at, marker, isLiteSpeed = l, modsecLiteSpeedMarker, true
+	} else {
+		at, marker = a, modsecApacheMarker
 	}
-	return a, modsecApacheMarker, false
+	if at >= 0 && !errorLogPrefix.MatchString(line[:at]) {
+		return -1, "", false
+	}
+	return at, marker, isLiteSpeed
 }
 
 // ErrorLogClientIP reads the client address from the server-written prefix

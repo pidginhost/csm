@@ -65,3 +65,10 @@ func errorLogFindingIPs(t *testing.T, content string) []string {
 	}
 	return ips
 }
+
+func TestModSecAuditIgnoresOrdinaryNginxErrors(t *testing.T) {
+	line := `2026/11/08 08:40:00 [error] 123#123: *1 open() "/srv/www/[client 198.51.100.7] ModSecurity: Access denied with code 403" failed (2: No such file or directory), client: 203.0.113.50, server: example.test`
+	if got := errorLogFindingIPs(t, strings.Repeat(line+"\n", 25)); len(got) != 0 {
+		t.Fatalf("request text in a file error forged WAF findings: %v", got)
+	}
+}

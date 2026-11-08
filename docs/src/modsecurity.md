@@ -50,17 +50,29 @@ escalation excludes both new events and retained evidence from later blocking
 decisions. Existing firewall bans keep their configured expiry.
 
 ModSecurity error-log detections take the client address only from the
-server-written prefix before `ModSecurity:` or `[MODSEC]`. Request text cannot
-supply a client address. Live monitoring, scheduled WAF checks, and the Web UI
-use the same parser. Apache's module-qualified error prefix identifies its
-unbracketed IPv6 connection port. Legacy Apache and libmodsecurity client fields
-keep the complete IPv6 address. Bracketed addresses with a port are also accepted.
+structured prefix before `ModSecurity:` or `[MODSEC]`. Fields later in the same
+record cannot supply a client address. Live monitoring, scheduled WAF checks,
+and the Web UI use the same parser. The module marker must follow the server's
+structured header directly. Markers inside ordinary file errors, PHP errors, or other
+message text do not create WAF detections. Standard Apache, Nginx and LiteSpeed
+headers are accepted; custom headers outside those formats are ignored.
+Apache's module-qualified error prefix identifies its unbracketed IPv6 connection
+port. Legacy Apache and libmodsecurity client fields keep the complete IPv6
+address. Bracketed addresses with a port are also accepted.
 Custom Apache logs must retain the module field to distinguish unbracketed IPv6
 addresses with ports from bare addresses.
 LiteSpeed IPv6 connection formats are unsupported: events keep an unknown
 client and cannot trigger an IP escalation. The Web UI uses the finding's
 recorded source address, with a prefix-only raw-log fallback for older findings;
 it leaves the client unknown when neither is available.
+
+Header validation does not authenticate file-based records. Nginx can write
+literal line breaks from decoded filenames into its error log, allowing request
+text to create an entire apparent record on a new line. File-based real-time
+escalation and scheduled error-log scans remain exposed to that case. Native
+ModSecurity audit logs provide transaction framing for scheduled scans; fixing
+real-time ingestion requires a source that preserves authenticated record
+boundaries rather than splitting arbitrary log bytes into lines.
 
 Scheduled audit scans read native serial logs and concurrent indexes from
 ModSecurity 2 and libmodsecurity 3, plus libmodsecurity 3 JSON logs. Counts use

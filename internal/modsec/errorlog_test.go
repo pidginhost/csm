@@ -2,6 +2,21 @@ package modsec
 
 import "testing"
 
+func TestErrorLogRejectsMarkersInOtherModuleMessages(t *testing.T) {
+	for _, line := range []string{
+		`2026/11/08 08:40:00 [error] 123#123: *1 open() "/srv/www/[client 198.51.100.7] ModSecurity: Access denied with code 403" failed (2: No such file or directory), client: 203.0.113.50, server: example.test`,
+		`[Sun Nov 08 08:40:00 2026] [core:error] [client 203.0.113.50:5555] File does not exist: /srv/www/ModSecurity: Access denied with code 403`,
+		`2026-11-08 08:40:00.123456 [INFO] [1] [203.0.113.50:5555-1#APVH_example.test] File not found [/srv/www/[MODSEC] Access denied with code 403]`,
+	} {
+		if msg, _ := ErrorLogMessage(line); msg != "" {
+			t.Errorf("ordinary server error became a ModSecurity message: %q", msg)
+		}
+		if ip := ErrorLogClientIP(line); ip != "" {
+			t.Errorf("ordinary server error supplied a ModSecurity client: %q", ip)
+		}
+	}
+}
+
 func TestErrorLogClientIPPortlessIPv6(t *testing.T) {
 	for _, prefix := range []string{
 		"",
