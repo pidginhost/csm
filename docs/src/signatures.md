@@ -114,11 +114,14 @@ The download-and-pipe, miner download, miner cron and shell startup file
 signatures also look for their parts within bounded spans of one line, in both
 engines. A download command is found wherever it sits on a long line, and a
 `#` shortly before it still marks a commented-out usage line. The YARA-X rules
-treat a command as documentation only inside a fenced code block, whose opening
+treat a command as documentation inside a fenced code block, whose opening
 fence starts a line and whose closing fence stands on its own line, or as the
-text of a Markdown link. The shell startup file signature judges a file with
-more Markdown blocks and links than any published document carries without that
-suppression, so its scan time stays linear. The download-and-pipe and shell
+text of a Markdown link. Both engines treat a download-and-pipe command on a
+static HTML page as documentation: the file opens with an HTML doctype or
+`<html>` element and holds no PHP, ASP-style or server-side include tag. The
+shell startup file signature judges a file with more Markdown blocks and links
+than any published document carries without that suppression, so its scan time
+stays linear. The download-and-pipe and shell
 startup file signatures need a whole shell or interpreter name after the pipe,
 so a download piped into a checksum tool or another program whose name starts
 the same way is not an execution. Versioned Perl and Python names, Python

