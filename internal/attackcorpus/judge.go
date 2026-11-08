@@ -35,11 +35,13 @@ type Result struct {
 // A control's findings are always retained: admission cannot excuse a false positive.
 //
 // An unattributed control finding is a false positive when its text names a
-// sample path, and an attribution error otherwise. On a path with a gap, an
-// unattributed finding whose text names an admitted sample path closes the
-// gap. @crontab is not matched in text because its real name is the account,
-// which Judge is not given. Drivers must attribute crontab findings and exclude
-// proven unrelated host findings before returning an outcome.
+// sample path, and an attribution error otherwise. On a path with a gap, only
+// a finding on a planted file, or an unattributed finding whose text names an
+// admitted sample path, closes the gap. A finding on a directory or any other
+// path is an extra finding. @crontab is not matched in text because its real
+// name is the account, which Judge is not given. Drivers must attribute crontab
+// findings and exclude proven unrelated host findings before returning an
+// outcome.
 //
 // Findings are sorted by file, check, severity and text, so reports and
 // failures do not depend on the order scanners report in.
@@ -105,7 +107,7 @@ func failures(s Sample, e PathExpect, findings []Observed, o Outcome) []string {
 			// An unattributed extra finding on a malicious sample.
 		case s.Kind == "control":
 			add("false positive: %s on %s", f.Check, f.File)
-		case e.Gap != "":
+		case e.Gap != "" && slices.ContainsFunc(s.Files, func(sf File) bool { return sf.Path == f.File }):
 			add("gap closed: %s on %s", f.Check, f.File)
 		}
 	}

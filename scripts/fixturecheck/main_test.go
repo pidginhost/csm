@@ -381,3 +381,63 @@ func TestCheckScansCorpusMetadataAsText(t *testing.T) {
 		})
 	}
 }
+
+// A private corpus checkout holds <category>/<sample>/ at its root. Every file
+// in it is a fixture, and sample data is scanned decoded as in the public
+// corpus.
+func TestFixturecheckScansCorpusCheckout(t *testing.T) {
+	encode := func(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
+	terms, err := loadTerms(writeTerms(t, "hostseven\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"webshell/probe/a.php.b64", "webshell/probe/payload", "standalone.b64"} {
+		for _, tc := range []struct {
+			decoded, want string
+			terms         []*regexp.Regexp
+		}{
+			{"<?php\n// peer 8.8.8.8\n", name + ":2: non-documentation IPv4 literal", nil},
+			{"<?php\n// first seen on HostSeven\n", name + ":2: private term", terms},
+		} {
+			root := fixtureRepo(t)
+			writeFixture(t, root, name, encode(tc.decoded))
+			var output bytes.Buffer
+			if err := checkTree(root, true, tc.terms, &output); err == nil {
+				t.Errorf("%q: decoded sample was accepted", tc.want)
+			}
+			if !strings.Contains(output.String(), tc.want) || strings.Contains(output.String(), "8.8.8.8") || strings.Contains(strings.ToLower(output.String()), "hostseven") {
+				t.Errorf("missing location or leaked text: %s", &output)
+			}
+		}
+
+		root := fixtureRepo(t)
+		writeFixture(t, root, name, encode("<?php\n// peer 192.0.2.10\n"))
+		var output bytes.Buffer
+		if err := checkTree(root, true, nil, &output); err != nil {
+			t.Errorf("%s: documentation address rejected: %v\n%s", name, err, &output)
+		}
+	}
+
+	// Notes and manifests are scanned as stored, and are fixtures wherever
+	// they sit, including at the top of the checkout.
+	for _, name := range []string{"README.md", "webshell/README.md", "webshell/probe/sample.json"} {
+		root := fixtureRepo(t)
+		writeFixture(t, root, name, "peer 192.0.2.10\n")
+		var output bytes.Buffer
+		if err := checkTree(root, true, nil, &output); err != nil || !strings.Contains(output.String(), "1 fixture file(s) checked") {
+			t.Errorf("%s: plain text rejected or not scanned: %v\n%s", name, err, &output)
+		}
+		writeFixture(t, root, name, "peer 8.8.8.8\n")
+		output.Reset()
+		if err := checkTree(root, true, nil, &output); err == nil {
+			t.Errorf("%s: non-documentation address accepted", name)
+		}
+		if !strings.Contains(output.String(), name+":1: non-documentation IPv4 literal") || strings.Contains(output.String(), "8.8.8.8") {
+			t.Errorf("%s: missing location or leaked address: %s", name, &output)
+		}
+	}
+
+	if err := checkTree(fixtureRepo(t), true, nil, new(bytes.Buffer)); err == nil {
+		t.Error("empty corpus checkout was accepted")
+	}
+}

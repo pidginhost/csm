@@ -70,7 +70,7 @@ from a checkout.
 
 `sample.json` fields:
 
-- `name`: unique across the corpus.
+- `name`: unique across both halves of the corpus, public and private.
 - `category`: one of `webshell`, `dropper`, `malicious_plugin`,
   `credential_stealer`, `injected_js`, `phishing_kit`, `spam_script`,
   `persistence`, `binary`, `archive`.
@@ -146,9 +146,11 @@ severity floor (below).
 - **Gaps.** A malicious sample that a path misses records a gap with the
   specific reason: which check misses which shape. A gap is a measurement, not
   an exemption. When a detector starts catching a recorded gap, the gate fails
-  with `gap closed:` until the manifest replaces the gap with the finding. A
-  finding that names no planted file but quotes an admitted file in its text
-  counts too. Files rejected by admission cannot close a gap.
+  with `gap closed:` until the manifest replaces the gap with the finding. Only
+  a finding on a planted file, or one that names no file but quotes an admitted
+  planted file in its text, closes a gap; a finding on a directory or other
+  path is reported as an extra finding. Files rejected by admission cannot
+  close a gap.
   Closing a gap is a corpus edit in the same change as the detector fix.
 - **Never weaken an expectation.** Do not delete a sample, lower a
   `min_severity`, turn a finding into a gap, or change an expected remediation
@@ -193,11 +195,12 @@ Each failure in the report and the test log starts with its kind:
 | `gap closed:` | A path caught a sample recorded as a gap on it. |
 | `error:` | The driver did not complete for this sample, or a control drew a finding that names no planted file. |
 
-A run also fails before its first sample when a corpus cannot load, a category
-lacks a malicious sample or a control, a self-test sample is not referenced
-exactly once, or an engine did not load. A test filter that excludes a sample,
-a driver that stops early, a check that panics, times out or reports partial
-coverage, and a failed quarantine all fail the sample.
+A run also fails before its first sample when a corpus cannot load, a required
+private half is not set, a private sample reuses a public sample's name, a
+category lacks a malicious sample or a control, a self-test sample is not
+referenced exactly once, or an engine did not load. A test filter that
+excludes a sample, a driver that stops early, a check that panics, times out
+or reports partial coverage, and a failed quarantine all fail the sample.
 
 Driver errors appear in the test log by type only, unless
 `CSM_ATTACK_CORPUS_SHOW_ERRORS=1` is set (see below). Reports carry check
@@ -234,6 +237,55 @@ What the corpus does not measure yet:
 - Realtime does not admit `.js` or `.phar` files, so those controls are not
   exercised on that path.
 
+## Private half
+
+Real attack samples, scrubbed of customer data, live in a private GitLab
+project in the same format, with `<category>/<name>/` at the project root.
+The project comes from the `CSM_ATTACK_CORPUS_PROJECT` CI variable, and it
+must allow this project's CI job token to read it.
+
+This repository pins the private commit in
+`internal/attackcorpus/private.commit`: one line holding the full
+40-character lowercase commit hash. Moving the pin is a reviewed public
+commit.
+
+In CI the script does the following before any test runs. Any failure stops
+the job.
+
+1. It fails when `CSM_ATTACK_CORPUS_PROJECT` is unset or the pin file is
+   missing or malformed. The pin accepts one full lowercase hash, with or
+   without a single final newline, before any clone or checkout runs.
+2. It clones the project with the CI job token into a new temporary
+   directory, open only to its owner and outside the checkout and its
+   artifacts. A credential helper reads the token from the environment, so
+   the token never appears in a command line, a URL or the clone's git
+   config, and no configured helper can store it. The helper serves only the
+   exact project on the CI server over HTTPS, and Git refuses redirects.
+   A temporary directory inside the checkout or reports is rejected. The
+   temporary clone is removed on success or failure, including a failed clone.
+3. It checks out the pinned commit and fails unless `HEAD` is exactly that
+   commit, so a short hash or a ref name fails.
+4. It runs `scripts/fixturecheck -corpus -require-terms` over the checkout.
+   Every file is scanned for IPv4 addresses outside the documentation ranges
+   and for the private terms in the `CSM_PRIVATE_TERMS` file variable. Sample
+   data is decoded first, one layer deep, as in the public check.
+5. It sets `CSM_ATTACK_CORPUS_PRIVATE` to the checkout and
+   `CSM_ATTACK_CORPUS_PRIVATE_REQUIRED=1`, so the tests fail rather than run
+   without the private half.
+
+`engines.txt` records the pin as `private corpus: <commit>`.
+
+Outside CI nothing is cloned and the private half is not required. A local
+run uses the public half alone unless `CSM_ATTACK_CORPUS_PRIVATE` names a
+checkout. `engines.txt` then says `private corpus: local, unpinned`, and
+otherwise `private corpus: none`.
+
+The coverage rules apply to the public half alone. The private half must load
+without validation errors and hold at least one sample. Sample names are
+unique across both halves. Reports and test logs print sample names and
+planted paths, so private samples follow the public naming rules for both: no
+real names, accounts, domains or mailboxes.
+
 ## Running it
 
 Run the gate in the release builder image, the one `CSM_BUILDER_IMAGE` and
@@ -252,7 +304,8 @@ harness, daemon and checks packages with `-tags yara`. It writes to
 - `realtime.json`, `tier.json`, `fullscan.json`: per sample results and a
   per-category summary (detected, gaps, missed, false positives, closed gaps,
   remediation mismatches, errors). The script fails if any is empty.
-- `engines.txt`: Go version, YARA-X version, commit and run time.
+- `engines.txt`: Go version, YARA-X version, commit, the private corpus line
+  (see [Private half](#private-half)) and run time.
 - `tests.jsonl`: the `go test -json` event stream.
 
 The output directory and its report files are open only to their owner,
@@ -267,8 +320,11 @@ Environment:
   directory. Without it the corpus tests skip.
 - `CSM_ATTACK_CORPUS_REQUIRED=1` turns that skip into a failure. The script
   sets both.
-- `CSM_ATTACK_CORPUS_PRIVATE` adds a second corpus in the same format. It must
-  load and hold at least one sample.
+- `CSM_ATTACK_CORPUS_PRIVATE` adds the private half, a corpus checkout in the
+  same format. It must load and hold at least one sample.
+- `CSM_ATTACK_CORPUS_PRIVATE_REQUIRED=1` fails the run when
+  `CSM_ATTACK_CORPUS_PRIVATE` or `CSM_ATTACK_CORPUS_REPORT_DIR` is not set,
+  instead of skipping. The script sets it in CI.
 - `CSM_ATTACK_CORPUS_SHOW_ERRORS=1` logs the full reason of a driver error
   instead of its type. Local runs only: a reason can quote decoded sample
   bytes, and CI keeps test logs as artifacts. The report script unsets it,

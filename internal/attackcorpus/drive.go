@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/config"
@@ -33,14 +35,37 @@ func Config(stateDir string) (*config.Config, error) {
 	return cfg, nil
 }
 
+// PrivateCommit returns the private corpus commit pinned in private.commit
+// beside this package's source.
+func PrivateCommit() (string, error) {
+	_, file, _, _ := runtime.Caller(0)
+	return readCommit(filepath.Join(filepath.Dir(file), "private.commit"))
+}
+
+// A full commit hash only: a short hash or ref name could resolve to another
+// commit than the one reviewed.
+var commitPin = regexp.MustCompile(`^[0-9a-f]{40}\n?$`)
+
+func readCommit(path string) (string, error) {
+	// #nosec G304 -- the pin file at a fixed path in this source tree, or a test fixture.
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	if !commitPin.Match(data) {
+		return "", fmt.Errorf("%s: want one line of 40 lowercase hex digits", path)
+	}
+	return strings.TrimSuffix(string(data), "\n"), nil
+}
+
 // gate decides whether the corpus runs. It runs only with a report dir, and a
 // pipeline that requires it fails instead of skipping when the dir is unset.
 func gate(getenv func(string) string) (reportDir, skipReason string, err error) {
 	if dir := getenv("CSM_ATTACK_CORPUS_REPORT_DIR"); dir != "" {
 		return dir, "", nil
 	}
-	if getenv("CSM_ATTACK_CORPUS_REQUIRED") == "1" {
-		return "", "", errors.New("CSM_ATTACK_CORPUS_REQUIRED=1 but CSM_ATTACK_CORPUS_REPORT_DIR is not set")
+	if getenv("CSM_ATTACK_CORPUS_REQUIRED") == "1" || getenv("CSM_ATTACK_CORPUS_PRIVATE_REQUIRED") == "1" {
+		return "", "", errors.New("a corpus run is required but CSM_ATTACK_CORPUS_REPORT_DIR is not set")
 	}
 	return "", "CSM_ATTACK_CORPUS_REPORT_DIR is not set", nil
 }
@@ -52,10 +77,15 @@ func prepare(p Path, getenv func(string) string) (reportDir, skip string, sample
 	if !slices.Contains(Paths, p) {
 		return "", "", nil, fmt.Errorf("unknown path %q", p)
 	}
+	dir := getenv("CSM_ATTACK_CORPUS_PRIVATE")
+	// Checked before the gate: a required private half must never skip silently.
+	if dir == "" && getenv("CSM_ATTACK_CORPUS_PRIVATE_REQUIRED") == "1" {
+		return "", "", nil, errors.New("CSM_ATTACK_CORPUS_PRIVATE_REQUIRED=1 but CSM_ATTACK_CORPUS_PRIVATE is not set")
+	}
 	if reportDir, skip, err = gate(getenv); err != nil || skip != "" {
 		return "", skip, nil, err
 	}
-	if dir := getenv("CSM_ATTACK_CORPUS_PRIVATE"); dir != "" {
+	if dir != "" {
 		if samples, err = Load(dir, "private"); err != nil {
 			return "", "", nil, fmt.Errorf("private corpus: %w", err)
 		}
@@ -67,6 +97,12 @@ func prepare(p Path, getenv func(string) string) (reportDir, skip string, sample
 	public, err := Load(PublicDir(), "public")
 	if err != nil {
 		return "", "", nil, fmt.Errorf("public corpus: %w", err)
+	}
+	// Reports and subtests identify a sample by name.
+	for _, s := range samples {
+		if slices.ContainsFunc(public, func(x Sample) bool { return x.Name == s.Name }) {
+			return "", "", nil, fmt.Errorf("private sample %s/%s: name also used in the public corpus", s.Category, s.Name)
+		}
 	}
 	if err = ValidateCoverage(public, true); err != nil {
 		return "", "", nil, fmt.Errorf("public corpus: %w", err)
