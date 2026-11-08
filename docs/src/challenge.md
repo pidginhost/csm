@@ -138,7 +138,13 @@ challenge:
   trusted_proxies:
     - "127.0.0.1"
     - "::1"
+    - "192.0.2.0/24"
 ```
+
+Entries are addresses or CIDR ranges. CSM reads X-Forwarded-For from the
+right, past other trusted proxies, and takes the first other address as the
+visitor. An entry that is not an address ends the read, and the connecting
+proxy is used instead.
 
 Without `trusted_proxies`, X-Forwarded-For is ignored to prevent IP spoofing.
 

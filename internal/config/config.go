@@ -873,7 +873,7 @@ type Config struct {
 		// challenge.tls_cert / tls_key, or the webui TLS fallback.
 		Secret         string   `yaml:"secret"`          // HMAC secret for challenge tokens (auto-generated if empty)
 		Difficulty     int      `yaml:"difficulty"`      // proof-of-work difficulty 0-5 (default: 2)
-		TrustedProxies []string `yaml:"trusted_proxies"` // IPs allowed to set X-Forwarded-For (empty = trust RemoteAddr only)
+		TrustedProxies []string `yaml:"trusted_proxies"` // IPs or CIDRs allowed to set X-Forwarded-For (empty = trust RemoteAddr only)
 		// TLSCert / TLSKey activate HTTPS on the challenge listener. Empty
 		// values keep loopback listeners on plain HTTP. Direct/public
 		// listeners fall back to webui.tls_cert / webui.tls_key so

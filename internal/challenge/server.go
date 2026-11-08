@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/netutil"
 )
 
 // Server serves challenge pages to gray-listed IPs. Passing the challenge
@@ -33,6 +34,7 @@ type Server struct {
 	ipList         *IPList
 	srv            *http.Server
 	trustedProxies map[string]bool
+	trustedNets    []*net.IPNet
 
 	// Track recently verified IPs to prevent replay
 	verified   map[string]time.Time
@@ -78,9 +80,16 @@ func New(cfg *config.Config, ipList *IPList) *Server {
 	}
 
 	trusted := make(map[string]bool)
+	var trustedNets []*net.IPNet
 	for _, p := range cfg.Challenge.TrustedProxies {
 		p = strings.TrimSpace(p)
 		if p == "" {
+			continue
+		}
+		if strings.Contains(p, "/") {
+			if n := netutil.ParseCIDROrIP(p); n != nil {
+				trustedNets = append(trustedNets, n)
+			}
 			continue
 		}
 		trusted[canonicalIP(p)] = true
@@ -91,6 +100,7 @@ func New(cfg *config.Config, ipList *IPList) *Server {
 		secret:         secret,
 		ipList:         ipList,
 		trustedProxies: trusted,
+		trustedNets:    trustedNets,
 		verified:       make(map[string]time.Time),
 		adminFailures:  make(map[string][]time.Time),
 	}
@@ -643,26 +653,39 @@ func (s *Server) CleanExpired() {
 
 // extractIP returns the client IP from the request. X-Forwarded-For is only
 // trusted when the direct peer is in the configured trusted_proxies list.
-// Uses the rightmost XFF entry (the one appended by the trusted proxy),
-// not the leftmost (which the client controls). Without trusted proxies,
-// RemoteAddr is always used — this prevents attackers from spoofing their IP
+// It is read right to left, past further trusted proxies, to the first
+// other address: entries left of that are client text. An unreadable entry
+// ends the walk, since the client could have written everything left of it.
+// When no client is found the direct peer is used. Without trusted proxies,
+// RemoteAddr is always used: this prevents attackers from spoofing their IP
 // to mint firewall allow rules for arbitrary addresses.
 func (s *Server) extractIP(r *http.Request) string {
 	peerIP, _, _ := net.SplitHostPort(r.RemoteAddr)
 	peerIP = canonicalIP(peerIP)
-	if len(s.trustedProxies) > 0 && s.trustedProxies[peerIP] {
-		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			parts := strings.Split(xff, ",")
-			// Use rightmost entry — the one the trusted proxy appended
-			for i := len(parts) - 1; i >= 0; i-- {
-				ip := strings.TrimSpace(parts[i])
-				if net.ParseIP(ip) != nil {
-					return canonicalIP(ip)
-				}
-			}
+	if !s.isTrustedProxy(peerIP) {
+		return peerIP
+	}
+	parts := strings.Split(r.Header.Get("X-Forwarded-For"), ",")
+	for i := len(parts) - 1; i >= 0; i-- {
+		ip := net.ParseIP(strings.TrimSpace(parts[i]))
+		if ip == nil {
+			break
+		}
+		if !s.isTrustedProxy(ip.String()) {
+			return ip.String()
 		}
 	}
 	return peerIP
+}
+
+// isTrustedProxy reports whether ip, in canonical form, is a configured
+// trusted proxy address or inside a configured trusted range.
+func (s *Server) isTrustedProxy(ip string) bool {
+	if s.trustedProxies[ip] {
+		return true
+	}
+	parsed := net.ParseIP(ip)
+	return parsed != nil && netutil.IPInAnyNet(parsed, s.trustedNets)
 }
 
 // canonicalIP normalizes an IP string so downstream exact-match lookups (the
