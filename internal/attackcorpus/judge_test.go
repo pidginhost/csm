@@ -266,6 +266,33 @@ func TestJudgeKeepsControlFindingsAfterAdmissionRejection(t *testing.T) {
 	}
 }
 
+func TestJudgeTextGapHonorsAdmission(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		text string
+		want []string
+	}{
+		{name: "rejected only", text: fileA},
+		{name: "admitted only", text: fileB, want: []string{"gap closed: test_check names " + fileB}},
+		{name: "both", text: fileA + "\n" + fileB, want: []string{"gap closed: test_check names " + fileB}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			o := Outcome{
+				Findings:    []Observed{{Check: "test_check", Severity: alert.High, Text: tc.text}},
+				Remediation: untouched(),
+				NotAdmitted: []string{fileA},
+			}
+			wantFailures(t, Judge(judgeSample(), Tier, o), tc.want...)
+			// Admission must never excuse a control's false positive.
+			named := fileA
+			if tc.name == "admitted only" {
+				named = fileB
+			}
+			wantFailures(t, Judge(judgeControl(), Tier, o), "false positive: test_check names "+named)
+		})
+	}
+}
+
 func TestJudgeRejectsUnattributedControlFindings(t *testing.T) {
 	for _, text := range []string{"unattributed scan result", "suspicious crontab for acct"} {
 		s := judgeControl()

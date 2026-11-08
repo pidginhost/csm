@@ -33,6 +33,8 @@ builder_version=$(awk '
 
 export CSM_ATTACK_CORPUS_REQUIRED=1
 export CSM_ATTACK_CORPUS_REPORT_DIR="$output"
+# An inherited local debugging option must not expose sample bytes in artifacts.
+unset CSM_ATTACK_CORPUS_SHOW_ERRORS
 chmod -R go-w configs
 CGO_LDFLAGS=$(pkg-config --libs --static yara_x_capi)
 export CGO_LDFLAGS

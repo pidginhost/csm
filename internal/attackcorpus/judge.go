@@ -36,10 +36,10 @@ type Result struct {
 //
 // An unattributed control finding is a false positive when its text names a
 // sample path, and an attribution error otherwise. On a path with a gap, an
-// unattributed finding whose text names a sample path closes the gap. @crontab
-// is not matched in text because its real name is the account, which Judge is
-// not given. Drivers must attribute crontab findings and exclude proven
-// unrelated host findings before returning an outcome.
+// unattributed finding whose text names an admitted sample path closes the
+// gap. @crontab is not matched in text because its real name is the account,
+// which Judge is not given. Drivers must attribute crontab findings and exclude
+// proven unrelated host findings before returning an outcome.
 //
 // Findings are sorted by file, check, severity and text, so reports and
 // failures do not depend on the order scanners report in.
@@ -90,7 +90,8 @@ func failures(s Sample, e PathExpect, findings []Observed, o Outcome) []string {
 		named := -1
 		if f.File == "" {
 			named = slices.IndexFunc(s.Files, func(sf File) bool {
-				return sf.Path != "@crontab" && strings.Contains(f.Text, sf.Path)
+				return sf.Path != "@crontab" && strings.Contains(f.Text, sf.Path) &&
+					(s.Kind == "control" || !slices.Contains(o.NotAdmitted, sf.Path))
 			})
 		}
 		switch {

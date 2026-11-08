@@ -147,7 +147,8 @@ severity floor (below).
   specific reason: which check misses which shape. A gap is a measurement, not
   an exemption. When a detector starts catching a recorded gap, the gate fails
   with `gap closed:` until the manifest replaces the gap with the finding. A
-  finding that names no planted file but quotes one in its text counts too.
+  finding that names no planted file but quotes an admitted file in its text
+  counts too. Files rejected by admission cannot close a gap.
   Closing a gap is a corpus edit in the same change as the detector fix.
 - **Never weaken an expectation.** Do not delete a sample, lower a
   `min_severity`, turn a finding into a gap, or change an expected remediation
@@ -270,7 +271,8 @@ Environment:
   load and hold at least one sample.
 - `CSM_ATTACK_CORPUS_SHOW_ERRORS=1` logs the full reason of a driver error
   instead of its type. Local runs only: a reason can quote decoded sample
-  bytes, and CI keeps test logs as artifacts. The script never sets it.
+  bytes, and CI keeps test logs as artifacts. The report script unsets it,
+  including when inherited from the caller.
 
 The other `TestAttackCorpus` tests check the drivers themselves, on their own
 samples, and need no report directory.
