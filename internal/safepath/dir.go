@@ -120,15 +120,6 @@ func (d *Dir) Readlink(name string) (string, error) {
 	return string(buf[:n]), nil
 }
 
-func (d *Dir) Stat(name string) (os.FileInfo, error) {
-	f, err := d.OpenFile(name, os.O_RDONLY, 0)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	return f.Stat()
-}
-
 func (d *Dir) CreateTemp() (*os.File, error) {
 	return d.OpenFile(".csm-restore-"+rand.Text(), os.O_RDWR|os.O_CREATE|os.O_EXCL, 0600)
 }

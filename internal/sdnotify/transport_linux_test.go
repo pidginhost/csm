@@ -62,19 +62,29 @@ func TestConcurrentStatusAndWatchdog(t *testing.T) {
 
 func TestNotifyReturnsWhenSocketQueueIsFull(t *testing.T) {
 	conn, path := notifyListener(t)
-	filler, err := net.DialUnix("unixgram", nil, &net.UnixAddr{Name: path, Net: "unixgram"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = filler.Close() }()
-	if err := filler.SetWriteDeadline(time.Now().Add(100 * time.Millisecond)); err != nil {
-		t.Fatal(err)
-	}
+	// A sender can exhaust its own buffer before the receiver's queue fills.
+	// Retain each sender's queued datagrams and continue with a fresh sender
+	// until even its first write times out.
 	for {
-		if _, err := filler.Write([]byte("fill")); err != nil {
-			if e, ok := err.(net.Error); !ok || !e.Timeout() {
-				t.Fatalf("fill notification queue: %v", err)
+		filler, err := net.DialUnix("unixgram", nil, &net.UnixAddr{Name: path, Net: "unixgram"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = filler.Close() })
+		if err := filler.SetWriteDeadline(time.Now().Add(100 * time.Millisecond)); err != nil {
+			t.Fatal(err)
+		}
+		written := 0
+		for {
+			if _, err := filler.Write([]byte("fill")); err != nil {
+				if e, ok := err.(net.Error); !ok || !e.Timeout() {
+					t.Fatalf("fill notification queue: %v", err)
+				}
+				break
 			}
+			written++
+		}
+		if written == 0 {
 			break
 		}
 	}

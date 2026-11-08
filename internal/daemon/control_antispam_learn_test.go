@@ -88,6 +88,14 @@ func TestControlLearnMaximumSnapshotRoundTrip(t *testing.T) {
 	d.cfg.EmailProtection.Antispam.Learning.Enabled = true
 	fake := &fakeLearner{res: learn.OperatorResult{Outcome: learn.ResultCommitted, ExitOK: true}}
 	withLearner(t, fake)
+	// Preparing a large fixture under the race detector must not consume
+	// the listener's I/O deadline before transmission starts.
+	body := bytes.Repeat([]byte("x"), learn.MaxBody)
+	req := control.Request{Cmd: control.CmdAntispamLearn, Args: learnArgs(t, learn.ActionSpam, "max.eml", string(body))}
+	var payload bytes.Buffer
+	if err := json.NewEncoder(&payload).Encode(req); err != nil {
+		t.Fatal(err)
+	}
 	server, client := net.Pipe()
 	done := make(chan struct{})
 	go func() {
@@ -95,9 +103,7 @@ func TestControlLearnMaximumSnapshotRoundTrip(t *testing.T) {
 		(&ControlListener{d: d}).handleConnection(server)
 	}()
 	t.Cleanup(func() { _ = client.Close(); <-done })
-	body := bytes.Repeat([]byte("x"), learn.MaxBody)
-	req := control.Request{Cmd: control.CmdAntispamLearn, Args: learnArgs(t, learn.ActionSpam, "max.eml", string(body))}
-	if err := json.NewEncoder(client).Encode(req); err != nil {
+	if _, err := payload.WriteTo(client); err != nil {
 		t.Fatal(err)
 	}
 	var resp control.Response

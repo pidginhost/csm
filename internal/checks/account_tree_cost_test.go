@@ -64,11 +64,7 @@ func useAccountTree(tb testing.TB, root string) *config.Config {
 // an empty walk looks like a very fast scan. This is the guard that the
 // harness measures real work.
 func TestAccountTreeHarnessIsActuallyScanned(t *testing.T) {
-	root, err := os.MkdirTemp("/run", "treecost-guard-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	root := t.TempDir()
 	buildAccountTree(t, root, 1, 4)
 	docroot := filepath.Join(root, "account00", "public_html")
 	if err := os.WriteFile(filepath.Join(docroot, "wso.php"), []byte("<?php eval($_POST[0]);"), 0o644); err != nil {
@@ -87,11 +83,7 @@ func TestAccountTreeHarnessIsActuallyScanned(t *testing.T) {
 }
 
 func benchmarkAccountTreeCheck(b *testing.B, name string, check CheckFunc, accounts, filesPerAccount int) {
-	root, err := os.MkdirTemp("/run", "treecost-")
-	if err != nil {
-		b.Fatal(err)
-	}
-	b.Cleanup(func() { _ = os.RemoveAll(root) })
+	root := b.TempDir()
 	buildAccountTree(b, root, accounts, filesPerAccount)
 	cfg := useAccountTree(b, root)
 	files := accounts * filesPerAccount

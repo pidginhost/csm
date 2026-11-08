@@ -3,12 +3,46 @@
 package safepath
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"golang.org/x/sys/unix"
 )
+
+func TestStatNeedsNoChildReadPermission(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "unreadable")
+	if err := os.WriteFile(path, []byte("retained content"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0); err != nil {
+		t.Fatal(err)
+	}
+	dir, err := OpenDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = dir.Close() }()
+	want, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := dir.Stat("unreadable")
+	if err != nil {
+		t.Fatalf("stat without read permission: %v", err)
+	}
+	if !os.SameFile(want, got) || got.Mode() != 0 || got.Size() != int64(len("retained content")) {
+		t.Fatalf("metadata changed: %+v", got)
+	}
+	if err := os.Symlink("unreadable", filepath.Join(root, "link")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dir.Stat("link"); !errors.Is(err, unix.ELOOP) {
+		t.Fatalf("stat accepted a symlink: %v", err)
+	}
+}
 
 func TestLstatWorksWhileChildHasExclusiveLease(t *testing.T) {
 	root := t.TempDir()

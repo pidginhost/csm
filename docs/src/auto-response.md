@@ -165,6 +165,10 @@ the opened destination before syncing it. Linux preserves modification times at
 the precision supported by the destination filesystem. An ownership or timestamp
 failure keeps the recovery evidence and reports an error.
 
+On Linux, restore can verify the destination after saved permissions remove all
+read access. The restored file keeps those permissions, including a mode with
+no access granted to anyone.
+
 Older sidecars may use `quarantine_at`; listing and restore also read that
 historical spelling. Entries without a saved quarantine date sort last. Older
 entries have no recorded original modification time, so restore leaves the new

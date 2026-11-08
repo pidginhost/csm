@@ -67,6 +67,13 @@ func TestRestorePreservesRecordedModificationTime(t *testing.T) {
 			if directory {
 				destination = filepath.Join(destination, "content")
 			}
+			// Metadata was verified above. Grant the test owner read access
+			// only for the content assertion on a permissionless fixture.
+			if !directory && tc.mode.Perm()&0400 == 0 {
+				if chmodErr := os.Chmod(destination, tc.mode|0400); chmodErr != nil {
+					t.Fatal(chmodErr)
+				}
+			}
 			data, err = os.ReadFile(destination)
 			if err != nil || string(data) != "original content" {
 				t.Fatalf("restored content=%q, error=%v", data, err)
