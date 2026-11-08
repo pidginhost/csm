@@ -114,3 +114,37 @@ func TestUploaderClassExemptionTrivia(t *testing.T) {
 		}
 	}
 }
+
+// Comparison, ternary and null-coalescing operators are ordinary class code,
+// but no operator may consume a PHP opener or closer next to it.
+func TestUploaderClassExemptionOperators(t *testing.T) {
+	s := loadRepoYaraScanner(t)
+	guard := "defined('_FW_VERSION_') or die;\n"
+	for name, tc := range map[string]struct {
+		code string
+		want bool
+	}{
+		"less than":          {code: "$ok = $a < $b;"},
+		"less or equal":      {code: "$ok = $a <= $b;"},
+		"spaceship":          {code: "$ok = $a <=> $b;"},
+		"ternary":            {code: "$ok = $a ? 1 : 2;"},
+		"null coalescing":    {code: "$ok = $a ?? $b;"},
+		"nullsafe call":      {code: "$ok = $a?->b();"},
+		"closer after ?":     {code: "$ok = $a ?>x<?php ;", want: true},
+		"closer after ??":    {code: "$ok = $a ??>x<?php ;", want: true},
+		"opener after <":     {code: "$ok = $a <<?php ;", want: true},
+		"short echo after <": {code: "$ok = $a <<?= 1 ?>;", want: true},
+		"heredoc":            {code: "$ok = <<<EOT\nx\nEOT;", want: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			sample := guardedImportHeader + guard + strings.Replace(guardedImportClass, "return true;", tc.code+"\n        return true;", 1)
+			matches, err := s.ScanBytesChecked([]byte(sample))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := hasYaraRule(matches, "dropper_uploader_no_auth"); got != tc.want {
+				t.Errorf("dropper_uploader_no_auth matched = %t, want %t", got, tc.want)
+			}
+		})
+	}
+}
