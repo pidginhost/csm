@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 )
 
@@ -238,7 +239,14 @@ func FuzzExtractPureFTPDClientIP(f *testing.F) {
 	f.Add("plain log line")
 	f.Add("")
 	f.Fuzz(func(t *testing.T, line string) {
-		_ = extractPureFTPDClientIP(line)
+		if ip := checks.PureFTPDClientIP(line); ip != "" {
+			if _, err := netip.ParseAddr(ip); err != nil {
+				t.Fatalf("accepted invalid peer %q: %v", ip, err)
+			}
+		}
+		if ip := checks.PureFTPDClientIP("other[1]: " + line); ip != "" {
+			t.Fatalf("another program's message supplied FTP peer %q", ip)
+		}
 	})
 }
 

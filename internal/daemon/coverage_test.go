@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/state"
 )
@@ -103,21 +104,21 @@ func TestFilterUnsuppressedNilFindings(t *testing.T) {
 
 func TestExtractPureFTPDClientIPStandard(t *testing.T) {
 	line := `Apr 11 10:00:00 host pure-ftpd: (?@203.0.113.5) [WARNING] Authentication failed for user [alice]`
-	if got := extractPureFTPDClientIP(line); got != "203.0.113.5" {
+	if got := checks.PureFTPDClientIP(line); got != "203.0.113.5" {
 		t.Errorf("got %q, want 203.0.113.5", got)
 	}
 }
 
 func TestExtractPureFTPDClientIPAuthenticatedUser(t *testing.T) {
 	line := `Apr 11 10:00:00 host pure-ftpd: (alice@198.51.100.1) [INFO] alice is now logged in`
-	if got := extractPureFTPDClientIP(line); got != "198.51.100.1" {
+	if got := checks.PureFTPDClientIP(line); got != "198.51.100.1" {
 		t.Errorf("got %q, want 198.51.100.1", got)
 	}
 }
 
 func TestExtractPureFTPDClientIPIPv6(t *testing.T) {
 	line := `Apr 11 10:00:00 host pure-ftpd: (?@2001:db8::1) [WARNING] Authentication failed for user [alice]`
-	if got := extractPureFTPDClientIP(line); got != "2001:db8::1" {
+	if got := checks.PureFTPDClientIP(line); got != "2001:db8::1" {
 		t.Errorf("got %q, want 2001:db8::1", got)
 	}
 }
@@ -127,25 +128,25 @@ func TestExtractPureFTPDClientIPReverseDNSHostname(t *testing.T) {
 	// appears in the prefix instead of the IP. We can't block a
 	// hostname at the firewall, so the extractor returns empty.
 	line := `Apr 11 10:00:00 host pure-ftpd: (?@client.example.com) [WARNING] Authentication failed for user [alice]`
-	if got := extractPureFTPDClientIP(line); got != "" {
+	if got := checks.PureFTPDClientIP(line); got != "" {
 		t.Errorf("hostname should return empty, got %q", got)
 	}
 }
 
 func TestExtractPureFTPDClientIPNoParens(t *testing.T) {
-	if got := extractPureFTPDClientIP("plain log line"); got != "" {
+	if got := checks.PureFTPDClientIP("plain log line"); got != "" {
 		t.Errorf("no parens should return empty, got %q", got)
 	}
 }
 
 func TestExtractPureFTPDClientIPNoAtSign(t *testing.T) {
-	if got := extractPureFTPDClientIP("host pure-ftpd: (noatsign) msg"); got != "" {
+	if got := checks.PureFTPDClientIP("pure-ftpd: (noatsign) msg"); got != "" {
 		t.Errorf("no @ should return empty, got %q", got)
 	}
 }
 
 func TestExtractPureFTPDClientIPUnclosedParen(t *testing.T) {
-	if got := extractPureFTPDClientIP("host pure-ftpd: (?@203.0.113.5 msg"); got != "" {
+	if got := checks.PureFTPDClientIP("pure-ftpd: (?@203.0.113.5 msg"); got != "" {
 		t.Errorf("unclosed paren should return empty, got %q", got)
 	}
 }
@@ -217,14 +218,13 @@ func TestParseFTPLogLineIrrelevantPureFTPDLine(t *testing.T) {
 	}
 }
 
-func TestParseFTPLogLineFallsBackToBareIPScanner(t *testing.T) {
-	// If somehow the (...@IP) prefix is missing but a bare IP is in the
-	// line, the extractIPFromLogDaemon fallback should still find it.
+func TestParseFTPLogLineMissingPeerIgnoresLaterIP(t *testing.T) {
+	// Without the server's peer field, later addresses are untrusted text.
 	cfg := &config.Config{}
 	line := `Apr 11 10:00:00 host pure-ftpd: Authentication failed from 203.0.113.5 user alice`
 	findings := parseFTPLogLine(line, cfg)
-	if len(findings) != 1 {
-		t.Fatalf("got %d, want 1 (fallback)", len(findings))
+	if len(findings) != 0 {
+		t.Fatalf("got %+v, want no finding without a peer", findings)
 	}
 }
 

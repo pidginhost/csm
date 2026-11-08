@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/store"
 )
@@ -995,16 +996,16 @@ func TestExtractRequestURI_FullLine(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestExtractPureFTPDClientIP_IPv6(t *testing.T) {
-	line := `(user@2001:db8::1) pure-ftpd: something`
-	got := extractPureFTPDClientIP(line)
+	line := `pure-ftpd: (user@2001:db8::1) something`
+	got := checks.PureFTPDClientIP(line)
 	if got != "2001:db8::1" {
 		t.Errorf("got %q, want 2001:db8::1", got)
 	}
 }
 
 func TestExtractPureFTPDClientIP_EmptyAddr(t *testing.T) {
-	line := `(user@) pure-ftpd: something`
-	got := extractPureFTPDClientIP(line)
+	line := `pure-ftpd: (user@) something`
+	got := checks.PureFTPDClientIP(line)
 	if got != "" {
 		t.Errorf("empty addr should return empty, got %q", got)
 	}

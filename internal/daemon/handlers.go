@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"fmt"
-	"net"
 	"strings"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -179,21 +178,7 @@ func isUnauthWHMScriptsRequest(requestURI string) bool {
 func parseFTPLogLine(line string, cfg *config.Config) []alert.Finding {
 	var findings []alert.Finding
 
-	if !strings.Contains(line, "pure-ftpd") {
-		return nil
-	}
-
-	// Extract the client address. Pure-ftpd's standard syslog format
-	// prefixes the client as (user@addr), where addr is either an IP
-	// (DontResolve=yes) or a reverse-resolved hostname (DontResolve=no).
-	// When that prefix is present it is the only server-written address:
-	// the rest of the line can hold the client's username, so a hostname
-	// prefix emits no finding. Only a line without the prefix falls back
-	// to the generic "whitespace field starting with a digit" scanner.
-	ip := extractPureFTPDClientIP(line)
-	if ip == "" && !hasPureFTPDPeer(line) {
-		ip = extractIPFromLogDaemon(line)
-	}
+	ip := checks.PureFTPDClientIP(line)
 	if ip == "" || isInfraIPDaemon(ip, cfg.InfraIPs) {
 		return nil
 	}
@@ -220,45 +205,6 @@ func parseFTPLogLine(line string, cfg *config.Config) []alert.Finding {
 	}
 
 	return findings
-}
-
-// hasPureFTPDPeer reports whether the line carries pure-ftpd's
-// "(user@addr)" prefix, whatever addr is.
-func hasPureFTPDPeer(line string) bool {
-	open := strings.Index(line, "(")
-	if open < 0 {
-		return false
-	}
-	inner, _, ok := strings.Cut(line[open+1:], ")")
-	return ok && strings.Contains(inner, "@")
-}
-
-// extractPureFTPDClientIP parses the "(user@addr)" prefix that pure-ftpd
-// prepends to every log message and returns `addr` only if it parses as
-// an IP. Returns empty if the log line contains no prefix at all, the
-// prefix is malformed, or addr is a reverse-resolved hostname (in which
-// case the caller should not emit a finding since we can't block a
-// hostname at the firewall).
-func extractPureFTPDClientIP(line string) string {
-	open := strings.Index(line, "(")
-	if open < 0 {
-		return ""
-	}
-	rest := line[open+1:]
-	close := strings.Index(rest, ")")
-	if close < 0 {
-		return ""
-	}
-	inner := rest[:close]
-	at := strings.LastIndexByte(inner, '@')
-	if at < 0 {
-		return ""
-	}
-	addr := inner[at+1:]
-	if net.ParseIP(addr) == nil {
-		return "" // hostname, not an IP — nothing we can block
-	}
-	return addr
 }
 
 // extractRequestURI extracts the request URI from an access log line.

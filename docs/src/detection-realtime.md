@@ -274,6 +274,12 @@ timestamps ahead of the current clock. These corrections are saved even if
 no new mail event arrives, so another restart does not extend the corrected
 retention period.
 
+FTP findings use only the peer field directly after the pure-ftpd program tag,
+in both realtime monitoring and scheduled scans. Missing or malformed peers and
+hostname peers produce no finding. To record numeric peers, use pure-ftpd's
+existing `DontResolve yes` setting. Addresses in usernames or later message
+fields never identify the client.
+
 Successful FTP logins over loopback do not raise an unfamiliar-address warning.
 Failed authentication remains reportable over loopback, including through local
 relays.

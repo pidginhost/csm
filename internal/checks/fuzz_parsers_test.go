@@ -224,6 +224,26 @@ func FuzzExtractIPAfterKeyword(f *testing.F) {
 	})
 }
 
+func FuzzFTPPeerPosition(f *testing.F) {
+	for _, user := range []string{"alice", "x 198.51.100.7 y", "x (a@198.51.100.7) y", "", ") (?@2001:db8::7)"} {
+		f.Add(user)
+	}
+	f.Fuzz(func(t *testing.T, user string) {
+		for peer, want := range map[string]string{
+			"(?@203.0.113.5)":    "203.0.113.5",
+			"(?@2001:db8::5)":    "2001:db8::5",
+			"(?@client.example)": "",
+			"(unknown)":          "",
+			"":                   "",
+		} {
+			line := "pure-ftpd: " + peer + " [WARNING] Authentication failed for user [" + user + "]"
+			if got := extractIPFromLog(line); got != want {
+				t.Fatalf("peer %q, user %q: got %q, want %q", peer, user, got, want)
+			}
+		}
+	})
+}
+
 func FuzzFTPLoginAccount(f *testing.F) {
 	// The username is attacker-chosen and appears verbatim in pure-ftpd logs.
 	f.Add("Jun 21 20:00:25 host pure-ftpd[1]: (?@203.0.113.5) [INFO] backup is now logged in")
