@@ -170,6 +170,10 @@ func TestJudgeGapClosed(t *testing.T) {
 		t.Errorf("Gap = %q, want %q", r.Gap, gapText)
 	}
 
+	// Next to a finding on the planted file, a directory finding adds no failure.
+	o.Findings = append(o.Findings, Observed{Check: "dir_check", Severity: alert.Critical, File: "public_html"})
+	wantFailures(t, Judge(judgeSample(), Tier, o), "gap closed: test_check on "+fileA)
+
 	// An unattributed finding closes the gap when its text names a planted
 	// file, as a detector that names the file only in its details would.
 	o.Findings = []Observed{{Check: "host_check", Severity: alert.Critical, Text: "Suspicious file: /tmp/x/acct/" + fileA}}
@@ -178,6 +182,23 @@ func TestJudgeGapClosed(t *testing.T) {
 	// One that names no planted file does not.
 	o.Findings = []Observed{{Check: "host_check", Severity: alert.Critical, Text: "nothing about the planted files"}}
 	wantFailures(t, Judge(judgeSample(), Tier, o))
+}
+
+// Attribute returns any path inside the home, directories included. Only a
+// finding on a planted file closes a gap; the rest are extra findings.
+func TestJudgeGapIgnoresUnplantedPaths(t *testing.T) {
+	o := Outcome{
+		Findings: []Observed{
+			{Check: "dir_check", Severity: alert.Critical, File: "public_html"},
+			{Check: "test_check", Severity: alert.Critical, File: "public_html/c.php"},
+		},
+		Remediation: untouched(),
+	}
+	r := Judge(judgeSample(), Tier, o)
+	wantFailures(t, r)
+	if !reflect.DeepEqual(r.Findings, o.Findings) {
+		t.Errorf("findings = %+v, want both kept", r.Findings)
+	}
 }
 
 func TestJudgeError(t *testing.T) {

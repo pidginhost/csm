@@ -146,9 +146,11 @@ severity floor (below).
 - **Gaps.** A malicious sample that a path misses records a gap with the
   specific reason: which check misses which shape. A gap is a measurement, not
   an exemption. When a detector starts catching a recorded gap, the gate fails
-  with `gap closed:` until the manifest replaces the gap with the finding. A
-  finding that names no planted file but quotes an admitted file in its text
-  counts too. Files rejected by admission cannot close a gap.
+  with `gap closed:` until the manifest replaces the gap with the finding. Only
+  a finding on a planted file, or one that names no file but quotes an admitted
+  planted file in its text, closes a gap; a finding on a directory or other
+  path is reported as an extra finding. Files rejected by admission cannot
+  close a gap.
   Closing a gap is a corpus edit in the same change as the detector fix.
 - **Never weaken an expectation.** Do not delete a sample, lower a
   `min_severity`, turn a finding into a gap, or change an expected remediation
