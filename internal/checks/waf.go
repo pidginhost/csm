@@ -1303,11 +1303,13 @@ func countModSecDenials(lines []string) map[string]int {
 // is: hostname, client, remote user, local user, [time], "request",
 // status, ...; the hostname comes from the request's Host header, so only
 // the second field names the client, and only the status says denied. An
-// error-log style line names the client in its first [client] field.
+// error-log style line names the client only in its server-written prefix.
 func modsecLineDenial(line string) (string, bool) {
 	if date := strings.Index(line, "] \""); date >= 0 {
 		head := strings.Fields(line[:date])
-		if len(head) == 6 && strings.HasPrefix(head[4], "[") {
+		// Request text after an error-log marker can mimic an audit index.
+		errorMessage, _ := modsec.ErrorLogMessage(line[:date])
+		if len(head) == 6 && strings.HasPrefix(head[4], "[") && errorMessage == "" {
 			ip := net.ParseIP(head[1])
 			if ip == nil {
 				return "", false
@@ -1325,16 +1327,8 @@ func modsecLineDenial(line string) (string, bool) {
 			return "", false
 		}
 	}
-	i := strings.Index(line, "[client ")
-	if i < 0 || !modsecDenialLine(line) {
-		return "", false
-	}
-	field, _, ok := strings.Cut(line[i+len("[client "):], "]")
-	if !ok {
-		return "", false
-	}
-	ip, ok := netutil.ParseIPToken(field)
-	return ip, ok
+	ip := modsec.ErrorLogClientIP(line)
+	return ip, ip != "" && modsecDenialLine(line)
 }
 
 func modsecDenialLine(line string) bool {

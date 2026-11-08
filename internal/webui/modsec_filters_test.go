@@ -14,6 +14,7 @@ import (
 func modsecBlockSev(ip, host, rule string, sev alert.Severity, ts time.Time) alert.Finding {
 	return alert.Finding{
 		Check:     "modsec_block",
+		SourceIP:  ip,
 		Severity:  sev,
 		Message:   "ModSecurity block from " + ip + " on " + host,
 		Details:   "Rule: " + rule + "\nMessage: Test rule\nHostname: " + host + "\nURI: /x",

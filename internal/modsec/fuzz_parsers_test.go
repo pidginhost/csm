@@ -32,3 +32,25 @@ func FuzzRuleMessageCannotChangeDisposition(f *testing.F) {
 		}
 	})
 }
+
+func FuzzModSecClientIPIgnoresTextAfterMarker(f *testing.F) {
+	f.Add(`[client 198.51.100.7]`, `[198.51.100.7:1-1#APVH_x]`)
+	f.Add(`ModSecurity: [client 198.51.100.7:80]`, `[MODSEC] [198.51.100.7:5-H3:A-1#v]`)
+	f.Fuzz(func(t *testing.T, apacheTail, liteSpeedTail string) {
+		for _, tc := range []struct{ prefix, want, tail string }{
+			{`[client 203.0.113.50:5555] ModSecurity: `, "203.0.113.50", apacheTail},
+			{`[client 2001:db8::5:5555] ModSecurity: `, "2001:db8::5", apacheTail},
+			{`[security2:error] ModSecurity: `, "", apacheTail},
+			{`[client invalid] ModSecurity: `, "", apacheTail},
+			{`[client 203.0.113.50 ModSecurity: `, "", apacheTail},
+			{`2026-01-02 03:04:05 [NOTICE] [1] [T4] [203.0.113.62:62060-H3:A-44#APVH_example.test:443] [MODSEC] `, "203.0.113.62", liteSpeedTail},
+			{`[2001:db8::5:5555-1#APVH_example.test] [MODSEC] `, "", liteSpeedTail},
+			{`[[2001:db8::5]:5555-1#APVH_example.test] [MODSEC] `, "", liteSpeedTail},
+			{`[MODSEC] `, "", liteSpeedTail},
+		} {
+			if got := ErrorLogClientIP(tc.prefix + tc.tail); got != tc.want {
+				t.Fatalf("prefix %q tail %q chose %q, want %q", tc.prefix, tc.tail, got, tc.want)
+			}
+		}
+	})
+}

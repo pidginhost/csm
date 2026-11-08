@@ -1410,8 +1410,8 @@ func TestLooksLikeIP(t *testing.T) {
 	}
 }
 
-func TestExtractModSecIPFromMessage(t *testing.T) {
-	f := alert.Finding{Message: "ModSecurity block from 203.0.113.5 on /login"}
+func TestExtractModSecIPFromSource(t *testing.T) {
+	f := alert.Finding{SourceIP: "203.0.113.5", Message: "ModSecurity block from 203.0.113.5 on /login"}
 	if got := extractModSecIP(f); got != "203.0.113.5" {
 		t.Errorf("got %q, want 203.0.113.5", got)
 	}
@@ -1425,14 +1425,14 @@ func TestExtractModSecIPFromClientBracket(t *testing.T) {
 }
 
 func TestExtractModSecIPApacheWithPort(t *testing.T) {
-	f := alert.Finding{Details: `[client 198.51.100.1:54321] denied`}
+	f := alert.Finding{Details: `[client 198.51.100.1:54321] ModSecurity: Access denied`}
 	if got := extractModSecIP(f); got != "198.51.100.1" {
 		t.Errorf("got %q, want 198.51.100.1 (port stripped)", got)
 	}
 }
 
 func TestExtractModSecIPLiteSpeedFormat(t *testing.T) {
-	f := alert.Finding{Details: `[203.0.113.5:443-0#HTTPS] blocked`}
+	f := alert.Finding{Details: `[203.0.113.5:443-0#HTTPS] [MODSEC] Access denied`}
 	if got := extractModSecIP(f); got != "203.0.113.5" {
 		t.Errorf("got %q, want 203.0.113.5", got)
 	}

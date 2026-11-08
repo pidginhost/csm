@@ -98,45 +98,6 @@ func TestExtractModSecField_MultipleOccurrences(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// extractLiteSpeedIP
-// ---------------------------------------------------------------------------
-
-func TestExtractLiteSpeedIP_Standard(t *testing.T) {
-	line := `2026-04-01 [NOTICE] [122.9.114.57:41920-13#APVH_*_server.example.com] [MODSEC] triggered!`
-	got := extractLiteSpeedIP(line)
-	if got != "122.9.114.57" {
-		t.Errorf("got %q, want 122.9.114.57", got)
-	}
-}
-
-func TestExtractLiteSpeedIP_NoMatch(t *testing.T) {
-	if got := extractLiteSpeedIP("no bracketed IP here"); got != "" {
-		t.Errorf("got %q, want empty", got)
-	}
-}
-
-func TestExtractLiteSpeedIP_BracketButNotLiteSpeed(t *testing.T) {
-	// A bracket without the #-conn pattern should not match.
-	if got := extractLiteSpeedIP("[plain text] more text"); got != "" {
-		t.Errorf("got %q, want empty", got)
-	}
-}
-
-func TestExtractLiteSpeedIP_NoCloseBracket(t *testing.T) {
-	if got := extractLiteSpeedIP("[122.9.114.57:41920-13#APVH_*_server.example.com"); got != "" {
-		t.Errorf("unclosed bracket should return empty, got %q", got)
-	}
-}
-
-func TestExtractLiteSpeedIP_IPv6NotMatched(t *testing.T) {
-	// IPv6 doesn't have 3 dots, so extractLiteSpeedIP should return empty.
-	line := `[2001:db8::1:41920-13#APVH_*_host] [MODSEC] triggered!`
-	if got := extractLiteSpeedIP(line); got != "" {
-		t.Errorf("IPv6 should not match dot-count check, got %q", got)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // mergeInfraIPs
 // ---------------------------------------------------------------------------
 

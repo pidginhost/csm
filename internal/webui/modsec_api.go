@@ -1,6 +1,7 @@
 package webui
 
 import (
+	"net"
 	"net/http"
 	"sort"
 	"strconv"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/modsec"
 	"github.com/pidginhost/csm/internal/store"
 )
 
@@ -440,40 +442,19 @@ func (s *Server) modsecFindingsWithTruncation(r *http.Request) ([]alert.Finding,
 // Details format: "Rule: NNNN\nMessage: ...\nHostname: ...\nURI: ..."
 
 func extractModSecIP(f alert.Finding) string {
-	// Try from message: "... from IP on ..." or "... from IP ..."
-	msg := f.Message
-	if idx := strings.Index(msg, " from "); idx >= 0 {
-		rest := msg[idx+6:]
-		if sp := strings.IndexAny(rest, " \n"); sp >= 0 {
-			rest = rest[:sp]
+	if f.SourceIP != "" {
+		if ip := net.ParseIP(f.SourceIP); ip != nil {
+			return ip.String()
 		}
-		if len(rest) >= 7 && rest[0] >= '0' && rest[0] <= '9' && strings.Count(rest, ".") == 3 {
-			return rest
-		}
+		return ""
 	}
-	// Fallback: parse [client IP] from raw log line in Details
-	if ip := extractBetween(f.Details, "[client ", "]"); ip != "" {
-		// Strip port if present (Apache 2.4: "IP:port")
-		if strings.Count(ip, ":") == 1 {
-			if idx := strings.LastIndex(ip, ":"); idx > 0 {
-				ip = ip[:idx]
-			}
-		}
-		return ip
+	// Older findings may carry only the raw log. Display text includes
+	// request data, so it cannot supply an address when the source is unknown.
+	raw := f.Details
+	if strings.HasPrefix(raw, "Rule: ") {
+		raw = extractDetailField(raw, "Raw: ")
 	}
-	// Fallback: LiteSpeed format - IP in [IP:PORT-CONN#VHOST]
-	for _, field := range strings.Fields(f.Details) {
-		if strings.HasPrefix(field, "[") && strings.Contains(field, "#") {
-			inner := strings.TrimPrefix(field, "[")
-			if colonIdx := strings.Index(inner, ":"); colonIdx > 0 {
-				ip := inner[:colonIdx]
-				if len(ip) >= 7 && ip[0] >= '0' && ip[0] <= '9' {
-					return ip
-				}
-			}
-		}
-	}
-	return ""
+	return modsec.ErrorLogClientIP(raw)
 }
 
 func extractModSecRule(f alert.Finding) string {

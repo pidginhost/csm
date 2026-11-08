@@ -16,6 +16,7 @@ import (
 func modsecBlock(ip, host, uri, rule string, ts time.Time) alert.Finding {
 	return alert.Finding{
 		Check:     "modsec_block",
+		SourceIP:  ip,
 		Severity:  alert.Warning,
 		Message:   "ModSecurity block from " + ip + " on " + host,
 		Details:   "Rule: " + rule + "\nMessage: Test rule\nHostname: " + host + "\nURI: " + uri,
@@ -268,7 +269,7 @@ func TestModSecBlocksMarksEscalatedAddresses(t *testing.T) {
 	now := time.Now()
 	escalation := func(ip string) alert.Finding {
 		return alert.Finding{Check: "modsec_csm_block_escalation", Severity: alert.Critical,
-			Message: "Escalated block from " + ip, Details: "[client " + ip + "]", Timestamp: now}
+			SourceIP: ip, Message: "Escalated block from " + ip, Details: "[client " + ip + "]", Timestamp: now}
 	}
 	if err := store.Global().AppendHistory([]alert.Finding{
 		modsecBlock("203.0.113.50", "example.com", "/a", "900001", now),

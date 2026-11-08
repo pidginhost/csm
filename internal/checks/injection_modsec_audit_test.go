@@ -85,7 +85,7 @@ func TestCheckModSecAuditLogHighVolumeAttackerEmitsHigh(t *testing.T) {
 	// Generate 25 blocked lines from the same IP.
 	var sb strings.Builder
 	for i := 0; i < 25; i++ {
-		fmt.Fprintf(&sb, "2026-04-14 10:00:%02d [client 203.0.113.9] [id \"942100\"] [msg \"SQL Injection\"] 403 Access denied MODSEC\n", i)
+		fmt.Fprintf(&sb, "2026-04-14 10:00:%02d [client 203.0.113.9] ModSecurity: Access denied with code 403 [id \"942100\"] [msg \"SQL Injection\"]\n", i)
 	}
 	withModSecAuditLog(t, sb.String())
 
@@ -110,7 +110,7 @@ func TestCheckModSecAuditLogBelowThresholdIgnored(t *testing.T) {
 	// Only 10 blocked lines — under the 20-hit threshold.
 	var sb strings.Builder
 	for i := 0; i < 10; i++ {
-		fmt.Fprintf(&sb, "2026-04-14 10:00:%02d [client 203.0.113.9] 403 MODSEC blocked\n", i)
+		fmt.Fprintf(&sb, "2026-04-14 10:00:%02d [client 203.0.113.9] ModSecurity: Access denied with code 403\n", i)
 	}
 	withModSecAuditLog(t, sb.String())
 
@@ -123,11 +123,11 @@ func TestCheckModSecAuditLogBelowThresholdIgnored(t *testing.T) {
 func TestCheckModSecAuditLogSkipsInfraIP(t *testing.T) {
 	var sb strings.Builder
 	for i := 0; i < 25; i++ {
-		fmt.Fprintf(&sb, "2026-04-14 10:00:%02d [client 10.0.0.5] 403 MODSEC blocked\n", i)
+		fmt.Fprintf(&sb, "2026-04-14 10:00:%02d [client 192.0.2.5] ModSecurity: Access denied with code 403\n", i)
 	}
 	withModSecAuditLog(t, sb.String())
 
-	got := CheckModSecAuditLog(context.Background(), &config.Config{InfraIPs: []string{"10.0.0.0/8"}}, nil)
+	got := CheckModSecAuditLog(context.Background(), &config.Config{InfraIPs: []string{"192.0.2.0/24"}}, nil)
 	if len(got) != 0 {
 		t.Errorf("infra IP should be skipped, got %+v", got)
 	}
