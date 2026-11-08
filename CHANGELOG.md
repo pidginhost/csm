@@ -9,6 +9,16 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ## [Unreleased]
 
+## [4.10.2] - 2026-11-08
+
+### Highlights
+
+- Crafted mail logins, FTP logins and web requests can no longer get unrelated addresses blocked.
+- Scheduled scans see ModSecurity denials only in error logs CSM knows; list custom error logs in `modsec_error_log` or `web_server.error_logs`.
+- `challenge.trusted_proxies` now accepts CIDR ranges, and visitors behind trusted proxies can no longer obtain challenge passes for other addresses.
+- Ordinary server errors no longer appear as ModSecurity attacks or trigger false blocks.
+- The malware scanning engine moves to YARA-X 1.23.0; shipped rules compile and match as before.
+
 ### Security
 
 - An attacker can no longer get an unrelated address blocked, or exempt its own address from reputation blocks, through crafted mail login attempts.
@@ -25,16 +35,24 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Fixed
 
+#### ModSecurity and challenges
+
 - `challenge.trusted_proxies` now accepts CIDR ranges, as documented.
 - ModSecurity detections now name an IPv6 client by its own address on Apache and Nginx hosts.
 - Ordinary server errors no longer appear as ModSecurity attacks or trigger false blocks.
+
+#### Blocking and alerts
+
 - Admission status lifetime counts now include responses refused or dropped before they reached the queue.
 - Known-customer block emails no longer list a compromised mail or FTP login that caused the block, even when the block comes later.
 - The known-customer block email now says that allowing an address trusts it on every port.
+- A file quarantined by realtime protection no longer raises a second Critical self-deleting dropper alert.
+
+#### Web UI and configuration
+
 - The Performance page shows n/a for Redis when CSM cannot read it, and the API and MCP tool return null instead of zero.
 - Reloading CSM no longer causes a false tamper alert after a config edit that changes no setting, or after a reload that fails partway.
 - A config reload during a Web UI settings save no longer overwrites the saved settings.
-- A file quarantined by realtime protection no longer raises a second Critical self-deleting dropper alert.
 
 ## [4.10.1] - 2026-11-07
 
@@ -106,5 +124,6 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 - Doctor no longer reports CSM's own scan workers as CloudLinux cages missing the PHP Shield event mount.
 
+[4.10.2]: https://github.com/pidginhost/csm/compare/v4.10.1...v4.10.2
 [4.10.1]: https://github.com/pidginhost/csm/compare/v4.10.0...v4.10.1
 [4.10.0]: https://github.com/pidginhost/csm/compare/v4.9.0...v4.10.0
