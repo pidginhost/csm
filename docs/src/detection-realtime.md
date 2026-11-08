@@ -475,6 +475,12 @@ A login identified as a short-window password crack revokes trust for that addre
 
 When the mail authentication backend itself fails (for example dovecot cannot reach `cpdoveauthd`), every login fails regardless of password. CSM detects a burst of these backend errors, pauses `mail_bruteforce` and `mail_subnet_spray` auto-blocking, keeps the failures out of spray evidence, and raises a `mail_auth_backend_degraded` warning so the outage is visible instead of mass-blocking legitimate users. IMAP and POP successes during this degraded period do not update spray memory, raise spray alerts, or earn good standing. The short-window compromise detector still uses recorded failures. Detection resumes automatically once the backend recovers.
 
+Mail login attribution uses the connection fields outside the raw login name.
+Names containing field-like text or angle brackets remain one account name.
+Records without a usable remote address do not count toward IP blocking or
+login trust. Reputation exemptions require a successful Dovecot login summary;
+success wording in a failed login name does not qualify.
+
 ## Admin-Panel Brute-Force Tracker
 
 Counts repeated POST requests to high-value non-WordPress admin login endpoints. Runs as part of the web access-log watcher.

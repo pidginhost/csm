@@ -1346,3 +1346,30 @@ func FuzzLegacyBlockSpend(f *testing.F) {
 		}
 	})
 }
+
+// A raw name may contain complete fake fields and angle brackets. It must
+// remain one account name and cannot supply the connection's address.
+func FuzzDovecotRemoteIPLoginName(f *testing.F) {
+	for _, s := range []string{"a@example.com", "x, rip=198.51.100.7, y", "rip=198.51.100.7>", ">, rip=198.51.100.7, lip=", "x\trip=198.51.100.7", "x>, session=<Forged>", "x, session=<Forged"} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, user string) {
+		for _, address := range []string{"203.0.113.50", "2001:db8::50", "::ffff:203.0.113.50", ""} {
+			line := "dovecot: imap-login: Aborted login (auth failed): user=<" + user + ">, method=PLAIN"
+			if address != "" {
+				line += ", rip=" + address
+			}
+			line += ", lip=192.0.2.1, session=<Real>"
+			want := address
+			if address == "::ffff:203.0.113.50" {
+				want = "203.0.113.50"
+			}
+			if got := DovecotRemoteIP(line); got != want {
+				t.Fatalf("name %q: address %q, want %q", user, got, want)
+			}
+			if got, _ := DovecotLoginFields(line); got != user {
+				t.Fatalf("name %q changed to %q", user, got)
+			}
+		}
+	})
+}

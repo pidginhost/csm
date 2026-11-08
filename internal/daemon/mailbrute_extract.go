@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 )
 
@@ -44,7 +45,8 @@ func NewAccountExtractor(spec string) (*AccountExtractor, error) {
 func (e *AccountExtractor) Extract(line string) string {
 	switch e.mode {
 	case "dovecot-user":
-		return extractAngleBracket(line, "user=")
+		user, _ := checks.DovecotLoginFields(line)
+		return user
 	case "postfix-sasl":
 		return extractEqualsValue(line, "sasl_username=")
 	case "regex":
@@ -60,19 +62,6 @@ func (e *AccountExtractor) Extract(line string) string {
 // regex can capture part of it, and a part says nothing about the mailbox.
 func (e *AccountExtractor) readsWholeLogin() bool {
 	return e.mode == "dovecot-user"
-}
-
-// extractAngleBracket matches `key<value>` with balanced angle brackets.
-func extractAngleBracket(line, key string) string {
-	idx := strings.Index(line, key+"<")
-	if idx < 0 {
-		return ""
-	}
-	end := strings.IndexByte(line[idx+len(key)+1:], '>')
-	if end < 0 {
-		return ""
-	}
-	return line[idx+len(key)+1 : idx+len(key)+1+end]
 }
 
 // extractEqualsValue matches `key=<value>` where value is delimited by

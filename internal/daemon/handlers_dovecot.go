@@ -155,20 +155,9 @@ func parseDovecotLogLine(line string, cfg *config.Config) []alert.Finding {
 }
 
 // parseDovecotLoginFields extracts user and remote IP from a Dovecot login line.
-// Expected format: "... Login: user=<user@domain>, ... rip=1.2.3.4, ..."
+// Expected format: "... Login: user=<user@example.com>, ... rip=203.0.113.5, ..."
 func parseDovecotLoginFields(line string) (user, ip string) {
-	// Extract user from user=<...>
-	userIdx := strings.Index(line, "user=<")
-	if userIdx < 0 {
-		return "", ""
-	}
-	rest := line[userIdx+6:]
-	endIdx := strings.IndexByte(rest, '>')
-	if endIdx < 0 {
-		return "", ""
-	}
-	user = rest[:endIdx]
-
+	user, _ = checks.DovecotLoginFields(line)
 	ip = checks.DovecotRemoteIP(line)
 	if user == "" || ip == "" {
 		return "", ""
