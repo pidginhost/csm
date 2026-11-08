@@ -25,6 +25,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Security
 
+- Malicious uploaders and downloaders are detected more reliably in framework helpers and web pages.
 - An attacker can no longer get an unrelated address blocked, or exempt its own address from reputation blocks, through crafted mail login attempts.
 - An attacker can no longer get an unrelated address blocked, or shown as the attacker in the Web UI, through crafted web requests that ModSecurity denies.
 - An attacker can no longer get an unrelated address blocked through crafted FTP login attempts.

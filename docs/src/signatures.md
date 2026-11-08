@@ -118,11 +118,14 @@ treat a command as documentation inside a fenced code block, whose opening
 fence starts a line and whose closing fence stands on its own line, or as the
 text of a Markdown link. Both engines treat a download-and-pipe command on a
 static HTML page as documentation: the file opens with an HTML doctype or
-`<html>` element and holds no PHP, ASP-style or server-side include tag. The
-shell startup file signature judges a file with more Markdown blocks and links
-than any published document carries without that suppression, so its scan time
-stays linear. The download-and-pipe and shell
-startup file signatures need a whole shell or interpreter name after the pipe,
+`<html>` element and holds no PHP, ASP-style or server-side include tag. Both
+engines refuse this exemption when a scan window ends with an incomplete tag
+opener. YARA-X also refuses PHP 5 script elements and unfinished script openers;
+the YAML twin deliberately does not recognize that legacy syntax. The shell
+startup file signature judges a file with more Markdown blocks and links than
+any published document carries without that suppression, so its scan time stays
+linear. The download-and-pipe and shell startup file signatures need a whole
+shell or interpreter name after the pipe,
 so a download piped into a checksum tool or another program whose name starts
 the same way is not an execution. Versioned Perl and Python names, Python
 build variants and standard Windows executable names retain detection. Both
@@ -134,6 +137,16 @@ The other bounded spans are measured in bytes by the YARA-X rules and in
 characters by the YAML rules, so the two can disagree on a line with non-ASCII
 text in the span. Measuring characters in YARA-X slowed scans of crafted lines
 too much. A finding is re-checked by the engine that raised it.
+
+The unauthenticated uploader signature exempts a framework helper only when
+the complete file contains a terminating direct-access guard followed by one
+class declaration. Comments and quoted strings cannot supply a guard or hide
+code after the class. The write must use the instance, and the file must not
+instantiate it. This is a conservative source-text check: nested blocks are
+bounded, and interpolation, heredocs, backticks and attributes do not qualify.
+Code that calls a method, registers a hook or runs after the class keeps the
+uploader alert. The application remains responsible for access control when
+it invokes the helper.
 
 The PHP goto-obfuscation rule requires three independent signals in both
 engines: a PHP opening tag, at least nine jumps to digit-bearing generated
