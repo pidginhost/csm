@@ -1,0 +1,25 @@
+{
+  "name": "wp_config_ico_include",
+  "category": "persistence",
+  "kind": "malicious",
+  "source": "synthetic",
+  "description": "wp-config.php opening with an @include of a hidden .ico under wp-includes, the path written in octal escapes. Probes with a plain path and with the line in index.php miss as well, so the escaping is not the cause. The full scan answers its database and core-checksum lookups offline; neither reads includes in wp-config.php.",
+  "provenance": "written for the corpus",
+  "files": [
+    {
+      "path": "public_html/wp-config.php",
+      "b64": "wp-config.php.b64"
+    }
+  ],
+  "expect": {
+    "realtime": {
+      "gap": "rules and content checks miss an include of a hidden .ico file"
+    },
+    "tier": {
+      "gap": "YARA, PHP taint and content checks miss an include of a hidden .ico file"
+    },
+    "fullscan": {
+      "gap": "YARA and content checks miss an include of a hidden .ico file"
+    }
+  }
+}

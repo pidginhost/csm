@@ -1,0 +1,19 @@
+{
+  "name": "cpanel_user_ini",
+  "category": "persistence",
+  "kind": "control",
+  "source": "fixture",
+  "description": "A .user.ini from the cPanel MultiPHP INI Editor with display_errors on and no execution time limit, settings an owner picks on purpose.",
+  "provenance": "content from internal/checks/user_ini_signature_test.go TestIsCpanelManagedUserIni_RealCpanelHeader (documentation link moved to example.com)",
+  "files": [
+    {
+      "path": "public_html/.user.ini",
+      "b64": ".user.ini.b64"
+    }
+  ],
+  "expect": {
+    "realtime": {},
+    "tier": {},
+    "fullscan": {}
+  }
+}

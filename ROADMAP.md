@@ -208,14 +208,13 @@ disabled, never allowlisted; defaults are recalibrated from the numbers.
 
 ### Attack replay corpus
 
-**Problem:** `internal/selftest` holds nine file-content samples gating both
-rule sets; coverage must reach web shells, droppers, malicious plugins,
-credential stealers, injected JavaScript, phishing kits, spam scripts,
-persistence, binaries and archives, mostly from existing fixtures.
-Event-driven detection has partial replay (`scripts/crawl-calibrate` for
-access logs, `scripts/correlation-calibrate` for finding streams);
-authentication, mail log and spool activity have none, and no sample states
-its expected incident or remediation.
+**Problem:** file content is gated by the
+[attack replay corpus](docs/src/attack-corpus.md) on realtime analysis, the
+deep tier and the full account scan, with expected findings and remediation
+per path. Event-driven detection has partial replay (`scripts/crawl-calibrate`
+for access logs, `scripts/correlation-calibrate` for finding streams);
+authentication, mail log and spool activity have none (stage 2), and no
+sample states its expected incident (stage 3).
 
 **Acceptance:** the replay runs at release acceptance; losing a detected
 sample fails the run; each sample carries expected findings and incident;

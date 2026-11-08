@@ -1,0 +1,34 @@
+{
+  "name": "keystroke_logger",
+  "category": "injected_js",
+  "kind": "malicious",
+  "source": "fixture",
+  "description": "A script that sends every keystroke to a collector URL. The tier leaves it in place: js_keylogger_dataflow is on neither quarantine list.",
+  "provenance": "internal/checks/jstaint_deep_test.go TestCheckYARADeepDetectsJSKeyloggerWithNilBackend",
+  "files": [
+    {
+      "path": "public_html/assets/js/analytics.js",
+      "b64": "analytics.js.b64"
+    }
+  ],
+  "expect": {
+    "realtime": {
+      "gap": "not admitted by realtime: .js"
+    },
+    "tier": {
+      "findings": [
+        {
+          "check": "js_keylogger_dataflow",
+          "file": "public_html/assets/js/analytics.js",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/assets/js/analytics.js": "untouched"
+      }
+    },
+    "fullscan": {
+      "gap": "the full scan runs no JS taint and the YARA keylogger rule misses this shape"
+    }
+  }
+}

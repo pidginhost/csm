@@ -1,0 +1,57 @@
+{
+  "name": "phpmailer_open_relay",
+  "category": "spam_script",
+  "kind": "malicious",
+  "source": "fixture",
+  "description": "A PHPMailer endpoint that sends posted HTML to a posted recipient and falls back to mail(), an open relay for spam runs. Left in place on every path: realtime moves only webshell or dropper signature matches on high-entropy files of 512 bytes or more and never moves on a YARA match, and yara_match_scheduled is on neither scan quarantine list.",
+  "provenance": "content from internal/signatures/mailer_phpmailer_abuse_test.go TestMailerPHPMailerAbuse_RecipientFromRequest",
+  "files": [
+    {
+      "path": "public_html/contact/send.php",
+      "b64": "send.php.b64"
+    }
+  ],
+  "expect": {
+    "realtime": {
+      "findings": [
+        {
+          "check": "signature_match_realtime",
+          "file": "public_html/contact/send.php",
+          "min_severity": "critical"
+        },
+        {
+          "check": "yara_match_realtime",
+          "file": "public_html/contact/send.php",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/contact/send.php": "untouched"
+      }
+    },
+    "tier": {
+      "findings": [
+        {
+          "check": "yara_match_scheduled",
+          "file": "public_html/contact/send.php",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/contact/send.php": "untouched"
+      }
+    },
+    "fullscan": {
+      "findings": [
+        {
+          "check": "yara_match_scheduled",
+          "file": "public_html/contact/send.php",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/contact/send.php": "untouched"
+      }
+    }
+  }
+}

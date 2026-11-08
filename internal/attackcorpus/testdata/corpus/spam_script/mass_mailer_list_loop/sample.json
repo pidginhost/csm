@@ -1,0 +1,57 @@
+{
+  "name": "mass_mailer_list_loop",
+  "category": "spam_script",
+  "kind": "malicious",
+  "source": "fixture",
+  "description": "A mailer that sends a posted subject and body to every address in list.txt under a posted From header. Left in place on every path: realtime moves only webshell or dropper signature matches on high-entropy files of 512 bytes or more and never moves on a YARA match, and yara_match_scheduled is on neither scan quarantine list.",
+  "provenance": "content from internal/signatures/fp_flood_mailer_test.go TestFPFlood_YML_MailerMassSender_CoreNotify",
+  "files": [
+    {
+      "path": "public_html/images/stories/mail.php",
+      "b64": "mail.php.b64"
+    }
+  ],
+  "expect": {
+    "realtime": {
+      "findings": [
+        {
+          "check": "signature_match_realtime",
+          "file": "public_html/images/stories/mail.php",
+          "min_severity": "critical"
+        },
+        {
+          "check": "yara_match_realtime",
+          "file": "public_html/images/stories/mail.php",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/images/stories/mail.php": "untouched"
+      }
+    },
+    "tier": {
+      "findings": [
+        {
+          "check": "yara_match_scheduled",
+          "file": "public_html/images/stories/mail.php",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/images/stories/mail.php": "untouched"
+      }
+    },
+    "fullscan": {
+      "findings": [
+        {
+          "check": "yara_match_scheduled",
+          "file": "public_html/images/stories/mail.php",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/images/stories/mail.php": "untouched"
+      }
+    }
+  }
+}

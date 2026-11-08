@@ -1,0 +1,19 @@
+{
+  "name": "public_rest_hours_plugin",
+  "category": "malicious_plugin",
+  "kind": "control",
+  "source": "synthetic",
+  "description": "A plugin publishing opening hours on a public read-only REST route with __return_true and an admin-only update route.",
+  "provenance": "written for the corpus",
+  "files": [
+    {
+      "path": "public_html/wp-content/plugins/shop-hours/shop-hours.php",
+      "b64": "shop-hours.php.b64"
+    }
+  ],
+  "expect": {
+    "realtime": {},
+    "tier": {},
+    "fullscan": {}
+  }
+}

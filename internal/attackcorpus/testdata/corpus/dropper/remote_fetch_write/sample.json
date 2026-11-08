@@ -1,0 +1,25 @@
+{
+  "name": "remote_fetch_write",
+  "category": "dropper",
+  "kind": "malicious",
+  "source": "fixture",
+  "description": "Fetches a remote payload and writes it to a new PHP file next to itself.",
+  "provenance": "internal/checks/php_content_test.go TestAnalyzePHPContentRemotePayload, with a write sink and an example host",
+  "files": [
+    {
+      "path": "public_html/cache/upd.php",
+      "b64": "upd.php.b64"
+    }
+  ],
+  "expect": {
+    "realtime": {
+      "gap": "no realtime check flags a remote download written to a new PHP file"
+    },
+    "tier": {
+      "gap": "no tier check, PHP taint included, flags a remote download written to a new PHP file"
+    },
+    "fullscan": {
+      "gap": "no full scan check flags a remote download written to a new PHP file"
+    }
+  }
+}

@@ -1,0 +1,52 @@
+{
+  "name": "encrypted_kit_zip",
+  "category": "archive",
+  "kind": "malicious",
+  "source": "synthetic",
+  "description": "A ZipCrypto-encrypted OneDrive kit with a login page, capture script, anti-bot gate and results file. Encryption hides the contents but not the member names, so every path still rates it High, which fits an archive that serves nothing until extracted. Left in place: realtime has no responder for a kit archive and phishing_kit_archive is on neither scan quarantine list.",
+  "provenance": "written for the corpus; throwaway ZipCrypto password kit2026",
+  "files": [
+    {
+      "path": "public_html/wp-content/uploads/2026/11/onedrive-verify.zip",
+      "b64": "onedrive-verify.zip.b64"
+    }
+  ],
+  "expect": {
+    "realtime": {
+      "findings": [
+        {
+          "check": "phishing_kit_realtime",
+          "file": "public_html/wp-content/uploads/2026/11/onedrive-verify.zip",
+          "min_severity": "high"
+        }
+      ],
+      "remediation": {
+        "public_html/wp-content/uploads/2026/11/onedrive-verify.zip": "untouched"
+      }
+    },
+    "tier": {
+      "findings": [
+        {
+          "check": "phishing_kit_archive",
+          "file": "public_html/wp-content/uploads/2026/11/onedrive-verify.zip",
+          "min_severity": "high"
+        }
+      ],
+      "remediation": {
+        "public_html/wp-content/uploads/2026/11/onedrive-verify.zip": "untouched"
+      }
+    },
+    "fullscan": {
+      "findings": [
+        {
+          "check": "phishing_kit_archive",
+          "file": "public_html/wp-content/uploads/2026/11/onedrive-verify.zip",
+          "min_severity": "high"
+        }
+      ],
+      "remediation": {
+        "public_html/wp-content/uploads/2026/11/onedrive-verify.zip": "untouched"
+      }
+    }
+  }
+}

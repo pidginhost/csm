@@ -1,0 +1,57 @@
+{
+  "name": "blockchain_injector_muplugin",
+  "category": "injected_js",
+  "kind": "malicious",
+  "source": "fixture",
+  "description": "A must-use plugin injecting an XOR-decoded script run through new Function into every front-end page. Left in place on every path: realtime moves only webshell or dropper signature matches on high-entropy files of 512 bytes or more and never moves on a YARA match, and yara_match_scheduled is on neither scan quarantine list.",
+  "provenance": "internal/signatures/detect_blockchain_injector_test.go TestBlockchainInjectorDetectsPlainVariant",
+  "files": [
+    {
+      "path": "public_html/wp-content/mu-plugins/wp-stream-cache.php",
+      "b64": "wp-stream-cache.php.b64"
+    }
+  ],
+  "expect": {
+    "realtime": {
+      "findings": [
+        {
+          "check": "signature_match_realtime",
+          "file": "public_html/wp-content/mu-plugins/wp-stream-cache.php",
+          "min_severity": "critical"
+        },
+        {
+          "check": "yara_match_realtime",
+          "file": "public_html/wp-content/mu-plugins/wp-stream-cache.php",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/wp-content/mu-plugins/wp-stream-cache.php": "untouched"
+      }
+    },
+    "tier": {
+      "findings": [
+        {
+          "check": "yara_match_scheduled",
+          "file": "public_html/wp-content/mu-plugins/wp-stream-cache.php",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/wp-content/mu-plugins/wp-stream-cache.php": "untouched"
+      }
+    },
+    "fullscan": {
+      "findings": [
+        {
+          "check": "yara_match_scheduled",
+          "file": "public_html/wp-content/mu-plugins/wp-stream-cache.php",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/wp-content/mu-plugins/wp-stream-cache.php": "untouched"
+      }
+    }
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "name": "multiphp_handler_htaccess",
+  "category": "persistence",
+  "kind": "control",
+  "source": "fixture",
+  "description": "The handler block cPanel MultiPHP Manager writes, mapping .php, .php7 and .phtml to an EA-PHP handler, above the WordPress rewrite block.",
+  "provenance": "content from internal/checks/wpcron_phpbin_inherit_test.go TestResolveDocrootPHPBinInheritFollowsDocrootHandler (cpanelHandlerBlock)",
+  "files": [
+    {
+      "path": "public_html/.htaccess",
+      "b64": ".htaccess.b64"
+    }
+  ],
+  "expect": {
+    "realtime": {},
+    "tier": {},
+    "fullscan": {}
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "name": "webshell_zip_upload",
+  "category": "archive",
+  "kind": "malicious",
+  "source": "synthetic",
+  "description": "A child theme zip in uploads whose functions.php evaluates base64 from a request parameter, waiting to be extracted. No path reads archive members.",
+  "provenance": "written for the corpus",
+  "files": [
+    {
+      "path": "public_html/wp-content/uploads/2026/11/theme-update.zip",
+      "b64": "theme-update.zip.b64"
+    }
+  ],
+  "expect": {
+    "realtime": {
+      "gap": "realtime judges a zip by its name only, a brand plus a phishing word, and never reads its members"
+    },
+    "tier": {
+      "gap": "YARA and signature scans skip a file that is an archive by name and magic, and the kit check lists only kit-named zips"
+    },
+    "fullscan": {
+      "gap": "YARA and signature scans skip a file that is an archive by name and magic, and the kit check lists only kit-named zips"
+    }
+  }
+}

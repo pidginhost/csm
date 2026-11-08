@@ -1,0 +1,19 @@
+{
+  "name": "example_widget_plugin",
+  "category": "malicious_plugin",
+  "kind": "control",
+  "source": "fixture",
+  "description": "An ordinary shortcode widget plugin.",
+  "provenance": "self-test bundle sample benign_wordpress_plugin",
+  "files": [
+    {
+      "path": "public_html/wp-content/plugins/example-widget/example-widget.php",
+      "selftest": "benign_wordpress_plugin"
+    }
+  ],
+  "expect": {
+    "realtime": {},
+    "tier": {},
+    "fullscan": {}
+  }
+}

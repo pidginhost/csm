@@ -1,0 +1,52 @@
+{
+  "name": "harvested_credential_log",
+  "category": "credential_stealer",
+  "kind": "malicious",
+  "source": "fixture",
+  "description": "A results.txt holding six email and password pairs in mixed delimiters, as a phishing kit writes them. Left in place on every path: credential log findings are not quarantine triggers.",
+  "provenance": "internal/daemon/fanotify_coverage_linux_test.go TestCheckCredentialLogCriticalFromDelimiters",
+  "files": [
+    {
+      "path": "public_html/wp-content/uploads/2026/11/results.txt",
+      "b64": "results.txt.b64"
+    }
+  ],
+  "expect": {
+    "realtime": {
+      "findings": [
+        {
+          "check": "credential_log_realtime",
+          "file": "public_html/wp-content/uploads/2026/11/results.txt",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/wp-content/uploads/2026/11/results.txt": "untouched"
+      }
+    },
+    "tier": {
+      "findings": [
+        {
+          "check": "phishing_credential_log",
+          "file": "public_html/wp-content/uploads/2026/11/results.txt",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/wp-content/uploads/2026/11/results.txt": "untouched"
+      }
+    },
+    "fullscan": {
+      "findings": [
+        {
+          "check": "phishing_credential_log",
+          "file": "public_html/wp-content/uploads/2026/11/results.txt",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/wp-content/uploads/2026/11/results.txt": "untouched"
+      }
+    }
+  }
+}

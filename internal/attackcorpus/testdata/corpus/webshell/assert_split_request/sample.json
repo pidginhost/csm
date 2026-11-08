@@ -1,0 +1,25 @@
+{
+  "name": "assert_split_request",
+  "category": "webshell",
+  "kind": "malicious",
+  "source": "fixture",
+  "description": "A shell that calls assert on a request parameter through a name split to defeat literal matching.",
+  "provenance": "self-test bundle sample webshell_assert_request",
+  "files": [
+    {
+      "path": "public_html/images/thumb.php",
+      "selftest": "webshell_assert_request"
+    }
+  ],
+  "expect": {
+    "realtime": {
+      "gap": "rules and content checks miss assert called through a name built from fragments"
+    },
+    "tier": {
+      "gap": "YARA, PHP taint and content checks miss assert called through a name built from fragments"
+    },
+    "fullscan": {
+      "gap": "YARA misses assert called through a name built from fragments"
+    }
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "name": "theme_login_mailer",
+  "category": "credential_stealer",
+  "kind": "malicious",
+  "source": "fixture",
+  "description": "Child theme functions.php that mails the posted WordPress password to a drop box on each login.",
+  "provenance": "internal/signatures/credential_mailer_test.go TestCredentialMailerDetectsHarvesterKits, moved into a theme login hook",
+  "files": [
+    {
+      "path": "public_html/wp-content/themes/example-child/functions.php",
+      "b64": "functions.php.b64"
+    }
+  ],
+  "expect": {
+    "realtime": {
+      "gap": "credential mailer rules need posted email and password fields; this wp_login hook mails the posted pwd field"
+    },
+    "tier": {
+      "gap": "credential mailer rules need posted email and password fields; this wp_login hook mails the posted pwd field"
+    },
+    "fullscan": {
+      "gap": "credential mailer rules need posted email and password fields; this wp_login hook mails the posted pwd field"
+    }
+  }
+}

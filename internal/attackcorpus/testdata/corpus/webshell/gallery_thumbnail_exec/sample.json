@@ -1,0 +1,19 @@
+{
+  "name": "gallery_thumbnail_exec",
+  "category": "webshell",
+  "kind": "control",
+  "source": "synthetic",
+  "description": "A gallery thumbnailer that runs ImageMagick through exec with escaped, validated request input.",
+  "provenance": "written for the corpus",
+  "files": [
+    {
+      "path": "public_html/gallery-thumb.php",
+      "b64": "gallery-thumb.php.b64"
+    }
+  ],
+  "expect": {
+    "realtime": {},
+    "tier": {},
+    "fullscan": {}
+  }
+}

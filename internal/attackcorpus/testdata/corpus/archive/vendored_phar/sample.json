@@ -1,0 +1,19 @@
+{
+  "name": "vendored_phar",
+  "category": "archive",
+  "kind": "control",
+  "source": "synthetic",
+  "description": "A small CLI library phar in a Composer vendor tree whose stub maps itself and requires its bootstrap through phar://.",
+  "provenance": "written for the corpus",
+  "files": [
+    {
+      "path": "public_html/vendor/acme/csv-tools/bin/csv-tools.phar",
+      "b64": "csv-tools.phar.b64"
+    }
+  ],
+  "expect": {
+    "realtime": {},
+    "tier": {},
+    "fullscan": {}
+  }
+}

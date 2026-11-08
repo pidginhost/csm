@@ -674,9 +674,9 @@
       "queue": "bpf.execution.docroot"
     },
     {
-      "id": "internal/daemon/fanotify.go::NewFileMonitor::analyzerCh::channel::1",
+      "id": "internal/daemon/fanotify.go::newFileMonitorCore::analyzerCh::channel::1",
       "path": "internal/daemon/fanotify.go",
-      "owner": "NewFileMonitor",
+      "owner": "newFileMonitorCore",
       "target": "analyzerCh",
       "kind": "channel",
       "source": "make(chan fileEvent, analyzerChBufferSize)",
@@ -686,9 +686,9 @@
       "queue": "fanotify.analyzer"
     },
     {
-      "id": "internal/daemon/fanotify.go::NewFileMonitor::reconcileSig::channel::1",
+      "id": "internal/daemon/fanotify.go::newFileMonitorCore::reconcileSig::channel::1",
       "path": "internal/daemon/fanotify.go",
-      "owner": "NewFileMonitor",
+      "owner": "newFileMonitorCore",
       "target": "reconcileSig",
       "kind": "channel",
       "source": "make(chan struct{}, 1)",
@@ -698,9 +698,9 @@
       "queue": "fanotify.reconcile"
     },
     {
-      "id": "internal/daemon/fanotify.go::NewFileMonitor::stopCh::channel::1",
+      "id": "internal/daemon/fanotify.go::newFileMonitorCore::stopCh::channel::1",
       "path": "internal/daemon/fanotify.go",
-      "owner": "NewFileMonitor",
+      "owner": "newFileMonitorCore",
       "target": "stopCh",
       "kind": "channel",
       "source": "make(chan struct{})",

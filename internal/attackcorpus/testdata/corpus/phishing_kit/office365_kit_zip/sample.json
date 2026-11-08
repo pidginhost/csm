@@ -1,0 +1,43 @@
+{
+  "name": "office365_kit_zip",
+  "category": "phishing_kit",
+  "kind": "malicious",
+  "source": "fixture",
+  "description": "A kit archive in uploads with a login page, a capture script and an empty results file. The scans read its member names and rate it High, which fits an archive that serves nothing until extracted; phishing_kit_archive is on neither scan quarantine list, so it stays.",
+  "provenance": "content from internal/checks/phishing_test.go TestScanForPhishingFindsPhishPageAndRedirector (office365_kit.zip member names, filled with working kit files)",
+  "files": [
+    {
+      "path": "public_html/wp-content/uploads/2026/11/office365_kit.zip",
+      "b64": "office365_kit.zip.b64"
+    }
+  ],
+  "expect": {
+    "realtime": {
+      "gap": "realtime judges a zip by its name only, a brand plus a phishing word, and never reads its members; office365_kit has a brand but no phishing word"
+    },
+    "tier": {
+      "findings": [
+        {
+          "check": "phishing_kit_archive",
+          "file": "public_html/wp-content/uploads/2026/11/office365_kit.zip",
+          "min_severity": "high"
+        }
+      ],
+      "remediation": {
+        "public_html/wp-content/uploads/2026/11/office365_kit.zip": "untouched"
+      }
+    },
+    "fullscan": {
+      "findings": [
+        {
+          "check": "phishing_kit_archive",
+          "file": "public_html/wp-content/uploads/2026/11/office365_kit.zip",
+          "min_severity": "high"
+        }
+      ],
+      "remediation": {
+        "public_html/wp-content/uploads/2026/11/office365_kit.zip": "untouched"
+      }
+    }
+  }
+}

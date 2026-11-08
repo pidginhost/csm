@@ -1,0 +1,67 @@
+{
+  "name": "dropbox_php_login",
+  "category": "phishing_kit",
+  "kind": "malicious",
+  "source": "fixture",
+  "description": "A Dropbox-branded PHP sign-in page that mails the posted email and password and appends them to results.txt. Left in place on every path: realtime moves only webshell or dropper signature matches on high-entropy files of 512 bytes or more and never moves on a YARA match, and phishing_php and yara_match_scheduled are on neither scan quarantine list.",
+  "provenance": "content from internal/checks/phishing_test.go TestAnalyzePHPForPhishingDetectsDropbox (dropboxPhishPHP, redirect moved to example.com, padded with an inline stylesheet)",
+  "files": [
+    {
+      "path": "public_html/dbx/share.php",
+      "b64": "share.php.b64"
+    }
+  ],
+  "expect": {
+    "realtime": {
+      "findings": [
+        {
+          "check": "signature_match_realtime",
+          "file": "public_html/dbx/share.php",
+          "min_severity": "critical"
+        },
+        {
+          "check": "yara_match_realtime",
+          "file": "public_html/dbx/share.php",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/dbx/share.php": "untouched"
+      }
+    },
+    "tier": {
+      "findings": [
+        {
+          "check": "phishing_php",
+          "file": "public_html/dbx/share.php",
+          "min_severity": "critical"
+        },
+        {
+          "check": "yara_match_scheduled",
+          "file": "public_html/dbx/share.php",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/dbx/share.php": "untouched"
+      }
+    },
+    "fullscan": {
+      "findings": [
+        {
+          "check": "phishing_php",
+          "file": "public_html/dbx/share.php",
+          "min_severity": "critical"
+        },
+        {
+          "check": "yara_match_scheduled",
+          "file": "public_html/dbx/share.php",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/dbx/share.php": "untouched"
+      }
+    }
+  }
+}

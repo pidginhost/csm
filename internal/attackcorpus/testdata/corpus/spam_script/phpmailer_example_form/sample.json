@@ -1,0 +1,19 @@
+{
+  "name": "phpmailer_example_form",
+  "category": "spam_script",
+  "kind": "control",
+  "source": "fixture",
+  "description": "PHPMailer's contact form example: the recipient is fixed and only the display name comes from the request.",
+  "provenance": "content from internal/signatures/mailer_phpmailer_abuse_test.go TestMailerPHPMailerAbuse_ExampleFormWithRequestDisplayName",
+  "files": [
+    {
+      "path": "public_html/lib/PHPMailer/examples/contact.php",
+      "b64": "contact.php.b64"
+    }
+  ],
+  "expect": {
+    "realtime": {},
+    "tier": {},
+    "fullscan": {}
+  }
+}
