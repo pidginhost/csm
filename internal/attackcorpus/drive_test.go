@@ -229,6 +229,118 @@ func TestDrivePrivateCorpus(t *testing.T) {
 	}
 }
 
+// A pipeline that requires the private half fails without it, also where the
+// run would otherwise skip for want of a report dir.
+func TestDrivePrivateRequiredWithoutDir(t *testing.T) {
+	for _, reports := range []string{"", t.TempDir()} {
+		env := map[string]string{"CSM_ATTACK_CORPUS_REPORT_DIR": reports, "CSM_ATTACK_CORPUS_PRIVATE_REQUIRED": "1"}
+		getenv := func(k string) string { return env[k] }
+		_, skip, samples, err := prepare(Realtime, getenv)
+		if err == nil || !strings.Contains(err.Error(), "CSM_ATTACK_CORPUS_PRIVATE is not set") || skip != "" || samples != nil {
+			t.Errorf("required without a private corpus, report dir %q: %q, %d samples, %v; want an error naming CSM_ATTACK_CORPUS_PRIVATE", reports, skip, len(samples), err)
+		}
+		if _, _, _, err = prepare("yara", getenv); err == nil || !strings.Contains(err.Error(), `unknown path "yara"`) {
+			t.Errorf("prepare(yara) = %v; want the unknown path error first", err)
+		}
+
+		// Only "1" requires the private half.
+		env["CSM_ATTACK_CORPUS_PRIVATE_REQUIRED"] = "0"
+		_, skip, samples, err = prepare(Realtime, getenv)
+		if err != nil || (skip != "") != (reports == "") {
+			t.Errorf("CSM_ATTACK_CORPUS_PRIVATE_REQUIRED=0, report dir %q: %q, %v; want the public run or its skip", reports, skip, err)
+		}
+		if slices.ContainsFunc(samples, func(s Sample) bool { return s.Half != "public" }) {
+			t.Errorf("samples %+v include a private sample", samples)
+		}
+	}
+}
+
+func TestDrivePrivateRequiredEmpty(t *testing.T) {
+	empty := t.TempDir()
+	for _, private := range []string{empty, filepath.Join(empty, "missing")} {
+		env := map[string]string{
+			"CSM_ATTACK_CORPUS_REPORT_DIR":       t.TempDir(),
+			"CSM_ATTACK_CORPUS_PRIVATE":          private,
+			"CSM_ATTACK_CORPUS_PRIVATE_REQUIRED": "1",
+		}
+		_, skip, samples, err := prepare(Realtime, func(k string) string { return env[k] })
+		if err == nil || !strings.Contains(err.Error(), "private corpus") || skip != "" || samples != nil {
+			t.Errorf("required private corpus %s: %q, %d samples, %v; want a private corpus error", private, skip, len(samples), err)
+		}
+	}
+}
+
+// Reports and subtests identify a sample by name, so a private sample must
+// not reuse a public name, even in another category.
+func TestLoadRejectsCrossHalfNameCollision(t *testing.T) {
+	public, err := Load(PublicDir(), "public")
+	if err != nil || len(public) == 0 {
+		t.Fatalf("public corpus: %d samples, %v", len(public), err)
+	}
+	s := maliciousSample()
+	s.Name = public[0].Name
+	root := t.TempDir()
+	writeSample(t, filepath.Join(root, s.Category, s.Name), s)
+	if _, err = Load(root, "private"); err != nil {
+		t.Fatalf("the private sample does not load on its own: %v", err)
+	}
+	env := map[string]string{"CSM_ATTACK_CORPUS_REPORT_DIR": t.TempDir(), "CSM_ATTACK_CORPUS_PRIVATE": root}
+	_, _, samples, err := prepare(Realtime, func(k string) string { return env[k] })
+	if err == nil || !strings.Contains(err.Error(), s.Category+"/"+s.Name) || samples != nil {
+		t.Errorf("private sample named like public %s/%s: %d samples, %v; want an error naming it", public[0].Category, s.Name, len(samples), err)
+	}
+}
+
+func TestPrivateCommitRejectsMalformed(t *testing.T) {
+	const pin = "0123456789abcdef0123456789abcdef01234567"
+	dir := t.TempDir()
+	read := func(content string) (string, error) {
+		path := filepath.Join(dir, "private.commit")
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return readCommit(path)
+	}
+	for _, content := range []string{pin, pin + "\n"} {
+		if got, err := read(content); err != nil || got != pin {
+			t.Errorf("readCommit(%q) = %q, %v; want %q", content, got, err, pin)
+		}
+	}
+	for name, content := range map[string]string{
+		"empty":          "",
+		"newline only":   "\n",
+		"crlf":           pin + "\r\n",
+		"leading space":  " " + pin,
+		"trailing space": pin + " \n",
+		"two newlines":   pin + "\n\n",
+		"second line":    pin + "\n" + pin + "\n",
+		"uppercase":      strings.ToUpper(pin),
+		"short sha":      pin[:12] + "\n",
+		"too long":       pin + "8\n",
+		"ref name":       "refs/heads/main\n",
+		"not hex":        strings.Repeat("g", 40) + "\n",
+	} {
+		got, err := read(content)
+		if err == nil || got != "" {
+			t.Errorf("%s: readCommit = %q, %v; want an error", name, got, err)
+			continue
+		}
+		if strings.Contains(strings.ToLower(err.Error()), pin[:16]) {
+			t.Errorf("%s: error %q quotes the file", name, err)
+		}
+	}
+	if _, err := readCommit(filepath.Join(dir, "absent")); err == nil {
+		t.Error("a missing pin file was accepted")
+	}
+
+	// PrivateCommit reads the pin beside the package source.
+	_, file, _, _ := runtime.Caller(0)
+	want, wantErr := readCommit(filepath.Join(filepath.Dir(file), "private.commit"))
+	if got, err := PrivateCommit(); got != want || errString(err) != errString(wantErr) {
+		t.Errorf("PrivateCommit() = %q, %v; want %q, %v", got, err, want, wantErr)
+	}
+}
+
 func errString(err error) string {
 	if err == nil {
 		return ""

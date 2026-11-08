@@ -31,6 +31,28 @@ builder_version=$(awk '
     git rev-parse HEAD
 } > "$output/engines.txt"
 
+# CI must replay the private half at the reviewed pin. The empty helper drops
+# any configured one, so no helper can store the job token, and the quoted
+# helper reads the token from the environment, so it never enters an argv, a
+# URL or the checkout's git config.
+if [ -n "${CI:-}" ]; then
+    : "${CSM_ATTACK_CORPUS_PROJECT:?CSM_ATTACK_CORPUS_PROJECT must name the private corpus project}"
+    pin=$(cat internal/attackcorpus/private.commit)
+    private=$(mktemp -d)
+    git -c credential.helper= \
+        -c 'credential.helper=!f() { test "$1" = get || exit 0; echo username=gitlab-ci-token; echo "password=${CI_JOB_TOKEN}"; }; f' \
+        clone --quiet --no-checkout "${CI_SERVER_URL}/${CSM_ATTACK_CORPUS_PROJECT}.git" "$private"
+    git -C "$private" checkout --quiet --detach "$pin"
+    [ "$(git -C "$private" rev-parse HEAD)" = "$pin" ] || { echo "private corpus checkout is not at the pinned commit" >&2; exit 1; }
+    go run ./scripts/fixturecheck -root "$private" -corpus -require-terms
+    export CSM_ATTACK_CORPUS_PRIVATE="$private" CSM_ATTACK_CORPUS_PRIVATE_REQUIRED=1
+    echo "private corpus: $pin" >> "$output/engines.txt"
+elif [ -n "${CSM_ATTACK_CORPUS_PRIVATE:-}" ]; then
+    echo "private corpus: local, unpinned" >> "$output/engines.txt"
+else
+    echo "private corpus: none" >> "$output/engines.txt"
+fi
+
 export CSM_ATTACK_CORPUS_REQUIRED=1
 export CSM_ATTACK_CORPUS_REPORT_DIR="$output"
 # An inherited local debugging option must not expose sample bytes in artifacts.
