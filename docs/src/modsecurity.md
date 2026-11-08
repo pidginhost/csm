@@ -56,9 +56,9 @@ and the Web UI use the same parser. The module marker must follow the server's
 structured header directly. Markers inside ordinary file errors, PHP errors, or other
 message text do not create WAF detections. Standard Apache, Nginx and LiteSpeed
 headers are accepted; custom headers outside those formats are ignored.
-Apache's module-qualified error prefix identifies its unbracketed IPv6 connection
-port. Legacy Apache and libmodsecurity client fields keep the complete IPv6
-address. Bracketed addresses with a port are also accepted.
+Apache's module-qualified error prefix, including `[:error]`, identifies its
+unbracketed IPv6 connection port. Legacy Apache and libmodsecurity client fields
+keep the complete IPv6 address. Bracketed addresses with a port are also accepted.
 Custom Apache logs must retain the module field to distinguish unbracketed IPv6
 addresses with ports from bare addresses.
 LiteSpeed IPv6 connection formats are unsupported: events keep an unknown
@@ -70,6 +70,11 @@ On Apache 2.4 a line must carry ModSecurity's own module tag (`security2` or
 LiteSpeed PHP stderr lines are never ModSecurity events, even when their text
 holds a ModSecurity message. A LiteSpeed line must have its standard header,
 with the connection field directly before `[MODSEC]`.
+
+Apache 2.2-style headers without a module tag remain accepted for compatibility.
+They cannot distinguish ModSecurity output from a hosted site's message that
+starts with the same marker, so false alerts and visitor escalation remain
+possible with that format. Use module-tagged Apache logs to separate writers.
 
 Header validation does not authenticate file-based records. Nginx can write
 literal line breaks from decoded filenames into its error log, allowing request

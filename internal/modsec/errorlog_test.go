@@ -73,6 +73,7 @@ func TestErrorLogClientIP(t *testing.T) {
 		{"apache_port", `[client 203.0.113.5:65535] ModSecurity: Access denied`, "203.0.113.5"},
 		{"apache_ipv6", `[security2:error] [client 2001:db8::5:5555] ModSecurity: Access denied`, "2001:db8::5"},
 		{"apache_v3_ipv6", `[security3:error] [client 2001:db8::5:5555] ModSecurity: Access denied`, "2001:db8::5"},
+		{"apache_empty_module_ipv6", `[:error] [client 2001:db8::5:5555] [client 2001:db8::5] ModSecurity: Access denied`, ""},
 		{"apache_ipv6_full", `[client 2001:db8:1:2:3:4:5:6:65535] ModSecurity: Access denied`, "2001:db8:1:2:3:4:5:6"},
 		{"apache_ipv6_compressed_tail", `[client 2001:db8:::5555] ModSecurity: Access denied`, "2001:db8::"},
 		{"apache_mapped", `[client ::ffff:192.0.2.5:5555] ModSecurity: Access denied`, "192.0.2.5"},
@@ -122,5 +123,48 @@ func TestErrorLogAcceptsModSecurityModuleTags(t *testing.T) {
 		if ip := ErrorLogClientIP(line); ip != "203.0.113.50" {
 			t.Errorf("ModSecurity line named %q, want 203.0.113.50: %q", ip, line)
 		}
+	}
+}
+
+func TestErrorLogHeaderOwnership(t *testing.T) {
+	const message = `Access denied with code 403 [id "900115"]`
+	for _, tt := range []struct {
+		name, prefix, marker, ip string
+		accept, liteSpeed        bool
+	}{
+		{"apache_php_litespeed_marker", `[Sun Nov 08 08:40:00 2026] [php:notice] [pid 1] [client 203.0.113.50:5555] `, `[MODSEC]`, "", false, false},
+		{"apache_cgi_litespeed_marker", `[Sun Nov 08 08:40:00 2026] [cgi:error] [pid 1] [client 203.0.113.50:5555] `, `[MODSEC]`, "", false, false},
+		{"apache_php_forged_connection", `[php:notice] [client 203.0.113.50:5555] [198.51.100.7:5555-1#APVH_example.test] `, `[MODSEC]`, "", false, false},
+		{"nginx_litespeed_marker", `2026/11/08 08:40:00 [error] 123#123: *1 [198.51.100.7:5555-1#APVH_example.test] `, `[MODSEC]`, "", false, false},
+		{"litespeed_stderr_ipv6", `2026-11-08 08:40:00 [NOTICE] [1] [T1] [[2001:db8::5]:5555-1#APVH_example.test] [STDERR] `, `[MODSEC]`, "", false, false},
+		{"litespeed_stderr_without_connection", `2026-11-08 08:40:00 [NOTICE] [1] [T1] [STDERR] `, `[MODSEC]`, "", false, false},
+		{"litespeed_stderr_forged_connection", `2026-11-08 08:40:00 [NOTICE] [1] [T1] [STDERR] [198.51.100.7:5555-1#APVH_example.test] `, `[MODSEC]`, "", false, false},
+		{"litespeed_stderr_apache_marker", `2026-11-08 08:40:00 [NOTICE] [1] [T1] [STDERR] [client 198.51.100.7] `, `ModSecurity:`, "", false, false},
+		{"litespeed_missing_connection", `2026-11-08 08:40:00 [NOTICE] [1] [T1] `, `[MODSEC]`, "", false, false},
+		{"litespeed_double_connection", `[[2001:db8::5]:5555-1#APVH_example.test] [198.51.100.7:5555-1#APVH_example.test] `, `[MODSEC]`, "", false, false},
+		// Modules without a module index, such as old mod_php, also write [:level].
+		{"apache_empty_module", `[:error] [pid 1:tid 2] [client 203.0.113.50:5555] `, `ModSecurity:`, "", false, false},
+		{"apache_security2", `[security2:error] [pid 1:tid 2] [client 203.0.113.50:5555] `, `ModSecurity:`, "203.0.113.50", true, false},
+		{"apache_security3", `[security3:error] [pid 1:tid 2] [client 203.0.113.50:5555] `, `ModSecurity:`, "203.0.113.50", true, false},
+		{"apache_legacy", `[Sun Nov  8 08:40:00 2026] [error] [client 203.0.113.50] `, `ModSecurity:`, "203.0.113.50", true, false},
+		{"nginx", `2026/11/08 08:40:00 [error] 123#123: *1 [client 2001:db8::5:1234] `, `ModSecurity:`, "2001:db8::5:1234", true, false},
+		{"litespeed", `2026-11-08 08:40:00.123456 [NOTICE] [1] [T1] [203.0.113.50:5555-1#APVH_example.test] `, `[MODSEC]`, "203.0.113.50", true, true},
+		{"litespeed_nested_marker", `2026-11-08 08:40:00 [NOTICE] [1] [T1] [203.0.113.50:5555-1#APVH_example.test] `, `[MODSEC] ModSecurity:`, "203.0.113.50", true, true},
+		{"litespeed_ipv6", `2026-11-08 08:40:00 [NOTICE] [1] [T1] [2001:db8::5:5555-1#APVH_example.test] `, `[MODSEC]`, "", true, true},
+		{"litespeed_bracketed_ipv6", `2026-11-08 08:40:00 [NOTICE] [1] [T1] [[2001:db8::5]:5555-1#APVH_example.test] `, `[MODSEC]`, "", true, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			line := tt.prefix + tt.marker + " " + message
+			want := ""
+			if tt.accept {
+				want = message
+			}
+			if got, ls := ErrorLogMessage(line); got != want || ls != tt.liteSpeed {
+				t.Errorf("message = %q, LiteSpeed = %v; want %q, %v", got, ls, want, tt.liteSpeed)
+			}
+			if got := ErrorLogClientIP(line); got != tt.ip {
+				t.Errorf("client = %q, want %q", got, tt.ip)
+			}
+		})
 	}
 }

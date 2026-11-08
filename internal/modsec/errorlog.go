@@ -26,13 +26,21 @@ const (
 	modsecLiteSpeedMarker = "[MODSEC]"
 )
 
-// Apache uses bracketed header fields. Nginx adds a timestamp and process /
-// connection identifiers; LiteSpeed adds a timestamp. Anything else before
-// the marker is message text, such as a missing filename or a PHP error.
-var errorLogPrefix = regexp.MustCompile(`^(?:` +
-	`[0-9]{4}/[0-9]{2}/[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2} \[[a-z]+\] [0-9]+#[0-9]+: (?:\*[0-9]+ )?|` +
-	`[0-9]{4}-[0-9]{2}-[0-9]{2}(?: [0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?)? ` +
-	`)?(?:\[(?:[^\[\]\r\n]|\[[^\[\]\r\n]*\])*\][ \t]*)*$`)
+// Each marker has its own header grammar. Message text cannot change which
+// server wrote the header or extend it with another module's bracketed fields.
+var (
+	errorLogPrefix = regexp.MustCompile(`^(?:` +
+		`[0-9]{4}/[0-9]{2}/[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2} \[[a-z]+\] [0-9]+#[0-9]+: (?:\*[0-9]+ )?|` +
+		`(?:\[[A-Z][a-z]{2} [A-Z][a-z]{2} [ 0-9]?[0-9] [0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)? [0-9]{4}\][ \t]*)?` +
+		`(?:\[(?:security[23]:)?(?:emerg|alert|crit|error|warn|notice|info|debug|trace[1-8])\][ \t]*)?` +
+		`(?:\[pid [0-9]+(?::tid [0-9]+)?\][ \t]*)?` +
+		`)(?:\[client (?:[^\[\]\r\n]|\[[^\[\]\r\n]*\])*\][ \t]*)*$`)
+	liteSpeedErrorLogPrefix = regexp.MustCompile(`^` +
+		`(?:[0-9]{4}-[0-9]{2}-[0-9]{2}(?: [0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?)? )?` +
+		`(?:\[(?:DEBUG|INFO|NOTICE|WARN|WARNING|ERROR|CRIT|ALERT|EMERG)\][ \t]*)?` +
+		`(?:\[[0-9]+\][ \t]*)?(?:\[T[0-9]+\][ \t]*)?` +
+		`\[(?:[^\[\]\s:]+|\[[^\[\]\r\n]+\]):[^\[\]\s#]+#[^\[\]\r\n]+\][ \t]*$`)
+)
 
 // errorLogMarker finds the module marker that ends the server-written prefix
 // of a ModSecurity log line, or -1.
@@ -44,42 +52,16 @@ func errorLogMarker(line string) (at int, marker string, isLiteSpeed bool) {
 	} else {
 		at, marker = a, modsecApacheMarker
 	}
-	if at >= 0 && (!errorLogPrefix.MatchString(line[:at]) || !modsecOwnsHeader(line[:at], isLiteSpeed)) {
-		return -1, "", false
+	if at >= 0 {
+		prefix := errorLogPrefix
+		if isLiteSpeed {
+			prefix = liteSpeedErrorLogPrefix
+		}
+		if !prefix.MatchString(line[:at]) {
+			return -1, "", false
+		}
 	}
 	return at, marker, isLiteSpeed
-}
-
-// liteSpeedHeader is LiteSpeed's header in fixed positions: an optional
-// timestamp, [LEVEL], [pid], an optional [T#] thread, then exactly one
-// connection field directly before [MODSEC]. A request's PHP stderr is
-// logged as [STDERR] followed by its own text, which can hold any field.
-var liteSpeedHeader = regexp.MustCompile(`^(?:[0-9]{4}-[0-9]{2}-[0-9]{2}(?: [0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?)? )?` +
-	`\[[A-Z]+\] \[[0-9]+\] (?:\[T[0-9]+\] )?\[[^\[\]\s#]+#[^\[\]\s]*\][ \t]*$`)
-
-// modsecOwnsHeader rejects headers other writers share. Apache 2.4 tags
-// each line with its module ([module:level]); PHP error_log, CGI stderr and
-// modules without a module index ([:level]) can write a ModSecurity message
-// after their own tag. Apache 2.2 lines carry no tag and stay accepted.
-func modsecOwnsHeader(prefix string, isLiteSpeed bool) bool {
-	if isLiteSpeed {
-		return liteSpeedHeader.MatchString(prefix)
-	}
-	for rest := prefix; ; {
-		_, after, ok := strings.Cut(rest, "[")
-		if !ok {
-			return true
-		}
-		field, tail, ok := strings.Cut(after, "]")
-		if !ok {
-			return true
-		}
-		rest = tail
-		module, _, tagged := strings.Cut(field, ":")
-		if tagged && !strings.ContainsAny(field, " \t") && module != "security2" && module != "security3" {
-			return false
-		}
-	}
 }
 
 // ErrorLogClientIP reads the client address from the server-written prefix

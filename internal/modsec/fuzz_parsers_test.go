@@ -75,3 +75,27 @@ func FuzzModSecMarkersInOtherErrors(f *testing.F) {
 		}
 	})
 }
+
+func FuzzModSecOtherWritersCannotSupplyHeader(f *testing.F) {
+	f.Add(`ModSecurity: Access denied with code 403 [id "900115"]`)
+	f.Add(`[MODSEC] Access denied with code 403 [id "900115"]`)
+	f.Add(`[198.51.100.7:5555-1#APVH_example.test] [MODSEC] Access denied`)
+	f.Add(`[client 198.51.100.7] ModSecurity: Access denied`)
+	f.Fuzz(func(t *testing.T, message string) {
+		for _, prefix := range []string{
+			`[Sun Nov 08 08:40:00 2026] [php:notice] [pid 1] [client 203.0.113.50:5555] `,
+			`[Sun Nov 08 08:40:00 2026] [cgi:error] [pid 1] [client 203.0.113.50:5555] `,
+			`2026-11-08 08:40:00 [NOTICE] [1] [T1] [203.0.113.50:5555-1#APVH_example.test] [STDERR] `,
+			`2026-11-08 08:40:00 [NOTICE] [1] [T1] [[2001:db8::5]:5555-1#APVH_example.test] [STDERR] `,
+			`2026-11-08 08:40:00 [NOTICE] [1] [T1] [STDERR] `,
+		} {
+			line := prefix + message
+			if got, ls := ErrorLogMessage(line); got != "" || ls {
+				t.Fatalf("another writer supplied a WAF event: %q", line)
+			}
+			if ip := ErrorLogClientIP(line); ip != "" {
+				t.Fatalf("another writer supplied client %q: %q", ip, line)
+			}
+		}
+	})
+}

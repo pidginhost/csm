@@ -76,15 +76,9 @@ func TestModSecUnsupportedClientCannotSelectLaterField(t *testing.T) {
 			resetModSecState()
 			t.Cleanup(resetModSecState)
 			line := `2026-01-02 03:04:05 [NOTICE] [1] [T1] ` + connection + ` [198.51.100.7:5555-1#APVH_forged] [MODSEC] Access denied with code 403 [id "900115"]`
-			// A second connection field is not a LiteSpeed header, so the line
-			// may be dropped; it must never name an address or escalate.
 			got := escalationTargets(t, line)
-			for check, ips := range got {
-				for _, ip := range ips {
-					if ip != "" || strings.Contains(check, "escalation") {
-						t.Fatalf("unsupported connection selected an address or escalated: %v", got)
-					}
-				}
+			if len(got) != 0 {
+				t.Fatalf("multiple connection fields produced WAF findings: %v", got)
 			}
 		})
 	}
@@ -113,5 +107,27 @@ func TestModSecIgnoresOrdinaryNginxErrors(t *testing.T) {
 	line := `2026/11/08 08:40:00 [error] 123#123: *1 open() "/srv/www/[client 198.51.100.7] ModSecurity: Access denied with code 403 [id "900115"]" failed (2: No such file or directory), client: 203.0.113.50, server: example.test`
 	if got := escalationTargets(t, line); len(got) != 0 {
 		t.Fatalf("request text in a file error forged WAF findings: %v", got)
+	}
+}
+
+func TestModSecIgnoresOtherWritersWithEitherMarker(t *testing.T) {
+	for _, prefix := range []string{
+		`[Sun Nov 08 08:40:00 2026] [php:notice] [pid 1] [client 203.0.113.50:5555] `,
+		`[Sun Nov 08 08:40:00 2026] [cgi:error] [pid 1] [client 203.0.113.50:5555] `,
+		`2026-11-08 08:40:00 [NOTICE] [1] [T1] [203.0.113.50:5555-1#APVH_example.test] [STDERR] `,
+		`2026-11-08 08:40:00 [NOTICE] [1] [T1] [[2001:db8::5]:5555-1#APVH_example.test] [STDERR] `,
+		`2026-11-08 08:40:00 [NOTICE] [1] [T1] [STDERR] [198.51.100.7:5555-1#APVH_example.test] `,
+		`2026-11-08 08:40:00 [NOTICE] [1] [T1] [STDERR] [client 198.51.100.7] `,
+	} {
+		for _, marker := range []string{"ModSecurity:", "[MODSEC]"} {
+			t.Run(prefix+marker, func(t *testing.T) {
+				resetModSecState()
+				t.Cleanup(resetModSecState)
+				line := prefix + marker + ` Access denied with code 403 [id "900115"]`
+				if got := escalationTargets(t, line); len(got) != 0 {
+					t.Fatalf("another writer produced WAF findings: %v", got)
+				}
+			})
+		}
 	}
 }
