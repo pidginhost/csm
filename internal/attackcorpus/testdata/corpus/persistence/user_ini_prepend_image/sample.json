@@ -1,0 +1,52 @@
+{
+  "name": "user_ini_prepend_image",
+  "category": "persistence",
+  "kind": "malicious",
+  "source": "synthetic",
+  "description": "A .user.ini that prepends a .jpg in uploads to every PHP request. Only the YARA .htaccess prepend rule, which matches the directive text, catches it: the PHP configuration checks look only at disable_functions, allow_url_include and open_basedir. Left in place: realtime never moves on a YARA match and yara_match_scheduled is on neither scan quarantine list.",
+  "provenance": "written for the corpus",
+  "files": [
+    {
+      "path": "public_html/.user.ini",
+      "b64": ".user.ini.b64"
+    }
+  ],
+  "expect": {
+    "realtime": {
+      "findings": [
+        {
+          "check": "yara_match_realtime",
+          "file": "public_html/.user.ini",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/.user.ini": "untouched"
+      }
+    },
+    "tier": {
+      "findings": [
+        {
+          "check": "yara_match_scheduled",
+          "file": "public_html/.user.ini",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/.user.ini": "untouched"
+      }
+    },
+    "fullscan": {
+      "findings": [
+        {
+          "check": "yara_match_scheduled",
+          "file": "public_html/.user.ini",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/.user.ini": "untouched"
+      }
+    }
+  }
+}

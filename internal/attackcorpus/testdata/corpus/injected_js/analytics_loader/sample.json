@@ -1,0 +1,19 @@
+{
+  "name": "analytics_loader",
+  "category": "injected_js",
+  "kind": "control",
+  "source": "synthetic",
+  "description": "An async analytics loader snippet that inserts a script tag for a fixed tracker URL.",
+  "provenance": "written for the corpus",
+  "files": [
+    {
+      "path": "public_html/assets/js/site-stats.js",
+      "b64": "site-stats.js.b64"
+    }
+  ],
+  "expect": {
+    "realtime": {},
+    "tier": {},
+    "fullscan": {}
+  }
+}

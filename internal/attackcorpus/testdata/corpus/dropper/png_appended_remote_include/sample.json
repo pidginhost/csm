@@ -1,0 +1,52 @@
+{
+  "name": "png_appended_remote_include",
+  "category": "dropper",
+  "kind": "malicious",
+  "source": "fixture",
+  "description": "A valid PNG in a plugin asset directory with a PHP loader appended that fetches and includes remote code. Left in place on every path: php_in_image_realtime is not an inline quarantine check and yara_match_scheduled is on neither scan quarantine list.",
+  "provenance": "internal/daemon/image_payload_linux_test.go TestCheckImagePayloadFlagsPHPAppendedToAValidPNG",
+  "files": [
+    {
+      "path": "public_html/wp-content/plugins/demo-slider/assets/images/light_square.png",
+      "b64": "light_square.png.b64"
+    }
+  ],
+  "expect": {
+    "realtime": {
+      "findings": [
+        {
+          "check": "php_in_image_realtime",
+          "file": "public_html/wp-content/plugins/demo-slider/assets/images/light_square.png",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/wp-content/plugins/demo-slider/assets/images/light_square.png": "untouched"
+      }
+    },
+    "tier": {
+      "findings": [
+        {
+          "check": "yara_match_scheduled",
+          "file": "public_html/wp-content/plugins/demo-slider/assets/images/light_square.png",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/wp-content/plugins/demo-slider/assets/images/light_square.png": "untouched"
+      }
+    },
+    "fullscan": {
+      "findings": [
+        {
+          "check": "yara_match_scheduled",
+          "file": "public_html/wp-content/plugins/demo-slider/assets/images/light_square.png",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/wp-content/plugins/demo-slider/assets/images/light_square.png": "untouched"
+      }
+    }
+  }
+}

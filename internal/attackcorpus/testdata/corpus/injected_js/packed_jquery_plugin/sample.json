@@ -1,0 +1,19 @@
+{
+  "name": "packed_jquery_plugin",
+  "category": "injected_js",
+  "kind": "control",
+  "source": "synthetic",
+  "description": "A jQuery slider plugin shipped through the p,a,c,k,e,d packer, an eval-looking legacy asset.",
+  "provenance": "written for the corpus",
+  "files": [
+    {
+      "path": "public_html/assets/js/jquery.slider.pack.js",
+      "b64": "jquery.slider.pack.js.b64"
+    }
+  ],
+  "expect": {
+    "realtime": {},
+    "tier": {},
+    "fullscan": {}
+  }
+}

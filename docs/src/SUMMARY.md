@@ -62,6 +62,7 @@
 
 - [Building and Testing](development.md)
   - [Clean Application Corpus](clean-corpus.md)
+  - [Attack Replay Corpus](attack-corpus.md)
   - [Recorded Finding Streams](finding-streams.md)
   - [Crawl Detector Calibration](crawl-calibration.md)
   - [cPanel Release Tests](cpanel-release-tests.md)

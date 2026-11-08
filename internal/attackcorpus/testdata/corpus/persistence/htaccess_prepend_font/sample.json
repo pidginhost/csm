@@ -1,0 +1,72 @@
+{
+  "name": "htaccess_prepend_font",
+  "category": "persistence",
+  "kind": "malicious",
+  "source": "fixture",
+  "description": "A root .htaccess that prepends a .ttf file in uploads to every PHP request, above the WordPress rewrite block. Left in place on every path: realtime has no .htaccess responder and its signature quarantine takes only webshell or dropper rules on files of 512 bytes or more, the tier's .htaccess cleaning is off in the shipped config (auto_response.clean_htaccess), the full scan keeps .htaccess findings off its quarantine list, and yara_match_scheduled is on neither list.",
+  "provenance": "content from internal/checks/htaccess_auto_prepend_target_test.go TestDetectorAutoPrependFlagsAccountTargets (font file under uploads)",
+  "files": [
+    {
+      "path": "public_html/.htaccess",
+      "b64": ".htaccess.b64"
+    }
+  ],
+  "expect": {
+    "realtime": {
+      "findings": [
+        {
+          "check": "htaccess_auto_prepend",
+          "file": "public_html/.htaccess",
+          "min_severity": "critical"
+        },
+        {
+          "check": "signature_match_realtime",
+          "file": "public_html/.htaccess",
+          "min_severity": "critical"
+        },
+        {
+          "check": "yara_match_realtime",
+          "file": "public_html/.htaccess",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/.htaccess": "untouched"
+      }
+    },
+    "tier": {
+      "findings": [
+        {
+          "check": "htaccess_auto_prepend",
+          "file": "public_html/.htaccess",
+          "min_severity": "critical"
+        },
+        {
+          "check": "yara_match_scheduled",
+          "file": "public_html/.htaccess",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/.htaccess": "untouched"
+      }
+    },
+    "fullscan": {
+      "findings": [
+        {
+          "check": "htaccess_auto_prepend",
+          "file": "public_html/.htaccess",
+          "min_severity": "critical"
+        },
+        {
+          "check": "yara_match_scheduled",
+          "file": "public_html/.htaccess",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/.htaccess": "untouched"
+      }
+    }
+  }
+}

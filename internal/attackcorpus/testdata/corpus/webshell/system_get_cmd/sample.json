@@ -1,0 +1,52 @@
+{
+  "name": "system_get_cmd",
+  "category": "webshell",
+  "kind": "malicious",
+  "source": "fixture",
+  "description": "A one-line command shell passing a GET parameter to system, in a Joomla tmp directory. Scans leave it in place: yara_match_scheduled is on neither scan quarantine list and suspicious_php_content is only High.",
+  "provenance": "content from internal/daemon/image_payload_linux_test.go TestCheckImagePayloadFlagsPHPWearingAnImageName, planted as .php",
+  "files": [
+    {
+      "path": "public_html/tmp/thumb.php",
+      "b64": "thumb.php.b64"
+    }
+  ],
+  "expect": {
+    "realtime": {
+      "findings": [
+        {
+          "check": "webshell_content_realtime",
+          "file": "public_html/tmp/thumb.php",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/tmp/thumb.php": "quarantined"
+      }
+    },
+    "tier": {
+      "findings": [
+        {
+          "check": "yara_match_scheduled",
+          "file": "public_html/tmp/thumb.php",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/tmp/thumb.php": "untouched"
+      }
+    },
+    "fullscan": {
+      "findings": [
+        {
+          "check": "yara_match_scheduled",
+          "file": "public_html/tmp/thumb.php",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/tmp/thumb.php": "untouched"
+      }
+    }
+  }
+}

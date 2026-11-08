@@ -1,0 +1,23 @@
+{
+  "name": "member_login",
+  "category": "credential_stealer",
+  "kind": "control",
+  "source": "synthetic",
+  "description": "A member login form posting to its own site and the handler that checks the password with password_verify.",
+  "provenance": "written for the corpus",
+  "files": [
+    {
+      "path": "public_html/members/login.html",
+      "b64": "login.html.b64"
+    },
+    {
+      "path": "public_html/members/login.php",
+      "b64": "login.php.b64"
+    }
+  ],
+  "expect": {
+    "realtime": {},
+    "tier": {},
+    "fullscan": {}
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "name": "monolog_native_mailer",
+  "category": "spam_script",
+  "kind": "control",
+  "source": "fixture",
+  "description": "Monolog's NativeMailerHandler in a vendor tree: mail() in a loop over configured recipients, the shape the mass sender rule must pass.",
+  "provenance": "content from internal/signatures/fp_flood_mailer_test.go TestFPFlood_YML_MailerLoopVariableTo",
+  "files": [
+    {
+      "path": "public_html/vendor/monolog/monolog/src/Monolog/Handler/NativeMailerHandler.php",
+      "b64": "NativeMailerHandler.php.b64"
+    }
+  ],
+  "expect": {
+    "realtime": {},
+    "tier": {},
+    "fullscan": {}
+  }
+}

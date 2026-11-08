@@ -1,0 +1,57 @@
+{
+  "name": "curl_fetch_eval",
+  "category": "dropper",
+  "kind": "malicious",
+  "source": "fixture",
+  "description": "Downloads code with curl and evaluates the response. Left in place on every path: realtime moves only webshell or dropper signature matches on high-entropy files of 512 bytes or more and never moves on a YARA match, and yara_match_scheduled is on neither scan quarantine list.",
+  "provenance": "content from internal/signatures/backdoor_htmlmode_eval_test.go TestScannerTreatsPhpsAsPHPSource, completed into a working loader and planted as .php",
+  "files": [
+    {
+      "path": "public_html/old/admin/update.php",
+      "b64": "update.php.b64"
+    }
+  ],
+  "expect": {
+    "realtime": {
+      "findings": [
+        {
+          "check": "signature_match_realtime",
+          "file": "public_html/old/admin/update.php",
+          "min_severity": "critical"
+        },
+        {
+          "check": "yara_match_realtime",
+          "file": "public_html/old/admin/update.php",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/old/admin/update.php": "untouched"
+      }
+    },
+    "tier": {
+      "findings": [
+        {
+          "check": "yara_match_scheduled",
+          "file": "public_html/old/admin/update.php",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/old/admin/update.php": "untouched"
+      }
+    },
+    "fullscan": {
+      "findings": [
+        {
+          "check": "yara_match_scheduled",
+          "file": "public_html/old/admin/update.php",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/old/admin/update.php": "untouched"
+      }
+    }
+  }
+}

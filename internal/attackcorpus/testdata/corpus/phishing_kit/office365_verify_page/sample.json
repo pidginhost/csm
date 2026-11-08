@@ -1,0 +1,62 @@
+{
+  "name": "office365_verify_page",
+  "category": "phishing_kit",
+  "kind": "malicious",
+  "source": "fixture",
+  "description": "A self-contained Office 365 sign-in page in uploads that posts to an outside host and beacons the form with fetch. The scans quarantine it as phishing_page; realtime reports phishing_realtime but has no responder for it.",
+  "provenance": "content from internal/checks/phishing_test.go TestScanForPhishingFindsPhishPageAndRedirector (officePhishHTML, hosts moved to example.net, padded with an inline stylesheet)",
+  "files": [
+    {
+      "path": "public_html/wp-content/uploads/2026/11/o365/verify.html",
+      "b64": "verify.html.b64"
+    }
+  ],
+  "expect": {
+    "realtime": {
+      "findings": [
+        {
+          "check": "phishing_realtime",
+          "file": "public_html/wp-content/uploads/2026/11/o365/verify.html",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/wp-content/uploads/2026/11/o365/verify.html": "untouched"
+      }
+    },
+    "tier": {
+      "findings": [
+        {
+          "check": "phishing_page",
+          "file": "public_html/wp-content/uploads/2026/11/o365/verify.html",
+          "min_severity": "critical"
+        },
+        {
+          "check": "yara_match_scheduled",
+          "file": "public_html/wp-content/uploads/2026/11/o365/verify.html",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/wp-content/uploads/2026/11/o365/verify.html": "quarantined"
+      }
+    },
+    "fullscan": {
+      "findings": [
+        {
+          "check": "phishing_page",
+          "file": "public_html/wp-content/uploads/2026/11/o365/verify.html",
+          "min_severity": "critical"
+        },
+        {
+          "check": "yara_match_scheduled",
+          "file": "public_html/wp-content/uploads/2026/11/o365/verify.html",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/wp-content/uploads/2026/11/o365/verify.html": "quarantined"
+      }
+    }
+  }
+}

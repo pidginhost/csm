@@ -1,0 +1,52 @@
+{
+  "name": "muplugin_option_eval",
+  "category": "malicious_plugin",
+  "kind": "malicious",
+  "source": "synthetic",
+  "description": "A must-use plugin that evaluates base64 code stored in a site option on every request. Left in place on every path: realtime moves a content finding only when its execution check confirms the flow, and scans rate it Critical only through yara_match_scheduled, which is on neither quarantine list.",
+  "provenance": "written for the corpus",
+  "files": [
+    {
+      "path": "public_html/wp-content/mu-plugins/wp-object-cache.php",
+      "b64": "wp-object-cache.php.b64"
+    }
+  ],
+  "expect": {
+    "realtime": {
+      "findings": [
+        {
+          "check": "obfuscated_php_realtime",
+          "file": "public_html/wp-content/mu-plugins/wp-object-cache.php",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/wp-content/mu-plugins/wp-object-cache.php": "untouched"
+      }
+    },
+    "tier": {
+      "findings": [
+        {
+          "check": "yara_match_scheduled",
+          "file": "public_html/wp-content/mu-plugins/wp-object-cache.php",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/wp-content/mu-plugins/wp-object-cache.php": "untouched"
+      }
+    },
+    "fullscan": {
+      "findings": [
+        {
+          "check": "yara_match_scheduled",
+          "file": "public_html/wp-content/mu-plugins/wp-object-cache.php",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/wp-content/mu-plugins/wp-object-cache.php": "untouched"
+      }
+    }
+  }
+}

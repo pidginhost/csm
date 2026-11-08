@@ -1,0 +1,43 @@
+{
+  "name": "crontab_gsocket_defunct",
+  "category": "persistence",
+  "kind": "malicious",
+  "source": "fixture",
+  "description": "A gsocket persistence crontab: base64 piped to bash relaunches a hidden binary as [kworker] under the defunct-kernel marker. suspicious_crontab has only an operator fix (quarantine and truncate): no responder acts on it in realtime, and the full scan keeps it off its quarantine list.",
+  "provenance": "content from internal/checks/crontab_fix_test.go TestMatchCrontabPatterns_GsocketDefunctFixtures (testdata/crontabs/gsocket_defunct_kernel_01.crontab, account renamed)",
+  "files": [
+    {
+      "path": "@crontab",
+      "b64": "crontab.b64"
+    }
+  ],
+  "expect": {
+    "realtime": {
+      "findings": [
+        {
+          "check": "suspicious_crontab",
+          "file": "@crontab",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "@crontab": "untouched"
+      }
+    },
+    "tier": {
+      "gap": "the deep tier runs no crontab check; only the critical tier's crontabs check reads the spool"
+    },
+    "fullscan": {
+      "findings": [
+        {
+          "check": "suspicious_crontab",
+          "file": "@crontab",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "@crontab": "untouched"
+      }
+    }
+  }
+}

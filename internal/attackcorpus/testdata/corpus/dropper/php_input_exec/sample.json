@@ -1,0 +1,34 @@
+{
+  "name": "php_input_exec",
+  "category": "dropper",
+  "kind": "malicious",
+  "source": "fixture",
+  "description": "Runs the raw request body as a shell command, in a .well-known validation directory. Realtime leaves it in place through a detector shortfall: its execution confirmation blanks string literals, so it never sees the php://input source the content check matched.",
+  "provenance": "internal/signatures/loader_test.go TestRepoDropperPHPInputRuleRequiresPHPInputPattern",
+  "files": [
+    {
+      "path": "public_html/.well-known/pki-validation/ok.php",
+      "b64": "ok.php.b64"
+    }
+  ],
+  "expect": {
+    "realtime": {
+      "findings": [
+        {
+          "check": "webshell_content_realtime",
+          "file": "public_html/.well-known/pki-validation/ok.php",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/.well-known/pki-validation/ok.php": "untouched"
+      }
+    },
+    "tier": {
+      "gap": "YARA, PHP taint and content checks miss the raw request body passed to system"
+    },
+    "fullscan": {
+      "gap": "YARA misses the raw request body passed to system"
+    }
+  }
+}

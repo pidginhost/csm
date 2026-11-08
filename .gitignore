@@ -9,6 +9,7 @@ state/state.json
 /csm
 .cache/
 /corpus-results/
+/attack-corpus-results/
 graphify-out/
 
 # Internal planning / local-only files

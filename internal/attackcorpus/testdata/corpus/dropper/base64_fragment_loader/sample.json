@@ -1,0 +1,34 @@
+{
+  "name": "base64_fragment_loader",
+  "category": "dropper",
+  "kind": "malicious",
+  "source": "fixture",
+  "description": "A loader that builds base64_decode from fragments and evaluates the decoded command shell. The tier rates it High only, below the Critical its responder needs, so it stays in place.",
+  "provenance": "self-test bundle sample obfuscated_base64_loader",
+  "files": [
+    {
+      "path": "public_html/wp-content/cache/object/loader.php",
+      "selftest": "obfuscated_base64_loader"
+    }
+  ],
+  "expect": {
+    "realtime": {
+      "gap": "rules and content checks miss base64_decode built from fragments and passed to eval"
+    },
+    "tier": {
+      "findings": [
+        {
+          "check": "suspicious_php_content",
+          "file": "public_html/wp-content/cache/object/loader.php",
+          "min_severity": "high"
+        }
+      ],
+      "remediation": {
+        "public_html/wp-content/cache/object/loader.php": "untouched"
+      }
+    },
+    "fullscan": {
+      "gap": "YARA misses base64_decode built from fragments, and the full scan content pass raised nothing outside uploads"
+    }
+  }
+}

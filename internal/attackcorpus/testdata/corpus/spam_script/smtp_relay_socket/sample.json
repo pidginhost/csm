@@ -1,0 +1,57 @@
+{
+  "name": "smtp_relay_socket",
+  "category": "spam_script",
+  "kind": "malicious",
+  "source": "fixture",
+  "description": "A raw SMTP relay that opens a socket to the local MTA and sends a posted message to every address in targets.txt. Left in place on every path: realtime moves only webshell or dropper signature matches on high-entropy files of 512 bytes or more and never moves on a YARA match, and yara_match_scheduled is on neither scan quarantine list.",
+  "provenance": "content from internal/signatures/fp_flood_mailer_test.go TestFPFlood_YML_MailerSmtpRelay_StockClient",
+  "files": [
+    {
+      "path": "public_html/includes/class-relay.php",
+      "b64": "class-relay.php.b64"
+    }
+  ],
+  "expect": {
+    "realtime": {
+      "findings": [
+        {
+          "check": "signature_match_realtime",
+          "file": "public_html/includes/class-relay.php",
+          "min_severity": "critical"
+        },
+        {
+          "check": "yara_match_realtime",
+          "file": "public_html/includes/class-relay.php",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/includes/class-relay.php": "untouched"
+      }
+    },
+    "tier": {
+      "findings": [
+        {
+          "check": "yara_match_scheduled",
+          "file": "public_html/includes/class-relay.php",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/includes/class-relay.php": "untouched"
+      }
+    },
+    "fullscan": {
+      "findings": [
+        {
+          "check": "yara_match_scheduled",
+          "file": "public_html/includes/class-relay.php",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/includes/class-relay.php": "untouched"
+      }
+    }
+  }
+}
