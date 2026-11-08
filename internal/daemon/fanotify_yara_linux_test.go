@@ -217,7 +217,7 @@ func TestRealtimeYARAPartialWindowLeavesDigestToStamp(t *testing.T) {
 			var matched bool
 			if ext == ".php" {
 				// Exercise the explicit size independently of the fd identity.
-				matched = fm.runSignatureScanWithSize(data, int64(len(whole)), path, ext, "", nil)
+				matched = fm.runSignatureScanWithSize(data, int64(len(whole)), path, ext, "", -1, nil)
 			} else {
 				// These callers pass len(data); only the event fd reveals the tail.
 				matched = fm.runEventSignatureScan(int(event.Fd()), data, path, ext, "")

@@ -22,6 +22,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 - The Performance page shows n/a for Redis when CSM cannot read it, and the API and MCP tool return null instead of zero.
 - Reloading CSM no longer causes a false tamper alert after a config edit that changes no setting, or after a reload that fails partway.
 - A config reload during a Web UI settings save no longer overwrites the saved settings.
+- A file quarantined by realtime protection no longer raises a second Critical self-deleting dropper alert.
 
 ## [4.10.1] - 2026-11-07
 

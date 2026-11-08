@@ -36,6 +36,12 @@ func (p dropperFSProbe) probe(c dropperCandidate) dropperProbe {
 		// the tracked file survived; a different one means it was replaced.
 		result := dropperProbe{Conclusive: true, AtPath: &state.file}
 		if !dropperSameIdentity(c, state.file) {
+			// A new file at this path does not undo CSM's removal of the
+			// tracked inode. Its own candidate cannot consume this record.
+			if p.quarantines.matched(c, time.Now()) {
+				result.QuarantineMatched = true
+				return result
+			}
 			result.PluginCopy = p.pluginCopy(c)
 		}
 		return result

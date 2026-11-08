@@ -34,7 +34,7 @@ func TestRealtimeSignatureFindingNamesTheIncludedPayload(t *testing.T) {
 	}
 	alerts := make(chan alert.Finding, 8)
 	fm := &FileMonitor{cfg: &config.Config{StatePath: root}, alertCh: alerts}
-	if !fm.runSignatureScanWithSize(loader, int64(len(loader)), path, ".php", "", info) {
+	if !fm.runSignatureScanWithSize(loader, int64(len(loader)), path, ".php", "", -1, info) {
 		t.Fatal("the cookie-gated image loader produced no realtime finding")
 	}
 

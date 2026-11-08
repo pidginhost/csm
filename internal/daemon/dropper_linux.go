@@ -471,7 +471,11 @@ func statPathToFileState(path string, includeDigest bool) (dropperPathState, err
 		}
 	}
 	defer func() { _ = unix.Close(fd) }()
+	return fileStateFromFD(fd, path, includeDigest && readable)
+}
 
+// fileStateFromFD describes the file an open descriptor names, under path.
+func fileStateFromFD(fd int, path string, includeDigest bool) (dropperPathState, error) {
 	var st unix.Stat_t
 	if err := unix.Fstat(fd, &st); err != nil {
 		return dropperPathState{}, err
@@ -487,7 +491,7 @@ func statPathToFileState(path string, includeDigest bool) (dropperPathState, err
 		state.file.Birth = birth
 		state.file.BirthKnown = true
 	}
-	if includeDigest && readable && st.Mode&unix.S_IFMT == unix.S_IFREG {
+	if includeDigest && st.Mode&unix.S_IFMT == unix.S_IFREG {
 		if digest, ok := digestFromFD(fd, st.Size); ok {
 			state.file.Digest = digest
 			state.file.DigestKnown = true
@@ -659,8 +663,7 @@ func (l *dropperQuarantineLedger) matched(c dropperCandidate, now time.Time) boo
 	for i, record := range records {
 		// Require the same inode generation. Digest-only matching would let a
 		// later identical drop at the same path consume an older quarantine
-		// record and evade detection. Cross-filesystem quarantine may therefore
-		// produce a duplicate alert, which is safer than suppressing a replay.
+		// record and evade detection.
 		if !dropperSameIdentity(c, record.state) {
 			continue
 		}
@@ -694,14 +697,16 @@ func (l *dropperQuarantineLedger) pruneLocked(now time.Time) {
 	}
 }
 
-func (fm *FileMonitor) recordDropperQuarantine(originalPath, quarantinePath string) {
-	if fm.dropperQuarantines == nil {
+// recordDropperQuarantine remembers a file CSM quarantined so the dropper probe
+// does not report its removal. Quarantine writes a copy, so the identity comes
+// from the detector's descriptor of the original, never from the copy.
+func (fm *FileMonitor) recordDropperQuarantine(originalPath string, fd int) {
+	if fm.dropperQuarantines == nil || fd < 0 {
 		return
 	}
-	state, err := statPathToFileState(quarantinePath, false)
+	state, err := fileStateFromFD(fd, originalPath, false)
 	if err != nil || state.mode&unix.S_IFMT != unix.S_IFREG {
 		return
 	}
-	state.file.Path = originalPath
 	fm.dropperQuarantines.record(originalPath, state.file, time.Now())
 }
