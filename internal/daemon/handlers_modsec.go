@@ -145,23 +145,13 @@ func parseModSecLogLine(line string, cfg *config.Config) []alert.Finding {
 
 	var ip, ruleID, msg, hostname, uri string
 
+	ip = modsecClientIP(line)
 	if isLiteSpeed {
-		ip = extractLiteSpeedIP(line)
 		ruleID = extractModSecField(line, `[id "`, `"]`)
 		msg = extractModSecField(line, `[msg "`, `"]`)
 		hostname = extractModSecField(line, `[hostname "`, `"]`)
 		uri = extractModSecField(line, `[uri "`, `"]`)
 	} else {
-		// Apache format: [client IP] or [client IP:port]
-		raw := extractModSecField(line, "[client ", "]")
-		// Strip port if present (Apache 2.4 uses "IP:port").
-		if idx := strings.LastIndex(raw, ":"); idx > 0 {
-			// Make sure it's not an IPv6 address (contains multiple colons).
-			if strings.Count(raw, ":") == 1 {
-				raw = raw[:idx]
-			}
-		}
-		ip = raw
 		ruleID = extractModSecField(line, `[id "`, `"]`)
 		msg = extractModSecField(line, `[msg "`, `"]`)
 		hostname = extractModSecField(line, `[hostname "`, `"]`)
@@ -250,18 +240,58 @@ func parseModSecLogLine(line string, cfg *config.Config) []alert.Finding {
 // modsecLogMessage uses the first module marker so request text cannot change
 // the server format or supply an action by embedding another marker later.
 func modsecLogMessage(line string) (string, bool) {
-	const apache = "ModSecurity:"
-	const liteSpeed = "[MODSEC]"
-	a := strings.Index(line, apache)
-	l := strings.Index(line, liteSpeed)
+	at, marker, isLiteSpeed := modsecMarker(line)
+	if at < 0 {
+		return "", false
+	}
+	message := strings.TrimSpace(line[at+len(marker):])
+	if isLiteSpeed {
+		message = strings.TrimSpace(strings.TrimPrefix(message, modsecApacheMarker))
+	}
+	return message, isLiteSpeed
+}
+
+const (
+	modsecApacheMarker    = "ModSecurity:"
+	modsecLiteSpeedMarker = "[MODSEC]"
+)
+
+// modsecMarker finds the module marker that ends the server-written prefix
+// of a ModSecurity log line, or -1.
+func modsecMarker(line string) (at int, marker string, isLiteSpeed bool) {
+	a := strings.Index(line, modsecApacheMarker)
+	l := strings.Index(line, modsecLiteSpeedMarker)
 	if l >= 0 && (a < 0 || l < a) {
-		message := strings.TrimSpace(line[l+len(liteSpeed):])
-		return strings.TrimSpace(strings.TrimPrefix(message, apache)), true
+		return l, modsecLiteSpeedMarker, true
 	}
-	if a >= 0 {
-		return strings.TrimSpace(line[a+len(apache):]), false
+	return a, modsecApacheMarker, false
+}
+
+// modsecClientIP reads the client address from the server-written prefix
+// of a ModSecurity log line. Rule data, the URI and the message after the
+// marker are client text and never name the client.
+func modsecClientIP(line string) string {
+	at, _, isLiteSpeed := modsecMarker(line)
+	if at < 0 {
+		return ""
 	}
-	return "", false
+	prefix := line[:at]
+	if isLiteSpeed {
+		return extractLiteSpeedIP(prefix)
+	}
+	// Apache 2.4 writes [client IP:port], also for IPv6 ("2001:db8::5:5555").
+	raw := extractModSecField(prefix, "[client ", "]")
+	if i := strings.LastIndexByte(raw, ':'); i > 0 {
+		if _, err := strconv.ParseUint(raw[i+1:], 10, 16); err == nil {
+			if ip := net.ParseIP(raw[:i]); ip != nil {
+				return ip.String()
+			}
+		}
+	}
+	if ip := net.ParseIP(raw); ip != nil {
+		return ip.String()
+	}
+	return ""
 }
 
 // domainOrEmpty returns hostname unless it parses as a bare IP address
@@ -430,16 +460,7 @@ func parseModSecLogLineDeduped(line string, cfg *config.Config) []alert.Finding 
 	// --- Step 1: block escalation (before dedup) ---
 	// Extract IP and rule ID directly from the raw log line - NOT from the
 	// finding message, which could be manipulated via log injection.
-	ip := extractModSecField(line, "[client ", "]")
-	if ip == "" {
-		ip = extractLiteSpeedIP(line)
-	}
-	// Strip port from Apache 2.4 format (IP:port)
-	if strings.Count(ip, ":") == 1 {
-		if idx := strings.LastIndex(ip, ":"); idx > 0 {
-			ip = ip[:idx]
-		}
-	}
+	ip := modsecClientIP(line)
 	ruleID := extractModSecField(line, `[id "`, `"]`)
 	ruleNum, _ := strconv.Atoi(ruleID)
 	isBlock := f.Check == "modsec_block_realtime"
