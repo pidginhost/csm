@@ -504,7 +504,14 @@ Inside a class, verified scopes rotate, a scope serves Critical:High:Warning
 4:2:1 and a severity serves its oldest candidate; deficit accounting lets a
 candidate that costs several block units wait its turn without starving. The
 scheduler's position persists, and every pick is revalidated before it is
-returned. A schedule passes over candidates the caller names as pending,
+returned. Regression tests reopen the ledger during unfinished scope and
+reserved sub-lane rotations, then check service order across the restart.
+Overload recovery uses elapsed-time refill and verifies each reservation's
+charge, so a fresh cursor or an uncharged pick cannot satisfy the test.
+Free-slot rotation tests require a granted reservation, its stored effect,
+and the expected occupancy and charge, including after a limit increase.
+A missing effect must fail rather than count as proof that no victim was taken.
+A schedule passes over candidates the caller names as pending,
 such as one waiting for the panel's verdict: they are never picked or
 deferred, their scopes keep their turns, and the next wake waits only for
 their deadlines. A candidate the caller names as allowed ends without a
@@ -1186,7 +1193,16 @@ waiting for its timer. An owner with an engine also selects, checks or
 forecasts work once a second at most, including turns that dispatch
 nothing: work that falls due sooner, from a drain or a panel answer, stays
 due for the next second, while retirement of earlier attempts keeps its own
-waits.
+waits. Before the next live batch may start, a turn selects nothing and
+leaves the next selection due. Clock or engine outages still defer waiting
+blocks without spending fair turns or running early probes; work already
+deferred for capacity keeps its reason. Dry-run
+forecasts and previews without an engine keep their own cadence.
+The policy installed at the turn boundary decides whether the batch wait
+applies; changing between live execution and dry run does not spend a turn
+that cannot select work. During a batch wait, opt-outs end silently before
+any outage is reported. Outage deferrals revalidate waiting work first, so
+expired evidence and changed ownership keep their own terminal reasons.
 
 The first time an owner executes (only in tests while `liveExecution` is
 false), its live start runs once per ledger, in one transaction, before
