@@ -23,7 +23,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Fixed
 
-- Challenge pages now accept trusted proxy address ranges.
+- `challenge.trusted_proxies` now accepts CIDR ranges, as documented.
 - ModSecurity detections on Apache now name an IPv6 client by its own address, not one built from its port.
 - Admission status lifetime counts now include responses refused or dropped before they reached the queue.
 - Known-customer block emails no longer list a compromised mail or FTP login that caused the block, even when the block comes later.
