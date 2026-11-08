@@ -1151,19 +1151,17 @@ func CheckModSecAuditLog(ctx context.Context, cfg *config.Config, store *state.S
 		return nil
 	}
 
-	var lines []string
+	var blocked map[string]int
 	for _, path := range logPaths {
-		lines = tailFile(path, modsecAuditTailLines)
-		if len(lines) > 0 {
+		var nonempty bool
+		blocked, nonempty = readModSecDenials(ctx, path)
+		if nonempty {
 			break
 		}
 	}
-	if len(lines) == 0 {
+	if len(blocked) == 0 {
 		return nil
 	}
-
-	// Count blocked attacks per IP
-	blocked := countModSecDenials(lines)
 	for ip := range blocked {
 		if isInfraIP(ip, cfg.InfraIPs) || !wafAttackerIsReportable(ip) {
 			delete(blocked, ip)
@@ -1223,118 +1221,10 @@ func wafBlockAdvice(ip string, count int) string {
 // modsecAuditLogPaths yields the audit log candidates; a seam for tests.
 var modsecAuditLogPaths = func() []string { return platform.Detect().ModSecAuditLogPaths }
 
-// modsecAuditTailLines is how much of the audit log one cycle inspects.
+// modsecAuditTailLines bounds the recent window used for denial counts.
 // The serial format spends ten or more lines per transaction, so 200 lines
 // could never hold the 20 denials the threshold asks for.
 const modsecAuditTailLines = 4000
-
-// countModSecDenials counts denied transactions per client address.
-//
-// In the serial audit format one transaction spans lettered sections
-// between "--<id>-A--" and "--<id>-Z--"; the client address is on the A
-// header and the denial in the F status line or the H trailer. Request and
-// response bodies are client text and can hold whole forged transactions,
-// so inside a transaction only its own id's markers count. A tail window can
-// also start inside a body: a marker seen between transactions, or a
-// transaction left open after swallowing other markers, shows that, and the
-// counts made so far are dropped. A client cannot cause either in step: it
-// cannot guess the id of its own transaction.
-//
-// Logs without serial markers hold one line per transaction: concurrent
-// index lines or error-log style lines with a [client] field. Any other
-// line names no client.
-func countModSecDenials(lines []string) map[string]int {
-	blocked := make(map[string]int)
-	serial := false
-	for _, line := range lines {
-		if _, _, ok := modsecSectionBoundary(line); ok {
-			serial = true
-			break
-		}
-	}
-	if !serial {
-		for _, line := range lines {
-			if ip, denied := modsecLineDenial(line); denied {
-				blocked[ip]++
-			}
-		}
-		return blocked
-	}
-	var (
-		txID, txIP             string
-		section                byte
-		wantA, denied, foreign bool
-	)
-	for _, line := range lines {
-		id, sec, isBoundary := modsecSectionBoundary(line)
-		switch {
-		case txID == "" && isBoundary && sec == 'A':
-			txID, txIP, section, wantA, denied, foreign = id, "", 'A', true, false, false
-		case txID == "" && isBoundary:
-			// Another transaction's section outside any transaction: the
-			// window began inside a body.
-			clear(blocked)
-		case txID == "":
-		case isBoundary && id != txID:
-			foreign = true
-		case isBoundary && sec == 'Z':
-			if denied && !foreign && txIP != "" {
-				blocked[txIP]++
-			}
-			txID = ""
-		case isBoundary:
-			section, wantA = sec, false
-		case wantA:
-			if strings.TrimSpace(line) != "" {
-				txIP, wantA = modsecAuditClientIP(line), false
-			}
-		case (section == 'F' || section == 'H') && modsecDenialLine(line):
-			denied = true
-		}
-	}
-	if txID != "" && foreign {
-		// An open transaction that swallowed other markers began inside a body.
-		clear(blocked)
-	}
-	return blocked
-}
-
-// modsecLineDenial reads a one-line audit record. A concurrent index line
-// is: hostname, client, remote user, local user, [time], "request",
-// status, ...; the hostname comes from the request's Host header, so only
-// the second field names the client, and only the status says denied. An
-// error-log style line names the client only in its server-written prefix.
-func modsecLineDenial(line string) (string, bool) {
-	if date := strings.Index(line, "] \""); date >= 0 {
-		head := strings.Fields(line[:date])
-		// Request text after an error-log marker can mimic an audit index.
-		errorMessage, _ := modsec.ErrorLogMessage(line[:date])
-		if len(head) == 6 && strings.HasPrefix(head[4], "[") && errorMessage == "" {
-			ip := net.ParseIP(head[1])
-			if ip == nil {
-				return "", false
-			}
-			rest := line[date+3:]
-			for i := 0; i < len(rest); i++ {
-				switch rest[i] {
-				case '\\':
-					i++
-				case '"':
-					status := strings.Fields(rest[i+1:])
-					return ip.String(), len(status) > 0 && status[0] == "403"
-				}
-			}
-			return "", false
-		}
-	}
-	ip := modsec.ErrorLogClientIP(line)
-	return ip, ip != "" && modsecDenialLine(line)
-}
-
-func modsecDenialLine(line string) bool {
-	return strings.Contains(line, "403") || strings.Contains(line, "Access denied") ||
-		strings.Contains(line, "MODSEC") || strings.Contains(line, "mod_security")
-}
 
 // modsecSectionBoundary parses a serial-format "--<id>-<letter>--" line.
 func modsecSectionBoundary(line string) (id string, section byte, ok bool) {

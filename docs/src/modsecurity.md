@@ -58,6 +58,18 @@ client and cannot trigger an IP escalation. The Web UI uses the finding's
 recorded source address, with a prefix-only raw-log fallback for older findings;
 it leaves the client unknown when neither is available.
 
+Scheduled audit scans read native serial logs and concurrent indexes from
+ModSecurity 2 and libmodsecurity 3, plus libmodsecurity 3 JSON logs. Counts use
+the recorded client address and denial action or response status. Request and
+response content cannot select another client or cancel another client's counts.
+The existing `web_server.modsec_audit_logs` setting selects the candidate logs.
+
+Only complete transactions within the recent line window contribute to these
+counts. The first scan and scans after log rotation read from the file's start
+to establish transaction boundaries. Later scans resume from the saved position.
+Large existing logs can take longer on the first scan. Memory use stays bounded,
+and incomplete writes wait for the next scan.
+
 CSM adds the default escalation exclusion for browser-marked upload progress
 requests once, including on upgrade, and keeps later operator changes. If the
 saved exclusions cannot be read, CSM keeps running and blocking requests but

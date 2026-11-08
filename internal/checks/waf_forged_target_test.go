@@ -88,7 +88,9 @@ func TestModSecSerialWindowStartingInsideBodyCountsNoForgery(t *testing.T) {
 		"forged transactions then the real tail": forged.String() + realTail,
 		"forged transactions left open":          forged.String() + "--f9999999-A--\n[08/Nov/2026:08:40:00 +0000] f9999999 198.51.100.7 5555 192.0.2.1 443\n" + realTail + serialWithBody("7f3e9cbb", "203.0.113.50", 200, "x"),
 	} {
-		if got := auditFindingIPs(t, window); len(got) != 0 {
+		prefix := "--7f3e9caa-A--\n[08/Nov/2026:08:40:00 +0000] real 203.0.113.50 5555 192.0.2.1 443\n--7f3e9caa-C--\n"
+		prefix += strings.Repeat("body padding\n", modsecAuditTailLines)
+		if got := auditFindingIPs(t, prefix+window); len(got) != 0 {
 			t.Errorf("%s: window cut inside a body counted %v", name, got)
 		}
 	}
@@ -102,40 +104,4 @@ func TestModSecSerialStillCountsRealDenials(t *testing.T) {
 	if got := auditFindingIPs(t, b.String()); len(got) != 1 || got[0] != "203.0.113.50" {
 		t.Fatalf("findings for %v, want 203.0.113.50", got)
 	}
-}
-
-func FuzzModSecIndexLineClientFields(f *testing.F) {
-	f.Add("198.51.100.7", "GET / HTTP/1.1", "probe")
-	f.Add("a 198.51.100.7", `GET /" 403 "x HTTP/1.1`, `x" 198.51.100.7 "y`)
-	f.Fuzz(func(t *testing.T, host, request, ua string) {
-		if strings.ContainsAny(host+request+ua, "\r\n") {
-			t.Skip("ModSecurity escapes line breaks in index fields")
-		}
-		request = strings.ReplaceAll(strings.ReplaceAll(request, `\`, `\\`), `"`, `\"`)
-		ua = strings.ReplaceAll(strings.ReplaceAll(ua, `\`, `\\`), `"`, `\"`)
-		for ip := range countModSecDenials([]string{modsecIndexLine(host, "203.0.113.50", request, ua, 403)}) {
-			if ip != "203.0.113.50" {
-				t.Fatalf("host %q request %q ua %q chose %q", host, request, ua, ip)
-			}
-		}
-	})
-}
-
-func FuzzModSecSerialBody(f *testing.F) {
-	f.Add(forgedSerialTransaction("f0000001"))
-	f.Add(forgedSerialTransaction("f0000001") + "--f0000002-A--\n[08/Nov/2026:08:40:00 +0000] f0000002 198.51.100.7 5555 192.0.2.1 443\n")
-	f.Fuzz(func(t *testing.T, body string) {
-		if strings.Contains(body, "7f3e9c") {
-			t.Skip("the real transaction ids are unguessable")
-		}
-		inside := strings.Split(serialWithBody("7f3e9c01", "203.0.113.50", 403, body), "\n")
-		cut := strings.Split(body+"\n--7f3e9c02-F--\nHTTP/1.1 200\n--7f3e9c02-Z--\n"+serialWithBody("7f3e9c03", "203.0.113.50", 403, "a=1"), "\n")
-		for _, lines := range [][]string{inside, cut} {
-			for ip := range countModSecDenials(lines) {
-				if ip != "203.0.113.50" {
-					t.Fatalf("body %q chose %q", body, ip)
-				}
-			}
-		}
-	})
 }

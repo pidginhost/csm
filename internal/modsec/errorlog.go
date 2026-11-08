@@ -53,6 +53,24 @@ func ErrorLogClientIP(line string) string {
 	if !ok {
 		return ""
 	}
+	if strings.HasPrefix(rest, "[") {
+		// Bracketed IPv6 with a port: [client [2001:db8::5]:5555].
+		raw, _, ok := strings.Cut(rest, "] ")
+		if !ok {
+			raw, ok = strings.CutSuffix(rest, "]")
+		}
+		host, port, err := net.SplitHostPort(raw)
+		if !ok || err != nil {
+			return ""
+		}
+		if _, err := strconv.ParseUint(port, 10, 16); err != nil {
+			return ""
+		}
+		if ip := net.ParseIP(host); ip != nil {
+			return ip.String()
+		}
+		return ""
+	}
 	raw, _, ok := strings.Cut(rest, "]")
 	if !ok {
 		return ""

@@ -45,6 +45,8 @@ func TestErrorLogClientIP(t *testing.T) {
 		{"apache_ipv6_full", `[client 2001:db8:1:2:3:4:5:6:65535] ModSecurity: Access denied`, "2001:db8:1:2:3:4:5:6"},
 		{"apache_ipv6_compressed_tail", `[client 2001:db8:::5555] ModSecurity: Access denied`, "2001:db8::"},
 		{"apache_mapped", `[client ::ffff:192.0.2.5:5555] ModSecurity: Access denied`, "192.0.2.5"},
+		{"apache_bracketed_ipv6", `[client [2001:db8::50]:5555] ModSecurity: Access denied`, "2001:db8::50"},
+		{"apache_bracketed_ipv6_bad_port", `[client [2001:db8::50]:x] ModSecurity: Access denied`, ""},
 		{"apache_invalid_port", `[client 203.0.113.5:invalid] ModSecurity: Access denied`, ""},
 		{"apache_missing_close", `[client 203.0.113.5 ModSecurity: [client 198.51.100.7]`, ""},
 		{"apache_invalid_first", `[client invalid] [client 198.51.100.7] ModSecurity: Access denied`, ""},
