@@ -75,6 +75,187 @@ class CategoryMap
 	}
 }
 
+// A framework helper class is not an endpoint. Its first statement stops a
+// direct request, and including it runs nothing until the application, which
+// does its own access control, calls a method on an instance.
+const guardedImportClass = `class ImportMap
+{
+    private $errors = [];
+
+    public function save($title)
+    {
+        if (empty($_FILES['map_file']['name']) || empty($title)) {
+            $this->errors[] = 'Empty file or title';
+            return false;
+        }
+        if ($_FILES['map_file']['type'] != 'text/plain') {
+            return false;
+        }
+        $name = ($this->lastId() + 1) . '_' . $this->sanitize($_FILES['map_file']['name']);
+        if (!move_uploaded_file($_FILES['map_file']['tmp_name'], $this->path($name))) {
+            return false;
+        }
+        return true;
+    }
+
+    public function path($name = '')
+    {
+        return dirname(__FILE__) . DIRECTORY_SEPARATOR . 'maps' . DIRECTORY_SEPARATOR . $name;
+    }
+
+    public function sanitize($name)
+    {
+        return strtolower(preg_replace('/[^a-zA-Z0-9_.-]/', '_', $name));
+    }
+
+    public function lastId()
+    {
+        return (int) Db::getInstance()->getValue('SELECT MAX(id) FROM maps');
+    }
+}
+`
+
+const guardedImportHeader = `<?php
+/**
+ * Feed module, category map import.
+ *
+ * @license   proprietary
+ */
+
+`
+
+func TestFPTriage_DropperUploader_GuardedFrameworkClass(t *testing.T) {
+	s := loadRepoYaraScanner(t)
+	for name, legit := range map[string]string{
+		"if not defined, exit": guardedImportHeader + "if (!defined('_FW_VERSION_')) {\n    exit;\n}\n\n" + guardedImportClass,
+		"defined or die":       guardedImportHeader + "defined('_FW_EXEC') or die('Restricted access');\n\n" + guardedImportClass,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if hasYaraRule(s.ScanBytes([]byte(legit)), "dropper_uploader_no_auth") {
+				t.Error("dropper_uploader_no_auth FP: matched a framework class that stops direct requests and runs nothing when included")
+			}
+		})
+	}
+}
+
+// The production shape: a shop module helper with size limits compared by
+// operator, multi-line SQL strings, casts and quoted identifiers.
+const guardedModuleHelper = `<?php
+/**
+ * Feed module.
+ *
+ * It's not allowed to share this file without the author's permission.
+ *
+ * @author    Example Author
+ * @license
+ */
+
+if (!defined('_FW_VERSION_')) {
+    exit;
+}
+
+class MapImport
+{
+    private $errors = [];
+
+    public function saveMapFile()
+    {
+        $this->errors = [];
+        $title = Tools::getValue('map_name');
+
+        if (empty($_FILES['map_file']['name']) || empty($title)) {
+            $this->errors[] = 'Empty file or title';
+            return false;
+        }
+
+        if ($_FILES['map_file']['type'] != 'text/plain') {
+            $this->errors[] = 'Invalid file format, should be .txt';
+            return false;
+        }
+
+        if (Tools::getOctets(ini_get('upload_max_filesize')) <= $_FILES['map_file']['size']) {
+            $this->errors[] = 'File too big, max size '.ini_get('upload_max_filesize');
+            return false;
+        }
+
+        $name = ($this->getLastMapId()+1).'_'.$this->sanitizeName($_FILES['map_file']['name']);
+
+        if (!move_uploaded_file($_FILES['map_file']['tmp_name'], $this->getFilePath($name))) {
+            $this->errors[] = 'System error, please check "/modules/feed/maps" directory permissions';
+            return false;
+        }
+
+        Db::getInstance()->insert(
+            'feed_map',
+            array(
+                'title' => pSQL($title),
+                'file_name' => pSQL($name),
+            )
+        );
+
+        return true;
+    }
+
+    public function delete($id)
+    {
+        $fileName = $this->getFileNameById($id);
+        Db::getInstance()->Execute('DELETE FROM '._DB_PREFIX_.'feed_map WHERE id = "'.(int)$id.'"');
+        unlink($this->getFilePath($fileName));
+        return true;
+    }
+
+    public function getFilePath($name = '')
+    {
+        return dirname(__FILE__) . DIRECTORY_SEPARATOR . 'maps' . DIRECTORY_SEPARATOR . $name;
+    }
+
+    public function sanitizeName($name)
+    {
+        return Tools::strtolower(htmlspecialchars(preg_replace('/[^a-zA-Z0-9_.-]/', '_', $name)));
+    }
+
+    public function getLastMapId()
+    {
+        return (int)Db::getInstance()->getValue('SELECT m.id
+			FROM '._DB_PREFIX_.'feed_map m
+			ORDER BY m.id DESC');
+    }
+
+    public function getIdByKey($key)
+    {
+        return Db::getInstance()->getValue('SELECT m.id
+			FROM '._DB_PREFIX_.'feed_map m
+			WHERE m.` + "`key`" + ` = "'.pSQL($key).'"');
+    }
+}
+`
+
+func TestFPTriage_DropperUploader_GuardedModuleHelper(t *testing.T) {
+	s := loadRepoYaraScanner(t)
+	if hasYaraRule(s.ScanBytes([]byte(guardedModuleHelper)), "dropper_uploader_no_auth") {
+		t.Error("dropper_uploader_no_auth FP: matched a guarded module helper that compares sizes with an operator")
+	}
+}
+
+func TestFPTriage_DropperUploader_GuardAloneDoesNotSuppress(t *testing.T) {
+	s := loadRepoYaraScanner(t)
+	guard := "if (!defined('_FW_VERSION_')) {\n    exit;\n}\n\n"
+	for name, mal := range map[string]string{
+		"guard then a top-level upload": "<?php\nif (!defined('ABSPATH')) {\n    exit;\n}\n$name = basename($_FILES['f']['name']);\nmove_uploaded_file($_FILES['f']['tmp_name'], WP_CONTENT_DIR . '/' . $name);\n",
+		"class instantiated on include": guardedImportHeader + guard + guardedImportClass + "$importer = new ImportMap();\n$importer->save('x');\n",
+		"statement before the guard":    "<?php\n$started = 1;\n" + guard + guardedImportClass,
+		"guard that does not exit":      "<?php\nif (!defined('_FW_VERSION_')) {\n}\n\n" + guardedImportClass,
+		"upload written outside the object": guardedImportHeader + guard + strings.Replace(guardedImportClass,
+			"$this->path($name)", "'/var/www/maps/' . $name", 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if !hasYaraRule(s.ScanBytes([]byte(mal)), "dropper_uploader_no_auth") {
+				t.Error("dropper_uploader_no_auth regression: a direct-access guard suppressed an upload that can run without the application")
+			}
+		})
+	}
+}
+
 func TestFPTriage_DropperUploader_ExtensionAllowlist(t *testing.T) {
 	s := loadRepoYaraScanner(t)
 	legit := []byte(`<?php

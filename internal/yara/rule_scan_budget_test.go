@@ -251,6 +251,9 @@ func TestRuleScanBudgetDownloadAndMinerLines(t *testing.T) {
 			"invalid_cron_prefixes.txt": []byte(strings.Repeat("*/5 * * * * "+strings.Repeat("\xed\xa0\x80", 86)+"XMRig ", 2_000)),
 		}},
 		{"dropper_wget_exec", map[string][]byte{
+			"static_markup.html":    []byte("<html>" + strings.Repeat("<!<", 200_000) + "</html>"),
+			"script_openers.html":   []byte("<html>" + strings.Repeat("<script ", 75_000)),
+			"script_spaces.html":    []byte("<html><script " + strings.Repeat(" ", 600_000) + "language=php>"),
 			"download_words.txt":    downloadWords,
 			"download_args.txt":     downloadArgs,
 			"pipe_targets.txt":      []byte(strings.Repeat("curl x | sh ", 50_000)),
@@ -260,6 +263,10 @@ func TestRuleScanBudgetDownloadAndMinerLines(t *testing.T) {
 			"linked_commands.md":    []byte(strings.Repeat("[curl x | sh](https://a.test/)\n", 20_000)),
 			"backtick_runs.txt":     []byte(strings.Repeat("`", 600_000)),
 			"fence_lines.md":        []byte(strings.Repeat("```\n", 150_000)),
+		}},
+		{"dropper_uploader_no_auth", map[string][]byte{
+			"large_class.php":   []byte("<?php defined('FW') or die; class ImportMap { function save() {" + strings.Repeat("$x = 'text'; ", 50_000) + "}}"),
+			"class_comment.php": []byte("<?php /*" + strings.Repeat("* ", 300_000)),
 		}},
 		{"backdoor_bashrc_injection", map[string][]byte{
 			"download_words.txt":      downloadWords,
