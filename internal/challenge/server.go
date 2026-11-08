@@ -246,7 +246,10 @@ func (s *Server) Shutdown() {
 }
 
 func (s *Server) handleChallenge(w http.ResponseWriter, r *http.Request) {
-	ip := s.extractIP(r)
+	ip, ok := s.clientIP(w, r)
+	if !ok {
+		return
+	}
 	if !s.challengePending(ip) {
 		http.Error(w, "No challenge pending for this address", http.StatusNotFound)
 		return
@@ -286,7 +289,10 @@ func (s *Server) handleGate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	ip := s.extractIP(r)
+	ip, ok := s.clientIP(w, r)
+	if !ok {
+		return
+	}
 	if s.bypassByAdminCookie(r, ip) || s.bypassByVerifiedCrawler(r.Context(), ip) || s.bypassByVerifyCookie(r, ip) {
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -334,7 +340,10 @@ func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ip := s.extractIP(r)
+	ip, ok := s.clientIP(w, r)
+	if !ok {
+		return
+	}
 	if !s.challengePending(ip) {
 		http.Error(w, "No challenge pending for this address", http.StatusNotFound)
 		return
@@ -383,7 +392,10 @@ func (s *Server) handleCaptchaVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ip := s.extractIP(r)
+	ip, ok := s.clientIP(w, r)
+	if !ok {
+		return
+	}
 	if !s.challengePending(ip) {
 		http.Error(w, "No challenge pending for this address", http.StatusNotFound)
 		return
@@ -440,7 +452,10 @@ func (s *Server) handleAdminToken(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	ip := s.extractIP(r)
+	ip, ok := s.clientIP(w, r)
+	if !ok {
+		return
+	}
 
 	if s.adminRateLimited(ip) {
 		http.Error(w, "Too many failed attempts; try again later.", http.StatusTooManyRequests)
@@ -651,21 +666,34 @@ func (s *Server) CleanExpired() {
 	}
 }
 
+// clientIP rejects a trusted proxy fallback before any challenge or bypass
+// decision. That address identifies a shared transport, not a visitor, so a
+// pass or cookie for it could bypass challenges for unrelated visitors.
+func (s *Server) clientIP(w http.ResponseWriter, r *http.Request) (string, bool) {
+	ip := s.extractIP(r)
+	if s.isTrustedProxy(ip) {
+		http.Error(w, "Cannot identify the client behind the trusted proxy", http.StatusBadRequest)
+		return "", false
+	}
+	return ip, true
+}
+
 // extractIP returns the client IP from the request. X-Forwarded-For is only
 // trusted when the direct peer is in the configured trusted_proxies list.
 // It is read right to left, past further trusted proxies, to the first
 // other address: entries left of that are client text. An unreadable entry
 // ends the walk, since the client could have written everything left of it.
-// When no client is found the direct peer is used. Without trusted proxies,
-// RemoteAddr is always used: this prevents attackers from spoofing their IP
-// to mint firewall allow rules for arbitrary addresses.
+// When no client is found the direct peer is used; clientIP rejects that
+// fallback in handlers. Without trusted proxies, RemoteAddr is always used.
 func (s *Server) extractIP(r *http.Request) string {
 	peerIP, _, _ := net.SplitHostPort(r.RemoteAddr)
 	peerIP = canonicalIP(peerIP)
 	if !s.isTrustedProxy(peerIP) {
 		return peerIP
 	}
-	parts := strings.Split(r.Header.Get("X-Forwarded-For"), ",")
+	// Proxies can append a field line instead of extending the first one.
+	// Header.Get would hide that trusted suffix and expose client-written text.
+	parts := strings.Split(strings.Join(r.Header.Values("X-Forwarded-For"), ","), ",")
 	for i := len(parts) - 1; i >= 0; i-- {
 		ip := net.ParseIP(strings.TrimSpace(parts[i]))
 		if ip == nil {

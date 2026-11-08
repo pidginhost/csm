@@ -141,10 +141,18 @@ challenge:
     - "192.0.2.0/24"
 ```
 
-Entries are addresses or CIDR ranges. CSM reads X-Forwarded-For from the
+Entries are addresses or CIDR ranges. Trust only proxies you control, not
+ranges that also contain visitors. Each proxy must append its observed peer
+address to X-Forwarded-For or replace the header with that address.
+
+CSM reads all X-Forwarded-For field lines as one ordered chain, from the
 right, past other trusted proxies, and takes the first other address as the
-visitor. An entry that is not an address ends the read, and the connecting
-proxy is used instead.
+visitor. An entry that is not an address ends the read.
+
+If no visitor can be identified because the chain is missing, malformed, or
+contains only trusted proxies, challenge endpoints return HTTP 400. They do
+not issue a puzzle or cookie, accept a bypass, or clear a pending challenge
+for the proxy. This also applies to the gate and admin-token endpoints.
 
 Without `trusted_proxies`, X-Forwarded-For is ignored to prevent IP spoofing.
 
