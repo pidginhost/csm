@@ -26,7 +26,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 - `challenge.trusted_proxies` now accepts CIDR ranges, as documented.
 - ModSecurity detections now name an IPv6 client by its own address on Apache and Nginx hosts.
-- Ordinary single-line server errors no longer appear as ModSecurity attacks or trigger false blocks.
+- Server errors and PHP messages no longer appear as ModSecurity attacks or trigger false blocks.
 - Admission status lifetime counts now include responses refused or dropped before they reached the queue.
 - Known-customer block emails no longer list a compromised mail or FTP login that caused the block, even when the block comes later.
 - The known-customer block email now says that allowing an address trusts it on every port.

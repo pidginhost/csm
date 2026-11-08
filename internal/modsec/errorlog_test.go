@@ -95,3 +95,29 @@ func TestErrorLogClientIP(t *testing.T) {
 		})
 	}
 }
+
+func TestErrorLogRejectsOtherModulesWritingMarkers(t *testing.T) {
+	for _, line := range []string{
+		`[Sun Nov 08 08:40:00.000000 2026] [php7:notice] [pid 1] [client 203.0.113.50:5555] ModSecurity: Access denied with code 403 [id "1"]`,
+		`[Sun Nov 08 08:40:00.000000 2026] [cgi:error] [pid 1:tid 2] [client 203.0.113.50:5555] ModSecurity: Access denied with code 403`,
+		`2026-05-09 09:07:53.866619 [NOTICE] [1800848] [T4] [203.0.113.62:62060-1#APVH_test.example.com:443] [STDERR] [MODSEC] mod_security rule [id "1"] triggered!`,
+	} {
+		if msg, _ := ErrorLogMessage(line); msg != "" {
+			t.Errorf("another module's line read as ModSecurity: %q", line)
+		}
+		if ip := ErrorLogClientIP(line); ip != "" {
+			t.Errorf("another module's line named client %q: %q", ip, line)
+		}
+	}
+}
+
+func TestErrorLogAcceptsModSecurityModuleTags(t *testing.T) {
+	for _, line := range []string{
+		`[Sun Nov 08 08:40:00.000000 2026] [:error] [pid 1] [client 203.0.113.50:5555] [client 203.0.113.50] ModSecurity: Access denied with code 403`,
+		`[Sun Nov 08 08:40:00.000000 2026] [security2:error] [pid 1:tid 2] [client 203.0.113.50:5555] ModSecurity: Access denied with code 403`,
+	} {
+		if ip := ErrorLogClientIP(line); ip != "203.0.113.50" {
+			t.Errorf("ModSecurity line named %q, want 203.0.113.50: %q", ip, line)
+		}
+	}
+}

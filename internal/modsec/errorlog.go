@@ -44,10 +44,48 @@ func errorLogMarker(line string) (at int, marker string, isLiteSpeed bool) {
 	} else {
 		at, marker = a, modsecApacheMarker
 	}
-	if at >= 0 && !errorLogPrefix.MatchString(line[:at]) {
+	if at >= 0 && (!errorLogPrefix.MatchString(line[:at]) || !modsecOwnsHeader(line[:at], isLiteSpeed)) {
 		return -1, "", false
 	}
 	return at, marker, isLiteSpeed
+}
+
+// modsecOwnsHeader rejects headers other writers share. Apache tags each
+// line with its module ([module:level]); PHP error_log, CGI stderr and other
+// modules can write a ModSecurity message after their own tag. LiteSpeed
+// logs a request's PHP stderr as [STDERR] after the connection field, so the
+// marker must follow that field directly.
+func modsecOwnsHeader(prefix string, isLiteSpeed bool) bool {
+	var fields []string
+	for rest := prefix; ; {
+		_, after, ok := strings.Cut(rest, "[")
+		if !ok {
+			break
+		}
+		field, tail, ok := strings.Cut(after, "]")
+		if !ok {
+			break
+		}
+		fields, rest = append(fields, field), tail
+	}
+	if isLiteSpeed {
+		for i, f := range fields {
+			if strings.Contains(f, "#") && i != len(fields)-1 {
+				return false
+			}
+		}
+		return true
+	}
+	for _, f := range fields {
+		module, _, tagged := strings.Cut(f, ":")
+		if !tagged || strings.ContainsAny(f, " \t") {
+			continue
+		}
+		if module != "" && module != "security2" && module != "security3" {
+			return false
+		}
+	}
+	return true
 }
 
 // ErrorLogClientIP reads the client address from the server-written prefix

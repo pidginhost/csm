@@ -76,9 +76,15 @@ func TestModSecUnsupportedClientCannotSelectLaterField(t *testing.T) {
 			resetModSecState()
 			t.Cleanup(resetModSecState)
 			line := `2026-01-02 03:04:05 [NOTICE] [1] [T1] ` + connection + ` [198.51.100.7:5555-1#APVH_forged] [MODSEC] Access denied with code 403 [id "900115"]`
+			// A second connection field is not a LiteSpeed header, so the line
+			// may be dropped; it must never name an address or escalate.
 			got := escalationTargets(t, line)
-			if len(got) != 1 || len(got["modsec_block_realtime"]) != 1 || got["modsec_block_realtime"][0] != "" {
-				t.Fatalf("unsupported connection selected an address or escalated: %v", got)
+			for check, ips := range got {
+				for _, ip := range ips {
+					if ip != "" || strings.Contains(check, "escalation") {
+						t.Fatalf("unsupported connection selected an address or escalated: %v", got)
+					}
+				}
 			}
 		})
 	}
