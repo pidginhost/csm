@@ -1,6 +1,7 @@
 // fixturecheck rejects IPv4 literals outside the documentation and loopback
 // ranges in repository fixtures and, given a terms file, private names
-// anywhere in the repository.
+// anywhere in the repository. With -corpus, every file of an attack corpus
+// checkout is a fixture.
 package main
 
 import (
@@ -59,15 +60,20 @@ func matchesTerm(line []byte, terms []*regexp.Regexp) bool {
 }
 
 // isCorpusSample distinguishes encoded payloads from corpus notes and Go fuzz
-// seeds, which are scanned as text. Sample data lives under
-// <corpus>/<category>/<sample>/; .b64 files are decoded at any depth.
+// seeds, which are scanned as text. Each directory in testdata is read as a
+// corpus checkout.
 func isCorpusSample(path string) bool {
 	relative, ok := strings.CutPrefix(path, "internal/attackcorpus/testdata/")
-	if !ok {
-		return false
-	}
-	return strings.HasSuffix(relative, ".b64") ||
-		(strings.Count(relative, "/") >= 3 && !strings.HasSuffix(relative, "/sample.json"))
+	_, inCorpus, _ := strings.Cut(relative, "/")
+	return ok && (strings.HasSuffix(relative, ".b64") || isSampleData(inCorpus))
+}
+
+// isSampleData reports whether a file of a corpus checkout is stored
+// base64-encoded. Sample data lives under <category>/<sample>/ beside
+// sample.json; .b64 files are decoded at any depth.
+func isSampleData(path string) bool {
+	return strings.HasSuffix(path, ".b64") ||
+		(strings.Count(path, "/") >= 2 && !strings.HasSuffix(path, "/sample.json"))
 }
 
 func isFixture(path string) bool {
@@ -120,11 +126,11 @@ func termsSource(path string, required bool) ([]*regexp.Regexp, error) {
 }
 
 // scanFile reports the violating lines of one file: non-documentation IPv4
-// literals in fixtures, private terms everywhere. Corpus samples are scanned
-// decoded, with line numbers of the decoded text. Fixtures must be regular
-// files; elsewhere a symlink is skipped because its target is scanned under
-// its own path.
-func scanFile(root *os.Root, name string, fixture bool, terms []*regexp.Regexp, output io.Writer) (violations int, scanned bool, err error) {
+// literals in fixtures, private terms everywhere. Encoded corpus samples are
+// scanned decoded, with line numbers of the decoded text. Fixtures must be
+// regular files; elsewhere a symlink is skipped because its target is scanned
+// under its own path.
+func scanFile(root *os.Root, name string, fixture, encoded bool, terms []*regexp.Regexp, output io.Writer) (violations int, scanned bool, err error) {
 	info, err := root.Lstat(name)
 	if err != nil {
 		return 0, false, err
@@ -141,12 +147,12 @@ func scanFile(root *os.Root, name string, fixture bool, terms []*regexp.Regexp, 
 	}
 	defer file.Close()
 	var content io.Reader = file
-	if isCorpusSample(name) {
-		encoded, err := io.ReadAll(file)
+	if encoded {
+		stored, err := io.ReadAll(file)
 		if err != nil {
 			return 0, false, fmt.Errorf("%s: read: %w", name, err)
 		}
-		decoded, err := base64.StdEncoding.DecodeString(string(encoded))
+		decoded, err := base64.StdEncoding.DecodeString(string(stored))
 		if err != nil {
 			return 0, false, fmt.Errorf("%s: decode corpus sample: %w", name, err)
 		}
@@ -179,6 +185,12 @@ func scanFile(root *os.Root, name string, fixture bool, terms []*regexp.Regexp, 
 }
 
 func check(directory string, terms []*regexp.Regexp, output io.Writer) error {
+	return checkTree(directory, false, terms, output)
+}
+
+// checkTree checks a repository or, with corpus set, an attack corpus
+// checkout, where every file is a fixture.
+func checkTree(directory string, corpus bool, terms []*regexp.Regexp, output io.Writer) error {
 	cmd := exec.Command("git", "-C", directory, "ls-files", "--cached", "--others", "--exclude-standard", "-z") // #nosec G204 -- Git options are fixed; the selected directory is one -C argument, never shell code.
 	paths, err := cmd.Output()
 	if err != nil {
@@ -206,11 +218,14 @@ func check(directory string, terms []*regexp.Regexp, output io.Writer) error {
 			violations++
 			continue
 		}
-		fixture := isFixture(name)
+		fixture, encoded := isFixture(name), isCorpusSample(name)
+		if corpus {
+			fixture, encoded = true, isSampleData(name)
+		}
 		if !fixture && len(terms) == 0 {
 			continue
 		}
-		count, ok, scanErr := scanFile(root, name, fixture, terms, output)
+		count, ok, scanErr := scanFile(root, name, fixture, encoded, terms, output)
 		if scanErr != nil {
 			return scanErr
 		}
@@ -244,13 +259,14 @@ func main() {
 	root := flag.String("root", ".", "repository to check")
 	termsPath := flag.String("terms", os.Getenv("CSM_PRIVATE_TERMS"), "file of case-insensitive regular expressions, one per line, that must not appear in any repository file (default: $CSM_PRIVATE_TERMS)")
 	requireTerms := flag.Bool("require-terms", false, "fail when no terms file is available")
+	corpus := flag.Bool("corpus", false, "treat -root as an attack corpus checkout: every file is a fixture and sample data is decoded")
 	flag.Parse()
 	terms, err := termsSource(*termsPath, *requireTerms)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	if err := check(*root, terms, os.Stdout); err != nil {
+	if err := checkTree(*root, *corpus, terms, os.Stdout); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
