@@ -50,42 +50,36 @@ func errorLogMarker(line string) (at int, marker string, isLiteSpeed bool) {
 	return at, marker, isLiteSpeed
 }
 
-// modsecOwnsHeader rejects headers other writers share. Apache tags each
-// line with its module ([module:level]); PHP error_log, CGI stderr and other
-// modules can write a ModSecurity message after their own tag. LiteSpeed
-// logs a request's PHP stderr as [STDERR] after the connection field, so the
-// marker must follow that field directly.
+// liteSpeedHeader is LiteSpeed's header in fixed positions: an optional
+// timestamp, [LEVEL], [pid], an optional [T#] thread, then exactly one
+// connection field directly before [MODSEC]. A request's PHP stderr is
+// logged as [STDERR] followed by its own text, which can hold any field.
+var liteSpeedHeader = regexp.MustCompile(`^(?:[0-9]{4}-[0-9]{2}-[0-9]{2}(?: [0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?)? )?` +
+	`\[[A-Z]+\] \[[0-9]+\] (?:\[T[0-9]+\] )?\[[^\[\]\s#]+#[^\[\]\s]*\][ \t]*$`)
+
+// modsecOwnsHeader rejects headers other writers share. Apache 2.4 tags
+// each line with its module ([module:level]); PHP error_log, CGI stderr and
+// modules without a module index ([:level]) can write a ModSecurity message
+// after their own tag. Apache 2.2 lines carry no tag and stay accepted.
 func modsecOwnsHeader(prefix string, isLiteSpeed bool) bool {
-	var fields []string
+	if isLiteSpeed {
+		return liteSpeedHeader.MatchString(prefix)
+	}
 	for rest := prefix; ; {
 		_, after, ok := strings.Cut(rest, "[")
 		if !ok {
-			break
+			return true
 		}
 		field, tail, ok := strings.Cut(after, "]")
 		if !ok {
-			break
+			return true
 		}
-		fields, rest = append(fields, field), tail
-	}
-	if isLiteSpeed {
-		for i, f := range fields {
-			if strings.Contains(f, "#") && i != len(fields)-1 {
-				return false
-			}
-		}
-		return true
-	}
-	for _, f := range fields {
-		module, _, tagged := strings.Cut(f, ":")
-		if !tagged || strings.ContainsAny(f, " \t") {
-			continue
-		}
-		if module != "" && module != "security2" && module != "security3" {
+		rest = tail
+		module, _, tagged := strings.Cut(field, ":")
+		if tagged && !strings.ContainsAny(field, " \t") && module != "security2" && module != "security3" {
 			return false
 		}
 	}
-	return true
 }
 
 // ErrorLogClientIP reads the client address from the server-written prefix

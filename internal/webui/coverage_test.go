@@ -1432,7 +1432,7 @@ func TestExtractModSecIPApacheWithPort(t *testing.T) {
 }
 
 func TestExtractModSecIPLiteSpeedFormat(t *testing.T) {
-	f := alert.Finding{Details: `[203.0.113.5:443-0#HTTPS] [MODSEC] Access denied`}
+	f := alert.Finding{Details: `2026-05-09 09:07:53.866619 [NOTICE] [1800848] [T4] [203.0.113.5:443-0#HTTPS] [MODSEC] Access denied`}
 	if got := extractModSecIP(f); got != "203.0.113.5" {
 		t.Errorf("got %q, want 203.0.113.5", got)
 	}

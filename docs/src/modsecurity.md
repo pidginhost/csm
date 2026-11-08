@@ -65,9 +65,11 @@ LiteSpeed IPv6 connection formats are unsupported: events keep an unknown
 client and cannot trigger an IP escalation. The Web UI uses the finding's
 recorded source address, with a prefix-only raw-log fallback for older findings;
 it leaves the client unknown when neither is available.
-Lines that another Apache module tags, such as PHP or CGI output, and
+On Apache 2.4 a line must carry ModSecurity's own module tag (`security2` or
+`security3`). Lines that another module tags, such as PHP or CGI output, and
 LiteSpeed PHP stderr lines are never ModSecurity events, even when their text
-holds a ModSecurity message.
+holds a ModSecurity message. A LiteSpeed line must have its standard header,
+with the connection field directly before `[MODSEC]`.
 
 Header validation does not authenticate file-based records. Nginx can write
 literal line breaks from decoded filenames into its error log, allowing request
