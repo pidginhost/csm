@@ -9,12 +9,12 @@ import (
 	"mime"
 	"net/textproto"
 	"path/filepath"
-	"regexp"
 	"strings"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/emailspool"
+	"github.com/pidginhost/csm/internal/eximlog"
 	emime "github.com/pidginhost/csm/internal/mime"
 	"github.com/pidginhost/csm/internal/state"
 )
@@ -83,20 +83,17 @@ func CheckOutboundEmailContent(ctx context.Context, cfg *config.Config, _ *state
 		return nil
 	}
 
-	// Extract message IDs for outbound emails
-	msgIDRegex := regexp.MustCompile(`^\S+\s+(\S+)\s+<=\s+(\S+)`)
 	scanned := make(map[string]bool) // avoid scanning same message twice
 
 	for _, line := range lines {
-		matches := msgIDRegex.FindStringSubmatch(line)
-		if len(matches) < 3 {
-			continue
+		msgID, sender, ok := eximlog.Arrival(line)
+		if !ok || sender == "<>" {
+			continue // not an arrival, or a bounce
 		}
-		msgID := matches[1]
-		sender := matches[2]
-
-		if sender == "<>" || sender == "" {
-			continue // bounce message
+		// Outbound means submitted here: an authenticated mailbox or a local
+		// caller. Inbound mail from other servers is not this check's job.
+		if eximlog.Submitter(line) == "" {
+			continue
 		}
 		if scanned[msgID] {
 			continue
@@ -115,16 +112,8 @@ func CheckOutboundEmailContent(ctx context.Context, cfg *config.Config, _ *state
 
 // scanEximMessage reads an Exim spool message and checks for suspicious content.
 func scanEximMessage(msgID, sender string, cfg *config.Config) *alert.Finding {
-	// Exim spool paths
-	// Headers: /var/spool/exim/input/{msgID}-H
-	// Body: /var/spool/exim/input/{msgID}-D
-	spoolDirs := []string{
-		"/var/spool/exim/input",
-		"/var/spool/exim4/input",
-	}
-
 	var headerPath, bodyPath string
-	for _, dir := range spoolDirs {
+	for _, dir := range eximSpoolMessageDirs(msgID) {
 		h := filepath.Join(dir, msgID+"-H")
 		b := filepath.Join(dir, msgID+"-D")
 		if _, err := osFS.Stat(h); err == nil {

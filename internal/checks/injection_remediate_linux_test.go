@@ -341,6 +341,33 @@ func TestFixHtaccessNoDangerousDirectivesReportsError(t *testing.T) {
 	}
 }
 
+func TestFixQuarantineSpoolMessageFindsSplitSpool(t *testing.T) {
+	tmp := t.TempDir()
+	spool := filepath.Join(tmp, "spool")
+	const msgID = "2jKPFm-000abc-1X"
+	split := filepath.Join(spool, msgID[5:6])
+	if err := os.MkdirAll(split, 0755); err != nil {
+		t.Fatal(err)
+	}
+	withEximSpoolDirs(t, []string{spool})
+	withQuarantineDir(t, filepath.Join(tmp, "quarantine"))
+	for _, suf := range []string{"-H", "-D"} {
+		if err := os.WriteFile(filepath.Join(split, msgID+suf), []byte("data"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	res := fixQuarantineSpoolMessage("phishing (message: " + msgID + ")")
+	if !res.Success || !strings.Contains(res.Action, "2 files") {
+		t.Fatalf("split spool message not quarantined: %+v", res)
+	}
+	for _, suf := range []string{"-H", "-D"} {
+		if _, err := os.Stat(filepath.Join(split, msgID+suf)); !os.IsNotExist(err) {
+			t.Errorf("spool %s should be removed, stat err=%v", suf, err)
+		}
+	}
+}
+
 func TestFixQuarantineSpoolMessageMovesHandD(t *testing.T) {
 	tmp := t.TempDir()
 	spool := filepath.Join(tmp, "spool")

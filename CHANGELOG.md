@@ -16,6 +16,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 ### Fixed
 
 - Framework classes that handle admin uploads no longer raise Critical dropper alerts.
+- Phishing sent from hosted accounts is now reported, stays open while still queued, and can be quarantined from its finding.
 
 ## [4.10.2] - 2026-11-08
 

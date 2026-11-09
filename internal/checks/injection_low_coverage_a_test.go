@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -1466,17 +1467,20 @@ func TestScanEximMessageNoHeaders(t *testing.T) {
 // ===========================================================================
 
 func TestCheckOutboundEmailContentParsesLog(t *testing.T) {
-	// Regex: ^\S+\s+(\S+)\s+<=\s+(\S+) expects:
-	// <timestamp> <msgID> <= <sender>
-	logLines := "1681234567 ABC123 <= sender@example.com H=mail.example.com\n" +
-		"1681234568 ABC123 => victim@target.com R=remote\n" +
-		"1681234569 DEF456 <= <> H=bounce\n"
+	// Real mainlog records: date, time, optional PID, then the message ID.
+	// Only mail this server submitted (authenticated or local) is outbound.
+	logLines := "2026-11-09 10:00:00 1vOutA-000001-AB <= sender@example.com H=(client) [203.0.113.9]:4000 P=esmtpa A=dovecot_login:sender@example.com S=900 T=\"Invoice\" for victim@example.net\n" +
+		"2026-11-09 10:00:01 [4242] 1vOutB-000002-CD <= cpuser@example.com U=cpuser P=local S=700 T=\"Notice\" for victim@example.net\n" +
+		"2026-11-09 10:00:02 1vInbC-000003-EF <= stranger@example.org H=mx.example.org [198.51.100.7]:25 P=esmtps S=800 T=\"Hello\" for alice@example.com\n" +
+		"2026-11-09 10:00:03 1vOutA-000001-AB => victim@example.net R=dkim_lookuphost T=dkim_remote_smtp\n" +
+		"2026-11-09 10:00:04 1vBncD-000004-GH <= <> R=1vOutA-000001-AB U=mailnull P=local S=1200\n"
 
 	headers := eximSpool(
 		"048F From: PayPal <sender@example.com>",
 		"036R Reply-To: hacker@evil.com",
 	)
 
+	var spoolStats []string
 	withMockOS(t, &mockOS{
 		open: func(name string) (*os.File, error) {
 			if strings.Contains(name, "exim_mainlog") {
@@ -1491,7 +1495,8 @@ func TestCheckOutboundEmailContentParsesLog(t *testing.T) {
 				return fakeFileInfo{name: "exim_mainlog", size: int64(len(logLines))}, nil
 			}
 			if strings.HasSuffix(name, "-H") {
-				return fakeFileInfo{name: "ABC123-H"}, nil
+				spoolStats = append(spoolStats, filepath.Base(name))
+				return fakeFileInfo{name: filepath.Base(name)}, nil
 			}
 			return nil, os.ErrNotExist
 		},
@@ -1507,8 +1512,49 @@ func TestCheckOutboundEmailContentParsesLog(t *testing.T) {
 	})
 
 	findings := CheckOutboundEmailContent(context.Background(), &config.Config{}, nil)
-	if len(findings) == 0 {
-		t.Error("expected findings from parsed exim log with Reply-To mismatch")
+	if len(findings) != 2 {
+		t.Fatalf("findings = %d, want 2 (one per outbound message): %+v", len(findings), findings)
+	}
+	for i, id := range []string{"1vOutA-000001-AB", "1vOutB-000002-CD"} {
+		if !strings.Contains(findings[i].Message, id) {
+			t.Errorf("finding %d message %q does not name %s", i, findings[i].Message, id)
+		}
+	}
+	for _, name := range spoolStats {
+		if strings.HasPrefix(name, "1vInbC-") || strings.HasPrefix(name, "1vBncD-") {
+			t.Errorf("inbound or bounce message spool %s was scanned", name)
+		}
+	}
+}
+
+func TestScanEximMessageFindsSplitSpool(t *testing.T) {
+	// cPanel runs Exim with split_spool_directory: the message files sit in
+	// a subdirectory named after the sixth character of the message ID.
+	headers := eximSpool(
+		"048F From: PayPal <sender@example.com>",
+		"036R Reply-To: hacker@evil.com",
+	)
+	split := "/var/spool/exim/input/A/1vOutA-000001-AB"
+	withMockOS(t, &mockOS{
+		stat: func(name string) (os.FileInfo, error) {
+			if name == split+"-H" {
+				return fakeFileInfo{name: filepath.Base(name)}, nil
+			}
+			return nil, os.ErrNotExist
+		},
+		readFile: func(name string) ([]byte, error) {
+			switch name {
+			case split + "-H":
+				return []byte(headers), nil
+			case split + "-D":
+				return []byte("Normal body"), nil
+			}
+			return nil, os.ErrNotExist
+		},
+	})
+
+	if scanEximMessage("1vOutA-000001-AB", "sender@example.com", &config.Config{}) == nil {
+		t.Fatal("message in a split spool subdirectory was not scanned")
 	}
 }
 

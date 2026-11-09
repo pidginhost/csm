@@ -2,6 +2,7 @@ package eximlog
 
 import (
 	"net"
+	"strings"
 	"testing"
 )
 
@@ -53,6 +54,28 @@ func FuzzAuthFailureLoginText(f *testing.F) {
 		want := AuthFailureRecord{Authenticator: "dovecot_login", ClientIP: "203.0.113.7", Code: "435", Account: name}
 		if got := AuthFailure(line); got != want {
 			t.Fatalf("login text changed the record: %+v, want %+v", got, want)
+		}
+	})
+}
+
+func FuzzArrival(f *testing.F) {
+	f.Add(`2026-11-09 10:00:00 1vOutA-000001-AB <= sender@example.com H=(client) [203.0.113.9]:4000 P=esmtpa A=dovecot_login:sender@example.com S=900`)
+	f.Add(`2026-11-09 10:00:02 [12] 1vOutC-000003-EF <= "john doe"@example.com U=cpuser P=local S=700`)
+	f.Add(`2026-11-09 10:00:04 1vOutA-000001-AB ** a@example.net: 550 <= b@example.org`)
+	f.Add(`1681234567 ABC123 <= sender@example.com`)
+	f.Fuzz(func(t *testing.T, line string) {
+		id, sender, ok := Arrival(line)
+		if !ok {
+			if id != "" || sender != "" {
+				t.Fatalf("Arrival(%q) = (%q, %q) without ok", line, id, sender)
+			}
+			return
+		}
+		if id == "" || strings.ContainsAny(id, " \t\r\n") || sender == "" {
+			t.Fatalf("Arrival(%q) = (%q, %q)", line, id, sender)
+		}
+		if !strings.Contains(line, id) || !strings.Contains(line, " <= "+sender) {
+			t.Fatalf("Arrival(%q) = (%q, %q) not taken from the line", line, id, sender)
 		}
 	})
 }

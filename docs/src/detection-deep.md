@@ -363,7 +363,7 @@ discovers WordPress installs only.
 | Check | Description |
 |-------|-------------|
 | `phishing` | 8-layer phishing detection (kit directories, credential harvesting). Kit archives are judged from their file list, read through an isolated worker without decompression. Unread or malformed directory records leave the check incomplete. |
-| `email_content` | Outbound email body scanning for credentials and suspicious URLs. Oversized headers are checked from a bounded prefix; long padding lines do not discard readable evidence or stop body checks. |
+| `email_content` | Outbound email body scanning for credentials and suspicious URLs. Only mail submitted on this server, by an authenticated mailbox or a local process, is scanned; mail arriving from other servers is not. Messages are found in both flat and split Exim spool layouts. Oversized headers are checked from a bounded prefix; long padding lines do not discard readable evidence or stop body checks. |
 
 If the ZIP worker is unavailable, the check stays incomplete. ZIP parsing never
 falls back into the daemon. The existing `phishing` entry in `disabled_checks`

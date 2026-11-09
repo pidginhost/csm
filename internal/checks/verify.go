@@ -606,7 +606,7 @@ func verifyEximSpoolAbsent(message string) VerifyResult {
 	if !eximMsgIDRegex.MatchString(msgID) {
 		return VerifyResult{Checked: false, Detail: fmt.Sprintf("invalid Exim message ID format: %s", msgID)}
 	}
-	for _, dir := range eximSpoolDirs {
+	for _, dir := range eximSpoolMessageDirs(msgID) {
 		if _, err := osFS.Lstat(filepath.Join(dir, msgID+"-H")); err == nil {
 			return VerifyResult{Checked: true, Resolved: false, Detail: fmt.Sprintf("spool message %s is still queued", msgID)}
 		} else if !os.IsNotExist(err) {

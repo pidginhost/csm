@@ -315,6 +315,25 @@ func TestVerifyFindingEximSpool(t *testing.T) {
 	}
 }
 
+func TestVerifyFindingEximSplitSpoolStillQueued(t *testing.T) {
+	tmp := t.TempDir()
+	oldSpool := eximSpoolDirs
+	eximSpoolDirs = []string{tmp}
+	t.Cleanup(func() { eximSpoolDirs = oldSpool })
+
+	msgID := "1abcde-123456-AB"
+	if err := os.MkdirAll(filepath.Join(tmp, msgID[5:6]), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, msgID[5:6], msgID+"-H"), []byte("hdr"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	msg := "Phishing email queued (message: " + msgID + ")"
+	if res := VerifyFinding("email_phishing_content", msg, ""); !res.Checked || res.Resolved {
+		t.Errorf("message queued in a split spool subdirectory should verify unresolved, got %+v", res)
+	}
+}
+
 func TestVerifyFindingEximSpoolStatErrorNotResolved(t *testing.T) {
 	oldSpool := eximSpoolDirs
 	eximSpoolDirs = []string{"/var/spool/exim/input"}

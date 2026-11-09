@@ -46,6 +46,21 @@ var (
 	eximSpoolDirs              = []string{"/var/spool/exim/input", "/var/spool/exim4/input"}
 )
 
+// eximSpoolMessageDirs lists where Exim may keep a message's -H and -D
+// files: with split_spool_directory (the cPanel default) the input/
+// subdirectory named after the sixth character of the message ID, otherwise
+// input/ itself.
+func eximSpoolMessageDirs(msgID string) []string {
+	var dirs []string
+	for _, root := range eximSpoolDirs {
+		if len(msgID) > 5 {
+			dirs = append(dirs, filepath.Join(root, msgID[5:6]))
+		}
+		dirs = append(dirs, root)
+	}
+	return dirs
+}
+
 // chmodFunc performs the permission change for fixPermissions on the pinned
 // descriptor. It is a var so tests can simulate failures (e.g. a read-only
 // mount returning EROFS) without an actual read-only filesystem, and assert an
@@ -562,7 +577,7 @@ func fixQuarantineSpoolMessage(message string) RemediationResult {
 	}
 
 	var spoolDir string
-	for _, dir := range eximSpoolDirs {
+	for _, dir := range eximSpoolMessageDirs(msgID) {
 		if _, err := osFS.Stat(filepath.Join(dir, msgID+"-H")); err == nil {
 			spoolDir = dir
 			break
