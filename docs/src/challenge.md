@@ -156,15 +156,25 @@ contains only trusted proxies, challenge endpoints return HTTP 400. They do
 not issue a puzzle or cookie, accept a bypass, or clear a pending challenge
 for the proxy. This also applies to the gate and admin-token endpoints.
 
-An address of this host is never trusted: loopback, the unspecified
+At startup, CSM rejects proxy trust for loopback, the unspecified
 addresses, and every address on the host's interfaces, link-local ones
 included. Any local account can connect from those and write
 X-Forwarded-For. When an entry is or contains one of them, the challenge
-server does not start, `csm validate` warns and `csm doctor challenge`
-fails. Suspicious addresses then get the normal response, a block or an
-alert, instead of a challenge. An address added to the host while the
-daemon runs is not trusted either. For a proxy on this host, use the
-[socket](#proxy-on-the-same-host).
+server does not start, `csm validate` warns, `csm doctor challenge` fails,
+and the webserver integration installer refuses the configuration. This
+applies to both TCP and Unix socket listeners. The daemon keeps running;
+suspicious addresses get the normal response, a block or an alert,
+instead of a challenge. For a proxy on this host, use the
+[socket](#proxy-on-the-same-host) and remove host-local entries from
+`trusted_proxies`.
+
+While serving requests, CSM uses a cached interface address list, refreshed
+on demand after five minutes. If a refresh fails, it keeps the last
+successful list. An address added while the daemon runs can still be
+trusted until a successful refresh discovers it. Before assigning this
+host an address covered by `trusted_proxies`, remove or narrow the covering
+entries to remote proxies and restart CSM. Only then assign the address.
+Run `csm doctor challenge` to check the resulting configuration.
 
 With `trusted_proxies` set, point `challenge.public_url` at the proxy.
 `listen_addr` holds a host only; the port goes in `listen_port`.
