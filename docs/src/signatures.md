@@ -132,6 +132,10 @@ characters by the YAML rules, so the two can disagree on a line with non-ASCII
 text in the span. Measuring characters in YARA-X slowed scans of crafted lines
 too much. A finding is re-checked by the engine that raised it.
 
+Both engines report download-and-pipe commands even when a file begins with
+HTML or has an HTML extension. This includes install commands printed on web
+pages. Leading markup does not prove that later lines cannot run as shell code.
+
 The unauthenticated uploader signature skips a framework helper class: a file
 holding only a direct-access guard that exits and one class declaration, which
 writes the upload through the object and creates no object itself. Code after
