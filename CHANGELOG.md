@@ -25,7 +25,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Fixed
 
-- Realtime web, ModSecurity and cPanel API checks no longer flag or block a configured trusted proxy.
+- Realtime web, ModSecurity and cPanel API checks no longer block or score configured trusted proxies, while informational events stay visible.
 - Framework classes that handle admin uploads no longer raise Critical dropper alerts.
 - The webserver integration installs with a loopback challenge listener behind your own proxy when `challenge.trusted_proxies` lists the listener's address.
 - `csm doctor challenge` no longer fails the gate check, or asks for listener TLS and the port gate, when the listener sits behind `challenge.trusted_proxies`.
