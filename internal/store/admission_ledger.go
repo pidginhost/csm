@@ -152,6 +152,13 @@ type AdmissionLedger struct {
 	held      map[string]int
 	heldDelta map[string]int
 
+	// onRefused learns of each queued candidate a later check ends, with
+	// the refusal, its cause and the ledger time it ended at, once the
+	// ending commits; refused collects a write transaction's endings until
+	// then. Both are guarded by mu.
+	onRefused func(admission.Candidate, error, time.Time)
+	refused   []refusedEnding
+
 	// failBeforeCommit lets a test fail a write transaction after all of
 	// its writes, to prove that nothing is published.
 	failBeforeCommit func(op string) error
@@ -469,8 +476,8 @@ func loadLedgerInventory(meta *bolt.Bucket) (ledgerInventory, error) {
 }
 
 func (l *AdmissionLedger) update(op string, fn func(tx *bolt.Tx) error) error {
-	l.heldDelta = map[string]int{}
-	defer func() { l.heldDelta = nil }()
+	l.heldDelta, l.refused = map[string]int{}, nil
+	defer func() { l.heldDelta, l.refused = nil, nil }()
 	if err := l.db.bolt.Update(func(tx *bolt.Tx) error {
 		if err := fn(tx); err != nil {
 			return err
@@ -487,7 +494,30 @@ func (l *AdmissionLedger) update(op string, fn func(tx *bolt.Tx) error) error {
 			delete(l.held, key)
 		}
 	}
+	if l.onRefused != nil {
+		for _, r := range l.refused {
+			l.onRefused(r.c, r.err, r.at)
+		}
+	}
 	return nil
+}
+
+// refusedEnding is a queued candidate a check ended, why, and when.
+type refusedEnding struct {
+	c   admission.Candidate
+	err error
+	at  time.Time
+}
+
+// ObserveRefusals registers fn to learn of each queued candidate a later
+// check refuses (revalidation, an inventory refresh, the recheck of a
+// schedule or preview pick) or that loses its queue position, with the
+// refusal, its cause and the ledger time it ended at, after the ending
+// commits. fn runs under the ledger lock and must not call it.
+func (l *AdmissionLedger) ObserveRefusals(fn func(admission.Candidate, error, time.Time)) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.onRefused = fn
 }
 
 // Tick records a clock reading. The high-water mark it persists is the only
@@ -612,6 +642,7 @@ func (l *AdmissionLedger) RefreshInventory(obs admission.InventoryObservation) e
 		if err != nil {
 			return err
 		}
+		q.refused = &l.refused
 		if err = q.checkOwners(); err != nil {
 			return err
 		}

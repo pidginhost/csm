@@ -172,6 +172,10 @@ func TestAdmissionLedgerQueueOverflowDisplaces(t *testing.T) {
 	f := newLedgerFixture(t)
 	alice, bob := f.owner("alice"), f.owner("bob")
 	flood := f.fill(admission.PartitionGeneral.DurableCapacity(), evidenceSpec{owner: alice})
+	var reported []laterRefusal
+	f.l.ObserveRefusals(func(c admission.Candidate, err error, at time.Time) {
+		reported = append(reported, laterRefusal{key: c.Key, err: err, at: at})
+	})
 	own := f.published(evidenceSpec{owner: alice, target: "192.0.2.20", cursor: "own"})
 	before := f.snapshot()
 	_, _, err := f.l.Enqueue(f.request("192.0.2.20", own))
@@ -188,7 +192,22 @@ func TestAdmissionLedgerQueueOverflowDisplaces(t *testing.T) {
 	if !reflect.DeepEqual(before, f.snapshot()) {
 		t.Fatal("a failed displacing enqueue changed records")
 	}
+	// Neither the refused arrival, which ingress counts, nor the aborted
+	// displacement is reported.
+	if len(reported) != 0 {
+		t.Fatalf("reported %+v before a committed displacement", reported)
+	}
 	c, otherID := f.enqueue(f.request("192.0.2.21", other))
+	victim, err := f.l.Candidate(newest(flood))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reported) != 1 || reported[0].key != victim.Key || !reported[0].at.Equal(f.wall) {
+		t.Fatalf("reported %+v, want the displaced candidate once", reported)
+	}
+	if reason, _ := admission.ReasonOf(reported[0].err); reason != admission.ReasonQueueOverflow || admission.CauseOf(reported[0].err) != 0 {
+		t.Fatalf("reported %v, want queue overflow with no cause", reported[0].err)
+	}
 	if e, err := f.entry(otherID); err != nil || e.Partition != admission.PartitionGeneral || c.Scope.Owner != bob {
 		t.Fatalf("reclaiming arrival = %+v %+v, %v", c, e, err)
 	}
@@ -310,7 +329,27 @@ func TestAdmissionLedgerSweepMovesLapsedCorroboration(t *testing.T) {
 			flood := f.fill(admission.PartitionGeneral.DurableCapacity(), evidenceSpec{owner: floodOwner, severity: admission.SeverityCritical})
 			f.tickAt(ledgerT0.Add(time.Hour))
 			trigger := f.published(evidenceSpec{producer: f.mail, check: "mail_takeover", target: "192.0.2.40", cursor: "trigger", severity: admission.SeverityCritical})
+			var reported []laterRefusal
+			f.l.ObserveRefusals(func(c admission.Candidate, err error, at time.Time) {
+				reported = append(reported, laterRefusal{key: c.Key, err: err, at: at})
+			})
 			_, triggerID := f.enqueue(f.request("192.0.2.40", trigger))
+			// The ending the sweep made is reported once, at the sweep's
+			// ledger time, as queue overflow with no attribution cause.
+			endedID := id
+			if !crowded {
+				endedID = newest(flood)
+			}
+			want, err := f.l.Candidate(endedID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(reported) != 1 || reported[0].key != want.Key || !reported[0].at.Equal(ledgerT0.Add(time.Hour)) {
+				t.Fatalf("reported %+v, want the one ending of %v at the sweep", reported, want.Key)
+			}
+			if reason, _ := admission.ReasonOf(reported[0].err); reason != admission.ReasonQueueOverflow || admission.CauseOf(reported[0].err) != 0 {
+				t.Fatalf("reported %v, want queue overflow with no cause", reported[0].err)
+			}
 			if e, err := f.entry(triggerID); err != nil || e.Partition != admission.PartitionReserved {
 				t.Fatalf("trigger = %+v, %v", e, err)
 			}

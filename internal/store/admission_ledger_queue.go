@@ -174,6 +174,10 @@ type queueTx struct {
 	// rows.
 	held, heldDelta map[string]int
 	heldTargets     map[string]bool
+	// refused collects the candidates refuse ends, for the handle to report
+	// once the transaction commits (AdmissionLedger.refused); nil reports
+	// nothing.
+	refused *[]refusedEnding
 	// started is the handle's live start (AdmissionLedger.live) and set
 	// the handle's set occupancy (AdmissionLedger.set). degraded is the
 	// handle's last reading (AdmissionLedger.degraded): no record rotates
@@ -195,7 +199,7 @@ func (l *AdmissionLedger) openQueue(tx *bolt.Tx, now time.Time) (*queueTx, error
 		return nil, err
 	}
 	q.held, q.heldDelta, q.started, q.degraded, q.set, q.imports, q.waiting = l.held, l.heldDelta, l.live, l.degraded, l.set, l.imports, l.waiting
-	q.executed = l.executed
+	q.executed, q.refused = l.executed, &l.refused
 	return q, nil
 }
 
@@ -354,7 +358,20 @@ func (q *queueTx) end(lc liveCandidate, reason admission.Reason) error {
 	return q.ended(lc.id, c)
 }
 
-// endByKey ends the queued candidate a view decision displaced.
+// refuse ends a queued candidate a check refused and keeps the refusal, with
+// its cause, for the handle to report once the transaction commits.
+func (q *queueTx) refuse(lc liveCandidate, reason admission.Reason, cause admission.Cause) error {
+	if err := q.end(lc, reason); err != nil {
+		return err
+	}
+	if q.refused != nil {
+		*q.refused = append(*q.refused, refusedEnding{c: lc.c, err: &admission.Error{Reason: reason, Cause: cause, Detail: "candidate no longer qualifies for a response"}, at: q.now})
+	}
+	return nil
+}
+
+// endByKey ends the queued candidate a view decision displaced and reports
+// it as refused, with no attribution cause.
 func (q *queueTx) endByKey(key string, reason admission.Reason) error {
 	id := admission.CandidateID(key)
 	c, err := loadCandidate(q.tx, id)
@@ -365,7 +382,7 @@ func (q *queueTx) endByKey(key string, reason admission.Reason) error {
 	if err != nil {
 		return err
 	}
-	return q.end(liveCandidate{id: id, c: c, entry: e}, reason)
+	return q.refuse(liveCandidate{id: id, c: c, entry: e}, reason, 0)
 }
 
 // entryFor turns an assessment into the entry fields it decides.
@@ -415,7 +432,7 @@ func (q *queueTx) reassess(lc liveCandidate, next admission.QueueEntry) (admissi
 		placed, ok := v.Admit(queueItem(lc.id, lc.c, next))
 		if !ok {
 			lc.entry = next
-			if err = q.end(lc, admission.ReasonQueueOverflow); err != nil {
+			if err = q.refuse(lc, admission.ReasonQueueOverflow, 0); err != nil {
 				return lc.c, err
 			}
 			return loadCandidate(q.tx, lc.id)
@@ -441,19 +458,20 @@ func (q *queueTx) reassess(lc liveCandidate, next admission.QueueEntry) (admissi
 
 // check revalidates a queued candidate against current policy and
 // inventory and, when timed, assesses it at q.now. A refusal is the reason
-// the candidate must end; any other error is returned. A root that is no
-// longer published is damage, not a refusal: evidence is never removed.
-func (q *queueTx) check(lc liveCandidate, timed bool) (admission.Assessment, admission.Reason, error) {
+// the candidate must end and, for an attribution refusal, its cause; any
+// other error is returned. A root that is no longer published is damage,
+// not a refusal: evidence is never removed.
+func (q *queueTx) check(lc liveCandidate, timed bool) (admission.Assessment, admission.Reason, admission.Cause, error) {
 	c := lc.c
 	roots, err := loadRoots(q.tx, q.reg, c.Roots)
 	if errors.Is(err, admission.ErrEvidenceUnpublished) {
-		return admission.Assessment{}, 0, admission.ErrCorruptRecord
+		return admission.Assessment{}, 0, 0, admission.ErrCorruptRecord
 	}
 	if _, refused := admission.ReasonOf(err); err != nil && !refused {
-		return admission.Assessment{}, 0, err
+		return admission.Assessment{}, 0, 0, err
 	}
 	if timed && (!q.now.Before(c.AgeOut) || (c.Attempts > 0 && !q.now.Before(c.ExpiresAt))) {
-		return admission.Assessment{}, admission.ReasonStale, nil
+		return admission.Assessment{}, admission.ReasonStale, 0, nil
 	}
 	if err == nil {
 		err = validateCandidateEntry(q.reg, c, roots)
@@ -466,9 +484,9 @@ func (q *queueTx) check(lc liveCandidate, timed bool) (admission.Assessment, adm
 		a, err = admission.Assess(c.Key.Target, roots, q.now)
 	}
 	if reason, refused := admission.ReasonOf(err); refused {
-		return admission.Assessment{}, reason, nil
+		return admission.Assessment{}, reason, admission.CauseOf(err), nil
 	}
-	return a, 0, err
+	return a, 0, 0, err
 }
 
 // revalidate checks queued candidates in queue order, oldest first. With
@@ -503,12 +521,12 @@ func (q *queueTx) revalidate(all bool) error {
 		if !all && !due {
 			continue
 		}
-		a, reason, checkErr := q.check(lc, true)
+		a, reason, cause, checkErr := q.check(lc, true)
 		if checkErr != nil {
 			return checkErr
 		}
 		if reason != 0 {
-			if err = q.end(lc, reason); err != nil {
+			if err = q.refuse(lc, reason, cause); err != nil {
 				return err
 			}
 			continue
@@ -566,12 +584,12 @@ func (q *queueTx) checkOwners() error {
 		if lc.c.State != admission.StateQueued {
 			continue
 		}
-		_, reason, err := q.check(lc, false)
+		_, reason, cause, err := q.check(lc, false)
 		if err != nil {
 			return err
 		}
 		if reason != 0 {
-			if err = q.end(lc, reason); err != nil {
+			if err = q.refuse(lc, reason, cause); err != nil {
 				return err
 			}
 		}
@@ -724,14 +742,14 @@ func (l *AdmissionLedger) scheduleTx(q *queueTx, lim admission.ScheduleLimits, a
 		}
 		refused := map[admission.CandidateID]bool{}
 		for _, p := range picks {
-			_, reason, checkErr := q.check(byID[p.ID], true)
+			_, reason, cause, checkErr := q.check(byID[p.ID], true)
 			if checkErr != nil {
 				return nil, checkErr
 			}
 			if reason == 0 {
 				continue
 			}
-			if checkErr = q.end(byID[p.ID], reason); checkErr != nil {
+			if checkErr = q.refuse(byID[p.ID], reason, cause); checkErr != nil {
 				return nil, checkErr
 			}
 			refused[p.ID] = true
@@ -866,7 +884,7 @@ func (l *AdmissionLedger) previewTx(q *queueTx, answers map[admission.CandidateI
 		remaining := history
 		skipped := map[admission.CandidateID]bool{}
 		for i, p := range picks {
-			_, reason, checkErr := q.check(byID[p.ID], true)
+			_, reason, cause, checkErr := q.check(byID[p.ID], true)
 			if checkErr != nil {
 				return nil, checkErr
 			}
@@ -886,7 +904,7 @@ func (l *AdmissionLedger) previewTx(q *queueTx, answers map[admission.CandidateI
 				}
 				continue
 			}
-			if checkErr = q.end(byID[p.ID], reason); checkErr != nil {
+			if checkErr = q.refuse(byID[p.ID], reason, cause); checkErr != nil {
 				return nil, checkErr
 			}
 			refused[p.ID] = true
