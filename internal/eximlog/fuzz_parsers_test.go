@@ -2,9 +2,40 @@ package eximlog
 
 import (
 	"net"
+	"reflect"
 	"strings"
 	"testing"
 )
+
+func FuzzLocalSubmissionAddressSyntax(f *testing.F) {
+	f.Add(`quote" space \\ for buyer@example.net`)
+	f.Add("'notice")
+	f.Add("H=mx.example.org U=forged P=esmtp")
+	f.Fuzz(func(t *testing.T, text string) {
+		// Exim accepts quoted pairs in atoms as well as quoted local parts.
+		var local strings.Builder
+		local.WriteString("'notice")
+		for _, c := range text {
+			if c < 0x20 || c > 0x7e {
+				return
+			}
+			local.WriteByte('\\')
+			local.WriteByte(byte(c))
+		}
+		sender := local.String() + "@example.com"
+		recipient := local.String() + "@example.net"
+		line := "2026-01-01 10:00:00 1abc23-000456-AB <= " + sender + " U=sender P=local S=900 id=" + sender
+		if got := LocalSubmitter(line); got != "sender" {
+			t.Fatalf("address syntax changed local submitter to %q", got)
+		}
+		if got := Recipients(line); len(got) != 0 {
+			t.Fatalf("address text invented recipients: %q", got)
+		}
+		if got := Recipients(line + " for " + recipient); !reflect.DeepEqual(got, []string{recipient}) {
+			t.Fatalf("address syntax changed recipients to %q, want %q", got, recipient)
+		}
+	})
+}
 
 func FuzzClientIP(f *testing.F) {
 	f.Add("H=client [203.0.113.50]:2222 auth failed")

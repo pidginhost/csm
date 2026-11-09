@@ -9,6 +9,8 @@ func TestLocalSubmitter(t *testing.T) {
 	}{
 		{"php mail", prefix + `info@example.com U=alice P=local S=1200 id=1@example.com T="Order 12" for buyer@example.net`, "alice"},
 		{"sendmail -bs", prefix + `info@example.com U=alice P=local-esmtp S=1200 T="Order 12" for buyer@example.net`, "alice"},
+		{"escaped quote in sender", prefix + `notice\"tag@example.com U=alice P=local S=1200 for buyer@example.net`, "alice"},
+		{"escaped space in sender", prefix + `notice\ tag@example.com U=alice P=local S=1200 for buyer@example.net`, "alice"},
 		{"bounce from mailnull", prefix + `<> R=1vAbCd-000AbC-1w U=mailnull P=local S=800 T="Mail delivery failed" for info@example.com`, "mailnull"},
 		{"authenticated smtp", prefix + `info@example.com H=(client) [203.0.113.7]:51000 P=esmtpsa X=TLS1.3 A=dovecot_login:info@example.com S=1200 for buyer@example.net`, ""},
 		{"local caller that authenticated", prefix + `info@example.com U=alice P=local-esmtpa A=dovecot_login:info@example.com S=1200 for buyer@example.net`, ""},

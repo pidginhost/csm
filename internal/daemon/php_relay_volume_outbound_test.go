@@ -2,12 +2,13 @@ package daemon
 
 import (
 	"fmt"
-	"strings"
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/checks"
+	"github.com/pidginhost/csm/internal/eximlog"
 )
 
 // path2bTestHost makes exampleuser and acct hosting accounts and example.com
@@ -145,9 +146,69 @@ func TestPath2bSkipsWhenLocalDomainsUnknown(t *testing.T) {
 	}
 }
 
+func TestPath2bMessageDataCannotChangeOutboundVolume(t *testing.T) {
+	path2bTestHost(t)
+	now := time.Now()
+	const prefix = "2026-01-01 10:00:00 1abc23-000456-AB <= "
+	for _, tc := range []struct {
+		name, record string
+		want         int
+	}{
+		{"apostrophe in message id", `info@example.com U=exampleuser P=local S=100 id='notice@example.org for buyer@example.net`, 1},
+		{"message id cannot forge recipients", `info@example.com U=exampleuser P=local S=100 id='tag."a' for forged@example.net "@example.org for office@example.com`, 0},
+		{"escaped quote in sender", `notice\"tag@example.com U=exampleuser P=local S=100 for buyer@example.net`, 1},
+		{"escaped quote in message id", `info@example.com U=exampleuser P=local S=100 id=notice\"tag@example.org for buyer@example.net`, 1},
+		{"escaped quote in recipient", `info@example.com U=exampleuser P=local S=100 for notice\"tag@example.net`, 1},
+		{"escaped space in local recipient", `info@example.com U=exampleuser P=local S=100 for notice\ @example.net\ tag@example.com`, 0},
+		{"truncated local recipient", `info@example.com U=exampleuser P=local S=100 for office@example.com office@exam<trunc>`, 0},
+		{"outbound before truncation", `info@example.com U=exampleuser P=local S=100 for buyer@example.net office@exam<trunc>`, 1},
+		{"truncation text in quoted recipient", `info@example.com U=exampleuser P=local S=100 for "<trunc>"@example.net`, 1},
+		{"subject cannot invent absent recipients", `info@example.com U=exampleuser P=local S=100 T="for buyer@example.net"`, 0},
+		{"message id cannot invent absent recipients", `info@example.com U=exampleuser P=local S=100 id="for buyer@example.net"@example.org`, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			eng := path2bEvaluator(1)
+			got := eng.parsePHPRelayAccountVolume(prefix+tc.record, now)
+			if len(got) != tc.want {
+				t.Fatalf("findings = %+v, want %d", got, tc.want)
+			}
+			if volume := eng.accounts.volumeSince("exampleuser", now.Add(-time.Hour)); volume != tc.want {
+				t.Fatalf("account volume = %d, want %d", volume, tc.want)
+			}
+		})
+	}
+}
+
 func TestPhpSendLineIsARealArrival(t *testing.T) {
 	line := phpSendLine(time.Now(), 7, "exampleuser", "buyer@example.net")
-	if !strings.Contains(line, " P=local ") || !strings.Contains(line, " for buyer@example.net") {
-		t.Fatalf("fixture lost its shape: %s", line)
+	if id, sender, ok := eximlog.Arrival(line); !ok || id != "1vAb07-000AbC-1x" || sender != "info@example.com" {
+		t.Fatalf("fixture arrival = %q, %q, %v", id, sender, ok)
+	}
+	if user := eximlog.LocalSubmitter(line); user != "exampleuser" {
+		t.Fatalf("fixture submitter = %q", user)
+	}
+	if recipients := eximlog.Recipients(line); !reflect.DeepEqual(recipients, []string{"buyer@example.net"}) {
+		t.Fatalf("fixture recipients = %q", recipients)
+	}
+}
+
+func TestPath2bRetainsOnlyHostingAccountKeys(t *testing.T) {
+	path2bTestHost(t)
+	now := time.Now()
+	eng := path2bEvaluator(2)
+	for i := range 256 {
+		user := fmt.Sprintf("unknown%d", i)
+		if got := eng.parsePHPRelayAccountVolume(phpSendLine(now, i, user, "buyer@example.net"), now); len(got) != 0 {
+			t.Fatalf("unknown user produced findings: %+v", got)
+		}
+	}
+	eng.parsePHPRelayAccountVolume(phpSendLine(now, 1, "exampleuser", "buyer@example.net"), now)
+	var keys []string
+	eng.accounts.states.Range(func(key, _ any) bool {
+		keys = append(keys, key.(string))
+		return true
+	})
+	if !reflect.DeepEqual(keys, []string{"exampleuser"}) {
+		t.Fatalf("retained account keys = %q, want only exampleuser", keys)
 	}
 }

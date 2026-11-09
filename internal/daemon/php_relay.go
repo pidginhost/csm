@@ -1559,6 +1559,11 @@ func (e *evaluator) parsePHPRelayAccountVolumeAt(line string, eventTime, now tim
 // the domain list unreadable nothing counts rather than everything.
 func sendsOffHost(recipients []string) bool {
 	for _, rcpt := range recipients {
+		// Exim can cut the final address mid-domain when its log buffer
+		// fills. That fragment cannot prove an off-host destination.
+		if strings.HasSuffix(rcpt, "<trunc>") {
+			continue
+		}
 		at := strings.LastIndexByte(rcpt, '@')
 		if at < 0 || at == len(rcpt)-1 {
 			continue

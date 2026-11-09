@@ -178,11 +178,11 @@ func envelopeEnd(s string) int {
 	quoted := false
 	for i := 0; i < len(s); i++ {
 		switch {
-		case quoted && s[i] == '\\' && i+1 < len(s):
+		case s[i] == '\\' && i+1 < len(s):
 			i++
 		case s[i] == '"':
 			quoted = !quoted
-		case !quoted && (s[i] == ' ' || s[i] == '\t' || s[i] == '\n'):
+		case !quoted && (s[i] == ' ' || s[i] == '\t' || s[i] == '\r' || s[i] == '\n'):
 			return i
 		}
 	}
@@ -193,24 +193,7 @@ func envelopeEnd(s string) int {
 // masquerade as authentication or local-user metadata. Quotes can begin
 // within a value, including an optional mailbox appended to an A= field.
 func fieldEnd(s string) int {
-	eq := strings.IndexByte(s, '=')
-	var quote byte
-	for i := 0; i < len(s); i++ {
-		if quote != 0 {
-			switch {
-			case s[i] == '\\' && i+1 < len(s):
-				i++
-			case s[i] == quote:
-				quote = 0
-			}
-			continue
-		}
-		switch {
-		case s[i] == '"' || (s[i] == '\'' && eq >= 0 && i == eq+1):
-			quote = s[i]
-		case s[i] == ' ' || s[i] == '\t' || s[i] == '\r' || s[i] == '\n':
-			return i
-		}
-	}
-	return len(s)
+	// Apostrophes are address characters, not quoting delimiters. Exim
+	// also preserves quoted pairs outside double-quoted local parts.
+	return envelopeEnd(s)
 }

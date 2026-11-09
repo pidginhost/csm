@@ -61,7 +61,7 @@ func recipientAddresses(rest string) []string {
 		address := rest[:end]
 		quoted := false
 		for i := 0; i < len(address); i++ {
-			if quoted && address[i] == '\\' && i+1 < len(address) {
+			if address[i] == '\\' && i+1 < len(address) {
 				i++
 			} else if address[i] == '"' {
 				quoted = !quoted
