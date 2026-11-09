@@ -89,6 +89,55 @@ func TestServerHonorsExplicitIPv6ListenAddr(t *testing.T) {
 	}
 }
 
+func TestServerLoopbackAddressForms(t *testing.T) {
+	for _, tc := range []struct{ addr, host string }{
+		{"", "127.0.0.1"},
+		{"localhost", "127.0.0.1"},
+		{" LOCALHOST ", "127.0.0.1"},
+		{"127.0.0.1", "127.0.0.1"},
+		{"::ffff:127.0.0.1", "127.0.0.1"},
+		{"::1", "::1"},
+		{"[::1]", "::1"},
+	} {
+		t.Run(tc.addr, func(t *testing.T) {
+			cfg := baseCfg()
+			cfg.Challenge.ListenAddr = tc.addr
+			cfg.Challenge.ListenPort = 0
+			cfg.WebUI.TLSCert = "/nonexistent/webui.crt"
+			cfg.WebUI.TLSKey = "/nonexistent/webui.key"
+			s := New(cfg, nil)
+			if got := s.srv.Addr; got != net.JoinHostPort(tc.host, "0") {
+				t.Fatalf("bind address = %q, want host %q and configured port", got, tc.host)
+			}
+			ln, err := s.Listen()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = ln.Close() }()
+			if got := ln.Addr().(*net.TCPAddr).IP.String(); got != tc.host {
+				t.Fatalf("bound host = %q, want %q", got, tc.host)
+			}
+		})
+	}
+}
+
+func TestServerRejectsPortInListenAddress(t *testing.T) {
+	for _, addr := range []string{"127.0.0.1:8439", "[::1]:8439"} {
+		t.Run(addr, func(t *testing.T) {
+			cfg := baseCfg()
+			cfg.Challenge.ListenAddr = addr
+			s := New(cfg, nil)
+			ln, err := s.Listen()
+			if ln != nil {
+				_ = ln.Close()
+			}
+			if err == nil {
+				t.Fatal("listener accepted a port in its host setting")
+			}
+		})
+	}
+}
+
 func TestServerListenReportsOccupiedAddressSynchronously(t *testing.T) {
 	occupied, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

@@ -2,12 +2,103 @@ package challenge
 
 import (
 	"context"
+	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestTrustsProxyMatchesConnectingPeer(t *testing.T) {
+	for _, tc := range []struct {
+		entry, peer string
+		trusted     bool
+	}{
+		{"192.0.2.10", "192.0.2.10", true},
+		{" 192.0.2.10 ", "::ffff:192.0.2.10", true},
+		{"::ffff:192.0.2.10", "192.0.2.10", true},
+		{"192.0.2.0/24", "::ffff:192.0.2.10", true},
+		{"::ffff:192.0.2.0/120", "192.0.2.10", true},
+		{"2001:db8::/32", "2001:db8::1", true},
+		{"::1", "::1", true},
+		{"192.0.2.0/24", "198.51.100.10", false},
+		{"", "192.0.2.10", false},
+		{"  ", "192.0.2.10", false},
+		{"localhost", "127.0.0.1", false},
+		{"[::1]", "::1", false},
+		{"192.0.2.0/99", "192.0.2.10", false},
+	} {
+		t.Run(tc.entry+"/"+tc.peer, func(t *testing.T) {
+			entries := []string{tc.entry}
+			if got := TrustsProxy(entries, tc.peer); got != tc.trusted {
+				t.Fatalf("TrustsProxy = %v, want %v", got, tc.trusted)
+			}
+			got := extractVia(t, entries, net.JoinHostPort(tc.peer, "1234"), "203.0.113.20")
+			want := canonicalIP(tc.peer)
+			if tc.trusted {
+				want = "203.0.113.20"
+			}
+			if got != want {
+				t.Errorf("server used %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+func TestDoctorGateRequestIsReadOnly(t *testing.T) {
+	for _, trusted := range []bool{false, true} {
+		for _, pending := range []bool{false, true} {
+			name := fmt.Sprintf("trusted=%v/pending=%v", trusted, pending)
+			t.Run(name, func(t *testing.T) {
+				cfg := baseCfg()
+				if trusted {
+					cfg.Challenge.TrustedProxies = []string{"127.0.0.1"}
+				}
+				s, list := newTestServer(t, cfg)
+				const visitor = "192.0.2.1"
+				if pending {
+					list.Add(visitor, "test", time.Hour)
+				}
+				beforeEntry := list.ips[visitor]
+				beforeMap, err := os.ReadFile(list.path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for range 2 {
+					req := httptest.NewRequest(http.MethodHead, "/challenge/gate", nil)
+					req.RemoteAddr = "127.0.0.1:1234"
+					req.Header.Set("X-Forwarded-For", visitor)
+					rec := httptest.NewRecorder()
+					s.srv.Handler.ServeHTTP(rec, req)
+					want := http.StatusNoContent
+					if trusted && pending {
+						want = http.StatusUnauthorized
+					}
+					if rec.Code != want {
+						t.Fatalf("gate = %d, want %d", rec.Code, want)
+					}
+					if len(rec.Result().Cookies()) != 0 {
+						t.Fatal("probe issued a cookie")
+					}
+				}
+				if list.Contains(visitor) != pending || !reflect.DeepEqual(beforeEntry, list.ips[visitor]) {
+					t.Fatal("probe changed pending challenge state")
+				}
+				afterMap, err := os.ReadFile(list.path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if string(afterMap) != string(beforeMap) || len(s.verified) != 0 || len(s.adminFailures) != 0 {
+					t.Fatal("probe changed list, verification or authentication state")
+				}
+			})
+		}
+	}
+}
 
 func extractVia(t *testing.T, trusted []string, peer, xff string) string {
 	t.Helper()
