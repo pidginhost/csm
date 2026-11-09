@@ -327,6 +327,16 @@ func readNewSyslogRecords(path string, st followState) ([]syslogRecord, followSt
 		skipped += aligned - start
 		start = aligned
 	}
+	framed := true
+	if start > 0 {
+		// Catch-up may have reached EOF inside an unfinished line. Its
+		// eventual suffix still feeds legacy checks but names no record.
+		var before [1]byte
+		if _, err := f.ReadAt(before[:], start-1); err != nil {
+			return nil, st, 0, err
+		}
+		framed = before[0] == '\n'
+	}
 
 	var records []syslogRecord
 	var consumed int64
@@ -350,7 +360,9 @@ func readNewSyslogRecords(path string, st followState) ([]syslogRecord, followSt
 	if id, ok := selfWriteIdentityFromFileInfo(info); ok {
 		stream := alert.FileStream(id.Device, id.Inode)
 		for i := range records {
-			records[i].stream = stream
+			if framed || records[i].offset > start {
+				records[i].stream = stream
+			}
 		}
 	}
 	return records, next, skipped, nil

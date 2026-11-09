@@ -286,6 +286,8 @@ Admission checks how each finding's address was read against its producer's decl
 
 Scheduled cPanel scans can supply automatic response forecasts when a complete record identifies the peer and an unambiguous server time. Unfinished or ambiguous records cannot supply a new observation. Rereading a record does not refresh its time or add independent evidence. The existing `auto_response.dry_run` setting controls forecasts; the admission executor remains disabled and legacy live responses keep their current behavior.
 
+A reader that starts inside an unfinished line still delivers its remainder to existing checks, but that fragment cannot supply admission evidence. Complete records that follow it keep their shared references.
+
 Admission also binds each response target to its evidence. Only the mail subnet and ASN crawl entries may widen an attributed address to a containing prefix. Direct queue requests, retained candidates and reservations repeat this check, so previously queued responses cannot bypass it.
 
 This setting is not a universal simulation mode. It gates automatic firewall and related network enforcement paths plus web-exposed-file virtual patches. File quarantine, cleanup, permission changes, and process termination are controlled by their individual `auto_response` flags. Leave those flags off while evaluating block policy.

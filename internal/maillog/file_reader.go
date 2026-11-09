@@ -190,11 +190,18 @@ func (r *FileReader) openAt(offset int64, whence int) (*mailFileInput, error) {
 		// Only a newline before the start offset makes the next byte a
 		// record start.
 		var before [1]byte
-		if _, err := f.ReadAt(before[:], position-1); err != nil {
+		_, err := f.ReadAt(before[:], position-1)
+		if errors.Is(err, io.EOF) {
+			// The file shrank after Seek. Rewind now, before it can regrow
+			// past the stale offset and conceal the truncation from polling.
+			position, err = f.Seek(0, io.SeekStart)
+		} else if err == nil {
+			unframed = before[0] != '\n'
+		}
+		if err != nil {
 			_ = f.Close()
 			return nil, err
 		}
-		unframed = before[0] != '\n'
 	}
 	dev, ino := fileIdentity(st)
 	return &mailFileInput{file: f, reader: bufio.NewReader(f), dev: dev, ino: ino, offset: position, size: st.Size(), unframed: unframed}, nil

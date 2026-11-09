@@ -33,6 +33,45 @@ func TestReadNewSyslogRecordsKeepLineOffsets(t *testing.T) {
 	}
 }
 
+// Catch-up can reach EOF without finding a newline. The next read still
+// delivers the suffix, but only the following complete record has an identity.
+func TestReadNewSyslogRecordsDoesNotNameACatchUpFragment(t *testing.T) {
+	followReal(t)
+	prefix := strings.Repeat("x", maxCatchUpBytes+1)
+	path := writeFollowFile(t, prefix)
+	records, state, skipped, err := readNewSyslogRecords(path, followState{})
+	if err != nil || len(records) != 0 || state.Offset != int64(len(prefix)) || skipped != state.Offset {
+		t.Fatalf("initial catch-up: %d records, state %+v, skipped %d, error %v", len(records), state, skipped, err)
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if _, writeErr := f.WriteString("hit suf"); writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	records, partial, _, err := readNewSyslogRecords(path, state)
+	if err != nil || len(records) != 0 || partial.Offset != state.Offset {
+		t.Fatalf("partial read: %+v, state %+v, error %v", records, partial, err)
+	}
+	if _, writeErr := f.WriteString("fix\nhit next\n"); writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	records, next, _, err := readNewSyslogRecords(path, partial)
+	if err != nil || len(records) != 2 || records[0].text != "hit suffix" || records[1].text != "hit next" {
+		t.Fatalf("completed read: %+v, error %v", records, err)
+	}
+	if o := records[0].observation(ProducerFTPScan, time.Unix(1, 0)); o != (alert.Observation{}) {
+		t.Errorf("catch-up fragment named %+v, want no observation", o)
+	}
+	offset := int64(len(prefix) + len("hit suffix\n"))
+	o, want := records[1].observation(ProducerFTPScan, time.Unix(1, 0)), syslogTestRef(t, path, offset, "hit next")
+	if o.Stream != want.Stream || o.Cursor != want.Cursor || next.Offset != offset+int64(len("hit next\n")) {
+		t.Errorf("next record named %+v, state %+v, want %+v and all bytes consumed", o, next, want)
+	}
+}
+
 // A login found by the scheduled scan names its line in the auth log.
 func TestSSHLoginScanStampsObservation(t *testing.T) {
 	path := useAuthLog(t)

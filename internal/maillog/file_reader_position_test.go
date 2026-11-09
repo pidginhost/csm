@@ -2,6 +2,7 @@ package maillog
 
 import (
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -298,6 +299,61 @@ func TestFileReaderLinePositionsMatchTheSharedRef(t *testing.T) {
 		appendMailAndPoll(t, w, raw[0])
 		if again := processMailLine(t, out); !sameMailRef(again.Position, first) {
 			t.Fatalf("the same bytes at offset 0 named %+v, first %+v", again.Position, first)
+		}
+	})
+}
+
+// A truncation between SeekEnd and the boundary read leaves the saved
+// position past EOF. Starting there must recover and deliver the new file.
+func TestFileReaderStartsAfterBoundaryDisappears(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "maillog")
+		if err := os.WriteFile(path, []byte("fresh\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		q := NewQueue()
+		r := NewFileReader(path, q)
+		// Reproduce the stale result of SeekEnd after the file shrank.
+		input, err := r.openAt(128, io.SeekStart)
+		if err != nil {
+			t.Fatalf("open after truncation: %v", err)
+		}
+		// Regrowth before the first poll must not hide the lost boundary.
+		f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o600)
+		if err != nil {
+			_ = input.file.Close()
+			t.Fatal(err)
+		}
+		_, err = f.WriteString(strings.Repeat("later\n", 32))
+		_ = f.Close()
+		if err != nil {
+			_ = input.file.Close()
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		out := q.channel()
+		go r.loop(ctx, out, input)
+		synctest.Wait()
+		time.Sleep(2 * time.Second)
+		synctest.Wait()
+		line := processMailLine(t, out)
+		want := mailRef(t, path, 0, "fresh\n")
+		if line.Message != "fresh\n" || !sameMailRef(line.Position, want) || line.Position.ObservedAt.IsZero() {
+			t.Fatalf("recovered line %+v, want fresh record named %+v", line, want)
+		}
+		for i := range 32 {
+			line := processMailLine(t, out)
+			want := mailRef(t, path, int64(len("fresh\n")+i*len("later\n")), "later\n")
+			if line.Message != "later\n" || !sameMailRef(line.Position, want) {
+				t.Fatalf("regrown line %d: %+v, want %+v", i, line, want)
+			}
+		}
+		settledEveryByte(t, q)
+		cancel()
+		synctest.Wait()
+		if extra, ok := <-out; ok {
+			t.Fatalf("unexpected extra line: %+v", extra)
 		}
 	})
 }
