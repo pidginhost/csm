@@ -131,16 +131,8 @@ func New(cfg *config.Config, ipList *IPList) *Server {
 	mux.HandleFunc("/challenge/captcha-verify", s.handleCaptchaVerify)
 	mux.HandleFunc("/challenge/admin-token", s.handleAdminToken)
 
-	bindAddr := cfg.Challenge.ListenAddr
-	if bindAddr == "" {
-		// Defaults are applied during config.Load, but tests construct
-		// Server directly with an empty config; default to loopback so
-		// the production safety guarantee (never bind public by default)
-		// holds even on those paths.
-		bindAddr = "127.0.0.1"
-	}
 	s.srv = &http.Server{
-		Addr:              net.JoinHostPort(bindAddr, strconv.Itoa(cfg.Challenge.ListenPort)),
+		Addr:              net.JoinHostPort(ListenHost(cfg.Challenge.ListenAddr), strconv.Itoa(cfg.Challenge.ListenPort)),
 		Handler:           mux,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      10 * time.Second,
@@ -218,12 +210,19 @@ func (s *Server) resolveTLSMaterial() (cert, key string) {
 }
 
 func isLoopbackListenAddr(addr string) bool {
-	addr = strings.TrimSpace(addr)
-	if addr == "" || strings.EqualFold(addr, "localhost") {
-		return true
-	}
-	ip := net.ParseIP(addr)
+	ip := net.ParseIP(ListenHost(addr))
 	return ip != nil && ip.IsLoopback()
+}
+
+// ListenHost gives the server, installer and diagnostics the same bind host.
+// Localhost is pinned to IPv4 so proxy trust does not depend on DNS ordering.
+func ListenHost(addr string) string {
+	host := strings.TrimSpace(addr)
+	host = strings.Trim(host, "[]")
+	if host == "" || strings.EqualFold(host, "localhost") {
+		return "127.0.0.1"
+	}
+	return canonicalIP(host)
 }
 
 // Shutdown gracefully stops the server.

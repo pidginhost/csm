@@ -15,6 +15,7 @@ import (
 	"github.com/pidginhost/csm/internal/control"
 	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/health"
+	"github.com/pidginhost/csm/internal/netutil"
 )
 
 func validDoctorConfig() *config.Config {
@@ -350,7 +351,7 @@ func TestBuildChallengeDoctorReport_LoopbackListenerBehindLocalProxy(t *testing.
 	requireAllChallengeChecksOK(t, challengeDoctorReportFor(cfg))
 }
 
-func TestBuildChallengeDoctorReport_RemoteProxyServesTLS(t *testing.T) {
+func TestBuildChallengeDoctorReport_RemoteProxyNeedsVerification(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Challenge.Enabled = true
 	cfg.Challenge.ListenAddr = "0.0.0.0"
@@ -358,7 +359,85 @@ func TestBuildChallengeDoctorReport_RemoteProxyServesTLS(t *testing.T) {
 	cfg.Challenge.PublicURL = "https://challenge.example.com/challenge"
 	cfg.Challenge.TrustedProxies = []string{"192.0.2.10"}
 
-	requireAllChallengeChecksOK(t, challengeDoctorReportFor(cfg))
+	for _, check := range []DoctorCheck{challengeTLSCheck(cfg), challengePortGateCheck(cfg)} {
+		if check.Status != "warn" || check.Fix == "" {
+			t.Errorf("%s = %+v; remote TLS and network filtering need verification", check.Name, check)
+		}
+	}
+}
+
+func TestChallengeProxyListDoesNotProveTLSOrPortProtection(t *testing.T) {
+	for _, tc := range []struct {
+		name, scheme string
+		trusted      []string
+		wantTLS      string
+	}{
+		{"direct HTTPS with trusted peer", "https", []string{"192.0.2.10"}, "warn"},
+		{"direct HTTP with trusted peer", "http", []string{"192.0.2.10"}, "warn"},
+		{"blank proxies", "https", []string{"", "  "}, "fail"},
+		{"invalid proxy", "https", []string{"not-an-ip"}, "fail"},
+		{"invalid CIDR", "https", []string{"192.0.2.0/99"}, "fail"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &config.Config{}
+			cfg.Challenge.ListenAddr = "0.0.0.0"
+			cfg.Challenge.ListenPort = 8439
+			cfg.Challenge.PublicURL = tc.scheme + "://challenge.example.com:8439/challenge"
+			cfg.Challenge.TrustedProxies = tc.trusted
+			if check := challengeTLSCheck(cfg); check.Status != tc.wantTLS {
+				t.Errorf("TLS = %+v, want %s", check, tc.wantTLS)
+			}
+			if check := challengePortGateCheck(cfg); check.Status != "warn" {
+				t.Errorf("port gate = %+v, want warn", check)
+			}
+		})
+	}
+}
+
+func TestChallengeTLSFailsWhenPublicURLTargetsPlainListener(t *testing.T) {
+	t.Cleanup(netutil.SetHostAddressLookup(func() ([]net.IP, error) {
+		return []net.IP{net.ParseIP("192.0.2.20"), net.ParseIP("2001:db8::20")}, nil
+	}))
+	for _, tc := range []struct{ listen, public string }{
+		{"192.0.2.20", "https://192.0.2.20:8439/challenge"},
+		{"0.0.0.0", "https://192.0.2.20:8439/challenge"},
+		{"2001:db8::20", "https://[2001:db8::20]:8439/challenge"},
+		{"::", "https://[2001:db8::20]:8439/challenge"},
+		{"::ffff:192.0.2.20", "https://192.0.2.20:8439/challenge"},
+	} {
+		t.Run(tc.listen, func(t *testing.T) {
+			cfg := &config.Config{}
+			cfg.Challenge.ListenAddr = tc.listen
+			cfg.Challenge.ListenPort = 8439
+			cfg.Challenge.PublicURL = tc.public
+			cfg.Challenge.TrustedProxies = []string{"192.0.2.10"}
+			if check := challengeTLSCheck(cfg); check.Status != "fail" {
+				t.Fatalf("TLS = %+v; HTTPS targets the plain HTTP listener", check)
+			}
+		})
+	}
+}
+
+func TestChallengeTLSDoesNotMistakeProxyForListener(t *testing.T) {
+	t.Cleanup(netutil.SetHostAddressLookup(func() ([]net.IP, error) {
+		return []net.IP{net.ParseIP("192.0.2.20"), net.ParseIP("2001:db8::20")}, nil
+	}))
+	for _, tc := range []struct{ listen, public string }{
+		{"192.0.2.20", "https://192.0.2.20/challenge"},
+		{"0.0.0.0", "https://192.0.2.30:8439/challenge"},
+		{"0.0.0.0", "https://[2001:db8::20]:8439/challenge"},
+	} {
+		t.Run(tc.public, func(t *testing.T) {
+			cfg := &config.Config{}
+			cfg.Challenge.ListenAddr = tc.listen
+			cfg.Challenge.ListenPort = 8439
+			cfg.Challenge.PublicURL = tc.public
+			cfg.Challenge.TrustedProxies = []string{"192.0.2.10"}
+			if check := challengeTLSCheck(cfg); check.Status != "warn" {
+				t.Fatalf("TLS = %+v; proxy termination needs verification", check)
+			}
+		})
+	}
 }
 
 func TestBuildChallengeDoctorReport_DirectListenerStillNeedsTLSAndGate(t *testing.T) {

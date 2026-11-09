@@ -1851,6 +1851,9 @@ func (inst *Installer) deployShieldConfig() {
 	if _, err := os.Lstat(phpShieldConfPath); err == nil {
 		fmt.Printf("  Shield config: %s kept (edit its allowed IPs by hand after changing infra_ips)\n", phpShieldConfPath)
 		return
+	} else if !errors.Is(err, os.ErrNotExist) {
+		fmt.Fprintf(os.Stderr, "  Warning: could not inspect shield config: %v\n", err)
+		return
 	}
 	cfg, err := config.LoadWithDir(inst.ConfigPath, resolveConfDir())
 	if err != nil {
@@ -1880,8 +1883,20 @@ return array(
 );
 `, ips)
 
-	// #nosec G306 -- Shield config PHP; read by every PHP pool.
-	if err := os.WriteFile(phpShieldConfPath, []byte(confContent), 0644); err != nil {
+	// Exclusive creation also protects files and symlinks created while
+	// loading the main config; an earlier existence check is not enough.
+	// #nosec G302 G304 G703 -- operator-owned Shield config, read by every PHP pool.
+	f, err := os.OpenFile(phpShieldConfPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
+	if errors.Is(err, os.ErrExist) {
+		fmt.Printf("  Shield config: %s kept (edit its allowed IPs by hand after changing infra_ips)\n", phpShieldConfPath)
+		return
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "  Warning: could not create shield config: %v\n", err)
+		return
+	}
+	_, writeErr := f.WriteString(confContent)
+	if err := errors.Join(writeErr, f.Close()); err != nil {
 		fmt.Fprintf(os.Stderr, "  Warning: could not write shield config: %v\n", err)
 		return
 	}
