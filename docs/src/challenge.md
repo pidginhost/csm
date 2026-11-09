@@ -28,7 +28,7 @@ JavaScript proof-of-work challenge pages - a CAPTCHA alternative for suspicious 
 
 ## Routing Behavior
 
-When `challenge.enabled: true`, CSM routes eligible IPs to the challenge page instead of hard-blocking them. This works independently of `auto_response` settings.
+When `challenge.enabled: true`, CSM routes eligible IPs to the challenge page instead of hard-blocking them. This works independently of `auto_response` settings. Addresses in `infra_ips` or `firewall.infra_ips` are never routed.
 
 ### Challenge-Eligible Checks
 

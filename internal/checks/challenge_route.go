@@ -158,6 +158,9 @@ func ChallengeRouteIPs(cfg *config.Config, findings []alert.Finding) []alert.Fin
 
 	var actions []alert.Finding
 	routed := make(map[string]bool)
+	// The firewall refuses to block either infra list, and a challenge can
+	// end in a block, so skip the same addresses the engine protects.
+	infra := config.EffectiveFirewallConfig(cfg).InfraIPs
 
 	for _, f := range findings {
 		if f.AutoIPResponseEvaluated || !CheckResponseEnabled(cfg, f.Check) {
@@ -192,7 +195,7 @@ func ChallengeRouteIPs(cfg *config.Config, findings []alert.Finding) []alert.Fin
 			continue
 		}
 
-		if isInfraIP(ip, cfg.InfraIPs) || ip == "127.0.0.1" {
+		if isInfraIP(ip, infra) || ip == "127.0.0.1" {
 			continue
 		}
 
