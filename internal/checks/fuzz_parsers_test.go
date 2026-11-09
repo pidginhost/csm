@@ -1404,3 +1404,42 @@ func FuzzDovecotRemoteIPLoginName(f *testing.F) {
 		}
 	})
 }
+
+// The cPanel scan dates a record only by the time cpsrvd wrote. Whatever user
+// a client chose, an accepted time is the server's and a rejection is zero.
+// A user without a bracket cannot hold a second timestamp, so it is accepted.
+func FuzzCpanelAccessLogTimeUserField(f *testing.F) {
+	server := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
+	line := func(user string) string {
+		return `203.0.113.9 - ` + user + ` [` + server.Format("01/02/2006:15:04:05") +
+			` -0000] "GET /execute/Themes/list HTTP/1.1" 401 0 "https://example.com:2083/" "Mozilla/5.0" "-" "-" 2083`
+	}
+	if got, ok := cpanelAccessLogTime(line("-")); !ok || !got.Equal(server) {
+		f.Fatalf("control: time %v (%v), want %v", got, ok, server)
+	}
+	for _, user := range []string{
+		"-", "a [b] c", `x "y`, "user name", "2001:db8::1", "[2001:db8::1]:443", "198.51.100.7",
+		`x [11/09/2026:12:00:00 -0000] "y`,
+		`x [11/09/2026:12:00:00 -0000] "GET / HTTP/1.1" 401 0 "-" "-" "-" "-" 2083 y`,
+		`[11/09/2026:12:00:00 -0000] "GET / HTTP/1.1" 401 0`,
+		`x[11/09/2026:12:00:00 -0000]` + "\t" + `"y`,
+		`x [13/99/2026:99:99:99 +9999] "y`,
+		"x [11/09/2026:12:00:00 -0000] y",
+	} {
+		f.Add(user)
+	}
+	f.Fuzz(func(t *testing.T, user string) {
+		if user == "" || strings.ContainsAny(user, "\r\n") {
+			t.Skip("cpsrvd writes a nonempty user on one line")
+		}
+		got, ok := cpanelAccessLogTime(line(user))
+		switch {
+		case ok && !got.Equal(server):
+			t.Fatalf("user %q dated the record %v, want the server time %v", user, got, server)
+		case !ok && !got.IsZero():
+			t.Fatalf("user %q: rejected with time %v, want zero", user, got)
+		case !ok && !strings.Contains(user, "["):
+			t.Fatalf("user %q holds no bracket but the record was rejected", user)
+		}
+	})
+}

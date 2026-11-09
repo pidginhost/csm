@@ -179,12 +179,14 @@ func nextNewline(f *os.File, from, size int64) (int64, error) {
 	return size, nil
 }
 
-// syslogRecord is one complete line, the offset where it starts and the
-// stream of the file it was read from (empty when the file has no identity).
+// syslogRecord is one line, the offset where it starts and the stream of the
+// file it was read from (empty when the file has no identity, or when the line
+// is unterminated: a writer can still append to it).
 type syslogRecord struct {
-	text   string
-	offset int64
-	stream string
+	text         string
+	offset       int64
+	stream       string
+	unterminated bool
 }
 
 // observation names the record as every reader of its file names it; zero

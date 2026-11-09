@@ -131,7 +131,7 @@ func TestTailFileLargeFileCapsTailWindow(t *testing.T) {
 		t.Fatal(truncateErr)
 	}
 
-	data, err := readTailWindow(f, 4096, 10, 1024)
+	data, _, err := readTailWindow(f, 4096, 10, 1024)
 	if err != nil {
 		t.Fatal(err)
 	}
