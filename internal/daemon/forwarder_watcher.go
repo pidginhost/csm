@@ -155,26 +155,8 @@ func (fw *ForwarderWatcher) handleFileChange(domain string) {
 	}
 }
 
-// loadLocalDomainsForWatcher reads local domain files. Separate from the checks
-// package version to avoid import cycles.
+// loadLocalDomainsForWatcher reads the host's local domain files.
 func loadLocalDomainsForWatcher() map[string]bool {
-	domains := make(map[string]bool)
-	for _, path := range []string{"/etc/localdomains", "/etc/virtualdomains"} {
-		// #nosec G304 -- path iterates a literal slice of cPanel system files.
-		data, err := os.ReadFile(path)
-		if err != nil {
-			continue
-		}
-		for _, line := range strings.Split(string(data), "\n") {
-			line = strings.TrimSpace(line)
-			if line == "" || strings.HasPrefix(line, "#") {
-				continue
-			}
-			if idx := strings.IndexByte(line, ':'); idx > 0 {
-				line = strings.TrimSpace(line[:idx])
-			}
-			domains[strings.ToLower(line)] = true
-		}
-	}
+	domains, _ := readLocalDomains()
 	return domains
 }

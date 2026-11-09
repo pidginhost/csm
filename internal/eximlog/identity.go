@@ -34,6 +34,21 @@ func Submitter(line string) string {
 	return ""
 }
 
+// LocalSubmitter returns the local Exim caller of an arrival a process on
+// this host submitted without authenticating: P=local, or local SMTP on stdin
+// such as `sendmail -bs`. Network and authenticated arrivals return "". The
+// caller must resolve the name against the local account inventory.
+func LocalSubmitter(line string) string {
+	fields, ok := submissionFields(line)
+	if !ok || fields.remote || fields.authSeen {
+		return ""
+	}
+	if fields.protocol != "local" && !strings.HasPrefix(fields.protocol, "local-") {
+		return ""
+	}
+	return fields.user
+}
+
 type submitFields struct {
 	auth, user, protocol string
 	remote, authSeen     bool

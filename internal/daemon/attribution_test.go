@@ -136,6 +136,7 @@ func TestMailBruteCompromiseStampsOwner(t *testing.T) {
 
 func TestPHPRelayAbuseStampsOwner(t *testing.T) {
 	withOwnerTable(t)
+	withPath2bLocalDomains(t)
 	now := time.Now()
 	eng := newEvaluator(newPerScriptWindow(), newPerIPWindow(64), nil, defaultPHPRelayCfg(), nil)
 	f := eng.makeFinding("example.test:/mail.php", "path1", "203.0.113.7", "alice", &scriptState{}, "fixture", now)
@@ -152,13 +153,17 @@ func TestPHPRelayAbuseStampsOwner(t *testing.T) {
 	accounts := newPerAccountWindow(5000)
 	volume := newEvaluator(nil, nil, accounts, startup, nil)
 	volume.SetEffectiveAccountLimit(2)
-	line := "2026-09-08 12:00:00 1abcdefghijk-DEF <= info@example.com U=bob ID=1 B=redirect_resolver"
+	line := "2026-09-08 12:00:00 1abcdefghijk-DEF-01 <= info@example.com U=bob P=local S=900 for buyer@example.net"
 	_ = volume.parsePHPRelayAccountVolumeAt(line, now, now)
 	got := volume.parsePHPRelayAccountVolumeAt(line, now, now)
 	requireOwner(t, got, "email_php_relay_abuse", "bob")
-	system := "2026-09-08 12:00:00 1abcdefghijk-DEG <= info@example.com U=mailnull ID=2 B=redirect_resolver"
+	// A system caller is not a hosting account, so its mail never feeds the
+	// per-account volume alert at all.
+	system := "2026-09-08 12:00:00 1abcdefghijk-DEG-01 <= info@example.com U=mailnull P=local S=900 for buyer@example.net"
 	_ = volume.parsePHPRelayAccountVolumeAt(system, now, now)
-	requireOwner(t, volume.parsePHPRelayAccountVolumeAt(system, now, now), "email_php_relay_abuse", "")
+	if got := volume.parsePHPRelayAccountVolumeAt(system, now, now); len(got) != 0 {
+		t.Fatalf("system caller fed the per-account volume alert: %+v", got)
+	}
 }
 
 // The form relay script finding names the account whose form bots abused;

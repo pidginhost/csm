@@ -105,6 +105,13 @@ func FuzzSubmissionMessageData(f *testing.F) {
 			if got := IsSubmission(line); got != tc.want {
 				t.Fatalf("message data changed submission classification to %v for %q", got, line)
 			}
+			wantLocal := ""
+			if tc.fields == "U=sender P=local" {
+				wantLocal = "sender"
+			}
+			if got := LocalSubmitter(line); got != wantLocal {
+				t.Fatalf("message data changed the local submitter to %q for %q", got, line)
+			}
 		}
 	})
 }
