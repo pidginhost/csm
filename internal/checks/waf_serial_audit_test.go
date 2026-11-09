@@ -34,7 +34,7 @@ func serialTransaction(id, clientIP string, status int) string {
 	return b.String()
 }
 
-func setupSerialAuditLog(t *testing.T, content string) {
+func setupSerialAuditLog(t *testing.T, content string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "modsec_audit.log")
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
@@ -51,6 +51,7 @@ func setupSerialAuditLog(t *testing.T, content string) {
 			return nil, os.ErrNotExist
 		},
 	})
+	return path
 }
 
 func TestCheckModSecAuditLogAttributesSerialFormatDenials(t *testing.T) {

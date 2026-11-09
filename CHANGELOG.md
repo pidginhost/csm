@@ -17,7 +17,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 - Automatic response forecasts reject unverified PHP relay addresses and stop trusting evidence after its allowed address sources change.
 - Automatic response previews reject subnet targets from checks that only attribute individual addresses, including previously queued responses.
-- Automatic response forecasts include scheduled cPanel scans without counting repeated reports of the same log record as independent evidence.
+- Automatic response forecasts include scheduled cPanel and ModSecurity scans without counting repeated reports of the same log record as independent evidence.
 
 ### Security
 

@@ -3,6 +3,7 @@ package modsec
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func FuzzRuleOperatorCannotChangeDisposition(f *testing.F) {
@@ -95,6 +96,52 @@ func FuzzModSecOtherWritersCannotSupplyHeader(f *testing.F) {
 			}
 			if ip := ErrorLogClientIP(line); ip != "" {
 				t.Fatalf("another writer supplied client %q: %q", ip, line)
+			}
+		}
+	})
+}
+
+// The time of an error-log line comes only from the server's prefix. Text
+// after the module marker, timestamps included, never changes it, and a line
+// whose prefix fails validation has no time whatever the message says.
+func FuzzErrorLogTimeIgnoresMessage(f *testing.F) {
+	at := func(nsec int) time.Time { return time.Date(2026, 11, 8, 8, 40, 0, nsec, time.Local) }
+	valid := []struct {
+		prefix string
+		want   time.Time
+	}{
+		{`[Sun Nov 08 08:40:00.123456 2026] [security2:error] [pid 123] [client 203.0.113.50:5555] ModSecurity: `, at(123456000)},
+		{`[Sun Nov  8 08:40:00 2026] [error] [client 203.0.113.50] ModSecurity: `, at(0)},
+		{`2026/11/08 08:40:00 [error] 123#123: *1 [client 203.0.113.50] ModSecurity: `, at(0)},
+		{`2026-11-08 08:40:00.123 [INFO] [1] [203.0.113.50:5555-1#APVH_example.test] [MODSEC] `, at(123000000)},
+	}
+	invalid := []string{
+		`[client 203.0.113.50] ModSecurity: `,
+		`[Sun Nov 31 08:40:00 2026] [error] [client 203.0.113.50] ModSecurity: `,
+		`[Sun Nov 08 08:40:00 2026] [core:error] [client 203.0.113.50:5555] File does not exist: /srv/www/ModSecurity: `,
+		`2026-11-08 [NOTICE] [203.0.113.57:41920-13#APVH_*_server.example.com] [MODSEC] `,
+	}
+	for _, message := range []string{
+		"Access denied with code 403",
+		"[Mon Nov 09 12:00:00 2026] Access denied with code 403",
+		"2026/11/09 12:00:00 [error] 1#1: [client 198.51.100.7] ModSecurity: x",
+		"2026-11-09 12:00:00.000 [ERROR] [MODSEC] x",
+		"",
+	} {
+		f.Add(message)
+	}
+	f.Fuzz(func(t *testing.T, message string) {
+		if strings.ContainsAny(message, "\r\n") {
+			t.Skip("error logs escape physical line breaks")
+		}
+		for _, v := range valid {
+			if got, ok := ErrorLogTime(v.prefix + message); !ok || !got.Equal(v.want) {
+				t.Fatalf("message %q dated %q as %v (%v), want %v", message, v.prefix, got, ok, v.want)
+			}
+		}
+		for _, prefix := range invalid {
+			if got, ok := ErrorLogTime(prefix + message); ok || !got.IsZero() {
+				t.Fatalf("message %q dated the invalid prefix %q as %v", message, prefix, got)
 			}
 		}
 	})

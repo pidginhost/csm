@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/modsec"
@@ -1152,9 +1153,10 @@ func CheckModSecAuditLog(ctx context.Context, cfg *config.Config, store *state.S
 	}
 
 	var blocked map[string]int
+	var newest map[string]scanRecord
 	for _, path := range logPaths {
 		var nonempty bool
-		blocked, nonempty = readModSecDenials(ctx, path, modsecAuditIsErrorLog(path, cfg))
+		blocked, newest, nonempty = readModSecDenials(ctx, path, modsecAuditIsErrorLog(path, cfg))
 		if nonempty {
 			break
 		}
@@ -1171,13 +1173,17 @@ func CheckModSecAuditLog(ctx context.Context, cfg *config.Config, store *state.S
 	// Alert on high-volume attackers (auto-block integration via check name)
 	for ip, count := range blocked {
 		if count >= 20 {
-			findings = append(findings, alert.Finding{
+			f := alert.Finding{
 				Severity: alert.High,
 				Check:    "waf_attack_blocked",
 				SourceIP: ip,
 				Message:  fmt.Sprintf("WAF blocking high-volume attacker: %s (%d blocked requests)", ip, count),
 				Details:  wafBlockAdvice(ip, count),
-			})
+				// The audit record names the connecting client.
+				Attribution: admission.AttributionHTTPPeer,
+			}
+			newest[ip].stamp(&f, ProducerModSecAuditScan)
+			findings = append(findings, f)
 		}
 	}
 
@@ -1242,6 +1248,20 @@ func modsecSectionBoundary(line string) (id string, section byte, ok bool) {
 		return "", 0, false
 	}
 	return body[:dash], section, true
+}
+
+// modsecAuditHeaderTime reads the time the server wrote at the start of an
+// A-section header; zero when it has none.
+func modsecAuditHeaderTime(line string) time.Time {
+	fields := strings.Fields(line)
+	if len(fields) < 5 || !strings.HasPrefix(fields[0], "[") {
+		return time.Time{}
+	}
+	at, err := time.Parse("02/Jan/2006:15:04:05 -0700", fields[0][1:]+" "+strings.TrimSuffix(fields[1], "]"))
+	if err != nil {
+		return time.Time{}
+	}
+	return at
 }
 
 // modsecAuditClientIP reads the client address from an A-section header:

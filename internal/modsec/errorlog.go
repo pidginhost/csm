@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // ErrorLogMessage requires the module marker directly after the server header.
@@ -62,6 +63,37 @@ func errorLogMarker(line string) (at int, marker string, isLiteSpeed bool) {
 		}
 	}
 	return at, marker, isLiteSpeed
+}
+
+// The time each server writes at the start of its error-log prefix.
+var (
+	apacheErrorLogTime    = regexp.MustCompile(`^\[([A-Z][a-z]{2} [A-Z][a-z]{2} [ 0-9]?[0-9] [0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)? [0-9]{4})\]`)
+	nginxErrorLogTime     = regexp.MustCompile(`^([0-9]{4}/[0-9]{2}/[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}) `)
+	liteSpeedErrorLogTime = regexp.MustCompile(`^([0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?) `)
+)
+
+// ErrorLogTime reads the time the server wrote at the start of a ModSecurity
+// log line's prefix, in the server's local time. A line without a validated
+// prefix, or whose prefix has no time, has none.
+func ErrorLogTime(line string) (time.Time, bool) {
+	at, _, isLiteSpeed := errorLogMarker(line)
+	if at < 0 {
+		return time.Time{}, false
+	}
+	prefix := line[:at]
+	re, layout := nginxErrorLogTime, "2006/01/02 15:04:05"
+	switch {
+	case isLiteSpeed:
+		re, layout = liteSpeedErrorLogTime, "2006-01-02 15:04:05"
+	case strings.HasPrefix(prefix, "["):
+		re, layout = apacheErrorLogTime, "Mon Jan 2 15:04:05 2006"
+	}
+	m := re.FindStringSubmatch(prefix)
+	if m == nil {
+		return time.Time{}, false
+	}
+	t, err := time.ParseInLocation(layout, m[1], time.Local)
+	return t, err == nil
 }
 
 // ErrorLogClientIP reads the client address from the server-written prefix

@@ -158,7 +158,7 @@ func writeAuditReaderFile(t *testing.T, path, content string) {
 
 func assertAuditReaderCounts(t *testing.T, path string, want map[string]int) {
 	t.Helper()
-	got, nonempty := readModSecDenials(context.Background(), path, false)
+	got, _, nonempty := readModSecDenials(context.Background(), path, false)
 	if !nonempty || !maps.Equal(got, want) {
 		t.Fatalf("denials = %v, nonempty = %v; want %v", got, nonempty, want)
 	}
@@ -180,7 +180,7 @@ func TestModSecAuditReaderPartialWritesAndConcurrentScans(t *testing.T) {
 	results := make(chan map[string]int, 4)
 	for range 4 {
 		wg.Go(func() {
-			counts, _ := readModSecDenials(context.Background(), path, false)
+			counts, _, _ := readModSecDenials(context.Background(), path, false)
 			results <- counts
 		})
 	}
@@ -191,7 +191,7 @@ func TestModSecAuditReaderPartialWritesAndConcurrentScans(t *testing.T) {
 			t.Fatalf("concurrent scan counts %v, want %v", got, want)
 		}
 	}
-	got, _ := readModSecDenials(context.Background(), path, false)
+	got, _, _ := readModSecDenials(context.Background(), path, false)
 	clear(got)
 	assertAuditReaderCounts(t, path, want)
 }
@@ -222,13 +222,13 @@ func TestModSecEmptyCandidatePreservesActiveReader(t *testing.T) {
 	assertAuditReaderCounts(t, path, want)
 	empty := path + ".empty"
 	writeAuditReaderFile(t, empty, "")
-	if got, nonempty := readModSecDenials(context.Background(), empty, false); nonempty || len(got) != 0 {
+	if got, _, nonempty := readModSecDenials(context.Background(), empty, false); nonempty || len(got) != 0 {
 		t.Fatalf("empty candidate selected: %v", got)
 	}
 	// An empty earlier candidate must not force the active log to replay on
 	// every scan. An unchanged log can finish within one cancellation check.
 	ctx := &auditCancelContext{Context: context.Background(), remaining: 2}
-	if got, _ := readModSecDenials(ctx, path, false); !maps.Equal(got, want) {
+	if got, _, _ := readModSecDenials(ctx, path, false); !maps.Equal(got, want) {
 		t.Fatalf("empty candidate discarded the active cursor: %v", got)
 	}
 }
@@ -253,7 +253,7 @@ func TestModSecAuditReaderCancelledScanKeepsFramedProgress(t *testing.T) {
 	content += serialTransaction("new", "203.0.113.50", 403)
 	writeAuditReaderFile(t, path, content)
 	ctx := &auditCancelContext{Context: context.Background(), remaining: 4}
-	if counts, _ := readModSecDenials(ctx, path, false); len(counts) != 0 {
+	if counts, _, _ := readModSecDenials(ctx, path, false); len(counts) != 0 {
 		t.Fatalf("cancelled scan returned %v", counts)
 	}
 	modsecAuditReader.Lock()
@@ -288,7 +288,7 @@ func (c *auditCancelContext) Err() error {
 func countModSecDenials(lines []string) map[string]int {
 	var p modsecAuditParser
 	for _, line := range lines {
-		p.feed(line, false)
+		p.feed(syslogRecord{text: line}, false)
 	}
 	return p.blocked
 }
@@ -303,7 +303,7 @@ func TestModSecErrorLogIPv6ClientDropsPort(t *testing.T) {
 func countModSecErrorDenials(lines []string) map[string]int {
 	p := modsecAuditParser{errorLog: true}
 	for _, line := range lines {
-		p.feed(line, false)
+		p.feed(syslogRecord{text: line}, false)
 	}
 	return p.blocked
 }
