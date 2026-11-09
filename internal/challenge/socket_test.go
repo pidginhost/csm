@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -340,4 +341,45 @@ func TestNewPortGateSkipsSocketListener(t *testing.T) {
 	if err != nil || g != nil {
 		t.Fatalf("NewPortGate(socket) = (%v, %v), want (nil, nil)", g, err)
 	}
+}
+
+// A listed proxy names a shared transport, not a visitor. When the host-local
+// guard refuses to trust it, the request must fail, not run as that address:
+// a gate answer or cookie for the proxy would cover everyone behind it.
+func TestListedPeerIsNeverAVisitor(t *testing.T) {
+	gate := func(t *testing.T, trusted []string, peer, xff string) int {
+		t.Helper()
+		cfg := baseCfg()
+		cfg.Challenge.TrustedProxies = trusted
+		s := New(cfg, NewIPList(filepath.Join(t.TempDir(), "challenge_ips.txt")))
+		req, _ := http.NewRequest(http.MethodGet, "/challenge/gate", nil)
+		req.RemoteAddr = peer
+		req.Header.Set("X-Forwarded-For", xff)
+		rec := httptest.NewRecorder()
+		s.srv.Handler.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	t.Run("host-local listed peer", func(t *testing.T) {
+		pinHost(t, testHostAddr, "198.51.100.9")
+		if code := gate(t, []string{"198.51.100.0/24"}, "198.51.100.9:1234", "192.0.2.50"); code != http.StatusBadRequest {
+			t.Fatalf("gate = %d, want 400", code)
+		}
+	})
+	t.Run("host-local listed hop", func(t *testing.T) {
+		pinHost(t, testHostAddr, "198.51.100.9")
+		if code := gate(t, []string{"198.51.100.0/24"}, "198.51.100.2:1234", "192.0.2.50, 198.51.100.9"); code != http.StatusBadRequest {
+			t.Fatalf("gate = %d, want 400", code)
+		}
+	})
+	t.Run("unknown host set", func(t *testing.T) {
+		t.Cleanup(netutil.SetHostAddressLookup(func() ([]net.IP, error) { return nil, errors.New("netlink down") }))
+		if code := gate(t, []string{"198.51.100.2"}, "198.51.100.2:1234", "192.0.2.50"); code != http.StatusBadRequest {
+			t.Fatalf("gate = %d, want 400", code)
+		}
+	})
+	t.Run("control: unlisted host address is its own visitor", func(t *testing.T) {
+		if code := gate(t, nil, "127.0.0.1:1234", "192.0.2.50"); code != http.StatusNoContent {
+			t.Fatalf("gate = %d, want 204", code)
+		}
+	})
 }

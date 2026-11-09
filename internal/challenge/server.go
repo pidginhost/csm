@@ -705,7 +705,9 @@ func (s *Server) CleanExpired() {
 // pass or cookie for it could bypass challenges for unrelated visitors.
 func (s *Server) clientIP(w http.ResponseWriter, r *http.Request) (string, bool) {
 	ip := s.extractIP(r)
-	if ip == "" || s.isTrustedProxy(ip) {
+	// Test the list itself, not isTrustedProxy: a listed proxy the host-local
+	// guard refused to trust still names a shared transport, not a visitor.
+	if ip == "" || proxyTrusted(s.trustedProxies, s.trustedNets, ip) {
 		http.Error(w, "Cannot identify the client behind the trusted proxy", http.StatusBadRequest)
 		return "", false
 	}
