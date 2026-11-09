@@ -16,6 +16,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Changed
 
+- `csm scan --full` now scans images last, and `--wait` and `--report` exit with status 3 when a scan did not cover everything, including skipped oversize files.
 - Automatic response forecasts reject unverified PHP relay addresses and stop trusting evidence after its allowed address sources change.
 - Automatic response previews reject subnet targets from checks that only attribute individual addresses, including previously queued responses.
 - New hosts set up with `csm install` now start from the packaged config, so they filter IPv6 and match the package's alert and detection settings.
@@ -23,6 +24,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Security
 
+- PHP and phishing checks now read `${'_POST'}` and `$GLOBALS['_POST']` as request input, so these spellings no longer hide a webshell or phishing kit.
 - The challenge server no longer starts when `challenge.trusted_proxies` covers an address of this host, so suspicious addresses get your normal response instead. Use the challenge socket or direct mode.
 - Mail that crashes, exhausts or stalls the attachment unpacker is now deferred instead of delivered unscanned, even with `email_av.fail_mode: open`; observe mode still delivers it.
 - A remote sender can no longer get a hosted mailbox reported as compromised through the wording of an email subject.
@@ -32,6 +34,10 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Fixed
 
+- JavaScript served through PHP no longer raises a Critical WSO or FilesMan webshell alert because a variable name contains "filesMan".
+- Goto-obfuscated PHP, the shape licence-protected commercial modules also ship, is now reported for review instead of quarantined the moment it is written.
+- PHP Shield no longer logs an `open_basedir` warning on every request to sites whose PHP pool cannot see the account's home folder.
+- Realtime scanning skips files CSM already moved to quarantine, so a quarantine no longer logs a refused response or counts twice against the automatic response limit.
 - Realtime web, ModSecurity and cPanel API checks no longer block or score configured trusted proxies, while informational events stay visible.
 - Framework classes that handle admin uploads no longer raise Critical dropper alerts.
 - Incident correlation now follows `reputation.whitelist` changes on reload, and matches IPv6 entries however the address is written.

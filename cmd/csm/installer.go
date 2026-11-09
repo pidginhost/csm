@@ -1036,11 +1036,11 @@ try {
     if ($csm_script === '' || $csm_script === __FILE__) return;
     // Per-account disable
     if (preg_match('#^/home/([^/]+)/#', $csm_script, $csm_m)) {
-        if (file_exists('/home/' . $csm_m[1] . '/.csm-shield-disable')) return;
+        if (@file_exists('/home/' . $csm_m[1] . '/.csm-shield-disable')) return;
     }
     // Load config
     $csm_conf = array('blocked_paths' => array('/wp-content/uploads/','/wp-content/upgrade/','/tmp/','/dev/shm/','/var/tmp/'), 'allowed_ips' => array());
-    if (file_exists(CSM_SHIELD_CONF)) { $c = @include CSM_SHIELD_CONF; if (is_array($c)) { if (isset($c['blocked_paths']) && is_array($c['blocked_paths'])) $csm_conf['blocked_paths'] = $c['blocked_paths']; if (isset($c['allowed_ips']) && is_array($c['allowed_ips'])) $csm_conf['allowed_ips'] = $c['allowed_ips']; } }
+    if (@file_exists(CSM_SHIELD_CONF)) { $c = @include CSM_SHIELD_CONF; if (is_array($c)) { if (isset($c['blocked_paths']) && is_array($c['blocked_paths'])) $csm_conf['blocked_paths'] = $c['blocked_paths']; if (isset($c['allowed_ips']) && is_array($c['allowed_ips'])) $csm_conf['allowed_ips'] = $c['allowed_ips']; } }
     // IP allowlist (supports CIDR)
     $csm_ip = isset($_SERVER['REMOTE_ADDR']) ? $_SERVER['REMOTE_ADDR'] : '';
     if ($csm_ip !== '') { $csm_ipl = ip2long($csm_ip); if ($csm_ipl !== false) { foreach ($csm_conf['allowed_ips'] as $e) { if (strpos($e, '/') !== false) { list($sn,$b) = explode('/',$e,2); $sl = ip2long($sn); $mk = -1 << (32-(int)$b); if (($csm_ipl & $mk) === ($sl & $mk)) return; } elseif ($csm_ip === $e) return; } } }

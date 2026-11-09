@@ -623,6 +623,34 @@ func FuzzExtractPHPString(f *testing.F) {
 	})
 }
 
+func FuzzCanonicalSuperglobalAliases(f *testing.F) {
+	for _, code := range []string{
+		`${'_POST'}['x']`,
+		"$GLOBALS[/*\r\n*/'_GET']",
+		`'${"_POST"}'; "\${'_GET'}";`,
+		`"{${'_POST'}["x"]}"`,
+		"<<<'TEXT'\n${'_POST'}\nTEXT;",
+		"<<<TEXT\n{${'_POST'}['x']}\nTEXT;",
+		`${/* first */ '_SAFE' . /* second */ '_POST'}`,
+	} {
+		f.Add(code)
+	}
+	f.Fuzz(func(t *testing.T, code string) {
+		out := canonicalSuperglobalAliases(code)
+		if len(out) != len(code) {
+			t.Fatalf("length changed: %d to %d", len(code), len(out))
+		}
+		for i := range code {
+			if (code[i] == '\n' || code[i] == '\r') && out[i] != code[i] {
+				t.Fatalf("line break moved at %d", i)
+			}
+		}
+		if again := canonicalSuperglobalAliases(out); again != out {
+			t.Fatal("normalization is not idempotent")
+		}
+	})
+}
+
 func FuzzCloakOptionParsers(f *testing.F) {
 	f.Add("YTowOnt9")
 	f.Add(`a:1:{s:14:"sitemap7\.xml$";s:26:"index.php?feed=xmlsitemap7";}`)

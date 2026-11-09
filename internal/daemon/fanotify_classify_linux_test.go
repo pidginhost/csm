@@ -107,3 +107,27 @@ func TestClassifyEventAdmission(t *testing.T) {
 		})
 	}
 }
+
+// Quarantine and pre-clean copies keep the name of the file they came from.
+// Admitting them re-scans malware CSM already moved and spends an automatic
+// response on a copy it can never act on.
+func TestClassifyEventSkipsQuarantineCopies(t *testing.T) {
+	t.Cleanup(checks.SetAccountHomeRootsForTest([]string{t.TempDir()}))
+	quarantine := filepath.Join(t.TempDir(), "quarantine")
+	t.Cleanup(checks.SetQuarantineDirForTest(quarantine))
+	fm := newFileMonitorCore(&config.Config{StatePath: t.TempDir()}, make(chan alert.Finding, 1))
+	realPrefixes := tempRootPrefixes
+	t.Cleanup(func() { tempRootPrefixes = realPrefixes })
+	tempRootPrefixes = nil
+
+	for _, dir := range []string{quarantine, filepath.Join(quarantine, "pre_clean")} {
+		path, fd := classifyFixture(t, dir, "20261109-120000_k_home_acct_public_html_x.php", 0o600)
+		if _, admit := fm.classifyEvent(path, fd); admit {
+			t.Errorf("classifyEvent admitted quarantine copy %s", path)
+		}
+	}
+	path, fd := classifyFixture(t, quarantine+"-other", "x.php", 0o644)
+	if _, admit := fm.classifyEvent(path, fd); !admit {
+		t.Errorf("classifyEvent rejected %s, which is outside the quarantine", path)
+	}
+}

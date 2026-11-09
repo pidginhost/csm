@@ -34,7 +34,7 @@ try {
 
     // --- Per-account disable ---
     if (preg_match('#^/home/([^/]+)/#', $csm_script, $csm_m)) {
-        if (file_exists('/home/' . $csm_m[1] . '/.csm-shield-disable')) return;
+        if (@file_exists('/home/' . $csm_m[1] . '/.csm-shield-disable')) return;
     }
 
     $csm_conf = csm_shield_load_config();
@@ -344,7 +344,7 @@ function csm_shield_load_config() {
         'allowed_ips' => array(),
     );
 
-    if (file_exists(CSM_SHIELD_CONF)) {
+    if (@file_exists(CSM_SHIELD_CONF)) {
         $custom = @include CSM_SHIELD_CONF;
         if (is_array($custom)) {
             if (isset($custom['blocked_paths']) && is_array($custom['blocked_paths'])) {

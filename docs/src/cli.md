@@ -36,11 +36,15 @@ empty tree keeps the last loaded actions until a replacement is available.
 | `csm check-critical` | Test critical checks only (dry-run via daemon) |
 | `csm check-deep` | Test deep checks only (dry-run via daemon) |
 | `csm scan <user> [--alert]` | Scan a single cPanel account (capped quick scan). `--alert` sends alerts for the findings. An account whose home is on an additional home partition is found through the cPanel account list and its passwd home. |
-| `csm scan <user> --full [--wait] [--json] [--respect-ignores] [--quarantine]` | Uncapped deep scan of one account, routed through the daemon (bypasses the per-account file cap). It also runs the YARA rules over the account's document roots, one file at a time through the YARA worker; files over `full_scan_max_file_mb` are reported as not scanned. It is report-only by default; `--quarantine` acts on critical file findings the way the scheduled auto-response does (WordPress core, plugin and theme files are cleaned in place; directories, symlinks and lower-severity findings are left for review); `--wait` polls to completion and prints the report; `--respect-ignores` honors `ignore_paths`. |
+| `csm scan <user> --full [--wait] [--json] [--respect-ignores] [--quarantine]` | Uncapped deep scan of one account, routed through the daemon (bypasses the per-account file cap). It also runs the YARA rules over the account's document roots, one file at a time through the YARA worker; files over `full_scan_max_file_mb` are reported as not scanned, and image files are scanned after everything else so a scan that runs out of time has read the code first. It is report-only by default; `--quarantine` acts on critical file findings the way the scheduled auto-response does (WordPress core, plugin and theme files are cleaned in place; directories, symlinks and lower-severity findings are left for review); `--wait` polls to completion and prints the report, and exits with status 3 when the scan stopped early, was canceled or failed; `--respect-ignores` honors `ignore_paths`. |
 | `csm scan --all --full [--wait] [--json] [--respect-ignores]` | Server-wide uncapped full scan across every account. Quarantine per account after review (`--quarantine` is rejected with `--all`). |
 | `csm scan --status [id] [--json]` | List full-scan jobs, or show one job by id. |
-| `csm scan --report <id> [--json]` | Print the stored report for a completed full-scan job. |
+| `csm scan --report <id> [--json]` | Print the stored report for a completed full-scan job. Exits with status 3 when that scan did not cover everything. |
 | `csm scan --cancel <id> [--json]` | Cancel a running full-scan job. |
+
+Exit status 3 means the scan did not cover everything: a check timed out or
+failed, a file was skipped as oversize or unreadable, the account was not
+found, or not every finding was stored.
 
 Passwd home fallback accepts an account-named directory directly under a sibling
 home volume, such as `/home2`, and rejects symlinked volumes and homes. Arbitrary
@@ -134,6 +138,10 @@ Operator-driven mitigations applied to the host. Run `csm harden` with no argume
 Installing or enabling PHP Shield creates `/opt/csm/shield.conf.php` only
 when it is missing, so your edits survive. Update its allowed IPs by hand
 after changing `infra_ips`. Disabling keeps the file; uninstalling removes it.
+A PHP pool with `open_basedir` must allow `/opt/csm/`, not just the shield
+script, or the shield ignores `/opt/csm/shield.conf.php` and uses its
+defaults. A `.csm-shield-disable` file only works where `open_basedir`
+allows the account's home folder.
 
 ## State database
 
