@@ -524,8 +524,8 @@ func validateChallengePublicURL(rc RenderConfig) error {
 	// socket settings before accepting redirects to a listener that cannot
 	// start, and before the "unix:" prefix can be parsed as host:port.
 	if path, socket := config.ChallengeSocketPath(rc.ChallengeListenAddr); socket {
-		if !filepath.IsAbs(path) {
-			return fmt.Errorf("webserver integration: challenge.listen_addr unix socket path must be absolute, got %q", path)
+		if err := config.ChallengeSocketPathError(path); err != nil {
+			return fmt.Errorf("webserver integration: %w", err)
 		}
 		if strings.TrimSpace(rc.ChallengeListenGroup) == "" {
 			return errors.New("webserver integration: challenge.listen_group must name the group your proxy runs as when challenge.listen_addr is a unix socket")

@@ -355,8 +355,8 @@ func Validate(cfg *Config) []ValidationResult {
 	}
 	if cfg.Challenge.Enabled {
 		if socket {
-			if !filepath.IsAbs(socketPath) {
-				results = append(results, ValidationResult{"error", "challenge.listen_addr", fmt.Sprintf("listen_addr unix socket path must be absolute, got %q", socketPath)})
+			if err := ChallengeSocketPathError(socketPath); err != nil {
+				results = append(results, ValidationResult{"error", "challenge.listen_addr", err.Error()})
 			}
 			if strings.TrimSpace(cfg.Challenge.ListenGroup) == "" {
 				results = append(results, ValidationResult{"error", "challenge.listen_group", "listen_group must name the group your proxy runs as when challenge.listen_addr is a unix socket"})

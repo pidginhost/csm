@@ -63,3 +63,20 @@ func TestInstallSocketSettings(t *testing.T) {
 		})
 	}
 }
+
+func TestInstallRejectsUnsafeSocketPath(t *testing.T) {
+	pinInstallerHost(t)
+	for _, addr := range []string{"unix:/run/csm//challenge.sock", "unix:/" + strings.Repeat("d", 95) + "/c"} {
+		h := &fakeHandler{kind: "apache", body: "body\n"}
+		i := newTestInstaller(t, h)
+		i.Config.ChallengeListenAddr = addr
+		i.Config.ChallengeListenGroup = "nginx"
+		i.Config.ChallengePublicURL = "https://challenge.example.com/challenge"
+		if _, err := i.Install(); err == nil {
+			t.Fatalf("%q: install accepted a path the server refuses", addr)
+		}
+		if h.validates.Load() != 0 || h.reloads.Load() != 0 {
+			t.Fatalf("%q: refused install touched the webserver", addr)
+		}
+	}
+}

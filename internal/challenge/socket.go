@@ -12,11 +12,11 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/pidginhost/csm/internal/config"
 )
 
-// maxSocketPath is the longest path a client can connect to: sun_path holds
-// 108 bytes including the terminating NUL.
-const maxSocketPath = 107
+const maxSocketPath = config.ChallengeSocketMaxPath
 
 // CheckSocketPlacement checks where the challenge socket would live: an
 // absolute path a client can connect to, a group that exists, a parent owned
@@ -24,14 +24,8 @@ const maxSocketPath = 107
 // swap the path), and nothing but a socket at the path. The server and
 // doctor share it so their rules cannot drift.
 func CheckSocketPlacement(path, group string) (gid int, err error) {
-	if !filepath.IsAbs(path) {
-		return 0, fmt.Errorf("challenge.listen_addr: unix socket path %q must be absolute", path)
-	}
-	if filepath.Clean(path) != path {
-		return 0, fmt.Errorf("challenge.listen_addr: unix socket path %q must be clean (no redundant separators or dot components)", path)
-	}
-	if len(path) > maxSocketPath {
-		return 0, fmt.Errorf("challenge.listen_addr: socket path too long for the %d-byte limit: %s", maxSocketPath, path)
+	if err := config.ChallengeSocketPathError(path); err != nil {
+		return 0, err
 	}
 	g, err := user.LookupGroup(group)
 	if err != nil {
@@ -175,7 +169,7 @@ func listenUnixSocket(path, group string) (net.Listener, error) {
 	if err != nil {
 		return nil, err
 	}
-	tmpDir, err := os.MkdirTemp(filepath.Dir(path), ".cs")
+	tmpDir, err := os.MkdirTemp(filepath.Dir(path), config.ChallengeSocketBindPrefix)
 	if err != nil {
 		return nil, fmt.Errorf("challenge socket: %w", err)
 	}

@@ -691,3 +691,21 @@ func TestListedPeerIsNeverAVisitor(t *testing.T) {
 		}
 	})
 }
+
+// The server binds inside <dir>/.csNNNNNNNNNN/s first, so a directory that
+// leaves no room for that name must be refused every time, by doctor too.
+func TestCheckSocketPlacementReservesTempName(t *testing.T) {
+	group, _ := ownGroup(t)
+	dir := shortSocketDir(t)
+	deep := dir
+	for len(deep) < 92 {
+		deep = filepath.Join(deep, "d")
+	}
+	deep = deep[:92]
+	if err := os.MkdirAll(deep, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CheckSocketPlacement(filepath.Join(deep, "c"), group); err == nil || !strings.Contains(err.Error(), "107") {
+		t.Fatalf("CheckSocketPlacement = %v, want refusal naming the 107-byte limit", err)
+	}
+}

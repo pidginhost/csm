@@ -217,3 +217,41 @@ func TestEffectiveFirewallSkipsSocketListener(t *testing.T) {
 		t.Fatalf("control: public listener should open 8439, got %v", got.TCPIn)
 	}
 }
+
+func TestChallengeSocketPathError(t *testing.T) {
+	dir92 := "/" + strings.Repeat("d", 91) // the bind-time name needs 16 bytes after the directory
+	for _, tc := range []struct {
+		path string
+		ok   bool
+	}{
+		{"/run/csm/challenge.sock", true},
+		{"/" + strings.Repeat("d", 90) + "/c", true},
+		{"run/c.sock", false},
+		{"", false},
+		{"/run/csm//c.sock", false},
+		{"/run/csm/", false},
+		{"/run/csm/./c.sock", false},
+		{dir92 + "/c", false},
+		{"/" + strings.Repeat("x", 108), false},
+	} {
+		err := ChallengeSocketPathError(tc.path)
+		if (err == nil) != tc.ok {
+			t.Errorf("ChallengeSocketPathError(%q) = %v, want ok=%v", tc.path, err, tc.ok)
+		}
+	}
+	if err := ChallengeSocketPathError(dir92 + "/c"); err == nil || !strings.Contains(err.Error(), "107") {
+		t.Errorf("long directory: %v, want the 107-byte limit named", err)
+	}
+}
+
+func TestValidateChallengeSocketPathRules(t *testing.T) {
+	for _, addr := range []string{"unix:/run/csm//c.sock", "unix:/run/csm/", "unix:/" + strings.Repeat("d", 95) + "/c"} {
+		cfg := baseValidationConfig()
+		cfg.Challenge.Enabled = true
+		cfg.Challenge.ListenAddr = addr
+		cfg.Challenge.ListenGroup = "nginx"
+		if !hasResult(Validate(cfg), "error", "challenge.listen_addr") {
+			t.Errorf("%q: want error on challenge.listen_addr", addr)
+		}
+	}
+}

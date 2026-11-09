@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/pidginhost/csm/internal/netutil"
@@ -21,6 +22,38 @@ func ChallengeSocketPath(listenAddr string) (string, bool) {
 		return "", false
 	}
 	return strings.TrimSpace(addr[len(challengeSocketPrefix):]), true
+}
+
+// ChallengeSocketMaxPath is the longest socket path a client can connect to:
+// sun_path holds 108 bytes including the terminating NUL.
+const ChallengeSocketMaxPath = 107
+
+// ChallengeSocketBindName is the name the server binds before renaming the
+// socket into place: a fresh directory named ChallengeSocketBindPrefix plus
+// up to ten random digits, holding "s". Its length bounds the directory.
+const (
+	ChallengeSocketBindPrefix = ".cs"
+	challengeSocketBindExtra  = len("/"+ChallengeSocketBindPrefix) + 10 + len("/s")
+)
+
+// ChallengeSocketPathError reports a socket path the server cannot bind
+// reliably: not absolute, not in clean form, or too long for sun_path once
+// the bind-time name is counted. Validation, the installer and the server
+// share it, so a path never passes one and fails another.
+func ChallengeSocketPathError(path string) error {
+	if !filepath.IsAbs(path) {
+		return fmt.Errorf("challenge.listen_addr: unix socket path %q must be absolute", path)
+	}
+	if filepath.Clean(path) != path {
+		return fmt.Errorf("challenge.listen_addr: unix socket path %q must be clean (no repeated separators, dot components or trailing slash)", path)
+	}
+	if len(path) > ChallengeSocketMaxPath {
+		return fmt.Errorf("challenge.listen_addr: socket path too long for the %d-byte limit: %s", ChallengeSocketMaxPath, path)
+	}
+	if dir := filepath.Dir(path); len(dir)+challengeSocketBindExtra > ChallengeSocketMaxPath {
+		return fmt.Errorf("challenge.listen_addr: socket directory %s is too long: binding needs %d more bytes within the %d-byte limit", dir, challengeSocketBindExtra, ChallengeSocketMaxPath)
+	}
+	return nil
 }
 
 // ChallengeLocalTrustError reports a challenge.trusted_proxies entry that
