@@ -46,6 +46,21 @@ var (
 	eximSpoolDirs              = []string{"/var/spool/exim/input", "/var/spool/exim4/input"}
 )
 
+// eximSpoolMessageDirs lists where Exim may keep a message's -H and -D
+// files: with split_spool_directory (the cPanel default) the input/
+// subdirectory named after the sixth character of the message ID, otherwise
+// input/ itself.
+func eximSpoolMessageDirs(msgID string) []string {
+	var dirs []string
+	for _, root := range eximSpoolDirs {
+		if len(msgID) > 5 {
+			dirs = append(dirs, filepath.Join(root, msgID[5:6]))
+		}
+		dirs = append(dirs, root)
+	}
+	return dirs
+}
+
 // chmodFunc performs the permission change for fixPermissions on the pinned
 // descriptor. It is a var so tests can simulate failures (e.g. a read-only
 // mount returning EROFS) without an actual read-only filesystem, and assert an
@@ -537,16 +552,19 @@ func homeAccountRoot(path string) string {
 // Matches the pattern "(message: XXXXXX-XXXXXX-XX)" used by emailscan.go.
 func extractEximMsgID(message string) string {
 	prefix := "(message: "
-	idx := strings.Index(message, prefix)
+	// Sender text can contain the same marker. The target is always the
+	// final suffix of the finding, never an earlier occurrence.
+	idx := strings.LastIndex(message, prefix)
 	if idx < 0 {
 		return ""
 	}
-	rest := message[idx+len(prefix):]
-	end := strings.Index(rest, ")")
-	if end < 0 {
+	// Redaction may have consumed the real suffix of a stored finding.
+	// Such a message cannot prove a target, even if an earlier marker remains.
+	rest, ok := strings.CutSuffix(message[idx+len(prefix):], ")")
+	if !ok {
 		return ""
 	}
-	return strings.TrimSpace(rest[:end])
+	return strings.TrimSpace(rest)
 }
 
 // fixQuarantineSpoolMessage moves Exim spool files (-H header and -D body)
@@ -562,7 +580,7 @@ func fixQuarantineSpoolMessage(message string) RemediationResult {
 	}
 
 	var spoolDir string
-	for _, dir := range eximSpoolDirs {
+	for _, dir := range eximSpoolMessageDirs(msgID) {
 		if _, err := osFS.Stat(filepath.Join(dir, msgID+"-H")); err == nil {
 			spoolDir = dir
 			break

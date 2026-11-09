@@ -105,7 +105,8 @@ func TestExtractEximMsgID(t *testing.T) {
 	cases := []struct {
 		in, want string
 	}{
-		{"phishing detected (message: 2jKPFm-000abc-1X) blah", "2jKPFm-000abc-1X"},
+		{"phishing detected (message: 2jKPFm-000abc-1X)", "2jKPFm-000abc-1X"},
+		{"phishing detected (message: 2jKPFm-000abc-1X) [REDACTED]", ""},
 		{"no marker", ""},
 		{"(message: open-but-no-close", ""},
 		{"(message: )", ""},

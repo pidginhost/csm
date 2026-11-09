@@ -84,14 +84,14 @@ metadata:
 			case "A":
 				out.authSeen = true
 				authenticator, identity, ok := strings.Cut(value, ":")
-				if ok && (authenticator == "dovecot_login" || authenticator == "dovecot_plain") {
+				if ok {
 					// smtp_mailauth can append an envelope identity after the
 					// authenticated identity. Only the second A= item is trusted.
 					auth, _, mailauth := strings.Cut(identity, ":")
-					out.auth = auth
-					if strings.Count(out.auth, "@") > 1 || strings.HasPrefix(out.auth, "@") ||
-						strings.HasSuffix(out.auth, "@") || strings.ContainsAny(out.auth, " \t\r\n\"\\") {
-						return submitFields{}, false
+					if (authenticator == "dovecot_login" || authenticator == "dovecot_plain") &&
+						strings.Count(auth, "@") <= 1 && !strings.HasPrefix(auth, "@") &&
+						!strings.HasSuffix(auth, "@") && !strings.ContainsAny(auth, " \t\r\n\"\\") {
+						out.auth = auth
 					}
 					if mailauth {
 						// The optional envelope is client-supplied xtext,
