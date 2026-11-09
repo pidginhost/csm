@@ -150,6 +150,8 @@ func SetHostAddressLookup(fn func() ([]net.IP, error)) func() {
 	hostAddrGeneration++
 	hostAddrCache = nil
 	hostAddrCacheGood = false
+	hostLocalCache = nil
+	hostLocalCacheGood = false
 	hostAddrMu.Unlock()
 
 	return func() {
@@ -158,6 +160,8 @@ func SetHostAddressLookup(fn func() ([]net.IP, error)) func() {
 		hostAddrGeneration++
 		hostAddrCache = nil
 		hostAddrCacheGood = false
+		hostLocalCache = nil
+		hostLocalCacheGood = false
 		hostAddrMu.Unlock()
 	}
 }

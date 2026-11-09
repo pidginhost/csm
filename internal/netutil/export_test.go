@@ -18,3 +18,9 @@ func expireHostAddressCacheForTest(at time.Time) {
 	hostAddrCachedAt = at
 	hostAddrMu.Unlock()
 }
+
+func expireHostLocalCacheForTest(at time.Time) {
+	hostAddrMu.Lock()
+	hostLocalCachedAt = at
+	hostAddrMu.Unlock()
+}
