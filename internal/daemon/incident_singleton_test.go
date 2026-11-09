@@ -227,6 +227,51 @@ func TestIncidentCorrelatorSkipsPublishedCrawlerRemoteIP(t *testing.T) {
 	}
 }
 
+// TestIncidentCorrelatorFollowsReloadedReputationWhitelist pins that
+// reputation.whitelist, a hot-reload field, reaches the correlator on reload:
+// a removed entry may anchor incidents again and an added one may not.
+func TestIncidentCorrelatorFollowsReloadedReputationWhitelist(t *testing.T) {
+	resetIncidentForTest()
+	t.Cleanup(resetIncidentForTest)
+
+	live := &config.Config{}
+	live.Reputation.Whitelist = []string{"203.0.113.50", "2001:DB8::70"}
+	SetIncidentConfigSource(func() *config.Config { return live })
+	c := IncidentCorrelator()
+	flood := func(ip, domain string) bool {
+		t.Helper()
+		_, created, err := c.OnFinding(alert.Finding{
+			Check:     "http_request_flood",
+			Severity:  alert.High,
+			Domain:    domain,
+			SourceIP:  ip,
+			Timestamp: time.Now(),
+		})
+		if err != nil {
+			t.Fatalf("OnFinding %s: %v", ip, err)
+		}
+		return created
+	}
+
+	if flood("203.0.113.50", "example.com") {
+		t.Error("whitelisted address opened an incident")
+	}
+	if flood("2001:db8::70", "example.com") {
+		t.Error("whitelisted address configured in another spelling opened an incident")
+	}
+
+	reloaded := &config.Config{}
+	reloaded.Reputation.Whitelist = []string{"203.0.113.60", "2001:DB8::70"}
+	live = reloaded
+
+	if !flood("203.0.113.50", "example.net") {
+		t.Error("address removed from reputation.whitelist by reload still cannot open an incident")
+	}
+	if flood("203.0.113.60", "example.org") {
+		t.Error("address added to reputation.whitelist by reload opened an incident")
+	}
+}
+
 func TestIncidentCorrelatorSprayBlockerHonorsLiveAutoResponseConfig(t *testing.T) {
 	resetIncidentForTest()
 	t.Cleanup(resetIncidentForTest)

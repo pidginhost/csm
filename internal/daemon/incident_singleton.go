@@ -197,21 +197,16 @@ func IncidentCorrelator() *incident.Correlator {
 					return live
 				}
 			}
-			// Whitelist accessor: check the static reputation.whitelist
-			// list, then the bbolt-backed live whitelist operators add at
-			// runtime. db nil-check inside the closure so store resolution
-			// stays current across daemon restarts.
-			staticAllow := make(map[string]bool, len(cfg.Reputation.Whitelist))
-			for _, ip := range cfg.Reputation.Whitelist {
-				if ip != "" {
-					staticAllow[ip] = true
-				}
-			}
+			// Whitelist accessor: reputation.whitelist from the live config
+			// (a hot-reload field), then the bbolt-backed whitelist operators
+			// add at runtime. Resolve the config per call, but cache the last
+			// immutable snapshot so findings do not scan the list.
+			var configWhitelist reputationWhitelist
 			whitelisted = func(ip string) bool {
 				if ip == "" {
 					return false
 				}
-				if staticAllow[ip] {
+				if configWhitelist.contains(globalCfgForIncidents(), ip) {
 					return true
 				}
 				if d := store.Global(); d != nil && d.IsWhitelisted(ip) {

@@ -26,6 +26,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 ### Fixed
 
 - Framework classes that handle admin uploads no longer raise Critical dropper alerts.
+- Incident correlation now follows `reputation.whitelist` changes on reload, and matches IPv6 entries however the address is written.
 - The webserver integration installs with a loopback challenge listener behind your own proxy when `challenge.trusted_proxies` lists the listener's address.
 - `csm doctor challenge` no longer fails the gate check, or asks for listener TLS and the port gate, when the listener sits behind `challenge.trusted_proxies`.
 - Re-running `csm enable --php-shield` or `csm install --php-shield` keeps your edited PHP Shield config; update its allowed IPs by hand after changing `infra_ips`.
