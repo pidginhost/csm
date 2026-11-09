@@ -12,6 +12,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/contenttype"
 	"github.com/pidginhost/csm/internal/safepath"
 	"github.com/pidginhost/csm/internal/signatures"
 	"github.com/pidginhost/csm/internal/state"
@@ -52,6 +53,9 @@ func checkAccountYARA(ctx context.Context, cfg *config.Config, _ *state.Store) [
 	// The report only names gaps; nothing is carried forward by alias.
 	gaps.resolveAliases = func(string) ([]string, bool) { return nil, true }
 	var findings []alert.Finding
+	// Raster images go in a second pass: a shop's product photos can sort
+	// before its code folders and use up the whole time budget.
+	imagesPass := false
 	stopped := false
 	stop := func(path string) bool {
 		if stopped {
@@ -59,9 +63,21 @@ func checkAccountYARA(ctx context.Context, cfg *config.Config, _ *state.Store) [
 		}
 		if ctx.Err() != nil || (!softDeadline.IsZero() && !yaraDeepNow().Before(softDeadline)) {
 			stopped = true
-			gaps.recordUnknownRange(fmt.Sprintf("stopped at %s before the time budget ran out", path))
+			detail := fmt.Sprintf("stopped at %s before the time budget ran out", path)
+			if imagesPass {
+				detail += "; only image files were left"
+			}
+			gaps.recordUnknownRange(detail)
 		}
 		return stopped
+	}
+	// Both passes walk the same folders; report each unreadable one once.
+	reported := make(map[string]bool)
+	locationGap := func(path, detail string) {
+		if !reported[path] {
+			reported[path] = true
+			gaps.recordUnknownRange(detail)
+		}
 	}
 
 	var walk func(dir string, pinned *safepath.Dir)
@@ -69,7 +85,7 @@ func checkAccountYARA(ctx context.Context, cfg *config.Config, _ *state.Store) [
 		defer func() { _ = pinned.Close() }()
 		entries, err := pinned.ReadDir()
 		if err != nil {
-			gaps.recordUnknownRange(fmt.Sprintf("reading %s: %v", dir, err))
+			locationGap(dir, fmt.Sprintf("reading %s: %v", dir, err))
 		}
 		sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
 		for _, entry := range entries {
@@ -86,11 +102,11 @@ func checkAccountYARA(ctx context.Context, cfg *config.Config, _ *state.Store) [
 			case entry.IsDir():
 				child, err := pinned.Walk(entry.Name())
 				if err != nil {
-					gaps.recordUnknownRange(fmt.Sprintf("opening %s: %v", path, err))
+					locationGap(path, fmt.Sprintf("opening %s: %v", path, err))
 					continue
 				}
 				walk(path, child)
-			case entry.Type().IsRegular():
+			case entry.Type().IsRegular() && contenttype.IsImageExt(filepath.Ext(entry.Name())) == imagesPass:
 				matches := scanAccountYARAFile(backend, gaps, pinned, path, maxBytes)
 				findings = append(findings, matches...)
 				publishAccountScanFindings(ctx, matches)
@@ -104,13 +120,13 @@ func checkAccountYARA(ctx context.Context, cfg *config.Config, _ *state.Store) [
 		}
 		pinned, err := openAccountYARAHome(homePath)
 		if err != nil {
-			gaps.recordUnknownRange(fmt.Sprintf("opening %s: %v", homePath, err))
+			locationGap(homePath, fmt.Sprintf("opening %s: %v", homePath, err))
 			return
 		}
 		defer func() { _ = pinned.Close() }()
 		entries, err := pinned.ReadDir()
 		if err != nil {
-			gaps.recordUnknownRange(fmt.Sprintf("reading %s: %v", homePath, err))
+			locationGap(homePath, fmt.Sprintf("reading %s: %v", homePath, err))
 		}
 		sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
 		for _, entry := range entries {
@@ -127,7 +143,7 @@ func checkAccountYARA(ctx context.Context, cfg *config.Config, _ *state.Store) [
 			switch {
 			case entry.Type()&os.ModeSymlink != 0:
 				if entry.Name() == "public_html" {
-					gaps.recordUnknownRange(fmt.Sprintf("%s is a symbolic link and was not followed", root))
+					locationGap(root, fmt.Sprintf("%s is a symbolic link and was not followed", root))
 				}
 				continue
 			case !entry.IsDir():
@@ -135,7 +151,7 @@ func checkAccountYARA(ctx context.Context, cfg *config.Config, _ *state.Store) [
 			}
 			child, err := pinned.Walk(entry.Name())
 			if err != nil {
-				gaps.recordUnknownRange(fmt.Sprintf("opening %s: %v", root, err))
+				locationGap(root, fmt.Sprintf("opening %s: %v", root, err))
 				continue
 			}
 			walk(root, child)
@@ -145,8 +161,10 @@ func checkAccountYARA(ctx context.Context, cfg *config.Config, _ *state.Store) [
 	if err != nil {
 		gaps.recordUnknownRange(fmt.Sprintf("resolving the account home: %v", err))
 	}
-	for _, home := range homes {
-		scanHome(scanHomeDirPath(home))
+	for _, imagesPass = range []bool{false, true} {
+		for _, home := range homes {
+			scanHome(scanHomeDirPath(home))
+		}
 	}
 	if !gaps.empty() {
 		findings = append(findings, gaps.finding())

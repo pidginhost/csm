@@ -289,7 +289,9 @@ func runScanFullWithInterval(f scanFlags, send sendFn, interval time.Duration) {
 		}
 		switch statusResp.Job.State {
 		case "done", "canceled", "error":
-			printScanReportWith(jobID, f.jsonOutput, send)
+			if !printScanReportWith(jobID, f.jsonOutput, send) {
+				os.Exit(exitScanIncomplete)
+			}
 			return
 		}
 		// queued or running -- sleep then poll again
@@ -328,7 +330,9 @@ func runScanStatus(f scanFlags) {
 
 // runScanReport handles `csm scan --report <id>`.
 func runScanReport(f scanFlags) {
-	printScanReport(f.reportID, f.jsonOutput)
+	if !printScanReport(f.reportID, f.jsonOutput) {
+		os.Exit(exitScanIncomplete)
+	}
 }
 
 // runScanCancel handles `csm scan --cancel <id>`.
@@ -367,20 +371,25 @@ func runScanCancelWith(f scanFlags, send sendFn) {
 }
 
 // printScanReport fetches and prints the full report for jobID.
-func printScanReport(jobID string, asJSON bool) {
-	printScanReportWith(jobID, asJSON, sendControl)
+func printScanReport(jobID string, asJSON bool) bool {
+	return printScanReportWith(jobID, asJSON, sendControl)
 }
 
 // printScanReportWith is the testable core of printScanReport.
 // It writes to os.Stdout; see printScanReportTo for the io.Writer variant.
-func printScanReportWith(jobID string, asJSON bool, send sendFn) {
-	printScanReportTo(jobID, asJSON, os.Stdout, send)
+func printScanReportWith(jobID string, asJSON bool, send sendFn) bool {
+	return printScanReportTo(jobID, asJSON, os.Stdout, send)
 }
 
+// exitScanIncomplete is the exit status of a report for a scan that stopped
+// early, was canceled or failed, so a script cannot take it for a clean one.
+const exitScanIncomplete = 3
+
 // printScanReportTo is the inner core: it writes the human-readable (or JSON)
-// report for jobID to w. Production callers pass os.Stdout; tests pass a
-// bytes.Buffer so they can assert on the output without capturing os.Stdout.
-func printScanReportTo(jobID string, asJSON bool, w io.Writer, send sendFn) {
+// report for jobID to w and reports whether the scan covered everything.
+// Production callers pass os.Stdout; tests pass a bytes.Buffer so they can
+// assert on the output without capturing os.Stdout.
+func printScanReportTo(jobID string, asJSON bool, w io.Writer, send sendFn) bool {
 	req := control.ScanReportRequest{JobID: jobID}
 	raw, err := send(control.CmdScanReport, req)
 	if err != nil {
@@ -392,16 +401,17 @@ func printScanReportTo(jobID string, asJSON bool, w io.Writer, send sendFn) {
 		os.Exit(1)
 	}
 
-	if asJSON {
-		// Pass through raw JSON to w — no coverage header, no decoration.
-		printJSONTo(w, raw)
-		return
-	}
-
 	var resp control.ScanReportResponse
 	if err := json.Unmarshal(raw, &resp); err != nil {
 		fmt.Fprintf(os.Stderr, "csm: decode report response: %v\n", err)
 		os.Exit(1)
+	}
+	complete := scanReportComplete(resp)
+
+	if asJSON {
+		// Pass through raw JSON to w — no coverage header, no decoration.
+		printJSONTo(w, raw)
+		return complete
 	}
 
 	printJobRecordTo(w, resp.Job)
@@ -410,10 +420,18 @@ func printScanReportTo(jobID string, asJSON bool, w io.Writer, send sendFn) {
 	if resp.Job.Options != nil {
 		printCoverageHeader(w, resp.Job, resp.Findings)
 	}
+	switch {
+	case complete:
+	case resp.Job.State != "done":
+		fmt.Fprintf(w, "INCOMPLETE: this scan was %s before it covered everything.\n\n", resp.Job.State)
+	default:
+		fmt.Fprintln(w, "INCOMPLETE: this scan did not cover everything; see the incomplete and truncated findings below.")
+		fmt.Fprintln(w)
+	}
 
 	if resp.Total == 0 {
 		fmt.Fprintln(w, "no findings")
-		return
+		return complete
 	}
 	fmt.Fprintf(w, "%d finding(s):\n\n", resp.Total)
 
@@ -424,6 +442,22 @@ func printScanReportTo(jobID string, asJSON bool, w io.Writer, send sendFn) {
 			printFindingTo(w, finding)
 		}
 	}
+	return complete
+}
+
+// scanReportComplete reports whether the job finished and every scanner
+// covered its whole scope. Coverage gaps are findings named *_incomplete or
+// *_truncated; the CLI requests every finding, so none is on a later page.
+func scanReportComplete(resp control.ScanReportResponse) bool {
+	if resp.Job.State != "done" {
+		return false
+	}
+	for _, f := range resp.Findings {
+		if strings.HasSuffix(f.Check, "_incomplete") || strings.HasSuffix(f.Check, "_truncated") {
+			return false
+		}
+	}
+	return true
 }
 
 // printCoverageHeader writes the full-scan coverage block to w.

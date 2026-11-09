@@ -412,3 +412,56 @@ func TestAccountYARAPassRespectsIgnoredDocroot(t *testing.T) {
 		t.Fatalf("scanned ignored document root: %+v", findings)
 	}
 }
+
+// A shop's product images can sort before its code folders and fill the
+// time budget. Images go last, so a scan that runs out of time has read
+// the code.
+func TestAccountYARAPassScansImagesLast(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "home")
+	withAccountHomeRoots(t, root)
+	writeYARADeepFile(t, root, "alice/public_html/img/p/1.jpg", "dormant malware")
+	code := writeYARADeepFile(t, root, "alice/public_html/modules/x/x.php", "dormant malware")
+	deadline := time.Now().Add(time.Hour)
+	clock := deadline.Add(-2 * yaraDeepDeadlineMargin)
+	useYARADeepClock(t, &clock)
+	backend := useCountingYARABackend(t)
+	backend.onScan = func() { clock = deadline }
+	ctx, cancel := context.WithDeadline(fullAccountYARAContext("alice", FullScanOptions(&config.Config{}, false)), deadline)
+	defer cancel()
+
+	findings := checkAccountYARA(ctx, &config.Config{}, nil)
+
+	if got := yaraMatchPaths(findings); len(got) != 1 || got[0] != code {
+		t.Fatalf("YARA matches = %v, want only the code file %s", got, code)
+	}
+	gap := findingByCheck(findings, "yara_scan_incomplete")
+	if !strings.Contains(gap.Details, "only image files were left") {
+		t.Fatalf("gap = %+v, want it to say only images were left", gap)
+	}
+}
+
+func TestAccountYARAPassStillScansImages(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "home")
+	withAccountHomeRoots(t, root)
+	image := writeYARADeepFile(t, root, "alice/public_html/img/p/1.jpg", "dormant malware")
+	code := writeYARADeepFile(t, root, "alice/public_html/modules/x/x.php", "dormant malware")
+	missing := filepath.Join(root, "alice/public_html/gone")
+	if err := os.Symlink(missing, filepath.Join(root, "alice/public_html/link")); err != nil {
+		t.Fatal(err)
+	}
+	backend := useCountingYARABackend(t)
+
+	findings := checkAccountYARA(fullAccountYARAContext("alice", FullScanOptions(&config.Config{}, false)), &config.Config{}, nil)
+
+	want := []string{image, code}
+	sort.Strings(want)
+	if got := yaraMatchPaths(findings); strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("YARA matches = %v, want %v", got, want)
+	}
+	if n := len(backend.scans()); n != 2 {
+		t.Fatalf("scanned %d files, want each file once", n)
+	}
+	if gap := findingByCheck(findings, "yara_scan_incomplete"); gap.Check != "" {
+		t.Fatalf("unexpected gap %+v", gap)
+	}
+}
