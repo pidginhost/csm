@@ -54,8 +54,8 @@ func TestNeverChallengeDynamicNames(t *testing.T) {
 
 func TestResponsePolicyForFollowsRenamedProducers(t *testing.T) {
 	for name, want := range map[string]ResponsePolicy{
-		"ssh_login_realtime":   {Block: BlockAlways, Evidence: admission.FamilySSH, Basis: admission.BasisLocal},
-		"ssh_login_unknown_ip": {Block: BlockAlways, Evidence: admission.FamilySSH, Basis: admission.BasisLocal},
+		"ssh_login_realtime":   {Block: BlockAlways, Evidence: admission.FamilySSH, Basis: admission.BasisLocal, Attribution: peerKind},
+		"ssh_login_unknown_ip": {Block: BlockAlways, Evidence: admission.FamilySSH, Basis: admission.BasisLocal, Attribution: peerKind},
 		"ftp_login_realtime":   {},
 		"ftp_login":            {},
 	} {
@@ -74,6 +74,7 @@ func TestRegistryResponsePolicyMatchesGoldenTables(t *testing.T) {
 			NeverChallenge: goldenNeverChallenge[c.Name],
 			Evidence:       evidencePolicy[c.Name].Family,
 			Basis:          evidencePolicy[c.Name].Basis,
+			Attribution:    evidencePolicy[c.Name].Attribution,
 			Subnet:         goldenSubnet[c.Name],
 		}
 		switch {
@@ -171,8 +172,8 @@ func TestResponseAndHealthChecksAreNeverActionable(t *testing.T) {
 // -race in a fresh process to cover the first initialization.
 func TestResponsePolicyLookupConcurrent(t *testing.T) {
 	want := map[string]ResponsePolicy{
-		"ssh_login_realtime":  {Block: BlockAlways, Evidence: admission.FamilySSH, Basis: admission.BasisLocal},
-		"wp_login_bruteforce": {Block: BlockAlways, ChallengeFirst: true, Evidence: admission.FamilyHTTP, Basis: admission.BasisLocal},
+		"ssh_login_realtime":  {Block: BlockAlways, Evidence: admission.FamilySSH, Basis: admission.BasisLocal, Attribution: peerKind},
+		"wp_login_bruteforce": {Block: BlockAlways, ChallengeFirst: true, Evidence: admission.FamilyHTTP, Basis: admission.BasisLocal, Attribution: httpKinds},
 		"not_a_check":         {},
 	}
 	start := make(chan struct{})

@@ -15,6 +15,8 @@ type Policy struct {
 	// the check; zero accepts every severity. It carries a Critical-only
 	// rule, so an advisory finding of such a check never becomes a root.
 	MinSeverity Severity
+	// Attribution is the set of kinds the check accepts its address from.
+	Attribution AttributionSet
 }
 
 // PolicyLookup resolves a check name, including a renamed producer's old
@@ -64,13 +66,16 @@ const maxProducerChecks = 32
 
 // ProducerSpec is what a producer registers. Checks are exact names; a
 // dynamic prefix is never a catch-all. Claims are the ownership claim kinds
-// the producer's findings may carry; Mint refuses any other.
+// the producer's findings may carry; Mint refuses any other. Attribution is
+// the set of kinds its parsers read addresses by; a derived entry, which
+// mints nothing, declares none.
 type ProducerSpec struct {
 	ID          ProducerID
 	Entry       Entry
 	Observation ObservationKind
 	Checks      []string
 	Claims      []ClaimKind
+	Attribution AttributionSet
 }
 
 // Registry holds the producers allowed to mint evidence. Register all
@@ -128,8 +133,12 @@ func (r *Registry) Register(spec ProducerSpec) (*Producer, error) {
 		if p.Family == FamilyNone {
 			return nil, fmt.Errorf("producer check carries no admissible address evidence")
 		}
-		if err := ValidPolicy(p.Family, p.Basis); err != nil || (p.MinSeverity != 0 && !p.MinSeverity.Valid()) {
+		if err := ValidPolicy(p.Family, p.Basis); err != nil || (p.MinSeverity != 0 && !p.MinSeverity.Valid()) ||
+			!p.Attribution.Valid() || !p.Attribution.Within(p.Family.Attributions()) {
 			return nil, fmt.Errorf("producer check has an invalid evidence policy")
+		}
+		if !spec.Attribution.Within(p.Attribution) {
+			return nil, fmt.Errorf("producer declares an attribution kind its check does not accept")
 		}
 		if seen[name] {
 			return nil, fmt.Errorf("producer check is repeated")
