@@ -134,7 +134,7 @@ String boundaries and legacy line endings preserve the executable code that
 follows them.
 Attribute declarations do not qualify as comment-only stubs for demotion.
 
-PHP scans keep literal request-variable examples quiet while reporting executable aliases. Findings retain their original source locations.
+PHP scans keep literal request-variable examples quiet while reporting executable aliases. Findings retain their original source locations. Phishing checks also recognize these aliases when identifying password capture and credential exfiltration.
 
 Phishing title analysis ignores a brand that appears only inside an email
 address, as on a blog author archive named after its author, even when the page

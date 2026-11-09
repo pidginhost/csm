@@ -1158,8 +1158,8 @@ var phpPhishingPatterns = []string{
 }
 
 // mayBePHPPhishing reports whether raw can reach a result in
-// analyzePHPPhishingContent, which needs a credential pattern (each starts
-// with $_post or $_request) or "<form" or "<input" in the lowercased content.
+// analyzePHPPhishingContent, which needs a credential pattern (including
+// literal superglobal aliases) or "<form" or "<input" in the content.
 // Most PHP files the walk reads hold none of them, and this byte scan rules
 // them out without lowercasing a copy of the whole file.
 func mayBePHPPhishing(raw []byte) bool {
@@ -1170,6 +1170,7 @@ func mayBePHPPhishing(raw []byte) bool {
 		return true
 	}
 	return anchorFollowedByFold(raw, '$', "_post", "_request") ||
+		bytes.Contains(raw, []byte("${")) || bytes.Contains(raw, []byte("$GLOBALS")) ||
 		anchorFollowedByFold(raw, '<', "form", "input")
 }
 
@@ -1212,6 +1213,9 @@ func hasPrefixFoldASCII(b []byte, lower string) bool {
 // capture behind an impersonated brand.
 func analyzePHPPhishingContent(content string) *phishingResult {
 	contentLower := strings.ToLower(content)
+	// Superglobal names are case-sensitive. Resolve aliases before folding
+	// and share that view across credential capture and exfiltration checks.
+	phpLower := strings.ToLower(stripPHPCommentsFromCode(phpCodeOnly(content)))
 
 	var indicators []string
 	score := 0
@@ -1219,7 +1223,7 @@ func analyzePHPPhishingContent(content string) *phishingResult {
 	// Check for PHP credential handling
 	phpCredHandling := false
 	for _, pattern := range phpPhishingPatterns {
-		if strings.Contains(contentLower, pattern) {
+		if strings.Contains(phpLower, pattern) {
 			phpCredHandling = true
 			indicators = append(indicators, fmt.Sprintf("PHP credential handling: '%s'", pattern))
 			score += 2
@@ -1261,7 +1265,7 @@ func analyzePHPPhishingContent(content string) *phishingResult {
 			}
 		}
 	}
-	if brandMatch == "" && hasPHPSubmittedPassword(contentLower) {
+	if brandMatch == "" && hasPHPSubmittedPassword(phpLower) {
 		bodyContent := visiblePageContent(pageMarkup, true)
 		for _, brand := range phishingBrands {
 			if brand.generic {
@@ -1299,7 +1303,7 @@ func analyzePHPPhishingContent(content string) *phishingResult {
 	// These only fire when the file also reads from $_POST/$_REQUEST,
 	// because a phishing kit must capture form data before exfiltrating it.
 	// Without this gate, any PHP file using fwrite()+config keywords triggers.
-	hasPostData := strings.Contains(contentLower, "$_post") || strings.Contains(contentLower, "$_request")
+	hasPostData := strings.Contains(phpLower, "$_post") || strings.Contains(phpLower, "$_request")
 
 	if hasPostData && strings.Contains(contentLower, "mail(") &&
 		(strings.Contains(contentLower, "password") || strings.Contains(contentLower, "email")) {
@@ -1337,7 +1341,7 @@ func analyzePHPPhishingContent(content string) *phishingResult {
 	return nil
 }
 
-func hasPHPSubmittedPassword(contentLower string) bool {
+func hasPHPSubmittedPassword(code string) bool {
 	passwordKeys := map[string]bool{
 		"password": true,
 		"pass":     true,
@@ -1345,7 +1349,6 @@ func hasPHPSubmittedPassword(contentLower string) bool {
 		"pwd":      true,
 		"passcode": true,
 	}
-	code := stripPHPCommentsFromCode(phpCodeOnly(contentLower))
 	for i := 0; i < len(code); {
 		if label, bodyStart, ok := phpHeredocOpen(code, i); ok {
 			i = phpHeredocEnd(code, bodyStart, label)
