@@ -674,6 +674,7 @@ func defaultChallengeGateProbe(cfg *config.Config) DoctorCheck {
 		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
 	}
 	client := &http.Client{Timeout: 2 * time.Second, Transport: transport}
+	defer transport.CloseIdleConnections()
 	req, err := http.NewRequest(http.MethodHead, rawURL, nil)
 	if err != nil {
 		return DoctorCheck{Name: "challenge gate endpoint", Status: "fail", Message: err.Error()}
