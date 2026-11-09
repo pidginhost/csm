@@ -12,7 +12,7 @@ import (
 
 // testRoots mints admission evidence for findings the way the daemon's
 // root minter does, one observation per finding.
-func testRoots(t *testing.T) func(alert.Finding, string) PreparedRoot {
+func testRoots(t *testing.T) func(alert.Finding) PreparedRoot {
 	t.Helper()
 	reg, err := admission.NewRegistry(func(check string) (string, admission.Policy, bool) {
 		return check, admission.Policy{Family: admission.FamilyHTTP, Basis: admission.BasisLocal, Attribution: admission.Attributions(admission.AttributionHTTPPeer, admission.AttributionTrustedHTTPChain)}, true
@@ -25,8 +25,8 @@ func testRoots(t *testing.T) func(alert.Finding, string) PreparedRoot {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return func(f alert.Finding, target string) PreparedRoot {
-		tg, err := admission.CanonicalAddress(target, admission.Caps{})
+	return func(f alert.Finding) PreparedRoot {
+		tg, err := admission.CanonicalAddress(f.SourceIP, admission.Caps{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -64,7 +64,7 @@ func TestIncidentBlockCarriesItsAttestingRoot(t *testing.T) {
 	id := feed(t, c, &now, evidence)
 	evidence.Timestamp = now
 	feed(t, c, &now, attestingFinding("wp_login_bruteforce", alert.Critical, 2))
-	if len(got) != 1 || !got[0].Equal(roots(evidence, evidence.SourceIP).Evidence) {
+	if len(got) != 1 || !got[0].Equal(roots(evidence).Evidence) {
 		t.Fatalf("roots = %+v", got)
 	}
 	inc, _ := c.Get(id)
@@ -115,18 +115,18 @@ func TestRestoredIncidentBlockCarriesNoRoot(t *testing.T) {
 	}
 }
 
-func TestIncidentRootUsesTheSelectedCanonicalAddress(t *testing.T) {
+func TestIncidentRootUsesTheAttributedAddress(t *testing.T) {
 	roots := testRoots(t)
 	var got []PreparedRoot
 	c := NewCorrelator(CorrelatorConfig{
 		OpenThreshold:   1,
 		AddressEvidence: func(check string, _ alert.Severity) bool { return check == "modsec_csm_block_escalation" },
 		AutoBlock:       IncidentAutoBlockConfig{Enabled: true, BlockAtSeverity: "critical"},
-		Root: func(f alert.Finding, target string) PreparedRoot {
-			if _, err := admission.CanonicalAddress(target, admission.Caps{}); err != nil {
+		Root: func(f alert.Finding) PreparedRoot {
+			if _, err := admission.CanonicalAddress(f.SourceIP, admission.Caps{}); err != nil {
 				return PreparedRoot{Finding: f, Err: err}
 			}
-			return roots(f, target)
+			return roots(f)
 		},
 		OnIncidentBlock: func(ip, _ string, _ time.Duration, _ string, root PreparedRoot) bool {
 			if ip != "192.0.2.81" {
@@ -139,10 +139,15 @@ func TestIncidentRootUsesTheSelectedCanonicalAddress(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	c.now = func() time.Time { return now }
 	f := attestingFinding("modsec_csm_block_escalation", alert.Critical, 1)
+	// The legacy block normalizes the address; the root keeps what the
+	// parser wrote and refuses an address it cannot attribute.
 	f.SourceIP = "192.0.2.81:443"
 	feed(t, c, &now, f)
-	if len(got) != 1 || got[0].Err != nil || got[0].Target().Key() != "ip:192.0.2.81" || got[0].Finding.SourceIP != f.SourceIP {
+	if len(got) != 1 || got[0].Err == nil || got[0].Finding.SourceIP != f.SourceIP {
 		t.Fatalf("prepared roots=%+v", got)
+	}
+	if reason, _ := admission.ReasonOf(got[0].Err); reason != admission.ReasonInvalid || got[0].Check() != "" {
+		t.Fatalf("malformed attributed address must produce no root and an invalid refusal: %+v", got[0])
 	}
 }
 

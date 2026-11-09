@@ -155,12 +155,12 @@ func TestIngressRefusesInvalidSubmissions(t *testing.T) {
 	wantReason(t, "stale evidence", f.in.Submit(stale), ReasonStale)
 	moved := f.sub(subSpec{})
 	moved.Target = mustAddr(t, "2001:db8::ffff")
-	wantReason(t, "evidence for another target", f.in.Submit(moved), ReasonInvalid)
+	wantReason(t, "evidence for another target", f.in.Submit(moved), ReasonAttribution)
 	unknown := f.sub(subSpec{})
 	unknown.Kind = 0
 	wantReason(t, "unknown kind", f.in.Submit(unknown), ReasonInvalid)
 	st := f.in.Stats()
-	for r, want := range map[Reason]uint64{ReasonPolicy: 1, ReasonStale: 1, ReasonInvalid: 2} {
+	for r, want := range map[Reason]uint64{ReasonPolicy: 1, ReasonStale: 1, ReasonInvalid: 1, ReasonAttribution: 1} {
 		if got := st.Counters.Count(CountKey{Event: EventRefused, Reason: r}); got != want {
 			t.Errorf("%s refusals = %d, want %d", r, got, want)
 		}
@@ -489,7 +489,7 @@ func TestIngressSnapshotOrderAndEnvelope(t *testing.T) {
 	}
 	moved := first
 	moved.Target = mustAddr(t, "2001:db8::ffff")
-	wantReason(t, "duplicate with another target", f.in.Submit(moved), ReasonInvalid)
+	wantReason(t, "duplicate with another target", f.in.Submit(moved), ReasonAttribution)
 	snapshot := *f.in.snap
 	f.publish(durable(1, aliceScope, c2h)...)
 	revision := f.in.revision

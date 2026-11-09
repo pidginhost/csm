@@ -7,14 +7,15 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 )
 
-// AdmissionEvidence is what a finding asks admission to mint for target:
-// the producer that stamped its observation and the evidence input that
-// producer attests. A finding without an observation, or naming a producer
-// the table does not list, asks for nothing: provenance is never
-// reconstructed from the finding's other fields (spec 5.1). Missing
-// provenance is an attribution refusal, not malformed input. The caller
-// supplies the inventory the owner resolves claims against.
-func AdmissionEvidence(f alert.Finding, target admission.Target) (admission.ProducerID, admission.EvidenceInput, error) {
+// AdmissionEvidence is what a finding asks admission to mint: the producer
+// that stamped its observation and the evidence input that producer attests,
+// aimed at the address the finding's parser read (spec 5.8). A finding
+// without an observation, naming a producer the table does not list, or
+// whose parser vouched for no address asks for nothing: provenance is never
+// reconstructed from the finding's other fields, and message text never
+// becomes a target. The caller supplies the inventory the owner resolves
+// claims against.
+func AdmissionEvidence(f alert.Finding) (admission.ProducerID, admission.EvidenceInput, error) {
 	if f.Observation.Producer == "" {
 		return "", admission.EvidenceInput{}, &admission.Error{Reason: admission.ReasonAttribution, Cause: admission.CauseNoObservation, Detail: "finding has no observation"}
 	}
@@ -22,6 +23,13 @@ func AdmissionEvidence(f alert.Finding, target admission.Target) (admission.Prod
 	parser, ok := ProducerParser(producer)
 	if !ok {
 		return "", admission.EvidenceInput{}, &admission.Error{Reason: admission.ReasonPolicy, Detail: "finding names no registered producer"}
+	}
+	if !f.Attribution.Valid() {
+		return "", admission.EvidenceInput{}, &admission.Error{Reason: admission.ReasonAttribution, Cause: admission.CauseKindNotAllowed, Detail: "no parser vouched for the finding's address"}
+	}
+	target, err := admission.CanonicalAddress(f.SourceIP, admission.Caps{IPv6: true})
+	if err != nil {
+		return "", admission.EvidenceInput{}, err
 	}
 	return producer, admission.EvidenceInput{
 		Check: f.Check, FindingID: alert.FindingID(f), Severity: admissionSeverity(f.Severity),

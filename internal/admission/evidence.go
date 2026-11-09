@@ -49,7 +49,8 @@ type EvidenceInput struct {
 	Observation ObservationRef
 	ObservedAt  time.Time
 	Parser      ParserRef
-	Target      Target
+	// Target is the address the attribution names; never a prefix.
+	Target Target
 	// Attribution is how the producer's parser read Target. Mint checks
 	// it against the producer's declaration and the check's policy; the
 	// record does not store it.
@@ -187,6 +188,11 @@ func (p *Producer) Mint(in EvidenceInput) (Evidence, error) {
 	}
 	if !spec.Attribution.Has(in.Attribution) || !pol.Attribution.Has(in.Attribution) {
 		return Evidence{}, refuseAttribution(CauseKindNotAllowed, "the producer or check does not accept this attribution kind")
+	}
+	// Stored records may still name a spray's prefix; a new record names
+	// the address its parser read.
+	if !in.Target.IsZero() && !in.Target.IsAddress() {
+		return Evidence{}, refuse(ReasonInvalid, "evidence names the address its parser read, not a prefix")
 	}
 	for _, c := range in.Claims {
 		if !slices.Contains(spec.Claims, c.Kind) {

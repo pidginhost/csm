@@ -111,12 +111,12 @@ func TestAdmissionLedgerRetainsSubnetHistoryUntilBothClocksPass(t *testing.T) {
 	e, err := f.ssh.Mint(admission.EvidenceInput{
 		Check: "ssh_brute", FindingID: "0123456789abcdef", Severity: admission.SeverityHigh, Attribution: ledgerKind("ssh_brute"),
 		Observation: admission.ObservationRef{Stream: "log:sshd_log", Cursor: "subnet", Version: 1},
-		ObservedAt:  f.wall, Parser: admission.ParserRef{Name: "fixture", Version: 1}, Target: prefix,
+		ObservedAt:  f.wall, Parser: admission.ParserRef{Name: "fixture", Version: 1}, Target: f.target("192.0.2.7"),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	arrival := f.arrive(admission.Arrival{Request: admission.CandidateRequest{Kind: admission.KindBlockSubnet, Target: prefix, Primary: e.ID()}, Evidence: e})[0]
+	arrival := f.arrive(admission.Arrival{Request: admission.CandidateRequest{Kind: admission.KindBlockSubnet, Target: prefix, Primary: e.ID(), Entry: admission.EntryMailSubnet}, Evidence: e})[0]
 	if arrival.Err != nil || !arrival.Created {
 		t.Fatalf("subnet arrival: %+v", arrival)
 	}
@@ -159,12 +159,12 @@ func TestAdmissionLedgerForgetLineDropsAnUnretainableRow(t *testing.T) {
 	e, err := f.ssh.Mint(admission.EvidenceInput{
 		Check: "ssh_brute", FindingID: "0123456789abcdef", Severity: admission.SeverityHigh, Attribution: ledgerKind("ssh_brute"),
 		Observation: admission.ObservationRef{Stream: "log:sshd_log", Cursor: "subnet", Version: 1},
-		ObservedAt:  f.wall, Parser: admission.ParserRef{Name: "fixture", Version: 1}, Target: prefix,
+		ObservedAt:  f.wall, Parser: admission.ParserRef{Name: "fixture", Version: 1}, Target: f.target("192.0.2.7"),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	arrival := f.arrive(admission.Arrival{Request: admission.CandidateRequest{Kind: admission.KindBlockSubnet, Target: prefix, Primary: e.ID()}, Evidence: e})[0]
+	arrival := f.arrive(admission.Arrival{Request: admission.CandidateRequest{Kind: admission.KindBlockSubnet, Target: prefix, Primary: e.ID(), Entry: admission.EntryMailSubnet}, Evidence: e})[0]
 	if arrival.Err != nil || !arrival.Created {
 		t.Fatalf("subnet arrival: %+v", arrival)
 	}

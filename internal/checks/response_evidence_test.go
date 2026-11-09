@@ -282,6 +282,28 @@ type reviewedEvidenceRestore struct {
 // dot, and the function name. Pin the whole declaration so changes to the
 // source or destination of restored evidence require a new review.
 var reviewedEvidenceRestores = map[string]reviewedEvidenceRestore{
+	"internal/checks.respondSpray": {
+		reason: "names each root of a spray by the address its tracker counted, read as the tracker's parser read it",
+		declaration: `func respondSpray(f alert.Finding, cidr string) {
+	if len(f.SprayConstituents) == 0 {
+		respond(admission.KindBlockSubnet, f, cidr, admission.EntryMailSubnet)
+		return
+	}
+	constituents := slices.Clone(f.SprayConstituents)
+	slices.SortFunc(constituents, func(a, b alert.SprayConstituent) int {
+		if c := b.LastSeen.Compare(a.LastSeen); c != 0 {
+			return c
+		}
+		return strings.Compare(a.Address, b.Address)
+	})
+	for _, c := range constituents[:min(len(constituents), admission.MaxRoots)] {
+		root := f
+		root.SourceIP = c.Address
+		root.Observation, root.Attribution = c.Observation, c.Attribution
+		respond(admission.KindBlockSubnet, root, cidr, admission.EntryMailSubnet)
+	}
+}`,
+	},
 	"internal/state.fromPendingRecords": {
 		reason: "restores the subnets and attribution a finding carried when it was parked at shutdown",
 		declaration: `func fromPendingRecords(records []pendingFinding) []alert.Finding {

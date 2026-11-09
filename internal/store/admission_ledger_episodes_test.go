@@ -484,18 +484,22 @@ func TestAdmissionLedgerRefusesArrivalsNamingAnEpisode(t *testing.T) {
 	for name, edit := range map[string]func(*admission.CandidateRequest){
 		"episode":    func(r *admission.CandidateRequest) { r.Episode[15] = 1 },
 		"generation": func(r *admission.CandidateRequest) { r.Generation = 1 },
-		// The episode row is keyed by the request's target, so it must be
-		// the evidence's own, even where a prefix would cover it.
+		// A scan root never widens to the prefix that covers it: only a
+		// range entry may act on one (spec 5.13).
 		"prefix": func(r *admission.CandidateRequest) { r.Kind, r.Target = admission.KindBlockSubnet, prefix },
 	} {
 		a := f.arrival(evidenceSpec{cursor: name})
 		edit(&a.Request)
-		wantLedgerReason(t, name, f.arrive(a)[0].Err, admission.ReasonInvalid)
+		want := admission.ReasonInvalid
+		if name == "prefix" {
+			want = admission.ReasonAttribution
+		}
+		wantLedgerReason(t, name, f.arrive(a)[0].Err, want)
 	}
 	if _, ok := f.episodeAt("192.0.2.10"); ok {
 		t.Fatal("a refused arrival opened an episode")
 	}
-	if n := f.refusals(admission.ReasonInvalid); n != 3 {
+	if n := f.refusals(admission.ReasonInvalid); n != 2 {
 		t.Fatalf("refusals = %d", n)
 	}
 }
@@ -1092,12 +1096,12 @@ func TestAdmissionLedgerVerifiedSubnetEpisodeEndsAtExpiry(t *testing.T) {
 	e, err := f.ssh.Mint(admission.EvidenceInput{
 		Check: "ssh_brute", FindingID: "0123456789abcdef", Severity: admission.SeverityHigh, Attribution: ledgerKind("ssh_brute"),
 		Observation: admission.ObservationRef{Stream: "log:sshd_log", Cursor: "prefix=1", Version: 1},
-		ObservedAt:  f.wall, Parser: admission.ParserRef{Name: "fixture", Version: 1}, Target: prefix,
+		ObservedAt:  f.wall, Parser: admission.ParserRef{Name: "fixture", Version: 1}, Target: f.target("192.0.2.7"),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	first := f.arrive(admission.Arrival{Request: admission.CandidateRequest{Kind: admission.KindBlockSubnet, Target: prefix, Primary: e.ID()}, Evidence: e})[0]
+	first := f.arrive(admission.Arrival{Request: admission.CandidateRequest{Kind: admission.KindBlockSubnet, Target: prefix, Primary: e.ID(), Entry: admission.EntryMailSubnet}, Evidence: e})[0]
 	if first.Err != nil || !first.Created {
 		t.Fatalf("subnet arrival: %+v", first)
 	}

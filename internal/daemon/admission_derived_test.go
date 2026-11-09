@@ -19,10 +19,11 @@ import (
 )
 
 type derivedResponse struct {
-	kind admission.Kind
-	root admission.Evidence
-	via  admission.Entry
-	ttl  time.Duration
+	kind   admission.Kind
+	target string
+	root   admission.Evidence
+	via    admission.Entry
+	ttl    time.Duration
 }
 
 // recordingAdmission stands for the admission owner: it mints with the
@@ -41,11 +42,11 @@ type derivedRefusal struct {
 	reason admission.Reason
 }
 
-func (a *recordingAdmission) Mint(f alert.Finding, target string) (admission.Evidence, error) {
+func (a *recordingAdmission) Mint(f alert.Finding) (admission.Evidence, error) {
 	if f.Observation.Producer == "" {
 		return admission.Evidence{}, &admission.Error{Reason: admission.ReasonAttribution, Detail: "finding has no observation"}
 	}
-	return mintRoot(a.t, f, target)
+	return mintRoot(a.t, f)
 }
 
 func (a *recordingAdmission) Refuse(kind admission.Kind, f alert.Finding, via admission.Entry, err error) {
@@ -55,14 +56,14 @@ func (a *recordingAdmission) Refuse(kind admission.Kind, f alert.Finding, via ad
 	a.refusals = append(a.refusals, derivedRefusal{kind, f.Check, via, reason})
 }
 
-func (a *recordingAdmission) Respond(kind admission.Kind, e admission.Evidence, via admission.Entry, ttl ...time.Duration) error {
+func (a *recordingAdmission) Respond(kind admission.Kind, target string, e admission.Evidence, via admission.Entry, ttl ...time.Duration) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	var selected time.Duration
 	if len(ttl) != 0 {
 		selected = ttl[0]
 	}
-	a.responses = append(a.responses, derivedResponse{kind: kind, root: e, via: via, ttl: selected})
+	a.responses = append(a.responses, derivedResponse{kind: kind, target: target, root: e, via: via, ttl: selected})
 	return nil
 }
 
@@ -80,9 +81,9 @@ func withRecordingAdmission(t *testing.T) *recordingAdmission {
 	return a
 }
 
-func mintedRoot(t *testing.T, f alert.Finding, target string) admission.Evidence {
+func mintedRoot(t *testing.T, f alert.Finding) admission.Evidence {
 	t.Helper()
-	e, err := mintRoot(t, f, target)
+	e, err := mintRoot(t, f)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +92,7 @@ func mintedRoot(t *testing.T, f alert.Finding, target string) admission.Evidence
 
 // mintRoot mints as the production registry does; a refusal is returned,
 // as the owner returns it to the funnel.
-func mintRoot(t *testing.T, f alert.Finding, target string) (admission.Evidence, error) {
+func mintRoot(t *testing.T, f alert.Finding) (admission.Evidence, error) {
 	t.Helper()
 	reg, err := admission.NewRegistry(checks.AdmissionPolicy)
 	if err != nil {
@@ -107,13 +108,9 @@ func mintRoot(t *testing.T, f alert.Finding, target string) (admission.Evidence,
 			producer = h
 		}
 	}
-	tg, err := checks.AdmissionTarget(target, admission.Caps{})
+	_, in, err := checks.AdmissionEvidence(f)
 	if err != nil {
-		t.Fatal(err)
-	}
-	_, in, err := checks.AdmissionEvidence(f, tg)
-	if err != nil {
-		t.Fatal(err)
+		return admission.Evidence{}, err
 	}
 	return producer.Mint(in)
 }
@@ -135,11 +132,11 @@ func TestChallengeEscalationAnswersItsRoot(t *testing.T) {
 	a := withRecordingAdmission(t)
 	d := New(cfg, nil, nil, "")
 	d.ipList = challenge.NewIPList(filepath.Join(t.TempDir(), "challenge_ips.txt"))
-	root := mintedRoot(t, observedBruteForce("203.0.113.70"), "203.0.113.70")
+	root := mintedRoot(t, observedBruteForce("203.0.113.70"))
 	d.ipList.AddWithRoot("203.0.113.70", "wp brute", -time.Minute, root.FindingID(), root.Check(), root)
 	d.escalateExpiredChallenges(parseBlockExpiry(cfg.AutoResponse.BlockExpiry))
 	got := a.got()
-	if len(got) != 1 || got[0].kind != admission.KindBlockIP || got[0].via != admission.EntryChallengeTimeout || !got[0].root.Equal(root) || got[0].ttl != parseBlockExpiry(cfg.AutoResponse.BlockExpiry) {
+	if len(got) != 1 || got[0].kind != admission.KindBlockIP || got[0].target != "203.0.113.70" || got[0].via != admission.EntryChallengeTimeout || !got[0].root.Equal(root) || got[0].ttl != parseBlockExpiry(cfg.AutoResponse.BlockExpiry) {
 		t.Fatalf("responses = %+v", got)
 	}
 }
@@ -157,7 +154,7 @@ func TestCentralActionAnswersTheLocalRoot(t *testing.T) {
 	})
 	notProtected := func(string) bool { return false }
 	f := observedBruteForce("198.51.100.20")
-	root := mintedRoot(t, f, f.SourceIP)
+	root := mintedRoot(t, f)
 	block, ok := d.planCentralAction(store, reporting.ActionBlockIfLocalCorroborated, 80, notProtected, f)
 	if !ok || !block.root.Equal(root) {
 		t.Fatalf("planned %+v (%v), want the local root", block, ok)
@@ -175,7 +172,7 @@ func TestCentralActionAnswersTheLocalRoot(t *testing.T) {
 		t.Fatalf("responses = %+v", got)
 	}
 	for _, r := range got {
-		if r.via != admission.EntryCentral || !r.root.Equal(root) {
+		if r.via != admission.EntryCentral || r.target != "198.51.100.20" || !r.root.Equal(root) {
 			t.Fatalf("response %+v, want the root through the central entry", r)
 		}
 	}
@@ -187,14 +184,15 @@ func TestIncidentBlockAnswersItsRoot(t *testing.T) {
 	cfg, _ := applyWiringSetup(t)
 	a := withRecordingAdmission(t)
 	d := New(cfg, nil, nil, "")
-	root := incident.PreparedRoot{Evidence: mintedRoot(t, observedBruteForce("203.0.113.90"), "203.0.113.90")}
+	root := incident.PreparedRoot{Evidence: mintedRoot(t, observedBruteForce("203.0.113.90"))}
 	for _, entry := range []admission.Entry{admission.EntryIncident, admission.EntryIncidentSpray} {
 		if _, err := d.applyIncidentBlock("203.0.113.90", "incident", 7*24*time.Hour, root.FindingID(), root, entry); err != nil {
 			t.Fatal(err)
 		}
 	}
 	got := a.got()
-	if len(got) != 2 || got[0].via != admission.EntryIncident || got[1].via != admission.EntryIncidentSpray || !got[0].root.Equal(root.Evidence) || !got[1].root.Equal(root.Evidence) || got[0].ttl != 7*24*time.Hour || got[1].ttl != 7*24*time.Hour {
+	if len(got) != 2 || got[0].via != admission.EntryIncident || got[1].via != admission.EntryIncidentSpray || !got[0].root.Equal(root.Evidence) || !got[1].root.Equal(root.Evidence) ||
+		got[0].target != "203.0.113.90" || got[1].target != "203.0.113.90" || got[0].ttl != 7*24*time.Hour || got[1].ttl != 7*24*time.Hour {
 		t.Fatalf("responses = %+v", got)
 	}
 }
@@ -363,7 +361,7 @@ func TestIncidentRootsKeepOnlyWhatARefusalCounts(t *testing.T) {
 	unobserved := observed
 	unobserved.Observation = alert.Observation{}
 	for name, f := range map[string]alert.Finding{"minted": observed, "refused": unobserved} {
-		root := prepareIncidentRoot(f, f.SourceIP)
+		root := prepareIncidentRoot(f)
 		if (name == "minted") != (root.Err == nil) {
 			t.Fatalf("%s: mint error = %v", name, root.Err)
 		}

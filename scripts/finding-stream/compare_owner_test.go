@@ -74,7 +74,7 @@ func TestCompareCountsOwnerPlacementRefusals(t *testing.T) {
 				Observation: alert.Observation{Producer: string(checks.ProducerSSHLog), Stream: "ssh", Cursor: "offset=1", ObservedAt: compareTS},
 				Attribution: admission.AttributionPeer,
 			}
-			root, err := o.Mint(finding, finding.SourceIP)
+			root, err := o.Mint(finding)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -114,11 +114,11 @@ func TestCompareCountsOwnerPlacementRefusals(t *testing.T) {
 			}
 			finding.Timestamp, finding.Observation.ObservedAt = compareTS.Add(time.Second), compareTS.Add(time.Second)
 			finding.Observation.Cursor = "offset=2"
-			root, err = o.Mint(finding, finding.SourceIP)
+			root, err = o.Mint(finding)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err = o.Respond(admission.KindBlockIP, root, 0); err != nil {
+			if err = o.Respond(admission.KindBlockIP, finding.SourceIP, root, 0); err != nil {
 				t.Fatal(err)
 			}
 			o.Stop()

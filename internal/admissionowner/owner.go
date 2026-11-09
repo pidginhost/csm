@@ -1213,7 +1213,7 @@ func (o *Owner) countArrivalAt(a admission.DrainedArrival, at time.Time) {
 	k := compareKey{entry: entryOf(a.Submission.Evidence, a.Submission.Via), check: a.Submission.Evidence.Check(), kind: a.Submission.Kind}
 	switch {
 	case a.Result.Err != nil:
-		k.decision, k.reason = decisionRefused, reasonOf(a.Result.Err)
+		k.decision, k.reason, k.cause = decisionRefused, reasonOf(a.Result.Err), admission.CauseOf(a.Result.Err)
 		o.compare.addCountAt(k, a.Selected, at)
 	case a.Result.Created:
 		k.decision = decisionQueued
@@ -1233,19 +1233,16 @@ func arrivalRequest(s admission.Submission) (admission.CandidateRequest, error) 
 	return admission.CandidateRequest{Kind: s.Kind, Target: s.Target, Primary: s.Evidence.ID(), Entry: s.Via, PreviewTTL: s.PreviewTTL}, nil
 }
 
-// Mint mints the evidence f's own observation supports for target, with
-// the producer that stamped it (spec 5.1). It counts nothing: a path may
-// mint a root before it knows it will answer it. Mint takes no owner lock:
-// funnels call it on their own goroutines.
-func (o *Owner) Mint(f alert.Finding, target string) (admission.Evidence, error) {
+// Mint mints the evidence f's own observation supports, aimed at the
+// address its parser read, with the producer that stamped it (spec 5.1,
+// 5.8). It counts nothing: a path may mint a root before it knows it will
+// answer it. Mint takes no owner lock: funnels call it on their own
+// goroutines.
+func (o *Owner) Mint(f alert.Finding) (admission.Evidence, error) {
 	if o.ingress == nil {
 		return admission.Evidence{}, o.startErr
 	}
-	t, err := checks.AdmissionTarget(target, admission.Caps{IPv6: true})
-	if err != nil {
-		return admission.Evidence{}, err
-	}
-	producer, in, err := checks.AdmissionEvidence(f, t)
+	producer, in, err := checks.AdmissionEvidence(f)
 	if err != nil {
 		return admission.Evidence{}, err
 	}
@@ -1288,18 +1285,29 @@ func entryOf(e admission.Evidence, via admission.Entry) admission.Entry {
 	return e.Entry()
 }
 
-// Respond hands the ingress a response of kind to e's target, through the
-// derived entry via when it is set. It acknowledges memory acceptance only
-// and never waits for the ledger.
-func (o *Owner) Respond(kind admission.Kind, e admission.Evidence, via admission.Entry, ttl ...time.Duration) error {
+// Respond hands the ingress a response of kind to target with e as its
+// root, through the derived entry via when it is set. The ingress refuses a
+// target e does not attribute (spec 5.8). It acknowledges memory acceptance
+// only and never waits for the ledger.
+func (o *Owner) Respond(kind admission.Kind, target string, e admission.Evidence, via admission.Entry, ttl ...time.Duration) error {
 	if o.ingress == nil {
 		return o.startErr
+	}
+	var t admission.Target
+	if target != "" {
+		parsed, err := checks.AdmissionTarget(target, admission.Caps{IPv6: true})
+		if err != nil {
+			o.ingress.Refuse(err, e.Severity())
+			o.compare.add(compareKey{entry: entryOf(e, via), check: e.Check(), kind: kind, decision: decisionRefused, reason: reasonOf(err)})
+			return err
+		}
+		t = parsed
 	}
 	var caps admission.Caps
 	if o.opts.Caps != nil {
 		caps = o.opts.Caps()
 	}
-	if kind != admission.KindChallenge && !caps.IPv6 && e.Target().Prefix().Addr().Is6() {
+	if kind != admission.KindChallenge && !caps.IPv6 && t.Prefix().Addr().Is6() {
 		err := &admission.Error{Reason: admission.ReasonUnsupportedContainment, Detail: "firewall does not contain IPv6"}
 		o.ingress.Refuse(err, e.Severity())
 		o.compare.add(compareKey{entry: entryOf(e, via), check: e.Check(), kind: kind, decision: decisionRefused, reason: admission.ReasonUnsupportedContainment})
@@ -1315,9 +1323,9 @@ func (o *Owner) Respond(kind admission.Kind, e admission.Evidence, via admission
 	if len(ttl) == 1 {
 		selected = ttl[0]
 	}
-	err := o.ingress.Submit(admission.Submission{Kind: kind, Target: e.Target(), Evidence: e, Via: via, PreviewTTL: selected})
+	err := o.ingress.Submit(admission.Submission{Kind: kind, Target: t, Evidence: e, Via: via, PreviewTTL: selected})
 	if err != nil {
-		o.compare.add(compareKey{entry: entryOf(e, via), check: e.Check(), kind: kind, decision: decisionRefused, reason: reasonOf(err)})
+		o.compare.add(compareKey{entry: entryOf(e, via), check: e.Check(), kind: kind, decision: decisionRefused, reason: reasonOf(err), cause: admission.CauseOf(err)})
 	}
 	return err
 }

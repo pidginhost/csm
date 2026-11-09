@@ -30,7 +30,7 @@ func TestAdmissionEvidenceFromAFinding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	producer, in, err := AdmissionEvidence(f, target)
+	producer, in, err := AdmissionEvidence(f)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,20 +47,16 @@ func TestAdmissionEvidenceFromAFinding(t *testing.T) {
 // observation, or one naming a producer the table does not list, asks for
 // nothing.
 func TestAdmissionEvidenceRefusesAFindingWithoutProvenance(t *testing.T) {
-	target, err := AdmissionTarget("192.0.2.7", admission.Caps{})
-	if err != nil {
-		t.Fatal(err)
-	}
 	unobserved := observedSSHLogin()
 	unobserved.Observation = alert.Observation{}
-	_, _, err = AdmissionEvidence(unobserved, target)
+	_, _, err := AdmissionEvidence(unobserved)
 	wantAdmissionReason(t, "no observation", err, admission.ReasonAttribution)
 	if admission.CauseOf(err) != admission.CauseNoObservation {
 		t.Errorf("no observation: cause %s", admission.CauseOf(err))
 	}
 	unknown := observedSSHLogin()
 	unknown.Observation.Producer = "tail_scan"
-	_, _, err = AdmissionEvidence(unknown, target)
+	_, _, err = AdmissionEvidence(unknown)
 	wantAdmissionReason(t, "unregistered producer", err, admission.ReasonPolicy)
 }
 
@@ -108,27 +104,72 @@ func TestAdmissionRefusesAFindingWithoutAttribution(t *testing.T) {
 			sshd = registered
 		}
 	}
-	target, err := AdmissionTarget("192.0.2.7", admission.Caps{})
+	f := observedSSHLogin()
+	f.Attribution = admission.AttributionHTTPPeer
+	_, in, err := AdmissionEvidence(f)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, kind := range []admission.Attribution{admission.AttributionUnknown, admission.AttributionHTTPPeer} {
-		f := observedSSHLogin()
-		f.Attribution = kind
-		_, in, inErr := AdmissionEvidence(f, target)
-		if inErr != nil {
-			t.Fatal(inErr)
-		}
-		if _, err = sshd.Mint(in); admission.CauseOf(err) != admission.CauseKindNotAllowed {
-			t.Errorf("%s: minted or refused without the cause: %v", kind, err)
-		}
+	if _, err = sshd.Mint(in); admission.CauseOf(err) != admission.CauseKindNotAllowed {
+		t.Errorf("an HTTP peer from sshd: minted or refused without the cause: %v", err)
 	}
-	_, in, err := AdmissionEvidence(observedSSHLogin(), target)
+	_, in, err = AdmissionEvidence(observedSSHLogin())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err = sshd.Mint(in); err != nil {
 		t.Fatalf("an sshd peer: %v", err)
+	}
+}
+
+// The target is the address the parser read, never one in the message
+// (spec 5.8): a victim named in log text cannot become an admission target.
+func TestAdmissionEvidenceTargetsOnlyTheAttributedAddress(t *testing.T) {
+	f := observedSSHLogin()
+	f.Message = "SSH login from 198.51.100.66"
+	f.Details = "client 203.0.113.66"
+	_, in, err := AdmissionEvidence(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if in.Target.Key() != "ip:192.0.2.7" {
+		t.Fatalf("target %s, want the attributed 192.0.2.7", in.Target.Key())
+	}
+	injected := observedSSHLogin()
+	injected.SourceIP, injected.Message = "", "SSH login from 198.51.100.66"
+	_, _, err = AdmissionEvidence(injected)
+	wantAdmissionReason(t, "address only in the message", err, admission.ReasonInvalid)
+	injected.Attribution = admission.AttributionUnknown
+	_, _, err = AdmissionEvidence(injected)
+	if admission.CauseOf(err) != admission.CauseKindNotAllowed {
+		t.Fatalf("an unvouched message address: %v", err)
+	}
+	if ExtractIPFromFinding(injected) != "198.51.100.66" {
+		t.Fatal("the legacy path no longer reads the message; this test lost its premise")
+	}
+	for name, raw := range map[string]string{
+		"empty": "", "port": "192.0.2.7:22", "prefix": "192.0.2.0/24", "malformed": "peer.example",
+	} {
+		for _, detailsOnly := range []bool{false, true} {
+			text := observedSSHLogin()
+			text.SourceIP, text.Message, text.Details = raw, "", ""
+			if detailsOnly {
+				text.Details = "SSH login from 198.51.100.66"
+			} else {
+				text.Message = "SSH login from 198.51.100.66"
+			}
+			_, _, err := AdmissionEvidence(text)
+			wantAdmissionReason(t, name, err, admission.ReasonInvalid)
+		}
+	}
+	for raw, want := range map[string]string{
+		"::ffff:192.0.2.7": "ip:192.0.2.7", "2001:db8::7": "ip:2001:db8::7",
+	} {
+		f.SourceIP = raw
+		_, input, err := AdmissionEvidence(f)
+		if err != nil || input.Target.Key() != want {
+			t.Errorf("%s: target %s, error %v", raw, input.Target.Key(), err)
+		}
 	}
 }
 
@@ -158,11 +199,7 @@ func TestPHPRelayCannotMintOrReuseEvidence(t *testing.T) {
 	f.Observation.Producer = string(ProducerPHPRelaySpool)
 	f.Claims = nil
 	f.Attribution = admission.AttributionHTTPPeer
-	target, err := AdmissionTarget(f.SourceIP, admission.Caps{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, in, err := AdmissionEvidence(f, target)
+	_, in, err := AdmissionEvidence(f)
 	if err != nil {
 		t.Fatal(err)
 	}

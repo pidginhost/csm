@@ -271,6 +271,9 @@ var entryNames = [...]string{"", "scan", "challenge_timeout", "incident", "incid
 
 func (e Entry) Valid() bool { return e >= EntryScan && e < entryEnd }
 
+// Range reports an entry that acts on a prefix holding its roots' addresses.
+func (e Entry) Range() bool { return e == EntryMailSubnet || e == EntryASNCrawl }
+
 func (e Entry) String() string {
 	if e.Valid() {
 		return entryNames[e]

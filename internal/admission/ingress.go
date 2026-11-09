@@ -21,11 +21,13 @@ type Submission struct {
 }
 
 // held identifies one held response: an observation may ask for several
-// kinds, and a derived entry answers the same root as its own response.
+// kinds, a derived entry answers the same root as its own response, and a
+// range entry may name several prefixes holding it.
 type held struct {
-	id   EvidenceID
-	kind Kind
-	via  Entry
+	id     EvidenceID
+	kind   Kind
+	via    Entry
+	target Target
 }
 
 func heldKeyOf(s Submission) held {
@@ -33,7 +35,7 @@ func heldKeyOf(s Submission) held {
 	if entry == 0 {
 		entry = s.Evidence.Entry()
 	}
-	return held{id: s.Evidence.ID(), kind: s.Kind, via: entry}
+	return held{id: s.Evidence.ID(), kind: s.Kind, via: entry, target: s.Target}
 }
 
 // IngressCheckpoint records the ingress decisions preceding a drain. Counters
@@ -189,8 +191,8 @@ func (in *Ingress) Submit(s Submission) error {
 		return refused(err, Tier{})
 	}
 	// Validate the submission envelope before merging by evidence identity.
-	if s.Target != e.Target() {
-		return refused(refuse(ReasonInvalid, "submission target differs from evidence"), Tier{})
+	if err := BindTarget(s.Target, s.Via, e); err != nil {
+		return refused(err, Tier{})
 	}
 	if h := in.byEvidence[heldKeyOf(s)]; h != nil {
 		switch {

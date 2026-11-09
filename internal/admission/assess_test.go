@@ -206,7 +206,17 @@ func TestAssessPrefixTargets(t *testing.T) {
 	net := mustPrefix(t, "198.51.100.0/24")
 	inside := mintRoot(t, t0, rootSpec{p: tp.ssh, check: "ssh_brute", target: "198.51.100.7", cursor: "a"})
 	insideRep := mintRoot(t, t0, rootSpec{p: tp.reputation, check: "reputation", target: "198.51.100.8", cursor: "r", intel: time.Hour})
-	summary := mintRoot(t, t0, rootSpec{p: tp.mail, check: "mail_brute", target: "198.51.100.0/24", cursor: "m"})
+	summary := mintRoot(t, t0, rootSpec{p: tp.mail, check: "mail_brute", target: "198.51.100.9", cursor: "m"})
+	// Older stored records may name a prefix even though new mints cannot.
+	summary.rec.Target = net.Key()
+	encoded, err := summary.MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	summary, err = UnmarshalEvidence(encoded)
+	if err != nil || summary.Target() != net {
+		t.Fatalf("legacy prefix record: %+v %v", summary, err)
+	}
 	outside := mintRoot(t, t0, rootSpec{p: tp.ssh, check: "ssh_brute", target: "203.0.113.7", cursor: "b"})
 	a, err := Assess(net, []Evidence{inside, insideRep, summary}, t0)
 	if err != nil || a.Tier.Class != ClassC2 || a.Corroborated {

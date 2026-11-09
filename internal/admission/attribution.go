@@ -127,3 +127,17 @@ func CauseOf(err error) Cause {
 func refuseAttribution(c Cause, detail string) error {
 	return &Error{Reason: ReasonAttribution, Cause: c, Detail: detail}
 }
+
+// BindTarget refuses a response target e does not attribute. A response
+// acts on e's address, or a service on it; only a range entry, whose
+// registered checks count the addresses of a range, may act on a prefix
+// holding it (spec 5.8, 5.13). via zero is e's own entry.
+func BindTarget(target Target, via Entry, e Evidence) error {
+	if via == 0 {
+		via = e.Entry()
+	}
+	if target.Covers(e.Target()) && (target.IsAddress() || via.Range()) {
+		return nil
+	}
+	return refuseAttribution(CauseTargetMismatch, "the response target is not the attributed address, or a range this entry may act on")
+}

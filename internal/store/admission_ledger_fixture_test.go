@@ -74,6 +74,13 @@ func newLedgerRegistry(t testing.TB) (*admission.Registry, *admission.Producer, 
 	if _, regErr := reg.Register(admission.ProducerSpec{ID: "challenge_timeout", Entry: admission.EntryChallengeTimeout, Observation: admission.ObservationEventSeq, Checks: []string{"ssh_brute"}}); regErr != nil {
 		t.Fatal(regErr)
 	}
+	// A range entry wraps the fixture check so a subnet arrival can name
+	// a prefix holding its root's address.
+	for id, entry := range map[admission.ProducerID]admission.Entry{"mail_subnet": admission.EntryMailSubnet, "asn_crawl": admission.EntryASNCrawl} {
+		if _, regErr := reg.Register(admission.ProducerSpec{ID: id, Entry: entry, Observation: admission.ObservationLogCursor, Checks: []string{"ssh_brute"}}); regErr != nil {
+			t.Fatal(regErr)
+		}
+	}
 	reg.Seal()
 	return reg, ssh, rep, mail
 }

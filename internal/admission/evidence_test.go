@@ -69,6 +69,9 @@ func newTestProducers(t testing.TB) testProducers {
 	tp.reputation = must(ProducerSpec{ID: "reputation_scan", Entry: EntryScan, Observation: ObservationScanPass, Checks: []string{"reputation"}, Claims: []ClaimKind{ClaimAccount}, Attribution: derived})
 	tp.derived = must(ProducerSpec{ID: "threat_scan", Entry: EntryScan, Observation: ObservationScanPass, Checks: []string{"threat_score"}, Attribution: derived})
 	tp.spare = must(ProducerSpec{ID: "incident", Entry: EntryIncident, Observation: ObservationEventSeq, Checks: []string{"ssh_brute"}, Attribution: peer})
+	// A range entry wraps the SSH fixture check, so a subnet response may
+	// name a prefix holding its root.
+	must(ProducerSpec{ID: "mail_subnet", Entry: EntryMailSubnet, Observation: ObservationLogCursor, Checks: []string{"ssh_brute"}})
 	return tp
 }
 
@@ -222,6 +225,7 @@ func TestMintRefusesMalformedInput(t *testing.T) {
 		"no parser":            func(in *EvidenceInput) { in.Parser = ParserRef{} },
 		"no target":            func(in *EvidenceInput) { in.Target = Target{} },
 		"service target":       func(in *EvidenceInput) { in.Target = svc },
+		"prefix target":        func(in *EvidenceInput) { in.Target = prefix },
 		"intel on local root":  func(in *EvidenceInput) { in.Intel = &IntelRef{Source: "feed", Expires: t0.Add(time.Hour)} },
 	}
 	for name, m := range mutate {
@@ -232,11 +236,6 @@ func TestMintRefusesMalformedInput(t *testing.T) {
 		} else if _, ok := ReasonOf(err); !ok {
 			t.Errorf("%s: refusal without a reason: %v", name, err)
 		}
-	}
-	in := sshInput(t)
-	in.Target = prefix
-	if _, err := tp.ssh.Mint(in); err != nil {
-		t.Errorf("prefix evidence refused: %v", err)
 	}
 	rep := sshInput(t)
 	rep.Check = "reputation"
