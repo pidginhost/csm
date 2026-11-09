@@ -25,7 +25,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Fixed
 
-- Infrastructure addresses configured as literal IPs or CIDRs are no longer sent to the challenge page.
+- Addresses the firewall never blocks, such as `firewall.infra_ips` entries and infra hostnames, are no longer sent to the challenge page.
 - Framework classes that handle admin uploads no longer raise Critical dropper alerts.
 - The webserver integration installs with a loopback challenge listener behind your own proxy when `challenge.trusted_proxies` lists the listener's address.
 - `csm doctor challenge` no longer fails the gate check, or asks for listener TLS and the port gate, when the listener sits behind `challenge.trusted_proxies`.

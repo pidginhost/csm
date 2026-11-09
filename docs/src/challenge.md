@@ -30,11 +30,10 @@ JavaScript proof-of-work challenge pages - a CAPTCHA alternative for suspicious 
 
 When `challenge.enabled: true`, CSM routes eligible IPs to the challenge page instead of hard-blocking them. This works independently of `auto_response` settings.
 
-Literal IPs and CIDRs in `infra_ips` or `firewall.infra_ips` are excluded from
-automatic challenge routing. Hostname entries protect their resolved addresses
-from firewall blocks, but challenge routing does not use those DNS answers.
-To exempt those addresses from challenges, also list their IPs or CIDRs.
-Entries only in `firewall.infra_ips` still produce alerts and spam evidence.
+Addresses the firewall refuses to block are never routed: entries in
+`infra_ips` or `firewall.infra_ips` and, while the CSM firewall runs, the
+current addresses of infra hostnames and the server's own addresses. Entries
+only in `firewall.infra_ips` still produce alerts and spam evidence.
 
 ### Challenge-Eligible Checks
 

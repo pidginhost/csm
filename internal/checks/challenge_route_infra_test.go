@@ -85,3 +85,35 @@ func TestChallengeRouteInfraAddressForms(t *testing.T) {
 		})
 	}
 }
+
+type protectingBlocker struct {
+	fakeBlocker
+	protected map[string]bool
+}
+
+func (p *protectingBlocker) BlockProtected(ip string) bool { return p.protected[ip] }
+
+// The engine also protects what config cannot show: the current addresses
+// of infra hostnames and the host's own interfaces. Routing asks it.
+func TestChallengeRouteSkipsEngineProtectedIPs(t *testing.T) {
+	a := withAdmission(t)
+	list := &mockIPList{ips: make(map[string]bool)}
+	withChallengeList(t, list)
+	oldBlocker := getIPBlocker()
+	SetIPBlocker(&protectingBlocker{fakeBlocker: fakeBlocker{blocked: map[string]bool{}}, protected: map[string]bool{"198.51.100.5": true}})
+	t.Cleanup(func() { SetIPBlocker(oldBlocker) })
+
+	cfg := &config.Config{}
+	cfg.Challenge.Enabled = true
+	findings := []alert.Finding{
+		{Check: "wp_login_bruteforce", SourceIP: "198.51.100.5"},
+		{Check: "wp_login_bruteforce", SourceIP: "192.0.2.44"},
+	}
+	actions := ChallengeRouteIPs(cfg, findings)
+	if len(actions) != 1 || !list.Contains("192.0.2.44") || len(list.ips) != 1 {
+		t.Fatalf("routed %v (%d actions), want only 192.0.2.44", list.ips, len(actions))
+	}
+	if calls := a.responses(); len(calls) != 1 || calls[0].target != "192.0.2.44" {
+		t.Fatalf("admission responses = %+v, want only 192.0.2.44", calls)
+	}
+}
