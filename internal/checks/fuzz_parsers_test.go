@@ -1530,6 +1530,9 @@ func FuzzDomlogAttributionSource(f *testing.F) {
 			if finding.Attribution == admission.AttributionHTTPPeer && forwarded[finding.SourceIP] {
 				t.Fatalf("user %q ua %q xff %q: %s read as the HTTP peer with a forwarded record", user, ua, xff, finding.SourceIP)
 			}
+			if finding.Attribution == admission.AttributionHTTPPeer && finding.SourceIP == "192.0.2.10" {
+				t.Fatalf("user %q ua %q xff %q: the trusted proxy read as the HTTP peer", user, ua, xff)
+			}
 			if finding.SourceIP == "203.0.113.80" && !forwarded["203.0.113.80"] {
 				if finding.Attribution != admission.AttributionHTTPPeer || finding.Observation == (alert.Observation{}) {
 					t.Fatalf("user %q ua %q xff %q: the direct peer lost its kind or record: %+v", user, ua, xff, finding)
