@@ -61,6 +61,7 @@ func readModSecDenials(ctx context.Context, path string, errorLog bool) (map[str
 
 	modsecAuditReader.Lock()
 	defer modsecAuditReader.Unlock()
+	now := time.Now()
 	r := &modsecAuditReader
 	start := int64(0)
 	if r.path == path && r.parser.errorLog == errorLog && r.info != nil && os.SameFile(r.info, info) && r.follow.Offset > 0 {
@@ -126,8 +127,9 @@ func readModSecDenials(ctx context.Context, path string, errorLog bool) (map[str
 	if id, ok := selfWriteIdentityFromFileInfo(info); ok {
 		stream = alert.FileStream(id.Device, id.Inode)
 	}
-	newest := make(map[string]scanRecord, len(r.parser.newest))
-	for ip, n := range r.parser.newest {
+	eligible := r.parser.newestAt(now)
+	newest := make(map[string]scanRecord, len(eligible))
+	for ip, n := range eligible {
 		n.stream = stream
 		newest[ip] = n.scanRecord
 	}
@@ -147,12 +149,13 @@ type modsecAuditParser struct {
 	// Each slot belongs to a physical line, including oversized body lines.
 	// Attribute a completed transaction to its A line so the recent window
 	// never counts a transaction whose start has already aged out.
-	recent  [modsecAuditTailLines]string
+	recent  [modsecAuditTailLines]modsecDenial
 	blocked map[string]int
-	// newest is each address's last counted denial with a recorded time no
-	// later than the read, with the line it is counted at; it leaves the
-	// window with that line.
-	newest map[string]modsecNewest
+}
+
+type modsecDenial struct {
+	ip string
+	modsecNewest
 }
 
 type modsecNewest struct {
@@ -163,20 +166,16 @@ type modsecNewest struct {
 func (p *modsecAuditParser) feed(rec syslogRecord, truncated bool) {
 	if p.blocked == nil {
 		p.blocked = make(map[string]int)
-		p.newest = make(map[string]modsecNewest)
 	}
 	line := rec.text
 	p.line++
 	slot := p.line % modsecAuditTailLines
-	if ip := p.recent[slot]; ip != "" {
+	if ip := p.recent[slot].ip; ip != "" {
 		p.blocked[ip]--
 		if p.blocked[ip] == 0 {
 			delete(p.blocked, ip)
 		}
-		if n, ok := p.newest[ip]; ok && n.line == p.line-modsecAuditTailLines {
-			delete(p.newest, ip)
-		}
-		p.recent[slot] = ""
+		p.recent[slot] = modsecDenial{}
 	}
 	if truncated {
 		p.wantFirst = false
@@ -240,14 +239,26 @@ func (p *modsecAuditParser) feed(rec syslogRecord, truncated bool) {
 
 func (p *modsecAuditParser) record(ip string, line int64, r scanRecord) {
 	if p.line-line < modsecAuditTailLines {
-		p.recent[line%modsecAuditTailLines] = ip
+		p.recent[line%modsecAuditTailLines] = modsecDenial{ip, modsecNewest{r, line}}
 		p.blocked[ip]++
-		// Admission refuses a root dated after the scan.
-		future := r.at.After(time.Now().Add(scanRecordFutureSkew))
-		if cur, ok := p.newest[ip]; !r.at.IsZero() && !future && (!ok || line >= cur.line) {
-			p.newest[ip] = modsecNewest{r, line}
+	}
+}
+
+// Eligibility is relative to this scan, not the first read. Keeping the
+// record with its counted line makes cached reads agree with a full replay
+// as the clock advances or moves back, without retaining request text.
+func (p *modsecAuditParser) newestAt(now time.Time) map[string]modsecNewest {
+	newest := make(map[string]modsecNewest)
+	for i := range p.recent {
+		d := &p.recent[i]
+		if d.at.IsZero() || d.at.After(now) {
+			continue
+		}
+		if cur, ok := newest[d.ip]; !ok || d.line > cur.line {
+			newest[d.ip] = d.modsecNewest
 		}
 	}
+	return newest
 }
 
 const (
@@ -277,9 +288,9 @@ func modsecLineDenial(line string) (string, time.Time, bool) {
 	if strings.HasPrefix(line, "{") {
 		var record struct {
 			Transaction struct {
-				ClientIP    string `json:"client_ip"`
-				TimeStamp   string `json:"time_stamp"`
-				Interrupted bool   `json:"is_interrupted"`
+				ClientIP    string          `json:"client_ip"`
+				TimeStamp   json.RawMessage `json:"time_stamp"`
+				Interrupted bool            `json:"is_interrupted"`
 				Response    struct {
 					Status int `json:"http_code"`
 				} `json:"response"`
@@ -292,10 +303,12 @@ func modsecLineDenial(line string) (string, time.Time, bool) {
 		if ip == nil {
 			return "", time.Time{}, false
 		}
-		// libmodsecurity writes ctime in the server's local time.
-		at, err := time.ParseInLocation("Mon Jan 2 15:04:05 2006", record.Transaction.TimeStamp, time.Local)
-		if err != nil {
-			at = time.Time{}
+		// Unknown timestamp metadata must not discard a legacy denial.
+		var stamp string
+		var at time.Time
+		if json.Unmarshal(record.Transaction.TimeStamp, &stamp) == nil {
+			// libmodsecurity writes ctime in the server's local time.
+			at, _ = time.ParseInLocation("Mon Jan 2 15:04:05 2006", stamp, time.Local)
 		}
 		return ip.String(), at, record.Transaction.Response.Status == 403 || record.Transaction.Interrupted
 	}
@@ -305,14 +318,25 @@ func modsecLineDenial(line string) (string, time.Time, bool) {
 			if ip == nil {
 				return "", time.Time{}, false
 			}
-			at, err := time.Parse("02/Jan/2006:15:04:05 -0700", fields[2])
-			if err != nil {
-				at = time.Time{}
-			}
+			at := modsecAuditTime(fields[2])
 			return ip.String(), at, fields[3] == "403"
 		}
 	}
 	return "", time.Time{}, false
+}
+
+func modsecAuditTime(stamp string) time.Time {
+	at, err := time.Parse("02/Jan/2006:15:04:05 -0700", stamp)
+	if err != nil {
+		return time.Time{}
+	}
+	// Go accepts overflowing zone hours and minutes and normalizes them.
+	// Those are not server timestamps and cannot date admission evidence.
+	zone := stamp[len(stamp)-5:]
+	if zone[1:3] > "23" || zone[3:] > "59" {
+		return time.Time{}
+	}
+	return at
 }
 
 func modsecErrorLogDenial(line string) (string, bool) {

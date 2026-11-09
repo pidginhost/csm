@@ -28,12 +28,13 @@ func feedModSecAt(lines []string, errorLog bool) (*modsecAuditParser, []int64) {
 // it counted one, by the server record at offset with the server's time.
 func requireModSecNewest(t *testing.T, p *modsecAuditParser, client string, offset int64, record string, at time.Time) {
 	t.Helper()
-	for ip := range p.newest {
+	newest := p.newestAt(time.Now())
+	for ip := range newest {
 		if ip != client {
-			t.Fatalf("injected text named %q: %+v", ip, p.newest)
+			t.Fatalf("injected text named %q: %+v", ip, newest)
 		}
 	}
-	n, ok := p.newest[client]
+	n, ok := newest[client]
 	if p.blocked[client] == 0 {
 		if ok {
 			t.Fatalf("no denial counted but %q named %+v", client, n)

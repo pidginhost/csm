@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1254,14 +1255,24 @@ func modsecSectionBoundary(line string) (id string, section byte, ok bool) {
 // A-section header; zero when it has none.
 func modsecAuditHeaderTime(line string) time.Time {
 	fields := strings.Fields(line)
-	if len(fields) < 5 || !strings.HasPrefix(fields[0], "[") {
+	if len(fields) != 7 || !strings.HasPrefix(fields[0], "[") || !strings.HasSuffix(fields[1], "]") {
 		return time.Time{}
 	}
-	at, err := time.Parse("02/Jan/2006:15:04:05 -0700", fields[0][1:]+" "+strings.TrimSuffix(fields[1], "]"))
-	if err != nil {
-		return time.Time{}
+	for _, i := range []int{3, 5} {
+		address := fields[i]
+		if strings.HasPrefix(address, "[") && strings.HasSuffix(address, "]") {
+			address = address[1 : len(address)-1]
+		}
+		if net.ParseIP(address) == nil {
+			return time.Time{}
+		}
 	}
-	return at
+	for _, i := range []int{4, 6} {
+		if _, err := strconv.ParseUint(fields[i], 10, 16); err != nil {
+			return time.Time{}
+		}
+	}
+	return modsecAuditTime(fields[0][1:] + " " + strings.TrimSuffix(fields[1], "]"))
 }
 
 // modsecAuditClientIP reads the client address from an A-section header:
