@@ -1022,6 +1022,11 @@ func (fm *FileMonitor) classifyEvent(path string, fd int) (ev fileEvent, admit b
 	if strings.HasSuffix(path, "/") {
 		return fileEvent{}, false
 	}
+	// Recovery copies keep their original names. Re-scanning them repeats
+	// detections CSM already acted on and spends automatic responses.
+	if checks.InQuarantine(path) {
+		return fileEvent{}, false
+	}
 
 	// The dropper tracker also needs arbitrary executable names that have
 	// no path-only content signal.

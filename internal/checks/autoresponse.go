@@ -22,6 +22,12 @@ import (
 // var (not const) so tests can redirect to t.TempDir().
 var quarantineDir = "/opt/csm/quarantine"
 
+// InQuarantine reports whether path lies inside CSM's quarantine directory.
+func InQuarantine(path string) bool {
+	path = filepath.Clean(path)
+	return path == quarantineDir || strings.HasPrefix(path, quarantineDir+string(filepath.Separator))
+}
+
 // autoQuarantineChecks are the findings the scheduled auto-responder may
 // quarantine on its own: the manual move set plus the kill-and-quarantine
 // family, and the realtime signature match, which must
