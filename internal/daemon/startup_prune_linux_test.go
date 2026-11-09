@@ -40,8 +40,9 @@ func (s *spySubnetManager) UnblockSubnet(cidr string) error {
 
 // TestStartupPruneAfterFirewallWired verifies that checks.PruneExemptAutoSubnets
 // enumerates the blocker's subnet list (calls BlockedSubnets) and removes only
-// auto_response entries that intersect the DoS-exempt set. This mirrors the
-// daemon startup call at checks.SetIPBlocker time.
+// auto_response entries that intersect the DoS-exempt set, and only when IP
+// auto-response is live. This mirrors the daemon startup call at
+// checks.SetIPBlocker time.
 func TestStartupPruneAfterFirewallWired(t *testing.T) {
 	spy := &spySubnetManager{
 		subnets: []firewall.SubnetEntry{
@@ -75,6 +76,14 @@ func TestStartupPruneAfterFirewallWired(t *testing.T) {
 		DOSExemptRanges:             []string{"192.0.2.0/24"},
 		DOSExemptKnownMailProviders: &f,
 	}
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.BlockIPs = true
+
+	// Dry run (the default) keeps the firewall read-only at startup too.
+	if n := checks.PruneExemptAutoSubnets(cfg, spy); n != 0 || len(spy.unblocked) != 0 {
+		t.Fatalf("dry run pruned %d, unblocked %v; want nothing", n, spy.unblocked)
+	}
+	cfg.AutoResponse.DryRun = &f
 
 	pruned := checks.PruneExemptAutoSubnets(cfg, spy)
 
