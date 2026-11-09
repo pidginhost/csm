@@ -2,6 +2,7 @@ package checks
 
 import (
 	"encoding/hex"
+	"fmt"
 	"net/netip"
 	"path/filepath"
 	"regexp"
@@ -12,7 +13,9 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/config"
 )
 
 func FuzzCountWPLoopback(f *testing.F) {
@@ -1403,4 +1406,116 @@ func FuzzDovecotRemoteIPLoginName(f *testing.F) {
 			}
 		}
 	})
+}
+
+// The cPanel scan dates a record only by the time cpsrvd wrote. Whatever user
+// a client chose, an accepted time is the server's and a rejection is zero.
+// A user without a bracket cannot hold a second timestamp, so it is accepted.
+func FuzzCpanelAccessLogTimeUserField(f *testing.F) {
+	server := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
+	line := func(user string) string {
+		return `203.0.113.9 - ` + user + ` [` + server.Format("01/02/2006:15:04:05") +
+			` -0000] "GET /execute/Themes/list HTTP/1.1" 401 0 "https://example.com:2083/" "Mozilla/5.0" "-" "-" 2083`
+	}
+	if got, ok := cpanelAccessLogTime(line("-")); !ok || !got.Equal(server) {
+		f.Fatalf("control: time %v (%v), want %v", got, ok, server)
+	}
+	for _, user := range []string{
+		"-", "a [b] c", `x "y`, "user name", "2001:db8::1", "[2001:db8::1]:443", "198.51.100.7",
+		`x [11/09/2026:12:00:00 -0000] "y`,
+		`x [11/09/2026:12:00:00 -0000] "GET / HTTP/1.1" 401 0 "-" "-" "-" "-" 2083 y`,
+		`[11/09/2026:12:00:00 -0000] "GET / HTTP/1.1" 401 0`,
+		`x[11/09/2026:12:00:00 -0000]` + "\t" + `"y`,
+		`x [13/99/2026:99:99:99 +9999] "y`,
+		"x [11/09/2026:12:00:00 -0000] y",
+	} {
+		f.Add(user)
+	}
+	f.Fuzz(func(t *testing.T, user string) {
+		if user == "" || strings.ContainsAny(user, "\r\n") {
+			t.Skip("cpsrvd writes a nonempty user on one line")
+		}
+		got, ok := cpanelAccessLogTime(line(user))
+		switch {
+		case ok && !got.Equal(server):
+			t.Fatalf("user %q dated the record %v, want the server time %v", user, got, server)
+		case !ok && !got.IsZero():
+			t.Fatalf("user %q: rejected with time %v, want zero", user, got)
+		case !ok && !strings.Contains(user, "["):
+			t.Fatalf("user %q holds no bracket but the record was rejected", user)
+		}
+	})
+}
+
+// A domlog finding is read as the HTTP peer only when no forwarded header
+// supplied its address for any record it counted, whatever the user, UA or
+// header text; a trusted proxy's header selection never supplies the kind,
+// even when it names the proxy itself. A direct peer with no forwarded record
+// keeps its kind.
+func FuzzDomlogAttributionSource(f *testing.F) {
+	for _, seed := range [][3]string{
+		{"-", "Mozilla/5.0", "203.0.113.81"},
+		{"-", "Mozilla/5.0", "192.0.2.10"},
+		{"a [b] c", `x" "203.0.113.80`, "203.0.113.80"},
+		{"-", "Mozilla/5.0", "198.51.100.1, 203.0.113.80"},
+		{"-", "-", "not-an-address"},
+		{"-", "-", ""},
+		{`x [09/Nov/2026:12:01:00 +0000] "y`, "curl/8.0", "::ffff:192.0.2.10"},
+		{`x [09/Nov/2099:12:01:00 +0000] "POST /xmlrpc.php HTTP/1.1" 200 100 "-" "-" "`, "Mozilla/5.0", "203.0.113.80"},
+		{"-", "Mozilla/5.0", "2001:db8::80"},
+	} {
+		f.Add(seed[0], seed[1], seed[2])
+	}
+	cfg := &config.Config{}
+	cfg.WebServer.TrustedProxies = []string{"192.0.2.10"}
+	cfg.Thresholds.XMLRPCThreshold = 3
+	quote := strings.NewReplacer(`\`, `\\`, `"`, `\"`)
+	f.Fuzz(func(t *testing.T, user, ua, xff string) {
+		if user == "" || strings.ContainsAny(user+ua+xff, "\r\n") {
+			return // Access logs escape physical line breaks.
+		}
+		stats := newDomlogStatsAt(time.Date(2026, 11, 9, 12, 5, 0, 0, time.UTC))
+		forwarded := map[string]bool{}
+		for i, peer := range []string{"192.0.2.10", "203.0.113.80", "192.0.2.10", "203.0.113.80", "192.0.2.10", "203.0.113.80"} {
+			// Access logs escape quotes and backslashes in the remote user
+			// too, so client text cannot become a second request header.
+			line := fmt.Sprintf(`%s - %s [09/Nov/2026:12:01:%02d +0000] "POST /xmlrpc.php HTTP/1.1" 200 100 "-" "%s" "%s"`,
+				peer, quote.Replace(user), i, quote.Replace(ua), quote.Replace(xff))
+			rec, ok := parseAccessLogRecord(line)
+			if !ok || !rec.Time.Equal(domlogTestTime(i)) || rec.Method != "POST" || rec.URI != "/xmlrpc.php" {
+				t.Fatalf("log-escaped user %q changed request framing: ok=%v record=%+v", user, ok, rec)
+			}
+			rec.ref = syslogRecord{text: line, offset: int64(i) * 1000, stream: "f:1:2"}
+			// Every address a trusted proxy's header could name is forwarded.
+			if rec.RemoteIP == "192.0.2.10" && rec.XFF != "" {
+				if last := strings.TrimSpace(rec.XFF[strings.LastIndexByte(rec.XFF, ',')+1:]); parseAddrOK(last) {
+					forwarded[normalizeHTTPClientIP(last)] = true
+				}
+			}
+			stats.scan(rec, cfg, nopBotClassifier{})
+		}
+		direct := 0
+		for _, finding := range stats.emitLegacy(cfg) {
+			if finding.Check != "xmlrpc_abuse" {
+				continue
+			}
+			if finding.Attribution == admission.AttributionHTTPPeer && forwarded[finding.SourceIP] {
+				t.Fatalf("user %q ua %q xff %q: %s read as the HTTP peer with a forwarded record", user, ua, xff, finding.SourceIP)
+			}
+			if finding.SourceIP == "203.0.113.80" && !forwarded["203.0.113.80"] {
+				if finding.Attribution != admission.AttributionHTTPPeer || finding.Observation == (alert.Observation{}) {
+					t.Fatalf("user %q ua %q xff %q: the direct peer lost its kind or record: %+v", user, ua, xff, finding)
+				}
+				direct++
+			}
+		}
+		if stats.xmlrpc["203.0.113.80"] >= 3 && !forwarded["203.0.113.80"] && direct != 1 {
+			t.Fatalf("user %q ua %q xff %q: direct peer counted %d but emitted %d findings", user, ua, xff, stats.xmlrpc["203.0.113.80"], direct)
+		}
+	})
+}
+
+func parseAddrOK(s string) bool {
+	_, err := netip.ParseAddr(s)
+	return err == nil
 }

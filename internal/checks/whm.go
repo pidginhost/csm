@@ -232,6 +232,21 @@ func isSSHDProgramToken(field string) bool {
 
 // tailFile reads the last N lines of a file efficiently.
 func tailFile(path string, maxLines int) []string {
+	records := tailFileRecords(path, maxLines)
+	if records == nil {
+		return nil
+	}
+	lines := make([]string, len(records))
+	for i, r := range records {
+		lines[i] = r.text
+	}
+	return lines
+}
+
+// tailFileRecords reads the last N lines of a file with the offset each
+// starts at and the file's stream, so a scan that re-reads the window names
+// a record the way every reader of the file names it.
+func tailFileRecords(path string, maxLines int) []syslogRecord {
 	if maxLines <= 0 {
 		return nil
 	}
@@ -248,24 +263,34 @@ func tailFile(path string, maxLines int) []string {
 		return nil
 	}
 
-	// For small files, just read all
+	var records []syslogRecord
 	if info.Size() < 1024*1024 {
-		return readAllLines(f, maxLines)
+		// For small files, just read all
+		records = readAllRecords(f, 0, maxLines)
+	} else if data, start, err := readTailWindow(f, info.Size(), maxLines, maxTailWindowBytes); err != nil {
+		records = readAllRecords(f, 0, maxLines)
+	} else {
+		records = readAllRecords(bytes.NewReader(data), start, maxLines)
 	}
-
-	data, err := readTailWindow(f, info.Size(), maxLines, maxTailWindowBytes)
-	if err != nil {
-		return readAllLines(f, maxLines)
+	if id, ok := selfWriteIdentityFromFileInfo(info); ok {
+		stream := alert.FileStream(id.Device, id.Inode)
+		for i := range records {
+			if !records[i].unterminated {
+				records[i].stream = stream
+			}
+		}
 	}
-
-	return readAllLines(bytes.NewReader(data), maxLines)
+	return records
 }
 
-func readTailWindow(f *os.File, size int64, maxLines int, maxBytes int64) ([]byte, error) {
+// readTailWindow returns the complete lines of the last maxBytes of the file
+// and the offset they start at. A short read cannot be placed in the file,
+// so it is an error.
+func readTailWindow(f *os.File, size int64, maxLines int, maxBytes int64) ([]byte, int64, error) {
 	const chunkSize int64 = 256 * 1024
 
 	if maxBytes <= 0 {
-		return nil, nil
+		return nil, size, nil
 	}
 
 	offset := size
@@ -285,9 +310,11 @@ func readTailWindow(f *os.File, size int64, maxLines int, maxBytes int64) ([]byt
 		chunk := make([]byte, n)
 		read, err := f.ReadAt(chunk, offset)
 		if err != nil && !errors.Is(err, io.EOF) {
-			return nil, err
+			return nil, 0, err
 		}
-		chunk = chunk[:read]
+		if int64(read) != n {
+			return nil, 0, io.ErrUnexpectedEOF
+		}
 		totalRead += int64(read)
 		newlines += bytes.Count(chunk, []byte{'\n'})
 		chunks = append(chunks, chunk)
@@ -303,12 +330,11 @@ func readTailWindow(f *os.File, size int64, maxLines int, maxBytes int64) ([]byt
 	}
 	if offset > 0 {
 		if firstNewline := bytes.IndexByte(data, '\n'); firstNewline >= 0 {
-			data = data[firstNewline+1:]
-		} else {
-			return nil, nil
+			return data[firstNewline+1:], offset + int64(firstNewline) + 1, nil
 		}
+		return nil, size, nil
 	}
-	return data, nil
+	return data, offset, nil
 }
 
 const (
@@ -324,26 +350,55 @@ const (
 )
 
 func readAllLines(r io.Reader, maxLines int) []string {
+	records := readAllRecords(r, 0, maxLines)
+	if records == nil {
+		return nil
+	}
+	lines := make([]string, len(records))
+	for i, rec := range records {
+		lines[i] = rec.text
+	}
+	return lines
+}
+
+// countingReader counts the bytes read through it.
+type countingReader struct {
+	r io.Reader
+	n int64
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += int64(n)
+	return n, err
+}
+
+// readAllRecords reads the last maxLines lines of r, which starts at offset
+// base of its file, with the offset each line starts at. Oversized lines are
+// skipped; their bytes still count toward the next line's offset.
+func readAllRecords(r io.Reader, base int64, maxLines int) []syslogRecord {
 	if maxLines <= 0 {
 		return nil
 	}
 
-	br := bufio.NewReaderSize(r, 64*1024)
-	var lines []string
+	counter := &countingReader{r: r}
+	br := bufio.NewReaderSize(counter, 64*1024)
+	var records []syslogRecord
 	for {
+		start := base + counter.n - int64(br.Buffered())
 		line, truncated, err := readBoundedLineLog(br, maxLogLineBytes)
 		if len(line) > 0 && !truncated {
-			lines = append(lines, trimLogLineEnding(line))
+			records = append(records, syslogRecord{text: trimLogLineEnding(line), offset: start, unterminated: err != nil})
 		}
 		if err != nil {
 			break
 		}
 	}
 
-	if len(lines) > maxLines {
-		return lines[len(lines)-maxLines:]
+	if len(records) > maxLines {
+		return records[len(records)-maxLines:]
 	}
-	return lines
+	return records
 }
 
 func trimLogLineEnding(line string) string {

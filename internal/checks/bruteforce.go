@@ -6,7 +6,6 @@ import (
 	"net"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -82,10 +81,10 @@ func CheckWPBruteForce(ctx context.Context, cfg *config.Config, _ *state.Store) 
 	stats := newDomlogStats()
 	hostInfo := platform.Detect()
 	var centralPath string
-	var centralLines []string
+	var centralRecords []syslogRecord
 	for _, p := range hostInfo.AccessLogPaths {
-		if lines := tailFile(p, window); len(lines) > 0 {
-			centralPath, centralLines = p, lines
+		if records := tailFileRecords(p, window); len(records) > 0 {
+			centralPath, centralRecords = p, records
 			break
 		}
 	}
@@ -99,11 +98,12 @@ func CheckWPBruteForce(ctx context.Context, cfg *config.Config, _ *state.Store) 
 	// On Apache it duplicates domlog data; minor double-counting is
 	// acceptable since thresholds are high enough.
 	central := hostInfo.IsCPanelCentralAccessLog(centralPath)
-	for _, line := range centralLines {
-		rec, ok := parseAccessLogRecord(line)
+	for _, r := range centralRecords {
+		rec, ok := parseAccessLogRecord(r.text)
 		if !ok {
 			continue
 		}
+		rec.ref = r
 		rec.Central = central
 		stats.scan(rec, cfg, currentBotClassifier(cfg))
 	}
@@ -314,11 +314,12 @@ func tailDomlogsInto(ctx context.Context, paths []string, cfg *config.Config, st
 		}
 		domain := domainFromDomlogPath(p)
 		account := domainAccountOwner(domain)
-		for _, line := range tailFile(p, tailLines) {
-			rec, ok := parseAccessLogRecord(line)
+		for _, r := range tailFileRecords(p, tailLines) {
+			rec, ok := parseAccessLogRecord(r.text)
 			if !ok {
 				continue
 			}
+			rec.ref = r
 			rec.Domain = domain
 			rec.Account = account
 			stats.scan(rec, cfg, classifier)
@@ -518,7 +519,7 @@ func CheckFTPLogins(ctx context.Context, cfg *config.Config, store *state.Store)
 			}
 			tracker.record(ip, at)
 			// The newest new failure is the observation the report names.
-			freshFailures[ip] = alert.Observation{Producer: string(ProducerFTPScan), Stream: syslogStream(next), Cursor: strconv.FormatInt(rec.offset, 10), ObservedAt: at.UTC()}
+			freshFailures[ip] = rec.observation(ProducerFTPScan, at)
 		case account != "":
 			findings = append(findings, ftpLoginFinding(ip, account, line, tracker.count(ip)))
 		}
@@ -634,11 +635,14 @@ func CheckWebmailLogins(ctx context.Context, cfg *config.Config, _ *state.Store)
 
 	var findings []alert.Finding
 
-	lines := tailFile("/usr/local/cpanel/logs/access_log", 300)
+	records := tailFileRecords("/usr/local/cpanel/logs/access_log", 300)
 
 	loginAttempts := make(map[string]int)
+	newest := make(map[string]scanRecord)
+	now := time.Now()
 
-	for _, line := range lines {
+	for _, rec := range records {
+		line := rec.text
 		// Webmail ports: 2095 (HTTP), 2096 (HTTPS)
 		if !strings.Contains(line, "2095") && !strings.Contains(line, "2096") {
 			continue
@@ -657,17 +661,23 @@ func CheckWebmailLogins(ctx context.Context, cfg *config.Config, _ *state.Store)
 		// Count login attempts per IP
 		if strings.Contains(line, "POST") && (strings.Contains(line, "login") || strings.Contains(line, "auth")) {
 			loginAttempts[ip]++
+			at, _ := cpanelAccessLogTime(line)
+			keepNewest(newest, ip, scanned(rec, at), now)
 		}
 	}
 
 	for ip, count := range loginAttempts {
 		if count >= webmailThreshold {
-			findings = append(findings, alert.Finding{
+			f := alert.Finding{
 				Severity: alert.High,
 				Check:    "webmail_bruteforce",
 				Message:  fmt.Sprintf("Webmail brute force from %s: %d attempts", ip, count),
 				SourceIP: ip,
-			})
+				// cpsrvd logs the connecting peer first.
+				Attribution: admission.AttributionPeer,
+			}
+			newest[ip].stamp(&f, ProducerCpanelScan)
+			findings = append(findings, f)
 		}
 	}
 
@@ -683,19 +693,22 @@ func CheckAPIAuthFailures(ctx context.Context, cfg *config.Config, _ *state.Stor
 
 	var findings []alert.Finding
 
-	lines := tailFile("/usr/local/cpanel/logs/access_log", 300)
+	records := tailFileRecords("/usr/local/cpanel/logs/access_log", 300)
 	evidence := StaleSessionEvidence{Denials: recentSessionTokenDenials()}
 	if len(evidence.Denials) > 0 {
-		for _, line := range lines {
-			if r, ok := ParseStaleSessionRequest(line); ok && r.User != "-" {
+		for _, rec := range records {
+			if r, ok := ParseStaleSessionRequest(rec.text); ok && r.User != "-" {
 				evidence.Rejected = append(evidence.Rejected, r)
 			}
 		}
 	}
 
 	failedAPI := make(map[string]int)
+	newest := make(map[string]scanRecord)
+	now := time.Now()
 
-	for _, line := range lines {
+	for _, rec := range records {
+		line := rec.text
 		// Look for 401/403 responses on API endpoints
 		if !strings.Contains(line, "\" 401 ") && !strings.Contains(line, "\" 403 ") {
 			continue
@@ -721,21 +734,153 @@ func CheckAPIAuthFailures(ctx context.Context, cfg *config.Config, _ *state.Stor
 		}
 
 		failedAPI[ip]++
+		at, _ := cpanelAccessLogTime(line)
+		keepNewest(newest, ip, scanned(rec, at), now)
 	}
 
 	for ip, count := range failedAPI {
 		if count >= apiFailThreshold {
-			findings = append(findings, alert.Finding{
+			f := alert.Finding{
 				Severity: alert.High,
 				Check:    "api_auth_failure",
 				Message:  fmt.Sprintf("cPanel API auth failures from %s: %d attempts", ip, count),
 				SourceIP: ip,
 				Details:  "Possible API token brute force or unauthorized API access",
-			})
+				// cpsrvd logs the connecting peer first.
+				Attribution: admission.AttributionPeer,
+			}
+			newest[ip].stamp(&f, ProducerCpanelScan)
+			findings = append(findings, f)
 		}
 	}
 
 	return findings
+}
+
+// cpanelAccessLogTime reads the time cpsrvd stamped on an access_log line:
+// `<ip> - <user> [01/02/2006:15:04:05 -0700] "<request>" <status> <size>`,
+// then up to four quoted fields and an optional listener port. The client
+// chooses the user, which may hold spaces, brackets and quotes, so only one
+// complete parse dates the line: a user holding its own timestamp followed by
+// a quote leaves the line with no time, never the time the client wrote.
+func cpanelAccessLogTime(line string) (time.Time, bool) {
+	peer, rest, ok := strings.Cut(line, " ")
+	if !ok || net.ParseIP(peer) == nil {
+		return time.Time{}, false
+	}
+	rest, ok = strings.CutPrefix(rest, "- ")
+	if !ok {
+		return time.Time{}, false
+	}
+	stamp, suffix, ok := cpanelUniqueStamp(rest)
+	if !ok || !cpanelAccessLogSuffix(suffix) {
+		return time.Time{}, false
+	}
+	at, err := time.Parse("01/02/2006:15:04:05 -0700", stamp)
+	return at, err == nil
+}
+
+// cpanelStampLen is the length of cpsrvd's `01/02/2006:15:04:05 -0700`.
+const cpanelStampLen = 25
+
+// cpanelUniqueStamp finds the bracketed timestamp, followed by blanks and a
+// quote, that ends a nonempty user field. Any second such timestamp anywhere
+// in the user, valid date or not, makes the split ambiguous. Candidates never
+// overlap, so one pass bounds the work by the line.
+func cpanelUniqueStamp(s string) (stamp, rest string, ok bool) {
+	found, at := 0, -1
+	for i := 0; i < len(s); i++ {
+		j := strings.IndexByte(s[i:], '[')
+		if j < 0 {
+			break
+		}
+		i += j
+		end := i + 1 + cpanelStampLen
+		if end >= len(s) || s[end] != ']' || !cpanelStampShape(s[i+1:end]) {
+			continue
+		}
+		after := strings.TrimLeft(s[end+1:], " \t")
+		if len(after) == len(s)-end-1 || after == "" || after[0] != '"' {
+			continue
+		}
+		found++
+		at, stamp, rest = i, s[i+1:end], after
+		i = end
+	}
+	if found != 1 || at < 2 || (s[at-1] != ' ' && s[at-1] != '\t') {
+		return "", "", false
+	}
+	return stamp, rest, true
+}
+
+// cpanelStampShape reports whether s has the shape of cpsrvd's timestamp.
+func cpanelStampShape(s string) bool {
+	const shape = "00/00/0000:00:00:00 +0000"
+	if len(s) != len(shape) {
+		return false
+	}
+	for i := range len(shape) {
+		switch c := s[i]; shape[i] {
+		case '0':
+			if c < '0' || c > '9' {
+				return false
+			}
+		case '+':
+			if c != '+' && c != '-' {
+				return false
+			}
+		default:
+			if c != shape[i] {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// cpanelAccessLogSuffix validates what cpsrvd writes after its timestamp,
+// through the end of the line.
+func cpanelAccessLogSuffix(s string) bool {
+	request, s, ok := patternQuotedField(s)
+	if !ok {
+		return false
+	}
+	method, afterMethod, hasMethod := strings.Cut(request, " ")
+	target, proto, hasProto := strings.Cut(afterMethod, " ")
+	method, methodOver := patternDecodeField(method, patternMaxMethod)
+	if !hasMethod || !hasProto || methodOver || !patternValidMethod(method) ||
+		!patternValidRawTarget(target) || !patternHTTPVersion(proto) {
+		return false
+	}
+	status, s := patternToken(s)
+	if len(status) != 3 || !patternDigitsOnly(status) || status[0] < '1' || status[0] > '5' {
+		return false
+	}
+	size, s := patternToken(s)
+	if size != "-" && !patternDigitsOnly(size) {
+		return false
+	}
+	for quoted := 0; ; quoted++ {
+		s = strings.TrimLeft(s, " \t")
+		if s == "" || s[0] != '"' {
+			break
+		}
+		if quoted == 4 {
+			return false
+		}
+		if _, s, ok = patternQuotedField(s); !ok {
+			return false
+		}
+	}
+	if s == "" {
+		return true
+	}
+	port, tail := patternToken(s)
+	if strings.TrimLeft(tail, " \t") != "" || len(port) > 5 || !patternDigitsOnly(port) {
+		return false
+	}
+	n := atoiSafe(port)
+	return n > 0 && n <= 65535
 }
 
 // FTPLoginFinding builds the finding for a successful pure-ftpd login line,

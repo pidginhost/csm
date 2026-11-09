@@ -286,16 +286,17 @@ func patternQuotedField(s string) (raw, rest string, ok bool) {
 		return "", s, false
 	}
 	for i := 1; i < len(s); {
-		// Only a quote or an escape changes the scan; skip plain bytes.
-		q := strings.IndexByte(s[i:], '"')
-		if q < 0 {
+		// Find either delimiter in one pass. Looking for the closing quote
+		// again after each escape would repeatedly scan the same suffix.
+		next := strings.IndexAny(s[i:], "\"\\")
+		if next < 0 {
 			break
 		}
-		if b := strings.IndexByte(s[i:i+q], '\\'); b >= 0 {
-			_, i = patternLogByte(s, i+b)
+		i += next
+		if s[i] == '\\' {
+			_, i = patternLogByte(s, i)
 			continue
 		}
-		i += q
 		if i+1 < len(s) && s[i+1] != ' ' && s[i+1] != '\t' {
 			return "", s, false
 		}

@@ -23,8 +23,10 @@ type mailLogFile interface {
 type mailFileInput struct {
 	file         mailLogFile
 	reader       *bufio.Reader
-	ino          uint64
+	dev, ino     uint64
 	offset, size int64
+	// unframed: offset is inside a line that began before this open.
+	unframed bool
 }
 
 // One identity per open or rewind prevents a late Stat from joining bytes from

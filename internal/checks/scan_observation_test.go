@@ -2,10 +2,9 @@ package checks
 
 import (
 	"context"
-	"encoding/json"
+	"maps"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -27,8 +26,49 @@ func TestReadNewSyslogRecordsKeepLineOffsets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(records) != 2 || records[0] != (syslogRecord{text: "first", offset: 0}) || records[1] != (syslogRecord{text: "second", offset: 7}) || next.Offset != 14 {
+	stream := syslogTestRef(t, path, 0, "").Stream
+	if len(records) != 2 || records[0] != (syslogRecord{text: "first", offset: 0, stream: stream}) ||
+		records[1] != (syslogRecord{text: "second", offset: 7, stream: stream}) || next.Offset != 14 {
 		t.Fatalf("records %+v next %+v, want first at 0 and second at 7", records, next)
+	}
+}
+
+// Catch-up can reach EOF without finding a newline. The next read still
+// delivers the suffix, but only the following complete record has an identity.
+func TestReadNewSyslogRecordsDoesNotNameACatchUpFragment(t *testing.T) {
+	followReal(t)
+	prefix := strings.Repeat("x", maxCatchUpBytes+1)
+	path := writeFollowFile(t, prefix)
+	records, state, skipped, err := readNewSyslogRecords(path, followState{})
+	if err != nil || len(records) != 0 || state.Offset != int64(len(prefix)) || skipped != state.Offset {
+		t.Fatalf("initial catch-up: %d records, state %+v, skipped %d, error %v", len(records), state, skipped, err)
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if _, writeErr := f.WriteString("hit suf"); writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	records, partial, _, err := readNewSyslogRecords(path, state)
+	if err != nil || len(records) != 0 || partial.Offset != state.Offset {
+		t.Fatalf("partial read: %+v, state %+v, error %v", records, partial, err)
+	}
+	if _, writeErr := f.WriteString("fix\nhit next\n"); writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	records, next, _, err := readNewSyslogRecords(path, partial)
+	if err != nil || len(records) != 2 || records[0].text != "hit suffix" || records[1].text != "hit next" {
+		t.Fatalf("completed read: %+v, error %v", records, err)
+	}
+	if o := records[0].observation(ProducerFTPScan, time.Unix(1, 0)); o != (alert.Observation{}) {
+		t.Errorf("catch-up fragment named %+v, want no observation", o)
+	}
+	offset := int64(len(prefix) + len("hit suffix\n"))
+	o, want := records[1].observation(ProducerFTPScan, time.Unix(1, 0)), syslogTestRef(t, path, offset, "hit next")
+	if o.Stream != want.Stream || o.Cursor != want.Cursor || next.Offset != offset+int64(len("hit next\n")) {
+		t.Errorf("next record named %+v, state %+v, want %+v and all bytes consumed", o, next, want)
 	}
 }
 
@@ -53,9 +93,9 @@ func TestSSHLoginScanStampsObservation(t *testing.T) {
 	}
 	o := got[0].Observation
 	at, _ := syslogLineTime(accepted, now)
-	if o.Producer != "ssh_login_scan" || !strings.HasPrefix(o.Stream, "s:") || len(o.Stream) <= 2 ||
-		o.Cursor != strconv.Itoa(len(failed)+1) || !o.ObservedAt.Equal(at) {
-		t.Fatalf("observation %+v, want ssh_login_scan at offset %d logged at %v", o, len(failed)+1, at)
+	want := syslogTestRef(t, path, int64(len(failed)+1), accepted)
+	if o.Producer != "ssh_login_scan" || o.Stream != want.Stream || o.Cursor != want.Cursor || !o.ObservedAt.Equal(at) {
+		t.Fatalf("observation %+v, want ssh_login_scan %+v logged at %v", o, want, at)
 	}
 }
 
@@ -79,24 +119,69 @@ func TestFTPBruteforceNamesItsNewestFailure(t *testing.T) {
 	if got[0].Attribution != admission.AttributionPeer {
 		t.Errorf("attribution %s, want the pure-ftpd peer", got[0].Attribution)
 	}
-	if o.Producer != "ftp_scan" || !strings.HasPrefix(o.Stream, "s:") || o.Cursor != strconv.Itoa(newest) || o.ObservedAt.IsZero() {
-		t.Fatalf("observation %+v, want ftp_scan at the last failure's offset %d", o, newest)
+	want := syslogTestRef(t, log, int64(newest), lines[len(lines)-2])
+	if o.Producer != "ftp_scan" || o.Stream != want.Stream || o.Cursor != want.Cursor || o.ObservedAt.IsZero() {
+		t.Fatalf("observation %+v, want ftp_scan at the last failure %+v", o, want)
 	}
 }
 
-// Rewrites with an unchanged prefix must never reuse a prior line position.
-// An append, repeat of the same input and persisted restart keep the reference.
-func TestReadNewSyslogRecordsSeparateGenerations(t *testing.T) {
+// syslogTestRef is the reference every reader gives a record of path: the
+// file by device and inode, the record by offset and bytes.
+func syslogTestRef(t *testing.T, path string, offset int64, text string) alert.Observation {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, ok := selfWriteIdentityFromFileInfo(info)
+	if !ok {
+		t.Fatal("no file identity")
+	}
+	return alert.Observation{Stream: alert.FileStream(id.Device, id.Inode), Cursor: alert.RecordCursor(offset, text)}
+}
+
+type syslogRef struct{ stream, cursor string }
+
+func refsOf(records []syslogRecord) map[syslogRef]syslogRecord {
+	out := make(map[syslogRef]syslogRecord, len(records))
+	for _, r := range records {
+		o := r.observation(ProducerFTPScan, time.Unix(1, 0))
+		out[syslogRef{o.Stream, o.Cursor}] = r
+	}
+	return out
+}
+
+// checkRecordRefs asserts that every record names its file, offset and bytes,
+// and that a ref an earlier read used names the same bytes at the same
+// offset: a reused offset with other bytes is never an earlier record.
+func checkRecordRefs(t *testing.T, path string, earlier map[syslogRef]syslogRecord, records []syslogRecord) {
+	t.Helper()
+	for _, r := range records {
+		o := r.observation(ProducerFTPScan, time.Unix(1, 0))
+		if want := syslogTestRef(t, path, r.offset, r.text); o.Stream != want.Stream || o.Cursor != want.Cursor {
+			t.Fatalf("record %+v named %+v, want %+v", r, o, want)
+		}
+		if prior, ok := earlier[syslogRef{o.Stream, o.Cursor}]; ok && (prior.text != r.text || prior.offset != r.offset) {
+			t.Fatalf("record %+v reuses the ref of %+v", r, prior)
+		}
+	}
+}
+
+// Every rewrite of a followed file names the records it changed anew and
+// keeps the refs of unchanged bytes, whether the reader follows the stored
+// state, repeats a read or starts after a restart with no state (design A7).
+func TestReadNewSyslogRecordsNameRecordsByFileOffsetAndBytes(t *testing.T) {
 	followReal(t)
 	for _, mode := range []string{"append", "copytruncate", "empty truncate", "rewrite", "rotate", "marker reset"} {
 		t.Run(mode, func(t *testing.T) {
 			head := strings.Repeat("H", fingerprintBytes) + "\n"
 			original := head + "first\nsecond\n"
 			path := writeFollowFile(t, original)
-			_, old, _, err := readNewSyslogRecords(path, followState{})
-			if err != nil {
-				t.Fatal(err)
+			before, old, _, err := readNewSyslogRecords(path, followState{})
+			if err != nil || len(before) != 3 {
+				t.Fatalf("records %+v, error %v", before, err)
 			}
+			earlier := refsOf(before)
 			content := original + "third\n"
 			switch mode {
 			case "empty truncate":
@@ -115,48 +200,38 @@ func TestReadNewSyslogRecordsSeparateGenerations(t *testing.T) {
 			if writeErr := os.WriteFile(path, []byte(content), 0o600); writeErr != nil {
 				t.Fatal(writeErr)
 			}
-			a, next, _, err := readNewSyslogRecords(path, old)
-			if err != nil || (len(a) == 0 && mode != "empty truncate") {
-				t.Fatalf("records %+v, error %v", a, err)
+			after, next, _, err := readNewSyslogRecords(path, old)
+			if err != nil || (len(after) == 0 && mode != "empty truncate") {
+				t.Fatalf("records %+v, error %v", after, err)
 			}
-			same := syslogStream(old) == syslogStream(next)
-			if same != (mode == "append") || next.Stream == "" || len(next.Stream) > 128 {
-				t.Fatalf("%s: stream %+v became %+v", mode, old, next)
+			checkRecordRefs(t, path, earlier, after)
+			if mode == "rotate" {
+				for ref := range refsOf(after) {
+					if _, reused := earlier[ref]; reused {
+						t.Fatalf("a rotated file reused ref %+v", ref)
+					}
+				}
 			}
 			if mode == "empty truncate" {
-				if writeErr := os.WriteFile(path, []byte(original), 0o600); writeErr != nil {
+				if writeErr := os.WriteFile(path, []byte(head+"other\n"), 0o600); writeErr != nil {
 					t.Fatal(writeErr)
 				}
-				_, regrown, _, regrowErr := readNewSyslogRecords(path, next)
-				if regrowErr != nil || regrown.Stream != next.Stream || regrown.Stream == old.Stream {
-					t.Fatalf("empty rewind reused %+v as %+v, error %v", old, regrown, regrowErr)
+				regrown, _, _, regrowErr := readNewSyslogRecords(path, next)
+				if regrowErr != nil || len(regrown) != 2 {
+					t.Fatalf("regrown records %+v, error %v", regrown, regrowErr)
 				}
-				// Continue the repeat/persistence checks on the regrown input.
-				old, next = next, regrown
+				checkRecordRefs(t, path, earlier, regrown)
+				after = regrown
 			}
-			for i := range next.Stream {
-				if next.Stream[i] < 0x21 || next.Stream[i] > 0x7e {
-					t.Fatalf("stream %q is not printable", next.Stream)
-				}
-			}
-			_, repeated, _, err := readNewSyslogRecords(path, old)
-			if err != nil || repeated.Stream != next.Stream {
-				t.Fatalf("repeat changed %+v to %+v, error %v", next, repeated, err)
-			}
-			raw, err := json.Marshal(next)
+			repeated, _, _, err := readNewSyslogRecords(path, followState{})
 			if err != nil {
 				t.Fatal(err)
 			}
-			var restored followState
-			if decodeErr := json.Unmarshal(raw, &restored); decodeErr != nil {
-				t.Fatal(decodeErr)
-			}
-			before := scanObservationEpoch
-			scanObservationEpoch = alert.NewObservationEpoch()
-			_, restarted, _, err := readNewSyslogRecords(path, restored)
-			scanObservationEpoch = before
-			if err != nil || restarted.Stream != next.Stream || restarted.Offset != next.Offset {
-				t.Fatalf("restart changed %+v to %+v, error %v", next, restarted, err)
+			again := refsOf(repeated)
+			for ref, r := range refsOf(after) {
+				if prior, ok := again[ref]; !ok || prior != r {
+					t.Fatalf("a read with no state named %+v otherwise", r)
+				}
 			}
 		})
 	}
@@ -174,34 +249,36 @@ func TestFTPBruteforceNamesUnchangedInputConsistently(t *testing.T) {
 	}
 }
 
-func TestReadNewSyslogRecordsSeparatesUncommittedRewrites(t *testing.T) {
+// An uncommitted rewrite of one line names that line anew; the unchanged
+// lines around it, read again, keep their refs.
+func TestReadNewSyslogRecordsNameUncommittedRewritesAnew(t *testing.T) {
 	followReal(t)
 	head := strings.Repeat("H", fingerprintBytes) + "\n"
 	path := writeFollowFile(t, head+"first\n"+head)
-	var previous followState
+	earlier := map[syslogRef]syslogRecord{}
 	for _, line := range []string{"first", "other", "third"} {
 		if err := os.WriteFile(path, []byte(head+line+"\n"+head), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		records, next, _, err := readNewSyslogRecords(path, followState{})
+		records, _, _, err := readNewSyslogRecords(path, followState{})
 		if err != nil || len(records) != 3 || records[1].offset != int64(len(head)) {
 			t.Fatalf("records %+v, error %v", records, err)
 		}
-		if next.Stream == "" || next.Stream == previous.Stream {
-			t.Fatalf("uncommitted rewrite reused stream %q", next.Stream)
+		checkRecordRefs(t, path, earlier, records)
+		repeat, _, _, err := readNewSyslogRecords(path, followState{})
+		if err != nil || !maps.Equal(refsOf(repeat), refsOf(records)) {
+			t.Fatalf("unchanged repeat named %+v as %+v: %v", records, repeat, err)
 		}
-		_, repeat, _, err := readNewSyslogRecords(path, followState{})
-		if err != nil || repeat.Stream != next.Stream {
-			t.Fatalf("unchanged repeat changed %+v to %+v: %v", next, repeat, err)
-		}
-		previous = next
+		maps.Copy(earlier, refsOf(records))
 	}
 }
 
-func TestReadNewSyslogRecordsCappedRewindChangesStream(t *testing.T) {
+// A capped rewind after the file was replaced names the bytes it reads now,
+// never the records the stored state remembered.
+func TestReadNewSyslogRecordsCappedRewindNamesNewBytes(t *testing.T) {
 	followReal(t)
 	path := writeFollowFile(t, "first\n")
-	_, old, _, err := readNewSyslogRecords(path, followState{})
+	before, old, _, err := readNewSyslogRecords(path, followState{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -209,83 +286,63 @@ func TestReadNewSyslogRecordsCappedRewindChangesStream(t *testing.T) {
 	if writeErr := os.WriteFile(path, []byte(content), 0o600); writeErr != nil {
 		t.Fatal(writeErr)
 	}
-	// A restart has only the persisted state, so the rewind must be
-	// recognized even without the previous reader's captured bytes.
-	before := scanObservationEpoch
-	scanObservationEpoch = alert.NewObservationEpoch()
-	t.Cleanup(func() { scanObservationEpoch = before })
-	_, next, skipped, err := readNewSyslogRecords(path, old)
-	if err != nil || skipped <= old.Offset || next.Stream == old.Stream || next.Generation <= old.Generation {
-		t.Fatalf("capped rewind reused %+v as %+v (skipped %d): %v", old, next, skipped, err)
+	after, _, skipped, err := readNewSyslogRecords(path, old)
+	if err != nil || skipped <= old.Offset || len(after) == 0 {
+		t.Fatalf("capped rewind read %+v (skipped %d): %v", after, skipped, err)
 	}
+	checkRecordRefs(t, path, refsOf(before), after)
 }
 
-func TestReadNewSyslogRecordsUncommittedEmptyTruncate(t *testing.T) {
+// Emptied and regrown with other bytes, a file names its new first line
+// anew; regrown with the same bytes, the line is the record it was.
+func TestReadNewSyslogRecordsEmptyTruncateNamesBytes(t *testing.T) {
 	followReal(t)
 	path := writeFollowFile(t, "first\n")
-	_, old, _, err := readNewSyslogRecords(path, followState{})
+	before, _, _, err := readNewSyslogRecords(path, followState{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if truncateErr := os.Truncate(path, 0); truncateErr != nil {
-		t.Fatal(truncateErr)
-	}
-	_, empty, _, err := readNewSyslogRecords(path, followState{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if writeErr := os.WriteFile(path, []byte("first\n"), 0o600); writeErr != nil {
-		t.Fatal(writeErr)
-	}
-	_, regrown, _, err := readNewSyslogRecords(path, followState{})
-	if err != nil || empty.Stream == "" || empty.Stream == old.Stream || regrown.Stream != empty.Stream {
-		t.Fatalf("empty truncate reused %+v as %+v then %+v: %v", old, empty, regrown, err)
+	for _, content := range []string{"other\n", "first\n"} {
+		if truncateErr := os.Truncate(path, 0); truncateErr != nil {
+			t.Fatal(truncateErr)
+		}
+		if _, _, _, emptyErr := readNewSyslogRecords(path, followState{}); emptyErr != nil {
+			t.Fatal(emptyErr)
+		}
+		if writeErr := os.WriteFile(path, []byte(content), 0o600); writeErr != nil {
+			t.Fatal(writeErr)
+		}
+		regrown, _, _, regrowErr := readNewSyslogRecords(path, followState{})
+		if regrowErr != nil || len(regrown) != 1 {
+			t.Fatalf("regrown %+v: %v", regrown, regrowErr)
+		}
+		checkRecordRefs(t, path, refsOf(before), regrown)
+		if same := maps.Equal(refsOf(regrown), refsOf(before)); same != (content == "first\n") {
+			t.Fatalf("regrown %q named %+v, earlier %+v", content, regrown, before)
+		}
 	}
 }
 
-func TestSyslogObservationUsesReadSnapshot(t *testing.T) {
+// A writer can restore the old disk bytes after ReadAt captured a new line.
+// The ref describes the captured bytes being processed.
+func TestSyslogObservationNamesTheCapturedBytes(t *testing.T) {
 	followReal(t)
 	path := writeFollowFile(t, "first\n")
-	_, old, _, err := readNewSyslogRecords(path, followState{})
-	if err != nil {
-		t.Fatal(err)
+	records, _, _, err := readNewSyslogRecords(path, followState{})
+	if err != nil || len(records) != 1 {
+		t.Fatalf("records %+v: %v", records, err)
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = f.Close() }()
-	info, err := f.Stat()
-	if err != nil {
-		t.Fatal(err)
-	}
-	// A writer can restore the old disk bytes after ReadAt captured a new
-	// line. Provenance must describe the captured bytes being processed.
-	next := old
-	setSyslogObservationStream(&next, followState{}, path, f, info, false, 0, []byte("other\n"))
-	if next.Stream == old.Stream {
-		t.Fatalf("different read snapshot reused stream %q", old.Stream)
+	captured := records[0]
+	captured.text = "other"
+	if a, b := records[0].observation(ProducerFTPScan, time.Unix(1, 0)), captured.observation(ProducerFTPScan, time.Unix(1, 0)); a.Cursor == b.Cursor {
+		t.Fatalf("different captured bytes shared cursor %q", a.Cursor)
 	}
 }
 
-// Follow state lost across a restart (never saved, or dropped as invalid)
-// must not let the new process name its lines with an earlier stream.
-func TestReadNewSyslogRecordsFreshStateAfterRestartGetsNewStream(t *testing.T) {
-	followReal(t)
-	path := writeFollowFile(t, "first\nsecond\n")
-	_, a, _, err := readNewSyslogRecords(path, followState{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	before := scanObservationEpoch
-	scanObservationEpoch = alert.NewObservationEpoch()
-	t.Cleanup(func() { scanObservationEpoch = before })
-	_, b, _, err := readNewSyslogRecords(path, followState{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if a.Stream == "" || a.Stream == b.Stream {
-		t.Fatalf("fresh state after a restart reused stream %q (now %q)", a.Stream, b.Stream)
+// A record without a known file names no observation.
+func TestSyslogRecordWithoutAFileNamesNothing(t *testing.T) {
+	if o := (syslogRecord{text: "first", offset: 0}).observation(ProducerFTPScan, time.Unix(1, 0)); o != (alert.Observation{}) {
+		t.Fatalf("observation %+v, want none", o)
 	}
 }
 
@@ -326,4 +383,42 @@ func TestScanObservationsNameTheirTimeInUTC(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
+}
+
+// A followed record is named as the shared helper names the raw record: one
+// LF, CRLF or repeated CR before LF ends it, and leading and trailing spaces
+// are content. A read with no state names unchanged bytes the same way.
+func TestReadNewSyslogRecordsLineEndingsMatchTheSharedRef(t *testing.T) {
+	raw := []string{"hit x\n", "hit x\r\n", "hit x\r\r\n", " hit x \n", "hit x  \r\n", "hit y\n"}
+	path := filepath.Join(t.TempDir(), "messages")
+	if err := os.WriteFile(path, []byte(strings.Join(raw, "")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	first, _, _, err := readNewSyslogRecords(path, followState{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, _, _, err := readNewSyslogRecords(path, followState{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first) != len(raw) || len(again) != len(raw) {
+		t.Fatalf("records %+v then %+v, want %d each", first, again, len(raw))
+	}
+	seen := map[string]int{}
+	var offset int64
+	for i, record := range raw {
+		o := first[i].observation(ProducerFTPScan, time.Unix(1, 0))
+		if want := syslogTestRef(t, path, offset, record); o.Stream != want.Stream || o.Cursor != want.Cursor {
+			t.Errorf("record %d %q named %+v, want %+v", i, record, o, want)
+		}
+		if a := again[i].observation(ProducerFTPScan, time.Unix(1, 0)); a.Stream != o.Stream || a.Cursor != o.Cursor {
+			t.Errorf("record %d %q named %+v on a second read, first %+v", i, record, a, o)
+		}
+		if j, dup := seen[o.Cursor]; dup {
+			t.Errorf("records %d and %d share cursor %q", j, i, o.Cursor)
+		}
+		seen[o.Cursor] = i
+		offset += int64(len(record))
+	}
 }

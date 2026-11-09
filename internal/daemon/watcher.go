@@ -10,7 +10,6 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -68,22 +67,13 @@ type LogWatcher struct {
 	observed ObservedLineHandler
 	// open opens path for reading; nil means os.Open.
 	open func(path string) (*os.File, error)
-	// epoch separates reader lifetimes even when a reader is reattached
-	// without restarting the process.
-	epoch string
-	// generation counts the times the offset went back to the start, so a
-	// reused offset is never the same position.
-	generation uint64
 	// stream caches the stream name of streamOf, so an observed log does not
 	// format it for every line.
 	stream   string
-	streamOf streamKey
-}
-
-// streamKey is what names a watcher's stream: the file and its generation.
-type streamKey struct {
-	file       logFileID
-	generation uint64
+	streamOf logFileID
+	// unframed is set while the offset is inside a line that began before
+	// this watcher read the file: that remainder names no observation.
+	unframed bool
 }
 
 type logFileID struct {
@@ -137,7 +127,7 @@ func NewLogWatcher(path string, cfg *config.Config, handler LogLineHandler, aler
 // newLogWatcher creates a watcher that opens the log with open, or with
 // os.Open when open is nil, every time it opens it.
 func newLogWatcher(path string, cfg *config.Config, handler LogLineHandler, alertCh chan<- alert.Finding, open func(string) (*os.File, error)) (*LogWatcher, error) {
-	w := &LogWatcher{path: path, cfg: cfg, handler: handler, alertCh: alertCh, open: open, epoch: alert.NewObservationEpoch()}
+	w := &LogWatcher{path: path, cfg: cfg, handler: handler, alertCh: alertCh, open: open}
 	f, err := w.openFile()
 	if err != nil {
 		return nil, err
@@ -169,6 +159,8 @@ func newLogWatcher(path string, cfg *config.Config, handler LogLineHandler, aler
 		marker = nil
 	}
 	w.file, w.offset, w.fileID, w.marker = f, offset, fileID(info), marker
+	// Only a newline before the start offset makes the next byte a record start.
+	w.unframed = len(marker) > 0 && marker[len(marker)-1] != '\n'
 	return w, nil
 }
 
@@ -195,20 +187,20 @@ func newObservedLogWatcher(spec logWatchSpec, cfg *config.Config, alertCh chan<-
 	return w, nil
 }
 
-// observation names the line that starts at lineStart in the current
-// generation of the file; zero when the log feeds no producer.
-func (w *LogWatcher) observation(lineStart int64, at time.Time) alert.Observation {
+// observation names the line that starts at lineStart in the current file
+// by its offset and bytes; zero when the log feeds no producer.
+func (w *LogWatcher) observation(lineStart int64, line string, at time.Time) alert.Observation {
 	if w.producer == "" || !w.fileID.known {
 		return alert.Observation{}
 	}
-	if key := (streamKey{w.fileID, w.generation}); w.stream == "" || w.streamOf != key {
-		w.stream = fmt.Sprintf("f:%x:%x:%s.%d", w.fileID.dev, w.fileID.ino, w.epoch, w.generation)
-		w.streamOf = key
+	if w.stream == "" || w.streamOf != w.fileID {
+		w.stream = alert.FileStream(w.fileID.dev, w.fileID.ino)
+		w.streamOf = w.fileID
 	}
 	return alert.Observation{
 		Producer:   string(w.producer),
 		Stream:     w.stream,
-		Cursor:     strconv.FormatInt(lineStart, 10),
+		Cursor:     alert.RecordCursor(lineStart, line),
 		ObservedAt: at,
 	}
 }
@@ -291,7 +283,7 @@ func (w *LogWatcher) readNewLines() {
 	if !w.offsetMarkerMatches(w.file) {
 		w.offset = 0
 		w.marker = nil
-		w.generation++
+		w.unframed = false
 	}
 
 	// No new data
@@ -313,7 +305,10 @@ func (w *LogWatcher) readNewLines() {
 		if len(rawLine) > 0 && readErr != nil {
 			break
 		}
+		framed := !w.unframed
 		if readErr == nil {
+			// This line ends here, so the next one starts a record.
+			w.unframed = false
 			if current, seekErr := w.file.Seek(0, io.SeekCurrent); seekErr == nil {
 				committedOffset = current - int64(reader.Buffered())
 			}
@@ -334,10 +329,12 @@ func (w *LogWatcher) readNewLines() {
 			var findings []alert.Finding
 			var obs alert.Observation
 			if w.observed != nil {
-				obs = w.observation(lineStart, now)
+				if framed {
+					obs = w.observation(lineStart, line, now)
+				}
 				findings = w.observed(line, obs, w.currentCfg())
-			} else if findings = w.handler(line, w.currentCfg()); len(findings) > 0 {
-				obs = w.observation(lineStart, now)
+			} else if findings = w.handler(line, w.currentCfg()); len(findings) > 0 && framed {
+				obs = w.observation(lineStart, line, now)
 			}
 			for _, f := range findings {
 				if f.Timestamp.IsZero() {
@@ -415,21 +412,19 @@ func (w *LogWatcher) reopen() {
 	switch {
 	case w.fileID.known && id.known && !w.fileID.same(id):
 		// Rotated by rename+create: new file, read from the start regardless
-		// of its size. Returning to an earlier inode must stay distinct.
+		// of its size.
 		w.offset = 0
-		w.generation++
 	case info.Size() < w.offset:
 		// Truncated in place (copytruncate rotation).
 		w.offset = 0
-		w.generation++
 	case !w.offsetMarkerMatches(f):
 		// The saved offset now points into different content. This catches a
 		// truncate-and-regrow between polling ticks and cheap inode reuse.
 		w.offset = 0
-		w.generation++
 	}
 	if w.offset == 0 {
 		w.marker = nil
+		w.unframed = false
 	} else {
 		w.refreshOffsetMarker()
 	}

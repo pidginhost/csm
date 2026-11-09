@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -186,18 +185,32 @@ func (r *FileReader) openAt(offset int64, whence int) (*mailFileInput, error) {
 		_ = f.Close()
 		return nil, err
 	}
-	return &mailFileInput{file: f, reader: bufio.NewReader(f), ino: inode(st), offset: position, size: st.Size()}, nil
+	unframed := false
+	if position > 0 {
+		// Only a newline before the start offset makes the next byte a
+		// record start.
+		var before [1]byte
+		_, err := f.ReadAt(before[:], position-1)
+		if errors.Is(err, io.EOF) {
+			// The file shrank after Seek. Rewind now, before it can regrow
+			// past the stale offset and conceal the truncation from polling.
+			position, err = f.Seek(0, io.SeekStart)
+		} else if err == nil {
+			unframed = before[0] != '\n'
+		}
+		if err != nil {
+			_ = f.Close()
+			return nil, err
+		}
+	}
+	dev, ino := fileIdentity(st)
+	return &mailFileInput{file: f, reader: bufio.NewReader(f), dev: dev, ino: ino, offset: position, size: st.Size(), unframed: unframed}, nil
 }
 
 func (r *FileReader) loop(ctx context.Context, out chan<- Line, input *mailFileInput) {
 	defer close(out)
-	f, reader, lastIno := input.file, input.reader, input.ino
+	f, reader, lastDev, lastIno, unframed := input.file, input.reader, input.dev, input.ino, input.unframed
 	source := r.queue.file.attach(input, true)
-	// generation counts rewinds of the same file, so a reused offset is
-	// never the same position, including a rotation back to an earlier inode.
-	epoch := alert.NewObservationEpoch()
-	generation := 0
-	stream := fileStream(lastIno, epoch, generation)
 	sampleCtx, stopSample := context.WithCancel(ctx)
 	sampleDone := make(chan struct{})
 	go r.queue.file.sampleLoop(sampleCtx, sampleDone)
@@ -245,8 +258,7 @@ func (r *FileReader) loop(ctx context.Context, out chan<- Line, input *mailFileI
 			r.queue.discardFile(source, buffered)
 			source = r.queue.file.attach(&mailFileInput{file: f}, false)
 			pending.reset()
-			generation++
-			stream = fileStream(lastIno, epoch, generation)
+			unframed = false
 		}
 	}
 
@@ -260,7 +272,7 @@ func (r *FileReader) loop(ctx context.Context, out chan<- Line, input *mailFileI
 			return
 		}
 		r.recordStat(false, nil)
-		if inode(st) == lastIno {
+		if dev, ino := fileIdentity(st); dev == lastDev && ino == lastIno {
 			r.queue.file.outcome(fileOpenFault, false)
 			rewindOnTruncate()
 			r.recordRestored()
@@ -274,11 +286,9 @@ func (r *FileReader) loop(ctx context.Context, out chan<- Line, input *mailFileI
 		}
 		_ = f.Close()
 		r.queue.discardFile(source, bufferedMailRecords(reader))
-		f, reader, lastIno = next.file, next.reader, next.ino
+		f, reader, lastDev, lastIno, unframed = next.file, next.reader, next.dev, next.ino, next.unframed
 		source = r.queue.file.attach(next, true)
 		pending.reset()
-		generation++
-		stream = fileStream(lastIno, epoch, generation)
 		r.recordRestored()
 	}
 
@@ -306,13 +316,19 @@ func (r *FileReader) loop(ctx context.Context, out chan<- Line, input *mailFileI
 					break
 				}
 				r.queue.file.outcome(fileReadFault, false)
+				// This line ends here, so the next one starts a record.
+				framed := !unframed
+				unframed = false
 				if truncated {
 					r.queue.lose()
 					r.queue.file.complete(source)
 					fmt.Fprintf(os.Stderr, "maillog file_reader %s: oversized line skipped at %d bytes\n", r.path, maxLogLineBytes)
 					continue
 				}
-				position := Position{Stream: stream, Cursor: strconv.FormatInt(r.queue.file.settledAt(source), 10), ObservedAt: time.Now()}
+				var position Position
+				if framed {
+					position = filePosition(lastDev, lastIno, r.queue.file.settledAt(source), line)
+				}
 				if !r.queue.sendFile(ctx, out, Line{Source: "file", Message: line, Position: position}, source) {
 					normal = true
 					return
@@ -345,6 +361,8 @@ func rewindTruncatedFile(f mailLogFile, reader *bufio.Reader) (bool, error) {
 	return true, nil
 }
 
-func fileStream(ino uint64, epoch string, generation int) string {
-	return fmt.Sprintf("m:%x:%s.%d", ino, epoch, generation)
+// filePosition names a file line by the file and the line's offset and bytes,
+// as every reader of the file names it.
+func filePosition(dev, ino uint64, offset int64, line string) Position {
+	return Position{Stream: alert.FileStream(dev, ino), Cursor: alert.RecordCursor(offset, line), ObservedAt: time.Now()}
 }

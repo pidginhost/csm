@@ -530,14 +530,14 @@ func TestClientIPForRecord_RequiresTrustedProxy(t *testing.T) {
 		XFF:      "192.0.2.50, 203.0.113.10",
 	}
 
-	if got := clientIPForRecord(rec, &config.Config{}); got != "198.51.100.10" {
-		t.Fatalf("untrusted proxy used XFF: got %q", got)
+	if got, forwarded := clientIPForRecord(rec, &config.Config{}); got != "198.51.100.10" || forwarded {
+		t.Fatalf("untrusted proxy used XFF: got %q (forwarded %v)", got, forwarded)
 	}
 
 	cfg := &config.Config{}
 	cfg.WebServer.TrustedProxies = []string{"198.51.100.0/24"}
-	if got := clientIPForRecord(rec, cfg); got != "203.0.113.10" {
-		t.Fatalf("trusted proxy client IP=%q, want 203.0.113.10", got)
+	if got, forwarded := clientIPForRecord(rec, cfg); got != "203.0.113.10" || !forwarded {
+		t.Fatalf("trusted proxy client IP=%q (forwarded %v), want 203.0.113.10 from the header", got, forwarded)
 	}
 }
 
@@ -552,8 +552,8 @@ func TestClientIPForRecord_RejectsSpoofedLeftmost(t *testing.T) {
 		RemoteIP: "198.51.100.10",
 		XFF:      "203.0.113.99, 203.0.113.10", // attacker put victim 203.0.113.99 leftmost
 	}
-	if got := clientIPForRecord(rec, cfg); got != "203.0.113.10" {
-		t.Fatalf("spoofed leftmost XFF honoured: got %q, want 203.0.113.10", got)
+	if got, forwarded := clientIPForRecord(rec, cfg); got != "203.0.113.10" || !forwarded {
+		t.Fatalf("spoofed leftmost XFF honoured: got %q (forwarded %v), want 203.0.113.10 from the header", got, forwarded)
 	}
 }
 
@@ -567,8 +567,8 @@ func TestClientIPForRecord_UsesProxyAppendedEntryInTrustedCIDR(t *testing.T) {
 		RemoteIP: "198.51.100.10",
 		XFF:      "203.0.113.99, 198.51.100.20",
 	}
-	if got := clientIPForRecord(rec, cfg); got != "198.51.100.20" {
-		t.Fatalf("trusted-CIDR appended entry: got %q, want 198.51.100.20", got)
+	if got, forwarded := clientIPForRecord(rec, cfg); got != "198.51.100.20" || !forwarded {
+		t.Fatalf("trusted-CIDR appended entry: got %q (forwarded %v), want 198.51.100.20 from the header", got, forwarded)
 	}
 }
 
@@ -577,8 +577,28 @@ func TestClientIPForRecord_TrimsTrustedProxyEntries(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.WebServer.TrustedProxies = []string{" 198.51.100.10 "}
 
-	if got := clientIPForRecord(rec, cfg); got != "203.0.113.10" {
-		t.Fatalf("trusted proxy client IP=%q, want 203.0.113.10", got)
+	if got, forwarded := clientIPForRecord(rec, cfg); got != "203.0.113.10" || !forwarded {
+		t.Fatalf("trusted proxy client IP=%q (forwarded %v), want 203.0.113.10 from the header", got, forwarded)
+	}
+}
+
+// A trusted proxy whose header names an unparsable entry, or no header at all,
+// leaves the peer in place and nothing forwarded; an entry equal to the peer
+// is still forwarded.
+func TestClientIPForRecord_ReportsTheHeaderSelection(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.WebServer.TrustedProxies = []string{"198.51.100.10"}
+	for _, tc := range []struct {
+		xff, want string
+		forwarded bool
+	}{
+		{"", "198.51.100.10", false},
+		{"not-an-address", "198.51.100.10", false},
+		{"198.51.100.10", "198.51.100.10", true},
+	} {
+		if got, forwarded := clientIPForRecord(accessLogRecord{RemoteIP: "198.51.100.10", XFF: tc.xff}, cfg); got != tc.want || forwarded != tc.forwarded {
+			t.Errorf("XFF %q: got %q (forwarded %v), want %q (forwarded %v)", tc.xff, got, forwarded, tc.want, tc.forwarded)
+		}
 	}
 }
 

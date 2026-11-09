@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/metrics"
@@ -26,14 +27,11 @@ const (
 
 // followState is the persisted position+identity of the syslog follower.
 type followState struct {
-	Offset     int64  `json:"offset"`
-	HeadLen    int    `json:"head_len"`
-	HeadFP     string `json:"head_fp"`
-	AnchorLen  int    `json:"anchor_len"`
-	AnchorFP   string `json:"anchor_fp"`
-	Stream     string `json:"observation_stream,omitempty"`
-	FileID     string `json:"observation_file,omitempty"`
-	Generation uint64 `json:"observation_generation,omitempty"`
+	Offset    int64  `json:"offset"`
+	HeadLen   int    `json:"head_len"`
+	HeadFP    string `json:"head_fp"`
+	AnchorLen int    `json:"anchor_len"`
+	AnchorFP  string `json:"anchor_fp"`
 }
 
 // ftpFailTracker is the persisted detector state: where we last read to, and a
@@ -181,10 +179,23 @@ func nextNewline(f *os.File, from, size int64) (int64, error) {
 	return size, nil
 }
 
-// syslogRecord is one complete line and the offset where it starts.
+// syslogRecord is one line, the offset where it starts and the stream of the
+// file it was read from (empty when the file has no identity, or when the line
+// is unterminated: a writer can still append to it).
 type syslogRecord struct {
-	text   string
-	offset int64
+	text         string
+	offset       int64
+	stream       string
+	unterminated bool
+}
+
+// observation names the record as every reader of its file names it; zero
+// when the file has no identity.
+func (r syslogRecord) observation(producer admission.ProducerID, at time.Time) alert.Observation {
+	if r.stream == "" {
+		return alert.Observation{}
+	}
+	return alert.Observation{Producer: string(producer), Stream: r.stream, Cursor: alert.RecordCursor(r.offset, r.text), ObservedAt: at.UTC()}
 }
 
 // completeRecords splits data, which starts at offset start, into complete
@@ -206,79 +217,6 @@ func completeRecords(data []byte, start int64) ([]syslogRecord, int64) {
 		pos = end + 1
 	}
 	return records, int64(lastNL + 1)
-}
-
-// Persisted streams survive restarts. The process epoch retires cached reader
-// lifetimes; each reader also has its own epoch.
-var scanObservationEpoch = alert.NewObservationEpoch()
-
-type syslogObservationReader struct {
-	processEpoch, epoch string
-	base, next          followState
-	start               int64
-	data                []byte
-}
-
-// Diagnostic scans and failed saves do not advance persisted follow state.
-// Retain their observed generation so a retry is stable, while a rewrite
-// cannot reuse its offsets. Only the fixed forward-reader paths use this map.
-var syslogObservationReaders = struct {
-	sync.Mutex
-	byPath map[string]syslogObservationReader
-}{byPath: make(map[string]syslogObservationReader)}
-
-// syslogStream names the persisted file generation, not a changing head hash.
-func syslogStream(st followState) string { return st.Stream }
-
-func setSyslogObservationStream(next *followState, old followState, path string, f *os.File, info os.FileInfo, reset bool, start int64, data []byte) {
-	identity, ok := selfWriteIdentityFromFileInfo(info)
-	if !ok {
-		return
-	}
-	next.FileID = fmt.Sprintf("%x:%x", identity.Device, identity.Inode)
-	next.Generation = old.Generation
-	reset = reset || (old.FileID != "" && old.FileID != next.FileID)
-	if reset {
-		next.Generation++
-	}
-	next.Stream = old.Stream
-
-	syslogObservationReaders.Lock()
-	defer syslogObservationReaders.Unlock()
-	reader, cached := syslogObservationReaders.byPath[path]
-	if info.Size() == 0 && old.Stream == "" && (!cached || reader.processEpoch != scanObservationEpoch) {
-		next.FileID = ""
-		return
-	}
-	if !cached || reader.processEpoch != scanObservationEpoch {
-		reader = syslogObservationReader{processEpoch: scanObservationEpoch, epoch: alert.NewObservationEpoch()}
-	} else {
-		intact := false
-		if (old == reader.base || old == reader.next) && next.FileID == reader.next.FileID {
-			from, _, err := chooseStart(f, reader.next, info.Size())
-			if err == nil && from >= reader.next.Offset {
-				// Compare captured bytes at reused positions. A later disk
-				// read could see another rewrite instead of these records.
-				first := max(start, reader.start)
-				last := min(start+int64(len(data)), reader.start+int64(len(reader.data)))
-				intact = first >= last || bytes.Equal(data[first-start:last-start], reader.data[first-reader.start:last-reader.start])
-			}
-		}
-		if intact {
-			next.Stream, next.Generation = reader.next.Stream, reader.next.Generation
-			reset = false
-		} else {
-			next.Generation = max(next.Generation, reader.next.Generation+1)
-			reset = true
-		}
-	}
-	if next.Stream == "" || reset {
-		next.Stream = fmt.Sprintf("s:%s:%s.%d", next.FileID, reader.epoch, next.Generation)
-	}
-	reader.base, reader.next = old, *next
-	// The existing catch-up bound also bounds this retained read snapshot.
-	reader.start, reader.data = start, data
-	syslogObservationReaders.byPath[path] = reader
 }
 
 // chooseStart returns the byte offset to begin reading from, plus skipped bytes
@@ -380,9 +318,6 @@ func readNewSyslogRecords(path string, st followState) ([]syslogRecord, followSt
 	if err != nil {
 		return nil, st, 0, err
 	}
-	// Capture a rewind before the catch-up cap moves start forward again.
-	reset := start < st.Offset
-
 	if curSize-start > maxCatchUpBytes {
 		capped := curSize - maxCatchUpBytes
 		aligned, aerr := nextNewline(f, capped, curSize)
@@ -391,6 +326,16 @@ func readNewSyslogRecords(path string, st followState) ([]syslogRecord, followSt
 		}
 		skipped += aligned - start
 		start = aligned
+	}
+	framed := true
+	if start > 0 {
+		// Catch-up may have reached EOF inside an unfinished line. Its
+		// eventual suffix still feeds legacy checks but names no record.
+		var before [1]byte
+		if _, err := f.ReadAt(before[:], start-1); err != nil {
+			return nil, st, 0, err
+		}
+		framed = before[0] == '\n'
 	}
 
 	var records []syslogRecord
@@ -412,7 +357,14 @@ func readNewSyslogRecords(path string, st followState) ([]syslogRecord, followSt
 	if err := fillIdentity(f, &next, curSize); err != nil {
 		return nil, st, 0, err
 	}
-	setSyslogObservationStream(&next, st, path, f, info, reset, start, data[:consumed])
+	if id, ok := selfWriteIdentityFromFileInfo(info); ok {
+		stream := alert.FileStream(id.Device, id.Inode)
+		for i := range records {
+			if framed || records[i].offset > start {
+				records[i].stream = stream
+			}
+		}
+	}
 	return records, next, skipped, nil
 }
 
