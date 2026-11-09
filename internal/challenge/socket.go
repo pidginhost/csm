@@ -24,8 +24,8 @@ const maxSocketPath = config.ChallengeSocketMaxPath
 // swap the path), and nothing but a socket at the path. The server and
 // doctor share it so their rules cannot drift.
 func CheckSocketPlacement(path, group string) (gid int, err error) {
-	if err := config.ChallengeSocketPathError(path); err != nil {
-		return 0, err
+	if pathErr := config.ChallengeSocketPathError(path); pathErr != nil {
+		return 0, pathErr
 	}
 	g, err := user.LookupGroup(group)
 	if err != nil {
