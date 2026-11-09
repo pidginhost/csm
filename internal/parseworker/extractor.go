@@ -23,8 +23,8 @@ import (
 // 2-vCPU host), rounded up. It stays under the 5 s hold budget on purpose: a
 // hanging message gets its verdict before the hold answers, so tempfail and
 // quarantine still apply in time, and the scan slot is freed quickly. A
-// message that kills the worker has none of its attachments scanned and
-// follows email_av.fail_mode.
+// message that kills the worker has none of its attachments scanned and is
+// deferred whatever email_av.fail_mode says, except in observe mode.
 const ExtractTimeout = 4 * time.Second
 
 // extractTimeout is a seam for tests.

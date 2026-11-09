@@ -641,7 +641,7 @@ func (sw *SpoolWatcher) handleSpoolEvent(evt spoolEvent) {
 
 	headerPath := filepath.Join(spoolDir, msgID+"-H")
 
-	// MIME parse in a parse worker - fail-open on error
+	// MIME parse in a parse worker
 	limits := emime.Limits{
 		MaxAttachmentSize: sw.cfg.EmailAV.MaxAttachmentSize,
 		MaxArchiveDepth:   sw.cfg.EmailAV.MaxArchiveDepth,
@@ -652,7 +652,7 @@ func (sw *SpoolWatcher) handleSpoolEvent(evt spoolEvent) {
 
 	tempfail := sw.cfg.EmailAV.FailMode == "tempfail" && evt.needResp
 
-	extraction, err := sw.extractSpoolMessage(evt, msgID, headerPath, limits)
+	extraction, messageFault, err := sw.extractSpoolMessage(evt, msgID, headerPath, limits)
 	if err != nil {
 		// MAIL-03: Exim opens the -D body file before it writes the matching
 		// -H header file (the -H lands only after the message is accepted).
@@ -678,7 +678,14 @@ func (sw *SpoolWatcher) handleSpoolEvent(evt spoolEvent) {
 
 	if extraction.Partial {
 		partialResult := &emailav.ScanResult{PartialExtraction: true}
-		if shouldTempfailEmailDelivery(tempfail, partialResult, nil) {
+		switch {
+		case messageFault && evt.needResp && !sw.cfg.ObserveMode():
+			// fail_mode open covers the host failing to scan. Mail built to
+			// break the worker would otherwise choose to pass unscanned.
+			response = FAN_DENY
+			sw.emitDegradedWarning("message_fault_deferred", fmt.Sprintf("Incomplete email attachment extraction for message %s (%q) - delivery deferred (the message made the parse worker fail)", msgID, partialExtractionReason(extraction)))
+			return
+		case shouldTempfailEmailDelivery(tempfail, partialResult, nil):
 			response = FAN_DENY
 			sw.emitDegradedWarning("partial_extraction_deferred", fmt.Sprintf("Incomplete email attachment extraction for message %s (%q) - delivery deferred (tempfail mode)", msgID, partialExtractionReason(extraction)))
 			return

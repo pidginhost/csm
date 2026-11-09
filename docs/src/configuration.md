@@ -658,7 +658,7 @@ email_av:
   # policy decision and is not something CSM does for you.
   # Attachments are unpacked in locked-down worker processes, one per
   # scan_concurrency slot, started on first use. When a worker cannot finish,
-  # the message counts as not fully scanned and follows fail_mode:
+  # the message counts as not fully scanned:
   #   worker deadline reached     "parse worker timed out"
   #   worker memory cap reached   "parse worker ran out of memory"
   #   worker crashed or exited    "parse worker crashed"
@@ -666,6 +666,11 @@ email_av:
   #   worker unit cannot start    "parse isolation unavailable"
   #   unit keeps failing to start "parse worker failing repeatedly"
   #   message failed twice before "parse worker failed on this message before"
+  # The first four and the last are caused by the message. Outside observe
+  # mode they request deferral whatever fail_mode says, so Exim retries it.
+  # Deferral requires a permission event that is still holding delivery;
+  # notification-only mode cannot block it. The two unit failures, and a unit
+  # still starting when the scan deadline passes, follow fail_mode.
   # The first four raise email_av_parse_worker_failed, naming the message and
   # its sender, at most once a minute; a rejected reply also raises a Critical
   # email_av_parse_worker_rejected. The next two raise a Critical
@@ -676,14 +681,14 @@ email_av:
   # not count against messages or senders. When messages from one sender
   # make workers fail three times, each within ten minutes of the one before,
   # a High email_av_parse_worker_source names the sender, at most once every
-  # ten minutes. This advisory never blocks automatically, and blocking an
-  # address does not hide it.
+  # ten minutes. This advisory reports scan failures, not delivery outcomes.
+  # It never blocks automatically, and blocking an address does not hide it.
   worker_memory_limit: 536870912        # memory and swap cap of each attachment worker in bytes (512 MiB); minimum 134217728 (128 MiB)
   # Up to scan_concurrency attachment workers run at once, and each may use up
   # to worker_memory_limit. A worker that reaches it is killed and the message
-  # follows fail_mode as "parse worker ran out of memory". The phishing-kit
-  # zip worker keeps the default cap. Changing it takes effect after a daemon
-  # restart.
+  # is deferred as "parse worker ran out of memory"; raise the limit if
+  # ordinary mail reaches it. The phishing-kit zip worker keeps the default
+  # cap. Changing it takes effect after a daemon restart.
   keep_crash_samples: false             # keep copies of messages and tenant zips that crash an attachment worker
   # Crash samples are for diagnosing worker crashes. They hold customer mail
   # and tenant files: they are readable by root only, stored in parse-crashes

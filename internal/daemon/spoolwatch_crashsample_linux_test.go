@@ -108,7 +108,7 @@ func TestSpoolNonWorkerFailuresNeverStrikeOrSave(t *testing.T) {
 			sw, ch := strikeWatcher("open", ex)
 			store := filepath.Join(t.TempDir(), "parse-crashes")
 			sw.setCrashSamples(crashsample.New(store))
-			captureResponses(t)
+			responses := captureResponses(t)
 			dir := t.TempDir()
 			const id = "1abcDE-000005-AB"
 			buildMinimalEximSpool(t, dir, id)
@@ -119,6 +119,15 @@ func TestSpoolNonWorkerFailuresNeverStrikeOrSave(t *testing.T) {
 			}
 			if sw.mailStrikes.Len() != 0 || sw.sourceKills.Len() != 0 || len(ex.recorded()) != sourceKillLimit+1 {
 				t.Fatal("non-worker failure charged to message or source")
+			}
+			got := responses()
+			if len(got) != sourceKillLimit+1 {
+				t.Fatalf("responses %+v, want one per event", got)
+			}
+			for _, r := range got {
+				if r.response != FAN_ALLOW {
+					t.Fatalf("non-worker failure overrode fail_mode open: %+v", got)
+				}
 			}
 			if fs := findingsFor(takeFindings(ch), "email_av_parse_worker_source"); len(fs) != 0 {
 				t.Fatalf("non-worker failure raised source findings: %+v", fs)

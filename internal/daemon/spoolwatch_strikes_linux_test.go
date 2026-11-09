@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/emailav"
 	emime "github.com/pidginhost/csm/internal/mime"
 	"github.com/pidginhost/csm/internal/workerproc"
@@ -25,13 +26,19 @@ func strikeWatcher(mode string, ex mailExtractor) (*SpoolWatcher, chan alert.Fin
 }
 
 // A message that killed the worker twice is not unpacked again: each retry
-// would cost another worker and still end incomplete.
+// would cost another worker and still end incomplete. It stays deferred, in
+// either fail mode, unless the operator selected observe mode.
 func TestSpoolRepeatFailureSkipsWorker(t *testing.T) {
 	timeout := workerFailure(t, workerproc.ReasonTimeout)
-	for _, mode := range []string{"open", "tempfail"} {
+	for _, mode := range []string{"open", "tempfail", config.ModeObserve} {
 		t.Run(mode, func(t *testing.T) {
 			ex := &recordingExtractor{size: 1, extract: func(context.Context, int) (*emime.ExtractionResult, error) { return nil, timeout }}
 			sw, ch := strikeWatcher(mode, ex)
+			want, outcome := uint32(FAN_DENY), "delivery deferred"
+			if mode == config.ModeObserve {
+				sw.cfg.Mode, sw.cfg.EmailAV.FailMode = config.ModeObserve, "open"
+				want, outcome = FAN_ALLOW, "delivery allowed"
+			}
 			dir := t.TempDir()
 			msgID := "1abcDE-000001-AB"
 			buildMinimalEximSpool(t, dir, msgID)
@@ -46,14 +53,51 @@ func TestSpoolRepeatFailureSkipsWorker(t *testing.T) {
 			if n := len(ex.recorded()); n != 2 {
 				t.Fatalf("extractor calls = %d, want the third event skipped", n)
 			}
-			if got := responses(); len(got) != 1 || got[0].response != wantResponse(mode) {
-				t.Fatalf("responses %+v, want %d", got, wantResponse(mode))
+			if got := responses(); len(got) != 1 || got[0].response != want {
+				t.Fatalf("responses %+v, want %d", got, want)
 			}
 			d := findingsFor(takeFindings(ch), "email_av_degraded")
-			if len(d) != 1 || !strings.Contains(d[0].Message, `("parse worker failed on this message before")`) {
+			if len(d) != 1 || !strings.Contains(d[0].Message, `("parse worker failed on this message before")`) || !strings.Contains(d[0].Message, outcome) {
 				t.Fatalf("degraded findings %+v, want the repeat-failure reason", d)
 			}
 		})
+	}
+}
+
+// Without permission events nothing can be deferred, so the finding must not
+// claim the message was.
+func TestSpoolMessageFaultWithoutPermissionEventsIsDelivered(t *testing.T) {
+	crash := workerFailure(t, workerproc.ReasonCrash)
+	ex := &recordingExtractor{size: 1, extract: func(context.Context, int) (*emime.ExtractionResult, error) { return nil, crash }}
+	sw, ch := strikeWatcher("open", ex)
+	responses := captureResponses(t)
+	dir := t.TempDir()
+	for i := range sourceKillLimit {
+		msgID := fmt.Sprintf("1abcDE-00020%d-AB", i)
+		buildMinimalEximSpool(t, dir, msgID)
+		evt := bodyEvent(t, dir, msgID)
+		evt.needResp = false
+		evt.source = "ip:192.0.2.10"
+		sw.handleSpoolEvent(evt)
+	}
+	if got := responses(); len(got) != 0 {
+		t.Fatalf("notification event answered: %+v", got)
+	}
+	fs := takeFindings(ch)
+	d := findingsFor(fs, "email_av_degraded")
+	if len(d) != 1 || !strings.Contains(d[0].Message, "delivery allowed") {
+		t.Fatalf("degraded findings %+v, want delivery allowed", d)
+	}
+	failed := findingsFor(fs, "email_av_parse_worker_failed")
+	if len(failed) != 1 || !strings.Contains(failed[0].Message, "delivery cannot be deferred without fanotify permission events") {
+		t.Errorf("worker failure findings %+v, want the delivery limitation", failed)
+	}
+	source := findingsFor(fs, "email_av_parse_worker_source")
+	if len(source) != 1 || source[0].Severity != alert.High || !strings.Contains(source[0].Message, `"ip:192.0.2.10"`) {
+		t.Fatalf("source findings %+v, want one High naming the source", source)
+	}
+	if strings.Contains(source[0].Message, "were deferred") {
+		t.Errorf("source finding claims notification-only mail was deferred: %s", source[0].Message)
 	}
 }
 
@@ -133,7 +177,7 @@ func TestSpoolExtractionErrorQuotesWorkerText(t *testing.T) {
 	text := "worker failed\nforged journal entry\x1b[31m"
 	sw, ch := strikeWatcher("open", nil)
 	logged := captureAppliedBlockStderr(t, func() {
-		sw.extractFailed("message", "ip:192.0.2.10", errors.New(text))
+		sw.extractFailed("message", spoolEvent{source: "ip:192.0.2.10"}, errors.New(text))
 	})
 	if strings.Contains(logged, text) || !strings.Contains(logged, fmt.Sprintf("%q", text)) {
 		t.Errorf("unquoted worker error in log: %q", logged)

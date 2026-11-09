@@ -9,6 +9,10 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ## [Unreleased]
 
+### Security
+
+- Mail that crashes, exhausts or stalls the attachment unpacker is now deferred instead of delivered unscanned, even with `email_av.fail_mode: open`; observe mode still delivers it.
+
 ### Fixed
 
 - Install commands shown on static web pages, and framework classes that handle admin uploads, no longer raise Critical dropper alerts.

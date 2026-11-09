@@ -62,6 +62,9 @@ The keys checked are `auto_response.enabled`, `firewall.enabled`,
 `auto_response.copy_fail_kill_process: true` and, when the antivirus scanner is
 enabled, `email_av.quarantine_infected: true` and `email_av.fail_mode: tempfail`,
 all of which act on a host independently of `auto_response.enabled`.
+Mail that makes the attachment parse worker fail is allowed with a finding
+instead. In `enforce`, CSM requests deferral whatever `fail_mode` says when a
+permission event still holds delivery.
 
 CSM refuses rather than silently turning those switches off in memory, because
 the config re-hash path marshals the in-memory config back over `csm.yaml`:

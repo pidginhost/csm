@@ -100,7 +100,7 @@ var operations = []Op{
 		ID: "respond.mail_delivery_gate", Subsystem: "response",
 		Risk:        RiskReversible,
 		RecoveryGap: "This inventory does not yet specify identity checks for releasing or restoring mail, or recovery after a restart.",
-		Summary:     "defer Exim delivery with fanotify permission responses when tempfail policy requires it",
+		Summary:     "defer Exim delivery with fanotify permission responses when tempfail policy requires it or a message makes its parse worker fail",
 		Privileges:  []Privilege{CapSysAdmin, Root}, Trigger: Automatic,
 		Writes:     []string{"fanotify:mail delivery decisions"},
 		DisableKey: "email_av.enabled", DisableValue: "false",
