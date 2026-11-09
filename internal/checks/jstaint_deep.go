@@ -23,6 +23,12 @@ const jsTaintDeepCursorCheck = logicalOwnerJSTaintDeep
 // walk's soft-deadline margin on a single file.
 const jsTaintDeepPerFileTimeout = 20 * time.Second
 
+// maxJSTaintGapPaths bounds the exact paths one run retains for carry-forward,
+// as maxPHPTaintGapPaths does for the PHP consumer. Past it the run keeps
+// counting but reports its path set as incomplete, which suppresses the purge
+// rather than carrying forward an arbitrary prefix.
+const maxJSTaintGapPaths = 50_000
+
 // Display bounds: the sanitized path in the finding message, the rendered
 // evidence in its details, and diagnostic example paths (spec: 512, 2048,
 // and 256 bytes, markers included).
@@ -67,6 +73,8 @@ type jsTaintGapCollector struct {
 	resolveAliases func(string) ([]string, bool)
 	unknown        int
 	unknownExample string
+	// pathsTruncated records that the exact-path set hit its bound.
+	pathsTruncated bool
 }
 
 func newJSTaintGapCollector() *jsTaintGapCollector {
@@ -81,7 +89,11 @@ func newJSTaintGapCollector() *jsTaintGapCollector {
 
 func (g *jsTaintGapCollector) record(path, status string) {
 	aliases, retained := g.aliasesByPath[path]
-	if !retained {
+	if !retained && len(g.paths) >= maxJSTaintGapPaths {
+		// Stop retaining paths, but never stop counting: the count is what
+		// tells an operator how much of the host went unexamined.
+		g.pathsTruncated = true
+	} else if !retained {
 		stable := true
 		if g.resolveAliases != nil {
 			aliases, stable = g.resolveAliases(path)
@@ -102,7 +114,7 @@ func (g *jsTaintGapCollector) record(path, status string) {
 			g.pathAliases[alias] = struct{}{}
 		}
 	}
-	if g.recordCoverage != nil {
+	if len(aliases) > 0 && g.recordCoverage != nil {
 		g.recordCoverage(aliases)
 	}
 	g.byStatus[status]++
@@ -118,7 +130,7 @@ func (g *jsTaintGapCollector) recordUnknownRange(detail string) {
 	}
 }
 
-func (g *jsTaintGapCollector) pathsIncomplete() bool { return g.unknown > 0 }
+func (g *jsTaintGapCollector) pathsIncomplete() bool { return g.pathsTruncated || g.unknown > 0 }
 
 func (g *jsTaintGapCollector) empty() bool { return len(g.byStatus) == 0 && g.unknown == 0 }
 
@@ -142,12 +154,15 @@ func (g *jsTaintGapCollector) finding() alert.Finding {
 		statuses = append(statuses, status)
 	}
 	sort.Strings(statuses)
-	parts := make([]string, 0, len(statuses)+1)
+	parts := make([]string, 0, len(statuses)+2)
 	for _, status := range statuses {
 		parts = append(parts, fmt.Sprintf("%s=%d (example: %s)", status, g.byStatus[status], g.example[status]))
 	}
 	if g.unknown > 0 {
 		parts = append(parts, fmt.Sprintf("unreadable-range=%d (example: %s)", g.unknown, g.unknownExample))
+	}
+	if g.pathsTruncated {
+		parts = append(parts, fmt.Sprintf("exact paths retained for only the first %d", maxJSTaintGapPaths))
 	}
 	message := fmt.Sprintf("JavaScript taint deep scan could not analyze %d file(s)", total)
 	if total == 0 {
