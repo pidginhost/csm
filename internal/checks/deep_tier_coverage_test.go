@@ -109,7 +109,7 @@ type unreadableScanEntry struct{ os.DirEntry }
 
 func (e unreadableScanEntry) Info() (os.FileInfo, error) { return nil, os.ErrPermission }
 
-func TestExposedFilesIncompleteRunRetriesAcrossTiers(t *testing.T) {
+func TestExposedFilesIncompleteRunRetriesNextCycle(t *testing.T) {
 	st, err := state.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
