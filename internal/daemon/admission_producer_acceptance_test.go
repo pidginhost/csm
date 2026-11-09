@@ -66,7 +66,8 @@ func producerAcceptanceMint(t *testing.T, f alert.Finding) (admission.Assessment
 	}
 	p, err := reg.Register(admission.ProducerSpec{
 		ID: "acceptance", Entry: admission.EntryScan, Observation: admission.ObservationLogCursor,
-		Checks: []string{"email_cloud_relay_abuse", "email_compromised_account", "mail_account_compromised"},
+		Checks:      []string{"email_cloud_relay_abuse", "email_compromised_account", "mail_account_compromised"},
+		Attribution: admission.Attributions(admission.AttributionPeer),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -81,7 +82,7 @@ func producerAcceptanceMint(t *testing.T, f alert.Finding) (admission.Assessment
 	}
 	observed := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
 	e, err := p.Mint(admission.EvidenceInput{
-		Check: f.Check, FindingID: "0123456789abcdef", Severity: sev,
+		Check: f.Check, FindingID: "0123456789abcdef", Severity: sev, Attribution: admission.AttributionPeer,
 		Observation: admission.ObservationRef{Stream: "fixture", Cursor: "1", Version: 1},
 		ObservedAt:  observed, Parser: admission.ParserRef{Name: "fixture", Version: 1}, Target: target,
 	})
@@ -114,7 +115,7 @@ func TestProducerAcceptanceMailHeuristicsWithoutAddress(t *testing.T) {
 		name, line, mailbox, domain string
 	}{
 		{"hold", `2026-10-02 12:00:00 Sender office@example.com has an outgoing mail hold`, "office@example.com", "example.com"},
-		{"bulk", `2026-10-02 12:00:00 1abc23 <= bulk@example.org H=truelist.io [192.0.2.5] P=esmtpsa A=dovecot_login:bulk@example.org S=500 T="news"`, "bulk@example.org", "example.org"},
+		{"bulk", `2026-10-02 12:00:00 1abc23-000456-AB <= bulk@example.org H=truelist.io [192.0.2.5] P=esmtpsa A=dovecot_login:bulk@example.org S=500 T="news"`, "bulk@example.org", "example.org"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			f := onlyCheck(t, parseEximLogLine(c.line, cfg), "email_compromised_account")

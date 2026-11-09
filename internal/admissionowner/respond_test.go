@@ -15,7 +15,16 @@ func sshFinding(at time.Time, cursor string, sev alert.Severity) alert.Finding {
 	return alert.Finding{
 		Check: "ssh_brute", Severity: sev, SourceIP: "192.0.2.10", Message: "brute force", Timestamp: at,
 		Observation: alert.Observation{Producer: "sshd_log", Stream: "secure:dev=1,ino=2", Cursor: cursor, ObservedAt: at},
+		Attribution: admission.AttributionPeer,
 	}
+}
+
+// targetOf is the address or prefix e names, as a funnel hands it over.
+func targetOf(e admission.Evidence) string {
+	if p := e.Target().Prefix(); !p.IsSingleIP() {
+		return p.String()
+	}
+	return e.Target().Prefix().Addr().String()
 }
 
 func respondOptions(f *ownerFixture) Options {
@@ -32,11 +41,11 @@ func TestOwnerMintsAndAnswersAFinding(t *testing.T) {
 	f := newOwnerFixture(t)
 	o := f.start(respondOptions(f))
 	finding := sshFinding(f.host.now(), "offset=1", alert.High)
-	e, err := o.Mint(finding, "192.0.2.10")
+	e, err := o.Mint(finding)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = o.Respond(admission.KindBlockIP, e, 0); err != nil {
+	if err = o.Respond(admission.KindBlockIP, targetOf(e), e, 0); err != nil {
 		t.Fatal(err)
 	}
 	if err = o.do(o.drain); err != nil {
@@ -57,7 +66,7 @@ func TestOwnerCountsAResponseItCannotMint(t *testing.T) {
 	o := f.start(respondOptions(f))
 	finding := sshFinding(f.host.now(), "offset=1", alert.Critical)
 	finding.Observation = alert.Observation{}
-	_, err := o.Mint(finding, "192.0.2.10")
+	_, err := o.Mint(finding)
 	if err == nil {
 		t.Fatal("a finding without an observation was minted")
 	}
@@ -78,11 +87,11 @@ func TestOwnerAnswersARootThroughADerivedEntry(t *testing.T) {
 	withTestRegistry(t)
 	f := newOwnerFixture(t)
 	o := f.start(respondOptions(f))
-	e, err := o.Mint(sshFinding(f.host.now(), "offset=1", alert.High), "192.0.2.10")
+	e, err := o.Mint(sshFinding(f.host.now(), "offset=1", alert.High))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = o.Respond(admission.KindBlockIP, e, admission.EntryIncident); err != nil {
+	if err = o.Respond(admission.KindBlockIP, targetOf(e), e, admission.EntryIncident); err != nil {
 		t.Fatal(err)
 	}
 	if err = o.do(o.drain); err != nil {
@@ -91,7 +100,7 @@ func TestOwnerAnswersARootThroughADerivedEntry(t *testing.T) {
 	if queued := queuedCandidates(t, o); len(queued) != 1 || queued[0].Entry != admission.EntryIncident {
 		t.Fatalf("queued = %+v", queued)
 	}
-	if err = o.Respond(admission.KindBlockIP, admission.Evidence{}, admission.EntryIncident); err == nil {
+	if err = o.Respond(admission.KindBlockIP, "", admission.Evidence{}, admission.EntryIncident); err == nil {
 		t.Fatal("a derived response without its root was accepted")
 	}
 	if n := o.ingress.Stats().Counters.Count(admission.CountKey{Event: admission.EventRefused, Reason: admission.ReasonPolicy}); n != 1 {
@@ -112,11 +121,11 @@ func TestOwnerCountsADerivedRemintAfterAnInventoryChangeAsAStaleIdentity(t *test
 	o := f.start(opts)
 	finding := sshFinding(f.host.now(), "offset=1", alert.High)
 	finding.Claims = []admission.Claim{{Kind: admission.ClaimAccount, Value: "alice"}}
-	primary, err := o.Mint(finding, finding.SourceIP)
+	primary, err := o.Mint(finding)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = o.Respond(admission.KindBlockIP, primary, 0); err != nil {
+	if err = o.Respond(admission.KindBlockIP, targetOf(primary), primary, 0); err != nil {
 		t.Fatal(err)
 	}
 	if err = o.do(o.drain); err != nil {
@@ -126,14 +135,14 @@ func TestOwnerCountsADerivedRemintAfterAnInventoryChangeAsAStaleIdentity(t *test
 	if err = o.do(func() error { o.refreshInventory(); return o.inventoryErr }); err != nil {
 		t.Fatal(err)
 	}
-	root, err := o.Mint(finding, finding.SourceIP)
+	root, err := o.Mint(finding)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if root.ID() != primary.ID() || root.Owner().IsHost() || root.Owner() == primary.Owner() {
 		t.Fatalf("fixture does not remint the root under the recreated account: %s then %s", primary.Owner().Key(), root.Owner().Key())
 	}
-	if err = o.Respond(admission.KindBlockIP, root, admission.EntryIncident); err != nil {
+	if err = o.Respond(admission.KindBlockIP, targetOf(root), root, admission.EntryIncident); err != nil {
 		t.Fatal(err)
 	}
 	if err = o.do(o.drain); err != nil {
@@ -168,9 +177,9 @@ func TestOwnerStopIsBoundedWhileAProducerSubmits(t *testing.T) {
 				return
 			default:
 			}
-			e, err := o.Mint(sshFinding(f.host.now(), "offset="+time.Duration(i).String(), alert.High), "192.0.2.10")
+			e, err := o.Mint(sshFinding(f.host.now(), "offset="+time.Duration(i).String(), alert.High))
 			if err == nil {
-				_ = o.Respond(admission.KindBlockIP, e, 0)
+				_ = o.Respond(admission.KindBlockIP, targetOf(e), e, 0)
 			}
 		}
 	}()
@@ -180,11 +189,11 @@ func TestOwnerStopIsBoundedWhileAProducerSubmits(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("stop did not end while a producer kept submitting")
 	}
-	e, err := o.Mint(sshFinding(f.host.now(), "offset=last", alert.High), "192.0.2.10")
+	e, err := o.Mint(sshFinding(f.host.now(), "offset=last", alert.High))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = o.Respond(admission.KindBlockIP, e, 0); err == nil {
+	if err = o.Respond(admission.KindBlockIP, targetOf(e), e, 0); err == nil {
 		t.Fatal("a stopped owner accepted a response")
 	}
 }
@@ -196,11 +205,11 @@ func TestOwnerStopRefusesWorkSubmittedDuringItsDrain(t *testing.T) {
 	withTestRegistry(t)
 	f := newOwnerFixture(t)
 	o := f.start(respondOptions(f))
-	e, err := o.Mint(sshFinding(f.host.now(), "offset=held", alert.High), "192.0.2.10")
+	e, err := o.Mint(sshFinding(f.host.now(), "offset=held", alert.High))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = o.Respond(admission.KindBlockIP, e, 0); err != nil {
+	if err = o.Respond(admission.KindBlockIP, targetOf(e), e, 0); err != nil {
 		t.Fatal(err)
 	}
 	var late, accepted int
@@ -208,7 +217,7 @@ func TestOwnerStopRefusesWorkSubmittedDuringItsDrain(t *testing.T) {
 	setOwnerHook(t, o, &drainGroupOf, func(in *admission.Ingress, l *store.AdmissionLedger, items []admission.IngressItem) (admission.DrainReport, error) {
 		if o.stopping.Load() {
 			late++
-			if e, mintErr := o.Mint(sshFinding(f.host.now(), fmt.Sprintf("offset=late-%d", late), alert.High), "192.0.2.10"); mintErr == nil && o.Respond(admission.KindBlockIP, e, 0) == nil {
+			if e, mintErr := o.Mint(sshFinding(f.host.now(), fmt.Sprintf("offset=late-%d", late), alert.High)); mintErr == nil && o.Respond(admission.KindBlockIP, targetOf(e), e, 0) == nil {
 				accepted++
 			}
 		}
@@ -234,11 +243,11 @@ func TestOwnerAnswersOnlyBlocksTheFirewallContains(t *testing.T) {
 	o := f.start(respondOptions(f))
 	finding := sshFinding(f.host.now(), "offset=1", alert.High)
 	finding.SourceIP = "2001:db8::10"
-	root, err := o.Mint(finding, finding.SourceIP)
+	root, err := o.Mint(finding)
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = o.Respond(admission.KindBlockIP, root, 0)
+	err = o.Respond(admission.KindBlockIP, targetOf(root), root, 0)
 	if reason, ok := admission.ReasonOf(err); !ok || reason != admission.ReasonUnsupportedContainment {
 		t.Fatalf("IPv6 without the capability: %v", err)
 	}
@@ -255,11 +264,11 @@ func TestOwnerPreviewsAnIPv6ChallengeWithoutFirewallIPv6(t *testing.T) {
 	o := f.start(respondOptions(f))
 	finding := sshFinding(f.host.now(), "offset=1", alert.High)
 	finding.SourceIP = "2001:db8::10"
-	root, err := o.Mint(finding, finding.SourceIP)
+	root, err := o.Mint(finding)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = o.Respond(admission.KindChallenge, root, 0); err != nil {
+	if err = o.Respond(admission.KindChallenge, targetOf(root), root, 0); err != nil {
 		t.Fatal(err)
 	}
 	if err = o.do(o.drain); err != nil {
@@ -291,7 +300,7 @@ func TestOwnerPreviewsAnIPv6ChallengeWithoutFirewallIPv6(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	err = o.Respond(admission.KindBlockIP, root, admission.EntryChallengeTimeout)
+	err = o.Respond(admission.KindBlockIP, targetOf(root), root, admission.EntryChallengeTimeout)
 	if reason, ok := admission.ReasonOf(err); !ok || reason != admission.ReasonUnsupportedContainment {
 		t.Fatalf("IPv6 timeout block without containment: %v", err)
 	}
@@ -310,7 +319,7 @@ func TestOwnerRefusesARootlessDerivedResponseAsPolicy(t *testing.T) {
 	for via, kind := range map[admission.Entry]admission.Kind{
 		admission.EntryNetblock: admission.KindBlockSubnet, admission.EntryPermblock: admission.KindBlockIP, admission.EntryIncident: admission.KindBlockIP,
 	} {
-		err := o.Respond(kind, admission.Evidence{}, via)
+		err := o.Respond(kind, "", admission.Evidence{}, via)
 		if reason, ok := admission.ReasonOf(err); !ok || reason != admission.ReasonPolicy {
 			t.Errorf("via %s: err = %v", via, err)
 		}
@@ -330,11 +339,11 @@ func TestOwnerPreviewKeepsASelectedLifetimeAcrossRestart(t *testing.T) {
 	opts := respondOptions(f)
 	opts.ScheduleEvery = time.Hour
 	o := f.start(opts)
-	e, err := o.Mint(sshFinding(f.host.now(), "offset=selected", alert.High), "192.0.2.10")
+	e, err := o.Mint(sshFinding(f.host.now(), "offset=selected", alert.High))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = o.Respond(admission.KindBlockIP, e, admission.EntryIncident, 7*24*time.Hour); err != nil {
+	if err = o.Respond(admission.KindBlockIP, targetOf(e), e, admission.EntryIncident, 7*24*time.Hour); err != nil {
 		t.Fatal(err)
 	}
 	if err = o.do(o.drain); err != nil {
@@ -353,11 +362,11 @@ func TestOwnerPreviewKeepsASelectedLifetimeAcrossRestart(t *testing.T) {
 	}
 	finding := sshFinding(f.host.now(), "offset=default", alert.High)
 	finding.SourceIP = "192.0.2.11"
-	ordinary, err := restarted.Mint(finding, finding.SourceIP)
+	ordinary, err := restarted.Mint(finding)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = restarted.Respond(admission.KindBlockIP, ordinary, 0); err != nil {
+	if err = restarted.Respond(admission.KindBlockIP, targetOf(ordinary), ordinary, 0); err != nil {
 		t.Fatal(err)
 	}
 	if err = restarted.do(restarted.drain); err != nil {
@@ -386,12 +395,12 @@ func TestOwnerRefusesMalformedSelectedLifetimes(t *testing.T) {
 	withTestRegistry(t)
 	f := newOwnerFixture(t)
 	o := f.start(respondOptions(f))
-	e, err := o.Mint(sshFinding(f.host.now(), "offset=bad-ttl", alert.High), "192.0.2.10")
+	e, err := o.Mint(sshFinding(f.host.now(), "offset=bad-ttl", alert.High))
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, ttls := range [][]time.Duration{{-time.Second}, {time.Hour, time.Hour}} {
-		err = o.Respond(admission.KindBlockIP, e, admission.EntryIncident, ttls...)
+		err = o.Respond(admission.KindBlockIP, targetOf(e), e, admission.EntryIncident, ttls...)
 		if reason, ok := admission.ReasonOf(err); !ok || reason != admission.ReasonInvalid {
 			t.Fatalf("lifetimes %v: %v", ttls, err)
 		}
@@ -416,9 +425,9 @@ func TestOwnerHandoffDoesNotWaitForTheOwner(t *testing.T) {
 	t.Cleanup(func() { close(release); <-ownerDone })
 	returned := make(chan error, 1)
 	go func() {
-		e, err := o.Mint(sshFinding(f.host.now(), "offset=nonblocking", alert.High), "192.0.2.10")
+		e, err := o.Mint(sshFinding(f.host.now(), "offset=nonblocking", alert.High))
 		if err == nil {
-			err = o.Respond(admission.KindBlockIP, e, 0)
+			err = o.Respond(admission.KindBlockIP, targetOf(e), e, 0)
 		}
 		returned <- err
 	}()
@@ -432,5 +441,53 @@ func TestOwnerHandoffDoesNotWaitForTheOwner(t *testing.T) {
 	}
 	if o.ingress.Len() != 1 || o.ingress.Stats().Accepted != 1 {
 		t.Fatalf("held %d, accepted %d", o.ingress.Len(), o.ingress.Stats().Accepted)
+	}
+}
+
+// A response acts on the address its evidence attributes (spec 5.8); a
+// scan root never widens to a prefix (5.13). Another target is refused and
+// the hourly row names the mismatch.
+func TestOwnerRefusesATargetItsEvidenceDoesNotName(t *testing.T) {
+	withTestRegistry(t)
+	f := newOwnerFixture(t)
+	comparisonClock(t, f.host.now)
+	sink := &actionSink{}
+	opts := respondOptions(f)
+	opts.WriteAudit = sink.write
+	o := f.start(opts)
+	e, err := o.Mint(sshFinding(f.host.now(), "offset=1", alert.High))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = o.Respond(admission.KindBlockIP, "192.0.2.11", e, 0)
+	if r, _ := admission.ReasonOf(err); r != admission.ReasonAttribution || admission.CauseOf(err) != admission.CauseTargetMismatch {
+		t.Fatalf("another address: %v", err)
+	}
+	if err = o.Respond(admission.KindBlockSubnet, "198.51.100.0/24", e, 0); admission.CauseOf(err) != admission.CauseTargetMismatch {
+		t.Fatalf("a prefix without the address: %v", err)
+	}
+	if err = o.Respond(admission.KindBlockSubnet, "192.0.2.0/24", e, 0); admission.CauseOf(err) != admission.CauseTargetMismatch {
+		t.Fatalf("a prefix from a scan root: %v", err)
+	}
+	if err = o.Respond(admission.KindBlockIP, "192.0.2.10", e, 0); err != nil {
+		t.Fatalf("the address: %v", err)
+	}
+	f.host.advance(time.Hour)
+	if err = o.do(o.tick); err != nil {
+		t.Fatal(err)
+	}
+	refused := uint64(0)
+	sink.mu.Lock()
+	for _, r := range sink.recs {
+		if r.Result == "refused" {
+			if r.Error != "attribution" || r.Cause != "target_mismatch" {
+				t.Errorf("refusal row %s/%s", r.Error, r.Cause)
+			}
+			refused += r.Count
+		}
+	}
+	sink.mu.Unlock()
+	if refused != 3 {
+		t.Fatalf("%d refusals counted, want 3", refused)
 	}
 }

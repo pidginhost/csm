@@ -62,7 +62,7 @@ func (f *ingressFixture) sub(s subSpec) Submission {
 	target := mustAddr(f.t, s.target)
 	claims, inv := ownerClaims(f.t, s.owner)
 	e, err := s.p.Mint(EvidenceInput{
-		Check: s.check, FindingID: s.finding, Severity: s.sev, Target: target, Claims: claims, Inventory: inv,
+		Check: s.check, FindingID: s.finding, Severity: s.sev, Target: target, Claims: claims, Inventory: inv, Attribution: testKind(s.check),
 		Observation: ObservationRef{Stream: string(s.p.ID()), Cursor: s.cursor, Version: 1},
 		ObservedAt:  t0.Add(-s.age), Parser: ParserRef{Name: "fixture", Version: 1},
 	})
@@ -145,7 +145,7 @@ func TestIngressRefusesInvalidSubmissions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	stranger, err := other.Register(ProducerSpec{ID: "stranger", Entry: EntryScan, Observation: ObservationLogCursor, Checks: []string{"ssh_brute"}})
+	stranger, err := other.Register(ProducerSpec{ID: "stranger", Entry: EntryScan, Observation: ObservationLogCursor, Checks: []string{"ssh_brute"}, Attribution: Attributions(testKind("ssh_brute"))})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,12 +155,12 @@ func TestIngressRefusesInvalidSubmissions(t *testing.T) {
 	wantReason(t, "stale evidence", f.in.Submit(stale), ReasonStale)
 	moved := f.sub(subSpec{})
 	moved.Target = mustAddr(t, "2001:db8::ffff")
-	wantReason(t, "evidence for another target", f.in.Submit(moved), ReasonInvalid)
+	wantReason(t, "evidence for another target", f.in.Submit(moved), ReasonAttribution)
 	unknown := f.sub(subSpec{})
 	unknown.Kind = 0
 	wantReason(t, "unknown kind", f.in.Submit(unknown), ReasonInvalid)
 	st := f.in.Stats()
-	for r, want := range map[Reason]uint64{ReasonPolicy: 1, ReasonStale: 1, ReasonInvalid: 2} {
+	for r, want := range map[Reason]uint64{ReasonPolicy: 1, ReasonStale: 1, ReasonInvalid: 1, ReasonAttribution: 1} {
 		if got := st.Counters.Count(CountKey{Event: EventRefused, Reason: r}); got != want {
 			t.Errorf("%s refusals = %d, want %d", r, got, want)
 		}
@@ -489,7 +489,7 @@ func TestIngressSnapshotOrderAndEnvelope(t *testing.T) {
 	}
 	moved := first
 	moved.Target = mustAddr(t, "2001:db8::ffff")
-	wantReason(t, "duplicate with another target", f.in.Submit(moved), ReasonInvalid)
+	wantReason(t, "duplicate with another target", f.in.Submit(moved), ReasonAttribution)
 	snapshot := *f.in.snap
 	f.publish(durable(1, aliceScope, c2h)...)
 	revision := f.in.revision

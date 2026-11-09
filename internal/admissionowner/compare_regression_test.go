@@ -29,7 +29,7 @@ func TestDecisionCountsIncludeTerminatedPreviews(t *testing.T) {
 	for i, addr := range []string{"192.0.2.10", "192.0.2.11"} {
 		finding := sshFinding(f.host.now(), addr, alert.High)
 		finding.SourceIP = addr
-		root, err := o.Mint(finding, addr)
+		root, err := o.Mint(finding)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -37,7 +37,7 @@ func TestDecisionCountsIncludeTerminatedPreviews(t *testing.T) {
 		if i == 0 {
 			ttl = time.Duration(1<<63 - 1)
 		}
-		if err := o.Respond(admission.KindBlockIP, root, admission.EntryIncident, ttl); err != nil {
+		if err := o.Respond(admission.KindBlockIP, targetOf(root), root, admission.EntryIncident, ttl); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -173,28 +173,28 @@ func TestDecisionCountsIncludeDisplacedMemoryMerges(t *testing.T) {
 				finding := sshFinding(f.host.now(), addr, alert.High)
 				finding.SourceIP = addr
 				var err error
-				last, err = o.Mint(finding, addr)
+				last, err = o.Mint(finding)
 				if err != nil {
 					t.Fatal(err)
 				}
-				if err := o.Respond(admission.KindBlockIP, last, 0); err != nil {
+				if err := o.Respond(admission.KindBlockIP, targetOf(last), last, 0); err != nil {
 					t.Fatal(err)
 				}
 			}
 			for range 2 {
-				if err := o.Respond(admission.KindBlockIP, last, 0); err != nil {
+				if err := o.Respond(admission.KindBlockIP, targetOf(last), last, 0); err != nil {
 					t.Fatal(err)
 				}
 			}
 			finding := sshFinding(f.host.now(), "offset=critical", alert.Critical)
-			root, err := o.Mint(finding, finding.SourceIP)
+			root, err := o.Mint(finding)
 			if err != nil {
 				t.Fatal(err)
 			}
 			// A wall step before the owner's next tick must date the loss by the
 			// funnel's hour, rather than its older queue snapshot.
 			f.host.advance(step)
-			if err := o.Respond(admission.KindBlockIP, root, 0); err != nil {
+			if err := o.Respond(admission.KindBlockIP, targetOf(root), root, 0); err != nil {
 				t.Fatal(err)
 			}
 			if n := o.ingress.Stats().Counters.Count(admission.CountKey{Event: admission.EventEnded, Reason: admission.ReasonQueueOverflow, Class: admission.ClassC2, Severity: admission.SeverityHigh}); n != 1 {

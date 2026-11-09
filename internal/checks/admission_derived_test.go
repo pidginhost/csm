@@ -16,6 +16,7 @@ func wpBruteForce(ip string) alert.Finding {
 	return alert.Finding{
 		Check: "wp_login_bruteforce", Severity: alert.Critical, SourceIP: ip, Message: "brute force", Timestamp: at,
 		Observation: alert.Observation{Producer: string(ProducerAccessLog), Stream: "access", Cursor: "offset=7", ObservedAt: at},
+		Attribution: admission.AttributionHTTPPeer,
 	}
 }
 
@@ -27,7 +28,7 @@ func TestApplyBlockAsksAdmissionThroughItsEntry(t *testing.T) {
 	a := withAdmission(t)
 	applyBlockTestSetup(t, &outcomeStubBlocker{outcome: firewall.BlockOutcomeLive})
 	cfg := pendingTestConfig(t)
-	root := realRoot(t, wpBruteForce("203.0.113.50"), "203.0.113.50")
+	root := realRoot(t, wpBruteForce("203.0.113.50"))
 	for _, req := range []ApplyBlockRequest{
 		{IP: "203.0.113.50", TTL: time.Hour, Source: BlockSourceChallenge, Root: root, Entry: admission.EntryChallengeTimeout},
 		{IP: "203.0.113.51", TTL: time.Hour, Source: BlockSourceIncident, Entry: admission.EntryIncident},
@@ -42,9 +43,9 @@ func TestApplyBlockAsksAdmissionThroughItsEntry(t *testing.T) {
 		t.Fatal("blocked with block_ips off")
 	}
 	want := []respondCall{
-		{kind: admission.KindBlockIP, check: "wp_login_bruteforce", target: "ip:203.0.113.50", cursor: "offset=7", via: admission.EntryChallengeTimeout, rooted: true},
-		{kind: admission.KindBlockIP, via: admission.EntryIncident},
-		{kind: admission.KindBlockIP, via: admission.EntryIncident},
+		{kind: admission.KindBlockIP, check: "wp_login_bruteforce", target: "203.0.113.50", cursor: "offset=7", via: admission.EntryChallengeTimeout, rooted: true},
+		{kind: admission.KindBlockIP, target: "203.0.113.51", via: admission.EntryIncident},
+		{kind: admission.KindBlockIP, target: "203.0.113.50", via: admission.EntryIncident},
 	}
 	if got := a.responses(); !sameResponses(got, want) {
 		t.Fatalf("responses = %+v, want %+v", got, want)
@@ -56,7 +57,7 @@ func TestApplyBlockAsksAdmissionThroughItsEntry(t *testing.T) {
 // or a finding admission could not mint, keeps none.
 func TestChallengeRouteKeepsItsRootForTheTimeout(t *testing.T) {
 	a := withAdmission(t)
-	a.mint = func(f alert.Finding, target string) admission.Evidence { return realRoot(t, f, target) }
+	a.mint = func(f alert.Finding) admission.Evidence { return realRoot(t, f) }
 	withBlocker(t)
 	list := &rootedIPList{mockIPList: mockIPList{ips: map[string]bool{}}, roots: map[string]admission.Evidence{}}
 	withChallengeList(t, list)
@@ -64,7 +65,7 @@ func TestChallengeRouteKeepsItsRootForTheTimeout(t *testing.T) {
 	cfg.Challenge.Enabled = true
 	f := wpBruteForce("203.0.113.60")
 	ChallengeRouteIPs(cfg, []alert.Finding{f})
-	if root, ok := list.roots["203.0.113.60"]; !ok || !root.Equal(realRoot(t, f, f.SourceIP)) {
+	if root, ok := list.roots["203.0.113.60"]; !ok || !root.Equal(realRoot(t, f)) {
 		t.Fatalf("roots = %+v", list.roots)
 	}
 	a.refuse = true

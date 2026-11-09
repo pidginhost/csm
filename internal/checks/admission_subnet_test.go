@@ -77,6 +77,7 @@ func sprayFinding(constituents int) alert.Finding {
 		f.SprayConstituents = append(f.SprayConstituents, alert.SprayConstituent{
 			Address: fmt.Sprintf("198.51.100.%d", i+1), LastSeen: at.Add(-time.Duration(constituents-i) * time.Second),
 			Observation: alert.Observation{Producer: string(ProducerMailLog), Stream: "maillog", Cursor: fmt.Sprintf("line-%02d", i+1), ObservedAt: at.Add(-time.Duration(constituents-i) * time.Second)},
+			Attribution: admission.AttributionPeer,
 		})
 	}
 	return f
@@ -108,8 +109,32 @@ func TestMailSprayAsksAdmissionForItsSubnet(t *testing.T) {
 	}
 }
 
-// A spray recorded before its constituents were kept answers its own
-// observation.
+// Each root is the counted address as its tracker read it, not the spray:
+// the evidence names the address and the response names the prefix that
+// holds it.
+func TestMailSprayRootsNameTheirAddresses(t *testing.T) {
+	a := withAdmission(t)
+	withBlocker(t)
+	withChallengeList(t, nil)
+	var roots []string
+	a.mint = func(f alert.Finding) admission.Evidence {
+		roots = append(roots, f.SourceIP+"/"+f.Attribution.String())
+		return admission.Evidence{}
+	}
+	AutoBlockIPs(liveAutoBlockConfig(t), []alert.Finding{sprayFinding(3)})
+	want := []string{"198.51.100.3/peer", "198.51.100.2/peer", "198.51.100.1/peer"}
+	if fmt.Sprint(roots) != fmt.Sprint(want) {
+		t.Fatalf("roots %v, want %v", roots, want)
+	}
+	for _, c := range a.responses() {
+		if c.target != "198.51.100.0/24" {
+			t.Fatalf("response target %q, want the prefix", c.target)
+		}
+	}
+}
+
+// A spray recorded before its constituents were kept names no address of
+// its own; the funnel still hands it over and admission refuses it.
 func TestMailSprayWithoutConstituentsAnswersItsOwnObservation(t *testing.T) {
 	a := withAdmission(t)
 	withBlocker(t)

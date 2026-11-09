@@ -30,6 +30,7 @@ type compareKey struct {
 	kind       admission.Kind
 	decision   string
 	reason     admission.Reason
+	cause      admission.Cause
 	prediction admission.Prediction
 }
 
@@ -107,6 +108,9 @@ func (c *comparison) closeHour() {
 		}
 		if k.reason != 0 {
 			r.Error = k.reason.String()
+		}
+		if k.cause != 0 {
+			r.Cause = k.cause.String()
 		}
 		if k.prediction != 0 {
 			r.Prediction = k.prediction.String()

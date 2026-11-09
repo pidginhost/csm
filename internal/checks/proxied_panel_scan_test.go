@@ -211,7 +211,7 @@ func TestDomlogProxiedPanelSessionStaysOneFamily(t *testing.T) {
 				sev = admission.SeverityCritical
 			}
 			root, mintErr := prod.Mint(admission.EvidenceInput{
-				Check: finding.Check, FindingID: "0123456789abcdef", Severity: sev,
+				Check: finding.Check, FindingID: "0123456789abcdef", Severity: sev, Attribution: rowKind(finding.Check),
 				Observation: admission.ObservationRef{Stream: "fixture-" + finding.Check, Cursor: fmt.Sprint(i), Version: 1},
 				ObservedAt:  at, Parser: admission.ParserRef{Name: "fixture", Version: 1}, Target: target,
 			})

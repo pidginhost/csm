@@ -56,7 +56,7 @@ func TestAdmissionLedgerEnqueueRefusals(t *testing.T) {
 	wantLedgerReason(t, "unpublished root", err, admission.ReasonInvalid)
 	other := f.published(evidenceSpec{target: "198.51.100.7", cursor: "offset=9"})
 	_, _, err = f.l.Enqueue(f.request("192.0.2.10", other))
-	wantLedgerReason(t, "root for another target", err, admission.ReasonInvalid)
+	wantLedgerReason(t, "root for another target", err, admission.ReasonAttribution)
 	var many []admission.EvidenceID
 	for i := 0; i <= admission.MaxRoots; i++ {
 		many = append(many, f.published(evidenceSpec{cursor: "offset=" + string(rune('a'+i))}))

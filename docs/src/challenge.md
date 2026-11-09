@@ -75,7 +75,9 @@ The listener binds to `127.0.0.1` by default, so enabling the challenge
 server alone does not expose a new public port. The webserver integration
 uses direct redirects to `challenge.public_url`; installed direct mode
 therefore needs a non-loopback listener and a public URL ending in
-`/challenge`.
+`/challenge`. A loopback listener is accepted only behind your own proxy on
+this host, with the listener's address in `trusted_proxies` (see
+[Trusted Proxies](#trusted-proxies)).
 
 ```yaml
 challenge:
@@ -154,6 +156,19 @@ contains only trusted proxies, challenge endpoints return HTTP 400. They do
 not issue a puzzle or cookie, accept a bypass, or clear a pending challenge
 for the proxy. This also applies to the gate and admin-token endpoints.
 
+With `trusted_proxies` set, point `challenge.public_url` at the proxy. A
+proxy on this host may front a loopback listener when the listener's own
+address is in the list, since that is the address the proxy connects from.
+`localhost` and an empty `listen_addr` mean `127.0.0.1`; write `::1` for
+IPv6 loopback. `listen_addr` holds a host only; the port goes in
+`listen_port`.
+
+`csm doctor challenge` leaves TLS to the proxy and does not ask for the
+port gate. It does not check the proxy itself, so confirm HTTPS works at
+`public_url` and keep `listen_port` closed to everything except the proxy.
+A `public_url` that names the listener's own address and port is direct
+mode, and the usual TLS and port-gate checks apply.
+
 Without `trusted_proxies`, X-Forwarded-For is ignored to prevent IP spoofing.
 
 ### Successful Verification
@@ -175,7 +190,8 @@ for IPs currently on the challenge list; anyone else gets 404.
 The webserver integration redirects challenge-listed IPs to
 `challenge.public_url`. The installer refuses to run until that URL is
 an absolute `http` or `https` URL ending in `/challenge`, and the
-configured challenge listener is non-loopback.
+configured challenge listener is non-loopback or fronted by a trusted proxy
+on this host.
 
 ```bash
 csm webserver-integration install     # initial wire-up

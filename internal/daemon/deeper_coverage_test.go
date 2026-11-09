@@ -1180,7 +1180,7 @@ func TestParseEximLogLine_BulkMailService(t *testing.T) {
 	cfg.EmailProtection.RateCritThreshold = 200
 	cfg.EmailProtection.RateWindowMin = 60
 
-	line := `2026-04-12 10:00:00 1abc23 <= spammer@example.com H=truelist.io [203.0.113.5] P=esmtpsa A=dovecot_login:spammer@example.com S=500 T="spam"`
+	line := `2026-04-12 10:00:00 1abc23-000456-AB <= spammer@example.com H=truelist.io [203.0.113.5] P=esmtpsa A=dovecot_login:spammer@example.com S=500 T="spam"`
 
 	findings := parseEximLogLine(line, cfg)
 	var found bool
