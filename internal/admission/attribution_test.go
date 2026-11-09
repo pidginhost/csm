@@ -116,11 +116,24 @@ func newRegistryWith(t *testing.T, policies map[string]Policy) *Registry {
 
 // The policy lookup is outside admission; a row accepting a kind its family
 // cannot carry, or an unknown kind, registers no producer.
+func TestAttributionsPreservesInvalidKinds(t *testing.T) {
+	for n := 0; n <= 255; n++ {
+		kind := Attribution(n)
+		if kind.Valid() {
+			continue
+		}
+		if Attributions(kind).Valid() || Attributions(AttributionPeer, kind).Valid() {
+			t.Errorf("invalid kind %d became a valid declaration", n)
+		}
+	}
+}
+
 func TestRegisterRefusesAPolicyAcceptingAKindOutsideItsFamily(t *testing.T) {
 	for name, row := range map[string]AttributionSet{
 		"http peer for ssh": Attributions(AttributionPeer, AttributionHTTPPeer),
 		"unknown kind":      1,
 		"kind past the end": 1 << 7,
+		"missing kind":      0,
 	} {
 		reg := newRegistryWith(t, map[string]Policy{"ssh_brute": {Family: FamilySSH, Basis: BasisLocal, Attribution: row}})
 		if _, err := reg.Register(ProducerSpec{ID: "sshd", Entry: EntryScan, Observation: ObservationLogCursor,

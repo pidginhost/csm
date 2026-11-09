@@ -134,7 +134,7 @@ func (r *Registry) Register(spec ProducerSpec) (*Producer, error) {
 			return nil, fmt.Errorf("producer check carries no admissible address evidence")
 		}
 		if err := ValidPolicy(p.Family, p.Basis); err != nil || (p.MinSeverity != 0 && !p.MinSeverity.Valid()) ||
-			!p.Attribution.Valid() || !p.Attribution.Within(p.Family.Attributions()) {
+			p.Attribution == 0 || !p.Attribution.Valid() || !p.Attribution.Within(p.Family.Attributions()) {
 			return nil, fmt.Errorf("producer check has an invalid evidence policy")
 		}
 		if !spec.Attribution.Within(p.Attribution) {

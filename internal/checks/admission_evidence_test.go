@@ -131,3 +131,69 @@ func TestAdmissionRefusesAFindingWithoutAttribution(t *testing.T) {
 		t.Fatalf("an sshd peer: %v", err)
 	}
 }
+
+// The relay's client address is a mail header: it mints nothing, and
+// evidence a build that once trusted it retained is refused on use.
+func TestPHPRelayCannotMintOrReuseEvidence(t *testing.T) {
+	reg, err := admission.NewRegistry(AdmissionPolicy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var relay *admission.Producer
+	for _, row := range ProducerTable() {
+		p, registerErr := reg.Register(row.Spec)
+		if registerErr != nil {
+			t.Fatal(registerErr)
+		}
+		if row.Spec.ID == ProducerPHPRelaySpool {
+			relay = p
+		}
+	}
+	if relay == nil {
+		t.Fatal("PHP relay producer is missing")
+	}
+	reg.Seal()
+	f := observedSSHLogin()
+	f.Check = "email_php_form_relay"
+	f.Observation.Producer = string(ProducerPHPRelaySpool)
+	f.Claims = nil
+	f.Attribution = admission.AttributionHTTPPeer
+	target, err := AdmissionTarget(f.SourceIP, admission.Caps{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, in, err := AdmissionEvidence(f, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e, err := relay.Mint(in)
+	wantAdmissionReason(t, "PHP relay mint", err, admission.ReasonAttribution)
+	if !e.Equal(admission.Evidence{}) {
+		t.Error("PHP relay minted evidence from a mail header")
+	}
+
+	// Model evidence from a registry that used to trust the relay address.
+	old, err := admission.NewRegistry(AdmissionPolicy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec, _ := reg.Spec(ProducerPHPRelaySpool)
+	spec.Attribution = admission.Attributions(admission.AttributionHTTPPeer)
+	p, err := old.Register(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e, err = p.Mint(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := e.MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	e, err = admission.UnmarshalEvidence(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantAdmissionReason(t, "retained PHP relay evidence", reg.Validate(e), admission.ReasonAttribution)
+}

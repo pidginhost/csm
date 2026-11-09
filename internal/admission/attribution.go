@@ -48,10 +48,14 @@ func (a Attribution) String() string {
 // or the kinds a producer mints.
 type AttributionSet uint8
 
-// Attributions returns the set of kinds.
+// Attributions returns the set of kinds, or an invalid set if any kind is
+// invalid: a kind past the bitset must not vanish into a valid set.
 func Attributions(kinds ...Attribution) AttributionSet {
 	var s AttributionSet
 	for _, k := range kinds {
+		if !k.Valid() {
+			return 1
+		}
 		s |= 1 << k
 	}
 	return s
