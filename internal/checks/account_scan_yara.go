@@ -56,9 +56,9 @@ func checkAccountYARA(ctx context.Context, cfg *config.Config, _ *state.Store) [
 	// Raster images go in a second pass: a shop's product photos can sort
 	// before its code folders and use up the whole time budget.
 	imagesPass := false
-	// Revisiting covered code-only folders can exhaust the image budget or
-	// report unfinished work after the last image has already been scanned.
-	imageDirs := make(map[string]bool)
+	// Retain deferred entries, not just their directories: a fresh listing
+	// would silently lose images removed or replaced between passes.
+	imageEntries := make(map[string][]os.DirEntry)
 	codeGaps := false
 	stopped := false
 	stop := func(path string) bool {
@@ -92,17 +92,17 @@ func checkAccountYARA(ctx context.Context, cfg *config.Config, _ *state.Store) [
 	var walk func(dir string, pinned *safepath.Dir)
 	walk = func(dir string, pinned *safepath.Dir) {
 		defer func() { _ = pinned.Close() }()
-		entries, err := pinned.ReadDir()
-		if err != nil {
-			locationGap(dir, fmt.Sprintf("reading %s: %v", dir, err))
+		entries := imageEntries[dir]
+		if !imagesPass {
+			var err error
+			entries, err = pinned.ReadDir()
+			if err != nil {
+				locationGap(dir, fmt.Sprintf("reading %s: %v", dir, err))
+			}
+			sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
 		}
-		sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
 		for _, entry := range entries {
 			path := filepath.Join(dir, entry.Name())
-			if imagesPass && !imageDirs[path] &&
-				(!entry.Type().IsRegular() || !contenttype.IsImageExt(filepath.Ext(entry.Name()))) {
-				continue
-			}
 			if respectIgnores && ignoredPath(cfg, path) {
 				continue
 			}
@@ -112,7 +112,7 @@ func checkAccountYARA(ctx context.Context, cfg *config.Config, _ *state.Store) [
 			// A symlink is neither entered nor scanned: its target is not
 			// necessarily the account's and may be anywhere on the host.
 			switch {
-			case entry.IsDir() || imageDirs[path]:
+			case entry.IsDir():
 				// Replaced image directories must fail the pinned walk
 				// instead of disappearing from the coverage report.
 				child, err := pinned.Walk(entry.Name())
@@ -121,13 +121,13 @@ func checkAccountYARA(ctx context.Context, cfg *config.Config, _ *state.Store) [
 					continue
 				}
 				walk(path, child)
-				if imageDirs[path] {
-					imageDirs[dir] = true
+				if !imagesPass && len(imageEntries[path]) > 0 {
+					imageEntries[dir] = append(imageEntries[dir], entry)
 				}
 			case entry.Type().IsRegular():
 				isImage := contenttype.IsImageExt(filepath.Ext(entry.Name()))
-				if isImage {
-					imageDirs[dir] = true
+				if isImage && !imagesPass {
+					imageEntries[dir] = append(imageEntries[dir], entry)
 				}
 				if isImage != imagesPass {
 					continue
@@ -140,7 +140,7 @@ func checkAccountYARA(ctx context.Context, cfg *config.Config, _ *state.Store) [
 	}
 
 	scanHome := func(homePath string) {
-		if imagesPass && !imageDirs[homePath] {
+		if imagesPass && len(imageEntries[homePath]) == 0 {
 			return
 		}
 		if stop(homePath) {
@@ -152,19 +152,19 @@ func checkAccountYARA(ctx context.Context, cfg *config.Config, _ *state.Store) [
 			return
 		}
 		defer func() { _ = pinned.Close() }()
-		entries, err := pinned.ReadDir()
-		if err != nil {
-			locationGap(homePath, fmt.Sprintf("reading %s: %v", homePath, err))
+		entries := imageEntries[homePath]
+		if !imagesPass {
+			entries, err = pinned.ReadDir()
+			if err != nil {
+				locationGap(homePath, fmt.Sprintf("reading %s: %v", homePath, err))
+			}
+			sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
 		}
-		sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
 		for _, entry := range entries {
 			if !accountContentDir(entry.Name()) {
 				continue
 			}
 			root := filepath.Join(homePath, entry.Name())
-			if imagesPass && !imageDirs[root] {
-				continue
-			}
 			if stop(root) {
 				break
 			}
@@ -173,11 +173,11 @@ func checkAccountYARA(ctx context.Context, cfg *config.Config, _ *state.Store) [
 			}
 			switch {
 			case entry.Type()&os.ModeSymlink != 0:
-				if entry.Name() == "public_html" || imagesPass {
+				if entry.Name() == "public_html" {
 					locationGap(root, fmt.Sprintf("%s is a symbolic link and was not followed", root))
 				}
 				continue
-			case !entry.IsDir() && !imagesPass:
+			case !entry.IsDir():
 				continue
 			}
 			child, err := pinned.Walk(entry.Name())
@@ -186,8 +186,8 @@ func checkAccountYARA(ctx context.Context, cfg *config.Config, _ *state.Store) [
 				continue
 			}
 			walk(root, child)
-			if imageDirs[root] {
-				imageDirs[homePath] = true
+			if !imagesPass && len(imageEntries[root]) > 0 {
+				imageEntries[homePath] = append(imageEntries[homePath], entry)
 			}
 		}
 	}
@@ -197,7 +197,7 @@ func checkAccountYARA(ctx context.Context, cfg *config.Config, _ *state.Store) [
 	}
 	for _, imagesPass = range []bool{false, true} {
 		if imagesPass {
-			if len(imageDirs) == 0 {
+			if len(imageEntries) == 0 {
 				break
 			}
 			codeGaps = !gaps.empty()

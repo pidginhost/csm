@@ -46,6 +46,8 @@ Exit status 3 also covers scanner timeouts, scanner failures, skipped files, mis
 
 An image-pass timeout claims only images remain when the earlier pass had no coverage gaps.
 
+Images that disappear or become unreadable before the image pass are reported as coverage gaps, including missing or replaced directories.
+
 Passwd home fallback accepts an account-named directory directly under a sibling
 home volume, such as `/home2`, and rejects symlinked volumes and homes. Arbitrary
 passwd locations outside this boundary are not used for account scans.

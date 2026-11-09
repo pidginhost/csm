@@ -23,6 +23,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Security
 
+- Full scans report incomplete coverage for images that disappear or become unreadable while the scan is running.
 - PHP scans detect disguised request input, keep quoted examples quiet, and preserve reported source locations.
 - The challenge server no longer starts when `challenge.trusted_proxies` covers an address of this host, so suspicious addresses get your normal response instead. Use the challenge socket or direct mode.
 - Mail that crashes, exhausts or stalls the attachment unpacker is now deferred instead of delivered unscanned, even with `email_av.fail_mode: open`; observe mode still delivers it.

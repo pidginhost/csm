@@ -614,3 +614,52 @@ func TestAccountYARAImagePassDoesNotStopOnIgnoredImage(t *testing.T) {
 		t.Fatalf("reported a gap outside the requested scope: %+v", gap)
 	}
 }
+
+// Entries deferred in the code pass must not silently disappear when the
+// tenant changes the tree before the image pass starts.
+func TestAccountYARAImagePassReportsLostEntries(t *testing.T) {
+	for _, target := range []string{"image", "directory", "docroot"} {
+		for _, replacement := range []string{"missing", "symlink", "directory"} {
+			t.Run(target+"/"+replacement, func(t *testing.T) {
+				base := t.TempDir()
+				root := filepath.Join(base, "home")
+				withAccountHomeRoots(t, root)
+				image := writeYARADeepFile(t, root, "alice/a.example/images/a.jpg", "deferred image")
+				writeYARADeepFile(t, root, "alice/public_html/z.php", "code")
+				outside := writeYARADeepFile(t, base, "outside/a.jpg", "outside account")
+				path := image
+				if target != "image" {
+					path = filepath.Dir(path)
+				}
+				if target == "docroot" {
+					path = filepath.Dir(path)
+				}
+				backend := useCountingYARABackend(t)
+				backend.onScan = func() {
+					backend.onScan = nil
+					if err := os.Rename(path, filepath.Join(base, "moved")); err != nil {
+						t.Fatal(err)
+					}
+					switch replacement {
+					case "symlink":
+						if err := os.Symlink(outside, path); err != nil {
+							t.Fatal(err)
+						}
+					case "directory":
+						if err := os.Mkdir(path, 0o700); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+				findings := checkAccountYARA(fullAccountYARAContext("alice", FullScanOptions(nil, false)), &config.Config{}, nil)
+				if scans := backend.scans(); len(scans) != 1 || scans[0] != "code" {
+					t.Fatalf("scanned replacement contents: %q", scans)
+				}
+				gap := findingByCheck(findings, "yara_scan_incomplete")
+				if !strings.Contains(gap.Details, path) {
+					t.Fatalf("lost deferred entry without a coverage gap: %+v", findings)
+				}
+			})
+		}
+	}
+}
