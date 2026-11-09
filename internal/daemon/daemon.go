@@ -2017,9 +2017,7 @@ func (d *Daemon) criticalScanner() {
 	}
 }
 
-// deepScanner runs deep checks at the configured interval (default 60 min).
-// If fanotify is active, runs only the checks it can't replace (reduced set).
-// If fanotify is NOT active (fallback mode), runs the full deep tier for timer-mode parity.
+// deepScanner runs the deep tier at the configured interval (default 60 min).
 func (d *Daemon) deepScanner() {
 	defer d.wg.Done()
 
@@ -2061,19 +2059,13 @@ func (d *Daemon) deepScanner() {
 				adb.PruneExpired()
 			}
 
-			// If fanotify is active, only run checks it can't replace.
-			// If fanotify is NOT active, run the full deep tier. A rescan
-			// queued by a rules update needs neither: both sets include the
-			// rolling YARA walk, which tracks and clears it.
+			// The full deep tier runs whether or not the file monitor is
+			// attached; the monitor misses renames, chmod and probe-only
+			// findings. A rescan queued by a rules update needs nothing extra:
+			// the rolling YARA walk in this tier tracks and clears it.
 			cfg := d.currentCfg()
 			scanCtx, gaps := checks.WithCoverageGaps(d.scanContext())
-			var findings []alert.Finding
-			var purgeChecks []string
-			if d.getFileMonitor() != nil {
-				findings, purgeChecks = checks.RunReducedDeepWithContext(scanCtx, cfg, d.store)
-			} else {
-				findings, purgeChecks = checks.RunTierWithContext(scanCtx, cfg, d.store, checks.TierDeep)
-			}
+			findings, purgeChecks := checks.RunTierWithContext(scanCtx, cfg, d.store, checks.TierDeep)
 			d.processScanFindingsWithCoverage(cfg, findings, purgeChecks, gaps.Snapshot(), "deep")
 		}
 	}

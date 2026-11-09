@@ -10,54 +10,52 @@ import (
 	"github.com/pidginhost/csm/internal/state"
 )
 
-func reducedDeepCheckNames() map[string]bool {
+func deepCheckNames() map[string]bool {
 	names := map[string]bool{}
-	for _, nc := range reducedDeepChecks() {
+	for _, nc := range deepChecks() {
 		names[nc.name] = true
 	}
 	return names
 }
 
-// The reduced deep tier drops the filesystem checks the realtime monitor is
-// assumed to cover, but the fanotify mask carries no FAN_MOVED_TO on any kernel
-// and loses FAN_CREATE on EL8. A file renamed into place - an unpacked archive,
-// a staged install, most droppers - raises no event, so the periodic content
-// scans are the only thing that ever meets it. This is the same reasoning that
-// already keeps the rolling PHP content scan and the file index in this tier.
-func TestReducedDeepTierKeepsRenameBlindContentScans(t *testing.T) {
-	names := reducedDeepCheckNames()
+// The deep tier also runs while the realtime file monitor is attached, and the
+// fanotify mask carries no FAN_MOVED_TO on any kernel and loses FAN_CREATE on
+// EL8. A file renamed into place - an unpacked archive, a staged install, most
+// droppers - raises no event, so the periodic content scans are the only thing
+// that ever meets it.
+func TestDeepTierKeepsRenameBlindContentScans(t *testing.T) {
+	names := deepCheckNames()
 	for _, want := range []string{"webshells", "htaccess", "phishing"} {
 		if !names[want] {
-			t.Errorf("reduced deep tier omits %q: a file renamed into place is never scanned while the file monitor is active", want)
+			t.Errorf("deep tier omits %q: a file renamed into place is never scanned while the file monitor is active", want)
 		}
 	}
 }
 
 // filesystem is worse than rename-blind: it reports a setuid binary from the
 // file mode, and chmod raises no close-write event at all, so no realtime path
-// can ever observe one. Dropping this check from the tier the daemon actually
-// runs leaves setuid detection with no coverage whatsoever.
-func TestReducedDeepTierKeepsFilesystem(t *testing.T) {
-	if !reducedDeepCheckNames()["filesystem"] {
-		t.Fatal("reduced deep tier omits filesystem: a setuid binary is set by chmod, which raises no file-monitor event, so nothing else reports it")
+// can ever observe one.
+func TestDeepTierKeepsFilesystem(t *testing.T) {
+	if !deepCheckNames()["filesystem"] {
+		t.Fatal("deep tier omits filesystem: a setuid binary is set by chmod, which raises no file-monitor event, so nothing else reports it")
 	}
 }
 
 // exposed_files confirms a finding with a live request to the vhost, so no file
 // event can stand in for it either. It has no realtime counterpart at all.
-func TestReducedDeepTierKeepsExposedFiles(t *testing.T) {
-	if !reducedDeepCheckNames()["exposed_files"] {
-		t.Fatal("reduced deep tier omits exposed_files: an exposed backup or dump is only confirmed by probing the vhost, which no file event replaces")
+func TestDeepTierKeepsExposedFiles(t *testing.T) {
+	if !deepCheckNames()["exposed_files"] {
+		t.Fatal("deep tier omits exposed_files: an exposed backup or dump is only confirmed by probing the vhost, which no file event replaces")
 	}
 }
 
 // A tier that runs a check must also be able to retire what it emitted, or a
 // finding whose file is gone stays in the latest set forever.
-func TestLatestPurgeCheckNamesForReducedDeepCoversRestoredChecks(t *testing.T) {
-	names := LatestPurgeCheckNamesForReducedDeep()
+func TestLatestPurgeCheckNamesForDeepCoversRestoredChecks(t *testing.T) {
+	names := LatestPurgeCheckNamesForTier(TierDeep)
 	for _, want := range []string{"suid_binary", "backdoor_binary", "webshell", "htaccess_injection", "phishing_page", "web_exposed_db_dump"} {
 		if !slices.Contains(names, want) {
-			t.Errorf("reduced deep purge names missing %q", want)
+			t.Errorf("deep purge names missing %q", want)
 		}
 	}
 }
@@ -65,7 +63,7 @@ func TestLatestPurgeCheckNamesForReducedDeepCoversRestoredChecks(t *testing.T) {
 // exposed_files confirms every candidate with a live request to the customer's
 // vhost. Running it on each deep cycle would multiply that traffic against
 // customer sites for findings the registry classes as posture, which do not
-// change between cycles. It is throttled instead, so restoring it to the tier
+// change between cycles. It is throttled instead, so keeping it in the tier
 // buys deterministic coverage without raising the probe rate.
 func TestExposedFilesIsThrottled(t *testing.T) {
 	min, ok := checkThrottleMin["exposed_files"]

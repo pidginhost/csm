@@ -252,8 +252,8 @@ func TestExposedFilesRootAbsencePurgeAndThrottle(t *testing.T) {
 			defer func() { _ = st.Close() }()
 			prior := alert.Finding{Check: "web_exposed_db_dump", FilePath: filepath.Join(root, "backup.sql"), Message: "prior exposure", Severity: alert.Critical}
 			st.SetLatestFindings([]alert.Finding{prior})
-			for i, tier := range []string{"deep", "reduced"} {
-				findings, purge := runParallel(&config.Config{}, st, []namedCheck{{"exposed_files", CheckExposedFiles}}, tier, true)
+			for i := range 2 {
+				findings, purge := runParallel(&config.Config{}, st, []namedCheck{{"exposed_files", CheckExposedFiles}}, "deep", true)
 				StoreLatestScanFindings(st, purge, findings)
 				if got := slices.Contains(purge, prior.Check); got != (!symlink && i == 0) {
 					t.Fatalf("cycle %d purge=%v, want exposure purge only on the first confirmed absence", i, purge)

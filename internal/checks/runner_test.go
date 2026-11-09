@@ -83,9 +83,6 @@ func TestRunnerFindingNamesMatchesRegisteredRunnersAndChecks(t *testing.T) {
 	for _, nc := range deepChecks() {
 		runners[nc.name] = struct{}{}
 	}
-	for _, nc := range reducedDeepChecks() {
-		runners[nc.name] = struct{}{}
-	}
 
 	for runner, findings := range runnerFindingNames {
 		if _, ok := runners[runner]; !ok {
@@ -151,20 +148,20 @@ func TestLatestPurgeCheckNamesForTierCriticalIncludesEmittedNames(t *testing.T) 
 	}
 }
 
-// The reduced tier owns the emitted names of every check it schedules, down to
+// The deep tier owns the emitted names of every check it schedules, down to
 // the per-run coverage summaries, so a run in this tier can retire what an
 // earlier one left behind. The names of the filesystem checks it also runs are
-// pinned separately, in reduced_tier_filesystem_test.go.
-func TestLatestPurgeCheckNamesForReducedDeepCoversScheduledChecks(t *testing.T) {
-	names := LatestPurgeCheckNamesForReducedDeep()
+// pinned separately, in deep_tier_filesystem_test.go.
+func TestLatestPurgeCheckNamesForDeepCoversScheduledChecks(t *testing.T) {
+	names := LatestPurgeCheckNamesForTier(TierDeep)
 	if !slices.Contains(names, "outdated_plugins") {
-		t.Fatalf("reduced deep purge names missing outdated_plugins")
+		t.Fatalf("deep purge names missing outdated_plugins")
 	}
 	if !slices.Contains(names, "php_config_change") {
-		t.Fatalf("reduced deep purge names missing php_config_change")
+		t.Fatalf("deep purge names missing php_config_change")
 	}
 	if !slices.Contains(names, "php_config_scan_incomplete") {
-		t.Fatalf("reduced deep purge names missing php_config_scan_incomplete")
+		t.Fatalf("deep purge names missing php_config_scan_incomplete")
 	}
 }
 

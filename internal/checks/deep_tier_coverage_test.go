@@ -79,7 +79,7 @@ func TestRestoredScansPreserveFindingsOnReadFailure(t *testing.T) {
 				defer func() { _ = st.Close() }()
 				prior := alert.Finding{Check: tc.finding, FilePath: path, Message: "prior detection", Severity: alert.Critical}
 				st.SetLatestFindings([]alert.Finding{prior})
-				checks := reducedDeepChecks()
+				checks := deepChecks()
 				for i := range checks {
 					if checks[i].name != tc.name {
 						checks[i].fn = func(context.Context, *config.Config, *state.Store) []alert.Finding { return nil }
@@ -123,8 +123,8 @@ func TestExposedFilesIncompleteRunRetriesAcrossTiers(t *testing.T) {
 		}
 		return nil
 	}}
-	for _, tier := range []string{"reduced", "deep", "reduced"} {
-		runParallel(&config.Config{}, st, []namedCheck{check}, tier, true)
+	for range 3 {
+		runParallel(&config.Config{}, st, []namedCheck{check}, "deep", true)
 	}
 	if runs != 2 {
 		t.Fatalf("runs=%d, want incomplete attempt, successful retry, then throttle skip", runs)
@@ -252,7 +252,7 @@ func TestHtaccessRegistryReadFailurePreservesFinding(t *testing.T) {
 	}
 }
 
-func TestReducedDeepSharedFindingsRequireEveryOwner(t *testing.T) {
+func TestDeepSharedFindingsRequireEveryOwner(t *testing.T) {
 	for _, partial := range []string{"php_content", "file_index"} {
 		t.Run(partial, func(t *testing.T) {
 			st, err := state.Open(t.TempDir())
@@ -262,7 +262,7 @@ func TestReducedDeepSharedFindingsRequireEveryOwner(t *testing.T) {
 			defer func() { _ = st.Close() }()
 			prior := alert.Finding{Check: "obfuscated_php", FilePath: "/home/alice/public_html/payload.php", Message: "prior detection"}
 			st.SetLatestFindings([]alert.Finding{prior})
-			checks := reducedDeepChecks()
+			checks := deepChecks()
 			incomplete := true
 			for i := range checks {
 				name := checks[i].name

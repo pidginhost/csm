@@ -61,7 +61,7 @@ func runFileIndexLifecycleScan(cfg *config.Config, st *state.Store) {
 	StoreLatestScanFindingsWithCoverage(st, purge, findings, gaps.Snapshot())
 }
 
-func TestReducedFileIndexFindingsSurviveBaselineAndRetireAfterRemoval(t *testing.T) {
+func TestFileIndexFindingsSurviveBaselineAndRetireAfterRemoval(t *testing.T) {
 	cfg, st, uploads := fileIndexLifecycleFixture(t)
 	runFileIndexLifecycleScan(cfg, st)
 	paths := map[string]string{
@@ -108,7 +108,7 @@ func TestReducedFileIndexFindingsSurviveBaselineAndRetireAfterRemoval(t *testing
 	}
 }
 
-func TestReducedFileIndexCachedShrinkPromotesAfterConsecutiveWalks(t *testing.T) {
+func TestFileIndexCachedShrinkPromotesAfterConsecutiveWalks(t *testing.T) {
 	cfg, st, uploads := fileIndexLifecycleFixture(t)
 	for i := 0; i < 12; i++ {
 		if err := os.WriteFile(filepath.Join(uploads, fmt.Sprintf("f%02d.php", i)), []byte("<?php"), 0600); err != nil {
@@ -140,7 +140,7 @@ func TestReducedFileIndexCachedShrinkPromotesAfterConsecutiveWalks(t *testing.T)
 	}
 }
 
-func TestReducedFileIndexForcesSixthWalkDespiteUnchangedMtime(t *testing.T) {
+func TestFileIndexForcesSixthWalkDespiteUnchangedMtime(t *testing.T) {
 	cfg, st, uploads := fileIndexLifecycleFixture(t)
 	runFileIndexLifecycleScan(cfg, st)
 	info, err := os.Stat(uploads)
@@ -163,7 +163,7 @@ func TestReducedFileIndexForcesSixthWalkDespiteUnchangedMtime(t *testing.T) {
 	}
 }
 
-func TestReducedFileIndexSharedFindingsRequireBothOwnersToComplete(t *testing.T) {
+func TestFileIndexSharedFindingsRequireBothOwnersToComplete(t *testing.T) {
 	for _, incomplete := range []string{"file_index", "php_content"} {
 		t.Run(incomplete, func(t *testing.T) {
 			_, st, _ := fileIndexLifecycleFixture(t)
@@ -196,7 +196,7 @@ func TestReducedFileIndexSharedFindingsRequireBothOwnersToComplete(t *testing.T)
 	}
 }
 
-func TestReducedFileIndexRetainsUnreadableActiveContent(t *testing.T) {
+func TestFileIndexRetainsUnreadableActiveContent(t *testing.T) {
 	for _, dir := range []string{"uploads", "languages"} {
 		t.Run(dir, func(t *testing.T) {
 			cfg, st, uploads := fileIndexLifecycleFixture(t)
