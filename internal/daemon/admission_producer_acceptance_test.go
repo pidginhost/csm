@@ -114,7 +114,7 @@ func TestProducerAcceptanceMailHeuristicsWithoutAddress(t *testing.T) {
 		name, line, mailbox, domain string
 	}{
 		{"hold", `2026-10-02 12:00:00 Sender office@example.com has an outgoing mail hold`, "office@example.com", "example.com"},
-		{"bulk", `2026-10-02 12:00:00 1abc23 <= bulk@example.org H=truelist.io [192.0.2.5] P=esmtpsa A=dovecot_login:bulk@example.org S=500 T="news"`, "bulk@example.org", "example.org"},
+		{"bulk", `2026-10-02 12:00:00 1abc23-000456-AB <= bulk@example.org H=truelist.io [192.0.2.5] P=esmtpsa A=dovecot_login:bulk@example.org S=500 T="news"`, "bulk@example.org", "example.org"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			f := onlyCheck(t, parseEximLogLine(c.line, cfg), "email_compromised_account")
