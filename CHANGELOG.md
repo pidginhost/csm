@@ -11,6 +11,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Added
 
+- The challenge server can listen on a Unix socket that only your proxy's group can open, for a proxy on the same host.
 - Admission refusal summaries in the action log name why an address was not attributed: no observation, unaccepted kind or target mismatch.
 
 ### Changed
@@ -20,6 +21,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Security
 
+- The challenge server no longer starts when `challenge.trusted_proxies` covers an address of this host, so suspicious addresses get your normal response instead. Use the challenge socket or direct mode.
 - Mail that crashes, exhausts or stalls the attachment unpacker is now deferred instead of delivered unscanned, even with `email_av.fail_mode: open`; observe mode still delivers it.
 - A remote sender can no longer get a hosted mailbox reported as compromised through the wording of an email subject.
 - An unban request for one address no longer lifts a subnet block an operator added, and says when the address stays blocked or a subnet cannot be removed.
@@ -28,9 +30,8 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 - Framework classes that handle admin uploads no longer raise Critical dropper alerts.
 - Incident correlation now follows `reputation.whitelist` changes on reload, and matches IPv6 entries however the address is written.
-- The webserver integration installs with a loopback challenge listener behind your own proxy when `challenge.trusted_proxies` lists the listener's address.
 - Addresses the firewall never blocks, such as `firewall.infra_ips` entries and infra hostnames, are no longer sent to the challenge page.
-- `csm doctor challenge` no longer fails the gate check, or asks for listener TLS and the port gate, when the listener sits behind `challenge.trusted_proxies`.
+- `csm doctor challenge` no longer fails the gate check, or asks for listener TLS and the port gate, behind a remote trusted proxy or the challenge socket.
 - Phishing sent from hosted accounts is now reported, stays open while still queued, and can be quarantined from its finding.
 - Re-running `csm enable --php-shield` or `csm install --php-shield` keeps your edited PHP Shield config; update its allowed IPs by hand after changing `infra_ips`.
 - Dry run no longer removes automatic subnet blocks from the firewall when the daemon starts.

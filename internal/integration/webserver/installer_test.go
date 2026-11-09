@@ -5,10 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/netutil"
 )
 
 // fakeHandler is a self-contained Handler for unit tests. It records
@@ -197,7 +201,9 @@ func TestInstallRejectsLoopbackListenerForPublicRedirect(t *testing.T) {
 	}
 }
 
-func TestInstallAcceptsLoopbackListenerBehindTrustedProxy(t *testing.T) {
+func TestInstallRejectsLoopbackListenerBehindTrustedProxy(t *testing.T) {
+	// Any local account can connect from loopback, so trusting it lets one
+	// pose as any visitor. A proxy on this host uses the socket instead.
 	for _, tc := range []struct{ listen, trusted string }{
 		{"127.0.0.1", "127.0.0.1"},
 		{"127.0.0.1", "127.0.0.0/8"},
@@ -215,11 +221,70 @@ func TestInstallAcceptsLoopbackListenerBehindTrustedProxy(t *testing.T) {
 			i.Config.ChallengeListenAddr = tc.listen
 			i.Config.ChallengeTrustedProxies = []string{tc.trusted}
 
+			_, err := i.Install()
+			if !errors.Is(err, ErrLoopbackPublicURL) {
+				t.Fatalf("err = %v, want ErrLoopbackPublicURL", err)
+			}
+			if !strings.Contains(err.Error(), config.ChallengeSocketExample) {
+				t.Fatalf("err = %v, want it to point at %s", err, config.ChallengeSocketExample)
+			}
+			if _, statErr := os.Stat(h.path); statErr == nil {
+				t.Fatal("snippet must not be written")
+			}
+		})
+	}
+}
+
+func TestInstallAcceptsSocketListener(t *testing.T) {
+	pinInstallerHost(t)
+	for _, addr := range []string{config.ChallengeSocketExample, " UNIX:/run/csm/challenge.sock "} {
+		t.Run(addr, func(t *testing.T) {
+			h := &fakeHandler{kind: "apache", body: "body\n"}
+			i := newTestInstaller(t, h)
+			i.Config.ChallengeListenAddr = addr
+			i.Config.ChallengeListenGroup = "proxy"
+			i.Config.ChallengePublicURL = "https://challenge.example.com/challenge"
 			if _, err := i.Install(); err != nil {
 				t.Fatalf("Install: %v", err)
 			}
 		})
 	}
+}
+
+func TestInstallRejectsHostLocalTrustedProxy(t *testing.T) {
+	pinInstallerHost(t)
+	for _, trusted := range []string{"127.0.0.1", "203.0.113.0/24"} {
+		for _, listen := range []string{"0.0.0.0", config.ChallengeSocketExample} {
+			t.Run(listen+" "+trusted, func(t *testing.T) {
+				h := &fakeHandler{kind: "apache", body: "body\n"}
+				i := newTestInstaller(t, h)
+				i.Config.ChallengeListenAddr = listen
+				i.Config.ChallengeListenGroup = "proxy"
+				i.Config.ChallengeTrustedProxies = []string{"198.51.100.2", trusted}
+				res, err := i.Install()
+				if err == nil || !strings.Contains(err.Error(), config.ChallengeSocketExample) || !strings.Contains(err.Error(), trusted) {
+					t.Fatalf("err = %v, want refusal naming %q and the socket", err, trusted)
+				}
+				if res.Status != "fail" {
+					t.Fatalf("status = %q, want fail", res.Status)
+				}
+				if _, statErr := os.Stat(h.path); statErr == nil {
+					t.Fatal("snippet must not be written")
+				}
+				if h.validates.Load() != 0 || h.reloads.Load() != 0 {
+					t.Fatal("refused install touched the webserver")
+				}
+			})
+		}
+	}
+}
+
+// pinInstallerHost gives the host-local trust check a fixed host address.
+func pinInstallerHost(t *testing.T) {
+	t.Helper()
+	t.Cleanup(netutil.SetHostAddressLookup(func() ([]net.IP, error) {
+		return []net.IP{net.ParseIP("203.0.113.10")}, nil
+	}))
 }
 
 func TestInstallRejectsPortInListenAddress(t *testing.T) {

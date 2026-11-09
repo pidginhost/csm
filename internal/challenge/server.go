@@ -36,6 +36,14 @@ type Server struct {
 	trustedProxies map[string]bool
 	trustedNets    []*net.IPNet
 
+	// socket mode: listen_addr is unix:<path>. The only peer that can open
+	// the socket is the proxy, so its X-Forwarded-For names the visitor.
+	socket         bool
+	socketPath     string
+	socketMu       sync.Mutex
+	socketListener net.Listener
+	socketClosed   bool
+
 	// Track recently verified IPs to prevent replay
 	verified   map[string]time.Time
 	verifiedMu sync.Mutex
@@ -124,6 +132,8 @@ func New(cfg *config.Config, ipList *IPList) *Server {
 		)
 	}
 
+	s.socketPath, s.socket = config.ChallengeSocketPath(cfg.Challenge.ListenAddr)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/challenge", s.handleChallenge)
 	mux.HandleFunc("/challenge/gate", s.handleGate)
@@ -131,8 +141,12 @@ func New(cfg *config.Config, ipList *IPList) *Server {
 	mux.HandleFunc("/challenge/captcha-verify", s.handleCaptchaVerify)
 	mux.HandleFunc("/challenge/admin-token", s.handleAdminToken)
 
+	addr := ""
+	if !s.socket {
+		addr = net.JoinHostPort(ListenHost(cfg.Challenge.ListenAddr), strconv.Itoa(cfg.Challenge.ListenPort))
+	}
 	s.srv = &http.Server{
-		Addr:              net.JoinHostPort(ListenHost(cfg.Challenge.ListenAddr), strconv.Itoa(cfg.Challenge.ListenPort)),
+		Addr:              addr,
 		Handler:           mux,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      10 * time.Second,
@@ -153,11 +167,41 @@ func (s *Server) Listen() (net.Listener, error) {
 			return nil, fmt.Errorf("challenge TLS material: %w", err)
 		}
 	}
+	// Any local account can connect from an address of this host and write
+	// X-Forwarded-For, so trusting one would let it pose as any visitor.
+	if err := config.ChallengeLocalTrustError(s.cfg.Challenge.TrustedProxies); err != nil {
+		return nil, err
+	}
+	if s.socket {
+		s.socketMu.Lock()
+		defer s.socketMu.Unlock()
+		if s.socketClosed {
+			return nil, http.ErrServerClosed
+		}
+		if s.socketListener != nil {
+			return nil, fmt.Errorf("challenge socket %s is already listening", s.socketPath)
+		}
+		listener, err := listenUnixSocket(s.socketPath, s.cfg.Challenge.ListenGroup)
+		if err != nil {
+			return nil, err
+		}
+		s.socketListener = listener
+		return listener, nil
+	}
 	listener, err := net.Listen("tcp", s.srv.Addr)
 	if err != nil {
 		return nil, fmt.Errorf("challenge listen %s: %w", s.srv.Addr, err)
 	}
 	return listener, nil
+}
+
+// Addr is the address the server listens on: the socket path in socket
+// mode, otherwise host:port.
+func (s *Server) Addr() string {
+	if s.socket {
+		return s.socketPath
+	}
+	return s.srv.Addr
 }
 
 // Serve begins serving challenge pages on an already-bound listener. Explicit
@@ -169,9 +213,11 @@ func (s *Server) Listen() (net.Listener, error) {
 //  2. webui.tls_cert + webui.tls_key              (direct/public binds only)
 //  3. plain HTTP                                  (loopback-only default)
 func (s *Server) Serve(listener net.Listener) error {
+	// ServeTLS can fail before http.Server takes ownership of the listener.
+	defer func() { _ = listener.Close() }()
 	cert, key := s.resolveTLSMaterial()
 	if cert == "" || key == "" {
-		if !isLoopbackListenAddr(s.cfg.Challenge.ListenAddr) {
+		if !localOnlyListener(s.cfg.Challenge.ListenAddr) {
 			fmt.Fprintf(os.Stderr,
 				"[%s] WARNING: public challenge listener has no complete TLS cert/key configured; HSTS-pinned domains will fail with ERR_SSL_PROTOCOL_ERROR\n",
 				time.Now().Format("2006-01-02 15:04:05"))
@@ -194,13 +240,13 @@ func (s *Server) Start() error {
 
 // resolveTLSMaterial picks the cert / key pair the challenge listener
 // should present. The WebUI fallback is only safe for direct/public binds;
-// loopback listeners stay plain HTTP unless challenge TLS is explicitly
-// configured.
+// loopback and socket listeners stay plain HTTP unless challenge TLS is
+// explicitly configured.
 func (s *Server) resolveTLSMaterial() (cert, key string) {
 	if c, k := s.cfg.Challenge.TLSCert, s.cfg.Challenge.TLSKey; c != "" && k != "" {
 		return c, k
 	}
-	if isLoopbackListenAddr(s.cfg.Challenge.ListenAddr) {
+	if localOnlyListener(s.cfg.Challenge.ListenAddr) {
 		return "", ""
 	}
 	if c, k := s.cfg.WebUI.TLSCert, s.cfg.WebUI.TLSKey; c != "" && k != "" {
@@ -214,6 +260,15 @@ func isLoopbackListenAddr(addr string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
+// localOnlyListener reports a listener only this host can reach: loopback
+// or a Unix socket. Such listeners get no port gate and no Web UI TLS.
+func localOnlyListener(addr string) bool {
+	if _, socket := config.ChallengeSocketPath(addr); socket {
+		return true
+	}
+	return isLoopbackListenAddr(addr)
+}
+
 // ListenHost gives the server, installer and diagnostics the same bind host.
 // Localhost is pinned to IPv4 so proxy trust does not depend on DNS ordering.
 func ListenHost(addr string) string {
@@ -225,9 +280,15 @@ func ListenHost(addr string) string {
 	return canonicalIP(host)
 }
 
-// Shutdown gracefully stops the server.
+// Shutdown gracefully stops the server and removes a socket it bound.
 func (s *Server) Shutdown() {
 	_ = s.srv.Close()
+	s.socketMu.Lock()
+	defer s.socketMu.Unlock()
+	s.socketClosed = true
+	if s.socketListener != nil {
+		_ = s.socketListener.Close()
+	}
 }
 
 func (s *Server) handleChallenge(w http.ResponseWriter, r *http.Request) {
@@ -656,7 +717,9 @@ func (s *Server) CleanExpired() {
 // pass or cookie for it could bypass challenges for unrelated visitors.
 func (s *Server) clientIP(w http.ResponseWriter, r *http.Request) (string, bool) {
 	ip := s.extractIP(r)
-	if s.isTrustedProxy(ip) {
+	// Test the list itself, not isTrustedProxy: a listed proxy the host-local
+	// guard refused to trust still names a shared transport, not a visitor.
+	if ip == "" || proxyTrusted(s.trustedProxies, s.trustedNets, ip) {
 		http.Error(w, "Cannot identify the client behind the trusted proxy", http.StatusBadRequest)
 		return "", false
 	}
@@ -670,11 +733,16 @@ func (s *Server) clientIP(w http.ResponseWriter, r *http.Request) (string, bool)
 // ends the walk, since the client could have written everything left of it.
 // When no client is found the direct peer is used; clientIP rejects that
 // fallback in handlers. Without trusted proxies, RemoteAddr is always used.
+// On a socket the peer is the proxy and has no address, so the fallback is
+// empty.
 func (s *Server) extractIP(r *http.Request) string {
-	peerIP, _, _ := net.SplitHostPort(r.RemoteAddr)
-	peerIP = canonicalIP(peerIP)
-	if !s.isTrustedProxy(peerIP) {
-		return peerIP
+	peerIP := ""
+	if !s.socket {
+		peerIP, _, _ = net.SplitHostPort(r.RemoteAddr)
+		peerIP = canonicalIP(peerIP)
+		if !s.isTrustedProxy(peerIP) {
+			return peerIP
+		}
 	}
 	// Proxies can append a field line instead of extending the first one.
 	// Header.Get would hide that trusted suffix and expose client-written text.
@@ -692,16 +760,15 @@ func (s *Server) extractIP(r *http.Request) string {
 }
 
 // isTrustedProxy reports whether ip, in canonical form, is a configured
-// trusted proxy address or inside a configured trusted range.
+// trusted proxy address or inside a configured trusted range, and is not an
+// address of this host. Listen refuses lists that cover one; this catches
+// addresses added to the host later. An unknown host set trusts nobody.
 func (s *Server) isTrustedProxy(ip string) bool {
-	return proxyTrusted(s.trustedProxies, s.trustedNets, ip)
-}
-
-// TrustsProxy reports whether challenge.trusted_proxies covers ip, matched
-// exactly as the running server matches a connecting peer.
-func TrustsProxy(entries []string, ip string) bool {
-	trusted, nets := parseTrustedProxies(entries)
-	return proxyTrusted(trusted, nets, canonicalIP(ip))
+	if !proxyTrusted(s.trustedProxies, s.trustedNets, ip) {
+		return false
+	}
+	local, known := netutil.IsHostLocal(net.ParseIP(ip))
+	return known && !local
 }
 
 func parseTrustedProxies(entries []string) (map[string]bool, []*net.IPNet) {

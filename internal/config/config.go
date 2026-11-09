@@ -865,6 +865,10 @@ type Config struct {
 		Enabled    bool   `yaml:"enabled"`     // enable challenge pages instead of hard block for some IPs
 		ListenAddr string `yaml:"listen_addr"` // bind address for the challenge listener (default: 127.0.0.1)
 		ListenPort int    `yaml:"listen_port"` // port for challenge server (default: 8439)
+		// ListenGroup is the group allowed to open the socket when
+		// listen_addr is unix:<path>; set it to the group your proxy
+		// runs as. Unused for TCP listeners.
+		ListenGroup string `yaml:"listen_group"`
 		// ListenAddr defaults to loopback because the production path
 		// keeps the listener private until an operator deliberately
 		// exposes it. The webserver integration redirects browsers to

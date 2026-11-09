@@ -345,10 +345,28 @@ func Validate(cfg *Config) []ValidationResult {
 	if cfg.Challenge.Difficulty < 0 || cfg.Challenge.Difficulty > 5 {
 		results = append(results, ValidationResult{"error", "challenge.difficulty", fmt.Sprintf("difficulty must be 0-5, got %d", cfg.Challenge.Difficulty)})
 	}
-	if cfg.Challenge.ListenPort < 0 || cfg.Challenge.ListenPort > 65535 {
-		results = append(results, ValidationResult{"error", "challenge.listen_port", fmt.Sprintf("listen_port must be 0-65535, got %d", cfg.Challenge.ListenPort)})
-	} else if cfg.Challenge.Enabled && cfg.Challenge.ListenPort == 0 {
-		results = append(results, ValidationResult{"error", "challenge.listen_port", fmt.Sprintf("listen_port must be 1-65535 when challenge.enabled, got %d", cfg.Challenge.ListenPort)})
+	socketPath, socket := ChallengeSocketPath(cfg.Challenge.ListenAddr)
+	if !socket {
+		if cfg.Challenge.ListenPort < 0 || cfg.Challenge.ListenPort > 65535 {
+			results = append(results, ValidationResult{"error", "challenge.listen_port", fmt.Sprintf("listen_port must be 0-65535, got %d", cfg.Challenge.ListenPort)})
+		} else if cfg.Challenge.Enabled && cfg.Challenge.ListenPort == 0 {
+			results = append(results, ValidationResult{"error", "challenge.listen_port", fmt.Sprintf("listen_port must be 1-65535 when challenge.enabled, got %d", cfg.Challenge.ListenPort)})
+		}
+	}
+	if cfg.Challenge.Enabled {
+		if socket {
+			if err := ChallengeSocketPathError(socketPath); err != nil {
+				results = append(results, ValidationResult{"error", "challenge.listen_addr", err.Error()})
+			}
+			if strings.TrimSpace(cfg.Challenge.ListenGroup) == "" {
+				results = append(results, ValidationResult{"error", "challenge.listen_group", "listen_group must name the group your proxy runs as when challenge.listen_addr is a unix socket"})
+			}
+		}
+		// A warning, not an error: an error aborts daemon start and SIGHUP
+		// reloads. The challenge server refuses this setup on its own.
+		if err := ChallengeLocalTrustError(cfg.Challenge.TrustedProxies); err != nil {
+			results = append(results, ValidationResult{"warn", "challenge.trusted_proxies", err.Error()})
+		}
 	}
 
 	// --- EmailAV ---

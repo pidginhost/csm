@@ -80,9 +80,8 @@ The listener binds to `127.0.0.1` by default, so enabling the challenge
 server alone does not expose a new public port. The webserver integration
 uses direct redirects to `challenge.public_url`; installed direct mode
 therefore needs a non-loopback listener and a public URL ending in
-`/challenge`. A loopback listener is accepted only behind your own proxy on
-this host, with the listener's address in `trusted_proxies` (see
-[Trusted Proxies](#trusted-proxies)).
+`/challenge`. For your own proxy on this host, listen on a Unix socket
+instead (see [Proxy on the same host](#proxy-on-the-same-host)).
 
 ```yaml
 challenge:
@@ -118,7 +117,8 @@ Resolution order:
 1. `challenge.tls_cert` + `challenge.tls_key` (explicit per-service).
 2. `webui.tls_cert` + `webui.tls_key` (shared cert; cPanel
    `mycpanel.pem` covers both webui and the challenge port without
-   extra config) only when `challenge.listen_addr` is not loopback.
+   extra config) only when `challenge.listen_addr` is not loopback or a
+   Unix socket.
 3. Plain HTTP. This is expected for the default loopback-only path.
    Public listeners without TLS log a startup warning.
    HSTS-pinned parent domains (cPanel, phpanel, customer apex) will
@@ -137,15 +137,15 @@ By default, the challenge server uses `RemoteAddr` to identify clients.
 The shipped webserver integration redirects browsers directly to
 `challenge.public_url`, so it does not need `trusted_proxies`. Configure
 trusted proxies only for a custom proxy deployment where CSM receives
-traffic from a proxy and must trust `X-Forwarded-For` from that proxy.
+traffic from a proxy on another machine and must trust `X-Forwarded-For`
+from that proxy.
 
 ```yaml
 challenge:
   enabled: true
   trusted_proxies:
-    - "127.0.0.1"
-    - "::1"
-    - "192.0.2.0/24"
+    - "192.0.2.10"
+    - "198.51.100.0/24"
 ```
 
 Entries are addresses or CIDR ranges. Trust only proxies you control, not
@@ -161,12 +161,28 @@ contains only trusted proxies, challenge endpoints return HTTP 400. They do
 not issue a puzzle or cookie, accept a bypass, or clear a pending challenge
 for the proxy. This also applies to the gate and admin-token endpoints.
 
-With `trusted_proxies` set, point `challenge.public_url` at the proxy. A
-proxy on this host may front a loopback listener when the listener's own
-address is in the list, since that is the address the proxy connects from.
-`localhost` and an empty `listen_addr` mean `127.0.0.1`; write `::1` for
-IPv6 loopback. `listen_addr` holds a host only; the port goes in
-`listen_port`.
+At startup, CSM rejects proxy trust for loopback, the unspecified
+addresses, and every address on the host's interfaces, link-local ones
+included. Any local account can connect from those and write
+X-Forwarded-For. When an entry is or contains one of them, the challenge
+server does not start, `csm validate` warns, `csm doctor challenge` fails,
+and the webserver integration installer refuses the configuration. This
+applies to both TCP and Unix socket listeners. The daemon keeps running;
+suspicious addresses get the normal response, a block or an alert,
+instead of a challenge. For a proxy on this host, use the
+[socket](#proxy-on-the-same-host) and remove host-local entries from
+`trusted_proxies`.
+
+While serving requests, CSM uses a cached interface address list, refreshed
+on demand after five minutes. If a refresh fails, it keeps the last
+successful list. An address added while the daemon runs can still be
+trusted until a successful refresh discovers it. Before assigning this
+host an address covered by `trusted_proxies`, remove or narrow the covering
+entries to remote proxies and restart CSM. Only then assign the address.
+Run `csm doctor challenge` to check the resulting configuration.
+
+With `trusted_proxies` set, point `challenge.public_url` at the proxy.
+`listen_addr` holds a host only; the port goes in `listen_port`.
 
 `csm doctor challenge` leaves TLS to the proxy and does not ask for the
 port gate. It does not check the proxy itself, so confirm HTTPS works at
@@ -174,7 +190,80 @@ port gate. It does not check the proxy itself, so confirm HTTPS works at
 A `public_url` that names the listener's own address and port is direct
 mode, and the usual TLS and port-gate checks apply.
 
-Without `trusted_proxies`, X-Forwarded-For is ignored to prevent IP spoofing.
+Without `trusted_proxies`, X-Forwarded-For from a TCP peer is ignored to
+prevent IP spoofing.
+
+### Proxy on the same host
+
+A proxy on the same host reaches the challenge server through a Unix
+socket. Only root and members of `challenge.listen_group` can open it, so
+local accounts cannot pose as the proxy. Shared hosts that do not need a
+proxy should use direct mode (see [Bind address](#bind-address)), which
+trusts nothing.
+
+```yaml
+challenge:
+  enabled: true
+  listen_addr: unix:/run/csm/challenge.sock
+  listen_group: nginx     # the group your proxy runs as; nobody on cPanel
+  public_url: https://challenge.example.com/challenge
+```
+
+CSM creates the socket with mode 0660, owned by root and `listen_group`,
+and removes it on shutdown. Its directory must be owned by root, not
+writable by anyone else, and writable by the CSM service; with the shipped
+systemd unit that means `/run/csm`. The path must be absolute, without
+repeated separators, dot components or a trailing slash. It may use at
+most 107 bytes, and its directory at most 91 bytes, since CSM first binds
+under a temporary name that needs up to 16 more bytes. `listen_port`, the port gate
+and the Web UI TLS fallback do not apply. The proxy must send
+X-Forwarded-For; a request without a readable visitor address gets HTTP
+400. `trusted_proxies` stays optional and lists any proxies in front of
+the local one.
+
+nginx:
+
+```nginx
+location /challenge {
+    proxy_pass http://unix:/run/csm/challenge.sock;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $remote_addr;
+}
+```
+
+With a CDN or another proxy in front of nginx, list those proxies in
+`trusted_proxies` and use `proxy_set_header X-Forwarded-For
+$proxy_add_x_forwarded_for;` so the visitor address they add is kept.
+
+Apache 2.4.7 or later, with mod_proxy and mod_proxy_http (it adds
+X-Forwarded-For itself):
+
+```apache
+ProxyPass "/challenge" "unix:/run/csm/challenge.sock|http://localhost/challenge"
+```
+
+The socket proves only that a request came through a process in
+`listen_group`. Two things outside CSM decide whether that process can be
+trusted, and CSM cannot check them:
+
+- Tenant code must not run as the proxy's user or group. On cPanel the web
+  servers run as `nobody`, which is safe when PHP and CGI run as each
+  account's own user (suEXEC, LSAPI with suEXEC, per-account PHP-FPM). It
+  is not safe with mod_php (DSO), CGI without suEXEC, mod_ruid2 or
+  mpm-itk. Use direct mode on those hosts.
+- The proxy must take the visitor's address from its own connection. It
+  must not accept forwarded-address headers from addresses on this host,
+  such as nginx `set_real_ip_from 127.0.0.1` or Apache
+  `RemoteIPInternalProxy 127.0.0.1` (set up for ea-nginx in front of
+  Apache). The proxy browsers connect to must be the one that talks to the
+  socket.
+
+LiteSpeed's proxy emulation does not support this setup, and SELinux in
+enforcing mode may stop a confined web server from opening the socket.
+Use direct mode on those hosts.
+
+`csm doctor challenge` checks the group and the socket directory, then
+probes the gate through the socket.
 
 ### Successful Verification
 
@@ -195,8 +284,10 @@ for IPs currently on the challenge list; anyone else gets 404.
 The webserver integration redirects challenge-listed IPs to
 `challenge.public_url`. The installer refuses to run until that URL is
 an absolute `http` or `https` URL ending in `/challenge`, and the
-configured challenge listener is non-loopback or fronted by a trusted proxy
-on this host.
+configured challenge listener uses non-loopback TCP or a Unix socket.
+For a socket, `challenge.listen_addr` must use `unix:/absolute/path` and
+`challenge.listen_group` must name the proxy's group. Invalid socket settings
+are rejected before the installer writes runtime maps or changes the webserver.
 
 ```bash
 csm webserver-integration install     # initial wire-up

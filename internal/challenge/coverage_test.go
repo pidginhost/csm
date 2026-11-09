@@ -645,13 +645,13 @@ func TestExtractIPUntrustedPeerIgnoresXFF(t *testing.T) {
 
 func TestHandleGateReflectsChallengeList(t *testing.T) {
 	cfg := baseCfg()
-	cfg.Challenge.TrustedProxies = []string{"127.0.0.1"}
+	cfg.Challenge.TrustedProxies = []string{"198.51.100.2"}
 	l := NewIPList(filepath.Join(t.TempDir(), "challenge_ips.txt"))
 	l.Add("203.0.113.44", "test", time.Hour)
 	s := New(cfg, l)
 
 	req := httptest.NewRequest(http.MethodGet, "/challenge/gate", nil)
-	req.RemoteAddr = "127.0.0.1:1234"
+	req.RemoteAddr = "198.51.100.2:1234"
 	req.Header.Set("X-Forwarded-For", "203.0.113.44")
 	rec := httptest.NewRecorder()
 	s.handleGate(rec, req)

@@ -5,7 +5,9 @@ import (
 	"errors"
 	"net"
 	"os"
+	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +18,7 @@ import (
 	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/health"
 	"github.com/pidginhost/csm/internal/netutil"
+	"github.com/pidginhost/csm/internal/webui"
 )
 
 func validDoctorConfig() *config.Config {
@@ -340,7 +343,9 @@ func requireAllChallengeChecksOK(t *testing.T, report DoctorReport) {
 	}
 }
 
-func TestBuildChallengeDoctorReport_LoopbackListenerBehindLocalProxy(t *testing.T) {
+func TestBuildChallengeDoctorReport_LoopbackListenerBehindLocalProxyFails(t *testing.T) {
+	// Local accounts connect from loopback too, so a proxy on this host must
+	// use the socket; trusting the loopback listener's address is refused.
 	cfg := &config.Config{}
 	cfg.Challenge.Enabled = true
 	cfg.Challenge.ListenAddr = "127.0.0.1"
@@ -348,7 +353,23 @@ func TestBuildChallengeDoctorReport_LoopbackListenerBehindLocalProxy(t *testing.
 	cfg.Challenge.PublicURL = "https://challenge.example.com/challenge"
 	cfg.Challenge.TrustedProxies = []string{"127.0.0.1"}
 
-	requireAllChallengeChecksOK(t, challengeDoctorReportFor(cfg))
+	pinDoctorHost(t)
+	report := challengeDoctorReportFor(cfg)
+	if report.OverallStatus != "fail" {
+		t.Fatalf("overall = %s, want fail\n%s", report.OverallStatus, report.Human())
+	}
+	if c := findCheck(t, report, "challenge trusted proxies"); c.Status != "fail" {
+		t.Fatalf("trusted proxies check = %+v, want fail", c)
+	}
+	for _, c := range report.Checks {
+		if c.Name == "challenge public URL" {
+			if c.Status != "fail" || !strings.Contains(c.Message, config.ChallengeSocketExample) {
+				t.Fatalf("public URL check = %s %q, want fail pointing at the socket", c.Status, c.Message)
+			}
+			return
+		}
+	}
+	t.Fatal("no challenge public URL check")
 }
 
 func TestBuildChallengeDoctorReport_RemoteProxyServesTLS(t *testing.T) {
@@ -470,25 +491,22 @@ func TestBuildChallengeDoctorReport_DirectListenerStillNeedsTLSAndGate(t *testin
 }
 
 func TestChallengeGateProbeReachesLiveListener(t *testing.T) {
-	for _, trusted := range [][]string{nil, {"127.0.0.1"}} {
-		t.Run(strings.Join(trusted, ","), func(t *testing.T) {
-			cfg := &config.Config{}
-			cfg.Challenge.Enabled = true
-			cfg.Challenge.ListenAddr = "127.0.0.1"
-			cfg.Challenge.TrustedProxies = trusted
-			srv := challenge.New(cfg, nil)
-			ln, err := srv.Listen()
-			if err != nil {
-				t.Fatal(err)
-			}
-			go func() { _ = srv.Serve(ln) }()
-			t.Cleanup(srv.Shutdown)
-			cfg.Challenge.ListenPort = ln.Addr().(*net.TCPAddr).Port
+	// The trusted-proxy case moved to the socket: the server now refuses to
+	// trust loopback (TestChallengeGateProbeReachesSocketListener).
+	cfg := &config.Config{}
+	cfg.Challenge.Enabled = true
+	cfg.Challenge.ListenAddr = "127.0.0.1"
+	srv := challenge.New(cfg, nil)
+	ln, err := srv.Listen()
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(srv.Shutdown)
+	cfg.Challenge.ListenPort = ln.Addr().(*net.TCPAddr).Port
 
-			if got := defaultChallengeGateProbe(cfg); got.Status != "ok" {
-				t.Fatalf("probe = %+v, want ok", got)
-			}
-		})
+	if got := defaultChallengeGateProbe(cfg); got.Status != "ok" {
+		t.Fatalf("probe = %+v, want ok", got)
 	}
 }
 
@@ -499,9 +517,9 @@ func TestChallengeGateProbeURLUsesConfiguredTLS(t *testing.T) {
 	cfg.Challenge.TLSCert = "/tmp/cert.pem"
 	cfg.Challenge.TLSKey = "/tmp/key.pem"
 
-	got, err := challengeGateProbeURL(cfg)
-	if err != nil {
-		t.Fatal(err)
+	got, socket, err := challengeGateProbeTarget(cfg)
+	if err != nil || socket != "" {
+		t.Fatal(err, socket)
 	}
 	if got != "https://[::1]:8439/challenge/gate" {
 		t.Fatalf("probe URL = %q, want https://[::1]:8439/challenge/gate", got)
@@ -515,9 +533,9 @@ func TestChallengeGateProbeURLIgnoresWebUITLSOnLoopback(t *testing.T) {
 	cfg.WebUI.TLSCert = "/tmp/webui-cert.pem"
 	cfg.WebUI.TLSKey = "/tmp/webui-key.pem"
 
-	got, err := challengeGateProbeURL(cfg)
-	if err != nil {
-		t.Fatal(err)
+	got, socket, err := challengeGateProbeTarget(cfg)
+	if err != nil || socket != "" {
+		t.Fatal(err, socket)
 	}
 	if got != "http://127.0.0.1:8439/challenge/gate" {
 		t.Fatalf("probe URL = %q, want http://127.0.0.1:8439/challenge/gate", got)
@@ -531,4 +549,135 @@ func writeDoctorTempFile(t *testing.T, name string) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+// pinDoctorHost gives the host-local trust check a fixed host address.
+func pinDoctorHost(t *testing.T) {
+	t.Helper()
+	t.Cleanup(netutil.SetHostAddressLookup(func() ([]net.IP, error) {
+		return []net.IP{net.ParseIP("203.0.113.250")}, nil
+	}))
+}
+
+// socketDoctorCfg points the challenge at a socket in a short private
+// directory, owned by the test's own group, so placement checks pass.
+func socketDoctorCfg(t *testing.T) (*config.Config, string) {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "cs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chmod(dir, 0o700)
+		_ = os.RemoveAll(dir)
+	})
+	g, err := user.LookupGroupId(strconv.Itoa(os.Getgid()))
+	if err != nil {
+		t.Skipf("own group not resolvable: %v", err)
+	}
+	cfg := &config.Config{}
+	cfg.Challenge.Enabled = true
+	cfg.Challenge.ListenAddr = "unix:" + filepath.Join(dir, "c.sock")
+	cfg.Challenge.ListenGroup = g.Name
+	cfg.Challenge.ListenPort = 8439
+	cfg.Challenge.PublicURL = "https://challenge.example.com/challenge"
+	return cfg, dir
+}
+
+func findCheck(t *testing.T, report DoctorReport, name string) DoctorCheck {
+	t.Helper()
+	for _, c := range report.Checks {
+		if c.Name == name {
+			return c
+		}
+	}
+	t.Fatalf("no %q check\n%s", name, report.Human())
+	return DoctorCheck{}
+}
+
+func TestBuildChallengeDoctorReport_SocketListenerAllOK(t *testing.T) {
+	pinDoctorHost(t)
+	cfg, _ := socketDoctorCfg(t)
+	cfg.WebUI.TLSCert = "/nonexistent/webui.crt"
+	cfg.WebUI.TLSKey = "/nonexistent/webui.key"
+	report := challengeDoctorReportFor(cfg)
+	requireAllChallengeChecksOK(t, report)
+	findCheck(t, report, "challenge socket")
+	findCheck(t, report, "challenge trusted proxies")
+}
+
+func TestBuildChallengeDoctorReport_HostLocalTrustFails(t *testing.T) {
+	pinDoctorHost(t)
+	cfg := &config.Config{}
+	cfg.Challenge.Enabled = true
+	cfg.Challenge.ListenAddr = "0.0.0.0"
+	cfg.Challenge.ListenPort = 8439
+	cfg.Challenge.PublicURL = "https://challenge.example.com/challenge"
+	cfg.Challenge.TrustedProxies = []string{"198.51.100.2", "127.0.0.1"}
+	c := findCheck(t, challengeDoctorReportFor(cfg), "challenge trusted proxies")
+	if c.Status != "fail" || !strings.Contains(c.Message, "127.0.0.1") || !strings.Contains(c.Fix, config.ChallengeSocketExample) {
+		t.Fatalf("trusted proxies check = %+v, want fail naming the entry with the socket fix", c)
+	}
+}
+
+func TestChallengePortGateWarnsOnSocketListener(t *testing.T) {
+	cfg, _ := socketDoctorCfg(t)
+	if c := challengePortGateCheck(cfg); c.Status != "ok" || !strings.Contains(c.Message, "no TCP port") {
+		t.Fatalf("socket without gate = %+v, want ok", c)
+	}
+	cfg.Challenge.PortGate.Enabled = true
+	if c := challengePortGateCheck(cfg); c.Status != "warn" {
+		t.Fatalf("socket with gate = %+v, want warn", c)
+	}
+}
+
+func TestChallengeSocketCheckFailsOnUnknownGroup(t *testing.T) {
+	pinDoctorHost(t)
+	cfg, _ := socketDoctorCfg(t)
+	cfg.Challenge.ListenGroup = "csm-no-such-group"
+	c := findCheck(t, challengeDoctorReportFor(cfg), "challenge socket")
+	if c.Status != "fail" || !strings.Contains(c.Message, "csm-no-such-group") || c.Fix == "" {
+		t.Fatalf("socket check = %+v, want fail naming the group", c)
+	}
+}
+
+func TestChallengeSocketCheckFailsOnWritableParent(t *testing.T) {
+	pinDoctorHost(t)
+	cfg, dir := socketDoctorCfg(t)
+	if err := os.Chmod(dir, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	c := findCheck(t, challengeDoctorReportFor(cfg), "challenge socket")
+	if c.Status != "fail" || !strings.Contains(c.Message, dir) {
+		t.Fatalf("socket check = %+v, want fail naming %s", c, dir)
+	}
+}
+
+func TestChallengeGateProbeReachesSocketListener(t *testing.T) {
+	pinDoctorHost(t)
+	for _, scheme := range []string{"http", "https"} {
+		t.Run(scheme, func(t *testing.T) {
+			cfg, dir := socketDoctorCfg(t)
+			// A socket has no TCP port, including when it serves TLS.
+			cfg.Challenge.ListenPort = 0
+			if scheme == "https" {
+				cfg.Challenge.TLSCert = filepath.Join(dir, "cert.pem")
+				cfg.Challenge.TLSKey = filepath.Join(dir, "key.pem")
+				if err := webui.EnsureTLSCert(cfg.Challenge.TLSCert, cfg.Challenge.TLSKey); err != nil {
+					t.Fatal(err)
+				}
+			}
+			srv := challenge.New(cfg, nil)
+			ln, err := srv.Listen()
+			if err != nil {
+				t.Fatal(err)
+			}
+			go func() { _ = srv.Serve(ln) }()
+			t.Cleanup(srv.Shutdown)
+			got := defaultChallengeGateProbe(cfg)
+			if got.Status != "ok" || got.Message != cfg.Challenge.ListenAddr {
+				t.Fatalf("probe = %+v, want ok naming %s", got, cfg.Challenge.ListenAddr)
+			}
+		})
+	}
 }

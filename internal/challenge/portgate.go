@@ -50,7 +50,7 @@ type PortGateConfig struct {
 // gate is needed (loopback traffic cannot originate from off-host).
 // Caller treats nil as "gate not active" and proceeds without it.
 func NewPortGate(cfg PortGateConfig) (PortGate, error) {
-	if isLoopbackListenAddr(cfg.ListenAddr) {
+	if localOnlyListener(cfg.ListenAddr) {
 		return nil, nil
 	}
 	return newPortGate(cfg)

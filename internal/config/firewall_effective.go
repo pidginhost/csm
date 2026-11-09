@@ -21,7 +21,8 @@ func EffectiveFirewallConfig(cfg *Config) *firewall.FirewallConfig {
 	}
 	effective.InfraIPs = firewall.MergeInfraIPs(cfg.InfraIPs, effective.InfraIPs)
 
-	if !cfg.Challenge.Enabled || !cfg.Challenge.PortGate.Enabled ||
+	_, socket := ChallengeSocketPath(cfg.Challenge.ListenAddr)
+	if !cfg.Challenge.Enabled || !cfg.Challenge.PortGate.Enabled || socket ||
 		cfg.Challenge.ListenPort <= 0 || challengeListenAddrIsLoopback(cfg.Challenge.ListenAddr) {
 		return &effective
 	}

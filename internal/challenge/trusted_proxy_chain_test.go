@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-func TestTrustsProxyMatchesConnectingPeer(t *testing.T) {
+func TestServerTrustMatchesConnectingPeer(t *testing.T) {
 	for _, tc := range []struct {
 		entry, peer string
 		trusted     bool
@@ -24,7 +24,8 @@ func TestTrustsProxyMatchesConnectingPeer(t *testing.T) {
 		{"192.0.2.0/24", "::ffff:192.0.2.10", true},
 		{"::ffff:192.0.2.0/120", "192.0.2.10", true},
 		{"2001:db8::/32", "2001:db8::1", true},
-		{"::1", "::1", true},
+		// Loopback is never trusted: any local account can connect from it.
+		{"::1", "::1", false},
 		{"192.0.2.0/24", "198.51.100.10", false},
 		{"", "192.0.2.10", false},
 		{"  ", "192.0.2.10", false},
@@ -34,9 +35,6 @@ func TestTrustsProxyMatchesConnectingPeer(t *testing.T) {
 	} {
 		t.Run(tc.entry+"/"+tc.peer, func(t *testing.T) {
 			entries := []string{tc.entry}
-			if got := TrustsProxy(entries, tc.peer); got != tc.trusted {
-				t.Fatalf("TrustsProxy = %v, want %v", got, tc.trusted)
-			}
 			got := extractVia(t, entries, net.JoinHostPort(tc.peer, "1234"), "203.0.113.20")
 			want := canonicalIP(tc.peer)
 			if tc.trusted {
@@ -56,7 +54,7 @@ func TestDoctorGateRequestIsReadOnly(t *testing.T) {
 			t.Run(name, func(t *testing.T) {
 				cfg := baseCfg()
 				if trusted {
-					cfg.Challenge.TrustedProxies = []string{"127.0.0.1"}
+					cfg.Challenge.TrustedProxies = []string{"198.51.100.2"}
 				}
 				s, list := newTestServer(t, cfg)
 				const visitor = "192.0.2.1"
@@ -70,7 +68,7 @@ func TestDoctorGateRequestIsReadOnly(t *testing.T) {
 				}
 				for range 2 {
 					req := httptest.NewRequest(http.MethodHead, "/challenge/gate", nil)
-					req.RemoteAddr = "127.0.0.1:1234"
+					req.RemoteAddr = "198.51.100.2:1234"
 					req.Header.Set("X-Forwarded-For", visitor)
 					rec := httptest.NewRecorder()
 					s.srv.Handler.ServeHTTP(rec, req)
