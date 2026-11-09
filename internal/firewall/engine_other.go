@@ -37,6 +37,7 @@ type SubnetEntry struct {
 	Source    string    `json:"source,omitempty"`
 	BlockedAt time.Time `json:"blocked_at"`
 	ExpiresAt time.Time `json:"expires_at,omitempty"`
+	Automatic bool      `json:"automatic,omitempty"`
 }
 
 type PortAllowEntry struct {
@@ -153,9 +154,10 @@ func (e *Engine) BlockedSubnetCovering(_ string) (string, bool) { return "", fal
 
 // SetConfig and Config mirror the Linux engine so re-apply wiring compiles
 // everywhere; the stub applies nothing.
-func (e *Engine) SetConfig(_ *FirewallConfig)  {}
-func (e *Engine) Config() *FirewallConfig      { return nil }
-func (e *Engine) UnblockSubnet(_ string) error { return ErrUnsupportedPlatform }
+func (e *Engine) SetConfig(_ *FirewallConfig)                  {}
+func (e *Engine) Config() *FirewallConfig                      { return nil }
+func (e *Engine) UnblockSubnet(_ string) error                 { return ErrUnsupportedPlatform }
+func (e *Engine) UnblockSubnetIfUnchanged(_ SubnetEntry) error { return ErrUnsupportedPlatform }
 func (e *Engine) TempAllowIP(_ string, _ string, _ time.Duration) error {
 	return ErrUnsupportedPlatform
 }

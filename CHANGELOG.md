@@ -22,6 +22,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 - Mail that crashes, exhausts or stalls the attachment unpacker is now deferred instead of delivered unscanned, even with `email_av.fail_mode: open`; observe mode still delivers it.
 - A remote sender can no longer get a hosted mailbox reported as compromised through the wording of an email subject.
+- An unban request for one address no longer lifts a subnet block an operator added, and says when the address stays blocked or a subnet cannot be removed.
 
 ### Fixed
 

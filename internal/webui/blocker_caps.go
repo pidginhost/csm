@@ -45,6 +45,9 @@ type (
 	subnetUnblocker interface {
 		UnblockSubnet(cidr string) error
 	}
+	conditionalSubnetUnblocker interface {
+		UnblockSubnetIfUnchanged(expected firewall.SubnetEntry) error
+	}
 	blockFlusher interface {
 		FlushBlocked() error
 	}
@@ -54,18 +57,19 @@ type (
 )
 
 var (
-	_ IPBlocker              = (*firewall.Engine)(nil)
-	_ forceBlocker           = (*firewall.Engine)(nil)
-	_ lifetimeKeepingBlocker = (*firewall.Engine)(nil)
-	_ undoableBlocker        = (*firewall.Engine)(nil)
-	_ undoableUnblocker      = (*firewall.Engine)(nil)
-	_ selfUnbanner           = (*firewall.Engine)(nil)
-	_ blockRestorer          = (*firewall.Engine)(nil)
-	_ ipAllower              = (*firewall.Engine)(nil)
-	_ ipTempAllower          = (*firewall.Engine)(nil)
-	_ allowRemover           = (*firewall.Engine)(nil)
-	_ subnetBlocker          = (*firewall.Engine)(nil)
-	_ subnetUnblocker        = (*firewall.Engine)(nil)
-	_ blockFlusher           = (*firewall.Engine)(nil)
-	_ cloudflareChecker      = (*firewall.Engine)(nil)
+	_ IPBlocker                  = (*firewall.Engine)(nil)
+	_ forceBlocker               = (*firewall.Engine)(nil)
+	_ lifetimeKeepingBlocker     = (*firewall.Engine)(nil)
+	_ undoableBlocker            = (*firewall.Engine)(nil)
+	_ undoableUnblocker          = (*firewall.Engine)(nil)
+	_ selfUnbanner               = (*firewall.Engine)(nil)
+	_ blockRestorer              = (*firewall.Engine)(nil)
+	_ ipAllower                  = (*firewall.Engine)(nil)
+	_ ipTempAllower              = (*firewall.Engine)(nil)
+	_ allowRemover               = (*firewall.Engine)(nil)
+	_ subnetBlocker              = (*firewall.Engine)(nil)
+	_ subnetUnblocker            = (*firewall.Engine)(nil)
+	_ conditionalSubnetUnblocker = (*firewall.Engine)(nil)
+	_ blockFlusher               = (*firewall.Engine)(nil)
+	_ cloudflareChecker          = (*firewall.Engine)(nil)
 )
