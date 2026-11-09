@@ -418,13 +418,8 @@ func challengeTLSCheck(cfg *config.Config) DoctorCheck {
 	}
 	if cert == "" || key == "" {
 		if scheme == "https" {
-			if challengeHasTrustedProxy(cfg) && !challengePublicURLTargetsListener(cfg) {
-				return DoctorCheck{
-					Name:    "challenge TLS",
-					Status:  "warn",
-					Message: "public challenge listener has no TLS; trusted proxies do not prove that the public URL has TLS termination",
-					Fix:     "verify HTTPS at challenge.public_url through your proxy, or configure the listener TLS pair",
-				}
+			if challengeBehindProxy(cfg) {
+				return DoctorCheck{Name: "challenge TLS", Status: "ok", Message: "challenge.trusted_proxies serve HTTPS for challenge.public_url; doctor does not check the proxy"}
 			}
 			return DoctorCheck{
 				Name:    "challenge TLS",
@@ -478,13 +473,8 @@ func challengePortGateCheck(cfg *config.Config) DoctorCheck {
 		return DoctorCheck{Name: "challenge port gate", Status: "ok", Message: "loopback listener is not exposed off-host"}
 	}
 	if !cfg.Challenge.PortGate.Enabled {
-		if challengeHasTrustedProxy(cfg) {
-			return DoctorCheck{
-				Name:    "challenge port gate",
-				Status:  "warn",
-				Message: "public challenge listener has no port gate; trusted proxies do not restrict network access",
-				Fix:     "restrict challenge.listen_port to the proxy at the firewall, or use a loopback listener for a proxy on this host",
-			}
+		if challengeBehindProxy(cfg) {
+			return DoctorCheck{Name: "challenge port gate", Status: "ok", Message: "browsers reach the listener through challenge.trusted_proxies; keep challenge.listen_port closed to everything except the proxy"}
 		}
 		return DoctorCheck{
 			Name:    "challenge port gate",
@@ -496,8 +486,13 @@ func challengePortGateCheck(cfg *config.Config) DoctorCheck {
 	return DoctorCheck{Name: "challenge port gate", Status: "ok"}
 }
 
-// A proxy list only grants forwarding-header trust. It cannot prove TLS
-// termination or network isolation, which require operator verification.
+// challengeBehindProxy reports a custom proxy deployment: browsers connect to
+// the proxy, so listener TLS and the port gate are not what protects them. A
+// public_url that names the listener itself is direct mode whatever the list.
+func challengeBehindProxy(cfg *config.Config) bool {
+	return challengeHasTrustedProxy(cfg) && !challengePublicURLTargetsListener(cfg)
+}
+
 func challengeHasTrustedProxy(cfg *config.Config) bool {
 	for _, p := range cfg.Challenge.TrustedProxies {
 		if netutil.ParseCIDROrIP(p) != nil {
@@ -518,6 +513,9 @@ func challengePublicURLTargetsListener(cfg *config.Config) bool {
 	port := u.Port()
 	if port == "" {
 		port = "443"
+		if u.Scheme == "http" {
+			port = "80"
+		}
 	}
 	if port != strconv.Itoa(cfg.Challenge.ListenPort) {
 		return false

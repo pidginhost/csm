@@ -159,17 +159,15 @@ for the proxy. This also applies to the gate and admin-token endpoints.
 With `trusted_proxies` set, point `challenge.public_url` at the proxy. A
 proxy on this host may front a loopback listener when the listener's own
 address is in the list, since that is the address the proxy connects from.
-`localhost` and an empty listener address bind to `127.0.0.1`; use `::1`
-explicitly for IPv6 loopback. Bracketed IPv6 addresses are also accepted.
-Keep the port in `listen_port`; `listen_addr` accepts a host only.
-`csm doctor challenge` does not require TLS or a port gate on a loopback
-listener. For a non-loopback listener, trusted proxies only authorize
-forwarding headers. Doctor warns when listener TLS or the port gate is
-absent because it cannot verify proxy TLS termination or firewall access.
-An HTTPS URL using the listener's own IP address and port still fails
-if listener TLS is absent.
-Verify HTTPS at `public_url` and keep `listen_port` closed to everything
-except the proxy.
+`localhost` and an empty `listen_addr` mean `127.0.0.1`; write `::1` for
+IPv6 loopback. `listen_addr` holds a host only; the port goes in
+`listen_port`.
+
+`csm doctor challenge` leaves TLS to the proxy and does not ask for the
+port gate. It does not check the proxy itself, so confirm HTTPS works at
+`public_url` and keep `listen_port` closed to everything except the proxy.
+A `public_url` that names the listener's own address and port is direct
+mode, and the usual TLS and port-gate checks apply.
 
 Without `trusted_proxies`, X-Forwarded-For is ignored to prevent IP spoofing.
 

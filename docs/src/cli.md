@@ -132,9 +132,8 @@ Operator-driven mitigations applied to the host. Run `csm harden` with no argume
 | `csm disable --php-shield` | Disable PHP runtime protection |
 
 Installing or enabling PHP Shield creates `/opt/csm/shield.conf.php` only
-when absent. Existing files and symlinks are kept, including operator edits.
-Update its allowed IPs by hand after changing `infra_ips`. Disabling keeps
-the config for re-enabling; uninstalling removes it.
+when it is missing, so your edits survive. Update its allowed IPs by hand
+after changing `infra_ips`. Disabling keeps the file; uninstalling removes it.
 
 ## State database
 

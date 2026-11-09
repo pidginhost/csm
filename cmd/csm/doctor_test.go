@@ -351,7 +351,7 @@ func TestBuildChallengeDoctorReport_LoopbackListenerBehindLocalProxy(t *testing.
 	requireAllChallengeChecksOK(t, challengeDoctorReportFor(cfg))
 }
 
-func TestBuildChallengeDoctorReport_RemoteProxyNeedsVerification(t *testing.T) {
+func TestBuildChallengeDoctorReport_RemoteProxyServesTLS(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Challenge.Enabled = true
 	cfg.Challenge.ListenAddr = "0.0.0.0"
@@ -359,24 +359,20 @@ func TestBuildChallengeDoctorReport_RemoteProxyNeedsVerification(t *testing.T) {
 	cfg.Challenge.PublicURL = "https://challenge.example.com/challenge"
 	cfg.Challenge.TrustedProxies = []string{"192.0.2.10"}
 
-	for _, check := range []DoctorCheck{challengeTLSCheck(cfg), challengePortGateCheck(cfg)} {
-		if check.Status != "warn" || check.Fix == "" {
-			t.Errorf("%s = %+v; remote TLS and network filtering need verification", check.Name, check)
-		}
-	}
+	requireAllChallengeChecksOK(t, challengeDoctorReportFor(cfg))
 }
 
-func TestChallengeProxyListDoesNotProveTLSOrPortProtection(t *testing.T) {
+func TestChallengeProxyChecksNeedAValidProxy(t *testing.T) {
 	for _, tc := range []struct {
-		name, scheme string
-		trusted      []string
-		wantTLS      string
+		name, scheme      string
+		trusted           []string
+		wantTLS, wantGate string
 	}{
-		{"direct HTTPS with trusted peer", "https", []string{"192.0.2.10"}, "warn"},
-		{"direct HTTP with trusted peer", "http", []string{"192.0.2.10"}, "warn"},
-		{"blank proxies", "https", []string{"", "  "}, "fail"},
-		{"invalid proxy", "https", []string{"not-an-ip"}, "fail"},
-		{"invalid CIDR", "https", []string{"192.0.2.0/99"}, "fail"},
+		{"HTTPS behind proxy", "https", []string{"192.0.2.10"}, "ok", "ok"},
+		{"plain HTTP public URL behind proxy", "http", []string{"192.0.2.10"}, "warn", "ok"},
+		{"blank proxies", "https", []string{"", "  "}, "fail", "warn"},
+		{"invalid proxy", "https", []string{"not-an-ip"}, "fail", "warn"},
+		{"invalid CIDR", "https", []string{"192.0.2.0/99"}, "fail", "warn"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := &config.Config{}
@@ -387,8 +383,8 @@ func TestChallengeProxyListDoesNotProveTLSOrPortProtection(t *testing.T) {
 			if check := challengeTLSCheck(cfg); check.Status != tc.wantTLS {
 				t.Errorf("TLS = %+v, want %s", check, tc.wantTLS)
 			}
-			if check := challengePortGateCheck(cfg); check.Status != "warn" {
-				t.Errorf("port gate = %+v, want warn", check)
+			if check := challengePortGateCheck(cfg); check.Status != tc.wantGate {
+				t.Errorf("port gate = %+v, want %s", check, tc.wantGate)
 			}
 		})
 	}
@@ -414,7 +410,24 @@ func TestChallengeTLSFailsWhenPublicURLTargetsPlainListener(t *testing.T) {
 			if check := challengeTLSCheck(cfg); check.Status != "fail" {
 				t.Fatalf("TLS = %+v; HTTPS targets the plain HTTP listener", check)
 			}
+			if check := challengePortGateCheck(cfg); check.Status != "warn" {
+				t.Fatalf("port gate = %+v; browsers reach the listener directly", check)
+			}
 		})
+	}
+}
+
+func TestChallengePortGateTreatsPlainHTTPURLOnPort80AsDirect(t *testing.T) {
+	t.Cleanup(netutil.SetHostAddressLookup(func() ([]net.IP, error) {
+		return []net.IP{net.ParseIP("192.0.2.20")}, nil
+	}))
+	cfg := &config.Config{}
+	cfg.Challenge.ListenAddr = "0.0.0.0"
+	cfg.Challenge.ListenPort = 80
+	cfg.Challenge.PublicURL = "http://192.0.2.20/challenge"
+	cfg.Challenge.TrustedProxies = []string{"192.0.2.10"}
+	if check := challengePortGateCheck(cfg); check.Status != "warn" {
+		t.Fatalf("port gate = %+v; browsers reach the listener directly", check)
 	}
 }
 
@@ -433,8 +446,8 @@ func TestChallengeTLSDoesNotMistakeProxyForListener(t *testing.T) {
 			cfg.Challenge.ListenPort = 8439
 			cfg.Challenge.PublicURL = tc.public
 			cfg.Challenge.TrustedProxies = []string{"192.0.2.10"}
-			if check := challengeTLSCheck(cfg); check.Status != "warn" {
-				t.Fatalf("TLS = %+v; proxy termination needs verification", check)
+			if check := challengeTLSCheck(cfg); check.Status != "ok" {
+				t.Fatalf("TLS = %+v; the proxy serves HTTPS", check)
 			}
 		})
 	}
