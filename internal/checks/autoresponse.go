@@ -47,6 +47,7 @@ var errProcessNotEligible = errors.New("process is no longer eligible for termin
 // AutoKillProcesses kills processes that match critical findings.
 // Only targets: fake kernel threads, reverse shells, GSocket processes.
 // Never kills root system services or cPanel processes.
+// Marks evaluated input findings so alert delivery cannot repeat a response.
 func AutoKillProcesses(ctx context.Context, cfg *config.Config, findings []alert.Finding) []alert.Finding {
 	if !cfg.AutoResponse.Enabled || !cfg.AutoResponse.KillProcesses {
 		return nil
@@ -54,16 +55,19 @@ func AutoKillProcesses(ctx context.Context, cfg *config.Config, findings []alert
 
 	var actions []alert.Finding
 
-	for _, f := range findings {
+	for i, f := range findings {
 		// Only act on specific high-confidence critical checks
 		switch f.Check {
 		case "fake_kernel_thread", "suspicious_process", "php_suspicious_execution":
 		default:
 			continue
 		}
-		if f.Severity != alert.Critical {
+		if f.Severity != alert.Critical || f.AutoProcessResponseEvaluated {
 			continue
 		}
+		// A scan hands its findings to alert delivery, which must not
+		// signal the same process again.
+		findings[i].AutoProcessResponseEvaluated = true
 
 		// Use structured PID field when available, fall back to text extraction
 		pid := fmt.Sprintf("%d", f.PID)

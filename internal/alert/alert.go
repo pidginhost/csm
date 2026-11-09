@@ -117,6 +117,10 @@ type Finding struct {
 	// already considered the finding in this process, so a later pass over
 	// the same finding neither acts again nor reaches admission twice.
 	AutoIPResponseEvaluated bool `json:"-"`
+	// AutoProcessResponseEvaluated records that automatic process termination
+	// already considered the finding in this process, so alert delivery does
+	// not signal the process again, including after a refused attempt.
+	AutoProcessResponseEvaluated bool `json:"-"`
 
 	// PHP-relay structured fields (Stage 1 email_php_relay_abuse). All optional;
 	// zero values mean "this finding does not carry that dimension".
