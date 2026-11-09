@@ -531,7 +531,7 @@ blocked a known customer are listed in the
 ## Safety Guards
 
 - Never kills root processes, system daemons, or cPanel services
-- Infrastructure IPs (`infra_ips` and `firewall.infra_ips`) are never blocked or sent to the challenge page
+- Infrastructure IPs (`infra_ips` and `firewall.infra_ips`) are never blocked. Automatic challenge routing exempts literal IPs and CIDRs; hostname entries alone do not exempt their resolved addresses
 - A block of an address that recently logged in as a customer is alerted at once and never exempted
 - Subnet blocks refuse the default route and any range that covers infrastructure, local host, allowed, or port-specific allowed IPs
 - Quarantined files preserve full metadata for restoration
