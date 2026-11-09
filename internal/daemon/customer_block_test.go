@@ -700,7 +700,7 @@ func TestCustomerBlockDerivedCause(t *testing.T) {
 			const ip = "203.0.113.93"
 			customerLogin(d, ip)
 			f := observedBruteForce(ip)
-			root := mintedRoot(t, f, ip)
+			root := mintedRoot(t, f)
 			switch path {
 			case "central root":
 				if err := d.performCentralAction(centralQueuedAction{decision: reporting.DecisionBlock, ip: ip, findingID: alert.FindingID(f), root: root}); err != nil {

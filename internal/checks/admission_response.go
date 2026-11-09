@@ -18,15 +18,17 @@ import (
 // legacy path keeps every enforcement decision and never waits for
 // admission.
 type ResponseAdmission interface {
-	// Mint mints the evidence f's own observation supports for target. It
-	// counts nothing.
-	Mint(f alert.Finding, target string) (admission.Evidence, error)
+	// Mint mints the evidence f's own observation supports, aimed at the
+	// address its parser read. It counts nothing.
+	Mint(f alert.Finding) (admission.Evidence, error)
 	// Refuse counts a response that could not be answered because f could
 	// not be minted.
 	Refuse(kind admission.Kind, f alert.Finding, via admission.Entry, err error)
-	// Respond hands a response of kind to e's target to the ingress,
-	// through the derived entry via when it is set.
-	Respond(kind admission.Kind, e admission.Evidence, via admission.Entry, ttl ...time.Duration) error
+	// Respond hands the ingress a response of kind to target, the address
+	// or prefix the legacy path acts on, with e as its root, through the
+	// derived entry via when it is set. Admission refuses a target that is
+	// not e's address and does not contain it.
+	Respond(kind admission.Kind, target string, e admission.Evidence, via admission.Entry, ttl ...time.Duration) error
 }
 
 type responseAdmissionSlot struct{ a ResponseAdmission }
@@ -72,19 +74,19 @@ func respond(kind admission.Kind, f alert.Finding, target string, via admission.
 		return admission.Evidence{}
 	}
 	defer timeHandoff(time.Now())
-	e, err := a.Mint(f, target)
+	e, err := a.Mint(f)
 	if err != nil {
 		a.Refuse(kind, f, via, err)
 		return admission.Evidence{}
 	}
-	_ = a.Respond(kind, e, via)
+	_ = a.Respond(kind, target, e, via)
 	return e
 }
 
 // respondSpray asks admission to block a spray's prefix through the mail
-// subnet entry, with each counted address's observation as a root, newest
-// first, at most as many as one candidate holds. A spray recorded without
-// its constituents answers its own observation.
+// subnet entry, with each counted address as a root, read as its tracker
+// recorded it, newest first, at most as many as one candidate holds. A
+// spray recorded without its constituents names no address of its own.
 func respondSpray(f alert.Finding, cidr string) {
 	if len(f.SprayConstituents) == 0 {
 		respond(admission.KindBlockSubnet, f, cidr, admission.EntryMailSubnet)
@@ -99,7 +101,8 @@ func respondSpray(f alert.Finding, cidr string) {
 	})
 	for _, c := range constituents[:min(len(constituents), admission.MaxRoots)] {
 		root := f
-		root.Observation = c.Observation
+		root.SourceIP = c.Address
+		root.Observation, root.Attribution = c.Observation, c.Attribution
 		respond(admission.KindBlockSubnet, root, cidr, admission.EntryMailSubnet)
 	}
 }
@@ -110,32 +113,32 @@ func respondSpray(f alert.Finding, cidr string) {
 // kept none is, and admission refuses it.
 func respondDerived(req ApplyBlockRequest) {
 	if req.TTL == 0 {
-		AnswerRoot(admission.KindBlockIP, admission.Evidence{}, req.Entry)
+		AnswerRoot(admission.KindBlockIP, req.IP, admission.Evidence{}, req.Entry)
 		return
 	}
-	AnswerPreparedRoot(admission.KindBlockIP, req.Root, req.Entry, req.RootFinding, req.RootErr, req.TTL)
+	AnswerPreparedRoot(admission.KindBlockIP, req.IP, req.Root, req.Entry, req.RootFinding, req.RootErr, req.TTL)
 }
 
 // AdmissionRoot keeps a root for a derived path whose retained finding
 // may no longer be available when it responds. Failure leaves no root.
-func AdmissionRoot(f alert.Finding, target string) admission.Evidence {
-	e, _ := PrepareAdmissionRoot(f, target)
+func AdmissionRoot(f alert.Finding) admission.Evidence {
+	e, _ := PrepareAdmissionRoot(f)
 	return e
 }
 
 // PrepareAdmissionRoot preserves a local finding's mint refusal so a
 // selected response can count it once with its original check and reason.
-func PrepareAdmissionRoot(f alert.Finding, target string) (admission.Evidence, error) {
+func PrepareAdmissionRoot(f alert.Finding) (admission.Evidence, error) {
 	a := getResponseAdmission()
 	if a == nil {
 		return admission.Evidence{}, nil
 	}
-	return a.Mint(f, target)
+	return a.Mint(f)
 }
 
 // AnswerPreparedRoot counts a failed mint once, without replacing its
 // provenance refusal with a second rootless-response refusal.
-func AnswerPreparedRoot(kind admission.Kind, root admission.Evidence, via admission.Entry, f alert.Finding, err error, ttl time.Duration) {
+func AnswerPreparedRoot(kind admission.Kind, target string, root admission.Evidence, via admission.Entry, f alert.Finding, err error, ttl time.Duration) {
 	if err != nil {
 		if a := getResponseAdmission(); a != nil {
 			defer timeHandoff(time.Now())
@@ -143,15 +146,15 @@ func AnswerPreparedRoot(kind admission.Kind, root admission.Evidence, via admiss
 		}
 		return
 	}
-	AnswerRoot(kind, root, via, ttl)
+	AnswerRoot(kind, target, root, via, ttl)
 }
 
-// AnswerRoot hands admission a response of kind a derived path decided,
-// with the root it kept, through its entry.
-func AnswerRoot(kind admission.Kind, root admission.Evidence, via admission.Entry, ttl ...time.Duration) {
+// AnswerRoot hands admission a response of kind to target a derived path
+// decided, with the root it kept, through its entry.
+func AnswerRoot(kind admission.Kind, target string, root admission.Evidence, via admission.Entry, ttl ...time.Duration) {
 	if a := getResponseAdmission(); a != nil {
 		defer timeHandoff(time.Now())
-		_ = a.Respond(kind, root, via, ttl...)
+		_ = a.Respond(kind, target, root, via, ttl...)
 	}
 }
 
@@ -161,6 +164,6 @@ func AnswerRoot(kind admission.Kind, root admission.Evidence, via admission.Entr
 func respondNetblock() {
 	if a := getResponseAdmission(); a != nil {
 		defer timeHandoff(time.Now())
-		_ = a.Respond(admission.KindBlockSubnet, admission.Evidence{}, admission.EntryNetblock)
+		_ = a.Respond(admission.KindBlockSubnet, "", admission.Evidence{}, admission.EntryNetblock)
 	}
 }

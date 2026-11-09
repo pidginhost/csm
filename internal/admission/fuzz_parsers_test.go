@@ -45,9 +45,9 @@ func FuzzCanonicalTargets(f *testing.F) {
 
 func FuzzUnmarshalEvidence(f *testing.F) {
 	reg, _ := NewRegistry(testLookup)
-	p, _ := reg.Register(ProducerSpec{ID: "sshd_log", Entry: EntryScan, Observation: ObservationLogCursor, Checks: []string{"ssh_brute"}})
+	p, _ := reg.Register(ProducerSpec{ID: "sshd_log", Entry: EntryScan, Observation: ObservationLogCursor, Checks: []string{"ssh_brute"}, Attribution: Attributions(AttributionPeer)})
 	tg, _ := CanonicalAddress("192.0.2.1", Caps{})
-	e, _ := p.Mint(EvidenceInput{Check: "ssh_brute", FindingID: "0123456789abcdef", Severity: SeverityHigh, Observation: ObservationRef{"s", "c", 1}, ObservedAt: t0, Parser: ParserRef{"sshd", 1}, Target: tg})
+	e, _ := p.Mint(EvidenceInput{Check: "ssh_brute", FindingID: "0123456789abcdef", Severity: SeverityHigh, Observation: ObservationRef{"s", "c", 1}, ObservedAt: t0, Parser: ParserRef{"sshd", 1}, Target: tg, Attribution: AttributionPeer})
 	seed, _ := e.MarshalBinary()
 	f.Add(seed)
 	f.Add([]byte("E\x01{}"))

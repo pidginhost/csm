@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/metrics"
@@ -535,6 +536,7 @@ func CheckFTPLogins(ctx context.Context, cfg *config.Config, store *state.Store)
 			SourceIP:    off.IP,
 			Message:     fmt.Sprintf("FTP brute force from %s: %d failed attempts in %dm", off.IP, off.Count, windowMin),
 			Observation: observation,
+			Attribution: admission.AttributionPeer,
 		})
 	}
 

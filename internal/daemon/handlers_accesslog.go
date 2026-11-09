@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
@@ -177,12 +178,13 @@ func parseAccessLogBruteForceForLog(line string, cfg *config.Config, central boo
 		if len(tracker.wpLoginTimes) >= accessLogWPLoginThreshold {
 			tracker.wpLoginAlerted = true
 			results = append(results, alert.Finding{
-				Severity:  alert.Critical,
-				Check:     "wp_login_bruteforce",
-				Message:   fmt.Sprintf("WordPress login brute force from %s: %d POSTs in %v (real-time)", ip, len(tracker.wpLoginTimes), accessLogWindow),
-				Details:   "Real-time detection: high rate of POST requests to wp-login.php",
-				Timestamp: now,
-				SourceIP:  ip,
+				Severity:    alert.Critical,
+				Check:       "wp_login_bruteforce",
+				Message:     fmt.Sprintf("WordPress login brute force from %s: %d POSTs in %v (real-time)", ip, len(tracker.wpLoginTimes), accessLogWindow),
+				Details:     "Real-time detection: high rate of POST requests to wp-login.php",
+				Timestamp:   now,
+				SourceIP:    ip,
+				Attribution: admission.AttributionHTTPPeer,
 			})
 		}
 	}
@@ -193,12 +195,13 @@ func parseAccessLogBruteForceForLog(line string, cfg *config.Config, central boo
 		if len(tracker.xmlrpcTimes) >= xmlrpcThreshold {
 			tracker.xmlrpcAlerted = true
 			results = append(results, alert.Finding{
-				Severity:  alert.Critical,
-				Check:     "xmlrpc_abuse",
-				Message:   fmt.Sprintf("XML-RPC abuse from %s: %d POSTs in %v (real-time)", ip, len(tracker.xmlrpcTimes), accessLogWindow),
-				Details:   "Real-time detection: high rate of POST requests to xmlrpc.php (brute force or amplification)",
-				Timestamp: now,
-				SourceIP:  ip,
+				Severity:    alert.Critical,
+				Check:       "xmlrpc_abuse",
+				Message:     fmt.Sprintf("XML-RPC abuse from %s: %d POSTs in %v (real-time)", ip, len(tracker.xmlrpcTimes), accessLogWindow),
+				Details:     "Real-time detection: high rate of POST requests to xmlrpc.php (brute force or amplification)",
+				Timestamp:   now,
+				SourceIP:    ip,
+				Attribution: admission.AttributionHTTPPeer,
 			})
 		}
 	}
@@ -208,12 +211,13 @@ func parseAccessLogBruteForceForLog(line string, cfg *config.Config, central boo
 		if len(tracker.adminPanelTimes) >= accessLogWPLoginThreshold {
 			tracker.adminPanelAlerted = true
 			results = append(results, alert.Finding{
-				Severity:  alert.Critical,
-				Check:     "admin_panel_bruteforce",
-				Message:   fmt.Sprintf("Admin panel brute force from %s: %d POSTs in %v (real-time)", ip, len(tracker.adminPanelTimes), accessLogWindow),
-				Details:   "Real-time detection: high rate of POST requests to common admin panel login paths (phpMyAdmin / Joomla)",
-				Timestamp: now,
-				SourceIP:  ip,
+				Severity:    alert.Critical,
+				Check:       "admin_panel_bruteforce",
+				Message:     fmt.Sprintf("Admin panel brute force from %s: %d POSTs in %v (real-time)", ip, len(tracker.adminPanelTimes), accessLogWindow),
+				Details:     "Real-time detection: high rate of POST requests to common admin panel login paths (phpMyAdmin / Joomla)",
+				Timestamp:   now,
+				SourceIP:    ip,
+				Attribution: admission.AttributionHTTPPeer,
 			})
 		}
 	}

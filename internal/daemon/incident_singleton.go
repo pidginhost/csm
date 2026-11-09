@@ -505,7 +505,7 @@ func resetIncidentForTestWithThreshold(threshold int) {
 // prepareIncidentRoot mints the admission root of an attesting finding.
 // A timeline holds one per attesting event, so it keeps of the finding only
 // what a later refusal counts: its check and severity.
-func prepareIncidentRoot(f alert.Finding, target string) incident.PreparedRoot {
-	root, err := checks.PrepareAdmissionRoot(f, target)
+func prepareIncidentRoot(f alert.Finding) incident.PreparedRoot {
+	root, err := checks.PrepareAdmissionRoot(f)
 	return incident.PreparedRoot{Evidence: root, Finding: alert.Finding{Check: f.Check, Severity: f.Severity}, Err: err}
 }

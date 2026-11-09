@@ -51,7 +51,7 @@ func submitObservationError(o *Owner, p *admission.Producer, addr, cursor string
 		return err
 	}
 	e, err := p.Mint(admission.EvidenceInput{
-		Check: "ssh_brute", FindingID: "0123456789abcdef", Severity: admission.SeverityHigh,
+		Check: "ssh_brute", Attribution: admission.AttributionPeer, FindingID: "0123456789abcdef", Severity: admission.SeverityHigh,
 		Observation: admission.ObservationRef{Stream: "log:sshd_log", Cursor: cursor, Version: 1},
 		ObservedAt:  at, Parser: admission.ParserRef{Name: "sshd", Version: 1}, Target: target,
 	})

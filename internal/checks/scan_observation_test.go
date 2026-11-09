@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/state"
@@ -47,6 +48,9 @@ func TestSSHLoginScanStampsObservation(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("findings %+v, want one login", got)
 	}
+	if got[0].Attribution != admission.AttributionPeer {
+		t.Errorf("scheduled SSH login attribution %s, want peer", got[0].Attribution)
+	}
 	o := got[0].Observation
 	at, _ := syslogLineTime(accepted, now)
 	if o.Producer != "ssh_login_scan" || !strings.HasPrefix(o.Stream, "s:") || len(o.Stream) <= 2 ||
@@ -72,6 +76,9 @@ func TestFTPBruteforceNamesItsNewestFailure(t *testing.T) {
 	lines := strings.SplitAfter(string(data), "\n")
 	newest := len(data) - len(lines[len(lines)-2])
 	o := got[0].Observation
+	if got[0].Attribution != admission.AttributionPeer {
+		t.Errorf("attribution %s, want the pure-ftpd peer", got[0].Attribution)
+	}
 	if o.Producer != "ftp_scan" || !strings.HasPrefix(o.Stream, "s:") || o.Cursor != strconv.Itoa(newest) || o.ObservedAt.IsZero() {
 		t.Fatalf("observation %+v, want ftp_scan at the last failure's offset %d", o, newest)
 	}

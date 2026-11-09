@@ -174,6 +174,10 @@ type Finding struct {
 	// from, as the producer read it. Admission resolves the owner from them,
 	// so a producer records only what it read, never a guess.
 	Claims []admission.Claim `json:"-"`
+	// Attribution is how the parser read SourceIP (spec 5.8). The parser
+	// that read the address sets it; a response path never does. Unknown
+	// never authorizes an admission response.
+	Attribution admission.Attribution `json:"-"`
 	// Observation is where the finding was read; zero when the producer has
 	// no position for it. Internal-only like Claims.
 	Observation Observation `json:"-"`

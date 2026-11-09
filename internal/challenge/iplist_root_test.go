@@ -11,12 +11,13 @@ import (
 func testRoot(t *testing.T) admission.Evidence {
 	t.Helper()
 	reg, err := admission.NewRegistry(func(check string) (string, admission.Policy, bool) {
-		return check, admission.Policy{Family: admission.FamilyHTTP, Basis: admission.BasisLocal}, check == "http_brute"
+		return check, admission.Policy{Family: admission.FamilyHTTP, Basis: admission.BasisLocal, Attribution: admission.Attributions(admission.AttributionHTTPPeer, admission.AttributionTrustedHTTPChain)}, check == "http_brute"
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := reg.Register(admission.ProducerSpec{ID: "access_log", Entry: admission.EntryScan, Observation: admission.ObservationLogCursor, Checks: []string{"http_brute"}})
+	p, err := reg.Register(admission.ProducerSpec{ID: "access_log", Entry: admission.EntryScan, Observation: admission.ObservationLogCursor, Checks: []string{"http_brute"},
+		Attribution: admission.Attributions(admission.AttributionHTTPPeer)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -25,7 +26,7 @@ func testRoot(t *testing.T) admission.Evidence {
 		t.Fatal(err)
 	}
 	e, err := p.Mint(admission.EvidenceInput{
-		Check: "http_brute", FindingID: "0123456789abcdef", Severity: admission.SeverityHigh, Target: target,
+		Check: "http_brute", FindingID: "0123456789abcdef", Severity: admission.SeverityHigh, Target: target, Attribution: admission.AttributionHTTPPeer,
 		Observation: admission.ObservationRef{Stream: "access", Cursor: "offset=1", Version: 1},
 		ObservedAt:  time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC), Parser: admission.ParserRef{Name: "access_log", Version: 1},
 	})
