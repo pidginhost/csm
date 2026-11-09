@@ -484,25 +484,22 @@ func TestBuildChallengeDoctorReport_DirectListenerStillNeedsTLSAndGate(t *testin
 }
 
 func TestChallengeGateProbeReachesLiveListener(t *testing.T) {
-	for _, trusted := range [][]string{nil, {"127.0.0.1"}} {
-		t.Run(strings.Join(trusted, ","), func(t *testing.T) {
-			cfg := &config.Config{}
-			cfg.Challenge.Enabled = true
-			cfg.Challenge.ListenAddr = "127.0.0.1"
-			cfg.Challenge.TrustedProxies = trusted
-			srv := challenge.New(cfg, nil)
-			ln, err := srv.Listen()
-			if err != nil {
-				t.Fatal(err)
-			}
-			go func() { _ = srv.Serve(ln) }()
-			t.Cleanup(srv.Shutdown)
-			cfg.Challenge.ListenPort = ln.Addr().(*net.TCPAddr).Port
+	// The trusted-proxy case moved to the socket: the server now refuses to
+	// trust loopback (TestChallengeGateProbeReachesSocketListener).
+	cfg := &config.Config{}
+	cfg.Challenge.Enabled = true
+	cfg.Challenge.ListenAddr = "127.0.0.1"
+	srv := challenge.New(cfg, nil)
+	ln, err := srv.Listen()
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(srv.Shutdown)
+	cfg.Challenge.ListenPort = ln.Addr().(*net.TCPAddr).Port
 
-			if got := defaultChallengeGateProbe(cfg); got.Status != "ok" {
-				t.Fatalf("probe = %+v, want ok", got)
-			}
-		})
+	if got := defaultChallengeGateProbe(cfg); got.Status != "ok" {
+		t.Fatalf("probe = %+v, want ok", got)
 	}
 }
 

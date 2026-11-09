@@ -3198,7 +3198,7 @@ func (d *Daemon) startChallengeServer() {
 	d.wg.Add(1)
 	obs.Go("challenge-server", func() {
 		defer d.wg.Done()
-		csmlog.Info("challenge server active", "port", d.cfg.Challenge.ListenPort)
+		csmlog.Info("challenge server active", "addr", srv.Addr())
 		if err := srv.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			csmlog.Error("challenge server error", "err", err)
 		}
@@ -3223,7 +3223,7 @@ func (d *Daemon) attachChallengePortGate() {
 		return
 	}
 	if gate == nil {
-		csmlog.Info("challenge port-gate skipped (loopback listener or non-Linux build)",
+		csmlog.Info("challenge port-gate skipped (local listener or non-Linux build)",
 			"listen_addr", d.cfg.Challenge.ListenAddr)
 		return
 	}
