@@ -281,7 +281,7 @@ type reviewedEvidenceRestore struct {
 // source or destination of restored evidence require a new review.
 var reviewedEvidenceRestores = map[string]reviewedEvidenceRestore{
 	"internal/state.fromPendingRecords": {
-		reason: "restores the subnets a finding carried when it was parked at shutdown",
+		reason: "restores the subnets and attribution a finding carried when it was parked at shutdown",
 		declaration: `func fromPendingRecords(records []pendingFinding) []alert.Finding {
 	if records == nil {
 		return nil
@@ -300,6 +300,7 @@ var reviewedEvidenceRestores = map[string]reviewedEvidenceRestore{
 		findings[i].MailLoginFailure = r.ResponseMailLoginFailure
 		findings[i].BlockTTL = r.ResponseBlockTTL
 		findings[i].LoginAccount = r.ResponseLoginAccount
+		findings[i].Attribution = r.ResponseAttribution
 		if r.ResponseObservation != nil {
 			findings[i].Observation = *r.ResponseObservation
 		}
@@ -1054,6 +1055,7 @@ func TestAddressProducerScannerRejectsUnreviewedRestoreChanges(t *testing.T) {
 		findings[i].MailLoginFailure = r.ResponseMailLoginFailure
 		findings[i].BlockTTL = r.ResponseBlockTTL
 		findings[i].LoginAccount = r.ResponseLoginAccount
+		findings[i].Attribution = r.ResponseAttribution
 		if r.ResponseObservation != nil {
 			findings[i].Observation = *r.ResponseObservation
 		}

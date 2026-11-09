@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
@@ -366,6 +367,7 @@ func (p *PAMListener) recordFailure(ip, user, service string) []alert.Finding {
 				strings.Join(accounts, ", "), strings.Join(sortedBoolKeys(tracker.services), ", ")),
 			Timestamp:    now,
 			SourceIP:     ip,
+			Attribution:  admission.AttributionPeer,
 			SprayTargets: append([]string(nil), accounts...),
 		})
 	}
@@ -398,6 +400,7 @@ func (p *PAMListener) recordFailure(ip, user, service string) []alert.Finding {
 				strings.Join(users, ", "), strings.Join(services, ", ")),
 			Timestamp:    now,
 			SourceIP:     ip,
+			Attribution:  admission.AttributionPeer,
 			SprayTargets: users,
 		})
 	}

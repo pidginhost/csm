@@ -4,6 +4,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/alert"
 )
 
@@ -19,7 +20,8 @@ type subnetSighting struct {
 func sprayConstituents(ips map[string]subnetSighting) []alert.SprayConstituent {
 	out := make([]alert.SprayConstituent, 0, len(ips))
 	for ip, s := range ips {
-		out = append(out, alert.SprayConstituent{Address: ip, LastSeen: s.at, Observation: s.obs})
+		// Both mail trackers count the transport peer their parser read.
+		out = append(out, alert.SprayConstituent{Address: ip, LastSeen: s.at, Observation: s.obs, Attribution: admission.AttributionPeer})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Address < out[j].Address })
 	return out

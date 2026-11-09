@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/checks"
 	csmlog "github.com/pidginhost/csm/internal/log"
@@ -795,9 +796,10 @@ func (t *mailAuthTracker) RecordResolvedObserved(ip, account string, mb sprayMai
 					Check:    "mail_bruteforce",
 					Message: fmt.Sprintf("Mail auth brute force from %s: %d failed auths in %v",
 						ip, len(e.times), t.window),
-					Details:   details,
-					Timestamp: now,
-					SourceIP:  ip,
+					Details:     details,
+					Timestamp:   now,
+					SourceIP:    ip,
+					Attribution: admission.AttributionPeer,
 				})
 			}
 		}
@@ -852,9 +854,10 @@ func (t *mailAuthTracker) RecordResolvedObserved(ip, account string, mb sprayMai
 						Check:    "mail_bruteforce",
 						Message: fmt.Sprintf("Mail auth brute force from %s: %d failed auths across %d mailboxes in %v",
 							ip, len(e.slowTimes), len(e.slowAccounts), t.slowWindow),
-						Details:   "Long-horizon detection of paced imap/pop3/managesieve auth failures that stay below the fast per-IP window",
-						Timestamp: now,
-						SourceIP:  ip,
+						Details:     "Long-horizon detection of paced imap/pop3/managesieve auth failures that stay below the fast per-IP window",
+						Timestamp:   now,
+						SourceIP:    ip,
+						Attribution: admission.AttributionPeer,
 					})
 				}
 			}
@@ -1203,14 +1206,15 @@ func (t *mailAuthTracker) recordSuccessAt(ip, account string, at time.Time, kind
 		details = fmt.Sprintf("Source IP holds established successful logins to %d other mailboxes on this host, so this is more likely a shared office or agency device with a stale credential than a takeover. Verify with the customer before acting; not auto-blocked.", n)
 	}
 	return []alert.Finding{{
-		Severity:  severity,
-		Check:     "mail_account_compromised",
-		Message:   message,
-		Details:   details,
-		Timestamp: now,
-		SourceIP:  ip,
-		Domain:    compDomain,
-		Mailbox:   account,
+		Severity:    severity,
+		Check:       "mail_account_compromised",
+		Message:     message,
+		Details:     details,
+		Timestamp:   now,
+		SourceIP:    ip,
+		Attribution: admission.AttributionPeer,
+		Domain:      compDomain,
+		Mailbox:     account,
 	}}
 }
 
