@@ -134,6 +134,10 @@ Operator-driven mitigations applied to the host. Run `csm harden` with no argume
 Installing or enabling PHP Shield creates `/opt/csm/shield.conf.php` only
 when it is missing, so your edits survive. Update its allowed IPs by hand
 after changing `infra_ips`. Disabling keeps the file; uninstalling removes it.
+A PHP pool with `open_basedir` must allow `/opt/csm/`, not just the shield
+script, or the shield ignores `/opt/csm/shield.conf.php` and uses its
+defaults. A `.csm-shield-disable` file only works where `open_basedir`
+allows the account's home folder.
 
 ## State database
 
