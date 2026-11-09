@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-func TestTrustsProxyMatchesConnectingPeer(t *testing.T) {
+func TestServerTrustMatchesConnectingPeer(t *testing.T) {
 	for _, tc := range []struct {
 		entry, peer string
 		trusted     bool
@@ -34,9 +34,6 @@ func TestTrustsProxyMatchesConnectingPeer(t *testing.T) {
 	} {
 		t.Run(tc.entry+"/"+tc.peer, func(t *testing.T) {
 			entries := []string{tc.entry}
-			if got := TrustsProxy(entries, tc.peer); got != tc.trusted {
-				t.Fatalf("TrustsProxy = %v, want %v", got, tc.trusted)
-			}
 			got := extractVia(t, entries, net.JoinHostPort(tc.peer, "1234"), "203.0.113.20")
 			want := canonicalIP(tc.peer)
 			if tc.trusted {

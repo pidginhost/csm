@@ -43,8 +43,8 @@ type RenderConfig struct {
 	// the host's TLS-valid control-panel domain on a CSM-owned port,
 	// e.g. https://server.example.com:8439/challenge.
 	ChallengePublicURL string
-	// ChallengeTrustedProxies lets a proxy on this host front a loopback
-	// listener; see validateChallengePublicURL.
+	// ChallengeTrustedProxies is checked so the installer never wires
+	// redirects to a listener that trusts an address of this host.
 	ChallengeTrustedProxies []string
 }
 
@@ -66,7 +66,7 @@ var ErrInvalidPublicURL = errors.New("webserver integration: challenge.public_ur
 // ErrLoopbackPublicURL is returned when the installed snippets would
 // redirect browsers to a listener that only accepts loopback traffic and no
 // proxy on this host is trusted to front it.
-var ErrLoopbackPublicURL = errors.New("webserver integration: challenge.listen_addr must be non-loopback when challenge.public_url redirects are enabled, unless challenge.trusted_proxies lists it for a proxy on this host")
+var ErrLoopbackPublicURL = errors.New("webserver integration: challenge.listen_addr must be non-loopback when challenge.public_url redirects are enabled; for a proxy on this host use challenge.listen_addr: " + config.ChallengeSocketExample)
 
 // Result is the structured outcome of an installer run. JSON-friendly
 // shape so the CLI can render either human text or `--json` output.
@@ -164,6 +164,14 @@ func (i *Installer) Install() (Result, error) {
 	}
 
 	if err := validateChallengePublicURL(i.Config); err != nil {
+		res.Status = "fail"
+		res.Message = err.Error()
+		return res, err
+	}
+	// Kept out of validateChallengePublicURL so doctor, which reports this
+	// in its own check, does not report it twice.
+	if err := config.ChallengeLocalTrustError(i.Config.ChallengeTrustedProxies); err != nil {
+		err = fmt.Errorf("webserver integration: %w", err)
 		res.Status = "fail"
 		res.Message = err.Error()
 		return res, err
@@ -511,20 +519,18 @@ func validateChallengePublicURL(rc RenderConfig) error {
 	if isLoopbackHost(u.Hostname()) {
 		return fmt.Errorf("%w: host %q is loopback", ErrInvalidPublicURL, u.Hostname())
 	}
+	// A socket is reachable only by the proxy's group, so it needs no
+	// host checks; its "unix:" prefix would also parse as host:port.
+	if _, socket := config.ChallengeSocketPath(rc.ChallengeListenAddr); socket {
+		return nil
+	}
 	if _, _, err := net.SplitHostPort(strings.TrimSpace(rc.ChallengeListenAddr)); err == nil {
 		return errors.New("webserver integration: challenge.listen_addr must contain only a host; set the port in challenge.listen_port")
 	}
-	if isLoopbackListenAddr(rc.ChallengeListenAddr) && !loopbackListenerBehindProxy(rc) {
+	if isLoopbackListenAddr(rc.ChallengeListenAddr) {
 		return ErrLoopbackPublicURL
 	}
 	return nil
-}
-
-// loopbackListenerBehindProxy reports whether a proxy on this host can front
-// the loopback listener. Such a proxy connects from the listener's own
-// address, so that address must be trusted or every visitor looks like it.
-func loopbackListenerBehindProxy(rc RenderConfig) bool {
-	return challenge.TrustsProxy(rc.ChallengeTrustedProxies, challenge.ListenHost(rc.ChallengeListenAddr))
 }
 
 // ValidateChallengePublicURL applies the same direct-redirect validation used

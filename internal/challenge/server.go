@@ -697,13 +697,6 @@ func (s *Server) isTrustedProxy(ip string) bool {
 	return proxyTrusted(s.trustedProxies, s.trustedNets, ip)
 }
 
-// TrustsProxy reports whether challenge.trusted_proxies covers ip, matched
-// exactly as the running server matches a connecting peer.
-func TrustsProxy(entries []string, ip string) bool {
-	trusted, nets := parseTrustedProxies(entries)
-	return proxyTrusted(trusted, nets, canonicalIP(ip))
-}
-
 func parseTrustedProxies(entries []string) (map[string]bool, []*net.IPNet) {
 	trusted := make(map[string]bool)
 	var nets []*net.IPNet

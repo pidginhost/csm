@@ -340,7 +340,9 @@ func requireAllChallengeChecksOK(t *testing.T, report DoctorReport) {
 	}
 }
 
-func TestBuildChallengeDoctorReport_LoopbackListenerBehindLocalProxy(t *testing.T) {
+func TestBuildChallengeDoctorReport_LoopbackListenerBehindLocalProxyFails(t *testing.T) {
+	// Local accounts connect from loopback too, so a proxy on this host must
+	// use the socket; trusting the loopback listener's address is refused.
 	cfg := &config.Config{}
 	cfg.Challenge.Enabled = true
 	cfg.Challenge.ListenAddr = "127.0.0.1"
@@ -348,7 +350,19 @@ func TestBuildChallengeDoctorReport_LoopbackListenerBehindLocalProxy(t *testing.
 	cfg.Challenge.PublicURL = "https://challenge.example.com/challenge"
 	cfg.Challenge.TrustedProxies = []string{"127.0.0.1"}
 
-	requireAllChallengeChecksOK(t, challengeDoctorReportFor(cfg))
+	report := challengeDoctorReportFor(cfg)
+	if report.OverallStatus != "fail" {
+		t.Fatalf("overall = %s, want fail\n%s", report.OverallStatus, report.Human())
+	}
+	for _, c := range report.Checks {
+		if c.Name == "challenge public URL" {
+			if c.Status != "fail" || !strings.Contains(c.Message, config.ChallengeSocketExample) {
+				t.Fatalf("public URL check = %s %q, want fail pointing at the socket", c.Status, c.Message)
+			}
+			return
+		}
+	}
+	t.Fatal("no challenge public URL check")
 }
 
 func TestBuildChallengeDoctorReport_RemoteProxyServesTLS(t *testing.T) {
