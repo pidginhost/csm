@@ -1,8 +1,15 @@
 package main
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
+	"math/big"
 	"net"
 	"os"
 	"os/user"
@@ -665,5 +672,57 @@ func TestChallengeGateProbeReachesSocketListener(t *testing.T) {
 	got := defaultChallengeGateProbe(cfg)
 	if got.Status != "ok" || !strings.Contains(got.Message, dir) {
 		t.Fatalf("probe = %+v, want ok naming the socket", got)
+	}
+}
+
+// writeSelfSignedPair writes a throwaway certificate and key for a TLS
+// listener test and returns their paths.
+func writeSelfSignedPair(t *testing.T) (certPath, keyPath string) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "csm-challenge"},
+		DNSNames:     []string{"csm-challenge"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	certPath, keyPath = filepath.Join(dir, "cert.pem"), filepath.Join(dir, "key.pem")
+	if err := os.WriteFile(certPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyPath, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return certPath, keyPath
+}
+
+// Explicit challenge TLS on a socket: the probe must still dial the socket.
+func TestChallengeGateProbeReachesTLSSocketListener(t *testing.T) {
+	pinDoctorHost(t)
+	cfg, dir := socketDoctorCfg(t)
+	cfg.Challenge.TLSCert, cfg.Challenge.TLSKey = writeSelfSignedPair(t)
+	srv := challenge.New(cfg, nil)
+	ln, err := srv.Listen()
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(srv.Shutdown)
+	got := defaultChallengeGateProbe(cfg)
+	if got.Status != "ok" || !strings.Contains(got.Message, dir) {
+		t.Fatalf("probe = %+v, want ok over the TLS socket", got)
 	}
 }

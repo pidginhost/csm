@@ -656,26 +656,24 @@ func defaultChallengeGateProbe(cfg *config.Config) DoctorCheck {
 			Fix:     "fix challenge.listen_addr and challenge.listen_port, then restart csm.service",
 		}
 	}
-	client := &http.Client{Timeout: 2 * time.Second}
+	// One transport: a socket listener with explicit TLS needs both the
+	// socket dialer and the TLS settings.
+	transport := &http.Transport{}
 	target := rawURL
 	if socketPath != "" {
 		target = "unix:" + socketPath
-		client.Transport = &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		transport.DialContext = func(ctx context.Context, _, _ string) (net.Conn, error) {
 			var d net.Dialer
 			return d.DialContext(ctx, "unix", socketPath)
-		}}
-	}
-	if strings.HasPrefix(rawURL, "https://") {
-		// Fresh transport rather than cloning http.DefaultTransport: the
-		// default may be wrapped (tracing, proxy) and the type assertion
-		// would panic.
-		client.Transport = &http.Transport{
-			// #nosec G402 -- csm doctor probes the local listener for
-			// reachability; it does not authenticate remote data or send
-			// secrets.
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 		}
 	}
+	if strings.HasPrefix(rawURL, "https://") {
+		// #nosec G402 -- csm doctor probes the local listener for
+		// reachability; it does not authenticate remote data or send
+		// secrets.
+		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	}
+	client := &http.Client{Timeout: 2 * time.Second, Transport: transport}
 	req, err := http.NewRequest(http.MethodHead, rawURL, nil)
 	if err != nil {
 		return DoctorCheck{Name: "challenge gate endpoint", Status: "fail", Message: err.Error()}
