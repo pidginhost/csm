@@ -292,6 +292,8 @@ type SubnetEntry struct {
 	Source    string    `json:"source,omitempty"`
 	BlockedAt time.Time `json:"blocked_at"`
 	ExpiresAt time.Time `json:"expires_at,omitempty"`
+	// Automatic records request intent; older Source values came from reason text.
+	Automatic bool `json:"automatic,omitempty"`
 }
 
 // PortAllowEntry represents a port-specific IP allow (e.g. tcp|in|d=PORT|s=IP).
@@ -4152,6 +4154,17 @@ func (e *Engine) BlockSubnetWithFindingID(cidr, reason string, timeout time.Dura
 }
 func (e *Engine) BlockSubnetRequest(req ActionRequest, budget *ScanAdmission) (resultErr error) {
 	cidr, reason, timeout, findingID := req.Target, req.Reason, req.TTL, req.FindingID
+	// Keep display provenance aligned with the request's automatic intent.
+	// Free-form operator reasons cannot establish automatic ownership.
+	source := req.Source
+	if source == "" {
+		source = InferProvenance("block_subnet", reason)
+	}
+	if req.Automatic {
+		source = SourceAutoResponse
+	} else if source == SourceAutoResponse {
+		source = SourceUnknown
+	}
 
 	defer func() {
 		if e.shouldLegacyOutcome(resultErr) {
@@ -4159,7 +4172,7 @@ func (e *Engine) BlockSubnetRequest(req ActionRequest, budget *ScanAdmission) (r
 			if errors.Is(resultErr, ErrActionDryRun) {
 				result, auditErr = actionlog.DryRun, nil
 			}
-			recordFirewallFindingResult("block_subnet", cidr, reason, InferProvenance("block_subnet", reason), timeout, result, auditErr, findingID)
+			recordFirewallFindingResult("block_subnet", cidr, reason, source, timeout, result, auditErr, findingID)
 		}
 	}()
 
@@ -4202,15 +4215,16 @@ func (e *Engine) BlockSubnetRequest(req ActionRequest, budget *ScanAdmission) (r
 		if err := e.updateSubnetMutation(priorState, priorState, req, budget); err != nil {
 			return err
 		}
-		e.legacyFileAuditLocked("block_subnet", network.String(), reason, InferProvenance("block_subnet", reason), timeout)
+		e.legacyFileAuditLocked("block_subnet", network.String(), reason, source, timeout)
 		return nil
 	}
 
 	entry := SubnetEntry{
 		CIDR:      network.String(),
 		Reason:    reason,
-		Source:    InferProvenance("block_subnet", reason),
+		Source:    source,
 		BlockedAt: time.Now(),
+		Automatic: req.Automatic,
 	}
 	if timeout > 0 {
 		entry.ExpiresAt = time.Now().Add(timeout)
@@ -4255,6 +4269,16 @@ func (e *Engine) BlockedSubnetCovering(ip string) (string, bool) {
 
 // UnblockSubnet removes a CIDR range from the blocked subnets set (IPv4 or IPv6).
 func (e *Engine) UnblockSubnet(cidr string) (resultErr error) {
+	return e.unblockSubnet(cidr, nil)
+}
+
+// UnblockSubnetIfUnchanged refuses to remove a replacement decision after a
+// caller checked the subnet's provenance in a snapshot.
+func (e *Engine) UnblockSubnetIfUnchanged(expected SubnetEntry) error {
+	return e.unblockSubnet(expected.CIDR, &expected)
+}
+
+func (e *Engine) unblockSubnet(cidr string, expected *SubnetEntry) (resultErr error) {
 	defer func() { e.legacyFirewallFailure("unblock_subnet", cidr, "", "", 0, resultErr) }()
 
 	e.mu.Lock()
@@ -4271,6 +4295,25 @@ func (e *Engine) UnblockSubnet(cidr string) (resultErr error) {
 	}
 
 	prior := e.loadStateFile()
+	if expected != nil {
+		if e.stateReadErr != nil {
+			return e.stateReadErr
+		}
+		found := false
+		for _, entry := range prior.BlockedNet {
+			if entry.CIDR != network.String() {
+				continue
+			}
+			if entry.Reason != expected.Reason || entry.Source != expected.Source || entry.Automatic != expected.Automatic ||
+				!entry.BlockedAt.Equal(expected.BlockedAt) || !entry.ExpiresAt.Equal(expected.ExpiresAt) {
+				return ErrBlockChanged
+			}
+			found = true
+		}
+		if !found {
+			return ErrBlockChanged
+		}
+	}
 	next := copyFirewallState(prior)
 	remaining := next.BlockedNet[:0]
 	for _, entry := range next.BlockedNet {

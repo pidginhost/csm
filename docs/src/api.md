@@ -76,14 +76,24 @@ Either credential also removes subnet blocks CSM added automatically that
 cover the address (`subnet_removed` in the response). A subnet an operator
 blocked is kept and named in `subnet_kept`: the address stays dropped until
 that subnet is unblocked.
+Operator descriptions do not grant automatic-unban eligibility. If a subnet
+changes during the request, CSM leaves the replacement intact and returns
+HTTP 500 with a retry message.
+Older subnet entries without recorded automatic ownership are also kept,
+even if their source label says automatic; they expire normally or can be
+removed explicitly through the admin-only subnet removal endpoint.
 The credential accepted at authorization selects the release mode; expiry
 while reading the request body cannot change it. A valid browser session
 takes precedence over a bearer token and still needs CSRF with an unban bearer.
 
-A failed firewall removal returns HTTP 500 without clearing threat state or
-reporting a successful unban. A firewall backend without self-service unban
+A failed individual-IP removal returns HTTP 500 without clearing threat state
+or reporting a successful unban. A failed subnet removal also returns HTTP 500;
+the individual-IP release and any earlier subnet removals have already taken
+effect. A firewall backend without self-service unban
 support returns HTTP 501 for an unban-scope caller; it never falls back to an
-operator release. The cPHulk flush remains best effort.
+operator release. A backend without conditional subnet removal returns HTTP
+501 when a covering automatic subnet needs removal. The cPHulk flush remains
+best effort and runs only after the firewall removals succeed.
 
 The legacy single-token `webui.auth_token:`, with its optional `webui.auth_token_issued_at` and `webui.auth_token_expires_at`, is loaded into a `legacy-auth-token` admin entry. Read-scope tokens are intended for orchestrators and dashboards that consume status, findings, history, stats, challenge stats, blocked-IP summaries, scan jobs, health, components, capabilities, and SSE events. Admin scope is still required for write routes and for sensitive reads such as quarantine, settings, firewall internals, threat-intel detail, rules, account detail, exports, incident timelines, and audit history. (ModSecurity `stats`/`blocks`/`events` are read scope; only the ModSecurity rules and escalation routes need admin.) `metrics_token:` is a separate, read-only credential for `/metrics` only.
 

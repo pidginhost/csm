@@ -3,6 +3,7 @@ package webui
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -715,25 +716,38 @@ func (s *Server) apiFirewallUnban(w http.ResponseWriter, r *http.Request) {
 	dropAutoBlockThreatRow(req.IP)
 
 	// 2. Also remove covering subnet blocks that CSM added automatically. A
-	// subnet an operator blocked stays: one address's unban must not reopen
-	// it, whoever asks, and the response says the address is still dropped.
+	// subnet an operator blocked, or whose automatic ownership is unproven,
+	// stays: one address's unban must not reopen it, whoever asks.
 	// A corrupt state file only costs us the subnet sweep; the IP unblock
 	// above already ran, so skip this step rather than fail the whole unban.
 	state, stateErr := firewall.LoadState(s.cfg.StatePath)
 	subnetRemoved, subnetKept := "", ""
-	if sb, ok := s.blocker.(subnetUnblocker); ok && stateErr == nil && state != nil {
+	if stateErr == nil && state != nil {
 		for _, sn := range state.BlockedNet {
 			_, network, err := net.ParseCIDR(sn.CIDR)
 			if err != nil || !network.Contains(parsedIP) {
 				continue
 			}
-			if sn.Source != firewall.SourceAutoResponse {
+			if !sn.Automatic {
 				if subnetKept == "" {
 					subnetKept = sn.CIDR
 				}
 				continue
 			}
-			if sb.UnblockSubnet(sn.CIDR) == nil && subnetRemoved == "" {
+			sb, ok := s.blocker.(conditionalSubnetUnblocker)
+			if !ok {
+				writeJSONError(w, "Safe subnet removal is not supported: "+sn.CIDR, http.StatusNotImplemented)
+				return
+			}
+			if err := sb.UnblockSubnetIfUnchanged(sn); err != nil {
+				message := "Failed to remove subnet " + sn.CIDR + ": " + err.Error()
+				if errors.Is(err, firewall.ErrBlockChanged) {
+					message = "Subnet " + sn.CIDR + " changed during unban; retry the request"
+				}
+				writeJSONError(w, message, http.StatusInternalServerError)
+				return
+			}
+			if subnetRemoved == "" {
 				subnetRemoved = sn.CIDR
 			}
 		}
@@ -751,7 +765,7 @@ func (s *Server) apiFirewallUnban(w http.ResponseWriter, r *http.Request) {
 	}
 	if subnetKept != "" {
 		result["subnet_kept"] = subnetKept
-		details += ", kept operator subnet " + subnetKept
+		details += ", kept subnet " + subnetKept
 	}
 	s.auditLog(r, "firewall_unban", req.IP, details)
 	writeJSON(w, result)

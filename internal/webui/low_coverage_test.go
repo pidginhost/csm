@@ -972,7 +972,7 @@ func TestAPIFirewallUnbanRemovesSubnet(t *testing.T) {
 	}
 	fwState := firewall.FirewallState{
 		BlockedNet: []firewall.SubnetEntry{
-			{CIDR: "203.0.113.0/24", Reason: "abuse", Source: firewall.SourceAutoResponse},
+			{CIDR: "203.0.113.0/24", Reason: "abuse", Source: firewall.SourceAutoResponse, Automatic: true},
 		},
 	}
 	data, _ := json.Marshal(fwState)
