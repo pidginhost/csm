@@ -1417,7 +1417,52 @@ func phpCodeOnly(src string) string {
 		// PHP mode: copy verbatim until a top-level "?>".
 		i = copyPHPModeRegion(&b, src, i)
 	}
-	return b.String()
+	return canonicalSuperglobalAliases(b.String())
+}
+
+// phpGapRe is what PHP accepts between the tokens of a variable expression.
+const phpGapRe = `(?:\s|/\*[\s\S]*?\*/|(?://|#)[^\n]*\n)*`
+
+const superglobalNameRe = `['"](_(?:GET|POST|REQUEST|COOKIE|FILES|SERVER|ENV|SESSION))['"]`
+
+var reSuperglobalAlias = regexp.MustCompile(
+	`\$\{` + phpGapRe + superglobalNameRe + phpGapRe + `\}` +
+		`|\$GLOBALS` + phpGapRe + `\[` + phpGapRe + superglobalNameRe + phpGapRe + `\]`)
+
+// canonicalSuperglobalAliases rewrites ${'_POST'} and $GLOBALS['_POST'] to
+// $_POST so every request-input heuristic sees one spelling. The rest of
+// each alias becomes spaces and its newlines stay, so offsets and line
+// numbers do not move.
+func canonicalSuperglobalAliases(code string) string {
+	if !strings.Contains(code, "${") && !strings.Contains(code, "$GLOBALS") {
+		return code
+	}
+	matches := reSuperglobalAlias.FindAllStringSubmatchIndex(code, -1)
+	if matches == nil {
+		return code
+	}
+	b := []byte(code)
+	for _, m := range matches {
+		name := "$"
+		if m[2] >= 0 {
+			name += code[m[2]:m[3]]
+		} else {
+			name += code[m[4]:m[5]]
+		}
+		for i := m[0]; i < m[1]; i++ {
+			if b[i] != '\n' {
+				b[i] = ' '
+			}
+		}
+		// Keep the name as close to a following [index] as possible without
+		// covering a newline. The quoted name itself is always such a span.
+		at := m[1] - len(name)
+		for strings.Contains(code[at:at+len(name)], "\n") {
+			at--
+		}
+		copy(b[at:], name)
+	}
+	return string(b)
 }
 
 // copyPHPModeRegion copies src[start:] into b verbatim until a top-level "?>"
