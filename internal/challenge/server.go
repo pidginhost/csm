@@ -16,7 +16,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/pidginhost/csm/internal/config"
@@ -39,9 +38,11 @@ type Server struct {
 
 	// socket mode: listen_addr is unix:<path>. The only peer that can open
 	// the socket is the proxy, so its X-Forwarded-For names the visitor.
-	socket      bool
-	socketPath  string
-	socketBound atomic.Bool
+	socket         bool
+	socketPath     string
+	socketMu       sync.Mutex
+	socketListener net.Listener
+	socketClosed   bool
 
 	// Track recently verified IPs to prevent replay
 	verified   map[string]time.Time
@@ -172,11 +173,19 @@ func (s *Server) Listen() (net.Listener, error) {
 		return nil, err
 	}
 	if s.socket {
+		s.socketMu.Lock()
+		defer s.socketMu.Unlock()
+		if s.socketClosed {
+			return nil, http.ErrServerClosed
+		}
+		if s.socketListener != nil {
+			return nil, fmt.Errorf("challenge socket %s is already listening", s.socketPath)
+		}
 		listener, err := listenUnixSocket(s.socketPath, s.cfg.Challenge.ListenGroup)
 		if err != nil {
 			return nil, err
 		}
-		s.socketBound.Store(true)
+		s.socketListener = listener
 		return listener, nil
 	}
 	listener, err := net.Listen("tcp", s.srv.Addr)
@@ -204,6 +213,8 @@ func (s *Server) Addr() string {
 //  2. webui.tls_cert + webui.tls_key              (direct/public binds only)
 //  3. plain HTTP                                  (loopback-only default)
 func (s *Server) Serve(listener net.Listener) error {
+	// ServeTLS can fail before http.Server takes ownership of the listener.
+	defer func() { _ = listener.Close() }()
 	cert, key := s.resolveTLSMaterial()
 	if cert == "" || key == "" {
 		if !localOnlyListener(s.cfg.Challenge.ListenAddr) {
@@ -272,10 +283,11 @@ func ListenHost(addr string) string {
 // Shutdown gracefully stops the server and removes a socket it bound.
 func (s *Server) Shutdown() {
 	_ = s.srv.Close()
-	if s.socketBound.Load() {
-		if fi, err := os.Lstat(s.socketPath); err == nil && fi.Mode()&os.ModeSocket != 0 {
-			_ = os.Remove(s.socketPath)
-		}
+	s.socketMu.Lock()
+	defer s.socketMu.Unlock()
+	s.socketClosed = true
+	if s.socketListener != nil {
+		_ = s.socketListener.Close()
 	}
 }
 
