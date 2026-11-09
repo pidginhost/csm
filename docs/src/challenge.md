@@ -205,8 +205,11 @@ challenge:
 ```
 
 CSM creates the socket with mode 0660, owned by root and `listen_group`,
-and removes it on shutdown. Its directory must be owned by root and not
-writable by anyone else, as `/run/csm` is. `listen_port`, the port gate
+and removes it on shutdown. Its directory must be owned by root, not
+writable by anyone else, and writable by the CSM service; with the shipped
+systemd unit that means `/run/csm`. The path must be absolute and short
+enough that the directory leaves 16 of the 107 bytes a socket path may
+use, since CSM creates the socket under a temporary name first. `listen_port`, the port gate
 and the Web UI TLS fallback do not apply. The proxy must send
 X-Forwarded-For; a request without a readable visitor address gets HTTP
 400. `trusted_proxies` stays optional and lists any proxies in front of
@@ -221,6 +224,10 @@ location /challenge {
     proxy_set_header X-Forwarded-For $remote_addr;
 }
 ```
+
+With a CDN or another proxy in front of nginx, list those proxies in
+`trusted_proxies` and use `proxy_set_header X-Forwarded-For
+$proxy_add_x_forwarded_for;` so the visitor address they add is kept.
 
 Apache 2.4.7 or later, with mod_proxy and mod_proxy_http (it adds
 X-Forwarded-For itself):
