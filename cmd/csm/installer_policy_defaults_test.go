@@ -8,28 +8,37 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 )
 
-// CLI installs previously omitted these keys and used runtime defaults.
-// Adopting the packaged template must not change their effective policies.
-func TestInstallerPreservesRuntimePolicyDefaults(t *testing.T) {
+// A CLI install must start with the packaged policy, not the built-in
+// defaults it got while it omitted these keys. With firewall.ipv6 false every
+// IPv6 packet bypasses the firewall, which the shipped config exists to avoid.
+func TestInstallerUsesPackagedPolicy(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "csm.yaml")
 	if err := deployDefaultConfig(path); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := config.Load(path)
+	installed, err := config.Load(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Alerts.MaxPerHour != 30 {
-		t.Errorf("alert limit = %d, want 30", cfg.Alerts.MaxPerHour)
+	data, err := os.ReadFile(filepath.Join("..", "..", "build", "packaging", "csm.yaml.default"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	if cfg.Thresholds.HTTPDistributedMinIPs != 0 {
-		t.Errorf("distributed HTTP detection = %d, want disabled", cfg.Thresholds.HTTPDistributedMinIPs)
+	packaged, err := config.LoadBytes(data)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if cfg.Firewall.IPv6 {
-		t.Error("IPv6 filtering enabled without operator opt-in")
+	if !installed.Firewall.IPv6 {
+		t.Error("CLI install leaves IPv6 unfiltered")
 	}
-	if cfg.Incidents.SpraySuppression.DryRun {
-		t.Error("credential-spray dry run enabled without operator opt-in")
+	if installed.Alerts.MaxPerHour != packaged.Alerts.MaxPerHour {
+		t.Errorf("alert limit = %d, packaged %d", installed.Alerts.MaxPerHour, packaged.Alerts.MaxPerHour)
+	}
+	if installed.Thresholds.HTTPDistributedMinIPs != packaged.Thresholds.HTTPDistributedMinIPs {
+		t.Errorf("distributed HTTP threshold = %d, packaged %d", installed.Thresholds.HTTPDistributedMinIPs, packaged.Thresholds.HTTPDistributedMinIPs)
+	}
+	if installed.Incidents.SpraySuppression.DryRun != packaged.Incidents.SpraySuppression.DryRun {
+		t.Error("credential-spray dry run differs from the packaged config")
 	}
 }
 

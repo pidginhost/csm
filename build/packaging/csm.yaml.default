@@ -607,9 +607,9 @@ incidents:
   # Credential-spray super-incident: when one source IP brute-forces
   # many distinct mailboxes inside the merge window, collapse the
   # per-mailbox fan-out into a single credential_spray incident keyed
-  # on the source IP. Off by default. Set dry_run: true to report
-  # would-be suppression through counters. Once you have validated
-  # those counters, set enabled: true and dry_run: false to apply it.
+  # on the source IP. Default-OFF + dry_run=TRUE so the path ships
+  # dark and counters report what would have happened. Flip enabled
+  # to true (and dry_run to false) once you have validated counters.
   spray_suppression:
     enabled: false
     dry_run: true

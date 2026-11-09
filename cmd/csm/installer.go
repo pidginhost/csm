@@ -778,20 +778,12 @@ func deployDefaultConfig(path string) error {
 	}
 	authToken := hex.EncodeToString(tokenBytes)
 	issuedAt := time.Now().UTC().Format(time.RFC3339)
-	defaults, err := config.LoadBytes(nil)
-	if err != nil {
-		return fmt.Errorf("loading runtime defaults: %w", err)
-	}
-	// Match YAML paths so examples in comments cannot receive the credentials.
+	// The packaged file is the one template for both install methods; only
+	// the credentials change. Match YAML paths so examples in comments cannot
+	// receive them.
 	content, err := config.YAMLEdit(packaging.DefaultConfig, []config.YAMLChange{
 		{Path: []string{"webui", "auth_token"}, Value: authToken},
 		{Path: []string{"webui", "auth_token_issued_at"}, Value: issuedAt},
-		// CLI installs use runtime policy defaults; package installs have
-		// their own opt-ins. Sharing the template must not enable them here.
-		{Path: []string{"alerts", "max_per_hour"}, Value: defaults.Alerts.MaxPerHour},
-		{Path: []string{"thresholds", "http_distributed_min_ips"}, Value: defaults.Thresholds.HTTPDistributedMinIPs},
-		{Path: []string{"firewall", "ipv6"}, Value: defaults.Firewall.IPv6},
-		{Path: []string{"incidents", "spray_suppression", "dry_run"}, Value: defaults.Incidents.SpraySuppression.DryRun},
 	})
 	if err != nil {
 		return fmt.Errorf("filling default config: %w", err)

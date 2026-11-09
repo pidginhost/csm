@@ -13,9 +13,11 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 )
 
-// CLI installs share the packaged template, keeping their runtime policies
-// and generating credentials without changing unrelated keys or comments.
-func TestInstallerWritesPackagedConfigWithInstallDefaults(t *testing.T) {
+// `csm install` and the packages must start a host from the same config file.
+// A separate installer copy drifted: keys, comments and defaults that the
+// packaged file carried were missing on hosts installed by the CLI. Only the
+// generated credentials may differ.
+func TestInstallerWritesThePackagedConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "csm.yaml")
 	if err := deployDefaultConfig(path); err != nil {
 		t.Fatalf("deployDefaultConfig: %v", err)
@@ -27,17 +29,6 @@ func TestInstallerWritesPackagedConfigWithInstallDefaults(t *testing.T) {
 	packaged, err := os.ReadFile(filepath.Join("..", "..", "build", "packaging", "csm.yaml.default"))
 	if err != nil {
 		t.Fatal(err)
-	}
-	for _, change := range []struct{ from, to string }{
-		{"  max_per_hour: 10\n", "  max_per_hour: 30\n"},
-		{"  http_distributed_min_ips: 10\n", "  http_distributed_min_ips: 0\n"},
-		{"  ipv6: true\n", "  ipv6: false\n"},
-		{"    dry_run: true\n    distinct_mailboxes:", "    dry_run: false\n    distinct_mailboxes:"},
-	} {
-		if bytes.Count(packaged, []byte(change.from)) != 1 {
-			t.Fatalf("expected one packaged policy setting %q", change.from)
-		}
-		packaged = bytes.Replace(packaged, []byte(change.from), []byte(change.to), 1)
 	}
 	cfg, err := config.LoadBytes(written)
 	if err != nil {
@@ -69,7 +60,7 @@ func TestInstallerWritesPackagedConfigWithInstallDefaults(t *testing.T) {
 		return strings.Join(out, "\n")
 	}
 	if normalize(written) != normalize(packaged) {
-		t.Fatal("installed config differs from the packaged template beyond credentials and install policies")
+		t.Fatal("installed config differs from the packaged template beyond the generated credentials")
 	}
 }
 
