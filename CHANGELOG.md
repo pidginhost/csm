@@ -15,7 +15,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Fixed
 
-- Install commands shown on static web pages, and framework classes that handle admin uploads, no longer raise Critical dropper alerts.
+- Framework classes that handle admin uploads no longer raise Critical dropper alerts.
 
 ## [4.10.2] - 2026-11-08
 

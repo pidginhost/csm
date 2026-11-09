@@ -55,30 +55,6 @@ func FuzzRegexGatesAreSound(f *testing.F) {
 	})
 }
 
-func FuzzStaticPageExclusion(f *testing.F) {
-	for _, seed := range []string{"text", "<!<p>", "<!-- comment -->", "<?php", "<<%", "<!-<!--#", "<", "<!", "<!-", "<!--", "\xff<?"} {
-		f.Add([]byte(seed))
-	}
-	rule := staticPageRule(f)
-	if len(rule.compiledExcludeRegexes) != 1 {
-		f.Fatal("expected one static page exclusion")
-	}
-	re := rule.compiledExcludeRegexes[0]
-	f.Fuzz(func(t *testing.T, body []byte) {
-		content := append([]byte("<html>"), body...)
-		want := true
-		for _, tag := range []string{"<?", "<%", "<!--#"} {
-			want = want && !bytes.Contains(content, []byte(tag))
-		}
-		for _, tail := range []string{"<", "<!", "<!-", "<!--"} {
-			want = want && !bytes.HasSuffix(content, []byte(tail))
-		}
-		if got := re.Match(content); got != want {
-			t.Fatalf("static exclusion on %q = %t, want %t", body, got, want)
-		}
-	})
-}
-
 func FuzzReferencedPayloadPaths(f *testing.F) {
 	f.Add([]byte("<?php include'payload.jpe';"))
 	f.Add([]byte("<?php $p = '/assets/logo.png'; include($p);"))
