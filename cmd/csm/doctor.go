@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -374,6 +375,10 @@ func buildChallengeDoctorReport(loadConfig func() (*config.Config, error), webCh
 	}
 	report.Checks = append(report.Checks, DoctorCheck{Name: "challenge enabled", Status: "ok"})
 	report.Checks = append(report.Checks, challengePublicURLCheck(cfg))
+	report.Checks = append(report.Checks, challengeTrustedProxiesCheck(cfg))
+	if _, socket := config.ChallengeSocketPath(cfg.Challenge.ListenAddr); socket {
+		report.Checks = append(report.Checks, challengeSocketCheck(cfg))
+	}
 	report.Checks = append(report.Checks, challengeTLSCheck(cfg))
 	report.Checks = append(report.Checks, challengePortGateCheck(cfg))
 	if webChecks != nil {
@@ -393,14 +398,48 @@ func challengePublicURLCheck(cfg *config.Config) DoctorCheck {
 			Name:    "challenge public URL",
 			Status:  "fail",
 			Message: err.Error(),
-			Fix:     "set challenge.public_url to an absolute http(s) URL ending in /challenge, and bind challenge.listen_addr to a non-loopback address or list it in challenge.trusted_proxies for a proxy on this host",
+			Fix:     "set challenge.public_url to an absolute http(s) URL ending in /challenge, and bind challenge.listen_addr to a non-loopback address, or to " + config.ChallengeSocketExample + " for a proxy on this host",
 		}
 	}
 	return DoctorCheck{Name: "challenge public URL", Status: "ok"}
 }
 
+// challengeTrustedProxiesCheck fails when trusted_proxies covers an address
+// of this host. The challenge server refuses to start then, since any local
+// account could pose as any visitor.
+func challengeTrustedProxiesCheck(cfg *config.Config) DoctorCheck {
+	if err := config.ChallengeLocalTrustError(cfg.Challenge.TrustedProxies); err != nil {
+		return DoctorCheck{
+			Name:    "challenge trusted proxies",
+			Status:  "fail",
+			Message: err.Error(),
+			Fix:     "serve a proxy on this host through challenge.listen_addr: " + config.ChallengeSocketExample + " with challenge.listen_group, or remove trusted_proxies and use direct mode",
+		}
+	}
+	return DoctorCheck{Name: "challenge trusted proxies", Status: "ok"}
+}
+
+// challengeSocketCheck applies the server's own placement rules, so a host
+// fact the config cannot show (a missing group, an unsafe directory) is
+// reported before a restart fails on it.
+func challengeSocketCheck(cfg *config.Config) DoctorCheck {
+	path, _ := config.ChallengeSocketPath(cfg.Challenge.ListenAddr)
+	if _, err := challenge.CheckSocketPlacement(path, cfg.Challenge.ListenGroup); err != nil {
+		return DoctorCheck{
+			Name:    "challenge socket",
+			Status:  "fail",
+			Message: err.Error(),
+			Fix:     "set challenge.listen_group to the group your proxy runs as and keep the socket in a root-owned directory nobody else can write, such as /run/csm",
+		}
+	}
+	return DoctorCheck{Name: "challenge socket", Status: "ok", Message: path}
+}
+
 func challengeTLSCheck(cfg *config.Config) DoctorCheck {
 	cert, key, source := challengeRuntimeTLSMaterial(cfg)
+	if _, socket := config.ChallengeSocketPath(cfg.Challenge.ListenAddr); socket && cert == "" && key == "" {
+		return DoctorCheck{Name: "challenge TLS", Status: "ok", Message: "unix socket listener: the proxy serves HTTPS"}
+	}
 	if challengeListenAddrIsLoopbackDoctor(cfg.Challenge.ListenAddr) && cert == "" && key == "" {
 		return DoctorCheck{Name: "challenge TLS", Status: "ok", Message: "loopback listener does not require TLS"}
 	}
@@ -452,7 +491,7 @@ func challengeRuntimeTLSMaterial(cfg *config.Config) (cert, key, source string) 
 	if cfg.Challenge.TLSCert != "" || cfg.Challenge.TLSKey != "" {
 		return cfg.Challenge.TLSCert, cfg.Challenge.TLSKey, "challenge"
 	}
-	if challengeListenAddrIsLoopbackDoctor(cfg.Challenge.ListenAddr) {
+	if _, socket := config.ChallengeSocketPath(cfg.Challenge.ListenAddr); socket || challengeListenAddrIsLoopbackDoctor(cfg.Challenge.ListenAddr) {
 		return "", "", ""
 	}
 	if cfg.WebUI.TLSCert != "" || cfg.WebUI.TLSKey != "" {
@@ -462,6 +501,16 @@ func challengeRuntimeTLSMaterial(cfg *config.Config) (cert, key, source string) 
 }
 
 func challengePortGateCheck(cfg *config.Config) DoctorCheck {
+	if _, socket := config.ChallengeSocketPath(cfg.Challenge.ListenAddr); socket {
+		if cfg.Challenge.PortGate.Enabled {
+			return DoctorCheck{
+				Name:    "challenge port gate",
+				Status:  "warn",
+				Message: "port gate is enabled but the listener is a unix socket, so it has no effect",
+			}
+		}
+		return DoctorCheck{Name: "challenge port gate", Status: "ok", Message: "unix socket listener has no TCP port"}
+	}
 	if challengeListenAddrIsLoopbackDoctor(cfg.Challenge.ListenAddr) {
 		if cfg.Challenge.PortGate.Enabled {
 			return DoctorCheck{
@@ -598,7 +647,7 @@ func challengeConfigtestCheck(res webserver.Result, err error) DoctorCheck {
 }
 
 func defaultChallengeGateProbe(cfg *config.Config) DoctorCheck {
-	rawURL, err := challengeGateProbeURL(cfg)
+	rawURL, socketPath, err := challengeGateProbeTarget(cfg)
 	if err != nil {
 		return DoctorCheck{
 			Name:    "challenge gate endpoint",
@@ -608,6 +657,14 @@ func defaultChallengeGateProbe(cfg *config.Config) DoctorCheck {
 		}
 	}
 	client := &http.Client{Timeout: 2 * time.Second}
+	target := rawURL
+	if socketPath != "" {
+		target = "unix:" + socketPath
+		client.Transport = &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, "unix", socketPath)
+		}}
+	}
 	if strings.HasPrefix(rawURL, "https://") {
 		// Fresh transport rather than cloning http.DefaultTransport: the
 		// default may be wrapped (tracing, proxy) and the type assertion
@@ -633,7 +690,7 @@ func defaultChallengeGateProbe(cfg *config.Config) DoctorCheck {
 			Name:    "challenge gate endpoint",
 			Status:  "fail",
 			Message: err.Error(),
-			Fix:     "start csm.service and confirm the challenge listener is bound",
+			Fix:     "start csm.service and confirm the challenge listener is bound and this user can open it",
 		}
 	}
 	defer resp.Body.Close()
@@ -641,14 +698,28 @@ func defaultChallengeGateProbe(cfg *config.Config) DoctorCheck {
 	// and 401 when it is. Either response proves the handler is reachable
 	// on the configured listener.
 	if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusUnauthorized {
-		return DoctorCheck{Name: "challenge gate endpoint", Status: "ok", Message: rawURL}
+		return DoctorCheck{Name: "challenge gate endpoint", Status: "ok", Message: target}
 	}
 	return DoctorCheck{
 		Name:    "challenge gate endpoint",
 		Status:  "fail",
-		Message: fmt.Sprintf("%s returned HTTP %d", rawURL, resp.StatusCode),
+		Message: fmt.Sprintf("%s returned HTTP %d", target, resp.StatusCode),
 		Fix:     "confirm the running daemon is serving /challenge/gate on the configured port",
 	}
+}
+
+// challengeGateProbeTarget names the gate the doctor probes: a URL, plus the
+// socket to dial when the listener is a Unix socket.
+func challengeGateProbeTarget(cfg *config.Config) (rawURL, socketPath string, err error) {
+	if path, socket := config.ChallengeSocketPath(cfg.Challenge.ListenAddr); socket {
+		scheme := "http"
+		if cert, key, _ := challengeRuntimeTLSMaterial(cfg); cert != "" && key != "" {
+			scheme = "https"
+		}
+		return scheme + "://csm-challenge/challenge/gate", path, nil
+	}
+	rawURL, err = challengeGateProbeURL(cfg)
+	return rawURL, "", err
 }
 
 func challengeGateProbeURL(cfg *config.Config) (string, error) {

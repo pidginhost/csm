@@ -5,7 +5,9 @@ import (
 	"errors"
 	"net"
 	"os"
+	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -350,9 +352,13 @@ func TestBuildChallengeDoctorReport_LoopbackListenerBehindLocalProxyFails(t *tes
 	cfg.Challenge.PublicURL = "https://challenge.example.com/challenge"
 	cfg.Challenge.TrustedProxies = []string{"127.0.0.1"}
 
+	pinDoctorHost(t)
 	report := challengeDoctorReportFor(cfg)
 	if report.OverallStatus != "fail" {
 		t.Fatalf("overall = %s, want fail\n%s", report.OverallStatus, report.Human())
+	}
+	if c := findCheck(t, report, "challenge trusted proxies"); c.Status != "fail" {
+		t.Fatalf("trusted proxies check = %+v, want fail", c)
 	}
 	for _, c := range report.Checks {
 		if c.Name == "challenge public URL" {
@@ -510,9 +516,9 @@ func TestChallengeGateProbeURLUsesConfiguredTLS(t *testing.T) {
 	cfg.Challenge.TLSCert = "/tmp/cert.pem"
 	cfg.Challenge.TLSKey = "/tmp/key.pem"
 
-	got, err := challengeGateProbeURL(cfg)
-	if err != nil {
-		t.Fatal(err)
+	got, socket, err := challengeGateProbeTarget(cfg)
+	if err != nil || socket != "" {
+		t.Fatal(err, socket)
 	}
 	if got != "https://[::1]:8439/challenge/gate" {
 		t.Fatalf("probe URL = %q, want https://[::1]:8439/challenge/gate", got)
@@ -526,9 +532,9 @@ func TestChallengeGateProbeURLIgnoresWebUITLSOnLoopback(t *testing.T) {
 	cfg.WebUI.TLSCert = "/tmp/webui-cert.pem"
 	cfg.WebUI.TLSKey = "/tmp/webui-key.pem"
 
-	got, err := challengeGateProbeURL(cfg)
-	if err != nil {
-		t.Fatal(err)
+	got, socket, err := challengeGateProbeTarget(cfg)
+	if err != nil || socket != "" {
+		t.Fatal(err, socket)
 	}
 	if got != "http://127.0.0.1:8439/challenge/gate" {
 		t.Fatalf("probe URL = %q, want http://127.0.0.1:8439/challenge/gate", got)
@@ -542,4 +548,122 @@ func writeDoctorTempFile(t *testing.T, name string) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+// pinDoctorHost gives the host-local trust check a fixed host address.
+func pinDoctorHost(t *testing.T) {
+	t.Helper()
+	t.Cleanup(netutil.SetHostAddressLookup(func() ([]net.IP, error) {
+		return []net.IP{net.ParseIP("203.0.113.250")}, nil
+	}))
+}
+
+// socketDoctorCfg points the challenge at a socket in a short private
+// directory, owned by the test's own group, so placement checks pass.
+func socketDoctorCfg(t *testing.T) (*config.Config, string) {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "cs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chmod(dir, 0o700)
+		_ = os.RemoveAll(dir)
+	})
+	g, err := user.LookupGroupId(strconv.Itoa(os.Getgid()))
+	if err != nil {
+		t.Skipf("own group not resolvable: %v", err)
+	}
+	cfg := &config.Config{}
+	cfg.Challenge.Enabled = true
+	cfg.Challenge.ListenAddr = "unix:" + filepath.Join(dir, "c.sock")
+	cfg.Challenge.ListenGroup = g.Name
+	cfg.Challenge.ListenPort = 8439
+	cfg.Challenge.PublicURL = "https://challenge.example.com/challenge"
+	return cfg, dir
+}
+
+func findCheck(t *testing.T, report DoctorReport, name string) DoctorCheck {
+	t.Helper()
+	for _, c := range report.Checks {
+		if c.Name == name {
+			return c
+		}
+	}
+	t.Fatalf("no %q check\n%s", name, report.Human())
+	return DoctorCheck{}
+}
+
+func TestBuildChallengeDoctorReport_SocketListenerAllOK(t *testing.T) {
+	pinDoctorHost(t)
+	cfg, _ := socketDoctorCfg(t)
+	cfg.WebUI.TLSCert = "/nonexistent/webui.crt"
+	cfg.WebUI.TLSKey = "/nonexistent/webui.key"
+	report := challengeDoctorReportFor(cfg)
+	requireAllChallengeChecksOK(t, report)
+	findCheck(t, report, "challenge socket")
+	findCheck(t, report, "challenge trusted proxies")
+}
+
+func TestBuildChallengeDoctorReport_HostLocalTrustFails(t *testing.T) {
+	pinDoctorHost(t)
+	cfg := &config.Config{}
+	cfg.Challenge.Enabled = true
+	cfg.Challenge.ListenAddr = "0.0.0.0"
+	cfg.Challenge.ListenPort = 8439
+	cfg.Challenge.PublicURL = "https://challenge.example.com/challenge"
+	cfg.Challenge.TrustedProxies = []string{"198.51.100.2", "127.0.0.1"}
+	c := findCheck(t, challengeDoctorReportFor(cfg), "challenge trusted proxies")
+	if c.Status != "fail" || !strings.Contains(c.Message, "127.0.0.1") || !strings.Contains(c.Fix, config.ChallengeSocketExample) {
+		t.Fatalf("trusted proxies check = %+v, want fail naming the entry with the socket fix", c)
+	}
+}
+
+func TestChallengePortGateWarnsOnSocketListener(t *testing.T) {
+	cfg, _ := socketDoctorCfg(t)
+	if c := challengePortGateCheck(cfg); c.Status != "ok" || !strings.Contains(c.Message, "no TCP port") {
+		t.Fatalf("socket without gate = %+v, want ok", c)
+	}
+	cfg.Challenge.PortGate.Enabled = true
+	if c := challengePortGateCheck(cfg); c.Status != "warn" {
+		t.Fatalf("socket with gate = %+v, want warn", c)
+	}
+}
+
+func TestChallengeSocketCheckFailsOnUnknownGroup(t *testing.T) {
+	pinDoctorHost(t)
+	cfg, _ := socketDoctorCfg(t)
+	cfg.Challenge.ListenGroup = "csm-no-such-group"
+	c := findCheck(t, challengeDoctorReportFor(cfg), "challenge socket")
+	if c.Status != "fail" || !strings.Contains(c.Message, "csm-no-such-group") || c.Fix == "" {
+		t.Fatalf("socket check = %+v, want fail naming the group", c)
+	}
+}
+
+func TestChallengeSocketCheckFailsOnWritableParent(t *testing.T) {
+	pinDoctorHost(t)
+	cfg, dir := socketDoctorCfg(t)
+	if err := os.Chmod(dir, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	c := findCheck(t, challengeDoctorReportFor(cfg), "challenge socket")
+	if c.Status != "fail" || !strings.Contains(c.Message, dir) {
+		t.Fatalf("socket check = %+v, want fail naming %s", c, dir)
+	}
+}
+
+func TestChallengeGateProbeReachesSocketListener(t *testing.T) {
+	pinDoctorHost(t)
+	cfg, dir := socketDoctorCfg(t)
+	srv := challenge.New(cfg, nil)
+	ln, err := srv.Listen()
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(srv.Shutdown)
+	got := defaultChallengeGateProbe(cfg)
+	if got.Status != "ok" || !strings.Contains(got.Message, dir) {
+		t.Fatalf("probe = %+v, want ok naming the socket", got)
+	}
 }
