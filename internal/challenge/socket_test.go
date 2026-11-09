@@ -210,8 +210,10 @@ func TestSocketTrustedForwardedChain(t *testing.T) {
 		{"visitor", "192.0.2.60, 198.51.100.2", "192.0.2.60", false, false, http.StatusUnauthorized},
 		{"all proxies", "198.51.100.9, 198.51.100.2", "", false, false, http.StatusBadRequest},
 		{"unreadable hop", "192.0.2.60, unknown, 198.51.100.2", "192.0.2.60", false, false, http.StatusBadRequest},
-		{"local hop", "192.0.2.60, 198.51.100.9, 198.51.100.2", "198.51.100.9", true, false, http.StatusUnauthorized},
-		{"unknown host set", "192.0.2.60, 198.51.100.2", "198.51.100.2", false, true, http.StatusUnauthorized},
+		// A listed proxy the host-local guard refuses is never the visitor:
+		// answering for it would wave through everyone behind it.
+		{"local hop", "192.0.2.60, 198.51.100.9, 198.51.100.2", "198.51.100.9", true, false, http.StatusBadRequest},
+		{"unknown host set", "192.0.2.60, 198.51.100.2", "192.0.2.60", false, true, http.StatusBadRequest},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(shortSocketDir(t), "c.sock")
