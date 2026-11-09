@@ -1,18 +1,32 @@
 package maillog
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/alert"
 )
 
-// Restarting the process cannot reuse a file stream when its offset returns.
-func TestFileReaderLinePositionsAcrossProcessEpochs(t *testing.T) {
-	a := fileStream(42, alert.NewObservationEpoch(), 0)
-	b := fileStream(42, alert.NewObservationEpoch(), 0)
-	if a == b || len(a) == 0 || len(a) > 128 || len(b) > 128 {
-		t.Fatalf("file epochs reused %q as %q", a, b)
+// A file line's stream names the file by device and inode, the same before
+// and after a restart; its cursor names the line's offset and bytes.
+func TestFileReaderPositionNamesFileOffsetAndBytes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "maillog")
+	if err := os.WriteFile(path, []byte("first\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dev, ino := fileIdentity(info)
+	a := filePosition(dev, ino, 0, "first\n")
+	if a.Stream != alert.FileStream(dev, ino) || a.Cursor != alert.RecordCursor(0, "first") || a.ObservedAt.IsZero() {
+		t.Fatalf("position %+v, want the file and the line's offset and bytes", a)
+	}
+	if b := filePosition(dev, ino, 0, "other\n"); b.Stream != a.Stream || b.Cursor == a.Cursor {
+		t.Fatalf("another line at the offset named %+v like %+v", b, a)
 	}
 }
 

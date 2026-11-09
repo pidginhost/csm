@@ -6,7 +6,6 @@ import (
 	"net"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -518,7 +517,7 @@ func CheckFTPLogins(ctx context.Context, cfg *config.Config, store *state.Store)
 			}
 			tracker.record(ip, at)
 			// The newest new failure is the observation the report names.
-			freshFailures[ip] = alert.Observation{Producer: string(ProducerFTPScan), Stream: syslogStream(next), Cursor: strconv.FormatInt(rec.offset, 10), ObservedAt: at.UTC()}
+			freshFailures[ip] = rec.observation(ProducerFTPScan, at)
 		case account != "":
 			findings = append(findings, ftpLoginFinding(ip, account, line, tracker.count(ip)))
 		}
