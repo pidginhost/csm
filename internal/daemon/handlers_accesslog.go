@@ -149,6 +149,13 @@ func parseAccessLogBruteForceForLog(line string, cfg *config.Config, central boo
 	if !isWPLogin && !isXMLRPC && !isAdminPanel {
 		return nil
 	}
+	// A trusted proxy's address stands for every visitor behind it. This
+	// path reads only the direct peer, so it leaves forwarded requests to
+	// the scheduled scan, which reads the client from X-Forwarded-For when
+	// the log records it.
+	if checks.IsTrustedProxy(ip, cfg.WebServer.TrustedProxies) {
+		return nil
+	}
 
 	now := time.Now()
 	tracker := loadAccessLogTracker(ip, now)

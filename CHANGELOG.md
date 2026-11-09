@@ -28,6 +28,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Fixed
 
+- Realtime web, ModSecurity and cPanel API checks no longer block or score configured trusted proxies, while informational events stay visible.
 - Framework classes that handle admin uploads no longer raise Critical dropper alerts.
 - Incident correlation now follows `reputation.whitelist` changes on reload, and matches IPv6 entries however the address is written.
 - Addresses the firewall never blocks, such as `firewall.infra_ips` entries and infra hostnames, are no longer sent to the challenge page.

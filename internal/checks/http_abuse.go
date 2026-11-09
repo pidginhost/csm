@@ -1068,7 +1068,7 @@ func clientIPForRecord(rec accessLogRecord, cfg *config.Config) string {
 	if cfg == nil || len(cfg.WebServer.TrustedProxies) == 0 || rec.XFF == "" {
 		return rec.RemoteIP
 	}
-	if !isTrustedProxy(rec.RemoteIP, cfg.WebServer.TrustedProxies) {
+	if !IsTrustedProxy(rec.RemoteIP, cfg.WebServer.TrustedProxies) {
 		return rec.RemoteIP
 	}
 	// A trusted direct proxy appends the peer it observed to the end of
@@ -1097,9 +1097,10 @@ func normalizeHTTPClientIP(raw string) string {
 	return ip.String()
 }
 
-// isTrustedProxy returns true when addr matches any entry in proxies (exact
-// IP or CIDR). Entries that fail to parse are skipped.
-func isTrustedProxy(addr string, proxies []string) bool {
+// IsTrustedProxy returns true when addr matches any entry in proxies (exact
+// IP or CIDR), such as web_server.trusted_proxies. Entries that fail to
+// parse are skipped.
+func IsTrustedProxy(addr string, proxies []string) bool {
 	addr = strings.TrimSpace(addr)
 	parsed := net.ParseIP(addr)
 	if parsed == nil {
