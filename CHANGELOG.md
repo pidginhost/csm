@@ -11,11 +11,10 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Security
 
-- Mail that crashes, exhausts or stalls attachment unpacking is deferred while delivery is held, even in fail-open mode; observe mode still allows delivery.
+- Mail that crashes, exhausts or stalls the attachment unpacker is now deferred instead of delivered unscanned, even with `email_av.fail_mode: open`; observe mode still delivers it.
 
 ### Fixed
 
-- Mail scanning alerts no longer claim delivery was deferred when the watcher cannot block it.
 - Install commands shown on static web pages, and framework classes that handle admin uploads, no longer raise Critical dropper alerts.
 
 ## [4.10.2] - 2026-11-08

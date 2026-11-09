@@ -13,12 +13,6 @@ CSM scans email attachments in real-time using ClamAV and YARA-X on the Exim mai
 6. Infected messages raise a Critical finding; with `quarantine_infected: true` they are also quarantined with full metadata instead of delivered
 7. Sender, recipient, and message ID are logged
 
-Worker-failure alerts distinguish requested deferral, observe-mode delivery and
-the inability to defer without permission events. Repeated-source alerts report
-scan failures without claiming a delivery outcome. `email_av_degraded` reports
-the scan's delivery decision; `email_av_late_verdict` warns when delivery was
-already allowed before a decision to stop it.
-
 Quarantine and release preserve each queue file's ownership, permissions, and
 modification time, including when the move crosses filesystems. Release returns
 the message to the queue directory it came from, including the hash directory
