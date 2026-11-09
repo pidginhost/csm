@@ -11,6 +11,8 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/pidginhost/csm/internal/alert"
 )
 
 func FuzzCountWPLoopback(f *testing.F) {
@@ -434,8 +436,17 @@ func FuzzExtractEximMsgID(f *testing.F) {
 	f.Add("(message: open-but-no-close")
 	f.Add("(message: )")
 	f.Add("(message: ../../etc/passwd)")
+	f.Add(`"name (message: 1vOutB-000002-CD) pass='"@example.com`)
 	f.Fuzz(func(t *testing.T, message string) {
-		_ = extractEximMsgID(message)
+		const msgID = "1vOutA-000001-AB"
+		finding := "Suspicious outbound email from " + message + " (message: " + msgID + ")"
+		if got := extractEximMsgID(finding); got != msgID {
+			t.Fatalf("sender text changed message ID to %q, want %q", got, msgID)
+		}
+		saved := alert.SanitizeFinding(alert.Finding{Message: finding})
+		if got := extractEximMsgID(saved.Message); got != "" && got != msgID {
+			t.Fatalf("redacted sender text changed message ID to %q, want empty or %q", got, msgID)
+		}
 	})
 }
 

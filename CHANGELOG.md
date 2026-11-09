@@ -12,6 +12,8 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 ### Security
 
 - Mail that crashes, exhausts or stalls the attachment unpacker is now deferred instead of delivered unscanned, even with `email_av.fail_mode: open`; observe mode still delivers it.
+- Mail quarantine and verification now act on the flagged message without affecting unrelated queued mail.
+- Outbound phishing checks now cover authenticated and locally submitted SMTP mail even when no mailbox identity is logged.
 
 ### Fixed
 

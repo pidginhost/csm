@@ -92,7 +92,7 @@ func CheckOutboundEmailContent(ctx context.Context, cfg *config.Config, _ *state
 		}
 		// Outbound means submitted here: an authenticated mailbox or a local
 		// caller. Inbound mail from other servers is not this check's job.
-		if eximlog.Submitter(line) == "" {
+		if !eximlog.IsSubmission(line) {
 			continue
 		}
 		if scanned[msgID] {
@@ -229,11 +229,13 @@ func scanEximMessage(msgID, sender string, cfg *config.Config) *alert.Finding {
 	}
 
 	_, senderDomain := alert.SplitEmail(sender)
+	// Action targets must survive redaction of attacker-controlled sender
+	// text at persistence boundaries. Keep that text out of the ID message.
 	return &alert.Finding{
 		Severity: severity,
 		Check:    "email_phishing_content",
-		Message:  fmt.Sprintf("Suspicious outbound email from %s (message: %s)", sender, msgID),
-		Details:  fmt.Sprintf("Indicators:\n- %s", strings.Join(indicators, "\n- ")),
+		Message:  fmt.Sprintf("Suspicious outbound email (message: %s)", msgID),
+		Details:  fmt.Sprintf("Envelope sender: %s\nIndicators:\n- %s", sender, strings.Join(indicators, "\n- ")),
 		Domain:   senderDomain,
 		Mailbox:  sender,
 	}

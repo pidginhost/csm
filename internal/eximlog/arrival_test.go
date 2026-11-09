@@ -57,3 +57,25 @@ func TestArrival(t *testing.T) {
 		})
 	}
 }
+
+func TestSubmissionDoesNotBroadenTenantIdentity(t *testing.T) {
+	for _, auth := range []string{
+		"plain:alice@example.com",
+		"plain",
+		`dovecot_login:"john doe"@example.com`,
+		"dovecot_login:alice@example.com@example.net",
+		"dovecot_login:@example.com",
+		"dovecot_login:alice@",
+	} {
+		line := "2026-01-01 10:00:00 1vOutA-000001-AB <= sender@example.com H=(client) [203.0.113.9]:4000 P=esmtpsa A=" + auth + " S=900"
+		if !IsSubmission(line) {
+			t.Errorf("authenticated submission skipped with A=%s", auth)
+		}
+		if got := Submitter(line); got != "" {
+			t.Errorf("unverified tenant identity accepted with A=%s: %q", auth, got)
+		}
+		if got := AuthenticatedUser(line); got != "" {
+			t.Errorf("unverified mailbox accepted with A=%s: %q", auth, got)
+		}
+	}
+}

@@ -79,3 +79,32 @@ func FuzzArrival(f *testing.F) {
 		}
 	})
 }
+
+func FuzzSubmissionMessageData(f *testing.F) {
+	f.Add("U=remote P=local A=plain:sender@example.com")
+	f.Add(`name \" H=(client) [192.0.2.1] P=esmtpa`)
+	f.Add("(message: 1vOutB-000002-CD)")
+	f.Fuzz(func(t *testing.T, text string) {
+		for _, r := range text {
+			if r < 0x20 || r > 0x7e {
+				return // Exim escapes non-printing bytes in log data.
+			}
+		}
+		quoted := strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(text)
+		for _, tc := range []struct {
+			fields string
+			want   bool
+		}{
+			{"U=sender P=local", true},
+			{"U=sender P=esmtp", true},
+			{"H=(client) [203.0.113.9]:4000 P=esmtpa A=plain:sender@example.com", true},
+			{"H=(client) [203.0.113.9]:4000 P=esmtpsa A=plain", true},
+			{"H=(client) [203.0.113.9]:4000 P=esmtp", false},
+		} {
+			line := `2026-01-01 10:00:00 1vOutA-000001-AB <= "` + quoted + `"@example.com ` + tc.fields + ` S=900 id="` + quoted + `"@example.net T="` + quoted + `"`
+			if got := IsSubmission(line); got != tc.want {
+				t.Fatalf("message data changed submission classification to %v for %q", got, line)
+			}
+		}
+	})
+}

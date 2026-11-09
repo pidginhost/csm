@@ -552,16 +552,19 @@ func homeAccountRoot(path string) string {
 // Matches the pattern "(message: XXXXXX-XXXXXX-XX)" used by emailscan.go.
 func extractEximMsgID(message string) string {
 	prefix := "(message: "
-	idx := strings.Index(message, prefix)
+	// Sender text can contain the same marker. The target is always the
+	// final suffix of the finding, never an earlier occurrence.
+	idx := strings.LastIndex(message, prefix)
 	if idx < 0 {
 		return ""
 	}
-	rest := message[idx+len(prefix):]
-	end := strings.Index(rest, ")")
-	if end < 0 {
+	// Redaction may have consumed the real suffix of a stored finding.
+	// Such a message cannot prove a target, even if an earlier marker remains.
+	rest, ok := strings.CutSuffix(message[idx+len(prefix):], ")")
+	if !ok {
 		return ""
 	}
-	return strings.TrimSpace(rest[:end])
+	return strings.TrimSpace(rest)
 }
 
 // fixQuarantineSpoolMessage moves Exim spool files (-H header and -D body)

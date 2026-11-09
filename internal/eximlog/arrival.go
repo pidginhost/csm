@@ -19,3 +19,16 @@ func Arrival(line string) (id, sender string, ok bool) {
 	}
 	return prefix[len(prefix)-1], rest[:end], true
 }
+
+// IsSubmission reports whether an arrival was submitted by a local process
+// or authenticated SMTP client. Unlike Submitter, it does not require a
+// tenant identity: Exim can authenticate without logging one, and local
+// processes can submit SMTP on stdin instead of using P=local.
+func IsSubmission(line string) bool {
+	fields, ok := submissionFields(line)
+	if !ok {
+		return false
+	}
+	return (!fields.remote && fields.user != "") ||
+		fields.protocol == "esmtpa" || fields.protocol == "esmtpsa"
+}
