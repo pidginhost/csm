@@ -1,8 +1,10 @@
 package config
 
 import (
+	"errors"
 	"net"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -91,6 +93,40 @@ func TestValidateChallengeSocketNeedsGroup(t *testing.T) {
 	}
 }
 
+func TestValidateChallengeListenerPort(t *testing.T) {
+	for _, addr := range []string{"0.0.0.0", ChallengeSocketExample, " UNIX:/run/csm/challenge.sock "} {
+		t.Run(addr, func(t *testing.T) {
+			for _, enabled := range []bool{false, true} {
+				t.Run("enabled="+strconv.FormatBool(enabled), func(t *testing.T) {
+					for _, port := range []int{-1, 0, 1, 8439, 65535, 65536} {
+						t.Run(strconv.Itoa(port), func(t *testing.T) {
+							cfg := baseValidationConfig()
+							cfg.Challenge.Enabled = enabled
+							cfg.Challenge.ListenAddr = addr
+							cfg.Challenge.ListenGroup = "nginx"
+							cfg.Challenge.ListenPort = port
+							wantErr := addr == "0.0.0.0" && (port < 0 || port > 65535 || (enabled && port == 0))
+							var portResults []ValidationResult
+							for _, r := range Validate(cfg) {
+								if r.Field == "challenge.listen_port" {
+									portResults = append(portResults, r)
+								}
+							}
+							if wantErr {
+								if len(portResults) != 1 || portResults[0].Level != "error" {
+									t.Fatalf("want one listen_port error, got %v", portResults)
+								}
+							} else if len(portResults) != 0 {
+								t.Fatalf("unexpected listen_port results: %v", portResults)
+							}
+						})
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestValidateWarnsHostLocalTrustedProxy(t *testing.T) {
 	pinChallengeHost(t, "203.0.113.10")
 	cfg := baseValidationConfig()
@@ -110,6 +146,43 @@ func TestValidateWarnsHostLocalTrustedProxy(t *testing.T) {
 	}
 	if want := ChallengeLocalTrustError(cfg.Challenge.TrustedProxies).Error(); results[i].Message != want {
 		t.Errorf("message = %q, want %q", results[i].Message, want)
+	}
+}
+
+func TestValidateChallengeTrustLookupFailure(t *testing.T) {
+	for _, addr := range []string{"0.0.0.0", ChallengeSocketExample} {
+		t.Run(addr, func(t *testing.T) {
+			calls := 0
+			t.Cleanup(netutil.SetHostAddressLookup(func() ([]net.IP, error) {
+				calls++
+				return nil, errors.New("interface lookup unavailable")
+			}))
+			cfg := baseValidationConfig()
+			cfg.Challenge.Enabled = true
+			cfg.Challenge.ListenAddr = addr
+			cfg.Challenge.ListenGroup = "nginx"
+			cfg.Challenge.ListenPort = 8439
+			cfg.Challenge.TrustedProxies = []string{"198.51.100.7"}
+			results := Validate(cfg)
+			var trustResults []ValidationResult
+			for _, r := range results {
+				if r.Field == "challenge.trusted_proxies" {
+					trustResults = append(trustResults, r)
+				}
+			}
+			if len(trustResults) != 1 || trustResults[0].Level != "warn" ||
+				!strings.Contains(trustResults[0].Message, "interface lookup unavailable") {
+				t.Fatalf("lookup failure must produce one warning: %v", trustResults)
+			}
+			if calls != 1 {
+				t.Fatalf("lookup calls = %d, want 1", calls)
+			}
+			cfg.Challenge.Enabled = false
+			if results := Validate(cfg); hasResult(results, "warn", "challenge.trusted_proxies") ||
+				hasResult(results, "error", "challenge.trusted_proxies") || calls != 1 {
+				t.Fatalf("disabled challenge must not check proxy trust: calls=%d results=%v", calls, results)
+			}
+		})
 	}
 }
 
