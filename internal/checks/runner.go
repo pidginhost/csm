@@ -509,6 +509,11 @@ func criticalChecks() []namedCheck {
 	}
 }
 
+// deepChecks also runs in full while the realtime file monitor is attached.
+// The monitor sees close-after-write only: a file renamed into place (no
+// FAN_MOVED_TO, and no FAN_CREATE on EL8), a setuid bit set by chmod, and a
+// write outside the mount mark raise no event, and probe-based checks have no
+// file event at all.
 func deepChecks() []namedCheck {
 	return []namedCheck{
 		{"filesystem", CheckFilesystem},
@@ -520,71 +525,6 @@ func deepChecks() []namedCheck {
 		{"php_content", CheckPHPContent},
 		{"yara_deep", CheckYARADeep},
 		{"phishing", CheckPhishing},
-		{"nulled_plugins", CheckNulledPlugins},
-		{"rpm_integrity", CheckRPMIntegrity},
-		{"group_writable_php", CheckGroupWritablePHP},
-		{"open_basedir", CheckOpenBasedir},
-		{"symlink_attacks", CheckSymlinkAttacks},
-		{"php_config_changes", CheckPHPConfigChanges},
-		{"dns_zones", CheckDNSZoneChanges},
-		{"ssl_certs", CheckSSLCertIssuance},
-		{"waf_status", CheckWAFStatus},
-		{"db_content", CheckDatabaseContent},
-		{"db_content_drupal", CheckDrupalContent},
-		{"db_content_joomla", CheckJoomlaContent},
-		{"db_content_magento", CheckMagentoContent},
-		{"db_content_opencart", CheckOpenCartContent},
-		{"db_objects", CheckDatabaseObjects},
-		{"admin_overlap", CheckAdminEmailOverlap},
-		{"credential_reuse", CheckCredentialReuse},
-		{"email_content", CheckOutboundEmailContent},
-		{"outdated_plugins", CheckOutdatedPlugins},
-		{"wp_plugin_inventory", CheckWPPluginVerification},
-		{"vulnerable_plugins", CheckVulnerablePlugins},
-		{"vulnerable_timthumb", CheckVulnerableTimThumb},
-		{"supply_chain", CheckSupplyChain},
-		{"email_weak_password", CheckEmailPasswords},
-		{"email_forwarder_audit", CheckForwarders},
-		{"email_mail_filters", CheckMailFilters},
-		{"perf_php_handler", CheckPHPHandler},
-		{"perf_mysql_config", CheckMySQLConfig},
-		{"perf_redis_config", CheckRedisConfig},
-		{"perf_error_logs", CheckErrorLogBloat},
-		{"perf_wp_config", CheckWPConfig},
-		{"perf_wp_transients", CheckWPTransientBloat},
-		{"perf_wp_cron", CheckWPCron},
-		{"perf_wp_loopback", CheckWPLoopbackRequests},
-		{"perf_wp_myisam", CheckWPMyISAM},
-	}
-}
-
-func reducedDeepChecks() []namedCheck {
-	return []namedCheck{
-		{"yara_deep", CheckYARADeep},
-		// The file monitor sees close-after-write only. A shell written under
-		// a temporary name and renamed into place, or written through a bind
-		// mount outside the mount mark, never produces an event, so the
-		// budgeted rolling YAML content scan keeps running beside the
-		// rolling YARA scan instead of being dropped as "covered".
-		{"php_content", CheckPHPContent},
-		// Same blind spot, and the file index is the only check that closes
-		// it: the mask carries no FAN_MOVED_TO on any kernel and drops
-		// FAN_CREATE on EL8, so a renamed-in file is never reported. The
-		// index also owns the baseline the new-file diff runs against, which
-		// stops being refreshed for as long as the monitor stays attached.
-		{"file_index", CheckFileIndex},
-		// The rest of the rename-blind content scans, for the same reason.
-		{"webshells", CheckWebshells},
-		{"htaccess", CheckHtaccess},
-		{"phishing", CheckPhishing},
-		// Not merely rename-blind: a setuid bit is set by chmod, which raises
-		// no close-write event, so no realtime path reports one at all.
-		{"filesystem", CheckFilesystem},
-		// Confirmed by probing the vhost rather than by reading the file, so
-		// no file event stands in for it. Throttled, because that probe is a
-		// live request to a customer site and the findings are posture.
-		{"exposed_files", CheckExposedFiles},
-		{"wp_core", CheckWPCore},
 		{"nulled_plugins", CheckNulledPlugins},
 		{"rpm_integrity", CheckRPMIntegrity},
 		{"group_writable_php", CheckGroupWritablePHP},
@@ -666,12 +606,6 @@ var checkThrottleMin = map[string]int{
 // retaining stale findings from prior runs.
 func LatestPurgeCheckNamesForTier(tier Tier) []string {
 	return withLogicalOwnerPurgeNames(checksForTier(tier))
-}
-
-// LatestPurgeCheckNamesForReducedDeep returns the emitted finding names owned
-// by the reduced deep set used while fanotify covers filesystem events.
-func LatestPurgeCheckNamesForReducedDeep() []string {
-	return withLogicalOwnerPurgeNames(reducedDeepChecks())
 }
 
 // withLogicalOwnerPurgeNames extends the physical ownership expansion with the
@@ -947,24 +881,6 @@ func RunTierDryRunWithContext(ctx context.Context, cfg *config.Config, store *st
 	return runParallelWithContext(ctx, cfg, store, checksForTier(tier), string(tier), true)
 }
 
-// RunReducedDeep runs only the deep checks that fanotify can't replace.
-// Used by the daemon when fanotify is active.
-//
-// Filesystem and content scans remain scheduled because fanotify misses
-// renames, permission changes and files planted before daemon startup.
-//
-// The second return value is the per-scan purge name list scoped to the
-// checks that actually executed this cycle.
-func RunReducedDeep(cfg *config.Config, store *state.Store) ([]alert.Finding, []string) {
-	return RunReducedDeepWithContext(context.Background(), cfg, store)
-}
-
-// RunReducedDeepWithContext is RunReducedDeep with a caller-owned parent
-// context for daemon shutdown cancellation.
-func RunReducedDeepWithContext(ctx context.Context, cfg *config.Config, store *state.Store) ([]alert.Finding, []string) {
-	return runParallelWithContext(ctx, cfg, store, reducedDeepChecks(), string(TierDeep), false)
-}
-
 // RunAll runs critical checks always. Deep checks run if throttle allows or
 // ForceAll is set. The second return value is the per-scan purge name list
 // scoped to the checks that actually executed this cycle.
@@ -996,8 +912,8 @@ func runParallel(cfg *config.Config, store *state.Store, checks []namedCheck, ti
 	return runParallelWithContext(context.Background(), cfg, store, checks, tier, dryRun)
 }
 
-// scansInFlight counts check runs in progress in this process: tier and
-// reduced deep scans from any caller, account scans and scan jobs.
+// scansInFlight counts check runs in progress in this process: tier scans
+// from any caller, account scans and scan jobs.
 var scansInFlight atomic.Int64
 
 type scanDryRunKey struct{}

@@ -446,18 +446,12 @@ func TestCheckWPLoopbackRequestsReadsPlatformDomlogs(t *testing.T) {
 	}
 }
 
-// The detector judges complete clock hours, so it runs in both deep tiers at
+// The detector judges complete clock hours, so it runs in the deep tier at
 // most hourly, owns its findings for the latest-findings purge, and is
 // classified like the other performance checks.
 func TestWPLoopbackIsWiredIntoDeepScans(t *testing.T) {
-	for tier, checks := range map[string][]namedCheck{"deep": deepChecks(), "reduced deep": reducedDeepChecks()} {
-		found := false
-		for _, c := range checks {
-			found = found || c.name == "perf_wp_loopback"
-		}
-		if !found {
-			t.Errorf("perf_wp_loopback missing from the %s tier", tier)
-		}
+	if !deepCheckNames()["perf_wp_loopback"] {
+		t.Error("perf_wp_loopback missing from the deep tier")
 	}
 	if got := checkThrottleMin["perf_wp_loopback"]; got != 60 {
 		t.Errorf("throttle = %d minutes, want 60", got)

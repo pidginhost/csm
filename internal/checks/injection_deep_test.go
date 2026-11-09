@@ -143,9 +143,9 @@ func TestRunAllWithMocks(t *testing.T) {
 	_ = findings
 }
 
-// --- RunReducedDeep with mocked system calls -------------------------
+// --- Deep tier with mocked system calls ------------------------------
 
-func TestRunReducedDeepWithMocks(t *testing.T) {
+func TestRunDeepTierWithMocks(t *testing.T) {
 	withMockOS(t, &mockOS{})
 	withMockCmd(t, &mockCmd{})
 
@@ -157,7 +157,7 @@ func TestRunReducedDeepWithMocks(t *testing.T) {
 	}
 	defer func() { _ = store.Close() }()
 
-	findings, _ := RunReducedDeep(cfg, store)
+	findings, _ := RunTier(cfg, store, TierDeep)
 	_ = findings
 }
 

@@ -180,17 +180,8 @@ func TestCheckYARADeepFailedScanDeleteRaceIsUnknownRange(t *testing.T) {
 }
 
 func TestYARADeepRunsWithAndWithoutFanotify(t *testing.T) {
-	for _, checks := range [][]namedCheck{deepChecks(), reducedDeepChecks()} {
-		found := false
-		for _, check := range checks {
-			if check.name == "yara_deep" {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Fatal("yara_deep missing from a scheduled deep-check set")
-		}
+	if !deepCheckNames()["yara_deep"] {
+		t.Fatal("yara_deep missing from the deep tier, which also runs while the file monitor is attached")
 	}
 }
 

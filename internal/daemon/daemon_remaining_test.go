@@ -612,14 +612,14 @@ func TestSetSpoolWatcher_TriggersSync(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// deepScanner with fileMonitor set — exercises reduced deep path
+// deepScanner stops with the file monitor attached
 // ---------------------------------------------------------------------------
 
 func TestDeepScanner_StopsOnSignalWithFileMonitor(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Thresholds.DeepScanIntervalMin = 60
 	d := New(cfg, nil, nil, "")
-	d.fileMonitor = &FileMonitor{} // non-nil triggers reduced deep path
+	d.fileMonitor = &FileMonitor{}
 	d.wg.Add(1)
 
 	done := make(chan struct{})

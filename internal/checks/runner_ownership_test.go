@@ -491,15 +491,11 @@ func TestDisabledCheckVocabularyPHPTaint(t *testing.T) {
 	}
 }
 
-func TestLatestPurgeNamesForDeepTiersIncludeTaintOwners(t *testing.T) {
-	for name, names := range map[string][]string{
-		"deep":         LatestPurgeCheckNamesForTier(TierDeep),
-		"reduced-deep": LatestPurgeCheckNamesForReducedDeep(),
-	} {
-		for _, want := range append(jsOwnerPurgeNames(), phpOwnerPurgeNames()...) {
-			if !slices.Contains(names, want) {
-				t.Errorf("%s purge names missing %q", name, want)
-			}
+func TestLatestPurgeNamesForDeepTierIncludeTaintOwners(t *testing.T) {
+	names := LatestPurgeCheckNamesForTier(TierDeep)
+	for _, want := range append(jsOwnerPurgeNames(), phpOwnerPurgeNames()...) {
+		if !slices.Contains(names, want) {
+			t.Errorf("deep purge names missing %q", want)
 		}
 	}
 }

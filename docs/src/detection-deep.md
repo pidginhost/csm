@@ -96,8 +96,8 @@ The exposed-file scan runs in that tier too, on its own interval, because it
 confirms each candidate with a live request to the site rather than by reading
 the file. A cycle that skips it on that interval leaves its existing findings
 in place. The interval starts only after a complete exposure scan; an incomplete
-attempt can retry on the next cycle, including after switching between full and
-reduced scans. A deleted document root does not make the exposure scan
+attempt can retry on the next cycle, whether or not the realtime monitor is
+active. A deleted document root does not make the exposure scan
 incomplete, even if the panel still lists its domain. A missing root reached
 through a symbolic link, and a subdirectory that disappears during the walk,
 keep earlier findings until a later scan completes.
@@ -105,7 +105,8 @@ keep earlier findings until a later scan completes.
 Account discovery failures, unreadable directories or files, and truncated
 backdoor candidate lists leave the affected scan incomplete. Its earlier
 findings remain active until a complete scan can replace them; detections from
-the incomplete attempt are still added. These rules apply to both deep tiers.
+the incomplete attempt are still added, whether or not the realtime monitor is
+active.
 
 The file index runs on every deep cycle, including while the realtime monitor
 is active. It checks new paths and rechecks indexed files with active findings;
@@ -522,7 +523,7 @@ The deep checks are the most cPanel-biased part of CSM because they iterate acco
 - `rpm_integrity` -- dispatches to `rpm -V` on RHEL family or `debsums` / `dpkg --verify` on Debian family
 - `waf_status` -- detects ModSecurity on Apache, Nginx, and LiteSpeed across all supported distros
 - `perf_mysql_config`, `perf_redis_config`, `perf_error_logs` -- rely on standard service locations
-- `perf_wp_myisam` -- uses shared WordPress discovery on both deep tiers, including account home layouts when no panel map is available
+- `perf_wp_myisam` -- uses shared WordPress discovery in the deep tier, including account home layouts when no panel map is available
 
 Operators on plain Linux can point `perf_error_logs`, `perf_wp_config`, `perf_wp_transients`, and `perf_wp_cron` at generic web roots with the `account_roots` glob list (see [configuration.md](configuration.md)). The remaining account and CMS scans still assume the cPanel `/home/*/public_html` layout.
 
