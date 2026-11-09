@@ -56,6 +56,10 @@ func checkAccountYARA(ctx context.Context, cfg *config.Config, _ *state.Store) [
 	// Raster images go in a second pass: a shop's product photos can sort
 	// before its code folders and use up the whole time budget.
 	imagesPass := false
+	// Revisiting covered code-only folders can exhaust the image budget or
+	// report unfinished work after the last image has already been scanned.
+	imageDirs := make(map[string]bool)
+	codeGaps := false
 	stopped := false
 	stop := func(path string) bool {
 		if stopped {
@@ -63,15 +67,20 @@ func checkAccountYARA(ctx context.Context, cfg *config.Config, _ *state.Store) [
 		}
 		if ctx.Err() != nil || (!softDeadline.IsZero() && !yaraDeepNow().Before(softDeadline)) {
 			stopped = true
-			detail := fmt.Sprintf("stopped at %s before the time budget ran out", path)
-			if imagesPass {
+			detail := fmt.Sprintf("stopped at %s: scan time budget reached", path)
+			if err := ctx.Err(); err != nil {
+				detail = fmt.Sprintf("stopped at %s: %v", path, err)
+			}
+			if imagesPass && !codeGaps {
 				detail += "; only image files were left"
+			} else if imagesPass {
+				detail += "; image pass"
 			}
 			gaps.recordUnknownRange(detail)
 		}
 		return stopped
 	}
-	// Both passes walk the same folders; report each unreadable one once.
+	// Image folders are revisited; report each unreadable location once.
 	reported := make(map[string]bool)
 	locationGap := func(path, detail string) {
 		if !reported[path] {
@@ -90,23 +99,39 @@ func checkAccountYARA(ctx context.Context, cfg *config.Config, _ *state.Store) [
 		sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
 		for _, entry := range entries {
 			path := filepath.Join(dir, entry.Name())
-			if stop(path) {
-				return
+			if imagesPass && !imageDirs[path] &&
+				(!entry.Type().IsRegular() || !contenttype.IsImageExt(filepath.Ext(entry.Name()))) {
+				continue
 			}
 			if respectIgnores && ignoredPath(cfg, path) {
 				continue
 			}
+			if stop(path) {
+				return
+			}
 			// A symlink is neither entered nor scanned: its target is not
 			// necessarily the account's and may be anywhere on the host.
 			switch {
-			case entry.IsDir():
+			case entry.IsDir() || imageDirs[path]:
+				// Replaced image directories must fail the pinned walk
+				// instead of disappearing from the coverage report.
 				child, err := pinned.Walk(entry.Name())
 				if err != nil {
 					locationGap(path, fmt.Sprintf("opening %s: %v", path, err))
 					continue
 				}
 				walk(path, child)
-			case entry.Type().IsRegular() && contenttype.IsImageExt(filepath.Ext(entry.Name())) == imagesPass:
+				if imageDirs[path] {
+					imageDirs[dir] = true
+				}
+			case entry.Type().IsRegular():
+				isImage := contenttype.IsImageExt(filepath.Ext(entry.Name()))
+				if isImage {
+					imageDirs[dir] = true
+				}
+				if isImage != imagesPass {
+					continue
+				}
 				matches := scanAccountYARAFile(backend, gaps, pinned, path, maxBytes)
 				findings = append(findings, matches...)
 				publishAccountScanFindings(ctx, matches)
@@ -115,6 +140,9 @@ func checkAccountYARA(ctx context.Context, cfg *config.Config, _ *state.Store) [
 	}
 
 	scanHome := func(homePath string) {
+		if imagesPass && !imageDirs[homePath] {
+			return
+		}
 		if stop(homePath) {
 			return
 		}
@@ -134,6 +162,9 @@ func checkAccountYARA(ctx context.Context, cfg *config.Config, _ *state.Store) [
 				continue
 			}
 			root := filepath.Join(homePath, entry.Name())
+			if imagesPass && !imageDirs[root] {
+				continue
+			}
 			if stop(root) {
 				break
 			}
@@ -142,11 +173,11 @@ func checkAccountYARA(ctx context.Context, cfg *config.Config, _ *state.Store) [
 			}
 			switch {
 			case entry.Type()&os.ModeSymlink != 0:
-				if entry.Name() == "public_html" {
+				if entry.Name() == "public_html" || imagesPass {
 					locationGap(root, fmt.Sprintf("%s is a symbolic link and was not followed", root))
 				}
 				continue
-			case !entry.IsDir():
+			case !entry.IsDir() && !imagesPass:
 				continue
 			}
 			child, err := pinned.Walk(entry.Name())
@@ -155,6 +186,9 @@ func checkAccountYARA(ctx context.Context, cfg *config.Config, _ *state.Store) [
 				continue
 			}
 			walk(root, child)
+			if imageDirs[root] {
+				imageDirs[homePath] = true
+			}
 		}
 	}
 	homes, err := GetScanHomeDirs(ctx)
@@ -162,6 +196,12 @@ func checkAccountYARA(ctx context.Context, cfg *config.Config, _ *state.Store) [
 		gaps.recordUnknownRange(fmt.Sprintf("resolving the account home: %v", err))
 	}
 	for _, imagesPass = range []bool{false, true} {
+		if imagesPass {
+			if len(imageDirs) == 0 {
+				break
+			}
+			codeGaps = !gaps.empty()
+		}
 		for _, home := range homes {
 			scanHome(scanHomeDirPath(home))
 		}

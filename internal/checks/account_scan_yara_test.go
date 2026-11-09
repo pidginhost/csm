@@ -465,3 +465,152 @@ func TestAccountYARAPassStillScansImages(t *testing.T) {
 		t.Fatalf("unexpected gap %+v", gap)
 	}
 }
+
+func TestAccountYARAPassDoesNotReportEmptyImagePass(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "home")
+	withAccountHomeRoots(t, root)
+	code := writeYARADeepFile(t, root, "alice/public_html/index.php", "dormant malware")
+	deadline := time.Now().Add(time.Hour)
+	clock := deadline.Add(-2 * yaraDeepDeadlineMargin)
+	useYARADeepClock(t, &clock)
+	backend := useCountingYARABackend(t)
+	backend.onScan = func() { clock = deadline }
+	ctx, cancel := context.WithDeadline(fullAccountYARAContext("alice", FullScanOptions(nil, false)), deadline)
+	defer cancel()
+	findings := checkAccountYARA(ctx, &config.Config{}, nil)
+	if paths := yaraMatchPaths(findings); len(paths) != 1 || paths[0] != code {
+		t.Fatalf("matches = %v, want %s", paths, code)
+	}
+	if gap := findingByCheck(findings, "yara_scan_incomplete"); gap.Check != "" {
+		t.Fatalf("reported unscanned images when there are none: %+v", gap)
+	}
+}
+
+func TestAccountYARAImagePassStopsWithEarlierGaps(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "home")
+	withAccountHomeRoots(t, root)
+	writeYARADeepFile(t, root, "alice/public_html/a.php", strings.Repeat("x", 32))
+	writeYARADeepFile(t, root, "alice/public_html/b.jpg", "image one")
+	writeYARADeepFile(t, root, "alice/public_html/c.PNG", "image two")
+	deadline := time.Now().Add(time.Hour)
+	clock := deadline.Add(-2 * yaraDeepDeadlineMargin)
+	useYARADeepClock(t, &clock)
+	backend := useCountingYARABackend(t)
+	backend.onScan = func() { clock = deadline }
+	ctx, cancel := context.WithDeadline(fullAccountYARAContext("alice", AccountScanOptions{ForceContent: true, MaxFileBytes: 16}), deadline)
+	defer cancel()
+	findings := checkAccountYARA(ctx, &config.Config{}, nil)
+	if scans := backend.scans(); len(scans) != 1 || scans[0] != "image one" {
+		t.Fatalf("image pass exceeded its budget: %q", scans)
+	}
+	gap := findingByCheck(findings, "yara_scan_incomplete")
+	if !strings.Contains(gap.Details, "oversize=1") || !strings.Contains(gap.Details, "time budget") {
+		t.Fatalf("missing coverage gaps: %+v", gap)
+	}
+	if strings.Contains(gap.Details, "only image files were left") {
+		t.Fatalf("claimed code coverage despite skipped code: %+v", gap)
+	}
+}
+
+func TestAccountYARAImagePassRepinsHome(t *testing.T) {
+	for _, replacePath := range []string{"alice", "alice/public_html", "alice/public_html/images", "alice/a.example"} {
+		for _, replacement := range []string{"symlink", "file"} {
+			t.Run(replacePath+"/"+replacement, func(t *testing.T) {
+				base := t.TempDir()
+				root := filepath.Join(base, "home")
+				withAccountHomeRoots(t, root)
+				imageRoot := "alice/public_html"
+				if replacePath == "alice/a.example" {
+					imageRoot = replacePath
+				}
+				writeYARADeepFile(t, root, imageRoot+"/images/a.jpg", "original image")
+				writeYARADeepFile(t, root, "alice/public_html/z.php", "original code")
+				outside := filepath.Join(base, "outside")
+				writeYARADeepFile(t, outside, "public_html/a.jpg", "outside image")
+				backend := useCountingYARABackend(t)
+				backend.onScan = func() {
+					backend.onScan = nil
+					home := filepath.Join(root, replacePath)
+					if err := os.Rename(home, home+"-moved"); err != nil {
+						t.Fatal(err)
+					}
+					if replacement == "symlink" {
+						if err := os.Symlink(outside, home); err != nil {
+							t.Fatal(err)
+						}
+					} else if err := os.WriteFile(home, []byte("replacement"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				findings := checkAccountYARA(fullAccountYARAContext("alice", FullScanOptions(nil, false)), &config.Config{}, nil)
+				if scans := backend.scans(); len(scans) != 1 || scans[0] != "original code" {
+					t.Fatalf("followed a replacement home in the image pass: %q", scans)
+				}
+				if gap := findingByCheck(findings, "yara_scan_incomplete"); !strings.Contains(gap.Details, filepath.Join(root, replacePath)) {
+					t.Fatalf("missing gap for replaced home: %+v", gap)
+				}
+			})
+		}
+	}
+}
+
+func TestAccountYARAImagePassDoesNotStopOnScannedCode(t *testing.T) {
+	for _, codePath := range []string{
+		"alice/public_html/z.php",
+		"alice/public_html/z/code.php",
+		"alice/z.example/code.php",
+	} {
+		t.Run(codePath, func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), "home")
+			withAccountHomeRoots(t, root)
+			writeYARADeepFile(t, root, "alice/public_html/a.jpg", "image")
+			writeYARADeepFile(t, root, codePath, "code")
+			deadline := time.Now().Add(time.Hour)
+			clock := deadline.Add(-2 * yaraDeepDeadlineMargin)
+			useYARADeepClock(t, &clock)
+			backend := useCountingYARABackend(t)
+			backend.onScan = func() {
+				if len(backend.scans()) == 2 {
+					clock = deadline
+				}
+			}
+			ctx, cancel := context.WithDeadline(fullAccountYARAContext("alice", FullScanOptions(nil, false)), deadline)
+			defer cancel()
+			findings := checkAccountYARA(ctx, &config.Config{}, nil)
+			if scans := backend.scans(); strings.Join(scans, ",") != "code,image" {
+				t.Fatalf("scans = %q, want code then image exactly once", scans)
+			}
+			if gap := findingByCheck(findings, "yara_scan_incomplete"); gap.Check != "" {
+				t.Fatalf("reported a gap for code scanned in the first pass: %+v", gap)
+			}
+		})
+	}
+}
+
+func TestAccountYARAImagePassDoesNotStopOnIgnoredImage(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "home")
+	withAccountHomeRoots(t, root)
+	writeYARADeepFile(t, root, "alice/public_html/a.jpg", "image")
+	writeYARADeepFile(t, root, "alice/public_html/code.php", "code")
+	ignored := writeYARADeepFile(t, root, "alice/public_html/z.jpg", "ignored image")
+	cfg := &config.Config{}
+	cfg.Suppressions.IgnorePaths = []string{ignored}
+	deadline := time.Now().Add(time.Hour)
+	clock := deadline.Add(-2 * yaraDeepDeadlineMargin)
+	useYARADeepClock(t, &clock)
+	backend := useCountingYARABackend(t)
+	backend.onScan = func() {
+		if len(backend.scans()) == 2 {
+			clock = deadline
+		}
+	}
+	ctx, cancel := context.WithDeadline(fullAccountYARAContext("alice", FullScanOptions(cfg, true)), deadline)
+	defer cancel()
+	findings := checkAccountYARA(ctx, cfg, nil)
+	if scans := backend.scans(); strings.Join(scans, ",") != "code,image" {
+		t.Fatalf("scans = %q, want only the in-scope files", scans)
+	}
+	if gap := findingByCheck(findings, "yara_scan_incomplete"); gap.Check != "" {
+		t.Fatalf("reported a gap outside the requested scope: %+v", gap)
+	}
+}

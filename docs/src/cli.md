@@ -42,6 +42,10 @@ empty tree keeps the last loaded actions until a replacement is available.
 | `csm scan --report <id> [--json]` | Print the stored report for a completed full-scan job. Exits with status 3 when that scan did not cover everything. |
 | `csm scan --cancel <id> [--json]` | Cancel a running full-scan job. |
 
+Exit status 3 also covers scanner timeouts, scanner failures, skipped files, missing accounts, and reports with omitted findings.
+
+An image-pass timeout claims only images remain when the earlier pass had no coverage gaps.
+
 Passwd home fallback accepts an account-named directory directly under a sibling
 home volume, such as `/home2`, and rejects symlinked volumes and homes. Arbitrary
 passwd locations outside this boundary are not used for account scans.

@@ -60,6 +60,39 @@ func TestReportFlagsIncompleteScan(t *testing.T) {
 	}
 }
 
+func TestReportFlagsFailedChecks(t *testing.T) {
+	job, _ := incompleteScanFixture()
+	for _, check := range []string{"check_timeout", "check_panic", "full_scan_file_too_large", "account_scan", "account_scan_error", "phishing_kit_archive_unscannable"} {
+		for _, asJSON := range []bool{false, true} {
+			var out bytes.Buffer
+			findings := []alert.Finding{{Severity: alert.Warning, Check: check}}
+			if printScanReportTo(job.ID, asJSON, &out, makeScanReportSender(job, findings)) {
+				t.Errorf("%s, JSON=%v: failed check reported complete", check, asJSON)
+			}
+			if !asJSON && !strings.Contains(out.String(), "INCOMPLETE") {
+				t.Errorf("%s: no incomplete warning", check)
+			}
+		}
+	}
+}
+
+func TestReportFlagsTruncatedStoredFindings(t *testing.T) {
+	job, _ := incompleteScanFixture()
+	job.FindingsTruncated = true
+	job.FindingCount = 2
+	job.FindingsStored = 1
+	findings := []alert.Finding{{Severity: alert.Critical, Check: "yara_match_scheduled"}}
+	for _, asJSON := range []bool{false, true} {
+		var out bytes.Buffer
+		if printScanReportTo(job.ID, asJSON, &out, makeScanReportSender(job, findings)) {
+			t.Errorf("JSON=%v: report with missing findings reported complete", asJSON)
+		}
+		if !asJSON && (!strings.Contains(out.String(), "INCOMPLETE") || !strings.Contains(out.String(), "findings were not stored")) {
+			t.Errorf("truncated report warning missing: %s", out.String())
+		}
+	}
+}
+
 // A script must not take a scan that stopped early for a clean result.
 func TestScanFullWaitExitsThreeWhenIncomplete(t *testing.T) {
 	if os.Getenv("CSM_TEST_SCAN_INCOMPLETE") == "1" {

@@ -1,6 +1,7 @@
 package signatures
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -8,6 +9,38 @@ import (
 
 	"gopkg.in/yaml.v3"
 )
+
+func TestGotoDecodeExecutionKeepsCriticalSignature(t *testing.T) {
+	s := loadRepoScanner(t)
+	prefix := "<?php "
+	for i := range 11 {
+		prefix += fmt.Sprintf("goto a%03d; a%03d: ", i, i)
+	}
+	for _, tt := range []struct {
+		code string
+		exec bool
+	}{
+		{prefix + "$text = base64_decode($data);", false},
+		{prefix + "eval(base64_decode($data));", true},
+	} {
+		matches := s.ScanContent([]byte(tt.code), ".php")
+		if !hasRule(matches, "php_goto_obfuscation") {
+			t.Fatal("fixture did not reach the goto rule")
+		}
+		criticalExec := false
+		for _, match := range matches {
+			if match.RuleName == "php_goto_obfuscation" && (match.Severity != "high" || match.Category != "obfuscation") {
+				t.Fatalf("goto grade changed: %+v", match)
+			}
+			if match.RuleName == "php_eval_decode_chain" && match.Severity == "critical" && match.Category == "dropper" {
+				criticalExec = true
+			}
+		}
+		if criticalExec != tt.exec {
+			t.Errorf("critical decode-execution match = %v, want %v", criticalExec, tt.exec)
+		}
+	}
+}
 
 var (
 	yaraMetaSeverity = regexp.MustCompile(`(?m)^\s*severity\s*=\s*"([a-z]+)"`)

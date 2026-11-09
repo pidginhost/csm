@@ -1389,6 +1389,11 @@ func PHPExecutableCode(src string) string {
 // comments so a "?>" inside them does not end PHP mode and blank real code. A
 // file with no PHP open tag yields all blanks -- it executes nothing.
 func phpCodeOnly(src string) string {
+	return canonicalSuperglobalAliases(phpCodeRegions(src))
+}
+
+// phpCodeRegions preserves PHP bytes for callers that use the result as a mask.
+func phpCodeRegions(src string) string {
 	var b strings.Builder
 	b.Grow(len(src))
 	n := len(src)
@@ -1417,52 +1422,142 @@ func phpCodeOnly(src string) string {
 		// PHP mode: copy verbatim until a top-level "?>".
 		i = copyPHPModeRegion(&b, src, i)
 	}
-	return canonicalSuperglobalAliases(b.String())
+	return b.String()
 }
 
-// phpGapRe is what PHP accepts between the tokens of a variable expression.
-const phpGapRe = `(?:\s|/\*[\s\S]*?\*/|(?://|#)[^\n]*\n)*`
+// A block comment must end at its first terminator; letting it cross that
+// terminator can turn a concatenated variable name into a superglobal.
+const phpGapRe = `(?:[ \t\r\n\v\f]|/\*[^*]*\*+(?:[^/*][^*]*\*+)*/|(?://|#)[^\r\n]*(?:\r\n|[\r\n]))*`
 
-const superglobalNameRe = `['"](_(?:GET|POST|REQUEST|COOKIE|FILES|SERVER|ENV|SESSION))['"]`
+const superglobalNameRe = `('_(?:GET|POST|REQUEST|COOKIE|FILES|SERVER|ENV|SESSION)'|"_(?:GET|POST|REQUEST|COOKIE|FILES|SERVER|ENV|SESSION)")`
 
 var reSuperglobalAlias = regexp.MustCompile(
-	`\$\{` + phpGapRe + superglobalNameRe + phpGapRe + `\}` +
-		`|\$GLOBALS` + phpGapRe + `\[` + phpGapRe + superglobalNameRe + phpGapRe + `\]`)
+	`^(?:\$\{` + phpGapRe + superglobalNameRe + phpGapRe + `\}` +
+		`|\$GLOBALS` + phpGapRe + `\[` + phpGapRe + superglobalNameRe + phpGapRe + `\])`)
 
-// canonicalSuperglobalAliases rewrites ${'_POST'} and $GLOBALS['_POST'] to
-// $_POST so every request-input heuristic sees one spelling. The rest of
-// each alias becomes spaces and its newlines stay, so offsets and line
-// numbers do not move.
+// canonicalSuperglobalAliases exposes literal superglobal aliases to the
+// request-input heuristics. Literal data and comments stay unchanged, including
+// escaped dollars and nowdocs. Replacements retain byte and line-break offsets.
 func canonicalSuperglobalAliases(code string) string {
 	if !strings.Contains(code, "${") && !strings.Contains(code, "$GLOBALS") {
 		return code
 	}
-	matches := reSuperglobalAlias.FindAllStringSubmatchIndex(code, -1)
-	if matches == nil {
-		return code
+	// A brace frame is executable interpolation inside a quoted string. A
+	// heredoc frame ends at a known offset, not at a quote in its body.
+	type mode struct {
+		quote byte
+		end   int
 	}
-	b := []byte(code)
-	for _, m := range matches {
-		name := "$"
-		if m[2] >= 0 {
-			name += code[m[2]:m[3]]
-		} else {
-			name += code[m[4]:m[5]]
+	modes := []mode{{}}
+	var out []byte
+	for i := 0; i < len(code); {
+		current := modes[len(modes)-1]
+		if current.end != 0 && i >= current.end {
+			modes = modes[:len(modes)-1]
+			continue
 		}
-		for i := m[0]; i < m[1]; i++ {
-			if b[i] != '\n' {
-				b[i] = ' '
+		inString := current.quote != 0 && current.quote != '{'
+		if inString {
+			switch {
+			case code[i] == '\\':
+				i += 2
+				continue
+			case current.end == 0 && code[i] == current.quote:
+				modes = modes[:len(modes)-1]
+				i++
+				continue
+			case strings.HasPrefix(code[i:], "{$"):
+				modes = append(modes, mode{quote: '{'})
+				i++
+				continue
+			case !strings.HasPrefix(code[i:], "${"):
+				i++
+				continue
+			}
+		} else {
+			if label, body, ok := phpHeredocOpen(code, i); ok {
+				end := phpHeredocEnd(code, body, label)
+				if strings.Contains(code[i:body], "'") {
+					i = end
+				} else {
+					modes = append(modes, mode{quote: '\n', end: end})
+					i = body
+				}
+				continue
+			}
+			if code[i] == '\'' {
+				i = skipPHPString(code, i) + 1
+				continue
+			}
+			if code[i] == '"' || code[i] == '`' {
+				modes = append(modes, mode{quote: code[i]})
+				i++
+				continue
+			}
+			if strings.HasPrefix(code[i:], "/*") {
+				end := strings.Index(code[i+2:], "*/")
+				if end < 0 {
+					break
+				}
+				i += end + 4
+				continue
+			}
+			if isPHPLineCommentStart(code, i) {
+				i = skipPHPLineComment(code, i)
+				continue
+			}
+			if current.quote == '{' {
+				switch code[i] {
+				case '{':
+					modes = append(modes, mode{quote: '{'})
+				case '}':
+					modes = modes[:len(modes)-1]
+				}
 			}
 		}
-		// Keep the name as close to a following [index] as possible without
-		// covering a newline. The quoted name itself is always such a span.
-		at := m[1] - len(name)
-		for strings.Contains(code[at:at+len(name)], "\n") {
-			at--
+		if code[i] == '$' && (strings.HasPrefix(code[i:], "${") || strings.HasPrefix(code[i:], "$GLOBALS")) {
+			if m := reSuperglobalAlias.FindStringSubmatchIndex(code[i:]); m != nil {
+				nameStart, nameEnd := m[2], m[3]
+				if nameStart < 0 {
+					nameStart, nameEnd = m[4], m[5]
+				}
+				name := "$" + code[i+nameStart+1:i+nameEnd-1]
+				if out == nil {
+					out = []byte(code)
+				}
+				start, end := i, i+m[1]
+				at := end - len(name)
+				if len(modes) > 1 {
+					// Retain interpolation delimiters so later string masking
+					// cannot mistake nested quotes for the outer closing quote.
+					start, end = i+nameStart, i+nameEnd
+					at = start
+				} else {
+					for strings.ContainsAny(code[at:at+len(name)], "\r\n") {
+						at--
+					}
+				}
+				for j := start; j < end; j++ {
+					if out[j] != '\n' && out[j] != '\r' {
+						out[j] = ' '
+					}
+				}
+				copy(out[at:], name)
+				i += m[1]
+				continue
+			}
+			if inString {
+				modes = append(modes, mode{quote: '{'})
+				i += 2
+				continue
+			}
 		}
-		copy(b[at:], name)
+		i++
 	}
-	return string(b)
+	if out == nil {
+		return code
+	}
+	return string(out)
 }
 
 // copyPHPModeRegion copies src[start:] into b verbatim until a top-level "?>"

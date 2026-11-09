@@ -174,3 +174,16 @@ func TestFPFlood_YML_FilesManNeedsQuotedActionName(t *testing.T) {
 		}
 	}
 }
+
+func TestFilesManActionCaseSurvivesLoaderFlags(t *testing.T) {
+	s := loadRepoScanner(t)
+	for _, action := range []string{`'FilesMan'`, `"FilesMan"`, `'filesman'`, `"filesMan"`} {
+		data := []byte("<?php $action = " + action + "; passthru($command);")
+		want := action == `'FilesMan'` || action == `"FilesMan"`
+		for _, rule := range []string{"webshell_wso", "webshell_filesman_variants"} {
+			if got := hasRule(s.ScanContent(data, ".php"), rule); got != want {
+				t.Errorf("%s, %s: match = %v, want %v", rule, action, got, want)
+			}
+		}
+	}
+}

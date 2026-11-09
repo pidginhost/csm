@@ -1393,7 +1393,7 @@ func hasPHPSubmittedPassword(contentLower string) bool {
 }
 
 func stripPHPBlocks(content string) string {
-	codeOnly := phpCodeOnly(content)
+	codeOnly := phpCodeRegions(content)
 	visible := []byte(content)
 	for i := range visible {
 		switch codeOnly[i] {

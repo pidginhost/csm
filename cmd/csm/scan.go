@@ -424,8 +424,11 @@ func printScanReportTo(jobID string, asJSON bool, w io.Writer, send sendFn) bool
 	case complete:
 	case resp.Job.State != "done":
 		fmt.Fprintf(w, "INCOMPLETE: this scan was %s before it covered everything.\n\n", resp.Job.State)
+	case resp.Job.FindingsTruncated:
+		fmt.Fprintln(w, "INCOMPLETE: some findings were not stored; this report cannot confirm full coverage.")
+		fmt.Fprintln(w)
 	default:
-		fmt.Fprintln(w, "INCOMPLETE: this scan did not cover everything; see the incomplete and truncated findings below.")
+		fmt.Fprintln(w, "INCOMPLETE: this scan did not cover everything; see the coverage and check failures below.")
 		fmt.Fprintln(w)
 	}
 
@@ -446,13 +449,17 @@ func printScanReportTo(jobID string, asJSON bool, w io.Writer, send sendFn) bool
 }
 
 // scanReportComplete reports whether the job finished and every scanner
-// covered its whole scope. Coverage gaps are findings named *_incomplete or
-// *_truncated; the CLI requests every finding, so none is on a later page.
+// covered its whole scope. The CLI requests every finding, including check
+// failures and coverage gaps, so none is on a later page.
 func scanReportComplete(resp control.ScanReportResponse) bool {
-	if resp.Job.State != "done" {
+	if resp.Job.State != "done" || resp.Job.FindingsTruncated {
 		return false
 	}
 	for _, f := range resp.Findings {
+		switch f.Check {
+		case "check_timeout", "check_panic", "full_scan_file_too_large", "phishing_kit_archive_unscannable", "account_scan", "account_scan_error":
+			return false
+		}
 		if strings.HasSuffix(f.Check, "_incomplete") || strings.HasSuffix(f.Check, "_truncated") {
 			return false
 		}
