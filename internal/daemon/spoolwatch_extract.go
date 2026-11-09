@@ -128,7 +128,7 @@ func (sw *SpoolWatcher) extractSpoolMessage(evt spoolEvent, msgID, headerPath st
 	}
 	defer func() { _ = header.Close() }()
 	if sw.extractor == nil {
-		return sw.extractFailed(msgID, evt.source, errNoExtractor), false, nil
+		return sw.extractFailed(msgID, evt, errNoExtractor), false, nil
 	}
 	if sw.mailStrikes != nil && sw.mailStrikes.Blocked(msgID) {
 		recordParseJob("mail", outcomeSkipped, 0)
@@ -144,7 +144,7 @@ func (sw *SpoolWatcher) extractSpoolMessage(evt spoolEvent, msgID, headerPath st
 			sw.recordWorkerKill(msgID, evt.source)
 			sw.saveCrashSample(msgID, header, body)
 		}
-		return sw.extractFailed(msgID, evt.source, err), killed, nil
+		return sw.extractFailed(msgID, evt, err), killed, nil
 	}
 	return extraction, false, nil
 }
@@ -162,7 +162,7 @@ func (sw *SpoolWatcher) recordWorkerKill(msgID, source string) {
 	sw.sourceKills.Record(source)
 	if sw.sourceKills.Blocked(source) {
 		sw.emitLimited("email_av_parse_worker_source", alert.High, sourceKillWindow,
-			fmt.Sprintf("Messages from source %q killed the attachment parse worker %d times, each within %s of the one before. Their attachments were not scanned, and outside observe mode the messages were deferred. This looks like crafted mail; consider blocking the source.", source, sourceKillLimit, sourceKillWindow))
+			fmt.Sprintf("Messages from source %q killed the attachment parse worker %d times, each within %s of the one before. Their attachments were not scanned. This looks like crafted mail; consider blocking the source.", source, sourceKillLimit, sourceKillWindow))
 	}
 }
 
@@ -201,7 +201,7 @@ func sourceText(source string) string {
 
 // extractFailed reports a failed extraction and turns it into a partial
 // result, which is never clean.
-func (sw *SpoolWatcher) extractFailed(msgID, source string, err error) *emime.ExtractionResult {
+func (sw *SpoolWatcher) extractFailed(msgID string, evt spoolEvent, err error) *emime.ExtractionResult {
 	reason, isolation := extractFailureReason(err)
 	fmt.Fprintf(os.Stderr, "[%s] spool watcher: extraction failed for %s: %q\n", ts(), msgID, err)
 	switch {
@@ -213,10 +213,19 @@ func (sw *SpoolWatcher) extractFailed(msgID, source string, err error) *emime.Ex
 	default:
 		outcome := "the message was handled as an incomplete scan under email_av.fail_mode"
 		if countedKill(err) {
-			outcome = "the message caused the failure, so outside observe mode it is deferred, whatever email_av.fail_mode says"
+			switch {
+			case sw.cfg.ObserveMode():
+				outcome = "the message caused the failure; delivery is allowed in observe mode"
+			case !evt.needResp:
+				outcome = "the message caused the failure; delivery cannot be deferred without fanotify permission events"
+			default:
+				// The hold may already have answered, so this is a request,
+				// not proof that the message was stopped.
+				outcome = "the message caused the failure; delivery deferral is requested regardless of email_av.fail_mode"
+			}
 		}
 		sw.emitLimited("email_av_parse_worker_failed", alert.Warning, time.Minute,
-			fmt.Sprintf("Parse worker failed on message %s from %s (%s); %s", msgID, sourceText(source), reason, outcome))
+			fmt.Sprintf("Parse worker failed on message %s from %s (%s); %s", msgID, sourceText(evt.source), reason, outcome))
 		if workerproc.FailureReason(err) == workerproc.ReasonProtocol {
 			sw.emitLimited("email_av_parse_worker_rejected", alert.Critical, time.Hour,
 				fmt.Sprintf("Parse worker sent an invalid reply for message %s and was killed; a crafted message may have taken it over", msgID))

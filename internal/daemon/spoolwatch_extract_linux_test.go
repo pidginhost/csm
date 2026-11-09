@@ -525,8 +525,14 @@ func TestSpoolExtractErrorMapping(t *testing.T) {
 						t.Fatalf("%s: %s findings %+v, want one at %v naming the message", mode, check, got, sev)
 					}
 				}
-				if failed := findingsFor(fs, "email_av_parse_worker_failed"); len(failed) == 1 && strings.Contains(failed[0].Message, "deferred") != tc.messageFault {
-					t.Fatalf("%s: worker failed finding %+v, want deferral stated only for a message fault", mode, failed)
+				if failed := findingsFor(fs, "email_av_parse_worker_failed"); len(failed) == 1 && tc.messageFault {
+					wantOutcome := "delivery deferral is requested regardless of email_av.fail_mode"
+					if mode == config.ModeObserve {
+						wantOutcome = "delivery is allowed in observe mode"
+					}
+					if !strings.Contains(failed[0].Message, wantOutcome) {
+						t.Fatalf("%s: worker failed finding %+v, want %q", mode, failed, wantOutcome)
+					}
 				}
 			}
 		})
