@@ -25,7 +25,8 @@ func strikeWatcher(mode string, ex mailExtractor) (*SpoolWatcher, chan alert.Fin
 }
 
 // A message that killed the worker twice is not unpacked again: each retry
-// would cost another worker and still end incomplete.
+// would cost another worker and still end incomplete. It stays deferred, in
+// either fail mode, so retrying it never delivers it unscanned.
 func TestSpoolRepeatFailureSkipsWorker(t *testing.T) {
 	timeout := workerFailure(t, workerproc.ReasonTimeout)
 	for _, mode := range []string{"open", "tempfail"} {
@@ -46,14 +47,36 @@ func TestSpoolRepeatFailureSkipsWorker(t *testing.T) {
 			if n := len(ex.recorded()); n != 2 {
 				t.Fatalf("extractor calls = %d, want the third event skipped", n)
 			}
-			if got := responses(); len(got) != 1 || got[0].response != wantResponse(mode) {
-				t.Fatalf("responses %+v, want %d", got, wantResponse(mode))
+			if got := responses(); len(got) != 1 || got[0].response != FAN_DENY {
+				t.Fatalf("responses %+v, want deferral", got)
 			}
 			d := findingsFor(takeFindings(ch), "email_av_degraded")
-			if len(d) != 1 || !strings.Contains(d[0].Message, `("parse worker failed on this message before")`) {
+			if len(d) != 1 || !strings.Contains(d[0].Message, `("parse worker failed on this message before")`) || !strings.Contains(d[0].Message, "delivery deferred") {
 				t.Fatalf("degraded findings %+v, want the repeat-failure reason", d)
 			}
 		})
+	}
+}
+
+// Without permission events nothing can be deferred, so the finding must not
+// claim the message was.
+func TestSpoolMessageFaultWithoutPermissionEventsIsDelivered(t *testing.T) {
+	crash := workerFailure(t, workerproc.ReasonCrash)
+	ex := &recordingExtractor{size: 1, extract: func(context.Context, int) (*emime.ExtractionResult, error) { return nil, crash }}
+	sw, ch := strikeWatcher("open", ex)
+	responses := captureResponses(t)
+	dir := t.TempDir()
+	msgID := "1abcDE-000003-AB"
+	buildMinimalEximSpool(t, dir, msgID)
+	evt := bodyEvent(t, dir, msgID)
+	evt.needResp = false
+	sw.handleSpoolEvent(evt)
+	if got := responses(); len(got) != 0 {
+		t.Fatalf("notification event answered: %+v", got)
+	}
+	d := findingsFor(takeFindings(ch), "email_av_degraded")
+	if len(d) != 1 || !strings.Contains(d[0].Message, "delivery allowed") {
+		t.Fatalf("degraded findings %+v, want delivery allowed", d)
 	}
 }
 

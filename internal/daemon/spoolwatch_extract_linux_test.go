@@ -324,7 +324,7 @@ func TestSpoolExtractWorkerHangIsPartial(t *testing.T) {
 		}
 		fs := takeFindings(ch)
 		failed := findingsFor(fs, "email_av_parse_worker_failed")
-		if len(failed) != 1 || !strings.Contains(failed[0].Message, "parse worker timed out") || !strings.Contains(failed[0].Message, msgID) {
+		if len(failed) != 1 || !strings.Contains(failed[0].Message, "parse worker timed out") || !strings.Contains(failed[0].Message, msgID) || !strings.Contains(failed[0].Message, "under email_av.fail_mode") {
 			t.Fatalf("%s: parse worker findings %+v", mode, failed)
 		}
 		if d := findingsFor(fs, "email_av_degraded"); len(d) != 1 || !strings.Contains(d[0].Message, "parse worker timed out") {
@@ -456,28 +456,32 @@ func workerFailure(t *testing.T, reason string) error {
 	return err
 }
 
+// A failure the message caused defers it whatever fail_mode says: open
+// covers the host failing to scan, not mail built to break the worker. Observe
+// mode never defers mail.
 func TestSpoolExtractErrorMapping(t *testing.T) {
 	cases := []struct {
-		name     string
-		err      func(t *testing.T) error
-		nilEx    bool
-		reason   string
-		findings map[string]alert.Severity
+		name         string
+		err          func(t *testing.T) error
+		nilEx        bool
+		reason       string
+		messageFault bool
+		findings     map[string]alert.Severity
 	}{
 		{"spawn", func(*testing.T) error { return fmt.Errorf("%w: systemd-run missing", workerproc.ErrSpawn) }, false,
-			"parse isolation unavailable", map[string]alert.Severity{"email_av_isolation_unavailable": alert.Critical}},
+			"parse isolation unavailable", false, map[string]alert.Severity{"email_av_isolation_unavailable": alert.Critical}},
 		{"breaker", func(*testing.T) error { return fmt.Errorf("%w: 3 failures in a row", workerproc.ErrBreakerOpen) }, false,
-			"parse worker failing repeatedly", map[string]alert.Severity{"email_av_isolation_unavailable": alert.Critical}},
+			"parse worker failing repeatedly", false, map[string]alert.Severity{"email_av_isolation_unavailable": alert.Critical}},
 		{"no extractor", nil, true,
-			"parse isolation unavailable", map[string]alert.Severity{"email_av_isolation_unavailable": alert.Critical}},
+			"parse isolation unavailable", false, map[string]alert.Severity{"email_av_isolation_unavailable": alert.Critical}},
 		{"timeout", func(t *testing.T) error { return workerFailure(t, workerproc.ReasonTimeout) }, false,
-			"parse worker timed out", map[string]alert.Severity{"email_av_parse_worker_failed": alert.Warning}},
+			"parse worker timed out", true, map[string]alert.Severity{"email_av_parse_worker_failed": alert.Warning}},
 		{"oom", func(t *testing.T) error { return workerFailure(t, workerproc.ReasonOOM) }, false,
-			"parse worker ran out of memory", map[string]alert.Severity{"email_av_parse_worker_failed": alert.Warning}},
+			"parse worker ran out of memory", true, map[string]alert.Severity{"email_av_parse_worker_failed": alert.Warning}},
 		{"crash", func(t *testing.T) error { return workerFailure(t, workerproc.ReasonCrash) }, false,
-			"parse worker crashed", map[string]alert.Severity{"email_av_parse_worker_failed": alert.Warning}},
+			"parse worker crashed", true, map[string]alert.Severity{"email_av_parse_worker_failed": alert.Warning}},
 		{"protocol", func(t *testing.T) error { return workerFailure(t, workerproc.ReasonProtocol) }, false,
-			"parse worker reply rejected", map[string]alert.Severity{"email_av_parse_worker_failed": alert.Warning, "email_av_parse_worker_rejected": alert.Critical}},
+			"parse worker reply rejected", true, map[string]alert.Severity{"email_av_parse_worker_failed": alert.Warning, "email_av_parse_worker_rejected": alert.Critical}},
 	}
 	others := []string{"email_av_isolation_unavailable", "email_av_parse_worker_failed", "email_av_parse_worker_rejected", "email_av_parse_error"}
 	for _, tc := range cases {
@@ -487,19 +491,26 @@ func TestSpoolExtractErrorMapping(t *testing.T) {
 				failure := tc.err(t)
 				ex = &recordingExtractor{size: 1, extract: func(context.Context, int) (*emime.ExtractionResult, error) { return nil, failure }}
 			}
-			for _, mode := range []string{"tempfail", "open"} {
+			for _, mode := range []string{"tempfail", "open", config.ModeObserve} {
 				responses := captureResponses(t)
 				dir := t.TempDir()
 				msgID := "1aBcDe-MAP-XX"
 				buildMinimalEximSpool(t, dir, msgID)
 				sw, ch := extractWatcher(mode, ex)
+				if mode == config.ModeObserve {
+					sw.cfg.Mode, sw.cfg.EmailAV.FailMode = config.ModeObserve, "open"
+				}
+				want, outcome := wantResponse(mode), "delivery allowed"
+				if mode == "tempfail" || (tc.messageFault && mode != config.ModeObserve) {
+					want, outcome = FAN_DENY, "delivery deferred"
+				}
 				sw.handleSpoolEvent(bodyEvent(t, dir, msgID))
-				if got := responses(); len(got) != 1 || got[0].response != wantResponse(mode) {
-					t.Fatalf("%s: responses %+v", mode, got)
+				if got := responses(); len(got) != 1 || got[0].response != want {
+					t.Fatalf("%s: responses %+v, want %d", mode, got, want)
 				}
 				fs := takeFindings(ch)
-				if d := findingsFor(fs, "email_av_degraded"); len(d) != 1 || !strings.Contains(d[0].Message, fmt.Sprintf("(%q)", tc.reason)) {
-					t.Fatalf("%s: degraded findings %+v, want reason %q", mode, d, tc.reason)
+				if d := findingsFor(fs, "email_av_degraded"); len(d) != 1 || !strings.Contains(d[0].Message, fmt.Sprintf("(%q)", tc.reason)) || !strings.Contains(d[0].Message, outcome) {
+					t.Fatalf("%s: degraded findings %+v, want reason %q and %q", mode, d, tc.reason, outcome)
 				}
 				for _, check := range others {
 					got := findingsFor(fs, check)
@@ -513,6 +524,9 @@ func TestSpoolExtractErrorMapping(t *testing.T) {
 					if len(got) != 1 || got[0].Severity != sev || !strings.Contains(got[0].Message, msgID) {
 						t.Fatalf("%s: %s findings %+v, want one at %v naming the message", mode, check, got, sev)
 					}
+				}
+				if failed := findingsFor(fs, "email_av_parse_worker_failed"); len(failed) == 1 && strings.Contains(failed[0].Message, "deferred") != tc.messageFault {
+					t.Fatalf("%s: worker failed finding %+v, want deferral stated only for a message fault", mode, failed)
 				}
 			}
 		})
