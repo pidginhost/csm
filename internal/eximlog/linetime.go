@@ -15,6 +15,9 @@ func lineTimeIn(line string, local *time.Location) (time.Time, bool) {
 	date, rest, _ := strings.Cut(line, " ")
 	clock, rest, _ := strings.Cut(rest, " ")
 	stamp := date + " " + clock
+	// Arrival metadata accepts extra spacing here; it must not hide a zone
+	// and silently turn an explicit offset into local time.
+	rest = strings.TrimLeft(rest, " \t")
 	if rest != "" && (rest[0] == '+' || rest[0] == '-') {
 		zone, _, _ := strings.Cut(rest, " ")
 		if !validOffset(zone) {

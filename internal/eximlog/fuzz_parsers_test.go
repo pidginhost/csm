@@ -172,8 +172,9 @@ func FuzzEximLineTime(f *testing.F) {
 			at = at.Truncate(time.Second)
 		}
 		zone := local
+		gap := []string{" ", "  ", " \t"}[ms%3]
 		if zoned {
-			layout += " -0700"
+			layout += gap + "-0700"
 			zone = time.FixedZone("exim", mins*60)
 		}
 		at = at.In(zone)
@@ -183,11 +184,11 @@ func FuzzEximLineTime(f *testing.F) {
 			t.Fatalf("LineTime(%q) = %v, %v; want %v", line, got, ok, at)
 		}
 		// The same prefix with an explicit zone that is not an offset.
-		bad := fmt.Sprintf("%s +%02d%02d 1abc-0000-AB <= %s", at.Format(time.DateTime), 24+int(ms)%76, int(ms)%100, suffix)
+		bad := fmt.Sprintf("%s%s+%02d%02d 1abc-0000-AB <= %s", at.Format(time.DateTime), gap, 24+int(ms)%76, int(ms)%100, suffix)
 		if got, ok := lineTimeIn(bad, local); ok {
 			t.Fatalf("LineTime(%q) = %v, want none", bad, got)
 		}
-		bad = fmt.Sprintf("%s -%02d%02d 1abc-0000-AB", at.Format(time.DateTime), int(ms)%24, 60+int(ms)%40)
+		bad = fmt.Sprintf("%s%s-%02d%02d 1abc-0000-AB", at.Format(time.DateTime), gap, int(ms)%24, 60+int(ms)%40)
 		if got, ok := lineTimeIn(bad, local); ok {
 			t.Fatalf("LineTime(%q) = %v, want none", bad, got)
 		}

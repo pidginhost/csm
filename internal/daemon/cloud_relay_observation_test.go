@@ -280,3 +280,43 @@ func TestEximHistoryRecordBindingAcrossAccounts(t *testing.T) {
 		}
 	})
 }
+
+// Prefix spacing must neither hide a valid zone nor let an invalid one
+// borrow local time. The newest peer and the legacy burst remain unchanged.
+func TestEximHistoryObservationZoneAfterWhitespace(t *testing.T) {
+	withLocal(t, time.FixedZone("local", 2*3600))
+	now := time.Date(2026, 1, 2, 22, 0, 0, 0, time.UTC)
+	base := now.Add(-12 * time.Hour)
+	for _, zone := range []string{"+0530", "-0700", "+2400", "-0060"} {
+		t.Run(zone, func(t *testing.T) {
+			lines := retroSends(base)
+			prefix := base.Add(17*time.Minute).Format(time.DateTime) + ".125  " + zone
+			lines[17] = stampedAs(lines[17], prefix)
+			path := writeEximFixture(t, lines)
+			withGlobalStore(t, func(*store.DB) {
+				findings := ScanEximHistoryForCloudRelay(&config.Config{}, path, now, 48*time.Hour)
+				if len(findings) != 1 || findings[0].SourceIP != "203.0.113.21" || findings[0].Attribution != admission.AttributionPeer {
+					t.Fatalf("findings %+v, want the legacy finding for the newest peer", findings)
+				}
+				if !strings.Contains(findings[0].Message, "sent 18 authenticated messages from 2 cloud-provider IPs") {
+					t.Fatalf("legacy burst changed: %s", findings[0].Message)
+				}
+				o := findings[0].Observation
+				if zone == "+2400" || zone == "-0060" {
+					if o != (alert.Observation{}) {
+						t.Fatalf("invalid zone named %+v", o)
+					}
+					return
+				}
+				want, err := time.Parse(time.DateTime+" -0700", strings.Replace(prefix, "  ", " ", 1))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !o.ObservedAt.Equal(want) || o.ObservedAt.Location() != time.UTC ||
+					!sameRef(o, recordRef(t, path, offsetOf(lines, 17), lines[17])) {
+					t.Fatalf("observation %+v, want the newest record at %v", o, want.UTC())
+				}
+			})
+		})
+	}
+}
