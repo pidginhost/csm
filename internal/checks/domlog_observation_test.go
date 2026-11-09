@@ -715,3 +715,112 @@ func TestScanObservationsMintAndRemainStable(t *testing.T) {
 		wantNoKind(t, f)
 	})
 }
+
+// A windowed domlog finding is minted from its record, so a later scan of
+// unchanged logs mints the same evidence even when another vhost's request
+// has left the window meanwhile. The vhosts an address touched are not a
+// property of the record, so the evidence claims none and stays host-owned.
+func TestDomlogRescanKeepsEvidenceAcrossWindowChanges(t *testing.T) {
+	const ip = "203.0.113.73"
+	dir := t.TempDir()
+	write := func(name string, lines []string) string {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	var flood []string
+	for i := 0; i < 12; i++ {
+		flood = append(flood, fmt.Sprintf(`%s - - [09/Nov/2026:12:04:%02d +0000] "GET /page-%d HTTP/1.1" 200 100 "-" "Mozilla/5.0"`, ip, i, i))
+	}
+	paths := []string{
+		write("example.test", flood),
+		write("example.org", []string{fmt.Sprintf(`%s - - [09/Nov/2026:12:00:10 +0000] "GET / HTTP/1.1" 200 100 "-" "Mozilla/5.0"`, ip)}),
+	}
+	withMockOS(t, &mockOS{open: os.Open})
+	cfg := &config.Config{}
+	cfg.Thresholds.HTTPFloodThreshold = 10
+	inv, err := admission.NewInventory(map[string]uint64{"tenanta": 1, "tenantb": 1}, map[string]string{"example.test": "tenanta", "example.org": "tenantb"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg, err := admission.NewRegistry(AdmissionPolicy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var producer *admission.Producer
+	for _, p := range ProducerTable() {
+		registered, regErr := reg.Register(p.Spec)
+		if regErr != nil {
+			t.Fatal(regErr)
+		}
+		if p.Spec.ID == ProducerDomlogScan {
+			producer = registered
+		}
+	}
+	mintAt := func(scan time.Time) admission.Evidence {
+		t.Helper()
+		stats := newDomlogStatsAt(scan)
+		tailDomlogsInto(context.Background(), paths, cfg, stats, nopBotClassifier{}, 1000)
+		f := oneScanFinding(t, stats.emit(cfg), "http_request_flood")
+		_, in, err := AdmissionEvidence(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		in.Inventory = inv
+		e, err := producer.Mint(in)
+		if err != nil {
+			t.Fatalf("mint at %v: %v", scan, err)
+		}
+		return e
+	}
+	early := mintAt(time.Date(2026, 11, 9, 12, 5, 0, 0, time.UTC))
+	late := mintAt(time.Date(2026, 11, 9, 12, 5, 30, 0, time.UTC))
+	if early.ID() != late.ID() || (!early.Equal(late) && !early.SameExceptFinding(late)) {
+		t.Fatalf("a later scan of the same record minted another record under %v: owners %+v then %+v", early.ID(), early.Owner(), late.Owner())
+	}
+	if !early.Owner().IsHost() || !late.Owner().IsHost() {
+		t.Fatalf("owners %+v then %+v, want host-owned evidence", early.Owner(), late.Owner())
+	}
+}
+
+// A finding observed in the central log claims no vhost, even while the
+// address's only in-window vhost request would name one: that request leaves
+// the window and the evidence of the unchanged record must not change.
+func TestDomlogCentralRecordClaimsNoVhost(t *testing.T) {
+	const ip = "203.0.113.74"
+	cfg := &config.Config{}
+	cfg.Thresholds.HTTPFloodThreshold = 10
+	scanAt := func(scan time.Time) alert.Finding {
+		t.Helper()
+		stats := newDomlogStatsAt(scan)
+		add := func(line string, offset int64, domain string) {
+			rec, ok := parseAccessLogRecord(line)
+			if !ok {
+				t.Fatalf("unparsable fixture %q", line)
+			}
+			rec.ref = syslogRecord{text: line, offset: offset, stream: alert.FileStream(1, 2)}
+			rec.Domain, rec.Central = domain, domain == ""
+			stats.scan(rec, cfg, nopBotClassifier{})
+		}
+		add(fmt.Sprintf(`%s - - [09/Nov/2026:12:00:10 +0000] "GET / HTTP/1.1" 200 100 "-" "Mozilla/5.0"`, ip), 0, "example.org")
+		for i := 0; i < 12; i++ {
+			add(fmt.Sprintf(`%s - - [09/Nov/2026:12:04:%02d +0000] "GET /page-%d HTTP/1.1" 200 100 "-" "Mozilla/5.0"`, ip, i, i), int64(1000+100*i), "")
+		}
+		return oneScanFinding(t, stats.emit(cfg), "http_request_flood")
+	}
+	for _, scan := range []time.Time{time.Date(2026, 11, 9, 12, 5, 0, 0, time.UTC), time.Date(2026, 11, 9, 12, 5, 30, 0, time.UTC)} {
+		f := scanAt(scan)
+		if f.Observation == (alert.Observation{}) || len(f.Claims) != 0 {
+			t.Fatalf("scan at %v: observation %+v with claims %+v, want the central record with no claim", scan, f.Observation, f.Claims)
+		}
+		_, in, err := AdmissionEvidence(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(in.Claims) != 0 {
+			t.Fatalf("evidence input claims %+v", in.Claims)
+		}
+	}
+}

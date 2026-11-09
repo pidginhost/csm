@@ -594,9 +594,12 @@ func (s *domlogStats) emit(cfg *config.Config) []alert.Finding {
 	// visitor spread never trips it.
 	out = append(out, s.emitDistributedFlood(cfg, out)...)
 	// Domain is set only from a per-vhost log path, which server
-	// configuration names, so it is a domain claim.
+	// configuration names, so it is a domain claim. A stamped finding
+	// claims none: the vhosts an address touched change with the window and
+	// would change the evidence of an unchanged record, and the newest
+	// record's vhost is the client's choice. Its evidence stays host-owned.
 	for i := range out {
-		if out[i].Domain != "" {
+		if out[i].Domain != "" && out[i].Observation == (alert.Observation{}) {
 			out[i].Claims = []admission.Claim{{Kind: admission.ClaimDomain, Value: out[i].Domain}}
 		}
 	}
