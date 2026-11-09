@@ -118,6 +118,9 @@ type Record struct {
 	// Prediction is what a dry-run forecast said live admission would have
 	// done, from its fixed vocabulary. Only a dry_run summary sets it.
 	Prediction string `json:"prediction,omitempty"`
+	// Cause narrows a refusal summary's Error, from its fixed vocabulary.
+	// Only an attribution refusal summary sets it.
+	Cause string `json:"cause,omitempty"`
 }
 
 // Sink writes records. The daemon installs a file sink at startup; tests

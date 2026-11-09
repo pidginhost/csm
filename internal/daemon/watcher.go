@@ -682,27 +682,19 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 		}
 	}
 
-	// 5. Authentication from known bulk mail services
-	if strings.Contains(line, " <= ") && strings.Contains(line, "A=dovecot_") {
-		knownSpamServices := []string{
-			"truelist.io", "sendinblue.com", "mailspree.co",
-			"bulkmailer.", "massmailsoftware.", "sendblaster.",
-		}
-		lineLower := strings.ToLower(line)
-		for _, service := range knownSpamServices {
-			if strings.Contains(lineLower, service) {
-				sender := extractEximSender(line)
-				findings = append(findings, alert.Finding{
-					Severity: alert.Critical,
-					Check:    "email_compromised_account",
-					Message:  fmt.Sprintf("Compromised email account %s authenticated from bulk mail service %s", sender, service),
-					Details:  truncateDaemon(line, 300),
-					Mailbox:  mailboxOnly(sender),
-					Domain:   extractDomainFromEmail(sender),
-					TenantID: mailAccountOwner(extractAuthUser(line)),
-				})
-				break
-			}
+	// 5. Authentication from known bulk mail services. The login and the
+	// connecting host come from Exim's metadata; the subject is sender text.
+	if authUser := extractAuthUser(line); authUser != "" {
+		if service := bulkMailServiceHost(line); service != "" {
+			findings = append(findings, alert.Finding{
+				Severity: alert.Critical,
+				Check:    "email_compromised_account",
+				Message:  fmt.Sprintf("Compromised email account %s authenticated from bulk mail service %s", authUser, service),
+				Details:  truncateDaemon(line, 300),
+				Mailbox:  mailboxOnly(authUser),
+				Domain:   extractDomainFromEmail(authUser),
+				TenantID: mailAccountOwner(authUser),
+			})
 		}
 	}
 
@@ -1254,6 +1246,29 @@ var emailRateWindows sync.Map // map[string]*rateWindow
 // extractAuthUser shares the Exim identity parser with scheduled mail checks.
 func extractAuthUser(line string) string {
 	return eximlog.AuthenticatedUser(line)
+}
+
+// bulkMailServiceHost returns the known bulk mail service named by the
+// connecting host or its greeting in the arrival's H= field, or "".
+func bulkMailServiceHost(line string) string {
+	start, ok := eximlog.HFieldStart(line)
+	if !ok {
+		return ""
+	}
+	_, end := eximlog.HFieldClientIPAndEnd(line[start:])
+	if end == 0 {
+		return ""
+	}
+	host := strings.ToLower(line[start : start+end])
+	for _, service := range []string{
+		"truelist.io", "sendinblue.com", "mailspree.co",
+		"bulkmailer.", "massmailsoftware.", "sendblaster.",
+	} {
+		if strings.Contains(host, service) {
+			return service
+		}
+	}
+	return ""
 }
 
 // isHighVolumeSender checks if a user is in the high-volume senders allowlist.

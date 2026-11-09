@@ -53,6 +53,9 @@ func TestSSHLoginClaimsOnlyAHostingAccount(t *testing.T) {
 		}
 		claimsDeclared(t, ProducerSSHLog, f)
 		claimsDeclared(t, ProducerSSHLoginScan, f)
+		if f.Attribution != admission.AttributionPeer {
+			t.Errorf("%s: attribution %s, want the sshd peer", user, f.Attribution)
+		}
 	}
 	failed := "Oct  2 12:00:00 host sshd[100]: Failed password for alice from 192.0.2.40 port 50000 ssh2"
 	if f, ok := SSHAcceptedLoginFinding(failed, &config.Config{}); ok || len(f.Claims) != 0 {

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
@@ -69,6 +70,8 @@ func parseAccessLogLineEnhanced(line string, cfg *config.Config) []alert.Finding
 					Message:  fmt.Sprintf("cPanel API auth failure from %s", ip),
 					Details:  truncateDaemon(line, 300),
 					SourceIP: ip,
+					// cpsrvd logs the connecting peer first.
+					Attribution: admission.AttributionPeer,
 				})
 			}
 		}
@@ -191,6 +194,8 @@ func parseFTPLogLine(line string, cfg *config.Config) []alert.Finding {
 			Message:  fmt.Sprintf("FTP authentication failed from %s", ip),
 			Details:  truncateDaemon(line, 200),
 			SourceIP: ip,
+			// The pure-ftpd peer slot (checks.PureFTPDClientIP).
+			Attribution: admission.AttributionPeer,
 		})
 	}
 

@@ -11,40 +11,64 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 )
 
-// acceptanceProducer registers one producer that publishes the checks the
-// acceptance tables cover. Classification comes from the check, not the
-// producer, so one producer stands in for each.
-func acceptanceProducer(t *testing.T) *admission.Producer {
+// acceptanceProducers registers a producer for each attribution kind the
+// acceptance tables cover, publishing the checks that accept it.
+// Classification comes from the check, not the producer, so one producer
+// stands in for each.
+type acceptanceProducers map[string]*admission.Producer
+
+func acceptanceProducer(t *testing.T) acceptanceProducers {
 	t.Helper()
 	reg, err := admission.NewRegistry(AdmissionPolicy)
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := reg.Register(admission.ProducerSpec{
-		ID: "acceptance", Entry: admission.EntryScan, Observation: admission.ObservationLogCursor,
-		Checks: []string{"email_cloud_relay_abuse", "email_compromised_account", "ssh_login_unknown_ip", "c2_connection", "mail_account_compromised"},
-	})
-	if err != nil {
-		t.Fatal(err)
+	byKind := map[admission.Attribution][]string{}
+	for _, check := range []string{"email_cloud_relay_abuse", "email_compromised_account", "ssh_login_unknown_ip", "c2_connection", "mail_account_compromised"} {
+		byKind[rowKind(check)] = append(byKind[rowKind(check)], check)
 	}
-	return p
+	out := acceptanceProducers{}
+	for kind, checks := range byKind {
+		p, err := reg.Register(admission.ProducerSpec{
+			ID: admission.ProducerID("acceptance_" + kind.String()), Entry: admission.EntryScan, Observation: admission.ObservationLogCursor,
+			Checks: checks, Attribution: admission.Attributions(kind),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, check := range checks {
+			out[check] = p
+		}
+	}
+	return out
 }
 
-func acceptanceMint(p *admission.Producer, check string, sev admission.Severity, cursor string, observed time.Time) (admission.Evidence, admission.Target, error) {
+// rowKind is the first attribution kind check's registry row accepts.
+func rowKind(check string) admission.Attribution {
+	row := ResponsePolicyFor(check).Attribution
+	for k := admission.AttributionPeer; k.Valid(); k++ {
+		if row.Has(k) {
+			return k
+		}
+	}
+	return admission.AttributionUnknown
+}
+
+func acceptanceMint(p acceptanceProducers, check string, sev admission.Severity, cursor string, observed time.Time) (admission.Evidence, admission.Target, error) {
 	return acceptanceMintFor(p, check, sev, "192.0.2.10", cursor, observed)
 }
 
-func acceptanceMintAt(p *admission.Producer, check string, sev admission.Severity, address string) (admission.Evidence, admission.Target, error) {
+func acceptanceMintAt(p acceptanceProducers, check string, sev admission.Severity, address string) (admission.Evidence, admission.Target, error) {
 	return acceptanceMintFor(p, check, sev, address, "1", time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC))
 }
 
-func acceptanceMintFor(p *admission.Producer, check string, sev admission.Severity, address, cursor string, observed time.Time) (admission.Evidence, admission.Target, error) {
+func acceptanceMintFor(p acceptanceProducers, check string, sev admission.Severity, address, cursor string, observed time.Time) (admission.Evidence, admission.Target, error) {
 	target, err := admission.CanonicalAddress(address, admission.Caps{})
 	if err != nil {
 		return admission.Evidence{}, target, err
 	}
-	e, err := p.Mint(admission.EvidenceInput{
-		Check: check, FindingID: "0123456789abcdef", Severity: sev,
+	e, err := p[check].Mint(admission.EvidenceInput{
+		Check: check, FindingID: "0123456789abcdef", Severity: sev, Attribution: rowKind(check),
 		Observation: admission.ObservationRef{Stream: "fixture", Cursor: cursor, Version: 1},
 		ObservedAt:  observed, Parser: admission.ParserRef{Name: "fixture", Version: 1}, Target: target,
 	})

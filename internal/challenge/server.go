@@ -79,21 +79,7 @@ func New(cfg *config.Config, ipList *IPList) *Server {
 		_, _ = rand.Read(secret)
 	}
 
-	trusted := make(map[string]bool)
-	var trustedNets []*net.IPNet
-	for _, p := range cfg.Challenge.TrustedProxies {
-		p = strings.TrimSpace(p)
-		if p == "" {
-			continue
-		}
-		if strings.Contains(p, "/") {
-			if n := netutil.ParseCIDROrIP(p); n != nil {
-				trustedNets = append(trustedNets, n)
-			}
-			continue
-		}
-		trusted[canonicalIP(p)] = true
-	}
+	trusted, trustedNets := parseTrustedProxies(cfg.Challenge.TrustedProxies)
 
 	s := &Server{
 		cfg:            cfg,
@@ -145,16 +131,8 @@ func New(cfg *config.Config, ipList *IPList) *Server {
 	mux.HandleFunc("/challenge/captcha-verify", s.handleCaptchaVerify)
 	mux.HandleFunc("/challenge/admin-token", s.handleAdminToken)
 
-	bindAddr := cfg.Challenge.ListenAddr
-	if bindAddr == "" {
-		// Defaults are applied during config.Load, but tests construct
-		// Server directly with an empty config; default to loopback so
-		// the production safety guarantee (never bind public by default)
-		// holds even on those paths.
-		bindAddr = "127.0.0.1"
-	}
 	s.srv = &http.Server{
-		Addr:              net.JoinHostPort(bindAddr, strconv.Itoa(cfg.Challenge.ListenPort)),
+		Addr:              net.JoinHostPort(ListenHost(cfg.Challenge.ListenAddr), strconv.Itoa(cfg.Challenge.ListenPort)),
 		Handler:           mux,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      10 * time.Second,
@@ -232,12 +210,19 @@ func (s *Server) resolveTLSMaterial() (cert, key string) {
 }
 
 func isLoopbackListenAddr(addr string) bool {
-	addr = strings.TrimSpace(addr)
-	if addr == "" || strings.EqualFold(addr, "localhost") {
-		return true
-	}
-	ip := net.ParseIP(addr)
+	ip := net.ParseIP(ListenHost(addr))
 	return ip != nil && ip.IsLoopback()
+}
+
+// ListenHost gives the server, installer and diagnostics the same bind host.
+// Localhost is pinned to IPv4 so proxy trust does not depend on DNS ordering.
+func ListenHost(addr string) string {
+	host := strings.TrimSpace(addr)
+	host = strings.Trim(host, "[]")
+	if host == "" || strings.EqualFold(host, "localhost") {
+		return "127.0.0.1"
+	}
+	return canonicalIP(host)
 }
 
 // Shutdown gracefully stops the server.
@@ -709,11 +694,41 @@ func (s *Server) extractIP(r *http.Request) string {
 // isTrustedProxy reports whether ip, in canonical form, is a configured
 // trusted proxy address or inside a configured trusted range.
 func (s *Server) isTrustedProxy(ip string) bool {
-	if s.trustedProxies[ip] {
+	return proxyTrusted(s.trustedProxies, s.trustedNets, ip)
+}
+
+// TrustsProxy reports whether challenge.trusted_proxies covers ip, matched
+// exactly as the running server matches a connecting peer.
+func TrustsProxy(entries []string, ip string) bool {
+	trusted, nets := parseTrustedProxies(entries)
+	return proxyTrusted(trusted, nets, canonicalIP(ip))
+}
+
+func parseTrustedProxies(entries []string) (map[string]bool, []*net.IPNet) {
+	trusted := make(map[string]bool)
+	var nets []*net.IPNet
+	for _, p := range entries {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		if strings.Contains(p, "/") {
+			if n := netutil.ParseCIDROrIP(p); n != nil {
+				nets = append(nets, n)
+			}
+			continue
+		}
+		trusted[canonicalIP(p)] = true
+	}
+	return trusted, nets
+}
+
+func proxyTrusted(trusted map[string]bool, nets []*net.IPNet, ip string) bool {
+	if trusted[ip] {
 		return true
 	}
 	parsed := net.ParseIP(ip)
-	return parsed != nil && netutil.IPInAnyNet(parsed, s.trustedNets)
+	return parsed != nil && netutil.IPInAnyNet(parsed, nets)
 }
 
 // canonicalIP normalizes an IP string so downstream exact-match lookups (the

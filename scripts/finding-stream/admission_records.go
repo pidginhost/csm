@@ -21,6 +21,8 @@ var (
 	// admissionPredictions are what a dry-run summary says live admission
 	// would have done with the work it counts.
 	admissionPredictions = ledgerNames(func(i int) (string, bool) { p := admission.Prediction(i); return p.String(), p.Valid() })
+	// admissionCauses narrow an attribution refusal.
+	admissionCauses = ledgerNames(func(i int) (string, bool) { c := admission.Cause(i); return c.String(), c.Valid() })
 )
 
 // unknown is the fixed summary value for absent or unregistered checks.
@@ -147,6 +149,8 @@ func validateSummary(r actionlog.Record) error {
 		return errSummary
 	case (r.Result == dryRunDecision) != admissionPredictions[r.Prediction], r.Result != dryRunDecision && r.Prediction != "":
 		return errSummary
+	case r.Cause != "" && (r.Error != admission.ReasonAttribution.String() || !admissionCauses[r.Cause]):
+		return errSummary
 	}
 	return nil
 }
@@ -163,6 +167,7 @@ func (a *Anonymizer) verifySummary(o anonAction) bool {
 		admissionEntries[o.Entry] && o.ReasonKind == "check" && o.anonTarget == anonTarget{TargetKind: "empty"} &&
 		((o.Result == string(actionlog.Refused) && admissionRefusals[o.Refusal]) || (o.Result != string(actionlog.Refused) && o.Refusal == "")) &&
 		((o.Result == dryRunDecision && admissionPredictions[o.Prediction]) || (o.Result != dryRunDecision && o.Prediction == "")) &&
+		(o.Cause == "" || (o.Refusal == admission.ReasonAttribution.String() && admissionCauses[o.Cause])) &&
 		o.HasError == (o.Refusal != "") &&
 		o.Account == "" && o.ActorIP == "" && o.DurationNS == 0 && o.FindingID == "" && o.IncidentID == "" &&
 		o.ActionID == "" && o.ActionVersion == 0 && o.UndoOf == "" && o.BeforeExists == nil && o.AfterExists == nil

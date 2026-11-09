@@ -39,7 +39,7 @@ func BenchmarkIngressSubmitFullSnapshot(b *testing.B) {
 	submission := func(cursor string, owner Owner) Submission {
 		claims, ownerInv := ownerClaims(b, owner)
 		e, mintErr := tp.ssh.Mint(EvidenceInput{
-			Check: "ssh_brute", FindingID: "0123456789abcdef", Severity: SeverityHigh, Target: target, Claims: claims, Inventory: ownerInv,
+			Check: "ssh_brute", FindingID: "0123456789abcdef", Severity: SeverityHigh, Target: target, Claims: claims, Inventory: ownerInv, Attribution: AttributionPeer,
 			Observation: ObservationRef{Stream: "bench", Cursor: cursor, Version: 1},
 			ObservedAt:  t0, Parser: ParserRef{Name: "bench", Version: 1},
 		})

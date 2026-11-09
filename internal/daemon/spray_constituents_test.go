@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/maillog"
@@ -54,7 +55,8 @@ func assertConstituents(t *testing.T, spray alert.Finding, start time.Time) {
 		if i == 0 {
 			cursor = 200
 		}
-		if c.Address != want || c.Observation.Cursor != strconv.Itoa(cursor) || c.LastSeen.Before(start) || !c.LastSeen.Equal(c.Observation.ObservedAt) {
+		if c.Address != want || c.Observation.Cursor != strconv.Itoa(cursor) || c.LastSeen.Before(start) || !c.LastSeen.Equal(c.Observation.ObservedAt) ||
+			c.Attribution != admission.AttributionPeer {
 			t.Errorf("constituent %d = %+v, want %s named by line %d", i, c, want, cursor)
 		}
 	}

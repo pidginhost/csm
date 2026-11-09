@@ -32,18 +32,18 @@ type fakeAdmission struct {
 	refuse  bool
 	pending *respondCall
 	// mint, when set, returns the evidence Mint hands back.
-	mint func(f alert.Finding, target string) admission.Evidence
+	mint func(f alert.Finding) admission.Evidence
 }
 
-func (a *fakeAdmission) Mint(f alert.Finding, target string) (admission.Evidence, error) {
+func (a *fakeAdmission) Mint(f alert.Finding) (admission.Evidence, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.refuse {
 		return admission.Evidence{}, &admission.Error{Reason: admission.ReasonInvalid, Detail: "refused"}
 	}
-	a.pending = &respondCall{check: f.Check, target: target, cursor: f.Observation.Cursor, rooted: true}
+	a.pending = &respondCall{check: f.Check, cursor: f.Observation.Cursor, rooted: true}
 	if a.mint != nil {
-		return a.mint(f, target), nil
+		return a.mint(f), nil
 	}
 	return admission.Evidence{}, nil
 }
@@ -55,8 +55,9 @@ func (a *fakeAdmission) Refuse(_ admission.Kind, f alert.Finding, _ admission.En
 }
 
 // Respond names a response without a mint before it by the evidence it
-// carries: a root minted earlier, or none.
-func (a *fakeAdmission) Respond(kind admission.Kind, e admission.Evidence, via admission.Entry, ttl ...time.Duration) error {
+// carries: a root minted earlier, or none. target is the address or prefix
+// the funnel acts on.
+func (a *fakeAdmission) Respond(kind admission.Kind, target string, e admission.Evidence, via admission.Entry, ttl ...time.Duration) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	var c respondCall
@@ -64,16 +65,16 @@ func (a *fakeAdmission) Respond(kind admission.Kind, e admission.Evidence, via a
 	case a.pending != nil:
 		c, a.pending = *a.pending, nil
 	case !e.Equal(admission.Evidence{}):
-		c = respondCall{check: e.Check(), target: e.Target().Key(), cursor: e.Observation().Cursor, rooted: true}
+		c = respondCall{check: e.Check(), cursor: e.Observation().Cursor, rooted: true}
 	}
-	c.kind, c.via = kind, via
+	c.kind, c.target, c.via = kind, target, via
 	a.calls = append(a.calls, c)
 	return nil
 }
 
-// realRoot mints f's evidence at target as the owner would, with the
-// production registry.
-func realRoot(t *testing.T, f alert.Finding, target string) admission.Evidence {
+// realRoot mints f's evidence as the owner would, with the production
+// registry.
+func realRoot(t *testing.T, f alert.Finding) admission.Evidence {
 	t.Helper()
 	reg, err := admission.NewRegistry(AdmissionPolicy)
 	if err != nil {
@@ -89,11 +90,7 @@ func realRoot(t *testing.T, f alert.Finding, target string) admission.Evidence {
 			producer = h
 		}
 	}
-	tg, err := AdmissionTarget(target, admission.Caps{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, in, err := AdmissionEvidence(f, tg)
+	_, in, err := AdmissionEvidence(f)
 	if err != nil {
 		t.Fatal(err)
 	}

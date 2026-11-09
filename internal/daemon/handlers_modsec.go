@@ -403,8 +403,10 @@ func parseModSecLogLineDeduped(line string, cfg *config.Config) []alert.Finding 
 				Message:  modsecEscalationMessage(label, ip, hits, win, outcome.singleHit),
 				Details:  truncateDaemon(line, 400),
 				SourceIP: ip,
-				Domain:   f.Domain,
-				Claims:   modsecRequestNameClaims(f.Domain),
+				// modsec.ErrorLogClientIP: the server's own client field.
+				Attribution: admission.AttributionHTTPPeer,
+				Domain:      f.Domain,
+				Claims:      modsecRequestNameClaims(f.Domain),
 			})
 		case outcome.lowConfBurst:
 			results = append(results, alert.Finding{
