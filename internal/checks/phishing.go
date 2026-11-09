@@ -1170,8 +1170,15 @@ func mayBePHPPhishing(raw []byte) bool {
 		return true
 	}
 	return anchorFollowedByFold(raw, '$', "_post", "_request") ||
-		bytes.Contains(raw, []byte("${")) || bytes.Contains(raw, []byte("$GLOBALS")) ||
+		hasRequestAliasBytes(raw) ||
 		anchorFollowedByFold(raw, '<', "form", "input")
+}
+
+// hasRequestAliasBytes reports whether raw may hold ${'_POST'} or
+// $GLOBALS['_POST'] (or _REQUEST). Superglobal names are case-sensitive.
+func hasRequestAliasBytes(raw []byte) bool {
+	return (bytes.Contains(raw, []byte("${")) || bytes.Contains(raw, []byte("$GLOBALS"))) &&
+		(bytes.Contains(raw, []byte("_POST")) || bytes.Contains(raw, []byte("_REQUEST")))
 }
 
 // anchorFollowedByFold reports whether some anchor byte in raw is followed by

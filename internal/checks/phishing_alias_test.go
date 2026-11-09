@@ -52,3 +52,22 @@ func TestPHPPhishingAliasExamplesDoNotEstablishCapture(t *testing.T) {
 		}
 	}
 }
+
+// Template literals put "${" in many PHP views. Only an alias that names
+// _POST or _REQUEST can reach a credential pattern, so only those pay for
+// the full phishing analysis.
+func TestPHPPhishingPrefilterNeedsRequestAlias(t *testing.T) {
+	for _, tc := range []struct {
+		body string
+		want bool
+	}{
+		{"<?php $x = 1; ?><script>const a = `${b}`;</script>", false},
+		{"<?php $page = $GLOBALS['wp_query'];", false},
+		{"<?php $m = ${'_POST'}['email'];", true},
+		{"<?php $m = $GLOBALS[\"_REQUEST\"]['password'];", true},
+	} {
+		if got := mayBePHPPhishing([]byte(tc.body)); got != tc.want {
+			t.Errorf("mayBePHPPhishing(%q) = %v, want %v", tc.body, got, tc.want)
+		}
+	}
+}
