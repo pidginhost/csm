@@ -36,6 +36,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 - Phishing sent from hosted accounts is now reported, stays open while still queued, and can be quarantined from its finding.
 - Re-running `csm enable --php-shield` or `csm install --php-shield` keeps your edited PHP Shield config; update its allowed IPs by hand after changing `infra_ips`.
 - Dry run no longer removes automatic subnet blocks from the firewall when the daemon starts.
+- A process killed by a scan no longer gets a second, refused kill entry in the action log.
 
 ## [4.10.2] - 2026-11-08
 
