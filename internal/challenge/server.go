@@ -488,7 +488,9 @@ func (s *Server) handleCaptchaVerify(w http.ResponseWriter, r *http.Request) {
 // success, 403 on bad/missing secret, 429 once an IP has burned
 // through adminMaxFailuresInWindow failures inside adminFailureWindow.
 // The 429 is returned BEFORE the constant-time compare so an attacker
-// cannot keep probing once they are throttled.
+// cannot keep probing once they are throttled. Requests from this host's
+// own addresses get 403 without a compare, and 503 while those addresses
+// have never been read.
 func (s *Server) handleAdminToken(w http.ResponseWriter, r *http.Request) {
 	if s.sessionSigner == nil {
 		http.NotFound(w, r)
@@ -500,6 +502,16 @@ func (s *Server) handleAdminToken(w http.ResponseWriter, r *http.Request) {
 	}
 	ip, ok := s.clientIP(w, r)
 	if !ok {
+		return
+	}
+	// Every local account can send from loopback and this host's addresses,
+	// so a per-address failure budget there would not limit guessing.
+	switch local, known := netutil.IsHostLocal(net.ParseIP(ip)); {
+	case !known:
+		http.Error(w, "Cannot check this host's addresses; try again later.", http.StatusServiceUnavailable)
+		return
+	case local:
+		http.Error(w, "Admin sessions are not issued to this host's addresses.", http.StatusForbidden)
 		return
 	}
 

@@ -415,6 +415,10 @@ curl -i -X POST -d "secret=long-shared-secret" \
 
 The cookie binds to the requester's IP, so a stolen cookie does not work from a different network.
 
+Requests from this server's own addresses, loopback included, get HTTP 403
+without a check of the secret, because every local account can send from
+them. Request the cookie from the network you browse from.
+
 ### Verified Search Crawlers
 
 Googlebot and Bingbot can be allow-passed by reverse-DNS forward-confirm. CSM looks up the visitor's PTR, checks it ends in a known crawler suffix (e.g. `.googlebot.com`), then forward-resolves that name to confirm the original IP appears in the result. A spoofed `User-Agent: Googlebot` from a residential IP fails forward-confirm and falls through to PoW.
