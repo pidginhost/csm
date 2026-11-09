@@ -24,14 +24,15 @@ func withTestRegistryBasis(t testing.TB, basis admission.Basis) *admission.Produ
 	t.Helper()
 	reg, err := admission.NewRegistry(func(check string) (string, admission.Policy, bool) {
 		if check == "ssh_brute" {
-			return check, admission.Policy{Family: admission.FamilySSH, Basis: basis}, true
+			return check, admission.Policy{Family: admission.FamilySSH, Basis: basis, Attribution: admission.Attributions(admission.AttributionPeer)}, true
 		}
 		return "", admission.Policy{}, false
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := reg.Register(admission.ProducerSpec{ID: "sshd_log", Entry: admission.EntryScan, Observation: admission.ObservationLogCursor, Checks: []string{"ssh_brute"}, Claims: []admission.ClaimKind{admission.ClaimAccount}})
+	p, err := reg.Register(admission.ProducerSpec{ID: "sshd_log", Entry: admission.EntryScan, Observation: admission.ObservationLogCursor, Checks: []string{"ssh_brute"},
+		Claims: []admission.ClaimKind{admission.ClaimAccount}, Attribution: admission.Attributions(admission.AttributionPeer)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +86,7 @@ func queuedTarget(t testing.TB, o *Owner, p *admission.Producer, host *fakeHost,
 			return err
 		}
 		e, err := p.Mint(admission.EvidenceInput{
-			Check: "ssh_brute", FindingID: "0123456789abcdef", Severity: sev,
+			Check: "ssh_brute", Attribution: admission.AttributionPeer, FindingID: "0123456789abcdef", Severity: sev,
 			Observation: admission.ObservationRef{Stream: "log:sshd_log", Cursor: cursorFor(addr), Version: 1},
 			ObservedAt:  now, Parser: admission.ParserRef{Name: "sshd", Version: 1}, Target: target,
 		})
@@ -320,7 +321,7 @@ func TestOwnerPublishesFreshSnapshots(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			e, err := p.Mint(admission.EvidenceInput{Check: "ssh_brute", FindingID: "0123456789abcdef", Severity: admission.SeverityHigh,
+			e, err := p.Mint(admission.EvidenceInput{Check: "ssh_brute", Attribution: admission.AttributionPeer, FindingID: "0123456789abcdef", Severity: admission.SeverityHigh,
 				Observation: admission.ObservationRef{Stream: "fixture", Cursor: "1", Version: 1}, ObservedAt: f.host.wall,
 				Parser: admission.ParserRef{Name: "fixture", Version: 1}, Target: target})
 			if err != nil {

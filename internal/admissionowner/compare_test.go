@@ -485,3 +485,41 @@ func TestOwnerCountsDryRunEndingsByPrediction(t *testing.T) {
 		}
 	}
 }
+
+// An attribution refusal's hourly row names its cause, so the comparison
+// separates findings no producer stamped from kinds the check refuses. Other
+// refusals name none.
+func TestOwnerHourlyRefusalsNameTheAttributionCause(t *testing.T) {
+	withTestRegistry(t)
+	f := newOwnerFixture(t)
+	comparisonClock(t, f.host.now)
+	sink := &actionSink{}
+	opts := respondOptions(f)
+	opts.WriteAudit = sink.write
+	o := f.start(opts)
+	unstamped := sshFinding(f.host.now(), "offset=1", alert.High)
+	unstamped.Observation = alert.Observation{}
+	unvouched := sshFinding(f.host.now(), "offset=2", alert.High)
+	unvouched.Attribution = admission.AttributionUnknown
+	for _, bad := range []alert.Finding{unstamped, unvouched, unvouched} {
+		_, err := o.Mint(bad, "192.0.2.10")
+		o.Refuse(admission.KindBlockIP, bad, 0, err)
+	}
+	o.Refuse(admission.KindBlockIP, sshFinding(f.host.now(), "offset=3", alert.High), 0, &admission.Error{Reason: admission.ReasonPolicy, Detail: "x"})
+	f.host.advance(time.Hour)
+	if err := o.do(o.tick); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]uint64{}
+	sink.mu.Lock()
+	for _, r := range sink.recs {
+		if r.Count > 0 {
+			got[r.Error+"/"+r.Cause] += r.Count
+		}
+	}
+	sink.mu.Unlock()
+	want := map[string]uint64{"attribution/no_observation": 1, "attribution/kind_not_allowed": 2, "policy/": 1}
+	if !maps.Equal(got, want) {
+		t.Fatalf("rows by reason and cause %v, want %v", got, want)
+	}
+}

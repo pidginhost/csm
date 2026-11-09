@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -138,11 +139,15 @@ func TestPath6_ObservedFindingCannotEscalateIncident(t *testing.T) {
 	}
 }
 
-func TestPath6_ResponseRetainsSpoolEvidence(t *testing.T) {
+// The relay names its client from an X-PHP-Script header any local account
+// can write, so no parser vouches for the address (spec 5.8): the response
+// reaches admission and is refused for attribution, while the legacy path
+// still acts. A later challenge timeout carries no root.
+func TestPath6_AdmissionRefusesTheHeaderAddress(t *testing.T) {
 	for _, challengeEnabled := range []bool{false, true} {
 		t.Run(fmt.Sprintf("challenge=%v", challengeEnabled), func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				cfg, _ := applyWiringSetup(t)
+				cfg, blocker := applyWiringSetup(t)
 				cfg.Challenge.Enabled = challengeEnabled
 				cfg.EmailProtection.PHPRelay.IPRecipientMode = "enforce"
 				a := withRecordingAdmission(t)
@@ -156,29 +161,34 @@ func TestPath6_ResponseRetainsSpoolEvidence(t *testing.T) {
 				now := time.Now()
 				feedVictims(t, p, "a", path6Form, path6IP, 0, 4, now.Add(-2*time.Hour))
 				feedScriptMail(t, p, "crossing", "a", path6Form, "text for 192.0.2.1, "+path6IP, now, "last@outside.example")
+				relay := path6Of(*findings, path6Check)
+				if len(relay) != 1 || relay[0].Attribution != admission.AttributionUnknown || relay[0].SourceIP != path6IP ||
+					relay[0].Observation.Producer != string(checks.ProducerPHPRelaySpool) || relay[0].Observation.Stream != "exim_spool" ||
+					relay[0].Observation.Cursor != "crossing" || !relay[0].Observation.ObservedAt.Equal(now) {
+					t.Fatalf("header finding lost provenance or acquired attribution: %+v", relay)
+				}
 				checks.ChallengeThenBlock(cfg, *findings)
-				got := a.got()
 				kind := admission.KindBlockIP
 				if challengeEnabled {
 					kind = admission.KindChallenge
 				}
-				if len(got) != 1 || got[0].kind != kind || len(a.refusals) != 0 {
-					t.Fatalf("responses = %+v, refusals = %+v, want one %s", got, a.refusals, kind)
-				}
-				root := got[0].root
-				if root.Producer() != checks.ProducerPHPRelaySpool || root.Check() != path6Check ||
-					root.Observation().Stream != "exim_spool" || root.Observation().Cursor != "crossing" ||
-					!root.ObservedAt().Equal(now) || root.Target().Key() != "ip:"+path6IP {
-					t.Fatalf("response lost the triggering mail or peer: %+v", root)
+				want := []derivedRefusal{{kind, path6Check, 0, admission.ReasonAttribution}}
+				if got := a.got(); len(got) != 0 || !reflect.DeepEqual(a.refusals, want) {
+					t.Fatalf("responses = %+v, refusals = %+v, want %+v", got, a.refusals, want)
 				}
 				if challengeEnabled {
+					if !d.ipList.Contains(path6IP) || len(blocker.calls) != 0 {
+						t.Fatal("the legacy challenge did not run alone")
+					}
 					time.Sleep(31 * time.Minute)
 					d.escalateExpiredChallenges(time.Hour)
-					got = a.got()
-					if len(got) != 2 || got[1].kind != admission.KindBlockIP ||
-						got[1].via != admission.EntryChallengeTimeout || !got[1].root.Equal(root) {
-						t.Fatalf("challenge timeout lost the spool evidence: %+v", got)
+					got := a.got()
+					if len(got) != 1 || got[0].kind != admission.KindBlockIP || got[0].via != admission.EntryChallengeTimeout || got[0].root.Check() != "" {
+						t.Fatalf("challenge timeout = %+v, want a rootless block", got)
 					}
+				}
+				if len(blocker.calls) != 1 || blocker.calls[0].ip != path6IP {
+					t.Fatalf("legacy block changed: %+v", blocker.calls)
 				}
 			})
 		})

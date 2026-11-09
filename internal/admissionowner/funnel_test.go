@@ -46,7 +46,8 @@ func TestFunnelHandsTheOwnerCanonicalAddressEvidence(t *testing.T) {
 			cfg.Challenge.Enabled = challenged
 			at := fixture.host.now()
 			finding := alert.Finding{
-				Check: "wp_login_bruteforce", Severity: alert.Critical, Timestamp: at,
+				Check: "wp_login_bruteforce", Severity: alert.Critical, Timestamp: at, SourceIP: "192.0.2.20",
+				Attribution: admission.AttributionHTTPPeer,
 				Message:     "WordPress login brute force from 192.0.2.20: 100 attempts",
 				Observation: alert.Observation{Producer: string(checks.ProducerAccessLog), Stream: "access", Cursor: "offset=1", ObservedAt: at},
 			}

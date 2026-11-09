@@ -16,6 +16,7 @@ func wpBruteForce(ip string) alert.Finding {
 	return alert.Finding{
 		Check: "wp_login_bruteforce", Severity: alert.Critical, SourceIP: ip, Message: "brute force", Timestamp: at,
 		Observation: alert.Observation{Producer: string(ProducerAccessLog), Stream: "access", Cursor: "offset=7", ObservedAt: at},
+		Attribution: admission.AttributionHTTPPeer,
 	}
 }
 

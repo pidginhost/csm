@@ -21,13 +21,22 @@ const fixtureCeiling = 2000
 func ledgerLookup(check string) (string, admission.Policy, bool) {
 	switch check {
 	case "ssh_brute":
-		return check, admission.Policy{Family: admission.FamilySSH, Basis: admission.BasisLocal}, true
+		return check, admission.Policy{Family: admission.FamilySSH, Basis: admission.BasisLocal, Attribution: admission.Attributions(admission.AttributionPeer)}, true
 	case "reputation":
-		return check, admission.Policy{Family: admission.FamilyReputation, Basis: admission.BasisIntel}, true
+		return check, admission.Policy{Family: admission.FamilyReputation, Basis: admission.BasisIntel, Attribution: admission.Attributions(admission.AttributionDerived)}, true
 	case "mail_takeover":
-		return check, admission.Policy{Family: admission.FamilyMail, Basis: admission.BasisCompromise, MinSeverity: admission.SeverityCritical}, true
+		return check, admission.Policy{Family: admission.FamilyMail, Basis: admission.BasisCompromise, MinSeverity: admission.SeverityCritical,
+			Attribution: admission.Attributions(admission.AttributionPeer)}, true
 	}
 	return "", admission.Policy{}, false
+}
+
+// ledgerKind is the kind a fixture producer of check reads its address by.
+func ledgerKind(check string) admission.Attribution {
+	if check == "reputation" {
+		return admission.AttributionDerived
+	}
+	return admission.AttributionPeer
 }
 
 // ledgerFixture is a ledger on a fresh database with three registered
@@ -51,7 +60,8 @@ func newLedgerRegistry(t testing.TB) (*admission.Registry, *admission.Producer, 
 		t.Fatal(err)
 	}
 	register := func(id admission.ProducerID, obs admission.ObservationKind, check string) *admission.Producer {
-		p, err := reg.Register(admission.ProducerSpec{ID: id, Entry: admission.EntryScan, Observation: obs, Checks: []string{check}, Claims: []admission.ClaimKind{admission.ClaimAccount}})
+		p, err := reg.Register(admission.ProducerSpec{ID: id, Entry: admission.EntryScan, Observation: obs, Checks: []string{check}, Claims: []admission.ClaimKind{admission.ClaimAccount},
+			Attribution: admission.Attributions(ledgerKind(check))})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -228,7 +238,7 @@ func (f *ledgerFixture) mint(s evidenceSpec) admission.Evidence {
 		Check: s.check, FindingID: s.finding, Severity: s.severity,
 		Observation: admission.ObservationRef{Stream: "log:" + string(s.producer.ID()), Cursor: s.cursor, Version: 1},
 		ObservedAt:  f.wall.Add(-s.age), Parser: admission.ParserRef{Name: "fixture", Version: 1},
-		Target: f.target(s.target), Claims: claims, Inventory: inv,
+		Target: f.target(s.target), Claims: claims, Inventory: inv, Attribution: ledgerKind(s.check),
 	}
 	if s.producer == f.rep {
 		in.Intel = &admission.IntelRef{Source: "feed", Expires: in.ObservedAt.Add(30 * time.Hour)}

@@ -1268,7 +1268,7 @@ func (o *Owner) Refuse(kind admission.Kind, f alert.Finding, via admission.Entry
 	if via == 0 {
 		via = admission.EntryScan
 	}
-	o.compare.add(compareKey{entry: via, check: f.Check, kind: kind, decision: decisionRefused, reason: reasonOf(err)})
+	o.compare.add(compareKey{entry: via, check: f.Check, kind: kind, decision: decisionRefused, reason: reasonOf(err), cause: admission.CauseOf(err)})
 }
 
 // reasonOf is err's admission reason; any other error is an invalid

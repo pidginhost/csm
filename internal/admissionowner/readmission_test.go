@@ -100,7 +100,7 @@ func TestOwnerForecastCapsAReturnReplacedEarlierInTheTurn(t *testing.T) {
 					t.Fatal(err)
 				}
 				e, err := p.Mint(admission.EvidenceInput{
-					Check: "ssh_brute", FindingID: "0123456789abcdef", Severity: admission.SeverityCritical,
+					Check: "ssh_brute", Attribution: admission.AttributionPeer, FindingID: "0123456789abcdef", Severity: admission.SeverityCritical,
 					Observation: admission.ObservationRef{Stream: "log:sshd_log", Cursor: "return-" + ip, Version: 1},
 					ObservedAt:  f.host.now(), Parser: admission.ParserRef{Name: "sshd", Version: 1}, Target: target,
 				})

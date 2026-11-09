@@ -15,13 +15,13 @@ import (
 func testRoots(t *testing.T) func(alert.Finding, string) PreparedRoot {
 	t.Helper()
 	reg, err := admission.NewRegistry(func(check string) (string, admission.Policy, bool) {
-		return check, admission.Policy{Family: admission.FamilyHTTP, Basis: admission.BasisLocal}, true
+		return check, admission.Policy{Family: admission.FamilyHTTP, Basis: admission.BasisLocal, Attribution: admission.Attributions(admission.AttributionHTTPPeer, admission.AttributionTrustedHTTPChain)}, true
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	p, err := reg.Register(admission.ProducerSpec{ID: "access_log", Entry: admission.EntryScan, Observation: admission.ObservationLogCursor,
-		Checks: []string{"modsec_csm_block_escalation", "wp_login_bruteforce"}})
+		Checks: []string{"modsec_csm_block_escalation", "wp_login_bruteforce"}, Attribution: admission.Attributions(admission.AttributionHTTPPeer)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -31,7 +31,7 @@ func testRoots(t *testing.T) func(alert.Finding, string) PreparedRoot {
 			t.Fatal(err)
 		}
 		e, err := p.Mint(admission.EvidenceInput{
-			Check: f.Check, FindingID: alert.FindingID(f), Severity: admission.SeverityHigh, Target: tg,
+			Check: f.Check, FindingID: alert.FindingID(f), Severity: admission.SeverityHigh, Target: tg, Attribution: admission.AttributionHTTPPeer,
 			Observation: admission.ObservationRef{Stream: "access", Cursor: alert.FindingID(f), Version: 1},
 			ObservedAt:  time.Unix(1_700_000_000, 0).UTC(), Parser: admission.ParserRef{Name: "access_log", Version: 1},
 		})

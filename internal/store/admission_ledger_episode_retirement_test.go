@@ -109,7 +109,7 @@ func TestAdmissionLedgerRetainsSubnetHistoryUntilBothClocksPass(t *testing.T) {
 		t.Fatal(err)
 	}
 	e, err := f.ssh.Mint(admission.EvidenceInput{
-		Check: "ssh_brute", FindingID: "0123456789abcdef", Severity: admission.SeverityHigh,
+		Check: "ssh_brute", FindingID: "0123456789abcdef", Severity: admission.SeverityHigh, Attribution: ledgerKind("ssh_brute"),
 		Observation: admission.ObservationRef{Stream: "log:sshd_log", Cursor: "subnet", Version: 1},
 		ObservedAt:  f.wall, Parser: admission.ParserRef{Name: "fixture", Version: 1}, Target: prefix,
 	})
@@ -157,7 +157,7 @@ func TestAdmissionLedgerForgetLineDropsAnUnretainableRow(t *testing.T) {
 		t.Fatal(err)
 	}
 	e, err := f.ssh.Mint(admission.EvidenceInput{
-		Check: "ssh_brute", FindingID: "0123456789abcdef", Severity: admission.SeverityHigh,
+		Check: "ssh_brute", FindingID: "0123456789abcdef", Severity: admission.SeverityHigh, Attribution: ledgerKind("ssh_brute"),
 		Observation: admission.ObservationRef{Stream: "log:sshd_log", Cursor: "subnet", Version: 1},
 		ObservedAt:  f.wall, Parser: admission.ParserRef{Name: "fixture", Version: 1}, Target: prefix,
 	})

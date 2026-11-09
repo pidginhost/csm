@@ -14,7 +14,8 @@ func observedSSHLogin() alert.Finding {
 		Message: "SSH login from an unknown address", Timestamp: time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC),
 		Observation: alert.Observation{Producer: string(ProducerSSHLog), Stream: "secure:dev=2049,ino=77", Cursor: "offset=4096",
 			ObservedAt: time.Date(2026, 10, 6, 11, 59, 59, 0, time.UTC)},
-		Claims: []admission.Claim{{Kind: admission.ClaimAccount, Value: "alice"}},
+		Claims:      []admission.Claim{{Kind: admission.ClaimAccount, Value: "alice"}},
+		Attribution: admission.AttributionPeer,
 	}
 }
 
@@ -36,7 +37,7 @@ func TestAdmissionEvidenceFromAFinding(t *testing.T) {
 	parser, _ := ProducerParser(ProducerSSHLog)
 	if producer != ProducerSSHLog || in.Check != f.Check || in.Severity != admission.SeverityCritical || in.FindingID != alert.FindingID(f) ||
 		in.Observation != (admission.ObservationRef{Stream: f.Observation.Stream, Cursor: f.Observation.Cursor, Version: 1}) ||
-		!in.ObservedAt.Equal(f.Observation.ObservedAt) || in.Parser != parser || in.Target != target ||
+		!in.ObservedAt.Equal(f.Observation.ObservedAt) || in.Parser != parser || in.Target != target || in.Attribution != admission.AttributionPeer ||
 		len(in.Claims) != 1 || in.Claims[0] != f.Claims[0] || in.Intel != f.Intel || in.Inventory != nil {
 		t.Fatalf("producer %s, input %+v", producer, in)
 	}
@@ -54,6 +55,9 @@ func TestAdmissionEvidenceRefusesAFindingWithoutProvenance(t *testing.T) {
 	unobserved.Observation = alert.Observation{}
 	_, _, err = AdmissionEvidence(unobserved, target)
 	wantAdmissionReason(t, "no observation", err, admission.ReasonAttribution)
+	if admission.CauseOf(err) != admission.CauseNoObservation {
+		t.Errorf("no observation: cause %s", admission.CauseOf(err))
+	}
 	unknown := observedSSHLogin()
 	unknown.Observation.Producer = "tail_scan"
 	_, _, err = AdmissionEvidence(unknown, target)
@@ -84,5 +88,46 @@ func wantAdmissionReason(t *testing.T, what string, err error, want admission.Re
 	t.Helper()
 	if got, ok := admission.ReasonOf(err); !ok || got != want {
 		t.Errorf("%s: err = %v, want reason %s", what, err, want)
+	}
+}
+
+// A finding whose parser vouched for no kind mints nothing, whatever its
+// observation; the production registry refuses it with the cause.
+func TestAdmissionRefusesAFindingWithoutAttribution(t *testing.T) {
+	reg, err := admission.NewRegistry(AdmissionPolicy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sshd *admission.Producer
+	for _, p := range ProducerTable() {
+		registered, regErr := reg.Register(p.Spec)
+		if regErr != nil {
+			t.Fatal(regErr)
+		}
+		if p.Spec.ID == ProducerSSHLog {
+			sshd = registered
+		}
+	}
+	target, err := AdmissionTarget("192.0.2.7", admission.Caps{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, kind := range []admission.Attribution{admission.AttributionUnknown, admission.AttributionHTTPPeer} {
+		f := observedSSHLogin()
+		f.Attribution = kind
+		_, in, inErr := AdmissionEvidence(f, target)
+		if inErr != nil {
+			t.Fatal(inErr)
+		}
+		if _, err = sshd.Mint(in); admission.CauseOf(err) != admission.CauseKindNotAllowed {
+			t.Errorf("%s: minted or refused without the cause: %v", kind, err)
+		}
+	}
+	_, in, err := AdmissionEvidence(observedSSHLogin(), target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = sshd.Mint(in); err != nil {
+		t.Fatalf("an sshd peer: %v", err)
 	}
 }

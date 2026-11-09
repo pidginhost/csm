@@ -34,6 +34,7 @@ func mintRoot(t *testing.T, now time.Time, s rootSpec) Evidence {
 		ObservedAt:  now.Add(-s.age),
 		Parser:      ParserRef{Name: "fixture", Version: 1},
 		Target:      target,
+		Attribution: testKind(s.check),
 	}
 	if s.intel != 0 {
 		in.Intel = &IntelRef{Source: "feed", Expires: in.ObservedAt.Add(s.intel)}
@@ -107,6 +108,7 @@ func TestAssessSameObservationAcrossFamiliesIsOneRoot(t *testing.T) {
 	in.Observation = ObservationRef{Stream: "shared", Cursor: "offset=1", Version: 1}
 	a, _ := tp.ssh.Mint(in)
 	in.Check = "mail_brute"
+	in.Attribution = testKind(in.Check)
 	in.Observation.Version = 2
 	b, err := tp.mail.Mint(in)
 	if err != nil {

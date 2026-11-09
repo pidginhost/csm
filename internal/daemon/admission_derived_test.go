@@ -45,7 +45,7 @@ func (a *recordingAdmission) Mint(f alert.Finding, target string) (admission.Evi
 	if f.Observation.Producer == "" {
 		return admission.Evidence{}, &admission.Error{Reason: admission.ReasonAttribution, Detail: "finding has no observation"}
 	}
-	return mintedRoot(a.t, f, target), nil
+	return mintRoot(a.t, f, target)
 }
 
 func (a *recordingAdmission) Refuse(kind admission.Kind, f alert.Finding, via admission.Entry, err error) {
@@ -82,6 +82,17 @@ func withRecordingAdmission(t *testing.T) *recordingAdmission {
 
 func mintedRoot(t *testing.T, f alert.Finding, target string) admission.Evidence {
 	t.Helper()
+	e, err := mintRoot(t, f, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return e
+}
+
+// mintRoot mints as the production registry does; a refusal is returned,
+// as the owner returns it to the funnel.
+func mintRoot(t *testing.T, f alert.Finding, target string) (admission.Evidence, error) {
+	t.Helper()
 	reg, err := admission.NewRegistry(checks.AdmissionPolicy)
 	if err != nil {
 		t.Fatal(err)
@@ -104,11 +115,7 @@ func mintedRoot(t *testing.T, f alert.Finding, target string) admission.Evidence
 	if err != nil {
 		t.Fatal(err)
 	}
-	e, err := producer.Mint(in)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return e
+	return producer.Mint(in)
 }
 
 func observedBruteForce(ip string) alert.Finding {
@@ -116,6 +123,7 @@ func observedBruteForce(ip string) alert.Finding {
 	return alert.Finding{
 		Check: "wp_login_bruteforce", Severity: alert.Critical, SourceIP: ip, Message: "brute force", Timestamp: at,
 		Observation: alert.Observation{Producer: string(checks.ProducerAccessLog), Stream: "access", Cursor: "offset=9", ObservedAt: at},
+		Attribution: admission.AttributionHTTPPeer,
 	}
 }
 
@@ -230,6 +238,7 @@ func TestIncidentCorrelatorHandsItsBlocksTheirRootsAndEntries(t *testing.T) {
 			findings := []alert.Finding{{
 				Check: "modsec_csm_block_escalation", Severity: alert.Critical, SourceIP: "192.0.2.81", Timestamp: at,
 				Observation: alert.Observation{Producer: string(checks.ProducerModSecLog), Stream: "modsec", Cursor: "offset=1", ObservedAt: at},
+				Attribution: admission.AttributionHTTPPeer,
 			}}
 			if spray {
 				findings = nil
@@ -238,6 +247,7 @@ func TestIncidentCorrelatorHandsItsBlocksTheirRootsAndEntries(t *testing.T) {
 						Check: "pam_bruteforce", Severity: alert.Critical, SourceIP: "192.0.2.81", Mailbox: fmt.Sprintf("user%d@example.com", i),
 						Timestamp:   at.Add(time.Duration(i) * time.Minute),
 						Observation: alert.Observation{Producer: string(checks.ProducerPAMSocket), Stream: "pam:boot", Cursor: fmt.Sprintf("1:%d", i), ObservedAt: at.Add(time.Duration(i) * time.Minute)},
+						Attribution: admission.AttributionPeer,
 					})
 				}
 			}

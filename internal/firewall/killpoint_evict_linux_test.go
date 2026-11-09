@@ -28,7 +28,7 @@ func (k *killLedger) reserveAt(addr string, severity admission.Severity, expires
 		k.t.Fatal(err)
 	}
 	evidence, err := k.producer.Mint(admission.EvidenceInput{
-		Check: "ssh_brute", FindingID: "0123456789abcdef", Severity: severity,
+		Check: "ssh_brute", Attribution: admission.AttributionPeer, FindingID: "0123456789abcdef", Severity: severity,
 		Observation: admission.ObservationRef{Stream: "fixture", Cursor: "evict=" + addr, Version: 1},
 		ObservedAt:  k.at, Parser: admission.ParserRef{Name: "fixture", Version: 1}, Target: target,
 	})

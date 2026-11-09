@@ -45,6 +45,7 @@ func TestControlActionShowAnswersDuringAuditFailure(t *testing.T) {
 	finding := alert.Finding{
 		Check: "ssh_login_unknown_ip", Severity: alert.Critical, SourceIP: "192.0.2.107", Timestamp: clock.Wall,
 		Observation: alert.Observation{Producer: "sshd_log", Stream: "secure:dev=1,ino=2", Cursor: "offset=1", ObservedAt: clock.Wall},
+		Attribution: admission.AttributionPeer,
 	}
 	e, err := d.admission.Mint(finding, finding.SourceIP)
 	if err != nil {

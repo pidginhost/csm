@@ -16,7 +16,7 @@ import (
 // supplies the inventory the owner resolves claims against.
 func AdmissionEvidence(f alert.Finding, target admission.Target) (admission.ProducerID, admission.EvidenceInput, error) {
 	if f.Observation.Producer == "" {
-		return "", admission.EvidenceInput{}, &admission.Error{Reason: admission.ReasonAttribution, Detail: "finding has no observation"}
+		return "", admission.EvidenceInput{}, &admission.Error{Reason: admission.ReasonAttribution, Cause: admission.CauseNoObservation, Detail: "finding has no observation"}
 	}
 	producer := admission.ProducerID(f.Observation.Producer)
 	parser, ok := ProducerParser(producer)
@@ -26,7 +26,7 @@ func AdmissionEvidence(f alert.Finding, target admission.Target) (admission.Prod
 	return producer, admission.EvidenceInput{
 		Check: f.Check, FindingID: alert.FindingID(f), Severity: admissionSeverity(f.Severity),
 		Observation: admission.ObservationRef{Stream: f.Observation.Stream, Cursor: f.Observation.Cursor, Version: 1},
-		ObservedAt:  f.Observation.ObservedAt, Parser: parser, Target: target, Claims: f.Claims, Intel: f.Intel,
+		ObservedAt:  f.Observation.ObservedAt, Parser: parser, Target: target, Attribution: f.Attribution, Claims: f.Claims, Intel: f.Intel,
 	}, nil
 }
 

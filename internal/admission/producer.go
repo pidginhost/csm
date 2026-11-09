@@ -232,5 +232,10 @@ func (r *Registry) Validate(e Evidence) error {
 	if e.rec.Severity < p.MinSeverity {
 		return refuse(ReasonPolicy, "finding severity is below the check's evidence floor")
 	}
+	// The record keeps no kind: its producer must still declare one, and
+	// the check must still accept every kind the producer declares.
+	if spec.Attribution == 0 || !spec.Attribution.Within(p.Attribution) {
+		return refuseAttribution(CauseKindNotAllowed, "the producer or check no longer accepts the evidence's attribution")
+	}
 	return nil
 }

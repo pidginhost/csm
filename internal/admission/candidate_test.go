@@ -476,18 +476,19 @@ func assertCandidateRefused(t *testing.T, c Candidate, rec candidateRecord) {
 func TestCandidatePreservesRegisteredEvidenceCheck(t *testing.T) {
 	const check = "ssh-brute.v2"
 	reg, err := NewRegistry(func(name string) (string, Policy, bool) {
-		return name, Policy{Family: FamilySSH, Basis: BasisLocal}, name == check
+		return name, Policy{Family: FamilySSH, Basis: BasisLocal, Attribution: Attributions(AttributionPeer)}, name == check
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := reg.Register(ProducerSpec{ID: "sshd_log", Entry: EntryScan, Observation: ObservationLogCursor, Checks: []string{check}})
+	p, err := reg.Register(ProducerSpec{ID: "sshd_log", Entry: EntryScan, Observation: ObservationLogCursor, Checks: []string{check}, Attribution: Attributions(testKind(check))})
 	if err != nil {
 		t.Fatal(err)
 	}
 	reg.Seal()
 	in := sshInput(t)
 	in.Check = check
+	in.Attribution = testKind(in.Check)
 	e, err := p.Mint(in)
 	if err != nil {
 		t.Fatal(err)

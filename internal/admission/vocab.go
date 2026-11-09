@@ -381,6 +381,8 @@ func (r Reason) Disposition() Disposition {
 // quotes the input that was refused.
 type Error struct {
 	Reason Reason
+	// Cause narrows an attribution refusal; zero for every other reason.
+	Cause  Cause
 	Detail string
 }
 

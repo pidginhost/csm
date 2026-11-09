@@ -62,7 +62,7 @@ func (f *ingressFixture) sub(s subSpec) Submission {
 	target := mustAddr(f.t, s.target)
 	claims, inv := ownerClaims(f.t, s.owner)
 	e, err := s.p.Mint(EvidenceInput{
-		Check: s.check, FindingID: s.finding, Severity: s.sev, Target: target, Claims: claims, Inventory: inv,
+		Check: s.check, FindingID: s.finding, Severity: s.sev, Target: target, Claims: claims, Inventory: inv, Attribution: testKind(s.check),
 		Observation: ObservationRef{Stream: string(s.p.ID()), Cursor: s.cursor, Version: 1},
 		ObservedAt:  t0.Add(-s.age), Parser: ParserRef{Name: "fixture", Version: 1},
 	})
@@ -145,7 +145,7 @@ func TestIngressRefusesInvalidSubmissions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	stranger, err := other.Register(ProducerSpec{ID: "stranger", Entry: EntryScan, Observation: ObservationLogCursor, Checks: []string{"ssh_brute"}})
+	stranger, err := other.Register(ProducerSpec{ID: "stranger", Entry: EntryScan, Observation: ObservationLogCursor, Checks: []string{"ssh_brute"}, Attribution: Attributions(testKind("ssh_brute"))})
 	if err != nil {
 		t.Fatal(err)
 	}

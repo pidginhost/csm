@@ -15,6 +15,7 @@ func sshFinding(at time.Time, cursor string, sev alert.Severity) alert.Finding {
 	return alert.Finding{
 		Check: "ssh_brute", Severity: sev, SourceIP: "192.0.2.10", Message: "brute force", Timestamp: at,
 		Observation: alert.Observation{Producer: "sshd_log", Stream: "secure:dev=1,ino=2", Cursor: cursor, ObservedAt: at},
+		Attribution: admission.AttributionPeer,
 	}
 }
 

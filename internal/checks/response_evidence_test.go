@@ -213,7 +213,8 @@ func TestAdmissionPolicyCarriesCriticalOnlyFloor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	producer, err := reg.Register(admission.ProducerSpec{ID: "mail_auth", Entry: admission.EntryScan, Observation: admission.ObservationLogCursor, Checks: []string{"mail_account_compromised"}})
+	producer, err := reg.Register(admission.ProducerSpec{ID: "mail_auth", Entry: admission.EntryScan, Observation: admission.ObservationLogCursor, Checks: []string{"mail_account_compromised"},
+		Attribution: peerKind})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -230,6 +231,7 @@ func TestAdmissionPolicyCarriesCriticalOnlyFloor(t *testing.T) {
 		ObservedAt:  observed,
 		Parser:      admission.ParserRef{Name: "dovecot", Version: 1},
 		Target:      target,
+		Attribution: admission.AttributionPeer,
 	}
 	if _, mintErr := producer.Mint(in); mintErr == nil {
 		t.Error("an advisory mail_account_compromised finding became evidence")

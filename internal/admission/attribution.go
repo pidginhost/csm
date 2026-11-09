@@ -1,6 +1,9 @@
 package admission
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
 
 // Attribution is how a parser learned the address a finding names (spec
 // 5.8). The parser that read the address sets it; a response path never
@@ -78,4 +81,45 @@ func (f Family) Attributions() AttributionSet {
 		return Attributions(AttributionDerived)
 	}
 	return 0
+}
+
+// Cause names why an attribution refusal was refused. Persisted in refusal
+// summaries: append, never renumber.
+type Cause uint8
+
+const (
+	// CauseNoObservation: the finding names no observation a producer
+	// stamped.
+	CauseNoObservation Cause = iota + 1
+	// CauseKindNotAllowed: the producer did not declare the kind, or the
+	// check does not accept it; unknown is never accepted.
+	CauseKindNotAllowed
+	// CauseTargetMismatch: the response names a target its evidence does
+	// not attribute.
+	CauseTargetMismatch
+	causeEnd
+)
+
+var causeNames = [...]string{"", "no_observation", "kind_not_allowed", "target_mismatch"}
+
+func (c Cause) Valid() bool { return c > 0 && c < causeEnd }
+
+func (c Cause) String() string {
+	if c.Valid() {
+		return causeNames[c]
+	}
+	return fmt.Sprintf("cause(%d)", uint8(c))
+}
+
+// CauseOf returns the cause of an attribution refusal in err, or zero.
+func CauseOf(err error) Cause {
+	var e *Error
+	if errors.As(err, &e) && e.Reason == ReasonAttribution {
+		return e.Cause
+	}
+	return 0
+}
+
+func refuseAttribution(c Cause, detail string) error {
+	return &Error{Reason: ReasonAttribution, Cause: c, Detail: detail}
 }
