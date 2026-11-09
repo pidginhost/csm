@@ -329,6 +329,66 @@ func TestDomlogScannerDenominatorCannotVouchForPeer(t *testing.T) {
 	}
 }
 
+// Browser assets do not count toward the scanner profile, but can defeat
+// the pending-bot majority that would otherwise route it to a challenge.
+// A forwarded vote in that decision cannot vouch for the HTTP peer.
+func TestDomlogScannerBotRoutingCannotVouchForPeer(t *testing.T) {
+	const ip = "203.0.113.72"
+	for _, tc := range []struct {
+		name         string
+		pending      bool
+		forwarded    bool
+		assetsFirst  bool
+		separateLogs bool
+	}{
+		{name: "forwarded assets last", pending: true, forwarded: true},
+		{name: "forwarded assets first", pending: true, forwarded: true, assetsFirst: true},
+		{name: "forwarded assets separate log", pending: true, forwarded: true, separateLogs: true},
+		{name: "direct assets", pending: true},
+		{name: "no pending bots", forwarded: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := scannerTestConfig()
+			ua := "Mozilla/5.0"
+			if tc.pending {
+				ua = "Googlebot/2.1 fake"
+			}
+			var probes, assets []string
+			for i := 0; i < 10; i++ {
+				probes = append(probes, domlogTestLine(ip, i, "GET", fmt.Sprintf("/probe-%d", i), 404, ua))
+				line := domlogTestLine(ip, 20+i, "GET", "/style.css", 200, "Mozilla/5.0")
+				if tc.forwarded {
+					line = forwardedVia(line, ip)
+				}
+				assets = append(assets, line)
+			}
+			logs := [][]string{append(append([]string{}, probes...), assets...)}
+			probeFile, newest := 0, len(probes)-1
+			if tc.assetsFirst {
+				logs = [][]string{append(append([]string{}, assets...), probes...)}
+				newest += len(assets)
+			} else if tc.separateLogs {
+				logs = [][]string{assets, probes}
+				probeFile = 1
+			}
+			paths, findings := scanDomlogFiles(t, cfg, pendingVerifyClassifier{}, logs...)
+			if len(findings) != 1 {
+				t.Fatalf("findings %+v, want only the scanner profile", findings)
+			}
+			f := oneScanFinding(t, findings, "http_scanner_profile")
+			if f.SourceIP != ip || f.Severity != alert.High || !strings.Contains(f.Message, "10 of 10 requests") {
+				t.Fatalf("scanner detection changed: %+v", f)
+			}
+			wantScanObservation(t, f, ProducerDomlogScan, lineRef(t, paths[probeFile], logs[probeFile], newest), domlogTestTime(9))
+			if tc.pending && tc.forwarded {
+				wantNoKind(t, f)
+			} else {
+				wantPeerMints(t, f)
+			}
+		})
+	}
+}
+
 // A pending claimed bot is decided by every in-window request: its majority,
 // flood and scanner gates. Forwarded browser requests that complete those
 // gates leave the claimed-bot finding with its pending-bot record but no

@@ -1461,6 +1461,7 @@ func FuzzDomlogAttributionSource(f *testing.F) {
 		{"-", "-", "not-an-address"},
 		{"-", "-", ""},
 		{`x [09/Nov/2026:12:01:00 +0000] "y`, "curl/8.0", "::ffff:192.0.2.10"},
+		{`x [09/Nov/2099:12:01:00 +0000] "POST /xmlrpc.php HTTP/1.1" 200 100 "-" "-" "`, "Mozilla/5.0", "203.0.113.80"},
 		{"-", "Mozilla/5.0", "2001:db8::80"},
 	} {
 		f.Add(seed[0], seed[1], seed[2])
@@ -1476,11 +1477,13 @@ func FuzzDomlogAttributionSource(f *testing.F) {
 		stats := newDomlogStatsAt(time.Date(2026, 11, 9, 12, 5, 0, 0, time.UTC))
 		forwarded := map[string]bool{}
 		for i, peer := range []string{"192.0.2.10", "203.0.113.80", "192.0.2.10", "203.0.113.80", "192.0.2.10", "203.0.113.80"} {
+			// Access logs escape quotes and backslashes in the remote user
+			// too, so client text cannot become a second request header.
 			line := fmt.Sprintf(`%s - %s [09/Nov/2026:12:01:%02d +0000] "POST /xmlrpc.php HTTP/1.1" 200 100 "-" "%s" "%s"`,
-				peer, user, i, quote.Replace(ua), quote.Replace(xff))
+				peer, quote.Replace(user), i, quote.Replace(ua), quote.Replace(xff))
 			rec, ok := parseAccessLogRecord(line)
-			if !ok {
-				continue
+			if !ok || !rec.Time.Equal(domlogTestTime(i)) || rec.Method != "POST" || rec.URI != "/xmlrpc.php" {
+				t.Fatalf("log-escaped user %q changed request framing: ok=%v record=%+v", user, ok, rec)
 			}
 			rec.ref = syslogRecord{text: line, offset: int64(i) * 1000, stream: "f:1:2"}
 			// Every address a trusted proxy's header could name is forwarded.

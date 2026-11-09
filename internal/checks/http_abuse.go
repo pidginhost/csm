@@ -647,6 +647,11 @@ func (s *domlogStats) emitScannerProfile(cfg *config.Config) []alert.Finding {
 			Details: "Sample: " + sample.Method + " " + sample.URI + " UA=" + truncate(sample.UA, 120),
 		}
 		s.stamp(&f, f.Check)
+		// Display assets can defeat a pending-bot majority even though
+		// they do not count toward the scanner profile itself.
+		if s.uaCat[ip][uaKindClaimedBotPending] > 0 && s.forwarded[uaObservationKey(uaKindClaimedBotPending)][ip] {
+			f.Attribution = admission.AttributionUnknown
+		}
 		out = append(out, f)
 	}
 	return out
