@@ -153,3 +153,24 @@ function featureShell($cmd) { return makeCommand($cmd); }
 		t.Error("webshell_p0wny FP: a single brand mention cleared the structural gate")
 	}
 }
+
+// Shop admin JavaScript served through PHP: a camelCase identifier holding
+// "filesMan" and a JavaScript eval are not a FilesMan shell. The shell's own
+// action name is the quoted, case-exact 'FilesMan'.
+const filesManJSIdentifier = `<?php header('Content-Type: application/javascript'); ?>
+var filesManList = [];
+function onLoad(callback) { if (typeof callback === 'string') { eval(callback); } }
+`
+
+func TestFPFlood_YML_FilesManNeedsQuotedActionName(t *testing.T) {
+	s := loadRepoScanner(t)
+	mal := []byte(`<?php $default_action = 'FilesMan'; if (!empty($_POST['c'])) passthru($_POST['c']);`)
+	for _, rule := range []string{"webshell_wso", "webshell_filesman_variants"} {
+		if hasRule(s.ScanContent([]byte(filesManJSIdentifier), ".php"), rule) {
+			t.Errorf("%s FP: matched a JavaScript identifier containing filesMan", rule)
+		}
+		if !hasRule(s.ScanContent(mal, ".php"), rule) {
+			t.Errorf("%s regression: quoted FilesMan action with a sink not detected", rule)
+		}
+	}
+}

@@ -218,3 +218,23 @@ eval($_POST['cmd']);`)
 		t.Error("webshell_p0wny FP: bare brand cleared the PHP and sink gate")
 	}
 }
+
+// Shop admin JavaScript served through PHP: a camelCase identifier holding
+// "filesMan" and a JavaScript eval are not a FilesMan shell. The shell's own
+// action name is the quoted, case-exact 'FilesMan'.
+func TestFPFlood_FilesManNeedsQuotedActionName(t *testing.T) {
+	s := loadRepoYaraScanner(t)
+	js := []byte(`<?php header('Content-Type: application/javascript'); ?>
+var filesManList = [];
+function onLoad(callback) { if (typeof callback === 'string') { eval(callback); } }
+`)
+	mal := []byte(`<?php $default_action = "FilesMan"; if (!empty($_POST['c'])) passthru($_POST['c']);`)
+	for _, rule := range []string{"webshell_wso", "webshell_filesman_variants"} {
+		if hasYaraRule(s.ScanBytes(js), rule) {
+			t.Errorf("%s FP: matched a JavaScript identifier containing filesMan", rule)
+		}
+		if !hasYaraRule(s.ScanBytes(mal), rule) {
+			t.Errorf("%s regression: quoted FilesMan action with a sink not detected", rule)
+		}
+	}
+}
