@@ -79,21 +79,7 @@ func New(cfg *config.Config, ipList *IPList) *Server {
 		_, _ = rand.Read(secret)
 	}
 
-	trusted := make(map[string]bool)
-	var trustedNets []*net.IPNet
-	for _, p := range cfg.Challenge.TrustedProxies {
-		p = strings.TrimSpace(p)
-		if p == "" {
-			continue
-		}
-		if strings.Contains(p, "/") {
-			if n := netutil.ParseCIDROrIP(p); n != nil {
-				trustedNets = append(trustedNets, n)
-			}
-			continue
-		}
-		trusted[canonicalIP(p)] = true
-	}
+	trusted, trustedNets := parseTrustedProxies(cfg.Challenge.TrustedProxies)
 
 	s := &Server{
 		cfg:            cfg,
@@ -709,11 +695,41 @@ func (s *Server) extractIP(r *http.Request) string {
 // isTrustedProxy reports whether ip, in canonical form, is a configured
 // trusted proxy address or inside a configured trusted range.
 func (s *Server) isTrustedProxy(ip string) bool {
-	if s.trustedProxies[ip] {
+	return proxyTrusted(s.trustedProxies, s.trustedNets, ip)
+}
+
+// TrustsProxy reports whether challenge.trusted_proxies covers ip, matched
+// exactly as the running server matches a connecting peer.
+func TrustsProxy(entries []string, ip string) bool {
+	trusted, nets := parseTrustedProxies(entries)
+	return proxyTrusted(trusted, nets, canonicalIP(ip))
+}
+
+func parseTrustedProxies(entries []string) (map[string]bool, []*net.IPNet) {
+	trusted := make(map[string]bool)
+	var nets []*net.IPNet
+	for _, p := range entries {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		if strings.Contains(p, "/") {
+			if n := netutil.ParseCIDROrIP(p); n != nil {
+				nets = append(nets, n)
+			}
+			continue
+		}
+		trusted[canonicalIP(p)] = true
+	}
+	return trusted, nets
+}
+
+func proxyTrusted(trusted map[string]bool, nets []*net.IPNet, ip string) bool {
+	if trusted[ip] {
 		return true
 	}
 	parsed := net.ParseIP(ip)
-	return parsed != nil && netutil.IPInAnyNet(parsed, s.trustedNets)
+	return parsed != nil && netutil.IPInAnyNet(parsed, nets)
 }
 
 // canonicalIP normalizes an IP string so downstream exact-match lookups (the

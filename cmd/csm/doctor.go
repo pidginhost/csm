@@ -391,7 +391,7 @@ func challengePublicURLCheck(cfg *config.Config) DoctorCheck {
 			Name:    "challenge public URL",
 			Status:  "fail",
 			Message: err.Error(),
-			Fix:     "set challenge.public_url to an absolute http(s) URL ending in /challenge and bind challenge.listen_addr to a non-loopback address",
+			Fix:     "set challenge.public_url to an absolute http(s) URL ending in /challenge, and bind challenge.listen_addr to a non-loopback address or list it in challenge.trusted_proxies for a proxy on this host",
 		}
 	}
 	return DoctorCheck{Name: "challenge public URL", Status: "ok"}
@@ -415,6 +415,9 @@ func challengeTLSCheck(cfg *config.Config) DoctorCheck {
 		scheme = u.Scheme
 	}
 	if cert == "" || key == "" {
+		if challengeBehindProxy(cfg) {
+			return DoctorCheck{Name: "challenge TLS", Status: "ok", Message: "browsers reach challenge.public_url through challenge.trusted_proxies, which serve its TLS"}
+		}
 		if scheme == "https" {
 			return DoctorCheck{
 				Name:    "challenge TLS",
@@ -468,6 +471,9 @@ func challengePortGateCheck(cfg *config.Config) DoctorCheck {
 		return DoctorCheck{Name: "challenge port gate", Status: "ok", Message: "loopback listener is not exposed off-host"}
 	}
 	if !cfg.Challenge.PortGate.Enabled {
+		if challengeBehindProxy(cfg) {
+			return DoctorCheck{Name: "challenge port gate", Status: "ok", Message: "browsers reach the listener through challenge.trusted_proxies; keep challenge.listen_port closed to other sources"}
+		}
 		return DoctorCheck{
 			Name:    "challenge port gate",
 			Status:  "warn",
@@ -476,6 +482,18 @@ func challengePortGateCheck(cfg *config.Config) DoctorCheck {
 		}
 	}
 	return DoctorCheck{Name: "challenge port gate", Status: "ok"}
+}
+
+// challengeBehindProxy reports a custom proxy deployment: browsers connect to
+// the proxy, so public_url's TLS and the listener's exposure are not the
+// direct-mode concerns the TLS and port-gate checks look for.
+func challengeBehindProxy(cfg *config.Config) bool {
+	for _, p := range cfg.Challenge.TrustedProxies {
+		if strings.TrimSpace(p) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func defaultChallengeWebserverChecks(cfg *config.Config) []DoctorCheck {
@@ -570,6 +588,10 @@ func defaultChallengeGateProbe(cfg *config.Config) DoctorCheck {
 	if err != nil {
 		return DoctorCheck{Name: "challenge gate endpoint", Status: "fail", Message: err.Error()}
 	}
+	// Behind a trusted proxy the gate answers 400 unless a visitor is named,
+	// so name a documentation address the way the proxy would. A peer that
+	// is not a trusted proxy has the header ignored.
+	req.Header.Set("X-Forwarded-For", "192.0.2.1")
 	resp, err := client.Do(req)
 	if err != nil {
 		return DoctorCheck{
@@ -581,8 +603,8 @@ func defaultChallengeGateProbe(cfg *config.Config) DoctorCheck {
 	}
 	defer resp.Body.Close()
 	// handleGate returns 204 when the probe IP is not currently challenged
-	// (the loopback case used here) and 401 when it is. Either response
-	// proves the handler is reachable on the configured listener.
+	// and 401 when it is. Either response proves the handler is reachable
+	// on the configured listener.
 	if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusUnauthorized {
 		return DoctorCheck{Name: "challenge gate endpoint", Status: "ok", Message: rawURL}
 	}

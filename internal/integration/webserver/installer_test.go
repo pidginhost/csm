@@ -197,6 +197,43 @@ func TestInstallRejectsLoopbackListenerForPublicRedirect(t *testing.T) {
 	}
 }
 
+func TestInstallAcceptsLoopbackListenerBehindTrustedProxy(t *testing.T) {
+	for _, tc := range []struct{ listen, trusted string }{
+		{"127.0.0.1", "127.0.0.1"},
+		{"127.0.0.1", "127.0.0.0/8"},
+		{"::1", "::1"},
+		{"localhost", "127.0.0.1"},
+	} {
+		t.Run(tc.listen+" "+tc.trusted, func(t *testing.T) {
+			h := &fakeHandler{kind: "apache", body: "body\n"}
+			i := newTestInstaller(t, h)
+			i.Config.ChallengeListenAddr = tc.listen
+			i.Config.ChallengeTrustedProxies = []string{tc.trusted}
+
+			if _, err := i.Install(); err != nil {
+				t.Fatalf("Install: %v", err)
+			}
+		})
+	}
+}
+
+func TestInstallRejectsLoopbackListenerWhenProxyCannotReachIt(t *testing.T) {
+	// The proxy on this host connects from the listener's own address; trusting
+	// another address leaves every visitor looking like the proxy.
+	for _, trusted := range []string{"::1", "192.0.2.10", "198.51.100.0/24"} {
+		t.Run(trusted, func(t *testing.T) {
+			h := &fakeHandler{kind: "apache", body: "body\n"}
+			i := newTestInstaller(t, h)
+			i.Config.ChallengeListenAddr = "127.0.0.1"
+			i.Config.ChallengeTrustedProxies = []string{trusted}
+
+			if _, err := i.Install(); !errors.Is(err, ErrLoopbackPublicURL) {
+				t.Fatalf("err = %v, want ErrLoopbackPublicURL", err)
+			}
+		})
+	}
+}
+
 func TestShippedTemplatesRenderRuntimeConfig(t *testing.T) {
 	for _, tc := range []struct {
 		name          string
