@@ -198,7 +198,8 @@ blocking settings still govern the action.
 Whitelisted IPs (entries in `reputation.whitelist` and the live bbolt
 whitelist updated via the Web UI) are skipped from spray detection so
 internal mail relays, NAT egresses, and known-good infrastructure
-never produce a spray incident.
+never produce a spray incident. Changes to `reputation.whitelist` apply
+on config reload.
 
 Choosing `block_at_severity`:
 

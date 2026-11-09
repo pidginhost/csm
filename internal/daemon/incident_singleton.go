@@ -3,6 +3,7 @@ package daemon
 import (
 	"errors"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -197,21 +198,15 @@ func IncidentCorrelator() *incident.Correlator {
 					return live
 				}
 			}
-			// Whitelist accessor: check the static reputation.whitelist
-			// list, then the bbolt-backed live whitelist operators add at
-			// runtime. db nil-check inside the closure so store resolution
-			// stays current across daemon restarts.
-			staticAllow := make(map[string]bool, len(cfg.Reputation.Whitelist))
-			for _, ip := range cfg.Reputation.Whitelist {
-				if ip != "" {
-					staticAllow[ip] = true
-				}
-			}
+			// Whitelist accessor: reputation.whitelist from the live config
+			// (a hot-reload field), then the bbolt-backed whitelist operators
+			// add at runtime. Both are read per call so a reload or a store
+			// reopen takes effect at once.
 			whitelisted = func(ip string) bool {
 				if ip == "" {
 					return false
 				}
-				if staticAllow[ip] {
+				if reputationWhitelisted(globalCfgForIncidents(), ip) {
 					return true
 				}
 				if d := store.Global(); d != nil && d.IsWhitelisted(ip) {
@@ -269,6 +264,29 @@ func IncidentCorrelator() *incident.Correlator {
 // auto-close loop simply does not start (no panic). The retention loop
 // keeps running unchanged.
 var globalCfgForIncidents = func() *config.Config { return nil }
+
+// reputationWhitelisted reports whether addr is listed in
+// reputation.whitelist. An IP entry matches any spelling of the address;
+// other entries match exactly.
+func reputationWhitelisted(cfg *config.Config, addr string) bool {
+	if cfg == nil {
+		return false
+	}
+	parsed := net.ParseIP(addr)
+	for _, entry := range cfg.Reputation.Whitelist {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		if entry == addr {
+			return true
+		}
+		if ip := net.ParseIP(entry); parsed != nil && ip != nil && ip.Equal(parsed) {
+			return true
+		}
+	}
+	return false
+}
 
 // SetIncidentConfigSource wires the daemon-loaded config so the
 // incident singleton can resolve auto-close thresholds at construction.
