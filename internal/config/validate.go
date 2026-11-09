@@ -350,6 +350,21 @@ func Validate(cfg *Config) []ValidationResult {
 	} else if cfg.Challenge.Enabled && cfg.Challenge.ListenPort == 0 {
 		results = append(results, ValidationResult{"error", "challenge.listen_port", fmt.Sprintf("listen_port must be 1-65535 when challenge.enabled, got %d", cfg.Challenge.ListenPort)})
 	}
+	if cfg.Challenge.Enabled {
+		if path, ok := ChallengeSocketPath(cfg.Challenge.ListenAddr); ok {
+			if !filepath.IsAbs(path) {
+				results = append(results, ValidationResult{"error", "challenge.listen_addr", fmt.Sprintf("listen_addr unix socket path must be absolute, got %q", path)})
+			}
+			if strings.TrimSpace(cfg.Challenge.ListenGroup) == "" {
+				results = append(results, ValidationResult{"error", "challenge.listen_group", "listen_group must name the group your proxy runs as when challenge.listen_addr is a unix socket"})
+			}
+		}
+		// A warning, not an error: an error aborts daemon start and SIGHUP
+		// reloads. The challenge server refuses this setup on its own.
+		if err := ChallengeLocalTrustError(cfg.Challenge.TrustedProxies); err != nil {
+			results = append(results, ValidationResult{"warn", "challenge.trusted_proxies", err.Error()})
+		}
+	}
 
 	// --- EmailAV ---
 	if cfg.EmailAV.Enabled && cfg.EmailAV.MaxAttachmentSize <= 0 {
