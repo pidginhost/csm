@@ -2352,6 +2352,16 @@ func (b *subnetManagerBlocker) UnblockSubnet(cidr string) error {
 	return nil
 }
 
+// liveAutoResponse switches cfg to live IP auto-response, the only mode in
+// which the exempt-subnet prune touches the firewall.
+func liveAutoResponse(cfg *config.Config) *config.Config {
+	live := false
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.BlockIPs = true
+	cfg.AutoResponse.DryRun = &live
+	return cfg
+}
+
 // TestPruneExemptAutoSubnets verifies that PruneExemptAutoSubnets:
 //   - calls UnblockSubnet only for auto_response entries whose CIDR intersects
 //     the DoS-exempt set
@@ -2362,7 +2372,7 @@ func (b *subnetManagerBlocker) UnblockSubnet(cidr string) error {
 //   - returns the correct pruned count
 //   - returns 0 when the blocker does not implement subnetManager
 func TestPruneExemptAutoSubnets(t *testing.T) {
-	cfg := cfgWithExempt(t, "203.0.113.0/24")
+	cfg := liveAutoResponse(cfgWithExempt(t, "203.0.113.0/24"))
 
 	// Every non-auto_response provenance source, each intersecting the exempt
 	// range, must survive. Sources are the real constants from
@@ -2440,11 +2450,48 @@ func TestPruneExemptAutoSubnets(t *testing.T) {
 	}
 }
 
+// TestPruneExemptAutoSubnetsReadOnlyUnlessLive pins that the prune is a
+// kernel mutation of the auto-response layer: dry run promises a read-only
+// firewall, and a disabled auto response leaves its blocks alone. The daemon
+// calls the exported function at startup, outside the scan cycle's own gate.
+func TestPruneExemptAutoSubnetsReadOnlyUnlessLive(t *testing.T) {
+	yes, no := true, false
+	cases := []struct {
+		name     string
+		enabled  bool
+		blockIPs bool
+		dryRun   *bool
+	}{
+		{"dry run by default", true, true, nil},
+		{"explicit dry run", true, true, &yes},
+		{"auto response disabled", false, true, &no},
+		{"ip blocking disabled", true, false, &no},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := cfgWithExempt(t, "203.0.113.0/24")
+			cfg.AutoResponse.Enabled = tc.enabled
+			cfg.AutoResponse.BlockIPs = tc.blockIPs
+			cfg.AutoResponse.DryRun = tc.dryRun
+			sm := &subnetManagerBlocker{subnets: []firewall.SubnetEntry{
+				{CIDR: "203.0.113.0/24", Source: firewall.SourceAutoResponse, Reason: "http_asn_crawl"},
+			}}
+
+			if n := PruneExemptAutoSubnets(cfg, sm); n != 0 {
+				t.Errorf("pruned %d, want 0", n)
+			}
+			if sm.callCount != 0 {
+				t.Errorf("UnblockSubnet called %d times, want 0", sm.callCount)
+			}
+		})
+	}
+}
+
 // TestPruneExemptAutoSubnetsUnblockError verifies that an UnblockSubnet error
 // is logged (we check stderr is not crashed) and the failing entry is not
 // counted as pruned, but processing continues for subsequent entries.
 func TestPruneExemptAutoSubnetsUnblockError(t *testing.T) {
-	cfg := cfgWithExempt(t, "203.0.113.0/24")
+	cfg := liveAutoResponse(cfgWithExempt(t, "203.0.113.0/24"))
 
 	sm := &subnetManagerBlocker{
 		subnets: []firewall.SubnetEntry{
