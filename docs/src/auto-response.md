@@ -34,6 +34,11 @@ subnet escalation waits while individual block attempts continue.
 
 ### Process termination
 
+An eligible finding receives one automatic termination evaluation across scan
+and alert delivery. A refused or failed attempt is not retried when the same
+finding reaches alert delivery. Realtime findings still receive an evaluation;
+new detections and findings replayed from storage receive a fresh evaluation.
+
 CSM opens a kernel process handle before verifying ownership, executable, start
 time, or the file referenced by a process. It checks that the captured process
 is still alive after verification and sends the signal through that handle.
