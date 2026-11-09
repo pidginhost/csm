@@ -25,6 +25,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 ### Security
 
 - PHP and phishing checks now read `${'_POST'}` and `$GLOBALS['_POST']` as request input, so these spellings no longer hide a webshell or phishing kit.
+- `challenge.verified_session` no longer issues admin sessions to this server's own addresses, so local accounts cannot guess `admin_secret` from loopback.
 - The challenge server no longer starts when `challenge.trusted_proxies` covers an address of this host, so suspicious addresses get your normal response instead. Use the challenge socket or direct mode.
 - Mail that crashes, exhausts or stalls the attachment unpacker is now deferred instead of delivered unscanned, even with `email_av.fail_mode: open`; observe mode still delivers it.
 - A remote sender can no longer get a hosted mailbox reported as compromised through the wording of an email subject.
