@@ -284,6 +284,8 @@ With the firewall on and outside observe mode, admission also forecasts each aut
 
 Admission checks how each finding's address was read against its producer's declared address sources and the check's current policy, when it mints evidence and whenever retained evidence is used. A producer without a trusted address source cannot mint evidence. This excludes PHP relay findings, whose client address comes from a mail header a local account can forge. With `auto_response.dry_run: true`, these findings cannot produce a successful admission forecast. The admission executor remains disabled in this build; existing live firewall decisions still use the current response path. Stored evidence keeps its existing format and identifiers.
 
+Admission also binds each response target to its evidence. Only the mail subnet and ASN crawl entries may widen an attributed address to a containing prefix. Direct queue requests, retained candidates and reservations repeat this check, so previously queued responses cannot bypass it.
+
 This setting is not a universal simulation mode. It gates automatic firewall and related network enforcement paths plus web-exposed-file virtual patches. File quarantine, cleanup, permission changes, and process termination are controlled by their individual `auto_response` flags. Leave those flags off while evaluating block policy.
 
 IP auto-blocking still requires `firewall.enabled: true`. The firewall engine owns live nftables mutations and the dry-run gate; with the firewall disabled there is no engine to call, so `csm validate` warns on `auto_response.enabled: true` plus `block_ips: true`.

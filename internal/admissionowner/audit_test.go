@@ -40,6 +40,11 @@ func withTestRegistryBasis(t testing.TB, basis admission.Basis) *admission.Produ
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Range fixtures wrap the same check but must use a range entry.
+	if _, err = reg.Register(admission.ProducerSpec{ID: "mail_subnet", Entry: admission.EntryMailSubnet,
+		Observation: admission.ObservationLogCursor, Checks: []string{"ssh_brute"}}); err != nil {
+		t.Fatal(err)
+	}
 	reg.Seal()
 	prev := buildRegistry
 	buildRegistry = func() (*admission.Registry, map[admission.ProducerID]*admission.Producer, error) {
@@ -100,7 +105,11 @@ func queuedTarget(t testing.TB, o *Owner, p *admission.Producer, host *fakeHost,
 		if err != nil {
 			return err
 		}
-		c, _, err := o.ledger.Enqueue(admission.CandidateRequest{Kind: kind, Target: candidate, Episode: ep, Generation: 1, Primary: e.ID()})
+		var entry admission.Entry
+		if kind == admission.KindBlockSubnet {
+			entry = admission.EntryMailSubnet
+		}
+		c, _, err := o.ledger.Enqueue(admission.CandidateRequest{Kind: kind, Target: candidate, Episode: ep, Generation: 1, Primary: e.ID(), Entry: entry})
 		if err != nil {
 			return err
 		}

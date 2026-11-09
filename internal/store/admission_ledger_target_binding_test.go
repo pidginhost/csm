@@ -1,9 +1,12 @@
 package store
 
 import (
+	"reflect"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/admission"
+	bolt "go.etcd.io/bbolt"
 )
 
 // The ledger binds an arrival to the address its evidence attributes, as
@@ -47,5 +50,88 @@ func TestAdmissionLedgerBindsTheArrivalTarget(t *testing.T) {
 		if got.Err != nil || !got.Created {
 			t.Fatalf("range entry %s with a contained address: %+v", entry, got)
 		}
+	}
+}
+
+// Published evidence cannot bypass target binding by entering the ledger
+// directly, including a repeated request for a permitted range candidate.
+func TestAdmissionLedgerBindsDirectRequests(t *testing.T) {
+	f := newLedgerFixture(t)
+	root := f.published(evidenceSpec{target: "192.0.2.7"})
+	prefix, err := admission.CanonicalPrefix("192.0.2.0/24", admission.Caps{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := f.request("192.0.2.7", root)
+	req.Kind, req.Target = admission.KindBlockSubnet, prefix
+	for _, queued := range []bool{false, true} {
+		if queued {
+			req.Entry = admission.EntryMailSubnet
+			if _, created, err := f.l.Enqueue(req); err != nil || !created {
+				t.Fatalf("permitted range: created=%v, err=%v", created, err)
+			}
+		}
+		for _, entry := range []admission.Entry{0, admission.EntryScan, admission.EntryChallengeTimeout} {
+			req.Entry = entry
+			_, created, err := f.l.Enqueue(req)
+			if created || admission.CauseOf(err) != admission.CauseTargetMismatch {
+				t.Errorf("queued=%v, entry=%s: created=%v, err=%v", queued, entry, created, err)
+			}
+		}
+		want := 0
+		if queued {
+			want = 1
+		}
+		if got := f.candidateCount(); got != want {
+			t.Fatalf("queued=%v: %d candidates, want %d", queued, got, want)
+		}
+	}
+}
+
+// A prefix queued under an entry that no longer permits ranges must be
+// refused when retained work is revalidated or selected for an attempt.
+func TestAdmissionLedgerRechecksRetainedTargetBinding(t *testing.T) {
+	for _, stage := range []string{"revalidate", "reserve"} {
+		t.Run(stage, func(t *testing.T) {
+			f := newLedgerFixture(t)
+			root := f.published(evidenceSpec{target: "192.0.2.7"})
+			prefix, err := admission.CanonicalPrefix("192.0.2.0/24", admission.Caps{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := f.request("192.0.2.7", root)
+			req.Kind, req.Target, req.Entry = admission.KindBlockSubnet, prefix, admission.EntryMailSubnet
+			legacy, id := f.enqueue(req)
+			if err := f.l.Revalidate(); err != nil {
+				t.Fatal(err)
+			}
+			if got, err := f.l.Candidate(id); err != nil || got.State != admission.StateQueued {
+				t.Fatalf("permitted range did not stay queued: %+v, err=%v", got, err)
+			}
+			// Reproduce the stored shape accepted before target binding;
+			// the entry is not part of the candidate's identity.
+			legacy.Entry = admission.EntryScan
+			if err := f.db.bolt.Update(func(tx *bolt.Tx) error { return putCandidate(tx, legacy) }); err != nil {
+				t.Fatal(err)
+			}
+			if stage == "reserve" {
+				before := f.snapshot()
+				_, _, granted, err := f.l.Reserve(id, admission.LaneGeneral, f.wall.Add(time.Hour))
+				if reason, _ := admission.ReasonOf(err); granted || reason != admission.ReasonAttribution {
+					t.Fatalf("unbound reservation: granted=%v, err=%v", granted, err)
+				}
+				if !reflect.DeepEqual(before, f.snapshot()) {
+					t.Fatal("refused reservation changed ledger records")
+				}
+			} else {
+				if err := f.l.Revalidate(); err != nil {
+					t.Fatal(err)
+				}
+				got, err := f.l.Candidate(id)
+				if err != nil || got.State != admission.StateRefused || got.Reason != admission.ReasonAttribution {
+					t.Fatalf("unbound candidate after revalidation: %+v, err=%v", got, err)
+				}
+			}
+		})
 	}
 }
