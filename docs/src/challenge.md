@@ -190,8 +190,10 @@ for IPs currently on the challenge list; anyone else gets 404.
 The webserver integration redirects challenge-listed IPs to
 `challenge.public_url`. The installer refuses to run until that URL is
 an absolute `http` or `https` URL ending in `/challenge`, and the
-configured challenge listener is non-loopback or fronted by a trusted proxy
-on this host.
+configured challenge listener uses non-loopback TCP or a Unix socket.
+For a socket, `challenge.listen_addr` must use `unix:/absolute/path` and
+`challenge.listen_group` must name the proxy's group. Invalid socket settings
+are rejected before the installer writes runtime maps or changes the webserver.
 
 ```bash
 csm webserver-integration install     # initial wire-up

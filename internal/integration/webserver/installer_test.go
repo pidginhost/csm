@@ -242,6 +242,7 @@ func TestInstallAcceptsSocketListener(t *testing.T) {
 			h := &fakeHandler{kind: "apache", body: "body\n"}
 			i := newTestInstaller(t, h)
 			i.Config.ChallengeListenAddr = addr
+			i.Config.ChallengeListenGroup = "proxy"
 			i.Config.ChallengePublicURL = "https://challenge.example.com/challenge"
 			if _, err := i.Install(); err != nil {
 				t.Fatalf("Install: %v", err)
@@ -258,6 +259,7 @@ func TestInstallRejectsHostLocalTrustedProxy(t *testing.T) {
 				h := &fakeHandler{kind: "apache", body: "body\n"}
 				i := newTestInstaller(t, h)
 				i.Config.ChallengeListenAddr = listen
+				i.Config.ChallengeListenGroup = "proxy"
 				i.Config.ChallengeTrustedProxies = []string{"198.51.100.2", trusted}
 				res, err := i.Install()
 				if err == nil || !strings.Contains(err.Error(), config.ChallengeSocketExample) || !strings.Contains(err.Error(), trusted) {

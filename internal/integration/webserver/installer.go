@@ -37,6 +37,7 @@ type RenderConfig struct {
 	ChallengeMapPath      string
 	ChallengeNginxMapPath string
 	ChallengeListenAddr   string
+	ChallengeListenGroup  string
 	// ChallengePublicURL is the fully-qualified redirect target the
 	// webserver snippet emits. Required on install; empty value blocks
 	// the installer with a clear error. Operator typically points it at
@@ -64,8 +65,7 @@ var ErrMissingPublicURL = errors.New("webserver integration: challenge.public_ur
 var ErrInvalidPublicURL = errors.New("webserver integration: challenge.public_url must be an absolute http(s) URL ending in /challenge")
 
 // ErrLoopbackPublicURL is returned when the installed snippets would
-// redirect browsers to a listener that only accepts loopback traffic and no
-// proxy on this host is trusted to front it.
+// redirect browsers to a TCP listener that only accepts loopback traffic.
 var ErrLoopbackPublicURL = errors.New("webserver integration: challenge.listen_addr must be non-loopback when challenge.public_url redirects are enabled; for a proxy on this host use challenge.listen_addr: " + config.ChallengeSocketExample)
 
 // Result is the structured outcome of an installer run. JSON-friendly
@@ -442,6 +442,7 @@ func renderConfigFrom(cfg *config.Config) RenderConfig {
 	if rc.ChallengeListenAddr == "" {
 		rc.ChallengeListenAddr = "127.0.0.1"
 	}
+	rc.ChallengeListenGroup = strings.TrimSpace(cfg.Challenge.ListenGroup)
 	rc.ChallengePublicURL = strings.TrimSpace(cfg.Challenge.PublicURL)
 	rc.ChallengeTrustedProxies = cfg.Challenge.TrustedProxies
 	return rc
@@ -519,9 +520,16 @@ func validateChallengePublicURL(rc RenderConfig) error {
 	if isLoopbackHost(u.Hostname()) {
 		return fmt.Errorf("%w: host %q is loopback", ErrInvalidPublicURL, u.Hostname())
 	}
-	// A socket is reachable only by the proxy's group, so it needs no
-	// host checks; its "unix:" prefix would also parse as host:port.
-	if _, socket := config.ChallengeSocketPath(rc.ChallengeListenAddr); socket {
+	// The installer loads config without running config.Validate. Check
+	// socket settings before accepting redirects to a listener that cannot
+	// start, and before the "unix:" prefix can be parsed as host:port.
+	if path, socket := config.ChallengeSocketPath(rc.ChallengeListenAddr); socket {
+		if !filepath.IsAbs(path) {
+			return fmt.Errorf("webserver integration: challenge.listen_addr unix socket path must be absolute, got %q", path)
+		}
+		if strings.TrimSpace(rc.ChallengeListenGroup) == "" {
+			return errors.New("webserver integration: challenge.listen_group must name the group your proxy runs as when challenge.listen_addr is a unix socket")
+		}
 		return nil
 	}
 	if _, _, err := net.SplitHostPort(strings.TrimSpace(rc.ChallengeListenAddr)); err == nil {
