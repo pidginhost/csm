@@ -972,13 +972,14 @@ func TestAPIFirewallUnbanRemovesSubnet(t *testing.T) {
 	}
 	fwState := firewall.FirewallState{
 		BlockedNet: []firewall.SubnetEntry{
-			{CIDR: "203.0.113.0/24", Reason: "abuse"},
+			{CIDR: "203.0.113.0/24", Reason: "abuse", Source: firewall.SourceAutoResponse},
 		},
 	}
 	data, _ := json.Marshal(fwState)
 	if err := os.WriteFile(filepath.Join(stateDir, "state.json"), data, 0644); err != nil {
 		t.Fatal(err)
 	}
+	fb.subnetsBlocked["203.0.113.0/24"] = "abuse"
 
 	w := httptest.NewRecorder()
 	body := `{"ip":"203.0.113.5"}`
@@ -988,8 +989,52 @@ func TestAPIFirewallUnbanRemovesSubnet(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
 	}
-	if !strings.Contains(w.Body.String(), "subnet_removed") {
-		t.Error("expected subnet_removed in response")
+	if !strings.Contains(w.Body.String(), `"subnet_removed":"203.0.113.0/24"`) {
+		t.Errorf("expected subnet_removed in response, got %s", w.Body.String())
+	}
+	if _, still := fb.subnetsBlocked["203.0.113.0/24"]; still {
+		t.Error("automatic subnet block covering the address was not removed")
+	}
+}
+
+// One address's unban must not reopen a subnet an operator blocked, whoever
+// asks; the CLI unblock keeps it too and says the address is still dropped.
+func TestAPIFirewallUnbanKeepsOperatorSubnet(t *testing.T) {
+	for _, source := range []string{firewall.SourceWebUI, firewall.SourceCLI, ""} {
+		t.Run("source "+source, func(t *testing.T) {
+			s := newTestServer(t, "tok")
+			s.cfg.Firewall = &firewall.FirewallConfig{Enabled: true}
+			fb := newFullBlocker()
+			fb.subnetsBlocked["203.0.113.0/24"] = "operator deny"
+			s.blocker = fb
+			stateDir := filepath.Join(s.cfg.StatePath, "firewall")
+			if err := os.MkdirAll(stateDir, 0755); err != nil {
+				t.Fatal(err)
+			}
+			data, _ := json.Marshal(firewall.FirewallState{BlockedNet: []firewall.SubnetEntry{
+				{CIDR: "203.0.113.0/24", Reason: "operator deny", Source: source},
+			}})
+			if err := os.WriteFile(filepath.Join(stateDir, "state.json"), data, 0644); err != nil {
+				t.Fatal(err)
+			}
+
+			w := httptest.NewRecorder()
+			req := httptest.NewRequest("POST", "/", strings.NewReader(`{"ip":"203.0.113.5"}`))
+			req.Header.Set("Content-Type", "application/json")
+			s.apiFirewallUnban(w, req)
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+			}
+			if _, kept := fb.subnetsBlocked["203.0.113.0/24"]; !kept {
+				t.Error("operator subnet block was removed by an address unban")
+			}
+			if strings.Contains(w.Body.String(), "subnet_removed") {
+				t.Errorf("response claims a subnet removal: %s", w.Body.String())
+			}
+			if !strings.Contains(w.Body.String(), `"subnet_kept":"203.0.113.0/24"`) {
+				t.Errorf("response does not say the address is still in a blocked subnet: %s", w.Body.String())
+			}
+		})
 	}
 }
 

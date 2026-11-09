@@ -72,6 +72,10 @@ other addresses' markers. Renewed spraying can still trigger a block.
 An admin token or browser session on the same route performs a full operator
 release, clearing the address's mail failure history and counts as described
 in [automatic blocking](auto-response.md#findings-that-always-trigger-ip-block).
+Either credential also removes subnet blocks CSM added automatically that
+cover the address (`subnet_removed` in the response). A subnet an operator
+blocked is kept and named in `subnet_kept`: the address stays dropped until
+that subnet is unblocked.
 The credential accepted at authorization selects the release mode; expiry
 while reading the request body cannot change it. A valid browser session
 takes precedence over a bearer token and still needs CSRF with an unban bearer.

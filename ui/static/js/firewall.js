@@ -762,7 +762,11 @@ function unbanEverywhere(ip) {
         CSM.post('/api/v1/firewall/unban', { ip: ip }).then(function(data) {
             var msg = 'Removed lockouts for ' + ip;
             if (data.subnet_removed) msg += ' (also removed subnet ' + data.subnet_removed + ')';
-            CSM.toast(msg, 'success');
+            if (data.subnet_kept) {
+                CSM.toast(msg + '; still dropped by blocked subnet ' + data.subnet_kept + ', unblock that subnet to restore access', 'warning');
+            } else {
+                CSM.toast(msg, 'success');
+            }
             refreshFirewallData();
             loadLookup(ip);
         }).catch(function(e) { CSM.toast(CSM.errorText(e), 'error'); });
