@@ -30,6 +30,11 @@ JavaScript proof-of-work challenge pages - a CAPTCHA alternative for suspicious 
 
 When `challenge.enabled: true`, CSM routes eligible IPs to the challenge page instead of hard-blocking them. This works independently of `auto_response` settings.
 
+Addresses the firewall refuses to block are never routed: entries in
+`infra_ips` or `firewall.infra_ips` and, while the CSM firewall runs, the
+current addresses of infra hostnames and the server's own addresses. Entries
+only in `firewall.infra_ips` still produce alerts and spam evidence.
+
 ### Challenge-Eligible Checks
 
 Pre-auth, browser-visible attack signals only: `wp_login_bruteforce`,

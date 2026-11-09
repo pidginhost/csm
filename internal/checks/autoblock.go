@@ -111,6 +111,13 @@ type allowChecker interface {
 	IsAllowed(ip string) bool
 }
 
+// blockProtector is satisfied by engines that report whether no block may
+// name an address. Challenge routing skips those addresses, since a challenge
+// can end in a block. Optional: without it only the configured lists apply.
+type blockProtector interface {
+	BlockProtected(ip string) bool
+}
+
 // permanentPromoter is satisfied by engines that can upgrade an existing
 // temporary block to a permanent one. PermBlock escalation runs in the same
 // scan cycle as the temp block that triggered it, so the ordinary block path

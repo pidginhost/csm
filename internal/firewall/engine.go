@@ -3110,6 +3110,20 @@ func (e *Engine) blockIPTargetFromStates(ip string, timeout time.Duration, skipE
 	return targetSet, key, false, "", nil
 }
 
+// BlockProtected reports whether no block may name ip: infra, the current
+// address of an infra hostname, the host's own interfaces or an address that
+// is never a packet's source. Callers about to act on an address in another
+// way ask it so they skip what a block would refuse.
+func (e *Engine) BlockProtected(ip string) bool {
+	parsed := net.ParseIP(strings.TrimSpace(ip))
+	if parsed == nil {
+		return false
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.blockProtectionLocked(parsed, parsed.String()) != nil
+}
+
 // blockProtectionLocked refuses an address no block may name: infra,
 // the host's own interfaces and addresses that are never a packet's source.
 func (e *Engine) blockProtectionLocked(parsed net.IP, ip string) error {
