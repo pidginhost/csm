@@ -3,6 +3,12 @@
 
 hostname: "SET_HOSTNAME_HERE"
 
+# enforce (default): every subsystem acts under its own switch.
+# observe: detection, correlation and alerting without automatic host
+# remediation or integration updates. Conflicting switches are refused
+# at startup. CSM still writes its own state. See docs/src/observe-mode.md.
+mode: "enforce"
+
 alerts:
   email:
     enabled: true
@@ -19,17 +25,17 @@ alerts:
     enabled: false
     url: ""  # healthchecks.io, cronitor, or similar dead man's switch URL
   max_per_hour: 10
-  # block_digest emails/posts a per-country roll-up of auto-blocked IPs so you
-  # learn when visitors from your customers' countries get blocked. Off by
-  # default. Changing this block needs a daemon restart.
+  # block_digest adds per-country counts of auto-blocked IPs to the daily
+  # summary so you learn when visitors from your customers' countries get
+  # blocked. Off by default. Changing this block needs a daemon restart.
   block_digest:
     enabled: false
     countries: []          # ISO 3166-1 alpha-2; empty falls back to suppressions.trusted_countries, then all
-    interval: "1h"
+    interval: "1h"         # how often counts fold into the summary; live alert dedup window
     live: false            # also send an immediate alert per qualifying block
-    send_on: "any"         # any | customer (customer = only likely-false-positive blocks)
-    channel: ""            # "" uses enabled alert channel(s); at least one of email/webhook must be enabled
-    min_block: 1           # suppress digests below this count (0 = send empty heartbeat digests)
+    send_on: "any"         # live alerts: any | customer (customer = only likely-false-positive blocks)
+    channel: ""            # live alerts only: "" uses enabled alert channel(s); enabled needs email or webhook on
+    min_block: 1           # watched blocks needed to show the summary section (0 = always show it)
 
 webui:
   enabled: true
@@ -132,6 +138,7 @@ thresholds:
   mail_queue_warn: 500
   mail_queue_crit: 2000
   deep_scan_interval_min: 60
+  exposed_file_scan_depth: 2
   multi_ip_login_threshold: 3
   multi_ip_login_window_min: 60
   cred_stuffing_distinct_accounts: 5
@@ -357,6 +364,8 @@ auto_response:
   block_expiry: "24h"         # how long IPs stay blocked
   http_asn_crawl_tempban: "24h"  # ban duration for http_asn_crawl findings
   max_blocks_per_hour: 50     # per-IP block cap; 0/omitted uses the default
+  # Permit blocks for thresholded cPanel, webmail, FTP and API login abuse.
+  # Single direct cPanel form logins stay audit-only.
   block_cpanel_logins: false
   # http_scanner_action: response for http_scanner_profile findings.
   # "challenge" (default) routes the IP to the PoW challenge when the
@@ -364,12 +373,12 @@ auto_response:
   # is not; "block" always hard-blocks.
   http_scanner_action: "challenge"
   fix_wp_cron: false          # auto-disable WP-Cron + install per-user system cron on WP-Cron findings
-  netblock: false             # auto-block /24 subnet when threshold IPs from same range
-  netblock_threshold: 3
+  netblock: false             # auto-block IPv4 /24 or IPv6 /64 at threshold
+  netblock_threshold: 3       # IPs from same IPv4 /24 or IPv6 /64 before subnet auto-block
   netblock_window: "168h"    # how far back blocked IPs count, including expired blocks
   permblock: false            # auto-promote to permanent after N temp blocks
-  permblock_count: 4
-  permblock_interval: "24h"
+  permblock_count: 4          # temp blocks before permanent
+  permblock_interval: "24h"   # window for counting temp blocks
   # virtual_patch_exposed_files: write .htaccess "Require all denied" rules for
   # confirmed web-exposed files (DB dumps, backups, config/source leaks).
   #   off (default): detect and alert only.
@@ -527,7 +536,7 @@ firewall:
       hits: 600
       seconds: 300
   udp_flood: true
-  udp_flood_rate: 100
+  udp_flood_rate: 100           # packets per second
   udp_flood_burst: 500
   drop_nolog:                   # silently drop without logging (scanner noise)
     - 23
@@ -546,7 +555,7 @@ firewall:
     - 520
   deny_ip_limit: 3000           # max permanent blocks (0 = unlimited)
   deny_temp_ip_limit: 500       # max temporary blocks
-  smtp_block: false
+  smtp_block: false             # restrict outbound SMTP to allowed users only
   smtp_allow_users:             # users allowed to send mail (root always allowed)
     - cpanel
     - mailman
@@ -554,12 +563,16 @@ firewall:
     - 25
     - 465
     - 587
+  # dyndns_hosts:               # resolve hostnames to IPs, update allowed set every 5 min
+  #   - "myhost.dyndns.org"
   log_dropped: true
-  log_rate: 5
+  log_rate: 5                   # dropped packet log entries per minute
   dos_exempt_ranges: []            # operator CIDR/IP exemptions from per-IP DoS heuristics (rate-limit, conn-limit, port-flood)
   dos_exempt_known_mail_providers: true  # include bundled Google/Microsoft outbound-mail ranges in the exempt set; set false to disable
 
+# Add any locally maintained blocklist IPs here.
 c2_blocklist: []
+  # - "203.0.113.53"
 backdoor_ports:
   - 4444
   - 5555

@@ -7,6 +7,17 @@ at daemon startup. After changing an environment file, restart the daemon;
 configuration reload alone does not import those changes. See
 [credential rotation](credential-rotation.md) for the systemd procedure.
 
+## Installation defaults
+
+Packages and `csm install` write the same commented configuration, so a new
+host starts with the same settings whichever way it was installed. A key left
+out of the file takes the built-in default, which can differ from the value
+the shipped file sets.
+
+The CLI generates a fresh Web UI admin token and issue time, validates the
+result, and writes the new configuration with mode `0600`. Invalid templates
+stop installation without replacing the destination configuration.
+
 ## Operating mode
 
 `mode` declares what CSM may do to the host. `enforce` (default) leaves every

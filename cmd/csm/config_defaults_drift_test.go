@@ -18,9 +18,8 @@ type firewallReference struct {
 	} `yaml:"firewall"`
 }
 
-// loadInstallerTemplate renders the installer's built-in config to disk and
-// parses it, which is the only way to read that template -- it is an inline
-// literal inside deployDefaultConfig, not an exported var.
+// loadInstallerTemplate renders the config `csm install` writes, the packaged
+// default with a generated token, and parses it.
 func loadInstallerTemplate(t *testing.T) []int {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "csm.yaml")
