@@ -25,7 +25,7 @@ func queuedFor(t testing.TB, o *Owner, p *admission.Producer, host *fakeHost, ac
 			return err
 		}
 		in := admission.EvidenceInput{
-			Check: "ssh_brute", FindingID: "0123456789abcdef", Severity: admission.SeverityHigh,
+			Check: "ssh_brute", Attribution: admission.AttributionPeer, FindingID: "0123456789abcdef", Severity: admission.SeverityHigh,
 			Observation: admission.ObservationRef{Stream: "log:sshd_log", Cursor: cursorFor(addr), Version: 1},
 			ObservedAt:  now, Parser: admission.ParserRef{Name: "sshd", Version: 1}, Target: target,
 		}

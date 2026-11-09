@@ -9,6 +9,15 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ## [Unreleased]
 
+### Added
+
+- Admission refusal summaries in the action log name why an address was not attributed: no observation, unaccepted kind or target mismatch.
+
+### Changed
+
+- Automatic response forecasts reject unverified PHP relay addresses and stop trusting evidence after its allowed address sources change.
+- Automatic response previews reject subnet targets from checks that only attribute individual addresses, including previously queued responses.
+
 ### Security
 
 - Mail that crashes, exhausts or stalls the attachment unpacker is now deferred instead of delivered unscanned, even with `email_av.fail_mode: open`; observe mode still delivers it.

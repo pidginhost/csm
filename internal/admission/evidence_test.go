@@ -11,14 +11,25 @@ import (
 
 // testPolicies is a registry fixture, not the production table.
 var testPolicies = map[string]Policy{
-	"ssh_brute":      {Family: FamilySSH, Basis: BasisLocal},
-	"http_scan":      {Family: FamilyHTTP, Basis: BasisLocal},
-	"waf_escalation": {Family: FamilyHTTP, Basis: BasisLocal},
-	"mail_brute":     {Family: FamilyMail, Basis: BasisLocal},
-	"mail_takeover":  {Family: FamilyMail, Basis: BasisCompromise},
-	"reputation":     {Family: FamilyReputation, Basis: BasisIntel},
-	"threat_score":   {Family: FamilyDerived, Basis: BasisIntel},
+	"ssh_brute":      {Family: FamilySSH, Basis: BasisLocal, Attribution: Attributions(AttributionPeer)},
+	"http_scan":      {Family: FamilyHTTP, Basis: BasisLocal, Attribution: Attributions(AttributionHTTPPeer, AttributionTrustedHTTPChain)},
+	"waf_escalation": {Family: FamilyHTTP, Basis: BasisLocal, Attribution: Attributions(AttributionHTTPPeer, AttributionTrustedHTTPChain)},
+	"mail_brute":     {Family: FamilyMail, Basis: BasisLocal, Attribution: Attributions(AttributionPeer)},
+	"mail_takeover":  {Family: FamilyMail, Basis: BasisCompromise, Attribution: Attributions(AttributionPeer)},
+	"reputation":     {Family: FamilyReputation, Basis: BasisIntel, Attribution: Attributions(AttributionDerived)},
+	"threat_score":   {Family: FamilyDerived, Basis: BasisIntel, Attribution: Attributions(AttributionDerived)},
 	"login_audit":    {},
+}
+
+// testKind is the kind a fixture producer of check reads its address by.
+func testKind(check string) Attribution {
+	switch _, p, _ := testLookup(check); p.Family {
+	case FamilyHTTP:
+		return AttributionHTTPPeer
+	case FamilyReputation, FamilyDerived:
+		return AttributionDerived
+	}
+	return AttributionPeer
 }
 
 func testLookup(check string) (string, Policy, bool) {
@@ -50,12 +61,17 @@ func newTestProducers(t testing.TB) testProducers {
 		return p
 	}
 	tp := testProducers{reg: reg}
-	tp.ssh = must(ProducerSpec{ID: "sshd_log", Entry: EntryScan, Observation: ObservationLogCursor, Checks: []string{"ssh_brute"}, Claims: []ClaimKind{ClaimAccount}})
-	tp.http = must(ProducerSpec{ID: "access_log", Entry: EntryScan, Observation: ObservationLogCursor, Checks: []string{"waf_escalation", "http_scan"}})
-	tp.mail = must(ProducerSpec{ID: "mail_log", Entry: EntryScan, Observation: ObservationLogCursor, Checks: []string{"mail_brute", "mail_takeover"}, Claims: []ClaimKind{ClaimAccount}})
-	tp.reputation = must(ProducerSpec{ID: "reputation_scan", Entry: EntryScan, Observation: ObservationScanPass, Checks: []string{"reputation"}, Claims: []ClaimKind{ClaimAccount}})
-	tp.derived = must(ProducerSpec{ID: "threat_scan", Entry: EntryScan, Observation: ObservationScanPass, Checks: []string{"threat_score"}})
-	tp.spare = must(ProducerSpec{ID: "incident", Entry: EntryIncident, Observation: ObservationEventSeq, Checks: []string{"ssh_brute"}})
+	peer, derived := Attributions(AttributionPeer), Attributions(AttributionDerived)
+	tp.ssh = must(ProducerSpec{ID: "sshd_log", Entry: EntryScan, Observation: ObservationLogCursor, Checks: []string{"ssh_brute"}, Claims: []ClaimKind{ClaimAccount}, Attribution: peer})
+	tp.http = must(ProducerSpec{ID: "access_log", Entry: EntryScan, Observation: ObservationLogCursor, Checks: []string{"waf_escalation", "http_scan"},
+		Attribution: Attributions(AttributionHTTPPeer)})
+	tp.mail = must(ProducerSpec{ID: "mail_log", Entry: EntryScan, Observation: ObservationLogCursor, Checks: []string{"mail_brute", "mail_takeover"}, Claims: []ClaimKind{ClaimAccount}, Attribution: peer})
+	tp.reputation = must(ProducerSpec{ID: "reputation_scan", Entry: EntryScan, Observation: ObservationScanPass, Checks: []string{"reputation"}, Claims: []ClaimKind{ClaimAccount}, Attribution: derived})
+	tp.derived = must(ProducerSpec{ID: "threat_scan", Entry: EntryScan, Observation: ObservationScanPass, Checks: []string{"threat_score"}, Attribution: derived})
+	tp.spare = must(ProducerSpec{ID: "incident", Entry: EntryIncident, Observation: ObservationEventSeq, Checks: []string{"ssh_brute"}, Attribution: peer})
+	// A range entry wraps the SSH fixture check, so a subnet response may
+	// name a prefix holding its root.
+	must(ProducerSpec{ID: "mail_subnet", Entry: EntryMailSubnet, Observation: ObservationLogCursor, Checks: []string{"ssh_brute"}})
 	return tp
 }
 
@@ -68,6 +84,7 @@ func sshInput(t *testing.T) EvidenceInput {
 		ObservedAt:  t0,
 		Parser:      ParserRef{Name: "sshd", Version: 1},
 		Target:      mustAddr(t, "192.0.2.1"),
+		Attribution: AttributionPeer,
 	}
 }
 
@@ -113,6 +130,7 @@ func TestMintBindsProducerEntryAndPolicy(t *testing.T) {
 	tp := newTestProducers(t)
 	in := sshInput(t)
 	in.Check = "ssh_brute_legacy"
+	in.Attribution = testKind(in.Check)
 	e, err := tp.ssh.Mint(in)
 	if err != nil {
 		t.Fatal(err)
@@ -207,6 +225,7 @@ func TestMintRefusesMalformedInput(t *testing.T) {
 		"no parser":            func(in *EvidenceInput) { in.Parser = ParserRef{} },
 		"no target":            func(in *EvidenceInput) { in.Target = Target{} },
 		"service target":       func(in *EvidenceInput) { in.Target = svc },
+		"prefix target":        func(in *EvidenceInput) { in.Target = prefix },
 		"intel on local root":  func(in *EvidenceInput) { in.Intel = &IntelRef{Source: "feed", Expires: t0.Add(time.Hour)} },
 	}
 	for name, m := range mutate {
@@ -218,13 +237,9 @@ func TestMintRefusesMalformedInput(t *testing.T) {
 			t.Errorf("%s: refusal without a reason: %v", name, err)
 		}
 	}
-	in := sshInput(t)
-	in.Target = prefix
-	if _, err := tp.ssh.Mint(in); err != nil {
-		t.Errorf("prefix evidence refused: %v", err)
-	}
 	rep := sshInput(t)
 	rep.Check = "reputation"
+	rep.Attribution = testKind(rep.Check)
 	if _, err := tp.reputation.Mint(rep); err == nil {
 		t.Error("reputation evidence without intel was minted")
 	}
@@ -277,8 +292,11 @@ func TestEvidenceIDFollowsTheObservation(t *testing.T) {
 func TestValidateRefusesPolicyDrift(t *testing.T) {
 	tp := newTestProducers(t)
 	e, _ := tp.ssh.Mint(sshInput(t))
-	testPolicies["ssh_brute"] = Policy{Family: FamilySSH, Basis: BasisCompromise}
-	defer func() { testPolicies["ssh_brute"] = Policy{Family: FamilySSH, Basis: BasisLocal} }()
+	saved := testPolicies["ssh_brute"]
+	changed := saved
+	changed.Basis = BasisCompromise
+	testPolicies["ssh_brute"] = changed
+	defer func() { testPolicies["ssh_brute"] = saved }()
 	err := tp.reg.Validate(e)
 	wantReason(t, "policy drift", err, ReasonPolicy)
 	other, _ := NewRegistry(testLookup)
@@ -361,6 +379,7 @@ func TestEvidenceTimeNanosecondBoundaries(t *testing.T) {
 	}
 	in := sshInput(t)
 	in.Check = "reputation"
+	in.Attribution = testKind(in.Check)
 	in.Intel = &IntelRef{Source: "feed", Expires: latest}
 	e, err := tp.reputation.Mint(in)
 	if err != nil {
@@ -376,6 +395,7 @@ func TestEvidenceTimeNanosecondBoundaries(t *testing.T) {
 		wantReason(t, "unrepresentable observation", err, ReasonInvalid)
 		in.ObservedAt = t0
 		in.Check = "reputation"
+		in.Attribution = testKind(in.Check)
 		in.Intel = &IntelRef{Source: "feed", Expires: outside}
 		_, err = tp.reputation.Mint(in)
 		wantReason(t, "unrepresentable intel expiry", err, ReasonInvalid)
@@ -427,7 +447,7 @@ func TestRegistryRejectsRenamedEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := reg.Register(ProducerSpec{ID: "ssh", Entry: EntryScan, Observation: ObservationLogCursor, Checks: []string{"ssh_brute"}})
+	p, err := reg.Register(ProducerSpec{ID: "ssh", Entry: EntryScan, Observation: ObservationLogCursor, Checks: []string{"ssh_brute"}, Attribution: Attributions(testKind("ssh_brute"))})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -456,18 +476,19 @@ func TestSeverityFloorKeepsAdvisoryFindingsOutOfEvidence(t *testing.T) {
 		if check != "mail_takeover" {
 			return testLookup(check)
 		}
-		return check, Policy{Family: FamilyMail, Basis: BasisCompromise, MinSeverity: floor}, true
+		return check, Policy{Family: FamilyMail, Basis: BasisCompromise, MinSeverity: floor, Attribution: Attributions(AttributionPeer)}, true
 	}
 	reg, err := NewRegistry(lookup)
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := reg.Register(ProducerSpec{ID: "mail_log", Entry: EntryScan, Observation: ObservationLogCursor, Checks: []string{"mail_takeover"}})
+	p, err := reg.Register(ProducerSpec{ID: "mail_log", Entry: EntryScan, Observation: ObservationLogCursor, Checks: []string{"mail_takeover"}, Attribution: Attributions(testKind("mail_takeover"))})
 	if err != nil {
 		t.Fatal(err)
 	}
 	in := sshInput(t)
 	in.Check = "mail_takeover"
+	in.Attribution = testKind(in.Check)
 	for _, sev := range []Severity{SeverityWarning, SeverityHigh} {
 		in.Severity = sev
 		e, mintErr := p.Mint(in)
@@ -517,6 +538,8 @@ func TestRegisterRefusesUnknownSeverityFloor(t *testing.T) {
 // The ledger stores these bytes under this ID. A change to the field names,
 // field order, checksum or ID derivation must be a deliberate format change
 // with a new version, never a side effect of a refactor.
+// Mint checks attribution without storing it. A new mint must keep the
+// same version 1 bytes and ID as the stored record.
 func TestEvidenceEncodingAndIDAreFrozen(t *testing.T) {
 	tp := newTestProducers(t)
 	inv, err := NewInventory(map[string]uint64{"alice": 4}, nil)
@@ -525,6 +548,7 @@ func TestEvidenceEncodingAndIDAreFrozen(t *testing.T) {
 	}
 	in := sshInput(t)
 	in.Check = "reputation"
+	in.Attribution = testKind(in.Check)
 	in.Claims, in.Inventory = []Claim{{ClaimAccount, "alice"}}, inv
 	in.Intel = &IntelRef{Source: "feed", Expires: t0.Add(time.Hour)}
 	e, err := tp.reputation.Mint(in)

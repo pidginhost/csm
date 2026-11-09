@@ -505,7 +505,7 @@ func TestMailSprayFindingMapping(t *testing.T) {
 			if strings.Count(f.Message, " from ") != 1 {
 				t.Fatalf("message must name one source: %q", f.Message)
 			}
-			want := alert.Finding{Timestamp: now, SourceIP: ip, BlockTTL: tc.ttl}
+			want := alert.Finding{Timestamp: now, SourceIP: ip, Attribution: admission.AttributionPeer, BlockTTL: tc.ttl}
 			if tc.mailbox {
 				want.Mailbox, want.Domain = "a@example.com", "example.com"
 			}

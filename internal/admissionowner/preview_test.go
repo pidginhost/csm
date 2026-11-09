@@ -343,11 +343,11 @@ func TestOwnerEndsAnInvalidPreviewWithoutStarvingWork(t *testing.T) {
 				}
 				finding := sshFinding(f.host.now(), addr, sev)
 				finding.SourceIP = addr
-				e, err := o.Mint(finding, addr)
+				e, err := o.Mint(finding)
 				if err != nil {
 					t.Fatal(err)
 				}
-				if err = o.Respond(admission.KindBlockIP, e, 0, ttl); err != nil {
+				if err = o.Respond(admission.KindBlockIP, targetOf(e), e, 0, ttl); err != nil {
 					t.Fatal(err)
 				}
 			}

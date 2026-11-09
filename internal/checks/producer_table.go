@@ -34,6 +34,14 @@ const (
 	ProducerPHPRelaySpool   admission.ProducerID = "php_relay_spool"
 )
 
+// The attribution kinds each producer's parsers read addresses by.
+var (
+	mintsPeer        = admission.Attributions(admission.AttributionPeer)
+	mintsHTTPPeer    = admission.Attributions(admission.AttributionHTTPPeer)
+	mintsDerived     = admission.Attributions(admission.AttributionDerived)
+	mintsDestination = admission.Attributions(admission.AttributionSocketDestination)
+)
+
 // producerTable lists every producer of address evidence. Realtime and
 // scheduled readers are separate producers because each has its own
 // observation stream. Admission has no realtime entry: both reach the
@@ -42,58 +50,61 @@ const (
 // account or mailbox, a request names a host it chose itself.
 var producerTable = []ProducerEntry{
 	{admission.ProducerSpec{ID: ProducerSSHLog, Entry: admission.EntryScan, Observation: admission.ObservationLogCursor,
-		Checks: []string{"ssh_login_unknown_ip"}, Claims: []admission.ClaimKind{admission.ClaimAccount}},
+		Checks: []string{"ssh_login_unknown_ip"}, Claims: []admission.ClaimKind{admission.ClaimAccount}, Attribution: mintsPeer},
 		admission.ParserRef{Name: "sshd", Version: 1}},
 	{admission.ProducerSpec{ID: ProducerSSHLoginScan, Entry: admission.EntryScan, Observation: admission.ObservationLogCursor,
-		Checks: []string{"ssh_login_unknown_ip"}, Claims: []admission.ClaimKind{admission.ClaimAccount}},
+		Checks: []string{"ssh_login_unknown_ip"}, Claims: []admission.ClaimKind{admission.ClaimAccount}, Attribution: mintsPeer},
 		admission.ParserRef{Name: "sshd", Version: 1}},
 	{admission.ProducerSpec{ID: ProducerPAMSocket, Entry: admission.EntryScan, Observation: admission.ObservationEventSeq,
-		Checks: []string{"pam_bruteforce", "credential_stuffing"}},
+		Checks: []string{"pam_bruteforce", "credential_stuffing"}, Attribution: mintsPeer},
 		admission.ParserRef{Name: "pam_csm", Version: 1}},
 	{admission.ProducerSpec{ID: ProducerFTPLog, Entry: admission.EntryScan, Observation: admission.ObservationLogCursor,
-		Checks: []string{"ftp_auth_failure_realtime"}},
+		Checks: []string{"ftp_auth_failure_realtime"}, Attribution: mintsPeer},
 		admission.ParserRef{Name: "pureftpd", Version: 1}},
 	{admission.ProducerSpec{ID: ProducerFTPScan, Entry: admission.EntryScan, Observation: admission.ObservationLogCursor,
-		Checks: []string{"ftp_bruteforce"}},
+		Checks: []string{"ftp_bruteforce"}, Attribution: mintsPeer},
 		admission.ParserRef{Name: "pureftpd", Version: 1}},
 	{admission.ProducerSpec{ID: ProducerEximLog, Entry: admission.EntryScan, Observation: admission.ObservationLogCursor,
 		Checks: []string{"smtp_bruteforce", "smtp_subnet_spray", "smtp_probe_abuse", "email_cloud_relay_abuse", "mail_account_compromised"},
-		Claims: []admission.ClaimKind{admission.ClaimAccount, admission.ClaimMailbox}},
+		Claims: []admission.ClaimKind{admission.ClaimAccount, admission.ClaimMailbox}, Attribution: mintsPeer},
 		admission.ParserRef{Name: "exim", Version: 1}},
 	{admission.ProducerSpec{ID: ProducerEximHistory, Entry: admission.EntryScan, Observation: admission.ObservationScanPass,
-		Checks: []string{"email_cloud_relay_abuse"}, Claims: []admission.ClaimKind{admission.ClaimAccount, admission.ClaimMailbox}},
+		Checks: []string{"email_cloud_relay_abuse"}, Claims: []admission.ClaimKind{admission.ClaimAccount, admission.ClaimMailbox}, Attribution: mintsPeer},
 		admission.ParserRef{Name: "exim", Version: 1}},
 	{admission.ProducerSpec{ID: ProducerMailLog, Entry: admission.EntryScan, Observation: admission.ObservationLogCursor,
 		Checks: []string{"mail_bruteforce", "mail_subnet_spray", "mail_account_compromised", "smtp_bruteforce"},
-		Claims: []admission.ClaimKind{admission.ClaimAccount, admission.ClaimMailbox}},
+		Claims: []admission.ClaimKind{admission.ClaimAccount, admission.ClaimMailbox}, Attribution: mintsPeer},
 		admission.ParserRef{Name: "dovecot", Version: 1}},
 	{admission.ProducerSpec{ID: ProducerAccessLog, Entry: admission.EntryScan, Observation: admission.ObservationLogCursor,
-		Checks: []string{"wp_login_bruteforce", "xmlrpc_abuse", "admin_panel_bruteforce"}},
+		Checks: []string{"wp_login_bruteforce", "xmlrpc_abuse", "admin_panel_bruteforce"}, Attribution: mintsHTTPPeer},
 		admission.ParserRef{Name: "access_log", Version: 1}},
 	{admission.ProducerSpec{ID: ProducerDomlogScan, Entry: admission.EntryScan, Observation: admission.ObservationScanPass,
 		Checks: []string{"wp_login_bruteforce", "xmlrpc_abuse", "wp_user_enumeration", "http_request_flood", "http_ua_spoof",
 			"http_scanner_profile", "http_claimed_bot_unverified", "http_asn_crawl"},
-		Claims: []admission.ClaimKind{admission.ClaimDomain}},
+		Claims: []admission.ClaimKind{admission.ClaimDomain}, Attribution: mintsHTTPPeer},
 		admission.ParserRef{Name: "access_log", Version: 1}},
 	{admission.ProducerSpec{ID: ProducerModSecLog, Entry: admission.EntryScan, Observation: admission.ObservationLogCursor,
-		Checks: []string{"modsec_block_escalation", "modsec_csm_block_escalation"}, Claims: []admission.ClaimKind{admission.ClaimRequestName}},
+		Checks: []string{"modsec_block_escalation", "modsec_csm_block_escalation"}, Claims: []admission.ClaimKind{admission.ClaimRequestName}, Attribution: mintsHTTPPeer},
 		admission.ParserRef{Name: "modsec", Version: 1}},
 	{admission.ProducerSpec{ID: ProducerModSecAuditScan, Entry: admission.EntryScan, Observation: admission.ObservationScanPass,
-		Checks: []string{"waf_attack_blocked"}},
+		Checks: []string{"waf_attack_blocked"}, Attribution: mintsHTTPPeer},
 		admission.ParserRef{Name: "modsec_audit", Version: 1}},
 	{admission.ProducerSpec{ID: ProducerCpanelAccessLog, Entry: admission.EntryScan, Observation: admission.ObservationLogCursor,
-		Checks: []string{"api_auth_failure_realtime"}},
+		Checks: []string{"api_auth_failure_realtime"}, Attribution: mintsPeer},
 		admission.ParserRef{Name: "cpsrvd", Version: 1}},
 	{admission.ProducerSpec{ID: ProducerCpanelScan, Entry: admission.EntryScan, Observation: admission.ObservationScanPass,
-		Checks: []string{"api_auth_failure", "webmail_bruteforce"}},
+		Checks: []string{"api_auth_failure", "webmail_bruteforce"}, Attribution: mintsPeer},
 		admission.ParserRef{Name: "cpsrvd", Version: 1}},
 	{admission.ProducerSpec{ID: ProducerReputationScan, Entry: admission.EntryScan, Observation: admission.ObservationScanPass,
-		Checks: []string{"ip_reputation"}},
+		Checks: []string{"ip_reputation"}, Attribution: mintsDerived},
 		admission.ParserRef{Name: "reputation", Version: 1}},
 	{admission.ProducerSpec{ID: ProducerConnectionScan, Entry: admission.EntryScan, Observation: admission.ObservationScanPass,
-		Checks: []string{"c2_connection"}},
+		Checks: []string{"c2_connection"}, Attribution: mintsDestination},
 		admission.ParserRef{Name: "proc_net_tcp", Version: 1}},
 	{admission.ProducerSpec{ID: ProducerPHPRelaySpool, Entry: admission.EntryScan, Observation: admission.ObservationEventSeq,
+		// The client address is PHP's REMOTE_ADDR as written into a mail
+		// header any local account can forge: no socket CSM observed, so no
+		// attribution kind (spec 5.8), and its findings mint nothing.
 		Checks: []string{"email_php_form_relay"}},
 		admission.ParserRef{Name: "exim_spool", Version: 1}},
 }

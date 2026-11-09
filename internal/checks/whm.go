@@ -170,6 +170,8 @@ func SSHAcceptedLoginFinding(line string, cfg *config.Config) (alert.Finding, bo
 		Details:  truncateString(line, 200),
 		SourceIP: ip,
 		TenantID: tenant,
+		// sshd's "from <ip> port" field is the transport peer.
+		Attribution: admission.AttributionPeer,
 	}
 	if tenant != "" {
 		f.Claims = []admission.Claim{{Kind: admission.ClaimAccount, Value: tenant}}

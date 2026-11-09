@@ -186,7 +186,7 @@ func (d *Daemon) planCentralAction(store *reporting.CentralStore, action reporti
 	if dec == reporting.DecisionIgnore {
 		return centralQueuedAction{}, false
 	}
-	root, rootErr := checks.PrepareAdmissionRoot(f, ip)
+	root, rootErr := checks.PrepareAdmissionRoot(f)
 	return centralQueuedAction{decision: dec, ip: ip, findingID: alert.FindingID(f), root: root, rootFinding: f, rootErr: rootErr}, true
 }
 
@@ -201,7 +201,7 @@ func (d *Daemon) performCentralAction(a centralQueuedAction) error {
 	switch a.decision {
 	case reporting.DecisionChallenge:
 		if d.ipList != nil {
-			checks.AnswerPreparedRoot(admission.KindChallenge, a.root, admission.EntryCentral, a.rootFinding, a.rootErr, centralChallengeTTL)
+			checks.AnswerPreparedRoot(admission.KindChallenge, a.ip, a.root, admission.EntryCentral, a.rootFinding, a.rootErr, centralChallengeTTL)
 			d.ipList.AddNonEscalating(a.ip, "central-intel", centralChallengeTTL)
 		}
 	case reporting.DecisionBlock:

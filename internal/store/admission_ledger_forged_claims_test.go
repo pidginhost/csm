@@ -27,7 +27,7 @@ func TestAdmissionLedgerForgedClaimsShareOneScope(t *testing.T) {
 		}
 		target := fmt.Sprintf("192.0.2.%d", 20+i)
 		e, err := producer.Mint(admission.EvidenceInput{
-			Check: check, FindingID: "0123456789abcdef", Severity: admission.SeverityCritical,
+			Check: check, FindingID: "0123456789abcdef", Severity: admission.SeverityCritical, Attribution: ledgerKind(check),
 			Observation: admission.ObservationRef{Stream: "log:" + string(producer.ID()), Cursor: fmt.Sprintf("forged=%d", i), Version: 1},
 			ObservedAt:  f.wall, Parser: admission.ParserRef{Name: "fixture", Version: 1}, Target: f.target(target),
 			Claims:    []admission.Claim{{Kind: admission.ClaimAccount, Value: fmt.Sprintf("ghost%d", i)}},

@@ -196,6 +196,58 @@ func TestAdmissionSummaryRows(t *testing.T) {
 	}
 }
 
+// An attribution refusal summary keeps its cause, from the ledger's fixed
+// vocabulary, as a typed field beside the refusal; no other row has one.
+func TestAdmissionAttributionSummaryRows(t *testing.T) {
+	a := NewAnonymizer(testSalt())
+	for c := admission.Cause(1); c.Valid(); c++ {
+		r := summaryRow(actionlog.Refused, "attribution")
+		r.Cause = c.String()
+		out, err := a.Action(r)
+		if err != nil {
+			t.Fatalf("%s: %v", c, err)
+		}
+		got, _ := marshalMap(t, out)
+		if got["cause"] != c.String() || got["refusal"] != "attribution" || got["has_error"] != true {
+			t.Errorf("%s summary -> %v", c, got)
+		}
+		if err = a.VerifyAction(out); err != nil {
+			t.Errorf("%s: verifier refused %+v: %v", c, out, err)
+		}
+	}
+	// A row written before causes existed still converts.
+	if out, err := a.Action(summaryRow(actionlog.Refused, "attribution")); err != nil || out.Cause != "" || a.VerifyAction(out) != nil {
+		t.Fatalf("attribution row without a cause: %+v %v", out, err)
+	}
+	for name, mutate := range map[string]func(*actionlog.Record){
+		"unknown cause":     func(r *actionlog.Record) { r.Cause = "spoofed" },
+		"free cause":        func(r *actionlog.Record) { r.Cause = "target 203.0.113.9" },
+		"cause on policy":   func(r *actionlog.Record) { r.Error = "policy" },
+		"cause on queued":   func(r *actionlog.Record) { r.Result, r.Error = "queued", "" },
+		"cause on dry runs": func(r *actionlog.Record) { r.Result, r.Error, r.Prediction = "dry_run", "", "capacity_admit" },
+	} {
+		r := summaryRow(actionlog.Refused, "attribution")
+		r.Cause = "kind_not_allowed"
+		mutate(&r)
+		if _, err := NewAnonymizer(testSalt()).Action(r); err == nil {
+			t.Errorf("%s: accepted %+v", name, r)
+		}
+	}
+	step := fullRecord()
+	step.Cause = "kind_not_allowed"
+	if _, err := NewAnonymizer(testSalt()).Action(step); err == nil {
+		t.Error("a cause on a row that is no summary was accepted")
+	}
+	out, err := a.Action(summaryRow(actionlog.Refused, "attribution"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out.Cause = "spoofed"
+	if a.VerifyAction(out) == nil {
+		t.Error("the verifier accepted an unknown cause")
+	}
+}
+
 // A dry-run summary keeps its prediction, from the forecast's fixed
 // vocabulary, as a typed field beside the decision; it is not a refusal.
 func TestAdmissionDryRunSummaryRows(t *testing.T) {

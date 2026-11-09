@@ -26,7 +26,7 @@ func claimProducer(t *testing.T, kinds ...ClaimKind) *Producer {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := reg.Register(ProducerSpec{ID: "claims", Entry: EntryScan, Observation: ObservationLogCursor, Checks: []string{"ssh_brute"}, Claims: kinds})
+	p, err := reg.Register(ProducerSpec{ID: "claims", Entry: EntryScan, Observation: ObservationLogCursor, Checks: []string{"ssh_brute"}, Claims: kinds, Attribution: Attributions(testKind("ssh_brute"))})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +37,7 @@ func claimProducer(t *testing.T, kinds ...ClaimKind) *Producer {
 // is a set of known kinds, stored sorted.
 func TestRegisterValidatesClaimKinds(t *testing.T) {
 	reg, _ := NewRegistry(testLookup)
-	p, err := reg.Register(ProducerSpec{ID: "domains", Entry: EntryScan, Observation: ObservationLogCursor, Checks: []string{"http_scan"}, Claims: []ClaimKind{ClaimRequestName, ClaimDomain}})
+	p, err := reg.Register(ProducerSpec{ID: "domains", Entry: EntryScan, Observation: ObservationLogCursor, Checks: []string{"http_scan"}, Claims: []ClaimKind{ClaimRequestName, ClaimDomain}, Attribution: Attributions(testKind("http_scan"))})
 	if err != nil {
 		t.Fatal(err)
 	}

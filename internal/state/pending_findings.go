@@ -28,6 +28,8 @@ type pendingFinding struct {
 	ResponseSprayTargets []string           `json:"response_spray_targets,omitempty"`
 	ResponseClaims       []admission.Claim  `json:"response_claims,omitempty"`
 	ResponseObservation  *alert.Observation `json:"response_observation,omitempty"`
+	// ResponseAttribution keeps how the parser read the address.
+	ResponseAttribution admission.Attribution `json:"response_attribution,omitempty"`
 	// ResponseSprayConstituents keeps the addresses a spray counted.
 	ResponseSprayConstituents []alert.SprayConstituent `json:"response_spray_constituents,omitempty"`
 	// ResponseIntel keeps the intel a reputation finding rests on.
@@ -48,7 +50,7 @@ func toPendingRecords(findings []alert.Finding) []pendingFinding {
 	for i, f := range findings {
 		records[i] = pendingFinding{Finding: f, ResponseCIDRs: f.CIDRs, ResponseSprayTargets: f.SprayTargets, ResponseClaims: f.Claims,
 			ResponseSprayConstituents: f.SprayConstituents, ResponseCause: f.Cause, ResponseMailLoginFailure: f.MailLoginFailure,
-			ResponseBlockTTL: f.BlockTTL, ResponseLoginAccount: f.LoginAccount}
+			ResponseBlockTTL: f.BlockTTL, ResponseLoginAccount: f.LoginAccount, ResponseAttribution: f.Attribution}
 		// An unencodable expiry costs only its intel, not the whole batch.
 		if f.Intel != nil {
 			if _, err := f.Intel.Expires.MarshalJSON(); err == nil {
@@ -83,6 +85,7 @@ func fromPendingRecords(records []pendingFinding) []alert.Finding {
 		findings[i].MailLoginFailure = r.ResponseMailLoginFailure
 		findings[i].BlockTTL = r.ResponseBlockTTL
 		findings[i].LoginAccount = r.ResponseLoginAccount
+		findings[i].Attribution = r.ResponseAttribution
 		if r.ResponseObservation != nil {
 			findings[i].Observation = *r.ResponseObservation
 		}

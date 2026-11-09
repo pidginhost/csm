@@ -24,19 +24,25 @@ func withTestRegistryBasis(t testing.TB, basis admission.Basis) *admission.Produ
 	t.Helper()
 	reg, err := admission.NewRegistry(func(check string) (string, admission.Policy, bool) {
 		if check == "ssh_brute" {
-			return check, admission.Policy{Family: admission.FamilySSH, Basis: basis}, true
+			return check, admission.Policy{Family: admission.FamilySSH, Basis: basis, Attribution: admission.Attributions(admission.AttributionPeer)}, true
 		}
 		return "", admission.Policy{}, false
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := reg.Register(admission.ProducerSpec{ID: "sshd_log", Entry: admission.EntryScan, Observation: admission.ObservationLogCursor, Checks: []string{"ssh_brute"}, Claims: []admission.ClaimKind{admission.ClaimAccount}})
+	p, err := reg.Register(admission.ProducerSpec{ID: "sshd_log", Entry: admission.EntryScan, Observation: admission.ObservationLogCursor, Checks: []string{"ssh_brute"},
+		Claims: []admission.ClaimKind{admission.ClaimAccount}, Attribution: admission.Attributions(admission.AttributionPeer)})
 	if err != nil {
 		t.Fatal(err)
 	}
 	incident, err := reg.Register(admission.ProducerSpec{ID: "incident", Entry: admission.EntryIncident, Observation: admission.ObservationEventSeq, Checks: []string{"ssh_brute"}})
 	if err != nil {
+		t.Fatal(err)
+	}
+	// Range fixtures wrap the same check but must use a range entry.
+	if _, err = reg.Register(admission.ProducerSpec{ID: "mail_subnet", Entry: admission.EntryMailSubnet,
+		Observation: admission.ObservationLogCursor, Checks: []string{"ssh_brute"}}); err != nil {
 		t.Fatal(err)
 	}
 	reg.Seal()
@@ -85,7 +91,7 @@ func queuedTarget(t testing.TB, o *Owner, p *admission.Producer, host *fakeHost,
 			return err
 		}
 		e, err := p.Mint(admission.EvidenceInput{
-			Check: "ssh_brute", FindingID: "0123456789abcdef", Severity: sev,
+			Check: "ssh_brute", Attribution: admission.AttributionPeer, FindingID: "0123456789abcdef", Severity: sev,
 			Observation: admission.ObservationRef{Stream: "log:sshd_log", Cursor: cursorFor(addr), Version: 1},
 			ObservedAt:  now, Parser: admission.ParserRef{Name: "sshd", Version: 1}, Target: target,
 		})
@@ -99,7 +105,11 @@ func queuedTarget(t testing.TB, o *Owner, p *admission.Producer, host *fakeHost,
 		if err != nil {
 			return err
 		}
-		c, _, err := o.ledger.Enqueue(admission.CandidateRequest{Kind: kind, Target: candidate, Episode: ep, Generation: 1, Primary: e.ID()})
+		var entry admission.Entry
+		if kind == admission.KindBlockSubnet {
+			entry = admission.EntryMailSubnet
+		}
+		c, _, err := o.ledger.Enqueue(admission.CandidateRequest{Kind: kind, Target: candidate, Episode: ep, Generation: 1, Primary: e.ID(), Entry: entry})
 		if err != nil {
 			return err
 		}
@@ -320,7 +330,7 @@ func TestOwnerPublishesFreshSnapshots(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			e, err := p.Mint(admission.EvidenceInput{Check: "ssh_brute", FindingID: "0123456789abcdef", Severity: admission.SeverityHigh,
+			e, err := p.Mint(admission.EvidenceInput{Check: "ssh_brute", Attribution: admission.AttributionPeer, FindingID: "0123456789abcdef", Severity: admission.SeverityHigh,
 				Observation: admission.ObservationRef{Stream: "fixture", Cursor: "1", Version: 1}, ObservedAt: f.host.wall,
 				Parser: admission.ParserRef{Name: "fixture", Version: 1}, Target: target})
 			if err != nil {

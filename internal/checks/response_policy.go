@@ -96,6 +96,10 @@ type ResponsePolicy struct {
 	// Basis is the priority class the check's own evidence supports.
 	// BasisCompromise is reserved for the reviewed compromise checks.
 	Basis admission.Basis
+	// Attribution is the set of kinds the check accepts its address from
+	// (spec 5.8): only kinds its evidence family can be read by. Every check
+	// with an evidence family names at least one.
+	Attribution admission.AttributionSet
 	// Subnet names the subnet response the check feeds: the mail subnet
 	// spray block or the crawl tempban. A subnet summary never authorizes
 	// a single-address block.
@@ -142,6 +146,14 @@ func validateResponsePolicy(entries []CheckInfo) error {
 		}
 		if err := admission.ValidPolicy(p.Evidence, p.Basis); err != nil {
 			return fmt.Errorf("check %q: %w", c.Name, err)
+		}
+		switch {
+		case !p.Attribution.Valid():
+			return fmt.Errorf("check %q accepts an unknown attribution kind", c.Name)
+		case (p.Evidence == admission.FamilyNone) != (p.Attribution == 0):
+			return fmt.Errorf("check %q must accept an attribution exactly when it has an evidence family", c.Name)
+		case !p.Attribution.Within(p.Evidence.Attributions()):
+			return fmt.Errorf("check %q accepts an attribution its evidence family cannot carry", c.Name)
 		}
 		if (p.Block != BlockNever || p.ChallengeFirst || p.Subnet != 0) && p.Evidence == admission.FamilyNone {
 			return fmt.Errorf("check %q can drive a response but has no evidence family", c.Name)
@@ -210,7 +222,7 @@ func AdmissionPolicy(check string) (string, admission.Policy, bool) {
 		return "", admission.Policy{}, false
 	}
 	p := ResponsePolicyFor(name)
-	pol := admission.Policy{Family: p.Evidence, Basis: p.Basis}
+	pol := admission.Policy{Family: p.Evidence, Basis: p.Basis, Attribution: p.Attribution}
 	if p.CriticalOnly {
 		pol.MinSeverity = admission.SeverityCritical
 	}

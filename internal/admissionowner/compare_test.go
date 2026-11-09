@@ -63,17 +63,17 @@ func TestOwnerWritesHourlyDecisionCounts(t *testing.T) {
 	opts.WriteAudit = sink.write
 	o := f.start(opts)
 	for _, cursor := range []string{"offset=1", "offset=2"} {
-		e, err := o.Mint(sshFinding(f.host.now(), cursor, alert.High), "192.0.2.10")
+		e, err := o.Mint(sshFinding(f.host.now(), cursor, alert.High))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err = o.Respond(admission.KindBlockIP, e, 0); err != nil {
+		if err = o.Respond(admission.KindBlockIP, targetOf(e), e, 0); err != nil {
 			t.Fatal(err)
 		}
 	}
 	bad := sshFinding(f.host.now(), "offset=3", alert.Critical)
 	bad.Observation = alert.Observation{}
-	_, err := o.Mint(bad, "192.0.2.11")
+	_, err := o.Mint(bad)
 	o.Refuse(admission.KindBlockIP, bad, admission.EntryIncident, err)
 	if err = o.do(o.drain); err != nil {
 		t.Fatal(err)
@@ -111,7 +111,7 @@ func TestOwnerKeepsDecisionCountsUntilWritten(t *testing.T) {
 	o := f.start(opts)
 	bad := sshFinding(f.host.now(), "offset=1", alert.High)
 	bad.Observation = alert.Observation{}
-	_, mintErr := o.Mint(bad, "192.0.2.11")
+	_, mintErr := o.Mint(bad)
 	o.Refuse(admission.KindChallenge, bad, 0, mintErr)
 	f.host.advance(time.Hour)
 	if err := o.do(o.tick); err != nil {
@@ -246,11 +246,11 @@ func TestDecisionCountsIncludeLifetimeRefusals(t *testing.T) {
 	opts.WriteAudit = sink.write
 	comparisonClock(t, f.host.now)
 	o := f.start(opts)
-	root, err := o.Mint(sshFinding(f.host.now(), "offset=1", alert.High), "192.0.2.10")
+	root, err := o.Mint(sshFinding(f.host.now(), "offset=1", alert.High))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := o.Respond(admission.KindBlockIP, root, 0, time.Hour, 2*time.Hour); err == nil {
+	if err := o.Respond(admission.KindBlockIP, targetOf(root), root, 0, time.Hour, 2*time.Hour); err == nil {
 		t.Fatal("several lifetimes accepted")
 	}
 	if err := o.do(func() error { o.writeComparison(true); return nil }); err != nil {
@@ -316,11 +316,13 @@ func TestDecisionCountsIncludeContainmentRefusals(t *testing.T) {
 	opts.WriteAudit = sink.write
 	comparisonClock(t, f.host.now)
 	o := f.start(opts)
-	root, err := o.Mint(sshFinding(f.host.now(), "offset=1", alert.High), "2001:db8::10")
+	v6 := sshFinding(f.host.now(), "offset=1", alert.High)
+	v6.SourceIP = "2001:db8::10"
+	root, err := o.Mint(v6)
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = o.Respond(admission.KindBlockIP, root, admission.EntryChallengeTimeout)
+	err = o.Respond(admission.KindBlockIP, targetOf(root), root, admission.EntryChallengeTimeout)
 	if reason, ok := admission.ReasonOf(err); !ok || reason != admission.ReasonUnsupportedContainment {
 		t.Fatalf("missing containment refusal: %v", err)
 	}
@@ -343,22 +345,22 @@ func TestDecisionCountsIncludeMemoryMerges(t *testing.T) {
 			o := f.start(opts)
 			finding := sshFinding(f.host.now(), "offset=one-observation", alert.High)
 			finding.SourceIP = "192.0.2.66"
-			first, err := o.Mint(finding, finding.SourceIP)
+			first, err := o.Mint(finding)
 			if err != nil {
 				t.Fatal(err)
 			}
 			finding.Message = "Another report of the same observation"
-			second, err := o.Mint(finding, finding.SourceIP)
+			second, err := o.Mint(finding)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if first.ID() != second.ID() || first.FindingID() == second.FindingID() || !first.SameExceptFinding(second) {
 				t.Fatal("fixture does not remint one observation under another finding")
 			}
-			if err := o.Respond(admission.KindBlockIP, first, 0); err != nil {
+			if err := o.Respond(admission.KindBlockIP, targetOf(first), first, 0); err != nil {
 				t.Fatal(err)
 			}
-			if err := o.Respond(admission.KindBlockIP, second, 0); err != nil {
+			if err := o.Respond(admission.KindBlockIP, targetOf(second), second, 0); err != nil {
 				t.Fatal(err)
 			}
 			previous := drainGroupOf
@@ -370,12 +372,12 @@ func TestDecisionCountsIncludeMemoryMerges(t *testing.T) {
 					if outcome != "same finding during commit" {
 						finding.Message = "A later report of the same observation"
 						var err error
-						third, err = o.Mint(finding, finding.SourceIP)
+						third, err = o.Mint(finding)
 						if err != nil {
 							return admission.DrainReport{}, err
 						}
 					}
-					if err := o.Respond(admission.KindBlockIP, third, 0); err != nil {
+					if err := o.Respond(admission.KindBlockIP, targetOf(third), third, 0); err != nil {
 						return admission.DrainReport{}, err
 					}
 				}
@@ -409,7 +411,15 @@ func TestDecisionCountsIncludeMemoryMerges(t *testing.T) {
 				want[0] = "2026-10-04T13:00:00Z block_ip unknown scan coalesced  2"
 			}
 			if outcome == "refused" {
-				want = []string{"2026-10-04T13:00:00Z block_ip unknown scan refused invalid 2"}
+				// The ledger binds the moved target as the ingress does.
+				want = []string{"2026-10-04T13:00:00Z block_ip unknown scan refused attribution 2"}
+				sink.mu.Lock()
+				for _, r := range sink.recs {
+					if r.Count > 0 && r.Cause != "target_mismatch" {
+						t.Errorf("refusal row cause %q, want target_mismatch", r.Cause)
+					}
+				}
+				sink.mu.Unlock()
 			}
 			if outcome == "damaged" {
 				want = []string{"2026-10-04T13:00:00Z block_ip unknown scan refused invalid 3"}
@@ -483,5 +493,43 @@ func TestOwnerCountsDryRunEndingsByPrediction(t *testing.T) {
 		if r.Result != "dry_run" && r.Prediction != "" {
 			t.Fatalf("a %s row names a prediction: %+v", r.Result, r)
 		}
+	}
+}
+
+// An attribution refusal's hourly row names its cause, so the comparison
+// separates findings no producer stamped from kinds the check refuses. Other
+// refusals name none.
+func TestOwnerHourlyRefusalsNameTheAttributionCause(t *testing.T) {
+	withTestRegistry(t)
+	f := newOwnerFixture(t)
+	comparisonClock(t, f.host.now)
+	sink := &actionSink{}
+	opts := respondOptions(f)
+	opts.WriteAudit = sink.write
+	o := f.start(opts)
+	unstamped := sshFinding(f.host.now(), "offset=1", alert.High)
+	unstamped.Observation = alert.Observation{}
+	unvouched := sshFinding(f.host.now(), "offset=2", alert.High)
+	unvouched.Attribution = admission.AttributionUnknown
+	for _, bad := range []alert.Finding{unstamped, unvouched, unvouched} {
+		_, err := o.Mint(bad)
+		o.Refuse(admission.KindBlockIP, bad, 0, err)
+	}
+	o.Refuse(admission.KindBlockIP, sshFinding(f.host.now(), "offset=3", alert.High), 0, &admission.Error{Reason: admission.ReasonPolicy, Detail: "x"})
+	f.host.advance(time.Hour)
+	if err := o.do(o.tick); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]uint64{}
+	sink.mu.Lock()
+	for _, r := range sink.recs {
+		if r.Count > 0 {
+			got[r.Error+"/"+r.Cause] += r.Count
+		}
+	}
+	sink.mu.Unlock()
+	want := map[string]uint64{"attribution/no_observation": 1, "attribution/kind_not_allowed": 2, "policy/": 1}
+	if !maps.Equal(got, want) {
+		t.Fatalf("rows by reason and cause %v, want %v", got, want)
 	}
 }

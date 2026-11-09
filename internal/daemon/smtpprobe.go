@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/eximlog"
@@ -141,9 +142,10 @@ func (t *smtpProbeTracker) Record(ip string) []alert.Finding {
 			Check:    "smtp_probe_abuse",
 			Message: fmt.Sprintf("SMTP probe abuse from %s: %d connections in %v",
 				ip, len(e.times), t.window),
-			Details:   details,
-			Timestamp: now,
-			SourceIP:  ip,
+			Details:     details,
+			Timestamp:   now,
+			SourceIP:    ip,
+			Attribution: admission.AttributionPeer,
 			// The connection count grows while one scanner keeps probing.
 			DedupKey: ip,
 		})

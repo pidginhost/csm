@@ -116,7 +116,7 @@ func TestPAMAndFTPServiceFailuresStayOneFamily(t *testing.T) {
 			sev = admission.SeverityCritical
 		}
 		e, mintErr := prod.Mint(admission.EvidenceInput{
-			Check: f.Check, FindingID: "0123456789abcdef", Severity: sev,
+			Check: f.Check, FindingID: "0123456789abcdef", Severity: sev, Attribution: f.Attribution,
 			Observation: admission.ObservationRef{Stream: "fixture-" + f.Check, Cursor: string(rune('a' + i)), Version: 1},
 			ObservedAt:  observed, Parser: admission.ParserRef{Name: "fixture", Version: 1}, Target: target,
 		})

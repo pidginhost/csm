@@ -106,3 +106,33 @@ func TestProducerTableDeclaresExactClaimKinds(t *testing.T) {
 		}
 	}
 }
+
+// A producer declares exactly the attribution kinds its parser reads. Only
+// the HTTP resolver of plan 2.1c may add trusted chains.
+func TestProducerTableDeclaresExactAttribution(t *testing.T) {
+	peer, http := admission.Attributions(admission.AttributionPeer), admission.Attributions(admission.AttributionHTTPPeer)
+	want := map[admission.ProducerID]admission.AttributionSet{
+		ProducerSSHLog: peer, ProducerSSHLoginScan: peer, ProducerPAMSocket: peer,
+		ProducerFTPLog: peer, ProducerFTPScan: peer, ProducerEximLog: peer, ProducerEximHistory: peer,
+		ProducerMailLog: peer, ProducerCpanelAccessLog: peer, ProducerCpanelScan: peer,
+		ProducerAccessLog: http, ProducerDomlogScan: http, ProducerModSecLog: http,
+		ProducerModSecAuditScan: http,
+		// A header any local account writes names the client: no kind.
+		ProducerPHPRelaySpool:  0,
+		ProducerReputationScan: admission.Attributions(admission.AttributionDerived),
+		ProducerConnectionScan: admission.Attributions(admission.AttributionSocketDestination),
+	}
+	for _, p := range ProducerTable() {
+		if got := p.Spec.Attribution; got != want[p.Spec.ID] {
+			t.Errorf("%s declares %b, want %b", p.Spec.ID, got, want[p.Spec.ID])
+		}
+	}
+	if len(ProducerTable()) != len(want) {
+		t.Errorf("table lists %d producers, want %d", len(ProducerTable()), len(want))
+	}
+	for _, d := range DerivedEntries() {
+		if d.Attribution != 0 {
+			t.Errorf("derived entry %s declares %b; it mints nothing", d.ID, d.Attribution)
+		}
+	}
+}
