@@ -69,6 +69,11 @@ cancellation does not prove recovery. Disabling a scanner clears its current cov
 Existing per-install database limit acknowledgments are kept
 when a partial scan cannot inspect those installations.
 
+JavaScript scans bound the paths retained for coverage gaps. If that list is
+truncated, the coverage warning says so and still counts every analysis failure.
+The scan keeps all earlier JavaScript detections and can report new ones. A later
+complete scan can clear findings for content it has examined or that is gone.
+
 PHP analyzer crashes and stalls are tracked by the failing file paths, contents,
 and failure statuses, including files outside the displayed examples. Different
 failing inputs can therefore alert even after an earlier failure was dismissed.
