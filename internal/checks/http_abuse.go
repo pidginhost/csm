@@ -261,9 +261,9 @@ func (s *domlogStats) scan(rec accessLogRecord, cfg *config.Config, bot botClass
 		return
 	}
 	// The record the counters below name. Its address is the HTTP peer only
-	// when no forwarded header supplied it and the peer is not a trusted
-	// proxy: a proxy's own requests without a usable header are its clients'.
-	direct := !forwarded && (cfg == nil || !IsTrustedProxy(rec.RemoteIP, cfg.WebServer.TrustedProxies))
+	// when no forwarded header supplied it and the normalized address is not
+	// a trusted proxy: brackets or ports in a log must not bypass that check.
+	direct := !forwarded && (cfg == nil || !IsTrustedProxy(ip, cfg.WebServer.TrustedProxies))
 	var r scanRecord
 	if rec.ref.stream != "" {
 		r = scanned(rec.ref, rec.Time)
