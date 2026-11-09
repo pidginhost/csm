@@ -43,6 +43,9 @@ type accessLogRecord struct {
 	Central bool
 	// proxyPath is classified before the URI is truncated for aggregation.
 	proxyPath bool
+	// ref is the log record the line was read from; zero when the caller
+	// read no file.
+	ref syslogRecord
 }
 
 // uaKind is the User-Agent classification produced by classifyUA and
@@ -148,6 +151,13 @@ type domlogStats struct {
 	// observeASNCrawl from scan(); read by emitASNCrawl. Lazily allocated.
 	asnCrawl map[string]*asnCrawlScope
 
+	// newest is each address's newest record that counted toward a finding,
+	// by finding check (or User-Agent kind), so the finding names it.
+	newest map[string]map[string]scanRecord
+	// forwarded marks, by the same key, the addresses a forwarded header
+	// supplied for any counted record: such a count is not the HTTP peer's.
+	forwarded map[string]map[string]bool
+
 	// Scanner thresholds are derived from cfg once per scan -- cfg is stable
 	// across a single domlogStats lifetime -- instead of on every parsed record.
 	scannerThreshComputed bool
@@ -177,8 +187,56 @@ func newDomlogStatsAt(t time.Time) *domlogStats {
 		scannerSamples:    make(map[string]httpSample),
 		scannerDomainReqs: make(map[string]int),
 		scannerDomainErr:  make(map[string]map[string]int),
+		newest:            make(map[string]map[string]scanRecord),
 		scanTime:          t,
 	}
+}
+
+// uaObservationKey names the newest-record slot of a User-Agent kind.
+func uaObservationKey(kind uaKind) string { return "ua:" + itoa(int(kind)) }
+
+// markForwarded notes, for key, a counted record whose address a forwarded
+// header supplied. Every record that decides a finding is marked, whether
+// or not it can be the finding's observation.
+func (s *domlogStats) markForwarded(key, ip string, direct bool) {
+	if direct {
+		return
+	}
+	if s.forwarded == nil {
+		s.forwarded = make(map[string]map[string]bool)
+	}
+	if s.forwarded[key] == nil {
+		s.forwarded[key] = make(map[string]bool)
+	}
+	s.forwarded[key][ip] = true
+}
+
+// observe keeps r as ip's newest record for key, and notes a record whose
+// address a forwarded header supplied.
+func (s *domlogStats) observe(key, ip string, r scanRecord, direct bool) {
+	s.markForwarded(key, ip, direct)
+	if r.at.IsZero() {
+		return
+	}
+	if s.newest == nil {
+		s.newest = make(map[string]map[string]scanRecord)
+	}
+	m := s.newest[key]
+	if m == nil {
+		m = make(map[string]scanRecord)
+		s.newest[key] = m
+	}
+	keepNewest(m, ip, r, s.scanTime)
+}
+
+// stamp names the newest record of f's address kept under key as f's
+// observation, read as the HTTP peer only when every counted record was.
+func (s *domlogStats) stamp(f *alert.Finding, key string) {
+	r := s.newest[key][f.SourceIP]
+	if s.forwarded[key][f.SourceIP] {
+		r.kind = admission.AttributionUnknown
+	}
+	r.stamp(f, ProducerDomlogScan)
 }
 
 // scan updates counters for one parsed record. cfg is allowed to be nil
@@ -190,7 +248,8 @@ func (s *domlogStats) scan(rec accessLogRecord, cfg *config.Config, bot botClass
 	if rec.Central && rec.proxyPath {
 		return
 	}
-	ip := normalizeHTTPClientIP(clientIPForRecord(rec, cfg))
+	selected, forwarded := clientIPForRecord(rec, cfg)
+	ip := normalizeHTTPClientIP(selected)
 	if ip == "" {
 		return
 	}
@@ -201,6 +260,16 @@ func (s *domlogStats) scan(rec accessLogRecord, cfg *config.Config, bot botClass
 		removeChallengeIP(ip)
 		return
 	}
+	// The record the counters below name. Its address is the HTTP peer only
+	// when no forwarded header supplied it.
+	direct := !forwarded
+	var r scanRecord
+	if rec.ref.stream != "" {
+		r = scanned(rec.ref, rec.Time)
+		if direct {
+			r.kind = admission.AttributionHTTPPeer
+		}
+	}
 
 	wpLoginHit := rec.Method == "POST" && strings.Contains(rec.URI, "wp-login.php")
 	xmlrpcHit := rec.Method == "POST" && strings.Contains(rec.URI, "xmlrpc.php")
@@ -208,9 +277,11 @@ func (s *domlogStats) scan(rec accessLogRecord, cfg *config.Config, bot botClass
 	if rec.Method == "POST" {
 		if wpLoginHit {
 			s.wpLogin[ip]++
+			s.observe("wp_login_bruteforce", ip, r, direct)
 		}
 		if xmlrpcHit {
 			s.xmlrpc[ip]++
+			s.observe("xmlrpc_abuse", ip, r, direct)
 		}
 	}
 	if strings.Contains(rec.URI, "?author=") {
@@ -220,6 +291,9 @@ func (s *domlogStats) scan(rec accessLogRecord, cfg *config.Config, bot botClass
 		!strings.Contains(rec.URI, "/users/me") {
 		s.userEnum[ip]++
 		userEnumHit = true
+	}
+	if userEnumHit {
+		s.observe("wp_user_enumeration", ip, r, direct)
 	}
 
 	// Rate and UA counters only fire for requests that fall inside the
@@ -248,6 +322,10 @@ func (s *domlogStats) scan(rec accessLogRecord, cfg *config.Config, bot botClass
 			s.samples[ip] = httpSample{Method: rec.Method, URI: rec.URI, UA: rec.UserAgent}
 		}
 		s.httpReqs[ip]++
+		s.observe("http_request_flood", ip, r, direct)
+		// Every in-window request decides a pending claimed bot: its
+		// majority and its flood or scanner gate, whatever its User-Agent.
+		s.markForwarded(uaObservationKey(uaKindClaimedBotPending), ip, direct)
 
 		_, _, _, scannerEnabled := s.scannerThresholds(cfg)
 		// Static display assets (images, styles, scripts, fonts, media)
@@ -259,12 +337,15 @@ func (s *domlogStats) scan(rec accessLogRecord, cfg *config.Config, bot botClass
 		// blinding the profile to real probes in the same window.
 		if scannerEnabled && !isDisplayAssetProbe(rec.URI) {
 			s.scannerReqs[ip]++
+			// The whole denominator decides the profile, not only errors.
+			s.markForwarded("http_scanner_profile", ip, direct)
 			if rec.Domain != "" {
 				s.recordScannerDomainRequest(ip, rec.Domain)
 			}
 			if isScannerErrorStatus(rec.Status, cfg.Thresholds.HTTPScannerStatusCodes) {
 				path := probePath(rec.URI)
 				s.scannerErr[ip]++
+				s.observe("http_scanner_profile", ip, r, direct)
 				if _, ok := s.scannerSamples[ip]; !ok {
 					s.scannerSamples[ip] = httpSample{Method: rec.Method, URI: rec.URI, UA: rec.UserAgent}
 				}
@@ -307,6 +388,7 @@ func (s *domlogStats) scan(rec accessLogRecord, cfg *config.Config, bot botClass
 			s.uaCat[ip] = make(map[uaKind]int)
 		}
 		s.uaCat[ip][kind]++
+		s.observe(uaObservationKey(kind), ip, r, direct)
 		if rec.Domain != "" && kind != uaKindBrowser && kind != uaKindClaimedBotPending {
 			s.recordAbuseDomain("http_ua_spoof", ip, rec.Domain)
 		}
@@ -380,35 +462,41 @@ func (s *domlogStats) emitLegacy(cfg *config.Config) []alert.Finding {
 	}
 	for ip, count := range s.wpLogin {
 		if count >= wpLoginThreshold {
-			out = append(out, alert.Finding{
+			f := alert.Finding{
 				Severity: alert.Critical,
 				Check:    "wp_login_bruteforce",
 				SourceIP: ip,
 				Message:  formatLegacyMessage("WordPress login brute force", ip, count, "attempts"),
 				Details:  "Aggregated across per-vhost access logs",
-			})
+			}
+			s.stamp(&f, f.Check)
+			out = append(out, f)
 		}
 	}
 	for ip, count := range s.xmlrpc {
 		if xmlrpcThr > 0 && count >= xmlrpcThr {
-			out = append(out, alert.Finding{
+			f := alert.Finding{
 				Severity: alert.Critical,
 				Check:    "xmlrpc_abuse",
 				SourceIP: ip,
 				Message:  formatLegacyMessage("XML-RPC abuse", ip, count, "requests"),
 				Details:  "Aggregated across per-vhost access logs",
-			})
+			}
+			s.stamp(&f, f.Check)
+			out = append(out, f)
 		}
 	}
 	for ip, count := range s.userEnum {
 		if count >= 5 {
-			out = append(out, alert.Finding{
+			f := alert.Finding{
 				Severity: alert.High,
 				Check:    "wp_user_enumeration",
 				SourceIP: ip,
 				Message:  formatLegacyMessage("WordPress user enumeration", ip, count, "requests"),
 				Details:  "Requests to /wp-json/wp/v2/users or ?author=",
-			})
+			}
+			s.stamp(&f, f.Check)
+			out = append(out, f)
 		}
 	}
 	return out
@@ -431,14 +519,16 @@ func (s *domlogStats) emit(cfg *config.Config) []alert.Finding {
 				continue
 			}
 			sample := s.samples[ip]
-			out = append(out, alert.Finding{
+			f := alert.Finding{
 				Severity: alert.High,
 				Check:    "http_request_flood",
 				SourceIP: ip,
 				Domain:   s.singleDomain(ip),
 				Message:  "HTTP request flood from " + ip + ": " + itoa(count) + " requests" + s.vhostSuffix(ip),
 				Details:  "Sample: " + sample.Method + " " + sample.URI + " UA=" + truncate(sample.UA, 120),
-			})
+			}
+			s.stamp(&f, f.Check)
+			out = append(out, f)
 		}
 	}
 
@@ -454,25 +544,25 @@ func (s *domlogStats) emit(cfg *config.Config) []alert.Finding {
 			// gating on the same threshold as the other spoof kinds keeps real
 			// spoof-crawlers (which make many requests) blocked.
 			if hits, ok := byKind[uaKindClaimedBotNegative]; ok && hits >= threshold {
-				out = append(out, s.makeUASpoofFinding(ip,
+				out = append(out, s.makeUASpoofFinding(ip, uaKindClaimedBotNegative,
 					"claimed search-engine bot failed rDNS verification",
 					s.samples[ip], hits))
 				continue
 			}
 			if hits, ok := byKind[uaKindKnownScanner]; ok && hits > 0 {
-				out = append(out, s.makeUASpoofFinding(ip, "known scanner UA",
+				out = append(out, s.makeUASpoofFinding(ip, uaKindKnownScanner, "known scanner UA",
 					s.samples[ip], hits))
 				continue
 			}
 			if hits := byKind[uaKindWPSpoofPingback]; hits >= threshold {
-				out = append(out, s.makeUASpoofFinding(ip,
+				out = append(out, s.makeUASpoofFinding(ip, uaKindWPSpoofPingback,
 					"WordPress/<ver> UA on GET (pingback spoof)",
 					s.samples[ip], hits))
 				continue
 			}
 			if cfg.Thresholds.HTTPUAScriptingEnabled {
 				if hits := byKind[uaKindScriptingLang]; hits >= threshold {
-					out = append(out, s.makeUASpoofFinding(ip,
+					out = append(out, s.makeUASpoofFinding(ip, uaKindScriptingLang,
 						"scripting-language UA (curl/python/etc.)",
 						s.samples[ip], hits))
 					continue
@@ -480,14 +570,14 @@ func (s *domlogStats) emit(cfg *config.Config) []alert.Finding {
 			}
 			if cfg.Thresholds.HTTPUAHeadlessEnabled {
 				if hits := byKind[uaKindHeadless]; hits >= threshold {
-					out = append(out, s.makeUASpoofFinding(ip,
+					out = append(out, s.makeUASpoofFinding(ip, uaKindHeadless,
 						"headless browser UA", s.samples[ip], hits))
 					continue
 				}
 			}
 			if cfg.Thresholds.HTTPUAEmptyEnabled {
 				if hits := byKind[uaKindEmpty]; hits >= threshold {
-					out = append(out, s.makeUASpoofFinding(ip,
+					out = append(out, s.makeUASpoofFinding(ip, uaKindEmpty,
 						"empty/dash User-Agent", s.samples[ip], hits))
 					continue
 				}
@@ -547,7 +637,7 @@ func (s *domlogStats) emitScannerProfile(cfg *config.Config) []alert.Finding {
 			s.recordAbuseDomain("http_scanner_profile", ip, domain)
 		}
 		sample := s.scannerSamples[ip]
-		out = append(out, alert.Finding{
+		f := alert.Finding{
 			Severity: alert.High,
 			Check:    "http_scanner_profile",
 			SourceIP: ip,
@@ -555,7 +645,9 @@ func (s *domlogStats) emitScannerProfile(cfg *config.Config) []alert.Finding {
 			Message: "URL scanner profile from " + ip + ": " + itoa(errs) + " of " + itoa(total) +
 				" requests hit probe-error statuses across " + itoa(paths) + " distinct paths" + s.vhostSuffix(ip),
 			Details: "Sample: " + sample.Method + " " + sample.URI + " UA=" + truncate(sample.UA, 120),
-		})
+		}
+		s.stamp(&f, f.Check)
+		out = append(out, f)
 	}
 	return out
 }
@@ -602,7 +694,7 @@ func (s *domlogStats) emitClaimedBotUnverified(cfg *config.Config) []alert.Findi
 			sample = s.scannerSamples[ip]
 		}
 		s.recordClaimedBotUnverifiedDomains(ip, flood, scanner, minReq, pct)
-		out = append(out, alert.Finding{
+		f := alert.Finding{
 			Severity: alert.High,
 			Check:    "http_claimed_bot_unverified",
 			SourceIP: ip,
@@ -610,7 +702,9 @@ func (s *domlogStats) emitClaimedBotUnverified(cfg *config.Config) []alert.Findi
 			Message: "Unverified claimed bot from " + ip + ": " + reason + " (" + itoa(total) +
 				" requests, rDNS not yet confirmed)" + s.vhostSuffix(ip),
 			Details: "Sample: " + sample.Method + " " + sample.URI + " UA=" + truncate(sample.UA, 120),
-		})
+		}
+		s.stamp(&f, uaObservationKey(uaKindClaimedBotPending))
+		out = append(out, f)
 	}
 	return out
 }
@@ -872,8 +966,8 @@ func (s *domlogStats) emitDistributedFlood(cfg *config.Config, prior []alert.Fin
 	return out
 }
 
-func (s *domlogStats) makeUASpoofFinding(ip, reason string, sample httpSample, hits int) alert.Finding {
-	return alert.Finding{
+func (s *domlogStats) makeUASpoofFinding(ip string, kind uaKind, reason string, sample httpSample, hits int) alert.Finding {
+	f := alert.Finding{
 		Severity: alert.Critical,
 		Check:    "http_ua_spoof",
 		SourceIP: ip,
@@ -882,6 +976,8 @@ func (s *domlogStats) makeUASpoofFinding(ip, reason string, sample httpSample, h
 		Details: "Hits: " + itoa(hits) + ", Sample: " + sample.Method + " " +
 			sample.URI + " UA=" + truncate(sample.UA, 200),
 	}
+	s.stamp(&f, uaObservationKey(kind))
+	return f
 }
 
 // singleDomain returns the one vhost ip touched, or "" when zero or more
@@ -1064,21 +1160,23 @@ func atoiSafe(s string) int {
 	return n
 }
 
-func clientIPForRecord(rec accessLogRecord, cfg *config.Config) string {
+func clientIPForRecord(rec accessLogRecord, cfg *config.Config) (ip string, forwarded bool) {
 	if cfg == nil || len(cfg.WebServer.TrustedProxies) == 0 || rec.XFF == "" {
-		return rec.RemoteIP
+		return rec.RemoteIP, false
 	}
 	if !isTrustedProxy(rec.RemoteIP, cfg.WebServer.TrustedProxies) {
-		return rec.RemoteIP
+		return rec.RemoteIP, false
 	}
 	// A trusted direct proxy appends the peer it observed to the end of
 	// X-Forwarded-For. Use that entry only; earlier entries can come from
 	// the client.
-	ip := strings.TrimSpace(rec.XFF[strings.LastIndexByte(rec.XFF, ',')+1:])
+	ip = strings.TrimSpace(rec.XFF[strings.LastIndexByte(rec.XFF, ',')+1:])
 	if net.ParseIP(ip) != nil {
-		return ip
+		// A forwarded header supplied the address, even one equal to the
+		// proxy's own.
+		return ip, true
 	}
-	return rec.RemoteIP
+	return rec.RemoteIP, false
 }
 
 func normalizeHTTPClientIP(raw string) string {

@@ -17,6 +17,9 @@ type scanRecord struct {
 	stream, cursor string
 	offset         int64
 	at             time.Time
+	// kind is how the record's parser read the finding's address, when the
+	// scan knows it only per record; unknown leaves the finding's kind.
+	kind admission.Attribution
 }
 
 // scanned is the scan record of r written at at; zero without a log time.
@@ -70,10 +73,13 @@ func (r scanRecord) observation(producer admission.ProducerID) alert.Observation
 	return alert.Observation{Producer: string(producer), Stream: r.stream, Cursor: r.cursor, ObservedAt: r.at.UTC()}
 }
 
-// stamp names r as the observation of f; f keeps no observation when the
-// scan kept no record for it.
+// stamp names r as the observation of f, with r's kind when it has one; f
+// keeps no observation when the scan kept no record for it.
 func (r scanRecord) stamp(f *alert.Finding, producer admission.ProducerID) {
 	if o := r.observation(producer); o != (alert.Observation{}) {
 		f.Observation = o
+		if r.kind.Valid() {
+			f.Attribution = r.kind
+		}
 	}
 }

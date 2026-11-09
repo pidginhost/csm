@@ -81,10 +81,10 @@ func CheckWPBruteForce(ctx context.Context, cfg *config.Config, _ *state.Store) 
 	stats := newDomlogStats()
 	hostInfo := platform.Detect()
 	var centralPath string
-	var centralLines []string
+	var centralRecords []syslogRecord
 	for _, p := range hostInfo.AccessLogPaths {
-		if lines := tailFile(p, window); len(lines) > 0 {
-			centralPath, centralLines = p, lines
+		if records := tailFileRecords(p, window); len(records) > 0 {
+			centralPath, centralRecords = p, records
 			break
 		}
 	}
@@ -98,11 +98,12 @@ func CheckWPBruteForce(ctx context.Context, cfg *config.Config, _ *state.Store) 
 	// On Apache it duplicates domlog data; minor double-counting is
 	// acceptable since thresholds are high enough.
 	central := hostInfo.IsCPanelCentralAccessLog(centralPath)
-	for _, line := range centralLines {
-		rec, ok := parseAccessLogRecord(line)
+	for _, r := range centralRecords {
+		rec, ok := parseAccessLogRecord(r.text)
 		if !ok {
 			continue
 		}
+		rec.ref = r
 		rec.Central = central
 		stats.scan(rec, cfg, currentBotClassifier(cfg))
 	}
@@ -313,11 +314,12 @@ func tailDomlogsInto(ctx context.Context, paths []string, cfg *config.Config, st
 		}
 		domain := domainFromDomlogPath(p)
 		account := domainAccountOwner(domain)
-		for _, line := range tailFile(p, tailLines) {
-			rec, ok := parseAccessLogRecord(line)
+		for _, r := range tailFileRecords(p, tailLines) {
+			rec, ok := parseAccessLogRecord(r.text)
 			if !ok {
 				continue
 			}
+			rec.ref = r
 			rec.Domain = domain
 			rec.Account = account
 			stats.scan(rec, cfg, classifier)
