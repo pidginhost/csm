@@ -4,9 +4,9 @@
 hostname: "SET_HOSTNAME_HERE"
 
 # enforce (default): every subsystem acts under its own switch.
-# observe: detection, correlation and alerting only. CSM changes no host
-# state, and a config that still enables a state-changing subsystem is
-# refused at startup by name. See docs/src/observe-mode.md.
+# observe: detection, correlation and alerting without automatic host
+# remediation or integration updates. Conflicting switches are refused
+# at startup. CSM still writes its own state. See docs/src/observe-mode.md.
 mode: "enforce"
 
 alerts:
@@ -364,7 +364,9 @@ auto_response:
   block_expiry: "24h"         # how long IPs stay blocked
   http_asn_crawl_tempban: "24h"  # ban duration for http_asn_crawl findings
   max_blocks_per_hour: 50     # per-IP block cap; 0/omitted uses the default
-  block_cpanel_logins: false  # block IPs on cPanel/webmail login alerts (enable after portal-only login)
+  # Permit blocks for thresholded cPanel, webmail, FTP and API login abuse.
+  # Single direct cPanel form logins stay audit-only.
+  block_cpanel_logins: false
   # http_scanner_action: response for http_scanner_profile findings.
   # "challenge" (default) routes the IP to the PoW challenge when the
   # challenge subsystem is enabled, falling through to a block when it
@@ -605,9 +607,9 @@ incidents:
   # Credential-spray super-incident: when one source IP brute-forces
   # many distinct mailboxes inside the merge window, collapse the
   # per-mailbox fan-out into a single credential_spray incident keyed
-  # on the source IP. Default-OFF + dry_run=TRUE so the path ships
-  # dark and counters report what would have happened. Flip enabled
-  # to true (and dry_run to false) once you have validated counters.
+  # on the source IP. Off by default. Set dry_run: true to report
+  # would-be suppression through counters. Once you have validated
+  # those counters, set enabled: true and dry_run: false to apply it.
   spray_suppression:
     enabled: false
     dry_run: true

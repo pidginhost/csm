@@ -18,7 +18,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 - Automatic response forecasts reject unverified PHP relay addresses and stop trusting evidence after its allowed address sources change.
 - Automatic response previews reject subnet targets from checks that only attribute individual addresses, including previously queued responses.
-- `csm install` now writes the same fully commented config file that the packages install.
+- Command-line installations now include the full packaged configuration comments while retaining their own defaults.
 
 ### Security
 
@@ -29,6 +29,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Fixed
 
+- Command-line installations retain their alert, detection and firewall defaults and generate valid Web UI credentials when configuration comments change.
 - Realtime web, ModSecurity and cPanel API checks no longer block or score configured trusted proxies, while informational events stay visible.
 - Framework classes that handle admin uploads no longer raise Critical dropper alerts.
 - Incident correlation now follows `reputation.whitelist` changes on reload, and matches IPv6 entries however the address is written.

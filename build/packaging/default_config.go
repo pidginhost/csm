@@ -1,5 +1,5 @@
-// Package packaging carries the config file the packages install, so that
-// `csm install` writes the same starting config.
+// Package packaging carries the shared config template for package and CLI
+// installs. The CLI fills credentials and retains its runtime policy defaults.
 package packaging
 
 import _ "embed"

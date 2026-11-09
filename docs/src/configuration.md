@@ -7,6 +7,28 @@ at daemon startup. After changing an environment file, restart the daemon;
 configuration reload alone does not import those changes. See
 [credential rotation](credential-rotation.md) for the systemd procedure.
 
+## Installation defaults
+
+Packages and `csm install` share the commented configuration template. The CLI
+uses runtime defaults for these settings, preserving each installation method's
+policy:
+
+| Setting | `csm install` | Packages |
+| --- | --- | --- |
+| `alerts.max_per_hour` | 30 | 10 |
+| `thresholds.http_distributed_min_ips` | 0 (disabled) | 10 |
+| `firewall.ipv6` | false | true |
+| `incidents.spray_suppression.dry_run` | false | true |
+
+With `firewall.ipv6: false`, IPv6 traffic bypasses filtering. To filter it, set
+the value to `true` and review the IPv6 port policy before enabling the firewall.
+Set `incidents.spray_suppression.dry_run: true` to preview suppression before
+enabling it.
+
+The CLI generates a fresh Web UI admin token and issue time, validates the
+result, and writes the new configuration with mode `0600`. Invalid templates
+stop installation without replacing the destination configuration.
+
 ## Operating mode
 
 `mode` declares what CSM may do to the host. `enforce` (default) leaves every

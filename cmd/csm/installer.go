@@ -777,18 +777,33 @@ func deployDefaultConfig(path string) error {
 		return fmt.Errorf("generating WebUI auth token: %w", err)
 	}
 	authToken := hex.EncodeToString(tokenBytes)
-	// The packaged file is the one template; only the token lines change.
-	content := string(packaging.DefaultConfig)
-	for _, r := range []struct{ from, to string }{
-		{`auth_token: ""  # auto-generated on install`, `auth_token: "` + authToken + `"  # generated on install`},
-		{`auth_token_issued_at: ""`, `auth_token_issued_at: "` + time.Now().UTC().Format(time.RFC3339) + `"`},
-	} {
-		if !strings.Contains(content, r.from) {
-			return fmt.Errorf("default config template has no %q line to fill", r.from)
-		}
-		content = strings.Replace(content, r.from, r.to, 1)
+	issuedAt := time.Now().UTC().Format(time.RFC3339)
+	defaults, err := config.LoadBytes(nil)
+	if err != nil {
+		return fmt.Errorf("loading runtime defaults: %w", err)
 	}
-	return writeFileAtomic(path, []byte(content), 0600)
+	// Match YAML paths so examples in comments cannot receive the credentials.
+	content, err := config.YAMLEdit(packaging.DefaultConfig, []config.YAMLChange{
+		{Path: []string{"webui", "auth_token"}, Value: authToken},
+		{Path: []string{"webui", "auth_token_issued_at"}, Value: issuedAt},
+		// CLI installs use runtime policy defaults; package installs have
+		// their own opt-ins. Sharing the template must not enable them here.
+		{Path: []string{"alerts", "max_per_hour"}, Value: defaults.Alerts.MaxPerHour},
+		{Path: []string{"thresholds", "http_distributed_min_ips"}, Value: defaults.Thresholds.HTTPDistributedMinIPs},
+		{Path: []string{"firewall", "ipv6"}, Value: defaults.Firewall.IPv6},
+		{Path: []string{"incidents", "spray_suppression", "dry_run"}, Value: defaults.Incidents.SpraySuppression.DryRun},
+	})
+	if err != nil {
+		return fmt.Errorf("filling default config: %w", err)
+	}
+	cfg, err := config.LoadBytes(content)
+	if err != nil {
+		return fmt.Errorf("validating default config: %w", err)
+	}
+	if cfg.WebUI.AuthToken != authToken || cfg.WebUI.AuthTokenIssuedAt != issuedAt {
+		return fmt.Errorf("default config does not contain the generated WebUI credentials")
+	}
+	return writeFileAtomic(path, content, 0600)
 }
 
 func deploySystemdTimer() error {
