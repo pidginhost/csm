@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/alert"
 )
 
@@ -61,13 +62,14 @@ func sprayFinding(proto mailProto, ip string, v *sprayVerdict, mode sprayMode, n
 			message = fmt.Sprintf("Mail auth brute force from %s: %s", ip, reason)
 		}
 		return alert.Finding{
-			Severity:  severity,
-			Check:     check,
-			Message:   message,
-			Details:   strings.TrimSpace(details + observe + " " + targets),
-			Timestamp: now,
-			SourceIP:  ip,
-			BlockTTL:  ttl,
+			Severity:    severity,
+			Check:       check,
+			Message:     message,
+			Details:     strings.TrimSpace(details + observe + " " + targets),
+			Timestamp:   now,
+			SourceIP:    ip,
+			Attribution: admission.AttributionPeer,
+			BlockTTL:    ttl,
 		}
 	}
 
@@ -98,15 +100,16 @@ func sprayFinding(proto mailProto, ip string, v *sprayVerdict, mode sprayMode, n
 	}
 	_, domain := alert.SplitEmail(v.Mailbox)
 	return alert.Finding{
-		Severity:  severity,
-		Check:     "mail_account_compromised",
-		Message:   message,
-		Details:   strings.TrimSpace(details + " " + targets),
-		Timestamp: now,
-		SourceIP:  ip,
-		Domain:    domain,
-		Mailbox:   v.Mailbox,
-		BlockTTL:  ttl,
+		Severity:    severity,
+		Check:       "mail_account_compromised",
+		Message:     message,
+		Details:     strings.TrimSpace(details + " " + targets),
+		Timestamp:   now,
+		SourceIP:    ip,
+		Attribution: admission.AttributionPeer,
+		Domain:      domain,
+		Mailbox:     v.Mailbox,
+		BlockTTL:    ttl,
 	}
 }
 

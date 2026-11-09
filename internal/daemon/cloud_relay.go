@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/eximlog"
@@ -319,8 +320,10 @@ func parseCloudRelayFinding(line string, cfg *config.Config) (findings []alert.F
 		Message:  message,
 		Details:  truncateDaemon(details, 800),
 		SourceIP: ips[0],
-		Mailbox:  mailbox,
-		Domain:   domain,
+		// Exim's H=... [ip] of the authenticated session.
+		Attribution: admission.AttributionPeer,
+		Mailbox:     mailbox,
+		Domain:      domain,
 	}}
 }
 

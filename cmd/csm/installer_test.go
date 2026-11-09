@@ -452,6 +452,48 @@ func TestEnsurePHPShieldEventLogHardensExistingRuntimePaths(t *testing.T) {
 	}
 }
 
+func setupShieldConfigTest(t *testing.T) (*Installer, string) {
+	t.Helper()
+	t.Setenv("CSM_CONFIG_DIR", t.TempDir())
+	cfgPath := filepath.Join(t.TempDir(), "csm.yaml")
+	if err := os.WriteFile(cfgPath, []byte("hostname: example.com\ninfra_ips: [\"192.0.2.10\"]\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	conf := filepath.Join(t.TempDir(), "shield.conf.php")
+	old := phpShieldConfPath
+	phpShieldConfPath = conf
+	t.Cleanup(func() { phpShieldConfPath = old })
+	return &Installer{ConfigPath: cfgPath}, conf
+}
+
+func TestDeployShieldConfigWritesMissingFile(t *testing.T) {
+	inst, conf := setupShieldConfigTest(t)
+	inst.deployShieldConfig()
+	data, err := os.ReadFile(conf) // #nosec G304 -- test temp file
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "'192.0.2.10'") || !strings.Contains(string(data), "'/wp-content/uploads/'") {
+		t.Fatalf("generated shield config missing defaults or infra IP:\n%s", data)
+	}
+}
+
+func TestDeployShieldConfigKeepsOperatorEdits(t *testing.T) {
+	inst, conf := setupShieldConfigTest(t)
+	edited := "<?php\nreturn array('blocked_paths' => array('/custom/'), 'allowed_ips' => array());\n"
+	if err := os.WriteFile(conf, []byte(edited), 0644); err != nil { // #nosec G306 -- test temp file
+		t.Fatal(err)
+	}
+	inst.deployShieldConfig()
+	data, err := os.ReadFile(conf) // #nosec G304 -- test temp file
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != edited {
+		t.Fatalf("operator edits replaced:\n%s", data)
+	}
+}
+
 func TestPatchConfigPHPShieldReSignsIntegrity(t *testing.T) {
 	confDir := t.TempDir()
 	t.Setenv("CSM_CONFIG_DIR", confDir)

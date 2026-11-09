@@ -45,12 +45,13 @@ func TestControlActionShowAnswersDuringAuditFailure(t *testing.T) {
 	finding := alert.Finding{
 		Check: "ssh_login_unknown_ip", Severity: alert.Critical, SourceIP: "192.0.2.107", Timestamp: clock.Wall,
 		Observation: alert.Observation{Producer: "sshd_log", Stream: "secure:dev=1,ino=2", Cursor: "offset=1", ObservedAt: clock.Wall},
+		Attribution: admission.AttributionPeer,
 	}
-	e, err := d.admission.Mint(finding, finding.SourceIP)
+	e, err := d.admission.Mint(finding)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = d.admission.Respond(admission.KindBlockIP, e, 0); err != nil {
+	if err = d.admission.Respond(admission.KindBlockIP, finding.SourceIP, e, 0); err != nil {
 		t.Fatal(err)
 	}
 	var ref string

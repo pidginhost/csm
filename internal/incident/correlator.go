@@ -131,7 +131,7 @@ type CorrelatorConfig struct {
 	// mint with its finding until a later block can count that refusal.
 	// The block answers this observation instead of minting its own root.
 	// It is kept in memory only; nil keeps no roots.
-	Root func(f alert.Finding, target string) PreparedRoot
+	Root func(f alert.Finding) PreparedRoot
 }
 
 // IncidentAutoBlockConfig drives the generic incident-driven firewall
@@ -733,11 +733,7 @@ func (c *Correlator) mutateWithFindingLocked(inc *Incident, f alert.Finding, now
 	if src := alert.AttackerAddress(f); src != "" {
 		ev.RemoteIP = src
 		if c.cfg.Root != nil && c.cfg.AddressEvidence != nil && c.cfg.AddressEvidence(f.Check, f.Severity) {
-			target := src
-			if ip := normalizeIncidentRemoteIP(src); ip != "" {
-				target = ip
-			}
-			root := c.cfg.Root(f, target)
+			root := c.cfg.Root(f)
 			ev.root = &root
 		}
 		if (!inc.RemoteIPEvidence || inc.RemoteIPEvidenceFinding == "") && c.cfg.AddressEvidence != nil && inc.CorrelationKey != nil && c.cfg.AddressEvidence(f.Check, f.Severity) {

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/queuehealth"
@@ -422,4 +423,5 @@ func TestCpanelLogHandlersHoldStaleTabAndReportGuesser(t *testing.T) {
 	if len(got) != 1 || got[0].Check != "api_auth_failure_realtime" || got[0].SourceIP != "203.0.113.9" {
 		t.Fatalf("alert pipeline received %+v, want only the guesser's finding", got)
 	}
+	wantAttribution(t, got[0], admission.AttributionPeer)
 }

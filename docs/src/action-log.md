@@ -143,6 +143,11 @@ target: `action` is the kind of response, `reason` the check that asked for
 it, `actor_detail` the entry it came through (`scan`, or a derived entry such
 as `challenge_timeout` or `central`), `result` the decision (`queued`,
 `coalesced`, `observe` or `refused`) and `error` the refusal reason. An
+`attribution` refusal also names its `cause`: `no_observation` (no reader
+stamped the finding), `kind_not_allowed` (no parser vouched for the address
+in a way the check accepts) or `target_mismatch` (the response names an
+address its evidence does not attribute). Refusals at submission and queue
+placement keep the same cause as refusals at evidence minting. An
 owner that runs automatic blocks and forecasts them in dry-run mode also
 counts `dry_run` decisions, each with a `prediction` of what live admission
 would have done: `capacity_admit`, `existing_actual`, `existing_shadow`,

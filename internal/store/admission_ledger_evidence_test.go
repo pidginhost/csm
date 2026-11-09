@@ -57,7 +57,8 @@ func TestAdmissionLedgerRefusesForeignEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	stranger, err := other.Register(admission.ProducerSpec{ID: "stranger", Entry: admission.EntryScan, Observation: admission.ObservationLogCursor, Checks: []string{"ssh_brute"}})
+	stranger, err := other.Register(admission.ProducerSpec{ID: "stranger", Entry: admission.EntryScan, Observation: admission.ObservationLogCursor, Checks: []string{"ssh_brute"},
+		Attribution: admission.Attributions(admission.AttributionPeer)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,13 +124,14 @@ func newFloorLedger(t *testing.T) (*ledgerFixture, func(admission.Severity)) {
 		if check != "ssh_brute" {
 			return "", admission.Policy{}, false
 		}
-		return check, admission.Policy{Family: admission.FamilySSH, Basis: admission.BasisLocal, MinSeverity: floor}, true
+		return check, admission.Policy{Family: admission.FamilySSH, Basis: admission.BasisLocal, MinSeverity: floor, Attribution: admission.Attributions(admission.AttributionPeer)}, true
 	}
 	reg, err := admission.NewRegistry(lookup)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ssh, err := reg.Register(admission.ProducerSpec{ID: "sshd_log", Entry: admission.EntryScan, Observation: admission.ObservationLogCursor, Checks: []string{"ssh_brute"}, Claims: []admission.ClaimKind{admission.ClaimAccount}})
+	ssh, err := reg.Register(admission.ProducerSpec{ID: "sshd_log", Entry: admission.EntryScan, Observation: admission.ObservationLogCursor, Checks: []string{"ssh_brute"}, Claims: []admission.ClaimKind{admission.ClaimAccount},
+		Attribution: admission.Attributions(admission.AttributionPeer)})
 	if err != nil {
 		t.Fatal(err)
 	}

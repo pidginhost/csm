@@ -251,17 +251,13 @@ func (l *AdmissionLedger) ForecastSeed() (admission.CeilingState, []admission.Ch
 	return s, kept, nil
 }
 
-// laneFits checks that a queued candidate may be reserved on lane. Any
-// candidate may use the general lane. A reserved lane is rechecked against
-// the candidate's assessment at now, since the pick was made in an earlier
-// transaction: direct compromise evidence has only the direct turn and
-// corroboration only the corroborated one.
+// laneFits rechecks a queued candidate before reservation because its pick
+// was made in an earlier transaction. Any qualifying candidate may use the
+// general lane; the direct and corroborated lanes also require their
+// respective assessments.
 func laneFits(q *queueTx, lc liveCandidate, lane admission.Lane) error {
-	switch {
-	case !lane.Valid():
+	if !lane.Valid() {
 		return refusal(admission.ReasonInvalid, "reservation names no lane")
-	case lane == admission.LaneGeneral:
-		return nil
 	}
 	a, reason, err := q.check(lc, true)
 	switch {

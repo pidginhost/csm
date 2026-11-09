@@ -265,8 +265,8 @@ func (l *AdmissionLedger) arriveTx(q *queueTx, a admission.Arrival) (admission.C
 	if !a.Request.Episode.IsZero() || a.Request.Generation != 0 {
 		return "", false, refusal(admission.ReasonInvalid, "an arrival names no episode: the ledger assigns it")
 	}
-	if a.Request.Target != e.Target() {
-		return "", false, refusal(admission.ReasonInvalid, "arrival request target differs from its evidence")
+	if err := admission.BindTarget(a.Request.Target, a.Request.Entry, e); err != nil {
+		return "", false, err
 	}
 	if a.Request.Entry != 0 {
 		if err := l.reg.ValidateVia(a.Request.Entry, e); err != nil {

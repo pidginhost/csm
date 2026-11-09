@@ -31,12 +31,12 @@ func TestRetirementEntryProofAfterHistoryRetires(t *testing.T) {
 				}
 				t.Cleanup(func() { _ = db.Close() })
 				reg, err := admission.NewRegistry(func(check string) (string, admission.Policy, bool) {
-					return check, admission.Policy{Family: admission.FamilySSH, Basis: admission.BasisLocal}, check == "ssh_brute"
+					return check, admission.Policy{Family: admission.FamilySSH, Basis: admission.BasisLocal, Attribution: admission.Attributions(admission.AttributionPeer)}, check == "ssh_brute"
 				})
 				if err != nil {
 					t.Fatal(err)
 				}
-				producer, err := reg.Register(admission.ProducerSpec{ID: "sshd_log", Entry: admission.EntryScan, Observation: admission.ObservationLogCursor, Checks: []string{"ssh_brute"}})
+				producer, err := reg.Register(admission.ProducerSpec{ID: "sshd_log", Entry: admission.EntryScan, Observation: admission.ObservationLogCursor, Checks: []string{"ssh_brute"}, Attribution: admission.Attributions(admission.AttributionPeer)})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -77,7 +77,7 @@ func TestRetirementEntryProofAfterHistoryRetires(t *testing.T) {
 					t.Fatal(err)
 				}
 				evidence, err := producer.Mint(admission.EvidenceInput{
-					Check: "ssh_brute", FindingID: "0123456789abcdef", Severity: admission.SeverityHigh,
+					Check: "ssh_brute", Attribution: admission.AttributionPeer, FindingID: "0123456789abcdef", Severity: admission.SeverityHigh,
 					Observation: admission.ObservationRef{Stream: "fixture", Cursor: "offset=1", Version: 1},
 					ObservedAt:  at, Parser: admission.ParserRef{Name: "fixture", Version: 1}, Target: target,
 				})

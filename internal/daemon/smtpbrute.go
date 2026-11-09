@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 )
@@ -314,9 +315,10 @@ func (t *smtpAuthTracker) recordFailure(ip, account string, exist mailboxExisten
 			Check:    "smtp_bruteforce",
 			Message: fmt.Sprintf("SMTP brute force from %s: %d failed auths in %v",
 				ip, len(e.times), t.window),
-			Details:   "Real-time detection of dovecot_login auth failures",
-			Timestamp: now,
-			SourceIP:  ip,
+			Details:     "Real-time detection of dovecot_login auth failures",
+			Timestamp:   now,
+			SourceIP:    ip,
+			Attribution: admission.AttributionPeer,
 		})
 	}
 
@@ -356,9 +358,10 @@ func (t *smtpAuthTracker) recordFailure(ip, account string, exist mailboxExisten
 					Check:    "smtp_bruteforce",
 					Message: fmt.Sprintf("SMTP brute force from %s: %d failed auths across %d mailboxes in %v",
 						ip, len(e.slowTimes), len(e.slowAccounts), t.slowWindow),
-					Details:   "Long-horizon detection of paced dovecot_login auth failures that stay below the fast per-IP window",
-					Timestamp: now,
-					SourceIP:  ip,
+					Details:     "Long-horizon detection of paced dovecot_login auth failures that stay below the fast per-IP window",
+					Timestamp:   now,
+					SourceIP:    ip,
+					Attribution: admission.AttributionPeer,
 				})
 			}
 		}

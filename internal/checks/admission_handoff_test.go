@@ -40,27 +40,27 @@ func TestAdmissionHandoffsAreTimed(t *testing.T) {
 	SetResponseAdmission(nil)
 	before := handoffSample(t, count)
 	respond(admission.KindBlockIP, f, f.SourceIP, 0)
-	AnswerRoot(admission.KindBlockIP, admission.Evidence{}, admission.EntryIncident)
+	AnswerRoot(admission.KindBlockIP, "", admission.Evidence{}, admission.EntryIncident)
 	respondNetblock()
-	_ = AdmissionRoot(f, f.SourceIP)
+	_ = AdmissionRoot(f)
 	if got := handoffSample(t, count); got != before {
 		t.Fatalf("unwired handoffs were timed: %v, want %v", got, before)
 	}
 	a := withAdmission(t)
 	beforeBucket := handoffSample(t, `csm_admission_handoff_seconds_bucket{le="0.01"}`)
 	respond(admission.KindBlockIP, f, f.SourceIP, 0)
-	AnswerRoot(admission.KindBlockIP, admission.Evidence{}, admission.EntryIncident)
+	AnswerRoot(admission.KindBlockIP, "", admission.Evidence{}, admission.EntryIncident)
 	respondNetblock()
 	for range 20 {
-		_ = AdmissionRoot(f, f.SourceIP)
-		_, _ = PrepareAdmissionRoot(f, f.SourceIP)
+		_ = AdmissionRoot(f)
+		_, _ = PrepareAdmissionRoot(f)
 	}
 	if got := handoffSample(t, count); got != before+3 {
 		t.Fatalf("preparation added handoff samples: %v, want %v", got, before+3)
 	}
 	a.refuse = true
-	_, refused := PrepareAdmissionRoot(f, f.SourceIP)
-	AnswerPreparedRoot(admission.KindBlockIP, admission.Evidence{}, admission.EntryCentral, f, refused, 0)
+	_, refused := PrepareAdmissionRoot(f)
+	AnswerPreparedRoot(admission.KindBlockIP, f.SourceIP, admission.Evidence{}, admission.EntryCentral, f, refused, 0)
 	if got := handoffSample(t, count); got != before+4 {
 		t.Fatalf("timed handoffs = %v, want %v", got, before+4)
 	}

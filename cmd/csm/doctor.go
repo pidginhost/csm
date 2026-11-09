@@ -14,11 +14,13 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/admission"
+	"github.com/pidginhost/csm/internal/challenge"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/control"
 	"github.com/pidginhost/csm/internal/health"
 	"github.com/pidginhost/csm/internal/integration/webserver"
 	"github.com/pidginhost/csm/internal/integrity"
+	"github.com/pidginhost/csm/internal/netutil"
 	"github.com/pidginhost/csm/internal/platform"
 )
 
@@ -391,7 +393,7 @@ func challengePublicURLCheck(cfg *config.Config) DoctorCheck {
 			Name:    "challenge public URL",
 			Status:  "fail",
 			Message: err.Error(),
-			Fix:     "set challenge.public_url to an absolute http(s) URL ending in /challenge and bind challenge.listen_addr to a non-loopback address",
+			Fix:     "set challenge.public_url to an absolute http(s) URL ending in /challenge, and bind challenge.listen_addr to a non-loopback address or list it in challenge.trusted_proxies for a proxy on this host",
 		}
 	}
 	return DoctorCheck{Name: "challenge public URL", Status: "ok"}
@@ -416,6 +418,9 @@ func challengeTLSCheck(cfg *config.Config) DoctorCheck {
 	}
 	if cert == "" || key == "" {
 		if scheme == "https" {
+			if challengeBehindProxy(cfg) {
+				return DoctorCheck{Name: "challenge TLS", Status: "ok", Message: "challenge.trusted_proxies serve HTTPS for challenge.public_url; doctor does not check the proxy"}
+			}
 			return DoctorCheck{
 				Name:    "challenge TLS",
 				Status:  "fail",
@@ -468,6 +473,9 @@ func challengePortGateCheck(cfg *config.Config) DoctorCheck {
 		return DoctorCheck{Name: "challenge port gate", Status: "ok", Message: "loopback listener is not exposed off-host"}
 	}
 	if !cfg.Challenge.PortGate.Enabled {
+		if challengeBehindProxy(cfg) {
+			return DoctorCheck{Name: "challenge port gate", Status: "ok", Message: "browsers reach the listener through challenge.trusted_proxies; keep challenge.listen_port closed to everything except the proxy"}
+		}
 		return DoctorCheck{
 			Name:    "challenge port gate",
 			Status:  "warn",
@@ -476,6 +484,51 @@ func challengePortGateCheck(cfg *config.Config) DoctorCheck {
 		}
 	}
 	return DoctorCheck{Name: "challenge port gate", Status: "ok"}
+}
+
+// challengeBehindProxy reports a custom proxy deployment: browsers connect to
+// the proxy, so listener TLS and the port gate are not what protects them. A
+// public_url that names the listener itself is direct mode whatever the list.
+func challengeBehindProxy(cfg *config.Config) bool {
+	return challengeHasTrustedProxy(cfg) && !challengePublicURLTargetsListener(cfg)
+}
+
+func challengeHasTrustedProxy(cfg *config.Config) bool {
+	for _, p := range cfg.Challenge.TrustedProxies {
+		if netutil.ParseCIDROrIP(p) != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// A literal public endpoint can prove that browsers hit this listener
+// directly. DNS names remain unverified rather than making network lookups
+// a prerequisite for offline configuration checks.
+func challengePublicURLTargetsListener(cfg *config.Config) bool {
+	u, err := url.Parse(strings.TrimSpace(cfg.Challenge.PublicURL))
+	if err != nil {
+		return false
+	}
+	port := u.Port()
+	if port == "" {
+		port = "443"
+		if u.Scheme == "http" {
+			port = "80"
+		}
+	}
+	if port != strconv.Itoa(cfg.Challenge.ListenPort) {
+		return false
+	}
+	publicIP := net.ParseIP(u.Hostname())
+	listenIP := net.ParseIP(challenge.ListenHost(cfg.Challenge.ListenAddr))
+	if publicIP == nil || listenIP == nil {
+		return false
+	}
+	if listenIP.To4() != nil && publicIP.To4() == nil {
+		return false
+	}
+	return listenIP.Equal(publicIP) || (listenIP.IsUnspecified() && netutil.IsHostAddress(publicIP.String()))
 }
 
 func defaultChallengeWebserverChecks(cfg *config.Config) []DoctorCheck {
@@ -570,6 +623,10 @@ func defaultChallengeGateProbe(cfg *config.Config) DoctorCheck {
 	if err != nil {
 		return DoctorCheck{Name: "challenge gate endpoint", Status: "fail", Message: err.Error()}
 	}
+	// Behind a trusted proxy the gate answers 400 unless a visitor is named,
+	// so name a documentation address the way the proxy would. A peer that
+	// is not a trusted proxy has the header ignored.
+	req.Header.Set("X-Forwarded-For", "192.0.2.1")
 	resp, err := client.Do(req)
 	if err != nil {
 		return DoctorCheck{
@@ -581,8 +638,8 @@ func defaultChallengeGateProbe(cfg *config.Config) DoctorCheck {
 	}
 	defer resp.Body.Close()
 	// handleGate returns 204 when the probe IP is not currently challenged
-	// (the loopback case used here) and 401 when it is. Either response
-	// proves the handler is reachable on the configured listener.
+	// and 401 when it is. Either response proves the handler is reachable
+	// on the configured listener.
 	if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusUnauthorized {
 		return DoctorCheck{Name: "challenge gate endpoint", Status: "ok", Message: rawURL}
 	}
@@ -598,20 +655,12 @@ func challengeGateProbeURL(cfg *config.Config) (string, error) {
 	if cfg.Challenge.ListenPort <= 0 || cfg.Challenge.ListenPort > 65535 {
 		return "", fmt.Errorf("invalid challenge.listen_port %d", cfg.Challenge.ListenPort)
 	}
-	host := strings.TrimSpace(cfg.Challenge.ListenAddr)
+	host := challenge.ListenHost(cfg.Challenge.ListenAddr)
 	switch host {
-	case "", "0.0.0.0":
+	case "0.0.0.0":
 		host = "127.0.0.1"
 	case "::":
 		host = "::1"
-	default:
-		if h, _, err := net.SplitHostPort(host); err == nil {
-			host = h
-		}
-		host = strings.Trim(host, "[]")
-		if strings.EqualFold(host, "localhost") {
-			host = "127.0.0.1"
-		}
 	}
 	scheme := "http"
 	cert, key, _ := challengeRuntimeTLSMaterial(cfg)
@@ -622,19 +671,7 @@ func challengeGateProbeURL(cfg *config.Config) (string, error) {
 }
 
 func challengeListenAddrIsLoopbackDoctor(addr string) bool {
-	addr = strings.TrimSpace(addr)
-	if addr == "" {
-		return true
-	}
-	host := addr
-	if h, _, err := net.SplitHostPort(addr); err == nil {
-		host = h
-	}
-	host = strings.Trim(host, "[]")
-	if strings.EqualFold(host, "localhost") {
-		return true
-	}
-	ip := net.ParseIP(host)
+	ip := net.ParseIP(challenge.ListenHost(addr))
 	return ip != nil && ip.IsLoopback()
 }
 
