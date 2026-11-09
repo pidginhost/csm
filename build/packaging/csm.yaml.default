@@ -67,11 +67,14 @@ mcp:
 # this URL. Point public_url at a TLS-valid host:port the operator
 # already controls (typically the cPanel admin domain on a CSM-owned
 # port). The installer refuses to run when public_url is empty or
-# listen_addr is still loopback, unless trusted_proxies lists that
-# address for your own proxy on this host.
+# listen_addr is still loopback. For your own proxy on this host, set
+# listen_addr to "unix:/run/csm/challenge.sock" and listen_group to the
+# group the proxy runs as. trusted_proxies never accepts an address of
+# this host.
 challenge:
   listen_addr: "127.0.0.1"
   listen_port: 8439
+  listen_group: ""
   tls_cert: ""
   tls_key: ""
   public_url: ""  # e.g. https://cpanel.example.com:8439/challenge

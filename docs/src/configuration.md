@@ -441,8 +441,9 @@ bpf_enforcement:
 # --- Challenge Pages ---
 challenge:
   enabled: false                        # enable PoW challenge pages instead of hard block
-  listen_addr: 127.0.0.1                # bind address; use 0.0.0.0 for public direct redirects
+  listen_addr: 127.0.0.1                # bind address; 0.0.0.0 for direct redirects, unix:/run/csm/challenge.sock for a proxy on this host
   listen_port: 8439                     # TCP port; ignored when listen_addr uses unix:
+  listen_group: ""                      # group allowed to open the unix: socket; the group your proxy runs as
   tls_cert: ""                          # optional HTTPS cert for direct/public challenge listener
   tls_key: ""                           # optional HTTPS key for direct/public challenge listener
   public_url: ""                        # required by webserver-integration, e.g. https://host:8439/challenge
