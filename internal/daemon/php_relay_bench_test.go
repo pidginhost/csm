@@ -14,7 +14,8 @@ func BenchmarkParsePHPRelayFinding(b *testing.B) {
 	pacct := newPerAccountWindow(5000)
 	eng := newEvaluator(psw, pip, pacct, cfg, nil)
 	eng.SetEffectiveAccountLimit(60)
-	line := "2026-04-29 12:00:01 1abcdefghij1234-DEF <= info@example.com U=u ID=1 B=redirect_resolver"
+	path2bTestHost(b)
+	line := "2026-04-29 12:00:01 1abcdefghij1234-DEF-01 <= info@example.com U=exampleuser P=local S=900 for buyer@example.net"
 	now := time.Now()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

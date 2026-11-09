@@ -86,13 +86,14 @@ func TestEffectiveAccountLimit_MissingAssumesDefault100(t *testing.T) {
 }
 
 func TestParsePHPRelayAccountVolume_FiresOnEffectiveLimit(t *testing.T) {
+	path2bTestHost(t)
 	cfg := defaultPHPRelayCfg()
 	cfg.EmailProtection.PHPRelay.AccountVolumePerHour = 5
 	pacct := newPerAccountWindow(5000)
 	eng := newEvaluator(nil, nil, pacct, cfg, nil)
 	eng.SetEffectiveAccountLimit(5)
 
-	line := "2026-04-29 12:00:01 1abc-DEF <= info@acmeagency.example U=exampleuser ID=1168 B=redirect_resolver"
+	line := "2026-04-29 12:00:01 1abc-DEF-01 <= info@acmeagency.example U=exampleuser P=local S=900 for buyer@example.net"
 
 	var findings []alert.Finding
 	for i := 0; i < 6; i++ {
@@ -118,29 +119,32 @@ func TestParsePHPRelayAccountVolume_FiresOnEffectiveLimit(t *testing.T) {
 	}
 }
 
-func TestParsePHPRelayAccountVolume_IgnoresNonRedirectResolver(t *testing.T) {
+func TestParsePHPRelayAccountVolume_IgnoresNetworkArrival(t *testing.T) {
+	path2bTestHost(t)
 	cfg := defaultPHPRelayCfg()
 	cfg.EmailProtection.PHPRelay.AccountVolumePerHour = 1
 	pacct := newPerAccountWindow(5000)
 	eng := newEvaluator(nil, nil, pacct, cfg, nil)
 	eng.SetEffectiveAccountLimit(1)
 
-	// Forwarder shape: no B=redirect_resolver.
-	line := "2026-04-29 12:00:01 1abc-DEF <= bounce-mc.us1@mcsv.example U=exampleuser ID=1168"
+	// Mail arriving from the network, such as a list message forwarded on,
+	// is not a send by the account's scripts.
+	line := "2026-04-29 12:00:01 1abc-DEF-01 <= bounce-mc.us1@mcsv.example H=mx.mcsv.example [203.0.113.20]:41000 P=esmtps S=900 for buyer@example.net"
 	findings := eng.parsePHPRelayAccountVolume(line, time.Now())
 	if len(findings) != 0 {
-		t.Errorf("forwarder line must not feed Path 2b, got %+v", findings)
+		t.Errorf("network arrival must not feed Path 2b, got %+v", findings)
 	}
 }
 
 func TestParsePHPRelayAccountVolume_CooldownSuppressesRefire(t *testing.T) {
+	path2bTestHost(t)
 	cfg := defaultPHPRelayCfg()
 	cfg.EmailProtection.PHPRelay.AccountVolumePerHour = 1
 	pacct := newPerAccountWindow(5000)
 	eng := newEvaluator(nil, nil, pacct, cfg, nil)
 	eng.SetEffectiveAccountLimit(1)
 
-	line := "2026-04-29 12:00:01 1abc-DEF <= info@example.com U=exampleuser ID=1168 B=redirect_resolver"
+	line := "2026-04-29 12:00:01 1abc-DEF-01 <= info@example.com U=exampleuser P=local S=900 for buyer@example.net"
 	now := time.Now()
 	a := eng.parsePHPRelayAccountVolume(line, now)
 	if len(a) == 0 {

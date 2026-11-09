@@ -25,6 +25,7 @@ import (
 	"github.com/pidginhost/csm/internal/contenttype"
 	"github.com/pidginhost/csm/internal/crawlid"
 	"github.com/pidginhost/csm/internal/emailspool"
+	"github.com/pidginhost/csm/internal/eximlog"
 	"github.com/pidginhost/csm/internal/store"
 )
 
@@ -1514,14 +1515,20 @@ func (e *evaluator) parsePHPRelayAccountVolumeAt(line string, eventTime, now tim
 	if !cfg.EmailProtection.PHPRelay.Enabled || limit <= 0 || e.accounts == nil {
 		return nil
 	}
-	if !strings.Contains(line, " <= ") {
-		return nil
-	}
-	if !strings.Contains(line, " B=redirect_resolver") {
-		return nil
-	}
-	user := extractUField(line)
+	// Only Exim's own submission metadata names the account: a message a
+	// hosting account's process submitted locally, such as PHP mail().
+	user := eximlog.LocalSubmitter(line)
 	if user == "" {
+		return nil
+	}
+	tenant := checks.HostingAccountForUser(user)
+	if tenant == "" {
+		return nil
+	}
+	if _, sender, ok := eximlog.Arrival(line); !ok || sender == "<>" {
+		return nil
+	}
+	if !sendsOffHost(eximlog.Recipients(line)) {
 		return nil
 	}
 	e.accounts.append(user, eventTime)
@@ -1541,29 +1548,35 @@ func (e *evaluator) parsePHPRelayAccountVolumeAt(line string, eventTime, now tim
 		Path:       "volume_account",
 		Message:    fmt.Sprintf("Path 2b: account %s sent >= %d outbound mails in last hour", user, limit),
 		CPUser:     user,
-		TenantID:   checks.HostingAccountForUser(user),
+		TenantID:   tenant,
 		RelayTotal: volume,
 		Timestamp:  now,
 	}}
 }
 
-// extractUField returns the cpuser from "U=<name>" in an exim log line.
-// Returns "" if absent.
-func extractUField(line string) string {
-	idx := strings.Index(line, " U=")
-	if idx < 0 {
-		return ""
-	}
-	rest := line[idx+3:]
-	end := len(rest)
-	for i := 0; i < len(rest); i++ {
-		c := rest[i]
-		if c == ' ' || c == '\t' {
-			end = i
-			break
+// sendsOffHost reports whether any recipient is outside this host's mail
+// domains. Mail to the host's own mailboxes is not outbound volume, and with
+// the domain list unreadable nothing counts rather than everything.
+func sendsOffHost(recipients []string) bool {
+	for _, rcpt := range recipients {
+		// Exim can cut the final address mid-domain when its log buffer
+		// fills. That fragment cannot prove an off-host destination.
+		if strings.HasSuffix(rcpt, "<trunc>") {
+			continue
+		}
+		at := strings.LastIndexByte(rcpt, '@')
+		if at < 0 || at == len(rcpt)-1 {
+			continue
+		}
+		local, known := phpRelayIsLocalDomain(strings.ToLower(rcpt[at+1:]))
+		if !known {
+			return false
+		}
+		if !local {
+			return true
 		}
 	}
-	return rest[:end]
+	return false
 }
 
 // ignoreEntry records an operator-issued ignore on a script. A zero

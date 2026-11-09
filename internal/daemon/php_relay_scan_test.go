@@ -14,11 +14,12 @@ import (
 )
 
 func TestScanEximHistoryForPHPRelayAccountVolume_ReplaysLines(t *testing.T) {
+	path2bTestHost(t)
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "exim_mainlog")
 	var b strings.Builder
 	for i := 0; i < 80; i++ {
-		b.WriteString("2026-04-29 12:00:01 1ab" + string(rune('A'+i%26)) + "-DEF <= info@example.com U=exampleuser ID=1 B=redirect_resolver\n")
+		b.WriteString("2026-04-29 12:00:01 1ab" + string(rune('A'+i%26)) + "-DEF-01 <= info@example.com U=exampleuser P=local S=900 for buyer@example.net\n")
 	}
 	if err := os.WriteFile(logPath, []byte(b.String()), 0o644); err != nil {
 		t.Fatalf("write exim mainlog fixture: %v", err)
@@ -53,6 +54,7 @@ func TestScanEximHistoryForPHPRelayAccountVolume_ReplaysLines(t *testing.T) {
 }
 
 func TestScanEximHistoryForPHPRelayAccountVolume_SkipsOversizedLine(t *testing.T) {
+	path2bTestHost(t)
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "exim_mainlog")
 	var b strings.Builder
@@ -90,6 +92,7 @@ func TestScanEximHistoryForPHPRelayAccountVolume_SkipsOversizedLine(t *testing.T
 }
 
 func TestScanEximHistoryForPHPRelayAccountVolume_StopsAfterContextCancel(t *testing.T) {
+	path2bTestHost(t)
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "exim_mainlog")
 	var b strings.Builder
@@ -124,19 +127,20 @@ func TestScanEximHistoryForPHPRelayAccountVolume_StopsAfterContextCancel(t *test
 }
 
 func phpRelayHistoryLine(i int) string {
-	return fmt.Sprintf("2026-04-29 12:%02d:01 1ab%03d-DEF <= info@example.com U=exampleuser ID=1 B=redirect_resolver\n", i%60, i)
+	return fmt.Sprintf("2026-04-29 12:%02d:01 1ab%03d-DEF-01 <= info@example.com U=exampleuser P=local S=900 for buyer@example.net\n", i%60, i)
 }
 
 // REL-01: history replay must ignore lines older than the account detection
 // window instead of stamping every line "now". With the old code an
 // exim_mainlog spanning days fired a false last-hour Critical on every restart.
 func TestScanEximHistoryForPHPRelayAccountVolume_SkipsLinesOutsideWindow(t *testing.T) {
+	path2bTestHost(t)
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "exim_mainlog")
 	var b strings.Builder
 	// 200 sends for one account, all dated a day before `now`.
 	for i := 0; i < 200; i++ {
-		fmt.Fprintf(&b, "2026-04-28 09:%02d:01 1ab%03d-DEF <= info@example.com U=exampleuser ID=1 B=redirect_resolver\n", i%60, i)
+		fmt.Fprintf(&b, "2026-04-28 09:%02d:01 1ab%03d-DEF-01 <= info@example.com U=exampleuser P=local S=900 for buyer@example.net\n", i%60, i)
 	}
 	if err := os.WriteFile(logPath, []byte(b.String()), 0o644); err != nil {
 		t.Fatalf("write exim mainlog fixture: %v", err)
@@ -164,11 +168,12 @@ func TestScanEximHistoryForPHPRelayAccountVolume_SkipsLinesOutsideWindow(t *test
 }
 
 func TestScanEximHistoryForPHPRelayAccountVolume_SkipsFutureDatedLines(t *testing.T) {
+	path2bTestHost(t)
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "exim_mainlog")
 	var b strings.Builder
 	for i := 0; i < 80; i++ {
-		fmt.Fprintf(&b, "2026-04-29 14:%02d:01 1ab%03d-DEF <= info@example.com U=exampleuser ID=1 B=redirect_resolver\n", i%60, i)
+		fmt.Fprintf(&b, "2026-04-29 14:%02d:01 1ab%03d-DEF-01 <= info@example.com U=exampleuser P=local S=900 for buyer@example.net\n", i%60, i)
 	}
 	if err := os.WriteFile(logPath, []byte(b.String()), 0o644); err != nil {
 		t.Fatalf("write exim mainlog fixture: %v", err)
@@ -198,6 +203,7 @@ func TestScanEximHistoryForPHPRelayAccountVolume_SkipsFutureDatedLines(t *testin
 // REL-01 (unit): the account event is stamped with the supplied eventTime, not
 // `now`, so a historical replay does not compress the window.
 func TestParsePHPRelayAccountVolumeAt_StampsEventTime(t *testing.T) {
+	path2bTestHost(t)
 	cfg := defaultPHPRelayCfg()
 	accounts := newPerAccountWindow(5000)
 	eng := newEvaluator(nil, nil, accounts, cfg, nil)
@@ -205,7 +211,7 @@ func TestParsePHPRelayAccountVolumeAt_StampsEventTime(t *testing.T) {
 
 	now := time.Date(2026, 4, 29, 13, 0, 0, 0, time.Local)
 	old := now.Add(-90 * time.Minute) // outside the 60-min window
-	line := "2026-04-29 11:30:01 1abc-DEF <= info@example.com U=exampleuser ID=1 B=redirect_resolver"
+	line := "2026-04-29 11:30:01 1abc-DEF-01 <= info@example.com U=exampleuser P=local S=900 for buyer@example.net"
 	if got := eng.parsePHPRelayAccountVolumeAt(line, old, now); got != nil {
 		t.Fatalf("an out-of-window event must not fire, got %+v", got)
 	}

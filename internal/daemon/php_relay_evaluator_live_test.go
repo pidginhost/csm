@@ -57,6 +57,7 @@ func TestEvaluatorSnapshotsLiveConfigOncePerEvaluation(t *testing.T) {
 }
 
 func TestEvaluatorAccountLimitFollowsLiveConfig(t *testing.T) {
+	path2bTestHost(t)
 	prev := config.Active()
 	config.SetActive(nil)
 	t.Cleanup(func() { config.SetActive(prev) })
@@ -71,7 +72,7 @@ func TestEvaluatorAccountLimitFollowsLiveConfig(t *testing.T) {
 	live.EmailProtection.PHPRelay.AccountVolumePerHour = 2
 	config.SetActive(&live)
 	now := time.Now()
-	line := "2026-09-02 12:00:00 1abcdefghijk-DEF <= info@example.com U=acct ID=1 B=redirect_resolver"
+	line := "2026-09-02 12:00:00 1abcdefghijk-DEF-01 <= info@example.com U=acct P=local S=900 for buyer@example.net"
 	if got := eng.parsePHPRelayAccountVolumeAt(line, now, now); len(got) != 0 {
 		t.Fatalf("first message fired unexpectedly: %+v", got)
 	}
