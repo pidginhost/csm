@@ -599,7 +599,7 @@ Sources in the exempt set skip three categories of metering:
 - **Concurrent connection-limit** - the IPv4 concurrent connection cap (`conn_limit`) does not apply.
 - **Mail-port flood meters** - the `port_flood` rules on TCP 25, 465, and 587 do not apply for the source's IP family.
 
-Subnet auto-block (spray, ASN-crawl, and netblock escalation) also skips any subnet block whose CIDR intersects an exempt range, and exempt IPs are excluded from the per-subnet threshold count so they cannot push a subnet over the netblock limit. Auto-response subnet blocks whose range falls inside an exempt range are removed automatically at daemon startup and at the start of each auto-block cycle. Manually created IP and subnet blocks are never pruned, even if they fall inside an exempt range.
+Subnet auto-block (spray, ASN-crawl, and netblock escalation) also skips any subnet block whose CIDR intersects an exempt range, and exempt IPs are excluded from the per-subnet threshold count so they cannot push a subnet over the netblock limit. Auto-response subnet blocks whose range falls inside an exempt range are removed automatically at daemon startup and at the start of each auto-block cycle, but only while IP auto-response is live; dry run leaves them in place. Manually created IP and subnet blocks are never pruned, even if they fall inside an exempt range.
 
 ### What exempt sources do not bypass
 
