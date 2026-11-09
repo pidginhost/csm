@@ -697,15 +697,29 @@ func TestListedPeerIsNeverAVisitor(t *testing.T) {
 func TestCheckSocketPlacementReservesTempName(t *testing.T) {
 	group, _ := ownGroup(t)
 	dir := shortSocketDir(t)
-	deep := dir
-	for len(deep) < 92 {
-		deep = filepath.Join(deep, "d")
-	}
-	deep = deep[:92]
-	if err := os.MkdirAll(deep, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := CheckSocketPlacement(filepath.Join(deep, "c"), group); err == nil || !strings.Contains(err.Error(), "107") {
-		t.Fatalf("CheckSocketPlacement = %v, want refusal naming the 107-byte limit", err)
+	for _, length := range []int{91, 92} {
+		t.Run(strconv.Itoa(length), func(t *testing.T) {
+			// Pad one component: truncating a multi-component path can
+			// leave a trailing slash that Join removes, shortening it.
+			deep := filepath.Join(dir, strings.Repeat("d", length-len(dir)-1))
+			if err := os.Mkdir(deep, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(deep, "c")
+			_, err := CheckSocketPlacement(path, group)
+			if length == 92 {
+				if err == nil || !strings.Contains(err.Error(), "107") {
+					t.Fatalf("CheckSocketPlacement = %v, want refusal naming the 107-byte limit", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("directory at the limit rejected: %v", err)
+			}
+			serveSocket(t, socketCfg(path, group), nil)
+			if code := gateStatus(t, path, "192.0.2.61"); code != http.StatusNoContent {
+				t.Fatalf("directory at the limit: gate = %d, want 204", code)
+			}
+		})
 	}
 }

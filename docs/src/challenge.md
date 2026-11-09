@@ -207,9 +207,10 @@ challenge:
 CSM creates the socket with mode 0660, owned by root and `listen_group`,
 and removes it on shutdown. Its directory must be owned by root, not
 writable by anyone else, and writable by the CSM service; with the shipped
-systemd unit that means `/run/csm`. The path must be absolute and short
-enough that the directory leaves 16 of the 107 bytes a socket path may
-use, since CSM creates the socket under a temporary name first. `listen_port`, the port gate
+systemd unit that means `/run/csm`. The path must be absolute, without
+repeated separators, dot components or a trailing slash. It may use at
+most 107 bytes, and its directory at most 91 bytes, since CSM first binds
+under a temporary name that needs up to 16 more bytes. `listen_port`, the port gate
 and the Web UI TLS fallback do not apply. The proxy must send
 X-Forwarded-For; a request without a readable visitor address gets HTTP
 400. `trusted_proxies` stays optional and lists any proxies in front of
