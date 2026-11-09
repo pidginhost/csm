@@ -1,10 +1,12 @@
 package eximlog
 
 import (
+	"fmt"
 	"net"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func FuzzLocalSubmissionAddressSyntax(f *testing.F) {
@@ -143,6 +145,55 @@ func FuzzSubmissionMessageData(f *testing.F) {
 			if got := LocalSubmitter(line); got != wantLocal {
 				t.Fatalf("message data changed the local submitter to %q for %q", got, line)
 			}
+		}
+	})
+}
+
+// LineTime reads the time Exim wrote at the start of a line: an exact
+// instant for every valid prefix, nothing for an explicit zone that is not
+// an offset, and nothing that client text later in the line can change.
+func FuzzEximLineTime(f *testing.F) {
+	f.Add(int64(1794225600), uint16(125), int16(330), true, true, "info@example.com H=x [203.0.113.9]:4321")
+	f.Add(int64(1794225600), uint16(999), int16(-420), true, true, "2026-01-01 00:00:00 +0000 T=\"x\"")
+	f.Add(int64(1794225600), uint16(1), int16(0), true, false, "")
+	f.Add(int64(1794225600), uint16(0), int16(60), false, true, "+0530 -0700")
+	f.Add(int64(1794225600), uint16(0), int16(0), false, false, " A=dovecot_plain:a@b")
+	f.Fuzz(func(t *testing.T, sec int64, ms uint16, offset int16, frac, zoned bool, suffix string) {
+		// Years 1970 to 2099; offsets within a day, as Exim writes them.
+		sec = (sec%4102444800 + 4102444800) % 4102444800
+		ms %= 1000
+		mins := int(offset) % (24 * 60)
+		local := time.FixedZone("local", 2*3600)
+		at := time.Unix(sec, int64(ms)*int64(time.Millisecond))
+		layout := time.DateTime
+		if frac {
+			layout += ".000"
+		} else {
+			at = at.Truncate(time.Second)
+		}
+		zone := local
+		if zoned {
+			layout += " -0700"
+			zone = time.FixedZone("exim", mins*60)
+		}
+		at = at.In(zone)
+		line := at.Format(layout) + " 1abc-0000-AB <= " + suffix
+		got, ok := lineTimeIn(line, local)
+		if !ok || !got.Equal(at) {
+			t.Fatalf("LineTime(%q) = %v, %v; want %v", line, got, ok, at)
+		}
+		// The same prefix with an explicit zone that is not an offset.
+		bad := fmt.Sprintf("%s +%02d%02d 1abc-0000-AB <= %s", at.Format(time.DateTime), 24+int(ms)%76, int(ms)%100, suffix)
+		if got, ok := lineTimeIn(bad, local); ok {
+			t.Fatalf("LineTime(%q) = %v, want none", bad, got)
+		}
+		bad = fmt.Sprintf("%s -%02d%02d 1abc-0000-AB", at.Format(time.DateTime), int(ms)%24, 60+int(ms)%40)
+		if got, ok := lineTimeIn(bad, local); ok {
+			t.Fatalf("LineTime(%q) = %v, want none", bad, got)
+		}
+		// No time at the start: suffix text alone never dates a line.
+		if got, ok := lineTimeIn("1abc-0000-AB <= "+suffix, local); ok {
+			t.Fatalf("undated line read as %v", got)
 		}
 	})
 }

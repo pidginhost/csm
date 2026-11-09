@@ -10,7 +10,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/eximlog"
 	"github.com/pidginhost/csm/internal/store"
@@ -65,6 +67,14 @@ func ScanEximHistoryForCloudRelay(cfg *config.Config, logPath string, now time.T
 		return nil
 	}
 	defer func() { _ = f.Close() }()
+	// A record is named by the file and its offset and bytes, as the realtime
+	// watcher names the same line.
+	var stream string
+	if info, statErr := f.Stat(); statErr == nil {
+		if id := fileID(info); id.known {
+			stream = alert.FileStream(id.dev, id.ino)
+		}
+	}
 
 	since := now.Add(-lookback)
 	byUser := make(map[string]*cloudRelayScanAccumulator)
@@ -76,13 +86,19 @@ func ScanEximHistoryForCloudRelay(cfg *config.Config, logPath string, now time.T
 	// compromise event. Reader.ReadString lets us skip oversized
 	// lines and keep going.
 	reader := bufio.NewReaderSize(f, 256*1024)
+	var offset int64
 	for {
 		line, rerr := reader.ReadString('\n')
 		if len(line) > 0 {
+			lineStart := offset
+			offset += int64(len(line))
+			// A line without its newline may still be written: no record yet.
+			ref := ""
 			if line[len(line)-1] == '\n' {
 				line = line[:len(line)-1]
+				ref = stream
 			}
-			processCloudRelayScanLine(line, cfg, since, byUser)
+			processCloudRelayScanRecord(line, cfg, since, byUser, cloudRelayRecord{stream: ref, offset: lineStart})
 		}
 		if rerr == nil {
 			continue
@@ -167,8 +183,12 @@ func ScanEximHistoryForCloudRelay(cfg *config.Config, logPath string, now time.T
 			Details:   truncateDaemon(details, 900),
 			Timestamp: now,
 			SourceIP:  recentIP,
-			Mailbox:   mailbox,
-			Domain:    domain,
+			// Exim's H=... [ip] of the authenticated session.
+			Attribution: admission.AttributionPeer,
+			// The newest counted send is the record behind recentIP.
+			Observation: acc.newest,
+			Mailbox:     mailbox,
+			Domain:      domain,
 		})
 		stampMailAccountOwner(findings[len(findings)-1:], user)
 
@@ -182,6 +202,12 @@ func ScanEximHistoryForCloudRelay(cfg *config.Config, logPath string, now time.T
 // an authenticated cloud-PTR acceptance within the lookback window,
 // records it under the AUTH user in `byUser`.
 func processCloudRelayScanLine(line string, cfg *config.Config, since time.Time, byUser map[string]*cloudRelayScanAccumulator) {
+	processCloudRelayScanRecord(line, cfg, since, byUser, cloudRelayRecord{})
+}
+
+// processCloudRelayScanRecord is processCloudRelayScanLine for a line read
+// at rec, which the newest counted send of its account then names.
+func processCloudRelayScanRecord(line string, cfg *config.Config, since time.Time, byUser map[string]*cloudRelayScanAccumulator, rec cloudRelayRecord) {
 	if !strings.Contains(line, " <= ") || !strings.Contains(line, "A=dovecot_") {
 		return
 	}
@@ -220,6 +246,22 @@ func processCloudRelayScanLine(line string, cfg *config.Config, since time.Time,
 		byUser[user] = acc
 	}
 	acc.record(cloudRelayScanEvent{at: ts, ip: ip, ptr: ptr})
+	// Forward order: the last counted send is the newest. A send without a
+	// record or a whole server time leaves none, so the finding never names
+	// an older address's line. The observation reads Exim's full time; the
+	// counting above keeps its legacy reading.
+	acc.newest = alert.Observation{}
+	if at, dated := eximlog.LineTime(line); rec.stream != "" && dated {
+		acc.newest = alert.Observation{Producer: string(checks.ProducerEximHistory), Stream: rec.stream,
+			Cursor: alert.RecordCursor(rec.offset, line), ObservedAt: at.UTC()}
+	}
+}
+
+// cloudRelayRecord is where a mainlog line sits: the file's stream, empty for
+// a line that may still be written, and the line's start offset.
+type cloudRelayRecord struct {
+	stream string
+	offset int64
 }
 
 // drainUntilNewline reads from reader and discards bytes until a newline
@@ -257,6 +299,8 @@ type cloudRelayScanAccumulator struct {
 	bestAt          time.Time
 	bestPTR         string
 	reportable      bool
+	// newest names the last counted send's record; zero without one.
+	newest alert.Observation
 }
 
 func newCloudRelayScanAccumulator() *cloudRelayScanAccumulator {
