@@ -44,6 +44,9 @@ type comparison struct {
 	unwritten []comparisonRow
 	// dropped counts the rows retention discarded unwritten.
 	dropped uint64
+	// discardedThrough keeps late rows from restoring partial hours after
+	// retention discarded them, even when acknowledgement makes room.
+	discardedThrough time.Time
 }
 
 type comparisonRow struct {
@@ -153,10 +156,15 @@ func (k compareKey) row(end time.Time, n uint64) actionlog.Record {
 func (c *comparison) retain() {
 	sort.SliceStable(c.unwritten, func(i, j int) bool { return c.unwritten[i].Timestamp.Before(c.unwritten[j].Timestamp) })
 	if extra := len(c.unwritten) - maxUnwrittenRows; extra > 0 {
-		cut := extra
-		for cut < len(c.unwritten) && c.unwritten[cut].Timestamp.Equal(c.unwritten[cut-1].Timestamp) {
-			cut++
+		if through := c.unwritten[extra-1].Timestamp; through.After(c.discardedThrough) {
+			c.discardedThrough = through
 		}
+	}
+	cut := 0
+	for cut < len(c.unwritten) && !c.unwritten[cut].Timestamp.After(c.discardedThrough) {
+		cut++
+	}
+	if cut > 0 {
 		copy(c.unwritten, c.unwritten[cut:])
 		c.unwritten = c.unwritten[:len(c.unwritten)-cut]
 		saturatingAdd(&c.dropped, uint64(cut))

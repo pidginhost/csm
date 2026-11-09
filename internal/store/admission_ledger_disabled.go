@@ -36,7 +36,7 @@ func (l *AdmissionLedger) RefuseDisabled(allows func(admission.Candidate) bool) 
 		ended := false
 		for _, lc := range live {
 			if lc.c.State == admission.StateQueued && !allows(lc.c) {
-				if err = q.end(lc, admission.ReasonDisabled); err != nil {
+				if err = q.refuse(lc, admission.ReasonDisabled, 0); err != nil {
 					return err
 				}
 				ended = true

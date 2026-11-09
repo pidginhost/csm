@@ -95,10 +95,17 @@ func TestAdmissionLedgerDisabledRefusalIsAtomic(t *testing.T) {
 	// Refusal must raise schema 10 even without a prior schema-13 write.
 	// Episode rows permit a deliberately lowered schema in this fixture.
 	f.setSchema(admissionSchemaVersion)
+	var reported []laterRefusal
+	f.l.ObserveRefusals(func(c admission.Candidate, err error, at time.Time) {
+		reported = append(reported, laterRefusal{key: c.Key, err: err, at: at})
+	})
 	before := f.snapshot()
 	f.failNext("disabled")
 	if err := f.l.RefuseDisabled(allows); err == nil || !reflect.DeepEqual(f.snapshot(), before) {
 		t.Fatalf("failed refusal changed the ledger: %v", err)
+	}
+	if len(reported) != 0 {
+		t.Fatalf("failed refusal reported %+v", reported)
 	}
 	if err := f.l.RefuseDisabled(allows); err != nil {
 		t.Fatal(err)
@@ -114,6 +121,28 @@ func TestAdmissionLedgerDisabledRefusalIsAtomic(t *testing.T) {
 	after := f.snapshot()
 	if err := f.l.RefuseDisabled(allows); err != nil || !reflect.DeepEqual(f.snapshot(), after) {
 		t.Fatalf("repeated refusal changed the ledger: %v", err)
+	}
+	if len(reported) != 2 {
+		t.Fatalf("reported %+v, want each disabled candidate exactly once", reported)
+	}
+	seen := map[admission.CandidateKey]bool{}
+	for _, r := range reported {
+		reason, ok := admission.ReasonOf(r.err)
+		if !ok || reason != admission.ReasonDisabled || admission.CauseOf(r.err) != 0 || !r.at.Equal(f.wall) || seen[r.key] {
+			t.Fatalf("wrong or duplicate disabled refusal: %+v", r)
+		}
+		seen[r.key] = true
+	}
+	for _, id := range ids[:2] {
+		if !seen[f.candidateOf(id).Key] {
+			t.Fatalf("disabled candidate %s was not reported", id)
+		}
+	}
+	if _, err := f.l.Terminate(ids[2], admission.ReasonDisabled); err != nil {
+		t.Fatal(err)
+	}
+	if len(reported) != 2 {
+		t.Fatalf("explicit termination was also reported: %+v", reported)
 	}
 }
 

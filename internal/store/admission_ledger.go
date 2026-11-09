@@ -510,10 +510,11 @@ type refusedEnding struct {
 }
 
 // ObserveRefusals registers fn to learn of each queued candidate a later
-// check refuses (revalidation, an inventory refresh, the recheck of a
-// schedule or preview pick) or that loses its queue position, with the
-// refusal, its cause and the ledger time it ended at, after the ending
-// commits. fn runs under the ledger lock and must not call it.
+// check refuses (revalidation, an inventory refresh, a configuration
+// opt-out, the recheck of a schedule or preview pick) or that loses its
+// queue position, with the refusal, its cause and the ledger time it ended
+// at, after the ending commits. fn runs under the ledger lock and must not
+// call it.
 func (l *AdmissionLedger) ObserveRefusals(fn func(admission.Candidate, error, time.Time)) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
