@@ -295,9 +295,8 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	state.IPs = stillBlocked
 
 	// Prune auto-response subnet blocks that now intersect the DoS-exempt set
-	// before making new subnet decisions this cycle. Never in dry-run:
-	// dry-run promises a read-only firewall and pruning is a kernel mutation.
-	if blocker != nil && isAutoResponseActive(cfg) {
+	// before making new subnet decisions this cycle.
+	if blocker != nil {
 		pruneExemptAutoSubnets(cfg, blocker, work.progress)
 	}
 
@@ -1513,11 +1512,16 @@ func shouldSkipAutoSubnet(cfg *config.Config, cidr string, logged map[string]str
 // CLI, web-UI, challenge, whitelist, dyndns, system, and unknown-source blocks
 // are left untouched. If b does not implement subnetManager, returns 0.
 // UnblockSubnet errors are logged and the entry is not counted as pruned.
+// Nothing is pruned unless auto response is live: dry run promises a
+// read-only firewall and pruning is a kernel mutation.
 func PruneExemptAutoSubnets(cfg *config.Config, b IPBlocker) int {
 	return pruneExemptAutoSubnets(cfg, b, func() {})
 }
 
 func pruneExemptAutoSubnets(cfg *config.Config, b IPBlocker, progress func()) int {
+	if !isAutoResponseActive(cfg) {
+		return 0
+	}
 	sm, ok := b.(subnetManager)
 	if !ok {
 		return 0
