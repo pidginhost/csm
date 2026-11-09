@@ -79,8 +79,8 @@ func TestPath6_CentralResponseRespectsModeReload(t *testing.T) {
 			if err := d.performCentralAction(planned); err != nil {
 				t.Fatal(err)
 			}
-			if d.ipList.Contains(path6IP) || len(blocker.calls) != 0 || len(a.got()) != 0 {
-				t.Fatalf("queued central response survived observe reload: responses %+v, blocked %v", a.got(), blocker.calls)
+			if d.ipList.Contains(path6IP) || len(blocker.calls) != 0 || len(a.got()) != 0 || len(a.refusals) != 0 {
+				t.Fatalf("queued central response survived observe reload: responses %+v, refusals %+v, blocked %v", a.got(), a.refusals, blocker.calls)
 			}
 		})
 	}
