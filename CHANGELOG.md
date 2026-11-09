@@ -9,6 +9,10 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ## [Unreleased]
 
+### Security
+
+- Automatic response forecasts reject unverified PHP relay addresses and stop trusting evidence after its allowed address sources change.
+
 ### Fixed
 
 - Install commands shown on static web pages, and framework classes that handle admin uploads, no longer raise Critical dropper alerts.
