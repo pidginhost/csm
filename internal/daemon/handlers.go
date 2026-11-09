@@ -61,7 +61,10 @@ func parseAccessLogLineEnhanced(line string, cfg *config.Config) []alert.Finding
 	// When a user changes their password, in-flight browser AJAX requests (notification
 	// polls, etc.) will 401 against the now-invalidated session - that's expected, not
 	// an attack. Real API abuse won't correlate with a recent purge for the same account.
-	if strings.Contains(line, "\" 401 ") || strings.Contains(line, "\" 403 ") {
+	// A failure counts as brute force against its source and can block it;
+	// a trusted proxy's address stands for every visitor behind it.
+	if (strings.Contains(line, "\" 401 ") || strings.Contains(line, "\" 403 ")) &&
+		!checks.IsTrustedProxy(ip, cfg.WebServer.TrustedProxies) {
 		if strings.Contains(lineLower, "json-api") || strings.Contains(lineLower, "/execute/") {
 			if !purgeTracker.isPostPurge401(ip) {
 				findings = append(findings, alert.Finding{

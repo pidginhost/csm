@@ -13,6 +13,7 @@ import (
 	"github.com/pidginhost/csm/internal/admission"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/modsec"
 	"github.com/pidginhost/csm/internal/obs"
@@ -384,7 +385,10 @@ func parseModSecLogLineDeduped(line string, cfg *config.Config) []alert.Finding 
 	// in the same burst. LiteSpeed often omits msg/tag on pass-action attack
 	// rules; unknown must fail secure instead of disappearing before the low
 	// anomaly rule denies. Operator-excluded rules are not recorded at all.
-	if ip != "" && ruleID != "" && (isBlock || conf == modsecConfHigh || conf == modsecConfUnknown) {
+	// A trusted proxy's address stands for every visitor behind it: its
+	// denies stay visible below but never escalate to a block of it.
+	if ip != "" && ruleID != "" && (isBlock || conf == modsecConfHigh || conf == modsecConfUnknown) &&
+		!checks.IsTrustedProxy(ip, cfg.WebServer.TrustedProxies) {
 		hits, win := modsecEscalationParams(cfg)
 		lowConfHits := modsecLowConfEscalationHits(cfg)
 		rearmAfter := modsecEscalationRearmInterval(cfg)

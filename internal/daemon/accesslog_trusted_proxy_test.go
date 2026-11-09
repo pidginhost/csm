@@ -103,3 +103,53 @@ func TestAccessLogBruteForceSkipsTrustedProxyPeer(t *testing.T) {
 		}
 	}
 }
+
+// ModSecurity names the proxy as the client of every request it forwards.
+// Its denies stay visible, but they must not escalate to a block of it.
+func TestModSecEscalationSkipsTrustedProxyPeer(t *testing.T) {
+	resetModSecState()
+	t.Cleanup(resetModSecState)
+	cfg := &config.Config{}
+	cfg.WebServer.TrustedProxies = []string{"203.0.113.0/28"}
+	const format = `[Wed Apr 01 17:13:54.047783 2026] [error] [client %s] ModSecurity: Access denied with code 403, [Rule: 'REQUEST_URI' '/\.env'] [id "900115"] [msg "CSM VP: Blocked .env file access"] [hostname "edge.example.net"] [uri "/.env_sample"]`
+
+	escalations := func(peer string) (n, events int) {
+		for i := 0; i < 10; i++ {
+			for _, f := range parseModSecLogLineDeduped(fmt.Sprintf(format, peer), cfg) {
+				switch f.Check {
+				case "modsec_block_escalation", "modsec_csm_block_escalation":
+					n++
+				case "modsec_block_realtime":
+					events++
+				}
+			}
+		}
+		return n, events
+	}
+	if n, _ := escalations("198.51.100.61"); n == 0 {
+		t.Fatal("untrusted peer did not escalate; the fixture no longer reaches the threshold")
+	}
+	n, events := escalations("203.0.113.5")
+	if n != 0 {
+		t.Fatalf("trusted proxy peer escalated %d times, want 0", n)
+	}
+	if events == 0 {
+		t.Fatal("trusted proxy peer lost its per-request ModSecurity finding")
+	}
+}
+
+// A cPanel API auth failure counts as brute force against its source and
+// can block it. From a trusted proxy that source is every visitor behind it.
+func TestCpanelAPIFailureSkipsTrustedProxyPeer(t *testing.T) {
+	resetPurgeTrackerState()
+	cfg := &config.Config{}
+	cfg.WebServer.TrustedProxies = []string{"203.0.113.0/28"}
+	const format = `%s - - [11/Apr/2026:12:00:00 +0000] "GET /cpsess1234567/execute/Email/list_pops HTTP/1.1" 401 0 "-" "Mozilla/5.0" "example.com:2083"`
+
+	if got := parseAccessLogLineEnhanced(fmt.Sprintf(format, "198.51.100.11"), cfg); len(got) != 1 || got[0].Check != "api_auth_failure_realtime" {
+		t.Fatalf("untrusted peer: %+v, want one api_auth_failure_realtime", got)
+	}
+	if got := parseAccessLogLineEnhanced(fmt.Sprintf(format, "203.0.113.5"), cfg); len(got) != 0 {
+		t.Fatalf("trusted proxy peer: %+v, want none", got)
+	}
+}

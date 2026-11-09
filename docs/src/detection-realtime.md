@@ -618,7 +618,7 @@ Requests that a cPanel proxy subdomain (`cpanel.`, `webmail.`, `whm.` and simila
 
 Web counters use the request and timestamp written by the web server, including requests with Basic authentication usernames and quoted header values. For periodic client attribution, `web_server.trusted_proxies` enables X-Forwarded-For from a configured proxy; the log format must record it immediately after User-Agent, optionally preceded by a vhost in `host:port` form.
 
-The realtime WordPress, XML-RPC and admin panel access-log checks skip a configured trusted proxy before creating or updating request counters. They ignore X-Forwarded-For, so these requests cannot produce a realtime block of either the proxy or its forwarded client through these checks. The first log field must contain the actual connecting peer; a log that replaces it with a forwarded client address cannot identify the proxy. This exclusion does not apply to ModSecurity, cPanel's own access-log handler, or periodic scans.
+Realtime checks read the connecting address, not X-Forwarded-For. When that address is a configured trusted proxy, the WordPress, XML-RPC and admin panel checks skip the request, ModSecurity denies stay visible but never escalate to a block, and cPanel API auth failures are not reported. The web server must log the connecting peer, not a forwarded client, in that field.
 
 A verified crawler is dropped from the scan before any counter increments: a source IP whose claimed bot User-Agent passes IP-range or reverse-DNS verification cannot contribute to a flood, scanner, or spoof finding, so verified Googlebot and AI crawler traffic does not produce false positives. Verification is covered in [Threat intel](threat-intel.md#verified-crawlers).
 
