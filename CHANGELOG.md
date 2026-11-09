@@ -21,7 +21,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 - Automatic response previews reject subnet targets from checks that only attribute individual addresses, including previously queued responses.
 - New hosts set up with `csm install` now start from the packaged config, so they filter IPv6 and match the package's alert and detection settings.
 - Automatic response forecasts include scheduled security scans, Exim history and IP reputation findings with recent local sightings, without treating repeated reports as independent evidence.
-- Automatic response forecasts never read a trusted proxy's own address as the client, and include SMTP password sprays seen in a Postfix mail log.
+- Automatic response forecasts never read an address in `web_server.trusted_proxies` as the client, and include SMTP password sprays seen in a Postfix mail log.
 
 ### Security
 
