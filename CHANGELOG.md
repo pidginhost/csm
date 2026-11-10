@@ -9,13 +9,9 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ## [Unreleased]
 
-### Security
-
-- Hosted accounts named after Stalwart no longer bypass outbound mail detection or blocking.
-
 ### Fixed
 
-- Outbound mail from Stalwart system accounts or users listed in `firewall.smtp_allow_users` no longer raises unexpected high-severity findings.
+- Outbound mail from Stalwart's service account, or from users listed in `firewall.smtp_allow_users`, no longer raises a High direct SMTP egress finding.
 
 ## [4.11.0] - 2026-11-10
 
