@@ -2,6 +2,7 @@ package emailspool
 
 import (
 	"net/netip"
+	"slices"
 	"strings"
 )
 
@@ -16,8 +17,13 @@ type ProxyProvider struct {
 // in file order, so a caller can select providers by name. A bare address
 // is a single-address range. An operator's replacement file is not read:
 // it carries no provider headings the loader could trust.
+// The returned providers and prefix slices are independent copies.
 func BuiltInProxyProviders() []ProxyProvider {
-	return builtInProxyProviders
+	providers := slices.Clone(builtInProxyProviders)
+	for i := range providers {
+		providers[i].Prefixes = slices.Clone(providers[i].Prefixes)
+	}
+	return providers
 }
 
 var builtInProxyProviders = mustProxyProviders(defaultProxyRanges)

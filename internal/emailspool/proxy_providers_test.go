@@ -2,8 +2,37 @@ package emailspool
 
 import (
 	"net/netip"
+	"reflect"
 	"testing"
 )
+
+func TestBuiltInProxyProvidersReturnsIndependentSnapshots(t *testing.T) {
+	for name, mutate := range map[string]func([]ProxyProvider){
+		"provider name": func(providers []ProxyProvider) {
+			providers[0].Name = "Example caller"
+		},
+		"prefix entry": func(providers []ProxyProvider) {
+			providers[0].Prefixes[0] = netip.MustParsePrefix("192.0.2.0/24")
+		},
+		"prefix slice": func(providers []ProxyProvider) {
+			providers[0].Prefixes = nil
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			want := mustProxyProviders(defaultProxyRanges)
+			// Keep a failing ownership check from corrupting later tests.
+			t.Cleanup(func() { builtInProxyProviders = want })
+			before := BuiltInProxyProviders()
+			mutate(BuiltInProxyProviders())
+			if !reflect.DeepEqual(before, want) {
+				t.Error("mutating one result changed an earlier snapshot")
+			}
+			if !reflect.DeepEqual(BuiltInProxyProviders(), want) {
+				t.Error("mutating one result changed the built-in snapshot")
+			}
+		})
+	}
+}
 
 // Every built-in entry belongs to exactly the provider block it is listed
 // under, so callers can select providers by name.
