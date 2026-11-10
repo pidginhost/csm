@@ -328,7 +328,10 @@ finding unresolved when its configuration cannot be inspected.
 Joomla, Drupal, Magento, OpenCart, and PrestaShop scans skip suspended accounts
 before reading their configuration or applying the account scan file limit: a
 suspended account's database user is locked, so scanning it would only leave the
-check incomplete. PrestaShop also skips copies named `staging`, `backup`,
+check incomplete. Both Magento configuration layouts use this filter. Only
+installs with a resolved owner and a cPanel suspension marker are excluded;
+unowned paths remain eligible. Active accounts still scan when others are
+suspended. PrestaShop also skips copies named `staging`, `backup`,
 `backups`, `cache` and `.trash`, matched without regard to case.
 
 CMS re-checks look at every install of the account in the layouts the scanner
