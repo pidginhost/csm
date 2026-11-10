@@ -569,7 +569,9 @@ type Config struct {
 		// the detector. Ships empty; operator-supplied list only.
 		HTTPASNCrawlAllowlistASNs []uint `yaml:"http_asn_crawl_allowlist_asns"`
 		// HTTPASNCrawlReverseProxyASNs lists CDN/reverse-proxy ASNs whose edge
-		// IPs are never directly flagged by this detector.
+		// IPs are never directly flagged by this detector. Admission also
+		// refuses HTTP, cPanel and IP reputation forecasts against an address
+		// the ASN database places in one of these networks.
 		// Ships with Cloudflare (13335), Fastly (54113), and Akamai (20940).
 		// Set to [] to clear the seed; absent key retains the built-in list.
 		HTTPASNCrawlReverseProxyASNs []uint `yaml:"http_asn_crawl_reverse_proxy_asns"`

@@ -2,6 +2,7 @@ package checks
 
 import (
 	"fmt"
+	"net"
 	"strconv"
 	"strings"
 	"testing"
@@ -526,4 +527,22 @@ func TestDomlogASNCrawlCountsOnlyResolvedClients(t *testing.T) {
 	if sc.byASN[64513] != nil || sc.byASN[64514] != nil || sc.scopeExpensive != 1 {
 		t.Fatalf("a proxy or client text contributed: proxy %+v text %+v expensive %d", sc.byASN[64513], sc.byASN[64514], sc.scopeExpensive)
 	}
+}
+
+// normalizeHTTPClientIP reduces a logged peer spelling to a bare address,
+// or "" for one the detectors never count.
+func normalizeHTTPClientIP(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if host, _, err := net.SplitHostPort(raw); err == nil {
+		raw = host
+	}
+	raw = strings.Trim(raw, "[]")
+	ip := net.ParseIP(raw)
+	if ip == nil || ip.IsLoopback() || ip.IsUnspecified() {
+		return ""
+	}
+	return ip.String()
 }

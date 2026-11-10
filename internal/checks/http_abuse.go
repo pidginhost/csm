@@ -1210,22 +1210,6 @@ func recordClient(rec accessLogRecord, trusted clientaddr.Trusted) (clientaddr.R
 	return res, nil
 }
 
-func normalizeHTTPClientIP(raw string) string {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return ""
-	}
-	if host, _, err := net.SplitHostPort(raw); err == nil {
-		raw = host
-	}
-	raw = strings.Trim(raw, "[]")
-	ip := net.ParseIP(raw)
-	if ip == nil || ip.IsLoopback() || ip.IsUnspecified() {
-		return ""
-	}
-	return ip.String()
-}
-
 // IsTrustedProxy reports whether addr, a bare address as a log writes a
 // peer, is listed in cfg's one trusted proxy list: web_server.trusted_proxies
 // and challenge.trusted_proxies together. A listed address stands for every

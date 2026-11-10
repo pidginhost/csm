@@ -159,7 +159,7 @@ right, past other trusted proxies, and takes the first other address as the
 visitor. An entry that is not an address ends the read.
 
 If no visitor can be identified because the chain is missing, malformed,
-over 4 KiB, more than 32 trusted hops before the visitor, or contains only
+over 4 KiB, more than 31 trusted hops before the visitor, or contains only
 trusted proxies, challenge endpoints return HTTP 400. They do not issue a
 puzzle or cookie, accept a bypass, or clear a pending challenge for the
 proxy. This also applies to the gate and admin-token endpoints.
