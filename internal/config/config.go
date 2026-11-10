@@ -1641,6 +1641,9 @@ type defaultPresence struct {
 	integrityImmutable         bool
 	suppressWebmail            bool
 	autoResponse               autoResponsePresence
+	// The trusted_proxies lists as written, null entries kept as "".
+	webServerProxies, challengeProxies         []string
+	webServerProxiesRead, challengeProxiesRead bool
 	// firewall records which firewall: keys the operator wrote, so a
 	// partial block keeps the defaults for everything unlisted. nil means
 	// the whole block was absent.
@@ -1751,6 +1754,12 @@ type ForwardHoldSignals struct {
 }
 
 func applyDefaults(cfg *Config, presence defaultPresence) {
+	if presence.webServerProxiesRead {
+		cfg.WebServer.TrustedProxies = presence.webServerProxies
+	}
+	if presence.challengeProxiesRead {
+		cfg.Challenge.TrustedProxies = presence.challengeProxies
+	}
 	for i, name := range cfg.Alerts.Email.DisabledChecks {
 		cfg.Alerts.Email.DisabledChecks[i] = CanonicalCheckName(strings.TrimSpace(name))
 	}
@@ -2388,10 +2397,23 @@ func LoadBytes(data []byte) (*Config, error) {
 	if err := validateFirewallConfig(cfg); err != nil {
 		return nil, err
 	}
-	if err := validateTrustedProxies(cfg); err != nil {
-		return nil, err
-	}
 	return cfg, nil
+}
+
+// trustedProxyList reads a trusted_proxies sequence with each null entry kept
+// as "". Anything else is left to the typed decode, which reports it.
+func trustedProxyList(node yaml.Node) ([]string, bool) {
+	var items []*string
+	if yamlResolvedTag(&node) != "!!seq" || node.Decode(&items) != nil {
+		return nil, false
+	}
+	out := make([]string, len(items))
+	for i, item := range items {
+		if item != nil {
+			out[i] = *item
+		}
+	}
+	return out, true
 }
 
 func defaultPresenceFromYAML(data []byte) (defaultPresence, error) {
@@ -2421,20 +2443,13 @@ func defaultPresenceFromYAML(data []byte) (defaultPresence, error) {
 	if err := yaml.Unmarshal(data, &raw); err != nil {
 		return presence, err
 	}
-	// yaml.v3 drops null sequence entries when decoding []string, so the
-	// typed proxy validation alone could accept only part of a trust list.
-	for _, section := range []struct {
-		name   string
-		fields map[string]yaml.Node
-	}{
-		{"web_server", raw.WebServer},
-		{"challenge", raw.Challenge},
-	} {
-		if node, ok := section.fields["trusted_proxies"]; ok && !yamlNodeIsNull(&node) {
-			if err := validateStringList(node, section.name+".trusted_proxies"); err != nil {
-				return presence, err
-			}
-		}
+	// yaml.v3 drops null sequence entries when decoding []string. Keep them
+	// as "" so Validate reports them instead of losing them silently.
+	if node, ok := raw.WebServer["trusted_proxies"]; ok {
+		presence.webServerProxies, presence.webServerProxiesRead = trustedProxyList(node)
+	}
+	if node, ok := raw.Challenge["trusted_proxies"]; ok {
+		presence.challengeProxies, presence.challengeProxiesRead = trustedProxyList(node)
 	}
 	if raw.Firewall != nil {
 		presence.firewall = make(map[string]bool, len(raw.Firewall))

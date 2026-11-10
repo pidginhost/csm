@@ -229,6 +229,36 @@ func TestBuildDoctorReportIncludesSSHLockoutWarning(t *testing.T) {
 	t.Fatalf("doctor omitted the SSH lockout warning: %+v", report.Checks)
 }
 
+// Deploy scripts roll an upgrade back when doctor fails, so an unusable
+// trusted proxy entry, which the daemon skips, is a warning there.
+func TestBuildDoctorReportWarnsAboutUnusableTrustedProxies(t *testing.T) {
+	cfg := validDoctorConfig()
+	cfg.WebServer.TrustedProxies = []string{"0.0.0.0/0", "proxy.example"}
+	snap := &health.Snapshot{StartedAt: time.Now(), StoreHealthy: true, Watchers: map[string]bool{"fanotify": true}}
+	payload, err := json.Marshal(control.StatusResult{Version: "test", Snapshot: snap})
+	if err != nil {
+		t.Fatal(err)
+	}
+	report := buildDoctorReport(
+		func() (*config.Config, error) { return cfg, nil },
+		func() ([]byte, error) { return payload, nil },
+		integrityOK,
+	)
+	warned := 0
+	for _, check := range report.Checks {
+		if check.Name != "config: web_server.trusted_proxies" {
+			continue
+		}
+		if check.Status != "warn" {
+			t.Fatalf("check %+v, want warn: a doctor failure rolls the upgrade back", check)
+		}
+		warned++
+	}
+	if warned != 2 || report.OverallStatus == "fail" {
+		t.Fatalf("warned %d entries, overall %q; want both entries warned and no failure: %+v", warned, report.OverallStatus, report.Checks)
+	}
+}
+
 func TestBuildDoctorReportStopsOnConfigValidationError(t *testing.T) {
 	cfg := validDoctorConfig()
 	cfg.Hostname = ""
@@ -679,5 +709,20 @@ func TestChallengeGateProbeReachesSocketListener(t *testing.T) {
 				t.Fatalf("probe = %+v, want ok naming %s", got, cfg.Challenge.ListenAddr)
 			}
 		})
+	}
+}
+
+// A skipped catch-all trusts no proxy, so doctor still checks the listener
+// as direct mode rather than as a proxy deployment.
+func TestChallengeBehindProxyIgnoresSkippedEntries(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Challenge.PublicURL = "https://proxy.example.com/challenge"
+	cfg.Challenge.TrustedProxies = []string{"0.0.0.0/0", "::/0"}
+	if challengeBehindProxy(cfg) {
+		t.Fatal("a skipped catch-all made doctor treat the listener as behind a proxy")
+	}
+	cfg.Challenge.TrustedProxies = append(cfg.Challenge.TrustedProxies, "192.0.2.10")
+	if !challengeBehindProxy(cfg) {
+		t.Fatal("a usable proxy entry must still count")
 	}
 }

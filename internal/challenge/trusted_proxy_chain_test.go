@@ -109,6 +109,20 @@ func extractVia(t *testing.T, trusted []string, peer, xff string) string {
 	return s.extractIP(req)
 }
 
+// A catch-all entry is never trusted: a forwarded request names nobody, so
+// no visitor's pass is issued for an address a header could forge, and a
+// direct request is its own client.
+func TestExtractIPNamesNobodyBehindARefusedCatchAll(t *testing.T) {
+	for _, entry := range []string{"0.0.0.0/0", "::ffff:0:0/96"} {
+		if got := extractVia(t, []string{entry}, "198.51.100.10:1234", "203.0.113.20"); got != "" {
+			t.Errorf("%s: forwarded request resolved to %q, want nobody", entry, got)
+		}
+		if got := extractVia(t, []string{entry}, "198.51.100.10:1234", ""); got != "198.51.100.10" {
+			t.Errorf("%s: direct request resolved to %q, want its peer", entry, got)
+		}
+	}
+}
+
 func TestExtractIPTrustedProxyCIDR(t *testing.T) {
 	for _, tc := range []struct{ cidr, peer string }{
 		{"192.0.2.0/24", "192.0.2.7:1234"},

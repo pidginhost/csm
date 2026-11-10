@@ -32,11 +32,30 @@ var (
 	ErrTruncated  = errors.New("forwarded chain was cut before its client")
 	ErrOverlong   = errors.New("forwarded chain exceeds 4 KiB or 32 hops before its client")
 	ErrAllTrusted = errors.New("forwarded chain holds only trusted proxies")
+	// ErrCatchAllChain refuses a forwarded chain from a peer that only a
+	// refused catch-all entry listed: the operator put a proxy there, so the
+	// peer is not a visitor, and its header is not trusted either.
+	ErrCatchAllChain = errors.New("forwarded chain from a peer only a catch-all entry listed")
 )
+
+// ErrCatchAllEntry marks a refused entry that covers every address of a
+// family, such as 0.0.0.0/0.
+var ErrCatchAllEntry = errors.New("entry covers every address")
+
+// catchAllError refuses a catch-all entry and keeps the range it named.
+type catchAllError struct {
+	msg    string
+	covers netip.Prefix
+}
+
+func (e *catchAllError) Error() string        { return e.msg }
+func (e *catchAllError) Is(target error) bool { return target == ErrCatchAllEntry }
 
 // Trusted is a parsed trusted proxy list.
 type Trusted struct {
 	prefixes []netip.Prefix
+	// catchAll holds refused catch-all entries; see ErrCatchAllChain.
+	catchAll []netip.Prefix
 }
 
 // Parse reads trusted proxy entries: IP addresses or CIDR ranges. An empty
@@ -47,11 +66,33 @@ func Parse(entries []string) (Trusted, error) {
 		entry := strings.TrimSpace(raw)
 		prefix, err := parseEntry(entry)
 		if err != nil {
-			return Trusted{}, fmt.Errorf("[%d]: %q %v", i, entry, err)
+			return Trusted{}, fmt.Errorf("[%d]: %q %w", i, entry, err)
 		}
 		t.prefixes = append(t.prefixes, prefix)
 	}
 	return t, nil
+}
+
+// ParseUsable reads entries as Parse does but skips each unusable one,
+// returning its error, so a running daemon keeps the proxies listed beside
+// it. A skipped catch-all is never trusted; see ErrCatchAllChain.
+func ParseUsable(entries []string) (Trusted, []error) {
+	var t Trusted
+	var errs []error
+	for i, raw := range entries {
+		entry := strings.TrimSpace(raw)
+		prefix, err := parseEntry(entry)
+		if err != nil {
+			var all *catchAllError
+			if errors.As(err, &all) {
+				t.catchAll = append(t.catchAll, all.covers)
+			}
+			errs = append(errs, fmt.Errorf("[%d]: %q %w", i, entry, err))
+			continue
+		}
+		t.prefixes = append(t.prefixes, prefix)
+	}
+	return t, errs
 }
 
 func parseEntry(entry string) (netip.Prefix, error) {
@@ -76,12 +117,12 @@ func parseEntry(entry string) (netip.Prefix, error) {
 	// and silently leave the configured IPv4 proxies uncovered.
 	if prefix.Addr().Is4In6() {
 		if prefix.Bits() <= 96 {
-			return netip.Prefix{}, errors.New("covers every IPv4 address")
+			return netip.Prefix{}, &catchAllError{"covers every IPv4 address", netip.PrefixFrom(netip.IPv4Unspecified(), 0)}
 		}
 		prefix = netip.PrefixFrom(prefix.Addr().Unmap(), prefix.Bits()-96)
 	}
 	if prefix.Bits() == 0 {
-		return netip.Prefix{}, errors.New("is a default route and would trust every address")
+		return netip.Prefix{}, &catchAllError{"is a default route and would trust every address", prefix}
 	}
 	return prefix.Masked(), nil
 }
@@ -137,9 +178,21 @@ func Resolve(peer, xff string, complete bool, t Trusted) (Result, error) {
 		return Result{}, ErrPeer
 	}
 	if !t.Has(p) {
+		if t.refusedCatchAll(p) && strings.Trim(xff, " \t") != "" {
+			return Result{}, ErrCatchAllChain
+		}
 		return Result{Client: p, Peer: p}, nil
 	}
 	return chain(p, xff, complete, t)
+}
+
+func (t Trusted) refusedCatchAll(addr netip.Addr) bool {
+	for _, p := range t.catchAll {
+		if p.Contains(addr) {
+			return true
+		}
+	}
+	return false
 }
 
 // ResolveBehindProxy returns the client behind a peer that has no address

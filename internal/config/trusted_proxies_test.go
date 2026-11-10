@@ -10,7 +10,9 @@ import (
 	"testing"
 )
 
-func TestLoadRejectsNullTrustedProxyEntries(t *testing.T) {
+// An upgrade must keep a daemon that ran with an empty entry: Load skips it,
+// the readable entries keep working, and validate warns.
+func TestLoadSkipsNullTrustedProxyEntries(t *testing.T) {
 	for _, key := range []string{"web_server", "challenge"} {
 		for _, tc := range []struct {
 			name, preamble, entries string
@@ -24,30 +26,32 @@ func TestLoadRejectsNullTrustedProxyEntries(t *testing.T) {
 			t.Run(key+"/"+tc.name, func(t *testing.T) {
 				data := []byte(fmt.Sprintf("%s%s:\n  trusted_proxies: %s\n", tc.preamble, key, tc.entries))
 				cfg, err := LoadBytes(data)
-				if err == nil || cfg != nil {
-					t.Fatal("LoadBytes accepted an empty proxy entry and retained a partial trust list")
+				if err != nil || cfg == nil {
+					t.Fatalf("LoadBytes refused an empty proxy entry: %v", err)
 				}
-				if !strings.Contains(err.Error(), key+".trusted_proxies") {
-					t.Fatalf("error = %v, want the invalid proxy setting named", err)
+				if got := TrustedProxies(cfg); got.Len() != 1 || !got.Covers(netip.MustParseAddr("192.0.2.10")) {
+					t.Fatalf("TrustedProxies kept %d entries, want only 192.0.2.10", got.Len())
 				}
+				assertTrustedProxyWarning(t, cfg, key, "is empty")
 			})
 		}
 	}
 }
 
-func TestLoadRejectsInheritedNullTrustedProxyEntries(t *testing.T) {
+func TestLoadSkipsInheritedNullTrustedProxyEntries(t *testing.T) {
 	for _, key := range []string{"web_server", "challenge"} {
 		t.Run(key, func(t *testing.T) {
 			data := []byte(fmt.Sprintf("%s:\n  <<: {trusted_proxies: [192.0.2.10, null]}\n", key))
-			_, err := LoadBytes(data)
-			if err == nil || !strings.Contains(err.Error(), key+".trusted_proxies") {
-				t.Fatalf("LoadBytes error = %v, want the inherited empty proxy entry refused", err)
+			cfg, err := LoadBytes(data)
+			if err != nil {
+				t.Fatalf("LoadBytes refused an inherited empty proxy entry: %v", err)
 			}
+			assertTrustedProxyWarning(t, cfg, key, "is empty")
 		})
 	}
 }
 
-func TestLoadRejectsNullTrustedProxyEntriesFromDropIns(t *testing.T) {
+func TestLoadSkipsNullTrustedProxyEntriesFromDropIns(t *testing.T) {
 	for _, key := range []string{"web_server", "challenge"} {
 		t.Run(key, func(t *testing.T) {
 			dir := t.TempDir()
@@ -56,10 +60,11 @@ func TestLoadRejectsNullTrustedProxyEntriesFromDropIns(t *testing.T) {
 				t.Fatal(err)
 			}
 			main := []byte(fmt.Sprintf("%s:\n  trusted_proxies: [192.0.2.10]\n", key))
-			_, err := LoadBytesWithDir(main, dir)
-			if err == nil || !strings.Contains(err.Error(), key+".trusted_proxies") {
-				t.Fatalf("LoadBytesWithDir error = %v, want the empty drop-in entry refused", err)
+			cfg, err := LoadBytesWithDir(main, dir)
+			if err != nil {
+				t.Fatalf("LoadBytesWithDir refused an empty drop-in entry: %v", err)
 			}
+			assertTrustedProxyWarning(t, cfg, key, "is empty")
 		})
 	}
 }
@@ -96,24 +101,24 @@ func TestLoadPreservesTrustedProxyAliases(t *testing.T) {
 	}
 }
 
-func TestLoadRejectsInvalidTrustedProxies(t *testing.T) {
+// Validate reports an unusable entry as a warning, never an error: an error
+// aborts daemon start and reload, and 4.10.2 ran with such entries.
+func TestValidateWarnsAboutUnusableTrustedProxies(t *testing.T) {
 	cases := []struct {
-		yaml string
-		want []string
+		yaml, key string
+		want      []string
 	}{
-		{"web_server:\n  trusted_proxies: [\"192.0.2.0/24\", \"proxy.example\"]\n", []string{"web_server.trusted_proxies[1]", "proxy.example"}},
-		{"challenge:\n  trusted_proxies: [\"0.0.0.0/0\"]\n", []string{"challenge.trusted_proxies[0]", "default route"}},
-		{"web_server:\n  trusted_proxies: [\"\"]\n", []string{"web_server.trusted_proxies[0]", "empty"}},
+		{"web_server:\n  trusted_proxies: [\"192.0.2.0/24\", \"proxy.example\"]\n", "web_server", []string{"web_server.trusted_proxies[1]", "proxy.example", "skips"}},
+		{"challenge:\n  trusted_proxies: [\"0.0.0.0/0\"]\n", "challenge", []string{"challenge.trusted_proxies[0]", "default route", "count against nobody"}},
+		{"web_server:\n  trusted_proxies: [\"\"]\n", "web_server", []string{"web_server.trusted_proxies[0]", "empty"}},
 	}
 	for _, tc := range cases {
-		_, err := LoadBytes([]byte(tc.yaml))
-		if err == nil {
-			t.Fatalf("LoadBytes(%q) = nil error; an unreadable trusted proxy entry must not be dropped silently", tc.yaml)
+		cfg, err := LoadBytes([]byte(tc.yaml))
+		if err != nil {
+			t.Fatalf("LoadBytes(%q): %v; an unusable entry must not stop the daemon", tc.yaml, err)
 		}
 		for _, want := range tc.want {
-			if !strings.Contains(err.Error(), want) {
-				t.Fatalf("LoadBytes(%q) error %q lacks %q", tc.yaml, err, want)
-			}
+			assertTrustedProxyWarning(t, cfg, tc.key, want)
 		}
 	}
 }
@@ -138,20 +143,24 @@ func TestTrustedProxiesUnionsBothKeys(t *testing.T) {
 }
 
 // A drop-in's entry is checked after the merge, like the main file's.
-func TestLoadRejectsAnInvalidTrustedProxyFromADropIn(t *testing.T) {
+func TestLoadSkipsAnInvalidTrustedProxyFromADropIn(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "proxies.yaml"), []byte("challenge:\n  trusted_proxies: [\"192.0.2.0/33\"]\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, err := LoadBytesWithDir([]byte("web_server:\n  trusted_proxies: [\"192.0.2.10\"]\n"), dir)
-	if err == nil || !strings.Contains(err.Error(), "challenge.trusted_proxies") {
-		t.Fatalf("LoadBytesWithDir error = %v, want the drop-in's key named", err)
+	cfg, err := LoadBytesWithDir([]byte("web_server:\n  trusted_proxies: [\"192.0.2.10\"]\n"), dir)
+	if err != nil {
+		t.Fatalf("LoadBytesWithDir: %v", err)
 	}
+	if !TrustedProxies(cfg).Covers(netip.MustParseAddr("192.0.2.10")) {
+		t.Fatal("the readable web_server entry was dropped")
+	}
+	assertTrustedProxyWarning(t, cfg, "challenge", "192.0.2.0/33")
 }
 
-// A config built without loading that holds an unreadable entry trusts no
-// proxy, never the readable part of its list.
-func TestTrustedProxiesRefusesAnUnloadedInvalidList(t *testing.T) {
+// An unusable entry is skipped on its own, as 4.10.2 skipped it, so a typo
+// never drops the proxies listed beside it.
+func TestTrustedProxiesSkipsOnlyUnusableEntries(t *testing.T) {
 	for _, key := range []string{"web_server", "challenge"} {
 		cfg := &Config{}
 		entries := []string{"192.0.2.10", "proxy.example"}
@@ -160,10 +169,25 @@ func TestTrustedProxiesRefusesAnUnloadedInvalidList(t *testing.T) {
 		} else {
 			cfg.Challenge.TrustedProxies = entries
 		}
-		if got := TrustedProxies(cfg); got.Len() != 0 || got.Covers(netip.MustParseAddr("192.0.2.10")) {
-			t.Fatalf("%s: TrustedProxies kept %d entries from an unreadable list", key, got.Len())
+		if got := TrustedProxies(cfg); got.Len() != 1 || !got.Covers(netip.MustParseAddr("192.0.2.10")) {
+			t.Fatalf("%s: TrustedProxies kept %d entries, want the readable one", key, got.Len())
 		}
 	}
+}
+
+func assertTrustedProxyWarning(t *testing.T, cfg *Config, key, want string) {
+	t.Helper()
+	field := key + ".trusted_proxies"
+	results := Validate(cfg)
+	if hasResult(results, "error", field) {
+		t.Fatalf("%s is a validation error; it would stop the daemon", field)
+	}
+	for _, r := range results {
+		if r.Level == "warn" && r.Field == field && strings.Contains(r.Message, want) {
+			return
+		}
+	}
+	t.Fatalf("want a %s warning containing %q, got %v", field, want, results)
 }
 
 // An address of this host in web_server.trusted_proxies is never trusted, so
@@ -191,5 +215,36 @@ func TestValidateWarnsAboutAWebServerProxyOfThisHost(t *testing.T) {
 	cfg.WebServer.TrustedProxies = []string{"198.51.100.7", "192.0.2.0/24"}
 	if hasResult(Validate(cfg), "warn", "web_server.trusted_proxies") {
 		t.Fatal("remote proxy entries must not warn")
+	}
+}
+
+// Settings save is where an operator types a new entry: there an unusable
+// challenge.trusted_proxies entry is an error, never only a warning.
+func TestValidateDeepSectionRefusesUnusableChallengeProxies(t *testing.T) {
+	cfg := baseValidationConfig()
+	cfg.Challenge.TrustedProxies = []string{"192.0.2.10", "0.0.0.0/0"}
+	if !hasResult(ValidateDeepSection(cfg, "challenge"), "error", "challenge.trusted_proxies") {
+		t.Fatal("Settings save must refuse a challenge.trusted_proxies catch-all")
+	}
+	cfg.Challenge.TrustedProxies = []string{"192.0.2.10"}
+	if hasResult(ValidateDeepSection(cfg, "challenge"), "error", "challenge.trusted_proxies") {
+		t.Fatal("a readable entry must save")
+	}
+}
+
+// A skipped catch-all trusts nothing, so it is reported once, as unusable,
+// and never stops the challenge server as an address of this host would.
+func TestLocalTrustChecksIgnoreSkippedCatchAlls(t *testing.T) {
+	pinChallengeHost(t, "203.0.113.10")
+	for _, entry := range []string{"0.0.0.0/0", "::/0", "::ffff:0:0/96"} {
+		if err := ChallengeLocalTrustError([]string{entry}); err != nil {
+			t.Errorf("ChallengeLocalTrustError(%q) = %v, want nil", entry, err)
+		}
+		if err := WebServerLocalTrustError([]string{entry}); err != nil {
+			t.Errorf("WebServerLocalTrustError(%q) = %v, want nil", entry, err)
+		}
+	}
+	if ChallengeLocalTrustError([]string{"0.0.0.0/0", "127.0.0.1"}) == nil {
+		t.Error("a usable entry of this host beside a catch-all must still be reported")
 	}
 }

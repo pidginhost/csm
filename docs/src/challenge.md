@@ -148,8 +148,10 @@ challenge:
     - "198.51.100.0/24"
 ```
 
-Entries are addresses or CIDR ranges. Trust only proxies you control, not
-ranges that also contain visitors. Each proxy must append its observed peer
+Entries are addresses or CIDR ranges. CSM skips any other entry and never
+trusts one covering every address, such as `0.0.0.0/0`: a forwarded request
+from a peer it covers then names no visitor. `csm validate` warns about both.
+Trust only proxies you control, not ranges that also contain visitors. Each proxy must append its observed peer
 address to X-Forwarded-For or replace the header with that address. The
 challenge server also trusts the proxies in `web_server.trusted_proxies`,
 the list the HTTP checks use.

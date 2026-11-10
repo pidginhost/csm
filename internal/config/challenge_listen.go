@@ -61,7 +61,7 @@ func ChallengeSocketPathError(path string) error {
 // address and write X-Forwarded-For, so trusting it lets it pose as any
 // visitor. Validation, the server, the installer and doctor share this text.
 func ChallengeLocalTrustError(entries []string) error {
-	entry, covered, err := netutil.HostLocalProxyEntry(entries)
+	entry, covered, err := netutil.HostLocalProxyEntry(usableTrustedProxyEntries(entries))
 	if err != nil {
 		return fmt.Errorf("challenge.trusted_proxies: cannot check the entries: %v", err)
 	}
