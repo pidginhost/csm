@@ -165,6 +165,15 @@ func TestVerifyCMSAdminInjection(t *testing.T) {
 				schema:  "oc_db", table: "user",
 			},
 		},
+		{
+			setup: func(t *testing.T) { withCMSVerifyOS(t, prestashopVerifyFiles(), nil) },
+			c: cmsAdminCase{
+				name: "prestashop", verify: verifyPrestaShopAdminInjection,
+				message: "New PrestaShop employee on bob: id_employee=9",
+				details: "Account: bob\nRow: 9\t4\tx@y\nReview: confirm.",
+				schema:  "shop_db", table: "employee",
+			},
+		},
 	}
 
 	for _, tc := range cases {

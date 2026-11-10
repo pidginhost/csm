@@ -7,8 +7,9 @@ import (
 )
 
 // Per-finding Re-check for the administrator-account database findings: the
-// WordPress rogue-admin and disposable-email-admin findings, and the four
-// per-CMS administrator findings (Drupal, Joomla, Magento, OpenCart). Each
+// WordPress rogue-admin and disposable-email-admin findings, and the five
+// per-CMS administrator findings (Drupal, Joomla, Magento, OpenCart,
+// PrestaShop). Each
 // resolves only when the specific flagged account is no longer present (or, for
 // the WordPress rogue admin, no longer holds administrator capability). A
 // surviving account -- which for the per-CMS Warning findings includes the
@@ -234,4 +235,37 @@ func verifyOpenCartAdminInjection(message, details string) VerifyResult {
 	rows, err := runDBVerifyQueryRoot(schema,
 		fmt.Sprintf("SELECT user_id FROM %s WHERE user_id = ?", table), id)
 	return dbAdminPresenceResult(err, rows)
+}
+
+// verifyPrestaShopAdminInjection resolves a new-employee finding when the
+// employee is gone, and a SuperAdmin finding when the employee is gone or no
+// longer holds the SuperAdmin profile.
+func verifyPrestaShopAdminInjection(message, details string) VerifyResult {
+	id, ok := dbAdminRowID(details)
+	if !ok {
+		return VerifyResult{Checked: false, Detail: "could not parse the account id from the finding"}
+	}
+	schema, prefix, ok := discoverPrestaShopSchema(dbFindingAccount(message, details))
+	if !ok {
+		return dbVerifyNotLocatable("PrestaShop site")
+	}
+	table, err := QuoteIdent(prefix + "employee")
+	if err != nil {
+		return VerifyResult{Checked: false, Detail: "could not validate the PrestaShop table from the finding"}
+	}
+	query := fmt.Sprintf("SELECT id_employee FROM %s WHERE id_employee = ?", table)
+	event := detailField(details, "Event")
+	superAdmin := event == prestashopEventNewSuperAdmin || event == prestashopEventPromoted
+	if superAdmin {
+		query += " AND id_profile = " + prestashopSuperAdminProfile
+	}
+	rows, err := runDBVerifyQueryRoot(schema, query, id)
+	res := dbAdminPresenceResult(err, rows)
+	if superAdmin && res.Checked {
+		res.Detail = "the flagged employee still holds the SuperAdmin profile"
+		if res.Resolved {
+			res.Detail = "the flagged employee no longer holds the SuperAdmin profile"
+		}
+	}
+	return res
 }

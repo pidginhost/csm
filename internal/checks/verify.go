@@ -157,6 +157,10 @@ func buildFindingVerifiers() map[string]func(VerifyInput) VerifyResult {
 		"opencart_settings_injection")
 	register(func(in VerifyInput) VerifyResult { return verifyOpenCartContentInjection(in.Message, in.Details) },
 		"opencart_content_injection")
+	register(func(in VerifyInput) VerifyResult { return verifyPrestaShopSettingsInjection(in.Message, in.Details) },
+		"prestashop_settings_injection")
+	register(func(in VerifyInput) VerifyResult { return verifyPrestaShopContentInjection(in.Message, in.Details) },
+		"prestashop_content_injection")
 	register(func(in VerifyInput) VerifyResult { return verifyDBObject(in.Message, in.Details, false) },
 		"db_unexpected_trigger", "db_unexpected_event",
 		"db_unexpected_procedure", "db_unexpected_function")
@@ -177,6 +181,8 @@ func buildFindingVerifiers() map[string]func(VerifyInput) VerifyResult {
 		"magento_admin_injection")
 	register(func(in VerifyInput) VerifyResult { return verifyOpenCartAdminInjection(in.Message, in.Details) },
 		"opencart_admin_injection")
+	register(func(in VerifyInput) VerifyResult { return verifyPrestaShopAdminInjection(in.Message, in.Details) },
+		"prestashop_admin_injection")
 	return m
 }
 

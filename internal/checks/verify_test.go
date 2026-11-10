@@ -395,6 +395,7 @@ func TestCanVerifyMembership(t *testing.T) {
 		"joomla_extensions_injection", "joomla_content_injection",
 		"magento_settings_injection", "magento_content_injection",
 		"opencart_settings_injection", "opencart_content_injection",
+		"prestashop_settings_injection", "prestashop_content_injection",
 		"db_unexpected_trigger", "db_unexpected_event",
 		"db_unexpected_procedure", "db_unexpected_function",
 		"db_malicious_trigger", "db_malicious_event",
@@ -403,6 +404,7 @@ func TestCanVerifyMembership(t *testing.T) {
 		"db_rogue_admin", "db_suspicious_admin_email",
 		"drupal_admin_injection", "joomla_admin_injection",
 		"magento_admin_injection", "opencart_admin_injection",
+		"prestashop_admin_injection",
 	}
 	verifiable = append(verifiable, presenceVerifiableChecks...)
 	verifiable = append(verifiable, htaccessVerifiableChecks...)
@@ -444,6 +446,7 @@ func TestCanVerifyDoesNotAdvertiseDefaultVerifier(t *testing.T) {
 		"joomla_extensions_injection", "joomla_content_injection",
 		"magento_settings_injection", "magento_content_injection",
 		"opencart_settings_injection", "opencart_content_injection",
+		"prestashop_settings_injection", "prestashop_content_injection",
 		"db_unexpected_trigger", "db_unexpected_event",
 		"db_unexpected_procedure", "db_unexpected_function",
 		"db_malicious_trigger", "db_malicious_event",
@@ -452,6 +455,7 @@ func TestCanVerifyDoesNotAdvertiseDefaultVerifier(t *testing.T) {
 		"db_rogue_admin", "db_suspicious_admin_email",
 		"drupal_admin_injection", "joomla_admin_injection",
 		"magento_admin_injection", "opencart_admin_injection",
+		"prestashop_admin_injection",
 	}
 	verifiable = append(verifiable, presenceVerifiableChecks...)
 	verifiable = append(verifiable, htaccessVerifiableChecks...)

@@ -275,6 +275,7 @@ func TestCMSRecheckLeavesUnsafeConfigUnchecked(t *testing.T) {
 		{"drupal", "Account: alice\nNode entity_id: 7", verifyDrupalContentInjection},
 		{"magento", "Account: alice\nTable: cms_page\nRow id: 7", verifyMagentoContentInjection},
 		{"opencart", "Account: alice\nTable: product_description\nRow id: 7", verifyOpenCartContentInjection},
+		{"prestashop", "Account: alice\nTable: product_lang\nRow id: 7", verifyPrestaShopContentInjection},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			openCalls := 0
