@@ -339,7 +339,10 @@ fixing something by hand instead of waiting for the next scan), **Dismiss**
 (stop alerts for it while it stays unchanged; a later scan that still finds it
 lists it again, and undo is offered for 30 seconds), and **Suppress** (create a
 rule to hide similar findings for good). A finding cleared by Fix or Re-check
-is new again when a later scan finds it, so a reinfection alerts.
+is new again when a later scan finds it, so a reinfection alerts. Fix and
+Re-check leave newer detections and dismissals intact if they arrive while the
+action runs. A request without a matching stored finding cannot clear another
+finding. Operator Dismiss still keeps its acknowledgment.
 
 Dismissal undo preserves later dismissals, successful re-checks and baseline resets.
 Findings first received in real time stop alerting when dismissed, even before

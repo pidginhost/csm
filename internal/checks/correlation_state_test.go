@@ -173,7 +173,7 @@ func TestLatestStateRecomputesAfterEvidenceChanges(t *testing.T) {
 				st.DismissFinding(rows[2].Key())
 				st.DismissLatestFinding(rows[2].Key())
 			case "verified clear":
-				if !st.DismissFindingIfLatest(rows[2]) {
+				if !st.PrepareFindingResolution(rows[2])() {
 					t.Fatal("verified snapshot was not removed")
 				}
 			case "demote":

@@ -57,7 +57,7 @@ func TestFixTargetWithoutClientKeyReturnsStoredDismissKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fixTargetFromStore: %v", err)
 	}
-	if dismissKey != f.Key() {
-		t.Fatalf("dismiss key = %q, want stored canonical key %q", dismissKey, f.Key())
+	if dismissKey.Key() != f.Key() {
+		t.Fatalf("dismiss key = %q, want stored canonical key %q", dismissKey.Key(), f.Key())
 	}
 }

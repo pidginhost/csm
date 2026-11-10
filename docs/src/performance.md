@@ -2,6 +2,11 @@
 
 CSM monitors server performance metrics and generates findings when thresholds are exceeded.
 
+Successful fixes clear the finding without acknowledging it permanently. This
+also applies to automatic permission and WP-Cron fixes. A later recurrence can
+alert again; evidence received during a fix remains active. Fixing one file
+does not clear a finding for another file.
+
 ## Critical Checks (every 10 min)
 
 | Check | What it monitors |

@@ -82,8 +82,8 @@ func TestFixTargetUsesStoredMessageWhenStoredPathIsEmpty(t *testing.T) {
 	if message != f.Message || details != f.Details || path != "" {
 		t.Fatalf("target = (%q, %q, %q), want stored message/details and empty path", message, details, path)
 	}
-	if dismissKey != f.Key() {
-		t.Fatalf("dismiss key = %q, want %q", dismissKey, f.Key())
+	if dismissKey.Key() != f.Key() {
+		t.Fatalf("dismiss key = %q, want %q", dismissKey.Key(), f.Key())
 	}
 }
 

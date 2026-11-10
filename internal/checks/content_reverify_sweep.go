@@ -12,7 +12,7 @@ type LatestFindingStore interface {
 	// Each mutation takes the snapshot verification actually looked at, so a
 	// scan or realtime alert that refreshed the same key while the re-check was
 	// in flight is never overwritten by the older verdict.
-	DismissFindingIfLatest(expected alert.Finding) bool
+	PrepareFindingResolution(expected alert.Finding) func() bool
 	DemoteLatestFinding(expected alert.Finding, severity alert.Severity) bool
 	RestoreLatestFindingSeverity(expected alert.Finding) bool
 }
@@ -138,13 +138,14 @@ func ReverifyStaleFindingsStats(ctx context.Context, store LatestFindingStore) (
 			}
 			in.exposureVhosts = exposureVhosts
 		}
+		resolve := store.PrepareFindingResolution(f)
 		res := VerifyFindingInput(in)
 		if ctx.Err() != nil {
 			return dismissed, stats, false
 		}
 		switch {
 		case res.Checked && res.Resolved:
-			if store.DismissFindingIfLatest(f) {
+			if resolve() {
 				stats.Cleared++
 				dismissed = append(dismissed, ContentReverifyDismissal{Check: f.Check, Path: f.FilePath, Detail: res.Detail})
 			}

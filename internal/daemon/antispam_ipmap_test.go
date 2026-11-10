@@ -280,7 +280,7 @@ func TestIPMapDismissalEndsAfterRecovery(t *testing.T) {
 		t.Fatalf("write failure findings: %+v", findings)
 	}
 	d.dispatchBatch(findings)
-	if !d.store.DismissFindingIfLatest(findings[0]) {
+	if d.store.DismissFindingWithUndo(findings[0].Key()).DismissalID == "" {
 		t.Fatalf("could not dismiss the write failure: %+v", findings)
 	}
 	d.checkIPMap(context.Background(), time.Now(), false)

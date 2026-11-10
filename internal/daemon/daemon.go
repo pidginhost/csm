@@ -1669,15 +1669,12 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 	// check-wide rule would otherwise leave every attacker it reports
 	// unblocked. An IP false positive belongs on the allowlist.
 	challengeActions, blockActions := checks.ChallengeThenBlock(cfg, findings)
+	resolveFixed := d.prepareAutoFixResolutions(remediableFindings)
 	permActions, permFixedKeys := checks.AutoFixPermissions(cfg, remediableFindings)
+	defer resolveFixed(permFixedKeys)
 
 	// Mark auto-blocked IPs in attack database
 	markAppliedBlocks(blockActions)
-
-	// Dismiss auto-fixed findings from the Findings page
-	for _, key := range permFixedKeys {
-		d.store.DismissLatestFinding(key)
-	}
 
 	// Filter through state - only new findings get alerted and logged
 	unfilteredNew := d.store.FilterNew(findings)
@@ -1708,7 +1705,7 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 		if err := alert.DispatchWithNotificationFilter(cfg, nil, auditSources, nil, d.deliveryCandidates(remediableFindings, nil, suppressions), operatorAlertableFindings, d.store); err != nil {
 			fmt.Fprintf(os.Stderr, "[%s] Alert dispatch error: %v\n", ts(), err)
 		}
-		d.store.Update(findings)
+		d.store.Update(withoutFixedFindings(findings, permFixedKeys))
 		return
 	}
 
@@ -1758,7 +1755,7 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 		fmt.Fprintf(os.Stderr, "[%s] Alert dispatch error: %v\n", ts(), err)
 	}
 
-	d.store.Update(findings)
+	d.store.Update(withoutFixedFindings(findings, permFixedKeys))
 	d.store.MarkAlerted(newFindings)
 }
 
@@ -1780,7 +1777,10 @@ func (d *Daemon) respondToInitialScan(cfg *config.Config, initialFindings []aler
 
 	// Permission auto-fix runs on ALL findings (not just new) because
 	// it's safe/idempotent and should fix baseline findings too.
-	permActions, permFixedKeys := checks.AutoFixPermissions(cfg, filterUnsuppressedFindings(d.store, initialFindings, suppressions))
+	remediable := filterUnsuppressedFindings(d.store, initialFindings, suppressions)
+	resolveFixed := d.prepareAutoFixResolutions(remediable)
+	permActions, permFixedKeys := checks.AutoFixPermissions(cfg, remediable)
+	defer resolveFixed(permFixedKeys)
 
 	// Challenge routing runs on ALL findings unconditionally when enabled, so an
 	// eligible IP is on the challenge list before AutoBlockIPs (below, guarded by
@@ -1978,12 +1978,48 @@ func (d *Daemon) applyWPCronAutoFix(cfg *config.Config, findings []alert.Finding
 			findings = filterUnsuppressedFindings(d.store, findings, suppressions)
 		}
 	}
+	resolveFixed := d.prepareAutoFixResolutions(findings)
 	actions, fixedKeys := autoFixWPCron(cfg, findings)
-	for _, key := range fixedKeys {
-		d.store.DismissLatestFinding(key)
-	}
+	resolveFixed(fixedKeys)
 	if len(actions) > 0 {
 		d.store.AppendHistory(actions)
+	}
+}
+
+// Capture before remediation and resolve after dispatch, so its own delivery
+// cannot recreate cleared state. A concurrent observation invalidates the
+// capture and keeps both the newer listing and its alert state.
+func (d *Daemon) prepareAutoFixResolutions(findings []alert.Finding) func([]string) {
+	resolutions := make(map[string]func() bool)
+	var latest map[string]alert.Finding
+	for _, f := range findings {
+		switch f.Check {
+		case "world_writable_php", "group_writable_php", "perf_wp_cron":
+			if latest == nil {
+				latest = make(map[string]alert.Finding)
+				for _, current := range d.store.LatestFindings() {
+					latest[current.Key()] = current
+				}
+			}
+			expected := f
+			if current, ok := latest[f.Key()]; ok {
+				// At startup the UI can still hold the previous scan's row. Resolve
+				// that snapshot only when this producer observed the same condition
+				// at least as recently; a later row owns its own evidence.
+				if current.Timestamp.After(f.Timestamp) || current.Fingerprint() != f.Fingerprint() || current.FilePath != f.FilePath {
+					continue
+				}
+				expected = current
+			}
+			resolutions[f.Key()] = d.store.PrepareFindingResolution(expected)
+		}
+	}
+	return func(keys []string) {
+		for _, key := range keys {
+			if resolve := resolutions[key]; resolve != nil {
+				resolve()
+			}
+		}
 	}
 }
 

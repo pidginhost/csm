@@ -104,7 +104,7 @@ func TestUndoDismissPreservesLaterDecisions(t *testing.T) {
 			case "dismiss-with-undo":
 				s.DismissFindingWithUndo(f.Key())
 			case "verified":
-				if !s.DismissFindingIfLatest(f) {
+				if !s.PrepareFindingResolution(f)() {
 					t.Fatal("verification did not dismiss finding")
 				}
 			case "baseline":
