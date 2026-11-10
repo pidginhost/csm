@@ -9,6 +9,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/mysqlclient"
 	"github.com/pidginhost/csm/internal/state"
 )
 
@@ -222,7 +223,7 @@ func scanJoomlaExtensions(account string, creds jConfigCreds, prefix string) []a
 		if name == "" {
 			continue
 		}
-		sev, desc, ok := classifyMalwareRow(body, false)
+		sev, desc, ok := classifyMalwareRow(mysqlclient.BatchUnescape(body), false)
 		if !ok {
 			continue
 		}
@@ -259,7 +260,7 @@ func scanJoomlaContent(account string, creds jConfigCreds, prefix string) []aler
 			continue
 		}
 		id, title, body := fields[0], fields[1], fields[2]
-		sev, desc, ok := classifyMalwareRow(body, true)
+		sev, desc, ok := classifyMalwareRow(mysqlclient.BatchUnescape(body), true)
 		if !ok {
 			continue
 		}

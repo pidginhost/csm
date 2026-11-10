@@ -10,6 +10,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/mysqlclient"
 	"github.com/pidginhost/csm/internal/state"
 )
 
@@ -208,7 +209,7 @@ func scanOpenCartSettings(account string, creds opencartCreds) []alert.Finding {
 		if key == "" {
 			continue
 		}
-		sev, desc, ok := classifyMalwareRow(body, false)
+		sev, desc, ok := classifyMalwareRow(mysqlclient.BatchUnescape(body), false)
 		if !ok {
 			continue
 		}
@@ -251,7 +252,7 @@ func scanOpenCartContentTable(account string, creds opencartCreds, table, valueC
 		if id == "" {
 			continue
 		}
-		sev, desc, ok := classifyMalwareRow(body, true)
+		sev, desc, ok := classifyMalwareRow(mysqlclient.BatchUnescape(body), true)
 		if !ok {
 			continue
 		}

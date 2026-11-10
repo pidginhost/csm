@@ -10,6 +10,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/mysqlclient"
 	"github.com/pidginhost/csm/internal/state"
 )
 
@@ -276,7 +277,7 @@ func scanMagentoSettings(account string, creds magentoCreds) []alert.Finding {
 		if cfgPath == "" {
 			continue
 		}
-		sev, desc, ok := classifyMalwareRow(body, false)
+		sev, desc, ok := classifyMalwareRow(mysqlclient.BatchUnescape(body), false)
 		if !ok {
 			continue
 		}
@@ -314,7 +315,7 @@ func scanMagentoContent(account string, creds magentoCreds, table, valueCol stri
 		if id == "" {
 			continue
 		}
-		sev, desc, ok := classifyMalwareRow(body, true)
+		sev, desc, ok := classifyMalwareRow(mysqlclient.BatchUnescape(body), true)
 		if !ok {
 			continue
 		}

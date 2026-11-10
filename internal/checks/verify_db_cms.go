@@ -29,7 +29,7 @@ func dbVerifyRowMalware(schema, query string, inPostContext bool, args ...any) V
 		return dbVerifyQueryError()
 	}
 	for _, row := range rows {
-		if _, _, ok := classifyMalwareRow(row, inPostContext); ok {
+		if _, _, ok := classifyMalwareRow(mysqlclient.BatchUnescape(row), inPostContext); ok {
 			return VerifyResult{Checked: true, Resolved: false, Detail: "the flagged row still contains injected content"}
 		}
 	}

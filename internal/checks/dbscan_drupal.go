@@ -11,6 +11,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/mysqlclient"
 	"github.com/pidginhost/csm/internal/state"
 )
 
@@ -218,7 +219,7 @@ func scanDrupalConfig(account string, creds drupalCreds) []alert.Finding {
 		if name == "" {
 			continue
 		}
-		sev, desc, ok := classifyMalwareRow(body, false)
+		sev, desc, ok := classifyMalwareRow(mysqlclient.BatchUnescape(body), false)
 		if !ok {
 			continue
 		}
@@ -247,7 +248,7 @@ func scanDrupalContent(account string, creds drupalCreds) []alert.Finding {
 		if entityID == "" {
 			continue
 		}
-		sev, desc, ok := classifyMalwareRow(body, true)
+		sev, desc, ok := classifyMalwareRow(mysqlclient.BatchUnescape(body), true)
 		if !ok {
 			continue
 		}

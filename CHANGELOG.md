@@ -26,6 +26,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Security
 
+- Joomla, Drupal, Magento and OpenCart database scans and re-checks now catch script tags split by a tab or line break in the stored value.
 - Joomla, Drupal, Magento and OpenCart scans keep checking the remaining tables when one table returns too many rows, so a flood of rows no longer hides an injection.
 - PHP and phishing checks now read `${'_POST'}` and `$GLOBALS['_POST']` as request input, so these spellings no longer hide a webshell or phishing kit.
 - `challenge.verified_session` no longer issues admin sessions to this server's own addresses, so local accounts cannot guess `admin_secret` from loopback.
