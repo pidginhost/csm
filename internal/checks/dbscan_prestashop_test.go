@@ -817,8 +817,7 @@ func TestPrestaShopSettingsOverflowKeepsEmployeeScan(t *testing.T) {
 	withCMSConfigOS(t, &twoOwnerCMSOS{files: prestashopInstallFiles(psTestRoot, "ps_")})
 	employees := psBaselineRows
 	var settings []string
-	// Stub below runMySQLQuery so an overflow halts later queries as in
-	// production.
+	// Stub below runMySQLQuery to retain the installation's shared query state.
 	mysqlclient.SetPerAccountQueryForTest(func(_ context.Context, _ mysqlclient.Creds, q string, _ ...any) ([]string, error) {
 		switch {
 		case strings.Contains(q, "FROM ps_employee"):

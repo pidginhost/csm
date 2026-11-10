@@ -21,23 +21,25 @@ func runCMSQuery(creds wpDBCreds, query string) ([]string, bool) {
 	if creds.queryState == nil {
 		creds.queryState = new(dbQueryState)
 	}
-	markIncomplete := func() {
+	markIncomplete := func(halt bool) {
 		creds.queryState.failed = true
-		creds.queryState.halted = true
+		creds.queryState.halted = creds.queryState.halted || halt
 		markCheckIncomplete(creds.queryCtx, creds.queryCheck())
 	}
 	if creds.queryCtx != nil && creds.queryCtx.Err() != nil {
-		markIncomplete()
+		markIncomplete(true)
 		return nil, false
 	}
 	rows := runMySQLQuery(creds, fmt.Sprintf("%s LIMIT %d", query, cmsScanRowLimit+1))
 	if creds.queryCtx != nil && creds.queryCtx.Err() != nil {
-		markIncomplete()
+		markIncomplete(true)
 		return nil, false
 	}
 	if len(rows) > cmsScanRowLimit {
 		rows = rows[:cmsScanRowLimit]
-		markIncomplete()
+		// Overflow leaves the connection usable. Do not let one large
+		// result hide threats in the installation's other tables.
+		markIncomplete(false)
 	}
 	return rows, !creds.queryState.failed
 }

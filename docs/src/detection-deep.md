@@ -353,11 +353,16 @@ Database errors, discovery errors, and configuration or query limits keep the
 affected CMS check incomplete. Earlier findings remain until that CMS completes
 a scan; another CMS can still complete and clear its own resolved findings.
 Queries inspect at most 200 rows and request one extra row to detect overflow.
-Known statement errors allow independent queries to continue; connection
-failures and overflow stop further queries for that installation. Administrator
-baselines and recorded IDs change only after a complete result; a successful
-empty administrator result also establishes a baseline. New IDs in a partial
-result can still be reported against an existing baseline.
+Known statement errors and overflow allow independent queries to continue;
+connection failures and cancellation stop further queries for that installation.
+Administrator baselines and recorded IDs change only after a complete result;
+a successful empty administrator result also establishes a baseline. New IDs
+in a partial result can still be reported against an existing baseline.
+
+PrestaShop scans employees first, so settings or content limits do not prevent
+employee baselines or SuperAdmin alerts. An employee overflow keeps coverage
+incomplete and preserves employee state, while settings and content queries
+still run within their own row limits and the scan deadline.
 
 ## CMS Scanner Support Policy
 

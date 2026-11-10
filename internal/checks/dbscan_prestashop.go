@@ -109,8 +109,8 @@ func scanPrestaShopInstall(ctx context.Context, root string, store *state.Store)
 	account := extractUser(root)
 	creds.ctx = ctx
 	creds.queryState = new(dbQueryState)
-	// Employees first: an overflowing settings or content query halts every
-	// later query for the install, and must not hide a new SuperAdmin.
+	// Establish employee state before unrelated settings or content limits
+	// mark the installation incomplete and prevent baseline updates.
 	findings := scanPrestaShopEmployees(store, account, creds)
 	findings = append(findings, scanPrestaShopSettings(account, creds)...)
 	findings = append(findings, scanPrestaShopContent(account, creds)...)

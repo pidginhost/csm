@@ -233,6 +233,31 @@ func TestCMSQueryDetectsOnlyActualOverflow(t *testing.T) {
 	}
 }
 
+func TestCMSQueryOverflowKeepsIncompleteState(t *testing.T) {
+	ctx, coverage := withIncompleteCheckCollector(context.Background())
+	creds := wpDBCreds{queryCtx: ctx, queryOwner: prestashopOwner, queryState: new(dbQueryState)}
+	calls := 0
+	mysqlclient.SetPerAccountQueryForTest(func(context.Context, mysqlclient.Creds, string, ...any) ([]string, error) {
+		calls++
+		if calls == 1 {
+			return psEmployeeRows(cmsScanRowLimit + 1), nil
+		}
+		return []string{"42\tinjected content"}, nil
+	})
+	t.Cleanup(func() { mysqlclient.SetPerAccountQueryForTest(nil) })
+	rows, complete := runCMSQuery(creds, "SELECT id_employee, id_profile, email FROM ps_employee")
+	if complete || len(rows) != cmsScanRowLimit {
+		t.Fatalf("overflow returned %d rows, complete=%t", len(rows), complete)
+	}
+	rows, complete = runCMSQuery(creds, "SELECT id_cms, content FROM ps_cms_lang")
+	if len(rows) != 1 || rows[0] != "42\tinjected content" || calls != 2 {
+		t.Fatalf("independent query returned %v after %d calls", rows, calls)
+	}
+	if complete || !coverage.contains(prestashopOwner) {
+		t.Fatal("successful query erased earlier incomplete coverage")
+	}
+}
+
 func TestCMSEmptyAdminQueryEstablishesBaseline(t *testing.T) {
 	for _, adapter := range cmsAdminScanners() {
 		t.Run(adapter.name, func(t *testing.T) {
