@@ -42,6 +42,10 @@
       "reason": "Await all three precision items preceding 'Clean corpus growth and per-detector false-positive tracking' ('Taint laundering through value encoders', 'Local-path provenance through variables', 'Content rules versus archive containers'), then add and measure the pinned source."
     },
     {
+      "cms": "prestashop",
+      "reason": "No pinned archive inventory or license-path evidence is recorded in the current corpus-growth item; source and measure it under 'Clean corpus growth and per-detector false-positive tracking' after all three preceding precision items."
+    },
+    {
       "cms": "drupal",
       "reason": "Await all three precision items preceding 'Clean corpus growth and per-detector false-positive tracking' ('Taint laundering through value encoders', 'Local-path provenance through variables', 'Content rules versus archive containers'), then add and measure the pinned source."
     },

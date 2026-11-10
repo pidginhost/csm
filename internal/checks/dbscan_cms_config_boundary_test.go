@@ -39,6 +39,10 @@ func TestCMSConfigRejectsSymlinksAndOversize(t *testing.T) {
 			creds, err := parseOpenCartConfig(context.Background(), path)
 			return creds.dbName, err
 		}},
+		{"prestashop", prestashopParametersPHP("ps_"), func(path string) (string, error) {
+			creds, err := parsePrestaShopParameters(context.Background(), path)
+			return creds.dbName, err
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -191,6 +195,7 @@ func TestCMSConfigFailuresMarkActualOwnerIncomplete(t *testing.T) {
 		{"db_content_drupal", "sites/default/settings.php", CheckDrupalContent},
 		{"db_content_magento", "app/etc/env.php", CheckMagentoContent},
 		{"db_content_opencart", "config.php", CheckOpenCartContent},
+		{"db_content_prestashop", "config/defines.inc.php", CheckPrestaShopContent},
 	} {
 		t.Run(tc.owner, func(t *testing.T) {
 			root := t.TempDir()
@@ -270,6 +275,7 @@ func TestCMSRecheckLeavesUnsafeConfigUnchecked(t *testing.T) {
 		{"drupal", "Account: alice\nNode entity_id: 7", verifyDrupalContentInjection},
 		{"magento", "Account: alice\nTable: cms_page\nRow id: 7", verifyMagentoContentInjection},
 		{"opencart", "Account: alice\nTable: product_description\nRow id: 7", verifyOpenCartContentInjection},
+		{"prestashop", "Account: alice\nTable: product_lang\nRow id: 7", verifyPrestaShopContentInjection},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			openCalls := 0
@@ -300,6 +306,7 @@ func TestCMSConfigMarkerRejectsSymlinksAndOversize(t *testing.T) {
 	}{
 		{"joomla", canonicalJConfigBody("jos_"), looksLikeJoomlaConfig},
 		{"opencart", "<?php define('DB_DRIVER', 'mysqli');", configContainsDBDriver},
+		{"prestashop", prestashopDefinesPHP(), prestashopMarker},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "config")

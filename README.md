@@ -24,7 +24,7 @@ CSM is one Go daemon. It watches files, logins, web traffic, mail, processes, an
 | Webshells, phishing, and injected code | YAML and YARA-X signatures, PHP and JavaScript data-flow analysis, PHP Shield runtime blocking, quarantine |
 | Exposed files and vulnerable software | Probe-confirmed exposed dumps, backups, and repositories; known-vulnerable plugin inventory; reversible virtual patches |
 | Scanners and crawlers | Per-source probe profiling, claimed-bot verification, ASN crawl detection, challenge routing, firewall response |
-| Compromised CMS databases | WordPress, Joomla, Drupal, Magento, OpenCart: stored code, hidden links, spam, doorways, rogue admins; reversible cleanup for supported rows and objects |
+| Compromised CMS databases | WordPress, Joomla, Drupal, Magento, OpenCart, PrestaShop: stored code, hidden links, spam, doorways, rogue admins; reversible cleanup for supported rows and objects |
 | WAF and firewall | ModSecurity event correlation and per-domain coverage gaps, nftables, GeoIP, subnet escalation, rollback-confirmed changes |
 | Host compromise | Process, account, SSH, cron, and package drift, C2 connections, BPF telemetry, hardening audit, CVE mitigations |
 | Fleet observability | HTTPS API, SSE findings, incidents, forensic snapshots, Prometheus, audit log, syslog, webhooks, SIEM backfill, optional read-only MCP endpoint for support agents |

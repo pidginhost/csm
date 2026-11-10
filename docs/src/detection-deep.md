@@ -255,6 +255,7 @@ The parser supports PHP syntax up to version 8.1. A file written against a newer
 | `db_content_drupal` | Drupal 8+ database content scanning. Discovers installs via `sites/default/settings.php` plus the `core/lib/Drupal.php` marker. Credentials parsed from the `$databases` array. Scans `config`, `node_revision__body`, and `users_field_data` joined with `user__roles` (administrator role). Findings: `drupal_settings_injection`, `drupal_content_injection`, `drupal_admin_injection`. Administrator rows are baselined on the first pass; only an administrator that appears later is reported, once, as High. Every query is capped at 200 rows and runs under the scan deadline; installs under addon-domain document roots are discovered too. Drupal 7 not yet covered. |
 | `db_content_magento` | Magento 1.x and 2.x database content scanning. Discovers installs via `app/etc/env.php` (M2, preferred) or `app/etc/local.xml` (M1). Credentials parsed via `encoding/xml` for M1 (CDATA-aware) or field-level regex for M2. Scans `core_config_data`, `catalog_product_entity_text`, `cms_block`, `cms_page`, and `admin_user` (with the configured `db.prefix`). Findings: `magento_settings_injection`, `magento_content_injection`, `magento_admin_injection`. Administrator rows are baselined on the first pass; only an administrator that appears later is reported, once, as High. Every query is capped at 200 rows and runs under the scan deadline; installs under addon-domain document roots are discovered too. |
 | `db_content_opencart` | OpenCart database content scanning. Discovers installs via the `config.php` + `admin/config.php` pair both containing `define('DB_DRIVER'`. Credentials parsed from `DB_HOSTNAME` / `DB_USERNAME` / `DB_PASSWORD` / `DB_DATABASE` / `DB_PREFIX` defines. Scans `<prefix>setting` (`config_url` / `config_ssl` are canonical hijack targets), `<prefix>product_description`, `<prefix>information_description`, and `<prefix>user` (admin/staff). Findings: `opencart_settings_injection`, `opencart_content_injection`, `opencart_admin_injection`. Administrator rows are baselined on the first pass; only an administrator that appears later is reported, once, as High. Every query is capped at 200 rows and runs under the scan deadline; installs under addon-domain document roots are discovered too. |
+| `db_content_prestashop` | PrestaShop database content scanning. Discovers installs via `config/defines.inc.php` containing `_PS_ROOT_DIR_`. Credentials come from the six `database_*` entries of `app/config/parameters.php` (1.7.4 and later, 8 and 9), or from the 1.6 `config/settings.inc.php` defines when neither `parameters.php` nor `parameters.yml` exists; no other configuration value is read. A shop on 1.7.0 to 1.7.3, which keeps its live settings in `parameters.yml`, leaves the scan incomplete. Staging, backup and cache copies and suspended accounts are skipped. Scans `<prefix>configuration` and `<prefix>configuration_lang` values, `<prefix>cms_lang` content, `<prefix>product_lang` descriptions and short descriptions, and `<prefix>category_lang` descriptions in every language and shop, with one finding per setting, page, product or category. Setting values are never shown, because the mail password is stored among them. Findings: `prestashop_settings_injection`, `prestashop_content_injection`, `prestashop_admin_injection`. Back-office employees are baselined on the first pass; an employee that appears later is reported once as High, and a new employee with the SuperAdmin profile, or an existing employee moved to it, is reported once as Critical. Every query is capped at 200 rows and runs under the scan deadline; installs under addon-domain document roots are discovered too. |
 | `db_objects` | MySQL persistence mechanisms: triggers, events, stored procedures, stored functions. Critical when the body matches known-malware patterns (`sys_`+`exec`, `INTO OUTFILE`, `LOAD_FILE`, etc.); Warning when an object exists at all (vanilla CMSes ship none). Toggle with `detection.db_object_scanning`; suppress Warnings via `detection.db_object_allowlist`. Manual drop via `csm db-clean --drop-object`. |
 | `admin_overlap` | WordPress administrator email overlap across cPanel accounts. Reports when the same admin email appears on the configured number of accounts, with reviewed emails and domains suppressible in `detection`. |
 | `credential_reuse` | WordPress administrator password-hash reuse across cPanel accounts. Groups identical hashes with an in-memory fingerprint and reports only the affected accounts and count. |
@@ -316,32 +317,52 @@ an upgrade; previous dismissals do not transfer to the new identity.
 
 Hidden-link corroboration counts registrable domains within one hidden container, not hostnames across a whole row. Multiple subdomains of one linked domain count as one target, and both the WordPress home and site addresses count as local.
 
-Joomla, Drupal, Magento, and OpenCart configuration reads accept regular files
+Joomla, Drupal, Magento, OpenCart, and PrestaShop configuration reads accept regular files
 up to 1 MiB. Configuration symlinks and special files are rejected, including
-during Joomla and OpenCart marker probes. Drupal's version marker must also be
+during Joomla, OpenCart, and PrestaShop marker probes. Drupal's version marker must also be
 a regular file. Reads use the opened file throughout, reject changes observed
 during the read, and stop when the scan is canceled. Read failures and missing
 required credentials mark that CMS scan incomplete; manual re-checks keep the
 finding unresolved when its configuration cannot be inspected.
 
-Administrator baselines for Joomla, Drupal, Magento, and OpenCart are scoped to
+PrestaShop skips suspended accounts before reading their configuration or
+applying the account scan file limit. Copy names such as `staging`, `backup`,
+`backups`, `cache` and `.trash` are matched without regard to case.
+
+PrestaShop re-checks locate only the account's canonical `public_html` install.
+Its database host, database name and table prefix must match the finding.
+Re-checks use that install's current database credentials and endpoint, including
+custom ports and sockets. Missing or changed identity, configuration failures
+and query errors leave the finding unchecked. Settings and content resolve only
+when every language, shop and scanned column is clean or absent. New employees
+resolve only when deleted; SuperAdmin findings also resolve after demotion.
+
+Administrator baselines for Joomla, Drupal, Magento, OpenCart, and PrestaShop are scoped to
 the hosting account, CMS, database host, database name, and table prefix. Two
 sites under one account keep separate baselines when they use different
 databases or prefixes. Paths that share the same database and prefix share the
 same administrator set. Upgrading from account-wide baselines starts a fresh
 baseline for each installation on its first complete administrator query;
-later additions produce one High finding per new administrator. Finding
+later additions produce one High finding per new administrator. PrestaShop
+also records which employees hold the SuperAdmin profile: a new SuperAdmin,
+or an employee moved to that profile, produces one Critical finding instead,
+and an employee demoted and later promoted again is reported again. Finding
 details identify the affected database and prefix.
 
 Database errors, discovery errors, and configuration or query limits keep the
 affected CMS check incomplete. Earlier findings remain until that CMS completes
 a scan; another CMS can still complete and clear its own resolved findings.
 Queries inspect at most 200 rows and request one extra row to detect overflow.
-Known statement errors allow independent queries to continue; connection
-failures and overflow stop further queries for that installation. Administrator
-baselines and recorded IDs change only after a complete result; a successful
-empty administrator result also establishes a baseline. New IDs in a partial
-result can still be reported against an existing baseline.
+Known statement errors and overflow allow independent queries to continue;
+connection failures and cancellation stop further queries for that installation.
+Administrator baselines and recorded IDs change only after a complete result;
+a successful empty administrator result also establishes a baseline. New IDs
+in a partial result can still be reported against an existing baseline.
+
+PrestaShop scans employees first, so settings or content limits do not prevent
+employee baselines or SuperAdmin alerts. An employee overflow keeps coverage
+incomplete and preserves employee state, while settings and content queries
+still run within their own row limits and the scan deadline.
 
 ## CMS Scanner Support Policy
 
@@ -354,6 +375,7 @@ Current scanner scope:
 - Drupal 8 and newer. Drupal 7 is not a planned support target.
 - Magento 1 and 2.
 - OpenCart installs using the standard storefront and admin config pair.
+- PrestaShop 8 and 9; 1.7 and 1.6 best-effort through the same schema.
 
 The supported kinds are declared once in `internal/cms`. The database
 scanners and the PHP taint analyzer's knowledge of each CMS's bootstrap path

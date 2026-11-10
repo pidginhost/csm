@@ -34,6 +34,7 @@ var attackCorpusDeepCheckKind = map[string]string{
 	"db_content_joomla":     "host", // Joomla database content over MySQL
 	"db_content_magento":    "host", // Magento database content over MySQL
 	"db_content_opencart":   "host", // OpenCart database content over MySQL
+	"db_content_prestashop": "host", // PrestaShop database content over MySQL
 	"db_objects":            "host", // triggers, events and routines over MySQL
 	"admin_overlap":         "host", // WordPress admin emails from site databases
 	"credential_reuse":      "host", // admin password hashes from site databases

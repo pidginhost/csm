@@ -26,6 +26,8 @@ var cmsPathFixtureInventory = map[cms.Kind][]string{
 		"dir_opencart", "dir_root", "dir_session", "dir_storage", "dir_system",
 		"dir_template", "dir_upload"},
 	cms.Magento: {"bp"},
+	cms.PrestaShop: {"_ps_cache_dir_", "_ps_class_dir_", "_ps_config_dir_", "_ps_controller_dir_", "_ps_core_dir_",
+		"_ps_img_dir_", "_ps_module_dir_", "_ps_override_dir_", "_ps_root_dir_", "_ps_tool_dir_"},
 }
 
 func sortedCopy(in []string) []string {

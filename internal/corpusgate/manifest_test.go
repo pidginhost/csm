@@ -16,7 +16,7 @@ import (
 
 // supportedKindNames is an independent expectation of the supported set so
 // the manifest tests do not merely mirror cms.All().
-var supportedKindNames = []string{"wordpress", "joomla", "drupal", "opencart", "magento"}
+var supportedKindNames = []string{"wordpress", "joomla", "drupal", "opencart", "magento", "prestashop"}
 
 func validSource(id, kind string) Source {
 	return Source{ID: id, Version: "1.0", CMS: kind,
@@ -69,11 +69,11 @@ func invalidManifestCases() []invalidManifestCase {
 		{"no sources", func(m *Manifest) { m.Sources = nil; m.Pending = nil }, []string{"no source"}},
 		{"all pending", func(m *Manifest) { m.Sources = nil; m.Pending = pendingExcept() }, []string{"no source"}},
 		{"missing source cms", func(m *Manifest) { m.Sources[0].CMS = "" }, []string{"wordpress", "cms"}},
-		{"unknown source cms", func(m *Manifest) { m.Sources[2].CMS = "prestashop" }, []string{"joomla", "prestashop"}},
+		{"unknown source cms", func(m *Manifest) { m.Sources[2].CMS = "shopware" }, []string{"joomla", "shopware"}},
 		{"whitespace source cms", func(m *Manifest) { m.Sources[2].CMS = " joomla" }, []string{`" joomla"`}},
 		{"case-variant source cms", func(m *Manifest) { m.Sources[2].CMS = "Joomla" }, []string{`"Joomla"`}},
 		{"missing pending cms", func(m *Manifest) { m.Pending[0].CMS = "" }, []string{"pending", "cms"}},
-		{"unknown pending cms", func(m *Manifest) { m.Pending[0].CMS = "prestashop" }, []string{"pending", "prestashop"}},
+		{"unknown pending cms", func(m *Manifest) { m.Pending[0].CMS = "shopware" }, []string{"pending", "shopware"}},
 		{"whitespace pending cms", func(m *Manifest) { m.Pending[0].CMS = "drupal " }, []string{`"drupal "`}},
 		{"case-variant pending cms", func(m *Manifest) { m.Pending[0].CMS = "DRUPAL" }, []string{`"DRUPAL"`}},
 		{"duplicate pending", func(m *Manifest) { m.Pending = append(m.Pending, m.Pending[0]) }, []string{"drupal", "twice"}},
@@ -275,7 +275,7 @@ func TestRepositoryManifestValidates(t *testing.T) {
 	for _, p := range m.Pending {
 		pending[p.CMS] = p.Reason
 	}
-	for _, k := range []string{"joomla", "drupal", "opencart", "magento"} {
+	for _, k := range []string{"joomla", "drupal", "opencart", "magento", "prestashop"} {
 		if !strings.Contains(pending[k], "Clean corpus growth and per-detector false-positive tracking") {
 			t.Errorf("%s pending reason must name the roadmap item: %q", k, pending[k])
 		}

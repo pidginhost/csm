@@ -81,6 +81,15 @@ func maliciousRowsFor(adapter, query string, pass int) []byte {
 		case strings.Contains(query, "user"):
 			return []byte(admins)
 		}
+	case "prestashop":
+		switch {
+		case strings.Contains(query, "configuration"):
+			return []byte("12\tPS_HEAD_JS\t<?php " + payload + " ?>\n")
+		case strings.Contains(query, "_lang"):
+			return []byte("1\t<?php " + payload + " ?>\n")
+		case strings.Contains(query, "employee"):
+			return []byte(admins)
+		}
 	case "magento":
 		switch {
 		case strings.Contains(query, "core_config_data"):
@@ -119,6 +128,12 @@ func cmsAdapterCases() []cmsAdapterCase {
 			"/var/www/vhosts/bob/public_html/config.php":       canonicalOpenCartConfig(),
 			"/var/www/vhosts/bob/public_html/admin/config.php": canonicalOpenCartConfig(),
 		}, []string{"opencart_admin_injection", "opencart_content_injection", "opencart_settings_injection"}},
+		{"prestashop", CheckPrestaShopContent, map[string]string{
+			"/home/alice/public_html/config/defines.inc.php":            prestashopDefinesPHP(),
+			"/home/alice/public_html/app/config/parameters.php":         prestashopParametersPHP("ps_"),
+			"/var/www/vhosts/bob/public_html/config/defines.inc.php":    prestashopDefinesPHP(),
+			"/var/www/vhosts/bob/public_html/app/config/parameters.php": prestashopParametersPHP("ps_"),
+		}, []string{"prestashop_admin_injection", "prestashop_content_injection", "prestashop_settings_injection"}},
 		{"magento", CheckMagentoContent, map[string]string{
 			"/home/alice/public_html/app/etc/env.php":           canonicalM2EnvPHP(),
 			"/var/www/vhosts/bob/public_html/app/etc/local.xml": canonicalM1XML(),

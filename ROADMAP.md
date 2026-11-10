@@ -195,9 +195,9 @@ still matches, and the fix applies to the rule class.
 ### Clean corpus growth and per-detector false-positive tracking
 
 **Problem:** the corpus is pinned WordPress packages only; Joomla, Drupal and
-OpenCart pins are ready and `pending` in the manifest, Magento is not. The
-corpus then needs real-world content (common plugins, page builders, premium
-themes, admin tools) under a consent and scrubbing procedure. See
+OpenCart pins are ready and `pending` in the manifest, Magento and PrestaShop
+are not. The corpus then needs real-world content (common plugins, page
+builders, premium themes, admin tools) under a consent and scrubbing procedure. See
 [the corpus gate](docs/src/clean-corpus.md).
 
 **Acceptance:** the corpus runs on every release candidate and reports false

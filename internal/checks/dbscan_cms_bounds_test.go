@@ -38,8 +38,10 @@ func TestCMSContentQueriesAreBounded(t *testing.T) {
 	scanMagentoContent("alice", magentoCreds{dbName: "m"}, "cms_page", "content")
 	scanDrupalConfig("alice", drupalCreds{dbName: "d"})
 	scanDrupalContent("alice", drupalCreds{dbName: "d"})
-	if len(*queries) != 8 {
-		t.Fatalf("expected the eight content queries, got %d", len(*queries))
+	scanPrestaShopSettings("alice", prestashopCreds{dbName: "ps", dbPrefix: "ps_"})
+	scanPrestaShopContent("alice", prestashopCreds{dbName: "ps", dbPrefix: "ps_"})
+	if len(*queries) != 14 {
+		t.Fatalf("expected the fourteen content queries, got %d", len(*queries))
 	}
 	for _, q := range *queries {
 		if !strings.Contains(q, "LIMIT ") {
@@ -115,7 +117,9 @@ func TestCMSDiscoveryIncludesAddonDocroots(t *testing.T) {
 	CheckJoomlaContent(ctx, cfg, nil)
 	CheckMagentoContent(ctx, cfg, nil)
 	CheckDrupalContent(ctx, cfg, nil)
+	CheckPrestaShopContent(ctx, cfg, nil)
 	for _, want := range []string{
+		"/home/*/*/config/defines.inc.php",
 		"/home/*/*/config.php",
 		"/home/*/*/configuration.php",
 		"/home/*/*/app/etc/env.php",

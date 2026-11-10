@@ -27,6 +27,7 @@ func cmsCheckFixtures() []cmsCheckFixture {
 		{"drupal", "drupal_content_injection", CheckDrupalContent, &fakeDrupalOS{settingsBody: canonicalDrupalSettings(), hasDrupalPHP: true}},
 		{"magento", "magento_content_injection", CheckMagentoContent, &fakeMagentoOS{m2Body: canonicalM2EnvPHP()}},
 		{"opencart", "opencart_content_injection", CheckOpenCartContent, &fakeOpenCartOS{rootBody: canonicalOpenCartConfig(), adminBody: canonicalOpenCartConfig()}},
+		{"prestashop", "prestashop_content_injection", CheckPrestaShopContent, &twoOwnerCMSOS{files: prestashopInstallFiles("/home/alice/public_html", "ps_")}},
 	}
 }
 
@@ -190,7 +191,7 @@ func TestCMSIncompleteInstallationDoesNotSeedAdminBaseline(t *testing.T) {
 				if failed && calls == 1 {
 					return nil, errors.New("content query failed")
 				}
-				if strings.Contains(query, "username, email") || strings.Contains(query, "u.username, u.email") || strings.Contains(query, "u.uid, u.name, u.mail") {
+				if strings.Contains(query, "username, email") || strings.Contains(query, "u.username, u.email") || strings.Contains(query, "u.uid, u.name, u.mail") || strings.Contains(query, "id_profile, email") {
 					return rows, nil
 				}
 				return nil, nil
@@ -229,6 +230,31 @@ func TestCMSQueryDetectsOnlyActualOverflow(t *testing.T) {
 				t.Fatal("overflow coverage mark did not match the query result")
 			}
 		})
+	}
+}
+
+func TestCMSQueryOverflowKeepsIncompleteState(t *testing.T) {
+	ctx, coverage := withIncompleteCheckCollector(context.Background())
+	creds := wpDBCreds{queryCtx: ctx, queryOwner: prestashopOwner, queryState: new(dbQueryState)}
+	calls := 0
+	mysqlclient.SetPerAccountQueryForTest(func(context.Context, mysqlclient.Creds, string, ...any) ([]string, error) {
+		calls++
+		if calls == 1 {
+			return psEmployeeRows(cmsScanRowLimit + 1), nil
+		}
+		return []string{"42\tinjected content"}, nil
+	})
+	t.Cleanup(func() { mysqlclient.SetPerAccountQueryForTest(nil) })
+	rows, complete := runCMSQuery(creds, "SELECT id_employee, id_profile, email FROM ps_employee")
+	if complete || len(rows) != cmsScanRowLimit {
+		t.Fatalf("overflow returned %d rows, complete=%t", len(rows), complete)
+	}
+	rows, complete = runCMSQuery(creds, "SELECT id_cms, content FROM ps_cms_lang")
+	if len(rows) != 1 || rows[0] != "42\tinjected content" || calls != 2 {
+		t.Fatalf("independent query returned %v after %d calls", rows, calls)
+	}
+	if complete || !coverage.contains(prestashopOwner) {
+		t.Fatal("successful query erased earlier incomplete coverage")
 	}
 }
 
