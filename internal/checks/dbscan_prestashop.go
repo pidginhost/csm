@@ -109,10 +109,11 @@ func scanPrestaShopInstall(ctx context.Context, root string, store *state.Store)
 	account := extractUser(root)
 	creds.ctx = ctx
 	creds.queryState = new(dbQueryState)
-	var findings []alert.Finding
+	// Employees first: an overflowing settings or content query halts every
+	// later query for the install, and must not hide a new SuperAdmin.
+	findings := scanPrestaShopEmployees(store, account, creds)
 	findings = append(findings, scanPrestaShopSettings(account, creds)...)
 	findings = append(findings, scanPrestaShopContent(account, creds)...)
-	findings = append(findings, scanPrestaShopEmployees(store, account, creds)...)
 	if owned {
 		findings = stampTenantIDIfEmpty(findings, owner)
 	}

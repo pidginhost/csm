@@ -9,6 +9,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/mysqlclient"
 	"github.com/pidginhost/csm/internal/state"
 )
 
@@ -808,5 +809,36 @@ func TestCheckPrestaShopContentIgnoresNonPrestaShop(t *testing.T) {
 	CheckPrestaShopContent(ctx, &config.Config{}, nil)
 	if len(*queries) != 0 || coverage.contains(prestashopOwner) {
 		t.Fatalf("non-PrestaShop tree: %d queries, incomplete %v", len(*queries), coverage.contains(prestashopOwner))
+	}
+}
+
+func TestPrestaShopSettingsOverflowKeepsEmployeeScan(t *testing.T) {
+	withAccountHomeRoots(t, "/home")
+	withCMSConfigOS(t, &twoOwnerCMSOS{files: prestashopInstallFiles(psTestRoot, "ps_")})
+	employees := psBaselineRows
+	var settings []string
+	// Stub below runMySQLQuery so an overflow halts later queries as in
+	// production.
+	mysqlclient.SetPerAccountQueryForTest(func(_ context.Context, _ mysqlclient.Creds, q string, _ ...any) ([]string, error) {
+		switch {
+		case strings.Contains(q, "FROM ps_employee"):
+			return employees, nil
+		case strings.Contains(q, "FROM ps_configuration WHERE"):
+			return settings, nil
+		}
+		return nil, nil
+	})
+	t.Cleanup(func() { mysqlclient.SetPerAccountQueryForTest(nil) })
+	store := newCrontabTestStore(t)
+	CheckPrestaShopContent(context.Background(), &config.Config{}, store)
+	// Rows that pass the LIKE prefilter but classify clean: enough of them
+	// must not stop the employee scan.
+	for i := 0; i < 201; i++ {
+		settings = append(settings, fmt.Sprintf("%d\tPS_WIDGET_%d\t<script src=\"https://www.googletagmanager.com/gtag/js?id=G-XYZ\"></script>", i+100, i))
+	}
+	employees = append(append([]string(nil), psBaselineRows...), "9\t1\tx@example.test")
+	got := psCritical(CheckPrestaShopContent(context.Background(), &config.Config{}, store))
+	if len(got) != 1 || !strings.Contains(got[0].Details, "Event: new SuperAdmin") {
+		t.Fatalf("settings overflow hid the new SuperAdmin: %+v", got)
 	}
 }
