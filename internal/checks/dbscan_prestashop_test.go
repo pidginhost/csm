@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/state"
 )
 
 // psOmit drops a key from psParamsBody.
@@ -467,5 +468,166 @@ func TestPrestaShopScansUnprefixedTables(t *testing.T) {
 	}
 	if strings.Contains(joined, "FROM _") {
 		t.Error("an empty prefix produced an underscore table name")
+	}
+}
+
+// psEmployeeRows returns ids 1..n with profile 4, except the listed ids with
+// the SuperAdmin profile.
+func psEmployeeRows(n int, superAdmins ...int) []string {
+	super := map[int]bool{}
+	for _, id := range superAdmins {
+		super[id] = true
+	}
+	rows := make([]string, 0, n)
+	for id := 1; id <= n; id++ {
+		profile := "4"
+		if super[id] {
+			profile = "1"
+		}
+		rows = append(rows, fmt.Sprintf("%d\t%s\temployee%d@example.test", id, profile, id))
+	}
+	return rows
+}
+
+func psCritical(findings []alert.Finding) []alert.Finding {
+	var out []alert.Finding
+	for _, f := range findings {
+		if f.Severity == alert.Critical {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+type psEmployeeHarness struct {
+	t     *testing.T
+	store *state.Store
+	rows  []string
+}
+
+func newPSEmployeeHarness(t *testing.T) *psEmployeeHarness {
+	h := &psEmployeeHarness{t: t, store: newCrontabTestStore(t)}
+	withCapturedQueries(t, func(string) []string { return h.rows })
+	return h
+}
+
+func (h *psEmployeeHarness) scan(rows ...string) []alert.Finding {
+	h.rows = rows
+	return scanPrestaShopEmployees(h.store, "alice", psScanCreds("ps_"))
+}
+
+var psBaselineRows = []string{"1\t1\towner@example.test", "2\t4\tstaff@example.test"}
+
+func TestPrestaShopEmployeesBaselineIsQuiet(t *testing.T) {
+	h := newPSEmployeeHarness(t)
+	if got := h.scan(psBaselineRows...); len(got) != 0 {
+		t.Fatalf("baseline pass reported %+v", got)
+	}
+}
+
+func TestPrestaShopNewEmployeeIsHigh(t *testing.T) {
+	h := newPSEmployeeHarness(t)
+	h.scan(psBaselineRows...)
+	rows := append(append([]string(nil), psBaselineRows...), "3\t4\tnew@example.test")
+	got := h.scan(rows...)
+	if len(got) != 1 || got[0].Severity != alert.High || !strings.Contains(got[0].Message, "id_employee=3") || strings.Contains(got[0].Details, "Event:") {
+		t.Fatalf("new employee = %+v, want one High without an event", got)
+	}
+	if again := h.scan(rows...); len(again) != 0 {
+		t.Fatalf("new employee repeated: %+v", again)
+	}
+}
+
+func TestPrestaShopNewSuperAdminIsOneCritical(t *testing.T) {
+	h := newPSEmployeeHarness(t)
+	h.scan(psBaselineRows...)
+	rows := append(append([]string(nil), psBaselineRows...), "5\t1\tx@example.test")
+	got := h.scan(rows...)
+	if len(got) != 1 || got[0].Severity != alert.Critical || got[0].Check != "prestashop_admin_injection" ||
+		!strings.Contains(got[0].Details, "Event: new SuperAdmin") || !strings.Contains(got[0].Details, "Row: 5\t1\t") {
+		t.Fatalf("new SuperAdmin = %+v, want exactly one Critical", got)
+	}
+	if again := h.scan(rows...); len(again) != 0 {
+		t.Fatalf("new SuperAdmin repeated: %+v", again)
+	}
+}
+
+func TestPrestaShopPromotionIsCritical(t *testing.T) {
+	h := newPSEmployeeHarness(t)
+	h.scan(psBaselineRows...)
+	promoted := []string{"1\t1\towner@example.test", "2\t1\tstaff@example.test"}
+	got := h.scan(promoted...)
+	if len(got) != 1 || got[0].Severity != alert.Critical || !strings.Contains(got[0].Details, "Event: promoted to SuperAdmin") {
+		t.Fatalf("promotion = %+v, want one Critical", got)
+	}
+	plain := dbContentDedupKey("alice", psScanCreds("ps_").asWPDBCreds(), "ps_", "cms-admin=prestashop", "id=2")
+	if got[0].DedupKey == "" || got[0].DedupKey == plain {
+		t.Errorf("promotion shares the new-employee identity %q", plain)
+	}
+	if again := h.scan(promoted...); len(again) != 0 {
+		t.Fatalf("promotion repeated: %+v", again)
+	}
+}
+
+func TestPrestaShopRepromotionAfterDemotionAlertsAgain(t *testing.T) {
+	h := newPSEmployeeHarness(t)
+	h.scan(psBaselineRows...)
+	promoted := []string{"1\t1\towner@example.test", "2\t1\tstaff@example.test"}
+	if got := psCritical(h.scan(promoted...)); len(got) != 1 {
+		t.Fatalf("first promotion = %+v", got)
+	}
+	if got := h.scan(psBaselineRows...); len(got) != 0 {
+		t.Fatalf("demotion reported %+v", got)
+	}
+	if got := psCritical(h.scan(promoted...)); len(got) != 1 {
+		t.Fatalf("re-promotion = %+v, want one Critical", got)
+	}
+}
+
+func TestPrestaShopPartialResultDoesNotMoveSuperAdminSet(t *testing.T) {
+	h := newPSEmployeeHarness(t)
+	if got := h.scan(psEmployeeRows(200, 1)...); len(got) != 0 {
+		t.Fatalf("baseline = %+v", got)
+	}
+	if got := psCritical(h.scan(psEmployeeRows(201, 1, 2)...)); len(got) != 1 || !strings.Contains(got[0].Message, "id_employee=2") {
+		t.Fatalf("partial pass = %+v, want the promotion of id 2", got)
+	}
+	if got := psCritical(h.scan(psEmployeeRows(200, 1, 2)...)); len(got) != 1 {
+		t.Fatalf("complete pass after a partial one = %+v, want the promotion again", got)
+	}
+	if got := psCritical(h.scan(psEmployeeRows(200, 1, 2)...)); len(got) != 0 {
+		t.Fatalf("recorded promotion repeated: %+v", got)
+	}
+}
+
+func TestPrestaShopEmptyEmployeeBaselineThenSuperAdmin(t *testing.T) {
+	h := newPSEmployeeHarness(t)
+	if got := h.scan(); len(got) != 0 {
+		t.Fatalf("empty baseline = %+v", got)
+	}
+	got := h.scan("7\t1\tx@example.test")
+	if len(got) != 1 || got[0].Severity != alert.Critical || !strings.Contains(got[0].Details, "Event: new SuperAdmin") {
+		t.Fatalf("SuperAdmin after an empty baseline = %+v, want one Critical", got)
+	}
+}
+
+func TestPrestaShopEmployeesWithoutStoreWarnPerRow(t *testing.T) {
+	withCapturedQueries(t, func(string) []string { return psBaselineRows })
+	got := scanPrestaShopEmployees(nil, "alice", psScanCreds("ps_"))
+	if len(got) != 2 {
+		t.Fatalf("findings = %+v, want one per row", got)
+	}
+	for _, f := range got {
+		if f.Severity != alert.Warning {
+			t.Errorf("storeless finding severity = %v, want Warning", f.Severity)
+		}
+	}
+}
+
+func TestPrestaShopEmployeeQuerySkipsPassword(t *testing.T) {
+	queries := withCapturedQueries(t, func(string) []string { return nil })
+	scanPrestaShopEmployees(nil, "alice", psScanCreds("ps_"))
+	if len(*queries) != 1 || !strings.Contains((*queries)[0], "SELECT id_employee, id_profile, email FROM ps_employee") || strings.Contains((*queries)[0], "passwd") {
+		t.Fatalf("employee queries = %v", *queries)
 	}
 }

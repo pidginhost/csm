@@ -79,6 +79,27 @@ func rankCMSConfigs(ctx context.Context, owner string, paths []string, maxFiles 
 // per-row visibility Warning. describe renders the message tail and the
 // details for one row's tab-separated fields; fields[0] is the id.
 func cmsAdminFindings(store *state.Store, cms, check, account string, creds wpDBCreds, rows []string, complete bool, describe func(fields []string) (message, details string)) []alert.Finding {
+	return cmsAdminFindingsEscalated(store, cms, check, account, creds, rows, complete, describe, nil)
+}
+
+// cmsAdminEscalation may raise a newly seen administrator's finding above
+// High. event names why, in the message and details, and gives the finding
+// its own identity so it is not filtered as a repeat of an earlier one.
+type cmsAdminEscalation func(fields []string) (sev alert.Severity, event string, ok bool)
+
+const cmsAdminSeenPrefix = "_cmsadmin:v2:"
+
+// cmsAdminSeenKey is the store key recording that an administrator id has
+// been seen in this installation.
+func cmsAdminSeenKey(account string, creds wpDBCreds, cms, id string) string {
+	return cmsAdminSeenPrefix + dbContentDedupKey(account, creds, creds.tablePrefix, "cms-admin="+cms, "id="+id)
+}
+
+// cmsAdminFindingsEscalated is cmsAdminFindings with an optional escalation
+// applied to new administrators on the store path. Without a store, rows stay
+// one Warning each.
+func cmsAdminFindingsEscalated(store *state.Store, cms, check, account string, creds wpDBCreds, rows []string, complete bool,
+	describe func(fields []string) (message, details string), escalate cmsAdminEscalation) []alert.Finding {
 	for _, row := range rows {
 		id, _, _ := strings.Cut(row, "\t")
 		if !isAllDigits(id) {
@@ -116,7 +137,7 @@ func cmsAdminFindings(store *state.Store, cms, check, account string, creds wpDB
 			})
 			continue
 		}
-		key := "_cmsadmin:v2:" + dedupKey
+		key := cmsAdminSeenPrefix + dedupKey
 		if _, seen := store.GetRaw(key); seen {
 			continue
 		}
@@ -126,13 +147,22 @@ func cmsAdminFindings(store *state.Store, cms, check, account string, creds wpDB
 		if !baselined {
 			continue
 		}
-		findings = append(findings, alert.Finding{
+		finding := alert.Finding{
 			Severity: alert.High,
 			Check:    check,
 			Message:  "New " + message,
 			Details:  details + "\nThis administrator was not present when the install was baselined.",
 			DedupKey: dedupKey,
-		})
+		}
+		if escalate != nil {
+			if sev, event, ok := escalate(fields); ok {
+				finding.Severity = sev
+				finding.Message += " (" + event + ")"
+				finding.Details += "\nEvent: " + event
+				finding.DedupKey = dbContentDedupKey(account, creds, creds.tablePrefix, "cms-admin="+cms, "id="+fields[0], "event="+event)
+			}
+		}
+		findings = append(findings, finding)
 	}
 	if store != nil && !baselined && complete {
 		store.SetRaw(baselineKey, "1")

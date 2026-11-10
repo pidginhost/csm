@@ -7,9 +7,11 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/state"
 )
 
 // PrestaShop database content scanner.
@@ -382,4 +384,85 @@ func scanPrestaShopContent(account string, creds prestashopCreds) []alert.Findin
 		}
 	}
 	return set.findings()
+}
+
+const (
+	// prestashopSuperAdminProfile is _PS_ADMIN_PROFILE_, unchanged from 1.6 to
+	// 9.2. Profile names are localised, so the id is what identifies it.
+	prestashopSuperAdminProfile  = "1"
+	prestashopEventNewSuperAdmin = "new SuperAdmin"
+	prestashopEventPromoted      = "promoted to SuperAdmin"
+)
+
+// scanPrestaShopEmployees baselines back-office employees like the other shop
+// scanners and reports a new or promoted SuperAdmin as Critical. Password
+// hashes are never selected.
+func scanPrestaShopEmployees(store *state.Store, account string, creds prestashopCreds) []alert.Finding {
+	w := creds.asWPDBCreds()
+	rows, complete := runCMSQuery(w, fmt.Sprintf("SELECT id_employee, id_profile, email FROM %semployee", creds.dbPrefix))
+	describe := func(fields []string) (string, string) {
+		return fmt.Sprintf("PrestaShop employee on %s: id_employee=%s", account, fields[0]),
+			fmt.Sprintf("Account: %s\nRow: %s\nReview: confirm this is a legitimate back-office employee.", account, strings.Join(fields, "\t"))
+	}
+	// Promotions are judged before the shared baseline records this pass's
+	// new ids, so a new SuperAdmin is reported once, by the new-employee path.
+	findings := prestashopPromotions(store, account, w, rows, complete, describe)
+	return append(findings, cmsAdminFindingsEscalated(store, "prestashop", "prestashop_admin_injection", account, w, rows, complete, describe,
+		func(fields []string) (alert.Severity, string, bool) {
+			if len(fields) > 1 && fields[1] == prestashopSuperAdminProfile {
+				return alert.Critical, prestashopEventNewSuperAdmin, true
+			}
+			return 0, "", false
+		})...)
+}
+
+// prestashopPromotions reports known employees that moved to the SuperAdmin
+// profile since the recorded set. The set changes only after a complete
+// result; a demotion drops the id, so a later re-promotion alerts again.
+func prestashopPromotions(store *state.Store, account string, w wpDBCreds, rows []string, complete bool,
+	describe func(fields []string) (string, string)) []alert.Finding {
+	if store == nil {
+		return nil
+	}
+	setKey := "_pssuperadmin:v1:" + dbContentDedupKey(account, w, w.tablePrefix, "cms-admin=prestashop", "superadmins")
+	stored, recorded := store.GetRaw(setKey)
+	known := map[string]bool{}
+	for _, id := range strings.Split(stored, ",") {
+		known[id] = id != ""
+	}
+	var current []string
+	seen := map[string]bool{}
+	var findings []alert.Finding
+	for _, row := range rows {
+		fields := strings.Split(row, "\t")
+		id := fields[0]
+		if !isAllDigits(id) {
+			complete = false
+			continue
+		}
+		if len(fields) < 2 || fields[1] != prestashopSuperAdminProfile || seen[id] {
+			continue
+		}
+		seen[id] = true
+		current = append(current, id)
+		if !recorded || known[id] {
+			continue
+		}
+		if _, existing := store.GetRaw(cmsAdminSeenKey(account, w, "prestashop", id)); !existing {
+			continue
+		}
+		message, details := describe(fields)
+		findings = append(findings, alert.Finding{
+			Severity: alert.Critical,
+			Check:    "prestashop_admin_injection",
+			Message:  message + " (" + prestashopEventPromoted + ")",
+			Details:  prestashopFindingDetails(w, details) + "\nEvent: " + prestashopEventPromoted,
+			DedupKey: dbContentDedupKey(account, w, w.tablePrefix, "cms-admin=prestashop", "id="+id, "event="+prestashopEventPromoted),
+		})
+	}
+	if complete {
+		sort.Strings(current)
+		store.SetRaw(setKey, strings.Join(current, ","))
+	}
+	return findings
 }

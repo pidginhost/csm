@@ -30,6 +30,9 @@ func cmsAdminScanners() []cmsAdminScanner {
 		{"opencart", func(s *state.Store, account string, c wpDBCreds) []alert.Finding {
 			return scanOpenCartAdmins(s, account, opencartCreds{ctx: c.queryCtx, dbHost: c.dbHost, dbName: c.dbName, dbPrefix: c.tablePrefix})
 		}},
+		{"prestashop", func(s *state.Store, account string, c wpDBCreds) []alert.Finding {
+			return scanPrestaShopEmployees(s, account, prestashopCreds{ctx: c.queryCtx, dbHost: c.dbHost, dbName: c.dbName, dbPrefix: c.tablePrefix})
+		}},
 	}
 }
 
