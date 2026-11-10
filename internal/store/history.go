@@ -211,6 +211,17 @@ func (db *DB) ReadHistoryFilteredWithChecks(
 	search string,
 	checks map[string]bool,
 ) ([]alert.Finding, int) {
+	return db.readHistoryFilteredIn(limit, offset, from, to, severity, search, checks, time.Local)
+}
+
+func (db *DB) readHistoryFilteredIn(
+	limit, offset int,
+	from, to string,
+	severity int,
+	search string,
+	checks map[string]bool,
+	loc *time.Location,
+) ([]alert.Finding, int) {
 	var results []alert.Finding
 	matched := 0
 	searchLower := strings.ToLower(search)
@@ -219,14 +230,14 @@ func (db *DB) ReadHistoryFilteredWithChecks(
 
 	var fromPrefix, toPrefix string
 	if from != "" {
-		if fromTime, err := ParseHistoryBound(from, false); err == nil {
+		if fromTime, err := parseHistoryBoundIn(from, false, loc); err == nil {
 			fromPrefix = timeKeyLowerBound(fromTime)
 		} else {
 			fromPrefix = ParseTimeKeyPrefix(from)
 		}
 	}
 	if to != "" {
-		if toTime, err := ParseHistoryBound(to, true); err == nil {
+		if toTime, err := parseHistoryBoundIn(to, true, loc); err == nil {
 			// An exclusive upper bound: the next local midnight for a
 			// date, the instant itself for an RFC 3339 end.
 			toPrefix = timeKeyLowerBound(toTime)

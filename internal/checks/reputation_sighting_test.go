@@ -192,15 +192,6 @@ func TestReputationSightingIsStableAcrossScans(t *testing.T) {
 	}
 }
 
-// withLocalZone sets time.Local for one test. Tests using it never run in
-// parallel.
-func withLocalZone(t *testing.T, loc *time.Location) {
-	t.Helper()
-	old := time.Local
-	time.Local = loc
-	t.Cleanup(func() { time.Local = old })
-}
-
 // sshAt is an sshd login of ip that sshd dated at.
 func sshAt(at time.Time, ip string) string {
 	return at.Format(time.RFC3339Nano) + " host sshd[1]: Accepted publickey for root from " + ip + " port 22 ssh2"
@@ -264,8 +255,10 @@ func TestReputationSightingScanTimeBoundaries(t *testing.T) {
 // or an invalid zone, leaves the address without a sighting; a prefix the
 // RCPT parser rejects contributes no address at all.
 func TestReputationEximSightingUsesFullServerTime(t *testing.T) {
-	withLocalZone(t, time.FixedZone("local", 2*3600))
-	now := time.Date(2026, 11, 9, 12, 0, 0, 0, time.UTC)
+	// The server zone comes from the scan clock; time.Local stays untouched,
+	// since other goroutines read it.
+	server := time.FixedZone("local", 2*3600)
+	now := time.Date(2026, 11, 9, 12, 0, 0, 0, time.UTC).In(server)
 	recent := now.Add(-10*time.Minute + 125*time.Millisecond)
 	ist, mst, line := time.FixedZone("ist", 5*3600+1800), time.FixedZone("mst", -7*3600), time.FixedZone("lint", 14*3600)
 	authFail := func(prefix, ip string) string {
@@ -282,14 +275,14 @@ func TestReputationEximSightingUsesFullServerTime(t *testing.T) {
 	}{
 		{"auth positive zone", "203.0.113.100", authFail(recent.In(ist).Format(zoned), "203.0.113.100"), true, recent},
 		{"auth negative zone", "203.0.113.101", authFail(recent.In(mst).Format(zoned), "203.0.113.101"), true, recent},
-		{"auth local fraction", "203.0.113.102", authFail(recent.In(time.Local).Format(local), "203.0.113.102"), true, recent},
+		{"auth local fraction", "203.0.113.102", authFail(recent.In(server).Format(local), "203.0.113.102"), true, recent},
 		{"rcpt positive zone", "203.0.113.103", rcpt(recent.In(ist).Format(zoned), "203.0.113.103"), true, recent},
-		{"rcpt local fraction", "203.0.113.104", rcpt(recent.In(time.Local).Format(local), "203.0.113.104"), true, recent},
+		{"rcpt local fraction", "203.0.113.104", rcpt(recent.In(server).Format(local), "203.0.113.104"), true, recent},
 		// Read in the local zone, this day-old record would look recent.
 		{"auth stale in its zone", "203.0.113.105", authFail(now.Add(-25*time.Hour).In(line).Format(zoned), "203.0.113.105"), true, time.Time{}},
-		{"auth invalid zone", "203.0.113.106", authFail(recent.In(time.Local).Format(time.DateTime)+" +9999", "203.0.113.106"), true, time.Time{}},
-		{"rcpt out-of-range zone", "203.0.113.107", rcpt(recent.In(time.Local).Format(time.DateTime)+" +2400", "203.0.113.107"), true, time.Time{}},
-		{"rcpt invalid zone", "203.0.113.108", rcpt(recent.In(time.Local).Format(time.DateTime)+" +9999", "203.0.113.108"), false, time.Time{}},
+		{"auth invalid zone", "203.0.113.106", authFail(recent.In(server).Format(time.DateTime)+" +9999", "203.0.113.106"), true, time.Time{}},
+		{"rcpt out-of-range zone", "203.0.113.107", rcpt(recent.In(server).Format(time.DateTime)+" +2400", "203.0.113.107"), true, time.Time{}},
+		{"rcpt invalid zone", "203.0.113.108", rcpt(recent.In(server).Format(time.DateTime)+" +9999", "203.0.113.108"), false, time.Time{}},
 	}
 	var lines []string
 	for _, c := range cases {

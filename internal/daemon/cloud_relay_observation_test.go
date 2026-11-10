@@ -151,15 +151,6 @@ func TestCloudRelayAtTheEventCapNamesTheCurrentSend(t *testing.T) {
 	}
 }
 
-// withLocal sets time.Local for one test. Tests using it never run in
-// parallel.
-func withLocal(t *testing.T, loc *time.Location) {
-	t.Helper()
-	old := time.Local
-	time.Local = loc
-	t.Cleanup(func() { time.Local = old })
-}
-
 // stampedAs replaces line's leading Exim time with prefix.
 func stampedAs(line, prefix string) string { return prefix + line[len(time.DateTime):] }
 
@@ -167,8 +158,10 @@ func stampedAs(line, prefix string) string { return prefix + line[len(time.DateT
 // whole prefix: fractional seconds and, when logged, the zone. The legacy
 // detection still reads the first 19 bytes, so the finding is unchanged.
 func TestEximHistoryObservationUsesFullServerTime(t *testing.T) {
-	withLocal(t, time.FixedZone("local", 2*3600))
-	now := time.Now()
+	// The server zone comes from the scan clock; time.Local stays untouched,
+	// since other goroutines read it.
+	server := time.FixedZone("local", 2*3600)
+	now := time.Now().In(server)
 	base := now.Add(-12 * time.Hour).Truncate(time.Second)
 	for _, tc := range []struct {
 		name   string
@@ -177,7 +170,7 @@ func TestEximHistoryObservationUsesFullServerTime(t *testing.T) {
 	}{
 		{"positive zone", "2006-01-02 15:04:05.000 -0700", time.FixedZone("ist", 5*3600+1800)},
 		{"negative zone", "2006-01-02 15:04:05.000 -0700", time.FixedZone("mst", -7*3600)},
-		{"fraction without zone", "2006-01-02 15:04:05.000", time.Local},
+		{"fraction without zone", "2006-01-02 15:04:05.000", server},
 		{"zone without fraction", "2006-01-02 15:04:05 -0700", time.FixedZone("ist", 5*3600+1800)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -284,8 +277,7 @@ func TestEximHistoryRecordBindingAcrossAccounts(t *testing.T) {
 // Prefix spacing must neither hide a valid zone nor let an invalid one
 // borrow local time. The newest peer and the legacy burst remain unchanged.
 func TestEximHistoryObservationZoneAfterWhitespace(t *testing.T) {
-	withLocal(t, time.FixedZone("local", 2*3600))
-	now := time.Date(2026, 1, 2, 22, 0, 0, 0, time.UTC)
+	now := time.Date(2026, 1, 2, 22, 0, 0, 0, time.UTC).In(time.FixedZone("local", 2*3600))
 	base := now.Add(-12 * time.Hour)
 	for _, zone := range []string{"+0530", "-0700", "+2400", "-0060"} {
 		t.Run(zone, func(t *testing.T) {

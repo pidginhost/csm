@@ -28,7 +28,7 @@ func TestLineTimeZoneAfterWhitespace(t *testing.T) {
 				if got := AuthenticatedUser(line); got != "info@example.com" {
 					t.Fatalf("fixture user = %q", got)
 				}
-				got, ok := lineTimeIn(line, local)
+				got, ok := LineTime(line, local)
 				if ok != !tc.want.IsZero() || !got.Equal(tc.want) {
 					t.Errorf("zone %q after %q = %v, %v; want %v", tc.zone, spacing.gap, got, ok, tc.want)
 				}
