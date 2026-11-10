@@ -17,7 +17,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Changed
 
-- HTTP, cPanel and IP reputation forecasts exclude known proxy edges, including `thresholds.http_asn_crawl_reverse_proxy_asns` networks with a loaded ASN database; session peers retain their existing policy.
+- Automatic response forecasts refuse HTTP, cPanel and IP reputation findings from known CDN and website firewall edges, including networks in `thresholds.http_asn_crawl_reverse_proxy_asns` when the ASN database is loaded.
 - HTTP checks now also trust proxies listed in `challenge.trusted_proxies`, and the ModSecurity audit scan no longer reports a trusted proxy as an attacker.
 - The challenge server now also trusts proxies listed in `web_server.trusted_proxies`, and refuses overlong forwarded chains.
 - CSM now refuses to start, reload or save Settings with a `web_server.trusted_proxies` or `challenge.trusted_proxies` entry that is empty, unreadable or covers every address, instead of ignoring it. Correct such entries before upgrading.
