@@ -289,8 +289,6 @@ var checkRegistry = []CheckInfo{
 	{Name: "db_siteurl_hijack", Category: CategoryDatabase, Correlation: CorrelationSecurityEvent, Response: ResponsePolicy{NeverChallenge: true}},
 	{Name: "db_siteurl_foreign_host", Category: CategoryDatabase, Correlation: CorrelationSecurityEvent},
 	{Name: "db_siteurl_invalid", Category: CategoryDatabase, Correlation: CorrelationIgnored, CorrelationReason: reasonPosture},
-	{Name: "db_spam_cleaned", Category: CategoryDatabase, Correlation: CorrelationIgnored, CorrelationReason: reasonResponse, Summary: true},
-	{Name: "db_spam_found", Category: CategoryDatabase, Correlation: CorrelationSecurityEvent},
 	{Name: "db_spam_injection", Category: CategoryDatabase, Correlation: CorrelationSecurityEvent, Response: ResponsePolicy{NeverChallenge: true}},
 	{Name: "db_suspicious_admin_email", Category: CategoryDatabase, Correlation: CorrelationSecurityEvent},
 
