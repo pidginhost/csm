@@ -807,7 +807,7 @@ func TestAPIHistoryWithChecksFilter(t *testing.T) {
 }
 
 func TestAPIHistoryOffsetBeyondEnd(t *testing.T) {
-	s := newTestServer(t, "tok")
+	s := newTestServerWithBbolt(t, "tok")
 	now := time.Now()
 	findings := []alert.Finding{
 		{Severity: alert.Critical, Check: "webshell", Message: "shell", Timestamp: now},
@@ -818,6 +818,16 @@ func TestAPIHistoryOffsetBeyondEnd(t *testing.T) {
 	s.apiHistory(w, httptest.NewRequest("GET", "/?offset=9999&limit=10", nil))
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d", w.Code)
+	}
+	var resp struct {
+		Items []apiFinding `json:"items"`
+		Total int          `json:"total"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Total != 1 || len(resp.Items) != 0 {
+		t.Errorf("history = %+v, want no items and total 1", resp)
 	}
 }
 
@@ -1187,26 +1197,26 @@ func TestAPIHistoryLimitCapped(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestAPIHistoryFilteredPaginationEmpty(t *testing.T) {
-	s := newTestServer(t, "tok")
+	s := newTestServerWithBbolt(t, "tok")
 	findings := []alert.Finding{
 		{Severity: alert.Critical, Check: "webshell", Message: "shell", Timestamp: time.Now()},
 	}
 	s.store.AppendHistory(findings)
 
 	w := httptest.NewRecorder()
-	today := time.Now().Format("2006-01-02")
+	today := findings[0].Timestamp.Format("2006-01-02")
 	s.apiHistory(w, httptest.NewRequest("GET", "/?from="+today+"&to="+today+"&offset=100&limit=10", nil))
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d", w.Code)
 	}
 	var resp struct {
-		Findings interface{} `json:"items"`
-		Total    int         `json:"total"`
+		Findings []apiFinding `json:"items"`
+		Total    int          `json:"total"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("bad JSON: %v", err)
 	}
-	if arr, ok := resp.Findings.([]interface{}); ok && len(arr) > 0 {
-		t.Errorf("expected empty findings at large offset, got %d", len(arr))
+	if resp.Total != 1 || len(resp.Findings) != 0 {
+		t.Errorf("history = %+v, want no items and total 1", resp)
 	}
 }

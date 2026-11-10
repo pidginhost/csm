@@ -699,7 +699,7 @@ func TestAPIIncidentHoursMaxCapped(t *testing.T) {
 // --- apiAccountDetail: history is capped at 100 -----------------------
 
 func TestAPIAccountDetailHistoryCap(t *testing.T) {
-	s := newTestServer(t, "tok")
+	s := newTestServerWithBbolt(t, "tok")
 	// Create 150 history entries for one account
 	var findings []alert.Finding
 	for i := 0; i < 150; i++ {
@@ -723,8 +723,8 @@ func TestAPIAccountDetailHistoryCap(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil {
 		t.Fatalf("bad JSON: %v", err)
 	}
-	if len(data.History) > 100 {
-		t.Errorf("history count = %d, want <= 100 (capped)", len(data.History))
+	if len(data.History) != 100 {
+		t.Errorf("history count = %d, want 100 (capped)", len(data.History))
 	}
 }
 

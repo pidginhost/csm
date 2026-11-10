@@ -1,6 +1,7 @@
 package webui
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -55,12 +56,27 @@ func TestAPIFindingsEnrichedWithData(t *testing.T) {
 // --- apiHistory with data --------------------------------------------
 
 func TestAPIHistoryWithData(t *testing.T) {
-	s := newTestServer(t, "tok")
+	s := newTestServerWithBbolt(t, "tok")
 	seedFindings(t, s)
 	w := httptest.NewRecorder()
 	s.apiHistory(w, httptest.NewRequest("GET", "/?limit=10", nil))
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d", w.Code)
+	}
+	var resp struct {
+		Items []apiFinding `json:"items"`
+		Total int          `json:"total"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Total != 3 || len(resp.Items) != 3 {
+		t.Fatalf("history = %+v, want all three seeded findings", resp)
+	}
+	for i, check := range []string{"waf_status", "brute_force", "webshell"} {
+		if resp.Items[i].Check != check {
+			t.Errorf("history[%d].Check = %q, want %q", i, resp.Items[i].Check, check)
+		}
 	}
 }
 
@@ -82,12 +98,21 @@ func TestAPIHistoryCSVWithData(t *testing.T) {
 // --- apiStats with data ----------------------------------------------
 
 func TestAPIStatsWithData(t *testing.T) {
-	s := newTestServer(t, "tok")
+	s := newTestServerWithBbolt(t, "tok")
 	seedFindings(t, s)
 	w := httptest.NewRecorder()
 	s.apiStats(w, httptest.NewRequest("GET", "/", nil))
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d", w.Code)
+	}
+	var resp statsRiskResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	for key, want := range map[string]int{"critical": 1, "high": 1, "warning": 1, "total": 3} {
+		if got := resp.Last24h[key]; got != want {
+			t.Errorf("last_24h[%q] = %d, want %d", key, got, want)
+		}
 	}
 }
 
@@ -109,12 +134,21 @@ func TestAPIDismissFindingPost(t *testing.T) {
 // --- apiFindingDetail with data --------------------------------------
 
 func TestAPIFindingDetailWithData(t *testing.T) {
-	s := newTestServer(t, "tok")
+	s := newTestServerWithBbolt(t, "tok")
 	seedFindings(t, s)
 	w := httptest.NewRecorder()
 	s.apiFindingDetail(w, httptest.NewRequest("GET", "/?check=webshell&message=Found+/home/alice/shell.php", nil))
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d", w.Code)
+	}
+	var resp struct {
+		Related []apiFinding `json:"related"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Related) != 1 || resp.Related[0].Check != "webshell" || resp.Related[0].Message != "Found /home/alice/shell.php" {
+		t.Errorf("related = %+v, want the seeded webshell finding", resp.Related)
 	}
 }
 

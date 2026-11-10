@@ -3,6 +3,7 @@ package webui
 import (
 	"bytes"
 	"encoding/json"
+	"html/template"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -315,6 +316,8 @@ func TestAPIHardeningNoGlobalStore(t *testing.T) {
 // handleDashboard with a critical finding — exercises lastCriticalAgo != "None".
 func TestHandleDashboardShowsLastCritical(t *testing.T) {
 	s := newTestServerWithTemplates(t, "tok")
+	useHistoryDB(t)
+	s.templates["dashboard.html"] = template.Must(template.New("dashboard.html").Parse(`{{.LastCriticalISO}}`))
 	now := time.Now()
 	s.store.AppendHistory([]alert.Finding{
 		{Severity: alert.Critical, Check: "webshell", Message: "shell found", Details: "c99", Timestamp: now},
@@ -325,6 +328,9 @@ func TestHandleDashboardShowsLastCritical(t *testing.T) {
 	s.handleDashboard(w, httptest.NewRequest("GET", "/", nil))
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d", w.Code)
+	}
+	if got, want := w.Body.String(), now.Format(time.RFC3339); got != want {
+		t.Errorf("last critical = %q, want %q", got, want)
 	}
 }
 
