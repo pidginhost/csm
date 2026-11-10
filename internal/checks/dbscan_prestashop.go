@@ -65,9 +65,15 @@ func CheckPrestaShopContent(ctx context.Context, cfg *config.Config, store *stat
 	var kept []string
 	for _, marker := range markers {
 		// Staging and backup copies query a database the site does not serve.
-		if !wpSkipDirNames[filepath.Base(prestashopRoot(marker))] {
-			kept = append(kept, marker)
+		if wpSkipDirNames[strings.ToLower(filepath.Base(prestashopRoot(marker)))] {
+			continue
 		}
+		// Exclude suspended accounts before config reads and the file cap:
+		// their locked databases provide no coverage of active shops.
+		if owner, owned := installOwner(marker); owned && accountSuspended(owner) {
+			continue
+		}
+		kept = append(kept, marker)
 	}
 	if len(kept) == 0 {
 		return nil
@@ -100,11 +106,6 @@ func scanPrestaShopInstall(ctx context.Context, root string, store *state.Store)
 		return nil
 	}
 	owner, owned := installOwner(creds.path)
-	// A suspended account's database user is locked: scanning it would only
-	// leave the check incomplete.
-	if owned && accountSuspended(owner) {
-		return nil
-	}
 	account := extractUser(root)
 	creds.ctx = ctx
 	creds.queryState = new(dbQueryState)

@@ -170,7 +170,7 @@ func TestVerifyCMSAdminInjection(t *testing.T) {
 			c: cmsAdminCase{
 				name: "prestashop", verify: verifyPrestaShopAdminInjection,
 				message: "New PrestaShop employee on bob: id_employee=9",
-				details: "Account: bob\nRow: 9\t4\tx@y\nReview: confirm.",
+				details: psVerifyDetails("Account: bob\nRow: 9\t4\tx@y\nReview: confirm."),
 				schema:  "shop_db", table: "employee",
 			},
 		},
@@ -178,9 +178,13 @@ func TestVerifyCMSAdminInjection(t *testing.T) {
 
 	for _, tc := range cases {
 		tc := tc
+		withQuery := withRootQuery
+		if tc.c.name == "prestashop" {
+			withQuery = withPSVerifyQuery
+		}
 		t.Run(tc.c.name+"/resolved", func(t *testing.T) {
 			tc.setup(t)
-			withRootQuery(t, func(schema, query string, _ ...any) ([]string, error) {
+			withQuery(t, func(schema, query string, _ ...any) ([]string, error) {
 				if schema != tc.c.schema {
 					t.Errorf("schema=%q want %q", schema, tc.c.schema)
 				}
@@ -196,7 +200,7 @@ func TestVerifyCMSAdminInjection(t *testing.T) {
 		})
 		t.Run(tc.c.name+"/unresolved", func(t *testing.T) {
 			tc.setup(t)
-			withRootQuery(t, func(_, _ string, _ ...any) ([]string, error) { return []string{"1"}, nil })
+			withQuery(t, func(_, _ string, _ ...any) ([]string, error) { return []string{"1"}, nil })
 			res := tc.c.verify(tc.c.message, tc.c.details)
 			if !res.Checked || res.Resolved {
 				t.Errorf("want checked+unresolved, got %+v", res)
@@ -204,7 +208,7 @@ func TestVerifyCMSAdminInjection(t *testing.T) {
 		})
 		t.Run(tc.c.name+"/query-error", func(t *testing.T) {
 			tc.setup(t)
-			withRootQuery(t, func(_, _ string, _ ...any) ([]string, error) { return nil, context.DeadlineExceeded })
+			withQuery(t, func(_, _ string, _ ...any) ([]string, error) { return nil, context.DeadlineExceeded })
 			res := tc.c.verify(tc.c.message, tc.c.details)
 			if res.Checked {
 				t.Errorf("query error must not be checked, got %+v", res)

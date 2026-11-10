@@ -14,7 +14,7 @@ import (
 // Per-finding Re-check for the non-WordPress CMS database-content findings
 // (Drupal, Joomla, Magento, OpenCart, PrestaShop). Each verifier re-discovers the single
 // canonical install under /home/<account>/public_html, re-reads the one flagged
-// row as root against that install's schema, and re-runs the SAME malware
+// row against that install's schema, and re-runs the SAME malware
 // classifier the detector used. It resolves only when the row is gone or no
 // longer classifies as malware; any query failure or undiscoverable install
 // returns Checked:false so a live injection is never auto-cleared.
@@ -273,22 +273,41 @@ func verifyOpenCartContentInjection(message, details string) VerifyResult {
 
 // --- PrestaShop -------------------------------------------------------------
 
-func discoverPrestaShopSchema(account string) (schema, prefix string, ok bool) {
+func discoverPrestaShopVerifyCreds(account, details string) (prestashopCreds, bool) {
 	if !validAccountName.MatchString(account) {
-		return "", "", false
+		return prestashopCreds{}, false
 	}
 	creds, isShop, err := readPrestaShopCreds(context.Background(), filepath.Join(accountHomeDir(account), "public_html"))
 	if err != nil || !isShop {
-		return "", "", false
+		return prestashopCreds{}, false
 	}
-	return creds.dbName, creds.dbPrefix, true
+	// An addon install or changed configuration can name a different database
+	// with the same row ids. Never clear its finding against the canonical one.
+	for key, want := range map[string]string{
+		"Database": creds.dbName, "Table prefix": creds.dbPrefix, "Database host": creds.dbHost,
+	} {
+		if got, present := detailFieldPresent(details, key); !present || got != want {
+			return prestashopCreds{}, false
+		}
+	}
+	return creds, true
+}
+
+func runPrestaShopVerifyQuery(creds prestashopCreds, query string, args ...any) ([]string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), dbVerifyTimeout)
+	defer cancel()
+	// Root credentials may point at another server or socket. Use the same
+	// endpoint and account as the scanner, preserving errors for the caller.
+	return mysqlclient.PerAccountQuery(ctx, mysqlclient.Creds{
+		Host: creds.dbHost, DBName: creds.dbName, User: creds.dbUser, Password: creds.dbPass,
+	}, query, args...)
 }
 
 // prestashopVerifyRowMalware is dbVerifyRowMalware on the stored values. The
 // detector classifies batch-unescaped rows, so the re-check must as well, or
 // it would resolve a row the detector still reports.
-func prestashopVerifyRowMalware(schema, query string, inPostContext bool, args ...any) VerifyResult {
-	rows, err := runDBVerifyQueryRoot(schema, query, args...)
+func prestashopVerifyRowMalware(creds prestashopCreds, query string, inPostContext bool, args ...any) VerifyResult {
+	rows, err := runPrestaShopVerifyQuery(creds, query, args...)
 	if err != nil {
 		return dbVerifyQueryError()
 	}
@@ -305,19 +324,19 @@ func verifyPrestaShopSettingsInjection(message, details string) VerifyResult {
 	if !isAllDigits(id) {
 		return VerifyResult{Checked: false, Detail: "could not parse the setting id from the finding"}
 	}
-	schema, prefix, ok := discoverPrestaShopSchema(dbFindingAccount(message, details))
+	creds, ok := discoverPrestaShopVerifyCreds(dbFindingAccount(message, details), details)
 	if !ok {
 		return dbVerifyNotLocatable("PrestaShop site")
 	}
-	base, err := QuoteIdent(prefix + "configuration")
+	base, err := QuoteIdent(creds.dbPrefix + "configuration")
 	if err != nil {
 		return VerifyResult{Checked: false, Detail: "could not validate the PrestaShop tables from the finding"}
 	}
-	lang, err := QuoteIdent(prefix + "configuration_lang")
+	lang, err := QuoteIdent(creds.dbPrefix + "configuration_lang")
 	if err != nil {
 		return VerifyResult{Checked: false, Detail: "could not validate the PrestaShop tables from the finding"}
 	}
-	return prestashopVerifyRowMalware(schema, fmt.Sprintf(
+	return prestashopVerifyRowMalware(creds, fmt.Sprintf(
 		"SELECT value FROM %s WHERE id_configuration = ? UNION ALL SELECT value FROM %s WHERE id_configuration = ?",
 		base, lang), false, id, id)
 }
@@ -336,11 +355,11 @@ func verifyPrestaShopContentInjection(message, details string) VerifyResult {
 	if spec == nil || !isAllDigits(id) {
 		return VerifyResult{Checked: false, Detail: "could not parse the table and row id from the finding"}
 	}
-	schema, prefix, ok := discoverPrestaShopSchema(dbFindingAccount(message, details))
+	creds, ok := discoverPrestaShopVerifyCreds(dbFindingAccount(message, details), details)
 	if !ok {
 		return dbVerifyNotLocatable("PrestaShop site")
 	}
-	table, err := QuoteIdent(prefix + spec.table)
+	table, err := QuoteIdent(creds.dbPrefix + spec.table)
 	if err != nil {
 		return VerifyResult{Checked: false, Detail: "could not validate the PrestaShop table from the finding"}
 	}
@@ -350,5 +369,5 @@ func verifyPrestaShopContentInjection(message, details string) VerifyResult {
 		selects = append(selects, fmt.Sprintf("SELECT %s FROM %s WHERE %s = ?", col, table, spec.idCol))
 		args = append(args, id)
 	}
-	return prestashopVerifyRowMalware(schema, strings.Join(selects, " UNION ALL "), true, args...)
+	return prestashopVerifyRowMalware(creds, strings.Join(selects, " UNION ALL "), true, args...)
 }

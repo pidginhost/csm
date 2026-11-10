@@ -95,13 +95,18 @@ type cmsCase struct {
 	message string
 	details string
 	schema  string
+	query   func(*testing.T, func(string, string, ...any) ([]string, error))
 }
 
 func runCMSResolvedUnresolved(t *testing.T, setup func(t *testing.T), c cmsCase) {
 	t.Helper()
+	withQuery := c.query
+	if withQuery == nil {
+		withQuery = withRootQuery
+	}
 	t.Run(c.name+"/resolved", func(t *testing.T) {
 		setup(t)
-		withRootQuery(t, func(schema, query string, _ ...any) ([]string, error) {
+		withQuery(t, func(schema, query string, _ ...any) ([]string, error) {
 			if c.schema != "" && schema != c.schema {
 				t.Errorf("schema = %q, want %q", schema, c.schema)
 			}
@@ -114,7 +119,7 @@ func runCMSResolvedUnresolved(t *testing.T, setup func(t *testing.T), c cmsCase)
 	})
 	t.Run(c.name+"/unresolved", func(t *testing.T) {
 		setup(t)
-		withRootQuery(t, func(_, query string, _ ...any) ([]string, error) {
+		withQuery(t, func(_, query string, _ ...any) ([]string, error) {
 			return []string{"bad eval(base64_decode($x))"}, nil
 		})
 		res := c.verify(c.message, c.details)
@@ -124,7 +129,7 @@ func runCMSResolvedUnresolved(t *testing.T, setup func(t *testing.T), c cmsCase)
 	})
 	t.Run(c.name+"/query-error-not-checked", func(t *testing.T) {
 		setup(t)
-		withRootQuery(t, func(_, _ string, _ ...any) ([]string, error) {
+		withQuery(t, func(_, _ string, _ ...any) ([]string, error) {
 			return nil, context.DeadlineExceeded
 		})
 		res := c.verify(c.message, c.details)
@@ -245,15 +250,17 @@ func TestVerifyPrestaShopInjection(t *testing.T) {
 		name:    "settings",
 		verify:  verifyPrestaShopSettingsInjection,
 		message: "PrestaShop settings injection on bob: PS_HEAD_JS (eval)",
-		details: "Account: bob\nSetting key: PS_HEAD_JS\nSetting id: 12\nMatch: eval",
+		details: psVerifyDetails("Account: bob\nSetting key: PS_HEAD_JS\nSetting id: 12\nMatch: eval"),
 		schema:  "shop_db",
+		query:   withPSVerifyQuery,
 	})
 	runCMSResolvedUnresolved(t, setup, cmsCase{
 		name:    "content",
 		verify:  verifyPrestaShopContentInjection,
 		message: "PrestaShop content injection on bob: product_lang id=42 (eval)",
-		details: "Account: bob\nTable: product_lang\nRow id: 42\nMatch: eval",
+		details: psVerifyDetails("Account: bob\nTable: product_lang\nRow id: 42\nMatch: eval"),
 		schema:  "shop_db",
+		query:   withPSVerifyQuery,
 	})
 }
 
@@ -261,11 +268,11 @@ func TestVerifyPrestaShopContentQueriesEveryColumn(t *testing.T) {
 	withCMSVerifyOS(t, prestashopVerifyFiles(), nil)
 	var query string
 	var args []any
-	withRootQuery(t, func(_, q string, a ...any) ([]string, error) {
+	withPSVerifyQuery(t, func(_, q string, a ...any) ([]string, error) {
 		query, args = q, a
 		return nil, nil
 	})
-	res := verifyPrestaShopContentInjection("", "Account: bob\nTable: product_lang\nRow id: 42")
+	res := verifyPrestaShopContentInjection("", psVerifyDetails("Account: bob\nTable: product_lang\nRow id: 42"))
 	if !res.Checked || !strings.Contains(query, "description_short") || !strings.Contains(query, "UNION ALL") || fmt.Sprint(args) != "[42 42]" {
 		t.Fatalf("result %+v, query %q, args %v", res, query, args)
 	}
@@ -273,20 +280,20 @@ func TestVerifyPrestaShopContentQueriesEveryColumn(t *testing.T) {
 
 func TestVerifyPrestaShopRejectsUnknownTable(t *testing.T) {
 	withCMSVerifyOS(t, prestashopVerifyFiles(), nil)
-	withRootQuery(t, func(string, string, ...any) ([]string, error) {
+	withPSVerifyQuery(t, func(string, string, ...any) ([]string, error) {
 		t.Fatal("unknown table reached a query")
 		return nil, nil
 	})
-	if res := verifyPrestaShopContentInjection("", "Account: bob\nTable: employee\nRow id: 42"); res.Checked {
+	if res := verifyPrestaShopContentInjection("", psVerifyDetails("Account: bob\nTable: employee\nRow id: 42")); res.Checked {
 		t.Fatalf("unknown table checked: %+v", res)
 	}
 }
 
 func TestVerifyPrestaShopSuperAdminResolvesOnDemotion(t *testing.T) {
 	withCMSVerifyOS(t, prestashopVerifyFiles(), nil)
-	details := "Account: bob\nRow: 9\t1\tx@example.test\nEvent: promoted to SuperAdmin"
+	details := psVerifyDetails("Account: bob\nRow: 9\t1\tx@example.test\nEvent: promoted to SuperAdmin")
 	var rows []string
-	withRootQuery(t, func(_, q string, _ ...any) ([]string, error) {
+	withPSVerifyQuery(t, func(_, q string, _ ...any) ([]string, error) {
 		if !strings.Contains(q, "id_profile = 1") {
 			t.Errorf("SuperAdmin re-check ignores the profile: %s", q)
 		}
@@ -303,13 +310,13 @@ func TestVerifyPrestaShopSuperAdminResolvesOnDemotion(t *testing.T) {
 
 func TestVerifyPrestaShopNewEmployeeIgnoresProfile(t *testing.T) {
 	withCMSVerifyOS(t, prestashopVerifyFiles(), nil)
-	withRootQuery(t, func(_, q string, _ ...any) ([]string, error) {
+	withPSVerifyQuery(t, func(_, q string, _ ...any) ([]string, error) {
 		if strings.Contains(q, "id_profile") {
 			t.Errorf("new-employee re-check filters on profile: %s", q)
 		}
 		return nil, nil
 	})
-	if res := verifyPrestaShopAdminInjection("", "Account: bob\nRow: 9\t4\tx@example.test"); !res.Checked || !res.Resolved {
+	if res := verifyPrestaShopAdminInjection("", psVerifyDetails("Account: bob\nRow: 9\t4\tx@example.test")); !res.Checked || !res.Resolved {
 		t.Fatalf("result %+v", res)
 	}
 }
@@ -317,11 +324,11 @@ func TestVerifyPrestaShopNewEmployeeIgnoresProfile(t *testing.T) {
 func TestVerifyPrestaShopUnprefixedInstall(t *testing.T) {
 	withCMSVerifyOS(t, prestashopInstallFiles("/home/bob/public_html", ""), nil)
 	var query string
-	withRootQuery(t, func(_, q string, _ ...any) ([]string, error) {
+	withPSVerifyQuery(t, func(_, q string, _ ...any) ([]string, error) {
 		query = q
 		return nil, nil
 	})
-	res := verifyPrestaShopSettingsInjection("", "Account: bob\nSetting key: PS_X\nSetting id: 12")
+	res := verifyPrestaShopSettingsInjection("", strings.Replace(psVerifyDetails("Account: bob\nSetting key: PS_X\nSetting id: 12"), "Table prefix: ps_", "Table prefix: ", 1))
 	if !res.Checked || !strings.Contains(query, "`configuration`") {
 		t.Fatalf("unprefixed re-check = %+v, query %q", res, query)
 	}
@@ -329,10 +336,10 @@ func TestVerifyPrestaShopUnprefixedInstall(t *testing.T) {
 
 func TestVerifyPrestaShopDecodesBatchRows(t *testing.T) {
 	withCMSVerifyOS(t, prestashopVerifyFiles(), nil)
-	withRootQuery(t, func(string, string, ...any) ([]string, error) {
+	withPSVerifyQuery(t, func(string, string, ...any) ([]string, error) {
 		return []string{`<script src\t="https://192.0.2.40/fixture-loader.js"></script>`}, nil
 	})
-	if res := verifyPrestaShopContentInjection("", "Account: bob\nTable: cms_lang\nRow id: 42"); !res.Checked || res.Resolved {
+	if res := verifyPrestaShopContentInjection("", psVerifyDetails("Account: bob\nTable: cms_lang\nRow id: 42")); !res.Checked || res.Resolved {
 		t.Fatalf("batch-escaped injection = %+v, want unresolved", res)
 	}
 }

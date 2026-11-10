@@ -245,11 +245,11 @@ func verifyPrestaShopAdminInjection(message, details string) VerifyResult {
 	if !ok {
 		return VerifyResult{Checked: false, Detail: "could not parse the account id from the finding"}
 	}
-	schema, prefix, ok := discoverPrestaShopSchema(dbFindingAccount(message, details))
+	creds, ok := discoverPrestaShopVerifyCreds(dbFindingAccount(message, details), details)
 	if !ok {
 		return dbVerifyNotLocatable("PrestaShop site")
 	}
-	table, err := QuoteIdent(prefix + "employee")
+	table, err := QuoteIdent(creds.dbPrefix + "employee")
 	if err != nil {
 		return VerifyResult{Checked: false, Detail: "could not validate the PrestaShop table from the finding"}
 	}
@@ -259,7 +259,7 @@ func verifyPrestaShopAdminInjection(message, details string) VerifyResult {
 	if superAdmin {
 		query += " AND id_profile = " + prestashopSuperAdminProfile
 	}
-	rows, err := runDBVerifyQueryRoot(schema, query, id)
+	rows, err := runPrestaShopVerifyQuery(creds, query, id)
 	res := dbAdminPresenceResult(err, rows)
 	if superAdmin && res.Checked {
 		res.Detail = "the flagged employee still holds the SuperAdmin profile"

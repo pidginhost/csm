@@ -325,6 +325,18 @@ during the read, and stop when the scan is canceled. Read failures and missing
 required credentials mark that CMS scan incomplete; manual re-checks keep the
 finding unresolved when its configuration cannot be inspected.
 
+PrestaShop skips suspended accounts before reading their configuration or
+applying the account scan file limit. Copy names such as `staging`, `backup`,
+`backups`, `cache` and `.trash` are matched without regard to case.
+
+PrestaShop re-checks locate only the account's canonical `public_html` install.
+Its database host, database name and table prefix must match the finding.
+Re-checks use that install's current database credentials and endpoint, including
+custom ports and sockets. Missing or changed identity, configuration failures
+and query errors leave the finding unchecked. Settings and content resolve only
+when every language, shop and scanned column is clean or absent. New employees
+resolve only when deleted; SuperAdmin findings also resolve after demotion.
+
 Administrator baselines for Joomla, Drupal, Magento, OpenCart, and PrestaShop are scoped to
 the hosting account, CMS, database host, database name, and table prefix. Two
 sites under one account keep separate baselines when they use different
