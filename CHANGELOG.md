@@ -9,25 +9,17 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ## [Unreleased]
 
-### Added
+## [4.11.0] - 2026-11-10
 
-- PrestaShop shops are now scanned for injected script in settings, pages, products and categories, new back-office employees and new or promoted SuperAdmins (Critical); turn off with `disabled_checks: [db_content_prestashop]`.
-- The challenge server can listen on a Unix socket that only your proxy's group can open, for a proxy on the same host.
-- Admission refusal summaries explain missing address attribution, clients behind a trusted proxy and later refusals of queued responses, including disabled responses and lost queue positions.
+### Highlights
 
-### Changed
-
-- Automatic response forecasts refuse HTTP, cPanel and IP reputation findings from known CDN and website firewall edges, including networks in `thresholds.http_asn_crawl_reverse_proxy_asns` when the ASN database is loaded.
-- HTTP checks now also trust proxies listed in `challenge.trusted_proxies`, and the ModSecurity audit scan no longer reports a trusted proxy as an attacker.
-- The challenge server now also trusts proxies listed in `web_server.trusted_proxies`, and refuses overlong forwarded chains.
-- `csm validate` and `csm doctor` now warn about empty, unreadable or catch-all `trusted_proxies` entries, which CSM skips, and Settings refuses to save them.
-- An address of this host listed in `web_server.trusted_proxies` is no longer trusted, so requests through a local proxy count against nobody; `csm validate` warns about such entries.
-- `csm scan --full` now scans images last, and `--wait` and `--report` exit with status 3 when a scan did not cover everything, including skipped oversize files.
-- Automatic response forecasts reject unverified PHP relay addresses and stop trusting evidence after its allowed address sources change.
-- Automatic response previews reject subnet targets from checks that only attribute individual addresses, including previously queued responses.
-- New hosts set up with `csm install` now start from the packaged config, so they filter IPv6 and match the package's alert and detection settings.
-- Automatic response forecasts include scheduled security scans, Exim history and IP reputation findings with recent local sightings, without treating repeated reports as independent evidence.
-- Automatic response forecasts never read an address in `web_server.trusted_proxies` or `challenge.trusted_proxies` as the client, and include SMTP password sprays seen in a Postfix mail log.
+- Security fixes harden CMS database scans, PHP webshell and phishing detection, mail checks, unban requests and challenge admin sessions.
+- `trusted_proxies` entries that cover every address or an address of this host are no longer trusted; `csm validate` and `csm doctor` warn about them.
+- PrestaShop shops are now scanned for injected script and new or promoted SuperAdmins.
+- A finding cleared by Fix, Re-check or a rule update now alerts again if the same detection returns.
+- Mail that crashes or stalls the attachment unpacker is now deferred instead of delivered unscanned, even with `email_av.fail_mode: open`.
+- Automatic response forecasts refuse HTTP, cPanel and IP reputation findings from known CDN and website firewall edges.
+- `csm scan --full` with `--wait` or `--report` exits with status 3 when a scan did not cover everything.
 
 ### Security
 
@@ -46,23 +38,54 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 - A crafted Message-ID can no longer hide or invent recipients in the stolen-mailbox and PHP mail volume checks.
 - An unban request for one address no longer lifts a subnet block an operator added, and says when the address stays blocked or a subnet cannot be removed.
 
+### Added
+
+- PrestaShop shops are now scanned for injected script in settings, pages, products and categories, new back-office employees and new or promoted SuperAdmins (Critical); turn off with `disabled_checks: [db_content_prestashop]`.
+- The challenge server can listen on a Unix socket that only your proxy's group can open, for a proxy on the same host.
+- Admission refusal summaries explain missing address attribution, clients behind a trusted proxy and later refusals of queued responses, including disabled responses and lost queue positions.
+
+### Changed
+
+- HTTP checks and the challenge server now trust proxies listed in either `web_server.trusted_proxies` or `challenge.trusted_proxies`, and the challenge server refuses overlong forwarded chains.
+- `csm validate` and `csm doctor` now warn about empty, unreadable or catch-all `trusted_proxies` entries, which CSM skips, and Settings refuses to save them.
+- An address of this host listed in `web_server.trusted_proxies` is no longer trusted, so requests through a local proxy count against nobody; `csm validate` warns about such entries.
+- `csm scan --full` now scans images last, and `--wait` and `--report` exit with status 3 when a scan did not cover everything, including skipped oversize files.
+- New hosts set up with `csm install` now start from the packaged config, so they filter IPv6 and match the package's alert and detection settings.
+- Automatic response forecasts refuse HTTP, cPanel and IP reputation findings from known CDN and website firewall edges, including networks in `thresholds.http_asn_crawl_reverse_proxy_asns` when the ASN database is loaded.
+- Automatic response forecasts now include scheduled security scans, Exim history, IP reputation findings with recent local sightings and SMTP password sprays seen in a Postfix mail log.
+- Automatic response forecasts reject unverified PHP relay addresses and never read a trusted proxy as the client; previews reject subnet targets from checks that only attribute single addresses.
+
 ### Fixed
+
+#### Scanning
 
 - Joomla, Drupal, Magento and OpenCart scans skip suspended accounts, so their checks complete again and earlier findings for those accounts clear on the next scan.
 - JavaScript served through PHP no longer raises a Critical WSO or FilesMan webshell alert because a variable name contains "filesMan".
 - Goto-obfuscated PHP, the shape licence-protected commercial modules also ship, is now reported for review instead of quarantined the moment it is written.
-- PHP Shield no longer logs an `open_basedir` warning on every request to sites whose PHP pool cannot see the account's home folder.
-- Realtime scanning skips files CSM already moved to quarantine, so a quarantine no longer logs a refused response or counts twice against the automatic response limit.
-- Realtime web, ModSecurity and cPanel API checks no longer block or score configured trusted proxies, while informational events stay visible.
 - Framework classes that handle admin uploads no longer raise Critical dropper alerts.
+- JavaScript scans with widespread analysis failures use less memory, report truncated coverage details, and keep earlier detections visible.
+- Realtime scanning skips files CSM already moved to quarantine, so a quarantine no longer logs a refused response or counts twice against the automatic response limit.
+
+#### Mail
+
+- Phishing sent from hosted accounts is now reported, stays open while still queued, and can be quarantined from its finding.
+
+#### Blocking and challenges
+
+- Realtime web, ModSecurity and cPanel API checks and the ModSecurity audit scan no longer block, score or report configured trusted proxies; informational events stay visible.
+- Dry run no longer removes automatic subnet blocks from the firewall when the daemon starts.
+- Scan findings no longer produce duplicate termination attempts or action log entries, including when termination fails or is refused.
 - Incident correlation now follows `reputation.whitelist` changes on reload, and matches IPv6 entries however the address is written.
 - Addresses the firewall never blocks, such as `firewall.infra_ips` entries and infra hostnames, are no longer sent to the challenge page.
 - `csm doctor challenge` no longer fails the gate check, or asks for listener TLS and the port gate, behind a remote trusted proxy or the challenge socket.
-- Phishing sent from hosted accounts is now reported, stays open while still queued, and can be quarantined from its finding.
+
+#### PHP Shield
+
+- PHP Shield no longer logs an `open_basedir` warning on every request to sites whose PHP pool cannot see the account's home folder.
 - Re-running `csm enable --php-shield` or `csm install --php-shield` keeps your edited PHP Shield config; update its allowed IPs by hand after changing `infra_ips`.
-- JavaScript scans with widespread analysis failures use less memory, report truncated coverage details, and keep earlier detections visible.
-- Dry run no longer removes automatic subnet blocks from the firewall when the daemon starts.
-- Scan findings no longer produce duplicate termination attempts or action log entries, including when termination fails or is refused.
+
+#### Install and system
+
 - Audit rules now load in full on servers without cPanel, so cron, account, temporary-folder execution and CSM tamper watches work there.
 - Log rotation no longer skips CSM's own logs on servers installed from the package.
 
