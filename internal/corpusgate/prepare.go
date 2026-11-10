@@ -9,13 +9,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/fs"
-	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
-	"time"
 )
 
 type Manifest struct {
@@ -66,28 +63,25 @@ func Prepare(ctx context.Context, manifest Manifest, cache, destination string) 
 		return nil, err
 	}
 	defer func() { _ = cacheRoot.Close() }()
-	var inventory []File
-	// Named by checksum: a re-pinned archive never meets its old copy.
-	pinned := map[string]bool{}
+	managed, lock, err := openArchiveCache(cacheRoot)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = managed.Close() }()
+	defer func() { _ = lock.Close() }()
+	pinned := make(map[string]bool, len(manifest.Sources))
 	for _, s := range manifest.Sources {
-		archive := filepath.Join(cache, s.ID+"-"+s.SHA256+".zip")
-		pinned[filepath.Base(archive)] = true
-		if _, err := os.Stat(archive); os.IsNotExist(err) {
-			if downloadErr := download(ctx, s.URL, archive); downloadErr != nil {
-				return nil, downloadErr
-			}
-		} else if err != nil {
-			return nil, err
-		}
-		f, err := cacheRoot.Open(filepath.Base(archive))
+		pinned[strings.ToLower(s.SHA256)+".zip"] = true
+	}
+	// Prune before downloads so failed runs cannot accumulate retired pins.
+	if err := dropUnpinned(managed, pinned); err != nil {
+		return nil, err
+	}
+	var inventory []File
+	for _, s := range manifest.Sources {
+		f, n, err := cachedArchive(ctx, cacheRoot, managed, s)
 		if err != nil {
-			return nil, err
-		}
-		h := sha256.New()
-		n, copyErr := io.Copy(h, io.LimitReader(f, maxArchive+1))
-		if copyErr != nil || n > maxArchive || hex.EncodeToString(h.Sum(nil)) != s.SHA256 {
-			_ = f.Close()
-			return nil, fmt.Errorf("archive checksum/size/read failure for %s", s.ID)
+			return nil, fmt.Errorf("archive %s: %w", s.ID, err)
 		}
 		rows, err := extract(f, n, destination, s)
 		closeErr := f.Close()
@@ -99,66 +93,8 @@ func Prepare(ctx context.Context, manifest Manifest, cache, destination string) 
 		}
 		inventory = append(inventory, rows...)
 	}
-	if err := dropUnpinned(cacheRoot, pinned); err != nil {
-		return nil, err
-	}
 	sort.Slice(inventory, func(i, j int) bool { return inventory[i].Path < inventory[j].Path })
 	return inventory, nil
-}
-
-// dropUnpinned removes cached archives the manifest no longer pins, so a
-// cache kept across manifest changes holds only the current set.
-func dropUnpinned(cache *os.Root, pinned map[string]bool) error {
-	entries, err := fs.ReadDir(cache.FS(), ".")
-	if err != nil {
-		return err
-	}
-	for _, e := range entries {
-		if e.Type().IsRegular() && strings.HasSuffix(e.Name(), ".zip") && !pinned[e.Name()] {
-			if err := cache.Remove(e.Name()); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-func download(ctx context.Context, address, destination string) error {
-	client := &http.Client{Timeout: 3 * time.Minute, CheckRedirect: func(req *http.Request, via []*http.Request) error {
-		if req.URL.Scheme != "https" || len(via) >= 10 {
-			return fmt.Errorf("unsafe corpus redirect")
-		}
-		return nil
-	}}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, address, nil)
-	if err != nil {
-		return err
-	}
-	response, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("corpus download HTTP %d", response.StatusCode)
-	}
-	file, err := os.CreateTemp(filepath.Dir(destination), ".corpus-download-*")
-	if err != nil {
-		return err
-	}
-	defer func() { _ = os.Remove(file.Name()) }()
-	n, copyErr := io.Copy(file, io.LimitReader(response.Body, maxArchive+1))
-	closeErr := file.Close()
-	if copyErr != nil {
-		return copyErr
-	}
-	if closeErr != nil {
-		return closeErr
-	}
-	if n > maxArchive {
-		return fmt.Errorf("corpus archive too large")
-	}
-	return os.Rename(file.Name(), destination)
 }
 
 func extract(archive io.ReaderAt, size int64, destination string, source Source) ([]File, error) {

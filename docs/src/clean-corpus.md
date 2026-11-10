@@ -3,11 +3,28 @@
 The required `test:clean-corpus` job downloads the public vendor ZIP archives in
 `scripts/clean-corpus/manifest.json`. The manifest pins the version, official
 HTTPS source, SHA-256, license file, and exact regular-file count. Archives are
-cached under their checksum, so a manifest edit downloads only a changed pin,
-and archives the manifest no longer pins leave the cache. Each is rechecked
-before extraction and unpacked into a new private directory on every run. Missing input, checksum mismatch, missing license, empty or
-incomplete inventory, unsafe archive entries, and read failures stop the job.
-No downloaded PHP or JavaScript is executed.
+cached under their checksum, so editing metadata or adding a source downloads
+only new pins. Each archive is verified before extraction into a new private
+directory. Corrupt cache entries are replaced with a verified download;
+unverified downloads never enter the reusable cache. Failed downloads, missing
+licenses, empty or incomplete inventories, unsafe archive entries, and read
+failures stop the job. No downloaded PHP or JavaScript is executed.
+
+`CSM_CORPUS_ARCHIVE_CACHE` selects the cache directory. The tool reserves its
+`.csm-corpus-v1` subdirectory for checksum-named archives, temporary downloads,
+and a persistent lock. Do not put other files in that subdirectory. Cleanup
+only touches generated archive and temporary names there, never ZIPs elsewhere
+in the configured directory or symlink targets. A symlinked managed directory
+is refused. Concurrent preparations sharing a cache fail with a busy error;
+retry after the active run finishes.
+
+Valid flat cache entries from older versions are verified and copied into the
+managed cache without downloading. Their originals are left untouched because
+names alone cannot establish ownership; operators may remove those old inputs
+once no older tool uses them. Managed archives no longer pinned and interrupted
+downloads are pruned before fetching, even if preparation later fails. GitLab
+saves verified downloads and cleanup on failed jobs too, so retries retain
+progress without accumulating retired pins.
 
 Every source names the CMS it belongs to in a `cms` field, and the manifest
 lists each supported CMS that has no pinned source yet under `pending`, with

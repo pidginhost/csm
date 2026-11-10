@@ -6,6 +6,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +17,9 @@ import (
 func TestPreparePinnedCorpus(t *testing.T) {
 	for _, mode := range []string{"valid", "checksum", "empty", "missing license", "traversal", "symlink", "missing manifest"} {
 		t.Run(mode, func(t *testing.T) {
+			installCorpusTransport(t, func(*http.Request) (*http.Response, error) {
+				return nil, errors.New("offline")
+			})
 			cache := t.TempDir()
 			entries := map[string]string{"app/license.txt": "test license", "app/index.php": "<?php echo 'clean';"}
 			if mode == "empty" {
@@ -115,33 +120,31 @@ func testArchive(t *testing.T, entries map[string]string, symlink bool) []byte {
 // pinning must leave the cache instead of piling up in it.
 func TestPrepareDropsUnpinnedArchives(t *testing.T) {
 	cache := t.TempDir()
-	data := testArchive(t, map[string]string{"app/license.txt": "test license", "app/index.php": "<?php echo 'clean';"}, false)
+	m, data := cacheFixture(t)
+	requests := 0
+	installCorpusTransport(t, func(*http.Request) (*http.Response, error) {
+		requests++
+		return archiveResponse(data), nil
+	})
+	if err := prepareCache(t, m, cache); err != nil {
+		t.Fatal(err)
+	}
+	old := m.Sources[0].SHA256
+	data = testArchive(t, map[string]string{"app/license.txt": "updated license", "app/index.php": "<?php echo 'clean';"}, false)
 	hash := sha256.Sum256(data)
-	pinned := "app-" + hex.EncodeToString(hash[:]) + ".zip"
-	stale := []string{"app-" + strings.Repeat("0", 64) + ".zip", "app-1.zip", "gone-2.zip"}
-	for _, name := range append([]string{pinned}, stale...) {
-		if err := os.WriteFile(filepath.Join(cache, name), data, 0600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := os.WriteFile(filepath.Join(cache, "notes.txt"), nil, 0600); err != nil {
+	m.Sources[0].SHA256 = hex.EncodeToString(hash[:])
+	if err := prepareCache(t, m, cache); err != nil {
 		t.Fatal(err)
 	}
-	m := Manifest{Version: ManifestVersion,
-		Sources: []Source{{ID: "app", CMS: "wordpress", Version: "1", URL: "https://example.org/app.zip", SHA256: hex.EncodeToString(hash[:]), License: "test", LicenseFile: "app/license.txt", Files: 2}},
-		Pending: pendingExcept("wordpress")}
-	if _, err := Prepare(context.Background(), m, cache, filepath.Join(t.TempDir(), "corpus")); err != nil {
-		t.Fatal(err)
+	managed := filepath.Join(cache, archiveCacheDir)
+	if _, err := os.Stat(filepath.Join(managed, old+".zip")); !os.IsNotExist(err) {
+		t.Fatalf("retired archive survived: %v", err)
 	}
-	left, err := os.ReadDir(cache)
-	if err != nil {
-		t.Fatal(err)
+	body, err := os.ReadFile(filepath.Join(managed, m.Sources[0].SHA256+".zip"))
+	if err != nil || !bytes.Equal(body, data) {
+		t.Fatalf("new pin missing or changed: %v", err)
 	}
-	var names []string
-	for _, e := range left {
-		names = append(names, e.Name())
-	}
-	if strings.Join(names, " ") != pinned+" notes.txt" {
-		t.Fatalf("cache holds %v, want only the pinned archive and unrelated files", names)
+	if requests != 2 {
+		t.Fatalf("downloads = %d, want 2", requests)
 	}
 }
