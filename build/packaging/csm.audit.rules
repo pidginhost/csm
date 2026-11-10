@@ -9,8 +9,7 @@
 -w /etc/ssh/sshd_config -p wa -k csm_sshd_change
 -w /root/.ssh/authorized_keys -p wa -k csm_root_ssh_keys
 
-# WHM API tokens
--w /var/cpanel/authn/api_tokens_v2/ -p wa -k csm_whm_api_tokens
+# WHM API tokens: added by the daemon on cPanel hosts.
 
 # Crontab modifications
 -w /var/spool/cron/ -p wa -k csm_crontab_change

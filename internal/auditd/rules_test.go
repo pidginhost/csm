@@ -43,7 +43,7 @@ func TestRulesPathIsAuditDir(t *testing.T) {
 func TestDeployWritesRulesAndReloads(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "csm.rules")
 	var command []string
-	err := deployRules(path, func(name string, args ...string) error {
+	err := deployRules(path, rules, func(name string, args ...string) error {
 		command = append([]string{name}, args...)
 		return nil
 	})
