@@ -56,6 +56,7 @@ func TestRetiredThreatScoreDisableKeepsReputationRunning(t *testing.T) {
 }
 
 func TestRetiredThreatScorePurgeKeepsHistory(t *testing.T) {
+	withGlobalStore(t)
 	st, err := state.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)

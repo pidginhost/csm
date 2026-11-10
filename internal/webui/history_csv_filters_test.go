@@ -13,7 +13,7 @@ import (
 // The CSV export takes the History tab's filters, so an operator can narrow
 // it to reach entries older than the export cap.
 func TestHistoryCSVHonoursTheHistoryFilters(t *testing.T) {
-	s := newTestServer(t, "tok")
+	s := newTestServerWithBbolt(t, "tok")
 	now := time.Now()
 	s.store.AppendHistory([]alert.Finding{
 		{Severity: alert.High, Check: "webshell", Message: "shell one", Timestamp: now.Add(-3 * time.Minute)},

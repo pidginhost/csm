@@ -1,7 +1,6 @@
 package state
 
 import (
-	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/json"
@@ -732,9 +731,8 @@ func (s *Store) setRawLocked(key, value string) bool {
 	return false
 }
 
-// AppendHistory writes findings to the bbolt store (if available) or
-// falls back to the append-only JSONL history file.
-// The JSONL fallback is deprecated and will be removed in a future release.
+// AppendHistory writes findings to the state DB. Without an open DB the
+// findings are not kept: the daemon refuses to start without one.
 func (s *Store) AppendHistory(findings []alert.Finding) {
 	if len(findings) == 0 {
 		return
@@ -742,58 +740,10 @@ func (s *Store) AppendHistory(findings []alert.Finding) {
 
 	recordFindings(findings)
 
-	// Use bbolt store when available; skip JSONL writes entirely.
 	if db := store.Global(); db != nil {
 		if err := db.AppendHistory(findings); err != nil {
 			fmt.Fprintf(os.Stderr, "store: append history: %v\n", err)
 		}
-		return
-	}
-
-	// Deprecated: flat-file JSONL fallback has a truncation race condition.
-	// This path is kept only for installations that have not yet migrated to bbolt.
-	fmt.Fprintf(os.Stderr, "DEPRECATION: using JSONL history fallback; migrate to bbolt store\n")
-	s.appendHistoryFile(findings)
-}
-
-// appendHistoryFile writes findings to the append-only JSONL history file.
-// Caps file at 10MB by truncating the oldest half.
-func (s *Store) appendHistoryFile(findings []alert.Finding) {
-	histPath := filepath.Join(s.path, "history.jsonl")
-
-	// Check size, truncate if over 10MB
-	if info, err := os.Stat(histPath); err == nil && info.Size() > 10*1024*1024 {
-		// #nosec G304 -- histPath is {s.path}/history.jsonl; s.path is the
-		// operator-configured statePath set at Store creation.
-		data, err := os.ReadFile(histPath)
-		if err == nil {
-			// Keep the second half
-			half := len(data) / 2
-			for half < len(data) && data[half] != '\n' {
-				half++
-			}
-			if half < len(data) {
-				// #nosec G703 -- histPath comes from state.historyPath, a
-				// filepath.Join under the operator-configured statePath.
-				_ = os.WriteFile(histPath, data[half+1:], 0600)
-			}
-		}
-	}
-
-	// #nosec G304 -- see histPath derivation above.
-	f, err := os.OpenFile(histPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
-	if err != nil {
-		return
-	}
-	defer func() { _ = f.Close() }()
-
-	for _, finding := range findings {
-		line, err := json.Marshal(alert.SanitizeFinding(finding))
-		if err != nil {
-			continue
-		}
-		_, _ = f.Write(line)
-		_, _ = f.Write([]byte("\n"))
 	}
 }
 
@@ -861,47 +811,11 @@ func (s *Store) EntryForKey(key string) (Entry, bool) {
 
 // ReadHistory reads the last limit entries, starting at offset.
 // Returns the findings (newest first) and total count.
-// Uses bbolt store when available, falls back to flat-file JSONL.
 func (s *Store) ReadHistory(limit, offset int) ([]alert.Finding, int) {
-	// Use bbolt store when available.
 	if db := store.Global(); db != nil {
 		return db.ReadHistory(limit, offset)
 	}
-
-	// Fallback: flat-file JSONL.
-	historyPath := filepath.Join(s.path, "history.jsonl")
-	// #nosec G304 -- {s.path}/history.jsonl; s.path from operator config.
-	data, err := os.ReadFile(historyPath)
-	if err != nil {
-		return nil, 0
-	}
-
-	var all []alert.Finding
-	for _, line := range splitLines(data) {
-		if len(line) == 0 {
-			continue
-		}
-		var f alert.Finding
-		if err := json.Unmarshal(line, &f); err != nil {
-			continue
-		}
-		all = append(all, f)
-	}
-
-	// Reverse (newest first)
-	for i, j := 0, len(all)-1; i < j; i, j = i+1, j-1 {
-		all[i], all[j] = all[j], all[i]
-	}
-
-	total := len(all)
-	if offset >= total {
-		return nil, total
-	}
-	end := offset + limit
-	if end > total {
-		end = total
-	}
-	return all[offset:end], total
+	return nil, 0
 }
 
 // ReadHistoryFiltered reads matching history entries newest-first.
@@ -921,100 +835,45 @@ func (s *Store) ReadHistoryFilteredWithChecks(
 	checks map[string]bool,
 ) ([]alert.Finding, int) {
 	// An unreadable bound is dropped; the web UI rejects one before it gets
-	// here. toEnd is exclusive.
-	fromDate, fromErr := store.ParseHistoryBound(from, false)
-	toEnd, toErr := store.ParseHistoryBound(to, true)
+	// here.
 	fromFilter := ""
 	toFilter := ""
-	if fromErr == nil {
+	if _, err := store.ParseHistoryBound(from, false); err == nil {
 		fromFilter = from
 	}
-	if toErr == nil {
+	if _, err := store.ParseHistoryBound(to, true); err == nil {
 		toFilter = to
 	}
 
 	if db := store.Global(); db != nil {
 		return db.ReadHistoryFilteredWithChecks(limit, offset, fromFilter, toFilter, severity, search, checks)
 	}
-
-	all, _ := s.ReadHistory(1<<30, 0)
-	searchLower := strings.ToLower(search)
-	var results []alert.Finding
-	matched := 0
-	for _, f := range all {
-		if !fromDate.IsZero() && f.Timestamp.Before(fromDate) {
-			continue
-		}
-		if !toEnd.IsZero() && !f.Timestamp.Before(toEnd) {
-			continue
-		}
-		if severity >= 0 && int(f.Severity) != severity {
-			continue
-		}
-		if checks != nil && !checks[f.Check] {
-			continue
-		}
-		if search != "" {
-			if !strings.Contains(strings.ToLower(f.Check), searchLower) &&
-				!strings.Contains(strings.ToLower(f.Message), searchLower) &&
-				!strings.Contains(strings.ToLower(f.Details), searchLower) {
-				continue
-			}
-		}
-		matched++
-		if matched > offset && len(results) < limit {
-			results = append(results, f)
-		}
-	}
-	return results, matched
+	return nil, 0
 }
 
-// ReadHistorySince returns all findings since the given time.
-// Uses bbolt cursor seeking for efficiency. Results are newest-first.
-// Falls back to the JSONL store with a linear cutoff filter when bbolt
-// is unavailable so test wiring and migration-pending hosts still get
-// time-bounded search results.
+// ReadHistorySince returns all findings since the given time, newest-first.
 func (s *Store) ReadHistorySince(since time.Time) []alert.Finding {
 	if db := store.Global(); db != nil {
 		return db.ReadHistorySince(since)
 	}
-	all, _ := s.ReadHistory(1<<30, 0)
-	out := all[:0]
-	for _, f := range all {
-		if !f.Timestamp.Before(since) {
-			out = append(out, f)
-		}
-	}
-	return out
+	return nil
 }
 
-// HistoryMark changes whenever history does. The JSONL fallback uses the
-// history file's size and modification time.
+// HistoryMark changes whenever history does.
 func (s *Store) HistoryMark() string {
 	if db := store.Global(); db != nil {
 		return db.HistoryMark()
 	}
-	info, err := os.Stat(filepath.Join(s.path, "history.jsonl"))
-	if err != nil {
-		return ""
-	}
-	return fmt.Sprintf("%d|%d", info.Size(), info.ModTime().UnixNano())
+	return ""
 }
 
 // LatestByCheck returns the timestamp of the newest history entry of every
-// check. The bbolt store keeps an index; the JSONL fallback reads history.
+// check.
 func (s *Store) LatestByCheck() map[string]time.Time {
 	if db := store.Global(); db != nil {
 		return db.LatestByCheck()
 	}
-	out := map[string]time.Time{}
-	all, _ := s.ReadHistory(1<<30, 0)
-	for _, f := range all {
-		if f.Check != "" && f.Timestamp.After(out[f.Check]) {
-			out[f.Check] = f.Timestamp
-		}
-	}
-	return out
+	return map[string]time.Time{}
 }
 
 // SearchHistorySince returns up to limit matching findings since the given
@@ -1026,50 +885,7 @@ func (s *Store) SearchHistorySince(since time.Time, limit int, match func(alert.
 	if db := store.Global(); db != nil {
 		return db.SearchHistorySince(since, limit, match)
 	}
-	return s.searchHistoryFileSince(since, limit, match)
-}
-
-func (s *Store) searchHistoryFileSince(since time.Time, limit int, match func(alert.Finding) bool) []alert.Finding {
-	historyPath := filepath.Join(s.path, "history.jsonl")
-	// #nosec G304 -- {s.path}/history.jsonl; s.path from operator config.
-	data, err := os.ReadFile(historyPath)
-	if err != nil {
-		return nil
-	}
-
-	var results []alert.Finding
-	end := len(data)
-	for end > 0 && len(results) < limit {
-		for end > 0 && (data[end-1] == '\n' || data[end-1] == '\r') {
-			end--
-		}
-		if end == 0 {
-			break
-		}
-
-		start := bytes.LastIndexByte(data[:end], '\n') + 1
-		line := data[start:end]
-		if start == 0 {
-			end = 0
-		} else {
-			end = start - 1
-		}
-
-		var f alert.Finding
-		if err := json.Unmarshal(line, &f); err != nil {
-			continue
-		}
-		// The JSONL fallback appends findings in chronological order, so
-		// once a reverse scan reaches an old row the remaining rows are older.
-		if f.Timestamp.Before(since) {
-			break
-		}
-		if match != nil && !match(f) {
-			continue
-		}
-		results = append(results, f)
-	}
-	return results
+	return nil
 }
 
 // AggregateByHour returns 24 hourly severity buckets for the last 24 hours.
@@ -1095,23 +911,6 @@ func (s *Store) AggregateByDayN(days int) []store.DayBucket {
 		return db.AggregateByDayN(days)
 	}
 	return nil
-}
-
-func splitLines(data []byte) [][]byte {
-	var lines [][]byte
-	start := 0
-	for i, b := range data {
-		if b == '\n' {
-			if i > start {
-				lines = append(lines, data[start:i])
-			}
-			start = i + 1
-		}
-	}
-	if start < len(data) {
-		lines = append(lines, data[start:])
-	}
-	return lines
 }
 
 // SetLatestFindings merges scan results into the current findings set.

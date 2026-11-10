@@ -13,7 +13,7 @@ import (
 // truncated tells a client that more matching findings exist than the page
 // returned. It was always false, even when the page left matches out.
 func TestAPIHistoryReportsTruncation(t *testing.T) {
-	s := newTestServer(t, "tok")
+	s := newTestServerWithBbolt(t, "tok")
 	now := time.Now()
 	s.store.AppendHistory([]alert.Finding{
 		{Severity: alert.High, Check: "webshell", Message: "one", Timestamp: now.Add(-3 * time.Minute)},

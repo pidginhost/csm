@@ -1,6 +1,8 @@
 package state
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -66,13 +68,50 @@ func TestReadHistorySinceNoBbolt(t *testing.T) {
 	}
 }
 
-func TestSearchHistorySinceNoBboltUsesJSONLNewestFirst(t *testing.T) {
+// History lives only in the state DB. A history.jsonl left in the state
+// directory is never written or served; opening the DB imports it once.
+func TestHistoryWithoutStateDBUsesNoFile(t *testing.T) {
 	store.SetGlobal(nil)
 	t.Cleanup(func() { store.SetGlobal(nil) })
 
 	s := openTestStore(t)
+	leftover := filepath.Join(s.path, "history.jsonl")
+	old := []byte(`{"check":"leftover","message":"m","timestamp":"2026-04-01T10:00:00Z"}` + "\n")
+	if err := os.WriteFile(leftover, old, 0600); err != nil {
+		t.Fatal(err)
+	}
+	since := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	s.AppendHistory([]alert.Finding{{Check: "new", Message: "m", Timestamp: since.AddDate(0, 4, 0)}})
+
+	if data, err := os.ReadFile(leftover); err != nil || string(data) != string(old) {
+		t.Errorf("history.jsonl changed: %q, %v", data, err)
+	}
+	if got, total := s.ReadHistory(10, 0); len(got) != 0 || total != 0 {
+		t.Errorf("ReadHistory = %+v, total %d; want none", got, total)
+	}
+	if got, total := s.ReadHistoryFiltered(10, 0, "", "", -1, ""); len(got) != 0 || total != 0 {
+		t.Errorf("ReadHistoryFiltered = %+v, total %d; want none", got, total)
+	}
+	if got := s.ReadHistorySince(since); len(got) != 0 {
+		t.Errorf("ReadHistorySince = %+v; want none", got)
+	}
+	if got := s.SearchHistorySince(since, 10, nil); len(got) != 0 {
+		t.Errorf("SearchHistorySince = %+v; want none", got)
+	}
+	if got := s.LatestByCheck(); len(got) != 0 {
+		t.Errorf("LatestByCheck = %+v; want none", got)
+	}
+	if got := s.HistoryMark(); got != "" {
+		t.Errorf("HistoryMark = %q; want empty", got)
+	}
+}
+
+func TestSearchHistorySinceViaBboltNewestFirst(t *testing.T) {
+	t.Cleanup(setupBboltGlobal(t))
+
+	s := openTestStore(t)
 	base := time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC)
-	s.appendHistoryFile([]alert.Finding{
+	s.AppendHistory([]alert.Finding{
 		{Severity: alert.Warning, Check: "test", Message: "needle-before-cutoff", Timestamp: base},
 		{Severity: alert.High, Check: "test", Message: "needle-oldest", Timestamp: base.Add(time.Minute)},
 		{Severity: alert.High, Check: "test", Message: "ordinary", Timestamp: base.Add(2 * time.Minute)},

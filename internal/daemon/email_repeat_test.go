@@ -180,6 +180,7 @@ func TestDispatchBatchIdenticalReReportAuditOnly(t *testing.T) {
 
 func TestDispatchBatchNoDailyEmailReminder(t *testing.T) {
 	cfg, hook := emailRepeatSetup(t)
+	openStoreForTest(t)
 	f := repeatFinding("core file changed")
 	now := time.Now()
 	seed := map[string]map[string]any{f.Key(): {

@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
-	"github.com/pidginhost/csm/internal/store"
 )
 
 // openTestStore opens a fresh Store in a temp dir and schedules cleanup.
@@ -1084,70 +1083,9 @@ func TestSuppressionPathCandidatesStripsPunctuation(t *testing.T) {
 	}
 }
 
-// --- splitLines --------------------------------------------------------
+// --- ReadHistory ------------------------------------------------------
 
-func TestSplitLinesBasic(t *testing.T) {
-	got := splitLines([]byte("a\nb\nc"))
-	if len(got) != 3 {
-		t.Fatalf("got %d, want 3", len(got))
-	}
-	if string(got[0]) != "a" || string(got[1]) != "b" || string(got[2]) != "c" {
-		t.Errorf("got %v", got)
-	}
-}
-
-func TestSplitLinesEmpty(t *testing.T) {
-	got := splitLines(nil)
-	if len(got) != 0 {
-		t.Errorf("got %v, want empty", got)
-	}
-}
-
-func TestSplitLinesTrailingNewline(t *testing.T) {
-	got := splitLines([]byte("a\nb\n"))
-	if len(got) != 2 {
-		t.Errorf("got %d, want 2", len(got))
-	}
-}
-
-// --- ReadHistory (JSONL fallback path) --------------------------------
-
-func TestReadHistoryJSONLFallback(t *testing.T) {
-	dir := t.TempDir()
-	jsonlPath := filepath.Join(dir, "history.jsonl")
-	findings := []alert.Finding{
-		{Check: "a", Message: "old"},
-		{Check: "b", Message: "middle"},
-		{Check: "c", Message: "new"},
-	}
-	var data []byte
-	for _, f := range findings {
-		line, _ := json.Marshal(f)
-		data = append(data, line...)
-		data = append(data, '\n')
-	}
-	if err := os.WriteFile(jsonlPath, data, 0600); err != nil {
-		t.Fatal(err)
-	}
-
-	s, err := Open(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = s.Close() }()
-
-	// With no store.Global() set, ReadHistory falls back to JSONL.
-	got, total := s.ReadHistory(10, 0)
-	if total != 3 {
-		t.Errorf("total = %d, want 3", total)
-	}
-	// Newest-first reversal — 'c' should be first.
-	if len(got) == 3 && got[0].Check != "c" {
-		t.Errorf("expected newest-first, got[0] = %+v", got[0])
-	}
-}
-
-func TestReadHistoryJSONLMissingFile(t *testing.T) {
+func TestReadHistoryWithoutStateDB(t *testing.T) {
 	s := openTestStore(t)
 	got, total := s.ReadHistory(10, 0)
 	if total != 0 || got != nil {
@@ -1155,31 +1093,9 @@ func TestReadHistoryJSONLMissingFile(t *testing.T) {
 	}
 }
 
-func TestReadHistoryJSONLOffsetBeyondEnd(t *testing.T) {
-	dir := t.TempDir()
-	jsonlPath := filepath.Join(dir, "history.jsonl")
-	line, _ := json.Marshal(alert.Finding{Check: "c"})
-	if err := os.WriteFile(jsonlPath, append(line, '\n'), 0600); err != nil {
-		t.Fatal(err)
-	}
-	s, err := Open(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = s.Close() }()
-	got, total := s.ReadHistory(10, 100)
-	if total != 1 || got != nil {
-		t.Errorf("offset beyond end = (%v, %d), want (nil, 1)", got, total)
-	}
-}
+func TestReadHistoryFilteredAppliesFilters(t *testing.T) {
+	t.Cleanup(setupBboltGlobal(t))
 
-func TestReadHistoryFilteredJSONLFallbackAppliesFilters(t *testing.T) {
-	prev := store.Global()
-	store.SetGlobal(nil)
-	t.Cleanup(func() { store.SetGlobal(prev) })
-
-	dir := t.TempDir()
-	jsonlPath := filepath.Join(dir, "history.jsonl")
 	day := time.Date(2026, 1, 2, 12, 0, 0, 0, time.Local)
 	findings := []alert.Finding{
 		{Timestamp: day, Severity: alert.High, Check: "old-target", Message: "needle"},
@@ -1187,24 +1103,9 @@ func TestReadHistoryFilteredJSONLFallbackAppliesFilters(t *testing.T) {
 		{Timestamp: day, Severity: alert.High, Check: "other", Message: "needle"},
 		{Timestamp: day.Add(30 * 24 * time.Hour), Severity: alert.High, Check: "old-target", Message: "needle"},
 	}
-	var data []byte
-	for _, f := range findings {
-		line, err := json.Marshal(f)
-		if err != nil {
-			t.Fatal(err)
-		}
-		data = append(data, line...)
-		data = append(data, '\n')
-	}
-	if err := os.WriteFile(jsonlPath, data, 0600); err != nil {
-		t.Fatal(err)
-	}
 
-	s, err := Open(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = s.Close() }()
+	s := openTestStore(t)
+	s.AppendHistory(findings)
 
 	got, total := s.ReadHistoryFilteredWithChecks(
 		10,
@@ -1223,35 +1124,18 @@ func TestReadHistoryFilteredJSONLFallbackAppliesFilters(t *testing.T) {
 	}
 }
 
-func TestReadHistoryFilteredJSONLFallbackAcceptsInstants(t *testing.T) {
-	prev := store.Global()
-	store.SetGlobal(nil)
-	t.Cleanup(func() { store.SetGlobal(prev) })
+func TestReadHistoryFilteredAcceptsInstants(t *testing.T) {
+	t.Cleanup(setupBboltGlobal(t))
 
-	dir := t.TempDir()
 	start := time.Date(2026, 9, 22, 11, 15, 0, 0, time.UTC)
 	end := start.Add(24 * time.Hour)
-	var data []byte
-	for _, f := range []alert.Finding{
+	s := openTestStore(t)
+	s.AppendHistory([]alert.Finding{
 		{Timestamp: start.Add(-time.Second), Severity: alert.High, Check: "before"},
 		{Timestamp: start, Severity: alert.High, Check: "first"},
 		{Timestamp: end.Add(-time.Second), Severity: alert.High, Check: "last"},
 		{Timestamp: end, Severity: alert.High, Check: "after"},
-	} {
-		line, err := json.Marshal(f)
-		if err != nil {
-			t.Fatal(err)
-		}
-		data = append(append(data, line...), '\n')
-	}
-	if err := os.WriteFile(filepath.Join(dir, "history.jsonl"), data, 0600); err != nil {
-		t.Fatal(err)
-	}
-	s, err := Open(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = s.Close() }()
+	})
 
 	got, total := s.ReadHistoryFilteredWithChecks(10, 0, start.Format(time.RFC3339), end.Format(time.RFC3339), -1, "", nil)
 	if total != 2 || len(got) != 2 {
@@ -1264,74 +1148,13 @@ func TestReadHistoryFilteredJSONLFallbackAcceptsInstants(t *testing.T) {
 	}
 }
 
-// --- AppendHistory JSONL fallback --------------------------------------
-//
-// These tests exercise the deprecated JSONL path that fires only when
-// store.Global() is nil (no bbolt wired up). The bbolt-backed path is
-// covered by internal/store's own tests.
+// --- AppendHistory ----------------------------------------------------
 
 func TestAppendHistoryEmptyIsNoOp(t *testing.T) {
 	s := openTestStore(t)
 	s.AppendHistory(nil)
 	if _, err := os.Stat(filepath.Join(s.path, "history.jsonl")); err == nil {
 		t.Error("empty AppendHistory should not create history.jsonl")
-	}
-}
-
-func TestAppendHistoryJSONLFallbackWrites(t *testing.T) {
-	// Redirect stderr to /dev/null so the deprecation warning doesn't
-	// clutter test output.
-	devnull, _ := os.Open(os.DevNull)
-	defer func() { _ = devnull.Close() }()
-
-	s := openTestStore(t)
-	s.AppendHistory([]alert.Finding{
-		{Check: "a", Message: "one"},
-		{Check: "b", Message: "two"},
-	})
-	data, err := os.ReadFile(filepath.Join(s.path, "history.jsonl"))
-	if err != nil {
-		t.Fatalf("history.jsonl not written: %v", err)
-	}
-	if len(data) == 0 {
-		t.Error("history.jsonl is empty")
-	}
-
-	// Second append should add more lines.
-	s.AppendHistory([]alert.Finding{{Check: "c", Message: "three"}})
-	data2, _ := os.ReadFile(filepath.Join(s.path, "history.jsonl"))
-	if len(data2) <= len(data) {
-		t.Errorf("second append did not grow the file (%d vs %d)", len(data), len(data2))
-	}
-}
-
-func TestAppendHistoryFileTruncatesAt10MB(t *testing.T) {
-	s := openTestStore(t)
-	histPath := filepath.Join(s.path, "history.jsonl")
-
-	// Pre-seed a history file above the 10 MB threshold so the truncate
-	// branch fires on the next append.
-	big := make([]byte, 11*1024*1024)
-	for i := range big {
-		// Newlines so the half-split finds a terminator quickly.
-		if i%100 == 99 {
-			big[i] = '\n'
-		} else {
-			big[i] = 'x'
-		}
-	}
-	if err := os.WriteFile(histPath, big, 0600); err != nil {
-		t.Fatal(err)
-	}
-
-	s.appendHistoryFile([]alert.Finding{{Check: "after", Message: "trunc"}})
-
-	info, err := os.Stat(histPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Size() >= int64(len(big)) {
-		t.Errorf("history file should have shrunk, old=%d new=%d", len(big), info.Size())
 	}
 }
 

@@ -92,6 +92,7 @@ func (r *webhookRecorder) countContaining(marker string) int {
 // the operator is not paged, yet history and the summary keep both records.
 func TestDispatchBatchHandledAttackNotEmailed(t *testing.T) {
 	cfg, blocker, rec := suppressionResponseSetup(t)
+	openStoreForTest(t)
 	seen := recordSummaryHook(t)
 	d := suppressionTestDaemon(t, cfg, nil)
 
@@ -126,6 +127,7 @@ func TestDispatchBatchHandledAttackNotEmailed(t *testing.T) {
 // already landed, so it goes to the summary, not to the operator now.
 func TestAdmissionAppliedSummaryNoticeGoesToSummary(t *testing.T) {
 	cfg, _, rec := suppressionResponseSetup(t)
+	openStoreForTest(t)
 	useActiveConfig(t, cfg)
 	seen := recordSummaryHook(t)
 	d := suppressionTestDaemon(t, cfg, nil)
@@ -240,6 +242,7 @@ func TestRecordAppliedBlocksFollowClassRules(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg, blocker, rec := suppressionResponseSetup(t)
+			openStoreForTest(t)
 			seen := recordSummaryHook(t)
 			d := suppressionTestDaemon(t, cfg, nil)
 

@@ -83,6 +83,7 @@ func TestHistoryMemosDropTheOldestKey(t *testing.T) {
 func TestStatsAndDashboardShareOneSummary(t *testing.T) {
 	withMemoAges(t, 0, time.Hour)
 	s := newTestServerWithTemplates(t, "tok")
+	useHistoryDB(t)
 	now := time.Now()
 	s.store.AppendHistory([]alert.Finding{{Check: "webshell", Severity: alert.Critical, Message: "one", Timestamp: now.Add(-time.Minute)}})
 

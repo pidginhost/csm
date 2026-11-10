@@ -46,7 +46,7 @@ func getStatsRisk(t *testing.T, s *Server) statsRiskResponse {
 // even though history still holds it and the 24h summary is cached.
 func TestAccountsAtRiskFollowActiveFindings(t *testing.T) {
 	withMemoAges(t, time.Hour, time.Hour)
-	s := newTestServer(t, "tok")
+	s := newTestServerWithBbolt(t, "tok")
 	now := time.Now()
 	fixed := alert.Finding{Check: "webshell", Severity: alert.Critical, Message: "Webshell: /home/alice/public_html/x.php", Timestamp: now}
 	high := alert.Finding{Check: "obfuscated_php", Severity: alert.High, Message: "Obfuscated PHP: /home/bob/public_html/a.php", Timestamp: now}
@@ -61,14 +61,23 @@ func TestAccountsAtRiskFollowActiveFindings(t *testing.T) {
 	}
 
 	want := []statsRiskAccount{{"alice", "CRITICAL", 1}, {"bob", "HIGH", 2}}
-	if got := getStatsRisk(t, s).AccountsAtRisk; !reflect.DeepEqual(got, want) {
+	before := getStatsRisk(t, s)
+	if got := before.AccountsAtRisk; !reflect.DeepEqual(got, want) {
 		t.Fatalf("before fix: got %+v, want %+v", got, want)
+	}
+	wantCounts := map[string]int{"critical": 3, "high": 1, "warning": 1, "total": 5}
+	if !reflect.DeepEqual(before.Last24h, wantCounts) {
+		t.Fatalf("24h counts = %v, want %v", before.Last24h, wantCounts)
 	}
 
 	s.store.DismissLatestFinding(fixed.Key())
 	want = []statsRiskAccount{{"bob", "HIGH", 2}}
-	if got := getStatsRisk(t, s).AccountsAtRisk; !reflect.DeepEqual(got, want) {
+	after := getStatsRisk(t, s)
+	if got := after.AccountsAtRisk; !reflect.DeepEqual(got, want) {
 		t.Fatalf("after fix: got %+v, want %+v", got, want)
+	}
+	if !reflect.DeepEqual(after.Last24h, wantCounts) || s.statsMemo.computes != 1 {
+		t.Errorf("dismissal changed cached history: counts=%v computes=%d", after.Last24h, s.statsMemo.computes)
 	}
 }
 
@@ -76,7 +85,7 @@ func TestAccountsAtRiskUseCurrentFindingsBeyondHistoryWindow(t *testing.T) {
 	for _, backend := range []struct {
 		name string
 		new  func(*testing.T, string) *Server
-	}{{"json", newTestServer}, {"bbolt", newTestServerWithBbolt}} {
+	}{{"bbolt", newTestServerWithBbolt}} {
 		t.Run(backend.name, func(t *testing.T) {
 			s := backend.new(t, "")
 			now := time.Now()

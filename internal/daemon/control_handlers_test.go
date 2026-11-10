@@ -123,6 +123,7 @@ func TestDispatchStatusHappyPath(t *testing.T) {
 
 func TestHandleHistoryReadClampsLimit(t *testing.T) {
 	c := newListenerForTest(t)
+	openStoreForTest(t)
 
 	// Seed 150 findings so the default-of-100 clamp and the
 	// under/over-range branches produce observably different page

@@ -62,7 +62,7 @@ func TestAPIAccountDetailEmptyFindings(t *testing.T) {
 // --- apiAccountDetail: findings filtered to the account ----------------
 
 func TestAPIAccountDetailFiltersFindings(t *testing.T) {
-	s := newTestServer(t, "tok")
+	s := newTestServerWithBbolt(t, "tok")
 	now := time.Now()
 	findings := []alert.Finding{
 		{Severity: alert.Critical, Check: "webshell", Message: "Found /home/alice/public_html/shell.php", Timestamp: now},
@@ -626,7 +626,7 @@ func TestAPIScanAccountMissingBody(t *testing.T) {
 // --- apiIncident: account parameter -----------------------------------
 
 func TestAPIIncidentWithAccount(t *testing.T) {
-	s := newTestServer(t, "tok")
+	s := newTestServerWithBbolt(t, "tok")
 	now := time.Now()
 	findings := []alert.Finding{
 		{Severity: alert.Critical, Check: "webshell", Message: "Found /home/frank/shell.php", Timestamp: now},
@@ -699,7 +699,7 @@ func TestAPIIncidentHoursMaxCapped(t *testing.T) {
 // --- apiAccountDetail: history is capped at 100 -----------------------
 
 func TestAPIAccountDetailHistoryCap(t *testing.T) {
-	s := newTestServer(t, "tok")
+	s := newTestServerWithBbolt(t, "tok")
 	// Create 150 history entries for one account
 	var findings []alert.Finding
 	for i := 0; i < 150; i++ {
@@ -723,8 +723,8 @@ func TestAPIAccountDetailHistoryCap(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil {
 		t.Fatalf("bad JSON: %v", err)
 	}
-	if len(data.History) > 100 {
-		t.Errorf("history count = %d, want <= 100 (capped)", len(data.History))
+	if len(data.History) != 100 {
+		t.Errorf("history count = %d, want 100 (capped)", len(data.History))
 	}
 }
 

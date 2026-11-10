@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"html/template"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -301,6 +302,9 @@ func TestValidateCSRFOnDeleteWithHeader(t *testing.T) {
 
 func TestHandleDashboardSeverityBranches(t *testing.T) {
 	s := newTestServerWithTemplates(t, "tok")
+	useHistoryDB(t)
+	s.templates["dashboard.html"] = template.Must(template.New("dashboard.html").Parse(
+		`{{.Critical}}|{{.High}}|{{.Warning}}|{{.Total}}|{{range .RecentFindings}}{{.Check}};{{end}}`))
 	now := time.Now()
 	s.store.AppendHistory([]alert.Finding{
 		{Severity: alert.Critical, Check: "webshell", Message: "found shell", Timestamp: now},
@@ -317,13 +321,19 @@ func TestHandleDashboardSeverityBranches(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Errorf("status = %d, want 200", w.Code)
 	}
+	if got, want := w.Body.String(), "1|1|5|7|waf_status;obfuscated_php;webshell;"; got != want {
+		t.Errorf("dashboard = %q, want %q", got, want)
+	}
 }
 
 func TestHandleDashboardRecentCapped(t *testing.T) {
 	s := newTestServerWithTemplates(t, "tok")
+	useHistoryDB(t)
+	s.templates["dashboard.html"] = template.Must(template.New("dashboard.html").Parse(
+		`{{len .RecentFindings}}|{{(index .RecentFindings 0).TimestampISO}}|{{(index .RecentFindings 9).TimestampISO}}`))
 	now := time.Now()
 	var findings []alert.Finding
-	for i := 0; i < 15; i++ {
+	for i := 14; i >= 0; i-- {
 		findings = append(findings, alert.Finding{
 			Severity:  alert.High,
 			Check:     "webshell",
@@ -337,6 +347,10 @@ func TestHandleDashboardRecentCapped(t *testing.T) {
 	s.handleDashboard(w, httptest.NewRequest("GET", "/", nil))
 	if w.Code != http.StatusOK {
 		t.Errorf("status = %d", w.Code)
+	}
+	want := "10|" + now.Format(time.RFC3339) + "|" + now.Add(-9*time.Minute).Format(time.RFC3339)
+	if got := w.Body.String(); got != want {
+		t.Errorf("dashboard = %q, want %q", got, want)
 	}
 }
 
