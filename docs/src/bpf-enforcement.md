@@ -23,8 +23,15 @@ decision but always returns 1 (allow). Operators can run dry-run for
 as long as they need to gather telemetry before flipping to live
 denial.
 
+The safe-UID map includes system UIDs below 1000 and traditional MTA
+accounts. Stalwart usernames are exempt only as system UIDs; a hosted
+account cannot gain an exemption by choosing a Stalwart name.
+
 ## What it does NOT do
 
+- It does NOT apply `firewall.smtp_allow_users` to hosted UIDs. That
+  setting permits nftables SMTP traffic and suppresses detector findings,
+  but BPF denial can still block those connections.
 - It does NOT wait on remote verdict callbacks in-kernel. That would
   add HTTP latency to every connect. The verdict callback (if
   enabled) runs in userspace after the BPF decision and enriches the

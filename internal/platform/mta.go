@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"os/exec"
+	"slices"
 	"time"
 )
 
@@ -53,19 +54,15 @@ const EximLocalSkeleton = `@AUTH@
 // this allowlist to skip legitimate local MTA traffic instead of
 // path-allowlisting a directory.
 type MTAIdents struct {
-	Users     []string
-	Processes []string
+	Users       []string
+	SystemUsers []string // Names that hosted accounts may also claim; require a system UID.
+	Processes   []string
 }
 
-// IsMTAUser reports whether name is one of the known MTA usernames.
+// IsMTAUser reports whether name and uid identify a known MTA account.
 // Match is exact and case-sensitive (Linux usernames are).
-func (m MTAIdents) IsMTAUser(name string) bool {
-	for _, u := range m.Users {
-		if u == name {
-			return true
-		}
-	}
-	return false
+func (m MTAIdents) IsMTAUser(name string, uid uint32) bool {
+	return slices.Contains(m.Users, name) || (uid < 1000 && slices.Contains(m.SystemUsers, name))
 }
 
 // IsMTAProcess reports whether basename is one of the known MTA process
@@ -106,15 +103,15 @@ func LocalMTAIdentities(info Info) MTAIdents {
 		"pop3-login",
 		"lmtp",
 	}
+	var systemUsers []string
 	if info.IsCPanel() {
 		users = append(users, "exim")
 		processes = append(processes, "exim", "exim4")
 	} else {
-		// Stalwart runs as stalwart, or stalwart-mail on older installs. Not on cPanel,
-		// where a customer may sign up under a name no system user holds.
-		users = append(users, "stalwart", "stalwart-mail")
+		// Hosting accounts can claim these names on non-cPanel hosts too.
+		systemUsers = []string{"stalwart", "stalwart-mail"}
 	}
-	return MTAIdents{Users: users, Processes: processes}
+	return MTAIdents{Users: users, SystemUsers: systemUsers, Processes: processes}
 }
 
 // MTAKind identifies the host's Mail Transfer Agent.

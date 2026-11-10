@@ -54,7 +54,7 @@ func EvaluateDirectSMTPEgress(cfg *config.Config, in DirectSMTPEgressInput) (ale
 	if isInfraIP(in.DstIP.String(), cfg.InfraIPs) {
 		return alert.Finding{}, false
 	}
-	if in.MTA.IsMTAUser(in.User) || smtpAllowedUser(cfg, in.User) {
+	if in.MTA.IsMTAUser(in.User, in.UID) || smtpAllowedUser(cfg, in.User) {
 		return alert.Finding{}, false
 	}
 
