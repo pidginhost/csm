@@ -1585,3 +1585,14 @@ func FuzzDomlogAttributionSource(f *testing.F) {
 		}
 	})
 }
+
+func FuzzKnownProxyPeerAddressBoundary(f *testing.F) {
+	for _, raw := range []string{
+		"198.51.100.7", "::ffff:198.51.100.7", "2001:db8:1::5",
+		"2001:db8:1::5%eth0", "::ffff:198.51.100.7%eth0",
+		"[2001:db8:1::5]:443", "198.51.100.7, 203.0.113.9", "",
+	} {
+		f.Add(raw)
+	}
+	f.Fuzz(func(t *testing.T, raw string) { checkKnownProxyAddressBoundary(t, raw) })
+}
