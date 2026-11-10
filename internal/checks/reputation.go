@@ -822,7 +822,8 @@ func collectRecentSightings(cfg *config.Config, now time.Time) (ips map[string]s
 				}
 			}
 			if ip != "" {
-				at, _ := eximlog.LineTime(line)
+				// A stamp without a zone is in the scan clock's zone, as for syslog.
+				at, _ := eximlog.LineTime(line, now.Location())
 				add(ip, "SMTP auth failure", scanned(rec, at))
 			}
 		}

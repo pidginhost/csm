@@ -179,21 +179,21 @@ func FuzzEximLineTime(f *testing.F) {
 		}
 		at = at.In(zone)
 		line := at.Format(layout) + " 1abc-0000-AB <= " + suffix
-		got, ok := lineTimeIn(line, local)
+		got, ok := LineTime(line, local)
 		if !ok || !got.Equal(at) {
 			t.Fatalf("LineTime(%q) = %v, %v; want %v", line, got, ok, at)
 		}
 		// The same prefix with an explicit zone that is not an offset.
 		bad := fmt.Sprintf("%s%s+%02d%02d 1abc-0000-AB <= %s", at.Format(time.DateTime), gap, 24+int(ms)%76, int(ms)%100, suffix)
-		if got, ok := lineTimeIn(bad, local); ok {
+		if got, ok := LineTime(bad, local); ok {
 			t.Fatalf("LineTime(%q) = %v, want none", bad, got)
 		}
 		bad = fmt.Sprintf("%s%s-%02d%02d 1abc-0000-AB", at.Format(time.DateTime), gap, int(ms)%24, 60+int(ms)%40)
-		if got, ok := lineTimeIn(bad, local); ok {
+		if got, ok := LineTime(bad, local); ok {
 			t.Fatalf("LineTime(%q) = %v, want none", bad, got)
 		}
 		// No time at the start: suffix text alone never dates a line.
-		if got, ok := lineTimeIn("1abc-0000-AB <= "+suffix, local); ok {
+		if got, ok := LineTime("1abc-0000-AB <= "+suffix, local); ok {
 			t.Fatalf("undated line read as %v", got)
 		}
 	})
