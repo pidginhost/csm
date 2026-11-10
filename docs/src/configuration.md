@@ -1026,7 +1026,7 @@ what CSM already handled on its own:
 - an attack a challenge answers, while the address is on the challenge list or was routed there in the same batch. A challenge does not answer FTP or mail authentication failures, critical reputation sightings, or checks configured to require a hard block;
 - applied block and challenge notices, including permanent, subnet and netblock blocks, dry-run block verdicts, and the periodic count of applied automatic responses;
 - mail login advisories that never block, such as spray observe mode;
-- finished automatic actions that need no follow-up: database spam cleanup, and PHP relay freeze dry runs and rate-limit deferrals.
+- PHP relay freeze dry runs and rate-limit deferrals that need no follow-up.
 
 Summary-class findings are left out of alert email and the generic alert
 webhook and are counted for the daily summary instead. They never spend the
