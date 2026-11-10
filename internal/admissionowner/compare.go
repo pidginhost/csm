@@ -44,6 +44,9 @@ type comparison struct {
 	unwritten []comparisonRow
 	// dropped counts the rows retention discarded unwritten.
 	dropped uint64
+	// discardedThrough keeps late rows from restoring partial hours after
+	// retention discarded them, even when acknowledgement makes room.
+	discardedThrough time.Time
 }
 
 type comparisonRow struct {
@@ -70,6 +73,28 @@ func (c *comparison) addCountAt(k compareKey, n uint64, now time.Time) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.addCountLocked(k, n, now)
+}
+
+// addLedgerRefusalAt counts a refusal in the hour of at, the ledger time it
+// ended. When a funnel already opened a newer hour, the refusal keeps its
+// own hour as a separate row; the open hour never moves back.
+func (c *comparison) addLedgerRefusalAt(k compareKey, at time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	hour := at.UTC().Truncate(time.Hour)
+	if c.start.IsZero() || !hour.Before(c.start) {
+		c.addCountLocked(k, 1, at)
+		return
+	}
+	k.check = registeredCheck(k.check)
+	c.next++
+	c.unwritten = append(c.unwritten, comparisonRow{Record: k.row(hour.Add(time.Hour), 1), sequence: c.next})
+	c.retain()
+}
+
+// addCountLocked requires mu.
+func (c *comparison) addCountLocked(k compareKey, n uint64, now time.Time) {
 	k.check = registeredCheck(k.check)
 	hour := now.UTC().Truncate(time.Hour)
 	if c.start.IsZero() {
@@ -97,34 +122,49 @@ func (c *comparison) begin(now time.Time) {
 	}
 }
 
-// closeHour requires mu. Retention sorts before trimming, so a backdated
-// batch can never evict newer evidence merely by append order.
+// closeHour requires mu.
 func (c *comparison) closeHour() {
 	end := c.start.Add(time.Hour)
 	for k, n := range c.counts {
-		r := actionlog.Record{
-			Timestamp: end, Op: "respond.block_ip", Action: k.kind.String(), Actor: actionlog.Daemon,
-			ActorDetail: k.entry.String(), Reason: k.check, Result: actionlog.Result(k.decision), Count: n,
-		}
-		if k.reason != 0 {
-			r.Error = k.reason.String()
-		}
-		if k.cause != 0 {
-			r.Cause = k.cause.String()
-		}
-		if k.prediction != 0 {
-			r.Prediction = k.prediction.String()
-		}
 		c.next++
-		c.unwritten = append(c.unwritten, comparisonRow{Record: r, sequence: c.next})
+		c.unwritten = append(c.unwritten, comparisonRow{Record: k.row(end, n), sequence: c.next})
 	}
 	c.counts = nil
+	c.retain()
+}
+
+// row is the summary record of n decisions of k in the hour ending at end.
+func (k compareKey) row(end time.Time, n uint64) actionlog.Record {
+	r := actionlog.Record{
+		Timestamp: end, Op: "respond.block_ip", Action: k.kind.String(), Actor: actionlog.Daemon,
+		ActorDetail: k.entry.String(), Reason: k.check, Result: actionlog.Result(k.decision), Count: n,
+	}
+	if k.reason != 0 {
+		r.Error = k.reason.String()
+	}
+	if k.cause != 0 {
+		r.Cause = k.cause.String()
+	}
+	if k.prediction != 0 {
+		r.Prediction = k.prediction.String()
+	}
+	return r
+}
+
+// retain requires mu. It sorts before trimming, so a backdated row can never
+// evict newer evidence merely by append order.
+func (c *comparison) retain() {
 	sort.SliceStable(c.unwritten, func(i, j int) bool { return c.unwritten[i].Timestamp.Before(c.unwritten[j].Timestamp) })
 	if extra := len(c.unwritten) - maxUnwrittenRows; extra > 0 {
-		cut := extra
-		for cut < len(c.unwritten) && c.unwritten[cut].Timestamp.Equal(c.unwritten[cut-1].Timestamp) {
-			cut++
+		if through := c.unwritten[extra-1].Timestamp; through.After(c.discardedThrough) {
+			c.discardedThrough = through
 		}
+	}
+	cut := 0
+	for cut < len(c.unwritten) && !c.unwritten[cut].Timestamp.After(c.discardedThrough) {
+		cut++
+	}
+	if cut > 0 {
 		copy(c.unwritten, c.unwritten[cut:])
 		c.unwritten = c.unwritten[:len(c.unwritten)-cut]
 		saturatingAdd(&c.dropped, uint64(cut))

@@ -151,9 +151,11 @@ func TestOwnerCountsADerivedRemintAfterAnInventoryChangeAsAStaleIdentity(t *test
 	if err = o.do(func() error { o.writeComparison(true); return nil }); err != nil {
 		t.Fatal(err)
 	}
+	// The inventory refresh also ends the queued scan response it retired.
 	want := []string{
 		"2026-10-04T13:00:00Z block_ip unknown incident refused stale_identity 1",
 		"2026-10-04T13:00:00Z block_ip unknown scan queued  1",
+		"2026-10-04T13:00:00Z block_ip unknown scan refused stale_identity 1",
 	}
 	if got := sink.previews(); !equalStrings(got, want) {
 		t.Fatalf("rows = %q, want %q", got, want)

@@ -253,10 +253,12 @@ func parseCloudRelayFinding(line string, cfg *config.Config) (findings []alert.F
 	}
 	w.events = kept
 
-	// Append this event (with cap).
-	if len(w.events) < cloudRelayMaxEvents {
-		w.events = append(w.events, cloudRelayEvent{at: now, ip: ip, ptr: ptr})
+	// Append this event. At the cap the oldest leaves, so the finding names
+	// the address of the line it fires on.
+	if len(w.events) >= cloudRelayMaxEvents {
+		w.events = append(w.events[:0], w.events[len(w.events)-cloudRelayMaxEvents+1:]...)
 	}
+	w.events = append(w.events, cloudRelayEvent{at: now, ip: ip, ptr: ptr})
 	w.lastEvent = now
 
 	// Already fired recently for this user? Dedup.

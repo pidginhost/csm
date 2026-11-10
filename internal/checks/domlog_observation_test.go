@@ -824,3 +824,30 @@ func TestDomlogCentralRecordClaimsNoVhost(t *testing.T) {
 		}
 	}
 }
+
+// A trusted proxy that sends no usable forwarded header is still a proxy: the
+// requests it carries are its clients', so its own address is never read as
+// the HTTP peer. The legacy finding stays; admission refuses it.
+func TestDomlogScanNeverVouchesForATrustedProxy(t *testing.T) {
+	for name, tc := range map[string]struct{ trusted, suffix string }{
+		"no header":       {domlogProxy, ""},
+		"unusable header": {domlogProxy, ` "not-an-address"`},
+		"trusted range":   {"192.0.2.0/24", ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := &config.Config{}
+			cfg.WebServer.TrustedProxies = []string{tc.trusted}
+			var lines []string
+			for i := 0; i < 20; i++ {
+				lines = append(lines, domlogTestLine(domlogProxy, i, "POST", "/wp-login.php", 200, "Mozilla/5.0")+tc.suffix)
+			}
+			path, findings := scanDomlogFile(t, cfg, nopBotClassifier{}, lines)
+			f := oneScanFinding(t, findings, "wp_login_bruteforce")
+			if f.SourceIP != domlogProxy {
+				t.Fatalf("legacy finding names %s, want the proxy's address", f.SourceIP)
+			}
+			wantScanObservation(t, f, ProducerDomlogScan, lineRef(t, path, lines, 19), domlogTestTime(19))
+			wantNoKind(t, f)
+		})
+	}
+}

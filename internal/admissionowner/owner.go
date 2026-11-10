@@ -464,6 +464,7 @@ func (o *Owner) start() error {
 			return fmt.Errorf("opening the admission ledger: %w", err)
 		}
 		o.ledger = l
+		l.ObserveRefusals(o.countLaterRefusal)
 	}
 	o.syncPreviews()
 	// An existing ledger records elapsed time under its saved limit before
@@ -1141,7 +1142,7 @@ func (o *Owner) preview(p execPick) error {
 				if _, endErr := o.ledger.Terminate(p.pick.ID, reason); endErr != nil {
 					return fmt.Errorf("ending pick %s: %w", p.pick.ID, endErr)
 				}
-				o.compare.addAt(compareKey{entry: c.Entry, check: c.Check, kind: c.Key.Kind, decision: decisionRefused, reason: reason}, o.now)
+				o.compare.addLedgerRefusalAt(refusalKey(c, err), o.now)
 				return nil
 			}
 		}
@@ -1266,6 +1267,19 @@ func (o *Owner) Refuse(kind admission.Kind, f alert.Finding, via admission.Entry
 		via = admission.EntryScan
 	}
 	o.compare.add(compareKey{entry: via, check: f.Check, kind: kind, decision: decisionRefused, reason: reasonOf(err), cause: admission.CauseOf(err)})
+}
+
+// countLaterRefusal adds a queued candidate that a later check refused to
+// the hourly comparison, with the refusal's reason and cause, in the hour of
+// the ledger time it ended at. The ledger calls it once the ending commits,
+// on whichever goroutine ended it.
+func (o *Owner) countLaterRefusal(c admission.Candidate, err error, at time.Time) {
+	o.compare.addLedgerRefusalAt(refusalKey(c, err), at)
+}
+
+// refusalKey is the hourly comparison key of candidate c refused with err.
+func refusalKey(c admission.Candidate, err error) compareKey {
+	return compareKey{entry: c.Entry, check: c.Check, kind: c.Key.Kind, decision: decisionRefused, reason: reasonOf(err), cause: admission.CauseOf(err)}
 }
 
 // reasonOf is err's admission reason; any other error is an invalid

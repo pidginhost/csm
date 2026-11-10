@@ -259,12 +259,12 @@ func laneFits(q *queueTx, lc liveCandidate, lane admission.Lane) error {
 	if !lane.Valid() {
 		return refusal(admission.ReasonInvalid, "reservation names no lane")
 	}
-	a, reason, err := q.check(lc, true)
+	a, reason, cause, err := q.check(lc, true)
 	switch {
 	case err != nil:
 		return err
 	case reason != 0:
-		return refusal(reason, "candidate no longer qualifies for a response")
+		return &admission.Error{Reason: reason, Cause: cause, Detail: "candidate no longer qualifies for a response"}
 	case lane == admission.LaneDirect && !a.DirectC3, lane == admission.LaneCorroborated && !a.Corroborated:
 		return admission.ErrLaneIneligible
 	}

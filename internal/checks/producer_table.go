@@ -72,7 +72,8 @@ var producerTable = []ProducerEntry{
 		Checks: []string{"email_cloud_relay_abuse"}, Claims: []admission.ClaimKind{admission.ClaimAccount, admission.ClaimMailbox}, Attribution: mintsPeer},
 		admission.ParserRef{Name: "exim", Version: 1}},
 	{admission.ProducerSpec{ID: ProducerMailLog, Entry: admission.EntryScan, Observation: admission.ObservationLogCursor,
-		Checks: []string{"mail_bruteforce", "mail_subnet_spray", "mail_account_compromised", "smtp_bruteforce"},
+		// Postfix hosts track SMTP auth failures from the mail log too.
+		Checks: []string{"mail_bruteforce", "mail_subnet_spray", "mail_account_compromised", "smtp_bruteforce", "smtp_subnet_spray"},
 		Claims: []admission.ClaimKind{admission.ClaimAccount, admission.ClaimMailbox}, Attribution: mintsPeer},
 		admission.ParserRef{Name: "dovecot", Version: 1}},
 	{admission.ProducerSpec{ID: ProducerAccessLog, Entry: admission.EntryScan, Observation: admission.ObservationLogCursor,

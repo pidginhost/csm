@@ -194,6 +194,60 @@ func TestDecisionCountsRetainTheNewestBoundedRows(t *testing.T) {
 	if len(rows) != maxUnwrittenRows || rows[0].Timestamp != at.Add(3*time.Hour) {
 		t.Fatalf("backdated batch displaced newer rows: %d %v", len(rows), rows[0].Timestamp)
 	}
+	// A late ledger refusal joins the same retention: as the oldest row it
+	// is the one discarded; dated within the retained hours, it displaces
+	// the oldest retained row instead.
+	c.addAt(key, at.Add(time.Duration(maxUnwrittenRows+3)*time.Hour))
+	refused := compareKey{entry: admission.EntryScan, check: "pam_bruteforce", kind: admission.KindBlockIP, decision: decisionRefused, reason: admission.ReasonStale}
+	dropped := c.droppedRows()
+	c.addLedgerRefusalAt(refused, at.Add(30*time.Minute))
+	rows, _ = c.take(at.Add(time.Duration(maxUnwrittenRows+3)*time.Hour), false)
+	if c.droppedRows() != dropped+1 || len(rows) != maxUnwrittenRows || rows[0].Timestamp != at.Add(3*time.Hour) {
+		t.Fatalf("an older late row: dropped %d (was %d), %d rows from %v", c.droppedRows(), dropped, len(rows), rows[0].Timestamp)
+	}
+	c.addLedgerRefusalAt(refused, at.Add(5*time.Hour+30*time.Minute))
+	rows, _ = c.take(at.Add(time.Duration(maxUnwrittenRows+3)*time.Hour), false)
+	late := 0
+	for _, r := range rows {
+		if r.Result == actionlog.Refused && r.Timestamp.Equal(at.Add(6*time.Hour)) {
+			late++
+		}
+	}
+	if c.droppedRows() != dropped+2 || len(rows) != maxUnwrittenRows || rows[0].Timestamp != at.Add(4*time.Hour) || late != 1 {
+		t.Fatalf("a retained late row: dropped %d (was %d), %d rows from %v, late rows %d", c.droppedRows(), dropped, len(rows), rows[0].Timestamp, late)
+	}
+}
+
+// A ledger refusal dated in an hour the comparison already closed keeps
+// that hour as its own row. Acknowledging a batch taken before it arrived
+// cannot remove it, and once written it is never written again.
+func TestComparisonLateLedgerRefusalSurvivesAck(t *testing.T) {
+	var c comparison
+	h := time.Date(2026, 9, 8, 10, 0, 0, 0, time.UTC)
+	queued := compareKey{entry: admission.EntryScan, check: "pam_bruteforce", kind: admission.KindBlockIP, decision: decisionQueued}
+	refused := compareKey{entry: admission.EntryScan, check: "pam_bruteforce", kind: admission.KindBlockIP, decision: decisionRefused,
+		reason: admission.ReasonAttribution, cause: admission.CauseTargetMismatch}
+	c.addAt(queued, h.Add(10*time.Minute))
+	c.addAt(queued, h.Add(time.Hour+10*time.Minute))
+	batch, through := c.take(h.Add(time.Hour+20*time.Minute), false)
+	if len(batch) != 1 || !batch[0].Timestamp.Equal(h.Add(time.Hour)) || batch[0].Result != actionlog.Result(decisionQueued) {
+		t.Fatalf("first batch %+v, want hour h's queued row", batch)
+	}
+	c.addLedgerRefusalAt(refused, h.Add(20*time.Minute))
+	c.written(through)
+	rows, through := c.take(h.Add(time.Hour+30*time.Minute), false)
+	if len(rows) != 1 || !rows[0].Timestamp.Equal(h.Add(time.Hour)) || rows[0].Result != actionlog.Refused || rows[0].Count != 1 ||
+		rows[0].Error != "attribution" || rows[0].Cause != "target_mismatch" {
+		t.Fatalf("after acknowledging the old batch: %+v, want the late refusal in hour h", rows)
+	}
+	c.written(through)
+	if rows, _ = c.take(h.Add(time.Hour+40*time.Minute), false); len(rows) != 0 {
+		t.Fatalf("written late row came back: %+v", rows)
+	}
+	// The open hour keeps counting normally.
+	if rows, _ = c.take(h.Add(2*time.Hour), false); len(rows) != 1 || !rows[0].Timestamp.Equal(h.Add(2*time.Hour)) || rows[0].Result != actionlog.Result(decisionQueued) {
+		t.Fatalf("open hour rows %+v", rows)
+	}
 }
 
 func TestDecisionCountsIncludeIsolatedCorruptArrivals(t *testing.T) {

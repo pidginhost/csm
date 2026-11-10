@@ -184,7 +184,7 @@ func CheckIPReputation(ctx context.Context, cfg *config.Config, scanState *state
 	var findings []alert.Finding
 
 	supplementalAgg := newSupplementalThreatAggregator(cfg)
-	ips := collectRecentIPs(cfg)
+	ips, sightings := collectRecentSightings(cfg, now)
 	if len(ips) == 0 {
 		return reputationHealthFindings(ctx, cfg, sdb, scanState, now, quotaExhausted)
 	}
@@ -445,6 +445,7 @@ func CheckIPReputation(ctx context.Context, cfg *config.Config, scanState *state
 	for _, work := range cacheWork {
 		work.finish(saved)
 	}
+	stampReputationSightings(findings, sightings)
 	healthNow := time.Now()
 	quotaExhausted = quotaErrorObserved || !abuseQuotaReady(sdb, healthNow)
 	findings = append(findings, reputationHealthFindings(ctx, cfg, sdb, scanState, healthNow, quotaExhausted)...)
@@ -730,17 +731,46 @@ func abuseQuotaReady(sdb *store.DB, now time.Time) bool {
 // collectRecentIPs gathers non-infra IPs from multiple log sources.
 // Returns map of IP → source description (e.g. "SSH login", "Dovecot IMAP auth failure").
 func collectRecentIPs(cfg *config.Config) map[string]string {
-	ips := make(map[string]string)
+	ips, _ := collectRecentSightings(cfg, time.Now())
+	return ips
+}
+
+// reputationSightingWindow is how old a local record may be and still
+// corroborate intel: the independence window (spec 5.3).
+const reputationSightingWindow = 24 * time.Hour
+
+// collectRecentSightings is collectRecentIPs with the record behind each
+// address's kept surface: the newest record that surface's parser read the
+// address from, dated by the server within the sighting window. An address
+// without such a record has no entry in records.
+func collectRecentSightings(cfg *config.Config, now time.Time) (ips map[string]string, records map[string]scanRecord) {
+	ips, records = make(map[string]string), make(map[string]scanRecord)
+	add := func(ip, source string, r scanRecord) {
+		previous := ips[ip]
+		if !addIfNotInfra(ips, ip, source, cfg) {
+			return
+		}
+		if previous != source {
+			// A stronger surface replaced the earlier one and its record.
+			delete(records, ip)
+		}
+		// Dated within the window, and never after the scan itself: the
+		// shared skew for scan records does not apply to a sighting.
+		if !r.at.After(now) && !r.at.Before(now.Add(-reputationSightingWindow)) {
+			keepNewest(records, ip, r, now)
+		}
+	}
 	info := platform.Detect()
 
 	// SSH logins. Path differs by OS family (secure vs auth.log); the old
 	// hardcoded /var/log/secure made this loop dead on Debian/Ubuntu.
-	for _, line := range tailFile(info.AuthLogPath(), 50) {
-		if !strings.Contains(line, "Accepted") {
+	for _, rec := range tailFileRecords(info.AuthLogPath(), 50) {
+		if !strings.Contains(rec.text, "Accepted") {
 			continue
 		}
-		if _, ip, ok := sshAcceptedRecord(strings.Fields(line)); ok {
-			addIfNotInfra(ips, ip, "SSH login", cfg)
+		if _, ip, ok := sshAcceptedRecord(strings.Fields(rec.text)); ok {
+			at, _ := syslogLineTime(rec.text, now)
+			add(ip, "SSH login", scanned(rec, at))
 		}
 	}
 
@@ -749,42 +779,42 @@ func collectRecentIPs(cfg *config.Config) map[string]string {
 		if path == "" || isWHMAccessLog(path) {
 			continue
 		}
-		lines := tailFile(path, 100)
-		if len(lines) == 0 {
-			continue
-		}
-		for _, line := range lines {
-			if ip := firstField(line); ip != "" {
-				addIfNotInfra(ips, ip, "HTTP request", cfg)
+		for _, rec := range tailFileRecords(path, 100) {
+			if ip := firstField(rec.text); ip != "" {
+				add(ip, "HTTP request", accessLogSighting(rec, ip, cfg))
 			}
 		}
 	}
 
 	// Dovecot - IMAP/POP3 auth failures.
 	if mailLog := reputationMailLogPath(cfg, info); mailLog != "" {
-		for _, line := range tailFile(mailLog, 50) {
-			msg, _, _ := strings.Cut(DovecotLoginMessage(line), "user=<")
+		for _, rec := range tailFileRecords(mailLog, 50) {
+			msg, _, _ := strings.Cut(DovecotLoginMessage(rec.text), "user=<")
 			if strings.Contains(msg, "auth failed") || strings.Contains(msg, "Aborted login") {
-				if ip := DovecotRemoteIP(line); ip != "" {
-					addIfNotInfra(ips, ip, reputationViaMailLogin, cfg)
+				if ip := DovecotRemoteIP(rec.text); ip != "" {
+					at, _ := syslogLineTime(rec.text, now)
+					add(ip, reputationViaMailLogin, scanned(rec, at))
 				}
 			}
 		}
 	}
 
 	if info.IsCPanel() {
-		// cPanel/WHM access log.
-		for _, line := range tailFile(reputationWHMAccessLog, 100) {
-			if ip := firstField(line); ip != "" {
-				addIfNotInfra(ips, ip, "cPanel/WHM access", cfg)
+		// cPanel/WHM access log. cpsrvd writes the peer first and dates
+		// the line itself.
+		for _, rec := range tailFileRecords(reputationWHMAccessLog, 100) {
+			if ip := firstField(rec.text); ip != "" {
+				at, _ := cpanelAccessLogTime(rec.text)
+				add(ip, "cPanel/WHM access", scanned(rec, at))
 			}
 		}
 	}
 
 	if shouldCollectEximMainlog(info) {
-		for _, line := range tailFile(reputationEximMainlog, 50) {
+		for _, rec := range tailFileRecords(reputationEximMainlog, 50) {
 			// Only the failure or rejection record names the client: the
 			// same wording in a subject or greeting is client text.
+			line := rec.text
 			ip := eximlog.AuthFailure(line).ClientIP
 			if ip == "" && strings.Contains(line, " rejected RCPT ") {
 				if r, ok := mailstats.ParseReject(line, time.UTC, time.Time{}); ok && r.Command == "RCPT" {
@@ -792,12 +822,40 @@ func collectRecentIPs(cfg *config.Config) map[string]string {
 				}
 			}
 			if ip != "" {
-				addIfNotInfra(ips, ip, "SMTP auth failure", cfg)
+				at, _ := eximlog.LineTime(line)
+				add(ip, "SMTP auth failure", scanned(rec, at))
 			}
 		}
 	}
 
-	return ips
+	return ips, records
+}
+
+// accessLogSighting is the record of an access-log line its parser reads as
+// a request from ip itself. A trusted proxy's own address is never a
+// sighting: the requests it carries are its clients'.
+func accessLogSighting(rec syslogRecord, ip string, cfg *config.Config) scanRecord {
+	parsed, ok := parseAccessLogRecord(rec.text)
+	if !ok || parsed.RemoteIP != ip || IsTrustedProxy(parsed.RemoteIP, cfg.WebServer.TrustedProxies) {
+		return scanRecord{}
+	}
+	return scanned(rec, parsed.Time)
+}
+
+// stampReputationSightings names each reputation finding's local sighting
+// as its observation: intel plus a recent local record of the address make
+// derived evidence. A finding without such a record names none and mints
+// nothing.
+func stampReputationSightings(findings []alert.Finding, records map[string]scanRecord) {
+	for i := range findings {
+		if findings[i].Check != "ip_reputation" {
+			continue
+		}
+		if r, ok := records[findings[i].SourceIP]; ok {
+			r.kind = admission.AttributionDerived
+			r.stamp(&findings[i], ProducerReputationScan)
+		}
+	}
 }
 
 // collectAuthenticatedIPs returns IPs that successfully authenticated to a
@@ -864,12 +922,14 @@ func shouldCollectEximMainlog(info platform.Info) bool {
 	return true
 }
 
-func addIfNotInfra(ips map[string]string, ip, source string, cfg *config.Config) {
+// addIfNotInfra records source as ip's surface unless ip is local or
+// infrastructure, and reports whether source is ip's surface afterwards.
+func addIfNotInfra(ips map[string]string, ip, source string, cfg *config.Config) bool {
 	if ip == "127.0.0.1" || ip == "::1" || ip == "" {
-		return
+		return false
 	}
 	if isInfraIP(ip, cfg.InfraIPs) {
-		return
+		return false
 	}
 	// One address can appear on several surfaces in the same scan. Keep the
 	// strongest sighting so an earlier passive web request cannot hide a later
@@ -878,6 +938,7 @@ func addIfNotInfra(ips map[string]string, ip, source string, cfg *config.Config)
 	if !exists || reputationSightingSeverity(source) > reputationSightingSeverity(current) {
 		ips[ip] = source
 	}
+	return ips[ip] == source
 }
 
 func firstField(line string) string {

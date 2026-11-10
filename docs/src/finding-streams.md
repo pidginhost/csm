@@ -165,9 +165,10 @@ scrubbed:
   firewall target, so it joins the legacy row for the same address, and its
   reason category names the lane. An hourly summary, which sets `count`,
   keeps its check, entry, decision, refusal reason and attribution cause,
-  dry-run prediction and count and names no target; a check that matches a learned account, host or
-  domain refuses the run. An attribution cause belongs only on a refusal
-  summary; action inspection rows carrying one refuse the run.
+  dry-run prediction and count and names no target; a check that matches a
+  learned account, host or domain refuses the run. An attribution cause
+  belongs only on a refusal summary; action inspection rows carrying one
+  refuse the run.
 - An operation, action, actor, result or source the tool has not been
   reviewed against refuses the run instead of passing through.
 
