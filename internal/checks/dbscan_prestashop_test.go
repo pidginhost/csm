@@ -472,6 +472,77 @@ func TestPrestaShopScansUnprefixedTables(t *testing.T) {
 	}
 }
 
+func TestPrestaShopScansDecodeBatchValues(t *testing.T) {
+	for _, target := range []struct {
+		name, query, rowPrefix, check string
+		scan                          func(string, prestashopCreds) []alert.Finding
+		settings                      bool
+	}{
+		{"configuration", "FROM ps_configuration WHERE", "42\tPS_MAIL_PASSWD\t", "prestashop_settings_injection", scanPrestaShopSettings, true},
+		{"configuration_lang", "FROM ps_configuration_lang l", "42\tPS_MAIL_PASSWD\t", "prestashop_settings_injection", scanPrestaShopSettings, true},
+		{"cms_lang", "content FROM ps_cms_lang", "42\t", "prestashop_content_injection", scanPrestaShopContent, false},
+		{"product_description", "description FROM ps_product_lang", "42\t", "prestashop_content_injection", scanPrestaShopContent, false},
+		{"product_description_short", "description_short FROM ps_product_lang", "42\t", "prestashop_content_injection", scanPrestaShopContent, false},
+		{"category_lang", "description FROM ps_category_lang", "42\t", "prestashop_content_injection", scanPrestaShopContent, false},
+	} {
+		t.Run(target.name, func(t *testing.T) {
+			for _, tc := range []struct {
+				name, body, batch string
+				want              int
+			}{
+				{
+					name:  "tab_before_equals",
+					body:  "<script src\t=\"https://192.0.2.40/fixture-loader.js\"></script>",
+					batch: `<script src\t="https://192.0.2.40/fixture-loader.js"></script>`,
+					want:  1,
+				},
+				{
+					name:  "newline_after_equals",
+					body:  "<script src=\n\"https://192.0.2.40/fixture-loader.js\"></script>",
+					batch: `<script src=\n"https://192.0.2.40/fixture-loader.js"></script>`,
+					want:  1,
+				},
+				{
+					name:  "carriage_return_before_equals",
+					body:  "<script src\r=\"https://192.0.2.40/fixture-loader.js\"></script>",
+					batch: `<script src\r="https://192.0.2.40/fixture-loader.js"></script>`,
+					want:  1,
+				},
+				{
+					name:  "literal_backslash_is_not_whitespace",
+					body:  `<script src\t="https://192.0.2.40/fixture-loader.js"></script>`,
+					batch: `<script src\\t="https://192.0.2.40/fixture-loader.js"></script>`,
+				},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					_, _, matched := classifyMalwareRow(tc.body, !target.settings)
+					if matched != (tc.want == 1) {
+						t.Fatal("fixture does not have the expected raw-value classification")
+					}
+					withCapturedQueries(t, func(q string) []string {
+						if strings.Contains(q, target.query) {
+							return []string{target.rowPrefix + tc.batch}
+						}
+						return nil
+					})
+					got := target.scan("alice", psScanCreds("ps_"))
+					if len(got) != tc.want {
+						t.Fatalf("findings = %d, want %d for the stored value", len(got), tc.want)
+					}
+					for _, f := range got {
+						if f.Check != target.check || f.Severity != alert.High || f.DedupKey == "" {
+							t.Fatal("finding lost its check, severity or identity")
+						}
+						if target.settings && strings.Contains(fmt.Sprintf("%+v", f), "fixture-loader") {
+							t.Fatal("setting value reached a finding")
+						}
+					}
+				})
+			}
+		})
+	}
+}
+
 // psEmployeeRows returns ids 1..n with profile 4, except the listed ids with
 // the SuperAdmin profile.
 func psEmployeeRows(n int, superAdmins ...int) []string {

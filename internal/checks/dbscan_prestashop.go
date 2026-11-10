@@ -12,6 +12,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/mysqlclient"
 	"github.com/pidginhost/csm/internal/state"
 )
 
@@ -400,7 +401,9 @@ func scanPrestaShopSettings(account string, creds prestashopCreds) []alert.Findi
 				continue
 			}
 			id, name := fields[0], fields[1]
-			sev, desc, ok := classifyMalwareRow(fields[2], false)
+			// Rows arrive batch-escaped; classify the stored value, or a tab
+			// or newline inside a script tag hides it.
+			sev, desc, ok := classifyMalwareRow(mysqlclient.BatchUnescape(fields[2]), false)
 			if !ok {
 				continue
 			}
@@ -432,7 +435,7 @@ func scanPrestaShopContent(account string, creds prestashopCreds) []alert.Findin
 				if !isAllDigits(id) {
 					continue
 				}
-				sev, desc, ok := classifyMalwareRow(body, true)
+				sev, desc, ok := classifyMalwareRow(mysqlclient.BatchUnescape(body), true)
 				if !ok {
 					continue
 				}
