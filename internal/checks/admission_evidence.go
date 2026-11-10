@@ -5,6 +5,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/config"
 )
 
 // AdmissionEvidence is what a finding asks admission to mint: the producer
@@ -31,6 +32,11 @@ func AdmissionEvidence(f alert.Finding) (admission.ProducerID, admission.Evidenc
 	// response this build applies can contain it (spec 5.8).
 	if f.Attribution == admission.AttributionTrustedHTTPChain {
 		return "", admission.EvidenceInput{}, &admission.Error{Reason: admission.ReasonAttribution, Cause: admission.CauseUnreachable, Detail: "the address is a client behind a trusted proxy"}
+	}
+	// A known CDN or website-firewall edge carries every visitor behind it:
+	// blocking it as one of them is never an automatic response (spec 5.8).
+	if f.Attribution == admission.AttributionHTTPPeer && KnownProxyPeer(f.SourceIP, config.Active()) {
+		return "", admission.EvidenceInput{}, &admission.Error{Reason: admission.ReasonAttribution, Cause: admission.CauseProxyPeer, Detail: "the address is a known CDN or proxy edge"}
 	}
 	target, err := admission.CanonicalAddress(f.SourceIP, admission.Caps{IPv6: true})
 	if err != nil {
