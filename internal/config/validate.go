@@ -363,7 +363,7 @@ func Validate(cfg *Config) []ValidationResult {
 			}
 		}
 		// A warning, not an error: an error aborts daemon start and SIGHUP
-		// reloads. The challenge server refuses this setup on its own.
+		// reloads. Request-time attribution refuses the local proxy.
 		if err := ChallengeLocalTrustError(cfg.Challenge.TrustedProxies); err != nil {
 			results = append(results, ValidationResult{"warn", "challenge.trusted_proxies", err.Error()})
 		}
@@ -373,6 +373,8 @@ func Validate(cfg *Config) []ValidationResult {
 	if err := WebServerLocalTrustError(cfg.WebServer.TrustedProxies); err != nil {
 		results = append(results, ValidationResult{"warn", "web_server.trusted_proxies", err.Error()})
 	}
+	results = append(results, unusableTrustedProxyResults("warn", "web_server.trusted_proxies", cfg.WebServer.TrustedProxies)...)
+	results = append(results, unusableTrustedProxyResults("warn", "challenge.trusted_proxies", cfg.Challenge.TrustedProxies)...)
 
 	// --- EmailAV ---
 	if cfg.EmailAV.Enabled && cfg.EmailAV.MaxAttachmentSize <= 0 {
@@ -1540,8 +1542,9 @@ func ValidateDeepSection(cfg *Config, section string) []ValidationResult {
 		return probeSSHLockout(cfg)
 	case "challenge":
 		// probeListenPortAvailable is not yet implemented in this codebase.
-		// When added, invoke it here: return probeListenPortAvailable(cfg.Challenge.ListenPort).
-		return nil
+		// When added, append it here. Settings save is where a new proxy
+		// entry is typed, so an unusable one is refused there.
+		return unusableTrustedProxyResults("error", "challenge.trusted_proxies", cfg.Challenge.TrustedProxies)
 	}
 	return nil
 }

@@ -59,14 +59,14 @@ func ChallengeSocketPathError(path string) error {
 // ChallengeLocalTrustError reports a challenge.trusted_proxies entry that
 // covers an address of this host. Any local account can connect from such an
 // address and write X-Forwarded-For, so trusting it lets it pose as any
-// visitor. Validation, the server, the installer and doctor share this text.
+// visitor. Validation, the installer and doctor share this text.
 func ChallengeLocalTrustError(entries []string) error {
-	entry, covered, err := netutil.HostLocalProxyEntry(entries)
+	entry, covered, err := netutil.HostLocalProxyEntry(usableTrustedProxyEntries(entries))
 	if err != nil {
 		return fmt.Errorf("challenge.trusted_proxies: cannot check the entries: %v", err)
 	}
 	if entry == "" {
 		return nil
 	}
-	return fmt.Errorf("challenge.trusted_proxies entry %q covers %s, an address of this host: local accounts could pose as any visitor. Point a proxy on this host at challenge.listen_addr: %s with challenge.listen_group, or remove trusted_proxies and use direct mode", entry, covered, ChallengeSocketExample)
+	return fmt.Errorf("challenge.trusted_proxies entry %q covers %s, an address of this host: CSM never trusts it and refuses requests from that proxy. Point a proxy on this host at challenge.listen_addr: %s with challenge.listen_group, or remove trusted_proxies and use direct mode", entry, covered, ChallengeSocketExample)
 }

@@ -329,7 +329,11 @@ web_server:
   # to append or replace X-Forwarded-For with their observed peer. Other
   # HTTP readers protect these addresses without reading that header.
   # challenge.trusted_proxies entries count too. Addresses of this host
-  # are never trusted. Leave both lists empty to use the direct peer.
+  # are never trusted. CSM skips an empty or unreadable entry and never
+  # trusts one covering every address; csm validate warns about both.
+  # Legacy null or non-string scalar entries do not prevent startup,
+  # reload or plain csm doctor; usable entries beside them still work.
+  # Leave both lists empty to use the direct peer.
   trusted_proxies: []
 
 # --- Infrastructure ---

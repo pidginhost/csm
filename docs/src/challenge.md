@@ -148,8 +148,16 @@ challenge:
     - "198.51.100.0/24"
 ```
 
-Entries are addresses or CIDR ranges. Trust only proxies you control, not
-ranges that also contain visitors. Each proxy must append its observed peer
+Entries are addresses or CIDR ranges. Legacy zero-padded prefix lengths
+remain accepted. CSM skips other entries and never trusts a catch-all,
+such as `0.0.0.0/0`. A peer covered only by a refused catch-all names no
+visitor when it forwards a request, even if truncation leaves an empty
+header. This includes native IPv6 peers covered by a broad IPv4-mapped
+range. A direct request from such a peer still names its own address.
+`csm validate` and plain `csm doctor` warn about unusable entries; they do
+not reject the configuration. Saving the challenge section in Settings
+rejects them.
+Trust only proxies you control, not ranges that also contain visitors. Each proxy must append its observed peer
 address to X-Forwarded-For or replace the header with that address. The
 challenge server also trusts the proxies in `web_server.trusted_proxies`,
 the list the HTTP checks use.
@@ -164,15 +172,16 @@ trusted proxies, challenge endpoints return HTTP 400. They do not issue a
 puzzle or cookie, accept a bypass, or clear a pending challenge for the
 proxy. This also applies to the gate and admin-token endpoints.
 
-At startup, CSM rejects proxy trust for loopback, the unspecified
+CSM rejects proxy trust for loopback, the unspecified
 addresses, and every address on the host's interfaces, link-local ones
 included. Any local account can connect from those and write
-X-Forwarded-For. When an entry is or contains one of them, the challenge
-server does not start, `csm validate` warns, `csm doctor challenge` fails,
-and the webserver integration installer refuses the configuration. This
-applies to both TCP and Unix socket listeners. The daemon keeps running;
-suspicious addresses get the normal response, a block or an alert,
-instead of a challenge. For a proxy on this host, use the
+X-Forwarded-For. An entry containing one of them does not prevent the
+daemon or challenge listener from starting or reloading. Requests attributed
+to a listed local address receive HTTP 400. Remote proxies in the same
+range remain usable. `csm validate` and plain `csm doctor` warn;
+`csm doctor challenge` reports the unusable local proxy as a failure, and
+the webserver integration installer refuses it. This applies to both TCP
+and Unix socket listeners. For a proxy on this host, use the
 [socket](#proxy-on-the-same-host) and remove host-local entries from
 `trusted_proxies`.
 
@@ -196,8 +205,8 @@ mode, and the usual TLS and port-gate checks apply.
 With both `challenge.trusted_proxies` and `web_server.trusted_proxies`
 empty, X-Forwarded-For from a TCP peer is ignored to prevent IP spoofing.
 Only `challenge.trusted_proxies` says the listener itself sits behind a
-proxy: the installer, `csm doctor`'s TLS and port gate rows and the startup
-check above read it alone, so a site CDN in `web_server.trusted_proxies`
+proxy: the installer and `csm doctor challenge`'s TLS and port gate rows
+read it alone, so a site CDN in `web_server.trusted_proxies`
 does not change them. A listed address is never a visitor in either mode.
 
 ### Proxy on the same host

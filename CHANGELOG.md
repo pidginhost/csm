@@ -20,7 +20,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 - Automatic response forecasts refuse HTTP, cPanel and IP reputation findings from known CDN and website firewall edges, including networks in `thresholds.http_asn_crawl_reverse_proxy_asns` when the ASN database is loaded.
 - HTTP checks now also trust proxies listed in `challenge.trusted_proxies`, and the ModSecurity audit scan no longer reports a trusted proxy as an attacker.
 - The challenge server now also trusts proxies listed in `web_server.trusted_proxies`, and refuses overlong forwarded chains.
-- CSM now refuses to start, reload or save Settings with a `web_server.trusted_proxies` or `challenge.trusted_proxies` entry that is empty, unreadable or covers every address, instead of ignoring it. Correct such entries before upgrading.
+- `csm validate` and `csm doctor` now warn about empty, unreadable or catch-all `trusted_proxies` entries, which CSM skips, and Settings refuses to save them.
 - An address of this host listed in `web_server.trusted_proxies` is no longer trusted, so requests through a local proxy count against nobody; `csm validate` warns about such entries.
 - `csm scan --full` now scans images last, and `--wait` and `--report` exit with status 3 when a scan did not cover everything, including skipped oversize files.
 - Automatic response forecasts reject unverified PHP relay addresses and stop trusting evidence after its allowed address sources change.
@@ -32,13 +32,14 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 ### Security
 
 - With `web_server.trusted_proxies` or `challenge.trusted_proxies` set, HTTP checks no longer count requests against a trusted proxy whose forwarded header is missing or unreadable, and read past further trusted proxies in it.
+- A `web_server.trusted_proxies` or `challenge.trusted_proxies` entry covering every address is no longer trusted: visitors cannot forge their address through it, and forwarded requests count against nobody.
+- Addresses of this host in `challenge.trusted_proxies` are no longer trusted, so local accounts cannot pose as visitors; the challenge page refuses requests through them, so use the challenge socket.
 - Joomla, Drupal, Magento and OpenCart re-checks look at every site on the account with its own database login, so a clean main site no longer clears another site's finding.
 - Joomla, Drupal, Magento and OpenCart database scans and re-checks now catch script tags split by a tab or line break in the stored value.
 - Joomla, Drupal, Magento and OpenCart scans keep checking the remaining tables when one table returns too many rows, so a flood of rows no longer hides an injection.
 - A finding cleared by Fix, a performance fix, Re-check or a rule update now alerts again if the same detection returns.
 - PHP and phishing checks now read `${'_POST'}` and `$GLOBALS['_POST']` as request input, so these spellings no longer hide a webshell or phishing kit.
 - `challenge.verified_session` no longer issues admin sessions to this server's own addresses, so local accounts cannot guess `admin_secret` from loopback.
-- The challenge server no longer starts when `challenge.trusted_proxies` covers an address of this host, so suspicious addresses get your normal response instead. Use the challenge socket or direct mode.
 - Mail that crashes, exhausts or stalls the attachment unpacker is now deferred instead of delivered unscanned, even with `email_av.fail_mode: open`; observe mode still delivers it.
 - A remote sender can no longer get a hosted mailbox reported as compromised through the wording of an email subject.
 - The per-account PHP mail volume alert now counts each account's real outbound mail, and an email's subject or sender can no longer raise it.

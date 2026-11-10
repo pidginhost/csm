@@ -376,3 +376,136 @@ func TestParsePreservesNarrowMappedRanges(t *testing.T) {
 		}
 	}
 }
+
+// A running daemon skips an unusable entry on its own: the entries around it
+// keep working, and each refusal names its index.
+func TestParseUsableSkipsEachUnusableEntry(t *testing.T) {
+	trusted, errs := ParseUsable([]string{"192.0.2.10", "", "proxy.example", "198.51.100.0/24"})
+	if trusted.Len() != 2 {
+		t.Fatalf("Len = %d, want the two readable entries kept", trusted.Len())
+	}
+	for _, addr := range []string{"192.0.2.10", "198.51.100.9"} {
+		if !trusted.Covers(netip.MustParseAddr(addr)) {
+			t.Fatalf("the readable entry covering %s was dropped", addr)
+		}
+	}
+	if len(errs) != 2 || !strings.Contains(errs[0].Error(), `[1]: "" is empty`) || !strings.Contains(errs[1].Error(), `[2]: "proxy.example"`) {
+		t.Fatalf("errs = %v, want each skipped entry named by index", errs)
+	}
+	got, err := Resolve("203.0.113.5", "198.51.100.9", true, trusted)
+	if err != nil || got.Client != netip.MustParseAddr("203.0.113.5") {
+		t.Fatalf("Resolve = %+v, %v; without a catch-all an unlisted peer's header stays client text", got, err)
+	}
+}
+
+// A catch-all entry trusted every peer's forwarded header. It is never
+// trusted, and a forwarded chain from a peer it covered names nobody: the
+// operator put a proxy in front, so that peer is not a visitor either.
+func TestRefusedCatchAllNamesNobodyBehindAForwardedChain(t *testing.T) {
+	for _, tc := range []struct{ entry, peer, otherFamily string }{
+		{"0.0.0.0/0", "203.0.113.5", "2001:db8::5"},
+		{"::/0", "2001:db8::5", "203.0.113.5"},
+		{"::ffff:0:0/96", "203.0.113.5", "2001:db8::5"},
+	} {
+		t.Run(tc.entry, func(t *testing.T) {
+			trusted, errs := ParseUsable([]string{tc.entry, "192.0.2.10"})
+			if len(errs) != 1 || trusted.Len() != 1 || trusted.Covers(netip.MustParseAddr(tc.peer)) {
+				t.Fatalf("ParseUsable kept %d entries, errs %v; want only the catch-all refused", trusted.Len(), errs)
+			}
+			if _, err := Resolve(tc.peer, "198.51.100.9", true, trusted); !errors.Is(err, ErrCatchAllChain) {
+				t.Fatalf("Resolve with a chain: err = %v, want ErrCatchAllChain", err)
+			}
+			got, err := Resolve(tc.peer, " ", true, trusted)
+			if err != nil || got.Client != netip.MustParseAddr(tc.peer) {
+				t.Fatalf("Resolve without a chain = %+v, %v; want the peer as client", got, err)
+			}
+			got, err = Resolve(tc.otherFamily, "198.51.100.9", true, trusted)
+			if err != nil || got.Client != netip.MustParseAddr(tc.otherFamily) {
+				t.Fatalf("Resolve for a peer the catch-all never covered = %+v, %v; want that peer", got, err)
+			}
+		})
+	}
+}
+
+// A broad mapped catch-all can cover native IPv6 peers too. Refusing it
+// must not turn those shared transports into visitors.
+func TestRefusedMappedCatchAllKeepsItsIPv6Coverage(t *testing.T) {
+	for bits := 0; bits <= 96; bits++ {
+		entry := "::ffff:192.0.2.10/" + strconv.Itoa(bits)
+		t.Run(entry, func(t *testing.T) {
+			trusted, errs := ParseUsable([]string{entry, "192.0.2.10"})
+			if len(errs) != 1 || !errors.Is(errs[0], ErrCatchAllEntry) || trusted.Len() != 1 {
+				t.Fatalf("ParseUsable = %+v, %v; want only the narrow entry kept", trusted, errs)
+			}
+			prefix := netip.MustParsePrefix(entry)
+			for _, peer := range []string{"203.0.113.5", "::ffff:203.0.113.5", "2001:db8::5"} {
+				addr := netip.MustParseAddr(peer).Unmap()
+				got, err := Resolve(peer, "198.51.100.9", true, trusted)
+				if addr.Is4() || prefix.Contains(addr) {
+					if !errors.Is(err, ErrCatchAllChain) || got != (Result{}) {
+						t.Errorf("Resolve(%s) = %+v, %v; want no client", peer, got, err)
+					}
+				} else if err != nil || got.Client != addr || got.Chained {
+					t.Errorf("Resolve(%s) = %+v, %v; an uncovered peer is its own client", peer, got, err)
+				}
+				got, err = Resolve(peer, "", true, trusted)
+				if err != nil || got.Client != addr || got.Chained {
+					t.Errorf("direct Resolve(%s) = %+v, %v; want its peer", peer, got, err)
+				}
+			}
+			got, err := Resolve("192.0.2.10", "198.51.100.9", true, trusted)
+			if err != nil || got.Client.String() != "198.51.100.9" || !got.Chained {
+				t.Fatalf("explicit proxy = %+v, %v; want its visitor", got, err)
+			}
+		})
+	}
+}
+
+func TestRefusedCatchAllDoesNotTreatACutChainAsDirect(t *testing.T) {
+	trusted, _ := ParseUsable([]string{"0.0.0.0/0"})
+	for _, xff := range []string{"", " \t"} {
+		if got, err := Resolve("203.0.113.5", xff, false, trusted); !errors.Is(err, ErrCatchAllChain) || got != (Result{}) {
+			t.Errorf("cut chain %q = %+v, %v; want no client", xff, got, err)
+		}
+	}
+}
+
+// The legacy CIDR parser accepted zero-padded prefix lengths. They must
+// still identify proxies, including catch-alls whose headers we refuse.
+func TestLegacyPaddedProxyPrefixes(t *testing.T) {
+	for _, tc := range []struct {
+		entry, peer string
+		catchAll    bool
+	}{
+		{"192.0.2.0/024", "192.0.2.10", false},
+		{"2001:db8::/064", "2001:db8::10", false},
+		{"::ffff:192.0.2.0/0120", "192.0.2.10", false},
+		{"0.0.0.0/00", "192.0.2.10", true},
+		{"::/00", "2001:db8::10", true},
+		{"::ffff:192.0.2.0/096", "192.0.2.10", true},
+		{"::ffff:192.0.2.0/080", "192.0.2.10", true},
+		{"::ffff:192.0.2.0/00", "2001:db8::10", true},
+	} {
+		t.Run(tc.entry, func(t *testing.T) {
+			if _, _, err := net.ParseCIDR(tc.entry); err != nil {
+				t.Fatalf("legacy parser did not accept entry: %v", err)
+			}
+			trusted, errs := ParseUsable([]string{tc.entry})
+			got, err := Resolve(tc.peer, "198.51.100.9", true, trusted)
+			if tc.catchAll {
+				if len(errs) != 1 || !errors.Is(errs[0], ErrCatchAllEntry) || trusted.Len() != 0 {
+					t.Fatalf("ParseUsable = %+v, %v; want a refused catch-all", trusted, errs)
+				}
+				if !errors.Is(err, ErrCatchAllChain) || got != (Result{}) {
+					t.Fatalf("forwarded request = %+v, %v; want no client", got, err)
+				}
+				got, err = Resolve(tc.peer, "", true, trusted)
+				if err != nil || got.Client.String() != tc.peer || got.Chained {
+					t.Fatalf("direct request = %+v, %v; want the peer", got, err)
+				}
+			} else if len(errs) != 0 || trusted.Len() != 1 || err != nil || got.Client.String() != "198.51.100.9" || !got.Chained {
+				t.Fatalf("usable proxy = %+v, %v (parse errors %v); want its visitor", got, err, errs)
+			}
+		})
+	}
+}

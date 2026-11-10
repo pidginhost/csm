@@ -103,31 +103,73 @@ func leftovers(t *testing.T, dir string) []string {
 	return names
 }
 
-func TestListenRefusesHostLocalTrustedProxy(t *testing.T) {
+// Legacy local entries must not prevent binding. Request-time attribution
+// still refuses the local proxy, and keeps remote proxies beside it usable.
+func TestListenAllowsHostLocalTrustedProxy(t *testing.T) {
 	group, _ := ownGroup(t)
-	for _, entry := range []string{"127.0.0.1", "203.0.113.0/24"} {
-		for _, socket := range []bool{false, true} {
-			t.Run(entry+"/socket="+strconv.FormatBool(socket), func(t *testing.T) {
-				cfg := baseCfg()
-				cfg.Challenge.ListenAddr = "127.0.0.1"
-				dir := shortSocketDir(t)
+	for _, socket := range []bool{false, true} {
+		t.Run("socket="+strconv.FormatBool(socket), func(t *testing.T) {
+			cfg := baseCfg()
+			cfg.Challenge.ListenPort = 0
+			if socket {
+				cfg = socketCfg(filepath.Join(shortSocketDir(t), "c.sock"), group)
+			}
+			cfg.Challenge.TrustedProxies = []string{"198.51.100.2", "203.0.113.0/24"}
+			list := NewIPList(filepath.Join(t.TempDir(), "challenge_ips.txt"))
+			list.Add("192.0.2.50", "test", time.Hour)
+			s := New(cfg, list)
+			ln, err := s.Listen()
+			if err != nil {
+				t.Fatalf("legacy local proxy prevented startup: %v", err)
+			}
+			t.Cleanup(func() { _ = ln.Close() })
+			t.Cleanup(s.Shutdown)
+			for _, tc := range []struct {
+				peer, xff string
+				status    int
+			}{
+				{"198.51.100.2:1234", "192.0.2.50", http.StatusUnauthorized},
+				{testHostAddr + ":1234", "192.0.2.50", http.StatusBadRequest},
+			} {
+				req := httptest.NewRequest(http.MethodGet, "/challenge/gate", nil)
+				req.RemoteAddr = tc.peer
 				if socket {
-					cfg = socketCfg(filepath.Join(dir, "c.sock"), group)
+					host, _, _ := net.SplitHostPort(tc.peer)
+					req.Header.Set("X-Forwarded-For", tc.xff+", "+host)
+				} else {
+					req.Header.Set("X-Forwarded-For", tc.xff)
 				}
-				cfg.Challenge.TrustedProxies = []string{"198.51.100.2", entry}
-				ln, err := New(cfg, nil).Listen()
-				if ln != nil {
-					_ = ln.Close()
-					t.Fatal("listener bound despite host-local trust")
+				w := httptest.NewRecorder()
+				s.srv.Handler.ServeHTTP(w, req)
+				if w.Code != tc.status {
+					t.Errorf("peer %s: status %d, want %d", tc.peer, w.Code, tc.status)
 				}
-				if err == nil || !strings.Contains(err.Error(), entry) || !strings.Contains(err.Error(), config.ChallengeSocketExample) {
-					t.Fatalf("err = %v, want refusal naming %q and the socket", err, entry)
-				}
-				if got := leftovers(t, dir); len(got) != 0 {
-					t.Fatalf("refusal left %v behind", got)
-				}
-			})
-		}
+			}
+		})
+	}
+}
+
+func TestListenAllowsTrustedProxiesWhenHostLookupFails(t *testing.T) {
+	t.Cleanup(netutil.SetHostAddressLookup(func() ([]net.IP, error) {
+		return nil, errors.New("interface lookup failed")
+	}))
+	cfg := baseCfg()
+	cfg.Challenge.ListenPort = 0
+	cfg.Challenge.TrustedProxies = []string{"198.51.100.2"}
+	s := New(cfg, NewIPList(filepath.Join(t.TempDir(), "challenge_ips.txt")))
+	ln, err := s.Listen()
+	if err != nil {
+		t.Fatalf("host lookup prevented startup: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	t.Cleanup(s.Shutdown)
+	req := httptest.NewRequest(http.MethodGet, "/challenge/gate", nil)
+	req.RemoteAddr = "198.51.100.2:1234"
+	req.Header.Set("X-Forwarded-For", "192.0.2.50")
+	w := httptest.NewRecorder()
+	s.srv.Handler.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("unverified proxy: status %d, want 400", w.Code)
 	}
 }
 

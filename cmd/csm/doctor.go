@@ -16,6 +16,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/challenge"
+	"github.com/pidginhost/csm/internal/clientaddr"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/control"
 	"github.com/pidginhost/csm/internal/health"
@@ -405,8 +406,8 @@ func challengePublicURLCheck(cfg *config.Config) DoctorCheck {
 }
 
 // challengeTrustedProxiesCheck fails when trusted_proxies covers an address
-// of this host. The challenge server refuses to start then, since any local
-// account could pose as any visitor.
+// of this host. The listener starts, but refuses requests from that proxy;
+// this explicit diagnostic reports a deployment that cannot serve visitors.
 func challengeTrustedProxiesCheck(cfg *config.Config) DoctorCheck {
 	if err := config.ChallengeLocalTrustError(cfg.Challenge.TrustedProxies); err != nil {
 		return DoctorCheck{
@@ -542,13 +543,10 @@ func challengeBehindProxy(cfg *config.Config) bool {
 	return challengeHasTrustedProxy(cfg) && !challengePublicURLTargetsListener(cfg)
 }
 
+// Only an entry CSM trusts counts: a skipped catch-all names no proxy.
 func challengeHasTrustedProxy(cfg *config.Config) bool {
-	for _, p := range cfg.Challenge.TrustedProxies {
-		if netutil.ParseCIDROrIP(p) != nil {
-			return true
-		}
-	}
-	return false
+	trusted, _ := clientaddr.ParseUsable(cfg.Challenge.TrustedProxies)
+	return trusted.Len() > 0
 }
 
 // A literal public endpoint can prove that browsers hit this listener
