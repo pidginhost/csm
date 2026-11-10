@@ -650,8 +650,17 @@ func scanPrestaShopEmployees(store *state.Store, account string, creds prestasho
 	w := creds.asWPDBCreds()
 	rows, complete := runCMSQuery(w, fmt.Sprintf("SELECT id_employee, id_profile, email FROM %semployee", creds.dbPrefix))
 	describe := func(fields []string) (string, string) {
+		var profile, email string
+		if len(fields) > 1 {
+			profile = fields[1]
+		}
+		// The query helper trims trailing whitespace, including an empty email column.
+		if len(fields) > 2 {
+			email = fields[2]
+		}
 		return fmt.Sprintf("PrestaShop employee on %s: id_employee=%s", account, fields[0]),
-			fmt.Sprintf("Account: %s\nRow: %s\nReview: confirm this is a legitimate back-office employee.", account, strings.Join(fields, "\t"))
+			fmt.Sprintf("Account: %s\nRow: %s\nEmployee id: %s\nProfile id: %s\nEmail: %s\nReview: confirm this is a legitimate back-office employee.",
+				account, strings.Join(fields, "\t"), fields[0], profile, email)
 	}
 	// Promotions are judged before the shared baseline records this pass's
 	// new ids, so a new SuperAdmin is reported once, by the new-employee path.
