@@ -100,7 +100,7 @@ func CheckJoomlaContent(ctx context.Context, cfg *config.Config, store *state.St
 	}
 	var findings []alert.Finding
 
-	configs := cmsDiscover(ctx, "db_content_joomla", "*/public_html/configuration.php", "*/*/configuration.php")
+	configs := cmsDropSuspended(cmsDiscover(ctx, "db_content_joomla", "*/public_html/configuration.php", "*/*/configuration.php"))
 	if len(configs) == 0 {
 		return nil
 	}

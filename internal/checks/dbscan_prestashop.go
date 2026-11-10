@@ -68,13 +68,9 @@ func CheckPrestaShopContent(ctx context.Context, cfg *config.Config, store *stat
 		if wpSkipDirNames[strings.ToLower(filepath.Base(prestashopRoot(marker)))] {
 			continue
 		}
-		// Exclude suspended accounts before config reads and the file cap:
-		// their locked databases provide no coverage of active shops.
-		if owner, owned := installOwner(marker); owned && accountSuspended(owner) {
-			continue
-		}
 		kept = append(kept, marker)
 	}
+	kept = cmsDropSuspended(kept)
 	if len(kept) == 0 {
 		return nil
 	}

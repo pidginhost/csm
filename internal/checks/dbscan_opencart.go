@@ -119,7 +119,7 @@ func CheckOpenCartContent(ctx context.Context, cfg *config.Config, store *state.
 	}
 	var findings []alert.Finding
 
-	configs := cmsDiscover(ctx, "db_content_opencart", "*/public_html/config.php", "*/*/config.php")
+	configs := cmsDropSuspended(cmsDiscover(ctx, "db_content_opencart", "*/public_html/config.php", "*/*/config.php"))
 	if len(configs) == 0 {
 		return nil
 	}

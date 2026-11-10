@@ -66,6 +66,20 @@ func cmsDiscover(ctx context.Context, owner string, patterns ...string) []string
 	return uniqueStrings(out)
 }
 
+// cmsDropSuspended removes installs owned by a suspended account before their
+// configuration is read or counted against the scan file limit. The account's
+// database user is locked, so scanning it only leaves the check incomplete.
+func cmsDropSuspended(paths []string) []string {
+	kept := paths[:0:0]
+	for _, path := range paths {
+		if owner, owned := installOwner(path); owned && accountSuspended(owner) {
+			continue
+		}
+		kept = append(kept, path)
+	}
+	return kept
+}
+
 func rankCMSConfigs(ctx context.Context, owner string, paths []string, maxFiles int) []string {
 	ranked := rankPathsByMtimeDesc(ctx, paths, maxFiles)
 	if len(ranked) < len(paths) || ctx.Err() != nil {

@@ -39,6 +39,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Fixed
 
+- Joomla, Drupal, Magento and OpenCart scans skip suspended accounts, so their checks complete again and earlier findings for those accounts clear on the next scan.
 - JavaScript served through PHP no longer raises a Critical WSO or FilesMan webshell alert because a variable name contains "filesMan".
 - Goto-obfuscated PHP, the shape licence-protected commercial modules also ship, is now reported for review instead of quarantined the moment it is written.
 - PHP Shield no longer logs an `open_basedir` warning on every request to sites whose PHP pool cannot see the account's home folder.

@@ -325,9 +325,11 @@ during the read, and stop when the scan is canceled. Read failures and missing
 required credentials mark that CMS scan incomplete; manual re-checks keep the
 finding unresolved when its configuration cannot be inspected.
 
-PrestaShop skips suspended accounts before reading their configuration or
-applying the account scan file limit. Copy names such as `staging`, `backup`,
-`backups`, `cache` and `.trash` are matched without regard to case.
+Joomla, Drupal, Magento, OpenCart, and PrestaShop scans skip suspended accounts
+before reading their configuration or applying the account scan file limit: a
+suspended account's database user is locked, so scanning it would only leave the
+check incomplete. PrestaShop also skips copies named `staging`, `backup`,
+`backups`, `cache` and `.trash`, matched without regard to case.
 
 PrestaShop re-checks locate only the account's canonical `public_html` install.
 Its database host, database name and table prefix must match the finding.

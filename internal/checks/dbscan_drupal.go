@@ -141,7 +141,7 @@ func CheckDrupalContent(ctx context.Context, cfg *config.Config, store *state.St
 	}
 	var findings []alert.Finding
 
-	settings := cmsDiscover(ctx, "db_content_drupal", "*/public_html/sites/default/settings.php", "*/*/sites/default/settings.php")
+	settings := cmsDropSuspended(cmsDiscover(ctx, "db_content_drupal", "*/public_html/sites/default/settings.php", "*/*/sites/default/settings.php"))
 	if len(settings) == 0 {
 		return nil
 	}
