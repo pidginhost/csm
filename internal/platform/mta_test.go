@@ -48,3 +48,25 @@ func TestIsMTAProcessExactMatch(t *testing.T) {
 		t.Errorf("postfix exact match should succeed")
 	}
 }
+
+// Stalwart runs its MTA as its own service user; without it every delivery
+// it makes reads as a hosted process mailing out directly.
+func TestLocalMTAIdentitiesIncludesStalwartOffCpanel(t *testing.T) {
+	got := LocalMTAIdentities(Info{OS: OSUbuntu})
+	for _, want := range []string{"stalwart", "stalwart-mail"} {
+		if !got.IsMTAUser(want) {
+			t.Errorf("expected %q in MTA users; got %+v", want, got.Users)
+		}
+	}
+}
+
+// cPanel lets a customer pick an account name no system user holds, so a
+// Stalwart name there would be an exemption anyone could sign up for.
+func TestLocalMTAIdentitiesOmitsStalwartOnCpanel(t *testing.T) {
+	got := LocalMTAIdentities(Info{OS: OSAlma, Panel: PanelCPanel})
+	for _, name := range []string{"stalwart", "stalwart-mail"} {
+		if got.IsMTAUser(name) {
+			t.Errorf("cPanel host must not exempt %q; got %+v", name, got.Users)
+		}
+	}
+}

@@ -15,7 +15,12 @@ A finding with `check: "direct_smtp_egress"` is emitted when:
 - Destination IP is not loopback, infra, or in the operator's
   `infra_ips` list.
 - The process user is NOT a known MTA user (mail, mailnull, postfix,
-  dovecot, dovenull, mailman, plus exim on cPanel).
+  dovecot, dovenull, mailman, plus exim on cPanel and Stalwart's
+  stalwart or stalwart-mail elsewhere).
+- The process user is NOT listed under `firewall.smtp_allow_users`.
+  Those users may send through `firewall.smtp_block`, so their
+  connections are expected. List any other mail server's service user
+  there.
 
 Process names are never a standalone allow condition. A hosted account
 renaming malware to `smtp` or `smtpd` still emits a finding.

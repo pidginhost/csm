@@ -83,7 +83,7 @@ func (m MTAIdents) IsMTAProcess(basename string) bool {
 // LocalMTAIdentities returns the MTA users and process basenames that
 // should be considered legitimate on the detected platform. cPanel
 // hosts get exim variants; non-cPanel hosts get the postfix/dovecot
-// baseline.
+// baseline plus Stalwart.
 func LocalMTAIdentities(info Info) MTAIdents {
 	users := []string{
 		"mail",
@@ -109,6 +109,10 @@ func LocalMTAIdentities(info Info) MTAIdents {
 	if info.IsCPanel() {
 		users = append(users, "exim")
 		processes = append(processes, "exim", "exim4")
+	} else {
+		// Stalwart runs as stalwart, or stalwart-mail on older installs. Not on cPanel,
+		// where a customer may sign up under a name no system user holds.
+		users = append(users, "stalwart", "stalwart-mail")
 	}
 	return MTAIdents{Users: users, Processes: processes}
 }
