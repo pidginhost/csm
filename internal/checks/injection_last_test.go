@@ -79,17 +79,6 @@ func TestFixQuarantineSpoolMessageNoID(t *testing.T) {
 	}
 }
 
-// --- CleanDatabaseSpam with no mysql ---------------------------------
-
-func TestCleanDatabaseSpamNoMySQL(t *testing.T) {
-	withMockCmd(t, &mockCmd{})
-	withMockOS(t, &mockOS{})
-	findings := CleanDatabaseSpam("alice")
-	if len(findings) != 0 {
-		t.Errorf("no mysql should produce 0, got %d", len(findings))
-	}
-}
-
 // --- SetOS and SetCmdRunner exercise ---------------------------------
 
 func TestSetOSAndRestore(t *testing.T) {

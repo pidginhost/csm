@@ -64,8 +64,6 @@
       "db_siteurl_foreign_host",
       "db_siteurl_hijack",
       "db_siteurl_invalid",
-      "db_spam_cleaned",
-      "db_spam_found",
       "db_spam_injection",
       "db_spam_taxonomy",
       "db_stored_cloak_logic",

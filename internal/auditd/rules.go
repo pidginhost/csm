@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 )
 
 type commandRunner func(name string, args ...string) error
@@ -64,21 +66,46 @@ const rules = `## Continuous Security Monitor - auditd rules
 -a always,exit -F arch=b32 -S socket -F a0=38 -F uid>=1000 -k csm_af_alg_socket
 `
 
-func Deploy() error {
-	return deployRules(rulesPath, runCommand)
+// renderRules drops each watch whose parent directory is missing, such as
+// cPanel paths on a host without cPanel: auditctl rejects that watch and
+// stops loading, which would leave every later rule inactive.
+func renderRules(dirExists func(string) bool) string {
+	var out strings.Builder
+	for _, line := range strings.SplitAfter(rules, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && fields[0] == "-w" &&
+			!dirExists(filepath.Dir(strings.TrimSuffix(fields[1], "/"))) {
+			continue
+		}
+		out.WriteString(line)
+	}
+	return out.String()
 }
 
-func deployRules(path string, run commandRunner) error {
+func hostDirExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
+}
+
+func hostRules() string {
+	return renderRules(hostDirExists)
+}
+
+func Deploy() error {
+	return deployRules(rulesPath, hostRules(), runCommand)
+}
+
+func deployRules(path, content string, run commandRunner) error {
 	// #nosec G306 -- /etc/audit/rules.d/csm.rules is read by the auditd
 	// tooling (augenrules) on reload; 0640 keeps world-read off.
-	if err := os.WriteFile(path, []byte(rules), 0640); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0640); err != nil {
 		return err
 	}
 	return run("augenrules", "--load")
 }
 
-// EnsureDeployed compares the on-disk rules file to the embedded rules
-// constant and re-runs Deploy if they differ. Used by the daemon at
+// EnsureDeployed compares the on-disk rules file to the rules for this host
+// and re-runs Deploy if they differ. Used by the daemon at
 // startup so a CSM upgrade that ships new auditd rules does not silently
 // remain inactive when the package postinstall did not invoke Deploy.
 //
@@ -88,7 +115,7 @@ func deployRules(path string, run commandRunner) error {
 // triggers Deploy.
 func EnsureDeployed() (bool, error) {
 	current, err := os.ReadFile(rulesPath)
-	if err == nil && string(current) == rules {
+	if err == nil && string(current) == hostRules() {
 		return false, nil
 	}
 	if err != nil && !os.IsNotExist(err) {

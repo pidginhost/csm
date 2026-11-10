@@ -96,20 +96,6 @@ func TestFindWPAdminVerifyPrefixes_LocatesNestedInstall(t *testing.T) {
 	}
 }
 
-// The spam cleaner acts on the installs it discovers; spam in a nested install
-// was left in place.
-func TestSpamCleanWPConfigs_IncludesNestedInstall(t *testing.T) {
-	const wpConfig = "/home/alice/public_html/blog/wp-config.php"
-	old := osFS
-	osFS = nestedInstallFS(t, wpConfig, nestedWPConfigBody)
-	t.Cleanup(func() { osFS = old })
-
-	got := spamCleanWPConfigs("alice")
-	if len(got) != 1 || got[0] != wpConfig {
-		t.Errorf("spam-clean configs = %v, want the nested install", got)
-	}
-}
-
 func TestFindCredsForAccountPrefersPrimaryInstall(t *testing.T) {
 	const (
 		primary = "/home/alice/public_html/wp-config.php"

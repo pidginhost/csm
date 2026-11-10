@@ -694,8 +694,6 @@ Attribution gaps:
 | `db_siteurl_foreign_host` | security event |  |  |
 | `db_siteurl_hijack` | security event |  |  |
 | `db_siteurl_invalid` | ignored | posture |  |
-| `db_spam_cleaned` | ignored | response |  |
-| `db_spam_found` | security event |  |  |
 | `db_spam_injection` | security event |  |  |
 | `db_spam_taxonomy` | security event |  |  |
 | `db_stored_cloak_logic` | security event |  |  |

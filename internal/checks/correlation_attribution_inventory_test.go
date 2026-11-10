@@ -33,7 +33,6 @@ var attributionEvidence = map[string]string{
 	"db_rogue_admin":                     "TestWordPressDBProducersStampOwner",
 	"db_siteurl_foreign_host":            "TestWordPressDBProducersStampOwner",
 	"db_siteurl_hijack":                  "TestWordPressDBProducersStampOwner",
-	"db_spam_found":                      "TestWordPressDBProducersStampOwner",
 	"db_spam_injection":                  "TestWordPressDBProducersStampOwner",
 	"db_spam_taxonomy":                   "TestWordPressDBProducersStampOwner",
 	"db_stored_cloak_logic":              "TestWordPressDBProducersStampOwner",

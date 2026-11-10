@@ -889,8 +889,18 @@ func logrotateConfig() string {
 }
 
 func deployLogrotate() error {
+	return writeLogrotate("/etc/logrotate.d/csm")
+}
+
+// writeLogrotate also resets the mode of an existing file, which WriteFile
+// keeps: logrotate skips a config that group or others can write.
+func writeLogrotate(path string) error {
 	// #nosec G306 -- /etc/logrotate.d/csm; logrotate requires 0644.
-	return os.WriteFile("/etc/logrotate.d/csm", []byte(logrotateConfig()), 0644)
+	if err := os.WriteFile(path, []byte(logrotateConfig()), 0644); err != nil {
+		return err
+	}
+	// #nosec G302 -- same file and mode as above.
+	return os.Chmod(path, 0644)
 }
 
 // InstallWHMPlugin deploys the CGI proxy and AppConfig registration

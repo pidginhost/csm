@@ -424,7 +424,7 @@ func TestCanVerifyMembership(t *testing.T) {
 	for _, c := range []string{
 		"supply_chain_vuln",
 		"brute_force", "mail_bruteforce", "ip_reputation",
-		"modsec_block_realtime", "cpanel_login", "db_spam_found",
+		"modsec_block_realtime", "cpanel_login",
 		"", "definitely_not_a_check",
 	} {
 		if CanVerify(c) {

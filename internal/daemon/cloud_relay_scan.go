@@ -251,7 +251,8 @@ func processCloudRelayScanRecord(line string, cfg *config.Config, since time.Tim
 	// an older address's line. The observation reads Exim's full time; the
 	// counting above keeps its legacy reading.
 	acc.newest = alert.Observation{}
-	if at, dated := eximlog.LineTime(line); rec.stream != "" && dated {
+	// A stamp without a zone is in the zone of the caller's clock.
+	if at, dated := eximlog.LineTime(line, since.Location()); rec.stream != "" && dated {
 		acc.newest = alert.Observation{Producer: string(checks.ProducerEximHistory), Stream: rec.stream,
 			Cursor: alert.RecordCursor(rec.offset, line), ObservedAt: at.UTC()}
 	}

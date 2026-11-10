@@ -7,11 +7,9 @@ import (
 
 // LineTime is the time Exim wrote at the start of line: the date, the time
 // with any fraction log_selector +millisec adds, and the zone log_timezone
-// adds, else local time. An explicit zone that is not a valid offset dates
-// nothing; client text later in the line is never read.
-func LineTime(line string) (time.Time, bool) { return lineTimeIn(line, time.Local) }
-
-func lineTimeIn(line string, local *time.Location) (time.Time, bool) {
+// adds, else the time in local. An explicit zone that is not a valid offset
+// dates nothing; client text later in the line is never read.
+func LineTime(line string, local *time.Location) (time.Time, bool) {
 	date, rest, _ := strings.Cut(line, " ")
 	clock, rest, _ := strings.Cut(rest, " ")
 	stamp := date + " " + clock
