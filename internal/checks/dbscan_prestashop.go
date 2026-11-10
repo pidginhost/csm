@@ -6,8 +6,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -185,14 +186,6 @@ var prestashopParamKeys = []string{
 	"database_user", "database_password", "database_prefix",
 }
 
-var prestashopParamRes = func() map[string]*regexp.Regexp {
-	out := make(map[string]*regexp.Regexp, len(prestashopParamKeys))
-	for _, key := range prestashopParamKeys {
-		out[key] = regexp.MustCompile(`(?:'` + key + `'|"` + key + `")\s*=>\s*`)
-	}
-	return out
-}()
-
 type prestashopParamValue struct {
 	value  string
 	quoted bool
@@ -207,17 +200,17 @@ func parsePrestaShopParameters(ctx context.Context, path string) (prestashopCred
 	if err != nil {
 		return prestashopCreds{}, err
 	}
-	body := string(data)
-	vals := make(map[string]prestashopParamValue, len(prestashopParamKeys))
-	for _, key := range prestashopParamKeys {
-		v, err := prestashopParam(body, key)
-		if err != nil {
-			return prestashopCreds{}, err
-		}
-		vals[key] = v
+	vals, err := parsePrestaShopParameterValues(string(data))
+	if err != nil {
+		return prestashopCreds{}, err
 	}
 	for _, key := range []string{"database_name", "database_user", "database_prefix"} {
 		if !vals[key].found || !vals[key].quoted {
+			return prestashopCreds{}, fmt.Errorf("%w: %s", errPrestaShopCreds, key)
+		}
+	}
+	for _, key := range []string{"database_host", "database_password"} {
+		if vals[key].found && !vals[key].quoted {
 			return prestashopCreds{}, fmt.Errorf("%w: %s", errPrestaShopCreds, key)
 		}
 	}
@@ -244,25 +237,202 @@ func parsePrestaShopParameters(ctx context.Context, path string) (prestashopCred
 	}, nil
 }
 
-// prestashopParam returns the last `'key' => literal` entry in body, as PHP
-// keeps the last of duplicate array keys. Comments are not interpreted;
-// var_export writes none.
-func prestashopParam(body, key string) (prestashopParamValue, error) {
-	matches := prestashopParamRes[key].FindAllStringIndex(body, -1)
-	if len(matches) == 0 {
-		return prestashopParamValue{}, nil
+// parsePrestaShopParameterValues accepts the returned parameters array only.
+// Unrelated values stay opaque, including strings that resemble database keys.
+func parsePrestaShopParameterValues(body string) (map[string]prestashopParamValue, error) {
+	p := prestashopPHPParser{rest: body}
+	if !p.take("<?php") || len(p.rest) == 0 || !strings.ContainsRune(" \t\r\n", rune(p.rest[0])) || !p.keyword("return") {
+		return nil, errPrestaShopCreds
 	}
-	value, quoted, rest, ok := parsePHPScalarLiteral(body[matches[len(matches)-1][1]:])
-	rest = strings.TrimLeft(rest, " \t\r\n")
-	if !ok || rest == "" || !strings.ContainsRune(",)]", rune(rest[0])) {
-		return prestashopParamValue{}, fmt.Errorf("%w: %s", errPrestaShopCreds, key)
+	vals, ok := p.array(false)
+	if !ok || !p.take(";") {
+		return nil, errPrestaShopCreds
 	}
-	return prestashopParamValue{value: value, quoted: quoted, found: true}, nil
+	p.take("?>")
+	if !p.space() || p.rest != "" {
+		return nil, errPrestaShopCreds
+	}
+	return vals, nil
 }
 
-// parsePHPScalarLiteral reads one literal at the start of s: a single-quoted
-// string, a double-quoted string without interpolation or escapes other than
-// \" and \\, NULL, or a run of digits.
+type prestashopPHPParser struct {
+	rest string
+}
+
+func (p *prestashopPHPParser) space() bool {
+	for {
+		p.rest = strings.TrimLeft(p.rest, " \t\r\n\v\f")
+		switch {
+		case strings.HasPrefix(p.rest, "/*"):
+			end := strings.Index(p.rest[2:], "*/")
+			if end < 0 {
+				return false
+			}
+			p.rest = p.rest[end+4:]
+		case strings.HasPrefix(p.rest, "//"), strings.HasPrefix(p.rest, "#"):
+			end := strings.IndexAny(p.rest, "\r\n")
+			if end < 0 {
+				p.rest = ""
+			} else {
+				p.rest = p.rest[end:]
+			}
+		default:
+			return true
+		}
+	}
+}
+
+func (p *prestashopPHPParser) take(token string) bool {
+	if !p.space() || !strings.HasPrefix(p.rest, token) {
+		return false
+	}
+	p.rest = p.rest[len(token):]
+	return true
+}
+
+func (p *prestashopPHPParser) keyword(word string) bool {
+	if !p.space() || len(p.rest) < len(word) || !strings.EqualFold(p.rest[:len(word)], word) {
+		return false
+	}
+	if len(p.rest) > len(word) {
+		c := p.rest[len(word)]
+		if c == '_' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c >= 0x80 {
+			return false
+		}
+	}
+	p.rest = p.rest[len(word):]
+	return true
+}
+
+func (p *prestashopPHPParser) arrayEnd() (string, bool) {
+	if p.take("[") {
+		return "]", true
+	}
+	if p.keyword("array") && p.take("(") {
+		return ")", true
+	}
+	return "", false
+}
+
+func (p *prestashopPHPParser) array(parameters bool) (map[string]prestashopParamValue, bool) {
+	end, ok := p.arrayEnd()
+	if !ok {
+		return nil, false
+	}
+	vals := make(map[string]prestashopParamValue)
+	for !p.take(end) {
+		key, quoted, rest, valid := parsePHPScalarLiteral(p.rest)
+		if !valid || !quoted {
+			return nil, false
+		}
+		p.rest = rest
+		if !p.take("=>") || !p.space() {
+			return nil, false
+		}
+		switch {
+		case !parameters && key == "parameters":
+			// A later parameters entry replaces the whole earlier array.
+			vals, ok = p.array(true)
+		case parameters && slices.Contains(prestashopParamKeys, key):
+			var v prestashopParamValue
+			v, ok = p.databaseValue(key)
+			vals[key] = v
+		default:
+			ok = p.skipValue()
+		}
+		if !ok {
+			return nil, false
+		}
+		if p.take(end) {
+			return vals, true
+		}
+		if !p.take(",") {
+			return nil, false
+		}
+	}
+	return vals, true
+}
+
+func (p *prestashopPHPParser) databaseValue(key string) (prestashopParamValue, bool) {
+	// PHP empty() also accepts an empty array for the port. No array values
+	// are decoded or retained.
+	if key == "database_port" && (strings.HasPrefix(p.rest, "[") || len(p.rest) >= 5 && strings.EqualFold(p.rest[:5], "array")) {
+		end, ok := p.arrayEnd()
+		return prestashopParamValue{found: true}, ok && p.take(end)
+	}
+	value, quoted, rest, ok := parsePHPScalarLiteral(p.rest)
+	if !ok {
+		return prestashopParamValue{}, false
+	}
+	p.rest = rest
+	return prestashopParamValue{value: value, quoted: quoted, found: true}, true
+}
+
+// skipString walks a quoted token without decoding or retaining its value.
+func (p *prestashopPHPParser) skipString() bool {
+	if len(p.rest) == 0 || (p.rest[0] != '\'' && p.rest[0] != '"') {
+		return false
+	}
+	quote := p.rest[0]
+	for i := 1; i < len(p.rest); i++ {
+		switch p.rest[i] {
+		case '\\':
+			i++
+		case quote:
+			p.rest = p.rest[i+1:]
+			return true
+		}
+	}
+	return false
+}
+
+// skipValue tracks delimiters iteratively so deeply nested unrelated values
+// cannot exhaust the stack. Only the returned array and parameters recurse.
+func (p *prestashopPHPParser) skipValue() bool {
+	var ends []byte
+	consumed := false
+	for p.space() && len(p.rest) > 0 {
+		c := p.rest[0]
+		switch c {
+		case '\'', '"':
+			if !p.skipString() {
+				return false
+			}
+			consumed = true
+			continue
+		case '(':
+			ends = append(ends, ')')
+		case '[':
+			ends = append(ends, ']')
+		case ')', ']':
+			if len(ends) == 0 {
+				return consumed
+			}
+			if ends[len(ends)-1] != c {
+				return false
+			}
+			ends = ends[:len(ends)-1]
+		case ',':
+			if len(ends) == 0 {
+				return consumed
+			}
+		case '=':
+			if strings.HasPrefix(p.rest, "=>") {
+				p.rest = p.rest[2:]
+				consumed = true
+				continue
+			}
+		case ';', '{', '}', '`', '<', '>':
+			return false
+		}
+		consumed = true
+		p.rest = p.rest[1:]
+	}
+	return false
+}
+
+// parsePHPScalarLiteral reads a string, a nonnegative PHP integer,
+// or a PHP-empty scalar. It never evaluates an expression or interpolation.
 func parsePHPScalarLiteral(s string) (value string, quoted bool, rest string, ok bool) {
 	if s == "" {
 		return "", false, "", false
@@ -286,16 +456,28 @@ func parsePHPScalarLiteral(s string) (value string, quoted bool, rest string, ok
 		}
 		return "", false, "", false
 	}
-	end := 0
-	for end < len(s) && (s[end] >= '0' && s[end] <= '9' || s[end] >= 'A' && s[end] <= 'Z' || s[end] >= 'a' && s[end] <= 'z' || s[end] == '_') {
-		end++
+	end := strings.IndexAny(s, " \t\r\n\v\f,)]/#")
+	if end < 0 {
+		end = len(s)
 	}
 	token := s[:end]
 	switch {
-	case strings.EqualFold(token, "null"):
+	case strings.EqualFold(token, "null"), len(token) == len("false") && strings.EqualFold(token, "false"):
 		return "", false, s[end:], true
 	case isAllDigits(token):
-		return token, false, s[end:], true
+		// PHP interprets a leading zero as octal and overflowing integers as
+		// floats. Do not silently turn either into a different decimal port.
+		base := 10
+		if len(token) > 1 && token[0] == '0' {
+			base = 8
+		}
+		if v, err := strconv.ParseUint(token, base, 63); err == nil {
+			return strconv.FormatUint(v, 10), false, s[end:], true
+		}
+	case strings.Trim(token, "+-0123456789.eE") == "":
+		if v, err := strconv.ParseFloat(token, 64); err == nil && v == 0 {
+			return "", false, s[end:], true
+		}
 	}
 	return "", false, "", false
 }
