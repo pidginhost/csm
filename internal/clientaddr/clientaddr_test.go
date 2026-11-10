@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net"
 	"net/netip"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -285,5 +286,93 @@ func TestResolveBoundsOnlyTheHopsItReads(t *testing.T) {
 	deep := "203.0.113.9," + strings.TrimSuffix(strings.Repeat("192.0.2.11,", MaxHops), ",")
 	if got, err := Resolve("192.0.2.10", deep, true, trusted); !errors.Is(err, ErrOverlong) || got != (Result{}) {
 		t.Fatalf("Resolve(32 trusted hops before the client) = %+v, %v; want ErrOverlong", got, err)
+	}
+}
+
+func TestResolveRejectsPeerWhitespace(t *testing.T) {
+	trusted := mustParse(t, "192.0.2.0/24", "2001:db8::/64")
+	for _, peer := range []string{"192.0.2.10", "198.51.100.7:443", "[2001:db8::10]", "[::ffff:192.0.2.10]:443"} {
+		for _, space := range []string{" ", "\t", "\r", "\n", "\v", "\f", "\u0085", "\u00a0", "\u2028"} {
+			for _, input := range []string{space + peer, peer + space} {
+				if got, err := Resolve(input, "203.0.113.9", true, trusted); !errors.Is(err, ErrPeer) || got != (Result{}) {
+					t.Errorf("Resolve(%q) = %+v, %v; want ErrPeer", input, got, err)
+				}
+			}
+		}
+	}
+}
+
+func TestResolveRejectsNonWirePeerPorts(t *testing.T) {
+	trusted := mustParse(t, "192.0.2.0/24", "2001:db8::/64")
+	for _, host := range []string{"192.0.2.10", "[2001:db8::10]", "[::ffff:192.0.2.10]"} {
+		for _, port := range []string{"", "+443", "-1", "0443", "00", "65536", "https", "0x1bb", "4_43"} {
+			peer := host + ":" + port
+			if got, err := Resolve(peer, "203.0.113.9", true, trusted); !errors.Is(err, ErrPeer) || got != (Result{}) {
+				t.Errorf("Resolve(%q) = %+v, %v; want ErrPeer", peer, got, err)
+			}
+		}
+		for _, port := range []string{"0", "443", "65535"} {
+			peer := host + ":" + port
+			got, err := Resolve(peer, "203.0.113.9", true, trusted)
+			if err != nil || got.Client != netip.MustParseAddr("203.0.113.9") || !got.Chained {
+				t.Errorf("Resolve(%q) = %+v, %v; want chained client 203.0.113.9", peer, got, err)
+			}
+		}
+	}
+}
+
+func TestResolveRefusesNonHTTPHopWhitespace(t *testing.T) {
+	trusted := mustParse(t, "192.0.2.0/24", "2001:db8::/64")
+	for _, hop := range []string{"192.0.2.11", "198.51.100.7", "2001:db8::11", "2001:db8:1::7"} {
+		for _, space := range []string{"\r", "\n", "\v", "\f", "\u0085", "\u00a0", "\u2028"} {
+			for _, token := range []string{space + hop, hop + space} {
+				xff := "203.0.113.9," + token
+				if got, err := Resolve("192.0.2.10", xff, true, trusted); !errors.Is(err, ErrMalformed) || got != (Result{}) {
+					t.Errorf("Resolve chain %q = %+v, %v; want ErrMalformed", xff, got, err)
+				}
+			}
+		}
+	}
+	got, err := Resolve("192.0.2.10", " \t203.0.113.9\t ,\t 192.0.2.11 \t", true, trusted)
+	want := Result{Client: netip.MustParseAddr("203.0.113.9"), Peer: netip.MustParseAddr("192.0.2.10"), Chained: true}
+	if err != nil || got != want {
+		t.Fatalf("HTTP whitespace: Resolve = %+v, %v; want %+v", got, err, want)
+	}
+}
+
+func TestParseRejectsMappedRangesCoveringAllIPv4(t *testing.T) {
+	for bits := 0; bits <= 96; bits++ {
+		entry := "::ffff:192.0.2.10/" + strconv.Itoa(bits)
+		got, err := Parse([]string{"198.51.100.7", entry})
+		if err == nil || got.Len() != 0 {
+			t.Errorf("Parse(%q) = %v, %v; want no trust and an error", entry, got, err)
+		} else if !strings.Contains(err.Error(), "[1]") || !strings.Contains(err.Error(), entry) {
+			t.Errorf("Parse(%q) error = %v; want entry index and text", entry, err)
+		}
+	}
+}
+
+func TestParsePreservesNarrowMappedRanges(t *testing.T) {
+	for _, tc := range []struct {
+		entry   string
+		inside  []string
+		outside string
+	}{
+		{"::ffff:192.0.2.10/97", []string{"192.0.2.10", "203.0.113.9"}, "2001:db8::1"},
+		{"::ffff:192.0.2.129/121", []string{"192.0.2.128", "192.0.2.255"}, "192.0.2.127"},
+		{"::ffff:192.0.2.10/128", []string{"192.0.2.10"}, "192.0.2.11"},
+		{"::ffff:192.0.2.10", []string{"192.0.2.10"}, "192.0.2.11"},
+	} {
+		trusted := mustParse(t, tc.entry)
+		for _, ip := range tc.inside {
+			for _, spelling := range []string{ip, "::ffff:" + ip} {
+				if !trusted.Covers(netip.MustParseAddr(spelling)) {
+					t.Errorf("%s does not cover %s", tc.entry, spelling)
+				}
+			}
+		}
+		if trusted.Covers(netip.MustParseAddr(tc.outside)) {
+			t.Errorf("%s covers unrelated address %s", tc.entry, tc.outside)
+		}
 	}
 }

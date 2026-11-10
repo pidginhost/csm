@@ -1,6 +1,6 @@
 // Package clientaddr resolves the client address of an HTTP request or
-// access-log record from its direct peer and X-Forwarded-For chain. Every
-// HTTP producer and the challenge server share it, so one configured trust
+// access-log record from its direct peer and X-Forwarded-For chain. The
+// domlog scan and the challenge server share it, so one configured trust
 // list decides the address they act on.
 package clientaddr
 
@@ -64,7 +64,7 @@ func parseEntry(entry string) (netip.Prefix, error) {
 		if err != nil {
 			return netip.Prefix{}, errors.New("is not an IP address or CIDR range")
 		}
-		prefix = p.Masked()
+		prefix = p
 	} else {
 		addr, err := netip.ParseAddr(entry)
 		if err != nil || addr.Zone() != "" {
@@ -72,13 +72,18 @@ func parseEntry(entry string) (netip.Prefix, error) {
 		}
 		prefix = netip.PrefixFrom(addr, addr.BitLen())
 	}
-	if prefix.Addr().Is4In6() && prefix.Bits() >= 96 {
+	// Masking a broader mapped range first would erase its IPv4 identity
+	// and silently leave the configured IPv4 proxies uncovered.
+	if prefix.Addr().Is4In6() {
+		if prefix.Bits() <= 96 {
+			return netip.Prefix{}, errors.New("covers every IPv4 address")
+		}
 		prefix = netip.PrefixFrom(prefix.Addr().Unmap(), prefix.Bits()-96)
 	}
 	if prefix.Bits() == 0 {
 		return netip.Prefix{}, errors.New("is a default route and would trust every address")
 	}
-	return prefix, nil
+	return prefix.Masked(), nil
 }
 
 // Len reports how many entries the list holds.
@@ -118,12 +123,14 @@ type Result struct {
 }
 
 // Resolve returns the client behind peer. peer is the direct peer as a log or
-// socket writes it, with or without a port; xff is the X-Forwarded-For value
-// (several header lines joined with commas); complete is false when the log
-// kept only its right end. An untrusted peer is the client and its xff is ignored. For
-// a trusted peer the chain is read right to left past trusted hops to the
-// first other address; an unreadable hop on the way refuses the chain rather
-// than being skipped.
+// socket writes it, with or without a port and without whitespace; xff is the
+// X-Forwarded-For value (several header lines joined with commas). Only HTTP
+// spaces and tabs may surround a hop. complete is false when the log kept
+// only its right end; that suffix must contain whole comma-delimited tokens,
+// never a fragment of an address. An untrusted peer is the client and its xff
+// is ignored. For a trusted peer the chain is read right to left past trusted
+// hops to the first other address; an unreadable hop on the way refuses the
+// chain rather than being skipped.
 func Resolve(peer, xff string, complete bool, t Trusted) (Result, error) {
 	p, ok := parsePeer(peer)
 	if !ok {
@@ -146,7 +153,7 @@ func chain(p netip.Addr, xff string, complete bool, t Trusted) (Result, error) {
 	if len(xff) > MaxChainBytes {
 		return Result{}, ErrOverlong
 	}
-	if strings.TrimSpace(xff) == "" {
+	if strings.Trim(xff, " \t") == "" {
 		return Result{}, ErrNoChain
 	}
 	hops := strings.Split(xff, ",")
@@ -154,7 +161,7 @@ func chain(p netip.Addr, xff string, complete bool, t Trusted) (Result, error) {
 		if len(hops)-i > MaxHops {
 			return Result{}, ErrOverlong
 		}
-		hop, err := netip.ParseAddr(strings.TrimSpace(hops[i]))
+		hop, err := netip.ParseAddr(strings.Trim(hops[i], " \t"))
 		if err != nil || hop.Zone() != "" {
 			return Result{}, ErrMalformed
 		}
@@ -174,12 +181,16 @@ func chain(p netip.Addr, xff string, complete bool, t Trusted) (Result, error) {
 
 // parsePeer reads a bare address, an address with a port, or a bracketed
 // IPv6 address, and returns it unmapped. Zoned addresses, unmatched brackets
-// and bracketed IPv4 are refused.
+// and bracketed IPv4 are refused. Ports use the unpadded decimal spelling
+// emitted by sockets and web servers.
 func parsePeer(peer string) (netip.Addr, bool) {
-	peer = strings.TrimSpace(peer)
 	addr, err := netip.ParseAddr(peer)
 	if err != nil {
 		if ap, perr := netip.ParseAddrPort(peer); perr == nil {
+			port := peer[strings.LastIndexByte(peer, ':')+1:]
+			if len(port) > 1 && port[0] == '0' {
+				return netip.Addr{}, false
+			}
 			addr = ap.Addr()
 		} else if inner, ok := strings.CutPrefix(peer, "["); ok && strings.HasSuffix(inner, "]") {
 			addr, err = netip.ParseAddr(strings.TrimSuffix(inner, "]"))

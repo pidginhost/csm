@@ -2,6 +2,7 @@ package clientaddr
 
 import (
 	"net/netip"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -23,6 +24,10 @@ func FuzzResolveNeverInjects(f *testing.F) {
 		{"[2001:db8::10]:8443", "2001:db8:1::9, 2001:db8::11", true},
 		{"192.0.2.10", "203.0.113.9", false},
 		{"192.0.2.10", "", true},
+		{"\n192.0.2.10", "203.0.113.9", true},
+		{"192.0.2.10:0443", "203.0.113.9", true},
+		{"192.0.2.10", "203.0.113.9,\u00a0192.0.2.11", true},
+		{"192.0.2.10", "203.0.113.9,192.0.2.11\r", true},
 	} {
 		f.Add(seed.peer, seed.xff, seed.complete)
 	}
@@ -40,6 +45,14 @@ func FuzzResolveNeverInjects(f *testing.F) {
 		}
 		if !got.Client.IsValid() || got.Client.Is4In6() || got.Client.Zone() != "" {
 			t.Fatalf("client %v is not a canonical usable address", got.Client)
+		}
+		if peer != strings.TrimSpace(peer) {
+			t.Fatalf("resolved whitespace-padded peer %q", peer)
+		}
+		if ap, err := netip.ParseAddrPort(peer); err == nil {
+			if peer[strings.LastIndexByte(peer, ':')+1:] != strconv.Itoa(int(ap.Port())) {
+				t.Fatalf("resolved peer with a noncanonical port %q", peer)
+			}
 		}
 		if trusted.Has(got.Client) {
 			t.Fatalf("client %v is a trusted proxy", got.Client)
@@ -61,8 +74,8 @@ func FuzzResolveNeverInjects(f *testing.F) {
 			if len(hops)-i > MaxHops {
 				t.Fatalf("chained result after reading more than %d hops", MaxHops)
 			}
-			hop, perr := netip.ParseAddr(strings.TrimSpace(hops[i]))
-			if perr != nil {
+			hop, perr := netip.ParseAddr(strings.Trim(hops[i], " \t"))
+			if perr != nil || hop.Zone() != "" {
 				t.Fatalf("hop %q right of the client did not parse: %v", hops[i], perr)
 			}
 			hop = hop.Unmap()
