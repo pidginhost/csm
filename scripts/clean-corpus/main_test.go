@@ -41,11 +41,12 @@ func writeFixtureArchive(t *testing.T, cache, id string) (digest string, files i
 	if err := os.MkdirAll(cache, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(cache, id+"-1.0.zip"), buf.Bytes(), 0o600); err != nil {
+	sum := sha256.Sum256(buf.Bytes())
+	digest = hex.EncodeToString(sum[:])
+	if err := os.WriteFile(filepath.Join(cache, id+"-"+digest+".zip"), buf.Bytes(), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	sum := sha256.Sum256(buf.Bytes())
-	return hex.EncodeToString(sum[:]), len(entries)
+	return digest, len(entries)
 }
 
 func fixtureSource(t *testing.T, cache, id, kind string) corpusgate.Source {
@@ -145,7 +146,7 @@ func TestRunInvalidManifestHasNoSideEffects(t *testing.T) {
 	ct := installCountingTransport(t)
 	fixtureCache := t.TempDir()
 	good := fixtureSource(t, fixtureCache, "wp", "wordpress")
-	archive, err := os.ReadFile(filepath.Join(fixtureCache, "wp-1.0.zip"))
+	archive, err := os.ReadFile(filepath.Join(fixtureCache, "wp-"+good.SHA256+".zip"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -230,7 +231,7 @@ func TestRunInvalidManifestHasNoSideEffects(t *testing.T) {
 				sentinels := []struct {
 					dir, name string
 					data      []byte
-				}{{cache, "wp-1.0.zip", archive}, {dest, "keep", []byte("sentinel")}, {out, "keep", []byte("sentinel")}}
+				}{{cache, "wp-" + good.SHA256 + ".zip", archive}, {dest, "keep", []byte("sentinel")}, {out, "keep", []byte("sentinel")}}
 				if existing {
 					for _, s := range sentinels {
 						if err := os.Mkdir(s.dir, 0o700); err != nil {
