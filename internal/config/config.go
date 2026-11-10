@@ -2415,9 +2415,26 @@ func defaultPresenceFromYAML(data []byte) (defaultPresence, error) {
 		Suppressions map[string]yaml.Node `yaml:"suppressions"`
 		AutoResponse map[string]yaml.Node `yaml:"auto_response"`
 		Firewall     map[string]yaml.Node `yaml:"firewall"`
+		WebServer    map[string]yaml.Node `yaml:"web_server"`
+		Challenge    map[string]yaml.Node `yaml:"challenge"`
 	}
 	if err := yaml.Unmarshal(data, &raw); err != nil {
 		return presence, err
+	}
+	// yaml.v3 drops null sequence entries when decoding []string, so the
+	// typed proxy validation alone could accept only part of a trust list.
+	for _, section := range []struct {
+		name   string
+		fields map[string]yaml.Node
+	}{
+		{"web_server", raw.WebServer},
+		{"challenge", raw.Challenge},
+	} {
+		if node, ok := section.fields["trusted_proxies"]; ok && !yamlNodeIsNull(&node) {
+			if err := validateStringList(node, section.name+".trusted_proxies"); err != nil {
+				return presence, err
+			}
+		}
 	}
 	if raw.Firewall != nil {
 		presence.firewall = make(map[string]bool, len(raw.Firewall))

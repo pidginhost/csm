@@ -1,12 +1,99 @@
 package config
 
 import (
+	"fmt"
 	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestLoadRejectsNullTrustedProxyEntries(t *testing.T) {
+	for _, key := range []string{"web_server", "challenge"} {
+		for _, tc := range []struct {
+			name, preamble, entries string
+		}{
+			{"null", "", "[192.0.2.10, null]"},
+			{"tilde", "", "[192.0.2.10, ~]"},
+			{"blank", "", "\n    - 192.0.2.10\n    -"},
+			{"aliased entry", "hostname: &empty null\n", "[192.0.2.10, *empty]"},
+			{"aliased list", "infra_ips: &proxies [192.0.2.10, null]\n", "*proxies"},
+		} {
+			t.Run(key+"/"+tc.name, func(t *testing.T) {
+				data := []byte(fmt.Sprintf("%s%s:\n  trusted_proxies: %s\n", tc.preamble, key, tc.entries))
+				cfg, err := LoadBytes(data)
+				if err == nil || cfg != nil {
+					t.Fatal("LoadBytes accepted an empty proxy entry and retained a partial trust list")
+				}
+				if !strings.Contains(err.Error(), key+".trusted_proxies") {
+					t.Fatalf("error = %v, want the invalid proxy setting named", err)
+				}
+			})
+		}
+	}
+}
+
+func TestLoadRejectsInheritedNullTrustedProxyEntries(t *testing.T) {
+	for _, key := range []string{"web_server", "challenge"} {
+		t.Run(key, func(t *testing.T) {
+			data := []byte(fmt.Sprintf("%s:\n  <<: {trusted_proxies: [192.0.2.10, null]}\n", key))
+			_, err := LoadBytes(data)
+			if err == nil || !strings.Contains(err.Error(), key+".trusted_proxies") {
+				t.Fatalf("LoadBytes error = %v, want the inherited empty proxy entry refused", err)
+			}
+		})
+	}
+}
+
+func TestLoadRejectsNullTrustedProxyEntriesFromDropIns(t *testing.T) {
+	for _, key := range []string{"web_server", "challenge"} {
+		t.Run(key, func(t *testing.T) {
+			dir := t.TempDir()
+			fragment := []byte(fmt.Sprintf("%s:\n  trusted_proxies: [null]\n", key))
+			if err := os.WriteFile(filepath.Join(dir, "proxies.yaml"), fragment, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			main := []byte(fmt.Sprintf("%s:\n  trusted_proxies: [192.0.2.10]\n", key))
+			_, err := LoadBytesWithDir(main, dir)
+			if err == nil || !strings.Contains(err.Error(), key+".trusted_proxies") {
+				t.Fatalf("LoadBytesWithDir error = %v, want the empty drop-in entry refused", err)
+			}
+		})
+	}
+}
+
+func TestLoadAllowsEmptyTrustedProxyLists(t *testing.T) {
+	for _, key := range []string{"web_server", "challenge"} {
+		for _, value := range []string{"[]", "null", ""} {
+			t.Run(key+"/"+value, func(t *testing.T) {
+				cfg, err := LoadBytes([]byte(fmt.Sprintf("%s:\n  trusted_proxies: %s\n", key, value)))
+				if err != nil || cfg == nil {
+					t.Fatalf("LoadBytes did not return a config: %v", err)
+				}
+				if got := TrustedProxies(cfg).Len(); got != 0 {
+					t.Fatalf("empty proxy list trusts %d entries", got)
+				}
+			})
+		}
+	}
+}
+
+func TestLoadPreservesTrustedProxyAliases(t *testing.T) {
+	cfg, err := LoadBytes([]byte("web_server: &web\n  trusted_proxies: [&proxy 192.0.2.10, *proxy, 2001:db8::/32]\nchallenge:\n  <<: *web\n"))
+	if err != nil {
+		t.Fatalf("LoadBytes: %v", err)
+	}
+	if len(cfg.WebServer.TrustedProxies) != 3 || len(cfg.Challenge.TrustedProxies) != 3 {
+		t.Fatal("a proxy alias or inherited entry was dropped")
+	}
+	trusted := TrustedProxies(cfg)
+	for _, addr := range []string{"192.0.2.10", "2001:db8::1"} {
+		if !trusted.Covers(netip.MustParseAddr(addr)) {
+			t.Fatalf("TrustedProxies does not cover %s", addr)
+		}
+	}
+}
 
 func TestLoadRejectsInvalidTrustedProxies(t *testing.T) {
 	cases := []struct {

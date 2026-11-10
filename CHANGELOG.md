@@ -19,7 +19,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 - HTTP checks now also trust proxies listed in `challenge.trusted_proxies`, and the ModSecurity audit scan no longer reports a trusted proxy as an attacker.
 - The challenge server now also trusts proxies listed in `web_server.trusted_proxies`, and refuses overlong forwarded chains.
-- CSM now refuses to start with a `web_server.trusted_proxies` or `challenge.trusted_proxies` entry that is not an IP address or CIDR range, instead of ignoring it. Correct such entries before upgrading.
+- CSM now rejects a `web_server.trusted_proxies` or `challenge.trusted_proxies` entry that is not an IP address or CIDR range at startup, reload and Settings save, instead of ignoring it. Correct such entries before upgrading.
 - `csm scan --full` now scans images last, and `--wait` and `--report` exit with status 3 when a scan did not cover everything, including skipped oversize files.
 - Automatic response forecasts reject unverified PHP relay addresses and stop trusting evidence after its allowed address sources change.
 - Automatic response previews reject subnet targets from checks that only attribute individual addresses, including previously queued responses.
