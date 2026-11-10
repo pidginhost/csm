@@ -315,45 +315,6 @@ func TestScanDomlogsDeep(t *testing.T) {
 	_ = findings
 }
 
-// --- CleanDatabaseSpam with wp-config --------------------------------
-
-func TestCleanDatabaseSpamDeep(t *testing.T) {
-	wpConfig := "<?php\ndefine('DB_NAME','wp');\ndefine('DB_USER','u');\ndefine('DB_PASSWORD','p');\ndefine('DB_HOST','localhost');\n"
-
-	withMockOS(t, &mockOS{
-		readDir: func(name string) ([]os.DirEntry, error) {
-			if name == "/home" {
-				return []os.DirEntry{testDirEntry{name: "alice", isDir: true}}, nil
-			}
-			if strings.Contains(name, "public_html") {
-				return []os.DirEntry{testDirEntry{name: "wp-config.php", isDir: false}}, nil
-			}
-			return nil, os.ErrNotExist
-		},
-		readFile: func(name string) ([]byte, error) {
-			if strings.HasSuffix(name, "wp-config.php") {
-				return []byte(wpConfig), nil
-			}
-			return nil, os.ErrNotExist
-		},
-		open: func(name string) (*os.File, error) {
-			if strings.HasSuffix(name, "wp-config.php") {
-				tmp := t.TempDir() + "/wp-config.php"
-				_ = os.WriteFile(tmp, []byte(wpConfig), 0644)
-				return os.Open(tmp)
-			}
-			return nil, os.ErrNotExist
-		},
-	})
-	withMockCmd(t, &mockCmd{
-		runWithEnv: func(name string, args []string, env ...string) ([]byte, error) {
-			return []byte(""), nil
-		},
-	})
-
-	_ = CleanDatabaseSpam("alice")
-}
-
 // --- isInfraShadowChange exercise ------------------------------------
 
 func TestIsInfraShadowChangeExercise(t *testing.T) {

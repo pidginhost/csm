@@ -327,9 +327,6 @@ $table_prefix = 'wp_; DROP TABLE wp_users; --';
 	if len(findings) != 0 {
 		t.Fatalf("CheckDatabaseContent returned findings for rejected prefix: %v", findings)
 	}
-	if got := CleanDatabaseSpam("attacker"); len(got) != 0 {
-		t.Fatalf("CleanDatabaseSpam returned findings for rejected prefix: %v", got)
-	}
 	if mysqlCalls != 0 {
 		t.Fatalf("malicious table prefix reached MySQL query path %d times", mysqlCalls)
 	}

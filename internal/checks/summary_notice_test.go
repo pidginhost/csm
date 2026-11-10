@@ -17,7 +17,7 @@ import (
 // not to this list.
 func TestSummaryRegistryChecks(t *testing.T) {
 	want := []string{
-		"auto_block", "challenge_route", "db_spam_cleaned",
+		"auto_block", "challenge_route",
 		"email_php_form_relay_observed", "email_php_relay_action_dry_run", "email_php_relay_rate_limit_hit",
 		"mail_bruteforce_suspected",
 	}
@@ -57,7 +57,6 @@ func TestSplitByClassSummaryNotices(t *testing.T) {
 		{Check: "challenge_route", Severity: alert.Warning, Message: "CHALLENGE: 203.0.113.52 sent to PoW challenge (expires in 30m0s)"},
 		{Check: "mail_bruteforce_suspected", Severity: alert.High, Message: "Suspected IMAP password spray from 203.0.113.53: failed logins on 4 mailboxes it has no trusted login for (observe mode, not blocked)", SourceIP: "203.0.113.53"},
 		{Check: "mail_bruteforce_suspected", Severity: alert.High, Message: "Suspected mail misconfiguration from 203.0.113.54: 12 failed auths in 10m0s from an established good source (not auto-blocked)", SourceIP: "203.0.113.54"},
-		{Check: "db_spam_cleaned", Severity: alert.High, Message: "Cleaned spam links from 3 posts in example_wp (account: example)"},
 		{Check: "email_php_relay_rate_limit_hit", Severity: alert.Warning, Message: "AutoFreeze rate limit deferred 2 of 5 freezes for example.com:/home/example/public_html/mail.php"},
 		{Check: "email_php_relay_action_dry_run", Severity: alert.Warning, Message: "AutoFreeze dry-run: would freeze 5 msgs from example.com:/home/example/public_html/mail.php"},
 		{Check: "auto_block", Severity: alert.Warning, Message: admission.AppliedSummaryMessage, Details: "events=3 first=2026-01-02T10:00:00Z last=2026-01-02T10:05:00Z"},

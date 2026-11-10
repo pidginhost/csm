@@ -1328,96 +1328,6 @@ func truncateDB(s string, maxLen int) string {
 	return s[:maxLen] + "..."
 }
 
-// CleanDatabaseSpam removes known spam/malware patterns from WordPress database content.
-// Targets wp_posts and wp_options tables. Returns findings for each cleaned row.
-func CleanDatabaseSpam(account string) []alert.Finding {
-	var findings []alert.Finding
-
-	wpConfigs := spamCleanWPConfigs(account)
-
-	for _, wpConfig := range wpConfigs {
-		creds := parseWPConfig(wpConfig)
-		if creds.dbName == "" {
-			continue
-		}
-		prefix, ok := resolveTablePrefix(creds)
-		if !ok {
-			continue
-		}
-		creds.tablePrefix = prefix
-
-		// Clean spam from wp_posts
-		spamPatterns := []struct {
-			pattern string
-			desc    string
-		}{
-			{"<script>", "injected script tag"},
-			{"eval(", "eval() in post content"},
-			{"base64_decode(", "base64_decode in post content"},
-			{"document.write(", "document.write injection"},
-		}
-
-		for _, sp := range spamPatterns {
-			// Count affected rows first
-			countQuery := fmt.Sprintf(
-				"SELECT COUNT(*) FROM %sposts WHERE post_content LIKE '%%%s%%'",
-				prefix, sp.pattern)
-			countLines := runMySQLQuery(creds, countQuery)
-			if len(countLines) == 0 || countLines[0] == "0" {
-				continue
-			}
-
-			// Clean: remove the malicious pattern from post_content
-			cleanQuery := fmt.Sprintf(
-				"UPDATE %sposts SET post_content = REPLACE(post_content, '%s', '') WHERE post_content LIKE '%%%s%%'",
-				prefix, sp.pattern, sp.pattern)
-			runMySQLQuery(creds, cleanQuery)
-
-			findings = append(findings, alert.Finding{
-				Severity:  alert.High,
-				Check:     "db_spam_cleaned",
-				Message:   fmt.Sprintf("Cleaned %s from %s posts in %s (account: %s)", sp.desc, countLines[0], creds.dbName, account),
-				Timestamp: time.Now(),
-			})
-		}
-
-		// Scan for spam keywords in wp_posts. Uses the same word-boundary
-		// regex + post_type denylist + SEO-context requirement as
-		// checkWPPosts so an operator-initiated cleanup surfaces the
-		// same set of findings the periodic scan does.
-		postTypeExcl := nonScannablePostTypesSQLList()
-		for _, sp := range dbSpamPatterns {
-			query := fmt.Sprintf(
-				"SELECT ID, post_content FROM %sposts WHERE post_status='publish' AND post_type NOT IN (%s) AND post_content LIKE '%s' LIMIT 200",
-				prefix, postTypeExcl, sp.likeFragment)
-			lines := runMySQLQuery(creds, query)
-			if len(lines) == 0 {
-				continue
-			}
-			contents := make([]string, 0, len(lines))
-			for _, line := range lines {
-				parts := strings.SplitN(line, "\t", 2)
-				if len(parts) < 2 {
-					continue
-				}
-				contents = append(contents, parts[1])
-			}
-			n := countCloakedSpamMatches(sp, contents)
-			if n == 0 {
-				continue
-			}
-
-			findings = append(findings, alert.Finding{
-				Severity: alert.High,
-				Check:    "db_spam_found",
-				Message:  fmt.Sprintf("Found spam keyword '%s' in %d published posts in %s (account: %s) - manual review recommended", sp.keyword, n, creds.dbName, account),
-			})
-		}
-	}
-
-	return findings
-}
-
 // wpEstablishedLoginSessions is the number of stored login sessions from a
 // single stable IP that is strong enough to downgrade the finding for review.
 const wpEstablishedLoginSessions = 5
@@ -1539,10 +1449,4 @@ func docrootServedNote(state servedState) string {
 	default:
 		return ""
 	}
-}
-
-// spamCleanWPConfigs lists the installs the spam cleaner acts on. Shared
-// discovery: spam left in a nested or panel-mapped install is the same spam.
-func spamCleanWPConfigs(account string) []string {
-	return wpInstallConfigPaths(wpInstallsForAccount(context.Background(), "db_content", account))
 }

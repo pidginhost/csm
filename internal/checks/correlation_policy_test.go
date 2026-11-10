@@ -116,7 +116,6 @@ func TestClassificationExamples(t *testing.T) {
 	}
 	ignored := map[string]string{
 		"db_content_scan_incomplete":  reasonSelfHealth,
-		"db_spam_cleaned":             reasonResponse,
 		"db_siteurl_invalid":          reasonPosture,
 		"admin_cross_account_overlap": reasonAccountAggregate,
 		"bulk_password_change":        reasonAccountAggregate,
