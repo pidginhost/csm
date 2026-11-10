@@ -40,6 +40,10 @@ func cmsVerifyInstalls(account, rel string, load cmsInstallLoader) ([]wpDBCreds,
 		isDir := entry.IsDir()
 		if entry.Type()&os.ModeSymlink != 0 {
 			info, err := osFS.Stat(root)
+			// A link to nothing holds no install; any other error might hide one.
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
 			if err != nil {
 				return nil, false
 			}

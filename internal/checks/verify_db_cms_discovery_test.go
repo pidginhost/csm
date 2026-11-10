@@ -233,3 +233,19 @@ func TestCMSAdminDefaultPrefixRoundTrip(t *testing.T) {
 		})
 	}
 }
+
+// A link left behind by a removed site points nowhere and holds no install;
+// it must not make every re-check on the account unchecked.
+func TestCMSRecheckIgnoresDanglingHomeLinks(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, "bob")
+	writeCMSVerifyFiles(t, home, joomlaFiles(), nil)
+	if err := os.Symlink(filepath.Join(home, "removed-site"), filepath.Join(home, "old-site")); err != nil {
+		t.Fatal(err)
+	}
+	withAccountHomeRoots(t, root)
+	withRecheckQueries(t, func(mysqlclient.Creds, string, ...any) ([]string, error) { return nil, nil })
+	if res := verifyJoomlaContentInjection("", "Account: bob\nArticle ID: 7"); !res.Checked || !res.Resolved {
+		t.Fatalf("dangling home link: %+v, want checked and resolved", res)
+	}
+}
