@@ -339,8 +339,11 @@ web_server:
   # Override the per-vhost access-log globs. Empty uses the detected
   # default for the panel (cPanel, Plesk, DirectAdmin, bare Apache/Nginx).
   domlog_globs: []
-  # IPs or CIDRs whose X-Forwarded-For header is trusted for client-IP
-  # extraction. Leave empty to ignore XFF and use RemoteIP as-is.
+  # IPs or CIDRs trusted by periodic access-log scans and the challenge server
+  # to append or replace X-Forwarded-For with their observed peer. Other
+  # HTTP readers protect these addresses without reading that header.
+  # challenge.trusted_proxies entries count too. Addresses of this host
+  # are never trusted. Leave both lists empty to use the direct peer.
   trusted_proxies: []
 
 suppressions:

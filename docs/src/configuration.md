@@ -325,8 +325,11 @@ web_server:
   # auto-detected default for the panel (cPanel, Plesk, DirectAdmin,
   # bare Apache, or bare Nginx).
   domlog_globs: []
-  # IPs or CIDRs whose X-Forwarded-For header is trusted for client-IP
-  # extraction. Leave empty to ignore XFF and use RemoteIP as-is.
+  # IPs or CIDRs trusted by periodic access-log scans and the challenge server
+  # to append or replace X-Forwarded-For with their observed peer. Other
+  # HTTP readers protect these addresses without reading that header.
+  # challenge.trusted_proxies entries count too. Addresses of this host
+  # are never trusted. Leave both lists empty to use the direct peer.
   trusted_proxies: []
 
 # --- Infrastructure ---
@@ -460,7 +463,7 @@ challenge:
   public_url: ""                        # required by webserver-integration, e.g. https://host:8439/challenge
   secret: ""                            # HMAC secret for tokens (auto-generated if empty)
   difficulty: 2                         # SHA-256 proof-of-work difficulty 0-5 (default: 2)
-  trusted_proxies: []                   # IPs/CIDRs allowed to supply X-Forwarded-For
+  trusted_proxies: []                   # proxies in front of this listener; HTTP checks trust them too
   port_gate:
     enabled: false                      # nftables gate for non-loopback challenge listener
   captcha_fallback:                     # widget for JS-disabled visitors (default off)
