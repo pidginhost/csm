@@ -50,6 +50,8 @@ contents:
   - src: configs/logrotate.conf
     dst: /etc/logrotate.d/csm
     type: config|noreplace
+    file_info:
+      mode: 0644
 
   - src: build/packaging/csm.audit.rules
     dst: /etc/audit/rules.d/csm.rules
